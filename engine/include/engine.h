@@ -89,9 +89,44 @@ char* engine_detect_changes(uint64_t project_id, const char* modified_files_json
  */
 char* engine_get_communities(uint64_t project_id);
 
+// ─── Hotspot Analysis ───────────────────────────────────────────
+
+/**
+ * Find the most-called functions in the project (hotspots).
+ *
+ * @param project_id  The project to analyze.
+ * @param top_n       Number of top hotspots to return (default 10).
+ * @return JSON: { "hotspots": [ { "name","caller_count","complexity",... } ] }
+ */
+char* engine_get_hotspots(uint64_t project_id, int top_n);
+
 // ─── Memory ───────────────────────────────────────────────────
 
 void engine_free_string(char* ptr);
+
+// ─── Batch Indexing ────────────────────────────────────────────
+
+/**
+ * Index multiple files in a single transaction for better performance.
+ *
+ * @param project_id  The project to index into.
+ * @param file_paths_json  JSON array of file paths, e.g. ["/a.go","/b.rs"].
+ * @return JSON summary: {"ok":true, "files":N, "nodes":N, "edges":N, "errors":[...]}
+ */
+char* engine_index_batch(uint64_t project_id, const char* file_paths_json);
+
+// ─── Project Metadata ─────────────────────────────────────────
+
+/**
+ * Get project metadata including detected license and stats.
+ *
+ * Scans LICENSE files, go.mod/Cargo.toml/pyproject.toml, etc.
+ *
+ * @param project_id  The project to query.
+ * @return JSON: {"name":"...", "license":"Apache-2.0", "language":"go",
+ *         "file_count":N, "dependency_count":N, "detected_files":["..."]}
+ */
+char* engine_get_project_info(uint64_t project_id);
 
 #ifdef __cplusplus
 }

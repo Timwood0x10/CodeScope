@@ -187,6 +187,35 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
                 "properties": {}
             }),
         },
+        Tool {
+            name: "index_batch".into(),
+            description: "Index multiple source files in a single transaction for better performance. Accepts a JSON array of file paths.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "files": {"type": "string", "description": "JSON array of file paths, e.g. [\"/path/to/a.go\", \"/path/to/b.rs\"]"}
+                },
+                "required": ["files"]
+            }),
+        },
+        Tool {
+            name: "get_project_info".into(),
+            description: "Get project metadata: detected license, primary language, file count, estimated dependency count.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        Tool {
+            name: "get_hotspots".into(),
+            description: "Find the most-called functions in the project (hotspots). Returns caller count and cyclomatic complexity for each.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "top_n": {"type": "integer", "description": "Number of top hotspots to return (default 10, max 100)"}
+                }
+            }),
+        },
     ]
 }
 
@@ -272,6 +301,17 @@ pub fn execute(project_id: u64, tool_name: &str, args: &Value) -> String {
         }
         "get_communities" => {
             ffi::get_communities(project_id)
+        }
+        "index_batch" => {
+            let files = args["files"].as_str().unwrap_or("[]");
+            ffi::index_batch(project_id, files)
+        }
+        "get_project_info" => {
+            ffi::get_project_info(project_id)
+        }
+        "get_hotspots" => {
+            let top_n = args["top_n"].as_i64().unwrap_or(10) as i32;
+            ffi::get_hotspots(project_id, top_n)
         }
         _ => json!({"error": "Unknown tool"}).to_string(),
     }

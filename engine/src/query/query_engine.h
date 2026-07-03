@@ -67,6 +67,12 @@ public:
     // Returns JSON with communities, their members, and inter-community edges.
     std::string getCommunities(uint64_t project_id);
 
+    // ── Hotspot Analysis ───────────────────────────────────────
+
+    // Find the most-called functions in the project (hotspots).
+    // Returns JSON: { "hotspots": [ { "name","caller_count","complexity",... } ] }
+    std::string getHotspots(uint64_t project_id, int top_n);
+
 private:
     store::GraphStore* store_;
 };

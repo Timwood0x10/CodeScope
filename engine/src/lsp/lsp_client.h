@@ -77,6 +77,24 @@ public:
     /** Returns the last error message. */
     const std::string& error() const { return error_; }
 
+    /**
+     * Check if an LSP server command is available on the system PATH.
+     * Used before attempting to start a server.
+     */
+    static bool isAvailable(const char* command);
+
+    /**
+     * Extract the target URI from a textDocument/definition response.
+     * The response is a JSON-RPC result body containing either a single
+     * Location or a LocationLink/array.
+     */
+    std::string extractTargetUri(const std::string& response_body);
+
+    /**
+     * Extract readable content from a textDocument/hover response.
+     */
+    std::string extractHoverContent(const std::string& response_body);
+
 private:
     int    pid_ = 0;          // LSP server process PID
     int    stdin_fd_ = -1;    // Write end of pipe to server stdin

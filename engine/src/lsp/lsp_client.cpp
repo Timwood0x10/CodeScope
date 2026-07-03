@@ -327,3 +327,80 @@ std::string LspClient::extractStringField(const std::string& json, const std::st
     if (end == std::string::npos) return "";
     return json.substr(pos, end - pos);
 }
+
+// ─── Static helpers ────────────────────────────────────────────
+
+bool LspClient::isAvailable(const char* command) {
+    if (!command || !*command) return false;
+    // Safe check: use access() for absolute paths, PATH search without shell
+    if (command[0] == '/') {
+        return access(command, X_OK) == 0;
+    }
+    // Search PATH manually (no shell invocation)
+    const char* path_env = getenv("PATH");
+    if (!path_env) return false;
+    std::string path(path_env);
+    size_t start = 0, end;
+    while ((end = path.find(':', start)) != std::string::npos) {
+        std::string dir = path.substr(start, end - start);
+        std::string full = dir + "/" + command;
+        if (access(full.c_str(), X_OK) == 0) return true;
+        start = end + 1;
+    }
+    // Last entry (no trailing colon)
+    std::string full = path.substr(start) + "/" + command;
+    return access(full.c_str(), X_OK) == 0;
+}
+
+std::string LspClient::extractTargetUri(const std::string& response_body) {
+    if (response_body.empty()) return "";
+
+    // Handle empty/error responses
+    if (response_body.find("\"result\":null") != std::string::npos) return "";
+
+    // Try to find "uri" in a Location object: {"uri":"file:///...","range":{...}}
+    // This handles both single Location and Location array
+    std::string uri_marker = "\"uri\":\"";
+    auto pos = response_body.find(uri_marker);
+    if (pos == std::string::npos) return "";
+
+    pos += uri_marker.size();
+    auto end = response_body.find('"', pos);
+    if (end == std::string::npos) return "";
+
+    std::string uri = response_body.substr(pos, end - pos);
+
+    // Strip file:// prefix for cleaner representation
+    if (uri.compare(0, 7, "file://") == 0) {
+        uri = uri.substr(7);
+    }
+
+    return uri;
+}
+
+std::string LspClient::extractHoverContent(const std::string& response_body) {
+    if (response_body.empty()) return "";
+
+    // Hover response structure: { "contents": { "kind": "markdown", "value": "..." } }
+    // or { "contents": "type info" }
+    auto val_pos = response_body.find("\"value\":\"");
+    if (val_pos != std::string::npos) {
+        val_pos += 9; // skip "value":"
+        auto end = response_body.find('"', val_pos);
+        if (end != std::string::npos) {
+            return response_body.substr(val_pos, end - val_pos);
+        }
+    }
+
+    // Fallback: try to extract the "contents" string directly
+    auto cont_pos = response_body.find("\"contents\":\"");
+    if (cont_pos != std::string::npos) {
+        cont_pos += 12;
+        auto end = response_body.find('"', cont_pos);
+        if (end != std::string::npos) {
+            return response_body.substr(cont_pos, end - cont_pos);
+        }
+    }
+
+    return "";
+}

@@ -15,6 +15,7 @@
 #include <sstream>
 #include <fstream>
 #include <memory>
+#include <vector>
 #include <unordered_map>
 
 // ─── Global singletons ─────────────────────────────────────────
@@ -31,6 +32,23 @@ static std::string readFile(const char* path) {
     std::ostringstream ss;
     ss << f.rdbuf();
     return ss.str();
+}
+
+// Escape a string for safe embedding in JSON (escape ", \, \n, \r, \t)
+static std::string jsonEscape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 4);
+    for (char c : s) {
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            default:   out += c;      break;
+        }
+    }
+    return out;
 }
 
 static std::string simpleHash(const std::string& s) {
@@ -148,34 +166,43 @@ char* engine_index_file(uint64_t project_id, const char* file_path) {
     }
 
     // ── Optional LSP enhancement ──────────────────────────────
-    // If CODESCOPE_LSP env var is set (e.g. "pylsp", "gopls"), start
+    // If CODESCOPE_LSP env var is set (e.g. "pylsp"), start
     // an LSP server and resolve call targets for better accuracy.
+    // LSP provides cross-file/package symbol resolution that pure
+    // tree-sitter cannot achieve.
     {
         const char* lsp_cmd = getenv("CODESCOPE_LSP");
-        if (lsp_cmd && *lsp_cmd) {
+        if (lsp_cmd && *lsp_cmd && LspClient::isAvailable(lsp_cmd)) {
             LspClient lsp;
             if (lsp.start(lsp_cmd, "file://")) {
                 lsp.openDocument(file_path, source.c_str());
                 for (auto* node : unit->all_nodes) {
+                    // For call expressions, try to resolve the callee via LSP
                     if (node->kind == ir::NodeKind::CallExpr && !node->name.empty()) {
-                        // Query definition at the start of the call expression
                         std::string def = lsp.queryDefinition(
                             file_path,
                             static_cast<int>(node->loc.start_row),
                             static_cast<int>(node->loc.start_col));
                         if (!def.empty()) {
-                            // def is a JSON-RPC result; extract targetUri/targetRange
-                            // For v1, just mark that we got LSP data
-                            node->doc_comment = "[LSP resolved]";
+                            // Extract target URI from LSP response
+                            std::string target_uri = lsp.extractTargetUri(def);
+                            if (!target_uri.empty()) {
+                                node->qualified_name = target_uri;
+                            }
                         }
                     }
+                    // For identifier expressions, try to get their type info
                     if (node->kind == ir::NodeKind::IdentifierExpr && !node->name.empty()) {
-                        std::string def = lsp.queryDefinition(
+                        std::string hover = lsp.queryHover(
                             file_path,
                             static_cast<int>(node->loc.start_row),
                             static_cast<int>(node->loc.start_col));
-                        if (!def.empty()) {
-                            node->doc_comment = "[LSP resolved]";
+                        if (!hover.empty()) {
+                            // Store hover info as doc comment for search indexing
+                            std::string content = lsp.extractHoverContent(hover);
+                            if (!content.empty()) {
+                                node->doc_comment = "[type: " + content + "]";
+                            }
                         }
                     }
                 }
@@ -405,8 +432,240 @@ char* engine_get_communities(uint64_t project_id) {
     return dupString(g_query->getCommunities(project_id));
 }
 
+// ─── Hotspot Analysis ──────────────────────────────────────
+
+char* engine_get_hotspots(uint64_t project_id, int top_n) {
+    if (!g_query) return dupString("{\"error\":\"not initialized\"}");
+    if (top_n <= 0) top_n = 10;
+    return dupString(g_query->getHotspots(project_id, top_n));
+}
+
 // ─── Memory ────────────────────────────────────────────────────
 
 void engine_free_string(char* ptr) {
     free(ptr);
+}
+
+// ─── Batch Indexing ──────────────────────────────────────────
+
+char* engine_index_batch(uint64_t project_id, const char* file_paths_json) {
+    if (!g_store || !g_parser) return dupString("{\"ok\":false,\"error\":\"not initialized\"}");
+
+    // Parse JSON array of file paths
+    std::vector<std::string> paths;
+    {
+        const char* p = file_paths_json;
+        if (!p || !*p) return dupString("{\"ok\":false,\"error\":\"empty file list\"}");
+        while (*p && *p != '[') p++;
+        if (!*p) return dupString("{\"ok\":false,\"error\":\"expected [\"}");
+        p++;
+        while (*p) {
+            while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == ',') p++;
+            if (*p == ']') break;
+            if (*p != '"') return dupString("{\"ok\":false,\"error\":\"expected string\"}");
+            p++;
+            std::string path;
+            while (*p && *p != '"') { path += *p; p++; }
+            if (*p != '"') return dupString("{\"ok\":false,\"error\":\"unterminated string\"}");
+            p++;
+            if (!path.empty()) paths.push_back(path);
+        }
+    }
+    if (paths.empty()) return dupString("{\"ok\":false,\"error\":\"empty file list\"}");
+
+    // Phase 1: Parse all files in memory (no DB I/O)
+    struct FileBatch {
+        std::unique_ptr<ir::TranslationUnit> unit;
+        std::string source;
+        std::string language;
+        std::string file_path;
+    };
+    std::vector<FileBatch> batches;
+    std::vector<std::string> errors;
+
+    for (const auto& fp : paths) {
+        const char* lang = detectLanguage(fp.c_str());
+        if (!lang) { errors.push_back(fp + ": unsupported"); continue; }
+
+        std::string source = readFile(fp.c_str());
+        if (source.empty()) { errors.push_back(fp + ": cannot read"); continue; }
+
+        TSTree* tree = g_parser->parse(fp.c_str(), source.c_str(), lang);
+        if (!tree) { errors.push_back(fp + ": parse failed"); continue; }
+
+        std::unique_ptr<ir::Translator> translator(ir::createTranslator(lang));
+        if (!translator) { ts_tree_delete(tree); errors.push_back(fp + ": no translator"); continue; }
+
+        ir::TranslationUnit* unit = translator->translate(tree, source.c_str(), fp.c_str());
+        ts_tree_delete(tree);
+        if (!unit) { errors.push_back(fp + ": translation failed"); continue; }
+
+        batches.push_back({std::unique_ptr<ir::TranslationUnit>(unit), std::move(source), lang, fp});
+    }
+
+    // Phase 2: Persist in single transaction
+    g_store->beginTransaction();
+
+    uint64_t start_id = 1;
+    {
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(g_store->handle(),
+                "SELECT COALESCE(MAX(id),0)+1 FROM graph_nodes", -1, &stmt, nullptr) == SQLITE_OK) {
+            if (sqlite3_step(stmt) == SQLITE_ROW)
+                start_id = static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
+            sqlite3_finalize(stmt);
+        }
+    }
+
+    graph::GraphBuilder builder(project_id, start_id);
+    int total_nodes = 0, total_edges = 0;
+
+    for (auto& b : batches) {
+        std::string hash = simpleHash(b.source);
+        uint64_t file_id = g_store->upsertFile(project_id, b.file_path.c_str(),
+                                                b.language.c_str(), hash.c_str());
+        g_store->deleteIRByFile(project_id, file_id);
+        g_store->deleteGraphNodesByFile(project_id, b.file_path.c_str());
+        g_store->deleteFTSByFile(project_id, file_id);
+
+        std::unordered_map<uint64_t, uint64_t> ir_map;
+        for (auto* node : b.unit->all_nodes) {
+            uint64_t db_id = g_store->insertIRNode(
+                project_id, file_id, 0, static_cast<int>(node->kind),
+                node->name.empty() ? nullptr : node->name.c_str(),
+                nullptr,
+                node->loc.start_row, node->loc.start_col,
+                node->loc.end_row, node->loc.end_col,
+                node->language.c_str());
+            ir_map[node->id] = db_id;
+            const char* fn = node->name.empty() ? nullptr : node->name.c_str();
+            if (fn || !node->doc_comment.empty())
+                g_store->insertIntoFTS(db_id, project_id, fn, nullptr, b.file_path.c_str(),
+                                       node->doc_comment.c_str(), static_cast<int>(node->kind));
+        }
+        for (auto* node : b.unit->all_nodes)
+            for (auto& e : node->semantic_edges) {
+                auto si = ir_map.find(node->id), ti = ir_map.find(e.target->id);
+                if (si != ir_map.end() && ti != ir_map.end())
+                    g_store->insertIRSemanticEdge(project_id, si->second, ti->second,
+                                                  static_cast<int>(e.relation));
+            }
+
+        auto sg = builder.buildSymbolGraph(b.unit.get());
+        auto cg = builder.buildCallGraph(b.unit.get());
+        for (auto& gn : sg.nodes) { g_store->insertGraphNode(project_id, gn); total_nodes++; }
+        for (auto& e : sg.edges) { g_store->insertGraphEdge(project_id, e); total_edges++; }
+        for (auto& e : cg.edges) { g_store->insertGraphEdge(project_id, e); total_edges++; }
+
+        ir::ComplexityAnalyzer ca;
+        for (auto& gn : sg.nodes)
+            if (gn.type == graph::NodeType::Function || gn.type == graph::NodeType::Method)
+                for (auto* in : b.unit->all_nodes)
+                    if (in->id == gn.ir_node_id) {
+                        auto cr = ca.analyze(in);
+                        g_store->setComplexity(project_id, gn.id, cr.cyclomatic, cr.cognitive,
+                                               cr.nesting_depth, cr.decision_points);
+                        break;
+                    }
+    }
+
+    g_store->commitTransaction();
+
+    std::ostringstream r;
+    r << "{\"ok\":true,\"files\":" << (batches.size() + errors.size())
+      << ",\"indexed\":" << batches.size()
+      << ",\"nodes\":" << total_nodes
+      << ",\"edges\":" << total_edges
+      << ",\"errors\":[";
+    for (size_t i = 0; i < errors.size(); i++) {
+        if (i > 0) r << ",";
+        r << "\"" << jsonEscape(errors[i]) << "\"";
+    }
+    r << "]}";
+    return dupString(r.str());
+}
+
+// ─── Project Metadata ───────────────────────────────────────
+
+static const char* detectLicense(const std::string& content) {
+    if (content.find("Apache License") != std::string::npos ||
+        content.find("Version 2.0, January 2004") != std::string::npos)
+        return "Apache-2.0";
+    if (content.find("MIT License") != std::string::npos ||
+        content.find("Permission is hereby granted") != std::string::npos)
+        return "MIT";
+    if (content.find("GNU GENERAL PUBLIC LICENSE") != std::string::npos)
+        return content.find("Version 3") != std::string::npos ? "GPL-3.0" : "GPL-2.0";
+    if (content.find("BSD") != std::string::npos) return "BSD";
+    if (content.find("Mozilla Public") != std::string::npos) return "MPL-2.0";
+    return "Unknown";
+}
+
+char* engine_get_project_info(uint64_t project_id) {
+    if (!g_store) return dupString("{\"error\":\"not initialized\"}");
+
+    sqlite3* db = g_store->handle();
+    std::string name, root;
+
+    {
+        sqlite3_stmt* stmt = nullptr;
+        const char* sql = "SELECT name, root_path FROM projects WHERE id=?";
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+            if (sqlite3_step(stmt) == SQLITE_ROW) {
+                if (sqlite3_column_text(stmt, 0)) name = (const char*)sqlite3_column_text(stmt, 0);
+                if (sqlite3_column_text(stmt, 1)) root = (const char*)sqlite3_column_text(stmt, 1);
+            }
+            sqlite3_finalize(stmt);
+        }
+    }
+
+    // Detect license
+    std::string license = "Unknown";
+    const char* lfs[] = {"LICENSE","LICENSE.txt","LICENSE.md","LICENSE-APACHE","COPYING",nullptr};
+    for (int i = 0; lfs[i]; i++) {
+        std::string c = readFile((root + "/" + lfs[i]).c_str());
+        if (!c.empty()) { license = detectLicense(c); break; }
+    }
+
+    // Primary language
+    std::string lang;
+    {
+        sqlite3_stmt* stmt = nullptr;
+        const char* sql = "SELECT language,COUNT(*) FROM files WHERE project_id=? GROUP BY language ORDER BY 2 DESC LIMIT 1";
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+            if (sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_text(stmt, 0))
+                lang = (const char*)sqlite3_column_text(stmt, 0);
+            sqlite3_finalize(stmt);
+        }
+    }
+
+    int file_count = 0, dep_count = 0;
+    {
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM files WHERE project_id=?", -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+            if (sqlite3_step(stmt) == SQLITE_ROW) file_count = sqlite3_column_int(stmt, 0);
+            sqlite3_finalize(stmt);
+        }
+    }
+
+    // Try to parse dep files
+    const char* dfs[] = {"go.mod","Cargo.toml","pyproject.toml","package.json","requirements.txt",nullptr};
+    for (int i = 0; dfs[i]; i++) {
+        std::string c = readFile((root + "/" + dfs[i]).c_str());
+        if (!c.empty()) {
+            int lines = 0;
+            for (size_t p = 0; (p = c.find('\n', p)) != std::string::npos; lines++, p++);
+            dep_count = lines / 3;
+            break;
+        }
+    }
+
+    std::ostringstream j;
+    j << "{\"name\":\"" << jsonEscape(name) << "\",\"license\":\"" << jsonEscape(license)
+      << "\",\"language\":\"" << jsonEscape(lang) << "\",\"file_count\":" << file_count
+      << ",\"dependency_count\":" << dep_count << "}";
+    return dupString(j.str());
 }

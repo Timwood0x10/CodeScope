@@ -41,6 +41,12 @@ unsafe extern "C" {
 
     fn engine_get_communities(project_id: u64) -> *mut c_char;
 
+    fn engine_index_batch(project_id: u64, file_paths_json: *const c_char) -> *mut c_char;
+
+    fn engine_get_project_info(project_id: u64) -> *mut c_char;
+
+    fn engine_get_hotspots(project_id: u64, top_n: i32) -> *mut c_char;
+
     fn engine_free_string(ptr: *mut c_char);
 }
 
@@ -161,4 +167,16 @@ pub fn detect_changes(project_id: u64, modified_files_json: &str) -> String {
 
 pub fn get_communities(project_id: u64) -> String {
     take_string(unsafe { engine_get_communities(project_id) })
+}
+
+pub fn index_batch(project_id: u64, file_paths_json: &str) -> String {
+    take_string(unsafe { engine_index_batch(project_id, cstr(file_paths_json).as_ptr()) })
+}
+
+pub fn get_project_info(project_id: u64) -> String {
+    take_string(unsafe { engine_get_project_info(project_id) })
+}
+
+pub fn get_hotspots(project_id: u64, top_n: i32) -> String {
+    take_string(unsafe { engine_get_hotspots(project_id, top_n) })
 }

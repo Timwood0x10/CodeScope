@@ -9,6 +9,24 @@
 
 namespace query {
 
+// ─── JSON string escaping ──────────────────────────────────────
+
+static std::string jsonEscape(const char* s) {
+    if (!s) return "";
+    std::string out;
+    for (const char* p = s; *p; p++) {
+        switch (*p) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default: out += *p; break;
+        }
+    }
+    return out;
+}
+
 QueryEngine::QueryEngine(store::GraphStore* store)
     : store_(store) {}
 
@@ -325,6 +343,54 @@ std::string QueryEngine::detectChanges(uint64_t project_id, const char* modified
 
 std::string QueryEngine::getCommunities(uint64_t project_id) {
     return detectCommunities(project_id, store_);
+}
+
+// ─── Hotspot Analysis ───────────────────────────────────────
+
+std::string QueryEngine::getHotspots(uint64_t project_id, int top_n) {
+    if (top_n <= 0) top_n = 10;
+    if (top_n > 100) top_n = 100;
+
+    sqlite3* db = store_->handle();
+    sqlite3_stmt* stmt = nullptr;
+    std::string sql =
+        "SELECT gn.id, gn.name, gn.file_path, gn.node_type, "
+        "COUNT(ge.id) AS caller_count, nc.cyclomatic "
+        "FROM graph_nodes gn "
+        "LEFT JOIN graph_edges ge ON ge.target_node_id = gn.id AND ge.edge_type = 1 "
+        "LEFT JOIN node_complexity nc ON nc.graph_node_id = gn.id "
+        "WHERE gn.project_id = ? AND gn.node_type IN (0,1) "
+        "GROUP BY gn.id "
+        "ORDER BY caller_count DESC "
+        "LIMIT ?";
+
+    std::ostringstream json;
+    json << "{\"hotspots\":[";
+    bool first = true;
+    int row_count = 0;
+
+    if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+        sqlite3_bind_int(stmt, 2, top_n);
+
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            row_count++;
+            if (!first) json << ",";
+            first = false;
+            json << "{"
+                 << "\"id\":" << sqlite3_column_int64(stmt, 0) << ","
+                 << "\"name\":\"" << jsonEscape(sqlite3_column_text(stmt, 1) ? (const char*)sqlite3_column_text(stmt, 1) : "") << "\","
+                 << "\"file\":\"" << jsonEscape(sqlite3_column_text(stmt, 2) ? (const char*)sqlite3_column_text(stmt, 2) : "") << "\","
+                 << "\"type\":" << sqlite3_column_int(stmt, 3) << ","
+                 << "\"caller_count\":" << sqlite3_column_int(stmt, 4) << ","
+                 << "\"complexity\":" << sqlite3_column_int(stmt, 5)
+                 << "}";
+        }
+        sqlite3_finalize(stmt);
+    }
+
+    json << "],\"total\":" << row_count << "}";
+    return json.str();
 }
 
 } // namespace query
