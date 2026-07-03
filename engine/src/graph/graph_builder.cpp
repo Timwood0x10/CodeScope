@@ -60,13 +60,18 @@ bool GraphBuilder::visitEnter(ir::Node* node) {
         case ir::NodeKind::ClassDecl:
             addGraphNode(node, NodeType::Class);
             break;
+        case ir::NodeKind::EnumDecl:
+            addGraphNode(node, NodeType::Module);
+            break;
         case ir::NodeKind::VariableDecl:
             addGraphNode(node, NodeType::Variable);
             break;
         case ir::NodeKind::Module:
+        case ir::NodeKind::NamespaceDecl:
             addGraphNode(node, NodeType::Module);
             break;
         case ir::NodeKind::ImportDecl:
+        case ir::NodeKind::ExportDecl:
             addGraphNode(node, NodeType::Module);
             break;
         case ir::NodeKind::TranslationUnit:
@@ -74,6 +79,41 @@ bool GraphBuilder::visitEnter(ir::Node* node) {
             break;
         default:
             break;
+    }
+
+    // ── Contains edges: parent → child hierarchy ────────────
+    // If the parent node has a graph node, connect parent → child.
+    // This builds the contains tree: file→class→method, etc.
+    // We check the parent by looking at the function_stack for the
+    // containing function, and the ir_to_graph_node_ for all ancestors.
+    // For simplicity, use a container_stack_ that tracks which graph
+    // node is the current container.
+    if (!building_call_graph_) {
+        // The current graph node (if any) is the child.
+        // Its container is the nearest ancestor that has a graph node.
+        auto child_it = ir_to_graph_node_.find(node->id);
+        if (child_it != ir_to_graph_node_.end()) {
+            // Find the container: the nearest ancestor in the IR tree
+            // that also has a graph node. Since we visit in DFS order,
+            // and the function stack tracks function ancestors, we look
+            // there first, then fall back to the file-level parent.
+            uint64_t container_id = getContainingFunctionNode();
+            if (container_id == 0) {
+                // Not inside a function — check if the parent IR node exists
+                // (the File/Module level container). For simplicity, use
+                // the File node if it exists.
+                for (auto it = function_stack_.rbegin(); it != function_stack_.rend(); ++it) {
+                    auto found = ir_to_graph_node_.find((*it)->id);
+                    if (found != ir_to_graph_node_.end()) {
+                        container_id = found->second;
+                        break;
+                    }
+                }
+            }
+            if (container_id > 0 && container_id != child_it->second) {
+                addGraphEdge(container_id, child_it->second, EdgeType::Contains);
+            }
+        }
     }
 
     // ── Process semantic edges ──────────────────────────────

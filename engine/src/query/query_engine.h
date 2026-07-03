@@ -73,6 +73,37 @@ public:
     // Returns JSON: { "hotspots": [ { "name","caller_count","complexity",... } ] }
     std::string getHotspots(uint64_t project_id, int top_n);
 
+    // ── Code Understanding Queries ──────────────────────────────
+
+    /**
+     * Get a module map: all files grouped by directory, with their
+     * functions, methods, dependencies (imports), and call relationships.
+     * Gives AI the full picture of "what lives where".
+     */
+    std::string getModuleMap(uint64_t project_id);
+
+    /**
+     * Find entry points: functions named main, run, start, init, setup
+     * that are likely application entry points. Returns each with its
+     * full call chain (who they call, down to 3 levels).
+     */
+    std::string getEntryPoints(uint64_t project_id);
+
+    /**
+     * Trace a call chain between two named functions.
+     * Uses the multi-hop graph to find the shortest call path.
+     */
+    std::string traceCallChain(uint64_t project_id,
+                                const char* from_function,
+                                const char* to_function);
+
+    /**
+     * Get an AI-friendly project overview: module map + entry points +
+     * top hotspots + architecture summary. This is the "one query"
+     * that gives an AI complete understanding of the codebase.
+     */
+    std::string getProjectOverview(uint64_t project_id);
+
 private:
     store::GraphStore* store_;
 };

@@ -67,6 +67,35 @@ public:
     std::string queryHover(const char* file_uri, int line, int column);
 
     /**
+     * Query textDocument/documentSymbol for all symbols in a file.
+     *
+     * Parses the response and populates a name→range map for fast
+     * local symbol resolution without per-symbol LSP queries.
+     *
+     * @param file_uri  The file URI.
+     * @return Raw JSON-RPC response body for parsing.
+     */
+    std::string queryDocumentSymbols(const char* file_uri);
+
+    /**
+     * Parse a documentSymbol response and extract name→kind mapping.
+     *
+     * @param response_body  Raw JSON body from queryDocumentSymbols.
+     * @param out_symbols    Output map: name → NodeKind (0=Function, 12=Class, etc).
+     */
+    static void parseDocumentSymbols(const std::string& response_body,
+                                     std::unordered_map<std::string, int>& out_symbols);
+
+    /**
+     * Parse a documentSymbol response and extract name→location mapping.
+     *
+     * @param response_body  Raw JSON body from queryDocumentSymbols.
+     * @param out_locations  Output map: name → "file://path:line:col"
+     */
+    static void parseSymbolLocations(const std::string& response_body,
+                                     std::unordered_map<std::string, std::string>& out_locations);
+
+    /**
      * Shutdown and stop the LSP server.
      */
     void stop();

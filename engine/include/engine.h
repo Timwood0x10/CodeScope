@@ -103,6 +103,20 @@ char* engine_get_communities(uint64_t project_id);
  */
 char* engine_get_hotspots(uint64_t project_id, int top_n);
 
+// ─── Code Understanding ─────────────────────────────────────────
+
+// Get a module map: all directories with their functions and methods
+char* engine_get_module_map(uint64_t project_id);
+
+// Find likely entry points (main, run, start, init, setup)
+char* engine_get_entry_points(uint64_t project_id);
+
+// Trace call chain between two named functions
+char* engine_trace_call_chain(uint64_t project_id, const char* from, const char* to);
+
+// Complete project overview: modules + entry points + hotspots + stats
+char* engine_get_project_overview(uint64_t project_id);
+
 // ─── Memory ───────────────────────────────────────────────────
 
 void engine_free_string(char* ptr);

@@ -9,6 +9,7 @@
 #include <sys/select.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <csignal>
 
 // ─── JSON-RPC helpers (minimal, no external deps) ─────────────
 
@@ -68,14 +69,20 @@ bool LspClient::start(const char* command, const char* root_uri) {
                 << "}";
 
     std::string req = buildJsonRpc("initialize", init_params.str(), req_id_);
-    if (!sendMessage(req)) return false;
+    if (!sendMessage(req)) {
+        stop();
+        return false;
+    }
 
-    // Read response
+    // Read response with timeout; if server dies silently, clean up
     std::string resp = readResponse(req_id_);
-    if (resp.empty()) return false;
+    if (resp.empty()) {
+        stop();
+        return false;
+    }
     req_id_++;
 
-    // Send initialized notification
+    // Send initialized notification (best-effort)
     std::string notif = buildNotification("initialized", "{}");
     sendMessage(notif);
 
@@ -135,6 +142,76 @@ std::string LspClient::queryHover(const char* file_uri, int line, int column) {
     return resp;
 }
 
+std::string LspClient::queryDocumentSymbols(const char* file_uri) {
+    if (!isRunning()) return "";
+
+    std::ostringstream params;
+    params << "{"
+           << "\"textDocument\":{\"uri\":\"" << file_uri << "\"}"
+           << "}";
+
+    std::string req = buildJsonRpc("textDocument/documentSymbol", params.str(), req_id_);
+    if (!sendMessage(req)) return "";
+
+    std::string resp = readResponse(req_id_);
+    req_id_++;
+    return resp;
+}
+
+void LspClient::parseDocumentSymbols(const std::string& response_body,
+                                      std::unordered_map<std::string, int>& out_symbols) {
+    out_symbols.clear();
+    if (response_body.empty()) return;
+
+    // Parse: [{"name":"...","kind":N,"children":[...]}, ...]
+    // We flatten the hierarchy: for each symbol, add name→kind
+    std::string search = "\"name\":\"";
+    size_t pos = 0;
+    while ((pos = response_body.find(search, pos)) != std::string::npos) {
+        pos += search.size();
+        auto end = response_body.find('"', pos);
+        if (end == std::string::npos) break;
+        std::string name = response_body.substr(pos, end - pos);
+        pos = end;
+
+        // Find kind field after this name
+        auto kind_pos = response_body.find("\"kind\":", end);
+        if (kind_pos == std::string::npos) break;
+        kind_pos += 7;
+        while (kind_pos < response_body.size() && response_body[kind_pos] == ' ') kind_pos++;
+        auto kind_end = response_body.find_first_of(",}", kind_pos);
+        if (kind_end == std::string::npos) break;
+        int kind = std::atoi(response_body.substr(kind_pos, kind_end - kind_pos).c_str());
+        out_symbols[name] = kind;
+    }
+}
+
+void LspClient::parseSymbolLocations(const std::string& response_body,
+                                      std::unordered_map<std::string, std::string>& out_locations) {
+    out_locations.clear();
+    if (response_body.empty()) return;
+
+    // Parse: [{"name":"...","range":{"start":{"line":N,"character":N}},...}, ...]
+    std::string search = "\"name\":\"";
+    size_t pos = 0;
+    while ((pos = response_body.find(search, pos)) != std::string::npos) {
+        pos += search.size();
+        auto end = response_body.find('"', pos);
+        if (end == std::string::npos) break;
+        std::string name = response_body.substr(pos, end - pos);
+        pos = end;
+
+        // Find range
+        auto line_pos = response_body.find("\"line\":", end);
+        if (line_pos == std::string::npos) break;
+        line_pos += 7;
+        auto line_end = response_body.find_first_of(",}", line_pos);
+        if (line_end == std::string::npos) break;
+        std::string loc = "line:" + response_body.substr(line_pos, line_end - line_pos);
+        out_locations[name] = loc;
+    }
+}
+
 void LspClient::stop() {
     if (!isRunning()) return;
 
@@ -165,6 +242,9 @@ void LspClient::stop() {
 // ─── Private helpers ──────────────────────────────────────────
 
 bool LspClient::spawnProcess(const char* command) {
+    // Ignore SIGPIPE so a dead LSP server doesn't crash us
+    signal(SIGPIPE, SIG_IGN);
+
     int stdin_pipe[2], stdout_pipe[2];
     if (pipe(stdin_pipe) < 0 || pipe(stdout_pipe) < 0) {
         error_ = "pipe() failed";
