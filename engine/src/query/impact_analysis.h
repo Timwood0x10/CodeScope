@@ -29,16 +29,14 @@ namespace query {
  *                             ["/path/to/file1.py", "/path/to/file2.cpp"].
  * @return JSON object:
  *   {
- *     "modified": [ { node fields } ],        // functions directly in changed files
- *     "callers":  [ { node fields, caller_of } ], // functions that call modified ones
- *     "callees":  [ { node fields, callee_of } ], // functions called by modified ones
- *     "total_impacted": N
+ *     "modified": [ { node fields } ],        // functions directly in changed
+ * files "callers":  [ { node fields, caller_of } ], // functions that call
+ * modified ones "callees":  [ { node fields, callee_of } ], // functions called
+ * by modified ones "total_impacted": N
  *   }
  */
-std::string analyzeChangeImpact(
-    uint64_t project_id,
-    store::GraphStore* store,
-    const char* modified_files_json);
+std::string analyzeChangeImpact(uint64_t project_id, store::GraphStore *store,
+                                const char *modified_files_json);
 
 } // namespace query
 

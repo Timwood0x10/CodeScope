@@ -1,9 +1,9 @@
 #ifndef GRAPH_QUERY_H
 #define GRAPH_QUERY_H
 
-#include <string>
-#include <cstdint>
 #include "../store/store.h"
+#include <cstdint>
+#include <string>
 
 namespace query {
 
@@ -16,9 +16,10 @@ namespace query {
 // Empty type matches any (e.g. ()-[Calls]->(Function)).
 // Optional :name filters by symbol name (e.g. (Function:add)).
 //
-// Returns JSON: { "total": N, "results": [ { source: ..., edge: ..., target: ... }, ... ] }
-std::string executeGraphQuery(uint64_t project_id, const char* dsl_query,
-                              store::GraphStore* store);
+// Returns JSON: { "total": N, "results": [ { source: ..., edge: ..., target:
+// ... }, ... ] }
+std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
+                              store::GraphStore *store);
 
 } // namespace query
 

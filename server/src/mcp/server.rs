@@ -29,7 +29,9 @@ impl Server {
 
     fn handle_request(&mut self, req: Request) -> serde_json::Value {
         match req {
-            Request::Standard { id, method, params, .. } => {
+            Request::Standard {
+                id, method, params, ..
+            } => {
                 let result = self.dispatch(&method, params);
                 json_response(id, result)
             }
@@ -41,13 +43,17 @@ impl Server {
         }
     }
 
-    fn dispatch(&mut self, method: &str, params: Option<serde_json::Value>) -> Result<serde_json::Value, JsonRpcError> {
+    fn dispatch(
+        &mut self,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, JsonRpcError> {
         match method {
-            "initialize"          => self.handle_initialize(params),
-            "initialized"         => Ok(serde_json::Value::Null),
+            "initialize" => self.handle_initialize(params),
+            "initialized" => Ok(serde_json::Value::Null),
             "notifications/initialized" => Ok(serde_json::Value::Null),
-            "tools/list"          => self.handle_list_tools(),
-            "tools/call"          => self.handle_call_tool(params),
+            "tools/list" => self.handle_list_tools(),
+            "tools/call" => self.handle_call_tool(params),
             _ => Err(JsonRpcError {
                 code: -32601,
                 message: format!("Method not found: {}", method),
@@ -58,7 +64,10 @@ impl Server {
 
     // ── Initialize ──────────────────────────────────────────────
 
-    fn handle_initialize(&mut self, params: Option<serde_json::Value>) -> Result<serde_json::Value, JsonRpcError> {
+    fn handle_initialize(
+        &mut self,
+        params: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, JsonRpcError> {
         // Extract project path from initialization params
         // MCP clients may pass rootPath, root_uri, or workspaceFolders
         let root_path = params.as_ref().and_then(|p| {
@@ -117,7 +126,10 @@ impl Server {
 
     // ── Call Tool ───────────────────────────────────────────────
 
-    fn handle_call_tool(&self, params: Option<serde_json::Value>) -> Result<serde_json::Value, JsonRpcError> {
+    fn handle_call_tool(
+        &self,
+        params: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, JsonRpcError> {
         let params = params.ok_or_else(|| JsonRpcError {
             code: -32602,
             message: "Missing params".into(),
@@ -130,7 +142,10 @@ impl Server {
             data: None,
         })?;
 
-        let tool_args = params.get("arguments").cloned().unwrap_or(serde_json::Value::Null);
+        let tool_args = params
+            .get("arguments")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
 
         let result = tools::execute(self.project_id, tool_name, &tool_args);
 
@@ -150,16 +165,16 @@ impl Server {
             text: result,
         }];
 
-        let result = CallToolResult {
-            content,
-            is_error,
-        };
+        let result = CallToolResult { content, is_error };
 
         Ok(serde_json::to_value(result).unwrap())
     }
 }
 
-fn json_response(id: serde_json::Value, result: Result<serde_json::Value, JsonRpcError>) -> serde_json::Value {
+fn json_response(
+    id: serde_json::Value,
+    result: Result<serde_json::Value, JsonRpcError>,
+) -> serde_json::Value {
     let response = match result {
         Ok(val) => Response {
             jsonrpc: "2.0",

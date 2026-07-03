@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::ffi;
 
@@ -319,6 +319,97 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
                 "properties": {}
             }),
         },
+
+        // ── codescope_ prefixed tools (canonical names) ────────
+        Tool {
+            name: "codescope_scan".into(),
+            description: "Fast scan a project: walk directory tree, detect languages, extract lightweight declarations. Returns modules, entry points, and total symbol count in ms. Alias: scan_project".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "project_path": {"type": "string"},
+                    "language_filter": {"type": "string"}
+                },
+                "required": ["project_path"]
+            }),
+        },
+        Tool {
+            name: "codescope_find_symbol".into(),
+            description: "Find symbol(s) by exact name match. Alias: find_symbol".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "symbol_name": {"type": "string"}
+                },
+                "required": ["symbol_name"]
+            }),
+        },
+        Tool {
+            name: "codescope_search".into(),
+            description: "Unified code search: auto-selects FTS5 or semantic search. Alias: search".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "limit": {"type": "integer"}
+                },
+                "required": ["query"]
+            }),
+        },
+        Tool {
+            name: "codescope_get_callers".into(),
+            description: "Find callers of a function (auto-adapts to callgraph readiness). Alias: find_callers".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "symbol_name": {"type": "string"}
+                },
+                "required": ["symbol_name"]
+            }),
+        },
+        Tool {
+            name: "codescope_get_callees".into(),
+            description: "Find callees of a function (auto-adapts to callgraph readiness). Alias: find_callees".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "symbol_name": {"type": "string"}
+                },
+                "required": ["symbol_name"]
+            }),
+        },
+        Tool {
+            name: "codescope_get_entry_points".into(),
+            description: "Get likely entry points from the new schema. Alias: get_entry_points".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        Tool {
+            name: "codescope_overview".into(),
+            description: "Get a comprehensive project overview. Alias: project_overview".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        Tool {
+            name: "codescope_enhance".into(),
+            description: "Run background full enhancement: full parse → call graph → metrics → embeddings. Alias: enhance_project".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        Tool {
+            name: "codescope_module_tree".into(),
+            description: "Get hierarchical module tree. Alias: get_module_tree".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
     ]
 }
 
@@ -382,9 +473,7 @@ pub fn execute(project_id: u64, tool_name: &str, args: &Value) -> String {
             let path = args["file_path"].as_str().unwrap_or("");
             ffi::index_file(project_id, path)
         }
-        "get_graph_stats" => {
-            ffi::get_graph_stats(project_id)
-        }
+        "get_graph_stats" => ffi::get_graph_stats(project_id),
         "search_code" => {
             let query = args["query"].as_str().unwrap_or("");
             let limit = args["limit"].as_i64().unwrap_or(20) as i32;
@@ -402,16 +491,12 @@ pub fn execute(project_id: u64, tool_name: &str, args: &Value) -> String {
             let files = args["modified_files"].as_str().unwrap_or("[]");
             ffi::detect_changes(project_id, files)
         }
-        "get_communities" => {
-            ffi::get_communities(project_id)
-        }
+        "get_communities" => ffi::get_communities(project_id),
         "index_batch" => {
             let files = args["files"].as_str().unwrap_or("[]");
             ffi::index_batch(project_id, files)
         }
-        "get_project_info" => {
-            ffi::get_project_info(project_id)
-        }
+        "get_project_info" => ffi::get_project_info(project_id),
         "get_hotspots" => {
             let top_n = args["top_n"].as_i64().unwrap_or(10) as i32;
             ffi::get_hotspots(project_id, top_n)
@@ -427,17 +512,11 @@ pub fn execute(project_id: u64, tool_name: &str, args: &Value) -> String {
             let name = args["symbol_name"].as_str().unwrap_or("");
             ffi::find_symbol(project_id, name)
         }
-        "get_module_tree" => {
-            ffi::get_module_tree(project_id)
-        }
+        "get_module_tree" => ffi::get_module_tree(project_id),
 
         // ── Phase B: Enhancement Tools ────────────────────────────
-        "enhance_project" => {
-            ffi::enhance_project(project_id)
-        }
-        "get_enhancement_status" => {
-            ffi::get_enhancement_status(project_id)
-        }
+        "enhance_project" => ffi::enhance_project(project_id),
+        "get_enhancement_status" => ffi::get_enhancement_status(project_id),
 
         // ── Phase C: Unified MCP Tools ────────────────────────────
         "search" => {
@@ -453,12 +532,36 @@ pub fn execute(project_id: u64, tool_name: &str, args: &Value) -> String {
             let name = args["symbol_name"].as_str().unwrap_or("");
             ffi::find_callees_adaptive(project_id, name)
         }
-        "get_entry_points" => {
-            ffi::get_entry_points_new(project_id)
+        "get_entry_points" => ffi::get_entry_points_new(project_id),
+        "project_overview" => ffi::project_overview(project_id),
+
+        // ── codescope_ prefixed tool names (canonical) ───────────
+        "codescope_scan" => {
+            let path = args["project_path"].as_str().unwrap_or("");
+            let lang = args["language_filter"].as_str();
+            ffi::scan_project(project_id, path, lang)
         }
-        "project_overview" => {
-            ffi::project_overview(project_id)
+        "codescope_find_symbol" => {
+            let name = args["symbol_name"].as_str().unwrap_or("");
+            ffi::find_symbol(project_id, name)
         }
+        "codescope_search" => {
+            let query = args["query"].as_str().unwrap_or("");
+            let limit = args["limit"].as_i64().unwrap_or(20) as i32;
+            ffi::unified_search(project_id, query, limit)
+        }
+        "codescope_get_callers" => {
+            let name = args["symbol_name"].as_str().unwrap_or("");
+            ffi::find_callers_adaptive(project_id, name)
+        }
+        "codescope_get_callees" => {
+            let name = args["symbol_name"].as_str().unwrap_or("");
+            ffi::find_callees_adaptive(project_id, name)
+        }
+        "codescope_get_entry_points" => ffi::get_entry_points_new(project_id),
+        "codescope_overview" => ffi::project_overview(project_id),
+        "codescope_enhance" => ffi::enhance_project(project_id),
+        "codescope_module_tree" => ffi::get_module_tree(project_id),
 
         _ => json!({"error": "Unknown tool"}).to_string(),
     }

@@ -1,10 +1,10 @@
 #ifndef VECTOR_SEARCH_H
 #define VECTOR_SEARCH_H
 
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
-#include <cmath>
 
 /**
  * Minimal character n-gram vector search.
@@ -25,7 +25,7 @@ using Vector = std::vector<float>;
 
 // ─── Configuration ────────────────────────────────────────────
 
-constexpr int VECTOR_DIM = 64;     // Fixed vector dimension
+constexpr int VECTOR_DIM = 64; // Fixed vector dimension
 
 // ─── Functions ────────────────────────────────────────────────
 
@@ -41,24 +41,24 @@ constexpr int VECTOR_DIM = 64;     // Fixed vector dimension
  * @param text  Input string (symbol name, identifier, etc.)
  * @return Fixed-size float vector
  */
-Vector stringToVector(const std::string& text);
+Vector stringToVector(const std::string &text);
 
 /**
  * Compute cosine similarity between two vectors.
  *
  * @return Similarity in [0, 1], 1 = identical
  */
-float cosineSimilarity(const Vector& a, const Vector& b);
+float cosineSimilarity(const Vector &a, const Vector &b);
 
 /**
  * Serialize a vector to a byte string for SQLite BLOB storage.
  */
-std::string serializeVector(const Vector& v);
+std::string serializeVector(const Vector &v);
 
 /**
  * Deserialize a BLOB back to a vector.
  */
-Vector deserializeVector(const std::string& blob);
+Vector deserializeVector(const std::string &blob);
 
 } // namespace vector_search
 

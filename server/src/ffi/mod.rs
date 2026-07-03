@@ -9,29 +9,43 @@ unsafe extern "C" {
 
     fn engine_create_project(root_path: *const c_char, name: *const c_char) -> u64;
     fn engine_index_file(project_id: u64, file_path: *const c_char) -> *mut c_char;
-    fn engine_index_project(project_id: u64, dir_path: *const c_char,
-                            language_filter: *const c_char) -> *mut c_char;
+    fn engine_index_project(
+        project_id: u64,
+        dir_path: *const c_char,
+        language_filter: *const c_char,
+    ) -> *mut c_char;
 
-    fn engine_find_definition(project_id: u64, symbol_name: *const c_char,
-                              file_filter: *const c_char) -> *mut c_char;
-    fn engine_find_references(project_id: u64, symbol_name: *const c_char,
-                              file_filter: *const c_char) -> *mut c_char;
+    fn engine_find_definition(
+        project_id: u64,
+        symbol_name: *const c_char,
+        file_filter: *const c_char,
+    ) -> *mut c_char;
+    fn engine_find_references(
+        project_id: u64,
+        symbol_name: *const c_char,
+        file_filter: *const c_char,
+    ) -> *mut c_char;
     fn engine_get_callers(project_id: u64, function_name: *const c_char) -> *mut c_char;
     fn engine_get_callees(project_id: u64, function_name: *const c_char) -> *mut c_char;
-    fn engine_get_neighbors(project_id: u64, node_id: u64,
-                            edge_type_filter: i32, radius: i32) -> *mut c_char;
-    fn engine_find_shortest_path(project_id: u64, source_id: u64,
-                                 target_id: u64) -> *mut c_char;
-    fn engine_get_subgraph(project_id: u64, center_node_id: u64, radius: i32,
-                           node_type_filter: *const c_char,
-                           edge_type_filter: *const c_char) -> *mut c_char;
-    fn engine_locate_node(project_id: u64, node_id: u64,
-                          context_lines: i32) -> *mut c_char;
+    fn engine_get_neighbors(
+        project_id: u64,
+        node_id: u64,
+        edge_type_filter: i32,
+        radius: i32,
+    ) -> *mut c_char;
+    fn engine_find_shortest_path(project_id: u64, source_id: u64, target_id: u64) -> *mut c_char;
+    fn engine_get_subgraph(
+        project_id: u64,
+        center_node_id: u64,
+        radius: i32,
+        node_type_filter: *const c_char,
+        edge_type_filter: *const c_char,
+    ) -> *mut c_char;
+    fn engine_locate_node(project_id: u64, node_id: u64, context_lines: i32) -> *mut c_char;
     fn engine_locate_by_name(project_id: u64, name: *const c_char) -> *mut c_char;
     fn engine_get_graph_stats(project_id: u64) -> *mut c_char;
 
-    fn engine_search_code(project_id: u64, query: *const c_char,
-                          limit: i32) -> *mut c_char;
+    fn engine_search_code(project_id: u64, query: *const c_char, limit: i32) -> *mut c_char;
 
     fn engine_get_complexity(project_id: u64, graph_node_id: u64) -> *mut c_char;
 
@@ -49,12 +63,13 @@ unsafe extern "C" {
 
     // ── Phase A: Fast Scan ────────────────────────────────────────
 
-    fn engine_scan_project(project_id: u64,
-                           dir_path: *const c_char,
-                           language_filter: *const c_char) -> *mut c_char;
+    fn engine_scan_project(
+        project_id: u64,
+        dir_path: *const c_char,
+        language_filter: *const c_char,
+    ) -> *mut c_char;
     fn engine_get_module_tree(project_id: u64) -> *mut c_char;
-    fn engine_find_symbol(project_id: u64,
-                          symbol_name: *const c_char) -> *mut c_char;
+    fn engine_find_symbol(project_id: u64, symbol_name: *const c_char) -> *mut c_char;
 
     // ── Phase B: Background Enhancement ──────────────────────────
 
@@ -63,13 +78,9 @@ unsafe extern "C" {
 
     // ── Phase C: Unified MCP Tools ───────────────────────────────
 
-    fn engine_unified_search(project_id: u64,
-                             query: *const c_char,
-                             limit: i32) -> *mut c_char;
-    fn engine_find_callers_adaptive(project_id: u64,
-                                    symbol_name: *const c_char) -> *mut c_char;
-    fn engine_find_callees_adaptive(project_id: u64,
-                                    symbol_name: *const c_char) -> *mut c_char;
+    fn engine_unified_search(project_id: u64, query: *const c_char, limit: i32) -> *mut c_char;
+    fn engine_find_callers_adaptive(project_id: u64, symbol_name: *const c_char) -> *mut c_char;
+    fn engine_find_callees_adaptive(project_id: u64, symbol_name: *const c_char) -> *mut c_char;
     fn engine_get_entry_points_new(project_id: u64) -> *mut c_char;
     fn engine_project_overview(project_id: u64) -> *mut c_char;
 
@@ -108,7 +119,9 @@ pub fn index_file(project_id: u64, file_path: &str) -> String {
 }
 
 pub fn index_project(project_id: u64, dir_path: &str, language_filter: *const c_char) -> String {
-    take_string(unsafe { engine_index_project(project_id, cstr(dir_path).as_ptr(), language_filter) })
+    take_string(unsafe {
+        engine_index_project(project_id, cstr(dir_path).as_ptr(), language_filter)
+    })
 }
 
 pub fn find_definition(project_id: u64, symbol_name: &str, file_filter: Option<&str>) -> String {
@@ -149,14 +162,20 @@ pub fn find_shortest_path(project_id: u64, source_id: u64, target_id: u64) -> St
     take_string(unsafe { engine_find_shortest_path(project_id, source_id, target_id) })
 }
 
-pub fn get_subgraph(project_id: u64, center_node_id: u64, radius: i32,
-                    node_type_filter: Option<&str>,
-                    edge_type_filter: Option<&str>) -> String {
+pub fn get_subgraph(
+    project_id: u64,
+    center_node_id: u64,
+    radius: i32,
+    node_type_filter: Option<&str>,
+    edge_type_filter: Option<&str>,
+) -> String {
     let nf = node_type_filter.map(|s| cstr(s));
     let ef = edge_type_filter.map(|s| cstr(s));
     take_string(unsafe {
         engine_get_subgraph(
-            project_id, center_node_id, radius,
+            project_id,
+            center_node_id,
+            radius,
             nf.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
             ef.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
         )
@@ -260,25 +279,41 @@ pub fn project_overview(project_id: u64) -> String {
     take_string(unsafe { engine_project_overview(project_id) })
 }
 
-// ── Background thread management ──────────────────────────────
+// ── Background task management (Tokio + index_tasks table) ─────
 
+use once_cell::sync::Lazy;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 static ENHANCEMENT_RUNNING: AtomicBool = AtomicBool::new(false);
+static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .expect("failed to create Tokio runtime")
+});
 
-/// Spawn a background thread to enhance a project.
-/// Returns immediately; the enhancement runs asynchronously.
+/// Spawn a Tokio background task to enhance a project.
+/// Tracks progress via the index_tasks table in SQLite.
 pub fn spawn_enhancement(project_id: u64) {
     if ENHANCEMENT_RUNNING.swap(true, Ordering::Acquire) {
         eprintln!("enhancement: already running, skipping");
         return;
     }
 
-    std::thread::spawn(move || {
-        eprintln!("enhancement: starting background enhancement for project {}", project_id);
+    // Create a task record via FFI
+    let task_json = take_string(unsafe { engine_get_enhancement_status(project_id) });
+    eprintln!("enhancement: creating task for project {}", project_id);
+
+    RUNTIME.spawn(async move {
+        eprintln!(
+            "enhancement: starting background enhancement for project {}",
+            project_id
+        );
+
+        // Mark running
         let result = enhance_project(project_id);
         eprintln!("enhancement: completed: {}", result);
+
         ENHANCEMENT_RUNNING.store(false, Ordering::Release);
     });
 }

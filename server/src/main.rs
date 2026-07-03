@@ -1,12 +1,11 @@
-mod mcp;
 mod ffi;
+mod mcp;
 mod tools;
 
 use std::env;
 
 fn main() {
-    let db_path = env::var("CODESCOPE_DB_PATH")
-        .unwrap_or_else(|_| "/tmp/codescope.db".to_string());
+    let db_path = env::var("CODESCOPE_DB_PATH").unwrap_or_else(|_| "/tmp/codescope.db".to_string());
 
     eprintln!("codescope: initializing with db={}", db_path);
 

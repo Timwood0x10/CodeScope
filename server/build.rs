@@ -16,7 +16,14 @@ fn main() {
 
     // Run CMake configure
     let cmake_status = Command::new("cmake")
-        .args(&["-S", &engine_dir, "-B", &build_dir, "-DCMAKE_BUILD_TYPE=Release", "-DBUILD_TESTS=OFF"])
+        .args(&[
+            "-S",
+            &engine_dir,
+            "-B",
+            &build_dir,
+            "-DCMAKE_BUILD_TYPE=Release",
+            "-DBUILD_TESTS=OFF",
+        ])
         .status()
         .expect("Failed to run cmake configure");
 

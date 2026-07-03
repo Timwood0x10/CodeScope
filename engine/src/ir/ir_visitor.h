@@ -10,20 +10,20 @@ namespace ir {
 
 class Visitor {
 public:
-    virtual ~Visitor() = default;
+  virtual ~Visitor() = default;
 
-    // Called before visiting children. Return false to skip subtree.
-    virtual bool visitEnter(Node* /*node*/) { return true; }
+  // Called before visiting children. Return false to skip subtree.
+  virtual bool visitEnter(Node * /*node*/) { return true; }
 
-    // Called after visiting children.
-    virtual void visitLeave(Node* /*node*/) {}
+  // Called after visiting children.
+  virtual void visitLeave(Node * /*node*/) {}
 
-    // Full traversal of a TranslationUnit.
-    void traverse(TranslationUnit* unit);
-    void traverse(Node* node);
+  // Full traversal of a TranslationUnit.
+  void traverse(TranslationUnit *unit);
+  void traverse(Node *node);
 
 private:
-    void traverseNode(Node* node);
+  void traverseNode(Node *node);
 };
 
 } // namespace ir
