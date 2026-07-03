@@ -99,7 +99,7 @@ make build
 make test
 
 # 5. Start MCP server
-cargo run --bin ast-graph-mcp
+cargo run --bin codescope
 ```
 
 ### As a Claude Desktop MCP server
@@ -110,10 +110,10 @@ Add to your `claude_desktop_config.json`:
 {
   "mcpServers": {
     "codescope": {
-      "command": "/path/to/CodeScope/target/release/ast-graph-mcp",
+      "command": "/path/to/CodeScope/target/release/codescope",
       "args": [],
       "env": {
-        "ASTGRAPH_DB_PATH": "/tmp/astgraph.db",
+        "CODESCOPE_DB_PATH": "/tmp/astgraph.db",
         "GRAMMARS_DIR": "/path/to/CodeScope/grammars"
       }
     }
@@ -125,7 +125,7 @@ Add to your `claude_desktop_config.json`:
 
 | Variable           | Default            | Description                                    |
 | ------------------ | ------------------ | ---------------------------------------------- |
-| `ASTGRAPH_DB_PATH` | `/tmp/astgraph.db` | SQLite database path                           |
+| `CODESCOPE_DB_PATH` | `/tmp/astgraph.db` | SQLite database path                           |
 | `GRAMMARS_DIR`     | `grammars/`        | Grammar .so files directory                    |
 | `CODESCOPE_LSP`    | (unset)            | LSP server for type enhancement (e.g. `pylsp`) |
 

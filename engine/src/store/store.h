@@ -72,6 +72,13 @@ public:
                        const char* name, const char* qualified_name,
                        const char* file_path, const char* content,
                        int node_kind = -1);
+
+    // ── Vector search (semantic) ─────────────────────────────────
+
+    bool storeVector(uint64_t node_id, uint64_t project_id,
+                     const void* vec_data, size_t vec_bytes);
+    std::string searchSemantic(uint64_t project_id, const void* query_vec,
+                               size_t vec_bytes, int limit);
     void deleteFTSByFile(uint64_t project_id, uint64_t file_id);
 
     // ── Complexity ───────────────────────────────────────────────

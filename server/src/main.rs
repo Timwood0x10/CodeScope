@@ -5,23 +5,23 @@ mod tools;
 use std::env;
 
 fn main() {
-    let db_path = env::var("ASTGRAPH_DB_PATH")
-        .unwrap_or_else(|_| "/tmp/astgraph.db".to_string());
+    let db_path = env::var("CODESCOPE_DB_PATH")
+        .unwrap_or_else(|_| "/tmp/codescope.db".to_string());
 
-    eprintln!("ast-graph-mcp: initializing with db={}", db_path);
+    eprintln!("codescope: initializing with db={}", db_path);
 
     let rc = ffi::init(&db_path);
     if rc != 0 {
-        eprintln!("ast-graph-mcp: failed to initialize engine");
+        eprintln!("codescope: failed to initialize engine");
         std::process::exit(1);
     }
 
-    eprintln!("ast-graph-mcp: ready");
+    eprintln!("codescope: ready");
 
     let mut server = mcp::server::Server::new();
 
     if let Err(e) = server.run() {
-        eprintln!("ast-graph-mcp: server error: {}", e);
+        eprintln!("codescope: server error: {}", e);
     }
 
     ffi::shutdown();

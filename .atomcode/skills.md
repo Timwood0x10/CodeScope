@@ -59,7 +59,7 @@ make build-server
 ### Quick start
 ```bash
 # Start the MCP server
-cargo run --bin ast-graph-mcp
+cargo run --bin codescope
 
 # In another terminal, send MCP messages:
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | nc localhost 8080

@@ -3,6 +3,9 @@
 #include <sqlite3.h>
 #include <cstring>
 #include <sstream>
+#include <algorithm>
+
+#include "../query/vector_search.h"
 
 namespace store {
 
@@ -140,6 +143,13 @@ bool GraphStore::createSchema() {
             decision_points INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (project_id, graph_node_id),
             FOREIGN KEY (project_id) REFERENCES projects(id)
+        );
+
+        -- Semantic vector index (n-gram hash vectors for each ir_node)
+        CREATE TABLE IF NOT EXISTS node_vectors (
+            node_id INTEGER PRIMARY KEY,
+            project_id INTEGER NOT NULL,
+            vector BLOB NOT NULL
         );
     )SQL";
 
@@ -534,6 +544,91 @@ std::string GraphStore::getComplexityJson(uint64_t project_id, uint64_t graph_no
 
     sqlite3_finalize(stmt);
     return result;
+}
+
+// ─── Vector Search ───────────────────────────────────────────
+
+bool GraphStore::storeVector(uint64_t node_id, uint64_t project_id,
+                              const void* vec_data, size_t vec_bytes) {
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "INSERT OR REPLACE INTO node_vectors (node_id, project_id, vector) VALUES (?, ?, ?)";
+    sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(node_id));
+    sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
+    sqlite3_bind_blob(stmt, 3, vec_data, static_cast<int>(vec_bytes), SQLITE_TRANSIENT);
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return rc == SQLITE_DONE;
+}
+
+std::string GraphStore::searchSemantic(uint64_t project_id, const void* query_vec,
+                                        size_t vec_bytes, int limit) {
+    if (!query_vec || vec_bytes == 0 || limit <= 0) {
+        return "{\"total\":0,\"results\":[],\"error\":\"invalid query\"}";
+    }
+    if (limit > 50) limit = 50;
+
+    // Load all vectors for this project and find closest by cosine similarity
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "SELECT nv.node_id, nv.vector, ir.name, ir.kind, f.path "
+                       "FROM node_vectors nv "
+                       "JOIN ir_nodes ir ON ir.id = nv.node_id "
+                       "JOIN files f ON f.id = ir.file_id "
+                       "WHERE nv.project_id = ?";
+    sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+
+    // Use vector_search to compute similarity
+    // (Include the header in the calling .cpp)
+    (void)vec_bytes; // dimension checked via vector length
+    const float* qv = static_cast<const float*>(query_vec);
+
+    // Brute-force scan — fine for <100K nodes
+    struct Hit { uint64_t id; std::string name; int kind; std::string file; float score; };
+    std::vector<Hit> hits;
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        uint64_t nid = static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
+        const void* blob = sqlite3_column_blob(stmt, 1);
+        int bsz = sqlite3_column_bytes(stmt, 1);
+        const char* nm = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+        int kd = sqlite3_column_int(stmt, 3);
+        const char* fp = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
+
+        if (!blob || bsz < 0) continue;
+        // Deserialize and compute similarity
+        auto vec = ::vector_search::deserializeVector(
+            std::string(static_cast<const char*>(blob), static_cast<size_t>(bsz)));
+        auto query_vec_obj = ::vector_search::deserializeVector(
+            std::string(static_cast<const char*>(query_vec), vec_bytes));
+        float sim = ::vector_search::cosineSimilarity(vec, query_vec_obj);
+        if (sim > 0.1f) {
+            hits.push_back({nid, nm ? nm : "", kd, fp ? fp : "", sim});
+        }
+    }
+    sqlite3_finalize(stmt);
+
+    // Sort by similarity descending
+    std::sort(hits.begin(), hits.end(),
+              [](const Hit& a, const Hit& b) { return a.score > b.score; });
+    if (static_cast<int>(hits.size()) > limit) hits.resize(limit);
+
+    std::ostringstream json;
+    json << "{\"total\":0,\"results\":[";
+    bool first = true;
+    for (const auto& h : hits) {
+        if (!first) json << ",";
+        first = false;
+        json << "{"
+             << "\"node_id\":" << h.id << ","
+             << "\"name\":\"" << h.name << "\","
+             << "\"node_type\":" << h.kind << ","
+             << "\"file_path\":\"" << h.file << "\","
+             << "\"score\":" << h.score
+             << "}";
+    }
+    json << "],\"total\":" << hits.size() << "}";
+    return json.str();
 }
 
 } // namespace store

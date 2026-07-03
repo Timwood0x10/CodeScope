@@ -6,6 +6,7 @@
 #include "graph/graph_builder.h"
 #include "store/store.h"
 #include "query/query_engine.h"
+#include "query/vector_search.h"
 #include "lsp/lsp_client.h"
 
 #include <tree_sitter/api.h>
@@ -165,43 +166,44 @@ char* engine_index_file(uint64_t project_id, const char* file_path) {
         return dupString("{\"ok\":false,\"error\":\"translation failed\"}");
     }
 
-    // ── Optional LSP enhancement ──────────────────────────────
-    // If CODESCOPE_LSP env var is set (e.g. "pylsp"), start
-    // an LSP server and resolve call targets for better accuracy.
-    // LSP provides cross-file/package symbol resolution that pure
-    // tree-sitter cannot achieve.
+    // ── Optional LSP & extern "C" enhancement ─────────────────
+    // If CODESCOPE_LSP env var is set (e.g. "pylsp", "gopls", "clangd"),
+    // resolve call targets via LSP for cross-file/package accuracy.
+    // This turns vague "CallExpr: add" into precise "CallExpr: math.add"
+    // or "CallExpr: file:///path/to/lib.rs:42".
     {
+        // First: detect extern "C" FFI calls (language boundary)
+        for (auto* node : unit->all_nodes) {
+            if (node->kind == ir::NodeKind::CallExpr && !node->name.empty()) {
+                // Check if call target starts with "engine_" — these are FFI calls
+                if (node->name.compare(0, 7, "engine_") == 0) {
+                    node->qualified_name = "ffi://" + node->name;
+                }
+                // Check for common extern "C" patterns
+                if (node->name == "ts_tree_delete" || node->name == "dlopen" ||
+                    node->name == "dlsym" || node->name == "dlclose" ||
+                    node->name == "sqlite3_open" || node->name == "sqlite3_prepare_v2") {
+                    node->qualified_name = "extern_c://" + node->name;
+                }
+            }
+        }
+
+        // Second: optional LSP server for deeper resolution
         const char* lsp_cmd = getenv("CODESCOPE_LSP");
         if (lsp_cmd && *lsp_cmd && LspClient::isAvailable(lsp_cmd)) {
             LspClient lsp;
             if (lsp.start(lsp_cmd, "file://")) {
                 lsp.openDocument(file_path, source.c_str());
                 for (auto* node : unit->all_nodes) {
-                    // For call expressions, try to resolve the callee via LSP
                     if (node->kind == ir::NodeKind::CallExpr && !node->name.empty()) {
                         std::string def = lsp.queryDefinition(
                             file_path,
                             static_cast<int>(node->loc.start_row),
                             static_cast<int>(node->loc.start_col));
                         if (!def.empty()) {
-                            // Extract target URI from LSP response
-                            std::string target_uri = lsp.extractTargetUri(def);
-                            if (!target_uri.empty()) {
-                                node->qualified_name = target_uri;
-                            }
-                        }
-                    }
-                    // For identifier expressions, try to get their type info
-                    if (node->kind == ir::NodeKind::IdentifierExpr && !node->name.empty()) {
-                        std::string hover = lsp.queryHover(
-                            file_path,
-                            static_cast<int>(node->loc.start_row),
-                            static_cast<int>(node->loc.start_col));
-                        if (!hover.empty()) {
-                            // Store hover info as doc comment for search indexing
-                            std::string content = lsp.extractHoverContent(hover);
-                            if (!content.empty()) {
-                                node->doc_comment = "[type: " + content + "]";
+                            std::string uri = lsp.extractTargetUri(def);
+                            if (!uri.empty()) {
+                                node->qualified_name = uri;
                             }
                         }
                     }
@@ -247,6 +249,13 @@ char* engine_index_file(uint64_t project_id, const char* file_path) {
         if (fts_name || fts_qn || fts_comment) {
             g_store->insertIntoFTS(db_id, project_id, fts_name, fts_qn, file_path, fts_comment,
                                    static_cast<int>(node->kind));
+        }
+
+        // Store semantic vector for name-based similarity search
+        if (fts_name) {
+            auto vec = vector_search::stringToVector(node->name);
+            auto blob = vector_search::serializeVector(vec);
+            g_store->storeVector(db_id, project_id, blob.data(), blob.size());
         }
     }
 
@@ -398,6 +407,18 @@ char* engine_search_code(uint64_t project_id, const char* query, int limit) {
     return dupString(g_query->searchCode(project_id, query, limit));
 }
 
+// ─── Semantic Search ─────────────────────────────────────────
+
+char* engine_search_semantic(uint64_t project_id, const char* query, int limit) {
+    if (!g_store) return dupString("{\"total\":0,\"results\":[],\"error\":\"not initialized\"}");
+    if (!query || !*query) return dupString("{\"total\":0,\"results\":[],\"error\":\"empty query\"}");
+    if (limit <= 0 || limit > 50) limit = 10;
+
+    auto vec = vector_search::stringToVector(query);
+    auto blob = vector_search::serializeVector(vec);
+    return dupString(g_store->searchSemantic(project_id, blob.data(), blob.size(), limit));
+}
+
 // ─── Complexity Analysis ──────────────────────────────────────
 
 char* engine_get_complexity(uint64_t project_id, uint64_t graph_node_id) {
@@ -542,6 +563,11 @@ char* engine_index_batch(uint64_t project_id, const char* file_paths_json) {
             if (fn || !node->doc_comment.empty())
                 g_store->insertIntoFTS(db_id, project_id, fn, nullptr, b.file_path.c_str(),
                                        node->doc_comment.c_str(), static_cast<int>(node->kind));
+            if (fn) {
+                auto vec = vector_search::stringToVector(node->name);
+                auto blob = vector_search::serializeVector(vec);
+                g_store->storeVector(db_id, project_id, blob.data(), blob.size());
+            }
         }
         for (auto* node : b.unit->all_nodes)
             for (auto& e : node->semantic_edges) {

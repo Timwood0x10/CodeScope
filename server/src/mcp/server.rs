@@ -98,7 +98,7 @@ impl Server {
                 tools: ToolCapability { list_changed: true },
             },
             server_info: ServerInfo {
-                name: "ast-graph-mcp".to_string(),
+                name: "codescope".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
             },
         };

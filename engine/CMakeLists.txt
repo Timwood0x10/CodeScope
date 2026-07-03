@@ -40,6 +40,7 @@ set(ENGINE_SOURCES
     src/query/graph_query.cpp
     src/query/impact_analysis.cpp
     src/query/community_detection.cpp
+    src/query/vector_search.cpp
     src/lsp/lsp_client.cpp
 )
 

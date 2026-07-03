@@ -99,7 +99,7 @@ make build
 make test
 
 # 5. 启动 MCP 服务
-cargo run --bin ast-graph-mcp
+cargo run --bin codescope
 ```
 
 ### 作为 Claude Desktop MCP 服务器
@@ -110,10 +110,10 @@ cargo run --bin ast-graph-mcp
 {
   "mcpServers": {
     "codescope": {
-      "command": "/path/to/CodeScope/target/release/ast-graph-mcp",
+      "command": "/path/to/CodeScope/target/release/codescope",
       "args": [],
       "env": {
-        "ASTGRAPH_DB_PATH": "/tmp/astgraph.db",
+        "CODESCOPE_DB_PATH": "/tmp/astgraph.db",
         "GRAMMARS_DIR": "/path/to/CodeScope/grammars"
       }
     }
@@ -125,7 +125,7 @@ cargo run --bin ast-graph-mcp
 
 | 变量                 | 默认值                | 说明                          |
 | ------------------ | ------------------ | --------------------------- |
-| `ASTGRAPH_DB_PATH` | `/tmp/astgraph.db` | SQLite 数据库路径                |
+| `CODESCOPE_DB_PATH` | `/tmp/astgraph.db` | SQLite 数据库路径                |
 | `GRAMMARS_DIR`     | `grammars/`        | 语法 .so 文件目录                 |
 | `CODESCOPE_LSP`    | 未设置                | LSP 服务器命令（如 `pylsp`），用于类型增强 |
 
