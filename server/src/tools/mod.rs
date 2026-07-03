@@ -157,6 +157,17 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
                 "required": ["node_id"]
             }),
         },
+        Tool {
+            name: "graph_query".into(),
+            description: "Execute a minimal graph pattern query. Format: MATCH (srcType[:name])-[edgeType]->(tgtType[:name]). Node/edge types: Function, Method, Class, Variable, Calls, References, Contains, etc.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "DSL query, e.g. MATCH (Function)-[Calls]->(Function) or MATCH (Function:add)-[Calls]->(Function)"}
+                },
+                "required": ["query"]
+            }),
+        },
     ]
 }
 
@@ -231,6 +242,10 @@ pub fn execute(project_id: u64, tool_name: &str, args: &Value) -> String {
         "get_complexity" => {
             let node_id = args["node_id"].as_u64().unwrap_or(0);
             ffi::get_complexity(project_id, node_id)
+        }
+        "graph_query" => {
+            let query = args["query"].as_str().unwrap_or("");
+            ffi::graph_query(project_id, query)
         }
         _ => json!({"error": "Unknown tool"}).to_string(),
     }

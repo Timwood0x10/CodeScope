@@ -56,6 +56,12 @@ char* engine_search_code(uint64_t project_id, const char* query, int limit);
 // Get cyclomatic complexity, cognitive complexity, and nesting depth for a graph node
 char* engine_get_complexity(uint64_t project_id, uint64_t graph_node_id);
 
+// ─── Graph Query DSL ──────────────────────────────────────────
+
+// Execute a minimal graph pattern query: MATCH (srcType[:name])-[edgeType]->(tgtType[:name])
+// Returns JSON array of {source, edge, target} triples.
+char* engine_graph_query(uint64_t project_id, const char* dsl_query);
+
 // ─── Memory ───────────────────────────────────────────────────
 
 void engine_free_string(char* ptr);

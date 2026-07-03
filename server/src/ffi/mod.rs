@@ -35,6 +35,8 @@ unsafe extern "C" {
 
     fn engine_get_complexity(project_id: u64, graph_node_id: u64) -> *mut c_char;
 
+    fn engine_graph_query(project_id: u64, dsl_query: *const c_char) -> *mut c_char;
+
     fn engine_free_string(ptr: *mut c_char);
 }
 
@@ -143,4 +145,8 @@ pub fn search_code(project_id: u64, query: &str, limit: i32) -> String {
 
 pub fn get_complexity(project_id: u64, graph_node_id: u64) -> String {
     take_string(unsafe { engine_get_complexity(project_id, graph_node_id) })
+}
+
+pub fn graph_query(project_id: u64, dsl_query: &str) -> String {
+    take_string(unsafe { engine_graph_query(project_id, cstr(dsl_query).as_ptr()) })
 }

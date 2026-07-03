@@ -37,6 +37,7 @@ set(ENGINE_SOURCES
     src/graph/graph_builder.cpp
     src/store/store.cpp
     src/query/query_engine.cpp
+    src/query/graph_query.cpp
 )
 
 add_library(astgraph_engine STATIC ${ENGINE_SOURCES})

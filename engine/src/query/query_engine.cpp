@@ -1,4 +1,5 @@
 #include "query_engine.h"
+#include "graph_query.h"
 
 #include <sqlite3.h>
 #include <sstream>
@@ -304,6 +305,12 @@ std::string QueryEngine::searchCode(uint64_t project_id, const char* query, int 
 
 std::string QueryEngine::getComplexity(uint64_t project_id, uint64_t graph_node_id) {
     return store_->getComplexityJson(project_id, graph_node_id);
+}
+
+// ─── Graph Query DSL ─────────────────────────────────────────
+
+std::string QueryEngine::graphQuery(uint64_t project_id, const char* dsl_query) {
+    return executeGraphQuery(project_id, dsl_query, store_);
 }
 
 } // namespace query

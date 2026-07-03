@@ -50,6 +50,11 @@ public:
 
     std::string getComplexity(uint64_t project_id, uint64_t graph_node_id);
 
+    // ── Graph Query DSL ────────────────────────────────────────
+
+    // Execute a minimal Cypher-like pattern: MATCH (srcType)-[edgeType]->(tgtType)
+    std::string graphQuery(uint64_t project_id, const char* dsl_query);
+
 private:
     store::GraphStore* store_;
 };

@@ -326,6 +326,13 @@ char* engine_get_complexity(uint64_t project_id, uint64_t graph_node_id) {
     return dupString(g_query->getComplexity(project_id, graph_node_id));
 }
 
+// ─── Graph Query DSL ─────────────────────────────────────────
+
+char* engine_graph_query(uint64_t project_id, const char* dsl_query) {
+    if (!g_query) return dupString("{\"total\":0,\"results\":[],\"error\":\"not initialized\"}");
+    return dupString(g_query->graphQuery(project_id, dsl_query));
+}
+
 // ─── Memory ────────────────────────────────────────────────────
 
 void engine_free_string(char* ptr) {
