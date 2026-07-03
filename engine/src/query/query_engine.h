@@ -46,6 +46,10 @@ public:
 
     std::string searchCode(uint64_t project_id, const char* query, int limit);
 
+    // ── Complexity ──────────────────────────────────────────────
+
+    std::string getComplexity(uint64_t project_id, uint64_t graph_node_id);
+
 private:
     store::GraphStore* store_;
 };

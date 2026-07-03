@@ -51,6 +51,11 @@ char* engine_get_graph_stats(uint64_t project_id);
 // Search code by name or content using FTS5; returns JSON with matching nodes
 char* engine_search_code(uint64_t project_id, const char* query, int limit);
 
+// ─── Complexity analysis ───────────────────────────────────────
+
+// Get cyclomatic complexity, cognitive complexity, and nesting depth for a graph node
+char* engine_get_complexity(uint64_t project_id, uint64_t graph_node_id);
+
 // ─── Memory ───────────────────────────────────────────────────
 
 void engine_free_string(char* ptr);

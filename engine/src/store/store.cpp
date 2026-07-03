@@ -128,6 +128,18 @@ bool GraphStore::createSchema() {
             project_id INTEGER NOT NULL,
             file_id INTEGER NOT NULL
         );
+
+        -- Code complexity scores per graph node
+        CREATE TABLE IF NOT EXISTS node_complexity (
+            project_id INTEGER NOT NULL,
+            graph_node_id INTEGER NOT NULL,
+            cyclomatic INTEGER NOT NULL DEFAULT 0,
+            cognitive INTEGER NOT NULL DEFAULT 0,
+            nesting_depth INTEGER NOT NULL DEFAULT 0,
+            decision_points INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (project_id, graph_node_id),
+            FOREIGN KEY (project_id) REFERENCES projects(id)
+        );
     )SQL";
 
     return exec(schema);
@@ -462,6 +474,60 @@ std::string GraphStore::searchCode(uint64_t project_id, const char* query, int l
 
     json << "],\"total\":" << count << "}";
     return json.str();
+}
+
+// ─── Complexity ───────────────────────────────────────────────
+
+bool GraphStore::setComplexity(uint64_t project_id, uint64_t graph_node_id,
+                               uint64_t cyclomatic, uint64_t cognitive,
+                               uint64_t nesting_depth, uint64_t decision_points) {
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "INSERT OR REPLACE INTO node_complexity "
+                       "(project_id, graph_node_id, cyclomatic, cognitive, nesting_depth, decision_points) "
+                       "VALUES (?, ?, ?, ?, ?, ?)";
+    sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+    sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(graph_node_id));
+    sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(cyclomatic));
+    sqlite3_bind_int64(stmt, 4, static_cast<int64_t>(cognitive));
+    sqlite3_bind_int64(stmt, 5, static_cast<int64_t>(nesting_depth));
+    sqlite3_bind_int64(stmt, 6, static_cast<int64_t>(decision_points));
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return rc == SQLITE_DONE;
+}
+
+std::string GraphStore::getComplexityJson(uint64_t project_id, uint64_t graph_node_id) {
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "SELECT nc.cyclomatic, nc.cognitive, nc.nesting_depth, nc.decision_points, "
+                       "gn.name, gn.file_path, gn.start_row, gn.start_col "
+                       "FROM node_complexity nc "
+                       "JOIN graph_nodes gn ON gn.id = nc.graph_node_id "
+                       "WHERE nc.project_id = ? AND nc.graph_node_id = ?";
+    sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+    sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(graph_node_id));
+
+    std::string result;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        std::ostringstream json;
+        json << "{"
+             << "\"cyclomatic\":" << sqlite3_column_int64(stmt, 0) << ","
+             << "\"cognitive\":" << sqlite3_column_int64(stmt, 1) << ","
+             << "\"nesting_depth\":" << sqlite3_column_int64(stmt, 2) << ","
+             << "\"decision_points\":" << sqlite3_column_int64(stmt, 3) << ","
+             << "\"name\":\"" << (sqlite3_column_text(stmt, 4) ? reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4)) : "") << "\","
+             << "\"file_path\":\"" << (sqlite3_column_text(stmt, 5) ? reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5)) : "") << "\","
+             << "\"start_row\":" << sqlite3_column_int(stmt, 6) << ","
+             << "\"start_col\":" << sqlite3_column_int(stmt, 7)
+             << "}";
+        result = json.str();
+    } else {
+        result = "{\"error\":\"no complexity data for this node\"}";
+    }
+
+    sqlite3_finalize(stmt);
+    return result;
 }
 
 } // namespace store

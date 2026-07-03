@@ -73,6 +73,13 @@ public:
                        const char* file_path, const char* content);
     void deleteFTSByFile(uint64_t project_id, uint64_t file_id);
 
+    // ── Complexity ───────────────────────────────────────────────
+
+    bool setComplexity(uint64_t project_id, uint64_t graph_node_id,
+                       uint64_t cyclomatic, uint64_t cognitive,
+                       uint64_t nesting_depth, uint64_t decision_points);
+    std::string getComplexityJson(uint64_t project_id, uint64_t graph_node_id);
+
     // ── Raw access (for query engine) ──────────────────────────
 
     sqlite3* handle() const { return db_; }

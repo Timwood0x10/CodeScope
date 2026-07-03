@@ -146,6 +146,17 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
                 "required": ["query"]
             }),
         },
+        Tool {
+            name: "get_complexity".into(),
+            description: "Get code complexity metrics (cyclomatic, cognitive, nesting depth) for a function or method.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "node_id": {"type": "integer", "description": "ID of the graph node (function/method)"}
+                },
+                "required": ["node_id"]
+            }),
+        },
     ]
 }
 
@@ -216,6 +227,10 @@ pub fn execute(project_id: u64, tool_name: &str, args: &Value) -> String {
             let query = args["query"].as_str().unwrap_or("");
             let limit = args["limit"].as_i64().unwrap_or(20) as i32;
             ffi::search_code(project_id, query, limit)
+        }
+        "get_complexity" => {
+            let node_id = args["node_id"].as_u64().unwrap_or(0);
+            ffi::get_complexity(project_id, node_id)
         }
         _ => json!({"error": "Unknown tool"}).to_string(),
     }

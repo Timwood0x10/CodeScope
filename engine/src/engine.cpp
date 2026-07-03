@@ -2,6 +2,7 @@
 #include "parser/parser.h"
 #include "ir/ir.h"
 #include "ir/ir_translator.h"
+#include "ir/ir_complexity.h"
 #include "graph/graph_builder.h"
 #include "store/store.h"
 #include "query/query_engine.h"
@@ -210,6 +211,25 @@ char* engine_index_file(uint64_t project_id, const char* file_path) {
         g_store->insertGraphEdge(project_id, edge);
     }
 
+    // Compute and persist complexity for functions/methods
+    {
+        ir::ComplexityAnalyzer analyzer;
+        for (auto& gn : symbol_graph.nodes) {
+            if (gn.type == graph::NodeType::Function || gn.type == graph::NodeType::Method) {
+                // Find the IR node via ir_node_id (which matches unit->all_nodes index)
+                for (auto* ir_node : unit->all_nodes) {
+                    if (ir_node->id == gn.ir_node_id) {
+                        auto cr = analyzer.analyze(ir_node);
+                        g_store->setComplexity(project_id, gn.id,
+                                               cr.cyclomatic, cr.cognitive,
+                                               cr.nesting_depth, cr.decision_points);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     g_store->commitTransaction();
 
     delete unit;
@@ -297,6 +317,13 @@ char* engine_search_code(uint64_t project_id, const char* query, int limit) {
     if (!g_query) return dupString("{\"total\":0,\"results\":[],\"error\":\"not initialized\"}");
     if (limit <= 0 || limit > 100) limit = 20;
     return dupString(g_query->searchCode(project_id, query, limit));
+}
+
+// ─── Complexity Analysis ──────────────────────────────────────
+
+char* engine_get_complexity(uint64_t project_id, uint64_t graph_node_id) {
+    if (!g_query) return dupString("{\"error\":\"not initialized\"}");
+    return dupString(g_query->getComplexity(project_id, graph_node_id));
 }
 
 // ─── Memory ────────────────────────────────────────────────────

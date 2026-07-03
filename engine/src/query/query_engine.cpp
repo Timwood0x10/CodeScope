@@ -300,4 +300,10 @@ std::string QueryEngine::searchCode(uint64_t project_id, const char* query, int 
     return store_->searchCode(project_id, query, limit);
 }
 
+// ─── Complexity ──────────────────────────────────────────────
+
+std::string QueryEngine::getComplexity(uint64_t project_id, uint64_t graph_node_id) {
+    return store_->getComplexityJson(project_id, graph_node_id);
+}
+
 } // namespace query

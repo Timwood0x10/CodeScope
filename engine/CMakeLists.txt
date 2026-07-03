@@ -24,6 +24,7 @@ set(ENGINE_SOURCES
     src/ir/ir.cpp
     src/ir/ir_visitor.cpp
     src/ir/ir_translator.cpp
+    src/ir/ir_complexity.cpp
     src/ir/translators/python_translator.cpp
     src/ir/translators/go_translator.cpp
     src/ir/translators/c_translator.cpp
