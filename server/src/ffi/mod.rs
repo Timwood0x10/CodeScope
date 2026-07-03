@@ -47,6 +47,15 @@ unsafe extern "C" {
 
     fn engine_get_hotspots(project_id: u64, top_n: i32) -> *mut c_char;
 
+    // ── Phase A: Fast Scan ────────────────────────────────────────
+
+    fn engine_scan_project(project_id: u64,
+                           dir_path: *const c_char,
+                           language_filter: *const c_char) -> *mut c_char;
+    fn engine_get_module_tree(project_id: u64) -> *mut c_char;
+    fn engine_find_symbol(project_id: u64,
+                          symbol_name: *const c_char) -> *mut c_char;
+
     fn engine_free_string(ptr: *mut c_char);
 }
 
@@ -179,4 +188,25 @@ pub fn get_project_info(project_id: u64) -> String {
 
 pub fn get_hotspots(project_id: u64, top_n: i32) -> String {
     take_string(unsafe { engine_get_hotspots(project_id, top_n) })
+}
+
+// ── Phase A: Fast Scan ────────────────────────────────────────
+
+pub fn scan_project(project_id: u64, dir_path: &str, language_filter: Option<&str>) -> String {
+    let lf = language_filter.map(|s| cstr(s));
+    take_string(unsafe {
+        engine_scan_project(
+            project_id,
+            cstr(dir_path).as_ptr(),
+            lf.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
+        )
+    })
+}
+
+pub fn get_module_tree(project_id: u64) -> String {
+    take_string(unsafe { engine_get_module_tree(project_id) })
+}
+
+pub fn find_symbol(project_id: u64, symbol_name: &str) -> String {
+    take_string(unsafe { engine_find_symbol(project_id, cstr(symbol_name).as_ptr()) })
 }

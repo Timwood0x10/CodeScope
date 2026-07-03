@@ -151,6 +151,51 @@ bool GraphStore::createSchema() {
             project_id INTEGER NOT NULL,
             vector BLOB NOT NULL
         );
+
+        -- ============================================================
+        -- Phase A: New Fast-Index Schema (alongside existing tables)
+        -- ============================================================
+
+        CREATE TABLE IF NOT EXISTS modules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            parent_id INTEGER REFERENCES modules(id),
+            name TEXT NOT NULL,
+            path TEXT NOT NULL,
+            language TEXT,
+            file_count INTEGER DEFAULT 0,
+            FOREIGN KEY (project_id) REFERENCES projects(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS symbols (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            module_id INTEGER REFERENCES modules(id),
+            kind TEXT NOT NULL,
+            name TEXT NOT NULL,
+            signature TEXT,
+            visibility TEXT DEFAULT 'default',
+            language TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            line INTEGER NOT NULL,
+            column INTEGER NOT NULL,
+            span_start INTEGER,
+            span_end INTEGER,
+            callgraph_ready INTEGER DEFAULT 0,
+            cfg_ready INTEGER DEFAULT 0,
+            embedding_ready INTEGER DEFAULT 0,
+            FOREIGN KEY (project_id) REFERENCES projects(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(project_id, name);
+        CREATE INDEX IF NOT EXISTS idx_symbols_module ON symbols(module_id);
+
+        CREATE TABLE IF NOT EXISTS entry_points (
+            symbol_id INTEGER PRIMARY KEY,
+            project_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            FOREIGN KEY (symbol_id) REFERENCES symbols(id),
+            FOREIGN KEY (project_id) REFERENCES projects(id)
+        );
     )SQL";
 
     return exec(schema);
@@ -628,6 +673,243 @@ std::string GraphStore::searchSemantic(uint64_t project_id, const void* query_ve
              << "}";
     }
     json << "],\"total\":" << hits.size() << "}";
+    return json.str();
+}
+
+// ── New Schema (Phase A): Modules ─────────────────────────────
+
+uint64_t GraphStore::insertModule(uint64_t project_id, uint64_t parent_id,
+                                  const char* name, const char* path,
+                                  const char* language) {
+    // Check if module already exists at this path
+    const char* check_sql = "SELECT id FROM modules WHERE project_id = ? AND path = ?";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, check_sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+        sqlite3_bind_text(stmt, 2, path, -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            uint64_t id = static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
+            sqlite3_finalize(stmt);
+            return id;
+        }
+        sqlite3_finalize(stmt);
+    }
+
+    const char* sql = "INSERT INTO modules (project_id, parent_id, name, path, language) "
+                       "VALUES (?, ?, ?, ?, ?)";
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        error_ = "insertModule: prepare failed";
+        return 0;
+    }
+    sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+    if (parent_id > 0)
+        sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(parent_id));
+    else
+        sqlite3_bind_null(stmt, 2);
+    sqlite3_bind_text(stmt, 3, name, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, path, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, language, -1, SQLITE_TRANSIENT);
+
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        error_ = "insertModule: step failed";
+        sqlite3_finalize(stmt);
+        return 0;
+    }
+    uint64_t id = static_cast<uint64_t>(sqlite3_last_insert_rowid(db_));
+    sqlite3_finalize(stmt);
+    return id;
+}
+
+// ── New Schema (Phase A): Symbols ─────────────────────────────
+
+uint64_t GraphStore::insertSymbol(uint64_t project_id, uint64_t module_id,
+                                  const char* kind, const char* name,
+                                  const char* signature, const char* visibility,
+                                  const char* language, const char* file_path,
+                                  int line, int column,
+                                  int span_start, int span_end) {
+    const char* sql = "INSERT INTO symbols "
+                       "(project_id, module_id, kind, name, signature, visibility, "
+                       " language, file_path, line, column, span_start, span_end) "
+                       "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        error_ = "insertSymbol: prepare failed";
+        return 0;
+    }
+    sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+    if (module_id > 0)
+        sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(module_id));
+    else
+        sqlite3_bind_null(stmt, 2);
+    sqlite3_bind_text(stmt, 3, kind, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, name, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, signature, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 6, visibility, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 7, language, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 8, file_path, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 9, line);
+    sqlite3_bind_int(stmt, 10, column);
+    sqlite3_bind_int(stmt, 11, span_start);
+    sqlite3_bind_int(stmt, 12, span_end);
+
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        error_ = "insertSymbol: step failed";
+        sqlite3_finalize(stmt);
+        return 0;
+    }
+    uint64_t id = static_cast<uint64_t>(sqlite3_last_insert_rowid(db_));
+    sqlite3_finalize(stmt);
+    return id;
+}
+
+// ── New Schema (Phase A): Entry Points ────────────────────────
+
+bool GraphStore::insertEntryPoint(uint64_t symbol_id, uint64_t project_id,
+                                  const char* kind) {
+    const char* sql = "INSERT OR REPLACE INTO entry_points (symbol_id, project_id, kind) "
+                       "VALUES (?, ?, ?)";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        error_ = "insertEntryPoint: prepare failed";
+        return false;
+    }
+    sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(symbol_id));
+    sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
+    sqlite3_bind_text(stmt, 3, kind, -1, SQLITE_TRANSIENT);
+
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        error_ = "insertEntryPoint: step failed";
+        sqlite3_finalize(stmt);
+        return false;
+    }
+    sqlite3_finalize(stmt);
+    return true;
+}
+
+// ── Local JSON helper ──────────────────────────────────────────
+
+// Escape a string for safe embedding in JSON
+static std::string jsonEscape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 4);
+    for (char c : s) {
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            default:   out += c;      break;
+        }
+    }
+    return out;
+}
+
+// ── New Schema (Phase A): Queries ─────────────────────────────
+
+std::string GraphStore::getModuleTreeJson(uint64_t project_id) {
+    // Fetch all modules for the project
+    const char* sql = "SELECT id, parent_id, name, path, language, file_count "
+                       "FROM modules WHERE project_id = ? ORDER BY path";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return "{\"error\":\"getModuleTreeJson: prepare failed\"}";
+    }
+    sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+
+    // Build flat list first
+    struct ModuleInfo {
+        uint64_t id;
+        uint64_t parent_id;
+        std::string name;
+        std::string path;
+        std::string language;
+        int file_count;
+    };
+    std::vector<ModuleInfo> modules;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        ModuleInfo m;
+        m.id = static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
+        m.parent_id = sqlite3_column_type(stmt, 1) == SQLITE_NULL
+                       ? 0 : static_cast<uint64_t>(sqlite3_column_int64(stmt, 1));
+        const char* n = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+        m.name = n ? n : "";
+        const char* p = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+        m.path = p ? p : "";
+        const char* l = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
+        m.language = l ? l : "";
+        m.file_count = sqlite3_column_int(stmt, 5);
+        modules.push_back(std::move(m));
+    }
+    sqlite3_finalize(stmt);
+
+    if (modules.empty()) {
+        return "{\"modules\":[]}";
+    }
+
+    // Build tree: find roots (parent_id == 0), then nest children
+    // For JSON simplicity, output a flat array with parent references
+    std::ostringstream json;
+    json << "{\"modules\":[";
+    bool first = true;
+    for (const auto& m : modules) {
+        if (!first) json << ",";
+        first = false;
+        json << "{"
+             << "\"id\":" << m.id << ","
+             << "\"parent_id\":" << m.parent_id << ","
+             << "\"name\":\"" << jsonEscape(m.name) << "\","
+             << "\"path\":\"" << jsonEscape(m.path) << "\","
+             << "\"language\":\"" << jsonEscape(m.language) << "\","
+             << "\"file_count\":" << m.file_count
+             << "}";
+    }
+    json << "]}";
+    return json.str();
+}
+
+std::string GraphStore::findSymbolJson(uint64_t project_id, const char* name) {
+    const char* sql = "SELECT id, module_id, kind, name, signature, visibility, "
+                       "language, file_path, line, column "
+                       "FROM symbols WHERE project_id = ? AND name = ?";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return "{\"error\":\"findSymbolJson: prepare failed\",\"results\":[]}";
+    }
+    sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+    sqlite3_bind_text(stmt, 2, name, -1, SQLITE_TRANSIENT);
+
+    std::ostringstream json;
+    json << "{\"results\":[";
+    bool first = true;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        if (!first) json << ",";
+        first = false;
+        uint64_t id = static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
+        const char* kind = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+        const char* sym_name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+        const char* sig = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
+        const char* vis = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
+        const char* lang = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6));
+        const char* fp = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 7));
+        int line = sqlite3_column_int(stmt, 8);
+        int col = sqlite3_column_int(stmt, 9);
+
+        json << "{"
+             << "\"id\":" << id << ","
+             << "\"kind\":\"" << (kind ? kind : "") << "\","
+             << "\"name\":\"" << (sym_name ? sym_name : "") << "\","
+             << "\"signature\":\"" << (sig ? sig : "") << "\","
+             << "\"visibility\":\"" << (vis ? vis : "") << "\","
+             << "\"language\":\"" << (lang ? lang : "") << "\","
+             << "\"file_path\":\"" << (fp ? fp : "") << "\","
+             << "\"line\":" << line << ","
+             << "\"column\":" << col
+             << "}";
+    }
+    sqlite3_finalize(stmt);
+    json << "]}";
     return json.str();
 }
 

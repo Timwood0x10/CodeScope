@@ -88,6 +88,43 @@ public:
                        uint64_t nesting_depth, uint64_t decision_points);
     std::string getComplexityJson(uint64_t project_id, uint64_t graph_node_id);
 
+    // ── New Schema (Phase A): Modules ─────────────────────────
+
+    /**
+     * Insert or get a module (directory) node.
+     * Returns the module id.
+     */
+    uint64_t insertModule(uint64_t project_id, uint64_t parent_id,
+                          const char* name, const char* path,
+                          const char* language);
+
+    // ── New Schema (Phase A): Symbols ─────────────────────────
+
+    /**
+     * Insert a symbol (fast scan result).
+     * kind: function/method/class/struct/trait/enum/const/type_alias
+     * Returns the symbol id.
+     */
+    uint64_t insertSymbol(uint64_t project_id, uint64_t module_id,
+                          const char* kind, const char* name,
+                          const char* signature, const char* visibility,
+                          const char* language, const char* file_path,
+                          int line, int column,
+                          int span_start, int span_end);
+
+    // ── New Schema (Phase A): Entry Points ────────────────────
+
+    bool insertEntryPoint(uint64_t symbol_id, uint64_t project_id,
+                          const char* kind);
+
+    // ── New Schema (Phase A): Queries ─────────────────────────
+
+    /** Get module tree as JSON. */
+    std::string getModuleTreeJson(uint64_t project_id);
+
+    /** Find symbols by name as JSON. */
+    std::string findSymbolJson(uint64_t project_id, const char* name);
+
     // ── Raw access (for query engine) ──────────────────────────
 
     sqlite3* handle() const { return db_; }

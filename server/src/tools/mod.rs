@@ -216,6 +216,39 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
                 }
             }),
         },
+
+        // ── Phase A: Fast Scan & Query Tools ──────────────────────
+        Tool {
+            name: "scan_project".into(),
+            description: "Fast scan a project directory: walk the tree, detect languages, extract lightweight declarations (no full parse). Returns modules, entry points, and total symbol count in ms-level response time.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "project_path": {"type": "string", "description": "Absolute path to project root"},
+                    "language_filter": {"type": "string", "description": "Optional: only scan files of this language (e.g. 'rust', 'python')"}
+                },
+                "required": ["project_path"]
+            }),
+        },
+        Tool {
+            name: "find_symbol".into(),
+            description: "Find symbol(s) by exact name match. Returns id, kind, file path, line/column for each match.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "symbol_name": {"type": "string", "description": "Symbol name to search for"}
+                },
+                "required": ["symbol_name"]
+            }),
+        },
+        Tool {
+            name: "get_module_tree".into(),
+            description: "Get the hierarchical module (directory) tree for the current project. Returns modules with id, parent_id, name, path, and file_count.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
     ]
 }
 
@@ -313,6 +346,21 @@ pub fn execute(project_id: u64, tool_name: &str, args: &Value) -> String {
             let top_n = args["top_n"].as_i64().unwrap_or(10) as i32;
             ffi::get_hotspots(project_id, top_n)
         }
+
+        // ── Phase A: Fast Scan & Query Tools ──────────────────────
+        "scan_project" => {
+            let path = args["project_path"].as_str().unwrap_or("");
+            let lang = args["language_filter"].as_str();
+            ffi::scan_project(project_id, path, lang)
+        }
+        "find_symbol" => {
+            let name = args["symbol_name"].as_str().unwrap_or("");
+            ffi::find_symbol(project_id, name)
+        }
+        "get_module_tree" => {
+            ffi::get_module_tree(project_id)
+        }
+
         _ => json!({"error": "Unknown tool"}).to_string(),
     }
 }

@@ -117,6 +117,29 @@ char* engine_trace_call_chain(uint64_t project_id, const char* from, const char*
 // Complete project overview: modules + entry points + hotspots + stats
 char* engine_get_project_overview(uint64_t project_id);
 
+// ─── Phase A: Fast Scan & Query ───────────────────────────────
+
+/**
+ * Fast scan a project directory: walk directory tree, detect languages,
+ * extract lightweight declarations (no full parse), write to modules/symbols tables.
+ * Returns JSON with modules, entry_points, and total_symbols count.
+ * Designed for ms-level response time.
+ */
+char* engine_scan_project(uint64_t project_id, const char* dir_path,
+                          const char* language_filter);
+
+/**
+ * Get hierarchical module tree for a project.
+ * Returns JSON with modules array containing id, parent_id, name, path, file_count.
+ */
+char* engine_get_module_tree(uint64_t project_id);
+
+/**
+ * Find symbol(s) by exact name match.
+ * Returns JSON with results array.
+ */
+char* engine_find_symbol(uint64_t project_id, const char* symbol_name);
+
 // ─── Memory ───────────────────────────────────────────────────
 
 void engine_free_string(char* ptr);
