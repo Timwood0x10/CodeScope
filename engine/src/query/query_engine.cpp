@@ -1,5 +1,7 @@
 #include "query_engine.h"
 #include "graph_query.h"
+#include "impact_analysis.h"
+#include "community_detection.h"
 
 #include <sqlite3.h>
 #include <sstream>
@@ -311,6 +313,18 @@ std::string QueryEngine::getComplexity(uint64_t project_id, uint64_t graph_node_
 
 std::string QueryEngine::graphQuery(uint64_t project_id, const char* dsl_query) {
     return executeGraphQuery(project_id, dsl_query, store_);
+}
+
+// ─── Change Impact Analysis ─────────────────────────────────
+
+std::string QueryEngine::detectChanges(uint64_t project_id, const char* modified_files_json) {
+    return analyzeChangeImpact(project_id, store_, modified_files_json);
+}
+
+// ─── Community Detection ─────────────────────────────────────
+
+std::string QueryEngine::getCommunities(uint64_t project_id) {
+    return detectCommunities(project_id, store_);
 }
 
 } // namespace query

@@ -168,6 +168,25 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
                 "required": ["query"]
             }),
         },
+        Tool {
+            name: "detect_changes".into(),
+            description: "Analyze the impact of code changes across the call graph. Given a list of modified files, returns directly modified functions, their callers (who calls them), and their callees (who they call).".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "modified_files": {"type": "string", "description": "JSON array of modified file paths, e.g. [\"/path/to/file1.py\", \"/path/to/file2.rs\"]"}
+                },
+                "required": ["modified_files"]
+            }),
+        },
+        Tool {
+            name: "get_communities".into(),
+            description: "Run community detection on the code graph to discover module clusters. Uses label propagation to find groups of closely related code entities. Returns communities with member nodes and inter-community dependencies.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
     ]
 }
 
@@ -246,6 +265,13 @@ pub fn execute(project_id: u64, tool_name: &str, args: &Value) -> String {
         "graph_query" => {
             let query = args["query"].as_str().unwrap_or("");
             ffi::graph_query(project_id, query)
+        }
+        "detect_changes" => {
+            let files = args["modified_files"].as_str().unwrap_or("[]");
+            ffi::detect_changes(project_id, files)
+        }
+        "get_communities" => {
+            ffi::get_communities(project_id)
         }
         _ => json!({"error": "Unknown tool"}).to_string(),
     }

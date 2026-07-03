@@ -62,6 +62,33 @@ char* engine_get_complexity(uint64_t project_id, uint64_t graph_node_id);
 // Returns JSON array of {source, edge, target} triples.
 char* engine_graph_query(uint64_t project_id, const char* dsl_query);
 
+// ─── Change Impact Analysis ─────────────────────────────────────
+
+/**
+ * Analyze the impact of code changes across the call graph.
+ *
+ * @param project_id  The project to analyze.
+ * @param modified_files_json  JSON array of modified file paths,
+ *                             e.g. '["/path/to/file1.py","/path/to/file2.rs"]'.
+ * @return JSON with "modified", "callers", "callees", and "total_impacted".
+ */
+char* engine_detect_changes(uint64_t project_id, const char* modified_files_json);
+
+// ─── Community Detection ────────────────────────────────────────
+
+/**
+ * Run label-propagation community detection on the code graph.
+ *
+ * Each node starts in its own community and iteratively adopts the
+ * most common community label among its neighbors. Returns module
+ * clusters and their inter-relationships.
+ *
+ * @param project_id  The project to analyze.
+ * @return JSON with "communities" array, "inter_community_edges",
+ *         and "total_communities".
+ */
+char* engine_get_communities(uint64_t project_id);
+
 // ─── Memory ───────────────────────────────────────────────────
 
 void engine_free_string(char* ptr);

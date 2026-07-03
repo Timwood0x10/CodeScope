@@ -55,6 +55,18 @@ public:
     // Execute a minimal Cypher-like pattern: MATCH (srcType)-[edgeType]->(tgtType)
     std::string graphQuery(uint64_t project_id, const char* dsl_query);
 
+    // ── Change Impact Analysis ─────────────────────────────────
+
+    // Analyze the impact of changes to given files. Returns JSON with
+    // directly modified functions, their callers, and their callees.
+    std::string detectChanges(uint64_t project_id, const char* modified_files_json);
+
+    // ── Community Detection ────────────────────────────────────
+
+    // Run label-propagation community detection on the code graph.
+    // Returns JSON with communities, their members, and inter-community edges.
+    std::string getCommunities(uint64_t project_id);
+
 private:
     store::GraphStore* store_;
 };

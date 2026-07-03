@@ -333,6 +333,26 @@ char* engine_graph_query(uint64_t project_id, const char* dsl_query) {
     return dupString(g_query->graphQuery(project_id, dsl_query));
 }
 
+// ─── Change Impact Analysis ─────────────────────────────────
+
+char* engine_detect_changes(uint64_t project_id, const char* modified_files_json) {
+    if (!g_query) {
+        return dupString("{\"error\":\"not initialized\","
+                         "\"modified\":[],\"callers\":[],\"callees\":[],\"total_impacted\":0}");
+    }
+    return dupString(g_query->detectChanges(project_id, modified_files_json));
+}
+
+// ─── Community Detection ────────────────────────────────────
+
+char* engine_get_communities(uint64_t project_id) {
+    if (!g_query) {
+        return dupString("{\"error\":\"not initialized\","
+                         "\"communities\":[],\"inter_community_edges\":[],\"total_communities\":0}");
+    }
+    return dupString(g_query->getCommunities(project_id));
+}
+
 // ─── Memory ────────────────────────────────────────────────────
 
 void engine_free_string(char* ptr) {
