@@ -518,3 +518,23 @@ END;
 方案 A：C++ 扫描完一个文件，将该文件所有的 symbols 压入一个连续的 C-Style 结构体数组（POD struct array），一次性通过指针传给 Rust，由 Rust 侧的 rusqlite 开启事务进行 std::vec 批量插入。
 
 方案 B：C++ 侧直接静态链接 sqlite3（或者通过相同的 libsqlite 动态链接），直接由 C++ 写入事实表。Rust 侧只负责传入 db_path 和任务指令，并负责读取展示。从你的 Mermaid 架构图来看，方案 B（C++ Core 直接写 FACTS 表）是最符合你当前设计的，也能压榨出极限的 I/O 性能。
+
+
+
+
+----
+
+
+表设计
+symbols 表字段较多，可以考虑把 callgraph_ready、cfg_ready、embedding_ready 提取到一个 symbol_status 表，避免主表太宽。
+search_index 和 embeddings 可以考虑用同一个 symbol_id 关联，减少冗余。
+
+异步机制
+Rust 层用 Tokio Task Queue 很好，但建议加一个任务状态表（index_tasks），记录 project_id、status、progress、error 等，方便查询和重试。
+
+MCP Tool 设计
+建议统一用 codescope_ 前缀，例如：
+codescope_scan
+codescope_find_symbol
+codescope_search
+codescope_get_callers

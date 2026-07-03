@@ -1008,8 +1008,8 @@ static uint64_t lookupSymbolId(uint64_t project_id,
 char* engine_enhance_project(uint64_t project_id) {
     if (!g_store || !g_parser) return dupString("{\"error\":\"engine not initialized\"}");
 
-    // Get files with unenhanced symbols (callgraph_ready = 0)
-    auto files = g_store->getUnenhancedFiles(project_id, "callgraph_ready");
+    // Get files with unenhanced symbols (missing ANALYSIS_CALLGRAPH bit)
+    auto files = g_store->getUnenhancedFiles(project_id, store::GraphStore::ANALYSIS_CALLGRAPH);
     if (files.empty()) {
         return dupString("{\"files_processed\":0,\"symbols_enhanced\":0,\"call_edges\":0}");
     }
@@ -1162,7 +1162,7 @@ char* engine_enhance_project(uint64_t project_id) {
                     };
                     count(node);
 
-                    g_store->insertMetric(sym_id,
+                    g_store->insertMetric(project_id, "symbol", sym_id,
                         static_cast<int>(cr.cyclomatic),
                         static_cast<int>(cr.nesting_depth),
                         static_cast<int>(cr.cognitive),
@@ -1184,10 +1184,10 @@ char* engine_enhance_project(uint64_t project_id) {
                                                     signature.c_str(),
                                                     node->doc_comment.c_str());
 
-                    // Update ready flags
-                    g_store->updateSymbolReady(sym_id, "callgraph_ready", 1);
-                    g_store->updateSymbolReady(sym_id, "cfg_ready", 1);
-                    g_store->updateSymbolReady(sym_id, "embedding_ready", 1);
+                    // Update analysis state flags
+                    g_store->setAnalysisState(sym_id, store::GraphStore::ANALYSIS_CALLGRAPH |
+                                                        store::GraphStore::ANALYSIS_METRICS |
+                                                        store::GraphStore::ANALYSIS_EMBEDDING);
                     total_enhanced++;
                 } else if (node->kind == ir::NodeKind::ClassDecl ||
                            node->kind == ir::NodeKind::EnumDecl ||
@@ -1195,18 +1195,20 @@ char* engine_enhance_project(uint64_t project_id) {
                            node->kind == ir::NodeKind::TypeAliasDecl) {
                     // Non-function declarations: minimal metrics
                     int lines = static_cast<int>(node->loc.end_row - node->loc.start_row + 1);
-                    g_store->insertMetric(sym_id, 0, 0, 0, lines, 0, 0, 0, 0);
+                    g_store->insertMetric(project_id, "symbol", sym_id, 0, 0, 0, lines, 0, 0, 0, 0);
 
                     auto vec = vector_search::stringToVector(node->name);
                     g_store->insertEmbedding(sym_id, vec.data(), vector_search::VECTOR_DIM);
 
                     g_store->insertIntoSearchIndex(sym_id, project_id,
                                                     node->name.c_str(),
-                                                    node->name.c_str(), "");
+                                                    node->doc_comment.c_str(),
+                                                    node->name.c_str());
 
-                    g_store->updateSymbolReady(sym_id, "callgraph_ready", 1);
-                    g_store->updateSymbolReady(sym_id, "cfg_ready", 1);
-                    g_store->updateSymbolReady(sym_id, "embedding_ready", 1);
+                    // Update analysis state flags
+                    g_store->setAnalysisState(sym_id, store::GraphStore::ANALYSIS_CALLGRAPH |
+                                                        store::GraphStore::ANALYSIS_METRICS |
+                                                        store::GraphStore::ANALYSIS_EMBEDDING);
                     total_enhanced++;
                 }
             }
@@ -1280,7 +1282,7 @@ char* engine_find_callers_adaptive(uint64_t project_id, const char* symbol_name)
     if (!symbol_name || !*symbol_name) return dupString("{\"error\":\"symbol_name is empty\"}");
 
     // Check if callgraph is ready for this symbol
-    double cg_ratio = g_store->checkReadyRatio(project_id, "callgraph_ready");
+    double cg_ratio = g_store->checkAnalysisRatio(project_id, store::GraphStore::ANALYSIS_CALLGRAPH);
     if (cg_ratio > 0.5) {
         // Use new call_edges table
         return dupString(g_store->findCallersJson(project_id, symbol_name));
@@ -1297,7 +1299,7 @@ char* engine_find_callees_adaptive(uint64_t project_id, const char* symbol_name)
     if (!g_store) return dupString("{\"error\":\"engine not initialized\"}");
     if (!symbol_name || !*symbol_name) return dupString("{\"error\":\"symbol_name is empty\"}");
 
-    double cg_ratio = g_store->checkReadyRatio(project_id, "callgraph_ready");
+    double cg_ratio = g_store->checkAnalysisRatio(project_id, store::GraphStore::ANALYSIS_CALLGRAPH);
     if (cg_ratio > 0.5) {
         return dupString(g_store->findCalleesJson(project_id, symbol_name));
     }
@@ -1311,6 +1313,97 @@ char* engine_find_callees_adaptive(uint64_t project_id, const char* symbol_name)
 char* engine_get_entry_points_new(uint64_t project_id) {
     if (!g_store) return dupString("{\"error\":\"engine not initialized\"}");
     return dupString(g_store->getEntryPointsJson(project_id));
+}
+
+// ─── Phase C: Project Overview ───────────────────────────────
+
+char* engine_project_overview(uint64_t project_id) {
+    if (!g_store) return dupString("{\"error\":\"engine not initialized\"}");
+
+    auto db = g_store->handle();
+    std::ostringstream json;
+
+    // ── Project info ──
+    json << "{";
+
+    // Languages
+    {
+        const char* sql = "SELECT DISTINCT language FROM symbols WHERE project_id = ?";
+        sqlite3_stmt* stmt = nullptr;
+        json << "\"languages\":[";
+        bool first = true;
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+            while (sqlite3_step(stmt) == SQLITE_ROW) {
+                if (!first) json << ",";
+                first = false;
+                const char* l = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+                json << "\"" << (l ? l : "") << "\"";
+            }
+            sqlite3_finalize(stmt);
+        }
+        json << "],";
+    }
+
+    // Module count
+    {
+        const char* sql = "SELECT COUNT(*) FROM modules WHERE project_id = ?";
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+            if (sqlite3_step(stmt) == SQLITE_ROW)
+                json << "\"total_modules\":" << sqlite3_column_int(stmt, 0) << ",";
+            sqlite3_finalize(stmt);
+        }
+    }
+
+    // Symbol count + analysis state breakdown
+    {
+        const char* sql = "SELECT COUNT(*), "
+                           "SUM((analysis_state & 1) != 0), "
+                           "SUM((analysis_state & 2) != 0), "
+                           "SUM((analysis_state & 4) != 0), "
+                           "SUM((analysis_state & 8) != 0) "
+                           "FROM symbols WHERE project_id = ?";
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+            if (sqlite3_step(stmt) == SQLITE_ROW) {
+                json << "\"total_symbols\":" << sqlite3_column_int(stmt, 0) << ",";
+                json << "\"analysis_progress\":{"
+                     << "\"scanned\":" << sqlite3_column_int(stmt, 1) << ","
+                     << "\"callgraph\":" << sqlite3_column_int(stmt, 2) << ","
+                     << "\"metrics\":" << sqlite3_column_int(stmt, 3) << ","
+                     << "\"embedding\":" << sqlite3_column_int(stmt, 4)
+                     << "},";
+            }
+            sqlite3_finalize(stmt);
+        }
+    }
+
+    // Entry points
+    {
+        std::string ep = g_store->getEntryPointsJson(project_id);
+        // ep already has {"entry_points": [...]}
+        if (!ep.empty() && ep[0] == '{') {
+            json << "\"entry_points\":" << ep.c_str() << ",";
+        }
+    }
+
+    // Ready features (which analysis features are complete for >50% of symbols)
+    {
+        json << "\"ready_features\":{";
+        double cg = g_store->checkAnalysisRatio(project_id, store::GraphStore::ANALYSIS_CALLGRAPH);
+        double me = g_store->checkAnalysisRatio(project_id, store::GraphStore::ANALYSIS_METRICS);
+        double em = g_store->checkAnalysisRatio(project_id, store::GraphStore::ANALYSIS_EMBEDDING);
+        json << "\"call_graph\":" << (cg > 0.5 ? "true" : "false") << ","
+             << "\"metrics\":" << (me > 0.5 ? "true" : "false") << ","
+             << "\"semantic_search\":" << (em > 0.5 ? "true" : "false")
+             << "}";
+    }
+
+    json << "}";
+    return dupString(json.str());
 }
 
 char* engine_find_definition(uint64_t project_id, const char* symbol_name,

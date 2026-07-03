@@ -181,6 +181,13 @@ char* engine_find_callees_adaptive(uint64_t project_id, const char* symbol_name)
  */
 char* engine_get_entry_points_new(uint64_t project_id);
 
+/**
+ * Get a comprehensive project overview: languages, modules, symbols, 
+ * entry points, analysis progress, and ready features.
+ * This is the first tool AI should call after initialization.
+ */
+char* engine_project_overview(uint64_t project_id);
+
 // ─── Memory ───────────────────────────────────────────────────
 
 void engine_free_string(char* ptr);

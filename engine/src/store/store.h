@@ -100,9 +100,16 @@ public:
 
     // ── New Schema (Phase A): Symbols ─────────────────────────
 
+    // Analysis state bitmask constants
+    static constexpr int ANALYSIS_SCANNED   = 1;  // bit 0: found by fast scan
+    static constexpr int ANALYSIS_CALLGRAPH = 2;  // bit 1: call graph computed
+    static constexpr int ANALYSIS_METRICS   = 4;  // bit 2: metrics computed
+    static constexpr int ANALYSIS_EMBEDDING = 8;  // bit 3: embedding generated
+
     /**
      * Insert a symbol (fast scan result).
      * kind: function/method/class/struct/trait/enum/const/type_alias
+     * analysis_state defaults to ANALYSIS_SCANNED (1).
      * Returns the symbol id.
      */
     uint64_t insertSymbol(uint64_t project_id, uint64_t module_id,
@@ -134,13 +141,19 @@ public:
                             int line, int col);
 
     uint64_t insertDependencyEdge(uint64_t project_id,
-                                  uint64_t source_symbol_id,
-                                  uint64_t target_symbol_id,
+                                  uint64_t source_module_id,
+                                  uint64_t target_module_id,
+                                  const char* external_name,
                                   const char* kind);
 
     // ── Phase B: Enhancement — Metrics ────────────────────────
 
-    bool insertMetric(uint64_t symbol_id,
+    /**
+     * Insert or update metrics for an owner (symbol/module/project).
+     * owner_type: "symbol" / "module" / "project"
+     */
+    bool insertMetric(uint64_t project_id,
+                      const char* owner_type, uint64_t owner_id,
                       int cyclomatic, int nesting_depth, int cognitive,
                       int lines, int param_count, int call_count,
                       int branch_count, int loop_count);
@@ -148,22 +161,22 @@ public:
     // ── Phase B: Enhancement — Search Index ───────────────────
 
     void insertIntoSearchIndex(uint64_t symbol_id, uint64_t project_id,
-                               const char* name, const char* signature,
-                               const char* content);
+                               const char* title, const char* summary,
+                               const char* body);
 
     // ── Phase B: Enhancement — Embeddings ─────────────────────
 
     bool insertEmbedding(uint64_t symbol_id,
                          const float* vector_data, int dim);
 
-    // ── Phase B: Enhancement — Ready Flags ────────────────────
+    // ── Phase B: Enhancement — analysis_state bitmask ─────────
 
-    bool updateSymbolReady(uint64_t symbol_id,
-                           const char* field, int value);
+    /** Set bits in analysis_state for a symbol (OR operation). */
+    bool setAnalysisState(uint64_t symbol_id, int bits);
 
-    /** Get distinct file paths that have symbols with a ready flag = 0. */
+    /** Get distinct file paths that have symbols missing a given analysis bit. */
     std::vector<std::string> getUnenhancedFiles(uint64_t project_id,
-                                                 const char* ready_field);
+                                                 int required_bits);
 
     // ── Phase C: Unified Queries (adaptive) ───────────────────
 
@@ -185,14 +198,11 @@ public:
      */
     std::string findCalleesJson(uint64_t project_id, const char* symbol_name);
 
-    /**
-     * Get entry points from the new entry_points table.
-     * Returns JSON with entry point symbols.
-     */
+    /** Get entry points from the new entry_points table. */
     std::string getEntryPointsJson(uint64_t project_id);
 
-    /** Check what ratio of symbols have a given ready flag set (0.0 - 1.0). */
-    double checkReadyRatio(uint64_t project_id, const char* ready_field);
+    /** Check what fraction of symbols have a given analysis bit set (0.0 - 1.0). */
+    double checkAnalysisRatio(uint64_t project_id, int bit);
 
     // ── Raw access (for query engine) ──────────────────────────
 

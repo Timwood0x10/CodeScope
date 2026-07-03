@@ -71,6 +71,7 @@ unsafe extern "C" {
     fn engine_find_callees_adaptive(project_id: u64,
                                     symbol_name: *const c_char) -> *mut c_char;
     fn engine_get_entry_points_new(project_id: u64) -> *mut c_char;
+    fn engine_project_overview(project_id: u64) -> *mut c_char;
 
     fn engine_free_string(ptr: *mut c_char);
 }
@@ -253,6 +254,10 @@ pub fn find_callees_adaptive(project_id: u64, symbol_name: &str) -> String {
 
 pub fn get_entry_points_new(project_id: u64) -> String {
     take_string(unsafe { engine_get_entry_points_new(project_id) })
+}
+
+pub fn project_overview(project_id: u64) -> String {
+    take_string(unsafe { engine_project_overview(project_id) })
 }
 
 // ── Background thread management ──────────────────────────────

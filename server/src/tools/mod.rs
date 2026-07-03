@@ -311,6 +311,14 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
                 "properties": {}
             }),
         },
+        Tool {
+            name: "project_overview".into(),
+            description: "Get a comprehensive project overview: languages used, total modules/symbols, entry points, analysis progress (scanned/callgraph/metrics/embedding), and ready features. Call this first after initialization to understand the project.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
     ]
 }
 
@@ -447,6 +455,9 @@ pub fn execute(project_id: u64, tool_name: &str, args: &Value) -> String {
         }
         "get_entry_points" => {
             ffi::get_entry_points_new(project_id)
+        }
+        "project_overview" => {
+            ffi::project_overview(project_id)
         }
 
         _ => json!({"error": "Unknown tool"}).to_string(),

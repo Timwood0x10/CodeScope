@@ -153,52 +153,53 @@ bool GraphStore::createSchema() {
         );
 
         -- ============================================================
-        -- Phase A: New Fast-Index Schema (alongside existing tables)
+        -- Phase A: Skeleton Index (facts, ms-level, one schema)
         -- ============================================================
 
+        -- modules: path is stored as project-relative for portability
         CREATE TABLE IF NOT EXISTS modules (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id INTEGER NOT NULL,
             parent_id INTEGER REFERENCES modules(id),
             name TEXT NOT NULL,
-            path TEXT NOT NULL,
+            path TEXT NOT NULL,          -- project-relative path
             language TEXT,
             file_count INTEGER DEFAULT 0,
             FOREIGN KEY (project_id) REFERENCES projects(id)
         );
 
+        -- symbols: single table, gradually enriched via analysis_state bitmask
         CREATE TABLE IF NOT EXISTS symbols (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id INTEGER NOT NULL,
             module_id INTEGER REFERENCES modules(id),
-            kind TEXT NOT NULL,
+            kind TEXT NOT NULL,          -- function/method/class/struct/trait/enum/const/type_alias
             name TEXT NOT NULL,
             signature TEXT,
             visibility TEXT DEFAULT 'default',
             language TEXT NOT NULL,
-            file_path TEXT NOT NULL,
+            file_path TEXT NOT NULL,     -- project-relative path
             line INTEGER NOT NULL,
             column INTEGER NOT NULL,
-            span_start INTEGER,
+            span_start INTEGER,          -- byte offset
             span_end INTEGER,
-            callgraph_ready INTEGER DEFAULT 0,
-            cfg_ready INTEGER DEFAULT 0,
-            embedding_ready INTEGER DEFAULT 0,
+            analysis_state INTEGER DEFAULT 1,  -- bitmask: 1=SCANNED, 2=CALLGRAPH, 4=METRICS, 8=EMBEDDING
             FOREIGN KEY (project_id) REFERENCES projects(id)
         );
         CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(project_id, name);
         CREATE INDEX IF NOT EXISTS idx_symbols_module ON symbols(module_id);
+        CREATE INDEX IF NOT EXISTS idx_symbols_state ON symbols(analysis_state);
 
         CREATE TABLE IF NOT EXISTS entry_points (
             symbol_id INTEGER PRIMARY KEY,
             project_id INTEGER NOT NULL,
-            kind TEXT NOT NULL,
+            kind TEXT NOT NULL,          -- main/init/setup/run/handler
             FOREIGN KEY (symbol_id) REFERENCES symbols(id),
             FOREIGN KEY (project_id) REFERENCES projects(id)
         );
 
         -- ============================================================
-        -- Phase B: Enhancement Tables (new schema, alongside old tables)
+        -- Phase B: Knowledge Enhancement Tables
         -- ============================================================
 
         CREATE TABLE IF NOT EXISTS call_edges (
@@ -206,7 +207,7 @@ bool GraphStore::createSchema() {
             project_id INTEGER NOT NULL,
             caller_symbol_id INTEGER NOT NULL,
             callee_symbol_id INTEGER NOT NULL,
-            provenance TEXT DEFAULT 'static',
+            provenance TEXT DEFAULT 'static',  -- static/lsp/resolved
             line INTEGER,
             col INTEGER,
             FOREIGN KEY (caller_symbol_id) REFERENCES symbols(id),
@@ -215,20 +216,25 @@ bool GraphStore::createSchema() {
         CREATE INDEX IF NOT EXISTS idx_call_edges_caller ON call_edges(caller_symbol_id);
         CREATE INDEX IF NOT EXISTS idx_call_edges_callee ON call_edges(callee_symbol_id);
 
+        -- Dependency edges: module-level, supports external/third-party deps
         CREATE TABLE IF NOT EXISTS dependency_edges (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id INTEGER NOT NULL,
-            source_symbol_id INTEGER NOT NULL,
-            target_symbol_id INTEGER NOT NULL,
-            kind TEXT NOT NULL,
-            FOREIGN KEY (source_symbol_id) REFERENCES symbols(id),
-            FOREIGN KEY (target_symbol_id) REFERENCES symbols(id)
+            source_module_id INTEGER REFERENCES modules(id),
+            target_module_id INTEGER REFERENCES modules(id),
+            external_name TEXT,          -- e.g. "tokio::sync::Mutex", "context"
+            kind TEXT NOT NULL,          -- import/include/inherit/implement/use/ffi
+            FOREIGN KEY (source_module_id) REFERENCES modules(id)
         );
-        CREATE INDEX IF NOT EXISTS idx_dep_edges_src ON dependency_edges(source_symbol_id);
-        CREATE INDEX IF NOT EXISTS idx_dep_edges_tgt ON dependency_edges(target_symbol_id);
+        CREATE INDEX IF NOT EXISTS idx_dep_edges_src ON dependency_edges(source_module_id);
+        CREATE INDEX IF NOT EXISTS idx_dep_edges_tgt ON dependency_edges(target_module_id);
 
+        -- Metrics: generic owner_type/owner_id for symbols, modules, projects
         CREATE TABLE IF NOT EXISTS metrics (
-            symbol_id INTEGER PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            owner_type TEXT NOT NULL,    -- 'symbol' / 'module' / 'project'
+            owner_id INTEGER NOT NULL,
             cyclomatic INTEGER DEFAULT 0,
             nesting_depth INTEGER DEFAULT 0,
             cognitive INTEGER DEFAULT 0,
@@ -237,16 +243,23 @@ bool GraphStore::createSchema() {
             call_count INTEGER DEFAULT 0,
             branch_count INTEGER DEFAULT 0,
             loop_count INTEGER DEFAULT 0,
-            FOREIGN KEY (symbol_id) REFERENCES symbols(id)
+            FOREIGN KEY (project_id) REFERENCES projects(id),
+            UNIQUE(owner_type, owner_id)
         );
+        CREATE INDEX IF NOT EXISTS idx_metrics_owner ON metrics(owner_type, owner_id);
 
-        -- New FTS5 search index for symbols
+        -- FTS5 search index: title/summary/body for better AI search
         CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
-            name, signature, content,
+            title, summary, body,
             project_id UNINDEXED,
             symbol_id UNINDEXED,
             tokenize='unicode61'
         );
+
+        -- Trigger: auto-clean search_index when symbols are deleted
+        CREATE TRIGGER IF NOT EXISTS trg_symbols_delete AFTER DELETE ON symbols BEGIN
+            DELETE FROM search_index WHERE symbol_id = old.id;
+        END;
 
         -- Embeddings table (sqlite-vec vec0)
         -- Requires sqlite-vec extension; falls back gracefully if not available
@@ -1003,21 +1016,23 @@ uint64_t GraphStore::insertCallEdge(uint64_t project_id,
 }
 
 uint64_t GraphStore::insertDependencyEdge(uint64_t project_id,
-                                           uint64_t source_symbol_id,
-                                           uint64_t target_symbol_id,
+                                           uint64_t source_module_id,
+                                           uint64_t target_module_id,
+                                           const char* external_name,
                                            const char* kind) {
     const char* sql = "INSERT INTO dependency_edges "
-                       "(project_id, source_symbol_id, target_symbol_id, kind) "
-                       "VALUES (?, ?, ?, ?)";
+                       "(project_id, source_module_id, target_module_id, external_name, kind) "
+                       "VALUES (?, ?, ?, ?, ?)";
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
         error_ = "insertDependencyEdge: prepare failed";
         return 0;
     }
     sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-    sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(source_symbol_id));
-    sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(target_symbol_id));
-    sqlite3_bind_text(stmt, 4, kind, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(source_module_id));
+    sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(target_module_id));
+    sqlite3_bind_text(stmt, 4, external_name, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, kind, -1, SQLITE_TRANSIENT);
     if (sqlite3_step(stmt) != SQLITE_DONE) {
         error_ = "insertDependencyEdge: step failed";
         sqlite3_finalize(stmt);
@@ -1030,28 +1045,31 @@ uint64_t GraphStore::insertDependencyEdge(uint64_t project_id,
 
 // ── Phase B: Enhancement — Metrics ────────────────────────────
 
-bool GraphStore::insertMetric(uint64_t symbol_id,
+bool GraphStore::insertMetric(uint64_t project_id,
+                               const char* owner_type, uint64_t owner_id,
                                int cyclomatic, int nesting_depth, int cognitive,
                                int lines, int param_count, int call_count,
                                int branch_count, int loop_count) {
     const char* sql = "INSERT OR REPLACE INTO metrics "
-                       "(symbol_id, cyclomatic, nesting_depth, cognitive, lines, "
+                       "(project_id, owner_type, owner_id, cyclomatic, nesting_depth, cognitive, lines, "
                        " param_count, call_count, branch_count, loop_count) "
-                       "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
+                       "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
         error_ = "insertMetric: prepare failed";
         return false;
     }
-    sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(symbol_id));
-    sqlite3_bind_int(stmt, 2, cyclomatic);
-    sqlite3_bind_int(stmt, 3, nesting_depth);
-    sqlite3_bind_int(stmt, 4, cognitive);
-    sqlite3_bind_int(stmt, 5, lines);
-    sqlite3_bind_int(stmt, 6, param_count);
-    sqlite3_bind_int(stmt, 7, call_count);
-    sqlite3_bind_int(stmt, 8, branch_count);
-    sqlite3_bind_int(stmt, 9, loop_count);
+    sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+    sqlite3_bind_text(stmt, 2, owner_type, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(owner_id));
+    sqlite3_bind_int(stmt, 4, cyclomatic);
+    sqlite3_bind_int(stmt, 5, nesting_depth);
+    sqlite3_bind_int(stmt, 6, cognitive);
+    sqlite3_bind_int(stmt, 7, lines);
+    sqlite3_bind_int(stmt, 8, param_count);
+    sqlite3_bind_int(stmt, 9, call_count);
+    sqlite3_bind_int(stmt, 10, branch_count);
+    sqlite3_bind_int(stmt, 11, loop_count);
     if (sqlite3_step(stmt) != SQLITE_DONE) {
         error_ = "insertMetric: step failed";
         sqlite3_finalize(stmt);
@@ -1064,17 +1082,17 @@ bool GraphStore::insertMetric(uint64_t symbol_id,
 // ── Phase B: Enhancement — Search Index ───────────────────────
 
 void GraphStore::insertIntoSearchIndex(uint64_t symbol_id, uint64_t project_id,
-                                        const char* name, const char* signature,
-                                        const char* content) {
-    const char* sql = "INSERT INTO search_index (symbol_id, project_id, name, signature, content) "
+                                        const char* title, const char* summary,
+                                        const char* body) {
+    const char* sql = "INSERT INTO search_index (symbol_id, project_id, title, summary, body) "
                        "VALUES (?, ?, ?, ?, ?)";
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
-    sqlite3_bind_text(stmt, 1, name ? name : "", -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(symbol_id));
     sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
-    sqlite3_bind_text(stmt, 3, name ? name : "", -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 4, signature ? signature : "", -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 5, content ? content : "", -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, title ? title : "", -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, summary ? summary : "", -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, body ? body : "", -1, SQLITE_TRANSIENT);
     if (sqlite3_step(stmt) != SQLITE_DONE) {
         error_ = "insertIntoSearchIndex: step failed";
     }
@@ -1115,18 +1133,17 @@ bool GraphStore::insertEmbedding(uint64_t symbol_id,
 
 // ── Phase B: Enhancement — Ready Flags ────────────────────────
 
-bool GraphStore::updateSymbolReady(uint64_t symbol_id,
-                                    const char* field, int value) {
-    std::string sql = "UPDATE symbols SET " + std::string(field) + " = ? WHERE id = ?";
+bool GraphStore::setAnalysisState(uint64_t symbol_id, int bits) {
+    const char* sql = "UPDATE symbols SET analysis_state = analysis_state | ? WHERE id = ?";
     sqlite3_stmt* stmt = nullptr;
-    if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
-        error_ = "updateSymbolReady: prepare failed";
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        error_ = "setAnalysisState: prepare failed";
         return false;
     }
-    sqlite3_bind_int(stmt, 1, value);
+    sqlite3_bind_int(stmt, 1, bits);
     sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(symbol_id));
     if (sqlite3_step(stmt) != SQLITE_DONE) {
-        error_ = "updateSymbolReady: step failed";
+        error_ = "setAnalysisState: step failed";
         sqlite3_finalize(stmt);
         return false;
     }
@@ -1135,17 +1152,19 @@ bool GraphStore::updateSymbolReady(uint64_t symbol_id,
 }
 
 std::vector<std::string> GraphStore::getUnenhancedFiles(uint64_t project_id,
-                                                         const char* ready_field) {
-    std::string sql = "SELECT DISTINCT file_path FROM symbols "
-                       "WHERE project_id = ? AND " + std::string(ready_field) + " = 0 "
+                                                         int required_bits) {
+    const char* sql = "SELECT DISTINCT file_path FROM symbols "
+                       "WHERE project_id = ? AND (analysis_state & ?) != ? "
                        "ORDER BY file_path";
     sqlite3_stmt* stmt = nullptr;
     std::vector<std::string> files;
-    if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
         error_ = "getUnenhancedFiles: prepare failed";
         return files;
     }
     sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+    sqlite3_bind_int(stmt, 2, required_bits);
+    sqlite3_bind_int(stmt, 3, required_bits);
     while (sqlite3_step(stmt) == SQLITE_ROW) {
         const char* fp = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
         if (fp) files.emplace_back(fp);
@@ -1156,14 +1175,15 @@ std::vector<std::string> GraphStore::getUnenhancedFiles(uint64_t project_id,
 
 // ── Phase C: Unified Queries ──────────────────────────────────
 
-double GraphStore::checkReadyRatio(uint64_t project_id, const char* ready_field) {
-    std::string sql = "SELECT CASE WHEN COUNT(*) > 0 THEN "
-                       "CAST(SUM(" + std::string(ready_field) + ") AS REAL) / COUNT(*) "
+double GraphStore::checkAnalysisRatio(uint64_t project_id, int bit) {
+    const char* sql = "SELECT CASE WHEN COUNT(*) > 0 THEN "
+                       "CAST(SUM((analysis_state & ?) != 0) AS REAL) / COUNT(*) "
                        "ELSE 0.0 END FROM symbols WHERE project_id = ?";
     sqlite3_stmt* stmt = nullptr;
     double ratio = 0.0;
-    if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {
-        sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, bit);
+        sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
         if (sqlite3_step(stmt) == SQLITE_ROW) {
             ratio = sqlite3_column_double(stmt, 0);
         }
@@ -1176,7 +1196,7 @@ std::string GraphStore::searchUnifiedJson(uint64_t project_id, const char* query
     if (limit <= 0 || limit > 100) limit = 20;
 
     // Check embedding readiness — if > 50% ready, use semantic search via embeddings
-    double emb_ratio = checkReadyRatio(project_id, "embedding_ready");
+    double emb_ratio = checkAnalysisRatio(project_id, ANALYSIS_EMBEDDING);
 
     if (emb_ratio > 0.5) {
         // Use semantic search: compute n-gram vector for query, compare via vec0
