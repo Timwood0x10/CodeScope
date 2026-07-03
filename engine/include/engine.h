@@ -188,6 +188,15 @@ char* engine_get_entry_points_new(uint64_t project_id);
  */
 char* engine_project_overview(uint64_t project_id);
 
+/**
+ * Trace the shortest call path between two functions using BFS on call_edges.
+ * Returns JSON: {"path": [{"name":"...","file":"...","line":N}, ...]}
+ * Requires callgraph_ready (run enhance_project first).
+ */
+char* engine_trace_path(uint64_t project_id,
+                         const char* from_name,
+                         const char* to_name);
+
 // ─── Memory ───────────────────────────────────────────────────
 
 void engine_free_string(char* ptr);

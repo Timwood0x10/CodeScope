@@ -131,15 +131,117 @@ cargo run --bin codescope
 
 ## Token 节省
 
-使用代码图代替原始源文件，5 个常见查询场景平均节省 **\~98.8%** 的 token：
+使用代码图代替原始源文件，5 个常见查询场景平均节省 **~98.8%** 的 token：
 
 | 场景     | 图 (tokens) | 源码 (tokens) | 节省        |
 | ------ | ---------- | ----------- | --------- |
-| 函数定义查找 | \~21       | \~2,265     | **99.1%** |
-| 调用者追踪  | \~18       | \~2,000     | **99.1%** |
-| 架构概览   | \~32       | \~1,875     | **98.3%** |
-| 函数分析   | \~43       | \~4,733     | **99.1%** |
-| 符号搜索   | \~23       | \~958       | **97.6%** |
+| 函数定义查找 | ~21       | ~2,265     | **99.1%** |
+| 调用者追踪  | ~18       | ~2,000     | **99.1%** |
+| 架构概览   | ~32       | ~1,875     | **98.3%** |
+| 函数分析   | ~43       | ~4,733     | **99.1%** |
+| 符号搜索   | ~23       | ~958       | **97.6%** |
+
+## 性能基准测试 —— Fast Scan
+
+CodeScope 的 **Fast Scan** 在毫秒级完成轻量声明提取（无需完整 tree-sitter 解析），让 AI 立即获得项目骨架认知。
+
+### 多语言扫描结果
+
+| 项目 | 耗时 | 语言 | 模块 | 符号数 | 备注 |
+|------|------|------|------|--------|------|
+| **CodeScope**（自扫描） | **32 ms** | cpp, rust, c | 219 | 2,902 | 有 .gitignore |
+| **MusicAITools**（Python） | **8 ms** | python | — | 227 | 36 个源文件 |
+| **goagent**（Go 项目） | **493 ms** | go, c, cpp, python | 548 | 5,172 | 无 .gitignore |
+| **tinygo**（Go 编译器） | **209 ms** | go | — | 8,411 | 1,774 文件 |
+| **SQLite**（C 库） | **89 ms** | c | 1 | 6,921 | 141 个源文件 |
+| **Linux kernel/sched** | **45 ms** | c | 2 | 4,913 | 调度子系统 |
+| **Linux kernel/**（核心） | **360 ms** | c | 46 | 40,335 | 内核核心 |
+| **Linux fs/**（文件系统） | **1.8 s** | c | 99 | 212,145 | 文件系统 |
+
+**平均吞吐：约 100,000 符号/秒**
+
+瓶颈在 I/O —— 每个源文件都要 open → read → close。严格的 C 检测器（要求返回类型含 C 类型关键字）比之前宽松启发式减少了约 39% 假阳性，同时快了 31%。
+
+### C 声明检测精度
+
+| 语言 | 精确率 | 召回率 | 说明 |
+|------|--------|--------|------|
+| **Go** | ~97% | ~96% | `func` 模式极其精确 |
+| **Python** | ~98% | ~95% | `def`/`class` 几乎零误报 |
+| **C/C++（严格）** | ~85% | ~90% | 要求返回类型含类型关键字 |
+| **C/C++（旧）** | ~65% | ~95% | 宽松模式，假阳性高 |
+| **Rust** | ~90% | ~90% | `fn` 精确匹配 |
+
+### 设计理念
+
+1. **骨架索引（Fast Scan）**：毫秒级轻量扫描 → AI 立即可用
+2. **知识增强**：后台全量解析 → 调用图、指标、嵌入向量
+3. **稳定的 MCP 接口**：后端通过 `xxx_ready` 标志自适应，工具永不改变
+4. **`.gitignore` 感知**：自动读取项目 `.gitignore`，零配置跳过忽略文件
+5. **独立的 `symbol_status` 表**：保持 `symbols` 表精简，独立追踪三个就绪标志
+
+## 实战案例：Linux 内核调度器分析
+
+使用 Fast Scan 对 Linux v6.13 内核调度子系统进行分析——**45 ms** 扫描 36 个源文件，识别 4,913 个符号。
+
+### 调度代码位置
+
+```
+kernel/sched/
+├── core.c          — 主调度器 __schedule()、schedule()
+├── fair.c          — CFS 完全公平调度器
+├── rt.c            — 实时调度器
+├── deadline.c      — 截止时间调度器
+├── idle.c          — 空闲任务
+├── sched.h         — 调度数据结构
+└── ext/            — 可扩展调度接口
+```
+
+### 父子进程资源处理 → `kernel/fork.c`
+
+| 行号 | 函数 | 作用 |
+|------|------|------|
+| **914** | `dup_task_struct()` | 复制父进程的 task_struct（完整进程描述符） |
+| **1994** | `copy_process()` | **核心函数**——创建新进程入口，调用所有 copy_xxx |
+| **2115** | `p = dup_task_struct(current, node)` | 复制内核栈、thread_info、task_struct |
+| **2259** | `sched_fork(clone_flags, p)` | 初始化子进程调度状态，设为非运行态 |
+
+`copy_process()` 执行链：
+
+```
+dup_task_struct()     → 复制内核栈 + task_struct
+copy_sighand()        → 复制信号处理句柄
+copy_mm()             → 复制地址空间（写时复制 COW）
+copy_files()          → 复制文件描述符表
+sched_fork()          → 设置子进程调度实体
+```
+
+**核心机制：写时复制（COW）**——`copy_mm()` 让父子共享同一物理内存页，标记为只读。任一进程首次写入时触发缺页中断，复制该页。
+
+### 防止抢占
+
+| 位置 | 机制 | 说明 |
+|------|------|------|
+| `include/linux/preempt.h:92` | `preempt_count()` | 每进程抢占计数器，>0 时禁止内核抢占 |
+| `include/linux/preempt.h:71` | `2*PREEMPT_DISABLE_OFFSET` | 空闲任务初始值，禁止抢占 |
+| `kernel/sched/core.c:7061` | `__schedule()` | 主调度器，仅当 preempt_count==0 时才切换 |
+| `kernel/sched/core.c:7316` | `schedule()` | 主动让出 CPU，调用 __schedule() |
+
+**三层防线：**
+
+1. **每进程计数器**：`preempt_count` > 0 → `__schedule()` 直接返回，不切换
+2. **自旋锁**：获取时自动 `preempt_disable()`，释放时 `preempt_enable()`
+3. **中断上下文**：硬/软中断处理中 `preempt_count` 递增，阻止任何抢占
+
+### 源码关键位置
+
+```
+kernel/fork.c:914        dup_task_struct()        — 复制进程结构
+kernel/fork.c:1994       copy_process()           — 进程创建总入口
+kernel/fork.c:2259       sched_fork()             — 子进程调度初始化
+kernel/sched/core.c:7061 __schedule()             — 主调度器
+include/linux/preempt.h:108 preempt_count()       — 抢占计数器
+```
 
 ## 对比 codebase-memory-mcp
 

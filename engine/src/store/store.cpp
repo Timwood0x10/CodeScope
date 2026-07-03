@@ -2,8 +2,11 @@
 
 #include <algorithm>
 #include <cstring>
+#include <queue>
 #include <sqlite3.h>
 #include <sstream>
+#include <unordered_map>
+#include <unordered_set>
 
 #include "../query/vector_search.h"
 
@@ -1676,6 +1679,102 @@ std::string GraphStore::getEntryPointsJson(uint64_t project_id) {
          << "}";
   }
   sqlite3_finalize(stmt);
+  json << "]}";
+  return json.str();
+}
+
+// ── Path Tracing (BFS on call_edges) ──────────────────────────
+
+std::string GraphStore::tracePathJson(uint64_t project_id,
+                                       const char *from_name,
+                                       const char *to_name) {
+  // 1. Find symbol IDs
+  auto syms = [&](const char *name) -> uint64_t {
+    const char *sql = "SELECT id FROM symbols WHERE project_id = ? AND name = ? LIMIT 1";
+    sqlite3_stmt *stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return 0;
+    sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+    sqlite3_bind_text(stmt, 2, name, -1, SQLITE_TRANSIENT);
+    uint64_t id = 0;
+    if (sqlite3_step(stmt) == SQLITE_ROW)
+      id = static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
+    sqlite3_finalize(stmt);
+    return id;
+  };
+
+  uint64_t from_id = syms(from_name);
+  uint64_t to_id = syms(to_name);
+  if (!from_id || !to_id)
+    return "{\"path\":[],\"error\":\"symbol not found\"}";
+  if (from_id == to_id)
+    return "{\"path\":[{\"name\":\"" + std::string(from_name) + "\"}],\"trivial\":true}";
+
+  // 2. BFS through call_edges: parent map = callee → caller
+  std::unordered_map<uint64_t, uint64_t> parent;
+  std::queue<uint64_t> q;
+  std::unordered_set<uint64_t> visited;
+
+  q.push(from_id);
+  visited.insert(from_id);
+  bool found = false;
+
+  while (!q.empty() && !found) {
+    uint64_t cur = q.front(); q.pop();
+
+    const char *sql = "SELECT callee_symbol_id FROM call_edges "
+                       "WHERE project_id = ? AND caller_symbol_id = ?";
+    sqlite3_stmt *stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) continue;
+    sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+    sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(cur));
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+      uint64_t callee = static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
+      if (visited.count(callee)) continue;
+      visited.insert(callee);
+      parent[callee] = cur;
+      if (callee == to_id) { found = true; break; }
+      q.push(callee);
+    }
+    sqlite3_finalize(stmt);
+  }
+
+  if (!found) return "{\"path\":[],\"error\":\"no path found\"}";
+
+  // 3. Reconstruct path: to_id → ... → from_id
+  std::vector<uint64_t> path_ids;
+  for (uint64_t id = to_id; id != from_id; id = parent[id])
+    path_ids.push_back(id);
+  path_ids.push_back(from_id);
+  std::reverse(path_ids.begin(), path_ids.end());
+
+  // 4. Build JSON with name, file, line
+  std::ostringstream json;
+  json << "{\"path\":[";
+  bool first = true;
+  for (auto id : path_ids) {
+    if (!first) json << ",";
+    first = false;
+
+    const char *sql = "SELECT name, file_path, line FROM symbols WHERE id = ?";
+    sqlite3_stmt *stmt = nullptr;
+    std::string name, file;
+    int line = 0;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+      sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(id));
+      if (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char *n = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 0));
+        const char *f = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 1));
+        if (n) name = n;
+        if (f) file = f;
+        line = sqlite3_column_int(stmt, 2);
+      }
+      sqlite3_finalize(stmt);
+    }
+    json << "{\"name\":\"" << name << "\","
+         << "\"file\":\"" << file << "\","
+         << "\"line\":" << line << "}";
+  }
   json << "]}";
   return json.str();
 }

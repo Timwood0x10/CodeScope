@@ -270,6 +270,7 @@ Node *CTranslator::translateNode(TSNode ts_node, Node *parent) {
       strcmp(type, "compound_statement") == 0 ||
       strcmp(type, "enumerator_list") == 0 ||
       strcmp(type, "argument_list") == 0 ||
+      strcmp(type, "expression_statement") == 0 ||
       strcmp(type, "parameter_list") == 0 ||
       strcmp(type, "init_declarator") == 0 ||
       strcmp(type, "pointer_declarator") == 0 ||
@@ -354,6 +355,9 @@ Node *CTranslator::handleStruct(TSNode ts_node, Node *parent, bool is_union) {
 Node *CTranslator::handleCallExpr(TSNode ts_node, Node *parent) {
   auto *call = makeNode(NodeKind::CallExpr, ts_node);
   parent->children.push_back(call);
+  fprintf(stderr, "CALL_DBG: kind=%d name='%s' parent_kind=%d\n",
+          (int)call->kind, call->name.c_str(),
+          parent ? static_cast<int>(parent->kind) : -1);
 
   uint32_t count = ts_node_child_count(ts_node);
   for (uint32_t i = 0; i < count; i++) {

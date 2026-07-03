@@ -161,6 +161,16 @@ public:
   /** Get ratio of symbols with a status flag = 1 (0.0 - 1.0). */
   double getReadyRatio(uint64_t project_id, const char *ready_field);
 
+  // ── Path Tracing (BFS on call_edges) ──────────────────────
+
+  /**
+   * Trace the shortest call path between two functions using BFS on call_edges.
+   * Returns JSON: {"path": [{"name":"...","file":"...","line":N}, ...]}
+   * Requires callgraph_ready (enhancement must be run first).
+   */
+  std::string tracePathJson(uint64_t project_id, const char *from_name,
+                            const char *to_name);
+
   // ── Index Tasks (Tokio background task tracking) ──────────
 
   /** Create a new task record. Returns task id. */

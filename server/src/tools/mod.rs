@@ -410,6 +410,18 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
                 "properties": {}
             }),
         },
+        Tool {
+            name: "codescope_trace".into(),
+            description: "Trace the shortest call path between two functions using BFS on the call graph. Returns the full call chain with file paths and line numbers. Requires callgraph_ready (run codescope_enhance first).".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "from": {"type": "string", "description": "Source function name"},
+                    "to": {"type": "string", "description": "Target function name"}
+                },
+                "required": ["from", "to"]
+            }),
+        },
     ]
 }
 
@@ -562,6 +574,11 @@ pub fn execute(project_id: u64, tool_name: &str, args: &Value) -> String {
         "codescope_overview" => ffi::project_overview(project_id),
         "codescope_enhance" => ffi::enhance_project(project_id),
         "codescope_module_tree" => ffi::get_module_tree(project_id),
+        "codescope_trace" => {
+            let from = args["from"].as_str().unwrap_or("");
+            let to = args["to"].as_str().unwrap_or("");
+            ffi::trace_path(project_id, from, to)
+        }
 
         _ => json!({"error": "Unknown tool"}).to_string(),
     }
