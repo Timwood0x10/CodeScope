@@ -70,7 +70,8 @@ public:
 
     void insertIntoFTS(uint64_t node_id, uint64_t project_id,
                        const char* name, const char* qualified_name,
-                       const char* file_path, const char* content);
+                       const char* file_path, const char* content,
+                       int node_kind = -1);
     void deleteFTSByFile(uint64_t project_id, uint64_t file_id);
 
     // ── Complexity ───────────────────────────────────────────────

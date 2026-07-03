@@ -2,14 +2,13 @@
 
 namespace graph {
 
-GraphBuilder::GraphBuilder(uint64_t project_id)
-    : project_id_(project_id) {}
+GraphBuilder::GraphBuilder(uint64_t project_id, uint64_t start_node_id)
+    : project_id_(project_id), next_node_id_(start_node_id) {}
 
 CodeGraph GraphBuilder::buildSymbolGraph(ir::TranslationUnit* unit) {
     current_graph_ = CodeGraph{};
     current_graph_.graph_type = "symbol_reference";
     current_graph_.name = "symbol-graph";
-    next_node_id_ = 1;
     next_edge_id_ = 1;
     ir_to_graph_node_.clear();
     function_stack_.clear();
@@ -23,7 +22,6 @@ CodeGraph GraphBuilder::buildCallGraph(ir::TranslationUnit* unit) {
     current_graph_ = CodeGraph{};
     current_graph_.graph_type = "call_graph";
     current_graph_.name = "call-graph";
-    next_node_id_ = 1;
     next_edge_id_ = 1;
     ir_to_graph_node_.clear();
     function_stack_.clear();

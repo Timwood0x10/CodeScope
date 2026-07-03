@@ -9,6 +9,7 @@
 #include "lsp/lsp_client.h"
 
 #include <tree_sitter/api.h>
+#include <sqlite3.h>
 #include <cstring>
 #include <string>
 #include <sstream>
@@ -217,7 +218,8 @@ char* engine_index_file(uint64_t project_id, const char* file_path) {
         const char* fts_qn   = node->qualified_name.empty() ? nullptr : node->qualified_name.c_str();
         const char* fts_comment = node->doc_comment.empty() ? nullptr : node->doc_comment.c_str();
         if (fts_name || fts_qn || fts_comment) {
-            g_store->insertIntoFTS(db_id, project_id, fts_name, fts_qn, file_path, fts_comment);
+            g_store->insertIntoFTS(db_id, project_id, fts_name, fts_qn, file_path, fts_comment,
+                                   static_cast<int>(node->kind));
         }
     }
 
@@ -233,8 +235,20 @@ char* engine_index_file(uint64_t project_id, const char* file_path) {
         }
     }
 
-    // Build graph from IR
-    graph::GraphBuilder builder(project_id);
+    // Build graph from IR — use unique node IDs across all projects
+    uint64_t start_node_id = 1;
+    {
+        sqlite3_stmt* stmt = nullptr;
+        // graph_nodes.id is globally unique (INTEGER PRIMARY KEY), so query ALL projects
+        const char* sql = "SELECT COALESCE(MAX(id), 0) + 1 FROM graph_nodes";
+        if (sqlite3_prepare_v2(g_store->handle(), sql, -1, &stmt, nullptr) == SQLITE_OK) {
+            if (sqlite3_step(stmt) == SQLITE_ROW) {
+                start_node_id = static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
+            }
+            sqlite3_finalize(stmt);
+        }
+    }
+    graph::GraphBuilder builder(project_id, start_node_id);
     auto symbol_graph = builder.buildSymbolGraph(unit);
     auto call_graph   = builder.buildCallGraph(unit);
 

@@ -13,7 +13,7 @@ namespace graph {
 
 class GraphBuilder : public ir::Visitor {
 public:
-    explicit GraphBuilder(uint64_t project_id);
+    explicit GraphBuilder(uint64_t project_id, uint64_t start_node_id = 1);
 
     // Build both graphs from a single IR unit.
     CodeGraph buildSymbolGraph(ir::TranslationUnit* unit);

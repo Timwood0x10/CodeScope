@@ -4,69 +4,63 @@
 
 ## Architecture
 
-```
-AI Client (Claude Desktop, Cursor, etc.)
-    │
-    │ MCP stdio (JSON-RPC 2.0)
-    ▼
-┌─────────────────────────────┐
-│  Rust MCP Server             │
-│  - MCP protocol handler      │
-│  - Tool definitions + dispatch│
-│  - C FFI bridge to engine    │
-└──────────────┬──────────────┘
-               │ C FFI
-               ▼
-┌─────────────────────────────┐
-│  C++ Core Engine             │
-│  - tree-sitter parser (8 langs)│
-│  - Unified AST IR            │
-│  - Graph builder             │
-│  - SQLite store              │
-│  - Query engine              │
-└─────────────────────────────┘
+```mermaid
+graph TB
+    Client["AI Client<br/>(Claude Desktop, Cursor, etc.)"]
+    Server["Rust MCP Server<br/>(protocol / tools / FFI)"]
+    Engine["C++ Core Engine<br/>(parser / IR / graph / store / query)"]
+
+    Client -->|"MCP stdio (JSON-RPC 2.0)"| Server
+    Server -->|"C FFI"| Engine
 ```
 
 **Data flow:**
-```
-Source Code → tree-sitter CST → Unified AST IR → Code Graph → SQLite Store → Query Engine → MCP Tools
+
+```mermaid
+flowchart LR
+    A["Source Code"] --> B["tree-sitter CST"]
+    B --> C["Unified AST IR"]
+    C --> D["Code Graph"]
+    D --> E["SQLite Store"]
+    E --> F["Query Engine"]
+    F --> G["MCP Tools"]
 ```
 
 ## Features
 
 ### 14 MCP Tools
 
-| Category | Tool | Description |
-|----------|------|-------------|
-| **Core** (11) | `find_definition` | Locate symbol definition |
-| | `find_references` | Find all references to a symbol |
-| | `get_callers` | Get functions that call a given function |
-| | `get_callees` | Get functions called by a given function |
-| | `get_neighbors` | Get neighbor nodes in the graph |
-| | `find_shortest_path` | Find shortest path between two nodes |
-| | `get_subgraph` | Extract subgraph centered on a node |
-| | `locate_code` | Locate code entity in source file |
-| | `index_project` | Index an entire project directory |
-| | `index_file` | Index a single source file |
-| | `get_graph_stats` | Get code graph statistics |
-| **Search** | `search_code` | FTS5 full-text search (prefix matching) |
-| **Analysis** | `get_complexity` | Cyclomatic complexity + nesting depth |
-| | `graph_query` | Cypher-like DSL: `MATCH (Func)-[Calls]->(Func)` |
-| | `detect_changes` | Change impact analysis (callers/callees of modified files) |
-| | `get_communities` | Label-propagation community detection |
+| Category      | Tool                 | Description                                                |
+| ------------- | -------------------- | ---------------------------------------------------------- |
+| **Core** (11) | `find_definition`    | Locate symbol definition                                   |
+| <br />        | `find_references`    | Find all references to a symbol                            |
+| <br />        | `get_callers`        | Get functions that call a given function                   |
+| <br />        | `get_callees`        | Get functions called by a given function                   |
+| <br />        | `get_neighbors`      | Get neighbor nodes in the graph                            |
+| <br />        | `find_shortest_path` | Find shortest path between two nodes                       |
+| <br />        | `get_subgraph`       | Extract subgraph centered on a node                        |
+| <br />        | `locate_code`        | Locate code entity in source file                          |
+| <br />        | `index_project`      | Index an entire project directory                          |
+| <br />        | `index_file`         | Index a single source file                                 |
+| <br />        | `get_graph_stats`    | Get code graph statistics                                  |
+| **Search**    | `search_code`        | FTS5 full-text search (prefix matching)                    |
+| **Analysis**  | `get_complexity`     | Cyclomatic complexity + nesting depth                      |
+| <br />        | `graph_query`        | Cypher-like DSL: `MATCH (Func)-[Calls]->(Func)`            |
+| <br />        | `detect_changes`     | Change impact analysis (callers/callees of modified files) |
+| <br />        | `get_communities`    | Label-propagation community detection                      |
 
 ### Supported Languages (8)
 
-| Language | Parser | IR Translator | Verified |
-|----------|--------|---------------|----------|
-| Python | ✅ | ✅ | ✅ |
-| Go | ✅ | ✅ | ✅ |
-| C | ✅ | ✅ | ✅ |
-| C++ | ✅ | ✅ | ✅ |
-| Rust | ✅ | ✅ | ✅ |
-| JavaScript | ✅ | ✅ | ✅ |
-| TypeScript | ✅ | ✅ | ✅ |
-| Java | ✅ | ✅ | ✅ |
+| Language   | Parser | IR Translator | Verified |
+| ---------- | ------ | ------------- | -------- |
+| Python     | ✅      | ✅             | ✅        |
+| Go         | ✅      | ✅             | ✅        |
+| C          | ✅      | ✅             | ✅        |
+| C++        | ✅      | ✅             | ✅        |
+| Rust       | ✅      | ✅             | ✅        |
+| JavaScript | ✅      | ✅             | ✅        |
+| TypeScript | ✅      | ✅             | ✅        |
+| Java       | ✅      | ✅             | ✅        |
 
 ### Graph Capabilities
 
@@ -80,6 +74,7 @@ Source Code → tree-sitter CST → Unified AST IR → Code Graph → SQLite Sto
 ## Quick Start
 
 ### Prerequisites
+
 - Rust 2024 Edition + 1.85+ (`cargo`)
 - CMake 3.30+, C++23 compiler (Clang 17+)
 - SQLite3 (dev packages)
@@ -110,6 +105,7 @@ cargo run --bin ast-graph-mcp
 ### As a Claude Desktop MCP server
 
 Add to your `claude_desktop_config.json`:
+
 ```json
 {
   "mcpServers": {
@@ -127,73 +123,42 @@ Add to your `claude_desktop_config.json`:
 
 ### Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ASTGRAPH_DB_PATH` | `/tmp/astgraph.db` | SQLite database path |
-| `GRAMMARS_DIR` | `grammars/` | Grammar .so files directory |
-| `CODESCOPE_LSP` | (unset) | LSP server for type enhancement (e.g. `pylsp`) |
+| Variable           | Default            | Description                                    |
+| ------------------ | ------------------ | ---------------------------------------------- |
+| `ASTGRAPH_DB_PATH` | `/tmp/astgraph.db` | SQLite database path                           |
+| `GRAMMARS_DIR`     | `grammars/`        | Grammar .so files directory                    |
+| `CODESCOPE_LSP`    | (unset)            | LSP server for type enhancement (e.g. `pylsp`) |
 
 ## Token Savings
 
-Using code graphs instead of raw source files saves **~98.8% tokens** on average across 5 common query scenarios:
+Using code graphs instead of raw source files saves **\~98.8% tokens** on average across 5 common query scenarios:
 
-| Scenario | Graph (tokens) | Raw (tokens) | Savings |
-|----------|---------------|-------------|---------|
-| Find function definition | ~21 | ~2,265 | **99.1%** |
-| Trace callers | ~18 | ~2,000 | **99.1%** |
-| Architecture overview | ~32 | ~1,875 | **98.3%** |
-| Function analysis | ~43 | ~4,733 | **99.1%** |
-| Symbol search | ~23 | ~958 | **97.6%** |
+| Scenario                 | Graph (tokens) | Raw (tokens) | Savings   |
+| ------------------------ | -------------- | ------------ | --------- |
+| Find function definition | \~21           | \~2,265      | **99.1%** |
+| Trace callers            | \~18           | \~2,000      | **99.1%** |
+| Architecture overview    | \~32           | \~1,875      | **98.3%** |
+| Function analysis        | \~43           | \~4,733      | **99.1%** |
+| Symbol search            | \~23           | \~958        | **97.6%** |
 
 ## Comparison with codebase-memory-mcp
 
-| Aspect | CodeScope | codebase-memory-mcp |
-|--------|-----------|---------------------|
-| **Backend** | SQLite (embedded) | Neo4j (external service) |
-| **Deployment** | Single binary | Neo4j + configuration |
-| **Search** | FTS5 prefix matching | BM25 + vector semantic search |
-| **Graph query** | Minimal DSL | Full Cypher |
-| **Type info** | Optional LSP enhancement | LSP-aware |
-| **Complexity** | Cyclomatic + nesting | Cyclomatic + cognitive + hotspots |
-| **Community detection** | Label propagation | Leiden algorithm |
-| **Cross-repo** | ❌ | ✅ |
-| **ADR management** | ❌ | ✅ |
-| **Dependencies** | Zero external | Neo4j |
+| Aspect                  | CodeScope                | codebase-memory-mcp               |
+| ----------------------- | ------------------------ | --------------------------------- |
+| **Backend**             | SQLite (embedded)        | Neo4j (external service)          |
+| **Deployment**          | Single binary            | Neo4j + configuration             |
+| **Search**              | FTS5 prefix matching     | BM25 + vector semantic search     |
+| **Graph query**         | Minimal DSL              | Full Cypher                       |
+| **Type info**           | Optional LSP enhancement | LSP-aware                         |
+| **Complexity**          | Cyclomatic + nesting     | Cyclomatic + cognitive + hotspots |
+| **Community detection** | Label propagation        | Leiden algorithm                  |
+| **Cross-repo**          | ❌                        | ✅                                 |
+| **ADR management**      | ❌                        | ✅                                 |
+| **Dependencies**        | Zero external            | Neo4j                             |
 
 **CodeScope's edge**: Zero-dependency deployment, unified IR layer, portability.
 **codebase-memory-mcp's edge**: Richer queries, semantic search, type-aware parsing.
 
-## Roadmap
-
-See [plan/roadmap.md](plan/roadmap.md) for detailed status.
-
-## Development
-
-### Project Structure
-
-```
-server/         Rust MCP server (protocol, tools, FFI)
-engine/         C++ core engine
-  src/parser/   tree-sitter parser wrapper
-  src/ir/       Unified AST IR + translators
-  src/graph/    Code graph builder
-  src/store/    SQLite persistence
-  src/query/    Query engine + DSL
-  src/lsp/      LSP client for type enhancement
-grammars/       tree-sitter grammar .so files
-plan/           Design docs + roadmap
-tests/          Integration tests
-```
-
-### Coding Standards
-
-- File limit: 1000 lines max
-- Comments: English only
-- Rust: rustfmt + clippy
-- C++: Google C++ Style Guide, C++23
-- Memory: RAII, no raw new/delete
-- FFI: explicit ownership docs on every function
-
 ## License
 
-MIT
+Apache 2.0

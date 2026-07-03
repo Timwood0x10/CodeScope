@@ -120,6 +120,7 @@ bool GraphStore::createSchema() {
             name, qualified_name, file_path, content,
             project_id UNINDEXED,
             node_id UNINDEXED,
+            node_kind UNINDEXED,
             tokenize='unicode61'
         );
 
@@ -351,12 +352,14 @@ bool GraphStore::rollbackTransaction(){ return exec("ROLLBACK"); }
 
 void GraphStore::insertIntoFTS(uint64_t node_id, uint64_t project_id,
                                const char* name, const char* qualified_name,
-                               const char* file_path, const char* content) {
+                               const char* file_path, const char* content,
+                               int node_kind) {
     // Skip empty entries
     if ((!name || !*name) && (!qualified_name || !*qualified_name)
         && (!file_path || !*file_path) && (!content || !*content)) {
         return;
     }
+    if (node_kind < 0) node_kind = 0;
 
     // Update mapping table
     {
@@ -370,12 +373,12 @@ void GraphStore::insertIntoFTS(uint64_t node_id, uint64_t project_id,
         sqlite3_finalize(stmt);
     }
 
-    // Insert into FTS5 (content table — rowid matches node_id)
+    // Insert into FTS5
     {
         sqlite3_stmt* stmt = nullptr;
         const char* sql = "INSERT OR REPLACE INTO code_fts (rowid, name, qualified_name, "
-                           "file_path, content, project_id, node_id) "
-                           "VALUES (?, ?, ?, ?, ?, ?, ?)";
+                           "file_path, content, project_id, node_id, node_kind) "
+                           "VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
         sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
         sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(node_id));
         sqlite3_bind_text(stmt,  2, name ? name : "", -1, SQLITE_TRANSIENT);
@@ -384,6 +387,7 @@ void GraphStore::insertIntoFTS(uint64_t node_id, uint64_t project_id,
         sqlite3_bind_text(stmt,  5, content ? content : "", -1, SQLITE_TRANSIENT);
         sqlite3_bind_int64(stmt, 6, static_cast<int64_t>(project_id));
         sqlite3_bind_int64(stmt, 7, static_cast<int64_t>(node_id));
+        sqlite3_bind_int(stmt,   8, node_kind);
         sqlite3_step(stmt);
         sqlite3_finalize(stmt);
     }
@@ -423,7 +427,9 @@ std::string GraphStore::searchCode(uint64_t project_id, const char* query, int l
                        "JOIN ir_nodes ir ON ir.id = code_fts.node_id "
                        "JOIN files f ON f.id = ir.file_id "
                        "WHERE code_fts MATCH ? AND code_fts.project_id = ? "
-                       "ORDER BY rank "
+                       "ORDER BY "
+                       "  CASE WHEN ir.kind IN (2,3,4) THEN 0 ELSE 1 END, "  // FunctionDecl(2)/ClassDecl(3)/MethodDecl(4) first
+                       "  rank "
                        "LIMIT ?";
 
     if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
