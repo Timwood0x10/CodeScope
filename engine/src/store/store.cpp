@@ -279,16 +279,33 @@ bool GraphStore::createSchema() {
         CREATE TRIGGER IF NOT EXISTS trg_symbols_delete AFTER DELETE ON symbols BEGIN
             DELETE FROM search_index WHERE symbol_id = old.id;
         END;
-
-        -- Embeddings table (sqlite-vec vec0)
-        -- Requires sqlite-vec extension; falls back gracefully if not available
-        CREATE VIRTUAL TABLE IF NOT EXISTS embeddings USING vec0(
-            symbol_id INTEGER PRIMARY KEY,
-            vector FLOAT[384]
-        );
     )SQL";
 
-  return exec(schema);
+  // Execute main schema
+  bool ok = exec(schema);
+
+  // Try to create vec0 embeddings table (sqlite-vec extension, may not be
+  // available) This is optional — if it fails, embeddings just won't be stored.
+  {
+    char *err = nullptr;
+    int rc =
+        sqlite3_exec(db_,
+                     "CREATE VIRTUAL TABLE IF NOT EXISTS embeddings USING vec0("
+                     "    symbol_id INTEGER PRIMARY KEY,"
+                     "    vector FLOAT[384]"
+                     ");",
+                     nullptr, nullptr, &err);
+    if (rc != SQLITE_OK) {
+      // sqlite-vec not available — embeddings will use search_index FTS
+      // fallback
+      fprintf(stderr,
+              "store: vec0 table not available (sqlite-vec not loaded): %s\n",
+              err ? err : "");
+      sqlite3_free(err);
+    }
+  }
+
+  return ok;
 }
 
 // ─── Utility ───────────────────────────────────────────────────

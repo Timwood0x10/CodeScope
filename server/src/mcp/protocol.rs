@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 #[serde(untagged)]
 pub enum Request {
     Standard {
+        #[allow(dead_code)]
         jsonrpc: String,
         id: serde_json::Value,
         method: String,
@@ -13,6 +14,7 @@ pub enum Request {
         params: Option<serde_json::Value>,
     },
     Notification {
+        #[allow(dead_code)]
         jsonrpc: String,
         method: String,
         #[serde(default)]

@@ -8,7 +8,10 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # ── Dependencies ────────────────────────────────────────────────
 find_package(PkgConfig)
 
-pkg_check_modules(SQLITE3 REQUIRED sqlite3)
+# Force homebrew sqlite3 (supports extension loading with SQLITE_ENABLE_LOAD_EXTENSION)
+set(SQLITE3_INCLUDE_DIRS "/opt/homebrew/Cellar/sqlite/3.53.3/include")
+set(SQLITE3_LIBRARY_DIRS "/opt/homebrew/Cellar/sqlite/3.53.3/lib")
+set(SQLITE3_LIBRARIES "sqlite3")
 
 # tree-sitter is linked dynamically (the core lib)
 pkg_check_modules(TREE_SITTER REQUIRED tree-sitter)
@@ -45,6 +48,9 @@ set(ENGINE_SOURCES
 )
 
 add_library(astgraph_engine STATIC ${ENGINE_SOURCES})
+
+# Enable sqlite3 extension loading (required for sqlite-vec)
+target_compile_definitions(astgraph_engine PUBLIC SQLITE_ENABLE_LOAD_EXTENSION)
 
 target_include_directories(astgraph_engine PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include

@@ -125,7 +125,7 @@ pub fn index_project(project_id: u64, dir_path: &str, language_filter: *const c_
 }
 
 pub fn find_definition(project_id: u64, symbol_name: &str, file_filter: Option<&str>) -> String {
-    let ff = file_filter.map(|s| cstr(s));
+    let ff = file_filter.map(cstr);
     take_string(unsafe {
         engine_find_definition(
             project_id,
@@ -136,7 +136,7 @@ pub fn find_definition(project_id: u64, symbol_name: &str, file_filter: Option<&
 }
 
 pub fn find_references(project_id: u64, symbol_name: &str, file_filter: Option<&str>) -> String {
-    let ff = file_filter.map(|s| cstr(s));
+    let ff = file_filter.map(cstr);
     take_string(unsafe {
         engine_find_references(
             project_id,
@@ -169,8 +169,8 @@ pub fn get_subgraph(
     node_type_filter: Option<&str>,
     edge_type_filter: Option<&str>,
 ) -> String {
-    let nf = node_type_filter.map(|s| cstr(s));
-    let ef = edge_type_filter.map(|s| cstr(s));
+    let nf = node_type_filter.map(cstr);
+    let ef = edge_type_filter.map(cstr);
     take_string(unsafe {
         engine_get_subgraph(
             project_id,
@@ -229,7 +229,7 @@ pub fn get_hotspots(project_id: u64, top_n: i32) -> String {
 // ── Phase A: Fast Scan ────────────────────────────────────────
 
 pub fn scan_project(project_id: u64, dir_path: &str, language_filter: Option<&str>) -> String {
-    let lf = language_filter.map(|s| cstr(s));
+    let lf = language_filter.map(cstr);
     take_string(unsafe {
         engine_scan_project(
             project_id,
@@ -301,7 +301,7 @@ pub fn spawn_enhancement(project_id: u64) {
     }
 
     // Create a task record via FFI
-    let task_json = take_string(unsafe { engine_get_enhancement_status(project_id) });
+    let _task_json = take_string(unsafe { engine_get_enhancement_status(project_id) });
     eprintln!("enhancement: creating task for project {}", project_id);
 
     RUNTIME.spawn(async move {

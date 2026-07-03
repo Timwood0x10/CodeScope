@@ -64,7 +64,10 @@ build-grammars:
 		&& printf "  $(CHECK) grammars built\n" \
 		|| printf "  $(YELLOW)⚠ grammars: some languages skipped\n"
 
-ENGINE_CMAKE_FLAGS := -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=ON
+ENGINE_CMAKE_FLAGS := -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+                       -DCMAKE_C_COMPILER=/opt/homebrew/opt/llvm@21/bin/clang \
+                       -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm@21/bin/clang++ \
+                       -DCMAKE_OSX_SYSROOT=$(shell xcrun --show-sdk-path)
 ENGINE_LIB         := $(BUILD_DIR)/libastgraph_engine.a
 
 $(BUILD_DIR):
@@ -96,10 +99,17 @@ test-engine: $(ENGINE_LIB)
 	@printf "$(CYAN)[test/engine]$(RESET) Building and running C++ tests...\n"
 	@rm -f $(TEST_DB)
 	@cd $(BUILD_DIR) && cmake --build . -j$$(nproc 2>/dev/null || sysctl -n hw.ncpu) 2>&1 | grep -E "(error|Error|Building|Linking)" || true
-	@for test in $(TEST_EXES); do \
+	@failed=0; \
+	for test in $(TEST_EXES); do \
 		printf "  Running $$test...\n"; \
-		$(BUILD_DIR)/$$test 2>&1 && printf "  $(CHECK) $$test passed\n" || printf "  $(CROSS) $$test failed\n"; \
-	done
+		if $(BUILD_DIR)/$$test 2>&1; then \
+			printf "  $(CHECK) $$test passed\n"; \
+		else \
+			printf "  $(CROSS) $$test failed\n"; \
+			failed=1; \
+		fi; \
+	done; \
+	exit $$failed
 
 test-bench: $(ENGINE_LIB)
 	@printf "$(CYAN)[test/bench]$(RESET) Building benchmark...\n"
@@ -107,8 +117,8 @@ test-bench: $(ENGINE_LIB)
 	@printf "  Run with: $(BUILD_DIR)/test_bench <source_file.go|source_file.py>\n"
 
 test-server:
-	@printf "$(CYAN)[test/server]$(RESET) Running Rust cargo test...\n"
-	@cd $(SERVER_DIR) && cargo test 2>&1
+	@printf "$(CYAN)[test/server]$(RESET) Running Rust cargo nextest...\n"
+	@cd $(SERVER_DIR) && cargo nextest run --no-tests=pass 2>&1
 
 test-savings:
 	@printf "$(CYAN)[test/savings]$(RESET) Running token savings integration test...\n"
@@ -121,19 +131,20 @@ LINT_CPP_FILES := $(shell find $(ENGINE_DIR)/src -name '*.cpp' -o -name '*.h' | 
 lint: lint-cpp lint-rust
 	@printf "$(CHECK) lint complete\n"
 
-lint-cpp:
+lint-cpp: $(BUILD_DIR)/compile_commands.json
 	@printf "$(CYAN)[lint/cpp]$(RESET) Running clang-format check...\n"
 	@clang-format --dry-run --Werror $(LINT_CPP_FILES) 2>&1 \
-		&& printf "  $(CHECK) clang-format: ok\n" \
-		|| printf "  $(YELLOW)⚠ clang-format: run 'make fmt-cpp' to fix\n"
+		&& printf "  $(CHECK) clang-format: ok\n"
 	@printf "$(CYAN)[lint/cpp]$(RESET) Running clang-tidy...\n"
-	@cd $(ENGINE_DIR) && run-clang-tidy -p build 2>&1 | tail -5 || true
+	@cd $(ENGINE_DIR) && run-clang-tidy -p build 2>&1 | tail -5
+
+$(BUILD_DIR)/compile_commands.json: $(BUILD_DIR)/Makefile
+	@printf "$(CYAN)[engine]$(RESET) Generating compile_commands.json...\n"
 
 lint-rust:
 	@printf "$(CYAN)[lint/rust]$(RESET) Running cargo clippy...\n"
 	@cd $(SERVER_DIR) && cargo clippy --all-targets -- -D warnings 2>&1 \
-		&& printf "  $(CHECK) clippy: ok\n" \
-		|| printf "  $(CROSS) clippy found issues\n"
+		&& printf "  $(CHECK) clippy: ok\n"
 
 # ─── Format ───────────────────────────────────────────────────────
 fmt: fmt-cpp fmt-rust
@@ -150,7 +161,7 @@ fmt-rust:
 	@printf "  $(CHECK) done\n"
 
 # ─── Check (CI) ──────────────────────────────────────────────────
-check: lint test
+check: build lint test-server
 	@printf "$(CHECK) check complete\n"
 
 # ─── Clean ───────────────────────────────────────────────────────

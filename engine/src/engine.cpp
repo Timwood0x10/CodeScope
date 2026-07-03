@@ -21,6 +21,13 @@
 #include <unordered_map>
 #include <vector>
 
+// ─── C-linkage SQLite extension loading (provided by Homebrew sqlite3) ──
+extern "C" {
+int sqlite3_enable_load_extension(sqlite3 *, int onoff);
+int sqlite3_load_extension(sqlite3 *, const char *zFile, const char *zProc,
+                           char **pzErrMsg);
+}
+
 // ─── Global singletons ─────────────────────────────────────────
 
 static store::GraphStore *g_store = nullptr;
@@ -136,6 +143,34 @@ int engine_init(const char *db_path) {
   for (auto lang : langs) {
     std::string path = base + "/tree-sitter-" + lang + ".so";
     g_parser->registerLanguage(lang, path.c_str());
+  }
+
+  // Try to load sqlite-vec extension for vector embeddings
+  {
+    std::string vec_path = base + "/vec0.dylib";
+    sqlite3 *db = g_store->handle();
+    sqlite3_enable_load_extension(db, 1);
+    char *ext_err = nullptr;
+    int rc = sqlite3_load_extension(db, vec_path.c_str(), nullptr, &ext_err);
+    if (rc == SQLITE_OK) {
+      // Try creating the embeddings table now that the extension is loaded
+      char *sql_err = nullptr;
+      sqlite3_exec(db,
+                   "CREATE VIRTUAL TABLE IF NOT EXISTS embeddings USING vec0("
+                   "    symbol_id INTEGER PRIMARY KEY,"
+                   "    vector FLOAT[384]"
+                   ");",
+                   nullptr, nullptr, &sql_err);
+      if (sql_err)
+        sqlite3_free(sql_err);
+      fprintf(stderr, "engine: sqlite-vec loaded from %s\n", vec_path.c_str());
+    } else {
+      fprintf(stderr, "engine: sqlite-vec not available (%s)\n",
+              ext_err ? ext_err : "extension loading not supported");
+    }
+    if (ext_err)
+      sqlite3_free(ext_err);
+    sqlite3_enable_load_extension(db, 0);
   }
 
   return 0;
@@ -471,7 +506,8 @@ static inline std::string_view trimLeft(std::string_view s) {
   return s;
 }
 
-// Check if a line starts with a keyword (after whitespace)
+// Check if a line starts with a keyword (after whitespace).
+// If kw ends with a space, the space itself is the word boundary.
 static inline bool startsWithKW(std::string_view line, const char *kw) {
   line = trimLeft(line);
   auto klen = std::strlen(kw);
@@ -479,10 +515,14 @@ static inline bool startsWithKW(std::string_view line, const char *kw) {
     return false;
   if (line.substr(0, klen) != kw)
     return false;
-  // Keyword must be followed by space, (, <, or end (not another letter)
   if (line.size() > klen) {
     char c = line[klen];
-    return (c == ' ' || c == '(' || c == '<' || c == '\t' || c == '{');
+    // If kw ends with space, the space was the delimiter — any char is valid
+    if (klen > 0 && kw[klen - 1] == ' ')
+      return true;
+    // Otherwise, keyword must be followed by a non-word character
+    return (c == ' ' || c == '(' || c == '<' || c == '\t' || c == '{' ||
+            c == '[' || c == ':' || c == ';');
   }
   return true;
 }
@@ -867,6 +907,141 @@ static std::string entryPointKind(const std::string &name) {
 
 } // anonymous namespace
 
+// ─── Gitignore pattern matcher ─────────────────────────────────
+
+namespace {
+
+// Simple glob-style gitignore pattern matcher
+struct GitignoreRule {
+  std::string pattern;  // raw pattern (after stripping ! and trailing /)
+  bool negate = false;  // starts with '!'
+  bool dir_only = false; // ends with '/'
+  bool anchored = false; // starts with '/'
+  bool has_star = false; // contains * or **
+};
+
+class Gitignore {
+public:
+  // Load patterns from a .gitignore file (returns empty rules if file missing)
+  static std::vector<GitignoreRule> load(const std::string &filepath) {
+    std::vector<GitignoreRule> rules;
+    std::ifstream f(filepath);
+    if (!f) return rules;
+
+    std::string line;
+    while (std::getline(f, line)) {
+      // Trim whitespace
+      auto start = line.find_first_not_of(" \t\r");
+      if (start == std::string::npos) continue;
+      auto end = line.find_last_not_of(" \t\r");
+      line = line.substr(start, end - start + 1);
+
+      if (line.empty() || line[0] == '#') continue;
+
+      GitignoreRule rule;
+      // Negation
+      if (line[0] == '!') {
+        rule.negate = true;
+        line = line.substr(1);
+      }
+      // Directory-only
+      if (!line.empty() && line.back() == '/') {
+        rule.dir_only = true;
+        line.pop_back();
+      }
+      // Anchored
+      if (!line.empty() && line[0] == '/') {
+        rule.anchored = true;
+        line = line.substr(1);
+      }
+      // Check for glob wildcards
+      rule.has_star = (line.find('*') != std::string::npos);
+      rule.pattern = line;
+      if (!rule.pattern.empty()) rules.push_back(std::move(rule));
+    }
+    return rules;
+  }
+
+  // Check if a path (relative to gitignore dir) matches any pattern
+  static bool matches(const std::vector<GitignoreRule> &rules,
+                      const std::string &rel_path, bool is_dir) {
+    bool ignored = false;
+    // Partition: simple patterns first (no stars) for fast path
+    for (const auto &r : rules) {
+      // Directory-only rule doesn't apply to files
+      if (r.dir_only && !is_dir) continue;
+
+      bool match = false;
+      if (r.has_star) {
+        match = globMatch(r.pattern, rel_path);
+      } else {
+        // Simple literal match — fast path
+        if (r.anchored) {
+          match = (rel_path == r.pattern);
+        } else {
+          // Check as suffix (last component or directory)
+          auto pos = rel_path.rfind(r.pattern);
+          if (pos != std::string::npos) {
+            auto after = pos + r.pattern.size();
+            match = (after == rel_path.size() || rel_path[after] == '/');
+            // Also match if it's the entire last path component
+            if (!match && pos > 0 && rel_path[pos - 1] == '/')
+              match = (after == rel_path.size() || rel_path[after] == '/');
+          }
+        }
+      }
+
+      if (match) {
+        ignored = !r.negate;
+        // If this is a positive match and not negated, we can stop early
+        if (!r.negate) break;
+      }
+    }
+    return ignored;
+  }
+
+private:
+  // Simple glob: * matches any chars except /, ** matches any chars
+  static bool globMatch(const std::string &pattern, const std::string &str) {
+    // Use recursive matching
+    auto pi = pattern.begin(), si = str.begin();
+    return globImpl(pattern, str, pi, si);
+  }
+
+  static bool globImpl(const std::string &p, const std::string &s,
+                       std::string::const_iterator pi,
+                       std::string::const_iterator si) {
+    while (pi != p.end()) {
+      if (*pi == '*') {
+        // ** matches anything
+        if (pi + 1 != p.end() && *(pi + 1) == '*') {
+          pi += 2; // skip "**"
+          // **/ or /** - match any depth
+          if (pi != p.end() && *pi == '/') pi++;
+          // Try matching rest of pattern at every position
+          while (si != s.end()) {
+            if (globImpl(p, s, pi, si)) return true;
+            ++si;
+          }
+          return globImpl(p, s, pi, si);
+        }
+        // * matches anything except /
+        while (si != s.end() && *si != '/') {
+          if (globImpl(p, s, pi + 1, si)) return true;
+          ++si;
+        }
+        return globImpl(p, s, pi + 1, si);
+      }
+      if (si == s.end()) return false;
+      if (*pi != *si && *pi != '?') return false;
+      ++pi; ++si;
+    }
+    return (si == s.end());
+  }
+};
+
+} // anonymous namespace
+
 // ─── Phase A: engine_scan_project ──────────────────────────────
 
 char *engine_scan_project(uint64_t project_id, const char *dir_path,
@@ -906,22 +1081,53 @@ char *engine_scan_project(uint64_t project_id, const char *dir_path,
 
   // Walk directory tree
   try {
-    for (auto &entry : std::filesystem::recursive_directory_iterator(
-             dir, std::filesystem::directory_options::skip_permission_denied)) {
-      if (entry.is_regular_file()) {
-        std::string file_path = entry.path().string();
+    // Load .gitignore patterns from project root
+    std::string gitignore_path = dir + "/.gitignore";
+    auto gitignore_rules = Gitignore::load(gitignore_path);
+
+    auto it = std::filesystem::recursive_directory_iterator(
+        dir, std::filesystem::directory_options::skip_permission_denied);
+    auto end = std::filesystem::end(it);
+    while (it != end) {
+      // Compute path relative to project root for gitignore matching
+      std::string rel_path = it->path().string();
+      if (rel_path.size() > dir.size() + 1)
+        rel_path = rel_path.substr(dir.size() + 1); // strip root + '/'
+      else
+        rel_path.clear();
+
+      // Skip files/dirs matching .gitignore (unless !negated)
+      if (!rel_path.empty()) {
+        bool is_dir = it->is_directory();
+        bool ignore = Gitignore::matches(gitignore_rules, rel_path, is_dir);
+        if (ignore && is_dir) {
+          it.disable_recursion_pending();
+          ++it;
+          continue;
+        }
+        if (ignore) {
+          ++it;
+          continue;
+        }
+      }
+      if (it->is_regular_file()) {
+        std::string file_path = it->path().string();
         const char *lang = detectLanguage(file_path.c_str());
-        if (!lang)
+        if (!lang) {
+          ++it;
           continue;
-        if (!lang_filter.empty() && lang != lang_filter)
+        }
+        if (!lang_filter.empty() && lang != lang_filter) {
+          ++it;
           continue;
+        }
 
         // Ensure parent module exists
-        std::string parent_dir = entry.path().parent_path().string();
-        auto it = module_path_map.find(parent_dir);
+        std::string parent_dir = it->path().parent_path().string();
+        auto mod_it = module_path_map.find(parent_dir);
         uint64_t parent_mod_id = root_module_id;
-        if (it != module_path_map.end()) {
-          parent_mod_id = it->second;
+        if (mod_it != module_path_map.end()) {
+          parent_mod_id = mod_it->second;
         } else {
           // Create module chain for this directory
           std::filesystem::path p(parent_dir);
@@ -1031,22 +1237,23 @@ char *engine_scan_project(uint64_t project_id, const char *dir_path,
             }
           }
         }
-      } else if (entry.is_directory()) {
+      } else if (it->is_directory()) {
         // Pre-populate module path for this directory
-        std::string dir_path_str = entry.path().string();
+        std::string dir_path_str = it->path().string();
         if (module_path_map.count(dir_path_str) == 0) {
-          auto parent = entry.path().parent_path();
+          auto parent = it->path().parent_path();
           uint64_t parent_id = root_module_id;
           auto pit = module_path_map.find(parent.string());
           if (pit != module_path_map.end()) {
             parent_id = pit->second;
           }
           uint64_t mod_id = g_store->insertModule(
-              project_id, parent_id, entry.path().filename().string().c_str(),
+              project_id, parent_id, it->path().filename().string().c_str(),
               dir_path_str.c_str(), "");
           module_path_map[dir_path_str] = mod_id;
         }
       }
+      ++it;
     }
   } catch (const std::exception &e) {
     g_store->rollbackTransaction();
@@ -1443,10 +1650,12 @@ char *engine_get_enhancement_status(uint64_t project_id) {
   auto db = g_store->handle();
   const char *sql = "SELECT "
                     "COUNT(*) as total, "
-                    "SUM(callgraph_ready) as cg_ready, "
-                    "SUM(cfg_ready) as cfg, "
-                    "SUM(embedding_ready) as emb "
-                    "FROM symbols WHERE project_id = ?";
+                    "COALESCE(SUM(ss.callgraph_ready),0), "
+                    "COALESCE(SUM(ss.metrics_ready),0), "
+                    "COALESCE(SUM(ss.embedding_ready),0) "
+                    "FROM symbols s "
+                    "LEFT JOIN symbol_status ss ON ss.symbol_id = s.id "
+                    "WHERE s.project_id = ?";
   sqlite3_stmt *stmt = nullptr;
   int total = 0, cg = 0, cfg = 0, emb = 0;
   if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
@@ -1578,21 +1787,22 @@ char *engine_project_overview(uint64_t project_id) {
     }
   }
 
-  // Symbol count + analysis state breakdown
+  // Symbol count + analysis state breakdown (via symbol_status)
   {
     const char *sql = "SELECT COUNT(*), "
-                      "SUM((analysis_state & 1) != 0), "
-                      "SUM((analysis_state & 2) != 0), "
-                      "SUM((analysis_state & 4) != 0), "
-                      "SUM((analysis_state & 8) != 0) "
-                      "FROM symbols WHERE project_id = ?";
+                      "COALESCE(SUM(ss.callgraph_ready),0), "
+                      "COALESCE(SUM(ss.metrics_ready),0), "
+                      "COALESCE(SUM(ss.embedding_ready),0) "
+                      "FROM symbols s "
+                      "LEFT JOIN symbol_status ss ON ss.symbol_id = s.id "
+                      "WHERE s.project_id = ?";
     sqlite3_stmt *stmt = nullptr;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
       sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
       if (sqlite3_step(stmt) == SQLITE_ROW) {
         json << "\"total_symbols\":" << sqlite3_column_int(stmt, 0) << ",";
         json << "\"analysis_progress\":{"
-             << "\"scanned\":" << sqlite3_column_int(stmt, 1) << ","
+             << "\"scanned\":" << sqlite3_column_int(stmt, 0) << ","
              << "\"callgraph\":" << sqlite3_column_int(stmt, 2) << ","
              << "\"metrics\":" << sqlite3_column_int(stmt, 3) << ","
              << "\"embedding\":" << sqlite3_column_int(stmt, 4) << "},";

@@ -81,19 +81,18 @@ impl Server {
                 return Some(path.to_string());
             }
             // Try workspaceFolders (newer MCP clients)
-            if let Some(folders) = p.get("workspaceFolders").and_then(|v| v.as_array()) {
-                if let Some(first) = folders.first() {
-                    if let Some(uri) = first.get("uri").and_then(|v| v.as_str()) {
-                        let path = uri.trim_start_matches("file://");
-                        return Some(path.to_string());
-                    }
-                }
+            if let Some(folders) = p.get("workspaceFolders").and_then(|v| v.as_array())
+                && let Some(first) = folders.first()
+                && let Some(uri) = first.get("uri").and_then(|v| v.as_str())
+            {
+                let path = uri.trim_start_matches("file://");
+                return Some(path.to_string());
             }
             None
         });
 
         if let Some(ref path) = root_path {
-            let name = path.split('/').last().unwrap_or("unnamed");
+            let name = path.split('/').next_back().unwrap_or("unnamed");
             self.project_id = ffi::create_project(path, name);
             if self.project_id > 0 {
                 eprintln!("Created project {} (id={})", name, self.project_id);

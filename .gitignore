@@ -2,6 +2,7 @@
 .claude
 .gemini
 .opencode
+.atomcode
 
 # IDE and Editors
 **/.idea/

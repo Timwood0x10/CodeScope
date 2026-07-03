@@ -14,15 +14,25 @@ fn main() {
     // Create build directory
     let _ = std::fs::create_dir_all(&build_dir);
 
-    // Run CMake configure
+    // Get SDK path
+    let sdk_path = Command::new("xcrun")
+        .args(["--show-sdk-path"])
+        .output()
+        .expect("Failed to get SDK path");
+    let sdk_path = String::from_utf8_lossy(&sdk_path.stdout).trim().to_string();
+
+    // Run CMake configure with homebrew llvm clang
     let cmake_status = Command::new("cmake")
-        .args(&[
+        .args([
             "-S",
             &engine_dir,
             "-B",
             &build_dir,
             "-DCMAKE_BUILD_TYPE=Release",
             "-DBUILD_TESTS=OFF",
+            "-DCMAKE_C_COMPILER=/opt/homebrew/opt/llvm@21/bin/clang",
+            "-DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm@21/bin/clang++",
+            &format!("-DCMAKE_OSX_SYSROOT={}", sdk_path),
         ])
         .status()
         .expect("Failed to run cmake configure");
@@ -33,7 +43,7 @@ fn main() {
 
     // Run CMake build
     let build_status = Command::new("cmake")
-        .args(&["--build", &build_dir, "--config", "Release"])
+        .args(["--build", &build_dir, "--config", "Release"])
         .status()
         .expect("Failed to run cmake build");
 
@@ -46,5 +56,7 @@ fn main() {
     println!("cargo:rustc-link-lib=static=astgraph_engine");
     println!("cargo:rustc-link-lib=dylib=c++");
     println!("cargo:rustc-link-lib=tree-sitter");
-    println!("cargo:rustc-link-lib=sqlite3");
+    // Use homebrew sqlite3 (has extension loading support)
+    println!("cargo:rustc-link-search=native=/opt/homebrew/Cellar/sqlite/3.53.3/lib");
+    println!("cargo:rustc-link-lib=dylib=sqlite3");
 }
