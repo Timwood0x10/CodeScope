@@ -7,7 +7,7 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
     vec![
         Tool {
             name: "find_definition".into(),
-            description: "Find where a symbol is defined. Returns file path and precise line/column numbers.".into(),
+            description: "[DEPRECATED — use find_symbol] Find where a symbol is defined. Returns file path and precise line/column numbers.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -31,7 +31,7 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
         },
         Tool {
             name: "get_callers".into(),
-            description: "Get all functions that call the specified function.".into(),
+            description: "[DEPRECATED — use find_callers] Get all functions that call the specified function.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -42,7 +42,7 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
         },
         Tool {
             name: "get_callees".into(),
-            description: "Get all functions called by the specified function.".into(),
+            description: "[DEPRECATED — use find_callees] Get all functions called by the specified function.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -136,7 +136,7 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
         },
         Tool {
             name: "search_code".into(),
-            description: "Full-text search across code symbols, file paths, and comments using FTS5. Supports prefix matching (e.g. 'add' matches 'addValue', 'adder').".into(),
+            description: "[DEPRECATED — use search] Full-text search across code symbols, file paths, and comments using FTS5.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -244,6 +244,68 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
         Tool {
             name: "get_module_tree".into(),
             description: "Get the hierarchical module (directory) tree for the current project. Returns modules with id, parent_id, name, path, and file_count.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+
+        // ── Phase B: Enhancement Tools ────────────────────────────
+        Tool {
+            name: "enhance_project".into(),
+            description: "Run background full enhancement: full parse → call graph → complexity metrics → semantic search indexing for all fast-scanned symbols. Call this after scan_project to get deeper code understanding. Runs asynchronously.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        Tool {
+            name: "get_enhancement_status".into(),
+            description: "Check enhancement progress. Returns total_symbols, callgraph_ready, cfg_ready, and embedding_ready counts.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+
+        // ── Phase C: Unified MCP Tools ────────────────────────────
+        Tool {
+            name: "search".into(),
+            description: "Unified code search: auto-selects between FTS5 and semantic search based on enhancement status. Supports prefix matching.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query string"},
+                    "limit": {"type": "integer", "description": "Max results (default 20, max 100)"}
+                },
+                "required": ["query"]
+            }),
+        },
+        Tool {
+            name: "find_callers".into(),
+            description: "Find all symbols that call the specified function. Auto-adapts to callgraph readiness: uses fast index first, falls back to full analysis.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "symbol_name": {"type": "string", "description": "Name of the symbol to find callers for"}
+                },
+                "required": ["symbol_name"]
+            }),
+        },
+        Tool {
+            name: "find_callees".into(),
+            description: "Find all symbols called by the specified function. Auto-adapts to callgraph readiness.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "symbol_name": {"type": "string", "description": "Name of the symbol to find callees for"}
+                },
+                "required": ["symbol_name"]
+            }),
+        },
+        Tool {
+            name: "get_entry_points".into(),
+            description: "Get likely entry points from the new schema (main/init/setup/run/handler). Returns symbol id, name, file path, and line.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {}
@@ -359,6 +421,32 @@ pub fn execute(project_id: u64, tool_name: &str, args: &Value) -> String {
         }
         "get_module_tree" => {
             ffi::get_module_tree(project_id)
+        }
+
+        // ── Phase B: Enhancement Tools ────────────────────────────
+        "enhance_project" => {
+            ffi::enhance_project(project_id)
+        }
+        "get_enhancement_status" => {
+            ffi::get_enhancement_status(project_id)
+        }
+
+        // ── Phase C: Unified MCP Tools ────────────────────────────
+        "search" => {
+            let query = args["query"].as_str().unwrap_or("");
+            let limit = args["limit"].as_i64().unwrap_or(20) as i32;
+            ffi::unified_search(project_id, query, limit)
+        }
+        "find_callers" => {
+            let name = args["symbol_name"].as_str().unwrap_or("");
+            ffi::find_callers_adaptive(project_id, name)
+        }
+        "find_callees" => {
+            let name = args["symbol_name"].as_str().unwrap_or("");
+            ffi::find_callees_adaptive(project_id, name)
+        }
+        "get_entry_points" => {
+            ffi::get_entry_points_new(project_id)
         }
 
         _ => json!({"error": "Unknown tool"}).to_string(),

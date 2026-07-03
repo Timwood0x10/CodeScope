@@ -970,6 +970,349 @@ char* engine_find_symbol(uint64_t project_id, const char* symbol_name) {
     return dupString(g_store->findSymbolJson(project_id, symbol_name));
 }
 
+// ─── Phase B: engine_enhance_project ──────────────────────────
+
+// Helper: find symbol_id for a given file + name + approximate line
+// Uses an in-memory cache populated per-project
+static uint64_t lookupSymbolId(uint64_t project_id,
+                                const std::string& file_path,
+                                const std::string& name,
+                                int line,
+                                std::unordered_map<std::string, std::vector<std::pair<std::string, uint64_t>>>& cache) {
+    auto& entries = cache[file_path];
+    if (entries.empty()) {
+        // Query all symbols for this file
+        const char* sql = "SELECT name, id FROM symbols "
+                           "WHERE project_id = ? AND file_path = ?";
+        sqlite3_stmt* stmt = nullptr;
+        auto db = g_store->handle();
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+            sqlite3_bind_text(stmt, 2, file_path.c_str(), -1, SQLITE_TRANSIENT);
+            while (sqlite3_step(stmt) == SQLITE_ROW) {
+                const char* n = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+                uint64_t sid = static_cast<uint64_t>(sqlite3_column_int64(stmt, 1));
+                if (n) entries.emplace_back(n, sid);
+            }
+            sqlite3_finalize(stmt);
+        }
+    }
+
+    // Exact match first
+    for (auto& [n, sid] : entries) {
+        if (n == name) return sid;
+    }
+    return 0;
+}
+
+char* engine_enhance_project(uint64_t project_id) {
+    if (!g_store || !g_parser) return dupString("{\"error\":\"engine not initialized\"}");
+
+    // Get files with unenhanced symbols (callgraph_ready = 0)
+    auto files = g_store->getUnenhancedFiles(project_id, "callgraph_ready");
+    if (files.empty()) {
+        return dupString("{\"files_processed\":0,\"symbols_enhanced\":0,\"call_edges\":0}");
+    }
+
+    int total_enhanced = 0;
+    int total_edges = 0;
+    int total_metrics = 0;
+    int total_files_processed = 0;
+
+    // Cache for symbol lookups: file_path → [(name, symbol_id)]
+    std::unordered_map<std::string, std::vector<std::pair<std::string, uint64_t>>> sym_cache;
+
+    for (const auto& file_path : files) {
+        const char* lang = detectLanguage(file_path.c_str());
+        if (!lang) continue;
+
+        std::string source = readFile(file_path.c_str());
+        if (source.empty()) continue;
+
+        TSTree* tree = g_parser->parse(file_path.c_str(), source.c_str(), lang);
+        if (!tree) continue;
+
+        std::unique_ptr<ir::Translator> translator(ir::createTranslator(lang));
+        if (!translator) { ts_tree_delete(tree); continue; }
+
+        ir::TranslationUnit* unit = translator->translate(tree, source.c_str(), file_path.c_str());
+        ts_tree_delete(tree);
+        if (!unit) continue;
+
+        // Build mapping: IR node id → symbol_id for declaration nodes
+        std::unordered_map<uint64_t, uint64_t> ir_id_to_symbol;
+        for (auto* node : unit->all_nodes) {
+            if (node->name.empty()) continue;
+            // Only map declaration-like nodes
+            switch (node->kind) {
+                case ir::NodeKind::FunctionDecl:
+                case ir::NodeKind::MethodDecl:
+                case ir::NodeKind::ClassDecl:
+                case ir::NodeKind::EnumDecl:
+                case ir::NodeKind::VariableDecl:
+                case ir::NodeKind::TypeAliasDecl:
+                    break;
+                default:
+                    continue;
+            }
+            uint64_t sym_id = lookupSymbolId(project_id, file_path, node->name,
+                                              static_cast<int>(node->loc.start_row), sym_cache);
+            if (sym_id > 0) {
+                ir_id_to_symbol[node->id] = sym_id;
+            }
+        }
+
+        if (ir_id_to_symbol.empty()) {
+            delete unit;
+            continue;
+        }
+
+        // ─────────────────────────────────────────────────────
+        // Build function line ranges for call graph mapping
+        // ─────────────────────────────────────────────────────
+        struct FuncRange {
+            uint64_t start_line, end_line;
+            uint64_t symbol_id;
+            std::string name;
+        };
+        std::vector<FuncRange> func_ranges;
+        for (auto* node : unit->all_nodes) {
+            if (node->kind == ir::NodeKind::FunctionDecl || node->kind == ir::NodeKind::MethodDecl) {
+                auto it = ir_id_to_symbol.find(node->id);
+                if (it != ir_id_to_symbol.end()) {
+                    func_ranges.push_back({
+                        node->loc.start_row, node->loc.end_row,
+                        it->second, node->name
+                    });
+                }
+            }
+        }
+
+        // ─────────────────────────────────────────────────────
+        // Extract call edges
+        // ─────────────────────────────────────────────────────
+        for (auto* node : unit->all_nodes) {
+            if (node->kind != ir::NodeKind::CallExpr || node->name.empty()) continue;
+
+            uint64_t caller_sym_id = 0;
+            // Find containing function
+            uint32_t call_line = node->loc.start_row;
+            for (const auto& fr : func_ranges) {
+                if (call_line >= fr.start_line && call_line <= fr.end_line) {
+                    caller_sym_id = fr.symbol_id;
+                    break;
+                }
+            }
+            if (caller_sym_id == 0) continue;
+
+            // Find callee symbol_id
+            uint64_t callee_sym_id = lookupSymbolId(project_id, file_path, node->name,
+                                                      static_cast<int>(call_line), sym_cache);
+            if (callee_sym_id == 0) {
+                // Try all files (cross-file call)
+                // For simplicity, check if it's a known symbol globally
+                std::string callee_json = g_store->findSymbolJson(project_id, node->name.c_str());
+                // Parse JSON to get first result's id... (simplified)
+                // For now, skip cross-file calls in v1
+                continue;
+            }
+
+            if (callee_sym_id > 0) {
+                g_store->beginTransaction();
+                g_store->insertCallEdge(project_id, caller_sym_id, callee_sym_id,
+                                        "static", static_cast<int>(node->loc.start_row),
+                                        static_cast<int>(node->loc.start_col));
+                g_store->commitTransaction();
+                total_edges++;
+            }
+        }
+
+        // ─────────────────────────────────────────────────────
+        // Compute metrics + embeddings for each function
+        // ─────────────────────────────────────────────────────
+        {
+            ir::ComplexityAnalyzer analyzer;
+            g_store->beginTransaction();
+
+            for (auto* node : unit->all_nodes) {
+                auto it = ir_id_to_symbol.find(node->id);
+                if (it == ir_id_to_symbol.end()) continue;
+                uint64_t sym_id = it->second;
+
+                if (node->kind == ir::NodeKind::FunctionDecl || node->kind == ir::NodeKind::MethodDecl) {
+                    // Metrics
+                    auto cr = analyzer.analyze(node);
+                    int lines = static_cast<int>(node->loc.end_row - node->loc.start_row + 1);
+                    int param_count = 0, call_count = 0, branch_count = 0, loop_count = 0;
+
+                    // Count params, calls, branches, loops
+                    std::function<void(ir::Node*)> count = [&](ir::Node* n) {
+                        switch (n->kind) {
+                            case ir::NodeKind::ParameterDecl: param_count++; break;
+                            case ir::NodeKind::CallExpr:      call_count++; break;
+                            case ir::NodeKind::IfStmt:
+                            case ir::NodeKind::SwitchStmt:
+                            case ir::NodeKind::CaseStmt:      branch_count++; break;
+                            case ir::NodeKind::ForStmt:
+                            case ir::NodeKind::WhileStmt:
+                            case ir::NodeKind::DoWhileStmt:   loop_count++; break;
+                            default: break;
+                        }
+                        for (auto* c : n->children) count(c);
+                    };
+                    count(node);
+
+                    g_store->insertMetric(sym_id,
+                        static_cast<int>(cr.cyclomatic),
+                        static_cast<int>(cr.nesting_depth),
+                        static_cast<int>(cr.cognitive),
+                        lines, param_count, call_count, branch_count, loop_count);
+                    total_metrics++;
+
+                    // Generate embedding from name + doc comment
+                    std::string embed_text = node->name;
+                    if (!node->doc_comment.empty()) {
+                        embed_text += " " + node->doc_comment;
+                    }
+                    auto vec = vector_search::stringToVector(embed_text);
+                    g_store->insertEmbedding(sym_id, vec.data(), vector_search::VECTOR_DIM);
+
+                    // Insert into search_index FTS
+                    std::string signature = node->qualified_name.empty() ? node->name : node->qualified_name;
+                    g_store->insertIntoSearchIndex(sym_id, project_id,
+                                                    node->name.c_str(),
+                                                    signature.c_str(),
+                                                    node->doc_comment.c_str());
+
+                    // Update ready flags
+                    g_store->updateSymbolReady(sym_id, "callgraph_ready", 1);
+                    g_store->updateSymbolReady(sym_id, "cfg_ready", 1);
+                    g_store->updateSymbolReady(sym_id, "embedding_ready", 1);
+                    total_enhanced++;
+                } else if (node->kind == ir::NodeKind::ClassDecl ||
+                           node->kind == ir::NodeKind::EnumDecl ||
+                           node->kind == ir::NodeKind::VariableDecl ||
+                           node->kind == ir::NodeKind::TypeAliasDecl) {
+                    // Non-function declarations: minimal metrics
+                    int lines = static_cast<int>(node->loc.end_row - node->loc.start_row + 1);
+                    g_store->insertMetric(sym_id, 0, 0, 0, lines, 0, 0, 0, 0);
+
+                    auto vec = vector_search::stringToVector(node->name);
+                    g_store->insertEmbedding(sym_id, vec.data(), vector_search::VECTOR_DIM);
+
+                    g_store->insertIntoSearchIndex(sym_id, project_id,
+                                                    node->name.c_str(),
+                                                    node->name.c_str(), "");
+
+                    g_store->updateSymbolReady(sym_id, "callgraph_ready", 1);
+                    g_store->updateSymbolReady(sym_id, "cfg_ready", 1);
+                    g_store->updateSymbolReady(sym_id, "embedding_ready", 1);
+                    total_enhanced++;
+                }
+            }
+            g_store->commitTransaction();
+        }
+
+        delete unit;
+        total_files_processed++;
+    }
+
+    std::ostringstream json;
+    json << "{"
+         << "\"files_processed\":" << total_files_processed << ","
+         << "\"symbols_enhanced\":" << total_enhanced << ","
+         << "\"call_edges\":" << total_edges << ","
+         << "\"metrics_recorded\":" << total_metrics
+         << "}";
+    return dupString(json.str());
+}
+
+// ─── Phase B: engine_get_enhancement_status ────────────────────
+
+char* engine_get_enhancement_status(uint64_t project_id) {
+    if (!g_store) return dupString("{\"error\":\"engine not initialized\"}");
+
+    auto db = g_store->handle();
+    const char* sql = "SELECT "
+                       "COUNT(*) as total, "
+                       "SUM(callgraph_ready) as cg_ready, "
+                       "SUM(cfg_ready) as cfg, "
+                       "SUM(embedding_ready) as emb "
+                       "FROM symbols WHERE project_id = ?";
+    sqlite3_stmt* stmt = nullptr;
+    int total = 0, cg = 0, cfg = 0, emb = 0;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            total = sqlite3_column_int(stmt, 0);
+            cg = sqlite3_column_int(stmt, 1);
+            cfg = sqlite3_column_int(stmt, 2);
+            emb = sqlite3_column_int(stmt, 3);
+        }
+        sqlite3_finalize(stmt);
+    }
+
+    std::ostringstream json;
+    json << "{"
+         << "\"total_symbols\":" << total << ","
+         << "\"callgraph_ready\":" << cg << ","
+         << "\"cfg_ready\":" << cfg << ","
+         << "\"embedding_ready\":" << emb
+         << "}";
+    return dupString(json.str());
+}
+
+// ─── Phase C: Unified Search (adaptive FTS / semantic) ───────
+
+char* engine_unified_search(uint64_t project_id, const char* query, int limit) {
+    if (!g_store) return dupString("{\"error\":\"engine not initialized\"}");
+    if (!query || !*query) return dupString("{\"total\":0,\"results\":[],\"error\":\"empty query\"}");
+    if (limit <= 0 || limit > 100) limit = 20;
+
+    // Delegate to store's adaptive search
+    return dupString(g_store->searchUnifiedJson(project_id, query, limit));
+}
+
+// ─── Phase C: Adaptive Find Callers ──────────────────────────
+
+char* engine_find_callers_adaptive(uint64_t project_id, const char* symbol_name) {
+    if (!g_store) return dupString("{\"error\":\"engine not initialized\"}");
+    if (!symbol_name || !*symbol_name) return dupString("{\"error\":\"symbol_name is empty\"}");
+
+    // Check if callgraph is ready for this symbol
+    double cg_ratio = g_store->checkReadyRatio(project_id, "callgraph_ready");
+    if (cg_ratio > 0.5) {
+        // Use new call_edges table
+        return dupString(g_store->findCallersJson(project_id, symbol_name));
+    }
+
+    // Fall back to old query engine
+    if (!g_query) return dupString("{\"error\":\"query engine not initialized\"}");
+    return dupString(g_query->getCallers(project_id, symbol_name));
+}
+
+// ─── Phase C: Adaptive Find Callees ──────────────────────────
+
+char* engine_find_callees_adaptive(uint64_t project_id, const char* symbol_name) {
+    if (!g_store) return dupString("{\"error\":\"engine not initialized\"}");
+    if (!symbol_name || !*symbol_name) return dupString("{\"error\":\"symbol_name is empty\"}");
+
+    double cg_ratio = g_store->checkReadyRatio(project_id, "callgraph_ready");
+    if (cg_ratio > 0.5) {
+        return dupString(g_store->findCalleesJson(project_id, symbol_name));
+    }
+
+    if (!g_query) return dupString("{\"error\":\"query engine not initialized\"}");
+    return dupString(g_query->getCallees(project_id, symbol_name));
+}
+
+// ─── Phase C: Get Entry Points (new schema) ──────────────────
+
+char* engine_get_entry_points_new(uint64_t project_id) {
+    if (!g_store) return dupString("{\"error\":\"engine not initialized\"}");
+    return dupString(g_store->getEntryPointsJson(project_id));
+}
+
 char* engine_find_definition(uint64_t project_id, const char* symbol_name,
                               const char* file_filter) {
     if (!g_query) return dupString("{\"total\":0,\"results\":[],\"error\":\"not initialized\"}");

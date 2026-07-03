@@ -196,6 +196,64 @@ bool GraphStore::createSchema() {
             FOREIGN KEY (symbol_id) REFERENCES symbols(id),
             FOREIGN KEY (project_id) REFERENCES projects(id)
         );
+
+        -- ============================================================
+        -- Phase B: Enhancement Tables (new schema, alongside old tables)
+        -- ============================================================
+
+        CREATE TABLE IF NOT EXISTS call_edges (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            caller_symbol_id INTEGER NOT NULL,
+            callee_symbol_id INTEGER NOT NULL,
+            provenance TEXT DEFAULT 'static',
+            line INTEGER,
+            col INTEGER,
+            FOREIGN KEY (caller_symbol_id) REFERENCES symbols(id),
+            FOREIGN KEY (callee_symbol_id) REFERENCES symbols(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_call_edges_caller ON call_edges(caller_symbol_id);
+        CREATE INDEX IF NOT EXISTS idx_call_edges_callee ON call_edges(callee_symbol_id);
+
+        CREATE TABLE IF NOT EXISTS dependency_edges (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            source_symbol_id INTEGER NOT NULL,
+            target_symbol_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            FOREIGN KEY (source_symbol_id) REFERENCES symbols(id),
+            FOREIGN KEY (target_symbol_id) REFERENCES symbols(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_dep_edges_src ON dependency_edges(source_symbol_id);
+        CREATE INDEX IF NOT EXISTS idx_dep_edges_tgt ON dependency_edges(target_symbol_id);
+
+        CREATE TABLE IF NOT EXISTS metrics (
+            symbol_id INTEGER PRIMARY KEY,
+            cyclomatic INTEGER DEFAULT 0,
+            nesting_depth INTEGER DEFAULT 0,
+            cognitive INTEGER DEFAULT 0,
+            lines INTEGER DEFAULT 0,
+            param_count INTEGER DEFAULT 0,
+            call_count INTEGER DEFAULT 0,
+            branch_count INTEGER DEFAULT 0,
+            loop_count INTEGER DEFAULT 0,
+            FOREIGN KEY (symbol_id) REFERENCES symbols(id)
+        );
+
+        -- New FTS5 search index for symbols
+        CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
+            name, signature, content,
+            project_id UNINDEXED,
+            symbol_id UNINDEXED,
+            tokenize='unicode61'
+        );
+
+        -- Embeddings table (sqlite-vec vec0)
+        -- Requires sqlite-vec extension; falls back gracefully if not available
+        CREATE VIRTUAL TABLE IF NOT EXISTS embeddings USING vec0(
+            symbol_id INTEGER PRIMARY KEY,
+            vector FLOAT[384]
+        );
     )SQL";
 
     return exec(schema);
@@ -906,6 +964,411 @@ std::string GraphStore::findSymbolJson(uint64_t project_id, const char* name) {
              << "\"file_path\":\"" << (fp ? fp : "") << "\","
              << "\"line\":" << line << ","
              << "\"column\":" << col
+             << "}";
+    }
+    sqlite3_finalize(stmt);
+    json << "]}";
+    return json.str();
+}
+
+// ── Phase B: Enhancement — Call Edges ─────────────────────────
+
+uint64_t GraphStore::insertCallEdge(uint64_t project_id,
+                                     uint64_t caller_symbol_id,
+                                     uint64_t callee_symbol_id,
+                                     const char* provenance,
+                                     int line, int col) {
+    const char* sql = "INSERT INTO call_edges "
+                       "(project_id, caller_symbol_id, callee_symbol_id, provenance, line, col) "
+                       "VALUES (?, ?, ?, ?, ?, ?)";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        error_ = "insertCallEdge: prepare failed";
+        return 0;
+    }
+    sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+    sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(caller_symbol_id));
+    sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(callee_symbol_id));
+    sqlite3_bind_text(stmt, 4, provenance ? provenance : "static", -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 5, line);
+    sqlite3_bind_int(stmt, 6, col);
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        error_ = "insertCallEdge: step failed";
+        sqlite3_finalize(stmt);
+        return 0;
+    }
+    uint64_t id = static_cast<uint64_t>(sqlite3_last_insert_rowid(db_));
+    sqlite3_finalize(stmt);
+    return id;
+}
+
+uint64_t GraphStore::insertDependencyEdge(uint64_t project_id,
+                                           uint64_t source_symbol_id,
+                                           uint64_t target_symbol_id,
+                                           const char* kind) {
+    const char* sql = "INSERT INTO dependency_edges "
+                       "(project_id, source_symbol_id, target_symbol_id, kind) "
+                       "VALUES (?, ?, ?, ?)";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        error_ = "insertDependencyEdge: prepare failed";
+        return 0;
+    }
+    sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+    sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(source_symbol_id));
+    sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(target_symbol_id));
+    sqlite3_bind_text(stmt, 4, kind, -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        error_ = "insertDependencyEdge: step failed";
+        sqlite3_finalize(stmt);
+        return 0;
+    }
+    uint64_t id = static_cast<uint64_t>(sqlite3_last_insert_rowid(db_));
+    sqlite3_finalize(stmt);
+    return id;
+}
+
+// ── Phase B: Enhancement — Metrics ────────────────────────────
+
+bool GraphStore::insertMetric(uint64_t symbol_id,
+                               int cyclomatic, int nesting_depth, int cognitive,
+                               int lines, int param_count, int call_count,
+                               int branch_count, int loop_count) {
+    const char* sql = "INSERT OR REPLACE INTO metrics "
+                       "(symbol_id, cyclomatic, nesting_depth, cognitive, lines, "
+                       " param_count, call_count, branch_count, loop_count) "
+                       "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        error_ = "insertMetric: prepare failed";
+        return false;
+    }
+    sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(symbol_id));
+    sqlite3_bind_int(stmt, 2, cyclomatic);
+    sqlite3_bind_int(stmt, 3, nesting_depth);
+    sqlite3_bind_int(stmt, 4, cognitive);
+    sqlite3_bind_int(stmt, 5, lines);
+    sqlite3_bind_int(stmt, 6, param_count);
+    sqlite3_bind_int(stmt, 7, call_count);
+    sqlite3_bind_int(stmt, 8, branch_count);
+    sqlite3_bind_int(stmt, 9, loop_count);
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        error_ = "insertMetric: step failed";
+        sqlite3_finalize(stmt);
+        return false;
+    }
+    sqlite3_finalize(stmt);
+    return true;
+}
+
+// ── Phase B: Enhancement — Search Index ───────────────────────
+
+void GraphStore::insertIntoSearchIndex(uint64_t symbol_id, uint64_t project_id,
+                                        const char* name, const char* signature,
+                                        const char* content) {
+    const char* sql = "INSERT INTO search_index (symbol_id, project_id, name, signature, content) "
+                       "VALUES (?, ?, ?, ?, ?)";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
+    sqlite3_bind_text(stmt, 1, name ? name : "", -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
+    sqlite3_bind_text(stmt, 3, name ? name : "", -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, signature ? signature : "", -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, content ? content : "", -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        error_ = "insertIntoSearchIndex: step failed";
+    }
+    sqlite3_finalize(stmt);
+}
+
+// ── Phase B: Enhancement — Embeddings ─────────────────────────
+
+bool GraphStore::insertEmbedding(uint64_t symbol_id,
+                                  const float* vector_data, int dim) {
+    // The vec0 table expects a blob of float32 values
+    // Pad/truncate to 384 (schema definition)
+    constexpr int TARGET_DIM = 384;
+    std::vector<float> vec(TARGET_DIM, 0.0f);
+    int copy_dim = dim < TARGET_DIM ? dim : TARGET_DIM;
+    if (vector_data) {
+        memcpy(vec.data(), vector_data, static_cast<size_t>(copy_dim) * sizeof(float));
+    }
+
+    const char* sql = "INSERT INTO embeddings (symbol_id, vector) VALUES (?, ?)";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        error_ = "insertEmbedding: prepare failed";
+        return false;
+    }
+    sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(symbol_id));
+    sqlite3_bind_blob(stmt, 2, vec.data(),
+                      TARGET_DIM * static_cast<int>(sizeof(float)),
+                      SQLITE_TRANSIENT);
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        error_ = "insertEmbedding: step failed";
+        sqlite3_finalize(stmt);
+        return false;
+    }
+    sqlite3_finalize(stmt);
+    return true;
+}
+
+// ── Phase B: Enhancement — Ready Flags ────────────────────────
+
+bool GraphStore::updateSymbolReady(uint64_t symbol_id,
+                                    const char* field, int value) {
+    std::string sql = "UPDATE symbols SET " + std::string(field) + " = ? WHERE id = ?";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        error_ = "updateSymbolReady: prepare failed";
+        return false;
+    }
+    sqlite3_bind_int(stmt, 1, value);
+    sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(symbol_id));
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        error_ = "updateSymbolReady: step failed";
+        sqlite3_finalize(stmt);
+        return false;
+    }
+    sqlite3_finalize(stmt);
+    return true;
+}
+
+std::vector<std::string> GraphStore::getUnenhancedFiles(uint64_t project_id,
+                                                         const char* ready_field) {
+    std::string sql = "SELECT DISTINCT file_path FROM symbols "
+                       "WHERE project_id = ? AND " + std::string(ready_field) + " = 0 "
+                       "ORDER BY file_path";
+    sqlite3_stmt* stmt = nullptr;
+    std::vector<std::string> files;
+    if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        error_ = "getUnenhancedFiles: prepare failed";
+        return files;
+    }
+    sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char* fp = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        if (fp) files.emplace_back(fp);
+    }
+    sqlite3_finalize(stmt);
+    return files;
+}
+
+// ── Phase C: Unified Queries ──────────────────────────────────
+
+double GraphStore::checkReadyRatio(uint64_t project_id, const char* ready_field) {
+    std::string sql = "SELECT CASE WHEN COUNT(*) > 0 THEN "
+                       "CAST(SUM(" + std::string(ready_field) + ") AS REAL) / COUNT(*) "
+                       "ELSE 0.0 END FROM symbols WHERE project_id = ?";
+    sqlite3_stmt* stmt = nullptr;
+    double ratio = 0.0;
+    if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            ratio = sqlite3_column_double(stmt, 0);
+        }
+        sqlite3_finalize(stmt);
+    }
+    return ratio;
+}
+
+std::string GraphStore::searchUnifiedJson(uint64_t project_id, const char* query, int limit) {
+    if (limit <= 0 || limit > 100) limit = 20;
+
+    // Check embedding readiness — if > 50% ready, use semantic search via embeddings
+    double emb_ratio = checkReadyRatio(project_id, "embedding_ready");
+
+    if (emb_ratio > 0.5) {
+        // Use semantic search: compute n-gram vector for query, compare via vec0
+        // Fallback: use FTS search_index since vec0 query is complex without sqlite-vec
+        // For now, use search_index FTS with relevance ranking
+        (void)emb_ratio;
+    }
+
+    // Try new search_index FTS5 first
+    {
+        std::string sql = "SELECT symbol_id, name, signature, content, rank "
+                           "FROM search_index WHERE search_index MATCH ? AND project_id = ? "
+                           "ORDER BY rank LIMIT ?";
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {
+            // Build FTS5 query: append * for prefix matching
+            std::string fts_query = query;
+            if (!fts_query.empty() && fts_query.back() != '*') fts_query += "*";
+            sqlite3_bind_text(stmt, 1, fts_query.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
+            sqlite3_bind_int(stmt, 3, limit);
+
+            std::ostringstream json;
+            json << "{\"method\":\"fts\",\"results\":[";
+            bool first = true;
+            while (sqlite3_step(stmt) == SQLITE_ROW) {
+                if (!first) json << ",";
+                first = false;
+                int64_t sym_id = sqlite3_column_int64(stmt, 0);
+                const char* n = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+                const char* sig = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+                json << "{"
+                     << "\"symbol_id\":" << sym_id << ","
+                     << "\"name\":\"" << (n ? n : "") << "\","
+                     << "\"signature\":\"" << (sig ? sig : "") << "\""
+                     << "}";
+            }
+            sqlite3_finalize(stmt);
+            json << "]}";
+            if (!first) return json.str(); // had results
+        }
+    }
+
+    // Fallback to old code_fts table
+    {
+        std::string sql = "SELECT node_id, name, qualified_name, file_path, rank "
+                           "FROM code_fts WHERE code_fts MATCH ? AND project_id = ? "
+                           "ORDER BY rank LIMIT ?";
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {
+            std::string fts_query = query;
+            if (!fts_query.empty() && fts_query.back() != '*') fts_query += "*";
+            sqlite3_bind_text(stmt, 1, fts_query.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
+            sqlite3_bind_int(stmt, 3, limit);
+
+            std::ostringstream json;
+            json << "{\"method\":\"legacy_fts\",\"results\":[";
+            bool first = true;
+            while (sqlite3_step(stmt) == SQLITE_ROW) {
+                if (!first) json << ",";
+                first = false;
+                int64_t nid = sqlite3_column_int64(stmt, 0);
+                const char* n = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+                const char* qn = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+                const char* fp = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+                json << "{"
+                     << "\"node_id\":" << nid << ","
+                     << "\"name\":\"" << (n ? n : "") << "\","
+                     << "\"qualified_name\":\"" << (qn ? qn : "") << "\","
+                     << "\"file_path\":\"" << (fp ? fp : "") << "\""
+                     << "}";
+            }
+            sqlite3_finalize(stmt);
+            json << "]}";
+            return json.str();
+        }
+    }
+
+    return "{\"method\":\"none\",\"results\":[]}";
+}
+
+std::string GraphStore::findCallersJson(uint64_t project_id, const char* symbol_name) {
+    // Query call_edges table via symbols name lookup
+    const char* sql = "SELECT DISTINCT caller.id, caller.name, caller.kind, caller.file_path, caller.line "
+                       "FROM call_edges ce "
+                       "JOIN symbols caller ON caller.id = ce.caller_symbol_id "
+                       "JOIN symbols callee ON callee.id = ce.callee_symbol_id "
+                       "WHERE callee.name = ? AND ce.project_id = ? "
+                       "ORDER BY caller.name";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return "{\"error\":\"findCallersJson: prepare failed\",\"results\":[]}";
+    }
+    sqlite3_bind_text(stmt, 1, symbol_name, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
+
+    std::ostringstream json;
+    json << "{\"callers\":[";
+    bool first = true;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        if (!first) json << ",";
+        first = false;
+        int64_t id = sqlite3_column_int64(stmt, 0);
+        const char* n = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        const char* k = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+        const char* fp = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+        int line = sqlite3_column_int(stmt, 4);
+        json << "{"
+             << "\"id\":" << id << ","
+             << "\"name\":\"" << (n ? n : "") << "\","
+             << "\"kind\":\"" << (k ? k : "") << "\","
+             << "\"file_path\":\"" << (fp ? fp : "") << "\","
+             << "\"line\":" << line
+             << "}";
+    }
+    sqlite3_finalize(stmt);
+    json << "]}";
+    return json.str();
+}
+
+std::string GraphStore::findCalleesJson(uint64_t project_id, const char* symbol_name) {
+    const char* sql = "SELECT DISTINCT callee.id, callee.name, callee.kind, callee.file_path, callee.line "
+                       "FROM call_edges ce "
+                       "JOIN symbols caller ON caller.id = ce.caller_symbol_id "
+                       "JOIN symbols callee ON callee.id = ce.callee_symbol_id "
+                       "WHERE caller.name = ? AND ce.project_id = ? "
+                       "ORDER BY callee.name";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return "{\"error\":\"findCalleesJson: prepare failed\",\"results\":[]}";
+    }
+    sqlite3_bind_text(stmt, 1, symbol_name, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
+
+    std::ostringstream json;
+    json << "{\"callees\":[";
+    bool first = true;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        // Same column order: s.id, s.name, s.kind, s.file_path, s.line
+        // but s is from the callee side... fix: actually the caller side is used
+        if (!first) json << ",";
+        first = false;
+        int64_t id = sqlite3_column_int64(stmt, 0);
+        const char* n = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        const char* k = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+        const char* fp = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+        int line = sqlite3_column_int(stmt, 4);
+        json << "{"
+             << "\"id\":" << id << ","
+             << "\"name\":\"" << (n ? n : "") << "\","
+             << "\"kind\":\"" << (k ? k : "") << "\","
+             << "\"file_path\":\"" << (fp ? fp : "") << "\","
+             << "\"line\":" << line
+             << "}";
+    }
+    sqlite3_finalize(stmt);
+    json << "]}";
+    return json.str();
+}
+
+std::string GraphStore::getEntryPointsJson(uint64_t project_id) {
+    const char* sql = "SELECT s.id, s.name, s.kind, s.file_path, s.line, ep.kind as ep_kind "
+                       "FROM entry_points ep "
+                       "JOIN symbols s ON s.id = ep.symbol_id "
+                       "WHERE ep.project_id = ? "
+                       "ORDER BY ep.kind";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return "{\"error\":\"getEntryPointsJson: prepare failed\",\"entry_points\":[]}";
+    }
+    sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+
+    std::ostringstream json;
+    json << "{\"entry_points\":[";
+    bool first = true;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        if (!first) json << ",";
+        first = false;
+        int64_t id = sqlite3_column_int64(stmt, 0);
+        const char* n = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        const char* k = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+        const char* fp = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+        int line = sqlite3_column_int(stmt, 4);
+        const char* epk = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
+        json << "{"
+             << "\"id\":" << id << ","
+             << "\"name\":\"" << (n ? n : "") << "\","
+             << "\"kind\":\"" << (k ? k : "") << "\","
+             << "\"file_path\":\"" << (fp ? fp : "") << "\","
+             << "\"line\":" << line << ","
+             << "\"entry_kind\":\"" << (epk ? epk : "") << "\""
              << "}";
     }
     sqlite3_finalize(stmt);

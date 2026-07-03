@@ -56,6 +56,22 @@ unsafe extern "C" {
     fn engine_find_symbol(project_id: u64,
                           symbol_name: *const c_char) -> *mut c_char;
 
+    // ── Phase B: Background Enhancement ──────────────────────────
+
+    fn engine_enhance_project(project_id: u64) -> *mut c_char;
+    fn engine_get_enhancement_status(project_id: u64) -> *mut c_char;
+
+    // ── Phase C: Unified MCP Tools ───────────────────────────────
+
+    fn engine_unified_search(project_id: u64,
+                             query: *const c_char,
+                             limit: i32) -> *mut c_char;
+    fn engine_find_callers_adaptive(project_id: u64,
+                                    symbol_name: *const c_char) -> *mut c_char;
+    fn engine_find_callees_adaptive(project_id: u64,
+                                    symbol_name: *const c_char) -> *mut c_char;
+    fn engine_get_entry_points_new(project_id: u64) -> *mut c_char;
+
     fn engine_free_string(ptr: *mut c_char);
 }
 
@@ -209,4 +225,55 @@ pub fn get_module_tree(project_id: u64) -> String {
 
 pub fn find_symbol(project_id: u64, symbol_name: &str) -> String {
     take_string(unsafe { engine_find_symbol(project_id, cstr(symbol_name).as_ptr()) })
+}
+
+// ── Phase B: Background Enhancement ───────────────────────────
+
+pub fn enhance_project(project_id: u64) -> String {
+    take_string(unsafe { engine_enhance_project(project_id) })
+}
+
+pub fn get_enhancement_status(project_id: u64) -> String {
+    take_string(unsafe { engine_get_enhancement_status(project_id) })
+}
+
+// ── Phase C: Unified MCP Tools ───────────────────────────────
+
+pub fn unified_search(project_id: u64, query: &str, limit: i32) -> String {
+    take_string(unsafe { engine_unified_search(project_id, cstr(query).as_ptr(), limit) })
+}
+
+pub fn find_callers_adaptive(project_id: u64, symbol_name: &str) -> String {
+    take_string(unsafe { engine_find_callers_adaptive(project_id, cstr(symbol_name).as_ptr()) })
+}
+
+pub fn find_callees_adaptive(project_id: u64, symbol_name: &str) -> String {
+    take_string(unsafe { engine_find_callees_adaptive(project_id, cstr(symbol_name).as_ptr()) })
+}
+
+pub fn get_entry_points_new(project_id: u64) -> String {
+    take_string(unsafe { engine_get_entry_points_new(project_id) })
+}
+
+// ── Background thread management ──────────────────────────────
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+static ENHANCEMENT_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// Spawn a background thread to enhance a project.
+/// Returns immediately; the enhancement runs asynchronously.
+pub fn spawn_enhancement(project_id: u64) {
+    if ENHANCEMENT_RUNNING.swap(true, Ordering::Acquire) {
+        eprintln!("enhancement: already running, skipping");
+        return;
+    }
+
+    std::thread::spawn(move || {
+        eprintln!("enhancement: starting background enhancement for project {}", project_id);
+        let result = enhance_project(project_id);
+        eprintln!("enhancement: completed: {}", result);
+        ENHANCEMENT_RUNNING.store(false, Ordering::Release);
+    });
 }

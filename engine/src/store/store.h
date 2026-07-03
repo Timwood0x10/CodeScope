@@ -125,6 +125,75 @@ public:
     /** Find symbols by name as JSON. */
     std::string findSymbolJson(uint64_t project_id, const char* name);
 
+    // ── Phase B: Enhancement — Call Edges ─────────────────────
+
+    uint64_t insertCallEdge(uint64_t project_id,
+                            uint64_t caller_symbol_id,
+                            uint64_t callee_symbol_id,
+                            const char* provenance,
+                            int line, int col);
+
+    uint64_t insertDependencyEdge(uint64_t project_id,
+                                  uint64_t source_symbol_id,
+                                  uint64_t target_symbol_id,
+                                  const char* kind);
+
+    // ── Phase B: Enhancement — Metrics ────────────────────────
+
+    bool insertMetric(uint64_t symbol_id,
+                      int cyclomatic, int nesting_depth, int cognitive,
+                      int lines, int param_count, int call_count,
+                      int branch_count, int loop_count);
+
+    // ── Phase B: Enhancement — Search Index ───────────────────
+
+    void insertIntoSearchIndex(uint64_t symbol_id, uint64_t project_id,
+                               const char* name, const char* signature,
+                               const char* content);
+
+    // ── Phase B: Enhancement — Embeddings ─────────────────────
+
+    bool insertEmbedding(uint64_t symbol_id,
+                         const float* vector_data, int dim);
+
+    // ── Phase B: Enhancement — Ready Flags ────────────────────
+
+    bool updateSymbolReady(uint64_t symbol_id,
+                           const char* field, int value);
+
+    /** Get distinct file paths that have symbols with a ready flag = 0. */
+    std::vector<std::string> getUnenhancedFiles(uint64_t project_id,
+                                                 const char* ready_field);
+
+    // ── Phase C: Unified Queries (adaptive) ───────────────────
+
+    /**
+     * Unified search: auto-selects between FTS5 and semantic search
+     * based on embedding_ready ratio.
+     */
+    std::string searchUnifiedJson(uint64_t project_id, const char* query, int limit);
+
+    /**
+     * Find callers from the new call_edges table (requires callgraph_ready).
+     * Returns JSON array of caller symbols.
+     */
+    std::string findCallersJson(uint64_t project_id, const char* symbol_name);
+
+    /**
+     * Find callees from the new call_edges table (requires callgraph_ready).
+     * Returns JSON array of callee symbols.
+     */
+    std::string findCalleesJson(uint64_t project_id, const char* symbol_name);
+
+    /**
+     * Get entry points from the new entry_points table.
+     * Returns JSON with entry point symbols.
+     */
+    std::string getEntryPointsJson(uint64_t project_id);
+
+    /** Check what ratio of symbols have a given ready flag set (0.0 - 1.0). */
+    double checkReadyRatio(uint64_t project_id, const char* ready_field);
+
     // ── Raw access (for query engine) ──────────────────────────
 
     sqlite3* handle() const { return db_; }

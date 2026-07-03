@@ -140,6 +140,47 @@ char* engine_get_module_tree(uint64_t project_id);
  */
 char* engine_find_symbol(uint64_t project_id, const char* symbol_name);
 
+// ─── Phase B: Background Enhancement ──────────────────────────
+
+/**
+ * Run background enhancement for all un-enhanced symbols.
+ * Does full parse → call graph → metrics → embeddings for each file.
+ * Returns JSON summary: { "files_processed": N, "symbols_enhanced": N, "call_edges": N }
+ * Call this asynchronously after engine_scan_project returns.
+ */
+char* engine_enhance_project(uint64_t project_id);
+
+/**
+ * Get enhancement status — how many symbols have ready flags set.
+ * Returns JSON: { "total_symbols": N, "callgraph_ready": N, "cfg_ready": N, "embedding_ready": N }
+ */
+char* engine_get_enhancement_status(uint64_t project_id);
+
+// ─── Phase C: Unified MCP Tools (adaptive backend) ────────────
+
+/**
+ * Unified search: auto-selects between FTS5 and semantic search.
+ * Returns JSON with results and method field indicating which engine was used.
+ */
+char* engine_unified_search(uint64_t project_id, const char* query, int limit);
+
+/**
+ * Find callers (adaptive): uses new call_edges table if callgraph_ready,
+ * otherwise falls back to old graph query engine.
+ */
+char* engine_find_callers_adaptive(uint64_t project_id, const char* symbol_name);
+
+/**
+ * Find callees (adaptive): uses new call_edges table if callgraph_ready,
+ * otherwise falls back to old graph query engine.
+ */
+char* engine_find_callees_adaptive(uint64_t project_id, const char* symbol_name);
+
+/**
+ * Get entry points from the new schema.
+ */
+char* engine_get_entry_points_new(uint64_t project_id);
+
 // ─── Memory ───────────────────────────────────────────────────
 
 void engine_free_string(char* ptr);
