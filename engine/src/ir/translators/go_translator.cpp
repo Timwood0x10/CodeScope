@@ -141,6 +141,7 @@ Node* GoTranslator::translateNode(TSNode ts_node, Node* parent) {
         return n;
     }
     if (strcmp(type, "expression_statement") == 0 ||
+        strcmp(type, "statement_list") == 0 ||
         strcmp(type, "block") == 0 ||
         strcmp(type, "expression_list") == 0 ||
         strcmp(type, "argument_list") == 0 ||
@@ -330,15 +331,15 @@ Node* GoTranslator::handleCallExpr(TSNode ts_node, Node* parent) {
             if (member) {
                 // If the selector resolves to a known method, add CallTarget
                 uint32_t selc = ts_node_child_count(child);
-                const char* last_field = nullptr;
+                std::string last_field;
                 for (uint32_t j = 0; j < selc; j++) {
                     TSNode sc = ts_node_child(child, j);
                     if (strcmp(ts_node_type(sc), "field_identifier") == 0) {
-                        last_field = nodeText(sc).c_str();
+                        last_field = nodeText(sc);
                     }
                 }
-                if (last_field) {
-                    Node* target = resolveSymbol(std::string(last_field));
+                if (!last_field.empty()) {
+                    Node* target = resolveSymbol(last_field);
                     if (target) {
                         call->semantic_edges.push_back({target, Relation::CallTarget});
                     }
@@ -444,7 +445,8 @@ Node* GoTranslator::handleVarDecl(TSNode ts_node, Node* parent) {
 // ─── Short Var Declaration (:=) ────────────────────────────────
 
 Node* GoTranslator::handleShortVarDecl(TSNode ts_node, Node* parent) {
-    // Inside a function body — declare variables
+    // Extract variable names from ALL expression_list children,
+    // then translate value expressions for semantic edges.
     uint32_t count = ts_node_child_count(ts_node);
     for (uint32_t i = 0; i < count; i++) {
         TSNode child = ts_node_child(ts_node, i);
@@ -452,15 +454,21 @@ Node* GoTranslator::handleShortVarDecl(TSNode ts_node, Node* parent) {
             uint32_t ec = ts_node_child_count(child);
             for (uint32_t j = 0; j < ec; j++) {
                 TSNode e = ts_node_child(child, j);
+                if (!ts_node_is_named(e)) continue;
                 if (strcmp(ts_node_type(e), "identifier") == 0) {
                     auto* var = makeNode(NodeKind::VariableDecl, e);
                     var->name = nodeText(e);
                     defineSymbol(var->name, var);
                     parent->children.push_back(var);
                 } else {
+                    // Value expression (call, selector, etc.) — translate normally
                     translateNode(e, parent);
                 }
             }
+        } else if (ts_node_is_named(child)) {
+            // Also translate any other named children not in expression_list
+            // (e.g. some Go grammar versions have call_expression directly)
+            translateNode(child, parent);
         }
     }
     return nullptr;

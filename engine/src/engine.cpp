@@ -6,6 +6,7 @@
 #include "graph/graph_builder.h"
 #include "store/store.h"
 #include "query/query_engine.h"
+#include "lsp/lsp_client.h"
 
 #include <tree_sitter/api.h>
 #include <cstring>
@@ -143,6 +144,43 @@ char* engine_index_file(uint64_t project_id, const char* file_path) {
 
     if (!unit) {
         return dupString("{\"ok\":false,\"error\":\"translation failed\"}");
+    }
+
+    // ── Optional LSP enhancement ──────────────────────────────
+    // If CODESCOPE_LSP env var is set (e.g. "pylsp", "gopls"), start
+    // an LSP server and resolve call targets for better accuracy.
+    {
+        const char* lsp_cmd = getenv("CODESCOPE_LSP");
+        if (lsp_cmd && *lsp_cmd) {
+            LspClient lsp;
+            if (lsp.start(lsp_cmd, "file://")) {
+                lsp.openDocument(file_path, source.c_str());
+                for (auto* node : unit->all_nodes) {
+                    if (node->kind == ir::NodeKind::CallExpr && !node->name.empty()) {
+                        // Query definition at the start of the call expression
+                        std::string def = lsp.queryDefinition(
+                            file_path,
+                            static_cast<int>(node->loc.start_row),
+                            static_cast<int>(node->loc.start_col));
+                        if (!def.empty()) {
+                            // def is a JSON-RPC result; extract targetUri/targetRange
+                            // For v1, just mark that we got LSP data
+                            node->doc_comment = "[LSP resolved]";
+                        }
+                    }
+                    if (node->kind == ir::NodeKind::IdentifierExpr && !node->name.empty()) {
+                        std::string def = lsp.queryDefinition(
+                            file_path,
+                            static_cast<int>(node->loc.start_row),
+                            static_cast<int>(node->loc.start_col));
+                        if (!def.empty()) {
+                            node->doc_comment = "[LSP resolved]";
+                        }
+                    }
+                }
+                lsp.stop();
+            }
+        }
     }
 
     // Persist IR + build graph

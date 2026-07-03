@@ -59,17 +59,36 @@ impl Server {
     // ── Initialize ──────────────────────────────────────────────
 
     fn handle_initialize(&mut self, params: Option<serde_json::Value>) -> Result<serde_json::Value, JsonRpcError> {
-        // Extract project path from initialization params if provided
-        if let Some(ref p) = params {
-            if let Some(root) = p.get("rootPath").or_else(|| p.get("root_path")) {
-                if let Some(path) = root.as_str() {
-                    let name = path.split('/').last().unwrap_or("unnamed");
-                    self.project_id = ffi::create_project(path, name);
-                    if self.project_id > 0 {
-                        eprintln!("Created project {} (id={})", name, self.project_id);
-                        let _ = ffi::index_project(self.project_id, path, std::ptr::null());
+        // Extract project path from initialization params
+        // MCP clients may pass rootPath, root_uri, or workspaceFolders
+        let root_path = params.as_ref().and_then(|p| {
+            // Try rootPath (old Claude Desktop convention)
+            if let Some(path) = p.get("rootPath").and_then(|v| v.as_str()) {
+                return Some(path.to_string());
+            }
+            // Try rootUri (MCP spec)
+            if let Some(uri) = p.get("rootUri").and_then(|v| v.as_str()) {
+                let path = uri.trim_start_matches("file://");
+                return Some(path.to_string());
+            }
+            // Try workspaceFolders (newer MCP clients)
+            if let Some(folders) = p.get("workspaceFolders").and_then(|v| v.as_array()) {
+                if let Some(first) = folders.first() {
+                    if let Some(uri) = first.get("uri").and_then(|v| v.as_str()) {
+                        let path = uri.trim_start_matches("file://");
+                        return Some(path.to_string());
                     }
                 }
+            }
+            None
+        });
+
+        if let Some(ref path) = root_path {
+            let name = path.split('/').last().unwrap_or("unnamed");
+            self.project_id = ffi::create_project(path, name);
+            if self.project_id > 0 {
+                eprintln!("Created project {} (id={})", name, self.project_id);
+                let _ = ffi::index_project(self.project_id, path, std::ptr::null());
             }
         }
 
@@ -115,6 +134,12 @@ impl Server {
 
         let result = tools::execute(self.project_id, tool_name, &tool_args);
 
+        // Determine if the result indicates an error (JSON with non-null "error" key)
+        let is_error = serde_json::from_str::<serde_json::Value>(&result)
+            .ok()
+            .and_then(|v| v.get("error").cloned())
+            .and_then(|e| if e.is_null() { None } else { Some(true) });
+
         let content = vec![TextContent {
             content_type: "text",
             text: result,
@@ -122,7 +147,7 @@ impl Server {
 
         let result = CallToolResult {
             content,
-            is_error: None,
+            is_error,
         };
 
         Ok(serde_json::to_value(result).unwrap())

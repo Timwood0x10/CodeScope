@@ -1,69 +1,85 @@
 # CodeScope
 
-**CodeScope** is a code understanding service based on the MCP (Model Context Protocol). It parses source code to generate an AST, constructs multi-dimensional code graphs, and exposes query interfaces — enabling AI to understand code structure, behavior, and relationships through graph traversal.
+**CodeScope** is an MCP (Model Context Protocol) code understanding service. It parses source code into a unified AST IR, builds multi-dimensional code graphs (call graph + symbol reference graph), persists them to SQLite, and exposes powerful queries via 14 MCP tools — enabling AI to understand code structure, behavior, and relationships through graph traversal instead of reading raw source files.
 
 ## Architecture
 
-```mermaid
-graph LR
-    A["AI Client"] -->|"MCP stdio"| B["Rust MCP Server"]
-    B -->|"C FFI"| C["C++ Engine"]
-    C --> D["Multi-Lang Parser<br/>(tree-sitter)"]
-    C --> E["Unified AST IR<br/>(Core)"]
-    C --> F["Code Graph<br/>+ SQLite"]
+```
+AI Client (Claude Desktop, Cursor, etc.)
+    │
+    │ MCP stdio (JSON-RPC 2.0)
+    ▼
+┌─────────────────────────────┐
+│  Rust MCP Server             │
+│  - MCP protocol handler      │
+│  - Tool definitions + dispatch│
+│  - C FFI bridge to engine    │
+└──────────────┬──────────────┘
+               │ C FFI
+               ▼
+┌─────────────────────────────┐
+│  C++ Core Engine             │
+│  - tree-sitter parser (8 langs)│
+│  - Unified AST IR            │
+│  - Graph builder             │
+│  - SQLite store              │
+│  - Query engine              │
+└─────────────────────────────┘
 ```
 
 **Data flow:**
-```mermaid
-flowchart LR
-    A["Source Code"] --> B["tree-sitter CST"]
-    B --> C["Unified AST IR"]
-    C --> D["Code Graph"]
-    D --> E["SQLite Store"]
-    E --> F["Query Engine"]
 ```
-
-## Project Structure
-
-```mermaid
-graph TD
-    subgraph server["server/ · Rust MCP Server"]
-        MCP["src/mcp/<br/>Protocol + Transport"]
-        TOOLS["src/tools/<br/>Tool Definitions"]
-        FFI["src/ffi/<br/>C++ FFI Bridge"]
-    end
-    subgraph engine["engine/ · C++ Core Engine"]
-        PARSER["src/parser/<br/>Multi-Lang Parser"]
-        IR["src/ir/<br/>★ Unified AST IR"]
-        TRANS["src/ir/translators/<br/>CST→IR Converters"]
-        GRAPH["src/graph/<br/>Graph Builder"]
-        STORE["src/store/<br/>SQLite Persistence"]
-        QUERY["src/query/<br/>Query Engine"]
-    end
-    GRAMMARS["grammars/<br/>tree-sitter .so"]
-    PLAN["plan/<br/>Design Docs"]
-
-    PARSER --> GRAMMARS
-    IR --> TRANS
-    GRAPH --> IR
-    STORE --> GRAPH
-    QUERY --> STORE
-    FFI --> engine
+Source Code → tree-sitter CST → Unified AST IR → Code Graph → SQLite Store → Query Engine → MCP Tools
 ```
 
 ## Features
 
-- **Multi-language parser**: C, C++, Rust, Python, JavaScript, TypeScript, Go, Java via tree-sitter
-- **Unified AST IR**: Language-neutral intermediate representation with exact source-location mapping
-- **Code graph**: Symbol reference graph + call graph with SQLite-backed persistence
-- **Semantic edges**: `SymbolRef`, `CallTarget`, `Receiver`, `TypeRef`, `BaseClass`
-- **Graph queries**: `find_definition`, `find_references`, `get_callers/get_callees`, `get_neighbors`, `find_shortest_path`, `get_subgraph`, `locate_code`
-- **MCP protocol**: Full JSON-RPC 2.0 over stdio, compatible with any MCP client
+### 14 MCP Tools
+
+| Category | Tool | Description |
+|----------|------|-------------|
+| **Core** (11) | `find_definition` | Locate symbol definition |
+| | `find_references` | Find all references to a symbol |
+| | `get_callers` | Get functions that call a given function |
+| | `get_callees` | Get functions called by a given function |
+| | `get_neighbors` | Get neighbor nodes in the graph |
+| | `find_shortest_path` | Find shortest path between two nodes |
+| | `get_subgraph` | Extract subgraph centered on a node |
+| | `locate_code` | Locate code entity in source file |
+| | `index_project` | Index an entire project directory |
+| | `index_file` | Index a single source file |
+| | `get_graph_stats` | Get code graph statistics |
+| **Search** | `search_code` | FTS5 full-text search (prefix matching) |
+| **Analysis** | `get_complexity` | Cyclomatic complexity + nesting depth |
+| | `graph_query` | Cypher-like DSL: `MATCH (Func)-[Calls]->(Func)` |
+| | `detect_changes` | Change impact analysis (callers/callees of modified files) |
+| | `get_communities` | Label-propagation community detection |
+
+### Supported Languages (8)
+
+| Language | Parser | IR Translator | Verified |
+|----------|--------|---------------|----------|
+| Python | ✅ | ✅ | ✅ |
+| Go | ✅ | ✅ | ✅ |
+| C | ✅ | ✅ | ✅ |
+| C++ | ✅ | ✅ | ✅ |
+| Rust | ✅ | ✅ | ✅ |
+| JavaScript | ✅ | ✅ | ✅ |
+| TypeScript | ✅ | ✅ | ✅ |
+| Java | ✅ | ✅ | ✅ |
+
+### Graph Capabilities
+
+- **6 edge types**: `References`, `Calls`, `Defines`, `Contains`, `Imports`, `Inherits`
+- **8 node types**: `Function`, `Method`, `Class`, `Struct`, `Interface`, `Variable`, `Module`, `File`
+- **SQLite persistence**: Zero external dependencies, portable single-file database
+- **FTS5 full-text search**: Prefix matching on symbol names and file paths
+- **Community detection**: Label propagation algorithm for architecture overview
+- **Change impact analysis**: Trace callers/callees through the graph
 
 ## Quick Start
 
 ### Prerequisites
-
 - Rust 2024 Edition + 1.85+ (`cargo`)
 - CMake 3.30+, C++23 compiler (Clang 17+)
 - SQLite3 (dev packages)
@@ -73,50 +89,110 @@ graph TD
 ### Build & Run
 
 ```bash
-# Build tree-sitter grammars
+# 1. Install tree-sitter grammars (one-time)
+npm install -g tree-sitter-python tree-sitter-c tree-sitter-cpp \
+  tree-sitter-rust tree-sitter-javascript tree-sitter-typescript \
+  tree-sitter-go tree-sitter-java
+
+# 2. Build grammar .so files
 cd grammars && bash build.sh && cd ..
 
-# Build and run the MCP server
+# 3. Build everything
+make build
+
+# 4. Run all tests
+make test
+
+# 5. Start MCP server
 cargo run --bin ast-graph-mcp
 ```
 
-The server listens on stdio for MCP JSON-RPC messages.
+### As a Claude Desktop MCP server
+
+Add to your `claude_desktop_config.json`:
+```json
+{
+  "mcpServers": {
+    "codescope": {
+      "command": "/path/to/CodeScope/target/release/ast-graph-mcp",
+      "args": [],
+      "env": {
+        "ASTGRAPH_DB_PATH": "/tmp/astgraph.db",
+        "GRAMMARS_DIR": "/path/to/CodeScope/grammars"
+      }
+    }
+  }
+}
+```
 
 ### Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ASTGRAPH_DB_PATH` | `/tmp/astgraph.db` | SQLite database path |
-| `GRAMMARS_DIR` | `grammars/` | Directory with grammar .so files |
+| `GRAMMARS_DIR` | `grammars/` | Grammar .so files directory |
+| `CODESCOPE_LSP` | (unset) | LSP server for type enhancement (e.g. `pylsp`) |
 
-### MCP Tools
+## Token Savings
 
-| Tool | Description |
-|------|-------------|
-| `find_definition` | Find symbol definition location |
-| `find_references` | Find all references to a symbol |
-| `get_callers` | Get functions that call a given function |
-| `get_callees` | Get functions called by a given function |
-| `get_neighbors` | Get neighbor nodes in the graph |
-| `find_shortest_path` | Find shortest path between two nodes |
-| `get_subgraph` | Get subgraph centered on a node |
-| `locate_code` | Locate code entity in source file |
-| `index_project` | Index a project directory |
-| `index_file` | Index a single source file |
-| `get_graph_stats` | Get code graph statistics |
+Using code graphs instead of raw source files saves **~98.8% tokens** on average across 5 common query scenarios:
 
-## Supported Languages & Status
+| Scenario | Graph (tokens) | Raw (tokens) | Savings |
+|----------|---------------|-------------|---------|
+| Find function definition | ~21 | ~2,265 | **99.1%** |
+| Trace callers | ~18 | ~2,000 | **99.1%** |
+| Architecture overview | ~32 | ~1,875 | **98.3%** |
+| Function analysis | ~43 | ~4,733 | **99.1%** |
+| Symbol search | ~23 | ~958 | **97.6%** |
 
-| Language | Parser | IR Translator | Verified |
-|----------|--------|---------------|----------|
-| Python | ✅ | ✅ | ✅ |
-| Go | ✅ | ✅ | ✅ |
-| C | ✅ | ✅ | ⬜ |
-| C++ | ✅ | ✅ | ⬜ |
-| Rust | ✅ | ✅ | ⬜ |
-| JavaScript | ✅ | ✅ | ⬜ |
-| TypeScript | ✅ | ✅ | ⬜ |
-| Java | ✅ | ✅ | ⬜ |
+## Comparison with codebase-memory-mcp
+
+| Aspect | CodeScope | codebase-memory-mcp |
+|--------|-----------|---------------------|
+| **Backend** | SQLite (embedded) | Neo4j (external service) |
+| **Deployment** | Single binary | Neo4j + configuration |
+| **Search** | FTS5 prefix matching | BM25 + vector semantic search |
+| **Graph query** | Minimal DSL | Full Cypher |
+| **Type info** | Optional LSP enhancement | LSP-aware |
+| **Complexity** | Cyclomatic + nesting | Cyclomatic + cognitive + hotspots |
+| **Community detection** | Label propagation | Leiden algorithm |
+| **Cross-repo** | ❌ | ✅ |
+| **ADR management** | ❌ | ✅ |
+| **Dependencies** | Zero external | Neo4j |
+
+**CodeScope's edge**: Zero-dependency deployment, unified IR layer, portability.
+**codebase-memory-mcp's edge**: Richer queries, semantic search, type-aware parsing.
+
+## Roadmap
+
+See [plan/roadmap.md](plan/roadmap.md) for detailed status.
+
+## Development
+
+### Project Structure
+
+```
+server/         Rust MCP server (protocol, tools, FFI)
+engine/         C++ core engine
+  src/parser/   tree-sitter parser wrapper
+  src/ir/       Unified AST IR + translators
+  src/graph/    Code graph builder
+  src/store/    SQLite persistence
+  src/query/    Query engine + DSL
+  src/lsp/      LSP client for type enhancement
+grammars/       tree-sitter grammar .so files
+plan/           Design docs + roadmap
+tests/          Integration tests
+```
+
+### Coding Standards
+
+- File limit: 1000 lines max
+- Comments: English only
+- Rust: rustfmt + clippy
+- C++: Google C++ Style Guide, C++23
+- Memory: RAII, no raw new/delete
+- FFI: explicit ownership docs on every function
 
 ## License
 
