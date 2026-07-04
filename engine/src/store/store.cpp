@@ -309,26 +309,9 @@ bool GraphStore::createSchema()
 	// Execute main schema
 	bool ok = exec(schema);
 
-	// Try to create vec0 embeddings table (sqlite-vec extension, may not be
-	// available) This is optional — if it fails, embeddings just won't be stored.
-	{
-		char *err = nullptr;
-		int rc = sqlite3_exec(
-			db_,
-			"CREATE VIRTUAL TABLE IF NOT EXISTS embeddings USING vec0("
-			"    symbol_id INTEGER PRIMARY KEY,"
-			"    vector FLOAT[384]"
-			");",
-			nullptr, nullptr, &err);
-		if (rc != SQLITE_OK) {
-			// sqlite-vec not available — embeddings will use search_index FTS
-			// fallback
-			fprintf(stderr,
-				"store: vec0 table not available (sqlite-vec not loaded): %s\n",
-				err ? err : "");
-			sqlite3_free(err);
-		}
-	}
+	// Note: vec0 embeddings table is created in engine_init() after
+	// sqlite-vec extension is loaded via dlopen. Not needed here.
+	(void)ok;
 
 	return ok;
 }

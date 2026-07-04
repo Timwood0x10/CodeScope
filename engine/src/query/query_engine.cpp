@@ -3,6 +3,7 @@
 #include "graph_query.h"
 #include "impact_analysis.h"
 
+#include <algorithm>
 #include <cstring>
 #include <sqlite3.h>
 #include <sstream>
@@ -59,7 +60,7 @@ static std::string queryToJson(sqlite3 *db, const char *sql,
 	}
 
 	std::ostringstream json;
-	json << "{\"total\":0,\"" << result_key << "\":[";
+	json << "{\"" << result_key << "\":[";
 
 	int col_count = sqlite3_column_count(stmt);
 	bool first_row = true;

@@ -93,3 +93,58 @@ pub struct TextContent {
     pub content_type: &'static str,
     pub text: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_initialize_result_serde() {
+        let r = InitializeResult {
+            protocol_version: "2024-11-05".into(),
+            capabilities: ServerCapabilities {
+                tools: ToolCapability { list_changed: true },
+            },
+            server_info: ServerInfo {
+                name: "codescope".into(),
+                version: "0.3.0".into(),
+            },
+        };
+        let json = serde_json::to_value(&r).unwrap();
+        assert_eq!(json["protocol_version"], "2024-11-05");
+        assert_eq!(json["server_info"]["name"], "codescope");
+        assert!(
+            json["capabilities"]["tools"]["listChanged"]
+                .as_bool()
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn test_tool_serde() {
+        let t = Tool {
+            name: "test_tool".into(),
+            description: "A test tool".into(),
+            input_schema: json!({"type": "object", "properties": {}}),
+        };
+        let json = serde_json::to_value(&t).unwrap();
+        assert_eq!(json["name"], "test_tool");
+        assert_eq!(json["description"], "A test tool");
+        assert!(json["inputSchema"].is_object());
+    }
+
+    #[test]
+    fn test_call_tool_result() {
+        let r = CallToolResult {
+            content: vec![TextContent {
+                content_type: "text",
+                text: "hello".into(),
+            }],
+            is_error: None,
+        };
+        let json = serde_json::to_value(&r).unwrap();
+        assert_eq!(json["content"][0]["type"], "text");
+        assert_eq!(json["content"][0]["text"], "hello");
+    }
+}

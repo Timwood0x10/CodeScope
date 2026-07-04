@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <dlfcn.h>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -24,12 +25,7 @@
 #include <unordered_set>
 #include <vector>
 
-// ─── C-linkage SQLite extension loading (provided by Homebrew sqlite3) ──
-extern "C" {
-int sqlite3_enable_load_extension(sqlite3 *, int onoff);
-int sqlite3_load_extension(sqlite3 *, const char *zFile, const char *zProc,
-			   char **pzErrMsg);
-}
+// ─── Sqlite-vec extension loading (dlopen-based, portable) ──
 
 // ─── Global singletons ─────────────────────────────────────────
 
@@ -158,36 +154,47 @@ int engine_init(const char *db_path)
 	}
 
 	// Try to load sqlite-vec extension for vector embeddings
+	// Use dlsym to find sqlite3_load_extension — avoids linking against Homebrew-only symbols
 	{
 		std::string vec_path = base + "/vec0.dylib";
 		sqlite3 *db = g_store->handle();
-		sqlite3_enable_load_extension(db, 1);
-		char *ext_err = nullptr;
-		int rc = sqlite3_load_extension(db, vec_path.c_str(), nullptr,
-						&ext_err);
-		if (rc == SQLITE_OK) {
-			// Try creating the embeddings table now that the extension is loaded
-			char *sql_err = nullptr;
-			sqlite3_exec(
-				db,
-				"CREATE VIRTUAL TABLE IF NOT EXISTS embeddings USING vec0("
-				"    symbol_id INTEGER PRIMARY KEY,"
-				"    vector FLOAT[384]"
-				");",
-				nullptr, nullptr, &sql_err);
-			if (sql_err)
-				sqlite3_free(sql_err);
-			fprintf(stderr, "engine: sqlite-vec loaded from %s\n",
-				vec_path.c_str());
+
+		typedef int (*load_ext_fn)(sqlite3 *, const char *,
+					   const char *, char **);
+		typedef int (*enable_ext_fn)(sqlite3 *, int);
+		auto enable = (enable_ext_fn)dlsym(
+			RTLD_DEFAULT, "sqlite3_enable_load_extension");
+		auto load = (load_ext_fn)dlsym(RTLD_DEFAULT,
+					       "sqlite3_load_extension");
+
+		if (load && enable) {
+			enable(db, 1);
+			char *ext_err = nullptr;
+			int rc = load(db, vec_path.c_str(), nullptr, &ext_err);
+			if (rc == SQLITE_OK) {
+				char *sql_err = nullptr;
+				sqlite3_exec(
+					db,
+					"CREATE VIRTUAL TABLE IF NOT EXISTS embeddings USING vec0("
+					"    symbol_id INTEGER PRIMARY KEY,"
+					"    vector FLOAT[384]"
+					");",
+					nullptr, nullptr, &sql_err);
+				if (sql_err)
+					sqlite3_free(sql_err);
+				fprintf(stderr, "engine: sqlite-vec loaded\n");
+			} else {
+				fprintf(stderr,
+					"engine: sqlite-vec not available: %s\n",
+					ext_err ? ext_err : "unknown");
+			}
+			if (ext_err)
+				sqlite3_free(ext_err);
+			enable(db, 0);
 		} else {
 			fprintf(stderr,
-				"engine: sqlite-vec not available (%s)\n",
-				ext_err ? ext_err :
-					  "extension loading not supported");
+				"engine: sqlite-vec not available (extension API not found)\n");
 		}
-		if (ext_err)
-			sqlite3_free(ext_err);
-		sqlite3_enable_load_extension(db, 0);
 	}
 
 	return 0;
@@ -562,11 +569,116 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 char *engine_index_project(uint64_t project_id, const char *dir_path,
 			   const char *language_filter)
 {
-	// Simplified: walk directory and index each supported file
-	// Real implementation would use std::filesystem
+	if (!g_store)
+		return dupString(
+			"{\"ok\":false,\"error\":\"engine not initialized\"}");
+
+	std::string dir = dir_path ? dir_path : "";
+	if (dir.empty())
+		return dupString(
+			"{\"ok\":false,\"error\":\"dir_path is empty\"}");
+
+	while (!dir.empty() && dir.back() == '/')
+		dir.pop_back();
+	if (!std::filesystem::exists(dir))
+		return dupString(
+			"{\"ok\":false,\"error\":\"directory not found\"}");
+
+	std::string lang_filter = language_filter ? language_filter : "";
+
+	// Directories to skip (common build/cache/vcs dirs)
+	std::unordered_set<std::string> skip_dirs = {
+		".git",	      ".svn",	     "node_modules", "target",
+		"build",      "__pycache__", ".venv",	     "venv",
+		".codescope", ".codegraph"
+	};
+
+	int total_indexed = 0, total_errors = 0, total_nodes = 0,
+	    total_edges = 0;
+
+	g_store->beginTransaction();
+
+	try {
+		auto it = std::filesystem::recursive_directory_iterator(
+			dir, std::filesystem::directory_options::
+				     skip_permission_denied);
+		auto end = std::filesystem::end(it);
+		while (it != end) {
+			// Compute path relative to project root
+			std::string rel_path = it->path().string();
+			if (rel_path.size() > dir.size() + 1)
+				rel_path = rel_path.substr(dir.size() + 1);
+			else
+				rel_path.clear();
+
+			// Skip common build/cache directories
+			if (!rel_path.empty()) {
+				std::string first_component =
+					rel_path.substr(0, rel_path.find('/'));
+				if (it->is_directory() &&
+				    skip_dirs.count(first_component)) {
+					it.disable_recursion_pending();
+					++it;
+					continue;
+				}
+				if (it->is_regular_file() &&
+				    skip_dirs.count(rel_path)) {
+					++it;
+					continue;
+				}
+			}
+
+			if (it->is_regular_file()) {
+				std::string file_path = it->path().string();
+				const char *lang =
+					detectLanguage(file_path.c_str());
+				if (!lang) {
+					++it;
+					continue;
+				}
+				if (!lang_filter.empty() &&
+				    lang != lang_filter) {
+					++it;
+					continue;
+				}
+
+				char *idx = engine_index_file(
+					project_id, file_path.c_str());
+				if (idx) {
+					if (strstr(idx, "\"ok\":true")) {
+						total_indexed++;
+						const char *n = strstr(
+							idx, "\"nodes\":");
+						if (n)
+							total_nodes +=
+								atoi(n + 8);
+						const char *e = strstr(
+							idx, "\"edges\":");
+						if (e)
+							total_edges +=
+								atoi(e + 8);
+					} else {
+						total_errors++;
+					}
+					engine_free_string(idx);
+				} else {
+					total_errors++;
+				}
+			}
+			++it;
+		}
+	} catch (const std::exception &e) {
+		g_store->rollbackTransaction();
+		return dupString("{\"ok\":false,\"error\":\"index error: " +
+				 jsonEscape(e.what()) + "\"}");
+	}
+
+	g_store->commitTransaction();
+
 	std::ostringstream result;
-	result << "{\"ok\":true,\"message\":\"directory indexing not yet implemented "
-		  "in v1\"}";
+	result << "{\"ok\":true,\"files_indexed\":" << total_indexed
+	       << ",\"nodes\":" << total_nodes << ",\"edges\":" << total_edges
+	       << ",\"errors\":" << total_errors << "}";
 	return dupString(result.str());
 }
 
@@ -1284,7 +1396,8 @@ getGitChangedFiles(const std::string &project_dir)
 	std::string tm = "timeout 3";
 	if (std::filesystem::exists("/opt/homebrew/bin/gtimeout"))
 		tm = "gtimeout 3";
-	std::string cmd = "cd " + project_dir + " && " + tm + " git status --porcelain 2>/dev/null || true";
+	std::string cmd = "cd " + project_dir + " && " + tm +
+			  " git status --porcelain 2>/dev/null || true";
 	FILE *fp = popen(cmd.c_str(), "r");
 	if (!fp)
 		return changed;
@@ -1653,14 +1766,8 @@ char *engine_scan_project(uint64_t project_id, const char *dir_path,
 	}
 
 	// Update module file counts
-	// Count per-module via a simple map
-	std::unordered_map<uint64_t, int> mod_file_counts;
+	// Update module file counts
 	{
-		const char *sql =
-			"UPDATE modules SET file_count = ("
-			"SELECT COUNT(DISTINCT file_path) FROM symbols "
-			"WHERE symbols.project_id = ? AND symbols.module_id = modules.id)";
-		// Simple approach: update each module individually
 		std::string count_sql =
 			"SELECT id FROM modules WHERE project_id = ?";
 		sqlite3_stmt *stmt = nullptr;

@@ -23,8 +23,10 @@ CodeGraph GraphBuilder::buildCallGraph(ir::TranslationUnit* unit) {
     current_graph_.graph_type = "call_graph";
     current_graph_.name = "call-graph";
     next_edge_id_ = 1;
-    ir_to_graph_node_.clear();
-    function_stack_.clear();
+    // NOTE: ir_to_graph_node_ and function_stack_ are intentionally NOT cleared
+    // here. buildSymbolGraph already populated them with node ID mappings. By
+    // keeping them, call edges reference the SAME graph node IDs, so the
+    // SQL JOIN in getCallers/getCallees finds matching rows in graph_nodes.
     building_call_graph_ = true;
 
     traverse(unit);

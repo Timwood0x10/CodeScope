@@ -109,7 +109,7 @@ test-engine: $(ENGINE_LIB)
 	@failed=0; \
 	for test in $(TEST_EXES); do \
 		printf "  Running $$test...\n"; \
-		if $(BUILD_DIR)/$$test 2>&1; then \
+		if GRAMMARS_DIR=$(GRAMMARS_DIR) DYLD_LIBRARY_PATH=/opt/homebrew/opt/sqlite/lib:/opt/homebrew/opt/tree-sitter/lib $(BUILD_DIR)/$$test 2>&1; then \
 			printf "  $(CHECK) $$test passed\n"; \
 		else \
 			printf "  $(CROSS) $$test failed\n"; \

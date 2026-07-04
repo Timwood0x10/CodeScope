@@ -6,6 +6,7 @@
 .codegraph/
 
 .codescope/
+.mcp.json
 
 
 # IDE and Editors
@@ -182,3 +183,5 @@
 *.iso
 
 plan/
+# AtomCode local-scope configs (machine-specific)
+.atomcode/local/

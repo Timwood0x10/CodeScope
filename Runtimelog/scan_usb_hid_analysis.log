@@ -1,0 +1,318 @@
+# Linux Kernel USB 设备识别机制分析
+## CodeScope MCP 自动化代码分析报告
+
+**日期**: 2026-07-04
+**分析工具**: CodeScope Engine + codebase-memory-mcp
+**源码**: /tmp/linux-src/ (Linux Kernel 源码树, 89,465 文件)
+**索引文件**:
+  - drivers/hid/usbhid/hid-core.c → 169 nodes, 192 edges
+  - drivers/hid/usbhid/usbmouse.c → 32 nodes, 22 edges
+  - drivers/hid/usbhid/usbkbd.c → 39 nodes, 49 edges
+  - include/linux/hid.h → 1 node (宏定义为主)
+
+---
+
+## 1. 代码库全量索引 Benchmark
+
+### 1.1 全量索引性能
+
+| 指标 | 值 |
+|------|-----|
+| 文件数 | 89,465 |
+| 文件发现时间 | 2,336 ms |
+| 结构化处理 | 149 ms (86,646 节点, 86,304 边) |
+| 并行提取 | 14 workers, 18,432 MB budget |
+| 索引内容 | 全部 ~89K 文件完成 |
+
+### 1.2 查询性能
+
+使用 `codebase-memory-mcp search_code` 在已索引的内核上运行：
+
+| 查询 | 结果数 | 耗时 |
+|------|--------|------|
+| `usb` | 5 matches | 578 ms |
+| `hid` | 5 matches | 1,148 ms |
+| `input` | 5 matches | 447 ms |
+| `mouse` | 5 matches | 6,624 ms |
+| `keyboard` | 5 matches | 2,153 ms |
+
+注：首次查询包含冷启动开销。后续查询预计快 10x。
+
+### 1.3 CodeScope 引擎单文件性能 (test_bench)
+
+| 测试文件 | 大小 | 索引时间 | 吞吐量 | 查询总时间 |
+|----------|------|---------|--------|-----------|
+| kernel/latencytop.c | 7.6 KB | 4.94 ms | 1,533 KB/s | 0.17 ms (9次) |
+| kernel/cgroup (15 files) | 18,872 行 | 索引完成 | 1,460 nodes | 2,064 edges, 0 errors |
+
+---
+
+## 2. USB 设备驱动识别机制
+
+### 2.1 总体架构：USB 设备枚举 → 驱动匹配 → HID 识别
+
+```
+USB 设备插入
+    │
+    ├── USB Core 枚举阶段 ─────────────────────────────┐
+    │   usb_new_device()                                │
+    │   → usb_analyze_device()  读取设备描述符          │
+    │   → usb_device_descriptor: idVendor, idProduct    │
+    │   → usb_set_configuration()                       │
+    │   → 遍历接口描述符 (interface descriptors)        │
+    └───────────────────────────────────────────────────┘
+    │
+    ├── 驱动匹配阶段 (USB Core) ────────────────────────┐
+    │   usb_device_match()                              │
+    │   → 匹配 usb_device_id 表                          │
+    │   → hid_usb_ids[] (hid-core.c:1679)               │
+    │     { USB_INTERFACE_INFO(HID_CLASS, ...) }         │
+    │   → usb_match_id() / usb_match_device()           │
+    │   → 匹配成功 → 调用 probe()                      │
+    └───────────────────────────────────────────────────┘
+    │
+    ├── HID 驱动探测 ───────────────────────────────────┐
+    │   usbhid_probe() (hid-core.c:1363)                │
+    │   → 分配 hid_device 结构                          │
+    │   → usbhid_parse() 解析 HID Report Descriptor     │
+    │   → hid_parse_report()                            │
+    └───────────────────────────────────────────────────┘
+    │
+    ├── HID 报告描述符解析 ─────────────────────────────┐
+    │   usbhid_parse() (hid-core.c:982)                 │
+    │   → hid_get_class_descriptor() 读取 HID 描述符    │
+    │   → hid_set_idle()                                │
+    │   → hid_parse_report() 解析 Usage Pages/IDs       │
+    └───────────────────────────────────────────────────┘
+    │
+    ├── 输入子系统连接 ─────────────────────────────────┐
+    │   hid_connect()                                   │
+    │   → 根据 HID 设备类型创建 input_dev                │
+    │   → 设置 evbit/keybit/relbit 等能力位             │
+    └───────────────────────────────────────────────────┘
+```
+
+### 2.2 USB 设备匹配 (驱动层)
+
+USB 设备通过 **`usb_device_id` 表** 匹配驱动。对于 HID 设备，核心匹配表在 `hid-core.c:1679`：
+
+```c
+static const struct usb_device_id hid_usb_ids[] = {
+    { USB_INTERFACE_INFO(USB_INTERFACE_CLASS_HID, ...) },
+    { }  /* 终止 */
+};
+MODULE_DEVICE_TABLE(usb, hid_usb_ids);
+```
+
+匹配条件：
+| 字段 | 含义 |
+|------|------|
+| `idVendor` | USB 厂商 ID (如 0x046D = Logitech) |
+| `idProduct` | USB 产品 ID (特定设备型号) |
+| `bInterfaceClass` | 接口类 (3 = HID) |
+| `bInterfaceSubClass` | 接口子类 (1 = 启动设备) |
+| `bInterfaceProtocol` | 接口协议 (1 = 键盘, 2 = 鼠标) |
+
+### 2.3 CodeScope 查询结果：关键函数位置
+
+通过 CodeScope `find_definition` 工具定位：
+
+```
+usbhid_probe   → hid-core.c:1363  — USB HID 设备探测入口
+usbhid_parse   → hid-core.c:982   — HID 报告描述符解析
+usb_mouse_probe → usbmouse.c:106  — USB 鼠标专用探测
+usb_kbd_probe   → usbkbd.c:261    — USB 键盘专用探测
+hid_usb_ids     → hid-core.c:1678 — USB 设备匹配表
+```
+
+### 2.4 CodeScope 查询结果：调用关系图
+
+通过 `graph_query MATCH (Function)-[Calls]->(Function)` 获得的 USB HID 调用链：
+
+```
+usbhid_probe [hid-core.c:1363]    ← USB Core 匹配后调用
+  → hid_parse_report()            解析 HID 报告
+  → usbhid_parse() [hid-core.c:982]
+     → hid_set_idle()             设置空闲时间
+     → hid_get_class_descriptor()  读取分类描述符
+  → usbhid_start() [hid-core.c:112]
+     → hid_find_max_report()       找最大报告长度
+     → hid_start_in()              启动输入 URB
+     → usbhid_set_leds()           设置 LED（键盘专用）
+     → hid_free_buffers()
+
+usb_mouse_probe [usbmouse.c:106]  ← USB Core 匹配鼠标
+  → usb_alloc_coherent()
+  → input_allocate_device()       创建输入设备
+  → usb_fill_int_urb()            设置中断 URB
+  → input_register_device()       注册到输入子系统
+
+usb_kbd_probe [usbkbd.c:261]      ← USB Core 匹配键盘
+  → usb_alloc_coherent()
+  → input_allocate_device()       创建输入设备
+  → usb_fill_int_urb()
+  → input_register_device()       注册到输入子系统
+  → usb_kbd_irq() [usbkbd.c:103]  键盘中断处理
+     → input_report_key()          上报按键事件
+```
+
+注：通过 CodeScope MCP 的 `get_callers` 查询 `usbhid_probe` 返回空集，说明调用链跨越不同编译单元（USB Core 在 `drivers/usb/core/`），不在当前索引范围内。
+
+---
+
+## 3. 同为 USB，如何区分鼠标和键盘？
+
+### 3.1 第一层区分：USB 接口描述符
+
+USB 设备在枚举阶段提供**接口描述符 (Interface Descriptor)**，包含三个关键字段：
+
+```
+bInterfaceClass    = 3     (HID - Human Interface Device)
+bInterfaceSubClass = 0/1   (0=无, 1=启动设备 Boot Device)
+bInterfaceProtocol = 0/1/2 (0=无, 1=键盘, 2=鼠标)
+```
+
+**这是最底层的区分**。USB 规范明确定义：
+| Protocol | 设备类型 | 说明 |
+|----------|---------|------|
+| 1 | 键盘 (Keyboard) | 使用 Boot Protocol 的键盘 |
+| 2 | 鼠标 (Mouse) | 使用 Boot Protocol 的鼠标 |
+
+### 3.2 第二层区分：HID 报告描述符 (Report Descriptor)
+
+对于非 Boot 设备（如多媒体键盘、游戏鼠标），通过 **HID Report Descriptor** 中的 **Usage Page** 和 **Usage ID** 区分：
+
+```c
+// HID Usage Tables (include/linux/hid.h)
+#define HID_USAGE_PAGE         0xffff0000
+#define HID_UP_GENERAL_DESKTOP 0x00010000  // Generic Desktop Controls
+#define HID_UP_KEYBOARD        0x00070000  // Keyboard/Keypad
+#define HID_UP_BUTTON          0x00090000  // Button
+#define HID_UP_CONSUMER        0x000c0000  // Consumer Controls
+
+// Generic Desktop Page Usage IDs:
+#define HID_GD_MOUSE           0x00010002  // Mouse
+#define HID_GD_KEYBOARD        0x00010006  // Keyboard
+#define HID_GD_KEYPAD          0x00010007  // Keypad
+```
+
+**关键识别逻辑**：
+
+```
+HID 报告描述符解析:
+  │
+  ├── 若 Usage Page = Generic Desktop (0x01)
+  │   └── Usage = Mouse (0x02)      → 创建鼠标 input_dev
+  │   └── Usage = Keyboard (0x06)    → 创建键盘 input_dev
+  │
+  ├── 若 Usage Page = Keyboard (0x07)
+  │   └── Usage 任意键盘键值         → 键盘
+  │
+  ├── 若 Usage Page = Button (0x09)
+  │   └── Usage 1/2/3 (左/中/右键)  → 鼠标
+  │
+  └── 若 Usage Page = Consumer (0x0C)
+      └── 多媒体键                   → 可能是键盘的扩展功能
+```
+
+### 3.3 第三层区分：input_dev 能力位
+
+在 `hid_connect()` 或专用 probe 函数中，根据解析结果设置输入设备的能力位：
+
+**鼠标 (usbmouse.c)**:
+```c
+static int usb_mouse_probe(struct usb_interface *intf, ...)
+{
+    struct usb_device *dev = interface_to_usbdev(intf);
+    struct usb_mouse *mouse;
+    struct input_dev *input_dev;
+
+    // 设置事件类型
+    set_bit(EV_KEY, input_dev->evbit);     // 按键事件
+    set_bit(EV_REL, input_dev->evbit);     // 相对位移事件
+
+    // 设置按键: 左/中/右键
+    set_bit(BTN_LEFT, input_dev->keybit);
+    set_bit(BTN_RIGHT, input_dev->keybit);
+    set_bit(BTN_MIDDLE, input_dev->keybit);
+
+    // 设置相对轴: X/Y
+    set_bit(REL_X, input_dev->relbit);
+    set_bit(REL_Y, input_dev->relbit);
+}
+```
+
+**键盘 (usbkbd.c)**:
+```c
+static int usb_kbd_probe(struct usb_interface *intf, ...)
+{
+    struct usb_kbd *kbd;
+    struct input_dev *input_dev;
+
+    set_bit(EV_KEY, input_dev->evbit);     // 按键事件
+    set_bit(EV_REP, input_dev->evbit);     // 自动重复事件
+
+    // 设置 256 个键位: KEY_A..KEY_Z, KEY_0..KEY_9, ...
+    for (i = 0; i < 256; i++)
+        set_bit(usb_kbd_keycode[i], input_dev->keybit);
+}
+```
+
+| 能力位 | 鼠标 | 键盘 |
+|--------|------|------|
+| `EV_KEY` | ✅ (仅 BTN_LEFT/RIGHT/MIDDLE) | ✅ (KEY_A-Z, KEY_0-9, ... 256+ keys) |
+| `EV_REL` | ✅ (REL_X, REL_Y) | ❌ |
+| `EV_ABS` | 可选 (触摸板) | ❌ |
+| `EV_REP` | ❌ | ✅ (按键重复) |
+| `REL_WHEEL` | ✅ (滚轮) | ❌ |
+
+### 3.4 完整识别流程图
+
+```
+USB 设备插入 (如 USB 鼠标)
+    │
+    ├── USB Core 枚举
+    │   读取设备描述符: idVendor=0x046D, idProduct=0xC077
+    │   读取接口描述符: bInterfaceClass=3(HID),
+    │                   bInterfaceSubClass=1(Boot),
+    │                   bInterfaceProtocol=2(Mouse)  ← 协议=2 表示鼠标
+    │
+    ├── USB 驱动匹配
+    │   hid_usb_ids[] 匹配 → usbhid_probe() 调用
+    │
+    ├── HID 报告描述符解析
+    │   usbhid_parse():
+    │   Usage Page = Generic Desktop (0x01)
+    │   Usage = Mouse (0x02)
+    │   → hid_connect() 判断设备类型 = HID_DEVICE_TYPE_MOUSE
+    │
+    ├── 输入子系统注册
+    │   input_register_device():
+    │   evbit = EV_KEY | EV_REL
+    │   keybit = BTN_LEFT | BTN_RIGHT | BTN_MIDDLE
+    │   relbit = REL_X | REL_Y | REL_WHEEL
+    │
+    └── 用户空间
+        通过 /dev/input/eventX 读取鼠标事件
+        每次移动 → type=EV_REL, code=REL_X/REL_Y, value=位移量
+        每次点击 → type=EV_KEY, code=BTN_LEFT, value=1/0
+```
+
+---
+
+## 4. 总结
+
+| 层级 | 区分机制 | 鼠标特征 | 键盘特征 | 关键代码 |
+|------|---------|----------|----------|---------|
+| **USB 协议层** | 接口协议号 | `bInterfaceProtocol=2` | `bInterfaceProtocol=1` | USB 规范定义 |
+| **HID 描述符** | Usage Page + Usage | `HID_GD_MOUSE` (0x02) | `HID_GD_KEYBOARD` (0x06) | `hid_parse_report()` |
+| **输入能力位** | evbit / keybit / relbit | `BTN_LEFT`, `REL_X/Y` | 256+ `KEY_*` | `usb_mouse_probe()` / `usb_kbd_probe()` |
+| **驱动层** | 专用驱动 | `usbmouse.c` | `usbkbd.c` | USB HID 子系统 |
+
+**核心洞见**: 区分鼠标和键盘不是靠"猜"，而是靠 **USB 协议的标准化分类机制**——从 USB 接口描述符的 `bInterfaceProtocol` 字段到 HID 报告描述符的 Usage Page/ID，每一层都有明确定义的规范值。
+
+---
+
+*分析完成时间: 2026-07-04 20:13 UTC*
+*使用 CodeScope Engine MCP 工具链自动化完成*
+*工具: find_definition × 8, graph_query × 1, index_file × 4, search_code × 5*
