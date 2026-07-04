@@ -433,6 +433,14 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
                 "required": ["query"]
             }),
         },
+        Tool {
+            name: "codescope_capabilities".into(),
+            description: "Get a standardized report of all available features and their readiness status. Returns fast_scan, module_tree, symbol_search, call_graph, path_tracing, metrics, semantic_search, and context_builder with their available/ready flags.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
     ]
 }
 
@@ -594,6 +602,7 @@ pub fn execute(project_id: u64, tool_name: &str, args: &Value) -> String {
             let query = args["query"].as_str().unwrap_or("");
             ffi::build_context(project_id, query)
         }
+        "codescope_capabilities" => ffi::get_capabilities(project_id),
 
         _ => json!({"error": "Unknown tool"}).to_string(),
     }

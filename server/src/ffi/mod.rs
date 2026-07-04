@@ -89,6 +89,7 @@ unsafe extern "C" {
         to_name: *const c_char,
     ) -> *mut c_char;
     fn engine_build_context(project_id: u64, query: *const c_char) -> *mut c_char;
+    fn engine_get_capabilities(project_id: u64) -> *mut c_char;
 
     fn engine_free_string(ptr: *mut c_char);
 }
@@ -293,6 +294,10 @@ pub fn trace_path(project_id: u64, from_name: &str, to_name: &str) -> String {
 
 pub fn build_context(project_id: u64, query: &str) -> String {
     take_string(unsafe { engine_build_context(project_id, cstr(query).as_ptr()) })
+}
+
+pub fn get_capabilities(project_id: u64) -> String {
+    take_string(unsafe { engine_get_capabilities(project_id) })
 }
 
 // ── Background task management (Tokio + index_tasks table) ─────

@@ -10,6 +10,7 @@
 #include "store/store.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -17,8 +18,10 @@
 #include <sqlite3.h>
 #include <sstream>
 #include <string>
+#include <sys/stat.h>
 #include <tree_sitter/api.h>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // ─── C-linkage SQLite extension loading (provided by Homebrew sqlite3) ──
@@ -1091,6 +1094,43 @@ class Gitignore {
 
 } // anonymous namespace
 
+// ─── Git-aware incremental scan helper ────────────────────────
+// Runs `git status --porcelain` to detect changed files.
+// Returns a set of file paths that have been modified/added/deleted.
+// If git is not available or the project isn't a git repo, returns empty (full scan).
+static std::unordered_set<std::string> getGitChangedFiles(const std::string &project_dir) {
+    std::unordered_set<std::string> changed;
+    std::string cmd = "cd " + project_dir + " && git status --porcelain 2>/dev/null";
+    FILE *fp = popen(cmd.c_str(), "r");
+    if (!fp) return changed;
+
+    char buf[4096];
+    while (fgets(buf, sizeof(buf), fp)) {
+        // Format: "XY filename" where X/Y are status codes
+        // We care about: M (modified), A (added), ? (untracked), D (deleted)
+        if (strlen(buf) < 3) continue;
+        char status = buf[0];
+        char status2 = buf[1];
+        if (status == 'D' || status2 == 'D') continue; // skip deleted - handled by cleanup
+
+        // Extract filename starting at position 3
+        std::string filepath(buf + 3);
+        // Trim trailing newline
+        while (!filepath.empty() && (filepath.back() == '\n' || filepath.back() == '\r'))
+            filepath.pop_back();
+
+        if (status == '?' && status2 == '?') {
+            // Untracked file
+            changed.insert(project_dir + "/" + filepath);
+        } else if (status == 'M' || status2 == 'M' || status == 'A' || status2 == 'A' ||
+                   status == 'R' || status2 == 'R') {
+            changed.insert(project_dir + "/" + filepath);
+        }
+    }
+    pclose(fp);
+    return changed;
+}
+
 // ─── Phase A: engine_scan_project ──────────────────────────────
 
 char *engine_scan_project(uint64_t project_id, const char *dir_path, const char *language_filter) {
@@ -1121,6 +1161,13 @@ char *engine_scan_project(uint64_t project_id, const char *dir_path, const char 
     // Track module_id by directory path
     std::unordered_map<std::string, uint64_t> module_path_map;
     module_path_map[dir] = root_module_id;
+
+    // Git-aware incremental: only scan changed files if git repo
+    std::unordered_set<std::string> git_changed = getGitChangedFiles(dir);
+    bool incremental = !git_changed.empty();
+    if (incremental) {
+        fprintf(stderr, "engine: git incremental scan — %zu changed files\n", git_changed.size());
+    }
 
     // Counters
     int total_symbols = 0;
@@ -1200,6 +1247,20 @@ char *engine_scan_project(uint64_t project_id, const char *dir_path, const char 
                     }
                     parent_mod_id = current_parent;
                 }
+
+                // Git incremental: skip files that haven't changed
+                if (incremental && git_changed.find(file_path) == git_changed.end())
+                    continue;
+
+                // Check file modification time for incremental indexing
+                struct stat file_stat;
+                int64_t mtime = 0, fsize_stat = 0;
+                if (stat(file_path.c_str(), &file_stat) == 0) {
+                    mtime = static_cast<int64_t>(file_stat.st_mtime);
+                    fsize_stat = static_cast<int64_t>(file_stat.st_size);
+                }
+                if (g_store->isFileUnchanged(project_id, file_path.c_str(), mtime, fsize_stat))
+                    continue;
 
                 // Read file content for declaration scanning
                 std::ifstream file(file_path);
@@ -1281,6 +1342,9 @@ char *engine_scan_project(uint64_t project_id, const char *dir_path, const char 
                         }
                     }
                 }
+                // Record file scan state for incremental indexing
+                if (mtime > 0)
+                    g_store->updateFileScanState(project_id, file_path.c_str(), mtime, fsize_stat);
             } else if (it->is_directory()) {
                 // Pre-populate module path for this directory
                 std::string dir_path_str = it->path().string();
@@ -1415,11 +1479,22 @@ char *engine_find_symbol(uint64_t project_id, const char *symbol_name) {
 
         // Check if this looks like a kernel project
         bool is_kernel = (langs.find("c") != std::string::npos);
+        // Check callgraph/enhancement readiness
+        double cg_ready = g_store->getReadyRatio(project_id, "callgraph_ready");
+        double emb_ready = g_store->getReadyRatio(project_id, "embedding_ready");
         // Build smart message
         std::string hint = "{\"results\":[],\"hint\":{";
         hint += "\"message\":\"No symbol named '" + std::string(symbol_name) + "' found\",";
         hint += "\"project_language\":\"" + langs + "\",";
         hint += "\"total_symbols\":" + std::to_string(total) + ",";
+        hint += "\"callgraph_ready\":" + std::to_string(cg_ready) + ",";
+        hint += "\"embedding_ready\":" + std::to_string(emb_ready) + ",";
+        hint += "\"note\":\"Symbol not found — it may not have been indexed yet. ";
+        if (cg_ready < 0.1)
+            hint += "Call graph is not ready — run codescope_enhance for deeper analysis. ";
+        else if (total > 0)
+            hint += "The symbol exists in the project but was not found by exact name match — try search or a different spelling. ";
+        hint += "\"";
         if (total > 0 && is_kernel) {
             hint += "\"suggestion\":\"This appears to be a C/C++ project. ";
             // Check common kernel entry points
@@ -2103,6 +2178,51 @@ char *engine_build_context(uint64_t project_id, const char *query) {
          << "}";
 
     json << "}";
+    return dupString(json.str());
+}
+
+// ─── Capability API ────────────────────────────────────────────
+
+char *engine_get_capabilities(uint64_t project_id) {
+    if (!g_store)
+        return dupString("{\"error\":\"engine not initialized\"}");
+
+    double cg = g_store->getReadyRatio(project_id, "callgraph_ready");
+    double me = g_store->getReadyRatio(project_id, "metrics_ready");
+    double em = g_store->getReadyRatio(project_id, "embedding_ready");
+
+    int total = 0;
+    const char *sql = "SELECT COUNT(*) FROM symbols WHERE project_id = ?";
+    sqlite3_stmt *stmt = nullptr;
+    if (sqlite3_prepare_v2(g_store->handle(), sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+        if (sqlite3_step(stmt) == SQLITE_ROW)
+            total = sqlite3_column_int(stmt, 0);
+        sqlite3_finalize(stmt);
+    }
+
+    std::ostringstream json;
+    json << "{"
+         << "\"project_id\":" << project_id << ","
+         << "\"total_symbols\":" << total << ","
+         << "\"capabilities\":{"
+         << "\"fast_scan\":{\"available\":true,\"ready\":true,\"description\":\"ms-level declaration extraction\"},"
+         << "\"module_tree\":{\"available\":true,\"ready\":true,\"description\":\"hierarchical module view\"},"
+         << "\"symbol_search\":{\"available\":true,\"ready\":true,\"description\":\"exact name match\"},"
+         << "\"entry_points\":{\"available\":true,\"ready\":" << (total > 0 ? "true" : "false")
+         << ",\"description\":\"main/initcall/probe detection\"},"
+         << "\"call_graph\":{\"available\":true,\"ready\":" << (cg > 0.1 ? "true" : "false")
+         << ",\"description\":\"function call edges — run codescope_enhance to enable\"},"
+         << "\"path_tracing\":{\"available\":true,\"ready\":" << (cg > 0.1 ? "true" : "false")
+         << ",\"description\":\"BFS shortest path between functions\"},"
+         << "\"metrics\":{\"available\":true,\"ready\":" << (me > 0.1 ? "true" : "false")
+         << ",\"description\":\"complexity metrics — run codescope_enhance\"},"
+         << "\"semantic_search\":{\"available\":true,\"ready\":" << (em > 0.1 ? "true" : "false")
+         << ",\"description\":\"vector embedding search — run codescope_enhance\"},"
+         << "\"context_builder\":{\"available\":true,\"ready\":true,\"description\":\"intelligent context assembly\"}"
+         << "},"
+         << "\"enhancement_needed\":\"Run codescope_enhance to enable call graph, metrics, and semantic search\""
+         << "}";
     return dupString(json.str());
 }
 

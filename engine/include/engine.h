@@ -205,6 +205,13 @@ char* engine_trace_path(uint64_t project_id,
  */
 char* engine_build_context(uint64_t project_id, const char* query);
 
+/**
+ * Get a standardized capabilities report — what features are available
+ * and their readiness status. Returns JSON with each capability's name,
+ * available flag, and ready flag.
+ */
+char* engine_get_capabilities(uint64_t project_id);
+
 // ─── Memory ───────────────────────────────────────────────────
 
 void engine_free_string(char* ptr);
