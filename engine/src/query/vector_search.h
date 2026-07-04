@@ -17,7 +17,8 @@
  * "addition", "summation" better than FTS5 prefix alone.
  */
 
-namespace vector_search {
+namespace vector_search
+{
 
 // ─── Vector type ──────────────────────────────────────────────
 

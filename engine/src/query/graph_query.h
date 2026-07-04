@@ -5,7 +5,8 @@
 #include <string>
 #include "../store/store.h"
 
-namespace query {
+namespace query
+{
 
 // Parse a minimal graph-pattern DSL and execute against the store.
 //
@@ -18,7 +19,8 @@ namespace query {
 //
 // Returns JSON: { "total": N, "results": [ { source: ..., edge: ..., target:
 // ... }, ... ] }
-std::string executeGraphQuery(uint64_t project_id, const char *dsl_query, store::GraphStore *store);
+std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
+			      store::GraphStore *store);
 
 } // namespace query
 

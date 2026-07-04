@@ -7,7 +7,8 @@
 
 #include "../store/store.h"
 
-namespace query {
+namespace query
+{
 
 /**
  * Performs change impact analysis on code graphs.
@@ -36,7 +37,7 @@ namespace query {
  *   }
  */
 std::string analyzeChangeImpact(uint64_t project_id, store::GraphStore *store,
-                                const char *modified_files_json);
+				const char *modified_files_json);
 
 } // namespace query
 
