@@ -62,10 +62,18 @@ static std::string buildSingleHopQuery(uint64_t project_id, int edge_type,
 
 	if (edge_type >= 0)
 		sql << " AND ge.edge_type = " << edge_type;
-	if (src_type_val >= 0)
-		sql << " AND src.node_type = " << src_type_val;
-	if (tgt_type_val >= 0)
-		sql << " AND tgt.node_type = " << tgt_type_val;
+	if (src_type_val >= 0) {
+		if (src_type_val == 0)
+			sql << " AND src.node_type IN (0,1)";
+		else
+			sql << " AND src.node_type = " << src_type_val;
+	}
+	if (tgt_type_val >= 0) {
+		if (tgt_type_val == 0)
+			sql << " AND tgt.node_type IN (0,1)";
+		else
+			sql << " AND tgt.node_type = " << tgt_type_val;
+	}
 	if (!src_name.empty())
 		sql << " AND src.name = '" << src_name << "'";
 	if (!tgt_name.empty())
@@ -128,10 +136,18 @@ static std::string buildMultiHopQuery(uint64_t project_id, int edge_type,
 	    << "WHERE p.depth >= " << min_depth
 	    << " AND p.depth <= " << max_depth;
 
-	if (src_type_val >= 0)
-		sql << " AND src.node_type = " << src_type_val;
-	if (tgt_type_val >= 0)
-		sql << " AND tgt.node_type = " << tgt_type_val;
+	if (src_type_val >= 0) {
+		if (src_type_val == 0)
+			sql << " AND src.node_type IN (0,1)";
+		else
+			sql << " AND src.node_type = " << src_type_val;
+	}
+	if (tgt_type_val >= 0) {
+		if (tgt_type_val == 0)
+			sql << " AND tgt.node_type IN (0,1)";
+		else
+			sql << " AND tgt.node_type = " << tgt_type_val;
+	}
 	if (!src_name.empty())
 		sql << " AND src.name = '" << src_name << "'";
 	if (!tgt_name.empty())

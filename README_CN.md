@@ -398,6 +398,45 @@ CodeScope 在首次运行时自动在项目根目录创建 `.codescope/` 目录�
 
 > **提示**：数据库是可移植的——将 `.codescope/` 随项目一起复制，即可在其他机器上复用分析结果。
 
+## 性能
+
+基准测试在 **Apple M3 Max（36 GB 内存）** 上执行。
+
+### 微基准测试 (test_bench)
+
+| 指标 | 数值 |
+|------|------|
+| 引擎初始化 | **14.6 ms** |
+| 索引吞吐量 | **1,533 KB/s** |
+| 符号定义查询 | **0.01–0.03 ms** |
+| 调用者/被调用者查询 | **0.01–0.02 ms** |
+| 9 次查询（总计） | **0.17 ms** |
+
+### 全量内核索引 (codebase-memory-mcp)
+
+| 指标 | Linux 内核 v6.x (89,465 文件) |
+|------|:---------------------------:|
+| 总节点数 | **4,877,492** |
+| 总边数 | **9,326,238** |
+| 数据库大小 | **7.06 GB** |
+| 缓存大小 | **6.7 GB** |
+| 索引耗时 | **183 s（约 3 分钟）** |
+| 峰值内存 | **11.6 GB** |
+| 并行度 | **14 workers** |
+| 文件处理速度 | **489 files/s** |
+| 边生成速度 | **50,966 edges/s** |
+
+### Token 节省
+
+| 场景 | 原始源码 | CodeScope | 节省 |
+|------|:-------:|:---------:|:----:|
+| 查找函数定义 | ~2,265 tokens | ~21 tokens | **99.1%** |
+| 追踪函数调用者 | ~2,000 tokens | ~18 tokens | **99.1%** |
+| 项目架构概览 | ~1,875 tokens | ~32 tokens | **98.3%** |
+| USB 子系统概览 | ~24,000 tokens | ~250 tokens | **99.0%** |
+| 调度器分析 | ~15,000 tokens | ~180 tokens | **98.8%** |
+| **平均** | **~7,416 tokens** | **~81 tokens** | **98.9%** |
+
 ## License
 
 Apache 2.0
@@ -409,14 +448,18 @@ Apache 2.0
 所有基准测试在 **Apple M3 Max（36 GB 内存）** 上执行。\
 原始输出日志位于 [`runtimelog/`](runtimelog/)：
 
-| 日志                           | 大小     | 内容                            |
-| ---------------------------- | ------ | ----------------------------- |
-| `scan_goagent.log`           | 127 KB | Go agent 工具调度分析               |
-| `scan_linux_kernel.log`      | 52 KB  | Linux kernel/ 核心扫描（40,335 符号） |
-| `scan_fs_io.log`             | 14 KB  | VFS + 页缓存 + 预读分析              |
-| `scan_linux_kernel_full.log` | 12 KB  | 内核子目录全量扫描汇总                   |
-| `scan_usb_raw.log`           | 11 KB  | USB 驱动子系统原始输出                 |
-| `scan_stub_full.log`         | 2.2 KB | 空实现检测（Fast + AST）测试           |
-| `scan_multilang.log`         | 1.1 KB | 多语言架构扫描                       |
-| `scan_hid.log`               | 526 B  | USB HID 子系统扫描                 |
+| 日志 | 大小 | 内容 |
+|------|------|------|
+| `scan_goagent.log` | 127 KB | Go agent 工具调度分析 |
+| `scan_linux_kernel.log` | 52 KB | Linux kernel/ 核心扫描（40,335 符号） |
+| `scan_fs_io.log` | 14 KB | VFS + 页缓存 + 预读分析 |
+| `scan_linux_kernel_full.log` | 12 KB | 内核子目录全量扫描汇总 |
+| `scan_usb_raw.log` | 11 KB | USB 驱动子系统原始输出 |
+| `scan_stub_full.log` | 2.2 KB | 空实现检测（Fast + AST）测试 |
+| `scan_linux_full.log` | 1.7 KB | 全量内核扫描尝试 |
+| `scan_multilang.log` | 1.1 KB | 多语言架构扫描 |
+| `scan_hid.log` | 526 B | USB HID 子系统扫描 |
+| `scan_linux_scheduler.log` | 12.8 KB | 进程调度 + 父子进程资源分析 |
+| `scan_usb_hid_analysis.log` | 12.8 KB | USB HID 设备识别深度分析 |
+| `performance_benchmark.log` | 5.5 KB | 全量性能基准报告 |
 

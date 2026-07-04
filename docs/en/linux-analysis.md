@@ -223,3 +223,88 @@ include/linux/fs.h:401  address_space_operations  — Page IO vtable
 **Total analysis time (all scans combined):** ~800 ms  
 **Total peak memory:** ~30 MB  
 **Token savings vs reading raw source:** ~98.9%
+
+---
+
+## 5. Full Kernel Index (codebase-memory-mcp)
+
+### Index Results (89,465 files)
+
+| Metric | Value |
+|--------|-------|
+| Files discovered | **89,465** |
+| File discovery | **2,336 ms** |
+| **Total nodes** | **4,877,492** |
+| **Total edges** | **9,326,238** |
+| **Database size** | **7.06 GB** |
+| **Index time** | **183 s (≈3 min)** |
+| **Peak memory** | **11.6 GB** |
+| Parallel workers | 14 |
+| Throughput | 489 files/s, 50,966 edges/s |
+
+### Phase Timing Breakdown
+
+| Phase | Time | Description |
+|-------|:----:|-------------|
+| `parallel_extract` | **60.4 s** | Parse 89K files, extract tokens and symbols |
+| `parallel_resolve` | **38.9 s** | Resolve call relations, usages, semantic edges |
+| `dump` (DB persist) | **23.8 s** | Write to SQLite database |
+| `semantic_edges` | **14.5 s** | Semantic similarity edges |
+| `registry_build` | **11.1 s** | Build symbol registry |
+| `similarity` | 1.8 s | Function fingerprint similarity |
+| Other phases | 3.5 s | tests/k8s/githistory/decorator/configlink |
+| **Total** | **~183 s** | |
+
+### Memory Profile
+
+```
+Peak:  11,644 MB  (during parallel_extract — 14 workers holding ASTs)
+Stable: 7,500 MB  (post-extract, during resolve and registry phases)
+Budget: 18,432 MB (per-worker: 1,316 MB)
+```
+
+### Disk Usage
+
+```
+SQLite DB:  7.06 GB  (~/.cache/codebase-memory-mcp/)
+Cache:      6.70 GB  (total indexed projects)
+───
+Total:     ~14 GB
+```
+
+### Performance Scaling
+
+| Scope | Files | Nodes | Time | Memory |
+|-------|:----:|:-----:|:----:|:------:|
+| Single file | 1 | 31 | 4.94 ms | ~50 MB |
+| kernel/sched/ | 51 | 3,854 | 841 ms | ~500 MB |
+| kernel/ | 697 | 33,546 | 2,302 ms | ~1.5 GB |
+| **Full kernel** | **89,465** | **4,877,492** | **183 s** | **11.6 GB** |
+
+## 6. CodeScope MCP Analysis Examples
+
+The following analyses were conducted using **CodeScope's own MCP tools** — the project's MCP server was configured in `.mcp.json` and used to query the Linux kernel source code.
+
+### Example 1: USB HID Device Identification
+
+**Tools used:** `index_file`, `find_definition`, `graph_query` (MATCH (Function)-[Calls]->(Function))
+
+Key symbols located via CodeScope MCP:
+
+| Symbol | File | Line | CodeScope Tool |
+|--------|------|:----:|---------------|
+| `usbhid_probe` | `hid-core.c` | 1363 | `find_definition` |
+| `usbhid_parse` | `hid-core.c` | 982 | `find_definition` |
+| `usb_mouse_probe` | `usbmouse.c` | 106 | `find_definition` |
+| `usb_kbd_probe` | `usbkbd.c` | 261 | `find_definition` |
+| `hid_usb_ids` | `hid-core.c` | 1678 | `find_definition` |
+
+Call graph (via `graph_query`): 45 Call edges discovered across the USB HID driver chain.
+
+Full analysis: `Runtimelog/scan_usb_hid_analysis.log`
+
+### Example 2: Process Scheduling & COW Resource Management
+
+**Tools used:** `find_definition`, `index_file` on kernel/sched/core.c, kernel/fork.c, kernel/exit.c
+
+Full analysis: `Runtimelog/scan_linux_scheduler.log`

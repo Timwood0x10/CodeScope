@@ -223,3 +223,71 @@ include/linux/fs.h:401  address_space_operations  — 页 IO 虚函数表
 **全部分析总耗时：** ~800 ms  
 **峰值内存：** ~30 MB  
 **相比直接读源码的 Token 节省：** ~98.9%
+
+---
+
+## 5. 全量内核索引 (codebase-memory-mcp)
+
+### 索引结果 (89,465 文件)
+
+| 指标 | 数值 |
+|------|------|
+| 发现文件数 | **89,465** |
+| 文件发现耗时 | **2,336 ms** |
+| **总节点数** | **4,877,492** |
+| **总边数** | **9,326,238** |
+| **数据库大小** | **7.06 GB** |
+| **索引耗时** | **183 s（约 3 分钟）** |
+| **峰值内存** | **11.6 GB** |
+| 并行 workers | 14 |
+| 吞吐量 | 489 files/s，50,966 edges/s |
+
+### 阶段耗时
+
+| 阶段 | 耗时 | 说明 |
+|------|:----:|------|
+| `parallel_extract` | **60.4 s** | 并行解析 89K 文件，提取 token 和符号 |
+| `parallel_resolve` | **38.9 s** | 解析调用关系、引用、语义边 |
+| `dump` (DB 持久化) | **23.8 s** | 写入 SQLite 数据库 |
+| `semantic_edges` | **14.5 s** | 语义相似度边 |
+| `registry_build` | **11.1 s** | 构建符号注册表 |
+| `similarity` | 1.8 s | 函数指纹相似度 |
+| 其他阶段 | 3.5 s | tests/k8s/githistory/decorator/configlink |
+| **总计** | **~183 s** | |
+
+### 扩展性
+
+| 范围 | 文件数 | 节点 | 耗时 | 内存 |
+|------|:-----:|:----:|:----:|:----:|
+| 单文件 | 1 | 31 | 4.94 ms | ~50 MB |
+| kernel/sched/ | 51 | 3,854 | 841 ms | ~500 MB |
+| kernel/ | 697 | 33,546 | 2,302 ms | ~1.5 GB |
+| **全量内核** | **89,465** | **4,877,492** | **183 s** | **11.6 GB** |
+
+## 6. CodeScope MCP 分析示例
+
+以下分析使用 **CodeScope 自身的 MCP 工具**完成——MCP 服务器配置在 `.mcp.json` 中，用于查询 Linux 内核源码。
+
+### 示例 1：USB HID 设备识别
+
+**使用工具：** `index_file`, `find_definition`, `graph_query`
+
+关键符号定位（通过 CodeScope MCP）：
+
+| 符号 | 文件 | 行号 | CodeScope 工具 |
+|------|------|:----:|---------------|
+| `usbhid_probe` | `hid-core.c` | 1363 | `find_definition` |
+| `usbhid_parse` | `hid-core.c` | 982 | `find_definition` |
+| `usb_mouse_probe` | `usbmouse.c` | 106 | `find_definition` |
+| `usb_kbd_probe` | `usbkbd.c` | 261 | `find_definition` |
+| `hid_usb_ids` | `hid-core.c` | 1678 | `find_definition` |
+
+调用图（通过 `graph_query`）：发现 45 条调用边。
+
+完整分析：`Runtimelog/scan_usb_hid_analysis.log`
+
+### 示例 2：进程调度与父子资源管理
+
+**使用工具：** `find_definition`, `index_file`
+
+完整分析：`Runtimelog/scan_linux_scheduler.log`

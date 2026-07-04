@@ -406,6 +406,45 @@ The database contains 11 tables:
 
 > **Tip**: The database is portable — copy `.codescope/` along with your project to reuse analysis results on another machine.
 
+## Performance
+
+Benchmarks measured on **Apple M3 Max (36 GB RAM)**.
+
+### Micro Benchmarks (test_bench)
+
+| Metric | Value |
+|--------|-------|
+| Engine init | **14.6 ms** |
+| Index throughput | **1,533 KB/s** |
+| Symbol definition query | **0.01–0.03 ms** |
+| Callers/callees query | **0.01–0.02 ms** |
+| 9 queries (total) | **0.17 ms** |
+
+### Full Kernel Index (codebase-memory-mcp)
+
+| Metric | Linux Kernel v6.x (89,465 files) |
+|--------|:-------------------------------:|
+| Total nodes | **4,877,492** |
+| Total edges | **9,326,238** |
+| DB size | **7.06 GB** |
+| Cache size | **6.7 GB** |
+| Index time | **183 s (~3 min)** |
+| Peak memory | **11.6 GB** |
+| Parallelism | **14 workers** |
+| Files processed | **489 files/s** |
+| Edges generated | **50,966 edges/s** |
+
+### Token Savings
+
+| Scenario | Raw Source | CodeScope | Savings |
+|----------|:----------:|:---------:|:-------:|
+| Find function definition | ~2,265 tokens | ~21 tokens | **99.1%** |
+| Trace function callers | ~2,000 tokens | ~18 tokens | **99.1%** |
+| Project architecture | ~1,875 tokens | ~32 tokens | **98.3%** |
+| USB subsystem overview | ~24,000 tokens | ~250 tokens | **99.0%** |
+| Scheduler analysis | ~15,000 tokens | ~180 tokens | **98.8%** |
+| **Average** | **~7,416 tokens** | **~81 tokens** | **98.9%** |
+
 ## License
 
 Apache 2.0
@@ -429,3 +468,6 @@ Raw output logs are available in [`runtimelog/`](runtimelog/):
 | `scan_multilang.log` | 1.1 KB | Multi-language architecture scan |
 | `scan_hid.log` | 526 B | USB HID subsystem scan |
 | `scan_researcher.log` | 143 B | Researcher subproject scan |
+| `scan_linux_scheduler.log` | 12.8 KB | Process scheduling + parent-child resource analysis |
+| `scan_usb_hid_analysis.log` | 12.8 KB | USB HID device identification deep-dive |
+| `performance_benchmark.log` | 5.5 KB | Full performance benchmark report |
