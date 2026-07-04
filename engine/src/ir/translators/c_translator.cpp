@@ -150,6 +150,13 @@ Node *CTranslator::translateNode(TSNode ts_node, Node *parent)
 
 	if (strcmp(type, "function_definition") == 0)
 		return handleFuncDef(ts_node, parent);
+	if (strcmp(type, "ERROR") == 0) {
+		// Tree-sitter ERROR nodes often contain function definitions
+		// that were mangled by GNU C attribute macros (e.g. __sched).
+		// Recurse into children to find any function_declarator.
+		translateChildren(ts_node, parent);
+		return nullptr;
+	}
 	if (strcmp(type, "declaration") == 0)
 		return handleDeclaration(ts_node, parent);
 	if (strcmp(type, "struct_specifier") == 0)
@@ -342,8 +349,27 @@ Node *CTranslator::handleFuncDef(TSNode ts_node, Node *parent)
 
 Node *CTranslator::handleDeclaration(TSNode ts_node, Node *parent)
 {
+	// Check if this declaration contains a function definition (GNU C
+	// attributes like __sched can cause tree-sitter to misparse function
+	// definitions as declarations).
+	{
+		bool has_func_decl = false;
+		bool has_body = false;
+		uint32_t count = ts_node_child_count(ts_node);
+		for (uint32_t i = 0; i < count; i++) {
+			TSNode child = ts_node_child(ts_node, i);
+			if (!ts_node_is_named(child)) continue;
+			const char *t = ts_node_type(child);
+			if (strcmp(t, "function_declarator") == 0)
+				has_func_decl = true;
+			if (strcmp(t, "compound_statement") == 0)
+				has_body = true;
+		}
+		if (has_func_decl && has_body)
+			return handleFuncDef(ts_node, parent);
+	}
+
 	if (parent->kind == NodeKind::TranslationUnit ||
-	    parent->kind == NodeKind::ClassDecl ||
 	    parent->kind == NodeKind::ClassDecl) {
 		auto *var = makeNode(NodeKind::VariableDecl, ts_node);
 		var->name = extractName(ts_node);

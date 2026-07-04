@@ -16,10 +16,12 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <sqlite3.h>
 #include <sstream>
 #include <string>
 #include <sys/stat.h>
+#include <thread>
 #include <tree_sitter/api.h>
 #include <unordered_map>
 #include <unordered_set>
@@ -564,7 +566,7 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 	return dupString(result.str());
 }
 
-// ─── Index Project ─────────────────────────────────────────────
+// ─── Index Project (Parallel) ──────────────────────────────────
 
 char *engine_index_project(uint64_t project_id, const char *dir_path,
 			   const char *language_filter)
@@ -586,103 +588,132 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 
 	std::string lang_filter = language_filter ? language_filter : "";
 
-	// Directories to skip (common build/cache/vcs dirs)
 	std::unordered_set<std::string> skip_dirs = {
 		".git",	      ".svn",	     "node_modules", "target",
 		"build",      "__pycache__", ".venv",	     "venv",
 		".codescope", ".codegraph"
 	};
 
-	int total_indexed = 0, total_errors = 0, total_nodes = 0,
-	    total_edges = 0;
+	// Phase 1: collect file paths (single-threaded)
+	struct FileJob { std::string path; std::string lang; };
+	std::vector<FileJob> jobs;
+	try {
+		auto it = std::filesystem::recursive_directory_iterator(dir,
+			std::filesystem::directory_options::skip_permission_denied);
+		for (auto &entry : it) {
+			std::string rel = entry.path().string();
+			if (rel.size() > dir.size() + 1)
+				rel = rel.substr(dir.size() + 1);
+			else rel.clear();
+			if (!rel.empty()) {
+				std::string first = rel.substr(0, rel.find('/'));
+				if (entry.is_directory() && skip_dirs.count(first)) {
+					it.disable_recursion_pending(); continue;
+				}
+				if (entry.is_regular_file() && skip_dirs.count(rel))
+					continue;
+			}
+			if (entry.is_regular_file()) {
+				const char *lang = detectLanguage(entry.path().c_str());
+				if (!lang) continue;
+				if (!lang_filter.empty() && lang != lang_filter) continue;
+				jobs.push_back({entry.path(), lang});
+			}
+		}
+	} catch (const std::exception &e) {
+		std::ostringstream err;
+		err << "{\"ok\":false,\"error\":\"scan error: " << jsonEscape(e.what()) << "\"}";
+		return dupString(err.str());
+	}
+	if (jobs.empty())
+		return dupString(
+			"{\"ok\":true,\"files_indexed\":0,\"nodes\":0,\"edges\":0,\"errors\":0}");
+
+	// Pre-load TSLanguage pointers (read-only after registration)
+	std::unordered_map<std::string, const TSLanguage *> lang_ptrs;
+	{
+		std::unordered_set<std::string> langs;
+		for (auto &j : jobs) langs.insert(j.lang);
+		for (auto &l : langs)
+			lang_ptrs[l] = g_parser->getLanguage(l.c_str());
+	}
+
+	// Phase 2: parallel indexing
+	int num_workers = std::min(static_cast<int>(jobs.size()),
+				   static_cast<int>(std::thread::hardware_concurrency()));
+	if (num_workers < 1) num_workers = 1;
+
+	std::atomic<int> next_job{0};
 
 	g_store->beginTransaction();
 
-	try {
-		auto it = std::filesystem::recursive_directory_iterator(
-			dir, std::filesystem::directory_options::
-				     skip_permission_denied);
-		auto end = std::filesystem::end(it);
-		while (it != end) {
-			// Compute path relative to project root
-			std::string rel_path = it->path().string();
-			if (rel_path.size() > dir.size() + 1)
-				rel_path = rel_path.substr(dir.size() + 1);
-			else
-				rel_path.clear();
+	auto worker = [&]() {
+		while (true) {
+			int idx = next_job.fetch_add(1);
+			if (idx >= static_cast<int>(jobs.size())) break;
+			auto &job = jobs[idx];
+			auto it = lang_ptrs.find(job.lang);
+			if (it == lang_ptrs.end()) continue;
 
-			// Skip common build/cache directories
-			if (!rel_path.empty()) {
-				std::string first_component =
-					rel_path.substr(0, rel_path.find('/'));
-				if (it->is_directory() &&
-				    skip_dirs.count(first_component)) {
-					it.disable_recursion_pending();
-					++it;
-					continue;
-				}
-				if (it->is_regular_file() &&
-				    skip_dirs.count(rel_path)) {
-					++it;
-					continue;
+			// Each worker creates its own TSParser
+			const TSLanguage *ts_lang = it->second;
+			std::string source = readFile(job.path.c_str());
+			if (source.empty()) continue;
+
+			TSParser *parser = ts_parser_new();
+			ts_parser_set_language(parser, ts_lang);
+			TSTree *tree = ts_parser_parse_string(parser, nullptr,
+				source.c_str(), static_cast<uint32_t>(source.size()));
+			ts_parser_delete(parser);
+			if (!tree) continue;
+
+			auto translator = std::unique_ptr<ir::Translator>(
+				ir::createTranslator(job.lang.c_str()));
+			if (!translator) { ts_tree_delete(tree); continue; }
+
+			ir::TranslationUnit *unit = translator->translate(
+				tree, source.c_str(), job.path.c_str());
+			ts_tree_delete(tree);
+			if (!unit) continue;
+
+			// Build graph in-memory, persist via g_store
+			uint64_t start_id = 1;
+			{
+				sqlite3_stmt *s = nullptr;
+				const char *q = "SELECT COALESCE(MAX(id), 0) + 1 FROM graph_nodes";
+				if (sqlite3_prepare_v2(g_store->handle(), q, -1, &s, nullptr) == SQLITE_OK) {
+					if (sqlite3_step(s) == SQLITE_ROW)
+						start_id = static_cast<uint64_t>(sqlite3_column_int64(s, 0));
+					sqlite3_finalize(s);
 				}
 			}
+			graph::GraphBuilder builder(project_id, start_id);
+			auto sym_g = builder.buildSymbolGraph(unit);
+			auto call_g = builder.buildCallGraph(unit);
 
-			if (it->is_regular_file()) {
-				std::string file_path = it->path().string();
-				const char *lang =
-					detectLanguage(file_path.c_str());
-				if (!lang) {
-					++it;
-					continue;
-				}
-				if (!lang_filter.empty() &&
-				    lang != lang_filter) {
-					++it;
-					continue;
-				}
-
-				char *idx = engine_index_file(
-					project_id, file_path.c_str());
-				if (idx) {
-					if (strstr(idx, "\"ok\":true")) {
-						total_indexed++;
-						const char *n = strstr(
-							idx, "\"nodes\":");
-						if (n)
-							total_nodes +=
-								atoi(n + 8);
-						const char *e = strstr(
-							idx, "\"edges\":");
-						if (e)
-							total_edges +=
-								atoi(e + 8);
-					} else {
-						total_errors++;
-					}
-					engine_free_string(idx);
-				} else {
-					total_errors++;
-				}
-			}
-			++it;
+			g_store->upsertFile(project_id, job.path.c_str(), job.lang.c_str(), "");
+			for (auto &n : sym_g.nodes) g_store->insertGraphNode(project_id, n);
+			for (auto &e : sym_g.edges) g_store->insertGraphEdge(project_id, e);
+			for (auto &e : call_g.edges) g_store->insertGraphEdge(project_id, e);
+			delete unit;
 		}
-	} catch (const std::exception &e) {
-		g_store->rollbackTransaction();
-		return dupString("{\"ok\":false,\"error\":\"index error: " +
-				 jsonEscape(e.what()) + "\"}");
-	}
+	};
+
+	std::vector<std::thread> workers;
+	for (int i = 0; i < num_workers; i++)
+		workers.emplace_back(worker);
+	for (auto &w : workers)
+		w.join();
 
 	g_store->commitTransaction();
 
 	std::ostringstream result;
-	result << "{\"ok\":true,\"files_indexed\":" << total_indexed
-	       << ",\"nodes\":" << total_nodes << ",\"edges\":" << total_edges
-	       << ",\"errors\":" << total_errors << "}";
+	result << "{\"ok\":true,\"files_indexed\":" << static_cast<int>(jobs.size())
+	       << ",\"workers\":" << num_workers << "}";
 	return dupString(result.str());
 }
 
-// ─── Phase A: Fast Scanner Helpers ─────────────────────────────
+// ─── Phase A: Fast Scanner Helpers// ─── Phase A: Fast Scanner Helpers ─────────────────────────────
 
 namespace
 {

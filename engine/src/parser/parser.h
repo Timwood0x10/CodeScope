@@ -32,6 +32,12 @@ class Parser {
 	TSTree *parse(const char *file_path, const char *source,
 		      const char *language);
 
+	/** Get the TSLanguage pointer for a registered language.
+	 *  Thread-safe: the pointer is read-only after registration.
+	 *  Returns nullptr if language not registered.
+	 *  Caller can use this to create per-thread TSParser instances. */
+	const TSLanguage *getLanguage(const char *name);
+
 	const std::string &error() const
 	{
 		return error_;
@@ -47,7 +53,7 @@ class Parser {
 	std::unordered_map<std::string, Grammar> grammars_;
 	std::string error_;
 
-	const TSLanguage *getLanguage(const char *name);
+
 };
 
 #endif // PARSER_H
