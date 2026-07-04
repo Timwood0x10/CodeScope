@@ -5,6 +5,9 @@
 .atomcode
 .codegraph/
 
+.codescope/
+
+
 # IDE and Editors
 **/.idea/
 **/.vscode/

@@ -1,0 +1,105 @@
+===== Swift 编译器源码扫描 2026年 7月 4日 星期六 16时15分44秒 CST =====
+目标: /Users/scc/code/researcher/swift
+Swift 文件: 22,272
+
+=== 目录结构 ===
+/Users/scc/code/researcher/swift
+/Users/scc/code/researcher/swift/.git
+/Users/scc/code/researcher/swift/.git/hooks
+/Users/scc/code/researcher/swift/.git/info
+/Users/scc/code/researcher/swift/.git/logs
+/Users/scc/code/researcher/swift/.git/logs/refs
+/Users/scc/code/researcher/swift/.git/logs/refs/heads
+/Users/scc/code/researcher/swift/.git/logs/refs/remotes
+/Users/scc/code/researcher/swift/.git/objects
+/Users/scc/code/researcher/swift/.git/objects/info
+/Users/scc/code/researcher/swift/.git/objects/pack
+/Users/scc/code/researcher/swift/.git/refs
+/Users/scc/code/researcher/swift/.git/refs/heads
+/Users/scc/code/researcher/swift/.git/refs/remotes
+/Users/scc/code/researcher/swift/.git/refs/remotes/origin
+/Users/scc/code/researcher/swift/.git/refs/tags
+/Users/scc/code/researcher/swift/.github
+/Users/scc/code/researcher/swift/.github/ISSUE_TEMPLATE
+/Users/scc/code/researcher/swift/apinotes
+/Users/scc/code/researcher/swift/benchmark
+/Users/scc/code/researcher/swift/benchmark/cmake
+/Users/scc/code/researcher/swift/benchmark/cmake/modules
+/Users/scc/code/researcher/swift/benchmark/cxx-source
+/Users/scc/code/researcher/swift/benchmark/multi-source
+/Users/scc/code/researcher/swift/benchmark/multi-source/Monoids
+/Users/scc/code/researcher/swift/benchmark/multi-source/PrimsSplit
+/Users/scc/code/researcher/swift/benchmark/scripts
+/Users/scc/code/researcher/swift/benchmark/scripts/generate_harness
+/Users/scc/code/researcher/swift/benchmark/scripts/perf_test_driver
+/Users/scc/code/researcher/swift/benchmark/single-source
+/Users/scc/code/researcher/swift/benchmark/utils
+/Users/scc/code/researcher/swift/benchmark/utils/CxxTests
+/Users/scc/code/researcher/swift/benchmark/utils/LibProc
+/Users/scc/code/researcher/swift/benchmark/utils/ObjectiveCTests
+/Users/scc/code/researcher/swift/bindings
+/Users/scc/code/researcher/swift/bindings/xml
+/Users/scc/code/researcher/swift/cmake
+/Users/scc/code/researcher/swift/cmake/caches
+/Users/scc/code/researcher/swift/cmake/modules
+/Users/scc/code/researcher/swift/docs
+/Users/scc/code/researcher/swift/docs/_static
+/Users/scc/code/researcher/swift/docs/_templates
+/Users/scc/code/researcher/swift/docs/ABI
+/Users/scc/code/researcher/swift/docs/archive
+/Users/scc/code/researcher/swift/docs/assets
+/Users/scc/code/researcher/swift/docs/assets/DifferentiableProgramming
+/Users/scc/code/researcher/swift/docs/assets/DifferentiableProgrammingImplementation
+/Users/scc/code/researcher/swift/docs/CppInteroperability
+/Users/scc/code/researcher/swift/docs/EmbeddedSwift
+/Users/scc/code/researcher/swift/docs/Generics
+/Users/scc/code/researcher/swift/docs/Generics/chapters
+/Users/scc/code/researcher/swift/docs/HowToGuides
+/Users/scc/code/researcher/swift/docs/proposals
+/Users/scc/code/researcher/swift/docs/proposals/archive
+/Users/scc/code/researcher/swift/docs/proposals/rejected
+/Users/scc/code/researcher/swift/docs/refactoring
+/Users/scc/code/researcher/swift/docs/ReferenceGuides
+/Users/scc/code/researcher/swift/docs/scripts
+/Users/scc/code/researcher/swift/docs/SIL
+/Users/scc/code/researcher/swift/docs/tools
+
+--- Fast Scan: stdlib/include ---
+=== Fast Scan === (121255 us = 121.25 ms)
+{"modules":{"modules":[{"id":1,"parent_id":0,"depth":0,"name":"include","path":"/Users/scc/code/researcher/swift/stdlib/include","language":"","file_count":0,"children":[,{"id":2,"parent_id":1,"depth":1,"name":"llvm","path":"/Users/scc/code/researcher/swift/stdlib/include/llvm","language":"","file_count":0,"children":[,{"id":3,"parent_id":2,"depth":2,"name":"ADT","path":"/Users/scc/code/researcher/swift/stdlib/include/llvm/ADT","language":"","file_count":18},,{"id":4,"parent_id":2,"depth":2,"name":"Support","path":"/Users/scc/code/researcher/swift/stdlib/include/llvm/Support","language":"","file_count":13}]}]}]},"total_symbols":891,"entry_points":[]}
+           {"results":[],"hint":{"message":"No symbol named 'engine_scan_project' found","project_language":"c","total_symbols":891,"callgraph_ready":0.000000,"embedding_ready":0.000000,"note":"Symbol not found — it may not have been indexed yet. Call graph is not ready — run codescope_enhance for deeper analysis. ""suggestion":"This appears to be a C/C++ project. Possible entry points: module_init(), usb_register(), probe(), init()."}}
+           {"results":[],"hint":{"message":"No symbol named 'engine_init' found","project_language":"c","total_symbols":891,"callgraph_ready":0.000000,"embedding_ready":0.000000,"note":"Symbol not found — it may not have been indexed yet. Call graph is not ready — run codescope_enhance for deeper analysis. ""suggestion":"This appears to be a C/C++ project. Possible entry points: module_init(), usb_register(), probe(), init()."}}
+           {"results":[],"hint":{"message":"No symbol named 'main' found","project_language":"c","total_symbols":891,"callgraph_ready":0.000000,"embedding_ready":0.000000,"note":"Symbol not found — it may not have been indexed yet. Call graph is not ready — run codescope_enhance for deeper analysis. ""suggestion":"This appears to be a C/C++ project. Possible entry points: module_init(), usb_register(), probe(), init()."}}
+           {"results":[],"hint":{"message":"No symbol named 'insertSymbol' found","project_language":"c","total_symbols":891,"callgraph_ready":0.000000,"embedding_ready":0.000000,"note":"Symbol not found — it may not have been indexed yet. Call graph is not ready — run codescope_enhance for deeper analysis. ""suggestion":"This appears to be a C/C++ project. Possible entry points: module_init(), usb_register(), probe(), init()."}}
+{"total_symbols":891,"callgraph_ready":0,"cfg_ready":0,"embedding_ready":0}
+{"languages":["c"],"total_modules":4,"total_symbols":891,"analysis_progress":{"scanned":891,"callgraph":0,"metrics":0,"embedding":0},"entry_points":{"entry_points":[]},"ready_features":{"call_graph":false,"metrics":false,"semantic_search":false}}
+--- Fast Scan: include/swift ---
+=== Fast Scan === (421612 us = 421.61 ms)
+{"modules":{"modules":[{"id":1,"parent_id":0,"depth":0,"name":"swift","path":"/Users/scc/code/researcher/swift/include/swift","language":"","file_count":2,"children":[,{"id":26,"parent_id":1,"depth":1,"name":"ABI","path":"/Users/scc/code/researcher/swift/include/swift/ABI","language":"","file_count":23},,{"id":54,"parent_id":1,"depth":1,"name":"APIDigester","path":"/Users/scc/code/researcher/swift/include/swift/APIDigester","language":"","file_count":2},,{"id":45,"parent_id":1,"depth":1,"name":"AST","path":"/Users/scc/code/researcher/swift/include/swift/AST","language":"","file_count":192},,{"id":17,"parent_id":1,"depth":1,"name":"ASTSectionImporter","path":"/Users/scc/code/researcher/swift/include/swift/ASTSectionImporter","language":"","file_count":1},,{"id":19,"parent_id":1,"depth":1,"name":"Basic","path":"/Users/scc/code/researcher/swift/include/swift/Basic","language":"","file_count":118},,{"id":40,"parent_id":1,"depth":1,"name":"Bridging","path":"/Users/scc/code/researcher/swift/include/swift/Bridging","language":"","file_count":3},,{"id":10,"parent_id":1,"depth":1,"name":"ClangImporter","path":"/Users/scc/code/researcher/swift/include/swift/ClangImporter","language":"","file_count":5},,{"id":27,"parent_id":1,"depth":1,"name":"Concurrency","path":"/Users/scc/code/researcher/swift/include/swift/Concurrency","language":"","file_count":1},,{"id":41,"parent_id":1,"depth":1,"name":"ConstExtract","path":"/Users/scc/code/researcher/swift/include/swift/ConstExtract","language":"","file_count":2},,{"id":44,"parent_id":1,"depth":1,"name":"Demangling","path":"/Users/scc/code/researcher/swift/include/swift/Demangling","language":"","file_count":8},,{"id":20,"parent_id":1,"depth":1,"name":"DependencyScan","path":"/Users/scc/code/researcher/swift/include/swift/DependencyScan","language":"","file_count":7},,{"id":12,"parent_id":1,"depth":1,"name":"Driver","path":"/Users/scc/code/researcher/swift/include/swift/Driver","language":"","file_count":9},,{"id":49,"parent_id":1,"depth":1,"name":"DriverTool","path":"/Users/scc/code/researcher/swift/include/swift/DriverTool","language":"","file_count":1},,{"id":11,"parent_id":1,"depth":1,"name":"Frontend","path":"/Users/scc/code/researcher/swift/include/swift/Frontend","language":"","file_count":17},,{"id":14,"parent_id":1,"depth":1,"name":"FrontendTool","path":"/Users/scc/code/researcher/swift/include/swift/FrontendTool","language":"","file_count":2},,{"id":2,"parent_id":1,"depth":1,"name":"IDE","path":"/Users/scc/code/researcher/swift/include/swift/IDE","language":"","file_count":41},,{"id":21,"parent_id":1,"depth":1,"name":"IDETool","path":"/Users/scc/code/researcher/swift/include/swift/IDETool","language":"","file_count":4},,{"id":22,"parent_id":1,"depth":1,"name":"IRGen","path":"/Users/scc/code/researcher/swift/include/swift/IRGen","language":"","file_count":8},,{"id":25,"parent_id":1,"depth":1,"name":"Immediate","path":"/Users/scc/code/researcher/swift/include/swift/Immediate","language":"","file_count":2},,{"id":46,"parent_id":1,"depth":1,"name":"Index","path":"/Users/scc/code/researcher/swift/include/swift/Index","language":"","file_count":4},,{"id":42,"parent_id":1,"depth":1,"name":"LLVMPasses","path":"/Users/scc/code/researcher/swift/include/swift/LLVMPasses","language":"","file_count":2},,{"id":56,"parent_id":1,"depth":1,"name":"Localization","path":"/Users/scc/code/researcher/swift/include/swift/Localization","language":"","file_count":1},,{"id":38,"parent_id":1,"depth":1,"name":"Markup","path":"/Users/scc/code/researcher/swift/include/swift/Markup","language":"","file_count":5},,{"id":3,"parent_id":1,"depth":1,"name":"Migrator","path":"/Users/scc/code/researcher/swift/include/swift/Migrator","language":"","file_count":9},,{"id":24,"parent_id":1,"depth":1,"name":"Option","path":"/Users/scc/code/researcher/swift/include/swift/Option","language":"","file_count":2},,{"id":16,"parent_id":1,"depth":1,"name":"Parse","path":"/Users/scc/code/researcher/swift/include/swift/Parse","language":"","file_count":13},,{"id":55,"parent_id":1,"depth":1,"name":"PrintAsClang","path":"/Users/scc/code/researcher/swift/include/swift/PrintAsClang","language":"","file_count":1},,{"id":48,"parent_id":1,"depth":1,"name":"Refactoring","path":"/Users/scc/code/researcher/swift/include/swift/Refactoring","language":"","file_count":2},,{"id":58,"parent_id":1,"depth":1,"name":"Remote","path":"/Users/scc/code/researcher/swift/include/swift/Remote","language":"","file_count":8},,{"id":39,"parent_id":1,"depth":1,"name":"RemoteAST","path":"/Users/scc/code/researcher/swift/include/swift/RemoteAST","language":"","file_count":1},,{"id":28,"parent_id":1,"depth":1,"name":"RemoteInspection","path":"/Users/scc/code/researcher/swift/include/swift/RemoteInspection","language":"","file_count":11,"children":[,{"id":29,"parent_id":28,"depth":2,"name":"RuntimeHeaders","path":"/Users/scc/code/researcher/swift/include/swift/RemoteInspection/RuntimeHeaders","language":"","file_count":0,"children":[,{"id":30,"parent_id":29,"depth":3,"name":"llvm","path":"/Users/scc/code/researcher/swift/include/swift/RemoteInspection/RuntimeHeaders/llvm","language":"","file_count":0,"children":[,{"id":31,"parent_id":30,"depth":4,"name":"ADT","path":"/Users/scc/code/researcher/swift/include/swift/RemoteInspection/RuntimeHeaders/llvm/ADT","language":"","file_count":1},,{"id":33,"parent_id":30,"depth":4,"name":"BinaryFormat","path":"/Users/scc/code/researcher/swift/include/swift/RemoteInspection/RuntimeHeaders/llvm/BinaryFormat","language":"","file_count":6,"children":[,{"id":34,"parent_id":33,"depth":5,"name":"ELFRelocs","path":"/Users/scc/code/researcher/swift/include/swift/RemoteInspection/RuntimeHeaders/llvm/BinaryFormat/ELFRelocs","language":"","file_count":0}]},,{"id":35,"parent_id":30,"depth":4,"name":"Object","path":"/Users/scc/code/researcher/swift/include/swift/RemoteInspection/RuntimeHeaders/llvm/Object","language":"","file_count":6},,{"id":36,"parent_id":30,"depth":4,"name":"Support","path":"/Users/scc/code/researcher/swift/include/swift/RemoteInspection/RuntimeHeaders/llvm/Support","language":"","file_count":15},,{"id":32,"parent_id":30,"depth":4,"name":"TargetParser","path":"/Users/scc/code/researcher/swift/include/swift/RemoteInspection/RuntimeHeaders/llvm/TargetParser","language":"","file_count":2}]},,{"id":37,"parent_id":29,"depth":3,"name":"llvm-c","path":"/Users/scc/code/researcher/swift/include/swift/RemoteInspection/RuntimeHeaders/llvm-c","language":"","file_count":1}]}]},,{"id":18,"parent_id":1,"depth":1,"name":"Runtime","path":"/Users/scc/code/researcher/swift/include/swift/Runtime","language":"","file_count":38},,{"id":47,"parent_id":1,"depth":1,"name":"SIL","path":"/Users/scc/code/researcher/swift/include/swift/SIL","language":"","file_count":100},,{"id":4,"parent_id":1,"depth":1,"name":"SILOptimizer","path":"/Users/scc/code/researcher/swift/include/swift/SILOptimizer","language":"","file_count":2,"children":[,{"id":5,"parent_id":4,"depth":2,"name":"Analysis","path":"/Users/scc/code/researcher/swift/include/swift/SILOptimizer/Analysis","language":"","file_count":34},,{"id":9,"parent_id":4,"depth":2,"name":"Differentiation","path":"/Users/scc/code/researcher/swift/include/swift/SILOptimizer/Differentiation","language":"","file_count":10},,{"id":8,"parent_id":4,"depth":2,"name":"PassManager","path":"/Users/scc/code/researcher/swift/include/swift/SILOptimizer/PassManager","language":"","file_count":5},,{"id":7,"parent_id":4,"depth":2,"name":"Transforms","path":"/Users/scc/code/researcher/swift/include/swift/SILOptimizer/Transforms","language":"","file_count":2},,{"id":6,"parent_id":4,"depth":2,"name":"Utils","path":"/Users/scc/code/researcher/swift/include/swift/SILOptimizer/Utils","language":"","file_count":36}]},,{"id":23,"parent_id":1,"depth":1,"name":"Sema","path":"/Users/scc/code/researcher/swift/include/swift/Sema","language":"","file_count":25},,{"id":13,"parent_id":1,"depth":1,"name":"Serialization","path":"/Users/scc/code/researcher/swift/include/swift/Serialization","language":"","file_count":6},,{"id":43,"parent_id":1,"depth":1,"name":"StaticMirror","path":"/Users/scc/code/researcher/swift/include/swift/StaticMirror","language":"","file_count":3},,{"id":57,"parent_id":1,"depth":1,"name":"SwiftDemangle","path":"/Users/scc/code/researcher/swift/include/swift/SwiftDemangle","language":"","file_count":1},,{"id":15,"parent_id":1,"depth":1,"name":"SwiftRemoteMirror","path":"/Users/scc/code/researcher/swift/include/swift/SwiftRemoteMirror","language":"","file_count":2},,{"id":59,"parent_id":1,"depth":1,"name":"SymbolGraphGen","path":"/Users/scc/code/researcher/swift/include/swift/SymbolGraphGen","language":"","file_count":5},,{"id":50,"parent_id":1,"depth":1,"name":"Threading","path":"/Users/scc/code/researcher/swift/include/swift/Threading","language":"","file_count":10,"children":[,{"id":51,"parent_id":50,"depth":2,"name":"Impl","path":"/Users/scc/code/researcher/swift/include/swift/Threading/Impl","language":"","file_count":7,"children":[,{"id":52,"parent_id":51,"depth":3,"name":"Linux","path":"/Users/scc/code/researcher/swift/include/swift/Threading/Impl/Linux","language":"","file_count":1},,{"id":53,"parent_id":51,"depth":3,"name":"Win32","path":"/Users/scc/code/researcher/swift/include/swift/Threading/Impl/Win32","language":"","file_count":1}]}]}]}]},"total_symbols":25860,"entry_points":[{"symbol_id":5586,"kind":"probe"}]}
+           {"results":[],"hint":{"message":"No symbol named 'engine_scan_project' found","project_language":"c","total_symbols":25860,"callgraph_ready":0.000000,"embedding_ready":0.000000,"note":"Symbol not found — it may not have been indexed yet. Call graph is not ready — run codescope_enhance for deeper analysis. ""suggestion":"This appears to be a C/C++ project. Known entry point types: p, . Try searching for 'probe', 'init', or a driver-specific function name."}}
+           {"results":[],"hint":{"message":"No symbol named 'engine_init' found","project_language":"c","total_symbols":25860,"callgraph_ready":0.000000,"embedding_ready":0.000000,"note":"Symbol not found — it may not have been indexed yet. Call graph is not ready — run codescope_enhance for deeper analysis. ""suggestion":"This appears to be a C/C++ project. Known entry point types: p, . Try searching for 'probe', 'init', or a driver-specific function name."}}
+           {"results":[],"hint":{"message":"No symbol named 'main' found","project_language":"c","total_symbols":25860,"callgraph_ready":0.000000,"embedding_ready":0.000000,"note":"Symbol not found — it may not have been indexed yet. Call graph is not ready — run codescope_enhance for deeper analysis. ""suggestion":"This appears to be a C/C++ project. Known entry point types: p, . Try searching for 'probe', 'init', or a driver-specific function name."}}
+           {"results":[],"hint":{"message":"No symbol named 'insertSymbol' found","project_language":"c","total_symbols":25860,"callgraph_ready":0.000000,"embedding_ready":0.000000,"note":"Symbol not found — it may not have been indexed yet. Call graph is not ready — run codescope_enhance for deeper analysis. ""suggestion":"This appears to be a C/C++ project. Known entry point types: p, . Try searching for 'probe', 'init', or a driver-specific function name."}}
+{"total_symbols":25860,"callgraph_ready":0,"cfg_ready":0,"embedding_ready":0}
+{"languages":["c"],"total_modules":59,"total_symbols":25860,"analysis_progress":{"scanned":25860,"callgraph":0,"metrics":0,"embedding":0},"entry_points":{"entry_points":{"probe":[{"id":5586,"name":"Probe","kind":"struct","file":"/Users/scc/code/researcher/swift/include/swift/Basic/HeaderFooterLayout.h","line":23}]}},"ready_features":{"call_graph":false,"metrics":false,"semantic_search":false}}
+
+=== Swift-C 互操作关键源码 ===
+--- Runtime/HeapObject.h ---
+1136:///   -> (UnsafePointer<UInt8>, Int)
+1143:///   -> (UnsafePointer<UInt8>, Int)
+1150:/// func _getMangledTypeName(_ mangledName: UnsafePointer<UInt8>,
+1152:///   -> (UnsafePointer<UInt8>, Int)
+--- Frontend/FrontendOptions.h ---
+358:  /// Should we emit the cType when printing @convention(c) or no?
+--- Sema/ConstraintSystem.h ---
+609:  /// different @convention(c) function types with the same parameter and result
+--- Demangling/StandardTypesMangling.def ---
+31:OBJC_INTEROP_STANDARD_TYPE(Structure, A, AutoreleasingUnsafeMutablePointer)
+44:STANDARD_TYPE(Structure, P, UnsafePointer)
+45:STANDARD_TYPE(Structure, p, UnsafeMutablePointer)
+
+=== 跨语言安全机制 ===
+/Users/scc/code/researcher/swift/include/swift/AST/Attr.h:691:/// Defines the @_silgen_name attribute.
+/Users/scc/code/researcher/swift/include/swift/AST/Attr.h:748:/// Defines the @_cdecl attribute.
+
+===== 完成 2026年 7月 4日 星期六 16时15分45秒 CST =====

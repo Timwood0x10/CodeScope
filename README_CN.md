@@ -362,11 +362,41 @@ cargo run --bin codescope
 
 ### 环境变量
 
-| 变量                  | 默认值                 | 说明               |
-| ------------------- | ------------------- | ---------------- |
-| `CODESCOPE_DB_PATH` | `/tmp/codescope.db` | SQLite 数据库路径     |
-| `GRAMMARS_DIR`      | `grammars/`         | 语法 .so 文件目录      |
-| `CODESCOPE_LSP`     | 未设置                 | LSP 服务器命令，用于类型增强 |
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `CODESCOPE_DB_PATH` | `.codescope/codescope.db` | SQLite 数据库路径 |
+| `GRAMMARS_DIR` | `grammars/` | 语法 .so 文件目录 |
+| `CODESCOPE_LSP` | 未设置 | LSP 服务器命令，用于类型增强 |
+
+## 数据目录 `.codescope/`
+
+CodeScope 在首次运行时自动在项目根目录创建 `.codescope/` 目录。  
+所有持久化数据都存储在此——无需手动配置。
+
+```
+.codescope/
+├── codescope.db       ← SQLite 数据库（WAL 模式）：所有事实、索引、图
+├── skills.md          ← 快速入门指南和命令参考
+└── *.log              ← 分析运行日志（含时间、CPU、内存数据）
+```
+
+数据库包含 11 张表：
+
+| 表 | 说明 |
+|------|-------------|
+| `modules` | 目录模块树 |
+| `symbols` | 符号声明（含 `role` 字段） |
+| `entry_points` | 入口点（main/probe/initcall） |
+| `call_edges` | 函数调用图边 |
+| `dependency_edges` | 模块依赖边 |
+| `metrics` | 复杂度指标（圈复杂度、认知复杂度等） |
+| `search_index` | FTS5 全文搜索索引 |
+| `embeddings` | vec0 向量嵌入 |
+| `symbol_status` | 逐符号分析进度标志 |
+| `index_tasks` | 后台任务跟踪 |
+| `file_scan_state` | 文件修改时间戳 |
+
+> **提示**：数据库是可移植的——将 `.codescope/` 随项目一起复制，即可在其他机器上复用分析结果。
 
 ## License
 

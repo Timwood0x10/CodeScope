@@ -192,6 +192,7 @@ bool GraphStore::createSchema()
             column INTEGER NOT NULL,
             span_start INTEGER,          -- byte offset
             span_end INTEGER,
+            role TEXT DEFAULT 'unknown',  -- API/Callback/Driver/Hook/Entry/Utility/Test
             FOREIGN KEY (project_id) REFERENCES projects(id)
         );
         CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(project_id, name);
@@ -2045,8 +2046,8 @@ void GraphStore::updateFileScanState(uint64_t project_id, const char *file_path,
 void GraphStore::cleanupStaleFiles(uint64_t project_id,
 				   const std::vector<std::string> &active_files)
 {
-    // Delete file_scan_state entries to force rescan next time
-    const char *sql = "DELETE FROM file_scan_state WHERE project_id=?";
+	// Delete file_scan_state entries to force rescan next time
+	const char *sql = "DELETE FROM file_scan_state WHERE project_id=?";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
 		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));

@@ -370,11 +370,41 @@ cargo run --bin codescope
 
 ### Environment Variables
 
-| Variable           | Default            | Description                                    |
-| ------------------ | ------------------ | ---------------------------------------------- |
-| `CODESCOPE_DB_PATH` | `/tmp/codescope.db` | SQLite database path                           |
-| `GRAMMARS_DIR`     | `grammars/`        | Grammar .so files directory                    |
-| `CODESCOPE_LSP`    | (unset)            | LSP server for type enhancement (e.g. `pylsp`) |
+| Variable           | Default                     | Description                                    |
+| ------------------ | --------------------------- | ---------------------------------------------- |
+| `CODESCOPE_DB_PATH` | `.codescope/codescope.db`   | SQLite database path                           |
+| `GRAMMARS_DIR`     | `grammars/`                 | Grammar .so files directory                    |
+| `CODESCOPE_LSP`    | (unset)                     | LSP server for type enhancement (e.g. `pylsp`) |
+
+## Data Directory `.codescope/`
+
+CodeScope automatically creates a `.codescope/` directory in the project root on first run.  
+All persistent data is stored here — no manual setup needed.
+
+```
+.codescope/
+├── codescope.db       ← SQLite database (WAL mode): all facts, indexes, graphs
+├── skills.md          ← Quick start guide and command reference
+└── *.log              ← Analysis run logs with timing + CPU + memory data
+```
+
+The database contains 11 tables:
+
+| Table | Description |
+|-------|-------------|
+| `modules` | Directory module tree |
+| `symbols` | Symbol declarations with `role` field |
+| `entry_points` | Entry points (main/probe/initcall) |
+| `call_edges` | Function call graph edges |
+| `dependency_edges` | Module dependency edges |
+| `metrics` | Complexity metrics (cyclomatic, cognitive, etc.) |
+| `search_index` | FTS5 full-text search index |
+| `embeddings` | vec0 vector embeddings |
+| `symbol_status` | Per-symbol analysis progress flags |
+| `index_tasks` | Background task tracking |
+| `file_scan_state` | File modification timestamps |
+
+> **Tip**: The database is portable — copy `.codescope/` along with your project to reuse analysis results on another machine.
 
 ## License
 

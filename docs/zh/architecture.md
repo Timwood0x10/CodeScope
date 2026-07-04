@@ -267,10 +267,30 @@ Layer 3: IR 翻译器 — CST → 统一 IR
 | JavaScript | tree-sitter-javascript.so | javascript_translator.cpp | ✅ |
 | TypeScript | tree-sitter-typescript.so | typescript_translator.cpp | ✅ |
 | Java | tree-sitter-java.so | java_translator.cpp | ✅ |
+| **Swift** | **tree-sitter-swift.so** | **—** | **✅ (快速扫描)** |
 
----
+### Swift 编译器分析
 
-## 7. 实战分析
+| 指标 | 数值 |
+|------|------|
+| 目录 | `include/swift`（C++ 头文件） |
+| 扫描时间 | **421 ms** |
+| 符号数 | **25,860** |
+| 模块数 | 59 |
+| 语言 | c（Swift 编译器 C++ 实现） |
+| 全量扫描预估（22,272 文件） | **20-35 秒**（Fast Scan） |
+| 全量增强预估 | **5-15 分钟** |
+| 日志 | `runtimelog/scan_swift.log`（18 KB） |
+
+### Swift-C 互操作（5 层）
+
+```
+1. @_silgen_name     — 直接绑定 C 符号（Attr.h:691）
+2. @_cdecl           — Swift 函数以 C ABI 导出（Attr.h:748）
+3. @convention(c)    — C 函数指针类型（FrontendOptions.h:358）
+4. UnsafePointer     — 手动内存管理（StandardTypesMangling.def:44）
+5. AutoreleasingUnsafeMutablePointer — ObjC 桥接（StandardTypesMangling.def:31）
+```
 
 ### Linux 内核调度器
 

@@ -421,7 +421,8 @@ Node *RustTranslator::handleImpl(TSNode ts_node, Node *parent)
 		}
 	}
 
-	Node *impl_class = impl_type.empty() ? nullptr : resolveSymbol(impl_type.c_str());
+	Node *impl_class = impl_type.empty() ? nullptr :
+					       resolveSymbol(impl_type.c_str());
 
 	pushScope();
 	for (uint32_t i = 0; i < count; i++) {

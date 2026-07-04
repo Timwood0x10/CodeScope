@@ -22,6 +22,7 @@ jobs:
 
       - name: Build C++ engine
         run: |
+          mkdir -p engine/build
           cd engine/build
           cmake .. -DBUILD_TESTS=ON
           make -j$(nproc)
@@ -44,6 +45,7 @@ jobs:
 
       - name: Build C++ engine
         run: |
+          mkdir -p engine/build
           cd engine/build
           cmake .. -DBUILD_TESTS=OFF
           make -j$(nproc) astgraph_engine

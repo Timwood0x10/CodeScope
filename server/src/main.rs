@@ -3,9 +3,20 @@ mod mcp;
 mod tools;
 
 use std::env;
+use std::fs;
+use std::path::Path;
 
 fn main() {
-    let db_path = env::var("CODESCOPE_DB_PATH").unwrap_or_else(|_| "/tmp/codescope.db".to_string());
+    // Default to .codescope/ directory in current working directory
+    let default_dir = ".codescope";
+    let default_db = format!("{}/codescope.db", default_dir);
+
+    // Auto-create .codescope/ if it doesn't exist
+    if !Path::new(default_dir).exists() {
+        fs::create_dir_all(default_dir).expect("failed to create .codescope/ directory");
+    }
+
+    let db_path = env::var("CODESCOPE_DB_PATH").unwrap_or(default_db);
 
     eprintln!("codescope: initializing with db={}", db_path);
 

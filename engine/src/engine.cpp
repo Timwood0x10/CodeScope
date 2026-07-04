@@ -105,6 +105,8 @@ static const char *detectLanguage(const char *file_path)
 		return "cpp";
 	if (strcmp(ext, ".rs") == 0)
 		return "rust";
+	if (strcmp(ext, ".swift") == 0)
+		return "swift";
 	if (strcmp(ext, ".js") == 0)
 		return "javascript";
 	if (strcmp(ext, ".ts") == 0)
@@ -147,8 +149,9 @@ int engine_init(const char *db_path)
 	std::string base = grammars_dir ? grammars_dir : "grammars";
 
 	// Language → grammar .so path mapping
-	const char *langs[] = { "python",     "cpp",	    "c",  "rust",
-				"javascript", "typescript", "go", "java" };
+	const char *langs[] = { "python",     "cpp",   "c",
+				"rust",	      "swift", "javascript",
+				"typescript", "go",    "java" };
 	for (auto lang : langs) {
 		std::string path = base + "/tree-sitter-" + lang + ".so";
 		g_parser->registerLanguage(lang, path.c_str());
@@ -837,6 +840,29 @@ static std::string detectDecl(std::string_view line, const std::string &lang)
 				return "interface";
 			return "type_alias";
 		}
+	} else if (lang == "swift") {
+		if (startsWithKW(line, "open func ") ||
+		    startsWithKW(line, "public func ") ||
+		    startsWithKW(line, "private func ") ||
+		    startsWithKW(line, "func "))
+			return "function";
+		if (startsWithKW(line, "open class ") ||
+		    startsWithKW(line, "public class ") ||
+		    startsWithKW(line, "class "))
+			return "class";
+		if (startsWithKW(line, "public struct ") ||
+		    startsWithKW(line, "struct "))
+			return "struct";
+		if (startsWithKW(line, "public enum ") ||
+		    startsWithKW(line, "enum "))
+			return "enum";
+		if (startsWithKW(line, "public protocol ") ||
+		    startsWithKW(line, "protocol "))
+			return "interface";
+		if (startsWithKW(line, "extension "))
+			return "class";
+		if (startsWithKW(line, "init("))
+			return "function";
 	} else if (lang == "java") {
 		if (startsWithKW(line, "public class ") ||
 		    startsWithKW(line, "private class ") ||
@@ -1252,8 +1278,13 @@ static std::unordered_set<std::string>
 getGitChangedFiles(const std::string &project_dir)
 {
 	std::unordered_set<std::string> changed;
-	std::string cmd =
-		"cd " + project_dir + " && git status --porcelain 2>/dev/null";
+	if (!std::filesystem::exists(project_dir + "/.git"))
+		return changed;
+	// timeout: macOS uses gtimeout, Linux uses timeout
+	std::string tm = "timeout 3";
+	if (std::filesystem::exists("/opt/homebrew/bin/gtimeout"))
+		tm = "gtimeout 3";
+	std::string cmd = "cd " + project_dir + " && " + tm + " git status --porcelain 2>/dev/null || true";
 	FILE *fp = popen(cmd.c_str(), "r");
 	if (!fp)
 		return changed;

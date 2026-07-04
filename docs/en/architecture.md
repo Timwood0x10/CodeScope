@@ -267,10 +267,30 @@ Layer 3: IR Translator — CST → Unified IR
 | JavaScript | tree-sitter-javascript.so | javascript_translator.cpp | ✅ |
 | TypeScript | tree-sitter-typescript.so | typescript_translator.cpp | ✅ |
 | Java | tree-sitter-java.so | java_translator.cpp | ✅ |
+| **Swift** | **tree-sitter-swift.so** | **—** | **✅ (Fast Scan)** |
 
----
+### Swift Compiler Analysis
 
-## 7. Real-World Analysis
+| Metric | Value |
+|--------|-------|
+| Directory | `include/swift` (C++ headers) |
+| Scan time | **421 ms** |
+| Symbols | **25,860** |
+| Modules | 59 |
+| Language | c (Swift compiler is C++-implemented) |
+| Full scan (22,272 files) | **Estimated 20-35 s** (Fast Scan) |
+| Full enhancement | **Estimated 5-15 min** |
+| Log | `runtimelog/scan_swift.log` (18 KB) |
+
+### Swift-C Interop (5 Layers)
+
+```
+1. @_silgen_name     — Direct C symbol binding (Attr.h:691)
+2. @_cdecl           — Export Swift fn as C ABI (Attr.h:748)
+3. @convention(c)    — C function pointer type (FrontendOptions.h:358)
+4. UnsafePointer     — Manual memory management (StandardTypesMangling.def:44)
+5. AutoreleasingUnsafeMutablePointer — ObjC bridge (StandardTypesMangling.def:31)
+```
 
 ### Linux Kernel Scheduler
 
