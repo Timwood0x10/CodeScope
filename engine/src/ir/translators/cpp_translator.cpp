@@ -345,6 +345,23 @@ Node *CppTranslator::translateNode(TSNode ts_node, Node *parent)
 		return n;
 	}
 
+	if (strcmp(type, "function_declarator") == 0) {
+	 // Check for sibling compound_statement inside ERROR nodes
+	 // (GNU C++ attributes can cause tree-sitter to misparse).
+	 TSNode p = ts_node_parent(ts_node);
+	 if (!ts_node_is_null(p)) {
+	  uint32_t n = ts_node_child_count(p);
+	  for (uint32_t j = 0; j < n; j++) {
+	   TSNode s = ts_node_child(p, j);
+	   if (ts_node_is_named(s) &&
+	       strcmp(ts_node_type(s), "compound_statement") == 0)
+	    return handleFuncDef(p, parent);
+	  }
+	 }
+	 translateChildren(ts_node, parent);
+	 return nullptr;
+	}
+
 	if (strcmp(type, "expression_statement") == 0 ||
 	    strcmp(type, "compound_statement") == 0 ||
 	    strcmp(type, "argument_list") == 0 ||
@@ -353,7 +370,6 @@ Node *CppTranslator::translateNode(TSNode ts_node, Node *parent)
 	    strcmp(type, "template_argument_list") == 0 ||
 	    strcmp(type, "init_declarator") == 0 ||
 	    strcmp(type, "pointer_declarator") == 0 ||
-	    strcmp(type, "function_declarator") == 0 ||
 	    strcmp(type, "array_declarator") == 0 ||
 	    strcmp(type, "parenthesized_declarator") == 0 ||
 	    strcmp(type, "reference_declarator") == 0 ||
@@ -395,7 +411,22 @@ Node *CppTranslator::handleFuncDef(TSNode ts_node, Node *parent)
 	auto *func = makeNode(is_method ? NodeKind::MethodDecl :
 					  NodeKind::FunctionDecl,
 			      ts_node);
-	func->name = extractName(ts_node);
+	// Extract name from function_declarator first to avoid picking up
+	// GNU C++ attribute identifiers (e.g. __sched).
+	func->name = "";
+	{
+		uint32_t cc = ts_node_child_count(ts_node);
+		for (uint32_t i = 0; i < cc; i++) {
+			TSNode c = ts_node_child(ts_node, i);
+			if (!ts_node_is_named(c)) continue;
+			if (strcmp(ts_node_type(c), "function_declarator") == 0) {
+				std::string n = extractName(c);
+				if (!n.empty()) { func->name = n; break; }
+			}
+		}
+	}
+	if (func->name.empty())
+		func->name = extractName(ts_node);
 	defineSymbol(func->name, func);
 	parent->children.push_back(func);
 

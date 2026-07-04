@@ -304,8 +304,23 @@ Node *CTranslator::translateNode(TSNode ts_node, Node *parent)
 	    strcmp(type, "parenthesized_declarator") == 0 ||
 	    strcmp(type, "field_declaration_list") == 0 ||
 	    strcmp(type, "field_declaration") == 0) {
-		translateChildren(ts_node, parent);
-		return nullptr;
+	  // Special case: function_declarator inside an ERROR node
+	  // (e.g. from GNU C __sched attribute). Check if there's a
+	  // compound_statement sibling → treat as function definition.
+	  if (strcmp(type, "function_declarator") == 0) {
+	   TSNode err_node = ts_node_parent(ts_node);
+	   if (!ts_node_is_null(err_node)) {
+	    uint32_t ec = ts_node_child_count(err_node);
+	    for (uint32_t j = 0; j < ec; j++) {
+	     TSNode sib = ts_node_child(err_node, j);
+	     if (ts_node_is_named(sib) &&
+	         strcmp(ts_node_type(sib), "compound_statement") == 0)
+	      return handleFuncDef(err_node, parent);
+	    }
+	   }
+	  }
+	  translateChildren(ts_node, parent);
+	  return nullptr;
 	}
 
 	return nullptr;
@@ -325,7 +340,22 @@ void CTranslator::translateChildren(TSNode ts_node, Node *parent)
 Node *CTranslator::handleFuncDef(TSNode ts_node, Node *parent)
 {
 	auto *func = makeNode(NodeKind::FunctionDecl, ts_node);
-	func->name = extractName(ts_node);
+
+	// Extract function name — prefer identifier inside function_declarator
+	// over the first identifier found (avoids picking up __sched etc.).
+	func->name = "";
+	uint32_t cc = ts_node_child_count(ts_node);
+	for (uint32_t i = 0; i < cc; i++) {
+		TSNode c = ts_node_child(ts_node, i);
+		if (!ts_node_is_named(c)) continue;
+		if (strcmp(ts_node_type(c), "function_declarator") == 0) {
+			std::string n = extractName(c);
+			if (!n.empty()) { func->name = n; break; }
+		}
+	}
+	if (func->name.empty())
+		func->name = extractName(ts_node);
+
 	defineSymbol(func->name, func);
 	parent->children.push_back(func);
 
