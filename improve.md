@@ -1,540 +1,871 @@
-我觉得**这版已经可以开干了。**如果打分的话，我会给 9.5/10。
+我认真看完了，而且说实话，比我前几天看到的架构又成熟了一大截。
 
-和前几版相比，这版最大的变化不是多了几张表，而是架构开始收敛了。
+这已经不是一个”代码分析工具”了，而是在往 AI Native Code Knowledge Engine 的方向走。
 
-⸻
-
-我认为做对的地方
-
-① Facts / Derived 分离（★★★★★）
-
-这是整个设计最值钱的地方。
-
-Facts
---------
-modules
-symbols
-entry_points
-dependency_edges
-call_edges
-Derived
---------
-metrics
-FTS
-embeddings
-
-以后所有分析能力都建立在 Facts 上。
-
-这是一个非常健康的架构。
-
-以后你想接：
-
-* OmniScope
-* LLVM
-* LSP
-* AI Summary
-
-全部都不用改 Schema。
-
-这一点我非常喜欢。
+我从架构、性能、AI价值三个角度评价一下。
 
 ⸻
 
-② Fast + Enhancement
+一、最让我惊喜的是 Fast Index
 
-这是整个项目最大的卖点。
+351ms
 
-Fast Index
+扫描
+
+drivers/usb
+
+得到
+
+40 modules
+37286 symbols
+
+同时还能直接回答
+
+Module Tree
+Entry Points
+Overview
+
+这一点其实比很多 LSP 快。
+
+因为 LSP 的问题是：
+
+Open File
 ↓
-AI 已经能工作
+Index
 ↓
-Background Enhancement
-
-不是：
-
-等待五秒
+Wait
 ↓
-开始工作
+Goto Definition
 
-体验差很多。
+而你这里变成了
 
-我甚至建议 README 第一张图就画这个。
+Project
+↓
+Fast Scan
+↓
+Project Knowledge
 
-⸻
+这是两个东西。
 
-③ Rust / C++ 分工
-
-这个没有问题。
-
-Rust：
-
-* MCP
-* Queue
-* Task
-* Cancellation
-
-C++：
-
-* Scanner
-* Parser
-* Graph
-
-职责非常清楚。
+AI 更喜欢第二种。
 
 ⸻
 
-我建议改的地方（只有几个）
+二、数据库设计是对的
 
-⸻
+我之前一直说：
 
-① dependency_edges 不应该引用 symbol
+不要存分析结果。
 
-这是我唯一觉得设计上有点问题的地方。
+只存事实。
+
+现在你的 schema 已经非常接近这个思想。
 
 例如
 
-Rust
+modules
+symbols
+entry_points
+call_edges
 
-use tokio::sync::Mutex;
+都是 Facts。
 
-Go
+真正 Derived 的只有
 
-import "context"
+metrics
+embedding
+fts
 
-Python
+以后即使：
 
-import requests
+新的 CFG
+新的复杂度算法
+新的 AI
 
-很多：
+全部重新生成。
 
-Target
+事实层不用改。
 
-根本不是：
-
-你的 symbol。
-
-可能：
-
-第三方。
-
-可能：
-
-标准库。
-
-所以：
-
-不要：
-
-source_symbol_id
-target_symbol_id
-
-建议：
-
-dependency_edges
-source_module_id
-target_module_id
-external_name
-kind
-
-模块依赖。
-
-不是：
-
-Symbol。
-
-否则：
-
-以后：
-
-stdlib
-
-怎么建？
+这一点以后会非常舒服。
 
 ⸻
 
-② embeddings
+三、Fast Scan 真正有价值的是
 
-我还是坚持：
+不是扫描速度。
 
-不要：
+而是：
 
-symbol embedding
+AI 第一句话就能回答。
 
-建议：
+例如
 
-document embedding
+scan_project
+
+立刻知道：
+
+USB
+├── host
+├── gadget
+├── serial
+├── storage
+├── typec
+
+AI 已经知道：
+
+整个项目有哪些模块。
+
+以后：
+
+USB Host
+如何初始化？
+
+它已经不用全仓库搜索了。
+
+直接：
+
+host
+↓
+entry
+↓
+symbols
+
+⸻
+
+这一步其实就是：
+
+Project Context。
+
+⸻
+
+四、Overview 非常好
+
+例如
+
+Project Overview
+languages
+modules
+symbols
+progress
+entry points
+ready features
+
+以后甚至可以继续扩展。
+
+例如
+
+Overview
+↓
+Architecture
+↓
+Largest Modules
+↓
+Most Referenced Symbols
+↓
+Dependency Summary
+↓
+Potential Hotspots
+↓
+Complexity
+
+这些全部不用 LLM。
+
+SQL 就够。
+
+⸻
+
+五、Module Tree 返回时间
+
+44 us
+
+基本已经属于：
+
+数据库查询速度。
+
+说明你的 schema 没问题。
+
+⸻
+
+六、Entry Point
+
+我特别喜欢。
+
+以后可以继续扩展。
 
 例如：
 
-README
-Comment
-Summary
-API Doc
+现在
+
+Entry
+↓
+main
+init
+setup
+start
 
 以后：
 
-AI：
+增加：
 
-检索：
+module_init
+device_initcall
+late_initcall
+subsys_initcall
 
-都是：
+Linux 会更准。
 
-这些。
+Go：
 
-不是：
+main
+init
 
-函数名。
+Rust：
+
+main
+#[test]
+proc_macro
+
+Python：
+
+if __name__
+
+统一。
 
 ⸻
 
-③ metrics
+七、唯一觉得还能改的地方
 
-建议：
+就是：
 
-不要：
+symbols
 
-只有：
+现在还是：
 
-Function。
+Name
+Kind
+Signature
 
-以后：
+以后建议加：
 
-建议：
-
-module_metrics
-project_metrics
-symbol_metrics
-
-统一：
+symbol_role
 
 例如：
 
-owner_type
-owner_id
+API
+Callback
+Interrupt
+Driver
+Hook
+Entry
+Utility
+Test
 
-以后：
-
-Module：
-
-也有：
-
-复杂度。
-
-⸻
-
-④ search_index
-
-建议：
-
-不要：
-
-content
-
-建议：
-
-title
-summary
-body
-
-以后：
-
-AI Summary：
-
-直接放：
-
-summary。
-
-FTS：
-
-效果：
-
-比：
-
-content：
-
-好很多。
+AI 会聪明很多。
 
 ⸻
 
-⑤ callgraph_ready
+八、find_symbol
 
-建议：
-
-不要：
-
-Ready Flag。
-
-建议：
-
-统一：
-
-analysis_state
-bitflag
+这里其实暴露一个问题。
 
 例如：
 
-SCAN
-CALLGRAPH
-CFG
-LSP
-EMBEDDING
+find_symbol(main)
 
-以后：
+返回空。
 
-不会：
+其实不是没找到。
 
-出现：
+而是：
+
+drivers/usb
+没有 main
+
+所以建议返回：
+
+No symbol named main.
+Project language: C
+This project appears to be a kernel subsystem.
+Possible entry:
+module_init()
+usb_register()
+...
+
+AI 就不会误判。
+
+⸻
+
+九、Enhancement Status
+
+这个我非常喜欢。
 
 callgraph_ready
 cfg_ready
 embedding_ready
-ownership_ready
-...
 
-越来越多。
+我甚至建议：
 
-一个：
+以后所有 Tool 都返回：
 
-bitmask。
+confidence
+ready
+missing_features
 
-全部解决。
+例如
 
-⸻
+Call Graph
+Ready
+false
+Need
+Background Enhancement
 
-⑥ MCP Tool
+AI 自己知道：
 
-我建议：
-
-增加：
-
-一个。
-
-project_overview
-
-返回：
-
-Project
-Language
-Modules
-Symbols
-Entry Points
-Current Progress
-Ready Features
-
-这是：
-
-AI：
-
-第一件：
-
-调用。
+不能调用。
 
 ⸻
 
-⑦ 还有一个隐藏问题
+十、最大的价值
 
-Fast Scan
+其实不是扫描。
 
-千万：
+而是：
 
-不要：
+以后 AI Prompt 可以变成：
 
-Regex。
-
-建议：
-
-Lexer。
-
-例如：
-
-Tree-sitter：
-
-太慢。
-
-Regex：
-
-太脆。
-
-Lexer：
-
-刚刚好。
-
-例如：
-
-Rust：
-
-fn
-struct
-trait
-enum
-impl
-
-一扫：
-
-几十 MB：
-
-几百毫秒。
-
-Regex：
-
-以后：
-
-各种：
-
-Raw String
-
-Macro
-
-容易炸。
-
-⸻
-
-我觉得未来还能再加一个
-
-这个不是现在。
-
-以后。
-
-Knowledge Layer
-
-例如：
-
-Module
+Before answering:
+query Project Overview
 ↓
-Summary
+query Module Tree
+↓
+query Entry Points
+↓
+query Symbol
+↓
+Need?
+↓
+Call Graph
+↓
+Need?
 ↓
 Embedding
 
-AI：
+AI 就不是：
 
-问：
+Read Files
 
-Scheduler
-负责什么？
+而是：
 
-直接：
+Read Knowledge Base
 
-Summary。
-
-不用：
-
-读：
-
-5000 行。
-
-这个：
-
-以后：
-
-ARES
-
-也能复用。
+这是两个时代。
 
 ⸻
 
-我真正最喜欢的一点
+十一、性能我比较惊讶
 
-其实不是数据库。
+37286
+symbols
+351ms
 
-而是你的定位已经变了。
+相当于：
 
-以前：
+106000 symbol/sec
 
-像：
+已经和你前面的 Linux Benchmark 差不多了。
 
-Code Index
+说明：
+
+Fast Scanner 已经比较稳定。
+
+以后真正瓶颈会变成：
+
+Disk IO
+tree-sitter
+Embedding
+
+不是 Scanner。
+
+⸻
+
+十二、我建议下一步（我认为最重要）
+
+其实不是继续加 Tool。
+
+而是加一个：
+
+Context Builder
 
 现在：
 
-更像：
+User
+↓
+find_symbol
+↓
+AI
 
-Project Knowledge Engine
+以后建议：
 
-这是两个完全不同的东西。
+Question
+↓
+Context Builder
+↓
+自动决定：
+Overview
++
+Module Tree
++
+Entry
++
+Symbol
++
+Call Graph
+↓
+合并 Context
+↓
+LLM
+
+例如：
+
+用户：
+
+Explain USB initialization.
+
+Context Builder 自动：
+
+Overview
+↓
+Entry Points
+↓
+module_init
+↓
+usb_register
+↓
+Call Graph
+↓
+Relevant Modules
+
+LLM 收到的已经不是整个项目。
+
+而是：
+
+10KB
+最相关上下文
+
+Token 能降一个数量级。
 
 ⸻
 
-我唯一会改的一句话
+最后，我觉得 CodeScope 的定位其实可以再提升一级。
 
-现在叫：
+你之前一直说它是 “让 AI 更懂代码”，但现在它实际上已经开始承担另一种角色：
 
-Fast Index + Enhancement
+CodeScope 不是代码搜索工具，而是 AI 的项目知识层（Project Knowledge Layer）。
 
-我觉得还可以再好一点。
+也就是说：
 
-改成：
+Source Code
+      │
+      ▼
+CodeScope
+(Facts + Index + Graph + Context)
+      │
+      ▼
+LLM / Agent
+      │
+      ▼
+Reasoning & Tool Use
 
-Skeleton Index
-        ↓
-Knowledge Enhancement
+以后无论是 ARES，还是 Claude、Gemini、Codex，甚至任何支持 MCP 的 Agent，都可以把 CodeScope 当作统一的项目知识提供者，而不是每次重新扫描整个代码库。
 
-因为 AI 第一阶段获得的是项目骨架（Skeleton），第二阶段获得的是知识增强（Knowledge）。
-
-这两个名字比”Fast/Enhancement”更有产品感，也更准确地表达了项目目标。
-
-⸻
-
-总体评价：这是我最近看到你所有设计里，收敛得最好的一版。
-
-它没有为了”高级”而引入一堆概念，而是围绕一个很清晰的目标展开：
-
-让 AI 尽快建立项目认知，然后在后台不断加深理解。
-
-如果你能把 Phase A 做出来，我觉得这个 MCP 就已经有很强的实用价值了。剩下的调用图、Embedding、LSP 都是在这个稳定骨架上的增量增强。
-
-
----
-
-
-一、 Schema 与数据流的微调（避坑点）
-1. modules 的 path 存储规范
-在 modules 表中，path 建议严格存储为基于项目根目录的相对路径（Relative Path）。
-
-原因：如果存储绝对路径，一旦用户移动了项目、或者在不同机器上打开（比如宿主机和 OrbStack 容器、或者远程开发环境），数据库里的路径会全部失效。相对路径保证了缓存的可移植性。
-
-2. search_index (FTS5) 缺少外键关联的级联删除
-FTS5 是虚表，它本身不支持传统的 REFERENCES symbols(id) ON DELETE CASCADE。
-
-落地建议：当你需要更新代码或删除模块时，需要手动同步清理 FTS5 虚表，或者在 symbols 表上挂一个 SQLite Trigger（触发器）来自动同步：
-
-SQL
-CREATE TRIGGER AFTER DELETE ON symbols BEGIN
-    DELETE FROM search_index WHERE symbol_id = old.id;
-END;
-3. dependency_edges 的阶段归属纠正
-在第四节的表格中，你将 dependency_edges 归类为了 Phase A（扫描阶段）。
-
-现实挑战：在 Phase A 的 ms 级轻量扫描中，由于此时完整的类型系统还没有建立，像 C++ 的 using、Rust 的 use 往往只能拿到字面量符号。如果要想真正精准解析出 source_symbol_id 到 target_symbol_id 的绑定关系（特别是跨模块的依赖），通常需要等 AST 甚至 LSP 增强。
-
-建议：把 dependency_edges 的完整建立归入 Phase B（增强阶段）。在 Phase A 只记录当前符号引用了哪些原始字符串，由 Phase B 异步将其转化为 id -> id 的边，或者通过 dependency_ready 状态位进行控制。
-
-二、 Rust - C++ FFI 边界设计规范
-由于你使用 C++ 跑 Scanner/Parser，Rust 跑 MCP 调度，为了确保高频大数据量插入时 FFI 不成为瓶颈，请遵循以下规范：
-
-绝对不要“单条符号调用一次 FFI”：如果 C++ 扫出一个符号就调用一次 Rust 导出的 Insert 接口，几千次 FFI 的上下文切换开销会直接毁掉 ms 级的目标。
-
-块级传递（Chunking）或回调（Callback）：
-
-方案 A：C++ 扫描完一个文件，将该文件所有的 symbols 压入一个连续的 C-Style 结构体数组（POD struct array），一次性通过指针传给 Rust，由 Rust 侧的 rusqlite 开启事务进行 std::vec 批量插入。
-
-方案 B：C++ 侧直接静态链接 sqlite3（或者通过相同的 libsqlite 动态链接），直接由 C++ 写入事实表。Rust 侧只负责传入 db_path 和任务指令，并负责读取展示。从你的 Mermaid 架构图来看，方案 B（C++ Core 直接写 FACTS 表）是最符合你当前设计的，也能压榨出极限的 I/O 性能。
-
+如果按这个方向继续做，我反而不会急着去加更多分析算法，而是会优先把 Context Builder + Capability API + 增量索引（Incremental Indexing） 做出来。这三样一旦完成，CodeScope 就会从一个”分析器”真正升级成 AI 编程系统的基础设施。
 
 
 
 ----
 
 
-表设计
-symbols 表字段较多，可以考虑把 callgraph_ready、cfg_ready、embedding_ready 提取到一个 symbol_status 表，避免主表太宽。
-search_index 和 embeddings 可以考虑用同一个 symbol_id 关联，减少冗余。
+我会选一个字：
 
-异步机制
-Rust 层用 Tokio Task Queue 很好，但建议加一个任务状态表（index_tasks），记录 project_id、status、progress、error 等，方便查询和重试。
+Context Builder。
 
-MCP Tool 设计
-建议统一用 codescope_ 前缀，例如：
-codescope_scan
-codescope_find_symbol
-codescope_search
-codescope_get_callers
+不是因为它最酷，而是因为它会把你前面几个月做的所有东西串起来。
+
+⸻
+
+你现在其实已经到了一个拐点
+
+看看你已经有什么：
+
+Fast Scan          ✓
+Module Tree        ✓
+Symbols            ✓
+Entry Points       ✓
+Overview           ✓
+Background Enhance ✓
+Call Graph (准备)
+Embedding (准备)
+
+如果继续做：
+
+Entry Point++
+空结果优化++
+
+这些都是：
+
+Tool Enhancement。
+
+用户体验会好一点。
+
+但是整个系统不会发生质变。
+
+⸻
+
+而 Context Builder 会直接改变整个调用模式
+
+现在：
+
+Question
+↓
+LLM
+↓
+应该调哪个 Tool？
+↓
+Tool
+↓
+LLM
+↓
+Tool
+↓
+LLM
+
+以后：
+
+Question
+↓
+Context Builder
+↓
+Context Bundle
+↓
+LLM
+↓
+Answer
+
+这是完全不同的架构。
+
+⸻
+
+我甚至建议把 Context Builder 做成一个 MCP Tool
+
+例如：
+
+codescope_build_context
+
+输入：
+
+{
+    "query":"Explain USB initialization"
+}
+
+输出：
+
+{
+    "summary": "...",
+    "project": {...},
+    "related_modules":[...],
+    "entry_points":[...],
+    "symbols":[...],
+    "callgraph":[...],
+    "ready_features": {...}
+}
+
+LLM 不需要知道：
+
+get_module_tree
+get_entry_points
+find_symbol
+find_callers
+...
+
+LLM 只知道：
+
+build_context
+
+⸻
+
+真正厉害的是这里
+
+Builder 自己决定。
+
+例如：
+
+用户：
+
+Explain USB initialization
+
+Builder：
+
+Overview
+✓
+Module Tree
+✓
+Entry Point
+✓
+Find Symbol
+×
+Call Graph
+×
+Embedding
+×
+
+如果：
+
+callgraph_ready=false
+
+Builder 根本不会查。
+
+如果：
+
+embedding_ready=true
+
+Builder 自动加：
+
+Semantic Search
+
+以后 Tool 可以增加到 100 个。
+
+LLM 永远不知道。
+
+Builder 才知道。
+
+⸻
+
+它其实就是一个 Query Planner
+
+数据库有：
+
+SQL Optimizer
+
+Linux 有：
+
+Scheduler
+
+ARES 有：
+
+Workflow Planner
+
+CodeScope 以后应该有：
+
+Context Planner
+
+不是：
+
+Tool Router
+
+Planner。
+
+名字都应该改。
+
+⸻
+
+我甚至觉得它可以有一个小 Pipeline
+
+例如：
+
+Question
+↓
+Intent Detection
+↓
+Need Architecture?
+↓
+Need Symbol?
+↓
+Need Module?
+↓
+Need Dependency?
+↓
+Need Call Graph?
+↓
+Need Embedding?
+↓
+Assemble Context
+
+这一层全部不用 LLM。
+
+Go 就能写。
+
+⸻
+
+Entry Point 为什么放后面？
+
+不是因为它不重要。
+
+而是：
+
+Context Builder 做出来以后：
+
+你自然会发现：
+
+Kernel
+↓
+Need Entry Point
+
+于是：
+
+module_init
+device_initcall
+late_initcall
+
+全部都会补。
+
+这是自然演化。
+
+而不是提前写死。
+
+⸻
+
+空结果优化也是一样
+
+以后：
+
+Builder 查：
+
+find_symbol(main)
+
+发现：
+
+0
+
+它不会直接返回。
+
+它继续：
+
+Language?
+↓
+C
+↓
+Kernel?
+↓
+Yes
+↓
+Entry Point?
+↓
+module_init
+
+最后给 LLM：
+
+No main()
+Possible Entry
+module_init()
+usb_register()
+...
+
+这个能力其实属于：
+
+Builder。
+
+不是：
+
+find_symbol。
+
+⸻
+
+我反而建议把 Tool 全部做”纯”
+
+例如：
+
+find_symbol
+
+永远：
+
+查数据库
+
+不会解释。
+
+find_callers
+
+永远：
+
+查数据库
+
+不会解释。
+
+overview
+
+永远：
+
+查数据库
+
+不会解释。
+
+然后：
+
+Context Builder
+
+负责：
+
+组合
+推断
+补全
+降级
+Fallback
+Hint
+
+这样职责极其清晰。
+
+⸻
+
+如果让我给 CodeScope 排 Roadmap，我会直接改成：
+
+v0.3 —— Context Builder（最高优先级）⭐⭐⭐⭐⭐
+
+完成：
+
+* Intent Analyzer（规则即可）
+* Context Planner
+* Context Assembler
+* Ready-aware Query
+* Fallback Logic
+
+这是整个项目的第一次”架构升级”。
+
+⸻
+
+v0.4 —— Background Enhancement ⭐⭐⭐⭐
+
+完成：
+
+* Call Graph
+* CFG
+* Metrics
+* Embedding
+* Incremental Update
+
+⸻
+
+v0.5 —— Smart Knowledge ⭐⭐⭐⭐⭐
+
+完成：
+
+* Architecture Summary
+* Auto Hotspot Detection
+* Module Importance Ranking
+* API Relationship
+* Cross-file Reasoning
+
+⸻
+
+最后，我想补一句我刚刚突然想到的话。
+
+CodeScope 不应该把 MCP Tool 当成 API。
+
+而应该把 MCP Tool 当成 Knowledge Operators（知识算子）。
+
+Tool 只是最底层的原子操作：
+
+find_symbol
+get_module_tree
+get_callers
+search
+
+Context Builder 则是第一个真正的”知识算子”，它把这些原子操作组合成一个面向 AI 推理的知识上下文。从这一刻开始，CodeScope 的核心就不再是”提供很多查询接口”，而是主动构建 AI 最需要的上下文。我认为，这会成为 CodeScope 与普通代码索引工具最大的区别。

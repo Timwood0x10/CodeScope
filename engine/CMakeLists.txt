@@ -35,6 +35,13 @@ if(NOT CMAKE_JOB_POOLS)
     set(CMAKE_JOB_POOLS "compile=${NCPU};link=${NCPU}")
 endif()
 
+# ── Compiler Cache ───────────────────────────────────────────────
+find_program(CCACHE_PROGRAM ccache)
+if(CCACHE_PROGRAM)
+    set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE "${CCACHE_PROGRAM}")
+    message(STATUS "Using ccache: ${CCACHE_PROGRAM}")
+endif()
+
 # ── Dependencies ────────────────────────────────────────────────
 find_package(PkgConfig)
 

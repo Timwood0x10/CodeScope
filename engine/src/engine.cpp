@@ -910,14 +910,25 @@ static std::string extractName(std::string_view line, const std::string &kind,
 
 // Check if a symbol name is a likely entry point
 static bool isEntryPoint(const std::string &name) {
+    // Common names
     static const char *ep_names[] = {"main", "Main",  "init",  "Init",    "setup",   "Setup", "run",
                                      "Run",  "start", "Start", "handler", "Handler", nullptr};
     for (const char **ep = ep_names; *ep; ep++) {
         if (name == *ep)
             return true;
     }
-    // Handle C++ main variants
+    // C++/Windows main variants
     if (name == "_main" || name == "WinMain" || name == "wmain")
+        return true;
+    // Kernel entry points: module_init(x) / module_exit(x) → x is the entry
+    // Driver probe/disconnect
+    if (name == "probe" || name == "Probe")
+        return true;
+    // initcall variants
+    if (name == "device_initcall" || name == "subsys_initcall" ||
+        name == "late_initcall" || name == "arch_initcall" ||
+        name == "fs_initcall" || name == "rootfs_initcall" ||
+        name == "console_initcall" || name == "security_initcall")
         return true;
     return false;
 }
@@ -934,6 +945,14 @@ static std::string entryPointKind(const std::string &name) {
         return "run";
     if (name == "start" || name == "Start")
         return "start";
+    if (name == "probe" || name == "Probe")
+        return "probe";
+    // initcall variants
+    if (name == "device_initcall" || name == "subsys_initcall" ||
+        name == "late_initcall" || name == "arch_initcall" ||
+        name == "fs_initcall" || name == "rootfs_initcall" ||
+        name == "console_initcall" || name == "security_initcall")
+        return "initcall";
     return "handler";
 }
 
@@ -1376,7 +1395,71 @@ char *engine_find_symbol(uint64_t project_id, const char *symbol_name) {
         return dupString("{\"error\":\"engine not initialized\"}");
     if (!symbol_name || !*symbol_name)
         return dupString("{\"error\":\"symbol_name is empty\",\"results\":[]}");
-    return dupString(g_store->findSymbolJson(project_id, symbol_name));
+
+    std::string result = g_store->findSymbolJson(project_id, symbol_name);
+
+    // Check if empty and add smart hints
+    if (result.find("\"results\":[]") != std::string::npos) {
+        // Query project languages
+        std::string langs;
+        const char *lsql = "SELECT DISTINCT language || ',' FROM symbols WHERE project_id = ? LIMIT 5";
+        sqlite3_stmt *lstmt = nullptr;
+        if (sqlite3_prepare_v2(g_store->handle(), lsql, -1, &lstmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int64(lstmt, 1, static_cast<int64_t>(project_id));
+            while (sqlite3_step(lstmt) == SQLITE_ROW) {
+                const char *l = reinterpret_cast<const char *>(sqlite3_column_text(lstmt, 0));
+                if (l) langs += l;
+            }
+            sqlite3_finalize(lstmt);
+        }
+        if (!langs.empty()) langs.pop_back(); // remove trailing comma
+        if (langs.empty()) langs = "unknown";
+
+        // Check total symbols
+        int total = 0;
+        const char *csql = "SELECT COUNT(*) FROM symbols WHERE project_id = ?";
+        sqlite3_stmt *cstmt = nullptr;
+        if (sqlite3_prepare_v2(g_store->handle(), csql, -1, &cstmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int64(cstmt, 1, static_cast<int64_t>(project_id));
+            if (sqlite3_step(cstmt) == SQLITE_ROW)
+                total = sqlite3_column_int(cstmt, 0);
+            sqlite3_finalize(cstmt);
+        }
+
+        // Check if this looks like a kernel project
+        bool is_kernel = (langs.find("c") != std::string::npos);
+        // Build smart message
+        std::string hint = "{\"results\":[],\"hint\":{";
+        hint += "\"message\":\"No symbol named '" + std::string(symbol_name) + "' found\",";
+        hint += "\"project_language\":\"" + langs + "\",";
+        hint += "\"total_symbols\":" + std::to_string(total) + ",";
+        if (total > 0 && is_kernel) {
+            hint += "\"suggestion\":\"This appears to be a C/C++ project. ";
+            // Check common kernel entry points
+            std::string ep_hints;
+            const char *epsql = "SELECT DISTINCT kind FROM entry_points WHERE project_id = ? LIMIT 5";
+            sqlite3_stmt *estmt = nullptr;
+            if (sqlite3_prepare_v2(g_store->handle(), epsql, -1, &estmt, nullptr) == SQLITE_OK) {
+                sqlite3_bind_int64(estmt, 1, static_cast<int64_t>(project_id));
+                while (sqlite3_step(estmt) == SQLITE_ROW) {
+                    const char *k = reinterpret_cast<const char *>(sqlite3_column_text(estmt, 0));
+                    if (k) { ep_hints += *k; ep_hints += ", "; }
+                }
+                sqlite3_finalize(estmt);
+            }
+            if (!ep_hints.empty()) {
+                hint += "Known entry point types: " + ep_hints + ". ";
+                hint += "Try searching for 'probe', 'init', or a driver-specific function name.";
+            } else {
+                hint += "Possible entry points: module_init(), usb_register(), probe(), init().";
+            }
+            hint += "\"";
+        }
+        hint += "}}";
+        return dupString(hint);
+    }
+
+    return dupString(result);
 }
 
 // ─── Phase B: engine_enhance_project ──────────────────────────

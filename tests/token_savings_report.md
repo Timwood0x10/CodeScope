@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-03
 **Method:** Live measurements using codebase-memory-mcp on CodeScope project (733 nodes, 1850 edges)
-**Project:** `/Users/scc/code/cppCode/CodeScope`
+**Project:** `～/code/cppCode/CodeScope`
 
 ---
 
