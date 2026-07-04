@@ -78,7 +78,7 @@ int main() {
     // ── Create project ─────────────────────────────────────────
     uint64_t pid = engine_create_project("/tmp", "test-project");
     assert(pid > 0);
-    printf("[OK] Project created: id=%lu\n\n", pid);
+    printf("[OK] Project created: id=%llu\n\n", (unsigned long long)pid);
 
     // ── Index file ─────────────────────────────────────────────
     char* result = engine_index_file(pid, test_file);

@@ -1,0 +1,49 @@
+# Rust build optimization configuration
+
+# NOTE: To use sccache (Rust compiler cache), install it first:
+#   cargo install sccache
+#   Then set environment variable: RUSTC_WRAPPER=sccache
+# Do NOT set rustc-wrapper here as it will fail if sccache is not installed
+
+# Build optimizations
+[build]
+# Use all available CPU cores
+jobs = -1
+
+# Incremental compilation (enabled by default in dev profile)
+incremental = true
+
+# Rustflags for faster builds
+[target.'cfg(debug_assertions)']
+rustflags = ["-C", "target-cpu=native"]
+
+# Profile-specific optimizations
+[profile.dev]
+opt-level = 0          # No optimization for dev builds (fastest compile)
+debug = true           # Full debug info
+debug-assertions = true
+overflow-checks = true
+lto = false            # No LTO for dev builds
+codegen-units = 256    # Max parallelism for dev builds
+
+[profile.release]
+opt-level = 3          # Maximum optimization
+debug = false          # No debug info
+debug-assertions = false
+overflow-checks = false
+lto = "thin"           # Thin LTO for faster build than full LTO
+codegen-units = 16     # Some parallelism, better optimization
+strip = true           # Strip symbols for smaller binary
+
+[profile.test]
+opt-level = 0
+debug = true
+debug-assertions = true
+overflow-checks = true
+lto = false
+codegen-units = 256
+
+# Faster check builds (for linting)
+[profile.check]
+inherits = "dev"
+opt-level = 0

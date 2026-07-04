@@ -10,79 +10,79 @@ namespace ir {
 // ─── Node Kinds ───────────────────────────────────────────────
 
 enum class NodeKind : uint16_t {
-  // compilation units
-  TranslationUnit,
-  Module,
+    // compilation units
+    TranslationUnit,
+    Module,
 
-  // declarations
-  FunctionDecl,
-  ClassDecl,
-  MethodDecl,
-  VariableDecl,
-  FieldDecl,
-  ParameterDecl,
-  EnumDecl,
-  EnumMemberDecl,
-  TypeAliasDecl,
-  TemplateDecl,
-  NamespaceDecl,
+    // declarations
+    FunctionDecl,
+    ClassDecl,
+    MethodDecl,
+    VariableDecl,
+    FieldDecl,
+    ParameterDecl,
+    EnumDecl,
+    EnumMemberDecl,
+    TypeAliasDecl,
+    TemplateDecl,
+    NamespaceDecl,
 
-  // statements
-  BlockStmt,
-  ExprStmt,
-  IfStmt,
-  ForStmt,
-  WhileStmt,
-  DoWhileStmt,
-  SwitchStmt,
-  CaseStmt,
-  ReturnStmt,
-  BreakStmt,
-  ContinueStmt,
-  TryStmt,
-  CatchStmt,
-  ThrowStmt,
+    // statements
+    BlockStmt,
+    ExprStmt,
+    IfStmt,
+    ForStmt,
+    WhileStmt,
+    DoWhileStmt,
+    SwitchStmt,
+    CaseStmt,
+    ReturnStmt,
+    BreakStmt,
+    ContinueStmt,
+    TryStmt,
+    CatchStmt,
+    ThrowStmt,
 
-  // expressions
-  CallExpr,
-  BinaryExpr,
-  UnaryExpr,
-  MemberExpr,
-  IndexExpr,
-  IdentifierExpr,
-  LiteralExpr,
-  LambdaExpr,
-  NewExpr,
-  CastExpr,
-  TernaryExpr,
+    // expressions
+    CallExpr,
+    BinaryExpr,
+    UnaryExpr,
+    MemberExpr,
+    IndexExpr,
+    IdentifierExpr,
+    LiteralExpr,
+    LambdaExpr,
+    NewExpr,
+    CastExpr,
+    TernaryExpr,
 
-  // imports / exports
-  ImportDecl,
-  ExportDecl,
+    // imports / exports
+    ImportDecl,
+    ExportDecl,
 
-  // misc
-  Comment,
+    // misc
+    Comment,
 };
 
 // ─── Relations ────────────────────────────────────────────────
 
 enum class Relation : uint8_t {
-  Parent,     // parent node
-  Child,      // child node (implicit via children vector)
-  TypeRef,    // type reference
-  SymbolRef,  // identifier → definition
-  CallTarget, // call expr → function decl
-  Receiver,   // method → class
-  BaseClass,  // class → base class
+    Parent,     // parent node
+    Child,      // child node (implicit via children vector)
+    TypeRef,    // type reference
+    SymbolRef,  // identifier → definition
+    CallTarget, // call expr → function decl
+    Receiver,   // method → class
+    BaseClass,  // class → base class
 };
 
 // ─── Source Location ──────────────────────────────────────────
 
 struct SourceLocation {
-  uint32_t start_row = 0;
-  uint32_t start_col = 0;
-  uint32_t end_row = 0;
-  uint32_t end_col = 0;
+    uint32_t start_row = 0;
+    uint32_t start_col = 0;
+    uint32_t end_row = 0;
+    uint32_t end_col = 0;
 };
 
 // ─── IR Node ──────────────────────────────────────────────────
@@ -90,49 +90,49 @@ struct SourceLocation {
 struct Node;
 
 struct SemanticEdge {
-  Node *target;
-  Relation relation;
+    Node *target;
+    Relation relation;
 };
 
 struct Node {
-  uint64_t id = 0; // assigned during traversal
-  NodeKind kind;
+    uint64_t id = 0; // assigned during traversal
+    NodeKind kind;
 
-  std::string name; // short name (empty if not applicable)
-  std::string qualified_name;
+    std::string name; // short name (empty if not applicable)
+    std::string qualified_name;
 
-  SourceLocation loc;
+    SourceLocation loc;
 
-  std::vector<Node *> children;
-  std::vector<SemanticEdge> semantic_edges;
+    std::vector<Node *> children;
+    std::vector<SemanticEdge> semantic_edges;
 
-  std::string language;
-  std::string file_path;
+    std::string language;
+    std::string file_path;
 
-  // Documentation comment attached to this node (if any)
-  std::string doc_comment;
+    // Documentation comment attached to this node (if any)
+    std::string doc_comment;
 
-  // True if the parser encountered syntax errors in this subtree
-  bool has_error = false;
+    // True if the parser encountered syntax errors in this subtree
+    bool has_error = false;
 
-  // ── helpers ────────────────────────────────────────────────
+    // ── helpers ────────────────────────────────────────────────
 
-  bool hasName() const { return !name.empty(); }
+    bool hasName() const { return !name.empty(); }
 
-  const char *kindName() const;
+    const char *kindName() const;
 };
 
 // ─── IR Translation Unit ──────────────────────────────────────
 
 struct TranslationUnit {
-  Node *root = nullptr;          // TranslationUnit node
-  std::vector<Node *> all_nodes; // flat list, indexed by Node::id
-  std::string source_content;    // original source text
+    Node *root = nullptr;          // TranslationUnit node
+    std::vector<Node *> all_nodes; // flat list, indexed by Node::id
+    std::string source_content;    // original source text
 
-  ~TranslationUnit();
+    ~TranslationUnit();
 
-  // Walk the tree and assign sequential IDs
-  void assignIds();
+    // Walk the tree and assign sequential IDs
+    void assignIds();
 };
 
 const char *kindName(NodeKind k);

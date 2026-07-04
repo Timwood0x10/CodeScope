@@ -67,7 +67,7 @@ int main(int argc, char** argv) {
     if (rc != 0) { fprintf(stderr, "engine_init failed\n"); return 1; }
 
     uint64_t pid = engine_create_project("/tmp", "bench");
-    printf("project_id: %lu\n", pid);
+    printf("project_id: %llu\n", (unsigned long long)pid);
 
     size_t src_size = fileSize(file_path);
     printf("source_size: %zu bytes (%.1f KB)\n", src_size, src_size / 1024.0);

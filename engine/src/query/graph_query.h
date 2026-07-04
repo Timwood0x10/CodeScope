@@ -1,9 +1,9 @@
 #ifndef GRAPH_QUERY_H
 #define GRAPH_QUERY_H
 
-#include "../store/store.h"
 #include <cstdint>
 #include <string>
+#include "../store/store.h"
 
 namespace query {
 
@@ -18,8 +18,7 @@ namespace query {
 //
 // Returns JSON: { "total": N, "results": [ { source: ..., edge: ..., target:
 // ... }, ... ] }
-std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
-                              store::GraphStore *store);
+std::string executeGraphQuery(uint64_t project_id, const char *dsl_query, store::GraphStore *store);
 
 } // namespace query
 

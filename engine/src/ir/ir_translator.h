@@ -14,15 +14,14 @@ namespace ir {
 // Each language implements one.
 
 class Translator {
-public:
-  virtual ~Translator() = default;
+  public:
+    virtual ~Translator() = default;
 
-  // Translate a tree-sitter CST into an IR TranslationUnit.
-  // Ownership of the returned TranslationUnit passes to the caller.
-  virtual TranslationUnit *translate(TSTree *tree, const char *source,
-                                     const char *file_path) = 0;
+    // Translate a tree-sitter CST into an IR TranslationUnit.
+    // Ownership of the returned TranslationUnit passes to the caller.
+    virtual TranslationUnit *translate(TSTree *tree, const char *source, const char *file_path) = 0;
 
-  virtual const char *language() const = 0;
+    virtual const char *language() const = 0;
 };
 
 // Factory: returns the appropriate translator for a language string,

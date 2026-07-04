@@ -68,16 +68,23 @@ ENGINE_CMAKE_FLAGS := -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=ON -DCMAKE_EXPORT_C
                        -DCMAKE_C_COMPILER=/opt/homebrew/opt/llvm@21/bin/clang \
                        -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm@21/bin/clang++ \
                        -DCMAKE_OSX_SYSROOT=$(shell xcrun --show-sdk-path)
-ENGINE_LIB         := $(BUILD_DIR)/libastgraph_engine.a
+
+# Use Ninja if available for faster builds
+BUILD_GENERATOR := $(shell which ninja >/dev/null 2>&1 && echo "Ninja" || echo "Unix Makefiles")
+ENGINE_LIB      := $(BUILD_DIR)/libastgraph_engine.a
 
 $(BUILD_DIR):
 	@mkdir -p $(BUILD_DIR)
 
-$(BUILD_DIR)/Makefile: | $(BUILD_DIR)
-	@printf "$(CYAN)[engine]$(RESET) Configuring CMake...\n"
-	@cd $(BUILD_DIR) && cmake $(CURDIR)/$(ENGINE_DIR) $(ENGINE_CMAKE_FLAGS) 2>&1 | tail -3
+$(BUILD_DIR)/build.ninja: | $(BUILD_DIR)
+	@printf "$(CYAN)[engine]$(RESET) Configuring CMake ($(BUILD_GENERATOR))...\n"
+	@cd $(BUILD_DIR) && cmake -G "$(BUILD_GENERATOR)" $(CURDIR)/$(ENGINE_DIR) $(ENGINE_CMAKE_FLAGS) 2>&1 | tail -3
 
-$(ENGINE_LIB): $(BUILD_DIR)/Makefile
+$(BUILD_DIR)/Makefile: | $(BUILD_DIR)
+	@printf "$(CYAN)[engine]$(RESET) Configuring CMake ($(BUILD_GENERATOR))...\n"
+	@cd $(BUILD_DIR) && cmake -G "$(BUILD_GENERATOR)" $(CURDIR)/$(ENGINE_DIR) $(ENGINE_CMAKE_FLAGS) 2>&1 | tail -3
+
+$(ENGINE_LIB): $(BUILD_DIR)/build.ninja $(BUILD_DIR)/Makefile
 	@printf "$(CYAN)[engine]$(RESET) Building C++ engine...\n"
 	@cmake --build $(BUILD_DIR) -j$$(nproc 2>/dev/null || sysctl -n hw.ncpu) 2>&1 \
 		&& printf "  $(CHECK) engine built: $(ENGINE_LIB)\n"

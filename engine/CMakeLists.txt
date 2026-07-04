@@ -1,9 +1,39 @@
 cmake_minimum_required(VERSION 3.30)
 project(astgraph_engine VERSION 0.1.0 LANGUAGES CXX)
 
+# ── Build Optimization ───────────────────────────────────────────
+# Use Ninja if available (much faster than Make)
+if(NOT CMAKE_GENERATOR)
+    find_program(NINJA ninja)
+    if(NINJA)
+        set(CMAKE_GENERATOR "Ninja" CACHE STRING "Build generator")
+    endif()
+endif()
+
+# Enable ccache if available (compiler cache)
+find_program(CCACHE_PROGRAM ccache)
+if(CCACHE_PROGRAM)
+    set(CMAKE_CXX_COMPILER_LAUNCHER ${CCACHE_PROGRAM})
+    message(STATUS "Using ccache: ${CCACHE_PROGRAM}")
+endif()
+
+# Unity build for faster compilation (combine source files)
+option(UNITY_BUILD "Enable unity build for faster compilation" OFF)
+if(UNITY_BUILD)
+    set_target_properties(astgraph_engine PROPERTIES UNITY_BUILD ON)
+endif()
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+# Parallel compilation
+set(CMAKE_JOB_POOL_COMPILE compile)
+set(CMAKE_JOB_POOL_LINK link)
+if(NOT CMAKE_JOB_POOLS)
+    cmake_host_system_information(RESULT NCPU QUERY NUMBER_OF_LOGICAL_CORES)
+    set(CMAKE_JOB_POOLS "compile=${NCPU};link=${NCPU}")
+endif()
 
 # ── Dependencies ────────────────────────────────────────────────
 find_package(PkgConfig)
@@ -64,6 +94,16 @@ target_link_libraries(astgraph_engine PUBLIC
     ${SQLITE3_LIBRARIES}
     ${CMAKE_DL_LIBS}
 )
+
+# Ensure Homebrew SQLite is found on macOS (needed for sqlite-vec extension loading)
+# The system SQLite doesn't provide sqlite3_enable_load_extension / sqlite3_load_extension
+if(APPLE)
+    find_library(HOMEBREW_SQLITE3 sqlite3 PATHS /opt/homebrew/opt/sqlite/lib NO_DEFAULT_PATH)
+    if(HOMEBREW_SQLITE3)
+        target_link_libraries(astgraph_engine PUBLIC ${HOMEBREW_SQLITE3})
+        target_include_directories(astgraph_engine PUBLIC /opt/homebrew/opt/sqlite/include)
+    endif()
+endif()
 
 # ── Grammar Build Script ────────────────────────────────────────
 # Grammars are compiled as .so files using gcc (C compiler) since

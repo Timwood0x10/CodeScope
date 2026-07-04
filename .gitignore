@@ -3,6 +3,7 @@
 .gemini
 .opencode
 .atomcode
+.codegraph/
 
 # IDE and Editors
 **/.idea/
