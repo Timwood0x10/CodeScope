@@ -197,6 +197,14 @@ char* engine_trace_path(uint64_t project_id,
                          const char* from_name,
                          const char* to_name);
 
+/**
+ * Build an intelligent context bundle for a natural language query.
+ * Automatically determines what data is relevant (overview, modules, symbols,
+ * entry points, call graph) based on the query and ready flags.
+ * This is the primary tool LLM should call — replaces manual multi-tool chains.
+ */
+char* engine_build_context(uint64_t project_id, const char* query);
+
 // ─── Memory ───────────────────────────────────────────────────
 
 void engine_free_string(char* ptr);

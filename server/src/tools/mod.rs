@@ -422,6 +422,17 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
                 "required": ["from", "to"]
             }),
         },
+        Tool {
+            name: "codescope_build_context".into(),
+            description: "**PRIMARY TOOL** Build an intelligent context bundle for any code-related question. Automatically determines what information is relevant (modules, symbols, entry points, call graph) based on your query and data readiness. A single call replaces manual chains of find_symbol + get_module_tree + get_entry_points + find_callers.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Natural language question about the codebase (e.g. 'Explain USB initialization', 'How does memory allocation work?', 'Overview of the scheduler')"}
+                },
+                "required": ["query"]
+            }),
+        },
     ]
 }
 
@@ -578,6 +589,10 @@ pub fn execute(project_id: u64, tool_name: &str, args: &Value) -> String {
             let from = args["from"].as_str().unwrap_or("");
             let to = args["to"].as_str().unwrap_or("");
             ffi::trace_path(project_id, from, to)
+        }
+        "codescope_build_context" => {
+            let query = args["query"].as_str().unwrap_or("");
+            ffi::build_context(project_id, query)
         }
 
         _ => json!({"error": "Unknown tool"}).to_string(),

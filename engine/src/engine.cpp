@@ -908,27 +908,21 @@ static std::string extractName(std::string_view line, const std::string &kind,
     return "";
 }
 
-// Check if a symbol name is a likely entry point
+// Check if a symbol name is a likely entry point (conservative — avoid false positives)
 static bool isEntryPoint(const std::string &name) {
-    // Common names
-    static const char *ep_names[] = {"main", "Main",  "init",  "Init",    "setup",   "Setup", "run",
-                                     "Run",  "start", "Start", "handler", "Handler", nullptr};
-    for (const char **ep = ep_names; *ep; ep++) {
-        if (name == *ep)
-            return true;
-    }
-    // C++/Windows main variants
-    if (name == "_main" || name == "WinMain" || name == "wmain")
+    // High-confidence: main function variants
+    if (name == "main" || name == "Main" || name == "_main" || name == "WinMain" || name == "wmain")
         return true;
-    // Kernel entry points: module_init(x) / module_exit(x) → x is the entry
-    // Driver probe/disconnect
-    if (name == "probe" || name == "Probe")
-        return true;
-    // initcall variants
-    if (name == "device_initcall" || name == "subsys_initcall" ||
+    // Kernel initcall macros: module_init(x), device_initcall(x), etc.
+    // These are detected when the scanner finds the macro name itself
+    if (name == "module_init" || name == "module_exit" ||
+        name == "device_initcall" || name == "subsys_initcall" ||
         name == "late_initcall" || name == "arch_initcall" ||
         name == "fs_initcall" || name == "rootfs_initcall" ||
         name == "console_initcall" || name == "security_initcall")
+        return true;
+    // Driver probe callbacks (high confidence in driver context)
+    if (name == "probe" || name == "Probe")
         return true;
     return false;
 }
@@ -937,23 +931,16 @@ static bool isEntryPoint(const std::string &name) {
 static std::string entryPointKind(const std::string &name) {
     if (name == "main" || name == "Main" || name == "_main" || name == "WinMain" || name == "wmain")
         return "main";
-    if (name == "init" || name == "Init")
-        return "init";
-    if (name == "setup" || name == "Setup")
-        return "setup";
-    if (name == "run" || name == "Run")
-        return "run";
-    if (name == "start" || name == "Start")
-        return "start";
     if (name == "probe" || name == "Probe")
         return "probe";
-    // initcall variants
+    if (name == "module_init" || name == "module_exit")
+        return "module_init";
     if (name == "device_initcall" || name == "subsys_initcall" ||
         name == "late_initcall" || name == "arch_initcall" ||
         name == "fs_initcall" || name == "rootfs_initcall" ||
         name == "console_initcall" || name == "security_initcall")
         return "initcall";
-    return "handler";
+    return "entry";
 }
 
 } // anonymous namespace
@@ -1978,6 +1965,145 @@ char *engine_trace_path(uint64_t project_id, const char *from_name, const char *
                          "first\",\"path\":[]}");
 
     return dupString(g_store->tracePathJson(project_id, from_name, to_name));
+}
+
+// ─── Context Builder ─────────────────────────────────────────
+
+// Simple intent detection: extract keywords from a natural language query
+static std::string detectIntent(const std::string &query) {
+    std::string q;
+    for (char c : query) {
+        if (isalnum(c) || c == '_' || c == ' ') q += tolower(c);
+        else q += ' ';
+    }
+
+    // Module/subdir hints
+    static const char *modules[] = {"usb", "sound", "net", "block", "mmc", "gpu", "drm",
+                                     "i2c", "spi", "pci", "acpi", "arm", "x86", "riscv", nullptr};
+    for (const char **m = modules; *m; m++) {
+        if (q.find(*m) != std::string::npos) return std::string("module:") + *m;
+    }
+
+    // Topic hints
+    if (q.find("init") != std::string::npos || q.find("entry") != std::string::npos ||
+        q.find("start") != std::string::npos || q.find("boot") != std::string::npos)
+        return "entry_points";
+    if (q.find("call") != std::string::npos || q.find("graph") != std::string::npos ||
+        q.find("trace") != std::string::npos || q.find("path") != std::string::npos)
+        return "callgraph";
+    if (q.find("driver") != std::string::npos || q.find("probe") != std::string::npos ||
+        q.find("device") != std::string::npos)
+        return "drivers";
+    if (q.find("memory") != std::string::npos || q.find("alloc") != std::string::npos ||
+        q.find("free") != std::string::npos || q.find("mm") != std::string::npos)
+        return "memory";
+    if (q.find("sched") != std::string::npos || q.find("task") != std::string::npos ||
+        q.find("process") != std::string::npos || q.find("thread") != std::string::npos)
+        return "scheduler";
+    if (q.find("overview") != std::string::npos || q.find("architectur") != std::string::npos)
+        return "overview";
+
+    return "general";
+}
+
+char *engine_build_context(uint64_t project_id, const char *query) {
+    if (!g_store)
+        return dupString("{\"error\":\"engine not initialized\"}");
+
+    std::string q = query ? query : "";
+    std::string intent = detectIntent(q);
+    auto db = g_store->handle();
+    std::ostringstream json;
+    json << "{";
+
+    // 1. Project overview (always)
+    json << "\"project_overview\":" << g_store->getModuleTreeJson(project_id).c_str() << ",";
+
+    // 2. Intent metadata
+    json << "\"intent\":\"" << intent << "\",";
+
+    // 3. Entry points (if relevant or always for general)
+    if (intent.find("module:") != std::string::npos || intent == "entry_points" || intent == "general" || intent == "drivers") {
+        json << "\"entry_points\":" << g_store->getEntryPointsJson(project_id).c_str() << ",";
+    }
+
+    // 4. Focus on specific module if detected
+    if (intent.find("module:") == 0) {
+        std::string module_name = intent.substr(7);
+        std::string msql = "SELECT name, kind, file_path, line FROM symbols "
+                           "WHERE project_id = ? AND file_path LIKE ? "
+                           "LIMIT 50";
+        sqlite3_stmt *mstmt = nullptr;
+        if (sqlite3_prepare_v2(db, msql.c_str(), -1, &mstmt, nullptr) == SQLITE_OK) {
+            std::string pattern = "%/" + module_name + "/%";
+            sqlite3_bind_int64(mstmt, 1, static_cast<int64_t>(project_id));
+            sqlite3_bind_text(mstmt, 2, pattern.c_str(), -1, SQLITE_TRANSIENT);
+            json << "\"related_symbols\":[";
+            bool first = true;
+            while (sqlite3_step(mstmt) == SQLITE_ROW) {
+                if (!first) json << ",";
+                first = false;
+                const char *n = reinterpret_cast<const char *>(sqlite3_column_text(mstmt, 0));
+                const char *k = reinterpret_cast<const char *>(sqlite3_column_text(mstmt, 1));
+                const char *f = reinterpret_cast<const char *>(sqlite3_column_text(mstmt, 2));
+                int ln = sqlite3_column_int(mstmt, 3);
+                json << "{\"name\":\"" << (n ? n : "") << "\",\"kind\":\"" << (k ? k : "") << "\","
+                     << "\"file\":\"" << (f ? f : "") << "\",\"line\":" << ln << "}";
+            }
+            sqlite3_finalize(mstmt);
+            json << "],";
+        }
+    }
+
+    // 5. Call graph data (only if ready AND relevant)
+    double cg_ratio = g_store->getReadyRatio(project_id, "callgraph_ready");
+    bool cg_ready = (cg_ratio > 0.1);
+    if (cg_ready && (intent == "callgraph" || intent == "general")) {
+        json << "\"callgraph_available\":true,";
+        // Add a sample of call edges
+        const char *csql = "SELECT caller.name, callee.name FROM call_edges ce "
+                           "JOIN symbols caller ON caller.id = ce.caller_symbol_id "
+                           "JOIN symbols callee ON callee.id = ce.callee_symbol_id "
+                           "WHERE ce.project_id = ? LIMIT 10";
+        sqlite3_stmt *cstmt = nullptr;
+        if (sqlite3_prepare_v2(db, csql, -1, &cstmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_int64(cstmt, 1, static_cast<int64_t>(project_id));
+            json << "\"sample_call_edges\":[";
+            bool first = true;
+            while (sqlite3_step(cstmt) == SQLITE_ROW) {
+                if (!first) json << ",";
+                first = false;
+                const char *caller = reinterpret_cast<const char *>(sqlite3_column_text(cstmt, 0));
+                const char *callee = reinterpret_cast<const char *>(sqlite3_column_text(cstmt, 1));
+                json << "{\"caller\":\"" << (caller ? caller : "") << "\","
+                     << "\"callee\":\"" << (callee ? callee : "") << "\"}";
+            }
+            sqlite3_finalize(cstmt);
+            json << "],";
+        }
+    } else {
+        json << "\"callgraph_available\":false,";
+    }
+
+    // 6. Enhancement progress
+    json << "\"enhancement_progress\":{"
+         << "\"callgraph_ready\":" << (cg_ready ? "true" : "false") << ","
+         << "\"metrics_ready\":" << (g_store->getReadyRatio(project_id, "metrics_ready") > 0.1 ? "true" : "false") << ","
+         << "\"embedding_ready\":" << (g_store->getReadyRatio(project_id, "embedding_ready") > 0.1 ? "true" : "false")
+         << "}";
+
+    // 7. Ready features summary
+    json << ",\"ready_features\":{"
+         << "\"fast_scan\":true,"
+         << "\"module_tree\":true,"
+         << "\"symbol_search\":true,"
+         << "\"call_graph\":" << (cg_ready ? "true" : "false") << ","
+         << "\"path_tracing\":" << (cg_ready ? "true" : "false") << ","
+         << "\"semantic_search\":" << (g_store->getReadyRatio(project_id, "embedding_ready") > 0.1 ? "true" : "false")
+         << "}";
+
+    json << "}";
+    return dupString(json.str());
 }
 
 char *engine_find_definition(uint64_t project_id, const char *symbol_name,
