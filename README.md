@@ -71,18 +71,24 @@ flowchart LR
 
 ### Two-Phase Design
 
-```
-                  Phase A                          Phase B
-            ┌─────────────────┐            ┌──────────────────────┐
-            │  Fast Scan      │            │  Background Enhance   │
-            │  (ms级)         │            │  (async, seconds)     │
-            │                 │            │                       │
-            │  scan_project ──┤── trigger ─→│  enhance_project     │
-            │  total_symbols  │            │  full tree-sitter     │
-            │  module_tree    │            │  call graph           │
-            │  entry_points   │            │  complexity metrics   │
-            └─────────────────┘            │  embeddings + FTS     │
-                                           └──────────────────────┘
+```mermaid
+flowchart LR
+    subgraph A["Phase A: Fast Scan (ms)"]
+        S1["scan_project"]
+        S2["total_symbols"]
+        S3["module_tree"]
+        S4["entry_points"]
+    end
+
+    subgraph B["Phase B: Background Enhance (async, seconds)"]
+        E1["enhance_project"]
+        E2["full tree-sitter"]
+        E3["call graph"]
+        E4["complexity metrics"]
+        E5["embeddings + FTS"]
+    end
+
+    A -->|"trigger"| B
 ```
 
 ## MCP Tools
@@ -373,3 +379,23 @@ cargo run --bin codescope
 ## License
 
 Apache 2.0
+
+---
+
+## Runtime Logs
+
+All benchmark scans were executed on **Apple M3 Max (36 GB RAM)**.  
+Raw output logs are available in [`runtimelog/`](runtimelog/):
+
+| Log | Size | Content |
+|-----|------|---------|
+| `scan_goagent.log` | 127 KB | Go agent tool dispatch analysis |
+| `scan_linux_kernel.log` | 52 KB | Linux kernel/ core scan (40,335 symbols) |
+| `scan_fs_io.log` | 14 KB | VFS + page cache + readahead analysis |
+| `scan_linux_kernel_full.log` | 12 KB | Full kernel subdirectory scan summary |
+| `scan_usb_raw.log` | 11 KB | USB driver subsystem raw output |
+| `scan_stub_full.log` | 2.2 KB | Stub detection (Fast + AST) test |
+| `scan_linux_full.log` | 1.7 KB | Full kernel scan attempt |
+| `scan_multilang.log` | 1.1 KB | Multi-language architecture scan |
+| `scan_hid.log` | 526 B | USB HID subsystem scan |
+| `scan_researcher.log` | 143 B | Researcher subproject scan |

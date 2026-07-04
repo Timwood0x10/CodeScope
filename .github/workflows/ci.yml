@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [ master]
+  pull_request:
+    branches: [ master]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-cpp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libsqlite3-dev libtree-sitter-dev
+
+      - name: Build C++ engine
+        run: |
+          cd engine/build
+          cmake .. -DBUILD_TESTS=ON
+          make -j$(nproc)
+
+      - name: Run C++ tests
+        run: |
+          cd engine/build
+          ./test_ir
+          ./test_graph
+
+  build-rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libsqlite3-dev libtree-sitter-dev
+
+      - name: Build C++ engine
+        run: |
+          cd engine/build
+          cmake .. -DBUILD_TESTS=OFF
+          make -j$(nproc) astgraph_engine
+
+      - name: Build Rust server
+        run: |
+          cd server
+          cargo build --release
+          cargo check

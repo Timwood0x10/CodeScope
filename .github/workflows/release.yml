@@ -1,0 +1,77 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: codescope-linux-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: codescope-macos-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: codescope-windows-x86_64.exe
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake libsqlite3-dev libtree-sitter-dev
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake pkg-config sqlite3 tree-sitter
+
+      - name: Install dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: choco install cmake llvm
+
+      - name: Setup Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build C++ engine
+        shell: bash
+        run: |
+          cd engine/build
+          cmake .. -DBUILD_TESTS=OFF
+          make -j$(nproc) astgraph_engine
+
+      - name: Build Rust server
+        shell: bash
+        run: |
+          cd server
+          cargo build --release --target ${{ matrix.target }}
+
+      - name: Package release
+        shell: bash
+        run: |
+          mkdir -p release/${{ matrix.artifact }}
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp target/${{ matrix.target }}/release/codescope.exe release/${{ matrix.artifact }}/
+          else
+            cp target/${{ matrix.target }}/release/codescope release/${{ matrix.artifact }}/
+          fi
+          cp -r grammars release/${{ matrix.artifact }}/
+          cp README.md RELEASE.md CHANGELOG.md release/${{ matrix.artifact }}/
+          cd release
+          tar czf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}/
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/${{ matrix.artifact }}.tar.gz
+          generate_release_notes: true
+          body_path: RELEASE.md

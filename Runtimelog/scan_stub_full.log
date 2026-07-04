@@ -1,0 +1,47 @@
+===== Stub 检测全量测试 =====
+时间: 2026年 7月 4日 星期六 15时32分14秒 CST
+项目: /tmp/stubcheck
+代码量:      124 bytes,        6 lines
+
+--- Phase A: Fast Scan ---
+=== CodeScope Self-Scan Benchmark ===
+
+Project: /tmp/stubcheck
+DB:      /tmp/codescope_bench.db
+
+[OK] Engine initialized
+[OK] Project created: id=1  (960 us)
+
+=== Fast Scan === (25930 us = 25.93 ms)
+{"modules":{"modules":[{"id":1,"parent_id":0,"depth":0,"name":"stubcheck","path":"/tmp/stubcheck","language":"","file_count":1}]},"total_symbols":4,"entry_points":[{"symbol_id":4,"kind":"main"}]}
+
+=== Module Tree === (46 us)
+{"modules":[{"id":1,"parent_id":0,"depth":0,"name":"stubcheck","path":"/tmp/stubcheck","language":"","file_count":1}]}
+
+=== find_symbol("engine_scan_project") === (173 us)
+           {"results":[],"hint":{"message":"No symbol named 'engine_scan_project' found","project_language":"go","total_symbols":4,"callgraph_ready":0.000000,"embedding_ready":0.000000,"note":"Symbol not found — it may not have been indexed yet. Call graph is not ready — run codescope_enhance for deeper analysis. "}}
+=== find_symbol("engine_init") === (119 us)
+           {"results":[],"hint":{"message":"No symbol named 'engine_init' found","project_language":"go","total_symbols":4,"callgraph_ready":0.000000,"embedding_ready":0.000000,"note":"Symbol not found — it may not have been indexed yet. Call graph is not ready — run codescope_enhance for deeper analysis. "}}
+=== find_symbol("main") === (27 us)
+           {"results":[{"id":4,"kind":"function","name":"main","signature":"func main() { println("hi") }","visibility":"default","language":"go","file_path":"/tmp/stubcheck/stub_check.go","line":6,"column":1}]}
+
+real	0m2.426s
+user	0m0.040s
+sys	0m0.042s
+
+--- Phase B: Enhancement (全量 tree-sitter) ---
+CPU 使用率:   0.0
+内存: 2224 KB
+
+real	0m0.321s
+user	0m0.036s
+sys	0m0.023s
+{"files_processed":1,"symbols_enhanced":4,"call_edges":4,"metrics_recorded":4}
+
+--- 最终结果 ---
+emptyBody|function|1|/tmp/stubcheck/stub_check.go
+main|function|0|/tmp/stubcheck/stub_check.go
+realFunc|function|0|/tmp/stubcheck/stub_check.go
+stubFunc|function|1|/tmp/stubcheck/stub_check.go
+
+===== 完成 2026年 7月 4日 星期六 15时32分17秒 CST =====

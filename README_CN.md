@@ -71,75 +71,81 @@ flowchart LR
 
 ### 两阶段设计
 
-```
-                  Phase A                          Phase B
-            ┌─────────────────┐            ┌──────────────────────┐
-            │  快速扫描        │            │  后台增强            │
-            │  (ms 级)        │            │  (异步, 秒级)        │
-            │                 │            │                       │
-            │  scan_project ──┤── 触发 ───→│  enhance_project     │
-            │  total_symbols  │            │  全量 tree-sitter     │
-            │  module_tree    │            │  调用图               │
-            │  entry_points   │            │  复杂度指标            │
-            └─────────────────┘            │  嵌入向量 + FTS       │
-                                           └──────────────────────┘
+```mermaid
+flowchart LR
+    subgraph A["Phase A: 快速扫描 (ms 级)"]
+        S1["scan_project"]
+        S2["total_symbols"]
+        S3["module_tree"]
+        S4["entry_points"]
+    end
+
+    subgraph B["Phase B: 后台增强 (异步, 秒级)"]
+        E1["enhance_project"]
+        E2["全量 tree-sitter"]
+        E3["调用图"]
+        E4["复杂度指标"]
+        E5["嵌入向量 + FTS"]
+    end
+
+    A -->|"触发"| B
 ```
 
 ## MCP 工具
 
 ### 骨架扫描（Phase A）
 
-| 工具 | 说明 | 参数 |
-|------|------|------|
-| `codescope_scan` / `scan_project` | 快速扫描项目目录（ms 级） | `project_path`, `language_filter?` |
-| `codescope_find_symbol` / `find_symbol` | 按名称查找符号 | `symbol_name` |
-| `codescope_module_tree` / `get_module_tree` | 获取层级模块树 | 无 |
-| `codescope_get_entry_points` / `get_entry_points` | 获取入口点 | 无 |
+| 工具                                                | 说明             | 参数                                 |
+| ------------------------------------------------- | -------------- | ---------------------------------- |
+| `codescope_scan` / `scan_project`                 | 快速扫描项目目录（ms 级） | `project_path`, `language_filter?` |
+| `codescope_find_symbol` / `find_symbol`           | 按名称查找符号        | `symbol_name`                      |
+| `codescope_module_tree` / `get_module_tree`       | 获取层级模块树        | 无                                  |
+| `codescope_get_entry_points` / `get_entry_points` | 获取入口点          | 无                                  |
 
 ### 知识增强（Phase B）
 
-| 工具 | 说明 | 参数 |
-|------|------|------|
-| `codescope_enhance` / `enhance_project` | 后台全量增强 | 无 |
-| `get_enhancement_status` | 检查增强进度 | 无 |
+| 工具                                      | 说明     | 参数 |
+| --------------------------------------- | ------ | -- |
+| `codescope_enhance` / `enhance_project` | 后台全量增强 | 无  |
+| `get_enhancement_status`                | 检查增强进度 | 无  |
 
 ### 搜索
 
-| 工具 | 说明 | 参数 |
-|------|------|------|
+| 工具                            | 说明              | 参数                |
+| ----------------------------- | --------------- | ----------------- |
 | `codescope_search` / `search` | 统一搜索（FTS/语义自适应） | `query`, `limit?` |
-| `search_code` | [已弃用] 旧 FTS 搜索 | `query`, `limit?` |
+| `search_code`                 | \[已弃用] 旧 FTS 搜索 | `query`, `limit?` |
 
 ### 调用图
 
-| 工具 | 说明 | 参数 |
-|------|------|------|
-| `codescope_get_callers` / `find_callers` | 查找调用者（自适应） | `symbol_name` |
-| `codescope_get_callees` / `find_callees` | 查找被调用者（自适应） | `symbol_name` |
-| `codescope_trace` | **新功能** 追踪两函数间调用路径（BFS） | `from`, `to` |
-| `get_callers` | [已弃用] 旧调用者查询 | `function_name` |
-| `get_callees` | [已弃用] 旧被调用者查询 | `function_name` |
+| 工具                                       | 说明                      | 参数              |
+| ---------------------------------------- | ----------------------- | --------------- |
+| `codescope_get_callers` / `find_callers` | 查找调用者（自适应）              | `symbol_name`   |
+| `codescope_get_callees` / `find_callees` | 查找被调用者（自适应）             | `symbol_name`   |
+| `codescope_trace`                        | **新功能** 追踪两函数间调用路径（BFS） | `from`, `to`    |
+| `get_callers`                            | \[已弃用] 旧调用者查询           | `function_name` |
+| `get_callees`                            | \[已弃用] 旧被调用者查询          | `function_name` |
 
 ### 项目分析
 
-| 工具 | 说明 | 参数 |
-|------|------|------|
-| `codescope_overview` / `project_overview` | 项目全貌 | 无 |
-| `find_definition` | [已弃用] 查找符号定义 | `symbol_name` |
-| `find_references` | 查找符号的所有引用 | `symbol_name` |
-| `get_graph_stats` | 代码图统计 | 无 |
-| `get_complexity` | 圈复杂度 + 认知复杂度 | `node_id` |
+| 工具                                        | 说明            | 参数            |
+| ----------------------------------------- | ------------- | ------------- |
+| `codescope_overview` / `project_overview` | 项目全貌          | 无             |
+| `find_definition`                         | \[已弃用] 查找符号定义 | `symbol_name` |
+| `find_references`                         | 查找符号的所有引用     | `symbol_name` |
+| `get_graph_stats`                         | 代码图统计         | 无             |
+| `get_complexity`                          | 圈复杂度 + 认知复杂度  | `node_id`     |
 
 ### 代码图（旧）
 
-| 工具 | 说明 | 参数 |
-|------|------|------|
-| `get_neighbors` | 获取节点邻居 | `node_id`, `edge_type?`, `radius?` |
-| `get_subgraph` | 获取子图 | `center_node_id`, `radius?` |
-| `locate_code` | 定位源代码 | `identifier` |
-| `graph_query` | DSL: `MATCH (函数)-[调用]->(函数)` | `query` |
-| `detect_changes` | 变更影响分析 | `modified_files` |
-| `get_communities` | 社区检测 | 无 |
+| 工具                | 说明                           | 参数                                 |
+| ----------------- | ---------------------------- | ---------------------------------- |
+| `get_neighbors`   | 获取节点邻居                       | `node_id`, `edge_type?`, `radius?` |
+| `get_subgraph`    | 获取子图                         | `center_node_id`, `radius?`        |
+| `locate_code`     | 定位源代码                        | `identifier`                       |
+| `graph_query`     | DSL: `MATCH (函数)-[调用]->(函数)` | `query`                            |
+| `detect_changes`  | 变更影响分析                       | `modified_files`                   |
+| `get_communities` | 社区检测                         | 无                                  |
 
 ## 使用指南
 
@@ -212,70 +218,70 @@ echo "          export GRAMMARS_DIR=\$(pwd)/grammars"
 
 ## 性能基准测试
 
-| 项目 | 耗时 | 语言 | 符号数 | 备注 |
-|------|------|------|--------|------|
-| **CodeScope**（自扫描） | **32 ms** | cpp, rust, c | 2,902 | 有 .gitignore |
-| **MusicAITools**（Python） | **8 ms** | python | 227 | 36 个源文件 |
-| **goagent**（Go） | **493 ms** | go, c, cpp, python | 5,172 | 无 .gitignore |
-| **tinygo**（Go 编译器） | **209 ms** | go | 8,411 | 1,774 文件 |
-| **SQLite**（C 库） | **89 ms** | c | 6,921 | 141 个源文件 |
-| **Linux kernel/sched** | **45 ms** | c | 4,913 | 调度子系统 |
-| **Linux kernel/**（核心） | **360 ms** | c | 40,335 | 内核核心 |
-| **Linux fs/**（文件系统） | **1.8 s** | c | 212,145 | 文件系统子系统 |
+| 项目                       | 耗时         | 语言                 | 符号数     | 备注           |
+| ------------------------ | ---------- | ------------------ | ------- | ------------ |
+| **CodeScope**（自扫描）       | **32 ms**  | cpp, rust, c       | 2,902   | 有 .gitignore |
+| **MusicAITools**（Python） | **8 ms**   | python             | 227     | 36 个源文件      |
+| **ARES**（Go）             | **493 ms** | go, c, cpp, python | 5,172   | 无 .gitignore |
+| **tinygo**（Go 编译器）       | **209 ms** | go                 | 8,411   | 1,774 文件     |
+| **SQLite**（C 库）          | **89 ms**  | c                  | 6,921   | 141 个源文件     |
+| **Linux kernel/sched**   | **45 ms**  | c                  | 4,913   | 调度子系统        |
+| **Linux kernel/**（核心）    | **360 ms** | c                  | 40,335  | 内核核心         |
+| **Linux fs/**（文件系统）      | **1.8 s**  | c                  | 212,145 | 文件系统子系统      |
 
 **平均吞吐：约 100,000 符号/秒**
 
 ### 增强阶段（tree-sitter 全量解析）
 
-| 项目 | 时间 | 处理文件 | 增强符号 | 生成调用边 |
-|------|------|---------|---------|-----------|
-| **kernel/sched**（调度器） | **291 ms** | 34 | 1,209 | **4,800** |
-| **kernel/**（内核核心） | **27 s** | 495 | 11,925 | **45,573** |
+| 项目                    | 时间         | 处理文件 | 增强符号   | 生成调用边      |
+| --------------------- | ---------- | ---- | ------ | ---------- |
+| **kernel/sched**（调度器） | **291 ms** | 34   | 1,209  | **4,800**  |
+| **kernel/**（内核核心）     | **27 s**   | 495  | 11,925 | **45,573** |
 
 ### 查询性能
 
-| 操作 | 时间 | 说明 |
-|------|------|------|
-| `find_symbol("main")` | **10-37 µs** | 精确名称匹配 |
-| `get_module_tree()` | **15-29 µs** | 模块层级结构 |
-| `trace_path()` BFS | **< 1 ms** | 调用路径追踪 |
-| `project_overview()` | **1.5 ms** | 项目全貌 |
-| `search("mutex")` | **< 5 ms** | FTS5 搜索 |
+| 操作                    | 时间           | 说明      |
+| --------------------- | ------------ | ------- |
+| `find_symbol("main")` | **10-37 µs** | 精确名称匹配  |
+| `get_module_tree()`   | **15-29 µs** | 模块层级结构  |
+| `trace_path()` BFS    | **< 1 ms**   | 调用路径追踪  |
+| `project_overview()`  | **1.5 ms**   | 项目全貌    |
+| `search("mutex")`     | **< 5 ms**   | FTS5 搜索 |
 
 ### C 声明检测精度
 
-| 语言 | 精确率 | 召回率 | 说明 |
-|------|--------|--------|------|
-| **Go** | ~97% | ~96% | `func` 模式极其精确 |
-| **Python** | ~98% | ~95% | `def`/`class` 几乎零误报 |
-| **C/C++（严格）** | ~85% | ~90% | 要求返回类型含类型关键字 |
-| **C/C++（旧）** | ~65% | ~95% | 宽松模式，假阳性高 |
-| **Rust** | ~90% | ~90% | `fn` 精确匹配 |
+| 语言            | 精确率   | 召回率   | 说明                  |
+| ------------- | ----- | ----- | ------------------- |
+| **Go**        | \~97% | \~96% | `func` 模式极其精确       |
+| **Python**    | \~98% | \~95% | `def`/`class` 几乎零误报 |
+| **C/C++（严格）** | \~85% | \~90% | 要求返回类型含类型关键字        |
+| **C/C++（旧）**  | \~65% | \~95% | 宽松模式，假阳性高           |
+| **Rust**      | \~90% | \~90% | `fn` 精确匹配           |
 
 ### 支持的语言（8 种）
 
-| 语言 | 解析器 | IR 转换器 | 已验证 |
-|------|--------|-----------|--------|
-| Python | ✅ | ✅ | ✅ |
-| Go | ✅ | ✅ | ✅ |
-| C | ✅ | ✅ | ✅ |
-| C++ | ✅ | ✅ | ✅ |
-| Rust | ✅ | ✅ | ✅ |
-| JavaScript | ✅ | ✅ | ✅ |
-| TypeScript | ✅ | ✅ | ✅ |
-| Java | ✅ | ✅ | ✅ |
+| 语言         | 解析器 | IR 转换器 | 已验证 |
+| ---------- | --- | ------ | --- |
+| Python     | ✅   | ✅      | ✅   |
+| Go         | ✅   | ✅      | ✅   |
+| C          | ✅   | ✅      | ✅   |
+| C++        | ✅   | ✅      | ✅   |
+| Rust       | ✅   | ✅      | ✅   |
+| JavaScript | ✅   | ✅      | ✅   |
+| TypeScript | ✅   | ✅      | ✅   |
+| Java       | ✅   | ✅      | ✅   |
 
 ## Token 节省
 
-使用代码图代替原始源文件，5 个常见查询场景平均节省 **~98.8%** 的 token：
+使用代码图代替原始源文件，5 个常见查询场景平均节省 **\~98.8%** 的 token：
 
-| 场景 | 图 (tokens) | 源码 (tokens) | 节省 |
-|------|------------|--------------|------|
-| 函数定义查找 | ~21 | ~2,265 | **99.1%** |
-| 调用者追踪 | ~18 | ~2,000 | **99.1%** |
-| 架构概览 | ~32 | ~1,875 | **98.3%** |
-| 函数分析 | ~43 | ~4,733 | **99.1%** |
-| 符号搜索 | ~23 | ~958 | **97.6%** |
+| 场景     | 图 (tokens) | 源码 (tokens) | 节省        |
+| ------ | ---------- | ----------- | --------- |
+| 函数定义查找 | \~21       | \~2,265     | **99.1%** |
+| 调用者追踪  | \~18       | \~2,000     | **99.1%** |
+| 架构概览   | \~32       | \~1,875     | **98.3%** |
+| 函数分析   | \~43       | \~4,733     | **99.1%** |
+| 符号搜索   | \~23       | \~958       | **97.6%** |
 
 ## 实战案例：Linux 内核调度器分析
 
@@ -309,22 +315,22 @@ kernel/sched/
 
 ### 父子进程资源处理 → `kernel/fork.c`
 
-| 行号 | 函数 | 作用 |
-|------|------|------|
-| **914** | `dup_task_struct()` | 复制父进程 task_struct |
-| **1994** | `copy_process()` | **核心函数**——创建新进程入口 |
-| **2115** | `p = dup_task_struct(current, node)` | 复制内核栈 + thread_info + task_struct |
-| **2259** | `sched_fork(clone_flags, p)` | 初始化子进程调度状态，设为非运行态 |
+| 行号       | 函数                                   | 作用                                  |
+| -------- | ------------------------------------ | ----------------------------------- |
+| **914**  | `dup_task_struct()`                  | 复制父进程 task\_struct                  |
+| **1994** | `copy_process()`                     | **核心函数**——创建新进程入口                   |
+| **2115** | `p = dup_task_struct(current, node)` | 复制内核栈 + thread\_info + task\_struct |
+| **2259** | `sched_fork(clone_flags, p)`         | 初始化子进程调度状态，设为非运行态                   |
 
 **核心机制：写时复制（COW）**——`copy_mm()` 让父子共享同一物理内存页，标记为只读。
 
 ### 防止抢占
 
-| 位置 | 机制 | 说明 |
-|------|------|------|
-| `include/linux/preempt.h:92` | `preempt_count()` | 每进程计数器，>0 时禁止内核抢占 |
-| `kernel/sched/core.c:7061` | `__schedule()` | 主调度器，仅当 preempt_count==0 时才切换 |
-| `kernel/sched/core.c:7316` | `schedule()` | 主动让出 CPU |
+| 位置                           | 机制                | 说明                             |
+| ---------------------------- | ----------------- | ------------------------------ |
+| `include/linux/preempt.h:92` | `preempt_count()` | 每进程计数器，>0 时禁止内核抢占              |
+| `kernel/sched/core.c:7061`   | `__schedule()`    | 主调度器，仅当 preempt\_count==0 时才切换 |
+| `kernel/sched/core.c:7316`   | `schedule()`      | 主动让出 CPU                       |
 
 ## 快速开始
 
@@ -356,12 +362,31 @@ cargo run --bin codescope
 
 ### 环境变量
 
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `CODESCOPE_DB_PATH` | `/tmp/codescope.db` | SQLite 数据库路径 |
-| `GRAMMARS_DIR` | `grammars/` | 语法 .so 文件目录 |
-| `CODESCOPE_LSP` | 未设置 | LSP 服务器命令，用于类型增强 |
+| 变量                  | 默认值                 | 说明               |
+| ------------------- | ------------------- | ---------------- |
+| `CODESCOPE_DB_PATH` | `/tmp/codescope.db` | SQLite 数据库路径     |
+| `GRAMMARS_DIR`      | `grammars/`         | 语法 .so 文件目录      |
+| `CODESCOPE_LSP`     | 未设置                 | LSP 服务器命令，用于类型增强 |
 
 ## License
 
 Apache 2.0
+
+***
+
+## 运行时日志
+
+所有基准测试在 **Apple M3 Max（36 GB 内存）** 上执行。\
+原始输出日志位于 [`runtimelog/`](runtimelog/)：
+
+| 日志                           | 大小     | 内容                            |
+| ---------------------------- | ------ | ----------------------------- |
+| `scan_goagent.log`           | 127 KB | Go agent 工具调度分析               |
+| `scan_linux_kernel.log`      | 52 KB  | Linux kernel/ 核心扫描（40,335 符号） |
+| `scan_fs_io.log`             | 14 KB  | VFS + 页缓存 + 预读分析              |
+| `scan_linux_kernel_full.log` | 12 KB  | 内核子目录全量扫描汇总                   |
+| `scan_usb_raw.log`           | 11 KB  | USB 驱动子系统原始输出                 |
+| `scan_stub_full.log`         | 2.2 KB | 空实现检测（Fast + AST）测试           |
+| `scan_multilang.log`         | 1.1 KB | 多语言架构扫描                       |
+| `scan_hid.log`               | 526 B  | USB HID 子系统扫描                 |
+
