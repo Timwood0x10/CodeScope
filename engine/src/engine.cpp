@@ -1336,6 +1336,20 @@ char *engine_scan_project(uint64_t project_id, const char *dir_path, const char 
 
                     if (sym_id > 0) {
                         total_symbols++;
+                        // Stub detection (fast scan — single-line only, AST-free)
+                        // Reliable case: func foo() {} — brace on same line, empty
+                        if ((kind == "function" || kind == "method") && line.find("{}") != std::string::npos) {
+                            // Only if nothing substantive between { and }
+                            auto ob = line.find('{');
+                            auto cb = line.find('}', ob);
+                            if (cb != std::string::npos) {
+                                bool has_content = false;
+                                for (size_t i = ob + 1; i < cb; i++) {
+                                    if (line[i] != ' ' && line[i] != '\t') { has_content = true; break; }
+                                }
+                                if (!has_content) g_store->setSymbolStub(sym_id, true);
+                            }
+                        }
                         // Check if entry point
                         if (isEntryPoint(name)) {
                             entry_points.emplace_back(sym_id, entryPointKind(name));
@@ -1772,6 +1786,25 @@ char *engine_enhance_project(uint64_t project_id) {
                             count(c);
                     };
                     count(node);
+
+                    // AST stub detection: function has no real statements → stub
+                    bool has_real_stmt = false;
+                    std::function<void(ir::Node*)> stub_check = [&](ir::Node* n) {
+                        if (has_real_stmt) return;
+                        switch (n->kind) {
+                            case ir::NodeKind::CallExpr:
+                            case ir::NodeKind::IfStmt:
+                            case ir::NodeKind::ForStmt:
+                            case ir::NodeKind::WhileStmt:
+                            case ir::NodeKind::VariableDecl:
+                            case ir::NodeKind::TryStmt:
+                                has_real_stmt = true; return;
+                            default: break;
+                        }
+                        for (auto* c : n->children) stub_check(c);
+                    };
+                    for (auto* c : node->children) stub_check(c);
+                    if (!has_real_stmt) g_store->setSymbolStub(sym_id, true);
 
                     g_store->insertMetric(
                         project_id, "symbol", sym_id, static_cast<int>(cr.cyclomatic),

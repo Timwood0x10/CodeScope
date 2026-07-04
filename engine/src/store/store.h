@@ -144,6 +144,7 @@ class GraphStore {
     /** Set a specific status flag (callgraph_ready/metrics_ready/embedding_ready)
      * to 1. */
     bool setSymbolReady(uint64_t symbol_id, const char *field);
+  bool setSymbolStub(uint64_t symbol_id, bool is_stub);
 
     /** Get files where symbols have a status flag = 0 (not ready). */
     std::vector<std::string> getUnreadyFiles(uint64_t project_id, const char *ready_field);

@@ -284,13 +284,33 @@ CREATE VIRTUAL TABLE embeddings USING vec0(
 ### Phase A 当前任务
 
 ```
-[ ] A1 建 modules / symbols / entry_points 表
-[ ] A2 storeInsertModule / storeInsertSymbol
-[ ] A3 engine_scan_project（快速扫描）
-[ ] A4 engine_get_module_tree / find_symbol
-[ ] A5 Rust FFI: scan_project / get_module_tree
-[ ] A6 MCP Tool: scan_project / find_symbol
-[ ] A7 验收: ms 级返回
+[x] A1 建 modules / symbols / entry_points 表         → store.cpp:164-223
+[x] A2 storeInsertModule / storeInsertSymbol          → store.cpp:879,910
+[x] A3 engine_scan_project（快速扫描）                 → engine.cpp:1136
+[x] A4 engine_get_module_tree / find_symbol           → engine.cpp:1450,1458
+[x] A5 Rust FFI: scan_project / get_module_tree       → ffi/mod.rs:238-255
+[x] A6 MCP Tool: scan_project / find_symbol           → tools/mod.rs:222-251,537-546
+[ ] A7 验收: ms 级返回                                 → 待实际测试
+```
+
+### Phase B 任务（已完成）
+
+```
+[x] B1 建 call_edges / dependency_edges / metrics 表  → store.cpp
+[x] B2 Rust Tokio 后台任务调度                         → ffi/mod.rs:316-340
+[x] B3 enhance_project FFI + MCP Tool                  → tools/mod.rs:255-261,549
+[x] B4 get_enhancement_status                          → tools/mod.rs:263-269,550
+```
+
+### Phase C 任务（已完成）
+
+```
+[x] C1 find_symbol（替代 find_definition）             → tools/mod.rs:234-243
+[x] C2 search（FTS / 语义自适应）                       → tools/mod.rs:273-283,553-557
+[x] C3 find_callers / find_callees（自适应）           → tools/mod.rs:285-305,558-565
+[x] C4 get_entry_points / get_module_tree              → tools/mod.rs:307-251,566,546
+[x] C5 codescope_build_context（主工具）               → tools/mod.rs:426-435,601-604
+[x] C6 codescope_capabilities（能力报告）              → tools/mod.rs:437-443,605
 ```
 
 ---

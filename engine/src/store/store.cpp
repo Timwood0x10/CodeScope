@@ -198,6 +198,7 @@ bool GraphStore::createSchema() {
             callgraph_ready INTEGER DEFAULT 0,
             metrics_ready INTEGER DEFAULT 0,
             embedding_ready INTEGER DEFAULT 0,
+            is_stub INTEGER DEFAULT 0,
             FOREIGN KEY (symbol_id) REFERENCES symbols(id)
         );
 
@@ -1284,6 +1285,24 @@ bool GraphStore::setSymbolReady(uint64_t symbol_id, const char *field) {
     sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(symbol_id));
     if (sqlite3_step(stmt) != SQLITE_DONE) {
         error_ = "setSymbolReady: step failed";
+        sqlite3_finalize(stmt);
+        return false;
+    }
+    sqlite3_finalize(stmt);
+    return true;
+}
+
+bool GraphStore::setSymbolStub(uint64_t symbol_id, bool is_stub) {
+    const char *sql = "UPDATE symbol_status SET is_stub = ? WHERE symbol_id = ?";
+    sqlite3_stmt *stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        error_ = "setSymbolStub: prepare failed";
+        return false;
+    }
+    sqlite3_bind_int(stmt, 1, is_stub ? 1 : 0);
+    sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(symbol_id));
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        error_ = "setSymbolStub: step failed";
         sqlite3_finalize(stmt);
         return false;
     }
