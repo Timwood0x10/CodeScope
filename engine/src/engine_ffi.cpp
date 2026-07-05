@@ -1,0 +1,622 @@
+#include "engine_internal.h"
+
+#include <algorithm>
+#include <cstdio>
+#include <cstring>
+#include <dlfcn.h>
+#include <filesystem>
+#include <fstream>
+#include <memory>
+#include <mutex>
+#include <sqlite3.h>
+#include <sstream>
+#include <string>
+#include <sys/stat.h>
+#include <thread>
+#include <tree_sitter/api.h>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+// ─── Capability API ────────────────────────────────────────────
+
+char *engine_get_capabilities(uint64_t project_id)
+{
+	if (!g_store)
+		return dupString("{\"error\":\"engine not initialized\"}");
+
+	double cg = g_store->getReadyRatio(project_id, "callgraph_ready");
+	double me = g_store->getReadyRatio(project_id, "metrics_ready");
+	double em = g_store->getReadyRatio(project_id, "embedding_ready");
+
+	int total = 0;
+	const char *sql = "SELECT COUNT(*) FROM symbols WHERE project_id = ?";
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(g_store->handle(), sql, -1, &stmt, nullptr) ==
+	    SQLITE_OK) {
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		if (sqlite3_step(stmt) == SQLITE_ROW)
+			total = sqlite3_column_int(stmt, 0);
+		sqlite3_finalize(stmt);
+	}
+
+	std::ostringstream json;
+	json << "{"
+	     << "\"project_id\":" << project_id << ","
+	     << "\"total_symbols\":" << total << ","
+	     << "\"capabilities\":{"
+	     << "\"fast_scan\":{\"available\":true,\"ready\":true,\"description\":\"ms-level declaration extraction\"},"
+	     << "\"module_tree\":{\"available\":true,\"ready\":true,\"description\":\"hierarchical module view\"},"
+	     << "\"symbol_search\":{\"available\":true,\"ready\":true,\"description\":\"exact name match\"},"
+	     << "\"entry_points\":{\"available\":true,\"ready\":"
+	     << (total > 0 ? "true" : "false")
+	     << ",\"description\":\"main/initcall/probe detection\"},"
+	     << "\"call_graph\":{\"available\":true,\"ready\":"
+	     << (cg > 0.1 ? "true" : "false")
+	     << ",\"description\":\"function call edges — run codescope_enhance to enable\"},"
+	     << "\"path_tracing\":{\"available\":true,\"ready\":"
+	     << (cg > 0.1 ? "true" : "false")
+	     << ",\"description\":\"BFS shortest path between functions\"},"
+	     << "\"metrics\":{\"available\":true,\"ready\":"
+	     << (me > 0.1 ? "true" : "false")
+	     << ",\"description\":\"complexity metrics — run codescope_enhance\"},"
+	     << "\"semantic_search\":{\"available\":true,\"ready\":"
+	     << (em > 0.1 ? "true" : "false")
+	     << ",\"description\":\"vector embedding search — run codescope_enhance\"},"
+	     << "\"context_builder\":{\"available\":true,\"ready\":true,\"description\":\"intelligent context assembly\"}"
+	     << "},"
+	     << "\"enhancement_needed\":\"Run codescope_enhance to enable call graph, metrics, and semantic search\""
+	     << "}";
+	return dupString(json.str());
+}
+
+char *engine_find_definition(uint64_t project_id, const char *symbol_name,
+			     const char *file_filter)
+{
+	if (!g_query)
+		return dupString(
+			"{\"total\":0,\"results\":[],\"error\":\"not initialized\"}");
+	return dupString(
+		g_query->findDefinition(project_id, symbol_name, file_filter));
+}
+
+char *engine_find_references(uint64_t project_id, const char *symbol_name,
+			     const char *file_filter)
+{
+	if (!g_query)
+		return dupString(
+			"{\"total\":0,\"results\":[],\"error\":\"not initialized\"}");
+	return dupString(
+		g_query->findReferences(project_id, symbol_name, file_filter));
+}
+
+char *engine_get_callers(uint64_t project_id, const char *function_name)
+{
+	if (!g_query)
+		return dupString(
+			"{\"total\":0,\"callers\":[],\"error\":\"not initialized\"}");
+	return dupString(g_query->getCallers(project_id, function_name));
+}
+
+char *engine_get_callees(uint64_t project_id, const char *function_name)
+{
+	if (!g_query)
+		return dupString(
+			"{\"total\":0,\"callees\":[],\"error\":\"not initialized\"}");
+	return dupString(g_query->getCallees(project_id, function_name));
+}
+
+char *engine_get_neighbors(uint64_t project_id, uint64_t node_id,
+			   int edge_type_filter, int radius)
+{
+	if (!g_query)
+		return dupString(
+			"{\"total\":0,\"neighbors\":[],\"error\":\"not initialized\"}");
+	return dupString(g_query->getNeighbors(project_id, node_id,
+					       edge_type_filter, radius));
+}
+
+char *engine_find_shortest_path(uint64_t project_id, uint64_t source_id,
+				uint64_t target_id)
+{
+	if (!g_query)
+		return dupString("{\"path\":[],\"error\":\"not initialized\"}");
+	return dupString(
+		g_query->findShortestPath(project_id, source_id, target_id));
+}
+
+char *engine_get_subgraph(uint64_t project_id, uint64_t center_node_id,
+			  int radius, const char *node_type_filter,
+			  const char *edge_type_filter)
+{
+	if (!g_query)
+		return dupString(
+			"{\"total\":0,\"nodes\":[],\"error\":\"not initialized\"}");
+	return dupString(g_query->getSubgraph(project_id, center_node_id,
+					      radius, node_type_filter,
+					      edge_type_filter));
+}
+
+char *engine_locate_node(uint64_t project_id, uint64_t node_id,
+			 int context_lines)
+{
+	if (!g_query)
+		return dupString(
+			"{\"total\":0,\"locations\":[],\"error\":\"not initialized\"}");
+	return dupString(
+		g_query->locateNode(project_id, node_id, context_lines));
+}
+
+char *engine_locate_by_name(uint64_t project_id, const char *name)
+{
+	if (!g_query)
+		return dupString(
+			"{\"total\":0,\"locations\":[],\"error\":\"not initialized\"}");
+	return dupString(g_query->locateByName(project_id, name));
+}
+
+char *engine_get_graph_stats(uint64_t project_id)
+{
+	if (!g_query)
+		return dupString("{\"error\":\"not initialized\"}");
+	return dupString(g_query->getGraphStats(project_id));
+}
+
+// ─── Full-text search ─────────────────────────────────────────
+
+char *engine_search_code(uint64_t project_id, const char *query, int limit)
+{
+	if (!g_query)
+		return dupString(
+			"{\"total\":0,\"results\":[],\"error\":\"not initialized\"}");
+	if (limit <= 0 || limit > 100)
+		limit = 20;
+	return dupString(g_query->searchCode(project_id, query, limit));
+}
+
+// ─── Semantic Search ─────────────────────────────────────────
+
+char *engine_search_semantic(uint64_t project_id, const char *query, int limit)
+{
+	if (!g_store)
+		return dupString(
+			"{\"total\":0,\"results\":[],\"error\":\"not initialized\"}");
+	if (!query || !*query)
+		return dupString(
+			"{\"total\":0,\"results\":[],\"error\":\"empty query\"}");
+	if (limit <= 0 || limit > 50)
+		limit = 10;
+
+	auto vec = vector_search::stringToVector(query);
+	auto blob = vector_search::serializeVector(vec);
+	return dupString(g_store->searchSemantic(project_id, blob.data(),
+						 blob.size(), limit));
+}
+
+// ─── Complexity Analysis ──────────────────────────────────────
+
+char *engine_get_complexity(uint64_t project_id, uint64_t graph_node_id)
+{
+	if (!g_query)
+		return dupString("{\"error\":\"not initialized\"}");
+	return dupString(g_query->getComplexity(project_id, graph_node_id));
+}
+
+// ─── Graph Query DSL ─────────────────────────────────────────
+
+char *engine_graph_query(uint64_t project_id, const char *dsl_query)
+{
+	if (!g_query)
+		return dupString(
+			"{\"total\":0,\"results\":[],\"error\":\"not initialized\"}");
+	return dupString(g_query->graphQuery(project_id, dsl_query));
+}
+
+// ─── Change Impact Analysis ─────────────────────────────────
+
+char *engine_detect_changes(uint64_t project_id,
+			    const char *modified_files_json)
+{
+	if (!g_query) {
+		return dupString(
+			"{\"error\":\"not initialized\","
+			"\"modified\":[],\"callers\":[],\"callees\":[],\"total_impacted\":0}");
+	}
+	return dupString(
+		g_query->detectChanges(project_id, modified_files_json));
+}
+
+// ─── Community Detection ────────────────────────────────────
+
+char *engine_get_communities(uint64_t project_id)
+{
+	if (!g_query) {
+		return dupString(
+			"{\"error\":\"not initialized\","
+			"\"communities\":[],\"inter_community_edges\":[],\"total_"
+			"communities\":0}");
+	}
+	return dupString(g_query->getCommunities(project_id));
+}
+
+// ─── Hotspot Analysis ──────────────────────────────────────
+
+char *engine_get_hotspots(uint64_t project_id, int top_n)
+{
+	if (!g_query)
+		return dupString("{\"error\":\"not initialized\"}");
+	if (top_n <= 0)
+		top_n = 10;
+	return dupString(g_query->getHotspots(project_id, top_n));
+}
+
+// ─── Code Understanding ────────────────────────────────────
+
+char *engine_get_module_map(uint64_t project_id)
+{
+	if (!g_query)
+		return dupString("{\"error\":\"not initialized\"}");
+	return dupString(g_query->getModuleMap(project_id));
+}
+
+char *engine_get_entry_points(uint64_t project_id)
+{
+	if (!g_query)
+		return dupString("{\"error\":\"not initialized\"}");
+	return dupString(g_query->getEntryPoints(project_id));
+}
+
+char *engine_trace_call_chain(uint64_t project_id, const char *from,
+			      const char *to)
+{
+	if (!g_query)
+		return dupString("{\"error\":\"not initialized\"}");
+	return dupString(g_query->traceCallChain(project_id, from, to));
+}
+
+char *engine_get_project_overview(uint64_t project_id)
+{
+	if (!g_query)
+		return dupString("{\"error\":\"not initialized\"}");
+	return dupString(g_query->getProjectOverview(project_id));
+}
+
+// ─── Memory ────────────────────────────────────────────────────
+
+void engine_free_string(char *ptr)
+{
+	free(ptr);
+}
+
+// ─── Batch Indexing ──────────────────────────────────────────
+
+char *engine_index_batch(uint64_t project_id, const char *file_paths_json)
+{
+	if (!g_store || !g_parser)
+		return dupString(
+			"{\"ok\":false,\"error\":\"not initialized\"}");
+
+	// Parse JSON array of file paths
+	std::vector<std::string> paths;
+	{
+		const char *p = file_paths_json;
+		if (!p || !*p)
+			return dupString(
+				"{\"ok\":false,\"error\":\"empty file list\"}");
+		while (*p && *p != '[')
+			p++;
+		if (!*p)
+			return dupString(
+				"{\"ok\":false,\"error\":\"expected [\"}");
+		p++;
+		while (*p) {
+			while (*p == ' ' || *p == '\t' || *p == '\n' ||
+			       *p == '\r' || *p == ',')
+				p++;
+			if (*p == ']')
+				break;
+			if (*p != '"')
+				return dupString(
+					"{\"ok\":false,\"error\":\"expected string\"}");
+			p++;
+			std::string path;
+			while (*p && *p != '"') {
+				path += *p;
+				p++;
+			}
+			if (*p != '"')
+				return dupString(
+					"{\"ok\":false,\"error\":\"unterminated string\"}");
+			p++;
+			if (!path.empty())
+				paths.push_back(path);
+		}
+	}
+	if (paths.empty())
+		return dupString(
+			"{\"ok\":false,\"error\":\"empty file list\"}");
+
+	// Phase 1: Parse all files in memory (no DB I/O)
+	struct FileBatch {
+		std::unique_ptr<ir::TranslationUnit> unit;
+		std::string source;
+		std::string language;
+		std::string file_path;
+	};
+	std::vector<FileBatch> batches;
+	std::vector<std::string> errors;
+
+	for (const auto &fp : paths) {
+		const char *lang = detectLanguage(fp.c_str());
+		if (!lang) {
+			errors.push_back(fp + ": unsupported");
+			continue;
+		}
+
+		std::string source = readFile(fp.c_str());
+		if (source.empty()) {
+			errors.push_back(fp + ": cannot read");
+			continue;
+		}
+
+		TSTree *tree =
+			g_parser->parse(fp.c_str(), source.c_str(), lang);
+		if (!tree) {
+			errors.push_back(fp + ": parse failed");
+			continue;
+		}
+
+		std::unique_ptr<ir::Translator> translator(
+			ir::createTranslator(lang));
+		if (!translator) {
+			ts_tree_delete(tree);
+			errors.push_back(fp + ": no translator");
+			continue;
+		}
+
+		ir::TranslationUnit *unit =
+			translator->translate(tree, source.c_str(), fp.c_str());
+		ts_tree_delete(tree);
+		if (!unit) {
+			errors.push_back(fp + ": translation failed");
+			continue;
+		}
+
+		batches.push_back({ std::unique_ptr<ir::TranslationUnit>(unit),
+				    std::move(source), lang, fp });
+	}
+
+	// Phase 2: Persist in single transaction
+	g_store->beginTransaction();
+
+	uint64_t start_id = 1;
+	{
+		sqlite3_stmt *stmt = nullptr;
+		if (sqlite3_prepare_v2(
+			    g_store->handle(),
+			    "SELECT COALESCE(MAX(id),0)+1 FROM graph_nodes", -1,
+			    &stmt, nullptr) == SQLITE_OK) {
+			if (sqlite3_step(stmt) == SQLITE_ROW)
+				start_id = static_cast<uint64_t>(
+					sqlite3_column_int64(stmt, 0));
+			sqlite3_finalize(stmt);
+		}
+	}
+
+	graph::GraphBuilder builder(project_id, start_id);
+	int total_nodes = 0, total_edges = 0;
+
+	for (auto &b : batches) {
+		std::string hash = simpleHash(b.source);
+		uint64_t file_id =
+			g_store->upsertFile(project_id, b.file_path.c_str(),
+					    b.language.c_str(), hash.c_str());
+		g_store->deleteIRByFile(project_id, file_id);
+		g_store->deleteGraphNodesByFile(project_id,
+						b.file_path.c_str());
+		g_store->deleteFTSByFile(project_id, file_id);
+
+		std::unordered_map<uint64_t, uint64_t> ir_map;
+		for (auto *node : b.unit->all_nodes) {
+			uint64_t db_id = g_store->insertIRNode(
+				project_id, file_id, 0,
+				static_cast<int>(node->kind),
+				node->name.empty() ? nullptr :
+						     node->name.c_str(),
+				nullptr, node->loc.start_row,
+				node->loc.start_col, node->loc.end_row,
+				node->loc.end_col, node->language.c_str());
+			ir_map[node->id] = db_id;
+			const char *fn = node->name.empty() ?
+						 nullptr :
+						 node->name.c_str();
+			if (fn || !node->doc_comment.empty())
+				g_store->insertIntoFTS(
+					db_id, project_id, fn, nullptr,
+					b.file_path.c_str(),
+					node->doc_comment.c_str(),
+					static_cast<int>(node->kind));
+			if (fn) {
+				auto vec = vector_search::stringToVector(
+					node->name);
+				auto blob = vector_search::serializeVector(vec);
+				g_store->storeVector(db_id, project_id,
+						     blob.data(), blob.size());
+			}
+		}
+		for (auto *node : b.unit->all_nodes)
+			for (auto &e : node->semantic_edges) {
+				auto si = ir_map.find(node->id),
+				     ti = ir_map.find(e.target->id);
+				if (si != ir_map.end() && ti != ir_map.end())
+					g_store->insertIRSemanticEdge(
+						project_id, si->second,
+						ti->second,
+						static_cast<int>(e.relation));
+			}
+
+		auto sg = builder.buildSymbolGraph(b.unit.get());
+		auto cg = builder.buildCallGraph(b.unit.get());
+		for (auto &gn : sg.nodes) {
+			g_store->insertGraphNode(project_id, gn);
+			total_nodes++;
+		}
+		for (auto &e : sg.edges) {
+			g_store->insertGraphEdge(project_id, e);
+			total_edges++;
+		}
+		for (auto &e : cg.edges) {
+			g_store->insertGraphEdge(project_id, e);
+			total_edges++;
+		}
+
+		ir::ComplexityAnalyzer ca;
+		for (auto &gn : sg.nodes)
+			if (gn.type == graph::NodeType::Function ||
+			    gn.type == graph::NodeType::Method)
+				for (auto *in : b.unit->all_nodes)
+					if (in->id == gn.ir_node_id) {
+						auto cr = ca.analyze(in);
+						g_store->setComplexity(
+							project_id, gn.id,
+							cr.cyclomatic,
+							cr.cognitive,
+							cr.nesting_depth,
+							cr.decision_points);
+						break;
+					}
+	}
+
+	g_store->commitTransaction();
+
+	std::ostringstream r;
+	r << "{\"ok\":true,\"files\":" << (batches.size() + errors.size())
+	  << ",\"indexed\":" << batches.size() << ",\"nodes\":" << total_nodes
+	  << ",\"edges\":" << total_edges << ",\"errors\":[";
+	for (size_t i = 0; i < errors.size(); i++) {
+		if (i > 0)
+			r << ",";
+		r << "\"" << jsonEscape(errors[i]) << "\"";
+	}
+	r << "]}";
+	return dupString(r.str());
+}
+
+// ─── Project Metadata ───────────────────────────────────────
+
+static const char *detectLicense(const std::string &content)
+{
+	if (content.find("Apache License") != std::string::npos ||
+	    content.find("Version 2.0, January 2004") != std::string::npos)
+		return "Apache-2.0";
+	if (content.find("MIT License") != std::string::npos ||
+	    content.find("Permission is hereby granted") != std::string::npos)
+		return "MIT";
+	if (content.find("GNU GENERAL PUBLIC LICENSE") != std::string::npos)
+		return content.find("Version 3") != std::string::npos ?
+			       "GPL-3.0" :
+			       "GPL-2.0";
+	if (content.find("BSD") != std::string::npos)
+		return "BSD";
+	if (content.find("Mozilla Public") != std::string::npos)
+		return "MPL-2.0";
+	return "Unknown";
+}
+
+char *engine_get_project_info(uint64_t project_id)
+{
+	if (!g_store)
+		return dupString("{\"error\":\"not initialized\"}");
+
+	sqlite3 *db = g_store->handle();
+	std::string name, root;
+
+	{
+		sqlite3_stmt *stmt = nullptr;
+		const char *sql =
+			"SELECT name, root_path FROM projects WHERE id=?";
+		if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
+		    SQLITE_OK) {
+			sqlite3_bind_int64(stmt, 1,
+					   static_cast<int64_t>(project_id));
+			if (sqlite3_step(stmt) == SQLITE_ROW) {
+				if (sqlite3_column_text(stmt, 0))
+					name = (const char *)
+						sqlite3_column_text(stmt, 0);
+				if (sqlite3_column_text(stmt, 1))
+					root = (const char *)
+						sqlite3_column_text(stmt, 1);
+			}
+			sqlite3_finalize(stmt);
+		}
+	}
+
+	// Detect license
+	std::string license = "Unknown";
+	const char *lfs[] = { "LICENSE",	"LICENSE.txt", "LICENSE.md",
+			      "LICENSE-APACHE", "COPYING",     nullptr };
+	for (int i = 0; lfs[i]; i++) {
+		std::string c = readFile((root + "/" + lfs[i]).c_str());
+		if (!c.empty()) {
+			license = detectLicense(c);
+			break;
+		}
+	}
+
+	// Primary language
+	std::string lang;
+	{
+		sqlite3_stmt *stmt = nullptr;
+		const char *sql =
+			"SELECT language,COUNT(*) FROM files WHERE project_id=? "
+			"GROUP BY language ORDER BY 2 DESC LIMIT 1";
+		if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
+		    SQLITE_OK) {
+			sqlite3_bind_int64(stmt, 1,
+					   static_cast<int64_t>(project_id));
+			if (sqlite3_step(stmt) == SQLITE_ROW &&
+			    sqlite3_column_text(stmt, 0))
+				lang = (const char *)sqlite3_column_text(stmt,
+									 0);
+			sqlite3_finalize(stmt);
+		}
+	}
+
+	int file_count = 0, dep_count = 0;
+	{
+		sqlite3_stmt *stmt = nullptr;
+		if (sqlite3_prepare_v2(
+			    db, "SELECT COUNT(*) FROM files WHERE project_id=?",
+			    -1, &stmt, nullptr) == SQLITE_OK) {
+			sqlite3_bind_int64(stmt, 1,
+					   static_cast<int64_t>(project_id));
+			if (sqlite3_step(stmt) == SQLITE_ROW)
+				file_count = sqlite3_column_int(stmt, 0);
+			sqlite3_finalize(stmt);
+		}
+	}
+
+	// Try to parse dep files
+	const char *dfs[] = { "go.mod",		  "Cargo.toml",
+			      "pyproject.toml",	  "package.json",
+			      "requirements.txt", nullptr };
+	for (int i = 0; dfs[i]; i++) {
+		std::string c = readFile((root + "/" + dfs[i]).c_str());
+		if (!c.empty()) {
+			int lines = 0;
+			for (size_t p = 0;
+			     (p = c.find('\n', p)) != std::string::npos;
+			     lines++, p++)
+				;
+			dep_count = lines / 3;
+			break;
+		}
+	}
+
+	std::ostringstream j;
+	j << "{\"name\":\"" << jsonEscape(name) << "\",\"license\":\""
+	  << jsonEscape(license) << "\",\"language\":\"" << jsonEscape(lang)
+	  << "\",\"file_count\":" << file_count
+	  << ",\"dependency_count\":" << dep_count << "}";
+	return dupString(j.str());
+}

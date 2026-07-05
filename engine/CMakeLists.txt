@@ -60,6 +60,12 @@ set(CMAKE_DL_LIBS dl)
 
 set(ENGINE_SOURCES
     src/engine.cpp
+    src/engine_helpers.cpp
+    src/engine_lifecycle.cpp
+    src/engine_index.cpp
+    src/engine_scanner.cpp
+    src/engine_queries.cpp
+    src/engine_ffi.cpp
     src/parser/parser.cpp
     src/ir/ir.cpp
     src/ir/ir_visitor.cpp
