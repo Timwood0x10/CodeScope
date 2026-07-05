@@ -50,12 +50,23 @@ class GraphStore {
 
 	uint64_t insertGraphNode(uint64_t project_id,
 				 const graph::GraphNode &node);
+
+	/** Batch insert graph nodes — prepare once, bind/step/reset in a loop.
+	 *  Up to ~10x faster than calling insertGraphNode per node. */
+	void insertGraphNodes(uint64_t project_id,
+			      const std::vector<graph::GraphNode> &nodes);
+
 	bool deleteGraphNodesByFile(uint64_t project_id, const char *file_path);
 
 	// ── Graph Edges ────────────────────────────────────────────
 
 	uint64_t insertGraphEdge(uint64_t project_id,
 				 const graph::GraphEdge &edge);
+
+	/** Batch insert graph edges — prepare once, bind/step/reset in a loop. */
+	void insertGraphEdges(uint64_t project_id,
+			      const std::vector<graph::GraphEdge> &edges);
+
 	bool deleteGraphEdgesByFile(uint64_t project_id, const char *file_path);
 
 	// ── Transactions ───────────────────────────────────────────

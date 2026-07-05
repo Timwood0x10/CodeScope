@@ -135,6 +135,7 @@ class SemanticUnit {
 
     private:
 	std::vector<Record> records_;
+	std::unordered_map<uint64_t, size_t> id_to_index_; // record.id → index in records_
 	std::string file_path_;
 	std::string language_;
 	uint64_t next_id_ = 1;

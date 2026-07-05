@@ -512,6 +512,53 @@ uint64_t GraphStore::insertGraphNode(uint64_t project_id,
 	return node.id;
 }
 
+void GraphStore::insertGraphNodes(uint64_t project_id,
+				  const std::vector<graph::GraphNode> &nodes)
+{
+	if (nodes.empty())
+		return;
+
+	const char *sql =
+		"INSERT INTO graph_nodes (id, project_id, ir_node_id, node_type, "
+		"name, qualified_name, start_row, start_col, end_row, end_col, "
+		"file_path, language) "
+		"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		error_ = "insertGraphNodes: prepare failed";
+		return;
+	}
+
+	for (auto &node : nodes) {
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(node.id));
+		sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
+		sqlite3_bind_int64(stmt, 3,
+				   static_cast<int64_t>(node.ir_node_id));
+		sqlite3_bind_int(stmt, 4, static_cast<int>(node.type));
+		sqlite3_bind_text(stmt, 5, node.name.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 6, node.qualified_name.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_int(stmt, 7, static_cast<int>(node.start_row));
+		sqlite3_bind_int(stmt, 8, static_cast<int>(node.start_col));
+		sqlite3_bind_int(stmt, 9, static_cast<int>(node.end_row));
+		sqlite3_bind_int(stmt, 10, static_cast<int>(node.end_col));
+		sqlite3_bind_text(stmt, 11, node.file_path.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 12, node.language.c_str(), -1,
+				  SQLITE_TRANSIENT);
+
+		int rc = sqlite3_step(stmt);
+		if (rc != SQLITE_DONE)
+			fprintf(stderr, "insertGraphNodes: step error %d\n",
+				rc);
+		sqlite3_reset(stmt);
+	}
+
+	sqlite3_finalize(stmt);
+}
+
 bool GraphStore::deleteGraphNodesByFile(uint64_t project_id,
 					const char *file_path)
 {
@@ -545,6 +592,40 @@ uint64_t GraphStore::insertGraphEdge(uint64_t project_id,
 	sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	return static_cast<uint64_t>(sqlite3_last_insert_rowid(db_));
+}
+
+void GraphStore::insertGraphEdges(uint64_t project_id,
+				   const std::vector<graph::GraphEdge> &edges)
+{
+	if (edges.empty())
+		return;
+
+	const char *sql =
+		"INSERT INTO graph_edges (project_id, source_node_id, "
+		"target_node_id, edge_type, graph_type) "
+		"VALUES (?, ?, ?, ?, ?)";
+
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		error_ = "insertGraphEdges: prepare failed";
+		return;
+	}
+
+	for (auto &edge : edges) {
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(edge.source_id));
+		sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(edge.target_id));
+		sqlite3_bind_int(stmt, 4, static_cast<int>(edge.type));
+		sqlite3_bind_text(stmt, 5, edge.graph_type.c_str(), -1,
+				  SQLITE_TRANSIENT);
+
+		int rc = sqlite3_step(stmt);
+		if (rc != SQLITE_DONE)
+			fprintf(stderr, "insertGraphEdges: step error %d\n", rc);
+		sqlite3_reset(stmt);
+	}
+
+	sqlite3_finalize(stmt);
 }
 
 bool GraphStore::deleteGraphEdgesByFile(uint64_t project_id,

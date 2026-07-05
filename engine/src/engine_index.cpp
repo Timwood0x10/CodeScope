@@ -540,10 +540,9 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 				ir::JsVisitor *visitor =
 					ir::createJsVisitor(job.lang.c_str());
 				if (visitor) {
-					ir::SemanticUnit *su =
-						visitor->visit(tree,
-							       source.c_str(),
-							       job.path.c_str());
+					ir::SemanticUnit *su = visitor->visit(
+						tree, source.c_str(),
+						job.path.c_str());
 					delete visitor;
 					ts_tree_delete(tree);
 					if (!su)
@@ -622,69 +621,88 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		// Pass 3a: Build symbol graphs for all JS/TS files and accumulate
 		// a cross-file name index for call resolution.
 		std::unordered_multimap<std::string, uint64_t>
-		 cross_file_name_index;
+			cross_file_name_index;
 		std::vector<graph::CodeGraph> sym_graphs(batch_count);
 
 		for (size_t i = 0; i < batch_count; i++) {
-		 auto &su = semantic_units[i];
-		 if (!su)
-		  continue;
+			auto &su = semantic_units[i];
+			if (!su)
+				continue;
 
-		 auto sym_g = gb.buildSymbolGraph(*su);
-		 sym_graphs[i] = std::move(sym_g);
+			auto sym_g = gb.buildSymbolGraph(*su);
+			sym_graphs[i] = std::move(sym_g);
 		}
 
 		// Build cross-file name index from all symbol graphs
 		for (auto &g : sym_graphs) {
 		 for (auto &n : g.nodes) {
 		  if (!n.name.empty())
-		   cross_file_name_index.emplace(n.name, n.id);
+		   cross_file_name_index.emplace(n.name,
+		            n.id);
 		 }
 		}
 
-		// Pass 3b: Build call graphs with cross-file resolution and persist
+		// Pass 3b: Build call graphs with cross-file resolution
+		// Collect nodes/edges for batch insert (prepare once,
+		// bind/step/reset loop — ~10x faster than per-row inserts).
+		std::vector<graph::GraphNode> all_nodes;
+		std::vector<graph::GraphEdge> all_edges;
+
 		for (size_t i = 0; i < batch_count; i++) {
 		 auto &su = semantic_units[i];
 		 if (!su)
 		  continue;
 
 		 auto &sym_g = sym_graphs[i];
-		 auto call_g = gb.buildCallGraph(*su, cross_file_name_index);
+		 auto call_g =
+		  gb.buildCallGraph(*su, cross_file_name_index);
 		 auto &fp = file_paths[i];
 
-		 // Persist
-		 g_store->upsertFile(project_id, fp.c_str(),
-		  fp.c_str(), "");
+		 // Upsert file record (metadata only, not graph data)
+		 g_store->upsertFile(project_id, fp.c_str(), fp.c_str(),
+		       "");
+
+		 // Collect all nodes and edges
 		 for (auto &n : sym_g.nodes)
-		  g_store->insertGraphNode(project_id, n);
+		  all_nodes.push_back(std::move(n));
 		 for (auto &e : sym_g.edges)
-		  g_store->insertGraphEdge(project_id, e);
+		  all_edges.push_back(std::move(e));
 		 for (auto &e : call_g.edges)
-		  g_store->insertGraphEdge(project_id, e);
+		  all_edges.push_back(std::move(e));
 
 		 fprintf(stderr,
-		  "  EMIT[%zu]: %s (%zu nodes, %zu edges)\n",
-		  i, fp.c_str(), sym_g.nodes.size(),
+		  "  EMIT[%zu]: %s (%zu nodes, %zu edges)\n", i,
+		  fp.c_str(), sym_g.nodes.size(),
 		  sym_g.edges.size() + call_g.edges.size());
 		}
+
+		// Batch insert: one prepare per type, bind/step/reset per row
+		if (!all_nodes.empty())
+		 g_store->insertGraphNodes(project_id, all_nodes);
+		if (!all_edges.empty())
+		 g_store->insertGraphEdges(project_id, all_edges);
 
 		// ── Old pipeline: linker passes on TranslationUnits ──
 		int passes_ok = 0;
 		{
-		 size_t old_count = 0;
-		 for (auto &u : all_units)
-		  if (u) old_count++;
+			size_t old_count = 0;
+			for (auto &u : all_units)
+				if (u)
+					old_count++;
 
-		 if (old_count > 0) {
-		  linker::Linker linker;
-		  linker.addPass(std::make_unique<linker::BuildSymbolIndexPass>());
-		  linker.addPass(std::make_unique<linker::ResolveCallPass>());
-		  linker.addPass(std::make_unique<linker::EmitGraphPass>());
-		  passes_ok = linker.run(project_id, all_units,
-		        file_paths,
-		        global_symbol_index,
-		        g_store);
-		 }
+			if (old_count > 0) {
+				linker::Linker linker;
+				linker.addPass(std::make_unique<
+					       linker::BuildSymbolIndexPass>());
+				linker.addPass(std::make_unique<
+					       linker::ResolveCallPass>());
+				linker.addPass(std::make_unique<
+					       linker::EmitGraphPass>());
+				passes_ok = linker.run(project_id, all_units,
+						       file_paths,
+						       global_symbol_index,
+						       g_store);
+			}
 		}
 
 		g_store->commitTransaction();
