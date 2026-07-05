@@ -3,10 +3,14 @@
 
 #include "ir.h"
 
-// tree-sitter types — we only need pointers, so forward declare is sufficient.
-// api.h uses `typedef struct { ... } TSNode;` and `typedef struct TSTree
-// TSTree;`
+// tree-sitter types
 typedef struct TSTree TSTree;
+
+// Forward declare resolver interface
+namespace resolver
+{
+class Resolver;
+}
 
 namespace ir
 {
@@ -24,10 +28,20 @@ class Translator {
 					   const char *file_path) = 0;
 
 	virtual const char *language() const = 0;
+
+	// Set an optional resolver chain for cross-file symbol resolution.
+	// Must be called BEFORE translate(). The resolver is NOT owned
+	// by the translator — the caller must keep it alive.
+	virtual void setResolver(resolver::Resolver *resolver)
+	{
+		resolver_ = resolver;
+	}
+
+    protected:
+	resolver::Resolver *resolver_ = nullptr;
 };
 
-// Factory: returns the appropriate translator for a language string,
-// or nullptr if the language is not supported.
+// Factory
 Translator *createTranslator(const char *language);
 
 } // namespace ir

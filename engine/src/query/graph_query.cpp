@@ -336,7 +336,7 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 	}
 
 	std::ostringstream json;
-	json << "{\"total\":0,\"results\":[";
+	json << "{\"results\":[";
 	bool first_row = true;
 	int row_count = 0;
 

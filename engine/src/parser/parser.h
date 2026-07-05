@@ -52,8 +52,6 @@ class Parser {
 	// Map language name → grammar
 	std::unordered_map<std::string, Grammar> grammars_;
 	std::string error_;
-
-
 };
 
 #endif // PARSER_H

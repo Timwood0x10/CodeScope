@@ -13,7 +13,10 @@ namespace ir
 
 class SwiftTranslator : public Translator {
     public:
-	const char *language() const override { return "swift"; }
+	const char *language() const override
+	{
+		return "swift";
+	}
 
 	TranslationUnit *translate(TSTree *tree, const char *source,
 				   const char *file_path) override;
@@ -178,13 +181,16 @@ Node *SwiftTranslator::handleClassDecl(TSNode ts_node, Node *parent)
 	uint32_t cc = ts_node_child_count(ts_node);
 	for (uint32_t i = 0; i < cc; i++) {
 		TSNode c = ts_node_child(ts_node, i);
-		if (!ts_node_is_named(c)) continue;
+		if (!ts_node_is_named(c))
+			continue;
 		if (strcmp(ts_node_type(c), "struct") == 0) {
-			is_class = false; break;
+			is_class = false;
+			break;
 		}
 	}
 
-	auto *cls = makeNode(is_class ? NodeKind::ClassDecl : NodeKind::ClassDecl, ts_node);
+	auto *cls = makeNode(
+		is_class ? NodeKind::ClassDecl : NodeKind::ClassDecl, ts_node);
 	cls->name = extractName(ts_node);
 	if (!cls->name.empty())
 		defineSymbol(cls->name, cls);
@@ -329,14 +335,11 @@ Node *SwiftTranslator::translateNode(TSNode ts_node, Node *parent)
 	}
 
 	// Recursive containers
-	if (strcmp(type, "expression") == 0 ||
-	    strcmp(type, "statement") == 0 ||
-	    strcmp(type, "body") == 0 ||
-	    strcmp(type, "function_body") == 0 ||
+	if (strcmp(type, "expression") == 0 || strcmp(type, "statement") == 0 ||
+	    strcmp(type, "body") == 0 || strcmp(type, "function_body") == 0 ||
 	    strcmp(type, "class_body") == 0 ||
 	    strcmp(type, "parameter_list") == 0 ||
-	    strcmp(type, "parameter") == 0 ||
-	    strcmp(type, "argument") == 0 ||
+	    strcmp(type, "parameter") == 0 || strcmp(type, "argument") == 0 ||
 	    strcmp(type, "tuple") == 0 ||
 	    strcmp(type, "member_access_expression") == 0 ||
 	    strcmp(type, "binary_expression") == 0 ||
@@ -351,9 +354,8 @@ Node *SwiftTranslator::translateNode(TSNode ts_node, Node *parent)
 
 // ─── Translation Entry ─────────────────────────────────────────
 
-TranslationUnit *SwiftTranslator::translate(TSTree *tree,
-					     const char *source,
-					     const char *file_path)
+TranslationUnit *SwiftTranslator::translate(TSTree *tree, const char *source,
+					    const char *file_path)
 {
 	unit_ = new TranslationUnit();
 	unit_->source_content = source;

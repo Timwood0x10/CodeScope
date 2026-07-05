@@ -334,15 +334,23 @@ bool GraphStore::exec(const char *sql)
 
 uint64_t GraphStore::createProject(const char *root_path, const char *name)
 {
+	// Try INSERT; if root_path already exists (UNIQUE constraint),
+	// query the existing project ID instead.
 	sqlite3_stmt *stmt = nullptr;
-	const char *sql =
-		"INSERT INTO projects (root_path, name) VALUES (?, ?)";
+	const char *sql = "INSERT OR IGNORE INTO projects (root_path, name) "
+			  "VALUES (?, ?)";
 	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
 	sqlite3_bind_text(stmt, 1, root_path, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 2, name, -1, SQLITE_TRANSIENT);
 	sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
-	return static_cast<uint64_t>(sqlite3_last_insert_rowid(db_));
+
+	uint64_t id = static_cast<uint64_t>(sqlite3_last_insert_rowid(db_));
+	if (id == 0) {
+		// Row already exists — query the existing ID
+		id = getProjectId(root_path);
+	}
+	return id;
 }
 
 uint64_t GraphStore::getProjectId(const char *root_path)

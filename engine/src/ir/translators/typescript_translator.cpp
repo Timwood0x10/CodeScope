@@ -414,12 +414,12 @@ Node *TypescriptTranslator::handleClass(TSNode ts_node, Node *parent)
 	auto *cls = makeNode(NodeKind::ClassDecl, ts_node);
 	uint32_t count = ts_node_child_count(ts_node);
 	for (uint32_t i = 0; i < count; i++) {
-	 TSNode child = ts_node_child(ts_node, i);
-	 if (strcmp(ts_node_type(child), "identifier") == 0 ||
-	     strcmp(ts_node_type(child), "type_identifier") == 0) {
-	  cls->name = nodeText(child);
-	  break;
-	 }
+		TSNode child = ts_node_child(ts_node, i);
+		if (strcmp(ts_node_type(child), "identifier") == 0 ||
+		    strcmp(ts_node_type(child), "type_identifier") == 0) {
+			cls->name = nodeText(child);
+			break;
+		}
 	}
 	defineSymbol(cls->name, cls);
 	parent->children.push_back(cls);

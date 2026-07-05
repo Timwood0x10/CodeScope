@@ -84,6 +84,9 @@ set(ENGINE_SOURCES
     src/query/community_detection.cpp
     src/query/vector_search.cpp
     src/lsp/lsp_client.cpp
+    src/resolver/resolver.cpp
+    src/resolver/project_index.cpp
+    src/resolver/project_resolver.cpp
 )
 
 add_library(astgraph_engine STATIC ${ENGINE_SOURCES})

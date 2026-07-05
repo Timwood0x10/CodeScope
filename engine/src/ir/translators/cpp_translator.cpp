@@ -346,20 +346,21 @@ Node *CppTranslator::translateNode(TSNode ts_node, Node *parent)
 	}
 
 	if (strcmp(type, "function_declarator") == 0) {
-	 // Check for sibling compound_statement inside ERROR nodes
-	 // (GNU C++ attributes can cause tree-sitter to misparse).
-	 TSNode p = ts_node_parent(ts_node);
-	 if (!ts_node_is_null(p)) {
-	  uint32_t n = ts_node_child_count(p);
-	  for (uint32_t j = 0; j < n; j++) {
-	   TSNode s = ts_node_child(p, j);
-	   if (ts_node_is_named(s) &&
-	       strcmp(ts_node_type(s), "compound_statement") == 0)
-	    return handleFuncDef(p, parent);
-	  }
-	 }
-	 translateChildren(ts_node, parent);
-	 return nullptr;
+		// Check for sibling compound_statement inside ERROR nodes
+		// (GNU C++ attributes can cause tree-sitter to misparse).
+		TSNode p = ts_node_parent(ts_node);
+		if (!ts_node_is_null(p)) {
+			uint32_t n = ts_node_child_count(p);
+			for (uint32_t j = 0; j < n; j++) {
+				TSNode s = ts_node_child(p, j);
+				if (ts_node_is_named(s) &&
+				    strcmp(ts_node_type(s),
+					   "compound_statement") == 0)
+					return handleFuncDef(p, parent);
+			}
+		}
+		translateChildren(ts_node, parent);
+		return nullptr;
 	}
 
 	if (strcmp(type, "expression_statement") == 0 ||
@@ -418,10 +419,15 @@ Node *CppTranslator::handleFuncDef(TSNode ts_node, Node *parent)
 		uint32_t cc = ts_node_child_count(ts_node);
 		for (uint32_t i = 0; i < cc; i++) {
 			TSNode c = ts_node_child(ts_node, i);
-			if (!ts_node_is_named(c)) continue;
-			if (strcmp(ts_node_type(c), "function_declarator") == 0) {
+			if (!ts_node_is_named(c))
+				continue;
+			if (strcmp(ts_node_type(c), "function_declarator") ==
+			    0) {
 				std::string n = extractName(c);
-				if (!n.empty()) { func->name = n; break; }
+				if (!n.empty()) {
+					func->name = n;
+					break;
+				}
 			}
 		}
 	}
@@ -465,7 +471,8 @@ Node *CppTranslator::handleDeclaration(TSNode ts_node, Node *parent)
 		uint32_t count = ts_node_child_count(ts_node);
 		for (uint32_t i = 0; i < count; i++) {
 			TSNode child = ts_node_child(ts_node, i);
-			if (!ts_node_is_named(child)) continue;
+			if (!ts_node_is_named(child))
+				continue;
 			const char *t = ts_node_type(child);
 			if (strcmp(t, "function_declarator") == 0)
 				has_func_decl = true;

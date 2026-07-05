@@ -27,7 +27,9 @@ fn h_get_callers(project_id: u64, args: &Value) -> String {
 }
 
 fn h_get_callees(project_id: u64, args: &Value) -> String {
-    let name = args["function_name"].as_str().unwrap_or("");
+    let name = args["function_name"].as_str()
+        .or_else(|| args["name"].as_str())
+        .unwrap_or("");
     ffi::get_callees(project_id, name)
 }
 
@@ -93,7 +95,9 @@ fn h_get_complexity(project_id: u64, args: &Value) -> String {
 }
 
 fn h_graph_query(project_id: u64, args: &Value) -> String {
-    let query = args["query"].as_str().unwrap_or("");
+    let query = args["query"].as_str()
+        .or_else(|| args["dsl"].as_str())
+        .unwrap_or("");
     ffi::graph_query(project_id, query)
 }
 

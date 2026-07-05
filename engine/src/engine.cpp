@@ -7,6 +7,9 @@
 #include "parser/parser.h"
 #include "query/query_engine.h"
 #include "query/vector_search.h"
+#include "resolver/resolver.h"
+#include "resolver/project_index.h"
+#include "resolver/project_resolver.h"
 #include "store/store.h"
 
 #include <algorithm>
@@ -149,10 +152,9 @@ int engine_init(const char *db_path)
 	std::string base = grammars_dir ? grammars_dir : "grammars";
 
 	// Language → grammar .so path mapping
-	const char *langs[] = { "python",     "cpp",   "c",
-	   "rust",	      "swift", "javascript",
-	   "typescript", "tsx",   "go",
-	   "java" };
+	const char *langs[] = { "python", "cpp",	"c",	      "rust",
+				"swift",  "javascript", "typescript", "tsx",
+				"go",	  "java" };
 	for (auto lang : langs) {
 		std::string path = base + "/tree-sitter-" + lang + ".so";
 		g_parser->registerLanguage(lang, path.c_str());
@@ -569,6 +571,92 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 	return dupString(result.str());
 }
 
+// ─── Pre-scan: Build ProjectSymbolIndex ─────────────────────────
+//
+// Lightweight pre-scan to extract function/class/macro names across all
+// project files. Builds the ProjectSymbolIndex used by the ResolverChain
+// during the main parallel translation phase.
+
+static void extractSymbolNames(TSTree *tree, const char *source,
+			       const std::string &file_path,
+			       const std::string &language,
+			       resolver::ProjectSymbolIndex &index)
+{
+	TSNode root = ts_tree_root_node(tree);
+	uint32_t count = ts_node_child_count(root);
+
+	auto getNodeText = [source](TSNode n) {
+		uint32_t s = ts_node_start_byte(n);
+		uint32_t e = ts_node_end_byte(n);
+		return std::string(source + s, e - s);
+	};
+
+	// Walk tree to find the first identifier under a node
+	std::function<std::string(TSNode)> findFirstIdent;
+	findFirstIdent = [&](TSNode n) -> std::string {
+		uint32_t cc = ts_node_child_count(n);
+		for (uint32_t i = 0; i < cc; i++) {
+			TSNode c = ts_node_child(n, i);
+			if (!ts_node_is_named(c))
+				continue;
+			const char *ct = ts_node_type(c);
+			if (strcmp(ct, "identifier") == 0 ||
+			    strcmp(ct, "field_identifier") == 0)
+				return getNodeText(c);
+			std::string sub = findFirstIdent(c);
+			if (!sub.empty())
+				return sub;
+		}
+		return "";
+	};
+
+	auto addEntry = [&](const std::string &name, ir::NodeKind kind,
+			    TSNode n, bool is_static) {
+		if (name.empty())
+			return;
+		resolver::IndexEntry entry;
+		entry.name = name;
+		entry.file_path = file_path;
+		entry.kind = kind;
+		entry.is_static = is_static;
+		TSPoint s = ts_node_start_point(n);
+		TSPoint e = ts_node_end_point(n);
+		entry.loc.start_row = s.row;
+		entry.loc.start_col = s.column;
+		entry.loc.end_row = e.row;
+		entry.loc.end_col = e.column;
+		index.addEntry(entry);
+	};
+
+	for (uint32_t i = 0; i < count; i++) {
+		TSNode child = ts_node_child(root, i);
+		if (!ts_node_is_named(child))
+			continue;
+		const char *type = ts_node_type(child);
+
+		if (strcmp(type, "function_definition") == 0 ||
+		    strcmp(type, "function_item") == 0) {
+			std::string name = findFirstIdent(child);
+			addEntry(name, ir::NodeKind::FunctionDecl, child,
+				 false);
+		} else if (strcmp(type, "struct_specifier") == 0 ||
+			   strcmp(type, "class_specifier") == 0) {
+			std::string name = findFirstIdent(child);
+			addEntry(name, ir::NodeKind::ClassDecl, child, false);
+		} else if (strcmp(type, "preproc_def") == 0) {
+			std::string name = findFirstIdent(child);
+			addEntry(name, ir::NodeKind::MacroDecl, child, false);
+		} else if (strcmp(type, "preproc_function_def") == 0) {
+			std::string name = findFirstIdent(child);
+			addEntry(name, ir::NodeKind::MacroDecl, child, false);
+		} else if (strcmp(type, "type_definition") == 0) {
+			std::string name = findFirstIdent(child);
+			addEntry(name, ir::NodeKind::TypeAliasDecl, child,
+				 false);
+		}
+	}
+}
+
 // ─── Index Project (Parallel) ──────────────────────────────────
 
 char *engine_index_project(uint64_t project_id, const char *dir_path,
@@ -598,34 +686,47 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	};
 
 	// Phase 1: collect file paths (single-threaded)
-	struct FileJob { std::string path; std::string lang; };
+	struct FileJob {
+		std::string path;
+		std::string lang;
+	};
 	std::vector<FileJob> jobs;
 	try {
-		auto it = std::filesystem::recursive_directory_iterator(dir,
-			std::filesystem::directory_options::skip_permission_denied);
+		auto it = std::filesystem::recursive_directory_iterator(
+			dir, std::filesystem::directory_options::
+				     skip_permission_denied);
 		for (auto &entry : it) {
 			std::string rel = entry.path().string();
 			if (rel.size() > dir.size() + 1)
 				rel = rel.substr(dir.size() + 1);
-			else rel.clear();
+			else
+				rel.clear();
 			if (!rel.empty()) {
-				std::string first = rel.substr(0, rel.find('/'));
-				if (entry.is_directory() && skip_dirs.count(first)) {
-					it.disable_recursion_pending(); continue;
+				std::string first =
+					rel.substr(0, rel.find('/'));
+				if (entry.is_directory() &&
+				    skip_dirs.count(first)) {
+					it.disable_recursion_pending();
+					continue;
 				}
-				if (entry.is_regular_file() && skip_dirs.count(rel))
+				if (entry.is_regular_file() &&
+				    skip_dirs.count(rel))
 					continue;
 			}
 			if (entry.is_regular_file()) {
-				const char *lang = detectLanguage(entry.path().c_str());
-				if (!lang) continue;
-				if (!lang_filter.empty() && lang != lang_filter) continue;
-				jobs.push_back({entry.path(), lang});
+				const char *lang =
+					detectLanguage(entry.path().c_str());
+				if (!lang)
+					continue;
+				if (!lang_filter.empty() && lang != lang_filter)
+					continue;
+				jobs.push_back({ entry.path(), lang });
 			}
 		}
 	} catch (const std::exception &e) {
 		std::ostringstream err;
-		err << "{\"ok\":false,\"error\":\"scan error: " << jsonEscape(e.what()) << "\"}";
+		err << "{\"ok\":false,\"error\":\"scan error: "
+		    << jsonEscape(e.what()) << "\"}";
 		return dupString(err.str());
 	}
 	if (jobs.empty())
@@ -636,68 +737,135 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	std::unordered_map<std::string, const TSLanguage *> lang_ptrs;
 	{
 		std::unordered_set<std::string> langs;
-		for (auto &j : jobs) langs.insert(j.lang);
+		for (auto &j : jobs)
+			langs.insert(j.lang);
 		for (auto &l : langs)
 			lang_ptrs[l] = g_parser->getLanguage(l.c_str());
 	}
 
-	// Phase 2: parallel indexing
-	int num_workers = std::min(static_cast<int>(jobs.size()),
-				   static_cast<int>(std::thread::hardware_concurrency()));
-	if (num_workers < 1) num_workers = 1;
+	// Phase 1.5: Pre-scan → build ProjectSymbolIndex for cross-file resolution
+	resolver::ProjectSymbolIndex sym_index;
+	if (jobs.size() > 1) {
+		for (auto &job : jobs) {
+			auto it = lang_ptrs.find(job.lang);
+			if (it == lang_ptrs.end())
+				continue;
+			std::string src = readFile(job.path.c_str());
+			if (src.empty())
+				continue;
+			TSParser *ps = ts_parser_new();
+			ts_parser_set_language(ps, it->second);
+			TSTree *tr = ts_parser_parse_string(
+				ps, nullptr, src.c_str(),
+				static_cast<uint32_t>(src.size()));
+			ts_parser_delete(ps);
+			if (tr) {
+				extractSymbolNames(tr, src.c_str(), job.path,
+						   job.lang, sym_index);
+				ts_tree_delete(tr);
+			}
+		}
+	}
+	resolver::ResolverChain res_chain;
+	if (!sym_index.empty()) {
+		res_chain.addResolver(
+			std::make_unique<resolver::ProjectResolver>(
+				&sym_index));
+	}
 
-	std::atomic<int> next_job{0};
+	// Phase 2: parallel indexing
+	int num_workers =
+		std::min(static_cast<int>(jobs.size()),
+			 static_cast<int>(std::thread::hardware_concurrency()));
+	if (num_workers < 1)
+		num_workers = 1;
+
+	std::atomic<int> next_job{ 0 };
 
 	g_store->beginTransaction();
 
 	auto worker = [&]() {
 		while (true) {
 			int idx = next_job.fetch_add(1);
-			if (idx >= static_cast<int>(jobs.size())) break;
+			if (idx >= static_cast<int>(jobs.size()))
+				break;
 			auto &job = jobs[idx];
 			auto it = lang_ptrs.find(job.lang);
-			if (it == lang_ptrs.end()) continue;
+			if (it == lang_ptrs.end())
+				continue;
 
 			// Each worker creates its own TSParser
 			const TSLanguage *ts_lang = it->second;
 			std::string source = readFile(job.path.c_str());
-			if (source.empty()) continue;
+			if (source.empty())
+				continue;
 
 			TSParser *parser = ts_parser_new();
 			ts_parser_set_language(parser, ts_lang);
-			TSTree *tree = ts_parser_parse_string(parser, nullptr,
-				source.c_str(), static_cast<uint32_t>(source.size()));
+			TSTree *tree = ts_parser_parse_string(
+				parser, nullptr, source.c_str(),
+				static_cast<uint32_t>(source.size()));
 			ts_parser_delete(parser);
-			if (!tree) continue;
+			if (!tree)
+				continue;
 
 			auto translator = std::unique_ptr<ir::Translator>(
 				ir::createTranslator(job.lang.c_str()));
-			if (!translator) { ts_tree_delete(tree); continue; }
+			if (!translator) {
+				ts_tree_delete(tree);
+				continue;
+			}
+
+			// Set the ResolverChain for cross-file symbol resolution
+			if (!sym_index.empty())
+				translator->setResolver(&res_chain);
 
 			ir::TranslationUnit *unit = translator->translate(
 				tree, source.c_str(), job.path.c_str());
 			ts_tree_delete(tree);
-			if (!unit) continue;
+			if (!unit)
+				continue;
 
 			// Build graph in-memory, persist via g_store
-			uint64_t start_id = 1;
+			// NOTE: graph node ID allocation + inserts are protected by a mutex
+			// because multiple workers share the same sqlite3 connection and
+			// the SELECT MAX(id) + INSERT sequence is not thread-safe.
 			{
-				sqlite3_stmt *s = nullptr;
-				const char *q = "SELECT COALESCE(MAX(id), 0) + 1 FROM graph_nodes";
-				if (sqlite3_prepare_v2(g_store->handle(), q, -1, &s, nullptr) == SQLITE_OK) {
-					if (sqlite3_step(s) == SQLITE_ROW)
-						start_id = static_cast<uint64_t>(sqlite3_column_int64(s, 0));
-					sqlite3_finalize(s);
-				}
-			}
-			graph::GraphBuilder builder(project_id, start_id);
-			auto sym_g = builder.buildSymbolGraph(unit);
-			auto call_g = builder.buildCallGraph(unit);
+				static std::mutex graph_mutex;
+				std::lock_guard<std::mutex> lock(graph_mutex);
 
-			g_store->upsertFile(project_id, job.path.c_str(), job.lang.c_str(), "");
-			for (auto &n : sym_g.nodes) g_store->insertGraphNode(project_id, n);
-			for (auto &e : sym_g.edges) g_store->insertGraphEdge(project_id, e);
-			for (auto &e : call_g.edges) g_store->insertGraphEdge(project_id, e);
+				uint64_t start_id = 1;
+				{
+					sqlite3_stmt *s = nullptr;
+					const char *q =
+						"SELECT COALESCE(MAX(id), 0) + 1 FROM graph_nodes";
+					if (sqlite3_prepare_v2(
+						    g_store->handle(), q, -1,
+						    &s, nullptr) == SQLITE_OK) {
+						if (sqlite3_step(s) ==
+						    SQLITE_ROW)
+							start_id = static_cast<
+								uint64_t>(
+								sqlite3_column_int64(
+									s, 0));
+						sqlite3_finalize(s);
+					}
+				}
+				graph::GraphBuilder builder(project_id,
+							    start_id);
+				auto sym_g = builder.buildSymbolGraph(unit);
+				auto call_g = builder.buildCallGraph(unit);
+
+				g_store->upsertFile(project_id,
+						    job.path.c_str(),
+						    job.lang.c_str(), "");
+				for (auto &n : sym_g.nodes)
+					g_store->insertGraphNode(project_id, n);
+				for (auto &e : sym_g.edges)
+					g_store->insertGraphEdge(project_id, e);
+				for (auto &e : call_g.edges)
+					g_store->insertGraphEdge(project_id, e);
+			}
 			delete unit;
 		}
 	};
@@ -711,7 +879,8 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	g_store->commitTransaction();
 
 	std::ostringstream result;
-	result << "{\"ok\":true,\"files_indexed\":" << static_cast<int>(jobs.size())
+	result << "{\"ok\":true,\"files_indexed\":"
+	       << static_cast<int>(jobs.size())
 	       << ",\"workers\":" << num_workers << "}";
 	return dupString(result.str());
 }

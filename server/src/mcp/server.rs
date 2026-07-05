@@ -18,9 +18,9 @@ impl Server {
     pub fn run(&mut self) -> io::Result<()> {
         loop {
             let req = match transport::read_message()? {
-                       Some(r) => r,
-                       None => return Ok(()), // EOF — client disconnected or pipe closed
-                   };
+                Some(r) => r,
+                None => return Ok(()), // EOF — client disconnected or pipe closed
+            };
 
             let response = self.handle_request(req);
             transport::write_message(&response)?;
