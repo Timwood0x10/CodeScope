@@ -10,13 +10,13 @@ graph TB
         Client["Claude Desktop / Cursor / Any MCP Client"]
     end
 
-    subgraph "Rust MCP Server (调度层)"
+    subgraph "Rust MCP Server"
         MCP["MCP Protocol (JSON-RPC 2.0)<br/>tools / protocol / transport"]
         FFI["C++ FFI Bridge<br/>extern C → safe wrappers"]
         TQ["Task Queue (Tokio)<br/>background enhancement"]
     end
 
-    subgraph "C++ Core Engine (分析层)"
+    subgraph "C++ Core Engine"
         SCANNER["Fast Scanner<br/>ms-level declaration extraction"]
         PARSER["Full Parser<br/>tree-sitter → IR"]
         GRAPH["Graph Builder<br/>call graph / dependency graph"]
@@ -24,10 +24,10 @@ graph TB
         LSP["LSP Client<br/>type enhancement"]
     end
 
-    subgraph "SQLite (WAL 模式)"
-        FACTS["事实表<br/>modules / symbols / files<br/>dependency_edges / call_edges"]
-        INDICES["索引表<br/>search_index (FTS5)<br/>embeddings (sqlite-vec)"]
-        METRICS["指标表<br/>metrics / symbol_status"]
+    subgraph "SQLite (WAL mode)"
+        FACTS["Symbol tables<br/>modules / symbols / files<br/>dependency_edges / call_edges"]
+        INDICES["Index tables<br/>search_index (FTS5)<br/>embeddings (sqlite-vec)"]
+        METRICS["Metrics table<br/>metrics / symbol_status"]
     end
 
     Client -->|"MCP stdio"| MCP
@@ -222,39 +222,64 @@ echo "Set env:       export CODESCOPE_DB_PATH=/tmp/codescope.db"
 echo "              export GRAMMARS_DIR=\$(pwd)/grammars"
 ```
 
-## Performance Benchmarks — Fast Scan
+## Performance Benchmarks
 
-CodeScope's **Fast Scan** extracts lightweight declarations (no full tree-sitter parse) in milliseconds, providing AI with an immediate project skeleton.
+### Full Parse & Index (tree-sitter + Graph Builder + Linker)
 
-| Project                       | Time       | Languages              | Symbols | Notes                         |
-| ----------------------------- | ---------- | ---------------------- | ------- | ----------------------------- |
-| **CodeScope** (self)          | **32 ms**  | cpp, rust, c           | 2,902   | Has `.gitignore`              |
-| **MusicAITools** (Python)     | **8 ms**   | python                 | 227     | 36 source files               |
-| **goagent** (Go)              | **493 ms** | go, c, cpp, python     | 5,172   | No `.gitignore`               |
-| **tinygo** (Go compiler)      | **209 ms** | go                     | 8,411   | 1,774 files, 1,234 source     |
-| **SQLite** (C library)        | **89 ms**  | c                      | 6,921   | 141 source files              |
-| **Linux kernel/sched**        | **45 ms**  | c                      | 4,913   | Scheduler, 36 files           |
-| **Linux kernel/** (core)      | **360 ms** | c                      | 40,335  | Kernel core                   |
-| **Linux fs/** (filesystem)    | **1.8 s**  | c                      | 212,145 | Filesystem subsystem          |
+| Project | Files | Nodes | Functions | CALLS | ★Cross-File | Time |
+|---------|:----:|:-----:|:--------:|:-----:|:----------:|:----:|
+| **CodeScope** (self) | 47 | 12K | 3.8K | 23K | 13 | 3s |
+| **goagent** (Go) | 2,651 | 155K | 49K | 56K | 49K | 30s |
+| **Linux kernel** (full) | **64,694** | **12M** | **3.8M** | **3.7M** | **1.5M** | **3min 07s** |
 
-**Average throughput: ~100,000 symbols/second**
+### Pipeline Architecture (v0.2)
 
-### Enhancement Phase (Full tree-sitter parse)
+```
+Source Files
+     │
+     ▼  Phase 1: Collect
+┌──────────────┐
+│  Translator  │  Phase 2: Parallel translate
+│ (no resolver)│  Pure: Source → IR, 14 workers
+└──────┬───────┘
+       │ IR Units
+       ▼
+┌──────────────┐  Phase 3: Link (serial PassManager)
+│   Linker     │
+│  ├─ BuildSymbolIndex  (scan IR, ~ms)
+│  ├─ ResolveCallPass   (cross-file CALLS)
+│  └─ EmitGraphPass     (GraphBuilder → SQLite)
+└──────────────┘
+```
 
-| Project | Time | Files Processed | Symbols Enhanced | Call Edges Generated |
-|---------|------|----------------|-----------------|---------------------|
-| **kernel/sched** (scheduler) | **291 ms** | 34 | 1,209 | **4,800** |
-| **kernel/** (core) | **27 s** | 495 | 11,925 | **45,573** |
+### Indexing Throughput
 
-### Query Performance
+| Metric | Value |
+|--------|-------|
+| **Linux kernel**: 64,694 files | **3 min 07 sec** (~350 files/sec) |
+| Functions indexed | **3,840,680** |
+| CALLS edges | **3,727,864** |
+| Cross-file CALLS (★) | **1,502,432 (40%)** |
+| DB size | ~1.2 GB |
+| Workers | 14 × 8MB stack |
 
-| Operation | Time | Notes |
-|-----------|------|-------|
-| `find_symbol("main")` | **10-37 µs** | Exact name match |
-| `get_module_tree()` | **15-29 µs** | Module hierarchy |
-| `trace_path()` BFS | **< 1 ms** | Call path tracing |
-| `project_overview()` | **1.5 ms** | Full project summary |
-| `search("mutex")` | **< 5 ms** | FTS5 search |
+### Cross-File Resolution
+
+The Linker's `ResolveCallPass` resolves function calls across file boundaries using a global symbol index built from all TranslationUnits. Candidate ranking prefers `.c`/`.cpp` definitions over `.h` prototypes.
+
+| Project | Cross-File CALLS | % of total CALLS |
+|---------|:---------------:|:----------------:|
+| CodeScope (C++) | 23 | 0.1% |
+| goagent (Go) | 49,258 | 86% |
+| Linux kernel (C) | 1,502,432 | 40% |
+
+### Fast Scan (Lightweight, ms-level)
+
+| Project | Time | Languages | Symbols |
+|--------|:----:|:---------:|:-------:|
+| **CodeScope** (self) | **32 ms** | cpp, rust, c | 2,902 |
+| **goagent** (Go) | **493 ms** | go, c, cpp, python | 5,172 |
+| **Linux kernel/** (core) | **360 ms** | c | 40,335 |
 
 ### C Declaration Detection Accuracy
 

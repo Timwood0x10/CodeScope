@@ -494,11 +494,33 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	if (num_workers < 1)
 		num_workers = 1;
 
-	std::vector<std::thread> workers;
-	for (int i = 0; i < num_workers; i++)
-		workers.emplace_back(translate_worker);
-	for (auto &w : workers)
-		w.join();
+	std::vector<pthread_t> workers(num_workers);
+	for (int i = 0; i < num_workers; i++) {
+		// Use 8 MB stack per worker for deep ASTs (Linux kernel drivers/,
+		// bun, cpython, etc.). std::thread ignores pthread_attr_t, so we
+		// must use pthread_create directly.
+		pthread_attr_t attr;
+		pthread_attr_init(&attr);
+		pthread_attr_setstacksize(&attr, 64 * 1024 * 1024);
+
+		// Wrap the lambda in a struct so we can pass it to pthread_create.
+		struct WorkerArg {
+			decltype(translate_worker) * fn;
+		};
+		auto *arg = new WorkerArg{ &translate_worker };
+		pthread_create(
+			&workers[i], &attr,
+			[](void *v) -> void * {
+				auto *a = static_cast<WorkerArg *>(v);
+				(*a->fn)();
+				delete a;
+				return nullptr;
+			},
+			arg);
+		pthread_attr_destroy(&attr);
+	}
+	for (auto &t : workers)
+		pthread_join(t, nullptr);
 
 	// Build file_paths vector for the Linker
 	std::vector<std::string> file_paths;

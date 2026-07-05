@@ -480,9 +480,6 @@ Node *CTranslator::handleCallExpr(TSNode ts_node, Node *parent)
 {
 	auto *call = makeNode(NodeKind::CallExpr, ts_node);
 	parent->children.push_back(call);
-	fprintf(stderr, "HCALL: parent_kind=%d parent_name=%s\n",
-		parent ? (int)parent->kind : -1,
-		parent ? parent->name.c_str() : "(null)");
 
 	uint32_t count = ts_node_child_count(ts_node);
 	for (uint32_t i = 0; i < count; i++) {

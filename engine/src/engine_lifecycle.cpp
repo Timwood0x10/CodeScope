@@ -47,48 +47,47 @@ int engine_init(const char *db_path)
 		g_parser->registerLanguage(lang, path.c_str());
 	}
 
-	// Try to load sqlite-vec extension for vector embeddings
-	// Use dlsym to find sqlite3_load_extension — avoids linking against Homebrew-only symbols
+	// Try to load sqlite-vec extension for vector embeddings (optional).
 	{
 		std::string vec_path = base + "/vec0.dylib";
 		sqlite3 *db = g_store->handle();
+		char *ext_err = nullptr;
+		int rc = SQLITE_ERROR;
 
-		typedef int (*load_ext_fn)(sqlite3 *, const char *,
-					   const char *, char **);
-		typedef int (*enable_ext_fn)(sqlite3 *, int);
-		auto enable = (enable_ext_fn)dlsym(
-			RTLD_DEFAULT, "sqlite3_enable_load_extension");
-		auto load = (load_ext_fn)dlsym(RTLD_DEFAULT,
-					       "sqlite3_load_extension");
-
-		if (load && enable) {
-			enable(db, 1);
-			char *ext_err = nullptr;
-			int rc = load(db, vec_path.c_str(), nullptr, &ext_err);
-			if (rc == SQLITE_OK) {
-				char *sql_err = nullptr;
-				sqlite3_exec(
-					db,
-					"CREATE VIRTUAL TABLE IF NOT EXISTS embeddings USING vec0("
-					"    symbol_id INTEGER PRIMARY KEY,"
-					"    vector FLOAT[384]"
-					");",
-					nullptr, nullptr, &sql_err);
-				if (sql_err)
-					sqlite3_free(sql_err);
-				fprintf(stderr, "engine: sqlite-vec loaded\n");
+		if (db) {
+			void *handle = dlopen(vec_path.c_str(),
+					      RTLD_LAZY | RTLD_LOCAL);
+			if (handle) {
+				dlclose(handle);
+				rc = sqlite3_load_extension(db,
+							    vec_path.c_str(),
+							    nullptr, &ext_err);
 			} else {
 				fprintf(stderr,
-					"engine: sqlite-vec not available: %s\n",
-					ext_err ? ext_err : "unknown");
+					"engine: sqlite-vec not available (%s)\n",
+					dlerror());
 			}
-			if (ext_err)
-				sqlite3_free(ext_err);
-			enable(db, 0);
-		} else {
-			fprintf(stderr,
-				"engine: sqlite-vec not available (extension API not found)\n");
 		}
+
+		if (rc == SQLITE_OK) {
+			char *sql_err = nullptr;
+			sqlite3_exec(
+				db,
+				"CREATE VIRTUAL TABLE IF NOT EXISTS embeddings USING vec0("
+				"    symbol_id INTEGER PRIMARY KEY,"
+				"    vector FLOAT[384]"
+				");",
+				nullptr, nullptr, &sql_err);
+			if (sql_err)
+				sqlite3_free(sql_err);
+			fprintf(stderr, "engine: sqlite-vec loaded\n");
+		} else if (rc != SQLITE_OK && ext_err) {
+			fprintf(stderr,
+				"engine: sqlite-vec not available: %s\n",
+				ext_err);
+		}
+		if (ext_err)
+			sqlite3_free(ext_err);
 	}
 
 	return 0;
