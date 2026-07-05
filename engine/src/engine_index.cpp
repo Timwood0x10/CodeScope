@@ -442,13 +442,20 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 					bool match = false;
 					size_t start = 0, end;
 					do {
-						end = lang_filter.find(',', start);
-						std::string single = lang_filter.substr(
-							start, end - start);
-						if (lang == single) { match = true; break; }
+						end = lang_filter.find(',',
+								       start);
+						std::string single =
+							lang_filter.substr(
+								start,
+								end - start);
+						if (lang == single) {
+							match = true;
+							break;
+						}
 						start = end + 1;
 					} while (end != std::string::npos);
-					if (!match) continue;
+					if (!match)
+						continue;
 				}
 				jobs.push_back({ entry.path(), lang });
 			}
@@ -537,25 +544,40 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 
 				std::string source = readFile(job.path.c_str());
 				if (source.empty())
-				 continue;
+					continue;
 
 				// ── Reuse TSParser per thread (avoid new/delete overhead) ──
-				thread_local static std::
-				 unordered_map<std::string, TSParser *>
-				  tl_parsers;
+				thread_local static std::unordered_map<
+					std::string, TSParser *>
+					tl_parsers;
 				auto pit = tl_parsers.find(job.lang);
 				if (pit == tl_parsers.end() || !pit->second) {
-				 TSParser *np = ts_parser_new();
-				 ts_parser_set_language(np, ts_lang);
-				 tl_parsers[job.lang] = np;
-				 pit = tl_parsers.find(job.lang);
+					TSParser *np = ts_parser_new();
+					ts_parser_set_language(np, ts_lang);
+					tl_parsers[job.lang] = np;
+					pit = tl_parsers.find(job.lang);
 				}
 				TSParser *parser = pit->second;
+
+				// ── Incremental parse: reuse old TSTree if available ──
+				// ts_parser_parse_string(parser, old_tree, ...) only
+				// re-parses changed parts — ~10-50x faster for edits.
+				thread_local static std::unordered_map<
+					std::string, TSTree *>
+					tl_old_trees;
+				TSTree *old_tree = nullptr;
+				auto ot = tl_old_trees.find(job.path);
+				if (ot != tl_old_trees.end())
+					old_tree = ot->second;
 				TSTree *tree = ts_parser_parse_string(
-				 parser, nullptr, source.c_str(),
-				 static_cast<uint32_t>(source.size()));
+					parser, old_tree, source.c_str(),
+					static_cast<uint32_t>(source.size()));
 				if (!tree)
 					continue;
+				// Cache new tree, delete old one
+				tl_old_trees[job.path] = tree;
+				if (old_tree)
+					ts_tree_delete(old_tree);
 
 				// ── New pipeline: JS/TS/TSX → Visitor → SemanticUnit ──
 				ir::JsVisitor *visitor =
@@ -633,91 +655,20 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		for (size_t i = batch_start; i < batch_end; i++)
 			file_paths.push_back(jobs[i].path);
 
-		// Phase 3: Link + Emit — runs serially
-		// ── New pipeline: build graph from SemanticUnit, emit to Store ──
+		// Phase 3: Persist semantic records + old pipeline — runs serially
+		// ── New pipeline: write flat records to semantic_records table ──
 		g_store->beginTransaction();
-
-		graph::GraphBuilder gb(project_id);
-
-		// Query next available node ID from store to avoid PRIMARY KEY
-		// collisions across batches (old EmitGraphPass does the same).
-		{
-		 sqlite3_stmt *s = nullptr;
-		 const char *q =
-		  "SELECT COALESCE(MAX(id), 0) + 1 FROM graph_nodes";
-		 if (sqlite3_prepare_v2(g_store->handle(), q, -1,
-		       &s, nullptr) == SQLITE_OK) {
-		  if (sqlite3_step(s) == SQLITE_ROW)
-		   gb = graph::GraphBuilder(project_id,
-		    static_cast<uint64_t>(
-		     sqlite3_column_int64(s, 0)));
-		  sqlite3_finalize(s);
-		 }
-		}
-
-		// Pass 3a: Build symbol graphs for all JS/TS files and accumulate
-		// a cross-file name index for call resolution.
-		std::unordered_multimap<std::string, uint64_t>
-			cross_file_name_index;
-		std::vector<graph::CodeGraph> sym_graphs(batch_count);
 
 		for (size_t i = 0; i < batch_count; i++) {
 			auto &su = semantic_units[i];
 			if (!su)
 				continue;
-
-			auto sym_g = gb.buildSymbolGraph(*su);
-			sym_graphs[i] = std::move(sym_g);
+			auto &fp = file_paths[i];
+			g_store->insertSemanticRecords(project_id, fp,
+						       su->allRecords());
+			g_store->upsertFile(project_id, fp.c_str(), fp.c_str(),
+					    "");
 		}
-
-		// Build cross-file name index from all symbol graphs
-		for (auto &g : sym_graphs) {
-		 for (auto &n : g.nodes) {
-		  if (!n.name.empty())
-		   cross_file_name_index.emplace(n.name,
-		            n.id);
-		 }
-		}
-
-		// Pass 3b: Build call graphs with cross-file resolution
-		// Collect nodes/edges for batch insert (prepare once,
-		// bind/step/reset loop — ~10x faster than per-row inserts).
-		std::vector<graph::GraphNode> all_nodes;
-		std::vector<graph::GraphEdge> all_edges;
-
-		for (size_t i = 0; i < batch_count; i++) {
-		 auto &su = semantic_units[i];
-		 if (!su)
-		  continue;
-
-		 auto &sym_g = sym_graphs[i];
-		 auto call_g =
-		  gb.buildCallGraph(*su, cross_file_name_index);
-		 auto &fp = file_paths[i];
-
-		 // Upsert file record (metadata only, not graph data)
-		 g_store->upsertFile(project_id, fp.c_str(), fp.c_str(),
-		       "");
-
-		 // Collect all nodes and edges
-		 for (auto &n : sym_g.nodes)
-		  all_nodes.push_back(std::move(n));
-		 for (auto &e : sym_g.edges)
-		  all_edges.push_back(std::move(e));
-		 for (auto &e : call_g.edges)
-		  all_edges.push_back(std::move(e));
-
-		 fprintf(stderr,
-		  "  EMIT[%zu]: %s (%zu nodes, %zu edges)\n", i,
-		  fp.c_str(), sym_g.nodes.size(),
-		  sym_g.edges.size() + call_g.edges.size());
-		}
-
-		// Batch insert: one prepare per type, bind/step/reset per row
-		if (!all_nodes.empty())
-		 g_store->insertGraphNodes(project_id, all_nodes);
-		if (!all_edges.empty())
-		 g_store->insertGraphEdges(project_id, all_edges);
 
 		// ── Old pipeline: linker passes on TranslationUnits ──
 		int passes_ok = 0;
@@ -752,6 +703,17 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 			"total indexed: %d\n",
 			batch_start, batch_end - 1, passes_ok, total_indexed);
 	}
+
+	// ── Post-loop: build graph from all accumulated semantic records ──
+	// Reads semantic_records table, runs GraphBuilder, writes graph_nodes/edges.
+	// Single pass — minimizes CPU and memory compared to per-batch building.
+	fprintf(stderr, "POST_BUILD: starting...\n");
+	fflush(stderr);
+	g_store->beginTransaction();
+	bool graph_ok = g_store->buildGraph(project_id);
+	g_store->commitTransaction();
+	fprintf(stderr, "POST_BUILD_GRAPH: %s\n", graph_ok ? "ok" : "failed");
+	fflush(stderr);
 
 	std::ostringstream result;
 	result << "{\"ok\":true,\"files_indexed\":" << total_indexed

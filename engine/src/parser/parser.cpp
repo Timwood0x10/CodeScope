@@ -10,20 +10,26 @@
 
 static const TSLanguage *resolveGrammar(const char *name)
 {
-	if (strcmp(name, "c") == 0)                     return tree_sitter_c();
-	if (strcmp(name, "cpp") == 0 || strcmp(name, "c++") == 0) return tree_sitter_cpp();
-	if (strcmp(name, "go") == 0)                    return tree_sitter_go();
-	if (strcmp(name, "java") == 0)                  return tree_sitter_java();
+	if (strcmp(name, "c") == 0)
+		return tree_sitter_c();
+	if (strcmp(name, "cpp") == 0 || strcmp(name, "c++") == 0)
+		return tree_sitter_cpp();
+	if (strcmp(name, "go") == 0)
+		return tree_sitter_go();
+	if (strcmp(name, "java") == 0)
+		return tree_sitter_java();
 	if (strcmp(name, "javascript") == 0 || strcmp(name, "js") == 0)
-	                                                return tree_sitter_javascript();
+		return tree_sitter_javascript();
 	if (strcmp(name, "python") == 0 || strcmp(name, "py") == 0)
-	                                                return tree_sitter_python();
+		return tree_sitter_python();
 	if (strcmp(name, "rust") == 0 || strcmp(name, "rs") == 0)
-	                                                return tree_sitter_rust();
-	if (strcmp(name, "swift") == 0)                 return tree_sitter_swift();
+		return tree_sitter_rust();
+	if (strcmp(name, "swift") == 0)
+		return tree_sitter_swift();
 	if (strcmp(name, "typescript") == 0 || strcmp(name, "ts") == 0)
-	                                                return tree_sitter_typescript();
-	if (strcmp(name, "tsx") == 0)                   return tree_sitter_tsx();
+		return tree_sitter_typescript();
+	if (strcmp(name, "tsx") == 0)
+		return tree_sitter_tsx();
 	return nullptr;
 }
 
@@ -42,17 +48,17 @@ Parser::~Parser()
 
 bool Parser::registerLanguage(const char *name)
 {
- if (hasLanguage(name))
-  return true; // already registered
+	if (hasLanguage(name))
+		return true; // already registered
 
- const TSLanguage *lang = resolveGrammar(name);
- if (!lang) {
-  error_ = std::string("Unsupported language: ") + name;
-  return false;
- }
+	const TSLanguage *lang = resolveGrammar(name);
+	if (!lang) {
+		error_ = std::string("Unsupported language: ") + name;
+		return false;
+	}
 
- grammars_[name] = lang;
- return true;
+	grammars_[name] = lang;
+	return true;
 }
 
 bool Parser::hasLanguage(const char *name) const
@@ -62,11 +68,11 @@ bool Parser::hasLanguage(const char *name) const
 
 const TSLanguage *Parser::getLanguage(const char *name)
 {
- auto it = grammars_.find(name);
- if (it != grammars_.end()) {
-  return it->second;
- }
- return nullptr;
+	auto it = grammars_.find(name);
+	if (it != grammars_.end()) {
+		return it->second;
+	}
+	return nullptr;
 }
 
 // ── Parse ─────────────────────────────────────────────────────

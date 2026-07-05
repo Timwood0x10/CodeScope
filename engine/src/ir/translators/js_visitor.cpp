@@ -3,8 +3,69 @@
 #include <cstring>
 #include <tree_sitter/api.h>
 
+#include "ahocorasick.h"
+
 namespace ir
 {
+
+// ── Aho-Corasick dispatch table for visitNode ──────────────────
+
+static const ACAutomaton &getJsAC()
+{
+	static ACAutomaton ac;
+	static bool built = false;
+	if (!built) {
+		// Handlers (produce semantic records)
+		ac.addPattern("function_declaration", 100);
+		ac.addPattern("generator_function_declaration", 100);
+		ac.addPattern("arrow_function", 101);
+		ac.addPattern("class_declaration", 102);
+		ac.addPattern("method_definition", 103);
+		ac.addPattern("call_expression", 104);
+		ac.addPattern("identifier", 105);
+		ac.addPattern("variable_declaration", 106);
+		ac.addPattern("lexical_declaration", 106);
+		ac.addPattern("import_statement", 107);
+		ac.addPattern("import", 107);
+		ac.addPattern("export_statement", 108);
+		ac.addPattern("export", 108);
+		ac.addPattern("member_expression", 109);
+		// Literals
+		ac.addPattern("number", 200);
+		ac.addPattern("string", 200);
+		ac.addPattern("template_string", 200);
+		ac.addPattern("true", 200);
+		ac.addPattern("false", 200);
+		ac.addPattern("null", 200);
+		ac.addPattern("undefined", 200);
+		ac.addPattern("regex", 200);
+		ac.addPattern("comment", 201);
+		// Compound statements (pass-through, recurse children)
+		ac.addPattern("return_statement", 300);
+		ac.addPattern("if_statement", 300);
+		ac.addPattern("for_statement", 300);
+		ac.addPattern("for_in_statement", 300);
+		ac.addPattern("for_of_statement", 300);
+		ac.addPattern("while_statement", 300);
+		ac.addPattern("do_statement", 300);
+		ac.addPattern("switch_statement", 300);
+		ac.addPattern("switch_case", 300);
+		ac.addPattern("try_statement", 300);
+		ac.addPattern("catch_clause", 300);
+		ac.addPattern("throw_statement", 300);
+		ac.addPattern("binary_expression", 300);
+		ac.addPattern("unary_expression", 300);
+		ac.addPattern("assignment_expression", 300);
+		ac.addPattern("ternary_expression", 300);
+		ac.addPattern("subscript_expression", 300);
+		ac.addPattern("new_expression", 300);
+		ac.addPattern("await_expression", 300);
+		ac.addPattern("yield_expression", 300);
+		ac.build();
+		built = true;
+	}
+	return ac;
+}
 
 JsVisitor::JsVisitor()
 {
@@ -104,82 +165,50 @@ void JsVisitor::visitChildren(TSNode node, uint64_t parent_id)
 void JsVisitor::visitNode(TSNode node, uint64_t parent_id)
 {
 	const char *type = ts_node_type(node);
+	int id = getJsAC().match(type);
 
+	switch (id) {
 	// ── Handlers ───────────────────────────────────────────
-	if (strcmp(type, "function_declaration") == 0)
+	case 100:
 		return visitFunctionDecl(node, parent_id);
-	if (strcmp(type, "generator_function_declaration") == 0)
-		return visitFunctionDecl(node, parent_id);
-	if (strcmp(type, "arrow_function") == 0)
+	case 101:
 		return visitArrowFunction(node, parent_id);
-	if (strcmp(type, "class_declaration") == 0)
+	case 102:
 		return visitClassDecl(node, parent_id);
-	if (strcmp(type, "method_definition") == 0)
+	case 103:
 		return visitMethodDef(node, parent_id);
-	if (strcmp(type, "call_expression") == 0)
+	case 104:
 		return visitCallExpr(node, parent_id);
-	if (strcmp(type, "identifier") == 0)
+	case 105:
 		return visitIdentifier(node, parent_id);
-	if (strcmp(type, "variable_declaration") == 0)
+	case 106:
 		return visitVariableDecl(node, parent_id);
-	if (strcmp(type, "lexical_declaration") == 0)
-		return visitVariableDecl(node, parent_id);
-	if (strcmp(type, "import_statement") == 0 ||
-	    strcmp(type, "import") == 0)
+	case 107:
 		return visitImportStmt(node, parent_id);
-	if (strcmp(type, "export_statement") == 0 ||
-	    strcmp(type, "export") == 0)
+	case 108:
 		return visitExportStmt(node, parent_id);
-	if (strcmp(type, "member_expression") == 0)
+	case 109:
 		return visitMemberExpr(node, parent_id);
 
-	// ── Literals (emit record, no children to recurse into) ─
-	if (strcmp(type, "number") == 0 || strcmp(type, "string") == 0 ||
-	    strcmp(type, "template_string") == 0 || strcmp(type, "true") == 0 ||
-	    strcmp(type, "false") == 0 || strcmp(type, "null") == 0 ||
-	    strcmp(type, "undefined") == 0 || strcmp(type, "regex") == 0) {
+	// ── Literals ──────────────────────────────────────────
+	case 200:
 		emitter_->emitLiteral(nodeText(node), location(node),
 				      parent_id);
 		return;
-	}
-	if (strcmp(type, "comment") == 0) {
+	case 201:
 		emitter_->emitComment(nodeText(node), location(node),
 				      parent_id);
 		return;
-	}
 
-	// ── Compound statements (emit container, recurse into
-	// children) ─────────────────────────────────────────────
-	if (strcmp(type, "return_statement") == 0 ||
-	    strcmp(type, "if_statement") == 0 ||
-	    strcmp(type, "for_statement") == 0 ||
-	    strcmp(type, "for_in_statement") == 0 ||
-	    strcmp(type, "for_of_statement") == 0 ||
-	    strcmp(type, "while_statement") == 0 ||
-	    strcmp(type, "do_statement") == 0 ||
-	    strcmp(type, "switch_statement") == 0 ||
-	    strcmp(type, "switch_case") == 0 ||
-	    strcmp(type, "try_statement") == 0 ||
-	    strcmp(type, "catch_clause") == 0 ||
-	    strcmp(type, "throw_statement") == 0 ||
-	    strcmp(type, "binary_expression") == 0 ||
-	    strcmp(type, "unary_expression") == 0 ||
-	    strcmp(type, "assignment_expression") == 0 ||
-	    strcmp(type, "ternary_expression") == 0 ||
-	    strcmp(type, "subscript_expression") == 0 ||
-	    strcmp(type, "new_expression") == 0 ||
-	    strcmp(type, "await_expression") == 0 ||
-	    strcmp(type, "yield_expression") == 0) {
-		// These are structural — we recurse into children
-		// without emitting a record. The children (identifiers,
-		// call expressions, etc.) will be emitted directly.
+	// ── Compound / pass-through ──────────────────────────
+	case 300:
+		visitChildren(node, parent_id);
+		return;
+
+	default:
 		visitChildren(node, parent_id);
 		return;
 	}
-
-	// ── Pass-through nodes: no record emitted, just recurse ─
-	// These are structural wrappers that add no semantic value.
-	visitChildren(node, parent_id);
 }
 
 // ── Handler implementations ───────────────────────────────────

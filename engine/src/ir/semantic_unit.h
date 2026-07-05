@@ -87,6 +87,16 @@ class SemanticUnit {
 	uint64_t addRecord(RecordKind kind, const std::string &name,
 			   uint64_t parent_id, SourceRange loc);
 
+	/**
+	 * Add a record with explicit original_id and qualified_name (for DB rebuild).
+	 * The original_id allows parent_id links to be preserved across rebuilds.
+	 * Returns the internally-assigned ID (may differ from original_id).
+	 */
+	uint64_t addRecord(RecordKind kind, const std::string &name,
+			   const std::string &qualified_name,
+			   uint64_t original_id, uint64_t parent_id,
+			   SourceRange loc);
+
 	/** Accessors. */
 	const Record &getRecord(uint64_t id) const;
 	const std::vector<Record> &allRecords() const
@@ -135,7 +145,8 @@ class SemanticUnit {
 
     private:
 	std::vector<Record> records_;
-	std::unordered_map<uint64_t, size_t> id_to_index_; // record.id → index in records_
+	std::unordered_map<uint64_t, size_t>
+		id_to_index_; // record.id → index in records_
 	std::string file_path_;
 	std::string language_;
 	uint64_t next_id_ = 1;

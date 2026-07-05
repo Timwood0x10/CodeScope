@@ -41,15 +41,15 @@ struct GraphNode {
 	NodeType type;
 	std::string name;
 	std::string qualified_name;
-	std::string module_path;   // "src/network/http/" — derived from file_path
-	std::string package_name;  // "com.example.server"
-	std::string class_name;    // "Server" — empty = top-level function
+	std::string module_path; // "src/network/http/" — derived from file_path
+	std::string package_name; // "com.example.server"
+	std::string class_name; // "Server" — empty = top-level function
 	std::string file_path;
 	uint32_t start_row = 0, start_col = 0;
 	uint32_t end_row = 0, end_col = 0;
 	std::string language;
-	std::string signature;     // "listen(port: number, host: string): void"
-	int complexity = 0;        // cyclomatic
+	std::string signature; // "listen(port: number, host: string): void"
+	int complexity = 0; // cyclomatic
 	bool is_entry_point = false;
 };
 
@@ -62,8 +62,8 @@ struct GraphEdge {
 	EdgeType type;
 	std::string graph_type; // "call_graph" | "symbol_reference"
 	std::string call_site_file; // file where the call happens
-	int call_site_line = 0;     // line number of the call
-	std::string label;          // "async" / "virtual" / "override"
+	int call_site_line = 0; // line number of the call
+	std::string label; // "async" / "virtual" / "override"
 };
 
 // ─── Code Graph ────────────────────────────────────────────────

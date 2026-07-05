@@ -9,6 +9,11 @@
 
 struct sqlite3;
 
+namespace ir
+{
+struct Record;
+} // namespace ir
+
 namespace store
 {
 
@@ -68,6 +73,38 @@ class GraphStore {
 			      const std::vector<graph::GraphEdge> &edges);
 
 	bool deleteGraphEdgesByFile(uint64_t project_id, const char *file_path);
+
+	// ── Semantic Records (DB-first pipeline) ───────────────────
+
+	/**
+	 * Batch insert semantic records into a persistent table.
+	 * Records are stored flat (no graph) — graph is built on-demand
+	 * via buildGraph(). This keeps parse-time memory O(1) per file.
+	 *
+	 * @param project_id  Project identifier.
+	 * @param file_path   Source file path for all records.
+	 * @param records     Flat vector of semantic records (parent_id links).
+	 */
+	void insertSemanticRecords(uint64_t project_id,
+				   const std::string &file_path,
+				   const std::vector<ir::Record> &records);
+
+	/**
+	 * Build the knowledge graph from previously stored semantic records.
+	 * Reads records from semantic_records table, runs GraphBuilder,
+	 * writes graph_nodes and graph_edges. Idempotent — deletes and
+	 * rebuilds if called again.
+	 *
+	 * @param project_id  Project to build graph for.
+	 * @param build_calls If true (default), also builds call graph edges
+	 *                    via cross-file name matching. If false, builds
+	 *                    only symbol/containment graph (~2x faster).
+	 * @param changed_files If non-null, only rebuild graph for these files
+	 *                      (incremental mode). When null, rebuilds all.
+	 * @return true on success.
+	 */
+	bool buildGraph(uint64_t project_id, bool build_calls = true,
+		       const std::unordered_set<std::string> *changed_files = nullptr);
 
 	// ── Transactions ───────────────────────────────────────────
 

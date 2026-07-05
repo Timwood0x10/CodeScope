@@ -9,6 +9,8 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "../graph/graph_builder.h"
+#include "../ir/semantic_unit.h"
 #include "../query/vector_search.h"
 
 namespace store
@@ -134,6 +136,26 @@ bool GraphStore::createSchema()
         CREATE INDEX IF NOT EXISTS idx_graph_edges_src ON graph_edges(source_node_id);
         CREATE INDEX IF NOT EXISTS idx_graph_edges_tgt ON graph_edges(target_node_id);
         CREATE INDEX IF NOT EXISTS idx_graph_edges_project ON graph_edges(project_id);
+
+        -- Semantic records table (flat, O(1) parse-time memory)
+        -- Uses AUTOINCREMENT rowid to avoid per-file ID conflicts (each file's
+        -- record IDs start at 1). original_id stores the per-file record ID.
+        CREATE TABLE IF NOT EXISTS semantic_records (
+            rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+            original_id INTEGER NOT NULL,
+            project_id INTEGER NOT NULL,
+            kind INTEGER NOT NULL,
+            name TEXT,
+            qualified_name TEXT DEFAULT '',
+            parent_id INTEGER DEFAULT 0,
+            start_row INTEGER DEFAULT 0, start_col INTEGER DEFAULT 0,
+            end_row INTEGER DEFAULT 0, end_col INTEGER DEFAULT 0,
+            file_path TEXT NOT NULL,
+            language TEXT DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_sr_project ON semantic_records(project_id);
+        CREATE INDEX IF NOT EXISTS idx_sr_parent ON semantic_records(project_id, parent_id);
+        CREATE INDEX IF NOT EXISTS idx_sr_name ON semantic_records(project_id, name);
 
         -- FTS5 full-text search index
         CREATE VIRTUAL TABLE IF NOT EXISTS code_fts USING fts5(
@@ -490,86 +512,103 @@ bool GraphStore::deleteIRByFile(uint64_t project_id, uint64_t file_id)
 // ─── Graph Nodes ───────────────────────────────────────────────
 
 uint64_t GraphStore::insertGraphNode(uint64_t project_id,
-         const graph::GraphNode &node)
+				     const graph::GraphNode &node)
 {
- sqlite3_stmt *stmt = nullptr;
- const char *sql =
-  "INSERT INTO graph_nodes (id, project_id, ir_node_id, node_type, "
-  "name, qualified_name, module_path, package_name, class_name, "
-  "start_row, start_col, end_row, end_col, "
-  "file_path, language, signature, complexity, is_entry_point) "
-  "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, "
-  "?, ?, ?, ?, ?, ?, ?, ?, ?)";
- sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
- sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(node.id));
- sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
- sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(node.ir_node_id));
- sqlite3_bind_int(stmt, 4, static_cast<int>(node.type));
- sqlite3_bind_text(stmt, 5, node.name.c_str(), -1, SQLITE_TRANSIENT);
- sqlite3_bind_text(stmt, 6, node.qualified_name.c_str(), -1, SQLITE_TRANSIENT);
- sqlite3_bind_text(stmt, 7, node.module_path.c_str(), -1, SQLITE_TRANSIENT);
- sqlite3_bind_text(stmt, 8, node.package_name.c_str(), -1, SQLITE_TRANSIENT);
- sqlite3_bind_text(stmt, 9, node.class_name.c_str(), -1, SQLITE_TRANSIENT);
- sqlite3_bind_int(stmt, 10, static_cast<int>(node.start_row));
- sqlite3_bind_int(stmt, 11, static_cast<int>(node.start_col));
- sqlite3_bind_int(stmt, 12, static_cast<int>(node.end_row));
- sqlite3_bind_int(stmt, 13, static_cast<int>(node.end_col));
- sqlite3_bind_text(stmt, 14, node.file_path.c_str(), -1, SQLITE_TRANSIENT);
- sqlite3_bind_text(stmt, 15, node.language.c_str(), -1, SQLITE_TRANSIENT);
- sqlite3_bind_text(stmt, 16, node.signature.c_str(), -1, SQLITE_TRANSIENT);
- sqlite3_bind_int(stmt, 17, node.complexity);
- sqlite3_bind_int(stmt, 18, node.is_entry_point ? 1 : 0);
+	sqlite3_stmt *stmt = nullptr;
+	const char *sql =
+		"INSERT INTO graph_nodes (id, project_id, ir_node_id, node_type, "
+		"name, qualified_name, module_path, package_name, class_name, "
+		"start_row, start_col, end_row, end_col, "
+		"file_path, language, signature, complexity, is_entry_point) "
+		"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, "
+		"?, ?, ?, ?, ?, ?, ?, ?, ?)";
+	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(node.id));
+	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
+	sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(node.ir_node_id));
+	sqlite3_bind_int(stmt, 4, static_cast<int>(node.type));
+	sqlite3_bind_text(stmt, 5, node.name.c_str(), -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 6, node.qualified_name.c_str(), -1,
+			  SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 7, node.module_path.c_str(), -1,
+			  SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 8, node.package_name.c_str(), -1,
+			  SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 9, node.class_name.c_str(), -1,
+			  SQLITE_TRANSIENT);
+	sqlite3_bind_int(stmt, 10, static_cast<int>(node.start_row));
+	sqlite3_bind_int(stmt, 11, static_cast<int>(node.start_col));
+	sqlite3_bind_int(stmt, 12, static_cast<int>(node.end_row));
+	sqlite3_bind_int(stmt, 13, static_cast<int>(node.end_col));
+	sqlite3_bind_text(stmt, 14, node.file_path.c_str(), -1,
+			  SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 15, node.language.c_str(), -1,
+			  SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 16, node.signature.c_str(), -1,
+			  SQLITE_TRANSIENT);
+	sqlite3_bind_int(stmt, 17, node.complexity);
+	sqlite3_bind_int(stmt, 18, node.is_entry_point ? 1 : 0);
 
- sqlite3_step(stmt);
- sqlite3_finalize(stmt);
- return node.id;
+	sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
+	return node.id;
 }
 
 void GraphStore::insertGraphNodes(uint64_t project_id,
-      const std::vector<graph::GraphNode> &nodes)
+				  const std::vector<graph::GraphNode> &nodes)
 {
- if (nodes.empty())
-  return;
+	if (nodes.empty())
+		return;
 
- const char *sql =
-  "INSERT INTO graph_nodes (id, project_id, ir_node_id, node_type, "
-  "name, qualified_name, module_path, package_name, class_name, "
-  "start_row, start_col, end_row, end_col, "
-  "file_path, language, signature, complexity, is_entry_point) "
-  "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, "
-  "?, ?, ?, ?, ?, ?, ?, ?, ?)";
+	const char *sql =
+		"INSERT INTO graph_nodes (id, project_id, ir_node_id, node_type, "
+		"name, qualified_name, module_path, package_name, class_name, "
+		"start_row, start_col, end_row, end_col, "
+		"file_path, language, signature, complexity, is_entry_point) "
+		"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, "
+		"?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
- sqlite3_stmt *stmt = nullptr;
- if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-  error_ = "insertGraphNodes: prepare failed";
-  return;
- }
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		error_ = "insertGraphNodes: prepare failed";
+		return;
+	}
 
- for (auto &node : nodes) {
-  sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(node.id));
-  sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
-  sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(node.ir_node_id));
-  sqlite3_bind_int(stmt, 4, static_cast<int>(node.type));
-  sqlite3_bind_text(stmt, 5, node.name.c_str(), -1, SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt, 6, node.qualified_name.c_str(), -1, SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt, 7, node.module_path.c_str(), -1, SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt, 8, node.package_name.c_str(), -1, SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt, 9, node.class_name.c_str(), -1, SQLITE_TRANSIENT);
-  sqlite3_bind_int(stmt, 10, static_cast<int>(node.start_row));
-  sqlite3_bind_int(stmt, 11, static_cast<int>(node.start_col));
-  sqlite3_bind_int(stmt, 12, static_cast<int>(node.end_row));
-  sqlite3_bind_int(stmt, 13, static_cast<int>(node.end_col));
-  sqlite3_bind_text(stmt, 14, node.file_path.c_str(), -1, SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt, 15, node.language.c_str(), -1, SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt, 16, node.signature.c_str(), -1, SQLITE_TRANSIENT);
-  sqlite3_bind_int(stmt, 17, node.complexity);
-  sqlite3_bind_int(stmt, 18, node.is_entry_point ? 1 : 0);
+	for (auto &node : nodes) {
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(node.id));
+		sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
+		sqlite3_bind_int64(stmt, 3,
+				   static_cast<int64_t>(node.ir_node_id));
+		sqlite3_bind_int(stmt, 4, static_cast<int>(node.type));
+		sqlite3_bind_text(stmt, 5, node.name.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 6, node.qualified_name.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 7, node.module_path.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 8, node.package_name.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 9, node.class_name.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_int(stmt, 10, static_cast<int>(node.start_row));
+		sqlite3_bind_int(stmt, 11, static_cast<int>(node.start_col));
+		sqlite3_bind_int(stmt, 12, static_cast<int>(node.end_row));
+		sqlite3_bind_int(stmt, 13, static_cast<int>(node.end_col));
+		sqlite3_bind_text(stmt, 14, node.file_path.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 15, node.language.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 16, node.signature.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_int(stmt, 17, node.complexity);
+		sqlite3_bind_int(stmt, 18, node.is_entry_point ? 1 : 0);
 
-  int rc = sqlite3_step(stmt);
-  if (rc != SQLITE_DONE)
-   fprintf(stderr, "insertGraphNodes: step error %d\n", rc);
-  sqlite3_reset(stmt);
- }
+		int rc = sqlite3_step(stmt);
+		if (rc != SQLITE_DONE)
+			fprintf(stderr, "insertGraphNodes: step error %d\n",
+				rc);
+		sqlite3_reset(stmt);
+	}
 
 	sqlite3_finalize(stmt);
 }
@@ -589,68 +628,70 @@ bool GraphStore::deleteGraphNodesByFile(uint64_t project_id,
 // ─── Graph Edges ───────────────────────────────────────────────
 
 uint64_t GraphStore::insertGraphEdge(uint64_t project_id,
-         const graph::GraphEdge &edge)
+				     const graph::GraphEdge &edge)
 {
- sqlite3_stmt *stmt = nullptr;
- const char *sql =
-  "INSERT INTO graph_edges (project_id, source_node_id, "
-  "target_node_id, edge_type, graph_type, "
-  "call_site_file, call_site_line, label) "
-  "VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
- sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
- sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
- sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(edge.source_id));
- sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(edge.target_id));
- sqlite3_bind_int(stmt, 4, static_cast<int>(edge.type));
- sqlite3_bind_text(stmt, 5, edge.graph_type.c_str(), -1,
-     SQLITE_TRANSIENT);
- sqlite3_bind_text(stmt, 6, edge.call_site_file.c_str(), -1,
-     SQLITE_TRANSIENT);
- sqlite3_bind_int(stmt, 7, edge.call_site_line);
- sqlite3_bind_text(stmt, 8, edge.label.c_str(), -1,
-     SQLITE_TRANSIENT);
+	sqlite3_stmt *stmt = nullptr;
+	const char *sql =
+		"INSERT INTO graph_edges (project_id, source_node_id, "
+		"target_node_id, edge_type, graph_type, "
+		"call_site_file, call_site_line, label) "
+		"VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(edge.source_id));
+	sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(edge.target_id));
+	sqlite3_bind_int(stmt, 4, static_cast<int>(edge.type));
+	sqlite3_bind_text(stmt, 5, edge.graph_type.c_str(), -1,
+			  SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 6, edge.call_site_file.c_str(), -1,
+			  SQLITE_TRANSIENT);
+	sqlite3_bind_int(stmt, 7, edge.call_site_line);
+	sqlite3_bind_text(stmt, 8, edge.label.c_str(), -1, SQLITE_TRANSIENT);
 
- sqlite3_step(stmt);
- sqlite3_finalize(stmt);
- return static_cast<uint64_t>(sqlite3_last_insert_rowid(db_));
+	sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
+	return static_cast<uint64_t>(sqlite3_last_insert_rowid(db_));
 }
 
 void GraphStore::insertGraphEdges(uint64_t project_id,
-      const std::vector<graph::GraphEdge> &edges)
+				  const std::vector<graph::GraphEdge> &edges)
 {
- if (edges.empty())
-  return;
+	if (edges.empty())
+		return;
 
- const char *sql =
-  "INSERT INTO graph_edges (project_id, source_node_id, "
-  "target_node_id, edge_type, graph_type, "
-  "call_site_file, call_site_line, label) "
-  "VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+	const char *sql =
+		"INSERT INTO graph_edges (project_id, source_node_id, "
+		"target_node_id, edge_type, graph_type, "
+		"call_site_file, call_site_line, label) "
+		"VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
 
- sqlite3_stmt *stmt = nullptr;
- if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-  error_ = "insertGraphEdges: prepare failed";
-  return;
- }
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		error_ = "insertGraphEdges: prepare failed";
+		return;
+	}
 
- for (auto &edge : edges) {
-  sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-  sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(edge.source_id));
-  sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(edge.target_id));
-  sqlite3_bind_int(stmt, 4, static_cast<int>(edge.type));
-  sqlite3_bind_text(stmt, 5, edge.graph_type.c_str(), -1,
-      SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt, 6, edge.call_site_file.c_str(), -1,
-      SQLITE_TRANSIENT);
-  sqlite3_bind_int(stmt, 7, edge.call_site_line);
-  sqlite3_bind_text(stmt, 8, edge.label.c_str(), -1,
-      SQLITE_TRANSIENT);
+	for (auto &edge : edges) {
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		sqlite3_bind_int64(stmt, 2,
+				   static_cast<int64_t>(edge.source_id));
+		sqlite3_bind_int64(stmt, 3,
+				   static_cast<int64_t>(edge.target_id));
+		sqlite3_bind_int(stmt, 4, static_cast<int>(edge.type));
+		sqlite3_bind_text(stmt, 5, edge.graph_type.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 6, edge.call_site_file.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_int(stmt, 7, edge.call_site_line);
+		sqlite3_bind_text(stmt, 8, edge.label.c_str(), -1,
+				  SQLITE_TRANSIENT);
 
-  int rc = sqlite3_step(stmt);
-  if (rc != SQLITE_DONE)
-   fprintf(stderr, "insertGraphEdges: step error %d\n", rc);
-  sqlite3_reset(stmt);
- }
+		int rc = sqlite3_step(stmt);
+		if (rc != SQLITE_DONE)
+			fprintf(stderr, "insertGraphEdges: step error %d\n",
+				rc);
+		sqlite3_reset(stmt);
+	}
 
 	sqlite3_finalize(stmt);
 }
@@ -2153,6 +2194,163 @@ void GraphStore::cleanupStaleFiles(uint64_t project_id,
 		sqlite3_step(stmt);
 		sqlite3_finalize(stmt);
 	}
+}
+
+// ─── Semantic Records (DB-first pipeline) ───────────────────
+
+void GraphStore::insertSemanticRecords(uint64_t project_id,
+				       const std::string &file_path,
+				       const std::vector<ir::Record> &records)
+{
+	if (records.empty())
+		return;
+
+	const char *sql =
+		"INSERT INTO semantic_records "
+		"(original_id, project_id, kind, name, qualified_name, parent_id, "
+		"start_row, start_col, end_row, end_col, file_path, language) "
+		"VALUES (?,?,?,?,?,?,?,?,?,?,?,?)";
+
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		error_ = "insertSemanticRecords: prepare failed";
+		return;
+	}
+
+	for (auto &r : records) {
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(r.id));
+		sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
+		sqlite3_bind_int(stmt, 3, static_cast<int>(r.kind));
+		sqlite3_bind_text(stmt, 4, r.name.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 5, r.qualified_name.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_int64(stmt, 6, static_cast<int64_t>(r.parent_id));
+		sqlite3_bind_int(stmt, 7, static_cast<int>(r.loc.start_row));
+		sqlite3_bind_int(stmt, 8, static_cast<int>(r.loc.start_col));
+		sqlite3_bind_int(stmt, 9, static_cast<int>(r.loc.end_row));
+		sqlite3_bind_int(stmt, 10, static_cast<int>(r.loc.end_col));
+		sqlite3_bind_text(stmt, 11, r.file_path.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 12, r.language.c_str(), -1,
+				  SQLITE_TRANSIENT);
+
+		int rc = sqlite3_step(stmt);
+		if (rc != SQLITE_DONE)
+			fprintf(stderr,
+				"insertSemanticRecords: step error %d: %s\n",
+				rc, sqlite3_errmsg(db_));
+		sqlite3_reset(stmt);
+	}
+	sqlite3_finalize(stmt);
+}
+
+bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
+        const std::unordered_set<std::string> *changed_files)
+{
+ // Step 1: determine which files to rebuild
+ // Incremental mode: only rebuild changed files
+ // Full mode: rebuild all files with semantic_records
+ std::string file_list_sql =
+  "SELECT DISTINCT file_path FROM semantic_records WHERE project_id=" +
+  std::to_string(project_id);
+ sqlite3_stmt *fl_stmt = nullptr;
+ sqlite3_prepare_v2(db_, file_list_sql.c_str(), -1, &fl_stmt, nullptr);
+
+ std::vector<std::string> rebuild_files;
+ while (sqlite3_step(fl_stmt) == SQLITE_ROW) {
+  const char *fp = reinterpret_cast<const char *>(
+   sqlite3_column_text(fl_stmt, 0));
+  if (!fp) continue;
+  std::string file_path(fp);
+  // Incremental: skip if not in changed_files list
+  if (changed_files && changed_files->find(file_path) == changed_files->end())
+   continue;
+  rebuild_files.push_back(std::move(file_path));
+ }
+ sqlite3_finalize(fl_stmt);
+
+ if (rebuild_files.empty())
+  return true;
+
+ // Delete existing graph data for files being rebuilt
+ for (auto &fp : rebuild_files) {
+  deleteGraphEdgesByFile(project_id, fp.c_str());
+  deleteGraphNodesByFile(project_id, fp.c_str());
+ }
+
+	// Build file filter + pid shorthand
+	std::string pid = std::to_string(project_id);
+	std::string file_where;
+	for (size_t i = 0; i < rebuild_files.size(); i++) {
+	 if (i > 0) file_where += ",";
+	 std::string e = rebuild_files[i];
+	 size_t p = 0;
+	 while ((p = e.find("'", p)) != std::string::npos) { e.replace(p, 1, "''"); p += 2; }
+	 file_where += "'" + e + "'";
+	}
+	std::string ff = "sr.file_path IN (" + file_where + ")";
+
+	// Step 2: build graph entirely inside SQLite — zero C++ heap memory
+	// Mapping: (original_id, file_path) → graph_node_id
+	exec("DROP TABLE IF EXISTS _r2n");
+	exec(std::string(
+	 "CREATE TEMP TABLE _r2n AS "
+	 "SELECT sr.rowid as rid, sr.original_id, sr.file_path, "
+	 " CAST(ROW_NUMBER() OVER (ORDER BY sr.file_path, sr.original_id) "
+	 "  + COALESCE((SELECT MAX(id) FROM graph_nodes WHERE project_id=" + pid + "), 0)"
+	 "  AS INTEGER) as node_id "
+	 "FROM semantic_records sr "
+	 "WHERE sr.project_id=" + pid + " AND sr.kind IN (0,1,2,3,4,5,6,9,10)"
+	 " AND " + ff).c_str());
+
+	// Graph nodes from declarations
+	exec(std::string(
+	 "INSERT INTO graph_nodes (id, project_id, ir_node_id, node_type, "
+	 " name, qualified_name, module_path, file_path, "
+	 " start_row, start_col, end_row, end_col, language) "
+	 "SELECT r2n.node_id, sr.project_id, sr.original_id, "
+	 " CASE sr.kind WHEN 0 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 "
+	 "  WHEN 3 THEN 4 WHEN 4 THEN 7 WHEN 5 THEN 7 "
+	 "  WHEN 6 THEN 6 WHEN 9 THEN 7 WHEN 10 THEN 7 ELSE 7 END, "
+	 " sr.name, sr.qualified_name, sr.file_path, sr.file_path, "
+	 " sr.start_row, sr.start_col, sr.end_row, sr.end_col, sr.language "
+	 "FROM semantic_records sr JOIN _r2n r2n ON sr.rowid = r2n.rid"
+	).c_str());
+
+	// Containment edges (parent → child by parent_id chain)
+	exec(std::string(
+	 "INSERT INTO graph_edges "
+	 "(project_id, source_node_id, target_node_id, edge_type, graph_type) "
+	 "SELECT DISTINCT " + pid + ", parent.node_id, child.node_id, 3, 'symbol_reference' "
+	 "FROM semantic_records sr "
+	 "JOIN _r2n child ON sr.original_id = child.original_id AND sr.file_path = child.file_path "
+	 "JOIN _r2n parent ON sr.parent_id = parent.original_id AND sr.file_path = parent.file_path "
+	 "WHERE sr.project_id=" + pid + " AND " + ff + " AND parent.node_id != child.node_id"
+	).c_str());
+
+	// Call edges (name matching)
+	if (build_calls) {
+	 exec(std::string(
+	  "INSERT INTO graph_edges "
+	  "(project_id, source_node_id, target_node_id, edge_type, graph_type, "
+	  " call_site_file, call_site_line) "
+	  "SELECT DISTINCT " + pid + ", "
+	  "  caller.node_id, callee.node_id, 1, 'call_graph', "
+	  "  sr.file_path, sr.start_row "
+	  "FROM semantic_records sr "
+	  "JOIN _r2n callee ON sr.name = callee.name "
+	  "JOIN _r2n caller ON sr.parent_id = caller.original_id AND sr.file_path = caller.file_path "
+	  "WHERE sr.project_id=" + pid + " AND sr.kind=7 AND " + ff
+	  + " AND sr.name != '' AND callee.node_id != caller.node_id"
+	 ).c_str());
+	}
+
+	exec("DROP TABLE IF EXISTS _r2n");
+
+	fprintf(stderr, "buildGraph(SQL): %zu files, %s\n",
+	 rebuild_files.size(), build_calls ? "with calls" : "symbols only");
+	return true;
 }
 
 } // namespace store
