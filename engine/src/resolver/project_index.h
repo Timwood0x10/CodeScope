@@ -1,6 +1,7 @@
 #ifndef PROJECT_INDEX_H
 #define PROJECT_INDEX_H
 
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -32,10 +33,10 @@ struct IndexEntry {
 
 class ProjectSymbolIndex {
     public:
-	// Add a single symbol entry to the index.
+	// Add a single symbol entry to the index (thread-safe).
 	void addEntry(const IndexEntry &entry);
 
-	// Look up all entries with the given name.
+	// Look up all entries with the given name (thread-safe).
 	// Returns empty vector if no entries found.
 	const std::vector<IndexEntry> *lookup(const std::string &name) const;
 
@@ -45,17 +46,20 @@ class ProjectSymbolIndex {
 	// Return total number of indexed symbols.
 	size_t size() const
 	{
+		std::lock_guard<std::mutex> lock(mutex_);
 		return entries_.size();
 	}
 
 	// Check if the index has been populated.
 	bool empty() const
 	{
+		std::lock_guard<std::mutex> lock(mutex_);
 		return name_index_.empty();
 	}
 
     private:
 	// Primary index: name → entries
+	mutable std::mutex mutex_;
 	std::unordered_map<std::string, std::vector<IndexEntry> > name_index_;
 
 	// Flat list of all entries (for iteration / stats)

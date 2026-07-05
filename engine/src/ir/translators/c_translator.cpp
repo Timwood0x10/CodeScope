@@ -64,6 +64,7 @@ class CTranslator : public Translator {
 
 	Node *handleFuncDef(TSNode ts_node, Node *parent);
 	Node *handleDeclaration(TSNode ts_node, Node *parent);
+	Node *handleAttributedDeclarator(TSNode ts_node, Node *parent);
 	Node *handleStruct(TSNode ts_node, Node *parent, bool is_union);
 	Node *handleCallExpr(TSNode ts_node, Node *parent);
 	Node *handleIdentifier(TSNode ts_node, Node *parent);
@@ -163,14 +164,18 @@ Node *CTranslator::translateNode(TSNode ts_node, Node *parent)
 	if (strcmp(type, "ERROR") == 0) {
 		// Tree-sitter ERROR nodes often contain function definitions
 		// that were mangled by GNU C attribute macros (e.g. __sched).
-		// Recurse into children to find any function_declarator.
+		translateChildren(ts_node, parent);
+		return nullptr;
+	}
+	// GNU C __attribute__((...)) wraps function declarations.
+	// Skip through to find the underlying function_declarator.
+	if (strcmp(type, "attributed_declarator") == 0) {
 		translateChildren(ts_node, parent);
 		return nullptr;
 	}
 	if (strcmp(type, "declaration") == 0)
-		return handleDeclaration(ts_node, parent);
-	if (strcmp(type, "struct_specifier") == 0)
-		return handleStruct(ts_node, parent, false);
+		if (strcmp(type, "struct_specifier") == 0)
+			return handleStruct(ts_node, parent, false);
 	if (strcmp(type, "union_specifier") == 0)
 		return handleStruct(ts_node, parent, true);
 	if (strcmp(type, "enum_specifier") == 0) {
@@ -429,16 +434,16 @@ Node *CTranslator::handleDeclaration(TSNode ts_node, Node *parent)
 				has_body = true;
 		}
 		if (has_func_decl && has_body)
-		 return handleFuncDef(ts_node, parent);
+			return handleFuncDef(ts_node, parent);
 		if (has_func_decl && !has_body) {
-		  // Function prototype (no body): create a FunctionDecl node
-		  // so the graph can represent it, but do NOT register it in
-		  // the scope. The Resolver must find the actual definition.
-		  auto *func = makeNode(NodeKind::FunctionDecl, ts_node);
-		  func->name = extractName(ts_node);
-		  parent->children.push_back(func);
-		  return func;
-		 }
+			// Function prototype (no body): create a FunctionDecl node
+			// so the graph can represent it, but do NOT register it in
+			// the scope. The Resolver must find the actual definition.
+			auto *func = makeNode(NodeKind::FunctionDecl, ts_node);
+			func->name = extractName(ts_node);
+			parent->children.push_back(func);
+			return func;
+		}
 	}
 
 	if (parent->kind == NodeKind::TranslationUnit ||
@@ -484,42 +489,43 @@ Node *CTranslator::handleCallExpr(TSNode ts_node, Node *parent)
 			continue;
 
 		const char *t = ts_node_type(child);
-		 if (strcmp(t, "identifier") == 0) {
-		  std::string fname = nodeText(child);
-		  Node *target = resolveSymbol(fname);
+		if (strcmp(t, "identifier") == 0) {
+			std::string fname = nodeText(child);
+			Node *target = resolveSymbol(fname);
 
-		  // Even if resolveSymbol found a local match, consult the
-		  // Resolver for cross-file definitions. In C/C++ with headers,
-		  // resolveSymbol always finds function prototypes (from #include)
-		  // in the local scope, so the Resolver would never fire.
-		  // If the Resolver finds a match in a different file, prefer it
-		  // — it points to the actual definition, not a forward declaration.
-		  resolver::ResolutionResult rr;
-		  if (resolver_ &&
-		      resolver_->resolve(fname, file_path_, nullptr)
-		       .isResolved()) {
-		   rr = resolver_->resolve(fname, file_path_, nullptr);
-		  }
-		  bool use_resolver = rr.isResolved() &&
-		   rr.best()->file_path != file_path_;
+			// Even if resolveSymbol found a local match, consult the
+			// Resolver for cross-file definitions. In C/C++ with headers,
+			// resolveSymbol always finds function prototypes (from #include)
+			// in the local scope, so the Resolver would never fire.
+			// If the Resolver finds a match in a different file, prefer it
+			// — it points to the actual definition, not a forward declaration.
+			resolver::ResolutionResult rr;
+			if (resolver_ &&
+			    resolver_->resolve(fname, file_path_, nullptr)
+				    .isResolved()) {
+				rr = resolver_->resolve(fname, file_path_,
+							nullptr);
+			}
+			bool use_resolver = rr.isResolved() &&
+					    rr.best()->file_path != file_path_;
 
-		  if (use_resolver) {
-		       // Override local symbol with cross-file definition
-		       target = makeNode(
-		        NodeKind::FunctionDecl, child);
-		       target->name = fname;
-		       target->file_path = rr.best()->file_path;
-		      }
-		     if (target) {
-		      call->semantic_edges.push_back(
-		       { target, Relation::CallTarget });
-		     }
+			if (use_resolver) {
+				// Override local symbol with cross-file definition
+				target =
+					makeNode(NodeKind::FunctionDecl, child);
+				target->name = fname;
+				target->file_path = rr.best()->file_path;
+			}
+			if (target) {
+				call->semantic_edges.push_back(
+					{ target, Relation::CallTarget });
+			}
 			auto *id_expr =
-			 makeNode(NodeKind::IdentifierExpr, child);
+				makeNode(NodeKind::IdentifierExpr, child);
 			id_expr->name = fname;
 			if (target)
-			 id_expr->semantic_edges.push_back(
-			  { target, Relation::SymbolRef });
+				id_expr->semantic_edges.push_back(
+					{ target, Relation::SymbolRef });
 			call->children.push_back(id_expr);
 			// Attach cross-file resolution stub as a child of the
 			// CallExpr so that the GraphBuilder visits it naturally.
@@ -528,7 +534,7 @@ Node *CTranslator::handleCallExpr(TSNode ts_node, Node *parent)
 			if (target && target->kind == NodeKind::FunctionDecl &&
 			    target != id_expr &&
 			    target->file_path != file_path_) {
-			 call->children.push_back(target);
+				call->children.push_back(target);
 			}
 		} else if (strcmp(t, "field_expression") == 0) {
 			auto *member = makeNode(NodeKind::MemberExpr, child);
@@ -549,8 +555,8 @@ Node *CTranslator::handleIdentifier(TSNode ts_node, Node *parent)
 
 	Node *target = resolveSymbol(id_expr->name);
 	if (target) {
-	 id_expr->semantic_edges.push_back(
-	  { target, Relation::SymbolRef });
+		id_expr->semantic_edges.push_back(
+			{ target, Relation::SymbolRef });
 	}
 	return id_expr;
 }
@@ -591,6 +597,43 @@ Node *CTranslator::handleParamDecl(TSNode ts_node, Node *parent)
 		defineSymbol(param->name, param);
 	parent->children.push_back(param);
 	return param;
+}
+
+Node *CTranslator::handleAttributedDeclarator(TSNode ts_node, Node *parent)
+{
+	// Attributed declarators wrap a function_declarator with GNU C
+	// __attribute__((...)). Walk children to find the actual declarator
+	// and, if present with a compound_statement sibling, treat as a
+	// function definition.
+	uint32_t count = ts_node_child_count(ts_node);
+	for (uint32_t i = 0; i < count; i++) {
+		TSNode child = ts_node_child(ts_node, i);
+		if (!ts_node_is_named(child))
+			continue;
+		if (strcmp(ts_node_type(child), "function_declarator") == 0) {
+			// Check parent (the enclosing declaration) for a body
+			TSNode p = ts_node_parent(ts_node);
+			if (!ts_node_is_null(p)) {
+				uint32_t pc = ts_node_child_count(p);
+				for (uint32_t j = 0; j < pc; j++) {
+					TSNode sib = ts_node_child(p, j);
+					if (!ts_node_is_named(sib))
+						continue;
+					if (strcmp(ts_node_type(sib),
+						   "compound_statement") == 0)
+						return handleFuncDef(p, parent);
+				}
+			}
+			// No body found — treat as a declaration
+			auto *func = makeNode(NodeKind::FunctionDecl, child);
+			func->name = nodeText(child);
+			parent->children.push_back(func);
+			return func;
+		}
+	}
+	// Fallback: recurse into children
+	translateChildren(ts_node, parent);
+	return nullptr;
 }
 
 Node *CTranslator::handlePreprocDef(TSNode ts_node, Node *parent)
