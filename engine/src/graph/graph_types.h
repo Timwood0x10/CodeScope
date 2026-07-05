@@ -37,14 +37,20 @@ enum class EdgeType : uint8_t {
 
 struct GraphNode {
 	uint64_t id = 0;
-	uint64_t ir_node_id = 0; // back-reference to IR node
+	uint64_t ir_node_id = 0; // back-reference to IR record
 	NodeType type;
 	std::string name;
 	std::string qualified_name;
+	std::string module_path;   // "src/network/http/" — derived from file_path
+	std::string package_name;  // "com.example.server"
+	std::string class_name;    // "Server" — empty = top-level function
 	std::string file_path;
 	uint32_t start_row = 0, start_col = 0;
 	uint32_t end_row = 0, end_col = 0;
 	std::string language;
+	std::string signature;     // "listen(port: number, host: string): void"
+	int complexity = 0;        // cyclomatic
+	bool is_entry_point = false;
 };
 
 // ─── Graph Edge ────────────────────────────────────────────────
@@ -54,7 +60,10 @@ struct GraphEdge {
 	uint64_t source_id = 0; // GraphNode.id
 	uint64_t target_id = 0; // GraphNode.id
 	EdgeType type;
-	std::string graph_type; // "symbol_reference" | "call_graph"
+	std::string graph_type; // "call_graph" | "symbol_reference"
+	std::string call_site_file; // file where the call happens
+	int call_site_line = 0;     // line number of the call
+	std::string label;          // "async" / "virtual" / "override"
 };
 
 // ─── Code Graph ────────────────────────────────────────────────

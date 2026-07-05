@@ -547,13 +547,10 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 				if (pit == tl_parsers.end() || !pit->second) {
 				 TSParser *np = ts_parser_new();
 				 ts_parser_set_language(np, ts_lang);
-				 ts_parser_set_timeout_micros(np,
-				          500000); // 0.5s timeout
 				 tl_parsers[job.lang] = np;
 				 pit = tl_parsers.find(job.lang);
 				}
 				TSParser *parser = pit->second;
-				ts_parser_set_timeout_micros(parser, 500000);
 				TSTree *tree = ts_parser_parse_string(
 				 parser, nullptr, source.c_str(),
 				 static_cast<uint32_t>(source.size()));

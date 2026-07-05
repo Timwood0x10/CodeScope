@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.30)
-project(astgraph_engine VERSION 0.1.0 LANGUAGES CXX)
+project(astgraph_engine VERSION 0.1.0 LANGUAGES C CXX)
 
 # ── Build Optimization ───────────────────────────────────────────
 # Use Ninja if available (much faster than Make)
@@ -58,7 +58,30 @@ set(CMAKE_DL_LIBS dl)
 
 # ── Engine Library ──────────────────────────────────────────────
 
+# Statically-linked tree-sitter grammar sources
+set(TREE_SITTER_NPM "/opt/homebrew/lib/node_modules")
+set(GRAMMAR_SOURCES
+    ${TREE_SITTER_NPM}/tree-sitter-c/src/parser.c
+    ${TREE_SITTER_NPM}/tree-sitter-cpp/src/parser.c
+    ${TREE_SITTER_NPM}/tree-sitter-cpp/src/scanner.c
+    ${TREE_SITTER_NPM}/tree-sitter-go/src/parser.c
+    ${TREE_SITTER_NPM}/tree-sitter-java/src/parser.c
+    ${TREE_SITTER_NPM}/tree-sitter-javascript/src/parser.c
+    ${TREE_SITTER_NPM}/tree-sitter-javascript/src/scanner.c
+    ${TREE_SITTER_NPM}/tree-sitter-python/src/parser.c
+    ${TREE_SITTER_NPM}/tree-sitter-python/src/scanner.c
+    ${TREE_SITTER_NPM}/tree-sitter-rust/src/parser.c
+    ${TREE_SITTER_NPM}/tree-sitter-rust/src/scanner.c
+    ${TREE_SITTER_NPM}/tree-sitter-swift/src/parser.c
+    ${TREE_SITTER_NPM}/tree-sitter-swift/src/scanner.c
+    ${TREE_SITTER_NPM}/tree-sitter-typescript/typescript/src/parser.c
+    ${TREE_SITTER_NPM}/tree-sitter-typescript/typescript/src/scanner.c
+    ${TREE_SITTER_NPM}/tree-sitter-typescript/tsx/src/parser.c
+    ${TREE_SITTER_NPM}/tree-sitter-typescript/tsx/src/scanner.c
+)
+
 set(ENGINE_SOURCES
+    ${GRAMMAR_SOURCES}
     src/engine.cpp
     src/engine_helpers.cpp
     src/engine_lifecycle.cpp
@@ -92,6 +115,7 @@ set(ENGINE_SOURCES
     src/ir/translators/swift_visitor.cpp
     src/ir/translators/java_translator.cpp
     src/ir/translators/swift_translator.cpp
+    src/ir/translators/scanner_visitor.cpp
     src/ir/translators/tsx_translator.cpp
     src/graph/graph_types.cpp
     src/graph/graph_builder.cpp
@@ -118,6 +142,18 @@ target_include_directories(astgraph_engine PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${TREE_SITTER_INCLUDE_DIRS}
     ${SQLITE3_INCLUDE_DIRS}
+    # Grammar source directories (for #include "tree_sitter/parser.h")
+    ${TREE_SITTER_NPM}/tree-sitter-c/src
+    ${TREE_SITTER_NPM}/tree-sitter-cpp/src
+    ${TREE_SITTER_NPM}/tree-sitter-go/src
+    ${TREE_SITTER_NPM}/tree-sitter-java/src
+    ${TREE_SITTER_NPM}/tree-sitter-javascript/src
+    ${TREE_SITTER_NPM}/tree-sitter-python/src
+    ${TREE_SITTER_NPM}/tree-sitter-rust/src
+    ${TREE_SITTER_NPM}/tree-sitter-swift/src
+    ${TREE_SITTER_NPM}/tree-sitter-typescript/typescript/src
+    ${TREE_SITTER_NPM}/tree-sitter-typescript/tsx/src
+    ${TREE_SITTER_NPM}/tree-sitter-typescript/common
 )
 
 target_link_libraries(astgraph_engine PUBLIC

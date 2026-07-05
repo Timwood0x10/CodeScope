@@ -33,23 +33,20 @@ int engine_init(const char *db_path)
 	// Initialize parser and register available grammars
 	g_parser = new Parser();
 
-	// Try to register grammars from the grammars/ directory
-	// The directory is resolved relative to the binary or from GRAMMARS_DIR env
-	const char *grammars_dir = getenv("GRAMMARS_DIR");
-	std::string base = grammars_dir ? grammars_dir : "grammars";
-
-	// Language → grammar .so path mapping
+	// Register all statically-linked tree-sitter grammars.
+	// Grammars are compiled into the binary — no .so loading needed.
 	const char *langs[] = { "python", "cpp",	"c",	      "rust",
-				"swift",  "javascript", "typescript", "tsx",
-				"go",	  "java" };
+	   "swift",  "javascript", "typescript", "tsx",
+	   "go",	  "java" };
 	for (auto lang : langs) {
-		std::string path = base + "/tree-sitter-" + lang + ".so";
-		g_parser->registerLanguage(lang, path.c_str());
+	 g_parser->registerLanguage(lang);
 	}
 
 	// Try to load sqlite-vec extension for vector embeddings (optional).
 	{
-		std::string vec_path = base + "/vec0.dylib";
+	 const char *gdir = getenv("GRAMMARS_DIR");
+	 std::string base = gdir ? gdir : "grammars";
+	 std::string vec_path = base + "/vec0.dylib";
 		sqlite3 *db = g_store->handle();
 		char *ext_err = nullptr;
 		int rc = SQLITE_ERROR;

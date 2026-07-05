@@ -1,9 +1,31 @@
 #include "parser.h"
 
-#include <dlfcn.h>
-#include <algorithm>
+#include "../codescope_grammars.h"
 #include <cstring>
 #include <tree_sitter/api.h>
+
+// ── Static grammar registry ─────────────────────────────────────
+// Grammars are compiled into the binary (no dlopen).
+// Map language name → tree_sitter_<lang>() function.
+
+static const TSLanguage *resolveGrammar(const char *name)
+{
+	if (strcmp(name, "c") == 0)                     return tree_sitter_c();
+	if (strcmp(name, "cpp") == 0 || strcmp(name, "c++") == 0) return tree_sitter_cpp();
+	if (strcmp(name, "go") == 0)                    return tree_sitter_go();
+	if (strcmp(name, "java") == 0)                  return tree_sitter_java();
+	if (strcmp(name, "javascript") == 0 || strcmp(name, "js") == 0)
+	                                                return tree_sitter_javascript();
+	if (strcmp(name, "python") == 0 || strcmp(name, "py") == 0)
+	                                                return tree_sitter_python();
+	if (strcmp(name, "rust") == 0 || strcmp(name, "rs") == 0)
+	                                                return tree_sitter_rust();
+	if (strcmp(name, "swift") == 0)                 return tree_sitter_swift();
+	if (strcmp(name, "typescript") == 0 || strcmp(name, "ts") == 0)
+	                                                return tree_sitter_typescript();
+	if (strcmp(name, "tsx") == 0)                   return tree_sitter_tsx();
+	return nullptr;
+}
 
 // ── Construction ───────────────────────────────────────────────
 
@@ -13,45 +35,24 @@ Parser::Parser()
 
 Parser::~Parser()
 {
-	for (auto &[name, g] : grammars_) {
-		if (g.handle)
-			dlclose(g.handle);
-	}
 	grammars_.clear();
 }
 
 // ── Language Registration ─────────────────────────────────────
 
-bool Parser::registerLanguage(const char *name, const char *so_path)
+bool Parser::registerLanguage(const char *name)
 {
-	if (hasLanguage(name))
-		return true; // already registered
+ if (hasLanguage(name))
+  return true; // already registered
 
-	void *handle = dlopen(so_path, RTLD_LAZY | RTLD_LOCAL);
-	if (!handle) {
-		error_ = std::string("dlopen failed for ") + so_path + ": " +
-			 dlerror();
-		return false;
-	}
+ const TSLanguage *lang = resolveGrammar(name);
+ if (!lang) {
+  error_ = std::string("Unsupported language: ") + name;
+  return false;
+ }
 
-	// Build the symbol name: tree_sitter_<name>
-	std::string sym = "tree_sitter_";
-	sym += name;
-
-	// Replace hyphens with underscores in symbol name
-	std::replace(sym.begin(), sym.end(), '-', '_');
-
-	auto *fn = reinterpret_cast<const TSLanguage *(*)()>(
-		dlsym(handle, sym.c_str()));
-	if (!fn) {
-		error_ = std::string("dlsym failed for ") + sym + " in " +
-			 so_path + ": " + dlerror();
-		dlclose(handle);
-		return false;
-	}
-
-	grammars_[name] = Grammar{ handle, fn };
-	return true;
+ grammars_[name] = lang;
+ return true;
 }
 
 bool Parser::hasLanguage(const char *name) const
@@ -61,11 +62,11 @@ bool Parser::hasLanguage(const char *name) const
 
 const TSLanguage *Parser::getLanguage(const char *name)
 {
-	auto it = grammars_.find(name);
-	if (it != grammars_.end()) {
-		return it->second.fn();
-	}
-	return nullptr;
+ auto it = grammars_.find(name);
+ if (it != grammars_.end()) {
+  return it->second;
+ }
+ return nullptr;
 }
 
 // ── Parse ─────────────────────────────────────────────────────
