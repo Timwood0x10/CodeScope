@@ -172,9 +172,9 @@ Node *CTranslator::translateNode(TSNode ts_node, Node *parent)
 		return nullptr;
 	}
 	if (strcmp(type, "declaration") == 0)
-	 return handleDeclaration(ts_node, parent);
+		return handleDeclaration(ts_node, parent);
 	if (strcmp(type, "struct_specifier") == 0)
-			return handleStruct(ts_node, parent, false);
+		return handleStruct(ts_node, parent, false);
 	if (strcmp(type, "union_specifier") == 0)
 		return handleStruct(ts_node, parent, true);
 	if (strcmp(type, "enum_specifier") == 0) {
@@ -478,11 +478,11 @@ Node *CTranslator::handleStruct(TSNode ts_node, Node *parent, bool is_union)
 
 Node *CTranslator::handleCallExpr(TSNode ts_node, Node *parent)
 {
- auto *call = makeNode(NodeKind::CallExpr, ts_node);
- parent->children.push_back(call);
- fprintf(stderr, "HCALL: parent_kind=%d parent_name=%s\n",
-  parent ? (int)parent->kind : -1,
-  parent ? parent->name.c_str() : "(null)");
+	auto *call = makeNode(NodeKind::CallExpr, ts_node);
+	parent->children.push_back(call);
+	fprintf(stderr, "HCALL: parent_kind=%d parent_name=%s\n",
+		parent ? (int)parent->kind : -1,
+		parent ? parent->name.c_str() : "(null)");
 
 	uint32_t count = ts_node_child_count(ts_node);
 	for (uint32_t i = 0; i < count; i++) {
@@ -491,24 +491,24 @@ Node *CTranslator::handleCallExpr(TSNode ts_node, Node *parent)
 			continue;
 
 		const char *t = ts_node_type(child);
-		 if (strcmp(t, "identifier") == 0) {
-		  std::string fname = nodeText(child);
-		  Node *target = resolveSymbol(fname);
+		if (strcmp(t, "identifier") == 0) {
+			std::string fname = nodeText(child);
+			Node *target = resolveSymbol(fname);
 
-		  // Pure translator: no external Resolver.
-		  // Cross-file resolution happens in the Linker phase.
-		  if (target) {
-		   call->semantic_edges.push_back(
-		    { target, Relation::CallTarget });
-		  }
-		  auto *id_expr =
-		   makeNode(NodeKind::IdentifierExpr, child);
-		  id_expr->name = fname;
-		  if (target)
-		   id_expr->semantic_edges.push_back(
-		    { target, Relation::SymbolRef });
-		  call->children.push_back(id_expr);
-		 } else if (strcmp(t, "field_expression") == 0) {
+			// Pure translator: no external Resolver.
+			// Cross-file resolution happens in the Linker phase.
+			if (target) {
+				call->semantic_edges.push_back(
+					{ target, Relation::CallTarget });
+			}
+			auto *id_expr =
+				makeNode(NodeKind::IdentifierExpr, child);
+			id_expr->name = fname;
+			if (target)
+				id_expr->semantic_edges.push_back(
+					{ target, Relation::SymbolRef });
+			call->children.push_back(id_expr);
+		} else if (strcmp(t, "field_expression") == 0) {
 			auto *member = makeNode(NodeKind::MemberExpr, child);
 			call->children.push_back(member);
 			translateChildren(child, member);

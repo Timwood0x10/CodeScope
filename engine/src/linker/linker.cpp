@@ -19,7 +19,7 @@ void Linker::addPass(std::unique_ptr<LinkPass> pass)
 }
 
 int Linker::run(uint64_t project_id,
-		std::vector<std::unique_ptr<ir::TranslationUnit>> &units,
+		std::vector<std::unique_ptr<ir::TranslationUnit> > &units,
 		const std::vector<std::string> &file_paths,
 		store::GraphStore *store)
 {
@@ -31,23 +31,26 @@ int Linker::run(uint64_t project_id,
 		if (p->run(project_id, units, file_paths, symbol_index, store))
 			passed++;
 		else
-			fprintf(stderr, "LINKER: pass '%s' failed\n", p->name());
+			fprintf(stderr, "LINKER: pass '%s' failed\n",
+				p->name());
 	}
 	return passed;
 }
 
 // ─── BuildSymbolIndexPass ────────────────────────────────────────
 
-bool BuildSymbolIndexPass::run(uint64_t project_id,
-			       std::vector<std::unique_ptr<ir::TranslationUnit>> &units,
-			       const std::vector<std::string> &file_paths,
-			       resolver::ProjectSymbolIndex &symbol_index,
-			       store::GraphStore *store)
+bool BuildSymbolIndexPass::run(
+	uint64_t project_id,
+	std::vector<std::unique_ptr<ir::TranslationUnit> > &units,
+	const std::vector<std::string> &file_paths,
+	resolver::ProjectSymbolIndex &symbol_index, store::GraphStore *store)
 {
 	for (auto &u : units) {
-		if (!u) continue;
+		if (!u)
+			continue;
 		for (auto *n : u->all_nodes) {
-			if (n->name.empty()) continue;
+			if (n->name.empty())
+				continue;
 			resolver::IndexEntry ie;
 			ie.name = n->name;
 			ie.file_path = n->file_path;
@@ -65,40 +68,45 @@ bool BuildSymbolIndexPass::run(uint64_t project_id,
 			}
 		}
 	}
-	fprintf(stderr, "LINKER: %s — %zu symbols indexed\n",
-		name(), symbol_index.size());
+	fprintf(stderr, "LINKER: %s — %zu symbols indexed\n", name(),
+		symbol_index.size());
 	return true;
 }
 
 // ─── ResolveCallPass ─────────────────────────────────────────────
 
-bool ResolveCallPass::run(uint64_t project_id,
-			  std::vector<std::unique_ptr<ir::TranslationUnit>> &units,
-			  const std::vector<std::string> &file_paths,
-			  resolver::ProjectSymbolIndex &symbol_index,
-			  store::GraphStore *store)
+bool ResolveCallPass::run(
+	uint64_t project_id,
+	std::vector<std::unique_ptr<ir::TranslationUnit> > &units,
+	const std::vector<std::string> &file_paths,
+	resolver::ProjectSymbolIndex &symbol_index, store::GraphStore *store)
 {
 	int cross_file_count = 0;
 	for (size_t fi = 0; fi < units.size(); fi++) {
-	 auto &u = units[fi];
-	 if (!u) continue;
-	 auto &caller_file = file_paths[fi];
-	 fprintf(stderr, "RESOLVE_FILE[%zu]: %s (%zu nodes)\n",
-	  fi, caller_file.c_str(), u->all_nodes.size());
-	 std::vector<ir::Node *> stubs;
-	 int call_exprs = 0, resolved_local = 0, resolved_cross = 0, no_name = 0;
+		auto &u = units[fi];
+		if (!u)
+			continue;
+		auto &caller_file = file_paths[fi];
+		fprintf(stderr, "RESOLVE_FILE[%zu]: %s (%zu nodes)\n", fi,
+			caller_file.c_str(), u->all_nodes.size());
+		std::vector<ir::Node *> stubs;
+		int call_exprs = 0, resolved_local = 0, resolved_cross = 0,
+		    no_name = 0;
 
 		int node_count = 0;
 		fprintf(stderr, "  FILE_NODES: ");
 		for (auto *node : u->all_nodes) {
 			node_count++;
 			if (node_count <= 15)
-				fprintf(stderr, "%s(%s) ", ir::kindName(node->kind), node->name.c_str());
+				fprintf(stderr, "%s(%s) ",
+					ir::kindName(node->kind),
+					node->name.c_str());
 		}
 		fprintf(stderr, "\n");
 
 		for (auto *node : u->all_nodes) {
-			if (node->kind != ir::NodeKind::CallExpr) continue;
+			if (node->kind != ir::NodeKind::CallExpr)
+				continue;
 
 			// Find function name from child identifier
 			std::string fname;
@@ -109,7 +117,8 @@ bool ResolveCallPass::run(uint64_t project_id,
 					break;
 				}
 			}
-			if (fname.empty()) continue;
+			if (fname.empty())
+				continue;
 
 			// Already has a local CallTarget — skip (intra-file resolved)
 			bool has_local = false;
@@ -128,13 +137,17 @@ bool ResolveCallPass::run(uint64_t project_id,
 			resolved_cross++;
 			auto *candidates = symbol_index.lookup(fname);
 			if (!candidates || candidates->empty()) {
-				fprintf(stderr, "  RESOLVE[%s]: '%s' not in index (index has %zu entries)\n",
-					caller_file.c_str(), fname.c_str(), symbol_index.size());
+				fprintf(stderr,
+					"  RESOLVE[%s]: '%s' not in index (index has %zu entries)\n",
+					caller_file.c_str(), fname.c_str(),
+					symbol_index.size());
 				continue;
 			}
 
-			fprintf(stderr, "  RESOLVE[%s]: '%s' has %zu candidates\n",
-				caller_file.c_str(), fname.c_str(), candidates->size());
+			fprintf(stderr,
+				"  RESOLVE[%s]: '%s' has %zu candidates\n",
+				caller_file.c_str(), fname.c_str(),
+				candidates->size());
 			for (auto &c : *candidates)
 				fprintf(stderr, "    candidate: %s in %s\n",
 					c.name.c_str(), c.file_path.c_str());
@@ -143,14 +156,16 @@ bool ResolveCallPass::run(uint64_t project_id,
 			const resolver::IndexEntry *best = nullptr;
 			int best_score = -1;
 			for (auto &c : *candidates) {
-				if (c.file_path == caller_file) continue; // same file
+				if (c.file_path == caller_file)
+					continue; // same file
 				int score = rankCandidate(c, caller_file);
 				if (score > best_score) {
 					best_score = score;
 					best = &c;
 				}
 			}
-			if (!best) continue;
+			if (!best)
+				continue;
 
 			// Create stub and add CallTarget edge (NOT as a child node,
 			// to prevent the GraphBuilder from traversing into the stub
@@ -161,7 +176,7 @@ bool ResolveCallPass::run(uint64_t project_id,
 			stub->file_path = best->file_path;
 			stub->loc = best->loc;
 			node->semantic_edges.push_back(
-			 {stub, ir::Relation::CallTarget});
+				{ stub, ir::Relation::CallTarget });
 			stubs.push_back(stub);
 			cross_file_count++;
 		}
@@ -169,8 +184,8 @@ bool ResolveCallPass::run(uint64_t project_id,
 		for (auto *s : stubs)
 			u->all_nodes.push_back(s);
 	}
-	fprintf(stderr, "LINKER: %s — %d cross-file calls resolved\n",
-		name(), cross_file_count);
+	fprintf(stderr, "LINKER: %s — %d cross-file calls resolved\n", name(),
+		cross_file_count);
 	return true;
 }
 
@@ -184,39 +199,47 @@ int ResolveCallPass::rankCandidate(const resolver::IndexEntry &candidate,
 
 		// Prefer definitions (.c/.cpp) over prototypes (.h)
 		std::string ext = dp.extension().string();
-		if (ext == ".c" || ext == ".cpp" || ext == ".cc" || ext == ".cxx")
+		if (ext == ".c" || ext == ".cpp" || ext == ".cc" ||
+		    ext == ".cxx")
 			score += 5;
 
 		// Same directory = most likely
 		if (cp.parent_path() == dp.parent_path())
 			score += 3;
-		else if (cp.parent_path().parent_path() == dp.parent_path().parent_path())
+		else if (cp.parent_path().parent_path() ==
+			 dp.parent_path().parent_path())
 			score += 1;
 
 		// Shorter path depth difference = more related
 		auto ci = cp.begin(), di = dp.begin();
 		while (ci != cp.end() && di != dp.end() && *ci == *di) {
-			++ci; ++di;
+			++ci;
+			++di;
 		}
 		int remaining = 0;
-		for (; ci != cp.end(); ++ci) remaining++;
-		for (; di != dp.end(); ++di) remaining++;
-		if (remaining <= 2) score += 2;
-	} catch (...) {}
+		for (; ci != cp.end(); ++ci)
+			remaining++;
+		for (; di != dp.end(); ++di)
+			remaining++;
+		if (remaining <= 2)
+			score += 2;
+	} catch (...) {
+	}
 	return score;
 }
 
 // ─── EmitGraphPass ──────────────────────────────────────────────
 
-bool EmitGraphPass::run(uint64_t project_id,
-			std::vector<std::unique_ptr<ir::TranslationUnit>> &units,
-			const std::vector<std::string> &file_paths,
-			resolver::ProjectSymbolIndex &symbol_index,
-			store::GraphStore *store)
+bool EmitGraphPass::run(
+	uint64_t project_id,
+	std::vector<std::unique_ptr<ir::TranslationUnit> > &units,
+	const std::vector<std::string> &file_paths,
+	resolver::ProjectSymbolIndex &symbol_index, store::GraphStore *store)
 {
 	for (size_t fi = 0; fi < units.size(); fi++) {
 		auto &u = units[fi];
-		if (!u) continue;
+		if (!u)
+			continue;
 		auto &fp = file_paths[fi];
 
 		// Determine next graph node ID
@@ -243,12 +266,13 @@ bool EmitGraphPass::run(uint64_t project_id,
 		auto call_g = builder.buildCallGraph(u.get());
 
 		// Persist
-		store->upsertFile(
-			project_id, fp.c_str(),
-			(fp.size() > 2) ?
-				(fp.substr(fp.size() - 1) == "h" ? "c" : "unknown")
-				: "unknown",
-			"");
+		store->upsertFile(project_id, fp.c_str(),
+				  (fp.size() > 2) ?
+					  (fp.substr(fp.size() - 1) == "h" ?
+						   "c" :
+						   "unknown") :
+					  "unknown",
+				  "");
 		for (auto &n : sym_g.nodes)
 			store->insertGraphNode(project_id, n);
 		for (auto &e : sym_g.edges)
@@ -256,8 +280,8 @@ bool EmitGraphPass::run(uint64_t project_id,
 		for (auto &e : call_g.edges)
 			store->insertGraphEdge(project_id, e);
 	}
-	fprintf(stderr, "LINKER: %s — %zu files emitted\n",
-		name(), units.size());
+	fprintf(stderr, "LINKER: %s — %zu files emitted\n", name(),
+		units.size());
 	return true;
 }
 

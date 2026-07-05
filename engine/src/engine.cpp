@@ -656,42 +656,53 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	}
 
 	// Phase 2: Translate all files in parallel (pure: source to IR, no graph/DB)
-	std::vector<std::unique_ptr<ir::TranslationUnit>> all_units(jobs.size());
+	std::vector<std::unique_ptr<ir::TranslationUnit> > all_units(
+		jobs.size());
 	std::mutex collect_lock;
 	std::atomic<int> next_job{ 0 };
 
 	auto translate_worker = [&]() {
 		while (true) {
 			int idx = next_job.fetch_add(1);
-			if (idx >= static_cast<int>(jobs.size())) break;
+			if (idx >= static_cast<int>(jobs.size()))
+				break;
 			auto &job = jobs[idx];
 			auto it = lang_ptrs.find(job.lang);
-			if (it == lang_ptrs.end()) continue;
+			if (it == lang_ptrs.end())
+				continue;
 			const TSLanguage *ts_lang = it->second;
 			std::string source = readFile(job.path.c_str());
-			if (source.empty()) continue;
+			if (source.empty())
+				continue;
 			TSParser *parser = ts_parser_new();
 			ts_parser_set_language(parser, ts_lang);
 			TSTree *tree = ts_parser_parse_string(
 				parser, nullptr, source.c_str(),
 				static_cast<uint32_t>(source.size()));
 			ts_parser_delete(parser);
-			if (!tree) continue;
+			if (!tree)
+				continue;
 			auto translator = std::unique_ptr<ir::Translator>(
 				ir::createTranslator(job.lang.c_str()));
-			if (!translator) { ts_tree_delete(tree); continue; }
+			if (!translator) {
+				ts_tree_delete(tree);
+				continue;
+			}
 			ir::TranslationUnit *unit = translator->translate(
 				tree, source.c_str(), job.path.c_str());
 			ts_tree_delete(tree);
-			if (!unit) continue;
+			if (!unit)
+				continue;
 			std::lock_guard<std::mutex> lock(collect_lock);
 			all_units[idx].reset(unit);
 		}
 	};
 
-	int num_workers = std::min(static_cast<int>(jobs.size()),
-		static_cast<int>(std::thread::hardware_concurrency()));
-	if (num_workers < 1) num_workers = 1;
+	int num_workers =
+		std::min(static_cast<int>(jobs.size()),
+			 static_cast<int>(std::thread::hardware_concurrency()));
+	if (num_workers < 1)
+		num_workers = 1;
 
 	std::vector<std::thread> workers;
 	for (int i = 0; i < num_workers; i++)
@@ -702,7 +713,8 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	// Build file_paths vector for the Linker
 	std::vector<std::string> file_paths;
 	file_paths.reserve(jobs.size());
-	for (auto &j : jobs) file_paths.push_back(j.path);
+	for (auto &j : jobs)
+		file_paths.push_back(j.path);
 
 	// Phase 3: Link — passes run serially over all IR units
 	g_store->beginTransaction();
@@ -721,7 +733,6 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	       << ",\"workers\":" << num_workers << "}";
 	return dupString(result.str());
 }
-
 
 // ─── Phase A: Fast Scanner Helpers// ─── Phase A: Fast Scanner Helpers ─────────────────────────────
 
