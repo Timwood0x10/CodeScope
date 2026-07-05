@@ -73,6 +73,7 @@ class TypescriptTranslator : public Translator {
 	Node *handleImport(TSNode ts_node, Node *parent);
 	Node *handleExport(TSNode ts_node, Node *parent);
 	Node *handleMember(TSNode ts_node, Node *parent);
+	// TypeScript-specific
 	Node *handleInterface(TSNode ts_node, Node *parent);
 	Node *handleTypeAlias(TSNode ts_node, Node *parent);
 	Node *handleEnum(TSNode ts_node, Node *parent);
@@ -97,12 +98,16 @@ TranslationUnit *TypescriptTranslator::translate(TSTree *tree,
 	translateChildren(root_node, root);
 	popScope();
 
-	std::function<void(Node *)> collect = [&](Node *n) {
+	// Collect all nodes into a flat list for the linker
+	std::vector<Node *> collect_stack;
+	collect_stack.push_back(root);
+	while (!collect_stack.empty()) {
+		Node *n = collect_stack.back();
+		collect_stack.pop_back();
 		unit_->all_nodes.push_back(n);
-		for (auto *c : n->children)
-			collect(c);
-	};
-	collect(root);
+		for (size_t j = n->children.size(); j > 0; j--)
+			collect_stack.push_back(n->children[j - 1]);
+	}
 	unit_->assignIds();
 	return unit_;
 }
@@ -174,6 +179,7 @@ Node *TypescriptTranslator::translateNode(TSNode ts_node, Node *parent)
 	if (strcmp(type, "member_expression") == 0)
 		return handleMember(ts_node, parent);
 
+	// ── Compound statements ──────────────────────────────────
 	if (strcmp(type, "return_statement") == 0) {
 		auto *n = makeNode(NodeKind::ReturnStmt, ts_node);
 		parent->children.push_back(n);
@@ -246,6 +252,8 @@ Node *TypescriptTranslator::translateNode(TSNode ts_node, Node *parent)
 		translateChildren(ts_node, n);
 		return n;
 	}
+
+	// ── Expressions ──────────────────────────────────────────
 	if (strcmp(type, "binary_expression") == 0) {
 		auto *n = makeNode(NodeKind::BinaryExpr, ts_node);
 		parent->children.push_back(n);
@@ -289,6 +297,8 @@ Node *TypescriptTranslator::translateNode(TSNode ts_node, Node *parent)
 		translateChildren(ts_node, n);
 		return n;
 	}
+
+	// ── Literals ─────────────────────────────────────────────
 	if (strcmp(type, "number") == 0 || strcmp(type, "string") == 0 ||
 	    strcmp(type, "template_string") == 0 || strcmp(type, "true") == 0 ||
 	    strcmp(type, "false") == 0 || strcmp(type, "null") == 0 ||
@@ -304,6 +314,7 @@ Node *TypescriptTranslator::translateNode(TSNode ts_node, Node *parent)
 		return n;
 	}
 
+	// ── Pass-through nodes: create no IR, recurse into children ──
 	if (strcmp(type, "expression_statement") == 0 ||
 	    strcmp(type, "statement_block") == 0 ||
 	    strcmp(type, "formal_parameters") == 0 ||
@@ -355,6 +366,8 @@ Node *TypescriptTranslator::translateNode(TSNode ts_node, Node *parent)
 		return nullptr;
 	}
 
+	// Unknown node type: recurse into children rather than silently dropping.
+	translateChildren(ts_node, parent);
 	return nullptr;
 }
 
@@ -372,6 +385,7 @@ void TypescriptTranslator::translateChildren(TSNode ts_node, Node *parent)
 Node *TypescriptTranslator::handleFunction(TSNode ts_node, Node *parent)
 {
 	auto *func = makeNode(NodeKind::FunctionDecl, ts_node);
+
 	uint32_t count = ts_node_child_count(ts_node);
 	for (uint32_t i = 0; i < count; i++) {
 		TSNode child = ts_node_child(ts_node, i);
@@ -380,14 +394,17 @@ Node *TypescriptTranslator::handleFunction(TSNode ts_node, Node *parent)
 			break;
 		}
 	}
+
 	defineSymbol(func->name, func);
 	parent->children.push_back(func);
+
 	pushScope();
 	for (uint32_t i = 0; i < count; i++) {
 		TSNode child = ts_node_child(ts_node, i);
 		if (!ts_node_is_named(child))
 			continue;
 		const char *t = ts_node_type(child);
+
 		if (strcmp(t, "identifier") == 0)
 			continue;
 		if (strcmp(t, "formal_parameters") == 0)
@@ -412,6 +429,7 @@ Node *TypescriptTranslator::handleArrow(TSNode ts_node, Node *parent)
 Node *TypescriptTranslator::handleClass(TSNode ts_node, Node *parent)
 {
 	auto *cls = makeNode(NodeKind::ClassDecl, ts_node);
+
 	uint32_t count = ts_node_child_count(ts_node);
 	for (uint32_t i = 0; i < count; i++) {
 		TSNode child = ts_node_child(ts_node, i);
@@ -421,8 +439,10 @@ Node *TypescriptTranslator::handleClass(TSNode ts_node, Node *parent)
 			break;
 		}
 	}
+
 	defineSymbol(cls->name, cls);
 	parent->children.push_back(cls);
+
 	class_stack_.push_back(cls);
 	pushScope();
 	translateChildren(ts_node, cls);
@@ -434,6 +454,7 @@ Node *TypescriptTranslator::handleClass(TSNode ts_node, Node *parent)
 Node *TypescriptTranslator::handleMethod(TSNode ts_node, Node *parent)
 {
 	auto *method = makeNode(NodeKind::MethodDecl, ts_node);
+
 	uint32_t count = ts_node_child_count(ts_node);
 	for (uint32_t i = 0; i < count; i++) {
 		TSNode child = ts_node_child(ts_node, i);
@@ -444,12 +465,15 @@ Node *TypescriptTranslator::handleMethod(TSNode ts_node, Node *parent)
 			break;
 		}
 	}
+
 	defineSymbol(method->name, method);
 	parent->children.push_back(method);
+
 	if (!class_stack_.empty()) {
 		method->semantic_edges.push_back(
 			{ class_stack_.back(), Relation::Receiver });
 	}
+
 	pushScope();
 	for (uint32_t i = 0; i < count; i++) {
 		TSNode child = ts_node_child(ts_node, i);
@@ -472,12 +496,14 @@ Node *TypescriptTranslator::handleCall(TSNode ts_node, Node *parent)
 {
 	auto *call = makeNode(NodeKind::CallExpr, ts_node);
 	parent->children.push_back(call);
+
 	uint32_t count = ts_node_child_count(ts_node);
 	for (uint32_t i = 0; i < count; i++) {
 		TSNode child = ts_node_child(ts_node, i);
 		if (!ts_node_is_named(child))
 			continue;
 		const char *t = ts_node_type(child);
+
 		if (strcmp(t, "identifier") == 0) {
 			std::string fname = nodeText(child);
 			Node *target = resolveSymbol(fname);
@@ -507,6 +533,7 @@ Node *TypescriptTranslator::handleIdentifier(TSNode ts_node, Node *parent)
 	auto *id_expr = makeNode(NodeKind::IdentifierExpr, ts_node);
 	id_expr->name = nodeText(ts_node);
 	parent->children.push_back(id_expr);
+
 	Node *target = resolveSymbol(id_expr->name);
 	if (target) {
 		id_expr->semantic_edges.push_back(
@@ -567,12 +594,14 @@ Node *TypescriptTranslator::handleExport(TSNode ts_node, Node *parent)
 {
 	auto *exp = makeNode(NodeKind::ExportDecl, ts_node);
 	parent->children.push_back(exp);
+
 	uint32_t count = ts_node_child_count(ts_node);
 	for (uint32_t i = 0; i < count; i++) {
 		TSNode child = ts_node_child(ts_node, i);
 		if (!ts_node_is_named(child))
 			continue;
 		const char *t = ts_node_type(child);
+
 		if (strcmp(t, "function_declaration") == 0 ||
 		    strcmp(t, "class_declaration") == 0 ||
 		    strcmp(t, "variable_declaration") == 0 ||
@@ -594,14 +623,17 @@ Node *TypescriptTranslator::handleMember(TSNode ts_node, Node *parent)
 Node *TypescriptTranslator::handleInterface(TSNode ts_node, Node *parent)
 {
 	auto *iface = makeNode(NodeKind::ClassDecl, ts_node);
+
 	uint32_t count = ts_node_child_count(ts_node);
 	for (uint32_t i = 0; i < count; i++) {
 		TSNode child = ts_node_child(ts_node, i);
-		if (strcmp(ts_node_type(child), "identifier") == 0) {
+		if (strcmp(ts_node_type(child), "identifier") == 0 ||
+		    strcmp(ts_node_type(child), "type_identifier") == 0) {
 			iface->name = nodeText(child);
 			break;
 		}
 	}
+
 	defineSymbol(iface->name, iface);
 	parent->children.push_back(iface);
 	return iface;
@@ -610,6 +642,7 @@ Node *TypescriptTranslator::handleInterface(TSNode ts_node, Node *parent)
 Node *TypescriptTranslator::handleTypeAlias(TSNode ts_node, Node *parent)
 {
 	auto *alias = makeNode(NodeKind::TypeAliasDecl, ts_node);
+
 	uint32_t count = ts_node_child_count(ts_node);
 	for (uint32_t i = 0; i < count; i++) {
 		TSNode child = ts_node_child(ts_node, i);
@@ -618,6 +651,7 @@ Node *TypescriptTranslator::handleTypeAlias(TSNode ts_node, Node *parent)
 			break;
 		}
 	}
+
 	defineSymbol(alias->name, alias);
 	parent->children.push_back(alias);
 	return alias;
@@ -626,6 +660,7 @@ Node *TypescriptTranslator::handleTypeAlias(TSNode ts_node, Node *parent)
 Node *TypescriptTranslator::handleEnum(TSNode ts_node, Node *parent)
 {
 	auto *en = makeNode(NodeKind::EnumDecl, ts_node);
+
 	uint32_t count = ts_node_child_count(ts_node);
 	for (uint32_t i = 0; i < count; i++) {
 		TSNode child = ts_node_child(ts_node, i);
@@ -634,6 +669,7 @@ Node *TypescriptTranslator::handleEnum(TSNode ts_node, Node *parent)
 			break;
 		}
 	}
+
 	defineSymbol(en->name, en);
 	parent->children.push_back(en);
 	return en;

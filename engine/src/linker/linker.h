@@ -41,9 +41,22 @@ class Linker {
 	void addPass(std::unique_ptr<LinkPass> pass);
 
 	// Run all passes in order. Returns number of passed passes.
+	// Creates a local ProjectSymbolIndex (independent of other runs).
 	int run(uint64_t project_id,
 		std::vector<std::unique_ptr<ir::TranslationUnit> > &units,
 		const std::vector<std::string> &file_paths,
+		store::GraphStore *store);
+
+	// Run all passes with an externally-owned symbol index.
+	// Use this for batch processing: the same index accumulates
+	// symbols across batches, enabling cross-batch symbol resolution.
+	// The index is passed by reference to each pass — BuildSymbolIndexPass
+	// adds new entries incrementally, ResolveCallPass queries the
+	// cumulative index, and EmitGraphPass emits the current batch only.
+	int run(uint64_t project_id,
+		std::vector<std::unique_ptr<ir::TranslationUnit> > &units,
+		const std::vector<std::string> &file_paths,
+		resolver::ProjectSymbolIndex &symbol_index,
 		store::GraphStore *store);
 
     private:

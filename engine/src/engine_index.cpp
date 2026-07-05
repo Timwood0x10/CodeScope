@@ -382,9 +382,25 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	std::string lang_filter = language_filter ? language_filter : "";
 
 	std::unordered_set<std::string> skip_dirs = {
-		".git",	      ".svn",	     "node_modules", "target",
-		"build",      "__pycache__", ".venv",	     "venv",
-		".codescope", ".codegraph"
+		".git",
+		".svn",
+		"node_modules",
+		"target",
+		"build",
+		"__pycache__",
+		".venv",
+		"venv",
+		".codescope",
+		".codegraph",
+		// JS/TS build output — skip by default
+		"dist",
+		".next",
+		".nuxt",
+		"coverage",
+		"vendor",
+		"public",
+		".cache",
+		".out",
 	};
 
 	// Phase 1: collect file paths (single-threaded)
@@ -445,103 +461,164 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 			lang_ptrs[l] = g_parser->getLanguage(l.c_str());
 	}
 
-	// Phase 2: Translate all files in parallel (pure: source to IR, no graph/DB)
-	std::vector<std::unique_ptr<ir::TranslationUnit> > all_units(
-		jobs.size());
-	std::mutex collect_lock;
-	std::atomic<int> next_job{ 0 };
+	// ── Batch Processing ─────────────────────────────────────
+	// Process files in batches to keep memory O(batch_size) instead of O(total_files).
+	const size_t BATCH_SIZE = 100;
+	int total_indexed = 0;
 
-	auto translate_worker = [&]() {
-		while (true) {
-			int idx = next_job.fetch_add(1);
-			if (idx >= static_cast<int>(jobs.size()))
-				break;
-			auto &job = jobs[idx];
-			auto it = lang_ptrs.find(job.lang);
-			if (it == lang_ptrs.end())
-				continue;
-			const TSLanguage *ts_lang = it->second;
-			std::string source = readFile(job.path.c_str());
-			if (source.empty())
-				continue;
-			TSParser *parser = ts_parser_new();
-			ts_parser_set_language(parser, ts_lang);
-			TSTree *tree = ts_parser_parse_string(
-				parser, nullptr, source.c_str(),
-				static_cast<uint32_t>(source.size()));
-			ts_parser_delete(parser);
-			if (!tree)
-				continue;
-			auto translator = std::unique_ptr<ir::Translator>(
-				ir::createTranslator(job.lang.c_str()));
-			if (!translator) {
+	// Persistent symbol index across all batches.
+	// BuildSymbolIndexPass adds entries incrementally each batch;
+	// ResolveCallPass queries the cumulative index so cross-batch
+	// symbol resolution works correctly.
+	resolver::ProjectSymbolIndex global_symbol_index;
+
+	for (size_t batch_start = 0; batch_start < jobs.size();
+	     batch_start += BATCH_SIZE) {
+		size_t batch_end =
+			std::min(batch_start + BATCH_SIZE, jobs.size());
+		size_t batch_count = batch_end - batch_start;
+
+		fprintf(stderr, "BATCH [%zu..%zu] of %zu (%zu files)\n",
+			batch_start, batch_end - 1, jobs.size(), batch_count);
+
+		// Phase 2: Translate batch in parallel
+		std::vector<std::unique_ptr<ir::TranslationUnit> > all_units(
+			batch_count);
+		std::mutex collect_lock;
+		std::atomic<int> next_batch_job{ 0 };
+
+		auto translate_batch_worker = [&]() {
+			while (true) {
+				int local_idx = next_batch_job.fetch_add(1);
+				if (local_idx >= static_cast<int>(batch_count))
+					break;
+				size_t global_idx = batch_start + local_idx;
+				auto &job = jobs[global_idx];
+				auto it = lang_ptrs.find(job.lang);
+				if (it == lang_ptrs.end())
+					continue;
+				const TSLanguage *ts_lang = it->second;
+
+				// Skip files larger than 5 MB to prevent OOM on
+				// minified bundles
+				struct stat file_stat;
+				uint64_t max_size =
+					5 * 1024 * 1024; // 5 MB default
+				const char *env_max =
+					getenv("CODESCOPE_MAX_FILE_SIZE");
+				if (env_max)
+					max_size = static_cast<uint64_t>(
+						std::atoll(env_max));
+				if (stat(job.path.c_str(), &file_stat) == 0 &&
+				    static_cast<uint64_t>(file_stat.st_size) >
+					    max_size) {
+					fprintf(stderr,
+						"SKIP (size > %llu): %s\n",
+						(unsigned long long)max_size,
+						job.path.c_str());
+					continue;
+				}
+
+				std::string source = readFile(job.path.c_str());
+				if (source.empty())
+					continue;
+				TSParser *parser = ts_parser_new();
+				ts_parser_set_language(parser, ts_lang);
+				TSTree *tree = ts_parser_parse_string(
+					parser, nullptr, source.c_str(),
+					static_cast<uint32_t>(source.size()));
+				ts_parser_delete(parser);
+				if (!tree)
+					continue;
+				auto translator =
+					std::unique_ptr<ir::Translator>(
+						ir::createTranslator(
+							job.lang.c_str()));
+				if (!translator) {
+					ts_tree_delete(tree);
+					continue;
+				}
+				ir::TranslationUnit *unit =
+					translator->translate(tree,
+							      source.c_str(),
+							      job.path.c_str());
 				ts_tree_delete(tree);
-				continue;
+				if (!unit)
+					continue;
+				std::lock_guard<std::mutex> lock(collect_lock);
+				all_units[local_idx].reset(unit);
 			}
-			ir::TranslationUnit *unit = translator->translate(
-				tree, source.c_str(), job.path.c_str());
-			ts_tree_delete(tree);
-			if (!unit)
-				continue;
-			std::lock_guard<std::mutex> lock(collect_lock);
-			all_units[idx].reset(unit);
-		}
-	};
-
-	int num_workers =
-		std::min(static_cast<int>(jobs.size()),
-			 static_cast<int>(std::thread::hardware_concurrency()));
-	if (num_workers < 1)
-		num_workers = 1;
-
-	std::vector<pthread_t> workers(num_workers);
-	for (int i = 0; i < num_workers; i++) {
-		// Use 8 MB stack per worker for deep ASTs (Linux kernel drivers/,
-		// bun, cpython, etc.). std::thread ignores pthread_attr_t, so we
-		// must use pthread_create directly.
-		pthread_attr_t attr;
-		pthread_attr_init(&attr);
-		pthread_attr_setstacksize(&attr, 64 * 1024 * 1024);
-
-		// Wrap the lambda in a struct so we can pass it to pthread_create.
-		struct WorkerArg {
-			decltype(translate_worker) * fn;
 		};
-		auto *arg = new WorkerArg{ &translate_worker };
-		pthread_create(
-			&workers[i], &attr,
-			[](void *v) -> void * {
-				auto *a = static_cast<WorkerArg *>(v);
-				(*a->fn)();
-				delete a;
-				return nullptr;
-			},
-			arg);
-		pthread_attr_destroy(&attr);
+
+		int num_workers = std::min(
+			static_cast<int>(batch_count),
+			static_cast<int>(std::thread::hardware_concurrency()));
+		if (num_workers < 1)
+			num_workers = 1;
+
+		std::vector<pthread_t> workers(num_workers);
+		for (int i = 0; i < num_workers; i++) {
+			pthread_attr_t attr;
+			pthread_attr_init(&attr);
+			pthread_attr_setstacksize(&attr, 256 * 1024 * 1024);
+
+			struct BatchWorkerArg {
+				decltype(translate_batch_worker) * fn;
+			};
+			auto *arg =
+				new BatchWorkerArg{ &translate_batch_worker };
+			pthread_create(
+				&workers[i], &attr,
+				[](void *v) -> void * {
+					auto *a = static_cast<BatchWorkerArg *>(
+						v);
+					(*a->fn)();
+					delete a;
+					return nullptr;
+				},
+				arg);
+			pthread_attr_destroy(&attr);
+		}
+		for (auto &t : workers)
+			pthread_join(t, nullptr);
+
+		// Build file_paths vector for this batch
+		std::vector<std::string> file_paths;
+		file_paths.reserve(batch_count);
+		for (size_t i = batch_start; i < batch_end; i++)
+			file_paths.push_back(jobs[i].path);
+
+		// Phase 3: Link batch — passes run serially
+		// Uses the persistent global_symbol_index so that
+		// BuildSymbolIndexPass adds entries incrementally and
+		// ResolveCallPass queries ALL accumulated symbols (cross-batch).
+		g_store->beginTransaction();
+
+		linker::Linker linker;
+		linker.addPass(
+			std::make_unique<linker::BuildSymbolIndexPass>());
+		linker.addPass(std::make_unique<linker::ResolveCallPass>());
+		linker.addPass(std::make_unique<linker::EmitGraphPass>());
+		int passes_ok = linker.run(project_id, all_units, file_paths,
+					   global_symbol_index, g_store);
+
+		g_store->commitTransaction();
+
+		total_indexed += static_cast<int>(batch_count);
+
+		// all_units goes out of scope here → memory freed
+		fprintf(stderr,
+			"BATCH [%zu..%zu] done (%d passes ok), "
+			"total indexed: %d\n",
+			batch_start, batch_end - 1, passes_ok, total_indexed);
 	}
-	for (auto &t : workers)
-		pthread_join(t, nullptr);
-
-	// Build file_paths vector for the Linker
-	std::vector<std::string> file_paths;
-	file_paths.reserve(jobs.size());
-	for (auto &j : jobs)
-		file_paths.push_back(j.path);
-
-	// Phase 3: Link — passes run serially over all IR units
-	g_store->beginTransaction();
-
-	linker::Linker linker;
-	linker.addPass(std::make_unique<linker::BuildSymbolIndexPass>());
-	linker.addPass(std::make_unique<linker::ResolveCallPass>());
-	linker.addPass(std::make_unique<linker::EmitGraphPass>());
-	int passes_ok = linker.run(project_id, all_units, file_paths, g_store);
-
-	g_store->commitTransaction();
 
 	std::ostringstream result;
-	result << "{\"ok\":true,\"files_indexed\":"
-	       << static_cast<int>(jobs.size())
-	       << ",\"workers\":" << num_workers << "}";
+	result << "{\"ok\":true,\"files_indexed\":" << total_indexed
+	       << ",\"workers\":"
+	       << std::min(
+			  static_cast<int>(jobs.size()),
+			  static_cast<int>(std::thread::hardware_concurrency()))
+	       << "}";
 	return dupString(result.str());
 }

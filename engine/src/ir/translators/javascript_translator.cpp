@@ -94,12 +94,15 @@ TranslationUnit *JavascriptTranslator::translate(TSTree *tree,
 	translateChildren(root_node, root);
 	popScope();
 
-	std::function<void(Node *)> collect = [&](Node *n) {
+	std::vector<Node *> collect_stack;
+	collect_stack.push_back(root);
+	while (!collect_stack.empty()) {
+		Node *n = collect_stack.back();
+		collect_stack.pop_back();
 		unit_->all_nodes.push_back(n);
-		for (auto *c : n->children)
-			collect(c);
-	};
-	collect(root);
+		for (size_t j = n->children.size(); j > 0; j--)
+			collect_stack.push_back(n->children[j - 1]);
+	}
 	unit_->assignIds();
 	return unit_;
 }
@@ -311,20 +314,7 @@ Node *JavascriptTranslator::translateNode(TSNode ts_node, Node *parent)
 	    strcmp(type, "import_clause") == 0 ||
 	    strcmp(type, "namespace_import") == 0 ||
 	    strcmp(type, "named_imports") == 0 ||
-	    strcmp(type, "from_clause") == 0 ||
-	    // TypeScript node types (needed by bun, cpython JS, etc.)
-	    strcmp(type, "type_annotation") == 0 ||
-	    strcmp(type, "type_parameters") == 0 ||
-	    strcmp(type, "type_assertion") == 0 ||
-	    strcmp(type, "as_expression") == 0 ||
-	    strcmp(type, "satisfies_clause") == 0 ||
-	    strcmp(type, "non_null_expression") == 0 ||
-	    strcmp(type, "template_literal_type") == 0 ||
-	    strcmp(type, "predefined_type") == 0 ||
-	    strcmp(type, "type_arguments") == 0 ||
-	    strcmp(type, "required_parameter") == 0 ||
-	    strcmp(type, "optional_parameter") == 0 ||
-	    strcmp(type, "rest_pattern") == 0) {
+	    strcmp(type, "from_clause") == 0) {
 		translateChildren(ts_node, parent);
 		return nullptr;
 	}

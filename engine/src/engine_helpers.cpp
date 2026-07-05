@@ -75,6 +75,18 @@ const char *detectLanguage(const char *file_path)
 	if (!ext)
 		return nullptr;
 
+	// Skip minified/bundled JS files — they are typically generated code
+	// that is expensive to parse and provides little semantic value.
+	const char *slash = strrchr(file_path, '/');
+	const char *fname = slash ? slash + 1 : file_path;
+	size_t fname_len = strlen(fname);
+	if (fname_len > 7 && strcmp(fname + fname_len - 7, ".min.js") == 0)
+		return nullptr;
+	if (fname_len > 10 && strstr(fname, ".bundle.js") != nullptr)
+		return nullptr;
+	if (strcmp(fname, "vendor.js") == 0)
+		return nullptr;
+
 	if (strcmp(ext, ".py") == 0)
 		return "python";
 	if (strcmp(ext, ".cpp") == 0 || strcmp(ext, ".cc") == 0 ||

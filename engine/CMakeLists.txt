@@ -71,6 +71,8 @@ set(ENGINE_SOURCES
     src/ir/ir_visitor.cpp
     src/ir/ir_translator.cpp
     src/ir/ir_complexity.cpp
+    src/ir/semantic_unit.cpp
+    src/ir/semantic_emitter.cpp
     src/ir/translators/python_translator.cpp
     src/ir/translators/go_translator.cpp
     src/ir/translators/c_translator.cpp
@@ -78,6 +80,9 @@ set(ENGINE_SOURCES
     src/ir/translators/rust_translator.cpp
     src/ir/translators/javascript_translator.cpp
     src/ir/translators/typescript_translator.cpp
+    src/ir/translators/js_visitor.cpp
+    src/ir/translators/ts_visitor.cpp
+    src/ir/translators/tsx_visitor.cpp
     src/ir/translators/java_translator.cpp
     src/ir/translators/swift_translator.cpp
     src/ir/translators/tsx_translator.cpp

@@ -26,6 +26,15 @@ int Linker::run(uint64_t project_id,
 	// Shared symbol index built by the first pass and used by subsequent passes
 	resolver::ProjectSymbolIndex symbol_index;
 
+	return run(project_id, units, file_paths, symbol_index, store);
+}
+
+int Linker::run(uint64_t project_id,
+		std::vector<std::unique_ptr<ir::TranslationUnit> > &units,
+		const std::vector<std::string> &file_paths,
+		resolver::ProjectSymbolIndex &symbol_index,
+		store::GraphStore *store)
+{
 	int passed = 0;
 	for (auto &p : passes_) {
 		if (p->run(project_id, units, file_paths, symbol_index, store))
