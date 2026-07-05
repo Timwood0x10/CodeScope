@@ -62,6 +62,8 @@ const char *kindName(NodeKind k)
 		return "EnumMemberDecl";
 	case NodeKind::TypeAliasDecl:
 		return "TypeAliasDecl";
+	case NodeKind::MacroDecl:
+		return "MacroDecl";
 	case NodeKind::TemplateDecl:
 		return "TemplateDecl";
 	case NodeKind::NamespaceDecl:

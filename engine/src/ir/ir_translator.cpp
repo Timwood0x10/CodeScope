@@ -14,6 +14,8 @@ Translator *createJavascriptTranslator();
 Translator *createTypescriptTranslator();
 Translator *createGoTranslator();
 Translator *createJavaTranslator();
+Translator *createSwiftTranslator();
+Translator *createTsxTranslator();
 } // namespace ir
 
 namespace ir
@@ -42,6 +44,10 @@ Translator *createTranslator(const char *language)
 		return createGoTranslator();
 	if (lang == "java")
 		return createJavaTranslator();
+	if (lang == "swift")
+		return createSwiftTranslator();
+	if (lang == "tsx")
+		return createTsxTranslator();
 
 	return nullptr;
 }

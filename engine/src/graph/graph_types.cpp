@@ -18,6 +18,8 @@ const char *nodeTypeName(NodeType t)
 		return "interface";
 	case NodeType::Variable:
 		return "variable";
+	case NodeType::Macro:
+		return "macro";
 	case NodeType::Module:
 		return "module";
 	case NodeType::File:

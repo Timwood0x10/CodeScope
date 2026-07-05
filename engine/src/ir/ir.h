@@ -25,6 +25,7 @@ enum class NodeKind : uint16_t {
 	EnumDecl,
 	EnumMemberDecl,
 	TypeAliasDecl,
+	MacroDecl,
 	TemplateDecl,
 	NamespaceDecl,
 

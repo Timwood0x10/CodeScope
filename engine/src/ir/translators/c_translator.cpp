@@ -68,6 +68,8 @@ class CTranslator : public Translator {
 	Node *handleInclude(TSNode ts_node, Node *parent);
 	Node *handleTypeDef(TSNode ts_node, Node *parent);
 	Node *handleParamDecl(TSNode ts_node, Node *parent);
+	Node *handlePreprocDef(TSNode ts_node, Node *parent);
+	Node *handlePreprocFunctionDef(TSNode ts_node, Node *parent);
 
 	std::string extractName(TSNode ts_node);
 };
@@ -179,6 +181,10 @@ Node *CTranslator::translateNode(TSNode ts_node, Node *parent)
 		return handleIdentifier(ts_node, parent);
 	if (strcmp(type, "preproc_include") == 0)
 		return handleInclude(ts_node, parent);
+	if (strcmp(type, "preproc_def") == 0)
+		return handlePreprocDef(ts_node, parent);
+	if (strcmp(type, "preproc_function_def") == 0)
+		return handlePreprocFunctionDef(ts_node, parent);
 	if (strcmp(type, "type_definition") == 0)
 		return handleTypeDef(ts_node, parent);
 	if (strcmp(type, "parameter_declaration") == 0)
@@ -520,6 +526,51 @@ Node *CTranslator::handleParamDecl(TSNode ts_node, Node *parent)
 		defineSymbol(param->name, param);
 	parent->children.push_back(param);
 	return param;
+}
+
+Node *CTranslator::handlePreprocDef(TSNode ts_node, Node *parent)
+{
+	auto *macro = makeNode(NodeKind::MacroDecl, ts_node);
+	// Find identifier child (the macro name)
+	uint32_t count = ts_node_child_count(ts_node);
+	for (uint32_t i = 0; i < count; i++) {
+		TSNode child = ts_node_child(ts_node, i);
+		if (!ts_node_is_named(child)) continue;
+		if (strcmp(ts_node_type(child), "identifier") == 0) {
+			macro->name = nodeText(child);
+			break;
+		}
+	}
+	if (macro->name.empty())
+		macro->name = extractName(ts_node);
+	if (!macro->name.empty())
+		defineSymbol(macro->name, macro);
+	parent->children.push_back(macro);
+	return macro;
+}
+
+Node *CTranslator::handlePreprocFunctionDef(TSNode ts_node, Node *parent)
+{
+	auto *macro = makeNode(NodeKind::MacroDecl, ts_node);
+	// Find identifier child (the macro name)
+	uint32_t count = ts_node_child_count(ts_node);
+	for (uint32_t i = 0; i < count; i++) {
+		TSNode child = ts_node_child(ts_node, i);
+		if (!ts_node_is_named(child)) continue;
+		if (strcmp(ts_node_type(child), "identifier") == 0) {
+			macro->name = nodeText(child);
+			break;
+		}
+	}
+	if (macro->name.empty())
+		macro->name = extractName(ts_node);
+	if (!macro->name.empty())
+		defineSymbol(macro->name, macro);
+	parent->children.push_back(macro);
+
+	// Also translate children to capture parameter info
+	translateChildren(ts_node, macro);
+	return macro;
 }
 
 Translator *createCTranslator()

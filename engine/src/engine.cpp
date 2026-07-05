@@ -109,6 +109,8 @@ static const char *detectLanguage(const char *file_path)
 		return "javascript";
 	if (strcmp(ext, ".ts") == 0)
 		return "typescript";
+	if (strcmp(ext, ".tsx") == 0)
+		return "tsx";
 	if (strcmp(ext, ".go") == 0)
 		return "go";
 	if (strcmp(ext, ".java") == 0)
@@ -148,8 +150,9 @@ int engine_init(const char *db_path)
 
 	// Language → grammar .so path mapping
 	const char *langs[] = { "python",     "cpp",   "c",
-				"rust",	      "swift", "javascript",
-				"typescript", "go",    "java" };
+	   "rust",	      "swift", "javascript",
+	   "typescript", "tsx",   "go",
+	   "java" };
 	for (auto lang : langs) {
 		std::string path = base + "/tree-sitter-" + lang + ".so";
 		g_parser->registerLanguage(lang, path.c_str());

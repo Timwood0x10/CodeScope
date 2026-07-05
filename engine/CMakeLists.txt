@@ -73,6 +73,8 @@ set(ENGINE_SOURCES
     src/ir/translators/javascript_translator.cpp
     src/ir/translators/typescript_translator.cpp
     src/ir/translators/java_translator.cpp
+    src/ir/translators/swift_translator.cpp
+    src/ir/translators/tsx_translator.cpp
     src/graph/graph_types.cpp
     src/graph/graph_builder.cpp
     src/store/store.cpp

@@ -66,8 +66,11 @@ bool GraphBuilder::visitEnter(ir::Node* node) {
             addGraphNode(node, NodeType::Module);
             break;
         case ir::NodeKind::VariableDecl:
-            addGraphNode(node, NodeType::Variable);
-            break;
+         addGraphNode(node, NodeType::Variable);
+         break;
+        case ir::NodeKind::MacroDecl:
+         addGraphNode(node, NodeType::Macro);
+         break;
         case ir::NodeKind::Module:
         case ir::NodeKind::NamespaceDecl:
             addGraphNode(node, NodeType::Module);
@@ -151,6 +154,7 @@ bool GraphBuilder::visitEnter(ir::Node* node) {
                 case ir::NodeKind::MethodDecl:   addGraphNode(edge.target, NodeType::Method);   break;
                 case ir::NodeKind::ClassDecl:    addGraphNode(edge.target, NodeType::Class);    break;
                 case ir::NodeKind::VariableDecl: addGraphNode(edge.target, NodeType::Variable); break;
+                case ir::NodeKind::MacroDecl:    addGraphNode(edge.target, NodeType::Macro);    break;
                 case ir::NodeKind::Module:       addGraphNode(edge.target, NodeType::Module);   break;
                 default: continue;
             }
