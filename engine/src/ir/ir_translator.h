@@ -6,17 +6,12 @@
 // tree-sitter types
 typedef struct TSTree TSTree;
 
-// Forward declare resolver interface
-namespace resolver
-{
-class Resolver;
-}
-
 namespace ir
 {
 
 // Abstract base for language-specific CST → IR translators.
-// Each language implements one.
+// Pure function: source tree → IR TranslationUnit.
+// No resolver, no graph, no DB — thread-safe, each call is independent.
 
 class Translator {
     public:
@@ -28,17 +23,6 @@ class Translator {
 					   const char *file_path) = 0;
 
 	virtual const char *language() const = 0;
-
-	// Set an optional resolver chain for cross-file symbol resolution.
-	// Must be called BEFORE translate(). The resolver is NOT owned
-	// by the translator — the caller must keep it alive.
-	virtual void setResolver(resolver::Resolver *resolver)
-	{
-		resolver_ = resolver;
-	}
-
-    protected:
-	resolver::Resolver *resolver_ = nullptr;
 };
 
 // Factory

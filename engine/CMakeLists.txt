@@ -87,6 +87,7 @@ set(ENGINE_SOURCES
     src/resolver/resolver.cpp
     src/resolver/project_index.cpp
     src/resolver/project_resolver.cpp
+    src/linker/linker.cpp
 )
 
 add_library(astgraph_engine STATIC ${ENGINE_SOURCES})

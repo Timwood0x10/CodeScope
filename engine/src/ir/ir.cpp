@@ -24,15 +24,13 @@ TranslationUnit::~TranslationUnit()
 
 void TranslationUnit::assignIds()
 {
+	// Assign sequential IDs to all nodes. Uses all_nodes rather than
+	// walking the tree so that stubs added by the Linker (which are
+	// only in all_nodes, not in the children tree) also get IDs.
 	uint64_t next = 0;
-	std::function<void(Node *)> walk = [&](Node *node) {
+	for (auto *node : all_nodes) {
 		node->id = next++;
-		for (auto *child : node->children) {
-			walk(child);
-		}
-	};
-	if (root)
-		walk(root);
+	}
 }
 
 // ─── kindName / relationName ───────────────────────────────────

@@ -3,13 +3,11 @@
 #include "ir/ir.h"
 #include "ir/ir_complexity.h"
 #include "ir/ir_translator.h"
+#include "linker/linker.h"
 #include "lsp/lsp_client.h"
 #include "parser/parser.h"
 #include "query/query_engine.h"
 #include "query/vector_search.h"
-#include "resolver/resolver.h"
-#include "resolver/project_index.h"
-#include "resolver/project_resolver.h"
 #include "store/store.h"
 
 #include <algorithm>
@@ -657,140 +655,63 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 			lang_ptrs[l] = g_parser->getLanguage(l.c_str());
 	}
 
-	// Empty ProjectSymbolIndex — populated incrementally by workers
-	// during translation. The Resolver becomes more effective as more
-	// files are indexed (later workers benefit from earlier symbols).
-	resolver::ProjectSymbolIndex sym_index;
-	resolver::ResolverChain res_chain;
-	res_chain.addResolver(
-		std::make_unique<resolver::ProjectResolver>(&sym_index));
-
-	// Phase 2: parallel indexing
-	int num_workers =
-		std::min(static_cast<int>(jobs.size()),
-			 static_cast<int>(std::thread::hardware_concurrency()));
-	if (num_workers < 1)
-		num_workers = 1;
-
+	// Phase 2: Translate all files in parallel (pure: source to IR, no graph/DB)
+	std::vector<std::unique_ptr<ir::TranslationUnit>> all_units(jobs.size());
+	std::mutex collect_lock;
 	std::atomic<int> next_job{ 0 };
 
-	g_store->beginTransaction();
-
-	auto worker = [&]() {
+	auto translate_worker = [&]() {
 		while (true) {
 			int idx = next_job.fetch_add(1);
-			if (idx >= static_cast<int>(jobs.size()))
-				break;
+			if (idx >= static_cast<int>(jobs.size())) break;
 			auto &job = jobs[idx];
 			auto it = lang_ptrs.find(job.lang);
-			if (it == lang_ptrs.end())
-				continue;
-
-			// Each worker creates its own TSParser
+			if (it == lang_ptrs.end()) continue;
 			const TSLanguage *ts_lang = it->second;
 			std::string source = readFile(job.path.c_str());
-			if (source.empty())
-				continue;
-
+			if (source.empty()) continue;
 			TSParser *parser = ts_parser_new();
 			ts_parser_set_language(parser, ts_lang);
 			TSTree *tree = ts_parser_parse_string(
 				parser, nullptr, source.c_str(),
 				static_cast<uint32_t>(source.size()));
 			ts_parser_delete(parser);
-			if (!tree)
-				continue;
-
+			if (!tree) continue;
 			auto translator = std::unique_ptr<ir::Translator>(
 				ir::createTranslator(job.lang.c_str()));
-			if (!translator) {
-				ts_tree_delete(tree);
-				continue;
-			}
-
-			// Set the ResolverChain for cross-file symbol resolution
-			if (!sym_index.empty())
-				translator->setResolver(&res_chain);
-
+			if (!translator) { ts_tree_delete(tree); continue; }
 			ir::TranslationUnit *unit = translator->translate(
 				tree, source.c_str(), job.path.c_str());
 			ts_tree_delete(tree);
-			if (!unit)
-				continue;
-
-			// Build graph in-memory, persist via g_store
-			// NOTE: graph node ID allocation + inserts are protected by a mutex
-			// because multiple workers share the same sqlite3 connection and
-			// the SELECT MAX(id) + INSERT sequence is not thread-safe.
-			{
-				static std::mutex graph_mutex;
-				std::lock_guard<std::mutex> lock(graph_mutex);
-
-				uint64_t start_id = 1;
-				{
-					sqlite3_stmt *s = nullptr;
-					const char *q =
-						"SELECT COALESCE(MAX(id), 0) + 1 FROM graph_nodes";
-					if (sqlite3_prepare_v2(
-						    g_store->handle(), q, -1,
-						    &s, nullptr) == SQLITE_OK) {
-						if (sqlite3_step(s) ==
-						    SQLITE_ROW)
-							start_id = static_cast<
-								uint64_t>(
-								sqlite3_column_int64(
-									s, 0));
-						sqlite3_finalize(s);
-					}
-				}
-				graph::GraphBuilder builder(project_id,
-							    start_id);
-				auto sym_g = builder.buildSymbolGraph(unit);
-				auto call_g = builder.buildCallGraph(unit);
-
-				g_store->upsertFile(project_id,
-						    job.path.c_str(),
-						    job.lang.c_str(), "");
-				for (auto &n : sym_g.nodes)
-					g_store->insertGraphNode(project_id, n);
-				for (auto &e : sym_g.edges)
-					g_store->insertGraphEdge(project_id, e);
-				for (auto &e : call_g.edges)
-					g_store->insertGraphEdge(project_id, e);
-
-				// Incrementally populate ProjectSymbolIndex from IR.
-				// This runs inside the mutex so it's thread-safe, and
-				// later workers benefit from earlier files' symbols.
-				for (auto *ir_node : unit->all_nodes) {
-					if (ir_node->name.empty())
-						continue;
-					resolver::IndexEntry ie;
-					ie.name = ir_node->name;
-					ie.file_path = ir_node->file_path;
-					ie.kind = ir_node->kind;
-					ie.loc = ir_node->loc;
-					ie.is_static = false;
-					switch (ir_node->kind) {
-					case ir::NodeKind::FunctionDecl:
-					case ir::NodeKind::MethodDecl:
-					case ir::NodeKind::ClassDecl:
-					case ir::NodeKind::MacroDecl:
-						sym_index.addEntry(ie);
-						break;
-					default:
-						break;
-					}
-				}
-			}
-			delete unit;
+			if (!unit) continue;
+			std::lock_guard<std::mutex> lock(collect_lock);
+			all_units[idx].reset(unit);
 		}
 	};
 
+	int num_workers = std::min(static_cast<int>(jobs.size()),
+		static_cast<int>(std::thread::hardware_concurrency()));
+	if (num_workers < 1) num_workers = 1;
+
 	std::vector<std::thread> workers;
 	for (int i = 0; i < num_workers; i++)
-		workers.emplace_back(worker);
+		workers.emplace_back(translate_worker);
 	for (auto &w : workers)
 		w.join();
+
+	// Build file_paths vector for the Linker
+	std::vector<std::string> file_paths;
+	file_paths.reserve(jobs.size());
+	for (auto &j : jobs) file_paths.push_back(j.path);
+
+	// Phase 3: Link — passes run serially over all IR units
+	g_store->beginTransaction();
+
+	linker::Linker linker;
+	linker.addPass(std::make_unique<linker::BuildSymbolIndexPass>());
+	linker.addPass(std::make_unique<linker::ResolveCallPass>());
+	linker.addPass(std::make_unique<linker::EmitGraphPass>());
+	int passes_ok = linker.run(project_id, all_units, file_paths, g_store);
 
 	g_store->commitTransaction();
 
@@ -800,6 +721,7 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	       << ",\"workers\":" << num_workers << "}";
 	return dupString(result.str());
 }
+
 
 // ─── Phase A: Fast Scanner Helpers// ─── Phase A: Fast Scanner Helpers ─────────────────────────────
 

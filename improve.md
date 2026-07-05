@@ -1,418 +1,396 @@
-我同意你的方向，但我不会把 Phase 2a 做成 SQL 拼图。
+我是支持这个方向的，而且我觉得这是一个架构级重构，不是普通优化。
 
-我建议换一个思路。
-
-⸻
-
-先说根本问题
-
-你的问题不是
-
-如何找到 add()
-
-而是
-
-CallSite 如何 Bind 到 Symbol。
-
-实际上所有静态分析器最后都在解决一个问题：
-
-CallExpr
-↓
-Callee Resolution
-↓
-Function Symbol
-↓
-Call Edge
-
-你的 Translator 目前只做了
-
-当前 Scope
-↓
-resolveSymbol()
-↓
-成功
-
-一旦跨文件：
-
-Scope
-↓
-NULL
-
-结束。
-
-所以问题其实是
-
-Resolver 太弱。
-
-不是 Graph Builder 太弱。
+不过我会把它再推一步。
 
 ⸻
 
-我为什么不建议 SQL 拼图
+我认为现在真正的问题
 
-SQL 拼图当然能做。
+你现在还是把 Resolver 当成 Translator 的一部分。
 
-例如：
+实际上，它应该属于 Linker。
 
-IdentifierExpr
-↓
-name=add
-↓
-graph_nodes
-↓
-Function add
-↓
-CALL Edge
+整个流程其实和编译器非常像。
 
-但是问题马上来了。
-
-例如
-
-util/add.c
-add()
-math/add.c
-add()
-
-SQL：
-
-SELECT *
-WHERE name='add'
-
-得到两个。
-
-怎么办？
-
-又开始写：
-
-module score
-path score
-include score
-namespace score
-...
-
-最后：
-
-Resolver
-
-搬到了
-
-SQL里面。
-
-以后越来越复杂。
-
-⸻
-
-我建议把 Resolver 单独抽出来
-
-例如：
-
-Resolver
-↓
-Local Resolver
-↓
-Project Resolver
-↓
-LSP Resolver
-↓
-Future Resolver
-
-⸻
-
-第一层
-
-Local
-
-就是今天的
-
-Scope Stack
-
-已经有了。
-
-⸻
-
-第二层
-
-Project Resolver
-
-不要查 graph_nodes。
-
-建立
-
-Project Symbol Index
-
-例如
-
-unordered_map
-name
-↓
-vector<SymbolCandidate>
-
-启动索引的时候一次建立。
-
-例如：
-
-add
-↓
-helper.c
-↓
-SymbolID 35
-multiply
-↓
-helper.c
-↓
-SymbolID 40
-
-以后：
-
-CallExpr
-↓
-ProjectResolver
-O(1)
-
-不用SQL。
-
-⸻
-
-然后 Candidate Ranking
-
-如果：
-
-init
-
-出来十个。
-
-不要SQL。
-
-直接：
-
-score
-=
-same directory
-+
-same module
-+
-included header
-+
-static
-+
-visibility
-+
-namespace
-+
-distance
-
-最高的。
-
-⸻
-
-这就是 Clang 做的思路。
-
-不是数据库。
-
-是 Resolver。
-
-⸻
-
-然后 Graph Builder 根本不用改
-
-Graph Builder 永远应该：
-
-IR
-↓
-CallTarget
-↓
-Edge
-
-它不关心：
-
-CallTarget哪里来的。
-
-否则职责开始混。
-
-⸻
-
-如果 Resolver 全失败怎么办？
-
-这时候：
-
-Resolver Chain
-Local
-↓
-Project
-↓
-LSP
-↓
-Unresolved
-
-例如：
-
-CallExpr
-↓
-resolve()
-↓
-Local
-×
-↓
-Project
-×
-↓
-LSP
-√
-↓
-Edge
-
-以后支持：
-
-Rust
-Go
-C
-Cpp
-Java
-
-完全一样。
-
-⸻
-
-Phase2a 我建议这样改
-
-不是：
-
-Graph Builder
-↓
-SQL
-↓
-CALLS
-
-而是：
-
-Translator
-↓
-CallExpr
-↓
-Resolver
-↓
-Project Index
-↓
-CallTarget
-↓
-GraphBuilder
-
-整个Graph Builder一行不用改。
-
-⸻
-
-Project Symbol Index 应该长这样
-
-struct SymbolCandidate {
-    SymbolId id;
-    std::string name;
-    std::string file;
-    ModuleId module;
-    bool is_static;
-    Visibility visibility;
-    SymbolKind kind;
-};
-
-然后
-
-unordered_map<
-    std::string,
-    std::vector<SymbolCandidate>
->
-
-一次建完。
-
-几十万Symbol也没问题。
-
-⸻
-
-Resolver接口
-
-例如：
-
-ResolutionResult resolveCall(
-    const CallExpr&,
-    const TranslationUnit&
-);
-
-里面：
-
-LocalResolver
-↓
-ProjectResolver
-↓
-LSPResolver
-
-全部隐藏。
-
-Translator不用知道。
-
-⸻
-
-还有一个你以后一定会遇到的问题
-
-现在讨论的是
-
-add()
-
-以后马上就是
-
-foo->bar()
-obj.method()
-ptr->ops->read()
-inode->i_fop->read_iter()
-
-Linux大量：
-
-file->f_op->read_iter
-
-这种。
-
-SQL方案基本废了。
-
-但是：
-
-Resolver
-↓
-VirtualResolver
-↓
-Function Pointer Resolver
-↓
-LSP Resolver
-
-还能继续扩展。
-
-⸻
-
-我的最终建议
-
-我会把整个调用解析能力设计成一个独立模块，而不是 Graph Builder 的补丁。
-
+Source
+    │
+    ▼
 Parser
     │
     ▼
+AST
+    │
+    ▼
 IR
     │
     ▼
-Semantic Resolver  ⭐⭐⭐⭐⭐
-    ├── Local Resolver
-    ├── Project Symbol Index Resolver
-    ├── Include/Header Resolver
-    ├── Function Pointer Resolver（未来）
-    ├── LSP Resolver（未来）
-    └── External Resolver
+Resolve Symbol
     │
     ▼
-Resolved IR（CallTarget 已绑定）
+Call Graph
     │
     ▼
+Store
+
+而不是
+
+Parser
+   │
+Resolver
+   │
+Graph
+
+也就是说：
+
+Translator 不应该知道 Resolver 的存在。
+
+Translator唯一职责：
+
+我把一个文件翻译成IR。
+
+结束。
+
+⸻
+
+我会直接拆成四层
+
+Phase1 Collect
+
+Collect Files
+↓
+[]SourceFile
+
+完全不变。
+
+⸻
+
+Phase2 Translate（完全并行）
+
+每个Worker只做：
+
+source.c
+↓
+tree-sitter
+↓
+IRUnit
+
+例如
+
+IRUnit{
+    File
+    Symbols
+    CallExpr
+    Identifier
+    Imports
+    Types
+}
+
+注意：
+
+这里没有：
+
+Resolver
+Graph
+DB
+
+统统没有。
+
+Translator甚至不知道Graph是什么。
+
+这一层100%纯函数。
+
+File
+↓
+IR
+
+结束。
+
+⸻
+
+Phase3 Link（新增）
+
+所有IR全部出来以后。
+
+开始真正做
+
+All IR Units
+↓
+Build Global Symbol Index
+↓
+Resolve
+↓
+Call Target
+↓
+Cross File
+↓
+Type Link
+↓
+CFG
+↓
+Data Flow
+
+注意：
+
+这一层就是
+
+CodeScope Linker。
+
+不是Resolver。
+
+Resolver只是里面一个Pass。
+
+例如
+
+Link Pass
+Pass1
+Build Symbol Index
+Pass2
+Resolve Function
+Pass3
+Resolve Type
+Pass4
+Resolve Struct
+Pass5
+Resolve Macro
+Pass6
+Resolve Call
+Pass7
+Resolve Import
+
+以后Rust
+
+Go
+
+C++
+
+Python
+
+全部共用。
+
+⸻
+
+Phase4 Emit
+
+最后才开始
+
 Graph Builder
-    │
-    ▼
+↓
 SQLite
+↓
+FTS
+↓
+Embedding
+↓
+Metrics
 
-这是我最推荐的架构。
+Store最后一步。
 
-原因很简单：Graph Builder 负责”建图”，Resolver 负责”解析语义”。
+不是Translator里面。
 
-把这两个职责分开之后，后面无论你接 LSP、tree-sitter、Clang、LLVM IR，甚至做跨语言调用分析，都不用改 Graph Builder，只需要不断增强 Resolver。这会比在 SQL 或 Graph Builder 上不断打补丁更容易演进，也更符合静态分析器的经典架构。
+⸻
+
+为什么这样以后扩展会舒服很多
+
+例如以后：
+
+CallGraph增强
+
+以前：
+
+Translator
+↓
+Resolver
+↓
+Graph
+↓
+Store
+
+以后：
+
+IR
+↓
+Link Pass
+↓
+Graph
+
+增加一个Pass即可。
+
+例如：
+
+LinkPass
+↓
+CallGraphPass
+↓
+OwnershipPass
+↓
+AliasPass
+↓
+LifetimePass
+↓
+CFGPass
+↓
+MetricsPass
+↓
+EmbeddingPass
+
+越来越像LLVM。
+
+⸻
+
+还有一个最大的收益
+
+现在你说：
+
+预扫描没意义。
+
+其实不是。
+
+真正没意义的是
+
+为了Resolver再解析一次AST。
+
+如果IR已经有
+
+FunctionDecl
+StructDecl
+EnumDecl
+Typedef
+VariableDecl
+
+为什么还要再Tree-sitter？
+
+完全没有必要。
+
+直接：
+
+for unit
+    for symbol
+        index.add(symbol)
+
+几毫秒。
+
+不用AST。
+
+⸻
+
+Resolver也会变简单
+
+现在Resolver里面：
+
+lookup()
+↓
+scope
+↓
+file
+↓
+global
+↓
+fallback
+↓
+goto
+
+以后变成
+
+GlobalSymbolIndex
+↓
+Resolve(name)
+↓
+Candidates
+↓
+Rank
+↓
+Return
+
+完全和Parser解耦。
+
+⸻
+
+我甚至建议把Resolver改名字
+
+因为以后它已经不只是Resolve。
+
+建议直接：
+
+Linker
+
+里面
+
+Linker.Run()
+↓
+BuildSymbolIndex()
+↓
+ResolveCalls()
+↓
+ResolveTypes()
+↓
+ResolveStructs()
+↓
+ResolveImports()
+↓
+BuildGraph()
+↓
+Store()
+
+以后任何分析都是Pass。
+
+例如
+
+Linker
+↓
+PassManager
+↓
+ResolveCallPass
+↓
+ResolveTypePass
+↓
+OwnershipPass
+↓
+CFGPass
+↓
+MetricsPass
+↓
+EmbeddingPass
+↓
+PersistencePass
+
+这和LLVM、Clang、Rustc等现代编译器的思路是一致的：Parser 负责生成IR，后续一切分析都建立在IR之上。
+
+⸻
+
+我认为可以再往前迈一步
+
+如果我是ARES/CodeScope的架构负责人，我不会叫它 Phase 3。
+
+我会正式引入一个新的概念：
+
+                Source Files
+                     │
+                     ▼
+              ┌──────────────┐
+              │   Translator │
+              └──────────────┘
+                     │
+                     ▼
+                  IR Units
+                     │
+                     ▼
+              ┌──────────────┐
+              │    Linker    │
+              │ (PassManager)│
+              └──────────────┘
+                     │
+     ┌───────────────┼────────────────┐
+     ▼               ▼                ▼
+ SymbolIndex     Call Graph      Type Graph
+     ▼               ▼                ▼
+ CFG           Ownership        Dependency
+     └───────────────┼────────────────┘
+                     ▼
+              ┌──────────────┐
+              │   Emitter    │
+              │ SQLite/FTS   │
+              └──────────────┘
+
+这不是简单的重构，而是把 CodeScope 从一个“扫描器”升级为一个真正的多阶段静态分析框架。
+
+从你现在已经完成的扫描速度、数据库设计和 MCP 能力来看，我认为这是下一步最值得投入的架构演进方向。

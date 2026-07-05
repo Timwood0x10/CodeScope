@@ -6,8 +6,6 @@
 #include <unordered_map>
 #include <vector>
 
-#include "../../resolver/resolver.h"
-
 namespace ir
 {
 
@@ -174,7 +172,8 @@ Node *CTranslator::translateNode(TSNode ts_node, Node *parent)
 		return nullptr;
 	}
 	if (strcmp(type, "declaration") == 0)
-		if (strcmp(type, "struct_specifier") == 0)
+	 return handleDeclaration(ts_node, parent);
+	if (strcmp(type, "struct_specifier") == 0)
 			return handleStruct(ts_node, parent, false);
 	if (strcmp(type, "union_specifier") == 0)
 		return handleStruct(ts_node, parent, true);
@@ -479,8 +478,11 @@ Node *CTranslator::handleStruct(TSNode ts_node, Node *parent, bool is_union)
 
 Node *CTranslator::handleCallExpr(TSNode ts_node, Node *parent)
 {
-	auto *call = makeNode(NodeKind::CallExpr, ts_node);
-	parent->children.push_back(call);
+ auto *call = makeNode(NodeKind::CallExpr, ts_node);
+ parent->children.push_back(call);
+ fprintf(stderr, "HCALL: parent_kind=%d parent_name=%s\n",
+  parent ? (int)parent->kind : -1,
+  parent ? parent->name.c_str() : "(null)");
 
 	uint32_t count = ts_node_child_count(ts_node);
 	for (uint32_t i = 0; i < count; i++) {
@@ -489,54 +491,24 @@ Node *CTranslator::handleCallExpr(TSNode ts_node, Node *parent)
 			continue;
 
 		const char *t = ts_node_type(child);
-		if (strcmp(t, "identifier") == 0) {
-			std::string fname = nodeText(child);
-			Node *target = resolveSymbol(fname);
+		 if (strcmp(t, "identifier") == 0) {
+		  std::string fname = nodeText(child);
+		  Node *target = resolveSymbol(fname);
 
-			// Even if resolveSymbol found a local match, consult the
-			// Resolver for cross-file definitions. In C/C++ with headers,
-			// resolveSymbol always finds function prototypes (from #include)
-			// in the local scope, so the Resolver would never fire.
-			// If the Resolver finds a match in a different file, prefer it
-			// — it points to the actual definition, not a forward declaration.
-			resolver::ResolutionResult rr;
-			if (resolver_ &&
-			    resolver_->resolve(fname, file_path_, nullptr)
-				    .isResolved()) {
-				rr = resolver_->resolve(fname, file_path_,
-							nullptr);
-			}
-			bool use_resolver = rr.isResolved() &&
-					    rr.best()->file_path != file_path_;
-
-			if (use_resolver) {
-				// Override local symbol with cross-file definition
-				target =
-					makeNode(NodeKind::FunctionDecl, child);
-				target->name = fname;
-				target->file_path = rr.best()->file_path;
-			}
-			if (target) {
-				call->semantic_edges.push_back(
-					{ target, Relation::CallTarget });
-			}
-			auto *id_expr =
-				makeNode(NodeKind::IdentifierExpr, child);
-			id_expr->name = fname;
-			if (target)
-				id_expr->semantic_edges.push_back(
-					{ target, Relation::SymbolRef });
-			call->children.push_back(id_expr);
-			// Attach cross-file resolution stub as a child of the
-			// CallExpr so that the GraphBuilder visits it naturally.
-			// Without this, the stub is isolated in all_nodes and
-			// traverse() never reaches it.
-			if (target && target->kind == NodeKind::FunctionDecl &&
-			    target != id_expr &&
-			    target->file_path != file_path_) {
-				call->children.push_back(target);
-			}
-		} else if (strcmp(t, "field_expression") == 0) {
+		  // Pure translator: no external Resolver.
+		  // Cross-file resolution happens in the Linker phase.
+		  if (target) {
+		   call->semantic_edges.push_back(
+		    { target, Relation::CallTarget });
+		  }
+		  auto *id_expr =
+		   makeNode(NodeKind::IdentifierExpr, child);
+		  id_expr->name = fname;
+		  if (target)
+		   id_expr->semantic_edges.push_back(
+		    { target, Relation::SymbolRef });
+		  call->children.push_back(id_expr);
+		 } else if (strcmp(t, "field_expression") == 0) {
 			auto *member = makeNode(NodeKind::MemberExpr, child);
 			call->children.push_back(member);
 			translateChildren(child, member);
