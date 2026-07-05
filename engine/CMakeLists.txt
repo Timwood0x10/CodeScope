@@ -83,6 +83,13 @@ set(ENGINE_SOURCES
     src/ir/translators/js_visitor.cpp
     src/ir/translators/ts_visitor.cpp
     src/ir/translators/tsx_visitor.cpp
+    src/ir/translators/c_visitor.cpp
+    src/ir/translators/cpp_visitor.cpp
+    src/ir/translators/go_visitor.cpp
+    src/ir/translators/python_visitor.cpp
+    src/ir/translators/rust_visitor.cpp
+    src/ir/translators/java_visitor.cpp
+    src/ir/translators/swift_visitor.cpp
     src/ir/translators/java_translator.cpp
     src/ir/translators/swift_translator.cpp
     src/ir/translators/tsx_translator.cpp

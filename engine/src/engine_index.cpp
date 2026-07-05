@@ -437,8 +437,19 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 					detectLanguage(entry.path().c_str());
 				if (!lang)
 					continue;
-				if (!lang_filter.empty() && lang != lang_filter)
-					continue;
+				if (!lang_filter.empty()) {
+					// Support comma-separated language filter: "js,ts,tsx"
+					bool match = false;
+					size_t start = 0, end;
+					do {
+						end = lang_filter.find(',', start);
+						std::string single = lang_filter.substr(
+							start, end - start);
+						if (lang == single) { match = true; break; }
+						start = end + 1;
+					} while (end != std::string::npos);
+					if (!match) continue;
+				}
 				jobs.push_back({ entry.path(), lang });
 			}
 		}
@@ -526,13 +537,26 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 
 				std::string source = readFile(job.path.c_str());
 				if (source.empty())
-					continue;
-				TSParser *parser = ts_parser_new();
-				ts_parser_set_language(parser, ts_lang);
+				 continue;
+
+				// ── Reuse TSParser per thread (avoid new/delete overhead) ──
+				thread_local static std::
+				 unordered_map<std::string, TSParser *>
+				  tl_parsers;
+				auto pit = tl_parsers.find(job.lang);
+				if (pit == tl_parsers.end() || !pit->second) {
+				 TSParser *np = ts_parser_new();
+				 ts_parser_set_language(np, ts_lang);
+				 ts_parser_set_timeout_micros(np,
+				          500000); // 0.5s timeout
+				 tl_parsers[job.lang] = np;
+				 pit = tl_parsers.find(job.lang);
+				}
+				TSParser *parser = pit->second;
+				ts_parser_set_timeout_micros(parser, 500000);
 				TSTree *tree = ts_parser_parse_string(
-					parser, nullptr, source.c_str(),
-					static_cast<uint32_t>(source.size()));
-				ts_parser_delete(parser);
+				 parser, nullptr, source.c_str(),
+				 static_cast<uint32_t>(source.size()));
 				if (!tree)
 					continue;
 
@@ -617,6 +641,22 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		g_store->beginTransaction();
 
 		graph::GraphBuilder gb(project_id);
+
+		// Query next available node ID from store to avoid PRIMARY KEY
+		// collisions across batches (old EmitGraphPass does the same).
+		{
+		 sqlite3_stmt *s = nullptr;
+		 const char *q =
+		  "SELECT COALESCE(MAX(id), 0) + 1 FROM graph_nodes";
+		 if (sqlite3_prepare_v2(g_store->handle(), q, -1,
+		       &s, nullptr) == SQLITE_OK) {
+		  if (sqlite3_step(s) == SQLITE_ROW)
+		   gb = graph::GraphBuilder(project_id,
+		    static_cast<uint64_t>(
+		     sqlite3_column_int64(s, 0)));
+		  sqlite3_finalize(s);
+		 }
+		}
 
 		// Pass 3a: Build symbol graphs for all JS/TS files and accumulate
 		// a cross-file name index for call resolution.
