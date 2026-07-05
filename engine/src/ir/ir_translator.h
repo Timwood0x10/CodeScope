@@ -9,6 +9,9 @@ typedef struct TSTree TSTree;
 namespace ir
 {
 
+// Forward declaration for the new visitor-based pipeline
+class JsVisitor;
+
 // Abstract base for language-specific CST → IR translators.
 // Pure function: source tree → IR TranslationUnit.
 // No resolver, no graph, no DB — thread-safe, each call is independent.
@@ -27,6 +30,11 @@ class Translator {
 
 // Factory
 Translator *createTranslator(const char *language);
+
+// Create a visitor for JS/TS/TSX languages. Returns nullptr for other langs.
+// The returned JsVisitor (or TsVisitor/TsxVisitor) emits SemanticUnit records.
+// Ownership passes to the caller; delete with `delete`.
+JsVisitor *createJsVisitor(const char *language);
 
 } // namespace ir
 

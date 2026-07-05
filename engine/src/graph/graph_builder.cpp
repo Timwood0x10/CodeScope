@@ -217,4 +217,203 @@ void GraphBuilder::addGraphEdge(uint64_t src, uint64_t tgt, EdgeType type) {
     current_graph_.edges.push_back(std::move(ge));
 }
 
+// ── SemanticUnit API ──────────────────────────────────────────
+
+CodeGraph GraphBuilder::buildSymbolGraph(const ir::SemanticUnit &unit) {
+    current_graph_ = CodeGraph{};
+    current_graph_.graph_type = "symbol_reference";
+    current_graph_.name = "symbol-graph";
+    next_edge_id_ = 1;
+    ir_to_graph_node_.clear();
+    function_stack_.clear();
+    building_call_graph_ = false;
+
+    // Pass 1: Create GraphNode for each declaration record
+    for (auto &rec : unit.allRecords()) {
+        if (!isDeclarationKind(rec.kind))
+            continue;
+        NodeType nt = recordKindToNodeType(rec.kind);
+        if (nt == NodeType::File && rec.kind == ir::RecordKind::Variable)
+            continue; // skip anonymous root Variable (used as container)
+        addGraphNode(rec, nt);
+    }
+
+    // Pass 2: Create Contains edges from parent_id
+    for (auto &rec : unit.allRecords()) {
+        if (rec.parent_id == 0) continue;
+        auto child_it = ir_to_graph_node_.find(rec.id);
+        if (child_it == ir_to_graph_node_.end()) continue;
+
+        // Walk parent_id chain to find the nearest ancestor that has a graph node
+        uint64_t pid = rec.parent_id;
+        while (pid != 0) {
+            auto parent_it = ir_to_graph_node_.find(pid);
+            if (parent_it != ir_to_graph_node_.end()) {
+                if (parent_it->second != child_it->second)
+                    addGraphEdge(parent_it->second, child_it->second,
+                                 EdgeType::Contains);
+                break;
+            }
+            // Walk further up
+            const ir::Record &parent_rec = unit.getRecord(pid);
+            pid = parent_rec.parent_id;
+        }
+    }
+
+    return current_graph_;
+}
+
+CodeGraph GraphBuilder::buildCallGraph(const ir::SemanticUnit &unit) {
+    current_graph_ = CodeGraph{};
+    current_graph_.graph_type = "call_graph";
+    current_graph_.name = "call-graph";
+    next_edge_id_ = 1;
+    // Keep ir_to_graph_node_ from buildSymbolGraph — same node IDs
+    building_call_graph_ = true;
+
+    // Build name index for quick callee lookup
+    auto name_index = buildNameIndex(unit);
+
+    for (auto &rec : unit.allRecords()) {
+        if (rec.kind != ir::RecordKind::CallExpr)
+            continue;
+        if (rec.name.empty())
+            continue;
+
+        // Find the containing function (caller)
+        uint64_t caller_id = findContainingFunction(unit, rec);
+        auto caller_it = ir_to_graph_node_.find(caller_id);
+        if (caller_it == ir_to_graph_node_.end())
+            continue;
+
+        // Look up callee by name
+        auto [callee_begin, callee_end] = name_index.equal_range(rec.name);
+        for (auto it = callee_begin; it != callee_end; ++it) {
+            if (it->second == caller_it->second)
+                continue; // skip self-call
+            addGraphEdge(caller_it->second, it->second, EdgeType::Calls);
+        }
+    }
+
+    return current_graph_;
+}
+
+CodeGraph GraphBuilder::buildCallGraph(const ir::SemanticUnit &unit,
+                                        const std::unordered_multimap<std::string, uint64_t> &external_name_index)
+{
+    current_graph_ = CodeGraph{};
+    current_graph_.graph_type = "call_graph";
+    current_graph_.name = "call-graph";
+    next_edge_id_ = 1;
+    building_call_graph_ = true;
+
+    for (auto &rec : unit.allRecords()) {
+        if (rec.kind != ir::RecordKind::CallExpr)
+            continue;
+        if (rec.name.empty())
+            continue;
+
+        // Find the containing function (caller)
+        uint64_t caller_id = findContainingFunction(unit, rec);
+        auto caller_it = ir_to_graph_node_.find(caller_id);
+        if (caller_it == ir_to_graph_node_.end())
+            continue;
+
+        // Look up callee by name in the external cross-file index
+        auto [callee_begin, callee_end] = external_name_index.equal_range(rec.name);
+        for (auto it = callee_begin; it != callee_end; ++it) {
+            if (it->second == caller_it->second)
+                continue;
+            addGraphEdge(caller_it->second, it->second, EdgeType::Calls);
+        }
+    }
+
+    return current_graph_;
+}
+
+// ── Helpers ──────────────────────────────────────────────────
+
+NodeType GraphBuilder::recordKindToNodeType(ir::RecordKind kind) {
+    switch (kind) {
+        case ir::RecordKind::Function:   return NodeType::Function;
+        case ir::RecordKind::Method:     return NodeType::Method;
+        case ir::RecordKind::Class:      return NodeType::Class;
+        case ir::RecordKind::Interface:  return NodeType::Interface;
+        case ir::RecordKind::Enum:       return NodeType::Module;
+        case ir::RecordKind::TypeAlias:  return NodeType::Module;
+        case ir::RecordKind::Variable:   return NodeType::Variable;
+        case ir::RecordKind::Import:     return NodeType::Module;
+        case ir::RecordKind::Export:     return NodeType::Module;
+        case ir::RecordKind::Field:      return NodeType::Variable;
+        default:                         return NodeType::File; // sentinel
+    }
+}
+
+bool GraphBuilder::isDeclarationKind(ir::RecordKind kind) {
+    switch (kind) {
+        case ir::RecordKind::Function:
+        case ir::RecordKind::Method:
+        case ir::RecordKind::Class:
+        case ir::RecordKind::Interface:
+        case ir::RecordKind::Enum:
+        case ir::RecordKind::TypeAlias:
+        case ir::RecordKind::Variable:
+        case ir::RecordKind::Field:
+        case ir::RecordKind::Import:
+        case ir::RecordKind::Export:
+            return true;
+        default:
+            return false;
+    }
+}
+
+void GraphBuilder::addGraphNode(const ir::Record &rec, NodeType type) {
+    if (ir_to_graph_node_.count(rec.id)) return;
+
+    GraphNode gn;
+    gn.id             = next_node_id_++;
+    gn.ir_node_id     = rec.id;
+    gn.type           = type;
+    gn.name           = rec.name;
+    gn.qualified_name = rec.qualified_name.empty() ? rec.name
+                                                    : rec.qualified_name;
+    gn.file_path      = rec.file_path;
+    gn.start_row      = rec.loc.start_row;
+    gn.start_col      = rec.loc.start_col;
+    gn.end_row        = rec.loc.end_row;
+    gn.end_col        = rec.loc.end_col;
+    gn.language       = rec.language;
+
+    ir_to_graph_node_[rec.id] = gn.id;
+    current_graph_.nodes.push_back(std::move(gn));
+}
+
+uint64_t GraphBuilder::findContainingFunction(
+    const ir::SemanticUnit &unit, const ir::Record &rec) const
+{
+    uint64_t pid = rec.parent_id;
+    while (pid != 0) {
+        auto it = ir_to_graph_node_.find(pid);
+        if (it != ir_to_graph_node_.end())
+            return pid;
+        const ir::Record &parent = unit.getRecord(pid);
+        pid = parent.parent_id;
+    }
+    return 0;
+}
+
+std::unordered_multimap<std::string, uint64_t>
+GraphBuilder::buildNameIndex(const ir::SemanticUnit &unit) const
+{
+    std::unordered_multimap<std::string, uint64_t> idx;
+    // Iterate SemanticUnit records and look up their graph node IDs
+    // from ir_to_graph_node_ (preserved from buildSymbolGraph).
+    for (auto &rec : unit.allRecords()) {
+        auto it = ir_to_graph_node_.find(rec.id);
+        if (it != ir_to_graph_node_.end() && !rec.name.empty())
+            idx.emplace(rec.name, it->second);
+    }
+    return idx;
+}
+
 } // namespace graph

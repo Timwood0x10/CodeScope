@@ -1,5 +1,9 @@
 #include "ir_translator.h"
 
+#include "translators/js_visitor.h"
+#include "translators/ts_visitor.h"
+#include "translators/tsx_visitor.h"
+
 // Forward-declare concrete translators (implemented in translators/ dir)
 // Each returns a new Translator* or nullptr if the grammar can't be loaded.
 
@@ -48,6 +52,22 @@ Translator *createTranslator(const char *language)
 		return createSwiftTranslator();
 	if (lang == "tsx")
 		return createTsxTranslator();
+
+	return nullptr;
+}
+
+JsVisitor *createJsVisitor(const char *language)
+{
+	std::string lang(language);
+	for (auto &c : lang)
+		c = static_cast<char>(std::tolower(c));
+
+	if (lang == "javascript" || lang == "js")
+		return new JsVisitor();
+	if (lang == "typescript" || lang == "ts")
+		return new TsVisitor();
+	if (lang == "tsx")
+		return new TsxVisitor();
 
 	return nullptr;
 }

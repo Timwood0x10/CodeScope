@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "linker/linker.h"
+#include "ir/translators/js_visitor.h"
 // ─── Index File ────────────────────────────────────────────────
 
 char *engine_index_file(uint64_t project_id, const char *file_path)
@@ -482,7 +483,11 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 			batch_start, batch_end - 1, jobs.size(), batch_count);
 
 		// Phase 2: Translate batch in parallel
+		// Uses new Visitor→SemanticUnit pipeline for JS/TS/TSX,
+		// old Translator→TranslationUnit pipeline for all other languages.
 		std::vector<std::unique_ptr<ir::TranslationUnit> > all_units(
+			batch_count);
+		std::vector<std::unique_ptr<ir::SemanticUnit> > semantic_units(
 			batch_count);
 		std::mutex collect_lock;
 		std::atomic<int> next_batch_job{ 0 };
@@ -530,6 +535,26 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 				ts_parser_delete(parser);
 				if (!tree)
 					continue;
+
+				// ── New pipeline: JS/TS/TSX → Visitor → SemanticUnit ──
+				ir::JsVisitor *visitor =
+					ir::createJsVisitor(job.lang.c_str());
+				if (visitor) {
+					ir::SemanticUnit *su =
+						visitor->visit(tree,
+							       source.c_str(),
+							       job.path.c_str());
+					delete visitor;
+					ts_tree_delete(tree);
+					if (!su)
+						continue;
+					std::lock_guard<std::mutex> lock(
+						collect_lock);
+					semantic_units[local_idx].reset(su);
+					continue;
+				}
+
+				// ── Old pipeline: all other languages → Translator → TranslationUnit ──
 				auto translator =
 					std::unique_ptr<ir::Translator>(
 						ir::createTranslator(
@@ -588,19 +613,79 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		for (size_t i = batch_start; i < batch_end; i++)
 			file_paths.push_back(jobs[i].path);
 
-		// Phase 3: Link batch — passes run serially
-		// Uses the persistent global_symbol_index so that
-		// BuildSymbolIndexPass adds entries incrementally and
-		// ResolveCallPass queries ALL accumulated symbols (cross-batch).
+		// Phase 3: Link + Emit — runs serially
+		// ── New pipeline: build graph from SemanticUnit, emit to Store ──
 		g_store->beginTransaction();
 
-		linker::Linker linker;
-		linker.addPass(
-			std::make_unique<linker::BuildSymbolIndexPass>());
-		linker.addPass(std::make_unique<linker::ResolveCallPass>());
-		linker.addPass(std::make_unique<linker::EmitGraphPass>());
-		int passes_ok = linker.run(project_id, all_units, file_paths,
-					   global_symbol_index, g_store);
+		graph::GraphBuilder gb(project_id);
+
+		// Pass 3a: Build symbol graphs for all JS/TS files and accumulate
+		// a cross-file name index for call resolution.
+		std::unordered_multimap<std::string, uint64_t>
+		 cross_file_name_index;
+		std::vector<graph::CodeGraph> sym_graphs(batch_count);
+
+		for (size_t i = 0; i < batch_count; i++) {
+		 auto &su = semantic_units[i];
+		 if (!su)
+		  continue;
+
+		 auto sym_g = gb.buildSymbolGraph(*su);
+		 sym_graphs[i] = std::move(sym_g);
+		}
+
+		// Build cross-file name index from all symbol graphs
+		for (auto &g : sym_graphs) {
+		 for (auto &n : g.nodes) {
+		  if (!n.name.empty())
+		   cross_file_name_index.emplace(n.name, n.id);
+		 }
+		}
+
+		// Pass 3b: Build call graphs with cross-file resolution and persist
+		for (size_t i = 0; i < batch_count; i++) {
+		 auto &su = semantic_units[i];
+		 if (!su)
+		  continue;
+
+		 auto &sym_g = sym_graphs[i];
+		 auto call_g = gb.buildCallGraph(*su, cross_file_name_index);
+		 auto &fp = file_paths[i];
+
+		 // Persist
+		 g_store->upsertFile(project_id, fp.c_str(),
+		  fp.c_str(), "");
+		 for (auto &n : sym_g.nodes)
+		  g_store->insertGraphNode(project_id, n);
+		 for (auto &e : sym_g.edges)
+		  g_store->insertGraphEdge(project_id, e);
+		 for (auto &e : call_g.edges)
+		  g_store->insertGraphEdge(project_id, e);
+
+		 fprintf(stderr,
+		  "  EMIT[%zu]: %s (%zu nodes, %zu edges)\n",
+		  i, fp.c_str(), sym_g.nodes.size(),
+		  sym_g.edges.size() + call_g.edges.size());
+		}
+
+		// ── Old pipeline: linker passes on TranslationUnits ──
+		int passes_ok = 0;
+		{
+		 size_t old_count = 0;
+		 for (auto &u : all_units)
+		  if (u) old_count++;
+
+		 if (old_count > 0) {
+		  linker::Linker linker;
+		  linker.addPass(std::make_unique<linker::BuildSymbolIndexPass>());
+		  linker.addPass(std::make_unique<linker::ResolveCallPass>());
+		  linker.addPass(std::make_unique<linker::EmitGraphPass>());
+		  passes_ok = linker.run(project_id, all_units,
+		        file_paths,
+		        global_symbol_index,
+		        g_store);
+		 }
+		}
 
 		g_store->commitTransaction();
 

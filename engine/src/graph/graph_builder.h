@@ -3,6 +3,7 @@
 
 #include "graph_types.h"
 #include "../ir/ir_visitor.h"
+#include "../ir/semantic_unit.h"
 
 #include <unordered_map>
 
@@ -15,11 +16,28 @@ class GraphBuilder : public ir::Visitor {
 public:
     explicit GraphBuilder(uint64_t project_id, uint64_t start_node_id = 1);
 
-    // Build both graphs from a single IR unit.
+    // ── Old API (TranslationUnit / Node* tree) ─────────────────
+    // Works for all non-JS/TS languages. Uses Visitor traversal.
+
     CodeGraph buildSymbolGraph(ir::TranslationUnit* unit);
     CodeGraph buildCallGraph(ir::TranslationUnit* unit);
 
-    // IR Visitor overrides — called during traversal
+    // ── New API (SemanticUnit / flat records) ──────────────────
+    // Works for JS/TS via JsVisitor/TsVisitor.
+    // Iterates flat records directly — no Visitor traversal needed.
+    // Containment derived from parent_id; calls derived by name matching.
+
+    CodeGraph buildSymbolGraph(const ir::SemanticUnit &unit);
+    CodeGraph buildCallGraph(const ir::SemanticUnit &unit);
+
+    // Build call graph with an external cross-file name index.
+    // The name_index maps function/class names → graph_node_id across files.
+    // When provided, callee lookup uses this index instead of per-file names
+    // only, enabling cross-file call resolution.
+    CodeGraph buildCallGraph(const ir::SemanticUnit &unit,
+                              const std::unordered_multimap<std::string, uint64_t> &external_name_index);
+
+    // IR Visitor overrides — called during old traversal
     bool visitEnter(ir::Node* node) override;
 
 private:
@@ -29,12 +47,31 @@ private:
     uint64_t next_edge_id_ = 1;
     bool building_call_graph_ = false;
 
+    // ── Old state (Node* tree traversal) ───────────────────────
     std::unordered_map<uint64_t, uint64_t> ir_to_graph_node_; // ir_node_id → graph_node_id
-    std::vector<const ir::Node*> function_stack_;              // current function context
+    std::vector<const ir::Node*> function_stack_;
 
+    // ── Shared helpers ─────────────────────────────────────────
     void addGraphNode(const ir::Node* ir_node, NodeType type);
     void addGraphEdge(uint64_t src, uint64_t tgt, EdgeType type);
     uint64_t getContainingFunctionNode();
+
+    // ── SemanticUnit helpers ───────────────────────────────────
+    // Map a RecordKind to a NodeType for graph node creation.
+    // Returns std::nullopt_t equivalent: use isValidNodeType() check.
+    static NodeType recordKindToNodeType(ir::RecordKind kind);
+    static bool isDeclarationKind(ir::RecordKind kind);
+
+    void addGraphNode(const ir::Record &rec, NodeType type);
+
+    // Find the containing function/method record by walking parent_id chain.
+    // Returns record id, or 0 if not found.
+    uint64_t findContainingFunction(const ir::SemanticUnit &unit,
+                                    const ir::Record &rec) const;
+
+    // Build a name → graph_node_id map from ir_to_graph_node_ and the unit.
+    std::unordered_multimap<std::string, uint64_t>
+    buildNameIndex(const ir::SemanticUnit &unit) const;
 };
 
 } // namespace graph
