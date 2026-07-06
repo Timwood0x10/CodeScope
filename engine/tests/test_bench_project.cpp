@@ -80,19 +80,32 @@ int main(int argc, char **argv) {
     printf("lang_filter:     %s\n", lang_filter);
     printf("project_dir:     %s\n", argv[2]);
 
+    // Map language filter to file extensions for counting
+    std::string ext_filter;
+    if (strcmp(lang_filter, "c") == 0 || strcmp(lang_filter, "cpp") == 0)
+        ext_filter = "-name \"*.c\" -o -name \"*.h\" -o -name \"*.cpp\" -o -name \"*.hpp\"";
+    else if (strcmp(lang_filter, "go") == 0)
+        ext_filter = "-name \"*.go\"";
+    else if (strcmp(lang_filter, "rust") == 0)
+        ext_filter = "-name \"*.rs\"";
+    else if (strcmp(lang_filter, "python") == 0)
+        ext_filter = "-name \"*.py\"";
+    else if (strcmp(lang_filter, "java") == 0)
+        ext_filter = "-name \"*.java\"";
+    else
+        ext_filter = "-name \"*.ts\" -o -name \"*.tsx\" -o -name \"*.js\"";
+
     // Count source files first
-    std::string count_cmd = std::string("find ") + argv[2] +
-        " -name \"*.ts\" -o -name \"*.tsx\" -o -name \"*.js\" 2>/dev/null | "
-        "grep -v node_modules | wc -l";
+    std::string count_cmd = std::string("find ") + argv[2] + " " + ext_filter +
+        " 2>/dev/null | grep -v node_modules | wc -l";
     FILE *fp = popen(count_cmd.c_str(), "r");
     char count_buf[64] = {0};
     if (fp) { fgets(count_buf, sizeof(count_buf), fp); pclose(fp); }
     int total_files = atoi(count_buf);
-    printf("total_ts_js_files: %d\n", total_files);
+    printf("total_source_files: %d\n", total_files);
 
-    std::string size_cmd = std::string("find ") + argv[2] +
-        " -name \"*.ts\" -o -name \"*.tsx\" -o -name \"*.js\" 2>/dev/null | "
-        "grep -v node_modules | xargs wc -l 2>/dev/null | tail -1";
+    std::string size_cmd = std::string("find ") + argv[2] + " " + ext_filter +
+        " 2>/dev/null | grep -v node_modules | xargs wc -l 2>/dev/null | tail -1";
     fp = popen(size_cmd.c_str(), "r");
     char size_buf[64] = {0};
     if (fp) { fgets(size_buf, sizeof(size_buf), fp); pclose(fp); }
@@ -136,10 +149,11 @@ int main(int argc, char **argv) {
     int64_t time_parse_ms = extract_int64(result, "time_parse_ms");
     int64_t time_sqlite_ms = extract_int64(result, "time_sqlite_ms");
     int64_t time_buildgraph_ms = extract_int64(result, "time_buildgraph_ms");
+    int64_t time_ftsvector_ms = extract_int64(result, "time_ftsvector_ms");
     engine_free_string(result);
 
     // Phase breakdown
-    int64_t time_accounted = time_parse_ms + time_sqlite_ms + time_buildgraph_ms;
+    int64_t time_accounted = time_parse_ms + time_sqlite_ms + time_buildgraph_ms + time_ftsvector_ms;
     int64_t time_unaccounted = static_cast<int64_t>(index_ms) - time_accounted;
 
     printf("\n\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80 PHASE BREAKDOWN \xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\n");
@@ -155,6 +169,9 @@ int main(int argc, char **argv) {
         printf("%-20s %10lld %7.1f%%\n", "buildGraph (post)",
                (long long)time_buildgraph_ms,
                100.0 * time_buildgraph_ms / index_ms);
+        printf("%-20s %10lld %7.1f%%\n", "FTS/vectors (post)",
+               (long long)time_ftsvector_ms,
+               100.0 * time_ftsvector_ms / index_ms);
         if (time_unaccounted > 0) {
             printf("%-20s %10lld %7.1f%%\n", "(overhead/other)",
                    (long long)time_unaccounted,

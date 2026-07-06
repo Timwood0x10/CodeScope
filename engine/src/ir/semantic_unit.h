@@ -155,12 +155,12 @@ class SemanticUnit {
 	std::vector<size_t> getChildren(uint64_t parent_id) const;
 
     private:
-	std::vector<Record> records_;
-	std::unordered_map<uint64_t, size_t>
-		id_to_index_; // record.id → index in records_
-	std::string file_path_;
-	std::string language_;
-	uint64_t next_id_ = 1;
+ std::vector<Record> records_;
+ std::unordered_map<uint64_t, size_t>
+   id_to_index_; // record.id → index in records_
+ std::string file_path_;
+ std::string language_;
+ uint64_t next_id_ = 1;
 };
 
 } // namespace ir

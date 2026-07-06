@@ -895,12 +895,16 @@ void GraphStore::buildVectorsFromGraph(uint64_t project_id)
 	}
 	sqlite3_finalize(stmt);
 
-	// Batch insert vectors using cached prepared statement
+	// Batch insert vectors in a single transaction
+	// Previously each storeVector auto-committed — 261K transactions.
+	// With explicit begin/commit, all inserts are one transaction.
+	beginTransaction();
 	for (auto &p : pending) {
 		auto vec = vector_search::stringToVector(p.second);
 		auto blob = vector_search::serializeVector(vec);
 		storeVector(p.first, project_id, blob.data(), blob.size());
 	}
+	commitTransaction();
 }
 
 std::string GraphStore::searchCode(uint64_t project_id, const char *query,

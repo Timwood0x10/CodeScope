@@ -737,23 +737,35 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	if (verbose)
 		fprintf(stderr, "POST_BUILD: symbol graph...\n");
 	fflush(stderr);
-	auto t_bg_start = steady_clock::now();
+	int64_t time_ftsvector_ms = 0;
 	g_store->beginTransaction();
-	bool graph_ok = g_store->buildGraph(project_id, false);
+	{
+	 auto t_bg = steady_clock::now();
+	 g_store->buildGraph(project_id, false);
+	 time_buildgraph_ms =
+	  duration_cast<milliseconds>(
+	   steady_clock::now() - t_bg)
+	   .count();
+	 auto t_fv = steady_clock::now();
+	 g_store->buildFTSFromGraph(project_id);
+	 g_store->buildVectorsFromGraph(project_id);
+	 time_ftsvector_ms =
+	  duration_cast<milliseconds>(
+	   steady_clock::now() - t_fv)
+	   .count();
+	}
 	g_store->commitTransaction();
-	time_buildgraph_ms =
-		duration_cast<milliseconds>(steady_clock::now() - t_bg_start)
-			.count();
 	std::ostringstream result;
 	result << "{\"ok\":true,\"files_indexed\":" << total_indexed
 	       << ",\"workers\":"
 	       << std::min(static_cast<int>(jobs.size()),
-			   static_cast<int>(
-				   std::thread::hardware_concurrency()));
+	     static_cast<int>(
+	      std::thread::hardware_concurrency()));
 	if (time_parse_ms > 0)
-		result << ",\"time_parse_ms\":" << time_parse_ms
-		       << ",\"time_sqlite_ms\":" << time_sqlite_ms
-		       << ",\"time_buildgraph_ms\":" << time_buildgraph_ms;
+	 result << ",\"time_parse_ms\":" << time_parse_ms
+	        << ",\"time_sqlite_ms\":" << time_sqlite_ms
+	        << ",\"time_buildgraph_ms\":" << time_buildgraph_ms;
+	result << ",\"time_ftsvector_ms\":" << time_ftsvector_ms;
 	result << "}";
 	return dupString(result.str());
 }

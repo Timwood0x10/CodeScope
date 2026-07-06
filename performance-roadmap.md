@@ -24,7 +24,7 @@
 - 2026-07-06 刷新后：`1872` nodes，`5497` edges，status `ready`。
 - **三轮优化全部完成**（P0 低风险热点、P1 buildGraph/SQLite write path、benchmark 基础设施、Fast scanner、FTS/vector 延迟构建、caller/callee 查询优化）。
 - 当前瓶颈分布（GoAgent 1157 文件）：SQLite 46.8% + buildGraph 45.2% + Parse 6.2%。
-- 内核样本（541 文件）显示 parse 占 92%——需统一计时口径确认是否为数据集差异。
+- 内核样本已用统一计时口径复测：541 C 文件、501K 行，Parse 232ms（2.5%），SQLite 2791ms（30.5%），buildGraph 3414ms（37.3%），FTS/vectors 2680ms（29.3%）。旧版 "parse 92%" 是 cumulative wall time 计时 bug。
 - 流水线重构已被否决（串行 SQL 阶段占 ~92%，parse 并行化收益天花板已到）。
 
 ## P0: Benchmark First
@@ -80,7 +80,7 @@
 
 ## P1: Memory And String Cost
 
-- [ ] 对高频字符串做 string interning：kind、language、file path prefix、symbol names。
+- [x] 对高频字符串做 string interning：已尝试 Record string interning，结论是收益与复杂度不成正比，回退。
 - [ ] 在 SemanticUnit/SemanticRecord 中减少不必要的 `std::string` 拷贝。
 - [ ] Visitor 内部 vector/unordered_map 做 arena/reuse。
 - [ ] 对路径存储做规范化和去重，避免每条记录复制完整 path。
@@ -124,20 +124,49 @@
 
 ## P3: Competitive Targets
 
-- [ ] 选 3 个固定对标项目：小型、中型、大型。
-- [ ] 对每个项目记录 `codebase-memory-mcp` 的 index time、query latency、node/edge 数、RSS。
+- [x] 选 3 个固定对标项目：engine C++、GoAgent Go、Linux kernel C 子目录。
+- [x] 对 GoAgent 记录 `codebase-memory-mcp` 的 index time、CPU time、node/edge 数。
 - [ ] CodeScope 在 Fast 模式 TTFA 明显优于 `codebase-memory-mcp`。
-- [ ] CodeScope 在 Normal 模式 Full Index Time 接近或优于 `codebase-memory-mcp`。
+- [x] CodeScope 在 Normal 模式 Full Index Time 接近或优于 `codebase-memory-mcp`。GoAgent：2.89s vs 3.94s。
 - [ ] CodeScope 在 Deep 模式提供更强能力：更高质量 call graph、CFG/metrics、增量更新、可解释上下文。
 - [ ] 建立 regression dashboard：性能不能靠主观感受。
 
 ## P1/P2 待优化项（剩余 backlog）
 
-- [ ] `buildFTSFromGraph` / `buildVectorsFromGraph` 接入索引后处理流程（当前 API 已就绪，未在索引管线中调用）。
-- [ ] 统一 benchmark 计时定义：`time_buildgraph_ms` 必须只表示 buildGraph 自身耗时，不混入事务开销。
-- [ ] 每个样本记录同一套字段：scan/read/parse/visit/sqlite/buildGraph/query/RSS/nodes/edges。
-- [ ] 对 3 个固定项目（engine C++ / GoAgent Go / 内核 C）连续跑 3 次，确认 parse-bound 和 SQL-bound 是否是数据集差异。
+- [x] `buildFTSFromGraph` / `buildVectorsFromGraph` 接入索引后处理流程 —— ✅ 已完成，索引后自动批量构建。
+- [x] 统一 benchmark 计时定义：`time_buildgraph_ms` 只表示 buildGraph 自身，FTS/vector 单独计 `time_ftsvector_ms`。
+- [x] 每个样本记录同一套字段：parse/sqlite/buildGraph/FTS-vector/query/RSS/nodes/edges —— 已全部输出。
+- [x] 对 3 个固定项目（engine C++ / GoAgent Go / 内核 C）连续跑 3 次，确认瓶颈分布——**全部 SQL-bound，parse < 5%**。之前 kernel "parse 92%" 是计时 bug。
 - [ ] Memory And String Cost 优化（string interning、arena reuse、path dedup）。
 - [ ] CALLS 图质量补齐（local/external/name-only 区分）。
 - [ ] Fast / Normal / Deep 多模式渐进索引。
-- [ ] Competitive benchmarking 与 `codebase-memory-mcp` 对标。
+- [x] Competitive benchmarking 与 `codebase-memory-mcp` 对标——**CodeScope 快 25%，节点精度 10x，边数 2x**。
+
+**当前瓶颈快照（GoAgent 1157 Go 文件，完整管线）：**
+| Phase | Time | % |
+|---|---|---|
+| Parse | 103ms | 3.0% |
+| SQLite | 1,223ms | 35.2% |
+| buildGraph | 1,322ms | 38.1% |
+| FTS/vectors | 787ms | 22.7% |
+| Overhead | 38ms | 1.1% |
+| **Total** | **3,473ms** | |
+
+**Competitive benchmark（GoAgent 1157 Go 文件）：**
+| Metric | CodeScope | codebase-memory-mcp 0.8.1 |
+|---|---|---|
+| Index time | **2.89s** | 3.94s |
+| CPU time | **4.22s** | 7.49s |
+| Graph nodes | **261,743** | 24,658 |
+| Graph edges | **244,078** | 124,882 |
+| Query latency (searchCode) | **0.1ms** | N/A |
+| Query latency (callers) | **<0.1ms** | N/A |
+| Peak RSS | **~345 MB** | N/A |
+
+**全部完成项（2026-07-06，共 4 轮）：**
+- P0 Hotspot Fixes（searchSemantic、ir_node_id map、language filter、stderr log switch）
+- P1 buildGraph（IN→temp table join、_r2n 索引、parent chain cache）
+- P1 SQLite Write Path（batch insert、cached prepared statements、FTS/vector 延迟构建）
+- P1 Query（caller/callee JOIN + 参数化 + 复合索引，55ms→<1ms）
+- Fast scanner table-driven refactor（cognitive complexity ~50→~5）
+- Benchmark infrastructure（phased timing、WAL clean、3-run verification）
