@@ -441,27 +441,40 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 				}
 			}
 			if (entry.is_regular_file()) {
-				filter.stats().seen_files++;
-				// Check filename-based skip
-				auto slash = rel.rfind('/');
-				std::string fname =
-					(slash == std::string::npos) ?
-						rel :
-						rel.substr(slash + 1);
-				if (filter.shouldSkipFile(fname)) {
-					filter.stats().skipped_files++;
-					continue;
-				}
-				// Check suffix-based skip
-				auto dot = rel.rfind('.');
-				if (dot != std::string::npos) {
-					if (filter.shouldSkipSuffix(
-						    rel.substr(dot))) {
-						filter.stats().skipped_suffix++;
-						continue;
-					}
-				}
-				const char *lang = filter.detectLanguage(
+			 filter.stats().seen_files++;
+			 // Check filename-based skip
+			 auto slash = rel.rfind('/');
+			 std::string fname =
+			  (slash == std::string::npos) ?
+			   rel :
+			   rel.substr(slash + 1);
+			 if (filter.shouldSkipFile(fname)) {
+			  filter.stats().skipped_files++;
+			  continue;
+			 }
+			 // Check suffix-based skip
+			 auto dot = rel.rfind('.');
+			 if (dot != std::string::npos) {
+			  if (filter.shouldSkipSuffix(
+			       rel.substr(dot))) {
+			   filter.stats().skipped_suffix++;
+			   continue;
+			  }
+			 }
+			 // Incremental: check file_scan_state to skip unchanged files
+			 struct stat file_stat;
+			 bool file_unchanged = false;
+			 if (stat(entry.path().c_str(), &file_stat) == 0) {
+			  file_unchanged = g_store->isFileUnchanged(
+			   project_id, entry.path().c_str(),
+			   static_cast<int64_t>(file_stat.st_mtime),
+			   static_cast<int64_t>(file_stat.st_size));
+			 }
+			 if (file_unchanged) {
+			  filter.stats().skipped_files++;
+			  continue;
+			 }
+			 const char *lang = filter.detectLanguage(
 					entry.path().c_str());
 				if (!lang) {
 					filter.stats().skipped_lang++;
@@ -538,6 +551,9 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	bool mode_fast = mode_fast_discover;
 	bool mode_deep = env_mode && strcmp(env_mode, "deep") == 0;
 	// normal is default when neither fast nor deep
+
+	// Track successfully-indexed files for incremental file_scan_state update
+	std::vector<std::string> all_indexed_files;
 
 	for (size_t batch_start = 0; batch_start < jobs.size();
 	     batch_start += BATCH_SIZE) {
@@ -721,10 +737,11 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 
 		// Upsert file records (not in batch — lightweight per-file)
 		for (size_t i = 0; i < batch_count; i++) {
-			if (!semantic_units[i])
-				continue;
-			g_store->upsertFile(project_id, file_paths[i].c_str(),
-					    file_paths[i].c_str(), "");
+		 if (!semantic_units[i])
+		  continue;
+		 g_store->upsertFile(project_id, file_paths[i].c_str(),
+		       file_paths[i].c_str(), "");
+		 all_indexed_files.push_back(file_paths[i]);
 		}
 
 		// ── Old pipeline: linker passes on TranslationUnits ──
@@ -799,6 +816,20 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	g_store->commitTransaction();
 	// Build deferred indexes after bulk load
 	g_store->createIndexesAfterBulkLoad(project_id);
+
+	// Update file_scan_state for indexed files (incremental: next run skips unchanged)
+	// Only update for files that were actually indexed, wrapped in a transaction
+	g_store->beginTransaction();
+	for (auto &fp : all_indexed_files) {
+	 struct stat fs;
+	 if (stat(fp.c_str(), &fs) == 0) {
+	  g_store->updateFileScanState(
+	   project_id, fp.c_str(),
+	   static_cast<int64_t>(fs.st_mtime),
+	   static_cast<int64_t>(fs.st_size));
+	 }
+	}
+	g_store->commitTransaction();
 
 	// Set project readiness flags based on mode
 	{

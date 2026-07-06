@@ -82,12 +82,18 @@ fn h_index_project(project_id: u64, args: &Value) -> String {
             .unwrap_or_else(|_| "grammars".to_string());
         let lang = args["language_filter"].as_str().unwrap_or("");
 
+        // Shutdown engine before spawning worker to release SQLite lock
+        crate::ffi::shutdown();
+
         let output = Command::new(&exe)
             .args(["worker", &db_path, path, lang, &project_id.to_string()])
             .env("GRAMMARS_DIR", &grammars_dir)
             .env("CODESCOPE_DB_PATH", &db_path)
             .env("CODESCOPE_VERBOSE", "0")
             .output();
+
+        // Re-init engine after worker completes (regardless of success/failure)
+        crate::ffi::init(&db_path);
 
         match output {
             Ok(out) => {
