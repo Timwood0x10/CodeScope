@@ -2562,14 +2562,42 @@ void GraphStore::updateFileScanState(uint64_t project_id, const char *file_path,
 void GraphStore::cleanupStaleFiles(uint64_t project_id,
 				   const std::vector<std::string> &active_files)
 {
-	// Delete file_scan_state entries to force rescan next time
-	const char *sql = "DELETE FROM file_scan_state WHERE project_id=?";
+	// Build temp table of active files for efficient set-difference
+	const char *create_sql =
+		"CREATE TEMP TABLE IF NOT EXISTS _active_files (path TEXT PRIMARY KEY)";
+	sqlite3_exec(db_, create_sql, nullptr, nullptr, nullptr);
+
 	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
-		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+
+	// Clear previous active files
+	sqlite3_prepare_v2(db_, "DELETE FROM _active_files", -1, &stmt,
+			   nullptr);
+	sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
+
+	// Insert current active files
+	sqlite3_prepare_v2(db_, "INSERT INTO _active_files (path) VALUES (?)",
+			   -1, &stmt, nullptr);
+	for (const auto &f : active_files) {
+		sqlite3_bind_text(stmt, 1, f.c_str(), -1, SQLITE_TRANSIENT);
 		sqlite3_step(stmt);
-		sqlite3_finalize(stmt);
+		sqlite3_reset(stmt);
 	}
+	sqlite3_finalize(stmt);
+
+	// Delete stale file_scan_state entries (files that no longer exist)
+	sqlite3_prepare_v2(db_,
+			   "DELETE FROM file_scan_state "
+			   "WHERE project_id=? AND file_path NOT IN "
+			   "(SELECT path FROM _active_files)",
+			   -1, &stmt, nullptr);
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
+
+	// Drop temp table
+	sqlite3_exec(db_, "DROP TABLE IF EXISTS _active_files", nullptr,
+		     nullptr, nullptr);
 }
 
 // ─── Semantic Records (DB-first pipeline) ───────────────────

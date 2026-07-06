@@ -292,29 +292,29 @@ std::string detectCommunities(uint64_t project_id, store::GraphStore *store,
 			json << ",";
 		first_comm = false;
 		json << "{"
-		      << "\"id\":" << comm.id << ","
-		      << "\"label\":\"" << comm.label << "\","
-		      << "\"member_count\":" << comm.member_count;
-		 if (include_members) {
-		  json << ",\"members\":[";
-		  bool first_member = true;
-		  int member_cnt = 0;
-		  for (const auto &m : comm.members) {
-		   if (max_members > 0 &&
-		       member_cnt >= max_members)
-		    break;
-		   member_cnt++;
-		   if (!first_member)
-		    json << ",";
-		   first_member = false;
-		   json << "{"
-		        << "\"node_id\":" << m.node_id << ","
-		        << "\"name\":\"" << m.name << "\","
-		        << "\"type\":" << m.node_type << "}";
-		  }
-		  json << "]";
-		 }
-		 json << "}";
+		     << "\"id\":" << comm.id << ","
+		     << "\"label\":\"" << comm.label << "\","
+		     << "\"member_count\":" << comm.member_count;
+		if (include_members) {
+			json << ",\"members\":[";
+			bool first_member = true;
+			int member_cnt = 0;
+			for (const auto &m : comm.members) {
+				if (max_members > 0 &&
+				    member_cnt >= max_members)
+					break;
+				member_cnt++;
+				if (!first_member)
+					json << ",";
+				first_member = false;
+				json << "{"
+				     << "\"node_id\":" << m.node_id << ","
+				     << "\"name\":\"" << m.name << "\","
+				     << "\"type\":" << m.node_type << "}";
+			}
+			json << "]";
+		}
+		json << "}";
 	}
 	json << "],";
 

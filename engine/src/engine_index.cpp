@@ -514,6 +514,15 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		return dupString(
 			"{\"ok\":true,\"files_indexed\":0,\"nodes\":0,\"edges\":0,\"errors\":0}");
 
+	// Build active file list for stale cleanup (files that disappeared since last index)
+	{
+		std::vector<std::string> active_files;
+		active_files.reserve(jobs.size());
+		for (auto &job : jobs)
+			active_files.push_back(job.path);
+		g_store->cleanupStaleFiles(project_id, active_files);
+	}
+
 	// Sort jobs by file size descending — large files first
 	// This reduces tail latency from big files being last in random order.
 	std::sort(jobs.begin(), jobs.end(),
@@ -700,7 +709,7 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		for (int i = 0; i < num_workers; i++) {
 			pthread_attr_t attr;
 			pthread_attr_init(&attr);
-			pthread_attr_setstacksize(&attr, 256 * 1024 * 1024);
+			pthread_attr_setstacksize(&attr, 8 * 1024 * 1024);
 			struct WA {
 				decltype(translate_batch_worker) * fn;
 			};
