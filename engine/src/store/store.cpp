@@ -2839,23 +2839,25 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 
 	// ── 2e: Call edges ──
 	if (build_calls) {
-		exec(std::string(
-			     "INSERT INTO graph_edges "
-			     "(project_id, source_node_id, target_node_id, edge_type, graph_type, "
-			     " call_site_file, call_site_line) "
-			     "SELECT DISTINCT " +
-			     pid +
-			     ", caller.node_id, callee.node_id, 1, 'call_graph', "
-			     "  sr.file_path, sr.start_row "
-			     "FROM semantic_records sr "
-			     "JOIN _r2n callee ON sr.name = callee.name "
-			     "JOIN _r2n caller ON sr.parent_id = caller.original_id AND sr.file_path = caller.file_path "
-			     "JOIN semantic_records cal_sr ON cal_sr.rowid = callee.rid "
-			     "WHERE sr.project_id=" +
-			     pid + " AND sr.kind=7" +
-			     " AND sr.name != '' AND callee.node_id != caller.node_id"
-			     " AND cal_sr.kind IN (0,1)")
-			     .c_str());
+	 exec(std::string(
+	       "INSERT INTO graph_edges "
+	       "(project_id, source_node_id, target_node_id, edge_type, graph_type, "
+	       " call_site_file, call_site_line) "
+	       "SELECT DISTINCT " +
+	       pid +
+	       ", caller.node_id, callee.node_id, 1, 'call_graph', "
+	       "  sr.file_path, sr.start_row "
+	       "FROM semantic_records sr "
+	       "JOIN _r2n callee ON sr.name = callee.name "
+	       "JOIN _r2n caller ON sr.parent_id = caller.original_id AND sr.file_path = caller.file_path "
+	       "JOIN semantic_records cal_sr ON cal_sr.rowid = callee.rid "
+	       "JOIN semantic_records call_sr ON sr.parent_id = call_sr.original_id AND sr.file_path = call_sr.file_path "
+	       "WHERE sr.project_id=" +
+	       pid + " AND sr.kind=7" +
+	       " AND sr.name != '' AND callee.node_id != caller.node_id"
+	       " AND cal_sr.kind IN (0,1)"
+	       " AND call_sr.kind IN (0,1)")
+	       .c_str());
 	}
 	auto t_call = Clock::now();
 

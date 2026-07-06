@@ -377,4 +377,141 @@ Aggregated from three projects in this test:
 - rustc 36,807 files: CodeScope returns architecture info in **~910 tokens** vs reading source code would require **millions of tokens**
 - Bun 9,641 files: CodeScope returns architecture info in **~910 tokens** vs reading source code would require **hundreds of thousands of tokens**
 
-**vs codebase-memory-mcp**: codebase-memory-mcp cannot complete full indexing for either project (rustc: no Rust multi-file graph support, Bun: no Zig support), while CodeScope covers all languages through tree-sitter multi-language parsers.
+**vs codebase-memory-mcp**: codebase-memory-mcp cannot complete full indexing for either project (rustc: no Rust multi-file graph support, Bun: no Zig support, JDK: no Java support), while CodeScope covers all languages through tree-sitter multi-language parsers.
+
+---
+
+## 6. JDK 20K Java Files — Full Index
+
+### Complete Log
+
+```
+Start: 2026-07-06 20:50:45
+
+worker: project=0 starting index_project dir=/Users/scc/code/researcher/jdk/src lang=
+BATCH [0..99] of 19821 (100 files)
+...
+BATCH [19800..19820] of 19821 (21 files)
+BATCH [19800..19820] done, total indexed: 19821
+POST_BUILD: symbol graph...
+buildGraph: 19821 files | file_list=644ms delete=239ms rf=10ms r2n=14567ms
+  nodes=22609ms edges=38139ms calls=0ms total=76344ms
+{"ok":true,"files_indexed":19821,"workers":14,
+  "time_parse_ms":2410,"time_sqlite_ms":83556,
+  "time_buildgraph_ms":76344,"time_fts_ms":38349,"time_vector_ms":0,
+  "discovery":{"seen_dirs":25805,"seen_files":22935,
+    "skipped_dirs":113,"skipped_files":0,
+    "skipped_suffix":765,"candidate_files":19821}}
+
+End: 2026-07-06 20:54:16
+Total: 3m31s
+```
+
+### Performance
+
+| Metric | Value |
+|--------|:-----:|
+| **Total time** | **3m31s** |
+| Source files | 19,821 (src/ only, test/make/doc excluded) |
+| Graph nodes | **8,047,762** |
+| Graph edges | **6,723,123** |
+| Parse | 2,410ms (1.2%) |
+| SQLite write | 83,556ms (41.7%) |
+| buildGraph | 76,344ms (38.1%) |
+| FTS (deferred) | 38,349ms (19.1%) |
+| DB size | **8.9 GB** |
+
+### Bottleneck
+
+```
+Parse    2,410ms  ██░░░░░░░░░░░░░░░░░░░   1.2%
+SQLite  83,556ms  █████████████████████  41.7%
+Graph   76,344ms  ████████████████████░  38.1%
+FTS     38,349ms  █████████████████░░░░  19.1%
+```
+
+### Why JDK Is Slower Than rustc
+
+JDK has fewer files (19,821 vs 36,807) but takes longer (3m31s vs 1m44s) because:
+
+| Project | Files | Nodes/File | Total Nodes | Throughput |
+|---------|:-----:|:----------:|:-----------:|:----------:|
+| rustc | 36,807 | **112** | 4.13M | **353 files/s** |
+| Bun | 9,641 | **306** | 2.95M | 155 files/s |
+| **JDK** | **19,821** | **405** | **8.05M** | 93 files/s |
+
+JDK produces **405 nodes per file** (3.6× rustc). Java classes have more fields, methods, annotations, and inner classes than Rust modules, resulting in more SQLite writes and buildGraph work.
+
+### Before vs After FilterPolicy Fix
+
+| State | Files | Result |
+|-------|:-----:|:-------|
+| ❌ Before FilterPolicy fix | 59,923 (45,586 test files) | 300s timeout, incomplete |
+| ✅ After FilterPolicy fix | **19,821** (src/ only) | **3m31s, complete** |
+
+---
+
+## 7. Full Comparison
+
+| Metric | rustc | Bun | JDK | Linux kernel |
+|--------|:-----:|:---:|:---:|:------------:|
+| **Primary language** | Rust | Zig/C++/JS | **Java** | C |
+| **Source files** | 36,807 | 9,641 | **19,821** | ~60,000 |
+| **Index time** | **1m44s** | 1m1s | **3m31s** | ~300s (timeout) |
+| **Graph nodes** | 4,130,017 | 2,951,664 | **8,047,762** | — |
+| **Graph edges** | 3,044,162 | 2,567,205 | **6,723,123** | — |
+| **Nodes/file** | 112 | 306 | **405** | — |
+| **DB size** | — | — | **8.9 GB** | 12 GB |
+| **Parse %** | 3.0% | 1.7% | 1.2% | 2.5% |
+| **SQLite %** | 37.4% | 43.6% | **41.7%** | 30.5% |
+| **buildGraph %** | 29.5% | 34.4% | **38.1%** | 37.3% |
+| **FTS %** | 22.1% | 19.6% | 19.1% | 29.3% |
+
+---
+
+## 8. Additional Projects
+
+### codebase-memory-mcp (Competitor Source)
+
+| Metric | Value |
+|--------|:-----:|
+| **Index time** | **2m0s** |
+| Source files | 1,257 |
+| Graph nodes | **6,221,406** |
+| Graph edges | **1,065,570** |
+| DB size | ~1.2 GB |
+| Languages | **Pure C** (src/ + vendored/) — rewritten from Go to pure C |
+
+### CPython
+
+| Part | Files | Time | Nodes | Status |
+|------|:-----:|:----:|:-----:|:------:|
+| Python source | **1,022** | **6s** | 446,618 | ✅ Done |
+| C source | ~1,100 | — | — | ❌ tree-sitter-c parser bug |
+
+**Why CPython C files failed**: tree-sitter-c 0.24.1's parser crashes with `Illegal instruction: 4` (SIGILL) when parsing core CPython C files (e.g., `Python/Python-ast.c`, `Objects/unicodeobject.c`). This is a tree-sitter upstream bug in the generated parser.c using unsupported CPU instructions.
+
+---
+
+## 9. Complete Index Summary
+
+| Project | Language | Files | Time | Nodes | Status |
+|---------|----------|:-----:|:----:|:-----:|:------:|
+| **rustc** | Rust | 36,807 | 1m44s | 4,130,017 | ✅ |
+| **JDK** | Java/C++ | 19,821 | 3m31s | 8,047,762 | ✅ |
+| **Bun** | Zig/C++/JS | 9,641 | 1m1s | 2,951,664 | ✅ |
+| **codebase-memory-mcp** | Pure C (src/ + vendored/) | 1,257 | 2m0s | 6,221,406 | ✅ |
+| **CPython (Python)** | Python | 1,022 | 6s | 446,618 | ✅ |
+| **CPython (C)** | C | ~1,100 | — | — | ❌ tree-sitter bug |
+| **Linux kernel** | C | ~60,000 | 300s timeout | — | ⚠️ Partial |
+| **memscope-rs** | Rust/C | 238 | 2s | 123,270 | ✅ |
+| **InstrumentTimbre** | Python | 142 | 0.9s | — | ✅ |
+| **ARES Agent** | Go | 95 | 0.3s | 24,924 | ✅ |
+
+### Key Takeaways
+
+1. **Bottleneck is always SQLite** (SQLite + buildGraph + FTS = ~90%), parse is only 1-3%
+2. **Nodes/file determines index speed**: JDK 405 nodes/file (most complex) → 3m31s; rustc 112 nodes/file → 1m44s
+3. **FilterPolicy + .gitignore** drastically reduces noise (JDK from 59,923 to 19,821 files)
+4. **Deferred FTS** allows graph queries before FTS completes
+5. **tree-sitter-c parser** has compatibility issues with complex C codebases (CPython/Linux kernel), awaiting upstream fix

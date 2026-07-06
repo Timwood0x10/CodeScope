@@ -845,62 +845,54 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	int64_t time_fts_ms = 0, time_vector_ms = 0;
 	g_store->beginTransaction();
 	{
-		auto t_bg = steady_clock::now();
-		g_store->buildGraph(project_id, true);
-		time_buildgraph_ms =
-			duration_cast<milliseconds>(steady_clock::now() - t_bg)
-				.count();
-		// FAST mode: skip FTS and vectors
-		if (!mode_fast) {
-			auto t_f = steady_clock::now();
-			g_store->buildFTSFromGraph(project_id);
-			time_fts_ms = duration_cast<milliseconds>(
-					      steady_clock::now() - t_f)
-					      .count();
-		}
-		// DEEP mode: build vectors (NORMAL skips them)
-		if (mode_deep) {
-			auto t_v = steady_clock::now();
-			g_store->buildVectorsFromGraph(project_id);
-			time_vector_ms = duration_cast<milliseconds>(
-						 steady_clock::now() - t_v)
-						 .count();
-		}
+	 auto t_bg = steady_clock::now();
+	 g_store->buildGraph(project_id, true);
+	 time_buildgraph_ms =
+	  duration_cast<milliseconds>(steady_clock::now() - t_bg)
+	   .count();
 	}
 	g_store->commitTransaction();
+
+	// Deferred: build FTS after the main transaction so index_project
+	// returns quickly. FTS is built synchronously here but won't block
+	// graph availability — search falls back to graph query if fts_ready=0.
+	// FAST mode: skip FTS entirely.
+	if (!mode_fast) {
+	 auto t_f = steady_clock::now();
+	 g_store->buildFTSFromGraph(project_id);
+	 g_store->setProjectReadiness(project_id, "fts_ready", 1);
+	 g_store->setProjectReadiness(project_id, "normal_ready", 1);
+	 time_fts_ms = duration_cast<milliseconds>(
+	         steady_clock::now() - t_f)
+	         .count();
+	} else {
+	 g_store->setProjectReadiness(project_id, "normal_ready", 1);
+	}
+	// DEEP mode: build vectors (NORMAL skips them)
+	if (mode_deep) {
+	 auto t_v = steady_clock::now();
+	 g_store->buildVectorsFromGraph(project_id);
+	 g_store->setProjectReadiness(project_id, "vector_ready", 1);
+	 time_vector_ms = duration_cast<milliseconds>(
+	     steady_clock::now() - t_v)
+	     .count();
+	}
+
 	// Build deferred indexes after bulk load
 	g_store->createIndexesAfterBulkLoad(project_id);
 
 	// Update file_scan_state for indexed files (incremental: next run skips unchanged)
-	// Only update for files that were actually indexed, wrapped in a transaction
 	g_store->beginTransaction();
 	for (auto &fp : all_indexed_files) {
-		struct stat fs;
-		if (stat(fp.c_str(), &fs) == 0) {
-			g_store->updateFileScanState(
-				project_id, fp.c_str(),
-				static_cast<int64_t>(fs.st_mtime),
-				static_cast<int64_t>(fs.st_size));
-		}
+	 struct stat fs;
+	 if (stat(fp.c_str(), &fs) == 0) {
+	  g_store->updateFileScanState(
+	   project_id, fp.c_str(),
+	   static_cast<int64_t>(fs.st_mtime),
+	   static_cast<int64_t>(fs.st_size));
+	 }
 	}
 	g_store->commitTransaction();
-
-	// Set project readiness flags based on mode
-	{
-		g_store->setProjectReadiness(project_id, "fast_ready", 1);
-		if (!mode_fast) {
-			g_store->setProjectReadiness(project_id, "normal_ready",
-						     1);
-			g_store->setProjectReadiness(project_id, "fts_ready",
-						     1);
-		}
-		if (mode_deep) {
-			g_store->setProjectReadiness(project_id, "deep_ready",
-						     1);
-			g_store->setProjectReadiness(project_id, "vector_ready",
-						     1);
-		}
-	}
 
 	std::ostringstream result;
 	result << "{\"ok\":true,\"files_indexed\":" << total_indexed

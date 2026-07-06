@@ -295,15 +295,38 @@ bool FilterPolicy::shouldSkipPath(const std::string &rel_path,
 	    gitignoreMatches(gitignore_rules_, rel_path, is_dir))
 		return true;
 
-	// 3. Check against .codescopeignore raw patterns (suffix match)
+	// 3. Check against .codescopeignore raw patterns
+	//    Supports: directory/  (trailing slash = dir only)
+	//              filename    (matches any component)
+	//              /path/name  (anchored from root)
 	for (const auto &pat : ignore_patterns_) {
-		if (is_dir) {
-			// Directory: check if pattern matches the dir name
-			// or any path component
-			if (rel_path == pat ||
-			    rel_path.rfind('/' + pat) != std::string::npos)
-				return true;
-		}
+	 bool dir_only = (!pat.empty() && pat.back() == '/');
+	 bool anchored = (!pat.empty() && pat[0] == '/');
+	 // For dir_only patterns applied to file entries:
+	 // still check if any PATH COMPONENT matches the dir name
+	 if (dir_only && pat.size() <= 1)
+	  continue;
+
+	 // Normalize pattern: strip trailing /
+	 std::string normalized = dir_only ? pat.substr(0, pat.size() - 1) : pat;
+
+	 // Anchored: match from start
+	 if (anchored) {
+	  if (rel_path == normalized.substr(1) ||
+	      (rel_path.size() > normalized.size() - 1 &&
+	       rel_path.compare(0, normalized.size() - 1, normalized.substr(1)) == 0 &&
+	       rel_path[normalized.size() - 1] == '/'))
+	   return true;
+	  continue;
+	 }
+
+	 // Unanchored: check every path component
+	 std::istringstream ss2(rel_path);
+	 std::string comp;
+	 while (std::getline(ss2, comp, '/')) {
+	  if (comp == normalized)
+	   return true;
+	 }
 	}
 
 	return false;
