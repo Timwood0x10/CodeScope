@@ -2528,32 +2528,37 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		     pid + " AND parent.node_id != child.node_id")
 		     .c_str());
 
-	// ── 2e: Call edges (name matching) ──
+	// ── 2e: Call edges (name matching with candidate filter) ──
 	if (build_calls) {
-		exec(std::string(
-			     "INSERT INTO graph_edges "
-			     "(project_id, source_node_id, target_node_id, edge_type, graph_type, "
-			     " call_site_file, call_site_line) "
-			     "SELECT DISTINCT " +
-			     pid +
-			     ", "
-			     "  caller.node_id, callee.node_id, 1, 'call_graph', "
-			     "  sr.file_path, sr.start_row "
-			     "FROM semantic_records sr "
-			     "JOIN _r2n callee ON sr.name = callee.name "
-			     "JOIN _r2n caller ON sr.parent_id = caller.original_id AND sr.file_path = caller.file_path "
-			     "WHERE sr.project_id=" +
-			     pid + " AND sr.kind=7" +
-			     " AND sr.name != '' AND callee.node_id != caller.node_id")
-			     .c_str());
+	 // Only match callee kinds that are callable: Function(0), Method(1)
+	 // Filter out Variables, Imports, Modules etc to avoid invalid name joins
+	 exec(std::string(
+	       "INSERT INTO graph_edges "
+	       "(project_id, source_node_id, target_node_id, edge_type, graph_type, "
+	       " call_site_file, call_site_line) "
+	       "SELECT DISTINCT " +
+	       pid +
+	       ", "
+	       "  caller.node_id, callee.node_id, 1, 'call_graph', "
+	       "  sr.file_path, sr.start_row "
+	       "FROM semantic_records sr "
+	       "JOIN _r2n callee ON sr.name = callee.name "
+	       "JOIN _r2n caller ON sr.parent_id = caller.original_id AND sr.file_path = caller.file_path "
+	       "JOIN semantic_records cal_sr ON cal_sr.rowid = callee.rid "
+	       "WHERE sr.project_id=" +
+	       pid + " AND sr.kind=7" +
+	       " AND sr.name != '' AND callee.node_id != caller.node_id"
+	       " AND cal_sr.kind IN (0,1)" // only callable kinds
+	       )
+	       .c_str());
 	}
 
 	exec("DROP TABLE IF EXISTS _r2n");
 	exec("DROP TABLE IF EXISTS _rf");
 
 	fprintf(stderr, "buildGraph(SQL): %zu files, %s\n",
-		rebuild_files.size(),
-		build_calls ? "with calls" : "symbols only");
+	 rebuild_files.size(),
+	 build_calls ? "with calls" : "symbols only");
 	return true;
 }
 

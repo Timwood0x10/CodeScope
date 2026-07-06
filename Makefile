@@ -132,6 +132,41 @@ test-savings:
 	@bash tests/test_token_savings.sh 2>&1
 	@printf "  Report: tests/token_savings_report.md\n"
 
+# ─── Benchmark ────────────────────────────────────────────────────
+BENCH_BIN   := $(BUILD_DIR)/test_bench_project
+BENCH_DIR   := benchmarks
+BENCH_RES   := $(BENCH_DIR)/results
+BENCH_BASE  := $(BENCH_DIR)/baselines
+GRAMMARS    := $(GRAMMARS_DIR)
+
+bench-check: $(BENCH_BIN)
+	@printf "$(CYAN)[bench/check]$(RESET) Quick benchmark (engine C++ + GoAgent)...\n"
+	@mkdir -p $(BENCH_RES)
+	@printf "  Running engine C++ (48 files)...\n"
+	@CODESCOPE_BENCH_JSON=$(BENCH_RES)/engine_cpp_$$(git rev-parse --short HEAD).json \
+		$(BENCH_BIN) $(GRAMMARS) $(ENGINE_DIR)/src 5 "cpp" 2>/dev/null
+	@printf "  Running GoAgent (1157 Go files)...\n"
+	@CODESCOPE_BENCH_JSON=$(BENCH_RES)/goagent_go_$$(git rev-parse --short HEAD).json \
+		$(BENCH_BIN) $(GRAMMARS) $(HOME)/go/src/goagent 5 "go" 2>/dev/null
+	@printf "$(CHECK) bench-check complete\n"
+
+bench-full: $(BENCH_BIN)
+	@printf "$(CYAN)[bench/full]$(RESET) Full benchmark (engine + GoAgent + kernel)...\n"
+	@mkdir -p $(BENCH_RES)
+	@printf "  Running engine C++ (48 files)...\n"
+	@CODESCOPE_BENCH_JSON=$(BENCH_RES)/engine_cpp_$$(git rev-parse --short HEAD).json \
+		$(BENCH_BIN) $(GRAMMARS) $(ENGINE_DIR)/src 5 "cpp" 2>/dev/null
+	@printf "  Running GoAgent (1157 Go files)...\n"
+	@CODESCOPE_BENCH_JSON=$(BENCH_RES)/goagent_go_$$(git rev-parse --short HEAD).json \
+		$(BENCH_BIN) $(GRAMMARS) $(HOME)/go/src/goagent 5 "go" 2>/dev/null
+	@printf "  Running kernel subdir (541 C files)...\n"
+	@CODESCOPE_BENCH_JSON=$(BENCH_RES)/kernel_c_$$(git rev-parse --short HEAD).json \
+		$(BENCH_BIN) $(GRAMMARS) $(HOME)/code/researcher/linux/linux-6.14.7/kernel 5 "c" 2>/dev/null
+	@printf "$(CHECK) bench-full complete\n"
+
+$(BENCH_BIN): $(ENGINE_LIB)
+	@cmake --build $(BUILD_DIR) -j$$(nproc 2>/dev/null || sysctl -n hw.ncpu) 2>&1 | tail -1
+
 # ─── Lint ────────────────────────────────────────────────────────
 LINT_CPP_FILES := $(shell find $(ENGINE_DIR)/src -name '*.cpp' -o -name '*.h' | grep -v build)
 
