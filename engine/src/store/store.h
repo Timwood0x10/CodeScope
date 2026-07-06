@@ -34,6 +34,7 @@ class GraphStore {
 
 	uint64_t createProject(const char *root_path, const char *name);
 	uint64_t getProjectId(const char *root_path);
+	uint64_t getLatestProjectId();
 
 	// ── File ───────────────────────────────────────────────────
 

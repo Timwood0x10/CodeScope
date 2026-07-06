@@ -702,6 +702,19 @@ uint64_t GraphStore::getProjectId(const char *root_path)
 	return id;
 }
 
+uint64_t GraphStore::getLatestProjectId()
+{
+	sqlite3_stmt *stmt = nullptr;
+	const char *sql = "SELECT id FROM projects ORDER BY id DESC LIMIT 1";
+	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+	uint64_t id = 0;
+	if (sqlite3_step(stmt) == SQLITE_ROW) {
+		id = static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
+	}
+	sqlite3_finalize(stmt);
+	return id;
+}
+
 // ─── File ──────────────────────────────────────────────────────
 
 uint64_t GraphStore::upsertFile(uint64_t project_id, const char *path,

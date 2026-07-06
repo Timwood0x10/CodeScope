@@ -113,3 +113,10 @@ uint64_t engine_create_project(const char *root_path, const char *name)
 		return 0;
 	return g_store->createProject(root_path, name);
 }
+
+uint64_t engine_get_latest_project_id()
+{
+	if (!g_store)
+		return 0;
+	return g_store->getLatestProjectId();
+}

@@ -12,7 +12,13 @@ pub struct Server {
 
 impl Server {
     pub fn new() -> Self {
-        Server { project_id: 0 }
+        // Restore the most recent project_id from the database,
+        // so queries work immediately without re-indexing.
+        let pid = ffi::get_latest_project_id();
+        if pid > 0 {
+            eprintln!("codescope: restored project_id={}", pid);
+        }
+        Server { project_id: pid }
     }
 
     pub fn run(&mut self) -> io::Result<()> {

@@ -46,6 +46,10 @@ char* engine_locate_node(uint64_t project_id, uint64_t node_id,
 char* engine_locate_by_name(uint64_t project_id, const char* name);
 char* engine_get_graph_stats(uint64_t project_id);
 
+// Get the latest project ID from the database (highest ID).
+// Returns 0 if no projects exist.
+uint64_t engine_get_latest_project_id();
+
 // ─── Full-text search ──────────────────────────────────────────
 
 // Search code by name or content using FTS5; returns JSON with matching nodes

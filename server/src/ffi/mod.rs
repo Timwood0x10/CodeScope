@@ -8,6 +8,7 @@ unsafe extern "C" {
     fn engine_shutdown();
 
     fn engine_create_project(root_path: *const c_char, name: *const c_char) -> u64;
+    fn engine_get_latest_project_id() -> u64;
     fn engine_index_file(project_id: u64, file_path: *const c_char) -> *mut c_char;
     fn engine_index_project(
         project_id: u64,
@@ -123,6 +124,10 @@ pub fn shutdown() {
 
 pub fn create_project(root_path: &str, name: &str) -> u64 {
     unsafe { engine_create_project(cstr(root_path).as_ptr(), cstr(name).as_ptr()) }
+}
+
+pub fn get_latest_project_id() -> u64 {
+    unsafe { engine_get_latest_project_id() }
 }
 
 pub fn index_file(project_id: u64, file_path: &str) -> String {
