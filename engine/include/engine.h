@@ -87,10 +87,13 @@ char* engine_detect_changes(uint64_t project_id, const char* modified_files_json
  * clusters and their inter-relationships.
  *
  * @param project_id  The project to analyze.
+ * @param max_members Maximum members per community in output. 
+ *                    Set to a small value (e.g. 5-10) to avoid large token output.
+ *                    0 = include all members.
  * @return JSON with "communities" array, "inter_community_edges",
  *         and "total_communities".
  */
-char* engine_get_communities(uint64_t project_id);
+char* engine_get_communities(uint64_t project_id, int max_members);
 
 // ─── Hotspot Analysis ───────────────────────────────────────────
 

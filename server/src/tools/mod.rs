@@ -154,8 +154,9 @@ fn h_detect_changes(project_id: u64, args: &Value) -> String {
     ffi::detect_changes(project_id, files)
 }
 
-fn h_get_communities(project_id: u64, _args: &Value) -> String {
-    ffi::get_communities(project_id)
+fn h_get_communities(project_id: u64, args: &Value) -> String {
+    let max_members = args["max_members"].as_i64().unwrap_or(0) as i32;
+    ffi::get_communities(project_id, max_members)
 }
 
 fn h_index_batch(project_id: u64, args: &Value) -> String {

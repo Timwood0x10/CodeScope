@@ -44,9 +44,12 @@ struct Community {
  *
  * @param project_id  The project to analyze.
  * @param store       Initialized GraphStore.
+ * @param max_members Maximum members per community in output (0 = all, default).
+ *                    Set to a small number (e.g. 5-10) to avoid huge token output.
  * @return JSON with "communities" array and "inter_community_edges".
  */
-std::string detectCommunities(uint64_t project_id, store::GraphStore *store);
+std::string detectCommunities(uint64_t project_id, store::GraphStore *store,
+                              int max_members = 0);
 
 } // namespace query
 

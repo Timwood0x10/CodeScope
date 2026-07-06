@@ -480,9 +480,9 @@ std::string QueryEngine::detectChanges(uint64_t project_id,
 
 // ─── Community Detection ─────────────────────────────────────
 
-std::string QueryEngine::getCommunities(uint64_t project_id)
+std::string QueryEngine::getCommunities(uint64_t project_id, int max_members)
 {
-	return detectCommunities(project_id, store_);
+	return detectCommunities(project_id, store_, max_members);
 }
 
 // ─── Hotspot Analysis ───────────────────────────────────────
