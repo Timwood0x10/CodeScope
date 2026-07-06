@@ -132,7 +132,7 @@ flowchart LR
 | `find_definition` | Find where a symbol is defined | `symbol_name`, `file_filter` | file + line/col range | ~20 |
 | `find_references` | Find all references to a symbol | `symbol_name`, `file_filter` | all referencing locations | ~30 |
 | `find_symbol` | Find symbol(s) by exact name | `symbol_name` | id, kind, file, line | ~30 |
-| `locate_code` | Get source code context around a symbol | `identifier`, `identifier_type`, `context_lines` | file path + source lines | ~50-300 |
+| `locate_code` | Get source code context around a symbol | `identifier`, `context_lines` | file path + source lines | ~50-300 |
 | `get_complexity` | Get cyclomatic/cognitive complexity | `node_id` | cyclomatic, cognitive, nesting depth | ~20 |
 
 ### 3.3 Call Graph

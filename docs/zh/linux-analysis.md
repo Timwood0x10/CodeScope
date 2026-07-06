@@ -268,6 +268,23 @@ include/linux/fs.h:401  address_space_operations  — 页 IO 虚函数表
 | 其他阶段 | 3.5 s | tests/k8s/githistory/decorator/configlink |
 | **总计** | **~183 s** | |
 
+### 内存配置文件
+
+```
+峰值：  11,644 MB  (parallel_extract 阶段 — 14 workers 持有 AST)
+稳定：  7,500 MB  (提取后，resolve 和 registry 阶段)
+预算：  18,432 MB (每个 worker: 1,316 MB)
+```
+
+### 磁盘使用
+
+```
+SQLite DB:  7.06 GB  (~/.cache/codebase-memory-mcp/)
+缓存：      6.70 GB  (所有已索引项目)
+───
+总计：     ~14 GB
+```
+
 ### 扩展性
 
 | 范围 | 文件数 | 节点 | 耗时 | 内存 |
@@ -283,7 +300,7 @@ include/linux/fs.h:401  address_space_operations  — 页 IO 虚函数表
 
 ### 示例 1：USB HID 设备识别
 
-**使用工具：** `index_file`, `find_definition`, `graph_query`
+**使用工具：** `index_file`, `find_definition`, `graph_query` (MATCH (Function)-[Calls]->(Function))
 
 关键符号定位（通过 CodeScope MCP）：
 
@@ -295,12 +312,12 @@ include/linux/fs.h:401  address_space_operations  — 页 IO 虚函数表
 | `usb_kbd_probe` | `usbkbd.c` | 261 | `find_definition` |
 | `hid_usb_ids` | `hid-core.c` | 1678 | `find_definition` |
 
-调用图（通过 `graph_query`）：发现 45 条调用边。
+调用图（通过 `graph_query`）：在 USB HID 驱动链中发现 45 条调用边。
 
 完整分析：`Runtimelog/scan_usb_hid_analysis.log`
 
 ### 示例 2：进程调度与父子资源管理
 
-**使用工具：** `find_definition`, `index_file`
+**使用工具：** `find_definition`, `index_file` 针对 kernel/sched/core.c、kernel/fork.c、kernel/exit.c
 
 完整分析：`Runtimelog/scan_linux_scheduler.log`

@@ -31,7 +31,7 @@ End: 2026-07-06 19:52:18
 Total: 1m44s
 ```
 
-### Performance
+### Performance Metrics
 
 | Metric | Value |
 |--------|:-----:|
@@ -43,11 +43,11 @@ Total: 1m44s
 | SQLite write | 38,932ms (37.4%) |
 | buildGraph | 30,703ms (29.5%) |
 | FTS index | 22,995ms (22.1%) |
-| Directories scanned | 65,437 |
+| Directories discovered | 65,437 |
 | Directories skipped | 1,698 |
 | Workers | 14 |
 
-### Bottleneck
+### Bottleneck Analysis
 
 ```
 Parse    3,193ms  ███░░░░░░░░░░░░░░░░░░  3.0%
@@ -56,19 +56,19 @@ Graph   30,703ms  █████████████████░░░�
 FTS     22,995ms  █████████████░░░░░░░░  22.1%
 ```
 
-**SQLite-bound** (SQLite + buildGraph + FTS = 89%). Parse throughput: **11,523 files/sec**.
+**Still SQLite-bound** (SQLite + buildGraph + FTS = 89%). Parsing only took 3.2s (3%), achieving throughput of **11,523 files/sec**.
 
-### Query Token Cost
+### Query Token Consumption
 
-| Query | Tokens |
-|-------|:------:|
-| `get_graph_stats` | 19 |
-| `get_hotspots` top10 | ~500 |
-| `project_overview` | ~71 |
-| `get_module_tree` | 4 |
-| `get_entry_points` | 5 |
-| `search` (single) | ~300-1000 |
-| **Typical analysis** | **~910** |
+| Query | Tokens | Percentage |
+|-------|:------:|:----------:|
+| `get_graph_stats` | 19 | — |
+| `get_hotspots` top10 | ~500 | — |
+| `project_overview` | ~71 | — |
+| `get_module_tree` | 4 | — |
+| `get_entry_points` | 5 | — |
+| `search` (single) | ~300-1000 | — |
+| **Typical analysis combo** | **~910** | — |
 
 ---
 
@@ -99,7 +99,7 @@ End: 2026-07-06 19:56:39
 Total: 1m1s
 ```
 
-### Performance
+### Performance Metrics
 
 | Metric | Value |
 |--------|:-----:|
@@ -111,37 +111,106 @@ Total: 1m1s
 | SQLite write | 25,736ms (43.6%) |
 | buildGraph | 20,321ms (34.4%) |
 | FTS index | 11,568ms (19.6%) |
-| Directories scanned | 21,672 |
+| Directories discovered | 21,672 |
 | Directories skipped | 6,415 |
 | Workers | 14 |
 
-### Bottleneck
+### Bottleneck Analysis
 
-```mermaid
-mindmap
-  root((Bottleneck))
-    Parse
-      1024ms(1.7%)
-    SQLite
-      25736ms(43.6%)
-    buildGraph
-      20321ms(34.4%)
-    FTS
-      11568ms(19.6%)
+```
+Parse   1,024ms  ██░░░░░░░░░░░░░░░░░░░   1.7%
+SQLite 25,736ms  █████████████████████  43.6%
+Graph  20,321ms  ██████████████████░░░  34.4%
+FTS    11,568ms  ███████████████░░░░░░  19.6%
 ```
 
 ---
 
-## 3. Arc/Rc & Multithreading in rustc
+## 3. Bun Runtime Core Functionality Analysis
+
+### Tech Stack
+
+Bun is primarily written in **Zig**, integrating **WebKit's JavaScriptCore** as the JS engine, with extensive C++ FFI binding layers:
+
+| Language | Files | Purpose |
+|----------|:-----:|---------|
+| Zig | 1,270 | Core runtime, CLI, bundler, package manager |
+| C++ | 579 | JSC binding layer (`src/jsc/bindings/`) |
+| C | 113 | WebCore integration, system calls |
+| JS/TS | 6,592 | Tests, API definitions |
+
+### Core Architecture
+
+```mermaid
+graph TB
+    subgraph "Bun CLI (main.zig)"
+        CLI["Cli.start()"]
+    end
+    subgraph "Commands"
+        RUN["bun run"]
+        TEST["bun test"]
+        INSTALL["bun install"]
+        BUILD["bun build"]
+        SERVE["bun serve"]
+    end
+    subgraph "JS Runtime (bun.js.zig)"
+        VM["VirtualMachine"]
+        TRANS["Transpiler<br/>(TS/JSX→JS)"]
+        RES["Resolver"]
+    end
+    subgraph "JavaScriptCore (C++)"
+        JSC["JSC::JSGlobalObject"]
+        BIND["bindings: JSCommonJSModule<br/>JSCommonJSExtensions"]
+        WC["WebCore bindings<br/>TypedArrayController"]
+    end
+    subgraph "System Layer"
+        MIM["mimalloc allocator"]
+        SSL["BoringSSL"]
+    end
+
+    CLI --> RUN & TEST & INSTALL & BUILD & SERVE
+    RUN --> VM
+    VM --> JSC
+    VM --> TRANS
+    VM --> RES
+    JSC --> BIND & WC
+    CLI --> MIM & SSL
+```
+
+### Core Feature Breakdown
+
+| Feature | Implementation Location | Technology |
+|---------|------------------------|-----------|
+| **JS/TS execution** | `src/bun.js.zig` → `VirtualMachine` | Zig + JSC C++ FFI |
+| **Transpiler** | `src/transpiler/` | Zig implementation of TS/JSX→JS |
+| **Bundler** | `src/bundler/` | Zig (BundleThread.zig) |
+| **Package manager** | `src/install/` | Zig (npm protocol implementation) |
+| **HTTP server** | `src/http/` | Zig + libuv |
+| **SQLite** | `src/sqlite/` | Zig wrapper |
+| **WebSocket** | `src/websocket/` | Zig |
+| **Crypto** | `src/boringssl/` | BoringSSL (OpenSSL fork) |
+| **Memory allocator** | `src/bun_alloc/` | mimalloc |
+
+### Key Technical Details
+
+1. **JavaScriptCore Integration**: Bun directly links WebKit's `libjavascriptcoregtk`, exposing JSC API to Zig through C++ glue code in `src/jsc/bindings/`
+2. **Main Loop**: `Cli.start()` in `main.zig` parses subcommands and dispatches
+3. **Fast Startup**: Bun pre-compiles WebKit bytecode cache, achieving 4-5x faster cold start than Node.js
+4. **mimalloc**: Uses Microsoft's mimalloc instead of system allocator to reduce memory fragmentation
+5. **Zig Zero-Cost Abstractions**: Zig's comptime and no implicit allocation policies are the foundation of Bun's performance advantages
+
+---
+
+## 4. Arc/Rc & Multithreading Implementation in rustc
 
 > Based on source analysis of `library/alloc/src/sync.rs` (4,974 lines) and `library/alloc/src/rc.rs` (4,599 lines).
 
-### 3.1 Arc Data Structure
+### 4.1 Arc Core Data Structure
 
 ```rust
 // sync.rs:269-276
 pub struct Arc<T: ?Sized, A: Allocator = Global> {
-    ptr: NonNull<ArcInner<T>>,       // heap-allocated inner
+    ptr: NonNull<ArcInner<T>>,       // heap-allocated ArcInner
     phantom: PhantomData<ArcInner<T>>,
     alloc: A,                         // allocator (default Global)
 }
@@ -151,24 +220,24 @@ pub struct Arc<T: ?Sized, A: Allocator = Global> {
 struct ArcInner<T: ?Sized> {
     strong: Atomic<usize>,   // thread-safe strong ref count
     weak: Atomic<usize>,     // thread-safe weak ref count
-    data: T,                 // the actual value
+    data: T,                 // actual data
 }
 ```
 
 Key design points:
-- **`Atomic<usize>`** vs Rc's `Cell<usize>` — the fundamental difference between thread-safe and single-threaded
-- **`#[repr(C, align(2))]`** — 2-byte alignment enables low-bit tagging for weak count locking
+- **`Atomic<usize>`** replaces Rc's `Cell<usize>` — the fundamental difference between Arc thread-safety and Rc single-threading
+- **`#[repr(C, align(2))]`** — 2-byte alignment enables low-bit tagging (for weak reference count locking)
 
-### 3.2 Send/Sync Derivation
+### 4.2 Send/Sync Derivation
 
 ```rust
 unsafe impl<T: ?Sized + Sync + Send, A: Allocator + Send> Send for Arc<T, A> {}
 unsafe impl<T: ?Sized + Sync + Send, A: Allocator + Sync> Sync for Arc<T, A> {}
 ```
 
-`Arc<T>: Send` iff `T: Sync + Send + Allocator: Send`. This is a manual `unsafe impl` — the compiler trusts the programmer that `Atomic<usize>` provides the necessary memory ordering guarantees.
+`Arc<T>: Send` if and only if `T: Sync + Send` and allocator is Send. This is a manually annotated `unsafe impl` — the compiler trusts the programmer to have chosen the correct atomic types.
 
-### 3.3 Arc::new — Allocation Path
+### 4.3 Arc::new Allocation Path
 
 ```rust
 pub fn new(data: T) -> Arc<T> {
@@ -179,28 +248,28 @@ pub fn new(data: T) -> Arc<T> {
     });
     unsafe { Self::from_inner(Box::leak(x).into()) }
     //        ^^^ Box::leak prevents Box from freeing memory,
-    //            transferring lifetime control to the ref count
+    //            transferring lifetime control to reference count
 }
 ```
 
-### 3.4 Arc::clone — Atomic Increment
+### 4.4 Arc::clone Atomic Increment
 
 ```rust
 fn clone(&self) -> Self {
     let inner = self.ptr.as_ref();
     inner.strong.fetch_add(1, Ordering::Relaxed);
-    // Relaxed is sufficient: clone has no data dependency on other memory
+    // Relaxed is sufficient: clone doesn't involve data dependency on other memory
     Self { ptr: self.ptr, phantom: PhantomData, alloc: ... }
 }
 ```
 
-### 3.5 Arc::drop — Atomic Decrement & Memory Release
+### 4.5 Arc::drop Atomic Decrement & Memory Deallocation
 
 ```rust
 fn drop(&mut self) {
     let inner = self.ptr.as_ref();
     if inner.strong.fetch_sub(1, Ordering::Release) != 1 {
-        return;  // other strong refs exist
+        return;  // other strong references exist
     }
     atomic::fence(Ordering::Acquire);  // synchronize with last Release
     unsafe { ptr::drop_in_place(&mut (*ptr).data); }
@@ -212,12 +281,12 @@ fn drop(&mut self) {
 }
 ```
 
-**Memory order strategy:**
-- `fetch_sub(Release)`: ensures all prior writes are visible to other threads
-- `fence(Acquire)`: ensures we see the last thread's final writes to data
-- Together they form a **happens-before** relationship — the foundation of lock-free programming
+**Memory Ordering Strategy**:
+- `fetch_sub(Release)`: ensures all writes before drop are visible to other threads
+- `fence(Acquire)`: ensures we see the last thread's final writes to data before releasing
+- Release/Acquire forms a **happens-before** relationship — the foundation of lock-free programming
 
-### 3.6 Arc vs Rc — Comparison
+### 4.6 Arc vs Rc Comparison
 
 ```mermaid
 flowchart TD
@@ -245,13 +314,13 @@ flowchart TD
 | Send | ✅ conditional | ❌ not supported |
 | Sync | ✅ conditional | ❌ not supported |
 | Memory ordering | Relaxed / Release / Acquire + fence | None (single-threaded) |
-| Overhead | Atomic operations | Zero |
+| Overhead | Atomic operation instructions | Zero |
 
-### 3.7 Thread Implementation
+### 4.7 Thread Underlying Implementation
 
 ```rust
 // library/std/src/thread/mod.rs
-// Platform dispatch via cfg:
+// Platform dispatch (via cfg macro):
 // Linux/macOS: sys::unix::thread → libc::pthread_create
 // Windows:     sys::windows::thread → CreateThread
 
@@ -264,65 +333,15 @@ where F: FnOnce() -> T + Send + 'static, T: Send + 'static
 }
 ```
 
-The `Send` bound on `spawn()` is checked at **compile time** by the type system — it's not a runtime check. The `unsafe impl Send for Arc<T>` is what allows `Arc<T>` to be moved across threads.
+The `Send` constraint on `spawn()` is checked at **compile time** by the type system, not a runtime check. The `unsafe impl Send for Arc<T>` is the key that allows `Arc<T>` to be moved across threads.
 
----
+### Summary
 
-## 4. Bun Runtime Core Architecture
+Arc's thread safety relies on three underlying mechanisms:
 
-### Tech Stack
-
-Bun is written in **Zig** with **WebKit JavaScriptCore** as the JS engine:
-
-```mermaid
-graph TB
-    subgraph "Bun CLI (main.zig)"
-        CLI["Cli.start()"]
-    end
-    subgraph "Commands"
-        RUN["bun run"]
-        TEST["bun test"]
-        INSTALL["bun install"]
-        BUILD["bun build"]
-        SERVE["bun serve"]
-    end
-    subgraph "JS Runtime (bun.js.zig)"
-        VM["VirtualMachine"]
-        TRANS["Transpiler<br/>(TS/JSX→JS)"]
-        RES["Resolver"]
-    end
-    subgraph "JavaScriptCore (C++)"
-        JSC["JSC::JSGlobalObject"]
-        BIND["bindings: JSCommonJSModule<br/>JSCommonJSExtensions"]
-        WC["WebCore bindings<br/>TypedArrayController"]
-    end
-    subgraph "System"
-        MIM["mimalloc allocator"]
-        SSL["BoringSSL"]
-    end
-
-    CLI --> RUN & TEST & INSTALL & BUILD & SERVE
-    RUN --> VM
-    VM --> JSC
-    VM --> TRANS
-    VM --> RES
-    JSC --> BIND & WC
-    CLI --> MIM & SSL
-```
-
-### Core Features
-
-| Feature | Location | Technology |
-|---------|----------|-----------|
-| JS/TS execution | `src/bun.js.zig` → VirtualMachine | Zig + JSC C++ FFI |
-| Transpiler | `src/transpiler/` | Zig (TS/JSX→JS) |
-| Bundler | `src/bundler/` | Zig (BundleThread.zig) |
-| Package manager | `src/install/` | Zig (npm protocol) |
-| HTTP server | `src/http/` | Zig + libuv |
-| SQLite | `src/sqlite/` | Zig bindings |
-| WebSocket | `src/websocket/` | Zig |
-| Crypto | `src/boringssl/` | BoringSSL |
-| Allocator | `src/bun_alloc/` | mimalloc |
+1. **`Atomic<usize>`** hardware-level atomic operations (x86 `LOCK XADD` / ARM `LDREX+STREX`)
+2. **`Release/Acquire` memory ordering** ensures cross-thread happens-before
+3. **`unsafe impl Send/Sync`** manual annotation — the compiler trusts the programmer chose correct atomic types
 
 ---
 
@@ -339,16 +358,23 @@ graph TB
 | buildGraph % | 29.5% | 34.4% | 37.3% |
 | FTS % | 22.1% | 19.6% | 29.3% |
 
-### Token Cost Consistency
+## 6. Token Consumption Comparison
+
+Aggregated from three projects in this test:
 
 | Query | rustc | Bun | ARES Agent | memscope-rs |
-|-------|:----:|:---:|:----------:|:-----------:|
+|-------|:-----:|:---:|:----------:|:-----------:|
 | `get_graph_stats` | 19 | 19 | 18 | 18 |
-| `get_hotspots` top10 | ~500 | ~488 | 488 | 488 |
+| `get_hotspots` top10 | 500 | ~488 | 488 | 488 |
 | `project_overview` | 71 | 71 | 71 | 71 |
 | `get_module_tree` | 4 | 4 | 4 | 4 |
 | `get_entry_points` | 5 | 5 | 5 | 5 |
 | `get_project_info` | 44 | 39 | 44 | 44 |
 
-**vs raw source**: rustc 36,807 files → CodeScope delivers **~910 tokens** vs **millions raw**
-**vs codebase-memory-mcp**: Cannot index rustc (no Rust multi-file graph) or Bun (no Zig support)
+**Cross-project consistency**: Token consumption depends only on **returned data volume**, not project size. Both million-node and thousand-node projects' `get_graph_stats` are ~18 tokens.
+
+**vs raw source code**:
+- rustc 36,807 files: CodeScope returns architecture info in **~910 tokens** vs reading source code would require **millions of tokens**
+- Bun 9,641 files: CodeScope returns architecture info in **~910 tokens** vs reading source code would require **hundreds of thousands of tokens**
+
+**vs codebase-memory-mcp**: codebase-memory-mcp cannot complete full indexing for either project (rustc: no Rust multi-file graph support, Bun: no Zig support), while CodeScope covers all languages through tree-sitter multi-language parsers.

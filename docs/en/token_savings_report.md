@@ -19,7 +19,7 @@ CodeScope reduces token consumption by ~98.9% on average vs raw source, and by ~
 |----------|-------------------|---------------------|---------|
 | Find function definition | ~21 | ~2,265 | **99.1%** |
 | Trace callers of a function | ~18 | ~2,000 | **99.1%** |
-| Project architecture overview (module_tree) | ~4 | ~1,875 | **99.8%** |
+| Project module tree (`get_module_tree`) | ~4 | ~1,875 | **99.8%** |
 | Project overview (project_overview) | ~71 | ~1,875 | **96.2%** |
 | Function complexity analysis | ~43 | ~4,733 | **99.1%** |
 | Symbol search by name | ~23 | ~958 | **97.6%** |
