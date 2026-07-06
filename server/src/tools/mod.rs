@@ -3,6 +3,7 @@ use serde_json::{Value, json};
 use crate::ffi;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
+use std::process::Command;
 
 /// Handler signature for a single MCP tool.
 type ToolHandler = fn(u64, &Value) -> String;
@@ -70,6 +71,45 @@ fn h_locate_code(project_id: u64, args: &Value) -> String {
 
 fn h_index_project(project_id: u64, args: &Value) -> String {
     let path = args["project_path"].as_str().unwrap_or("");
+
+    // Use worker subprocess for memory isolation
+    // Pass the existing project_id so indexed data is accessible to the parent server
+    let self_exe = std::env::current_exe().ok();
+    if let Some(exe) = self_exe {
+        let db_path = std::env::var("CODESCOPE_DB_PATH")
+            .unwrap_or_else(|_| ".codescope/codescope.db".to_string());
+        let grammars_dir = std::env::var("GRAMMARS_DIR")
+            .unwrap_or_else(|_| "grammars".to_string());
+        let lang = args["language_filter"].as_str().unwrap_or("");
+
+        let output = Command::new(&exe)
+            .args(["worker", &db_path, path, lang, &project_id.to_string()])
+            .env("GRAMMARS_DIR", &grammars_dir)
+            .env("CODESCOPE_DB_PATH", &db_path)
+            .env("CODESCOPE_VERBOSE", "0")
+            .output();
+
+        match output {
+            Ok(out) => {
+                if out.status.success() {
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    if let Some(json_start) = stdout.find('{') {
+                        if let Some(json_end) = stdout[json_start..].rfind('}') {
+                            return stdout[json_start..=json_start + json_end].to_string();
+                        }
+                    }
+                    return stdout.to_string();
+                }
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                return format!("{{\"ok\":false,\"error\":\"worker failed: {}\"}}", stderr.lines().last().unwrap_or("unknown"));
+            }
+            Err(e) => {
+                return format!("{{\"ok\":false,\"error\":\"spawn worker: {}\"}}", e);
+            }
+        }
+    }
+
+    // Fallback: in-process indexing with correct null handling for missing lang filter
     let lang = args["language_filter"].as_str();
     let lang_ptr = lang.map_or(std::ptr::null(), |s| s.as_ptr() as *const _);
     ffi::index_project(project_id, path, lang_ptr)

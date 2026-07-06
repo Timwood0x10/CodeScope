@@ -9,6 +9,47 @@ use std::path::Path;
 fn main() {
     let args: Vec<String> = env::args().collect();
 
+    // ── Worker mode: codescope worker <db_path> <dir_path> <lang_filter> <project_name> ─
+    // Runs index_project in a subprocess, then exits. RSS is 100% returned to OS on exit.
+    // Called by the MCP server to isolate indexing memory from the long-running server.
+    if args.len() >= 2 && args[1] == "worker" {
+        let db_path = args.get(2).map(|s| s.as_str()).unwrap_or(".codescope/codescope.db");
+        let dir_path = args.get(3).map(|s| s.as_str()).unwrap_or(".");
+        let lang_filter = args.get(4).map(|s| s.as_str()).unwrap_or("");
+        let project_name = args.get(5).map(|s| s.as_str()).unwrap_or("worker-project");
+        let project_id_arg = args.get(5).map(|s| s.as_str()).unwrap_or("0");
+        // project_id is the 5th arg if it's numeric, otherwise project_name is
+
+        unsafe { env::set_var("CODESCOPE_DB_PATH", db_path); }
+
+        if ffi::init(db_path) != 0 {
+            eprintln!("codescope worker: engine init failed");
+            std::process::exit(1);
+        }
+
+        // Use provided project_id if numeric, otherwise create a new project
+        let pid = if project_id_arg.chars().all(|c| c.is_ascii_digit()) {
+            project_id_arg.parse::<u64>().unwrap_or_else(|_| ffi::create_project(dir_path, project_name))
+        } else {
+            ffi::create_project(dir_path, project_name)
+        };
+
+        eprintln!("worker: project={} starting index_project dir={} lang={}", pid, dir_path, lang_filter);
+
+        let result = if lang_filter.is_empty() {
+            ffi::index_project(pid, dir_path, std::ptr::null())
+        } else {
+            let c_lang = std::ffi::CString::new(lang_filter).unwrap_or_default();
+            ffi::index_project(pid, dir_path, c_lang.as_ptr() as *const _)
+        };
+        // Write result JSON to stdout for the server to read
+        println!("{}", result);
+
+        ffi::shutdown();
+        eprintln!("worker: done, RSS will be returned to OS on exit");
+        return;
+    }
+
     // ── CLI mode: codescope cli <tool_name> [json_args] ─────
     if args.len() >= 3 && args[1] == "cli" {
         let tool_name = &args[2];
