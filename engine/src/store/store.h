@@ -349,6 +349,18 @@ class GraphStore {
 	/** Debug: run EXPLAIN QUERY PLAN and log output to stderr. */
 	void explainQueryPlan(const char *sql, const char *label = nullptr);
 
+	// ── Project Readiness ──────────────────────────────────────
+
+	/** Set a readiness flag for a project. */
+	void setProjectReadiness(uint64_t project_id, const char *field,
+				 int value);
+
+	/** Get a readiness flag for a project, or 0 if not set. */
+	int getProjectReadiness(uint64_t project_id, const char *field);
+
+	/** Get all readiness flags as JSON: "fast_ready":1,"fts_ready":0,... */
+	std::string getProjectReadinessJson(uint64_t project_id);
+
     private:
 	sqlite3 *db_ = nullptr;
 	std::string error_;

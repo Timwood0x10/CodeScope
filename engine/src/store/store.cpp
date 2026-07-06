@@ -96,6 +96,18 @@ bool GraphStore::createSchema()
             created_at TEXT DEFAULT (datetime('now'))
         );
 
+        -- Project readiness: tracks which index phases have completed.
+        -- Each column is 0 (not ready) or 1 (ready).
+        CREATE TABLE IF NOT EXISTS project_readiness (
+            project_id INTEGER PRIMARY KEY,
+            fast_ready INTEGER DEFAULT 0,
+            normal_ready INTEGER DEFAULT 0,
+            deep_ready INTEGER DEFAULT 0,
+            fts_ready INTEGER DEFAULT 0,
+            vector_ready INTEGER DEFAULT 0,
+            FOREIGN KEY (project_id) REFERENCES projects(id)
+        );
+
         CREATE TABLE IF NOT EXISTS files (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id INTEGER NOT NULL,
@@ -429,6 +441,64 @@ bool GraphStore::createIndexesAfterBulkLoad(uint64_t project_id)
 		}
 	}
 	return ok;
+}
+
+// ─── Project Readiness ───────────────────────────────────────────
+
+void GraphStore::setProjectReadiness(uint64_t project_id, const char *field,
+				     int value)
+{
+	// Ensure the readiness row exists
+	exec(std::string(
+		     "INSERT OR IGNORE INTO project_readiness (project_id) VALUES (" +
+		     std::to_string(project_id) + ")")
+		     .c_str());
+	exec(std::string("UPDATE project_readiness SET " + std::string(field) +
+			 "=" + std::to_string(value) +
+			 " WHERE project_id=" + std::to_string(project_id))
+		     .c_str());
+}
+
+int GraphStore::getProjectReadiness(uint64_t project_id, const char *field)
+{
+	sqlite3_stmt *stmt = nullptr;
+	std::string sql = "SELECT " + std::string(field) +
+			  " FROM project_readiness WHERE project_id=" +
+			  std::to_string(project_id);
+	if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) !=
+	    SQLITE_OK)
+		return 0;
+	int val = 0;
+	if (sqlite3_step(stmt) == SQLITE_ROW)
+		val = sqlite3_column_int(stmt, 0);
+	sqlite3_finalize(stmt);
+	return val;
+}
+
+std::string GraphStore::getProjectReadinessJson(uint64_t project_id)
+{
+	sqlite3_stmt *stmt = nullptr;
+	const char *sql = "SELECT fast_ready, normal_ready, deep_ready, "
+			  "fts_ready, vector_ready "
+			  "FROM project_readiness WHERE project_id=?";
+	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
+		return "";
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	std::string json;
+	if (sqlite3_step(stmt) == SQLITE_ROW) {
+		json = "\"fast_ready\":" +
+		       std::to_string(sqlite3_column_int(stmt, 0)) +
+		       ",\"normal_ready\":" +
+		       std::to_string(sqlite3_column_int(stmt, 1)) +
+		       ",\"deep_ready\":" +
+		       std::to_string(sqlite3_column_int(stmt, 2)) +
+		       ",\"fts_ready\":" +
+		       std::to_string(sqlite3_column_int(stmt, 3)) +
+		       ",\"vector_ready\":" +
+		       std::to_string(sqlite3_column_int(stmt, 4));
+	}
+	sqlite3_finalize(stmt);
+	return json;
 }
 
 // ─── Utility ───────────────────────────────────────────────────

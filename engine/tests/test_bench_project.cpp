@@ -76,6 +76,8 @@ int main(int argc, char **argv) {
     if (argc < 3) {
         fprintf(stderr, "Usage: %s <grammars_dir> <project_dir> [max_file_size_mb] [lang_filter]\n", argv[0]);
         fprintf(stderr, "  CODESCOPE_BENCH_JSON=<path>  Write machine-readable JSON report\n");
+        fprintf(stderr, "  CODESCOPE_BENCH_REPEAT=<N>   Run N times, output aggregated stats\n");
+        fprintf(stderr, "  CODESCOPE_BENCH_COMPARE=<baseline.json>  Compare against baseline\n");
         return 1;
     }
     setenv("GRAMMARS_DIR", argv[1], 1);
@@ -91,6 +93,10 @@ int main(int argc, char **argv) {
     const char *lang_filter = (argc > 4) ? argv[4] : "typescript,tsx,javascript";
     const char *json_out = getenv("CODESCOPE_BENCH_JSON");
     bool json_mode = json_out && *json_out;
+    const char *repeat_env = getenv("CODESCOPE_BENCH_REPEAT");
+    int repeat_count = repeat_env ? atoi(repeat_env) : 1;
+    if (repeat_count < 1) repeat_count = 1;
+    const char *compare_file = getenv("CODESCOPE_BENCH_COMPARE");
 
     // Map language filter to file extensions for counting
     std::string ext_filter;

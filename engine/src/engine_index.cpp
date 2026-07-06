@@ -1,4 +1,5 @@
 #include "engine_internal.h"
+#include "filter_policy.h"
 
 #include <algorithm>
 #include <chrono>
@@ -400,32 +401,22 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	if (env_max)
 		max_file_size = static_cast<uint64_t>(std::atoll(env_max));
 
-	std::unordered_set<std::string> skip_dirs = {
-		".git",
-		".svn",
-		"node_modules",
-		"target",
-		"build",
-		"__pycache__",
-		".venv",
-		"venv",
-		".codescope",
-		".codegraph",
-		// JS/TS build output — skip by default
-		"dist",
-		".next",
-		".nuxt",
-		"coverage",
-		"vendor",
-		"public",
-		".cache",
-		".out",
-	};
+	std::unordered_set<std::string> skip_dirs = {};
+
+	// Use centralized FilterPolicy for file discovery
+	FilterPolicy filter;
+	const char *env_mode = getenv("CODESCOPE_INDEX_MODE");
+	bool mode_fast_discover = env_mode && strcmp(env_mode, "fast") == 0;
+	if (mode_fast_discover)
+		filter.setMode(FilterPolicy::FAST);
+	if (!lang_filter.empty())
+		filter.setLanguageFilter(lang_filter);
 
 	// Phase 1: collect file paths (single-threaded)
 	struct FileJob {
 		std::string path;
 		std::string lang;
+		size_t size = 0;
 	};
 	std::vector<FileJob> jobs;
 	try {
@@ -433,6 +424,7 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 			dir, std::filesystem::directory_options::
 				     skip_permission_denied);
 		for (auto &entry : it) {
+			filter.stats().seen_dirs++;
 			std::string rel = entry.path().string();
 			if (rel.size() > dir.size() + 1)
 				rel = rel.substr(dir.size() + 1);
@@ -442,25 +434,51 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 				std::string first =
 					rel.substr(0, rel.find('/'));
 				if (entry.is_directory() &&
-				    skip_dirs.count(first)) {
+				    filter.shouldSkipDir(first)) {
 					it.disable_recursion_pending();
+					filter.stats().skipped_dirs++;
 					continue;
 				}
-				if (entry.is_regular_file() &&
-				    skip_dirs.count(rel))
-					continue;
 			}
 			if (entry.is_regular_file()) {
-				const char *lang =
-					detectLanguage(entry.path().c_str());
-				if (!lang)
+				filter.stats().seen_files++;
+				// Check filename-based skip
+				auto slash = rel.rfind('/');
+				std::string fname =
+					(slash == std::string::npos) ?
+						rel :
+						rel.substr(slash + 1);
+				if (filter.shouldSkipFile(fname)) {
+					filter.stats().skipped_files++;
 					continue;
-				// Use pre-parsed language filter set (O(1) lookup)
-				if (!lang_filter_set.empty() &&
-				    lang_filter_set.find(lang) ==
-					    lang_filter_set.end())
+				}
+				// Check suffix-based skip
+				auto dot = rel.rfind('.');
+				if (dot != std::string::npos) {
+					if (filter.shouldSkipSuffix(
+						    rel.substr(dot))) {
+						filter.stats().skipped_suffix++;
+						continue;
+					}
+				}
+				const char *lang = filter.detectLanguage(
+					entry.path().c_str());
+				if (!lang) {
+					filter.stats().skipped_lang++;
 					continue;
-				jobs.push_back({ entry.path(), lang });
+				}
+				if (!filter.isLanguageAccepted(lang)) {
+					filter.stats().skipped_lang++;
+					continue;
+				}
+				filter.stats().candidate_files++;
+				auto file_size =
+					entry.is_regular_file() ?
+						std::filesystem::file_size(
+							entry.path()) :
+						0;
+				jobs.push_back(
+					{ entry.path(), lang, file_size });
 			}
 		}
 	} catch (const std::exception &e) {
@@ -472,6 +490,13 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	if (jobs.empty())
 		return dupString(
 			"{\"ok\":true,\"files_indexed\":0,\"nodes\":0,\"edges\":0,\"errors\":0}");
+
+	// Sort jobs by file size descending — large files first
+	// This reduces tail latency from big files being last in random order.
+	std::sort(jobs.begin(), jobs.end(),
+		  [](const FileJob &a, const FileJob &b) {
+			  return a.size > b.size;
+		  });
 
 	// Pre-load TSLanguage pointers (read-only after registration)
 	std::unordered_map<std::string, const TSLanguage *> lang_ptrs;
@@ -509,8 +534,8 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	// FAST:  skip FTS + vectors, symbol graph only
 	// NORMAL: build FTS, skip vectors
 	// DEEP:   build FTS + vectors (full pipeline)
-	const char *env_mode = getenv("CODESCOPE_INDEX_MODE");
-	bool mode_fast = env_mode && strcmp(env_mode, "fast") == 0;
+	// mode_fast_discover / env_mode defined above in Phase 1
+	bool mode_fast = mode_fast_discover;
 	bool mode_deep = env_mode && strcmp(env_mode, "deep") == 0;
 	// normal is default when neither fast nor deep
 
@@ -774,6 +799,24 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	g_store->commitTransaction();
 	// Build deferred indexes after bulk load
 	g_store->createIndexesAfterBulkLoad(project_id);
+
+	// Set project readiness flags based on mode
+	{
+		g_store->setProjectReadiness(project_id, "fast_ready", 1);
+		if (!mode_fast) {
+			g_store->setProjectReadiness(project_id, "normal_ready",
+						     1);
+			g_store->setProjectReadiness(project_id, "fts_ready",
+						     1);
+		}
+		if (mode_deep) {
+			g_store->setProjectReadiness(project_id, "deep_ready",
+						     1);
+			g_store->setProjectReadiness(project_id, "vector_ready",
+						     1);
+		}
+	}
+
 	std::ostringstream result;
 	result << "{\"ok\":true,\"files_indexed\":" << total_indexed
 	       << ",\"workers\":"
@@ -786,6 +829,15 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		       << ",\"time_buildgraph_ms\":" << time_buildgraph_ms;
 	result << ",\"time_fts_ms\":" << time_fts_ms
 	       << ",\"time_vector_ms\":" << time_vector_ms;
+	// Discovery stats
+	auto &fs = filter.stats();
+	result << ",\"discovery\":{\"seen_dirs\":" << fs.seen_dirs
+	       << ",\"seen_files\":" << fs.seen_files
+	       << ",\"skipped_dirs\":" << fs.skipped_dirs
+	       << ",\"skipped_files\":" << fs.skipped_files
+	       << ",\"skipped_suffix\":" << fs.skipped_suffix
+	       << ",\"candidate_files\":" << fs.candidate_files
+	       << "}";
 	result << "}";
 	return dupString(result.str());
 }
