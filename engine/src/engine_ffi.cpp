@@ -625,18 +625,18 @@ char *engine_get_project_info(uint64_t project_id)
 
 char *engine_export_artifact(uint64_t project_id, const char *output_path)
 {
- if (!g_store || !output_path || !*output_path)
-  return dupString(
-   "{\"ok\":false,\"error\":\"invalid arguments\"}");
- auto result = g_store->exportArtifact(project_id, output_path);
- return dupString(result);
+	if (!g_store || !output_path || !*output_path)
+		return dupString(
+			"{\"ok\":false,\"error\":\"invalid arguments\"}");
+	auto result = g_store->exportArtifact(project_id, output_path);
+	return dupString(result);
 }
 
 char *engine_import_artifact(uint64_t project_id, const char *artifact_path)
 {
- if (!g_store || !artifact_path || !*artifact_path)
-  return dupString(
-   "{\"ok\":false,\"error\":\"invalid arguments\"}");
- auto result = g_store->importArtifact(project_id, artifact_path);
- return dupString(result);
+	if (!g_store || !artifact_path || !*artifact_path)
+		return dupString(
+			"{\"ok\":false,\"error\":\"invalid arguments\"}");
+	auto result = g_store->importArtifact(project_id, artifact_path);
+	return dupString(result);
 }

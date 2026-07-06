@@ -367,15 +367,17 @@ class GraphStore {
 	 * Export a compact DB artifact (VACUUM INTO + zstd).
 	 * Returns JSON result string.
 	 */
-	std::string exportArtifact(uint64_t project_id, const char *output_path);
+	std::string exportArtifact(uint64_t project_id,
+				   const char *output_path);
 
 	/**
 	 * Import a previously exported artifact.
 	 * Returns JSON result string.
 	 */
-	std::string importArtifact(uint64_t project_id, const char *artifact_path);
+	std::string importArtifact(uint64_t project_id,
+				   const char *artifact_path);
 
-	   private:
+	private:
 	sqlite3 *db_ = nullptr;
 	std::string error_;
 

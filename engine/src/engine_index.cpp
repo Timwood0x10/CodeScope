@@ -441,42 +441,47 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 				}
 			}
 			if (entry.is_regular_file()) {
-			 filter.stats().seen_files++;
-			 // Check filename-based skip
-			 auto slash = rel.rfind('/');
-			 std::string fname =
-			  (slash == std::string::npos) ?
-			   rel :
-			   rel.substr(slash + 1);
-			 if (filter.shouldSkipFile(fname)) {
-			  filter.stats().skipped_files++;
-			  continue;
-			 }
-			 // Check suffix-based skip
-			 auto dot = rel.rfind('.');
-			 if (dot != std::string::npos) {
-			  if (filter.shouldSkipSuffix(
-			       rel.substr(dot))) {
-			   filter.stats().skipped_suffix++;
-			   continue;
-			  }
-			 }
-			 // Incremental: check file_scan_state to skip unchanged files
-			 struct stat file_stat;
-			 int64_t mtime = 0, fsize = 0;
-			 bool file_unchanged = false;
-			 if (stat(entry.path().c_str(), &file_stat) == 0) {
-			  mtime = static_cast<int64_t>(file_stat.st_mtime);
-			  fsize = static_cast<int64_t>(file_stat.st_size);
-			  file_unchanged = g_store->isFileUnchanged(
-			   project_id, entry.path().c_str(),
-			   mtime, fsize);
-			 }
-			 if (file_unchanged) {
-			  filter.stats().skipped_files++;
-			  continue;
-			 }
-			 const char *lang = filter.detectLanguage(
+				filter.stats().seen_files++;
+				// Check filename-based skip
+				auto slash = rel.rfind('/');
+				std::string fname =
+					(slash == std::string::npos) ?
+						rel :
+						rel.substr(slash + 1);
+				if (filter.shouldSkipFile(fname)) {
+					filter.stats().skipped_files++;
+					continue;
+				}
+				// Check suffix-based skip
+				auto dot = rel.rfind('.');
+				if (dot != std::string::npos) {
+					if (filter.shouldSkipSuffix(
+						    rel.substr(dot))) {
+						filter.stats().skipped_suffix++;
+						continue;
+					}
+				}
+				// Incremental: check file_scan_state to skip unchanged files
+				struct stat file_stat;
+				int64_t mtime = 0, fsize = 0;
+				bool file_unchanged = false;
+				if (stat(entry.path().c_str(), &file_stat) ==
+				    0) {
+					mtime = static_cast<int64_t>(
+						file_stat.st_mtime);
+					fsize = static_cast<int64_t>(
+						file_stat.st_size);
+					file_unchanged =
+						g_store->isFileUnchanged(
+							project_id,
+							entry.path().c_str(),
+							mtime, fsize);
+				}
+				if (file_unchanged) {
+					filter.stats().skipped_files++;
+					continue;
+				}
+				const char *lang = filter.detectLanguage(
 					entry.path().c_str());
 				if (!lang) {
 					filter.stats().skipped_lang++;
@@ -558,7 +563,8 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	uint64_t memory_budget_mb = 0;
 	const char *env_budget = getenv("CODESCOPE_MEMORY_BUDGET_MB");
 	if (env_budget)
-		memory_budget_mb = static_cast<uint64_t>(std::atoll(env_budget));
+		memory_budget_mb =
+			static_cast<uint64_t>(std::atoll(env_budget));
 
 	// Track successfully-indexed files for incremental file_scan_state update
 	std::vector<std::string> all_indexed_files;
@@ -717,19 +723,30 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 
 		// Memory budget: check RSS after parse, sleep if over budget
 		if (memory_budget_mb > 0) {
-		 struct rusage usage;
-		 if (getrusage(RUSAGE_SELF, &usage) == 0) {
-		  uint64_t rss_mb = static_cast<uint64_t>(usage.ru_maxrss) / (1024 * 1024);
-		  if (rss_mb > memory_budget_mb) {
-		   unsigned sleep_ms = (rss_mb - memory_budget_mb) * 10;
-		   if (sleep_ms > 1000) sleep_ms = 1000;
-		   if (verbose)
-		    fprintf(stderr, "MEM: RSS %lluMB > budget %lluMB, sleeping %ums\n",
-		     (unsigned long long)rss_mb,
-		     (unsigned long long)memory_budget_mb, sleep_ms);
-		   std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
-		  }
-		 }
+			struct rusage usage;
+			if (getrusage(RUSAGE_SELF, &usage) == 0) {
+				uint64_t rss_mb =
+					static_cast<uint64_t>(usage.ru_maxrss) /
+					(1024 * 1024);
+				if (rss_mb > memory_budget_mb) {
+					unsigned sleep_ms =
+						(rss_mb - memory_budget_mb) *
+						10;
+					if (sleep_ms > 1000)
+						sleep_ms = 1000;
+					if (verbose)
+						fprintf(stderr,
+							"MEM: RSS %lluMB > budget %lluMB, sleeping %ums\n",
+							(unsigned long long)
+								rss_mb,
+							(unsigned long long)
+								memory_budget_mb,
+							sleep_ms);
+					std::this_thread::sleep_for(
+						std::chrono::milliseconds(
+							sleep_ms));
+				}
+			}
 		}
 
 		// Build file_paths vector for this batch
@@ -762,11 +779,11 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 
 		// Upsert file records (not in batch — lightweight per-file)
 		for (size_t i = 0; i < batch_count; i++) {
-		 if (!semantic_units[i])
-		  continue;
-		 g_store->upsertFile(project_id, file_paths[i].c_str(),
-		       file_paths[i].c_str(), "");
-		 all_indexed_files.push_back(file_paths[i]);
+			if (!semantic_units[i])
+				continue;
+			g_store->upsertFile(project_id, file_paths[i].c_str(),
+					    file_paths[i].c_str(), "");
+			all_indexed_files.push_back(file_paths[i]);
 		}
 
 		// ── Old pipeline: linker passes on TranslationUnits ──
@@ -846,13 +863,13 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	// Only update for files that were actually indexed, wrapped in a transaction
 	g_store->beginTransaction();
 	for (auto &fp : all_indexed_files) {
-	 struct stat fs;
-	 if (stat(fp.c_str(), &fs) == 0) {
-	  g_store->updateFileScanState(
-	   project_id, fp.c_str(),
-	   static_cast<int64_t>(fs.st_mtime),
-	   static_cast<int64_t>(fs.st_size));
-	 }
+		struct stat fs;
+		if (stat(fp.c_str(), &fs) == 0) {
+			g_store->updateFileScanState(
+				project_id, fp.c_str(),
+				static_cast<int64_t>(fs.st_mtime),
+				static_cast<int64_t>(fs.st_size));
+		}
 	}
 	g_store->commitTransaction();
 
@@ -892,8 +909,7 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	       << ",\"skipped_dirs\":" << fs.skipped_dirs
 	       << ",\"skipped_files\":" << fs.skipped_files
 	       << ",\"skipped_suffix\":" << fs.skipped_suffix
-	       << ",\"candidate_files\":" << fs.candidate_files
-	       << "}";
+	       << ",\"candidate_files\":" << fs.candidate_files << "}";
 	result << "}";
 	return dupString(result.str());
 }

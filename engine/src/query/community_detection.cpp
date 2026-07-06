@@ -209,7 +209,7 @@ buildCommunities(const std::unordered_map<uint64_t, uint64_t> &assignments,
 // ─── Public API ───────────────────────────────────────────────
 
 std::string detectCommunities(uint64_t project_id, store::GraphStore *store,
-				    int max_members)
+			      int max_members)
 {
 	sqlite3 *db = store->handle();
 	if (!db) {
@@ -232,6 +232,14 @@ std::string detectCommunities(uint64_t project_id, store::GraphStore *store,
 	if (adjacency.empty()) {
 		return "{\"communities\":[],\"inter_community_edges\":[],\"total_"
 		       "communities\":0}";
+	}
+
+	// Token warning for full member expansion
+	if (max_members == 0) {
+		fprintf(stderr,
+			"WARN: get_communities max_members=0 returns ALL members. "
+			"This can produce large token output (~100K+ tokens for large projects). "
+			"Set max_members to a small value (e.g. 10) for summary mode.\n");
 	}
 
 	// Run label propagation
@@ -284,11 +292,11 @@ std::string detectCommunities(uint64_t project_id, store::GraphStore *store,
 		     << "\"member_count\":" << comm.member_count << ","
 		     << "\"members\":[";
 		bool first_member = true;
-		 int member_cnt = 0;
-		 for (const auto &m : comm.members) {
-		  if (max_members > 0 && member_cnt >= max_members)
-		   break;
-		  member_cnt++;
+		int member_cnt = 0;
+		for (const auto &m : comm.members) {
+			if (max_members > 0 && member_cnt >= max_members)
+				break;
+			member_cnt++;
 			if (!first_member)
 				json << ",";
 			first_member = false;

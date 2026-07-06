@@ -69,7 +69,7 @@ class QueryEngine {
 	// Run label-propagation community detection on the code graph.
 	// Returns JSON with communities, their members, and inter-community edges.
 	// @param max_members Max members per community in output (0 = all).
-	std::string getCommunities(uint64_t project_id, int max_members = 0);
+	std::string getCommunities(uint64_t project_id, int max_members = 10);
 
 	// ── Hotspot Analysis ───────────────────────────────────────
 

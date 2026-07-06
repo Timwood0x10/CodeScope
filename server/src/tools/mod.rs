@@ -78,8 +78,7 @@ fn h_index_project(project_id: u64, args: &Value) -> String {
     if let Some(exe) = self_exe {
         let db_path = std::env::var("CODESCOPE_DB_PATH")
             .unwrap_or_else(|_| ".codescope/codescope.db".to_string());
-        let grammars_dir = std::env::var("GRAMMARS_DIR")
-            .unwrap_or_else(|_| "grammars".to_string());
+        let grammars_dir = std::env::var("GRAMMARS_DIR").unwrap_or_else(|_| "grammars".to_string());
         let lang = args["language_filter"].as_str().unwrap_or("");
 
         // Shutdown engine before spawning worker to release SQLite lock
@@ -99,15 +98,18 @@ fn h_index_project(project_id: u64, args: &Value) -> String {
             Ok(out) => {
                 if out.status.success() {
                     let stdout = String::from_utf8_lossy(&out.stdout);
-                    if let Some(json_start) = stdout.find('{') {
-                        if let Some(json_end) = stdout[json_start..].rfind('}') {
-                            return stdout[json_start..=json_start + json_end].to_string();
-                        }
+                    if let Some(json_start) = stdout.find('{')
+                        && let Some(json_end) = stdout[json_start..].rfind('}')
+                    {
+                        return stdout[json_start..=json_start + json_end].to_string();
                     }
                     return stdout.to_string();
                 }
                 let stderr = String::from_utf8_lossy(&out.stderr);
-                return format!("{{\"ok\":false,\"error\":\"worker failed: {}\"}}", stderr.lines().last().unwrap_or("unknown"));
+                return format!(
+                    "{{\"ok\":false,\"error\":\"worker failed: {}\"}}",
+                    stderr.lines().last().unwrap_or("unknown")
+                );
             }
             Err(e) => {
                 return format!("{{\"ok\":false,\"error\":\"spawn worker: {}\"}}", e);
@@ -265,7 +267,8 @@ fn h_count_tokens(_project_id: u64, args: &Value) -> String {
         "chars_non_ascii": non_ascii_chars,
         "chars_total": text.chars().count(),
         "method": "estimate (DeepSeek: ascii*0.3 + non-ascii*0.6)"
-    }).to_string()
+    })
+    .to_string()
 }
 
 // ─── Tool Registry ──────────────────────────────────────────────

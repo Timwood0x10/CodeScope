@@ -301,7 +301,7 @@ int main(int argc, char **argv) {
     }
 
     printf("\n--- GRAPH STATS ---\n");
-    printf("stats: nodes=%lld edges=%lld files=%lld (%.0f ms)\n",
+    printf("stats: nodes=%lld edges=%lld files=%lld\n",
            (long long)total_nodes, (long long)total_edges, (long long)files_idx);
 
     printf("\n=== PERFORMANCE SUMMARY ===\n");
