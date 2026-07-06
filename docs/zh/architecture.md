@@ -11,22 +11,23 @@ CodeScope 是一个基于 MCP（Model Context Protocol）协议的代码理解�
 
 ### 四层管线
 
-```
-Source Files
-     │
-     ▼  Phase 1: Collect
-┌──────────────┐
-│  Translator  │  Phase 2: 并行翻译（纯函数）
-│ (无 Resolver)│  Source → IR, 14 workers
-└──────┬───────┘
-       │ IR Units
-       ▼
-┌──────────────┐  Phase 3: Link（串行 PassManager）
-│   Linker     │
-│  ├─ BuildSymbolIndex  (扫描 IR 建全局索引)
-│  ├─ ResolveCallPass   (跨文件调用解析)
-│  └─ EmitGraphPass     (GraphBuilder → SQLite)
-└──────────────┘
+```mermaid
+flowchart TB
+    subgraph "Phase 1: Collect"
+        S["Source Files"]
+    end
+    subgraph "Phase 2: 并行翻译（纯函数）"
+        T["Translator<br/>(无 Resolver)<br/>Source → IR, 14 workers"]
+    end
+    subgraph "Phase 3: Link（串行 PassManager）"
+        L["Linker"]
+        L1["├─ BuildSymbolIndex<br/>扫描 IR 建全局索引"]
+        L2["├─ ResolveCallPass<br/>跨文件调用解析"]
+        L3["└─ EmitGraphPass<br/>GraphBuilder → SQLite"]
+    end
+    S -->|Phase 1| T
+    T -->|IR Units| L
+    L --> L1 & L2 & L3
 ```
 
 ---

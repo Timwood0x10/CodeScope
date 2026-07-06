@@ -22,19 +22,33 @@
 
 ### 模块树（40 个子目录）
 
-```
-usb/
-├── core/           (27 文件)  — USB 核心子系统
-├── host/           (110 文件) — Host 控制器驱动
-├── gadget/         (9 文件)   — USB Gadget 框架
-│   ├── function/   (63 文件)  — Gadget 功能驱动
-│   └── udc/        (40 文件)  — UDC 控制器驱动
-├── serial/         (67 文件)  — USB 串口驱动
-├── storage/        (32 文件)  — USB 存储驱动
-├── typec/          (17 文件)  — USB Type-C 子系统
-├── misc/           (32 文件)  — 杂项 USB 设备
-├── dwc3/           (32 文件)  — Synopsys DWC3 控制器
-└── musb/           (28 文件)  — Mentor USB 控制器
+```mermaid
+graph TD
+    USB["usb/"]
+    USB --> CORE["core/<br/>(27 文件)"]
+    USB --> HOST["host/<br/>(110 文件)"]
+    USB --> GADGET["gadget/<br/>(9 文件)"]
+    GADGET --> FUNC["function/<br/>(63 文件)"]
+    GADGET --> UDC["udc/<br/>(40 文件)"]
+    USB --> SERIAL["serial/<br/>(67 文件)"]
+    USB --> STORAGE["storage/<br/>(32 文件)"]
+    USB --> TYPEC["typec/<br/>(17 文件)"]
+    USB --> MISC["misc/<br/>(32 文件)"]
+    USB --> DWC3["dwc3/<br/>(32 文件)"]
+    USB --> MUSBC["musb/<br/>(28 文件)"]
+
+    style USB fill:#4472C4,color:#fff
+    style CORE fill:#E6F3FF
+    style HOST fill:#E6F3FF
+    style GADGET fill:#E6F3FF
+    style SERIAL fill:#E6F3FF
+    style STORAGE fill:#E6F3FF
+    style TYPEC fill:#E6F3FF
+    style MISC fill:#E6F3FF
+    style DWC3 fill:#E6F3FF
+    style MUSBC fill:#E6F3FF
+    style FUNC fill:#FFF2CC
+    style UDC fill:#FFF2CC
 ```
 
 ### 鼠标与键盘的区分机制
@@ -88,15 +102,16 @@ flowchart TD
 
 ### 调度代码结构
 
-```
-kernel/sched/
-├── core.c          — __schedule()、schedule()
-├── fair.c          — CFS 完全公平调度器
-├── rt.c            — 实时调度器
-├── deadline.c      — 截止时间调度器
-├── idle.c          — 空闲任务
-├── sched.h         — 数据结构
-└── ext/            — 可扩展调度接口
+```mermaid
+graph TD
+    SCHED["kernel/sched/"]
+    SCHED --> CORE["core.c<br/>__schedule()、schedule()"]
+    SCHED --> FAIR["fair.c<br/>CFS 完全公平调度器"]
+    SCHED --> RT["rt.c<br/>实时调度器"]
+    SCHED --> DEADLINE["deadline.c<br/>截止时间调度器"]
+    SCHED --> IDLE["idle.c<br/>空闲任务"]
+    SCHED --> H["sched.h<br/>数据结构"]
+    SCHED --> EXT["ext/<br/>可扩展调度接口"]
 ```
 
 ### 父子进程资源流程（写时复制 COW）
@@ -174,14 +189,12 @@ flowchart TD
 
 ### 页回收（内存压力下）
 
-```
-try_to_free_pages()                       ← 内存回收入口
-    ↓
-shrink_node()                             ← 按 NUMA 节点扫描 LRU
-    ↓
-shrink_lruvec()                           ← 扫描 LRU 链表
-    ├── shrink_active_list()              ← 活跃 → 非活跃降级
-    └── shrink_inactive_list()            ← 回收非活跃页
+```mermaid
+flowchart TD
+    A["try_to_free_pages()<br/>内存回收入口"] --> B["shrink_node()<br/>按 NUMA 节点扫描 LRU"]
+    B --> C["shrink_lruvec()<br/>扫描 LRU 链表"]
+    C --> D["shrink_active_list()<br/>活跃 → 非活跃降级"]
+    C --> E["shrink_inactive_list()<br/>回收非活跃页"]
 ```
 
 ### IO 策略：预读

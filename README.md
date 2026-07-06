@@ -11,38 +11,49 @@ graph TB
     end
 
     subgraph "Rust MCP Server"
-        MCP["MCP Protocol (JSON-RPC 2.0)<br/>tools / protocol / transport"]
-        FFI["C++ FFI Bridge<br/>extern C → safe wrappers"]
+        MCP["MCP Protocol (JSON-RPC 2.0)<br/>35+ tools / protocol / transport"]
+        DISPATCH["Tool Dispatch<br/>project_id auto-restore<br/>worker subprocess spawn"]
         TQ["Task Queue (Tokio)<br/>background enhancement"]
     end
 
     subgraph "C++ Core Engine"
         SCANNER["Fast Scanner<br/>ms-level declaration extraction"]
-        PARSER["Full Parser<br/>tree-sitter → IR"]
-        GRAPH["Graph Builder<br/>call graph / dependency graph"]
+        FILTER["FilterPolicy<br/>.gitignore / .codescopeignore<br/>skip dir at any depth"]
+        PARSER["Full Parser<br/>tree-sitter → unified IR"]
+        GRAPH["Graph Builder<br/>call graph (buildGraph=true)<br/>+ symbol reference graph"]
         COMPLEXITY["Complexity Analyzer<br/>cyclomatic / cognitive"]
+        COMMUNITY["Community Detection<br/>Label Propagation<br/>max_communities / include_members"]
         LSP["LSP Client<br/>type enhancement"]
     end
 
     subgraph "SQLite (WAL mode)"
         FACTS["Symbol tables<br/>modules / symbols / files<br/>dependency_edges / call_edges"]
         INDICES["Index tables<br/>search_index (FTS5)<br/>embeddings (sqlite-vec)"]
-        METRICS["Metrics table<br/>metrics / symbol_status"]
+        METRICS["Metrics table<br/>complexity / symbol_status<br/>communities"]
     end
 
     Client -->|"MCP stdio"| MCP
-    MCP --> FFI
+    MCP --> DISPATCH
+    DISPATCH --> FFI
+    DISPATCH -->|"spawn worker"| WORKER["Worker Subprocess<br/>memory isolation<br/>exits after indexing"]
+    WORKER -->|"write"| FACTS
     FFI --> SCANNER
+    FFI --> FILTER
     FFI --> PARSER
     FFI --> GRAPH
     FFI --> COMPLEXITY
+    FFI --> COMMUNITY
     FFI --> LSP
 
     SCANNER --> FACTS
+    FILTER --> SCANNER
+    FILTER --> PARSER
     PARSER --> GRAPH
     GRAPH --> FACTS
     COMPLEXITY --> METRICS
+    COMMUNITY --> METRICS
     LSP --> FACTS
+    TQ --> GRAPH
 ```
 
 ### Data Flow
@@ -50,23 +61,46 @@ graph TB
 ```mermaid
 flowchart LR
     subgraph "Phase A: Skeleton Index (ms)"
-        A1["scan_project<br/>walk directory + .gitignore"] --> A2{"detectLanguage +<br/>detectDecl"}
-        A2 -->|"facts"| A3["symbols + modules +<br/>entry_points tables"]
-        A2 -->|"status"| A4["symbol_status<br/>flags = 0"]
-        A3 --> A5["✓ AI ready in ms"]
+        A0["discover files<br/>FilterPolicy: .gitignore + .codescopeignore<br/>skip dir at any depth"] --> A1["scan_project<br/>detectLanguage + detectDecl"]
+        A1 -->|"facts"| A2["symbols + modules +<br/>entry_points tables"]
+        A1 -->|"status"| A3["symbol_status<br/>flags = 0"]
+        A2 --> A4["✓ AI ready in ms<br/>query: get_module_tree<br/>find_symbol, get_entry_points"]
     end
 
     subgraph "Phase B: Knowledge Enhancement (async)"
         B1["enhance_project<br/>background Tokio task"] --> B2["Full Parse<br/>tree-sitter all files"]
-        B2 --> B3["Build Call Graph<br/>call_edges table"]
-        B2 --> B4["Compute Metrics<br/>metrics table"]
-        B2 --> B5["Generate Embeddings<br/>search_index + vec0"]
+        B2 --> B3["Build Call Graph<br/>buildGraph(project_id, true)<br/>CALLS edges (edge_type=1)"]
+        B2 --> B4["Compute Metrics<br/>cyclomatic + cognitive<br/>complexity table"]
+        B2 --> B5["Generate Embeddings<br/>search_index FTS5<br/>+ sqlite-vec vectors"]
         B3 --> B6["set callgraph_ready=1"]
         B4 --> B7["set metrics_ready=1"]
         B5 --> B8["set embedding_ready=1"]
     end
 
-    A5 -.->|"triggers"| B1
+    subgraph "Phase C: Full Index (on-demand)"
+        C1["index_project<br/>spawns worker subprocess<br/>memory isolation"] --> C2["Worker: Full Parse<br/>tree-sitter all files"]
+        C2 --> C3["Worker: Semantic Records<br/>insertSemanticRecordsBatch"]
+        C3 --> C4["Worker: buildGraph(true)<br/>call + ref edges"]
+        C4 --> C5["Worker: build FTS index<br/>+ vectors"]
+        C5 --> C6["Worker exits → RSS freed"]
+    end
+
+    A4 -.->|"triggers"| B1
+```
+
+### Query Flow (Tool Dispatch)
+
+```mermaid
+flowchart LR
+    Q["MCP Client<br/>tool call"] --> Q1["Server receives<br/>project_id auto-restore<br/>from DB (getLatestProjectId)"]
+    Q1 --> Q2{"Tool type?"}
+    Q2 -->|"index_project"| Q3["Spawn worker subprocess<br/>→ memory isolated<br/>→ exits after done"]
+    Q2 -->|"query tools"| Q4["C++ FFI → SQLite query<br/>graph_nodes, graph_edges<br/>search_index, ..."]
+    Q2 -->|"get_communities"| Q5["Load full graph<br/>Label Propagation<br/>→ JSON with max_communities limit"]
+    Q2 -->|"get_hotspots"| Q6["SQL: COUNT(ge.id) JOIN<br/>graph_edges edge_type=1<br/>ORDER BY caller_count"]
+    Q4 --> R["Result JSON<br/>back to MCP Client"]
+    Q5 --> R
+    Q6 --> R
 ```
 
 ### Two-Phase Design

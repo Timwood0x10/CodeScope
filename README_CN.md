@@ -11,38 +11,49 @@ graph TB
     end
 
     subgraph "Rust MCP Server（调度层）"
-        MCP["MCP Protocol (JSON-RPC 2.0)<br/>tools / protocol / transport"]
-        FFI["C++ FFI Bridge<br/>extern C → safe wrappers"]
-        TQ["Task Queue (Tokio)<br/>后台增强调度"]
+        MCP["MCP Protocol (JSON-RPC 2.0)<br/>35+ 工具 / protocol / transport"]
+        DISPATCH["工具调度<br/>project_id 自动恢复<br/>worker 子进程隔离"]
+        TQ["任务队列 (Tokio)<br/>后台增强调度"]
     end
 
     subgraph "C++ Core Engine（分析层）"
         SCANNER["Fast Scanner<br/>ms 级声明提取"]
-        PARSER["Full Parser<br/>tree-sitter → IR"]
-        GRAPH["Graph Builder<br/>调用图 / 依赖图"]
-        COMPLEXITY["Complexity Analyzer<br/>圈复杂度 / 认知复杂度"]
-        LSP["LSP Client<br/>类型增强"]
+        FILTER["FilterPolicy<br/>.gitignore / .codescopeignore<br/>任意深度跳过目录"]
+        PARSER["Full Parser<br/>tree-sitter → 统一 IR"]
+        GRAPH["Graph Builder<br/>调用图 (buildGraph=true)<br/>+ 符号引用图"]
+        COMPLEXITY["复杂度分析<br/>圈复杂度 / 认知复杂度"]
+        COMMUNITY["社区检测<br/>Label Propagation<br/>max_communities / include_members"]
+        LSP["LSP 客户端<br/>类型增强"]
     end
 
     subgraph "SQLite (WAL 模式)"
         FACTS["事实表<br/>modules / symbols / files<br/>dependency_edges / call_edges"]
         INDICES["索引表<br/>search_index (FTS5)<br/>embeddings (sqlite-vec)"]
-        METRICS["指标表<br/>metrics / symbol_status"]
+        METRICS["指标表<br/>complexity / symbol_status<br/>communities"]
     end
 
     Client -->|"MCP stdio"| MCP
-    MCP --> FFI
+    MCP --> DISPATCH
+    DISPATCH --> FFI
+    DISPATCH -->|"spawn worker"| WORKER["Worker 子进程<br/>内存隔离<br/>索引完成后退出"]
+    WORKER -->|"写入"| FACTS
     FFI --> SCANNER
+    FFI --> FILTER
     FFI --> PARSER
     FFI --> GRAPH
     FFI --> COMPLEXITY
+    FFI --> COMMUNITY
     FFI --> LSP
 
     SCANNER --> FACTS
+    FILTER --> SCANNER
+    FILTER --> PARSER
     PARSER --> GRAPH
     GRAPH --> FACTS
     COMPLEXITY --> METRICS
+    COMMUNITY --> METRICS
     LSP --> FACTS
+    TQ --> GRAPH
 ```
 
 ### 数据流
@@ -50,23 +61,46 @@ graph TB
 ```mermaid
 flowchart LR
     subgraph "Phase A: 骨架索引 (ms 级)"
-        A1["scan_project<br/>遍历目录 + .gitignore"] --> A2{"detectLanguage +<br/>detectDecl"}
-        A2 -->|"事实数据"| A3["symbols + modules +<br/>entry_points 表"]
-        A2 -->|"状态"| A4["symbol_status<br/>flags = 0"]
-        A3 --> A5["✓ AI 立即可用"]
+        A0["文件发现<br/>FilterPolicy: .gitignore + .codescopeignore<br/>任意深度跳过目录"] --> A1["scan_project<br/>detectLanguage + detectDecl"]
+        A1 -->|"事实数据"| A2["symbols + modules +<br/>entry_points 表"]
+        A1 -->|"状态"| A3["symbol_status<br/>flags = 0"]
+        A2 --> A4["✓ AI 立即可用<br/>查询: get_module_tree<br/>find_symbol, get_entry_points"]
     end
 
     subgraph "Phase B: 知识增强（异步）"
         B1["enhance_project<br/>后台 Tokio 任务"] --> B2["全量解析<br/>tree-sitter 所有文件"]
-        B2 --> B3["构建调用图<br/>call_edges 表"]
-        B2 --> B4["计算指标<br/>metrics 表"]
-        B2 --> B5["生成嵌入</br>search_index + vec0"]
+        B2 --> B3["构建调用图<br/>buildGraph(project_id, true)<br/>CALLS 边 (edge_type=1)"]
+        B2 --> B4["计算指标<br/>圈复杂度 + 认知复杂度<br/>complexity 表"]
+        B2 --> B5["生成嵌入<br/>search_index FTS5<br/>+ sqlite-vec 向量"]
         B3 --> B6["set callgraph_ready=1"]
         B4 --> B7["set metrics_ready=1"]
         B5 --> B8["set embedding_ready=1"]
     end
 
-    A5 -.->|"触发"| B1
+    subgraph "Phase C: 全量索引（按需）"
+        C1["index_project<br/>启动 worker 子进程<br/>内存隔离"] --> C2["Worker: 全量解析<br/>tree-sitter 所有文件"]
+        C2 --> C3["Worker: 语义记录<br/>insertSemanticRecordsBatch"]
+        C3 --> C4["Worker: buildGraph(true)<br/>调用 + 引用边"]
+        C4 --> C5["Worker: 构建 FTS 索引<br/>+ 向量"]
+        C5 --> C6["Worker 退出 → RSS 释放"]
+    end
+
+    A4 -.->|"触发"| B1
+```
+
+### 查询流程（工具调度）
+
+```mermaid
+flowchart LR
+    Q["MCP 客户端<br/>tool call"] --> Q1["Server 接收<br/>project_id 自动恢复<br/>从 DB (getLatestProjectId)"]
+    Q1 --> Q2{"工具类型?"}
+    Q2 -->|"index_project"| Q3["启动 Worker 子进程<br/>→ 内存隔离<br/>→ 完成后退出"]
+    Q2 -->|"查询工具"| Q4["C++ FFI → SQLite 查询<br/>graph_nodes, graph_edges<br/>search_index, ..."]
+    Q2 -->|"get_communities"| Q5["加载全图<br/>Label Propagation<br/>→ JSON (max_communities 限制)"]
+    Q2 -->|"get_hotspots"| Q6["SQL: COUNT(ge.id) JOIN<br/>graph_edges edge_type=1<br/>ORDER BY caller_count"]
+    Q4 --> R["结果 JSON<br/>返回 MCP 客户端"]
+    Q5 --> R
+    Q6 --> R
 ```
 
 ### 两阶段设计
@@ -462,4 +496,105 @@ Apache 2.0
 | `scan_linux_scheduler.log` | 12.8 KB | 进程调度 + 父子进程资源分析 |
 | `scan_usb_hid_analysis.log` | 12.8 KB | USB HID 设备识别深度分析 |
 | `performance_benchmark.log` | 5.5 KB | 全量性能基准报告 |
+
+---
+
+## 工具使用指南
+
+每个 MCP 工具有其适用的场景和副作用（主要是 Token 消耗）。以下指南帮助你在正确的场合选择合适的工具。
+
+### 核心查询类
+
+| 工具 | 适用场景 | 不适用场景 | Token 消耗 | 副作用 |
+|------|---------|-----------|-----------|--------|
+| `get_graph_stats` | 快速了解项目规模（文件数、节点数、边数） | 不需要知道具体符号时 | **~18** | 无 |
+| `get_project_info` | 查看项目元信息（许可证、主语言、依赖数） | 不需要细节时 | **~44** | 无 |
+| `get_module_tree` | 了解项目的目录/模块结构 | 项目结构已经清晰时 | **~4** | 无 |
+| `project_overview` | 新接手项目的第一步总览 | 只需要统计数字时 | **~71** | 无 |
+
+### 符号查询类
+
+| 工具 | 适用场景 | 不适用场景 | Token 消耗 | 副作用 |
+|------|---------|-----------|-----------|--------|
+| `find_definition` | 定位符号的定义位置 | 需要查看所有引用时 | **~20** | 无 |
+| `find_references` | 搜索符号被哪些地方引用 | 只想知道定义时 | **~30** | 无 |
+| `find_symbol` | 模糊匹配符号名称 | 知道精确位置时 | **~30** | 无 |
+| `locate_code` | 获取符号附近的代码上下文（含行号） | 只需要文件名时 | **~50-300** | 包含相邻行，量较大 |
+
+### 调用图查询类
+
+| 工具 | 适用场景 | 不适用场景 | Token 消耗 | 副作用 |
+|------|---------|-----------|-----------|--------|
+| `get_callers` / `find_callers` | 调查函数被谁调用——定位 bug 影响范围 | **CALLS 边未构建时 caller_count=0** | **~10-50** | 依赖 `buildGraph(true)` |
+| `get_callees` / `find_callees` | 调查函数调用了什么——理解函数行为 | 不需要递归展开时 | **~10-50** | 同上 |
+| `codescope_trace` | 两点之间的最短调用路径——追 data flow | 只需要直接调用者时 | **~50-200** | 路径过长时输出膨胀 |
+| `get_hotspots` | 找项目中**最热门的函数**（被调最多） | 项目 <100 个函数、热点不明显 | **~500** | caller_count=0 时说明调用边未构建 |
+
+### 搜索类
+
+| 工具 | 适用场景 | 不适用场景 | Token 消耗 | 副作用 |
+|------|---------|-----------|-----------|--------|
+| `search` | 按名称/关键词搜索代码**（推荐首选）** | 需要语法精确匹配时 | **~300-1000** | 结果较多时会增加 token |
+| `search_code` | 旧版 FTS 搜索，推荐改用 `search` | 已迁移到 `search` | **~300-1000** | 已废弃 |
+| `graph_query` | 自定义模式匹配，如 `MATCH (Function)-[Calls]->(Function)` | 标准调用链已覆盖时 | **~50-500** | DSL 语法错误会返回空结果 |
+
+### 社区检测（特殊工具 ⚠️）
+
+> **社区检测通过 Label Propagation 算法将代码图中的节点按关系紧密程度分组。适用于需要理解代码模块边界、检测架构违规的场景，但 Token 消耗可能很大，使用前请确认参数。**
+
+| 场景 | 推荐用法 | 说明 |
+|------|---------|------|
+| **接手 legacy 项目** | ✅ `get_communities(max_communities=20)` | 快速了解代码模块划分 |
+| **架构逆向** | ✅ `get_communities(max_members=5, max_communities=50)` | 看社区之间的边，找模块间依赖 |
+| **检测架构违规** | ✅ `include_members=true` 查看社区成员 | 不该在一起的代码出现在同一社区需关注 |
+| **monorepo 模块发现** | ✅ 默认参数即可 | 区分各子项目边界 |
+| **小型项目 (<500 节点)** | ✅ 适用 | 社区数少，输出可控 |
+| **中型项目 (500-10K 节点)** | ✅ 推荐加 `max_communities=20` | 默认 20 社区约 **1K-50K tokens** |
+| **大型项目 (>10K 节点)** | ⚠️ **谨慎使用，必须加 `max_communities`** | 123K 节点示例：5社区×10成员 = **199K tokens** 🔴 |
+
+**`get_communities` 的副作用：**
+
+1. **Token 爆炸风险**：123K 节点的项目，即使限制 `max_members=5, max_communities=10`，因 `label` 字段包含完整路径，仍可达 **200K tokens**。**默认参数 (max_members=10, max_communities=20) 约 1K-50K tokens**。
+2. **耗时**：社区检测需要全图 Label Propagation 算法，大型项目耗时数百 ms。
+3. **信息密度**：对于目录结构清晰的项目，`get_module_tree`（4 tokens）比社区检测（200K tokens）更高效。
+4. **屏蔽策略**：
+   - `max_communities` 优先调低（10-20），限制社区总数
+   - `include_members=false`（默认），只返回摘要，需成员详情时再开启
+   - 先用 `get_module_tree` 了解结构，社区检测仅作补充
+
+### 热点分析
+
+| 场景 | 推荐用法 | 说明 |
+|------|---------|------|
+| **性能优化** | ✅ `get_hotspots(top_n=10)` | 找被调用最多的函数，优先优化 |
+| **代码审查** | ✅ `get_hotspots(top_n=20)` | 高复杂度 + 高调用数的函数需要关注 |
+| **重构决策** | ✅ 配合 `get_complexity` 交叉分析 | 高复杂度 + 高热点的函数最值得重构 |
+
+**前提条件**：`get_hotspots` 的 `caller_count` 依赖调用边构建。如果索引时 `buildGraph(project_id, false)`，所有 caller_count 为 0。确认方法：检查索引输出中是否有 `calls=XXms`（非零）。
+
+### 变更影响分析
+
+| 工具 | 适用场景 | Token 消耗 |
+|------|---------|-----------|
+| `detect_changes` | 修改代码后分析影响范围——返回直接/间接调用者 | **~100-500** |
+
+### 增强工具（Phase B）
+
+| 工具 | 适用场景 | 说明 |
+|------|---------|------|
+| `enhance_project` | 触发后台全量分析（调用图 + 复杂度 + 向量索引） | 异步运行，`get_enhancement_status` 查看进度 |
+| `codescope_build_context` | **PRIMARY**：AI 问答上下文构建 | 自动判断需要什么信息 |
+| `codescope_capabilities` | 检查当前项目各功能的就绪状态 | 快速诊断"为什么查不到数据" |
+
+### 总结选择策略
+
+```
+新接手项目 → project_overview (71 tok) + get_module_tree (4 tok)
+找入口点   → get_entry_points (5 tok)
+查热点     → get_hotspots (500 tok)
+搜代码     → search (300-1000 tok)
+查调用链   → find_callers / find_callees (10-50 tok)
+做架构分析  → get_module_tree (4 tok) + 可选 get_communities (1K-200K tok)
+查变更影响  → detect_changes (100-500 tok)
+```
 

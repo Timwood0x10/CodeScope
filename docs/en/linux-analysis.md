@@ -22,19 +22,20 @@
 
 ### Module Tree (40 subdirectories)
 
-```
-usb/
-├── core/           (27 files)    — USB core subsystem
-├── host/           (110 files)   — Host controller drivers
-├── gadget/         (9 files)     — USB gadget framework
-│   ├── function/   (63 files)    — Gadget function drivers
-│   └── udc/        (40 files)    — UDC controller drivers
-├── serial/         (67 files)    — USB serial drivers
-├── storage/        (32 files)    — USB storage drivers
-├── typec/          (17 files)    — USB Type-C subsystem
-├── misc/           (32 files)    — Miscellaneous USB devices
-├── dwc3/           (32 files)    — Synopsys DWC3 controller
-└── musb/           (28 files)    — Mentor USB controller
+```mermaid
+graph TD
+    USB["usb/"]
+    USB --> CORE["core/<br/>(27 files)"]
+    USB --> HOST["host/<br/>(110 files)"]
+    USB --> GADGET["gadget/<br/>(9 files)"]
+    GADGET --> FUNC["function/<br/>(63 files)"]
+    GADGET --> UDC["udc/<br/>(40 files)"]
+    USB --> SERIAL["serial/<br/>(67 files)"]
+    USB --> STORAGE["storage/<br/>(32 files)"]
+    USB --> TYPEC["typec/<br/>(17 files)"]
+    USB --> MISC["misc/<br/>(32 files)"]
+    USB --> DWC3["dwc3/<br/>(32 files)"]
+    USB --> MUSBC["musb/<br/>(28 files)"]
 ```
 
 ### How Mice vs Keyboards Are Distinguished
@@ -88,15 +89,16 @@ flowchart TD
 
 ### Scheduler Code Layout
 
-```
-kernel/sched/
-├── core.c          — __schedule(), schedule()
-├── fair.c          — CFS Completely Fair Scheduler
-├── rt.c            — Real-time scheduler
-├── deadline.c      — Deadline scheduler
-├── idle.c          — Idle task
-├── sched.h         — Data structures
-└── ext/            — Extensible scheduler API
+```mermaid
+graph TD
+    SCHED["kernel/sched/"]
+    SCHED --> CORE["core.c<br/>__schedule(), schedule()"]
+    SCHED --> FAIR["fair.c<br/>CFS Completely Fair Scheduler"]
+    SCHED --> RT["rt.c<br/>Real-time scheduler"]
+    SCHED --> DEADLINE["deadline.c<br/>Deadline scheduler"]
+    SCHED --> IDLE["idle.c<br/>Idle task"]
+    SCHED --> H["sched.h<br/>Data structures"]
+    SCHED --> EXT["ext/<br/>Extensible scheduler API"]
 ```
 
 ### Parent-Child Resource Flow (Copy-On-Write)
@@ -174,14 +176,12 @@ flowchart TD
 
 ### Page Reclaim (Memory Pressure)
 
-```
-try_to_free_pages()                       ← memory reclaim entry
-    ↓
-shrink_node()                             ← per-node LRU scanning
-    ↓
-shrink_lruvec()                           ← scan LRU lists
-    ├── shrink_active_list()              ← demote active→inactive
-    └── shrink_inactive_list()            ← reclaim inactive pages
+```mermaid
+flowchart TD
+    A["try_to_free_pages()<br/>memory reclaim entry"] --> B["shrink_node()<br/>per-node LRU scanning"]
+    B --> C["shrink_lruvec()<br/>scan LRU lists"]
+    C --> D["shrink_active_list()<br/>demote active→inactive"]
+    C --> E["shrink_inactive_list()<br/>reclaim inactive pages"]
 ```
 
 ### IO Strategy: Readahead
