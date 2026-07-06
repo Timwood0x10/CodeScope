@@ -837,7 +837,7 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	g_store->beginTransaction();
 	{
 		auto t_bg = steady_clock::now();
-		g_store->buildGraph(project_id, false);
+		g_store->buildGraph(project_id, true);
 		time_buildgraph_ms =
 			duration_cast<milliseconds>(steady_clock::now() - t_bg)
 				.count();

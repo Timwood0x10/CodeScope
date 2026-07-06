@@ -51,7 +51,7 @@ struct Community {
  *                        Set to e.g. 20 to limit output size and token cost.
  */
 std::string detectCommunities(uint64_t project_id, store::GraphStore *store,
-			      int max_members = 10, int max_communities = 0);
+			      int max_members = 10, int max_communities = 20);
 
 } // namespace query
 

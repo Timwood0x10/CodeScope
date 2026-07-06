@@ -83,11 +83,11 @@ fn main() {
         }
 
         // Restore latest project_id so CLI queries work on existing DB
-        let pid = ffi::get_latest_project_id();
+        let mut pid = ffi::get_latest_project_id();
         if pid == 0 {
             // No existing project — create a fresh one
-            let fresh = ffi::create_project(".", "cli-project");
-            eprintln!("codescope cli: created fresh project_id={}", fresh);
+            pid = ffi::create_project(".", "cli-project");
+            eprintln!("codescope cli: created fresh project_id={}", pid);
         }
         let result = tools::execute(pid, tool_name, &tool_args);
         println!("{}", result);
