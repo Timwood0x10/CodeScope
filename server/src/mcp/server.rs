@@ -102,7 +102,19 @@ impl Server {
             self.project_id = ffi::create_project(path, name);
             if self.project_id > 0 {
                 eprintln!("Created project {} (id={})", name, self.project_id);
-                let _ = ffi::index_project(self.project_id, path, std::ptr::null());
+                let result = ffi::index_project(self.project_id, path, std::ptr::null());
+                // Parse result to check for errors
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&result) {
+                    if let Some(error) = json.get("error").and_then(|e| e.as_str()) {
+                        if !error.is_empty() {
+                            eprintln!("Warning: index_project failed: {}", error);
+                        }
+                    } else {
+                        eprintln!("Successfully indexed project {}", name);
+                    }
+                } else {
+                    eprintln!("Warning: index_project returned invalid JSON: {}", result);
+                }
             }
         }
 
@@ -117,7 +129,7 @@ impl Server {
             },
         };
 
-        Ok(serde_json::to_value(result).unwrap())
+        Ok(serde_json::to_value(result).expect("failed to serialize initialize result"))
     }
 
     // ── List Tools ──────────────────────────────────────────────
@@ -126,7 +138,7 @@ impl Server {
         let result = ListToolsResult {
             tools: tools::all_tools(),
         };
-        Ok(serde_json::to_value(result).unwrap())
+        Ok(serde_json::to_value(result).expect("failed to serialize tools list"))
     }
 
     // ── Call Tool ───────────────────────────────────────────────
@@ -172,7 +184,7 @@ impl Server {
 
         let result = CallToolResult { content, is_error };
 
-        Ok(serde_json::to_value(result).unwrap())
+        Ok(serde_json::to_value(result).expect("failed to serialize call tool result"))
     }
 }
 
@@ -194,5 +206,5 @@ fn json_response(
             error: Some(err),
         },
     };
-    serde_json::to_value(response).unwrap()
+    serde_json::to_value(response).expect("failed to serialize JSON-RPC response")
 }

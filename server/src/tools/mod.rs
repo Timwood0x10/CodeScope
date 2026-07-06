@@ -84,8 +84,9 @@ fn h_index_project(project_id: u64, args: &Value) -> String {
         // Shutdown engine before spawning worker to release SQLite lock
         crate::ffi::shutdown();
 
+        // Fix: Pass args in correct order: worker <db_path> <dir_path> <lang_filter> <project_name> <project_id>
         let output = Command::new(&exe)
-            .args(["worker", &db_path, path, lang, &project_id.to_string()])
+            .args(["worker", &db_path, path, lang, "worker-project", &project_id.to_string()])
             .env("GRAMMARS_DIR", &grammars_dir)
             .env("CODESCOPE_DB_PATH", &db_path)
             .env("CODESCOPE_VERBOSE", "0")
@@ -118,8 +119,10 @@ fn h_index_project(project_id: u64, args: &Value) -> String {
     }
 
     // Fallback: in-process indexing with correct null handling for missing lang filter
+    // Fix: Use CString to ensure null-termination for FFI compatibility
     let lang = args["language_filter"].as_str();
-    let lang_ptr = lang.map_or(std::ptr::null(), |s| s.as_ptr() as *const _);
+    let lang_cstring = lang.map(|s| std::ffi::CString::new(s).unwrap_or_default());
+    let lang_ptr = lang_cstring.as_ref().map_or(std::ptr::null(), |cs| cs.as_ptr() as *const _);
     ffi::index_project(project_id, path, lang_ptr)
 }
 

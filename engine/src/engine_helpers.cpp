@@ -44,10 +44,28 @@ std::string readFile(const char *path)
 	size_t size = static_cast<size_t>(st.st_size);
 	std::string result(size, '\0');
 
-	ssize_t n = read(fd, &result[0], size);
+	// Handle EINTR: retry on signal interruption
+	size_t total_read = 0;
+	while (total_read < size) {
+		ssize_t bytes_read = read(fd, &result[total_read], size - total_read);
+		if (bytes_read < 0) {
+			if (errno == EINTR) {
+				// Signal received, retry
+				continue;
+			}
+			// Other error
+			close(fd);
+			return "";
+		}
+		if (bytes_read == 0) {
+			// EOF reached early
+			break;
+		}
+		total_read += static_cast<size_t>(bytes_read);
+	}
 	close(fd);
 
-	if (n < 0 || static_cast<size_t>(n) != size)
+	if (total_read != size)
 		return "";
 
 	return result;
@@ -136,6 +154,17 @@ const char *detectLanguage(const char *file_path)
 	return nullptr;
 }
 
+/**
+ * Duplicate a string into a new heap-allocated C string.
+ *
+ * MEMORY OWNERSHIP:
+ * - Allocates memory using malloc()
+ * - Caller MUST free() the returned pointer when no longer needed
+ * - Returns nullptr if allocation fails
+ *
+ * @param s  String to duplicate
+ * @return   Newly allocated C string, or nullptr on allocation failure
+ */
 char *dupString(const std::string &s)
 {
 	char *buf = static_cast<char *>(malloc(s.size() + 1));

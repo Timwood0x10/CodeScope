@@ -9,7 +9,7 @@ use std::path::Path;
 fn main() {
     let args: Vec<String> = env::args().collect();
 
-    // ── Worker mode: codescope worker <db_path> <dir_path> <lang_filter> <project_name> ─
+    // ── Worker mode: codescope worker <db_path> <dir_path> <lang_filter> <project_name> <project_id> ─
     // Runs index_project in a subprocess, then exits. RSS is 100% returned to OS on exit.
     // Called by the MCP server to isolate indexing memory from the long-running server.
     if args.len() >= 2 && args[1] == "worker" {
@@ -20,8 +20,9 @@ fn main() {
         let dir_path = args.get(3).map(|s| s.as_str()).unwrap_or(".");
         let lang_filter = args.get(4).map(|s| s.as_str()).unwrap_or("");
         let project_name = args.get(5).map(|s| s.as_str()).unwrap_or("worker-project");
-        let project_id_arg = args.get(5).map(|s| s.as_str()).unwrap_or("0");
-        // project_id is the 5th arg if it's numeric, otherwise project_name is
+        // Fix: project_id_arg should be the 6th argument (args[6]), not the 5th
+        let project_id_arg = args.get(6).map(|s| s.as_str()).unwrap_or("0");
+        // project_id is the 6th arg if it's numeric, otherwise project_name is
 
         unsafe {
             env::set_var("CODESCOPE_DB_PATH", db_path);

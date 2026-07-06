@@ -396,7 +396,12 @@ std::string LspClient::readResponse(int expected_id, int timeout_ms)
 		}
 
 		char buf[4096];
-		ssize_t n = read(stdout_fd_, buf, sizeof(buf) - 1);
+		ssize_t n = 0;
+		// Handle EINTR: retry on signal interruption
+		do {
+			n = read(stdout_fd_, buf, sizeof(buf) - 1);
+		} while (n < 0 && errno == EINTR);
+
 		if (n < 0) {
 			if (errno == EAGAIN || errno == EWOULDBLOCK)
 				continue;

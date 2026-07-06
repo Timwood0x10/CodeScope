@@ -83,13 +83,13 @@ static std::string queryToJson(sqlite3 *db, const char *sql,
 			if (col_type == SQLITE_NULL) {
 				json << "null";
 			} else if (col_type == SQLITE_INTEGER) {
-				json << sqlite3_column_int64(stmt, i);
-			} else {
-				const char *text =
-					reinterpret_cast<const char *>(
-						sqlite3_column_text(stmt, i));
-				json << "\"" << text << "\"";
-			}
+			json << sqlite3_column_int64(stmt, i);
+		} else {
+			const char *text =
+				reinterpret_cast<const char *>(
+					sqlite3_column_text(stmt, i));
+			json << "\"" << jsonEscape(text ? text : "") << "\"";
+		}
 		}
 		json << "}";
 	}
@@ -105,37 +105,154 @@ std::string QueryEngine::findDefinition(uint64_t project_id,
 					const char *symbol_name,
 					const char *file_filter)
 {
-	std::ostringstream sql;
-	sql << "SELECT id AS node_id, name, qualified_name, node_type, file_path, "
-	       "start_row, start_col, end_row, end_col, language "
-	       "FROM graph_nodes WHERE project_id = "
-	    << project_id << " AND name = '" << symbol_name << "'";
-	if (file_filter && strlen(file_filter) > 0) {
-		sql << " AND file_path LIKE '%" << file_filter << "%'";
+	// Use parameterized query to prevent SQL injection
+	const char *sql =
+		"SELECT id AS node_id, name, qualified_name, node_type, file_path, "
+		"start_row, start_col, end_row, end_col, language "
+		"FROM graph_nodes WHERE project_id = ? AND name = ?";
+
+	std::string sql_with_filter;
+	const char *final_sql = sql;
+	bool has_filter = file_filter && strlen(file_filter) > 0;
+
+	if (has_filter) {
+		sql_with_filter = std::string(sql) + " AND file_path LIKE ? LIMIT 20";
+		final_sql = sql_with_filter.c_str();
+	} else {
+		sql_with_filter = std::string(sql) + " LIMIT 20";
+		final_sql = sql_with_filter.c_str();
 	}
-	sql << " LIMIT 20";
-	return queryToJson(store_->handle(), sql.str().c_str());
+
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(store_->handle(), final_sql, -1, &stmt, nullptr) !=
+	    SQLITE_OK) {
+		return "{\"total\":0,\"results\":[],\"error\":\"prepare failed\"}";
+	}
+
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	sqlite3_bind_text(stmt, 2, symbol_name, -1, SQLITE_TRANSIENT);
+
+	if (has_filter) {
+		std::string filter_pattern = std::string("%") + file_filter + "%";
+		sqlite3_bind_text(stmt, 3, filter_pattern.c_str(), -1, SQLITE_TRANSIENT);
+	}
+
+	std::ostringstream json;
+	json << "{\"results\":[";
+	int col_count = sqlite3_column_count(stmt);
+	bool first_row = true;
+	int row_count = 0;
+
+	while (sqlite3_step(stmt) == SQLITE_ROW) {
+		if (!first_row)
+			json << ",";
+		first_row = false;
+		row_count++;
+
+		json << "{";
+		for (int i = 0; i < col_count; i++) {
+			if (i > 0)
+				json << ",";
+			const char *col_name = sqlite3_column_name(stmt, i);
+			json << "\"" << col_name << "\":";
+
+			int col_type = sqlite3_column_type(stmt, i);
+			if (col_type == SQLITE_NULL) {
+				json << "null";
+			} else if (col_type == SQLITE_INTEGER) {
+				json << sqlite3_column_int64(stmt, i);
+			} else {
+				const char *text =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(stmt, i));
+				json << "\"" << jsonEscape(text ? text : "") << "\"";
+			}
+		}
+		json << "}";
+	}
+
+	json << "],\"total\":" << row_count << "}";
+	sqlite3_finalize(stmt);
+	return json.str();
 }
 
 std::string QueryEngine::findReferences(uint64_t project_id,
 					const char *symbol_name,
 					const char *file_filter)
 {
-	std::ostringstream sql;
-	sql << "SELECT gn.id AS node_id, gn.name, gn.qualified_name, gn.node_type, "
-	       "gn.file_path, gn.start_row, gn.start_col, gn.end_row, gn.end_col, "
-	       "gn.language "
-	       "FROM graph_nodes gn "
-	       "JOIN graph_edges ge ON gn.id = ge.source_node_id "
-	       "JOIN graph_nodes target ON target.id = ge.target_node_id "
-	       "WHERE gn.project_id = "
-	    << project_id << " AND target.name = '" << symbol_name << "'"
-	    << " AND ge.edge_type = 0";
-	if (file_filter && strlen(file_filter) > 0) {
-		sql << " AND gn.file_path LIKE '%" << file_filter << "%'";
+	// Use parameterized query to prevent SQL injection
+	const char *sql =
+		"SELECT gn.id AS node_id, gn.name, gn.qualified_name, gn.node_type, "
+		"gn.file_path, gn.start_row, gn.start_col, gn.end_row, gn.end_col, "
+		"gn.language "
+		"FROM graph_nodes gn "
+		"JOIN graph_edges ge ON gn.id = ge.source_node_id "
+		"JOIN graph_nodes target ON target.id = ge.target_node_id "
+		"WHERE gn.project_id = ? AND target.name = ? AND ge.edge_type = 0";
+
+	std::string sql_with_filter;
+	const char *final_sql = sql;
+	bool has_filter = file_filter && strlen(file_filter) > 0;
+
+	if (has_filter) {
+		sql_with_filter = std::string(sql) + " AND gn.file_path LIKE ? LIMIT 100";
+		final_sql = sql_with_filter.c_str();
+	} else {
+		sql_with_filter = std::string(sql) + " LIMIT 100";
+		final_sql = sql_with_filter.c_str();
 	}
-	sql << " LIMIT 100";
-	return queryToJson(store_->handle(), sql.str().c_str());
+
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(store_->handle(), final_sql, -1, &stmt, nullptr) !=
+	    SQLITE_OK) {
+		return "{\"total\":0,\"results\":[],\"error\":\"prepare failed\"}";
+	}
+
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	sqlite3_bind_text(stmt, 2, symbol_name, -1, SQLITE_TRANSIENT);
+
+	if (has_filter) {
+		std::string filter_pattern = std::string("%") + file_filter + "%";
+		sqlite3_bind_text(stmt, 3, filter_pattern.c_str(), -1, SQLITE_TRANSIENT);
+	}
+
+	std::ostringstream json;
+	json << "{\"results\":[";
+	int col_count = sqlite3_column_count(stmt);
+	bool first_row = true;
+	int row_count = 0;
+
+	while (sqlite3_step(stmt) == SQLITE_ROW) {
+		if (!first_row)
+			json << ",";
+		first_row = false;
+		row_count++;
+
+		json << "{";
+		for (int i = 0; i < col_count; i++) {
+			if (i > 0)
+				json << ",";
+			const char *col_name = sqlite3_column_name(stmt, i);
+			json << "\"" << col_name << "\":";
+
+			int col_type = sqlite3_column_type(stmt, i);
+			if (col_type == SQLITE_NULL) {
+				json << "null";
+			} else if (col_type == SQLITE_INTEGER) {
+				json << sqlite3_column_int64(stmt, i);
+			} else {
+				const char *text =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(stmt, i));
+				json << "\"" << jsonEscape(text ? text : "") << "\"";
+			}
+		}
+		json << "}";
+	}
+
+	json << "],\"total\":" << row_count << "}";
+	sqlite3_finalize(stmt);
+	return json.str();
 }
 
 std::string QueryEngine::getCallers(uint64_t project_id,
@@ -245,35 +362,95 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 std::string QueryEngine::getNeighbors(uint64_t project_id, uint64_t node_id,
 				      int edge_type_filter, int radius)
 {
+	// Use parameterized query to prevent SQL injection
 	// BFS-based neighbor expansion (single hop for now, radius unused in v1)
-	std::ostringstream sql;
+	const char *sql =
+		"SELECT gn.id AS neighbor_id, gn.name, gn.node_type, gn.file_path, "
+		"ge.edge_type, 'outgoing' AS direction "
+		"FROM graph_nodes gn "
+		"JOIN graph_edges ge ON gn.id = ge.target_node_id "
+		"WHERE ge.source_node_id = ? AND ge.project_id = ?";
 
-	// Outgoing edges
-	sql << "SELECT gn.id AS neighbor_id, gn.name, gn.node_type, gn.file_path, "
-	       "ge.edge_type, 'outgoing' AS direction "
-	       "FROM graph_nodes gn "
-	       "JOIN graph_edges ge ON gn.id = ge.target_node_id "
-	       "WHERE ge.source_node_id = "
-	    << node_id << " AND ge.project_id = " << project_id;
-	if (edge_type_filter >= 0) {
-		sql << " AND ge.edge_type = " << edge_type_filter;
+	std::string sql_out;
+	std::string sql_in;
+	bool has_filter = edge_type_filter >= 0;
+
+	if (has_filter) {
+		sql_out = std::string(sql) + " AND ge.edge_type = ?";
+		sql_in = "SELECT gn.id AS neighbor_id, gn.name, gn.node_type, gn.file_path, "
+			 "ge.edge_type, 'incoming' AS direction "
+			 "FROM graph_nodes gn "
+			 "JOIN graph_edges ge ON gn.id = ge.source_node_id "
+			 "WHERE ge.target_node_id = ? AND ge.project_id = ? AND ge.edge_type = ?";
+	} else {
+		sql_out = std::string(sql);
+		sql_in = "SELECT gn.id AS neighbor_id, gn.name, gn.node_type, gn.file_path, "
+			 "ge.edge_type, 'incoming' AS direction "
+			 "FROM graph_nodes gn "
+			 "JOIN graph_edges ge ON gn.id = ge.source_node_id "
+			 "WHERE ge.target_node_id = ? AND ge.project_id = ?";
 	}
 
-	sql << " UNION ALL ";
+	std::string final_sql = sql_out + " UNION ALL " + sql_in + " LIMIT 200";
 
-	// Incoming edges
-	sql << "SELECT gn.id AS neighbor_id, gn.name, gn.node_type, gn.file_path, "
-	       "ge.edge_type, 'incoming' AS direction "
-	       "FROM graph_nodes gn "
-	       "JOIN graph_edges ge ON gn.id = ge.source_node_id "
-	       "WHERE ge.target_node_id = "
-	    << node_id << " AND ge.project_id = " << project_id;
-	if (edge_type_filter >= 0) {
-		sql << " AND ge.edge_type = " << edge_type_filter;
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(store_->handle(), final_sql.c_str(), -1, &stmt,
+			       nullptr) != SQLITE_OK) {
+		return "{\"total\":0,\"neighbors\":[],\"error\":\"prepare failed\"}";
 	}
 
-	sql << " LIMIT 200";
-	return queryToJson(store_->handle(), sql.str().c_str(), "neighbors");
+	// Bind parameters for outgoing edges query
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(node_id));
+	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
+	if (has_filter) {
+		sqlite3_bind_int(stmt, 3, edge_type_filter);
+	}
+
+	// Bind parameters for incoming edges query
+	int next_param = has_filter ? 4 : 3;
+	sqlite3_bind_int64(stmt, next_param, static_cast<int64_t>(node_id));
+	sqlite3_bind_int64(stmt, next_param + 1, static_cast<int64_t>(project_id));
+	if (has_filter) {
+		sqlite3_bind_int(stmt, next_param + 2, edge_type_filter);
+	}
+
+	std::ostringstream json;
+	json << "{\"neighbors\":[";
+	int col_count = sqlite3_column_count(stmt);
+	bool first_row = true;
+	int row_count = 0;
+
+	while (sqlite3_step(stmt) == SQLITE_ROW) {
+		if (!first_row)
+			json << ",";
+		first_row = false;
+		row_count++;
+
+		json << "{";
+		for (int i = 0; i < col_count; i++) {
+			if (i > 0)
+				json << ",";
+			const char *col_name = sqlite3_column_name(stmt, i);
+			json << "\"" << col_name << "\":";
+
+			int col_type = sqlite3_column_type(stmt, i);
+			if (col_type == SQLITE_NULL) {
+				json << "null";
+			} else if (col_type == SQLITE_INTEGER) {
+				json << sqlite3_column_int64(stmt, i);
+			} else {
+				const char *text =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(stmt, i));
+				json << "\"" << jsonEscape(text ? text : "") << "\"";
+			}
+		}
+		json << "}";
+	}
+
+	json << "],\"total\":" << row_count << "}";
+	sqlite3_finalize(stmt);
+	return json.str();
 }
 
 std::string QueryEngine::findShortestPath(uint64_t project_id,
@@ -343,28 +520,104 @@ std::string QueryEngine::getSubgraph(uint64_t project_id,
 				     const char *node_type_filter,
 				     const char *edge_type_filter)
 {
+	// Use parameterized query to prevent SQL injection
 	// v1: radius 1 subgraph = center + all direct neighbors
 	(void)radius; // reserved for future multi-hop
 
-	std::ostringstream sql;
-	sql << "SELECT DISTINCT gn.id, gn.name, gn.node_type, gn.file_path, "
-	       "gn.language "
-	       "FROM graph_nodes gn "
-	       "JOIN graph_edges ge ON (gn.id = ge.source_node_id OR gn.id = "
-	       "ge.target_node_id) "
-	       "WHERE ge.project_id = "
-	    << project_id << " AND (ge.source_node_id = " << center_node_id
-	    << " OR ge.target_node_id = " << center_node_id << ")";
+	// Note: node_type_filter and edge_type_filter are expected to be comma-separated
+	// integer lists (e.g., "0,1,2"). We cannot use parameters for IN clauses directly,
+	// so we validate and safely construct these parts.
+	std::string sql_base =
+		"SELECT DISTINCT gn.id, gn.name, gn.node_type, gn.file_path, "
+		"gn.language "
+		"FROM graph_nodes gn "
+		"JOIN graph_edges ge ON (gn.id = ge.source_node_id OR gn.id = "
+		"ge.target_node_id) "
+		"WHERE ge.project_id = ? AND (ge.source_node_id = ? OR ge.target_node_id = ?)";
 
-	if (node_type_filter && strlen(node_type_filter) > 0) {
-		sql << " AND gn.node_type IN (" << node_type_filter << ")";
-	}
-	if (edge_type_filter && strlen(edge_type_filter) > 0) {
-		sql << " AND ge.edge_type IN (" << edge_type_filter << ")";
+	std::string final_sql = sql_base;
+
+	// Safely validate node_type_filter (should only contain digits and commas)
+	bool has_node_filter = node_type_filter && strlen(node_type_filter) > 0;
+	if (has_node_filter) {
+		std::string filter = node_type_filter;
+		bool valid = true;
+		for (char c : filter) {
+			if (!std::isdigit(c) && c != ',' && c != ' ') {
+				valid = false;
+				break;
+			}
+		}
+		if (valid) {
+			final_sql += " AND gn.node_type IN (" + filter + ")";
+		}
 	}
 
-	sql << " LIMIT 200";
-	return queryToJson(store_->handle(), sql.str().c_str(), "nodes");
+	// Safely validate edge_type_filter (should only contain digits and commas)
+	bool has_edge_filter = edge_type_filter && strlen(edge_type_filter) > 0;
+	if (has_edge_filter) {
+		std::string filter = edge_type_filter;
+		bool valid = true;
+		for (char c : filter) {
+			if (!std::isdigit(c) && c != ',' && c != ' ') {
+				valid = false;
+				break;
+			}
+		}
+		if (valid) {
+			final_sql += " AND ge.edge_type IN (" + filter + ")";
+		}
+	}
+
+	final_sql += " LIMIT 200";
+
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(store_->handle(), final_sql.c_str(), -1, &stmt,
+			       nullptr) != SQLITE_OK) {
+		return "{\"total\":0,\"nodes\":[],\"error\":\"prepare failed\"}";
+	}
+
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(center_node_id));
+	sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(center_node_id));
+
+	std::ostringstream json;
+	json << "{\"nodes\":[";
+	int col_count = sqlite3_column_count(stmt);
+	bool first_row = true;
+	int row_count = 0;
+
+	while (sqlite3_step(stmt) == SQLITE_ROW) {
+		if (!first_row)
+			json << ",";
+		first_row = false;
+		row_count++;
+
+		json << "{";
+		for (int i = 0; i < col_count; i++) {
+			if (i > 0)
+				json << ",";
+			const char *col_name = sqlite3_column_name(stmt, i);
+			json << "\"" << col_name << "\":";
+
+			int col_type = sqlite3_column_type(stmt, i);
+			if (col_type == SQLITE_NULL) {
+				json << "null";
+			} else if (col_type == SQLITE_INTEGER) {
+				json << sqlite3_column_int64(stmt, i);
+			} else {
+				const char *text =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(stmt, i));
+				json << "\"" << jsonEscape(text ? text : "") << "\"";
+			}
+		}
+		json << "}";
+	}
+
+	json << "],\"total\":" << row_count << "}";
+	sqlite3_finalize(stmt);
+	return json.str();
 }
 
 std::string QueryEngine::locateNode(uint64_t project_id, uint64_t node_id,
@@ -381,12 +634,58 @@ std::string QueryEngine::locateNode(uint64_t project_id, uint64_t node_id,
 
 std::string QueryEngine::locateByName(uint64_t project_id, const char *name)
 {
-	std::ostringstream sql;
-	sql << "SELECT id AS node_id, name, qualified_name, node_type, file_path, "
-	       "start_row, start_col, end_row, end_col, language "
-	       "FROM graph_nodes WHERE project_id = "
-	    << project_id << " AND name = '" << name << "' LIMIT 20";
-	return queryToJson(store_->handle(), sql.str().c_str(), "locations");
+	// Use parameterized query to prevent SQL injection
+	const char *sql =
+		"SELECT id AS node_id, name, qualified_name, node_type, file_path, "
+		"start_row, start_col, end_row, end_col, language "
+		"FROM graph_nodes WHERE project_id = ? AND name = ? LIMIT 20";
+
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(store_->handle(), sql, -1, &stmt, nullptr) !=
+	    SQLITE_OK) {
+		return "{\"total\":0,\"locations\":[],\"error\":\"prepare failed\"}";
+	}
+
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	sqlite3_bind_text(stmt, 2, name, -1, SQLITE_TRANSIENT);
+
+	std::ostringstream json;
+	json << "{\"locations\":[";
+	int col_count = sqlite3_column_count(stmt);
+	bool first_row = true;
+	int row_count = 0;
+
+	while (sqlite3_step(stmt) == SQLITE_ROW) {
+		if (!first_row)
+			json << ",";
+		first_row = false;
+		row_count++;
+
+		json << "{";
+		for (int i = 0; i < col_count; i++) {
+			if (i > 0)
+				json << ",";
+			const char *col_name = sqlite3_column_name(stmt, i);
+			json << "\"" << col_name << "\":";
+
+			int col_type = sqlite3_column_type(stmt, i);
+			if (col_type == SQLITE_NULL) {
+				json << "null";
+			} else if (col_type == SQLITE_INTEGER) {
+				json << sqlite3_column_int64(stmt, i);
+			} else {
+				const char *text =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(stmt, i));
+				json << "\"" << jsonEscape(text ? text : "") << "\"";
+			}
+		}
+		json << "}";
+	}
+
+	json << "],\"total\":" << row_count << "}";
+	sqlite3_finalize(stmt);
+	return json.str();
 }
 
 std::string QueryEngine::getGraphStats(uint64_t project_id)

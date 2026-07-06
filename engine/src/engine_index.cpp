@@ -817,7 +817,7 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 				passes_ok = linker.run(project_id, all_units,
 						       file_paths,
 						       global_symbol_index,
-						       g_store);
+						       g_store.get());
 			}
 		}
 

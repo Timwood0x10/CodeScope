@@ -33,10 +33,11 @@
 // ─── Global singletons ─────────────────────────────────────────
 // NOT static — declared extern in engine_internal.h so that
 // other engine_*.cpp translation units can access them.
+// Using unique_ptr for exception-safe memory management.
 
-store::GraphStore *g_store = nullptr;
-query::QueryEngine *g_query = nullptr;
-Parser *g_parser = nullptr;
+std::unique_ptr<store::GraphStore> g_store;
+std::unique_ptr<query::QueryEngine> g_query;
+std::unique_ptr<Parser> g_parser;
 
 // Core engine functions are split into separate translation units:
 //   engine_helpers.cpp   — readFile, jsonEscape, detectLanguage, dupString, etc.

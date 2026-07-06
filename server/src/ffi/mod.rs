@@ -320,9 +320,10 @@ pub fn get_capabilities(project_id: u64) -> String {
 // ── Background task management (Tokio + index_tasks table) ─────
 
 use once_cell::sync::Lazy;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::HashSet;
+use std::sync::Mutex;
 
-static ENHANCEMENT_RUNNING: AtomicBool = AtomicBool::new(false);
+static ENHANCEMENT_RUNNING: Lazy<Mutex<HashSet<u64>>> = Lazy::new(|| Mutex::new(HashSet::new()));
 static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()
@@ -333,9 +334,13 @@ static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
 /// Spawn a Tokio background task to enhance a project.
 /// Tracks progress via the index_tasks table in SQLite.
 pub fn spawn_enhancement(project_id: u64) {
-    if ENHANCEMENT_RUNNING.swap(true, Ordering::Acquire) {
-        eprintln!("enhancement: already running, skipping");
-        return;
+    // Check if this project is already being enhanced and insert in one atomic step
+    {
+        let mut running = ENHANCEMENT_RUNNING.lock().expect("enhancement tracking lock poisoned");
+        if !running.insert(project_id) {
+            eprintln!("enhancement: project {} already running, skipping", project_id);
+            return;
+        }
     }
 
     // Create a task record via FFI
@@ -348,10 +353,11 @@ pub fn spawn_enhancement(project_id: u64) {
             project_id
         );
 
-        // Mark running
         let result = enhance_project(project_id);
         eprintln!("enhancement: completed: {}", result);
 
-        ENHANCEMENT_RUNNING.store(false, Ordering::Release);
+        // Remove from running set
+        let mut running = ENHANCEMENT_RUNNING.lock().expect("enhancement tracking lock poisoned");
+        running.remove(&project_id);
     });
 }

@@ -130,10 +130,6 @@ std::string ScannerVisitor::detectDeclLine(std::string_view line)
 		if (line.find('(') != std::string_view::npos &&
 		    line.find('(') > 0 && line.back() != ';' &&
 		    line.back() != ',') {
-			// Simple C function heuristic: has ( and not ending with ;
-#if 0
-            if (line.back() == ')') return "function";
-#else
 			// More careful: skip if/while/for/switch
 			static const char *skip[] = {
 				"if",	  "while",  "for",    "switch", "catch",
@@ -165,7 +161,6 @@ std::string ScannerVisitor::detectDeclLine(std::string_view line)
 			for (const char **t = types; *t; t++)
 				if (before.find(*t) != std::string_view::npos)
 					return "function";
-#endif
 		}
 	}
 

@@ -1,6 +1,7 @@
 #ifndef ENGINE_INTERNAL_H
 #define ENGINE_INTERNAL_H
 
+#include <memory>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -29,10 +30,11 @@
 //
 // Shared across all engine_*.cpp translation units.
 // Initialized by engine_init() and cleaned up by engine_shutdown().
+// Using unique_ptr for exception-safe memory management.
 
-extern store::GraphStore *g_store;
-extern query::QueryEngine *g_query;
-extern Parser *g_parser;
+extern std::unique_ptr<store::GraphStore> g_store;
+extern std::unique_ptr<query::QueryEngine> g_query;
+extern std::unique_ptr<Parser> g_parser;
 
 // ─── Internal Helpers ────────────────────────────────────────────
 //

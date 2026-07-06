@@ -22,16 +22,17 @@
 
 int engine_init(const char *db_path)
 {
-	g_store = new store::GraphStore();
+	// Use unique_ptr for exception-safe initialization
+	// If any constructor throws, previous allocations are auto-freed.
+	g_store = std::make_unique<store::GraphStore>();
 	if (!g_store->open(db_path)) {
-		delete g_store;
-		g_store = nullptr;
+		g_store.reset(); // Auto-cleanup via unique_ptr
 		return -1;
 	}
-	g_query = new query::QueryEngine(g_store);
+	g_query = std::make_unique<query::QueryEngine>(g_store.get());
 
 	// Initialize parser and register available grammars
-	g_parser = new Parser();
+	g_parser = std::make_unique<Parser>();
 
 	// Register all statically-linked tree-sitter grammars.
 	// Grammars are compiled into the binary — no .so loading needed.
@@ -52,17 +53,14 @@ int engine_init(const char *db_path)
 		int rc = SQLITE_ERROR;
 
 		if (db) {
-			void *handle = dlopen(vec_path.c_str(),
-					      RTLD_LAZY | RTLD_LOCAL);
-			if (handle) {
-				dlclose(handle);
-				rc = sqlite3_load_extension(db,
-							    vec_path.c_str(),
-							    nullptr, &ext_err);
-			} else {
+			// Attempt to load extension directly without dlopen pre-check
+			rc = sqlite3_load_extension(db,
+						    vec_path.c_str(),
+						    nullptr, &ext_err);
+			if (rc != SQLITE_OK) {
 				fprintf(stderr,
 					"engine: sqlite-vec not available (%s)\n",
-					dlerror());
+					ext_err ? ext_err : "unknown error");
 			}
 		}
 
@@ -78,10 +76,6 @@ int engine_init(const char *db_path)
 			if (sql_err)
 				sqlite3_free(sql_err);
 			fprintf(stderr, "engine: sqlite-vec loaded\n");
-		} else if (rc != SQLITE_OK && ext_err) {
-			fprintf(stderr,
-				"engine: sqlite-vec not available: %s\n",
-				ext_err);
 		}
 		if (ext_err)
 			sqlite3_free(ext_err);
@@ -92,16 +86,12 @@ int engine_init(const char *db_path)
 
 void engine_shutdown()
 {
-	delete g_query;
-	g_query = nullptr;
-
-	delete g_parser;
-	g_parser = nullptr;
+	g_query.reset();
+	g_parser.reset();
 
 	if (g_store) {
 		g_store->close();
-		delete g_store;
-		g_store = nullptr;
+		g_store.reset();
 	}
 }
 
