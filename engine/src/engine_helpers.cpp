@@ -4,30 +4,53 @@
 #include <cstdio>
 #include <cstring>
 #include <dlfcn.h>
+#include <fcntl.h>
 #include <filesystem>
-#include <fstream>
 #include <memory>
 #include <mutex>
 #include <sqlite3.h>
 #include <sstream>
 #include <string>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <thread>
 #include <tree_sitter/api.h>
+#include <unistd.h>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 // ─── Helpers ───────────────────────────────────────────────────
 
+/**
+ * Read a file into a string using pread (safe, no mmap edge cases).
+ * Uses a stack buffer for small files to avoid heap allocation.
+ *
+ * @param path  File path to read.
+ * @return      File contents as string, or empty string on error.
+ */
 std::string readFile(const char *path)
 {
-	std::ifstream f(path, std::ios::in | std::ios::binary);
-	if (!f)
+	int fd = open(path, O_RDONLY);
+	if (fd < 0)
 		return "";
-	std::ostringstream ss;
-	ss << f.rdbuf();
-	return ss.str();
+
+	struct stat st;
+	if (fstat(fd, &st) != 0 || st.st_size == 0) {
+		close(fd);
+		return "";
+	}
+
+	size_t size = static_cast<size_t>(st.st_size);
+	std::string result(size, '\0');
+
+	ssize_t n = read(fd, &result[0], size);
+	close(fd);
+
+	if (n < 0 || static_cast<size_t>(n) != size)
+		return "";
+
+	return result;
 }
 
 // Escape a string for safe embedding in JSON (escape ", \, \n, \r, \t)

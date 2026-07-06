@@ -38,11 +38,19 @@ class JsVisitor {
 	virtual ~JsVisitor() = default;
 
 	/**
-  * Walk a tree-sitter AST and produce a SemanticUnit.
-  * Ownership of the returned SemanticUnit passes to the caller.
-  */
+	 * Walk a tree-sitter AST and produce a SemanticUnit.
+	 * Ownership of the returned SemanticUnit passes to the caller.
+	 */
 	virtual SemanticUnit *visit(TSTree *tree, const char *source,
-				    const char *file_path);
+	       const char *file_path);
+
+	/**
+	 * Reset for reuse — clears scope stack and source pointer.
+	 * Preserves internal vector capacity to avoid reallocation
+	 * when visiting multiple files sequentially (Visitor Arena).
+	 * Call before each visit() when reusing the same visitor.
+	 */
+	virtual void reset();
 
     protected:
 	SemanticUnit *unit_;
@@ -67,6 +75,12 @@ class JsVisitor {
 	// ── Helpers ─────────────────────────────────────────────
 	SourceRange location(TSNode node);
 	std::string nodeText(TSNode node);
+	/**
+	 * Zero-copy node text view — borrows from source_, no heap alloc.
+	 * Use for temporary lookups (comparisons, name extraction).
+	 * Only call nodeText() when the result needs to outlive the visit.
+	 */
+	std::string_view nodeTextView(TSNode node);
 
 	// ── Node visitors ───────────────────────────────────────
 	// Each visit* method receives a tree-sitter node and the

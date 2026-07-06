@@ -59,6 +59,7 @@
 *$py.class
 **/.Python
 **/build/
+**/build_asan/
 **/develop-eggs/
 **/dist/
 **/downloads/

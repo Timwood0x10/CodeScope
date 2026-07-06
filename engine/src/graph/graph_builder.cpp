@@ -226,6 +226,7 @@ CodeGraph GraphBuilder::buildSymbolGraph(const ir::SemanticUnit &unit) {
     next_edge_id_ = 1;
     ir_to_graph_node_.clear();
     function_stack_.clear();
+    parent_cache_.clear();
     building_call_graph_ = false;
 
     // Pass 1: Create GraphNode for each declaration record
@@ -238,25 +239,19 @@ CodeGraph GraphBuilder::buildSymbolGraph(const ir::SemanticUnit &unit) {
         addGraphNode(rec, nt);
     }
 
-    // Pass 2: Create Contains edges from parent_id
+    // Pass 2: Create Contains edges from parent_id (with caching)
     for (auto &rec : unit.allRecords()) {
         if (rec.parent_id == 0) continue;
         auto child_it = ir_to_graph_node_.find(rec.id);
         if (child_it == ir_to_graph_node_.end()) continue;
 
-        // Walk parent_id chain to find the nearest ancestor that has a graph node
-        uint64_t pid = rec.parent_id;
-        while (pid != 0) {
-            auto parent_it = ir_to_graph_node_.find(pid);
-            if (parent_it != ir_to_graph_node_.end()) {
-                if (parent_it->second != child_it->second)
-                    addGraphEdge(parent_it->second, child_it->second,
-                                 EdgeType::Contains);
-                break;
-            }
-            // Walk further up
-            const ir::Record &parent_rec = unit.getRecord(pid);
-            pid = parent_rec.parent_id;
+        uint64_t ancestor_id = findContainingFunction(unit, rec);
+        if (ancestor_id != 0 && ancestor_id != rec.id) {
+            auto ancestor_it = ir_to_graph_node_.find(ancestor_id);
+            if (ancestor_it != ir_to_graph_node_.end() &&
+                ancestor_it->second != child_it->second)
+                addGraphEdge(ancestor_it->second, child_it->second,
+                             EdgeType::Contains);
         }
     }
 
@@ -392,14 +387,36 @@ uint64_t GraphBuilder::findContainingFunction(
     const ir::SemanticUnit &unit, const ir::Record &rec) const
 {
     uint64_t pid = rec.parent_id;
+    if (pid == 0) return 0;
+
+    // Check parent cache first
+    {
+        auto cache_it = parent_cache_.find(pid);
+        if (cache_it != parent_cache_.end())
+            return cache_it->second;
+    }
+
+    // Walk parent_id chain until we find a node that has a graph node
+    // Cache each step so subsequent lookups skip the walk.
+    uint64_t result = 0;
     while (pid != 0) {
         auto it = ir_to_graph_node_.find(pid);
-        if (it != ir_to_graph_node_.end())
-            return pid;
-        const ir::Record &parent = unit.getRecord(pid);
-        pid = parent.parent_id;
+        if (it != ir_to_graph_node_.end()) {
+            result = pid;
+            break;
+        }
+        // Check cache along the way
+        auto cache_it = parent_cache_.find(pid);
+        if (cache_it != parent_cache_.end()) {
+            result = cache_it->second;
+            break;
+        }
+        pid = unit.getRecord(pid).parent_id;
     }
-    return 0;
+
+    // Cache the result for the starting pid so future lookups skip the walk
+    parent_cache_[rec.parent_id] = result;
+    return result;
 }
 
 std::unordered_multimap<std::string, uint64_t>

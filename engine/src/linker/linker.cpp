@@ -282,12 +282,10 @@ bool EmitGraphPass::run(
 						   "unknown") :
 					  "unknown",
 				  "");
-		for (auto &n : sym_g.nodes)
-			store->insertGraphNode(project_id, n);
-		for (auto &e : sym_g.edges)
-			store->insertGraphEdge(project_id, e);
-		for (auto &e : call_g.edges)
-			store->insertGraphEdge(project_id, e);
+		// Batch insert — use prepared-statement reuse APIs
+		store->insertGraphNodes(project_id, sym_g.nodes);
+		store->insertGraphEdges(project_id, sym_g.edges);
+		store->insertGraphEdges(project_id, call_g.edges);
 	}
 	fprintf(stderr, "LINKER: %s — %zu files emitted\n", name(),
 		units.size());

@@ -81,6 +81,17 @@ class SemanticUnit {
     public:
 	SemanticUnit() = default;
 
+	/**
+	 * Pre-allocate capacity for expected number of records.
+	 * Reduces vector reallocation overhead during batch insertion.
+	 * Call before addRecord() when the approximate count is known.
+	 */
+	void reserve(size_t count)
+	{
+		records_.reserve(count);
+		id_to_index_.reserve(count);
+	}
+
 	// ── Record Management ─────────────────────────────────────
 
 	/** Add a record and return its assigned ID. */

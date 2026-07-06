@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "../graph/graph_types.h"
@@ -86,8 +87,22 @@ class GraphStore {
 	 * @param records     Flat vector of semantic records (parent_id links).
 	 */
 	void insertSemanticRecords(uint64_t project_id,
-				   const std::string &file_path,
-				   const std::vector<ir::Record> &records);
+	      const std::string &file_path,
+	      const std::vector<ir::Record> &records);
+
+	/**
+	 * Batch insert semantic records for MULTIPLE files in one call.
+	 * Prepares the SQL statement ONCE and reuses it for all records
+	 * across all files — significantly reducing per-file prepare/finalize
+	 * overhead compared to calling insertSemanticRecords per file.
+	 *
+	 * @param project_id     Project identifier.
+	 * @param file_records   Vector of (file_path, records) pairs.
+	 */
+	void insertSemanticRecordsBatch(
+	 uint64_t project_id,
+	 const std::vector<
+	  std::pair<std::string, std::vector<ir::Record>>> &file_records);
 
 	/**
 	 * Build the knowledge graph from previously stored semantic records.
@@ -278,7 +293,24 @@ class GraphStore {
 	/** Get entry points from the new entry_points table. */
 	std::string getEntryPointsJson(uint64_t project_id);
 
-	// ── Raw access (for query engine) ──────────────────────────
+	// ── On-demand call graph queries (from semantic_records, not pre-built) ──
+
+	/**
+	 * Find callers of a function by querying semantic_records directly.
+	 * No pre-built call edges needed — builds the result on-the-fly in SQL.
+	 * Returns JSON: {"callers":[{"name":"...","file":"...","line":...},...]}
+	 * Returns "[]" if no callers found.
+	 */
+	std::string getCallersFromRecords(uint64_t project_id,
+					 const char *function_name);
+
+	/**
+	 * Find callees of a function by querying semantic_records directly.
+	 * Returns JSON: {"callees":[{"name":"...","file":"...","line":...},...]}
+	 * Returns "[]" if no callees found.
+	 */
+	std::string getCalleesFromRecords(uint64_t project_id,
+					  const char *function_name);
 
 	sqlite3 *handle() const
 	{
@@ -293,6 +325,11 @@ class GraphStore {
     private:
 	sqlite3 *db_ = nullptr;
 	std::string error_;
+
+	// Cached prepared statements (initialized in open(), finalized in close())
+	sqlite3_stmt *stmt_fts_map_ = nullptr;  // INSERT INTO fts_node_map
+	sqlite3_stmt *stmt_fts_ = nullptr;       // INSERT INTO code_fts
+	sqlite3_stmt *stmt_vector_ = nullptr;    // INSERT INTO node_vectors
 
 	bool exec(const char *sql);
 	bool createSchema();

@@ -56,6 +56,12 @@ private:
     void addGraphEdge(uint64_t src, uint64_t tgt, EdgeType type);
     uint64_t getContainingFunctionNode();
 
+    // ── Parent chain cache ─────────────────────────────────────
+    // Caches parent_id → nearest_ancestor_graph_node_id lookups
+    // to avoid O(depth × calls) walks for deep ASTs.
+    // Populated during buildSymbolGraph, reused by buildCallGraph.
+    mutable std::unordered_map<uint64_t, uint64_t> parent_cache_;
+
     // ── SemanticUnit helpers ───────────────────────────────────
     // Map a RecordKind to a NodeType for graph node creation.
     // Returns std::nullopt_t equivalent: use isValidNodeType() check.

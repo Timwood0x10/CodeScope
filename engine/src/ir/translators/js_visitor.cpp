@@ -99,6 +99,15 @@ SemanticUnit *JsVisitor::visit(TSTree *tree, const char *source,
 
 // ── Scope Management ──────────────────────────────────────────
 
+void JsVisitor::reset()
+{
+	// Clear scope stack but preserve vector capacity for reuse
+	scopes_.clear();
+	unit_ = nullptr;
+	emitter_ = nullptr;
+	source_ = nullptr;
+}
+
 void JsVisitor::pushScope()
 {
 	scopes_.push_back(Scope{});
@@ -145,6 +154,13 @@ std::string JsVisitor::nodeText(TSNode node)
 	uint32_t start = ts_node_start_byte(node);
 	uint32_t end = ts_node_end_byte(node);
 	return std::string(source_ + start, end - start);
+}
+
+std::string_view JsVisitor::nodeTextView(TSNode node)
+{
+	uint32_t start = ts_node_start_byte(node);
+	uint32_t end = ts_node_end_byte(node);
+	return std::string_view(source_ + start, end - start);
 }
 
 // ── Children traversal ───────────────────────────────────────
