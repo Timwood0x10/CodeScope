@@ -159,7 +159,8 @@ fn h_detect_changes(project_id: u64, args: &Value) -> String {
 fn h_get_communities(project_id: u64, args: &Value) -> String {
     let max_members = args["max_members"].as_i64().unwrap_or(10) as i32;
     let max_communities = args["max_communities"].as_i64().unwrap_or(20) as i32;
-    ffi::get_communities(project_id, max_members, max_communities)
+    let include_members = args["include_members"].as_bool().unwrap_or(false) as i32;
+    ffi::get_communities(project_id, max_members, max_communities, include_members)
 }
 
 fn h_index_batch(project_id: u64, args: &Value) -> String {
@@ -514,11 +515,15 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
                 "properties": {
                     "max_members": {
                         "type": "integer",
-                        "description": "Max members per community in output (default 10). Set to 5-20 to limit token cost."
+                        "description": "Max members per community in output (default 10). Only used when include_members=true."
                     },
                     "max_communities": {
                         "type": "integer",
-                        "description": "Max communities to return (default 20). Set to e.g. 50 for deeper analysis, or 0 for all (may produce large output)."
+                        "description": "Max communities to return (default 20). Set to 0 for all."
+                    },
+                    "include_members": {
+                        "type": "boolean",
+                        "description": "Include member list in each community (default false). When false, only returns {id, label, member_count} summary — much more token-efficient."
                     }
                 }
             }),

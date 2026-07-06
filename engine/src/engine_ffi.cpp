@@ -229,16 +229,17 @@ char *engine_detect_changes(uint64_t project_id,
 // ─── Community Detection ────────────────────────────────────
 
 char *engine_get_communities(uint64_t project_id, int max_members,
-			     int max_communities)
+        int max_communities, int include_members)
 {
-	if (!g_query) {
-		return dupString(
-			"{\"error\":\"not initialized\","
-			"\"communities\":[],\"inter_community_edges\":[],\"total_"
-			"communities\":0}");
-	}
-	return dupString(g_query->getCommunities(project_id, max_members,
-						 max_communities));
+ if (!g_query) {
+  return dupString(
+   "{\"error\":\"not initialized\","
+   "\"communities\":[],\"inter_community_edges\":[],\"total_"
+   "communities\":0}");
+ }
+ return dupString(g_query->getCommunities(project_id, max_members,
+        max_communities,
+        include_members != 0));
 }
 
 // ─── Hotspot Analysis ──────────────────────────────────────

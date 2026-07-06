@@ -70,8 +70,10 @@ class QueryEngine {
 	// Returns JSON with communities, their members, and inter-community edges.
 	// @param max_members Max members per community in output (0 = all).
 	// @param max_communities Max communities to return (0 = all).
+	// @param include_members Include member list in output (default false).
 	std::string getCommunities(uint64_t project_id, int max_members = 10,
-	      int max_communities = 20);
+	      int max_communities = 20,
+	      bool include_members = false);
 
 	// ── Hotspot Analysis ───────────────────────────────────────
 

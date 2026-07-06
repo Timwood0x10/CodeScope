@@ -209,7 +209,8 @@ buildCommunities(const std::unordered_map<uint64_t, uint64_t> &assignments,
 // ─── Public API ───────────────────────────────────────────────
 
 std::string detectCommunities(uint64_t project_id, store::GraphStore *store,
-			      int max_members, int max_communities)
+			      int max_members, int max_communities,
+			      bool include_members)
 {
 	sqlite3 *db = store->handle();
 	if (!db) {
@@ -291,25 +292,29 @@ std::string detectCommunities(uint64_t project_id, store::GraphStore *store,
 			json << ",";
 		first_comm = false;
 		json << "{"
-		     << "\"id\":" << comm.id << ","
-		     << "\"label\":\"" << comm.label << "\","
-		     << "\"member_count\":" << comm.member_count << ","
-		     << "\"members\":[";
-		bool first_member = true;
-		int member_cnt = 0;
-		for (const auto &m : comm.members) {
-			if (max_members > 0 && member_cnt >= max_members)
-				break;
-			member_cnt++;
-			if (!first_member)
-				json << ",";
-			first_member = false;
-			json << "{"
-			     << "\"node_id\":" << m.node_id << ","
-			     << "\"name\":\"" << m.name << "\","
-			     << "\"type\":" << m.node_type << "}";
-		}
-		json << "]}";
+		      << "\"id\":" << comm.id << ","
+		      << "\"label\":\"" << comm.label << "\","
+		      << "\"member_count\":" << comm.member_count;
+		 if (include_members) {
+		  json << ",\"members\":[";
+		  bool first_member = true;
+		  int member_cnt = 0;
+		  for (const auto &m : comm.members) {
+		   if (max_members > 0 &&
+		       member_cnt >= max_members)
+		    break;
+		   member_cnt++;
+		   if (!first_member)
+		    json << ",";
+		   first_member = false;
+		   json << "{"
+		        << "\"node_id\":" << m.node_id << ","
+		        << "\"name\":\"" << m.name << "\","
+		        << "\"type\":" << m.node_type << "}";
+		  }
+		  json << "]";
+		 }
+		 json << "}";
 	}
 	json << "],";
 

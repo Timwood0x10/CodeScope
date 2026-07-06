@@ -45,13 +45,16 @@ struct Community {
  * @param project_id  The project to analyze.
  * @param store       Initialized GraphStore.
  * @param max_members Maximum members per community in output (default 10).
+ *                    Only used when include_members=true.
  *                    Set to 0 for all members (WARNING: may produce large token output).
- *                    Set to a small number (e.g. 5-10) to avoid huge token output.
- * @param max_communities Maximum number of communities to return (default 0 = all).
- *                        Set to e.g. 20 to limit output size and token cost.
+ * @param max_communities Maximum number of communities to return (default 20).
+ *                        Set to 0 for all communities.
+ * @param include_members If true, include member list in each community.
+ *                        If false (default), only return {id, label, member_count} summary.
  */
 std::string detectCommunities(uint64_t project_id, store::GraphStore *store,
-			      int max_members = 10, int max_communities = 20);
+			      int max_members = 10, int max_communities = 20,
+			      bool include_members = false);
 
 } // namespace query
 

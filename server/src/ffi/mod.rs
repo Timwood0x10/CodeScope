@@ -58,6 +58,7 @@ unsafe extern "C" {
         project_id: u64,
         max_members: i32,
         max_communities: i32,
+        include_members: i32,
     ) -> *mut c_char;
 
     fn engine_index_batch(project_id: u64, file_paths_json: *const c_char) -> *mut c_char;
@@ -226,8 +227,8 @@ pub fn detect_changes(project_id: u64, modified_files_json: &str) -> String {
     take_string(unsafe { engine_detect_changes(project_id, cstr(modified_files_json).as_ptr()) })
 }
 
-pub fn get_communities(project_id: u64, max_members: i32, max_communities: i32) -> String {
-    take_string(unsafe { engine_get_communities(project_id, max_members, max_communities) })
+pub fn get_communities(project_id: u64, max_members: i32, max_communities: i32, include_members: i32) -> String {
+    take_string(unsafe { engine_get_communities(project_id, max_members, max_communities, include_members) })
 }
 
 pub fn index_batch(project_id: u64, file_paths_json: &str) -> String {
