@@ -228,7 +228,8 @@ char *engine_detect_changes(uint64_t project_id,
 
 // ─── Community Detection ────────────────────────────────────
 
-char *engine_get_communities(uint64_t project_id, int max_members)
+char *engine_get_communities(uint64_t project_id, int max_members,
+			     int max_communities)
 {
 	if (!g_query) {
 		return dupString(
@@ -236,7 +237,8 @@ char *engine_get_communities(uint64_t project_id, int max_members)
 			"\"communities\":[],\"inter_community_edges\":[],\"total_"
 			"communities\":0}");
 	}
-	return dupString(g_query->getCommunities(project_id, max_members));
+	return dupString(g_query->getCommunities(project_id, max_members,
+						 max_communities));
 }
 
 // ─── Hotspot Analysis ──────────────────────────────────────

@@ -47,9 +47,11 @@ struct Community {
  * @param max_members Maximum members per community in output (default 10).
  *                    Set to 0 for all members (WARNING: may produce large token output).
  *                    Set to a small number (e.g. 5-10) to avoid huge token output.
+ * @param max_communities Maximum number of communities to return (default 0 = all).
+ *                        Set to e.g. 20 to limit output size and token cost.
  */
 std::string detectCommunities(uint64_t project_id, store::GraphStore *store,
-			      int max_members = 10);
+			      int max_members = 10, int max_communities = 0);
 
 } // namespace query
 

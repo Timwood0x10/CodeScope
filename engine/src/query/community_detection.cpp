@@ -209,7 +209,7 @@ buildCommunities(const std::unordered_map<uint64_t, uint64_t> &assignments,
 // ─── Public API ───────────────────────────────────────────────
 
 std::string detectCommunities(uint64_t project_id, store::GraphStore *store,
-			      int max_members)
+			      int max_members, int max_communities)
 {
 	sqlite3 *db = store->handle();
 	if (!db) {
@@ -282,7 +282,11 @@ std::string detectCommunities(uint64_t project_id, store::GraphStore *store,
 
 	json << "\"communities\":[";
 	bool first_comm = true;
+	int comm_cnt = 0;
 	for (const auto &comm : sorted_communities) {
+		if (max_communities > 0 && comm_cnt >= max_communities)
+			break;
+		comm_cnt++;
 		if (!first_comm)
 			json << ",";
 		first_comm = false;

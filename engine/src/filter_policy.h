@@ -7,12 +7,24 @@
 #include <vector>
 
 /**
+ * Gitignore-style pattern rule.
+ */
+struct GitignoreRule {
+	std::string pattern; // raw pattern (after stripping ! and trailing /)
+	bool negate = false; // starts with '!'
+	bool dir_only = false; // ends with '/'
+	bool anchored = false; // starts with '/'
+	bool has_star = false; // contains * or **
+};
+
+/**
  * Centralized file filtering policy for CodeScope.
  *
  * Replaces ad-hoc skip_dirs / skip_suffixes scattered across
  * engine_index_project and engine_scanner. Supports:
  * - Normal / FAST mode filtering
  * - .codescopeignore file
+ * - .gitignore pattern matching
  * - Per-language extension mapping
  * - Discovery stats (seen/skipped/candidate counts)
  */
@@ -41,11 +53,21 @@ class FilterPolicy {
 	bool shouldSkipSuffix(const std::string &ext) const;
 	bool isSourceFile(const std::string &path) const;
 
+	// ── Path-based check (gitignore-aware, any depth) ────────────
+	// Check ALL path components against skip_dirs AND full path
+	// against .gitignore / .codescopeignore patterns.
+	// @param rel_path  Path relative to project root.
+	// @param is_dir    Whether this entry is a directory.
+	bool shouldSkipPath(const std::string &rel_path, bool is_dir) const;
+
 	// ── Language Detection ───────────────────────────────────────
 	const char *detectLanguage(const char *file_path) const;
 
-	// ── .codescopeignore ─────────────────────────────────────────
+	// ── Ignore Files ─────────────────────────────────────────────
+	// Load .codescopeignore patterns from project root.
 	bool loadIgnoreFile(const std::string &project_root);
+	// Load .gitignore patterns from project root.
+	bool loadGitignore(const std::string &project_root);
 
 	// ── Stats ────────────────────────────────────────────────────
 	struct Stats {
@@ -58,14 +80,8 @@ class FilterPolicy {
 		uint64_t skipped_ignore = 0;
 		uint64_t candidate_files = 0;
 	};
-	Stats &stats()
-	{
-		return stats_;
-	}
-	const Stats &stats() const
-	{
-		return stats_;
-	}
+	Stats &stats() { return stats_; }
+	const Stats &stats() const { return stats_; }
 	void printStats() const;
 
     private:
@@ -88,13 +104,24 @@ class FilterPolicy {
 	// Skip filenames
 	std::unordered_set<std::string> skip_filenames_;
 
-	// .codescopeignore patterns
+	// .codescopeignore patterns (raw lines)
 	std::vector<std::string> ignore_patterns_;
+	// .gitignore patterns (parsed rules)
+	std::vector<GitignoreRule> gitignore_rules_;
 
 	// Stats
 	mutable Stats stats_;
 
 	void buildActiveSets();
+
+	// Gitignore pattern matching helpers (static, reusable)
+	static bool gitignoreMatches(const std::vector<GitignoreRule> &rules,
+				    const std::string &rel_path, bool is_dir);
+	static bool globMatch(const std::string &pattern,
+			     const std::string &str);
+	static bool globImpl(const std::string &p, const std::string &s,
+			    std::string::const_iterator pi,
+			    std::string::const_iterator si);
 };
 
 #endif // FILTER_POLICY_H

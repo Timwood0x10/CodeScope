@@ -377,7 +377,7 @@ class GraphStore {
 	std::string importArtifact(uint64_t project_id,
 				   const char *artifact_path);
 
-	private:
+    private:
 	sqlite3 *db_ = nullptr;
 	std::string error_;
 

@@ -158,7 +158,8 @@ fn h_detect_changes(project_id: u64, args: &Value) -> String {
 
 fn h_get_communities(project_id: u64, args: &Value) -> String {
     let max_members = args["max_members"].as_i64().unwrap_or(0) as i32;
-    ffi::get_communities(project_id, max_members)
+    let max_communities = args["max_communities"].as_i64().unwrap_or(0) as i32;
+    ffi::get_communities(project_id, max_members, max_communities)
 }
 
 fn h_index_batch(project_id: u64, args: &Value) -> String {
@@ -508,7 +509,19 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
         Tool {
             name: "get_communities".into(),
             description: "Run community detection on the code graph to discover module clusters. Uses label propagation to find groups of closely related code entities.".into(),
-            input_schema: json!({ "type": "object", "properties": {} }),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "max_members": {
+                        "type": "integer",
+                        "description": "Max members per community in output (0 = all, default 0). Set to 5-20 to limit token cost."
+                    },
+                    "max_communities": {
+                        "type": "integer",
+                        "description": "Max communities to return (0 = all, default 0). Set to e.g. 20 to limit output size and token cost."
+                    }
+                }
+            }),
         },
         Tool {
             name: "index_batch".into(),

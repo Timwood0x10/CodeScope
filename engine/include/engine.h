@@ -90,10 +90,13 @@ char* engine_detect_changes(uint64_t project_id, const char* modified_files_json
  * @param max_members Maximum members per community in output. 
  *                    Set to a small value (e.g. 5-10) to avoid large token output.
  *                    0 = include all members.
+ * @param max_communities Maximum communities to return.
+ *                        Set to e.g. 20 to limit output size and token cost.
+ *                        0 = return all communities.
  * @return JSON with "communities" array, "inter_community_edges",
  *         and "total_communities".
  */
-char* engine_get_communities(uint64_t project_id, int max_members);
+char* engine_get_communities(uint64_t project_id, int max_members, int max_communities);
 
 // ─── Hotspot Analysis ───────────────────────────────────────────
 
