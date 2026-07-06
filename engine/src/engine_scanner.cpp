@@ -195,71 +195,89 @@ struct DeclPattern {
 };
 
 static const DeclPattern RUST_PATTERNS[] = {
-	{"pub unsafe fn ", "function"}, {"pub async fn ", "function"},
-	{"pub fn ",	 "function"},	    {"fn ",	"function"},
-	{"pub struct ",  "struct"},	    {"struct ",	"struct"},
-	{"pub enum ",	 "enum"},	    {"enum ",	"enum"},
-	{"pub trait ",	 "trait"},	    {"trait ",	"trait"},
-	{"pub type ",	 "type_alias"},	    {"type ",	"type_alias"},
-	{"pub const ",	 "const"},	    {"const ",	"const"},
-	{"pub static ",  "const"},	    {"static ",	"const"},
-	{"pub union ",	 "struct"},	    {"union ",	"struct"},
-	{"mod ",	 "module"},
+	{ "pub unsafe fn ", "function" },
+	{ "pub async fn ", "function" },
+	{ "pub fn ", "function" },
+	{ "fn ", "function" },
+	{ "pub struct ", "struct" },
+	{ "struct ", "struct" },
+	{ "pub enum ", "enum" },
+	{ "enum ", "enum" },
+	{ "pub trait ", "trait" },
+	{ "trait ", "trait" },
+	{ "pub type ", "type_alias" },
+	{ "type ", "type_alias" },
+	{ "pub const ", "const" },
+	{ "const ", "const" },
+	{ "pub static ", "const" },
+	{ "static ", "const" },
+	{ "pub union ", "struct" },
+	{ "union ", "struct" },
+	{ "mod ", "module" },
 };
 
 static const DeclPattern PYTHON_PATTERNS[] = {
-	{"async def ", "function"}, {"def ", "function"}, {"class ", "class"},
+	{ "async def ", "function" },
+	{ "def ", "function" },
+	{ "class ", "class" },
 };
 
 static const DeclPattern JSTS_PATTERNS[] = {
-	{"export async function ", "function"},
-	{"export function ", "function"},
-	{"async function ", "function"},
-	{"function ", "function"},
-	{"export class ", "class"},
-	{"class ", "class"},
-	{"export interface ", "interface"},
-	{"interface ", "interface"},
-	{"export enum ", "enum"},
-	{"enum ", "enum"},
+	{ "export async function ", "function" },
+	{ "export function ", "function" },
+	{ "async function ", "function" },
+	{ "function ", "function" },
+	{ "export class ", "class" },
+	{ "class ", "class" },
+	{ "export interface ", "interface" },
+	{ "interface ", "interface" },
+	{ "export enum ", "enum" },
+	{ "enum ", "enum" },
 };
 
 static const DeclPattern GO_PATTERNS[] = {
-	{"func ", "function"},
+	{ "func ", "function" },
 	// type handled inline for struct/interface/type_alias distinction
 };
 
 static const DeclPattern SWIFT_PATTERNS[] = {
-	{"open func ", "function"},	 {"public func ", "function"},
-	{"private func ", "function"},	 {"func ", "function"},
-	{"open class ", "class"},	 {"public class ", "class"},
-	{"class ", "class"},		 {"public struct ", "struct"},
-	{"struct ", "struct"},		 {"public enum ", "enum"},
-	{"enum ", "enum"},		 {"public protocol ", "interface"},
-	{"protocol ", "interface"},	 {"extension ", "class"},
-	{"init(", "function"},
+	{ "open func ", "function" },
+	{ "public func ", "function" },
+	{ "private func ", "function" },
+	{ "func ", "function" },
+	{ "open class ", "class" },
+	{ "public class ", "class" },
+	{ "class ", "class" },
+	{ "public struct ", "struct" },
+	{ "struct ", "struct" },
+	{ "public enum ", "enum" },
+	{ "enum ", "enum" },
+	{ "public protocol ", "interface" },
+	{ "protocol ", "interface" },
+	{ "extension ", "class" },
+	{ "init(", "function" },
 };
 
 static const DeclPattern JAVA_PATTERNS[] = {
-	{"public class ", "class"},	{"private class ", "class"},
-	{"protected class ", "class"},	{"class ", "class"},
-	{"public interface ", "interface"}, {"interface ", "interface"},
-	{"public enum ", "enum"},	{"enum ", "enum"},
-	{"public record ", "class"},	{"record ", "class"},
+	{ "public class ", "class" },	      { "private class ", "class" },
+	{ "protected class ", "class" },      { "class ", "class" },
+	{ "public interface ", "interface" }, { "interface ", "interface" },
+	{ "public enum ", "enum" },	      { "enum ", "enum" },
+	{ "public record ", "class" },	      { "record ", "class" },
 };
 
 static const DeclPattern C_CPP_PATTERNS[] = {
-	{"class ", "class"},	 {"struct ", "struct"},
-	{"enum class ", "enum"}, {"enum ", "enum"},
-	{"union ", "struct"},	 {"namespace ", "module"},
-	{"using namespace ", ""}, // skip
-	{"template ", ""},	 // skip
+	{ "class ", "class" },	    { "struct ", "struct" },
+	{ "enum class ", "enum" },  { "enum ", "enum" },
+	{ "union ", "struct" },	    { "namespace ", "module" },
+	{ "using namespace ", "" }, // skip
+	{ "template ", "" }, // skip
 };
 
 // Check one keyword pattern at the start of a trimmed line.
 // Returns the kind string, or nullptr if no match.
 static const char *matchDeclPattern(const DeclPattern *patterns, size_t count,
-				     std::string_view line)
+				    std::string_view line)
 {
 	for (size_t i = 0; i < count; i++) {
 		if (startsWithKW(line, patterns[i].keyword))
@@ -280,20 +298,18 @@ static std::string detectDecl(std::string_view line, const std::string &lang)
 	const char *kind = nullptr;
 
 	if (lang == "rust") {
-		kind = matchDeclPattern(RUST_PATTERNS,
-					sizeof(RUST_PATTERNS) /
-						sizeof(RUST_PATTERNS[0]),
-					line);
+		kind = matchDeclPattern(
+			RUST_PATTERNS,
+			sizeof(RUST_PATTERNS) / sizeof(RUST_PATTERNS[0]), line);
 	} else if (lang == "python") {
 		kind = matchDeclPattern(PYTHON_PATTERNS,
 					sizeof(PYTHON_PATTERNS) /
 						sizeof(PYTHON_PATTERNS[0]),
 					line);
 	} else if (lang == "javascript" || lang == "typescript") {
-		kind = matchDeclPattern(JSTS_PATTERNS,
-					sizeof(JSTS_PATTERNS) /
-						sizeof(JSTS_PATTERNS[0]),
-					line);
+		kind = matchDeclPattern(
+			JSTS_PATTERNS,
+			sizeof(JSTS_PATTERNS) / sizeof(JSTS_PATTERNS[0]), line);
 		// JS/TS arrow function detection (can't be table-driven)
 		if (!kind) {
 			if (line.substr(0, 6) == "const " ||
@@ -334,10 +350,9 @@ static std::string detectDecl(std::string_view line, const std::string &lang)
 						sizeof(SWIFT_PATTERNS[0]),
 					line);
 	} else if (lang == "java") {
-		kind = matchDeclPattern(JAVA_PATTERNS,
-					sizeof(JAVA_PATTERNS) /
-						sizeof(JAVA_PATTERNS[0]),
-					line);
+		kind = matchDeclPattern(
+			JAVA_PATTERNS,
+			sizeof(JAVA_PATTERNS) / sizeof(JAVA_PATTERNS[0]), line);
 		// Java methods need lookLikeCFunction check
 		if (!kind && looksLikeCFunction(std::string(line)))
 			return "method";

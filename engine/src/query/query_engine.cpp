@@ -141,33 +141,104 @@ std::string QueryEngine::findReferences(uint64_t project_id,
 std::string QueryEngine::getCallers(uint64_t project_id,
 				    const char *function_name)
 {
-	std::ostringstream sql;
-	sql << "SELECT caller.id AS node_id, caller.name, caller.file_path, "
-	       "caller.start_row, caller.start_col "
-	       "FROM graph_nodes caller "
-	       "JOIN graph_edges ge ON caller.id = ge.source_node_id "
-	       "JOIN graph_nodes callee ON callee.id = ge.target_node_id "
-	       "WHERE caller.project_id = "
-	    << project_id << " AND callee.name = '" << function_name << "'"
-	    << " AND ge.edge_type = 1"
-	    << " LIMIT 100";
-	return queryToJson(store_->handle(), sql.str().c_str(), "callers");
+	if (!function_name || !*function_name)
+		return "{\"callers\":[],\"total\":0}";
+
+	// Parameterized query with JOIN instead of IN (subquery)
+	// Uses: idx_ge_callers(edge_type, target_node_id) +
+	//       idx_graph_nodes_name(project_id, name)
+	const char *sql =
+		"SELECT caller.id, caller.name, caller.file_path, "
+		"caller.start_row, caller.start_col "
+		"FROM graph_nodes caller "
+		"JOIN graph_edges ge ON caller.id = ge.source_node_id "
+		"JOIN graph_nodes callee ON callee.id = ge.target_node_id "
+		"  AND callee.name = ? AND callee.project_id = ? "
+		"WHERE ge.edge_type = 1 AND caller.project_id = ? "
+		"LIMIT 100";
+
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(store_->handle(), sql, -1, &stmt, nullptr) !=
+	    SQLITE_OK)
+		return "{\"callers\":[],\"total\":0,\"error\":\"prepare failed\"}";
+	sqlite3_bind_text(stmt, 1, function_name, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
+	sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(project_id));
+
+	std::string result = "{\"callers\":[";
+	bool first = true;
+	while (sqlite3_step(stmt) == SQLITE_ROW) {
+		if (!first)
+			result += ",";
+		first = false;
+		result += "{\"node_id\":" +
+			  std::to_string(sqlite3_column_int64(stmt, 0));
+		const char *n = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 1));
+		const char *f = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 2));
+		result += ",\"name\":\"" + jsonEscape(n ? n : "") + "\"";
+		result += ",\"file_path\":\"" + jsonEscape(f ? f : "") + "\"";
+		result += ",\"start_row\":" +
+			  std::to_string(sqlite3_column_int(stmt, 3));
+		result += ",\"start_col\":" +
+			  std::to_string(sqlite3_column_int(stmt, 4));
+		result += "}";
+	}
+	sqlite3_finalize(stmt);
+	result += "],\"total\":" + std::to_string(first ? 0 : 100) + "}";
+	return result;
 }
 
 std::string QueryEngine::getCallees(uint64_t project_id,
 				    const char *function_name)
 {
-	std::ostringstream sql;
-	sql << "SELECT callee.id AS node_id, callee.name, callee.file_path, "
-	       "callee.start_row, callee.start_col "
-	       "FROM graph_nodes callee "
-	       "JOIN graph_edges ge ON callee.id = ge.target_node_id "
-	       "JOIN graph_nodes caller ON caller.id = ge.source_node_id "
-	       "WHERE callee.project_id = "
-	    << project_id << " AND caller.name = '" << function_name << "'"
-	    << " AND ge.edge_type = 1"
-	    << " LIMIT 100";
-	return queryToJson(store_->handle(), sql.str().c_str(), "callees");
+	if (!function_name || !*function_name)
+		return "{\"callees\":[],\"total\":0}";
+
+	// Parameterized query with JOIN instead of IN (subquery)
+	// Uses: idx_ge_callees(edge_type, source_node_id) +
+	//       idx_graph_nodes_name(project_id, name)
+	const char *sql =
+		"SELECT callee.id, callee.name, callee.file_path, "
+		"callee.start_row, callee.start_col "
+		"FROM graph_nodes callee "
+		"JOIN graph_edges ge ON callee.id = ge.target_node_id "
+		"JOIN graph_nodes caller ON caller.id = ge.source_node_id "
+		"  AND caller.name = ? AND caller.project_id = ? "
+		"WHERE ge.edge_type = 1 AND callee.project_id = ? "
+		"LIMIT 100";
+
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(store_->handle(), sql, -1, &stmt, nullptr) != SQLITE_OK)
+		return "{\"callees\":[],\"total\":0,\"error\":\"prepare failed\"}";
+	sqlite3_bind_text(stmt, 1, function_name, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
+	sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(project_id));
+
+	std::string result = "{\"callees\":[";
+	bool first = true;
+	while (sqlite3_step(stmt) == SQLITE_ROW) {
+		if (!first)
+			result += ",";
+		first = false;
+		result += "{\"node_id\":" +
+			  std::to_string(sqlite3_column_int64(stmt, 0));
+		const char *n = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 1));
+		const char *f = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 2));
+		result += ",\"name\":\"" + jsonEscape(n ? n : "") + "\"";
+		result += ",\"file_path\":\"" + jsonEscape(f ? f : "") + "\"";
+		result += ",\"start_row\":" +
+			  std::to_string(sqlite3_column_int(stmt, 3));
+		result += ",\"start_col\":" +
+			  std::to_string(sqlite3_column_int(stmt, 4));
+		result += "}";
+	}
+	sqlite3_finalize(stmt);
+	result += "],\"total\":" + std::to_string(first ? 0 : 100) + "}";
+	return result;
 }
 
 std::string QueryEngine::getNeighbors(uint64_t project_id, uint64_t node_id,

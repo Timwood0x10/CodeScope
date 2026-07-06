@@ -88,8 +88,8 @@ class GraphStore {
 	 * @param records     Flat vector of semantic records (parent_id links).
 	 */
 	void insertSemanticRecords(uint64_t project_id,
-	      const std::string &file_path,
-	      const std::vector<ir::Record> &records);
+				   const std::string &file_path,
+				   const std::vector<ir::Record> &records);
 
 	/**
 	 * Batch insert semantic records for MULTIPLE files in one call.
@@ -101,9 +101,10 @@ class GraphStore {
 	 * @param file_records   Vector of (file_path, records) pairs.
 	 */
 	void insertSemanticRecordsBatch(
-	 uint64_t project_id,
-	 const std::vector<
-	  std::pair<std::string, std::vector<ir::Record>>> &file_records);
+		uint64_t project_id,
+		const std::vector<
+			std::pair<std::string, std::vector<ir::Record> > >
+			&file_records);
 
 	/**
 	 * Build the knowledge graph from previously stored semantic records.
@@ -119,8 +120,9 @@ class GraphStore {
 	 *                      (incremental mode). When null, rebuilds all.
 	 * @return true on success.
 	 */
-	bool buildGraph(uint64_t project_id, bool build_calls = true,
-		       const std::unordered_set<std::string> *changed_files = nullptr);
+	bool buildGraph(
+		uint64_t project_id, bool build_calls = true,
+		const std::unordered_set<std::string> *changed_files = nullptr);
 
 	// ── Transactions ───────────────────────────────────────────
 
@@ -140,6 +142,14 @@ class GraphStore {
 			   const char *file_path, const char *content,
 			   int node_kind = -1);
 
+	/**
+	 * Bulk-build FTS index from graph_nodes for a project.
+	 * Scans all graph_nodes with a non-empty name and inserts into
+	 * code_fts + fts_node_map in one pass. Designed for deferred
+	 * indexing after the main batch insert.
+	 */
+	void buildFTSFromGraph(uint64_t project_id);
+
 	// ── Vector search (semantic) ─────────────────────────────────
 
 	bool storeVector(uint64_t node_id, uint64_t project_id,
@@ -147,6 +157,13 @@ class GraphStore {
 	std::string searchSemantic(uint64_t project_id, const void *query_vec,
 				   size_t vec_bytes, int limit);
 	void deleteFTSByFile(uint64_t project_id, uint64_t file_id);
+
+	/**
+	 * Bulk-build semantic vectors from graph_nodes for a project.
+	 * Reads node names, converts to n-gram hash vectors, and stores
+	 * in node_vectors. Designed for deferred indexing.
+	 */
+	void buildVectorsFromGraph(uint64_t project_id);
 
 	// ── Complexity ───────────────────────────────────────────────
 
@@ -303,7 +320,7 @@ class GraphStore {
 	 * Returns "[]" if no callers found.
 	 */
 	std::string getCallersFromRecords(uint64_t project_id,
-					 const char *function_name);
+					  const char *function_name);
 
 	/**
 	 * Find callees of a function by querying semantic_records directly.
@@ -328,9 +345,9 @@ class GraphStore {
 	std::string error_;
 
 	// Cached prepared statements (initialized in open(), finalized in close())
-	sqlite3_stmt *stmt_fts_map_ = nullptr;  // INSERT INTO fts_node_map
-	sqlite3_stmt *stmt_fts_ = nullptr;       // INSERT INTO code_fts
-	sqlite3_stmt *stmt_vector_ = nullptr;    // INSERT INTO node_vectors
+	sqlite3_stmt *stmt_fts_map_ = nullptr; // INSERT INTO fts_node_map
+	sqlite3_stmt *stmt_fts_ = nullptr; // INSERT INTO code_fts
+	sqlite3_stmt *stmt_vector_ = nullptr; // INSERT INTO node_vectors
 
 	bool exec(const char *sql);
 	bool createSchema();

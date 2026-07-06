@@ -42,7 +42,7 @@ class JsVisitor {
 	 * Ownership of the returned SemanticUnit passes to the caller.
 	 */
 	virtual SemanticUnit *visit(TSTree *tree, const char *source,
-	       const char *file_path);
+				    const char *file_path);
 
 	/**
 	 * Reset for reuse — clears scope stack and source pointer.
