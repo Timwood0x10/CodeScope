@@ -80,8 +80,14 @@ class FilterPolicy {
 		uint64_t skipped_ignore = 0;
 		uint64_t candidate_files = 0;
 	};
-	Stats &stats() { return stats_; }
-	const Stats &stats() const { return stats_; }
+	Stats &stats()
+	{
+		return stats_;
+	}
+	const Stats &stats() const
+	{
+		return stats_;
+	}
 	void printStats() const;
 
     private:
@@ -116,12 +122,12 @@ class FilterPolicy {
 
 	// Gitignore pattern matching helpers (static, reusable)
 	static bool gitignoreMatches(const std::vector<GitignoreRule> &rules,
-				    const std::string &rel_path, bool is_dir);
+				     const std::string &rel_path, bool is_dir);
 	static bool globMatch(const std::string &pattern,
-			     const std::string &str);
+			      const std::string &str);
 	static bool globImpl(const std::string &p, const std::string &s,
-			    std::string::const_iterator pi,
-			    std::string::const_iterator si);
+			     std::string::const_iterator pi,
+			     std::string::const_iterator si);
 };
 
 #endif // FILTER_POLICY_H

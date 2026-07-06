@@ -435,14 +435,14 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 			else
 				rel.clear();
 			if (!rel.empty()) {
-			  if (filter.shouldSkipPath(rel,
-			      entry.is_directory())) {
-			   if (entry.is_directory())
-			    it.disable_recursion_pending();
-			   filter.stats().skipped_dirs++;
-			   continue;
-			  }
-			 }
+				if (filter.shouldSkipPath(
+					    rel, entry.is_directory())) {
+					if (entry.is_directory())
+						it.disable_recursion_pending();
+					filter.stats().skipped_dirs++;
+					continue;
+				}
+			}
 			if (entry.is_regular_file()) {
 				filter.stats().seen_files++;
 				// Check filename-based skip

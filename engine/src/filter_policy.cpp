@@ -397,8 +397,10 @@ bool FilterPolicy::gitignoreMatches(const std::vector<GitignoreRule> &rules,
 					// Also match if it's the entire last path component
 					if (!match && pos > 0 &&
 					    rel_path[pos - 1] == '/')
-						match = (after == rel_path.size() ||
-							 rel_path[after] == '/');
+						match = (after ==
+								 rel_path.size() ||
+							 rel_path[after] ==
+								 '/');
 				}
 			}
 		}
@@ -413,8 +415,7 @@ bool FilterPolicy::gitignoreMatches(const std::vector<GitignoreRule> &rules,
 	return ignored;
 }
 
-bool FilterPolicy::globMatch(const std::string &pattern,
-			     const std::string &str)
+bool FilterPolicy::globMatch(const std::string &pattern, const std::string &str)
 {
 	auto pi = pattern.begin(), si = str.begin();
 	return globImpl(pattern, str, pi, si);
