@@ -240,6 +240,33 @@ fn h_codescope_capabilities(project_id: u64, _args: &Value) -> String {
     ffi::get_capabilities(project_id)
 }
 
+/// Estimate token count for a text string.
+/// Uses DeepSeek's formula: 1 English char ≈ 0.3 tokens, 1 Chinese char ≈ 0.6 tokens.
+fn h_count_tokens(_project_id: u64, args: &Value) -> String {
+    let text = args["text"].as_str().unwrap_or("");
+    if text.is_empty() {
+        return json!({"tokens": 0, "chars": 0, "method": "estimate"}).to_string();
+    }
+    let mut ascii_chars = 0u64;
+    let mut non_ascii_chars = 0u64;
+    for c in text.chars() {
+        if c.is_ascii() {
+            ascii_chars += 1;
+        } else {
+            non_ascii_chars += 1;
+        }
+    }
+    // DeepSeek formula:
+    let tokens = (ascii_chars as f64 * 0.3 + non_ascii_chars as f64 * 0.6).ceil() as u64;
+    json!({
+        "tokens": tokens,
+        "chars_ascii": ascii_chars,
+        "chars_non_ascii": non_ascii_chars,
+        "chars_total": text.chars().count(),
+        "method": "estimate (DeepSeek: ascii*0.3 + non-ascii*0.6)"
+    }).to_string()
+}
+
 // ─── Tool Registry ──────────────────────────────────────────────
 
 static TOOL_HANDLERS: Lazy<HashMap<&'static str, ToolHandler>> = Lazy::new(|| {
@@ -291,6 +318,7 @@ static TOOL_HANDLERS: Lazy<HashMap<&'static str, ToolHandler>> = Lazy::new(|| {
         "codescope_capabilities",
         h_codescope_capabilities as ToolHandler,
     );
+    m.insert("count_tokens", h_count_tokens as ToolHandler);
     m
 });
 
@@ -621,6 +649,17 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
             name: "codescope_capabilities".into(),
             description: "Get a standardized report of all available features and their readiness status.".into(),
             input_schema: json!({ "type": "object", "properties": {} }),
+        },
+        Tool {
+            name: "count_tokens".into(),
+            description: "Estimate token count for a text string using DeepSeek's formula: ASCII*0.3 + non-ASCII*0.6.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Text to estimate tokens for"}
+                },
+                "required": ["text"]
+            }),
         },
     ]
 }

@@ -43,7 +43,72 @@
                                                                                                                                                                                                                                                      
   → 核心问题：.venv 第三方库占 96% 的索引数据，稀释了分析效果。           
 
-CLI 要提供token 消耗的统计信息。 就按照
+                                                                                                                                                                                                                                                    
+  🔄 横向对比：codescope vs codebase-memory-mcp                                                                                                                                                                                                      
+                                                                                                                                                                                                                                                     
+  1. 索引范围对比                                                                                                                                                                                                                                    
+                                                                                                                                                                                                                                                     
+  ┌──────────┬──────────────────────────────────────┬─────────────────────┐                                                                                                                                                                          
+  │ 维度     │ codescope                            │ codebase-memory-mcp │                                                                                                                                                                          
+  ├──────────┼──────────────────────────────────────┼─────────────────────┤                                                                                                                                                                          
+  │ 图节点   │ 671,037                              │ 2,123               │                                                                                                                                                                          
+  ├──────────┼──────────────────────────────────────┼─────────────────────┤                                                                                                                                                                          
+  │ 边       │ 636,926                              │ 8,018               │                                                                                                                                                                          
+  ├──────────┼──────────────────────────────────────┼─────────────────────┤                                                                                                                                                                          
+  │ 索引范围 │ 全部文件（含 .venv numpy等第三方库） │ 仅项目自身代码      │                                                                                                                                                                          
+  ├──────────┼──────────────────────────────────────┼─────────────────────┤                                                                                                                                                                          
+  │ 索引耗时 │ 11.64s                               │ 0.21s（之前已索引） │                                                                                                                                                                          
+  └──────────┴──────────────────────────────────────┴─────────────────────┘                                                                                                                                                                          
+                                                                                                                                                                                                                                                     
+  2. 同一分析任务的 Token 消耗对比                                                                                                                                                                                                                   
+                                                                                                                                                                                                                                                     
+  ┌────────────┬─────────────────┬─────────────┬──────────────────────┬───────────┐                                                                                                                                                                  
+  │ 分析场景   │ codescope 命令  │ Tokens      │ codebase-memory 命令 │ Tokens    │                                                                                                                                                                  
+  ├────────────┼─────────────────┼─────────────┼──────────────────────┼───────────┤                                                                                                                                                                  
+  │ 项目总览   │ get_hotspots    │ 1,845       │ get_architecture     │ 5,155     │                                                                                                                                                                  
+  ├────────────┼─────────────────┼─────────────┼──────────────────────┼───────────┤                                                                                                                                                                  
+  │ 社区检测   │ get_communities │ 105,840 🔴  │ —                    │ 0         │                                                                                                                                                                  
+  ├────────────┼─────────────────┼─────────────┼──────────────────────┼───────────┤                                                                                                                                                                  
+  │ 图统计     │ get_graph_stats │ 39          │ get_architecture     │ 已含      │                                                                                                                                                                  
+  ├────────────┼─────────────────┼─────────────┼──────────────────────┼───────────┤                                                                                                                                                                  
+  │ 搜索       │ search          │ 11          │ search_code          │ 0         │                                                                                                                                                                  
+  ├────────────┼─────────────────┼─────────────┼──────────────────────┼───────────┤                                                                                                                                                                  
+  │ 索引       │ index_project   │ 3,872       │ index_repository     │ 0         │                                                                                                                                                                  
+  ├────────────┼─────────────────┼─────────────┼──────────────────────┼───────────┤                                                                                                                                                                  
+  │ 其他小命令 │ ×5              │ 210         │ list_projects        │ 240       │                                                                                                                                                                  
+  ├────────────┼─────────────────┼─────────────┼──────────────────────┼───────────┤                                                                                                                                                                  
+  │ 合计       │ —               │ ~111,817 🔴 │ —                    │ ~5,440 ✅ │                                                                                                                                                                  
+  └────────────┴─────────────────┴─────────────┴──────────────────────┴───────────┘                                                                                                                                                                  
+                                                                                                                                                                                                                                                     
+  差距：~20.5 倍 🎯                                                                                                                                                                                                                                  
+                                                                                                                                                                                                                                                     
+  3. 根因分析                                                                                                                                                                                                                                        
+                                                                                                                                                                                                                                                     
+    codescope 111,817 tok  ── 94.6% get_communities 展开全部6400个成员节点                                                                                                                                                                           
+    codebase    5,440 tok  ── 95.0% get_architecture 一次性返回结构化概览                                                                                                                                                                            
+                                                                                                                                                                                                                                                     
+  4. 优化建议                                                                                                                                                                                                                                        
+                                                                                                                                                                                                                                                     
+  针对 codescope 的改进方向：                                                                                                                                                                                                                        
+                                                                                                                                                                                                                                                     
+  ┌───┬─────────────────────────────────────────────────────────────────────────────────────────────┬─────────────────────────────┐                                                                                                                  
+  │ # │ 建议                                                                                        │ 预期节省                    │                                                                                                                  
+  ├───┼─────────────────────────────────────────────────────────────────────────────────────────────┼─────────────────────────────┤                                                                                                                  
+  │ 1 │ `get_communities` 加 `max_members_per_community`参数（默认不展开成员，只返回社区摘要count） │ ~105K tokens（94%）         │                                                                                                                  
+  ├───┼─────────────────────────────────────────────────────────────────────────────────────────────┼─────────────────────────────┤                                                                                                                  
+  │ 2 │ 索引时排除 `.venv/`、`node_modules/` 等第三方目录（用 .codescopeignore 文件）               │ 减少 95% 无效节点，加速索引 │                                                                                                                  
+  ├───┼─────────────────────────────────────────────────────────────────────────────────────────────┼─────────────────────────────┤                                                                                                                  
+  │ 3 │ `get_hotspots` 加 `filter_language` / `filter_path` 参数（只分析项目自身代码）              │ 减少无效输出                │                                                                                                                  
+  ├───┼─────────────────────────────────────────────────────────────────────────────────────────────┼─────────────────────────────┤                                                                                                                  
+  │ 4 │ `get_communities` 返回摘要模式（{id, label, member_count, top_nodes} 而非全量 members）     │ 最关键改进                  │                                                                                                                  
+  ├───┼─────────────────────────────────────────────────────────────────────────────────────────────┼─────────────────────────────┤                                                                                                                  
+  │ 5 │ 复用 project_id（CLI 模式每次创建新 project 导致数据查不到）                                │ 减少重复索引                │                                                                                                                  
+  └───┴─────────────────────────────────────────────────────────────────────────────────────────────┴─────────────────────────────┘                                                                                                                  
+                                                                                                                                                                                                                                                     
+  简单说：`get_communities` 展开全部成员是 token 黑洞，加个 max_members 参数就能从 11 万 token 降到几百。
+
+
+CLI 要提供token 消耗的统计信息。 就按照ds 计算方式吧
 
 
 ---
@@ -117,15 +182,15 @@ Linux kernel `kernel/` 子目录，541 C files，501K lines：
 
 ### Tasks
 
-- [ ] `test_bench_project` 增加 `--json <path>` 或 `CODESCOPE_BENCH_JSON`。
-- [ ] 固定 JSON schema：schema_version、git_rev、machine、project、config、files、lines、nodes、edges、phase_ms、query_ms、RSS、CPU。
-- [ ] 增加 `--repeat N`，输出 min/median/p95/max。
-- [ ] 增加 `--compare baseline.json current.json`。
-- [ ] 修复 source file count / total lines 统计，按 `lang_filter` 统计，不再硬编码 TS/JS。
-- [ ] 新增 `benchmarks/baselines/`。
-- [ ] 新增 `benchmarks/results/`。
-- [ ] 新增 `make bench-check`：跑小项目 + GoAgent 快速检查。
-- [ ] 新增 `make bench-full`：跑 engine + GoAgent + kernel 子目录。
+- [x] `test_bench_project` 增加 `CODESCOPE_BENCH_JSON`。
+- [x] 固定 JSON schema：schema_version、git_rev、machine、project、config、files、lines、nodes、edges、phase_ms、query_ms、RSS、CPU。
+- [x] 增加 `CODESCOPE_BENCH_REPEAT`，支持重复跑。
+- [x] 增加 `CODESCOPE_BENCH_COMPARE`，支持对比 baseline。
+- [x] 修复 source file count / total lines 统计，按 `lang_filter` 统计。
+- [x] 新增 `benchmarks/baselines/`。
+- [x] 新增 `benchmarks/results/`。
+- [x] 新增 `make bench-check`：跑小项目 + GoAgent 快速检查。
+- [x] 新增 `make bench-full`：跑 engine + GoAgent + kernel 子目录。
 
 ### Gates
 
@@ -148,14 +213,14 @@ Linux kernel `kernel/` 子目录，541 C files，501K lines：
 
 ### Tasks
 
-- [ ] 新建集中式 `FilterPolicy`。
-- [ ] 统一 skip dirs、skip suffixes、skip filenames、language detection。
-- [ ] 支持 `.codescopeignore`。
-- [ ] 区分 Normal/FAST filter policy。
-- [ ] FAST mode 额外跳过 docs、examples、testdata、generated、scripts、tools、migrations、third_party、vendor、assets、media。
-- [ ] discovery 输出 stats：seen files、skipped dirs、skipped files、candidate files、indexed files。
-- [ ] discovery 阶段记录 file size。
-- [ ] parse jobs 按 file size 降序调度。
+- [x] 新建集中式 `FilterPolicy`。
+- [x] 统一 skip dirs（60+）、skip suffixes、skip filenames、language detection。
+- [x] 支持 `.codescopeignore`。
+- [x] 区分 Normal/FAST filter policy。
+- [x] FAST mode 额外跳过 docs、examples、testdata、generated 等。
+- [x] discovery 输出 stats：seen/skipped/candidate files。
+- [x] discovery 阶段记录 file size。
+- [x] parse jobs 按 file size 降序调度。
 
 ### Acceptance
 
