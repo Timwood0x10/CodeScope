@@ -240,6 +240,31 @@ char* engine_index_batch(uint64_t project_id, const char* file_paths_json);
  */
 char* engine_get_project_info(uint64_t project_id);
 
+// ─── Shared Artifact ────────────────────────────────────────────
+
+/**
+ * Export a compact DB artifact for the given project.
+ * Uses VACUUM INTO to create a defragmented copy, then zstd-compresses it.
+ * The artifact can be shared with other clones to avoid full re-indexing.
+ *
+ * @param project_id    Project to export.
+ * @param output_path   Path for the output .db.zst file.
+ * @return JSON: {"ok":true, "size_bytes":N, "compressed_bytes":N}
+ *         or {"ok":false, "error":"..."} on failure.
+ */
+char* engine_export_artifact(uint64_t project_id, const char* output_path);
+
+/**
+ * Import a previously exported artifact.
+ * After import, the project is ready for incremental indexing.
+ *
+ * @param project_id    Project to import into.
+ * @param artifact_path Path to the .db.zst artifact file.
+ * @return JSON: {"ok":true, "project_id":N}
+ *         or {"ok":false, "error":"..."} on failure.
+ */
+char* engine_import_artifact(uint64_t project_id, const char* artifact_path);
+
 #ifdef __cplusplus
 }
 #endif

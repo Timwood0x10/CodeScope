@@ -361,7 +361,21 @@ class GraphStore {
 	/** Get all readiness flags as JSON: "fast_ready":1,"fts_ready":0,... */
 	std::string getProjectReadinessJson(uint64_t project_id);
 
-    private:
+	// ── Shared Artifact ─────────────────────────────────────────
+
+	/**
+	 * Export a compact DB artifact (VACUUM INTO + zstd).
+	 * Returns JSON result string.
+	 */
+	std::string exportArtifact(uint64_t project_id, const char *output_path);
+
+	/**
+	 * Import a previously exported artifact.
+	 * Returns JSON result string.
+	 */
+	std::string importArtifact(uint64_t project_id, const char *artifact_path);
+
+	   private:
 	sqlite3 *db_ = nullptr;
 	std::string error_;
 

@@ -463,12 +463,14 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 			 }
 			 // Incremental: check file_scan_state to skip unchanged files
 			 struct stat file_stat;
+			 int64_t mtime = 0, fsize = 0;
 			 bool file_unchanged = false;
 			 if (stat(entry.path().c_str(), &file_stat) == 0) {
+			  mtime = static_cast<int64_t>(file_stat.st_mtime);
+			  fsize = static_cast<int64_t>(file_stat.st_size);
 			  file_unchanged = g_store->isFileUnchanged(
 			   project_id, entry.path().c_str(),
-			   static_cast<int64_t>(file_stat.st_mtime),
-			   static_cast<int64_t>(file_stat.st_size));
+			   mtime, fsize);
 			 }
 			 if (file_unchanged) {
 			  filter.stats().skipped_files++;
@@ -551,6 +553,12 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	bool mode_fast = mode_fast_discover;
 	bool mode_deep = env_mode && strcmp(env_mode, "deep") == 0;
 	// normal is default when neither fast nor deep
+
+	// Memory budget: pause parsing if RSS exceeds limit (MB)
+	uint64_t memory_budget_mb = 0;
+	const char *env_budget = getenv("CODESCOPE_MEMORY_BUDGET_MB");
+	if (env_budget)
+		memory_budget_mb = static_cast<uint64_t>(std::atoll(env_budget));
 
 	// Track successfully-indexed files for incremental file_scan_state update
 	std::vector<std::string> all_indexed_files;
@@ -706,6 +714,23 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 						    t_parse_start)
 				.count();
 		time_parse_ms += batch_parse_ms;
+
+		// Memory budget: check RSS after parse, sleep if over budget
+		if (memory_budget_mb > 0) {
+		 struct rusage usage;
+		 if (getrusage(RUSAGE_SELF, &usage) == 0) {
+		  uint64_t rss_mb = static_cast<uint64_t>(usage.ru_maxrss) / (1024 * 1024);
+		  if (rss_mb > memory_budget_mb) {
+		   unsigned sleep_ms = (rss_mb - memory_budget_mb) * 10;
+		   if (sleep_ms > 1000) sleep_ms = 1000;
+		   if (verbose)
+		    fprintf(stderr, "MEM: RSS %lluMB > budget %lluMB, sleeping %ums\n",
+		     (unsigned long long)rss_mb,
+		     (unsigned long long)memory_budget_mb, sleep_ms);
+		   std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
+		  }
+		 }
+		}
 
 		// Build file_paths vector for this batch
 		std::vector<std::string> file_paths;

@@ -6,6 +6,9 @@
 #include <queue>
 #include <sqlite3.h>
 #include <sstream>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -499,6 +502,117 @@ std::string GraphStore::getProjectReadinessJson(uint64_t project_id)
 	}
 	sqlite3_finalize(stmt);
 	return json;
+}
+
+// ─── Shared Artifact ─────────────────────────────────────────────
+// Uses fork() + execvp() for zstd to avoid command injection via system().
+// Validates paths reject single-quote chars to prevent SQL injection in VACUUM/ATTACH.
+
+static bool pathHasMeta(const char *p) {
+	for (const char *c = p; *c; c++)
+		if (*c == '\'' || *c == ';' || *c == '`' || *c == '$' ||
+		    *c == '|' || *c == '&' || *c == '(' || *c == ')' ||
+		    *c == '\\' || *c == '\n')
+			return true;
+	return false;
+}
+
+std::string GraphStore::exportArtifact(uint64_t project_id,
+				       const char *output_path)
+{
+	if (!output_path || !*output_path || pathHasMeta(output_path))
+		return "{\"ok\":false,\"error\":\"invalid output_path\"}";
+
+	std::string tmp_path = std::string(output_path) + ".tmp";
+	// VACUUM INTO — escape single quote by doubling
+	std::string escaped_tmp = tmp_path;
+	for (size_t p = 0; (p = escaped_tmp.find('\'', p)) != std::string::npos; p += 2)
+		escaped_tmp.insert(p, 1, '\'');
+	std::string sql = "VACUUM INTO '" + escaped_tmp + "'";
+	if (!exec(sql.c_str()))
+		return "{\"ok\":false,\"error\":\"VACUUM INTO failed: " + error_ + "\"}";
+
+	uint64_t raw_size = 0;
+	struct stat st;
+	if (stat(tmp_path.c_str(), &st) == 0)
+		raw_size = static_cast<uint64_t>(st.st_size);
+
+	// fork + execvp for zstd compression — no shell involved
+	pid_t pid = fork();
+	int status = 0;
+	if (pid == 0) {
+	 // Child process
+	 execlp("zstd", "zstd", "-9", "-f", "-q",
+	        tmp_path.c_str(), "-o", output_path, nullptr);
+	 _exit(1); // exec failed
+	} else if (pid > 0) {
+	 waitpid(pid, &status, 0);
+	}
+	std::remove(tmp_path.c_str());
+	if (pid <= 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+		return "{\"ok\":false,\"error\":\"zstd compression failed\"}";
+
+	uint64_t comp_size = 0;
+	if (stat(output_path, &st) == 0)
+		comp_size = static_cast<uint64_t>(st.st_size);
+	return "{\"ok\":true,\"project_id\":" + std::to_string(project_id) +
+	       ",\"size_bytes\":" + std::to_string(raw_size) +
+	       ",\"compressed_bytes\":" + std::to_string(comp_size) + "}";
+}
+
+std::string GraphStore::importArtifact(uint64_t project_id,
+				       const char *artifact_path)
+{
+	if (!artifact_path || !*artifact_path || pathHasMeta(artifact_path))
+		return "{\"ok\":false,\"error\":\"invalid artifact_path\"}";
+
+	std::string tmp_path = std::string(artifact_path) + ".decompressed";
+
+	// fork + execvp for zstd decompression
+	pid_t pid = fork();
+	if (pid == 0) {
+		execlp("zstd", "zstd", "-d", "-f", "-q",
+		       artifact_path, "-o", tmp_path.c_str(), nullptr);
+		_exit(1);
+	}
+	int dec_ok = 0;
+	if (pid > 0) {
+		int status;
+		waitpid(pid, &status, 0);
+		dec_ok = WIFEXITED(status) && WEXITSTATUS(status) == 0;
+	}
+	if (!dec_ok) {
+		std::remove(tmp_path.c_str());
+		return "{\"ok\":false,\"error\":\"zstd decompression failed\"}";
+	}
+
+	// Escape tmp_path for SQL
+	std::string escaped_tmp = tmp_path;
+	for (size_t p = 0; (p = escaped_tmp.find('\'', p)) != std::string::npos; p += 2)
+		escaped_tmp.insert(p, 1, '\'');
+
+	if (!exec(("ATTACH DATABASE '" + escaped_tmp + "' AS artifact").c_str())) {
+		std::remove(tmp_path.c_str());
+		return "{\"ok\":false,\"error\":\"attach artifact failed\"}";
+	}
+
+	// Transactional import scoped to project_id
+	std::string pid_str = std::to_string(project_id);
+	beginTransaction();
+	bool ok = true;
+	ok &= exec(("INSERT OR IGNORE INTO semantic_records SELECT * FROM artifact.semantic_records WHERE project_id=" + pid_str).c_str());
+	ok &= exec(("INSERT OR IGNORE INTO graph_nodes SELECT * FROM artifact.graph_nodes WHERE project_id=" + pid_str).c_str());
+	ok &= exec(("INSERT OR IGNORE INTO graph_edges SELECT * FROM artifact.graph_edges WHERE project_id=" + pid_str).c_str());
+	if (!ok) {
+		rollbackTransaction();
+		exec("DETACH DATABASE artifact");
+		std::remove(tmp_path.c_str());
+		return "{\"ok\":false,\"error\":\"artifact import failed: " + error_ + "\"}";
+	}
+	commitTransaction();
+	exec("DETACH DATABASE artifact");
+	std::remove(tmp_path.c_str());
+	return "{\"ok\":true,\"project_id\":" + pid_str + "}";
 }
 
 // ─── Utility ───────────────────────────────────────────────────
