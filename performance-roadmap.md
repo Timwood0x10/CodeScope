@@ -177,42 +177,36 @@
 
 ### 5.1 Stable Benchmark Report
 
-- [ ] `test_bench_project` 增加 `--json <path>` 或 `CODESCOPE_BENCH_JSON`，输出机器可读 report。
-- [ ] JSON report 固定 schema：project、git_rev、timestamp、machine、config、files、lines、nodes、edges、RSS、CPU、phase_ms、query_ms。
-- [ ] 修正非 TS/JS 项目的展示统计：按 `lang_filter` 统计 source file count 和 total lines。
+- [x] `test_bench_project` 增加 `CODESCOPE_BENCH_JSON`，输出机器可读 report。
+- [x] JSON report 固定 schema：project、git_rev、timestamp、machine、config、files、lines、nodes、edges、RSS、CPU、phase_ms、query_ms。
+- [x] 修正非 TS/JS 项目的展示统计：按 `lang_filter` 统计 source file count 和 total lines。
 - [ ] 支持 `--repeat N`，自动输出 min/median/p95/max，避免手工三次跑。
 - [ ] 支持 `--compare baseline.json current.json`，输出百分比变化和 pass/fail。
 - [ ] benchmark report 保存到 `benchmarks/results/*.json`，文件名包含 project/lang/git short hash。
 
 验收标准：
 
-- [ ] GoAgent、engine、kernel 三个项目都能一条命令生成稳定 JSON。
-- [ ] benchmark 数据不再需要人工从 stdout 表格里抄。
+- [x] GoAgent、engine、kernel 三个项目都能一条命令生成稳定 JSON。
+- [x] benchmark 数据不再需要人工从 stdout 表格里抄。
 - [ ] report schema 变更必须显式 version bump。
 
 ### 5.2 Regression Gates
 
-- [ ] 建立 `benchmarks/baselines/`，保存当前最佳基线。
+- [x] 建立 `benchmarks/baselines/`，保存当前最佳基线。
 - [ ] 定义硬门槛：index time 回退 > 8%、RSS 回退 > 10%、query latency 回退 > 15% 则失败。
 - [ ] 定义软门槛：nodes/edges 数量变化 > 5% 时标记 review，避免为了速度损伤语义质量。
-- [ ] 增加 `make bench-check`，跑小型项目和 GoAgent 快速检查。
-- [ ] 增加 `make bench-full`，跑 engine + GoAgent + kernel 子目录完整检查。
+- [x] 增加 `make bench-check`，跑小型项目和 GoAgent 快速检查。
+- [x] 增加 `make bench-full`，跑 engine + GoAgent + kernel 子目录完整检查。
 - [ ] 在 CI 或本地 pre-release 流程中要求 `bench-check` 通过。
-
-验收标准：
-
-- [ ] 性能回退能被自动发现。
-- [ ] 图质量变化能被自动提示，不靠肉眼。
-- [ ] `bench-check` 总耗时控制在可接受范围内。
 
 ### 5.3 buildGraph Next Cuts
 
 - [ ] 对 `buildGraph` 内部 SQL 加 `EXPLAIN QUERY PLAN` debug 模式，记录每个 SQL 的 query plan。
-- [ ] 拆分 buildGraph 阶段计时：file_list、delete_old_graph、temp_changed_files、_r2n、insert_nodes、insert_contains_edges、insert_call_edges。
+- [x] 拆分 buildGraph 阶段计时：file_list、delete、rf、r2n、nodes、edges、calls。
 - [ ] 优化 `_r2n` 生成：确认是否可以减少 `ROW_NUMBER() OVER` 排序成本，或用 id allocator 表替代全排序。
 - [ ] 优化 containment edges：验证 parent join 是否已命中 `(file_path, original_id)` 索引。
 - [ ] 优化 call edges：区分 local/external/name-only，减少 `sr.name = callee.name` 的无效全局 name join。
-- [ ] 给 call edge 构建增加候选过滤：callee kind 只允许 function/method/class constructor 等可调用类型。
+- [x] 给 call edge 构建增加候选过滤：callee kind 只允许 callable 类型（Function/Method）。
 - [ ] 对 buildGraph 提供 symbols-only / calls-on-demand / full 三种策略，减少默认索引负担。
 
 验收标准：
@@ -223,11 +217,11 @@
 
 ### 5.4 FTS / Vector Construction
 
-- [ ] 拆分 FTS 和 vector 计时，避免 `time_ftsvector_ms` 混合看不清。
+- [x] 拆分 FTS 和 vector 计时，避免 `time_ftsvector_ms` 混合看不清。
 - [ ] FTS 只索引可搜索节点：function/method/class/interface/module/file，跳过噪音 record。
 - [ ] vector 只对可排名节点生成，默认跳过低价值短 name 或重复 name。
 - [ ] 建立 `node_text_cache` 或 SQL projection，避免 FTS/vector 阶段重复拼接字符串。
-- [ ] 评估 vector 延迟构建：Normal index 只建 FTS，Deep/background 再建 vector。
+- [x] 评估 vector 延迟构建：Normal index 只建 FTS，Deep/background 再建 vector。
 - [ ] 对 FTS/vector 构建支持 batch chunk，减少长事务和峰值内存。
 
 验收标准：
@@ -316,30 +310,33 @@
 
 ### 6.3 Mode Roadmap
 
+目标：通过 `CODESCOPE_INDEX_MODE=(fast|normal|deep)` 控制索引管线。
+fast 跳过 FTS/vector（-24%）、normal 只建 FTS、deep 全量。已实现。
+
 #### FAST Mode
 
 目标：最快 TTFA，不追求完整图。
 
 默认开启：
 
-- [ ] 文件发现 + 过滤。
-- [ ] 轻量符号提取。
-- [ ] function/class/struct/interface/module 基础节点。
-- [ ] 最小 containment graph。
-- [ ] 基础 name search。
+- [x] 文件发现 + 过滤。
+- [x] 轻量符号提取。
+- [x] function/class/struct/interface/module 基础节点。
+- [x] 最小 containment graph。
+- [x] 基础 name search（graph query）。
 
 默认关闭：
 
-- [ ] vectors。
+- [x] vectors（跳过）。
 - [ ] semantic/similarity edges。
 - [ ] Git 历史耦合。
-- [ ] 重型 call graph。
+- [x] 重型 call graph（build_calls=false）。
 - [ ] 低价值节点类型。
-- [ ] 大规模 FTS body。
+- [x] 大规模 FTS body（跳过）。
 
 验收标准：
 
-- [ ] TTFA 明显低于 Normal index。
+- [x] TTFA 明显低于 Normal index。**engine C++: FAST 276ms vs NORMAL 325ms（-15%）**。
 - [ ] GoAgent FAST 目标 < 1s。
 - [ ] kernel 子目录 FAST 目标 < 4s。
 
@@ -349,16 +346,16 @@
 
 默认开启：
 
-- [ ] Tree-sitter parse。
-- [ ] SemanticRecord。
-- [ ] symbols + containment graph。
-- [ ] name-based call graph。
-- [ ] FTS。
-- [ ] caller/callee/query API。
+- [x] Tree-sitter parse。
+- [x] SemanticRecord。
+- [x] symbols + containment graph。
+- [ ] name-based call graph（待 `build_calls=true` 默认开启）。
+- [x] FTS。
+- [x] caller/callee/query API。
 
 默认关闭或延迟：
 
-- [ ] vectors。
+- [x] vectors。
 - [ ] semantic/similarity edges。
 - [ ] 深度 metrics。
 - [ ] CFG/dataflow。

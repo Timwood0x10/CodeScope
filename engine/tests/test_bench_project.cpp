@@ -177,7 +177,8 @@ int main(int argc, char **argv) {
     int64_t time_parse_ms = extract_int64(result, "time_parse_ms");
     int64_t time_sqlite_ms = extract_int64(result, "time_sqlite_ms");
     int64_t time_buildgraph_ms = extract_int64(result, "time_buildgraph_ms");
-    int64_t time_ftsvector_ms = extract_int64(result, "time_ftsvector_ms");
+    int64_t time_fts_ms = extract_int64(result, "time_fts_ms");
+    int64_t time_vector_ms = extract_int64(result, "time_vector_ms");
 
     // Save copy for human-readable output before freeing
     std::string result_str = result ? result : "";
@@ -244,7 +245,8 @@ int main(int argc, char **argv) {
         jf << "    \"parse\": " << time_parse_ms << ",\n";
         jf << "    \"sqlite\": " << time_sqlite_ms << ",\n";
         jf << "    \"buildgraph\": " << time_buildgraph_ms << ",\n";
-        jf << "    \"ftsvector\": " << time_ftsvector_ms << ",\n";
+        jf << "    \"fts\": " << time_fts_ms << ",\n";
+        jf << "    \"vector\": " << time_vector_ms << ",\n";
         jf << "    \"total\": " << static_cast<int64_t>(index_ms) << "\n";
         jf << "  },\n";
         jf << "  \"query_ms\": {\n";
@@ -274,7 +276,7 @@ int main(int argc, char **argv) {
     printf("index_time:      %.0f ms (%.2f s)\n", index_ms, index_ms / 1000.0);
     printf("result:          %s\n", result_str.c_str());
 
-    int64_t time_accounted = time_parse_ms + time_sqlite_ms + time_buildgraph_ms + time_ftsvector_ms;
+    int64_t time_accounted = time_parse_ms + time_sqlite_ms + time_buildgraph_ms + time_fts_ms + time_vector_ms;
     int64_t time_unaccounted = static_cast<int64_t>(index_ms) - time_accounted;
 
     printf("\n--- PHASE BREAKDOWN ---\n");
@@ -284,7 +286,8 @@ int main(int argc, char **argv) {
         printf("%-20s %10lld %7.1f%%\n", "Parse (parallel)", (long long)time_parse_ms, 100.0 * time_parse_ms / index_ms);
         printf("%-20s %10lld %7.1f%%\n", "SQLite (serial write)", (long long)time_sqlite_ms, 100.0 * time_sqlite_ms / index_ms);
         printf("%-20s %10lld %7.1f%%\n", "buildGraph (post)", (long long)time_buildgraph_ms, 100.0 * time_buildgraph_ms / index_ms);
-        printf("%-20s %10lld %7.1f%%\n", "FTS/vectors (post)", (long long)time_ftsvector_ms, 100.0 * time_ftsvector_ms / index_ms);
+        printf("%-20s %10lld %7.1f%%\n", "FTS (post)", (long long)time_fts_ms, 100.0 * time_fts_ms / index_ms);
+        printf("%-20s %10lld %7.1f%%\n", "Vector (post)", (long long)time_vector_ms, 100.0 * time_vector_ms / index_ms);
         if (time_unaccounted > 0)
             printf("%-20s %10lld %7.1f%%\n", "(overhead/other)", (long long)time_unaccounted, 100.0 * time_unaccounted / index_ms);
         printf("%-20s %10s %8s\n", "--------------------", "----------", "--------");

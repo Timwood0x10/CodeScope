@@ -505,6 +505,15 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	if (env_verbose && strcmp(env_verbose, "0") == 0)
 		verbose = false;
 
+	// Index mode: "fast" | "normal" (default) | "deep"
+	// FAST:  skip FTS + vectors, symbol graph only
+	// NORMAL: build FTS, skip vectors
+	// DEEP:   build FTS + vectors (full pipeline)
+	const char *env_mode = getenv("CODESCOPE_INDEX_MODE");
+	bool mode_fast = env_mode && strcmp(env_mode, "fast") == 0;
+	bool mode_deep = env_mode && strcmp(env_mode, "deep") == 0;
+	// normal is default when neither fast nor deep
+
 	for (size_t batch_start = 0; batch_start < jobs.size();
 	     batch_start += BATCH_SIZE) {
 		size_t batch_end =
@@ -737,7 +746,7 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	if (verbose)
 		fprintf(stderr, "POST_BUILD: symbol graph...\n");
 	fflush(stderr);
-	int64_t time_ftsvector_ms = 0;
+	int64_t time_fts_ms = 0, time_vector_ms = 0;
 	g_store->beginTransaction();
 	{
 	 auto t_bg = steady_clock::now();
@@ -746,13 +755,24 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	  duration_cast<milliseconds>(
 	   steady_clock::now() - t_bg)
 	   .count();
-	 auto t_fv = steady_clock::now();
-	 g_store->buildFTSFromGraph(project_id);
-	 g_store->buildVectorsFromGraph(project_id);
-	 time_ftsvector_ms =
-	  duration_cast<milliseconds>(
-	   steady_clock::now() - t_fv)
-	   .count();
+	 // FAST mode: skip FTS and vectors
+	 if (!mode_fast) {
+	  auto t_f = steady_clock::now();
+	  g_store->buildFTSFromGraph(project_id);
+	  time_fts_ms =
+	   duration_cast<milliseconds>(
+	    steady_clock::now() - t_f)
+	    .count();
+	 }
+	 // DEEP mode: build vectors (NORMAL skips them)
+	 if (mode_deep) {
+	  auto t_v = steady_clock::now();
+	  g_store->buildVectorsFromGraph(project_id);
+	  time_vector_ms =
+	   duration_cast<milliseconds>(
+	    steady_clock::now() - t_v)
+	    .count();
+	 }
 	}
 	g_store->commitTransaction();
 	std::ostringstream result;
@@ -765,7 +785,8 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	 result << ",\"time_parse_ms\":" << time_parse_ms
 	        << ",\"time_sqlite_ms\":" << time_sqlite_ms
 	        << ",\"time_buildgraph_ms\":" << time_buildgraph_ms;
-	result << ",\"time_ftsvector_ms\":" << time_ftsvector_ms;
+	result << ",\"time_fts_ms\":" << time_fts_ms
+	       << ",\"time_vector_ms\":" << time_vector_ms;
 	result << "}";
 	return dupString(result.str());
 }
