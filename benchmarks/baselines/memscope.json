@@ -1,0 +1,40 @@
+{
+  "project": "memscope-rs",
+  "version": "main",
+  "files": 238,
+  "index_time_sec": 2,
+  "index_speed_files_per_sec": 119.0,
+  "nodes": 123270,
+  "edges": 0,
+  "nodes_per_file": 518,
+  "timing_breakdown": {
+    "parse_sec": 0.031,
+    "sqlite_sec": 0.589,
+    "build_graph_sec": 0.577,
+    "fts_sec": 0.253,
+    "other_sec": 0.55
+  },
+  "query_latency_ms": {
+    "get_graph_stats": {"p50": 0.1, "p99": 0.3},
+    "get_hotspots": {"p50": 0.3, "p99": 0.8},
+    "find_callers": {"p50": 0.2, "p99": 0.5},
+    "find_callees": {"p50": 0.2, "p99": 0.5},
+    "search_fts": {"p50": 1.0, "p99": 3.0},
+    "search_graph_fallback": {"p50": 3.0, "p99": 8.0},
+    "get_module_tree": {"p50": 0.1, "p99": 0.3},
+    "get_entry_points": {"p50": 0.1, "p99": 0.3},
+    "get_communities": {"p50": 50, "p99": 150},
+    "codescope_trace": {"p50": 1.0, "p99": 3.0}
+  },
+  "memory_mb": {
+    "rss_peak": 0,
+    "rss_post_gc": 0
+  },
+  "engine": {
+    "threads": 14,
+    "stack_mb": 8,
+    "filter_policy": "Normal"
+  },
+  "date": "2026-07-06",
+  "machine": "Apple M3 Max, 64GB"
+}

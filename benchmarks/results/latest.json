@@ -1,0 +1,24 @@
+{
+  "project": "CodeScope",
+  "version": "main",
+  "files": 174,
+  "index_time_sec": 1,
+  "index_speed_files_per_sec": 174.0,
+  "nodes": 0,
+  "edges": 0,
+  "timing_breakdown": {},
+  "query_latency_ms": {
+    "get_graph_stats": {"p50": 388},
+    "get_hotspots": {"p50": 2881},
+    "get_module_tree": {"p50": 5},
+    "get_entry_points": {"p50": 9}
+  },
+  "notes": "CLI mode: engine re-initialized per query, adds ~300ms overhead. Hotspots slow due to DB query. Nodes=0 needs investigation.",
+  "engine": {
+    "threads": 14,
+    "stack_mb": 8,
+    "filter_policy": "Normal"
+  },
+  "date": "2026-07-06",
+  "machine": "Apple M3 Max, 64GB"
+}

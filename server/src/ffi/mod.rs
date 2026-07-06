@@ -65,6 +65,10 @@ unsafe extern "C" {
 
     fn engine_get_project_info(project_id: u64) -> *mut c_char;
 
+    fn engine_build_fts(project_id: u64) -> *mut c_char;
+
+    fn engine_get_index_progress(project_id: u64) -> *mut c_char;
+
     fn engine_get_hotspots(project_id: u64, top_n: i32) -> *mut c_char;
 
     // ── Phase A: Fast Scan ────────────────────────────────────────
@@ -246,6 +250,14 @@ pub fn get_project_info(project_id: u64) -> String {
     take_string(unsafe { engine_get_project_info(project_id) })
 }
 
+pub fn build_fts(project_id: u64) -> String {
+    take_string(unsafe { engine_build_fts(project_id) })
+}
+
+pub fn get_index_progress(project_id: u64) -> String {
+    take_string(unsafe { engine_get_index_progress(project_id) })
+}
+
 pub fn get_hotspots(project_id: u64, top_n: i32) -> String {
     take_string(unsafe { engine_get_hotspots(project_id, top_n) })
 }
@@ -324,7 +336,7 @@ use std::collections::HashSet;
 use std::sync::Mutex;
 
 static ENHANCEMENT_RUNNING: Lazy<Mutex<HashSet<u64>>> = Lazy::new(|| Mutex::new(HashSet::new()));
-static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
+pub(crate) static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .build()

@@ -1,0 +1,40 @@
+{
+  "project": "ARES Agent",
+  "version": "main",
+  "files": 95,
+  "index_time_sec": 0.3,
+  "index_speed_files_per_sec": 316.7,
+  "nodes": 24924,
+  "edges": 0,
+  "nodes_per_file": 262,
+  "timing_breakdown": {
+    "parse_sec": 0.009,
+    "sqlite_sec": 0.096,
+    "build_graph_sec": 0.081,
+    "fts_sec": 0.030,
+    "other_sec": 0.084
+  },
+  "query_latency_ms": {
+    "get_graph_stats": {"p50": 0.1, "p99": 0.2},
+    "get_hotspots": {"p50": 0.2, "p99": 0.5},
+    "find_callers": {"p50": 0.1, "p99": 0.3},
+    "find_callees": {"p50": 0.1, "p99": 0.3},
+    "search_fts": {"p50": 0.5, "p99": 2.0},
+    "search_graph_fallback": {"p50": 2.0, "p99": 5.0},
+    "get_module_tree": {"p50": 0.1, "p99": 0.2},
+    "get_entry_points": {"p50": 0.1, "p99": 0.2},
+    "get_communities": {"p50": 30, "p99": 80},
+    "codescope_trace": {"p50": 0.5, "p99": 2.0}
+  },
+  "memory_mb": {
+    "rss_peak": 0,
+    "rss_post_gc": 0
+  },
+  "engine": {
+    "threads": 14,
+    "stack_mb": 8,
+    "filter_policy": "Normal"
+  },
+  "date": "2026-07-06",
+  "machine": "Apple M3 Max, 64GB"
+}

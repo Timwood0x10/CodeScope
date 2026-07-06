@@ -519,3 +519,44 @@ JDK 每文件平均产生 **405 个节点**（是 rustc 的 3.6 倍）。Java �
 4. **FTS 后置**让 graph 查询在 FTS 完成前即可用
 5. **tree-sitter-c 解析器**对复杂 C 代码（CPython/Linux 内核）存在兼容性问题，需要上游修复
 
+---
+
+## 十、查询性能基准
+
+### 查询延迟
+
+| 查询 | 平均延迟 | 说明 |
+|------|:--------:|------|
+| `get_graph_stats` | **<1 ms** | 纯 SQL COUNT |
+| `get_hotspots` | **<2 ms** | SQL JOIN + GROUP BY |
+| `find_callers` / `find_callees` | **<1 ms** | 索引覆盖的 JOIN |
+| `search`（FTS） | **<5 ms** | FTS5 全文搜索 |
+| `search`（graph fallback） | **<10 ms** | LIKE 降级搜索 |
+| `get_module_tree` | **<1 ms** | 轻量查询 |
+| `get_entry_points` | **<1 ms** | 索引查询 |
+| `get_communities` | **50-500 ms** | 全图 Label Propagation |
+| `codescope_trace` | **<5 ms** | BFS 路径搜索 |
+
+### 跨项目基准
+
+| 项目 | 文件 | 索引耗时 | Parse | SQLite | buildGraph | FTS | 节点/文件 |
+|------|:----:|:--------:|:-----:|:------:|:----------:|:---:|:----------:|
+| rustc | 36,807 | 1m44s | 3.2s | 38.9s | 30.7s | 23.0s | 112 |
+| Bun | 9,641 | 1m1s | 1.0s | 25.7s | 20.3s | 11.6s | 306 |
+| JDK | 19,821 | 3m31s | 2.4s | 83.6s | 76.3s | 38.3s | **405** |
+| codebase-memory-mcp | 1,257 | 2m0s | — | — | 48.0s | — | — |
+| memscope-rs | 238 | 2s | 31ms | 589ms | 577ms | 253ms | — |
+| ARES Agent | 95 | 0.3s | 9ms | 96ms | 81ms | 30ms | — |
+
+### 瓶颈分布总结
+
+```
+所有项目的瓶颈分布高度一致：
+  SQLite + buildGraph = ~70-80%
+  FTS                 = ~20%
+  Parse               = ~1-3%
+
+结论：CodeScope 是 SQLite-bound，不是 CPU-bound。
+优化 SQLite 写入和 buildGraph 是唯一有效的提速路径。
+```
+

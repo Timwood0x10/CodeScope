@@ -1,0 +1,40 @@
+{
+  "project": "rustc",
+  "version": "nightly-2026-06",
+  "files": 36807,
+  "index_time_sec": 104,
+  "index_speed_files_per_sec": 353.9,
+  "nodes": 4130017,
+  "edges": 0,
+  "nodes_per_file": 112,
+  "timing_breakdown": {
+    "parse_sec": 3.2,
+    "sqlite_sec": 38.9,
+    "build_graph_sec": 30.7,
+    "fts_sec": 23.0,
+    "other_sec": 8.2
+  },
+  "query_latency_ms": {
+    "get_graph_stats": {"p50": 0.2, "p99": 0.5},
+    "get_hotspots": {"p50": 0.5, "p99": 1.2},
+    "find_callers": {"p50": 0.3, "p99": 0.8},
+    "find_callees": {"p50": 0.3, "p99": 0.8},
+    "search_fts": {"p50": 2.0, "p99": 5.0},
+    "search_graph_fallback": {"p50": 5.0, "p99": 10.0},
+    "get_module_tree": {"p50": 0.2, "p99": 0.5},
+    "get_entry_points": {"p50": 0.2, "p99": 0.5},
+    "get_communities": {"p50": 200, "p99": 500},
+    "codescope_trace": {"p50": 2.0, "p99": 5.0}
+  },
+  "memory_mb": {
+    "rss_peak": 0,
+    "rss_post_gc": 0
+  },
+  "engine": {
+    "threads": 14,
+    "stack_mb": 8,
+    "filter_policy": "Normal"
+  },
+  "date": "2026-07-06",
+  "machine": "Apple M3 Max, 64GB"
+}

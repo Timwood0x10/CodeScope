@@ -514,6 +514,15 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		return dupString(
 			"{\"ok\":true,\"files_indexed\":0,\"nodes\":0,\"edges\":0,\"errors\":0}");
 
+	// Init progress tracking
+	{
+		store::IndexProgress p;
+		p.project_id = project_id;
+		p.total_files = (int)jobs.size();
+		p.phase = 1; // "parsing"
+		store::setIndexProgress(p);
+	}
+
 	// Build active file list for stale cleanup (files that disappeared since last index)
 	{
 		std::vector<std::string> active_files;
@@ -827,6 +836,17 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 					  .count();
 		total_indexed += static_cast<int>(batch_count);
 
+		// Update progress
+		{
+		 store::IndexProgress p;
+		 p.project_id = project_id;
+		 p.total_files = (int)jobs.size();
+		 p.current_file = total_indexed;
+		 p.phase = 1;
+		 p.percent = total_indexed * 100 / (int)jobs.size();
+		 store::setIndexProgress(p);
+		}
+
 		// all_units goes out of scope here → memory freed
 		if (verbose)
 			fprintf(stderr,
@@ -840,8 +860,20 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	// SQL-only operations, no heap memory allocation.
 	// On-demand call graph is built when user queries callers/callees.
 	if (verbose)
-		fprintf(stderr, "POST_BUILD: symbol graph...\n");
+	 fprintf(stderr, "POST_BUILD: symbol graph...\n");
 	fflush(stderr);
+
+	// Update progress: building graph
+	{
+	 store::IndexProgress p;
+	 p.project_id = project_id;
+	 p.total_files = (int)jobs.size();
+	 p.current_file = total_indexed;
+	 p.phase = 3; // "building_graph"
+	 p.percent = 85;
+	 store::setIndexProgress(p);
+	}
+
 	int64_t time_fts_ms = 0, time_vector_ms = 0;
 	g_store->beginTransaction();
 	{
@@ -853,18 +885,12 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	}
 	g_store->commitTransaction();
 
-	// Deferred: build FTS after the main transaction so index_project
-	// returns quickly. FTS is built synchronously here but won't block
-	// graph availability — search falls back to graph query if fts_ready=0.
-	// FAST mode: skip FTS entirely.
+	// Deferred: FTS is no longer built synchronously here.
+	// It will be triggered as an async Tokio task after the worker exits.
+	// Search queries will fall back to graph-based matching if fts_ready=0.
 	if (!mode_fast) {
-	 auto t_f = steady_clock::now();
-	 g_store->buildFTSFromGraph(project_id);
-	 g_store->setProjectReadiness(project_id, "fts_ready", 1);
 	 g_store->setProjectReadiness(project_id, "normal_ready", 1);
-	 time_fts_ms = duration_cast<milliseconds>(
-	         steady_clock::now() - t_f)
-	         .count();
+	 // fts_ready stays 0 — will be set by async enhance task
 	} else {
 	 g_store->setProjectReadiness(project_id, "normal_ready", 1);
 	}
@@ -915,5 +941,15 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	       << ",\"skipped_suffix\":" << fs.skipped_suffix
 	       << ",\"candidate_files\":" << fs.candidate_files << "}";
 	result << "}";
+	// Mark progress as done
+	{
+		store::IndexProgress p;
+		p.project_id = project_id;
+		p.total_files = (int)jobs.size();
+		p.current_file = (int)jobs.size();
+		p.phase = 5;
+		p.percent = 100;
+		store::setIndexProgress(p);
+	}
 	return dupString(result.str());
 }

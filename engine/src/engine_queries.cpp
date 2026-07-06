@@ -633,8 +633,17 @@ char *engine_unified_search(uint64_t project_id, const char *query, int limit)
 	if (limit <= 0 || limit > 100)
 		limit = 20;
 
-	// Delegate to store's adaptive search
-	return dupString(g_store->searchUnifiedJson(project_id, query, limit));
+	// Check if FTS index is ready; if not, fall back to graph-based search
+	int fts_ready = g_store->getProjectReadiness(project_id, "fts_ready");
+	if (fts_ready) {
+		// FTS is ready — use full-text search
+		return dupString(
+			g_store->searchUnifiedJson(project_id, query, limit));
+	}
+
+	// FTS not ready — fall back to graph-based name matching
+	return dupString(
+		g_store->searchGraphFallback(project_id, query, limit));
 }
 
 // ─── Phase C: Adaptive Find Callers ──────────────────────────

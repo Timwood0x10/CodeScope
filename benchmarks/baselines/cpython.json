@@ -1,0 +1,40 @@
+{
+  "project": "cpython (Python only)",
+  "version": "3.13",
+  "files": 1022,
+  "index_time_sec": 6,
+  "index_speed_files_per_sec": 170.3,
+  "nodes": 446618,
+  "edges": 0,
+  "nodes_per_file": 437,
+  "timing_breakdown": {
+    "parse_sec": 0.5,
+    "sqlite_sec": 2.5,
+    "build_graph_sec": 2.0,
+    "fts_sec": 0.8,
+    "other_sec": 0.2
+  },
+  "query_latency_ms": {
+    "get_graph_stats": {"p50": 0.1, "p99": 0.3},
+    "get_hotspots": {"p50": 0.3, "p99": 0.8},
+    "find_callers": {"p50": 0.2, "p99": 0.5},
+    "find_callees": {"p50": 0.2, "p99": 0.5},
+    "search_fts": {"p50": 1.0, "p99": 3.0},
+    "search_graph_fallback": {"p50": 3.0, "p99": 8.0},
+    "get_module_tree": {"p50": 0.1, "p99": 0.3},
+    "get_entry_points": {"p50": 0.1, "p99": 0.3},
+    "get_communities": {"p50": 50, "p99": 150},
+    "codescope_trace": {"p50": 1.0, "p99": 3.0}
+  },
+  "memory_mb": {
+    "rss_peak": 0,
+    "rss_post_gc": 0
+  },
+  "engine": {
+    "threads": 14,
+    "stack_mb": 8,
+    "filter_policy": "Normal"
+  },
+  "date": "2026-07-06",
+  "machine": "Apple M3 Max, 64GB"
+}

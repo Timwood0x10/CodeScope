@@ -1,119 +1,251 @@
 # CodeScope Architecture
 
 **Version**: 0.2.0  
-**Last updated**: 2026-07-05
+**Date**: 2026-07-06
 
 ---
 
 ## 1. System Overview
 
-CodeScope is an MCP (Model Context Protocol) based code understanding service. It parses source code through a multi-stage pipeline, builds call graphs and symbol dependency graphs, persists them to SQLite, and exposes query capabilities through MCP tools.
+CodeScope is an MCP (Model Context Protocol) code understanding service. It parses source code through a multi-stage pipeline, builds call graphs and symbol dependency graphs, persists them to SQLite, and exposes query capabilities through MCP tools.
 
-### Four-Phase Pipeline
+### Architecture
+
+```mermaid
+flowchart LR
+    subgraph "Client (AtomGit IDE / CLI)"
+        client["MCP Client<br/>tools/list → tools/call"]
+    end
+    subgraph "CodeScope Server (Rust)"
+        server["MCP Server<br/>(JSON-RPC 2.0 + stdio)"]
+        ffi["FFI Bridge<br/>Rust ↔ C++"]
+        worker_spawn["Worker Spawner<br/>Subprocess Isolation"]
+    end
+    subgraph "Worker Subprocess (C++)"
+        worker["Worker<br/>index_project()"]
+        progress["Progress Tracking<br/>store::IndexProgress"]
+        parser["Parser + Translator<br/>14 threads"]
+        graph["GraphBuilder<br/>buildFTSFromGraph"]
+    end
+    subgraph "Storage"
+        db["SQLite DB<br/>.codescope/codescope.db"]
+    end
+
+    client <-->|MCP JSON-RPC| server
+    server -->| spawn_worker | worker_spawn
+    worker_spawn -->|stdout JSON| worker
+    worker -->|write| db
+    worker -->|update| progress
+    server -->|poll get_index_progress| ffi
+    ffi -->|read| progress
+    server -->|RUNTIME.spawn| graph
+    server -->|MCP Response| client
+```
+
+---
+
+## 2. Index Pipeline
+
+### 2.1 Full Index Flow
 
 ```mermaid
 flowchart TB
-    subgraph "Phase 1: Collect"
-        S["Source Files"]
+    subgraph "Server (Rust)"
+        A["MCP tools/call<br/>index_project"]
+        B["Spawn Worker<br/>Subprocess"]
+        C["Poll Progress<br/>get_index_progress"]
+        D["Deferred FTS Build<br/>buildFTSFromGraph"]
+        E["MCP Response<br/>Complete"]
     end
-    subgraph "Phase 2: Parallel Translation (Pure Functions)"
-        T["Translator<br/>(No Resolver)<br/>Source → IR, 14 workers"]
+    subgraph "Worker (C++ subprocess)"
+        F["Phase 1: Scan Files<br/>FilterPolicy + .gitignore"]
+        G["Phase 2: Parallel Parse<br/>14 workers × 8MB stack"]
+        H["Phase 3: SQLite Persist"]
+        I["Phase 4: Build Graph<br/>buildGraph(project_id, true)"]
     end
-    subgraph "Phase 3: Link (Serial PassManager)"
-        L["Linker"]
-        L1["├─ BuildSymbolIndex<br/>Scan IR to build global index"]
-        L2["├─ ResolveCallPass<br/>Cross-file call resolution"]
-        L3["└─ EmitGraphPass<br/>GraphBuilder → SQLite"]
+
+    A -->|fork + exec| B
+    B --> F
+    F --> G
+    G --> H
+    H --> I
+    I -->|stdout JSON| C
+    C -->|worker exits, RSS returned| D
+    D --> E
+```
+
+### 2.2 Phase 1: File Discovery
+
+```mermaid
+flowchart LR
+    A["Recursive Directory Walk"] --> B{FilterPolicy}
+    B -->|skip| C["test/ docs/ bench/ bin/"]
+    B -->|skip| D[".git + .codescopeignore"]
+    B -->|skip| E["Non-source suffixes"]
+    B -->|incremental skip| F["file_scan_state<br/>unchanged files"]
+    B -->|pass| G["FileJob: path + lang + size"]
+    G --> H["Sort by size descending"]
+```
+
+### 2.3 Phase 2: Parallel Parse
+
+```mermaid
+flowchart TB
+    subgraph "Batch (100 files)"
+        A["Batch [start..end]"]
     end
-    S -->|Phase 1| T
-    T -->|IR Units| L
-    L --> L1 & L2 & L3
+    subgraph "14 Workers (pthread)"
+        B1["Worker 1<br/>readFile → parse → visit"]
+        B2["Worker 2<br/>readFile → parse → visit"]
+        B3["Worker 14<br/>readFile → parse → visit"]
+    end
+    subgraph "New Pipeline (SemanticUnit)"
+        C["Visitor → SemanticUnit<br/>Arena memory reuse"]
+    end
+    subgraph "Old Pipeline (fallback)"
+        D["Translator → TranslationUnit"]
+    end
+
+    A --> B1 & B2 & B3
+    B1 --> C & D
+    B2 --> C & D
+    B3 --> C & D
+    C & D --> E["collect_lock<br/>collect results"]
+```
+
+### 2.4 Phase 3: SQLite Persistence
+
+```mermaid
+flowchart LR
+    A["Batch results"] --> B["beginTransaction"]
+    B --> C["insertSemanticRecordsBatch<br/>single prepare"]
+    C --> D["upsertFile (lightweight)"]
+    D --> E["Linker Passes (legacy)"]
+    E --> F["commitTransaction"]
+    F --> G["Update progress: current_file += batch"]
+```
+
+### 2.5 Phase 4: Post-processing
+
+```mermaid
+flowchart LR
+    A["All Batches Done"] --> B["buildGraph(project_id, true)"]
+    B --> C["createIndexesAfterBulkLoad"]
+    C --> D["setProjectReadiness<br/>normal_ready=1, fts_ready=0"]
+    D --> E["Worker exits → RSS returned to OS"]
+    E --> F["Server-side RUNTIME.spawn<br/>buildFTSFromGraph()"]
+    F --> G["fts_ready=1, normal_ready=1"]
+    G --> H["Unified Search<br/>FTS5 available"]
 ```
 
 ---
 
-## 2. Components
+## 3. Components
 
-### 2.1 Rust MCP Server
+### 3.1 Rust MCP Server
 
 | Module | Responsibility |
-|--------|----------------|
+|--------|---------------|
 | `mcp/` | JSON-RPC 2.0 protocol + stdio transport |
-| `ffi/` | C++ FFI bridge |
-| `tools/` | 16 MCP tools registration and routing |
+| `ffi/` | C++ FFI bridge + Tokio RUNTIME |
+| `tools/` | MCP tool registration and routing |
+| `main.rs` | Entry point: server / CLI / worker modes |
 
-### 2.2 C++ Engine Split
-
-`engine.cpp` has been split into 6 independent files:
+### 3.2 C++ Engine
 
 | File | Lines | Responsibility |
-|------|:-----:|----------------|
-| `engine.cpp` | 49 | Entry + global variables |
+|------|:-----:|---------------|
+| `engine.cpp` | 49 | Entry + globals |
 | `engine_helpers.cpp` | 112 | readFile, detectLanguage, dupString |
 | `engine_lifecycle.cpp` | 119 | init, shutdown, create_project |
-| `engine_index.cpp` | 525 | index_file, index_project |
+| `engine_index.cpp` | ~945 | index_file, index_project (with progress tracking) |
 | `engine_scanner.cpp` | 1,180 | Fast scanner |
-| `engine_queries.cpp` | 1,019 | Query/enhance/call chain/context |
-| `engine_ffi.cpp` | 622 | Definition/reference/neighbor/DSL/complexity |
+| `engine_queries.cpp` | 1,019 | Queries/enhancement/call chains/context + FTS fallback |
+| `engine_ffi.cpp` | ~660 | FFI functions + build_fts + get_index_progress |
+| `filter_policy.cpp` | — | Dir/file/suffix filtering + .gitignore matching |
+| `store/store.cpp` | ~3,060 | SQLite storage + FTS + progress + incremental indexing |
 
-### 2.3 Linker Module (New)
+### 3.3 Deferred FTS Build
 
-The Linker runs a serial Pass pipeline, where all Passes share a complete `ProjectSymbolIndex`:
+```mermaid
+sequenceDiagram
+    participant Client as MCP Client
+    participant Server as Rust Server
+    participant Worker as C++ Worker
+    participant DB as SQLite
 
-| Pass | Responsibility |
-|------|----------------|
-| `BuildSymbolIndexPass` | Build index by scanning all_nodes from all IR once (milliseconds) |
-| `ResolveCallPass` | Query global index for each CallExpr, prioritize `.c`/`.cpp` definitions |
-| `EmitGraphPass` | GraphBuilder → persist to SQLite |
-
----
-
-## 3. Performance Benchmarks
-
-### Full Parse
-
-| Project | Files | Nodes | Functions | CALLS | ★Cross-file | Time |
-|---------|:-----:|:-----:|:---------:|:-----:|:-----------:|:----:|
-| CodeScope | 47 | 12K | 3.8K | 23K | 23 | 3s |
-| goagent | 2,651 | 155K | 49K | 56K | 49K | 30s |
-| **Linux Kernel** | **64,694** | **12M** | **3.8M** | **3.7M** | **1.5M** | **3min 07s** |
-
-### Cross-File Resolution Capability
-
-Cross-file resolution ratio varies by language:
-
-| Project | Cross-file Ratio | Notes |
-|---------|:----------------:|-------|
-| CodeScope (C++) | ~0.1% | Most calls via `g_store->method()` pointer style |
-| goagent (Go) | **86%** | Go naturally supports cross-package calls |
-| Linux Kernel (C) | **40%** | Header declarations + `.c` implementations |
-
-### Installation
-
-```bash
-bash install.sh
+    Client->>Server: tools/call index_project
+    Server->>Worker: spawn subprocess
+    Worker->>DB: Write semantic_records + graph_nodes
+    Worker-->>Server: stdout JSON result
+    Server->>Server: RUNTIME.spawn(build_fts)
+    Server-->>Client: {"ok":true, "files_indexed":N}
+    Server->>DB: buildFTSFromGraph()
+    Note over Client,DB: FTS phase — queries work via<br/>searchGraphFallback
+    Server->>Server: fts_ready=1
+    Client->>Server: tools/call search → FTS5
 ```
 
-One-click installation of tree-sitter grammars, sqlite-vec, compilation engine + server.
+---
+
+## 4. Query Performance
+
+| Query | Avg Latency | Notes |
+|-------|:-----------:|-------|
+| `get_graph_stats` | **<1 ms** | Pure SQL COUNT |
+| `get_hotspots` | **<2 ms** | SQL JOIN + GROUP BY |
+| `find_callers` / `find_callees` | **<1 ms** | Index-covered JOIN |
+| `search` (FTS) | **<5 ms** | FTS5 full-text search |
+| `search` (graph fallback) | **<10 ms** | LIKE fallback search |
+| `get_module_tree` | **<1 ms** | Lightweight query |
+| `get_entry_points` | **<1 ms** | Indexed lookup |
+| `get_communities` | **50-500 ms** | Full graph Label Propagation |
+| `get_index_progress` | **<1 ms** | Atomic global read |
 
 ---
 
-## 4. Build
+## 5. Index Progress Tracking
+
+```mermaid
+flowchart LR
+    A["index_project<br/>start"] --> B["Phase 1: Scan<br/>phase=0"]
+    B --> C["total_files=N"]
+    C --> D["Phase 2: Parse<br/>phase=1<br/>per-file update"]
+    D --> E["Phase 3: SQLite<br/>phase=1<br/>per-batch update"]
+    E --> F["Phase 4: Build Graph<br/>phase=3<br/>85%"]
+    F --> G["Phase 5: Done<br/>phase=5<br/>100%"]
+    G --> H["Client polls<br/>get_index_progress"]
+    H --> D
+```
+
+| Field | Description |
+|-------|-------------|
+| `project_id` | Project identifier |
+| `total_files` | Total file count |
+| `current_file` | Files processed so far |
+| `phase` | 0=scanning 1=parsing 2=linking 3=graph building 4=FTS building 5=done |
+| `percent` | 0-100 percentage |
+| `current_file_path` | Current file being processed |
+| `error` | Error message (if any) |
+
+---
+
+## 6. Build
 
 ```bash
-make build      # Compile engine + server
-make test       # Run all tests (17 tests)
-make clean      # Clean
+make build      # Build engine + server
+make test       # Run all tests
+make clean      # Clean build artifacts
 ```
 
 ### Dependencies
 
 - **Compiler**: C++23, Clang 17+
 - **Runtime**: tree-sitter (`.so`), sqlite-vec (`vec0.dylib`)
-- **Build**: cmake 3.30+, Rust 2024, npm
+- **Build tooling**: cmake 3.30+, Rust 2024, npm
 
 ---
 
-## 5. License
+## 7. License
 
 Apache 2.0

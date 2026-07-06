@@ -515,3 +515,44 @@ JDK produces **405 nodes per file** (3.6× rustc). Java classes have more fields
 3. **FilterPolicy + .gitignore** drastically reduces noise (JDK from 59,923 to 19,821 files)
 4. **Deferred FTS** allows graph queries before FTS completes
 5. **tree-sitter-c parser** has compatibility issues with complex C codebases (CPython/Linux kernel), awaiting upstream fix
+
+---
+
+## 10. Query Performance Benchmarks
+
+### Query Latency
+
+| Query | Avg Latency | Notes |
+|-------|:-----------:|-------|
+| `get_graph_stats` | **<1 ms** | Pure SQL COUNT |
+| `get_hotspots` | **<2 ms** | SQL JOIN + GROUP BY |
+| `find_callers` / `find_callees` | **<1 ms** | Index-covered JOIN |
+| `search` (FTS) | **<5 ms** | FTS5 full-text |
+| `search` (graph fallback) | **<10 ms** | LIKE fallback search |
+| `get_module_tree` | **<1 ms** | Lightweight |
+| `get_entry_points` | **<1 ms** | Indexed lookup |
+| `get_communities` | **50-500 ms** | Full graph Label Propagation |
+| `codescope_trace` | **<5 ms** | BFS path search |
+
+### Cross-Project Benchmarks
+
+| Project | Files | Index Time | Parse | SQLite | buildGraph | FTS | Nodes/File |
+|---------|:-----:|:----------:|:-----:|:------:|:----------:|:---:|:----------:|
+| rustc | 36,807 | 1m44s | 3.2s | 38.9s | 30.7s | 23.0s | 112 |
+| Bun | 9,641 | 1m1s | 1.0s | 25.7s | 20.3s | 11.6s | 306 |
+| JDK | 19,821 | 3m31s | 2.4s | 83.6s | 76.3s | 38.3s | **405** |
+| codebase-memory-mcp | 1,257 | 2m0s | — | — | 48.0s | — | — |
+| memscope-rs | 238 | 2s | 31ms | 589ms | 577ms | 253ms | — |
+| ARES Agent | 95 | 0.3s | 9ms | 96ms | 81ms | 30ms | — |
+
+### Bottleneck Summary
+
+```
+All projects show consistent bottleneck distribution:
+  SQLite + buildGraph = ~70-80%
+  FTS                 = ~20%
+  Parse               = ~1-3%
+
+Conclusion: CodeScope is SQLite-bound, not CPU-bound.
+Optimizing SQLite writes and buildGraph is the only effective speedup path.
+```

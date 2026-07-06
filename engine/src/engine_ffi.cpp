@@ -242,6 +242,27 @@ char *engine_get_communities(uint64_t project_id, int max_members,
 						 include_members != 0));
 }
 
+// ─── Index Progress ──────────────────────────────────────────────
+
+char *engine_get_index_progress(uint64_t project_id)
+{
+	if (!g_store)
+		return dupString("{\"error\":\"not initialized\"}");
+	return dupString(store::getIndexProgressJson(project_id).c_str());
+}
+
+// ─── Async FTS Build ────────────────────────────────────────
+
+char *engine_build_fts(uint64_t project_id)
+{
+	if (!g_store)
+		return dupString("{\"error\":\"not initialized\"}");
+	g_store->buildFTSFromGraph(project_id);
+	g_store->setProjectReadiness(project_id, "fts_ready", 1);
+	g_store->setProjectReadiness(project_id, "normal_ready", 1);
+	return dupString("{\"ok\":true}");
+}
+
 // ─── Hotspot Analysis ──────────────────────────────────────
 
 char *engine_get_hotspots(uint64_t project_id, int top_n)

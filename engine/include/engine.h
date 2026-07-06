@@ -58,6 +58,12 @@ char* engine_search_code(uint64_t project_id, const char* query, int limit);
 // Semantic search using n-gram vector similarity (matches similar names)
 char* engine_search_semantic(uint64_t project_id, const char* query, int limit);
 
+// Build FTS index from graph data (async, non-blocking for graph queries)
+char* engine_build_fts(uint64_t project_id);
+
+// Get current index progress as JSON (for client polling)
+char* engine_get_index_progress(uint64_t project_id);
+
 // ─── Complexity analysis ───────────────────────────────────────
 
 // Get cyclomatic complexity, cognitive complexity, and nesting depth for a graph node

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <functional>
+#include <mutex>
 #include <queue>
 #include <sqlite3.h>
 #include <sstream>
@@ -447,6 +448,38 @@ bool GraphStore::createIndexesAfterBulkLoad(uint64_t project_id)
 }
 
 // ─── Project Readiness ───────────────────────────────────────────
+
+// ─── Index Progress (global, thread-safe) ────────────────────────
+static std::mutex g_progress_mutex;
+static store::IndexProgress g_index_progress;
+
+void setIndexProgress(const IndexProgress &p)
+{
+	std::lock_guard<std::mutex> lock(g_progress_mutex);
+	g_index_progress = p;
+}
+
+IndexProgress getIndexProgress()
+{
+	std::lock_guard<std::mutex> lock(g_progress_mutex);
+	return g_index_progress;
+}
+
+std::string getIndexProgressJson(uint64_t project_id)
+{
+	auto p = getIndexProgress();
+	char buf[512];
+	int n = snprintf(buf, sizeof(buf),
+			 "{\"project_id\":%llu,\"total_files\":%d,"
+			 "\"current_file\":%d,\"phase\":%d,"
+			 "\"percent\":%d,\"current_file_path\":\"%s\","
+			 "\"error\":\"%s\"}",
+			 (unsigned long long)p.project_id,
+			 p.total_files, p.current_file, p.phase,
+			 p.percent, p.current_file_path.c_str(),
+			 p.error.c_str());
+	return std::string(buf, n);
+}
 
 void GraphStore::setProjectReadiness(uint64_t project_id, const char *field,
 				     int value)
@@ -2228,6 +2261,61 @@ std::string GraphStore::searchUnifiedJson(uint64_t project_id,
 	}
 
 	return "{\"method\":\"none\",\"results\":[]}";
+}
+
+std::string GraphStore::searchGraphFallback(uint64_t project_id,
+					    const char *query, int limit)
+{
+	if (limit <= 0 || limit > 100)
+		limit = 20;
+
+	std::string like_query = query;
+	// Escape % and _ for LIKE, then wrap
+	for (auto &c : like_query) {
+		if (c == '%' || c == '_')
+			c = ' ';
+	}
+	if (like_query.empty())
+		return "{\"method\":\"graph_fallback\",\"results\":[]}";
+
+	const char *sql =
+		"SELECT id, name, file_path, node_type "
+		"FROM graph_nodes "
+		"WHERE project_id=? AND name LIKE ? "
+		"ORDER BY LENGTH(name) ASC "
+		"LIMIT ?";
+	sqlite3_stmt *stmt = nullptr;
+	std::ostringstream json;
+	json << "{\"method\":\"graph_fallback\",\"results\":[";
+	bool first = true;
+	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		std::string pat = "%" + like_query + "%";
+		sqlite3_bind_text(stmt, 2, pat.c_str(), -1, SQLITE_TRANSIENT);
+		sqlite3_bind_int(stmt, 3, limit);
+
+		while (sqlite3_step(stmt) == SQLITE_ROW) {
+			if (!first)
+				json << ",";
+			first = false;
+			json << "{"
+			     << "\"node_id\":" << sqlite3_column_int64(stmt, 0)
+			     << ","
+			     << "\"name\":\""
+			     << jsonEscape(reinterpret_cast<const char *>(
+					       sqlite3_column_text(stmt, 1)))
+			     << "\","
+			     << "\"file_path\":\""
+			     << jsonEscape(reinterpret_cast<const char *>(
+					       sqlite3_column_text(stmt, 2)))
+			     << "\","
+			     << "\"type\":" << sqlite3_column_int(stmt, 3)
+			     << "}";
+		}
+		sqlite3_finalize(stmt);
+	}
+	json << "]}";
+	return json.str();
 }
 
 std::string GraphStore::findCallersJson(uint64_t project_id,

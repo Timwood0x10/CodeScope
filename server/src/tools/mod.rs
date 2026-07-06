@@ -102,8 +102,17 @@ fn h_index_project(project_id: u64, args: &Value) -> String {
                     if let Some(json_start) = stdout.find('{')
                         && let Some(json_end) = stdout[json_start..].rfind('}')
                     {
-                        return stdout[json_start..=json_start + json_end].to_string();
+                        let result = stdout[json_start..=json_start + json_end].to_string();
+                        // Trigger async FTS build after index completes
+                        crate::ffi::RUNTIME.spawn(async move {
+                            crate::ffi::build_fts(project_id);
+                        });
+                        return result;
                     }
+                    // Trigger async FTS build after index completes
+                    crate::ffi::RUNTIME.spawn(async move {
+                        crate::ffi::build_fts(project_id);
+                    });
                     return stdout.to_string();
                 }
                 let stderr = String::from_utf8_lossy(&out.stderr);
@@ -133,6 +142,10 @@ fn h_index_file(project_id: u64, args: &Value) -> String {
 
 fn h_get_graph_stats(project_id: u64, _args: &Value) -> String {
     ffi::get_graph_stats(project_id)
+}
+
+fn h_get_index_progress(project_id: u64, _args: &Value) -> String {
+    ffi::get_index_progress(project_id)
 }
 
 fn h_search_code(project_id: u64, args: &Value) -> String {
@@ -294,6 +307,7 @@ static TOOL_HANDLERS: Lazy<HashMap<&'static str, ToolHandler>> = Lazy::new(|| {
     m.insert("index_project", h_index_project as ToolHandler);
     m.insert("index_file", h_index_file as ToolHandler);
     m.insert("get_graph_stats", h_get_graph_stats as ToolHandler);
+    m.insert("get_index_progress", h_get_index_progress as ToolHandler);
     m.insert("get_complexity", h_get_complexity as ToolHandler);
     m.insert("graph_query", h_graph_query as ToolHandler);
     m.insert("detect_changes", h_detect_changes as ToolHandler);
@@ -475,6 +489,11 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
         Tool {
             name: "get_graph_stats".into(),
             description: "Get statistics about the current code graph (node count, edge count, file count).".into(),
+            input_schema: json!({ "type": "object", "properties": {} }),
+        },
+        Tool {
+            name: "get_index_progress".into(),
+            description: "Get current index progress for a project. Returns phase, percent, current_file, total_files.".into(),
             input_schema: json!({ "type": "object", "properties": {} }),
         },
         Tool {

@@ -289,11 +289,18 @@ class GraphStore {
 	// ── Phase C: Unified Queries (adaptive) ───────────────────
 
 	/**
-     * Unified search: auto-selects between FTS5 and semantic search
-     * based on embedding_ready ratio.
-     */
+	     * Unified search: auto-selects between FTS5 and semantic search
+	     * based on embedding_ready ratio. Falls back to graph-based name
+	     * matching if FTS is not ready.
+	     */
 	std::string searchUnifiedJson(uint64_t project_id, const char *query,
-				      int limit);
+	         int limit);
+	/**
+	 * Graph-based search fallback: searches graph_nodes.name using LIKE.
+	 * Used when FTS is not yet built (fts_ready=0).
+	 */
+	std::string searchGraphFallback(uint64_t project_id, const char *query,
+	    int limit);
 
 	/**
      * Find callers from the new call_edges table (requires callgraph_ready).
@@ -354,7 +361,7 @@ class GraphStore {
 
 	/** Set a readiness flag for a project. */
 	void setProjectReadiness(uint64_t project_id, const char *field,
-				 int value);
+	                 int value);
 
 	/** Get a readiness flag for a project, or 0 if not set. */
 	int getProjectReadiness(uint64_t project_id, const char *field);
@@ -390,6 +397,32 @@ class GraphStore {
 	bool exec(const char *sql);
 	bool createSchema();
 };
+
+// ── Index Progress (global, for client polling) ─────────────
+
+/**
+ * Index progress snapshot for a project.
+ * Written during index_project and read by client polling.
+ * Thread-safe via atomic store.
+ */
+struct IndexProgress {
+    uint64_t project_id = 0;
+    int total_files = 0;
+    int current_file = 0;
+    int phase = 0;           // 0:scanning 1:parsing 2:linking 3:building_graph 4:building_fts 5:done
+    int percent = 0;         // 0-100
+    std::string current_file_path;
+    std::string error;
+};
+
+/** Atomically set the current index progress. */
+void setIndexProgress(const IndexProgress &p);
+
+/** Atomically get the current index progress. */
+IndexProgress getIndexProgress();
+
+/** Get index progress as JSON for FFI. */
+std::string getIndexProgressJson(uint64_t project_id);
 
 } // namespace store
 
