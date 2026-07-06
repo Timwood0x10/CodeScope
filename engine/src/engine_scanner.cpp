@@ -182,103 +182,143 @@ static bool looksLikeCFunction(std::string_view line)
 	return false;
 }
 
+// ─── Table-driven declaration detection ──────────────────────────
+//
+// Each language has an array of (keyword, kind) pairs checked in order.
+// This replaces the 175-line if-else chain with a simple lookup loop,
+// reducing cognitive complexity from ~50 to ~5 and making it trivial
+// to add new languages or patterns.
+
+struct DeclPattern {
+	const char *keyword;
+	const char *kind;
+};
+
+static const DeclPattern RUST_PATTERNS[] = {
+	{"pub unsafe fn ", "function"}, {"pub async fn ", "function"},
+	{"pub fn ",	 "function"},	    {"fn ",	"function"},
+	{"pub struct ",  "struct"},	    {"struct ",	"struct"},
+	{"pub enum ",	 "enum"},	    {"enum ",	"enum"},
+	{"pub trait ",	 "trait"},	    {"trait ",	"trait"},
+	{"pub type ",	 "type_alias"},	    {"type ",	"type_alias"},
+	{"pub const ",	 "const"},	    {"const ",	"const"},
+	{"pub static ",  "const"},	    {"static ",	"const"},
+	{"pub union ",	 "struct"},	    {"union ",	"struct"},
+	{"mod ",	 "module"},
+};
+
+static const DeclPattern PYTHON_PATTERNS[] = {
+	{"async def ", "function"}, {"def ", "function"}, {"class ", "class"},
+};
+
+static const DeclPattern JSTS_PATTERNS[] = {
+	{"export async function ", "function"},
+	{"export function ", "function"},
+	{"async function ", "function"},
+	{"function ", "function"},
+	{"export class ", "class"},
+	{"class ", "class"},
+	{"export interface ", "interface"},
+	{"interface ", "interface"},
+	{"export enum ", "enum"},
+	{"enum ", "enum"},
+};
+
+static const DeclPattern GO_PATTERNS[] = {
+	{"func ", "function"},
+	// type handled inline for struct/interface/type_alias distinction
+};
+
+static const DeclPattern SWIFT_PATTERNS[] = {
+	{"open func ", "function"},	 {"public func ", "function"},
+	{"private func ", "function"},	 {"func ", "function"},
+	{"open class ", "class"},	 {"public class ", "class"},
+	{"class ", "class"},		 {"public struct ", "struct"},
+	{"struct ", "struct"},		 {"public enum ", "enum"},
+	{"enum ", "enum"},		 {"public protocol ", "interface"},
+	{"protocol ", "interface"},	 {"extension ", "class"},
+	{"init(", "function"},
+};
+
+static const DeclPattern JAVA_PATTERNS[] = {
+	{"public class ", "class"},	{"private class ", "class"},
+	{"protected class ", "class"},	{"class ", "class"},
+	{"public interface ", "interface"}, {"interface ", "interface"},
+	{"public enum ", "enum"},	{"enum ", "enum"},
+	{"public record ", "class"},	{"record ", "class"},
+};
+
+static const DeclPattern C_CPP_PATTERNS[] = {
+	{"class ", "class"},	 {"struct ", "struct"},
+	{"enum class ", "enum"}, {"enum ", "enum"},
+	{"union ", "struct"},	 {"namespace ", "module"},
+	{"using namespace ", ""}, // skip
+	{"template ", ""},	 // skip
+};
+
+// Check one keyword pattern at the start of a trimmed line.
+// Returns the kind string, or nullptr if no match.
+static const char *matchDeclPattern(const DeclPattern *patterns, size_t count,
+				     std::string_view line)
+{
+	for (size_t i = 0; i < count; i++) {
+		if (startsWithKW(line, patterns[i].keyword))
+			return patterns[i].kind;
+	}
+	return nullptr;
+}
+
 // Detect the kind of symbol from a line of source code (language-aware)
 // Returns the kind string, or empty string if no declaration found.
+// Uses table-driven keyword matching for each language — O(patterns) per line.
 static std::string detectDecl(std::string_view line, const std::string &lang)
 {
 	line = trimLeft(line);
 	if (line.empty() || line[0] == '/' || line[0] == '#' || line[0] == '*')
 		return "";
 
+	const char *kind = nullptr;
+
 	if (lang == "rust") {
-		// Rust declarations
-		if (startsWithKW(line, "pub unsafe fn "))
-			return "function";
-		if (startsWithKW(line, "pub async fn "))
-			return "function";
-		if (startsWithKW(line, "pub fn "))
-			return "function";
-		if (startsWithKW(line, "fn "))
-			return "function";
-		if (startsWithKW(line, "pub struct "))
-			return "struct";
-		if (startsWithKW(line, "struct "))
-			return "struct";
-		if (startsWithKW(line, "pub enum "))
-			return "enum";
-		if (startsWithKW(line, "enum "))
-			return "enum";
-		if (startsWithKW(line, "pub trait "))
-			return "trait";
-		if (startsWithKW(line, "trait "))
-			return "trait";
-		if (startsWithKW(line, "pub type "))
-			return "type_alias";
-		if (startsWithKW(line, "type "))
-			return "type_alias";
-		if (startsWithKW(line, "pub const "))
-			return "const";
-		if (startsWithKW(line, "const "))
-			return "const";
-		if (startsWithKW(line, "pub static "))
-			return "const";
-		if (startsWithKW(line, "static "))
-			return "const";
-		if (startsWithKW(line, "pub union "))
-			return "struct";
-		if (startsWithKW(line, "union "))
-			return "struct";
-		if (startsWithKW(line, "mod "))
-			return "module";
+		kind = matchDeclPattern(RUST_PATTERNS,
+					sizeof(RUST_PATTERNS) /
+						sizeof(RUST_PATTERNS[0]),
+					line);
 	} else if (lang == "python") {
-		if (startsWithKW(line, "async def "))
-			return "function";
-		if (startsWithKW(line, "def "))
-			return "function";
-		if (startsWithKW(line, "class "))
-			return "class";
+		kind = matchDeclPattern(PYTHON_PATTERNS,
+					sizeof(PYTHON_PATTERNS) /
+						sizeof(PYTHON_PATTERNS[0]),
+					line);
 	} else if (lang == "javascript" || lang == "typescript") {
-		if (startsWithKW(line, "export async function "))
-			return "function";
-		if (startsWithKW(line, "export function "))
-			return "function";
-		if (startsWithKW(line, "async function "))
-			return "function";
-		if (startsWithKW(line, "function "))
-			return "function";
-		if (startsWithKW(line, "export class "))
-			return "class";
-		if (startsWithKW(line, "class "))
-			return "class";
-		if (startsWithKW(line, "export interface "))
-			return "interface";
-		if (startsWithKW(line, "interface "))
-			return "interface";
-		if (startsWithKW(line, "export enum "))
-			return "enum";
-		if (startsWithKW(line, "enum "))
-			return "enum";
-		// Arrow functions: const name = (params) =>
-		// Regular const with arrow: const name = (...)
-		if (line.substr(0, 6) == "const " ||
-		    line.substr(0, 4) == "let " ||
-		    line.substr(0, 4) == "var ") {
-			auto eq = line.find('=');
-			if (eq != std::string_view::npos && eq > 0) {
-				auto after_eq = trimLeft(line.substr(eq + 1));
-				if (!after_eq.empty() && (after_eq[0] == '(' ||
-							  after_eq[0] == '>')) {
-					return "function"; // arrow function
+		kind = matchDeclPattern(JSTS_PATTERNS,
+					sizeof(JSTS_PATTERNS) /
+						sizeof(JSTS_PATTERNS[0]),
+					line);
+		// JS/TS arrow function detection (can't be table-driven)
+		if (!kind) {
+			if (line.substr(0, 6) == "const " ||
+			    line.substr(0, 4) == "let " ||
+			    line.substr(0, 4) == "var ") {
+				auto eq = line.find('=');
+				if (eq != std::string_view::npos && eq > 0) {
+					auto after_eq =
+						trimLeft(line.substr(eq + 1));
+					if (!after_eq.empty() &&
+					    (after_eq[0] == '(' ||
+					     after_eq[0] == '>')) {
+						return "function";
+					}
+					if (after_eq.substr(0, 8) ==
+					    "function") {
+						return "function";
+					}
 				}
-				if (after_eq.substr(0, 8) == "function") {
-					return "function";
-				}
+				if (line.find(":") != std::string_view::npos)
+					return "const";
 			}
-			// const/enum/namespace
-			if (line.find(":") != std::string_view::npos)
-				return "const";
 		}
 	} else if (lang == "go") {
+		// Go: func and type (type needs inline check)
 		if (startsWithKW(line, "func "))
 			return "function";
 		if (startsWithKW(line, "type ")) {
@@ -289,75 +329,29 @@ static std::string detectDecl(std::string_view line, const std::string &lang)
 			return "type_alias";
 		}
 	} else if (lang == "swift") {
-		if (startsWithKW(line, "open func ") ||
-		    startsWithKW(line, "public func ") ||
-		    startsWithKW(line, "private func ") ||
-		    startsWithKW(line, "func "))
-			return "function";
-		if (startsWithKW(line, "open class ") ||
-		    startsWithKW(line, "public class ") ||
-		    startsWithKW(line, "class "))
-			return "class";
-		if (startsWithKW(line, "public struct ") ||
-		    startsWithKW(line, "struct "))
-			return "struct";
-		if (startsWithKW(line, "public enum ") ||
-		    startsWithKW(line, "enum "))
-			return "enum";
-		if (startsWithKW(line, "public protocol ") ||
-		    startsWithKW(line, "protocol "))
-			return "interface";
-		if (startsWithKW(line, "extension "))
-			return "class";
-		if (startsWithKW(line, "init("))
-			return "function";
+		kind = matchDeclPattern(SWIFT_PATTERNS,
+					sizeof(SWIFT_PATTERNS) /
+						sizeof(SWIFT_PATTERNS[0]),
+					line);
 	} else if (lang == "java") {
-		if (startsWithKW(line, "public class ") ||
-		    startsWithKW(line, "private class ") ||
-		    startsWithKW(line, "protected class ") ||
-		    startsWithKW(line, "class "))
-			return "class";
-		if (startsWithKW(line, "public interface ") ||
-		    startsWithKW(line, "interface "))
-			return "interface";
-		if (startsWithKW(line, "public enum ") ||
-		    startsWithKW(line, "enum "))
-			return "enum";
-		if (startsWithKW(line, "public record ") ||
-		    startsWithKW(line, "record "))
-			return "class";
-		// Methods: public/private/protected <type> name(
-		if (line.find("public ") == 0 || line.find("private ") == 0 ||
-		    line.find("protected ") == 0) {
-			if (looksLikeCFunction(std::string(line)))
-				return "method";
-		}
-		if (looksLikeCFunction(std::string(line)))
+		kind = matchDeclPattern(JAVA_PATTERNS,
+					sizeof(JAVA_PATTERNS) /
+						sizeof(JAVA_PATTERNS[0]),
+					line);
+		// Java methods need lookLikeCFunction check
+		if (!kind && looksLikeCFunction(std::string(line)))
 			return "method";
 	} else if (lang == "c" || lang == "cpp") {
-		if (startsWithKW(line, "class "))
-			return "class";
-		if (startsWithKW(line, "struct "))
-			return "struct";
-		if (startsWithKW(line, "enum class "))
-			return "enum";
-		if (startsWithKW(line, "enum "))
-			return "enum";
-		if (startsWithKW(line, "union "))
-			return "struct";
-		if (startsWithKW(line, "namespace "))
-			return "module";
-		if (startsWithKW(line, "using namespace "))
-			return "";
-		if (startsWithKW(line, "template ")) {
-			// Could be a template function/class, skip for fast scan
-			return "";
-		}
-		if (looksLikeCFunction(std::string(line)))
+		kind = matchDeclPattern(C_CPP_PATTERNS,
+					sizeof(C_CPP_PATTERNS) /
+						sizeof(C_CPP_PATTERNS[0]),
+					line);
+		// C/C++ functions use looksLikeCFunction
+		if (!kind && looksLikeCFunction(std::string(line)))
 			return "function";
 	}
 
-	return "";
+	return kind ? kind : "";
 }
 
 // Extract the symbol name from a declaration line, language-aware

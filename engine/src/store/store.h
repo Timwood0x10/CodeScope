@@ -9,6 +9,7 @@
 #include "../graph/graph_types.h"
 
 struct sqlite3;
+struct sqlite3_stmt;
 
 namespace ir
 {

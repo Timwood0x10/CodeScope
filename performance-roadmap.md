@@ -24,6 +24,8 @@
 - 2026-07-06 刷新后：`1872` nodes，`5497` edges，status `ready`。
 - Edge counts: `CALLS=1004`，`DEFINES=1694`，`USAGE=883`。
 - P0 Low-Risk Hotspot Fixes 已合入（2026-07-06）。下一步：修复分阶段计时精度，运行 benchmark 记录 baseline。
+- 2026-07-06 第二轮优化完成：P0 低风险热点、P1 buildGraph/SQLite write path、benchmark 基础设施、Fast scanner 表驱动重构均已完成。
+- 注意：当前 benchmark 报告存在两种口径。内核核心样本显示 parse 约 92%，而小型/大型项目样本显示 SQLite + buildGraph 约 92%。下一步必须先统一计时口径，避免针对错误瓶颈继续优化。
 
 ## P0: Benchmark First
 
@@ -57,13 +59,14 @@
 
 ## P1: SQLite Write Path
 
-- [ ] 审计所有 insert 路径，确认是否复用 prepared statement。
-- [ ] 对 semantic_records、graph_nodes、graph_edges、FTS、vectors 增加批量 flush API。
-- [ ] `insertSemanticRecords` 支持跨文件 batch 输入，减少每文件 prepare/finalize 和逐 record 调用开销。
-- [ ] 减少逐条 `insertGraphNode` / `insertGraphEdge` 调用，优先使用批量写。
-- [ ] 索引期间启用明确的 SQLite profile：WAL、synchronous NORMAL/OFF、temp_store MEMORY、合理 cache_size。
-- [ ] 大事务按 batch 提交，避免每文件过碎，也避免单事务过大。
-- [ ] 对 `buildGraph` 的 changed files 过滤改为临时表 join，替代拼接大 `IN (...)`。
+- [x] 审计主要 insert 路径，确认 prepared statement 复用情况。
+- [x] 对 semantic_records 增加跨文件 batch flush API。
+- [x] `insertSemanticRecords` 支持跨文件 batch 输入，减少每文件 prepare/finalize 和逐 record 调用开销。
+- [x] 减少逐条 `insertGraphNode` / `insertGraphEdge` 调用，优先使用批量写。
+- [x] 索引期间启用明确的 SQLite profile：WAL、synchronous OFF、temp_store MEMORY、cache_size 64MB。
+- [x] 大事务按 batch 提交，避免每文件过碎，也避免单事务过大。
+- [x] 对 `buildGraph` 的 changed files 过滤改为临时表 join，替代拼接大 `IN (...)`。
+- [x] `insertIntoFTS` / `storeVector` 改为 cached prepared statement，减少每节点 prepare/finalize。
 
 验收标准：
 
@@ -101,8 +104,8 @@
 
 ## P2: Graph Construction
 
-- [ ] `GraphBuilder::buildSymbolGraph` 增加 nearest graph parent cache，避免重复 parent chain walk。
-- [ ] `GraphStore::buildGraph` 对 `_r2n` 增加必要临时索引，特别是 `(file_path, original_id)`、`name`。
+- [x] `GraphBuilder::buildSymbolGraph` 增加 nearest graph parent cache，避免重复 parent chain walk。
+- [x] `GraphStore::buildGraph` 对 `_r2n` 增加必要临时索引，特别是 `(file_path, original_id)`、`name`。
 - [ ] call edge 构建区分 local/external/name-only，减少无效 name join。
 - [ ] 对 on-demand call graph 查询做专门索引和 benchmark。
 - [ ] 补齐 CALLS 图质量，避免图工具看不到真实调用关系。
@@ -116,7 +119,7 @@
 ## P2: Fast / Normal / Deep Modes
 
 - [ ] Fast：轻量 scanner，只提 function/class/struct/import 和简单 call，目标 TTFA。
-- [ ] Fast scanner：把 `detectDecl` 按语言拆分，或改为 table-driven matcher，降低复杂度和误判风险。
+- [x] Fast scanner：把 `detectDecl` 按语言拆分，或改为 table-driven matcher，降低复杂度和误判风险。
 - [ ] Fast scanner：为每种语言建立小型 fixture benchmark，记录 scan time 和准确率。
 - [ ] Normal：Tree-sitter + SemanticUnit + symbol graph，目标高性价比全量索引。
 - [ ] Deep：CFG、完整 call graph、metrics、embedding，后台渐进增强。
@@ -160,9 +163,30 @@
 - **Parse: 24ms (7.4%)** ← 已很高效
 - **Total: 322ms**
 
-**下一步方向（P1/P2 混合）：**
-- [ ] 审计 `insertGraphNode` / `insertGraphEdge` 调用路径——old pipeline 中 `EmitGraphPass` 单条插入，改用 batch insert API。
-- [ ] `GraphBuilder::buildSymbolGraph` 增加 nearest graph parent cache（当前每 record 遍历 parent chain 查找最近图节点）。
-- [ ] 对 `node_vectors` / `code_fts` insert 路径做 same-statement reuse 审计。
-- [ ] 建立大项目（1000+ 文件）benchmark，暴露 IN-clause 退化。
-- [ ] 跑 Rust server 测试，验证 MCP query 延迟。
+**最新完成项（2026-07-06 第二轮）：**
+- [x] `insertGraphNode` / `insertGraphEdge` 调用路径审计并改为 batch insert。
+- [x] `GraphBuilder::buildSymbolGraph` 增加 nearest graph parent cache。
+- [x] `node_vectors` / `code_fts` insert 路径改为 cached prepared statement。
+- [x] 建立大项目 benchmark：1157 Go 文件，2.73s。
+- [x] Fast scanner `detectDecl` 从 175 行 if/else 改为 table-driven matcher。
+- [x] Rust server MCP CLI query 测试完成。
+
+**Benchmark 现状：**
+- 内核核心样本：541 files，total 5.72s，parse 5.29s，sqlite 0.41s，buildGraph 净值约 0.20s。
+- 小型 C++ 样本：72 files，total 328ms，parse 20ms，sqlite 159ms，buildGraph 142ms。
+- 大型 Go 样本：1157 files，total 2.73s，parse 150ms，sqlite 1291ms，buildGraph 1243ms。
+- `~/go/src/goagent` 复测 3 次（1157 Go files，5MB 上限，clean DB）：
+  - Run 1：2.79s，parse 177ms，sqlite 1303ms，buildGraph 1263ms。
+  - Run 2：2.82s，parse 162ms，sqlite 1351ms，buildGraph 1264ms。
+  - Run 3：2.86s，parse 167ms，sqlite 1321ms，buildGraph 1323ms。
+  - 结论：该项目稳定 SQL-bound。SQLite + buildGraph 约 91%~93%，parse 约 6%。
+  - 输出规模：261743 nodes，244078 edges，peak RSS 335~343 MB。
+  - Query 延迟：searchCode/searchSemantic 约 0.0~0.1ms，getCallers/getCallees("onRequest") 约 52~59ms。
+  - benchmark 当前 `total_ts_js_files`/`total_lines` 仍按 TS/JS 统计，对 Go benchmark 展示不准确，但不影响 `files_indexed` 和索引耗时。
+
+**下一步方向（必须先做）：**
+- [ ] 统一 benchmark 计时定义：`time_buildgraph_ms` 必须只表示 buildGraph 自身耗时，不能混入 cumulative wall time。
+- [ ] 每个样本记录同一套字段：scan/read/parse/visit/sqlite/buildGraph/query/RSS/nodes/edges。
+- [ ] 对 3 个固定项目连续跑 3 次，确认 parse-bound 和 SQL-bound 是否是数据集差异，而不是计时误差。
+- [ ] 如果 SQL-bound 成立：下一刀做 writer pipeline、FTS/vector 延迟写入、buildGraph 增量化。
+- [ ] 如果 parse-bound 成立：下一刀做 mmap、parser pool 深化、visitor arena、按需 Deep index。

@@ -765,54 +765,49 @@ bool GraphStore::rollbackTransaction()
 // ─── FTS5 Full-Text Search ─────────────────────────────────────
 
 void GraphStore::insertIntoFTS(uint64_t node_id, uint64_t project_id,
-			       const char *name, const char *qualified_name,
-			       const char *file_path, const char *content,
-			       int node_kind)
+           const char *name, const char *qualified_name,
+           const char *file_path, const char *content,
+           int node_kind)
 {
-	// Skip empty entries
-	if ((!name || !*name) && (!qualified_name || !*qualified_name) &&
-	    (!file_path || !*file_path) && (!content || !*content)) {
-		return;
-	}
-	if (node_kind < 0)
-		node_kind = 0;
+ // Skip empty entries
+ if ((!name || !*name) && (!qualified_name || !*qualified_name) &&
+     (!file_path || !*file_path) && (!content || !*content)) {
+  return;
+ }
+ if (node_kind < 0)
+  node_kind = 0;
 
-	// Update mapping table
-	{
-		sqlite3_stmt *stmt = nullptr;
-		const char *sql =
-			"INSERT OR REPLACE INTO fts_node_map (node_id, project_id, file_id) "
-			"VALUES (?, ?, 0)";
-		sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
-		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(node_id));
-		sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
-		sqlite3_step(stmt);
-		sqlite3_finalize(stmt);
-	}
+ // Update mapping table (reuses cached prepared statement)
+ if (stmt_fts_map_) {
+  sqlite3_reset(stmt_fts_map_);
+  sqlite3_bind_int64(stmt_fts_map_, 1,
+       static_cast<int64_t>(node_id));
+  sqlite3_bind_int64(stmt_fts_map_, 2,
+       static_cast<int64_t>(project_id));
+  sqlite3_step(stmt_fts_map_);
+ }
 
-	// Insert into FTS5
-	{
-		sqlite3_stmt *stmt = nullptr;
-		const char *sql =
-			"INSERT OR REPLACE INTO code_fts (rowid, name, qualified_name, "
-			"file_path, content, project_id, node_id, node_kind) "
-			"VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
-		sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
-		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(node_id));
-		sqlite3_bind_text(stmt, 2, name ? name : "", -1,
-				  SQLITE_TRANSIENT);
-		sqlite3_bind_text(stmt, 3, qualified_name ? qualified_name : "",
-				  -1, SQLITE_TRANSIENT);
-		sqlite3_bind_text(stmt, 4, file_path ? file_path : "", -1,
-				  SQLITE_TRANSIENT);
-		sqlite3_bind_text(stmt, 5, content ? content : "", -1,
-				  SQLITE_TRANSIENT);
-		sqlite3_bind_int64(stmt, 6, static_cast<int64_t>(project_id));
-		sqlite3_bind_int64(stmt, 7, static_cast<int64_t>(node_id));
-		sqlite3_bind_int(stmt, 8, node_kind);
-		sqlite3_step(stmt);
-		sqlite3_finalize(stmt);
-	}
+ // Insert into FTS5 (reuses cached prepared statement)
+ if (stmt_fts_) {
+  sqlite3_reset(stmt_fts_);
+  sqlite3_bind_int64(stmt_fts_, 1,
+       static_cast<int64_t>(node_id));
+  sqlite3_bind_text(stmt_fts_, 2, name ? name : "", -1,
+      SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt_fts_, 3,
+      qualified_name ? qualified_name : "", -1,
+      SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt_fts_, 4, file_path ? file_path : "", -1,
+      SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt_fts_, 5, content ? content : "", -1,
+      SQLITE_TRANSIENT);
+  sqlite3_bind_int64(stmt_fts_, 6,
+       static_cast<int64_t>(project_id));
+  sqlite3_bind_int64(stmt_fts_, 7,
+       static_cast<int64_t>(node_id));
+  sqlite3_bind_int(stmt_fts_, 8, node_kind);
+  sqlite3_step(stmt_fts_);
+ }
 }
 
 void GraphStore::deleteFTSByFile(uint64_t project_id, uint64_t file_id)
@@ -1010,20 +1005,19 @@ std::string GraphStore::getComplexityJson(uint64_t project_id,
 // ─── Vector Search ───────────────────────────────────────────
 
 bool GraphStore::storeVector(uint64_t node_id, uint64_t project_id,
-			     const void *vec_data, size_t vec_bytes)
+         const void *vec_data, size_t vec_bytes)
 {
-	sqlite3_stmt *stmt = nullptr;
-	const char *sql =
-		"INSERT OR REPLACE INTO node_vectors (node_id, project_id, "
-		"vector) VALUES (?, ?, ?)";
-	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(node_id));
-	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
-	sqlite3_bind_blob(stmt, 3, vec_data, static_cast<int>(vec_bytes),
-			  SQLITE_TRANSIENT);
-	int rc = sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-	return rc == SQLITE_DONE;
+ if (!stmt_vector_) {
+  error_ = "storeVector: statement not prepared";
+  return false;
+ }
+ sqlite3_reset(stmt_vector_);
+ sqlite3_bind_int64(stmt_vector_, 1, static_cast<int64_t>(node_id));
+ sqlite3_bind_int64(stmt_vector_, 2, static_cast<int64_t>(project_id));
+ sqlite3_bind_blob(stmt_vector_, 3, vec_data,
+     static_cast<int>(vec_bytes), SQLITE_TRANSIENT);
+ int rc = sqlite3_step(stmt_vector_);
+ return rc == SQLITE_DONE;
 }
 
 std::string GraphStore::searchSemantic(uint64_t project_id,
