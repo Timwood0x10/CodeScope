@@ -449,3 +449,209 @@ fast 跳过 FTS/vector（-24%）、normal 只建 FTS、deep 全量。已实现�
 2. 不先做 C 重写。
 3. 不先直接写 SQLite B-tree 页面。
 4. 不先做 mimalloc/slab，除非 RSS 已经成为第一瓶颈。
+
+## Phase 7 Plan: What To Copy, In What Order
+
+目标：把 `codebase-memory-mcp` 的高收益设计按 CodeScope 现状落地。原则是先抄架构策略，再抄低层实现；先抄可验证的，再抄高风险的。
+
+### 7.1 Copy Immediately
+
+这些和 CodeScope 当前瓶颈直接匹配，风险低，收益高。
+
+#### A. Discovery Filter Policy
+
+- [ ] 建立集中式 `FilterPolicy`：skip dirs、skip suffixes、skip filenames、mode-specific skips。
+- [ ] 把当前散落的 skip 逻辑收敛到一个模块，避免 engine/server/benchmark 各写各的。
+- [ ] 增加 `.codescopeignore`，语义类似 `.cbmignore`。
+- [ ] FAST mode 增加额外 skip：docs、examples、testdata、generated、scripts、tools、migrations、third_party、vendor。
+- [ ] benchmark 输出 discovery stats：seen files、skipped dirs、skipped files、candidate files、indexed files。
+
+验收标准：
+
+- [ ] GoAgent/engine/kernel 三个 benchmark 都能解释“为什么只索引这些文件”。
+- [ ] 文件过滤不会散落在多个模块里。
+
+#### B. Size-Descending Scheduling
+
+- [ ] discovery 阶段记录 file size。
+- [ ] parse jobs 按 size 降序排序。
+- [ ] worker 仍使用 atomic counter 抢任务。
+- [ ] benchmark 增加 tail latency 指标：last worker finish time、max file parse time。
+
+验收标准：
+
+- [ ] 大文件不会集中拖在最后。
+- [ ] 不改变索引结果，只改变调度顺序。
+
+#### C. Per-File Result Cache
+
+- [ ] 明确 `SemanticRecord` 是唯一中间事实层。
+- [ ] parse/visitor 只产出 per-file records，不直接做跨文件解析。
+- [ ] buildGraph/FTS/vector/metrics 都从 records 派生，不回读源码、不重复 parse。
+- [ ] 对每个文件记录 result cache metadata：file_id、mtime、size、hash、record_count、language。
+
+验收标准：
+
+- [ ] 单文件全生命周期只读一次、parse 一次。
+- [ ] 后处理阶段不依赖源码文件存在。
+
+#### D. Resolve Cache Trio
+
+照抄思想，不照抄代码。
+
+- [ ] `reach_cache`：per-file import reachability cache。
+- [ ] `import_map_cache`：import prefix -> module/symbol scope。
+- [ ] `resolve_cache`：同一 caller file 内相同 callee name 只走一次完整策略链。
+- [ ] resolve benchmark 输出 cache hit/miss。
+
+验收标准：
+
+- [ ] 大项目 call resolve 不再做重复全局查找。
+- [ ] cache hit rate 可观测。
+
+### 7.2 Copy After Benchmark Report Is Stable
+
+这些会影响架构和数据流，必须先有 JSON baseline 和 regression gate。
+
+#### E. Index Supervisor
+
+- [ ] 新增索引 worker 子进程。
+- [ ] MCP server 只负责调度、progress、读取完成后的 DB。
+- [ ] worker 退出即释放全部索引期 RSS。
+- [ ] 支持 cancel job。
+- [ ] 支持 failed/partial DB 策略。
+
+验收标准：
+
+- [ ] kernel 索引后 server RSS 回到基线。
+- [ ] 用户取消索引不会留下坏 DB。
+
+#### F. FAST / Normal / Deep Hard Split
+
+- [ ] FAST：Discovery + lightweight symbol graph + minimal search。
+- [ ] Normal：Tree-sitter + SemanticRecord + graph + FTS。
+- [ ] Deep：vectors + semantic/similarity edges + metrics + CFG。
+- [ ] DB 记录 mode readiness：fast_ready、normal_ready、deep_ready。
+- [ ] API 响应带 result_mode，避免用户误解 FAST 答案完整性。
+
+验收标准：
+
+- [ ] FAST 明显降低 TTFA。
+- [ ] Deep 不阻塞 Normal 查询。
+
+#### G. Bulk Load Then Build Indexes
+
+- [ ] schema 分 base tables 和 heavy indexes。
+- [ ] bulk load 期间只保留必要约束。
+- [ ] load 完后创建 graph/search/call 相关索引。
+- [ ] 对比插入时维护索引 vs 写完建索引。
+
+验收标准：
+
+- [ ] GoAgent SQL 总时间下降。
+- [ ] kernel SQL 总时间下降。
+- [ ] DB 一致性不退化。
+
+### 7.3 Copy Carefully
+
+这些可能有收益，但需要原型验证。
+
+#### H. Worker-Local Graph Buffer
+
+- [ ] worker 本地积累 graph nodes/edges。
+- [ ] 每个 worker 输出 sorted chunks。
+- [ ] writer 阶段批量合并写入 DB。
+- [ ] 避免 worker 直接争用 store 或全局 vector。
+
+验收标准：
+
+- [ ] lock contention 下降。
+- [ ] peak RSS 不明显上升。
+
+#### I. Memory Backpressure
+
+- [ ] 采样 RSS。
+- [ ] 设置 memory budget。
+- [ ] 超预算暂停 reader/parser，writer/buildGraph 继续推进。
+- [ ] benchmark 输出 throttle count 和 throttle time。
+
+验收标准：
+
+- [ ] kernel 大项目不因 worker 并发导致 RSS 尖峰。
+- [ ] 吞吐下降可接受。
+
+#### J. Scratch Arena / Slab
+
+- [ ] 先实现 CodeScope 自己的 per-file scratch arena，用于 visitor 临时对象。
+- [ ] 再评估 tree-sitter allocator/slab 替换。
+- [ ] 不先引入 mimalloc，除非 allocator profile 证明需要。
+
+验收标准：
+
+- [ ] malloc/free 次数下降。
+- [ ] RSS 或 CPU 有明确收益。
+
+### 7.4 Do Not Copy Yet
+
+#### K. Direct SQLite B-tree Page Writer
+
+暂不抄。
+
+理由：
+
+- 风险远高于收益。
+- SQLite 格式、WAL、一致性、索引维护都要自己负责。
+- 当前还有 bulk load、索引重建、分层模式、query plan 优化可做。
+
+只有满足以下条件才重新评估：
+
+- [ ] buildGraph/SQLite 已经做完 bulk-load 和索引重建实验。
+- [ ] SQL API 仍是最大瓶颈。
+- [ ] 有独立 DB corruption test suite。
+- [ ] 有 SQLite version compatibility 策略。
+
+#### L. C Rewrite
+
+暂不抄。
+
+理由：
+
+- 当前 C++ 版本已在 GoAgent 上超过 `codebase-memory-mcp`。
+- 重写会破坏现有测试资产和迭代速度。
+- 当前瓶颈是数据流和 DB 策略，不是 C++ 本身。
+
+### 7.5 Concrete Copy Order
+
+按这个顺序执行：
+
+1. `FilterPolicy` + `.codescopeignore` + discovery stats。
+2. size-desc job scheduling。
+3. benchmark JSON + regression gates。
+4. buildGraph split timing + EXPLAIN QUERY PLAN。
+5. resolve cache trio。
+6. FAST / Normal / Deep readiness model。
+7. FTS/vector 从 Normal 核心路径拆到 Deep/background。
+8. bulk-load then create indexes。
+9. index supervisor 子进程隔离。
+10. memory backpressure。
+11. scratch arena/slab 原型。
+
+当前最该抄的不是 C，也不是 SQLite page writer，而是：
+
+- 提前过滤。
+- 单次解析缓存。
+- worker 本地 buffer。
+- per-file resolve cache。
+- 模式裁剪。
+- 子进程隔离。
+- bulk-load 数据库策略。
+
+### 7.6 Success Targets
+
+- [ ] GoAgent Normal：保持 <3s，同时 nodes/edges 不下降。
+- [ ] GoAgent FAST：<1s TTFA。
+- [ ] kernel 子目录 Normal：SQL 总时间下降 25%。
+- [ ] kernel 子目录 FAST：<4s TTFA。
+- [ ] server 常驻 RSS：索引后回到基线。
+- [ ] caller/callee：继续保持 <1ms 级别。
+- [ ] benchmark report：每次优化都有 before/after JSON。

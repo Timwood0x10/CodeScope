@@ -399,6 +399,38 @@ bool GraphStore::createSchema()
 	return ok;
 }
 
+bool GraphStore::createIndexesAfterBulkLoad(uint64_t project_id)
+{
+	(void)project_id; // All indexes are global — project_id not needed
+	// Deferred indexes: created after bulk insert to avoid per-row index maintenance.
+	// Query-time indexes (graph_edges, symbols, call_edges, etc.) don't need to exist
+	// during bulk write — they only speed up user queries.
+	const char *indexes[] = {
+		"CREATE INDEX IF NOT EXISTS idx_graph_nodes_name ON graph_nodes(project_id, name)",
+		"CREATE INDEX IF NOT EXISTS idx_graph_edges_src ON graph_edges(source_node_id)",
+		"CREATE INDEX IF NOT EXISTS idx_graph_edges_tgt ON graph_edges(target_node_id)",
+		"CREATE INDEX IF NOT EXISTS idx_graph_edges_project ON graph_edges(project_id)",
+		"CREATE INDEX IF NOT EXISTS idx_ge_callers ON graph_edges(edge_type, target_node_id)",
+		"CREATE INDEX IF NOT EXISTS idx_ge_callees ON graph_edges(edge_type, source_node_id)",
+		"CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(project_id, name)",
+		"CREATE INDEX IF NOT EXISTS idx_call_edges_caller ON call_edges(caller_symbol_id)",
+		"CREATE INDEX IF NOT EXISTS idx_call_edges_callee ON call_edges(callee_symbol_id)",
+		"CREATE INDEX IF NOT EXISTS idx_dep_edges_src ON dependency_edges(source_module_id)",
+		"CREATE INDEX IF NOT EXISTS idx_dep_edges_tgt ON dependency_edges(target_module_id)",
+		"CREATE INDEX IF NOT EXISTS idx_metrics_owner ON metrics(owner_type, owner_id)",
+	};
+	bool ok = true;
+	for (auto *sql : indexes) {
+		if (!exec(sql)) {
+			fprintf(stderr,
+				"WARN: createIndexesAfterBulkLoad: %s\n",
+				error_.c_str());
+			ok = false;
+		}
+	}
+	return ok;
+}
+
 // ─── Utility ───────────────────────────────────────────────────
 
 bool GraphStore::exec(const char *sql)
@@ -411,6 +443,27 @@ bool GraphStore::exec(const char *sql)
 		return false;
 	}
 	return true;
+}
+
+void GraphStore::explainQueryPlan(const char *sql, const char *label)
+{
+	if (!sql || !*sql)
+		return;
+	std::string explain = std::string("EXPLAIN QUERY PLAN ") + sql;
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(db_, explain.c_str(), -1, &stmt, nullptr) !=
+	    SQLITE_OK)
+		return;
+	fprintf(stderr, "--- QPLAN %s ---\n", label ? label : "");
+	while (sqlite3_step(stmt) == SQLITE_ROW) {
+		int id = sqlite3_column_int(stmt, 0);
+		int parent = sqlite3_column_int(stmt, 1);
+		const char *detail = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 3));
+		fprintf(stderr, "  id=%d parent=%d %s\n", id, parent,
+			detail ? detail : "");
+	}
+	sqlite3_finalize(stmt);
 }
 
 // ─── Project ───────────────────────────────────────────────────
@@ -2418,153 +2471,174 @@ void GraphStore::insertSemanticRecordsBatch(
 }
 
 bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
-        const std::unordered_set<std::string> *changed_files)
+			    const std::unordered_set<std::string> *changed_files)
 {
- using Clock = std::chrono::steady_clock;
+	using Clock = std::chrono::steady_clock;
 
- // Step 1: determine which files to rebuild
- auto t0 = Clock::now();
- std::string file_list_sql =
-  "SELECT DISTINCT file_path FROM semantic_records WHERE project_id=" +
-  std::to_string(project_id);
- sqlite3_stmt *fl_stmt = nullptr;
- sqlite3_prepare_v2(db_, file_list_sql.c_str(), -1, &fl_stmt, nullptr);
+	// Step 1: determine which files to rebuild
+	auto t0 = Clock::now();
+	std::string file_list_sql =
+		"SELECT DISTINCT file_path FROM semantic_records WHERE project_id=" +
+		std::to_string(project_id);
+	sqlite3_stmt *fl_stmt = nullptr;
+	sqlite3_prepare_v2(db_, file_list_sql.c_str(), -1, &fl_stmt, nullptr);
 
- std::vector<std::string> rebuild_files;
- while (sqlite3_step(fl_stmt) == SQLITE_ROW) {
-  const char *fp = reinterpret_cast<const char *>(
-   sqlite3_column_text(fl_stmt, 0));
-  if (!fp)
-   continue;
-  std::string file_path(fp);
-  if (changed_files &&
-      changed_files->find(file_path) == changed_files->end())
-   continue;
-  rebuild_files.push_back(std::move(file_path));
- }
- sqlite3_finalize(fl_stmt);
- auto t_file_list = Clock::now();
+	std::vector<std::string> rebuild_files;
+	while (sqlite3_step(fl_stmt) == SQLITE_ROW) {
+		const char *fp = reinterpret_cast<const char *>(
+			sqlite3_column_text(fl_stmt, 0));
+		if (!fp)
+			continue;
+		std::string file_path(fp);
+		if (changed_files &&
+		    changed_files->find(file_path) == changed_files->end())
+			continue;
+		rebuild_files.push_back(std::move(file_path));
+	}
+	sqlite3_finalize(fl_stmt);
+	auto t_file_list = Clock::now();
 
- if (rebuild_files.empty())
-  return true;
+	if (rebuild_files.empty())
+		return true;
 
- // Delete existing graph data for files being rebuilt
- for (auto &fp : rebuild_files) {
-  deleteGraphEdgesByFile(project_id, fp.c_str());
-  deleteGraphNodesByFile(project_id, fp.c_str());
- }
- auto t_delete = Clock::now();
+	// Delete existing graph data for files being rebuilt
+	for (auto &fp : rebuild_files) {
+		deleteGraphEdgesByFile(project_id, fp.c_str());
+		deleteGraphNodesByFile(project_id, fp.c_str());
+	}
+	auto t_delete = Clock::now();
 
- std::string pid = std::to_string(project_id);
+	std::string pid = std::to_string(project_id);
 
- // ── 2a: Create file filter temp table ──
- exec("DROP TABLE IF EXISTS _rf");
- exec("CREATE TEMP TABLE _rf (file_path TEXT PRIMARY KEY)");
- {
-  sqlite3_stmt *ins = nullptr;
-  sqlite3_prepare_v2(
-   db_, "INSERT OR IGNORE INTO _rf (file_path) VALUES (?)",
-   -1, &ins, nullptr);
-  for (auto &fp : rebuild_files) {
-   sqlite3_bind_text(ins, 1, fp.c_str(), -1,
-       SQLITE_TRANSIENT);
-   sqlite3_step(ins);
-   sqlite3_reset(ins);
-  }
-  sqlite3_finalize(ins);
- }
- auto t_rf = Clock::now();
+	// ── 2a: Create file filter temp table ──
+	exec("DROP TABLE IF EXISTS _rf");
+	exec("CREATE TEMP TABLE _rf (file_path TEXT PRIMARY KEY)");
+	{
+		sqlite3_stmt *ins = nullptr;
+		sqlite3_prepare_v2(
+			db_, "INSERT OR IGNORE INTO _rf (file_path) VALUES (?)",
+			-1, &ins, nullptr);
+		for (auto &fp : rebuild_files) {
+			sqlite3_bind_text(ins, 1, fp.c_str(), -1,
+					  SQLITE_TRANSIENT);
+			sqlite3_step(ins);
+			sqlite3_reset(ins);
+		}
+		sqlite3_finalize(ins);
+	}
+	auto t_rf = Clock::now();
 
- // ── 2b: Create _r2n mapping table with index ──
- exec("DROP TABLE IF EXISTS _r2n");
- exec(std::string(
-       "CREATE TEMP TABLE _r2n AS "
-       "SELECT sr.rowid as rid, sr.original_id, sr.file_path, sr.name,"
-       " CAST(ROW_NUMBER() OVER (ORDER BY sr.file_path, sr.original_id) "
-       "  + COALESCE((SELECT MAX(id) FROM graph_nodes WHERE project_id=" +
-       pid +
-       "), 0)"
-       "  AS INTEGER) as node_id "
-       "FROM semantic_records sr "
-       "WHERE sr.project_id=" +
-       pid +
-       " AND sr.kind IN (0,1,2,3,4,5,6,9,10)"
-       " AND sr.file_path IN (SELECT file_path FROM _rf)")
-       .c_str());
- exec("CREATE INDEX IF NOT EXISTS _r2n_fp_oid ON _r2n(file_path, original_id)");
- exec("CREATE INDEX IF NOT EXISTS _r2n_name ON _r2n(name)");
- auto t_r2n = Clock::now();
+	// ── 2b: Create _r2n mapping table (unsorted for speed) ──
+	// Note: ROW_NUMBER() OVER () avoids ORDER BY sort cost.
+	// Node IDs are sequential but not sorted by file_path — sorting is
+	// not required for correctness since JOINs use indexes, not sequential scans.
+	exec("DROP TABLE IF EXISTS _r2n");
+	exec(std::string(
+		     "CREATE TEMP TABLE _r2n AS "
+		     "SELECT sr.rowid as rid, sr.original_id, sr.file_path, sr.name,"
+		     " CAST(ROW_NUMBER() OVER () "
+		     "  + COALESCE((SELECT MAX(id) FROM graph_nodes WHERE project_id=" +
+		     pid +
+		     "), 0)"
+		     "  AS INTEGER) as node_id "
+		     "FROM semantic_records sr "
+		     "WHERE sr.project_id=" +
+		     pid +
+		     " AND sr.kind IN (0,1,2,3,4,5,6,9,10)"
+		     " AND sr.file_path IN (SELECT file_path FROM _rf)")
+		     .c_str());
+	const char *explain_env = getenv("CODESCOPE_EXPLAIN");
+	if (explain_env && explain_env[0]) {
+		explainQueryPlan(
+			(std::string(
+				 "SELECT sr.rowid as rid, sr.original_id, sr.file_path, sr.name,"
+				 " CAST(ROW_NUMBER() OVER () + " +
+				 pid +
+				 " AS INTEGER) as node_id "
+				 "FROM semantic_records sr "
+				 "WHERE sr.project_id=" +
+				 pid +
+				 " AND sr.kind IN (0,1,2,3,4,5,6,9,10)"
+				 " AND sr.file_path IN (SELECT file_path FROM _rf)")
+				 .c_str()),
+			"_r2n");
+	}
+	exec("CREATE INDEX IF NOT EXISTS _r2n_fp_oid ON _r2n(file_path, original_id)");
+	exec("CREATE INDEX IF NOT EXISTS _r2n_name ON _r2n(name)");
+	auto t_r2n = Clock::now();
 
- // ── 2c: Graph nodes from declarations ──
- exec(std::string(
-       "INSERT INTO graph_nodes (id, project_id, ir_node_id, node_type, "
-       " name, qualified_name, module_path, file_path, "
-       " start_row, start_col, end_row, end_col, language) "
-       "SELECT r2n.node_id, sr.project_id, sr.original_id, "
-       " CASE sr.kind WHEN 0 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 "
-       "  WHEN 3 THEN 4 WHEN 4 THEN 7 WHEN 5 THEN 7 "
-       "  WHEN 6 THEN 6 WHEN 9 THEN 7 WHEN 10 THEN 7 ELSE 7 END, "
-       " sr.name, sr.qualified_name, sr.file_path, sr.file_path, "
-       " sr.start_row, sr.start_col, sr.end_row, sr.end_col, sr.language "
-       "FROM semantic_records sr JOIN _r2n r2n ON sr.rowid = r2n.rid")
-       .c_str());
- auto t_nodes = Clock::now();
+	// ── 2c: Graph nodes from declarations ──
+	exec(std::string(
+		     "INSERT INTO graph_nodes (id, project_id, ir_node_id, node_type, "
+		     " name, qualified_name, module_path, file_path, "
+		     " start_row, start_col, end_row, end_col, language) "
+		     "SELECT r2n.node_id, sr.project_id, sr.original_id, "
+		     " CASE sr.kind WHEN 0 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 "
+		     "  WHEN 3 THEN 4 WHEN 4 THEN 7 WHEN 5 THEN 7 "
+		     "  WHEN 6 THEN 6 WHEN 9 THEN 7 WHEN 10 THEN 7 ELSE 7 END, "
+		     " sr.name, sr.qualified_name, sr.file_path, sr.file_path, "
+		     " sr.start_row, sr.start_col, sr.end_row, sr.end_col, sr.language "
+		     "FROM semantic_records sr JOIN _r2n r2n ON sr.rowid = r2n.rid")
+		     .c_str());
+	auto t_nodes = Clock::now();
 
- // ── 2d: Containment edges ──
- exec(std::string(
-       "INSERT INTO graph_edges "
-       "(project_id, source_node_id, target_node_id, edge_type, graph_type) "
-       "SELECT DISTINCT " +
-       pid +
-       ", parent.node_id, child.node_id, 3, 'symbol_reference' "
-       "FROM semantic_records sr "
-       "JOIN _r2n child ON sr.original_id = child.original_id AND sr.file_path = child.file_path "
-       "JOIN _r2n parent ON sr.parent_id = parent.original_id AND sr.file_path = parent.file_path "
-       "WHERE sr.project_id=" +
-       pid + " AND parent.node_id != child.node_id")
-       .c_str());
- auto t_edges = Clock::now();
+	// ── 2d: Containment edges ──
+	exec(std::string(
+		     "INSERT INTO graph_edges "
+		     "(project_id, source_node_id, target_node_id, edge_type, graph_type) "
+		     "SELECT DISTINCT " +
+		     pid +
+		     ", parent.node_id, child.node_id, 3, 'symbol_reference' "
+		     "FROM semantic_records sr "
+		     "JOIN _r2n child ON sr.original_id = child.original_id AND sr.file_path = child.file_path "
+		     "JOIN _r2n parent ON sr.parent_id = parent.original_id AND sr.file_path = parent.file_path "
+		     "WHERE sr.project_id=" +
+		     pid + " AND parent.node_id != child.node_id")
+		     .c_str());
+	auto t_edges = Clock::now();
 
- // ── 2e: Call edges ──
- if (build_calls) {
-  exec(std::string(
-        "INSERT INTO graph_edges "
-        "(project_id, source_node_id, target_node_id, edge_type, graph_type, "
-        " call_site_file, call_site_line) "
-        "SELECT DISTINCT " +
-        pid +
-        ", caller.node_id, callee.node_id, 1, 'call_graph', "
-        "  sr.file_path, sr.start_row "
-        "FROM semantic_records sr "
-        "JOIN _r2n callee ON sr.name = callee.name "
-        "JOIN _r2n caller ON sr.parent_id = caller.original_id AND sr.file_path = caller.file_path "
-        "JOIN semantic_records cal_sr ON cal_sr.rowid = callee.rid "
-        "WHERE sr.project_id=" +
-        pid + " AND sr.kind=7" +
-        " AND sr.name != '' AND callee.node_id != caller.node_id"
-        " AND cal_sr.kind IN (0,1)")
-        .c_str());
- }
- auto t_call = Clock::now();
+	// ── 2e: Call edges ──
+	if (build_calls) {
+		exec(std::string(
+			     "INSERT INTO graph_edges "
+			     "(project_id, source_node_id, target_node_id, edge_type, graph_type, "
+			     " call_site_file, call_site_line) "
+			     "SELECT DISTINCT " +
+			     pid +
+			     ", caller.node_id, callee.node_id, 1, 'call_graph', "
+			     "  sr.file_path, sr.start_row "
+			     "FROM semantic_records sr "
+			     "JOIN _r2n callee ON sr.name = callee.name "
+			     "JOIN _r2n caller ON sr.parent_id = caller.original_id AND sr.file_path = caller.file_path "
+			     "JOIN semantic_records cal_sr ON cal_sr.rowid = callee.rid "
+			     "WHERE sr.project_id=" +
+			     pid + " AND sr.kind=7" +
+			     " AND sr.name != '' AND callee.node_id != caller.node_id"
+			     " AND cal_sr.kind IN (0,1)")
+			     .c_str());
+	}
+	auto t_call = Clock::now();
 
- exec("DROP TABLE IF EXISTS _r2n");
- exec("DROP TABLE IF EXISTS _rf");
+	exec("DROP TABLE IF EXISTS _r2n");
+	exec("DROP TABLE IF EXISTS _rf");
 
- // Phase timing breakdown
- auto t_end = Clock::now();
- auto ms = [](auto start, auto end) {
-  return std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
- };
- fprintf(stderr,
-  "buildGraph: %zu files"
-  " | file_list=%lldms delete=%lldms rf=%lldms r2n=%lldms"
-  " nodes=%lldms edges=%lldms calls=%lldms total=%lldms\n",
-  rebuild_files.size(),
-  (long long)ms(t0, t_file_list), (long long)ms(t_file_list, t_delete),
-  (long long)ms(t_delete, t_rf), (long long)ms(t_rf, t_r2n),
-  (long long)ms(t_r2n, t_nodes), (long long)ms(t_nodes, t_edges),
-  (long long)ms(t_edges, t_call), (long long)ms(t0, t_end));
- return true;
+	// Phase timing breakdown
+	auto t_end = Clock::now();
+	auto ms = [](auto start, auto end) {
+		return std::chrono::duration_cast<std::chrono::milliseconds>(
+			       end - start)
+			.count();
+	};
+	fprintf(stderr,
+		"buildGraph: %zu files"
+		" | file_list=%lldms delete=%lldms rf=%lldms r2n=%lldms"
+		" nodes=%lldms edges=%lldms calls=%lldms total=%lldms\n",
+		rebuild_files.size(), (long long)ms(t0, t_file_list),
+		(long long)ms(t_file_list, t_delete),
+		(long long)ms(t_delete, t_rf), (long long)ms(t_rf, t_r2n),
+		(long long)ms(t_r2n, t_nodes), (long long)ms(t_nodes, t_edges),
+		(long long)ms(t_edges, t_call), (long long)ms(t0, t_end));
+	return true;
 }
 
 // ─── On-demand call graph queries (from semantic_records) ────

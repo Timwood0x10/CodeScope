@@ -330,18 +330,24 @@ class GraphStore {
 	std::string getCalleesFromRecords(uint64_t project_id,
 					  const char *function_name);
 
+	/**
+	 * Create indexes after bulk data load.
+	 * Call this once after all semantic_records and graph_nodes have been inserted.
+	 */
+	bool createIndexesAfterBulkLoad(uint64_t project_id);
+
 	sqlite3 *handle() const
-{
-	return db_;
-}
+	{
+		return db_;
+	}
 
-const std::string &error() const
-{
-	return error_;
-}
+	const std::string &error() const
+	{
+		return error_;
+	}
 
-/** Debug: run EXPLAIN QUERY PLAN and log output to stderr. */
-void explainQueryPlan(const char *sql, const char *label = nullptr);
+	/** Debug: run EXPLAIN QUERY PLAN and log output to stderr. */
+	void explainQueryPlan(const char *sql, const char *label = nullptr);
 
     private:
 	sqlite3 *db_ = nullptr;

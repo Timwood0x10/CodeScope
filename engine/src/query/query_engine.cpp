@@ -210,7 +210,8 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 		"LIMIT 100";
 
 	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(store_->handle(), sql, -1, &stmt, nullptr) != SQLITE_OK)
+	if (sqlite3_prepare_v2(store_->handle(), sql, -1, &stmt, nullptr) !=
+	    SQLITE_OK)
 		return "{\"callees\":[],\"total\":0,\"error\":\"prepare failed\"}";
 	sqlite3_bind_text(stmt, 1, function_name, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));

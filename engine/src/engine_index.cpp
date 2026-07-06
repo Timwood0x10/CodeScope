@@ -749,42 +749,41 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	int64_t time_fts_ms = 0, time_vector_ms = 0;
 	g_store->beginTransaction();
 	{
-	 auto t_bg = steady_clock::now();
-	 g_store->buildGraph(project_id, false);
-	 time_buildgraph_ms =
-	  duration_cast<milliseconds>(
-	   steady_clock::now() - t_bg)
-	   .count();
-	 // FAST mode: skip FTS and vectors
-	 if (!mode_fast) {
-	  auto t_f = steady_clock::now();
-	  g_store->buildFTSFromGraph(project_id);
-	  time_fts_ms =
-	   duration_cast<milliseconds>(
-	    steady_clock::now() - t_f)
-	    .count();
-	 }
-	 // DEEP mode: build vectors (NORMAL skips them)
-	 if (mode_deep) {
-	  auto t_v = steady_clock::now();
-	  g_store->buildVectorsFromGraph(project_id);
-	  time_vector_ms =
-	   duration_cast<milliseconds>(
-	    steady_clock::now() - t_v)
-	    .count();
-	 }
+		auto t_bg = steady_clock::now();
+		g_store->buildGraph(project_id, false);
+		time_buildgraph_ms =
+			duration_cast<milliseconds>(steady_clock::now() - t_bg)
+				.count();
+		// FAST mode: skip FTS and vectors
+		if (!mode_fast) {
+			auto t_f = steady_clock::now();
+			g_store->buildFTSFromGraph(project_id);
+			time_fts_ms = duration_cast<milliseconds>(
+					      steady_clock::now() - t_f)
+					      .count();
+		}
+		// DEEP mode: build vectors (NORMAL skips them)
+		if (mode_deep) {
+			auto t_v = steady_clock::now();
+			g_store->buildVectorsFromGraph(project_id);
+			time_vector_ms = duration_cast<milliseconds>(
+						 steady_clock::now() - t_v)
+						 .count();
+		}
 	}
 	g_store->commitTransaction();
+	// Build deferred indexes after bulk load
+	g_store->createIndexesAfterBulkLoad(project_id);
 	std::ostringstream result;
 	result << "{\"ok\":true,\"files_indexed\":" << total_indexed
 	       << ",\"workers\":"
 	       << std::min(static_cast<int>(jobs.size()),
-	     static_cast<int>(
-	      std::thread::hardware_concurrency()));
+			   static_cast<int>(
+				   std::thread::hardware_concurrency()));
 	if (time_parse_ms > 0)
-	 result << ",\"time_parse_ms\":" << time_parse_ms
-	        << ",\"time_sqlite_ms\":" << time_sqlite_ms
-	        << ",\"time_buildgraph_ms\":" << time_buildgraph_ms;
+		result << ",\"time_parse_ms\":" << time_parse_ms
+		       << ",\"time_sqlite_ms\":" << time_sqlite_ms
+		       << ",\"time_buildgraph_ms\":" << time_buildgraph_ms;
 	result << ",\"time_fts_ms\":" << time_fts_ms
 	       << ",\"time_vector_ms\":" << time_vector_ms;
 	result << "}";
