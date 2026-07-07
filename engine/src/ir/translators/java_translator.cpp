@@ -549,10 +549,11 @@ Node *JavaTranslator::handleField(TSNode ts_node, Node *parent)
 
 		if (!field->name.empty()) {
 			parent->children.push_back(field);
+			return field;
 		} else {
 			delete field;
+			return nullptr;
 		}
-		return field;
 	}
 	translateChildren(ts_node, parent);
 	return nullptr;

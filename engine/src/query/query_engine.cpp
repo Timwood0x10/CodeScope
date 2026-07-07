@@ -113,7 +113,7 @@ std::string QueryEngine::findDefinition(uint64_t project_id,
 		"FROM graph_nodes WHERE project_id = ? AND name = ?";
 
 	std::string sql_with_filter;
-	const char *final_sql = sql;
+	const char *final_sql;
 	bool has_filter = file_filter && strlen(file_filter) > 0;
 
 	if (has_filter) {
@@ -196,7 +196,7 @@ std::string QueryEngine::findReferences(uint64_t project_id,
 		"WHERE gn.project_id = ? AND target.name = ? AND ge.edge_type = 0";
 
 	std::string sql_with_filter;
-	const char *final_sql = sql;
+	const char *final_sql;
 	bool has_filter = file_filter && strlen(file_filter) > 0;
 
 	if (has_filter) {

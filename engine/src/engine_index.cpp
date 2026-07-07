@@ -288,10 +288,9 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 	for (auto *ir_node : unit->all_nodes) {
 		if (ir_node->kind == ir::NodeKind::FunctionDecl ||
 		    ir_node->kind == ir::NodeKind::MethodDecl) {
-			auto it = ir_id_to_db_id.find(ir_node->id);
-			if (it == ir_id_to_db_id.end())
+			auto ir_db_it = ir_id_to_db_id.find(ir_node->id);
+			if (ir_db_it == ir_id_to_db_id.end())
 				continue;
-			uint64_t ir_db_id = it->second;
 
 			int if_c = 0, for_c = 0, while_c = 0, switch_c = 0,
 			    case_c = 0;
@@ -562,7 +561,6 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	resolver::ProjectSymbolIndex global_symbol_index;
 
 	using namespace std::chrono;
-	steady_clock::time_point t_total = steady_clock::now();
 	steady_clock::time_point t_parse_start;
 	int64_t time_parse_ms = 0, time_sqlite_ms = 0, time_buildgraph_ms = 0;
 

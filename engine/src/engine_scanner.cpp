@@ -876,7 +876,7 @@ char *engine_scan_project(uint64_t project_id, const char *dir_path,
 				std::string parent_dir =
 					it->path().parent_path().string();
 				auto mod_it = module_path_map.find(parent_dir);
-				uint64_t parent_mod_id = root_module_id;
+				uint64_t parent_mod_id;
 				if (mod_it != module_path_map.end()) {
 					parent_mod_id = mod_it->second;
 				} else {

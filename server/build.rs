@@ -90,7 +90,7 @@ fn main() {
     match target_os.as_str() {
         "macos" => println!("cargo:rustc-link-lib=dylib=c++"),
         "linux" => println!("cargo:rustc-link-lib=dylib=stdc++"),
-        _       => println!("cargo:rustc-link-lib=dylib=stdc++"),
+        _ => println!("cargo:rustc-link-lib=dylib=stdc++"),
     }
     println!("cargo:rustc-link-lib=tree-sitter");
 
