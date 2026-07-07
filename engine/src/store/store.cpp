@@ -487,25 +487,41 @@ std::string getIndexProgressJson(uint64_t project_id)
 }
 
 void GraphStore::setProjectReadiness(uint64_t project_id, const char *field,
-				     int value)
+          int value)
 {
-	// Ensure the readiness row exists
-	exec(std::string(
-		     "INSERT OR IGNORE INTO project_readiness (project_id) VALUES (" +
-		     std::to_string(project_id) + ")")
-		     .c_str());
-	exec(std::string("UPDATE project_readiness SET " + std::string(field) +
-			 "=" + std::to_string(value) +
-			 " WHERE project_id=" + std::to_string(project_id))
-		     .c_str());
+ // Whitelist allowed field names to prevent SQL injection
+ static const std::unordered_set<std::string> allowed_fields = {
+  "fast_ready", "normal_ready", "deep_ready",
+  "fts_ready", "vector_ready"
+ };
+ if (!field || allowed_fields.find(field) == allowed_fields.end())
+  return;
+
+ // Ensure the readiness row exists
+ exec(std::string(
+       "INSERT OR IGNORE INTO project_readiness (project_id) VALUES (" +
+       std::to_string(project_id) + ")")
+       .c_str());
+ exec(std::string("UPDATE project_readiness SET " + std::string(field) +
+    "=" + std::to_string(value) +
+    " WHERE project_id=" + std::to_string(project_id))
+       .c_str());
 }
 
 int GraphStore::getProjectReadiness(uint64_t project_id, const char *field)
 {
-	sqlite3_stmt *stmt = nullptr;
-	std::string sql = "SELECT " + std::string(field) +
-			  " FROM project_readiness WHERE project_id=" +
-			  std::to_string(project_id);
+ // Whitelist allowed field names to prevent SQL injection
+ static const std::unordered_set<std::string> allowed_fields = {
+  "fast_ready", "normal_ready", "deep_ready",
+  "fts_ready", "vector_ready"
+ };
+ if (!field || allowed_fields.find(field) == allowed_fields.end())
+  return 0;
+
+ sqlite3_stmt *stmt = nullptr;
+ std::string sql = "SELECT " + std::string(field) +
+     " FROM project_readiness WHERE project_id=" +
+     std::to_string(project_id);
 	if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) !=
 	    SQLITE_OK)
 		return 0;
@@ -970,15 +986,24 @@ void GraphStore::insertGraphNodes(uint64_t project_id,
 }
 
 bool GraphStore::deleteGraphNodesByFile(uint64_t project_id,
-					const char *file_path)
+      const char *file_path)
 {
-	// Delete edges first
-	deleteGraphEdgesByFile(project_id, file_path);
+ // Delete edges first
+ deleteGraphEdgesByFile(project_id, file_path);
 
-	std::ostringstream oss;
-	oss << "DELETE FROM graph_nodes WHERE project_id = " << project_id
-	    << " AND file_path = '" << file_path << "'";
-	return exec(oss.str().c_str());
+ // Use prepared statement to prevent SQL injection via file_path
+ sqlite3_stmt *stmt = nullptr;
+ const char *sql =
+  "DELETE FROM graph_nodes WHERE project_id = ? AND file_path = ?";
+ if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+  sqlite3_bind_int64(stmt, 1,
+       static_cast<int64_t>(project_id));
+  sqlite3_bind_text(stmt, 2, file_path, -1, SQLITE_STATIC);
+  int rc = sqlite3_step(stmt);
+  sqlite3_finalize(stmt);
+  return (rc == SQLITE_DONE);
+ }
+ return false;
 }
 
 // ─── Graph Edges ───────────────────────────────────────────────
@@ -1053,16 +1078,27 @@ void GraphStore::insertGraphEdges(uint64_t project_id,
 }
 
 bool GraphStore::deleteGraphEdgesByFile(uint64_t project_id,
-					const char *file_path)
+      const char *file_path)
 {
-	std::ostringstream oss;
-	oss << "DELETE FROM graph_edges WHERE project_id = " << project_id
-	    << " AND (source_node_id IN (SELECT id FROM graph_nodes WHERE file_path "
-	       "= '"
-	    << file_path << "')"
-	    << " OR target_node_id IN (SELECT id FROM graph_nodes WHERE file_path = '"
-	    << file_path << "'))";
-	return exec(oss.str().c_str());
+ // Use prepared statements to prevent SQL injection via file_path
+ sqlite3_stmt *stmt = nullptr;
+ const char *sql =
+  "DELETE FROM graph_edges WHERE project_id = ? "
+  "AND (source_node_id IN ("
+  "  SELECT id FROM graph_nodes WHERE file_path = ?"
+  ") OR target_node_id IN ("
+  "  SELECT id FROM graph_nodes WHERE file_path = ?"
+  "))";
+ if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+  sqlite3_bind_int64(stmt, 1,
+       static_cast<int64_t>(project_id));
+  sqlite3_bind_text(stmt, 2, file_path, -1, SQLITE_STATIC);
+  sqlite3_bind_text(stmt, 3, file_path, -1, SQLITE_STATIC);
+  int rc = sqlite3_step(stmt);
+  sqlite3_finalize(stmt);
+  return (rc == SQLITE_DONE);
+ }
+ return false;
 }
 
 // ─── Transactions ──────────────────────────────────────────────

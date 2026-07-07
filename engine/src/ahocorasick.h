@@ -25,6 +25,25 @@ class ACAutomaton {
     public:
 	ACAutomaton() = default;
 
+	~ACAutomaton()
+	{
+		// Free all dynamically allocated nodes
+		std::queue<Node *> to_free;
+		for (auto &n : root_.next) {
+			if (n)
+				to_free.push(n);
+		}
+		while (!to_free.empty()) {
+			Node *cur = to_free.front();
+			to_free.pop();
+			for (auto &n : cur->next) {
+				if (n)
+					to_free.push(n);
+			}
+			delete cur;
+		}
+	}
+
 	/** Add a pattern with an associated integer id (returned on match). */
 	void addPattern(const std::string &pattern, int id)
 	{

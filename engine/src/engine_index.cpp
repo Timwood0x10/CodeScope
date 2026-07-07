@@ -110,8 +110,7 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 				}
 
 				// Step 2: resolve each CallExpr
-				static std::unordered_map<std::string,
-							  std::string>
+				std::unordered_map<std::string, std::string>
 					ext_cache;
 				for (auto *node : unit->all_nodes) {
 					if (node->kind !=

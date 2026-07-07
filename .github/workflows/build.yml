@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: build-${{ github.sha }}
@@ -32,6 +33,7 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -49,60 +51,52 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Detected version: $VERSION"
 
-      - name: Check if tag already exists
-        id: check_tag
+      - name: Delete existing release + tag (if any)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
+        continue-on-error: true
         run: |
-          if git rev-parse "$VERSION" >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "Tag $VERSION already exists — skipping"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
+          gh release delete "$VERSION" --yes --cleanup-tag 2>/dev/null || true
+          echo "Cleaned up old release/tag for $VERSION"
 
       - name: Generate combined checksums
-        if: steps.check_tag.outputs.exists != 'true'
         run: |
           cd artifacts
           sha256sum *.tar.gz > ../checksums.txt
           ls -la ../checksums.txt
 
       - name: List artifacts
-        if: steps.check_tag.outputs.exists != 'true'
         run: |
           echo "Artifacts to release:"
           find artifacts -type f | sort
           find . -name 'checksums.txt' -type f
 
       - name: Write release notes to file
-        if: steps.check_tag.outputs.exists != 'true'
         run: |
-          # Skip title line (# CodeScope v0.1.0), use rest as body
           tail -n +2 RELEASE.md > /tmp/release_body.md
           echo "Release body written ($(wc -c < /tmp/release_body.md) bytes)"
-          head -3 /tmp/release_body.md
+          head -5 /tmp/release_body.md
 
       - name: Create tag
-        if: steps.check_tag.outputs.exists != 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
-          git tag -a "$VERSION" -m "Release $VERSION"
-          git push origin "$VERSION"
+          git tag -f "$VERSION" -m "Release $VERSION"
+          git push origin "$VERSION" --force
 
       - name: Create Draft Release
-        if: steps.check_tag.outputs.exists != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
+          ls -la artifacts/*.tar.gz checksums.txt
           gh release create "$VERSION" \
             --draft \
             --title "$VERSION" \
             --notes-file /tmp/release_body.md \
             artifacts/*.tar.gz \
             checksums.txt
+          echo "✅ Release $VERSION created with binaries"

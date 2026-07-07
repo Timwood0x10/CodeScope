@@ -69,12 +69,12 @@ std::string readFile(const char *path)
 	close(fd);
 
 	if (total_read != size)
-		return "";
+		result.resize(total_read);
 
 	return result;
 }
 
-// Escape a string for safe embedding in JSON (escape ", \, \n, \r, \t)
+// Escape a string for safe embedding in JSON (RFC 8259)
 std::string jsonEscape(const std::string &s)
 {
 	std::string out;
@@ -97,7 +97,15 @@ std::string jsonEscape(const std::string &s)
 			out += "\\t";
 			break;
 		default:
-			out += c;
+			// Escape control characters (0x00-0x1f) as \uXXXX
+			if (static_cast<unsigned char>(c) < 0x20) {
+				char buf[8];
+				snprintf(buf, sizeof(buf), "\\u%04x",
+					 static_cast<unsigned char>(c));
+				out += buf;
+			} else {
+				out += c;
+			}
 			break;
 		}
 	}

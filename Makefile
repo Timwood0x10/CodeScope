@@ -95,7 +95,7 @@ build-engine: $(ENGINE_LIB)
 build-server:
 	@printf "$(CYAN)[server]$(RESET) Building Rust MCP server...\n"
 	@cd $(SERVER_DIR) && cargo build --release 2>&1 \
-		&& printf "  $(CHECK) server built: target/release/ast-graph-mcp\n"
+		&& printf "  $(CHECK) server built: target/release/codescope-mcp\n"
 
 # ─── Test ────────────────────────────────────────────────────────
 test: test-engine test-server

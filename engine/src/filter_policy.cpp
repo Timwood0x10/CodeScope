@@ -419,7 +419,19 @@ bool FilterPolicy::gitignoreMatches(const std::vector<GitignoreRule> &rules,
 
 		bool match = false;
 		if (r.has_star) {
-			match = globMatch(r.pattern, rel_path);
+			// Per gitignore spec: non-anchored pattern without '/'
+			// matches only the filename (last path component)
+			if (!r.anchored &&
+			    r.pattern.find('/') == std::string::npos) {
+				auto pos = rel_path.rfind('/');
+				auto basename =
+					(pos == std::string::npos)
+					? rel_path
+					: rel_path.substr(pos + 1);
+				match = globMatch(r.pattern, basename);
+			} else {
+				match = globMatch(r.pattern, rel_path);
+			}
 		} else {
 			// Simple literal match — fast path
 			if (r.anchored) {

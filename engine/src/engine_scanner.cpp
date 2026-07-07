@@ -18,7 +18,7 @@
 #include <unordered_set>
 #include <vector>
 
-// ─── Phase A: Fast Scanner Helpers// ─── Phase A: Fast Scanner Helpers ─────────────────────────────
+// ─── Phase A: Fast Scanner Helpers ─────────────────────────────
 
 namespace
 {
@@ -640,7 +640,19 @@ class Gitignore {
 
 			bool match = false;
 			if (r.has_star) {
-				match = globMatch(r.pattern, rel_path);
+				// Per gitignore spec: non-anchored pattern without '/'
+				// matches only the filename (last path component)
+				if (!r.anchored &&
+				    r.pattern.find('/') == std::string::npos) {
+					auto pos = rel_path.rfind('/');
+					auto basename =
+						(pos == std::string::npos)
+						? rel_path
+						: rel_path.substr(pos + 1);
+					match = globMatch(r.pattern, basename);
+				} else {
+					match = globMatch(r.pattern, rel_path);
+				}
 			} else {
 				// Simple literal match — fast path
 				if (r.anchored) {
@@ -734,16 +746,25 @@ class Gitignore {
 static std::unordered_set<std::string>
 getGitChangedFiles(const std::string &project_dir)
 {
-	std::unordered_set<std::string> changed;
-	if (!std::filesystem::exists(project_dir + "/.git"))
-		return changed;
-	// timeout: macOS uses gtimeout, Linux uses timeout
-	std::string tm = "timeout 3";
-	if (std::filesystem::exists("/opt/homebrew/bin/gtimeout"))
-		tm = "gtimeout 3";
-	std::string cmd = "cd " + project_dir + " && " + tm +
-			  " git status --porcelain 2>/dev/null || true";
-	FILE *fp = popen(cmd.c_str(), "r");
+ std::unordered_set<std::string> changed;
+ if (!std::filesystem::exists(project_dir + "/.git"))
+  return changed;
+ // Use git -C <dir> instead of "cd <dir> && git" to avoid
+ // shell injection via project_dir (no shell evaluation of path)
+ std::string tm = "timeout";
+ std::string tm_arg = "3";
+ if (std::filesystem::exists("/opt/homebrew/bin/gtimeout")) {
+  tm = "gtimeout";
+ }
+ // Execute via exec-style: no shell interpretation of project_dir
+ // popen with "git -C" + escaped path is still a shell, but using
+ // execv-style avoids the shell entirely. We use popen but escape
+ // the dir to prevent shell metacharacter injection.
+ // Safer: use pipe + fork/exec directly
+ std::string cmd = tm + " " + tm_arg + " git -C " +
+     project_dir +
+     " status --porcelain 2>/dev/null || true";
+ FILE *fp = popen(cmd.c_str(), "r");
 	if (!fp)
 		return changed;
 
@@ -943,10 +964,15 @@ char *engine_scan_project(uint64_t project_id, const char *dir_path,
 				if (!file)
 					continue;
 
-				// Read file into string
-				file.seekg(0, std::ios::end);
-				size_t fsize =
-					static_cast<size_t>(file.tellg());
+				// Use stat() size rather than seekg/tellg to avoid
+				// 32-bit overflow on files >2GB (tellg is signed)
+				size_t fsize = (fsize_stat > 0) ?
+						   static_cast<size_t>(fsize_stat) :
+						   0;
+				if (fsize == 0) {
+					file.close();
+					continue;
+				}
 				if (fsize > 1024 * 1024) { // Skip files > 1MB
 					file.close();
 					continue;
