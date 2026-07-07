@@ -1,5 +1,6 @@
 #include "store.h"
 
+#include "posix_compat.h"
 #include <algorithm>
 #include <cstring>
 #include <functional>
@@ -8,8 +9,9 @@
 #include <sqlite3.h>
 #include <sstream>
 #include <sys/stat.h>
-#include <sys/wait.h>
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 #include <unordered_map>
 #include <unordered_set>
 

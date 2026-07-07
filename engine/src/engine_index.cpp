@@ -6,11 +6,8 @@
 #include <condition_variable>
 #include <cstdio>
 #include <cstring>
-#ifdef _WIN32
 #include "dlfcn_compat.h"
-#else
-#include <dlfcn.h>
-#endif
+#include "posix_compat.h"
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -19,7 +16,6 @@
 #include <sqlite3.h>
 #include <sstream>
 #include <string>
-#include <sys/resource.h>
 #include <sys/stat.h>
 #include <thread>
 #include <tree_sitter/api.h>

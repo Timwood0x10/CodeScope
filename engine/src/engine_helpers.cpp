@@ -3,11 +3,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
-#ifdef _WIN32
 #include "dlfcn_compat.h"
-#else
-#include <dlfcn.h>
-#endif
 #include <fcntl.h>
 #include <filesystem>
 #include <memory>
@@ -15,7 +11,9 @@
 #include <sqlite3.h>
 #include <sstream>
 #include <string>
+#ifndef _WIN32
 #include <sys/mman.h>
+#endif
 #include <sys/stat.h>
 #include <thread>
 #include <tree_sitter/api.h>

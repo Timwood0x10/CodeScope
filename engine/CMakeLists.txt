@@ -88,7 +88,7 @@ elseif(WIN32)
     set(TREE_SITTER_ENABLE_EXAMPLES OFF)
     FetchContent_MakeAvailable(ts_repo)
     set(TREE_SITTER_LIB tree-sitter)
-    set(TREE_SITTER_INCDIR "${ts_repo_SOURCE_DIR}/include" "${ts_repo_BINARY_DIR}/include")
+    set(TREE_SITTER_INCDIR "${ts_repo_SOURCE_DIR}/lib/include" "${ts_repo_BINARY_DIR}/lib/include")
 endif()
 
 # ── TREE_SITTER_NPM (grammar source paths) ──────────────────────
@@ -204,9 +204,9 @@ set(ENGINE_SOURCES
     src/filter_policy.cpp
 )
 
-# ── Windows only: add sqlite3 amalgamation to sources ────────────
+# ── Windows only: add platform adapters + sqlite3 amalgamation ──
 if(WIN32)
-    list(APPEND ENGINE_SOURCES ${SQLITE3_AMAL_SRC})
+    list(APPEND ENGINE_SOURCES src/platform_win.cpp ${SQLITE3_AMAL_SRC})
 endif()
 
 add_library(astgraph_engine STATIC ${ENGINE_SOURCES})

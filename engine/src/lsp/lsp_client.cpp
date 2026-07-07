@@ -1,15 +1,21 @@
 #include "lsp_client.h"
 
 #include <fcntl.h>
+#ifndef _WIN32
 #include <poll.h>
 #include <unistd.h>
+#endif
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <sstream>
+#ifdef _WIN32
+#include "../include/posix_compat.h"
+#else
 #include <sys/select.h>
 #include <sys/wait.h>
+#endif
 
 // ─── JSON-RPC helpers (minimal, no external deps) ─────────────
 
