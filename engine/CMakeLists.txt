@@ -51,7 +51,21 @@ set(SQLITE3_LIBRARY_DIRS "/opt/homebrew/Cellar/sqlite/3.53.3/lib")
 set(SQLITE3_LIBRARIES "sqlite3")
 
 # tree-sitter is linked dynamically (the core lib)
-pkg_check_modules(TREE_SITTER REQUIRED tree-sitter)
+# Use QUIET so CI builds without system tree-sitter still configure cleanly
+pkg_check_modules(TREE_SITTER QUIET tree-sitter)
+if(NOT TREE_SITTER_FOUND)
+    message(STATUS "tree-sitter not found via pkg-config; searching default paths")
+    find_path(TREE_SITTER_INCLUDE_DIRS tree_sitter/api.h
+        /usr/include /usr/local/include /opt/homebrew/include
+        $ENV{HOME}/.local/include)
+    find_library(TREE_SITTER_LIBRARIES tree-sitter
+        /usr/lib /usr/local/lib /opt/homebrew/lib
+        $ENV{HOME}/.local/lib)
+    if(NOT TREE_SITTER_LIBRARIES)
+        message(WARNING "tree-sitter library not found; using -ltree-sitter with default linker search")
+        set(TREE_SITTER_LIBRARIES "tree-sitter")
+    endif()
+endif()
 
 # dlopen (for dynamic grammar loading)
 set(CMAKE_DL_LIBS dl)
@@ -59,7 +73,26 @@ set(CMAKE_DL_LIBS dl)
 # ── Engine Library ──────────────────────────────────────────────
 
 # Statically-linked tree-sitter grammar sources
-set(TREE_SITTER_NPM "/opt/homebrew/lib/node_modules")
+# Set TREE_SITTER_NPM env var to override the default path (for CI cross-platform builds)
+if(DEFINED ENV{TREE_SITTER_NPM})
+    set(TREE_SITTER_NPM "$ENV{TREE_SITTER_NPM}")
+elseif(EXISTS "/opt/homebrew/lib/node_modules")
+    set(TREE_SITTER_NPM "/opt/homebrew/lib/node_modules")
+elseif(EXISTS "/usr/local/lib/node_modules")
+    set(TREE_SITTER_NPM "/usr/local/lib/node_modules")
+else()
+    # Try to find via npm root -g
+    execute_process(COMMAND npm root -g
+        OUTPUT_VARIABLE NPM_ROOT OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    if(EXISTS "${NPM_ROOT}")
+        set(TREE_SITTER_NPM "${NPM_ROOT}")
+    else()
+        message(WARNING "npm global root not found; grammar sources may be missing. Set TREE_SITTER_NPM env.")
+        set(TREE_SITTER_NPM "/opt/homebrew/lib/node_modules")
+    endif()
+endif()
+message(STATUS "TREE_SITTER_NPM: ${TREE_SITTER_NPM}")
 set(GRAMMAR_SOURCES
     ${TREE_SITTER_NPM}/tree-sitter-c/src/parser.c
     ${TREE_SITTER_NPM}/tree-sitter-cpp/src/parser.c

@@ -51,10 +51,11 @@ jobs:
         run: |
           choco install -y cmake ninja nodejs git mingw curl 2>$null | Out-Null
 
-      - name: Download tree-sitter grammars
+      - name: Clone and build tree-sitter grammars
         run: |
           cd grammars
-          bash download_grammars_v2.sh || bash build_ci.sh
+          bash clone_grammars.sh
+          bash build_ci.sh
 
       - name: Build C++ engine
         run: |
