@@ -20,7 +20,6 @@ jobs:
         include:
           - os: ubuntu-24.04
           - os: macos-14
-          - os: windows-2022
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -39,12 +38,6 @@ jobs:
         if: matrix.os == 'macos-14'
         run: |
           brew install cmake ninja sqlite node git tree-sitter
-
-      - name: Install deps (Windows)
-        if: matrix.os == 'windows-2022'
-        shell: pwsh
-        run: |
-          choco install -y cmake ninja nodejs git mingw curl 2>$null | Out-Null
 
       - name: Install tree-sitter CLI + grammar npm packages
         shell: bash

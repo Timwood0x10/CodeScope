@@ -24,9 +24,6 @@ jobs:
           - os: macos-14
             ext: .so
             artifact: codescope-aarch64-macos
-          - os: windows-2022
-            ext: .dll
-            artifact: codescope-x86_64-windows
     runs-on: ${{ matrix.os }}
     timeout-minutes: 240
     steps:
@@ -45,12 +42,6 @@ jobs:
         if: matrix.os == 'macos-14'
         run: |
           brew install cmake ninja sqlite node git tree-sitter
-
-      - name: Install deps (Windows)
-        if: matrix.os == 'windows-2022'
-        shell: pwsh
-        run: |
-          choco install -y cmake ninja nodejs git mingw curl 2>$null | Out-Null
 
       - name: Install tree-sitter CLI + grammar npm packages
         shell: bash

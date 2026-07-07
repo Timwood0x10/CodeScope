@@ -35,10 +35,11 @@ cd codescope
 |----------|-------------|---------|
 | **macOS** | cmake, ninja, tree-sitter, sqlite, node, rust | `make build` or `bash install.sh` |
 | **Linux** | cmake, ninja, libsqlite3-dev, node, rust | `make build` or `bash install.sh` |
-| **Windows** | cmake, ninja, node, rust, gcc (MSYS2) | `.\install.ps1` (PowerShell) |
 | **All** | Docker image | `docker build -t codescope .` |
 
-> Pre-built binaries are available on the [Releases page](https://github.com/your-org/codescope/releases).
+> Pre-built binaries are available for **Linux** and **macOS** on the [Releases page](https://github.com/your-org/codescope/releases).
+>
+> **Windows is not supported.** Windows users must compile from source using MSYS2/MinGW. The project does not provide pre-built binaries, CI guarantees, or support for Windows. Due to the complexity of the Windows environment (MinGW toolchain, missing POSIX APIs, C++ standard library differences), maintaining Windows compatibility is not feasible.
 
 ### Build from source
 

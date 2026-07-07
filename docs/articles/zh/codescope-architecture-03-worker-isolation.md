@@ -13,9 +13,9 @@
 | 篇 | 标题 | 一句话 |
 |:--:|------|--------|
 | 一 | [开篇](codescope-architecture-01-intro.md) | 为什么重写一个代码理解工具 |
-| 二 | [渐进式就绪](codescope-architecture-02-progressive-readiness.md) | 367ms 让 AI 开始理解你的代码 |
+| 二 | [渐进式就绪](codescope-architecture-02-progressive-readiness.md) | 毫秒级让 AI 开始理解你的代码 |
 | **三** | **Worker 隔离**（本文） | 为什么索引不会拖垮你的 MCP Server |
-| 四 | 零冗余响应 | 1 Token 干 35 个 Token 的活 |
+| 四 | 零冗余响应 | 精简响应，按需返回 |
 | 五 | C++ 引擎拆解 | 从源码到多维代码图的管线 |
 
 ---
@@ -256,4 +256,4 @@ Worker 隔离解决了"索引时 Server 不卡"的问题。但还有一个更"�
 
 当同一个查询，一个工具返回 56KB，另一个返回 629 bytes，AI 的 token 账单差了 35 倍。下一期我们讲 CodeScope 的零冗余响应设计——每个字段为什么存在，以及更重要的是：**每个字段为什么不存在。**
 
-[CodeScope 架构拆解（四）：零冗余响应——1 Token 干 35 个 Token 的活](codescope-architecture-04-zero-redundancy.md)
+[CodeScope 架构拆解（四）：零冗余响应——精简响应，按需返回](codescope-architecture-04-zero-redundancy.md)

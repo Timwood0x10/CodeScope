@@ -80,7 +80,7 @@ MCP 协议层的设计，本质上要回答三个问题：
 
 | 工具 | 做什么 | 响应时间 |
 |---|---|---|
-| `scan_project` | 扫描项目，提取声明 | ~367ms |
+| `scan_project` | 扫描项目，提取声明 | ~毫秒级 |
 | `find_symbol` | 精确符号匹配 | 即时 |
 | `get_module_tree` | 模块树 | 即时 |
 | `get_entry_points` | 入口点（main/initcall/probe） | 即时 |
@@ -313,9 +313,9 @@ fn h_index_project(project_id: u64, args: &Value) -> String {
 | 文章 | 主题 |
 |---|---|
 | (一) 开篇 | 56KB vs 629 bytes，CodeScope 要解决什么问题 |
-| (二) 渐进式就绪 | 367ms 让 AI 开始理解你的代码 |
+| (二) 渐进式就绪 | 毫秒级让 AI 开始理解你的代码 |
 | (三) Worker 隔离 | 为什么索引不会拖垮 MCP Server |
-| (四) 零冗余响应 | 1 Token 干 35 个 Token 的活 |
+| (四) 零冗余响应 | 精简响应，按需返回 |
 | (五) C++ 引擎拆解 | 从源码到多维代码图的管线 |
 | **(六) MCP 协议层** | **35+ 工具的设计哲学 ← 本文** |
 | (七) 语言翻译器 | 10 种语言 → 统一 IR |

@@ -1,4 +1,4 @@
-# CodeScope 架构拆解（四）：零冗余响应——1 Token 干 35 个 Token 的活
+# CodeScope 架构拆解（四）：零冗余响应——精简响应，按需返回
 
 > 我统计过 codebase-memory-mcp 一个 `search_graph` 响应里的字段：
 > - `fingerprint` — 不需要
@@ -19,16 +19,16 @@
 | 篇 | 标题 | 一句话 |
 |:--:|------|--------|
 | 一 | [开篇](codescope-architecture-01-intro.md) | 为什么重写一个代码理解工具 |
-| 二 | [渐进式就绪](codescope-architecture-02-progressive-readiness.md) | 367ms 让 AI 开始理解你的代码 |
+| 二 | [渐进式就绪](codescope-architecture-02-progressive-readiness.md) | 毫秒级让 AI 开始理解你的代码 |
 | 三 | [Worker 隔离](codescope-architecture-03-worker-isolation.md) | 为什么索引不会拖垮你的 MCP Server |
-| **四** | **零冗余响应**（本文） | 1 Token 干 35 个 Token 的活 |
+| **四** | **零冗余响应**（本文） | 精简响应，按需返回 |
 | 五 | C++ 引擎拆解 | 从源码到多维代码图的管线 |
 
 ---
 
 ## 一、先看数据
 
-同一台机器，同一个项目（GoAgent，~24K 行 Go），同一个问题，两个工具的响应：
+同一台机器，同一个项目（GoAgent，~24K 行 Go），同一个问题，两个工具的设计哲学不同，响应格式也不同：
 
 ### CBM v0.8.1 — search_graph 返回（56,183 bytes）
 
@@ -61,7 +61,7 @@
 ]
 ```
 
-56KB，64 条结果。其中 70% 的字段 AI 用不上。
+56KB，64 条结果。CBM 选择了一次返回完整信息，包括 fingerprint、ast_profile 等字段——这些字段在去重、性能分析等场景中很有价值，只是在"快速回答一个简单问题"的场景下 AI 用不上。
 
 ### CodeScope — find_symbol 返回（629 bytes）
 
@@ -91,15 +91,11 @@
 |------|:---:|:---------:|
 | 响应大小 | **56,183 bytes** | **629 bytes** |
 | 等价 tokens（ASCII×0.3） | ~16,855 | ~189 |
-| 等价 tokens（DeepSeek 公式） | ~19,632 | ~552 |
 | 结果数 | 64 | 2 |
-| 有用字段占比 | ~30% | ~100% |
+| 有用字段占比 | ~30%（取决于场景） | ~100% |
 | 不需要的字段数 | 7+ | 0 |
-| 额外阅读源码 | 681 行 | 0 行 |
 
-DeepSeek 的 token 估算公式：`ASCII字符数 × 0.3 + 非ASCII字符数 × 0.6`。所以 56KB ≈ 19,632 tokens，629 bytes ≈ 552 tokens。
-
-**35x 的 token 差。** 这不是渐进式的，是量级上的。
+两种设计都是合理的选择。CBM 的响应字段丰富，适合一次获取完整信息的深度分析；CodeScope 精简字段，适合 token 敏感和快速交互场景。
 
 ---
 
@@ -275,7 +271,7 @@ AI 不需要为每个工具学习不同的返回格式。`find_symbol` 返回 `r
 | 场景 | CBM | CodeScope | 节省 |
 |------|:---:|:---------:|:----:|
 | 查符号 | 19,632 tokens | 552 tokens | **97.2%** |
-| 查项目概况 | 全量索引 12 分钟 | 367ms + 629 bytes | 时间和 token 双赢 |
+| 查项目概况 | 全量索引 12 分钟 | 毫秒级 + 629 bytes | 时间和 token 双赢 |
 | 查调用关系 | 56KB + 额外读源码 | 调用图直接返回 | 不需要读源码 |
 | 索引 DB | 64 MB | 270 KB | **99.6%** |
 
