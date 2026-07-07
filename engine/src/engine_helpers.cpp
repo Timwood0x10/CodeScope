@@ -3,7 +3,11 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#ifdef _WIN32
+#include "dlfcn_compat.h"
+#else
 #include <dlfcn.h>
+#endif
 #include <fcntl.h>
 #include <filesystem>
 #include <memory>
