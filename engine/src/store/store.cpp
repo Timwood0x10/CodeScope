@@ -3165,10 +3165,12 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 
 	// ── 2d: Containment edges ──
 	{
-		std::string sql = std::string(
-			"SELECT DISTINCT " +
-			pid +
-			", parent.node_id, child.node_id, 3, 'symbol_reference' "
+	 std::string sql = std::string(
+	  "INSERT INTO graph_edges "
+	  "(project_id, source_node_id, target_node_id, edge_type, graph_type) "
+	  "SELECT DISTINCT " +
+	  pid +
+	  ", parent.node_id, child.node_id, 3, 'symbol_reference' "
 			"FROM semantic_records sr "
 			"JOIN _r2n child ON sr.original_id = child.original_id AND sr.file_path = child.file_path "
 			"JOIN _r2n parent ON sr.parent_id = parent.original_id AND sr.file_path = parent.file_path "
