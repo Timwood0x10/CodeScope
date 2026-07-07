@@ -54,7 +54,7 @@ for lang in "${LANGUAGES[@]}"; do
     echo "  Compiling to shared library..."
 
     # Build command - only include scanner.c if it exists
-    local src_files="src/parser.c"
+    src_files="src/parser.c"
     if [ -f "src/scanner.c" ]; then
         src_files="$src_files src/scanner.c"
     fi

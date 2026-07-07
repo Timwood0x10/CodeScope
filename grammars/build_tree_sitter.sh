@@ -54,7 +54,7 @@ build_grammar() {
     fi
 
     # Compile to shared library - only include scanner.c if it exists
-    local src_files="src/parser.c"
+    src_files="src/parser.c"
     if [ -f "src/scanner.c" ]; then
         src_files="$src_files src/scanner.c"
     fi

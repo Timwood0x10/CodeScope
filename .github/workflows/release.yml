@@ -38,12 +38,12 @@ jobs:
         if: matrix.os == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build libsqlite3-dev nodejs npm git curl
+          sudo apt-get install -y cmake ninja-build libsqlite3-dev nodejs npm git curl libtree-sitter-dev
 
       - name: Install dependencies (macOS)
         if: matrix.os == 'macos-14'
         run: |
-          brew install cmake ninja sqlite node git curl
+          brew install cmake ninja sqlite node git curl tree-sitter
 
       - name: Install dependencies (Windows)
         if: matrix.os == 'windows-2022'
