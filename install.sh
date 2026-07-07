@@ -1,45 +1,63 @@
 #!/bin/bash
-# CodeScope — One-command setup
-# Installs: tree-sitter grammars + sqlite-vec + builds engine + server
+# CodeScope — download pre-built binary for Linux / macOS
+# Usage: curl -fsSL https://raw.githubusercontent.com/Timwood0x10/CodeScope/master/install.sh | bash
 set -e
 
-CODESCOPE_DIR="$(cd "$(dirname "$0")" && pwd)"
-echo "=== CodeScope Install ==="
-echo "Target: $CODESCOPE_DIR"
+REPO="Timwood0x10/CodeScope"
 
-# 1. Install tree-sitter grammars (npm)
-echo ""
-echo "[1/4] Installing tree-sitter grammars..."
-npm install -g tree-sitter-python tree-sitter-c tree-sitter-cpp \
-  tree-sitter-rust tree-sitter-javascript tree-sitter-typescript \
-  tree-sitter-go tree-sitter-java tree-sitter-swift 2>/dev/null || true
+# ── Detect OS + arch ──
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m)
+case "$OS" in
+  linux)  ARTIFACT="codescope-x86_64-linux" ;;
+  darwin)
+    case "$ARCH" in
+      arm64|aarch64) ARTIFACT="codescope-aarch64-macos" ;;
+      x86_64|amd64)  ARTIFACT="codescope-x86_64-linux"
+                     echo "⚠️  Intel macOS not supported — falling back to Linux binary (may not work)" ;;
+      *) echo "❌ Unsupported macOS arch: $ARCH"; exit 1 ;;
+    esac ;;
+  *) echo "❌ Unsupported OS: $OS (only Linux/macOS)"; exit 1 ;;
+esac
 
-# 2. Build grammar .so files
-echo ""
-echo "[2/4] Building grammar shared libraries..."
-cd "$CODESCOPE_DIR/grammars" && bash build.sh
-
-# 3. Install sqlite-vec
-echo ""
-echo "[3/4] Installing sqlite-vec extension..."
-curl -sL 'https://github.com/asg017/sqlite-vec/releases/latest/download/install.sh' | sh 2>/dev/null || \
-  echo "  (skip — not required for basic functionality)"
-
-# 4. Build CodeScope
-echo ""
-echo "[4/4] Building CodeScope engine + server..."
-cd "$CODESCOPE_DIR" && make build
+# ── Resolve latest tag ──
+echo "=== CodeScope Download ==="
+echo "Platform: $OS $ARCH"
+echo "Artifact: $ARTIFACT"
 
 echo ""
-echo "=== CodeScope Ready ==="
+echo "[1/2] Resolving latest release..."
+LATEST_TAG=$(curl -sL "https://api.github.com/repos/$REPO/releases/latest" \
+  | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": "\(.*\)",.*/\1/')
+if [ -z "$LATEST_TAG" ]; then
+  echo "  ⚠️  Failed to get latest tag, falling back to 'latest'"
+  LATEST_TAG="latest"
+fi
+echo "  Latest tag: $LATEST_TAG"
+
+# ── Download ──
+DOWNLOAD_URL="https://github.com/$REPO/releases/download/$LATEST_TAG/${ARTIFACT}.tar.gz"
 echo ""
-echo "Quick start:"
-echo "  export GRAMMARS_DIR=$CODESCOPE_DIR/grammars"
-echo "  export CODESCOPE_DB_PATH=/tmp/codescope.db"
-echo "  cd $CODESCOPE_DIR && make run"
+echo "[2/2] Downloading $DOWNLOAD_URL ..."
+curl -fsSL "$DOWNLOAD_URL" -o /tmp/codescope.tar.gz
+
+# ── Extract ──
+INSTALL_DIR="${INSTALL_DIR:-$HOME/.codescope/bin}"
+mkdir -p "$INSTALL_DIR"
+tar -xzf /tmp/codescope.tar.gz -C "$INSTALL_DIR"
+chmod +x "$INSTALL_DIR/codescope"
+rm -f /tmp/codescope.tar.gz
+
 echo ""
-echo "Index a project:"
+echo "=== Done ==="
+echo ""
+echo "Binary installed to: $INSTALL_DIR/codescope"
+echo ""
+echo "Add to PATH:"
+echo "  export PATH=\"\$PATH:$INSTALL_DIR\""
+echo ""
+echo "Then index a project:"
 echo "  codescope cli index_project '{\"project_path\":\"/path/to/project\"}'"
 echo ""
 echo "Or start MCP server:"
-echo "  cargo run --bin codescope"
+echo "  codescope"

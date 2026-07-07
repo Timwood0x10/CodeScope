@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# CodeScope 交互式调用链追踪工具
-# 用法: ./codescope-trace.sh <project_dir> <function_name>
-# 交互展开/折叠调用者与被调用者
+# CodeScope interactive call-chain tracer
+# Usage: ./codescope-trace.sh <project_dir> <function_name>
+# Interactive expand/collapse of callers and callees
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

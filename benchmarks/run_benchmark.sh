@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CodeScope 基准测试运行脚本
+# CodeScope benchmark runner
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

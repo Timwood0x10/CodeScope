@@ -2,9 +2,9 @@
 
 > **Test environment**: Apple M3 Pro, macOS 15, 18GB memory budget  
 > **Index target**: GoAgent (Go project, ~24K lines of Go, ~200 source files)  
-> **Test date**: 2026-07-06 (original comparison), 2026-07-07 (v0.1.5 update)  
+> **Test date**: 2026-07-06 (original comparison), 2026-07-07 (v0.1.0 update)  
 > **Baseline tool**: codebase-memory-mcp v0.8.1 (CBM)  
-> **CodeScope version**: v0.1.5
+> **CodeScope version**: v0.1.0
 >
 > All data comes from both tools running on the same machine, same codebase, answering the same question, capturing real output.
 > This document focuses on **the tool call path and token cost when an Agent answers a specific question** — not a total indexing capacity comparison.
@@ -184,9 +184,9 @@ CodeScope total: ~687 tokens
 
 ## 4. Token Cost Comparison (Real Data)
 
-### 4.0 Index Phase (v0.1.5 Fresh Re-run)
+### 4.0 Index Phase (v0.1.0 Fresh Re-run)
 
-| Metric | v0.1.1 Original | **v0.1.5 Fresh Run** |
+| Metric | v0.1.1 Original | **v0.1.0 Fresh Run** |
 |--------|:---------------:|:---------------------:|
 | Files indexed | ~200 | **1,116** |
 | Index time | N/A | **28s** |
@@ -199,7 +199,7 @@ CodeScope total: ~687 tokens
 
 ### 4.1 Query Phase Comparison
 
-| Phase | codebase-memory-mcp | CodeScope v0.1.1 | **CodeScope v0.1.5 Fresh** |
+| Phase | codebase-memory-mcp | CodeScope v0.1.1 | **CodeScope v0.1.0 Fresh** |
 |-------|:-------------------:|:----------------:|:--------------------------:|
 | User question | 30 tokens | 30 tokens | 30 tokens |
 | Round 1 tool call | **14,046 tokens** (56KB JSON) | 157 tokens (629 bytes) | **42 tokens** (138 bytes) |
@@ -220,9 +220,9 @@ Token ratio:     1 : 35.6  (1 CodeScope token = 35.6 CBM tokens)
 Response bytes:  1 : 182   (1 byte CodeScope = 182 bytes CBM)
 ```
 
-### 4.3 v0.1.1 → v0.1.5 Improvements
+### 4.3 v0.1.1 → v0.1.0 Improvements
 
-| Metric | v0.1.1 | **v0.1.5 Fresh** | Improvement |
+| Metric | v0.1.1 | **v0.1.0 Fresh** | Improvement |
 |--------|:------:|:-----------------:|:-----------:|
 | Query latency | — | **6-7ms** | 🆕 |
 | Round 1 response size | 629 bytes | **138 bytes** | **4.6x** |
@@ -498,15 +498,15 @@ $ ls -lh ～/go/src/goagent/.codescope/codescope.db
 
 ---
 
-## v0.1.5 Update (2026-07-07): New Capabilities
+## v0.1.0 Update (2026-07-07): New Capabilities
 
-Since the original comparison, CodeScope v0.1.5 adds the following:
+Since the original comparison, CodeScope v0.1.0 adds the following:
 
 ### 🆕 Interactive Call Trace (`codescope_trace`)
 
 Where CBM's `trace_path` failed in testing and CodeScope v0.1.1 only had single-level `get_callees`:
 
-| Capability | CBM v0.8.1 | CodeScope v0.1.1 | CodeScope **v0.1.5** |
+| Capability | CBM v0.8.1 | CodeScope v0.1.1 | CodeScope **v0.1.0** |
 |------------|:-----------:|:-----------------:|:--------------------:|
 | Find callers | ✅ | ✅ | ✅ |
 | Find callees | ✅ | ✅ | ✅ |
@@ -566,7 +566,7 @@ Server no longer hangs indefinitely due to stuck worker
 
 Average across 5 benchmarked projects (Rust/C++/Go/JS/TS):
 
-| Metric | v0.1.1 | **v0.1.5** | Improvement |
+| Metric | v0.1.1 | **v0.1.0** | Improvement |
 |--------|:------:|:-----------:|:-----------:|
 | Call edge generation | 0 (bug) | **100% correct** | **∞** |
 | Query latency | 5-9ms | **5-9ms** | ✅ Stable |

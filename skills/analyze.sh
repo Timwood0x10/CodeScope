@@ -1,5 +1,5 @@
 #!/bin/bash
-# analyze.sh — 完整分析流水线
+# analyze.sh — full analysis pipeline
 # Usage: ./skills/analyze.sh <project_path> [language_filter]
 set -e
 PROJECT=$1
@@ -9,23 +9,23 @@ if [ -z "$PROJECT" ]; then
     exit 1
 fi
 echo "╔═══════════════════════════════════════════╗"
-echo "║      CodeScope 完整分析流水线              ║"
+echo "║      CodeScope Full Analysis Pipeline      ║"
 echo "╚═══════════════════════════════════════════╝"
 echo ""
-echo "=== [1/5] 索引项目 ==="
+echo "=== [1/5] Indexing project ==="
 codescope cli index_project "{\"project_path\":\"$PROJECT\",\"language_filter\":\"$LANG\"}"
 echo ""
-echo "=== [2/5] 项目概览 ==="
+echo "=== [2/5] Project overview ==="
 codescope cli project_overview '{}'
 echo ""
-echo "=== [3/5] 入口点 & 模块树 ==="
+echo "=== [3/5] Entry points & module tree ==="
 codescope cli get_entry_points '{}'
 codescope cli get_module_tree '{}'
 echo ""
-echo "=== [4/5] 热点函数 ==="
+echo "=== [4/5] Hotspot functions ==="
 codescope cli get_hotspots '{"top_n":10}'
 echo ""
-echo "=== [5/5] 图统计 ==="
+echo "=== [5/5] Graph stats ==="
 codescope cli get_graph_stats '{}'
 echo ""
-echo "=== 完成 ==="
+echo "=== Done ==="

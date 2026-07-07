@@ -1,11 +1,11 @@
 #!/bin/bash
-# stats.sh — 查询项目统计
+# stats.sh — query project statistics
 # Usage: ./skills/stats.sh
-echo "=== 图统计 ==="
+echo "=== Graph stats ==="
 codescope cli get_graph_stats '{}'
 echo ""
-echo "=== 项目信息 ==="
+echo "=== Project info ==="
 codescope cli get_project_info '{}'
 echo ""
-echo "=== 入口点 ==="
+echo "=== Entry points ==="
 codescope cli get_entry_points '{}'
