@@ -17,37 +17,12 @@ jobs:
       - name: Install system deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build libsqlite3-dev \
-            nodejs npm git gcc g++ libtree-sitter-dev clang-format
+          sudo apt-get install -y clang-format
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
-
-      - name: Install tree-sitter CLI + grammars
-        run: |
-          npm install -g tree-sitter-cli
-          npm install -g tree-sitter-python tree-sitter-c tree-sitter-cpp \
-            tree-sitter-rust tree-sitter-javascript tree-sitter-typescript \
-            tree-sitter-go tree-sitter-java tree-sitter-swift
-
-      - name: Capture npm root for cmake
-        shell: bash
-        run: |
-          NPM_ROOT=$(npm root -g)
-          echo "TREE_SITTER_NPM=$NPM_ROOT" >> "$GITHUB_ENV"
-
-      - name: Build grammar .so files
-        run: |
-          cd grammars
-          bash clone_grammars.sh
-          bash build_ci.sh
-
-      - name: Build C++ engine
-        run: |
-          cmake -B engine/build -G Ninja -DCMAKE_BUILD_TYPE=Release engine/
-          cmake --build engine/build --target astgraph_engine
 
       - name: Lint Rust (clippy)
         run: cargo clippy --all-targets -- -D warnings
@@ -63,9 +38,3 @@ jobs:
             echo "$FILES" | xargs clang-format --dry-run --Werror 2>&1 | tail -10
             echo "  ✓ clang-format passed"
           fi
-
-      - name: Run tests
-        env:
-          CBM_SKIP_PERF: '1'
-        run: |
-          cargo test --release
