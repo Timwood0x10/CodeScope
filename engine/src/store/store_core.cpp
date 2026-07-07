@@ -604,7 +604,9 @@ std::string GraphStore::exportArtifact(uint64_t project_id,
 	if (stat(tmp_path.c_str(), &st) == 0)
 		raw_size = static_cast<uint64_t>(st.st_size);
 
-	// fork + execvp for zstd compression — no shell involved
+	// zstd compression — no shell involved
+	bool zstd_ok = false;
+#ifndef _WIN32
 	pid_t pid = fork();
 	int status = 0;
 	if (pid == 0) {
@@ -615,8 +617,16 @@ std::string GraphStore::exportArtifact(uint64_t project_id,
 	} else if (pid > 0) {
 		waitpid(pid, &status, 0);
 	}
+	zstd_ok = (pid > 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+#else
+	// Windows: _spawnlp with _P_WAIT blocks until the child exits and
+	// returns its exit code directly — no fork/waitpid pair needed.
+	int exit_code = _spawnlp(_P_WAIT, "zstd", "zstd", "-9", "-f", "-q",
+				 tmp_path.c_str(), "-o", output_path, nullptr);
+	zstd_ok = (exit_code == 0);
+#endif
 	std::remove(tmp_path.c_str());
-	if (pid <= 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+	if (!zstd_ok)
 		return "{\"ok\":false,\"error\":\"zstd compression failed\"}";
 
 	uint64_t comp_size = 0;
@@ -635,19 +645,27 @@ std::string GraphStore::importArtifact(uint64_t project_id,
 
 	std::string tmp_path = std::string(artifact_path) + ".decompressed";
 
-	// fork + execvp for zstd decompression
+	// zstd decompression — no shell involved
+	bool dec_ok = false;
+#ifndef _WIN32
 	pid_t pid = fork();
 	if (pid == 0) {
 		execlp("zstd", "zstd", "-d", "-f", "-q", artifact_path, "-o",
 		       tmp_path.c_str(), nullptr);
 		_exit(1);
 	}
-	int dec_ok = 0;
 	if (pid > 0) {
 		int status;
 		waitpid(pid, &status, 0);
 		dec_ok = WIFEXITED(status) && WEXITSTATUS(status) == 0;
 	}
+#else
+	// Windows: _spawnlp with _P_WAIT returns the exit code directly.
+	int exit_code = _spawnlp(_P_WAIT, "zstd", "zstd", "-d", "-f", "-q",
+				 artifact_path, "-o", tmp_path.c_str(),
+				 nullptr);
+	dec_ok = (exit_code == 0);
+#endif
 	if (!dec_ok) {
 		std::remove(tmp_path.c_str());
 		return "{\"ok\":false,\"error\":\"zstd decompression failed\"}";

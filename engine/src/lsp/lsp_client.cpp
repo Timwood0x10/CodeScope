@@ -16,6 +16,12 @@
 #include <sys/wait.h>
 #endif
 
+// ─── Tunable constants ─────────────────────────────────────────
+static constexpr int kSpawnWaitUs =
+	100000; // 100 ms grace before checking child
+static constexpr size_t kMaxResponseBytes = 1
+					    << 20; // 1 MiB cap on LSP response
+
 // ─── JSON-RPC helpers (minimal, no external deps) ─────────────
 
 static std::string buildJsonRpc(const std::string &method,
@@ -349,7 +355,7 @@ bool LspClient::spawnProcess(const char *command)
 
 	// Give the child a moment to exec or fail. If it exits immediately,
 	// execlp failed (command not found) and we should return false.
-	usleep(100000); // 100ms
+	usleep(kSpawnWaitUs);
 	int child_status;
 	int waited = waitpid(pid_, &child_status, WNOHANG);
 	if (waited == pid_) {
@@ -475,7 +481,7 @@ std::string LspClient::readResponse(int expected_id, int timeout_ms)
 		}
 
 		// Prevent infinite loop on malformed data
-		if (buffer.size() > 1024 * 1024) {
+		if (buffer.size() > kMaxResponseBytes) {
 			error_ = "response too large";
 			return "";
 		}
@@ -492,20 +498,6 @@ std::string LspClient::readResponse(int expected_id, int timeout_ms)
 	(void)timeout_ms;
 	return "";
 #endif
-}
-
-std::string LspClient::extractStringField(const std::string &json,
-					  const std::string &key)
-{
-	std::string search = "\"" + key + "\":\"";
-	auto pos = json.find(search);
-	if (pos == std::string::npos)
-		return "";
-	pos += search.size();
-	auto end = json.find('"', pos);
-	if (end == std::string::npos)
-		return "";
-	return json.substr(pos, end - pos);
 }
 
 // ─── Static helpers ────────────────────────────────────────────

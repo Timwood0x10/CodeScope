@@ -150,10 +150,6 @@ class LspClient {
 	// Read a JSON-RPC response from the server (blocks until received).
 	// Returns the body of the response, or empty on timeout/failure.
 	std::string readResponse(int expected_id, int timeout_ms = 5000);
-
-	// Find a JSON string value by key (minimal, no full JSON parser).
-	static std::string extractStringField(const std::string &json,
-					      const std::string &key);
 };
 
 #endif // LSP_CLIENT_H
