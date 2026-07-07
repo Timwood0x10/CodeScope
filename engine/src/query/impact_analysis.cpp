@@ -1,4 +1,5 @@
 #include "impact_analysis.h"
+#include "query_engine.h"
 
 #include <cstring>
 #include <sqlite3.h>
@@ -75,7 +76,13 @@ findNodesInFiles(sqlite3 *db, uint64_t project_id,
 		sqlite3_stmt *stmt = nullptr;
 		std::string sql = "SELECT id, name FROM graph_nodes "
 				  "WHERE project_id = ? AND file_path = ?";
-		sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr);
+		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) !=
+		    SQLITE_OK) {
+			// Prepare failed: skip this file rather than risk a null stmt
+			if (stmt)
+				sqlite3_finalize(stmt);
+			continue;
+		}
 		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 		sqlite3_bind_text(stmt, 2, fp.c_str(), -1, SQLITE_TRANSIENT);
 
@@ -123,33 +130,30 @@ static void findCallers(sqlite3 *db, uint64_t project_id,
 			  ") "
 			  "LIMIT 100";
 
-	sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr);
+	if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) !=
+	    SQLITE_OK) {
+		// Prepare failed: cannot query callers — bail out safely
+		if (stmt)
+			sqlite3_finalize(stmt);
+		return;
+	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
 		if (!first)
 			json << ",";
 		first = false;
+		const char *name = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 1));
+		const char *file = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 2));
+		const char *caller_of = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 3));
 		json << "{"
 		     << "\"id\":" << sqlite3_column_int64(stmt, 0) << ","
-		     << "\"name\":\""
-		     << (sqlite3_column_text(stmt, 1) ?
-				 reinterpret_cast<const char *>(
-					 sqlite3_column_text(stmt, 1)) :
-				 "")
-		     << "\","
-		     << "\"file\":\""
-		     << (sqlite3_column_text(stmt, 2) ?
-				 reinterpret_cast<const char *>(
-					 sqlite3_column_text(stmt, 2)) :
-				 "")
-		     << "\","
-		     << "\"caller_of\":\""
-		     << (sqlite3_column_text(stmt, 3) ?
-				 reinterpret_cast<const char *>(
-					 sqlite3_column_text(stmt, 3)) :
-				 "")
-		     << "\""
+		     << "\"name\":\"" << jsonEscape(name) << "\","
+		     << "\"file\":\"" << jsonEscape(file) << "\","
+		     << "\"caller_of\":\"" << jsonEscape(caller_of) << "\""
 		     << "}";
 	}
 	sqlite3_finalize(stmt);
@@ -186,33 +190,30 @@ static void findCallees(sqlite3 *db, uint64_t project_id,
 			  ") "
 			  "LIMIT 100";
 
-	sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr);
+	if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) !=
+	    SQLITE_OK) {
+		// Prepare failed: cannot query callees — bail out safely
+		if (stmt)
+			sqlite3_finalize(stmt);
+		return;
+	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
 		if (!first)
 			json << ",";
 		first = false;
+		const char *name = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 1));
+		const char *file = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 2));
+		const char *callee_of = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 3));
 		json << "{"
 		     << "\"id\":" << sqlite3_column_int64(stmt, 0) << ","
-		     << "\"name\":\""
-		     << (sqlite3_column_text(stmt, 1) ?
-				 reinterpret_cast<const char *>(
-					 sqlite3_column_text(stmt, 1)) :
-				 "")
-		     << "\","
-		     << "\"file\":\""
-		     << (sqlite3_column_text(stmt, 2) ?
-				 reinterpret_cast<const char *>(
-					 sqlite3_column_text(stmt, 2)) :
-				 "")
-		     << "\","
-		     << "\"callee_of\":\""
-		     << (sqlite3_column_text(stmt, 3) ?
-				 reinterpret_cast<const char *>(
-					 sqlite3_column_text(stmt, 3)) :
-				 "")
-		     << "\""
+		     << "\"name\":\"" << jsonEscape(name) << "\","
+		     << "\"file\":\"" << jsonEscape(file) << "\","
+		     << "\"callee_of\":\"" << jsonEscape(callee_of) << "\""
 		     << "}";
 	}
 	sqlite3_finalize(stmt);
@@ -277,7 +278,8 @@ std::string analyzeChangeImpact(uint64_t project_id, store::GraphStore *store,
 		if (!first)
 			json << ",";
 		first = false;
-		json << "{\"id\":" << id << ",\"name\":\"" << name << "\"}";
+		json << "{\"id\":" << id << ",\"name\":\""
+		     << jsonEscape(name.c_str()) << "\"}";
 	}
 	json << "],";
 
@@ -314,11 +316,14 @@ std::string analyzeChangeImpact(uint64_t project_id, store::GraphStore *store,
 			"WHERE ge.project_id = ? AND ge.edge_type = 1 "
 			"AND ge.target_node_id IN (" +
 			id_list + ")";
-		sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr);
-		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-		while (sqlite3_step(stmt) == SQLITE_ROW) {
-			all_impacted.insert(static_cast<uint64_t>(
-				sqlite3_column_int64(stmt, 0)));
+		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) ==
+		    SQLITE_OK) {
+			sqlite3_bind_int64(stmt, 1,
+					   static_cast<int64_t>(project_id));
+			while (sqlite3_step(stmt) == SQLITE_ROW) {
+				all_impacted.insert(static_cast<uint64_t>(
+					sqlite3_column_int64(stmt, 0)));
+			}
 		}
 		sqlite3_finalize(stmt);
 
@@ -327,11 +332,14 @@ std::string analyzeChangeImpact(uint64_t project_id, store::GraphStore *store,
 		      "WHERE ge.project_id = ? AND ge.edge_type = 1 "
 		      "AND ge.source_node_id IN (" +
 		      id_list + ")";
-		sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr);
-		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-		while (sqlite3_step(stmt) == SQLITE_ROW) {
-			all_impacted.insert(static_cast<uint64_t>(
-				sqlite3_column_int64(stmt, 0)));
+		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) ==
+		    SQLITE_OK) {
+			sqlite3_bind_int64(stmt, 1,
+					   static_cast<int64_t>(project_id));
+			while (sqlite3_step(stmt) == SQLITE_ROW) {
+				all_impacted.insert(static_cast<uint64_t>(
+					sqlite3_column_int64(stmt, 0)));
+			}
 		}
 		sqlite3_finalize(stmt);
 	}

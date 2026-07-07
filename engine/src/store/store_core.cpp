@@ -484,6 +484,14 @@ std::string getIndexProgressJson(uint64_t project_id)
 			 (unsigned long long)p.project_id, p.total_files,
 			 p.current_file, p.phase, p.percent,
 			 p.current_file_path.c_str(), p.error.c_str());
+	// Clamp the returned length to the bytes actually written into buf.
+	// snprintf returns the would-be length (>= sizeof(buf)) on
+	// truncation, or a negative value on error; without clamping,
+	// std::string(buf, n) would read past the buffer.
+	if (n < 0)
+		return "{}";
+	if (n >= (int)sizeof(buf))
+		n = (int)sizeof(buf) - 1;
 	return std::string(buf, n);
 }
 

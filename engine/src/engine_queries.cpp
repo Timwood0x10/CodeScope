@@ -119,7 +119,7 @@ char *engine_find_symbol(uint64_t project_id, const char *symbol_name)
 							sqlite3_column_text(
 								estmt, 0));
 					if (k) {
-						ep_hints += *k;
+						ep_hints += k;
 						ep_hints += ", ";
 					}
 				}

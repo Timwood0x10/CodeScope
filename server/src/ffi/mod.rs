@@ -127,7 +127,11 @@ unsafe extern "C" {
 // ── Safe wrapper ───────────────────────────────────────────────
 
 fn cstr(s: &str) -> CString {
-    CString::new(s).unwrap_or_else(|_| CString::new("").unwrap())
+    // Replace interior NUL bytes to prevent CString::new from failing.
+    // NUL bytes in file paths or symbol names are extremely rare but would
+    // otherwise cause the entire string to be replaced with "".
+    let sanitized: String = s.replace('\0', "\u{FFFD}");
+    CString::new(sanitized).unwrap_or_else(|_| CString::new("").unwrap())
 }
 
 fn take_string(ptr: *mut c_char) -> String {
@@ -428,15 +432,24 @@ pub fn spawn_enhancement(project_id: u64) {
     eprintln!("enhancement: creating task for project {}", project_id);
 
     std::thread::spawn(move || {
-        eprintln!(
-            "enhancement: starting background enhancement for project {}",
-            project_id
-        );
+        // Wrap the worker body in `catch_unwind` so a panic in the FFI call
+        // cannot leak the `project_id` into the running set forever, which
+        // would block all future enhancement calls for this project.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            eprintln!(
+                "enhancement: starting background enhancement for project {}",
+                project_id
+            );
 
-        let result = enhance_project(project_id);
-        eprintln!("enhancement: completed: {}", result);
+            let result = enhance_project(project_id);
+            eprintln!("enhancement: completed: {}", result);
+        }));
 
-        // Remove from running set
+        if let Err(e) = result {
+            eprintln!("spawn_enhancement: worker panicked: {:?}", e);
+        }
+
+        // Always remove from running set, even if the worker panicked.
         let mut running = ENHANCEMENT_RUNNING
             .lock()
             .expect("enhancement tracking lock poisoned");
@@ -470,15 +483,25 @@ pub fn spawn_fts_build(project_id: u64) {
     }
 
     std::thread::spawn(move || {
-        eprintln!(
-            "fts_build: starting background FTS build for project {}",
-            project_id
-        );
+        // Wrap the worker body in `catch_unwind` so a panic in the FFI call
+        // cannot leak the `project_id` into the running set forever, which
+        // would block all future FTS builds for this project.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            eprintln!(
+                "fts_build: starting background FTS build for project {}",
+                project_id
+            );
 
-        let result = build_fts(project_id);
-        eprintln!("fts_build: completed: {}", result);
+            let result = build_fts(project_id);
+            eprintln!("fts_build: completed: {}", result);
+        }));
 
-        // Remove from running set so future builds can be scheduled.
+        if let Err(e) = result {
+            eprintln!("spawn_fts_build: worker panicked: {:?}", e);
+        }
+
+        // Always remove from running set so future builds can be scheduled,
+        // even if the worker panicked.
         let mut running = FTS_BUILD_RUNNING
             .lock()
             .expect("FTS build tracking lock poisoned");

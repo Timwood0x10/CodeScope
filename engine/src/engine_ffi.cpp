@@ -373,8 +373,12 @@ char *engine_index_batch(uint64_t project_id, const char *file_paths_json)
 						path += '\f';
 						break;
 					case 'u': {
-						// Simple pass-through for \uXXXX
-						char unicode_buf[7] = "\\u";
+						// Simple pass-through for \uXXXX.
+						// Buffer layout: '\' 'u' + up to 5 hex
+						// digits + NUL = 8 bytes. The loop below
+						// lets i reach 6, then writes the NUL at
+						// index 7, so the buffer must hold 8.
+						char unicode_buf[8] = "\\u";
 						int i = 1;
 						while (*++p && i < 6 &&
 						       ((*p >= '0' &&

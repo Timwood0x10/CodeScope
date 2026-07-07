@@ -489,8 +489,14 @@ std::string QueryEngine::findShortestPath(uint64_t project_id,
 	      << " AND project_id = " << project_id;
 	sqlite3_stmt *stmt = nullptr;
 	bool found = false;
-	sqlite3_prepare_v2(store_->handle(), check.str().c_str(), -1, &stmt,
-			   nullptr);
+	if (sqlite3_prepare_v2(store_->handle(), check.str().c_str(), -1, &stmt,
+			       nullptr) != SQLITE_OK) {
+		// Prepare failed: cannot check direct edge — report no path
+		if (stmt)
+			sqlite3_finalize(stmt);
+		json << "{\"node_id\":" << source_id << "}],\"found\":false}";
+		return json.str();
+	}
 	if (sqlite3_step(stmt) == SQLITE_ROW) {
 		// Direct edge: return source → target
 		json << "{\"node_id\":" << source_id
@@ -509,8 +515,15 @@ std::string QueryEngine::findShortestPath(uint64_t project_id,
 		    << source_id << " AND e2.target_node_id = " << target_id
 		    << " AND intermediate.project_id = " << project_id
 		    << " LIMIT 1";
-		sqlite3_prepare_v2(store_->handle(), hop.str().c_str(), -1,
-				   &stmt, nullptr);
+		if (sqlite3_prepare_v2(store_->handle(), hop.str().c_str(), -1,
+				       &stmt, nullptr) != SQLITE_OK) {
+			// Prepare failed: cannot check 1-hop path — report no path
+			if (stmt)
+				sqlite3_finalize(stmt);
+			json << "{\"node_id\":" << source_id
+			     << "}],\"found\":false}";
+			return json.str();
+		}
 		if (sqlite3_step(stmt) == SQLITE_ROW) {
 			uint64_t mid = static_cast<uint64_t>(
 				sqlite3_column_int64(stmt, 0));
@@ -720,8 +733,12 @@ std::string QueryEngine::getGraphStats(uint64_t project_id)
 		sql << "SELECT COUNT(*) FROM graph_nodes WHERE project_id = "
 		    << project_id;
 		sqlite3_stmt *stmt = nullptr;
-		sqlite3_prepare_v2(store_->handle(), sql.str().c_str(), -1,
-				   &stmt, nullptr);
+		if (sqlite3_prepare_v2(store_->handle(), sql.str().c_str(), -1,
+				       &stmt, nullptr) != SQLITE_OK) {
+			if (stmt)
+				sqlite3_finalize(stmt);
+			return "{\"error\":\"getGraphStats: prepare failed\"}";
+		}
 		if (sqlite3_step(stmt) == SQLITE_ROW) {
 			json << "\"total_nodes\":"
 			     << sqlite3_column_int64(stmt, 0);
@@ -737,8 +754,12 @@ std::string QueryEngine::getGraphStats(uint64_t project_id)
 		sql << "SELECT COUNT(*) FROM graph_edges WHERE project_id = "
 		    << project_id;
 		sqlite3_stmt *stmt = nullptr;
-		sqlite3_prepare_v2(store_->handle(), sql.str().c_str(), -1,
-				   &stmt, nullptr);
+		if (sqlite3_prepare_v2(store_->handle(), sql.str().c_str(), -1,
+				       &stmt, nullptr) != SQLITE_OK) {
+			if (stmt)
+				sqlite3_finalize(stmt);
+			return "{\"error\":\"getGraphStats: prepare failed\"}";
+		}
 		if (sqlite3_step(stmt) == SQLITE_ROW) {
 			json << "\"total_edges\":"
 			     << sqlite3_column_int64(stmt, 0);
@@ -754,8 +775,12 @@ std::string QueryEngine::getGraphStats(uint64_t project_id)
 		sql << "SELECT COUNT(*) FROM files WHERE project_id = "
 		    << project_id;
 		sqlite3_stmt *stmt = nullptr;
-		sqlite3_prepare_v2(store_->handle(), sql.str().c_str(), -1,
-				   &stmt, nullptr);
+		if (sqlite3_prepare_v2(store_->handle(), sql.str().c_str(), -1,
+				       &stmt, nullptr) != SQLITE_OK) {
+			if (stmt)
+				sqlite3_finalize(stmt);
+			return "{\"error\":\"getGraphStats: prepare failed\"}";
+		}
 		if (sqlite3_step(stmt) == SQLITE_ROW) {
 			json << "\"total_files\":"
 			     << sqlite3_column_int64(stmt, 0);

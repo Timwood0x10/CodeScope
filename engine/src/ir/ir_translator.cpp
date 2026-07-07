@@ -34,6 +34,9 @@ namespace ir
 
 std::unique_ptr<Translator> createTranslator(const char *language)
 {
+	// Guard against null language pointer
+	if (!language)
+		language = "";
 	// Normalize language string
 	std::string lang(language);
 	for (auto &c : lang)
@@ -65,6 +68,9 @@ std::unique_ptr<Translator> createTranslator(const char *language)
 
 std::unique_ptr<JsVisitor> createJsVisitor(const char *language)
 {
+	// Guard against null language pointer
+	if (!language)
+		language = "";
 	std::string lang(language);
 	for (auto &c : lang)
 		c = static_cast<char>(std::tolower(c));

@@ -2,6 +2,7 @@
 
 #include "posix_compat.h"
 #include <algorithm>
+#include <climits>
 #include <cstring>
 #include <functional>
 #include <mutex>
@@ -36,6 +37,10 @@ uint64_t GraphStore::insertIRNode(uint64_t project_id, uint64_t file_id,
 		"name, qualified_name, start_row, start_col, end_row, end_col, language) "
 		"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+	if (!stmt) {
+		error_ = "insertIRNode: prepare failed";
+		return 0;
+	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(file_id));
 	if (parent_id)
@@ -71,6 +76,10 @@ bool GraphStore::insertIRSemanticEdge(uint64_t project_id, uint64_t source_id,
 			  "source_node_id, target_node_id, relation) "
 			  "VALUES (?, ?, ?, ?)";
 	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+	if (!stmt) {
+		error_ = "insertIRSemanticEdge: prepare failed";
+		return false;
+	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(source_id));
 	sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(target_id));
@@ -117,6 +126,10 @@ uint64_t GraphStore::insertGraphNode(uint64_t project_id,
 		"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, "
 		"?, ?, ?, ?, ?, ?, ?, ?, ?)";
 	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+	if (!stmt) {
+		error_ = "insertGraphNode: prepare failed";
+		return 0;
+	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(node.id));
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
 	sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(node.ir_node_id));
@@ -240,6 +253,10 @@ uint64_t GraphStore::insertGraphEdge(uint64_t project_id,
 		"call_site_file, call_site_line, label) "
 		"VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
 	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+	if (!stmt) {
+		error_ = "insertGraphEdge: prepare failed";
+		return 0;
+	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(edge.source_id));
 	sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(edge.target_id));
@@ -390,7 +407,12 @@ void GraphStore::deleteFTSByFile(uint64_t project_id, uint64_t file_id)
 	const char *sql = "DELETE FROM code_fts WHERE rowid IN ("
 			  "SELECT node_id FROM fts_node_map "
 			  "WHERE project_id = ? AND file_id = ?)";
-	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		if (stmt)
+			sqlite3_finalize(stmt);
+		error_ = "deleteFTSByFile: prepare failed";
+		return;
+	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(file_id));
 	sqlite3_step(stmt);
@@ -399,7 +421,12 @@ void GraphStore::deleteFTSByFile(uint64_t project_id, uint64_t file_id)
 	// Delete mapping entries
 	const char *sql2 =
 		"DELETE FROM fts_node_map WHERE project_id = ? AND file_id = ?";
-	sqlite3_prepare_v2(db_, sql2, -1, &stmt, nullptr);
+	if (sqlite3_prepare_v2(db_, sql2, -1, &stmt, nullptr) != SQLITE_OK) {
+		if (stmt)
+			sqlite3_finalize(stmt);
+		error_ = "deleteFTSByFile: prepare failed";
+		return;
+	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(file_id));
 	sqlite3_step(stmt);
@@ -576,6 +603,10 @@ bool GraphStore::setComplexity(uint64_t project_id, uint64_t graph_node_id,
 			  "nesting_depth, decision_points) "
 			  "VALUES (?, ?, ?, ?, ?, ?)";
 	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+	if (!stmt) {
+		error_ = "setComplexity: prepare failed";
+		return false;
+	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(graph_node_id));
 	sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(cyclomatic));
@@ -599,6 +630,10 @@ std::string GraphStore::getComplexityJson(uint64_t project_id,
 		"JOIN graph_nodes gn ON gn.id = nc.graph_node_id "
 		"WHERE nc.project_id = ? AND nc.graph_node_id = ?";
 	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+	if (!stmt) {
+		error_ = "getComplexityJson: prepare failed";
+		return "{\"error\":\"getComplexityJson: prepare failed\"}";
+	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(graph_node_id));
 
@@ -648,6 +683,12 @@ bool GraphStore::storeVector(uint64_t node_id, uint64_t project_id,
 	sqlite3_reset(stmt_vector_);
 	sqlite3_bind_int64(stmt_vector_, 1, static_cast<int64_t>(node_id));
 	sqlite3_bind_int64(stmt_vector_, 2, static_cast<int64_t>(project_id));
+	// sqlite3_bind_blob takes an int length; reject vectors that would
+	// overflow it rather than silently truncating the size_t value.
+	if (vec_bytes > static_cast<size_t>(INT_MAX)) {
+		error_ = "storeVector: vector too large for blob binding";
+		return false;
+	}
 	sqlite3_bind_blob(stmt_vector_, 3, vec_data,
 			  static_cast<int>(vec_bytes), SQLITE_TRANSIENT);
 	int rc = sqlite3_step(stmt_vector_);
@@ -673,6 +714,11 @@ std::string GraphStore::searchSemantic(uint64_t project_id,
 		"JOIN files f ON f.id = ir.file_id "
 		"WHERE nv.project_id = ?";
 	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+	if (!stmt) {
+		error_ = "searchSemantic: prepare failed";
+		return "{\"total\":0,\"results\":[],\"error\":\"searchSemantic: "
+		       "prepare failed\"}";
+	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 
 	// Use vector_search to compute similarity
@@ -1256,15 +1302,18 @@ void GraphStore::insertIntoSearchIndex(uint64_t symbol_id, uint64_t project_id,
 bool GraphStore::insertEmbedding(uint64_t symbol_id, const float *vector_data,
 				 int dim)
 {
+	// Guard against negative dim (would wrap to a huge size_t in the
+	// memcpy below and cause a heap buffer overflow) and null input.
+	if (dim <= 0 || !vector_data)
+		return false;
+
 	// The vec0 table expects a blob of float32 values
 	// Pad/truncate to 384 (schema definition)
 	constexpr int TARGET_DIM = 384;
 	std::vector<float> vec(TARGET_DIM, 0.0f);
 	int copy_dim = dim < TARGET_DIM ? dim : TARGET_DIM;
-	if (vector_data) {
-		memcpy(vec.data(), vector_data,
-		       static_cast<size_t>(copy_dim) * sizeof(float));
-	}
+	memcpy(vec.data(), vector_data,
+	       static_cast<size_t>(copy_dim) * sizeof(float));
 
 	const char *sql =
 		"INSERT INTO embeddings (symbol_id, vector) VALUES (?, ?)";
@@ -1290,6 +1339,14 @@ bool GraphStore::insertEmbedding(uint64_t symbol_id, const float *vector_data,
 
 bool GraphStore::setSymbolReady(uint64_t symbol_id, const char *field)
 {
+	// Whitelist allowed field names to prevent SQL injection
+	static const std::unordered_set<std::string> allowed_fields = {
+		"fast_ready", "normal_ready", "deep_ready", "fts_ready",
+		"vector_ready"
+	};
+	if (!field || allowed_fields.find(field) == allowed_fields.end())
+		return false;
+
 	std::string sql = "UPDATE symbol_status SET " + std::string(field) +
 			  " = 1 WHERE symbol_id = ?";
 	sqlite3_stmt *stmt = nullptr;
@@ -1331,6 +1388,16 @@ bool GraphStore::setSymbolStub(uint64_t symbol_id, bool is_stub)
 std::vector<std::string> GraphStore::getUnreadyFiles(uint64_t project_id,
 						     const char *ready_field)
 {
+	// Whitelist allowed field names to prevent SQL injection
+	static const std::unordered_set<std::string> allowed_fields = {
+		"fast_ready", "normal_ready", "deep_ready", "fts_ready",
+		"vector_ready"
+	};
+	if (!ready_field ||
+	    allowed_fields.find(ready_field) == allowed_fields.end()) {
+		return {};
+	}
+
 	std::string sql = "SELECT DISTINCT s.file_path FROM symbols s "
 			  "JOIN symbol_status ss ON ss.symbol_id = s.id "
 			  "WHERE s.project_id = ? AND ss." +
@@ -1359,6 +1426,16 @@ std::vector<std::string> GraphStore::getUnreadyFiles(uint64_t project_id,
 
 double GraphStore::getReadyRatio(uint64_t project_id, const char *ready_field)
 {
+	// Whitelist allowed field names to prevent SQL injection
+	static const std::unordered_set<std::string> allowed_fields = {
+		"fast_ready", "normal_ready", "deep_ready", "fts_ready",
+		"vector_ready"
+	};
+	if (!ready_field ||
+	    allowed_fields.find(ready_field) == allowed_fields.end()) {
+		return 0.0;
+	}
+
 	std::string sql = "SELECT CASE WHEN COUNT(*) > 0 THEN "
 			  "CAST(SUM(ss." +
 			  std::string(ready_field) +
@@ -1405,6 +1482,9 @@ uint64_t GraphStore::createTask(uint64_t project_id, const char *task_type)
 bool GraphStore::updateTask(uint64_t task_id, const char *status, int progress,
 			    const char *error)
 {
+	// Guard against null status — strcmp below would dereference it
+	if (!status)
+		return false;
 	std::string sql =
 		"UPDATE index_tasks SET status = ?, progress = ?, error = ?";
 	if (strcmp(status, "running") == 0)
@@ -2100,6 +2180,12 @@ std::string GraphStore::exploreFunctionJson(uint64_t project_id,
 		depth = 5;
 	if (depth < 0)
 		depth = 0;
+	// Guard against null string parameters — strcmp / std::string
+	// construction below would dereference them
+	if (!direction)
+		direction = "";
+	if (!function_name)
+		function_name = "";
 
 	bool show_callers = (strcmp(direction, "callers") == 0 ||
 			     strcmp(direction, "both") == 0);

@@ -74,10 +74,12 @@ static std::string buildSingleHopQuery(uint64_t project_id, int edge_type,
 		else
 			sql << " AND tgt.node_type = " << tgt_type_val;
 	}
+	// Use parameter placeholders (?); values are bound by the caller
+	// after sqlite3_prepare_v2 to prevent SQL injection.
 	if (!src_name.empty())
-		sql << " AND src.name = '" << src_name << "'";
+		sql << " AND src.name = ?";
 	if (!tgt_name.empty())
-		sql << " AND tgt.name = '" << tgt_name << "'";
+		sql << " AND tgt.name = ?";
 	sql << " LIMIT 200";
 	return sql.str();
 }
@@ -148,10 +150,12 @@ static std::string buildMultiHopQuery(uint64_t project_id, int edge_type,
 		else
 			sql << " AND tgt.node_type = " << tgt_type_val;
 	}
+	// Use parameter placeholders (?); values are bound by the caller
+	// after sqlite3_prepare_v2 to prevent SQL injection.
 	if (!src_name.empty())
-		sql << " AND src.name = '" << src_name << "'";
+		sql << " AND src.name = ?";
 	if (!tgt_name.empty())
-		sql << " AND tgt.name = '" << tgt_name << "'";
+		sql << " AND tgt.name = ?";
 	sql << " LIMIT 200";
 	return sql.str();
 }
@@ -333,6 +337,23 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 	    SQLITE_OK) {
 		return "{\"total\":0,\"results\":[],\"error\":\"" +
 		       std::string(sqlite3_errmsg(db)) + "\"}";
+	}
+
+	// Bind the name filter parameters that were emitted as '?'
+	// placeholders. The order matches the SQL construction above:
+	// src_name first (if present), then tgt_name (if present).
+	{
+		int param_idx = 1;
+		if (!src_name.empty()) {
+			sqlite3_bind_text(stmt, param_idx, src_name.c_str(), -1,
+					  SQLITE_TRANSIENT);
+			++param_idx;
+		}
+		if (!tgt_name.empty()) {
+			sqlite3_bind_text(stmt, param_idx, tgt_name.c_str(), -1,
+					  SQLITE_TRANSIENT);
+			++param_idx;
+		}
 	}
 
 	std::ostringstream json;

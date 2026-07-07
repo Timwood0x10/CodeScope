@@ -28,23 +28,28 @@ impl Server {
                 None => return Ok(()), // EOF — client disconnected or pipe closed
             };
 
-            let response = self.handle_request(req);
-            transport::write_message(&response)?;
+            // JSON-RPC notifications must not receive a response, so only
+            // write to the transport when `handle_request` returns `Some`.
+            if let Some(response) = self.handle_request(req) {
+                transport::write_message(&response)?;
+            }
         }
     }
 
-    fn handle_request(&mut self, req: Request) -> serde_json::Value {
+    fn handle_request(&mut self, req: Request) -> Option<serde_json::Value> {
         match req {
             Request::Standard {
                 id, method, params, ..
             } => {
                 let result = self.dispatch(&method, params);
-                json_response(id, result)
+                Some(json_response(id, result))
             }
             Request::Notification { method, params, .. } => {
+                // Per JSON-RPC 2.0, notifications (requests without an `id`)
+                // must not receive a response. Dispatch the method for its
+                // side effects, then return `None` so `run()` skips writing.
                 let _ = self.dispatch(&method, params);
-                // Notifications don't get a response
-                serde_json::json!({})
+                None
             }
         }
     }
@@ -169,10 +174,8 @@ impl Server {
 
         let result = tools::execute(self.project_id, tool_name, &tool_args);
 
-        // ── Auto-trigger background enhancement after scan_project ──
-        if tool_name == "scan_project" && self.project_id > 0 {
-            crate::ffi::spawn_enhancement(self.project_id);
-        }
+        // Note: background enhancement after `scan_project` is triggered inside
+        // `tools::execute`, which is the natural owner for tool-specific logic.
 
         // Determine if the result indicates an error (JSON with non-null "error" key)
         let is_error = serde_json::from_str::<serde_json::Value>(&result)

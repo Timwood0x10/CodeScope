@@ -88,6 +88,12 @@ static WORKER_TIMEOUT: Lazy<Duration> = Lazy::new(|| {
 });
 const MAX_RETRIES: usize = 3;
 
+/// Upper bound for `limit` arguments accepted by query-style tools.
+/// Values above this are clamped down to prevent unbounded result sets.
+const MAX_QUERY_LIMIT: i64 = 100;
+/// Default `limit` used when the client omits the argument.
+const DEFAULT_QUERY_LIMIT: i64 = 20;
+
 /// Run a worker subprocess with timeout protection.
 /// Returns `Ok(output)` on success, `Err(msg)` on timeout or failure.
 /// On timeout the orphaned child is killed using a platform-appropriate
@@ -279,7 +285,10 @@ fn h_get_index_progress(project_id: u64, _args: &Value) -> String {
 
 fn h_search_code(project_id: u64, args: &Value) -> String {
     let query = args["query"].as_str().unwrap_or("");
-    let limit = args["limit"].as_i64().unwrap_or(20) as i32;
+    let limit = args["limit"]
+        .as_i64()
+        .unwrap_or(DEFAULT_QUERY_LIMIT)
+        .clamp(1, MAX_QUERY_LIMIT) as i32;
     ffi::search_code(project_id, query, limit)
 }
 
@@ -353,7 +362,10 @@ fn h_get_enhancement_status(project_id: u64, _args: &Value) -> String {
 
 fn h_search(project_id: u64, args: &Value) -> String {
     let query = args["query"].as_str().unwrap_or("");
-    let limit = args["limit"].as_i64().unwrap_or(20) as i32;
+    let limit = args["limit"]
+        .as_i64()
+        .unwrap_or(DEFAULT_QUERY_LIMIT)
+        .clamp(1, MAX_QUERY_LIMIT) as i32;
     ffi::unified_search(project_id, query, limit)
 }
 
@@ -433,7 +445,10 @@ fn h_count_tokens(_project_id: u64, args: &Value) -> String {
 
 fn h_search_semantic(project_id: u64, args: &Value) -> String {
     let query = args["query"].as_str().unwrap_or("");
-    let limit = args["limit"].as_i64().unwrap_or(10) as i32;
+    let limit = args["limit"]
+        .as_i64()
+        .unwrap_or(DEFAULT_QUERY_LIMIT)
+        .clamp(1, MAX_QUERY_LIMIT) as i32;
     ffi::search_semantic(project_id, query, limit)
 }
 
@@ -898,7 +913,7 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Search query"},
-                    "limit": {"type": "integer", "description": "Max results (default 10, max 50)"}
+                    "limit": {"type": "integer", "description": "Max results (default 20, max 100)"}
                 },
                 "required": ["query"]
             }),

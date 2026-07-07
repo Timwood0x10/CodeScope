@@ -36,7 +36,7 @@ constexpr unsigned kMaxSleepMs = 1000; // cap sleep at 1s
 
 char *engine_index_file(uint64_t project_id, const char *file_path)
 {
-	if (!g_store)
+	if (!g_store || !g_parser)
 		return dupString(
 			"{\"ok\":false,\"error\":\"engine not initialized\"}");
 
@@ -613,8 +613,18 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		std::atomic<int> next_job{ 0 };
 
 		auto translate_batch_worker = [&]() {
-			thread_local static std::unordered_map<std::string,
-							       TSParser *>
+			// RAII deleter for tree-sitter parsers so they are
+			// released when the thread_local map is destroyed.
+			struct TSParserDeleter {
+				void operator()(TSParser *p) const
+				{
+					if (p)
+						ts_parser_delete(p);
+				}
+			};
+			thread_local static std::unordered_map<
+				std::string,
+				std::unique_ptr<TSParser, TSParserDeleter> >
 				tl_parsers;
 			thread_local static std::unordered_map<
 				std::string, std::unique_ptr<ir::JsVisitor> >
@@ -645,13 +655,17 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 				// Per-thread parser
 				auto pit = tl_parsers.find(job.lang);
 				if (pit == tl_parsers.end()) {
-					TSParser *np = ts_parser_new();
-					ts_parser_set_language(np, ts_lang);
-					tl_parsers[job.lang] = np;
+					std::unique_ptr<TSParser,
+							TSParserDeleter>
+						np(ts_parser_new());
+					ts_parser_set_language(np.get(),
+							       ts_lang);
+					tl_parsers[job.lang] = std::move(np);
 					pit = tl_parsers.find(job.lang);
 				}
 				TSTree *tree = ts_parser_parse_string(
-					pit->second, nullptr, source.c_str(),
+					pit->second.get(), nullptr,
+					source.c_str(),
 					static_cast<uint32_t>(source.size()));
 				if (!tree)
 					continue;
@@ -713,7 +727,7 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		if (num_workers < 1)
 			num_workers = 1;
 
-		std::vector<pthread_t> workers(num_workers);
+		std::vector<pthread_t> workers(num_workers, 0);
 		for (int i = 0; i < num_workers; i++) {
 			pthread_attr_t attr;
 			pthread_attr_init(&attr);
@@ -722,19 +736,28 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 				decltype(translate_batch_worker) * fn;
 			};
 			auto *a = new WA{ &translate_batch_worker };
-			pthread_create(
-				&workers[i], &attr,
-				[](void *v) -> void * {
-					auto *w = static_cast<WA *>(v);
-					(*w->fn)();
-					delete w;
-					return nullptr;
-				},
-				a);
+			if (pthread_create(
+				    &workers[i], &attr,
+				    [](void *v) -> void * {
+					    auto *w = static_cast<WA *>(v);
+					    (*w->fn)();
+					    delete w;
+					    return nullptr;
+				    },
+				    a) != 0) {
+				// Thread creation failed: mark the slot as
+				// invalid so we skip joining it, and reclaim
+				// the heap-allocated argument here since the
+				// worker will never run to delete it.
+				workers[i] = 0;
+				delete a;
+			}
 			pthread_attr_destroy(&attr);
 		}
-		for (auto &t : workers)
-			pthread_join(t, nullptr);
+		for (auto &t : workers) {
+			if (t != 0)
+				pthread_join(t, nullptr);
+		}
 		int64_t batch_parse_ms =
 			duration_cast<milliseconds>(steady_clock::now() -
 						    t_parse_start)
@@ -801,8 +824,13 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		for (size_t i = 0; i < batch_count; i++) {
 			if (!semantic_units[i])
 				continue;
+			// file_paths[i] corresponds to jobs[batch_start + i];
+			// pass that job's language (not the path) and keep the
+			// content hash empty here — change detection relies on
+			// the language being correct.
+			const auto &job = jobs[batch_start + i];
 			g_store->upsertFile(project_id, file_paths[i].c_str(),
-					    file_paths[i].c_str(), "");
+					    job.lang.c_str(), "");
 			all_indexed_files.push_back(file_paths[i]);
 		}
 

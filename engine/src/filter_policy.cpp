@@ -231,6 +231,10 @@ bool FilterPolicy::isSourceFile(const std::string &path) const
 
 const char *FilterPolicy::detectLanguage(const char *file_path) const
 {
+	// Guard against null / empty path — strrchr below would dereference it
+	if (!file_path || !*file_path)
+		return nullptr;
+
 	const char *ext = strrchr(file_path, '.');
 	if (!ext)
 		return nullptr;
@@ -437,19 +441,20 @@ bool FilterPolicy::gitignoreMatches(const std::vector<GitignoreRule> &rules,
 			if (r.anchored) {
 				match = (rel_path == r.pattern);
 			} else {
-				// Check as suffix (last component or directory)
+				// Literal match at path-component boundaries only,
+				// so "foo" matches "foo", "a/foo", "a/foo/b" but
+				// not "afoo" or "foobar". rfind alone would match
+				// arbitrary substrings, so verify both edges.
 				auto pos = rel_path.rfind(r.pattern);
 				if (pos != std::string::npos) {
 					auto after = pos + r.pattern.size();
-					match = (after == rel_path.size() ||
+					bool left_boundary =
+						(pos == 0 ||
+						 rel_path[pos - 1] == '/');
+					bool right_boundary =
+						(after == rel_path.size() ||
 						 rel_path[after] == '/');
-					// Also match if it's the entire last path component
-					if (!match && pos > 0 &&
-					    rel_path[pos - 1] == '/')
-						match = (after ==
-								 rel_path.size() ||
-							 rel_path[after] ==
-								 '/');
+					match = left_boundary && right_boundary;
 				}
 			}
 		}

@@ -95,6 +95,9 @@ bool ResolveCallPass::run(
 		auto &u = units[fi];
 		if (!u)
 			continue;
+		// Bounds guard: file_paths must align 1:1 with units
+		if (fi >= file_paths.size())
+			break;
 		auto &caller_file = file_paths[fi];
 		fprintf(stderr, "RESOLVE_FILE[%zu]: %s (%zu nodes)\n", fi,
 			caller_file.c_str(), u->all_nodes.size());
@@ -258,6 +261,9 @@ bool EmitGraphPass::run(
 		auto &u = units[fi];
 		if (!u)
 			continue;
+		// Bounds guard: file_paths must align 1:1 with units
+		if (fi >= file_paths.size())
+			break;
 		auto &fp = file_paths[fi];
 
 		// Determine next graph node ID
@@ -283,14 +289,23 @@ bool EmitGraphPass::run(
 		auto sym_g = builder.buildSymbolGraph(u.get());
 		auto call_g = builder.buildCallGraph(u.get());
 
+		// Determine language from the file extension (proper check,
+		// not a single trailing character). Convention matches
+		// FilterPolicy::detectLanguage: .c/.h -> "c", .cpp/.cc/.cxx/
+		// .hpp/.hxx/.hh -> "cpp".
+		std::string lang = "unknown";
+		auto dot_pos = fp.find_last_of('.');
+		if (dot_pos != std::string::npos) {
+			std::string ext = fp.substr(dot_pos + 1);
+			if (ext == "c" || ext == "h")
+				lang = "c";
+			else if (ext == "cpp" || ext == "cc" || ext == "cxx" ||
+				 ext == "hpp" || ext == "hxx" || ext == "hh")
+				lang = "cpp";
+		}
+
 		// Persist
-		store->upsertFile(project_id, fp.c_str(),
-				  (fp.size() > 2) ?
-					  (fp.substr(fp.size() - 1) == "h" ?
-						   "c" :
-						   "unknown") :
-					  "unknown",
-				  "");
+		store->upsertFile(project_id, fp.c_str(), lang.c_str(), "");
 		// Batch insert — use prepared-statement reuse APIs
 		store->insertGraphNodes(project_id, sym_g.nodes);
 		store->insertGraphEdges(project_id, sym_g.edges);
