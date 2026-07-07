@@ -73,26 +73,43 @@ set(CMAKE_DL_LIBS dl)
 # ── Engine Library ──────────────────────────────────────────────
 
 # Statically-linked tree-sitter grammar sources
-# Set TREE_SITTER_NPM env var to override the default path (for CI cross-platform builds)
+# Set TREE_SITTER_NPM env var to override the default path (for CI cross-platform builds).
+# Priority: 1) env var TREE_SITTER_NPM, 2) platform-default npm root, 3) auto-detect via npm root -g
 if(DEFINED ENV{TREE_SITTER_NPM})
     set(TREE_SITTER_NPM "$ENV{TREE_SITTER_NPM}")
-elseif(EXISTS "/opt/homebrew/lib/node_modules")
-    set(TREE_SITTER_NPM "/opt/homebrew/lib/node_modules")
-elseif(EXISTS "/usr/local/lib/node_modules")
-    set(TREE_SITTER_NPM "/usr/local/lib/node_modules")
+elseif(APPLE)
+    # macOS: Homebrew on ARM, system on Intel
+    if(EXISTS "/opt/homebrew/lib/node_modules")
+        set(TREE_SITTER_NPM "/opt/homebrew/lib/node_modules")
+    else()
+        set(TREE_SITTER_NPM "/usr/local/lib/node_modules")
+    endif()
+elseif(WIN32)
+    # Windows: %APPDATA%/npm/node_modules or %NODE_PATH%
+    if(DEFINED ENV{APPDATA} AND EXISTS "$ENV{APPDATA}/npm/node_modules")
+        set(TREE_SITTER_NPM "$ENV{APPDATA}/npm/node_modules")
+    elseif(DEFINED ENV{NODE_PATH})
+        set(TREE_SITTER_NPM "$ENV{NODE_PATH}")
+    else()
+        set(TREE_SITTER_NPM "")
+    endif()
 else()
-    # Try to find via npm root -g
+    # Linux and other Unix: try npm root -g
     execute_process(COMMAND npm root -g
         OUTPUT_VARIABLE NPM_ROOT OUTPUT_STRIP_TRAILING_WHITESPACE
         ERROR_QUIET)
     if(EXISTS "${NPM_ROOT}")
         set(TREE_SITTER_NPM "${NPM_ROOT}")
+    elseif(EXISTS "/usr/local/lib/node_modules")
+        set(TREE_SITTER_NPM "/usr/local/lib/node_modules")
+    elseif(EXISTS "/usr/lib/node_modules")
+        set(TREE_SITTER_NPM "/usr/lib/node_modules")
     else()
         message(WARNING "npm global root not found; grammar sources may be missing. Set TREE_SITTER_NPM env.")
-        set(TREE_SITTER_NPM "/opt/homebrew/lib/node_modules")
+        set(TREE_SITTER_NPM "")
     endif()
 endif()
-message(STATUS "TREE_SITTER_NPM: ${TREE_SITTER_NPM}")
+message(STATUS "TREE_SITTER_NPM: \"${TREE_SITTER_NPM}\"")
 set(GRAMMAR_SOURCES
     ${TREE_SITTER_NPM}/tree-sitter-c/src/parser.c
     ${TREE_SITTER_NPM}/tree-sitter-cpp/src/parser.c

@@ -8,12 +8,7 @@
 #include "../semantic_emitter.h"
 #include "../semantic_unit.h"
 
-// tree-sitter types (forward declaration only)
-// Guarded so this doesn't conflict when <tree_sitter/api.h> is included first
-#ifndef TREE_SITTER_API_H_
-typedef struct TSTree TSTree;
-typedef struct TSNode TSNode;
-#endif
+#include <tree_sitter/api.h>
 
 namespace ir
 {

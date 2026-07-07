@@ -88,37 +88,45 @@ fn main() {
     println!("cargo:rustc-link-lib=dylib=c++");
     println!("cargo:rustc-link-lib=tree-sitter");
 
-    // SQLite: platform-dependent paths
+    // SQLite + tree-sitter: platform-dependent library paths
     match target_os.as_str() {
         "macos" => {
+            // Homebrew lib path for tree-sitter and sqlite3
+            let homebrew_lib = "/opt/homebrew/lib";
             let cellars = [
                 "/opt/homebrew/Cellar/sqlite/3.53.3/lib",
                 "/opt/homebrew/Cellar/sqlite/3.48.0/lib",
                 "/opt/homebrew/opt/sqlite/lib",
             ];
-            let mut found = false;
+            if std::path::Path::new(homebrew_lib).exists() {
+                println!("cargo:rustc-link-search=native={}", homebrew_lib);
+            }
+            let mut found_sqlite = false;
             for dir in &cellars {
                 if std::path::Path::new(dir).exists() {
                     println!("cargo:rustc-link-search=native={}", dir);
-                    found = true;
+                    found_sqlite = true;
                     break;
                 }
             }
-            if !found {
-                // Fallback: let the linker search default paths
+            if !found_sqlite {
                 eprintln!("build.rs: Homebrew sqlite3 not found, relying on default linker search");
             }
+            println!("cargo:rustc-link-lib=dylib=tree-sitter");
             println!("cargo:rustc-link-lib=dylib=sqlite3");
         }
         "linux" => {
-            // System sqlite3-dev provides libsqlite3.so
+            // System packages provide libtree-sitter.so and libsqlite3.so
+            println!("cargo:rustc-link-lib=tree-sitter");
             println!("cargo:rustc-link-lib=sqlite3");
         }
         "windows" => {
-            // MinGW provides libsqlite3 via choco/mingw
+            // MinGW and msys2 provide libraries
+            println!("cargo:rustc-link-lib=tree-sitter");
             println!("cargo:rustc-link-lib=sqlite3");
         }
         _ => {
+            println!("cargo:rustc-link-lib=tree-sitter");
             println!("cargo:rustc-link-lib=sqlite3");
         }
     }
