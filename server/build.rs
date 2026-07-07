@@ -20,7 +20,10 @@ fn main() {
     // ── Detect compiler ────────────────────────────────────────────
     // Priority: CC/CXX env vars > platform default > fallback
     let (cc_path, cxx_path) = if let (Ok(cc), Ok(cxx)) = (env::var("CC"), env::var("CXX")) {
-        eprintln!("build.rs [{}]: using CC={}, CXX={} from env", target_os, cc, cxx);
+        eprintln!(
+            "build.rs [{}]: using CC={}, CXX={} from env",
+            target_os, cc, cxx
+        );
         (cc, cxx)
     } else {
         platform_default_compiler(&target_os)
