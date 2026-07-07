@@ -98,7 +98,10 @@ impl Server {
         });
 
         if let Some(ref path) = root_path {
-            let name = path.split('/').next_back().unwrap_or("unnamed");
+            let name = std::path::Path::new(path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unnamed");
             self.project_id = ffi::create_project(path, name);
             if self.project_id > 0 {
                 eprintln!("Created project {} (id={})", name, self.project_id);

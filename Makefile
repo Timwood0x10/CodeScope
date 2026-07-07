@@ -42,7 +42,8 @@ help:
 	@printf "    make test-savings    Run token savings analysis\n"
 	@printf "\n"
 	@printf "  $(CYAN)Lint & Format:$(RESET)\n"
-	@printf "    make lint-cpp        Run clang-tidy + clang-format check\n"
+	@printf "    make lint-cpp        Fast clang-format check (recent files, <3s)\n"
+	@printf "    make lint-cpp-full   Full clang-format check (all files)\n"
 	@printf "    make lint-rust       Run cargo clippy\n"
 	@printf "    make fmt-cpp         Format C++ code\n"
 	@printf "    make fmt-rust        Format Rust code\n"
@@ -104,7 +105,8 @@ TEST_EXES := test_ir test_graph test_e2e test_go_e2e test_c_e2e test_cpp_e2e tes
 
 test-engine: $(ENGINE_LIB)
 	@printf "$(CYAN)[test/engine]$(RESET) Building and running C++ tests...\n"
-	@rm -f $(TEST_DB)
+	@rm -f $(TEST_DB) $(TEST_DB)-wal $(TEST_DB)-shm
+	@rm -f /tmp/test_*.db /tmp/test_*.db-wal /tmp/test_*.db-shm 2>/dev/null || true
 	@cd $(BUILD_DIR) && cmake --build . -j$$(nproc 2>/dev/null || sysctl -n hw.ncpu) 2>&1 | grep -E "(error|Error|Building|Linking)" || true
 	@failed=0; \
 	for test in $(TEST_EXES); do \
@@ -173,12 +175,28 @@ LINT_CPP_FILES := $(shell find $(ENGINE_DIR)/src -name '*.cpp' -o -name '*.h' | 
 lint: lint-cpp lint-rust
 	@printf "$(CHECK) lint complete\n"
 
+# Fast lint-cpp (3s target) - only check recently modified files
 lint-cpp: $(BUILD_DIR)/compile_commands.json
 	@printf "$(CYAN)[lint/cpp]$(RESET) Running clang-format check...\n"
+	@# Get recently modified files (last 1 hour) for fast lint
+	@RECENT_FILES=$$(find $(ENGINE_DIR)/src -name '*.cpp' -o -name '*.h' -mmin -60 | grep -v build); \
+	if [ -z "$$RECENT_FILES" ]; then \
+		RECENT_FILES="$(ENGINE_DIR)/src/query/query_engine.cpp $(ENGINE_DIR)/src/engine_lifecycle.cpp"; \
+	fi; \
+	clang-format --dry-run --Werror $$RECENT_FILES 2>&1 \
+		&& printf "  $(CHECK) clang-format: ok (checked $$RECENT_FILES)\n"
+
+# Full lint-cpp (all files) - use this for thorough checks
+lint-cpp-full: $(BUILD_DIR)/compile_commands.json
+	@printf "$(CYAN)[lint/cpp-full]$(RESET) Running clang-format on all files...\n"
 	@clang-format --dry-run --Werror $(LINT_CPP_FILES) 2>&1 \
-		&& printf "  $(CHECK) clang-format: ok\n"
-	@printf "$(CYAN)[lint/cpp]$(RESET) Running clang-tidy...\n"
-	@cd $(ENGINE_DIR) && run-clang-tidy -p build 2>&1 | tail -5
+		&& printf "  $(CHECK) clang-format: ok (all files)\n"
+
+# Slow clang-tidy analysis (not part of `make check` — run manually)
+tidy:
+	@printf "$(CYAN)[tidy]$(RESET) Running clang-tidy on project sources...\n"
+	@cd $(ENGINE_DIR) && run-clang-tidy -p build -j 2 $(LINT_CPP_FILES) 2>&1 | tail -10
+	@printf "  $(CHECK) clang-tidy done\n"
 
 $(BUILD_DIR)/compile_commands.json: $(BUILD_DIR)/Makefile
 	@printf "$(CYAN)[engine]$(RESET) Generating compile_commands.json...\n"

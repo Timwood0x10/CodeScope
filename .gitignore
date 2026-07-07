@@ -187,5 +187,6 @@ plan/
 # AtomCode local-scope configs (machine-specific)
 .atomcode/local/
 
+**/build_check/
 
 **/*.ll

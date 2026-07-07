@@ -2,180 +2,121 @@ cmake_minimum_required(VERSION 3.30)
 project(astgraph_engine VERSION 0.1.0 LANGUAGES C CXX)
 
 # ── Build Optimization ───────────────────────────────────────────
-# Use Ninja if available (much faster than Make)
 if(NOT CMAKE_GENERATOR)
     find_program(NINJA ninja)
     if(NINJA)
         set(CMAKE_GENERATOR "Ninja" CACHE STRING "Build generator")
     endif()
 endif()
-
-# Enable ccache if available (compiler cache)
 find_program(CCACHE_PROGRAM ccache)
 if(CCACHE_PROGRAM)
     set(CMAKE_CXX_COMPILER_LAUNCHER ${CCACHE_PROGRAM})
-    message(STATUS "Using ccache: ${CCACHE_PROGRAM}")
+    set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE "${CCACHE_PROGRAM}")
 endif()
-
-# Unity build for faster compilation (combine source files)
-option(UNITY_BUILD "Enable unity build for faster compilation" OFF)
-if(UNITY_BUILD)
-    set_target_properties(astgraph_engine PROPERTIES UNITY_BUILD ON)
-endif()
-
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# Parallel compilation
-set(CMAKE_JOB_POOL_COMPILE compile)
-set(CMAKE_JOB_POOL_LINK link)
-if(NOT CMAKE_JOB_POOLS)
-    cmake_host_system_information(RESULT NCPU QUERY NUMBER_OF_LOGICAL_CORES)
-    set(CMAKE_JOB_POOLS "compile=${NCPU};link=${NCPU}")
-endif()
-
-# ── Compiler Cache ───────────────────────────────────────────────
-find_program(CCACHE_PROGRAM ccache)
-if(CCACHE_PROGRAM)
-    set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE "${CCACHE_PROGRAM}")
-    message(STATUS "Using ccache: ${CCACHE_PROGRAM}")
-endif()
-
 # ── Dependencies ────────────────────────────────────────────────
 find_package(PkgConfig QUIET)
 
-# ── SQLite3 ─────────────────────────────────────────────────────
-# Each platform has its own sqlite3 story:
-#   macOS:  Homebrew sqlite3 (supports extension loading)
-#   Linux:  system libsqlite3-dev from apt
-#   Windows: MinGW sqlite3 from choco/mingw
+# ── macOS ───────────────────────────────────────────────────────
+# Uses Homebrew packages. CI installs: brew install sqlite tree-sitter
 if(APPLE)
-    # Homebrew sqlite3 — first try versioned Cellar, then opt symlink
-    set(SQLITE3_CANDIDATE_LIBS
-        "/opt/homebrew/Cellar/sqlite/3.53.3/lib"
-        "/opt/homebrew/opt/sqlite/lib"
-    )
-    set(SQLITE3_CANDIDATE_INCS
-        "/opt/homebrew/Cellar/sqlite/3.53.3/include"
-        "/opt/homebrew/opt/sqlite/include"
-    )
-    set(SQLITE3_FOUND_PATH "")
+    set(SQLITE3_INCLUDE_DIRS /opt/homebrew/opt/sqlite/include)
+    link_directories(/opt/homebrew/lib /opt/homebrew/opt/sqlite/lib)
+    set(SQLITE3_LIBRARIES sqlite3)
+    set(CMAKE_DL_LIBS dl)
 
-    # Look for sqlite3 in each candidate dir
-    foreach(_dir ${SQLITE3_CANDIDATE_LIBS})
-        if(EXISTS "${_dir}/libsqlite3.dylib" OR EXISTS "${_dir}/libsqlite3.a")
-            set(SQLITE3_FOUND_PATH "${_dir}")
-            break()
-        endif()
-    endforeach()
-
-    if(SQLITE3_FOUND_PATH)
-        message(STATUS "SQLite3: found at ${SQLITE3_FOUND_PATH}")
-        set(SQLITE3_LIBRARY_DIRS "${SQLITE3_FOUND_PATH}")
-        link_directories(${SQLITE3_FOUND_PATH})
-        set(SQLITE3_LIBRARIES sqlite3)
-        # Find matching include dir
-        foreach(_inc ${SQLITE3_CANDIDATE_INCS})
-            if(EXISTS "${_inc}/sqlite3.h")
-                set(SQLITE3_INCLUDE_DIRS "${_inc}")
-                break()
-            endif()
-        endforeach()
+    pkg_check_modules(TS_PKG QUIET tree-sitter)
+    if(TS_PKG_FOUND)
+        set(TREE_SITTER_INCDIR ${TS_PKG_INCLUDE_DIRS})
+        set(TREE_SITTER_LIB ${TS_PKG_LIBRARIES})
     else()
-        message(WARNING "Homebrew sqlite3 not found; falling back to system sqlite3")
-        set(SQLITE3_LIBRARIES sqlite3)
-        set(SQLITE3_INCLUDE_DIRS "")
+        find_path(TREE_SITTER_INCDIR tree_sitter/api.h /opt/homebrew/include /usr/local/include)
+        find_library(TREE_SITTER_LIB tree-sitter /opt/homebrew/lib /usr/local/lib)
+        if(NOT TREE_SITTER_LIB)
+            set(TREE_SITTER_LIB tree-sitter)
+        endif()
     endif()
-elseif(WIN32)
-    # MinGW sqlite3 — available via PATH / choco
-    set(SQLITE3_LIBRARIES sqlite3)
+
+# ── Linux ───────────────────────────────────────────────────────
+# Uses apt packages: libsqlite3-dev libtree-sitter-dev
+elseif(UNIX AND NOT APPLE)
     set(SQLITE3_INCLUDE_DIRS "")
-else()
-    # Linux: system libsqlite3-dev
     set(SQLITE3_LIBRARIES sqlite3)
-    set(SQLITE3_INCLUDE_DIRS "")
-endif()
+    set(CMAKE_DL_LIBS dl)
 
-# ── tree-sitter (core C library) ────────────────────────────────
-# Dynamically loaded — queried via pkg-config first, then manual search.
-# Each platform has different default paths.
-if(APPLE)
-    # macOS: Homebrew installs to /opt/homebrew
-    set(TREE_SITTER_PATHS /opt/homebrew /usr/local /usr)
+    find_path(TREE_SITTER_INCDIR tree_sitter/api.h /usr/include)
+    find_library(TREE_SITTER_LIB tree-sitter /usr/lib/x86_64-linux-gnu /usr/lib)
+    if(NOT TREE_SITTER_LIB)
+        set(TREE_SITTER_LIB tree-sitter)
+    endif()
+
+# ── Windows ─────────────────────────────────────────────────────
+# MinGW doesn't ship sqlite3-dev or tree-sitter.
+# Downloads sqlite3 amalgamation + builds tree-sitter from source.
 elseif(WIN32)
-    # Windows: MinGW / msys2
-    set(TREE_SITTER_PATHS $ENV{MINGW_PREFIX} C:/msys64 /usr /usr/local)
-else()
-    # Linux: system packages install to /usr
-    set(TREE_SITTER_PATHS /usr /usr/local)
-endif()
+    set(CMAKE_DL_LIBS "")
 
-pkg_check_modules(TREE_SITTER QUIET tree-sitter)
-if(NOT TREE_SITTER_FOUND)
-    message(STATUS "tree-sitter not found via pkg-config; searching ${TREE_SITTER_PATHS}")
-    find_path(TREE_SITTER_INCLUDE_DIRS tree_sitter/api.h
-        PATHS ${TREE_SITTER_PATHS}
-        PATH_SUFFIXES include
-        NO_DEFAULT_PATH)
-    find_library(TREE_SITTER_LIBRARIES tree-sitter
-        PATHS ${TREE_SITTER_PATHS}
-        PATH_SUFFIXES lib
-        NO_DEFAULT_PATH)
-
-    # If not found in platform paths, try system defaults as fallback
-    if(NOT TREE_SITTER_INCLUDE_DIRS)
-        find_path(TREE_SITTER_INCLUDE_DIRS tree_sitter/api.h)
+    # -- sqlite3 amalgamation (download once, compile as C) ------
+    set(SQLITE3_DEPS_DIR "${CMAKE_BINARY_DIR}/_deps")
+    set(SQLITE3_AMAL_SRC "${SQLITE3_DEPS_DIR}/sqlite3.c")
+    if(NOT EXISTS "${SQLITE3_AMAL_SRC}")
+        message(STATUS "SQLite3: downloading amalgamation for Windows...")
+        file(DOWNLOAD "https://www.sqlite.org/2025/sqlite-amalgamation-3490100.zip"
+            "${SQLITE3_DEPS_DIR}/sqlite-amalgamation.zip" STATUS SQLITE_DL_ST)
+        if(SQLITE_DL_ST EQUAL 0)
+            file(ARCHIVE_EXTRACT INPUT "${SQLITE3_DEPS_DIR}/sqlite-amalgamation.zip"
+                DESTINATION "${SQLITE3_DEPS_DIR}/")
+            file(GLOB SQLITE_EXTRACTED LIST_DIRECTORIES true "${SQLITE3_DEPS_DIR}/sqlite-amalgamation-*")
+            if(SQLITE_EXTRACTED)
+                file(GLOB SQLITE_FILES "${SQLITE_EXTRACTED}/*")
+                file(COPY ${SQLITE_FILES} DESTINATION "${SQLITE3_DEPS_DIR}/")
+            endif()
+        endif()
     endif()
-    if(NOT TREE_SITTER_LIBRARIES)
-        find_library(TREE_SITTER_LIBRARIES tree-sitter)
-    endif()
+    set(SQLITE3_INCLUDE_DIRS "${SQLITE3_DEPS_DIR}")
+    set(SQLITE3_AMAL_SRC "${SQLITE3_DEPS_DIR}/sqlite3.c")
 
-    if(NOT TREE_SITTER_LIBRARIES)
-        message(WARNING "tree-sitter library not found; using -ltree-sitter with default linker search")
-        set(TREE_SITTER_LIBRARIES "tree-sitter")
-    endif()
+    # -- tree-sitter (build from source via FetchContent) ---------
+    include(FetchContent)
+    FetchContent_Declare(ts_repo GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter.git
+        GIT_TAG v0.24.7 GIT_SHALLOW TRUE SOURCE_SUBDIR lib)
+    set(BUILD_SHARED_LIBS OFF)
+    set(TREE_SITTER_ENABLE_TESTING OFF)
+    set(TREE_SITTER_ENABLE_EXAMPLES OFF)
+    FetchContent_MakeAvailable(ts_repo)
+    set(TREE_SITTER_LIB tree-sitter)
+    set(TREE_SITTER_INCDIR "${ts_repo_SOURCE_DIR}/include" "${ts_repo_BINARY_DIR}/include")
 endif()
 
-# Add Homebrew and MinGW lib paths so -ltree-sitter / -lsqlite3 resolve at link time
-if(APPLE)
-    link_directories(/opt/homebrew/lib)
-endif()
-if(WIN32 AND DEFINED ENV{MINGW_PREFIX})
-    link_directories($ENV{MINGW_PREFIX}/lib)
-endif()
-
-# dlopen (for dynamic grammar loading)
-set(CMAKE_DL_LIBS dl)
-
-# ── Engine Library ──────────────────────────────────────────────
-
-# Statically-linked tree-sitter grammar sources
-# Set TREE_SITTER_NPM env var to override the default path (for CI cross-platform builds).
-# Priority: 1) env var TREE_SITTER_NPM, 2) platform-default npm root, 3) auto-detect via npm root -g
+# ── TREE_SITTER_NPM (grammar source paths) ──────────────────────
 if(DEFINED ENV{TREE_SITTER_NPM})
     set(TREE_SITTER_NPM "$ENV{TREE_SITTER_NPM}")
 elseif(APPLE)
-    # macOS: Homebrew on ARM, system on Intel
     if(EXISTS "/opt/homebrew/lib/node_modules")
         set(TREE_SITTER_NPM "/opt/homebrew/lib/node_modules")
     else()
         set(TREE_SITTER_NPM "/usr/local/lib/node_modules")
     endif()
 elseif(WIN32)
-    # Windows: %APPDATA%/npm/node_modules or %NODE_PATH%
     if(DEFINED ENV{APPDATA} AND EXISTS "$ENV{APPDATA}/npm/node_modules")
         set(TREE_SITTER_NPM "$ENV{APPDATA}/npm/node_modules")
     elseif(DEFINED ENV{NODE_PATH})
         set(TREE_SITTER_NPM "$ENV{NODE_PATH}")
     else()
-        set(TREE_SITTER_NPM "")
+        execute_process(COMMAND npm root -g
+            OUTPUT_VARIABLE NPM_ROOT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        if(EXISTS "${NPM_ROOT}")
+            set(TREE_SITTER_NPM "${NPM_ROOT}")
+        else()
+            set(TREE_SITTER_NPM "")
+        endif()
     endif()
 else()
-    # Linux and other Unix: try npm root -g
     execute_process(COMMAND npm root -g
-        OUTPUT_VARIABLE NPM_ROOT OUTPUT_STRIP_TRAILING_WHITESPACE
-        ERROR_QUIET)
+        OUTPUT_VARIABLE NPM_ROOT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
     if(EXISTS "${NPM_ROOT}")
         set(TREE_SITTER_NPM "${NPM_ROOT}")
     elseif(EXISTS "/usr/local/lib/node_modules")
@@ -183,11 +124,12 @@ else()
     elseif(EXISTS "/usr/lib/node_modules")
         set(TREE_SITTER_NPM "/usr/lib/node_modules")
     else()
-        message(WARNING "npm global root not found; grammar sources may be missing. Set TREE_SITTER_NPM env.")
         set(TREE_SITTER_NPM "")
     endif()
 endif()
 message(STATUS "TREE_SITTER_NPM: \"${TREE_SITTER_NPM}\"")
+
+# ── Grammar source files ────────────────────────────────────────
 set(GRAMMAR_SOURCES
     ${TREE_SITTER_NPM}/tree-sitter-c/src/parser.c
     ${TREE_SITTER_NPM}/tree-sitter-cpp/src/parser.c
@@ -260,18 +202,27 @@ set(ENGINE_SOURCES
     src/resolver/resolve_cache.cpp
     src/linker/linker.cpp
     src/filter_policy.cpp
-   )
+)
+
+# ── Windows only: add sqlite3 amalgamation to sources ────────────
+if(WIN32)
+    list(APPEND ENGINE_SOURCES ${SQLITE3_AMAL_SRC})
+endif()
 
 add_library(astgraph_engine STATIC ${ENGINE_SOURCES})
 
-# Enable sqlite3 extension loading (required for sqlite-vec)
+# Windows: compile sqlite3.c as C, not C++
+if(WIN32)
+    set_source_files_properties(${SQLITE3_AMAL_SRC} PROPERTIES LANGUAGE C)
+endif()
+
 target_compile_definitions(astgraph_engine PUBLIC SQLITE_ENABLE_LOAD_EXTENSION)
 
 target_include_directories(astgraph_engine PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${SQLITE3_INCLUDE_DIRS}
-    # Grammar source directories (for #include "tree_sitter/parser.h")
+    ${TREE_SITTER_INCDIR}
     ${TREE_SITTER_NPM}/tree-sitter-c/src
     ${TREE_SITTER_NPM}/tree-sitter-cpp/src
     ${TREE_SITTER_NPM}/tree-sitter-go/src
@@ -285,60 +236,14 @@ target_include_directories(astgraph_engine PUBLIC
     ${TREE_SITTER_NPM}/tree-sitter-typescript/common
 )
 
-# tree-sitter include dirs: guard against NOTFOUND (e.g. Windows where tree-sitter isn't installed)
-if(TREE_SITTER_INCLUDE_DIRS AND NOT "${TREE_SITTER_INCLUDE_DIRS}" MATCHES "-NOTFOUND$")
-    target_include_directories(astgraph_engine PUBLIC ${TREE_SITTER_INCLUDE_DIRS})
-endif()
-
-# tree-sitter library: guard against NOTFOUND
-if(TREE_SITTER_LIBRARIES AND NOT "${TREE_SITTER_LIBRARIES}" MATCHES "-NOTFOUND$")
-    target_link_libraries(astgraph_engine PUBLIC ${TREE_SITTER_LIBRARIES})
-else()
-    target_link_libraries(astgraph_engine PUBLIC tree-sitter)
-endif()
-
 target_link_libraries(astgraph_engine PUBLIC
-    ${TREE_SITTER_LIBRARIES}
+    ${TREE_SITTER_LIB}
     ${SQLITE3_LIBRARIES}
     ${CMAKE_DL_LIBS}
 )
 
-# Ensure Homebrew libraries are found on macOS
-if(APPLE)
-    # Add Homebrew lib path so -ltree-sitter resolves at link time
-    link_directories(/opt/homebrew/lib)
-    # Homebrew SQLite (needed for sqlite-vec extension loading)
-    # The system SQLite doesn't provide sqlite3_enable_load_extension / sqlite3_load_extension
-    find_library(HOMEBREW_SQLITE3 sqlite3 PATHS /opt/homebrew/opt/sqlite/lib NO_DEFAULT_PATH)
-    if(HOMEBREW_SQLITE3)
-        target_link_libraries(astgraph_engine PUBLIC ${HOMEBREW_SQLITE3})
-        target_include_directories(astgraph_engine PUBLIC /opt/homebrew/opt/sqlite/include)
-    endif()
-endif()
-
-# On Linux, ensure tree-sitter from apt is found
-# (libtree-sitter-dev installs to standard paths, so no extra config needed)
-
-# On Windows, ensure npm global root is in the include path
-if(WIN32)
-    # Grammar include dirs may be accessed via NPM root; warn if missing
-    if("${TREE_SITTER_NPM}" STREQUAL "")
-        message(WARNING "TREE_SITTER_NPM is empty — grammar source files for static linking will be missing. "
-                        "Run: npm install -g tree-sitter-python tree-sitter-c ...")
-    endif()
-endif()
-
-# ── Grammar Build Script ────────────────────────────────────────
-# Grammars are compiled as .so files using gcc (C compiler) since
-# tree-sitter parser.c files use C99 designated initializers.
-# They are loaded at runtime via dlopen.
-#
-# Build with: bash grammars/build.sh
-
-# ── Tests ───────────────────────────────────────────────────────
-
+# ── Tests ────────────────────────────────────────────────────────
 option(BUILD_TESTS "Build tests" ON)
-
 if(BUILD_TESTS)
     file(GLOB TEST_SOURCES tests/*.cpp)
     foreach(test_src ${TEST_SOURCES})

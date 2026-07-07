@@ -25,12 +25,12 @@ benchmarks/
 | `index_speed` | 文件/秒 | 核心 |
 | `query_latency.p50` | 各查询中位数延迟 | 核心 |
 | `query_latency.p99` | 各查询 P99 延迟 | 核心 |
-| `memory.rss_peak` | 峰值 RSS | 重要 |
+| `memory.rss_peak` | 峰值 RSS 内存 | 重要 |
 | `memory.rss_post_gc` | 索引后 GC 归还的 RSS | 重要 |
 | `node_count` | 总节点数 | 参考 |
 | `edge_count` | 总边数 | 参考 |
 
-## 运行
+## 运行基准测试
 
 ```bash
 # 对所有基线项目运行基准测试
