@@ -186,3 +186,6 @@
 plan/
 # AtomCode local-scope configs (machine-specific)
 .atomcode/local/
+
+
+**/*.ll

@@ -107,6 +107,20 @@ unsafe extern "C" {
     fn engine_build_context(project_id: u64, query: *const c_char) -> *mut c_char;
     fn engine_get_capabilities(project_id: u64) -> *mut c_char;
 
+    // ── Code Understanding (Phase C, missing bindings) ───────────
+    fn engine_search_semantic(project_id: u64, query: *const c_char, limit: i32) -> *mut c_char;
+    fn engine_get_module_map(project_id: u64) -> *mut c_char;
+    fn engine_trace_call_chain(
+        project_id: u64,
+        from: *const c_char,
+        to: *const c_char,
+    ) -> *mut c_char;
+    fn engine_get_project_overview(project_id: u64) -> *mut c_char;
+
+    // ── Shared Artifact (Phase C, missing bindings) ─────────────
+    fn engine_export_artifact(project_id: u64, output_path: *const c_char) -> *mut c_char;
+    fn engine_import_artifact(project_id: u64, artifact_path: *const c_char) -> *mut c_char;
+
     fn engine_free_string(ptr: *mut c_char);
 }
 
@@ -351,6 +365,36 @@ pub fn get_capabilities(project_id: u64) -> String {
     take_string(unsafe { engine_get_capabilities(project_id) })
 }
 
+// ── Code Understanding (Phase C, newly bound) ──────────────────────
+
+pub fn search_semantic(project_id: u64, query: &str, limit: i32) -> String {
+    take_string(unsafe { engine_search_semantic(project_id, cstr(query).as_ptr(), limit) })
+}
+
+pub fn get_module_map(project_id: u64) -> String {
+    take_string(unsafe { engine_get_module_map(project_id) })
+}
+
+pub fn trace_call_chain(project_id: u64, from: &str, to: &str) -> String {
+    take_string(unsafe {
+        engine_trace_call_chain(project_id, cstr(from).as_ptr(), cstr(to).as_ptr())
+    })
+}
+
+pub fn get_project_overview(project_id: u64) -> String {
+    take_string(unsafe { engine_get_project_overview(project_id) })
+}
+
+// ── Shared Artifact (newly bound) ──────────────────────────────────
+
+pub fn export_artifact(project_id: u64, output_path: &str) -> String {
+    take_string(unsafe { engine_export_artifact(project_id, cstr(output_path).as_ptr()) })
+}
+
+pub fn import_artifact(project_id: u64, artifact_path: &str) -> String {
+    take_string(unsafe { engine_import_artifact(project_id, cstr(artifact_path).as_ptr()) })
+}
+
 // ── Background task management (Tokio + index_tasks table) ─────
 
 use once_cell::sync::Lazy;
@@ -358,14 +402,11 @@ use std::collections::HashSet;
 use std::sync::Mutex;
 
 static ENHANCEMENT_RUNNING: Lazy<Mutex<HashSet<u64>>> = Lazy::new(|| Mutex::new(HashSet::new()));
-pub(crate) static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-        .expect("failed to create Tokio runtime")
-});
 
-/// Spawn a Tokio background task to enhance a project.
+/// Spawn a background thread to enhance a project (blocking FFI).
+/// Uses `std::thread::spawn` instead of a Tokio task because the FFI call
+/// is synchronous and blocking — spawning it on the async runtime would block
+/// the worker thread, starving other background tasks and timeouts.
 /// Tracks progress via the index_tasks table in SQLite.
 pub fn spawn_enhancement(project_id: u64) {
     // Check if this project is already being enhanced and insert in one atomic step
@@ -386,7 +427,7 @@ pub fn spawn_enhancement(project_id: u64) {
     let _task_json = take_string(unsafe { engine_get_enhancement_status(project_id) });
     eprintln!("enhancement: creating task for project {}", project_id);
 
-    RUNTIME.spawn(async move {
+    std::thread::spawn(move || {
         eprintln!(
             "enhancement: starting background enhancement for project {}",
             project_id

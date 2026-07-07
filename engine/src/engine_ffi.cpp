@@ -345,7 +345,58 @@ char *engine_index_batch(uint64_t project_id, const char *file_paths_json)
 			p++;
 			std::string path;
 			while (*p && *p != '"') {
-				path += *p;
+				if (*p == '\\') {
+					p++;
+					switch (*p) {
+					case '"':
+						path += '"';
+						break;
+					case '\\':
+						path += '\\';
+						break;
+					case '/':
+						path += '/';
+						break;
+					case 'n':
+						path += '\n';
+						break;
+					case 't':
+						path += '\t';
+						break;
+					case 'r':
+						path += '\r';
+						break;
+					case 'b':
+						path += '\b';
+						break;
+					case 'f':
+						path += '\f';
+						break;
+					case 'u': {
+						// Simple pass-through for \uXXXX
+						char unicode_buf[7] = "\\u";
+						int i = 1;
+						while (*++p && i < 6 &&
+						       ((*p >= '0' &&
+							 *p <= '9') ||
+							(*p >= 'a' &&
+							 *p <= 'f') ||
+							(*p >= 'A' &&
+							 *p <= 'F')))
+							unicode_buf[++i] = *p;
+						unicode_buf[++i] = '\0';
+						path += unicode_buf;
+						p--; // loop will advance p
+						break;
+					}
+					default:
+						path += '\\';
+						path += *p;
+						break;
+					}
+				} else {
+					path += *p;
+				}
 				p++;
 			}
 			if (*p != '"')

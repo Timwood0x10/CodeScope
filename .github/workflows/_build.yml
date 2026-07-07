@@ -67,6 +67,7 @@ jobs:
           bash build_ci.sh
 
       - name: Build C++ engine
+        shell: bash
         run: |
           cmake -B engine/build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \

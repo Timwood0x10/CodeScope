@@ -1,0 +1,524 @@
+{
+  "dedup_dropped": 1,
+  "duration": {
+    "nanos": 3620167,
+    "secs": 0
+  },
+  "findings_v2": [
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: __clang_call_terminate (C) -> _ZSt9terminatev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "__clang_call_terminate",
+      "id": "OMI-001",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "85%",
+      "cwe": "CWE-772",
+      "fix_hint": "Free the allocation on all exit paths, including error paths.",
+      "function": "_Z9dupStringRKNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEE",
+      "id": "OMI-002",
+      "kind": "conditional_leak",
+      "severity": "HIGH",
+      "title": "allocation may leak",
+      "why": "The allocated resource is not freed before the function returns on some path, causing a potential leak."
+    },
+    {
+      "confidence": "85%",
+      "cwe": "CWE-772",
+      "fix_hint": "Free the allocation on all exit paths, including error paths.",
+      "function": "malloc",
+      "id": "OMI-004",
+      "kind": "definite_leak",
+      "severity": "HIGH",
+      "title": "allocation never freed",
+      "why": "An allocation is never freed on any analyzed execution path, resulting in a memory leak."
+    }
+  ],
+  "issues": [
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: __clang_call_terminate (C) -> _ZSt9terminatev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZSt9terminatev",
+        "caller_lang": "c",
+        "caller_name": "__clang_call_terminate"
+      },
+      "id": 1,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "__clang_call_terminate",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZSt9terminatev",
+      "trace": []
+    },
+    {
+      "confidence": "Medium",
+      "cwe_id": 772,
+      "description": "conditional leak: resource from '_Z9dupStringRKNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEE' (FamilyId(1)) may not be freed on all paths [probable]",
+      "ffi_boundary": null,
+      "id": 2,
+      "kind": "ConditionalLeak",
+      "location": {
+        "file": "<ir>",
+        "function": "_Z9dupStringRKNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEE",
+        "line": 0
+      },
+      "severity": "warning",
+      "symbol": "_Z9dupStringRKNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEE",
+      "trace": []
+    },
+    {
+      "confidence": "Medium",
+      "cwe_id": 772,
+      "description": "allocation in 'malloc' of family C_HEAP has no same-family release on any analyzed path (definite leak)",
+      "ffi_boundary": null,
+      "id": 4,
+      "kind": "DefiniteLeak",
+      "location": {
+        "file": "<ir>",
+        "function": "malloc",
+        "line": 0
+      },
+      "severity": "error",
+      "symbol": "malloc",
+      "trace": []
+    }
+  ],
+  "pass_results": [
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "name": "CallGraph",
+      "nodes_analyzed": 77,
+      "stats": {
+        "cross_lang": 1,
+        "edges": 121,
+        "ffi_boundaries": 1
+      }
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "name": "RawFactCollector",
+      "nodes_analyzed": 1
+    },
+    {
+      "duration_ms": 0,
+      "issues": [
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: __clang_call_terminate (C) -> _ZSt9terminatev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZSt9terminatev",
+            "caller_lang": "c",
+            "caller_name": "__clang_call_terminate"
+          },
+          "id": 1,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "__clang_call_terminate",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZSt9terminatev",
+          "trace": []
+        }
+      ],
+      "issues_found": 1,
+      "name": "FFIBoundary",
+      "nodes_analyzed": 1
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "name": "SurfaceClassifier",
+      "nodes_analyzed": 77,
+      "stats": {
+        "boundary": 2,
+        "compiler_gen": 34,
+        "runtime": 0,
+        "stdlib": 0,
+        "unknown": 41,
+        "user_code": 0
+      }
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "name": "DangerSurface",
+      "nodes_analyzed": 1,
+      "stats": {
+        "known_family": 0
+      }
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "name": "IRBehaviorSummary",
+      "nodes_analyzed": 54,
+      "stats": {
+        "behaviors_extracted": 54,
+        "buffer_overflow": 0,
+        "conditional_release": 0,
+        "initialization": 1,
+        "internal_bridge": 0,
+        "ownership_transfer": 1,
+        "pointer_projection": 0,
+        "pure_computation": 37,
+        "semantic_facts_emitted": 69,
+        "summaries_from_behavior": 44
+      }
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "name": "LanguageAdapterFact",
+      "nodes_analyzed": 77,
+      "stats": {
+        "adapter_facts_emitted": 62,
+        "cpp_facts": 62,
+        "csharp_facts": 0,
+        "go_facts": 0,
+        "java_facts": 0,
+        "python_facts": 0,
+        "wasm_facts": 0
+      }
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "name": "AbiLayout",
+      "nodes_analyzed": 9,
+      "stats": {
+        "abi_facts_emitted": 1,
+        "cross_language_issues": 0,
+        "excessive_padding": 0,
+        "ffi_boundary_functions": 0,
+        "ffi_structs_checked": 1,
+        "ordering_issues": 0,
+        "padding_issues": 1,
+        "structs_analyzed": 9
+      }
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "name": "SummaryBuilder",
+      "nodes_analyzed": 156,
+      "stats": {
+        "behavior_summary_count": 44
+      }
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "name": "StructuralInference",
+      "nodes_analyzed": 1,
+      "stats": {
+        "behavior_override_count": 0,
+        "bridge_inferences": 0,
+        "destructor_inferences": 0,
+        "inferred_summaries": 1,
+        "refcount_inferences": 0,
+        "srt_fact_entries": 63,
+        "srt_key_resolution_entries": 16,
+        "srt_resolution_entries": 16,
+        "static_lifetime_inferences": 0
+      }
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "name": "ContractGraphBuilder",
+      "nodes_analyzed": 28
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "name": "OwnershipSolver",
+      "nodes_analyzed": 2
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "name": "CrossFunctionLifetime",
+      "nodes_analyzed": 77,
+      "stats": {
+        "flows_detected": 67,
+        "functions_analyzed": 77,
+        "violations_detected": 1
+      }
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "name": "IssueCandidateBuilder",
+      "nodes_analyzed": 16,
+      "stats": {
+        "boundary_evidence_count": 0,
+        "boundary_suppressed": 0,
+        "ffi_evidence_count": 14,
+        "local_bug_count": 2,
+        "needs_model_count": 0,
+        "semantic_facts_attached": 398
+      }
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "name": "LeakDetection",
+      "nodes_analyzed": 1,
+      "stats": {
+        "alloc_sites_analyzed": 1,
+        "leak_candidates": 1,
+        "max_path_length": 256,
+        "path_budget": 64
+      }
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "name": "FfiReturnCheck",
+      "nodes_analyzed": 0,
+      "stats": {
+        "ffi_unchecked_returns": 0
+      }
+    },
+    {
+      "duration_ms": 0,
+      "issues": [
+        {
+          "confidence": "Medium",
+          "cwe_id": 772,
+          "description": "conditional leak: resource from '_Z9dupStringRKNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEE' (FamilyId(1)) may not be freed on all paths [probable]",
+          "ffi_boundary": null,
+          "id": 2,
+          "kind": "ConditionalLeak",
+          "location": {
+            "file": "<ir>",
+            "function": "_Z9dupStringRKNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEE",
+            "line": 0
+          },
+          "severity": "warning",
+          "symbol": "_Z9dupStringRKNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEE",
+          "trace": []
+        },
+        {
+          "confidence": "Medium",
+          "cwe_id": 772,
+          "description": "conditional leak: resource from '_Z9dupStringRKNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEE' (FamilyId(1)) may not be freed on all paths [probable]",
+          "ffi_boundary": null,
+          "id": 3,
+          "kind": "ConditionalLeak",
+          "location": {
+            "file": "<ir>",
+            "function": "_Z9dupStringRKNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEE",
+            "line": 0
+          },
+          "severity": "warning",
+          "symbol": "_Z9dupStringRKNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEE",
+          "trace": []
+        },
+        {
+          "confidence": "Medium",
+          "cwe_id": 772,
+          "description": "allocation in 'malloc' of family C_HEAP has no same-family release on any analyzed path (definite leak)",
+          "ffi_boundary": null,
+          "id": 4,
+          "kind": "DefiniteLeak",
+          "location": {
+            "file": "<ir>",
+            "function": "malloc",
+            "line": 0
+          },
+          "severity": "error",
+          "symbol": "malloc",
+          "trace": []
+        }
+      ],
+      "issues_found": 3,
+      "name": "IssueVerifier",
+      "nodes_analyzed": 17,
+      "stats": {
+        "ffi_gate_suppressed": 0,
+        "gate_suppressed": 0,
+        "noise_suppressed": 0,
+        "reconcile_deduped": 13,
+        "reconcile_subsumed": 0,
+        "semantic_suppressed": 0,
+        "single_lang_suppressed": 0
+      }
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "name": "RaiiDrop",
+      "nodes_analyzed": 121
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "name": "InteriorMutability",
+      "nodes_analyzed": 121
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "name": "HeapProvenance",
+      "nodes_analyzed": 121
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "name": "BorrowEscape",
+      "nodes_analyzed": 121
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "name": "WriteToImmutable",
+      "nodes_analyzed": 130
+    }
+  ],
+  "pass_timings": [
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "pass_name": "CallGraph"
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "pass_name": "RawFactCollector"
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 1,
+      "pass_name": "FFIBoundary"
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "pass_name": "SurfaceClassifier"
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "pass_name": "DangerSurface"
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "pass_name": "IRBehaviorSummary"
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "pass_name": "LanguageAdapterFact"
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "pass_name": "AbiLayout"
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "pass_name": "SummaryBuilder"
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "pass_name": "StructuralInference"
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "pass_name": "ContractGraphBuilder"
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "pass_name": "OwnershipSolver"
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "pass_name": "CrossFunctionLifetime"
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "pass_name": "IssueCandidateBuilder"
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "pass_name": "LeakDetection"
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "pass_name": "FfiReturnCheck"
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 3,
+      "pass_name": "IssueVerifier"
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "pass_name": "RaiiDrop"
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "pass_name": "InteriorMutability"
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "pass_name": "HeapProvenance"
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "pass_name": "BorrowEscape"
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "pass_name": "WriteToImmutable"
+    }
+  ],
+  "stats": {
+    "analysis_passes": 22,
+    "avg_duration_ms": 0.0,
+    "foundation_passes": 0,
+    "max_duration_ms": 0,
+    "min_duration_ms": 0,
+    "total_duration_ms": 0,
+    "transformation_passes": 0
+  },
+  "total_issues": 3,
+  "total_nodes": 1209
+}

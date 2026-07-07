@@ -165,14 +165,14 @@ fn h_index_project(project_id: u64, args: &Value) -> String {
                             && let Some(json_end) = stdout[json_start..].rfind('}')
                         {
                             let result = stdout[json_start..=json_start + json_end].to_string();
-                            // Trigger async FTS build after index completes
-                            crate::ffi::RUNTIME.spawn(async move {
+                            // Trigger background FTS build after index completes
+                            std::thread::spawn(move || {
                                 crate::ffi::build_fts(project_id);
                             });
                             return result;
                         }
-                        // Trigger async FTS build after index completes
-                        crate::ffi::RUNTIME.spawn(async move {
+                        // Trigger background FTS build after index completes
+                        std::thread::spawn(move || {
                             crate::ffi::build_fts(project_id);
                         });
                         return stdout.to_string();
@@ -382,6 +382,38 @@ fn h_count_tokens(_project_id: u64, args: &Value) -> String {
     .to_string()
 }
 
+// ─── Newly bound FFI tools (formerly missing from Rust side) ───────
+
+fn h_search_semantic(project_id: u64, args: &Value) -> String {
+    let query = args["query"].as_str().unwrap_or("");
+    let limit = args["limit"].as_i64().unwrap_or(10) as i32;
+    ffi::search_semantic(project_id, query, limit)
+}
+
+fn h_get_module_map(project_id: u64, _args: &Value) -> String {
+    ffi::get_module_map(project_id)
+}
+
+fn h_trace_call_chain(project_id: u64, args: &Value) -> String {
+    let from = args["from"].as_str().unwrap_or("");
+    let to = args["to"].as_str().unwrap_or("");
+    ffi::trace_call_chain(project_id, from, to)
+}
+
+fn h_get_project_overview(project_id: u64, _args: &Value) -> String {
+    ffi::get_project_overview(project_id)
+}
+
+fn h_export_artifact(project_id: u64, args: &Value) -> String {
+    let output_path = args["output_path"].as_str().unwrap_or("");
+    ffi::export_artifact(project_id, output_path)
+}
+
+fn h_import_artifact(project_id: u64, args: &Value) -> String {
+    let artifact_path = args["artifact_path"].as_str().unwrap_or("");
+    ffi::import_artifact(project_id, artifact_path)
+}
+
 // ─── Tool Registry ──────────────────────────────────────────────
 
 static TOOL_HANDLERS: Lazy<HashMap<&'static str, ToolHandler>> = Lazy::new(|| {
@@ -435,6 +467,16 @@ static TOOL_HANDLERS: Lazy<HashMap<&'static str, ToolHandler>> = Lazy::new(|| {
         h_codescope_capabilities as ToolHandler,
     );
     m.insert("count_tokens", h_count_tokens as ToolHandler);
+    // Newly bound FFI tools
+    m.insert("search_semantic", h_search_semantic as ToolHandler);
+    m.insert("get_module_map", h_get_module_map as ToolHandler);
+    m.insert("trace_call_chain", h_trace_call_chain as ToolHandler);
+    m.insert(
+        "get_project_overview_old",
+        h_get_project_overview as ToolHandler,
+    );
+    m.insert("export_artifact", h_export_artifact as ToolHandler);
+    m.insert("import_artifact", h_import_artifact as ToolHandler);
     m
 });
 
@@ -798,6 +840,64 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
                     "text": {"type": "string", "description": "Text to estimate tokens for"}
                 },
                 "required": ["text"]
+            }),
+        },
+
+        // ══ Newly bound FFI tools ════════════════════════════════
+        Tool {
+            name: "search_semantic".into(),
+            description: "Semantic search using n-gram vector similarity (matches conceptually similar names, not exact text). Requires embeddings built via enhance_project.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "limit": {"type": "integer", "description": "Max results (default 10, max 50)"}
+                },
+                "required": ["query"]
+            }),
+        },
+        Tool {
+            name: "get_module_map".into(),
+            description: "[DEPRECATED — use get_module_tree] Get a module map: all directories with their functions and methods.".into(),
+            input_schema: json!({ "type": "object", "properties": {} }),
+        },
+        Tool {
+            name: "trace_call_chain".into(),
+            description: "Trace the shortest call chain between two named functions. Returns JSON path with name, file, and line for each hop.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "from": {"type": "string", "description": "Source function name"},
+                    "to": {"type": "string", "description": "Target function name"}
+                },
+                "required": ["from", "to"]
+            }),
+        },
+        Tool {
+            name: "get_project_overview_old".into(),
+            description: "[DEPRECATED — use project_overview] Get a complete project overview: modules, entry points, hotspots, and statistics.".into(),
+            input_schema: json!({ "type": "object", "properties": {} }),
+        },
+        Tool {
+            name: "export_artifact".into(),
+            description: "Export a compact compressed DB artifact for the given project. The artifact can be shared with other CodeScope instances to avoid full re-indexing.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "output_path": {"type": "string", "description": "Output path for the .db.zst artifact file"}
+                },
+                "required": ["output_path"]
+            }),
+        },
+        Tool {
+            name: "import_artifact".into(),
+            description: "Import a previously exported DB artifact. After import, the project is ready for incremental indexing.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "artifact_path": {"type": "string", "description": "Path to the .db.zst artifact file"}
+                },
+                "required": ["artifact_path"]
             }),
         },
     ]

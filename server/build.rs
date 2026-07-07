@@ -7,33 +7,61 @@ fn main() {
 
     println!("cargo:rerun-if-changed=../engine/src");
     println!("cargo:rerun-if-changed=../engine/CMakeLists.txt");
+    println!("cargo:rerun-if-env-changed=CC");
+    println!("cargo:rerun-if-env-changed=CXX");
 
     // Build the C++ engine
     let build_dir = format!("{}/build", engine_dir);
-
-    // Create build directory
     let _ = std::fs::create_dir_all(&build_dir);
 
-    // Get SDK path
-    let sdk_path = Command::new("xcrun")
-        .args(["--show-sdk-path"])
-        .output()
-        .expect("Failed to get SDK path");
-    let sdk_path = String::from_utf8_lossy(&sdk_path.stdout).trim().to_string();
+    // ── Detect platform ────────────────────────────────────────────
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
 
-    // Run CMake configure with homebrew llvm clang
+    // ── Detect compiler ────────────────────────────────────────────
+    // Priority: CC/CXX env vars > platform default > fallback
+    let (cc_path, cxx_path) = if let (Ok(cc), Ok(cxx)) = (env::var("CC"), env::var("CXX")) {
+        eprintln!("build.rs [{}]: using CC={}, CXX={} from env", target_os, cc, cxx);
+        (cc, cxx)
+    } else {
+        platform_default_compiler(&target_os)
+    };
+
+    eprintln!("build.rs [{}]: CC={}, CXX={}", target_os, cc_path, cxx_path);
+
+    // ── macOS: get SDK path for sysroot ────────────────────────────
+    let sdk_arg = if target_os == "macos" {
+        match Command::new("xcrun").args(["--show-sdk-path"]).output() {
+            Ok(output) if output.status.success() => {
+                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !path.is_empty() {
+                    format!("-DCMAKE_OSX_SYSROOT={}", path)
+                } else {
+                    String::new()
+                }
+            }
+            _ => String::new(),
+        }
+    } else {
+        String::new()
+    };
+
+    // ── CMake configure ────────────────────────────────────────────
+    let mut cmake_args = vec![
+        "-S".to_string(),
+        engine_dir.clone(),
+        "-B".to_string(),
+        build_dir.clone(),
+        "-DCMAKE_BUILD_TYPE=Release".to_string(),
+        "-DBUILD_TESTS=OFF".to_string(),
+        format!("-DCMAKE_C_COMPILER={}", cc_path),
+        format!("-DCMAKE_CXX_COMPILER={}", cxx_path),
+    ];
+    if !sdk_arg.is_empty() {
+        cmake_args.push(sdk_arg);
+    }
+
     let cmake_status = Command::new("cmake")
-        .args([
-            "-S",
-            &engine_dir,
-            "-B",
-            &build_dir,
-            "-DCMAKE_BUILD_TYPE=Release",
-            "-DBUILD_TESTS=OFF",
-            "-DCMAKE_C_COMPILER=/opt/homebrew/opt/llvm@21/bin/clang",
-            "-DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm@21/bin/clang++",
-            &format!("-DCMAKE_OSX_SYSROOT={}", sdk_path),
-        ])
+        .args(&cmake_args)
         .status()
         .expect("Failed to run cmake configure");
 
@@ -41,7 +69,7 @@ fn main() {
         panic!("CMake configure failed");
     }
 
-    // Run CMake build
+    // ── CMake build ────────────────────────────────────────────────
     let build_status = Command::new("cmake")
         .args(["--build", &build_dir, "--config", "Release"])
         .status()
@@ -51,12 +79,78 @@ fn main() {
         panic!("CMake build failed");
     }
 
-    // Tell cargo where to find the library
+    // ── Linker flags ───────────────────────────────────────────────
     println!("cargo:rustc-link-search=native={}", build_dir);
     println!("cargo:rustc-link-lib=static=astgraph_engine");
     println!("cargo:rustc-link-lib=dylib=c++");
     println!("cargo:rustc-link-lib=tree-sitter");
-    // Use homebrew sqlite3 (has extension loading support)
-    println!("cargo:rustc-link-search=native=/opt/homebrew/Cellar/sqlite/3.53.3/lib");
-    println!("cargo:rustc-link-lib=dylib=sqlite3");
+
+    // SQLite: platform-dependent paths
+    match target_os.as_str() {
+        "macos" => {
+            let cellars = [
+                "/opt/homebrew/Cellar/sqlite/3.53.3/lib",
+                "/opt/homebrew/Cellar/sqlite/3.48.0/lib",
+                "/opt/homebrew/opt/sqlite/lib",
+            ];
+            let mut found = false;
+            for dir in &cellars {
+                if std::path::Path::new(dir).exists() {
+                    println!("cargo:rustc-link-search=native={}", dir);
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                // Fallback: let the linker search default paths
+                eprintln!("build.rs: Homebrew sqlite3 not found, relying on default linker search");
+            }
+            println!("cargo:rustc-link-lib=dylib=sqlite3");
+        }
+        "linux" => {
+            // System sqlite3-dev provides libsqlite3.so
+            println!("cargo:rustc-link-lib=sqlite3");
+        }
+        "windows" => {
+            // MinGW provides libsqlite3 via choco/mingw
+            println!("cargo:rustc-link-lib=sqlite3");
+        }
+        _ => {
+            println!("cargo:rustc-link-lib=sqlite3");
+        }
+    }
+}
+
+/// Platform-default compiler detection.
+fn platform_default_compiler(target_os: &str) -> (String, String) {
+    match target_os {
+        "macos" => {
+            // macOS: prefer Homebrew LLVM@21 (C++23), fall back to Xcode CLT clang
+            let homebrew_cc = "/opt/homebrew/opt/llvm@21/bin/clang";
+            if std::path::Path::new(homebrew_cc).exists() {
+                eprintln!("build.rs: macOS → Homebrew LLVM@21");
+                (
+                    homebrew_cc.to_string(),
+                    "/opt/homebrew/opt/llvm@21/bin/clang++".to_string(),
+                )
+            } else {
+                eprintln!("build.rs: macOS → system clang (Xcode CLT)");
+                ("clang".to_string(), "clang++".to_string())
+            }
+        }
+        "linux" => {
+            // Linux: gcc/g++ is the default (installed via apt)
+            eprintln!("build.rs: Linux → gcc/g++");
+            ("gcc".to_string(), "g++".to_string())
+        }
+        "windows" => {
+            // Windows: MinGW gcc/g++ (installed via choco)
+            eprintln!("build.rs: Windows → gcc/g++ (MinGW)");
+            ("gcc".to_string(), "g++".to_string())
+        }
+        _ => {
+            eprintln!("build.rs: unknown OS {} → clang fallback", target_os);
+            ("clang".to_string(), "clang++".to_string())
+        }
+    }
 }

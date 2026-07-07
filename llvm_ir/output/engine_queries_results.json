@@ -1,0 +1,4638 @@
+{
+  "duration": {
+    "nanos": 312107834,
+    "secs": 0
+  },
+  "findings_v2": [
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_get_module_tree (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_get_module_tree",
+      "id": "OMI-001",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_get_module_tree (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_get_module_tree",
+      "id": "OMI-002",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_get_module_tree (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_get_module_tree",
+      "id": "OMI-003",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_get_module_tree (C) -> _ZN5store10GraphStore17getModuleTreeJsonEy (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_get_module_tree",
+      "id": "OMI-004",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_find_symbol (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_find_symbol",
+      "id": "OMI-005",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_find_symbol (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_find_symbol",
+      "id": "OMI-006",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_find_symbol (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_find_symbol",
+      "id": "OMI-007",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_find_symbol (C) -> _ZN5store10GraphStore14findSymbolJsonEyPKc (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_find_symbol",
+      "id": "OMI-008",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_enhance_project",
+      "id": "OMI-009",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__110unique_ptrI6ParserNS_14default_deleteIS1_EEEcvbB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_enhance_project",
+      "id": "OMI-010",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_enhance_project (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_enhance_project",
+      "id": "OMI-011",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_enhance_project",
+      "id": "OMI-012",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_enhance_project (C) -> _ZN5store10GraphStore15getUnreadyFilesEyPKc (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_enhance_project",
+      "id": "OMI-013",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__16vectorINS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEENS4_IS6_EEE5emptyB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_enhance_project",
+      "id": "OMI-014",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__111__wrap_iterIPNS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEEEdeB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_enhance_project",
+      "id": "OMI-015",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__110unique_ptrI6ParserNS_14default_deleteIS1_EEEptB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_enhance_project",
+      "id": "OMI-016",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__110unique_ptrIN2ir10TranslatorENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_enhance_project",
+      "id": "OMI-017",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__110unique_ptrIN2ir10TranslatorENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_enhance_project",
+      "id": "OMI-018",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__111__wrap_iterIPPN2ir4NodeEEdeB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_enhance_project",
+      "id": "OMI-019",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_enhance_project (C) -> _ZNSt3__111__wrap_iterIPPN2ir4NodeEEppB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_enhance_project",
+      "id": "OMI-020",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_enhance_project (C) -> _ZN2ir15TranslationUnitD1Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_enhance_project",
+      "id": "OMI-021",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "85%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_enhance_project (C) -> _ZdlPvm (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_enhance_project",
+      "id": "OMI-022",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__16vectorIZ22engine_enhance_projectE9FuncRangeNS_9allocatorIS1_EEE5emptyB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_enhance_project",
+      "id": "OMI-023",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4findEcm (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_enhance_project",
+      "id": "OMI-024",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__111__wrap_iterIPZ22engine_enhance_projectE9FuncRangeEdeB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_enhance_project",
+      "id": "OMI-025",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_enhance_project (C) -> _ZNSt3__111__wrap_iterIPZ22engine_enhance_projectE9FuncRangeEppB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_enhance_project",
+      "id": "OMI-026",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_enhance_project (C) -> _ZNSt3__111__wrap_iterIPNS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEEEppB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_enhance_project",
+      "id": "OMI-027",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_get_enhancement_status (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_get_enhancement_status",
+      "id": "OMI-028",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_get_enhancement_status (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_get_enhancement_status",
+      "id": "OMI-029",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_get_enhancement_status (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_get_enhancement_status",
+      "id": "OMI-030",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_get_enhancement_status (C) -> _ZNK5store10GraphStore6handleEv (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_get_enhancement_status",
+      "id": "OMI-031",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_unified_search (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_unified_search",
+      "id": "OMI-032",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_unified_search (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_unified_search",
+      "id": "OMI-033",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_unified_search (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_unified_search",
+      "id": "OMI-034",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_unified_search (C) -> _ZN5store10GraphStore19getProjectReadinessEyPKc (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_unified_search",
+      "id": "OMI-035",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_unified_search (C) -> _ZN5store10GraphStore17searchUnifiedJsonEyPKci (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_unified_search",
+      "id": "OMI-036",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_unified_search (C) -> _ZN5store10GraphStore19searchGraphFallbackEyPKci (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_unified_search",
+      "id": "OMI-037",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_find_callers_adaptive (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_find_callers_adaptive",
+      "id": "OMI-038",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_find_callers_adaptive (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_find_callers_adaptive",
+      "id": "OMI-039",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_find_callers_adaptive (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_find_callers_adaptive",
+      "id": "OMI-040",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_find_callers_adaptive (C) -> _ZN5store10GraphStore15findCallersJsonEyPKc (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_find_callers_adaptive",
+      "id": "OMI-041",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_find_callers_adaptive (C) -> _ZNKSt3__110unique_ptrIN5query11QueryEngineENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_find_callers_adaptive",
+      "id": "OMI-042",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_find_callers_adaptive (C) -> _ZNKSt3__110unique_ptrIN5query11QueryEngineENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_find_callers_adaptive",
+      "id": "OMI-043",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_find_callers_adaptive (C) -> _ZN5query11QueryEngine10getCallersEyPKc (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_find_callers_adaptive",
+      "id": "OMI-044",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_find_callees_adaptive (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_find_callees_adaptive",
+      "id": "OMI-045",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_find_callees_adaptive (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_find_callees_adaptive",
+      "id": "OMI-046",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_find_callees_adaptive (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_find_callees_adaptive",
+      "id": "OMI-047",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_find_callees_adaptive (C) -> _ZN5store10GraphStore15findCalleesJsonEyPKc (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_find_callees_adaptive",
+      "id": "OMI-048",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_find_callees_adaptive (C) -> _ZNKSt3__110unique_ptrIN5query11QueryEngineENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_find_callees_adaptive",
+      "id": "OMI-049",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_find_callees_adaptive (C) -> _ZNKSt3__110unique_ptrIN5query11QueryEngineENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_find_callees_adaptive",
+      "id": "OMI-050",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_get_entry_points_new (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_get_entry_points_new",
+      "id": "OMI-051",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_get_entry_points_new (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_get_entry_points_new",
+      "id": "OMI-052",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_get_entry_points_new (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_get_entry_points_new",
+      "id": "OMI-053",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_get_entry_points_new (C) -> _ZN5store10GraphStore18getEntryPointsJsonEy (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_get_entry_points_new",
+      "id": "OMI-054",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_project_overview (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_project_overview",
+      "id": "OMI-055",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_project_overview (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_project_overview",
+      "id": "OMI-056",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_project_overview (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_project_overview",
+      "id": "OMI-057",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_project_overview (C) -> _ZNK5store10GraphStore6handleEv (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_project_overview",
+      "id": "OMI-058",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_trace_path (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_trace_path",
+      "id": "OMI-059",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_trace_path (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_trace_path",
+      "id": "OMI-060",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_trace_path (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_trace_path",
+      "id": "OMI-061",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_trace_path (C) -> _ZN5store10GraphStore13tracePathJsonEyPKcS2_ (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_trace_path",
+      "id": "OMI-062",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_explore_function (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_explore_function",
+      "id": "OMI-063",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_explore_function (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_explore_function",
+      "id": "OMI-064",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_explore_function (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_explore_function",
+      "id": "OMI-065",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_explore_function (C) -> _ZN5store10GraphStore19exploreFunctionJsonEyPKciS2_ (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_explore_function",
+      "id": "OMI-066",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_build_context (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_build_context",
+      "id": "OMI-067",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_build_context (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_build_context",
+      "id": "OMI-068",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: engine_build_context (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "engine_build_context",
+      "id": "OMI-069",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "50%",
+      "cwe": "CWE-119",
+      "evidence": [
+        "FFI boundary: __clang_call_terminate (C) -> _ZSt9terminatev (Cpp)"
+      ],
+      "fix_hint": "Validate inputs and outputs around the FFI call, and wrap it in a safe abstraction.",
+      "function": "__clang_call_terminate",
+      "id": "OMI-070",
+      "kind": "ffi_unsafe_call",
+      "severity": "LOW",
+      "title": "potentially dangerous FFI call",
+      "why": "An FFI call with potentially dangerous semantics is performed without adequate safety checks."
+    },
+    {
+      "confidence": "85%",
+      "cwe": "CWE-772",
+      "fix_hint": "Free the allocation on all exit paths, including error paths.",
+      "function": "\"_ZNSt3__110__function12__value_funcIFvPN2ir4NodeEEEC2B8ne210108IZ22engine_enhance_projectE3$_0TnNS_9enable_ifIXntsr7is_sameIu7__decayIT_ES6_EE5valueEiE4typeELi0EEEOSA_\"",
+      "id": "OMI-071",
+      "kind": "conditional_leak",
+      "severity": "HIGH",
+      "title": "allocation may leak",
+      "why": "The allocated resource is not freed before the function returns on some path, causing a potential leak."
+    },
+    {
+      "confidence": "85%",
+      "cwe": "CWE-772",
+      "fix_hint": "Free the allocation on all exit paths, including error paths.",
+      "function": "\"_ZNKSt3__110__function6__funcIZ22engine_enhance_projectE3$_0FvPN2ir4NodeEEE7__cloneEv\"",
+      "id": "OMI-072",
+      "kind": "conditional_leak",
+      "severity": "HIGH",
+      "title": "allocation may leak",
+      "why": "The allocated resource is not freed before the function returns on some path, causing a potential leak."
+    },
+    {
+      "confidence": "85%",
+      "cwe": "CWE-772",
+      "fix_hint": "Free the allocation on all exit paths, including error paths.",
+      "function": "\"_ZNKSt3__110__function6__funcIZ22engine_enhance_projectE3$_1FvPN2ir4NodeEEE7__cloneEv\"",
+      "id": "OMI-073",
+      "kind": "conditional_leak",
+      "severity": "HIGH",
+      "title": "allocation may leak",
+      "why": "The allocated resource is not freed before the function returns on some path, causing a potential leak."
+    },
+    {
+      "confidence": "85%",
+      "cwe": "CWE-772",
+      "fix_hint": "Free the allocation on all exit paths, including error paths.",
+      "function": "_ZL14lookupSymbolIdyRKNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEES7_iRNS_13unordered_mapIS5_NS_6vectorINS_4pairIS5_yEENS3_ISB_EEEENS_4hashIS5_EENS_8equal_toIS5_EENS3_INSA_IS6_SD_EEEEEE",
+      "id": "OMI-074",
+      "kind": "conditional_leak",
+      "severity": "HIGH",
+      "title": "allocation may leak",
+      "why": "The allocated resource is not freed before the function returns on some path, causing a potential leak."
+    },
+    {
+      "confidence": "85%",
+      "cwe": "CWE-772",
+      "fix_hint": "Free the allocation on all exit paths, including error paths.",
+      "function": "engine_get_enhancement_status",
+      "id": "OMI-075",
+      "kind": "conditional_leak",
+      "severity": "HIGH",
+      "title": "allocation may leak",
+      "why": "The allocated resource is not freed before the function returns on some path, causing a potential leak."
+    }
+  ],
+  "issues": [
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_get_module_tree (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_get_module_tree"
+      },
+      "id": 1,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_get_module_tree",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_get_module_tree (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_get_module_tree"
+      },
+      "id": 2,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_get_module_tree",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_get_module_tree (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_get_module_tree"
+      },
+      "id": 3,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_get_module_tree",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_get_module_tree (C) -> _ZN5store10GraphStore17getModuleTreeJsonEy (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZN5store10GraphStore17getModuleTreeJsonEy",
+        "caller_lang": "c",
+        "caller_name": "engine_get_module_tree"
+      },
+      "id": 4,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_get_module_tree",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZN5store10GraphStore17getModuleTreeJsonEy",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_find_symbol (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_find_symbol"
+      },
+      "id": 5,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_find_symbol",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_find_symbol (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_find_symbol"
+      },
+      "id": 6,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_find_symbol",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_find_symbol (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_find_symbol"
+      },
+      "id": 7,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_find_symbol",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_find_symbol (C) -> _ZN5store10GraphStore14findSymbolJsonEyPKc (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZN5store10GraphStore14findSymbolJsonEyPKc",
+        "caller_lang": "c",
+        "caller_name": "engine_find_symbol"
+      },
+      "id": 8,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_find_symbol",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZN5store10GraphStore14findSymbolJsonEyPKc",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_enhance_project"
+      },
+      "id": 9,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_enhance_project",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__110unique_ptrI6ParserNS_14default_deleteIS1_EEEcvbB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__110unique_ptrI6ParserNS_14default_deleteIS1_EEEcvbB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_enhance_project"
+      },
+      "id": 10,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_enhance_project",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__110unique_ptrI6ParserNS_14default_deleteIS1_EEEcvbB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_enhance_project (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_enhance_project"
+      },
+      "id": 11,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_enhance_project",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_enhance_project"
+      },
+      "id": 12,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_enhance_project",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_enhance_project (C) -> _ZN5store10GraphStore15getUnreadyFilesEyPKc (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZN5store10GraphStore15getUnreadyFilesEyPKc",
+        "caller_lang": "c",
+        "caller_name": "engine_enhance_project"
+      },
+      "id": 13,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_enhance_project",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZN5store10GraphStore15getUnreadyFilesEyPKc",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__16vectorINS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEENS4_IS6_EEE5emptyB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__16vectorINS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEENS4_IS6_EEE5emptyB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_enhance_project"
+      },
+      "id": 14,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_enhance_project",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__16vectorINS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEENS4_IS6_EEE5emptyB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__111__wrap_iterIPNS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEEEdeB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__111__wrap_iterIPNS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEEEdeB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_enhance_project"
+      },
+      "id": 15,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_enhance_project",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__111__wrap_iterIPNS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEEEdeB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__110unique_ptrI6ParserNS_14default_deleteIS1_EEEptB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__110unique_ptrI6ParserNS_14default_deleteIS1_EEEptB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_enhance_project"
+      },
+      "id": 16,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_enhance_project",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__110unique_ptrI6ParserNS_14default_deleteIS1_EEEptB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__110unique_ptrIN2ir10TranslatorENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__110unique_ptrIN2ir10TranslatorENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_enhance_project"
+      },
+      "id": 17,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_enhance_project",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__110unique_ptrIN2ir10TranslatorENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__110unique_ptrIN2ir10TranslatorENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__110unique_ptrIN2ir10TranslatorENS_14default_deleteIS2_EEEptB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_enhance_project"
+      },
+      "id": 18,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_enhance_project",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__110unique_ptrIN2ir10TranslatorENS_14default_deleteIS2_EEEptB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__111__wrap_iterIPPN2ir4NodeEEdeB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__111__wrap_iterIPPN2ir4NodeEEdeB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_enhance_project"
+      },
+      "id": 19,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_enhance_project",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__111__wrap_iterIPPN2ir4NodeEEdeB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_enhance_project (C) -> _ZNSt3__111__wrap_iterIPPN2ir4NodeEEppB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNSt3__111__wrap_iterIPPN2ir4NodeEEppB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_enhance_project"
+      },
+      "id": 20,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_enhance_project",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNSt3__111__wrap_iterIPPN2ir4NodeEEppB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_enhance_project (C) -> _ZN2ir15TranslationUnitD1Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZN2ir15TranslationUnitD1Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_enhance_project"
+      },
+      "id": 21,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_enhance_project",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZN2ir15TranslationUnitD1Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Medium",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_enhance_project (C) -> _ZdlPvm (Cpp) [ownership transfer, unknown family]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZdlPvm",
+        "caller_lang": "c",
+        "caller_name": "engine_enhance_project"
+      },
+      "id": 22,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_enhance_project",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZdlPvm",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__16vectorIZ22engine_enhance_projectE9FuncRangeNS_9allocatorIS1_EEE5emptyB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__16vectorIZ22engine_enhance_projectE9FuncRangeNS_9allocatorIS1_EEE5emptyB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_enhance_project"
+      },
+      "id": 23,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_enhance_project",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__16vectorIZ22engine_enhance_projectE9FuncRangeNS_9allocatorIS1_EEE5emptyB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4findEcm (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4findEcm",
+        "caller_lang": "c",
+        "caller_name": "engine_enhance_project"
+      },
+      "id": 24,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_enhance_project",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4findEcm",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__111__wrap_iterIPZ22engine_enhance_projectE9FuncRangeEdeB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__111__wrap_iterIPZ22engine_enhance_projectE9FuncRangeEdeB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_enhance_project"
+      },
+      "id": 25,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_enhance_project",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__111__wrap_iterIPZ22engine_enhance_projectE9FuncRangeEdeB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_enhance_project (C) -> _ZNSt3__111__wrap_iterIPZ22engine_enhance_projectE9FuncRangeEppB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNSt3__111__wrap_iterIPZ22engine_enhance_projectE9FuncRangeEppB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_enhance_project"
+      },
+      "id": 26,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_enhance_project",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNSt3__111__wrap_iterIPZ22engine_enhance_projectE9FuncRangeEppB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_enhance_project (C) -> _ZNSt3__111__wrap_iterIPNS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEEEppB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNSt3__111__wrap_iterIPNS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEEEppB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_enhance_project"
+      },
+      "id": 27,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_enhance_project",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNSt3__111__wrap_iterIPNS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEEEppB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_get_enhancement_status (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_get_enhancement_status"
+      },
+      "id": 28,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_get_enhancement_status",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_get_enhancement_status (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_get_enhancement_status"
+      },
+      "id": 29,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_get_enhancement_status",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_get_enhancement_status (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_get_enhancement_status"
+      },
+      "id": 30,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_get_enhancement_status",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_get_enhancement_status (C) -> _ZNK5store10GraphStore6handleEv (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNK5store10GraphStore6handleEv",
+        "caller_lang": "c",
+        "caller_name": "engine_get_enhancement_status"
+      },
+      "id": 31,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_get_enhancement_status",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNK5store10GraphStore6handleEv",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_unified_search (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_unified_search"
+      },
+      "id": 32,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_unified_search",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_unified_search (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_unified_search"
+      },
+      "id": 33,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_unified_search",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_unified_search (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_unified_search"
+      },
+      "id": 34,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_unified_search",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_unified_search (C) -> _ZN5store10GraphStore19getProjectReadinessEyPKc (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZN5store10GraphStore19getProjectReadinessEyPKc",
+        "caller_lang": "c",
+        "caller_name": "engine_unified_search"
+      },
+      "id": 35,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_unified_search",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZN5store10GraphStore19getProjectReadinessEyPKc",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_unified_search (C) -> _ZN5store10GraphStore17searchUnifiedJsonEyPKci (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZN5store10GraphStore17searchUnifiedJsonEyPKci",
+        "caller_lang": "c",
+        "caller_name": "engine_unified_search"
+      },
+      "id": 36,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_unified_search",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZN5store10GraphStore17searchUnifiedJsonEyPKci",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_unified_search (C) -> _ZN5store10GraphStore19searchGraphFallbackEyPKci (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZN5store10GraphStore19searchGraphFallbackEyPKci",
+        "caller_lang": "c",
+        "caller_name": "engine_unified_search"
+      },
+      "id": 37,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_unified_search",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZN5store10GraphStore19searchGraphFallbackEyPKci",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_find_callers_adaptive (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_find_callers_adaptive"
+      },
+      "id": 38,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_find_callers_adaptive",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_find_callers_adaptive (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_find_callers_adaptive"
+      },
+      "id": 39,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_find_callers_adaptive",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_find_callers_adaptive (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_find_callers_adaptive"
+      },
+      "id": 40,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_find_callers_adaptive",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_find_callers_adaptive (C) -> _ZN5store10GraphStore15findCallersJsonEyPKc (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZN5store10GraphStore15findCallersJsonEyPKc",
+        "caller_lang": "c",
+        "caller_name": "engine_find_callers_adaptive"
+      },
+      "id": 41,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_find_callers_adaptive",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZN5store10GraphStore15findCallersJsonEyPKc",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_find_callers_adaptive (C) -> _ZNKSt3__110unique_ptrIN5query11QueryEngineENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__110unique_ptrIN5query11QueryEngineENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_find_callers_adaptive"
+      },
+      "id": 42,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_find_callers_adaptive",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__110unique_ptrIN5query11QueryEngineENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_find_callers_adaptive (C) -> _ZNKSt3__110unique_ptrIN5query11QueryEngineENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__110unique_ptrIN5query11QueryEngineENS_14default_deleteIS2_EEEptB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_find_callers_adaptive"
+      },
+      "id": 43,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_find_callers_adaptive",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__110unique_ptrIN5query11QueryEngineENS_14default_deleteIS2_EEEptB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_find_callers_adaptive (C) -> _ZN5query11QueryEngine10getCallersEyPKc (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZN5query11QueryEngine10getCallersEyPKc",
+        "caller_lang": "c",
+        "caller_name": "engine_find_callers_adaptive"
+      },
+      "id": 44,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_find_callers_adaptive",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZN5query11QueryEngine10getCallersEyPKc",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_find_callees_adaptive (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_find_callees_adaptive"
+      },
+      "id": 45,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_find_callees_adaptive",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_find_callees_adaptive (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_find_callees_adaptive"
+      },
+      "id": 46,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_find_callees_adaptive",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_find_callees_adaptive (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_find_callees_adaptive"
+      },
+      "id": 47,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_find_callees_adaptive",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_find_callees_adaptive (C) -> _ZN5store10GraphStore15findCalleesJsonEyPKc (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZN5store10GraphStore15findCalleesJsonEyPKc",
+        "caller_lang": "c",
+        "caller_name": "engine_find_callees_adaptive"
+      },
+      "id": 48,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_find_callees_adaptive",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZN5store10GraphStore15findCalleesJsonEyPKc",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_find_callees_adaptive (C) -> _ZNKSt3__110unique_ptrIN5query11QueryEngineENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__110unique_ptrIN5query11QueryEngineENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_find_callees_adaptive"
+      },
+      "id": 49,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_find_callees_adaptive",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__110unique_ptrIN5query11QueryEngineENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_find_callees_adaptive (C) -> _ZNKSt3__110unique_ptrIN5query11QueryEngineENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__110unique_ptrIN5query11QueryEngineENS_14default_deleteIS2_EEEptB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_find_callees_adaptive"
+      },
+      "id": 50,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_find_callees_adaptive",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__110unique_ptrIN5query11QueryEngineENS_14default_deleteIS2_EEEptB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_get_entry_points_new (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_get_entry_points_new"
+      },
+      "id": 51,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_get_entry_points_new",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_get_entry_points_new (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_get_entry_points_new"
+      },
+      "id": 52,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_get_entry_points_new",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_get_entry_points_new (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_get_entry_points_new"
+      },
+      "id": 53,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_get_entry_points_new",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_get_entry_points_new (C) -> _ZN5store10GraphStore18getEntryPointsJsonEy (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZN5store10GraphStore18getEntryPointsJsonEy",
+        "caller_lang": "c",
+        "caller_name": "engine_get_entry_points_new"
+      },
+      "id": 54,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_get_entry_points_new",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZN5store10GraphStore18getEntryPointsJsonEy",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_project_overview (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_project_overview"
+      },
+      "id": 55,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_project_overview",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_project_overview (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_project_overview"
+      },
+      "id": 56,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_project_overview",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_project_overview (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_project_overview"
+      },
+      "id": 57,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_project_overview",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_project_overview (C) -> _ZNK5store10GraphStore6handleEv (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNK5store10GraphStore6handleEv",
+        "caller_lang": "c",
+        "caller_name": "engine_project_overview"
+      },
+      "id": 58,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_project_overview",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNK5store10GraphStore6handleEv",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_trace_path (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_trace_path"
+      },
+      "id": 59,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_trace_path",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_trace_path (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_trace_path"
+      },
+      "id": 60,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_trace_path",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_trace_path (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_trace_path"
+      },
+      "id": 61,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_trace_path",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_trace_path (C) -> _ZN5store10GraphStore13tracePathJsonEyPKcS2_ (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZN5store10GraphStore13tracePathJsonEyPKcS2_",
+        "caller_lang": "c",
+        "caller_name": "engine_trace_path"
+      },
+      "id": 62,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_trace_path",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZN5store10GraphStore13tracePathJsonEyPKcS2_",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_explore_function (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_explore_function"
+      },
+      "id": 63,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_explore_function",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_explore_function (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_explore_function"
+      },
+      "id": 64,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_explore_function",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_explore_function (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_explore_function"
+      },
+      "id": 65,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_explore_function",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_explore_function (C) -> _ZN5store10GraphStore19exploreFunctionJsonEyPKciS2_ (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZN5store10GraphStore19exploreFunctionJsonEyPKciS2_",
+        "caller_lang": "c",
+        "caller_name": "engine_explore_function"
+      },
+      "id": 66,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_explore_function",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZN5store10GraphStore19exploreFunctionJsonEyPKciS2_",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_build_context (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_build_context"
+      },
+      "id": 67,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_build_context",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_build_context (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_build_context"
+      },
+      "id": 68,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_build_context",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: engine_build_context (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+        "caller_lang": "c",
+        "caller_name": "engine_build_context"
+      },
+      "id": 69,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "engine_build_context",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+      "trace": []
+    },
+    {
+      "confidence": "Low",
+      "cwe_id": 119,
+      "description": "FFI boundary: __clang_call_terminate (C) -> _ZSt9terminatev (Cpp) [verdict=Unknown, C++ cross-language]",
+      "ffi_boundary": {
+        "boundary_kind": "CToRust",
+        "callee_lang": "cpp",
+        "callee_name": "_ZSt9terminatev",
+        "caller_lang": "c",
+        "caller_name": "__clang_call_terminate"
+      },
+      "id": 70,
+      "kind": "FfiUnsafeCall",
+      "location": {
+        "file": "<ffi>",
+        "function": "__clang_call_terminate",
+        "line": 0
+      },
+      "severity": "note",
+      "symbol": "_ZSt9terminatev",
+      "trace": []
+    },
+    {
+      "confidence": "Medium",
+      "cwe_id": 772,
+      "description": "conditional leak: resource from '\"_ZNSt3__110__function12__value_funcIFvPN2ir4NodeEEEC2B8ne210108IZ22engine_enhance_projectE3$_0TnNS_9enable_ifIXntsr7is_sameIu7__decayIT_ES6_EE5valueEiE4typeELi0EEEOSA_\"' (FamilyId(2)) may not be freed on all paths [probable]",
+      "ffi_boundary": null,
+      "id": 71,
+      "kind": "ConditionalLeak",
+      "location": {
+        "file": "<ir>",
+        "function": "\"_ZNSt3__110__function12__value_funcIFvPN2ir4NodeEEEC2B8ne210108IZ22engine_enhance_projectE3$_0TnNS_9enable_ifIXntsr7is_sameIu7__decayIT_ES6_EE5valueEiE4typeELi0EEEOSA_\"",
+        "line": 0
+      },
+      "severity": "warning",
+      "symbol": "\"_ZNSt3__110__function12__value_funcIFvPN2ir4NodeEEEC2B8ne210108IZ22engine_enhance_projectE3$_0TnNS_9enable_ifIXntsr7is_sameIu7__decayIT_ES6_EE5valueEiE4typeELi0EEEOSA_\"",
+      "trace": []
+    },
+    {
+      "confidence": "Medium",
+      "cwe_id": 772,
+      "description": "conditional leak: resource from '\"_ZNKSt3__110__function6__funcIZ22engine_enhance_projectE3$_0FvPN2ir4NodeEEE7__cloneEv\"' (FamilyId(2)) may not be freed on all paths [probable]",
+      "ffi_boundary": null,
+      "id": 72,
+      "kind": "ConditionalLeak",
+      "location": {
+        "file": "<ir>",
+        "function": "\"_ZNKSt3__110__function6__funcIZ22engine_enhance_projectE3$_0FvPN2ir4NodeEEE7__cloneEv\"",
+        "line": 0
+      },
+      "severity": "warning",
+      "symbol": "\"_ZNKSt3__110__function6__funcIZ22engine_enhance_projectE3$_0FvPN2ir4NodeEEE7__cloneEv\"",
+      "trace": []
+    },
+    {
+      "confidence": "Medium",
+      "cwe_id": 772,
+      "description": "conditional leak: resource from '\"_ZNKSt3__110__function6__funcIZ22engine_enhance_projectE3$_1FvPN2ir4NodeEEE7__cloneEv\"' (FamilyId(2)) may not be freed on all paths [probable]",
+      "ffi_boundary": null,
+      "id": 73,
+      "kind": "ConditionalLeak",
+      "location": {
+        "file": "<ir>",
+        "function": "\"_ZNKSt3__110__function6__funcIZ22engine_enhance_projectE3$_1FvPN2ir4NodeEEE7__cloneEv\"",
+        "line": 0
+      },
+      "severity": "warning",
+      "symbol": "\"_ZNKSt3__110__function6__funcIZ22engine_enhance_projectE3$_1FvPN2ir4NodeEEE7__cloneEv\"",
+      "trace": []
+    },
+    {
+      "confidence": "Medium",
+      "cwe_id": 772,
+      "description": "conditional leak: resource from '_ZL14lookupSymbolIdyRKNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEES7_iRNS_13unordered_mapIS5_NS_6vectorINS_4pairIS5_yEENS3_ISB_EEEENS_4hashIS5_EENS_8equal_toIS5_EENS3_INSA_IS6_SD_EEEEEE' (FamilyId(16)) may not be freed on all paths [probable]",
+      "ffi_boundary": null,
+      "id": 74,
+      "kind": "ConditionalLeak",
+      "location": {
+        "file": "<ir>",
+        "function": "_ZL14lookupSymbolIdyRKNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEES7_iRNS_13unordered_mapIS5_NS_6vectorINS_4pairIS5_yEENS3_ISB_EEEENS_4hashIS5_EENS_8equal_toIS5_EENS3_INSA_IS6_SD_EEEEEE",
+        "line": 0
+      },
+      "severity": "warning",
+      "symbol": "_ZL14lookupSymbolIdyRKNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEES7_iRNS_13unordered_mapIS5_NS_6vectorINS_4pairIS5_yEENS3_ISB_EEEENS_4hashIS5_EENS_8equal_toIS5_EENS3_INSA_IS6_SD_EEEEEE",
+      "trace": []
+    },
+    {
+      "confidence": "Medium",
+      "cwe_id": 772,
+      "description": "conditional leak: resource from 'engine_get_enhancement_status' (FamilyId(16)) may not be freed on all paths [probable]",
+      "ffi_boundary": null,
+      "id": 75,
+      "kind": "ConditionalLeak",
+      "location": {
+        "file": "<ir>",
+        "function": "engine_get_enhancement_status",
+        "line": 0
+      },
+      "severity": "warning",
+      "symbol": "engine_get_enhancement_status",
+      "trace": []
+    }
+  ],
+  "pass_results": [
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "name": "CallGraph",
+      "nodes_analyzed": 851,
+      "stats": {
+        "cross_lang": 382,
+        "edges": 1627,
+        "ffi_boundaries": 382
+      }
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "name": "RawFactCollector",
+      "nodes_analyzed": 13
+    },
+    {
+      "duration_ms": 263,
+      "issues": [
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_get_module_tree (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_get_module_tree"
+          },
+          "id": 1,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_get_module_tree",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_get_module_tree (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_get_module_tree"
+          },
+          "id": 2,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_get_module_tree",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_get_module_tree (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_get_module_tree"
+          },
+          "id": 3,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_get_module_tree",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_get_module_tree (C) -> _ZN5store10GraphStore17getModuleTreeJsonEy (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZN5store10GraphStore17getModuleTreeJsonEy",
+            "caller_lang": "c",
+            "caller_name": "engine_get_module_tree"
+          },
+          "id": 4,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_get_module_tree",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZN5store10GraphStore17getModuleTreeJsonEy",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_find_symbol (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_find_symbol"
+          },
+          "id": 5,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_find_symbol",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_find_symbol (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_find_symbol"
+          },
+          "id": 6,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_find_symbol",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_find_symbol (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_find_symbol"
+          },
+          "id": 7,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_find_symbol",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_find_symbol (C) -> _ZN5store10GraphStore14findSymbolJsonEyPKc (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZN5store10GraphStore14findSymbolJsonEyPKc",
+            "caller_lang": "c",
+            "caller_name": "engine_find_symbol"
+          },
+          "id": 8,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_find_symbol",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZN5store10GraphStore14findSymbolJsonEyPKc",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_enhance_project"
+          },
+          "id": 9,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_enhance_project",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__110unique_ptrI6ParserNS_14default_deleteIS1_EEEcvbB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__110unique_ptrI6ParserNS_14default_deleteIS1_EEEcvbB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_enhance_project"
+          },
+          "id": 10,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_enhance_project",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__110unique_ptrI6ParserNS_14default_deleteIS1_EEEcvbB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_enhance_project (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_enhance_project"
+          },
+          "id": 11,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_enhance_project",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_enhance_project"
+          },
+          "id": 12,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_enhance_project",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_enhance_project (C) -> _ZN5store10GraphStore15getUnreadyFilesEyPKc (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZN5store10GraphStore15getUnreadyFilesEyPKc",
+            "caller_lang": "c",
+            "caller_name": "engine_enhance_project"
+          },
+          "id": 13,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_enhance_project",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZN5store10GraphStore15getUnreadyFilesEyPKc",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__16vectorINS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEENS4_IS6_EEE5emptyB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__16vectorINS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEENS4_IS6_EEE5emptyB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_enhance_project"
+          },
+          "id": 14,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_enhance_project",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__16vectorINS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEENS4_IS6_EEE5emptyB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__111__wrap_iterIPNS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEEEdeB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__111__wrap_iterIPNS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEEEdeB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_enhance_project"
+          },
+          "id": 15,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_enhance_project",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__111__wrap_iterIPNS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEEEdeB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__110unique_ptrI6ParserNS_14default_deleteIS1_EEEptB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__110unique_ptrI6ParserNS_14default_deleteIS1_EEEptB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_enhance_project"
+          },
+          "id": 16,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_enhance_project",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__110unique_ptrI6ParserNS_14default_deleteIS1_EEEptB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__110unique_ptrIN2ir10TranslatorENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__110unique_ptrIN2ir10TranslatorENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_enhance_project"
+          },
+          "id": 17,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_enhance_project",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__110unique_ptrIN2ir10TranslatorENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__110unique_ptrIN2ir10TranslatorENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__110unique_ptrIN2ir10TranslatorENS_14default_deleteIS2_EEEptB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_enhance_project"
+          },
+          "id": 18,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_enhance_project",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__110unique_ptrIN2ir10TranslatorENS_14default_deleteIS2_EEEptB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__111__wrap_iterIPPN2ir4NodeEEdeB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__111__wrap_iterIPPN2ir4NodeEEdeB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_enhance_project"
+          },
+          "id": 19,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_enhance_project",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__111__wrap_iterIPPN2ir4NodeEEdeB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_enhance_project (C) -> _ZNSt3__111__wrap_iterIPPN2ir4NodeEEppB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNSt3__111__wrap_iterIPPN2ir4NodeEEppB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_enhance_project"
+          },
+          "id": 20,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_enhance_project",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNSt3__111__wrap_iterIPPN2ir4NodeEEppB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_enhance_project (C) -> _ZN2ir15TranslationUnitD1Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZN2ir15TranslationUnitD1Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_enhance_project"
+          },
+          "id": 21,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_enhance_project",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZN2ir15TranslationUnitD1Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Medium",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_enhance_project (C) -> _ZdlPvm (Cpp) [ownership transfer, unknown family]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZdlPvm",
+            "caller_lang": "c",
+            "caller_name": "engine_enhance_project"
+          },
+          "id": 22,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_enhance_project",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZdlPvm",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__16vectorIZ22engine_enhance_projectE9FuncRangeNS_9allocatorIS1_EEE5emptyB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__16vectorIZ22engine_enhance_projectE9FuncRangeNS_9allocatorIS1_EEE5emptyB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_enhance_project"
+          },
+          "id": 23,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_enhance_project",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__16vectorIZ22engine_enhance_projectE9FuncRangeNS_9allocatorIS1_EEE5emptyB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4findEcm (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4findEcm",
+            "caller_lang": "c",
+            "caller_name": "engine_enhance_project"
+          },
+          "id": 24,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_enhance_project",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4findEcm",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_enhance_project (C) -> _ZNKSt3__111__wrap_iterIPZ22engine_enhance_projectE9FuncRangeEdeB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__111__wrap_iterIPZ22engine_enhance_projectE9FuncRangeEdeB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_enhance_project"
+          },
+          "id": 25,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_enhance_project",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__111__wrap_iterIPZ22engine_enhance_projectE9FuncRangeEdeB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_enhance_project (C) -> _ZNSt3__111__wrap_iterIPZ22engine_enhance_projectE9FuncRangeEppB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNSt3__111__wrap_iterIPZ22engine_enhance_projectE9FuncRangeEppB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_enhance_project"
+          },
+          "id": 26,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_enhance_project",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNSt3__111__wrap_iterIPZ22engine_enhance_projectE9FuncRangeEppB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_enhance_project (C) -> _ZNSt3__111__wrap_iterIPNS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEEEppB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNSt3__111__wrap_iterIPNS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEEEppB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_enhance_project"
+          },
+          "id": 27,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_enhance_project",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNSt3__111__wrap_iterIPNS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEEEppB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_get_enhancement_status (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_get_enhancement_status"
+          },
+          "id": 28,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_get_enhancement_status",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_get_enhancement_status (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_get_enhancement_status"
+          },
+          "id": 29,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_get_enhancement_status",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_get_enhancement_status (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_get_enhancement_status"
+          },
+          "id": 30,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_get_enhancement_status",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_get_enhancement_status (C) -> _ZNK5store10GraphStore6handleEv (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNK5store10GraphStore6handleEv",
+            "caller_lang": "c",
+            "caller_name": "engine_get_enhancement_status"
+          },
+          "id": 31,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_get_enhancement_status",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNK5store10GraphStore6handleEv",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_unified_search (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_unified_search"
+          },
+          "id": 32,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_unified_search",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_unified_search (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_unified_search"
+          },
+          "id": 33,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_unified_search",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_unified_search (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_unified_search"
+          },
+          "id": 34,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_unified_search",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_unified_search (C) -> _ZN5store10GraphStore19getProjectReadinessEyPKc (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZN5store10GraphStore19getProjectReadinessEyPKc",
+            "caller_lang": "c",
+            "caller_name": "engine_unified_search"
+          },
+          "id": 35,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_unified_search",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZN5store10GraphStore19getProjectReadinessEyPKc",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_unified_search (C) -> _ZN5store10GraphStore17searchUnifiedJsonEyPKci (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZN5store10GraphStore17searchUnifiedJsonEyPKci",
+            "caller_lang": "c",
+            "caller_name": "engine_unified_search"
+          },
+          "id": 36,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_unified_search",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZN5store10GraphStore17searchUnifiedJsonEyPKci",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_unified_search (C) -> _ZN5store10GraphStore19searchGraphFallbackEyPKci (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZN5store10GraphStore19searchGraphFallbackEyPKci",
+            "caller_lang": "c",
+            "caller_name": "engine_unified_search"
+          },
+          "id": 37,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_unified_search",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZN5store10GraphStore19searchGraphFallbackEyPKci",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_find_callers_adaptive (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_find_callers_adaptive"
+          },
+          "id": 38,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_find_callers_adaptive",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_find_callers_adaptive (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_find_callers_adaptive"
+          },
+          "id": 39,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_find_callers_adaptive",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_find_callers_adaptive (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_find_callers_adaptive"
+          },
+          "id": 40,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_find_callers_adaptive",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_find_callers_adaptive (C) -> _ZN5store10GraphStore15findCallersJsonEyPKc (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZN5store10GraphStore15findCallersJsonEyPKc",
+            "caller_lang": "c",
+            "caller_name": "engine_find_callers_adaptive"
+          },
+          "id": 41,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_find_callers_adaptive",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZN5store10GraphStore15findCallersJsonEyPKc",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_find_callers_adaptive (C) -> _ZNKSt3__110unique_ptrIN5query11QueryEngineENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__110unique_ptrIN5query11QueryEngineENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_find_callers_adaptive"
+          },
+          "id": 42,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_find_callers_adaptive",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__110unique_ptrIN5query11QueryEngineENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_find_callers_adaptive (C) -> _ZNKSt3__110unique_ptrIN5query11QueryEngineENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__110unique_ptrIN5query11QueryEngineENS_14default_deleteIS2_EEEptB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_find_callers_adaptive"
+          },
+          "id": 43,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_find_callers_adaptive",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__110unique_ptrIN5query11QueryEngineENS_14default_deleteIS2_EEEptB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_find_callers_adaptive (C) -> _ZN5query11QueryEngine10getCallersEyPKc (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZN5query11QueryEngine10getCallersEyPKc",
+            "caller_lang": "c",
+            "caller_name": "engine_find_callers_adaptive"
+          },
+          "id": 44,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_find_callers_adaptive",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZN5query11QueryEngine10getCallersEyPKc",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_find_callees_adaptive (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_find_callees_adaptive"
+          },
+          "id": 45,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_find_callees_adaptive",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_find_callees_adaptive (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_find_callees_adaptive"
+          },
+          "id": 46,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_find_callees_adaptive",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_find_callees_adaptive (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_find_callees_adaptive"
+          },
+          "id": 47,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_find_callees_adaptive",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_find_callees_adaptive (C) -> _ZN5store10GraphStore15findCalleesJsonEyPKc (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZN5store10GraphStore15findCalleesJsonEyPKc",
+            "caller_lang": "c",
+            "caller_name": "engine_find_callees_adaptive"
+          },
+          "id": 48,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_find_callees_adaptive",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZN5store10GraphStore15findCalleesJsonEyPKc",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_find_callees_adaptive (C) -> _ZNKSt3__110unique_ptrIN5query11QueryEngineENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__110unique_ptrIN5query11QueryEngineENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_find_callees_adaptive"
+          },
+          "id": 49,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_find_callees_adaptive",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__110unique_ptrIN5query11QueryEngineENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_find_callees_adaptive (C) -> _ZNKSt3__110unique_ptrIN5query11QueryEngineENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__110unique_ptrIN5query11QueryEngineENS_14default_deleteIS2_EEEptB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_find_callees_adaptive"
+          },
+          "id": 50,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_find_callees_adaptive",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__110unique_ptrIN5query11QueryEngineENS_14default_deleteIS2_EEEptB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_get_entry_points_new (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_get_entry_points_new"
+          },
+          "id": 51,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_get_entry_points_new",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_get_entry_points_new (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_get_entry_points_new"
+          },
+          "id": 52,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_get_entry_points_new",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_get_entry_points_new (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_get_entry_points_new"
+          },
+          "id": 53,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_get_entry_points_new",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_get_entry_points_new (C) -> _ZN5store10GraphStore18getEntryPointsJsonEy (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZN5store10GraphStore18getEntryPointsJsonEy",
+            "caller_lang": "c",
+            "caller_name": "engine_get_entry_points_new"
+          },
+          "id": 54,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_get_entry_points_new",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZN5store10GraphStore18getEntryPointsJsonEy",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_project_overview (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_project_overview"
+          },
+          "id": 55,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_project_overview",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_project_overview (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_project_overview"
+          },
+          "id": 56,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_project_overview",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_project_overview (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_project_overview"
+          },
+          "id": 57,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_project_overview",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_project_overview (C) -> _ZNK5store10GraphStore6handleEv (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNK5store10GraphStore6handleEv",
+            "caller_lang": "c",
+            "caller_name": "engine_project_overview"
+          },
+          "id": 58,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_project_overview",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNK5store10GraphStore6handleEv",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_trace_path (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_trace_path"
+          },
+          "id": 59,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_trace_path",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_trace_path (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_trace_path"
+          },
+          "id": 60,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_trace_path",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_trace_path (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_trace_path"
+          },
+          "id": 61,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_trace_path",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_trace_path (C) -> _ZN5store10GraphStore13tracePathJsonEyPKcS2_ (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZN5store10GraphStore13tracePathJsonEyPKcS2_",
+            "caller_lang": "c",
+            "caller_name": "engine_trace_path"
+          },
+          "id": 62,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_trace_path",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZN5store10GraphStore13tracePathJsonEyPKcS2_",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_explore_function (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_explore_function"
+          },
+          "id": 63,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_explore_function",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_explore_function (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_explore_function"
+          },
+          "id": 64,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_explore_function",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_explore_function (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_explore_function"
+          },
+          "id": 65,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_explore_function",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_explore_function (C) -> _ZN5store10GraphStore19exploreFunctionJsonEyPKciS2_ (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZN5store10GraphStore19exploreFunctionJsonEyPKciS2_",
+            "caller_lang": "c",
+            "caller_name": "engine_explore_function"
+          },
+          "id": 66,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_explore_function",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZN5store10GraphStore19exploreFunctionJsonEyPKciS2_",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_build_context (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_build_context"
+          },
+          "id": 67,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_build_context",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEcvbB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_build_context (C) -> _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_build_context"
+          },
+          "id": 68,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_build_context",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: engine_build_context (C) -> _ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+            "caller_lang": "c",
+            "caller_name": "engine_build_context"
+          },
+          "id": 69,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "engine_build_context",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZNKSt3__110unique_ptrIN5store10GraphStoreENS_14default_deleteIS2_EEEptB8ne210108Ev",
+          "trace": []
+        },
+        {
+          "confidence": "Low",
+          "cwe_id": 119,
+          "description": "FFI boundary: __clang_call_terminate (C) -> _ZSt9terminatev (Cpp) [verdict=Unknown, C++ cross-language]",
+          "ffi_boundary": {
+            "boundary_kind": "CToRust",
+            "callee_lang": "cpp",
+            "callee_name": "_ZSt9terminatev",
+            "caller_lang": "c",
+            "caller_name": "__clang_call_terminate"
+          },
+          "id": 70,
+          "kind": "FfiUnsafeCall",
+          "location": {
+            "file": "<ffi>",
+            "function": "__clang_call_terminate",
+            "line": 0
+          },
+          "severity": "note",
+          "symbol": "_ZSt9terminatev",
+          "trace": []
+        }
+      ],
+      "issues_found": 70,
+      "name": "FFIBoundary",
+      "nodes_analyzed": 132
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "name": "SurfaceClassifier",
+      "nodes_analyzed": 851,
+      "stats": {
+        "boundary": 50,
+        "compiler_gen": 566,
+        "runtime": 0,
+        "stdlib": 0,
+        "unknown": 235,
+        "user_code": 0
+      }
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "name": "DangerSurface",
+      "nodes_analyzed": 382,
+      "stats": {
+        "known_family": 0
+      }
+    },
+    {
+      "duration_ms": 9,
+      "issues_found": 0,
+      "name": "IRBehaviorSummary",
+      "nodes_analyzed": 750,
+      "stats": {
+        "behaviors_extracted": 750,
+        "buffer_overflow": 0,
+        "conditional_release": 0,
+        "initialization": 16,
+        "internal_bridge": 0,
+        "ownership_transfer": 20,
+        "pointer_projection": 0,
+        "pure_computation": 519,
+        "semantic_facts_emitted": 909,
+        "summaries_from_behavior": 633
+      }
+    },
+    {
+      "duration_ms": 1,
+      "issues_found": 0,
+      "name": "LanguageAdapterFact",
+      "nodes_analyzed": 858,
+      "stats": {
+        "adapter_facts_emitted": 872,
+        "cpp_facts": 872,
+        "csharp_facts": 0,
+        "go_facts": 0,
+        "java_facts": 0,
+        "python_facts": 0,
+        "wasm_facts": 0
+      }
+    },
+    {
+      "duration_ms": 3,
+      "issues_found": 0,
+      "name": "AbiLayout",
+      "nodes_analyzed": 139,
+      "stats": {
+        "abi_facts_emitted": 129,
+        "cross_language_issues": 125,
+        "excessive_padding": 0,
+        "ffi_boundary_functions": 2,
+        "ffi_structs_checked": 4,
+        "ordering_issues": 0,
+        "padding_issues": 4,
+        "structs_analyzed": 139
+      }
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "name": "SummaryBuilder",
+      "nodes_analyzed": 156,
+      "stats": {
+        "behavior_summary_count": 633
+      }
+    },
+    {
+      "duration_ms": 1,
+      "issues_found": 0,
+      "name": "StructuralInference",
+      "nodes_analyzed": 13,
+      "stats": {
+        "behavior_override_count": 0,
+        "bridge_inferences": 0,
+        "destructor_inferences": 0,
+        "inferred_summaries": 11,
+        "refcount_inferences": 0,
+        "srt_fact_entries": 947,
+        "srt_key_resolution_entries": 151,
+        "srt_resolution_entries": 151,
+        "static_lifetime_inferences": 0
+      }
+    },
+    {
+      "duration_ms": 5,
+      "issues_found": 0,
+      "name": "ContractGraphBuilder",
+      "nodes_analyzed": 436
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "name": "OwnershipSolver",
+      "nodes_analyzed": 13
+    },
+    {
+      "duration_ms": 1,
+      "issues_found": 0,
+      "name": "CrossFunctionLifetime",
+      "nodes_analyzed": 851,
+      "stats": {
+        "flows_detected": 986,
+        "functions_analyzed": 851,
+        "violations_detected": 9
+      }
+    },
+    {
+      "duration_ms": 2,
+      "issues_found": 0,
+      "name": "IssueCandidateBuilder",
+      "nodes_analyzed": 280,
+      "stats": {
+        "boundary_evidence_count": 0,
+        "boundary_suppressed": 0,
+        "ffi_evidence_count": 277,
+        "local_bug_count": 20,
+        "needs_model_count": 0,
+        "semantic_facts_attached": 1828
+      }
+    },
+    {
+      "duration_ms": 2,
+      "issues_found": 0,
+      "name": "FfiReturnCheck",
+      "nodes_analyzed": 0,
+      "stats": {
+        "ffi_unchecked_returns": 1
+      }
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "name": "LeakDetection",
+      "nodes_analyzed": 11,
+      "stats": {
+        "alloc_sites_analyzed": 11,
+        "leak_candidates": 1,
+        "max_path_length": 256,
+        "path_budget": 64
+      }
+    },
+    {
+      "duration_ms": 1,
+      "issues": [
+        {
+          "confidence": "Medium",
+          "cwe_id": 772,
+          "description": "conditional leak: resource from '\"_ZNSt3__110__function12__value_funcIFvPN2ir4NodeEEEC2B8ne210108IZ22engine_enhance_projectE3$_0TnNS_9enable_ifIXntsr7is_sameIu7__decayIT_ES6_EE5valueEiE4typeELi0EEEOSA_\"' (FamilyId(2)) may not be freed on all paths [probable]",
+          "ffi_boundary": null,
+          "id": 71,
+          "kind": "ConditionalLeak",
+          "location": {
+            "file": "<ir>",
+            "function": "\"_ZNSt3__110__function12__value_funcIFvPN2ir4NodeEEEC2B8ne210108IZ22engine_enhance_projectE3$_0TnNS_9enable_ifIXntsr7is_sameIu7__decayIT_ES6_EE5valueEiE4typeELi0EEEOSA_\"",
+            "line": 0
+          },
+          "severity": "warning",
+          "symbol": "\"_ZNSt3__110__function12__value_funcIFvPN2ir4NodeEEEC2B8ne210108IZ22engine_enhance_projectE3$_0TnNS_9enable_ifIXntsr7is_sameIu7__decayIT_ES6_EE5valueEiE4typeELi0EEEOSA_\"",
+          "trace": []
+        },
+        {
+          "confidence": "Medium",
+          "cwe_id": 772,
+          "description": "conditional leak: resource from '\"_ZNKSt3__110__function6__funcIZ22engine_enhance_projectE3$_0FvPN2ir4NodeEEE7__cloneEv\"' (FamilyId(2)) may not be freed on all paths [probable]",
+          "ffi_boundary": null,
+          "id": 72,
+          "kind": "ConditionalLeak",
+          "location": {
+            "file": "<ir>",
+            "function": "\"_ZNKSt3__110__function6__funcIZ22engine_enhance_projectE3$_0FvPN2ir4NodeEEE7__cloneEv\"",
+            "line": 0
+          },
+          "severity": "warning",
+          "symbol": "\"_ZNKSt3__110__function6__funcIZ22engine_enhance_projectE3$_0FvPN2ir4NodeEEE7__cloneEv\"",
+          "trace": []
+        },
+        {
+          "confidence": "Medium",
+          "cwe_id": 772,
+          "description": "conditional leak: resource from '\"_ZNKSt3__110__function6__funcIZ22engine_enhance_projectE3$_1FvPN2ir4NodeEEE7__cloneEv\"' (FamilyId(2)) may not be freed on all paths [probable]",
+          "ffi_boundary": null,
+          "id": 73,
+          "kind": "ConditionalLeak",
+          "location": {
+            "file": "<ir>",
+            "function": "\"_ZNKSt3__110__function6__funcIZ22engine_enhance_projectE3$_1FvPN2ir4NodeEEE7__cloneEv\"",
+            "line": 0
+          },
+          "severity": "warning",
+          "symbol": "\"_ZNKSt3__110__function6__funcIZ22engine_enhance_projectE3$_1FvPN2ir4NodeEEE7__cloneEv\"",
+          "trace": []
+        },
+        {
+          "confidence": "Medium",
+          "cwe_id": 772,
+          "description": "conditional leak: resource from '_ZL14lookupSymbolIdyRKNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEES7_iRNS_13unordered_mapIS5_NS_6vectorINS_4pairIS5_yEENS3_ISB_EEEENS_4hashIS5_EENS_8equal_toIS5_EENS3_INSA_IS6_SD_EEEEEE' (FamilyId(16)) may not be freed on all paths [probable]",
+          "ffi_boundary": null,
+          "id": 74,
+          "kind": "ConditionalLeak",
+          "location": {
+            "file": "<ir>",
+            "function": "_ZL14lookupSymbolIdyRKNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEES7_iRNS_13unordered_mapIS5_NS_6vectorINS_4pairIS5_yEENS3_ISB_EEEENS_4hashIS5_EENS_8equal_toIS5_EENS3_INSA_IS6_SD_EEEEEE",
+            "line": 0
+          },
+          "severity": "warning",
+          "symbol": "_ZL14lookupSymbolIdyRKNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEES7_iRNS_13unordered_mapIS5_NS_6vectorINS_4pairIS5_yEENS3_ISB_EEEENS_4hashIS5_EENS_8equal_toIS5_EENS3_INSA_IS6_SD_EEEEEE",
+          "trace": []
+        },
+        {
+          "confidence": "Medium",
+          "cwe_id": 772,
+          "description": "conditional leak: resource from 'engine_get_enhancement_status' (FamilyId(16)) may not be freed on all paths [probable]",
+          "ffi_boundary": null,
+          "id": 75,
+          "kind": "ConditionalLeak",
+          "location": {
+            "file": "<ir>",
+            "function": "engine_get_enhancement_status",
+            "line": 0
+          },
+          "severity": "warning",
+          "symbol": "engine_get_enhancement_status",
+          "trace": []
+        }
+      ],
+      "issues_found": 5,
+      "name": "IssueVerifier",
+      "nodes_analyzed": 281,
+      "stats": {
+        "ffi_gate_suppressed": 0,
+        "gate_suppressed": 3,
+        "noise_suppressed": 0,
+        "reconcile_deduped": 147,
+        "reconcile_subsumed": 0,
+        "semantic_suppressed": 2,
+        "single_lang_suppressed": 0
+      }
+    },
+    {
+      "duration_ms": 2,
+      "issues_found": 0,
+      "name": "RaiiDrop",
+      "nodes_analyzed": 1627
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "name": "InteriorMutability",
+      "nodes_analyzed": 1627
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "name": "HeapProvenance",
+      "nodes_analyzed": 1627
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "name": "BorrowEscape",
+      "nodes_analyzed": 1627
+    },
+    {
+      "duration_ms": 1,
+      "issues_found": 0,
+      "name": "WriteToImmutable",
+      "nodes_analyzed": 2277
+    }
+  ],
+  "pass_timings": [
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "pass_name": "CallGraph"
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "pass_name": "RawFactCollector"
+    },
+    {
+      "duration_ms": 263,
+      "issues_found": 70,
+      "pass_name": "FFIBoundary"
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "pass_name": "SurfaceClassifier"
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "pass_name": "DangerSurface"
+    },
+    {
+      "duration_ms": 9,
+      "issues_found": 0,
+      "pass_name": "IRBehaviorSummary"
+    },
+    {
+      "duration_ms": 1,
+      "issues_found": 0,
+      "pass_name": "LanguageAdapterFact"
+    },
+    {
+      "duration_ms": 3,
+      "issues_found": 0,
+      "pass_name": "AbiLayout"
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "pass_name": "SummaryBuilder"
+    },
+    {
+      "duration_ms": 1,
+      "issues_found": 0,
+      "pass_name": "StructuralInference"
+    },
+    {
+      "duration_ms": 5,
+      "issues_found": 0,
+      "pass_name": "ContractGraphBuilder"
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "pass_name": "OwnershipSolver"
+    },
+    {
+      "duration_ms": 1,
+      "issues_found": 0,
+      "pass_name": "CrossFunctionLifetime"
+    },
+    {
+      "duration_ms": 2,
+      "issues_found": 0,
+      "pass_name": "IssueCandidateBuilder"
+    },
+    {
+      "duration_ms": 2,
+      "issues_found": 0,
+      "pass_name": "FfiReturnCheck"
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "pass_name": "LeakDetection"
+    },
+    {
+      "duration_ms": 1,
+      "issues_found": 5,
+      "pass_name": "IssueVerifier"
+    },
+    {
+      "duration_ms": 2,
+      "issues_found": 0,
+      "pass_name": "RaiiDrop"
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "pass_name": "InteriorMutability"
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "pass_name": "HeapProvenance"
+    },
+    {
+      "duration_ms": 0,
+      "issues_found": 0,
+      "pass_name": "BorrowEscape"
+    },
+    {
+      "duration_ms": 1,
+      "issues_found": 0,
+      "pass_name": "WriteToImmutable"
+    }
+  ],
+  "stats": {
+    "analysis_passes": 22,
+    "avg_duration_ms": 13.227272727272727,
+    "foundation_passes": 0,
+    "max_duration_ms": 263,
+    "min_duration_ms": 0,
+    "total_duration_ms": 291,
+    "transformation_passes": 0
+  },
+  "total_issues": 75,
+  "total_nodes": 14802
+}
