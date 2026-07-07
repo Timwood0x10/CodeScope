@@ -82,8 +82,9 @@ if [ -d "${GRAMMARS_DIR}/tree-sitter-typescript" ]; then
     echo "Building TypeScript sub-grammars..."
     cd "${GRAMMARS_DIR}/tree-sitter-typescript"
     
-    # Build typescript grammar
-    gcc -fPIC -shared typescript/src/parser.c -I typescript/src \
+    # Build typescript grammar (must include scanner — external_scanner_* symbols)
+    gcc -fPIC -shared typescript/src/parser.c typescript/src/scanner.c \
+        -I typescript/src \
         -o "${GRAMMARS_DIR}/tree-sitter-typescript.so"
     
     # Build tsx grammar

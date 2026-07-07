@@ -15,6 +15,7 @@
 #include <sqlite3.h>
 #include <sstream>
 #include <string>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <thread>
 #include <tree_sitter/api.h>
