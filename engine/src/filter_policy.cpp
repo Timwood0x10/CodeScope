@@ -8,87 +8,93 @@ FilterPolicy::FilterPolicy()
 {
 	// Normal mode skip dirs — VCS, IDE, common build artifacts, tests, docs
 	normal_skip_dirs_ = {
-	 ".git",
-	 ".svn",
-	 ".hg",
-	 ".worktrees",
-	 ".vscode",
-	 ".idea",
-	 ".eclipse",
-	 ".claude",
-	 ".claude-worktrees",
-	 "Antigravity",
-	 ".clangd",
-	 ".ccls-cache",
-	 ".cache",
-	 ".cpcache",
-	 ".shadow-cljs",
-	 ".metals",
-	 ".bloop",
-	 ".bsp",
-	 ".mypy_cache",
-	 ".pytest_cache",
-	 ".ruff_cache",
-	 ".nox",
-	 ".tox",
-	 ".eggs",
-	 ".npm",
-	 ".nyc_output",
-	 ".pnpm-store",
-	 ".yarn",
-	 ".next",
-	 ".nuxt",
-	 ".svelte-kit",
-	 ".angular",
-	 ".turbo",
-	 ".parcel-cache",
-	 ".docusaurus",
-	 ".expo",
-	 ".cargo",
-	 ".stack-work",
-	 ".dart_tool",
-	 "zig-cache",
-	 "zig-out",
-	 "elm-stuff",
-	 "_opam",
-	 ".terraform",
-	 ".serverless",
-	 ".vercel",
-	 ".netlify",
-	 ".codescope",
-	 ".codegraph",
-	 "node_modules",
-	 "target",
-	 "__pycache__",
-	 ".venv",
-	 "venv",
-	 "build",
-	 ".build",
-	 "dist",
-	 ".dist",
-	 "out",
-	 ".out",
-	 "coverage",
-	 "htmlcov",
-	 "site-packages",
-	 "Pods",
-	 "temp",
-	 "tmp",
-	 "bazel-bin",
-	 "bazel-out",
-	 "bazel-testlogs",
-	 "third_party",
-	 "thirdparty",
-	 "3rdparty",
-	 "vendor",
-	 ".qdrant_code_embeddings",
-	 ".tmp",
-	 // Non-essential directories that are rarely source code
-	 "test",		"tests",
-	 "doc",		"docs",		"documentation",
-	 "examples",	"example",
-	 "bench",	"benchmark",	"benchmarks",
-	 "bin",
+		".git",
+		".svn",
+		".hg",
+		".worktrees",
+		".vscode",
+		".idea",
+		".eclipse",
+		".claude",
+		".claude-worktrees",
+		"Antigravity",
+		".clangd",
+		".ccls-cache",
+		".cache",
+		".cpcache",
+		".shadow-cljs",
+		".metals",
+		".bloop",
+		".bsp",
+		".mypy_cache",
+		".pytest_cache",
+		".ruff_cache",
+		".nox",
+		".tox",
+		".eggs",
+		".npm",
+		".nyc_output",
+		".pnpm-store",
+		".yarn",
+		".next",
+		".nuxt",
+		".svelte-kit",
+		".angular",
+		".turbo",
+		".parcel-cache",
+		".docusaurus",
+		".expo",
+		".cargo",
+		".stack-work",
+		".dart_tool",
+		"zig-cache",
+		"zig-out",
+		"elm-stuff",
+		"_opam",
+		".terraform",
+		".serverless",
+		".vercel",
+		".netlify",
+		".codescope",
+		".codegraph",
+		"node_modules",
+		"target",
+		"__pycache__",
+		".venv",
+		"venv",
+		"build",
+		".build",
+		"dist",
+		".dist",
+		"out",
+		".out",
+		"coverage",
+		"htmlcov",
+		"site-packages",
+		"Pods",
+		"temp",
+		"tmp",
+		"bazel-bin",
+		"bazel-out",
+		"bazel-testlogs",
+		"third_party",
+		"thirdparty",
+		"3rdparty",
+		"vendor",
+		".qdrant_code_embeddings",
+		".tmp",
+		// Non-essential directories that are rarely source code
+		"test",
+		"tests",
+		"doc",
+		"docs",
+		"documentation",
+		"examples",
+		"example",
+		"bench",
+		"benchmark",
+		"benchmarks",
+		"bin",
 	};
 
 	// FAST mode skips even more — docs, examples, tests, generated, etc.
@@ -300,33 +306,35 @@ bool FilterPolicy::shouldSkipPath(const std::string &rel_path,
 	//              filename    (matches any component)
 	//              /path/name  (anchored from root)
 	for (const auto &pat : ignore_patterns_) {
-	 bool dir_only = (!pat.empty() && pat.back() == '/');
-	 bool anchored = (!pat.empty() && pat[0] == '/');
-	 // For dir_only patterns applied to file entries:
-	 // still check if any PATH COMPONENT matches the dir name
-	 if (dir_only && pat.size() <= 1)
-	  continue;
+		bool dir_only = (!pat.empty() && pat.back() == '/');
+		bool anchored = (!pat.empty() && pat[0] == '/');
+		// For dir_only patterns applied to file entries:
+		// still check if any PATH COMPONENT matches the dir name
+		if (dir_only && pat.size() <= 1)
+			continue;
 
-	 // Normalize pattern: strip trailing /
-	 std::string normalized = dir_only ? pat.substr(0, pat.size() - 1) : pat;
+		// Normalize pattern: strip trailing /
+		std::string normalized =
+			dir_only ? pat.substr(0, pat.size() - 1) : pat;
 
-	 // Anchored: match from start
-	 if (anchored) {
-	  if (rel_path == normalized.substr(1) ||
-	      (rel_path.size() > normalized.size() - 1 &&
-	       rel_path.compare(0, normalized.size() - 1, normalized.substr(1)) == 0 &&
-	       rel_path[normalized.size() - 1] == '/'))
-	   return true;
-	  continue;
-	 }
+		// Anchored: match from start
+		if (anchored) {
+			if (rel_path == normalized.substr(1) ||
+			    (rel_path.size() > normalized.size() - 1 &&
+			     rel_path.compare(0, normalized.size() - 1,
+					      normalized.substr(1)) == 0 &&
+			     rel_path[normalized.size() - 1] == '/'))
+				return true;
+			continue;
+		}
 
-	 // Unanchored: check every path component
-	 std::istringstream ss2(rel_path);
-	 std::string comp;
-	 while (std::getline(ss2, comp, '/')) {
-	  if (comp == normalized)
-	   return true;
-	 }
+		// Unanchored: check every path component
+		std::istringstream ss2(rel_path);
+		std::string comp;
+		while (std::getline(ss2, comp, '/')) {
+			if (comp == normalized)
+				return true;
+		}
 	}
 
 	return false;

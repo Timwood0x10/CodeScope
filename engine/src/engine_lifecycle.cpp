@@ -54,8 +54,7 @@ int engine_init(const char *db_path)
 
 		if (db) {
 			// Attempt to load extension directly without dlopen pre-check
-			rc = sqlite3_load_extension(db,
-						    vec_path.c_str(),
+			rc = sqlite3_load_extension(db, vec_path.c_str(),
 						    nullptr, &ext_err);
 			if (rc != SQLITE_OK) {
 				fprintf(stderr,

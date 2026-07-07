@@ -478,10 +478,9 @@ std::string getIndexProgressJson(uint64_t project_id)
 			 "\"current_file\":%d,\"phase\":%d,"
 			 "\"percent\":%d,\"current_file_path\":\"%s\","
 			 "\"error\":\"%s\"}",
-			 (unsigned long long)p.project_id,
-			 p.total_files, p.current_file, p.phase,
-			 p.percent, p.current_file_path.c_str(),
-			 p.error.c_str());
+			 (unsigned long long)p.project_id, p.total_files,
+			 p.current_file, p.phase, p.percent,
+			 p.current_file_path.c_str(), p.error.c_str());
 	return std::string(buf, n);
 }
 
@@ -1803,6 +1802,68 @@ std::string GraphStore::findSymbolJson(uint64_t project_id, const char *name)
 	}
 	sqlite3_finalize(stmt);
 	json << "]}";
+
+	// If symbols table was empty, fall back to graph_nodes (new pipeline)
+	if (first) {
+		std::ostringstream gn_json;
+		gn_json << "{\"results\":[";
+		bool gn_first = true;
+		const char *gn_sql =
+			"SELECT id, node_type, name, file_path, start_row, start_col, "
+			"end_row, end_col, language "
+			"FROM graph_nodes WHERE project_id = ? AND name = ? "
+			"AND node_type IN (0,1,2,3,4,6) LIMIT 20";
+		sqlite3_stmt *gn_stmt = nullptr;
+		if (sqlite3_prepare_v2(db_, gn_sql, -1, &gn_stmt, nullptr) ==
+		    SQLITE_OK) {
+			sqlite3_bind_int64(gn_stmt, 1,
+					   static_cast<int64_t>(project_id));
+			sqlite3_bind_text(gn_stmt, 2, name, -1,
+					  SQLITE_TRANSIENT);
+			static const char *type_names[] = {
+				"function",  "method", "class",
+				"interface", "enum",   "typealias",
+				"variable",
+			};
+			while (sqlite3_step(gn_stmt) == SQLITE_ROW) {
+				if (!gn_first)
+					gn_json << ",";
+				gn_first = false;
+				uint64_t id = static_cast<uint64_t>(
+					sqlite3_column_int64(gn_stmt, 0));
+				int nt = sqlite3_column_int(gn_stmt, 1);
+				const char *n = reinterpret_cast<const char *>(
+					sqlite3_column_text(gn_stmt, 2));
+				const char *fp = reinterpret_cast<const char *>(
+					sqlite3_column_text(gn_stmt, 3));
+				int sr = sqlite3_column_int(gn_stmt, 4);
+				int sc = sqlite3_column_int(gn_stmt, 5);
+				const char *lang =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(gn_stmt,
+								    8));
+				const char *type_name = (nt >= 0 && nt < 7) ?
+								type_names[nt] :
+								"symbol";
+				gn_json << "{"
+					<< "\"id\":" << id << ","
+					<< "\"kind\":\"" << type_name << "\","
+					<< "\"name\":\"" << (n ? n : "")
+					<< "\","
+					<< "\"file_path\":\"" << (fp ? fp : "")
+					<< "\","
+					<< "\"line\":" << sr << ","
+					<< "\"column\":" << sc << ","
+					<< "\"language\":\""
+					<< (lang ? lang : "") << "\""
+					<< "}";
+			}
+			sqlite3_finalize(gn_stmt);
+		}
+		gn_json << "]}";
+		return gn_json.str();
+	}
+
 	return json.str();
 }
 
@@ -2282,12 +2343,11 @@ std::string GraphStore::searchGraphFallback(uint64_t project_id,
 	if (like_query.empty())
 		return "{\"method\":\"graph_fallback\",\"results\":[]}";
 
-	const char *sql =
-		"SELECT id, name, file_path, node_type "
-		"FROM graph_nodes "
-		"WHERE project_id=? AND name LIKE ? "
-		"ORDER BY LENGTH(name) ASC "
-		"LIMIT ?";
+	const char *sql = "SELECT id, name, file_path, node_type "
+			  "FROM graph_nodes "
+			  "WHERE project_id=? AND name LIKE ? "
+			  "ORDER BY LENGTH(name) ASC "
+			  "LIMIT ?";
 	sqlite3_stmt *stmt = nullptr;
 	std::ostringstream json;
 	json << "{\"method\":\"graph_fallback\",\"results\":[";
@@ -2307,11 +2367,11 @@ std::string GraphStore::searchGraphFallback(uint64_t project_id,
 			     << ","
 			     << "\"name\":\""
 			     << jsonEscape(reinterpret_cast<const char *>(
-					       sqlite3_column_text(stmt, 1)))
+					sqlite3_column_text(stmt, 1)))
 			     << "\","
 			     << "\"file_path\":\""
 			     << jsonEscape(reinterpret_cast<const char *>(
-					       sqlite3_column_text(stmt, 2)))
+					sqlite3_column_text(stmt, 2)))
 			     << "\","
 			     << "\"type\":" << sqlite3_column_int(stmt, 3)
 			     << "}";
@@ -2412,6 +2472,84 @@ std::string GraphStore::findCalleesJson(uint64_t project_id,
 	}
 	sqlite3_finalize(stmt);
 	json << "]}";
+
+	// If call_edges table was empty, fall back to graph_edges (new pipeline)
+	if (first) {
+		std::ostringstream ge_json;
+		ge_json << "{\"callees\":[";
+		sqlite3_stmt *id_stmt = nullptr;
+		uint64_t gn_id = 0;
+		const char *id_sql =
+			"SELECT id FROM graph_nodes WHERE project_id = ? AND name = ? "
+			"AND node_type IN (0,1,6) LIMIT 1";
+		if (sqlite3_prepare_v2(db_, id_sql, -1, &id_stmt, nullptr) ==
+		    SQLITE_OK) {
+			sqlite3_bind_int64(id_stmt, 1,
+					   static_cast<int64_t>(project_id));
+			sqlite3_bind_text(id_stmt, 2, symbol_name, -1,
+					  SQLITE_TRANSIENT);
+			if (sqlite3_step(id_stmt) == SQLITE_ROW)
+				gn_id = static_cast<uint64_t>(
+					sqlite3_column_int64(id_stmt, 0));
+			sqlite3_finalize(id_stmt);
+		}
+		if (gn_id > 0) {
+			const char *ge_sql =
+				"SELECT gn.id, gn.name, gn.node_type, gn.file_path, gn.start_row "
+				"FROM graph_edges ge "
+				"JOIN graph_nodes gn ON gn.id = ge.target_node_id "
+				"WHERE ge.project_id = ? AND ge.source_node_id = ? "
+				"AND ge.edge_type = 1 ORDER BY gn.name LIMIT 50";
+			sqlite3_stmt *ge_stmt = nullptr;
+			static const char *type_names[] = {
+				"function",  "method", "class",
+				"interface", "enum",   "typealias",
+				"variable",
+			};
+			if (sqlite3_prepare_v2(db_, ge_sql, -1, &ge_stmt,
+					       nullptr) == SQLITE_OK) {
+				sqlite3_bind_int64(
+					ge_stmt, 1,
+					static_cast<int64_t>(project_id));
+				sqlite3_bind_int64(ge_stmt, 2,
+						   static_cast<int64_t>(gn_id));
+				bool ge_first = true;
+				while (sqlite3_step(ge_stmt) == SQLITE_ROW) {
+					if (!ge_first)
+						ge_json << ",";
+					ge_first = false;
+					uint64_t gid = static_cast<uint64_t>(
+						sqlite3_column_int64(ge_stmt,
+								     0));
+					int nt = sqlite3_column_int(ge_stmt, 2);
+					const char *gn =
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								ge_stmt, 1));
+					const char *fp =
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								ge_stmt, 3));
+					int ln = sqlite3_column_int(ge_stmt, 4);
+					const char *tn =
+						(nt >= 0 && nt < 7) ?
+							type_names[nt] :
+							"symbol";
+					ge_json << "{\"id\":" << gid
+						<< ",\"name\":\""
+						<< (gn ? gn : "") << "\""
+						<< ",\"kind\":\"" << tn << "\""
+						<< ",\"file_path\":\""
+						<< (fp ? fp : "") << "\""
+						<< ",\"line\":" << ln << "}";
+				}
+				sqlite3_finalize(ge_stmt);
+			}
+		}
+		ge_json << "]}";
+		return ge_json.str();
+	}
+
 	return json.str();
 }
 
@@ -2722,7 +2860,7 @@ std::string GraphStore::exploreFunctionJson(uint64_t project_id,
 					stmt, 1,
 					static_cast<int64_t>(project_id));
 				sqlite3_bind_text(stmt, 2, name, -1,
-						   SQLITE_TRANSIENT);
+						  SQLITE_TRANSIENT);
 				uint64_t id = 0;
 				if (sqlite3_step(stmt) == SQLITE_ROW)
 					id = static_cast<uint64_t>(
@@ -2763,8 +2901,8 @@ std::string GraphStore::exploreFunctionJson(uint64_t project_id,
 			std::string file_path = "";
 			int line = 0;
 			bool found = false;
-			if (sqlite3_prepare_v2(db_, gn_sql, -1, &stmt, nullptr) ==
-			    SQLITE_OK) {
+			if (sqlite3_prepare_v2(db_, gn_sql, -1, &stmt,
+					       nullptr) == SQLITE_OK) {
 				sqlite3_bind_int64(stmt, 1,
 						   static_cast<int64_t>(id));
 				sqlite3_bind_int64(
@@ -2797,10 +2935,9 @@ std::string GraphStore::exploreFunctionJson(uint64_t project_id,
 					sqlite3_bind_int64(
 						stmt, 1,
 						static_cast<int64_t>(id));
-					sqlite3_bind_int64(
-						stmt, 2,
-						static_cast<int64_t>(
-							project_id));
+					sqlite3_bind_int64(stmt, 2,
+							   static_cast<int64_t>(
+								   project_id));
 					if (sqlite3_step(stmt) == SQLITE_ROW) {
 						const char *n = reinterpret_cast<
 							const char *>(
@@ -2814,8 +2951,8 @@ std::string GraphStore::exploreFunctionJson(uint64_t project_id,
 								stmt, 1));
 						if (f)
 							file_path = f;
-						line = sqlite3_column_int(
-							stmt, 2);
+						line = sqlite3_column_int(stmt,
+									  2);
 					}
 					sqlite3_finalize(stmt);
 				}
@@ -2830,11 +2967,13 @@ std::string GraphStore::exploreFunctionJson(uint64_t project_id,
 				return;
 			}
 
-			bool has_fields = true; // name, file, line already written
+			bool has_fields =
+				true; // name, file, line already written
 
 			// Callers: graph_edges where target_node_id = id AND edge_type=1 (call)
 			if (show_callers) {
-				if (has_fields) json << ",";
+				if (has_fields)
+					json << ",";
 				has_fields = true;
 				json << "\"callers\":[";
 				const char *csql =
@@ -2845,9 +2984,9 @@ std::string GraphStore::exploreFunctionJson(uint64_t project_id,
 				bool first = true;
 				if (sqlite3_prepare_v2(db_, csql, -1, &cstmt,
 						       nullptr) == SQLITE_OK) {
-					sqlite3_bind_int64(
-						cstmt, 1,
-						static_cast<int64_t>(project_id));
+					sqlite3_bind_int64(cstmt, 1,
+							   static_cast<int64_t>(
+								   project_id));
 					sqlite3_bind_int64(
 						cstmt, 2,
 						static_cast<int64_t>(id));
@@ -2856,11 +2995,10 @@ std::string GraphStore::exploreFunctionJson(uint64_t project_id,
 						static_cast<int64_t>(id));
 					while (sqlite3_step(cstmt) ==
 					       SQLITE_ROW) {
-						uint64_t caller_id =
-							static_cast<uint64_t>(
-								sqlite3_column_int64(
-									cstmt,
-									0));
+						uint64_t caller_id = static_cast<
+							uint64_t>(
+							sqlite3_column_int64(
+								cstmt, 0));
 						if (!first)
 							json << ",";
 						first = false;
@@ -2874,7 +3012,8 @@ std::string GraphStore::exploreFunctionJson(uint64_t project_id,
 
 			// Callees: graph_edges where source_node_id = id AND edge_type=1 (call)
 			if (show_callees) {
-				if (has_fields) json << ",";
+				if (has_fields)
+					json << ",";
 				has_fields = true;
 				json << "\"callees\":[";
 				const char *csql =
@@ -2885,9 +3024,9 @@ std::string GraphStore::exploreFunctionJson(uint64_t project_id,
 				bool first = true;
 				if (sqlite3_prepare_v2(db_, csql, -1, &cstmt,
 						       nullptr) == SQLITE_OK) {
-					sqlite3_bind_int64(
-						cstmt, 1,
-						static_cast<int64_t>(project_id));
+					sqlite3_bind_int64(cstmt, 1,
+							   static_cast<int64_t>(
+								   project_id));
 					sqlite3_bind_int64(
 						cstmt, 2,
 						static_cast<int64_t>(id));
@@ -2896,11 +3035,10 @@ std::string GraphStore::exploreFunctionJson(uint64_t project_id,
 						static_cast<int64_t>(id));
 					while (sqlite3_step(cstmt) ==
 					       SQLITE_ROW) {
-						uint64_t callee_id =
-							static_cast<uint64_t>(
-								sqlite3_column_int64(
-									cstmt,
-									0));
+						uint64_t callee_id = static_cast<
+							uint64_t>(
+							sqlite3_column_int64(
+								cstmt, 0));
 						if (!first)
 							json << ",";
 						first = false;
@@ -3165,12 +3303,12 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 
 	// ── 2d: Containment edges ──
 	{
-	 std::string sql = std::string(
-	  "INSERT INTO graph_edges "
-	  "(project_id, source_node_id, target_node_id, edge_type, graph_type) "
-	  "SELECT DISTINCT " +
-	  pid +
-	  ", parent.node_id, child.node_id, 3, 'symbol_reference' "
+		std::string sql = std::string(
+			"INSERT INTO graph_edges "
+			"(project_id, source_node_id, target_node_id, edge_type, graph_type) "
+			"SELECT DISTINCT " +
+			pid +
+			", parent.node_id, child.node_id, 3, 'symbol_reference' "
 			"FROM semantic_records sr "
 			"JOIN _r2n child ON sr.original_id = child.original_id AND sr.file_path = child.file_path "
 			"JOIN _r2n parent ON sr.parent_id = parent.original_id AND sr.file_path = parent.file_path "
@@ -3184,27 +3322,27 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 
 	// ── 2e: Call edges ──
 	if (build_calls) {
-	 std::string sql = std::string(
-	       "INSERT INTO graph_edges "
-	       "(project_id, source_node_id, target_node_id, edge_type, graph_type, "
-	       " call_site_file, call_site_line) "
-	       "SELECT DISTINCT " +
-	       pid +
-	       ", caller.node_id, callee.node_id, 1, 'call_graph', "
-	       "  sr.file_path, sr.start_row "
-	       "FROM semantic_records sr "
-	       "JOIN _r2n callee ON SUBSTR(sr.name, -LENGTH(callee.name)) = callee.name "
-	       "JOIN _r2n caller ON sr.parent_id = caller.original_id AND sr.file_path = caller.file_path "
-	       "JOIN semantic_records cal_sr ON cal_sr.rowid = callee.rid "
-	       "JOIN semantic_records call_sr ON sr.parent_id = call_sr.original_id AND sr.file_path = call_sr.file_path "
-	       "WHERE sr.project_id=" +
-	       pid + " AND sr.kind=9" +
-	       " AND sr.name != '' AND callee.node_id != caller.node_id"
-	       " AND cal_sr.kind IN (0,1)"
-	       " AND call_sr.kind IN (0,1)");
-	 if (explain_env && explain_env[0])
-	 	explainQueryPlan(sql.c_str(), "call_edges");
-	 exec(sql.c_str());
+		std::string sql = std::string(
+			"INSERT INTO graph_edges "
+			"(project_id, source_node_id, target_node_id, edge_type, graph_type, "
+			" call_site_file, call_site_line) "
+			"SELECT DISTINCT " +
+			pid +
+			", caller.node_id, callee.node_id, 1, 'call_graph', "
+			"  sr.file_path, sr.start_row "
+			"FROM semantic_records sr "
+			"JOIN _r2n callee ON SUBSTR(sr.name, -LENGTH(callee.name)) = callee.name "
+			"JOIN _r2n caller ON sr.parent_id = caller.original_id AND sr.file_path = caller.file_path "
+			"JOIN semantic_records cal_sr ON cal_sr.rowid = callee.rid "
+			"JOIN semantic_records call_sr ON sr.parent_id = call_sr.original_id AND sr.file_path = call_sr.file_path "
+			"WHERE sr.project_id=" +
+			pid + " AND sr.kind=9" +
+			" AND sr.name != '' AND callee.node_id != caller.node_id"
+			" AND cal_sr.kind IN (0,1)"
+			" AND call_sr.kind IN (0,1)");
+		if (explain_env && explain_env[0])
+			explainQueryPlan(sql.c_str(), "call_edges");
+		exec(sql.c_str());
 	}
 	auto t_call = Clock::now();
 

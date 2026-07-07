@@ -83,13 +83,14 @@ static std::string queryToJson(sqlite3 *db, const char *sql,
 			if (col_type == SQLITE_NULL) {
 				json << "null";
 			} else if (col_type == SQLITE_INTEGER) {
-			json << sqlite3_column_int64(stmt, i);
-		} else {
-			const char *text =
-				reinterpret_cast<const char *>(
-					sqlite3_column_text(stmt, i));
-			json << "\"" << jsonEscape(text ? text : "") << "\"";
-		}
+				json << sqlite3_column_int64(stmt, i);
+			} else {
+				const char *text =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(stmt, i));
+				json << "\"" << jsonEscape(text ? text : "")
+				     << "\"";
+			}
 		}
 		json << "}";
 	}
@@ -116,7 +117,8 @@ std::string QueryEngine::findDefinition(uint64_t project_id,
 	bool has_filter = file_filter && strlen(file_filter) > 0;
 
 	if (has_filter) {
-		sql_with_filter = std::string(sql) + " AND file_path LIKE ? LIMIT 20";
+		sql_with_filter =
+			std::string(sql) + " AND file_path LIKE ? LIMIT 20";
 		final_sql = sql_with_filter.c_str();
 	} else {
 		sql_with_filter = std::string(sql) + " LIMIT 20";
@@ -124,8 +126,8 @@ std::string QueryEngine::findDefinition(uint64_t project_id,
 	}
 
 	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(store_->handle(), final_sql, -1, &stmt, nullptr) !=
-	    SQLITE_OK) {
+	if (sqlite3_prepare_v2(store_->handle(), final_sql, -1, &stmt,
+			       nullptr) != SQLITE_OK) {
 		return "{\"total\":0,\"results\":[],\"error\":\"prepare failed\"}";
 	}
 
@@ -133,8 +135,10 @@ std::string QueryEngine::findDefinition(uint64_t project_id,
 	sqlite3_bind_text(stmt, 2, symbol_name, -1, SQLITE_TRANSIENT);
 
 	if (has_filter) {
-		std::string filter_pattern = std::string("%") + file_filter + "%";
-		sqlite3_bind_text(stmt, 3, filter_pattern.c_str(), -1, SQLITE_TRANSIENT);
+		std::string filter_pattern =
+			std::string("%") + file_filter + "%";
+		sqlite3_bind_text(stmt, 3, filter_pattern.c_str(), -1,
+				  SQLITE_TRANSIENT);
 	}
 
 	std::ostringstream json;
@@ -165,7 +169,8 @@ std::string QueryEngine::findDefinition(uint64_t project_id,
 				const char *text =
 					reinterpret_cast<const char *>(
 						sqlite3_column_text(stmt, i));
-				json << "\"" << jsonEscape(text ? text : "") << "\"";
+				json << "\"" << jsonEscape(text ? text : "")
+				     << "\"";
 			}
 		}
 		json << "}";
@@ -195,7 +200,8 @@ std::string QueryEngine::findReferences(uint64_t project_id,
 	bool has_filter = file_filter && strlen(file_filter) > 0;
 
 	if (has_filter) {
-		sql_with_filter = std::string(sql) + " AND gn.file_path LIKE ? LIMIT 100";
+		sql_with_filter =
+			std::string(sql) + " AND gn.file_path LIKE ? LIMIT 100";
 		final_sql = sql_with_filter.c_str();
 	} else {
 		sql_with_filter = std::string(sql) + " LIMIT 100";
@@ -203,8 +209,8 @@ std::string QueryEngine::findReferences(uint64_t project_id,
 	}
 
 	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(store_->handle(), final_sql, -1, &stmt, nullptr) !=
-	    SQLITE_OK) {
+	if (sqlite3_prepare_v2(store_->handle(), final_sql, -1, &stmt,
+			       nullptr) != SQLITE_OK) {
 		return "{\"total\":0,\"results\":[],\"error\":\"prepare failed\"}";
 	}
 
@@ -212,8 +218,10 @@ std::string QueryEngine::findReferences(uint64_t project_id,
 	sqlite3_bind_text(stmt, 2, symbol_name, -1, SQLITE_TRANSIENT);
 
 	if (has_filter) {
-		std::string filter_pattern = std::string("%") + file_filter + "%";
-		sqlite3_bind_text(stmt, 3, filter_pattern.c_str(), -1, SQLITE_TRANSIENT);
+		std::string filter_pattern =
+			std::string("%") + file_filter + "%";
+		sqlite3_bind_text(stmt, 3, filter_pattern.c_str(), -1,
+				  SQLITE_TRANSIENT);
 	}
 
 	std::ostringstream json;
@@ -244,7 +252,8 @@ std::string QueryEngine::findReferences(uint64_t project_id,
 				const char *text =
 					reinterpret_cast<const char *>(
 						sqlite3_column_text(stmt, i));
-				json << "\"" << jsonEscape(text ? text : "") << "\"";
+				json << "\"" << jsonEscape(text ? text : "")
+				     << "\"";
 			}
 		}
 		json << "}";
@@ -377,18 +386,20 @@ std::string QueryEngine::getNeighbors(uint64_t project_id, uint64_t node_id,
 
 	if (has_filter) {
 		sql_out = std::string(sql) + " AND ge.edge_type = ?";
-		sql_in = "SELECT gn.id AS neighbor_id, gn.name, gn.node_type, gn.file_path, "
-			 "ge.edge_type, 'incoming' AS direction "
-			 "FROM graph_nodes gn "
-			 "JOIN graph_edges ge ON gn.id = ge.source_node_id "
-			 "WHERE ge.target_node_id = ? AND ge.project_id = ? AND ge.edge_type = ?";
+		sql_in =
+			"SELECT gn.id AS neighbor_id, gn.name, gn.node_type, gn.file_path, "
+			"ge.edge_type, 'incoming' AS direction "
+			"FROM graph_nodes gn "
+			"JOIN graph_edges ge ON gn.id = ge.source_node_id "
+			"WHERE ge.target_node_id = ? AND ge.project_id = ? AND ge.edge_type = ?";
 	} else {
 		sql_out = std::string(sql);
-		sql_in = "SELECT gn.id AS neighbor_id, gn.name, gn.node_type, gn.file_path, "
-			 "ge.edge_type, 'incoming' AS direction "
-			 "FROM graph_nodes gn "
-			 "JOIN graph_edges ge ON gn.id = ge.source_node_id "
-			 "WHERE ge.target_node_id = ? AND ge.project_id = ?";
+		sql_in =
+			"SELECT gn.id AS neighbor_id, gn.name, gn.node_type, gn.file_path, "
+			"ge.edge_type, 'incoming' AS direction "
+			"FROM graph_nodes gn "
+			"JOIN graph_edges ge ON gn.id = ge.source_node_id "
+			"WHERE ge.target_node_id = ? AND ge.project_id = ?";
 	}
 
 	std::string final_sql = sql_out + " UNION ALL " + sql_in + " LIMIT 200";
@@ -409,7 +420,8 @@ std::string QueryEngine::getNeighbors(uint64_t project_id, uint64_t node_id,
 	// Bind parameters for incoming edges query
 	int next_param = has_filter ? 4 : 3;
 	sqlite3_bind_int64(stmt, next_param, static_cast<int64_t>(node_id));
-	sqlite3_bind_int64(stmt, next_param + 1, static_cast<int64_t>(project_id));
+	sqlite3_bind_int64(stmt, next_param + 1,
+			   static_cast<int64_t>(project_id));
 	if (has_filter) {
 		sqlite3_bind_int(stmt, next_param + 2, edge_type_filter);
 	}
@@ -442,7 +454,8 @@ std::string QueryEngine::getNeighbors(uint64_t project_id, uint64_t node_id,
 				const char *text =
 					reinterpret_cast<const char *>(
 						sqlite3_column_text(stmt, i));
-				json << "\"" << jsonEscape(text ? text : "") << "\"";
+				json << "\"" << jsonEscape(text ? text : "")
+				     << "\"";
 			}
 		}
 		json << "}";
@@ -609,7 +622,8 @@ std::string QueryEngine::getSubgraph(uint64_t project_id,
 				const char *text =
 					reinterpret_cast<const char *>(
 						sqlite3_column_text(stmt, i));
-				json << "\"" << jsonEscape(text ? text : "") << "\"";
+				json << "\"" << jsonEscape(text ? text : "")
+				     << "\"";
 			}
 		}
 		json << "}";
@@ -677,7 +691,8 @@ std::string QueryEngine::locateByName(uint64_t project_id, const char *name)
 				const char *text =
 					reinterpret_cast<const char *>(
 						sqlite3_column_text(stmt, i));
-				json << "\"" << jsonEscape(text ? text : "") << "\"";
+				json << "\"" << jsonEscape(text ? text : "")
+				     << "\"";
 			}
 		}
 		json << "}";

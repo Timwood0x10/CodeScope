@@ -2,6 +2,55 @@
 
 **CodeScope** is an MCP (Model Context Protocol) code understanding service. It parses source code into a unified AST IR, builds multi-dimensional code graphs (call graph + symbol reference graph), persists them to SQLite, and exposes powerful queries via MCP tools — enabling AI to understand code structure, behavior, and relationships through graph traversal instead of reading raw source files.
 
+---
+
+## Quick Start
+
+### 30 seconds to your first query
+
+```bash
+# 1. Download (or build from source)
+curl -LO https://github.com/your-org/codescope/releases/latest/download/codescope-x86_64-linux.tar.gz
+tar xzf codescope-x86_64-linux.tar.gz
+cd codescope
+
+# 2. Index a project
+./codescope worker codescope.db ./my-project "" my-project 1
+
+# 3. Query
+./codescope cli get_graph_stats '{}'
+# → {"total_nodes":12345,"total_edges":6789,"total_files":99}
+
+# 4. Explore call graph
+./codescope cli codescope_trace '{"function_name":"main","depth":1,"direction":"both"}'
+# → {"name":"main","callers":[...],"callees":[...]}
+
+# 5. Start MCP server (for AI clients)
+./codescope
+```
+
+### Prerequisites
+
+| Platform | Dependencies | Install |
+|----------|-------------|---------|
+| **macOS** | cmake, ninja, tree-sitter, sqlite, node, rust | `make build` or `bash install.sh` |
+| **Linux** | cmake, ninja, libsqlite3-dev, node, rust | `make build` or `bash install.sh` |
+| **Windows** | cmake, ninja, node, rust, gcc (MSYS2) | `.\install.ps1` (PowerShell) |
+| **All** | Docker image | `docker build -t codescope .` |
+
+> Pre-built binaries are available on the [Releases page](https://github.com/your-org/codescope/releases).
+
+### Build from source
+
+```bash
+git clone https://github.com/your-org/codescope.git
+cd codescope
+make build    # Build engine + grammars + server
+make test     # Run tests
+```
+
+---
+
 ## Architecture
 
 ```mermaid

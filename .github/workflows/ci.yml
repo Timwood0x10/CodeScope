@@ -2,56 +2,52 @@ name: CI
 
 on:
   push:
-    branches: [ main]
+    branches: [master]
   pull_request:
-    branches: [ main]
+    branches: [master]
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build-cpp:
-    runs-on: ubuntu-latest
+  test:
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake libsqlite3-dev libtree-sitter-dev
+          sudo apt-get install -y cmake ninja-build libsqlite3-dev nodejs npm git
+          npm install -g tree-sitter-cli
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build grammars
+        run: |
+          cd grammars
+          bash build_ci.sh
 
       - name: Build C++ engine
         run: |
-          mkdir -p engine/build
-          cd engine/build
-          cmake .. -DBUILD_TESTS=ON
-          make -j$(nproc)
-
-      - name: Run C++ tests
-        run: |
-          cd engine/build
-          ./test_ir
-          ./test_graph
-
-  build-rust:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake libsqlite3-dev libtree-sitter-dev
-
-      - name: Build C++ engine
-        run: |
-          mkdir -p engine/build
-          cd engine/build
-          cmake .. -DBUILD_TESTS=OFF
-          make -j$(nproc) astgraph_engine
+          cmake -B engine/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            engine/
+          cmake --build engine/build --target astgraph_engine
 
       - name: Build Rust server
         run: |
-          cd server
-          cargo build --release
-          cargo check
+          cargo build --release --bin codescope
+
+      - name: Run all tests
+        run: |
+          cargo test --release
+          make check
+
+      - name: Upload coverage
+        if: success()
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: true

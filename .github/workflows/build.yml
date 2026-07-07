@@ -1,0 +1,97 @@
+name: Build & Test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  release:
+    types: [published]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-14]
+        include:
+          - os: ubuntu-22.04
+            cc: gcc
+            cxx: g++
+            ext: .so
+          - os: macos-14
+            cc: clang
+            cxx: clang++
+            ext: .so
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies (Ubuntu)
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build libsqlite3-dev nodejs npm git
+          npm install -g tree-sitter-cli
+
+      - name: Install dependencies (macOS)
+        if: matrix.os == 'macos-14'
+        run: |
+          brew install cmake ninja sqlite node git
+          npm install -g tree-sitter-cli
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build grammars
+        run: |
+          cd grammars
+          bash build_ci.sh
+
+      - name: Build C++ engine
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: |
+          cmake -B engine/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=${{ matrix.cc }} \
+            -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} \
+            engine/
+          cmake --build engine/build --target astgraph_engine
+
+      - name: Build Rust server
+        run: |
+          cargo build --release --bin codescope
+
+      - name: Run tests
+        run: |
+          cargo test --release
+
+      - name: Upload binary (Linux)
+        if: matrix.os == 'ubuntu-22.04'
+        uses: actions/upload-artifact@v4
+        with:
+          name: codescope-linux-x86_64
+          path: |
+            target/release/codescope
+            grammars/*.so
+
+      - name: Upload binary (macOS)
+        if: matrix.os == 'macos-14'
+        uses: actions/upload-artifact@v4
+        with:
+          name: codescope-macos-arm64
+          path: |
+            target/release/codescope
+            grammars/*.so
+
+      - name: Check grammars
+        run: |
+          echo "Built grammars:"
+          ls -lh grammars/*.so

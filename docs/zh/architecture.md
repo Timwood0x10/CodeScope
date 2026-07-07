@@ -12,34 +12,41 @@ CodeScope 是一个基于 MCP（Model Context Protocol）协议的代码理解�
 ### 整体架构
 
 ```mermaid
-flowchart LR
-    subgraph "Client (AtomGit IDE / CLI)"
-        client["MCP Client<br/>tools/list → tools/call"]
-    end
-    subgraph "CodeScope Server (Rust)"
-        server["MCP Server<br/>(JSON-RPC 2.0 + stdio)"]
-        ffi["FFI Bridge<br/>Rust / C++"]
-        worker_spawn["Worker Spawner<br/>子进程隔离"]
-    end
-    subgraph "Worker Subprocess (C++)"
-        worker["Worker<br/>index_project()"]
-        progress["Progress Tracking<br/>store::IndexProgress"]
-        parser["Parser + Translator<br/>14 threads"]
-        graph["GraphBuilder<br/>buildFTSFromGraph"]
-    end
-    subgraph "Storage"
-        db["SQLite DB<br/>.codescope/codescope.db"]
+flowchart TB
+    Client["MCP Client<br/>(AtomGit IDE / CLI)<br/>tools/list → tools/call"]
+
+    subgraph ServerProcess["CodeScope Server (Rust Process)"]
+        MCPServer["MCP Server<br/>(JSON-RPC 2.0 + stdio)"]
+        FFIBridge["FFI Bridge<br/>(Rust ↔ C++)"]
+        TokioRT["Tokio Runtime<br/>(Background Tasks)"]
     end
 
-    client <-->|MCP JSON-RPC| server
-    server -->| spawn_worker | worker_spawn
-    worker_spawn -->|子进程 stdout JSON | worker
-    worker -->|写入| db
-    worker -->|更新| progress
-    server -->|轮询 get_index_progress| ffi
-    ffi -->|读取| progress
-    server -->|RUNTIME.spawn| graph
-    server -->|MCP Response| client
+    subgraph WorkerProcess["Worker Subprocess (C++ Process)"]
+        WorkerMain["Worker Main<br/>index_project()"]
+        Parser["Parser + Translator<br/>(14 threads)"]
+        GraphBuilder["GraphBuilder<br/>(Symbol + Call Graph)"]
+        Store["Store Layer<br/>(SQLite Writer)"]
+        Progress["IndexProgress<br/>(Progress Tracker)"]
+    end
+
+    Database["SQLite DB<br/>(.codescope/codescope.db)"]
+
+    Client -->|"MCP JSON-RPC"| MCPServer
+    MCPServer -->|"spawn subprocess"| WorkerMain
+    WorkerMain -->|"parse files"| Parser
+    Parser -->|"build graph"| GraphBuilder
+    GraphBuilder -->|"persist"| Store
+    Store -->|"write"| Database
+    WorkerMain -->|"update"| Progress
+
+    MCPServer -->|"poll progress"| FFIBridge
+    FFIBridge -->|"read"| Progress
+    FFIBridge -->|"return status"| MCPServer
+
+    MCPServer -->|"spawn async task"| TokioRT
+    TokioRT -->|"FTS enhancement"| Database
+
+    MCPServer -->|"MCP Response"| Client
 ```
 
 ---
@@ -50,27 +57,28 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-    subgraph "Server (Rust)"
+    subgraph ServerProcess["Server (Rust)"]
         A["MCP tools/call<br/>index_project"]
-        B["Spwan Worker 子进程"]
-        C["轮询进度<br/>get_index_progress"]
-        D["FTS 后置构建<br/>buildFTSFromGraph"]
-        E["MCP 响应<br/>完成"]
-    end
-    subgraph "Worker (C++ subprocess)"
-        F["Phase 1: 扫描文件<br/>FilterPolicy + .gitignore"]
-        G["Phase 2: 并行解析<br/>14 workers × 8MB 栈"]
-        H["Phase 3: SQLite 持久化"]
-        I["Phase 4: 构建符号图<br/>buildGraph(project_id, true)"]
+        B["Spawn Worker Subprocess"]
+        C["Poll Progress<br/>get_index_progress"]
+        D["FTS Deferred Build<br/>buildFTSFromGraph"]
+        E["MCP Response<br/>Complete"]
     end
 
-    A -->|fork + exec| B
+    subgraph WorkerProcess["Worker (C++ subprocess)"]
+        F["Phase 1: Scan Files<br/>FilterPolicy + .gitignore"]
+        G["Phase 2: Parallel Parse<br/>14 workers × 8MB stack"]
+        H["Phase 3: SQLite Persist"]
+        I["Phase 4: Build Symbol Graph<br/>buildGraph(project_id, true)"]
+    end
+
+    A -->|"fork + exec"| B
     B --> F
     F --> G
     G --> H
     H --> I
-    I -->|stdout JSON| C
-    C -->|worker 退出 RSS 归还 OS| D
+    I -->|"stdout JSON"| C
+    C -->|"worker exits, RSS returned"| D
     D --> E
 ```
 
@@ -91,26 +99,37 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-    subgraph "Batch (100 files)"
-        A["Batch [start..end]"]
-    end
-    subgraph "14 Workers (pthread)"
-        B1["Worker 1<br/>readFile → parse → visit"]
-        B2["Worker 2<br/>readFile → parse → visit"]
-        B3["Worker 14<br/>readFile → parse → visit"]
-    end
-    subgraph "New Pipeline (SemanticUnit)"
-        C["Visitor → SemanticUnit<br/>Arena 内存复用"]
-    end
-    subgraph "Old Pipeline (fallback)"
-        D["Translator → TranslationUnit"]
+    BatchStart["Batch [start..end]"]
+
+    subgraph Workers["14 Workers (pthread)"]
+        W1["Worker 1<br/>readFile → parse → visit"]
+        W2["Worker 2<br/>readFile → parse → visit"]
+        W14["Worker 14<br/>readFile → parse → visit"]
     end
 
-    A --> B1 & B2 & B3
-    B1 --> C & D
-    B2 --> C & D
-    B3 --> C & D
-    C & D --> E["collect_lock<br/>收集结果"]
+    subgraph NewPipeline["New Pipeline (SemanticUnit)"]
+        New["Visitor → SemanticUnit<br/>Arena Memory Reuse"]
+    end
+
+    subgraph OldPipeline["Old Pipeline (fallback)"]
+        Old["Translator → TranslationUnit"]
+    end
+
+    Collect["collect_lock<br/>Collect Results"]
+
+    BatchStart --> W1
+    BatchStart --> W2
+    BatchStart --> W14
+
+    W1 --> New
+    W1 --> Old
+    W2 --> New
+    W2 --> Old
+    W14 --> New
+    W14 --> Old
+
+    New --> Collect
+    Old --> Collect
 ```
 
 ### 2.4 Phase 3: SQLite 持久化

@@ -47,7 +47,8 @@ std::string readFile(const char *path)
 	// Handle EINTR: retry on signal interruption
 	size_t total_read = 0;
 	while (total_read < size) {
-		ssize_t bytes_read = read(fd, &result[total_read], size - total_read);
+		ssize_t bytes_read =
+			read(fd, &result[total_read], size - total_read);
 		if (bytes_read < 0) {
 			if (errno == EINTR) {
 				// Signal received, retry

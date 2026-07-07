@@ -327,7 +327,12 @@ pub fn trace_path(project_id: u64, from_name: &str, to_name: &str) -> String {
     })
 }
 
-pub fn explore_function(project_id: u64, function_name: &str, depth: i32, direction: &str) -> String {
+pub fn explore_function(
+    project_id: u64,
+    function_name: &str,
+    depth: i32,
+    direction: &str,
+) -> String {
     take_string(unsafe {
         engine_explore_function(
             project_id,
@@ -365,9 +370,14 @@ pub(crate) static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
 pub fn spawn_enhancement(project_id: u64) {
     // Check if this project is already being enhanced and insert in one atomic step
     {
-        let mut running = ENHANCEMENT_RUNNING.lock().expect("enhancement tracking lock poisoned");
+        let mut running = ENHANCEMENT_RUNNING
+            .lock()
+            .expect("enhancement tracking lock poisoned");
         if !running.insert(project_id) {
-            eprintln!("enhancement: project {} already running, skipping", project_id);
+            eprintln!(
+                "enhancement: project {} already running, skipping",
+                project_id
+            );
             return;
         }
     }
@@ -386,7 +396,9 @@ pub fn spawn_enhancement(project_id: u64) {
         eprintln!("enhancement: completed: {}", result);
 
         // Remove from running set
-        let mut running = ENHANCEMENT_RUNNING.lock().expect("enhancement tracking lock poisoned");
+        let mut running = ENHANCEMENT_RUNNING
+            .lock()
+            .expect("enhancement tracking lock poisoned");
         running.remove(&project_id);
     });
 }

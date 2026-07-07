@@ -79,7 +79,11 @@ const MAX_RETRIES: usize = 3;
 /// Run a worker subprocess with timeout protection.
 /// Returns `Ok(output)` on success, `Err(msg)` on timeout or failure.
 /// Kills the child process via kill -9 on timeout.
-fn run_worker(exe: &str, args: &[&str], envs: &[(&str, &str)]) -> Result<std::process::Output, String> {
+fn run_worker(
+    exe: &str,
+    args: &[&str],
+    envs: &[(&str, &str)],
+) -> Result<std::process::Output, String> {
     let mut cmd = Command::new(exe);
     cmd.args(args);
     for (k, v) in envs {
@@ -102,9 +106,7 @@ fn run_worker(exe: &str, args: &[&str], envs: &[(&str, &str)]) -> Result<std::pr
     loop {
         if start.elapsed() > WORKER_TIMEOUT {
             // Kill orphaned child via kill -9
-            let _ = Command::new("kill")
-                .args(["-9", &pid.to_string()])
-                .output();
+            let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
             return Err("worker timed out after 300s".to_string());
         }
 
@@ -137,7 +139,12 @@ fn h_index_project(project_id: u64, args: &Value) -> String {
             crate::ffi::shutdown();
 
             let args_list = [
-                "worker", &db_path, path, lang, "worker-project", &project_id.to_string(),
+                "worker",
+                &db_path,
+                path,
+                lang,
+                "worker-project",
+                &project_id.to_string(),
             ];
             let envs = [
                 ("GRAMMARS_DIR", &grammars_dir as &str),
@@ -173,7 +180,10 @@ fn h_index_project(project_id: u64, args: &Value) -> String {
                     let stderr = String::from_utf8_lossy(&out.stderr);
                     let err_msg = stderr.lines().last().unwrap_or("unknown");
                     if attempt < MAX_RETRIES {
-                        eprintln!("worker attempt {} failed ({}), retrying...", attempt, err_msg);
+                        eprintln!(
+                            "worker attempt {} failed ({}), retrying...",
+                            attempt, err_msg
+                        );
                         std::thread::sleep(Duration::from_secs(1));
                         continue;
                     }
@@ -201,7 +211,9 @@ fn h_index_project(project_id: u64, args: &Value) -> String {
     // Fix: Use CString to ensure null-termination for FFI compatibility
     let lang = args["language_filter"].as_str();
     let lang_cstring = lang.map(|s| std::ffi::CString::new(s).unwrap_or_default());
-    let lang_ptr = lang_cstring.as_ref().map_or(std::ptr::null(), |cs| cs.as_ptr() as *const _);
+    let lang_ptr = lang_cstring
+        .as_ref()
+        .map_or(std::ptr::null(), |cs| cs.as_ptr() as *const _);
     ffi::index_project(project_id, path, lang_ptr)
 }
 
@@ -319,12 +331,12 @@ fn h_project_overview(project_id: u64, _args: &Value) -> String {
 fn h_codescope_trace(project_id: u64, args: &Value) -> String {
     // Interactive exploration mode: explore callers/callees recursively
     // Params: function_name, depth (default 1), direction (callers|callees|both, default both)
-    if let Some(name) = args["function_name"].as_str() {
-        if !name.is_empty() {
-            let depth = args["depth"].as_i64().unwrap_or(1) as i32;
-            let direction = args["direction"].as_str().unwrap_or("both");
-            return ffi::explore_function(project_id, name, depth, direction);
-        }
+    if let Some(name) = args["function_name"].as_str()
+        && !name.is_empty()
+    {
+        let depth = args["depth"].as_i64().unwrap_or(1) as i32;
+        let direction = args["direction"].as_str().unwrap_or("both");
+        return ffi::explore_function(project_id, name, depth, direction);
     }
     // Legacy mode: shortest path between two functions
     // Params: from, to

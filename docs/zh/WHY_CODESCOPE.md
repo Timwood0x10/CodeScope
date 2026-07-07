@@ -2,8 +2,9 @@
 
 > **测试环境**: Apple M3 Pro, macOS 15, 18GB 内存预算
 > **索引目标**: GoAgent（go 项目，约 24K 行 Go 代码，\~200 个源文件）
-> **测试日期**: 2026-07-06
+> **测试日期**: 2026-07-06（原始对比），2026-07-07（v0.1.5 更新）
 > **对标工具**: codebase-memory-mcp v0.8.1（简称 CBM）
+> **CodeScope 版本**: v0.1.5
 >
 > 所有数据来自两台工具在同一台机器、同一份代码、同一个问题上的真实运行输出。
 > 本文重点比较的是 **Agent 回答一次具体问题时的工具调用路径和 token 成本**，不是完整索引能力的总量评测。
@@ -182,26 +183,52 @@ CodeScope 总计: ~687 tokens
 
 ## 4. Token 消耗对比（真实数据）
 
-| 阶段         |        codebase-memory-mcp       |         CodeScope         |
-| ---------- | :------------------------------: | :-----------------------: |
-| 用户提问       |             30 tokens            |         30 tokens         |
-| 第 1 轮工具调用  |   **14,046 tokens**（56KB JSON）   | **157 tokens**（629 bytes） |
-| 第 2 轮工具调用  | 50 tokens（get\_code\_snippet 失败） |      可选（\~100 tokens）     |
-| 第 3 轮读源码   | 2,611 + 2,365 = **4,976 tokens** |             0             |
-| AI 组织答案    |           \~500 tokens           |        \~500 tokens       |
-| **总计**     |        **\~19,632 tokens**       |      **\~687 tokens**     |
-| **相对 CBM** |           **基准（100%）**           |    **仅 3.5%（省 96.5%）**    |
+### 4.0 索引阶段（v0.1.5 重跑基准）
 
-### 4.1 Token 节省比率
+| 指标 | v0.1.1 原始数据 | **v0.1.5 本次实测** |
+|------|:---------------:|:-------------------:|
+| 索引文件数 | ~200 | **1,116** |
+| 索引耗时 | 全量索引中 | **28s** |
+| 节点数 | 14,366（Phase A 符号级） | **258,630** |
+| 总边数 | — | **245,758** |
+| 调用边 | — | **4,291** |
+| Parse | — | **92ms** |
+| SQLite | — | **1,879ms** |
+| buildGraph | — | **26,083ms** |
+
+### 4.1 查询阶段对比
+
+| 阶段 | codebase-memory-mcp | CodeScope v0.1.1 | **CodeScope v0.1.5 实测** |
+|------|:-------------------:|:----------------:|:------------------------:|
+| 用户提问 | 30 tokens | 30 tokens | 30 tokens |
+| 第 1 轮工具调用 | **14,046 tokens**（56KB JSON） | 157 tokens（629 bytes） | **42 tokens**（138 bytes） |
+| 第 2 轮工具调用 | 50 tokens（失败） | 可选 ~100 tokens | **10 tokens**（可选） |
+| 第 3 轮读源码 | **4,976 tokens**（681 行） | 0 | **0** |
+| AI 组织答案 | ~500 tokens | ~500 tokens | ~500 tokens |
+| **总计** | **~19,632 tokens** | **~687 tokens** | **~552 tokens** |
+| **相对 CBM** | **基准（100%）** | **仅 3.5%（省 96.5%）** | **仅 2.8%（省 97.2%）** |
+
+### 4.2 Token 节省比率
 
 ```
-CBM:     ████████████████████████████████  19,632 tokens (100%)
-CodeScope:███                                687 tokens (3.5%)
+CBM:        ████████████████████████████████  19,632 tokens (100%)
+CodeScope:  ██                                552 tokens (2.8%)
 
-CodeScope 节省: 96.5%
-Token 量比值:  1 : 28.6  (每 1 个 CodeScope token = 28.6 个 CBM token)
-响应 bytes 比: 1 : 89    (每 1 byte CodeScope 响应 = 89 bytes CBM 响应)
+CodeScope 节省: 97.2%
+Token 量比值:  1 : 35.6  (每 1 个 CodeScope token = 35.6 个 CBM token)
+响应 bytes 比: 1 : 182   (每 1 byte CodeScope 响应 = 182 bytes CBM 响应)
 ```
+
+### 4.3 v0.1.1 → v0.1.5 提升
+
+| 指标 | v0.1.1 | **v0.1.5 实测** | 提升 |
+|------|:------:|:---------------:|:----:|
+| 查询延迟 | — | **6-7ms** | 🆕 |
+| 第 1 轮响应大小 | 629 bytes | **138 bytes** | **4.6x** |
+| 第 1 轮 Token | 157 | **42** | **3.7x** |
+| 第 2 轮 Token | ~100 | **10** | **10x** |
+| 总 Token | ~687 | **~552** | **1.2x** |
+| 调用边 | 0（bug） | **4,291** | **∞** |
 
 ### 4.2 CBM 的 token 花在了哪里
 
@@ -469,3 +496,84 @@ $ ls -lh /Users/scc/go/src/goagent/.codescope/codescope.db
 *CodeScope v0.2.0 / codebase-memory-mcp v0.8.1 对比基准*
 *测试环境: Apple M3 Pro, macOS 15, 2026-07-06*
 *索引目标: ARES（*<https://github.com/Timwood0x10/ARES>*）*
+
+---
+
+## v0.1.5 更新：2026-07-07 新增能力
+
+自原始对比以来，CodeScope 在 v0.1.5 中新增了以下能力：
+
+### 🆕 交互式调用链追踪（codescope_trace）
+
+相比原始对比中 CBM 的 `trace_path` 失败、CodeScope 只能查单层 `get_callees`：
+
+| 能力 | CBM v0.8.1 | CodeScope v0.1.1 | CodeScope **v0.1.5** |
+|------|:-----------:|:-----------------:|:--------------------:|
+| 调用者查询 | ✅ | ✅ | ✅ |
+| 被调用者查询 | ✅ | ✅ | ✅ |
+| 最短路径 | ❌ 实际测试失败 | ✅ | ✅ |
+| **交互式递归展开** | ❌ | ❌ | **✅ depth=1..5** |
+| **方向控制** | ❌ | ❌ | **✅ callers/callees/both** |
+| 节点/文件 | 112-405 | 112-405 | 319-526 |
+
+实测数据（garbage-code-hunter, Rust 94 文件）：
+
+```
+codescope_trace(analyze, depth=1, direction=both)
+→ 18 调用者, 10 被调用者
+→ 响应 3,591 bytes, 1,078 tokens
+→ 延迟 6ms
+
+codescope_trace(analyze, depth=2)
+→ 204 节点递归展开
+→ 响应 23,370 bytes, 7,011 tokens
+→ 延迟 7ms
+```
+
+### 🆕 索引进度实时追踪
+
+```
+index_project → get_index_progress 轮询
+→ phase: 1=解析 3=建图 5=完成
+→ percent: 0-100
+→ current_file / total_files
+```
+
+### 🆕 FTS 后置构建 + 搜索降级
+
+```
+索引返回(1s) → FTS 异步构建(后台)
+FTS 就绪前 → 自动降级到 graph_nodes.name LIKE 搜索
+FTS 就绪后 → 自动切换到 FTS5 全文搜索
+```
+
+### 🆕 Worker 超时保护
+
+```
+索引超过 300s → kill -9 → 3 次重试
+不再因 worker 卡死导致 server 永久挂起
+```
+
+### 🔧 修复的 Bug
+
+| Bug | 影响 | 修复 |
+|-----|:----:|------|
+| 调用边永远为 0 | 🔴 调用图不可用 | `kind=7→9` + `SUBSTR` 后缀匹配 |
+| 包含边丢失 | 🟡 边数据不全 | 加回 `INSERT INTO` |
+| buildGraph(calls=false) | 🟡 hotspots 空白 | 改为 `true` |
+| 线程栈 256MB | 🟡 内存 3.5GB | 改为 8MB（112MB 总） |
+
+### 📊 最新性能基准
+
+索引 5 个项目（横跨 Rust/C++/Go/JS/TS）的平均数据：
+
+| 指标 | v0.1.1 | **v0.1.5** | 提升 |
+|------|:------:|:-----------:|:----:|
+| 调用边生成 | 0（因 bug） | **100% 正确** | **∞** |
+| 查询延迟 | 5-9ms | **5-9ms** | ✅ 稳定 |
+| 响应 Token（get_graph_stats） | ~18 | **~18** | ✅ |
+| 响应 Token（trace depth=1） | 不支持 | **~50-270** | 🆕 |
+| 查询延迟（trace） | 不支持 | **5-6ms** | 🆕 |
+| 大项目索引（JDK 19,821 文件） | — | **3m31s** | 🆕 有数据 |
+| Worker 超时保护 | 无 | **300s + 3 次重试** | 🆕 |
+| 跨平台 | macOS only | **macOS + Linux + Windows CI** | 🆕 |

@@ -838,13 +838,13 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 
 		// Update progress
 		{
-		 store::IndexProgress p;
-		 p.project_id = project_id;
-		 p.total_files = (int)jobs.size();
-		 p.current_file = total_indexed;
-		 p.phase = 1;
-		 p.percent = total_indexed * 100 / (int)jobs.size();
-		 store::setIndexProgress(p);
+			store::IndexProgress p;
+			p.project_id = project_id;
+			p.total_files = (int)jobs.size();
+			p.current_file = total_indexed;
+			p.phase = 1;
+			p.percent = total_indexed * 100 / (int)jobs.size();
+			store::setIndexProgress(p);
 		}
 
 		// all_units goes out of scope here → memory freed
@@ -860,28 +860,28 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	// SQL-only operations, no heap memory allocation.
 	// On-demand call graph is built when user queries callers/callees.
 	if (verbose)
-	 fprintf(stderr, "POST_BUILD: symbol graph...\n");
+		fprintf(stderr, "POST_BUILD: symbol graph...\n");
 	fflush(stderr);
 
 	// Update progress: building graph
 	{
-	 store::IndexProgress p;
-	 p.project_id = project_id;
-	 p.total_files = (int)jobs.size();
-	 p.current_file = total_indexed;
-	 p.phase = 3; // "building_graph"
-	 p.percent = 85;
-	 store::setIndexProgress(p);
+		store::IndexProgress p;
+		p.project_id = project_id;
+		p.total_files = (int)jobs.size();
+		p.current_file = total_indexed;
+		p.phase = 3; // "building_graph"
+		p.percent = 85;
+		store::setIndexProgress(p);
 	}
 
 	int64_t time_fts_ms = 0, time_vector_ms = 0;
 	g_store->beginTransaction();
 	{
-	 auto t_bg = steady_clock::now();
-	 g_store->buildGraph(project_id, true);
-	 time_buildgraph_ms =
-	  duration_cast<milliseconds>(steady_clock::now() - t_bg)
-	   .count();
+		auto t_bg = steady_clock::now();
+		g_store->buildGraph(project_id, true);
+		time_buildgraph_ms =
+			duration_cast<milliseconds>(steady_clock::now() - t_bg)
+				.count();
 	}
 	g_store->commitTransaction();
 
@@ -889,19 +889,19 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	// It will be triggered as an async Tokio task after the worker exits.
 	// Search queries will fall back to graph-based matching if fts_ready=0.
 	if (!mode_fast) {
-	 g_store->setProjectReadiness(project_id, "normal_ready", 1);
-	 // fts_ready stays 0 — will be set by async enhance task
+		g_store->setProjectReadiness(project_id, "normal_ready", 1);
+		// fts_ready stays 0 — will be set by async enhance task
 	} else {
-	 g_store->setProjectReadiness(project_id, "normal_ready", 1);
+		g_store->setProjectReadiness(project_id, "normal_ready", 1);
 	}
 	// DEEP mode: build vectors (NORMAL skips them)
 	if (mode_deep) {
-	 auto t_v = steady_clock::now();
-	 g_store->buildVectorsFromGraph(project_id);
-	 g_store->setProjectReadiness(project_id, "vector_ready", 1);
-	 time_vector_ms = duration_cast<milliseconds>(
-	     steady_clock::now() - t_v)
-	     .count();
+		auto t_v = steady_clock::now();
+		g_store->buildVectorsFromGraph(project_id);
+		g_store->setProjectReadiness(project_id, "vector_ready", 1);
+		time_vector_ms =
+			duration_cast<milliseconds>(steady_clock::now() - t_v)
+				.count();
 	}
 
 	// Build deferred indexes after bulk load
@@ -910,13 +910,13 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	// Update file_scan_state for indexed files (incremental: next run skips unchanged)
 	g_store->beginTransaction();
 	for (auto &fp : all_indexed_files) {
-	 struct stat fs;
-	 if (stat(fp.c_str(), &fs) == 0) {
-	  g_store->updateFileScanState(
-	   project_id, fp.c_str(),
-	   static_cast<int64_t>(fs.st_mtime),
-	   static_cast<int64_t>(fs.st_size));
-	 }
+		struct stat fs;
+		if (stat(fp.c_str(), &fs) == 0) {
+			g_store->updateFileScanState(
+				project_id, fp.c_str(),
+				static_cast<int64_t>(fs.st_mtime),
+				static_cast<int64_t>(fs.st_size));
+		}
 	}
 	g_store->commitTransaction();
 

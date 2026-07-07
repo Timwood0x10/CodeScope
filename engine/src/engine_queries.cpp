@@ -679,12 +679,14 @@ char *engine_find_callees_adaptive(uint64_t project_id, const char *symbol_name)
 	if (!symbol_name || !*symbol_name)
 		return dupString("{\"error\":\"symbol_name is empty\"}");
 
-	double cg_ratio = g_store->getReadyRatio(project_id, "callgraph_ready");
-	if (cg_ratio > 0.5) {
-		return dupString(
-			g_store->findCalleesJson(project_id, symbol_name));
+	// Try findCalleesJson first (new pipeline: graph_edges + graph_nodes)
+	std::string result = g_store->findCalleesJson(project_id, symbol_name);
+	if (result.find("\"callees\":[]") == std::string::npos ||
+	    result.find("\"callees\":[{") != std::string::npos) {
+		return dupString(result.c_str());
 	}
 
+	// Fallback: old query engine
 	if (!g_query)
 		return dupString(
 			"{\"error\":\"query engine not initialized\"}");
@@ -838,8 +840,7 @@ char *engine_trace_path(uint64_t project_id, const char *from_name,
 
 // ─── Interactive Function Exploration ─────────────────────────
 
-char *engine_explore_function(uint64_t project_id,
-			      const char *function_name,
+char *engine_explore_function(uint64_t project_id, const char *function_name,
 			      int depth, const char *direction)
 {
 	if (!g_store)
@@ -849,9 +850,9 @@ char *engine_explore_function(uint64_t project_id,
 		return dupString(
 			"{\"error\":\"empty function name\",\"callers\":[],\"callees\":[]}");
 	const char *dir = direction ? direction : "both";
-	return dupString(
-		g_store->exploreFunctionJson(project_id, function_name,
-					     depth, dir).c_str());
+	return dupString(g_store->exploreFunctionJson(project_id, function_name,
+						      depth, dir)
+				 .c_str());
 }
 
 // ─── Context Builder ─────────────────────────────────────────
