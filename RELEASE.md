@@ -1,10 +1,10 @@
-# CodeScope v0.1.1
+# CodeScope v0.1.5
 
 > **Project Knowledge Layer for AI** — Code analysis service that turns source code into structured knowledge (facts, indexes, graphs) via MCP protocol.
 
 ***
 
-## What's New in v0.1.1
+## What's New in v0.1.5
 
 ### Context Builder (Primary Feature)
 

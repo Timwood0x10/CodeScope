@@ -1,19 +1,23 @@
-# Reusable: build binaries on all platforms
-name: Build
+# Reusable: build → test → package (single pass, no duplication)
+name: CI
 
 on:
   workflow_call:
     inputs:
-      version:
-        description: 'Version string for release (e.g. v0.1.5)'
-        type: string
-        default: ''
+      skip_perf:
+        description: 'Skip performance tests'
+        type: boolean
+        default: true
+      skip_package:
+        description: 'Skip packaging (PR mode)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
-  build:
+  ci:
     strategy:
       fail-fast: false
       matrix:
@@ -25,7 +29,7 @@ jobs:
             ext: .so
             artifact: codescope-aarch64-macos
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 240
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
@@ -72,12 +76,16 @@ jobs:
             engine/
           cmake --build engine/build --target astgraph_engine
 
-      - name: Build Rust server
+      - name: Build + test Rust server
         shell: bash
+        env:
+          CBM_SKIP_PERF: ${{ inputs.skip_perf && '1' || '' }}
         run: |
           cargo build --release --bin codescope
+          cargo test --release
 
       - name: Strip binary
+        if: inputs.skip_package != true
         shell: bash
         run: |
           BIN="target/release/codescope"
@@ -85,10 +93,11 @@ jobs:
           strip "$BIN" 2>/dev/null || true
 
       - name: Ad-hoc sign macOS binary
-        if: matrix.os == 'macos-15'
+        if: ${{ matrix.os == 'macos-15' && inputs.skip_package != true }}
         run: codesign --sign - --force target/release/codescope 2>/dev/null || true
 
       - name: Package
+        if: inputs.skip_package != true
         shell: bash
         run: |
           BIN="target/release/codescope"
@@ -100,7 +109,7 @@ jobs:
           [ -f install.sh ] && cp install.sh package/
           [ -f install.ps1 ] && cp install.ps1 package/
 
-          # Copy grammar files (any matching .so or .dll)
+          # Copy grammar files
           shopt -s nullglob
           for f in grammars/tree-sitter-*.so grammars/tree-sitter-*.dll; do
             cp "$f" package/
@@ -112,11 +121,13 @@ jobs:
           echo "Packaged: ${{ matrix.artifact }}.tar.gz ($(ls -lh ${{ matrix.artifact }}.tar.gz | awk '{print $5}'))"
 
       - name: Generate checksum
+        if: inputs.skip_package != true
         shell: bash
         run: |
           sha256sum "${{ matrix.artifact }}.tar.gz" > "checksum-${{ matrix.artifact }}.txt"
 
       - uses: actions/upload-artifact@v4
+        if: inputs.skip_package != true
         with:
           name: ${{ matrix.artifact }}
           path: |

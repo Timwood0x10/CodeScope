@@ -1,4 +1,4 @@
-# Push to master: lint → test → build
+# Push to master: lint → CI (build + test + package) → auto release draft
 name: Build & Test
 
 on:
@@ -16,14 +16,82 @@ jobs:
   lint:
     uses: ./.github/workflows/_lint.yml
 
-  test:
+  ci:
     needs: [lint]
     if: ${{ !cancelled() && needs.lint.result == 'success' }}
-    uses: ./.github/workflows/_test.yml
+    uses: ./.github/workflows/_ci.yml
     with:
       skip_perf: true
+      skip_package: false
 
-  build:
-    needs: [test]
-    if: ${{ !cancelled() && needs.test.result == 'success' }}
-    uses: ./.github/workflows/_build.yml
+  # ── Auto create draft release ──
+  release-draft:
+    needs: [ci]
+    if: ${{ !cancelled() && needs.ci.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: artifacts
+
+      - name: Read version from RELEASE.md
+        id: version
+        run: |
+          VERSION=$(head -1 RELEASE.md | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected version: $VERSION"
+
+      - name: Check if tag already exists
+        id: check_tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" &>/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release $VERSION already exists — skipping"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate combined checksums
+        if: steps.check_tag.outputs.exists != 'true'
+        run: |
+          cd artifacts
+          sha256sum *.tar.gz > ../checksums.txt
+          cd ..
+
+      - name: Create tag
+        if: steps.check_tag.outputs.exists != 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git tag "$VERSION" "$GITHUB_SHA"
+          git push origin "$VERSION" 2>/dev/null || true
+
+      - name: Release notes from RELEASE.md
+        if: steps.check_tag.outputs.exists != 'true'
+        id: notes
+        run: |
+          # Everything after the first --- line
+          NOTES=$(awk '/^---$/,0' RELEASE.md | tail -n +2)
+          echo "notes<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$NOTES" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Create Draft Release
+        if: steps.check_tag.outputs.exists != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          draft: true
+          files: |
+            artifacts/*.tar.gz
+            checksums.txt
+          body: ${{ steps.notes.outputs.notes }}

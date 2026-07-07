@@ -1,4 +1,4 @@
-# PR Validation: lint + test + light smoke (on product changes)
+# PR Validation: lint + CI (build + test, no package)
 name: PR
 
 on:
@@ -17,16 +17,17 @@ jobs:
   lint:
     uses: ./.github/workflows/_lint.yml
 
-  test:
+  ci:
     needs: [lint]
     if: ${{ !cancelled() && needs.lint.result == 'success' }}
-    uses: ./.github/workflows/_test.yml
+    uses: ./.github/workflows/_ci.yml
     with:
       skip_perf: true
+      skip_package: true
 
   # ── Single required status check ──
   ci-ok:
-    needs: [lint, test]
+    needs: [lint, ci]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
