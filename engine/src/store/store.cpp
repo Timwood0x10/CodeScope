@@ -1,6 +1,6 @@
 #include "store.h"
+#include "platform_win.h"
 
-#include "posix_compat.h"
 #include <algorithm>
 #include <climits>
 #include <cstring>

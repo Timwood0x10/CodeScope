@@ -1,4 +1,5 @@
 #include "store.h"
+#include "platform_win.h"
 
 #include "posix_compat.h"
 #include <cstdio>

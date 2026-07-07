@@ -4,11 +4,9 @@
 
 #ifdef _WIN32
 
-#include "../include/dlfcn_compat.h"
-#include "../include/posix_compat.h"
+#include "platform_win.h"
+// platform_win.h already includes windows.h, psapi.h, etc.
 
-#include <windows.h>
-#include <psapi.h>
 #include <errno.h>
 
 // ─── dlopen / dlsym / dlclose ──────────────────────────────────
@@ -27,7 +25,11 @@ int dlclose(void *handle)
 }
 char *dlerror(void)
 {
-	return (char *)"dlfcn compat: see GetLastError()";
+	// Return a stable, writable buffer — callers may mutate or the C string
+	// API may expect modifiable memory. thread_local avoids races between
+	// threads without needing a lock.
+	static thread_local char buf[] = "dlfcn compat: see GetLastError()";
+	return buf;
 }
 
 // ─── getrusage ──────────────────────────────────────────────────
@@ -48,9 +50,12 @@ int waitpid(int pid, int *status, int options)
 	HANDLE h = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_INFORMATION, FALSE,
 			       (DWORD)pid);
 	if (!h) {
+		// Process not found / no access — mirror POSIX failure semantics
+		// (return -1, errno=ECHILD) instead of falsely reporting success.
+		errno = ECHILD;
 		if (status)
 			*status = 0;
-		return pid;
+		return -1;
 	}
 	DWORD ret = WaitForSingleObject(h, (options & WNOHANG) ? 0 : INFINITE);
 	if (ret == WAIT_TIMEOUT) {
@@ -58,7 +63,13 @@ int waitpid(int pid, int *status, int options)
 		return 0;
 	}
 	DWORD exit_code = STILL_ACTIVE;
-	GetExitCodeProcess(h, &exit_code);
+	if (!GetExitCodeProcess(h, &exit_code)) {
+		CloseHandle(h);
+		errno = ECHILD;
+		if (status)
+			*status = 0;
+		return -1;
+	}
 	CloseHandle(h);
 	if (status)
 		*status = (int)exit_code;

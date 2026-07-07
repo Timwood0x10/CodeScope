@@ -17,24 +17,33 @@ jobs:
       - name: Install system deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-format
+          sudo apt-get install -y clang-format cmake ninja-build libsqlite3-dev libtree-sitter-dev
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
 
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: lint-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: lint-cargo-registry-
+
       - name: Lint Rust (clippy)
         run: cargo clippy --all-targets -- -D warnings
-        continue-on-error: true
 
       - name: Check formatting (Rust)
         run: cargo fmt --check
 
       - name: Lint C++ (clang-format)
         run: |
-          FILES=$(find engine/src -name '*.cpp' -o -name '*.h' | head -100)
+          set -e
+          FILES=$(find engine/src -name '*.cpp' -o -name '*.h')
           if [ -n "$FILES" ]; then
-            echo "$FILES" | xargs clang-format --dry-run --Werror 2>&1 | tail -10
+            echo "$FILES" | xargs clang-format --dry-run --Werror
             echo "  ✓ clang-format passed"
           fi

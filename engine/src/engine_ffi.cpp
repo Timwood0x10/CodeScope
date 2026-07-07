@@ -1,9 +1,9 @@
 #include "engine_internal.h"
+#include "platform_win.h"
 
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
-#include "dlfcn_compat.h"
 #include <filesystem>
 #include <fstream>
 #include <memory>

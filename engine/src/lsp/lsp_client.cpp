@@ -1,4 +1,5 @@
 #include "lsp_client.h"
+#include "platform_win.h"
 
 #include <fcntl.h>
 #ifndef _WIN32
@@ -10,9 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <sstream>
-#ifdef _WIN32
-#include "../include/posix_compat.h"
-#else
+#ifndef _WIN32
 #include <sys/select.h>
 #include <sys/wait.h>
 #endif
@@ -258,6 +257,7 @@ void LspClient::parseSymbolLocations(
 
 void LspClient::stop()
 {
+#ifndef _WIN32
 	if (!isRunning())
 		return;
 
@@ -285,12 +285,19 @@ void LspClient::stop()
 		waitpid(pid_, &status, WNOHANG);
 	}
 	pid_ = 0;
+#else
+	// Windows: LSP process management not supported
+	pid_ = 0;
+	stdin_fd_ = -1;
+	stdout_fd_ = -1;
+#endif
 }
 
 // ─── Private helpers ──────────────────────────────────────────
 
 bool LspClient::spawnProcess(const char *command)
 {
+#ifndef _WIN32
 	// Ignore SIGPIPE so a dead LSP server doesn't crash us
 	signal(SIGPIPE, SIG_IGN);
 
@@ -357,6 +364,12 @@ bool LspClient::spawnProcess(const char *command)
 	}
 
 	return true;
+#else
+	// Windows: fork/exec not available; LSP not supported
+	(void)command;
+	error_ = "LSP client not supported on Windows";
+	return false;
+#endif
 }
 
 bool LspClient::sendMessage(const std::string &body)
@@ -367,7 +380,11 @@ bool LspClient::sendMessage(const std::string &body)
 	}
 
 	std::string msg = wrapLspMessage(body);
+#ifndef _WIN32
 	ssize_t written = write(stdin_fd_, msg.c_str(), msg.size());
+#else
+	ssize_t written = _write(stdin_fd_, msg.c_str(), msg.size());
+#endif
 	if (written < 0 || static_cast<size_t>(written) != msg.size()) {
 		error_ = "write to LSP server failed";
 		return false;
@@ -377,6 +394,7 @@ bool LspClient::sendMessage(const std::string &body)
 
 std::string LspClient::readResponse(int expected_id, int timeout_ms)
 {
+#ifndef _WIN32
 	if (stdout_fd_ < 0)
 		return "";
 
@@ -468,6 +486,12 @@ std::string LspClient::readResponse(int expected_id, int timeout_ms)
 			return "";
 		}
 	}
+#else
+	// Windows: LSP process management not supported
+	(void)expected_id;
+	(void)timeout_ms;
+	return "";
+#endif
 }
 
 std::string LspClient::extractStringField(const std::string &json,
@@ -490,6 +514,7 @@ bool LspClient::isAvailable(const char *command)
 {
 	if (!command || !*command)
 		return false;
+#ifndef _WIN32
 	// Safe check: use access() for absolute paths, PATH search without shell
 	if (command[0] == '/') {
 		return access(command, X_OK) == 0;
@@ -510,6 +535,10 @@ bool LspClient::isAvailable(const char *command)
 	// Last entry (no trailing colon)
 	std::string full = path.substr(start) + "/" + command;
 	return access(full.c_str(), X_OK) == 0;
+#else
+	// Windows: LSP availability check not implemented
+	return false;
+#endif
 }
 
 std::string LspClient::extractTargetUri(const std::string &response_body)

@@ -92,7 +92,6 @@ fn main() {
         "linux" => println!("cargo:rustc-link-lib=dylib=stdc++"),
         _ => println!("cargo:rustc-link-lib=dylib=stdc++"),
     }
-    println!("cargo:rustc-link-lib=tree-sitter");
 
     // SQLite + tree-sitter: platform-dependent library paths
     match target_os.as_str() {
@@ -116,9 +115,14 @@ fn main() {
             println!("cargo:rustc-link-lib=sqlite3");
         }
         "windows" => {
-            // MinGW and msys2 provide libraries
-            println!("cargo:rustc-link-lib=tree-sitter");
-            println!("cargo:rustc-link-lib=sqlite3");
+            // tree-sitter is built via FetchContent; its library is in a subdir
+            let ts_build_lib = format!("{}/_deps/ts_repo-build/lib", build_dir);
+            if std::path::Path::new(&ts_build_lib).exists() {
+                println!("cargo:rustc-link-search=native={}", ts_build_lib);
+            }
+            println!("cargo:rustc-link-lib=static=tree-sitter");
+            // sqlite3 amalgamation is compiled directly into astgraph_engine.a
+            // (CMakeLists.txt appends sqlite3.c to ENGINE_SOURCES on Windows)
         }
         _ => {
             println!("cargo:rustc-link-lib=tree-sitter");

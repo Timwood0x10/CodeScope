@@ -29,6 +29,9 @@ jobs:
           - os: macos-15
             ext: .so
             artifact: codescope-aarch64-macos
+          - os: windows-2022
+            ext: .dll
+            artifact: codescope-x86_64-windows
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     steps:
@@ -36,6 +39,15 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install GNU toolchain (Windows — MinGW compat)
+        if: matrix.os == 'windows-2022'
+        run: |
+          rustup toolchain install stable-x86_64-pc-windows-gnu
+          rustup default stable-x86_64-pc-windows-gnu
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
 
       - name: Install deps (Ubuntu)
         if: matrix.os == 'ubuntu-24.04'
@@ -48,6 +60,44 @@ jobs:
         run: |
           brew install cmake ninja sqlite node git tree-sitter
 
+      - name: Install deps (Windows)
+        if: matrix.os == 'windows-2022'
+        shell: bash
+        run: |
+          choco install -y cmake ninja mingw git
+          # Rust is already installed via dtolnay/rust-toolchain
+          # MinGW provides gcc/g++ for C++ engine compilation
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ matrix.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ matrix.os }}-cargo-registry-
+
+      - name: Cache Cargo target
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ matrix.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ matrix.os }}-cargo-target-
+
+      - name: Cache CMake build
+        uses: actions/cache@v4
+        with:
+          path: engine/build
+          key: ${{ matrix.os }}-cmake-build-${{ hashFiles('engine/CMakeLists.txt') }}
+          restore-keys: ${{ matrix.os }}-cmake-build-
+
+      - name: Cache grammar sources
+        uses: actions/cache@v4
+        with:
+          path: grammars/tree-sitter-*
+          key: ${{ matrix.os }}-grammars-${{ hashFiles('grammars/clone_grammars.sh') }}
+          restore-keys: ${{ matrix.os }}-grammars-
+
       - name: Set grammar source path for CMake
         shell: bash
         run: |
@@ -55,6 +105,7 @@ jobs:
           echo "Grammar sources: $PWD/grammars"
 
       - name: Clone grammar sources for CMake
+        shell: bash
         run: |
           cd grammars
           bash clone_grammars.sh
@@ -62,10 +113,19 @@ jobs:
       - name: Build C++ engine
         shell: bash
         run: |
-          cmake -B engine/build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            engine/
-          cmake --build engine/build --target astgraph_engine
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            cmake -B engine/build -G "MinGW Makefiles" \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_C_COMPILER=gcc \
+              -DCMAKE_CXX_COMPILER=g++ \
+              engine/
+            cmake --build engine/build --target astgraph_engine
+          else
+            cmake -B engine/build -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              engine/
+            cmake --build engine/build --target astgraph_engine
+          fi
 
       - name: Build + test Rust server
         shell: bash
@@ -73,10 +133,10 @@ jobs:
           CBM_SKIP_PERF: ${{ inputs.skip_perf && '1' || '' }}
         run: |
           cargo build --release --bin codescope
-          cargo test --release
+          cargo nextest run --release --no-tests=pass
 
       - name: Strip binary
-        if: inputs.skip_package != true
+        if: inputs.skip_package != true && matrix.os != 'windows-2022'
         shell: bash
         run: |
           BIN="target/release/codescope"

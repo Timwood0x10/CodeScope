@@ -1,12 +1,12 @@
 #include "engine_internal.h"
 #include "filter_policy.h"
+#include "platform_win.h"
 
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
 #include <cstring>
-#include "dlfcn_compat.h"
 #include "posix_compat.h"
 #include <filesystem>
 #include <fstream>

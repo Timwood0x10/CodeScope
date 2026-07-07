@@ -1,25 +1,18 @@
 #include "engine_internal.h"
+#include "platform_win.h"
 
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
-#include "dlfcn_compat.h"
-#include <fcntl.h>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <sqlite3.h>
 #include <sstream>
 #include <string>
-#ifndef _WIN32
-#include <sys/mman.h>
-#endif
-#include <sys/stat.h>
 #include <thread>
 #include <tree_sitter/api.h>
-#ifndef _WIN32
-#include <unistd.h>
-#endif
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -27,51 +20,28 @@
 // ─── Helpers ───────────────────────────────────────────────────
 
 /**
- * Read a file into a string using pread (safe, no mmap edge cases).
- * Uses a stack buffer for small files to avoid heap allocation.
+ * Read a file into a string using std::ifstream (portable, RAII).
  *
  * @param path  File path to read.
  * @return      File contents as string, or empty string on error.
  */
 std::string readFile(const char *path)
 {
-	int fd = open(path, O_RDONLY);
-	if (fd < 0)
+	if (!path || !*path)
 		return "";
 
-	struct stat st;
-	if (fstat(fd, &st) != 0 || st.st_size == 0) {
-		close(fd);
+	std::ifstream ifs(path, std::ios::binary | std::ios::ate);
+	if (!ifs)
 		return "";
-	}
 
-	size_t size = static_cast<size_t>(st.st_size);
-	std::string result(size, '\0');
+	std::streamsize size = ifs.tellg();
+	if (size <= 0)
+		return "";
 
-	// Handle EINTR: retry on signal interruption
-	size_t total_read = 0;
-	while (total_read < size) {
-		ssize_t bytes_read =
-			read(fd, &result[total_read], size - total_read);
-		if (bytes_read < 0) {
-			if (errno == EINTR) {
-				// Signal received, retry
-				continue;
-			}
-			// Other error
-			close(fd);
-			return "";
-		}
-		if (bytes_read == 0) {
-			// EOF reached early
-			break;
-		}
-		total_read += static_cast<size_t>(bytes_read);
-	}
-	close(fd);
-
-	if (total_read != size)
-		result.resize(total_read);
+	ifs.seekg(0, std::ios::beg);
+	std::string result(static_cast<size_t>(size), '\0');
+	if (!ifs.read(&result[0], size))
+		return "";
 
 	return result;
 }

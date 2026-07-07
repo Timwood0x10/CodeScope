@@ -13,7 +13,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
-#include "dlfcn_compat.h"
+#include "platform_win.h"
 #include <filesystem>
 #include <fstream>
 #include <memory>

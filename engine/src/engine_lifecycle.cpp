@@ -1,4 +1,5 @@
 #include "engine_internal.h"
+#include "platform_win.h"
 
 #include <cstdio>
 #include <cstdlib>

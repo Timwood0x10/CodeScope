@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <unordered_map>
 
 /**
  * Minimal LSP (Language Server Protocol) client.
