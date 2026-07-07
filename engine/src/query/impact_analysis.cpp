@@ -84,7 +84,7 @@ findNodesInFiles(sqlite3 *db, uint64_t project_id,
 				sqlite3_column_int64(stmt, 0));
 			const char *name = reinterpret_cast<const char *>(
 				sqlite3_column_text(stmt, 1));
-			out_nodes.push_back({ nid, name ? name : "" });
+			out_nodes.emplace_back(nid, name ? name : "");
 		}
 		sqlite3_finalize(stmt);
 	}

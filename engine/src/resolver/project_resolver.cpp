@@ -39,7 +39,7 @@ ResolutionResult ProjectResolver::resolve(const std::string &name,
 			continue;
 
 		int score = rankCandidate(entry, file_path);
-		scored.push_back({ &entry, score });
+		scored.emplace_back(&entry, score);
 	}
 
 	if (scored.empty()) {

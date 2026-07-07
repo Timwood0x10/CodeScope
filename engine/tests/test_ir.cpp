@@ -33,7 +33,7 @@ int main() {
     func->children.push_back(call);
 
     // Add semantic edge: call -> func
-    call->semantic_edges.push_back({func, Relation::CallTarget});
+    call->semantic_edges.emplace_back(func, Relation::CallTarget);
 
     unit->root = root;
 

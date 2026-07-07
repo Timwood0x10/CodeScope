@@ -257,7 +257,7 @@ std::string detectCommunities(uint64_t project_id, store::GraphStore *store,
 		for (auto nid : neighbors) {
 			uint64_t comm_b = assignments[nid];
 			if (comm_a != comm_b) {
-				inter_edges.push_back({ comm_a, comm_b });
+				inter_edges.emplace_back(comm_a, comm_b);
 			}
 		}
 	}

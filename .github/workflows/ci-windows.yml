@@ -27,6 +27,17 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@9d47c6ad4dd2b516f881d4534a0e4b16a3faa840 # v2.7.8
+        with:
+          sharedKey: codescope-${{ runner.os }}
+
+      - name: Cache npm
+        uses: actions/cache@5a3b84e0eb1b7366e4fc2890e0e72a2243f07d75 # v4.2.2
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('grammars/build_ci.sh', 'grammars/clone_grammars.sh') }}
+
       - name: Install deps
         shell: pwsh
         run: |
@@ -47,8 +58,19 @@ jobs:
           echo "TREE_SITTER_NPM=$NPM_ROOT" >> "$GITHUB_ENV"
           echo "npm root: $NPM_ROOT"
 
+      - name: Cache grammar binaries
+        id: grammar-cache
+        uses: actions/cache@5a3b84e0eb1b7366e4fc2890e0e72a2243f07d75 # v4.2.2
+        with:
+          path: |
+            grammars/tree-sitter-*.so
+            grammars/tree-sitter-*.dll
+          key: grammars-${{ runner.os }}-${{ hashFiles('grammars/build_ci.sh', 'grammars/clone_grammars.sh') }}
+          restore-keys: |
+            grammars-${{ runner.os }}-
+
       - name: Build grammar .so files
-        if: ${{ inputs.skip_grammars != true }}
+        if: ${{ steps.grammar-cache.outputs.cache-hit != 'true' && inputs.skip_grammars != true }}
         run: |
           cd grammars
           bash clone_grammars.sh

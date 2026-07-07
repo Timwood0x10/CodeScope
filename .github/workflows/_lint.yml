@@ -24,6 +24,11 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@9d47c6ad4dd2b516f881d4534a0e4b16a3faa840 # v2.7.8
+        with:
+          sharedKey: codescope-lint
+
       - name: Lint Rust (clippy)
         run: cargo clippy --all-targets -- -D warnings
         continue-on-error: true

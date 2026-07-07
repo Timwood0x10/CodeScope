@@ -457,8 +457,8 @@ char *engine_index_batch(uint64_t project_id, const char *file_paths_json)
 			continue;
 		}
 
-		batches.push_back({ std::unique_ptr<ir::TranslationUnit>(unit),
-				    std::move(source), lang, fp });
+		batches.emplace_back(std::unique_ptr<ir::TranslationUnit>(unit),
+				     std::move(source), lang, fp);
 	}
 
 	// Phase 2: Persist in single transaction
