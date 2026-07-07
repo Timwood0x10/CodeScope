@@ -54,6 +54,13 @@ jobs:
             tree-sitter-rust tree-sitter-javascript tree-sitter-typescript \
             tree-sitter-go tree-sitter-java tree-sitter-swift
 
+      - name: Capture npm root for cmake
+        shell: bash
+        run: |
+          NPM_ROOT=$(npm root -g)
+          echo "TREE_SITTER_NPM=$NPM_ROOT" >> "$GITHUB_ENV"
+          echo "npm root: $NPM_ROOT"
+
       - name: Build grammar .so files (runtime dlopen)
         run: |
           cd grammars
@@ -69,6 +76,7 @@ jobs:
           cmake --build engine/build --target astgraph_engine
 
       - name: Build Rust server
+        shell: bash
         run: |
           cargo build --release --bin codescope
 

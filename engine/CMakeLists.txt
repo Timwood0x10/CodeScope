@@ -43,28 +43,106 @@ if(CCACHE_PROGRAM)
 endif()
 
 # ── Dependencies ────────────────────────────────────────────────
-find_package(PkgConfig)
+find_package(PkgConfig QUIET)
 
-# Force homebrew sqlite3 (supports extension loading with SQLITE_ENABLE_LOAD_EXTENSION)
-set(SQLITE3_INCLUDE_DIRS "/opt/homebrew/Cellar/sqlite/3.53.3/include")
-set(SQLITE3_LIBRARY_DIRS "/opt/homebrew/Cellar/sqlite/3.53.3/lib")
-set(SQLITE3_LIBRARIES "sqlite3")
+# ── SQLite3 ─────────────────────────────────────────────────────
+# Each platform has its own sqlite3 story:
+#   macOS:  Homebrew sqlite3 (supports extension loading)
+#   Linux:  system libsqlite3-dev from apt
+#   Windows: MinGW sqlite3 from choco/mingw
+if(APPLE)
+    # Homebrew sqlite3 — first try versioned Cellar, then opt symlink
+    set(SQLITE3_CANDIDATE_LIBS
+        "/opt/homebrew/Cellar/sqlite/3.53.3/lib"
+        "/opt/homebrew/opt/sqlite/lib"
+    )
+    set(SQLITE3_CANDIDATE_INCS
+        "/opt/homebrew/Cellar/sqlite/3.53.3/include"
+        "/opt/homebrew/opt/sqlite/include"
+    )
+    set(SQLITE3_FOUND_PATH "")
 
-# tree-sitter is linked dynamically (the core lib)
-# Use QUIET so CI builds without system tree-sitter still configure cleanly
+    # Look for sqlite3 in each candidate dir
+    foreach(_dir ${SQLITE3_CANDIDATE_LIBS})
+        if(EXISTS "${_dir}/libsqlite3.dylib" OR EXISTS "${_dir}/libsqlite3.a")
+            set(SQLITE3_FOUND_PATH "${_dir}")
+            break()
+        endif()
+    endforeach()
+
+    if(SQLITE3_FOUND_PATH)
+        message(STATUS "SQLite3: found at ${SQLITE3_FOUND_PATH}")
+        set(SQLITE3_LIBRARY_DIRS "${SQLITE3_FOUND_PATH}")
+        link_directories(${SQLITE3_FOUND_PATH})
+        set(SQLITE3_LIBRARIES sqlite3)
+        # Find matching include dir
+        foreach(_inc ${SQLITE3_CANDIDATE_INCS})
+            if(EXISTS "${_inc}/sqlite3.h")
+                set(SQLITE3_INCLUDE_DIRS "${_inc}")
+                break()
+            endif()
+        endforeach()
+    else()
+        message(WARNING "Homebrew sqlite3 not found; falling back to system sqlite3")
+        set(SQLITE3_LIBRARIES sqlite3)
+        set(SQLITE3_INCLUDE_DIRS "")
+    endif()
+elseif(WIN32)
+    # MinGW sqlite3 — available via PATH / choco
+    set(SQLITE3_LIBRARIES sqlite3)
+    set(SQLITE3_INCLUDE_DIRS "")
+else()
+    # Linux: system libsqlite3-dev
+    set(SQLITE3_LIBRARIES sqlite3)
+    set(SQLITE3_INCLUDE_DIRS "")
+endif()
+
+# ── tree-sitter (core C library) ────────────────────────────────
+# Dynamically loaded — queried via pkg-config first, then manual search.
+# Each platform has different default paths.
+if(APPLE)
+    # macOS: Homebrew installs to /opt/homebrew
+    set(TREE_SITTER_PATHS /opt/homebrew /usr/local /usr)
+elseif(WIN32)
+    # Windows: MinGW / msys2
+    set(TREE_SITTER_PATHS $ENV{MINGW_PREFIX} C:/msys64 /usr /usr/local)
+else()
+    # Linux: system packages install to /usr
+    set(TREE_SITTER_PATHS /usr /usr/local)
+endif()
+
 pkg_check_modules(TREE_SITTER QUIET tree-sitter)
 if(NOT TREE_SITTER_FOUND)
-    message(STATUS "tree-sitter not found via pkg-config; searching default paths")
+    message(STATUS "tree-sitter not found via pkg-config; searching ${TREE_SITTER_PATHS}")
     find_path(TREE_SITTER_INCLUDE_DIRS tree_sitter/api.h
-        /usr/include /usr/local/include /opt/homebrew/include
-        $ENV{HOME}/.local/include)
+        PATHS ${TREE_SITTER_PATHS}
+        PATH_SUFFIXES include
+        NO_DEFAULT_PATH)
     find_library(TREE_SITTER_LIBRARIES tree-sitter
-        /usr/lib /usr/local/lib /opt/homebrew/lib
-        $ENV{HOME}/.local/lib)
+        PATHS ${TREE_SITTER_PATHS}
+        PATH_SUFFIXES lib
+        NO_DEFAULT_PATH)
+
+    # If not found in platform paths, try system defaults as fallback
+    if(NOT TREE_SITTER_INCLUDE_DIRS)
+        find_path(TREE_SITTER_INCLUDE_DIRS tree_sitter/api.h)
+    endif()
+    if(NOT TREE_SITTER_LIBRARIES)
+        find_library(TREE_SITTER_LIBRARIES tree-sitter)
+    endif()
+
     if(NOT TREE_SITTER_LIBRARIES)
         message(WARNING "tree-sitter library not found; using -ltree-sitter with default linker search")
         set(TREE_SITTER_LIBRARIES "tree-sitter")
     endif()
+endif()
+
+# Add Homebrew and MinGW lib paths so -ltree-sitter / -lsqlite3 resolve at link time
+if(APPLE)
+    link_directories(/opt/homebrew/lib)
+endif()
+if(WIN32 AND DEFINED ENV{MINGW_PREFIX})
+    link_directories($ENV{MINGW_PREFIX}/lib)
 endif()
 
 # dlopen (for dynamic grammar loading)
@@ -214,13 +292,28 @@ target_link_libraries(astgraph_engine PUBLIC
     ${CMAKE_DL_LIBS}
 )
 
-# Ensure Homebrew SQLite is found on macOS (needed for sqlite-vec extension loading)
-# The system SQLite doesn't provide sqlite3_enable_load_extension / sqlite3_load_extension
+# Ensure Homebrew libraries are found on macOS
 if(APPLE)
+    # Add Homebrew lib path so -ltree-sitter resolves at link time
+    link_directories(/opt/homebrew/lib)
+    # Homebrew SQLite (needed for sqlite-vec extension loading)
+    # The system SQLite doesn't provide sqlite3_enable_load_extension / sqlite3_load_extension
     find_library(HOMEBREW_SQLITE3 sqlite3 PATHS /opt/homebrew/opt/sqlite/lib NO_DEFAULT_PATH)
     if(HOMEBREW_SQLITE3)
         target_link_libraries(astgraph_engine PUBLIC ${HOMEBREW_SQLITE3})
         target_include_directories(astgraph_engine PUBLIC /opt/homebrew/opt/sqlite/include)
+    endif()
+endif()
+
+# On Linux, ensure tree-sitter from apt is found
+# (libtree-sitter-dev installs to standard paths, so no extra config needed)
+
+# On Windows, ensure npm global root is in the include path
+if(WIN32)
+    # Grammar include dirs may be accessed via NPM root; warn if missing
+    if("${TREE_SITTER_NPM}" STREQUAL "")
+        message(WARNING "TREE_SITTER_NPM is empty — grammar source files for static linking will be missing. "
+                        "Run: npm install -g tree-sitter-python tree-sitter-c ...")
     endif()
 endif()
 

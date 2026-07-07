@@ -1,6 +1,7 @@
 #ifndef FILTER_POLICY_H
 #define FILTER_POLICY_H
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <unordered_set>
