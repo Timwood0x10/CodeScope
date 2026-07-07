@@ -468,24 +468,23 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 				struct stat file_stat;
 				int64_t mtime = 0, fsize = 0;
 				bool file_unchanged = false;
-				if (stat(entry.path().c_str(), &file_stat) ==
-				    0) {
+				if (stat(entry.path().string().c_str(),
+					 &file_stat) == 0) {
 					mtime = static_cast<int64_t>(
 						file_stat.st_mtime);
 					fsize = static_cast<int64_t>(
 						file_stat.st_size);
-					file_unchanged =
-						g_store->isFileUnchanged(
-							project_id,
-							entry.path().c_str(),
-							mtime, fsize);
+					file_unchanged = g_store->isFileUnchanged(
+						project_id,
+						entry.path().string().c_str(),
+						mtime, fsize);
 				}
 				if (file_unchanged) {
 					filter.stats().skipped_files++;
 					continue;
 				}
 				const char *lang = filter.detectLanguage(
-					entry.path().c_str());
+					entry.path().string().c_str());
 				if (!lang) {
 					filter.stats().skipped_lang++;
 					continue;
