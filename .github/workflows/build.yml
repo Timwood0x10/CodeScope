@@ -40,43 +40,23 @@ jobs:
         if: matrix.os == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build libsqlite3-dev nodejs npm git libtree-sitter-dev
-          # Use system tree-sitter instead of npm version (avoids GLIBC issues)
-          sudo apt-get install -y tree-sitter-cli || true
+          sudo apt-get install -y cmake ninja-build libsqlite3-dev nodejs npm git curl
 
       - name: Install dependencies (macOS)
         if: matrix.os == 'macos-14'
         run: |
-          brew install cmake ninja sqlite node git
-          npm install -g tree-sitter-cli
+          brew install cmake ninja sqlite node git curl
 
       - name: Install dependencies (Windows)
         if: matrix.os == 'windows-2022'
         shell: pwsh
         run: |
-          choco install -y cmake ninja nodejs git mingw 2>$null | Out-Null
-          npm install -g tree-sitter-cli
+          choco install -y cmake ninja nodejs git mingw curl 2>$null | Out-Null
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Build grammars (Linux/macOS)
-        if: runner.os != 'Windows'
+      - name: Download tree-sitter grammars
         run: |
           cd grammars
-          # Try with tree-sitter CLI first, fallback to source-only build
-          if command -v tree-sitter >/dev/null 2>&1; then
-              bash build_ci.sh || bash build_tree_sitter.sh
-          else
-              bash build_tree_sitter.sh
-          fi
-
-      - name: Build grammars (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          cd grammars
-          .\build_ci.ps1
+          bash download_grammars_v2.sh || bash build_ci.sh
 
       - name: Build C++ engine
         env:

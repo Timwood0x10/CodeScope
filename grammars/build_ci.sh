@@ -39,16 +39,27 @@ for lang in "${LANGUAGES[@]}"; do
     fi
     
     cd "$grammar_dir"
-    
-    # Generate parser if needed (skip WASM build)
+
+    # Generate parser if needed (REQUIRED)
     if [ ! -f "src/parser.c" ]; then
         echo "  Generating parser.c..."
-        tree-sitter generate || echo "  Warning: generation failed, parser.c may be pre-generated"
+        tree-sitter generate
+        if [ ! -f "src/parser.c" ]; then
+            echo "  ERROR: parser.c generation failed"
+            exit 1
+        fi
     fi
 
     # Compile to shared library
     echo "  Compiling to shared library..."
-    gcc -fPIC -shared src/parser.c src/scanner.c -I src \
+
+    # Build command - only include scanner.c if it exists
+    local src_files="src/parser.c"
+    if [ -f "src/scanner.c" ]; then
+        src_files="$src_files src/scanner.c"
+    fi
+
+    gcc -fPIC -shared $src_files -I src \
         -o "${GRAMMARS_DIR}/tree-sitter-${lang}.so"
     
     echo "  -> ${GRAMMARS_DIR}/tree-sitter-${lang}.so"

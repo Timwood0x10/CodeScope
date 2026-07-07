@@ -1,12 +1,19 @@
 #!/bin/bash
-# Alternative script: Use tree-sitter source instead of CLI
-# This avoids GLIBC compatibility issues
+# Alternative script: Compile grammars that already have parser.c
+# Use this ONLY if tree-sitter CLI is unavailable AND parser.c exists
+# Otherwise, use build_ci.sh which requires tree-sitter CLI
 
 set -e
 
 GRAMMARS_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-echo "Building tree-sitter grammars from source..."
+echo "========================================="
+echo "  Tree-sitter Grammars Build (No CLI)"
+echo "========================================="
+echo ""
+echo "Note: This script only works if parser.c already exists"
+echo "For most grammars, use build_ci.sh (requires tree-sitter CLI)"
+echo ""
 
 # Languages to build
 LANGUAGES=(
@@ -36,20 +43,22 @@ build_grammar() {
     fi
     
     cd "$grammar_dir"
-    
-    # Most tree-sitter grammars have pre-generated parser.c
-    # If not, we need tree-sitter CLI, but try without first
+
+    # Most tree-sitter grammars NEED generation
+    # If parser.c doesn't exist, we need tree-sitter CLI
     if [ ! -f "src/parser.c" ]; then
-        echo "  Warning: parser.c not found, grammar may need manual generation"
-        echo "  Trying to proceed anyway..."
+        echo "  ERROR: parser.c not found"
+        echo "  This grammar requires tree-sitter CLI to generate parser.c"
+        echo "  Please use build_ci.sh instead (requires tree-sitter CLI)"
+        exit 1
     fi
-    
-    # Compile to shared library
+
+    # Compile to shared library - only include scanner.c if it exists
     local src_files="src/parser.c"
     if [ -f "src/scanner.c" ]; then
         src_files="$src_files src/scanner.c"
     fi
-    
+
     gcc -fPIC -shared $src_files -I src \
         -o "${GRAMMARS_DIR}/tree-sitter-${lang}.so"
     
