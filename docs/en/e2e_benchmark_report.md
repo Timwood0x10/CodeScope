@@ -48,7 +48,7 @@ User asks "show me the call relationships of analyze()"
 ### Command
 ```bash
 ./target/debug/codescope worker /tmp/e2e_bench.db \
-  /Users/scc/code/rustcode/garbage-code-hunter "" "e2e-bench" "1"
+  ～/code/rustcode/garbage-code-hunter "" "e2e-bench" "1"
 ```
 
 ### Output

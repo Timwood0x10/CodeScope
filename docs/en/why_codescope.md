@@ -455,7 +455,7 @@ CodeScope's Phase A only stores the symbol table — no graph, no fingerprints, 
       "signature": "type ChaosExecutor struct {",
       "visibility": "default",
       "language": "go",
-      "file_path": "/Users/scc/go/src/goagent/internal/ares_quant/marketmaking/chaos.go",
+      "file_path": "～/go/src/goagent/internal/ares_quant/marketmaking/chaos.go",
       "line": 72,
       "column": 1
     },
@@ -466,7 +466,7 @@ CodeScope's Phase A only stores the symbol table — no graph, no fingerprints, 
       "signature": "type ChaosExecutor interface {",
       "visibility": "default",
       "language": "go",
-      "file_path": "/Users/scc/go/src/goagent/internal/ares_quant/marketmaking_api/chaos.go",
+      "file_path": "～/go/src/goagent/internal/ares_quant/marketmaking_api/chaos.go",
       "line": 40,
       "column": 1
     }
@@ -480,11 +480,11 @@ CodeScope's Phase A only stores the symbol table — no graph, no fingerprints, 
 
 ```bash
 # CBM: index 1 project → 64 MB
-$ ls -lh /Users/scc/go/src/goagent/.codebase-memory/graph.db.zst
+$ ls -lh ～/go/src/goagent/.codebase-memory/graph.db.zst
 -rw-r--r--  ...  64M
 
 # CodeScope: same project → 270 KB
-$ ls -lh /Users/scc/go/src/goagent/.codescope/codescope.db
+$ ls -lh ～/go/src/goagent/.codescope/codescope.db
 -rw-r--r--  ...  270K
 
 # Ratio: 64,057,344 / 270,336 = 237x

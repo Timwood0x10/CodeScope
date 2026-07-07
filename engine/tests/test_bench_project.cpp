@@ -131,7 +131,7 @@ int main(int argc, char **argv) {
     // Get git rev
     std::string git_rev;
     {
-        FILE *gf = popen("cd /Users/scc/code/cppCode/CodeScope && git rev-parse --short HEAD 2>/dev/null", "r");
+        FILE *gf = popen("cd ～/code/cppCode/CodeScope && git rev-parse --short HEAD 2>/dev/null", "r");
         char gb[64] = {0};
         if (gf) { fgets(gb, sizeof(gb), gf); pclose(gf); }
         size_t len = strlen(gb);

@@ -1,9 +1,9 @@
 ===== HID 输入设备扫描 2026年 7月 4日 星期六 11时52分48秒 CST =====
 --- drivers/hid/usbhid ---
 store: vec0 table not available (sqlite-vec not loaded): no such module: vec0
-engine: sqlite-vec loaded from /Users/scc/code/cppCode/CodeScope/grammars/vec0.dylib
+engine: sqlite-vec loaded from ～/code/cppCode/CodeScope/grammars/vec0.dylib
 --- drivers/input ---
 store: vec0 table not available (sqlite-vec not loaded): no such module: vec0
-engine: sqlite-vec loaded from /Users/scc/code/cppCode/CodeScope/grammars/vec0.dylib
+engine: sqlite-vec loaded from ～/code/cppCode/CodeScope/grammars/vec0.dylib
 
 ===== 完成 2026年 7月 4日 星期六 11时52分48秒 CST =====

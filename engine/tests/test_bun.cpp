@@ -14,7 +14,7 @@ static double elapsed(Clock::time_point start) {
 }
 
 int main(int argc, char** argv) {
-    const char* bun_dir = argc > 1 ? argv[1] : "/Users/scc/code/researcher/bun";
+    const char* bun_dir = argc > 1 ? argv[1] : "～/code/researcher/bun";
 
     unlink("/tmp/test_bun.db");
 

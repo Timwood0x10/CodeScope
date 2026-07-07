@@ -2,7 +2,7 @@
 
 --- Phase A: Fast Scan ---
 store: vec0 table not available (sqlite-vec not loaded): no such module: vec0
-engine: sqlite-vec loaded from /Users/scc/code/cppCode/CodeScope/grammars/vec0.dylib
+engine: sqlite-vec loaded from ～/code/cppCode/CodeScope/grammars/vec0.dylib
 === CodeScope Self-Scan Benchmark ===
 
 Project: /tmp/linux-src/kernel

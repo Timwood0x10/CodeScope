@@ -1,0 +1,123 @@
+# Reusable: build binaries on all platforms
+name: Build
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Version string for release (e.g. v0.1.5)'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            ext: .so
+            artifact: codescope-x86_64-linux
+          - os: macos-14
+            ext: .so
+            artifact: codescope-aarch64-macos
+          - os: windows-2022
+            ext: .dll
+            artifact: codescope-x86_64-windows
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install deps (Ubuntu)
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build libsqlite3-dev nodejs npm git gcc g++ libtree-sitter-dev
+
+      - name: Install deps (macOS)
+        if: matrix.os == 'macos-14'
+        run: |
+          brew install cmake ninja sqlite node git tree-sitter
+
+      - name: Install deps (Windows)
+        if: matrix.os == 'windows-2022'
+        shell: pwsh
+        run: |
+          choco install -y cmake ninja nodejs git mingw curl 2>$null | Out-Null
+
+      - name: Install tree-sitter CLI + grammar npm packages
+        run: |
+          npm install -g tree-sitter-cli
+          npm install -g tree-sitter-python tree-sitter-c tree-sitter-cpp \
+            tree-sitter-rust tree-sitter-javascript tree-sitter-typescript \
+            tree-sitter-go tree-sitter-java tree-sitter-swift
+
+      - name: Build grammar .so files (runtime dlopen)
+        run: |
+          cd grammars
+          bash clone_grammars.sh
+          bash build_ci.sh
+
+      - name: Build C++ engine
+        run: |
+          cmake -B engine/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            engine/
+          cmake --build engine/build --target astgraph_engine
+
+      - name: Build Rust server
+        run: |
+          cargo build --release --bin codescope
+
+      - name: Strip binary
+        shell: bash
+        run: |
+          BIN="target/release/codescope"
+          [ -f "${BIN}.exe" ] && BIN="${BIN}.exe"
+          strip "$BIN" 2>/dev/null || true
+
+      - name: Ad-hoc sign macOS binary
+        if: matrix.os == 'macos-14'
+        run: codesign --sign - --force target/release/codescope 2>/dev/null || true
+
+      - name: Package
+        shell: bash
+        run: |
+          BIN="target/release/codescope"
+          [ -f "${BIN}.exe" ] && BIN="${BIN}.exe"
+
+          mkdir -p package
+          cp "$BIN" package/
+          cp LICENSE package/
+          [ -f install.sh ] && cp install.sh package/
+          [ -f install.ps1 ] && cp install.ps1 package/
+
+          # Copy grammar files (any matching .so or .dll)
+          shopt -s nullglob
+          for f in grammars/tree-sitter-*.so grammars/tree-sitter-*.dll; do
+            cp "$f" package/
+          done
+
+          cd package
+          tar -czf "../${{ matrix.artifact }}.tar.gz" ./*
+          cd ..
+          echo "Packaged: ${{ matrix.artifact }}.tar.gz ($(ls -lh ${{ matrix.artifact }}.tar.gz | awk '{print $5}'))"
+
+      - name: Generate checksum
+        shell: bash
+        run: |
+          sha256sum "${{ matrix.artifact }}.tar.gz" > "checksum-${{ matrix.artifact }}.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}.tar.gz
+            checksum-${{ matrix.artifact }}.txt

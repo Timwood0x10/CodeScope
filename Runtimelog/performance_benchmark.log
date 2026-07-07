@@ -11,8 +11,8 @@
 
 | 项目 | 路径 | 节点数 | 边数 | DB 大小 |
 |------|------|:------:|:----:|:-------:|
-| CodeScope 自身 | /Users/scc/code/cppCode/CodeScope | 1,272 | 3,597 | 6 MB |
-| ARES_POLIS (Go) | /Users/scc/go/src/ARES_POLIS | 2,023 | 8,519 | 10 MB |
+| CodeScope 自身 | ～/code/cppCode/CodeScope | 1,272 | 3,597 | 6 MB |
+| ARES_POLIS (Go) | ～/go/src/ARES_POLIS | 2,023 | 8,519 | 10 MB |
 | **Linux 内核 (全量)** | **/tmp/linux-src** | **4,877,492** | **9,326,238** | **7.06 GB** |
 | kernel/sched (子集) | /tmp/linux-src/kernel/sched | 3,854 | 9,997 | 14 MB |
 | kernel/ (子集) | /tmp/linux-src/kernel | 33,546 | 95,304 | 85 MB |

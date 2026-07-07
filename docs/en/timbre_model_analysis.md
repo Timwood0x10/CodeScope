@@ -10,7 +10,7 @@
 ```
 Start Time: Monday, July 6, 2026 20:59:53
 
-worker: project=0 starting index_project dir=/Users/scc/code/AIproject/music_ai/InstrumentTimbre lang=
+worker: project=0 starting index_project dir=～/code/AIproject/music_ai/InstrumentTimbre lang=
 BATCH [0..99] of 142 (100 files)
 BATCH [0..99] done, total indexed: 100
 BATCH [100..141] of 142 (42 files)

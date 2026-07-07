@@ -11,7 +11,7 @@
 ```
 Start: 2026-07-06 19:50:33
 
-worker: project=0 starting index_project dir=/Users/scc/code/rustcode/rust lang=
+worker: project=0 starting index_project dir=～/code/rustcode/rust lang=
 BATCH [0..99] of 36807 (100 files)
 BATCH [0..99] done (0 passes ok), total indexed: 100
 ...
@@ -79,7 +79,7 @@ FTS     22,995ms  █████████████░░░░░░░�
 ```
 Start: 2026-07-06 19:55:37
 
-worker: project=0 starting index_project dir=/Users/scc/code/researcher/bun lang=
+worker: project=0 starting index_project dir=～/code/researcher/bun lang=
 BATCH [0..99] of 9641 (100 files)
 BATCH [0..99] done (0 passes ok), total indexed: 100
 ...
@@ -388,7 +388,7 @@ Aggregated from three projects in this test:
 ```
 Start: 2026-07-06 20:50:45
 
-worker: project=0 starting index_project dir=/Users/scc/code/researcher/jdk/src lang=
+worker: project=0 starting index_project dir=～/code/researcher/jdk/src lang=
 BATCH [0..99] of 19821 (100 files)
 ...
 BATCH [19800..19820] of 19821 (21 files)

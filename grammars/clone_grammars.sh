@@ -18,6 +18,9 @@ GRAMMARS=(
     "rust"
     "javascript"
     "typescript"
+    "go"
+    "java"
+    "swift"
 )
 
 for grammar in "${GRAMMARS[@]}"; do

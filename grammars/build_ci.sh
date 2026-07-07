@@ -6,10 +6,10 @@ set -e
 
 GRAMMARS_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Check if tree-sitter CLI is available
+# Check if tree-sitter CLI is available (needed only for `tree-sitter generate`,
+# which is no longer called — all grammar repos have pre-generated parser.c)
 if ! command -v tree-sitter &> /dev/null; then
-    echo "Error: tree-sitter CLI not found. Install with: npm install -g tree-sitter-cli"
-    exit 1
+    echo "Warning: tree-sitter CLI not found (not required — using pre-generated parser.c)"
 fi
 
 # List of languages to build
@@ -26,41 +26,52 @@ LANGUAGES=(
     "swift"
 )
 
+# Grammars that need special directory handling (handled below)
+SPECIAL_GRAMMARS=("typescript" "tsx")
+
 # Build each grammar
 for lang in "${LANGUAGES[@]}"; do
     echo "Building grammar: ${lang}"
+    
+    # Skip typescript/tsx - handled in special section below
+    if [[ " ${SPECIAL_GRAMMARS[*]} " == *" ${lang} "* ]]; then
+        echo "  (deferred to special handling section)"
+        continue
+    fi
     
     # Clone grammar repository if not exists
     grammar_repo="https://github.com/tree-sitter/tree-sitter-${lang}"
     grammar_dir="${GRAMMARS_DIR}/tree-sitter-${lang}"
     
     if [ ! -d "$grammar_dir" ]; then
-        git clone "$grammar_repo" "$grammar_dir" --depth 1
+        git clone "$grammar_repo" "$grammar_dir" --depth 1 2>/dev/null || {
+            echo "  WARNING: Failed to clone ${lang}, skipping"
+            continue
+        }
     fi
     
     cd "$grammar_dir"
-
-    # Generate parser if needed (REQUIRED)
-    if [ ! -f "src/parser.c" ]; then
-        echo "  Generating parser.c..."
-        tree-sitter generate
-        if [ ! -f "src/parser.c" ]; then
-            echo "  ERROR: parser.c generation failed"
-            exit 1
-        fi
-    fi
 
     # Compile to shared library
     echo "  Compiling to shared library..."
 
     # Build command - only include scanner.c if it exists
     src_files="src/parser.c"
+    if [ ! -f "src/parser.c" ]; then
+        echo "  WARNING: src/parser.c not found for ${lang}, skipping"
+        cd "$GRAMMARS_DIR"
+        continue
+    fi
     if [ -f "src/scanner.c" ]; then
         src_files="$src_files src/scanner.c"
     fi
 
     gcc -fPIC -shared $src_files -I src \
-        -o "${GRAMMARS_DIR}/tree-sitter-${lang}.so"
+        -o "${GRAMMARS_DIR}/tree-sitter-${lang}.so" 2>/dev/null || {
+        echo "  WARNING: compilation failed for ${lang}, skipping"
+        cd "$GRAMMARS_DIR"
+        continue
+    }
     
     echo "  -> ${GRAMMARS_DIR}/tree-sitter-${lang}.so"
     cd "$GRAMMARS_DIR"

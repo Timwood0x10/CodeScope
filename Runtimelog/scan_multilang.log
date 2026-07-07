@@ -3,14 +3,14 @@
 --- parser ---
 
 --- 语言注册入口 ---
-/Users/scc/code/cppCode/CodeScope/engine/src/parser/parser.h:24:	// The .so must export a function tree_sitter_<lang>().
-/Users/scc/code/cppCode/CodeScope/engine/src/parser/parser.h:25:	bool registerLanguage(const char *name, const char *so_path);
-/Users/scc/code/cppCode/CodeScope/engine/src/parser/parser.cpp:25:bool Parser::registerLanguage(const char *name, const char *so_path)
-/Users/scc/code/cppCode/CodeScope/engine/src/parser/parser.cpp:37:	// Build the symbol name: tree_sitter_<name>
-/Users/scc/code/cppCode/CodeScope/engine/src/parser/parser.cpp:38:	std::string sym = "tree_sitter_";
+～/code/cppCode/CodeScope/engine/src/parser/parser.h:24:	// The .so must export a function tree_sitter_<lang>().
+～/code/cppCode/CodeScope/engine/src/parser/parser.h:25:	bool registerLanguage(const char *name, const char *so_path);
+～/code/cppCode/CodeScope/engine/src/parser/parser.cpp:25:bool Parser::registerLanguage(const char *name, const char *so_path)
+～/code/cppCode/CodeScope/engine/src/parser/parser.cpp:37:	// Build the symbol name: tree_sitter_<name>
+～/code/cppCode/CodeScope/engine/src/parser/parser.cpp:38:	std::string sym = "tree_sitter_";
 
 --- 翻译器工厂 ---
-/Users/scc/code/cppCode/CodeScope/engine/src/ir/ir_translator.cpp:4:// Each returns a new Translator* or nullptr if the grammar can't be loaded.
-/Users/scc/code/cppCode/CodeScope/engine/src/ir/ir_translator.cpp:22:Translator *createTranslator(const char *language)
+～/code/cppCode/CodeScope/engine/src/ir/ir_translator.cpp:4:// Each returns a new Translator* or nullptr if the grammar can't be loaded.
+～/code/cppCode/CodeScope/engine/src/ir/ir_translator.cpp:22:Translator *createTranslator(const char *language)
 
 ===== 完成 2026年 7月 4日 星期六 15时36分03秒 CST =====

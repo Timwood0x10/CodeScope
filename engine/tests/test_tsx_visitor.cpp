@@ -30,7 +30,7 @@ static const TSLanguage *load_tsx_language()
 		getenv("GRAMMARS_DIR"),
 		"../grammars",
 		"grammars",
-		"/Users/scc/code/cppCode/CodeScope/grammars",
+		"～/code/cppCode/CodeScope/grammars",
 	};
 	for (auto d : dirs) {
 		if (!d)

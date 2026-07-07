@@ -11,7 +11,7 @@
 ```
 开始时间: 2026年 7月 6日 星期一 19时50分33秒
 
-worker: project=0 starting index_project dir=/Users/scc/code/rustcode/rust lang=
+worker: project=0 starting index_project dir=～/code/rustcode/rust lang=
 BATCH [0..99] of 36807 (100 files)
 BATCH [0..99] done (0 passes ok), total indexed: 100
 ...
@@ -79,7 +79,7 @@ FTS     22,995ms  █████████████░░░░░░░�
 ```
 开始时间: 2026年 7月 6日 星期一 19时55分37秒
 
-worker: project=0 starting index_project dir=/Users/scc/code/researcher/bun lang=
+worker: project=0 starting index_project dir=～/code/researcher/bun lang=
 BATCH [0..99] of 9641 (100 files)
 BATCH [0..99] done (0 passes ok), total indexed: 100
 ...
@@ -391,7 +391,7 @@ Arc 的线程安全性依赖于三个底层机制：
 ```
 开始时间: 2026年 7月 6日 星期一 20时50分45秒
 
-worker: project=0 starting index_project dir=/Users/scc/code/researcher/jdk/src lang=
+worker: project=0 starting index_project dir=～/code/researcher/jdk/src lang=
 BATCH [0..99] of 19821 (100 files)
 ...
 BATCH [19800..19820] of 19821 (21 files)
