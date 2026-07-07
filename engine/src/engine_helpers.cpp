@@ -124,8 +124,25 @@ std::string simpleHash(const std::string &s)
 const char *detectLanguage(const char *file_path)
 {
 	const char *ext = strrchr(file_path, '.');
-	if (!ext)
+	if (!ext) {
+		// No extension: try shebang detection
+		FILE *f = fopen(file_path, "r");
+		if (!f)
+			return nullptr;
+		char first_line[256] = {0};
+		if (!fgets(first_line, sizeof(first_line), f)) {
+			fclose(f);
+			return nullptr;
+		}
+		fclose(f);
+		if (strncmp(first_line, "#!/", 3) == 0) {
+			if (strstr(first_line, "python"))
+				return "python";
+			if (strstr(first_line, "node") || strstr(first_line, "deno"))
+				return "javascript";
+		}
 		return nullptr;
+	}
 
 	// Skip minified/bundled JS files — they are typically generated code
 	// that is expensive to parse and provides little semantic value.

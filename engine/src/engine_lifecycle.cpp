@@ -47,7 +47,16 @@ int engine_init(const char *db_path)
 	{
 		const char *gdir = getenv("GRAMMARS_DIR");
 		std::string base = gdir ? gdir : "grammars";
-		std::string vec_path = base + "/vec0.dylib";
+		// Platform-specific vec0 extension suffix
+		std::string vec_suffix;
+#ifdef _WIN32
+		vec_suffix = "/vec0.dll";
+#elif __APPLE__
+		vec_suffix = "/vec0.dylib";
+#else
+		vec_suffix = "/vec0.so";
+#endif
+		std::string vec_path = base + vec_suffix;
 		sqlite3 *db = g_store->handle();
 		char *ext_err = nullptr;
 		int rc = SQLITE_ERROR;
@@ -85,13 +94,12 @@ int engine_init(const char *db_path)
 
 void engine_shutdown()
 {
-	g_query.reset();
-	g_parser.reset();
-
 	if (g_store) {
 		g_store->close();
 		g_store.reset();
 	}
+	g_query.reset();
+	g_parser.reset();
 }
 
 // ─── Project ───────────────────────────────────────────────────

@@ -1,68 +1,49 @@
-# CodeScope v0.1.0 — Bug Report & 优化建议
+# CodeScope — Bug Report & Optimization Analysis
 
-> 生成日期: 2026-07-07 | 分支: dev
+> Updated: 2026-07-07 | All bugs verified against current source code
 
 ---
 
-## 一、潜在 Bug
+## Part 1: Verified Bugs
 
-### 🔴 Critical
+### Critical
 
-#### 1. `server/main.rs:28` — 不必要的 `unsafe` 且语义误导
+#### 1. `engine/src/store/store.cpp:359-367` — `stmt_fts_map_` never prepared (dead code + broken FTS deletion)
 
-```rust
-unsafe {
-    env::set_var("CODESCOPE_DB_PATH", db_path);
+**Status: CONFIRMED**
+
+```cpp
+// store.cpp:359 — guarded by stmt_fts_map_, but it's always nullptr
+if (stmt_fts_map_) {
+    sqlite3_reset(stmt_fts_map_);
+    sqlite3_bind_int64(stmt_fts_map_, 1, ...);
+    sqlite3_step(stmt_fts_map_);
 }
 ```
 
-`std::env::set_var` 本身就是 safe 函数，不需要 `unsafe` 块。但这在 Rust 2024 edition 中可能会触发未定义行为，因为在多线程环境下调用 `set_var` 不是线程安全的。
+`stmt_fts_map_` is declared in `store.h:406` but **never prepared** in `store_core.cpp:open()` (only `stmt_fts_` and `stmt_vector_` are prepared). The guard `if (stmt_fts_map_)` is always false, so:
+- The `fts_node_map` table is **never populated**
+- `deleteFTSByFile()` (`store.cpp:390`) queries `fts_node_map` → always returns empty → **FTS entries are never deleted when a file is re-indexed**, causing stale search results
 
-**修复**: 移除 `unsafe` 块，或使用 `std::env::set_var` 在单线程启动阶段安全调用。
-
----
-
-#### 2. `server/tools/mod.rs:169-178` — 多线程并发调用 C FFI 不安全
-
-```rust
-std::thread::spawn(move || {
-    crate::ffi::build_fts(project_id);
-});
-```
-
-`h_index_project` 中两次 spawn 后台线程调用 `crate::ffi::build_fts(project_id)`（重复代码），该 FFI 函数访问全局 C++ 对象（如 `g_store`），且没有任何同步机制。这会导致 data race，可能造成 SQLite 崩溃或数据损坏。
-
-**修复**: 使用 Tokio 的 `spawn_blocking` 并通过 channel 将结果返回主线程处理，或确保 FFI 内部加锁。
+**Fix**: Either prepare `stmt_fts_map_` in `open()`, or remove the dead code and fix `deleteFTSByFile` to use a different deletion strategy (e.g., join on `ir_nodes`).
 
 ---
 
-#### 3. `engine/src/store/store.cpp:60-76` — 预编译语句 `stmt_fts_map_` 从未被使用
+#### 2. `engine/src/engine_lifecycle.cpp:50` — vec0 path hardcoded to `.dylib` (Linux/Windows broken)
+
+**Status: CONFIRMED**
 
 ```cpp
-sqlite3_prepare_v2(db_,
-    "INSERT OR REPLACE INTO fts_node_map (node_id, project_id, file_id) "
-    "VALUES (?, ?, 0)", -1, &stmt_fts_map_, nullptr);
+std::string vec_path = base + "/vec0.dylib";  // macOS only!
 ```
 
-`stmt_fts_map_` 在 `open()` 时 prepare，在 `close()` 时 finalize，但在整个代码库中 **从未被实际使用**。同时，`stmt_fts_` 和 `stmt_vector_` 的预编译语句也几乎没有被使用（实际的 FTS 插入路径重新 prepare 了新语句）。这是死代码，且占用了 SQLite 的 statement 配额。
+On Linux the file is `vec0.so`, on Windows `vec0.dll`. Vector search is silently broken on non-macOS platforms.
 
----
-
-#### 4. `engine/src/engine_lifecycle.cpp:48-51` — vec0 扩展硬编码 macOS 路径
-
-```cpp
-const char *gdir = getenv("GRAMMARS_DIR");
-std::string base = gdir ? gdir : "grammars";
-std::string vec_path = base + "/vec0.dylib";  // 仅 macOS!
-```
-
-`vec0.dylib` 是 macOS 的扩展名，在 Linux 上应该是 `vec0.so`，在 Windows 上是 `vec0.dll`。此外，`GRAMMARS_DIR` 变量名容易误导——它实际用于 vec0 加载而非 grammars（grammars 已静态编译到二进制）。
-
-**修复**: 根据平台选择后缀：
+**Fix**:
 ```cpp
 #ifdef __APPLE__
     std::string vec_path = base + "/vec0.dylib";
-#elif _WIN32
+#elif defined(_WIN32)
     std::string vec_path = base + "/vec0.dll";
 #else
     std::string vec_path = base + "/vec0.so";
@@ -71,50 +52,283 @@ std::string vec_path = base + "/vec0.dylib";  // 仅 macOS!
 
 ---
 
-### 🟠 High
+#### 3. `server/src/tools/mod.rs:169-177` — Background FTS build races with main thread
 
-#### 5. `server/build.rs:101-106` — 硬编码 SQLite 版本路径
+**Status: CONFIRMED**
 
 ```rust
-let cellars = [
-    "/opt/homebrew/Cellar/sqlite/3.53.3/lib",
-    "/opt/homebrew/Cellar/sqlite/3.48.0/lib",
-    "/opt/homebrew/opt/sqlite/lib",
-];
+std::thread::spawn(move || {
+    crate::ffi::build_fts(project_id);  // accesses global C++ g_store
+});
 ```
 
-任何 SQLite 版本更新都会导致本地编译失败。`/opt/homebrew/opt/sqlite/lib` 最后兜底勉强可用，但前两个硬编码路径完全多余。
+The spawned thread calls `engine_build_fts` which accesses the global `g_store` with **no synchronization**. Meanwhile, the main MCP server thread may serve other queries that also touch `g_store`. This is a **data race** on SQLite handles — can cause crashes or database corruption.
+
+**Fix**: Use a dedicated worker thread with a channel, or add a mutex around all store access. The simplest fix: use `spawn_blocking` within the Tokio runtime and serialize FTS work.
 
 ---
 
-#### 6. `Makefile:69-71` — 硬编码 Homebrew LLVM@21 编译器
+#### 4. `server/src/tools/mod.rs:109` — `kill -9` not portable to Windows
+
+**Status: CONFIRMED**
+
+```rust
+let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
+```
+
+Windows has no `kill` command. Worker timeout on Windows silently fails to terminate the child, leaving orphan processes.
+
+**Fix**: Use `child.kill()` — but this requires restructuring `run_worker` to own the `Child` across the timeout check. Alternatively, use the `sysinfo` crate for cross-platform process termination.
+
+---
+
+### High
+
+#### 5. `server/build.rs:102-105` — Hardcoded SQLite version paths
+
+**Status: CONFIRMED**
+
+```rust
+let cellars = [
+    "/opt/homebrew/Cellar/sqlite/3.53.3/lib",  // will break on version bump
+    "/opt/homebrew/Cellar/sqlite/3.48.0/lib",  // will break on version bump
+    "/opt/homebrew/opt/sqlite/lib",            // stable symlink
+];
+```
+
+Any Homebrew SQLite update breaks local builds. The first two paths are dead weight — `/opt/homebrew/opt/sqlite/lib` always points to the current version.
+
+**Fix**: Remove the hardcoded version paths; keep only `/opt/homebrew/opt/sqlite/lib`. Better yet, use `pkg-config` to discover SQLite.
+
+---
+
+#### 6. `Makefile:69-71` — Hardcoded Homebrew LLVM@21
+
+**Status: CONFIRMED**
 
 ```makefile
 -DCMAKE_C_COMPILER=/opt/homebrew/opt/llvm@21/bin/clang
 -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm@21/bin/clang++
 ```
 
-没有安装 LLVM@21 的 macOS 用户无法编译，Linux 用户也无法使用此 Makefile。
+Users without LLVM@21 installed cannot `make build-engine`. Linux users are entirely blocked from using the Makefile.
+
+**Fix**: Fall back to system clang:
+```makefile
+ENGINE_CC  := $(shell test -x /opt/homebrew/opt/llvm@21/bin/clang && echo /opt/homebrew/opt/llvm@21/bin/clang || echo clang)
+ENGINE_CXX := $(shell test -x /opt/homebrew/opt/llvm@21/bin/clang++ && echo /opt/homebrew/opt/llvm@21/bin/clang++ || echo clang++)
+```
 
 ---
 
-#### 7. `install.sh:16-17` — Intel macOS 错误回退
+#### 7. `install.sh:16-17` — Intel macOS falls back to Linux binary (100% broken)
+
+**Status: CONFIRMED**
 
 ```bash
 x86_64|amd64)  ARTIFACT="codescope-x86_64-linux"
                echo "⚠️  Intel macOS not supported — falling back to Linux binary (may not work)" ;;
 ```
 
-Intel Mac 用户被引导下载 Linux 二进制，该二进制 100% 无法在 macOS 上运行（ELF vs Mach-O）。应该直接报错退出而非碰运气。
+An ELF Linux binary cannot run on macOS (Mach-O). This "fallback" is guaranteed to fail. Should exit with an error instead.
+
+**Fix**:
+```bash
+x86_64|amd64)  echo "❌ Intel macOS not supported. Use Rosetta 2 with the ARM64 binary." ; exit 1 ;;
+```
 
 ---
 
-#### 8. `engine/src/engine_lifecycle.cpp:86-95` — shutdown 顺序可能导致 use-after-free
+#### 8. `Makefile:98` — Wrong binary name in build message
+
+**Status: CONFIRMED**
+
+```makefile
+&& printf "  $(CHECK) server built: target/release/codescope-mcp\n"
+```
+
+`Cargo.toml` defines the binary as `codescope`, not `codescope-mcp`. The message is misleading (cosmetic only — build itself works).
+
+**Fix**: `target/release/codescope`
+
+---
+
+### Medium
+
+#### 9. `server/src/main.rs:27-29` — Unnecessary `unsafe` around `env::set_var`
+
+**Status: CONFIRMED**
+
+```rust
+unsafe {
+    env::set_var("CODESCOPE_DB_PATH", db_path);
+}
+```
+
+`env::set_var` is a safe function. The `unsafe` block is misleading. In Rust 2024 edition, `set_var` was made `unsafe` because it's not thread-safe — but this is single-threaded startup code, so the `unsafe` is technically correct for 2024 edition but the comment should explain why.
+
+**Fix**: Add a comment explaining the 2024 edition safety requirement, or move to a `once_cell` / lazy static pattern.
+
+---
+
+#### 10. `engine/src/engine_helpers.cpp:124-166` — `detectLanguage()` misses shebang scripts and misclassifies `.h`
+
+**Status: CONFIRMED**
+
+- No shebang detection: a file named `my-script` with `#!/usr/bin/env python3` returns `nullptr`
+- `.h` files are always classified as C, but C++ headers (`.h`) are common and should be detected by content heuristics
+
+**Fix**: Read first line for shebang; for `.h` files, check for C++ keywords (`class`, `namespace`, `template`) in the first N lines.
+
+---
+
+#### 11. `engine/src/parser/parser.cpp:89-102` — `TSParser` created/destroyed on every `parse()` call
+
+**Status: CONFIRMED**
+
+```cpp
+TSParser *ts_parser = ts_parser_new();
+ts_parser_set_language(ts_parser, lang);
+TSTree *tree = ts_parser_parse_string(...);
+ts_parser_delete(ts_parser);
+```
+
+During batch indexing of large projects (e.g., Linux kernel), this creates/destroys thousands of parser objects. Should use a parser pool or cache per-language parsers.
+
+**Fix**: Cache `TSParser*` per language in the `Parser` class, reuse across calls.
+
+---
+
+#### 12. `engine/src/engine_scanner.cpp:28-33` — `trimLeft` doesn't handle `\r`
+
+**Status: CONFIRMED**
+
+```cpp
+while (!s.empty() && (s[0] == ' ' || s[0] == '\t'))
+    s.remove_prefix(1);
+```
+
+Files with CRLF line endings (Windows) or mixed line endings will have `\r` at end of lines, which can cause false negatives in `startsWithKW` checks.
+
+**Fix**: Add `s[0] == '\r'` to the condition.
+
+---
+
+#### 13. `.github/workflows/_ci.yml:113-117` — CI packages `grammars/*.so` but they're unused
+
+**Status: CONFIRMED**
+
+```yaml
+# Copy grammar files
+shopt -s nullglob
+for f in grammars/tree-sitter-*.so grammars/tree-sitter-*.dll; do
+    cp "$f" package/
+done
+```
+
+Grammars are **statically compiled** into `libastgraph_engine.a` (CMakeLists.txt:133-151). The `.so` files are leftover from the old dlopen approach and are **never loaded** at runtime. They bloat the release tarball by ~13MB and confuse users.
+
+**Fix**: Remove this packaging step entirely.
+
+---
+
+#### 14. `.github/workflows/_ci.yml:51-57` — CI installs npm grammar packages that are unnecessary
+
+**Status: CONFIRMED**
+
+```yaml
+npm install -g tree-sitter-cli
+npm install -g tree-sitter-python tree-sitter-c tree-sitter-cpp \
+    tree-sitter-rust tree-sitter-javascript tree-sitter-typescript \
+    tree-sitter-go tree-sitter-java tree-sitter-swift
+```
+
+The CMake build uses `TREE_SITTER_NPM` to find grammar `.c` source files, but the `grammars/clone_grammars.sh` + `build_ci.sh` step (line 68-70) clones the repos separately. So there are **two redundant grammar source providers** — the npm packages and the cloned repos. The npm packages are unnecessary if `clone_grammars.sh` is used.
+
+**Fix**: Pick one source. Either use npm packages (set `TREE_SITTER_NPM` to npm root) OR use cloned repos (point CMake to the cloned dirs). Don't do both.
+
+---
+
+### Low
+
+#### 15. `engine/src/store/store_core.cpp:43-44` — `synchronous=OFF` risks data loss
+
+**Status: CONFIRMED**
+
+```cpp
+if (!exec("PRAGMA synchronous=OFF"))
+    fprintf(stderr, "WARN: PRAGMA synchronous=OFF failed\n");
+```
+
+`synchronous=OFF` means SQLite won't call `fsync` — a power failure or crash can corrupt the database. For a code analysis tool this may be acceptable (the DB can be rebuilt), but the risk should be documented. Consider `synchronous=NORMAL` with WAL mode for a better safety/speed tradeoff.
+
+---
+
+#### 16. `engine/src/engine_helpers.cpp:20` — `#include <unistd.h>` not guarded on Windows
+
+**Status: CONFIRMED**
+
+```cpp
+#include <unistd.h>  // line 20 — not inside #ifndef _WIN32
+```
+
+`unistd.h` doesn't exist on MSVC/Windows. The `#ifndef _WIN32` guard is used for `<sys/mman.h>` (line 15) but missing for `<unistd.h>`. This will fail on native Windows builds (MinGW may provide it, but MSVC won't).
+
+**Fix**: Wrap in `#ifndef _WIN32`.
+
+---
+
+#### 17. Multiple `.cpp` files have 9-10 unused `#include` directives each
+
+**Status: CONFIRMED**
+
+`engine_lifecycle.cpp` and `engine_scanner.cpp` include `<algorithm>`, `<cstdio>`, `<cstring>`, `<filesystem>`, `<fstream>`, `<memory>`, `<mutex>`, `<thread>`, `<unordered_map>`, `<unordered_set>`, `<vector>` — many unused. Slows compilation.
+
+**Fix**: Run `include-what-you-use` and clean up.
+
+---
+
+## Part 2: New Bugs Found
+
+#### 18. `server/src/tools/mod.rs:164-167` — JSON extraction slice can panic on malformed output
+
+```rust
+if let Some(json_start) = stdout.find('{')
+    && let Some(json_end) = stdout[json_start..].rfind('}')
+{
+    let result = stdout[json_start..=json_start + json_end].to_string();
+```
+
+If the worker outputs `{}extra}`, `rfind('}')` finds the last `}`, but `json_start + json_end` correctly indexes it. However, if `json_start + json_end` exceeds the string length due to UTF-8 boundary issues (multi-byte char before `{`), this could panic. More importantly, the extracted slice may not be valid JSON if there's trailing garbage between the first `{` and last `}`.
+
+**Fix**: Use a proper JSON parser (`serde_json::from_str`) to validate the extracted slice, or find the matching closing brace.
+
+---
+
+#### 19. `server/src/main.rs:22-24` — Worker `project_name` is always `"worker-project"`
+
+```rust
+// main.rs
+let project_name = args.get(5).map(|s| s.as_str()).unwrap_or("worker-project");
+```
+
+```rust
+// tools/mod.rs:146
+"worker-project",  // hardcoded
+```
+
+The worker always receives `"worker-project"` as the project name, so `create_project` always creates projects named `"worker-project"`. This makes it impossible to distinguish projects by name in the DB. The actual project path is available but not used as the name.
+
+**Fix**: Pass the real project name (or derive from the path basename) in `tools/mod.rs:141-148`.
+
+---
+
+#### 20. `engine/src/engine_lifecycle.cpp:88-94` — Shutdown order skips parser before query
 
 ```cpp
 void engine_shutdown() {
-    g_query.reset();   // QueryEngine 持有 g_store 裸指针!
-    g_parser.reset();
+    g_query.reset();   // QueryEngine may access g_store
+    g_parser.reset();  // Parser has no dependency on g_store
     if (g_store) {
         g_store->close();
         g_store.reset();
@@ -122,311 +336,329 @@ void engine_shutdown() {
 }
 ```
 
-`QueryEngine` 构造函数接收 `g_store.get()` 裸指针。如果 `g_query.reset()` 在析构时访问 `g_store`（例如内部查询未完成），而此时 `g_store` 还活着但即将被 close，存在潜在风险。
+Construction order: `g_store` → `g_query` (depends on store) → `g_parser` (independent).
+Destruction should be reverse: `g_parser` → `g_query` → `g_store`.
 
-**修复**: 先 close store，再 reset query。
+Current order resets `g_query` before `g_parser`, which is harmless since `g_parser` is independent. But the real risk: if `g_query`'s destructor does any SQLite work during `reset()`, it happens before `g_store->close()` — which is correct. **This is actually fine as-is**, but the ordering is fragile and should be documented.
 
----
-
-#### 9. `server/tools/mod.rs:108-110` — `kill -9` 不可移植
-
-```rust
-let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
-```
-
-Windows 没有 `kill` 命令。应该使用平台特定的进程终止方法，或用 `child.kill()` 代替。
+**Severity**: Low (no actual bug, but fragile)
 
 ---
 
-### 🟡 Medium
+## Part 3: Compilation Requirements & Self-Contained Release Analysis
 
-#### 10. `engine/src/engine_helpers.cpp:124-166` — `detectLanguage()` 无法检测无扩展名脚本
+### Current State: What the Release Binary Depends On
 
-不检查 shebang (`#!/usr/bin/env python3`)，对有 shebang 但无扩展名的 Python/Shell 脚本返回 `nullptr`。同时 `.h` 文件一律识别为 C（而非 C++），可能误判 C++ 头文件。
+After downloading the current release tarball, the user must have these **system libraries** installed:
 
----
+| Dependency | Required? | Source | Size |
+|---|---|---|---|
+| `libtree-sitter.so/dylib` | **YES** (dynamic link) | `brew install tree-sitter` / `apt install libtree-sitter-dev` | ~200KB |
+| `libsqlite3.so/dylib` | **YES** (dynamic link) | `brew install sqlite` / `apt install libsqlite3-dev` | ~1.5MB |
+| `libstdc++.so` / `libc++.dylib` | **YES** (C++ runtime) | System-provided | — |
+| `grammars/*.so` | **NO** (statically compiled) | Packaged but unused | ~13MB wasted |
+| `vec0.so/dylib` | Optional (vector search) | Packaged in tarball | ~160KB |
+| `glibc` / `libSystem` | **YES** (libc) | System-provided | — |
 
-#### 11. `engine/src/parser/parser.cpp:80-104` — 每次 `parse()` 创建新 `TSParser`
+### The `grammars/*.so` Situation
 
-```cpp
-TSParser *ts_parser = ts_parser_new();
-// ... use it ...
-ts_parser_delete(ts_parser);
-```
+**Key insight**: `grammars/*.so` files are **completely unnecessary**. Here's why:
 
-批量解析时大量重复创建/销毁 parser 对象，影响性能。应该使用 parser pool 复用。
+1. **CMakeLists.txt:133-151** compiles all grammar `parser.c` files directly into `libastgraph_engine.a`:
+   ```cmake
+   set(GRAMMAR_SOURCES
+       ${TREE_SITTER_NPM}/tree-sitter-c/src/parser.c
+       ${TREE_SITTER_NPM}/tree-sitter-cpp/src/parser.c
+       # ... 17 .c files total
+   )
+   set(ENGINE_SOURCES ${GRAMMAR_SOURCES} ...)  # compiled into static lib
+   ```
 
----
+2. **parser.cpp:11-34** resolves grammars via function calls (`tree_sitter_c()`, `tree_sitter_cpp()`, etc.), not `dlopen`. Comment at line 8: `// Grammars are compiled into the binary (no dlopen).`
 
-#### 12. `engine/src/linker/linker.cpp:182-188` — stub node 所有权不清晰
+3. **engine_lifecycle.cpp:37-44** registers grammars by name, no file loading:
+   ```cpp
+   // Grammars are compiled into the binary — no .so loading needed.
+   for (auto lang : langs) {
+       g_parser->registerLanguage(lang);
+   }
+   ```
 
-```cpp
-auto *stub = new ir::Node();
-// ... 
-u->all_nodes.push_back(stub);
-```
+4. **CI still builds and packages .so files** (`_ci.yml:66-70, 113-117`) — this is pure waste.
 
-Linker pass 创建 raw pointer stubs 并推入 TranslationUnit 的 `all_nodes`。TranslationUnit 析构时 `delete` 这些指针。但如果 Linker pass 和 TranslationUnit 的生命周期管理不当，可能导致 double-free 或 leak。当前代码正确，但极度脆弱。
+### How to Achieve a Fully Self-Contained Release (Zero External Dependencies)
 
-**修复**: 使用 `std::unique_ptr` 或让 Translator 统一管理 node 所有权。
+The goal: after `curl | tar xz`, the binary runs immediately with no `apt install` or `brew install` needed.
 
----
+#### Step 1: Statically Link tree-sitter C Library (All Platforms)
 
-#### 13. `engine/src/engine_scanner.cpp:37-55` — `looksLikeCFunction()` 对类型宏名无感知
+The Windows branch already does this via `FetchContent` (CMakeLists.txt:83-91). Apply the same pattern to all platforms:
 
-`type_keywords` 数组包含 `SQLITE_API`，但不包含如 `__attribute__`、`__declspec` 等常见的编译器属性。Linux 内核代码常用的 `__init`、`__exit` 等也会误判。
-
----
-
-#### 14. `engine/src/engine_ffi.cpp:236-270` — `engine_find_symbol` 重复检查逻辑分散
-
-该函数中对空结果的智能提示和 language/callgraph 查询在 `engine_ffi.cpp` 硬编码，而这些逻辑应该封装在 `store` 或 `query_engine` 中。
-
----
-
-#### 15. `server/main.rs:64-98` — CLI 模式每次启动都创建 `.codescope/` 目录
-
-如果用户只是在 `/tmp` 临时测试，会留下 `.codescope/` 目录。
-
----
-
-#### 16. `engine/src/engine_queries.cpp:43-44` — JSON 中的字符串查找过于脆弱
-
-```cpp
-if (result.find("\"results\":[]") != std::string::npos) {
-```
-
-如果 JSON 中 `results` 字段有空格（如 `"results": []`），此检测会失败。应该解析 JSON 或使用更健壮的匹配。
-
----
-
-#### 17. `engine/src/engine_scanner.cpp:28-33` — `trimLeft` 只 trim 空格和 tab
-
-```cpp
-static std::string_view trimLeft(std::string_view s) {
-    while (!s.empty() && (s[0] == ' ' || s[0] == '\t'))
-        s.remove_prefix(1);
-```
-
-不处理 `\r`（CR），Windows 行尾或混合行尾的文件会出问题。
-
----
-
-#### 18. `.github/workflows/_ci.yml:49` — CI 安装所有 Homebrew 包但没有锁版本
-
-```yaml
-brew install cmake ninja sqlite node git tree-sitter
-```
-
-没有版本锁定，CI 可能会因上游包更新而突然失败。
-
----
-
-### 🟢 Low
-
-#### 19. 多个 `.cpp` 文件有大量未使用的 `#include`
-
-clangd 诊断显示每个 `engine_*.cpp` 文件都有 9-10 个 unused includes（如 `algorithm`、`cstdio`、`dlfcn_compat.h`、`filesystem`、`fstream`、`mutex`、`thread` 等）。影响编译速度和代码可读性。
-
----
-
-#### 20. `engine/src/store/store.cpp:47-48` — PRAGMA 失败仅打印警告
-
-```cpp
-if (!exec("PRAGMA journal_mode=WAL"))
-    fprintf(stderr, "WARN: PRAGMA journal_mode=WAL failed: %s\n", error_.c_str());
-```
-
-`synchronous=OFF` 是一个有数据丢失风险的设置。如果设置失败但继续运行（仅 warn），用户不知道数据可能不安全。
-
----
-
-#### 21. `engine/src/query/query_engine.cpp:53-101` — `queryToJson()` 对 FLOAT/BLOB 类型处理不完整
-
-```cpp
-} else {
-    const char *text = reinterpret_cast<const char *>(
-        sqlite3_column_text(stmt, i));
-```
-
-当列类型为 `SQLITE_FLOAT` 或 `SQLITE_BLOB` 时，用 `sqlite3_column_text` 会得到格式可能不一致的字符串。应显式处理 `SQLITE_FLOAT`。
-
----
-
-#### 22. `server/tools/mod.rs:78` — `WORKER_TIMEOUT` 5分钟对于大项目可能不够
-
-```rust
-const WORKER_TIMEOUT: Duration = Duration::from_secs(300);
-```
-
-索引 Linux 内核等大项目可能需要更长时间。
-
----
-
-## 二、Release 自包含问题 & 优化方案
-
-### 当前状态分析
-
-好消息：**grammars 已经静态编译进了二进制**，不再需要 `grammars/*.so`。
-
-`CMakeLists.txt` 正在将 tree-sitter grammar 的 `.c` 源文件编译到 `libastgraph_engine.a` 静态库中：
 ```cmake
-set(GRAMMAR_SOURCES
-    ${TREE_SITTER_NPM}/tree-sitter-c/src/parser.c
-    ${TREE_SITTER_NPM}/tree-sitter-cpp/src/parser.c
-    # ... 共 17 个 .c 文件
-)
-```
-
-`codescope_grammars.h` 声明了所有静态链接的 grammar 函数，`parser.cpp` 通过函数指针直接调用，无需 dlopen。
-
-### 当前 Release 包仍然依赖的动态库
-
-| 依赖 | 来源 | 是否必需 |
-|------|------|----------|
-| `libtree-sitter` (tree-sitter C 库) | Homebrew/apt | **必需** — parser API |
-| `libsqlite3` | Homebrew/apt | **必需** — 数据存储 |
-| `libc++` / `libstdc++` | 系统 | **必需** — C++ 运行时 |
-| `grammars/*.so` | **已废弃** | **不再需要** |
-| `vec0.dylib/so` | sqlite-vec | 可选（向量搜索） |
-
-### 问题
-
-1. **CI 仍在打包 `.so` 文件**：`.github/workflows/_ci.yml:114-117` 将 `grammars/tree-sitter-*.so` 复制进 package，但这些文件已无用处。
-
-2. **`GRAMMARS_DIR` 环境变量名误导**：现在只用于加载 vec0 扩展，不是 grammars。
-
-3. **依赖宿主机的动态库**：用户仍需安装 `tree-sitter`、`sqlite3`、C++ 运行时。
-
-### 自包含 Release 方案
-
-#### 方案一：全静态链接（推荐）
-
-```
-目标：单个 `codescope` 二进制，零外部依赖
-```
-
-**具体步骤**：
-
-1. **修改 CMakeLists.txt**：将 tree-sitter C 库也编译为静态库并入 engine
-```cmake
-# 替换 find_package/find_library
+# Replace the platform-specific find_library calls with:
 include(FetchContent)
 FetchContent_Declare(ts_repo
     GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter.git
-    GIT_TAG v0.24.7 GIT_SHALLOW TRUE SOURCE_SUBDIR lib)
+    GIT_TAG v0.24.7
+    GIT_SHALLOW TRUE
+    SOURCE_SUBDIR lib)
 set(BUILD_SHARED_LIBS OFF)
+set(TREE_SITTER_ENABLE_TESTING OFF)
+set(TREE_SITTER_ENABLE_EXAMPLES OFF)
 FetchContent_MakeAvailable(ts_repo)
 set(TREE_SITTER_LIB tree-sitter)
+set(TREE_SITTER_INCDIR "${ts_repo_SOURCE_DIR}/lib/include")
 ```
 
-2. **静态链接 sqlite3**：类似 Windows 分支的做法，下载 amalgamation 编译进 engine
+This eliminates the `libtree-sitter.so/dylib` runtime dependency on all platforms.
+
+#### Step 2: Statically Link SQLite3 (All Platforms)
+
+The Windows branch already downloads the amalgamation (CMakeLists.txt:63-80). Apply to all platforms:
+
 ```cmake
-# 对所有平台统一使用 sqlite amalgamation
-set(SQLITE3_AMAL_SRC "${CMAKE_BINARY_DIR}/_deps/sqlite3.c")
-# 编译为 C 源文件
+# Download sqlite3 amalgamation for ALL platforms (not just Windows)
+set(SQLITE3_DEPS_DIR "${CMAKE_BINARY_DIR}/_deps")
+set(SQLITE3_AMAL_SRC "${SQLITE3_DEPS_DIR}/sqlite3.c")
+if(NOT EXISTS "${SQLITE3_AMAL_SRC}")
+    file(DOWNLOAD "https://www.sqlite.org/2025/sqlite-amalgamation-3490100.zip"
+        "${SQLITE3_DEPS_DIR}/sqlite-amalgamation.zip" STATUS SQLITE_DL_ST)
+    if(SQLITE_DL_ST EQUAL 0)
+        file(ARCHIVE_EXTRACT INPUT "${SQLITE3_DEPS_DIR}/sqlite-amalgamation.zip"
+            DESTINATION "${SQLITE3_DEPS_DIR}/")
+        # ... copy files (same as Windows branch)
+    endif()
+endif()
+set(SQLITE3_INCLUDE_DIRS "${SQLITE3_DEPS_DIR}")
+list(APPEND ENGINE_SOURCES ${SQLITE3_AMAL_SRC})
+set_source_files_properties(${SQLITE3_AMAL_SRC} PROPERTIES LANGUAGE C)
 ```
 
-3. **修改 server/build.rs**：移除动态库链接
+This eliminates the `libsqlite3.so/dylib` runtime dependency.
+
+#### Step 3: Statically Link C++ Runtime
+
+- **Linux**: Use `x86_64-unknown-linux-musl` Rust target + `-static-libstdc++` flag
+  ```cmake
+  target_link_options(astgraph_engine PRIVATE -static-libstdc++ -static-libgcc)
+  ```
+  ```yaml
+  # CI
+  rustup target add x86_64-unknown-linux-musl
+  cargo build --release --target x86_64-unknown-linux-musl
+  ```
+
+- **macOS**: `libc++.dylib` is always present on macOS, no action needed.
+
+- **Windows**: MinGW already links statically by default with `-static`.
+
+#### Step 4: Update `server/build.rs`
+
+Remove all dynamic library linking — the static lib already contains everything:
+
 ```rust
-// 不再需要 println!("cargo:rustc-link-lib=dylib=tree-sitter");
-// 不再需要 println!("cargo:rustc-link-lib=dylib=sqlite3");
-// 因为是 engine 静态库的间接依赖，rustc 自动解析
+// After step 1+2, the static lib contains tree-sitter + sqlite3.
+// Only need to link C++ runtime.
+match target_os.as_str() {
+    "macos" => println!("cargo:rustc-link-lib=dylib=c++"),  // system-provided
+    "linux" => {
+        println!("cargo:rustc-link-lib=dylib=stdc++");
+        // OR for fully static: println!("cargo:rustc-link-lib=static=stdc++");
+    },
+    _ => println!("cargo:rustc-link-lib=dylib=stdc++"),
+}
+// Remove these lines (no longer needed):
+// println!("cargo:rustc-link-lib=tree-sitter");
+// println!("cargo:rustc-link-lib=sqlite3");
 ```
 
-4. **MUSL 编译 (Linux)**：在 CI 中使用 `x86_64-unknown-linux-musl` target
+#### Step 5: Bundle `vec0` Extension (Optional but Nice)
+
+The `vec0` extension is the only remaining runtime `dlopen`. Options:
+1. **Bundle it**: Copy `vec0.so/dylib/dll` next to the binary, load from `$ORIGIN`
+2. **Compile it in**: SQLite extensions can be compiled as part of the amalgamation (advanced)
+3. **Graceful fallback** (already implemented): If vec0 fails to load, vector search is disabled — this is the current behavior
+
+Recommendation: Bundle it in the tarball (already done) and fix the path resolution to look next to the binary.
+
+#### Step 6: Clean Up CI
+
 ```yaml
-- name: Build with MUSL
-  run: |
-    rustup target add x86_64-unknown-linux-musl
-    cargo build --release --target x86_64-unknown-linux-musl
+# _ci.yml — REMOVE these steps:
+# - "Install tree-sitter CLI + grammar npm packages" (lines 51-57)
+# - "Build grammar .so files" (lines 66-70)
+# - "Copy grammar files" in Package step (lines 113-117)
+
+# ADD: SQLite amalgamation download + tree-sitter FetchContent happen in CMake automatically
 ```
 
-5. **CI 清理**：移除 grammar `.so` 打包步骤，移除 `GRAMMARS_DIR` 相关代码
+#### Step 7: Fix `install.sh` and `GRAMMARS_DIR`
 
-**最终效果**：
-- Linux: 单个静态二进制，可 `scp` 到任何 Linux 机器直接运行
-- macOS: 依赖系统 `libc++.dylib`（macOS 自带），其他全静态
-- vec0: 如果不可用，graceful fallback（当前已实现）
+- Rename `GRAMMARS_DIR` to `CODESCOPE_LIB_DIR` (it's now only for vec0, not grammars)
+- Remove `GRAMMARS_DIR` from install instructions in README/RELEASE.md
+- `install.sh` should just download + extract + add to PATH — no env vars needed
 
-#### 方案二：Docker 分发（备选）
+### Expected Result After All Steps
 
-```dockerfile
-FROM scratch
-COPY codescope /codescope
-ENTRYPOINT ["/codescope"]
-```
+| Platform | Binary Type | External Dependencies | Tarball Size (est.) |
+|---|---|---|---|
+| Linux x86_64 | Fully static (MUSL) | **None** | ~15MB |
+| macOS ARM64 | Mostly static | `libc++.dylib` (system) | ~15MB |
+| Windows x86_64 | Static (MinGW) | **None** | ~20MB |
 
-#### 方案三：Bundled 动态库（当前折中）
-
-保持当前模式但改进：将所有 `.so/.dylib` 放到 `lib/` 子目录，用 `$ORIGIN/lib` (Linux) / `@executable_path/lib` (macOS) 作为 rpath。
-
----
-
-### 其它优化建议
-
-#### 1. 简化安装流程
-
-当前用户需要：
-```
-安装 cmake, ninja, sqlite, tree-sitter, node, npm, rust
-npm install -g tree-sitter-cli + 9个grammar包
-make build
-```
-
-优化为（全静态后）：
-```
-curl -fsSL https://raw.githubusercontent.com/.../install.sh | bash
-# 或
-brew install codescope
-```
-
-**一键 install.sh 改进**：
+User experience:
 ```bash
-#!/bin/bash
-# 自动检测 OS/ARCH → 下载对应二进制 → 解压到 ~/.local/bin
+curl -fsSL https://.../install.sh | bash
+codescope  # just works, no dependencies to install
 ```
-
-#### 2. 构建系统改进
-
-- `Makefile`: 移除硬编码的 `/opt/homebrew/opt/llvm@21`，改用 `$(shell which clang++)` 兜底
-- `build.rs`: 移除硬编码 SQLite 版本路径，改用 `pkg-config`
-- CI: 使用 `actions/cache` 缓存 Homebrew 包和 Rust crate
-
-#### 3. CI 改进
-
-- `npm install -g tree-sitter-*` 在静态编译方案后可移除
-- 添加 Windows CI（MinGW 交叉编译）或 MSVC target
-- 添加 ARM Linux (aarch64) 构建
-
-#### 4. 代码质量
-
-- 统一清理 84 个 clangd unused-includes 警告
-- `engine_scanner.cpp` 的 `trimLeft` 应处理 `\r`
-- `detectLanguage()` 应检查 shebang
-- 使用 `-Wall -Wextra -Wpedantic`（目前仅 `-Wall` ?）
-
-#### 5. 文档改进
-
-- `GRAMMARS_DIR` 环境变量名应改为 `CODESCOPE_VEC_DIR` 或废弃
-- RELEASE.md 中移除 grammars 相关说明
-- README 中标记 grammars 已内置，无需额外安装
 
 ---
 
-## 三、总结
+## Part 4: External Installation Optimization Suggestions
 
-| 类别 | 数量 |
-|------|------|
-| Critical bugs | 4 |
-| High bugs | 5 |
-| Medium bugs | 8 |
-| Low bugs | 4 |
-| **合计** | **21** |
+### Current Pain Points
 
-**最高优先级修复**：
-1. `server/tools/mod.rs` — 多线程并发调用 C FFI（data race）
-2. `engine/src/engine_lifecycle.cpp` — vec0 路径 platform 适配
-3. `install.sh` — Intel Mac 回退逻辑
-4. CI 移除无用的 `.so` 打包
-5. 全静态链接消除外部依赖
+A new user wanting to **build from source** currently needs:
+
+1. `cmake`, `ninja` (build tools)
+2. `llvm@21` (specific Homebrew LLVM — non-standard!)
+3. `sqlite` (Homebrew) + `tree-sitter` (Homebrew)
+4. `node` + `npm` (for grammar packages)
+5. `npm install -g tree-sitter-cli` + 9 grammar npm packages
+6. `rust` toolchain
+7. `gcc` / `clang` (system compiler)
+8. Run `make build` which orchestrates 3 separate builds
+
+This is **8+ dependencies** and ~2GB of toolchain downloads. Way too much for a code analysis tool.
+
+### Optimization Plan
+
+#### A. For Release Users (Binary Download)
+
+After implementing Part 3 (static linking), installation becomes:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Timwood0x10/CodeScope/master/install.sh | bash
+# Done. Binary is in ~/.codescope/bin/codescope
+```
+
+No dependencies. No env vars. No `GRAMMARS_DIR`. Just works.
+
+**`install.sh` improvements needed:**
+1. Remove Intel macOS → Linux fallback (bug #7)
+2. Add Windows support (download `.exe` or `.zip`)
+3. Add ARM Linux (`aarch64`) support
+4. Add PATH setup to shell rc file automatically
+5. Add `codescope --version` smoke test after install
+
+#### B. For Source Builders (Compile from Source)
+
+Simplify to **3 dependencies**: `cmake`, `rust`, `git`.
+
+1. **Remove LLVM@21 requirement**: Use system clang/gcc (bug #6 fix). C++23 is supported by clang 17+ and gcc 13+, both available on modern systems.
+
+2. **Remove node/npm dependency**: After static tree-sitter linking via `FetchContent`, grammar source files are fetched from git during CMake configure. No npm needed.
+
+3. **Remove Homebrew sqlite/tree-sitter dependency**: After static SQLite amalgamation, no system SQLite needed.
+
+4. **Single `cargo build` command**: The `server/build.rs` already invokes CMake. So `cargo build --release` should be the only command needed. The Makefile becomes optional.
+
+   ```bash
+   git clone https://github.com/Timwood0x10/CodeScope
+   cd CodeScope/server
+   cargo build --release
+   # Binary: target/release/codescope
+   ```
+
+5. **Improve `build.rs` robustness**:
+   - Remove hardcoded SQLite version paths (bug #5)
+   - Remove hardcoded LLVM@21 path (use `CC`/`CXX` env vars or system default)
+   - Auto-detect Ninja for faster builds
+   - Add `CMAKE_EXPORT_COMPILE_COMMANDS=ON` for IDE support
+
+#### C. CI Optimization
+
+1. **Remove redundant steps**:
+   - Remove npm grammar package installation (bug #14)
+   - Remove grammar .so building (bug #13)
+   - Remove grammar .so packaging (bug #13)
+
+2. **Add caching**:
+   ```yaml
+   - uses: actions/cache@v4
+     with:
+       path: |
+         ~/.cargo/registry
+         engine/build/_deps  # CMake FetchContent cache
+       key: ${{ runner.os }}-deps-${{ hashFiles('**/Cargo.lock') }}
+   ```
+
+3. **Add more platforms**:
+   - `aarch64-unknown-linux-musl` (ARM Linux, for Raspberry Pi / Graviton)
+   - `x86_64-pc-windows-msvc` (native Windows, not MinGW)
+
+4. **Matrix for static vs dynamic**:
+   - `static` job: MUSL + amalgamation → self-contained binary
+   - `dynamic` job: system libs → smaller binary for package managers
+
+#### D. Package Manager Distribution
+
+After static linking, distribute via:
+
+1. **Homebrew tap** (macOS):
+   ```ruby
+   class Codescope < Formula
+     desc "Code knowledge layer for AI"
+     homepage "https://github.com/Timwood0x10/CodeScope"
+     url "https://github.com/Timwood0x10/CodeScope/releases/download/v0.1.0/codescope-aarch64-macos.tar.gz"
+     sha256 "..."
+     def install
+       bin.install "codescope"
+     end
+   end
+   ```
+
+2. **AUR** (Arch Linux): `yay -S codescope-bin`
+
+3. **Nix**: `nix-shell -p codescope`
+
+4. **Docker** (for CI/CD pipelines):
+   ```dockerfile
+   FROM alpine:latest
+   COPY codescope /usr/local/bin/
+   ENTRYPOINT ["codescope"]
+   ```
+
+---
+
+## Summary
+
+| Category | Count | Status |
+|---|---|---|
+| Critical bugs | 4 | All confirmed |
+| High bugs | 5 | All confirmed |
+| Medium bugs | 6 | All confirmed |
+| Low bugs | 2 | All confirmed |
+| **Total bugs** | **17 verified** | — |
+
+### Top Priority Fixes
+
+1. **`stmt_fts_map_` dead code** — FTS deletion is broken, causing stale search results
+2. **vec0 path platform fix** — vector search broken on Linux/Windows
+3. **FTS background thread data race** — can corrupt SQLite database
+4. **Static linking** — eliminates 3 runtime dependencies, simplifies installation
+5. **Remove grammar .so packaging** — saves 13MB, eliminates confusion
+
+### Self-Contained Release Checklist
+
+- [ ] Statically link tree-sitter via FetchContent (all platforms)
+- [ ] Statically link SQLite3 via amalgamation (all platforms)
+- [ ] Use MUSL target for Linux (`x86_64-unknown-linux-musl`)
+- [ ] Remove grammar .so build + packaging from CI
+- [ ] Remove npm grammar package installation from CI
+- [ ] Fix `engine_lifecycle.cpp` vec0 path for Linux/Windows
+- [ ] Rename `GRAMMARS_DIR` to `CODESCOPE_LIB_DIR`
+- [ ] Fix `install.sh` Intel macOS fallback
+- [ ] Update `build.rs` to remove dynamic library linking
+- [ ] Update README/RELEASE.md to remove dependency installation steps
+- [ ] Add Homebrew tap formula

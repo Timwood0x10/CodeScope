@@ -40,7 +40,9 @@ char *engine_find_symbol(uint64_t project_id, const char *symbol_name)
 	std::string result = g_store->findSymbolJson(project_id, symbol_name);
 
 	// Check if empty and add smart hints
-	if (result.find("\"results\":[]") != std::string::npos) {
+	if (result.find("\"results\":") != std::string::npos &&
+	    (result.find("\"results\":[]") != std::string::npos ||
+	     result.find("\"results\": []") != std::string::npos)) {
 		// Query project languages
 		std::string langs;
 		const char *lsql =

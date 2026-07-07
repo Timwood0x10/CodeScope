@@ -27,7 +27,7 @@ namespace
 // Strip leading whitespace from a string view
 static std::string_view trimLeft(std::string_view s)
 {
-	while (!s.empty() && (s[0] == ' ' || s[0] == '\t'))
+	while (!s.empty() && (s[0] == ' ' || s[0] == '\t' || s[0] == '\r'))
 		s.remove_prefix(1);
 	return s;
 }
@@ -136,18 +136,24 @@ static bool looksLikeCFunction(std::string_view line)
 	// C type keywords that must appear in the return type
 	// This eliminates 90%+ false positives from non-declaration lines
 	static const char *type_keywords[] = {
-		"int",	      "void",	     "char",
-		"long",	      "short",	     "float",
-		"double",     "bool",	     "signed",
-		"unsigned",   "const",	     "volatile",
-		"struct",     "union",	     "enum",
-		"class",      "size_t",	     "ssize_t",
-		"off_t",      "pid_t",	     "time_t",
-		"int8_t",     "int16_t",     "int32_t",
-		"int64_t",    "uint8_t",     "uint16_t",
-		"uint32_t",   "uint64_t",    "atomic_t",
-		"gfp_t",      "phys_addr_t", "resource_size_t",
-		"SQLITE_API", nullptr
+	 "int",	      "void",	     "char",
+	 "long",	      "short",	     "float",
+	 "double",     "bool",	     "signed",
+	 "unsigned",   "const",	     "volatile",
+	 "struct",     "union",	     "enum",
+	 "class",      "size_t",	     "ssize_t",
+	 "off_t",      "pid_t",	     "time_t",
+	 "int8_t",     "int16_t",     "int32_t",
+	 "int64_t",    "uint8_t",     "uint16_t",
+	 "uint32_t",   "uint64_t",    "atomic_t",
+	 "gfp_t",      "phys_addr_t", "resource_size_t",
+	 "SQLITE_API", "EXTERN_C",    "APICALL",
+	 "__init",     "__exit",      "__devinit",
+	 "__attribute__", "__declspec", "__stdcall",
+	 "__cdecl",    "inline",      "typedef",
+	 "typename",   "mutable",     "explicit",
+	 "virtual",    "override",    "noexcept",
+	 nullptr
 	};
 
 	for (const char **tk = type_keywords; *tk; tk++) {

@@ -73,7 +73,14 @@ fn h_locate_code(project_id: u64, args: &Value) -> String {
 
 // ─── Worker Supervisor (timeout + retry) ───────────────────────
 
-const WORKER_TIMEOUT: Duration = Duration::from_secs(300);
+static WORKER_TIMEOUT: Lazy<Duration> = Lazy::new(|| {
+    Duration::from_secs(
+        std::env::var("CODESCOPE_WORKER_TIMEOUT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(300_u64),
+    )
+});
 const MAX_RETRIES: usize = 3;
 
 /// Run a worker subprocess with timeout protection.
@@ -104,9 +111,12 @@ fn run_worker(
     // Poll for result with timeout
     let start = std::time::Instant::now();
     loop {
-        if start.elapsed() > WORKER_TIMEOUT {
-            // Kill orphaned child via kill -9
+        if start.elapsed() > *WORKER_TIMEOUT {
+            // Kill orphaned child via platform-specific command
+            #[cfg(unix)]
             let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
+            #[cfg(windows)]
+            let _ = Command::new("taskkill").args(["/F", "/PID", &pid.to_string()]).output();
             return Err("worker timed out after 300s".to_string());
         }
 
@@ -165,16 +175,8 @@ fn h_index_project(project_id: u64, args: &Value) -> String {
                             && let Some(json_end) = stdout[json_start..].rfind('}')
                         {
                             let result = stdout[json_start..=json_start + json_end].to_string();
-                            // Trigger background FTS build after index completes
-                            std::thread::spawn(move || {
-                                crate::ffi::build_fts(project_id);
-                            });
                             return result;
                         }
-                        // Trigger background FTS build after index completes
-                        std::thread::spawn(move || {
-                            crate::ffi::build_fts(project_id);
-                        });
                         return stdout.to_string();
                     }
                     let stderr = String::from_utf8_lossy(&out.stderr);

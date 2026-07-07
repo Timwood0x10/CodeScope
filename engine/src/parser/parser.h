@@ -47,6 +47,8 @@ class Parser {
     private:
 	// Map language name → TSLanguage pointer (statically linked)
 	std::unordered_map<std::string, const TSLanguage *> grammars_;
+	// Per-language cached TSParser instances (avoid create/destroy per parse)
+	std::unordered_map<std::string, TSParser *> parsers_;
 	std::string error_;
 };
 

@@ -66,8 +66,6 @@ build-grammars:
 		|| printf "  $(YELLOW)⚠ grammars: some languages skipped\n"
 
 ENGINE_CMAKE_FLAGS := -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-                       -DCMAKE_C_COMPILER=/opt/homebrew/opt/llvm@21/bin/clang \
-                       -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm@21/bin/clang++ \
                        -DCMAKE_OSX_SYSROOT=$(shell xcrun --show-sdk-path)
 
 # Use Ninja if available for faster builds

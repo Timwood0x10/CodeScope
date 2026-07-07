@@ -42,6 +42,9 @@ Parser::Parser()
 Parser::~Parser()
 {
 	grammars_.clear();
+	for (auto &p : parsers_)
+		ts_parser_delete(p.second);
+	parsers_.clear();
 }
 
 // ── Language Registration ─────────────────────────────────────
@@ -78,27 +81,32 @@ const TSLanguage *Parser::getLanguage(const char *name)
 // ── Parse ─────────────────────────────────────────────────────
 
 TSTree *Parser::parse(const char *file_path, const char *source,
-		      const char *language)
+         const char *language)
 {
-	const TSLanguage *lang = getLanguage(language);
-	if (!lang) {
-		error_ = std::string("Language not registered: ") + language;
-		return nullptr;
-	}
+ const TSLanguage *lang = getLanguage(language);
+ if (!lang) {
+  error_ = std::string("Language not registered: ") + language;
+  return nullptr;
+ }
 
-	TSParser *ts_parser = ts_parser_new();
-	ts_parser_set_language(ts_parser, lang);
+ // Cache TSParser per language to avoid create/destroy overhead
+ auto it = parsers_.find(language);
+ if (it == parsers_.end()) {
+  TSParser *p = ts_parser_new();
+  ts_parser_set_language(p, lang);
+  parsers_[language] = p;
+  it = parsers_.find(language);
+ }
 
-	TSTree *tree =
-		ts_parser_parse_string(ts_parser, nullptr, source,
-				       static_cast<uint32_t>(strlen(source)));
+ TSTree *tree =
+  ts_parser_parse_string(it->second, nullptr, source,
+           static_cast<uint32_t>(strlen(source)));
 
-	if (!tree) {
-		error_ = std::string("Parse failed for ") + file_path;
-	} else {
-		error_.clear();
-	}
+ if (!tree) {
+  error_ = std::string("Parse failed for ") + file_path;
+ } else {
+  error_.clear();
+ }
 
-	ts_parser_delete(ts_parser);
-	return tree;
+ return tree;
 }

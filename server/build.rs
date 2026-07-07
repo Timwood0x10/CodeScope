@@ -99,23 +99,12 @@ fn main() {
         "macos" => {
             // Homebrew lib path for tree-sitter and sqlite3
             let homebrew_lib = "/opt/homebrew/lib";
-            let cellars = [
-                "/opt/homebrew/Cellar/sqlite/3.53.3/lib",
-                "/opt/homebrew/Cellar/sqlite/3.48.0/lib",
-                "/opt/homebrew/opt/sqlite/lib",
-            ];
-            if std::path::Path::new(homebrew_lib).exists() {
+            let sqlite_opt = "/opt/homebrew/opt/sqlite/lib";
+            if std::path::Path::new(&sqlite_opt).exists() {
+                println!("cargo:rustc-link-search=native={}", sqlite_opt);
+            } else if std::path::Path::new(homebrew_lib).exists() {
                 println!("cargo:rustc-link-search=native={}", homebrew_lib);
-            }
-            let mut found_sqlite = false;
-            for dir in &cellars {
-                if std::path::Path::new(dir).exists() {
-                    println!("cargo:rustc-link-search=native={}", dir);
-                    found_sqlite = true;
-                    break;
-                }
-            }
-            if !found_sqlite {
+            } else {
                 eprintln!("build.rs: Homebrew sqlite3 not found, relying on default linker search");
             }
             println!("cargo:rustc-link-lib=dylib=tree-sitter");

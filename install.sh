@@ -13,8 +13,7 @@ case "$OS" in
   darwin)
     case "$ARCH" in
       arm64|aarch64) ARTIFACT="codescope-aarch64-macos" ;;
-      x86_64|amd64)  ARTIFACT="codescope-x86_64-linux"
-                     echo "⚠️  Intel macOS not supported — falling back to Linux binary (may not work)" ;;
+      x86_64|amd64)  echo "❌ Intel macOS is not supported yet (no pre-built binary available)"; exit 1 ;;
       *) echo "❌ Unsupported macOS arch: $ARCH"; exit 1 ;;
     esac ;;
   *) echo "❌ Unsupported OS: $OS (only Linux/macOS)"; exit 1 ;;

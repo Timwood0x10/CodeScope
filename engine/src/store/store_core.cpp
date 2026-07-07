@@ -52,21 +52,21 @@ bool GraphStore::open(const char *db_path)
 
 	// Pre-cache prepared statements for hot insert paths
 	sqlite3_prepare_v2(
-		db_,
-		"INSERT OR REPLACE INTO fts_node_map (node_id, project_id, file_id) "
-		"VALUES (?, ?, 0)",
-		-1, &stmt_fts_map_, nullptr);
+	 db_,
+	 "INSERT OR REPLACE INTO fts_node_map (node_id, project_id, file_id) "
+	 "VALUES (?, ?, 0)",
+	 -1, &stmt_fts_map_, nullptr);
 	sqlite3_prepare_v2(
-		db_,
-		"INSERT OR REPLACE INTO code_fts (rowid, name, qualified_name, "
-		"file_path, content, project_id, node_id, node_kind) "
-		"VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-		-1, &stmt_fts_, nullptr);
+	 db_,
+	 "INSERT OR REPLACE INTO code_fts (rowid, name, qualified_name, "
+	 "file_path, content, project_id, node_id, node_kind) "
+	 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+	 -1, &stmt_fts_, nullptr);
 	sqlite3_prepare_v2(
-		db_,
-		"INSERT OR REPLACE INTO node_vectors (node_id, project_id, vector) "
-		"VALUES (?, ?, ?)",
-		-1, &stmt_vector_, nullptr);
+	 db_,
+	 "INSERT OR REPLACE INTO node_vectors (node_id, project_id, vector) "
+	 "VALUES (?, ?, ?)",
+	 -1, &stmt_vector_, nullptr);
 
 	return true;
 }
@@ -74,14 +74,14 @@ bool GraphStore::open(const char *db_path)
 void GraphStore::close()
 {
 	if (db_) {
-		// Finalize cached prepared statements
-		if (stmt_fts_map_)
-			sqlite3_finalize(stmt_fts_map_);
-		if (stmt_fts_)
-			sqlite3_finalize(stmt_fts_);
-		if (stmt_vector_)
-			sqlite3_finalize(stmt_vector_);
-		stmt_fts_map_ = stmt_fts_ = stmt_vector_ = nullptr;
+	  // Finalize cached prepared statements
+	  if (stmt_fts_map_)
+	   sqlite3_finalize(stmt_fts_map_);
+	  if (stmt_fts_)
+	   sqlite3_finalize(stmt_fts_);
+	  if (stmt_vector_)
+	   sqlite3_finalize(stmt_vector_);
+	  stmt_fts_map_ = stmt_fts_ = stmt_vector_ = nullptr;
 
 		sqlite3_close(db_);
 		db_ = nullptr;
