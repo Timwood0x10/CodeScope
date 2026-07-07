@@ -15,7 +15,7 @@ jobs:
         include:
           - os: ubuntu-24.04
             artifact: codescope-x86_64-linux
-          - os: macos-14
+          - os: macos-15
             artifact: codescope-aarch64-macos
           - os: windows-2022
             artifact: codescope-x86_64-windows

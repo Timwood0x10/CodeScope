@@ -21,7 +21,7 @@ jobs:
           - os: ubuntu-24.04
             ext: .so
             artifact: codescope-x86_64-linux
-          - os: macos-14
+          - os: macos-15
             ext: .so
             artifact: codescope-aarch64-macos
     runs-on: ${{ matrix.os }}
@@ -39,7 +39,7 @@ jobs:
           sudo apt-get install -y cmake ninja-build libsqlite3-dev nodejs npm git gcc g++ libtree-sitter-dev
 
       - name: Install deps (macOS)
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-15'
         run: |
           brew install cmake ninja sqlite node git tree-sitter
 
@@ -85,7 +85,7 @@ jobs:
           strip "$BIN" 2>/dev/null || true
 
       - name: Ad-hoc sign macOS binary
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-15'
         run: codesign --sign - --force target/release/codescope 2>/dev/null || true
 
       - name: Package

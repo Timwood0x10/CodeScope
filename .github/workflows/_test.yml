@@ -19,7 +19,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-24.04
-          - os: macos-14
+          - os: macos-15
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -35,7 +35,7 @@ jobs:
           sudo apt-get install -y cmake ninja-build libsqlite3-dev nodejs npm git gcc g++ libtree-sitter-dev
 
       - name: Install deps (macOS)
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-15'
         run: |
           brew install cmake ninja sqlite node git tree-sitter
 
