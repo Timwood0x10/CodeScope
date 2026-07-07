@@ -499,8 +499,8 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 						std::filesystem::file_size(
 							entry.path()) :
 						0;
-				jobs.emplace_back(entry.path().string(), lang,
-						  file_size);
+				jobs.push_back({ entry.path().string(), lang,
+						 file_size });
 			}
 		}
 	} catch (const std::exception &e) {

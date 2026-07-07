@@ -417,6 +417,14 @@ char *engine_index_batch(uint64_t project_id, const char *file_paths_json)
 		std::string source;
 		std::string language;
 		std::string file_path;
+		FileBatch(std::unique_ptr<ir::TranslationUnit> u, std::string s,
+			  std::string l, std::string fp)
+			: unit(std::move(u))
+			, source(std::move(s))
+			, language(std::move(l))
+			, file_path(std::move(fp))
+		{
+		}
 	};
 	std::vector<FileBatch> batches;
 	std::vector<std::string> errors;
@@ -457,8 +465,9 @@ char *engine_index_batch(uint64_t project_id, const char *file_paths_json)
 			continue;
 		}
 
-		batches.emplace_back(std::unique_ptr<ir::TranslationUnit>(unit),
-				     std::move(source), lang, fp);
+		batches.push_back(
+			FileBatch{ std::unique_ptr<ir::TranslationUnit>(unit),
+				   std::move(source), lang, fp });
 	}
 
 	// Phase 2: Persist in single transaction
