@@ -18,7 +18,7 @@ flowchart LR
     end
     subgraph "CodeScope Server (Rust)"
         server["MCP Server<br/>(JSON-RPC 2.0 + stdio)"]
-        ffi["FFI Bridge<br/>Rust ↔ C++"]
+        ffi["FFI Bridge<br/>Rust / C++"]
         worker_spawn["Worker Spawner<br/>Subprocess Isolation"]
     end
     subgraph "Worker Subprocess (C++)"
@@ -181,7 +181,7 @@ sequenceDiagram
     Server->>Server: RUNTIME.spawn(build_fts)
     Server-->>Client: {"ok":true, "files_indexed":N}
     Server->>DB: buildFTSFromGraph()
-    Note over Client,DB: FTS phase — queries work via<br/>searchGraphFallback
+    Note over Client,DB: FTS phase -- queries work via searchGraphFallback
     Server->>Server: fts_ready=1
     Client->>Server: tools/call search → FTS5
 ```
