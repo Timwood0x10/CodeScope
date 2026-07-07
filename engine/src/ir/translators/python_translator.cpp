@@ -467,9 +467,9 @@ Node *PythonTranslator::handleAssignment(TSNode ts_node, Node *parent)
 
 // ─── Factory ───────────────────────────────────────────────────
 
-Translator *createPythonTranslator()
+std::unique_ptr<Translator> createPythonTranslator()
 {
-	return new PythonTranslator();
+	return std::make_unique<PythonTranslator>();
 }
 
 } // namespace ir

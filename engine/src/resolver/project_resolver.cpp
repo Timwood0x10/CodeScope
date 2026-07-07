@@ -123,23 +123,27 @@ int ProjectResolver::rankCandidate(const IndexEntry &candidate,
 			score += 2;
 		else if (remaining <= 3)
 			score += 1;
-	} catch (...) {
-		// Ignore filesystem errors
+	} catch (const std::exception &e) {
+	  fprintf(stderr,
+	   "RESOLVER: rankCandidate filesystem error: %s\n",
+	   e.what());
+	 }
+
+	 return score;
 	}
 
-	return score;
-}
-
-std::string ProjectResolver::extractModule(const std::string &file_path)
-{
-	try {
-		std::filesystem::path p(file_path);
-		if (p.has_parent_path()) {
-			return p.parent_path().lexically_normal().string();
-		}
-	} catch (...) {
-		// Ignore filesystem errors
-	}
+	std::string ProjectResolver::extractModule(const std::string &file_path)
+	{
+	 try {
+	  std::filesystem::path p(file_path);
+	  if (p.has_parent_path()) {
+	   return p.parent_path().lexically_normal().string();
+	  }
+	 } catch (const std::exception &e) {
+	  fprintf(stderr,
+	   "RESOLVER: extractModule filesystem error: %s\n",
+	   e.what());
+	 }
 	return "";
 }
 

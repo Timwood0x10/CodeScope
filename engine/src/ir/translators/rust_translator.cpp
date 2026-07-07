@@ -588,9 +588,9 @@ Node *RustTranslator::handleIfLet(TSNode ts_node, Node *parent)
 	return stmt;
 }
 
-Translator *createRustTranslator()
+std::unique_ptr<Translator> createRustTranslator()
 {
-	return new RustTranslator();
+	return std::make_unique<RustTranslator>();
 }
 
 } // namespace ir

@@ -24,6 +24,10 @@ namespace store
 
 // ─── Lifecycle ─────────────────────────────────────────────────
 
+// Performance PRAGMA values
+static constexpr int kCacheSizePages = -64000; // 64 MB cache
+static constexpr int kMmapSizeBytes = 268435456; // 256 MB mmap
+
 GraphStore::~GraphStore()
 {
 	close();
@@ -46,8 +50,8 @@ bool GraphStore::open(const char *db_path)
 		fprintf(stderr, "WARN: PRAGMA synchronous=OFF failed\n");
 	if (!exec("PRAGMA temp_store=MEMORY"))
 		fprintf(stderr, "WARN: PRAGMA temp_store=MEMORY failed\n");
-	exec("PRAGMA cache_size=-64000"); // 64 MB cache (non-critical)
-	exec("PRAGMA mmap_size=268435456"); // 256 MB mmap (non-critical)
+	exec(("PRAGMA cache_size=" + std::to_string(kCacheSizePages)).c_str());
+	exec(("PRAGMA mmap_size=" + std::to_string(kMmapSizeBytes)).c_str());
 
 	if (!createSchema())
 		return false;
@@ -976,10 +980,12 @@ void GraphStore::insertGraphNodes(uint64_t project_id,
 		sqlite3_bind_int(stmt, 18, node.is_entry_point ? 1 : 0);
 
 		int rc = sqlite3_step(stmt);
-		if (rc != SQLITE_DONE)
-			fprintf(stderr, "insertGraphNodes: step error %d\n",
-				rc);
-		sqlite3_reset(stmt);
+		 if (rc != SQLITE_DONE) {
+		  error_ = "insertGraphNodes: step error (" +
+		    std::to_string(rc) + ") for node " +
+		    node.name;
+		 }
+		 sqlite3_reset(stmt);
 	}
 
 	sqlite3_finalize(stmt);
@@ -1068,10 +1074,11 @@ void GraphStore::insertGraphEdges(uint64_t project_id,
 				  SQLITE_TRANSIENT);
 
 		int rc = sqlite3_step(stmt);
-		if (rc != SQLITE_DONE)
-			fprintf(stderr, "insertGraphEdges: step error %d\n",
-				rc);
-		sqlite3_reset(stmt);
+		 if (rc != SQLITE_DONE) {
+		  error_ = "insertGraphEdges: step error (" +
+		    std::to_string(rc) + ")";
+		 }
+		 sqlite3_reset(stmt);
 	}
 
 	sqlite3_finalize(stmt);

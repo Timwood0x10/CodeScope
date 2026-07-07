@@ -25,6 +25,13 @@
 
 #include "linker/linker.h"
 #include "ir/translators/js_visitor.h"
+
+// ─── Constants ─────────────────────────────────────────────────
+constexpr uint64_t kMaxFileSize = 5 * 1024 * 1024; // 5 MB default
+constexpr size_t kWorkerStackSize = 8 * 1024 * 1024; // 8 MB per thread
+constexpr unsigned kSleepFactor = 10;     // ms per MB over budget
+constexpr unsigned kMaxSleepMs = 1000;    // cap sleep at 1s
+
 // ─── Index File ────────────────────────────────────────────────
 
 char *engine_index_file(uint64_t project_id, const char *file_path)
@@ -52,22 +59,22 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 	}
 
 	// Translate to IR
-	std::unique_ptr<ir::Translator> translator(
-		ir::createTranslator(language));
+	auto translator = ir::createTranslator(language);
 	if (!translator) {
 		ts_tree_delete(tree);
 		return dupString(
 			"{\"ok\":false,\"error\":\"no translator for language\"}");
 	}
 
-	ir::TranslationUnit *unit =
+	ir::TranslationUnit *unit_raw =
 		translator->translate(tree, source.c_str(), file_path);
 	ts_tree_delete(tree);
 
-	if (!unit) {
+	if (!unit_raw) {
 		return dupString(
 			"{\"ok\":false,\"error\":\"translation failed\"}");
 	}
+	auto unit = std::unique_ptr<ir::TranslationUnit>(unit_raw);
 
 	// ── Optional LSP & extern "C" enhancement ─────────────────
 	// Uses textDocument/documentSymbol (1 query per file, NOT per-node)
@@ -247,8 +254,8 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 		}
 	}
 	graph::GraphBuilder builder(project_id, start_node_id);
-	auto symbol_graph = builder.buildSymbolGraph(unit);
-	auto call_graph = builder.buildCallGraph(unit);
+	auto symbol_graph = builder.buildSymbolGraph(unit.get());
+	auto call_graph = builder.buildCallGraph(unit.get());
 
 	// Persist graph nodes + edges
 	// Persist graph nodes + edges — use batch insert APIs
@@ -352,8 +359,6 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 
 	g_store->commitTransaction();
 
-	delete unit;
-
 	std::ostringstream result;
 	result << "{\"ok\":true,\"nodes\":" << symbol_graph.nodes.size()
 	       << ",\"edges\":"
@@ -395,7 +400,7 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 			start = end + 1;
 		} while (end != std::string::npos);
 	}
-	uint64_t max_file_size = 5 * 1024 * 1024;
+	uint64_t max_file_size = kMaxFileSize;
 	const char *env_max = getenv("CODESCOPE_MAX_FILE_SIZE");
 	if (env_max)
 		max_file_size = static_cast<uint64_t>(std::atoll(env_max));
@@ -655,14 +660,11 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 				auto vl = tl_visitors.find(job.lang);
 				ir::JsVisitor *visitor = nullptr;
 				if (vl == tl_visitors.end()) {
-					auto *v = ir::createJsVisitor(
+					auto v = ir::createJsVisitor(
 						job.lang.c_str());
 					if (v) {
-						tl_visitors[job.lang] =
-							std::unique_ptr<
-								ir::JsVisitor>(
-								v);
-						visitor = v;
+						tl_visitors[job.lang] = std::move(v);
+						visitor = tl_visitors[job.lang].get();
 					}
 				} else {
 					visitor = vl->second.get();
@@ -684,10 +686,8 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 				}
 
 				// Old pipeline fallback
-				auto translator =
-					std::unique_ptr<ir::Translator>(
-						ir::createTranslator(
-							job.lang.c_str()));
+				auto translator = ir::createTranslator(
+				  job.lang.c_str());
 				if (!translator) {
 					ts_tree_delete(tree);
 					continue;
@@ -715,7 +715,7 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		for (int i = 0; i < num_workers; i++) {
 			pthread_attr_t attr;
 			pthread_attr_init(&attr);
-			pthread_attr_setstacksize(&attr, 8 * 1024 * 1024);
+			pthread_attr_setstacksize(&attr, kWorkerStackSize);
 			struct WA {
 				decltype(translate_batch_worker) * fn;
 			};
@@ -749,9 +749,9 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 				if (rss_mb > memory_budget_mb) {
 					unsigned sleep_ms =
 						(rss_mb - memory_budget_mb) *
-						10;
-					if (sleep_ms > 1000)
-						sleep_ms = 1000;
+						kSleepFactor;
+					if (sleep_ms > kMaxSleepMs)
+						sleep_ms = kMaxSleepMs;
 					if (verbose)
 						fprintf(stderr,
 							"MEM: RSS %lluMB > budget %lluMB, sleeping %ums\n",

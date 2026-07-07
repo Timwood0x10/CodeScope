@@ -675,9 +675,9 @@ Node *TypescriptTranslator::handleEnum(TSNode ts_node, Node *parent)
 	return en;
 }
 
-Translator *createTypescriptTranslator()
+std::unique_ptr<Translator> createTypescriptTranslator()
 {
-	return new TypescriptTranslator();
+	return std::make_unique<TypescriptTranslator>();
 }
 
 } // namespace ir

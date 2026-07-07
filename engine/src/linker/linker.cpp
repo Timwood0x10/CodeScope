@@ -198,43 +198,52 @@ bool ResolveCallPass::run(
 	return true;
 }
 
+// ─── RankCandidate score weights ──────────────────────────────────
+static constexpr int kScoreImplExt = 5;  // .c/.cpp over .h
+static constexpr int kScoreSameDir = 3;  // same directory
+static constexpr int kScoreParentDir = 1; // parent directory
+static constexpr int kScoreShallowDepth = 2; // ≤2 segment difference
+static constexpr int kMaxDepthDiff = 2;  // max path depth difference for bonus
+
 int ResolveCallPass::rankCandidate(const resolver::IndexEntry &candidate,
-				   const std::string &caller_file) const
+        const std::string &caller_file) const
 {
-	int score = 0;
-	try {
-		std::filesystem::path cp(caller_file);
-		std::filesystem::path dp(candidate.file_path);
+ int score = 0;
+ try {
+  std::filesystem::path cp(caller_file);
+  std::filesystem::path dp(candidate.file_path);
 
-		// Prefer definitions (.c/.cpp) over prototypes (.h)
-		std::string ext = dp.extension().string();
-		if (ext == ".c" || ext == ".cpp" || ext == ".cc" ||
-		    ext == ".cxx")
-			score += 5;
+  // Prefer definitions (.c/.cpp) over prototypes (.h)
+  std::string ext = dp.extension().string();
+  if (ext == ".c" || ext == ".cpp" || ext == ".cc" ||
+      ext == ".cxx")
+   score += kScoreImplExt;
 
-		// Same directory = most likely
-		if (cp.parent_path() == dp.parent_path())
-			score += 3;
-		else if (cp.parent_path().parent_path() ==
-			 dp.parent_path().parent_path())
-			score += 1;
+  // Same directory = most likely
+  if (cp.parent_path() == dp.parent_path())
+   score += kScoreSameDir;
+  else if (cp.parent_path().parent_path() ==
+    dp.parent_path().parent_path())
+   score += kScoreParentDir;
 
-		// Shorter path depth difference = more related
-		auto ci = cp.begin(), di = dp.begin();
-		while (ci != cp.end() && di != dp.end() && *ci == *di) {
-			++ci;
-			++di;
-		}
-		int remaining = 0;
-		for (; ci != cp.end(); ++ci)
-			remaining++;
-		for (; di != dp.end(); ++di)
-			remaining++;
-		if (remaining <= 2)
-			score += 2;
-	} catch (...) {
-	}
-	return score;
+  // Shorter path depth difference = more related
+  auto ci = cp.begin(), di = dp.begin();
+  while (ci != cp.end() && di != dp.end() && *ci == *di) {
+   ++ci;
+   ++di;
+  }
+  int remaining = 0;
+  for (; ci != cp.end(); ++ci)
+   remaining++;
+  for (; di != dp.end(); ++di)
+   remaining++;
+  if (remaining <= kMaxDepthDiff)
+   score += kScoreShallowDepth;
+ } catch (const std::exception &e) {
+  fprintf(stderr, "LINKER: rankCandidate exception: %s\n",
+   e.what());
+ }
+ return score;
 }
 
 // ─── EmitGraphPass ──────────────────────────────────────────────

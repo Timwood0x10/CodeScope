@@ -17,22 +17,22 @@
 namespace ir
 {
 // Defined in each translator's .cpp file
-Translator *createPythonTranslator();
-Translator *createCppTranslator();
-Translator *createCTranslator();
-Translator *createRustTranslator();
-Translator *createJavascriptTranslator();
-Translator *createTypescriptTranslator();
-Translator *createGoTranslator();
-Translator *createJavaTranslator();
-Translator *createSwiftTranslator();
-Translator *createTsxTranslator();
+std::unique_ptr<Translator> createPythonTranslator();
+std::unique_ptr<Translator> createCppTranslator();
+std::unique_ptr<Translator> createCTranslator();
+std::unique_ptr<Translator> createRustTranslator();
+std::unique_ptr<Translator> createJavascriptTranslator();
+std::unique_ptr<Translator> createTypescriptTranslator();
+std::unique_ptr<Translator> createGoTranslator();
+std::unique_ptr<Translator> createJavaTranslator();
+std::unique_ptr<Translator> createSwiftTranslator();
+std::unique_ptr<Translator> createTsxTranslator();
 } // namespace ir
 
 namespace ir
 {
 
-Translator *createTranslator(const char *language)
+std::unique_ptr<Translator> createTranslator(const char *language)
 {
 	// Normalize language string
 	std::string lang(language);
@@ -63,33 +63,33 @@ Translator *createTranslator(const char *language)
 	return nullptr;
 }
 
-JsVisitor *createJsVisitor(const char *language)
+std::unique_ptr<JsVisitor> createJsVisitor(const char *language)
 {
 	std::string lang(language);
 	for (auto &c : lang)
 		c = static_cast<char>(std::tolower(c));
 
 	if (lang == "javascript" || lang == "js")
-		return new JsVisitor();
+		return std::make_unique<JsVisitor>();
 	if (lang == "typescript" || lang == "ts")
-		return new TsVisitor();
+		return std::make_unique<TsVisitor>();
 	if (lang == "tsx")
-		return new TsxVisitor();
+		return std::make_unique<TsxVisitor>();
 
 	if (lang == "c")
-		return new CVisitor();
+		return std::make_unique<CVisitor>();
 	if (lang == "cpp" || lang == "c++" || lang == "cxx")
-		return new CppVisitor();
+		return std::make_unique<CppVisitor>();
 	if (lang == "go" || lang == "golang")
-		return new GoVisitor();
+		return std::make_unique<GoVisitor>();
 	if (lang == "python" || lang == "py")
-		return new PythonVisitor();
+		return std::make_unique<PythonVisitor>();
 	if (lang == "rust" || lang == "rs")
-		return new RustVisitor();
+		return std::make_unique<RustVisitor>();
 	if (lang == "java")
-		return new JavaVisitor();
+		return std::make_unique<JavaVisitor>();
 	if (lang == "swift")
-		return new SwiftVisitor();
+		return std::make_unique<SwiftVisitor>();
 
 	return nullptr;
 }

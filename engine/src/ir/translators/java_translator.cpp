@@ -618,9 +618,9 @@ Node *JavaTranslator::handleEnum(TSNode ts_node, Node *parent)
 	return en;
 }
 
-Translator *createJavaTranslator()
+std::unique_ptr<Translator> createJavaTranslator()
 {
-	return new JavaTranslator();
+	return std::make_unique<JavaTranslator>();
 }
 
 } // namespace ir

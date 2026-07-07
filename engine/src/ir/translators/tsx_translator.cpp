@@ -5,7 +5,7 @@ namespace ir
 
 // Forward declaration — createTypescriptTranslator is implemented in
 // typescript_translator.cpp and registered via ir_translator.cpp
-Translator *createTypescriptTranslator();
+std::unique_ptr<Translator> createTypescriptTranslator();
 
 // TSX (TypeScript JSX) uses an identical AST structure to TypeScript for
 // all non-JSX constructs. The tree-sitter-tsx grammar simply adds JSX node
@@ -15,7 +15,7 @@ Translator *createTypescriptTranslator();
 // If JSX-specific IR nodes are needed in the future, create a dedicated
 // TsxTranslator class here.
 
-Translator *createTsxTranslator()
+std::unique_ptr<Translator> createTsxTranslator()
 {
 	// Delegate to the TypeScript translator — TSX is a superset of TS
 	return createTypescriptTranslator();

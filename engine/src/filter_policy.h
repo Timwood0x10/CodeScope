@@ -70,6 +70,15 @@ class FilterPolicy {
 	// Load .gitignore patterns from project root.
 	bool loadGitignore(const std::string &project_root);
 
+	// ── Gitignore-Only Check ────────────────────────────────────
+	// Check a relative path against loaded .gitignore rules only
+	// (without skip_dirs/suffix/language filters).
+	// Returns true if the path matches a gitignore pattern.
+	bool isGitignoreMatch(const std::string &rel_path, bool is_dir) const
+	{
+		return gitignoreMatches(gitignore_rules_, rel_path, is_dir);
+	}
+
 	// ── Stats ────────────────────────────────────────────────────
 	struct Stats {
 		uint64_t seen_dirs = 0;

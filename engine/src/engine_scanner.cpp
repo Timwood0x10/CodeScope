@@ -1,4 +1,5 @@
 #include "engine_internal.h"
+#include "filter_policy.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -566,179 +567,6 @@ static std::string entryPointKind(const std::string &name)
 
 } // anonymous namespace
 
-// ─── Gitignore pattern matcher ─────────────────────────────────
-
-namespace
-{
-
-// Simple glob-style gitignore pattern matcher
-struct GitignoreRule {
-	std::string pattern; // raw pattern (after stripping ! and trailing /)
-	bool negate = false; // starts with '!'
-	bool dir_only = false; // ends with '/'
-	bool anchored = false; // starts with '/'
-	bool has_star = false; // contains * or **
-};
-
-class Gitignore {
-    public:
-	// Load patterns from a .gitignore file (returns empty rules if file missing)
-	static std::vector<GitignoreRule> load(const std::string &filepath)
-	{
-		std::vector<GitignoreRule> rules;
-		std::ifstream f(filepath);
-		if (!f)
-			return rules;
-
-		std::string line;
-		while (std::getline(f, line)) {
-			// Trim whitespace
-			auto start = line.find_first_not_of(" \t\r");
-			if (start == std::string::npos)
-				continue;
-			auto end = line.find_last_not_of(" \t\r");
-			line = line.substr(start, end - start + 1);
-
-			if (line.empty() || line[0] == '#')
-				continue;
-
-			GitignoreRule rule;
-			// Negation
-			if (line[0] == '!') {
-				rule.negate = true;
-				line = line.substr(1);
-			}
-			// Directory-only
-			if (!line.empty() && line.back() == '/') {
-				rule.dir_only = true;
-				line.pop_back();
-			}
-			// Anchored
-			if (!line.empty() && line[0] == '/') {
-				rule.anchored = true;
-				line = line.substr(1);
-			}
-			// Check for glob wildcards
-			rule.has_star = (line.find('*') != std::string::npos);
-			rule.pattern = line;
-			if (!rule.pattern.empty())
-				rules.push_back(std::move(rule));
-		}
-		return rules;
-	}
-
-	// Check if a path (relative to gitignore dir) matches any pattern
-	static bool matches(const std::vector<GitignoreRule> &rules,
-			    const std::string &rel_path, bool is_dir)
-	{
-		bool ignored = false;
-		// Partition: simple patterns first (no stars) for fast path
-		for (const auto &r : rules) {
-			// Directory-only rule doesn't apply to files
-			if (r.dir_only && !is_dir)
-				continue;
-
-			bool match = false;
-			if (r.has_star) {
-				// Per gitignore spec: non-anchored pattern without '/'
-				// matches only the filename (last path component)
-				if (!r.anchored &&
-				    r.pattern.find('/') == std::string::npos) {
-					auto pos = rel_path.rfind('/');
-					auto basename =
-						(pos == std::string::npos)
-						? rel_path
-						: rel_path.substr(pos + 1);
-					match = globMatch(r.pattern, basename);
-				} else {
-					match = globMatch(r.pattern, rel_path);
-				}
-			} else {
-				// Simple literal match — fast path
-				if (r.anchored) {
-					match = (rel_path == r.pattern);
-				} else {
-					// Check as suffix (last component or directory)
-					auto pos = rel_path.rfind(r.pattern);
-					if (pos != std::string::npos) {
-						auto after =
-							pos + r.pattern.size();
-						match = (after ==
-								 rel_path.size() ||
-							 rel_path[after] ==
-								 '/');
-						// Also match if it's the entire last path component
-						if (!match && pos > 0 &&
-						    rel_path[pos - 1] == '/')
-							match = (after ==
-									 rel_path.size() ||
-								 rel_path[after] ==
-									 '/');
-					}
-				}
-			}
-
-			if (match) {
-				ignored = !r.negate;
-				// If this is a positive match and not negated, we can stop early
-				if (!r.negate)
-					break;
-			}
-		}
-		return ignored;
-	}
-
-    private:
-	// Simple glob: * matches any chars except /, ** matches any chars
-	static bool globMatch(const std::string &pattern,
-			      const std::string &str)
-	{
-		// Use recursive matching
-		auto pi = pattern.begin(), si = str.begin();
-		return globImpl(pattern, str, pi, si);
-	}
-
-	static bool globImpl(const std::string &p, const std::string &s,
-			     std::string::const_iterator pi,
-			     std::string::const_iterator si)
-	{
-		while (pi != p.end()) {
-			if (*pi == '*') {
-				// ** matches anything
-				if (pi + 1 != p.end() && *(pi + 1) == '*') {
-					pi += 2; // skip "**"
-					// **/ or /** - match any depth
-					if (pi != p.end() && *pi == '/')
-						pi++;
-					// Try matching rest of pattern at every position
-					while (si != s.end()) {
-						if (globImpl(p, s, pi, si))
-							return true;
-						++si;
-					}
-					return globImpl(p, s, pi, si);
-				}
-				// * matches anything except /
-				while (si != s.end() && *si != '/') {
-					if (globImpl(p, s, pi + 1, si))
-						return true;
-					++si;
-				}
-				return globImpl(p, s, pi + 1, si);
-			}
-			if (si == s.end())
-				return false;
-			if (*pi != *si && *pi != '?')
-				return false;
-			++pi;
-			++si;
-		}
-		return (si == s.end());
-	}
-};
-
-} // anonymous namespace
-
 // ─── Git-aware incremental scan helper ────────────────────────
 // Runs `git status --porcelain` to detect changed files.
 // Returns a set of file paths that have been modified/added/deleted.
@@ -848,8 +676,8 @@ char *engine_scan_project(uint64_t project_id, const char *dir_path,
 	// Walk directory tree
 	try {
 		// Load .gitignore patterns from project root
-		std::string gitignore_path = dir + "/.gitignore";
-		auto gitignore_rules = Gitignore::load(gitignore_path);
+		FilterPolicy filter;
+		filter.loadGitignore(dir);
 
 		auto it = std::filesystem::recursive_directory_iterator(
 			dir, std::filesystem::directory_options::
@@ -867,8 +695,8 @@ char *engine_scan_project(uint64_t project_id, const char *dir_path,
 			// Skip files/dirs matching .gitignore (unless !negated)
 			if (!rel_path.empty()) {
 				bool is_dir = it->is_directory();
-				bool ignore = Gitignore::matches(
-					gitignore_rules, rel_path, is_dir);
+				bool ignore = filter.isGitignoreMatch(
+					rel_path, is_dir);
 				if (ignore && is_dir) {
 					it.disable_recursion_pending();
 					++it;

@@ -569,9 +569,9 @@ Node *GoTranslator::handleShortVarDecl(TSNode ts_node, Node *parent)
 
 // ─── Factory ───────────────────────────────────────────────────
 
-Translator *createGoTranslator()
+std::unique_ptr<Translator> createGoTranslator()
 {
-	return new GoTranslator();
+	return std::make_unique<GoTranslator>();
 }
 
 } // namespace ir

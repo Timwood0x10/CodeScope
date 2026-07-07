@@ -384,9 +384,9 @@ TranslationUnit *SwiftTranslator::translate(TSTree *tree, const char *source,
 
 // ─── Factory ───────────────────────────────────────────────────
 
-Translator *createSwiftTranslator()
+std::unique_ptr<Translator> createSwiftTranslator()
 {
-	return new SwiftTranslator();
+	return std::make_unique<SwiftTranslator>();
 }
 
 } // namespace ir

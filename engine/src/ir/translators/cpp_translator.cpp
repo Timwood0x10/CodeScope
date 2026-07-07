@@ -653,9 +653,9 @@ Node *CppTranslator::handleFieldDecl(TSNode ts_node, Node *parent)
 	return nullptr;
 }
 
-Translator *createCppTranslator()
+std::unique_ptr<Translator> createCppTranslator()
 {
-	return new CppTranslator();
+	return std::make_unique<CppTranslator>();
 }
 
 } // namespace ir

@@ -2,6 +2,7 @@
 #define IR_TRANSLATOR_H
 
 #include "ir.h"
+#include <memory>
 
 // tree-sitter types
 typedef struct TSTree TSTree;
@@ -29,12 +30,11 @@ class Translator {
 };
 
 // Factory
-Translator *createTranslator(const char *language);
+std::unique_ptr<Translator> createTranslator(const char *language);
 
 // Create a visitor for JS/TS/TSX languages. Returns nullptr for other langs.
 // The returned JsVisitor (or TsVisitor/TsxVisitor) emits SemanticUnit records.
-// Ownership passes to the caller; delete with `delete`.
-JsVisitor *createJsVisitor(const char *language);
+std::unique_ptr<JsVisitor> createJsVisitor(const char *language);
 
 } // namespace ir
 

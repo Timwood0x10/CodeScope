@@ -576,9 +576,9 @@ Node *JavascriptTranslator::handleMember(TSNode ts_node, Node *parent)
 	return member;
 }
 
-Translator *createJavascriptTranslator()
+std::unique_ptr<Translator> createJavascriptTranslator()
 {
-	return new JavascriptTranslator();
+	return std::make_unique<JavascriptTranslator>();
 }
 
 } // namespace ir

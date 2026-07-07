@@ -652,9 +652,9 @@ Node *CTranslator::handlePreprocFunctionDef(TSNode ts_node, Node *parent)
 	return macro;
 }
 
-Translator *createCTranslator()
+std::unique_ptr<Translator> createCTranslator()
 {
-	return new CTranslator();
+	return std::make_unique<CTranslator>();
 }
 
 } // namespace ir
