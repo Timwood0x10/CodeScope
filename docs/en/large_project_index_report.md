@@ -556,3 +556,42 @@ All projects show consistent bottleneck distribution:
 Conclusion: CodeScope is SQLite-bound, not CPU-bound.
 Optimizing SQLite writes and buildGraph is the only effective speedup path.
 ```
+
+---
+
+## 11. buildGraph SQL Audit
+
+### EXPLAIN QUERY PLAN Results (50-file C++ project)
+
+```
+--- QPLAN _r2n ---
+  id=6 parent=3 SEARCH sr USING INDEX idx_sr_kind (project_id=? AND kind=?)
+  id=50 parent=3 USING INDEX sqlite_autoindex__rf_1 FOR IN-OPERATOR
+  id=69 parent=0 SCAN (subquery-3)
+```
+
+| Phase | SQL | Time | Analysis |
+|-------|-----|:----:|----------|
+| file_list | `SELECT DISTINCT file_path FROM semantic_records` | 1ms | ✅ Uses `idx_sr_kind` |
+| delete | `deleteGraphEdgesByFile` + `deleteGraphNodesByFile` | 0ms | ✅ Index-covered |
+| _rf | Create temp file filter table | 0ms | ✅ Lightweight |
+| r2n | `CREATE TEMP TABLE _r2n AS ... ROW_NUMBER() OVER ()` | 36ms | ⚠️ Window function non-indexed |
+| nodes | `INSERT INTO graph_nodes SELECT ... JOIN _r2n` | 32ms | ✅ Indexed JOIN |
+| edges | `INSERT INTO graph_edges SELECT ... JOIN _r2n x2` | 41ms | ⚠️ Slowest phase |
+| calls | `INSERT ... 4x JOIN + semantic_records self-join` | 0ms | ⚠️ O(N²) risk on large projects |
+
+### Large Project Bottleneck Predictions
+
+| Bottleneck | Complexity | Impact | Suggestion |
+|------------|:----------:|--------|------------|
+| `ROW_NUMBER() OVER ()` window function | O(N) | ~1-2s for 8M rows | Cannot index, but still O(N) |
+| containment edges double _r2n JOIN | O(N log N) | ~4-8s for 8M rows | Already uses DISTINCT + indexes, acceptable |
+| call edges 4x JOIN + self-join | O(N²) risk | Main bottleneck | Needs `idx_sr_kind(project_id, kind)` + `idx_sr_fp_oid(file_path, original_id)` |
+
+### Optimization Recommendations
+
+1. `_r2n` `ROW_NUMBER() OVER ()` without ORDER BY is already optimal
+2. Call edges `sr.name = callee.name` JOIN has no index — add `idx_sr_name(project_id, name)` to accelerate
+3. Consider batch INSERT instead of row-by-row INSERT-SELECT for containment edges
+
+---

@@ -98,6 +98,12 @@ unsafe extern "C" {
         from_name: *const c_char,
         to_name: *const c_char,
     ) -> *mut c_char;
+    fn engine_explore_function(
+        project_id: u64,
+        function_name: *const c_char,
+        depth: i32,
+        direction: *const c_char,
+    ) -> *mut c_char;
     fn engine_build_context(project_id: u64, query: *const c_char) -> *mut c_char;
     fn engine_get_capabilities(project_id: u64) -> *mut c_char;
 
@@ -318,6 +324,17 @@ pub fn project_overview(project_id: u64) -> String {
 pub fn trace_path(project_id: u64, from_name: &str, to_name: &str) -> String {
     take_string(unsafe {
         engine_trace_path(project_id, cstr(from_name).as_ptr(), cstr(to_name).as_ptr())
+    })
+}
+
+pub fn explore_function(project_id: u64, function_name: &str, depth: i32, direction: &str) -> String {
+    take_string(unsafe {
+        engine_explore_function(
+            project_id,
+            cstr(function_name).as_ptr(),
+            depth,
+            cstr(direction).as_ptr(),
+        )
     })
 }
 

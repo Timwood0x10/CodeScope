@@ -225,6 +225,10 @@ bool GraphStore::createSchema()
         CREATE INDEX IF NOT EXISTS idx_sr_file ON semantic_records(project_id, file_path);
         CREATE INDEX IF NOT EXISTS idx_sr_file_oid ON semantic_records(file_path, original_id);
         CREATE INDEX IF NOT EXISTS idx_sr_kind ON semantic_records(project_id, kind);
+        -- Index for containment edges parent JOIN: (file_path, parent_id)
+        CREATE INDEX IF NOT EXISTS idx_sr_fp_parent ON semantic_records(file_path, parent_id);
+        -- Index for call edges name matching: (project_id, kind, name) covers the WHERE + JOIN
+        CREATE INDEX IF NOT EXISTS idx_sr_kind_name ON semantic_records(project_id, kind, name);
 
         -- FTS5 full-text search index
         CREATE VIRTUAL TABLE IF NOT EXISTS code_fts USING fts5(
@@ -2688,6 +2692,244 @@ void GraphStore::cleanupStaleFiles(uint64_t project_id,
 		     nullptr, nullptr);
 }
 
+// ─── Interactive Function Exploration ──────────────────────────
+
+std::string GraphStore::exploreFunctionJson(uint64_t project_id,
+					    const char *function_name,
+					    int depth, const char *direction)
+{
+	// Limit depth to prevent runaway recursion
+	if (depth > 5)
+		depth = 5;
+	if (depth < 0)
+		depth = 0;
+
+	bool show_callers = (strcmp(direction, "callers") == 0 ||
+			     strcmp(direction, "both") == 0);
+	bool show_callees = (strcmp(direction, "callees") == 0 ||
+			     strcmp(direction, "both") == 0);
+
+	// 1. Find the function in graph_nodes (new pipeline) or symbols (legacy)
+	auto findFuncId = [&](const char *name) -> uint64_t {
+		// Try graph_nodes first (new pipeline)
+		{
+			const char *sql =
+				"SELECT id FROM graph_nodes WHERE project_id = ? AND name = ? AND node_type IN (0,1,6) LIMIT 1";
+			sqlite3_stmt *stmt = nullptr;
+			if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) ==
+			    SQLITE_OK) {
+				sqlite3_bind_int64(
+					stmt, 1,
+					static_cast<int64_t>(project_id));
+				sqlite3_bind_text(stmt, 2, name, -1,
+						   SQLITE_TRANSIENT);
+				uint64_t id = 0;
+				if (sqlite3_step(stmt) == SQLITE_ROW)
+					id = static_cast<uint64_t>(
+						sqlite3_column_int64(stmt, 0));
+				sqlite3_finalize(stmt);
+				if (id)
+					return id;
+			}
+		}
+		// Fallback: try symbols table (legacy/scanner pipeline)
+		{
+			const char *sql =
+				"SELECT id FROM symbols WHERE project_id = ? AND name = ? LIMIT 1";
+			sqlite3_stmt *stmt = nullptr;
+			if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) !=
+			    SQLITE_OK)
+				return 0;
+			sqlite3_bind_int64(stmt, 1,
+					   static_cast<int64_t>(project_id));
+			sqlite3_bind_text(stmt, 2, name, -1, SQLITE_TRANSIENT);
+			uint64_t id = 0;
+			if (sqlite3_step(stmt) == SQLITE_ROW)
+				id = static_cast<uint64_t>(
+					sqlite3_column_int64(stmt, 0));
+			sqlite3_finalize(stmt);
+			return id;
+		}
+	};
+
+	// 2. Recursive JSON builder
+	std::function<void(std::ostringstream &, uint64_t, int)> buildNode =
+		[&](std::ostringstream &json, uint64_t id, int remaining) {
+			// Get function metadata — try graph_nodes first
+			const char *gn_sql =
+				"SELECT name, file_path, start_row FROM graph_nodes WHERE id = ? AND project_id = ?";
+			sqlite3_stmt *stmt = nullptr;
+			std::string name = "?";
+			std::string file_path = "";
+			int line = 0;
+			bool found = false;
+			if (sqlite3_prepare_v2(db_, gn_sql, -1, &stmt, nullptr) ==
+			    SQLITE_OK) {
+				sqlite3_bind_int64(stmt, 1,
+						   static_cast<int64_t>(id));
+				sqlite3_bind_int64(
+					stmt, 2,
+					static_cast<int64_t>(project_id));
+				if (sqlite3_step(stmt) == SQLITE_ROW) {
+					const char *n =
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								stmt, 0));
+					if (n)
+						name = n;
+					const char *f =
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								stmt, 1));
+					if (f)
+						file_path = f;
+					line = sqlite3_column_int(stmt, 2);
+					found = true;
+				}
+				sqlite3_finalize(stmt);
+			}
+			// Fallback: symbols table
+			if (!found) {
+				const char *s_sql =
+					"SELECT name, file_path, line FROM symbols WHERE id = ? AND project_id = ?";
+				if (sqlite3_prepare_v2(db_, s_sql, -1, &stmt,
+						       nullptr) == SQLITE_OK) {
+					sqlite3_bind_int64(
+						stmt, 1,
+						static_cast<int64_t>(id));
+					sqlite3_bind_int64(
+						stmt, 2,
+						static_cast<int64_t>(
+							project_id));
+					if (sqlite3_step(stmt) == SQLITE_ROW) {
+						const char *n = reinterpret_cast<
+							const char *>(
+							sqlite3_column_text(
+								stmt, 0));
+						if (n)
+							name = n;
+						const char *f = reinterpret_cast<
+							const char *>(
+							sqlite3_column_text(
+								stmt, 1));
+						if (f)
+							file_path = f;
+						line = sqlite3_column_int(
+							stmt, 2);
+					}
+					sqlite3_finalize(stmt);
+				}
+			}
+
+			json << "{\"name\":\"" << jsonEscape(name)
+			     << "\",\"file\":\"" << jsonEscape(file_path)
+			     << "\",\"line\":" << line;
+
+			if (remaining <= 0) {
+				json << "}";
+				return;
+			}
+
+			bool has_fields = true; // name, file, line already written
+
+			// Callers: graph_edges where target_node_id = id AND edge_type=1 (call)
+			if (show_callers) {
+				if (has_fields) json << ",";
+				has_fields = true;
+				json << "\"callers\":[";
+				const char *csql =
+					"SELECT source_node_id FROM graph_edges "
+					"WHERE project_id = ? AND target_node_id = ? AND edge_type = 1 "
+					"AND source_node_id != ? LIMIT 20";
+				sqlite3_stmt *cstmt = nullptr;
+				bool first = true;
+				if (sqlite3_prepare_v2(db_, csql, -1, &cstmt,
+						       nullptr) == SQLITE_OK) {
+					sqlite3_bind_int64(
+						cstmt, 1,
+						static_cast<int64_t>(project_id));
+					sqlite3_bind_int64(
+						cstmt, 2,
+						static_cast<int64_t>(id));
+					sqlite3_bind_int64(
+						cstmt, 3,
+						static_cast<int64_t>(id));
+					while (sqlite3_step(cstmt) ==
+					       SQLITE_ROW) {
+						uint64_t caller_id =
+							static_cast<uint64_t>(
+								sqlite3_column_int64(
+									cstmt,
+									0));
+						if (!first)
+							json << ",";
+						first = false;
+						buildNode(json, caller_id,
+							  remaining - 1);
+					}
+					sqlite3_finalize(cstmt);
+				}
+				json << "]";
+			}
+
+			// Callees: graph_edges where source_node_id = id AND edge_type=1 (call)
+			if (show_callees) {
+				if (has_fields) json << ",";
+				has_fields = true;
+				json << "\"callees\":[";
+				const char *csql =
+					"SELECT target_node_id FROM graph_edges "
+					"WHERE project_id = ? AND source_node_id = ? AND edge_type = 1 "
+					"AND target_node_id != ? LIMIT 20";
+				sqlite3_stmt *cstmt = nullptr;
+				bool first = true;
+				if (sqlite3_prepare_v2(db_, csql, -1, &cstmt,
+						       nullptr) == SQLITE_OK) {
+					sqlite3_bind_int64(
+						cstmt, 1,
+						static_cast<int64_t>(project_id));
+					sqlite3_bind_int64(
+						cstmt, 2,
+						static_cast<int64_t>(id));
+					sqlite3_bind_int64(
+						cstmt, 3,
+						static_cast<int64_t>(id));
+					while (sqlite3_step(cstmt) ==
+					       SQLITE_ROW) {
+						uint64_t callee_id =
+							static_cast<uint64_t>(
+								sqlite3_column_int64(
+									cstmt,
+									0));
+						if (!first)
+							json << ",";
+						first = false;
+						buildNode(json, callee_id,
+							  remaining - 1);
+					}
+					sqlite3_finalize(cstmt);
+				}
+				json << "]";
+			}
+
+			json << "}";
+		};
+
+	// 3. Find starting function and build tree
+	uint64_t func_id = findFuncId(function_name);
+	if (!func_id) {
+		std::ostringstream err;
+		err << "{\"error\":\"function '" << jsonEscape(function_name)
+		    << "' not found\",\"name\":\"" << jsonEscape(function_name)
+		    << "\",\"callers\":[],\"callees\":[]}";
+		return err.str();
+	}
+
+	std::ostringstream result;
+	buildNode(result, func_id, depth);
+	return result.str();
+}
+
 // ─── Semantic Records (DB-first pipeline) ───────────────────
 
 void GraphStore::insertSemanticRecords(uint64_t project_id,
@@ -2896,6 +3138,17 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	auto t_r2n = Clock::now();
 
 	// ── 2c: Graph nodes from declarations ──
+	if (explain_env && explain_env[0]) {
+		explainQueryPlan(
+			"SELECT r2n.node_id, sr.project_id, sr.original_id, "
+			" CASE sr.kind WHEN 0 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 "
+			"  WHEN 3 THEN 4 WHEN 4 THEN 7 WHEN 5 THEN 7 "
+			"  WHEN 6 THEN 6 WHEN 9 THEN 7 WHEN 10 THEN 7 ELSE 7 END, "
+			" sr.name, sr.qualified_name, sr.file_path, sr.file_path, "
+			" sr.start_row, sr.start_col, sr.end_row, sr.end_col, sr.language "
+			"FROM semantic_records sr JOIN _r2n r2n ON sr.rowid = r2n.rid",
+			"nodes");
+	}
 	exec(std::string(
 		     "INSERT INTO graph_nodes (id, project_id, ir_node_id, node_type, "
 		     " name, qualified_name, module_path, file_path, "
@@ -2911,23 +3164,25 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	auto t_nodes = Clock::now();
 
 	// ── 2d: Containment edges ──
-	exec(std::string(
-		     "INSERT INTO graph_edges "
-		     "(project_id, source_node_id, target_node_id, edge_type, graph_type) "
-		     "SELECT DISTINCT " +
-		     pid +
-		     ", parent.node_id, child.node_id, 3, 'symbol_reference' "
-		     "FROM semantic_records sr "
-		     "JOIN _r2n child ON sr.original_id = child.original_id AND sr.file_path = child.file_path "
-		     "JOIN _r2n parent ON sr.parent_id = parent.original_id AND sr.file_path = parent.file_path "
-		     "WHERE sr.project_id=" +
-		     pid + " AND parent.node_id != child.node_id")
-		     .c_str());
+	{
+		std::string sql = std::string(
+			"SELECT DISTINCT " +
+			pid +
+			", parent.node_id, child.node_id, 3, 'symbol_reference' "
+			"FROM semantic_records sr "
+			"JOIN _r2n child ON sr.original_id = child.original_id AND sr.file_path = child.file_path "
+			"JOIN _r2n parent ON sr.parent_id = parent.original_id AND sr.file_path = parent.file_path "
+			"WHERE sr.project_id=" +
+			pid + " AND parent.node_id != child.node_id");
+		if (explain_env && explain_env[0])
+			explainQueryPlan(sql.c_str(), "containment_edges");
+		exec(sql.c_str());
+	}
 	auto t_edges = Clock::now();
 
 	// ── 2e: Call edges ──
 	if (build_calls) {
-	 exec(std::string(
+	 std::string sql = std::string(
 	       "INSERT INTO graph_edges "
 	       "(project_id, source_node_id, target_node_id, edge_type, graph_type, "
 	       " call_site_file, call_site_line) "
@@ -2936,16 +3191,18 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	       ", caller.node_id, callee.node_id, 1, 'call_graph', "
 	       "  sr.file_path, sr.start_row "
 	       "FROM semantic_records sr "
-	       "JOIN _r2n callee ON sr.name = callee.name "
+	       "JOIN _r2n callee ON SUBSTR(sr.name, -LENGTH(callee.name)) = callee.name "
 	       "JOIN _r2n caller ON sr.parent_id = caller.original_id AND sr.file_path = caller.file_path "
 	       "JOIN semantic_records cal_sr ON cal_sr.rowid = callee.rid "
 	       "JOIN semantic_records call_sr ON sr.parent_id = call_sr.original_id AND sr.file_path = call_sr.file_path "
 	       "WHERE sr.project_id=" +
-	       pid + " AND sr.kind=7" +
+	       pid + " AND sr.kind=9" +
 	       " AND sr.name != '' AND callee.node_id != caller.node_id"
 	       " AND cal_sr.kind IN (0,1)"
-	       " AND call_sr.kind IN (0,1)")
-	       .c_str());
+	       " AND call_sr.kind IN (0,1)");
+	 if (explain_env && explain_env[0])
+	 	explainQueryPlan(sql.c_str(), "call_edges");
+	 exec(sql.c_str());
 	}
 	auto t_call = Clock::now();
 

@@ -4,6 +4,8 @@ use crate::ffi;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::process::Command;
+use std::sync::mpsc;
+use std::time::Duration;
 
 /// Handler signature for a single MCP tool.
 type ToolHandler = fn(u64, &Value) -> String;
@@ -69,11 +71,60 @@ fn h_locate_code(project_id: u64, args: &Value) -> String {
     }
 }
 
+// ─── Worker Supervisor (timeout + retry) ───────────────────────
+
+const WORKER_TIMEOUT: Duration = Duration::from_secs(300);
+const MAX_RETRIES: usize = 3;
+
+/// Run a worker subprocess with timeout protection.
+/// Returns `Ok(output)` on success, `Err(msg)` on timeout or failure.
+/// Kills the child process via kill -9 on timeout.
+fn run_worker(exe: &str, args: &[&str], envs: &[(&str, &str)]) -> Result<std::process::Output, String> {
+    let mut cmd = Command::new(exe);
+    cmd.args(args);
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    let child = cmd.spawn().map_err(|e| format!("spawn failed: {}", e))?;
+    let pid = child.id();
+
+    let (tx, rx) = mpsc::channel();
+
+    // Thread: wait for child completion
+    let tx_out = tx.clone();
+    std::thread::spawn(move || {
+        let output = child.wait_with_output();
+        let _ = tx_out.send(output);
+    });
+
+    // Poll for result with timeout
+    let start = std::time::Instant::now();
+    loop {
+        if start.elapsed() > WORKER_TIMEOUT {
+            // Kill orphaned child via kill -9
+            let _ = Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .output();
+            return Err("worker timed out after 300s".to_string());
+        }
+
+        match rx.try_recv() {
+            Ok(Ok(output)) => return Ok(output),
+            Ok(Err(e)) => return Err(format!("worker error: {}", e)),
+            Err(mpsc::TryRecvError::Empty) => {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                return Err("worker channel disconnected".to_string());
+            }
+        }
+    }
+}
+
 fn h_index_project(project_id: u64, args: &Value) -> String {
     let path = args["project_path"].as_str().unwrap_or("");
 
     // Use worker subprocess for memory isolation
-    // Pass the existing project_id so indexed data is accessible to the parent server
     let self_exe = std::env::current_exe().ok();
     if let Some(exe) = self_exe {
         let db_path = std::env::var("CODESCOPE_DB_PATH")
@@ -81,48 +132,67 @@ fn h_index_project(project_id: u64, args: &Value) -> String {
         let grammars_dir = std::env::var("GRAMMARS_DIR").unwrap_or_else(|_| "grammars".to_string());
         let lang = args["language_filter"].as_str().unwrap_or("");
 
-        // Shutdown engine before spawning worker to release SQLite lock
-        crate::ffi::shutdown();
+        for attempt in 1..=MAX_RETRIES {
+            // Shutdown engine before spawning worker to release SQLite lock
+            crate::ffi::shutdown();
 
-        // Fix: Pass args in correct order: worker <db_path> <dir_path> <lang_filter> <project_name> <project_id>
-        let output = Command::new(&exe)
-            .args(["worker", &db_path, path, lang, "worker-project", &project_id.to_string()])
-            .env("GRAMMARS_DIR", &grammars_dir)
-            .env("CODESCOPE_DB_PATH", &db_path)
-            .env("CODESCOPE_VERBOSE", "0")
-            .output();
+            let args_list = [
+                "worker", &db_path, path, lang, "worker-project", &project_id.to_string(),
+            ];
+            let envs = [
+                ("GRAMMARS_DIR", &grammars_dir as &str),
+                ("CODESCOPE_DB_PATH", &db_path as &str),
+                ("CODESCOPE_VERBOSE", "0"),
+            ];
 
-        // Re-init engine after worker completes (regardless of success/failure)
-        crate::ffi::init(&db_path);
+            let result = run_worker(exe.to_str().unwrap_or("codescope"), &args_list, &envs);
 
-        match output {
-            Ok(out) => {
-                if out.status.success() {
-                    let stdout = String::from_utf8_lossy(&out.stdout);
-                    if let Some(json_start) = stdout.find('{')
-                        && let Some(json_end) = stdout[json_start..].rfind('}')
-                    {
-                        let result = stdout[json_start..=json_start + json_end].to_string();
+            // Re-init engine after worker completes (regardless of success/failure)
+            crate::ffi::init(&db_path);
+
+            match result {
+                Ok(out) => {
+                    if out.status.success() {
+                        let stdout = String::from_utf8_lossy(&out.stdout);
+                        if let Some(json_start) = stdout.find('{')
+                            && let Some(json_end) = stdout[json_start..].rfind('}')
+                        {
+                            let result = stdout[json_start..=json_start + json_end].to_string();
+                            // Trigger async FTS build after index completes
+                            crate::ffi::RUNTIME.spawn(async move {
+                                crate::ffi::build_fts(project_id);
+                            });
+                            return result;
+                        }
                         // Trigger async FTS build after index completes
                         crate::ffi::RUNTIME.spawn(async move {
                             crate::ffi::build_fts(project_id);
                         });
-                        return result;
+                        return stdout.to_string();
                     }
-                    // Trigger async FTS build after index completes
-                    crate::ffi::RUNTIME.spawn(async move {
-                        crate::ffi::build_fts(project_id);
-                    });
-                    return stdout.to_string();
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    let err_msg = stderr.lines().last().unwrap_or("unknown");
+                    if attempt < MAX_RETRIES {
+                        eprintln!("worker attempt {} failed ({}), retrying...", attempt, err_msg);
+                        std::thread::sleep(Duration::from_secs(1));
+                        continue;
+                    }
+                    return format!(
+                        "{{\"ok\":false,\"error\":\"worker failed after {} attempts: {}\"}}",
+                        MAX_RETRIES, err_msg
+                    );
                 }
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                return format!(
-                    "{{\"ok\":false,\"error\":\"worker failed: {}\"}}",
-                    stderr.lines().last().unwrap_or("unknown")
-                );
-            }
-            Err(e) => {
-                return format!("{{\"ok\":false,\"error\":\"spawn worker: {}\"}}", e);
+                Err(msg) => {
+                    if attempt < MAX_RETRIES {
+                        eprintln!("worker attempt {}: {} — retrying...", attempt, msg);
+                        std::thread::sleep(Duration::from_secs(1));
+                        continue;
+                    }
+                    return format!(
+                        "{{\"ok\":false,\"error\":\"worker {} after {} attempts\"}}",
+                        msg, MAX_RETRIES
+                    );
+                }
             }
         }
     }
@@ -247,6 +317,17 @@ fn h_project_overview(project_id: u64, _args: &Value) -> String {
 }
 
 fn h_codescope_trace(project_id: u64, args: &Value) -> String {
+    // Interactive exploration mode: explore callers/callees recursively
+    // Params: function_name, depth (default 1), direction (callers|callees|both, default both)
+    if let Some(name) = args["function_name"].as_str() {
+        if !name.is_empty() {
+            let depth = args["depth"].as_i64().unwrap_or(1) as i32;
+            let direction = args["direction"].as_str().unwrap_or("both");
+            return ffi::explore_function(project_id, name, depth, direction);
+        }
+    }
+    // Legacy mode: shortest path between two functions
+    // Params: from, to
     let from = args["from"].as_str().unwrap_or("");
     let to = args["to"].as_str().unwrap_or("");
     ffi::trace_path(project_id, from, to)
@@ -668,14 +749,16 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
         // ══ Unique Tools (codescope_ prefix, no short alias) ════
         Tool {
             name: "codescope_trace".into(),
-            description: "Trace the shortest call path between two functions using BFS on the call graph. Returns the full call chain with file paths and line numbers.".into(),
+            description: "Explore a function's callers/callees recursively, or trace the shortest path between two functions. Use function_name+depth+direction for interactive exploration, or from+to for shortest path.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "from": {"type": "string", "description": "Source function name"},
-                    "to": {"type": "string", "description": "Target function name"}
-                },
-                "required": ["from", "to"]
+                    "function_name": {"type": "string", "description": "Starting function for interactive exploration"},
+                    "depth": {"type": "integer", "description": "How many levels to explore (default: 1, max: 5)"},
+                    "direction": {"type": "string", "description": "\"callers\", \"callees\", or \"both\" (default: \"both\")"},
+                    "from": {"type": "string", "description": "Source function for shortest path (legacy)"},
+                    "to": {"type": "string", "description": "Target function for shortest path (legacy)"}
+                }
             }),
         },
         Tool {

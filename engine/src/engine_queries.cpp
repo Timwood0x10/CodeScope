@@ -836,6 +836,24 @@ char *engine_trace_path(uint64_t project_id, const char *from_name,
 		g_store->tracePathJson(project_id, from_name, to_name));
 }
 
+// ─── Interactive Function Exploration ─────────────────────────
+
+char *engine_explore_function(uint64_t project_id,
+			      const char *function_name,
+			      int depth, const char *direction)
+{
+	if (!g_store)
+		return dupString(
+			"{\"error\":\"not initialized\",\"callers\":[],\"callees\":[]}");
+	if (!function_name || !*function_name)
+		return dupString(
+			"{\"error\":\"empty function name\",\"callers\":[],\"callees\":[]}");
+	const char *dir = direction ? direction : "both";
+	return dupString(
+		g_store->exploreFunctionJson(project_id, function_name,
+					     depth, dir).c_str());
+}
+
 // ─── Context Builder ─────────────────────────────────────────
 
 // Simple intent detection: extract keywords from a natural language query

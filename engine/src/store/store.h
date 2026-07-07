@@ -274,6 +274,18 @@ class GraphStore {
 	std::string tracePathJson(uint64_t project_id, const char *from_name,
 				  const char *to_name);
 
+	/**
+	 * Explore a function's callers/callees recursively as a JSON tree.
+	 * Returns hierarchical JSON: {"name":"...","file":"...","line":N,"callers":[...],"callees":[...]}
+	 * Each level nests up to `depth` levels (0 = just the function metadata).
+	 * @param function_name Starting function.
+	 * @param depth How many levels to recurse (max 5).
+	 * @param direction "callers", "callees", or "both".
+	 */
+	std::string exploreFunctionJson(uint64_t project_id,
+					const char *function_name,
+					int depth, const char *direction);
+
 	// ── Index Tasks (Tokio background task tracking) ──────────
 
 	/** Create a new task record. Returns task id. */

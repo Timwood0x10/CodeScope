@@ -560,3 +560,41 @@ JDK 每文件平均产生 **405 个节点**（是 rustc 的 3.6 倍）。Java �
 优化 SQLite 写入和 buildGraph 是唯一有效的提速路径。
 ```
 
+---
+
+## 十一、buildGraph SQL 审计
+
+### EXPLAIN QUERY PLAN 结果（50 文件 C++ 项目）
+
+```
+--- QPLAN _r2n ---
+ id=6 parent=3 SEARCH sr USING INDEX idx_sr_kind (project_id=? AND kind=?)
+ id=50 parent=3 USING INDEX sqlite_autoindex__rf_1 FOR IN-OPERATOR
+ id=69 parent=0 SCAN (subquery-3)
+```
+
+| 阶段 | SQL | 耗时 | 分析 |
+|------|-----|:----:|------|
+| file_list | `SELECT DISTINCT file_path FROM semantic_records` | 1ms | ✅ 使用 `idx_sr_kind` 索引 |
+| delete | `deleteGraphEdgesByFile` + `deleteGraphNodesByFile` | 0ms | ✅ 索引覆盖 |
+| _rf | 创建临时文件过滤表 | 0ms | ✅ 轻量 |
+| r2n | `CREATE TEMP TABLE _r2n AS ... ROW_NUMBER() OVER ()` | 36ms | ⚠️ 窗口函数不走索引 |
+| nodes | `INSERT INTO graph_nodes SELECT ... JOIN _r2n` | 32ms | ✅ 索引 JOIN |
+| edges | `INSERT INTO graph_edges SELECT ... JOIN _r2n x2` | 41ms | ⚠️ 最慢阶段 |
+| calls | `INSERT ... 4x JOIN + semantic_records 自连接` | 0ms | ⚠️ 大项目可能 O(N²) |
+
+### 大项目瓶颈预测
+
+| 瓶颈 | 复杂度 | 影响 | 建议 |
+|------|:------:|------|------|
+| `ROW_NUMBER() OVER ()` 窗口函数 | O(N) | 8M 行时 ~1-2s | SQLite 窗口函数无法索引，但仍是 O(N) |
+| containment edges 双 _r2n JOIN | O(N log N) | 8M 行时 ~4-8s | 已用 DISTINCT + 索引，可接受 |
+| call edges 4x JOIN + 自连接 | O(N²) 风险 | 大项目主要瓶颈 | 需要 `idx_sr_kind(project_id, kind)` + `idx_sr_fp_oid(file_path, original_id)` |
+
+### 优化建议
+
+1. `_r2n` 创建时 `ROW_NUMBER() OVER ()` 不需要 ORDER BY，目前已是最优
+2. call edges 的 `sr.name = callee.name` JOIN 无索引——添加 `idx_sr_name(project_id, name)` 可加速
+3. 考虑对 containment edges 使用批量 INSERT 而非逐条 INSERT-SELECT
+
+---

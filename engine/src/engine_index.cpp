@@ -932,6 +932,30 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		       << ",\"time_buildgraph_ms\":" << time_buildgraph_ms;
 	result << ",\"time_fts_ms\":" << time_fts_ms
 	       << ",\"time_vector_ms\":" << time_vector_ms;
+
+	// Add node/edge counts from graph tables
+	{
+		sqlite3_stmt *stmt = nullptr;
+		std::string sql;
+		sql = "SELECT COUNT(*) FROM graph_nodes WHERE project_id = " +
+		      std::to_string(project_id);
+		if (sqlite3_prepare_v2(g_store->handle(), sql.c_str(), -1,
+				       &stmt, nullptr) == SQLITE_OK) {
+			if (sqlite3_step(stmt) == SQLITE_ROW)
+				result << ",\"total_nodes\":"
+				       << sqlite3_column_int64(stmt, 0);
+			sqlite3_finalize(stmt);
+		}
+		sql = "SELECT COUNT(*) FROM graph_edges WHERE project_id = " +
+		      std::to_string(project_id);
+		if (sqlite3_prepare_v2(g_store->handle(), sql.c_str(), -1,
+				       &stmt, nullptr) == SQLITE_OK) {
+			if (sqlite3_step(stmt) == SQLITE_ROW)
+				result << ",\"total_edges\":"
+				       << sqlite3_column_int64(stmt, 0);
+			sqlite3_finalize(stmt);
+		}
+	}
 	// Discovery stats
 	auto &fs = filter.stats();
 	result << ",\"discovery\":{\"seen_dirs\":" << fs.seen_dirs

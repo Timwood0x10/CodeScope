@@ -46,6 +46,16 @@ char* engine_locate_node(uint64_t project_id, uint64_t node_id,
 char* engine_locate_by_name(uint64_t project_id, const char* name);
 char* engine_get_graph_stats(uint64_t project_id);
 
+// ─── Interactive exploration ──────────────────────────────────
+// Explore a function's callers/callees recursively as a JSON tree.
+// Returns hierarchical JSON: {"name":"...","file":"...","line":N,"callers":[...],"callees":[...]}
+// @param function_name Starting function.
+// @param depth How many levels to recurse (max 5).
+// @param direction "callers", "callees", or "both".
+char* engine_explore_function(uint64_t project_id,
+                              const char* function_name,
+                              int depth, const char* direction);
+
 // Get the latest project ID from the database (highest ID).
 // Returns 0 if no projects exist.
 uint64_t engine_get_latest_project_id();
