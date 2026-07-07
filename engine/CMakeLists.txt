@@ -270,7 +270,6 @@ target_compile_definitions(astgraph_engine PUBLIC SQLITE_ENABLE_LOAD_EXTENSION)
 target_include_directories(astgraph_engine PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${TREE_SITTER_INCLUDE_DIRS}
     ${SQLITE3_INCLUDE_DIRS}
     # Grammar source directories (for #include "tree_sitter/parser.h")
     ${TREE_SITTER_NPM}/tree-sitter-c/src
@@ -285,6 +284,18 @@ target_include_directories(astgraph_engine PUBLIC
     ${TREE_SITTER_NPM}/tree-sitter-typescript/tsx/src
     ${TREE_SITTER_NPM}/tree-sitter-typescript/common
 )
+
+# tree-sitter include dirs: guard against NOTFOUND (e.g. Windows where tree-sitter isn't installed)
+if(TREE_SITTER_INCLUDE_DIRS AND NOT "${TREE_SITTER_INCLUDE_DIRS}" MATCHES "-NOTFOUND$")
+    target_include_directories(astgraph_engine PUBLIC ${TREE_SITTER_INCLUDE_DIRS})
+endif()
+
+# tree-sitter library: guard against NOTFOUND
+if(TREE_SITTER_LIBRARIES AND NOT "${TREE_SITTER_LIBRARIES}" MATCHES "-NOTFOUND$")
+    target_link_libraries(astgraph_engine PUBLIC ${TREE_SITTER_LIBRARIES})
+else()
+    target_link_libraries(astgraph_engine PUBLIC tree-sitter)
+endif()
 
 target_link_libraries(astgraph_engine PUBLIC
     ${TREE_SITTER_LIBRARIES}

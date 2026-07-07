@@ -85,7 +85,13 @@ fn main() {
     // ── Linker flags ───────────────────────────────────────────────
     println!("cargo:rustc-link-search=native={}", build_dir);
     println!("cargo:rustc-link-lib=static=astgraph_engine");
-    println!("cargo:rustc-link-lib=dylib=c++");
+
+    // C++ standard library: libc++ on macOS, libstdc++ on Linux/Windows
+    match target_os.as_str() {
+        "macos" => println!("cargo:rustc-link-lib=dylib=c++"),
+        "linux" => println!("cargo:rustc-link-lib=dylib=stdc++"),
+        _       => println!("cargo:rustc-link-lib=dylib=stdc++"),
+    }
     println!("cargo:rustc-link-lib=tree-sitter");
 
     // SQLite + tree-sitter: platform-dependent library paths
