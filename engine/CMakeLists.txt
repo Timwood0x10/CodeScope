@@ -189,8 +189,10 @@ set(ENGINE_SOURCES
     src/ir/translators/tsx_translator.cpp
     src/graph/graph_types.cpp
     src/graph/graph_builder.cpp
+    src/store/store_core.cpp
     src/store/store.cpp
     src/query/query_engine.cpp
+    src/query/query_analysis.cpp
     src/query/graph_query.cpp
     src/query/impact_analysis.cpp
     src/query/community_detection.cpp

@@ -569,8 +569,6 @@ static std::string entryPointKind(const std::string &name)
 
 // ─── Git-aware incremental scan helper ────────────────────────
 // Runs `git status --porcelain` to detect changed files.
-// Returns a set of file paths that have been modified/added/deleted.
-// If git is not available or the project isn't a git repo, returns empty (full scan).
 static std::unordered_set<std::string>
 getGitChangedFiles(const std::string &project_dir)
 {

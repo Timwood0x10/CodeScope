@@ -4,10 +4,19 @@
 #include <cstdint>
 #include <string>
 
+#include <string>
+
 #include "../store/store.h"
 
 namespace query
 {
+
+// JSON string escaping (shared by query_engine.cpp and query_analysis.cpp)
+std::string jsonEscape(const char *s);
+
+// Execute a SQL query and return results as JSON array
+std::string queryToJson(sqlite3 *db, const char *sql,
+			const char *result_key = "results");
 
 class QueryEngine {
     public:

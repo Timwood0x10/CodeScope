@@ -253,6 +253,7 @@ class GraphStore {
 						 const char *ready_field);
 
 	/** Get ratio of symbols with a status flag = 1 (0.0 - 1.0). */
+	double getReadyRatio(uint64_t project_id);
 	double getReadyRatio(uint64_t project_id, const char *ready_field);
 
 	// ── Incremental Indexing ──────────────────────────────────
@@ -262,7 +263,7 @@ class GraphStore {
 	void updateFileScanState(uint64_t project_id, const char *file_path,
 				 int64_t mtime, int64_t size);
 	void cleanupStaleFiles(uint64_t project_id,
-			       const std::vector<std::string> &active_files);
+			       const std::vector<std::string> &existing_files);
 
 	// ── Path Tracing (BFS on call_edges) ──────────────────────
 
