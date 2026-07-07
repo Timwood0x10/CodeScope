@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-14]
+        os: [ubuntu-22.04, macos-14, windows-2022]
         include:
           - os: ubuntu-22.04
             cc: gcc
@@ -26,6 +26,10 @@ jobs:
             cc: clang
             cxx: clang++
             ext: .so
+          - os: windows-2022
+            cc: gcc
+            cxx: g++
+            ext: .dll
 
     runs-on: ${{ matrix.os }}
 
@@ -36,8 +40,9 @@ jobs:
         if: matrix.os == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build libsqlite3-dev nodejs npm git
-          npm install -g tree-sitter-cli
+          sudo apt-get install -y cmake ninja-build libsqlite3-dev nodejs npm git libtree-sitter-dev
+          # Use system tree-sitter instead of npm version (avoids GLIBC issues)
+          sudo apt-get install -y tree-sitter-cli || true
 
       - name: Install dependencies (macOS)
         if: matrix.os == 'macos-14'
@@ -45,13 +50,33 @@ jobs:
           brew install cmake ninja sqlite node git
           npm install -g tree-sitter-cli
 
+      - name: Install dependencies (Windows)
+        if: matrix.os == 'windows-2022'
+        shell: pwsh
+        run: |
+          choco install -y cmake ninja nodejs git mingw 2>$null | Out-Null
+          npm install -g tree-sitter-cli
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Build grammars
+      - name: Build grammars (Linux/macOS)
+        if: runner.os != 'Windows'
         run: |
           cd grammars
-          bash build_ci.sh
+          # Try with tree-sitter CLI first, fallback to source-only build
+          if command -v tree-sitter >/dev/null 2>&1; then
+              bash build_ci.sh || bash build_tree_sitter.sh
+          else
+              bash build_tree_sitter.sh
+          fi
+
+      - name: Build grammars (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cd grammars
+          .\build_ci.ps1
 
       - name: Build C++ engine
         env:
@@ -91,7 +116,16 @@ jobs:
             target/release/codescope
             grammars/*.so
 
+      - name: Upload binary (Windows)
+        if: matrix.os == 'windows-2022'
+        uses: actions/upload-artifact@v4
+        with:
+          name: codescope-windows-x86_64
+          path: |
+            target/release/codescope.exe
+            grammars/*.dll
+
       - name: Check grammars
         run: |
           echo "Built grammars:"
-          ls -lh grammars/*.so
+          ls -lh grammars/*${{ matrix.ext }} 2>/dev/null || dir grammars\*.dll

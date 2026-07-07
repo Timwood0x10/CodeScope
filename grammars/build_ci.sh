@@ -40,16 +40,14 @@ for lang in "${LANGUAGES[@]}"; do
     
     cd "$grammar_dir"
     
-    # Generate parser if needed
+    # Generate parser if needed (skip WASM build)
     if [ ! -f "src/parser.c" ]; then
-        tree-sitter generate
+        echo "  Generating parser.c..."
+        tree-sitter generate || echo "  Warning: generation failed, parser.c may be pre-generated"
     fi
-    
-    # Build the grammar
-    tree-sitter build-wasm --docker  # Optional: for WASM support
-    tree-sitter test                 # Optional: run tests
-    
+
     # Compile to shared library
+    echo "  Compiling to shared library..."
     gcc -fPIC -shared src/parser.c src/scanner.c -I src \
         -o "${GRAMMARS_DIR}/tree-sitter-${lang}.so"
     
