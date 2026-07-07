@@ -48,26 +48,16 @@ jobs:
         run: |
           brew install cmake ninja sqlite node git tree-sitter
 
-      - name: Install tree-sitter CLI + grammar npm packages
+      - name: Set grammar source path for CMake
         shell: bash
         run: |
-          npm install -g tree-sitter-cli
-          npm install -g tree-sitter-python tree-sitter-c tree-sitter-cpp \
-            tree-sitter-rust tree-sitter-javascript tree-sitter-typescript \
-            tree-sitter-go tree-sitter-java tree-sitter-swift
+          echo "TREE_SITTER_NPM=$PWD/grammars" >> "$GITHUB_ENV"
+          echo "Grammar sources: $PWD/grammars"
 
-      - name: Capture npm root for cmake
-        shell: bash
-        run: |
-          NPM_ROOT=$(npm root -g)
-          echo "TREE_SITTER_NPM=$NPM_ROOT" >> "$GITHUB_ENV"
-          echo "npm root: $NPM_ROOT"
-
-      - name: Build grammar .so files (runtime dlopen)
+      - name: Clone grammar sources for CMake
         run: |
           cd grammars
           bash clone_grammars.sh
-          bash build_ci.sh
 
       - name: Build C++ engine
         shell: bash
@@ -109,12 +99,6 @@ jobs:
           cp LICENSE package/
           [ -f install.sh ] && cp install.sh package/
           [ -f install.ps1 ] && cp install.ps1 package/
-
-          # Copy grammar files
-          shopt -s nullglob
-          for f in grammars/tree-sitter-*.so grammars/tree-sitter-*.dll; do
-            cp "$f" package/
-          done
 
           cd package
           tar -czf "../${{ matrix.artifact }}.tar.gz" ./*

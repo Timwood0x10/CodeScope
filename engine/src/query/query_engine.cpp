@@ -50,8 +50,7 @@ QueryEngine::QueryEngine(store::GraphStore *store)
 
 // ─── Utility: execute a query that returns JSON rows ───────────
 
-std::string queryToJson(sqlite3 *db, const char *sql,
-          const char *result_key)
+std::string queryToJson(sqlite3 *db, const char *sql, const char *result_key)
 {
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -59,52 +58,52 @@ std::string queryToJson(sqlite3 *db, const char *sql,
 		       std::string(sqlite3_errmsg(db)) + "\"}";
 	}
 
-		std::ostringstream json;
-		json << "{\"" << result_key << "\":[";
+	std::ostringstream json;
+	json << "{\"" << result_key << "\":[";
 
-		int col_count = sqlite3_column_count(stmt);
-		bool first_row = true;
-		int row_count = 0;
+	int col_count = sqlite3_column_count(stmt);
+	bool first_row = true;
+	int row_count = 0;
 
-		while (sqlite3_step(stmt) == SQLITE_ROW) {
-			if (!first_row)
+	while (sqlite3_step(stmt) == SQLITE_ROW) {
+		if (!first_row)
+			json << ",";
+		first_row = false;
+		row_count++;
+
+		json << "{";
+		for (int i = 0; i < col_count; i++) {
+			if (i > 0)
 				json << ",";
-			first_row = false;
-			row_count++;
+			const char *col_name = sqlite3_column_name(stmt, i);
+			json << "\"" << col_name << "\":";
 
-			json << "{";
-			for (int i = 0; i < col_count; i++) {
-				if (i > 0)
-					json << ",";
-				const char *col_name = sqlite3_column_name(stmt, i);
-				json << "\"" << col_name << "\":";
-
-				int col_type = sqlite3_column_type(stmt, i);
-				if (col_type == SQLITE_NULL) {
-					json << "null";
-				} else if (col_type == SQLITE_INTEGER) {
-					json << sqlite3_column_int64(stmt, i);
-				} else if (col_type == SQLITE_FLOAT) {
-					double val = sqlite3_column_double(stmt, i);
-					// Use integer output for whole numbers to avoid "1.000000"
-					if (val == static_cast<int64_t>(val))
-						json << static_cast<int64_t>(val);
-					else
-						json << val;
-				} else {
-					const char *text =
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(stmt, i));
-					json << "\"" << jsonEscape(text ? text : "")
-					     << "\"";
-				}
+			int col_type = sqlite3_column_type(stmt, i);
+			if (col_type == SQLITE_NULL) {
+				json << "null";
+			} else if (col_type == SQLITE_INTEGER) {
+				json << sqlite3_column_int64(stmt, i);
+			} else if (col_type == SQLITE_FLOAT) {
+				double val = sqlite3_column_double(stmt, i);
+				// Use integer output for whole numbers to avoid "1.000000"
+				if (val == static_cast<int64_t>(val))
+					json << static_cast<int64_t>(val);
+				else
+					json << val;
+			} else {
+				const char *text =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(stmt, i));
+				json << "\"" << jsonEscape(text ? text : "")
+				     << "\"";
 			}
-			json << "}";
 		}
+		json << "}";
+	}
 
-		json << "],\"total\":" << row_count << "}";
-		sqlite3_finalize(stmt);
-		return json.str();
+	json << "],\"total\":" << row_count << "}";
+	sqlite3_finalize(stmt);
+	return json.str();
 }
 
 // ─── Queries ───────────────────────────────────────────────────

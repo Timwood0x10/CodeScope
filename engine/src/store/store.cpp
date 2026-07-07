@@ -198,36 +198,34 @@ void GraphStore::insertGraphNodes(uint64_t project_id,
 		sqlite3_bind_int(stmt, 18, node.is_entry_point ? 1 : 0);
 
 		int rc = sqlite3_step(stmt);
-		 if (rc != SQLITE_DONE) {
-		  error_ = "insertGraphNodes: step error (" +
-		    std::to_string(rc) + ") for node " +
-		    node.name;
-		 }
-		 sqlite3_reset(stmt);
+		if (rc != SQLITE_DONE) {
+			error_ = "insertGraphNodes: step error (" +
+				 std::to_string(rc) + ") for node " + node.name;
+		}
+		sqlite3_reset(stmt);
 	}
 
 	sqlite3_finalize(stmt);
 }
 
 bool GraphStore::deleteGraphNodesByFile(uint64_t project_id,
-      const char *file_path)
+					const char *file_path)
 {
- // Delete edges first
- deleteGraphEdgesByFile(project_id, file_path);
+	// Delete edges first
+	deleteGraphEdgesByFile(project_id, file_path);
 
- // Use prepared statement to prevent SQL injection via file_path
- sqlite3_stmt *stmt = nullptr;
- const char *sql =
-  "DELETE FROM graph_nodes WHERE project_id = ? AND file_path = ?";
- if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
-  sqlite3_bind_int64(stmt, 1,
-       static_cast<int64_t>(project_id));
-  sqlite3_bind_text(stmt, 2, file_path, -1, SQLITE_STATIC);
-  int rc = sqlite3_step(stmt);
-  sqlite3_finalize(stmt);
-  return (rc == SQLITE_DONE);
- }
- return false;
+	// Use prepared statement to prevent SQL injection via file_path
+	sqlite3_stmt *stmt = nullptr;
+	const char *sql =
+		"DELETE FROM graph_nodes WHERE project_id = ? AND file_path = ?";
+	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		sqlite3_bind_text(stmt, 2, file_path, -1, SQLITE_STATIC);
+		int rc = sqlite3_step(stmt);
+		sqlite3_finalize(stmt);
+		return (rc == SQLITE_DONE);
+	}
+	return false;
 }
 
 // ─── Graph Edges ───────────────────────────────────────────────
@@ -292,38 +290,36 @@ void GraphStore::insertGraphEdges(uint64_t project_id,
 				  SQLITE_TRANSIENT);
 
 		int rc = sqlite3_step(stmt);
-		 if (rc != SQLITE_DONE) {
-		  error_ = "insertGraphEdges: step error (" +
-		    std::to_string(rc) + ")";
-		 }
-		 sqlite3_reset(stmt);
+		if (rc != SQLITE_DONE) {
+			error_ = "insertGraphEdges: step error (" +
+				 std::to_string(rc) + ")";
+		}
+		sqlite3_reset(stmt);
 	}
 
 	sqlite3_finalize(stmt);
 }
 
 bool GraphStore::deleteGraphEdgesByFile(uint64_t project_id,
-      const char *file_path)
+					const char *file_path)
 {
- // Use prepared statements to prevent SQL injection via file_path
- sqlite3_stmt *stmt = nullptr;
- const char *sql =
-  "DELETE FROM graph_edges WHERE project_id = ? "
-  "AND (source_node_id IN ("
-  "  SELECT id FROM graph_nodes WHERE file_path = ?"
-  ") OR target_node_id IN ("
-  "  SELECT id FROM graph_nodes WHERE file_path = ?"
-  "))";
- if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
-  sqlite3_bind_int64(stmt, 1,
-       static_cast<int64_t>(project_id));
-  sqlite3_bind_text(stmt, 2, file_path, -1, SQLITE_STATIC);
-  sqlite3_bind_text(stmt, 3, file_path, -1, SQLITE_STATIC);
-  int rc = sqlite3_step(stmt);
-  sqlite3_finalize(stmt);
-  return (rc == SQLITE_DONE);
- }
- return false;
+	// Use prepared statements to prevent SQL injection via file_path
+	sqlite3_stmt *stmt = nullptr;
+	const char *sql = "DELETE FROM graph_edges WHERE project_id = ? "
+			  "AND (source_node_id IN ("
+			  "  SELECT id FROM graph_nodes WHERE file_path = ?"
+			  ") OR target_node_id IN ("
+			  "  SELECT id FROM graph_nodes WHERE file_path = ?"
+			  "))";
+	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		sqlite3_bind_text(stmt, 2, file_path, -1, SQLITE_STATIC);
+		sqlite3_bind_text(stmt, 3, file_path, -1, SQLITE_STATIC);
+		int rc = sqlite3_step(stmt);
+		sqlite3_finalize(stmt);
+		return (rc == SQLITE_DONE);
+	}
+	return false;
 }
 
 // ─── Transactions ──────────────────────────────────────────────

@@ -17,7 +17,9 @@
 #include <sys/stat.h>
 #include <thread>
 #include <tree_sitter/api.h>
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -129,7 +131,7 @@ const char *detectLanguage(const char *file_path)
 		FILE *f = fopen(file_path, "r");
 		if (!f)
 			return nullptr;
-		char first_line[256] = {0};
+		char first_line[256] = { 0 };
 		if (!fgets(first_line, sizeof(first_line), f)) {
 			fclose(f);
 			return nullptr;
@@ -138,7 +140,8 @@ const char *detectLanguage(const char *file_path)
 		if (strncmp(first_line, "#!/", 3) == 0) {
 			if (strstr(first_line, "python"))
 				return "python";
-			if (strstr(first_line, "node") || strstr(first_line, "deno"))
+			if (strstr(first_line, "node") ||
+			    strstr(first_line, "deno"))
 				return "javascript";
 		}
 		return nullptr;

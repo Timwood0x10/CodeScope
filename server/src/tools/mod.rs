@@ -73,19 +73,27 @@ fn h_locate_code(project_id: u64, args: &Value) -> String {
 
 // ─── Worker Supervisor (timeout + retry) ───────────────────────
 
+/// Default worker timeout in seconds when `CODESCOPE_WORKER_TIMEOUT` is unset.
+const DEFAULT_WORKER_TIMEOUT_SECS: u64 = 300;
+/// Interval between polls when waiting for a worker subprocess to finish.
+const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
 static WORKER_TIMEOUT: Lazy<Duration> = Lazy::new(|| {
     Duration::from_secs(
         std::env::var("CODESCOPE_WORKER_TIMEOUT")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(300_u64),
+            .unwrap_or(DEFAULT_WORKER_TIMEOUT_SECS),
     )
 });
 const MAX_RETRIES: usize = 3;
 
 /// Run a worker subprocess with timeout protection.
 /// Returns `Ok(output)` on success, `Err(msg)` on timeout or failure.
-/// Kills the child process via kill -9 on timeout.
+/// On timeout the orphaned child is killed using a platform-appropriate
+/// method: `kill -9` on Unix, `taskkill /F` on Windows. On any other
+/// platform the process is logged as orphaned (the `Child` handle was moved
+/// into the wait thread and is no longer accessible here).
 fn run_worker(
     exe: &str,
     args: &[&str],
@@ -112,19 +120,37 @@ fn run_worker(
     let start = std::time::Instant::now();
     loop {
         if start.elapsed() > *WORKER_TIMEOUT {
-            // Kill orphaned child via platform-specific command
+            // Kill orphaned child via a platform-appropriate method. The child
+            // handle was moved into the wait thread above, so we cannot call
+            // `child.kill()` here; instead we signal by PID.
             #[cfg(unix)]
-            let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
+            {
+                let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
+            }
             #[cfg(windows)]
-            let _ = Command::new("taskkill").args(["/F", "/PID", &pid.to_string()]).output();
-            return Err("worker timed out after 300s".to_string());
+            {
+                let _ = Command::new("taskkill")
+                    .args(["/F", "/PID", &pid.to_string()])
+                    .output();
+            }
+            #[cfg(not(any(unix, windows)))]
+            {
+                eprintln!(
+                    "warning: worker timeout on unsupported platform — process {} may be orphaned",
+                    pid
+                );
+            }
+            return Err(format!(
+                "worker timed out after {}s",
+                WORKER_TIMEOUT.as_secs()
+            ));
         }
 
         match rx.try_recv() {
             Ok(Ok(output)) => return Ok(output),
             Ok(Err(e)) => return Err(format!("worker error: {}", e)),
             Err(mpsc::TryRecvError::Empty) => {
-                std::thread::sleep(Duration::from_millis(100));
+                std::thread::sleep(WORKER_POLL_INTERVAL);
             }
             Err(mpsc::TryRecvError::Disconnected) => {
                 return Err("worker channel disconnected".to_string());
@@ -144,6 +170,15 @@ fn h_index_project(project_id: u64, args: &Value) -> String {
         let grammars_dir = std::env::var("GRAMMARS_DIR").unwrap_or_else(|_| "grammars".to_string());
         let lang = args["language_filter"].as_str().unwrap_or("");
 
+        // Derive a meaningful project name from the path's final component so the
+        // worker records a human-readable name instead of the placeholder
+        // "worker-project".
+        let project_name = std::path::Path::new(path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unnamed")
+            .to_string();
+
         for attempt in 1..=MAX_RETRIES {
             // Shutdown engine before spawning worker to release SQLite lock
             crate::ffi::shutdown();
@@ -153,7 +188,7 @@ fn h_index_project(project_id: u64, args: &Value) -> String {
                 &db_path,
                 path,
                 lang,
-                "worker-project",
+                &project_name,
                 &project_id.to_string(),
             ];
             let envs = [
@@ -171,12 +206,22 @@ fn h_index_project(project_id: u64, args: &Value) -> String {
                 Ok(out) => {
                     if out.status.success() {
                         let stdout = String::from_utf8_lossy(&out.stdout);
+                        // Trigger background FTS build after a successful index.
+                        // Uses spawn_fts_build to deduplicate concurrent builds
+                        // and avoid a data race on the global C++ g_store.
                         if let Some(json_start) = stdout.find('{')
                             && let Some(json_end) = stdout[json_start..].rfind('}')
                         {
-                            let result = stdout[json_start..=json_start + json_end].to_string();
-                            return result;
+                            let candidate = &stdout[json_start..=json_start + json_end];
+                            // Validate the slice is well-formed JSON before returning
+                            // it, so malformed worker output does not produce invalid
+                            // JSON that would confuse the MCP client.
+                            if serde_json::from_str::<serde_json::Value>(candidate).is_ok() {
+                                crate::ffi::spawn_fts_build(project_id);
+                                return candidate.to_string();
+                            }
                         }
+                        crate::ffi::spawn_fts_build(project_id);
                         return stdout.to_string();
                     }
                     let stderr = String::from_utf8_lossy(&out.stderr);

@@ -35,8 +35,11 @@ bool GraphStore::open(const char *db_path)
 		return false;
 	}
 
-	// Performance PRAGMAs: WAL mode + MEMORY temp + synchronous OFF
-	// Reduces SQLite overhead from ~2.4ms/file to ~0.5ms/file during batch insert.
+	// Performance PRAGMAs: WAL mode + MEMORY temp + synchronous OFF.
+	// WARNING: synchronous=OFF means fsync is never called — a power failure
+	// or crash may corrupt the database. Acceptable for CodeScope since the
+	// DB is a cache that can be rebuilt by re-indexing. Use synchronous=NORMAL
+	// if data safety is more important than write performance.
 	if (!exec("PRAGMA journal_mode=WAL"))
 		fprintf(stderr, "WARN: PRAGMA journal_mode=WAL failed: %s\n",
 			error_.c_str());
@@ -52,21 +55,21 @@ bool GraphStore::open(const char *db_path)
 
 	// Pre-cache prepared statements for hot insert paths
 	sqlite3_prepare_v2(
-	 db_,
-	 "INSERT OR REPLACE INTO fts_node_map (node_id, project_id, file_id) "
-	 "VALUES (?, ?, 0)",
-	 -1, &stmt_fts_map_, nullptr);
+		db_,
+		"INSERT OR REPLACE INTO fts_node_map (node_id, project_id, file_id) "
+		"VALUES (?, ?, 0)",
+		-1, &stmt_fts_map_, nullptr);
 	sqlite3_prepare_v2(
-	 db_,
-	 "INSERT OR REPLACE INTO code_fts (rowid, name, qualified_name, "
-	 "file_path, content, project_id, node_id, node_kind) "
-	 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-	 -1, &stmt_fts_, nullptr);
+		db_,
+		"INSERT OR REPLACE INTO code_fts (rowid, name, qualified_name, "
+		"file_path, content, project_id, node_id, node_kind) "
+		"VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+		-1, &stmt_fts_, nullptr);
 	sqlite3_prepare_v2(
-	 db_,
-	 "INSERT OR REPLACE INTO node_vectors (node_id, project_id, vector) "
-	 "VALUES (?, ?, ?)",
-	 -1, &stmt_vector_, nullptr);
+		db_,
+		"INSERT OR REPLACE INTO node_vectors (node_id, project_id, vector) "
+		"VALUES (?, ?, ?)",
+		-1, &stmt_vector_, nullptr);
 
 	return true;
 }
@@ -74,14 +77,14 @@ bool GraphStore::open(const char *db_path)
 void GraphStore::close()
 {
 	if (db_) {
-	  // Finalize cached prepared statements
-	  if (stmt_fts_map_)
-	   sqlite3_finalize(stmt_fts_map_);
-	  if (stmt_fts_)
-	   sqlite3_finalize(stmt_fts_);
-	  if (stmt_vector_)
-	   sqlite3_finalize(stmt_vector_);
-	  stmt_fts_map_ = stmt_fts_ = stmt_vector_ = nullptr;
+		// Finalize cached prepared statements
+		if (stmt_fts_map_)
+			sqlite3_finalize(stmt_fts_map_);
+		if (stmt_fts_)
+			sqlite3_finalize(stmt_fts_);
+		if (stmt_vector_)
+			sqlite3_finalize(stmt_vector_);
+		stmt_fts_map_ = stmt_fts_ = stmt_vector_ = nullptr;
 
 		sqlite3_close(db_);
 		db_ = nullptr;
@@ -485,41 +488,41 @@ std::string getIndexProgressJson(uint64_t project_id)
 }
 
 void GraphStore::setProjectReadiness(uint64_t project_id, const char *field,
-	     int value)
+				     int value)
 {
- // Whitelist allowed field names to prevent SQL injection
- static const std::unordered_set<std::string> allowed_fields = {
-  "fast_ready", "normal_ready", "deep_ready",
-  "fts_ready", "vector_ready"
- };
- if (!field || allowed_fields.find(field) == allowed_fields.end())
-  return;
+	// Whitelist allowed field names to prevent SQL injection
+	static const std::unordered_set<std::string> allowed_fields = {
+		"fast_ready", "normal_ready", "deep_ready", "fts_ready",
+		"vector_ready"
+	};
+	if (!field || allowed_fields.find(field) == allowed_fields.end())
+		return;
 
- // Ensure the readiness row exists
- exec(std::string(
-       "INSERT OR IGNORE INTO project_readiness (project_id) VALUES (" +
-       std::to_string(project_id) + ")")
-       .c_str());
- exec(std::string("UPDATE project_readiness SET " + std::string(field) +
-    "=" + std::to_string(value) +
-    " WHERE project_id=" + std::to_string(project_id))
-       .c_str());
+	// Ensure the readiness row exists
+	exec(std::string(
+		     "INSERT OR IGNORE INTO project_readiness (project_id) VALUES (" +
+		     std::to_string(project_id) + ")")
+		     .c_str());
+	exec(std::string("UPDATE project_readiness SET " + std::string(field) +
+			 "=" + std::to_string(value) +
+			 " WHERE project_id=" + std::to_string(project_id))
+		     .c_str());
 }
 
 int GraphStore::getProjectReadiness(uint64_t project_id, const char *field)
 {
- // Whitelist allowed field names to prevent SQL injection
- static const std::unordered_set<std::string> allowed_fields = {
-  "fast_ready", "normal_ready", "deep_ready",
-  "fts_ready", "vector_ready"
- };
- if (!field || allowed_fields.find(field) == allowed_fields.end())
-  return 0;
+	// Whitelist allowed field names to prevent SQL injection
+	static const std::unordered_set<std::string> allowed_fields = {
+		"fast_ready", "normal_ready", "deep_ready", "fts_ready",
+		"vector_ready"
+	};
+	if (!field || allowed_fields.find(field) == allowed_fields.end())
+		return 0;
 
- sqlite3_stmt *stmt = nullptr;
- std::string sql = "SELECT " + std::string(field) +
-     " FROM project_readiness WHERE project_id=" +
-     std::to_string(project_id);
+	sqlite3_stmt *stmt = nullptr;
+	std::string sql = "SELECT " + std::string(field) +
+			  " FROM project_readiness WHERE project_id=" +
+			  std::to_string(project_id);
 	if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) !=
 	    SQLITE_OK)
 		return 0;
@@ -571,7 +574,7 @@ static bool pathHasMeta(const char *p)
 }
 
 std::string GraphStore::exportArtifact(uint64_t project_id,
-					   const char *output_path)
+				       const char *output_path)
 {
 	if (!output_path || !*output_path || pathHasMeta(output_path))
 		return "{\"ok\":false,\"error\":\"invalid output_path\"}";
@@ -616,7 +619,7 @@ std::string GraphStore::exportArtifact(uint64_t project_id,
 }
 
 std::string GraphStore::importArtifact(uint64_t project_id,
-					   const char *artifact_path)
+				       const char *artifact_path)
 {
 	if (!artifact_path || !*artifact_path || pathHasMeta(artifact_path))
 		return "{\"ok\":false,\"error\":\"invalid artifact_path\"}";
@@ -770,7 +773,7 @@ uint64_t GraphStore::getLatestProjectId()
 // ─── File ──────────────────────────────────────────────────────
 
 uint64_t GraphStore::upsertFile(uint64_t project_id, const char *path,
-				    const char *language, const char *content_hash)
+				const char *language, const char *content_hash)
 {
 	sqlite3_stmt *stmt = nullptr;
 	const char *sql =

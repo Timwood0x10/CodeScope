@@ -24,9 +24,15 @@ fn main() {
         let project_id_arg = args.get(6).map(|s| s.as_str()).unwrap_or("0");
         // project_id is the 6th arg if it's numeric, otherwise project_name is
 
-        // Safety: set_var is safe in single-threaded startup context,
-        // but Rust 2024 marks it unsafe for multi-threaded use.
-        unsafe { env::set_var("CODESCOPE_DB_PATH", db_path); }
+        // SAFETY: This runs in single-threaded worker startup before any
+        // threads are spawned and before the engine (or any FFI call) is
+        // initialized. No concurrent access to the process environment is
+        // possible at this point. `env::set_var` is marked `unsafe` in the
+        // 2024 edition because mutating the environment is not thread-safe in
+        // general; the single-threaded precondition here upholds that invariant.
+        unsafe {
+            env::set_var("CODESCOPE_DB_PATH", db_path);
+        }
 
         if ffi::init(db_path) != 0 {
             eprintln!("codescope worker: engine init failed");

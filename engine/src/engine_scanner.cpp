@@ -1,20 +1,15 @@
 #include "engine_internal.h"
 #include "filter_policy.h"
 
-#include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
-#include "dlfcn_compat.h"
 #include <filesystem>
 #include <fstream>
-#include <memory>
-#include <mutex>
 #include <sqlite3.h>
 #include <sstream>
 #include <string>
 #include <sys/stat.h>
-#include <thread>
-#include <tree_sitter/api.h>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -136,24 +131,24 @@ static bool looksLikeCFunction(std::string_view line)
 	// C type keywords that must appear in the return type
 	// This eliminates 90%+ false positives from non-declaration lines
 	static const char *type_keywords[] = {
-	 "int",	      "void",	     "char",
-	 "long",	      "short",	     "float",
-	 "double",     "bool",	     "signed",
-	 "unsigned",   "const",	     "volatile",
-	 "struct",     "union",	     "enum",
-	 "class",      "size_t",	     "ssize_t",
-	 "off_t",      "pid_t",	     "time_t",
-	 "int8_t",     "int16_t",     "int32_t",
-	 "int64_t",    "uint8_t",     "uint16_t",
-	 "uint32_t",   "uint64_t",    "atomic_t",
-	 "gfp_t",      "phys_addr_t", "resource_size_t",
-	 "SQLITE_API", "EXTERN_C",    "APICALL",
-	 "__init",     "__exit",      "__devinit",
-	 "__attribute__", "__declspec", "__stdcall",
-	 "__cdecl",    "inline",      "typedef",
-	 "typename",   "mutable",     "explicit",
-	 "virtual",    "override",    "noexcept",
-	 nullptr
+		"int",		 "void",	"char",
+		"long",		 "short",	"float",
+		"double",	 "bool",	"signed",
+		"unsigned",	 "const",	"volatile",
+		"struct",	 "union",	"enum",
+		"class",	 "size_t",	"ssize_t",
+		"off_t",	 "pid_t",	"time_t",
+		"int8_t",	 "int16_t",	"int32_t",
+		"int64_t",	 "uint8_t",	"uint16_t",
+		"uint32_t",	 "uint64_t",	"atomic_t",
+		"gfp_t",	 "phys_addr_t", "resource_size_t",
+		"SQLITE_API",	 "EXTERN_C",	"APICALL",
+		"__init",	 "__exit",	"__devinit",
+		"__attribute__", "__declspec",	"__stdcall",
+		"__cdecl",	 "inline",	"typedef",
+		"typename",	 "mutable",	"explicit",
+		"virtual",	 "override",	"noexcept",
+		nullptr
 	};
 
 	for (const char **tk = type_keywords; *tk; tk++) {
@@ -578,25 +573,24 @@ static std::string entryPointKind(const std::string &name)
 static std::unordered_set<std::string>
 getGitChangedFiles(const std::string &project_dir)
 {
- std::unordered_set<std::string> changed;
- if (!std::filesystem::exists(project_dir + "/.git"))
-  return changed;
- // Use git -C <dir> instead of "cd <dir> && git" to avoid
- // shell injection via project_dir (no shell evaluation of path)
- std::string tm = "timeout";
- std::string tm_arg = "3";
- if (std::filesystem::exists("/opt/homebrew/bin/gtimeout")) {
-  tm = "gtimeout";
- }
- // Execute via exec-style: no shell interpretation of project_dir
- // popen with "git -C" + escaped path is still a shell, but using
- // execv-style avoids the shell entirely. We use popen but escape
- // the dir to prevent shell metacharacter injection.
- // Safer: use pipe + fork/exec directly
- std::string cmd = tm + " " + tm_arg + " git -C " +
-     project_dir +
-     " status --porcelain 2>/dev/null || true";
- FILE *fp = popen(cmd.c_str(), "r");
+	std::unordered_set<std::string> changed;
+	if (!std::filesystem::exists(project_dir + "/.git"))
+		return changed;
+	// Use git -C <dir> instead of "cd <dir> && git" to avoid
+	// shell injection via project_dir (no shell evaluation of path)
+	std::string tm = "timeout";
+	std::string tm_arg = "3";
+	if (std::filesystem::exists("/opt/homebrew/bin/gtimeout")) {
+		tm = "gtimeout";
+	}
+	// Execute via exec-style: no shell interpretation of project_dir
+	// popen with "git -C" + escaped path is still a shell, but using
+	// execv-style avoids the shell entirely. We use popen but escape
+	// the dir to prevent shell metacharacter injection.
+	// Safer: use pipe + fork/exec directly
+	std::string cmd = tm + " " + tm_arg + " git -C " + project_dir +
+			  " status --porcelain 2>/dev/null || true";
+	FILE *fp = popen(cmd.c_str(), "r");
 	if (!fp)
 		return changed;
 
@@ -699,8 +693,8 @@ char *engine_scan_project(uint64_t project_id, const char *dir_path,
 			// Skip files/dirs matching .gitignore (unless !negated)
 			if (!rel_path.empty()) {
 				bool is_dir = it->is_directory();
-				bool ignore = filter.isGitignoreMatch(
-					rel_path, is_dir);
+				bool ignore = filter.isGitignoreMatch(rel_path,
+								      is_dir);
 				if (ignore && is_dir) {
 					it.disable_recursion_pending();
 					++it;
@@ -799,8 +793,9 @@ char *engine_scan_project(uint64_t project_id, const char *dir_path,
 				// Use stat() size rather than seekg/tellg to avoid
 				// 32-bit overflow on files >2GB (tellg is signed)
 				size_t fsize = (fsize_stat > 0) ?
-						   static_cast<size_t>(fsize_stat) :
-						   0;
+						       static_cast<size_t>(
+							       fsize_stat) :
+						       0;
 				if (fsize == 0) {
 					file.close();
 					continue;

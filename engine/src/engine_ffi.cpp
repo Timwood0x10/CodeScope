@@ -510,9 +510,9 @@ char *engine_index_batch(uint64_t project_id, const char *file_paths_json)
 				node->qualified_name.empty() ?
 					nullptr :
 					node->qualified_name.c_str(),
-				node->loc.start_row,
-				node->loc.start_col, node->loc.end_row,
-				node->loc.end_col, node->language.c_str());
+				node->loc.start_row, node->loc.start_col,
+				node->loc.end_row, node->loc.end_col,
+				node->language.c_str());
 			ir_map[node->id] = db_id;
 			const char *fn = node->name.empty() ?
 						 nullptr :

@@ -425,9 +425,9 @@ bool FilterPolicy::gitignoreMatches(const std::vector<GitignoreRule> &rules,
 			    r.pattern.find('/') == std::string::npos) {
 				auto pos = rel_path.rfind('/');
 				auto basename =
-					(pos == std::string::npos)
-					? rel_path
-					: rel_path.substr(pos + 1);
+					(pos == std::string::npos) ?
+						rel_path :
+						rel_path.substr(pos + 1);
 				match = globMatch(r.pattern, basename);
 			} else {
 				match = globMatch(r.pattern, rel_path);

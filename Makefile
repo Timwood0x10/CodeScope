@@ -11,6 +11,13 @@ GRAMMARS_DIR:= grammars
 BUILD_DIR   := $(ENGINE_DIR)/build
 TEST_DB     := /tmp/astgraph_test.db
 
+# ─── Compiler Detection ─────────────────────────────────────────
+# Prefer Homebrew LLVM@21 if available, fall back to system clang/gcc
+LLVM21_CC  := /opt/homebrew/opt/llvm@21/bin/clang
+LLVM21_CXX := /opt/homebrew/opt/llvm@21/bin/clang++
+ENGINE_CC  := $(shell test -x $(LLVM21_CC) && echo $(LLVM21_CC) || echo clang)
+ENGINE_CXX := $(shell test -x $(LLVM21_CXX) && echo $(LLVM21_CXX) || echo clang++)
+
 # ─── Colors ──────────────────────────────────────────────────────
 CYAN   := \033[36m
 GREEN  := \033[32m
@@ -66,6 +73,8 @@ build-grammars:
 		|| printf "  $(YELLOW)⚠ grammars: some languages skipped\n"
 
 ENGINE_CMAKE_FLAGS := -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+                       -DCMAKE_C_COMPILER=$(ENGINE_CC) \
+                       -DCMAKE_CXX_COMPILER=$(ENGINE_CXX) \
                        -DCMAKE_OSX_SYSROOT=$(shell xcrun --show-sdk-path)
 
 # Use Ninja if available for faster builds
@@ -93,7 +102,7 @@ build-engine: $(ENGINE_LIB)
 build-server:
 	@printf "$(CYAN)[server]$(RESET) Building Rust MCP server...\n"
 	@cd $(SERVER_DIR) && cargo build --release 2>&1 \
-		&& printf "  $(CHECK) server built: target/release/codescope-mcp\n"
+		&& printf "  $(CHECK) server built: target/release/codescope\n"
 
 # ─── Test ────────────────────────────────────────────────────────
 test: test-engine test-server

@@ -13,7 +13,9 @@ case "$OS" in
   darwin)
     case "$ARCH" in
       arm64|aarch64) ARTIFACT="codescope-aarch64-macos" ;;
-      x86_64|amd64)  echo "❌ Intel macOS is not supported yet (no pre-built binary available)"; exit 1 ;;
+      x86_64|amd64)  echo "❌ Intel macOS is not supported. Use Rosetta 2 to run the ARM64 binary."
+               echo "   To install Rosetta 2: softwareupdate --install-rosetta"
+               exit 1 ;;
       *) echo "❌ Unsupported macOS arch: $ARCH"; exit 1 ;;
     esac ;;
   *) echo "❌ Unsupported OS: $OS (only Linux/macOS)"; exit 1 ;;

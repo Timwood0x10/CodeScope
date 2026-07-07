@@ -443,3 +443,45 @@ pub fn spawn_enhancement(project_id: u64) {
         running.remove(&project_id);
     });
 }
+
+static FTS_BUILD_RUNNING: Lazy<Mutex<HashSet<u64>>> = Lazy::new(|| Mutex::new(HashSet::new()));
+
+/// Spawn a background thread to build the FTS (full-text search) index for a
+/// project.
+///
+/// This mirrors the `spawn_enhancement` pattern: a `Mutex<HashSet<u64>>`
+/// deduplicates concurrent builds for the same `project_id`. Without this
+/// guard, a background `engine_build_fts` call would access the global C++
+/// `g_store` concurrently with the main MCP server thread (which serves other
+/// queries that also touch `g_store`), producing a data race on the C++ side.
+pub fn spawn_fts_build(project_id: u64) {
+    // Atomically check-and-insert to prevent duplicate FTS builds for the same project.
+    {
+        let mut running = FTS_BUILD_RUNNING
+            .lock()
+            .expect("FTS build tracking lock poisoned");
+        if !running.insert(project_id) {
+            eprintln!(
+                "fts_build: project {} already running, skipping",
+                project_id
+            );
+            return;
+        }
+    }
+
+    std::thread::spawn(move || {
+        eprintln!(
+            "fts_build: starting background FTS build for project {}",
+            project_id
+        );
+
+        let result = build_fts(project_id);
+        eprintln!("fts_build: completed: {}", result);
+
+        // Remove from running set so future builds can be scheduled.
+        let mut running = FTS_BUILD_RUNNING
+            .lock()
+            .expect("FTS build tracking lock poisoned");
+        running.remove(&project_id);
+    });
+}

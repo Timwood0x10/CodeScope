@@ -29,8 +29,8 @@
 // ─── Constants ─────────────────────────────────────────────────
 constexpr uint64_t kMaxFileSize = 5 * 1024 * 1024; // 5 MB default
 constexpr size_t kWorkerStackSize = 8 * 1024 * 1024; // 8 MB per thread
-constexpr unsigned kSleepFactor = 10;     // ms per MB over budget
-constexpr unsigned kMaxSleepMs = 1000;    // cap sleep at 1s
+constexpr unsigned kSleepFactor = 10; // ms per MB over budget
+constexpr unsigned kMaxSleepMs = 1000; // cap sleep at 1s
 
 // ─── Index File ────────────────────────────────────────────────
 
@@ -663,8 +663,10 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 					auto v = ir::createJsVisitor(
 						job.lang.c_str());
 					if (v) {
-						tl_visitors[job.lang] = std::move(v);
-						visitor = tl_visitors[job.lang].get();
+						tl_visitors[job.lang] =
+							std::move(v);
+						visitor = tl_visitors[job.lang]
+								  .get();
 					}
 				} else {
 					visitor = vl->second.get();
@@ -686,8 +688,8 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 				}
 
 				// Old pipeline fallback
-				auto translator = ir::createTranslator(
-				  job.lang.c_str());
+				auto translator =
+					ir::createTranslator(job.lang.c_str());
 				if (!translator) {
 					ts_tree_delete(tree);
 					continue;
