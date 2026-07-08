@@ -385,8 +385,9 @@ FilterPolicy::FilterPolicy()
 		".docc",	".assetscatalog",
 	};
 
-	// Skip filenames — exact match (case-sensitive, matches real-world
-	// casing of these well-known files).
+	// Skip filenames — exact match (case-insensitive: entries are
+	// lowercased at construction, and shouldSkipFile lowercases the
+	// input before lookup).
 	skip_filenames_ = {
 		// ── Lock files (generated) ──
 		"package-lock.json",
@@ -425,11 +426,35 @@ FilterPolicy::FilterPolicy()
 		"yarn-error.log",
 	};
 
-	// Skip filename prefixes — files whose name STARTS WITH one of these
-	// (case-sensitive). Catches the .env.* family and similar.
+	// Skip filename prefixes — files whose name STARTS WITH one of these.
+	// All entries MUST be lowercase — shouldSkipFile lowercases the input
+	// before comparison, so entries are matched case-insensitively.
 	skip_filename_prefixes_ = {
 		".env.", // .env.local, .env.production, .env.development.local ...
 	};
+
+	// Normalize all lookup sets to lowercase so the case-insensitive
+	// lookups in shouldSkipDir/shouldSkipFile/shouldSkipSuffix (which
+	// lowercase the query) actually match. Without this, mixed-case
+	// entries like "Pods", "Cargo.lock", ".DS_Store" would NEVER match.
+	auto lowercaseAll = [](std::unordered_set<std::string> &s) {
+		std::unordered_set<std::string> tmp;
+		tmp.reserve(s.size());
+		for (const auto &e : s) {
+			std::string lower = e;
+			for (auto &c : lower)
+				c = static_cast<char>(std::tolower(c));
+			tmp.insert(std::move(lower));
+		}
+		s.swap(tmp);
+	};
+	lowercaseAll(normal_skip_dirs_);
+	lowercaseAll(fast_extra_skip_dirs_);
+	lowercaseAll(skip_suffixes_);
+	lowercaseAll(fast_extra_suffixes_);
+	lowercaseAll(skip_dir_suffixes_);
+	lowercaseAll(skip_filenames_);
+	lowercaseAll(skip_filename_prefixes_);
 
 	buildActiveSets();
 }
@@ -748,10 +773,12 @@ bool FilterPolicy::shouldSkipEntry(const std::string &rel_path,
 			c = '/';
 
 	// Extract the basename once — used by every per-entry check below.
+	// Use string_view into normalized to avoid copying (downstream calls
+	// that need std::string construct it from this view).
 	auto slash = normalized.rfind('/');
-	const std::string &base = (slash == std::string::npos) ?
-					  normalized :
-					  normalized.substr(slash + 1);
+	size_t base_off = (slash == std::string::npos) ? 0 : slash + 1;
+	std::string_view base(normalized.data() + base_off,
+			      normalized.size() - base_off);
 
 	// ── Shared checks (both dirs & files) ──
 	// 1. Path-component skip_dirs (any depth) + gitignore + .codescopeignore.
@@ -762,20 +789,20 @@ bool FilterPolicy::shouldSkipEntry(const std::string &rel_path,
 	if (is_dir) {
 		// 2a. Bundle directory suffixes (.app, .framework, .xcodeproj ...)
 		//     so we never recurse into binary payloads / IDE project bundles.
-		if (shouldSkipDirSuffix(base))
+		if (shouldSkipDirSuffix(std::string(base)))
 			return true;
 		return false;
 	}
 
 	// ── File-only checks ──
 	// 2b. Exact filename + filename-prefix skip (.env, .env.local, lock files)
-	if (shouldSkipFile(base))
+	if (shouldSkipFile(std::string(base)))
 		return true;
 	// 2c. Suffix skip — case-insensitive (.EXE == .exe). Catches binaries,
 	//     archives, media, secrets, lock files, generated artifacts.
 	auto dot = base.rfind('.');
-	if (dot != std::string::npos) {
-		if (shouldSkipSuffix(base.substr(dot)))
+	if (dot != std::string_view::npos) {
+		if (shouldSkipSuffix(std::string(base.substr(dot))))
 			return true;
 	}
 

@@ -1,6 +1,13 @@
 # CodeScope — Bug Report & Optimization Analysis
 
-> Updated: 2026-07-07 | All bugs verified against current source code
+> Updated: 2026-07-08 | Re-verified against commit `a390f93` (dev branch)
+>
+> **Fix progress: 4 / 20 original bugs fixed (20%) + 22 new issues found & fixed by multi-agent review (see Part 5)**
+>
+> | Status       | Bugs                                                                                |
+> | ------------ | ----------------------------------------------------------------------------------- |
+> | FIXED        | #10 (shebang), #11 (TSParser cache), #12 (trimLeft \r), #16 (unistd.h guard)        |
+> | Not started  | #1-9, #13-15, #17-20                                                                |
 
 ***
 
@@ -177,44 +184,41 @@ unsafe {
 
 #### 10. `engine/src/engine_helpers.cpp:124-166` — `detectLanguage()` misses shebang scripts and misclassifies `.h`
 
-**Status: CONFIRMED**
+**Status: FIXED** (commit `a390f93`, 2026-07-08)
 
-- No shebang detection: a file named `my-script` with `#!/usr/bin/env python3` returns `nullptr`
-- `.h` files are always classified as C, but C++ headers (`.h`) are common and should be detected by content heuristics
+The canonical implementation moved to `FilterPolicy::detectLanguage()` (`engine/src/filter_policy.cpp:560+`). `engine_helpers.cpp:97` now delegates to `static const FilterPolicy kCanonicalFilter` so there is one source of truth. The shebang path now:
 
-**Fix**: Read first line for shebang; for `.h` files, check for C++ keywords (`class`, `namespace`, `template`) in the first N lines.
+- Opens the file with RAII `std::ifstream` (replaces raw `FILE*`/`fgets`/`fclose`)
+- Extracts the interpreter token after the last `/` on the shebang line
+- Strips trailing whitespace/args, lowercases for case-insensitive compare
+- Recognizes: `python*` → python; `node`/`nodejs`/`deno` → javascript; `bash`/`sh`/`zsh`/`ksh`/`fish` → bash; `ruby`/`rb` → ruby; `perl`/`perl5` → perl; `php` → php; `lua` → lua; `rscript`/`r` → r; `awk` → awk
+- `node` matching is now an exact-token compare (was `strstr`, which falsely matched `nodejs`-unrelated strings)
+
+The `.h` → C++ content-heuristic part is **still pending**; only the shebang half is done.
 
 ***
 
 #### 11. `engine/src/parser/parser.cpp:89-102` — `TSParser` created/destroyed on every `parse()` call
 
-**Status: CONFIRMED**
+**Status: FIXED** (pre-existing; re-verified 2026-07-08)
 
-```cpp
-TSParser *ts_parser = ts_parser_new();
-ts_parser_set_language(ts_parser, lang);
-TSTree *tree = ts_parser_parse_string(...);
-ts_parser_delete(ts_parser);
-```
+Two-layer cache now in place:
 
-During batch indexing of large projects (e.g., Linux kernel), this creates/destroys thousands of parser objects. Should use a parser pool or cache per-language parsers.
-
-**Fix**: Cache `TSParser*` per language in the `Parser` class, reuse across calls.
+1. `parser.cpp:92-98` — per-language `TSParser*` cache stored in `parsers_` map; `ts_parser_new()` runs once per language, reused across all subsequent `parse()` calls. Destructor (`parser.cpp:45-47`) calls `ts_parser_delete` for each.
+2. `engine_index.cpp:572-576` — `thread_local static std::unordered_map<...>` per-thread cache so worker threads don't contend on the shared parser during batch indexing.
 
 ***
 
 #### 12. `engine/src/engine_scanner.cpp:28-33` — `trimLeft` doesn't handle `\r`
 
-**Status: CONFIRMED**
+**Status: FIXED** (commit `a390f93`, 2026-07-08)
 
 ```cpp
-while (!s.empty() && (s[0] == ' ' || s[0] == '\t'))
+while (!s.empty() && (s[0] == ' ' || s[0] == '\t' || s[0] == '\r'))
     s.remove_prefix(1);
 ```
 
-Files with CRLF line endings (Windows) or mixed line endings will have `\r` at end of lines, which can cause false negatives in `startsWithKW` checks.
-
-**Fix**: Add `s[0] == '\r'` to the condition.
+`\r` added to the condition so CRLF / mixed line endings no longer cause false negatives in `startsWithKW`.
 
 ***
 
@@ -270,15 +274,9 @@ if (!exec("PRAGMA synchronous=OFF"))
 
 #### 16. `engine/src/engine_helpers.cpp:20` — `#include <unistd.h>` not guarded on Windows
 
-**Status: CONFIRMED**
+**Status: FIXED** (commit `a390f93`, 2026-07-08)
 
-```cpp
-#include <unistd.h>  // line 20 — not inside #ifndef _WIN32
-```
-
-`unistd.h` doesn't exist on MSVC/Windows. The `#ifndef _WIN32` guard is used for `<sys/mman.h>` (line 15) but missing for `<unistd.h>`. This will fail on native Windows builds (MinGW may provide it, but MSVC won't).
-
-**Fix**: Wrap in `#ifndef _WIN32`.
+The `<unistd.h>` include was removed entirely from `engine_helpers.cpp`. The file now includes `platform_win.h` (line 3) plus portable std headers (`<filesystem>`, `<fstream>`, `<thread>`, etc.), so POSIX-only headers are no longer referenced here. The Windows portability shim lives in `platform_win.h` / `platform_win.cpp`.
 
 ***
 
@@ -346,6 +344,58 @@ Destruction should be reverse: `g_parser` → `g_query` → `g_store`.
 Current order resets `g_query` before `g_parser`, which is harmless since `g_parser` is independent. But the real risk: if `g_query`'s destructor does any SQLite work during `reset()`, it happens before `g_store->close()` — which is correct. **This is actually fine as-is**, but the ordering is fragile and should be documented.
 
 **Severity**: Low (no actual bug, but fragile)
+
+***
+
+## Part 5: New Issues Found & Fixed by Multi-Agent Code Review (2026-07-08)
+
+A 4-agent parallel review (filter_policy / scanner / index+queries / Windows portability) against commit `a390f93` found 61 issues; 19 were fixed in this pass. None were in the original Part 1-2 list.
+
+### Critical (4)
+
+| # | File:Line | Issue | Fix |
+|---|-----------|-------|-----|
+| N1 | `engine_scanner.cpp` (5 sites, ~L890/904/909/919/923) | `while (it != end)` loop had `continue` without `++it` → **infinite loop** hanging on any git repo with unchanged files / unreadable / empty / >1MB files | Added `++it;` before each `continue;` |
+| N2 | `engine_scanner.cpp:19-22` | `waitpid`/`WIFEXITED`/`WEXITSTATUS` used but `<sys/wait.h>` never included (POSIX only) — undeclared on Linux/macOS | Added `#include <sys/wait.h>` inside `#ifndef _WIN32` |
+| N3 | `engine_index.cpp` | `pthread_create`/`pthread_join` with no `<pthread.h>` and no Windows guard — fails to build on native Windows | Replaced with `std::thread` (`std::vector<std::thread>` + `joinable()` join), `std::system_error` catch |
+| N4 | `filter_policy.cpp` constructor | `normal_skip_dirs_` included `test`, `tests`, `doc`, `docs`, `vendor`, `bin` → silently dropped Go test files, PHP vendor source, project docs in NORMAL mode | Moved source-bearing dirs to `fast_extra_skip_dirs_` only |
+
+### High (9)
+
+| # | File:Line | Issue | Fix |
+|---|-----------|-------|-----|
+| N5 | `engine_index.cpp` getrusage | `ru_maxrss` divided by `1024*1024` everywhere, but macOS returns bytes and Linux/Windows return KB → memory budget throttle 1024× too small on Linux/Windows | `#ifdef __APPLE__` platform-specific division |
+| N6 | `engine_index.cpp:293-357` | 65 lines of dead code building a CFG summary JSON `cfg` that was never stored | Deleted |
+| N7 | `engine_queries.cpp` call site loop | O(N²) line counting via linear scan of source per call site | Precomputed `line_starts` vector + `std::lower_bound` → O(log N) |
+| N8 | `engine_scanner.cpp` `read()` | EINTR not handled — signal delivery silently aborted pipe reads | Retry loop on `errno == EINTR` |
+| N9 | `engine_scanner.cpp` signal-killed child | Called `WEXITSTATUS` on a non-exited process (WIFSIGNALED) → garbage exit code | Branch on `WIFSIGNALED` before `WEXITSTATUS` |
+| N10 | `engine_scanner.cpp` Windows `_popen` guard | Shell-metacharacter guard missed `%`, `^`, `!` → command injection on Windows | Added missing chars to the reject set |
+| N11 | `filter_policy.cpp` `shouldSkipDir` | Raw `unordered_set::find` — `Node_Modules`/`VENV`/`BIN` slipped through on case-sensitive filesystems | Lowercase before lookup |
+| N12 | `filter_policy.cpp` `~` suffix | `skip_suffixes_` contained `"~"` but extension extraction starts at `.` so `main.cpp~` → `.cpp~` not `~` → dead code | Added trailing-`~` check in `shouldSkipFile` |
+| N13 | `filter_policy.cpp` `shouldSkipEntry` | No Windows `\` → `/` normalization → path-component checks failed on Windows paths | Normalize backslashes to forward slashes at entry |
+
+### Medium (6)
+
+| # | File:Line | Issue | Fix |
+|---|-----------|-------|-----|
+| N14 | `engine_queries.cpp` DB language string | `jsonEscape()` not applied to language field read from DB → JSON corruption on non-ASCII | Wrapped in `jsonEscape()` |
+| N15 | `platform_win.h` | `PATH_MAX` aliased to `MAX_PATH` (260) — too small for deep source trees | Changed to 4096 |
+| N16 | `platform_win.cpp` `waitpid` stub | `*status = (int)exit_code` broke `WIFEXITED`/`WEXITSTATUS` macros (expect `(code << 8)`) | `*status = (int)((exit_code & 0xFF) << 8)` |
+| N17 | `engine.cpp:2` | `#include "platform_win.h"` after system headers — header order violation | Moved to line 2, before system headers |
+| N18 | `filter_policy.cpp` `detectLanguage` | Raw `FILE*`/`fgets`/`fclose` (not RAII) + `strstr` for "node" over-matched | Rewrote with `std::ifstream`/`getline`; exact-token compare for node |
+| N19 | `filter_policy.cpp` gitignore literal | Used `rfind` (last occurrence) — pattern `foo` failed to match path `foo/xfoo` | Iterate all occurrences with `find` in a loop |
+
+### Critical (found in final review pass)
+
+| # | File:Line | Issue | Fix |
+|---|-----------|-------|-----|
+| N20 | `filter_policy.cpp` `shouldSkipDir` / `shouldSkipFile` | **Case-insensitive lookup broken for mixed-case set entries.** `shouldSkipDir` lowercases the input then looks it up in `normal_skip_dirs_`, but the set contained `Pods`, `Carthage`, `DerivedData`, `Debug`, `Release` (uppercase). `shouldSkipFile` had the same problem with `Cargo.lock`, `Gemfile.lock`, `Pipfile.lock`, `.DS_Store`, `Thumbs.db`. These entries were **never matched** → `Pods/`, `Cargo.lock`, `.DS_Store` etc. would have been indexed. | Added `lowercaseAll()` lambda in constructor that lowercases all set entries at construction time, before `buildActiveSets()` |
+| N21 | `filter_policy.cpp` `shouldSkipEntry` | `const std::string &base` bound to a ternary `cond ? lvalue : prvalue` — per [expr.cond] this yields a prvalue, causing an unnecessary copy of `normalized` per call | Replaced with `std::string_view base` pointing into `normalized`; downstream calls construct `std::string` from the view only when needed |
+| N22 | `engine_index.cpp` dir-walk filter | Duplicated `shouldSkipDirSuffix` + `shouldSkipFile` + `shouldSkipSuffix` checks manually instead of calling consolidated `shouldSkipEntry` like the scanner does — future changes to `shouldSkipEntry` wouldn't propagate to the indexer | Replaced the entire dir+file filter block with a single `shouldSkipEntry(rel, is_dir)` call |
+
+### Not fixed (42 remaining)
+
+The review surfaced ~42 lower-priority items (unused includes, naming nits, minor refactors) tracked separately. Notably: `fork()` on Windows is still unguarded (legacy), several files still carry unused `#include`s (overlaps with original Bug #17).
 
 ***
 
@@ -624,21 +674,30 @@ After static linking, distribute via:
 
 ## Summary
 
-| Category       | Count           | Status        |
-| -------------- | --------------- | ------------- |
-| Critical bugs  | 4               | All confirmed |
-| High bugs      | 5               | All confirmed |
-| Medium bugs    | 6               | All confirmed |
-| Low bugs       | 2               | All confirmed |
-| **Total bugs** | **17 verified** | —             |
+| Category                        | Count          | Fixed | Remaining |
+| ------------------------------- | -------------- | ----- | --------- |
+| Part 1-2: Critical bugs         | 4              | 0     | 4         |
+| Part 1-2: High bugs             | 5              | 0     | 5         |
+| Part 1-2: Medium bugs           | 6              | 3 (#10, #12, #16) | 3   |
+| Part 1-2: Low bugs              | 2              | 0     | 2         |
+| Part 1-2: New bugs (#18-20)     | 3              | 0     | 3         |
+| **Part 1-2 subtotal**           | **20**         | **3 + #11 pre-existing** | **16** |
+| Part 5: Multi-agent review fixes | 22           | 22    | 0         |
+| **Grand total**                 | **42**         | **26** | **16 + 42 low-pri not fixed** |
 
-### Top Priority Fixes
+### Top Priority Fixes (still pending)
 
 1. **`stmt_fts_map_`** **dead code** — FTS deletion is broken, causing stale search results
 2. **vec0 path platform fix** — vector search broken on Linux/Windows
 3. **FTS background thread data race** — can corrupt SQLite database
 4. **Static linking** — eliminates 3 runtime dependencies, simplifies installation
 5. **Remove grammar .so packaging** — saves 13MB, eliminates confusion
+
+### Completed in this pass (2026-07-08)
+
+- Original bugs fixed: #10 (shebang), #11 (parser cache, pre-existing), #12 (trimLeft \r), #16 (unistd.h guard)
+- Multi-agent review: 19 new issues fixed (4 Critical, 9 High, 6 Medium) — see Part 5
+- Filtering algorithm redesigned: hardcoded skip of platform executables + env/dependency dirs, case-insensitive matching, Windows path normalization, bundle-dir suffix skipping
 
 ### Self-Contained Release Checklist
 

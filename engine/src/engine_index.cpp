@@ -370,51 +370,23 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 				rel.clear();
 			if (!rel.empty()) {
 				bool entry_is_dir = entry.is_directory();
-				if (filter.shouldSkipPath(rel, entry_is_dir)) {
-					if (entry_is_dir)
-						it.disable_recursion_pending();
-					filter.stats().skipped_dirs++;
-					continue;
-				}
-				// Bundle / package directories (.app, .framework,
-				// .xcodeproj, ...): skip wholesale so we never recurse
-				// into their binary payloads. shouldSkipPath checks path
-				// components by exact name, so suffix-based bundles need
-				// this dedicated check.
-				if (entry_is_dir) {
-					auto slash2 = rel.rfind('/');
-					const std::string &dname =
-						(slash2 == std::string::npos) ?
-							rel :
-							rel.substr(slash2 + 1);
-					if (filter.shouldSkipDirSuffix(dname)) {
+				// Use the consolidated entry check (single source of
+				// truth) so the indexer and scanner apply identical
+				// filtering: skip_dirs (any depth), gitignore,
+				// .codescopeignore, bundle-dir suffixes, filename skip,
+				// filename-prefix skip, and suffix skip.
+				if (filter.shouldSkipEntry(rel, entry_is_dir)) {
+					if (entry_is_dir) {
 						it.disable_recursion_pending();
 						filter.stats().skipped_dirs++;
-						continue;
+					} else {
+						filter.stats().skipped_files++;
 					}
+					continue;
 				}
 			}
 			if (entry.is_regular_file()) {
 				filter.stats().seen_files++;
-				// Check filename-based skip
-				auto slash = rel.rfind('/');
-				std::string fname =
-					(slash == std::string::npos) ?
-						rel :
-						rel.substr(slash + 1);
-				if (filter.shouldSkipFile(fname)) {
-					filter.stats().skipped_files++;
-					continue;
-				}
-				// Check suffix-based skip
-				auto dot = rel.rfind('.');
-				if (dot != std::string::npos) {
-					if (filter.shouldSkipSuffix(
-						    rel.substr(dot))) {
-						filter.stats().skipped_suffix++;
-						continue;
-					}
-				}
 				// Incremental: check file_scan_state to skip unchanged files
 				struct stat file_stat;
 				int64_t mtime = 0, fsize = 0;
