@@ -23,8 +23,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Rust (MSVC)
+      - name: Setup Rust (GNU ABI)
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
 
       - name: Install deps
         run: |
@@ -79,18 +81,27 @@ jobs:
             engine/
           cmake --build engine/build --target astgraph_engine
 
-      - name: Build Rust server
+      - name: Build vec0.dll for sqlite-vec
         run: |
-          cargo build --release --bin codescope
+          if [ ! -d "grammars/sqlite-vec" ]; then
+            git clone https://github.com/asg017/sqlite-vec grammars/sqlite-vec --depth 1
+          fi
+          gcc -shared -O2 -Igrammars/sqlite-vec -o grammars/vec0.dll \
+            grammars/sqlite-vec/sqlite-vec.c -DSQLITE_VEC_OMIT_LITTLEENDIAN=0
+
+      - name: Build Rust server (GNU target)
+        run: |
+          cargo build --release --target x86_64-pc-windows-gnu --bin codescope
 
       - name: Package
         run: |
           mkdir -p package
-          cp target/release/codescope.exe package/
+          cp target/x86_64-pc-windows-gnu/release/codescope.exe package/
+          cp grammars/vec0.dll package/
           cp LICENSE package/ 2>/dev/null || true
           cd package
-          7z a -ttar "../codescope-x86_64-windows.tar" codescope.exe LICENSE 2>/dev/null || \
-          tar -cf "../codescope-x86_64-windows.tar" codescope.exe LICENSE 2>/dev/null || true
+          7z a -ttar "../codescope-x86_64-windows.tar" codescope.exe vec0.dll LICENSE 2>/dev/null || \
+          tar -cf "../codescope-x86_64-windows.tar" codescope.exe vec0.dll LICENSE 2>/dev/null || true
           cd ..
           echo "Packaged: codescope-x86_64-windows.tar"
 

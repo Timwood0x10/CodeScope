@@ -755,8 +755,8 @@ char *engine_scan_project(uint64_t project_id, const char *dir_path,
 	if (dir.empty())
 		return dupString("{\"error\":\"dir_path is empty\"}");
 
-	// Normalize path: remove trailing slash
-	while (!dir.empty() && dir.back() == '/')
+	// Normalize path: remove trailing separator(s)
+	while (!dir.empty() && isPathSep(dir.back()))
 		dir.pop_back();
 	if (!std::filesystem::exists(dir))
 		return dupString("{\"error\":\"directory not found\"}");

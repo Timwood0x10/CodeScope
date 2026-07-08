@@ -46,6 +46,15 @@ std::string simpleHash(const std::string &s);
 const char *detectLanguage(const char *file_path);
 char *dupString(const std::string &s);
 
+// ─── Path Helpers ─────────────────────────────────────────────────
+// Cross-platform path separator check: '/' on Unix, '/' and '\\' on
+// Windows. Using std::filesystem::path for full path manipulation is
+// preferred, but for simple single-character checks this is lighter.
+inline bool isPathSep(char c)
+{
+	return c == '/' || c == '\\';
+}
+
 // ─── Scanner Helpers ─────────────────────────────────────────────
 // Only used within engine_scanner.cpp; declared there.
 

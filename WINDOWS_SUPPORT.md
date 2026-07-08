@@ -301,28 +301,29 @@ ENGINE_API int engine_init(const char* db_path);
 
 ## 5. 实施路线图
 
-### Phase 1 — 让 Windows「能用」（~3 人日，P0 + 关键 P1）
-1. ✅ `build.rs` 加 `CARGO_CFG_TARGET_ENV` 校验，强制 `windows-gnu`（3.1 方案 A）。
-2. ✅ 写 `BUILDING.windows.md`：MinGW 安装（推荐 w64devkit）、`rustup target add`、构建命令。
-3. ✅ 修 `vec0.dll` 构建 + 随包（2.2-1）+ 修向量死写 bug（2.2-3，依赖 `BUG_SCAN_REPORT.md` M2）。
-4. ✅ 路径分隔符 `isPathSep` 工具函数 + 替换 `engine_scanner.cpp:759` 等高频点（4.1）。
+> ⚠️ **以下为 2026-07-08 实际代码复核状态**（对照 git 提交 `9e4fec5`/`6dc4f4b`/`876bf87` 等）。
+> 图例：✅ 已完成 ⚠️ 部分/有缺陷 ❌ 未做
 
-### Phase 2 — 功能对齐（~3 人日，LSP）
-5. ⏳ `lsp_client.cpp` 用方案 A 重写 Windows 分支（2.1）：新增 `HANDLE hProcess_`、`spawnProcess` 用 `CreateProcessW`、`readResponse` 用 `PeekNamedPipe`+`ReadFile`、`stop` 用 `TerminateProcess`。
-6. ⏳ 单元测试：mock 一个简单 LSP server（echo 脚本）验证 spawn/read/stop 在 Windows 上闭环。
+### Phase 1 — 让 Windows「能用」（P0 + 关键 P1）
+1. ✅ **`build.rs` `CARGO_CFG_TARGET_ENV` 校验**已实装（`server/build.rs:27-34`，非 gnu 直接 panic 并给出指引）。
+2. ❌ **`BUILDING.windows.md` 未建** —— 仅有 `grammars/build_win_guide.sh` 脚本，无独立文档。
+3. ⚠️ **`vec0.dll` 未随包 / M2 死写已修** —— `insertEmbedding` 现同时写 `node_vectors`（`store.cpp:1342`），数据链路接通；但仓库仍无 `vec0.dll` 文件，Windows 向量搜索**开箱仍坏**。
+4. ✅ **`isPathSep` 工具函数**已加（`engine_internal.h:53`），并替换 `engine_scanner.cpp:759` / `engine_index.cpp:315` 高频点。
 
-### Phase 3 — 构建健壮（~2 人日，P1 剩余）
-7. ⏳ vendor 离线依赖（3.2）：sqlite amalgamation + tree-sitter 源码预置。
-8. ⏳ 文法源统一（3.3）：删 `grammars/*.so`/`vec0.dylib` 入库，改 CI 产物发布；CMake fallback 到 `vendor/grammars/`。
+### Phase 2 — 功能对齐（LSP）
+5. ✅ **`lsp_client.cpp` Windows 分支已重写方案 A** —— `CreateProcessW`（`lsp_client.cpp:417`）+ `PeekNamedPipe`+`ReadFile`（`:599`）+ `TerminateProcess`，新增 `HANDLE` 成员。LSP 在 Windows 上已可用。
+6. ❌ **LSP 单元测试**未写。
 
-### Phase 4 — CI 验证（~1 人日）
-9. ⏳ GitHub Actions 加 `windows-latest` + `windows-gnu` target job，跑 `cargo build` + 基础索引冒烟测试。
-10. ⏳ 把 `vec0.dll` 构建步骤并进 Windows CI job，产物作为 artifact 上传。
+### Phase 3 — 构建健壮（P1 剩余）
+7. ❌ **vendor 离线依赖**未做 —— CMake 仍 `file(DOWNLOAD)` sqlite amalgamation（`CMakeLists.txt:67`）；CI 用 `clone_grammars.sh` + `actions/cache` 缓解，但未达离线。
+8. ✅ **文法源统一到 CMake 编译进二进制** —— Makefile `build-grammars` 改 no-op、`.so` 不再加载（`6dc4f4b`）。但 `grammars/*.so` / `vec0.dylib` 仍入 git 追踪，未删除。
+9. ⚠️ **Windows CI 工作流已建**（`build-windows.yml`）**但会失败** —— 用默认 MSVC target 跑 `cargo build`，触发 `build.rs` 的 gnu panic（缺 `rustup target add x86_64-pc-windows-gnu` + `--target`）。文件存在 ≠ 绿灯。
+10. ❌ **CI 未编/打包 `vec0.dll`** —— 仅打包 `codescope.exe` + LICENSE。
 
-### Phase 5 — 长期（按需）
-11. ⏳ MSVC 工具链支持（3.1 方案 B），等真实用户诉求。
-12. ⏳ `_popen` → `_spawnlp` 无 shell 化（4.2）。
-13. ⏳ FFI `dllexport` 宏预留（4.3）。
+### Phase 4/5 — 长期（按需）
+11. ❌ **MSVC 支持** —— `build.rs` 显式 panic 非 gnu，刻意不做（3.1 方案 B）。
+12. ❌ **`_popen` → `_spawnlp`** —— `engine_scanner.cpp:640` 仍 `_popen` + `hasShellMeta`（4.2）。
+13. ❌ **FFI `dllexport` 宏** —— `engine.h` 无 `ENGINE_API`（4.3，前瞻）。
 
 ---
 
@@ -350,4 +351,4 @@ ENGINE_API int engine_init(const char* db_path);
 
 ---
 
-*文档基于静态分析生成，所有 file:line 引用建议在动手前用最新代码复核一次。*
+*文档基于静态分析生成，所有 file:line 引用建议在动手前用最新代码复核一次。Phase 状态于 2026-07-08 按实际代码更新。*

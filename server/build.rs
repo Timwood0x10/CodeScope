@@ -17,6 +17,24 @@ fn main() {
     // ── Detect platform ────────────────────────────────────────────
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
 
+    // ── Windows: enforce GNU ABI ────────────────────────────────────
+    // CodeScope's C++ engine (CMake + MinGW gcc) produces a static
+    // library with the GCC ABI (SJLJ/DWARF exception model, libgcc
+    // runtime). The Rust side must use the matching `windows-gnu`
+    // target to avoid ABI mismatch (exception unwinding, malloc/free
+    // across CRT boundaries). MSVC (`windows-msvc`) is not supported.
+    if target_os == "windows" {
+        let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+        if target_env != "gnu" {
+            panic!(
+                "\n\nCodeScope on Windows requires the GNU ABI.\n\
+                 Run:\n  rustup target add x86_64-pc-windows-gnu\n\
+                 Then:\n  cargo build --target x86_64-pc-windows-gnu --release\n"
+            );
+        }
+        eprintln!("build.rs: Windows GNU ABI confirmed");
+    }
+
     // ── Detect compiler ────────────────────────────────────────────
     // Priority: CC/CXX env vars > platform default > fallback
     let (cc_path, cxx_path) = if let (Ok(cc), Ok(cxx)) = (env::var("CC"), env::var("CXX")) {

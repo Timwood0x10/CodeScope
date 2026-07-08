@@ -1321,26 +1321,12 @@ bool GraphStore::insertEmbedding(uint64_t symbol_id, const float *vector_data,
 	memcpy(vec.data(), vector_data,
 	       static_cast<size_t>(copy_dim) * sizeof(float));
 
-	const char *sql =
-		"INSERT INTO embeddings (symbol_id, vector) VALUES (?, ?)";
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-		error_ = "insertEmbedding: prepare failed";
-		return false;
-	}
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(symbol_id));
-	sqlite3_bind_blob(stmt, 2, vec.data(),
-			  TARGET_DIM * static_cast<int>(sizeof(float)),
-			  SQLITE_TRANSIENT);
-	if (sqlite3_step(stmt) != SQLITE_DONE) {
-		error_ = "insertEmbedding: step failed";
-		sqlite3_finalize(stmt);
-		return false;
-	}
-	sqlite3_finalize(stmt);
-
-	// Also write to node_vectors so searchSemantic (which queries
-	// node_vectors, not embeddings alone) can find this embedding.
+	// Write to node_vectors FIRST — this is the table that searchSemantic
+	// actually reads from (store.cpp ~771). This always works because
+	// node_vectors is a regular SQLite table, not a vec0 virtual table.
+	// On platforms where vec0.dll isn't available (e.g. Windows without
+	// the extension), the embeddings INSERT below will fail, but the
+	// node_vectors path still succeeds, providing graceful degradation.
 	{
 		uint64_t proj_id = 0;
 		sqlite3_stmt *pid_st = nullptr;
@@ -1367,6 +1353,28 @@ bool GraphStore::insertEmbedding(uint64_t symbol_id, const float *vector_data,
 			sqlite3_step(stmt_vector_);
 		}
 	}
+
+	// Also write to the vec0 embeddings table if available.
+	// This is optional — the vec0 extension may not be loaded.
+	// If the table doesn't exist, the INSERT fails harmlessly and
+	// we still return true because node_vectors was written above.
+	const char *sql =
+		"INSERT INTO embeddings (symbol_id, vector) VALUES (?, ?)";
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		// embeddings table not available — that's OK, node_vectors works
+		return true;
+	}
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(symbol_id));
+	sqlite3_bind_blob(stmt, 2, vec.data(),
+			  TARGET_DIM * static_cast<int>(sizeof(float)),
+			  SQLITE_TRANSIENT);
+	if (sqlite3_step(stmt) != SQLITE_DONE) {
+		// embeddings INSERT failed — still OK, node_vectors has the data
+		sqlite3_finalize(stmt);
+		return true;
+	}
+	sqlite3_finalize(stmt);
 	return true;
 }
 

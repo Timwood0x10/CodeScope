@@ -140,6 +140,10 @@ class LspClient {
 	int stdout_fd_ = -1; // Read end of pipe from server stdout
 	int req_id_ = 1; // JSON-RPC request ID counter
 	std::string error_;
+#ifdef _WIN32
+	void *hProcess_ =
+		nullptr; // Win32 process HANDLE (for TerminateProcess)
+#endif
 
 	// Spawn the server process with pipes for stdin/stdout.
 	bool spawnProcess(const char *command);

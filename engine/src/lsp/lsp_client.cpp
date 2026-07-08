@@ -292,10 +292,41 @@ void LspClient::stop()
 	}
 	pid_ = 0;
 #else
-	// Windows: LSP process management not supported
-	pid_ = 0;
+	// Windows: send LSP shutdown/exit protocol (same as POSIX),
+	// then force kill if the process doesn't exit cleanly.
+	if (!isRunning())
+		return;
+
+	// Send shutdown request (graceful, same as POSIX path)
+	{
+		std::string req = buildJsonRpc("shutdown", "null", req_id_);
+		sendMessage(req);
+		readResponse(req_id_, 2000);
+		req_id_++;
+	}
+	// Send exit notification
+	{
+		std::string notif = buildNotification("exit", "null");
+		sendMessage(notif);
+	}
+
+	// Close pipe handles
+	if (stdin_fd_ >= 0)
+		_close(stdin_fd_);
+	if (stdout_fd_ >= 0)
+		_close(stdout_fd_);
 	stdin_fd_ = -1;
 	stdout_fd_ = -1;
+
+	// Wait for graceful exit, then force kill
+	if (hProcess_) {
+		DWORD wait_rc = WaitForSingleObject(hProcess_, 3000);
+		if (wait_rc == WAIT_TIMEOUT)
+			TerminateProcess(hProcess_, 1);
+		CloseHandle(hProcess_);
+		hProcess_ = nullptr;
+	}
+	pid_ = 0;
 #endif
 }
 
@@ -371,10 +402,69 @@ bool LspClient::spawnProcess(const char *command)
 
 	return true;
 #else
-	// Windows: fork/exec not available; LSP not supported
-	(void)command;
-	error_ = "LSP client not supported on Windows";
-	return false;
+	// Windows: spawn LSP server via CreateProcessW with anonymous pipes.
+	SECURITY_ATTRIBUTES sa;
+	sa.nLength = sizeof(sa);
+	sa.lpSecurityDescriptor = nullptr;
+	sa.bInheritHandle = TRUE;
+
+	HANDLE hStdoutRd, hStdoutWr, hStdinRd, hStdinWr;
+	if (!CreatePipe(&hStdoutRd, &hStdoutWr, &sa, 0) ||
+	    !CreatePipe(&hStdinRd, &hStdinWr, &sa, 0)) {
+		error_ = "CreatePipe failed for LSP server";
+		return false;
+	}
+	// Ensure the read end of stdout and write end of stdin are not inherited
+	SetHandleInformation(hStdoutRd, HANDLE_FLAG_INHERIT, 0);
+	SetHandleInformation(hStdinWr, HANDLE_FLAG_INHERIT, 0);
+
+	STARTUPINFOW si;
+	ZeroMemory(&si, sizeof(si));
+	si.cb = sizeof(si);
+	si.hStdInput = hStdinRd;
+	si.hStdOutput = hStdoutWr;
+	si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+	si.dwFlags = STARTF_USESTDHANDLES;
+
+	PROCESS_INFORMATION pi;
+	ZeroMemory(&pi, sizeof(pi));
+
+	// Convert command to wide char for CreateProcessW
+	int wlen = MultiByteToWideChar(CP_UTF8, 0, command, -1, nullptr, 0);
+	std::wstring wcmd(static_cast<size_t>(wlen), L'\0');
+	MultiByteToWideChar(CP_UTF8, 0, command, -1, &wcmd[0], wlen);
+
+	if (!CreateProcessW(nullptr, &wcmd[0], nullptr, nullptr, TRUE,
+			    CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+		CloseHandle(hStdoutRd);
+		CloseHandle(hStdoutWr);
+		CloseHandle(hStdinRd);
+		CloseHandle(hStdinWr);
+		error_ = std::string("CreateProcessW failed for LSP server: ") +
+			 command;
+		return false;
+	}
+
+	// Close the child-side handles the parent doesn't need
+	CloseHandle(hStdoutWr);
+	CloseHandle(hStdinRd);
+
+	// Convert Win32 HANDLEs to CRT file descriptors (matching POSIX int fds)
+	stdin_fd_ = _open_osfhandle(reinterpret_cast<intptr_t>(hStdinWr),
+				    _O_WRONLY | _O_BINARY);
+	stdout_fd_ = _open_osfhandle(reinterpret_cast<intptr_t>(hStdoutRd),
+				     _O_RDONLY | _O_BINARY);
+	pid_ = pi.dwProcessId;
+	hProcess_ = pi.hProcess;
+	CloseHandle(pi.hThread);
+
+	if (stdin_fd_ < 0 || stdout_fd_ < 0) {
+		error_ = "_open_osfhandle failed for LSP pipes";
+		stop();
+		return false;
+	}
+
+	return true;
 #endif
 }
 
@@ -516,9 +606,90 @@ std::string LspClient::readResponse(int expected_id, int timeout_ms)
 		}
 	}
 #else
-	// Windows: LSP process management not supported
-	(void)expected_id;
-	(void)timeout_ms;
+	// Windows: read response via PeekNamedPipe + ReadFile (no poll()).
+	if (stdout_fd_ < 0)
+		return "";
+
+	std::string buffer;
+	auto start_time = GetTickCount64();
+
+	while (true) {
+		// Check timeout via PeekNamedPipe (non-blocking)
+		DWORD bytes_avail = 0;
+		if (!PeekNamedPipe((HANDLE)_get_osfhandle(stdout_fd_), nullptr,
+				   0, nullptr, &bytes_avail, nullptr)) {
+			// Pipe closed / error
+			break;
+		}
+
+		if (bytes_avail > 0) {
+			char buf[4096];
+			DWORD bytes_read = 0;
+			if (!ReadFile((HANDLE)_get_osfhandle(stdout_fd_), buf,
+				      sizeof(buf) - 1, &bytes_read, nullptr)) {
+				error_ = "ReadFile from LSP server failed";
+				return "";
+			}
+			if (bytes_read == 0) {
+				error_ = "LSP server closed connection";
+				return "";
+			}
+			buf[bytes_read] = '\0';
+			buffer += buf;
+
+			// Check for complete message (Content-Length header + body)
+			auto header_end = buffer.find("\r\n\r\n");
+			if (header_end != std::string::npos) {
+				auto cl_pos = buffer.find("Content-Length:");
+				if (cl_pos != std::string::npos) {
+					auto val_start = cl_pos + 15;
+					while (val_start < buffer.size() &&
+					       buffer[val_start] == ' ')
+						val_start++;
+					auto val_end = buffer.find_first_of(
+						"\r\n", val_start);
+					if (val_end != std::string::npos) {
+						int content_length = std::atoi(
+							buffer.substr(val_start,
+								      val_end -
+									      val_start)
+								.c_str());
+						if (content_length > 0) {
+							size_t body_start =
+								header_end + 4;
+							if (buffer.size() >=
+							    body_start +
+								    static_cast<
+									    size_t>(
+									    content_length)) {
+								(void)expected_id;
+								return buffer.substr(
+									body_start,
+									content_length);
+							}
+						}
+					}
+				}
+			}
+		}
+
+		// Timeout check
+		if (timeout_ms > 0 && (GetTickCount64() - start_time) >
+					      static_cast<DWORD>(timeout_ms)) {
+			error_ = "timeout waiting for LSP response";
+			return "";
+		}
+
+		// Prevent infinite loop on malformed data
+		if (buffer.size() > kMaxResponseBytes) {
+			error_ = "response too large";
+			return "";
+		}
+
+		Sleep(10); // 10ms poll interval
+	}
+
+	error_ = "LSP server closed connection";
 	return "";
 #endif
 }
@@ -551,7 +722,39 @@ bool LspClient::isAvailable(const char *command)
 	std::string full = path.substr(start) + "/" + command;
 	return access(full.c_str(), X_OK) == 0;
 #else
-	// Windows: LSP availability check not implemented
+	// Windows: search PATH manually with `\\` separator
+	if (command[0] == '/' || command[0] == '\\' ||
+	    (command[0] != '\0' && command[1] == ':')) {
+		return _access(command, 0) == 0; // absolute or drive path
+	}
+	const char *path_env = getenv("PATH");
+	if (!path_env)
+		return false;
+	std::string path(path_env);
+	size_t start = 0, end;
+	while ((end = path.find(';', start)) != std::string::npos) {
+		std::string dir = path.substr(start, end - start);
+		if (!dir.empty() && dir.back() != '/' && dir.back() != '\\')
+			dir += '\\';
+		std::string full = dir + command;
+		if (_access(full.c_str(), 0) == 0)
+			return true;
+		// Try with .exe extension
+		if (_access((full + ".exe").c_str(), 0) == 0)
+			return true;
+		start = end + 1;
+	}
+	// Last entry (no trailing semicolon)
+	{
+		std::string dir = path.substr(start);
+		if (!dir.empty() && dir.back() != '/' && dir.back() != '\\')
+			dir += '\\';
+		std::string full = dir + command;
+		if (_access(full.c_str(), 0) == 0)
+			return true;
+		if (_access((full + ".exe").c_str(), 0) == 0)
+			return true;
+	}
 	return false;
 #endif
 }

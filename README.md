@@ -39,7 +39,7 @@ cd codescope
 
 > Pre-built binaries are available for **Linux** and **macOS** on the [Releases page](https://github.com/your-org/codescope/releases).
 >
-> **Windows is not supported.** Windows users must compile from source using MSYS2/MinGW. The project does not provide pre-built binaries, CI guarantees, or support for Windows. Due to the complexity of the Windows environment (MinGW toolchain, missing POSIX APIs, C++ standard library differences), maintaining Windows compatibility is not feasible.
+> **Windows: beta support.** Windows builds require the `windows-gnu` Rust target and MinGW. See [BUILDING.windows.md](./BUILDING.windows.md) for setup. LSP and vector search are functional but not as thoroughly tested as macOS/Linux. No pre-built binaries or CI guarantees for Windows at this time.
 
 ### Build from source
 

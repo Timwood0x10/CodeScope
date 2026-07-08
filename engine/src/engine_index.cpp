@@ -312,7 +312,7 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		return dupString(
 			"{\"ok\":false,\"error\":\"dir_path is empty\"}");
 
-	while (!dir.empty() && dir.back() == '/')
+	while (!dir.empty() && isPathSep(dir.back()))
 		dir.pop_back();
 	if (!std::filesystem::exists(dir))
 		return dupString(
