@@ -1,4 +1,5 @@
 #include "engine_internal.h"
+#include "filter_policy.h"
 #include "platform_win.h"
 
 #include <algorithm>
@@ -95,64 +96,14 @@ std::string simpleHash(const std::string &s)
 
 const char *detectLanguage(const char *file_path)
 {
-	const char *ext = strrchr(file_path, '.');
-	if (!ext) {
-		// No extension: try shebang detection
-		FILE *f = fopen(file_path, "r");
-		if (!f)
-			return nullptr;
-		char first_line[256] = { 0 };
-		if (!fgets(first_line, sizeof(first_line), f)) {
-			fclose(f);
-			return nullptr;
-		}
-		fclose(f);
-		if (strncmp(first_line, "#!/", 3) == 0) {
-			if (strstr(first_line, "python"))
-				return "python";
-			if (strstr(first_line, "node") ||
-			    strstr(first_line, "deno"))
-				return "javascript";
-		}
-		return nullptr;
-	}
-
-	// Skip minified/bundled JS files — they are typically generated code
-	// that is expensive to parse and provides little semantic value.
-	const char *slash = strrchr(file_path, '/');
-	const char *fname = slash ? slash + 1 : file_path;
-	size_t fname_len = strlen(fname);
-	if (fname_len > 7 && strcmp(fname + fname_len - 7, ".min.js") == 0)
-		return nullptr;
-	if (fname_len > 10 && strstr(fname, ".bundle.js") != nullptr)
-		return nullptr;
-	if (strcmp(fname, "vendor.js") == 0)
-		return nullptr;
-
-	if (strcmp(ext, ".py") == 0)
-		return "python";
-	if (strcmp(ext, ".cpp") == 0 || strcmp(ext, ".cc") == 0 ||
-	    strcmp(ext, ".cxx") == 0)
-		return "cpp";
-	if (strcmp(ext, ".c") == 0 || strcmp(ext, ".h") == 0)
-		return "c";
-	if (strcmp(ext, ".hpp") == 0 || strcmp(ext, ".hxx") == 0)
-		return "cpp";
-	if (strcmp(ext, ".rs") == 0)
-		return "rust";
-	if (strcmp(ext, ".swift") == 0)
-		return "swift";
-	if (strcmp(ext, ".js") == 0)
-		return "javascript";
-	if (strcmp(ext, ".ts") == 0)
-		return "typescript";
-	if (strcmp(ext, ".tsx") == 0)
-		return "tsx";
-	if (strcmp(ext, ".go") == 0)
-		return "go";
-	if (strcmp(ext, ".java") == 0)
-		return "java";
-	return nullptr;
+	// Delegate to the canonical FilterPolicy implementation so there is a
+	// SINGLE source of truth for language detection (case-insensitive
+	// extensions, shebang probing for extensionless scripts, and the full
+	// language set including .kt/.rb/.scala/.mjs/.cjs). The static local
+	// is initialized once (thread-safe per C++11 [stmt.dcl]); it carries
+	// no mutable per-call state, so concurrent reads are safe.
+	static const FilterPolicy kCanonicalFilter;
+	return kCanonicalFilter.detectLanguage(file_path);
 }
 
 /**

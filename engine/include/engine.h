@@ -181,7 +181,7 @@ char* engine_enhance_project(uint64_t project_id);
 
 /**
  * Get enhancement status — how many symbols have ready flags set.
- * Returns JSON: { "total_symbols": N, "callgraph_ready": N, "cfg_ready": N, "embedding_ready": N }
+ * Returns JSON: { "total_symbols": N, "callgraph_ready": N, "metrics_ready": N, "embedding_ready": N }
  */
 char* engine_get_enhancement_status(uint64_t project_id);
 

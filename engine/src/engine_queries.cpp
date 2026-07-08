@@ -89,8 +89,8 @@ char *engine_find_symbol(uint64_t project_id, const char *symbol_name)
 		// Build smart message
 		std::string hint = "{\"results\":[],\"hint\":{";
 		hint += "\"message\":\"No symbol named '" +
-			std::string(symbol_name) + "' found\",";
-		hint += "\"project_language\":\"" + langs + "\",";
+			jsonEscape(std::string(symbol_name)) + "' found\",";
+		hint += "\"project_language\":\"" + jsonEscape(langs) + "\",";
 		hint += "\"total_symbols\":" + std::to_string(total) + ",";
 		hint += "\"callgraph_ready\":" + std::to_string(cg_ready) + ",";
 		hint += "\"embedding_ready\":" + std::to_string(emb_ready) +
@@ -124,6 +124,12 @@ char *engine_find_symbol(uint64_t project_id, const char *symbol_name)
 					}
 				}
 				sqlite3_finalize(estmt);
+				// Strip the trailing ", " so the rendered list reads
+				// "main, probe" rather than "main, probe, ".
+				if (ep_hints.size() >= 2 &&
+				    ep_hints.compare(ep_hints.size() - 2, 2,
+						     ", ") == 0)
+					ep_hints.erase(ep_hints.size() - 2);
 			}
 			if (!ep_hints.empty()) {
 				hint += "Known entry point types: " + ep_hints +
@@ -228,11 +234,15 @@ char *engine_enhance_project(uint64_t project_id)
 			continue;
 		}
 
-		ir::TranslationUnit *unit = translator->translate(
+		ir::TranslationUnit *unit_raw = translator->translate(
 			tree, source.c_str(), file_path.c_str());
 		ts_tree_delete(tree);
-		if (!unit)
+		if (!unit_raw)
 			continue;
+		// RAII: ensure the translation unit is freed on every exit path
+		// (early continue, exception, normal end-of-iteration) — no raw
+		// delete needed, matching the pattern in engine_index.cpp.
+		std::unique_ptr<ir::TranslationUnit> unit(unit_raw);
 
 		// Build mapping: IR node id → symbol_id for declaration nodes
 		std::unordered_map<uint64_t, uint64_t> ir_id_to_symbol;
@@ -261,7 +271,6 @@ char *engine_enhance_project(uint64_t project_id)
 		}
 
 		if (ir_id_to_symbol.empty()) {
-			delete unit;
 			continue;
 		}
 
@@ -292,6 +301,15 @@ char *engine_enhance_project(uint64_t project_id)
 		// ─────────────────────────────────────────────────────
 		{
 			if (!func_ranges.empty() && !source.empty()) {
+				// Precompute line start offsets once so each call-site
+				// lookup is O(log N) via binary search, not O(N) scan.
+				std::vector<size_t> line_starts;
+				line_starts.reserve(1024);
+				line_starts.push_back(0);
+				for (size_t i = 0; i < source.size(); i++)
+					if (source[i] == '\n')
+						line_starts.push_back(i + 1);
+
 				// Find all function calls: word(  (but not control flow)
 				auto pos = source.find('(');
 				while (pos != std::string::npos && pos > 0) {
@@ -323,12 +341,17 @@ char *engine_enhance_project(uint64_t project_id)
 					}
 
 					if (!name.empty() && !is_skip) {
-						// Find caller: which function range contains this call
-						uint32_t call_line = 0;
-						// Count newlines before pos to get line number
-						for (size_t i = 0; i < pos; i++)
-							if (source[i] == '\n')
-								call_line++;
+						// Find caller: which function range contains this call.
+						// Binary search line_starts for O(log N) per lookup.
+						auto it = std::lower_bound(
+							line_starts.begin(),
+							line_starts.end(),
+							pos + 1);
+						uint32_t call_line = static_cast<
+							uint32_t>(
+							(it -
+							 line_starts.begin()) -
+							1);
 
 						uint64_t caller_id = 0;
 						for (const auto &fr :
@@ -572,7 +595,6 @@ char *engine_enhance_project(uint64_t project_id)
 			g_store->commitTransaction();
 		}
 
-		delete unit;
 		total_files_processed++;
 	}
 
@@ -602,13 +624,13 @@ char *engine_get_enhancement_status(uint64_t project_id)
 			  "LEFT JOIN symbol_status ss ON ss.symbol_id = s.id "
 			  "WHERE s.project_id = ?";
 	sqlite3_stmt *stmt = nullptr;
-	int total = 0, cg = 0, cfg = 0, emb = 0;
+	int total = 0, cg = 0, metrics = 0, emb = 0;
 	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
 		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 		if (sqlite3_step(stmt) == SQLITE_ROW) {
 			total = sqlite3_column_int(stmt, 0);
 			cg = sqlite3_column_int(stmt, 1);
-			cfg = sqlite3_column_int(stmt, 2);
+			metrics = sqlite3_column_int(stmt, 2);
 			emb = sqlite3_column_int(stmt, 3);
 		}
 		sqlite3_finalize(stmt);
@@ -618,7 +640,7 @@ char *engine_get_enhancement_status(uint64_t project_id)
 	json << "{"
 	     << "\"total_symbols\":" << total << ","
 	     << "\"callgraph_ready\":" << cg << ","
-	     << "\"cfg_ready\":" << cfg << ","
+	     << "\"metrics_ready\":" << metrics << ","
 	     << "\"embedding_ready\":" << emb << "}";
 	return dupString(json.str());
 }
@@ -734,7 +756,7 @@ char *engine_project_overview(uint64_t project_id)
 				first = false;
 				const char *l = reinterpret_cast<const char *>(
 					sqlite3_column_text(stmt, 0));
-				json << "\"" << (l ? l : "") << "\"";
+				json << "\"" << jsonEscape(l ? l : "") << "\"";
 			}
 			sqlite3_finalize(stmt);
 		}
@@ -966,10 +988,10 @@ char *engine_build_context(uint64_t project_id, const char *query)
 				const char *f = reinterpret_cast<const char *>(
 					sqlite3_column_text(mstmt, 2));
 				int ln = sqlite3_column_int(mstmt, 3);
-				json << "{\"name\":\"" << (n ? n : "")
-				     << "\",\"kind\":\"" << (k ? k : "")
-				     << "\","
-				     << "\"file\":\"" << (f ? f : "")
+				json << "{\"name\":\"" << jsonEscape(n ? n : "")
+				     << "\",\"kind\":\""
+				     << jsonEscape(k ? k : "") << "\","
+				     << "\"file\":\"" << jsonEscape(f ? f : "")
 				     << "\",\"line\":" << ln << "}";
 			}
 			sqlite3_finalize(mstmt);
@@ -1006,9 +1028,11 @@ char *engine_build_context(uint64_t project_id, const char *query)
 					reinterpret_cast<const char *>(
 						sqlite3_column_text(cstmt, 1));
 				json << "{\"caller\":\""
-				     << (caller ? caller : "") << "\","
+				     << jsonEscape(caller ? caller : "")
+				     << "\","
 				     << "\"callee\":\""
-				     << (callee ? callee : "") << "\"}";
+				     << jsonEscape(callee ? callee : "")
+				     << "\"}";
 			}
 			sqlite3_finalize(cstmt);
 			json << "],";

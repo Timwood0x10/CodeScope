@@ -71,8 +71,10 @@ int waitpid(int pid, int *status, int options)
 		return -1;
 	}
 	CloseHandle(h);
+	// Encode exit status in POSIX wait-status format so WIFEXITED/WEXITSTATUS
+	// macros work: normal exit → (code << 8), low byte 0.
 	if (status)
-		*status = (int)exit_code;
+		*status = (int)((exit_code & 0xFF) << 8);
 	return pid;
 }
 

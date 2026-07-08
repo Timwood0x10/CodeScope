@@ -1,7 +1,9 @@
 #include "engine_internal.h"
 #include "filter_policy.h"
+#include "platform_win.h"
 
 #include <cctype>
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -13,6 +15,11 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+#ifndef _WIN32
+#include <sys/wait.h> // waitpid, WIFEXITED, WEXITSTATUS, WTERMSIG
+#include <unistd.h> // pipe, fork, execvp, dup2, read, close
+#endif
 
 // ─── Phase A: Fast Scanner Helpers ─────────────────────────────
 
@@ -569,58 +576,170 @@ static std::string entryPointKind(const std::string &name)
 } // anonymous namespace
 
 // ─── Git-aware incremental scan helper ────────────────────────
-// Runs `git status --porcelain` to detect changed files.
+// Runs `git status --porcelain -z` to detect changed files. Captures
+// git's stdout via a pipe WITHOUT going through a shell, so project_dir
+// is passed as a single argv element and shell metacharacters (; | $ `)
+// in the path cannot break out into a separate command (command injection).
+// Parses NUL-separated output to correctly handle paths containing spaces,
+// quotes, and renames ("R  newpath\0oldpath\0").
 static std::unordered_set<std::string>
 getGitChangedFiles(const std::string &project_dir)
 {
 	std::unordered_set<std::string> changed;
 	if (!std::filesystem::exists(project_dir + "/.git"))
 		return changed;
-	// Use git -C <dir> instead of "cd <dir> && git" to avoid
-	// shell injection via project_dir (no shell evaluation of path)
-	std::string tm = "timeout";
-	std::string tm_arg = "3";
-	if (std::filesystem::exists("/opt/homebrew/bin/gtimeout")) {
-		tm = "gtimeout";
+
+	// Build argv. project_dir is passed verbatim as one argv element —
+	// execvp never interprets it as a shell, so it is injection-safe.
+	// Wrap in timeout/gtimeout when present (also exec'd, never shelled)
+	// to prevent a wedged git from stalling the scan. If no timeout
+	// binary is found, run git directly (graceful: no hang protection).
+	std::string timeout_bin;
+	if (std::filesystem::exists("/opt/homebrew/bin/gtimeout"))
+		timeout_bin = "/opt/homebrew/bin/gtimeout";
+	else if (std::filesystem::exists("/usr/local/bin/gtimeout"))
+		timeout_bin = "/usr/local/bin/gtimeout";
+	else if (std::filesystem::exists("/usr/bin/timeout"))
+		timeout_bin = "/usr/bin/timeout";
+
+	std::vector<std::string> args;
+	if (!timeout_bin.empty()) {
+		args.push_back(timeout_bin);
+		args.push_back("3");
 	}
-	// Execute via exec-style: no shell interpretation of project_dir
-	// popen with "git -C" + escaped path is still a shell, but using
-	// execv-style avoids the shell entirely. We use popen but escape
-	// the dir to prevent shell metacharacter injection.
-	// Safer: use pipe + fork/exec directly
-	std::string cmd = tm + " " + tm_arg + " git -C " + project_dir +
-			  " status --porcelain 2>/dev/null || true";
-	FILE *fp = popen(cmd.c_str(), "r");
-	if (!fp)
-		return changed;
+	args.push_back("git");
+	args.push_back("-C");
+	args.push_back(project_dir);
+	args.push_back("status");
+	args.push_back("--porcelain");
+	args.push_back("-z");
 
+	// Capture child stdout.
+	std::string output;
 	char buf[4096];
-	while (fgets(buf, sizeof(buf), fp)) {
-		// Format: "XY filename" where X/Y are status codes
-		// We care about: M (modified), A (added), ? (untracked), D (deleted)
-		if (strlen(buf) < 3)
-			continue;
-		char status = buf[0];
-		char status2 = buf[1];
-		if (status == 'D' || status2 == 'D')
-			continue; // skip deleted - handled by cleanup
+#ifdef _WIN32
+	// Windows: _popen routes through cmd.exe, so the project_dir MUST be
+	// validated to reject shell metacharacters before we let cmd.exe see
+	// it. POSIX uses fork+execvp (no shell) and needs no such guard.
+	auto hasShellMeta = [](const std::string &s) {
+		for (char c : s)
+			if (c == ';' || c == '|' || c == '&' || c == '$' ||
+			    c == '`' || c == '(' || c == ')' || c == '"' ||
+			    c == '\n' || c == '\r' || c == '%' || c == '^' ||
+			    c == '!')
+				return true;
+		return false;
+	};
+	if (hasShellMeta(project_dir)) {
+		fprintf(stderr, "engine: rejected project_dir with shell "
+				"metacharacters for git status\n");
+		return changed;
+	}
+	std::string cmd =
+		"git -C \"" + project_dir + "\" status --porcelain -z";
+	FILE *fp = _popen(cmd.c_str(), "r");
+	if (!fp) {
+		fprintf(stderr, "engine: _popen(git status) failed\n");
+		return changed;
+	}
+	size_t n;
+	while ((n = fread(buf, 1, sizeof(buf), fp)) > 0)
+		output.append(buf, n);
+	int rc = _pclose(fp);
+	if (rc != 0)
+		fprintf(stderr, "engine: git status exited %d\n", rc);
+#else
+	int fds[2];
+	if (pipe(fds) != 0) {
+		fprintf(stderr, "engine: pipe() failed for git status: %s\n",
+			strerror(errno));
+		return changed;
+	}
+	std::vector<char *> argv;
+	argv.reserve(args.size() + 1);
+	for (auto &a : args)
+		argv.push_back(&a[0]);
+	argv.push_back(nullptr);
 
-		// Extract filename starting at position 3
-		std::string filepath(buf + 3);
-		// Trim trailing newline
-		while (!filepath.empty() &&
-		       (filepath.back() == '\n' || filepath.back() == '\r'))
-			filepath.pop_back();
+	pid_t pid = fork();
+	if (pid < 0) {
+		fprintf(stderr, "engine: fork() failed for git status: %s\n",
+			strerror(errno));
+		close(fds[0]);
+		close(fds[1]);
+		return changed;
+	}
+	if (pid == 0) {
+		// Child: wire stdout → pipe, then exec (NO shell).
+		close(fds[0]);
+		dup2(fds[1], STDOUT_FILENO);
+		close(fds[1]);
+		execvp(argv[0], argv.data());
+		_exit(127); // exec failed — child exits, parent reads empty pipe
+	}
+	// Parent: read all of git's stdout.
+	close(fds[1]);
+	ssize_t rn;
+	while ((rn = read(fds[0], buf, sizeof(buf))) != 0) {
+		if (rn < 0) {
+			if (errno == EINTR)
+				continue;
+			fprintf(stderr, "engine: read() from git failed: %s\n",
+				strerror(errno));
+			break;
+		}
+		output.append(buf, static_cast<size_t>(rn));
+	}
+	close(fds[0]);
+	int status = 0;
+	waitpid(pid, &status, 0);
+	if (WIFEXITED(status)) {
+		if (WEXITSTATUS(status) != 0)
+			fprintf(stderr, "engine: git status exited %d\n",
+				WEXITSTATUS(status));
+	} else if (WIFSIGNALED(status)) {
+		fprintf(stderr, "engine: git status killed by signal %d\n",
+			WTERMSIG(status));
+	}
+#endif
 
-		if (status == '?' && status2 == '?') {
-			// Untracked file
+	// Parse `git status --porcelain -z` output. Each entry is:
+	//   "XY path" terminated by NUL.  For renames/copies (X='R'/'C') the
+	//   NEW path is first, followed by a NUL, then the OLD path, then NUL.
+	//   -z disables quoting, so spaces/unicode in paths are literal.
+	size_t i = 0;
+	while (i + 3 <= output.size()) {
+		char x = output[i];
+		char y = output[i + 1];
+		size_t path_start = i + 3; // skip "XY "
+		size_t path_end = output.find('\0', path_start);
+		if (path_end == std::string::npos)
+			break;
+		std::string filepath =
+			output.substr(path_start, path_end - path_start);
+
+		bool is_rename = (x == 'R' || x == 'C' || y == 'R' || y == 'C');
+		if (is_rename) {
+			// Skip the second (old-path) NUL-terminated field.
+			size_t old_end = output.find('\0', path_end + 1);
+			if (old_end == std::string::npos)
+				break;
+			i = old_end + 1;
+		} else {
+			i = path_end + 1;
+		}
+
+		if (x == 'D' || y == 'D')
+			continue; // deleted — handled by cleanup, not re-scan
+
+		if (x == '?' && y == '?') {
 			changed.insert(project_dir + "/" + filepath);
-		} else if (status == 'M' || status2 == 'M' || status == 'A' ||
-			   status2 == 'A' || status == 'R' || status2 == 'R') {
+		} else if (x == 'M' || y == 'M' || x == 'A' || y == 'A' ||
+			   x == 'R' || y == 'R' || x == 'C' || y == 'C' ||
+			   x == 'T' || y == 'T') {
 			changed.insert(project_dir + "/" + filepath);
 		}
 	}
-	pclose(fp);
 	return changed;
 }
 
@@ -673,16 +792,28 @@ char *engine_scan_project(uint64_t project_id, const char *dir_path,
 
 	// Walk directory tree
 	try {
-		// Load .gitignore patterns from project root
+		// Load the centralized FilterPolicy once for the whole walk.
+		// This is the SINGLE source of truth for what gets indexed:
+		//   - skip_dirs (node_modules, .venv, .git, build, target, ...)
+		//     applied to every path component at any depth
+		//   - skip_suffixes (case-insensitive: .exe/.dll/.so/.dylib/.app
+		//     /.pyc/.class/.wasm/.lock/.log/.png ... )
+		//   - skip_filenames (.env, .env.local, package-lock.json, ...)
+		//     + filename prefixes (.env.*)
+		//   - .gitignore + .codescopeignore patterns
+		// Many real-world projects have incomplete .gitignore files, so
+		// we MUST NOT rely on gitignore alone — the hardcoded sets above
+		// guarantee binaries / venvs / deps are never indexed.
 		FilterPolicy filter;
 		filter.loadGitignore(dir);
+		filter.loadIgnoreFile(dir);
 
 		auto it = std::filesystem::recursive_directory_iterator(
 			dir, std::filesystem::directory_options::
 				     skip_permission_denied);
 		auto end = std::filesystem::end(it);
 		while (it != end) {
-			// Compute path relative to project root for gitignore matching
+			// Compute path relative to project root for matching.
 			std::string rel_path = it->path().string();
 			if (rel_path.size() > dir.size() + 1)
 				rel_path = rel_path.substr(
@@ -690,25 +821,27 @@ char *engine_scan_project(uint64_t project_id, const char *dir_path,
 			else
 				rel_path.clear();
 
-			// Skip files/dirs matching .gitignore (unless !negated)
+			// Apply the FULL filtering pipeline in one call. This
+			// replaces the old gitignore-only check that let
+			// node_modules / .venv / *.exe through when a project's
+			// .gitignore was incomplete or absent.
 			if (!rel_path.empty()) {
 				bool is_dir = it->is_directory();
-				bool ignore = filter.isGitignoreMatch(rel_path,
-								      is_dir);
-				if (ignore && is_dir) {
-					it.disable_recursion_pending();
-					++it;
-					continue;
-				}
-				if (ignore) {
+				if (filter.shouldSkipEntry(rel_path, is_dir)) {
+					if (is_dir)
+						it.disable_recursion_pending();
 					++it;
 					continue;
 				}
 			}
 			if (it->is_regular_file()) {
 				std::string file_path = it->path().string();
-				const char *lang =
-					detectLanguage(file_path.c_str());
+				// Use the FilterPolicy's language detection so the
+				// scanner and the indexer agree on language mapping,
+				// and so case-insensitive / shebang detection works
+				// uniformly across both code paths.
+				const char *lang = filter.detectLanguage(
+					file_path.c_str());
 				if (!lang) {
 					++it;
 					continue;
@@ -768,8 +901,10 @@ char *engine_scan_project(uint64_t project_id, const char *dir_path,
 				// Git incremental: skip files that haven't changed
 				if (incremental &&
 				    git_changed.find(file_path) ==
-					    git_changed.end())
+					    git_changed.end()) {
+					++it;
 					continue;
+				}
 
 				// Check file modification time for incremental indexing
 				struct stat file_stat;
@@ -780,15 +915,19 @@ char *engine_scan_project(uint64_t project_id, const char *dir_path,
 					fsize_stat = static_cast<int64_t>(
 						file_stat.st_size);
 				}
-				if (g_store->isFileUnchanged(project_id,
-							     file_path.c_str(),
-							     mtime, fsize_stat))
+				if (g_store->isFileUnchanged(
+					    project_id, file_path.c_str(),
+					    mtime, fsize_stat)) {
+					++it;
 					continue;
+				}
 
 				// Read file content for declaration scanning
 				std::ifstream file(file_path);
-				if (!file)
+				if (!file) {
+					++it;
 					continue;
+				}
 
 				// Use stat() size rather than seekg/tellg to avoid
 				// 32-bit overflow on files >2GB (tellg is signed)
@@ -798,10 +937,12 @@ char *engine_scan_project(uint64_t project_id, const char *dir_path,
 						       0;
 				if (fsize == 0) {
 					file.close();
+					++it;
 					continue;
 				}
 				if (fsize > 1024 * 1024) { // Skip files > 1MB
 					file.close();
+					++it;
 					continue;
 				}
 				file.seekg(0, std::ios::beg);
@@ -862,15 +1003,10 @@ char *engine_scan_project(uint64_t project_id, const char *dir_path,
 					if (sv2.substr(0, 4) == "pub ")
 						visibility = "visible";
 
-					// Compute span (byte offset approximate)
-					int span_start = static_cast<int>(
-						content.data() -
-						content.c_str()); // not right, approximate
-					// Better: accumulate known byte offsets
-					// Simplified: just use line_num * average_line_length heuristic
-					(void)span_start;
-
-					// Insert symbol
+					// Insert symbol. Span columns (1, 0, 0) are
+					// placeholders — the fast scan is line-oriented and
+					// does not track byte offsets; the AST-based indexer
+					// (engine_index.cpp) fills precise spans.
 					uint64_t sym_id = g_store->insertSymbol(
 						project_id, parent_mod_id,
 						kind.c_str(), name.c_str(),

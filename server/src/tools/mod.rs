@@ -812,7 +812,7 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
         },
         Tool {
             name: "get_enhancement_status".into(),
-            description: "Check enhancement progress. Returns total_symbols, callgraph_ready, cfg_ready, and embedding_ready counts.".into(),
+            description: "Check enhancement progress. Returns total_symbols, callgraph_ready, metrics_ready, and embedding_ready counts.".into(),
             input_schema: json!({ "type": "object", "properties": {} }),
         },
 

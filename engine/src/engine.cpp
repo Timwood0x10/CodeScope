@@ -1,4 +1,6 @@
 #include "engine.h"
+#include "platform_win.h"
+
 #include "graph/graph_builder.h"
 #include "ir/ir.h"
 #include "ir/ir_complexity.h"
@@ -13,7 +15,6 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
-#include "platform_win.h"
 #include <filesystem>
 #include <fstream>
 #include <memory>

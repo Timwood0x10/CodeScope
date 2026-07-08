@@ -46,8 +46,10 @@
 typedef SSIZE_T ssize_t;
 
 // ─── Path Length ────────────────────────────────────────────────
+// MAX_PATH (260) is dangerously small for a code-indexing tool that walks
+// arbitrary repository trees. Use 4096 (Linux default) for safety.
 #ifndef PATH_MAX
-#define PATH_MAX MAX_PATH
+#define PATH_MAX 4096
 #endif
 
 // ─── File Access Modes ──────────────────────────────────────────
@@ -66,14 +68,14 @@ typedef SSIZE_T ssize_t;
 
 // ─── dlfcn.h Compatibility ──────────────────────────────────────
 // Implemented in platform_win.cpp
-#define RTLD_LAZY   0
-#define RTLD_NOW    0
-#define RTLD_LOCAL  0
+#define RTLD_LAZY 0
+#define RTLD_NOW 0
+#define RTLD_LOCAL 0
 #define RTLD_GLOBAL 0
 
 void *dlopen(const char *file, int mode);
 void *dlsym(void *handle, const char *name);
-int   dlclose(void *handle);
+int dlclose(void *handle);
 char *dlerror(void);
 
 // ─── sys/resource.h Compatibility ───────────────────────────────
@@ -81,15 +83,15 @@ char *dlerror(void);
 #define RUSAGE_SELF 0
 
 struct rusage {
-    long ru_maxrss;
+	long ru_maxrss;
 };
 
 int getrusage(int who, struct rusage *usage);
 
 // ─── sys/wait.h Compatibility ───────────────────────────────────
 // Implemented in platform_win.cpp
-#define WNOHANG         1
-#define WIFEXITED(status)   (((status) & 0xff) == 0)
+#define WNOHANG 1
+#define WIFEXITED(status) (((status) & 0xff) == 0)
 #define WEXITSTATUS(status) (((status) >> 8) & 0xff)
 
 int waitpid(int pid, int *status, int options);

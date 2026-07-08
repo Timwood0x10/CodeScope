@@ -2,7 +2,7 @@
 
 > Updated: 2026-07-07 | All bugs verified against current source code
 
----
+***
 
 ## Part 1: Verified Bugs
 
@@ -22,12 +22,13 @@ if (stmt_fts_map_) {
 ```
 
 `stmt_fts_map_` is declared in `store.h:406` but **never prepared** in `store_core.cpp:open()` (only `stmt_fts_` and `stmt_vector_` are prepared). The guard `if (stmt_fts_map_)` is always false, so:
+
 - The `fts_node_map` table is **never populated**
 - `deleteFTSByFile()` (`store.cpp:390`) queries `fts_node_map` → always returns empty → **FTS entries are never deleted when a file is re-indexed**, causing stale search results
 
 **Fix**: Either prepare `stmt_fts_map_` in `open()`, or remove the dead code and fix `deleteFTSByFile` to use a different deletion strategy (e.g., join on `ir_nodes`).
 
----
+***
 
 #### 2. `engine/src/engine_lifecycle.cpp:50` — vec0 path hardcoded to `.dylib` (Linux/Windows broken)
 
@@ -40,6 +41,7 @@ std::string vec_path = base + "/vec0.dylib";  // macOS only!
 On Linux the file is `vec0.so`, on Windows `vec0.dll`. Vector search is silently broken on non-macOS platforms.
 
 **Fix**:
+
 ```cpp
 #ifdef __APPLE__
     std::string vec_path = base + "/vec0.dylib";
@@ -50,7 +52,7 @@ On Linux the file is `vec0.so`, on Windows `vec0.dll`. Vector search is silently
 #endif
 ```
 
----
+***
 
 #### 3. `server/src/tools/mod.rs:169-177` — Background FTS build races with main thread
 
@@ -66,7 +68,7 @@ The spawned thread calls `engine_build_fts` which accesses the global `g_store` 
 
 **Fix**: Use a dedicated worker thread with a channel, or add a mutex around all store access. The simplest fix: use `spawn_blocking` within the Tokio runtime and serialize FTS work.
 
----
+***
 
 #### 4. `server/src/tools/mod.rs:109` — `kill -9` not portable to Windows
 
@@ -80,7 +82,7 @@ Windows has no `kill` command. Worker timeout on Windows silently fails to termi
 
 **Fix**: Use `child.kill()` — but this requires restructuring `run_worker` to own the `Child` across the timeout check. Alternatively, use the `sysinfo` crate for cross-platform process termination.
 
----
+***
 
 ### High
 
@@ -100,9 +102,9 @@ Any Homebrew SQLite update breaks local builds. The first two paths are dead wei
 
 **Fix**: Remove the hardcoded version paths; keep only `/opt/homebrew/opt/sqlite/lib`. Better yet, use `pkg-config` to discover SQLite.
 
----
+***
 
-#### 6. `Makefile:69-71` — Hardcoded Homebrew LLVM@21
+#### 6. `Makefile:69-71` — Hardcoded Homebrew LLVM\@21
 
 **Status: CONFIRMED**
 
@@ -111,15 +113,16 @@ Any Homebrew SQLite update breaks local builds. The first two paths are dead wei
 -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm@21/bin/clang++
 ```
 
-Users without LLVM@21 installed cannot `make build-engine`. Linux users are entirely blocked from using the Makefile.
+Users without LLVM\@21 installed cannot `make build-engine`. Linux users are entirely blocked from using the Makefile.
 
 **Fix**: Fall back to system clang:
+
 ```makefile
 ENGINE_CC  := $(shell test -x /opt/homebrew/opt/llvm@21/bin/clang && echo /opt/homebrew/opt/llvm@21/bin/clang || echo clang)
 ENGINE_CXX := $(shell test -x /opt/homebrew/opt/llvm@21/bin/clang++ && echo /opt/homebrew/opt/llvm@21/bin/clang++ || echo clang++)
 ```
 
----
+***
 
 #### 7. `install.sh:16-17` — Intel macOS falls back to Linux binary (100% broken)
 
@@ -133,11 +136,12 @@ x86_64|amd64)  ARTIFACT="codescope-x86_64-linux"
 An ELF Linux binary cannot run on macOS (Mach-O). This "fallback" is guaranteed to fail. Should exit with an error instead.
 
 **Fix**:
+
 ```bash
 x86_64|amd64)  echo "❌ Intel macOS not supported. Use Rosetta 2 with the ARM64 binary." ; exit 1 ;;
 ```
 
----
+***
 
 #### 8. `Makefile:98` — Wrong binary name in build message
 
@@ -151,7 +155,7 @@ x86_64|amd64)  echo "❌ Intel macOS not supported. Use Rosetta 2 with the ARM64
 
 **Fix**: `target/release/codescope`
 
----
+***
 
 ### Medium
 
@@ -169,7 +173,7 @@ unsafe {
 
 **Fix**: Add a comment explaining the 2024 edition safety requirement, or move to a `once_cell` / lazy static pattern.
 
----
+***
 
 #### 10. `engine/src/engine_helpers.cpp:124-166` — `detectLanguage()` misses shebang scripts and misclassifies `.h`
 
@@ -180,7 +184,7 @@ unsafe {
 
 **Fix**: Read first line for shebang; for `.h` files, check for C++ keywords (`class`, `namespace`, `template`) in the first N lines.
 
----
+***
 
 #### 11. `engine/src/parser/parser.cpp:89-102` — `TSParser` created/destroyed on every `parse()` call
 
@@ -197,7 +201,7 @@ During batch indexing of large projects (e.g., Linux kernel), this creates/destr
 
 **Fix**: Cache `TSParser*` per language in the `Parser` class, reuse across calls.
 
----
+***
 
 #### 12. `engine/src/engine_scanner.cpp:28-33` — `trimLeft` doesn't handle `\r`
 
@@ -212,7 +216,7 @@ Files with CRLF line endings (Windows) or mixed line endings will have `\r` at e
 
 **Fix**: Add `s[0] == '\r'` to the condition.
 
----
+***
 
 #### 13. `.github/workflows/_ci.yml:113-117` — CI packages `grammars/*.so` but they're unused
 
@@ -226,11 +230,11 @@ for f in grammars/tree-sitter-*.so grammars/tree-sitter-*.dll; do
 done
 ```
 
-Grammars are **statically compiled** into `libastgraph_engine.a` (CMakeLists.txt:133-151). The `.so` files are leftover from the old dlopen approach and are **never loaded** at runtime. They bloat the release tarball by ~13MB and confuse users.
+Grammars are **statically compiled** into `libastgraph_engine.a` (CMakeLists.txt:133-151). The `.so` files are leftover from the old dlopen approach and are **never loaded** at runtime. They bloat the release tarball by \~13MB and confuse users.
 
 **Fix**: Remove this packaging step entirely.
 
----
+***
 
 #### 14. `.github/workflows/_ci.yml:51-57` — CI installs npm grammar packages that are unnecessary
 
@@ -247,7 +251,7 @@ The CMake build uses `TREE_SITTER_NPM` to find grammar `.c` source files, but th
 
 **Fix**: Pick one source. Either use npm packages (set `TREE_SITTER_NPM` to npm root) OR use cloned repos (point CMake to the cloned dirs). Don't do both.
 
----
+***
 
 ### Low
 
@@ -262,7 +266,7 @@ if (!exec("PRAGMA synchronous=OFF"))
 
 `synchronous=OFF` means SQLite won't call `fsync` — a power failure or crash can corrupt the database. For a code analysis tool this may be acceptable (the DB can be rebuilt), but the risk should be documented. Consider `synchronous=NORMAL` with WAL mode for a better safety/speed tradeoff.
 
----
+***
 
 #### 16. `engine/src/engine_helpers.cpp:20` — `#include <unistd.h>` not guarded on Windows
 
@@ -276,7 +280,7 @@ if (!exec("PRAGMA synchronous=OFF"))
 
 **Fix**: Wrap in `#ifndef _WIN32`.
 
----
+***
 
 #### 17. Multiple `.cpp` files have 9-10 unused `#include` directives each
 
@@ -286,7 +290,7 @@ if (!exec("PRAGMA synchronous=OFF"))
 
 **Fix**: Run `include-what-you-use` and clean up.
 
----
+***
 
 ## Part 2: New Bugs Found
 
@@ -303,7 +307,7 @@ If the worker outputs `{}extra}`, `rfind('}')` finds the last `}`, but `json_sta
 
 **Fix**: Use a proper JSON parser (`serde_json::from_str`) to validate the extracted slice, or find the matching closing brace.
 
----
+***
 
 #### 19. `server/src/main.rs:22-24` — Worker `project_name` is always `"worker-project"`
 
@@ -321,7 +325,7 @@ The worker always receives `"worker-project"` as the project name, so `create_pr
 
 **Fix**: Pass the real project name (or derive from the path basename) in `tools/mod.rs:141-148`.
 
----
+***
 
 #### 20. `engine/src/engine_lifecycle.cpp:88-94` — Shutdown order skips parser before query
 
@@ -343,7 +347,7 @@ Current order resets `g_query` before `g_parser`, which is harmless since `g_par
 
 **Severity**: Low (no actual bug, but fragile)
 
----
+***
 
 ## Part 3: Compilation Requirements & Self-Contained Release Analysis
 
@@ -351,14 +355,14 @@ Current order resets `g_query` before `g_parser`, which is harmless since `g_par
 
 After downloading the current release tarball, the user must have these **system libraries** installed:
 
-| Dependency | Required? | Source | Size |
-|---|---|---|---|
-| `libtree-sitter.so/dylib` | **YES** (dynamic link) | `brew install tree-sitter` / `apt install libtree-sitter-dev` | ~200KB |
-| `libsqlite3.so/dylib` | **YES** (dynamic link) | `brew install sqlite` / `apt install libsqlite3-dev` | ~1.5MB |
-| `libstdc++.so` / `libc++.dylib` | **YES** (C++ runtime) | System-provided | — |
-| `grammars/*.so` | **NO** (statically compiled) | Packaged but unused | ~13MB wasted |
-| `vec0.so/dylib` | Optional (vector search) | Packaged in tarball | ~160KB |
-| `glibc` / `libSystem` | **YES** (libc) | System-provided | — |
+| Dependency                      | Required?                    | Source                                                        | Size          |
+| ------------------------------- | ---------------------------- | ------------------------------------------------------------- | ------------- |
+| `libtree-sitter.so/dylib`       | **YES** (dynamic link)       | `brew install tree-sitter` / `apt install libtree-sitter-dev` | \~200KB       |
+| `libsqlite3.so/dylib`           | **YES** (dynamic link)       | `brew install sqlite` / `apt install libsqlite3-dev`          | \~1.5MB       |
+| `libstdc++.so` / `libc++.dylib` | **YES** (C++ runtime)        | System-provided                                               | —             |
+| `grammars/*.so`                 | **NO** (statically compiled) | Packaged but unused                                           | \~13MB wasted |
+| `vec0.so/dylib`                 | Optional (vector search)     | Packaged in tarball                                           | \~160KB       |
+| `glibc` / `libSystem`           | **YES** (libc)               | System-provided                                               | —             |
 
 ### The `grammars/*.so` Situation
 
@@ -373,17 +377,14 @@ After downloading the current release tarball, the user must have these **system
    )
    set(ENGINE_SOURCES ${GRAMMAR_SOURCES} ...)  # compiled into static lib
    ```
-
 2. **parser.cpp:11-34** resolves grammars via function calls (`tree_sitter_c()`, `tree_sitter_cpp()`, etc.), not `dlopen`. Comment at line 8: `// Grammars are compiled into the binary (no dlopen).`
-
-3. **engine_lifecycle.cpp:37-44** registers grammars by name, no file loading:
+3. **engine\_lifecycle.cpp:37-44** registers grammars by name, no file loading:
    ```cpp
    // Grammars are compiled into the binary — no .so loading needed.
    for (auto lang : langs) {
        g_parser->registerLanguage(lang);
    }
    ```
-
 4. **CI still builds and packages .so files** (`_ci.yml:66-70, 113-117`) — this is pure waste.
 
 ### How to Achieve a Fully Self-Contained Release (Zero External Dependencies)
@@ -447,9 +448,7 @@ This eliminates the `libsqlite3.so/dylib` runtime dependency.
   rustup target add x86_64-unknown-linux-musl
   cargo build --release --target x86_64-unknown-linux-musl
   ```
-
 - **macOS**: `libc++.dylib` is always present on macOS, no action needed.
-
 - **Windows**: MinGW already links statically by default with `-static`.
 
 #### Step 4: Update `server/build.rs`
@@ -475,6 +474,7 @@ match target_os.as_str() {
 #### Step 5: Bundle `vec0` Extension (Optional but Nice)
 
 The `vec0` extension is the only remaining runtime `dlopen`. Options:
+
 1. **Bundle it**: Copy `vec0.so/dylib/dll` next to the binary, load from `$ORIGIN`
 2. **Compile it in**: SQLite extensions can be compiled as part of the amalgamation (advanced)
 3. **Graceful fallback** (already implemented): If vec0 fails to load, vector search is disabled — this is the current behavior
@@ -500,19 +500,20 @@ Recommendation: Bundle it in the tarball (already done) and fix the path resolut
 
 ### Expected Result After All Steps
 
-| Platform | Binary Type | External Dependencies | Tarball Size (est.) |
-|---|---|---|---|
-| Linux x86_64 | Fully static (MUSL) | **None** | ~15MB |
-| macOS ARM64 | Mostly static | `libc++.dylib` (system) | ~15MB |
-| Windows x86_64 | Static (MinGW) | **None** | ~20MB |
+| Platform        | Binary Type         | External Dependencies   | Tarball Size (est.) |
+| --------------- | ------------------- | ----------------------- | ------------------- |
+| Linux x86\_64   | Fully static (MUSL) | **None**                | \~15MB              |
+| macOS ARM64     | Mostly static       | `libc++.dylib` (system) | \~15MB              |
+| Windows x86\_64 | Static (MinGW)      | **None**                | \~20MB              |
 
 User experience:
+
 ```bash
 curl -fsSL https://.../install.sh | bash
 codescope  # just works, no dependencies to install
 ```
 
----
+***
 
 ## Part 4: External Installation Optimization Suggestions
 
@@ -529,7 +530,7 @@ A new user wanting to **build from source** currently needs:
 7. `gcc` / `clang` (system compiler)
 8. Run `make build` which orchestrates 3 separate builds
 
-This is **8+ dependencies** and ~2GB of toolchain downloads. Way too much for a code analysis tool.
+This is **8+ dependencies** and \~2GB of toolchain downloads. Way too much for a code analysis tool.
 
 ### Optimization Plan
 
@@ -544,7 +545,8 @@ curl -fsSL https://raw.githubusercontent.com/Timwood0x10/CodeScope/master/instal
 
 No dependencies. No env vars. No `GRAMMARS_DIR`. Just works.
 
-**`install.sh` improvements needed:**
+**`install.sh`** **improvements needed:**
+
 1. Remove Intel macOS → Linux fallback (bug #7)
 2. Add Windows support (download `.exe` or `.zip`)
 3. Add ARM Linux (`aarch64`) support
@@ -555,24 +557,19 @@ No dependencies. No env vars. No `GRAMMARS_DIR`. Just works.
 
 Simplify to **3 dependencies**: `cmake`, `rust`, `git`.
 
-1. **Remove LLVM@21 requirement**: Use system clang/gcc (bug #6 fix). C++23 is supported by clang 17+ and gcc 13+, both available on modern systems.
-
+1. **Remove LLVM\@21 requirement**: Use system clang/gcc (bug #6 fix). C++23 is supported by clang 17+ and gcc 13+, both available on modern systems.
 2. **Remove node/npm dependency**: After static tree-sitter linking via `FetchContent`, grammar source files are fetched from git during CMake configure. No npm needed.
-
 3. **Remove Homebrew sqlite/tree-sitter dependency**: After static SQLite amalgamation, no system SQLite needed.
-
-4. **Single `cargo build` command**: The `server/build.rs` already invokes CMake. So `cargo build --release` should be the only command needed. The Makefile becomes optional.
-
+4. **Single** **`cargo build`** **command**: The `server/build.rs` already invokes CMake. So `cargo build --release` should be the only command needed. The Makefile becomes optional.
    ```bash
    git clone https://github.com/Timwood0x10/CodeScope
    cd CodeScope/server
    cargo build --release
    # Binary: target/release/codescope
    ```
-
-5. **Improve `build.rs` robustness**:
+5. **Improve** **`build.rs`** **robustness**:
    - Remove hardcoded SQLite version paths (bug #5)
-   - Remove hardcoded LLVM@21 path (use `CC`/`CXX` env vars or system default)
+   - Remove hardcoded LLVM\@21 path (use `CC`/`CXX` env vars or system default)
    - Auto-detect Ninja for faster builds
    - Add `CMAKE_EXPORT_COMPILE_COMMANDS=ON` for IDE support
 
@@ -582,7 +579,6 @@ Simplify to **3 dependencies**: `cmake`, `rust`, `git`.
    - Remove npm grammar package installation (bug #14)
    - Remove grammar .so building (bug #13)
    - Remove grammar .so packaging (bug #13)
-
 2. **Add caching**:
    ```yaml
    - uses: actions/cache@v4
@@ -592,11 +588,9 @@ Simplify to **3 dependencies**: `cmake`, `rust`, `git`.
          engine/build/_deps  # CMake FetchContent cache
        key: ${{ runner.os }}-deps-${{ hashFiles('**/Cargo.lock') }}
    ```
-
 3. **Add more platforms**:
    - `aarch64-unknown-linux-musl` (ARM Linux, for Raspberry Pi / Graviton)
    - `x86_64-pc-windows-msvc` (native Windows, not MinGW)
-
 4. **Matrix for static vs dynamic**:
    - `static` job: MUSL + amalgamation → self-contained binary
    - `dynamic` job: system libs → smaller binary for package managers
@@ -617,11 +611,8 @@ After static linking, distribute via:
      end
    end
    ```
-
 2. **AUR** (Arch Linux): `yay -S codescope-bin`
-
 3. **Nix**: `nix-shell -p codescope`
-
 4. **Docker** (for CI/CD pipelines):
    ```dockerfile
    FROM alpine:latest
@@ -629,21 +620,21 @@ After static linking, distribute via:
    ENTRYPOINT ["codescope"]
    ```
 
----
+***
 
 ## Summary
 
-| Category | Count | Status |
-|---|---|---|
-| Critical bugs | 4 | All confirmed |
-| High bugs | 5 | All confirmed |
-| Medium bugs | 6 | All confirmed |
-| Low bugs | 2 | All confirmed |
-| **Total bugs** | **17 verified** | — |
+| Category       | Count           | Status        |
+| -------------- | --------------- | ------------- |
+| Critical bugs  | 4               | All confirmed |
+| High bugs      | 5               | All confirmed |
+| Medium bugs    | 6               | All confirmed |
+| Low bugs       | 2               | All confirmed |
+| **Total bugs** | **17 verified** | —             |
 
 ### Top Priority Fixes
 
-1. **`stmt_fts_map_` dead code** — FTS deletion is broken, causing stale search results
+1. **`stmt_fts_map_`** **dead code** — FTS deletion is broken, causing stale search results
 2. **vec0 path platform fix** — vector search broken on Linux/Windows
 3. **FTS background thread data race** — can corrupt SQLite database
 4. **Static linking** — eliminates 3 runtime dependencies, simplifies installation
@@ -662,3 +653,4 @@ After static linking, distribute via:
 - [ ] Update `build.rs` to remove dynamic library linking
 - [ ] Update README/RELEASE.md to remove dependency installation steps
 - [ ] Add Homebrew tap formula
+

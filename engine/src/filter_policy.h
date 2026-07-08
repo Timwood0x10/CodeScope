@@ -61,6 +61,26 @@ class FilterPolicy {
 	// @param is_dir    Whether this entry is a directory.
 	bool shouldSkipPath(const std::string &rel_path, bool is_dir) const;
 
+	// ── Bundle-directory suffix check ───────────────────────────
+	// True if a directory's basename ends with a known bundle suffix
+	// (.app, .framework, .xcodeproj, ...). Case-insensitive.
+	bool shouldSkipDirSuffix(const std::string &dir_name) const;
+
+	// ── Consolidated entry check (single source of truth) ───────
+	// Applies the FULL filtering pipeline in one call:
+	//   1. Path-component skip_dirs (any depth) — node_modules, .venv, ...
+	//   2. .gitignore pattern matching
+	//   3. .codescopeignore raw patterns
+	//   4. Filename exact skip (package-lock.json, .env, .DS_Store, ...)
+	//   5. Filename prefix skip (.env.*, yarn-error.log.*)
+	//   6. Suffix skip — case-insensitive (.EXE == .exe) — binaries,
+	//      archives, media, lock files, generated artifacts
+	// Use this instead of calling shouldSkipPath/shouldSkipFile/
+	// shouldSkipSuffix separately so no check is silently missed.
+	// @param rel_path  Path relative to project root.
+	// @param is_dir    Whether this entry is a directory.
+	bool shouldSkipEntry(const std::string &rel_path, bool is_dir) const;
+
 	// ── Language Detection ───────────────────────────────────────
 	const char *detectLanguage(const char *file_path) const;
 
@@ -112,13 +132,20 @@ class FilterPolicy {
 	// Combined for current mode
 	std::unordered_set<std::string> active_skip_dirs_;
 
-	// Skip suffixes (always applied)
+	// Skip suffixes (always applied, case-insensitive) — for FILES
 	std::unordered_set<std::string> skip_suffixes_;
 	// FAST mode extra suffixes
 	std::unordered_set<std::string> fast_extra_suffixes_;
+	// Skip dir suffixes — directory ENTRIES whose name ends with one of
+	// these (e.g. MyApp.app, GLFW.framework, proj.xcodeproj). These are
+	// bundle/package directories on macOS / IDE project dirs that must be
+	// skipped wholesale to avoid recursing into binary payloads.
+	std::unordered_set<std::string> skip_dir_suffixes_;
 
-	// Skip filenames
+	// Skip filenames (exact, case-sensitive)
 	std::unordered_set<std::string> skip_filenames_;
+	// Skip filename prefixes (e.g. ".env" -> .env, .env.local, .env.production)
+	std::unordered_set<std::string> skip_filename_prefixes_;
 
 	// .codescopeignore patterns (raw lines)
 	std::vector<std::string> ignore_patterns_;

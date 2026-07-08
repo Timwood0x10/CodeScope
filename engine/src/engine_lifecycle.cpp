@@ -64,16 +64,28 @@ int engine_init(const char *db_path)
 
 		if (rc == SQLITE_OK) {
 			char *sql_err = nullptr;
-			sqlite3_exec(
+			int exec_rc = sqlite3_exec(
 				db,
 				"CREATE VIRTUAL TABLE IF NOT EXISTS embeddings USING vec0("
 				"    symbol_id INTEGER PRIMARY KEY,"
 				"    vector FLOAT[384]"
 				");",
 				nullptr, nullptr, &sql_err);
+			if (exec_rc != SQLITE_OK) {
+				// Surface the failure: a missing embeddings table would
+				// later make every INSERT INTO embeddings fail with no
+				// obvious root cause, so log it explicitly rather than
+				// silently freeing the message.
+				fprintf(stderr,
+					"engine: sqlite-vec table creation failed "
+					"(rc=%d): %s\n",
+					exec_rc,
+					sql_err ? sql_err : "unknown error");
+			} else {
+				fprintf(stderr, "engine: sqlite-vec loaded\n");
+			}
 			if (sql_err)
 				sqlite3_free(sql_err);
-			fprintf(stderr, "engine: sqlite-vec loaded\n");
 		}
 		if (ext_err)
 			sqlite3_free(ext_err);

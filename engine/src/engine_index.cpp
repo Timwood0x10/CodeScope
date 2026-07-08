@@ -28,7 +28,6 @@
 
 // ─── Constants ─────────────────────────────────────────────────
 constexpr uint64_t kMaxFileSize = 5 * 1024 * 1024; // 5 MB default
-constexpr size_t kWorkerStackSize = 8 * 1024 * 1024; // 8 MB per thread
 constexpr unsigned kSleepFactor = 10; // ms per MB over budget
 constexpr unsigned kMaxSleepMs = 1000; // cap sleep at 1s
 
@@ -290,73 +289,6 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 		}
 	}
 
-	// Store function detail (CFG summary as JSON BLOB) for AI understanding
-	for (auto *ir_node : unit->all_nodes) {
-		if (ir_node->kind == ir::NodeKind::FunctionDecl ||
-		    ir_node->kind == ir::NodeKind::MethodDecl) {
-			auto ir_db_it = ir_id_to_db_id.find(ir_node->id);
-			if (ir_db_it == ir_id_to_db_id.end())
-				continue;
-
-			int if_c = 0, for_c = 0, while_c = 0, switch_c = 0,
-			    case_c = 0;
-			int call_c = 0, ret_c = 0, try_c = 0, param_c = 0,
-			    max_depth = 0;
-
-			std::function<void(ir::Node *, int)> count =
-				[&](ir::Node *n, int d) {
-					if (d > max_depth)
-						max_depth = d;
-					switch (n->kind) {
-					case ir::NodeKind::IfStmt:
-						if_c++;
-						break;
-					case ir::NodeKind::ForStmt:
-						for_c++;
-						break;
-					case ir::NodeKind::WhileStmt:
-					case ir::NodeKind::DoWhileStmt:
-						while_c++;
-						break;
-					case ir::NodeKind::SwitchStmt:
-						switch_c++;
-						break;
-					case ir::NodeKind::CaseStmt:
-						case_c++;
-						break;
-					case ir::NodeKind::CallExpr:
-						call_c++;
-						break;
-					case ir::NodeKind::ReturnStmt:
-						ret_c++;
-						break;
-					case ir::NodeKind::TryStmt:
-						try_c++;
-						break;
-					case ir::NodeKind::ParameterDecl:
-						param_c++;
-						break;
-					default:
-						break;
-					}
-					for (auto *c : n->children)
-						count(c, d + 1);
-				};
-			count(ir_node, 0);
-
-			std::ostringstream cfg;
-			cfg << "{\"if\":" << if_c << ",\"for\":" << for_c
-			    << ",\"while\":" << while_c
-			    << ",\"switch\":" << switch_c
-			    << ",\"case\":" << case_c << ",\"calls\":" << call_c
-			    << ",\"returns\":" << ret_c << ",\"try\":" << try_c
-			    << ",\"params\":" << param_c
-			    << ",\"max_nesting\":" << max_depth
-			    << ",\"name\":\"" << ir_node->name << "\"}";
-			// Will be stored in metrics table in Phase B refactor
-		}
-	}
-
 	g_store->commitTransaction();
 
 	std::ostringstream result;
@@ -405,8 +337,6 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	if (env_max)
 		max_file_size = static_cast<uint64_t>(std::atoll(env_max));
 
-	std::unordered_set<std::string> skip_dirs = {};
-
 	// Use centralized FilterPolicy for file discovery
 	FilterPolicy filter;
 	const char *env_mode = getenv("CODESCOPE_INDEX_MODE");
@@ -439,12 +369,29 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 			else
 				rel.clear();
 			if (!rel.empty()) {
-				if (filter.shouldSkipPath(
-					    rel, entry.is_directory())) {
-					if (entry.is_directory())
+				bool entry_is_dir = entry.is_directory();
+				if (filter.shouldSkipPath(rel, entry_is_dir)) {
+					if (entry_is_dir)
 						it.disable_recursion_pending();
 					filter.stats().skipped_dirs++;
 					continue;
+				}
+				// Bundle / package directories (.app, .framework,
+				// .xcodeproj, ...): skip wholesale so we never recurse
+				// into their binary payloads. shouldSkipPath checks path
+				// components by exact name, so suffix-based bundles need
+				// this dedicated check.
+				if (entry_is_dir) {
+					auto slash2 = rel.rfind('/');
+					const std::string &dname =
+						(slash2 == std::string::npos) ?
+							rel :
+							rel.substr(slash2 + 1);
+					if (filter.shouldSkipDirSuffix(dname)) {
+						it.disable_recursion_pending();
+						filter.stats().skipped_dirs++;
+						continue;
+					}
 				}
 			}
 			if (entry.is_regular_file()) {
@@ -727,36 +674,22 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		if (num_workers < 1)
 			num_workers = 1;
 
-		std::vector<pthread_t> workers(num_workers, 0);
+		// Spawn workers with std::thread for cross-platform portability
+		// (pthreads is not available on native Windows / MSVC).
+		std::vector<std::thread> workers;
+		workers.reserve(num_workers);
 		for (int i = 0; i < num_workers; i++) {
-			pthread_attr_t attr;
-			pthread_attr_init(&attr);
-			pthread_attr_setstacksize(&attr, kWorkerStackSize);
-			struct WA {
-				decltype(translate_batch_worker) * fn;
-			};
-			auto *a = new WA{ &translate_batch_worker };
-			if (pthread_create(
-				    &workers[i], &attr,
-				    [](void *v) -> void * {
-					    auto *w = static_cast<WA *>(v);
-					    (*w->fn)();
-					    delete w;
-					    return nullptr;
-				    },
-				    a) != 0) {
-				// Thread creation failed: mark the slot as
-				// invalid so we skip joining it, and reclaim
-				// the heap-allocated argument here since the
-				// worker will never run to delete it.
-				workers[i] = 0;
-				delete a;
+			try {
+				workers.emplace_back(translate_batch_worker);
+			} catch (const std::system_error &e) {
+				fprintf(stderr,
+					"engine: thread spawn failed: %s\n",
+					e.what());
 			}
-			pthread_attr_destroy(&attr);
 		}
 		for (auto &t : workers) {
-			if (t != 0)
-				pthread_join(t, nullptr);
+			if (t.joinable())
+				t.join();
 		}
 		int64_t batch_parse_ms =
 			duration_cast<milliseconds>(steady_clock::now() -
@@ -768,9 +701,19 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		if (memory_budget_mb > 0) {
 			struct rusage usage;
 			if (getrusage(RUSAGE_SELF, &usage) == 0) {
+				// ru_maxrss units differ by platform:
+				//   macOS: bytes  → divide by 1024*1024 for MB
+				//   Linux: KB     → divide by 1024 for MB
+				//   Windows stub: KB (matches Linux)
+#ifdef __APPLE__
 				uint64_t rss_mb =
 					static_cast<uint64_t>(usage.ru_maxrss) /
 					(1024 * 1024);
+#else
+				uint64_t rss_mb =
+					static_cast<uint64_t>(usage.ru_maxrss) /
+					1024;
+#endif
 				if (rss_mb > memory_budget_mb) {
 					unsigned sleep_ms =
 						(rss_mb - memory_budget_mb) *

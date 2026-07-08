@@ -1,4 +1,6 @@
 #include "filter_policy.h"
+#include <cctype>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -6,22 +8,30 @@
 
 FilterPolicy::FilterPolicy()
 {
-	// Normal mode skip dirs — VCS, IDE, common build artifacts, tests, docs
+	// Normal mode skip dirs — VCS, IDE, build artifacts, dependency/env dirs.
+	// Applied to EVERY path component so matches work at any depth
+	// (e.g. src/node_modules, packages/foo/.venv are both caught).
+	// NOTE: source-bearing dirs (test/, docs/, vendor/, bin/) are NOT skipped
+	// here — they move to fast_extra_skip_dirs_ so NORMAL mode indexes them.
 	normal_skip_dirs_ = {
+		// ── VCS & worktrees ──
 		".git",
 		".svn",
 		".hg",
 		".worktrees",
+		".claude-worktrees",
+		// ── IDE / editor state ──
 		".vscode",
 		".idea",
 		".eclipse",
 		".claude",
-		".claude-worktrees",
 		"Antigravity",
 		".clangd",
 		".ccls-cache",
 		".cache",
 		".cpcache",
+		".vs",
+		// ── Language tooling caches ──
 		".shadow-cljs",
 		".metals",
 		".bloop",
@@ -32,10 +42,22 @@ FilterPolicy::FilterPolicy()
 		".nox",
 		".tox",
 		".eggs",
+		".cargo",
+		".stack-work",
+		".dart_tool",
+		"zig-cache",
+		"zig-out",
+		"elm-stuff",
+		"_opam",
+		".swiftpm",
+		".tscache",
+		".awcache",
+		// ── JS/TS ecosystems ──
 		".npm",
 		".nyc_output",
 		".pnpm-store",
 		".yarn",
+		".pnp",
 		".next",
 		".nuxt",
 		".svelte-kit",
@@ -44,91 +66,307 @@ FilterPolicy::FilterPolicy()
 		".parcel-cache",
 		".docusaurus",
 		".expo",
-		".cargo",
-		".stack-work",
-		".dart_tool",
-		"zig-cache",
-		"zig-out",
-		"elm-stuff",
-		"_opam",
-		".terraform",
-		".serverless",
-		".vercel",
-		".netlify",
-		".codescope",
-		".codegraph",
+		".nx",
 		"node_modules",
-		"target",
-		"__pycache__",
+		"bower_components",
+		"jspm_packages",
+		".deno",
+		".bun",
+		// ── Python environments (non-standard projects often omit these
+		//    from .gitignore, so we MUST hard-skip) ──
 		".venv",
 		"venv",
+		"env",
+		".env",
+		"__pycache__",
+		"site-packages",
+		".virtualenv",
+		".virtualenvs",
+		// ── Build outputs ──
 		"build",
 		".build",
 		"dist",
 		".dist",
 		"out",
 		".out",
-		"coverage",
-		"htmlcov",
-		"site-packages",
+		"target",
 		"Pods",
-		"temp",
-		"tmp",
+		"Carthage",
+		"DerivedData",
 		"bazel-bin",
 		"bazel-out",
 		"bazel-testlogs",
+		".gradle",
+		".buck",
+		".buck-out",
+		"obj",
+		"Debug",
+		"Release",
+		"_build",
+		".mvn",
+		"cmake-build-debug",
+		"cmake-build-release",
+		// ── Coverage / test reports ──
+		"coverage",
+		"htmlcov",
+		// ── IaC / serverless ──
+		".terraform",
+		".terragrunt-cache",
+		".serverless",
+		".vercel",
+		".netlify",
+		// ── Tool-internal & misc ──
+		".codescope",
+		".codegraph",
+		".qdrant_code_embeddings",
+		"temp",
+		"tmp",
+		".tmp",
+		// ── Secrets (NEVER index) ──
+		".ssh",
+	};
+
+	// FAST mode skips even more — docs, examples, tests, generated, vendor, etc.
+	// These dirs often hold source in NORMAL mode but are rarely the focus of
+	// a fast scan.
+	fast_extra_skip_dirs_ = {
+		"generated",
+		"gen",
+		"auto-generated",
+		"fixtures",
+		"testdata",
+		"test_data",
+		"__tests__",
+		"__mocks__",
+		"__snapshots__",
+		"__fixtures__",
+		"__test__",
+		"docs",
+		"doc",
+		"documentation",
+		"examples",
+		"example",
+		"samples",
+		"sample",
+		"scripts",
+		"tools",
+		"hack",
+		"migrations",
+		"seeds",
+		"e2e",
+		"integration",
+		"locale",
+		"locales",
+		"i18n",
+		"l10n",
+		"assets",
+		"static",
+		"public",
+		"media",
+		"external",
+		"bin",
+		// Source-bearing dirs promoted from NORMAL to FAST-only so that
+		// NORMAL mode indexes Go test files, PHP vendor source, docs, etc.
+		"test",
+		"tests",
 		"third_party",
 		"thirdparty",
 		"3rdparty",
 		"vendor",
-		".qdrant_code_embeddings",
-		".tmp",
-		// Non-essential directories that are rarely source code
-		"test",
-		"tests",
-		"doc",
-		"docs",
-		"documentation",
-		"examples",
-		"example",
 		"bench",
 		"benchmark",
 		"benchmarks",
-		"bin",
-	};
-
-	// FAST mode skips even more — docs, examples, tests, generated, etc.
-	fast_extra_skip_dirs_ = {
-		"generated",	"gen",		 "auto-generated",
-		"fixtures",	"testdata",	 "test_data",
-		"__tests__",	"__mocks__",	 "__snapshots__",
-		"__fixtures__", "__test__",	 "docs",
-		"doc",		"documentation", "examples",
-		"example",	"samples",	 "sample",
-		"scripts",	"tools",	 "hack",
-		"migrations",	"seeds",	 "e2e",
-		"integration",	"locale",	 "locales",
-		"i18n",		"l10n",		 "assets",
-		"static",	"public",	 "media",
-		"external",	"bin",
 	};
 
 	// Skip suffixes — non-source binaries, images, archives, etc.
+	// Matched CASE-INSENSITIVELY so .EXE / .Dll on Windows are caught.
+	// Covers: platform executables, object code, packages/installers,
+	// debug symbols, media, fonts, archives, secrets, data files, logs.
 	skip_suffixes_ = {
-		".o",	 ".a",	    ".so",	".dll",	     ".dylib",
-		".lib",	 ".exe",    ".bin",	".class",    ".wasm",
-		".node", ".pyc",    ".pyo",	".pyd",	     ".png",
-		".jpg",	 ".jpeg",   ".gif",	".ico",	     ".bmp",
-		".tiff", ".webp",   ".svg",	".woff",     ".woff2",
-		".ttf",	 ".eot",    ".otf",	".mp3",	     ".mp4",
-		".avi",	 ".mov",    ".wav",	".flac",     ".ogg",
-		".mkv",	 ".pdf",    ".doc",	".docx",     ".xls",
-		".xlsx", ".ppt",    ".pptx",	".zip",	     ".tar",
-		".gz",	 ".bz2",    ".xz",	".rar",	     ".7z",
-		".jar",	 ".war",    ".map",	".pem",	     ".crt",
-		".key",	 ".p12",    ".pb",	".avro",     ".parquet",
-		".beam", ".elc",    ".rlib",	".coverage", ".prof",
-		".db",	 ".sqlite", ".sqlite3", ".log",	     ".tmp",
+		// ── Compiled object code & libraries (all platforms) ──
+		".o",
+		".obj",
+		".a",
+		".lib",
+		".so",
+		".dll",
+		".dylib",
+		".lo",
+		".la",
+		".slo",
+		// ── Native executables & installers ──
+		".exe",
+		".bin",
+		".app",
+		".msi",
+		".scr",
+		".cpl",
+		".drv",
+		".ocx",
+		".efi",
+		".com",
+		".bat",
+		".cmd",
+		".ps1",
+		// ── Packages / disk images ──
+		".deb",
+		".rpm",
+		".dmg",
+		".pkg",
+		".snap",
+		".flatpak",
+		".appimage",
+		".apk",
+		".aab",
+		".aar",
+		".ipa",
+		".xpi",
+		".crx",
+		// ── Kernel modules / drivers ──
+		".ko",
+		".kext",
+		// ── Bytecode / VM artifacts ──
+		".class",
+		".wasm",
+		".node",
+		".pyc",
+		".pyo",
+		".pyd",
+		".beam",
+		".elc",
+		".rlib",
+		".cmo",
+		".cma",
+		".cmi",
+		".cmx",
+		".hi",
+		".native",
+		".run",
+		// ── Debug symbols ──
+		".pdb",
+		".dbg",
+		".dwarf",
+		".dwo",
+		".sym",
+		// ── MSVC build intermediates ──
+		".ilk",
+		".idb",
+		".exp",
+		".tlog",
+		".lastbuildstate",
+		".unsuccessfulbuild",
+		// ── Images ──
+		".png",
+		".jpg",
+		".jpeg",
+		".gif",
+		".ico",
+		".bmp",
+		".tiff",
+		".webp",
+		".svg",
+		".heic",
+		".heif",
+		".avif",
+		".raw",
+		// ── Fonts ──
+		".woff",
+		".woff2",
+		".ttf",
+		".eot",
+		".otf",
+		// ── Audio / video ──
+		".mp3",
+		".mp4",
+		".avi",
+		".mov",
+		".wav",
+		".flac",
+		".ogg",
+		".mkv",
+		".webm",
+		".m4a",
+		".aac",
+		".m4v",
+		".wmv",
+		// ── Documents ──
+		".pdf",
+		".doc",
+		".docx",
+		".xls",
+		".xlsx",
+		".ppt",
+		".pptx",
+		".odt",
+		".ods",
+		".odp",
+		".epub",
+		// ── Archives ──
+		".zip",
+		".tar",
+		".gz",
+		".tgz",
+		".bz2",
+		".xz",
+		".rar",
+		".7z",
+		".lz",
+		".lzma",
+		".zst",
+		".cab",
+		".cpio",
+		// ── JVM artifacts ──
+		".jar",
+		".war",
+		".ear",
+		// ── Source maps (generated, not source) ──
+		".map",
+		// ── Secrets / certs (NEVER index) ──
+		".pem",
+		".crt",
+		".key",
+		".p12",
+		".pfx",
+		".jks",
+		".keystore",
+		// ── Data files ──
+		".pb",
+		".avro",
+		".parquet",
+		".feather",
+		".orc",
+		".h5",
+		".hdf5",
+		".npy",
+		".npz",
+		".pkl",
+		".pickle",
+		// ── Databases ──
+		".db",
+		".sqlite",
+		".sqlite3",
+		".mdb",
+		".accdb",
+		// ── Logs / temp / backups ──
+		".log",
+		".tmp",
+		".swp",
+		".swo",
+		".bak",
+		".orig",
+		".rej",
+		// ── Coverage / profiling output ──
+		".coverage",
+		".prof",
+		".profraw",
+		".gcda",
+		".gcno",
+		".gcov",
+		// ── Editor / IDE metadata ──
+		".iml",
+		// ── Lock files (generated, not source) ──
+		".lock",
+		// ── Tilde backup (vim/emacs) ──
 		"~",
 	};
 	fast_extra_suffixes_ = {
@@ -136,11 +374,61 @@ FilterPolicy::FilterPolicy()
 		".min.css",
 	};
 
-	// Skip filenames
+	// Directory suffixes — bundle / package / IDE project DIRECTORIES.
+	// Matched case-insensitively against the directory's basename so
+	// "Foo.app", "Foo.APP" and "GLFW.framework" are all skipped.
+	skip_dir_suffixes_ = {
+		".app",		".framework",	  ".bundle",
+		".plugin",	".kext",	  ".xcodeproj",
+		".xcworkspace", ".xcdatamodeld",  ".scnassets",
+		".xcassets",	".playground",	  ".playgroundpackage",
+		".docc",	".assetscatalog",
+	};
+
+	// Skip filenames — exact match (case-sensitive, matches real-world
+	// casing of these well-known files).
 	skip_filenames_ = {
-		"package-lock.json", "yarn.lock",  "pnpm-lock.yaml",
-		"Gemfile.lock",	     "Cargo.lock", ".DS_Store",
+		// ── Lock files (generated) ──
+		"package-lock.json",
+		"yarn.lock",
+		"pnpm-lock.yaml",
+		"Gemfile.lock",
+		"Cargo.lock",
+		"composer.lock",
+		"go.sum",
+		"poetry.lock",
+		"Pipfile.lock",
+		"gradle.lockfile",
+		"gradle.properties",
+		// ── OS metadata ──
+		".DS_Store",
 		"Thumbs.db",
+		"desktop.ini",
+		".lsyncd.cfg",
+		// ── Secrets (NEVER index — .env* also via prefix below) ──
+		".env",
+		".env.local",
+		".env.production",
+		".env.development",
+		".env.staging",
+		".env.test",
+		".env.example",
+		".npmrc",
+		".yarnrc",
+		".pypirc",
+		".netrc",
+		".p12",
+		// ── Misc generated / non-source ──
+		".gitkeep",
+		".gitattributes",
+		".editorconfig",
+		"yarn-error.log",
+	};
+
+	// Skip filename prefixes — files whose name STARTS WITH one of these
+	// (case-sensitive). Catches the .env.* family and similar.
+	skip_filename_prefixes_ = {
+		".env.", // .env.local, .env.production, .env.development.local ...
 	};
 
 	buildActiveSets();
@@ -184,27 +472,67 @@ bool FilterPolicy::isLanguageAccepted(const std::string &lang) const
 
 bool FilterPolicy::shouldSkipDir(const std::string &dir_name) const
 {
-	if (active_skip_dirs_.find(dir_name) != active_skip_dirs_.end())
+	// Case-insensitive: lowercase before lookup so Node_Modules / VENV / BIN
+	// match on case-sensitive filesystems (Linux ext4).
+	std::string lower = dir_name;
+	for (auto &c : lower)
+		c = static_cast<char>(std::tolower(c));
+	if (active_skip_dirs_.find(lower) != active_skip_dirs_.end())
 		return true;
 	return false;
 }
 
 bool FilterPolicy::shouldSkipFile(const std::string &filename) const
 {
-	if (skip_filenames_.find(filename) != skip_filenames_.end())
+	// Case-insensitive: lowercase before lookup so .ENV.LOCAL matches.
+	std::string lower = filename;
+	for (auto &c : lower)
+		c = static_cast<char>(std::tolower(c));
+	if (skip_filenames_.find(lower) != skip_filenames_.end())
+		return true;
+	// Prefix check — catches .env.local, .env.production, etc.
+	for (const auto &pfx : skip_filename_prefixes_) {
+		if (lower.size() >= pfx.size() &&
+		    lower.compare(0, pfx.size(), pfx) == 0)
+			return true;
+	}
+	// Vim/emacs backup files (main.cpp~, config.json~) — the trailing '~'
+	// can't be matched by the '.'-extension path above, so check it here.
+	if (!lower.empty() && lower.back() == '~')
 		return true;
 	return false;
 }
 
 bool FilterPolicy::shouldSkipSuffix(const std::string &ext) const
 {
-	auto it = skip_suffixes_.find(ext);
-	if (it != skip_suffixes_.end())
+	// Case-insensitive: lowercase the extension before lookup so .EXE /
+	// .Dll / .SO on Windows & case-insensitive macOS filesystems match.
+	std::string lower = ext;
+	for (auto &c : lower)
+		c = static_cast<char>(std::tolower(c));
+	if (skip_suffixes_.find(lower) != skip_suffixes_.end())
 		return true;
 	if (mode_ == FAST) {
-		auto fit = fast_extra_suffixes_.find(ext);
-		if (fit != fast_extra_suffixes_.end())
+		if (fast_extra_suffixes_.find(lower) !=
+		    fast_extra_suffixes_.end())
 			return true;
+	}
+	return false;
+}
+
+// Check whether a directory's basename ends with a known bundle suffix
+// (case-insensitive). Used to skip .app/.framework/.xcodeproj dirs.
+bool FilterPolicy::shouldSkipDirSuffix(const std::string &dir_name) const
+{
+	for (const auto &sfx : skip_dir_suffixes_) {
+		if (dir_name.size() >= sfx.size()) {
+			auto tail =
+				dir_name.substr(dir_name.size() - sfx.size());
+			for (auto &c : tail)
+				c = static_cast<char>(std::tolower(c));
+			if (tail == sfx)
+				return true;
+		}
 	}
 	return false;
 }
@@ -236,50 +564,111 @@ const char *FilterPolicy::detectLanguage(const char *file_path) const
 		return nullptr;
 
 	const char *ext = strrchr(file_path, '.');
-	if (!ext)
+	if (!ext) {
+		// No extension: probe the shebang line to identify scripts
+		// (e.g. "#!/usr/bin/env python3", "#!/usr/bin/env node").
+		std::ifstream f(file_path);
+		if (!f.is_open())
+			return nullptr;
+		std::string first_line;
+		std::getline(f, first_line);
+		if (first_line.size() >= 2 && first_line[0] == '#' &&
+		    first_line[1] == '!') {
+			// Match the interpreter token after the last '/' on the
+			// shebang line so "/usr/bin/env python3" → "python3".
+			auto sp = first_line.rfind('/');
+			std::string interp = (sp != std::string::npos) ?
+						     first_line.substr(sp + 1) :
+						     first_line.substr(2);
+			// Strip trailing whitespace/args
+			auto ws = interp.find_first_of(" \t\r\n");
+			if (ws != std::string::npos)
+				interp.erase(ws);
+			// Lowercase for case-insensitive comparison
+			for (auto &c : interp)
+				c = static_cast<char>(std::tolower(c));
+			if (interp.rfind("python", 0) == 0)
+				return "python";
+			if (interp == "node" || interp == "nodejs" ||
+			    interp == "deno")
+				return "javascript";
+			if (interp == "bash" || interp == "sh" ||
+			    interp == "zsh" || interp == "ksh" ||
+			    interp == "fish")
+				return "bash";
+			if (interp == "ruby" || interp == "rb")
+				return "ruby";
+			if (interp == "perl" || interp == "perl5")
+				return "perl";
+			if (interp == "php")
+				return "php";
+			if (interp == "lua")
+				return "lua";
+			if (interp == "rscript" || interp == "r")
+				return "r";
+			if (interp == "awk" || interp == "gawk" ||
+			    interp == "mawk")
+				return "awk";
+		}
 		return nullptr;
+	}
 
-	// Skip minified/bundled JS
-	const char *slash = strrchr(file_path, '/');
+	// Lowercase the extension into a small buffer so that .PY / .Rs /
+	// .TSX on case-insensitive filesystems (Windows, default macOS)
+	// are recognized identically to their canonical lowercase forms.
+	std::string lext;
+	lext.reserve(16);
+	for (const char *p = ext; *p; ++p)
+		lext.push_back(static_cast<char>(std::tolower(*p)));
+
+	// Skip minified/bundled JS — generated code, expensive & low-value.
+	// Use both '/' and '\\' so basename extraction works on Windows too.
+	const char *slash_f = strrchr(file_path, '/');
+	const char *slash_b = strrchr(file_path, '\\');
+	const char *slash = (slash_b > slash_f) ? slash_b : slash_f;
 	const char *fname = slash ? slash + 1 : file_path;
 	size_t fname_len = strlen(fname);
-	if (fname_len > 7 && strcmp(fname + fname_len - 7, ".min.js") == 0)
-		return nullptr;
+	// Lowercased basename tail checks for robustness on all platforms.
+	if (fname_len > 7) {
+		char tail[8] = { 0 };
+		for (size_t i = 0; i < 7; i++)
+			tail[i] = static_cast<char>(
+				std::tolower(fname[fname_len - 7 + i]));
+		if (strcmp(tail, ".min.js") == 0)
+			return nullptr;
+	}
 	if (fname_len > 10 && strstr(fname, ".bundle.js") != nullptr)
 		return nullptr;
 	if (strcmp(fname, "vendor.js") == 0)
 		return nullptr;
 
-	if (strcmp(ext, ".py") == 0)
+	if (lext == ".py")
 		return "python";
-	if (strcmp(ext, ".cpp") == 0 || strcmp(ext, ".cc") == 0 ||
-	    strcmp(ext, ".cxx") == 0)
+	if (lext == ".cpp" || lext == ".cc" || lext == ".cxx")
 		return "cpp";
-	if (strcmp(ext, ".c") == 0 || strcmp(ext, ".h") == 0)
+	if (lext == ".c" || lext == ".h")
 		return "c";
-	if (strcmp(ext, ".hpp") == 0 || strcmp(ext, ".hxx") == 0)
+	if (lext == ".hpp" || lext == ".hxx")
 		return "cpp";
-	if (strcmp(ext, ".rs") == 0)
+	if (lext == ".rs")
 		return "rust";
-	if (strcmp(ext, ".swift") == 0)
+	if (lext == ".swift")
 		return "swift";
-	if (strcmp(ext, ".js") == 0)
+	if (lext == ".js" || lext == ".mjs" || lext == ".cjs")
 		return "javascript";
-	if (strcmp(ext, ".mjs") == 0)
-		return "javascript";
-	if (strcmp(ext, ".ts") == 0)
+	if (lext == ".ts")
 		return "typescript";
-	if (strcmp(ext, ".tsx") == 0)
+	if (lext == ".tsx")
 		return "tsx";
-	if (strcmp(ext, ".go") == 0)
+	if (lext == ".go")
 		return "go";
-	if (strcmp(ext, ".java") == 0)
+	if (lext == ".java")
 		return "java";
-	if (strcmp(ext, ".kt") == 0 || strcmp(ext, ".kts") == 0)
+	if (lext == ".kt" || lext == ".kts")
 		return "kotlin";
-	if (strcmp(ext, ".rb") == 0)
+	if (lext == ".rb")
 		return "ruby";
-	if (strcmp(ext, ".scala") == 0)
+	if (lext == ".scala")
 		return "scala";
 
 	return nullptr;
@@ -339,6 +728,55 @@ bool FilterPolicy::shouldSkipPath(const std::string &rel_path,
 			if (comp == normalized)
 				return true;
 		}
+	}
+
+	return false;
+}
+
+bool FilterPolicy::shouldSkipEntry(const std::string &rel_path,
+				   bool is_dir) const
+{
+	if (rel_path.empty())
+		return false;
+
+	// Normalize Windows backslashes to '/' so the rest of the pipeline
+	// (shouldSkipPath splits on '/', detectLanguage uses strrchr('/'))
+	// works uniformly across platforms.
+	std::string normalized = rel_path;
+	for (auto &c : normalized)
+		if (c == '\\')
+			c = '/';
+
+	// Extract the basename once — used by every per-entry check below.
+	auto slash = normalized.rfind('/');
+	const std::string &base = (slash == std::string::npos) ?
+					  normalized :
+					  normalized.substr(slash + 1);
+
+	// ── Shared checks (both dirs & files) ──
+	// 1. Path-component skip_dirs (any depth) + gitignore + .codescopeignore.
+	//    This alone catches node_modules/, .venv/, .git/ at any nesting.
+	if (shouldSkipPath(normalized, is_dir))
+		return true;
+
+	if (is_dir) {
+		// 2a. Bundle directory suffixes (.app, .framework, .xcodeproj ...)
+		//     so we never recurse into binary payloads / IDE project bundles.
+		if (shouldSkipDirSuffix(base))
+			return true;
+		return false;
+	}
+
+	// ── File-only checks ──
+	// 2b. Exact filename + filename-prefix skip (.env, .env.local, lock files)
+	if (shouldSkipFile(base))
+		return true;
+	// 2c. Suffix skip — case-insensitive (.EXE == .exe). Catches binaries,
+	//     archives, media, secrets, lock files, generated artifacts.
+	auto dot = base.rfind('.');
+	if (dot != std::string::npos) {
+		if (shouldSkipSuffix(base.substr(dot)))
+			return true;
 	}
 
 	return false;
@@ -443,10 +881,15 @@ bool FilterPolicy::gitignoreMatches(const std::vector<GitignoreRule> &rules,
 			} else {
 				// Literal match at path-component boundaries only,
 				// so "foo" matches "foo", "a/foo", "a/foo/b" but
-				// not "afoo" or "foobar". rfind alone would match
-				// arbitrary substrings, so verify both edges.
-				auto pos = rel_path.rfind(r.pattern);
-				if (pos != std::string::npos) {
+				// not "afoo" or "foobar". Iterate ALL occurrences
+				// (not just the last via rfind) so a pattern like
+				// "foo" matches even when "xfoo" appears later.
+				size_t search_from = 0;
+				while (true) {
+					auto pos = rel_path.find(r.pattern,
+								 search_from);
+					if (pos == std::string::npos)
+						break;
 					auto after = pos + r.pattern.size();
 					bool left_boundary =
 						(pos == 0 ||
@@ -454,7 +897,11 @@ bool FilterPolicy::gitignoreMatches(const std::vector<GitignoreRule> &rules,
 					bool right_boundary =
 						(after == rel_path.size() ||
 						 rel_path[after] == '/');
-					match = left_boundary && right_boundary;
+					if (left_boundary && right_boundary) {
+						match = true;
+						break;
+					}
+					search_from = pos + 1;
 				}
 			}
 		}
