@@ -4,10 +4,9 @@
 .opencode
 .atomcode
 .codegraph/
-
+.workbuddy/
 .codescope/
 .mcp.json
-
 
 # IDE and Editors
 **/.idea/
@@ -59,7 +58,6 @@
 *$py.class
 **/.Python
 **/build/
-**/build_asan/
 **/develop-eggs/
 **/dist/
 **/downloads/
@@ -110,7 +108,6 @@
 # Logs
 *.log
 **/logs/
-!Runtimelog/*.log
 
 # Environment and secrets
 **/.env
@@ -184,9 +181,6 @@
 *.iso
 
 plan/
-# AtomCode local-scope configs (machine-specific)
-.atomcode/local/
 
-**/build_check/
-
+**/build_*/
 **/*.ll

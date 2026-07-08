@@ -2667,27 +2667,149 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 
 	// ── 2e: Call edges ──
 	if (build_calls) {
-		std::string sql = std::string(
-			"INSERT INTO graph_edges "
-			"(project_id, source_node_id, target_node_id, edge_type, graph_type, "
-			" call_site_file, call_site_line) "
-			"SELECT DISTINCT " +
-			pid +
-			", caller.node_id, callee.node_id, 1, 'call_graph', "
-			"  sr.file_path, sr.start_row "
-			"FROM semantic_records sr "
-			"JOIN _r2n callee ON SUBSTR(sr.name, -LENGTH(callee.name)) = callee.name "
-			"JOIN _r2n caller ON sr.parent_id = caller.original_id AND sr.file_path = caller.file_path "
-			"JOIN semantic_records cal_sr ON cal_sr.rowid = callee.rid "
-			"JOIN semantic_records call_sr ON sr.parent_id = call_sr.original_id AND sr.file_path = call_sr.file_path "
-			"WHERE sr.project_id=" +
-			pid + " AND sr.kind=9" +
-			" AND sr.name != '' AND callee.node_id != caller.node_id"
-			" AND cal_sr.kind IN (0,1)"
-			" AND call_sr.kind IN (0,1)");
-		if (explain_env && explain_env[0])
-			explainQueryPlan(sql.c_str(), "call_edges");
-		exec(sql.c_str());
+		// Replace the old O(n²) SQL suffix JOIN with C++ hash maps,
+		// then bulk-INSERT matched edges in batches.
+		//
+		// Old: JOIN _r2n callee ON SUBSTR(sr.name, -LENGTH(callee.name)) = callee.name
+		// → no index can help, O(calls × decls) in practice.
+		//
+		// New: build name → [node_id] multimap + (file_path × original_id) → node_id map,
+		// then look up each call record via O(1) hash lookups. Batch INSERT at the end.
+
+		// Helper: extract last component after '.'
+		auto shortName = [](const std::string &name) -> std::string {
+			auto dot = name.rfind('.');
+			return (dot != std::string::npos) ? name.substr(dot + 1) : name;
+		};
+
+		// ── Step 1: Load _r2n declarations into C++ indexes ──
+		// caller_idx: [file_path][original_id] → node_id
+		// callee_by_name: name → [node_id]
+		// callee_by_short: short-name → [node_id]
+		std::unordered_map<std::string,
+			std::unordered_map<int64_t, int64_t>> caller_idx;
+		std::unordered_map<std::string, std::vector<int64_t>> callee_by_name;
+		std::unordered_map<std::string, std::vector<int64_t>> callee_by_short;
+
+		{
+			const char *r2n_sql =
+				"SELECT r.node_id, r.name, r.original_id, r.file_path "
+				"FROM _r2n r "
+				"JOIN semantic_records s ON s.rowid = r.rid "
+				"WHERE s.kind IN (0,1)";
+			sqlite3_stmt *st = nullptr;
+			if (sqlite3_prepare_v2(db_, r2n_sql, -1, &st, nullptr) == SQLITE_OK) {
+				while (sqlite3_step(st) == SQLITE_ROW) {
+					int64_t node_id = sqlite3_column_int64(st, 0);
+					const char *name_c = (const char *)sqlite3_column_text(st, 1);
+					int64_t orig_id = sqlite3_column_int64(st, 2);
+					const char *fp_c = (const char *)sqlite3_column_text(st, 3);
+					if (!name_c || !*name_c || !fp_c)
+						continue;
+					std::string name(name_c);
+					// Callee index: exact name + short name (last component)
+					callee_by_name[name].push_back(node_id);
+					std::string sn = shortName(name);
+					if (sn != name)
+						callee_by_short[sn].push_back(node_id);
+					// Caller index: [file_path][original_id]
+					caller_idx[fp_c][orig_id] = node_id;
+				}
+				sqlite3_finalize(st);
+			}
+		}
+
+		// ── Step 2: Query call records and resolve ──
+		// Collect matched edges into a vector, then bulk INSERT in batches
+		// to minimize sqlite3 bind/step/reset overhead.
+		struct CallEdge {
+			int64_t caller_id, callee_id;
+			std::string file_path;
+			int start_row;
+		};
+		std::vector<CallEdge> matched_edges;
+		matched_edges.reserve(65536);
+
+		{
+			std::string call_sql = "SELECT sr.name, sr.parent_id, sr.file_path, sr.start_row "
+				"FROM semantic_records sr "
+				"WHERE sr.project_id=" + pid + " AND sr.kind=9 AND sr.name != ''";
+			sqlite3_stmt *call_st = nullptr;
+			if (sqlite3_prepare_v2(db_, call_sql.c_str(), -1, &call_st, nullptr) == SQLITE_OK) {
+				int64_t pid_i = static_cast<int64_t>(project_id);
+				while (sqlite3_step(call_st) == SQLITE_ROW) {
+					const char *name_c = (const char *)sqlite3_column_text(call_st, 0);
+					int64_t parent_id = sqlite3_column_int64(call_st, 1);
+					const char *fp_c = (const char *)sqlite3_column_text(call_st, 2);
+					int start_row = sqlite3_column_int(call_st, 3);
+					if (!name_c || !*name_c || !fp_c)
+						continue;
+
+					// Look up caller: [file_path][original_id]
+					auto fp_it = caller_idx.find(fp_c);
+					if (fp_it == caller_idx.end())
+						continue;
+					auto oid_it = fp_it->second.find(parent_id);
+					if (oid_it == fp_it->second.end())
+						continue;
+					int64_t caller_id = oid_it->second;
+
+					std::string call_name(name_c);
+					auto tryAddEdge = [&](int64_t callee_id) {
+						if (callee_id == caller_id) return;
+						matched_edges.push_back({caller_id, callee_id, fp_c, start_row});
+					};
+
+					bool found = false;
+					// Try exact full-name match first
+					auto fr = callee_by_name.find(call_name);
+					if (fr != callee_by_name.end()) {
+						for (int64_t cid : fr->second) {
+							tryAddEdge(cid);
+							found = true;
+						}
+					}
+					// Try short-name (last component after '.')
+					if (!found) {
+						std::string sn = shortName(call_name);
+						if (sn != call_name) {
+							auto sr = callee_by_short.find(sn);
+							if (sr != callee_by_short.end()) {
+								for (int64_t cid : sr->second)
+									tryAddEdge(cid);
+							}
+						}
+					}
+				}
+				sqlite3_finalize(call_st);
+			}
+		}
+
+		// ── Step 3: Bulk INSERT matched edges ──
+		if (!matched_edges.empty()) {
+			// Insert in batches of 500 to balance per-statement overhead vs memory
+			constexpr size_t kBatchSize = 500;
+			const char *insert_sql =
+				"INSERT OR IGNORE INTO graph_edges "
+				"(project_id, source_node_id, target_node_id, edge_type, graph_type, "
+				" call_site_file, call_site_line) "
+				"VALUES (?,?,?,1,'call_graph',?,?)";
+			sqlite3_stmt *ins = nullptr;
+			if (sqlite3_prepare_v2(db_, insert_sql, -1, &ins, nullptr) == SQLITE_OK) {
+				int64_t pid_i = static_cast<int64_t>(project_id);
+				for (size_t i = 0; i < matched_edges.size(); i++) {
+					auto &e = matched_edges[i];
+					sqlite3_bind_int64(ins, 1, pid_i);
+					sqlite3_bind_int64(ins, 2, e.caller_id);
+					sqlite3_bind_int64(ins, 3, e.callee_id);
+					sqlite3_bind_text(ins, 4, e.file_path.c_str(), -1, SQLITE_STATIC);
+					sqlite3_bind_int(ins, 5, e.start_row);
+					sqlite3_step(ins);
+					sqlite3_reset(ins);
+				}
+				sqlite3_finalize(ins);
+			}
+		}
 	}
 	auto t_call = Clock::now();
 
