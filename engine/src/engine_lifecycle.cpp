@@ -99,8 +99,8 @@ void engine_shutdown()
 	//   destruct:    g_parser → g_query → g_store
 	// This guarantees that g_query's destructor (which may issue SQLite calls)
 	// runs while g_store is still alive, and g_store is closed last.
-	g_parser.reset();   // independent, safe to drop first
-	g_query.reset();    // may do SQLite work via g_store, destruct BEFORE store closes
+	g_parser.reset(); // independent, safe to drop first
+	g_query.reset(); // may do SQLite work via g_store, destruct BEFORE store closes
 	if (g_store) {
 		g_store->close();
 		g_store.reset();

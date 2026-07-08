@@ -1,0 +1,108 @@
+# Manual workflow: build Windows binary and upload as artifact
+# Trigger via GitHub UI: Actions → Build Windows → Run workflow
+name: Build Windows
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust (MSVC)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install deps
+        run: |
+          choco install -y cmake ninja mingw git
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: windows-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: windows-cargo-registry-
+
+      - name: Cache Cargo target
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: windows-cargo-target-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: windows-cargo-target-
+
+      - name: Cache CMake build
+        uses: actions/cache@v4
+        with:
+          path: engine/build
+          key: windows-cmake-build-${{ hashFiles('engine/CMakeLists.txt') }}
+          restore-keys: windows-cmake-build-
+
+      - name: Cache grammar sources
+        uses: actions/cache@v4
+        with:
+          path: grammars/tree-sitter-*
+          key: windows-grammars-${{ hashFiles('grammars/clone_grammars.sh') }}
+          restore-keys: windows-grammars-
+
+      - name: Set grammar source path for CMake
+        run: |
+          echo "TREE_SITTER_NPM=$PWD/grammars" >> "$GITHUB_ENV"
+          echo "Grammar sources: $PWD/grammars"
+
+      - name: Clone grammar sources for CMake
+        run: |
+          cd grammars
+          bash clone_grammars.sh
+
+      - name: Build C++ engine
+        run: |
+          cmake -B engine/build -G "MinGW Makefiles" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=gcc \
+            -DCMAKE_CXX_COMPILER=g++ \
+            engine/
+          cmake --build engine/build --target astgraph_engine
+
+      - name: Build Rust server
+        run: |
+          cargo build --release --bin codescope
+
+      - name: Package
+        run: |
+          mkdir -p package
+          cp target/release/codescope.exe package/
+          cp LICENSE package/ 2>/dev/null || true
+          cd package
+          7z a -ttar "../codescope-x86_64-windows.tar" codescope.exe LICENSE 2>/dev/null || \
+          tar -cf "../codescope-x86_64-windows.tar" codescope.exe LICENSE 2>/dev/null || true
+          cd ..
+          echo "Packaged: codescope-x86_64-windows.tar"
+
+      - name: Generate checksum
+        run: |
+          certutil -hashfile codescope-x86_64-windows.tar SHA256 > checksum-windows.txt 2>/dev/null || \
+          sha256sum codescope-x86_64-windows.tar > checksum-windows.txt 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codescope-x86_64-windows
+          path: |
+            codescope-x86_64-windows.tar
+            checksum-windows.txt
+          retention-days: 30
