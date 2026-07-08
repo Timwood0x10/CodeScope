@@ -2,21 +2,10 @@
 #include "filter_policy.h"
 #include "platform_win.h"
 
-#include <algorithm>
 #include <cstdio>
 #include <cstring>
-#include <filesystem>
 #include <fstream>
-#include <memory>
-#include <mutex>
-#include <sqlite3.h>
-#include <sstream>
 #include <string>
-#include <thread>
-#include <tree_sitter/api.h>
-#include <unordered_map>
-#include <unordered_set>
-#include <vector>
 
 // ─── Helpers ───────────────────────────────────────────────────
 

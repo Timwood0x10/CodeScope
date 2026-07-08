@@ -63,14 +63,15 @@ help:
 all: build
 
 # ─── Build ───────────────────────────────────────────────────────
-build: build-grammars build-engine build-server
+# build-grammars is intentionally omitted: tree-sitter grammars are
+# compiled into the C++ engine binary via CMake/FetchContent (see
+# CMakeLists.txt). The old build-grammars target that produced .so
+# files for dlopen was removed — those .so files are never loaded.
+build: build-engine build-server
 	@printf "$(CHECK) build complete\n"
 
 build-grammars:
-	@printf "$(CYAN)[grammars]$(RESET) Building tree-sitter grammar .so files...\n"
-	@cd $(GRAMMARS_DIR) && bash build.sh 2>&1 \
-		&& printf "  $(CHECK) grammars built\n" \
-		|| printf "  $(YELLOW)⚠ grammars: some languages skipped\n"
+	@printf "$(YELLOW)⚠ build-grammars: grammars are compiled into the binary, this target is a no-op$(RESET)\n"
 
 ENGINE_CMAKE_FLAGS := -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
                        -DCMAKE_C_COMPILER=$(ENGINE_CC) \

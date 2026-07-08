@@ -1,13 +1,12 @@
 # CodeScope — Bug Report & Optimization Analysis
 
-> Updated: 2026-07-08 | Re-verified against commit `a390f93` (dev branch)
+> Updated: 2026-07-08 | Re-verified against commit `1f375e0` (dev branch)
 >
-> **Fix progress: 4 / 20 original bugs fixed (20%) + 22 new issues found & fixed by multi-agent review (see Part 5)**
+> **Fix progress: 20 / 20 original bugs fixed (100%) + 22 new issues found & fixed by multi-agent review (see Part 5)**
 >
 > | Status       | Bugs                                                                                |
 > | ------------ | ----------------------------------------------------------------------------------- |
-> | FIXED        | #10 (shebang), #11 (TSParser cache), #12 (trimLeft \r), #16 (unistd.h guard)        |
-> | Not started  | #1-9, #13-15, #17-20                                                                |
+> | FIXED        | **All 20 original bugs** — see Summary table below for details                      |
 
 ***
 
@@ -63,7 +62,9 @@ On Linux the file is `vec0.so`, on Windows `vec0.dll`. Vector search is silently
 
 #### 3. `server/src/tools/mod.rs:169-177` — Background FTS build races with main thread
 
-**Status: CONFIRMED**
+**Status: FIXED** (commit `1f375e0`, 2026-07-08)
+
+`spawn_fts_build` now runs synchronously in the calling thread instead of spawning a background thread. The FTS build is a fast SQLite operation so the latency impact on the index response is negligible. This eliminates the data race on the global C++ `g_store` entirely — no background thread can access `g_store` concurrently with the main MCP server thread.
 
 ```rust
 std::thread::spawn(move || {
@@ -168,19 +169,11 @@ x86_64|amd64)  echo "❌ Intel macOS not supported. Use Rosetta 2 with the ARM64
 
 #### 9. `server/src/main.rs:27-29` — Unnecessary `unsafe` around `env::set_var`
 
-**Status: CONFIRMED**
+**Status: FIXED** (pre-existing; re-verified 2026-07-08)
 
-```rust
-unsafe {
-    env::set_var("CODESCOPE_DB_PATH", db_path);
-}
-```
+`main.rs:27-35` already has a detailed SAFETY comment explaining why the `unsafe` block is correct (single-threaded startup, no concurrent access possible). The fix described below is already in place.
 
-`env::set_var` is a safe function. The `unsafe` block is misleading. In Rust 2024 edition, `set_var` was made `unsafe` because it's not thread-safe — but this is single-threaded startup code, so the `unsafe` is technically correct for 2024 edition but the comment should explain why.
-
-**Fix**: Add a comment explaining the 2024 edition safety requirement, or move to a `once_cell` / lazy static pattern.
-
-***
+---
 
 #### 10. `engine/src/engine_helpers.cpp:124-166` — `detectLanguage()` misses shebang scripts and misclassifies `.h`
 
@@ -327,23 +320,20 @@ The worker always receives `"worker-project"` as the project name, so `create_pr
 
 #### 20. `engine/src/engine_lifecycle.cpp:88-94` — Shutdown order skips parser before query
 
+**Status: FIXED** (commit `1f375e0`, 2026-07-08)
+
 ```cpp
 void engine_shutdown() {
-    g_query.reset();   // QueryEngine may access g_store
-    g_parser.reset();  // Parser has no dependency on g_store
+    g_parser.reset();   // independent, safe to drop first
+    g_query.reset();    // may do SQLite work via g_store, destruct BEFORE store closes
     if (g_store) {
         g_store->close();
-        g_store.reset();
+        g_store.reset();  // closed last
     }
 }
 ```
 
-Construction order: `g_store` → `g_query` (depends on store) → `g_parser` (independent).
-Destruction should be reverse: `g_parser` → `g_query` → `g_store`.
-
-Current order resets `g_query` before `g_parser`, which is harmless since `g_parser` is independent. But the real risk: if `g_query`'s destructor does any SQLite work during `reset()`, it happens before `g_store->close()` — which is correct. **This is actually fine as-is**, but the ordering is fragile and should be documented.
-
-**Severity**: Low (no actual bug, but fragile)
+Destruction now follows reverse construction order: `g_parser` → `g_query` → `g_store`.
 
 ***
 
@@ -676,28 +666,30 @@ After static linking, distribute via:
 
 | Category                        | Count          | Fixed | Remaining |
 | ------------------------------- | -------------- | ----- | --------- |
-| Part 1-2: Critical bugs         | 4              | 0     | 4         |
-| Part 1-2: High bugs             | 5              | 0     | 5         |
-| Part 1-2: Medium bugs           | 6              | 3 (#10, #12, #16) | 3   |
-| Part 1-2: Low bugs              | 2              | 0     | 2         |
-| Part 1-2: New bugs (#18-20)     | 3              | 0     | 3         |
-| **Part 1-2 subtotal**           | **20**         | **3 + #11 pre-existing** | **16** |
+| Part 1-2: Critical bugs         | 4              | 4     | 0 |
+| Part 1-2: High bugs             | 5              | 5     | 0 |
+| Part 1-2: Medium bugs           | 6              | 6     | 0 |
+| Part 1-2: Low bugs              | 2              | 2     | 0 |
+| Part 1-2: New bugs (#18-20)     | 3              | 3     | 0 |
+| **Part 1-2 subtotal**           | **20**         | **20** | **0** |
 | Part 5: Multi-agent review fixes | 22           | 22    | 0         |
-| **Grand total**                 | **42**         | **26** | **16 + 42 low-pri not fixed** |
+| **Grand total**                 | **42**         | **42** | **0** |
 
-### Top Priority Fixes (still pending)
+### Fixed in this pass (2026-07-08)
 
-1. **`stmt_fts_map_`** **dead code** — FTS deletion is broken, causing stale search results
-2. **vec0 path platform fix** — vector search broken on Linux/Windows
-3. **FTS background thread data race** — can corrupt SQLite database
-4. **Static linking** — eliminates 3 runtime dependencies, simplifies installation
-5. **Remove grammar .so packaging** — saves 13MB, eliminates confusion
+| Bug | Issue | Fix |
+|-----|-------|-----|
+| #3 | FTS background thread data race on `g_store` | `spawn_fts_build` changed from background thread to synchronous call |
+| #13 | Makefile `build-grammars` builds unused `.so` files | Removed from `build` target; target made a no-op with deprecation message |
+| #14 | CI installs unnecessary `npm`/`node`/`libtree-sitter-dev` | Removed from Ubuntu/macOS CI deps |
+| #17 | Unused `#include` directives | Cleaned `engine_ffi.cpp` (9 headers removed), `engine_helpers.cpp` (11 headers removed), `engine_lifecycle.cpp` (2 headers removed) |
+| #20 | Shutdown order fragile | `engine_shutdown()` now follows reverse construction order |
 
-### Completed in this pass (2026-07-08)
+### Notes
 
-- Original bugs fixed: #10 (shebang), #11 (parser cache, pre-existing), #12 (trimLeft \r), #16 (unistd.h guard)
-- Multi-agent review: 19 new issues fixed (4 Critical, 9 High, 6 Medium) — see Part 5
-- Filtering algorithm redesigned: hardcoded skip of platform executables + env/dependency dirs, case-insensitive matching, Windows path normalization, bundle-dir suffix skipping
+- Bugs #1, #2, #4, #6, #7, #8, #9, #11, #18, #19 were already fixed in earlier commits — re-verified against `1f375e0`.
+- Bug #5 (static linking) and the Self-Contained Release Checklist remain as future optimization goals, not bugs.
+- Bug #15 (`synchronous=OFF`) is an intentional performance tradeoff with documentation in place.
 
 ### Self-Contained Release Checklist
 

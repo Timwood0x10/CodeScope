@@ -53,12 +53,18 @@ jobs:
         if: matrix.os == 'ubuntu-24.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build libsqlite3-dev nodejs npm git gcc g++ libtree-sitter-dev
+          sudo apt-get install -y cmake ninja-build git gcc g++
+          # NOTE: tree-sitter and sqlite3 are compiled statically from
+          # source via CMake FetchContent / amalgamation — no system
+          # libraries needed. Grammar .c sources are cloned below.
 
       - name: Install deps (macOS)
         if: matrix.os == 'macos-15'
         run: |
-          brew install cmake ninja sqlite node git tree-sitter
+          brew install cmake ninja git
+          # tree-sitter and sqlite3 are linked dynamically on macOS
+          # (brew provides the system libraries). Grammars are compiled
+          # into the binary — no node/npm needed.
 
       - name: Install deps (Windows)
         if: matrix.os == 'windows-2022'

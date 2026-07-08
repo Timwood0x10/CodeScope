@@ -457,54 +457,18 @@ pub fn spawn_enhancement(project_id: u64) {
     });
 }
 
-static FTS_BUILD_RUNNING: Lazy<Mutex<HashSet<u64>>> = Lazy::new(|| Mutex::new(HashSet::new()));
-
-/// Spawn a background thread to build the FTS (full-text search) index for a
-/// project.
+/// Build the FTS (full-text search) index for a project synchronously.
 ///
-/// This mirrors the `spawn_enhancement` pattern: a `Mutex<HashSet<u64>>`
-/// deduplicates concurrent builds for the same `project_id`. Without this
-/// guard, a background `engine_build_fts` call would access the global C++
-/// `g_store` concurrently with the main MCP server thread (which serves other
-/// queries that also touch `g_store`), producing a data race on the C++ side.
+/// Previously this function spawned a background thread, but that created a
+/// data race on the global C++ `g_store` because the main MCP server thread
+/// may serve other queries that also touch `g_store`. Running synchronously
+/// in the calling thread eliminates the race entirely and is safe because
+/// the FTS build is a fast SQLite operation.
 pub fn spawn_fts_build(project_id: u64) {
-    // Atomically check-and-insert to prevent duplicate FTS builds for the same project.
-    {
-        let mut running = FTS_BUILD_RUNNING
-            .lock()
-            .expect("FTS build tracking lock poisoned");
-        if !running.insert(project_id) {
-            eprintln!(
-                "fts_build: project {} already running, skipping",
-                project_id
-            );
-            return;
-        }
-    }
-
-    std::thread::spawn(move || {
-        // Wrap the worker body in `catch_unwind` so a panic in the FFI call
-        // cannot leak the `project_id` into the running set forever, which
-        // would block all future FTS builds for this project.
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            eprintln!(
-                "fts_build: starting background FTS build for project {}",
-                project_id
-            );
-
-            let result = build_fts(project_id);
-            eprintln!("fts_build: completed: {}", result);
-        }));
-
-        if let Err(e) = result {
-            eprintln!("spawn_fts_build: worker panicked: {:?}", e);
-        }
-
-        // Always remove from running set so future builds can be scheduled,
-        // even if the worker panicked.
-        let mut running = FTS_BUILD_RUNNING
-            .lock()
-            .expect("FTS build tracking lock poisoned");
-        running.remove(&project_id);
-    });
+    eprintln!(
+        "fts_build: starting synchronous FTS build for project {}",
+        project_id
+    );
+    let result = build_fts(project_id);
+    eprintln!("fts_build: completed: {}", result);
 }

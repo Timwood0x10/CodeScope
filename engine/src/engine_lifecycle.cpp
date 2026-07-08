@@ -3,9 +3,7 @@
 
 #include <cstdio>
 #include <cstdlib>
-#include <memory>
 #include <sqlite3.h>
-#include <string>
 #include <tree_sitter/api.h>
 
 // ─── Lifecycle ─────────────────────────────────────────────────
@@ -96,12 +94,17 @@ int engine_init(const char *db_path)
 
 void engine_shutdown()
 {
+	// Destruct in reverse construction order:
+	//   constructed: g_store → g_query (depends on store) → g_parser (independent)
+	//   destruct:    g_parser → g_query → g_store
+	// This guarantees that g_query's destructor (which may issue SQLite calls)
+	// runs while g_store is still alive, and g_store is closed last.
+	g_parser.reset();   // independent, safe to drop first
+	g_query.reset();    // may do SQLite work via g_store, destruct BEFORE store closes
 	if (g_store) {
 		g_store->close();
 		g_store.reset();
 	}
-	g_query.reset();
-	g_parser.reset();
 }
 
 // ─── Project ───────────────────────────────────────────────────
