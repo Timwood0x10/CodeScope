@@ -58,7 +58,7 @@ std::unique_ptr<Translator> createTranslator(const char *language)
 	if (lang == "go" || lang == "golang")
 		return createGoTranslator();
 	if (lang == "java")
-	 return createJavaTranslator();
+		return createJavaTranslator();
 	// Swift translator temporarily disabled: Swift grammar was removed
 	// from FetchContent due to ABI incompatibility with core v0.24.7.
 	// The Swift translator source files are excluded from the build

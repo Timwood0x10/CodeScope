@@ -6,62 +6,80 @@
 #include <sqlite3.h>
 #include <tree_sitter/api.h>
 
+// sqlite-vec is compiled directly into this binary (see engine/CMakeLists.txt).
+// When present, register its `vec0` virtual-table module on every new SQLite
+// connection so the `embeddings` table can be created without a runtime
+// load_extension() call. Guarded by HAVE_SQLITE_VEC so the build still links
+// when the amalgamation was unavailable at configure time.
+#ifdef HAVE_SQLITE_VEC
+extern "C" int sqlite3_vec_init(sqlite3 *db, char **pzErrMsg,
+				const sqlite3_api_routines *pApi);
+#endif
+
 // ─── Lifecycle ─────────────────────────────────────────────────
 
 int engine_init(const char *db_path)
 {
- // Use unique_ptr for exception-safe initialization
- // If any constructor throws, previous allocations are auto-freed.
- g_store = std::make_unique<store::GraphStore>();
+#ifdef HAVE_SQLITE_VEC
+	// Register sqlite-vec once for the whole process. auto_extension fires on
+	// every sqlite3_open, so the `vec0` module is available on the store's
+	// connection by the time we create the `embeddings` table below.
+	sqlite3_auto_extension(
+		reinterpret_cast<void (*)(void)>(sqlite3_vec_init));
+#endif
 
- if (!g_store->open(db_path)) {
-  fprintf(stderr, "engine_init: open failed: %s\n",
-   g_store ? g_store->error().c_str() : "(null)");
-  g_store.reset(); // Auto-cleanup via unique_ptr
-  return -1;
- }
- g_query = std::make_unique<query::QueryEngine>(g_store.get());
+	// Use unique_ptr for exception-safe initialization
+	// If any constructor throws, previous allocations are auto-freed.
+	g_store = std::make_unique<store::GraphStore>();
 
- // Initialize parser and register available grammars
- g_parser = std::make_unique<Parser>();
- // Register all statically-linked tree-sitter grammars.
- // Grammars are compiled into the binary — no .so loading needed.
- const char *langs[] = { "python", "cpp",	"c",	      "rust",
-    "javascript", "typescript", "tsx",
-    "go",	  "java" };
- for (auto lang : langs) {
-  g_parser->registerLanguage(lang);
- }
+	if (!g_store->open(db_path)) {
+		fprintf(stderr, "engine_init: open failed: %s\n",
+			g_store ? g_store->error().c_str() : "(null)");
+		g_store.reset(); // Auto-cleanup via unique_ptr
+		return -1;
+	}
+	g_query = std::make_unique<query::QueryEngine>(g_store.get());
 
- // sqlite-vec is statically compiled into the binary — no runtime
- // load_extension needed. The auto-extension registered above makes
- // vec0 available on every connection.
- {
-  sqlite3 *db = g_store->handle();
-  if (db) {
-   char *sql_err = nullptr;
-   int exec_rc = sqlite3_exec(
-    db,
-    "CREATE VIRTUAL TABLE IF NOT EXISTS embeddings USING vec0("
-    "    symbol_id INTEGER PRIMARY KEY,"
-    "    vector FLOAT[384]"
-    ");",
-    nullptr, nullptr, &sql_err);
-   if (exec_rc != SQLITE_OK) {
-    // Surface the failure: a missing embeddings table would later
-    // make every INSERT INTO embeddings fail with no obvious root
-    // cause, so log it explicitly rather than silently freeing.
-    fprintf(stderr,
-     "engine: sqlite-vec table creation failed (rc=%d): %s\n",
-     exec_rc,
-     sql_err ? sql_err : "unknown error");
-   } else {
-    fprintf(stderr, "engine: sqlite-vec loaded (static)\n");
-   }
-   if (sql_err)
-    sqlite3_free(sql_err);
-  }
- }
+	// Initialize parser and register available grammars
+	g_parser = std::make_unique<Parser>();
+	// Register all statically-linked tree-sitter grammars.
+	// Grammars are compiled into the binary — no .so loading needed.
+	const char *langs[] = { "python",     "cpp", "c",  "rust", "javascript",
+				"typescript", "tsx", "go", "java" };
+	for (auto lang : langs) {
+		g_parser->registerLanguage(lang);
+	}
+
+	// sqlite-vec is statically compiled into the binary — no runtime
+	// load_extension needed. The auto-extension registered above makes
+	// vec0 available on every connection.
+	{
+		sqlite3 *db = g_store->handle();
+		if (db) {
+			char *sql_err = nullptr;
+			int exec_rc = sqlite3_exec(
+				db,
+				"CREATE VIRTUAL TABLE IF NOT EXISTS embeddings USING vec0("
+				"    symbol_id INTEGER PRIMARY KEY,"
+				"    vector FLOAT[384]"
+				");",
+				nullptr, nullptr, &sql_err);
+			if (exec_rc != SQLITE_OK) {
+				// Surface the failure: a missing embeddings table would later
+				// make every INSERT INTO embeddings fail with no obvious root
+				// cause, so log it explicitly rather than silently freeing.
+				fprintf(stderr,
+					"engine: sqlite-vec table creation failed (rc=%d): %s\n",
+					exec_rc,
+					sql_err ? sql_err : "unknown error");
+			} else {
+				fprintf(stderr,
+					"engine: sqlite-vec loaded (static)\n");
+			}
+			if (sql_err)
+				sqlite3_free(sql_err);
+		}
+	}
 
 	return 0;
 }

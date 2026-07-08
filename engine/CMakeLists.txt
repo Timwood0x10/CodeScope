@@ -65,21 +65,21 @@ if(APPLE OR (UNIX AND NOT APPLE))
     set(CMAKE_DL_LIBS dl)
 endif()
 
-# ── sqlite-vec amalgamation (download once, compile as C) ───────
-# Compiled directly into the engine — no runtime load_extension needed.
-# If download fails, the engine still builds; vector search is simply unavailable.
-set(SQLITE_VEC_SRC "${SQLITE3_DEPS_DIR}/sqlite-vec.c")
-if(NOT EXISTS "${SQLITE_VEC_SRC}")
-    message(STATUS "sqlite-vec: downloading amalgamation ${SQLITE_VEC_VERSION}...")
-    file(DOWNLOAD "https://github.com/asg017/sqlite-vec/releases/download/${SQLITE_VEC_VERSION}/sqlite-vec-${SQLITE_VEC_VERSION}-amalgamation.zip"
-        "${SQLITE3_DEPS_DIR}/sqlite-vec-amalgamation.zip" STATUS SQLITE_VEC_DL_ST)
-    if(SQLITE_VEC_DL_ST EQUAL 0)
-        file(ARCHIVE_EXTRACT INPUT "${SQLITE3_DEPS_DIR}/sqlite-vec-amalgamation.zip"
-            DESTINATION "${SQLITE3_DEPS_DIR}/")
-    else()
-        message(WARNING "sqlite-vec: amalgamation download failed (status=${SQLITE_VEC_DL_ST}), vector search will be unavailable")
-    endif()
+# ── sqlite-vec (build from source, compiled directly into binary) ──
+# Uses FetchContent to clone the repo (like tree-sitter grammars).
+# Compiled as C — no runtime load_extension needed.
+include(FetchContent)
+cmake_policy(SET CMP0169 OLD)
+FetchContent_Declare(sqlite_vec
+    GIT_REPOSITORY https://github.com/asg017/sqlite-vec.git
+    GIT_TAG v0.1.10-alpha.4
+    GIT_SHALLOW TRUE)
+FetchContent_GetProperties(sqlite_vec)
+if(NOT sqlite_vec_POPULATED)
+    FetchContent_Populate(sqlite_vec)
 endif()
+set(SQLITE_VEC_SRC "${sqlite_vec_SOURCE_DIR}/sqlite-vec.c")
+message(STATUS "sqlite-vec: source at ${SQLITE_VEC_SRC}")
 
 # ── Grammar parser.c (FetchContent per grammar) ──────────────────
 # Swift omitted: parser.c incompatible with tree-sitter core v0.24.7.
@@ -171,10 +171,10 @@ set(ENGINE_SOURCES
     ${SQLITE3_AMAL_SRC}
 )
 
-# Add sqlite-vec.c if downloaded successfully
+# Add sqlite-vec.c if available
 if(EXISTS "${SQLITE_VEC_SRC}")
     list(APPEND ENGINE_SOURCES ${SQLITE_VEC_SRC})
-    message(STATUS "sqlite-vec: amalgamation found, compiling into engine")
+    message(STATUS "sqlite-vec: source found, compiling into engine")
 endif()
 
 add_library(astgraph_engine STATIC ${ENGINE_SOURCES})
@@ -183,6 +183,20 @@ add_library(astgraph_engine STATIC ${ENGINE_SOURCES})
 set_source_files_properties(${SQLITE3_AMAL_SRC} PROPERTIES LANGUAGE C)
 if(EXISTS "${SQLITE_VEC_SRC}")
     set_source_files_properties(${SQLITE_VEC_SRC} PROPERTIES LANGUAGE C)
+    # Generate sqlite-vec.h from template with version substitution.
+    # Parse the version string: v0.1.10-alpha.4 → major=0, minor=1, patch=10
+    string(REGEX MATCH "^v?([0-9]+)\\.([0-9]+)\\.([0-9]+)" _ ${SQLITE_VEC_VERSION})
+    set(VERSION_MAJOR ${CMAKE_MATCH_1})
+    set(VERSION_MINOR ${CMAKE_MATCH_2})
+    set(VERSION_PATCH ${CMAKE_MATCH_3})
+    set(VERSION "${SQLITE_VEC_VERSION}")  # full version string for SQLITE_VEC_VERSION macro
+    file(READ "${sqlite_vec_SOURCE_DIR}/sqlite-vec.h.tmpl" VEC_H_TMPL)
+    string(REPLACE "${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}-alpha.4"
+        "${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}" _dummy "${SQLITE_VEC_VERSION}")
+    string(CONFIGURE "${VEC_H_TMPL}" VEC_H_CONTENT)
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/sqlite-vec/include/sqlite-vec.h" "${VEC_H_CONTENT}")
+    target_include_directories(astgraph_engine PRIVATE
+        "${CMAKE_CURRENT_BINARY_DIR}/sqlite-vec/include")
 endif()
 
 target_compile_definitions(astgraph_engine PUBLIC
@@ -197,6 +211,15 @@ target_include_directories(astgraph_engine PUBLIC
     ${TREE_SITTER_INCDIR}
     ${TREE_SITTER_INCLUDE_DIRS}
 )
+# sqlite-vec include is added via COMPILE_FLAGS on the C source file only
+# (see the sqlite-vec section below) — not here, to avoid the C++ <version> conflict.
+# Add sqlite-vec source dir to C-only compiler flags via generator expression.
+# This lets sqlite-vec.c find sqlite-vec.h without polluting C++ include paths
+# (C++20's <version> would shadow against the repo's "version" file).
+if(EXISTS "${SQLITE_VEC_SRC}")
+    target_compile_options(astgraph_engine PRIVATE
+        $<$<COMPILE_LANGUAGE:C>:-I${sqlite_vec_SOURCE_DIR}>)
+endif()
 
 target_link_libraries(astgraph_engine PUBLIC
     ${TREE_SITTER_LIB}
