@@ -494,6 +494,10 @@ void GraphStore::buildVectorsFromGraph(uint64_t project_id)
 	commitTransaction();
 }
 
+// ── Local JSON helper (forward declaration) ─────────────────────
+// Escape a string for safe embedding in JSON (RFC 8259).
+static std::string jsonEscape(const std::string &s);
+
 std::string GraphStore::searchCode(uint64_t project_id, const char *query,
 				   int limit)
 {
@@ -547,7 +551,7 @@ std::string GraphStore::searchCode(uint64_t project_id, const char *query,
 	sqlite3_bind_int(stmt, 3, limit);
 
 	std::ostringstream json;
-	json << "{\"total\":0,\"results\":[";
+	json << "{\"results\":[";
 	bool first = true;
 	int count = 0;
 
@@ -557,20 +561,16 @@ std::string GraphStore::searchCode(uint64_t project_id, const char *query,
 		first = false;
 		count++;
 
+		const char *name_raw = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 1));
+		const char *fp_raw = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 3));
 		json << "{"
 		     << "\"node_id\":" << sqlite3_column_int64(stmt, 0) << ","
-		     << "\"name\":\""
-		     << (sqlite3_column_text(stmt, 1) ?
-				 reinterpret_cast<const char *>(
-					 sqlite3_column_text(stmt, 1)) :
-				 "")
+		     << "\"name\":\"" << jsonEscape(name_raw ? name_raw : "")
 		     << "\","
 		     << "\"node_type\":" << sqlite3_column_int(stmt, 2) << ","
-		     << "\"file_path\":\""
-		     << (sqlite3_column_text(stmt, 3) ?
-				 reinterpret_cast<const char *>(
-					 sqlite3_column_text(stmt, 3)) :
-				 "")
+		     << "\"file_path\":\"" << jsonEscape(fp_raw ? fp_raw : "")
 		     << "\","
 		     << "\"start_row\":" << sqlite3_column_int(stmt, 4) << ","
 		     << "\"start_col\":" << sqlite3_column_int(stmt, 5) << ","
@@ -1101,11 +1101,13 @@ std::string GraphStore::findSymbolJson(uint64_t project_id, const char *name)
 		json << "{"
 		     << "\"id\":" << id << ","
 		     << "\"kind\":\"" << (kind ? kind : "") << "\","
-		     << "\"name\":\"" << (sym_name ? sym_name : "") << "\","
-		     << "\"signature\":\"" << (sig ? sig : "") << "\","
+		     << "\"name\":\"" << jsonEscape(sym_name ? sym_name : "")
+		     << "\","
+		     << "\"signature\":\"" << jsonEscape(sig ? sig : "")
+		     << "\","
 		     << "\"visibility\":\"" << (vis ? vis : "") << "\","
 		     << "\"language\":\"" << (lang ? lang : "") << "\","
-		     << "\"file_path\":\"" << (fp ? fp : "") << "\","
+		     << "\"file_path\":\"" << jsonEscape(fp ? fp : "") << "\","
 		     << "\"line\":" << line << ","
 		     << "\"column\":" << col << "}";
 	}
@@ -1157,10 +1159,10 @@ std::string GraphStore::findSymbolJson(uint64_t project_id, const char *name)
 				gn_json << "{"
 					<< "\"id\":" << id << ","
 					<< "\"kind\":\"" << type_name << "\","
-					<< "\"name\":\"" << (n ? n : "")
-					<< "\","
-					<< "\"file_path\":\"" << (fp ? fp : "")
-					<< "\","
+					<< "\"name\":\""
+					<< jsonEscape(n ? n : "") << "\","
+					<< "\"file_path\":\""
+					<< jsonEscape(fp ? fp : "") << "\","
 					<< "\"line\":" << sr << ","
 					<< "\"column\":" << sc << ","
 					<< "\"language\":\""
@@ -1638,9 +1640,10 @@ std::string GraphStore::searchUnifiedJson(uint64_t project_id,
 						sqlite3_column_text(stmt, 2));
 				json << "{"
 				     << "\"symbol_id\":" << sym_id << ","
-				     << "\"name\":\"" << (n ? n : "") << "\","
-				     << "\"signature\":\"" << (sig ? sig : "")
-				     << "\""
+				     << "\"name\":\"" << jsonEscape(n ? n : "")
+				     << "\","
+				     << "\"signature\":\""
+				     << jsonEscape(sig ? sig : "") << "\""
 				     << "}";
 			}
 			sqlite3_finalize(stmt);
@@ -1684,11 +1687,12 @@ std::string GraphStore::searchUnifiedJson(uint64_t project_id,
 					sqlite3_column_text(stmt, 3));
 				json << "{"
 				     << "\"node_id\":" << nid << ","
-				     << "\"name\":\"" << (n ? n : "") << "\","
+				     << "\"name\":\"" << jsonEscape(n ? n : "")
+				     << "\","
 				     << "\"qualified_name\":\""
-				     << (qn ? qn : "") << "\","
-				     << "\"file_path\":\"" << (fp ? fp : "")
-				     << "\""
+				     << jsonEscape(qn ? qn : "") << "\","
+				     << "\"file_path\":\""
+				     << jsonEscape(fp ? fp : "") << "\""
 				     << "}";
 			}
 			sqlite3_finalize(stmt);
@@ -1790,9 +1794,9 @@ std::string GraphStore::findCallersJson(uint64_t project_id,
 		int line = sqlite3_column_int(stmt, 4);
 		json << "{"
 		     << "\"id\":" << id << ","
-		     << "\"name\":\"" << (n ? n : "") << "\","
+		     << "\"name\":\"" << jsonEscape(n ? n : "") << "\","
 		     << "\"kind\":\"" << (k ? k : "") << "\","
-		     << "\"file_path\":\"" << (fp ? fp : "") << "\","
+		     << "\"file_path\":\"" << jsonEscape(fp ? fp : "") << "\","
 		     << "\"line\":" << line << "}";
 	}
 	sqlite3_finalize(stmt);
@@ -1837,9 +1841,9 @@ std::string GraphStore::findCalleesJson(uint64_t project_id,
 		int line = sqlite3_column_int(stmt, 4);
 		json << "{"
 		     << "\"id\":" << id << ","
-		     << "\"name\":\"" << (n ? n : "") << "\","
+		     << "\"name\":\"" << jsonEscape(n ? n : "") << "\","
 		     << "\"kind\":\"" << (k ? k : "") << "\","
-		     << "\"file_path\":\"" << (fp ? fp : "") << "\","
+		     << "\"file_path\":\"" << jsonEscape(fp ? fp : "") << "\","
 		     << "\"line\":" << line << "}";
 	}
 	sqlite3_finalize(stmt);
@@ -1998,9 +2002,10 @@ std::string GraphStore::getEntryPointsJson(uint64_t project_id)
 			json << ",";
 		}
 		json << "{\"id\":" << entries[i].id << ",\"name\":\""
-		     << entries[i].name << "\""
+		     << jsonEscape(entries[i].name) << "\""
 		     << ",\"kind\":\"" << entries[i].kind << "\""
-		     << ",\"file\":\"" << entries[i].file_path << "\""
+		     << ",\"file\":\"" << jsonEscape(entries[i].file_path)
+		     << "\""
 		     << ",\"line\":" << entries[i].line << "}";
 	}
 	json << "]}}";
@@ -2118,8 +2123,8 @@ std::string GraphStore::tracePathJson(uint64_t project_id,
 			}
 			sqlite3_finalize(stmt);
 		}
-		json << "{\"name\":\"" << name << "\","
-		     << "\"file\":\"" << file << "\","
+		json << "{\"name\":\"" << jsonEscape(name) << "\","
+		     << "\"file\":\"" << jsonEscape(file) << "\","
 		     << "\"line\":" << line << "}";
 	}
 	json << "]}";

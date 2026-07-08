@@ -30,6 +30,24 @@ GraphStore::~GraphStore()
 
 bool GraphStore::open(const char *db_path)
 {
+	// Enable SQLite serialized threading mode so the same handle can be
+	// used from multiple threads safely (worker pool in engine_index.cpp
+	// + MCP server main loop both access g_store concurrently).
+	// This MUST be called before any sqlite3_open() call.
+	// If already initialized (SQLITE_MISUSE), the default is likely
+	// serialized already (most builds have SQLITE_THREADSAFE=1).
+	int config_rc = sqlite3_config(SQLITE_CONFIG_SERIALIZED);
+	if (config_rc == SQLITE_OK) {
+		fprintf(stderr, "store: SQLite serialized threading enabled\n");
+	} else if (config_rc == SQLITE_MISUSE) {
+		fprintf(stderr,
+			"store: SQLite already initialized, using existing threading mode\n");
+	} else {
+		fprintf(stderr,
+			"store: sqlite3_config(SERIALIZED) returned %d\n",
+			config_rc);
+	}
+
 	int rc = sqlite3_open(db_path, &db_);
 	if (rc != SQLITE_OK) {
 		error_ = sqlite3_errmsg(db_);
@@ -48,6 +66,11 @@ bool GraphStore::open(const char *db_path)
 		fprintf(stderr, "WARN: PRAGMA synchronous=OFF failed\n");
 	if (!exec("PRAGMA temp_store=MEMORY"))
 		fprintf(stderr, "WARN: PRAGMA temp_store=MEMORY failed\n");
+	// Busy timeout: under concurrent access (worker pool threads + main loop),
+	// WAL writers may conflict. Without a timeout, SQLite immediately returns
+	// SQLITE_BUSY. 5000ms gives contenders time to finish their transaction.
+	if (!exec("PRAGMA busy_timeout=5000"))
+		fprintf(stderr, "WARN: PRAGMA busy_timeout=5000 failed\n");
 	exec(("PRAGMA cache_size=" + std::to_string(kCacheSizePages)).c_str());
 	exec(("PRAGMA mmap_size=" + std::to_string(kMmapSizeBytes)).c_str());
 
