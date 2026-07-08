@@ -9,7 +9,8 @@
 #include "translators/python_visitor.h"
 #include "translators/rust_visitor.h"
 #include "translators/java_visitor.h"
-#include "translators/swift_visitor.h"
+// Swift translator excluded: Swift grammar not in FetchContent build
+// #include "translators/swift_visitor.h"
 
 // Forward-declare concrete translators (implemented in translators/ dir)
 // Each returns a new Translator* or nullptr if the grammar can't be loaded.
@@ -57,9 +58,13 @@ std::unique_ptr<Translator> createTranslator(const char *language)
 	if (lang == "go" || lang == "golang")
 		return createGoTranslator();
 	if (lang == "java")
-		return createJavaTranslator();
-	if (lang == "swift")
-		return createSwiftTranslator();
+	 return createJavaTranslator();
+	// Swift translator temporarily disabled: Swift grammar was removed
+	// from FetchContent due to ABI incompatibility with core v0.24.7.
+	// The Swift translator source files are excluded from the build
+	// (not in ENGINE_SOURCES in CMakeLists.txt).
+	// if (lang == "swift")
+	//     return createSwiftTranslator();
 	if (lang == "tsx")
 		return createTsxTranslator();
 
@@ -94,8 +99,9 @@ std::unique_ptr<JsVisitor> createJsVisitor(const char *language)
 		return std::make_unique<RustVisitor>();
 	if (lang == "java")
 		return std::make_unique<JavaVisitor>();
-	if (lang == "swift")
-		return std::make_unique<SwiftVisitor>();
+	// Swift visitor temporarily disabled
+	// if (lang == "swift")
+	//     return std::make_unique<SwiftVisitor>();
 
 	return nullptr;
 }

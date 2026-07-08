@@ -101,51 +101,26 @@ fn main() {
     }
 
     // ── Linker flags ───────────────────────────────────────────────
+    // FetchContent mode: all deps (tree-sitter core, sqlite3 amalgamation,
+    // sqlite-vec, grammar sources) are compiled into astgraph_engine.a.
+    // Only tree-sitter core is a separate static lib.
     println!("cargo:rustc-link-search=native={}", build_dir);
     println!("cargo:rustc-link-lib=static=astgraph_engine");
+
+    let ts_build_lib = format!("{}/_deps/ts_repo-build/lib", build_dir);
+    let ts_alt = format!("{}/_deps/ts_repo-build", build_dir);
+    if std::path::Path::new(&ts_build_lib).exists() {
+        println!("cargo:rustc-link-search=native={}", ts_build_lib);
+    }
+    if std::path::Path::new(&ts_alt).exists() {
+        println!("cargo:rustc-link-search=native={}", ts_alt);
+    }
+    println!("cargo:rustc-link-lib=static=tree-sitter");
 
     // C++ standard library: libc++ on macOS, libstdc++ on Linux/Windows
     match target_os.as_str() {
         "macos" => println!("cargo:rustc-link-lib=dylib=c++"),
-        "linux" => println!("cargo:rustc-link-lib=dylib=stdc++"),
         _ => println!("cargo:rustc-link-lib=dylib=stdc++"),
-    }
-
-    // SQLite + tree-sitter: platform-dependent library paths
-    match target_os.as_str() {
-        "macos" => {
-            let homebrew_lib = "/opt/homebrew/lib";
-            let sqlite_lib = "/opt/homebrew/opt/sqlite/lib";
-            if std::path::Path::new(homebrew_lib).exists() {
-                println!("cargo:rustc-link-search=native={}", homebrew_lib);
-            }
-            if std::path::Path::new(sqlite_lib).exists() {
-                println!("cargo:rustc-link-search=native={}", sqlite_lib);
-            } else {
-                eprintln!("build.rs: Homebrew sqlite3 not found, relying on default linker search");
-            }
-            println!("cargo:rustc-link-lib=dylib=tree-sitter");
-            println!("cargo:rustc-link-lib=dylib=sqlite3");
-        }
-        "linux" => {
-            // System packages provide libtree-sitter.so and libsqlite3.so
-            println!("cargo:rustc-link-lib=tree-sitter");
-            println!("cargo:rustc-link-lib=sqlite3");
-        }
-        "windows" => {
-            // tree-sitter is built via FetchContent; its library is in a subdir
-            let ts_build_lib = format!("{}/_deps/ts_repo-build/lib", build_dir);
-            if std::path::Path::new(&ts_build_lib).exists() {
-                println!("cargo:rustc-link-search=native={}", ts_build_lib);
-            }
-            println!("cargo:rustc-link-lib=static=tree-sitter");
-            // sqlite3 amalgamation is compiled directly into astgraph_engine.a
-            // (CMakeLists.txt appends sqlite3.c to ENGINE_SOURCES on Windows)
-        }
-        _ => {
-            println!("cargo:rustc-link-lib=tree-sitter");
-            println!("cargo:rustc-link-lib=sqlite3");
-        }
     }
 }
 

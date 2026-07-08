@@ -17,7 +17,7 @@ jobs:
       - name: Install system deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-format cmake ninja-build libsqlite3-dev libtree-sitter-dev
+          sudo apt-get install -y clang-format cmake ninja-build
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable

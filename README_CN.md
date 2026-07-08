@@ -229,25 +229,13 @@ if ! command -v rustc &> /dev/null; then
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 fi
 
-# 2. 安装 tree-sitter 语法
-npm install -g tree-sitter-python tree-sitter-c tree-sitter-cpp \
-  tree-sitter-rust tree-sitter-javascript tree-sitter-typescript \
-  tree-sitter-go tree-sitter-java 2>/dev/null || true
-
-# 3. 构建语法 .so 文件
-cd grammars && bash build.sh && cd ..
-
-# 4. 安装 sqlite-vec
-curl -sL 'https://github.com/asg017/sqlite-vec/releases/latest/download/install.sh' | sh
-
-# 5. 构建 CodeScope
+# 2. 构建 CodeScope（所有依赖通过 CMake FetchContent 自动下载编译进二进制）
 make build
 
 echo ""
 echo "=== CodeScope 安装完成 ==="
 echo "启动服务:  cargo run --bin codescope"
 echo "环境变量:   export CODESCOPE_DB_PATH=/tmp/codescope.db"
-echo "          export GRAMMARS_DIR=\$(pwd)/grammars"
 ```
 
 ## 性能基准测试
@@ -372,25 +360,17 @@ kernel/sched/
 
 - Rust 2024 Edition + 1.85+（`cargo`）
 - CMake 3.30+，C++23 编译器（Clang 17+）
-- SQLite3（开发包）
-- tree-sitter 核心库
-- Node.js（构建语法 .so 文件）
+
+> 所有第三方依赖（tree-sitter 核心、SQLite3、sqlite-vec、8 种语言文法）均通过 CMake FetchContent 自动下载并编译进二进制——**零外部依赖**，无需 npm、brew、apt 安装任何包。
 
 ### 构建与运行
 
 ```bash
-# 1. 安装 tree-sitter 语法（一次性）
-npm install -g tree-sitter-python tree-sitter-c tree-sitter-cpp \
-  tree-sitter-rust tree-sitter-javascript tree-sitter-typescript \
-  tree-sitter-go tree-sitter-java
-
-# 2. 构建语法 .so 文件
-cd grammars && bash build.sh && cd ..
-
-# 3. 构建全部
+# 构建全部 — tree-sitter、SQLite、sqlite-vec、文法
+# 均通过 CMake FetchContent 自动下载编译进二进制（零外部依赖）
 make build
 
-# 4. 启动 MCP 服务
+# 启动 MCP 服务
 cargo run --bin codescope
 ```
 
@@ -399,7 +379,6 @@ cargo run --bin codescope
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `CODESCOPE_DB_PATH` | `.codescope/codescope.db` | SQLite 数据库路径 |
-| `GRAMMARS_DIR` | `grammars/` | 语法 .so 文件目录 |
 | `CODESCOPE_LSP` | 未设置 | LSP 服务器命令，用于类型增强 |
 
 ## 数据目录 `.codescope/`

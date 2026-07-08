@@ -134,7 +134,6 @@ AI 问答     → codescope_build_context (200-1000 tok)
 | 变量 | 默认值 | 说明 |
 |------|-------|------|
 | `CODESCOPE_DB_PATH` | `.codescope/codescope.db` | SQLite 路径 |
-| `GRAMMARS_DIR` | `grammars/` | tree-sitter 语法 .so 目录 |
 | `CODESCOPE_INDEX_MODE` | `normal` | 模式: fast/normal/deep |
 | `CODESCOPE_VERBOSE` | `1` | 设为 0 关闭批量日志 |
 | `CODESCOPE_MAX_FILE_SIZE` | 5MB | 最大索引文件大小 |

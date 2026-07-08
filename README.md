@@ -33,13 +33,12 @@ cd codescope
 
 | Platform | Dependencies | Install |
 |----------|-------------|---------|
-| **macOS** | cmake, ninja, tree-sitter, sqlite, node, rust | `make build` or `bash install.sh` |
-| **Linux** | cmake, ninja, libsqlite3-dev, node, rust | `make build` or `bash install.sh` |
-| **All** | Docker image | `docker build -t codescope .` |
+| **macOS** | cmake, ninja, rust | `make build` or `bash install.sh` |
+| **Linux** | cmake, ninja, rust | `make build` or `bash install.sh` |
 
 > Pre-built binaries are available for **Linux** and **macOS** on the [Releases page](https://github.com/your-org/codescope/releases).
 >
-> **Windows: beta support.** Windows builds require the `windows-gnu` Rust target and MinGW. See [BUILDING.windows.md](./BUILDING.windows.md) for setup. LSP and vector search are functional but not as thoroughly tested as macOS/Linux. No pre-built binaries or CI guarantees for Windows at this time.
+> All dependencies (tree-sitter core, SQLite3, sqlite-vec, 8 language grammars) are compiled into the binary via CMake FetchContent — **zero external dependencies**. No npm, no brew, no apt packages required.
 
 ### Build from source
 
@@ -285,18 +284,7 @@ if ! command -v cmake &> /dev/null; then
     exit 1
 fi
 
-# 2. Install tree-sitter grammars
-npm install -g tree-sitter-python tree-sitter-c tree-sitter-cpp \
-  tree-sitter-rust tree-sitter-javascript tree-sitter-typescript \
-  tree-sitter-go tree-sitter-java 2>/dev/null || true
-
-# 3. Build grammar .so files
-cd grammars && bash build.sh && cd ..
-
-# 4. Install sqlite-vec for vector embeddings
-curl -sL 'https://github.com/asg017/sqlite-vec/releases/latest/download/install.sh' | sh
-
-# 5. Build CodeScope
+# 2. Build CodeScope (all deps auto-downloaded via CMake FetchContent)
 make build
 
 echo ""
@@ -455,25 +443,15 @@ kernel/sched/
 
 - Rust 2024 Edition + 1.85+ (`cargo`)
 - CMake 3.30+, C++23 compiler (Clang 17+)
-- SQLite3 (dev packages)
-- tree-sitter core library
-- Node.js (for building grammar .so files)
 
 ### Build & Run
 
 ```bash
-# 1. Install tree-sitter grammars (one-time)
-npm install -g tree-sitter-python tree-sitter-c tree-sitter-cpp \
-  tree-sitter-rust tree-sitter-javascript tree-sitter-typescript \
-  tree-sitter-go tree-sitter-java
-
-# 2. Build grammar .so files
-cd grammars && bash build.sh && cd ..
-
-# 3. Build everything
+# Build everything — tree-sitter, SQLite, sqlite-vec, grammars
+# are all auto-downloaded and compiled into the binary (zero deps)
 make build
 
-# 4. Start MCP server
+# Start MCP server
 cargo run --bin codescope
 ```
 

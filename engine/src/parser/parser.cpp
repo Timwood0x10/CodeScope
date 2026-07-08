@@ -23,9 +23,12 @@ static const TSLanguage *resolveGrammar(const char *name)
 	if (strcmp(name, "python") == 0 || strcmp(name, "py") == 0)
 		return tree_sitter_python();
 	if (strcmp(name, "rust") == 0 || strcmp(name, "rs") == 0)
-		return tree_sitter_rust();
-	if (strcmp(name, "swift") == 0)
-		return tree_sitter_swift();
+	 return tree_sitter_rust();
+	// Swift grammar temporarily disabled: parser.c incompatible
+	// with tree-sitter core v0.24.7. Re-enable when upstream
+	// releases an ABI-compatible version.
+	// if (strcmp(name, "swift") == 0)
+	//     return tree_sitter_swift();
 	if (strcmp(name, "typescript") == 0 || strcmp(name, "ts") == 0)
 		return tree_sitter_typescript();
 	if (strcmp(name, "tsx") == 0)

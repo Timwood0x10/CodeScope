@@ -17,139 +17,104 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# ── Dependencies ────────────────────────────────────────────────
-find_package(PkgConfig QUIET)
+# ── Dependency version pins ──────────────────────────────────────
+include(cmake/deps_versions.cmake)
 
-# ── macOS ───────────────────────────────────────────────────────
-# Uses Homebrew packages. CI installs: brew install sqlite tree-sitter
-if(APPLE)
-    set(SQLITE3_INCLUDE_DIRS /opt/homebrew/opt/sqlite/include)
-    link_directories(/opt/homebrew/lib /opt/homebrew/opt/sqlite/lib)
-    set(SQLITE3_LIBRARIES sqlite3)
-    set(CMAKE_DL_LIBS dl)
+# ── FetchContent: tree-sitter core + sqlite amalgamation + grammars + sqlite-vec ──
+include(FetchContent)
+include(cmake/fetch_grammar.cmake)
 
-    pkg_check_modules(TS_PKG QUIET tree-sitter)
-    if(TS_PKG_FOUND)
-        set(TREE_SITTER_INCDIR ${TS_PKG_INCLUDE_DIRS})
-        set(TREE_SITTER_LIB ${TS_PKG_LIBRARIES})
-    else()
-        find_path(TREE_SITTER_INCDIR tree_sitter/api.h /opt/homebrew/include /usr/local/include)
-        find_library(TREE_SITTER_LIB tree-sitter /opt/homebrew/lib /usr/local/lib)
-        if(NOT TREE_SITTER_LIB)
-            set(TREE_SITTER_LIB tree-sitter)
+# ── tree-sitter core (build from source) ─────────────────────────
+message(STATUS "tree-sitter: fetching core v${TS_CORE_VERSION}...")
+FetchContent_Declare(ts_repo
+    GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter.git
+    GIT_TAG ${TS_CORE_VERSION}
+    GIT_SHALLOW TRUE
+    SOURCE_SUBDIR lib)
+set(BUILD_SHARED_LIBS OFF)
+set(TREE_SITTER_ENABLE_TESTING OFF)
+set(TREE_SITTER_ENABLE_EXAMPLES OFF)
+FetchContent_MakeAvailable(ts_repo)
+set(TREE_SITTER_LIB tree-sitter)
+set(TREE_SITTER_INCDIR "${ts_repo_SOURCE_DIR}/lib/include" "${ts_repo_BINARY_DIR}/lib/include")
+
+# ── sqlite3 amalgamation (download once, compile as C) ──────────
+set(SQLITE3_DEPS_DIR "${CMAKE_BINARY_DIR}/_deps")
+set(SQLITE3_AMAL_SRC "${SQLITE3_DEPS_DIR}/sqlite3.c")
+if(NOT EXISTS "${SQLITE3_AMAL_SRC}")
+    message(STATUS "sqlite3: downloading amalgamation ${SQLITE_VERSION}...")
+    file(DOWNLOAD "https://www.sqlite.org/2025/sqlite-amalgamation-${SQLITE_VERSION}.zip"
+        "${SQLITE3_DEPS_DIR}/sqlite-amalgamation.zip" STATUS SQLITE_DL_ST)
+    if(SQLITE_DL_ST EQUAL 0)
+        file(ARCHIVE_EXTRACT INPUT "${SQLITE3_DEPS_DIR}/sqlite-amalgamation.zip"
+            DESTINATION "${SQLITE3_DEPS_DIR}/")
+        file(GLOB SQLITE_EXTRACTED LIST_DIRECTORIES true "${SQLITE3_DEPS_DIR}/sqlite-amalgamation-*")
+        if(SQLITE_EXTRACTED)
+            file(GLOB SQLITE_FILES "${SQLITE_EXTRACTED}/*")
+            file(COPY ${SQLITE_FILES} DESTINATION "${SQLITE3_DEPS_DIR}/")
         endif()
-    endif()
-
-# ── Linux ───────────────────────────────────────────────────────
-# Uses apt packages: libsqlite3-dev libtree-sitter-dev
-elseif(UNIX AND NOT APPLE)
-    set(SQLITE3_INCLUDE_DIRS "")
-    set(SQLITE3_LIBRARIES sqlite3)
-    set(CMAKE_DL_LIBS dl)
-
-    find_path(TREE_SITTER_INCDIR tree_sitter/api.h /usr/include)
-    find_library(TREE_SITTER_LIB tree-sitter /usr/lib/x86_64-linux-gnu /usr/lib)
-    if(NOT TREE_SITTER_LIB)
-        set(TREE_SITTER_LIB tree-sitter)
-    endif()
-
-# ── Windows ─────────────────────────────────────────────────────
-# MinGW doesn't ship sqlite3-dev or tree-sitter.
-# Downloads sqlite3 amalgamation + builds tree-sitter from source.
-elseif(WIN32)
-    set(CMAKE_DL_LIBS "")
-
-    # -- sqlite3 amalgamation (download once, compile as C) ------
-    set(SQLITE3_DEPS_DIR "${CMAKE_BINARY_DIR}/_deps")
-    set(SQLITE3_AMAL_SRC "${SQLITE3_DEPS_DIR}/sqlite3.c")
-    if(NOT EXISTS "${SQLITE3_AMAL_SRC}")
-        message(STATUS "SQLite3: downloading amalgamation for Windows...")
-        file(DOWNLOAD "https://www.sqlite.org/2025/sqlite-amalgamation-3490100.zip"
-            "${SQLITE3_DEPS_DIR}/sqlite-amalgamation.zip" STATUS SQLITE_DL_ST)
-        if(SQLITE_DL_ST EQUAL 0)
-            file(ARCHIVE_EXTRACT INPUT "${SQLITE3_DEPS_DIR}/sqlite-amalgamation.zip"
-                DESTINATION "${SQLITE3_DEPS_DIR}/")
-            file(GLOB SQLITE_EXTRACTED LIST_DIRECTORIES true "${SQLITE3_DEPS_DIR}/sqlite-amalgamation-*")
-            if(SQLITE_EXTRACTED)
-                file(GLOB SQLITE_FILES "${SQLITE_EXTRACTED}/*")
-                file(COPY ${SQLITE_FILES} DESTINATION "${SQLITE3_DEPS_DIR}/")
-            endif()
-        endif()
-    endif()
-    set(SQLITE3_INCLUDE_DIRS "${SQLITE3_DEPS_DIR}")
-    set(SQLITE3_AMAL_SRC "${SQLITE3_DEPS_DIR}/sqlite3.c")
-
-    # -- tree-sitter (build from source via FetchContent) ---------
-    include(FetchContent)
-    FetchContent_Declare(ts_repo GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter.git
-        GIT_TAG v0.24.7 GIT_SHALLOW TRUE SOURCE_SUBDIR lib)
-    set(BUILD_SHARED_LIBS OFF)
-    set(TREE_SITTER_ENABLE_TESTING OFF)
-    set(TREE_SITTER_ENABLE_EXAMPLES OFF)
-    FetchContent_MakeAvailable(ts_repo)
-    set(TREE_SITTER_LIB tree-sitter)
-    set(TREE_SITTER_INCDIR "${ts_repo_SOURCE_DIR}/lib/include" "${ts_repo_BINARY_DIR}/lib/include")
-endif()
-
-# ── TREE_SITTER_NPM (grammar source paths) ──────────────────────
-if(DEFINED ENV{TREE_SITTER_NPM})
-    set(TREE_SITTER_NPM "$ENV{TREE_SITTER_NPM}")
-elseif(APPLE)
-    if(EXISTS "/opt/homebrew/lib/node_modules")
-        set(TREE_SITTER_NPM "/opt/homebrew/lib/node_modules")
     else()
-        set(TREE_SITTER_NPM "/usr/local/lib/node_modules")
-    endif()
-elseif(WIN32)
-    if(DEFINED ENV{APPDATA} AND EXISTS "$ENV{APPDATA}/npm/node_modules")
-        set(TREE_SITTER_NPM "$ENV{APPDATA}/npm/node_modules")
-    elseif(DEFINED ENV{NODE_PATH})
-        set(TREE_SITTER_NPM "$ENV{NODE_PATH}")
-    else()
-        execute_process(COMMAND npm root -g
-            OUTPUT_VARIABLE NPM_ROOT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
-        if(EXISTS "${NPM_ROOT}")
-            set(TREE_SITTER_NPM "${NPM_ROOT}")
-        else()
-            set(TREE_SITTER_NPM "")
-        endif()
-    endif()
-else()
-    execute_process(COMMAND npm root -g
-        OUTPUT_VARIABLE NPM_ROOT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
-    if(EXISTS "${NPM_ROOT}")
-        set(TREE_SITTER_NPM "${NPM_ROOT}")
-    elseif(EXISTS "/usr/local/lib/node_modules")
-        set(TREE_SITTER_NPM "/usr/local/lib/node_modules")
-    elseif(EXISTS "/usr/lib/node_modules")
-        set(TREE_SITTER_NPM "/usr/lib/node_modules")
-    else()
-        set(TREE_SITTER_NPM "")
+        message(FATAL_ERROR "sqlite3: amalgamation download failed (status=${SQLITE_DL_ST})")
     endif()
 endif()
-message(STATUS "TREE_SITTER_NPM: \"${TREE_SITTER_NPM}\"")
+set(SQLITE3_INCLUDE_DIRS "${SQLITE3_DEPS_DIR}")
+set(SQLITE3_AMAL_SRC "${SQLITE3_DEPS_DIR}/sqlite3.c")
+set(SQLITE3_LIBRARIES "")
+set(CMAKE_DL_LIBS "")
+if(APPLE OR (UNIX AND NOT APPLE))
+    set(CMAKE_DL_LIBS dl)
+endif()
 
-# ── Grammar source files ────────────────────────────────────────
+# ── sqlite-vec amalgamation (download once, compile as C) ───────
+# Compiled directly into the engine — no runtime load_extension needed.
+# If download fails, the engine still builds; vector search is simply unavailable.
+set(SQLITE_VEC_SRC "${SQLITE3_DEPS_DIR}/sqlite-vec.c")
+if(NOT EXISTS "${SQLITE_VEC_SRC}")
+    message(STATUS "sqlite-vec: downloading amalgamation ${SQLITE_VEC_VERSION}...")
+    file(DOWNLOAD "https://github.com/asg017/sqlite-vec/releases/download/${SQLITE_VEC_VERSION}/sqlite-vec-${SQLITE_VEC_VERSION}-amalgamation.zip"
+        "${SQLITE3_DEPS_DIR}/sqlite-vec-amalgamation.zip" STATUS SQLITE_VEC_DL_ST)
+    if(SQLITE_VEC_DL_ST EQUAL 0)
+        file(ARCHIVE_EXTRACT INPUT "${SQLITE3_DEPS_DIR}/sqlite-vec-amalgamation.zip"
+            DESTINATION "${SQLITE3_DEPS_DIR}/")
+    else()
+        message(WARNING "sqlite-vec: amalgamation download failed (status=${SQLITE_VEC_DL_ST}), vector search will be unavailable")
+    endif()
+endif()
+
+# ── Grammar parser.c (FetchContent per grammar) ──────────────────
+# Swift omitted: parser.c incompatible with tree-sitter core v0.24.7.
 set(GRAMMAR_SOURCES
-    ${TREE_SITTER_NPM}/tree-sitter-c/src/parser.c
-    ${TREE_SITTER_NPM}/tree-sitter-cpp/src/parser.c
-    ${TREE_SITTER_NPM}/tree-sitter-cpp/src/scanner.c
-    ${TREE_SITTER_NPM}/tree-sitter-go/src/parser.c
-    ${TREE_SITTER_NPM}/tree-sitter-java/src/parser.c
-    ${TREE_SITTER_NPM}/tree-sitter-javascript/src/parser.c
-    ${TREE_SITTER_NPM}/tree-sitter-javascript/src/scanner.c
-    ${TREE_SITTER_NPM}/tree-sitter-python/src/parser.c
-    ${TREE_SITTER_NPM}/tree-sitter-python/src/scanner.c
-    ${TREE_SITTER_NPM}/tree-sitter-rust/src/parser.c
-    ${TREE_SITTER_NPM}/tree-sitter-rust/src/scanner.c
-    ${TREE_SITTER_NPM}/tree-sitter-swift/src/parser.c
-    ${TREE_SITTER_NPM}/tree-sitter-swift/src/scanner.c
-    ${TREE_SITTER_NPM}/tree-sitter-typescript/typescript/src/parser.c
-    ${TREE_SITTER_NPM}/tree-sitter-typescript/typescript/src/scanner.c
-    ${TREE_SITTER_NPM}/tree-sitter-typescript/tsx/src/parser.c
-    ${TREE_SITTER_NPM}/tree-sitter-typescript/tsx/src/scanner.c
+    ${GRAMMAR_SOURCE_DIR_c}/parser.c
+    ${GRAMMAR_SOURCE_DIR_cpp}/parser.c
+    ${GRAMMAR_SOURCE_DIR_cpp}/scanner.c
+    ${GRAMMAR_SOURCE_DIR_go}/parser.c
+    ${GRAMMAR_SOURCE_DIR_java}/parser.c
+    ${GRAMMAR_SOURCE_DIR_javascript}/parser.c
+    ${GRAMMAR_SOURCE_DIR_javascript}/scanner.c
+    ${GRAMMAR_SOURCE_DIR_python}/parser.c
+    ${GRAMMAR_SOURCE_DIR_python}/scanner.c
+    ${GRAMMAR_SOURCE_DIR_rust}/parser.c
+    ${GRAMMAR_SOURCE_DIR_rust}/scanner.c
+    ${tree-sitter-typescript_SOURCE_DIR}/typescript/src/parser.c
+    ${tree-sitter-typescript_SOURCE_DIR}/typescript/src/scanner.c
+    ${tree-sitter-typescript_SOURCE_DIR}/tsx/src/parser.c
+    ${tree-sitter-typescript_SOURCE_DIR}/tsx/src/scanner.c
 )
 
+set(TREE_SITTER_INCLUDE_DIRS
+    ${GRAMMAR_SOURCE_DIR_c}
+    ${GRAMMAR_SOURCE_DIR_cpp}
+    ${GRAMMAR_SOURCE_DIR_go}
+    ${GRAMMAR_SOURCE_DIR_java}
+    ${GRAMMAR_SOURCE_DIR_javascript}
+    ${GRAMMAR_SOURCE_DIR_python}
+    ${GRAMMAR_SOURCE_DIR_rust}
+    ${tree-sitter-typescript_SOURCE_DIR}/typescript/src
+    ${tree-sitter-typescript_SOURCE_DIR}/tsx/src
+    ${tree-sitter-typescript_SOURCE_DIR}/common
+)
+
+# ── Engine sources ───────────────────────────────────────────────
 set(ENGINE_SOURCES
     ${GRAMMAR_SOURCES}
     src/engine.cpp
@@ -182,9 +147,7 @@ set(ENGINE_SOURCES
     src/ir/translators/python_visitor.cpp
     src/ir/translators/rust_visitor.cpp
     src/ir/translators/java_visitor.cpp
-    src/ir/translators/swift_visitor.cpp
     src/ir/translators/java_translator.cpp
-    src/ir/translators/swift_translator.cpp
     src/ir/translators/scanner_visitor.cpp
     src/ir/translators/tsx_translator.cpp
     src/graph/graph_types.cpp
@@ -204,38 +167,35 @@ set(ENGINE_SOURCES
     src/resolver/resolve_cache.cpp
     src/linker/linker.cpp
     src/filter_policy.cpp
+    src/platform_win.cpp
+    ${SQLITE3_AMAL_SRC}
 )
 
-# ── Windows only: add platform adapters + sqlite3 amalgamation ──
-if(WIN32)
-    list(APPEND ENGINE_SOURCES src/platform_win.cpp ${SQLITE3_AMAL_SRC})
+# Add sqlite-vec.c if downloaded successfully
+if(EXISTS "${SQLITE_VEC_SRC}")
+    list(APPEND ENGINE_SOURCES ${SQLITE_VEC_SRC})
+    message(STATUS "sqlite-vec: amalgamation found, compiling into engine")
 endif()
 
 add_library(astgraph_engine STATIC ${ENGINE_SOURCES})
 
-# Windows: compile sqlite3.c as C, not C++
-if(WIN32)
-    set_source_files_properties(${SQLITE3_AMAL_SRC} PROPERTIES LANGUAGE C)
+# Compile sqlite3.c and sqlite-vec.c as C, not C++
+set_source_files_properties(${SQLITE3_AMAL_SRC} PROPERTIES LANGUAGE C)
+if(EXISTS "${SQLITE_VEC_SRC}")
+    set_source_files_properties(${SQLITE_VEC_SRC} PROPERTIES LANGUAGE C)
 endif()
 
-target_compile_definitions(astgraph_engine PUBLIC SQLITE_ENABLE_LOAD_EXTENSION)
+target_compile_definitions(astgraph_engine PUBLIC
+    SQLITE_ENABLE_LOAD_EXTENSION
+    SQLITE_ENABLE_FTS5
+    SQLITE_THREADSAFE=1)
 
 target_include_directories(astgraph_engine PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${SQLITE3_INCLUDE_DIRS}
     ${TREE_SITTER_INCDIR}
-    ${TREE_SITTER_NPM}/tree-sitter-c/src
-    ${TREE_SITTER_NPM}/tree-sitter-cpp/src
-    ${TREE_SITTER_NPM}/tree-sitter-go/src
-    ${TREE_SITTER_NPM}/tree-sitter-java/src
-    ${TREE_SITTER_NPM}/tree-sitter-javascript/src
-    ${TREE_SITTER_NPM}/tree-sitter-python/src
-    ${TREE_SITTER_NPM}/tree-sitter-rust/src
-    ${TREE_SITTER_NPM}/tree-sitter-swift/src
-    ${TREE_SITTER_NPM}/tree-sitter-typescript/typescript/src
-    ${TREE_SITTER_NPM}/tree-sitter-typescript/tsx/src
-    ${TREE_SITTER_NPM}/tree-sitter-typescript/common
+    ${TREE_SITTER_INCLUDE_DIRS}
 )
 
 target_link_libraries(astgraph_engine PUBLIC

@@ -1,4 +1,4 @@
-# Reusable: build → test → package (single pass, no duplication)
+# Reusable: build → test → package (macOS + Linux only)
 name: CI
 
 on:
@@ -24,14 +24,9 @@ jobs:
       matrix:
         include:
           - os: ubuntu-24.04
-            ext: .so
             artifact: codescope-x86_64-linux
           - os: macos-15
-            ext: .so
             artifact: codescope-aarch64-macos
-          - os: windows-2022
-            ext: .dll
-            artifact: codescope-x86_64-windows
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     steps:
@@ -39,12 +34,6 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Install GNU toolchain (Windows — MinGW compat)
-        if: matrix.os == 'windows-2022'
-        run: |
-          rustup toolchain install stable-x86_64-pc-windows-gnu
-          rustup default stable-x86_64-pc-windows-gnu
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
@@ -54,25 +43,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build git gcc g++
-          # NOTE: tree-sitter and sqlite3 are compiled statically from
-          # source via CMake FetchContent / amalgamation — no system
-          # libraries needed. Grammar .c sources are cloned below.
 
       - name: Install deps (macOS)
         if: matrix.os == 'macos-15'
         run: |
           brew install cmake ninja git
-          # tree-sitter and sqlite3 are linked dynamically on macOS
-          # (brew provides the system libraries). Grammars are compiled
-          # into the binary — no node/npm needed.
-
-      - name: Install deps (Windows)
-        if: matrix.os == 'windows-2022'
-        shell: bash
-        run: |
-          choco install -y cmake ninja mingw git
-          # Rust is already installed via dtolnay/rust-toolchain
-          # MinGW provides gcc/g++ for C++ engine compilation
 
       - name: Cache Cargo registry
         uses: actions/cache@v4
@@ -90,50 +65,15 @@ jobs:
           key: ${{ matrix.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ matrix.os }}-cargo-target-
 
-      - name: Cache CMake build
+      - name: Cache CMake build + deps
         uses: actions/cache@v4
         with:
-          path: engine/build
-          key: ${{ matrix.os }}-cmake-build-${{ hashFiles('engine/CMakeLists.txt') }}
-          restore-keys: ${{ matrix.os }}-cmake-build-
+          path: |
+            engine/build
+          key: ${{ matrix.os }}-cmake-${{ hashFiles('engine/CMakeLists.txt', 'engine/cmake/deps_versions.cmake') }}
+          restore-keys: ${{ matrix.os }}-cmake-
 
-      - name: Cache grammar sources
-        uses: actions/cache@v4
-        with:
-          path: grammars/tree-sitter-*
-          key: ${{ matrix.os }}-grammars-${{ hashFiles('grammars/clone_grammars.sh') }}
-          restore-keys: ${{ matrix.os }}-grammars-
-
-      - name: Set grammar source path for CMake
-        shell: bash
-        run: |
-          echo "TREE_SITTER_NPM=$PWD/grammars" >> "$GITHUB_ENV"
-          echo "Grammar sources: $PWD/grammars"
-
-      - name: Clone grammar sources for CMake
-        shell: bash
-        run: |
-          cd grammars
-          bash clone_grammars.sh
-
-      - name: Build C++ engine
-        shell: bash
-        run: |
-          if [ "$RUNNER_OS" == "Windows" ]; then
-            cmake -B engine/build -G "MinGW Makefiles" \
-              -DCMAKE_BUILD_TYPE=Release \
-              -DCMAKE_C_COMPILER=gcc \
-              -DCMAKE_CXX_COMPILER=g++ \
-              engine/
-            cmake --build engine/build --target astgraph_engine
-          else
-            cmake -B engine/build -G Ninja \
-              -DCMAKE_BUILD_TYPE=Release \
-              engine/
-            cmake --build engine/build --target astgraph_engine
-          fi
-
-      - name: Build + test Rust server
+      - name: Build + test
         shell: bash
         env:
           CBM_SKIP_PERF: ${{ inputs.skip_perf && '1' || '' }}
@@ -142,12 +82,10 @@ jobs:
           cargo nextest run --release --no-tests=pass
 
       - name: Strip binary
-        if: inputs.skip_package != true && matrix.os != 'windows-2022'
+        if: inputs.skip_package != true
         shell: bash
         run: |
-          BIN="target/release/codescope"
-          [ -f "${BIN}.exe" ] && BIN="${BIN}.exe"
-          strip "$BIN" 2>/dev/null || true
+          strip target/release/codescope 2>/dev/null || true
 
       - name: Ad-hoc sign macOS binary
         if: ${{ matrix.os == 'macos-15' && inputs.skip_package != true }}
@@ -157,14 +95,10 @@ jobs:
         if: inputs.skip_package != true
         shell: bash
         run: |
-          BIN="target/release/codescope"
-          [ -f "${BIN}.exe" ] && BIN="${BIN}.exe"
-
           mkdir -p package
-          cp "$BIN" package/
+          cp target/release/codescope package/
           cp LICENSE package/
           [ -f install.sh ] && cp install.sh package/
-          [ -f install.ps1 ] && cp install.ps1 package/
 
           cd package
           tar -czf "../${{ matrix.artifact }}.tar.gz" ./*

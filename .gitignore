@@ -6,6 +6,7 @@
 .codegraph/
 .workbuddy/
 .codescope/
+.cursh/
 .mcp.json
 
 # IDE and Editors
@@ -184,3 +185,5 @@ plan/
 
 **/build_*/
 **/*.ll
+**/cmake/
+bin/

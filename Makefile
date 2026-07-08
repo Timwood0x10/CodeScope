@@ -1,5 +1,5 @@
 SHELL := /bin/bash
-.PHONY: all build build-engine build-grammars build-server \
+.PHONY: all build build-engine build-server \
         test test-engine test-server test-bench test-savings \
         lint lint-cpp lint-rust fmt fmt-cpp fmt-rust check \
         clean distclean help
@@ -7,7 +7,6 @@ SHELL := /bin/bash
 # ─── Paths ───────────────────────────────────────────────────────
 ENGINE_DIR  := engine
 SERVER_DIR  := server
-GRAMMARS_DIR:= grammars
 BUILD_DIR   := $(ENGINE_DIR)/build
 TEST_DB     := /tmp/astgraph_test.db
 
@@ -31,7 +30,7 @@ CROSS  := $(RED)✗$(RESET)
 help:
 	@printf "$(CYAN)CodeScope Makefile$(RESET)\n"
 	@printf "\n"
-	@printf "  $(GREEN)make build$(RESET)          Build all (engine + grammars + server)\n"
+	@printf "  $(GREEN)make build$(RESET)          Build all (engine + server)\n"
 	@printf "  $(GREEN)make test$(RESET)           Run all tests\n"
 	@printf "  $(GREEN)make lint$(RESET)           Run all linters\n"
 	@printf "  $(GREEN)make fmt$(RESET)            Format all code\n"
@@ -39,7 +38,6 @@ help:
 	@printf "\n"
 	@printf "  $(CYAN)Build:$(RESET)\n"
 	@printf "    make build-engine    Build C++ engine (static lib)\n"
-	@printf "    make build-grammars  Build tree-sitter grammar .so files\n"
 	@printf "    make build-server    Build Rust MCP server\n"
 	@printf "\n"
 	@printf "  $(CYAN)Test:$(RESET)\n"
@@ -57,21 +55,16 @@ help:
 	@printf "\n"
 	@printf "  $(CYAN)Clean:$(RESET)\n"
 	@printf "    make clean           Clean build artifacts\n"
-	@printf "    make distclean       Clean everything including grammars\n"
+	@printf "    make distclean       Clean everything\n"
 
 # ─── All ─────────────────────────────────────────────────────────
 all: build
 
 # ─── Build ───────────────────────────────────────────────────────
-# build-grammars is intentionally omitted: tree-sitter grammars are
-# compiled into the C++ engine binary via CMake/FetchContent (see
-# CMakeLists.txt). The old build-grammars target that produced .so
-# files for dlopen was removed — those .so files are never loaded.
+# tree-sitter grammars are compiled into the binary via CMake/FetchContent.
+# No external .so files needed.
 build: build-engine build-server
 	@printf "$(CHECK) build complete\n"
-
-build-grammars:
-	@printf "$(YELLOW)⚠ build-grammars: grammars are compiled into the binary, this target is a no-op$(RESET)\n"
 
 ENGINE_CMAKE_FLAGS := -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
                        -DCMAKE_C_COMPILER=$(ENGINE_CC) \
@@ -102,8 +95,11 @@ build-engine: $(ENGINE_LIB)
 
 build-server:
 	@printf "$(CYAN)[server]$(RESET) Building Rust MCP server...\n"
-	@cd $(SERVER_DIR) && cargo build --release 2>&1 \
-		&& printf "  $(CHECK) server built: target/release/codescope\n"
+	cd $(SERVER_DIR) && cargo build --release 2>&1
+	@mkdir -p bin
+	@cp $(CURDIR)/target/release/codescope bin/codescope 2>/dev/null || \
+	 cp $(SERVER_DIR)/target/release/codescope bin/codescope 2>/dev/null || true
+	@printf "  $(CHECK) server built: bin/codescope\n"
 
 # ─── Test ────────────────────────────────────────────────────────
 test: test-engine test-server
@@ -119,7 +115,7 @@ test-engine: $(ENGINE_LIB)
 	@failed=0; \
 	for test in $(TEST_EXES); do \
 		printf "  Running $$test...\n"; \
-		if GRAMMARS_DIR=$(GRAMMARS_DIR) DYLD_LIBRARY_PATH=/opt/homebrew/opt/sqlite/lib:/opt/homebrew/opt/tree-sitter/lib $(BUILD_DIR)/$$test 2>&1; then \
+		if $(BUILD_DIR)/$$test 2>&1; then \
 			printf "  $(CHECK) $$test passed\n"; \
 		else \
 			printf "  $(CROSS) $$test failed\n"; \
@@ -146,18 +142,16 @@ test-savings:
 BENCH_BIN   := $(BUILD_DIR)/test_bench_project
 BENCH_DIR   := benchmarks
 BENCH_RES   := $(BENCH_DIR)/results
-BENCH_BASE  := $(BENCH_DIR)/baselines
-GRAMMARS    := $(GRAMMARS_DIR)
 
 bench-check: $(BENCH_BIN)
 	@printf "$(CYAN)[bench/check]$(RESET) Quick benchmark (engine C++ + GoAgent)...\n"
 	@mkdir -p $(BENCH_RES)
 	@printf "  Running engine C++ (48 files)...\n"
 	@CODESCOPE_BENCH_JSON=$(BENCH_RES)/engine_cpp_$$(git rev-parse --short HEAD).json \
-		$(BENCH_BIN) $(GRAMMARS) $(ENGINE_DIR)/src 5 "cpp" 2>/dev/null
+		$(BENCH_BIN) . $(ENGINE_DIR)/src 5 "cpp" 2>/dev/null
 	@printf "  Running GoAgent (1157 Go files)...\n"
 	@CODESCOPE_BENCH_JSON=$(BENCH_RES)/goagent_go_$$(git rev-parse --short HEAD).json \
-		$(BENCH_BIN) $(GRAMMARS) $(HOME)/go/src/goagent 5 "go" 2>/dev/null
+		$(BENCH_BIN) . $(HOME)/go/src/goagent 5 "go" 2>/dev/null
 	@printf "$(CHECK) bench-check complete\n"
 
 bench-full: $(BENCH_BIN)
@@ -165,13 +159,13 @@ bench-full: $(BENCH_BIN)
 	@mkdir -p $(BENCH_RES)
 	@printf "  Running engine C++ (48 files)...\n"
 	@CODESCOPE_BENCH_JSON=$(BENCH_RES)/engine_cpp_$$(git rev-parse --short HEAD).json \
-		$(BENCH_BIN) $(GRAMMARS) $(ENGINE_DIR)/src 5 "cpp" 2>/dev/null
+		$(BENCH_BIN) . $(ENGINE_DIR)/src 5 "cpp" 2>/dev/null
 	@printf "  Running GoAgent (1157 Go files)...\n"
 	@CODESCOPE_BENCH_JSON=$(BENCH_RES)/goagent_go_$$(git rev-parse --short HEAD).json \
-		$(BENCH_BIN) $(GRAMMARS) $(HOME)/go/src/goagent 5 "go" 2>/dev/null
+		$(BENCH_BIN) . $(HOME)/go/src/goagent 5 "go" 2>/dev/null
 	@printf "  Running kernel subdir (541 C files)...\n"
 	@CODESCOPE_BENCH_JSON=$(BENCH_RES)/kernel_c_$$(git rev-parse --short HEAD).json \
-		$(BENCH_BIN) $(GRAMMARS) $(HOME)/code/researcher/linux/linux-6.14.7/kernel 5 "c" 2>/dev/null
+		$(BENCH_BIN) . $(HOME)/code/researcher/linux/linux-6.14.7/kernel 5 "c" 2>/dev/null
 	@printf "$(CHECK) bench-full complete\n"
 
 $(BENCH_BIN): $(ENGINE_LIB)
@@ -241,6 +235,5 @@ clean:
 	@printf "  $(CHECK) cleaned\n"
 
 distclean: clean
-	@printf "$(CYAN)[distclean]$(RESET) Removing grammars...\n"
-	@rm -f $(GRAMMARS_DIR)/*.so
+	@printf "$(CYAN)[distclean]$(RESET) Done\n"
 	@printf "  $(CHECK) distclean done\n"
