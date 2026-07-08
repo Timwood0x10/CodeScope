@@ -695,6 +695,10 @@ bool GraphStore::storeVector(uint64_t node_id, uint64_t project_id,
 	return rc == SQLITE_DONE;
 }
 
+// ── Local JSON helper (forward declaration) ─────────────────────
+// Escape a string for safe embedding in JSON (RFC 8259).
+static std::string jsonEscape(const std::string &s);
+
 std::string GraphStore::searchSemantic(uint64_t project_id,
 				       const void *query_vec, size_t vec_bytes,
 				       int limit)
@@ -777,7 +781,7 @@ std::string GraphStore::searchSemantic(uint64_t project_id,
 	}
 
 	std::ostringstream json;
-	json << "{\"total\":0,\"results\":[";
+	json << "{\"results\":[";
 	bool first = true;
 	for (const auto &h : hits) {
 		if (!first)
@@ -785,9 +789,9 @@ std::string GraphStore::searchSemantic(uint64_t project_id,
 		first = false;
 		json << "{"
 		     << "\"node_id\":" << h.id << ","
-		     << "\"name\":\"" << h.name << "\","
+		     << "\"name\":\"" << jsonEscape(h.name) << "\","
 		     << "\"node_type\":" << h.kind << ","
-		     << "\"file_path\":\"" << h.file << "\","
+		     << "\"file_path\":\"" << jsonEscape(h.file) << "\","
 		     << "\"score\":" << h.score << "}";
 	}
 	json << "],\"total\":" << hits.size() << "}";
@@ -1332,6 +1336,35 @@ bool GraphStore::insertEmbedding(uint64_t symbol_id, const float *vector_data,
 		return false;
 	}
 	sqlite3_finalize(stmt);
+
+	// Also write to node_vectors so searchSemantic (which queries
+	// node_vectors, not embeddings alone) can find this embedding.
+	{
+		uint64_t proj_id = 0;
+		sqlite3_stmt *pid_st = nullptr;
+		if (sqlite3_prepare_v2(
+			    db_, "SELECT project_id FROM ir_nodes WHERE id=?",
+			    -1, &pid_st, nullptr) == SQLITE_OK) {
+			sqlite3_bind_int64(pid_st, 1,
+					   static_cast<int64_t>(symbol_id));
+			if (sqlite3_step(pid_st) == SQLITE_ROW)
+				proj_id = static_cast<uint64_t>(
+					sqlite3_column_int64(pid_st, 0));
+			sqlite3_finalize(pid_st);
+		}
+		if (proj_id > 0 && stmt_vector_) {
+			sqlite3_reset(stmt_vector_);
+			sqlite3_bind_int64(stmt_vector_, 1,
+					   static_cast<int64_t>(symbol_id));
+			sqlite3_bind_int64(stmt_vector_, 2,
+					   static_cast<int64_t>(proj_id));
+			sqlite3_bind_blob(
+				stmt_vector_, 3, vec.data(),
+				TARGET_DIM * static_cast<int>(sizeof(float)),
+				SQLITE_TRANSIENT);
+			sqlite3_step(stmt_vector_);
+		}
+	}
 	return true;
 }
 
@@ -2679,7 +2712,9 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		// Helper: extract last component after '.'
 		auto shortName = [](const std::string &name) -> std::string {
 			auto dot = name.rfind('.');
-			return (dot != std::string::npos) ? name.substr(dot + 1) : name;
+			return (dot != std::string::npos) ?
+				       name.substr(dot + 1) :
+				       name;
 		};
 
 		// ── Step 1: Load _r2n declarations into C++ indexes ──
@@ -2687,9 +2722,12 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		// callee_by_name: name → [node_id]
 		// callee_by_short: short-name → [node_id]
 		std::unordered_map<std::string,
-			std::unordered_map<int64_t, int64_t>> caller_idx;
-		std::unordered_map<std::string, std::vector<int64_t>> callee_by_name;
-		std::unordered_map<std::string, std::vector<int64_t>> callee_by_short;
+				   std::unordered_map<int64_t, int64_t> >
+			caller_idx;
+		std::unordered_map<std::string, std::vector<int64_t> >
+			callee_by_name;
+		std::unordered_map<std::string, std::vector<int64_t> >
+			callee_by_short;
 
 		{
 			const char *r2n_sql =
@@ -2698,12 +2736,17 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 				"JOIN semantic_records s ON s.rowid = r.rid "
 				"WHERE s.kind IN (0,1)";
 			sqlite3_stmt *st = nullptr;
-			if (sqlite3_prepare_v2(db_, r2n_sql, -1, &st, nullptr) == SQLITE_OK) {
+			if (sqlite3_prepare_v2(db_, r2n_sql, -1, &st,
+					       nullptr) == SQLITE_OK) {
 				while (sqlite3_step(st) == SQLITE_ROW) {
-					int64_t node_id = sqlite3_column_int64(st, 0);
-					const char *name_c = (const char *)sqlite3_column_text(st, 1);
-					int64_t orig_id = sqlite3_column_int64(st, 2);
-					const char *fp_c = (const char *)sqlite3_column_text(st, 3);
+					int64_t node_id =
+						sqlite3_column_int64(st, 0);
+					const char *name_c = (const char *)
+						sqlite3_column_text(st, 1);
+					int64_t orig_id =
+						sqlite3_column_int64(st, 2);
+					const char *fp_c = (const char *)
+						sqlite3_column_text(st, 3);
 					if (!name_c || !*name_c || !fp_c)
 						continue;
 					std::string name(name_c);
@@ -2711,7 +2754,8 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 					callee_by_name[name].push_back(node_id);
 					std::string sn = shortName(name);
 					if (sn != name)
-						callee_by_short[sn].push_back(node_id);
+						callee_by_short[sn].push_back(
+							node_id);
 					// Caller index: [file_path][original_id]
 					caller_idx[fp_c][orig_id] = node_id;
 				}
@@ -2731,17 +2775,27 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		matched_edges.reserve(65536);
 
 		{
-			std::string call_sql = "SELECT sr.name, sr.parent_id, sr.file_path, sr.start_row "
+			std::string call_sql =
+				"SELECT sr.name, sr.parent_id, sr.file_path, sr.start_row "
 				"FROM semantic_records sr "
-				"WHERE sr.project_id=" + pid + " AND sr.kind=9 AND sr.name != ''";
+				"WHERE sr.project_id=" +
+				pid + " AND sr.kind=9 AND sr.name != ''";
 			sqlite3_stmt *call_st = nullptr;
-			if (sqlite3_prepare_v2(db_, call_sql.c_str(), -1, &call_st, nullptr) == SQLITE_OK) {
-				int64_t pid_i = static_cast<int64_t>(project_id);
+			if (sqlite3_prepare_v2(db_, call_sql.c_str(), -1,
+					       &call_st,
+					       nullptr) == SQLITE_OK) {
+				int64_t pid_i =
+					static_cast<int64_t>(project_id);
 				while (sqlite3_step(call_st) == SQLITE_ROW) {
-					const char *name_c = (const char *)sqlite3_column_text(call_st, 0);
-					int64_t parent_id = sqlite3_column_int64(call_st, 1);
-					const char *fp_c = (const char *)sqlite3_column_text(call_st, 2);
-					int start_row = sqlite3_column_int(call_st, 3);
+					const char *name_c = (const char *)
+						sqlite3_column_text(call_st, 0);
+					int64_t parent_id =
+						sqlite3_column_int64(call_st,
+								     1);
+					const char *fp_c = (const char *)
+						sqlite3_column_text(call_st, 2);
+					int start_row =
+						sqlite3_column_int(call_st, 3);
 					if (!name_c || !*name_c || !fp_c)
 						continue;
 
@@ -2749,20 +2803,25 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 					auto fp_it = caller_idx.find(fp_c);
 					if (fp_it == caller_idx.end())
 						continue;
-					auto oid_it = fp_it->second.find(parent_id);
+					auto oid_it =
+						fp_it->second.find(parent_id);
 					if (oid_it == fp_it->second.end())
 						continue;
 					int64_t caller_id = oid_it->second;
 
 					std::string call_name(name_c);
 					auto tryAddEdge = [&](int64_t callee_id) {
-						if (callee_id == caller_id) return;
-						matched_edges.push_back({caller_id, callee_id, fp_c, start_row});
+						if (callee_id == caller_id)
+							return;
+						matched_edges.push_back(
+							{ caller_id, callee_id,
+							  fp_c, start_row });
 					};
 
 					bool found = false;
 					// Try exact full-name match first
-					auto fr = callee_by_name.find(call_name);
+					auto fr =
+						callee_by_name.find(call_name);
 					if (fr != callee_by_name.end()) {
 						for (int64_t cid : fr->second) {
 							tryAddEdge(cid);
@@ -2771,12 +2830,19 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 					}
 					// Try short-name (last component after '.')
 					if (!found) {
-						std::string sn = shortName(call_name);
+						std::string sn =
+							shortName(call_name);
 						if (sn != call_name) {
-							auto sr = callee_by_short.find(sn);
-							if (sr != callee_by_short.end()) {
-								for (int64_t cid : sr->second)
-									tryAddEdge(cid);
+							auto sr =
+								callee_by_short
+									.find(sn);
+							if (sr !=
+							    callee_by_short
+								    .end()) {
+								for (int64_t cid :
+								     sr->second)
+									tryAddEdge(
+										cid);
 							}
 						}
 					}
@@ -2795,14 +2861,19 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 				" call_site_file, call_site_line) "
 				"VALUES (?,?,?,1,'call_graph',?,?)";
 			sqlite3_stmt *ins = nullptr;
-			if (sqlite3_prepare_v2(db_, insert_sql, -1, &ins, nullptr) == SQLITE_OK) {
-				int64_t pid_i = static_cast<int64_t>(project_id);
-				for (size_t i = 0; i < matched_edges.size(); i++) {
+			if (sqlite3_prepare_v2(db_, insert_sql, -1, &ins,
+					       nullptr) == SQLITE_OK) {
+				int64_t pid_i =
+					static_cast<int64_t>(project_id);
+				for (size_t i = 0; i < matched_edges.size();
+				     i++) {
 					auto &e = matched_edges[i];
 					sqlite3_bind_int64(ins, 1, pid_i);
 					sqlite3_bind_int64(ins, 2, e.caller_id);
 					sqlite3_bind_int64(ins, 3, e.callee_id);
-					sqlite3_bind_text(ins, 4, e.file_path.c_str(), -1, SQLITE_STATIC);
+					sqlite3_bind_text(ins, 4,
+							  e.file_path.c_str(),
+							  -1, SQLITE_STATIC);
 					sqlite3_bind_int(ins, 5, e.start_row);
 					sqlite3_step(ins);
 					sqlite3_reset(ins);

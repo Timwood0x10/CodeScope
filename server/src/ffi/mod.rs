@@ -399,62 +399,27 @@ pub fn import_artifact(project_id: u64, artifact_path: &str) -> String {
     take_string(unsafe { engine_import_artifact(project_id, cstr(artifact_path).as_ptr()) })
 }
 
-// ── Background task management (Tokio + index_tasks table) ─────
-
-use once_cell::sync::Lazy;
-use std::collections::HashSet;
-use std::sync::Mutex;
-
-static ENHANCEMENT_RUNNING: Lazy<Mutex<HashSet<u64>>> = Lazy::new(|| Mutex::new(HashSet::new()));
+// ── Background task management ─────────────────────────────────
 
 /// Spawn a background thread to enhance a project (blocking FFI).
 /// Uses `std::thread::spawn` instead of a Tokio task because the FFI call
 /// is synchronous and blocking — spawning it on the async runtime would block
 /// the worker thread, starving other background tasks and timeouts.
 /// Tracks progress via the index_tasks table in SQLite.
+/// Run project enhancement synchronously.
+///
+/// Previously this spawned a background thread that accessed the global C++
+/// `g_store` concurrently with the main MCP server thread, creating a data
+/// race (same pattern as the old spawn_fts_build). Running synchronously
+/// in the calling thread eliminates the race entirely.
 pub fn spawn_enhancement(project_id: u64) {
-    // Check if this project is already being enhanced and insert in one atomic step
-    {
-        let mut running = ENHANCEMENT_RUNNING
-            .lock()
-            .expect("enhancement tracking lock poisoned");
-        if !running.insert(project_id) {
-            eprintln!(
-                "enhancement: project {} already running, skipping",
-                project_id
-            );
-            return;
-        }
-    }
-
-    // Create a task record via FFI
+    eprintln!(
+        "enhancement: starting synchronous enhancement for project {}",
+        project_id
+    );
     let _task_json = take_string(unsafe { engine_get_enhancement_status(project_id) });
-    eprintln!("enhancement: creating task for project {}", project_id);
-
-    std::thread::spawn(move || {
-        // Wrap the worker body in `catch_unwind` so a panic in the FFI call
-        // cannot leak the `project_id` into the running set forever, which
-        // would block all future enhancement calls for this project.
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            eprintln!(
-                "enhancement: starting background enhancement for project {}",
-                project_id
-            );
-
-            let result = enhance_project(project_id);
-            eprintln!("enhancement: completed: {}", result);
-        }));
-
-        if let Err(e) = result {
-            eprintln!("spawn_enhancement: worker panicked: {:?}", e);
-        }
-
-        // Always remove from running set, even if the worker panicked.
-        let mut running = ENHANCEMENT_RUNNING
-            .lock()
-            .expect("enhancement tracking lock poisoned");
-        running.remove(&project_id);
-    });
+    let result = enhance_project(project_id);
+    eprintln!("enhancement: completed: {}", result);
 }
 
 /// Build the FTS (full-text search) index for a project synchronously.

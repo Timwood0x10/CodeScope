@@ -182,6 +182,10 @@ bool ResolveCallPass::run(
 			// Create stub and add CallTarget edge (NOT as a child node,
 			// to prevent the GraphBuilder from traversing into the stub
 			// and creating spurious edges within the target file).
+			// Ownership: `stub` is transferred to u->all_nodes below,
+			// and ~TranslationUnit's destructor iterates all_nodes
+			// and deletes each Node. TranslationUnit is not copyable,
+			// so there is no double-free risk in the current design.
 			auto *stub = new ir::Node();
 			stub->kind = ir::NodeKind::FunctionDecl;
 			stub->name = best->name;

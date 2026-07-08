@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 use crate::ffi;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -110,6 +110,9 @@ fn run_worker(
     for (k, v) in envs {
         cmd.env(k, v);
     }
+    // Pipe stdout/stderr so the worker's output is captured instead of
+    // leaking into the MCP server's stdout transport stream.
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     let child = cmd.spawn().map_err(|e| format!("spawn failed: {}", e))?;
     let pid = child.id();
 

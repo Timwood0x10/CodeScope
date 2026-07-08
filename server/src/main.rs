@@ -24,15 +24,10 @@ fn main() {
         let project_id_arg = args.get(6).map(|s| s.as_str()).unwrap_or("0");
         // project_id is the 6th arg if it's numeric, otherwise project_name is
 
-        // SAFETY: This runs in single-threaded worker startup before any
-        // threads are spawned and before the engine (or any FFI call) is
-        // initialized. No concurrent access to the process environment is
-        // possible at this point. `env::set_var` is marked `unsafe` in the
-        // 2024 edition because mutating the environment is not thread-safe in
-        // general; the single-threaded precondition here upholds that invariant.
-        unsafe {
-            env::set_var("CODESCOPE_DB_PATH", db_path);
-        }
+        // CODESCOPE_DB_PATH is set explicitly via env var at the call site
+        // (h_index_project in tools/mod.rs sets it before spawning worker),
+        // and the C++ engine receives the path via ffi::init(db_path) directly,
+        // so env::set_var here is intentionally omitted as dead code.
 
         if ffi::init(db_path) != 0 {
             eprintln!("codescope worker: engine init failed");

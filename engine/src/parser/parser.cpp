@@ -98,9 +98,17 @@ TSTree *Parser::parse(const char *file_path, const char *source,
 		it = parsers_.find(language);
 	}
 
-	TSTree *tree =
-		ts_parser_parse_string(it->second, nullptr, source,
-				       static_cast<uint32_t>(strlen(source)));
+	// ts_parser_parse_string expects a uint32_t length. Reject files
+	// larger than UINT32_MAX to avoid silent truncation. Embedded NUL
+	// bytes are also handled correctly by using source length instead
+	// of strlen (which would stop at the first NUL).
+	size_t src_len = strlen(source);
+	if (src_len > UINT32_MAX) {
+		error_ = std::string("File too large to parse: ") + file_path;
+		return nullptr;
+	}
+	TSTree *tree = ts_parser_parse_string(it->second, nullptr, source,
+					      static_cast<uint32_t>(src_len));
 
 	if (!tree) {
 		error_ = std::string("Parse failed for ") + file_path;

@@ -6,6 +6,44 @@
 #include <sqlite3.h>
 #include <sstream>
 
+// ─── Local JSON escaping ───────────────────────────────────────
+
+static std::string jsonEscape(const std::string &s)
+{
+	std::string out;
+	out.reserve(s.size() + 4);
+	for (char c : s) {
+		switch (c) {
+		case '"':
+			out += "\\\"";
+			break;
+		case '\\':
+			out += "\\\\";
+			break;
+		case '\n':
+			out += "\\n";
+			break;
+		case '\r':
+			out += "\\r";
+			break;
+		case '\t':
+			out += "\\t";
+			break;
+		default:
+			if (static_cast<unsigned char>(c) < 0x20) {
+				char buf[8];
+				snprintf(buf, sizeof(buf), "\\u%04x",
+					 static_cast<unsigned char>(c));
+				out += buf;
+			} else {
+				out += c;
+			}
+			break;
+		}
+	}
+	return out;
+}
+
 namespace query
 {
 
@@ -257,11 +295,18 @@ std::string detectCommunities(uint64_t project_id, store::GraphStore *store,
 		for (auto nid : neighbors) {
 			uint64_t comm_b = assignments[nid];
 			if (comm_a != comm_b) {
-				inter_edges.emplace_back(comm_a, comm_b);
+				// Normalize to (min, max) so each unordered pair
+				// appears only once regardless of traversal order.
+				if (comm_a < comm_b)
+					inter_edges.emplace_back(comm_a,
+								 comm_b);
+				else
+					inter_edges.emplace_back(comm_b,
+								 comm_a);
 			}
 		}
 	}
-	// Deduplicate
+	// Deduplicate (now safe: normalized pairs are identical ordered pairs)
 	std::sort(inter_edges.begin(), inter_edges.end());
 	inter_edges.erase(std::unique(inter_edges.begin(), inter_edges.end()),
 			  inter_edges.end());
@@ -293,7 +338,7 @@ std::string detectCommunities(uint64_t project_id, store::GraphStore *store,
 		first_comm = false;
 		json << "{"
 		     << "\"id\":" << comm.id << ","
-		     << "\"label\":\"" << comm.label << "\","
+		     << "\"label\":\"" << jsonEscape(comm.label) << "\","
 		     << "\"member_count\":" << comm.member_count;
 		if (include_members) {
 			json << ",\"members\":[";
@@ -309,7 +354,8 @@ std::string detectCommunities(uint64_t project_id, store::GraphStore *store,
 				first_member = false;
 				json << "{"
 				     << "\"node_id\":" << m.node_id << ","
-				     << "\"name\":\"" << m.name << "\","
+				     << "\"name\":\"" << jsonEscape(m.name)
+				     << "\","
 				     << "\"type\":" << m.node_type << "}";
 			}
 			json << "]";

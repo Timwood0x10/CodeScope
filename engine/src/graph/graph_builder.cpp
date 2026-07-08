@@ -147,6 +147,9 @@ bool GraphBuilder::visitEnter(ir::Node* node) {
         if (effective_source == 0) continue;
 
         // Ensure target node exists in graph
+        // Defensive: all current translators provide a valid target, but
+        // a null target would cause a segfault on the dereference below.
+        if (!edge.target) continue;
         auto it_tgt = ir_to_graph_node_.find(edge.target->id);
         if (it_tgt == ir_to_graph_node_.end()) {
             switch (edge.target->kind) {

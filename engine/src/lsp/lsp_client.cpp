@@ -392,8 +392,31 @@ bool LspClient::sendMessage(const std::string &body)
 	ssize_t written = _write(stdin_fd_, msg.c_str(), msg.size());
 #endif
 	if (written < 0 || static_cast<size_t>(written) != msg.size()) {
-		error_ = "write to LSP server failed";
-		return false;
+		// Short write or EINTR: retry the remaining bytes in a loop.
+		// A single write() call may return fewer bytes than requested
+		// (especially on pipes/sockets under load or after signal
+		// delivery). Retrying until completion prevents LSP protocol
+		// desynchronization.
+		size_t offset = (written > 0) ? static_cast<size_t>(written) :
+						0;
+		while (offset < msg.size()) {
+#ifndef _WIN32
+			ssize_t n = write(stdin_fd_, msg.data() + offset,
+					  msg.size() - offset);
+#else
+			ssize_t n = _write(stdin_fd_, msg.data() + offset,
+					   msg.size() - offset);
+#endif
+			if (n < 0) {
+#ifndef _WIN32
+				if (errno == EINTR)
+					continue;
+#endif
+				error_ = "write to LSP server failed";
+				return false;
+			}
+			offset += static_cast<size_t>(n);
+		}
 	}
 	return true;
 }

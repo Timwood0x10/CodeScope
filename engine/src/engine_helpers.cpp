@@ -112,6 +112,16 @@ char *dupString(const std::string &s)
 	if (buf) {
 		memcpy(buf, s.data(), s.size());
 		buf[s.size()] = '\0';
+	} else {
+		// OOM: return a valid empty-JSON pointer instead of nullptr,
+		// so FFI callers (which unconditionally engine_free_string the
+		// result) don't pass nullptr to free().
+		buf = static_cast<char *>(malloc(3));
+		if (buf) {
+			buf[0] = '{';
+			buf[1] = '}';
+			buf[2] = '\0';
+		}
 	}
 	return buf;
 }

@@ -24,8 +24,9 @@ impl Server {
     pub fn run(&mut self) -> io::Result<()> {
         loop {
             let req = match transport::read_message()? {
-                Some(r) => r,
-                None => return Ok(()), // EOF — client disconnected or pipe closed
+                transport::ReadResult::Msg(r) => r,
+                transport::ReadResult::ParseError => continue, // log and skip bad input
+                transport::ReadResult::Eof => return Ok(()),   // clean disconnect
             };
 
             // JSON-RPC notifications must not receive a response, so only
