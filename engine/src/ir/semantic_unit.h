@@ -61,6 +61,8 @@ struct Record {
 	std::string name;
 	std::string qualified_name;
 	uint64_t parent_id = 0; // 0 = top-level (child of TranslationUnit)
+	uint64_t ref_original_id =
+		0; // for CallExpr: resolved callee's original_id (0 = unresolved cross-file)
 	SourceRange loc;
 	std::string file_path;
 	std::string language;

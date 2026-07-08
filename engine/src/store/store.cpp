@@ -2455,11 +2455,21 @@ void GraphStore::insertSemanticRecords(uint64_t project_id,
 	if (records.empty())
 		return;
 
+	// Build intra-file name→original_id map from declarations (kind 0,1)
+	// to resolve calls within the same file at write time.
+	std::unordered_map<std::string, uint64_t> decl_by_name;
+	for (auto &r : records) {
+		auto k = static_cast<int>(r.kind);
+		if ((k == 0 || k == 1) && !r.name.empty())
+			decl_by_name[r.name] = r.id;
+	}
+
 	const char *sql =
 		"INSERT INTO semantic_records "
 		"(original_id, project_id, kind, name, qualified_name, parent_id, "
-		"start_row, start_col, end_row, end_col, file_path, language) "
-		"VALUES (?,?,?,?,?,?,?,?,?,?,?,?)";
+		" ref_original_id,"
+		" start_row, start_col, end_row, end_col, file_path, language) "
+		"VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)";
 
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -2468,6 +2478,14 @@ void GraphStore::insertSemanticRecords(uint64_t project_id,
 	}
 
 	for (auto &r : records) {
+		uint64_t ref_id = 0;
+		if (static_cast<int>(r.kind) == 9 && !r.name.empty()) {
+			// CallExpr: try to resolve callee within the same file
+			auto it = decl_by_name.find(r.name);
+			if (it != decl_by_name.end())
+				ref_id = it->second;
+		}
+
 		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(r.id));
 		sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
 		sqlite3_bind_int(stmt, 3, static_cast<int>(r.kind));
@@ -2476,13 +2494,14 @@ void GraphStore::insertSemanticRecords(uint64_t project_id,
 		sqlite3_bind_text(stmt, 5, r.qualified_name.c_str(), -1,
 				  SQLITE_TRANSIENT);
 		sqlite3_bind_int64(stmt, 6, static_cast<int64_t>(r.parent_id));
-		sqlite3_bind_int(stmt, 7, static_cast<int>(r.loc.start_row));
-		sqlite3_bind_int(stmt, 8, static_cast<int>(r.loc.start_col));
-		sqlite3_bind_int(stmt, 9, static_cast<int>(r.loc.end_row));
-		sqlite3_bind_int(stmt, 10, static_cast<int>(r.loc.end_col));
-		sqlite3_bind_text(stmt, 11, r.file_path.c_str(), -1,
+		sqlite3_bind_int64(stmt, 7, static_cast<int64_t>(ref_id));
+		sqlite3_bind_int(stmt, 8, static_cast<int>(r.loc.start_row));
+		sqlite3_bind_int(stmt, 9, static_cast<int>(r.loc.start_col));
+		sqlite3_bind_int(stmt, 10, static_cast<int>(r.loc.end_row));
+		sqlite3_bind_int(stmt, 11, static_cast<int>(r.loc.end_col));
+		sqlite3_bind_text(stmt, 12, r.file_path.c_str(), -1,
 				  SQLITE_TRANSIENT);
-		sqlite3_bind_text(stmt, 12, r.language.c_str(), -1,
+		sqlite3_bind_text(stmt, 13, r.language.c_str(), -1,
 				  SQLITE_TRANSIENT);
 
 		int rc = sqlite3_step(stmt);
@@ -2510,8 +2529,9 @@ void GraphStore::insertSemanticRecordsBatch(
 	const char *sql =
 		"INSERT INTO semantic_records "
 		"(original_id, project_id, kind, name, qualified_name, parent_id, "
-		"start_row, start_col, end_row, end_col, file_path, language) "
-		"VALUES (?,?,?,?,?,?,?,?,?,?,?,?)";
+		" ref_original_id,"
+		" start_row, start_col, end_row, end_col, file_path, language) "
+		"VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)";
 
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -2521,7 +2541,24 @@ void GraphStore::insertSemanticRecordsBatch(
 
 	for (auto &fr : file_records) {
 		auto &file_path = fr.first;
-		for (auto &r : fr.second) {
+		auto &records = fr.second;
+
+		// Build intra-file declaration map for call resolution
+		std::unordered_map<std::string, uint64_t> decl_by_name;
+		for (auto &r : records) {
+			auto k = static_cast<int>(r.kind);
+			if ((k == 0 || k == 1) && !r.name.empty())
+				decl_by_name[r.name] = r.id;
+		}
+
+		for (auto &r : records) {
+			uint64_t ref_id = 0;
+			if (static_cast<int>(r.kind) == 9 && !r.name.empty()) {
+				auto it = decl_by_name.find(r.name);
+				if (it != decl_by_name.end())
+					ref_id = it->second;
+			}
+
 			sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(r.id));
 			sqlite3_bind_int64(stmt, 2,
 					   static_cast<int64_t>(project_id));
@@ -2532,17 +2569,19 @@ void GraphStore::insertSemanticRecordsBatch(
 					  SQLITE_TRANSIENT);
 			sqlite3_bind_int64(stmt, 6,
 					   static_cast<int64_t>(r.parent_id));
-			sqlite3_bind_int(stmt, 7,
-					 static_cast<int>(r.loc.start_row));
+			sqlite3_bind_int64(stmt, 7,
+					   static_cast<int64_t>(ref_id));
 			sqlite3_bind_int(stmt, 8,
-					 static_cast<int>(r.loc.start_col));
+					 static_cast<int>(r.loc.start_row));
 			sqlite3_bind_int(stmt, 9,
-					 static_cast<int>(r.loc.end_row));
+					 static_cast<int>(r.loc.start_col));
 			sqlite3_bind_int(stmt, 10,
+					 static_cast<int>(r.loc.end_row));
+			sqlite3_bind_int(stmt, 11,
 					 static_cast<int>(r.loc.end_col));
-			sqlite3_bind_text(stmt, 11, file_path.c_str(), -1,
+			sqlite3_bind_text(stmt, 12, file_path.c_str(), -1,
 					  SQLITE_TRANSIENT);
-			sqlite3_bind_text(stmt, 12, r.language.c_str(), -1,
+			sqlite3_bind_text(stmt, 13, r.language.c_str(), -1,
 					  SQLITE_TRANSIENT);
 
 			int rc = sqlite3_step(stmt);
@@ -2776,7 +2815,8 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 
 		{
 			std::string call_sql =
-				"SELECT sr.name, sr.parent_id, sr.file_path, sr.start_row "
+				"SELECT sr.name, sr.parent_id, sr.file_path,"
+				" sr.start_row, sr.ref_original_id "
 				"FROM semantic_records sr "
 				"WHERE sr.project_id=" +
 				pid + " AND sr.kind=9 AND sr.name != ''";
@@ -2796,6 +2836,8 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 						sqlite3_column_text(call_st, 2);
 					int start_row =
 						sqlite3_column_int(call_st, 3);
+					int64_t ref_oid = sqlite3_column_int64(
+						call_st, 4);
 					if (!name_c || !*name_c || !fp_c)
 						continue;
 
@@ -2809,7 +2851,6 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 						continue;
 					int64_t caller_id = oid_it->second;
 
-					std::string call_name(name_c);
 					auto tryAddEdge = [&](int64_t callee_id) {
 						if (callee_id == caller_id)
 							return;
@@ -2818,32 +2859,42 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 							  fp_c, start_row });
 					};
 
-					bool found = false;
+					// Priority 1: intra-file call resolved at write time
+					if (ref_oid > 0) {
+						auto callee_it =
+							fp_it->second.find(
+								ref_oid);
+						if (callee_it !=
+						    fp_it->second.end()) {
+							tryAddEdge(
+								callee_it
+									->second);
+							continue;
+						}
+					}
+
+					// Priority 2: cross-file call via name hash map
+					std::string call_name(name_c);
 					// Try exact full-name match first
 					auto fr =
 						callee_by_name.find(call_name);
 					if (fr != callee_by_name.end()) {
-						for (int64_t cid : fr->second) {
+						for (int64_t cid : fr->second)
 							tryAddEdge(cid);
-							found = true;
-						}
+						continue;
 					}
 					// Try short-name (last component after '.')
-					if (!found) {
-						std::string sn =
-							shortName(call_name);
-						if (sn != call_name) {
-							auto sr =
-								callee_by_short
-									.find(sn);
-							if (sr !=
-							    callee_by_short
-								    .end()) {
-								for (int64_t cid :
-								     sr->second)
-									tryAddEdge(
-										cid);
-							}
+					// Fan-out cap: "get"/"new"/"set" can match hundreds of
+					// declarations across the project; skip if too many.
+					std::string sn = shortName(call_name);
+					if (sn != call_name) {
+						auto sr = callee_by_short.find(
+							sn);
+						if (sr != callee_by_short.end() &&
+						    sr->second.size() <= 50) {
+							for (int64_t cid :
+							     sr->second)
+								tryAddEdge(cid);
 						}
 					}
 				}
