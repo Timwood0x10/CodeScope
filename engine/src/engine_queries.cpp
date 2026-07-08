@@ -196,6 +196,69 @@ char *engine_enhance_project(uint64_t project_id)
 	if (!g_store || !g_parser)
 		return dupString("{\"error\":\"engine not initialized\"}");
 
+	// Ensure the symbols table is populated before querying unready files.
+	// After index_project (worker subprocess), the symbols table may be empty
+	// because index_project does not call scan_project. Populate from graph_nodes.
+	{
+		sqlite3_stmt *cnt = nullptr;
+		if (sqlite3_prepare_v2(g_store->handle(),
+			"SELECT COUNT(*) FROM symbols WHERE project_id=?",
+			-1, &cnt, nullptr) == SQLITE_OK) {
+			sqlite3_bind_int64(cnt, 1, static_cast<int64_t>(project_id));
+			bool has_symbols = (sqlite3_step(cnt) == SQLITE_ROW &&
+				sqlite3_column_int(cnt, 0) > 0);
+			sqlite3_finalize(cnt);
+			if (!has_symbols) {
+				// Fast path: populate symbols + status from graph_nodes.
+				// graph_nodes already has language + file_path columns,
+				// so no JOIN with semantic_records is needed.
+				{
+					const char *pop_sym =
+						"INSERT OR IGNORE INTO symbols "
+						"(project_id, module_id, kind, name, "
+						" signature, visibility, language, "
+						" file_path, line, column) "
+						"SELECT DISTINCT project_id, 0, "
+						" CASE node_type WHEN 0 THEN 'function'"
+						"  WHEN 1 THEN 'method' WHEN 2 THEN 'class'"
+						"  WHEN 3 THEN 'interface' WHEN 4 THEN 'enum'"
+						"  WHEN 6 THEN 'variable'"
+						"  ELSE CAST(node_type AS TEXT) END, "
+						" name, '', '', language, file_path, "
+						" start_row, start_col "
+						"FROM graph_nodes "
+						"WHERE project_id=? AND node_type IN (0,1,2,3,4,6)";
+					sqlite3_stmt *pop = nullptr;
+					if (sqlite3_prepare_v2(g_store->handle(),
+						pop_sym, -1, &pop, nullptr) == SQLITE_OK) {
+						sqlite3_bind_int64(pop, 1,
+							static_cast<int64_t>(project_id));
+						sqlite3_step(pop);
+						sqlite3_finalize(pop);
+					}
+				}
+				// Also populate symbol_status so getUnreadyFiles
+				// (which uses INNER JOIN) can find unready files.
+				{
+					const char *pop_st =
+						"INSERT OR IGNORE INTO symbol_status "
+						"(symbol_id, callgraph_ready,"
+						" metrics_ready, embedding_ready, is_stub) "
+						"SELECT id, 0, 0, 0, 0 "
+						"FROM symbols WHERE project_id=?";
+					sqlite3_stmt *pop = nullptr;
+					if (sqlite3_prepare_v2(g_store->handle(),
+						pop_st, -1, &pop, nullptr) == SQLITE_OK) {
+						sqlite3_bind_int64(pop, 1,
+							static_cast<int64_t>(project_id));
+						sqlite3_step(pop);
+						sqlite3_finalize(pop);
+					}
+				}
+			}
+		}
+	}
+
 	// Get files with unenhanced symbols (missing ANALYSIS_CALLGRAPH bit)
 	auto files = g_store->getUnreadyFiles(project_id, "callgraph_ready");
 	if (files.empty()) {

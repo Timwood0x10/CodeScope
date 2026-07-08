@@ -1385,7 +1385,8 @@ bool GraphStore::setSymbolReady(uint64_t symbol_id, const char *field)
 	// Whitelist allowed field names to prevent SQL injection
 	static const std::unordered_set<std::string> allowed_fields = {
 		"fast_ready", "normal_ready", "deep_ready", "fts_ready",
-		"vector_ready"
+		"vector_ready", "callgraph_ready", "metrics_ready",
+		"embedding_ready"
 	};
 	if (!field || allowed_fields.find(field) == allowed_fields.end())
 		return false;
@@ -1434,7 +1435,8 @@ std::vector<std::string> GraphStore::getUnreadyFiles(uint64_t project_id,
 	// Whitelist allowed field names to prevent SQL injection
 	static const std::unordered_set<std::string> allowed_fields = {
 		"fast_ready", "normal_ready", "deep_ready", "fts_ready",
-		"vector_ready"
+		"vector_ready", "callgraph_ready", "metrics_ready",
+		"embedding_ready"
 	};
 	if (!ready_field ||
 	    allowed_fields.find(ready_field) == allowed_fields.end()) {
@@ -1472,7 +1474,8 @@ double GraphStore::getReadyRatio(uint64_t project_id, const char *ready_field)
 	// Whitelist allowed field names to prevent SQL injection
 	static const std::unordered_set<std::string> allowed_fields = {
 		"fast_ready", "normal_ready", "deep_ready", "fts_ready",
-		"vector_ready"
+		"vector_ready", "callgraph_ready", "metrics_ready",
+		"embedding_ready"
 	};
 	if (!ready_field ||
 	    allowed_fields.find(ready_field) == allowed_fields.end()) {
