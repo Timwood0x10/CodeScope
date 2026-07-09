@@ -34,14 +34,14 @@ class FilterPolicy {
 	FilterPolicy();
 
 	// ── Mode ─────────────────────────────────────────────────────
-	enum Mode { NORMAL, FAST };
+	enum Mode { NORMAL, FAST, STRICT };
 	void setMode(Mode m)
 	{
-		mode_ = m;
+	 mode_ = m;
 	}
 	Mode mode() const
 	{
-		return mode_;
+	 return mode_;
 	}
 
 	// ── Configuration ────────────────────────────────────────────
@@ -50,6 +50,7 @@ class FilterPolicy {
 
 	// ── File/Dir Checks ──────────────────────────────────────────
 	bool shouldSkipDir(const std::string &dir_name) const;
+	bool shouldSkipDirPrefix(const std::string &dir_name) const;
 	bool shouldSkipFile(const std::string &filename) const;
 	bool shouldSkipSuffix(const std::string &ext) const;
 	bool isSourceFile(const std::string &path) const;
@@ -146,6 +147,9 @@ class FilterPolicy {
 	std::unordered_set<std::string> skip_filenames_;
 	// Skip filename prefixes (e.g. ".env" -> .env, .env.local, .env.production)
 	std::unordered_set<std::string> skip_filename_prefixes_;
+
+	// Skip directory prefixes — catches build_test, build_master, etc.
+	std::unordered_set<std::string> skip_dir_prefixes_;
 
 	// .codescopeignore patterns (raw lines)
 	std::vector<std::string> ignore_patterns_;

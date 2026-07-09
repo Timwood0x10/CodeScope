@@ -127,6 +127,37 @@ FilterPolicy::FilterPolicy()
 		".tmp",
 		// ── Secrets (NEVER index) ──
 		".ssh",
+		// ── AI assistant config directories ──
+		".atomcode",
+		".workbuddy",
+		".gemini",
+		".opencode",
+		".cursh",
+		// ── CI/CD pipeline configs ──
+		".github",
+		".circleci",
+		".gitlab-ci",
+		".bitbucket",
+		".azure-pipelines",
+		// ── Project planning / changelog ──
+		"plan",
+		"changelogs",
+		// ── DevOps / infrastructure ──
+		"infra",
+		"deploy",
+		"deployment",
+		"docker",
+		"kubernetes",
+		"k8s",
+		"helm",
+		// ── VS Code container ──
+		".devcontainer",
+		// ── Runtime / intermediate output ──
+		"Runtimelog",
+		"runtimelog",
+		"llvm_ir",
+		// ── CMake fetched dependencies ──
+		"_deps",
 		// ── Generated / vendor / test (inflate file count 3-5x) ──
 		"generated",
 		"gen",
@@ -177,6 +208,13 @@ FilterPolicy::FilterPolicy()
 	// FAST mode skips even more — additional dirs that are sometimes
 	// source-bearing but rarely the focus of a quick scan.
 	fast_extra_skip_dirs_ = {};
+
+	// ── Directory prefixes — catches build_test, build_master, etc. ──
+	skip_dir_prefixes_ = {
+		"build_",
+		"cmake-build-",
+		"_build",
+	};
 
 	// Skip suffixes — non-source binaries, images, archives, etc.
 	// Matched CASE-INSENSITIVELY so .EXE / .Dll on Windows are caught.
@@ -368,6 +406,44 @@ FilterPolicy::FilterPolicy()
 		".lock",
 		// ── Tilde backup (vim/emacs) ──
 		"~",
+		// ── Project configuration (never source code) ──
+		".toml",       // Cargo.toml, pyproject.toml
+		".yaml",       // CI/CD, docker-compose
+		".yml",        // Same as .yaml
+		".json",       // package.json, tsconfig
+		".xml",        // pom.xml, build configs
+		".ini",        // Configuration files
+		".cfg",        // Configuration files
+		".conf",       // Configuration files
+		".properties", // Java properties
+		".gradle",     // Gradle build scripts
+		// ── Documentation (never source code) ──
+		".md",         // README, CHANGELOG
+		".markdown",   // Extended markdown
+		".rst",        // reStructuredText
+		".adoc",       // AsciiDoc
+		".tex",        // LaTeX
+		// ── Build system scripts (config, not source) ──
+		".cmake",      // CMake module scripts
+		".make",       // Makefile fragments
+		// ── Text / metadata (not source) ──
+		".txt",        // requirements.txt, NOTICE
+		".csv",        // Data tables
+		".tsv",        // Data tables
+		// ── LLVM intermediate output ──
+		".ll",         // LLVM IR text
+		".bc",         // LLVM bitcode
+		".rmeta",      // Rust metadata (intermediate)
+		// ── C/C++ build intermediates ──
+		".d",          // GCC/Clang dependency files
+		// ── API definition files (config, not source) ──
+		".graphql",    // GraphQL schemas
+		".gql",        // GraphQL shorthand
+		".proto",      // Protobuf definitions
+		// ── DevOps / container configs ──
+		".dockerfile", // Docker build files
+		".service",    // systemd unit files
+		".socket",     // systemd socket files
 	};
 	fast_extra_suffixes_ = {
 		".min.js",
@@ -424,6 +500,28 @@ FilterPolicy::FilterPolicy()
 		".gitattributes",
 		".editorconfig",
 		"yarn-error.log",
+		// ── Additional config / metadata filenames ──
+		"config.toml",
+		"setup.cfg",
+		"pyproject.toml",
+		"docker-compose.yml",
+		"docker-compose.yaml",
+		"Dockerfile",
+		".gitconfig",
+		".npmignore",
+		".eslintignore",
+		".prettierignore",
+		".stylelintignore",
+		"tsconfig.json",
+		"jsconfig.json",
+		".babelrc",
+		".browserslistrc",
+		".node-version",
+		".python-version",
+		".tool-versions",
+		"Makefile",
+		"CMakeLists.txt",
+		"GNUMakefile",
 	};
 
 	// Skip filename prefixes — files whose name STARTS WITH one of these.
@@ -431,6 +529,7 @@ FilterPolicy::FilterPolicy()
 	// before comparison, so entries are matched case-insensitively.
 	skip_filename_prefixes_ = {
 		".env.", // .env.local, .env.production, .env.development.local ...
+		"docker-compose.", // docker-compose.dev.yml, docker-compose.prod.yaml
 	};
 
 	// Normalize all lookup sets to lowercase so the case-insensitive
@@ -455,6 +554,7 @@ FilterPolicy::FilterPolicy()
 	lowercaseAll(skip_dir_suffixes_);
 	lowercaseAll(skip_filenames_);
 	lowercaseAll(skip_filename_prefixes_);
+	lowercaseAll(skip_dir_prefixes_);
 
 	buildActiveSets();
 }
@@ -462,7 +562,7 @@ FilterPolicy::FilterPolicy()
 void FilterPolicy::buildActiveSets()
 {
 	active_skip_dirs_ = normal_skip_dirs_;
-	if (mode_ == FAST) {
+	if (mode_ == FAST || mode_ == STRICT) {
 		active_skip_dirs_.insert(fast_extra_skip_dirs_.begin(),
 					 fast_extra_skip_dirs_.end());
 	}
@@ -504,6 +604,19 @@ bool FilterPolicy::shouldSkipDir(const std::string &dir_name) const
 		c = static_cast<char>(std::tolower(c));
 	if (active_skip_dirs_.find(lower) != active_skip_dirs_.end())
 		return true;
+	// Prefix match — catches build_test, build_master, etc.
+	if (shouldSkipDirPrefix(lower))
+		return true;
+	return false;
+}
+
+bool FilterPolicy::shouldSkipDirPrefix(const std::string &dir_name) const
+{
+	for (const auto &pfx : skip_dir_prefixes_) {
+		if (dir_name.size() >= pfx.size() &&
+		    dir_name.compare(0, pfx.size(), pfx) == 0)
+			return true;
+	}
 	return false;
 }
 
@@ -803,6 +916,14 @@ bool FilterPolicy::shouldSkipEntry(const std::string &rel_path,
 	auto dot = base.rfind('.');
 	if (dot != std::string_view::npos) {
 		if (shouldSkipSuffix(std::string(base.substr(dot))))
+			return true;
+	}
+
+	// 2d. STRICT mode: whitelist gate — only files that detectLanguage()
+	//     recognizes as source code pass through. Catches config/docs/data
+	//     files that slipped past the blacklist (.toml, .yaml, .json, .md).
+	if (mode_ == STRICT) {
+		if (detectLanguage(normalized.c_str()) == nullptr)
 			return true;
 	}
 

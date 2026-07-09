@@ -341,8 +341,11 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	FilterPolicy filter;
 	const char *env_mode = getenv("CODESCOPE_INDEX_MODE");
 	bool mode_fast_discover = env_mode && strcmp(env_mode, "fast") == 0;
+	bool mode_strict = env_mode && strcmp(env_mode, "strict") == 0;
 	if (mode_fast_discover)
 		filter.setMode(FilterPolicy::FAST);
+	if (mode_strict)
+		filter.setMode(FilterPolicy::STRICT);
 	if (!lang_filter.empty())
 		filter.setLanguageFilter(lang_filter);
 
