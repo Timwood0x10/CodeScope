@@ -56,6 +56,7 @@ bool GraphStore::open(const char *db_path)
 		error_ = sqlite3_errmsg(db_);
 		return false;
 	}
+	db_path_ = db_path;
 
 	// page_size MUST be set before any tables are created. Larger pages
 	// (64 KB vs default 4 KB) reduce I/O ops and improve B-tree fanout —
@@ -71,12 +72,11 @@ bool GraphStore::open(const char *db_path)
 	if (!exec("PRAGMA journal_mode=WAL"))
 		fprintf(stderr, "WARN: PRAGMA journal_mode=WAL failed: %s\n",
 			error_.c_str());
-	// EXCLUSIVE locking mode: set AFTER WAL so the wal-index shared memory
-	// initializes first. This allows later transition to NORMAL for the
-	// parallel enhance plan (ADR-006 / §10-E) where each worker opens its
-	// own connection to the same .db file.
-	if (!exec("PRAGMA locking_mode=EXCLUSIVE"))
-		fprintf(stderr, "WARN: PRAGMA locking_mode=EXCLUSIVE failed\n");
+	// NORMAL locking mode: release locks between transactions so that
+	// worker connections (for parallel enhance) can write concurrently.
+	// EXCLUSIVE was used during development but blocks concurrent WAL writers.
+	if (!exec("PRAGMA locking_mode=NORMAL"))
+		fprintf(stderr, "WARN: PRAGMA locking_mode=NORMAL failed\n");
 	if (!exec("PRAGMA synchronous=OFF"))
 		fprintf(stderr, "WARN: PRAGMA synchronous=OFF failed\n");
 	if (!exec("PRAGMA temp_store=MEMORY"))
@@ -457,7 +457,26 @@ bool GraphStore::createSchema()
             PRIMARY KEY (project_id, file_path),
             FOREIGN KEY (project_id) REFERENCES projects(id)
         );
-    )SQL";
+
+        -- Phase 2: adjacency (CSR BLOB). Aggregated from graph_edges(edge_type=1)
+        -- after buildGraph. Each row packs all callee node IDs for a caller into a
+        -- contiguous u32 BLOB. Queries are O(1) B-tree lookup + pointer arithmetic.
+        CREATE TABLE IF NOT EXISTS adjacency (
+            src_id INTEGER PRIMARY KEY,    -- graph_nodes.id (caller)
+            project_id INTEGER NOT NULL,
+            tgt_blob BLOB                  -- packed u32[] of callee node IDs
+        );
+
+        -- Phase 2: reverse adjacency (CSR BLOB). Mirror of adjacency for
+        -- caller lookups: each row packs all caller node IDs for a callee.
+        -- Enables O(1) getCallerIds() instead of O(n) full-scan.
+        CREATE TABLE IF NOT EXISTS adjacency_rev (
+            tgt_id INTEGER PRIMARY KEY,    -- graph_nodes.id (callee)
+            project_id INTEGER NOT NULL,
+            src_blob BLOB                  -- packed u32[] of caller node IDs
+        );
+
+        )SQL";
 
 	// Execute main schema
 	bool ok = exec(schema);
@@ -531,6 +550,61 @@ bool GraphStore::createSchema()
 	// Without this, the JOIN degrades to a full table scan per graph_edges row.
 	exec("CREATE INDEX IF NOT EXISTS idx_symbols_node"
 	     " ON symbols(project_id, node_id) WHERE node_id IS NOT NULL");
+
+	// Migration 3: String interning columns on graph_nodes.
+	// Adds *_id INTEGER columns that reference symbol_names.id. The TEXT
+	// columns are kept for backward compatibility (FTS, legacy queries).
+	// New code populates both TEXT and _id; old code that reads TEXT continues
+	// to work. The _id columns enable future memory-efficient queries.
+	{
+		struct InternCol {
+			const char *name;
+			const char *sql;
+		};
+		// Ordered so that column indices are stable for bind calls.
+		static const InternCol intern_cols[] = {
+			{ "name_id",
+			  "ALTER TABLE graph_nodes ADD COLUMN name_id INTEGER" },
+			{ "qualified_name_id",
+			  "ALTER TABLE graph_nodes ADD COLUMN qualified_name_id INTEGER" },
+			{ "module_path_id",
+			  "ALTER TABLE graph_nodes ADD COLUMN module_path_id INTEGER" },
+			{ "file_path_id",
+			  "ALTER TABLE graph_nodes ADD COLUMN file_path_id INTEGER" },
+			{ "language_id",
+			  "ALTER TABLE graph_nodes ADD COLUMN language_id INTEGER" },
+			{ "signature_id",
+			  "ALTER TABLE graph_nodes ADD COLUMN signature_id INTEGER" },
+		};
+		for (const auto &ic : intern_cols) {
+			sqlite3_stmt *probe = nullptr;
+			bool has_col = false;
+			if (sqlite3_prepare_v2(
+				    db_, "PRAGMA table_info(graph_nodes)", -1,
+				    &probe, nullptr) == SQLITE_OK) {
+				while (sqlite3_step(probe) == SQLITE_ROW) {
+					const char *col =
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								probe, 1));
+					if (col &&
+					    std::string(col) == ic.name) {
+						has_col = true;
+						break;
+					}
+				}
+				sqlite3_finalize(probe);
+			}
+			if (!has_col) {
+				if (!exec(ic.sql)) {
+					fprintf(stderr,
+						"createSchema: migration failed — "
+						"cannot add graph_nodes.%s: %s\n",
+						ic.name, error_.c_str());
+				}
+			}
+		}
+	}
 
 	// Note: vec0 embeddings table is created in engine_init() after
 	// sqlite-vec extension is loaded via dlopen. Not needed here.

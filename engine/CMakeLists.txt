@@ -162,6 +162,7 @@ set(ENGINE_SOURCES
     src/graph/graph_builder.cpp
     src/store/store_core.cpp
     src/store/store.cpp
+    src/store/store_intern.cpp
     src/query/query_engine.cpp
     src/query/query_analysis.cpp
     src/query/graph_query.cpp

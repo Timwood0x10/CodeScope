@@ -41,7 +41,7 @@ public:
     bool visitEnter(ir::Node* node) override;
 
 private:
-    uint64_t project_id_;
+    [[maybe_unused]] uint64_t project_id_;
     CodeGraph current_graph_;
     uint64_t next_node_id_ = 1;
     uint64_t next_edge_id_ = 1;

@@ -143,7 +143,11 @@ uint64_t GraphStore::insertGraphNode(uint64_t project_id,
 	sqlite3_bind_int(stmt, 17, node.complexity);
 	sqlite3_bind_int(stmt, 18, node.is_entry_point ? 1 : 0);
 
-	sqlite3_step(stmt);
+	int rc = sqlite3_step(stmt);
+	if (rc != SQLITE_DONE) {
+		fprintf(stderr, "insertGraphNode: step failed (rc=%d): %s\n",
+			rc, sqlite3_errmsg(db_));
+	}
 	return node.id;
 }
 
@@ -198,8 +202,10 @@ void GraphStore::insertGraphNodes(uint64_t project_id,
 
 		int rc = sqlite3_step(stmt);
 		if (rc != SQLITE_DONE) {
-			error_ = "insertGraphNodes: step error (" +
-				 std::to_string(rc) + ") for node " + node.name;
+			fprintf(stderr,
+				"insertGraphNodes: step failed (rc=%d) "
+				"for node '%s': %s\n",
+				rc, node.name.c_str(), sqlite3_errmsg(db_));
 		}
 		sqlite3_reset(stmt);
 	}
@@ -750,7 +756,6 @@ std::string GraphStore::searchSemantic(uint64_t project_id,
 
 	// Use vector_search to compute similarity
 	(void)vec_bytes; // dimension checked via vector length
-	const float *qv = static_cast<const float *>(query_vec);
 
 	// Deserialize query vector ONCE before the row loop (not per-row)
 	auto query_vec_obj = ::vector_search::deserializeVector(
@@ -2734,6 +2739,9 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	auto t_r2n = Clock::now();
 
 	// ── 2c: Graph nodes from declarations ──
+
+	auto t_intern = Clock::now();
+
 	if (explain_env && explain_env[0]) {
 		explainQueryPlan(
 			"SELECT r2n.node_id, sr.project_id, sr.original_id, "
@@ -2745,6 +2753,9 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			"FROM semantic_records sr JOIN _r2n r2n ON sr.rowid = r2n.rid",
 			"nodes");
 	}
+	// Insert graph_nodes from semantic_records via the _r2n mapping.
+	// This populates all declaration nodes (functions, classes, etc.) with
+	// their text metadata and location info for downstream queries.
 	exec(std::string(
 		     "INSERT INTO graph_nodes (id, project_id, ir_node_id, node_type, "
 		     " name, qualified_name, module_path, file_path, "
@@ -2755,7 +2766,8 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		     "  WHEN 6 THEN 6 WHEN 9 THEN 7 WHEN 10 THEN 7 ELSE 7 END, "
 		     " sr.name, sr.qualified_name, sr.file_path, sr.file_path, "
 		     " sr.start_row, sr.start_col, sr.end_row, sr.end_col, sr.language "
-		     "FROM semantic_records sr JOIN _r2n r2n ON sr.rowid = r2n.rid")
+		     "FROM semantic_records sr "
+		     "JOIN _r2n r2n ON sr.rowid = r2n.rid")
 		     .c_str());
 	auto t_nodes = Clock::now();
 
@@ -2779,346 +2791,33 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	auto t_edges = Clock::now();
 
 	// ── 2e: Call edges ──
+	// Phase 3: Use SQL-based call edge resolution instead of C++ hash maps.
+	// The old approach loaded all declarations into in-memory hash maps
+	// (caller_idx, callee_by_name, callee_by_short, decl_idx, ir_edge_target),
+	// consuming ~2-4GB for 4M nodes. The new approach uses SQL temp tables
+	// with indexes, keeping peak memory bounded by SQLite's cache (~64MB).
 	if (build_calls) {
-		// Replace the old O(n²) SQL suffix JOIN with C++ hash maps,
-		// then bulk-INSERT matched edges in batches.
-		//
-		// Old: JOIN _r2n callee ON SUBSTR(sr.name, -LENGTH(callee.name)) = callee.name
-		// → no index can help, O(calls × decls) in practice.
-		//
-		// New: build name → [node_id] multimap + (file_path × original_id) → node_id map,
-		// then look up each call record via O(1) hash lookups. Batch INSERT at the end.
-
-		// Helper: extract last component after '.'
-		auto shortName = [](const std::string &name) -> std::string {
-			auto dot = name.rfind('.');
-			return (dot != std::string::npos) ?
-				       name.substr(dot + 1) :
-				       name;
-		};
-
-		// ── Step 1: Load _r2n declarations into C++ indexes ──
-		// caller_idx: [file_path][original_id] → node_id
-		// callee_by_name: name → [node_id]
-		// callee_by_short: short-name → [node_id]
-		std::unordered_map<std::string,
-				   std::unordered_map<int64_t, int64_t> >
-			caller_idx;
-		std::unordered_map<std::string, std::vector<int64_t> >
-			callee_by_name;
-		std::unordered_map<std::string, std::vector<int64_t> >
-			callee_by_short;
-
-		{
-			const char *r2n_sql =
-				"SELECT r.node_id, r.name, r.original_id, r.file_path "
-				"FROM _r2n r "
-				"JOIN semantic_records s ON s.rowid = r.rid "
-				"WHERE s.kind IN (0,1)";
-			sqlite3_stmt *st = nullptr;
-			if (sqlite3_prepare_v2(db_, r2n_sql, -1, &st,
-					       nullptr) == SQLITE_OK) {
-				while (sqlite3_step(st) == SQLITE_ROW) {
-					int64_t node_id =
-						sqlite3_column_int64(st, 0);
-					const char *name_c = (const char *)
-						sqlite3_column_text(st, 1);
-					int64_t orig_id =
-						sqlite3_column_int64(st, 2);
-					const char *fp_c = (const char *)
-						sqlite3_column_text(st, 3);
-					if (!name_c || !*name_c || !fp_c)
-						continue;
-					std::string name(name_c);
-					// Callee index: exact name + short name (last component)
-					callee_by_name[name].push_back(node_id);
-					std::string sn = shortName(name);
-					if (sn != name)
-						callee_by_short[sn].push_back(
-							node_id);
-					// Caller index: [file_path][original_id]
-					caller_idx[fp_c][orig_id] = node_id;
-				}
-				sqlite3_finalize(st);
-			}
-		}
-
-		// ── Step 1.5: Load ir_semantic_edges for precise cross-file resolution ──
-		// The translator already resolved cross-file calls during IR construction
-		// and stored the results in ir_semantic_edges. This is more accurate than
-		// the name-based fallback (Priority 2) because it uses the actual AST
-		// node references rather than string matching.
-		// Map: source_file_path → source_name → source_start_row → [target.graph_node_id]
-		// Uses (name, file_path, start_row) triple to bridge ir_semantic_edges
-		// (which references ir_nodes.id) to semantic_records (which has original_id
-		// but uses a different ID namespace).
-		std::unordered_map<
-			std::string,
-			std::unordered_map<
-				std::string,
-				std::unordered_map<int, std::vector<int64_t> > > >
-			ir_edge_target;
-		{
-			// Pre-build declaration index: (file_path, name, start_row) → graph_node_id
-			// This is needed because ir_node IDs don't directly map to graph_node IDs.
-			std::unordered_map<
-				std::string,
-				std::unordered_map<
-					std::string,
-					std::unordered_map<int, int64_t> > >
-				decl_idx;
-			{
-				std::string dsql =
-					"SELECT r.file_path, r.name, s.start_row,"
-					" r.node_id "
-					"FROM _r2n r "
-					"JOIN semantic_records s ON s.rowid = r.rid "
-					"WHERE s.kind IN (0,1)";
-				sqlite3_stmt *dst = nullptr;
-				if (sqlite3_prepare_v2(db_, dsql.c_str(), -1,
-						       &dst,
-						       nullptr) == SQLITE_OK) {
-					while (sqlite3_step(dst) ==
-					       SQLITE_ROW) {
-						const char *fp = (const char *)
-							sqlite3_column_text(dst,
-									    0);
-						const char *nm = (const char *)
-							sqlite3_column_text(dst,
-									    1);
-						int sr = sqlite3_column_int(dst,
-									    2);
-						int64_t nid =
-							sqlite3_column_int64(
-								dst, 3);
-						if (fp && nm && *nm)
-							decl_idx[fp][nm][sr] =
-								nid;
-					}
-					sqlite3_finalize(dst);
-				}
-			}
-
-			// Load ir_semantic_edges: map source to target (file_path, name, start_row),
-			// resolve target to graph_node_id via decl_idx.
-			std::string edge_sql =
-				"SELECT f1.path, i1.name, i1.start_row,"
-				" f2.path, i2.name, i2.start_row "
-				"FROM ir_semantic_edges ise "
-				"JOIN ir_nodes i1 ON i1.id = ise.source_node_id"
-				" AND i1.project_id=" +
-				pid +
-				" JOIN ir_nodes i2 ON i2.id = ise.target_node_id"
-				" AND i2.project_id=" +
-				pid +
-				" JOIN files f1 ON f1.id = i1.file_id"
-				" JOIN files f2 ON f2.id = i2.file_id"
-				" WHERE ise.project_id=" +
-				pid;
-			sqlite3_stmt *est = nullptr;
-			if (sqlite3_prepare_v2(db_, edge_sql.c_str(), -1, &est,
-					       nullptr) == SQLITE_OK) {
-				while (sqlite3_step(est) == SQLITE_ROW) {
-					const char *sfp = (const char *)
-						sqlite3_column_text(est, 0);
-					const char *snm = (const char *)
-						sqlite3_column_text(est, 1);
-					int ssr = sqlite3_column_int(est, 2);
-					const char *tfp = (const char *)
-						sqlite3_column_text(est, 3);
-					const char *tnm = (const char *)
-						sqlite3_column_text(est, 4);
-					int tsr = sqlite3_column_int(est, 5);
-					if (!sfp || !snm || !tfp || !tnm)
-						continue;
-					// Resolve target → graph_node_id via decl_idx
-					auto df_it = decl_idx.find(tfp);
-					if (df_it == decl_idx.end())
-						continue;
-					auto dn_it = df_it->second.find(tnm);
-					if (dn_it == df_it->second.end())
-						continue;
-					auto ds_it = dn_it->second.find(tsr);
-					if (ds_it == dn_it->second.end())
-						continue;
-					int64_t callee_nid = ds_it->second;
-					ir_edge_target[sfp][snm][ssr].push_back(
-						callee_nid);
-				}
-				sqlite3_finalize(est);
-			}
-		}
-
-		// ── Step 2: Query call records and resolve ──
-		// Collect matched edges into a vector, then bulk INSERT in batches
-		// to minimize sqlite3 bind/step/reset overhead.
-		struct CallEdge {
-			int64_t caller_id, callee_id;
-			std::string file_path;
-			int start_row;
-		};
-		std::vector<CallEdge> matched_edges;
-		matched_edges.reserve(65536);
-
-		{
-			std::string call_sql =
-				"SELECT sr.name, sr.parent_id, sr.file_path,"
-				" sr.start_row, sr.ref_original_id,"
-				" sr.original_id "
-				"FROM semantic_records sr "
-				"WHERE sr.project_id=" +
-				pid + " AND sr.kind=9 AND sr.name != ''";
-			sqlite3_stmt *call_st = nullptr;
-			if (sqlite3_prepare_v2(db_, call_sql.c_str(), -1,
-					       &call_st,
-					       nullptr) == SQLITE_OK) {
-				int64_t pid_i =
-					static_cast<int64_t>(project_id);
-				while (sqlite3_step(call_st) == SQLITE_ROW) {
-					const char *name_c = (const char *)
-						sqlite3_column_text(call_st, 0);
-					int64_t parent_id =
-						sqlite3_column_int64(call_st,
-								     1);
-					const char *fp_c = (const char *)
-						sqlite3_column_text(call_st, 2);
-					int start_row =
-						sqlite3_column_int(call_st, 3);
-					int64_t ref_oid = sqlite3_column_int64(
-						call_st, 4);
-					int64_t call_oid = sqlite3_column_int64(
-						call_st, 5);
-					if (!name_c || !*name_c || !fp_c)
-						continue;
-
-					// Look up caller: [file_path][original_id]
-					auto fp_it = caller_idx.find(fp_c);
-					if (fp_it == caller_idx.end())
-						continue;
-					auto oid_it =
-						fp_it->second.find(parent_id);
-					if (oid_it == fp_it->second.end())
-						continue;
-					int64_t caller_id = oid_it->second;
-
-					auto tryAddEdge = [&](int64_t callee_id) {
-						if (callee_id == caller_id)
-							return;
-						matched_edges.push_back(
-							{ caller_id, callee_id,
-							  fp_c, start_row });
-					};
-
-					// Priority 1: intra-file call resolved at write time
-					if (ref_oid > 0) {
-						auto callee_it =
-							fp_it->second.find(
-								ref_oid);
-						if (callee_it !=
-						    fp_it->second.end()) {
-							tryAddEdge(
-								callee_it
-									->second);
-							continue;
-						}
-					}
-
-					// Priority 1.5: translator-resolved cross-file callee
-					// from ir_semantic_edges (more accurate than name matching).
-					// Uses (file_path, name, start_row) to bridge from the call
-					// record to the ir_semantic_edges entry (ir_node IDs) and
-					// back to the callee's graph_node_id via decl_idx.
-					{
-						auto sf_it =
-							ir_edge_target.find(
-								fp_c);
-						if (sf_it !=
-						    ir_edge_target.end()) {
-							auto sn_it =
-								sf_it->second.find(
-									name_c);
-							if (sn_it !=
-							    sf_it->second.end()) {
-								auto ss_it =
-									sn_it->second
-										.find(start_row);
-								if (ss_it !=
-								    sn_it->second
-									    .end()) {
-									for (int64_t cid :
-									     ss_it->second)
-										tryAddEdge(
-											cid);
-									continue;
-								}
-							}
-						}
-					}
-
-					// Priority 2: cross-file call via name hash map
-					std::string call_name(name_c);
-					// Try exact full-name match first
-					auto fr =
-						callee_by_name.find(call_name);
-					if (fr != callee_by_name.end()) {
-						for (int64_t cid : fr->second)
-							tryAddEdge(cid);
-						continue;
-					}
-					// Try short-name (last component after '.')
-					// Fan-out cap: "get"/"new"/"set" can match hundreds of
-					// declarations across the project; skip if too many.
-					constexpr size_t kShortNameFanoutCap =
-						50;
-					std::string sn = shortName(call_name);
-					if (sn != call_name) {
-						auto sr = callee_by_short.find(
-							sn);
-						if (sr != callee_by_short.end() &&
-						    sr->second.size() <=
-							    kShortNameFanoutCap) {
-							for (int64_t cid :
-							     sr->second)
-								tryAddEdge(cid);
-						}
-					}
-				}
-				sqlite3_finalize(call_st);
-			}
-		}
-
-		// ── Step 3: Bulk INSERT matched edges ──
-		if (!matched_edges.empty()) {
-			// Insert in batches of 500 to balance per-statement overhead vs memory
-			constexpr size_t kBatchSize = 500;
-			const char *insert_sql =
-				"INSERT OR IGNORE INTO graph_edges "
-				"(project_id, source_node_id, target_node_id, edge_type, graph_type, "
-				" call_site_file, call_site_line) "
-				"VALUES (?,?,?,1,'call_graph',?,?)";
-			sqlite3_stmt *ins = nullptr;
-			if (sqlite3_prepare_v2(db_, insert_sql, -1, &ins,
-					       nullptr) == SQLITE_OK) {
-				int64_t pid_i =
-					static_cast<int64_t>(project_id);
-				for (size_t i = 0; i < matched_edges.size();
-				     i++) {
-					auto &e = matched_edges[i];
-					sqlite3_bind_int64(ins, 1, pid_i);
-					sqlite3_bind_int64(ins, 2, e.caller_id);
-					sqlite3_bind_int64(ins, 3, e.callee_id);
-					sqlite3_bind_text(ins, 4,
-							  e.file_path.c_str(),
-							  -1, SQLITE_STATIC);
-					sqlite3_bind_int(ins, 5, e.start_row);
-					sqlite3_step(ins);
-					sqlite3_reset(ins);
-				}
-				sqlite3_finalize(ins);
-			}
+		int64_t n = buildCallEdgesSQL(project_id);
+		if (n < 0) {
+			fprintf(stderr,
+				"buildGraph: buildCallEdgesSQL failed for "
+				"project %s [module=store, method=buildGraph]\n",
+				pid.c_str());
 		}
 	}
 	auto t_call = Clock::now();
+
+	// ── Build CSR adjacency from call edges ──
+	// Aggregates graph_edges(edge_type=1) into src_id → [tgt_ids] BLOBs
+	// for O(1) caller/callee queries.
+	if (build_calls) {
+		if (!buildCSR(project_id)) {
+			fprintf(stderr,
+				"buildGraph: buildCSR failed for "
+				"project %s [module=store, method=buildGraph]\n",
+				pid.c_str());
+		}
+	}
 
 	// Backfill symbols.node_id from graph_nodes for rows created during
 	// scan_project (insertSymbol path), which don't know graph_nodes.id.
@@ -3155,12 +2854,15 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	fprintf(stderr,
 		"buildGraph: %zu files"
 		" | file_list=%lldms delete=%lldms rf=%lldms r2n=%lldms"
-		" nodes=%lldms edges=%lldms calls=%lldms total=%lldms\n",
+		" intern=%lldms nodes=%lldms edges=%lldms calls=%lldms"
+		" total=%lldms\n",
 		rebuild_files.size(), (long long)ms(t0, t_file_list),
 		(long long)ms(t_file_list, t_delete),
 		(long long)ms(t_delete, t_rf), (long long)ms(t_rf, t_r2n),
-		(long long)ms(t_r2n, t_nodes), (long long)ms(t_nodes, t_edges),
-		(long long)ms(t_edges, t_call), (long long)ms(t0, t_end));
+		(long long)ms(t_r2n, t_intern),
+		(long long)ms(t_intern, t_nodes),
+		(long long)ms(t_nodes, t_edges), (long long)ms(t_edges, t_call),
+		(long long)ms(t0, t_end));
 	return true;
 }
 
@@ -3246,6 +2948,251 @@ std::string GraphStore::getCalleesFromRecords(uint64_t project_id,
 	sqlite3_finalize(stmt);
 	result += "]}";
 	return result;
+}
+
+// ── CSR Adjacency (BLOB-packed call edges) ─────────────────────
+
+bool GraphStore::buildCSR(uint64_t project_id)
+{
+	// Clear previous entries for this project
+	exec(std::string("DELETE FROM adjacency WHERE project_id=" +
+			 std::to_string(project_id))
+		     .c_str());
+
+	// Read all call edges, ordered by source_node_id for streaming group-by.
+	// ORDER BY ensures same caller rows are contiguous so we only flush
+	// to the BLOB when the source changes.
+	std::string sql = "SELECT source_node_id, target_node_id "
+			  "FROM graph_edges "
+			  "WHERE edge_type=1 AND project_id=" +
+			  std::to_string(project_id) +
+			  " ORDER BY source_node_id";
+	sqlite3_stmt *st = nullptr;
+	if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &st, nullptr) != SQLITE_OK)
+		return false;
+
+	const char *ins_sql =
+		"INSERT OR REPLACE INTO adjacency (src_id, project_id, tgt_blob) "
+		"VALUES (?, ?, ?)";
+	sqlite3_stmt *ins = nullptr;
+	if (sqlite3_prepare_v2(db_, ins_sql, -1, &ins, nullptr) != SQLITE_OK) {
+		sqlite3_finalize(st);
+		return false;
+	}
+
+	int64_t pid_i = static_cast<int64_t>(project_id);
+	int64_t current_src = -1;
+	std::vector<uint32_t> buf;
+	buf.reserve(1024);
+	int64_t count = 0;
+
+	while (sqlite3_step(st) == SQLITE_ROW) {
+		int64_t src = sqlite3_column_int64(st, 0);
+		int64_t tgt = sqlite3_column_int64(st, 1);
+		if (src == tgt)
+			continue; // skip self-loops
+
+		if (src != current_src) {
+			// Flush previous group
+			if (current_src >= 0 && !buf.empty()) {
+				sqlite3_bind_int64(ins, 1, current_src);
+				sqlite3_bind_int64(ins, 2, pid_i);
+				sqlite3_bind_blob(
+					ins, 3, buf.data(),
+					static_cast<int>(buf.size() *
+							 sizeof(uint32_t)),
+					SQLITE_STATIC);
+				if (sqlite3_step(ins) == SQLITE_DONE)
+					count++;
+				else
+					fprintf(stderr,
+						"buildCSR: forward flush"
+						" failed: %s\n",
+						sqlite3_errmsg(db_));
+				sqlite3_reset(ins);
+			}
+			current_src = src;
+			buf.clear();
+		}
+		buf.push_back(static_cast<uint32_t>(tgt));
+	}
+	// Flush last group
+	if (current_src >= 0 && !buf.empty()) {
+		sqlite3_bind_int64(ins, 1, current_src);
+		sqlite3_bind_int64(ins, 2, pid_i);
+		sqlite3_bind_blob(
+			ins, 3, buf.data(),
+			static_cast<int>(buf.size() * sizeof(uint32_t)),
+			SQLITE_STATIC);
+		if (sqlite3_step(ins) == SQLITE_DONE)
+			count++;
+		else
+			fprintf(stderr,
+				"buildCSR: final forward flush failed: %s\n",
+				sqlite3_errmsg(db_));
+		sqlite3_reset(ins);
+	}
+
+	sqlite3_finalize(ins);
+	sqlite3_finalize(st);
+	fprintf(stderr,
+		"buildCSR: %lld forward groups from graph_edges(edge_type=1)\n",
+		(long long)count);
+
+	// ── Build reverse adjacency (adjacency_rev) ──
+	// Mirror of forward adjacency: group by target_node_id (callee) instead
+	// of source_node_id (caller). Enables O(1) getCallerIds() lookups.
+	exec(std::string("DELETE FROM adjacency_rev WHERE project_id=" +
+			 std::to_string(project_id))
+		     .c_str());
+
+	std::string rev_sql = "SELECT target_node_id, source_node_id "
+			      "FROM graph_edges "
+			      "WHERE edge_type=1 AND project_id=" +
+			      std::to_string(project_id) +
+			      " ORDER BY target_node_id";
+	sqlite3_stmt *rev_st = nullptr;
+	if (sqlite3_prepare_v2(db_, rev_sql.c_str(), -1, &rev_st, nullptr) !=
+	    SQLITE_OK)
+		return false;
+
+	const char *rev_ins_sql =
+		"INSERT OR REPLACE INTO adjacency_rev (tgt_id, project_id, "
+		"src_blob) VALUES (?, ?, ?)";
+	sqlite3_stmt *rev_ins = nullptr;
+	if (sqlite3_prepare_v2(db_, rev_ins_sql, -1, &rev_ins, nullptr) !=
+	    SQLITE_OK) {
+		sqlite3_finalize(rev_st);
+		return false;
+	}
+
+	int64_t current_tgt = -1;
+	std::vector<uint32_t> rev_buf;
+	rev_buf.reserve(1024);
+	int64_t rev_count = 0;
+
+	while (sqlite3_step(rev_st) == SQLITE_ROW) {
+		int64_t tgt = sqlite3_column_int64(rev_st, 0);
+		int64_t src = sqlite3_column_int64(rev_st, 1);
+		if (src == tgt)
+			continue;
+
+		if (tgt != current_tgt) {
+			if (current_tgt >= 0 && !rev_buf.empty()) {
+				sqlite3_bind_int64(rev_ins, 1, current_tgt);
+				sqlite3_bind_int64(rev_ins, 2, pid_i);
+				sqlite3_bind_blob(
+					rev_ins, 3, rev_buf.data(),
+					static_cast<int>(rev_buf.size() *
+							 sizeof(uint32_t)),
+					SQLITE_STATIC);
+				if (sqlite3_step(rev_ins) == SQLITE_DONE)
+					rev_count++;
+				else
+					fprintf(stderr,
+						"buildCSR: rev flush"
+						" failed: %s\n",
+						sqlite3_errmsg(db_));
+				sqlite3_reset(rev_ins);
+			}
+			current_tgt = tgt;
+			rev_buf.clear();
+		}
+		rev_buf.push_back(static_cast<uint32_t>(src));
+	}
+	if (current_tgt >= 0 && !rev_buf.empty()) {
+		sqlite3_bind_int64(rev_ins, 1, current_tgt);
+		sqlite3_bind_int64(rev_ins, 2, pid_i);
+		sqlite3_bind_blob(
+			rev_ins, 3, rev_buf.data(),
+			static_cast<int>(rev_buf.size() * sizeof(uint32_t)),
+			SQLITE_STATIC);
+		if (sqlite3_step(rev_ins) == SQLITE_DONE)
+			rev_count++;
+		else
+			fprintf(stderr,
+				"buildCSR: final rev flush failed: %s\n",
+				sqlite3_errmsg(db_));
+		sqlite3_reset(rev_ins);
+	}
+
+	sqlite3_finalize(rev_ins);
+	sqlite3_finalize(rev_st);
+	fprintf(stderr,
+		"buildCSR: %lld reverse groups from graph_edges(edge_type=1)\n",
+		(long long)rev_count);
+	return true;
+}
+
+std::vector<uint64_t> GraphStore::getCalleeIds(uint64_t node_id)
+{
+	std::vector<uint64_t> ids;
+	const char *sql = "SELECT tgt_blob FROM adjacency WHERE src_id=?";
+	sqlite3_stmt *st = nullptr;
+	if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK)
+		return ids;
+	sqlite3_bind_int64(st, 1, static_cast<int64_t>(node_id));
+	if (sqlite3_step(st) == SQLITE_ROW) {
+		const void *blob = sqlite3_column_blob(st, 0);
+		int bytes = sqlite3_column_bytes(st, 0);
+		int n = bytes / static_cast<int>(sizeof(uint32_t));
+		const uint32_t *arr = static_cast<const uint32_t *>(blob);
+		ids.reserve(static_cast<size_t>(n));
+		for (int i = 0; i < n; i++)
+			ids.push_back(static_cast<uint64_t>(arr[i]));
+	}
+	sqlite3_finalize(st);
+	return ids;
+}
+
+std::vector<uint64_t> GraphStore::getCallerIds(uint64_t node_id)
+{
+	// O(1) reverse adjacency lookup via adjacency_rev table.
+	// Falls back to O(n) full-scan if adjacency_rev is not populated
+	// (e.g., buildCSR was called before the reverse adjacency feature).
+	std::vector<uint64_t> ids;
+	const char *sql = "SELECT src_blob FROM adjacency_rev WHERE tgt_id=?";
+	sqlite3_stmt *st = nullptr;
+	if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK)
+		return ids;
+	sqlite3_bind_int64(st, 1, static_cast<int64_t>(node_id));
+	if (sqlite3_step(st) == SQLITE_ROW) {
+		const void *blob = sqlite3_column_blob(st, 0);
+		int bytes = sqlite3_column_bytes(st, 0);
+		int n = bytes / static_cast<int>(sizeof(uint32_t));
+		const uint32_t *arr = static_cast<const uint32_t *>(blob);
+		ids.reserve(static_cast<size_t>(n));
+		for (int i = 0; i < n; i++)
+			ids.push_back(static_cast<uint64_t>(arr[i]));
+		sqlite3_finalize(st);
+		return ids;
+	}
+	sqlite3_finalize(st);
+
+	// Fallback: O(n) full-scan of forward adjacency (legacy path)
+	const char *fallback_sql =
+		"SELECT src_id, tgt_blob FROM adjacency WHERE project_id IN "
+		"(SELECT project_id FROM graph_nodes WHERE id=?)";
+	if (sqlite3_prepare_v2(db_, fallback_sql, -1, &st, nullptr) !=
+	    SQLITE_OK)
+		return ids;
+	sqlite3_bind_int64(st, 1, static_cast<int64_t>(node_id));
+	while (sqlite3_step(st) == SQLITE_ROW) {
+		int64_t src = sqlite3_column_int64(st, 0);
+		const void *blob = sqlite3_column_blob(st, 1);
+		int bytes = sqlite3_column_bytes(st, 1);
+		int n = bytes / static_cast<int>(sizeof(uint32_t));
+		const uint32_t *arr = static_cast<const uint32_t *>(blob);
+		uint32_t target = static_cast<uint32_t>(node_id);
+		for (int i = 0; i < n; i++) {
+			if (arr[i] == target) {
+				ids.push_back(static_cast<uint64_t>(src));
+				break;
+			}
+		}
+	}
+	sqlite3_finalize(st);
+	return ids;
 }
 
 } // namespace store

@@ -37,7 +37,7 @@ class Parser {
   *  Thread-safe: the pointer is read-only after registration.
   *  Returns nullptr if language not registered.
   *  Caller can use this to create per-thread TSParser instances. */
-	const TSLanguage *getLanguage(const char *name);
+	const TSLanguage *getLanguage(const char *name) const;
 
 	const std::string &error() const
 	{

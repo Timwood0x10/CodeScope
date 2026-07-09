@@ -72,7 +72,7 @@ bool Parser::hasLanguage(const char *name) const
 	return grammars_.count(name) > 0;
 }
 
-const TSLanguage *Parser::getLanguage(const char *name)
+const TSLanguage *Parser::getLanguage(const char *name) const
 {
 	auto it = grammars_.find(name);
 	if (it != grammars_.end()) {

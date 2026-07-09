@@ -11,8 +11,11 @@ FilterPolicy::FilterPolicy()
 	// Normal mode skip dirs — VCS, IDE, build artifacts, dependency/env dirs.
 	// Applied to EVERY path component so matches work at any depth
 	// (e.g. src/node_modules, packages/foo/.venv are both caught).
-	// NOTE: source-bearing dirs (test/, docs/, vendor/, bin/) are NOT skipped
-	// here — they move to fast_extra_skip_dirs_ so NORMAL mode indexes them.
+	// NOTE: source-bearing dirs that are rarely the focus of analysis
+	// (test/, docs/, examples/, vendor/, bench/) are included here
+	// so NORMAL mode skips them. They would otherwise inflate file
+	// counts by 3-5x (e.g. Bun: 3,251 → 9,935) and cause timeouts
+	// on large projects.
 	normal_skip_dirs_ = {
 		// ── VCS & worktrees ──
 		".git",
@@ -124,12 +127,7 @@ FilterPolicy::FilterPolicy()
 		".tmp",
 		// ── Secrets (NEVER index) ──
 		".ssh",
-	};
-
-	// FAST mode skips even more — docs, examples, tests, generated, vendor, etc.
-	// These dirs often hold source in NORMAL mode but are rarely the focus of
-	// a fast scan.
-	fast_extra_skip_dirs_ = {
+		// ── Generated / vendor / test (inflate file count 3-5x) ──
 		"generated",
 		"gen",
 		"auto-generated",
@@ -141,6 +139,8 @@ FilterPolicy::FilterPolicy()
 		"__snapshots__",
 		"__fixtures__",
 		"__test__",
+		"test",
+		"tests",
 		"docs",
 		"doc",
 		"documentation",
@@ -165,10 +165,6 @@ FilterPolicy::FilterPolicy()
 		"media",
 		"external",
 		"bin",
-		// Source-bearing dirs promoted from NORMAL to FAST-only so that
-		// NORMAL mode indexes Go test files, PHP vendor source, docs, etc.
-		"test",
-		"tests",
 		"third_party",
 		"thirdparty",
 		"3rdparty",
@@ -177,6 +173,10 @@ FilterPolicy::FilterPolicy()
 		"benchmark",
 		"benchmarks",
 	};
+
+	// FAST mode skips even more — additional dirs that are sometimes
+	// source-bearing but rarely the focus of a quick scan.
+	fast_extra_skip_dirs_ = {};
 
 	// Skip suffixes — non-source binaries, images, archives, etc.
 	// Matched CASE-INSENSITIVELY so .EXE / .Dll on Windows are caught.

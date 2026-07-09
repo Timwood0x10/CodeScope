@@ -102,8 +102,6 @@ bool ResolveCallPass::run(
 		fprintf(stderr, "RESOLVE_FILE[%zu]: %s (%zu nodes)\n", fi,
 			caller_file.c_str(), u->all_nodes.size());
 		std::vector<ir::Node *> stubs;
-		int call_exprs = 0, resolved_local = 0, resolved_cross = 0,
-		    no_name = 0;
 
 		int node_count = 0;
 		fprintf(stderr, "  FILE_NODES: ");
@@ -141,12 +139,10 @@ bool ResolveCallPass::run(
 				}
 			}
 			if (has_local) {
-				resolved_local++;
 				continue;
 			}
 
 			// Look up in global symbol index
-			resolved_cross++;
 			auto *candidates = symbol_index.lookup(fname);
 			if (!candidates || candidates->empty()) {
 				fprintf(stderr,

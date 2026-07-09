@@ -30,6 +30,12 @@ class GraphStore {
 	GraphStore &operator=(const GraphStore &) = delete;
 
 	bool open(const char *db_path);
+
+	/** Get the database file path (for opening additional connections). */
+	const std::string &dbPath() const
+	{
+		return db_path_;
+	}
 	void close();
 
 	// ── Project ────────────────────────────────────────────────
@@ -126,6 +132,50 @@ class GraphStore {
 	bool buildGraph(
 		uint64_t project_id, bool build_calls = true,
 		const std::unordered_set<std::string> *changed_files = nullptr);
+
+	// ── CSR Adjacency (BLOB-packed call edges) ──────────────────
+
+	/** Build adjacency (CSR BLOB) from graph_edges(edge_type=1).
+	 *  Call after buildGraph. Drops and rebuilds adjacency. */
+	bool buildCSR(uint64_t project_id);
+	/** Get callee node IDs for a given source (caller) node via adjacency.
+	 *  Returns empty vector on miss. O(1) B-tree lookup. */
+	std::vector<uint64_t> getCalleeIds(uint64_t node_id);
+	/** Get caller node IDs for a given target (callee) node via adjacency.
+	 *  Returns empty vector on miss. O(1) B-tree lookup via adjacency_rev. */
+	std::vector<uint64_t> getCallerIds(uint64_t node_id);
+
+	// ── String Interning ───────────────────────────────────────
+
+	/**
+	 * Intern a string into the symbol_names pool.
+	 * Returns the u32 ID for the given text. If the text already exists,
+	 * returns the existing ID. Thread-safety: caller must serialize
+	 * (same constraint as all GraphStore write paths).
+	 *
+	 * @param text  Null-terminated string to intern. Empty strings and
+	 *              nullptr are mapped to 0 (sentinel: "no value").
+	 * @return      symbol_names.id for the text, or 0 if text is empty/null.
+	 */
+	uint32_t internString(const char *text);
+
+	/**
+	 * Reverse lookup: retrieve the original text for a symbol_names ID.
+	 *
+	 * @param id  symbol_names.id (as returned by internString).
+	 * @return    The interned text, or empty string if id is 0 or not found.
+	 */
+	std::string getStringById(uint32_t id);
+
+	/**
+	 * Bulk-intern all unique string values from a set of columns in a
+	 * source table into symbol_names. Uses INSERT OR IGNORE for dedup.
+	 * Call this before populating _id foreign-key columns.
+	 *
+	 * @param sql  A SQL statement that returns a single TEXT column of
+	 *             strings to intern (e.g. "SELECT DISTINCT name FROM ...").
+	 */
+	void bulkInternFromQuery(const char *sql);
 
 	// ── Transactions ───────────────────────────────────────────
 
@@ -406,11 +456,17 @@ class GraphStore {
     private:
 	sqlite3 *db_ = nullptr;
 	std::string error_;
+	std::string db_path_;
 
 	// Cached prepared statements (initialized in open(), finalized in close())
 	sqlite3_stmt *stmt_fts_map_ = nullptr; // INSERT INTO fts_node_map
 	sqlite3_stmt *stmt_fts_ = nullptr; // INSERT INTO code_fts
 	sqlite3_stmt *stmt_vector_ = nullptr; // INSERT INTO node_vectors
+
+	// String interning cache: text → symbol_names.id.
+	// Populated lazily by internString() and cleared by bulkInternFromQuery().
+	// Bounded by the number of unique strings (~500K for a 4M-node project).
+	std::unordered_map<std::string, uint32_t> intern_cache_;
 
 	// Dynamic statement cache keyed by SQL text. Reused across Phase B writes.
 	// The mutex only guards the cache map (insert/find/reset). The returned
@@ -433,6 +489,23 @@ class GraphStore {
 
 	bool exec(const char *sql);
 	bool createSchema();
+
+	// ── Internal: SQL-based call edge resolution ──────────────
+
+	/**
+	 * Build call graph edges (edge_type=1) using SQL JOINs instead of
+	 * C++ hash maps. Replaces the in-memory caller_idx / callee_by_name /
+	 * decl_idx / ir_edge_target maps with SQL temp tables + indexes.
+	 *
+	 * Memory: O(batch_size) instead of O(total_nodes). For 4M nodes,
+	 * this reduces peak RSS from ~2-4GB to ~64MB (SQLite cache).
+	 *
+	 * Prerequisites: _r2n temp table must exist (created by buildGraph).
+	 *
+	 * @param project_id  Project to build call edges for.
+	 * @return Number of call edges inserted, or -1 on error.
+	 */
+	int64_t buildCallEdgesSQL(uint64_t project_id);
 };
 
 // ── Index Progress (global, for client polling) ─────────────

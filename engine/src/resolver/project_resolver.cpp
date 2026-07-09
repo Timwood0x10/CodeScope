@@ -107,7 +107,6 @@ int ProjectResolver::rankCandidate(const IndexEntry &candidate,
 	try {
 		std::filesystem::path cp(caller_file);
 		std::filesystem::path dp(candidate.file_path);
-		int depth_diff = 0;
 		auto ci = cp.begin(), di = dp.begin();
 		while (ci != cp.end() && di != dp.end() && *ci == *di) {
 			++ci;

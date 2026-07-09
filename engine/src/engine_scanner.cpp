@@ -244,11 +244,6 @@ static const DeclPattern JSTS_PATTERNS[] = {
 	{ "enum ", "enum" },
 };
 
-static const DeclPattern GO_PATTERNS[] = {
-	{ "func ", "function" },
-	// type handled inline for struct/interface/type_alias distinction
-};
-
 static const DeclPattern SWIFT_PATTERNS[] = {
 	{ "open func ", "function" },
 	{ "public func ", "function" },
