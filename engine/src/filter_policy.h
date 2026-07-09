@@ -37,11 +37,11 @@ class FilterPolicy {
 	enum Mode { NORMAL, FAST, STRICT };
 	void setMode(Mode m)
 	{
-	 mode_ = m;
+		mode_ = m;
 	}
 	Mode mode() const
 	{
-	 return mode_;
+		return mode_;
 	}
 
 	// ── Configuration ────────────────────────────────────────────

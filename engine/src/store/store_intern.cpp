@@ -157,8 +157,13 @@ void GraphStore::bulkInternFromQuery(const char *sql)
  */
 int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 {
+	using Clock = std::chrono::steady_clock;
+	auto t0 = Clock::now();
+	Clock::time_point t1, t2, t3, t4;
+
 	std::string pid = std::to_string(project_id);
 	int64_t total_edges = 0;
+	int64_t edges_p1 = 0, edges_p2 = 0, edges_p3 = 0, edges_p3b = 0;
 
 	// ── Step 0: Create _decls temp table ──
 	// Replaces: caller_idx, callee_by_name, callee_by_short, decl_idx
@@ -208,6 +213,8 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 			total_edges +=
 				static_cast<int64_t>(sqlite3_changes(db_));
 		}
+		edges_p1 = total_edges;
+		t1 = Clock::now();
 	}
 
 	// ── Step 2: Priority 2 — Translator-resolved cross-file calls ──
@@ -273,6 +280,8 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 			total_edges +=
 				static_cast<int64_t>(sqlite3_changes(db_));
 		}
+		edges_p2 = total_edges - edges_p1;
+		t2 = Clock::now();
 	}
 
 	// ── Step 3: Priority 3 — Name-based cross-file calls ──
@@ -328,6 +337,8 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 			total_edges +=
 				static_cast<int64_t>(sqlite3_changes(db_));
 		}
+		edges_p3 = total_edges - edges_p2 - edges_p1;
+		t3 = Clock::now();
 	}
 
 	// ── Step 3b: Short-name fallback ──
@@ -478,11 +489,28 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 			sqlite3_finalize(call_st);
 
 			total_edges += short_name_edges;
+			edges_p3b = short_name_edges;
 			fprintf(stderr,
 				"buildCallEdgesSQL: Priority 3b (short-name) "
 				"inserted %lld edges\n",
 				(long long)short_name_edges);
 		}
+		t4 = Clock::now();
+
+		auto ms = [](auto start, auto end) {
+			return std::chrono::duration_cast<
+				       std::chrono::milliseconds>(end - start)
+				.count();
+		};
+		fprintf(stderr,
+			"buildCallEdgesSQL: P1=%lldms(%lld) "
+			"P2=%lldms(%lld) P3=%lldms(%lld) "
+			"P3b=%lldms(%lld) total=%lldms edges=%lld\n",
+			(long long)ms(t0, t1), (long long)edges_p1,
+			(long long)ms(t1, t2), (long long)edges_p2,
+			(long long)ms(t2, t3), (long long)edges_p3,
+			(long long)ms(t3, t4), (long long)edges_p3b,
+			(long long)ms(t0, t4), (long long)total_edges);
 	}
 
 	// Cleanup

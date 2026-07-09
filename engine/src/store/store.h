@@ -21,6 +21,57 @@ struct Record;
 namespace store
 {
 
+// ─── Streaming Pipeline Data Structures ──────────────────────────
+//
+// FileResult bundle: passed from parse worker to single writer thread.
+// MetricsRow, StubRow, LocalCall: pre-computed in parse worker.
+
+/**
+ * Pre-computed metrics for a single symbol.
+ * Populated during the parse phase (not in enhance) to avoid
+ * a second parse/translate pass.
+ *
+ * Fields correspond to the `metrics` table schema:
+ *   (project_id, owner_type, owner_id, cyclomatic, nesting_depth,
+ *    cognitive, lines, param_count, call_count, branch_count, loop_count)
+ * project_id is filled by the writer, not stored in the row.
+ *
+ * name/line/col are used to JOIN with the symbols table at resolve time
+ * (symbol IDs are not known until after buildGraph + populateSymbolsFromGraph).
+ */
+struct MetricRow {
+	std::string name; // symbol name, for symbol JOIN at resolve time
+	int line = 0; // symbol start line, for symbol JOIN at resolve time
+	int col = 0; // symbol start column, for symbol JOIN at resolve time
+	int cyclomatic = 0;
+	int nesting_depth = 0;
+	int cognitive = 0;
+	int lines = 0;
+	int param_count = 0;
+	int call_count = 0;
+	int branch_count = 0;
+	int loop_count = 0;
+	bool is_stub = false; // true = function body has no real statements
+};
+
+/**
+ * FileResult: 单个文件 parse 的全部产出。
+ *
+ * Worker 线程 parse 完一个文件后产出 FileResult，推入 BoundedQueue，
+ * 由单 writer 线程批量落库。Worker 推完即释放内存（AST/IR/source buffer）。
+ *
+ * 包含 semantic_records、预计算 metrics、stub 标志、同文件 call edges。
+ * 不包含 graph_nodes——那是 buildGraph 阶段由 SQL 生成的。
+ */
+struct FileResult {
+	std::string file_path;
+	std::string language;
+	std::vector<ir::Record> records;
+	std::vector<MetricRow> metrics;
+	int64_t mtime = 0;
+	int64_t fsize = 0;
+};
+
 class GraphStore {
     public:
 	GraphStore() = default;
@@ -114,6 +165,62 @@ class GraphStore {
 		const std::vector<
 			std::pair<std::string, std::vector<ir::Record> > >
 			&file_records);
+
+	/**
+	 * Streaming pipeline: batch-insert a complete FileResult bundle.
+	 *
+	 * Writes semantic_records, metrics, symbol_status (stub), and local
+	 * call_edges in a single transaction. Called by the single writer
+	 * thread, NOT by parse workers (which only push to the queue).
+	 *
+	 * This replaces the old two-phase flow (index + re-parse enhance):
+	 * metrics and stubs are pre-computed in the parse worker so the
+	 * enhance phase no longer needs to re-parse or re-translate files.
+	 *
+	 * @param project_id  Project identifier.
+	 * @param batch       Vector of FileResult bundles (one per file).
+	 * @return true on success.
+	 */
+	bool insertFileResultBatch(uint64_t project_id,
+				   const std::vector<FileResult> &batch);
+
+	/**
+	 * Resolve pre-computed metrics from the staging temp table into
+	 * the metrics and symbol_status tables.
+	 *
+	 * Must be called AFTER buildGraph + populateSymbolsFromGraph, because
+	 * metrics reference symbol IDs which are created during populate.
+	 *
+	 * Does a single SQL JOIN to resolve all staged metrics in O(n) time.
+	 *
+	 * @param project_id  Project identifier.
+	 * @return true on success.
+	 */
+	bool resolveStagedMetrics(uint64_t project_id);
+
+	/**
+	 * Populate the symbols table from graph_nodes for a project.
+	 * Called after buildGraph to create symbol entries with node_id
+	 * back-references for cross-file edge copy.
+	 *
+	 * @param project_id  Project identifier.
+	 * @return Number of symbols inserted.
+	 */
+	int64_t populateSymbolsFromGraph(uint64_t project_id);
+
+	/**
+	 * Copy cross-file call edges from graph_edges(edge_type=1) to call_edges.
+	 *
+	 * Must be called AFTER buildGraph + populateSymbolsFromGraph, because
+	 * the JOIN uses symbols.node_id (populated by populateSymbolsFromGraph)
+	 * to bridge graph_nodes IDs to symbol IDs.
+	 *
+	 * Uses INSERT OR IGNORE so it's idempotent.
+	 *
+	 * @param project_id  Project identifier.
+	 * @return Number of call edges copied.
+	 */
+	int64_t copyGraphEdgesToCallEdges(uint64_t project_id);
 
 	/**
 	 * Build the knowledge graph from previously stored semantic records.

@@ -407,43 +407,43 @@ FilterPolicy::FilterPolicy()
 		// ── Tilde backup (vim/emacs) ──
 		"~",
 		// ── Project configuration (never source code) ──
-		".toml",       // Cargo.toml, pyproject.toml
-		".yaml",       // CI/CD, docker-compose
-		".yml",        // Same as .yaml
-		".json",       // package.json, tsconfig
-		".xml",        // pom.xml, build configs
-		".ini",        // Configuration files
-		".cfg",        // Configuration files
-		".conf",       // Configuration files
+		".toml", // Cargo.toml, pyproject.toml
+		".yaml", // CI/CD, docker-compose
+		".yml", // Same as .yaml
+		".json", // package.json, tsconfig
+		".xml", // pom.xml, build configs
+		".ini", // Configuration files
+		".cfg", // Configuration files
+		".conf", // Configuration files
 		".properties", // Java properties
-		".gradle",     // Gradle build scripts
+		".gradle", // Gradle build scripts
 		// ── Documentation (never source code) ──
-		".md",         // README, CHANGELOG
-		".markdown",   // Extended markdown
-		".rst",        // reStructuredText
-		".adoc",       // AsciiDoc
-		".tex",        // LaTeX
+		".md", // README, CHANGELOG
+		".markdown", // Extended markdown
+		".rst", // reStructuredText
+		".adoc", // AsciiDoc
+		".tex", // LaTeX
 		// ── Build system scripts (config, not source) ──
-		".cmake",      // CMake module scripts
-		".make",       // Makefile fragments
+		".cmake", // CMake module scripts
+		".make", // Makefile fragments
 		// ── Text / metadata (not source) ──
-		".txt",        // requirements.txt, NOTICE
-		".csv",        // Data tables
-		".tsv",        // Data tables
+		".txt", // requirements.txt, NOTICE
+		".csv", // Data tables
+		".tsv", // Data tables
 		// ── LLVM intermediate output ──
-		".ll",         // LLVM IR text
-		".bc",         // LLVM bitcode
-		".rmeta",      // Rust metadata (intermediate)
+		".ll", // LLVM IR text
+		".bc", // LLVM bitcode
+		".rmeta", // Rust metadata (intermediate)
 		// ── C/C++ build intermediates ──
-		".d",          // GCC/Clang dependency files
+		".d", // GCC/Clang dependency files
 		// ── API definition files (config, not source) ──
-		".graphql",    // GraphQL schemas
-		".gql",        // GraphQL shorthand
-		".proto",      // Protobuf definitions
+		".graphql", // GraphQL schemas
+		".gql", // GraphQL shorthand
+		".proto", // Protobuf definitions
 		// ── DevOps / container configs ──
 		".dockerfile", // Docker build files
-		".service",    // systemd unit files
-		".socket",     // systemd socket files
+		".service", // systemd unit files
+		".socket", // systemd socket files
 	};
 	fast_extra_suffixes_ = {
 		".min.js",

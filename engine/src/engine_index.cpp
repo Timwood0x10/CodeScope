@@ -28,8 +28,6 @@
 
 // ─── Constants ─────────────────────────────────────────────────
 constexpr uint64_t kMaxFileSize = 5 * 1024 * 1024; // 5 MB default
-constexpr unsigned kSleepFactor = 10; // ms per MB over budget
-constexpr unsigned kMaxSleepMs = 1000; // cap sleep at 1s
 
 // ─── Index File ────────────────────────────────────────────────
 
@@ -474,156 +472,357 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 			lang_ptrs[l] = g_parser->getLanguage(l.c_str());
 	}
 
-	// ── Batch Processing ─────────────────────────────────────
-	// Process files in batches to keep memory O(batch_size) instead of O(total_files).
-	const size_t BATCH_SIZE = 100;
-	int total_indexed = 0;
+	// Index mode (from env): "fast" | "normal" (default) | "deep"
+	bool mode_fast = env_mode && strcmp(env_mode, "fast") == 0;
+	bool mode_deep = env_mode && strcmp(env_mode, "deep") == 0;
 
-	// Persistent symbol index across all batches.
-	// BuildSymbolIndexPass adds entries incrementally each batch;
-	// ResolveCallPass queries the cumulative index so cross-batch
-	// symbol resolution works correctly.
-	resolver::ProjectSymbolIndex global_symbol_index;
+	// ── Streaming Pipeline ─────────────────────────────────────
+	// Replaces the old batch loop (BATCH_SIZE=100, accumulate units in vector,
+	// then persist and run linker passes) with a streaming pipeline:
+	//
+	//   1. Parse workers: readFile → parse → produce FileResult → push queue
+	//   2. Writer thread:  consume queue → batch insertFileResultBatch
+	//   3. Post-writer:    buildGraph → populateSymbols → resolveStagedMetrics
+	//
+	// Workers release AST/IR/source memory immediately after pushing to queue.
+	// The bounded queue provides natural backpressure when DB write lags.
 
 	using namespace std::chrono;
 	steady_clock::time_point t_parse_start;
-	int64_t time_parse_ms = 0, time_sqlite_ms = 0, time_buildgraph_ms = 0;
+	int64_t time_parse_ms = 0, time_buildgraph_ms = 0;
 
-	// Control verbose batch logging (set CODESCOPE_VERBOSE=0 to suppress)
-	bool verbose = true;
-	const char *env_verbose = getenv("CODESCOPE_VERBOSE");
-	if (env_verbose && strcmp(env_verbose, "0") == 0)
-		verbose = false;
+	// Bounded queue: capacity = 2 * worker_count for natural backpressure
+	const size_t kQueueCapacity =
+		std::max<size_t>(2 * std::thread::hardware_concurrency(), 8);
+	BoundedQueue<std::unique_ptr<store::FileResult> > result_queue(
+		kQueueCapacity);
 
-	// Index mode: "fast" | "normal" (default) | "deep"
-	// FAST:  skip FTS + vectors, symbol graph only
-	// NORMAL: build FTS, skip vectors
-	// DEEP:   build FTS + vectors (full pipeline)
-	// mode_fast_discover / env_mode defined above in Phase 1
-	bool mode_fast = mode_fast_discover;
-	bool mode_deep = env_mode && strcmp(env_mode, "deep") == 0;
-	// normal is default when neither fast nor deep
+	// Thread-safe counters
+	std::atomic<int> next_job{ 0 };
+	std::atomic<int> files_queued{ 0 };
+	std::atomic<int> files_written{ 0 };
+	std::atomic<int> writer_error{ 0 };
 
-	// Memory budget: pause parsing if RSS exceeds limit (MB)
-	uint64_t memory_budget_mb = 0;
-	const char *env_budget = getenv("CODESCOPE_MEMORY_BUDGET_MB");
-	if (env_budget)
-		memory_budget_mb =
-			static_cast<uint64_t>(std::atoll(env_budget));
+	// ── Writer thread ──────────────────────────────────────────
+	// Single writer owns the SQLite write path. Workers never touch SQLite.
+	// Batches up to kWriterBatchSize files per transaction.
+	const size_t kWriterBatchSize = 50;
 
-	// Track successfully-indexed files for incremental file_scan_state update
-	std::vector<std::string> all_indexed_files;
+	std::thread writer_thread([&]() {
+		std::vector<store::FileResult> batch;
+		batch.reserve(kWriterBatchSize);
 
-	for (size_t batch_start = 0; batch_start < jobs.size();
-	     batch_start += BATCH_SIZE) {
-		size_t batch_end =
-			std::min(batch_start + BATCH_SIZE, jobs.size());
-		size_t batch_count = batch_end - batch_start;
-
-		if (verbose)
-			fprintf(stderr, "BATCH [%zu..%zu] of %zu (%zu files)\n",
-				batch_start, batch_end - 1, jobs.size(),
-				batch_count);
-
-		// Phase 2: Parallel translate — each worker reads + parses + visits independently
-		t_parse_start = steady_clock::now();
-		std::vector<std::unique_ptr<ir::TranslationUnit> > all_units(
-			batch_count);
-		std::vector<std::unique_ptr<ir::SemanticUnit> > semantic_units(
-			batch_count);
-		std::mutex collect_lock;
-		std::atomic<int> next_job{ 0 };
-
-		auto translate_batch_worker = [&]() {
-			// RAII deleter for tree-sitter parsers so they are
-			// released when the thread_local map is destroyed.
-			struct TSParserDeleter {
-				void operator()(TSParser *p) const
-				{
-					if (p)
-						ts_parser_delete(p);
+		while (true) {
+			std::unique_ptr<store::FileResult> fr;
+			bool ok = result_queue.pop(fr);
+			if (!ok) {
+				// Queue is done and empty — flush any remaining batch
+				if (!batch.empty()) {
+					g_store->beginTransaction();
+					if (!g_store->insertFileResultBatch(
+						    project_id, batch)) {
+						writer_error = 1;
+					}
+					if (writer_error)
+						g_store->rollbackTransaction();
+					else
+						g_store->commitTransaction();
 				}
-			};
-			thread_local static std::unordered_map<
-				std::string,
-				std::unique_ptr<TSParser, TSParserDeleter> >
-				tl_parsers;
-			thread_local static std::unordered_map<
-				std::string, std::unique_ptr<ir::JsVisitor> >
-				tl_visitors;
+				break;
+			}
+			batch.push_back(std::move(*fr));
+			fr.reset();
 
-			while (true) {
-				int local_idx = next_job.fetch_add(1);
-				if (local_idx >= static_cast<int>(batch_count))
+			// Grab more items without blocking (drain what's available)
+			while (batch.size() < kWriterBatchSize) {
+				std::unique_ptr<store::FileResult> extra;
+				if (!result_queue.pop(extra))
 					break;
-				size_t global_idx = batch_start + local_idx;
-				auto &job = jobs[global_idx];
+				batch.push_back(std::move(*extra));
+				extra.reset();
+			}
+
+			// Flush batch to DB
+			if (batch.size() >= kWriterBatchSize ||
+			    result_queue.isDone()) {
+				g_store->beginTransaction();
+				if (!g_store->insertFileResultBatch(project_id,
+								    batch)) {
+					writer_error = 1;
+					fprintf(stderr,
+						"writer: insertFileResultBatch"
+						" failed\n");
+				}
+				if (writer_error)
+					g_store->rollbackTransaction();
+				else
+					g_store->commitTransaction();
+				files_written += static_cast<int>(batch.size());
+				batch.clear();
+			}
+		}
+	});
+
+	// ── Parse workers ──────────────────────────────────────────
+	// Each worker: readFile → parse → produce FileResult → push queue.
+	// Metrics are pre-computed here (no enhance re-parse needed).
+
+	auto parse_worker_fn = [&]() {
+		// RAII deleter for tree-sitter parsers so they are
+		// released when the thread_local map is destroyed.
+		struct TSParserDeleter {
+			void operator()(TSParser *p) const
+			{
+				if (p)
+					ts_parser_delete(p);
+			}
+		};
+		thread_local static std::unordered_map<
+			std::string, std::unique_ptr<TSParser, TSParserDeleter> >
+			tl_parsers;
+		thread_local static std::unordered_map<
+			std::string, std::unique_ptr<ir::JsVisitor> >
+			tl_visitors;
+
+		// Helper: compute metrics from flat semantic records (new pipeline).
+		// Walks the parent_id tree to count params/calls/branches/loops.
+		// Stub detection: function with no CallExpr descendant.
+		// Cyclomatic/cognitive/nesting are estimated (tree-sitter CST
+		// is already freed; full IR tree is not available in this path).
+		auto computeMetricsFromRecords =
+			[&](const std::vector<ir::Record> &records,
+			    const std::string &file_path)
+			-> std::vector<store::MetricRow> {
+			std::vector<store::MetricRow> result;
+
+			// Build parent→children index and record map
+			std::unordered_map<uint64_t, std::vector<uint64_t> >
+				children_of;
+			for (auto &r : records) {
+				if (r.parent_id > 0)
+					children_of[r.parent_id].push_back(
+						r.id);
+			}
+			std::unordered_map<uint64_t, const ir::Record *>
+				record_map;
+			for (auto &r : records)
+				record_map[r.id] = &r;
+
+			for (auto &r : records) {
+				int k = static_cast<int>(r.kind);
+				// Only functions/methods get metrics
+				if (k != 0 && k != 1)
+					continue;
+
+				store::MetricRow m;
+				m.name = r.name;
+				m.line = static_cast<int>(r.loc.start_row);
+				m.col = static_cast<int>(r.loc.start_col);
+				m.lines = static_cast<int>(r.loc.end_row -
+							   r.loc.start_row + 1);
+				m.cyclomatic = 1; // minimum
+
+				// Walk descendants
+				bool has_call = false;
+				std::function<void(uint64_t)> visit =
+					[&](uint64_t id) {
+						auto it = record_map.find(id);
+						if (it == record_map.end())
+							return;
+						int ck = static_cast<int>(
+							it->second->kind);
+						switch (ck) {
+						case 4: // ParameterDecl
+							m.param_count++;
+							break;
+						case 9: // CallExpr
+							m.call_count++;
+							has_call = true;
+							break;
+						case 11: // IfStmt
+						case 12: // SwitchStmt
+						case 13: // CaseStmt
+							m.branch_count++;
+							break;
+						case 14: // ForStmt
+						case 15: // WhileStmt
+						case 16: // DoWhileStmt
+							m.loop_count++;
+							break;
+						default:
+							break;
+						}
+						auto child_it =
+							children_of.find(id);
+						if (child_it !=
+						    children_of.end())
+							for (auto cid :
+							     child_it->second)
+								visit(cid);
+					};
+
+				auto child_it = children_of.find(r.id);
+				if (child_it != children_of.end())
+					for (auto cid : child_it->second)
+						visit(cid);
+
+				m.is_stub = !has_call;
+				result.push_back(std::move(m));
+			}
+			return result;
+		};
+
+		// Helper: compute metrics from IR tree (old pipeline).
+		// Full ComplexityAnalyzer for all metric fields, plus stub detection.
+		auto computeMetricsFromUnit = [](ir::TranslationUnit *unit)
+			-> std::vector<store::MetricRow> {
+			std::vector<store::MetricRow> result;
+			ir::ComplexityAnalyzer analyzer;
+
+			for (auto *node : unit->all_nodes) {
+				if (node->kind != ir::NodeKind::FunctionDecl &&
+				    node->kind != ir::NodeKind::MethodDecl)
+					continue;
+
+				auto cr = analyzer.analyze(node);
+				store::MetricRow m;
+				m.name = node->name;
+				m.line = static_cast<int>(node->loc.start_row);
+				m.col = static_cast<int>(node->loc.start_col);
+				m.cyclomatic = static_cast<int>(cr.cyclomatic);
+				m.nesting_depth =
+					static_cast<int>(cr.nesting_depth);
+				m.cognitive = static_cast<int>(cr.cognitive);
+				m.lines = static_cast<int>(node->loc.end_row -
+							   node->loc.start_row +
+							   1);
+
+				// Count params, calls, branches, loops
+				std::function<void(ir::Node *)> count =
+					[&](ir::Node *n) {
+						switch (n->kind) {
+						case ir::NodeKind::ParameterDecl:
+							m.param_count++;
+							break;
+						case ir::NodeKind::CallExpr:
+							m.call_count++;
+							break;
+						case ir::NodeKind::IfStmt:
+						case ir::NodeKind::SwitchStmt:
+						case ir::NodeKind::CaseStmt:
+							m.branch_count++;
+							break;
+						case ir::NodeKind::ForStmt:
+						case ir::NodeKind::WhileStmt:
+						case ir::NodeKind::DoWhileStmt:
+							m.loop_count++;
+							break;
+						default:
+							break;
+						}
+						for (auto *c : n->children)
+							count(c);
+					};
+				count(node);
+
+				// Stub detection
+				bool has_real_stmt = false;
+				std::function<void(ir::Node *)> stub_check =
+					[&](ir::Node *n) {
+						if (has_real_stmt)
+							return;
+						switch (n->kind) {
+						case ir::NodeKind::CallExpr:
+						case ir::NodeKind::IfStmt:
+						case ir::NodeKind::ForStmt:
+						case ir::NodeKind::WhileStmt:
+						case ir::NodeKind::VariableDecl:
+						case ir::NodeKind::TryStmt:
+							has_real_stmt = true;
+							return;
+						default:
+							break;
+						}
+						for (auto *c : n->children)
+							stub_check(c);
+					};
+				stub_check(node);
+				m.is_stub = !has_real_stmt;
+
+				result.push_back(std::move(m));
+			}
+			return result;
+		};
+
+		while (true) {
+			int idx = next_job.fetch_add(1);
+			if (idx >= static_cast<int>(jobs.size()))
+				break;
+			auto &job = jobs[idx];
+
+			// File size check
+			struct stat file_stat;
+			if (stat(job.path.c_str(), &file_stat) == 0 &&
+			    static_cast<uint64_t>(file_stat.st_size) >
+				    max_file_size)
+				continue;
+
+			std::string source = readFile(job.path.c_str());
+			if (source.empty())
+				continue;
+
+			// Per-thread parser
+			auto pit = tl_parsers.find(job.lang);
+			if (pit == tl_parsers.end()) {
 				auto lit = lang_ptrs.find(job.lang);
 				if (lit == lang_ptrs.end())
 					continue;
-				const TSLanguage *ts_lang = lit->second;
+				std::unique_ptr<TSParser, TSParserDeleter> np(
+					ts_parser_new());
+				ts_parser_set_language(np.get(), lit->second);
+				tl_parsers[job.lang] = std::move(np);
+				pit = tl_parsers.find(job.lang);
+			}
+			TSTree *tree = ts_parser_parse_string(
+				pit->second.get(), nullptr, source.c_str(),
+				static_cast<uint32_t>(source.size()));
+			if (!tree)
+				continue;
 
-				// File size check — use pre-parsed max_file_size
-				struct stat file_stat;
-				if (stat(job.path.c_str(), &file_stat) == 0 &&
-				    static_cast<uint64_t>(file_stat.st_size) >
-					    max_file_size)
-					continue;
+			auto result = std::make_unique<store::FileResult>();
+			result->file_path = job.path;
+			result->language = job.lang;
+			result->mtime =
+				static_cast<int64_t>(file_stat.st_mtime);
+			result->fsize = static_cast<int64_t>(file_stat.st_size);
 
-				std::string source = readFile(job.path.c_str());
-				if (source.empty())
-					continue;
-
-				// Per-thread parser
-				auto pit = tl_parsers.find(job.lang);
-				if (pit == tl_parsers.end()) {
-					std::unique_ptr<TSParser,
-							TSParserDeleter>
-						np(ts_parser_new());
-					ts_parser_set_language(np.get(),
-							       ts_lang);
-					tl_parsers[job.lang] = std::move(np);
-					pit = tl_parsers.find(job.lang);
+			// Try new pipeline: Visitor → SemanticUnit
+			auto vl = tl_visitors.find(job.lang);
+			ir::JsVisitor *visitor = nullptr;
+			if (vl == tl_visitors.end()) {
+				auto v = ir::createJsVisitor(job.lang.c_str());
+				if (v) {
+					tl_visitors[job.lang] = std::move(v);
+					visitor = tl_visitors[job.lang].get();
 				}
-				TSTree *tree = ts_parser_parse_string(
-					pit->second.get(), nullptr,
-					source.c_str(),
-					static_cast<uint32_t>(source.size()));
-				if (!tree)
-					continue;
+			} else {
+				visitor = vl->second.get();
+				visitor->reset();
+			}
 
-				// New pipeline: Visitor → SemanticUnit (with Arena reuse)
-				auto vl = tl_visitors.find(job.lang);
-				ir::JsVisitor *visitor = nullptr;
-				if (vl == tl_visitors.end()) {
-					auto v = ir::createJsVisitor(
-						job.lang.c_str());
-					if (v) {
-						tl_visitors[job.lang] =
-							std::move(v);
-						visitor = tl_visitors[job.lang]
-								  .get();
-					}
-				} else {
-					visitor = vl->second.get();
-					visitor->reset();
+			if (visitor) {
+				ir::SemanticUnit *su = visitor->visit(
+					tree, source.c_str(), job.path.c_str());
+				ts_tree_delete(tree);
+				if (su) {
+					result->records = su->allRecords();
+					result->metrics =
+						computeMetricsFromRecords(
+							result->records,
+							job.path);
 				}
-
-				if (visitor) {
-					ir::SemanticUnit *su = visitor->visit(
-						tree, source.c_str(),
-						job.path.c_str());
-					ts_tree_delete(tree);
-					if (su) {
-						std::lock_guard<std::mutex> lk(
-							collect_lock);
-						semantic_units[local_idx].reset(
-							su);
-					}
-					continue;
-				}
-
-				// Old pipeline fallback
+			} else {
+				// Old pipeline fallback: Translator → TranslationUnit
 				auto translator =
 					ir::createTranslator(job.lang.c_str());
 				if (!translator) {
@@ -636,179 +835,102 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 							      job.path.c_str());
 				ts_tree_delete(tree);
 				if (unit) {
-					std::lock_guard<std::mutex> lk(
-						collect_lock);
-					all_units[local_idx].reset(unit);
+					// Convert TranslationUnit nodes to flat records.
+					// old pipeline: no parent_id available in flat
+					// form (tree is in children vector).
+					uint64_t flat_id = 1;
+					std::function<void(ir::Node *, uint64_t)>
+						flatten = [&](ir::Node *n,
+							      uint64_t parent) {
+							uint64_t my_id =
+								flat_id++;
+							ir::Record rec;
+							rec.id = my_id;
+							rec.kind = static_cast<
+								ir::RecordKind>(
+								static_cast<int>(
+									n->kind));
+							rec.name = n->name;
+							rec.qualified_name =
+								n->qualified_name;
+							rec.parent_id = parent;
+							rec.loc.start_row =
+								n->loc.start_row;
+							rec.loc.start_col =
+								n->loc.start_col;
+							rec.loc.end_row =
+								n->loc.end_row;
+							rec.loc.end_col =
+								n->loc.end_col;
+							rec.file_path =
+								job.path;
+							result->records.push_back(
+								std::move(rec));
+							for (auto *c :
+							     n->children)
+								flatten(c,
+									my_id);
+						};
+					for (auto *n : unit->all_nodes)
+						flatten(n, 0);
+					result->metrics =
+						computeMetricsFromUnit(unit);
 				}
 			}
-		};
 
-		int num_workers = std::min(
-			static_cast<int>(batch_count),
-			static_cast<int>(std::thread::hardware_concurrency()));
-		if (num_workers < 1)
-			num_workers = 1;
-
-		// Spawn workers with std::thread for cross-platform portability
-		// (pthreads is not available on native Windows / MSVC).
-		std::vector<std::thread> workers;
-		workers.reserve(num_workers);
-		for (int i = 0; i < num_workers; i++) {
-			try {
-				workers.emplace_back(translate_batch_worker);
-			} catch (const std::system_error &e) {
-				fprintf(stderr,
-					"engine: thread spawn failed: %s\n",
-					e.what());
+			if (!result->records.empty()) {
+				result_queue.push(std::move(result));
+				files_queued.fetch_add(1);
 			}
 		}
-		for (auto &t : workers) {
-			if (t.joinable())
-				t.join();
+	};
+
+	int num_workers =
+		std::min(static_cast<int>(jobs.size()),
+			 static_cast<int>(std::thread::hardware_concurrency()));
+	if (num_workers < 1)
+		num_workers = 1;
+
+	// Spawn workers
+	t_parse_start = steady_clock::now();
+	std::vector<std::thread> workers;
+	workers.reserve(num_workers);
+	for (int i = 0; i < num_workers; i++) {
+		try {
+			workers.emplace_back(parse_worker_fn);
+		} catch (const std::system_error &e) {
+			fprintf(stderr, "engine: thread spawn failed: %s\n",
+				e.what());
 		}
-		int64_t batch_parse_ms =
-			duration_cast<milliseconds>(steady_clock::now() -
-						    t_parse_start)
-				.count();
-		time_parse_ms += batch_parse_ms;
+	}
+	for (auto &t : workers) {
+		if (t.joinable())
+			t.join();
+	}
+	time_parse_ms =
+		duration_cast<milliseconds>(steady_clock::now() - t_parse_start)
+			.count();
 
-		// Memory budget: check RSS after parse, sleep if over budget
-		if (memory_budget_mb > 0) {
-			struct rusage usage;
-			if (getrusage(RUSAGE_SELF, &usage) == 0) {
-				// ru_maxrss units differ by platform:
-				//   macOS: bytes  → divide by 1024*1024 for MB
-				//   Linux: KB     → divide by 1024 for MB
-				//   Windows stub: KB (matches Linux)
-#ifdef __APPLE__
-				uint64_t rss_mb =
-					static_cast<uint64_t>(usage.ru_maxrss) /
-					(1024 * 1024);
-#else
-				uint64_t rss_mb =
-					static_cast<uint64_t>(usage.ru_maxrss) /
-					1024;
-#endif
-				if (rss_mb > memory_budget_mb) {
-					unsigned sleep_ms =
-						(rss_mb - memory_budget_mb) *
-						kSleepFactor;
-					if (sleep_ms > kMaxSleepMs)
-						sleep_ms = kMaxSleepMs;
-					if (verbose)
-						fprintf(stderr,
-							"MEM: RSS %lluMB > budget %lluMB, sleeping %ums\n",
-							(unsigned long long)
-								rss_mb,
-							(unsigned long long)
-								memory_budget_mb,
-							sleep_ms);
-					std::this_thread::sleep_for(
-						std::chrono::milliseconds(
-							sleep_ms));
-				}
-			}
-		}
+	// Signal writer to stop (no more data from workers)
+	result_queue.markDone();
 
-		// Build file_paths vector for this batch
-		std::vector<std::string> file_paths;
-		file_paths.reserve(batch_count);
-		for (size_t i = batch_start; i < batch_end; i++)
-			file_paths.push_back(jobs[i].path);
+	// Wait for writer to flush all batched data
+	if (writer_thread.joinable())
+		writer_thread.join();
 
-		// Phase 3: Persist semantic records — runs serially
-		auto t_sqlite_start = steady_clock::now();
-		g_store->beginTransaction();
+	int total_indexed = files_written.load();
 
-		// Batch insert: collect all file+records pairs, then prepare ONCE
-		// and insert all records across all files — saves per-file prepare/finalize.
-		{
-			std::vector<std::pair<std::string,
-					      std::vector<ir::Record> > >
-				batch_input;
-			batch_input.reserve(batch_count);
-			for (size_t i = 0; i < batch_count; i++) {
-				auto &su = semantic_units[i];
-				if (!su)
-					continue;
-				batch_input.emplace_back(file_paths[i],
-							 su->allRecords());
-			}
-			g_store->insertSemanticRecordsBatch(project_id,
-							    batch_input);
-		}
-
-		// Upsert file records (not in batch — lightweight per-file)
-		for (size_t i = 0; i < batch_count; i++) {
-			if (!semantic_units[i])
-				continue;
-			// file_paths[i] corresponds to jobs[batch_start + i];
-			// pass that job's language (not the path) and keep the
-			// content hash empty here — change detection relies on
-			// the language being correct.
-			const auto &job = jobs[batch_start + i];
-			g_store->upsertFile(project_id, file_paths[i].c_str(),
-					    job.lang.c_str(), "");
-			all_indexed_files.push_back(file_paths[i]);
-		}
-
-		// ── Old pipeline: linker passes on TranslationUnits ──
-		int passes_ok = 0;
-		{
-			size_t old_count = 0;
-			for (auto &u : all_units)
-				if (u)
-					old_count++;
-
-			if (old_count > 0) {
-				linker::Linker linker;
-				linker.addPass(std::make_unique<
-					       linker::BuildSymbolIndexPass>());
-				linker.addPass(std::make_unique<
-					       linker::ResolveCallPass>());
-				linker.addPass(std::make_unique<
-					       linker::EmitGraphPass>());
-				passes_ok = linker.run(project_id, all_units,
-						       file_paths,
-						       global_symbol_index,
-						       g_store.get());
-			}
-		}
-
-		g_store->commitTransaction();
-		time_sqlite_ms += duration_cast<milliseconds>(
-					  steady_clock::now() - t_sqlite_start)
-					  .count();
-		total_indexed += static_cast<int>(batch_count);
-
-		// Update progress
-		{
-			store::IndexProgress p;
-			p.project_id = project_id;
-			p.total_files = (int)jobs.size();
-			p.current_file = total_indexed;
-			p.phase = 1;
-			p.percent = total_indexed * 100 / (int)jobs.size();
-			store::setIndexProgress(p);
-		}
-
-		// all_units goes out of scope here → memory freed
-		if (verbose)
-			fprintf(stderr,
-				"BATCH [%zu..%zu] done (%d passes ok), "
-				"total indexed: %d\n",
-				batch_start, batch_end - 1, passes_ok,
-				total_indexed);
+	if (writer_error.load() > 0) {
+		return dupString(
+			"{\"ok\":false,\"error\":\"writer thread failed\"}");
 	}
 
-	// ── Post-loop: build symbol graph from semantic_records ──
-	// SQL-only operations, no heap memory allocation.
-	// On-demand call graph is built when user queries callers/callees.
-	if (verbose)
-		fprintf(stderr, "POST_BUILD: symbol graph...\n");
-	fflush(stderr);
+	// ── Post-loop: GraphFinalize ──────────────────────────────
+	// After all data is written, build the graph, populate symbols,
+	// copy cross-file call edges, build FTS, and resolve metrics.
+	// This replaces the old enhance phase — no re-parse needed.
 
-	// Update progress: building graph
+	// Update progress
 	{
 		store::IndexProgress p;
 		p.project_id = project_id;
@@ -819,26 +941,46 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		store::setIndexProgress(p);
 	}
 
+	// ── Step 1: buildGraph (SQL-only, graph_nodes + graph_edges + CSR) ──
+	// Reads semantic_records, creates graph_nodes/graph_edges via SQL JOINs.
+	// Memory: O(SQLite cache_size), not O(nodes).
 	int64_t time_fts_ms = 0, time_vector_ms = 0;
-	g_store->beginTransaction();
 	{
 		auto t_bg = steady_clock::now();
+		g_store->beginTransaction();
 		g_store->buildGraph(project_id, true);
+		g_store->commitTransaction();
 		time_buildgraph_ms =
 			duration_cast<milliseconds>(steady_clock::now() - t_bg)
 				.count();
 	}
-	g_store->commitTransaction();
 
-	// Deferred: FTS is no longer built synchronously here.
-	// It will be triggered as an async Tokio task after the worker exits.
-	// Search queries will fall back to graph-based matching if fts_ready=0.
+	// ── Step 2: Populate symbols table from graph_nodes ──
+	// Creates symbol entries with node_id back-references for cross-file copy.
+	// Also creates symbol_status rows with default flags (all 0).
+	g_store->populateSymbolsFromGraph(project_id);
+
+	// ── Step 3: Copy cross-file edges ──
+	// Copies graph_edges(edge_type=1) → call_edges via symbols.node_id JOIN.
+	// This was previously done in enhance (the async second parse).
+	g_store->copyGraphEdgesToCallEdges(project_id);
+
+	// ── Step 4: Build FTS index ──
+	// Bulk-builds code_fts + fts_node_map from graph_nodes.
+	// Uses existing buildFTSFromGraph which does one SQL scan.
 	if (!mode_fast) {
-		g_store->setProjectReadiness(project_id, "normal_ready", 1);
-		// fts_ready stays 0 — will be set by async enhance task
-	} else {
-		g_store->setProjectReadiness(project_id, "normal_ready", 1);
+		auto t_f = steady_clock::now();
+		g_store->buildFTSFromGraph(project_id);
+		time_fts_ms =
+			duration_cast<milliseconds>(steady_clock::now() - t_f)
+				.count();
 	}
+
+	// ── Step 5: Resolve staged metrics → metrics + symbol_status ──
+	// Pre-computed metrics (from parse workers) are resolved via
+	// (file_path, name, line) JOIN with symbols.
+	g_store->resolveStagedMetrics(project_id);
+
 	// DEEP mode: build vectors (NORMAL skips them)
 	if (mode_deep) {
 		auto t_v = steady_clock::now();
@@ -852,19 +994,12 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	// Build deferred indexes after bulk load
 	g_store->createIndexesAfterBulkLoad(project_id);
 
-	// Update file_scan_state for indexed files (incremental: next run skips unchanged)
-	g_store->beginTransaction();
-	for (auto &fp : all_indexed_files) {
-		struct stat fs;
-		if (stat(fp.c_str(), &fs) == 0) {
-			g_store->updateFileScanState(
-				project_id, fp.c_str(),
-				static_cast<int64_t>(fs.st_mtime),
-				static_cast<int64_t>(fs.st_size));
-		}
-	}
-	g_store->commitTransaction();
+	// Set readiness flags
+	g_store->setProjectReadiness(project_id, "normal_ready", 1);
+	if (!mode_fast)
+		g_store->setProjectReadiness(project_id, "fts_ready", 1);
 
+	// ── Result JSON ──────────────────────────────────────────────
 	std::ostringstream result;
 	result << "{\"ok\":true,\"files_indexed\":" << total_indexed
 	       << ",\"workers\":"
@@ -873,12 +1008,12 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 				   std::thread::hardware_concurrency()));
 	if (time_parse_ms > 0)
 		result << ",\"time_parse_ms\":" << time_parse_ms
-		       << ",\"time_sqlite_ms\":" << time_sqlite_ms
+		       << ",\"time_sqlite_ms\":0"
 		       << ",\"time_buildgraph_ms\":" << time_buildgraph_ms;
 	result << ",\"time_fts_ms\":" << time_fts_ms
 	       << ",\"time_vector_ms\":" << time_vector_ms;
 
-	// Add node/edge counts from graph tables
+	// Add counts from graph tables
 	{
 		sqlite3_stmt *stmt = nullptr;
 		std::string sql;
@@ -897,6 +1032,25 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 				       &stmt, nullptr) == SQLITE_OK) {
 			if (sqlite3_step(stmt) == SQLITE_ROW)
 				result << ",\"total_edges\":"
+				       << sqlite3_column_int64(stmt, 0);
+			sqlite3_finalize(stmt);
+		}
+		// Also report symbols and call_edges counts
+		sql = "SELECT COUNT(*) FROM symbols WHERE project_id = " +
+		      std::to_string(project_id);
+		if (sqlite3_prepare_v2(g_store->handle(), sql.c_str(), -1,
+				       &stmt, nullptr) == SQLITE_OK) {
+			if (sqlite3_step(stmt) == SQLITE_ROW)
+				result << ",\"total_symbols\":"
+				       << sqlite3_column_int64(stmt, 0);
+			sqlite3_finalize(stmt);
+		}
+		sql = "SELECT COUNT(*) FROM call_edges WHERE project_id = " +
+		      std::to_string(project_id);
+		if (sqlite3_prepare_v2(g_store->handle(), sql.c_str(), -1,
+				       &stmt, nullptr) == SQLITE_OK) {
+			if (sqlite3_step(stmt) == SQLITE_ROW)
+				result << ",\"total_call_edges\":"
 				       << sqlite3_column_int64(stmt, 0);
 			sqlite3_finalize(stmt);
 		}
