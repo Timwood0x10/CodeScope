@@ -4,6 +4,7 @@
 #include "posix_compat.h"
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <mutex>
 #include <sqlite3.h>
 #include <sstream>
@@ -62,11 +63,6 @@ bool GraphStore::open(const char *db_path)
 	// on new databases; existing DBs keep their original page size.
 	exec(("PRAGMA page_size=" + std::to_string(kPageSize)).c_str());
 
-	// EXCLUSIVE locking mode: CodeScope is single-process, so we skip the
-	// per-statement file lock/unlock overhead. WAL readers still work.
-	if (!exec("PRAGMA locking_mode=EXCLUSIVE"))
-		fprintf(stderr, "WARN: PRAGMA locking_mode=EXCLUSIVE failed\n");
-
 	// Performance PRAGMAs: WAL mode + MEMORY temp + synchronous OFF.
 	// WARNING: synchronous=OFF means fsync is never called — a power failure
 	// or crash may corrupt the database. Acceptable for CodeScope since the
@@ -75,6 +71,12 @@ bool GraphStore::open(const char *db_path)
 	if (!exec("PRAGMA journal_mode=WAL"))
 		fprintf(stderr, "WARN: PRAGMA journal_mode=WAL failed: %s\n",
 			error_.c_str());
+	// EXCLUSIVE locking mode: set AFTER WAL so the wal-index shared memory
+	// initializes first. This allows later transition to NORMAL for the
+	// parallel enhance plan (ADR-006 / §10-E) where each worker opens its
+	// own connection to the same .db file.
+	if (!exec("PRAGMA locking_mode=EXCLUSIVE"))
+		fprintf(stderr, "WARN: PRAGMA locking_mode=EXCLUSIVE failed\n");
 	if (!exec("PRAGMA synchronous=OFF"))
 		fprintf(stderr, "WARN: PRAGMA synchronous=OFF failed\n");
 	if (!exec("PRAGMA temp_store=MEMORY"))
@@ -714,9 +716,8 @@ std::string GraphStore::exportArtifact(uint64_t project_id,
 		       error_ + "\"}";
 
 	uint64_t raw_size = 0;
-	struct stat st;
-	if (stat(tmp_path.c_str(), &st) == 0)
-		raw_size = static_cast<uint64_t>(st.st_size);
+	std::error_code ec;
+	raw_size = std::filesystem::file_size(tmp_path, ec);
 
 	// zstd compression — no shell involved
 	bool zstd_ok = false;
@@ -744,8 +745,7 @@ std::string GraphStore::exportArtifact(uint64_t project_id,
 		return "{\"ok\":false,\"error\":\"zstd compression failed\"}";
 
 	uint64_t comp_size = 0;
-	if (stat(output_path, &st) == 0)
-		comp_size = static_cast<uint64_t>(st.st_size);
+	comp_size = std::filesystem::file_size(output_path, ec);
 	return "{\"ok\":true,\"project_id\":" + std::to_string(project_id) +
 	       ",\"size_bytes\":" + std::to_string(raw_size) +
 	       ",\"compressed_bytes\":" + std::to_string(comp_size) + "}";

@@ -17,6 +17,14 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# ── Build Type Default ───────────────────────────────────────────
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
+# ── Warning Flags ────────────────────────────────────────────────
+add_compile_options(-Wall -Wextra -Wno-unused-parameter)
+
 # ── Dependency version pins ──────────────────────────────────────
 include(cmake/deps_versions.cmake)
 
@@ -179,10 +187,31 @@ endif()
 
 add_library(astgraph_engine STATIC ${ENGINE_SOURCES})
 
+# ── Precompiled Header ───────────────────────────────────────────
+# PCH cuts build time 30-50% by pre-parsing heavy headers once.
+target_precompile_headers(astgraph_engine PRIVATE
+    <cstdio>
+    <cstring>
+    <string>
+    <vector>
+    <unordered_map>
+    <unordered_set>
+    <memory>
+    <mutex>
+    <sqlite3.h>
+    <tree_sitter/api.h>
+)
+
 # Compile sqlite3.c and sqlite-vec.c as C, not C++
-set_source_files_properties(${SQLITE3_AMAL_SRC} PROPERTIES LANGUAGE C)
+# Also skip PCH for all C sources (PCH contains C++-only headers like <unordered_map>)
+set_source_files_properties(${SQLITE3_AMAL_SRC} ${GRAMMAR_SOURCES} PROPERTIES LANGUAGE C)
 if(EXISTS "${SQLITE_VEC_SRC}")
     set_source_files_properties(${SQLITE_VEC_SRC} PROPERTIES LANGUAGE C)
+endif()
+set_source_files_properties(${SQLITE3_AMAL_SRC} ${GRAMMAR_SOURCES}
+    PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+if(EXISTS "${SQLITE_VEC_SRC}")
+    set_source_files_properties(${SQLITE_VEC_SRC} PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
     # Generate sqlite-vec.h from template with version substitution.
     # Parse the version string: v0.1.10-alpha.4 → major=0, minor=1, patch=10
     string(REGEX MATCH "^v?([0-9]+)\\.([0-9]+)\\.([0-9]+)" _ ${SQLITE_VEC_VERSION})
