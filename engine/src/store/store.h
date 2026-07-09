@@ -2,7 +2,9 @@
 #define STORE_H
 
 #include <cstdint>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -232,7 +234,7 @@ class GraphStore {
 
 	// ── Phase B: Enhancement — Search Index ───────────────────
 
-	void insertIntoSearchIndex(uint64_t symbol_id, uint64_t project_id,
+	bool insertIntoSearchIndex(uint64_t symbol_id, uint64_t project_id,
 				   const char *title, const char *summary,
 				   const char *body);
 
@@ -243,9 +245,12 @@ class GraphStore {
 
 	// ── Symbol Status (separate from symbols, keeps main table lean) ──
 
-	/** Set a specific status flag (callgraph_ready/metrics_ready/embedding_ready)
-     * to 1. */
-	bool setSymbolReady(uint64_t symbol_id, const char *field);
+	/** Mark a symbol's callgraph and metrics as ready (embedding is separate
+	 *  because it may fail when vec0 is unavailable). */
+	bool markCallgraphAndMetricsReady(uint64_t symbol_id);
+	/** Mark a symbol's embedding as ready. Only call after insertEmbedding
+	 *  succeeded, so that failed embeddings can self-heal on rerun. */
+	bool markEmbeddingReady(uint64_t symbol_id);
 	bool setSymbolStub(uint64_t symbol_id, bool is_stub);
 
 	/** Get files where symbols have a status flag = 0 (not ready). */
@@ -406,6 +411,25 @@ class GraphStore {
 	sqlite3_stmt *stmt_fts_map_ = nullptr; // INSERT INTO fts_node_map
 	sqlite3_stmt *stmt_fts_ = nullptr; // INSERT INTO code_fts
 	sqlite3_stmt *stmt_vector_ = nullptr; // INSERT INTO node_vectors
+
+	// Dynamic statement cache keyed by SQL text. Reused across Phase B writes.
+	// The mutex only guards the cache map (insert/find/reset). The returned
+	// sqlite3_stmt* is bind/stepped by the caller WITHOUT the lock — so all
+	// GraphStore write paths must be serialized by the caller (single-threaded
+	// enhance/index, or external locking). Do NOT call GraphStore methods
+	// concurrently from multiple threads.
+	// Soft cap at kStmtCacheMax; exceeding it means a bug (dynamic SQL at runtime).
+	static constexpr size_t kStmtCacheMax = 32;
+	std::unordered_map<std::string, sqlite3_stmt *> stmt_cache_;
+	std::mutex stmt_cache_mutex_;
+	// Returns a cached + reset prepared statement for `sql`. Prepares on first
+	// use; caller must bind + step, and must NOT finalize (owned by cache).
+	// Returns nullptr on prepare failure (error_ is set).
+	sqlite3_stmt *getCachedStmt(const char *sql);
+	// Release all cached prepared statements and clear the cache.
+	// Safe to call at any point; subsequent getCachedStmt calls will
+	// re-prepare. Already called by close().
+	void clearStmtCache();
 
 	bool exec(const char *sql);
 	bool createSchema();

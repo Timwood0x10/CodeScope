@@ -22,6 +22,8 @@ namespace store
 // Performance PRAGMA values
 static constexpr int kCacheSizePages = -64000; // 64 MB cache
 static constexpr int kMmapSizeBytes = 268435456; // 256 MB mmap
+static constexpr int kPageSize =
+	65536; // 64 KB pages (matches codebase-memory-mcp)
 
 GraphStore::~GraphStore()
 {
@@ -53,6 +55,17 @@ bool GraphStore::open(const char *db_path)
 		error_ = sqlite3_errmsg(db_);
 		return false;
 	}
+
+	// page_size MUST be set before any tables are created. Larger pages
+	// (64 KB vs default 4 KB) reduce I/O ops and improve B-tree fanout —
+	// critical for large projects with millions of rows. Only takes effect
+	// on new databases; existing DBs keep their original page size.
+	exec(("PRAGMA page_size=" + std::to_string(kPageSize)).c_str());
+
+	// EXCLUSIVE locking mode: CodeScope is single-process, so we skip the
+	// per-statement file lock/unlock overhead. WAL readers still work.
+	if (!exec("PRAGMA locking_mode=EXCLUSIVE"))
+		fprintf(stderr, "WARN: PRAGMA locking_mode=EXCLUSIVE failed\n");
 
 	// Performance PRAGMAs: WAL mode + MEMORY temp + synchronous OFF.
 	// WARNING: synchronous=OFF means fsync is never called — a power failure
@@ -109,6 +122,9 @@ void GraphStore::close()
 		if (stmt_vector_)
 			sqlite3_finalize(stmt_vector_);
 		stmt_fts_map_ = stmt_fts_ = stmt_vector_ = nullptr;
+
+		// Finalize all dynamically cached statements
+		clearStmtCache();
 
 		sqlite3_close(db_);
 		db_ = nullptr;
@@ -309,12 +325,16 @@ bool GraphStore::createSchema()
         );
 
         -- symbols: lean main table, status in symbol_status
+        -- node_id bridges graph_nodes(schema_v2) to symbols(schema_v3) so that
+        -- cross-file call edges can be copied from graph_edges via direct JOIN,
+        -- NOT via (name, file_path) which creates cartesian fan-out for overloads.
         CREATE TABLE IF NOT EXISTS symbols (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id INTEGER NOT NULL,
             module_id INTEGER REFERENCES modules(id),
             kind TEXT NOT NULL,          -- function/method/class/struct/trait/enum/const/type_alias
             name TEXT NOT NULL,
+            node_id INTEGER,             -- corresponding graph_nodes.id (NULL if no match)
             signature TEXT,
             visibility TEXT DEFAULT 'default',
             language TEXT NOT NULL,
@@ -439,6 +459,76 @@ bool GraphStore::createSchema()
 
 	// Execute main schema
 	bool ok = exec(schema);
+
+	// ── Schema migrations for pre-existing databases ───────────────
+	// CREATE TABLE IF NOT EXISTS skips when the table already exists, so columns
+	// added in later versions must be patched in here. SQLite has no
+	// "ADD COLUMN IF NOT EXISTS", so we probe PRAGMA table_info first.
+
+	// Migration 1: symbols.node_id (added for cross-file edge copy via JOIN).
+	// Without this column, the cross-file edge copy in enhance_project fails
+	// with "no such column: node_id" on databases created before this change.
+	{
+		sqlite3_stmt *probe = nullptr;
+		bool has_node_id = false;
+		if (sqlite3_prepare_v2(db_, "PRAGMA table_info(symbols)", -1,
+				       &probe, nullptr) == SQLITE_OK) {
+			while (sqlite3_step(probe) == SQLITE_ROW) {
+				const char *col =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(probe, 1));
+				if (col && std::string(col) == "node_id") {
+					has_node_id = true;
+					break;
+				}
+			}
+			sqlite3_finalize(probe);
+		}
+		if (!has_node_id) {
+			if (!exec("ALTER TABLE symbols ADD COLUMN node_id INTEGER")) {
+				fprintf(stderr,
+					"createSchema: migration failed — "
+					"cannot add symbols.node_id: %s\n",
+					error_.c_str());
+			}
+		}
+	}
+
+	// Migration 2: deduplicate call_edges before creating the unique index.
+	// Existing databases may contain duplicate rows (from older enhance runs
+	// before the unique constraint existed). CREATE UNIQUE INDEX fails on
+	// conflicting data, so we delete duplicates first, keeping the lowest id.
+	// Skip the full-table-scan DELETE when the index already exists (no
+	// duplicates are possible after the index is in place).
+	{
+		sqlite3_stmt *idx_probe = nullptr;
+		bool index_exists = false;
+		if (sqlite3_prepare_v2(
+			    db_,
+			    "SELECT 1 FROM sqlite_master"
+			    " WHERE type='index' AND name='idx_call_edges_unique'",
+			    -1, &idx_probe, nullptr) == SQLITE_OK) {
+			if (sqlite3_step(idx_probe) == SQLITE_ROW)
+				index_exists = true;
+			sqlite3_finalize(idx_probe);
+		}
+		if (!index_exists) {
+			exec("DELETE FROM call_edges WHERE id NOT IN ("
+			     " SELECT MIN(id) FROM call_edges"
+			     " GROUP BY caller_symbol_id, callee_symbol_id, provenance, line, col"
+			     ")");
+		}
+	}
+
+	// Unique constraint for rerun idempotency: INSERT OR IGNORE in
+	// enhance_project relies on this to avoid duplicate cross-file edges.
+	exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_call_edges_unique"
+	     " ON call_edges(caller_symbol_id, callee_symbol_id, provenance, line, col)");
+
+	// Index backing the cross-file edge copy JOIN (s1.node_id = ge.source_node_id).
+	// Without this, the JOIN degrades to a full table scan per graph_edges row.
+	exec("CREATE INDEX IF NOT EXISTS idx_symbols_node"
+	     " ON symbols(project_id, node_id) WHERE node_id IS NOT NULL");
 
 	// Note: vec0 embeddings table is created in engine_init() after
 	// sqlite-vec extension is loaded via dlopen. Not needed here.

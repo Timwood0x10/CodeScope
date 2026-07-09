@@ -201,12 +201,14 @@ char *engine_enhance_project(uint64_t project_id)
 	// because index_project does not call scan_project. Populate from graph_nodes.
 	{
 		sqlite3_stmt *cnt = nullptr;
-		if (sqlite3_prepare_v2(g_store->handle(),
-			"SELECT COUNT(*) FROM symbols WHERE project_id=?",
-			-1, &cnt, nullptr) == SQLITE_OK) {
-			sqlite3_bind_int64(cnt, 1, static_cast<int64_t>(project_id));
+		if (sqlite3_prepare_v2(
+			    g_store->handle(),
+			    "SELECT COUNT(*) FROM symbols WHERE project_id=?",
+			    -1, &cnt, nullptr) == SQLITE_OK) {
+			sqlite3_bind_int64(cnt, 1,
+					   static_cast<int64_t>(project_id));
 			bool has_symbols = (sqlite3_step(cnt) == SQLITE_ROW &&
-				sqlite3_column_int(cnt, 0) > 0);
+					    sqlite3_column_int(cnt, 0) > 0);
 			sqlite3_finalize(cnt);
 			if (!has_symbols) {
 				// Fast path: populate symbols + status from graph_nodes.
@@ -216,7 +218,7 @@ char *engine_enhance_project(uint64_t project_id)
 					const char *pop_sym =
 						"INSERT OR IGNORE INTO symbols "
 						"(project_id, module_id, kind, name, "
-						" signature, visibility, language, "
+						" node_id, signature, visibility, language, "
 						" file_path, line, column) "
 						"SELECT DISTINCT project_id, 0, "
 						" CASE node_type WHEN 0 THEN 'function'"
@@ -224,15 +226,19 @@ char *engine_enhance_project(uint64_t project_id)
 						"  WHEN 3 THEN 'interface' WHEN 4 THEN 'enum'"
 						"  WHEN 6 THEN 'variable'"
 						"  ELSE CAST(node_type AS TEXT) END, "
-						" name, '', '', language, file_path, "
+						" name, id, '', '', language, file_path, "
 						" start_row, start_col "
 						"FROM graph_nodes "
 						"WHERE project_id=? AND node_type IN (0,1,2,3,4,6)";
 					sqlite3_stmt *pop = nullptr;
-					if (sqlite3_prepare_v2(g_store->handle(),
-						pop_sym, -1, &pop, nullptr) == SQLITE_OK) {
-						sqlite3_bind_int64(pop, 1,
-							static_cast<int64_t>(project_id));
+					if (sqlite3_prepare_v2(
+						    g_store->handle(), pop_sym,
+						    -1, &pop,
+						    nullptr) == SQLITE_OK) {
+						sqlite3_bind_int64(
+							pop, 1,
+							static_cast<int64_t>(
+								project_id));
 						sqlite3_step(pop);
 						sqlite3_finalize(pop);
 					}
@@ -247,10 +253,14 @@ char *engine_enhance_project(uint64_t project_id)
 						"SELECT id, 0, 0, 0, 0 "
 						"FROM symbols WHERE project_id=?";
 					sqlite3_stmt *pop = nullptr;
-					if (sqlite3_prepare_v2(g_store->handle(),
-						pop_st, -1, &pop, nullptr) == SQLITE_OK) {
-						sqlite3_bind_int64(pop, 1,
-							static_cast<int64_t>(project_id));
+					if (sqlite3_prepare_v2(
+						    g_store->handle(), pop_st,
+						    -1, &pop,
+						    nullptr) == SQLITE_OK) {
+						sqlite3_bind_int64(
+							pop, 1,
+							static_cast<int64_t>(
+								project_id));
 						sqlite3_step(pop);
 						sqlite3_finalize(pop);
 					}
@@ -334,6 +344,14 @@ char *engine_enhance_project(uint64_t project_id)
 		}
 
 		if (ir_id_to_symbol.empty()) {
+			continue;
+		}
+
+		// Single transaction for the whole file: call edges + metrics +
+		// embeddings + FTS + ready flags. All earlier continue paths exit
+		// before this point, so no transaction is ever left dangling.
+		if (!g_store->beginTransaction()) {
+			fprintf(stderr, "enhance: beginTransaction failed\n");
 			continue;
 		}
 
@@ -438,33 +456,14 @@ char *engine_enhance_project(uint64_t project_id)
 									call_line),
 								sym_cache);
 							if (callee_id == 0) {
-								// Cross-file: look up globally
-								std::string json = g_store->findSymbolJson(
-									project_id,
-									name.c_str());
-								auto ip = json.find(
-									"\"id\":");
-								if (ip !=
-								    std::string::
-									    npos) {
-									ip += 5;
-									char *end =
-										nullptr;
-									uint64_t parsed = strtoull(
-										json.c_str() +
-											ip,
-										&end,
-										10);
-									if (end &&
-									    parsed >
-										    0)
-										callee_id =
-											parsed;
-								}
+								// Cross-file callee: already resolved by buildGraph
+								// (Phase A). The regex-based extraction can only
+								// resolve same-file calls. Cross-file entries in
+								// graph_edges(edge_type=1,project_id=?) are copied
+								// to call_edges after all files are processed.
 							}
 							if (callee_id > 0) {
-								g_store->beginTransaction();
-								g_store->insertCallEdge(
+								uint64_t edge_id = g_store->insertCallEdge(
 									project_id,
 									caller_id,
 									callee_id,
@@ -473,8 +472,8 @@ char *engine_enhance_project(uint64_t project_id)
 										int>(
 										call_line),
 									0);
-								g_store->commitTransaction();
-								total_edges++;
+								if (edge_id > 0)
+									total_edges++;
 							}
 						}
 					}
@@ -488,7 +487,6 @@ char *engine_enhance_project(uint64_t project_id)
 		// ─────────────────────────────────────────────────────
 		{
 			ir::ComplexityAnalyzer analyzer;
-			g_store->beginTransaction();
 
 			for (auto *node : unit->all_nodes) {
 				auto it = ir_id_to_symbol.find(node->id);
@@ -583,16 +581,16 @@ char *engine_enhance_project(uint64_t project_id)
 						branch_count, loop_count);
 					total_metrics++;
 
-					// Generate embedding from name + doc comment
+					// Generate embedding vector from name + doc comment
 					std::string embed_text = node->name;
-					if (!node->doc_comment.empty()) {
+					if (!node->doc_comment.empty())
 						embed_text +=
 							" " + node->doc_comment;
-					}
 					auto vec =
 						vector_search::stringToVector(
 							embed_text);
-					g_store->insertEmbedding(
+
+					bool emb_ok = g_store->insertEmbedding(
 						sym_id, vec.data(),
 						vector_search::VECTOR_DIM);
 
@@ -601,19 +599,31 @@ char *engine_enhance_project(uint64_t project_id)
 						node->qualified_name.empty() ?
 							node->name :
 							node->qualified_name;
-					g_store->insertIntoSearchIndex(
-						sym_id, project_id,
-						node->name.c_str(),
-						signature.c_str(),
-						node->doc_comment.c_str());
+					if (!g_store->insertIntoSearchIndex(
+						    sym_id, project_id,
+						    node->name.c_str(),
+						    signature.c_str(),
+						    node->doc_comment.c_str())) {
+						fprintf(stderr,
+							"enhance: insertIntoSearchIndex failed for symbol %llu: %s\n",
+							(unsigned long long)
+								sym_id,
+							g_store->error()
+								.c_str());
+					}
 
-					// Update analysis state flags
-					g_store->setSymbolReady(
-						sym_id, "callgraph_ready");
-					g_store->setSymbolReady(
-						sym_id, "metrics_ready");
-					g_store->setSymbolReady(
-						sym_id, "embedding_ready");
+					// Update analysis state flags. Embedding is marked
+					// separately so that vec0 failures can self-heal on rerun.
+					g_store->markCallgraphAndMetricsReady(
+						sym_id);
+					if (emb_ok)
+						g_store->markEmbeddingReady(
+							sym_id);
+					else
+						fprintf(stderr,
+							"enhance: insertEmbedding failed for symbol %llu (vec0 may be unavailable)\n",
+							(unsigned long long)
+								sym_id);
 					total_enhanced++;
 				} else if (node->kind ==
 						   ir::NodeKind::ClassDecl ||
@@ -635,30 +645,139 @@ char *engine_enhance_project(uint64_t project_id)
 					auto vec =
 						vector_search::stringToVector(
 							node->name);
-					g_store->insertEmbedding(
+					bool emb_ok = g_store->insertEmbedding(
 						sym_id, vec.data(),
 						vector_search::VECTOR_DIM);
 
-					g_store->insertIntoSearchIndex(
-						sym_id, project_id,
-						node->name.c_str(),
-						node->doc_comment.c_str(),
-						node->name.c_str());
+					if (!g_store->insertIntoSearchIndex(
+						    sym_id, project_id,
+						    node->name.c_str(),
+						    node->doc_comment.c_str(),
+						    node->name.c_str())) {
+						fprintf(stderr,
+							"enhance: insertIntoSearchIndex failed for symbol %llu: %s\n",
+							(unsigned long long)
+								sym_id,
+							g_store->error()
+								.c_str());
+					}
 
-					// Update analysis state flags
-					g_store->setSymbolReady(
-						sym_id, "callgraph_ready");
-					g_store->setSymbolReady(
-						sym_id, "metrics_ready");
-					g_store->setSymbolReady(
-						sym_id, "embedding_ready");
+					// Update analysis state flags. Embedding is marked
+					// separately so that vec0 failures can self-heal on rerun.
+					g_store->markCallgraphAndMetricsReady(
+						sym_id);
+					if (emb_ok)
+						g_store->markEmbeddingReady(
+							sym_id);
+					else
+						fprintf(stderr,
+							"enhance: insertEmbedding failed for symbol %llu (vec0 may be unavailable)\n",
+							(unsigned long long)
+								sym_id);
 					total_enhanced++;
 				}
 			}
-			g_store->commitTransaction();
+		}
+
+		// File-level commit: persist call edges + metrics + embeddings + FTS + flags
+		if (!g_store->commitTransaction()) {
+			fprintf(stderr,
+				"enhance: commitTransaction failed for %s: %s\n",
+				file_path.c_str(), g_store->error().c_str());
+			// Roll back any pending changes to avoid a dangling transaction
+			// that would break the next file's beginTransaction().
+			g_store->rollbackTransaction();
 		}
 
 		total_files_processed++;
+	}
+
+	// Copy cross-file call edges from graph_edges(edge_type=1) to call_edges.
+	// buildGraph (Phase A) already resolved cross-file calls via the graph
+	// builder. Phase B's regex extraction only handles same-file calls, so
+	// cross-file entries must be copied from graph_edges here.
+	// JOIN uses symbols.node_id for a direct bridge from graph_nodes IDs to
+	// symbol IDs — no (name, file_path) matching that would create cartesian
+	// fan-out for overloaded/homonymous symbols.
+	{
+		// Guard: warn if buildGraph hasn't populated cross-file edges,
+		// or if symbols.node_id backfill failed (JOIN would silently
+		// produce 0 rows).
+		{
+			sqlite3_stmt *gstmt = nullptr;
+			if (sqlite3_prepare_v2(
+				    g_store->handle(),
+				    "SELECT COUNT(*) FROM graph_edges"
+				    " WHERE project_id=? AND edge_type=1",
+				    -1, &gstmt, nullptr) == SQLITE_OK) {
+				sqlite3_bind_int64(
+					gstmt, 1,
+					static_cast<int64_t>(project_id));
+				if (sqlite3_step(gstmt) == SQLITE_ROW &&
+				    sqlite3_column_int(gstmt, 0) == 0) {
+					fprintf(stderr,
+						"enhance: WARNING — "
+						"graph_edges(edge_type=1) is"
+						" empty for project %llu."
+						" cross-file call edges may"
+						" be missing (buildGraph may"
+						" not have run)\n",
+						(unsigned long long)project_id);
+				}
+				sqlite3_finalize(gstmt);
+			}
+			// Also check that node_id was backfilled — otherwise the
+			// JOIN below silently matches 0 rows even when graph_edges
+			// has data.
+			sqlite3_stmt *nstmt = nullptr;
+			if (sqlite3_prepare_v2(
+				    g_store->handle(),
+				    "SELECT COUNT(*) FROM symbols"
+				    " WHERE project_id=? AND node_id IS NULL",
+				    -1, &nstmt, nullptr) == SQLITE_OK) {
+				sqlite3_bind_int64(
+					nstmt, 1,
+					static_cast<int64_t>(project_id));
+				if (sqlite3_step(nstmt) == SQLITE_ROW &&
+				    sqlite3_column_int(nstmt, 0) > 0) {
+					fprintf(stderr,
+						"enhance: WARNING — %d symbols"
+						" have NULL node_id for project"
+						" %llu; cross-file edges for them"
+						" will be skipped\n",
+						sqlite3_column_int(nstmt, 0),
+						(unsigned long long)project_id);
+				}
+				sqlite3_finalize(nstmt);
+			}
+		}
+
+		// Preserve call_site_line from graph_edges so distinct call sites
+		// between the same (caller, callee) pair are not collapsed by the
+		// unique index.
+		const char *copy_sql =
+			"INSERT OR IGNORE INTO call_edges "
+			"(project_id, caller_symbol_id, callee_symbol_id, provenance, line, col) "
+			"SELECT ge.project_id, s1.id, s2.id, 'graph', "
+			" ge.call_site_line, 0 "
+			"FROM graph_edges ge "
+			"JOIN symbols s1 ON s1.node_id = ge.source_node_id"
+			" AND s1.project_id = ge.project_id "
+			"JOIN symbols s2 ON s2.node_id = ge.target_node_id"
+			" AND s2.project_id = ge.project_id "
+			"WHERE ge.edge_type = 1 AND ge.project_id = ?";
+		sqlite3_stmt *cstmt = nullptr;
+		if (sqlite3_prepare_v2(g_store->handle(), copy_sql, -1, &cstmt,
+				       nullptr) == SQLITE_OK) {
+			sqlite3_bind_int64(cstmt, 1,
+					   static_cast<int64_t>(project_id));
+			if (sqlite3_step(cstmt) == SQLITE_DONE) {
+				int n = sqlite3_changes(g_store->handle());
+				if (n > 0)
+					total_edges += n;
+			}
+			sqlite3_finalize(cstmt);
+		}
 	}
 
 	std::ostringstream json;

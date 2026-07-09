@@ -31,14 +31,12 @@ uint64_t GraphStore::insertIRNode(uint64_t project_id, uint64_t file_id,
 				  uint32_t sr, uint32_t sc, uint32_t er,
 				  uint32_t ec, const char *language)
 {
-	sqlite3_stmt *stmt = nullptr;
 	const char *sql =
 		"INSERT INTO ir_nodes (project_id, file_id, parent_id, kind, "
 		"name, qualified_name, start_row, start_col, end_row, end_col, language) "
 		"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+	sqlite3_stmt *stmt = getCachedStmt(sql);
 	if (!stmt) {
-		error_ = "insertIRNode: prepare failed";
 		return 0;
 	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
@@ -64,20 +62,17 @@ uint64_t GraphStore::insertIRNode(uint64_t project_id, uint64_t file_id,
 	sqlite3_bind_text(stmt, 11, language, -1, SQLITE_TRANSIENT);
 
 	sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
 	return static_cast<uint64_t>(sqlite3_last_insert_rowid(db_));
 }
 
 bool GraphStore::insertIRSemanticEdge(uint64_t project_id, uint64_t source_id,
 				      uint64_t target_id, int relation)
 {
-	sqlite3_stmt *stmt = nullptr;
 	const char *sql = "INSERT INTO ir_semantic_edges (project_id, "
 			  "source_node_id, target_node_id, relation) "
 			  "VALUES (?, ?, ?, ?)";
-	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+	sqlite3_stmt *stmt = getCachedStmt(sql);
 	if (!stmt) {
-		error_ = "insertIRSemanticEdge: prepare failed";
 		return false;
 	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
@@ -85,7 +80,6 @@ bool GraphStore::insertIRSemanticEdge(uint64_t project_id, uint64_t source_id,
 	sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(target_id));
 	sqlite3_bind_int(stmt, 4, relation);
 	sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
 	return true;
 }
 
@@ -117,7 +111,6 @@ bool GraphStore::deleteIRByFile(uint64_t project_id, uint64_t file_id)
 uint64_t GraphStore::insertGraphNode(uint64_t project_id,
 				     const graph::GraphNode &node)
 {
-	sqlite3_stmt *stmt = nullptr;
 	const char *sql =
 		"INSERT INTO graph_nodes (id, project_id, ir_node_id, node_type, "
 		"name, qualified_name, module_path, package_name, class_name, "
@@ -125,39 +118,32 @@ uint64_t GraphStore::insertGraphNode(uint64_t project_id,
 		"file_path, language, signature, complexity, is_entry_point) "
 		"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, "
 		"?, ?, ?, ?, ?, ?, ?, ?, ?)";
-	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+	sqlite3_stmt *stmt = getCachedStmt(sql);
 	if (!stmt) {
-		error_ = "insertGraphNode: prepare failed";
 		return 0;
 	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(node.id));
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
 	sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(node.ir_node_id));
 	sqlite3_bind_int(stmt, 4, static_cast<int>(node.type));
-	sqlite3_bind_text(stmt, 5, node.name.c_str(), -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 5, node.name.c_str(), -1, SQLITE_STATIC);
 	sqlite3_bind_text(stmt, 6, node.qualified_name.c_str(), -1,
-			  SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 7, node.module_path.c_str(), -1,
-			  SQLITE_TRANSIENT);
+			  SQLITE_STATIC);
+	sqlite3_bind_text(stmt, 7, node.module_path.c_str(), -1, SQLITE_STATIC);
 	sqlite3_bind_text(stmt, 8, node.package_name.c_str(), -1,
-			  SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 9, node.class_name.c_str(), -1,
-			  SQLITE_TRANSIENT);
+			  SQLITE_STATIC);
+	sqlite3_bind_text(stmt, 9, node.class_name.c_str(), -1, SQLITE_STATIC);
 	sqlite3_bind_int(stmt, 10, static_cast<int>(node.start_row));
 	sqlite3_bind_int(stmt, 11, static_cast<int>(node.start_col));
 	sqlite3_bind_int(stmt, 12, static_cast<int>(node.end_row));
 	sqlite3_bind_int(stmt, 13, static_cast<int>(node.end_col));
-	sqlite3_bind_text(stmt, 14, node.file_path.c_str(), -1,
-			  SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 15, node.language.c_str(), -1,
-			  SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 16, node.signature.c_str(), -1,
-			  SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 14, node.file_path.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_text(stmt, 15, node.language.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_text(stmt, 16, node.signature.c_str(), -1, SQLITE_STATIC);
 	sqlite3_bind_int(stmt, 17, node.complexity);
 	sqlite3_bind_int(stmt, 18, node.is_entry_point ? 1 : 0);
 
 	sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
 	return node.id;
 }
 
@@ -188,25 +174,25 @@ void GraphStore::insertGraphNodes(uint64_t project_id,
 				   static_cast<int64_t>(node.ir_node_id));
 		sqlite3_bind_int(stmt, 4, static_cast<int>(node.type));
 		sqlite3_bind_text(stmt, 5, node.name.c_str(), -1,
-				  SQLITE_TRANSIENT);
+				  SQLITE_STATIC);
 		sqlite3_bind_text(stmt, 6, node.qualified_name.c_str(), -1,
-				  SQLITE_TRANSIENT);
+				  SQLITE_STATIC);
 		sqlite3_bind_text(stmt, 7, node.module_path.c_str(), -1,
-				  SQLITE_TRANSIENT);
+				  SQLITE_STATIC);
 		sqlite3_bind_text(stmt, 8, node.package_name.c_str(), -1,
-				  SQLITE_TRANSIENT);
+				  SQLITE_STATIC);
 		sqlite3_bind_text(stmt, 9, node.class_name.c_str(), -1,
-				  SQLITE_TRANSIENT);
+				  SQLITE_STATIC);
 		sqlite3_bind_int(stmt, 10, static_cast<int>(node.start_row));
 		sqlite3_bind_int(stmt, 11, static_cast<int>(node.start_col));
 		sqlite3_bind_int(stmt, 12, static_cast<int>(node.end_row));
 		sqlite3_bind_int(stmt, 13, static_cast<int>(node.end_col));
 		sqlite3_bind_text(stmt, 14, node.file_path.c_str(), -1,
-				  SQLITE_TRANSIENT);
+				  SQLITE_STATIC);
 		sqlite3_bind_text(stmt, 15, node.language.c_str(), -1,
-				  SQLITE_TRANSIENT);
+				  SQLITE_STATIC);
 		sqlite3_bind_text(stmt, 16, node.signature.c_str(), -1,
-				  SQLITE_TRANSIENT);
+				  SQLITE_STATIC);
 		sqlite3_bind_int(stmt, 17, node.complexity);
 		sqlite3_bind_int(stmt, 18, node.is_entry_point ? 1 : 0);
 
@@ -246,30 +232,26 @@ bool GraphStore::deleteGraphNodesByFile(uint64_t project_id,
 uint64_t GraphStore::insertGraphEdge(uint64_t project_id,
 				     const graph::GraphEdge &edge)
 {
-	sqlite3_stmt *stmt = nullptr;
 	const char *sql =
 		"INSERT INTO graph_edges (project_id, source_node_id, "
 		"target_node_id, edge_type, graph_type, "
 		"call_site_file, call_site_line, label) "
 		"VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
-	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+	sqlite3_stmt *stmt = getCachedStmt(sql);
 	if (!stmt) {
-		error_ = "insertGraphEdge: prepare failed";
 		return 0;
 	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(edge.source_id));
 	sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(edge.target_id));
 	sqlite3_bind_int(stmt, 4, static_cast<int>(edge.type));
-	sqlite3_bind_text(stmt, 5, edge.graph_type.c_str(), -1,
-			  SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 5, edge.graph_type.c_str(), -1, SQLITE_STATIC);
 	sqlite3_bind_text(stmt, 6, edge.call_site_file.c_str(), -1,
-			  SQLITE_TRANSIENT);
+			  SQLITE_STATIC);
 	sqlite3_bind_int(stmt, 7, edge.call_site_line);
-	sqlite3_bind_text(stmt, 8, edge.label.c_str(), -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 8, edge.label.c_str(), -1, SQLITE_STATIC);
 
 	sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
 	return static_cast<uint64_t>(sqlite3_last_insert_rowid(db_));
 }
 
@@ -299,12 +281,12 @@ void GraphStore::insertGraphEdges(uint64_t project_id,
 				   static_cast<int64_t>(edge.target_id));
 		sqlite3_bind_int(stmt, 4, static_cast<int>(edge.type));
 		sqlite3_bind_text(stmt, 5, edge.graph_type.c_str(), -1,
-				  SQLITE_TRANSIENT);
+				  SQLITE_STATIC);
 		sqlite3_bind_text(stmt, 6, edge.call_site_file.c_str(), -1,
-				  SQLITE_TRANSIENT);
+				  SQLITE_STATIC);
 		sqlite3_bind_int(stmt, 7, edge.call_site_line);
 		sqlite3_bind_text(stmt, 8, edge.label.c_str(), -1,
-				  SQLITE_TRANSIENT);
+				  SQLITE_STATIC);
 
 		int rc = sqlite3_step(stmt);
 		if (rc != SQLITE_DONE) {
@@ -352,6 +334,47 @@ bool GraphStore::commitTransaction()
 bool GraphStore::rollbackTransaction()
 {
 	return exec("ROLLBACK");
+}
+
+// ── Statement Cache ───────────────────────────────────────────
+
+sqlite3_stmt *GraphStore::getCachedStmt(const char *sql)
+{
+	if (!sql)
+		return nullptr;
+	std::lock_guard<std::mutex> lk(stmt_cache_mutex_);
+	auto it = stmt_cache_.find(sql);
+	if (it != stmt_cache_.end()) {
+		sqlite3_reset(it->second);
+		sqlite3_clear_bindings(it->second);
+		return it->second;
+	}
+	// Soft cap: if the cache exceeds kStmtCacheMax entries, something is
+	// dynamically constructing SQL at runtime — warn and return nullptr so
+	// the caller's existing failure path handles it without leaking.
+	if (stmt_cache_.size() >= kStmtCacheMax) {
+		fprintf(stderr,
+			"BUG: stmt_cache exceeded %zu entries (sql='%s')\n",
+			kStmtCacheMax, sql);
+		error_ = "getCachedStmt: cache cap exceeded (dynamic SQL bug)";
+		return nullptr;
+	}
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		error_ = std::string("getCachedStmt: prepare failed: ") +
+			 sqlite3_errmsg(db_);
+		return nullptr;
+	}
+	stmt_cache_[sql] = stmt;
+	return stmt;
+}
+
+void GraphStore::clearStmtCache()
+{
+	std::lock_guard<std::mutex> lk(stmt_cache_mutex_);
+	for (auto &kv : stmt_cache_)
+		sqlite3_finalize(kv.second);
+	stmt_cache_.clear();
 }
 
 // ─── FTS5 Full-Text Search ─────────────────────────────────────
@@ -1067,8 +1090,8 @@ std::string GraphStore::findSymbolJson(uint64_t project_id, const char *name)
 		"SELECT id, module_id, kind, name, signature, visibility, "
 		"language, file_path, line, column "
 		"FROM symbols WHERE project_id = ? AND name = ?";
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+	sqlite3_stmt *stmt = getCachedStmt(sql);
+	if (!stmt) {
 		return "{\"error\":\"findSymbolJson: prepare failed\",\"results\":[]}";
 	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
@@ -1111,7 +1134,6 @@ std::string GraphStore::findSymbolJson(uint64_t project_id, const char *name)
 		     << "\"line\":" << line << ","
 		     << "\"column\":" << col << "}";
 	}
-	sqlite3_finalize(stmt);
 	json << "]}";
 
 	// If symbols table was empty, fall back to graph_nodes (new pipeline)
@@ -1186,12 +1208,11 @@ uint64_t GraphStore::insertCallEdge(uint64_t project_id,
 				    const char *provenance, int line, int col)
 {
 	const char *sql =
-		"INSERT INTO call_edges "
+		"INSERT OR IGNORE INTO call_edges "
 		"(project_id, caller_symbol_id, callee_symbol_id, provenance, line, col) "
 		"VALUES (?, ?, ?, ?, ?, ?)";
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-		error_ = "insertCallEdge: prepare failed";
+	sqlite3_stmt *stmt = getCachedStmt(sql);
+	if (!stmt) {
 		return 0;
 	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
@@ -1203,12 +1224,13 @@ uint64_t GraphStore::insertCallEdge(uint64_t project_id,
 	sqlite3_bind_int(stmt, 6, col);
 	if (sqlite3_step(stmt) != SQLITE_DONE) {
 		error_ = "insertCallEdge: step failed";
-		sqlite3_finalize(stmt);
 		return 0;
 	}
-	uint64_t id = static_cast<uint64_t>(sqlite3_last_insert_rowid(db_));
-	sqlite3_finalize(stmt);
-	return id;
+	// Return 0 when the row was ignored (duplicate); non-zero row id otherwise.
+	// Callers use this to decide whether to increment the edge counter.
+	if (sqlite3_changes(db_) == 0)
+		return 0;
+	return static_cast<uint64_t>(sqlite3_last_insert_rowid(db_));
 }
 
 uint64_t GraphStore::insertDependencyEdge(uint64_t project_id,
@@ -1254,9 +1276,8 @@ bool GraphStore::insertMetric(uint64_t project_id, const char *owner_type,
 			  "nesting_depth, cognitive, lines, "
 			  " param_count, call_count, branch_count, loop_count) "
 			  "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-		error_ = "insertMetric: prepare failed";
+	sqlite3_stmt *stmt = getCachedStmt(sql);
+	if (!stmt) {
 		return false;
 	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
@@ -1272,25 +1293,23 @@ bool GraphStore::insertMetric(uint64_t project_id, const char *owner_type,
 	sqlite3_bind_int(stmt, 11, loop_count);
 	if (sqlite3_step(stmt) != SQLITE_DONE) {
 		error_ = "insertMetric: step failed";
-		sqlite3_finalize(stmt);
 		return false;
 	}
-	sqlite3_finalize(stmt);
 	return true;
 }
 
 // ── Phase B: Enhancement — Search Index ───────────────────────
 
-void GraphStore::insertIntoSearchIndex(uint64_t symbol_id, uint64_t project_id,
+bool GraphStore::insertIntoSearchIndex(uint64_t symbol_id, uint64_t project_id,
 				       const char *title, const char *summary,
 				       const char *body)
 {
 	const char *sql =
 		"INSERT INTO search_index (symbol_id, project_id, title, summary, body) "
 		"VALUES (?, ?, ?, ?, ?)";
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
-		return;
+	sqlite3_stmt *stmt = getCachedStmt(sql);
+	if (!stmt)
+		return false;
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(symbol_id));
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 3, title ? title : "", -1, SQLITE_TRANSIENT);
@@ -1299,8 +1318,9 @@ void GraphStore::insertIntoSearchIndex(uint64_t symbol_id, uint64_t project_id,
 	sqlite3_bind_text(stmt, 5, body ? body : "", -1, SQLITE_TRANSIENT);
 	if (sqlite3_step(stmt) != SQLITE_DONE) {
 		error_ = "insertIntoSearchIndex: step failed";
+		return false;
 	}
-	sqlite3_finalize(stmt);
+	return true;
 }
 
 // ── Phase B: Enhancement — Embeddings ─────────────────────────
@@ -1355,24 +1375,26 @@ bool GraphStore::insertEmbedding(uint64_t symbol_id, const float *vector_data,
 	}
 
 	// Also write to the vec0 embeddings table if available.
-	// This is optional — the vec0 extension may not be loaded.
-	// If the table doesn't exist, the INSERT fails harmlessly and
-	// we still return true because node_vectors was written above.
+	// Returns false when the vec0 INSERT fails (table missing or step error)
+	// so the caller can skip markEmbeddingReady and self-heal on rerun.
+	// node_vectors was already written above, so searchSemantic still works
+	// via graceful degradation even when vec0 is unavailable.
 	const char *sql =
 		"INSERT INTO embeddings (symbol_id, vector) VALUES (?, ?)";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-		// embeddings table not available — that's OK, node_vectors works
-		return true;
+		// embeddings table not available — vec0 extension not loaded
+		return false;
 	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(symbol_id));
 	sqlite3_bind_blob(stmt, 2, vec.data(),
 			  TARGET_DIM * static_cast<int>(sizeof(float)),
 			  SQLITE_TRANSIENT);
 	if (sqlite3_step(stmt) != SQLITE_DONE) {
-		// embeddings INSERT failed — still OK, node_vectors has the data
+		// embeddings INSERT failed — node_vectors has the data, but
+		// vec0 is unavailable so embedding_ready must stay 0 for rerun.
 		sqlite3_finalize(stmt);
-		return true;
+		return false;
 	}
 	sqlite3_finalize(stmt);
 	return true;
@@ -1380,32 +1402,36 @@ bool GraphStore::insertEmbedding(uint64_t symbol_id, const float *vector_data,
 
 // ── Phase B: Enhancement — Ready Flags ────────────────────────
 
-bool GraphStore::setSymbolReady(uint64_t symbol_id, const char *field)
+bool GraphStore::markCallgraphAndMetricsReady(uint64_t symbol_id)
 {
-	// Whitelist allowed field names to prevent SQL injection
-	static const std::unordered_set<std::string> allowed_fields = {
-		"fast_ready", "normal_ready", "deep_ready", "fts_ready",
-		"vector_ready", "callgraph_ready", "metrics_ready",
-		"embedding_ready"
-	};
-	if (!field || allowed_fields.find(field) == allowed_fields.end())
-		return false;
-
-	std::string sql = "UPDATE symbol_status SET " + std::string(field) +
-			  " = 1 WHERE symbol_id = ?";
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) !=
-	    SQLITE_OK) {
-		error_ = "setSymbolReady: prepare failed";
+	const char *sql =
+		"UPDATE symbol_status SET callgraph_ready=1, metrics_ready=1 "
+		"WHERE symbol_id = ?";
+	sqlite3_stmt *stmt = getCachedStmt(sql);
+	if (!stmt) {
 		return false;
 	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(symbol_id));
 	if (sqlite3_step(stmt) != SQLITE_DONE) {
-		error_ = "setSymbolReady: step failed";
-		sqlite3_finalize(stmt);
+		error_ = "markCallgraphAndMetricsReady: step failed";
 		return false;
 	}
-	sqlite3_finalize(stmt);
+	return true;
+}
+
+bool GraphStore::markEmbeddingReady(uint64_t symbol_id)
+{
+	const char *sql =
+		"UPDATE symbol_status SET embedding_ready=1 WHERE symbol_id = ?";
+	sqlite3_stmt *stmt = getCachedStmt(sql);
+	if (!stmt) {
+		return false;
+	}
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(symbol_id));
+	if (sqlite3_step(stmt) != SQLITE_DONE) {
+		error_ = "markEmbeddingReady: step failed";
+		return false;
+	}
 	return true;
 }
 
@@ -1434,9 +1460,9 @@ std::vector<std::string> GraphStore::getUnreadyFiles(uint64_t project_id,
 {
 	// Whitelist allowed field names to prevent SQL injection
 	static const std::unordered_set<std::string> allowed_fields = {
-		"fast_ready", "normal_ready", "deep_ready", "fts_ready",
-		"vector_ready", "callgraph_ready", "metrics_ready",
-		"embedding_ready"
+		"fast_ready",	 "normal_ready",   "deep_ready",
+		"fts_ready",	 "vector_ready",   "callgraph_ready",
+		"metrics_ready", "embedding_ready"
 	};
 	if (!ready_field ||
 	    allowed_fields.find(ready_field) == allowed_fields.end()) {
@@ -1473,9 +1499,9 @@ double GraphStore::getReadyRatio(uint64_t project_id, const char *ready_field)
 {
 	// Whitelist allowed field names to prevent SQL injection
 	static const std::unordered_set<std::string> allowed_fields = {
-		"fast_ready", "normal_ready", "deep_ready", "fts_ready",
-		"vector_ready", "callgraph_ready", "metrics_ready",
-		"embedding_ready"
+		"fast_ready",	 "normal_ready",   "deep_ready",
+		"fts_ready",	 "vector_ready",   "callgraph_ready",
+		"metrics_ready", "embedding_ready"
 	};
 	if (!ready_field ||
 	    allowed_fields.find(ready_field) == allowed_fields.end()) {
@@ -2505,10 +2531,9 @@ void GraphStore::insertSemanticRecords(uint64_t project_id,
 		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(r.id));
 		sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
 		sqlite3_bind_int(stmt, 3, static_cast<int>(r.kind));
-		sqlite3_bind_text(stmt, 4, r.name.c_str(), -1,
-				  SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 4, r.name.c_str(), -1, SQLITE_STATIC);
 		sqlite3_bind_text(stmt, 5, r.qualified_name.c_str(), -1,
-				  SQLITE_TRANSIENT);
+				  SQLITE_STATIC);
 		sqlite3_bind_int64(stmt, 6, static_cast<int64_t>(r.parent_id));
 		sqlite3_bind_int64(stmt, 7, static_cast<int64_t>(ref_id));
 		sqlite3_bind_int(stmt, 8, static_cast<int>(r.loc.start_row));
@@ -2516,9 +2541,9 @@ void GraphStore::insertSemanticRecords(uint64_t project_id,
 		sqlite3_bind_int(stmt, 10, static_cast<int>(r.loc.end_row));
 		sqlite3_bind_int(stmt, 11, static_cast<int>(r.loc.end_col));
 		sqlite3_bind_text(stmt, 12, r.file_path.c_str(), -1,
-				  SQLITE_TRANSIENT);
+				  SQLITE_STATIC);
 		sqlite3_bind_text(stmt, 13, r.language.c_str(), -1,
-				  SQLITE_TRANSIENT);
+				  SQLITE_STATIC);
 
 		int rc = sqlite3_step(stmt);
 		if (rc != SQLITE_DONE)
@@ -2580,9 +2605,9 @@ void GraphStore::insertSemanticRecordsBatch(
 					   static_cast<int64_t>(project_id));
 			sqlite3_bind_int(stmt, 3, static_cast<int>(r.kind));
 			sqlite3_bind_text(stmt, 4, r.name.c_str(), -1,
-					  SQLITE_TRANSIENT);
+					  SQLITE_STATIC);
 			sqlite3_bind_text(stmt, 5, r.qualified_name.c_str(), -1,
-					  SQLITE_TRANSIENT);
+					  SQLITE_STATIC);
 			sqlite3_bind_int64(stmt, 6,
 					   static_cast<int64_t>(r.parent_id));
 			sqlite3_bind_int64(stmt, 7,
@@ -2596,9 +2621,9 @@ void GraphStore::insertSemanticRecordsBatch(
 			sqlite3_bind_int(stmt, 11,
 					 static_cast<int>(r.loc.end_col));
 			sqlite3_bind_text(stmt, 12, file_path.c_str(), -1,
-					  SQLITE_TRANSIENT);
+					  SQLITE_STATIC);
 			sqlite3_bind_text(stmt, 13, r.language.c_str(), -1,
-					  SQLITE_TRANSIENT);
+					  SQLITE_STATIC);
 
 			int rc = sqlite3_step(stmt);
 			if (rc != SQLITE_DONE)
@@ -2818,6 +2843,112 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			}
 		}
 
+		// ── Step 1.5: Load ir_semantic_edges for precise cross-file resolution ──
+		// The translator already resolved cross-file calls during IR construction
+		// and stored the results in ir_semantic_edges. This is more accurate than
+		// the name-based fallback (Priority 2) because it uses the actual AST
+		// node references rather than string matching.
+		// Map: source_file_path → source_name → source_start_row → [target.graph_node_id]
+		// Uses (name, file_path, start_row) triple to bridge ir_semantic_edges
+		// (which references ir_nodes.id) to semantic_records (which has original_id
+		// but uses a different ID namespace).
+		std::unordered_map<
+			std::string,
+			std::unordered_map<
+				std::string,
+				std::unordered_map<int, std::vector<int64_t> > > >
+			ir_edge_target;
+		{
+			// Pre-build declaration index: (file_path, name, start_row) → graph_node_id
+			// This is needed because ir_node IDs don't directly map to graph_node IDs.
+			std::unordered_map<
+				std::string,
+				std::unordered_map<
+					std::string,
+					std::unordered_map<int, int64_t> > >
+				decl_idx;
+			{
+				std::string dsql =
+					"SELECT r.file_path, r.name, s.start_row,"
+					" r.node_id "
+					"FROM _r2n r "
+					"JOIN semantic_records s ON s.rowid = r.rid "
+					"WHERE s.kind IN (0,1)";
+				sqlite3_stmt *dst = nullptr;
+				if (sqlite3_prepare_v2(db_, dsql.c_str(), -1,
+						       &dst,
+						       nullptr) == SQLITE_OK) {
+					while (sqlite3_step(dst) ==
+					       SQLITE_ROW) {
+						const char *fp = (const char *)
+							sqlite3_column_text(dst,
+									    0);
+						const char *nm = (const char *)
+							sqlite3_column_text(dst,
+									    1);
+						int sr = sqlite3_column_int(dst,
+									    2);
+						int64_t nid =
+							sqlite3_column_int64(
+								dst, 3);
+						if (fp && nm && *nm)
+							decl_idx[fp][nm][sr] =
+								nid;
+					}
+					sqlite3_finalize(dst);
+				}
+			}
+
+			// Load ir_semantic_edges: map source to target (file_path, name, start_row),
+			// resolve target to graph_node_id via decl_idx.
+			std::string edge_sql =
+				"SELECT f1.path, i1.name, i1.start_row,"
+				" f2.path, i2.name, i2.start_row "
+				"FROM ir_semantic_edges ise "
+				"JOIN ir_nodes i1 ON i1.id = ise.source_node_id"
+				" AND i1.project_id=" +
+				pid +
+				" JOIN ir_nodes i2 ON i2.id = ise.target_node_id"
+				" AND i2.project_id=" +
+				pid +
+				" JOIN files f1 ON f1.id = i1.file_id"
+				" JOIN files f2 ON f2.id = i2.file_id"
+				" WHERE ise.project_id=" +
+				pid;
+			sqlite3_stmt *est = nullptr;
+			if (sqlite3_prepare_v2(db_, edge_sql.c_str(), -1, &est,
+					       nullptr) == SQLITE_OK) {
+				while (sqlite3_step(est) == SQLITE_ROW) {
+					const char *sfp = (const char *)
+						sqlite3_column_text(est, 0);
+					const char *snm = (const char *)
+						sqlite3_column_text(est, 1);
+					int ssr = sqlite3_column_int(est, 2);
+					const char *tfp = (const char *)
+						sqlite3_column_text(est, 3);
+					const char *tnm = (const char *)
+						sqlite3_column_text(est, 4);
+					int tsr = sqlite3_column_int(est, 5);
+					if (!sfp || !snm || !tfp || !tnm)
+						continue;
+					// Resolve target → graph_node_id via decl_idx
+					auto df_it = decl_idx.find(tfp);
+					if (df_it == decl_idx.end())
+						continue;
+					auto dn_it = df_it->second.find(tnm);
+					if (dn_it == df_it->second.end())
+						continue;
+					auto ds_it = dn_it->second.find(tsr);
+					if (ds_it == dn_it->second.end())
+						continue;
+					int64_t callee_nid = ds_it->second;
+					ir_edge_target[sfp][snm][ssr].push_back(
+						callee_nid);
+				}
+				sqlite3_finalize(est);
+			}
+		}
+
 		// ── Step 2: Query call records and resolve ──
 		// Collect matched edges into a vector, then bulk INSERT in batches
 		// to minimize sqlite3 bind/step/reset overhead.
@@ -2832,7 +2963,8 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		{
 			std::string call_sql =
 				"SELECT sr.name, sr.parent_id, sr.file_path,"
-				" sr.start_row, sr.ref_original_id "
+				" sr.start_row, sr.ref_original_id,"
+				" sr.original_id "
 				"FROM semantic_records sr "
 				"WHERE sr.project_id=" +
 				pid + " AND sr.kind=9 AND sr.name != ''";
@@ -2854,6 +2986,8 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 						sqlite3_column_int(call_st, 3);
 					int64_t ref_oid = sqlite3_column_int64(
 						call_st, 4);
+					int64_t call_oid = sqlite3_column_int64(
+						call_st, 5);
 					if (!name_c || !*name_c || !fp_c)
 						continue;
 
@@ -2889,6 +3023,38 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 						}
 					}
 
+					// Priority 1.5: translator-resolved cross-file callee
+					// from ir_semantic_edges (more accurate than name matching).
+					// Uses (file_path, name, start_row) to bridge from the call
+					// record to the ir_semantic_edges entry (ir_node IDs) and
+					// back to the callee's graph_node_id via decl_idx.
+					{
+						auto sf_it =
+							ir_edge_target.find(
+								fp_c);
+						if (sf_it !=
+						    ir_edge_target.end()) {
+							auto sn_it =
+								sf_it->second.find(
+									name_c);
+							if (sn_it !=
+							    sf_it->second.end()) {
+								auto ss_it =
+									sn_it->second
+										.find(start_row);
+								if (ss_it !=
+								    sn_it->second
+									    .end()) {
+									for (int64_t cid :
+									     ss_it->second)
+										tryAddEdge(
+											cid);
+									continue;
+								}
+							}
+						}
+					}
+
 					// Priority 2: cross-file call via name hash map
 					std::string call_name(name_c);
 					// Try exact full-name match first
@@ -2902,12 +3068,15 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 					// Try short-name (last component after '.')
 					// Fan-out cap: "get"/"new"/"set" can match hundreds of
 					// declarations across the project; skip if too many.
+					constexpr size_t kShortNameFanoutCap =
+						50;
 					std::string sn = shortName(call_name);
 					if (sn != call_name) {
 						auto sr = callee_by_short.find(
 							sn);
 						if (sr != callee_by_short.end() &&
-						    sr->second.size() <= 50) {
+						    sr->second.size() <=
+							    kShortNameFanoutCap) {
 							for (int64_t cid :
 							     sr->second)
 								tryAddEdge(cid);
@@ -2950,6 +3119,28 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		}
 	}
 	auto t_call = Clock::now();
+
+	// Backfill symbols.node_id from graph_nodes for rows created during
+	// scan_project (insertSymbol path), which don't know graph_nodes.id.
+	// Without this, the cross-file edge copy in enhance_project
+	// (s1.node_id = ge.source_node_id) would match zero rows.
+	// Clear stale node_id values first: after a re-index, graph_nodes IDs may
+	// have changed, so prior node_id values could point to deleted rows.
+	exec(std::string("UPDATE symbols SET node_id = NULL WHERE project_id=" +
+			 pid)
+		     .c_str());
+	exec(std::string("UPDATE symbols SET node_id = ("
+			 " SELECT gn.id FROM graph_nodes gn"
+			 " WHERE gn.project_id = symbols.project_id"
+			 " AND gn.name = symbols.name"
+			 " AND gn.file_path = symbols.file_path"
+			 " AND gn.start_row = symbols.line"
+			 " AND gn.start_col = symbols.column"
+			 " AND gn.node_type IN (0,1,2,3,4,6)"
+			 " LIMIT 1"
+			 ") WHERE project_id=" +
+			 pid)
+		     .c_str());
 
 	exec("DROP TABLE IF EXISTS _r2n");
 	exec("DROP TABLE IF EXISTS _rf");
