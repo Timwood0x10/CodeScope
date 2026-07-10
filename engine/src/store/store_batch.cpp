@@ -359,64 +359,14 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 	return true;
 }
 
-int64_t GraphStore::populateSymbolsFromGraph(uint64_t project_id)
-{
-	std::string pid = std::to_string(project_id);
-
-	// Populate symbols from graph_nodes
-	const char *pop_sym =
-		"INSERT OR IGNORE INTO symbols "
-		"(project_id, module_id, kind, name,"
-		" node_id, signature, visibility, language,"
-		" file_path, line, column) "
-		"SELECT DISTINCT project_id, 0,"
-		" CASE node_type WHEN 0 THEN 'function'"
-		"  WHEN 1 THEN 'method' WHEN 2 THEN 'class'"
-		"  WHEN 3 THEN 'interface' WHEN 4 THEN 'enum'"
-		"  WHEN 6 THEN 'variable'"
-		"  ELSE CAST(node_type AS TEXT) END,"
-		" name, id, COALESCE(NULLIF(qualified_name, ''), name), 'default',"
-		" language, file_path,"
-		" start_row, start_col "
-		"FROM graph_nodes "
-		"WHERE project_id=? AND node_type IN (0,1,2,3,4,6)";
-	sqlite3_stmt *pop = nullptr;
-	int64_t n = 0;
-	if (sqlite3_prepare_v2(db_, pop_sym, -1, &pop, nullptr) == SQLITE_OK) {
-		sqlite3_bind_int64(pop, 1, static_cast<int64_t>(project_id));
-		if (sqlite3_step(pop) == SQLITE_DONE)
-			n = sqlite3_changes(db_);
-		sqlite3_finalize(pop);
-	}
-
-	// Also populate symbol_status so downstream queries work
-	const char *pop_st =
-		"INSERT OR IGNORE INTO symbol_status "
-		"(symbol_id, callgraph_ready, metrics_ready, embedding_ready, is_stub) "
-		"SELECT id, 0, 0, 0, 0 "
-		"FROM symbols WHERE project_id=?";
-	sqlite3_stmt *st = nullptr;
-	if (sqlite3_prepare_v2(db_, pop_st, -1, &st, nullptr) == SQLITE_OK) {
-		sqlite3_bind_int64(st, 1, static_cast<int64_t>(project_id));
-		sqlite3_step(st);
-		sqlite3_finalize(st);
-	}
-
-	fprintf(stderr,
-		"populateSymbolsFromGraph: inserted %lld symbols for "
-		"project %s\n",
-		(long long)n, pid.c_str());
-	return n;
-}
-
 bool GraphStore::resolveStagedMetrics(uint64_t project_id)
 {
 	std::string pid = std::to_string(project_id);
 
 	// Check if staging table has data
+	bool has_data = false;
 	{
 		sqlite3_stmt *chk = nullptr;
-		bool has_data = false;
 		if (sqlite3_prepare_v2(db_,
 				       "SELECT 1 FROM _staged_metrics LIMIT 1",
 				       -1, &chk, nullptr) == SQLITE_OK) {
@@ -424,153 +374,54 @@ bool GraphStore::resolveStagedMetrics(uint64_t project_id)
 			sqlite3_finalize(chk);
 		}
 		if (!has_data)
-			return true; // nothing to resolve
+			return true;
 	}
 
-	// Copy staged metrics to real metrics table via symbol JOIN.
-	// The JOIN uses (file_path, name, line) triple which matches the
-	// unique constraint on symbols (project_id, file_path, name, line).
-	// OR IGNORE handles the case where a symbol was already resolved.
-	const char *copy_sql =
-		"INSERT OR IGNORE INTO metrics "
-		"(project_id, owner_type, owner_id, cyclomatic, "
-		" nesting_depth, cognitive, lines,"
-		" param_count, call_count, branch_count, loop_count) "
-		"SELECT sm.project_id, 'symbol', s.id,"
-		" sm.cyclomatic, sm.nesting_depth, sm.cognitive, sm.lines,"
-		" sm.param_count, sm.call_count, sm.branch_count, sm.loop_count "
-		"FROM _staged_metrics sm "
-		"JOIN symbols s ON s.project_id = sm.project_id "
-		" AND s.file_path = sm.file_path "
-		" AND s.name = sm.name "
-		" AND s.line = sm.line";
-	int64_t metrics_n = 0;
-	if (!exec(copy_sql)) {
+	// Sync staged metrics directly to graph_nodes columns.
+	// No more metrics table — complexity lives on graph_nodes directly.
+	std::string sync_sql =
+		"UPDATE graph_nodes SET "
+		" cyclomatic = COALESCE((SELECT sm.cyclomatic FROM _staged_metrics sm"
+		"  WHERE sm.file_path = graph_nodes.file_path"
+		"  AND sm.name = graph_nodes.name"
+		"  AND sm.line = graph_nodes.start_row"
+		"  AND sm.project_id = graph_nodes.project_id), 0),"
+		" cognitive = COALESCE((SELECT sm.cognitive FROM _staged_metrics sm"
+		"  WHERE sm.file_path = graph_nodes.file_path"
+		"  AND sm.name = graph_nodes.name"
+		"  AND sm.line = graph_nodes.start_row"
+		"  AND sm.project_id = graph_nodes.project_id), 0),"
+		" nesting_depth = COALESCE((SELECT sm.nesting_depth FROM _staged_metrics sm"
+		"  WHERE sm.file_path = graph_nodes.file_path"
+		"  AND sm.name = graph_nodes.name"
+		"  AND sm.line = graph_nodes.start_row"
+		"  AND sm.project_id = graph_nodes.project_id), 0),"
+		" param_count = COALESCE((SELECT sm.param_count FROM _staged_metrics sm"
+		"  WHERE sm.file_path = graph_nodes.file_path"
+		"  AND sm.name = graph_nodes.name"
+		"  AND sm.line = graph_nodes.start_row"
+		"  AND sm.project_id = graph_nodes.project_id), 0),"
+		" lines = COALESCE((SELECT sm.lines FROM _staged_metrics sm"
+		"  WHERE sm.file_path = graph_nodes.file_path"
+		"  AND sm.name = graph_nodes.name"
+		"  AND sm.line = graph_nodes.start_row"
+		"  AND sm.project_id = graph_nodes.project_id), 0)"
+		" WHERE project_id = " +
+		pid + " AND node_type IN (0, 1)";
+	if (!exec(sync_sql.c_str())) {
 		fprintf(stderr,
-			"resolveStagedMetrics: copy to metrics failed: %s "
+			"resolveStagedMetrics: sync to graph_nodes failed: %s "
 			"[module=store, method=resolveStagedMetrics]\n",
 			error_.c_str());
-	} else {
-		metrics_n = sqlite3_changes(db_);
-	}
-
-	// Mark stubs
-	const char *stub_sql = "UPDATE symbol_status SET is_stub = 1 "
-			       "WHERE symbol_id IN ("
-			       " SELECT s.id FROM _staged_metrics sm"
-			       " JOIN symbols s ON s.project_id = sm.project_id"
-			       "  AND s.file_path = sm.file_path"
-			       "  AND s.name = sm.name"
-			       "  AND s.line = sm.line"
-			       " WHERE sm.is_stub = 1"
-			       ")";
-	exec(stub_sql);
-	int64_t stub_n = sqlite3_changes(db_);
-
-	// Mark callgraph and metrics ready for all resolved symbols
-	const char *ready_sql =
-		"UPDATE symbol_status SET callgraph_ready = 1, metrics_ready = 1 "
-		"WHERE symbol_id IN ("
-		" SELECT s.id FROM _staged_metrics sm"
-		" JOIN symbols s ON s.project_id = sm.project_id"
-		"  AND s.file_path = sm.file_path"
-		"  AND s.name = sm.name"
-		"  AND s.line = sm.line"
-		")";
-	exec(ready_sql);
-	int64_t ready_n = sqlite3_changes(db_);
-
-	// Sync cyclomatic complexity from metrics table back to graph_nodes.
-	// This allows graph_nodes.complexity to be used directly in queries
-	// without JOINing through symbols -> metrics.
-	const char *sync_cx_sql =
-		"UPDATE graph_nodes SET complexity = COALESCE(("
-		" SELECT m.cyclomatic FROM metrics m"
-		" JOIN symbols s ON s.id = m.owner_id AND m.owner_type = 'symbol'"
-		" WHERE s.node_id = graph_nodes.id"
-		"  AND s.project_id = graph_nodes.project_id"
-		"), 0) WHERE project_id = ? AND node_type IN (0, 1)";
-	sqlite3_stmt *cx_st = nullptr;
-	if (sqlite3_prepare_v2(db_, sync_cx_sql, -1, &cx_st, nullptr) ==
-	    SQLITE_OK) {
-		sqlite3_bind_int64(cx_st, 1, static_cast<int64_t>(project_id));
-		sqlite3_step(cx_st);
-		sqlite3_finalize(cx_st);
 	}
 
 	fprintf(stderr,
-		"resolveStagedMetrics: %lld metrics, %lld stubs, %lld ready for "
-		"project %s\n",
-		(long long)metrics_n, (long long)stub_n, (long long)ready_n,
+		"resolveStagedMetrics: synced to graph_nodes for project %s\n",
 		pid.c_str());
 
 	// Clean up temp table
 	exec("DROP TABLE IF EXISTS _staged_metrics");
-
 	return true;
-}
-
-int64_t GraphStore::copyGraphEdgesToCallEdges(uint64_t project_id)
-{
-	// Guard: check if buildGraph + populateSymbols have been done
-	{
-		sqlite3_stmt *chk = nullptr;
-		bool has_edges = false;
-		if (sqlite3_prepare_v2(
-			    db_,
-			    "SELECT 1 FROM graph_edges"
-			    " WHERE project_id=? AND edge_type=1 LIMIT 1",
-			    -1, &chk, nullptr) == SQLITE_OK) {
-			sqlite3_bind_int64(chk, 1,
-					   static_cast<int64_t>(project_id));
-			has_edges = (sqlite3_step(chk) == SQLITE_ROW);
-			sqlite3_finalize(chk);
-		}
-		if (!has_edges) {
-			fprintf(stderr,
-				"copyGraphEdgesToCallEdges: no graph_edges"
-				" (edge_type=1) for project %llu"
-				" — skip cross-file copy\n",
-				(unsigned long long)project_id);
-			return 0;
-		}
-	}
-
-	// Copy cross-file call edges from graph_edges to call_edges.
-	// JOIN uses symbols.node_id to bridge graph_nodes IDs to symbol IDs.
-	// Provenance is 'graph' to distinguish from future LSP-resolved edges.
-	const char *copy_sql =
-		"INSERT OR IGNORE INTO call_edges "
-		"(project_id, caller_symbol_id, callee_symbol_id, provenance, line, col) "
-		"SELECT ge.project_id, s1.id, s2.id, 'graph',"
-		" ge.call_site_line, 0 "
-		"FROM graph_edges ge "
-		"JOIN symbols s1 ON s1.node_id = ge.source_node_id"
-		" AND s1.project_id = ge.project_id "
-		"JOIN symbols s2 ON s2.node_id = ge.target_node_id"
-		" AND s2.project_id = ge.project_id "
-		"WHERE ge.edge_type = 1 AND ge.project_id = ?";
-
-	sqlite3_stmt *cstmt = nullptr;
-	int64_t n = 0;
-	if (sqlite3_prepare_v2(db_, copy_sql, -1, &cstmt, nullptr) ==
-	    SQLITE_OK) {
-		sqlite3_bind_int64(cstmt, 1, static_cast<int64_t>(project_id));
-		if (sqlite3_step(cstmt) == SQLITE_DONE)
-			n = sqlite3_changes(db_);
-		sqlite3_finalize(cstmt);
-	} else {
-		fprintf(stderr,
-			"copyGraphEdgesToCallEdges: prepare failed: %s"
-			" [module=store, method=copyGraphEdgesToCallEdges]\n",
-			error_.c_str());
-	}
-
-	fprintf(stderr,
-		"copyGraphEdgesToCallEdges: copied %lld cross-file edges for"
-		" project %llu\n",
-		(long long)n, (unsigned long long)project_id);
-	return n;
 }
 
 } // namespace store

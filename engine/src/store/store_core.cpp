@@ -214,7 +214,15 @@ bool GraphStore::createSchema()
             file_path TEXT NOT NULL,
             language TEXT NOT NULL,
             signature TEXT DEFAULT '',
-            complexity INTEGER DEFAULT 0,
+            cyclomatic INTEGER DEFAULT 0,
+            cognitive INTEGER DEFAULT 0,
+            nesting_depth INTEGER DEFAULT 0,
+            param_count INTEGER DEFAULT 0,
+            lines INTEGER DEFAULT 0,
+            is_stub INTEGER DEFAULT 0,
+            callgraph_ready INTEGER DEFAULT 0,
+            metrics_ready INTEGER DEFAULT 0,
+            embedding_ready INTEGER DEFAULT 0,
             is_entry_point INTEGER DEFAULT 0,
             FOREIGN KEY (project_id) REFERENCES projects(id)
         );
@@ -303,18 +311,6 @@ bool GraphStore::createSchema()
             file_id INTEGER NOT NULL
         );
 
-        -- Code complexity scores per graph node
-        CREATE TABLE IF NOT EXISTS node_complexity (
-            project_id INTEGER NOT NULL,
-            graph_node_id INTEGER NOT NULL,
-            cyclomatic INTEGER NOT NULL DEFAULT 0,
-            cognitive INTEGER NOT NULL DEFAULT 0,
-            nesting_depth INTEGER NOT NULL DEFAULT 0,
-            decision_points INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY (project_id, graph_node_id),
-            FOREIGN KEY (project_id) REFERENCES projects(id)
-        );
-
         -- Semantic vector index (n-gram hash vectors for each ir_node)
         CREATE TABLE IF NOT EXISTS node_vectors (
             node_id INTEGER PRIMARY KEY,
@@ -336,41 +332,6 @@ bool GraphStore::createSchema()
             language TEXT,
             file_count INTEGER DEFAULT 0,
             FOREIGN KEY (project_id) REFERENCES projects(id)
-        );
-
-        -- symbols: lean main table, status in symbol_status
-        -- node_id bridges graph_nodes(schema_v2) to symbols(schema_v3) so that
-        -- cross-file call edges can be copied from graph_edges via direct JOIN,
-        -- NOT via (name, file_path) which creates cartesian fan-out for overloads.
-        CREATE TABLE IF NOT EXISTS symbols (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            project_id INTEGER NOT NULL,
-            module_id INTEGER REFERENCES modules(id),
-            kind TEXT NOT NULL,          -- function/method/class/struct/trait/enum/const/type_alias
-            name TEXT NOT NULL,
-            node_id INTEGER,             -- corresponding graph_nodes.id (NULL if no match)
-            signature TEXT,
-            visibility TEXT DEFAULT 'default',
-            language TEXT NOT NULL,
-            file_path TEXT NOT NULL,     -- project-relative path
-            line INTEGER NOT NULL,
-            column INTEGER NOT NULL,
-            span_start INTEGER,          -- byte offset
-            span_end INTEGER,
-            role TEXT DEFAULT 'unknown',  -- API/Callback/Driver/Hook/Entry/Utility/Test
-            FOREIGN KEY (project_id) REFERENCES projects(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(project_id, name);
-        CREATE INDEX IF NOT EXISTS idx_symbols_module ON symbols(module_id);
-
-        -- symbol_status: separate table for analysis progress flags, keeps symbols lean
-        CREATE TABLE IF NOT EXISTS symbol_status (
-            symbol_id INTEGER PRIMARY KEY,
-            callgraph_ready INTEGER DEFAULT 0,
-            metrics_ready INTEGER DEFAULT 0,
-            embedding_ready INTEGER DEFAULT 0,
-            is_stub INTEGER DEFAULT 0,
-            FOREIGN KEY (symbol_id) REFERENCES symbols(id)
         );
 
         -- index_tasks: background task tracking for Tokio queue
@@ -398,65 +359,6 @@ bool GraphStore::createSchema()
         -- ============================================================
         -- Phase B: Knowledge Enhancement Tables
         -- ============================================================
-
-        CREATE TABLE IF NOT EXISTS call_edges (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            project_id INTEGER NOT NULL,
-            caller_symbol_id INTEGER NOT NULL,
-            callee_symbol_id INTEGER NOT NULL,
-            provenance TEXT DEFAULT 'static',  -- static/lsp/resolved
-            line INTEGER,
-            col INTEGER,
-            FOREIGN KEY (caller_symbol_id) REFERENCES symbols(id),
-            FOREIGN KEY (callee_symbol_id) REFERENCES symbols(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_call_edges_caller ON call_edges(caller_symbol_id);
-        CREATE INDEX IF NOT EXISTS idx_call_edges_callee ON call_edges(callee_symbol_id);
-
-        -- Dependency edges: module-level, supports external/third-party deps
-        CREATE TABLE IF NOT EXISTS dependency_edges (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            project_id INTEGER NOT NULL,
-            source_module_id INTEGER REFERENCES modules(id),
-            target_module_id INTEGER REFERENCES modules(id),
-            external_name TEXT,          -- e.g. "tokio::sync::Mutex", "context"
-            kind TEXT NOT NULL,          -- import/include/inherit/implement/use/ffi
-            FOREIGN KEY (source_module_id) REFERENCES modules(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_dep_edges_src ON dependency_edges(source_module_id);
-        CREATE INDEX IF NOT EXISTS idx_dep_edges_tgt ON dependency_edges(target_module_id);
-
-        -- Metrics: generic owner_type/owner_id for symbols, modules, projects
-        CREATE TABLE IF NOT EXISTS metrics (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            project_id INTEGER NOT NULL,
-            owner_type TEXT NOT NULL,    -- 'symbol' / 'module' / 'project'
-            owner_id INTEGER NOT NULL,
-            cyclomatic INTEGER DEFAULT 0,
-            nesting_depth INTEGER DEFAULT 0,
-            cognitive INTEGER DEFAULT 0,
-            lines INTEGER DEFAULT 0,
-            param_count INTEGER DEFAULT 0,
-            call_count INTEGER DEFAULT 0,
-            branch_count INTEGER DEFAULT 0,
-            loop_count INTEGER DEFAULT 0,
-            FOREIGN KEY (project_id) REFERENCES projects(id),
-            UNIQUE(owner_type, owner_id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_metrics_owner ON metrics(owner_type, owner_id);
-
-        -- FTS5 search index: title/summary/body for better AI search
-        CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
-            title, summary, body,
-            project_id UNINDEXED,
-            symbol_id UNINDEXED,
-            tokenize='unicode61'
-        );
-
-        -- Trigger: auto-clean search_index when symbols are deleted
-        CREATE TRIGGER IF NOT EXISTS trg_symbols_delete AFTER DELETE ON symbols BEGIN
-            DELETE FROM search_index WHERE symbol_id = old.id;
-        END;
 
         -- file_scan_state: tracks file modification times for incremental indexing
         CREATE TABLE IF NOT EXISTS file_scan_state (
@@ -488,17 +390,6 @@ bool GraphStore::createSchema()
             src_blob BLOB                  -- packed u32[] of caller node IDs
         );
 
-        -- String interning pool for graph_nodes TEXT columns (name,
-        -- qualified_name, module_path, file_path, language, signature).
-        -- Referenced by graph_nodes.*_id columns (added in Migration 3 below).
-        -- Used by store_intern.cpp: internString() / getStringById() /
-        -- bulkInternFromQuery(). Must be created BEFORE any intern call.
-        CREATE TABLE IF NOT EXISTS symbol_names (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            text TEXT NOT NULL UNIQUE
-        );
-        CREATE INDEX IF NOT EXISTS idx_symbol_names_text ON symbol_names(text);
-
         )SQL";
 
 	// Execute main schema
@@ -508,126 +399,6 @@ bool GraphStore::createSchema()
 	// CREATE TABLE IF NOT EXISTS skips when the table already exists, so columns
 	// added in later versions must be patched in here. SQLite has no
 	// "ADD COLUMN IF NOT EXISTS", so we probe PRAGMA table_info first.
-
-	// Migration 1: symbols.node_id (added for cross-file edge copy via JOIN).
-	// Without this column, the cross-file edge copy in enhance_project fails
-	// with "no such column: node_id" on databases created before this change.
-	{
-		sqlite3_stmt *probe = nullptr;
-		bool has_node_id = false;
-		if (sqlite3_prepare_v2(db_, "PRAGMA table_info(symbols)", -1,
-				       &probe, nullptr) == SQLITE_OK) {
-			while (sqlite3_step(probe) == SQLITE_ROW) {
-				const char *col =
-					reinterpret_cast<const char *>(
-						sqlite3_column_text(probe, 1));
-				if (col && std::string(col) == "node_id") {
-					has_node_id = true;
-					break;
-				}
-			}
-			sqlite3_finalize(probe);
-		}
-		if (!has_node_id) {
-			if (!exec("ALTER TABLE symbols ADD COLUMN node_id INTEGER")) {
-				fprintf(stderr,
-					"createSchema: migration failed — "
-					"cannot add symbols.node_id: %s [module=store, method=createSchema]\n",
-					error_.c_str());
-			}
-		}
-	}
-
-	// Migration 2: deduplicate call_edges before creating the unique index.
-	// Existing databases may contain duplicate rows (from older enhance runs
-	// before the unique constraint existed). CREATE UNIQUE INDEX fails on
-	// conflicting data, so we delete duplicates first, keeping the lowest id.
-	// Skip the full-table-scan DELETE when the index already exists (no
-	// duplicates are possible after the index is in place).
-	{
-		sqlite3_stmt *idx_probe = nullptr;
-		bool index_exists = false;
-		if (sqlite3_prepare_v2(
-			    db_,
-			    "SELECT 1 FROM sqlite_master"
-			    " WHERE type='index' AND name='idx_call_edges_unique'",
-			    -1, &idx_probe, nullptr) == SQLITE_OK) {
-			if (sqlite3_step(idx_probe) == SQLITE_ROW)
-				index_exists = true;
-			sqlite3_finalize(idx_probe);
-		}
-		if (!index_exists) {
-			exec("DELETE FROM call_edges WHERE id NOT IN ("
-			     " SELECT MIN(id) FROM call_edges"
-			     " GROUP BY caller_symbol_id, callee_symbol_id, provenance, line, col"
-			     ")");
-		}
-	}
-
-	// Unique constraint for rerun idempotency: INSERT OR IGNORE in
-	// enhance_project relies on this to avoid duplicate cross-file edges.
-	exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_call_edges_unique"
-	     " ON call_edges(caller_symbol_id, callee_symbol_id, provenance, line, col)");
-
-	// Index backing the cross-file edge copy JOIN (s1.node_id = ge.source_node_id).
-	// Without this, the JOIN degrades to a full table scan per graph_edges row.
-	exec("CREATE INDEX IF NOT EXISTS idx_symbols_node"
-	     " ON symbols(project_id, node_id) WHERE node_id IS NOT NULL");
-
-	// Migration 3: String interning columns on graph_nodes.
-	// Adds *_id INTEGER columns that reference symbol_names.id. The TEXT
-	// columns are kept for backward compatibility (FTS, legacy queries).
-	// New code populates both TEXT and _id; old code that reads TEXT continues
-	// to work. The _id columns enable future memory-efficient queries.
-	{
-		struct InternCol {
-			const char *name;
-			const char *sql;
-		};
-		// Ordered so that column indices are stable for bind calls.
-		static const InternCol intern_cols[] = {
-			{ "name_id",
-			  "ALTER TABLE graph_nodes ADD COLUMN name_id INTEGER" },
-			{ "qualified_name_id",
-			  "ALTER TABLE graph_nodes ADD COLUMN qualified_name_id INTEGER" },
-			{ "module_path_id",
-			  "ALTER TABLE graph_nodes ADD COLUMN module_path_id INTEGER" },
-			{ "file_path_id",
-			  "ALTER TABLE graph_nodes ADD COLUMN file_path_id INTEGER" },
-			{ "language_id",
-			  "ALTER TABLE graph_nodes ADD COLUMN language_id INTEGER" },
-			{ "signature_id",
-			  "ALTER TABLE graph_nodes ADD COLUMN signature_id INTEGER" },
-		};
-		for (const auto &ic : intern_cols) {
-			sqlite3_stmt *probe = nullptr;
-			bool has_col = false;
-			if (sqlite3_prepare_v2(
-				    db_, "PRAGMA table_info(graph_nodes)", -1,
-				    &probe, nullptr) == SQLITE_OK) {
-				while (sqlite3_step(probe) == SQLITE_ROW) {
-					const char *col =
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(
-								probe, 1));
-					if (col &&
-					    std::string(col) == ic.name) {
-						has_col = true;
-						break;
-					}
-				}
-				sqlite3_finalize(probe);
-			}
-			if (!has_col) {
-				if (!exec(ic.sql)) {
-					fprintf(stderr,
-						"createSchema: migration failed — "
-						"cannot add graph_nodes.%s: %s [module=store, method=createSchema]\n",
-						ic.name, error_.c_str());
-				}
-			}
-		}
-	}
 
 	// Note: vec0 embeddings table is created in engine_init() after
 	// sqlite-vec extension is loaded via dlopen. Not needed here.
@@ -649,12 +420,7 @@ bool GraphStore::createIndexesAfterBulkLoad(uint64_t project_id)
 		"CREATE INDEX IF NOT EXISTS idx_graph_edges_project ON graph_edges(project_id)",
 		"CREATE INDEX IF NOT EXISTS idx_ge_callers ON graph_edges(edge_type, target_node_id)",
 		"CREATE INDEX IF NOT EXISTS idx_ge_callees ON graph_edges(edge_type, source_node_id)",
-		"CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(project_id, name)",
-		"CREATE INDEX IF NOT EXISTS idx_call_edges_caller ON call_edges(caller_symbol_id)",
-		"CREATE INDEX IF NOT EXISTS idx_call_edges_callee ON call_edges(callee_symbol_id)",
-		"CREATE INDEX IF NOT EXISTS idx_dep_edges_src ON dependency_edges(source_module_id)",
-		"CREATE INDEX IF NOT EXISTS idx_dep_edges_tgt ON dependency_edges(target_module_id)",
-		"CREATE INDEX IF NOT EXISTS idx_metrics_owner ON metrics(owner_type, owner_id)",
+		"CREATE INDEX IF NOT EXISTS idx_graph_nodes_lang ON graph_nodes(project_id, language)",
 	};
 	bool ok = true;
 	for (auto *sql : indexes) {

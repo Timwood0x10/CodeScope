@@ -202,27 +202,8 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		}
 	}
 
-	// Backfill symbols.node_id from graph_nodes for rows created during
-	// scan_project (insertSymbol path), which don't know graph_nodes.id.
-	// Without this, the cross-file edge copy in enhance_project
-	// (s1.node_id = ge.source_node_id) would match zero rows.
-	// Clear stale node_id values first: after a re-index, graph_nodes IDs may
-	// have changed, so prior node_id values could point to deleted rows.
-	exec(std::string("UPDATE symbols SET node_id = NULL WHERE project_id=" +
-			 pid)
-		     .c_str());
-	exec(std::string("UPDATE symbols SET node_id = ("
-			 " SELECT gn.id FROM graph_nodes gn"
-			 " WHERE gn.project_id = symbols.project_id"
-			 " AND gn.name = symbols.name"
-			 " AND gn.file_path = symbols.file_path"
-			 " AND gn.start_row = symbols.line"
-			 " AND gn.start_col = symbols.column"
-			 " AND gn.node_type IN (0,1,2,3,4,6)"
-			 " LIMIT 1"
-			 ") WHERE project_id=" +
-			 pid)
-		     .c_str());
+	// Backfill for symbols.node_id is no longer needed — symbols table
+	// has been eliminated. graph_nodes is the sole source of truth.
 
 	exec("DROP TABLE IF EXISTS _r2n");
 	exec("DROP TABLE IF EXISTS _rf");
@@ -247,90 +228,6 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		(long long)ms(t_nodes, t_edges), (long long)ms(t_edges, t_call),
 		(long long)ms(t0, t_end));
 	return true;
-}
-
-// ─── On-demand call graph queries (from semantic_records) ────
-
-std::string GraphStore::getCallersFromRecords(uint64_t project_id,
-					      const char *function_name)
-{
-	if (!function_name || !*function_name)
-		return "[]";
-	// Note: function_name is bound via sqlite3_bind_text (safe), not interpolated.
-
-	const char *sql =
-		"SELECT DISTINCT fn.name, fn.file_path, cr.start_row "
-		"FROM semantic_records cr "
-		"JOIN semantic_records fn ON cr.parent_id = fn.original_id "
-		"  AND cr.file_path = fn.file_path "
-		"WHERE cr.project_id=?1 AND cr.kind=7 AND cr.name=?2 "
-		"  AND fn.kind IN (0,1)";
-
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
-		return "[]";
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_text(stmt, 2, function_name, -1, SQLITE_TRANSIENT);
-
-	std::string result = "{\"callers\":[";
-	bool first = true;
-	while (sqlite3_step(stmt) == SQLITE_ROW) {
-		const char *n = reinterpret_cast<const char *>(
-			sqlite3_column_text(stmt, 0));
-		const char *f = reinterpret_cast<const char *>(
-			sqlite3_column_text(stmt, 1));
-		int l = sqlite3_column_int(stmt, 2);
-		if (!first)
-			result += ",";
-		first = false;
-		result += "{\"name\":\"" + jsonEscape(n ? n : "") +
-			  "\",\"file\":\"" + jsonEscape(f ? f : "") +
-			  "\",\"line\":" + std::to_string(l) + "}";
-	}
-	sqlite3_finalize(stmt);
-	result += "]}";
-	return result;
-}
-
-std::string GraphStore::getCalleesFromRecords(uint64_t project_id,
-					      const char *function_name)
-{
-	if (!function_name || !*function_name)
-		return "[]";
-
-	const char *sql =
-		"SELECT DISTINCT cr.name, cr.file_path, cr.start_row "
-		"FROM semantic_records cr "
-		"WHERE cr.project_id=?1 AND cr.kind=7 AND cr.name != '' "
-		"  AND cr.parent_id IN ("
-		"    SELECT original_id FROM semantic_records "
-		"    WHERE project_id=?1 AND name=?2 AND kind IN (0,1)"
-		"  ) ORDER BY cr.start_row";
-
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
-		return "[]";
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_text(stmt, 2, function_name, -1, SQLITE_TRANSIENT);
-
-	std::string result = "{\"callees\":[";
-	bool first = true;
-	while (sqlite3_step(stmt) == SQLITE_ROW) {
-		const char *n = reinterpret_cast<const char *>(
-			sqlite3_column_text(stmt, 0));
-		const char *f = reinterpret_cast<const char *>(
-			sqlite3_column_text(stmt, 1));
-		int l = sqlite3_column_int(stmt, 2);
-		if (!first)
-			result += ",";
-		first = false;
-		result += "{\"name\":\"" + jsonEscape(n ? n : "") +
-			  "\",\"file\":\"" + jsonEscape(f ? f : "") +
-			  "\",\"line\":" + std::to_string(l) + "}";
-	}
-	sqlite3_finalize(stmt);
-	result += "]}";
-	return result;
 }
 
 // ── CSR Adjacency (BLOB-packed call edges) ─────────────────────

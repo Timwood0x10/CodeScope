@@ -81,10 +81,10 @@ uint64_t GraphStore::insertSymbol(uint64_t project_id, uint64_t module_id,
 				  int span_end)
 {
 	const char *sql =
-		"INSERT INTO symbols "
-		"(project_id, module_id, kind, name, signature, visibility, "
-		" language, file_path, line, column, span_start, span_end) "
-		"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+		"INSERT OR IGNORE INTO graph_nodes "
+		"(project_id, node_type, name, signature, file_path, language, "
+		" start_row, start_col) "
+		"VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
 		error_ = "insertSymbol: prepare failed";
@@ -95,16 +95,36 @@ uint64_t GraphStore::insertSymbol(uint64_t project_id, uint64_t module_id,
 		sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(module_id));
 	else
 		sqlite3_bind_null(stmt, 2);
-	sqlite3_bind_text(stmt, 3, kind, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 4, name, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 5, signature, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 6, visibility, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 7, language, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 8, file_path, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int(stmt, 9, line);
-	sqlite3_bind_int(stmt, 10, column);
-	sqlite3_bind_int(stmt, 11, span_start);
-	sqlite3_bind_int(stmt, 12, span_end);
+	// Map string kind to node_type integer
+	int node_type = 7;
+	if (kind) {
+		std::string ks = kind;
+		if (ks == "function")
+			node_type = 0;
+		else if (ks == "method")
+			node_type = 1;
+		else if (ks == "class")
+			node_type = 2;
+		else if (ks == "struct")
+			node_type = 3;
+		else if (ks == "interface")
+			node_type = 4;
+		else if (ks == "enum")
+			node_type = 5;
+		else if (ks == "type_alias")
+			node_type = 6;
+	}
+	(void)module_id;
+	(void)visibility;
+	(void)span_start;
+	(void)span_end;
+	sqlite3_bind_int(stmt, 2, node_type);
+	sqlite3_bind_text(stmt, 3, name, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 4, signature, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 5, file_path, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 6, language, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_int(stmt, 7, line);
+	sqlite3_bind_int(stmt, 8, column);
 
 	if (sqlite3_step(stmt) != SQLITE_DONE) {
 		error_ = "insertSymbol: step failed";
@@ -113,20 +133,6 @@ uint64_t GraphStore::insertSymbol(uint64_t project_id, uint64_t module_id,
 	}
 	uint64_t id = static_cast<uint64_t>(sqlite3_last_insert_rowid(db_));
 	sqlite3_finalize(stmt);
-
-	// Auto-create symbol_status row (defaults all to 0)
-	{
-		const char *ss_sql =
-			"INSERT OR IGNORE INTO symbol_status (symbol_id) VALUES (?)";
-		sqlite3_stmt *ss_stmt = nullptr;
-		if (sqlite3_prepare_v2(db_, ss_sql, -1, &ss_stmt, nullptr) ==
-		    SQLITE_OK) {
-			sqlite3_bind_int64(ss_stmt, 1,
-					   static_cast<int64_t>(id));
-			sqlite3_step(ss_stmt);
-			sqlite3_finalize(ss_stmt);
-		}
-	}
 
 	return id;
 }
@@ -256,9 +262,10 @@ std::string GraphStore::getModuleTreeJson(uint64_t project_id)
 std::string GraphStore::findSymbolJson(uint64_t project_id, const char *name)
 {
 	const char *sql =
-		"SELECT id, module_id, kind, name, signature, visibility, "
-		"language, file_path, line, column "
-		"FROM symbols WHERE project_id = ? AND name = ?";
+		"SELECT gn.id, gn.node_type AS kind, gn.name, "
+		"COALESCE(gn.signature, gn.name), "
+		"gn.file_path, gn.language, gn.start_row AS line, gn.start_col AS column "
+		"FROM graph_nodes gn WHERE gn.project_id = ? AND gn.name = ?";
 	sqlite3_stmt *stmt = getCachedStmt(sql);
 	if (!stmt) {
 		return "{\"error\":\"findSymbolJson: prepare failed\",\"results\":[]}";
@@ -276,19 +283,17 @@ std::string GraphStore::findSymbolJson(uint64_t project_id, const char *name)
 		uint64_t id =
 			static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
 		const char *kind = reinterpret_cast<const char *>(
-			sqlite3_column_text(stmt, 2));
+			sqlite3_column_text(stmt, 1));
 		const char *sym_name = reinterpret_cast<const char *>(
-			sqlite3_column_text(stmt, 3));
+			sqlite3_column_text(stmt, 2));
 		const char *sig = reinterpret_cast<const char *>(
-			sqlite3_column_text(stmt, 4));
-		const char *vis = reinterpret_cast<const char *>(
-			sqlite3_column_text(stmt, 5));
-		const char *lang = reinterpret_cast<const char *>(
-			sqlite3_column_text(stmt, 6));
+			sqlite3_column_text(stmt, 3));
 		const char *fp = reinterpret_cast<const char *>(
-			sqlite3_column_text(stmt, 7));
-		int line = sqlite3_column_int(stmt, 8);
-		int col = sqlite3_column_int(stmt, 9);
+			sqlite3_column_text(stmt, 4));
+		const char *lang = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 5));
+		int line = sqlite3_column_int(stmt, 6);
+		int col = sqlite3_column_int(stmt, 7);
 
 		json << "{"
 		     << "\"id\":" << id << ","
@@ -297,7 +302,6 @@ std::string GraphStore::findSymbolJson(uint64_t project_id, const char *name)
 		     << "\","
 		     << "\"signature\":\"" << jsonEscape(sig ? sig : "")
 		     << "\","
-		     << "\"visibility\":\"" << (vis ? vis : "") << "\","
 		     << "\"language\":\"" << (lang ? lang : "") << "\","
 		     << "\"file_path\":\"" << jsonEscape(fp ? fp : "") << "\","
 		     << "\"line\":" << line << ","
@@ -369,129 +373,6 @@ std::string GraphStore::findSymbolJson(uint64_t project_id, const char *name)
 	return json.str();
 }
 
-// ── Phase B: Enhancement — Call Edges ─────────────────────────
-
-uint64_t GraphStore::insertCallEdge(uint64_t project_id,
-				    uint64_t caller_symbol_id,
-				    uint64_t callee_symbol_id,
-				    const char *provenance, int line, int col)
-{
-	const char *sql =
-		"INSERT OR IGNORE INTO call_edges "
-		"(project_id, caller_symbol_id, callee_symbol_id, provenance, line, col) "
-		"VALUES (?, ?, ?, ?, ?, ?)";
-	sqlite3_stmt *stmt = getCachedStmt(sql);
-	if (!stmt) {
-		return 0;
-	}
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(caller_symbol_id));
-	sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(callee_symbol_id));
-	sqlite3_bind_text(stmt, 4, provenance ? provenance : "static", -1,
-			  SQLITE_TRANSIENT);
-	sqlite3_bind_int(stmt, 5, line);
-	sqlite3_bind_int(stmt, 6, col);
-	if (sqlite3_step(stmt) != SQLITE_DONE) {
-		error_ = "insertCallEdge: step failed";
-		return 0;
-	}
-	// Return 0 when the row was ignored (duplicate); non-zero row id otherwise.
-	// Callers use this to decide whether to increment the edge counter.
-	if (sqlite3_changes(db_) == 0)
-		return 0;
-	return static_cast<uint64_t>(sqlite3_last_insert_rowid(db_));
-}
-
-uint64_t GraphStore::insertDependencyEdge(uint64_t project_id,
-					  uint64_t source_module_id,
-					  uint64_t target_module_id,
-					  const char *external_name,
-					  const char *kind)
-{
-	const char *sql =
-		"INSERT INTO dependency_edges "
-		"(project_id, source_module_id, target_module_id, external_name, kind) "
-		"VALUES (?, ?, ?, ?, ?)";
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-		error_ = "insertDependencyEdge: prepare failed";
-		return 0;
-	}
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(source_module_id));
-	sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(target_module_id));
-	sqlite3_bind_text(stmt, 4, external_name, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 5, kind, -1, SQLITE_TRANSIENT);
-	if (sqlite3_step(stmt) != SQLITE_DONE) {
-		error_ = "insertDependencyEdge: step failed";
-		sqlite3_finalize(stmt);
-		return 0;
-	}
-	uint64_t id = static_cast<uint64_t>(sqlite3_last_insert_rowid(db_));
-	sqlite3_finalize(stmt);
-	return id;
-}
-
-// ── Phase B: Enhancement — Metrics ────────────────────────────
-
-bool GraphStore::insertMetric(uint64_t project_id, const char *owner_type,
-			      uint64_t owner_id, int cyclomatic,
-			      int nesting_depth, int cognitive, int lines,
-			      int param_count, int call_count, int branch_count,
-			      int loop_count)
-{
-	const char *sql = "INSERT OR REPLACE INTO metrics "
-			  "(project_id, owner_type, owner_id, cyclomatic, "
-			  "nesting_depth, cognitive, lines, "
-			  " param_count, call_count, branch_count, loop_count) "
-			  "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-	sqlite3_stmt *stmt = getCachedStmt(sql);
-	if (!stmt) {
-		return false;
-	}
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_text(stmt, 2, owner_type, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(owner_id));
-	sqlite3_bind_int(stmt, 4, cyclomatic);
-	sqlite3_bind_int(stmt, 5, nesting_depth);
-	sqlite3_bind_int(stmt, 6, cognitive);
-	sqlite3_bind_int(stmt, 7, lines);
-	sqlite3_bind_int(stmt, 8, param_count);
-	sqlite3_bind_int(stmt, 9, call_count);
-	sqlite3_bind_int(stmt, 10, branch_count);
-	sqlite3_bind_int(stmt, 11, loop_count);
-	if (sqlite3_step(stmt) != SQLITE_DONE) {
-		error_ = "insertMetric: step failed";
-		return false;
-	}
-	return true;
-}
-
-// ── Phase B: Enhancement — Search Index ───────────────────────
-
-bool GraphStore::insertIntoSearchIndex(uint64_t symbol_id, uint64_t project_id,
-				       const char *title, const char *summary,
-				       const char *body)
-{
-	const char *sql =
-		"INSERT INTO search_index (symbol_id, project_id, title, summary, body) "
-		"VALUES (?, ?, ?, ?, ?)";
-	sqlite3_stmt *stmt = getCachedStmt(sql);
-	if (!stmt)
-		return false;
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(symbol_id));
-	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
-	sqlite3_bind_text(stmt, 3, title ? title : "", -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 4, summary ? summary : "", -1,
-			  SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 5, body ? body : "", -1, SQLITE_TRANSIENT);
-	if (sqlite3_step(stmt) != SQLITE_DONE) {
-		error_ = "insertIntoSearchIndex: step failed";
-		return false;
-	}
-	return true;
-}
-
 // ── Phase B: Enhancement — Embeddings ─────────────────────────
 
 bool GraphStore::insertEmbedding(uint64_t symbol_id, const float *vector_data,
@@ -543,29 +424,9 @@ bool GraphStore::insertEmbedding(uint64_t symbol_id, const float *vector_data,
 		}
 	}
 
-	// Also write to the vec0 embeddings table if available.
-	// Returns false when the vec0 INSERT fails (table missing or step error)
-	// so the caller can skip markEmbeddingReady and self-heal on rerun.
-	// node_vectors was already written above, so searchSemantic still works
-	// via graceful degradation even when vec0 is unavailable.
-	const char *sql =
-		"INSERT INTO embeddings (symbol_id, vector) VALUES (?, ?)";
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-		// embeddings table not available — vec0 extension not loaded
-		return false;
-	}
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(symbol_id));
-	sqlite3_bind_blob(stmt, 2, vec.data(),
-			  TARGET_DIM * static_cast<int>(sizeof(float)),
-			  SQLITE_TRANSIENT);
-	if (sqlite3_step(stmt) != SQLITE_DONE) {
-		// embeddings INSERT failed — node_vectors has the data, but
-		// vec0 is unavailable so embedding_ready must stay 0 for rerun.
-		sqlite3_finalize(stmt);
-		return false;
-	}
-	sqlite3_finalize(stmt);
+	// node_vectors was already written above (the only vector storage).
+	// The vec0 embeddings table was removed — searchSemantic reads
+	// node_vectors directly.
 	return true;
 }
 
@@ -574,8 +435,8 @@ bool GraphStore::insertEmbedding(uint64_t symbol_id, const float *vector_data,
 bool GraphStore::markCallgraphAndMetricsReady(uint64_t symbol_id)
 {
 	const char *sql =
-		"UPDATE symbol_status SET callgraph_ready=1, metrics_ready=1 "
-		"WHERE symbol_id = ?";
+		"UPDATE graph_nodes SET callgraph_ready=1, metrics_ready=1 "
+		"WHERE id = ?";
 	sqlite3_stmt *stmt = getCachedStmt(sql);
 	if (!stmt) {
 		return false;
@@ -591,7 +452,7 @@ bool GraphStore::markCallgraphAndMetricsReady(uint64_t symbol_id)
 bool GraphStore::markEmbeddingReady(uint64_t symbol_id)
 {
 	const char *sql =
-		"UPDATE symbol_status SET embedding_ready=1 WHERE symbol_id = ?";
+		"UPDATE graph_nodes SET embedding_ready=1 WHERE id = ?";
 	sqlite3_stmt *stmt = getCachedStmt(sql);
 	if (!stmt) {
 		return false;
@@ -606,8 +467,7 @@ bool GraphStore::markEmbeddingReady(uint64_t symbol_id)
 
 bool GraphStore::setSymbolStub(uint64_t symbol_id, bool is_stub)
 {
-	const char *sql =
-		"UPDATE symbol_status SET is_stub = ? WHERE symbol_id = ?";
+	const char *sql = "UPDATE graph_nodes SET is_stub = ? WHERE id = ?";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
 		error_ = "setSymbolStub: prepare failed";
@@ -638,12 +498,11 @@ std::vector<std::string> GraphStore::getUnreadyFiles(uint64_t project_id,
 		return {};
 	}
 
-	std::string sql = "SELECT DISTINCT s.file_path FROM symbols s "
-			  "JOIN symbol_status ss ON ss.symbol_id = s.id "
-			  "WHERE s.project_id = ? AND ss." +
+	std::string sql = "SELECT DISTINCT gn.file_path FROM graph_nodes gn "
+			  "WHERE gn.project_id = ? AND gn." +
 			  std::string(ready_field) +
 			  " = 0 "
-			  "ORDER BY s.file_path";
+			  "ORDER BY gn.file_path";
 	sqlite3_stmt *stmt = nullptr;
 	std::vector<std::string> files;
 	if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) !=
@@ -678,12 +537,11 @@ double GraphStore::getReadyRatio(uint64_t project_id, const char *ready_field)
 	}
 
 	std::string sql = "SELECT CASE WHEN COUNT(*) > 0 THEN "
-			  "CAST(SUM(ss." +
+			  "CAST(SUM(gn." +
 			  std::string(ready_field) +
 			  ") AS REAL) / COUNT(*) "
-			  "ELSE 0.0 END FROM symbols s "
-			  "JOIN symbol_status ss ON ss.symbol_id = s.id "
-			  "WHERE s.project_id = ?";
+			  "ELSE 0.0 END FROM graph_nodes gn "
+			  "WHERE gn.project_id = ? AND gn.node_type IN (0,1)";
 	sqlite3_stmt *stmt = nullptr;
 	double ratio = 0.0;
 	if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) ==

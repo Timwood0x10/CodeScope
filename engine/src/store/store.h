@@ -209,20 +209,6 @@ class GraphStore {
 	int64_t populateSymbolsFromGraph(uint64_t project_id);
 
 	/**
-	 * Copy cross-file call edges from graph_edges(edge_type=1) to call_edges.
-	 *
-	 * Must be called AFTER buildGraph + populateSymbolsFromGraph, because
-	 * the JOIN uses symbols.node_id (populated by populateSymbolsFromGraph)
-	 * to bridge graph_nodes IDs to symbol IDs.
-	 *
-	 * Uses INSERT OR IGNORE so it's idempotent.
-	 *
-	 * @param project_id  Project identifier.
-	 * @return Number of call edges copied.
-	 */
-	int64_t copyGraphEdgesToCallEdges(uint64_t project_id);
-
-	/**
 	 * Build the knowledge graph from previously stored semantic records.
 	 * Reads records from semantic_records table, runs GraphBuilder,
 	 * writes graph_nodes and graph_edges. Idempotent — deletes and
@@ -251,38 +237,6 @@ class GraphStore {
 	/** Get caller node IDs for a given target (callee) node via adjacency.
 	 *  Returns empty vector on miss. O(1) B-tree lookup via adjacency_rev. */
 	std::vector<uint64_t> getCallerIds(uint64_t node_id);
-
-	// ── String Interning ───────────────────────────────────────
-
-	/**
-	 * Intern a string into the symbol_names pool.
-	 * Returns the u32 ID for the given text. If the text already exists,
-	 * returns the existing ID. Thread-safety: caller must serialize
-	 * (same constraint as all GraphStore write paths).
-	 *
-	 * @param text  Null-terminated string to intern. Empty strings and
-	 *              nullptr are mapped to 0 (sentinel: "no value").
-	 * @return      symbol_names.id for the text, or 0 if text is empty/null.
-	 */
-	uint32_t internString(const char *text);
-
-	/**
-	 * Reverse lookup: retrieve the original text for a symbol_names ID.
-	 *
-	 * @param id  symbol_names.id (as returned by internString).
-	 * @return    The interned text, or empty string if id is 0 or not found.
-	 */
-	std::string getStringById(uint32_t id);
-
-	/**
-	 * Bulk-intern all unique string values from a set of columns in a
-	 * source table into symbol_names. Uses INSERT OR IGNORE for dedup.
-	 * Call this before populating _id foreign-key columns.
-	 *
-	 * @param sql  A SQL statement that returns a single TEXT column of
-	 *             strings to intern (e.g. "SELECT DISTINCT name FROM ...").
-	 */
-	void bulkInternFromQuery(const char *sql);
 
 	// ── Transactions ───────────────────────────────────────────
 
@@ -375,25 +329,6 @@ class GraphStore {
 	uint64_t insertCallEdge(uint64_t project_id, uint64_t caller_symbol_id,
 				uint64_t callee_symbol_id,
 				const char *provenance, int line, int col);
-
-	uint64_t insertDependencyEdge(uint64_t project_id,
-				      uint64_t source_module_id,
-				      uint64_t target_module_id,
-				      const char *external_name,
-				      const char *kind);
-
-	// ── Phase B: Enhancement — Metrics ────────────────────────
-
-	bool insertMetric(uint64_t project_id, const char *owner_type,
-			  uint64_t owner_id, int cyclomatic, int nesting_depth,
-			  int cognitive, int lines, int param_count,
-			  int call_count, int branch_count, int loop_count);
-
-	// ── Phase B: Enhancement — Search Index ───────────────────
-
-	bool insertIntoSearchIndex(uint64_t symbol_id, uint64_t project_id,
-				   const char *title, const char *summary,
-				   const char *body);
 
 	// ── Phase B: Enhancement — Embeddings ─────────────────────
 
@@ -497,23 +432,6 @@ class GraphStore {
 	// ── On-demand call graph queries (from semantic_records, not pre-built) ──
 
 	/**
-	 * Find callers of a function by querying semantic_records directly.
-	 * No pre-built call edges needed — builds the result on-the-fly in SQL.
-	 * Returns JSON: {"callers":[{"name":"...","file":"...","line":...},...]}
-	 * Returns "[]" if no callers found.
-	 */
-	std::string getCallersFromRecords(uint64_t project_id,
-					  const char *function_name);
-
-	/**
-	 * Find callees of a function by querying semantic_records directly.
-	 * Returns JSON: {"callees":[{"name":"...","file":"...","line":...},...]}
-	 * Returns "[]" if no callees found.
-	 */
-	std::string getCalleesFromRecords(uint64_t project_id,
-					  const char *function_name);
-
-	/**
 	 * Create indexes after bulk data load.
 	 * Call this once after all semantic_records and graph_nodes have been inserted.
 	 */
@@ -569,16 +487,6 @@ class GraphStore {
 	sqlite3_stmt *stmt_fts_map_ = nullptr; // INSERT INTO fts_node_map
 	sqlite3_stmt *stmt_fts_ = nullptr; // INSERT INTO code_fts
 	sqlite3_stmt *stmt_vector_ = nullptr; // INSERT INTO node_vectors
-
-	// String interning cache: text → symbol_names.id.
-	// Populated lazily by internString() and cleared by bulkInternFromQuery().
-	// Bounded by the number of unique strings (~500K for a 4M-node project).
-	//
-	// Thread safety: NO mutex. All access must be serialized by the caller
-	// (single writer thread in enhance/index, or external locking). This
-	// matches the stmt_cache_ convention. If concurrent queries are
-	// introduced in the future, a mutex must be added here.
-	std::unordered_map<std::string, uint32_t> intern_cache_;
 
 	// Dynamic statement cache keyed by SQL text. Reused across Phase B writes.
 	// The mutex only guards the cache map (insert/find/reset). The returned

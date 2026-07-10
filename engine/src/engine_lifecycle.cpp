@@ -54,33 +54,8 @@ int engine_init(const char *db_path)
 	// sqlite-vec is statically compiled into the binary — no runtime
 	// load_extension needed. The auto-extension registered above makes
 	// vec0 available on every connection.
-	{
-		sqlite3 *db = g_store->handle();
-		if (db) {
-			char *sql_err = nullptr;
-			int exec_rc = sqlite3_exec(
-				db,
-				"CREATE VIRTUAL TABLE IF NOT EXISTS embeddings USING vec0("
-				"    symbol_id INTEGER PRIMARY KEY,"
-				"    vector FLOAT[384]"
-				");",
-				nullptr, nullptr, &sql_err);
-			if (exec_rc != SQLITE_OK) {
-				// Surface the failure: a missing embeddings table would later
-				// make every INSERT INTO embeddings fail with no obvious root
-				// cause, so log it explicitly rather than silently freeing.
-				fprintf(stderr,
-					"engine: sqlite-vec table creation failed (rc=%d): %s [module=engine, method=engine_init]\n",
-					exec_rc,
-					sql_err ? sql_err : "unknown error");
-			} else {
-				fprintf(stderr,
-					"engine: sqlite-vec loaded (static)\n");
-			}
-			if (sql_err)
-				sqlite3_free(sql_err);
-		}
-	}
+	// Note: vec0 embeddings table is no longer created — node_vectors
+	// is the sole vector storage. searchSemantic reads node_vectors directly.
 
 	return 0;
 }

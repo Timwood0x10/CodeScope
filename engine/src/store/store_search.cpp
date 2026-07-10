@@ -173,17 +173,15 @@ std::string GraphStore::searchCode(uint64_t project_id, const char *query,
 
 	sqlite3_stmt *stmt = nullptr;
 	std::string sql =
-		"SELECT ir.id AS node_id, ir.name, ir.kind AS node_type, f.path AS "
+		"SELECT gn.id AS node_id, gn.name, gn.node_type, gn.file_path AS "
 		"file_path, "
-		"ir.start_row, ir.start_col, ir.end_row, ir.end_col, ir.language, "
+		"gn.start_row, gn.start_col, gn.end_row, gn.end_col, gn.language, "
 		"rank "
 		"FROM code_fts "
-		"JOIN ir_nodes ir ON ir.id = code_fts.node_id "
-		"JOIN files f ON f.id = ir.file_id "
+		"JOIN graph_nodes gn ON gn.id = code_fts.node_id "
 		"WHERE code_fts MATCH ? AND code_fts.project_id = ? "
 		"ORDER BY "
-		"  CASE WHEN ir.kind IN (2,3,4) THEN 0 ELSE 1 END, " // FunctionDecl(2)/ClassDecl(3)/MethodDecl(4)
-		// first
+		"  CASE WHEN gn.node_type IN (2,3,4) THEN 0 ELSE 1 END, "
 		"  rank "
 		"LIMIT ?";
 
@@ -263,22 +261,20 @@ bool GraphStore::setComplexity(uint64_t project_id, uint64_t graph_node_id,
 			       uint64_t cyclomatic, uint64_t cognitive,
 			       uint64_t nesting_depth, uint64_t decision_points)
 {
+	// Complexity is stored directly on graph_nodes (no separate node_complexity table)
+	const char *sql = "UPDATE graph_nodes SET cyclomatic=?, cognitive=?, "
+			  "nesting_depth=? WHERE id=? AND project_id=?";
 	sqlite3_stmt *stmt = nullptr;
-	const char *sql = "INSERT OR REPLACE INTO node_complexity "
-			  "(project_id, graph_node_id, cyclomatic, cognitive, "
-			  "nesting_depth, decision_points) "
-			  "VALUES (?, ?, ?, ?, ?, ?)";
 	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
 	if (!stmt) {
 		error_ = "setComplexity: prepare failed";
 		return false;
 	}
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(graph_node_id));
-	sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(cyclomatic));
-	sqlite3_bind_int64(stmt, 4, static_cast<int64_t>(cognitive));
-	sqlite3_bind_int64(stmt, 5, static_cast<int64_t>(nesting_depth));
-	sqlite3_bind_int64(stmt, 6, static_cast<int64_t>(decision_points));
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(cyclomatic));
+	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(cognitive));
+	sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(nesting_depth));
+	sqlite3_bind_int64(stmt, 4, static_cast<int64_t>(graph_node_id));
+	sqlite3_bind_int64(stmt, 5, static_cast<int64_t>(project_id));
 	int rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	return rc == SQLITE_DONE;
@@ -289,19 +285,17 @@ std::string GraphStore::getComplexityJson(uint64_t project_id,
 {
 	sqlite3_stmt *stmt = nullptr;
 	const char *sql =
-		"SELECT nc.cyclomatic, nc.cognitive, nc.nesting_depth, "
-		"nc.decision_points, "
+		"SELECT gn.cyclomatic, gn.cognitive, gn.nesting_depth, 0, "
 		"gn.name, gn.file_path, gn.start_row, gn.start_col "
-		"FROM node_complexity nc "
-		"JOIN graph_nodes gn ON gn.id = nc.graph_node_id "
-		"WHERE nc.project_id = ? AND nc.graph_node_id = ?";
+		"FROM graph_nodes gn "
+		"WHERE gn.id = ? AND gn.project_id = ?";
 	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
 	if (!stmt) {
 		error_ = "getComplexityJson: prepare failed";
 		return "{\"error\":\"getComplexityJson: prepare failed\"}";
 	}
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(graph_node_id));
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(graph_node_id));
+	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
 
 	std::string result;
 	if (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -374,10 +368,9 @@ std::string GraphStore::searchSemantic(uint64_t project_id,
 	// Load all vectors for this project and find closest by cosine similarity
 	sqlite3_stmt *stmt = nullptr;
 	const char *sql =
-		"SELECT nv.node_id, nv.vector, ir.name, ir.kind, f.path "
+		"SELECT nv.node_id, nv.vector, gn.name, gn.node_type, gn.file_path "
 		"FROM node_vectors nv "
-		"JOIN ir_nodes ir ON ir.id = nv.node_id "
-		"JOIN files f ON f.id = ir.file_id "
+		"JOIN graph_nodes gn ON gn.id = nv.node_id "
 		"WHERE nv.project_id = ?";
 	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
 	if (!stmt) {

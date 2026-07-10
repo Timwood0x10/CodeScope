@@ -1105,16 +1105,6 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 				.count();
 	}
 
-	// ── Step 2: Populate symbols table from graph_nodes ──
-	// Creates symbol entries with node_id back-references for cross-file copy.
-	// Also creates symbol_status rows with default flags (all 0).
-	g_store->populateSymbolsFromGraph(project_id);
-
-	// ── Step 3: Copy cross-file edges ──
-	// Copies graph_edges(edge_type=1) → call_edges via symbols.node_id JOIN.
-	// This was previously done in enhance (the async second parse).
-	g_store->copyGraphEdgesToCallEdges(project_id);
-
 	// ── Step 4: Build FTS index ──
 	// Bulk-builds code_fts + fts_node_map from graph_nodes.
 	// Uses existing buildFTSFromGraph which does one SQL scan.
@@ -1186,7 +1176,7 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 			sqlite3_finalize(stmt);
 		}
 		// Also report symbols and call_edges counts
-		sql = "SELECT COUNT(*) FROM symbols WHERE project_id = " +
+		sql = "SELECT COUNT(*) FROM graph_nodes WHERE project_id = " +
 		      std::to_string(project_id);
 		if (sqlite3_prepare_v2(g_store->handle(), sql.c_str(), -1,
 				       &stmt, nullptr) == SQLITE_OK) {
@@ -1195,8 +1185,8 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 				       << sqlite3_column_int64(stmt, 0);
 			sqlite3_finalize(stmt);
 		}
-		sql = "SELECT COUNT(*) FROM call_edges WHERE project_id = " +
-		      std::to_string(project_id);
+		sql = "SELECT COUNT(*) FROM graph_edges WHERE project_id = " +
+		      std::to_string(project_id) + " AND edge_type = 1";
 		if (sqlite3_prepare_v2(g_store->handle(), sql.c_str(), -1,
 				       &stmt, nullptr) == SQLITE_OK) {
 			if (sqlite3_step(stmt) == SQLITE_ROW)

@@ -48,7 +48,7 @@ char *engine_find_symbol(uint64_t project_id, const char *symbol_name)
 		// Query project languages
 		std::string langs;
 		const char *lsql =
-			"SELECT DISTINCT language || ',' FROM symbols WHERE project_id = ? LIMIT 5";
+			"SELECT DISTINCT language || ',' FROM graph_nodes WHERE project_id = ? AND node_type IN (0,1) LIMIT 5";
 		sqlite3_stmt *lstmt = nullptr;
 		if (sqlite3_prepare_v2(g_store->handle(), lsql, -1, &lstmt,
 				       nullptr) == SQLITE_OK) {
@@ -70,7 +70,7 @@ char *engine_find_symbol(uint64_t project_id, const char *symbol_name)
 		// Check total symbols
 		int total = 0;
 		const char *csql =
-			"SELECT COUNT(*) FROM symbols WHERE project_id = ?";
+			"SELECT COUNT(*) FROM graph_nodes WHERE project_id = ? AND node_type IN (0,1)";
 		sqlite3_stmt *cstmt = nullptr;
 		if (sqlite3_prepare_v2(g_store->handle(), csql, -1, &cstmt,
 				       nullptr) == SQLITE_OK) {
@@ -156,10 +156,8 @@ char *engine_find_symbol(uint64_t project_id, const char *symbol_name)
 // this function only runs the SQL-based graph finalization steps:
 //
 //   1. buildGraph (reads semantic_records → graph_nodes + graph_edges + CSR)
-//   2. populateSymbolsFromGraph (symbols + symbol_status from graph_nodes)
-//   3. copyGraphEdgesToCallEdges (cross-file edges → call_edges)
-//   4. buildFTSFromGraph (code_fts + fts_node_map)
-//   5. resolveStagedMetrics (pre-computed metrics → metrics + ready flags)
+//   2. buildFTSFromGraph (code_fts + fts_node_map)
+//   3. resolveStagedMetrics (pre-computed metrics → graph_nodes columns)
 //
 // No re-parse, no re-translate, no regex extraction.
 
@@ -193,33 +191,7 @@ char *engine_enhance_project(uint64_t project_id)
 				.count());
 	}
 
-	// Step 2: Populate symbols
-	int64_t n_syms = 0;
-	{
-		auto t = Clock::now();
-		n_syms = g_store->populateSymbolsFromGraph(project_id);
-		fprintf(stderr,
-			"enhance: populateSymbols %lldms (%lld symbols)\n",
-			(long long)std::chrono::duration_cast<
-				std::chrono::milliseconds>(Clock::now() - t)
-				.count(),
-			(long long)n_syms);
-	}
-
-	// Step 3: Copy cross-file call edges
-	int64_t n_edges = 0;
-	{
-		auto t = Clock::now();
-		n_edges = g_store->copyGraphEdgesToCallEdges(project_id);
-		fprintf(stderr,
-			"enhance: copyCrossFileEdges %lldms (%lld edges)\n",
-			(long long)std::chrono::duration_cast<
-				std::chrono::milliseconds>(Clock::now() - t)
-				.count(),
-			(long long)n_edges);
-	}
-
-	// Step 4: Build FTS
+	// Step 2: Build FTS (symbols no longer synced — graph_nodes is canonical)
 	{
 		auto t = Clock::now();
 		g_store->buildFTSFromGraph(project_id);
@@ -253,7 +225,6 @@ char *engine_enhance_project(uint64_t project_id)
 	std::ostringstream json;
 	json << "{"
 	     << "\"status\":\"ok\""
-	     << ",\"symbols\":" << n_syms << ",\"call_edges\":" << n_edges
 	     << ",\"time_ms\":" << total_ms << "}";
 	return dupString(json.str());
 }
@@ -268,12 +239,11 @@ char *engine_get_enhancement_status(uint64_t project_id)
 	auto db = g_store->handle();
 	const char *sql = "SELECT "
 			  "COUNT(*) as total, "
-			  "COALESCE(SUM(ss.callgraph_ready),0), "
-			  "COALESCE(SUM(ss.metrics_ready),0), "
-			  "COALESCE(SUM(ss.embedding_ready),0) "
-			  "FROM symbols s "
-			  "LEFT JOIN symbol_status ss ON ss.symbol_id = s.id "
-			  "WHERE s.project_id = ?";
+			  "COALESCE(SUM(gn.callgraph_ready),0), "
+			  "COALESCE(SUM(gn.metrics_ready),0), "
+			  "COALESCE(SUM(gn.embedding_ready),0) "
+			  "FROM graph_nodes gn "
+			  "WHERE gn.project_id = ? AND gn.node_type IN (0,1)";
 	sqlite3_stmt *stmt = nullptr;
 	int total = 0, cg = 0, metrics = 0, emb = 0;
 	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
@@ -330,19 +300,8 @@ char *engine_find_callers_adaptive(uint64_t project_id, const char *symbol_name)
 	if (!symbol_name || !*symbol_name)
 		return dupString("{\"error\":\"symbol_name is empty\"}");
 
-	// Check if callgraph is ready for this symbol
-	double cg_ratio = g_store->getReadyRatio(project_id, "callgraph_ready");
-	if (cg_ratio > 0.5) {
-		// Use new call_edges table
-		return dupString(
-			g_store->findCallersJson(project_id, symbol_name));
-	}
-
-	// Fall back to old query engine
-	if (!g_query)
-		return dupString(
-			"{\"error\":\"query engine not initialized\"}");
-	return dupString(g_query->getCallers(project_id, symbol_name));
+	// findCallersJson reads graph_edges directly (no call_edges dependency)
+	return dupString(g_store->findCallersJson(project_id, symbol_name));
 }
 
 // ─── Phase C: Adaptive Find Callees ──────────────────────────
@@ -393,7 +352,7 @@ char *engine_project_overview(uint64_t project_id)
 	// Languages
 	{
 		const char *sql =
-			"SELECT DISTINCT language FROM symbols WHERE project_id = ?";
+			"SELECT DISTINCT language FROM graph_nodes WHERE project_id = ? AND node_type IN (0,1)";
 		sqlite3_stmt *stmt = nullptr;
 		json << "\"languages\":[";
 		bool first = true;
@@ -434,12 +393,11 @@ char *engine_project_overview(uint64_t project_id)
 	{
 		const char *sql =
 			"SELECT COUNT(*), "
-			"COALESCE(SUM(ss.callgraph_ready),0), "
-			"COALESCE(SUM(ss.metrics_ready),0), "
-			"COALESCE(SUM(ss.embedding_ready),0) "
-			"FROM symbols s "
-			"LEFT JOIN symbol_status ss ON ss.symbol_id = s.id "
-			"WHERE s.project_id = ?";
+			"COALESCE(SUM(gn.callgraph_ready),0), "
+			"COALESCE(SUM(gn.metrics_ready),0), "
+			"COALESCE(SUM(gn.embedding_ready),0) "
+			"FROM graph_nodes gn "
+			"WHERE gn.project_id = ? AND gn.node_type IN (0,1)";
 		sqlite3_stmt *stmt = nullptr;
 		if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
 		    SQLITE_OK) {
@@ -655,12 +613,12 @@ char *engine_build_context(uint64_t project_id, const char *query)
 	bool cg_ready = (cg_ratio > 0.1);
 	if (cg_ready && (intent == "callgraph" || intent == "general")) {
 		json << "\"callgraph_available\":true,";
-		// Add a sample of call edges
+		// Add a sample of call edges (from graph_edges)
 		const char *csql =
-			"SELECT caller.name, callee.name FROM call_edges ce "
-			"JOIN symbols caller ON caller.id = ce.caller_symbol_id "
-			"JOIN symbols callee ON callee.id = ce.callee_symbol_id "
-			"WHERE ce.project_id = ? LIMIT 10";
+			"SELECT gn1.name, gn2.name FROM graph_edges ge "
+			"JOIN graph_nodes gn1 ON gn1.id = ge.source_node_id "
+			"JOIN graph_nodes gn2 ON gn2.id = ge.target_node_id "
+			"WHERE ge.project_id = ? AND ge.edge_type = 1 LIMIT 10";
 		sqlite3_stmt *cstmt = nullptr;
 		if (sqlite3_prepare_v2(db, csql, -1, &cstmt, nullptr) ==
 		    SQLITE_OK) {

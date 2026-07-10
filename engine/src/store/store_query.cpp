@@ -126,65 +126,7 @@ std::string GraphStore::searchUnifiedJson(uint64_t project_id,
 	if (limit <= 0 || limit > 100)
 		limit = 20;
 
-	// Check embedding readiness — if > 50% ready, use semantic search via
-	// embeddings
-	double emb_ratio = getReadyRatio(project_id, "embedding_ready");
-
-	if (emb_ratio > 0.5) {
-		// Use semantic search: compute n-gram vector for query, compare via vec0
-		// Fallback: use FTS search_index since vec0 query is complex without
-		// sqlite-vec For now, use search_index FTS with relevance ranking
-		(void)emb_ratio;
-	}
-
-	// Try new search_index FTS5 first
-	{
-		std::string sql =
-			"SELECT symbol_id, name, signature, content, rank "
-			"FROM search_index WHERE search_index MATCH ? AND project_id = ? "
-			"ORDER BY rank LIMIT ?";
-		sqlite3_stmt *stmt = nullptr;
-		if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) ==
-		    SQLITE_OK) {
-			// Build FTS5 query: append * for prefix matching
-			std::string fts_query = query;
-			if (!fts_query.empty() && fts_query.back() != '*')
-				fts_query += "*";
-			sqlite3_bind_text(stmt, 1, fts_query.c_str(), -1,
-					  SQLITE_TRANSIENT);
-			sqlite3_bind_int64(stmt, 2,
-					   static_cast<int64_t>(project_id));
-			sqlite3_bind_int(stmt, 3, limit);
-
-			std::ostringstream json;
-			json << "{\"method\":\"fts\",\"results\":[";
-			bool first = true;
-			while (sqlite3_step(stmt) == SQLITE_ROW) {
-				if (!first)
-					json << ",";
-				first = false;
-				int64_t sym_id = sqlite3_column_int64(stmt, 0);
-				const char *n = reinterpret_cast<const char *>(
-					sqlite3_column_text(stmt, 1));
-				const char *sig =
-					reinterpret_cast<const char *>(
-						sqlite3_column_text(stmt, 2));
-				json << "{"
-				     << "\"symbol_id\":" << sym_id << ","
-				     << "\"name\":\"" << jsonEscape(n ? n : "")
-				     << "\","
-				     << "\"signature\":\""
-				     << jsonEscape(sig ? sig : "") << "\""
-				     << "}";
-			}
-			sqlite3_finalize(stmt);
-			json << "]}";
-			if (!first)
-				return json.str(); // had results
-		}
-	}
-
-	// Fallback to old code_fts table
+	// Use code_fts FTS5 directly (search_index was removed — redundant).
 	{
 		std::string sql =
 			"SELECT node_id, name, qualified_name, file_path, rank "
@@ -292,103 +234,14 @@ std::string GraphStore::searchGraphFallback(uint64_t project_id,
 std::string GraphStore::findCallersJson(uint64_t project_id,
 					const char *symbol_name)
 {
-	// Query call_edges table via symbols name lookup
-	const char *sql =
-		"SELECT DISTINCT caller.id, caller.name, caller.kind, "
-		"caller.file_path, caller.line "
-		"FROM call_edges ce "
-		"JOIN symbols caller ON caller.id = ce.caller_symbol_id "
-		"JOIN symbols callee ON callee.id = ce.callee_symbol_id "
-		"WHERE callee.name = ? AND ce.project_id = ? "
-		"ORDER BY caller.name";
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-		return "{\"error\":\"findCallersJson: prepare failed\",\"results\":[]}";
-	}
-	sqlite3_bind_text(stmt, 1, symbol_name, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
-
-	std::ostringstream json;
-	json << "{\"callers\":[";
-	bool first = true;
-	while (sqlite3_step(stmt) == SQLITE_ROW) {
-		if (!first)
-			json << ",";
-		first = false;
-		int64_t id = sqlite3_column_int64(stmt, 0);
-		const char *n = reinterpret_cast<const char *>(
-			sqlite3_column_text(stmt, 1));
-		const char *k = reinterpret_cast<const char *>(
-			sqlite3_column_text(stmt, 2));
-		const char *fp = reinterpret_cast<const char *>(
-			sqlite3_column_text(stmt, 3));
-		int line = sqlite3_column_int(stmt, 4);
-		json << "{"
-		     << "\"id\":" << id << ","
-		     << "\"name\":\"" << jsonEscape(n ? n : "") << "\","
-		     << "\"kind\":\"" << (k ? k : "") << "\","
-		     << "\"file_path\":\"" << jsonEscape(fp ? fp : "") << "\","
-		     << "\"line\":" << line << "}";
-	}
-	sqlite3_finalize(stmt);
-	json << "]}";
-	return json.str();
-}
-
-std::string GraphStore::findCalleesJson(uint64_t project_id,
-					const char *symbol_name)
-{
-	const char *sql =
-		"SELECT DISTINCT callee.id, callee.name, callee.kind, "
-		"callee.file_path, callee.line "
-		"FROM call_edges ce "
-		"JOIN symbols caller ON caller.id = ce.caller_symbol_id "
-		"JOIN symbols callee ON callee.id = ce.callee_symbol_id "
-		"WHERE caller.name = ? AND ce.project_id = ? "
-		"ORDER BY callee.name";
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-		return "{\"error\":\"findCalleesJson: prepare failed\",\"results\":[]}";
-	}
-	sqlite3_bind_text(stmt, 1, symbol_name, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
-
-	std::ostringstream json;
-	json << "{\"callees\":[";
-	bool first = true;
-	while (sqlite3_step(stmt) == SQLITE_ROW) {
-		// Same column order: s.id, s.name, s.kind, s.file_path, s.line
-		// but s is from the callee side... fix: actually the caller side is used
-		if (!first)
-			json << ",";
-		first = false;
-		int64_t id = sqlite3_column_int64(stmt, 0);
-		const char *n = reinterpret_cast<const char *>(
-			sqlite3_column_text(stmt, 1));
-		const char *k = reinterpret_cast<const char *>(
-			sqlite3_column_text(stmt, 2));
-		const char *fp = reinterpret_cast<const char *>(
-			sqlite3_column_text(stmt, 3));
-		int line = sqlite3_column_int(stmt, 4);
-		json << "{"
-		     << "\"id\":" << id << ","
-		     << "\"name\":\"" << jsonEscape(n ? n : "") << "\","
-		     << "\"kind\":\"" << (k ? k : "") << "\","
-		     << "\"file_path\":\"" << jsonEscape(fp ? fp : "") << "\","
-		     << "\"line\":" << line << "}";
-	}
-	sqlite3_finalize(stmt);
-	json << "]}";
-
-	// If call_edges table was empty, fall back to graph_edges (new pipeline)
-	if (first) {
-		std::ostringstream ge_json;
-		ge_json << "{\"callees\":[";
-		sqlite3_stmt *id_stmt = nullptr;
-		uint64_t gn_id = 0;
+	// Find the node ID first, then query graph_edges for callers.
+	// No call_edges/symbols dual-path — graph_edges is canonical.
+	uint64_t gn_id = 0;
+	{
 		const char *id_sql =
 			"SELECT id FROM graph_nodes WHERE project_id = ? AND name = ? "
-			"AND node_type IN (0,1,6) LIMIT 1";
+			"AND node_type IN (0,1) LIMIT 1";
+		sqlite3_stmt *id_stmt = nullptr;
 		if (sqlite3_prepare_v2(db_, id_sql, -1, &id_stmt, nullptr) ==
 		    SQLITE_OK) {
 			sqlite3_bind_int64(id_stmt, 1,
@@ -400,72 +253,130 @@ std::string GraphStore::findCalleesJson(uint64_t project_id,
 					sqlite3_column_int64(id_stmt, 0));
 			sqlite3_finalize(id_stmt);
 		}
-		if (gn_id > 0) {
-			const char *ge_sql =
-				"SELECT gn.id, gn.name, gn.node_type, gn.file_path, gn.start_row "
-				"FROM graph_edges ge "
-				"JOIN graph_nodes gn ON gn.id = ge.target_node_id "
-				"WHERE ge.project_id = ? AND ge.source_node_id = ? "
-				"AND ge.edge_type = 1 ORDER BY gn.name LIMIT 50";
-			sqlite3_stmt *ge_stmt = nullptr;
-			static const char *type_names[] = {
-				"function",  "method", "class",
-				"interface", "enum",   "typealias",
-				"variable",
-			};
-			if (sqlite3_prepare_v2(db_, ge_sql, -1, &ge_stmt,
-					       nullptr) == SQLITE_OK) {
-				sqlite3_bind_int64(
-					ge_stmt, 1,
-					static_cast<int64_t>(project_id));
-				sqlite3_bind_int64(ge_stmt, 2,
-						   static_cast<int64_t>(gn_id));
-				bool ge_first = true;
-				while (sqlite3_step(ge_stmt) == SQLITE_ROW) {
-					if (!ge_first)
-						ge_json << ",";
-					ge_first = false;
-					uint64_t gid = static_cast<uint64_t>(
-						sqlite3_column_int64(ge_stmt,
-								     0));
-					int nt = sqlite3_column_int(ge_stmt, 2);
-					const char *gn =
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(
-								ge_stmt, 1));
-					const char *fp =
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(
-								ge_stmt, 3));
-					int ln = sqlite3_column_int(ge_stmt, 4);
-					const char *tn =
-						(nt >= 0 && nt < 7) ?
-							type_names[nt] :
-							"symbol";
-					ge_json << "{\"id\":" << gid
-						<< ",\"name\":\""
-						<< (gn ? gn : "") << "\""
-						<< ",\"kind\":\"" << tn << "\""
-						<< ",\"file_path\":\""
-						<< (fp ? fp : "") << "\""
-						<< ",\"line\":" << ln << "}";
-				}
-				sqlite3_finalize(ge_stmt);
-			}
-		}
-		ge_json << "]}";
-		return ge_json.str();
 	}
+	if (gn_id == 0)
+		return "{\"callers\":[]}";
 
+	std::ostringstream json;
+	json << "{\"callers\":[";
+	const char *ge_sql =
+		"SELECT gn.id, gn.name, gn.node_type, gn.file_path, gn.start_row "
+		"FROM graph_edges ge "
+		"JOIN graph_nodes gn ON gn.id = ge.source_node_id "
+		"WHERE ge.project_id = ? AND ge.target_node_id = ? "
+		"AND ge.edge_type = 1 ORDER BY gn.name LIMIT 50";
+	sqlite3_stmt *ge_stmt = nullptr;
+	static const char *type_names[] = {
+		"function", "method", "class", "interface", "enum", "typealias",
+	};
+	if (sqlite3_prepare_v2(db_, ge_sql, -1, &ge_stmt, nullptr) ==
+	    SQLITE_OK) {
+		sqlite3_bind_int64(ge_stmt, 1,
+				   static_cast<int64_t>(project_id));
+		sqlite3_bind_int64(ge_stmt, 2, static_cast<int64_t>(gn_id));
+		bool first = true;
+		while (sqlite3_step(ge_stmt) == SQLITE_ROW) {
+			if (!first)
+				json << ",";
+			first = false;
+			uint64_t gid = static_cast<uint64_t>(
+				sqlite3_column_int64(ge_stmt, 0));
+			int nt = sqlite3_column_int(ge_stmt, 2);
+			const char *gn = reinterpret_cast<const char *>(
+				sqlite3_column_text(ge_stmt, 1));
+			const char *fp = reinterpret_cast<const char *>(
+				sqlite3_column_text(ge_stmt, 3));
+			int ln = sqlite3_column_int(ge_stmt, 4);
+			const char *tn = (nt >= 0 && nt < 6) ? type_names[nt] :
+							       "symbol";
+			json << "{\"id\":" << gid << ",\"name\":\""
+			     << (gn ? gn : "") << "\""
+			     << ",\"kind\":\"" << tn << "\""
+			     << ",\"file_path\":\"" << (fp ? fp : "") << "\""
+			     << ",\"line\":" << ln << "}";
+		}
+		sqlite3_finalize(ge_stmt);
+	}
+	json << "]}";
+	return json.str();
+}
+
+std::string GraphStore::findCalleesJson(uint64_t project_id,
+					const char *symbol_name)
+{
+	// Find the node ID first, then query graph_edges for callees.
+	// No call_edges/symbols dual-path — graph_edges is canonical.
+	uint64_t gn_id = 0;
+	{
+		const char *id_sql =
+			"SELECT id FROM graph_nodes WHERE project_id = ? AND name = ? "
+			"AND node_type IN (0,1) LIMIT 1";
+		sqlite3_stmt *id_stmt = nullptr;
+		if (sqlite3_prepare_v2(db_, id_sql, -1, &id_stmt, nullptr) ==
+		    SQLITE_OK) {
+			sqlite3_bind_int64(id_stmt, 1,
+					   static_cast<int64_t>(project_id));
+			sqlite3_bind_text(id_stmt, 2, symbol_name, -1,
+					  SQLITE_TRANSIENT);
+			if (sqlite3_step(id_stmt) == SQLITE_ROW)
+				gn_id = static_cast<uint64_t>(
+					sqlite3_column_int64(id_stmt, 0));
+			sqlite3_finalize(id_stmt);
+		}
+	}
+	if (gn_id == 0)
+		return "{\"callees\":[]}";
+
+	std::ostringstream json;
+	json << "{\"callees\":[";
+	const char *ge_sql =
+		"SELECT gn.id, gn.name, gn.node_type, gn.file_path, gn.start_row "
+		"FROM graph_edges ge "
+		"JOIN graph_nodes gn ON gn.id = ge.target_node_id "
+		"WHERE ge.project_id = ? AND ge.source_node_id = ? "
+		"AND ge.edge_type = 1 ORDER BY gn.name LIMIT 50";
+	sqlite3_stmt *ge_stmt = nullptr;
+	static const char *type_names[] = {
+		"function", "method", "class", "interface", "enum", "typealias",
+	};
+	if (sqlite3_prepare_v2(db_, ge_sql, -1, &ge_stmt, nullptr) ==
+	    SQLITE_OK) {
+		sqlite3_bind_int64(ge_stmt, 1,
+				   static_cast<int64_t>(project_id));
+		sqlite3_bind_int64(ge_stmt, 2, static_cast<int64_t>(gn_id));
+		bool first = true;
+		while (sqlite3_step(ge_stmt) == SQLITE_ROW) {
+			if (!first)
+				json << ",";
+			first = false;
+			uint64_t gid = static_cast<uint64_t>(
+				sqlite3_column_int64(ge_stmt, 0));
+			int nt = sqlite3_column_int(ge_stmt, 2);
+			const char *gn = reinterpret_cast<const char *>(
+				sqlite3_column_text(ge_stmt, 1));
+			const char *fp = reinterpret_cast<const char *>(
+				sqlite3_column_text(ge_stmt, 3));
+			int ln = sqlite3_column_int(ge_stmt, 4);
+			const char *tn = (nt >= 0 && nt < 6) ? type_names[nt] :
+							       "symbol";
+			json << "{\"id\":" << gid << ",\"name\":\""
+			     << (gn ? gn : "") << "\""
+			     << ",\"kind\":\"" << tn << "\""
+			     << ",\"file_path\":\"" << (fp ? fp : "") << "\""
+			     << ",\"line\":" << ln << "}";
+		}
+		sqlite3_finalize(ge_stmt);
+	}
+	json << "]}";
 	return json.str();
 }
 
 std::string GraphStore::getEntryPointsJson(uint64_t project_id)
 {
 	const char *sql =
-		"SELECT s.id, s.name, s.kind, s.file_path, s.line, ep.kind as ep_kind "
+		"SELECT gn.id, gn.name, gn.node_type, gn.file_path, gn.start_row, ep.kind as ep_kind "
 		"FROM entry_points ep "
-		"JOIN symbols s ON s.id = ep.symbol_id "
+		"JOIN graph_nodes gn ON gn.id = ep.symbol_id "
 		"WHERE ep.project_id = ? "
 		"ORDER BY ep.kind";
 	sqlite3_stmt *stmt = nullptr;
@@ -552,7 +463,8 @@ std::string GraphStore::tracePathJson(uint64_t project_id,
 	// 1. Find symbol IDs
 	auto syms = [&](const char *name) -> uint64_t {
 		const char *sql =
-			"SELECT id FROM symbols WHERE project_id = ? AND name = ? LIMIT 1";
+			"SELECT id FROM graph_nodes WHERE project_id = ? AND name = ? "
+			"AND node_type IN (0,1) LIMIT 1";
 		sqlite3_stmt *stmt = nullptr;
 		if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) !=
 		    SQLITE_OK)
@@ -589,8 +501,8 @@ std::string GraphStore::tracePathJson(uint64_t project_id,
 		q.pop();
 
 		const char *sql =
-			"SELECT callee_symbol_id FROM call_edges "
-			"WHERE project_id = ? AND caller_symbol_id = ?";
+			"SELECT target_node_id FROM graph_edges "
+			"WHERE project_id = ? AND source_node_id = ? AND edge_type = 1";
 		sqlite3_stmt *stmt = nullptr;
 		if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) !=
 		    SQLITE_OK)
@@ -634,7 +546,7 @@ std::string GraphStore::tracePathJson(uint64_t project_id,
 		first = false;
 
 		const char *sql =
-			"SELECT name, file_path, line FROM symbols WHERE id = ?";
+			"SELECT name, file_path, start_row FROM graph_nodes WHERE id = ?";
 		sqlite3_stmt *stmt = nullptr;
 		std::string name, file;
 		int line = 0;

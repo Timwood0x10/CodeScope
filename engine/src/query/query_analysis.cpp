@@ -64,11 +64,10 @@ std::string QueryEngine::getHotspots(uint64_t project_id, int top_n)
 	sqlite3_stmt *stmt = nullptr;
 	std::string sql =
 		"SELECT gn.id, gn.name, gn.file_path, gn.node_type, "
-		"COUNT(ge.id) AS caller_count, nc.cyclomatic "
+		"COUNT(ge.id) AS caller_count, gn.cyclomatic "
 		"FROM graph_nodes gn "
 		"LEFT JOIN graph_edges ge ON ge.target_node_id = gn.id AND "
 		"ge.edge_type = 1 "
-		"LEFT JOIN node_complexity nc ON nc.graph_node_id = gn.id "
 		"WHERE gn.project_id = ? AND gn.node_type IN (0,1) "
 		"GROUP BY gn.id "
 		"ORDER BY caller_count DESC "
@@ -166,9 +165,8 @@ std::string QueryEngine::getModuleMap(uint64_t project_id)
 
 		// Functions in this directory
 		std::string func_sql =
-			"SELECT gn.name, gn.node_type, gn.file_path, nc.cyclomatic "
+			"SELECT gn.name, gn.node_type, gn.file_path, gn.cyclomatic "
 			"FROM graph_nodes gn "
-			"LEFT JOIN node_complexity nc ON nc.graph_node_id = gn.id "
 			"WHERE gn.project_id = ? AND gn.file_path LIKE ? "
 			"AND gn.node_type IN (0,1) ORDER BY gn.file_path";
 		sqlite3_prepare_v2(db, func_sql.c_str(), -1, &stmt, nullptr);
@@ -216,9 +214,8 @@ std::string QueryEngine::getEntryPoints(uint64_t project_id)
 
 	std::string sql =
 		"SELECT gn.id, gn.name, gn.node_type, gn.file_path, "
-		"nc.cyclomatic, nc.nesting_depth "
+		"gn.cyclomatic, gn.nesting_depth "
 		"FROM graph_nodes gn "
-		"LEFT JOIN node_complexity nc ON nc.graph_node_id = gn.id "
 		"WHERE gn.project_id = ? AND gn.node_type IN (0,1) "
 		"AND gn.name IN "
 		"('main','Main','run','Run','start','Start','init','Init','"
