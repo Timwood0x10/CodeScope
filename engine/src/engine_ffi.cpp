@@ -498,6 +498,7 @@ char *engine_index_batch(uint64_t project_id, const char *file_paths_json)
 		auto cg = builder.buildCallGraph(b.unit.get());
 		for (auto &gn : sg.nodes) {
 			g_store->insertGraphNode(project_id, gn);
+			g_store->insertEntity(project_id, gn);
 			total_nodes++;
 		}
 		for (auto &e : sg.edges) {

@@ -123,6 +123,13 @@ class GraphStore {
 
 	bool deleteGraphEdgesByFile(uint64_t project_id, const char *file_path);
 
+	// ── Entity/Relation (Phase 1.1) ─────────────────────────
+
+	uint64_t insertEntity(uint64_t project_id,
+			      const graph::GraphNode &node);
+	void insertRelation(uint64_t project_id, uint64_t source_id,
+			    uint64_t target_id, int type);
+
 	// ── Semantic Records (DB-first pipeline) ───────────────────
 
 	/**

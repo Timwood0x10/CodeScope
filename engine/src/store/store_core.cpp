@@ -211,6 +211,32 @@ bool GraphStore::createSchema()
             FOREIGN KEY (target_node_id) REFERENCES graph_nodes(id)
         );
 
+        CREATE TABLE IF NOT EXISTS entity (
+            id INTEGER PRIMARY KEY,
+            project_id INTEGER NOT NULL,
+            kind INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            qualified_name TEXT DEFAULT '',
+            file_path TEXT NOT NULL,
+            language TEXT NOT NULL,
+            start_row INTEGER NOT NULL,
+            start_col INTEGER NOT NULL,
+            end_row INTEGER NOT NULL,
+            end_col INTEGER NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS relation (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            source_id INTEGER NOT NULL,
+            target_id INTEGER NOT NULL,
+            type INTEGER NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects(id),
+            FOREIGN KEY (source_id) REFERENCES entity(id),
+            FOREIGN KEY (target_id) REFERENCES entity(id)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_files_project ON files(project_id);
         CREATE INDEX IF NOT EXISTS idx_graph_nodes_project ON graph_nodes(project_id);
         CREATE INDEX IF NOT EXISTS idx_graph_nodes_name ON graph_nodes(project_id, name);

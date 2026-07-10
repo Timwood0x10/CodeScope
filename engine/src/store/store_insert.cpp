@@ -65,6 +65,7 @@ uint64_t GraphStore::insertGraphNode(uint64_t project_id,
 		fprintf(stderr, "insertGraphNode: step failed (rc=%d): %s\n",
 			rc, sqlite3_errmsg(db_));
 	}
+	insertEntity(project_id, node);
 	return node.id;
 }
 
@@ -128,6 +129,51 @@ void GraphStore::insertGraphNodes(uint64_t project_id,
 	}
 
 	sqlite3_finalize(stmt);
+}
+
+// ── Entity (Phase 1.1) ──────────────────────────────────────
+
+uint64_t GraphStore::insertEntity(uint64_t project_id,
+				  const graph::GraphNode &node)
+{
+	const char *sql = "INSERT OR IGNORE INTO entity "
+			  "(id, project_id, kind, name, qualified_name, "
+			  " file_path, language, start_row, start_col, "
+			  " end_row, end_col) "
+			  "VALUES (?,?,?,?,?,?,?,?,?,?,?)";
+	sqlite3_stmt *stmt = getCachedStmt(sql);
+	if (!stmt)
+		return node.id;
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(node.id));
+	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
+	sqlite3_bind_int(stmt, 3, static_cast<int>(node.type));
+	sqlite3_bind_text(stmt, 4, node.name.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_text(stmt, 5, node.qualified_name.c_str(), -1,
+			  SQLITE_STATIC);
+	sqlite3_bind_text(stmt, 6, node.file_path.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_text(stmt, 7, node.language.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_int(stmt, 8, static_cast<int>(node.start_row));
+	sqlite3_bind_int(stmt, 9, static_cast<int>(node.start_col));
+	sqlite3_bind_int(stmt, 10, static_cast<int>(node.end_row));
+	sqlite3_bind_int(stmt, 11, static_cast<int>(node.end_col));
+	sqlite3_step(stmt);
+	return node.id;
+}
+
+void GraphStore::insertRelation(uint64_t project_id, uint64_t source_id,
+				uint64_t target_id, int type)
+{
+	const char *sql = "INSERT OR IGNORE INTO relation "
+			  "(project_id, source_id, target_id, type) "
+			  "VALUES (?,?,?,?)";
+	sqlite3_stmt *stmt = getCachedStmt(sql);
+	if (!stmt)
+		return;
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(source_id));
+	sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(target_id));
+	sqlite3_bind_int(stmt, 4, type);
+	sqlite3_step(stmt);
 }
 
 bool GraphStore::deleteGraphNodesByFile(uint64_t project_id,
