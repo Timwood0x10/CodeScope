@@ -65,6 +65,8 @@ uint64_t GraphStore::insertGraphNode(uint64_t project_id,
 		fprintf(stderr, "insertGraphNode: step failed (rc=%d): %s\n",
 			rc, sqlite3_errmsg(db_));
 	}
+	fprintf(stderr, "insertGraphNode: calling insertEntity for %s\n",
+		node.name.c_str());
 	insertEntity(project_id, node);
 	return node.id;
 }
@@ -126,6 +128,7 @@ void GraphStore::insertGraphNodes(uint64_t project_id,
 				rc, node.name.c_str(), sqlite3_errmsg(db_));
 		}
 		sqlite3_reset(stmt);
+		insertEntity(project_id, node);
 	}
 
 	sqlite3_finalize(stmt);
@@ -142,8 +145,10 @@ uint64_t GraphStore::insertEntity(uint64_t project_id,
 			  " end_row, end_col) "
 			  "VALUES (?,?,?,?,?,?,?,?,?,?,?)";
 	sqlite3_stmt *stmt = getCachedStmt(sql);
-	if (!stmt)
+	if (!stmt) {
+		fprintf(stderr, "insertEntity: getCachedStmt failed\n");
 		return node.id;
+	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(node.id));
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
 	sqlite3_bind_int(stmt, 3, static_cast<int>(node.type));
@@ -156,7 +161,9 @@ uint64_t GraphStore::insertEntity(uint64_t project_id,
 	sqlite3_bind_int(stmt, 9, static_cast<int>(node.start_col));
 	sqlite3_bind_int(stmt, 10, static_cast<int>(node.end_row));
 	sqlite3_bind_int(stmt, 11, static_cast<int>(node.end_col));
-	sqlite3_step(stmt);
+	int rc = sqlite3_step(stmt);
+	fprintf(stderr, "insertEntity: step=%d id=%lu name=%s\n", rc,
+		(unsigned long)node.id, node.name.c_str());
 	return node.id;
 }
 
@@ -263,6 +270,8 @@ void GraphStore::insertGraphEdges(uint64_t project_id,
 				 std::to_string(rc) + ")";
 		}
 		sqlite3_reset(stmt);
+		insertRelation(project_id, edge.source_id, edge.target_id,
+			       static_cast<int>(edge.type));
 	}
 
 	sqlite3_finalize(stmt);

@@ -193,6 +193,7 @@ set(ENGINE_SOURCES
     src/resolver/resolver.cpp
     src/resolver/project_index.cpp
     src/resolver/project_resolver.cpp
+	    src/verify/capability_verifier.cpp
     src/resolver/resolve_cache.cpp
     src/linker/linker.cpp
     src/filter_policy.cpp

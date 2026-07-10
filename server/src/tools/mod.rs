@@ -249,6 +249,10 @@ fn h_detect_changes(project_id: u64, args: &Value) -> String {
     ffi::detect_changes(project_id, files)
 }
 
+fn h_verify_integrity(project_id: u64, _args: &Value) -> String {
+    ffi::verify_integrity(project_id)
+}
+
 // ── Phase A: Fast Scan & Query ────────────────────────────
 
 fn h_find_symbol(project_id: u64, args: &Value) -> String {
@@ -351,6 +355,7 @@ static TOOL_HANDLERS: Lazy<HashMap<&'static str, ToolHandler>> = Lazy::new(|| {
     m.insert("index_file", h_index_file as ToolHandler);
     m.insert("get_graph_stats", h_get_graph_stats as ToolHandler);
     m.insert("detect_changes", h_detect_changes as ToolHandler);
+    m.insert("verify_integrity", h_verify_integrity as ToolHandler);
     // Fast scan
     m.insert("find_symbol", h_find_symbol as ToolHandler);
     m.insert("get_module_tree", h_get_module_tree as ToolHandler);
@@ -433,6 +438,11 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
         Tool {
             name: "get_graph_stats".into(),
             description: "Get statistics about the current code graph (node count, edge count, file count).".into(),
+            input_schema: json!({ "type": "object", "properties": {} }),
+        },
+        Tool {
+            name: "verify_integrity".into(),
+            description: "Verify codebase integrity: checks that README-promised features actually exist in the code. Returns findings with evidence chains and confidence scores.".into(),
             input_schema: json!({ "type": "object", "properties": {} }),
         },
         Tool {

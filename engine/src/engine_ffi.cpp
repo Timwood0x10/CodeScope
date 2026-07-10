@@ -266,6 +266,41 @@ char *engine_get_hotspots(uint64_t project_id, int top_n)
 
 // ─── Code Understanding ────────────────────────────────────
 
+#include "verify/capability_verifier.h"
+
+extern "C" char *engine_verify_integrity(uint64_t project_id)
+{
+	if (!g_store)
+		return dupString("{\"error\":\"not initialized\"}");
+
+	verify::CapabilityVerifier cv(g_store.get(), project_id);
+	auto findings = cv.verify();
+
+	std::string json = "{\"findings\":[";
+	bool first = true;
+	for (auto &f : findings) {
+		if (!first)
+			json += ",";
+		first = false;
+		json += "{\"type\":\"" + f.type + "\",";
+		json += "\"description\":\"" + f.description + "\",";
+		json += "\"confidence\":" + std::to_string(f.confidence);
+		json += ",\"evidence\":[";
+		bool efirst = true;
+		for (auto &e : f.evidence) {
+			if (!efirst)
+				json += ",";
+			efirst = false;
+			json += "{\"entity\":\"" + e.entity_name + "\",";
+			json += "\"file\":\"" + e.file_path + "\",";
+			json += "\"line\":" + std::to_string(e.line) + "}";
+		}
+		json += "]}";
+	}
+	json += "],\"total\":" + std::to_string(findings.size()) + "}";
+	return dupString(json);
+}
+
 char *engine_get_module_map(uint64_t project_id)
 {
 	if (!g_query)

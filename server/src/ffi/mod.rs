@@ -32,6 +32,8 @@ unsafe extern "C" {
 
     fn engine_detect_changes(project_id: u64, modified_files_json: *const c_char) -> *mut c_char;
 
+    fn engine_verify_integrity(project_id: u64) -> *mut c_char;
+
     fn engine_build_fts(project_id: u64) -> *mut c_char;
 
     // ── Phase A: Fast Scan ────────────────────────────────────────
@@ -146,6 +148,10 @@ pub fn detect_changes(project_id: u64, modified_files_json: &str) -> String {
 
 pub fn build_fts(project_id: u64) -> String {
     take_string(unsafe { engine_build_fts(project_id) })
+}
+
+pub fn verify_integrity(project_id: u64) -> String {
+    take_string(unsafe { engine_verify_integrity(project_id) })
 }
 
 // ── Phase A: Fast Scan ────────────────────────────────────────
