@@ -173,32 +173,6 @@ bool GraphStore::createSchema()
             UNIQUE(project_id, path)
         );
 
-        CREATE TABLE IF NOT EXISTS ir_nodes (
-            id INTEGER PRIMARY KEY,
-            project_id INTEGER NOT NULL,
-            file_id INTEGER NOT NULL,
-            parent_id INTEGER,
-            kind INTEGER NOT NULL,
-            name TEXT,
-            qualified_name TEXT,
-            start_row INTEGER NOT NULL, start_col INTEGER NOT NULL,
-            end_row INTEGER NOT NULL, end_col INTEGER NOT NULL,
-            language TEXT NOT NULL,
-            FOREIGN KEY (project_id) REFERENCES projects(id),
-            FOREIGN KEY (file_id) REFERENCES files(id)
-        );
-
-        CREATE TABLE IF NOT EXISTS ir_semantic_edges (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            project_id INTEGER NOT NULL,
-            source_node_id INTEGER NOT NULL,
-            target_node_id INTEGER NOT NULL,
-            relation INTEGER NOT NULL,
-            FOREIGN KEY (project_id) REFERENCES projects(id),
-            FOREIGN KEY (source_node_id) REFERENCES ir_nodes(id),
-            FOREIGN KEY (target_node_id) REFERENCES ir_nodes(id)
-        );
-
         CREATE TABLE IF NOT EXISTS graph_nodes (
             id INTEGER PRIMARY KEY,
             project_id INTEGER NOT NULL,
@@ -243,11 +217,6 @@ bool GraphStore::createSchema()
         );
 
         CREATE INDEX IF NOT EXISTS idx_files_project ON files(project_id);
-        CREATE INDEX IF NOT EXISTS idx_ir_nodes_project ON ir_nodes(project_id);
-        CREATE INDEX IF NOT EXISTS idx_ir_nodes_file ON ir_nodes(project_id, file_id);
-        CREATE INDEX IF NOT EXISTS idx_ir_nodes_name ON ir_nodes(project_id, name);
-        CREATE INDEX IF NOT EXISTS idx_ir_edges_src ON ir_semantic_edges(source_node_id);
-        CREATE INDEX IF NOT EXISTS idx_ir_edges_tgt ON ir_semantic_edges(target_node_id);
         CREATE INDEX IF NOT EXISTS idx_graph_nodes_project ON graph_nodes(project_id);
         CREATE INDEX IF NOT EXISTS idx_graph_nodes_name ON graph_nodes(project_id, name);
         CREATE INDEX IF NOT EXISTS idx_graph_edges_src ON graph_edges(source_node_id);

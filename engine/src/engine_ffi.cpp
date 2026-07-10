@@ -486,58 +486,13 @@ char *engine_index_batch(uint64_t project_id, const char *file_paths_json)
 
 	for (auto &b : batches) {
 		std::string hash = simpleHash(b.source);
-		uint64_t file_id =
-			g_store->upsertFile(project_id, b.file_path.c_str(),
-					    b.language.c_str(), hash.c_str());
-		g_store->deleteIRByFile(project_id, file_id);
+		g_store->upsertFile(project_id, b.file_path.c_str(),
+				    b.language.c_str(), hash.c_str());
 		g_store->deleteGraphNodesByFile(project_id,
 						b.file_path.c_str());
-		g_store->deleteFTSByFile(project_id, file_id);
 
-		std::unordered_map<uint64_t, uint64_t> ir_map;
-		for (auto *node : b.unit->all_nodes) {
-			uint64_t db_id = g_store->insertIRNode(
-				project_id, file_id, 0,
-				static_cast<int>(node->kind),
-				node->name.empty() ? nullptr :
-						     node->name.c_str(),
-				node->qualified_name.empty() ?
-					nullptr :
-					node->qualified_name.c_str(),
-				node->loc.start_row, node->loc.start_col,
-				node->loc.end_row, node->loc.end_col,
-				node->language.c_str());
-			ir_map[node->id] = db_id;
-			const char *fn = node->name.empty() ?
-						 nullptr :
-						 node->name.c_str();
-			const char *fqn = node->qualified_name.empty() ?
-						  nullptr :
-						  node->qualified_name.c_str();
-			if (fn || fqn || !node->doc_comment.empty())
-				g_store->insertIntoFTS(
-					db_id, project_id, fn, fqn,
-					b.file_path.c_str(),
-					node->doc_comment.c_str(),
-					static_cast<int>(node->kind));
-			if (fn) {
-				auto vec = vector_search::stringToVector(
-					node->name);
-				auto blob = vector_search::serializeVector(vec);
-				g_store->storeVector(db_id, project_id,
-						     blob.data(), blob.size());
-			}
-		}
-		for (auto *node : b.unit->all_nodes)
-			for (auto &e : node->semantic_edges) {
-				auto si = ir_map.find(node->id),
-				     ti = ir_map.find(e.target->id);
-				if (si != ir_map.end() && ti != ir_map.end())
-					g_store->insertIRSemanticEdge(
-						project_id, si->second,
-						ti->second,
-						static_cast<int>(e.relation));
-			}
+		// No ir_nodes/ir_semantic_edges write — graph_nodes is canonical.
+		// FTS/vector writes skipped for single-file index path.
 
 		auto sg = builder.buildSymbolGraph(b.unit.get());
 		auto cg = builder.buildCallGraph(b.unit.get());

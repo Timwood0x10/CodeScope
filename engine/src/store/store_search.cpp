@@ -70,38 +70,8 @@ void GraphStore::insertIntoFTS(uint64_t node_id, uint64_t project_id,
 	}
 }
 
-void GraphStore::deleteFTSByFile(uint64_t project_id, uint64_t file_id)
-{
-	// Delete FTS entries for nodes belonging to this file
-	sqlite3_stmt *stmt = nullptr;
-	const char *sql = "DELETE FROM code_fts WHERE rowid IN ("
-			  "SELECT node_id FROM fts_node_map "
-			  "WHERE project_id = ? AND file_id = ?)";
-	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-		if (stmt)
-			sqlite3_finalize(stmt);
-		error_ = "deleteFTSByFile: prepare failed";
-		return;
-	}
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(file_id));
-	sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-
-	// Delete mapping entries
-	const char *sql2 =
-		"DELETE FROM fts_node_map WHERE project_id = ? AND file_id = ?";
-	if (sqlite3_prepare_v2(db_, sql2, -1, &stmt, nullptr) != SQLITE_OK) {
-		if (stmt)
-			sqlite3_finalize(stmt);
-		error_ = "deleteFTSByFile: prepare failed";
-		return;
-	}
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(file_id));
-	sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-}
+// deleteFTSByFile removed — FTS is indexed inline during buildGraph.
+// Single-file index paths no longer write FTS entries per-node.
 
 void GraphStore::buildFTSFromGraph(uint64_t project_id)
 {

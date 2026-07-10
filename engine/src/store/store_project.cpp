@@ -401,8 +401,9 @@ bool GraphStore::insertEmbedding(uint64_t symbol_id, const float *vector_data,
 		uint64_t proj_id = 0;
 		sqlite3_stmt *pid_st = nullptr;
 		if (sqlite3_prepare_v2(
-			    db_, "SELECT project_id FROM ir_nodes WHERE id=?",
-			    -1, &pid_st, nullptr) == SQLITE_OK) {
+			    db_,
+			    "SELECT project_id FROM graph_nodes WHERE id=?", -1,
+			    &pid_st, nullptr) == SQLITE_OK) {
 			sqlite3_bind_int64(pid_st, 1,
 					   static_cast<int64_t>(symbol_id));
 			if (sqlite3_step(pid_st) == SQLITE_ROW)

@@ -169,70 +169,10 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 
 	// File record
 	std::string hash = simpleHash(source);
-	uint64_t file_id = g_store->upsertFile(project_id, file_path, language,
-					       hash.c_str());
+	g_store->upsertFile(project_id, file_path, language, hash.c_str());
 
-	// Delete old data for this file
-	g_store->deleteIRByFile(project_id, file_id);
+	// Delete old graph data for this file
 	g_store->deleteGraphNodesByFile(project_id, file_path);
-	g_store->deleteFTSByFile(project_id, file_id);
-
-	// Persist IR nodes
-	std::unordered_map<uint64_t, uint64_t> ir_id_to_db_id;
-	for (auto *node : unit->all_nodes) {
-		uint64_t parent_db_id = 0;
-		// Find parent in the children lists — simplified: parent is whoever has
-		// this node in children For now we skip parent tracking for simplicity (v2)
-		uint64_t db_id = g_store->insertIRNode(
-			project_id, file_id, parent_db_id,
-			static_cast<int>(node->kind),
-			node->name.empty() ? nullptr : node->name.c_str(),
-			node->qualified_name.empty() ?
-				nullptr :
-				node->qualified_name.c_str(),
-			node->loc.start_row, node->loc.start_col,
-			node->loc.end_row, node->loc.end_col,
-			node->language.c_str());
-		ir_id_to_db_id[node->id] = db_id;
-
-		// Index in FTS if node has a meaningful name
-		const char *fts_name = node->name.empty() ? nullptr :
-							    node->name.c_str();
-		const char *fts_qn = node->qualified_name.empty() ?
-					     nullptr :
-					     node->qualified_name.c_str();
-		const char *fts_comment = node->doc_comment.empty() ?
-						  nullptr :
-						  node->doc_comment.c_str();
-		if (fts_name || fts_qn || fts_comment) {
-			g_store->insertIntoFTS(db_id, project_id, fts_name,
-					       fts_qn, file_path, fts_comment,
-					       static_cast<int>(node->kind));
-		}
-
-		// Store semantic vector for name-based similarity search
-		if (fts_name) {
-			auto vec = vector_search::stringToVector(node->name);
-			auto blob = vector_search::serializeVector(vec);
-			g_store->storeVector(db_id, project_id, blob.data(),
-					     blob.size());
-		}
-	}
-
-	// Persist IR semantic edges
-	for (auto *node : unit->all_nodes) {
-		for (auto &edge : node->semantic_edges) {
-			auto src_it = ir_id_to_db_id.find(node->id);
-			auto tgt_it = ir_id_to_db_id.find(edge.target->id);
-			if (src_it != ir_id_to_db_id.end() &&
-			    tgt_it != ir_id_to_db_id.end()) {
-				g_store->insertIRSemanticEdge(
-					project_id, src_it->second,
-					tgt_it->second,
-					static_cast<int>(edge.relation));
-			}
-		}
-	}
 
 	// Build graph from IR — use unique node IDs across all projects
 	uint64_t start_node_id = 1;

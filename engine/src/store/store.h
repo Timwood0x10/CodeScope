@@ -100,19 +100,6 @@ class GraphStore {
 	uint64_t upsertFile(uint64_t project_id, const char *path,
 			    const char *language, const char *content_hash);
 
-	// ── IR Nodes ───────────────────────────────────────────────
-
-	uint64_t insertIRNode(uint64_t project_id, uint64_t file_id,
-			      uint64_t parent_id, int kind, const char *name,
-			      const char *qualified_name, uint32_t sr,
-			      uint32_t sc, uint32_t er, uint32_t ec,
-			      const char *language);
-
-	bool insertIRSemanticEdge(uint64_t project_id, uint64_t source_id,
-				  uint64_t target_id, int relation);
-
-	bool deleteIRByFile(uint64_t project_id, uint64_t file_id);
-
 	// ── Graph Nodes ────────────────────────────────────────────
 
 	uint64_t insertGraphNode(uint64_t project_id,
@@ -270,7 +257,7 @@ class GraphStore {
 			 const void *vec_data, size_t vec_bytes);
 	std::string searchSemantic(uint64_t project_id, const void *query_vec,
 				   size_t vec_bytes, int limit);
-	void deleteFTSByFile(uint64_t project_id, uint64_t file_id);
+	// deleteFTSByFile removed — FTS is built inline during buildGraph
 
 	/**
 	 * Bulk-build semantic vectors from graph_nodes for a project.

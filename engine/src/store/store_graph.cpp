@@ -227,6 +227,12 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		(long long)ms(t_intern, t_nodes),
 		(long long)ms(t_nodes, t_edges), (long long)ms(t_edges, t_call),
 		(long long)ms(t0, t_end));
+
+	// Reclaim space: semantic_records are no longer needed after buildGraph.
+	// Incremental re-index will re-insert them on next build.
+	exec(std::string("DELETE FROM semantic_records WHERE project_id=" + pid)
+		     .c_str());
+
 	return true;
 }
 

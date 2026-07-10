@@ -94,73 +94,7 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 		}
 		edges_p1 = total_edges;
 		t1 = Clock::now();
-	}
-
-	// ── Step 2: Priority 2 — Translator-resolved cross-file calls ──
-	// Uses ir_semantic_edges (from the IR translator) for precise
-	// cross-file resolution. Bridges ir_node IDs to graph_node IDs
-	// via (file_path, name, start_row) triple in _decls.
-	//
-	// Only processes calls NOT already resolved by Priority 1
-	// (ref_original_id = 0).
-	{
-		std::string sql = std::string(
-			"INSERT OR IGNORE INTO graph_edges "
-			"(project_id, source_node_id, target_node_id, "
-			" edge_type, graph_type, call_site_file, call_site_line) "
-			"SELECT DISTINCT " +
-			pid +
-			", src_decl.node_id, tgt_decl.node_id, "
-			" 1, 'call_graph', f1.path, i1.start_row "
-			"FROM ir_semantic_edges ise "
-			"JOIN ir_nodes i1 "
-			" ON i1.id = ise.source_node_id"
-			" AND i1.project_id=" +
-			pid +
-			" JOIN ir_nodes i2 "
-			" ON i2.id = ise.target_node_id"
-			" AND i2.project_id=" +
-			pid +
-			" JOIN files f1 ON f1.id = i1.file_id "
-			" JOIN files f2 ON f2.id = i2.file_id "
-			" JOIN _decls src_decl "
-			" ON src_decl.file_path = f1.path "
-			" AND src_decl.name = i1.name "
-			" AND src_decl.start_row = i1.start_row "
-			" JOIN _decls tgt_decl "
-			" ON tgt_decl.file_path = f2.path "
-			" AND tgt_decl.name = i2.name "
-			" AND tgt_decl.start_row = i2.start_row "
-			" WHERE ise.project_id=" +
-			pid +
-			" AND src_decl.node_id != tgt_decl.node_id "
-			// Only for calls not resolved by Priority 1:
-			// the call record must have ref_original_id = 0
-			" AND EXISTS ("
-			"  SELECT 1 FROM semantic_records sr "
-			"  WHERE sr.project_id=" +
-			pid +
-			"  AND sr.kind=9 AND sr.name = i1.name "
-			"  AND sr.file_path = f1.path "
-			"  AND sr.start_row = i1.start_row "
-			"  AND sr.ref_original_id = 0) "
-			// Exclude edges already inserted by Priority 1
-			" AND NOT EXISTS ("
-			"  SELECT 1 FROM graph_edges ge "
-			"  WHERE ge.source_node_id = src_decl.node_id "
-			"  AND ge.target_node_id = tgt_decl.node_id "
-			"  AND ge.edge_type = 1)");
-		if (!exec(sql.c_str())) {
-			fprintf(stderr,
-				"buildCallEdgesSQL: Priority 2 failed: %s "
-				"[module=store, method=buildCallEdgesSQL]\n",
-				error_.c_str());
-		} else {
-			total_edges +=
-				static_cast<int64_t>(sqlite3_changes(db_));
-		}
-		edges_p2 = total_edges - edges_p1;
-		t2 = Clock::now();
+		t2 = t1; // Priority 2 was removed
 	}
 
 	// ── Step 3: Priority 3 — Name-based cross-file calls (optimized) ──
@@ -295,16 +229,7 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 				"WHERE sr.project_id=? AND sr.kind=9 "
 				" AND sr.name != '' AND sr.ref_original_id = 0 "
 				" AND sr.name LIKE '%.%' "
-				// Exclude calls resolved by Priority 2
-				" AND NOT EXISTS ("
-				"  SELECT 1 FROM ir_semantic_edges ise "
-				"  JOIN ir_nodes i1 ON i1.id = ise.source_node_id"
-				"  AND i1.project_id=?"
-				"  JOIN files f1 ON f1.id = i1.file_id "
-				"  WHERE f1.path = sr.file_path "
-				"  AND i1.name = sr.name "
-				"  AND i1.start_row = sr.start_row "
-				"  AND ise.project_id=?)";
+				" AND sr.ref_original_id != 0";
 
 			sqlite3_stmt *call_st = nullptr;
 			if (sqlite3_prepare_v2(db_, call_sql, -1, &call_st,
@@ -318,7 +243,6 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 					static_cast<int64_t>(project_id);
 				sqlite3_bind_int64(call_st, 1, pid_i);
 				sqlite3_bind_int64(call_st, 2, pid_i);
-				sqlite3_bind_int64(call_st, 3, pid_i);
 
 				const char *callee_sql =
 					"SELECT d.node_id FROM _decls d "

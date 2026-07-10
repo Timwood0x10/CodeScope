@@ -24,89 +24,6 @@
 namespace store
 {
 
-// ─── IR Nodes ──────────────────────────────────────────────────
-
-uint64_t GraphStore::insertIRNode(uint64_t project_id, uint64_t file_id,
-				  uint64_t parent_id, int kind,
-				  const char *name, const char *qualified_name,
-				  uint32_t sr, uint32_t sc, uint32_t er,
-				  uint32_t ec, const char *language)
-{
-	const char *sql =
-		"INSERT INTO ir_nodes (project_id, file_id, parent_id, kind, "
-		"name, qualified_name, start_row, start_col, end_row, end_col, language) "
-		"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-	sqlite3_stmt *stmt = getCachedStmt(sql);
-	if (!stmt) {
-		return 0;
-	}
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(file_id));
-	if (parent_id)
-		sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(parent_id));
-	else
-		sqlite3_bind_null(stmt, 3);
-	sqlite3_bind_int(stmt, 4, kind);
-	if (name)
-		sqlite3_bind_text(stmt, 5, name, -1, SQLITE_TRANSIENT);
-	else
-		sqlite3_bind_null(stmt, 5);
-	if (qualified_name)
-		sqlite3_bind_text(stmt, 6, qualified_name, -1,
-				  SQLITE_TRANSIENT);
-	else
-		sqlite3_bind_null(stmt, 6);
-	sqlite3_bind_int(stmt, 7, static_cast<int>(sr));
-	sqlite3_bind_int(stmt, 8, static_cast<int>(sc));
-	sqlite3_bind_int(stmt, 9, static_cast<int>(er));
-	sqlite3_bind_int(stmt, 10, static_cast<int>(ec));
-	sqlite3_bind_text(stmt, 11, language, -1, SQLITE_TRANSIENT);
-
-	sqlite3_step(stmt);
-	return static_cast<uint64_t>(sqlite3_last_insert_rowid(db_));
-}
-
-bool GraphStore::insertIRSemanticEdge(uint64_t project_id, uint64_t source_id,
-				      uint64_t target_id, int relation)
-{
-	const char *sql = "INSERT INTO ir_semantic_edges (project_id, "
-			  "source_node_id, target_node_id, relation) "
-			  "VALUES (?, ?, ?, ?)";
-	sqlite3_stmt *stmt = getCachedStmt(sql);
-	if (!stmt) {
-		return false;
-	}
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(source_id));
-	sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(target_id));
-	sqlite3_bind_int(stmt, 4, relation);
-	sqlite3_step(stmt);
-	return true;
-}
-
-bool GraphStore::deleteIRByFile(uint64_t project_id, uint64_t file_id)
-{
-	// Delete semantic edges referencing nodes in this file
-	{
-		std::ostringstream oss;
-		oss << "DELETE FROM ir_semantic_edges WHERE project_id = "
-		    << project_id
-		    << " AND (source_node_id IN (SELECT id FROM ir_nodes WHERE file_id = "
-		    << file_id << ")"
-		    << " OR target_node_id IN (SELECT id FROM ir_nodes WHERE file_id = "
-		    << file_id << "))";
-		exec(oss.str().c_str());
-	}
-	// Delete IR nodes
-	{
-		std::ostringstream oss;
-		oss << "DELETE FROM ir_nodes WHERE project_id = " << project_id
-		    << " AND file_id = " << file_id;
-		exec(oss.str().c_str());
-	}
-	return true;
-}
-
 // ─── Graph Nodes ───────────────────────────────────────────────
 
 uint64_t GraphStore::insertGraphNode(uint64_t project_id,
@@ -116,7 +33,7 @@ uint64_t GraphStore::insertGraphNode(uint64_t project_id,
 		"INSERT INTO graph_nodes (id, project_id, ir_node_id, node_type, "
 		"name, qualified_name, module_path, package_name, class_name, "
 		"start_row, start_col, end_row, end_col, "
-		"file_path, language, signature, complexity, is_entry_point) "
+		"file_path, language, signature, cyclomatic, is_entry_point) "
 		"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, "
 		"?, ?, ?, ?, ?, ?, ?, ?, ?)";
 	sqlite3_stmt *stmt = getCachedStmt(sql);
@@ -162,7 +79,7 @@ void GraphStore::insertGraphNodes(uint64_t project_id,
 		"INSERT INTO graph_nodes (id, project_id, ir_node_id, node_type, "
 		"name, qualified_name, module_path, package_name, class_name, "
 		"start_row, start_col, end_row, end_col, "
-		"file_path, language, signature, complexity, is_entry_point) "
+		"file_path, language, signature, cyclomatic, is_entry_point) "
 		"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, "
 		"?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
