@@ -219,6 +219,9 @@ bool GraphStore::createSchema()
         CREATE INDEX IF NOT EXISTS idx_files_project ON files(project_id);
         CREATE INDEX IF NOT EXISTS idx_graph_nodes_project ON graph_nodes(project_id);
         CREATE INDEX IF NOT EXISTS idx_graph_nodes_name ON graph_nodes(project_id, name);
+        -- Composite index for _r2n JOIN during buildGraph:
+        -- graph_nodes JOIN semantic_records ON (project_id, file_path, start_row, node_type=kind)
+        CREATE INDEX IF NOT EXISTS idx_gn_file_row_type ON graph_nodes(project_id, file_path, start_row, node_type);
         CREATE INDEX IF NOT EXISTS idx_graph_edges_src ON graph_edges(source_node_id);
         CREATE INDEX IF NOT EXISTS idx_graph_edges_tgt ON graph_edges(target_node_id);
         CREATE INDEX IF NOT EXISTS idx_graph_edges_project ON graph_edges(project_id);
@@ -263,7 +266,10 @@ bool GraphStore::createSchema()
         -- Index for containment edges parent JOIN: (file_path, parent_id)
         CREATE INDEX IF NOT EXISTS idx_sr_fp_parent ON semantic_records(file_path, parent_id);
         -- Index for call edges name matching: (project_id, kind, name) covers the WHERE + JOIN
-        CREATE INDEX IF NOT EXISTS idx_sr_kind_name ON semantic_records(project_id, kind, name);
+        -- Language added for P3 cross-file matching: sr.language = callee.language
+        CREATE INDEX IF NOT EXISTS idx_sr_kind_name ON semantic_records(project_id, kind, name, language);
+        -- Index for _r2n file filter: WHERE kind IN (...) AND file_path IN (SELECT ...)
+        CREATE INDEX IF NOT EXISTS idx_sr_kind_fp ON semantic_records(project_id, kind, file_path);
 
         -- FTS5 full-text search index
         CREATE VIRTUAL TABLE IF NOT EXISTS code_fts USING fts5(

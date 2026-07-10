@@ -97,117 +97,205 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 		t2 = t1; // Priority 2 was removed
 	}
 
-	// ── Step 3: Priority 3 — Name-based cross-file calls (optimized) ──
-	// For call records not resolved by Priority 1 or 2, match by exact
-	// name across files in the SAME LANGUAGE only. This avoids cross-
-	// language false positives (e.g., a JS call to "get()" matching a
-	// C function named "get").
+	// ── Step 3: Priority 3 — Name-based cross-file calls (C++ HashMap) ──
+	// Original SQL approach replaced: temp table _p3_edges + ROW_NUMBER
+	// + PARTITION BY + NOT EXISTS was O(n²) in SQL for large projects.
 	//
-	// Fanout control: instead of dropping high-frequency names entirely
-	// (the old kNameFanoutCap=20 approach), we use ROW_NUMBER() to cap
-	// the number of callee candidates per (caller, name) pair to 5.
-	// This preserves call edges for common names like get/set/init while
-	// preventing cartesian explosion.
-	//
-	// Dedup strategy: candidate edges are first collected in a temp
-	// table _p3_edges with a UNIQUE(src, tgt) constraint. This replaces
-	// the expensive per-row NOT EXISTS subquery against graph_edges.
-	// The final INSERT only checks NOT EXISTS on the deduplicated set.
+	// New approach: load all declarations into a HashMap<(name,language),
+	// SmallVec<DeclInfo>>, then process each call site via O(1) lookup.
+	// Fanout cap of 5 per (caller, name) prevents cartesian explosion.
 	{
-		// Temp table for dedup — UNIQUE constraint handles within-P3 dedup
-		exec("DROP TABLE IF EXISTS _p3_edges");
-		exec("CREATE TEMP TABLE _p3_edges ("
-		     "  src INTEGER NOT NULL, "
-		     "  tgt INTEGER NOT NULL, "
-		     "  csf TEXT, "
-		     "  csl INTEGER, "
-		     "  UNIQUE(src, tgt))");
-
-		// Phase 3a: collect candidate edges with per-caller-per-name cap.
-		// ROW_NUMBER limits callee candidates to 5 per (caller, name),
-		// preventing cartesian explosion for high-frequency names.
-		// INSERT OR IGNORE on _p3_edges handles within-P3 dedup via UNIQUE.
 		constexpr int kP3PerCallerNameCap = 5;
-		std::string sql = std::string(
-			"INSERT OR IGNORE INTO _p3_edges (src, tgt, csf, csl) "
-			"SELECT src, tgt, csf, csl FROM ("
-			" SELECT caller.node_id AS src, "
-			"  callee.node_id AS tgt, "
-			"  sr.file_path AS csf, "
-			"  sr.start_row AS csl, "
-			"  ROW_NUMBER() OVER ("
-			"   PARTITION BY caller.node_id, sr.name"
-			"   ORDER BY callee.start_row"
-			"  ) AS rn "
-			" FROM semantic_records sr "
-			" JOIN _decls caller "
-			"  ON sr.file_path = caller.file_path "
-			"  AND sr.parent_id = caller.original_id "
-			" JOIN _decls callee "
-			"  ON sr.name = callee.name "
-			"  AND sr.language = callee.language "
-			" WHERE sr.project_id=" +
-			pid +
-			" AND sr.kind=9 AND sr.name != '' "
-			" AND sr.ref_original_id = 0 "
-			" AND caller.node_id != callee.node_id"
-			") WHERE rn <= " +
-			std::to_string(kP3PerCallerNameCap));
-		if (!exec(sql.c_str())) {
-			fprintf(stderr,
-				"buildCallEdgesSQL: Priority 3a (collect) failed: %s "
-				"[module=store, method=buildCallEdgesSQL]\n",
-				error_.c_str());
-		}
 
-		// Log candidate count for diagnostics
+		// ── Step 3a: Load declarations into HashMap ──
+		// Key: name + '\0' + language (null separator avoids accidental collisions)
+		struct DeclInfo {
+			uint64_t node_id;
+			std::string file_path;
+			int start_row;
+		};
+		std::unordered_map<std::string, std::vector<DeclInfo>> decl_map;
+
 		{
-			sqlite3_stmt *cnt = nullptr;
-			if (sqlite3_prepare_v2(
-				    db_, "SELECT COUNT(*) FROM _p3_edges", -1,
-				    &cnt, nullptr) == SQLITE_OK) {
-				if (sqlite3_step(cnt) == SQLITE_ROW)
-					fprintf(stderr,
-						"buildCallEdgesSQL: P3 candidates after "
-						"dedup+fanout+lang: %lld\n",
-						(long long)sqlite3_column_int64(
-							cnt, 0));
-				sqlite3_finalize(cnt);
+			const char *load_sql =
+				"SELECT d.node_id, d.file_path, d.start_row, "
+				" d.name, d.language FROM _decls d";
+			sqlite3_stmt *ld_st = nullptr;
+			if (sqlite3_prepare_v2(db_, load_sql, -1, &ld_st,
+					       nullptr) == SQLITE_OK) {
+				while (sqlite3_step(ld_st) == SQLITE_ROW) {
+					uint64_t nid = static_cast<uint64_t>(
+						sqlite3_column_int64(ld_st, 0));
+					const char *fp =
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								ld_st, 1));
+					int sr = sqlite3_column_int(ld_st, 2);
+					const char *name =
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								ld_st, 3));
+					const char *lang =
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								ld_st, 4));
+					if (!name || !lang)
+						continue;
+					std::string key =
+						std::string(name) + "\0" + lang;
+					decl_map[key].push_back(
+						{nid, fp ? fp : "", sr});
+				}
+				sqlite3_finalize(ld_st);
 			}
 		}
 
-		// Phase 3b: insert into graph_edges, excluding edges from P1/P2.
-		// NOT EXISTS runs only on the deduplicated _p3_edges set, not on
-		// the raw cartesian product — orders of magnitude fewer lookups.
-		std::string sql2 = std::string(
-			"INSERT OR IGNORE INTO graph_edges "
-			"(project_id, source_node_id, target_node_id, "
-			" edge_type, graph_type, call_site_file, call_site_line) "
-			"SELECT " +
-			pid +
-			", e.src, e.tgt, 1, 'call_graph', e.csf, e.csl "
-			"FROM _p3_edges e "
-			"WHERE NOT EXISTS ("
-			"  SELECT 1 FROM graph_edges ge "
-			"  WHERE ge.source_node_id = e.src"
-			"  AND ge.target_node_id = e.tgt"
-			"  AND ge.edge_type = 1)");
-		if (!exec(sql2.c_str())) {
-			fprintf(stderr,
-				"buildCallEdgesSQL: Priority 3b (insert) failed: %s "
-				"[module=store, method=buildCallEdgesSQL]\n",
-				error_.c_str());
-		} else {
-			total_edges +=
-				static_cast<int64_t>(sqlite3_changes(db_));
-		}
-		edges_p3 = total_edges - edges_p2 - edges_p1;
-		t3 = Clock::now();
+		// ── Step 3b: Process call sites via HashMap lookup ──
+		// Reads call records (kind=9) not resolved by P1 (ref_original_id=0),
+		// finds caller via (file_path, parent_id), then looks up callees
+		// by (name, language) in the HashMap with fanout cap.
+		{
+			const char *call_sql =
+				"SELECT sr.name, sr.parent_id, sr.file_path, "
+				" sr.start_row, sr.language "
+				"FROM semantic_records sr "
+				"WHERE sr.project_id=? AND sr.kind=9 "
+				" AND sr.name != '' AND sr.ref_original_id = 0";
+			sqlite3_stmt *call_st = nullptr;
+			if (sqlite3_prepare_v2(db_, call_sql, -1, &call_st,
+					       nullptr) != SQLITE_OK) {
+				fprintf(stderr,
+					"buildCallEdgesSQL: P3 prepare failed: "
+					"%s [module=store, "
+					"method=buildCallEdgesSQL]\n",
+					error_.c_str());
+			} else {
+				sqlite3_bind_int64(call_st, 1,
+						   static_cast<int64_t>(
+							   project_id));
 
-		exec("DROP TABLE IF EXISTS _p3_edges");
+				// Prepared statement: lookup caller
+				const char *caller_sql =
+					"SELECT d.node_id FROM _decls d "
+					"WHERE d.file_path = ? AND d.original_id = ?";
+				sqlite3_stmt *caller_st = nullptr;
+				sqlite3_prepare_v2(db_, caller_sql, -1,
+						   &caller_st, nullptr);
+
+				// Prepared statement: insert edge (dedup via OR IGNORE)
+				const char *ins_sql =
+					"INSERT OR IGNORE INTO graph_edges "
+					"(project_id, source_node_id, "
+					" target_node_id, edge_type, graph_type, "
+					" call_site_file, call_site_line) "
+					"VALUES (?,?,?,1,'call_graph',?,?)";
+				sqlite3_stmt *ins_st = nullptr;
+				sqlite3_prepare_v2(db_, ins_sql, -1, &ins_st,
+						   nullptr);
+
+				int64_t p3_edges = 0;
+				while (caller_st && ins_st &&
+				       sqlite3_step(call_st) == SQLITE_ROW) {
+					const char *name_c =
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								call_st, 0));
+					int64_t parent_id =
+						sqlite3_column_int64(call_st,
+								     1);
+					const char *fp_c =
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								call_st, 2));
+					int start_row =
+						sqlite3_column_int(call_st, 3);
+					const char *lang_c =
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								call_st, 4));
+					if (!name_c || !fp_c || !lang_c)
+						continue;
+
+					// Look up caller
+					sqlite3_bind_text(caller_st, 1, fp_c,
+							  -1,
+							  SQLITE_TRANSIENT);
+					sqlite3_bind_int64(caller_st, 2,
+							   parent_id);
+					uint64_t caller_id = 0;
+					if (sqlite3_step(caller_st) ==
+					    SQLITE_ROW)
+						caller_id =
+							static_cast<uint64_t>(
+								sqlite3_column_int64(
+									caller_st,
+									0));
+					sqlite3_reset(caller_st);
+					if (caller_id == 0)
+						continue;
+
+					// Look up callees in HashMap by
+					// (name, language)
+					std::string key = std::string(name_c) +
+							  "\0" + lang_c;
+					auto it = decl_map.find(key);
+					if (it == decl_map.end())
+						continue;
+
+					const auto &candidates = it->second;
+					int count = 0;
+					for (auto &cd : candidates) {
+						if (cd.node_id == caller_id)
+							continue;
+						if (count >=
+						    kP3PerCallerNameCap)
+							break;
+						count++;
+
+						// Check NOT EXISTS: skip if
+						// edge already in graph_edges
+						// INSERT OR IGNORE handles
+						// this via UNIQUE constraint
+						sqlite3_bind_int64(
+							ins_st, 1,
+							static_cast<int64_t>(
+								project_id));
+						sqlite3_bind_int64(ins_st, 2,
+								   static_cast<int64_t>(
+									   caller_id));
+						sqlite3_bind_int64(
+							ins_st, 3,
+							static_cast<int64_t>(
+								cd.node_id));
+						sqlite3_bind_text(
+							ins_st, 4, fp_c, -1,
+							SQLITE_TRANSIENT);
+						sqlite3_bind_int(ins_st, 5,
+								 start_row);
+						sqlite3_step(ins_st);
+						sqlite3_reset(ins_st);
+						p3_edges++;
+					}
+				}
+
+				if (caller_st)
+					sqlite3_finalize(caller_st);
+				if (ins_st)
+					sqlite3_finalize(ins_st);
+				sqlite3_finalize(call_st);
+
+				fprintf(stderr,
+					"buildCallEdgesSQL: P3 (HashMap) "
+					"inserted %lld edges\n",
+					(long long)p3_edges);
+				total_edges += p3_edges;
+				edges_p3 = p3_edges;
+			}
+		}
+		t3 = Clock::now();
 	}
 
-	// ── Step 3b: Short-name fallback ──
+// ── Step 3b: Short-name fallback ──
 	// For qualified names like "module.func", try matching the last
 	// component ("func") against declarations. Capped at kShortNameFanoutCap
 	// matches to avoid cartesian explosion for common names like "get".
