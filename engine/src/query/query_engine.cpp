@@ -790,4 +790,32 @@ std::string QueryEngine::getGraphStats(uint64_t project_id)
 	return json.str();
 }
 
+// ── Knowledge Navigation (Phase 2.2) ───────────────────────
+
+std::string QueryEngine::explainSymbol(uint64_t project_id,
+					const char *symbol_name)
+{
+	if (!symbol_name || !*symbol_name)
+		return "{\"error\":\"empty symbol name\"}";
+
+	std::string name = symbol_name;
+
+	// 1. Find symbol definition
+	std::string def_json = findDefinition(project_id, symbol_name, nullptr);
+
+	// 2. Find callers
+	std::string callers_json = getCallers(project_id, name.c_str());
+
+	// 3. Find callees
+	std::string callees_json = getCallees(project_id, name.c_str());
+
+	// 4. Combine into a single response
+	std::string json = "{";
+	json += "\"symbol\":\"" + name + "\",";
+	json += "\"definition\":" + def_json + ",";
+	json += "\"callers\":" + callers_json + ",";
+	json += "\"callees\":" + callees_json + "}";
+	return json;
+}
+
 } // namespace query

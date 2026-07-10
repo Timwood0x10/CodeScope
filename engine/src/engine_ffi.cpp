@@ -297,8 +297,26 @@ extern "C" char *engine_verify_integrity(uint64_t project_id)
 		}
 		json += "]}";
 	}
-	json += "],\"total\":" + std::to_string(findings.size()) + "}";
+	json += "],\"total\":" + std::to_string(findings.size()) + ",";
+
+	// Calculate trust score: start at 1.0, deduct for each finding
+	double trust_score = 1.0;
+	for (auto &f : findings)
+		trust_score -= f.confidence * 0.1;
+	if (trust_score < 0.0)
+		trust_score = 0.0;
+
+	json += "\"trust_score\":" + std::to_string(trust_score) + "}";
 	return dupString(json);
+}
+
+extern "C" char *engine_explain_symbol(uint64_t project_id,
+				       const char *symbol_name)
+{
+	if (!g_query)
+		return dupString("{\"error\":\"not initialized\"}");
+	return dupString(
+		g_query->explainSymbol(project_id, symbol_name));
 }
 
 char *engine_get_module_map(uint64_t project_id)

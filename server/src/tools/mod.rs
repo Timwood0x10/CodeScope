@@ -253,6 +253,17 @@ fn h_verify_integrity(project_id: u64, _args: &Value) -> String {
     ffi::verify_integrity(project_id)
 }
 
+fn h_explain_symbol(project_id: u64, args: &Value) -> String {
+    let name = args["symbol_name"].as_str().unwrap_or("");
+    ffi::explain_symbol(project_id, name)
+}
+
+fn h_trace_flow(project_id: u64, args: &Value) -> String {
+    let name = args["function_name"].as_str().unwrap_or("");
+    let depth = args["depth"].as_i64().unwrap_or(3) as i32;
+    ffi::explore_function(project_id, name, depth, "callees")
+}
+
 // ── Phase A: Fast Scan & Query ────────────────────────────
 
 fn h_find_symbol(project_id: u64, args: &Value) -> String {
@@ -356,6 +367,8 @@ static TOOL_HANDLERS: Lazy<HashMap<&'static str, ToolHandler>> = Lazy::new(|| {
     m.insert("get_graph_stats", h_get_graph_stats as ToolHandler);
     m.insert("detect_changes", h_detect_changes as ToolHandler);
     m.insert("verify_integrity", h_verify_integrity as ToolHandler);
+    m.insert("explain_symbol", h_explain_symbol as ToolHandler);
+    m.insert("trace_flow", h_trace_flow as ToolHandler);
     // Fast scan
     m.insert("find_symbol", h_find_symbol as ToolHandler);
     m.insert("get_module_tree", h_get_module_tree as ToolHandler);
@@ -439,6 +452,29 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
             name: "get_graph_stats".into(),
             description: "Get statistics about the current code graph (node count, edge count, file count).".into(),
             input_schema: json!({ "type": "object", "properties": {} }),
+        },
+        Tool {
+            name: "trace_flow".into(),
+            description: "Trace the execution flow from a function through its callees recursively. Returns a call chain showing how control flows through the codebase.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "function_name": {"type": "string", "description": "Starting function name"},
+                    "depth": {"type": "integer", "description": "How many levels to trace (default 3, max 10)"}
+                },
+                "required": ["function_name"]
+            }),
+        },
+        Tool {
+            name: "explain_symbol".into(),
+            description: "Get structured information about a symbol: definition location, callers, callees, and dependencies. Returns a comprehensive view of what the symbol does and how it relates to the rest of the codebase.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "symbol_name": {"type": "string", "description": "Name of the symbol to explain"}
+                },
+                "required": ["symbol_name"]
+            }),
         },
         Tool {
             name: "verify_integrity".into(),

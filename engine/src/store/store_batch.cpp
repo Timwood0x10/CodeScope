@@ -235,19 +235,6 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 		return false;
 	}
 
-	const char *sm_sql =
-		"INSERT INTO _staged_metrics "
-		"(project_id, file_path, name, line, col,"
-		" cyclomatic, nesting_depth, cognitive, lines,"
-		" param_count, call_count, branch_count, loop_count, is_stub) "
-		"VALUES (?,?,?,?,?, ?,?,?,?, ?,?,?,?, ?)";
-	sqlite3_stmt *sm_st = nullptr;
-	if (sqlite3_prepare_v2(db_, sm_sql, -1, &sm_st, nullptr) != SQLITE_OK) {
-		sqlite3_finalize(sr_st);
-		error_ = "insertFileResultBatch: prepare staged_metrics failed";
-		return false;
-	}
-
 	const char *fss_sql = "INSERT OR REPLACE INTO file_scan_state "
 			      "(project_id, file_path, file_mtime, file_size) "
 			      "VALUES (?,?,?,?)";
@@ -255,7 +242,6 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 	if (sqlite3_prepare_v2(db_, fss_sql, -1, &fss_st, nullptr) !=
 	    SQLITE_OK) {
 		sqlite3_finalize(sr_st);
-		sqlite3_finalize(sm_st);
 		error_ =
 			"insertFileResultBatch: prepare file_scan_state failed";
 		return false;
@@ -268,7 +254,6 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 	if (sqlite3_prepare_v2(db_, file_sql, -1, &file_st, nullptr) !=
 	    SQLITE_OK) {
 		sqlite3_finalize(sr_st);
-		sqlite3_finalize(sm_st);
 		sqlite3_finalize(fss_st);
 		error_ = "insertFileResultBatch: prepare file failed";
 		return false;
@@ -311,7 +296,6 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 
 		// Collect records and metrics for batch insert
 		batch_records.emplace_back(fr.file_path, fr.records);
-		batch_metrics.emplace_back(fr.file_path, fr.metrics);
 	}
 
 	// Step 2: Batch-insert semantic_records via multi-VALUES
@@ -519,7 +503,6 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 	}
 
 	sqlite3_finalize(sr_st);
-	sqlite3_finalize(sm_st);
 	sqlite3_finalize(fss_st);
 	if (file_st)
 		sqlite3_finalize(file_st);
