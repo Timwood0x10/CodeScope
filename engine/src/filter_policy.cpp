@@ -170,6 +170,8 @@ FilterPolicy::FilterPolicy()
 		"__snapshots__",
 		"__fixtures__",
 		"__test__",
+		// ── Source-bearing dirs rarely the focus of analysis ──
+		// Skipped in NORMAL to avoid 3-5x file count inflation.
 		"test",
 		"tests",
 		"docs",
@@ -205,8 +207,10 @@ FilterPolicy::FilterPolicy()
 		"benchmarks",
 	};
 
-	// FAST mode skips even more — additional dirs that are sometimes
-	// source-bearing but rarely the focus of a quick scan.
+	// FAST mode skips even more — reserved for future FAST-only
+	// additions. test/, docs/, vendor/, bench/ are already in
+	// normal_skip_dirs_ so NORMAL mode skips them; FAST mode skips
+	// everything NORMAL skips (plus anything added here).
 	fast_extra_skip_dirs_ = {};
 
 	// ── Directory prefixes — catches build_test, build_master, etc. ──
@@ -784,9 +788,13 @@ const char *FilterPolicy::detectLanguage(const char *file_path) const
 		return "python";
 	if (lext == ".cpp" || lext == ".cc" || lext == ".cxx")
 		return "cpp";
-	if (lext == ".c" || lext == ".h")
+	if (lext == ".c")
 		return "c";
-	if (lext == ".hpp" || lext == ".hxx")
+	// C++ headers (.h/.hpp/.hxx/.hh) are parsed as C++ because the
+	// tree-sitter C++ grammar is a strict superset of the C grammar.
+	// Parsing .h as C would mis-handle templates, namespaces, classes,
+	// and other C++ constructs commonly found in .h files.
+	if (lext == ".h" || lext == ".hpp" || lext == ".hxx" || lext == ".hh")
 		return "cpp";
 	if (lext == ".rs")
 		return "rust";

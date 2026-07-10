@@ -626,15 +626,17 @@ getGitChangedFiles(const std::string &project_dir)
 		return false;
 	};
 	if (hasShellMeta(project_dir)) {
-		fprintf(stderr, "engine: rejected project_dir with shell "
-				"metacharacters for git status\n");
+		fprintf(stderr,
+			"engine: rejected project_dir with shell "
+			"metacharacters for git status [module=scanner, method=getGitChangedFiles]\n");
 		return changed;
 	}
 	std::string cmd =
 		"git -C \"" + project_dir + "\" status --porcelain -z";
 	FILE *fp = _popen(cmd.c_str(), "r");
 	if (!fp) {
-		fprintf(stderr, "engine: _popen(git status) failed\n");
+		fprintf(stderr,
+			"engine: _popen(git status) failed [module=scanner, method=getGitChangedFiles]\n");
 		return changed;
 	}
 	size_t n;
@@ -642,11 +644,14 @@ getGitChangedFiles(const std::string &project_dir)
 		output.append(buf, n);
 	int rc = _pclose(fp);
 	if (rc != 0)
-		fprintf(stderr, "engine: git status exited %d\n", rc);
+		fprintf(stderr,
+			"engine: git status exited %d [module=scanner, method=getGitChangedFiles]\n",
+			rc);
 #else
 	int fds[2];
 	if (pipe(fds) != 0) {
-		fprintf(stderr, "engine: pipe() failed for git status: %s\n",
+		fprintf(stderr,
+			"engine: pipe() failed for git status: %s [module=scanner, method=getGitChangedFiles]\n",
 			strerror(errno));
 		return changed;
 	}
@@ -658,7 +663,8 @@ getGitChangedFiles(const std::string &project_dir)
 
 	pid_t pid = fork();
 	if (pid < 0) {
-		fprintf(stderr, "engine: fork() failed for git status: %s\n",
+		fprintf(stderr,
+			"engine: fork() failed for git status: %s [module=scanner, method=getGitChangedFiles]\n",
 			strerror(errno));
 		close(fds[0]);
 		close(fds[1]);
@@ -679,7 +685,8 @@ getGitChangedFiles(const std::string &project_dir)
 		if (rn < 0) {
 			if (errno == EINTR)
 				continue;
-			fprintf(stderr, "engine: read() from git failed: %s\n",
+			fprintf(stderr,
+				"engine: read() from git failed: %s [module=scanner, method=getGitChangedFiles]\n",
 				strerror(errno));
 			break;
 		}
@@ -690,10 +697,12 @@ getGitChangedFiles(const std::string &project_dir)
 	waitpid(pid, &status, 0);
 	if (WIFEXITED(status)) {
 		if (WEXITSTATUS(status) != 0)
-			fprintf(stderr, "engine: git status exited %d\n",
+			fprintf(stderr,
+				"engine: git status exited %d [module=scanner, method=getGitChangedFiles]\n",
 				WEXITSTATUS(status));
 	} else if (WIFSIGNALED(status)) {
-		fprintf(stderr, "engine: git status killed by signal %d\n",
+		fprintf(stderr,
+			"engine: git status killed by signal %d [module=scanner, method=getGitChangedFiles]\n",
 			WTERMSIG(status));
 	}
 #endif

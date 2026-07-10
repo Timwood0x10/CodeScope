@@ -278,7 +278,7 @@ std::string detectCommunities(uint64_t project_id, store::GraphStore *store,
 		fprintf(stderr,
 			"WARN: get_communities max_members=0 returns ALL members. "
 			"This can produce large token output (~100K+ tokens for large projects). "
-			"Set max_members to a small value (e.g. 10) for summary mode.\n");
+			"Set max_members to a small value (e.g. 10) for summary mode. [module=query, method=detectCommunities]\n");
 	}
 
 	// Run label propagation

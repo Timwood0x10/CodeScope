@@ -43,8 +43,25 @@ set(BUILD_SHARED_LIBS OFF)
 set(TREE_SITTER_ENABLE_TESTING OFF)
 set(TREE_SITTER_ENABLE_EXAMPLES OFF)
 FetchContent_MakeAvailable(ts_repo)
-set(TREE_SITTER_LIB tree-sitter)
+# IMPORTANT: Force using FetchContent-built tree-sitter, NOT the
+# system/Homebrew version. cmake's pkg-config may find libtree-sitter
+# from Homebrew first, which skips building the FetchContent source
+# entirely. This causes the grammar to compile against FetchContent
+# headers but link against Homebrew's library → SIGBUS from struct
+# layout mismatch. Fix: compile tree-sitter source directly into our
+# binary (like CBM's ts_runtime.c approach), bypassing the library
+# dependency entirely so there is NO external tree-sitter to resolve.
+set(TREE_SITTER_LIB "")
+set(TREE_SITTER_SOURCES
+    "${ts_repo_SOURCE_DIR}/lib/src/lib.c")
 set(TREE_SITTER_INCDIR "${ts_repo_SOURCE_DIR}/lib/include" "${ts_repo_BINARY_DIR}/lib/include")
+# Grammar compilation needs the core's internal parser.h (in lib/src/),
+# not just the public API (lib/include/). Adding lib/src/ here ensures
+# #include "tree_sitter/parser.h" resolves to the core's version FIRST,
+# before the grammar's bundled copy. Without this, grammars compile
+# against their OWN bundled parser.h which may have a different struct
+# layout than what the v0.26.10 core expects → SIGBUS.
+set(TREE_SITTER_SRCDIR "${ts_repo_SOURCE_DIR}/lib/src")
 
 # ── sqlite3 amalgamation (download once, compile as C) ──────────
 set(SQLITE3_DEPS_DIR "${CMAKE_BINARY_DIR}/_deps")
@@ -162,6 +179,12 @@ set(ENGINE_SOURCES
     src/graph/graph_builder.cpp
     src/store/store_core.cpp
     src/store/store.cpp
+    src/store/store_insert.cpp
+    src/store/store_search.cpp
+    src/store/store_batch.cpp
+    src/store/store_graph.cpp
+    src/store/store_query.cpp
+    src/store/store_project.cpp
     src/store/store_intern.cpp
     src/query/query_engine.cpp
     src/query/query_analysis.cpp
@@ -178,6 +201,7 @@ set(ENGINE_SOURCES
     src/filter_policy.cpp
     src/platform_win.cpp
     ${SQLITE3_AMAL_SRC}
+    ${TREE_SITTER_SOURCES}
 )
 
 # Add sqlite-vec.c if available
@@ -211,6 +235,8 @@ if(EXISTS "${SQLITE_VEC_SRC}")
 endif()
 set_source_files_properties(${SQLITE3_AMAL_SRC} ${GRAMMAR_SOURCES}
     PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+set_source_files_properties(${TREE_SITTER_SOURCES}
+    PROPERTIES LANGUAGE C SKIP_PRECOMPILE_HEADERS ON)
 if(EXISTS "${SQLITE_VEC_SRC}")
     set_source_files_properties(${SQLITE_VEC_SRC} PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
     # Generate sqlite-vec.h from template with version substitution.
@@ -239,6 +265,7 @@ target_include_directories(astgraph_engine PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${SQLITE3_INCLUDE_DIRS}
     ${TREE_SITTER_INCDIR}
+    ${TREE_SITTER_SRCDIR}
     ${TREE_SITTER_INCLUDE_DIRS}
 )
 # sqlite-vec include is added via COMPILE_FLAGS on the C source file only

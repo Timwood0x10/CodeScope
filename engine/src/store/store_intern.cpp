@@ -171,7 +171,7 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 	exec("DROP TABLE IF EXISTS _decls");
 	exec(std::string("CREATE TEMP TABLE _decls AS "
 			 "SELECT r2n.node_id, r2n.file_path, r2n.name, "
-			 " r2n.original_id, s.start_row "
+			 " r2n.original_id, s.start_row, s.language "
 			 "FROM _r2n r2n "
 			 "JOIN semantic_records s ON s.rowid = r2n.rid "
 			 "WHERE s.kind IN (0,1)")
@@ -179,6 +179,7 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 	exec("CREATE INDEX IF NOT EXISTS _decls_fp_oid ON _decls(file_path, original_id)");
 	exec("CREATE INDEX IF NOT EXISTS _decls_name ON _decls(name)");
 	exec("CREATE INDEX IF NOT EXISTS _decls_fp_name_sr ON _decls(file_path, name, start_row)");
+	exec("CREATE INDEX IF NOT EXISTS _decls_name_lang ON _decls(name, language)");
 
 	// ── Step 1: Priority 1 — Intra-file calls (ref_original_id > 0) ──
 	// JOIN: call record → caller (same file, parent_id = original_id)
@@ -284,53 +285,104 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 		t2 = Clock::now();
 	}
 
-	// ── Step 3: Priority 3 — Name-based cross-file calls ──
-	// For call records not resolved by Priority 1 or 2, match by
-	// exact full name across all files.
+	// ── Step 3: Priority 3 — Name-based cross-file calls (optimized) ──
+	// For call records not resolved by Priority 1 or 2, match by exact
+	// name across files in the SAME LANGUAGE only. This avoids cross-
+	// language false positives (e.g., a JS call to "get()" matching a
+	// C function named "get").
 	//
-	// The NOT EXISTS subquery excludes calls already resolved by
-	// Priority 2 (translator-resolved). Priority 1 is excluded by
-	// the ref_original_id = 0 filter.
+	// Fanout control: instead of dropping high-frequency names entirely
+	// (the old kNameFanoutCap=20 approach), we use ROW_NUMBER() to cap
+	// the number of callee candidates per (caller, name) pair to 5.
+	// This preserves call edges for common names like get/set/init while
+	// preventing cartesian explosion.
+	//
+	// Dedup strategy: candidate edges are first collected in a temp
+	// table _p3_edges with a UNIQUE(src, tgt) constraint. This replaces
+	// the expensive per-row NOT EXISTS subquery against graph_edges.
+	// The final INSERT only checks NOT EXISTS on the deduplicated set.
 	{
+		// Temp table for dedup — UNIQUE constraint handles within-P3 dedup
+		exec("DROP TABLE IF EXISTS _p3_edges");
+		exec("CREATE TEMP TABLE _p3_edges ("
+		     "  src INTEGER NOT NULL, "
+		     "  tgt INTEGER NOT NULL, "
+		     "  csf TEXT, "
+		     "  csl INTEGER, "
+		     "  UNIQUE(src, tgt))");
+
+		// Phase 3a: collect candidate edges with per-caller-per-name cap.
+		// ROW_NUMBER limits callee candidates to 5 per (caller, name),
+		// preventing cartesian explosion for high-frequency names.
+		// INSERT OR IGNORE on _p3_edges handles within-P3 dedup via UNIQUE.
+		constexpr int kP3PerCallerNameCap = 5;
 		std::string sql = std::string(
-			"INSERT INTO graph_edges "
-			"(project_id, source_node_id, target_node_id, "
-			" edge_type, graph_type, call_site_file, call_site_line) "
-			"SELECT DISTINCT " +
-			pid +
-			", caller.node_id, callee.node_id, "
-			" 1, 'call_graph', sr.file_path, sr.start_row "
-			"FROM semantic_records sr "
-			"JOIN _decls caller "
-			" ON sr.file_path = caller.file_path "
-			" AND sr.parent_id = caller.original_id "
-			"JOIN _decls callee ON sr.name = callee.name "
-			"WHERE sr.project_id=" +
+			"INSERT OR IGNORE INTO _p3_edges (src, tgt, csf, csl) "
+			"SELECT src, tgt, csf, csl FROM ("
+			" SELECT caller.node_id AS src, "
+			"  callee.node_id AS tgt, "
+			"  sr.file_path AS csf, "
+			"  sr.start_row AS csl, "
+			"  ROW_NUMBER() OVER ("
+			"   PARTITION BY caller.node_id, sr.name"
+			"   ORDER BY callee.start_row"
+			"  ) AS rn "
+			" FROM semantic_records sr "
+			" JOIN _decls caller "
+			"  ON sr.file_path = caller.file_path "
+			"  AND sr.parent_id = caller.original_id "
+			" JOIN _decls callee "
+			"  ON sr.name = callee.name "
+			"  AND sr.language = callee.language "
+			" WHERE sr.project_id=" +
 			pid +
 			" AND sr.kind=9 AND sr.name != '' "
 			" AND sr.ref_original_id = 0 "
-			" AND caller.node_id != callee.node_id "
-			// Exclude edges already inserted by Priority 1 or 2
-			" AND NOT EXISTS ("
-			"  SELECT 1 FROM graph_edges ge "
-			"  WHERE ge.source_node_id = caller.node_id "
-			"  AND ge.target_node_id = callee.node_id "
-			"  AND ge.edge_type = 1) "
-			// Exclude calls resolved by Priority 2 (translator)
-			" AND NOT EXISTS ("
-			"  SELECT 1 FROM ir_semantic_edges ise "
-			"  JOIN ir_nodes i1 ON i1.id = ise.source_node_id"
-			"  AND i1.project_id=" +
-			pid +
-			"  JOIN files f1 ON f1.id = i1.file_id "
-			"  WHERE f1.path = sr.file_path "
-			"  AND i1.name = sr.name "
-			"  AND i1.start_row = sr.start_row "
-			"  AND ise.project_id=" +
-			pid + ")");
+			" AND caller.node_id != callee.node_id"
+			") WHERE rn <= " +
+			std::to_string(kP3PerCallerNameCap));
 		if (!exec(sql.c_str())) {
 			fprintf(stderr,
-				"buildCallEdgesSQL: Priority 3 failed: %s "
+				"buildCallEdgesSQL: Priority 3a (collect) failed: %s "
+				"[module=store, method=buildCallEdgesSQL]\n",
+				error_.c_str());
+		}
+
+		// Log candidate count for diagnostics
+		{
+			sqlite3_stmt *cnt = nullptr;
+			if (sqlite3_prepare_v2(
+				    db_, "SELECT COUNT(*) FROM _p3_edges", -1,
+				    &cnt, nullptr) == SQLITE_OK) {
+				if (sqlite3_step(cnt) == SQLITE_ROW)
+					fprintf(stderr,
+						"buildCallEdgesSQL: P3 candidates after "
+						"dedup+fanout+lang: %lld\n",
+						(long long)sqlite3_column_int64(
+							cnt, 0));
+				sqlite3_finalize(cnt);
+			}
+		}
+
+		// Phase 3b: insert into graph_edges, excluding edges from P1/P2.
+		// NOT EXISTS runs only on the deduplicated _p3_edges set, not on
+		// the raw cartesian product — orders of magnitude fewer lookups.
+		std::string sql2 = std::string(
+			"INSERT INTO graph_edges "
+			"(project_id, source_node_id, target_node_id, "
+			" edge_type, graph_type, call_site_file, call_site_line) "
+			"SELECT " +
+			pid +
+			", e.src, e.tgt, 1, 'call_graph', e.csf, e.csl "
+			"FROM _p3_edges e "
+			"WHERE NOT EXISTS ("
+			"  SELECT 1 FROM graph_edges ge "
+			"  WHERE ge.source_node_id = e.src"
+			"  AND ge.target_node_id = e.tgt"
+			"  AND ge.edge_type = 1)");
+		if (!exec(sql2.c_str())) {
+			fprintf(stderr,
+				"buildCallEdgesSQL: Priority 3b (insert) failed: %s "
 				"[module=store, method=buildCallEdgesSQL]\n",
 				error_.c_str());
 		} else {
@@ -339,6 +391,8 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 		}
 		edges_p3 = total_edges - edges_p2 - edges_p1;
 		t3 = Clock::now();
+
+		exec("DROP TABLE IF EXISTS _p3_edges");
 	}
 
 	// ── Step 3b: Short-name fallback ──
@@ -353,7 +407,7 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 		constexpr size_t kShortNameFanoutCap = 50;
 		const char *call_sql =
 			"SELECT sr.name, sr.parent_id, sr.file_path, "
-			" sr.start_row "
+			" sr.start_row, sr.language "
 			"FROM semantic_records sr "
 			"WHERE sr.project_id=? AND sr.kind=9 "
 			" AND sr.name != '' AND sr.ref_original_id = 0 "
@@ -384,7 +438,7 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 
 			const char *callee_sql =
 				"SELECT d.node_id FROM _decls d "
-				"WHERE d.name = ? "
+				"WHERE d.name = ? AND d.language = ? "
 				" AND d.node_id NOT IN ("
 				"  SELECT target_node_id FROM graph_edges "
 				"  WHERE source_node_id = ? AND edge_type = 1)";
@@ -430,6 +484,10 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 						sqlite3_column_text(call_st,
 								    2));
 				int start_row = sqlite3_column_int(call_st, 3);
+				const char *lang_c =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(call_st,
+								    4));
 				if (!name_c || !fp_c)
 					continue;
 
@@ -452,7 +510,10 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 
 				sqlite3_bind_text(callee_st, 1, sn.c_str(), -1,
 						  SQLITE_TRANSIENT);
-				sqlite3_bind_int64(callee_st, 2, caller_id);
+				sqlite3_bind_text(callee_st, 2,
+						  lang_c ? lang_c : "", -1,
+						  SQLITE_TRANSIENT);
+				sqlite3_bind_int64(callee_st, 3, caller_id);
 
 				size_t match_count = 0;
 				while (sqlite3_step(callee_st) == SQLITE_ROW) {

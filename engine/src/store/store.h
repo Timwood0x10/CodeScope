@@ -573,6 +573,11 @@ class GraphStore {
 	// String interning cache: text → symbol_names.id.
 	// Populated lazily by internString() and cleared by bulkInternFromQuery().
 	// Bounded by the number of unique strings (~500K for a 4M-node project).
+	//
+	// Thread safety: NO mutex. All access must be serialized by the caller
+	// (single writer thread in enhance/index, or external locking). This
+	// matches the stmt_cache_ convention. If concurrent queries are
+	// introduced in the future, a mutex must be added here.
 	std::unordered_map<std::string, uint32_t> intern_cache_;
 
 	// Dynamic statement cache keyed by SQL text. Reused across Phase B writes.

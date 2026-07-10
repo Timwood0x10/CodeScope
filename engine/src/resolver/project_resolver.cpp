@@ -124,7 +124,7 @@ int ProjectResolver::rankCandidate(const IndexEntry &candidate,
 			score += 1;
 	} catch (const std::exception &e) {
 		fprintf(stderr,
-			"RESOLVER: rankCandidate filesystem error: %s\n",
+			"RESOLVER: rankCandidate filesystem error: %s [module=resolver, method=rankCandidate]\n",
 			e.what());
 	}
 
@@ -140,7 +140,7 @@ std::string ProjectResolver::extractModule(const std::string &file_path)
 		}
 	} catch (const std::exception &e) {
 		fprintf(stderr,
-			"RESOLVER: extractModule filesystem error: %s\n",
+			"RESOLVER: extractModule filesystem error: %s [module=resolver, method=extractModule]\n",
 			e.what());
 	}
 	return "";

@@ -8,6 +8,7 @@
 .codescope/
 .cursh/
 .mcp.json
+.trae/
 
 # IDE and Editors
 **/.idea/

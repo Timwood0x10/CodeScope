@@ -33,7 +33,8 @@ int engine_init(const char *db_path)
 	g_store = std::make_unique<store::GraphStore>();
 
 	if (!g_store->open(db_path)) {
-		fprintf(stderr, "engine_init: open failed: %s\n",
+		fprintf(stderr,
+			"engine_init: open failed: %s [module=engine, method=engine_init]\n",
 			g_store ? g_store->error().c_str() : "(null)");
 		g_store.reset(); // Auto-cleanup via unique_ptr
 		return -1;
@@ -69,7 +70,7 @@ int engine_init(const char *db_path)
 				// make every INSERT INTO embeddings fail with no obvious root
 				// cause, so log it explicitly rather than silently freeing.
 				fprintf(stderr,
-					"engine: sqlite-vec table creation failed (rc=%d): %s\n",
+					"engine: sqlite-vec table creation failed (rc=%d): %s [module=engine, method=engine_init]\n",
 					exec_rc,
 					sql_err ? sql_err : "unknown error");
 			} else {

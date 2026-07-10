@@ -16,6 +16,7 @@
 #include <sqlite3.h>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <sys/stat.h>
 #include <thread>
 #include <tree_sitter/api.h>
@@ -505,10 +506,13 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 
 	// ── Writer thread ──────────────────────────────────────────
 	// Single writer owns the SQLite write path. Workers never touch SQLite.
-	// Batches up to kWriterBatchSize files per transaction.
+	// All files are written in a SINGLE transaction (like codebase-memory-mcp)
+	// to minimize WAL commit overhead. Batches are for memory management only.
 	const size_t kWriterBatchSize = 50;
 
 	std::thread writer_thread([&]() {
+		g_store->beginTransaction();
+
 		std::vector<store::FileResult> batch;
 		batch.reserve(kWriterBatchSize);
 
@@ -518,15 +522,12 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 			if (!ok) {
 				// Queue is done and empty — flush any remaining batch
 				if (!batch.empty()) {
-					g_store->beginTransaction();
 					if (!g_store->insertFileResultBatch(
 						    project_id, batch)) {
 						writer_error = 1;
 					}
-					if (writer_error)
-						g_store->rollbackTransaction();
-					else
-						g_store->commitTransaction();
+					files_written +=
+						static_cast<int>(batch.size());
 				}
 				break;
 			}
@@ -542,25 +543,26 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 				extra.reset();
 			}
 
-			// Flush batch to DB
+			// Flush batch to DB (within the single transaction)
 			if (batch.size() >= kWriterBatchSize ||
 			    result_queue.isDone()) {
-				g_store->beginTransaction();
 				if (!g_store->insertFileResultBatch(project_id,
 								    batch)) {
 					writer_error = 1;
 					fprintf(stderr,
 						"writer: insertFileResultBatch"
-						" failed\n");
+						" failed [module=engine, "
+						"method=writer_thread]\n");
 				}
-				if (writer_error)
-					g_store->rollbackTransaction();
-				else
-					g_store->commitTransaction();
 				files_written += static_cast<int>(batch.size());
 				batch.clear();
 			}
 		}
+
+		if (writer_error)
+			g_store->rollbackTransaction();
+		else
+			g_store->commitTransaction();
 	});
 
 	// ── Parse workers ──────────────────────────────────────────
@@ -577,6 +579,13 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 					ts_parser_delete(p);
 			}
 		};
+		struct TSTreeDeleter {
+			void operator()(TSTree *t) const
+			{
+				if (t)
+					ts_tree_delete(t);
+			}
+		};
 		thread_local static std::unordered_map<
 			std::string, std::unique_ptr<TSParser, TSParserDeleter> >
 			tl_parsers;
@@ -584,16 +593,34 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 			std::string, std::unique_ptr<ir::JsVisitor> >
 			tl_visitors;
 
-		// Helper: compute metrics from flat semantic records (new pipeline).
-		// Walks the parent_id tree to count params/calls/branches/loops.
-		// Stub detection: function with no CallExpr descendant.
-		// Cyclomatic/cognitive/nesting are estimated (tree-sitter CST
-		// is already freed; full IR tree is not available in this path).
-		auto computeMetricsFromRecords =
-			[&](const std::vector<ir::Record> &records,
-			    const std::string &file_path)
+		// Helper: compute metrics from tree-sitter CST + records.
+		// The CST provides control-flow nodes (if/for/while/switch/case)
+		// that RecordKind intentionally elides. Records provide param/call
+		// counts with correct RecordKind values (Parameter=8, CallExpr=9).
+		// TSTree MUST be kept alive until this function returns.
+		auto computeMetricsFromCST =
+			[&](TSTree *tree, const char *source,
+			    const std::vector<ir::Record> &records)
 			-> std::vector<store::MetricRow> {
 			std::vector<store::MetricRow> result;
+			if (!tree || !source || records.empty())
+				return result;
+
+			// Build line-start byte offset table for row→byte conversion
+			std::vector<uint32_t> line_starts;
+			line_starts.push_back(0);
+			for (size_t i = 0; source[i]; ++i)
+				if (source[i] == '\n')
+					line_starts.push_back(
+						static_cast<uint32_t>(i + 1));
+
+			auto rowColToByte = [&](uint32_t row,
+						uint32_t col) -> uint32_t {
+				if (row >= line_starts.size())
+					row = static_cast<uint32_t>(
+						line_starts.size() - 1);
+				return line_starts[row] + col;
+			};
 
 			// Build parent→children index and record map
 			std::unordered_map<uint64_t, std::vector<uint64_t> >
@@ -608,65 +635,180 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 			for (auto &r : records)
 				record_map[r.id] = &r;
 
+			// Collect Function/Method records (RecordKind: Function=0,
+			// Method=1) with byte ranges, sorted by start_byte.
+			struct FuncEntry {
+				uint32_t start_byte;
+				uint32_t end_byte;
+				const ir::Record *rec;
+			};
+			std::vector<FuncEntry> funcs;
 			for (auto &r : records) {
 				int k = static_cast<int>(r.kind);
-				// Only functions/methods get metrics
 				if (k != 0 && k != 1)
 					continue;
+				FuncEntry fe;
+				fe.start_byte = rowColToByte(r.loc.start_row,
+							     r.loc.start_col);
+				fe.end_byte = rowColToByte(r.loc.end_row,
+							   r.loc.end_col);
+				fe.rec = &r;
+				funcs.push_back(fe);
+			}
+			if (funcs.empty())
+				return result;
 
+			std::sort(funcs.begin(), funcs.end(),
+				  [](const FuncEntry &a, const FuncEntry &b) {
+					  return a.start_byte < b.start_byte;
+				  });
+
+			// Binary search: find innermost function containing byte_offset.
+			// Returns the function with the largest start_byte <= offset
+			// whose end_byte > offset. Walks backwards to handle nesting.
+			auto findContainingFunc =
+				[&](uint32_t byte_offset) -> const FuncEntry * {
+				auto it = std::upper_bound(
+					funcs.begin(), funcs.end(), byte_offset,
+					[](uint32_t val, const FuncEntry &fe) {
+						return val < fe.start_byte;
+					});
+				while (it != funcs.begin()) {
+					--it;
+					if (byte_offset >= it->start_byte &&
+					    byte_offset < it->end_byte)
+						return &(*it);
+				}
+				return nullptr;
+			};
+
+			// Control-flow node types (tree-sitter grammar strings,
+			// covering JS/TS/Go/Rust/C/C++/Python/Java)
+			static const std::unordered_set<std::string_view>
+				branch_types = { "if_statement",
+						 "if_expression",
+						 "switch_statement",
+						 "switch_expression",
+						 "match_expression",
+						 "match_statement",
+						 "case",
+						 "case_clause",
+						 "case_statement",
+						 "catch_clause",
+						 "except_clause",
+						 "handler_clause",
+						 "conditional_expression",
+						 "ternary_expression",
+						 "select_statement" };
+			static const std::unordered_set<std::string_view>
+				loop_types = { "for_statement",
+					       "for_expression",
+					       "for_in_statement",
+					       "for_of_statement",
+					       "while_statement",
+					       "while_expression",
+					       "do_statement",
+					       "do_while_statement",
+					       "loop_expression" };
+
+			// Initialize MetricRow per function, counting params (kind=8)
+			// and calls (kind=9) from records via parent_id tree walk.
+			std::unordered_map<const ir::Record *, store::MetricRow>
+				metrics_map;
+			for (auto &fe : funcs) {
 				store::MetricRow m;
-				m.name = r.name;
-				m.line = static_cast<int>(r.loc.start_row);
-				m.col = static_cast<int>(r.loc.start_col);
-				m.lines = static_cast<int>(r.loc.end_row -
-							   r.loc.start_row + 1);
-				m.cyclomatic = 1; // minimum
-
-				// Walk descendants
+				m.name = fe.rec->name;
+				m.line =
+					static_cast<int>(fe.rec->loc.start_row);
+				m.col = static_cast<int>(fe.rec->loc.start_col);
+				m.lines = static_cast<int>(
+					fe.rec->loc.end_row -
+					fe.rec->loc.start_row + 1);
+				m.cyclomatic = 1;
 				bool has_call = false;
-				std::function<void(uint64_t)> visit =
+				std::function<void(uint64_t)> count_desc =
 					[&](uint64_t id) {
 						auto it = record_map.find(id);
 						if (it == record_map.end())
 							return;
 						int ck = static_cast<int>(
 							it->second->kind);
-						switch (ck) {
-						case 4: // ParameterDecl
+						if (ck == 8) // Parameter
 							m.param_count++;
-							break;
-						case 9: // CallExpr
+						else if (ck == 9) { // CallExpr
 							m.call_count++;
 							has_call = true;
-							break;
-						case 11: // IfStmt
-						case 12: // SwitchStmt
-						case 13: // CaseStmt
-							m.branch_count++;
-							break;
-						case 14: // ForStmt
-						case 15: // WhileStmt
-						case 16: // DoWhileStmt
-							m.loop_count++;
-							break;
-						default:
-							break;
 						}
-						auto child_it =
-							children_of.find(id);
-						if (child_it !=
-						    children_of.end())
+						auto ci = children_of.find(id);
+						if (ci != children_of.end())
 							for (auto cid :
-							     child_it->second)
-								visit(cid);
+							     ci->second)
+								count_desc(cid);
 					};
-
-				auto child_it = children_of.find(r.id);
-				if (child_it != children_of.end())
-					for (auto cid : child_it->second)
-						visit(cid);
-
+				auto ci = children_of.find(fe.rec->id);
+				if (ci != children_of.end())
+					for (auto cid : ci->second)
+						count_desc(cid);
 				m.is_stub = !has_call;
+				metrics_map[fe.rec] = std::move(m);
+			}
+
+			// Walk CST recursively, count control-flow nodes per function.
+			// cf_depth tracks nesting of control-flow nodes; resets when
+			// entering a different function.
+			std::function<void(TSNode, int, const FuncEntry *)>
+				walk = [&](TSNode node, int cf_depth,
+					   const FuncEntry *cur_func) {
+					uint32_t start_byte =
+						ts_node_start_byte(node);
+					const FuncEntry *fe =
+						findContainingFunc(start_byte);
+					int eff_depth = cf_depth;
+					const FuncEntry *eff_func = cur_func;
+					if (fe && fe != cur_func) {
+						eff_depth = 0;
+						eff_func = fe;
+					}
+
+					const char *type = ts_node_type(node);
+					std::string_view sv(type);
+					bool is_branch =
+						branch_types.count(sv) > 0;
+					bool is_loop = loop_types.count(sv) > 0;
+
+					if (eff_func &&
+					    (is_branch || is_loop)) {
+						if (is_branch)
+							metrics_map[eff_func->rec]
+								.branch_count++;
+						else
+							metrics_map[eff_func->rec]
+								.loop_count++;
+						eff_depth = eff_depth + 1;
+						if (eff_depth >
+						    metrics_map[eff_func->rec]
+							    .nesting_depth)
+							metrics_map[eff_func->rec]
+								.nesting_depth =
+								eff_depth;
+					}
+
+					uint32_t n = ts_node_child_count(node);
+					for (uint32_t i = 0; i < n; ++i)
+						walk(ts_node_child(node, i),
+						     eff_depth, eff_func);
+				};
+
+			TSNode root = ts_tree_root_node(tree);
+			walk(root, 0, nullptr);
+
+			// Finalize: cyclomatic = 1 + branches + loops,
+			// cognitive = cyclomatic + nesting_depth (approximation)
+			for (auto &fe : funcs) {
+				auto &m = metrics_map[fe.rec];
+				m.cyclomatic =
+					1 + m.branch_count + m.loop_count;
+				m.cognitive = m.cyclomatic + m.nesting_depth;
 				result.push_back(std::move(m));
 			}
 			return result;
@@ -783,9 +925,11 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 				tl_parsers[job.lang] = std::move(np);
 				pit = tl_parsers.find(job.lang);
 			}
-			TSTree *tree = ts_parser_parse_string(
-				pit->second.get(), nullptr, source.c_str(),
-				static_cast<uint32_t>(source.size()));
+			std::unique_ptr<TSTree, TSTreeDeleter> tree(
+				ts_parser_parse_string(
+					pit->second.get(), nullptr,
+					source.c_str(),
+					static_cast<uint32_t>(source.size())));
 			if (!tree)
 				continue;
 
@@ -812,32 +956,34 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 
 			if (visitor) {
 				ir::SemanticUnit *su = visitor->visit(
-					tree, source.c_str(), job.path.c_str());
-				ts_tree_delete(tree);
+					tree.get(), source.c_str(),
+					job.path.c_str());
 				if (su) {
 					result->records = su->allRecords();
-					result->metrics =
-						computeMetricsFromRecords(
-							result->records,
-							job.path);
+					result->metrics = computeMetricsFromCST(
+						tree.get(), source.c_str(),
+						result->records);
 				}
 			} else {
 				// Old pipeline fallback: Translator → TranslationUnit
 				auto translator =
 					ir::createTranslator(job.lang.c_str());
 				if (!translator) {
-					ts_tree_delete(tree);
 					continue;
 				}
 				ir::TranslationUnit *unit =
-					translator->translate(tree,
+					translator->translate(tree.get(),
 							      source.c_str(),
 							      job.path.c_str());
-				ts_tree_delete(tree);
 				if (unit) {
 					// Convert TranslationUnit nodes to flat records.
-					// old pipeline: no parent_id available in flat
-					// form (tree is in children vector).
+					// all_nodes is a flat list indexed by Node::id and
+					// contains root + ALL descendants — iterating it AND
+					// recursing would visit each node twice (once as a
+					// top-level item with parent_id=0, once as a real
+					// child), producing duplicate records that corrupt
+					// the intra-file ref_original_id map. Flatten from
+					// root only so each node is visited exactly once.
 					uint64_t flat_id = 1;
 					std::function<void(ir::Node *, uint64_t)>
 						flatten = [&](ir::Node *n,
@@ -871,8 +1017,8 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 								flatten(c,
 									my_id);
 						};
-					for (auto *n : unit->all_nodes)
-						flatten(n, 0);
+					if (unit->root)
+						flatten(unit->root, 0);
 					result->metrics =
 						computeMetricsFromUnit(unit);
 				}
@@ -899,7 +1045,8 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		try {
 			workers.emplace_back(parse_worker_fn);
 		} catch (const std::system_error &e) {
-			fprintf(stderr, "engine: thread spawn failed: %s\n",
+			fprintf(stderr,
+				"engine: thread spawn failed: %s [module=engine, method=engine_index_project]\n",
 				e.what());
 		}
 	}
@@ -943,7 +1090,11 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 
 	// ── Step 1: buildGraph (SQL-only, graph_nodes + graph_edges + CSR) ──
 	// Reads semantic_records, creates graph_nodes/graph_edges via SQL JOINs.
-	// Memory: O(SQLite cache_size), not O(nodes).
+	// NOTE: calls=true builds call edges via all priorities in
+	// buildCallEdgesSQL (store_intern.cpp): P1 (intra-file ref_original_id),
+	// P2 (translator-resolved), P3 (name-based cross-file, language-filtered
+	// and capped per-caller-per-name to avoid cartesian explosion), and
+	// P3b (short-name fallback). Memory: O(SQLite cache_size), not O(nodes).
 	int64_t time_fts_ms = 0, time_vector_ms = 0;
 	{
 		auto t_bg = steady_clock::now();

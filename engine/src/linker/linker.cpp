@@ -40,7 +40,8 @@ int Linker::run(uint64_t project_id,
 		if (p->run(project_id, units, file_paths, symbol_index, store))
 			passed++;
 		else
-			fprintf(stderr, "LINKER: pass '%s' failed\n",
+			fprintf(stderr,
+				"LINKER: pass '%s' failed [module=linker, method=run]\n",
 				p->name());
 	}
 	return passed;
@@ -291,16 +292,18 @@ bool EmitGraphPass::run(
 
 		// Determine language from the file extension (proper check,
 		// not a single trailing character). Convention matches
-		// FilterPolicy::detectLanguage: .c/.h -> "c", .cpp/.cc/.cxx/
-		// .hpp/.hxx/.hh -> "cpp".
+		// FilterPolicy::detectLanguage: .c -> "c", .cpp/.cc/.cxx/
+		// .h/.hpp/.hxx/.hh -> "cpp" (C++ headers parsed as C++ since
+		// the tree-sitter C++ grammar is a superset of C).
 		std::string lang = "unknown";
 		auto dot_pos = fp.find_last_of('.');
 		if (dot_pos != std::string::npos) {
 			std::string ext = fp.substr(dot_pos + 1);
-			if (ext == "c" || ext == "h")
+			if (ext == "c")
 				lang = "c";
 			else if (ext == "cpp" || ext == "cc" || ext == "cxx" ||
-				 ext == "hpp" || ext == "hxx" || ext == "hh")
+				 ext == "h" || ext == "hpp" || ext == "hxx" ||
+				 ext == "hh")
 				lang = "cpp";
 		}
 

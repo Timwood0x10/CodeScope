@@ -70,22 +70,27 @@ bool GraphStore::open(const char *db_path)
 	// DB is a cache that can be rebuilt by re-indexing. Use synchronous=NORMAL
 	// if data safety is more important than write performance.
 	if (!exec("PRAGMA journal_mode=WAL"))
-		fprintf(stderr, "WARN: PRAGMA journal_mode=WAL failed: %s\n",
+		fprintf(stderr,
+			"WARN: PRAGMA journal_mode=WAL failed: %s [module=store, method=open]\n",
 			error_.c_str());
 	// NORMAL locking mode: release locks between transactions so that
 	// worker connections (for parallel enhance) can write concurrently.
 	// EXCLUSIVE was used during development but blocks concurrent WAL writers.
 	if (!exec("PRAGMA locking_mode=NORMAL"))
-		fprintf(stderr, "WARN: PRAGMA locking_mode=NORMAL failed\n");
+		fprintf(stderr,
+			"WARN: PRAGMA locking_mode=NORMAL failed [module=store, method=open]\n");
 	if (!exec("PRAGMA synchronous=OFF"))
-		fprintf(stderr, "WARN: PRAGMA synchronous=OFF failed\n");
+		fprintf(stderr,
+			"WARN: PRAGMA synchronous=OFF failed [module=store, method=open]\n");
 	if (!exec("PRAGMA temp_store=MEMORY"))
-		fprintf(stderr, "WARN: PRAGMA temp_store=MEMORY failed\n");
+		fprintf(stderr,
+			"WARN: PRAGMA temp_store=MEMORY failed [module=store, method=open]\n");
 	// Busy timeout: under concurrent access (worker pool threads + main loop),
 	// WAL writers may conflict. Without a timeout, SQLite immediately returns
 	// SQLITE_BUSY. 5000ms gives contenders time to finish their transaction.
 	if (!exec("PRAGMA busy_timeout=5000"))
-		fprintf(stderr, "WARN: PRAGMA busy_timeout=5000 failed\n");
+		fprintf(stderr,
+			"WARN: PRAGMA busy_timeout=5000 failed [module=store, method=open]\n");
 	exec(("PRAGMA cache_size=" + std::to_string(kCacheSizePages)).c_str());
 	exec(("PRAGMA mmap_size=" + std::to_string(kMmapSizeBytes)).c_str());
 
@@ -476,6 +481,17 @@ bool GraphStore::createSchema()
             src_blob BLOB                  -- packed u32[] of caller node IDs
         );
 
+        -- String interning pool for graph_nodes TEXT columns (name,
+        -- qualified_name, module_path, file_path, language, signature).
+        -- Referenced by graph_nodes.*_id columns (added in Migration 3 below).
+        -- Used by store_intern.cpp: internString() / getStringById() /
+        -- bulkInternFromQuery(). Must be created BEFORE any intern call.
+        CREATE TABLE IF NOT EXISTS symbol_names (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            text TEXT NOT NULL UNIQUE
+        );
+        CREATE INDEX IF NOT EXISTS idx_symbol_names_text ON symbol_names(text);
+
         )SQL";
 
 	// Execute main schema
@@ -509,7 +525,7 @@ bool GraphStore::createSchema()
 			if (!exec("ALTER TABLE symbols ADD COLUMN node_id INTEGER")) {
 				fprintf(stderr,
 					"createSchema: migration failed — "
-					"cannot add symbols.node_id: %s\n",
+					"cannot add symbols.node_id: %s [module=store, method=createSchema]\n",
 					error_.c_str());
 			}
 		}
@@ -599,7 +615,7 @@ bool GraphStore::createSchema()
 				if (!exec(ic.sql)) {
 					fprintf(stderr,
 						"createSchema: migration failed — "
-						"cannot add graph_nodes.%s: %s\n",
+						"cannot add graph_nodes.%s: %s [module=store, method=createSchema]\n",
 						ic.name, error_.c_str());
 				}
 			}
@@ -637,7 +653,7 @@ bool GraphStore::createIndexesAfterBulkLoad(uint64_t project_id)
 	for (auto *sql : indexes) {
 		if (!exec(sql)) {
 			fprintf(stderr,
-				"WARN: createIndexesAfterBulkLoad: %s\n",
+				"WARN: createIndexesAfterBulkLoad: %s [module=store, method=createIndexesAfterBulkLoad]\n",
 				error_.c_str());
 			ok = false;
 		}
@@ -663,27 +679,55 @@ IndexProgress getIndexProgress()
 	return g_index_progress;
 }
 
+// Escape a string for safe inclusion in a JSON string literal.
+// Handles ", \, and control characters per RFC 8259.
+static std::string jsonEscapeForProgress(const std::string &s)
+{
+	std::string out;
+	out.reserve(s.size() + 8);
+	for (char c : s) {
+		switch (c) {
+		case '"':
+			out += "\\\"";
+			break;
+		case '\\':
+			out += "\\\\";
+			break;
+		case '\n':
+			out += "\\n";
+			break;
+		case '\r':
+			out += "\\r";
+			break;
+		case '\t':
+			out += "\\t";
+			break;
+		default:
+			if (static_cast<unsigned char>(c) < 0x20) {
+				char buf[8];
+				snprintf(buf, sizeof(buf), "\\u%04x",
+					 static_cast<unsigned char>(c));
+				out += buf;
+			} else {
+				out += c;
+			}
+		}
+	}
+	return out;
+}
+
 std::string getIndexProgressJson(uint64_t project_id)
 {
 	auto p = getIndexProgress();
-	char buf[512];
-	int n = snprintf(buf, sizeof(buf),
-			 "{\"project_id\":%llu,\"total_files\":%d,"
-			 "\"current_file\":%d,\"phase\":%d,"
-			 "\"percent\":%d,\"current_file_path\":\"%s\","
-			 "\"error\":\"%s\"}",
-			 (unsigned long long)p.project_id, p.total_files,
-			 p.current_file, p.phase, p.percent,
-			 p.current_file_path.c_str(), p.error.c_str());
-	// Clamp the returned length to the bytes actually written into buf.
-	// snprintf returns the would-be length (>= sizeof(buf)) on
-	// truncation, or a negative value on error; without clamping,
-	// std::string(buf, n) would read past the buffer.
-	if (n < 0)
-		return "{}";
-	if (n >= (int)sizeof(buf))
-		n = (int)sizeof(buf) - 1;
-	return std::string(buf, n);
+	std::ostringstream oss;
+	oss << "{\"project_id\":" << (unsigned long long)p.project_id
+	    << ",\"total_files\":" << p.total_files
+	    << ",\"current_file\":" << p.current_file
+	    << ",\"phase\":" << p.phase << ",\"percent\":" << p.percent
+	    << ",\"current_file_path\":\""
+	    << jsonEscapeForProgress(p.current_file_path) << "\""
+	    << ",\"error\":\"" << jsonEscapeForProgress(p.error) << "\"}";
+	return oss.str();
 }
 
 void GraphStore::setProjectReadiness(uint64_t project_id, const char *field,
