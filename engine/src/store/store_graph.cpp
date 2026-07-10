@@ -19,7 +19,6 @@
 
 #include "../graph/graph_builder.h"
 #include "../ir/semantic_unit.h"
-#include "../query/vector_search.h"
 
 namespace store
 {

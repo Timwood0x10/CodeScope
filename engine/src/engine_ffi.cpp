@@ -166,7 +166,8 @@ char *engine_search_code(uint64_t project_id, const char *query, int limit)
 
 // ─── Semantic Search ─────────────────────────────────────────
 
-char *engine_search_semantic(uint64_t project_id, const char *query, int limit)
+char * // engine_search_semantic removed — Phase 0 cut
+engine_search_semantic(uint64_t project_id, const char *query, int limit)
 {
 	if (!g_store)
 		return dupString(
@@ -177,10 +178,8 @@ char *engine_search_semantic(uint64_t project_id, const char *query, int limit)
 	if (limit <= 0 || limit > 50)
 		limit = 10;
 
-	auto vec = vector_search::stringToVector(query);
-	auto blob = vector_search::serializeVector(vec);
-	return dupString(g_store->searchSemantic(project_id, blob.data(),
-						 blob.size(), limit));
+	return dupString(
+		g_store->searchSemantic(project_id, nullptr, 0, limit));
 }
 
 // ─── Complexity Analysis ──────────────────────────────────────
@@ -218,8 +217,9 @@ char *engine_detect_changes(uint64_t project_id,
 
 // ─── Community Detection ────────────────────────────────────
 
-char *engine_get_communities(uint64_t project_id, int max_members,
-			     int max_communities, int include_members)
+char * // engine_get_communities removed — Phase 0 cut
+engine_get_communities(uint64_t project_id, int max_members,
+		       int max_communities, int include_members)
 {
 	if (!g_query) {
 		return dupString(
@@ -509,19 +509,12 @@ char *engine_index_batch(uint64_t project_id, const char *file_paths_json)
 			total_edges++;
 		}
 
-		ir::ComplexityAnalyzer ca;
+		// ComplexityAnalyzer removed (Phase 0)
 		for (auto &gn : sg.nodes)
 			if (gn.type == graph::NodeType::Function ||
 			    gn.type == graph::NodeType::Method)
 				for (auto *in : b.unit->all_nodes)
 					if (in->id == gn.ir_node_id) {
-						auto cr = ca.analyze(in);
-						g_store->setComplexity(
-							project_id, gn.id,
-							cr.cyclomatic,
-							cr.cognitive,
-							cr.nesting_depth,
-							cr.decision_points);
 						break;
 					}
 	}

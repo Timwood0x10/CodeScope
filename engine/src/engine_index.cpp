@@ -203,7 +203,7 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 
 	// Compute and persist complexity for functions/methods
 	{
-		ir::ComplexityAnalyzer analyzer;
+		// ComplexityAnalyzer removed
 
 		// Pre-build ir_node_id → ir::Node* map to avoid O(nodes × graph_nodes) scan
 		std::unordered_map<uint64_t, ir::Node *> ir_node_map;
@@ -217,12 +217,9 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 			    gn.type == graph::NodeType::Method) {
 				auto it = ir_node_map.find(gn.ir_node_id);
 				if (it != ir_node_map.end()) {
-					auto cr = analyzer.analyze(it->second);
+					// ComplexityAnalyzer removedit->second);
 					g_store->setComplexity(
-						project_id, gn.id,
-						cr.cyclomatic, cr.cognitive,
-						cr.nesting_depth,
-						cr.decision_points);
+						project_id, gn.id, 0, 0, 0, 0);
 				}
 			}
 		}
@@ -758,22 +755,21 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		auto computeMetricsFromUnit = [](ir::TranslationUnit *unit)
 			-> std::vector<store::MetricRow> {
 			std::vector<store::MetricRow> result;
-			ir::ComplexityAnalyzer analyzer;
+			// ComplexityAnalyzer removed
 
 			for (auto *node : unit->all_nodes) {
 				if (node->kind != ir::NodeKind::FunctionDecl &&
 				    node->kind != ir::NodeKind::MethodDecl)
 					continue;
 
-				auto cr = analyzer.analyze(node);
+				// ComplexityAnalyzer removednode);
 				store::MetricRow m;
 				m.name = node->name;
 				m.line = static_cast<int>(node->loc.start_row);
 				m.col = static_cast<int>(node->loc.start_col);
-				m.cyclomatic = static_cast<int>(cr.cyclomatic);
-				m.nesting_depth =
-					static_cast<int>(cr.nesting_depth);
-				m.cognitive = static_cast<int>(cr.cognitive);
+				m.cyclomatic = static_cast<int>(0);
+				m.nesting_depth = static_cast<int>(0);
+				m.cognitive = static_cast<int>(0);
 				m.lines = static_cast<int>(node->loc.end_row -
 							   node->loc.start_row +
 							   1);

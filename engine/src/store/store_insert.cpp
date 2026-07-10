@@ -19,7 +19,6 @@
 
 #include "../graph/graph_builder.h"
 #include "../ir/semantic_unit.h"
-#include "../query/vector_search.h"
 
 namespace store
 {
@@ -33,9 +32,9 @@ uint64_t GraphStore::insertGraphNode(uint64_t project_id,
 		"INSERT INTO graph_nodes (id, project_id, ir_node_id, node_type, "
 		"name, qualified_name, module_path, package_name, class_name, "
 		"start_row, start_col, end_row, end_col, "
-		"file_path, language, signature, cyclomatic, is_entry_point) "
+		"file_path, language, signature, is_entry_point) "
 		"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, "
-		"?, ?, ?, ?, ?, ?, ?, ?, ?)";
+		"?, ?, ?, ?, ?, ?, ?, ?)";
 	sqlite3_stmt *stmt = getCachedStmt(sql);
 	if (!stmt) {
 		return 0;
@@ -58,7 +57,7 @@ uint64_t GraphStore::insertGraphNode(uint64_t project_id,
 	sqlite3_bind_text(stmt, 14, node.file_path.c_str(), -1, SQLITE_STATIC);
 	sqlite3_bind_text(stmt, 15, node.language.c_str(), -1, SQLITE_STATIC);
 	sqlite3_bind_text(stmt, 16, node.signature.c_str(), -1, SQLITE_STATIC);
-	sqlite3_bind_int(stmt, 17, node.complexity);
+	sqlite3_bind_int(stmt, 17, 0);
 	sqlite3_bind_int(stmt, 18, node.is_entry_point ? 1 : 0);
 
 	int rc = sqlite3_step(stmt);
@@ -79,9 +78,9 @@ void GraphStore::insertGraphNodes(uint64_t project_id,
 		"INSERT INTO graph_nodes (id, project_id, ir_node_id, node_type, "
 		"name, qualified_name, module_path, package_name, class_name, "
 		"start_row, start_col, end_row, end_col, "
-		"file_path, language, signature, cyclomatic, is_entry_point) "
+		"file_path, language, signature, is_entry_point) "
 		"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, "
-		"?, ?, ?, ?, ?, ?, ?, ?, ?)";
+		"?, ?, ?, ?, ?, ?, ?, ?)";
 
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -115,7 +114,7 @@ void GraphStore::insertGraphNodes(uint64_t project_id,
 				  SQLITE_STATIC);
 		sqlite3_bind_text(stmt, 16, node.signature.c_str(), -1,
 				  SQLITE_STATIC);
-		sqlite3_bind_int(stmt, 17, node.complexity);
+		sqlite3_bind_int(stmt, 17, 0);
 		sqlite3_bind_int(stmt, 18, node.is_entry_point ? 1 : 0);
 
 		int rc = sqlite3_step(stmt);

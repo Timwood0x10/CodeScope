@@ -49,7 +49,7 @@ struct GraphNode {
 	uint32_t end_row = 0, end_col = 0;
 	std::string language;
 	std::string signature; // "listen(port: number, host: string): void"
-	int complexity = 0; // cyclomatic
+
 	bool is_entry_point = false;
 };
 

@@ -1,5 +1,5 @@
 #include "query_engine.h"
-#include "community_detection.h"
+// community_detection removed — Phase 0 cut
 #include "graph_query.h"
 #include "impact_analysis.h"
 

@@ -496,3 +496,687 @@ CodeScope builds a semantic knowledge graph of your repository so AI can underst
 
 
 ---
+
+新设计
+
+其实前面我们一直在讨论规则、性能、SQLite，其实都是枝节。
+
+真正的问题只有一句：
+
+CodeScope 到底在抽取什么？（What is Knowledge?）
+
+如果这个没定义清楚，以后 Parser、DB、MCP 都会越写越乱。
+
+⸻
+
+我给 CodeScope 重新定义一个核心公式
+
+Repository
+        ↓ Parse
+Raw Facts
+        ↓ Normalize
+Knowledge Graph
+        ↓ Verify / Compress
+Knowledge Network
+        ↓ MCP
+AI
+
+注意这里有四层。
+
+不是两层。
+
+⸻
+
+第一层：Raw Facts（事实）
+
+Parser 永远不要做推理。
+
+Parser 只干一件事：
+
+Extract Facts.
+
+例如：
+
+class Cache
+
+Parser：
+
+Fact
+Kind
+Class
+Name
+Cache
+Location
+cache.cpp:13
+
+⸻
+
+例如：
+
+cache.put()
+
+Parser：
+
+Fact
+CALL
+caller
+Cache::insert
+callee
+Cache::put
+
+结束。
+
+⸻
+
+Parser 不要判断：
+
+是不是架构？
+是不是Feature？
+是不是算法？
+
+全部不要。
+
+Parser：
+
+只生产 Fact。
+
+⸻
+
+所以 Parser 输出应该只有四种东西。
+
+Symbol
+
+Function
+Class
+Struct
+Enum
+Trait
+Variable
+
+⸻
+
+Relation
+
+Call
+Import
+Reference
+Inherit
+Implement
+
+⸻
+
+Document
+
+README
+Comment
+Architecture.md
+Design.md
+
+⸻
+
+Metadata
+
+Language
+File
+Module
+Line
+Signature
+Visibility
+
+结束。
+
+Parser 到此结束。
+
+⸻
+
+第二层：Knowledge Graph
+
+这里才是真正开始智能。
+
+例如：
+
+Parser：
+
+CALL
+A
+↓
+B
+
+Graph：
+
+A
+CALL
+B
+
+Parser：
+
+README
+Incremental Index
+
+Graph：
+
+生成：
+
+Capability
+Incremental Index
+
+Parser：
+
+Comment
+Thread Safe
+
+Graph：
+
+生成：
+
+Contract
+ThreadSafe
+
+Parser：
+
+不知道 Capability。
+
+Graph 才知道。
+
+⸻
+
+所以：
+
+Graph 开始出现高层概念。
+
+例如：
+
+Capability
+Contract
+Architecture
+Module
+EntryPoint
+Workflow
+
+这些都不是 AST。
+
+这些都是：
+
+Knowledge。
+
+⸻
+
+第三层：Knowledge Network
+
+这是 CodeScope 的创新。
+
+例如：
+
+Graph：
+
+Function
+↓
+Call
+↓
+Call
+↓
+Call
+
+压缩。
+
+得到：
+
+Workflow
+Login
+↓
+JWT
+↓
+Redis
+
+AI 根本不用遍历。
+
+⸻
+
+例如：
+
+Graph：
+
+Cache
+↓
+HashMap
+↓
+LinkedList
+
+压缩。
+
+得到：
+
+Algorithm
+LRU Cache
+
+⸻
+
+例如：
+
+Graph：
+
+HTTP
+↓
+Router
+↓
+Controller
+↓
+Service
+
+压缩。
+
+得到：
+
+Business Flow
+
+所以：
+
+Knowledge Network
+
+不是：
+
+Graph。
+
+而是：
+
+AI 可消费的信息。
+
+⸻
+
+第四层：Verifier
+
+现在：
+
+Knowledge 已经有了。
+
+Verifier：
+
+根本不用 Parser。
+
+例如：
+
+Verifier：
+
+Capability
+↓
+Implementation
+↓
+Evidence
+
+例如：
+
+README
+↓
+Hot Reload
+
+Knowledge：
+
+Capability
+↓
+0 Function
+
+直接：
+
+Dead Capability
+
+⸻
+
+Comment：
+
+Thread Safe
+
+Knowledge：
+
+Mutex
+0
+
+直接：
+
+Broken Contract
+
+⸻
+
+Architecture：
+
+Controller
+↓
+Service
+
+Knowledge：
+
+Controller
+↓
+SQLite
+
+直接：
+
+Architecture Drift
+
+⸻
+
+所以：
+
+Verifier：
+
+永远消费：
+
+Knowledge。
+
+不是 AST。
+
+⸻
+
+那么数据库到底应该存什么？
+
+这是重点。
+
+我觉得应该存三层。
+
+⸻
+
+第一层
+
+facts
+
+Parser 原始输出。
+
+例如：
+
+Function
+Cache::put
+CALL
+A
+↓
+B
+Import
+
+全部。
+
+不可修改。
+
+这是：
+
+Ground Truth。
+
+⸻
+
+第二层
+
+knowledge
+
+这里开始出现：
+
+Capability
+Workflow
+Contract
+Algorithm
+EntryPoint
+Module
+
+这些是：
+
+Knowledge Builder
+
+生成。
+
+⸻
+
+例如：
+
+Capability
+↓
+Function
+↓
+Function
+↓
+README
+
+⸻
+
+第三层
+
+evidence
+
+Verifier：
+
+只写这里。
+
+例如：
+
+Finding
+Broken Contract
+
+Evidence：
+
+Comment
+↓
+Function
+↓
+Call
+↓
+No Mutex
+
+⸻
+
+所以：
+
+数据库应该只有：
+
+facts
+knowledge
+evidence
+
+三个核心表。
+
+其他：
+
+全部附属。
+
+⸻
+
+MCP 查询什么？
+
+很多人这里设计错。
+
+不是：
+
+search_symbol()
+
+而是：
+
+查询：
+
+Knowledge。
+
+例如：
+
+Explain Runtime.
+
+实际上：
+
+SQL：
+
+SELECT *
+FROM knowledge
+WHERE
+module='runtime'
+
+返回：
+
+Runtime
+Capabilities
+Workflow
+EntryPoint
+Dependencies
+
+不是：
+
+100 个 Function。
+
+⸻
+
+例如：
+
+Trace Login.
+
+查：
+
+Workflow
+
+不是：
+
+Call Graph。
+
+⸻
+
+例如：
+
+Verify Cache.
+
+查：
+
+Evidence
+
+不是：
+
+AST。
+
+⸻
+
+AI 如何使用？
+
+我觉得 MCP 不应该返回源码。
+
+应该返回：
+
+Knowledge Card。
+
+例如：
+
+Tool
+explain_module
+↓
+{
+ module:"runtime",
+ summary:"Task scheduler",
+ entrypoints:[...]
+ workflows:[...]
+ capability:[...]
+ dependency:[...]
+ integrity:92
+}
+
+AI：
+
+一句话：
+
+就知道：
+
+Runtime。
+
+⸻
+
+再例如：
+
+trace_workflow
+↓
+{
+workflow:
+[
+HTTP,
+Router,
+Auth,
+JWT,
+Redis
+]
+}
+
+AI：
+
+不用：
+
+grep。
+
+⸻
+
+再例如：
+
+verify
+↓
+{
+findings:[
+Broken Contract,
+Dead Capability,
+Weak Test
+]
+}
+
+AI：
+
+直接：
+
+Review。
+
+⸻
+
+我认为整个 CodeScope 应该长这样
+
+                    Repository
+                         │
+                ─────────▼─────────
+                 Language Parsers
+           (Tree-sitter / LLVM IR ...)
+                         │
+                         ▼
+                Facts Extraction Layer
+────────────────────────────────────────────
+Symbols
+Relations
+Documents
+Metadata
+────────────────────────────────────────────
+                         │
+                         ▼
+             Knowledge Builder Engine
+────────────────────────────────────────────
+Capabilities
+Modules
+Workflows
+EntryPoints
+Contracts
+Algorithms
+Architectures
+────────────────────────────────────────────
+                         │
+          ┌──────────────┴──────────────┐
+          ▼                             ▼
+ Knowledge Query Engine          Integrity Engine
+(Explain / Trace / Impact)   (Promise / Test / FFI / Drift)
+          │                             │
+          └──────────────┬──────────────┘
+                         ▼
+                  Evidence Generator
+                         │
+                         ▼
+                     MCP Server
+                         │
+                         ▼
+                  Claude / Codex / ARES
+
+⸻
+
+最后，我想给 CodeScope 定一条我认为最重要的设计原则，它会决定未来几年架构是否稳定：
+
+Parser 负责提取事实（Facts），Knowledge Builder 负责组织知识（Knowledge），Verifier 负责生成证据（Evidence）。
+
+也就是：
+
+* Facts：永远客观，不带任何推断。
+* Knowledge：由事实组合出来，可以不断演进。
+* Evidence：基于知识验证得到结论，每一条都能追溯回 Facts。
+
+这样，数据库就不再是一堆 AST 节点，而是一个清晰的三层模型：
+
+Facts → Knowledge → Evidence
+
+而 MCP 永远只消费 Knowledge 和 Evidence，AI 不再面对海量源码，而是面对一张已经组织好的项目知识网络。这就是我认为 CodeScope 最核心、也最有长期生命力的架构。

@@ -243,9 +243,10 @@ GraphStore::storeVector(uint64_t node_id, uint64_t project_id,
 	return rc == SQLITE_DONE;
 }
 
-std::string // searchSemantic removed — Phase 0 cut
-GraphStore::searchSemantic(uint64_t project_id, const void *query_vec,
-			   size_t vec_bytes, int limit)
+// searchSemantic removed — Phase 0 cut
+std::string GraphStore::searchSemantic(uint64_t project_id,
+				       const void *query_vec, size_t vec_bytes,
+				       int limit)
 {
 	(void)project_id;
 	(void)query_vec;
@@ -254,6 +255,6 @@ GraphStore::searchSemantic(uint64_t project_id, const void *query_vec,
 	return "{\"total\":0,\"results\":[]}";
 }
 
-// ── New Schema (Phase A): Modules ─────────────────────────────
+// ── New Schema (Phase A): Modules// ── New Schema (Phase A): Modules ─────────────────────────────
 
 } // namespace store

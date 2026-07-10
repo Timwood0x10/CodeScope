@@ -3,13 +3,11 @@
 
 #include "graph/graph_builder.h"
 #include "ir/ir.h"
-#include "ir/ir_complexity.h"
 #include "ir/ir_translator.h"
 #include "linker/linker.h"
 #include "lsp/lsp_client.h"
 #include "parser/parser.h"
 #include "query/query_engine.h"
-#include "query/vector_search.h"
 #include "store/store.h"
 
 #include <algorithm>

@@ -153,7 +153,6 @@ set(ENGINE_SOURCES
     src/ir/ir.cpp
     src/ir/ir_visitor.cpp
     src/ir/ir_translator.cpp
-    src/ir/ir_complexity.cpp
     src/ir/semantic_unit.cpp
     src/ir/semantic_emitter.cpp
     src/ir/translators/python_translator.cpp
@@ -190,9 +189,7 @@ set(ENGINE_SOURCES
     src/query/query_analysis.cpp
     src/query/graph_query.cpp
     src/query/impact_analysis.cpp
-    src/query/community_detection.cpp
-    src/query/vector_search.cpp
-    src/lsp/lsp_client.cpp
+         src/lsp/lsp_client.cpp
     src/resolver/resolver.cpp
     src/resolver/project_index.cpp
     src/resolver/project_resolver.cpp

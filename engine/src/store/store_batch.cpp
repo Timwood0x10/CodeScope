@@ -19,7 +19,6 @@
 
 #include "../graph/graph_builder.h"
 #include "../ir/semantic_unit.h"
-#include "../query/vector_search.h"
 
 namespace store
 {
@@ -220,23 +219,7 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 	if (batch.empty())
 		return true;
 
-	// Ensure staging temp table exists (per-connection, auto-cleaned)
-	exec("CREATE TEMP TABLE IF NOT EXISTS _staged_metrics ("
-	     " project_id INTEGER NOT NULL,"
-	     " file_path TEXT NOT NULL,"
-	     " name TEXT NOT NULL,"
-	     " line INTEGER NOT NULL,"
-	     " col INTEGER NOT NULL,"
-	     " cyclomatic INTEGER DEFAULT 0,"
-	     " nesting_depth INTEGER DEFAULT 0,"
-	     " cognitive INTEGER DEFAULT 0,"
-	     " lines INTEGER DEFAULT 0,"
-	     " param_count INTEGER DEFAULT 0,"
-	     " call_count INTEGER DEFAULT 0,"
-	     " branch_count INTEGER DEFAULT 0,"
-	     " loop_count INTEGER DEFAULT 0,"
-	     " is_stub INTEGER DEFAULT 0"
-	     ")");
+	// _staged_metrics temp table removed — metrics no longer stored.
 
 	// ── Prepare statements ─────────────────────────────────────
 	const char *sr_sql =
@@ -544,68 +527,10 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 	return true;
 }
 
+// resolveStagedMetrics removed — metrics are no longer stored.
 bool GraphStore::resolveStagedMetrics(uint64_t project_id)
 {
-	std::string pid = std::to_string(project_id);
-
-	// Check if staging table has data
-	bool has_data = false;
-	{
-		sqlite3_stmt *chk = nullptr;
-		if (sqlite3_prepare_v2(db_,
-				       "SELECT 1 FROM _staged_metrics LIMIT 1",
-				       -1, &chk, nullptr) == SQLITE_OK) {
-			has_data = (sqlite3_step(chk) == SQLITE_ROW);
-			sqlite3_finalize(chk);
-		}
-		if (!has_data)
-			return true;
-	}
-
-	// Sync staged metrics directly to graph_nodes columns.
-	// No more metrics table — complexity lives on graph_nodes directly.
-	std::string sync_sql =
-		"UPDATE graph_nodes SET "
-		" cyclomatic = COALESCE((SELECT sm.cyclomatic FROM _staged_metrics sm"
-		"  WHERE sm.file_path = graph_nodes.file_path"
-		"  AND sm.name = graph_nodes.name"
-		"  AND sm.line = graph_nodes.start_row"
-		"  AND sm.project_id = graph_nodes.project_id), 0),"
-		" cognitive = COALESCE((SELECT sm.cognitive FROM _staged_metrics sm"
-		"  WHERE sm.file_path = graph_nodes.file_path"
-		"  AND sm.name = graph_nodes.name"
-		"  AND sm.line = graph_nodes.start_row"
-		"  AND sm.project_id = graph_nodes.project_id), 0),"
-		" nesting_depth = COALESCE((SELECT sm.nesting_depth FROM _staged_metrics sm"
-		"  WHERE sm.file_path = graph_nodes.file_path"
-		"  AND sm.name = graph_nodes.name"
-		"  AND sm.line = graph_nodes.start_row"
-		"  AND sm.project_id = graph_nodes.project_id), 0),"
-		" param_count = COALESCE((SELECT sm.param_count FROM _staged_metrics sm"
-		"  WHERE sm.file_path = graph_nodes.file_path"
-		"  AND sm.name = graph_nodes.name"
-		"  AND sm.line = graph_nodes.start_row"
-		"  AND sm.project_id = graph_nodes.project_id), 0),"
-		" lines = COALESCE((SELECT sm.lines FROM _staged_metrics sm"
-		"  WHERE sm.file_path = graph_nodes.file_path"
-		"  AND sm.name = graph_nodes.name"
-		"  AND sm.line = graph_nodes.start_row"
-		"  AND sm.project_id = graph_nodes.project_id), 0)"
-		" WHERE project_id = " +
-		pid + " AND node_type IN (0, 1)";
-	if (!exec(sync_sql.c_str())) {
-		fprintf(stderr,
-			"resolveStagedMetrics: sync to graph_nodes failed: %s "
-			"[module=store, method=resolveStagedMetrics]\n",
-			error_.c_str());
-	}
-
-	fprintf(stderr,
-		"resolveStagedMetrics: synced to graph_nodes for project %s\n",
-		pid.c_str());
-
-	// Clean up temp table
-	exec("DROP TABLE IF EXISTS _staged_metrics");
+	(void)project_id;
 	return true;
 }
 
