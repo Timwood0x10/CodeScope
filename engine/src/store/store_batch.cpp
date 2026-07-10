@@ -43,9 +43,9 @@ void GraphStore::insertSemanticRecords(uint64_t project_id,
 	const char *sql =
 		"INSERT INTO semantic_records "
 		"(original_id, project_id, kind, name, qualified_name, parent_id, "
-		" ref_original_id,"
+		" ref_original_id, arity, is_static,"
 		" start_row, start_col, end_row, end_col, file_path, language) "
-		"VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)";
+		"VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -78,6 +78,8 @@ void GraphStore::insertSemanticRecords(uint64_t project_id,
 				  SQLITE_STATIC);
 		sqlite3_bind_text(stmt, 13, r.language.c_str(), -1,
 				  SQLITE_STATIC);
+		sqlite3_bind_int(stmt, 14, r.arity);
+		sqlite3_bind_int(stmt, 15, r.is_static ? 1 : 0);
 
 		int rc = sqlite3_step(stmt);
 		if (rc != SQLITE_DONE)
@@ -114,7 +116,7 @@ void GraphStore::insertSemanticRecordsBatch(
 	flat.reserve(total);
 	for (auto &fr : file_records)
 		for (auto &r : fr.second)
-			flat.push_back({&r, &fr.first});
+			flat.push_back({ &r, &fr.first });
 
 	// Step 2: Process in batches using multi-VALUES INSERT.
 	// Build SQL: INSERT INTO t VALUES (?,?,...), (?,?,...), ...
@@ -129,17 +131,18 @@ void GraphStore::insertSemanticRecordsBatch(
 		std::string sql = "INSERT INTO semantic_records "
 				  "(original_id, project_id, kind, name, "
 				  "qualified_name, parent_id, ref_original_id, "
+				  "arity, is_static, "
 				  "start_row, start_col, end_row, end_col, "
 				  "file_path, language) VALUES ";
 		for (size_t i = 0; i < batch; i++) {
 			if (i > 0)
 				sql += ",";
-			sql += "(?,?,?,?,?,?,?,?,?,?,?,?,?)";
+			sql += "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 		}
 
 		sqlite3_stmt *stmt = nullptr;
-		if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt,
-				       nullptr) != SQLITE_OK) {
+		if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) !=
+		    SQLITE_OK) {
 			error_ = "insertSemanticRecordsBatch: prepare failed";
 			return;
 		}
@@ -192,9 +195,8 @@ void GraphStore::insertSemanticRecordsBatch(
 			sqlite3_bind_text(stmt, base + 12,
 					  fr.file_path->c_str(), -1,
 					  SQLITE_STATIC);
-			sqlite3_bind_text(stmt, base + 13,
-					  r.language.c_str(), -1,
-					  SQLITE_STATIC);
+			sqlite3_bind_text(stmt, base + 13, r.language.c_str(),
+					  -1, SQLITE_STATIC);
 		}
 
 		int rc = sqlite3_step(stmt);
@@ -240,9 +242,9 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 	const char *sr_sql =
 		"INSERT INTO semantic_records "
 		"(original_id, project_id, kind, name, qualified_name, parent_id, "
-		" ref_original_id,"
+		" ref_original_id, arity, is_static,"
 		" start_row, start_col, end_row, end_col, file_path, language) "
-		"VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)";
+		"VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 	sqlite3_stmt *sr_st = nullptr;
 	if (sqlite3_prepare_v2(db_, sr_sql, -1, &sr_st, nullptr) != SQLITE_OK) {
 		error_ =
@@ -294,12 +296,13 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 	// then insert via multi-VALUES at the end for ~200x fewer step() calls.
 
 	// Buffers for batch multi-VALUES insert
-	constexpr int kColsPerRecord = 13;
 	constexpr int kColsPerMetric = 14;
 
 	// Step 1: Process file-level inserts + collect records/metrics
-	std::vector<std::pair<std::string, std::vector<ir::Record>>> batch_records;
-	std::vector<std::pair<std::string, std::vector<store::MetricRow>>> batch_metrics;
+	std::vector<std::pair<std::string, std::vector<ir::Record> > >
+		batch_records;
+	std::vector<std::pair<std::string, std::vector<store::MetricRow> > >
+		batch_metrics;
 
 	for (auto &fr : batch) {
 		// Upsert file record (ignore if already exists)
@@ -329,73 +332,52 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 	}
 
 	// Step 2: Batch-insert semantic_records via multi-VALUES
-	// Build SQL: INSERT INTO semantic_records VALUES (?,?...,?), (?,?...,?), ...
+	// Simple flat iteration: collect (record_ptr, file_path) for all records
 	if (!batch_records.empty()) {
-		size_t total_records = 0;
+		struct RecRef {
+			const ir::Record *rec;
+			const std::string *file;
+		};
+		std::vector<RecRef> all_recs;
 		for (auto &br : batch_records)
-			total_records += br.second.size();
+			for (auto &r : br.second)
+				all_recs.push_back({ &r, &br.first });
 
 		constexpr size_t kMaxBatch = 500;
-		size_t offset = 0;
-		while (offset < total_records) {
-			size_t batch_size = total_records - offset;
-			if (batch_size > kMaxBatch)
-				batch_size = kMaxBatch;
-
-			// Flatten batch_records into a contiguous list
-			std::vector<std::pair<const ir::Record *, const std::string *>>
-				record_ptrs;
-			record_ptrs.reserve(batch_size);
-			size_t remaining = batch_size;
-			for (auto &br : batch_records) {
-				if (remaining == 0)
-					break;
-				size_t take = br.second.size();
-				if (take > offset) {
-					take -= offset;
-					if (take > remaining)
-						take = remaining;
-					for (size_t i = 0; i < take; i++)
-						record_ptrs.push_back(
-							{&br.second[offset + i],
-							 &br.first});
-					remaining -= take;
-					offset += take;
-				} else {
-					offset -= take;
-				}
-			}
-
-			if (record_ptrs.empty())
-				break;
+		for (size_t off = 0; off < all_recs.size(); off += kMaxBatch) {
+			size_t batch_sz = all_recs.size() - off;
+			if (batch_sz > kMaxBatch)
+				batch_sz = kMaxBatch;
 
 			// Build multi-VALUES SQL
-			std::string sql = "INSERT INTO semantic_records "
-					  "(original_id, project_id, kind, name, "
-					  "qualified_name, parent_id, "
-					  "ref_original_id, "
-					  "start_row, start_col, end_row, end_col, "
-					  "file_path, language) VALUES ";
-			for (size_t i = 0; i < record_ptrs.size(); i++) {
+			std::string sql =
+				"INSERT INTO semantic_records "
+				"(original_id, project_id, kind, name, "
+				"qualified_name, parent_id, "
+				"ref_original_id, arity, is_static, "
+				"start_row, start_col, end_row, end_col, "
+				"file_path, language) VALUES ";
+			for (size_t i = 0; i < batch_sz; i++) {
 				if (i > 0)
 					sql += ",";
-				sql += "(?,?,?,?,?,?,?,?,?,?,?,?,?)";
+				sql += "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 			}
 
 			sqlite3_stmt *batch_st = nullptr;
-			if (sqlite3_prepare_v2(db_, sql.c_str(), -1,
-					       &batch_st, nullptr) == SQLITE_OK) {
-				for (size_t i = 0; i < record_ptrs.size(); i++) {
-					auto &r = *record_ptrs[i].first;
-					int base = static_cast<int>(i * kColsPerRecord);
-					sqlite3_bind_int64(batch_st, base + 1,
-							   static_cast<int64_t>(
-								   r.id));
+			if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &batch_st,
+					       nullptr) == SQLITE_OK) {
+				for (size_t i = 0; i < batch_sz; i++) {
+					auto &r = *all_recs[off + i].rec;
+					int base = static_cast<int>(i * 15);
+					sqlite3_bind_int64(
+						batch_st, base + 1,
+						static_cast<int64_t>(r.id));
 					sqlite3_bind_int64(batch_st, base + 2,
 							   static_cast<int64_t>(
 								   project_id));
-					sqlite3_bind_int(batch_st, base + 3,
-							 static_cast<int>(r.kind));
+					sqlite3_bind_int(
+						batch_st, base + 3,
+						static_cast<int>(r.kind));
 					sqlite3_bind_text(batch_st, base + 4,
 							  r.name.c_str(), -1,
 							  SQLITE_STATIC);
@@ -407,31 +389,35 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 						batch_st, base + 6,
 						static_cast<int64_t>(
 							r.parent_id));
-					sqlite3_bind_int64(batch_st, base + 7, 0);
-					sqlite3_bind_int(
-						batch_st, base + 8,
-						static_cast<int>(
-							r.loc.start_row));
-					sqlite3_bind_int(
-						batch_st, base + 9,
-						static_cast<int>(
-							r.loc.start_col));
+					sqlite3_bind_int64(batch_st, base + 7,
+							   0);
+					sqlite3_bind_int(batch_st, base + 8,
+							 r.arity);
+					sqlite3_bind_int(batch_st, base + 9,
+							 r.is_static ? 1 : 0);
 					sqlite3_bind_int(
 						batch_st, base + 10,
 						static_cast<int>(
-							r.loc.end_row));
+							r.loc.start_row));
 					sqlite3_bind_int(
 						batch_st, base + 11,
 						static_cast<int>(
+							r.loc.start_col));
+					sqlite3_bind_int(
+						batch_st, base + 12,
+						static_cast<int>(
+							r.loc.end_row));
+					sqlite3_bind_int(
+						batch_st, base + 13,
+						static_cast<int>(
 							r.loc.end_col));
 					sqlite3_bind_text(
-						batch_st, base + 12,
-						record_ptrs[i].second->c_str(),
+						batch_st, base + 14,
+						all_recs[off + i].file->c_str(),
 						-1, SQLITE_STATIC);
-					sqlite3_bind_text(
-						batch_st, base + 13,
-						r.language.c_str(), -1,
-						SQLITE_STATIC);
+					sqlite3_bind_text(batch_st, base + 15,
+							  r.language.c_str(),
+							  -1, SQLITE_STATIC);
 				}
 				int rc = sqlite3_step(batch_st);
 				if (rc != SQLITE_DONE)
@@ -444,7 +430,7 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 		}
 	}
 
-	// Step 3: Batch-insert staged_metrics via multi-VALUES
+	// Step 3: Batch-insert staged_metrics via multi-VALUES	// Step 3: Batch-insert staged_metrics via multi-VALUES
 	if (!batch_metrics.empty()) {
 		size_t total_metrics = 0;
 		for (auto &bm : batch_metrics)
@@ -457,8 +443,8 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 			if (batch_size > kMaxBatch)
 				batch_size = kMaxBatch;
 
-			std::vector<
-				std::pair<const store::MetricRow *, const std::string *>>
+			std::vector<std::pair<const store::MetricRow *,
+					      const std::string *> >
 				metric_ptrs;
 			metric_ptrs.reserve(batch_size);
 			size_t remaining = batch_size;
@@ -472,8 +458,8 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 						take = remaining;
 					for (size_t i = 0; i < take; i++)
 						metric_ptrs.push_back(
-							{&bm.second[offset + i],
-							 &bm.first});
+							{ &bm.second[offset + i],
+							  &bm.first });
 					remaining -= take;
 					offset += take;
 				} else {
@@ -484,12 +470,13 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 			if (metric_ptrs.empty())
 				break;
 
-			std::string sql = "INSERT INTO _staged_metrics "
-					  "(project_id, file_path, name, line, col, "
-					  "cyclomatic, nesting_depth, cognitive, "
-					  "lines, param_count, call_count, "
-					  "branch_count, loop_count, is_stub) "
-					  "VALUES ";
+			std::string sql =
+				"INSERT INTO _staged_metrics "
+				"(project_id, file_path, name, line, col, "
+				"cyclomatic, nesting_depth, cognitive, "
+				"lines, param_count, call_count, "
+				"branch_count, loop_count, is_stub) "
+				"VALUES ";
 			for (size_t i = 0; i < metric_ptrs.size(); i++) {
 				if (i > 0)
 					sql += ",";
@@ -497,14 +484,16 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 			}
 
 			sqlite3_stmt *batch_st = nullptr;
-			if (sqlite3_prepare_v2(db_, sql.c_str(), -1,
-					       &batch_st, nullptr) == SQLITE_OK) {
-				for (size_t i = 0; i < metric_ptrs.size(); i++) {
+			if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &batch_st,
+					       nullptr) == SQLITE_OK) {
+				for (size_t i = 0; i < metric_ptrs.size();
+				     i++) {
 					auto &m = *metric_ptrs[i].first;
-					int base = static_cast<int>(i * kColsPerMetric);
-					sqlite3_bind_int64(
-						batch_st, base + 1,
-						static_cast<int64_t>(project_id));
+					int base = static_cast<int>(
+						i * kColsPerMetric);
+					sqlite3_bind_int64(batch_st, base + 1,
+							   static_cast<int64_t>(
+								   project_id));
 					sqlite3_bind_text(
 						batch_st, base + 2,
 						metric_ptrs[i].second->c_str(),
@@ -512,15 +501,18 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 					sqlite3_bind_text(batch_st, base + 3,
 							  m.name.c_str(), -1,
 							  SQLITE_STATIC);
-					sqlite3_bind_int(batch_st, base + 4, m.line);
-					sqlite3_bind_int(batch_st, base + 5, m.col);
+					sqlite3_bind_int(batch_st, base + 4,
+							 m.line);
+					sqlite3_bind_int(batch_st, base + 5,
+							 m.col);
 					sqlite3_bind_int(batch_st, base + 6,
 							 m.cyclomatic);
 					sqlite3_bind_int(batch_st, base + 7,
 							 m.nesting_depth);
 					sqlite3_bind_int(batch_st, base + 8,
 							 m.cognitive);
-					sqlite3_bind_int(batch_st, base + 9, m.lines);
+					sqlite3_bind_int(batch_st, base + 9,
+							 m.lines);
 					sqlite3_bind_int(batch_st, base + 10,
 							 m.param_count);
 					sqlite3_bind_int(batch_st, base + 11,

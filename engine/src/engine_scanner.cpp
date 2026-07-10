@@ -24,8 +24,6 @@
 // Phase A scanner removed — redirected to engine_index_project with fast mode.
 // ─── engine_scan_project ──────────────────────────────────────
 
-
-
 // ─── Phase A: engine_scan_project ──────────────────────────────
 // Redirected to engine_index_project with fast mode.
 // Regex scan eliminated — tree-sitter is fast enough (727ms for 150K lines).

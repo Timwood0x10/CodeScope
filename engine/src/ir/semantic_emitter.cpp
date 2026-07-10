@@ -11,15 +11,19 @@ SemanticEmitter::SemanticEmitter(SemanticUnit *unit)
 // ── Declaration Emitters ──────────────────────────────────────
 
 uint64_t SemanticEmitter::emitFunction(const std::string &name, SourceRange loc,
-				       uint64_t parent_id)
+				       uint64_t parent_id, int arity,
+				       bool is_static)
 {
-	return unit_->addRecord(RecordKind::Function, name, parent_id, loc);
+	return unit_->addRecord(RecordKind::Function, name, parent_id, loc,
+				arity, is_static);
 }
 
 uint64_t SemanticEmitter::emitMethod(const std::string &name, SourceRange loc,
-				     uint64_t parent_id)
+				     uint64_t parent_id, int arity,
+				     bool is_static)
 {
-	return unit_->addRecord(RecordKind::Method, name, parent_id, loc);
+	return unit_->addRecord(RecordKind::Method, name, parent_id, loc, arity,
+				is_static);
 }
 
 uint64_t SemanticEmitter::emitClass(const std::string &name, SourceRange loc,

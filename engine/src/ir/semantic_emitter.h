@@ -26,9 +26,11 @@ class SemanticEmitter {
 	// ── Declaration Emitters ─────────────────────────────────
 
 	uint64_t emitFunction(const std::string &name, SourceRange loc,
-			      uint64_t parent_id = 0);
+			      uint64_t parent_id = 0, int arity = 0,
+			      bool is_static = false);
 	uint64_t emitMethod(const std::string &name, SourceRange loc,
-			    uint64_t parent_id = 0);
+			    uint64_t parent_id = 0, int arity = 0,
+			    bool is_static = false);
 	uint64_t emitClass(const std::string &name, SourceRange loc,
 			   uint64_t parent_id = 0);
 	uint64_t emitInterface(const std::string &name, SourceRange loc,

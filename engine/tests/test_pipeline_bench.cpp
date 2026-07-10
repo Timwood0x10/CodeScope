@@ -97,7 +97,7 @@ static std::string generateJS(int num_functions, int calls_per_function)
 	return code;
 }
 
-static size_t vectorCapacityBytes(const std::vector<ir::Record> &records)
+__attribute__((unused)) static size_t vectorCapacityBytes(const std::vector<ir::Record> &records)
 {
 	return records.capacity() * sizeof(ir::Record);
 }

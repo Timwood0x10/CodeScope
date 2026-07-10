@@ -250,6 +250,8 @@ bool GraphStore::createSchema()
             qualified_name TEXT DEFAULT '',
             parent_id INTEGER DEFAULT 0,
             ref_original_id INTEGER DEFAULT 0,
+            arity INTEGER DEFAULT 0,
+            is_static INTEGER DEFAULT 0,
             start_row INTEGER DEFAULT 0, start_col INTEGER DEFAULT 0,
             end_row INTEGER DEFAULT 0, end_col INTEGER DEFAULT 0,
             file_path TEXT NOT NULL,

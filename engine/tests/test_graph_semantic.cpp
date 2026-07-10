@@ -19,9 +19,11 @@ static void test_symbol_graph_from_semantic_unit()
     unit.setLanguage("javascript");
 
     SourceRange loc{0, 0, 10, 0};
+    (void)loc;
 
     // Create: compute() at top level
     uint64_t fn1 = emitter.emitFunction("compute", {1, 0, 3, 0});
+    (void)fn1;
     // Create: main() at top level
     uint64_t fn2 = emitter.emitFunction("main", {5, 0, 9, 0});
     // Variable inside main
@@ -77,6 +79,7 @@ static void test_call_graph_from_semantic_unit()
 
     // Define compute function
     uint64_t fn1 = emitter.emitFunction("compute", {1, 0, 3, 0});
+    (void)fn1;
     // Define main function
     uint64_t fn2 = emitter.emitFunction("main", {5, 0, 9, 0});
     // main calls compute
@@ -124,6 +127,7 @@ static void test_class_method_hierarchy()
     uint64_t cls = emitter.emitClass("Calculator", {0, 0, 10, 0});
     uint64_t m1 = emitter.emitMethod("add", {1, 4, 4, 8}, cls);
     uint64_t m2 = emitter.emitMethod("sub", {5, 4, 8, 8}, cls);
+    (void)m2;
     emitter.emitVariable("tmp", {2, 8, 2, 12}, m1);
 
     GraphBuilder builder(1);

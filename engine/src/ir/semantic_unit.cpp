@@ -8,7 +8,8 @@ namespace ir
 // ── Record Management ──────────────────────────────────────────
 
 uint64_t SemanticUnit::addRecord(RecordKind kind, const std::string &name,
-				 uint64_t parent_id, SourceRange loc)
+				 uint64_t parent_id, SourceRange loc, int arity,
+				 bool is_static)
 {
 	Record rec;
 	rec.id = next_id_++;
@@ -18,6 +19,8 @@ uint64_t SemanticUnit::addRecord(RecordKind kind, const std::string &name,
 	rec.loc = loc;
 	rec.file_path = file_path_;
 	rec.language = language_;
+	rec.arity = arity;
+	rec.is_static = is_static;
 	id_to_index_[rec.id] = records_.size();
 	records_.push_back(std::move(rec));
 	return records_.back().id;

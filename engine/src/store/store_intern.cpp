@@ -49,7 +49,8 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 	exec("DROP TABLE IF EXISTS _decls");
 	exec(std::string("CREATE TEMP TABLE _decls AS "
 			 "SELECT r2n.node_id, r2n.file_path, r2n.name, "
-			 " r2n.original_id, s.start_row, s.language "
+			 " r2n.original_id, s.start_row, s.language, "
+			 " s.arity, s.is_static "
 			 "FROM _r2n r2n "
 			 "JOIN semantic_records s ON s.rowid = r2n.rid "
 			 "WHERE s.kind IN (0,1)")
@@ -58,6 +59,7 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 	exec("CREATE INDEX IF NOT EXISTS _decls_name ON _decls(name)");
 	exec("CREATE INDEX IF NOT EXISTS _decls_fp_name_sr ON _decls(file_path, name, start_row)");
 	exec("CREATE INDEX IF NOT EXISTS _decls_name_lang ON _decls(name, language)");
+	exec("CREATE INDEX IF NOT EXISTS _decls_resolution ON _decls(name, language, arity, is_static)");
 
 	// ── Step 1: Priority 1 — Intra-file calls (ref_original_id > 0) ──
 	// JOIN: call record → caller (same file, parent_id = original_id)
@@ -101,25 +103,29 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 	// Original SQL approach replaced: temp table _p3_edges + ROW_NUMBER
 	// + PARTITION BY + NOT EXISTS was O(n²) in SQL for large projects.
 	//
-	// New approach: load all declarations into a HashMap<(name,language),
-	// SmallVec<DeclInfo>>, then process each call site via O(1) lookup.
+	// New approach: load all declarations into a HashMap<(name,language,
+	// arity, is_static), SmallVec<DeclInfo>>, then process each call
+	// site via O(1) lookup. Arity + is_static reduce false positives
+	// by distinguishing overloads and static vs instance functions.
 	// Fanout cap of 5 per (caller, name) prevents cartesian explosion.
 	{
 		constexpr int kP3PerCallerNameCap = 5;
 
 		// ── Step 3a: Load declarations into HashMap ──
-		// Key: name + '\0' + language (null separator avoids accidental collisions)
+		// Key: name + '\0' + language + '\0' + arity + '\0' + is_static
+		// null separators avoid accidental collisions between fields.
 		struct DeclInfo {
 			uint64_t node_id;
 			std::string file_path;
 			int start_row;
 		};
-		std::unordered_map<std::string, std::vector<DeclInfo>> decl_map;
+		std::unordered_map<std::string, std::vector<DeclInfo> > decl_map;
 
 		{
 			const char *load_sql =
 				"SELECT d.node_id, d.file_path, d.start_row, "
-				" d.name, d.language FROM _decls d";
+				" d.name, d.language, d.arity, d.is_static "
+				"FROM _decls d";
 			sqlite3_stmt *ld_st = nullptr;
 			if (sqlite3_prepare_v2(db_, load_sql, -1, &ld_st,
 					       nullptr) == SQLITE_OK) {
@@ -139,25 +145,31 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 						reinterpret_cast<const char *>(
 							sqlite3_column_text(
 								ld_st, 4));
+					int ar = sqlite3_column_int(ld_st, 5);
+					int st = sqlite3_column_int(ld_st, 6);
 					if (!name || !lang)
 						continue;
-					std::string key =
-						std::string(name) + "\0" + lang;
+					// Build ResolutionKey:
+					// (name, language, arity, is_static)
+					std::string key = std::string(name) +
+							  "\0" + lang + "\0" +
+							  std::to_string(ar) +
+							  "\0" +
+							  std::to_string(st);
 					decl_map[key].push_back(
-						{nid, fp ? fp : "", sr});
+						{ nid, fp ? fp : "", sr });
 				}
 				sqlite3_finalize(ld_st);
 			}
 		}
 
 		// ── Step 3b: Process call sites via HashMap lookup ──
-		// Reads call records (kind=9) not resolved by P1 (ref_original_id=0),
-		// finds caller via (file_path, parent_id), then looks up callees
-		// by (name, language) in the HashMap with fanout cap.
+		// Uses ResolutionKey (name, language, arity, is_static)
+		// for O(1) lookup instead of SQL JOIN.
 		{
 			const char *call_sql =
 				"SELECT sr.name, sr.parent_id, sr.file_path, "
-				" sr.start_row, sr.language "
+				" sr.start_row, sr.language, sr.arity "
 				"FROM semantic_records sr "
 				"WHERE sr.project_id=? AND sr.kind=9 "
 				" AND sr.name != '' AND sr.ref_original_id = 0";
@@ -170,9 +182,9 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 					"method=buildCallEdgesSQL]\n",
 					error_.c_str());
 			} else {
-				sqlite3_bind_int64(call_st, 1,
-						   static_cast<int64_t>(
-							   project_id));
+				sqlite3_bind_int64(
+					call_st, 1,
+					static_cast<int64_t>(project_id));
 
 				// Prepared statement: lookup caller
 				const char *caller_sql =
@@ -213,34 +225,46 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 						reinterpret_cast<const char *>(
 							sqlite3_column_text(
 								call_st, 4));
+					int call_arity =
+						sqlite3_column_int(call_st, 5);
 					if (!name_c || !fp_c || !lang_c)
 						continue;
 
 					// Look up caller
 					sqlite3_bind_text(caller_st, 1, fp_c,
-							  -1,
-							  SQLITE_TRANSIENT);
+							  -1, SQLITE_TRANSIENT);
 					sqlite3_bind_int64(caller_st, 2,
 							   parent_id);
 					uint64_t caller_id = 0;
 					if (sqlite3_step(caller_st) ==
 					    SQLITE_ROW)
-						caller_id =
-							static_cast<uint64_t>(
-								sqlite3_column_int64(
-									caller_st,
-									0));
+						caller_id = static_cast<uint64_t>(
+							sqlite3_column_int64(
+								caller_st, 0));
 					sqlite3_reset(caller_st);
 					if (caller_id == 0)
 						continue;
 
 					// Look up callees in HashMap by
-					// (name, language)
-					std::string key = std::string(name_c) +
-							  "\0" + lang_c;
+					// ResolutionKey: (name, language,
+					// arity, is_static)
+					std::string key =
+						std::string(name_c) + "\0" +
+						lang_c + "\0" +
+						std::to_string(call_arity) +
+						"\0" + "0";
 					auto it = decl_map.find(key);
-					if (it == decl_map.end())
-						continue;
+					if (it == decl_map.end()) {
+						// Fallback: try without arity
+						// for C-style variadic calls
+						std::string key2 =
+							std::string(name_c) +
+							"\0" + lang_c + "\0" +
+							"0" + "\0" + "0";
+						it = decl_map.find(key2);
+						if (it == decl_map.end())
+							continue;
+					}
 
 					const auto &candidates = it->second;
 					int count = 0;
@@ -260,9 +284,10 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 							ins_st, 1,
 							static_cast<int64_t>(
 								project_id));
-						sqlite3_bind_int64(ins_st, 2,
-								   static_cast<int64_t>(
-									   caller_id));
+						sqlite3_bind_int64(
+							ins_st, 2,
+							static_cast<int64_t>(
+								caller_id));
 						sqlite3_bind_int64(
 							ins_st, 3,
 							static_cast<int64_t>(
@@ -295,7 +320,7 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 		t3 = Clock::now();
 	}
 
-// ── Step 3b: Short-name fallback ──
+	// ── Step 3b: Short-name fallback ──
 	// For qualified names like "module.func", try matching the last
 	// component ("func") against declarations. Capped at kShortNameFanoutCap
 	// matches to avoid cartesian explosion for common names like "get".

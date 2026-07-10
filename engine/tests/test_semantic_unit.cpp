@@ -98,9 +98,11 @@ static void test_queries()
 	uint64_t fn1 = unit.addRecord(ir::RecordKind::Function,
 				      "compute", 0, loc1);
 	uint64_t fn2 = unit.addRecord(ir::RecordKind::Function,
-				      "add", 0, loc2);
+	         "add", 0, loc2);
+	(void)fn2;
 	uint64_t call = unit.addRecord(ir::RecordKind::CallExpr,
-				       "add", fn1, loc3);
+	          "add", fn1, loc3);
+	(void)call;
 
 	// findByName
 	size_t idx = unit.findRecordByName("compute");
