@@ -186,7 +186,7 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 	//       call record → callee (same file, ref_original_id = original_id)
 	{
 		std::string sql = std::string(
-			"INSERT INTO graph_edges "
+			"INSERT OR IGNORE INTO graph_edges "
 			"(project_id, source_node_id, target_node_id, "
 			" edge_type, graph_type, call_site_file, call_site_line) "
 			"SELECT DISTINCT " +
@@ -227,7 +227,7 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 	// (ref_original_id = 0).
 	{
 		std::string sql = std::string(
-			"INSERT INTO graph_edges "
+			"INSERT OR IGNORE INTO graph_edges "
 			"(project_id, source_node_id, target_node_id, "
 			" edge_type, graph_type, call_site_file, call_site_line) "
 			"SELECT DISTINCT " +
@@ -368,7 +368,7 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 		// NOT EXISTS runs only on the deduplicated _p3_edges set, not on
 		// the raw cartesian product — orders of magnitude fewer lookups.
 		std::string sql2 = std::string(
-			"INSERT INTO graph_edges "
+			"INSERT OR IGNORE INTO graph_edges "
 			"(project_id, source_node_id, target_node_id, "
 			" edge_type, graph_type, call_site_file, call_site_line) "
 			"SELECT " +
@@ -404,158 +404,178 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 	// in SQL. However, it processes one call record at a time, so memory
 	// is O(1) per record.
 	{
-		constexpr size_t kShortNameFanoutCap = 50;
-		const char *call_sql =
-			"SELECT sr.name, sr.parent_id, sr.file_path, "
-			" sr.start_row, sr.language "
-			"FROM semantic_records sr "
-			"WHERE sr.project_id=? AND sr.kind=9 "
-			" AND sr.name != '' AND sr.ref_original_id = 0 "
-			" AND sr.name LIKE '%.%' "
-			// Exclude calls resolved by Priority 2
-			" AND NOT EXISTS ("
-			"  SELECT 1 FROM ir_semantic_edges ise "
-			"  JOIN ir_nodes i1 ON i1.id = ise.source_node_id"
-			"  AND i1.project_id=?"
-			"  JOIN files f1 ON f1.id = i1.file_id "
-			"  WHERE f1.path = sr.file_path "
-			"  AND i1.name = sr.name "
-			"  AND i1.start_row = sr.start_row "
-			"  AND ise.project_id=?)";
+		// P3b disabled by default — short-name matching creates noise edges
+		// for generic names like "get", "set", "len" (80% of Rust call edges).
+		// Enable via CODESCOPE_P3B=1 if maximum recall is needed.
+		const char *p3b_env = getenv("CODESCOPE_P3B");
+		if (p3b_env && p3b_env[0] == '1') {
+			constexpr size_t kShortNameFanoutCap = 50;
+			const char *call_sql =
+				"SELECT sr.name, sr.parent_id, sr.file_path, "
+				" sr.start_row, sr.language "
+				"FROM semantic_records sr "
+				"WHERE sr.project_id=? AND sr.kind=9 "
+				" AND sr.name != '' AND sr.ref_original_id = 0 "
+				" AND sr.name LIKE '%.%' "
+				// Exclude calls resolved by Priority 2
+				" AND NOT EXISTS ("
+				"  SELECT 1 FROM ir_semantic_edges ise "
+				"  JOIN ir_nodes i1 ON i1.id = ise.source_node_id"
+				"  AND i1.project_id=?"
+				"  JOIN files f1 ON f1.id = i1.file_id "
+				"  WHERE f1.path = sr.file_path "
+				"  AND i1.name = sr.name "
+				"  AND i1.start_row = sr.start_row "
+				"  AND ise.project_id=?)";
 
-		sqlite3_stmt *call_st = nullptr;
-		if (sqlite3_prepare_v2(db_, call_sql, -1, &call_st, nullptr) !=
-		    SQLITE_OK) {
-			fprintf(stderr,
-				"buildCallEdgesSQL: Priority 3b prepare failed: "
-				"%s [module=store, method=buildCallEdgesSQL]\n",
-				error_.c_str());
-		} else {
-			int64_t pid_i = static_cast<int64_t>(project_id);
-			sqlite3_bind_int64(call_st, 1, pid_i);
-			sqlite3_bind_int64(call_st, 2, pid_i);
-			sqlite3_bind_int64(call_st, 3, pid_i);
+			sqlite3_stmt *call_st = nullptr;
+			if (sqlite3_prepare_v2(db_, call_sql, -1, &call_st,
+					       nullptr) != SQLITE_OK) {
+				fprintf(stderr,
+					"buildCallEdgesSQL: Priority 3b prepare failed: "
+					"%s [module=store, method=buildCallEdgesSQL]\n",
+					error_.c_str());
+			} else {
+				int64_t pid_i =
+					static_cast<int64_t>(project_id);
+				sqlite3_bind_int64(call_st, 1, pid_i);
+				sqlite3_bind_int64(call_st, 2, pid_i);
+				sqlite3_bind_int64(call_st, 3, pid_i);
 
-			const char *callee_sql =
-				"SELECT d.node_id FROM _decls d "
-				"WHERE d.name = ? AND d.language = ? "
-				" AND d.node_id NOT IN ("
-				"  SELECT target_node_id FROM graph_edges "
-				"  WHERE source_node_id = ? AND edge_type = 1)";
-			sqlite3_stmt *callee_st = nullptr;
-			sqlite3_prepare_v2(db_, callee_sql, -1, &callee_st,
-					   nullptr);
+				const char *callee_sql =
+					"SELECT d.node_id FROM _decls d "
+					"WHERE d.name = ? AND d.language = ? "
+					" AND d.node_id NOT IN ("
+					"  SELECT target_node_id FROM graph_edges "
+					"  WHERE source_node_id = ? AND edge_type = 1)";
+				sqlite3_stmt *callee_st = nullptr;
+				sqlite3_prepare_v2(db_, callee_sql, -1,
+						   &callee_st, nullptr);
 
-			const char *caller_sql =
-				"SELECT d.node_id FROM _decls d "
-				"WHERE d.file_path = ? AND d.original_id = ?";
-			sqlite3_stmt *caller_st = nullptr;
-			sqlite3_prepare_v2(db_, caller_sql, -1, &caller_st,
-					   nullptr);
+				const char *caller_sql =
+					"SELECT d.node_id FROM _decls d "
+					"WHERE d.file_path = ? AND d.original_id = ?";
+				sqlite3_stmt *caller_st = nullptr;
+				sqlite3_prepare_v2(db_, caller_sql, -1,
+						   &caller_st, nullptr);
 
-			const char *ins_sql =
-				"INSERT OR IGNORE INTO graph_edges "
-				"(project_id, source_node_id, target_node_id, "
-				" edge_type, graph_type, call_site_file, "
-				" call_site_line) "
-				"VALUES (?,?,?,1,'call_graph',?,?)";
-			sqlite3_stmt *ins_st = nullptr;
-			sqlite3_prepare_v2(db_, ins_sql, -1, &ins_st, nullptr);
+				const char *ins_sql =
+					"INSERT OR IGNORE INTO graph_edges "
+					"(project_id, source_node_id, target_node_id, "
+					" edge_type, graph_type, call_site_file, "
+					" call_site_line) "
+					"VALUES (?,?,?,1,'call_graph',?,?)";
+				sqlite3_stmt *ins_st = nullptr;
+				sqlite3_prepare_v2(db_, ins_sql, -1, &ins_st,
+						   nullptr);
 
-			// Helper: extract last component after '.'
-			auto shortName = [](const std::string &name) {
-				auto dot = name.rfind('.');
-				return (dot != std::string::npos) ?
-					       name.substr(dot + 1) :
-					       name;
-			};
+				// Helper: extract last component after '.'
+				auto shortName = [](const std::string &name) {
+					auto dot = name.rfind('.');
+					return (dot != std::string::npos) ?
+						       name.substr(dot + 1) :
+						       name;
+				};
 
-			int64_t short_name_edges = 0;
-			while (callee_st && caller_st && ins_st &&
-			       sqlite3_step(call_st) == SQLITE_ROW) {
-				const char *name_c =
-					reinterpret_cast<const char *>(
-						sqlite3_column_text(call_st,
-								    0));
-				int64_t parent_id =
-					sqlite3_column_int64(call_st, 1);
-				const char *fp_c =
-					reinterpret_cast<const char *>(
-						sqlite3_column_text(call_st,
-								    2));
-				int start_row = sqlite3_column_int(call_st, 3);
-				const char *lang_c =
-					reinterpret_cast<const char *>(
-						sqlite3_column_text(call_st,
-								    4));
-				if (!name_c || !fp_c)
-					continue;
-
-				// Look up caller
-				sqlite3_bind_text(caller_st, 1, fp_c, -1,
-						  SQLITE_TRANSIENT);
-				sqlite3_bind_int64(caller_st, 2, parent_id);
-				int64_t caller_id = 0;
-				if (sqlite3_step(caller_st) == SQLITE_ROW)
-					caller_id = sqlite3_column_int64(
-						caller_st, 0);
-				sqlite3_reset(caller_st);
-				if (caller_id == 0)
-					continue;
-
-				// Look up callees by short name
-				std::string sn = shortName(name_c);
-				if (sn == name_c)
-					continue; // no dot, already tried exact
-
-				sqlite3_bind_text(callee_st, 1, sn.c_str(), -1,
-						  SQLITE_TRANSIENT);
-				sqlite3_bind_text(callee_st, 2,
-						  lang_c ? lang_c : "", -1,
-						  SQLITE_TRANSIENT);
-				sqlite3_bind_int64(callee_st, 3, caller_id);
-
-				size_t match_count = 0;
-				while (sqlite3_step(callee_st) == SQLITE_ROW) {
-					if (match_count >= kShortNameFanoutCap)
-						break;
-					int64_t callee_id =
-						sqlite3_column_int64(callee_st,
-								     0);
-					if (callee_id == caller_id)
+				int64_t short_name_edges = 0;
+				while (callee_st && caller_st && ins_st &&
+				       sqlite3_step(call_st) == SQLITE_ROW) {
+					const char *name_c =
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								call_st, 0));
+					int64_t parent_id =
+						sqlite3_column_int64(call_st,
+								     1);
+					const char *fp_c =
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								call_st, 2));
+					int start_row =
+						sqlite3_column_int(call_st, 3);
+					const char *lang_c =
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								call_st, 4));
+					if (!name_c || !fp_c)
 						continue;
 
-					sqlite3_bind_int64(ins_st, 1, pid_i);
-					sqlite3_bind_int64(ins_st, 2,
-							   caller_id);
-					sqlite3_bind_int64(ins_st, 3,
-							   callee_id);
-					sqlite3_bind_text(ins_st, 4, fp_c, -1,
+					// Look up caller
+					sqlite3_bind_text(caller_st, 1, fp_c,
+							  -1, SQLITE_TRANSIENT);
+					sqlite3_bind_int64(caller_st, 2,
+							   parent_id);
+					int64_t caller_id = 0;
+					if (sqlite3_step(caller_st) ==
+					    SQLITE_ROW)
+						caller_id =
+							sqlite3_column_int64(
+								caller_st, 0);
+					sqlite3_reset(caller_st);
+					if (caller_id == 0)
+						continue;
+
+					// Look up callees by short name
+					std::string sn = shortName(name_c);
+					if (sn == name_c)
+						continue; // no dot, already tried exact
+
+					sqlite3_bind_text(callee_st, 1,
+							  sn.c_str(), -1,
 							  SQLITE_TRANSIENT);
-					sqlite3_bind_int(ins_st, 5, start_row);
-					sqlite3_step(ins_st);
-					sqlite3_reset(ins_st);
-					short_name_edges++;
-					match_count++;
+					sqlite3_bind_text(callee_st, 2,
+							  lang_c ? lang_c : "",
+							  -1, SQLITE_TRANSIENT);
+					sqlite3_bind_int64(callee_st, 3,
+							   caller_id);
+
+					size_t match_count = 0;
+					while (sqlite3_step(callee_st) ==
+					       SQLITE_ROW) {
+						if (match_count >=
+						    kShortNameFanoutCap)
+							break;
+						int64_t callee_id =
+							sqlite3_column_int64(
+								callee_st, 0);
+						if (callee_id == caller_id)
+							continue;
+
+						sqlite3_bind_int64(ins_st, 1,
+								   pid_i);
+						sqlite3_bind_int64(ins_st, 2,
+								   caller_id);
+						sqlite3_bind_int64(ins_st, 3,
+								   callee_id);
+						sqlite3_bind_text(
+							ins_st, 4, fp_c, -1,
+							SQLITE_TRANSIENT);
+						sqlite3_bind_int(ins_st, 5,
+								 start_row);
+						sqlite3_step(ins_st);
+						sqlite3_reset(ins_st);
+						short_name_edges++;
+						match_count++;
+					}
+					sqlite3_reset(callee_st);
 				}
-				sqlite3_reset(callee_st);
+
+				if (callee_st)
+					sqlite3_finalize(callee_st);
+				if (caller_st)
+					sqlite3_finalize(caller_st);
+				if (ins_st)
+					sqlite3_finalize(ins_st);
+				sqlite3_finalize(call_st);
+
+				total_edges += short_name_edges;
+				edges_p3b = short_name_edges;
+				fprintf(stderr,
+					"buildCallEdgesSQL: Priority 3b (short-name) "
+					"inserted %lld edges\n",
+					(long long)short_name_edges);
 			}
-
-			if (callee_st)
-				sqlite3_finalize(callee_st);
-			if (caller_st)
-				sqlite3_finalize(caller_st);
-			if (ins_st)
-				sqlite3_finalize(ins_st);
-			sqlite3_finalize(call_st);
-
-			total_edges += short_name_edges;
-			edges_p3b = short_name_edges;
-			fprintf(stderr,
-				"buildCallEdgesSQL: Priority 3b (short-name) "
-				"inserted %lld edges\n",
-				(long long)short_name_edges);
-		}
+		} // end P3b
 		t4 = Clock::now();
 
 		auto ms = [](auto start, auto end) {

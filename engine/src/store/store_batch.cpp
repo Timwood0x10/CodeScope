@@ -375,7 +375,7 @@ int64_t GraphStore::populateSymbolsFromGraph(uint64_t project_id)
 		"  WHEN 3 THEN 'interface' WHEN 4 THEN 'enum'"
 		"  WHEN 6 THEN 'variable'"
 		"  ELSE CAST(node_type AS TEXT) END,"
-		" name, id, COALESCE(qualified_name, name), 'default',"
+		" name, id, COALESCE(NULLIF(qualified_name, ''), name), 'default',"
 		" language, file_path,"
 		" start_row, start_col "
 		"FROM graph_nodes "
@@ -479,6 +479,24 @@ bool GraphStore::resolveStagedMetrics(uint64_t project_id)
 		")";
 	exec(ready_sql);
 	int64_t ready_n = sqlite3_changes(db_);
+
+	// Sync cyclomatic complexity from metrics table back to graph_nodes.
+	// This allows graph_nodes.complexity to be used directly in queries
+	// without JOINing through symbols -> metrics.
+	const char *sync_cx_sql =
+		"UPDATE graph_nodes SET complexity = COALESCE(("
+		" SELECT m.cyclomatic FROM metrics m"
+		" JOIN symbols s ON s.id = m.owner_id AND m.owner_type = 'symbol'"
+		" WHERE s.node_id = graph_nodes.id"
+		"  AND s.project_id = graph_nodes.project_id"
+		"), 0) WHERE project_id = ? AND node_type IN (0, 1)";
+	sqlite3_stmt *cx_st = nullptr;
+	if (sqlite3_prepare_v2(db_, sync_cx_sql, -1, &cx_st, nullptr) ==
+	    SQLITE_OK) {
+		sqlite3_bind_int64(cx_st, 1, static_cast<int64_t>(project_id));
+		sqlite3_step(cx_st);
+		sqlite3_finalize(cx_st);
+	}
 
 	fprintf(stderr,
 		"resolveStagedMetrics: %lld metrics, %lld stubs, %lld ready for "

@@ -710,7 +710,6 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 					       "do_statement",
 					       "do_while_statement",
 					       "loop_expression" };
-
 			// Initialize MetricRow per function, counting params (kind=8)
 			// and calls (kind=9) from records via parent_id tree walk.
 			std::unordered_map<const ir::Record *, store::MetricRow>

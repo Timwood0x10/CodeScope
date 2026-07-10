@@ -240,7 +240,7 @@ uint64_t GraphStore::insertGraphEdge(uint64_t project_id,
 				     const graph::GraphEdge &edge)
 {
 	const char *sql =
-		"INSERT INTO graph_edges (project_id, source_node_id, "
+		"INSERT OR IGNORE INTO graph_edges (project_id, source_node_id, "
 		"target_node_id, edge_type, graph_type, "
 		"call_site_file, call_site_line, label) "
 		"VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
@@ -269,7 +269,7 @@ void GraphStore::insertGraphEdges(uint64_t project_id,
 		return;
 
 	const char *sql =
-		"INSERT INTO graph_edges (project_id, source_node_id, "
+		"INSERT OR IGNORE INTO graph_edges (project_id, source_node_id, "
 		"target_node_id, edge_type, graph_type, "
 		"call_site_file, call_site_line, label) "
 		"VALUES (?, ?, ?, ?, ?, ?, ?, ?)";

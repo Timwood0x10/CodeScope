@@ -250,6 +250,13 @@ bool GraphStore::createSchema()
         -- getCallees: WHERE edge_type=1 AND source_node_id IN (SELECT id FROM graph_nodes WHERE name=?)
         CREATE INDEX IF NOT EXISTS idx_ge_callers ON graph_edges(edge_type, target_node_id);
         CREATE INDEX IF NOT EXISTS idx_ge_callees ON graph_edges(edge_type, source_node_id);
+        -- Deduplicate existing edges before creating unique constraint
+        DELETE FROM graph_edges WHERE id NOT IN (
+          SELECT MIN(id) FROM graph_edges
+          GROUP BY source_node_id, target_node_id, edge_type
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_ge_unique_edge
+          ON graph_edges(source_node_id, target_node_id, edge_type);
 
         -- Semantic records table (flat, O(1) parse-time memory)
         -- Uses AUTOINCREMENT rowid to avoid per-file ID conflicts (each file's

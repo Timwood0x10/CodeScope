@@ -98,7 +98,8 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		     "FROM semantic_records sr "
 		     "WHERE sr.project_id=" +
 		     pid +
-		     " AND sr.kind IN (0,1,2,3,4,5,6,9,10)"
+		     " AND sr.kind IN (0,1,2,3,4,5)"
+		     " AND sr.name != ''"
 		     " AND sr.file_path IN (SELECT file_path FROM _rf)")
 		     .c_str());
 	const char *explain_env = getenv("CODESCOPE_EXPLAIN");
@@ -112,7 +113,8 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 				 "FROM semantic_records sr "
 				 "WHERE sr.project_id=" +
 				 pid +
-				 " AND sr.kind IN (0,1,2,3,4,5,6,9,10)"
+				 " AND sr.kind IN (0,1,2,3,4,5)"
+				 " AND sr.name != ''"
 				 " AND sr.file_path IN (SELECT file_path FROM _rf)")
 				 .c_str()),
 			"_r2n");
@@ -129,9 +131,8 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		explainQueryPlan(
 			"SELECT r2n.node_id, sr.project_id, sr.original_id, "
 			" CASE sr.kind WHEN 0 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 "
-			"  WHEN 3 THEN 4 WHEN 4 THEN 7 WHEN 5 THEN 7 "
-			"  WHEN 6 THEN 6 WHEN 9 THEN 7 WHEN 10 THEN 7 ELSE 7 END, "
-			" sr.name, sr.qualified_name, sr.file_path, sr.file_path, "
+			"  WHEN 3 THEN 4 WHEN 4 THEN 3 WHEN 5 THEN 3 ELSE 7 END, "
+			" sr.name, COALESCE(NULLIF(sr.qualified_name, ''), sr.name), COALESCE(NULLIF(sr.qualified_name, ''), sr.name), sr.file_path, sr.file_path, "
 			" sr.start_row, sr.start_col, sr.end_row, sr.end_col, sr.language "
 			"FROM semantic_records sr JOIN _r2n r2n ON sr.rowid = r2n.rid",
 			"nodes");
@@ -141,13 +142,12 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// their text metadata and location info for downstream queries.
 	exec(std::string(
 		     "INSERT INTO graph_nodes (id, project_id, ir_node_id, node_type, "
-		     " name, qualified_name, module_path, file_path, "
+		     " name, qualified_name, signature, module_path, file_path, "
 		     " start_row, start_col, end_row, end_col, language) "
 		     "SELECT r2n.node_id, sr.project_id, sr.original_id, "
 		     " CASE sr.kind WHEN 0 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 "
-		     "  WHEN 3 THEN 4 WHEN 4 THEN 7 WHEN 5 THEN 7 "
-		     "  WHEN 6 THEN 6 WHEN 9 THEN 7 WHEN 10 THEN 7 ELSE 7 END, "
-		     " sr.name, sr.qualified_name, sr.file_path, sr.file_path, "
+		     "  WHEN 3 THEN 4 WHEN 4 THEN 3 WHEN 5 THEN 3 ELSE 7 END, "
+		     " sr.name, COALESCE(NULLIF(sr.qualified_name, ''), sr.name), COALESCE(NULLIF(sr.qualified_name, ''), sr.name), sr.file_path, sr.file_path, "
 		     " sr.start_row, sr.start_col, sr.end_row, sr.end_col, sr.language "
 		     "FROM semantic_records sr "
 		     "JOIN _r2n r2n ON sr.rowid = r2n.rid")
@@ -157,7 +157,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// ── 2d: Containment edges ──
 	{
 		std::string sql = std::string(
-			"INSERT INTO graph_edges "
+			"INSERT OR IGNORE INTO graph_edges "
 			"(project_id, source_node_id, target_node_id, edge_type, graph_type) "
 			"SELECT DISTINCT " +
 			pid +
