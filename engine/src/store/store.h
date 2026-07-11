@@ -486,7 +486,25 @@ class GraphStore {
 	// Implemented in store_knowledge.cpp. Inserts use the prepared
 	// statement cache (see getCachedStmt) and SQLITE_STATIC for strings.
 
-	/** Insert a capability row. Returns true on success. */
+	/** Insert a document row. Returns true on success. */
+	bool insertDocument(uint64_t project_id, int type,
+			    const std::string &file_path,
+			    const std::string &content, int start_line,
+			    int end_line);
+
+	int64_t insertWorkflow(uint64_t project_id, const std::string &name);
+	bool insertWorkflowStep(int64_t workflow_id, int step_order,
+				int64_t entity_id, const std::string &label);
+	bool insertArchitectureEdge(uint64_t project_id,
+				    const std::string &layer_upper,
+				    const std::string &layer_lower,
+				    int64_t entity_id);
+
+	bool insertCapability(uint64_t project_id, const std::string &name,
+			      const std::string &file_path,
+			      const std::string &content, int start_line,
+			      int end_line);
+
 	bool insertCapability(uint64_t project_id, const std::string &name,
 			      const std::string &summary,
 			      const std::string &source_kind,

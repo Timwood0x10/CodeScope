@@ -146,6 +146,7 @@ set(ENGINE_SOURCES
     src/engine_helpers.cpp
     src/engine_lifecycle.cpp
     src/engine_index.cpp
+	    src/engine_index_project.cpp
     src/engine_scanner.cpp
     src/engine_queries.cpp
     src/engine_ffi.cpp
@@ -205,6 +206,7 @@ set(ENGINE_SOURCES
 	    src/resolver/resolve_cache.cpp
 	    src/linker/linker.cpp
 	    src/filter_policy.cpp
+	    src/filter_policy_ignore.cpp
 	    src/platform_win.cpp
 	    ${SQLITE3_AMAL_SRC}
 	    ${TREE_SITTER_SOURCES}

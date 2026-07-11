@@ -470,6 +470,51 @@ bool GraphStore::createSchema()
             FOREIGN KEY (claim_id) REFERENCES claim(id)
         );
 
+        -- document: fact-layer storage for README, Architecture.md, Comments.
+        CREATE TABLE IF NOT EXISTS document (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            type INTEGER NOT NULL,          -- 0=readme, 1=architecture, 2=comment, 3=todo
+            file_path TEXT NOT NULL,
+            content TEXT DEFAULT '',
+            start_line INTEGER DEFAULT 0,
+            end_line INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (project_id) REFERENCES projects(id)
+        );
+
+        -- workflow: high-level business flow (e.g. "Login").
+        CREATE TABLE IF NOT EXISTS workflow (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            name TEXT NOT NULL,              -- e.g. "Login"
+            description TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (project_id) REFERENCES projects(id)
+        );
+
+        -- workflow_step: ordered steps in a workflow.
+        CREATE TABLE IF NOT EXISTS workflow_step (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            workflow_id INTEGER NOT NULL,
+            step_order INTEGER NOT NULL,     -- 0-based order
+            entity_id INTEGER NOT NULL,      -- FK to entity.id
+            label TEXT DEFAULT '',           -- e.g. "Auth", "JWT"
+            FOREIGN KEY (workflow_id) REFERENCES workflow(id),
+            FOREIGN KEY (entity_id) REFERENCES entity(id)
+        );
+
+        -- architecture_edge: layer-to-layer call edges (Controller→Service).
+        CREATE TABLE IF NOT EXISTS architecture_edge (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            layer_upper TEXT NOT NULL,        -- e.g. "Controller"
+            layer_lower TEXT NOT NULL,        -- e.g. "Service"
+            entity_id INTEGER NOT NULL,       -- FK to entity.id
+            FOREIGN KEY (project_id) REFERENCES projects(id),
+            FOREIGN KEY (entity_id) REFERENCES entity(id)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_capability_project ON capability(project_id, name);
         CREATE INDEX IF NOT EXISTS idx_contract_project ON contract(project_id, name);
         CREATE INDEX IF NOT EXISTS idx_claim_project ON claim(project_id, claim_type);

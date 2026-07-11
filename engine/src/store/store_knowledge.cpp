@@ -321,4 +321,97 @@ GraphStore::listContracts(uint64_t project_id)
 	return out;
 }
 
+// ── document ──────────────────────────────────────────────────────
+
+bool GraphStore::insertDocument(uint64_t project_id, int type,
+				const std::string &file_path,
+				const std::string &content, int start_line,
+				int end_line)
+{
+	const char *sql = "INSERT INTO document "
+			  "(project_id, type, file_path, content, "
+			  " start_line, end_line) "
+			  "VALUES (?,?,?,?,?,?)";
+	sqlite3_stmt *stmt = getCachedStmt(sql);
+	if (!stmt)
+		return false;
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	sqlite3_bind_int(stmt, 2, type);
+	sqlite3_bind_text(stmt, 3, file_path.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_text(stmt, 4, content.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_int(stmt, 5, start_line);
+	sqlite3_bind_int(stmt, 6, end_line);
+	int rc = sqlite3_step(stmt);
+	if (rc != SQLITE_DONE) {
+		error_ = std::string("insertDocument: step failed: ") +
+			 sqlite3_errmsg(db_);
+		return false;
+	}
+	return true;
+}
+
+// ── workflow ──────────────────────────────────────────────────────
+
+int64_t GraphStore::insertWorkflow(uint64_t project_id, const std::string &name)
+{
+	const char *sql =
+		"INSERT INTO workflow (project_id, name) VALUES (?,?)";
+	sqlite3_stmt *stmt = getCachedStmt(sql);
+	if (!stmt)
+		return -1;
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	sqlite3_bind_text(stmt, 2, name.c_str(), -1, SQLITE_STATIC);
+	if (sqlite3_step(stmt) != SQLITE_DONE) {
+		error_ = "insertWorkflow: step failed";
+		return -1;
+	}
+	return sqlite3_last_insert_rowid(db_);
+}
+
+bool GraphStore::insertWorkflowStep(int64_t workflow_id, int step_order,
+				    int64_t entity_id, const std::string &label)
+{
+	const char *sql = "INSERT INTO workflow_step "
+			  "(workflow_id, step_order, entity_id, label) "
+			  "VALUES (?,?,?,?)";
+	sqlite3_stmt *stmt = getCachedStmt(sql);
+	if (!stmt)
+		return false;
+	sqlite3_bind_int64(stmt, 1, workflow_id);
+	sqlite3_bind_int(stmt, 2, step_order);
+	sqlite3_bind_int64(stmt, 3, entity_id);
+	sqlite3_bind_text(stmt, 4, label.c_str(), -1, SQLITE_STATIC);
+	int rc = sqlite3_step(stmt);
+	if (rc != SQLITE_DONE) {
+		error_ = "insertWorkflowStep: step failed";
+		return false;
+	}
+	return true;
+}
+
+// ── architecture_edge ─────────────────────────────────────────────
+
+bool GraphStore::insertArchitectureEdge(uint64_t project_id,
+					const std::string &layer_upper,
+					const std::string &layer_lower,
+					int64_t entity_id)
+{
+	const char *sql = "INSERT INTO architecture_edge "
+			  "(project_id, layer_upper, layer_lower, entity_id) "
+			  "VALUES (?,?,?,?)";
+	sqlite3_stmt *stmt = getCachedStmt(sql);
+	if (!stmt)
+		return false;
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	sqlite3_bind_text(stmt, 2, layer_upper.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_text(stmt, 3, layer_lower.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_int64(stmt, 4, entity_id);
+	int rc = sqlite3_step(stmt);
+	if (rc != SQLITE_DONE) {
+		error_ = "insertArchitectureEdge: step failed";
+		return false;
+	}
+	return true;
+}
+
 } // namespace store
