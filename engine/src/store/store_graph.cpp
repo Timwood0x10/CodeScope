@@ -151,6 +151,21 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		     "FROM semantic_records sr "
 		     "JOIN _r2n r2n ON sr.rowid = r2n.rid")
 		     .c_str());
+	// Phase 1.1: dual-write to entity table
+	exec(std::string(
+		     "INSERT OR IGNORE INTO entity "
+		     "(id, project_id, kind, name, qualified_name, "
+		     " file_path, language, start_row, start_col, "
+		     " end_row, end_col) "
+		     "SELECT r2n.node_id, sr.project_id, "
+		     " CASE sr.kind WHEN 0 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 "
+		     "  WHEN 3 THEN 4 WHEN 4 THEN 3 WHEN 5 THEN 3 ELSE 7 END, "
+		     " sr.name, COALESCE(NULLIF(sr.qualified_name, ''), sr.name), "
+		     " sr.file_path, sr.language, "
+		     " sr.start_row, sr.start_col, sr.end_row, sr.end_col "
+		     "FROM semantic_records sr "
+		     "JOIN _r2n r2n ON sr.rowid = r2n.rid")
+		     .c_str());
 	auto t_nodes = Clock::now();
 
 	// ── 2d: Containment edges ──
@@ -206,6 +221,41 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 
 	exec("DROP TABLE IF EXISTS _r2n");
 	exec("DROP TABLE IF EXISTS _rf");
+
+	// Phase 1.1: dual-write to entity table (production code only)
+	std::string entity_sql = "INSERT OR IGNORE INTO entity "
+				 "(id, project_id, kind, name, qualified_name, "
+				 " file_path, language, start_row, start_col, "
+				 " end_row, end_col) "
+				 "SELECT id, project_id, node_type, name, "
+				 " COALESCE(NULLIF(qualified_name, ''), name), "
+				 " file_path, language, "
+				 " start_row, start_col, end_row, end_col "
+				 "FROM graph_nodes WHERE project_id=" +
+				 std::to_string(project_id) +
+				 " AND file_path NOT LIKE '%_test.%'"
+				 " AND file_path NOT LIKE '%/tests/%'"
+				 " AND file_path NOT LIKE '%test_%'";
+	exec(entity_sql.c_str());
+
+	// Phase 1.1: dual-write to relation table (production code only)
+	std::string rel_sql =
+		"INSERT OR IGNORE INTO relation "
+		"(project_id, source_id, target_id, type) "
+		"SELECT e.project_id, e.source_node_id, "
+		" e.target_node_id, e.edge_type "
+		"FROM graph_edges e "
+		"JOIN graph_nodes src ON e.source_node_id = src.id"
+		" AND src.file_path NOT LIKE '%_test.%'"
+		" AND src.file_path NOT LIKE '%/tests/%'"
+		" AND src.file_path NOT LIKE '%test_%'"
+		"JOIN graph_nodes tgt ON e.target_node_id = tgt.id"
+		" AND tgt.file_path NOT LIKE '%_test.%'"
+		" AND tgt.file_path NOT LIKE '%/tests/%'"
+		" AND tgt.file_path NOT LIKE '%test_%'"
+		"WHERE e.project_id=" +
+		std::to_string(project_id);
+	exec(rel_sql.c_str());
 
 	// Phase timing breakdown
 	auto t_end = Clock::now();

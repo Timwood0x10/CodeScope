@@ -833,6 +833,44 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		g_store->beginTransaction();
 		g_store->buildGraph(project_id, true);
 		g_store->commitTransaction();
+		// Phase 1.1: dual-write to entity/relation tables
+		// Filter out test files (*_test.*, */tests/*) — AI only needs production code
+		{
+			char sql[1024];
+			snprintf(sql, sizeof(sql),
+				 "INSERT OR IGNORE INTO entity "
+				 "(id, project_id, kind, name, qualified_name, "
+				 " file_path, language, start_row, start_col, "
+				 " end_row, end_col) "
+				 "SELECT id, project_id, node_type, name, "
+				 " COALESCE(NULLIF(qualified_name, ''), name), "
+				 " file_path, language, "
+				 " start_row, start_col, end_row, end_col "
+				 "FROM graph_nodes WHERE project_id=%llu"
+				 " AND file_path NOT LIKE '%%_test.%%'"
+				 " AND file_path NOT LIKE '%%/tests/%%'"
+				 " AND file_path NOT LIKE '%%test_%%'",
+				 (unsigned long long)project_id);
+			g_store->exec(sql);
+			snprintf(
+				sql, sizeof(sql),
+				"INSERT OR IGNORE INTO relation "
+				"(project_id, source_id, target_id, type) "
+				"SELECT e.project_id, e.source_node_id, "
+				" e.target_node_id, e.edge_type "
+				"FROM graph_edges e "
+				"JOIN graph_nodes src ON e.source_node_id = src.id"
+				" AND src.file_path NOT LIKE '%%_test.%%'"
+				" AND src.file_path NOT LIKE '%%/tests/%%'"
+				" AND src.file_path NOT LIKE '%%test_%%'"
+				"JOIN graph_nodes tgt ON e.target_node_id = tgt.id"
+				" AND tgt.file_path NOT LIKE '%%_test.%%'"
+				" AND tgt.file_path NOT LIKE '%%/tests/%%'"
+				" AND tgt.file_path NOT LIKE '%%test_%%'"
+				"WHERE e.project_id=%llu",
+				(unsigned long long)project_id);
+			g_store->exec(sql);
+		}
 		time_buildgraph_ms =
 			duration_cast<milliseconds>(steady_clock::now() - t_bg)
 				.count();

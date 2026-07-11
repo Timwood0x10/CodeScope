@@ -580,7 +580,10 @@ class GraphStore {
 	// re-prepare. Already called by close().
 	void clearStmtCache();
 
+    public:
 	bool exec(const char *sql);
+
+    private:
 	bool createSchema();
 
 	// ── Internal: SQL-based call edge resolution ──────────────

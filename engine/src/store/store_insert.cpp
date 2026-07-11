@@ -162,7 +162,7 @@ uint64_t GraphStore::insertEntity(uint64_t project_id,
 	sqlite3_bind_int(stmt, 10, static_cast<int>(node.end_row));
 	sqlite3_bind_int(stmt, 11, static_cast<int>(node.end_col));
 	int rc = sqlite3_step(stmt);
-	  return node.id;
+	return node.id;
 }
 
 void GraphStore::insertRelation(uint64_t project_id, uint64_t source_id,
