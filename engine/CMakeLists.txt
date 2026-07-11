@@ -195,6 +195,10 @@ set(ENGINE_SOURCES
          src/lsp/lsp_client.cpp
     src/resolver/resolver.cpp
 	    src/resolver/pipeline.cpp
+	    src/model/engine.cpp
+	    src/model/plugins/workflow.cpp
+	    src/model/plugins/capability.cpp
+	    src/model/plugins/architecture.cpp
     src/resolver/project_index.cpp
 	    src/resolver/project_resolver.cpp
 		    src/verify/capability_verifier.cpp

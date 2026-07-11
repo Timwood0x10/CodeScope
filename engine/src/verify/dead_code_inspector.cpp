@@ -11,7 +11,8 @@ namespace verify
 
 DeadCodeInspector::DeadCodeInspector(store::GraphStore *store,
 				     uint64_t project_id)
-	: store_(store), project_id_(project_id)
+	: store_(store)
+	, project_id_(project_id)
 {
 }
 
@@ -23,24 +24,23 @@ std::vector<Finding> DeadCodeInspector::findOrphanModules()
 	// A module is orphaned if no external file imports it.
 	// This matches the manual audit methodology (grep for import paths,
 	// excluding self-references).
-	std::string sql =
-		"SELECT s.name, COUNT(e.id) as entities, "
-		" MIN(e.file_path) as sample_file "
-		"FROM scope s "
-		"JOIN entity e ON e.project_id = s.project_id "
-		" AND e.file_path LIKE s.name || '%' "
-		"WHERE s.kind = 1 AND s.project_id = ? "
-		" AND NOT EXISTS ("
-		"  SELECT 1 FROM import i "
-		"  WHERE i.project_id = ? "
-		"  AND i.target_path LIKE '%' || "
-		"   substr(s.name, length(s.name) - "
-		"    instr(reverse(s.name), '/') + 2) || '%'"
-		"  AND i.file_path NOT LIKE s.name || '%'"
-		" ) "
-		"GROUP BY s.name "
-		"HAVING entities >= 10 "
-		"ORDER BY entities DESC LIMIT 30";
+	std::string sql = "SELECT s.name, COUNT(e.id) as entities, "
+			  " MIN(e.file_path) as sample_file "
+			  "FROM scope s "
+			  "JOIN entity e ON e.project_id = s.project_id "
+			  " AND e.file_path LIKE s.name || '%' "
+			  "WHERE s.kind = 1 AND s.project_id = ? "
+			  " AND NOT EXISTS ("
+			  "  SELECT 1 FROM import i "
+			  "  WHERE i.project_id = ? "
+			  "  AND i.target_path LIKE '%' || "
+			  "   substr(s.name, length(s.name) - "
+			  "    instr(reverse(s.name), '/') + 2) || '%'"
+			  "  AND i.file_path NOT LIKE s.name || '%'"
+			  " ) "
+			  "GROUP BY s.name "
+			  "HAVING entities >= 10 "
+			  "ORDER BY entities DESC LIMIT 30";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), sql.c_str(), -1, &stmt,
 			       nullptr) != SQLITE_OK)
@@ -57,11 +57,11 @@ std::vector<Finding> DeadCodeInspector::findOrphanModules()
 
 		Finding f;
 		f.type = "DeadModule";
-		f.description =
-			std::string("Module '") + (mod ? mod : "") +
-			"' has " + std::to_string(entities) +
-			" entities with zero callers — orphan module. "
-			"Sample: " + (sample ? sample : "");
+		f.description = std::string("Module '") + (mod ? mod : "") +
+				"' has " + std::to_string(entities) +
+				" entities with zero callers — orphan module. "
+				"Sample: " +
+				(sample ? sample : "");
 		f.confidence = 0.95;
 		out.push_back(f);
 	}
@@ -73,16 +73,15 @@ std::vector<Finding> DeadCodeInspector::findOrphanFunctions()
 {
 	std::vector<Finding> out;
 	// Find functions/types with 0 incoming edges and 0 outgoing edges.
-	std::string sql =
-		"SELECT e.name, e.file_path, e.kind "
-		"FROM entity e "
-		"WHERE e.project_id = ? AND e.kind IN (0,1) "
-		" AND NOT EXISTS ("
-		"  SELECT 1 FROM relation r "
-		"  WHERE r.project_id = ? "
-		"  AND (r.source_id = e.id OR r.target_id = e.id)"
-		" ) "
-		"LIMIT 30";
+	std::string sql = "SELECT e.name, e.file_path, e.kind "
+			  "FROM entity e "
+			  "WHERE e.project_id = ? AND e.kind IN (0,1) "
+			  " AND NOT EXISTS ("
+			  "  SELECT 1 FROM relation r "
+			  "  WHERE r.project_id = ? "
+			  "  AND (r.source_id = e.id OR r.target_id = e.id)"
+			  " ) "
+			  "LIMIT 30";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), sql.c_str(), -1, &stmt,
 			       nullptr) != SQLITE_OK)
@@ -99,13 +98,13 @@ std::vector<Finding> DeadCodeInspector::findOrphanFunctions()
 
 		Finding f;
 		f.type = "DeadFunction";
-		
-		f.description = std::string("Function '") +
-				(name ? name : "") + "' in " +
-				(fp ? fp : "") +
-				" has zero callers and zero callees — isolated.";
+
+		f.description =
+			std::string("Function '") + (name ? name : "") +
+			"' in " + (fp ? fp : "") +
+			" has zero callers and zero callees — isolated.";
 		f.confidence = 0.90;
-		
+
 		out.push_back(f);
 	}
 	sqlite3_finalize(stmt);
@@ -153,14 +152,14 @@ std::vector<Finding> DeadCodeInspector::findArchitectureDrift()
 
 		Finding f;
 		f.type = "ArchitectureDrift";
-		
+
 		f.description = std::string("Module '") +
 				(src_mod ? src_mod : "") + "' calls '" +
 				(tgt_mod ? tgt_mod : "") + "' " +
 				std::to_string(edges) +
 				" times — potential architecture drift.";
 		f.confidence = 0.85;
-		
+
 		out.push_back(f);
 	}
 	sqlite3_finalize(stmt);

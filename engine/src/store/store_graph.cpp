@@ -2,6 +2,10 @@
 #include "store_internal.h"
 #include "platform_win.h"
 #include "../resolver/pipeline.h"
+#include "../model/engine.h"
+#include "../model/plugins/workflow.h"
+#include "../model/plugins/capability.h"
+#include "../model/plugins/architecture.h"
 
 #include <algorithm>
 #include <climits>
@@ -282,10 +286,11 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 					size_t end = text.find(q, pos + 1);
 					if (end == std::string::npos)
 						break;
-					std::string p = text.substr(pos + 1,
-								  end - pos - 1);
+					std::string p = text.substr(
+						pos + 1, end - pos - 1);
 					// Skip empty and system paths
-					if (!p.empty() && p.find('.') != std::string::npos)
+					if (!p.empty() &&
+					    p.find('.') != std::string::npos)
 						paths.push_back(p);
 					pos = end + 1;
 				}
@@ -297,26 +302,29 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 					size_t semi = text.find(';', use_pos);
 					if (semi == std::string::npos)
 						break;
-					std::string p = text.substr(
-						use_pos + 4,
-						semi - use_pos - 4);
+					std::string p =
+						text.substr(use_pos + 4,
+							    semi - use_pos - 4);
 					// Trim whitespace
 					p.erase(0, p.find_first_not_of(" \t"));
 					p.erase(p.find_last_not_of(" \t") + 1);
-					if (!p.empty() && p.find("::") != std::string::npos)
+					if (!p.empty() &&
+					    p.find("::") != std::string::npos)
 						paths.push_back(p);
 					use_pos = semi + 1;
 				}
 				// Also look for Python-style "from X import Y"
 				size_t from_pos = 0;
-				while ((from_pos = text.find("from ", from_pos)) !=
+				while ((from_pos =
+						text.find("from ", from_pos)) !=
 				       std::string::npos) {
-					size_t imp = text.find(" import ", from_pos);
+					size_t imp =
+						text.find(" import ", from_pos);
 					if (imp == std::string::npos)
 						break;
-					std::string p = text.substr(
-						from_pos + 5,
-						imp - from_pos - 5);
+					std::string p =
+						text.substr(from_pos + 5,
+							    imp - from_pos - 5);
 					p.erase(0, p.find_first_not_of(" \t"));
 					p.erase(p.find_last_not_of(" \t") + 1);
 					if (!p.empty())
@@ -331,23 +339,37 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 							ins_st, 1,
 							static_cast<int64_t>(
 								project_id));
-						sqlite3_bind_text(ins_st, 2,
-								  p.c_str(), -1,
-								  SQLITE_STATIC);
+						sqlite3_bind_text(
+							ins_st, 2, p.c_str(),
+							-1, SQLITE_STATIC);
 						// Set alias to last segment
 						std::string alias;
 						size_t last_sep = p.rfind('/');
-						if (last_sep == std::string::npos)
-							last_sep = p.rfind("::");
-						if (last_sep != std::string::npos)
-							alias = p.substr(last_sep + 1);
+						if (last_sep ==
+						    std::string::npos)
+							last_sep =
+								p.rfind("::");
+						if (last_sep !=
+						    std::string::npos)
+							alias = p.substr(
+								last_sep + 1);
 						else
 							alias = p;
-						sqlite3_bind_text(ins_st, 3, alias.c_str(), -1, SQLITE_STATIC);
+						sqlite3_bind_text(
+							ins_st, 3,
+							alias.c_str(), -1,
+							SQLITE_STATIC);
 						// Bind file_path
-						const char *fp_c = reinterpret_cast<const char *>(sqlite3_column_text(fetch_st, 2));
-						std::string fp_str = fp_c ? fp_c : "";
-						sqlite3_bind_text(ins_st, 4, fp_str.c_str(), -1, SQLITE_STATIC);
+						const char *fp_c = reinterpret_cast<
+							const char *>(
+							sqlite3_column_text(
+								fetch_st, 2));
+						std::string fp_str =
+							fp_c ? fp_c : "";
+						sqlite3_bind_text(
+							ins_st, 4,
+							fp_str.c_str(), -1,
+							SQLITE_STATIC);
 						// Bind is_pub
 						sqlite3_bind_int(ins_st, 5, 0);
 						sqlite3_step(ins_st);
@@ -458,6 +480,15 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	{
 		resolver::ResolverPipeline pipe(this, project_id);
 		pipe.run();
+	}
+
+	// Phase 1.4: Model Engine — build high-level models
+	{
+		model::ModelEngine me(this);
+		me.addPlugin(std::make_unique<model::WorkflowPlugin>(this));
+		me.addPlugin(std::make_unique<model::CapabilityPlugin>(this));
+		me.addPlugin(std::make_unique<model::ArchitecturePlugin>(this));
+		me.runAll(project_id);
 	}
 
 	// Phase timing breakdown

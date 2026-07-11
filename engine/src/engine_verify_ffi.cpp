@@ -384,7 +384,8 @@ extern "C" char *engine_verify_integrity(uint64_t project_id)
 			first = false;
 			json << "{\"type\":\"DeadCodeInspector\","
 			     << "\"rule\":\"" << jsonEscape(f.type) << "\","
-			     << "\"description\":\"" << jsonEscape(f.description) << "\","
+			     << "\"description\":\""
+			     << jsonEscape(f.description) << "\","
 			     << "\"confidence\":" << f.confidence << "}";
 		}
 	}

@@ -25,7 +25,10 @@ class DeadCodeInspector {
 	std::vector<Finding> inspect();
 
 	/// Inspector name.
-	std::string name() const { return "DeadCodeInspector"; }
+	std::string name() const
+	{
+		return "DeadCodeInspector";
+	}
 
     private:
 	store::GraphStore *store_;
