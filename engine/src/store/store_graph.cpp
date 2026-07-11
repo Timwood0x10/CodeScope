@@ -6,6 +6,7 @@
 #include "../model/plugins/workflow.h"
 #include "../model/plugins/capability.h"
 #include "../model/plugins/architecture.h"
+#include "../model/plugins/contract.h"
 
 #include <algorithm>
 #include <climits>
@@ -488,6 +489,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		me.addPlugin(std::make_unique<model::WorkflowPlugin>(this));
 		me.addPlugin(std::make_unique<model::CapabilityPlugin>(this));
 		me.addPlugin(std::make_unique<model::ArchitecturePlugin>(this));
+		me.addPlugin(std::make_unique<model::ContractPlugin>(this));
 		me.runAll(project_id);
 	}
 

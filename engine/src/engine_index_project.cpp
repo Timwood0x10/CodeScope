@@ -24,8 +24,11 @@
 #include <unordered_set>
 #include <vector>
 
-#include "knowledge/builder.h"
-#include "linker/linker.h"
+#include "model/engine.h"
+#include "model/plugins/workflow.h"
+#include "model/plugins/capability.h"
+#include "model/plugins/architecture.h"
+#include "model/plugins/contract.h"
 #include "ir/translators/js_visitor.h"
 
 // ─── Constants ─────────────────────────────────────────────────
@@ -910,18 +913,20 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	if (!mode_fast)
 		g_store->setProjectReadiness(project_id, "fts_ready", 1);
 
-	// ── Step 6: Knowledge Layer ──
-	// Build capability + contract tables from README / entity / comments.
+	// ── Step 6: Model Engine — build capability/contract/workflow ──
 	// This is supplementary — failures are logged but do NOT fail the
-	// index, since the knowledge layer is not required for graph queries.
+	// index, since the model layer is not required for graph queries.
 	{
-		knowledge::KnowledgeBuilder kb(g_store.get(), project_id);
-		if (!kb.build()) {
-			fprintf(stderr,
-				"engine_index: knowledge build had errors "
-				"(non-fatal) "
-				"[module=engine, method=engine_index_project]\n");
-		}
+		model::ModelEngine me(g_store.get());
+		me.addPlugin(
+			std::make_unique<model::WorkflowPlugin>(g_store.get()));
+		me.addPlugin(std::make_unique<model::CapabilityPlugin>(
+			g_store.get()));
+		me.addPlugin(std::make_unique<model::ArchitecturePlugin>(
+			g_store.get()));
+		me.addPlugin(
+			std::make_unique<model::ContractPlugin>(g_store.get()));
+		me.runAll(project_id);
 	}
 
 	// ── Result JSON ──────────────────────────────────────────────

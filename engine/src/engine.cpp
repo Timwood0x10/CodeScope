@@ -4,7 +4,6 @@
 #include "graph/graph_builder.h"
 #include "ir/ir.h"
 #include "ir/ir_translator.h"
-#include "linker/linker.h"
 #include "lsp/lsp_client.h"
 #include "parser/parser.h"
 #include "query/query_engine.h"

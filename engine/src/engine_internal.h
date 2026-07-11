@@ -23,11 +23,6 @@
 #include "query/impact_analysis.h"
 // community_detection removed — Phase 0 cut
 #include "lsp/lsp_client.h"
-#include "linker/linker.h"
-#include "resolver/resolver.h"
-#include "resolver/project_index.h"
-#include "resolver/project_resolver.h"
-
 // ─── Global Singletons ───────────────────────────────────────────
 //
 // Shared across all engine_*.cpp translation units.

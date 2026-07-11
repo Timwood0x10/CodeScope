@@ -25,7 +25,6 @@
 #include <vector>
 
 #include "knowledge/builder.h"
-#include "linker/linker.h"
 #include "ir/translators/js_visitor.h"
 
 // ─── Constants ─────────────────────────────────────────────────

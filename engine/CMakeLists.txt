@@ -199,6 +199,7 @@ set(ENGINE_SOURCES
 	    src/model/plugins/workflow.cpp
 	    src/model/plugins/capability.cpp
 	    src/model/plugins/architecture.cpp
+	    src/model/plugins/contract.cpp
     src/resolver/project_index.cpp
 	    src/resolver/project_resolver.cpp
 		    src/verify/capability_verifier.cpp
@@ -210,7 +211,6 @@ set(ENGINE_SOURCES
 	    src/verify/registry.cpp
 	    src/knowledge/builder.cpp
 	    src/resolver/resolve_cache.cpp
-	    src/linker/linker.cpp
 	    src/filter_policy.cpp
 	    src/filter_policy_ignore.cpp
 	    src/platform_win.cpp
