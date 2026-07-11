@@ -1,6 +1,7 @@
 #include "store.h"
 #include "store_internal.h"
 #include "platform_win.h"
+#include "../resolver/pipeline.h"
 
 #include <algorithm>
 #include <climits>
@@ -219,10 +220,95 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// Backfill for symbols.node_id is no longer needed — symbols table
 	// has been eliminated. graph_nodes is the sole source of truth.
 
+	// Phase 1.2: populate reference table from semantic_records CallExpr
+	// Uses _r2n mapping to resolve parent_id -> caller_id.
+	{
+		std::string ref_sql =
+			"INSERT OR IGNORE INTO reference "
+			"(project_id, caller_id, name, arity, start_row, start_col) "
+			"SELECT sr.project_id, r2n.node_id, sr.name, sr.arity, "
+			" sr.start_row, sr.start_col "
+			"FROM semantic_records sr "
+			"JOIN _r2n r2n ON sr.parent_id = r2n.original_id "
+			" AND sr.file_path = r2n.file_path "
+			"WHERE sr.project_id=" +
+			std::to_string(project_id) +
+			" AND sr.kind=9 AND sr.name != ''";
+		exec(ref_sql.c_str());
+	}
+
+	// Phase 1.2: populate import table from semantic_records Import
+	{
+		std::string imp_sql =
+			"INSERT OR IGNORE INTO import "
+			"(project_id, source_scope_id, target_path, alias, is_pub) "
+			"SELECT sr.project_id, 0, sr.name, sr.name, 0 "
+			"FROM semantic_records sr "
+			"WHERE sr.project_id=" +
+			std::to_string(project_id) +
+			" AND sr.kind=11 AND sr.name != ''";
+		exec(imp_sql.c_str());
+	}
+
+	// Phase 1.2: populate scope table from entity file paths.
+	// Module scopes: one per unique directory.
+	{
+		std::string scope_sql =
+			"INSERT OR IGNORE INTO scope "
+			"(project_id, parent_id, kind, name, start_row, end_row) "
+			"SELECT DISTINCT " +
+			std::to_string(project_id) +
+			", 0, 1, "
+			"rtrim(file_path, replace(file_path, '/', 'x')), "
+			"0, 0 "
+			"FROM entity WHERE project_id=" +
+			std::to_string(project_id) +
+			" AND file_path LIKE '%/%'";
+		exec(scope_sql.c_str());
+	}
+
+	// Function scopes: each entity within its module scope.
+	// Find the module scope id by matching the directory of the file.
+	{
+		std::string func_sql =
+			"INSERT OR IGNORE INTO scope "
+			"(project_id, parent_id, kind, name, start_row, end_row) "
+			"SELECT " +
+			std::to_string(project_id) +
+			", s.id, 2, e.name, "
+			" e.start_row, e.end_row "
+			"FROM entity e "
+			"JOIN scope s ON e.project_id = s.project_id"
+			" AND s.kind = 1"
+			" AND s.name = rtrim(e.file_path, "
+			"  replace(e.file_path, '/', 'x')) "
+			"WHERE e.project_id=" +
+			std::to_string(project_id);
+		exec(func_sql.c_str());
+	}
+
+	// Update import.source_scope_id to point to the file's module scope.
+	{
+		std::string imp_scope_sql =
+			"UPDATE import SET source_scope_id = "
+			"(SELECT COALESCE(s.id, 0) FROM scope s "
+			" JOIN entity e ON e.project_id = s.project_id"
+			" AND s.kind = 1"
+			" AND s.name = rtrim(e.file_path, "
+			"  replace(e.file_path, '/', 'x')) "
+			" WHERE e.project_id=import.project_id"
+			" AND e.file_path = "
+			"  (SELECT file_path FROM semantic_records sr"
+			"   WHERE sr.rowid = import.id"
+			"   AND sr.project_id=import.project_id)"
+			" LIMIT 1) "
+			"WHERE project_id=" +
+			std::to_string(project_id);
+		exec(imp_scope_sql.c_str());
+	}
+
 	exec("DROP TABLE IF EXISTS _r2n");
 	exec("DROP TABLE IF EXISTS _rf");
-
-	// Phase 1.1: dual-write to entity table (production code only)
 	std::string entity_sql = "INSERT OR IGNORE INTO entity "
 				 "(id, project_id, kind, name, qualified_name, "
 				 " file_path, language, start_row, start_col, "
@@ -257,34 +343,10 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		std::to_string(project_id);
 	exec(rel_sql.c_str());
 
-	// Phase 1.2: populate reference table from semantic_records CallExpr
-	// Uses _r2n mapping to resolve parent_id → caller_id before _r2n is dropped.
+	// Phase 1.3: Resolver Pipeline — resolve references to entities
 	{
-		std::string ref_sql =
-			"INSERT OR IGNORE INTO reference "
-			"(project_id, caller_id, name, arity, start_row, start_col) "
-			"SELECT sr.project_id, r2n.node_id, sr.name, sr.arity, "
-			" sr.start_row, sr.start_col "
-			"FROM semantic_records sr "
-			"JOIN _r2n r2n ON sr.parent_id = r2n.original_id "
-			" AND sr.file_path = r2n.file_path "
-			"WHERE sr.project_id=" +
-			std::to_string(project_id) +
-			" AND sr.kind=9 AND sr.name != ''";
-		exec(ref_sql.c_str());
-	}
-
-	// Phase 1.2: populate import table from semantic_records Import
-	{
-		std::string imp_sql =
-			"INSERT OR IGNORE INTO import "
-			"(project_id, source_scope_id, target_path, alias, is_pub) "
-			"SELECT sr.project_id, 0, sr.name, sr.name, 0 "
-			"FROM semantic_records sr "
-			"WHERE sr.project_id=" +
-			std::to_string(project_id) +
-			" AND sr.kind=11 AND sr.name != ''";
-		exec(imp_sql.c_str());
+		resolver::ResolverPipeline pipe(this, project_id);
+		pipe.run();
 	}
 
 	// Phase timing breakdown

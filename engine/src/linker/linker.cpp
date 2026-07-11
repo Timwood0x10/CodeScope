@@ -272,7 +272,7 @@ bool EmitGraphPass::run(
 		{
 			sqlite3_stmt *s = nullptr;
 			const char *q =
-				"SELECT COALESCE(MAX(id), 0) + 1 FROM graph_nodes";
+				"SELECT COALESCE(MAX(id), 0) + 1 FROM entity";
 			if (sqlite3_prepare_v2(store->handle(), q, -1, &s,
 					       nullptr) == SQLITE_OK) {
 				if (sqlite3_step(s) == SQLITE_ROW)

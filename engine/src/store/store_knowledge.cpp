@@ -246,8 +246,8 @@ bool GraphStore::clearProjectKnowledge(uint64_t project_id)
 		"(SELECT id FROM evidence WHERE claim_id IN "
 		" (SELECT id FROM claim WHERE project_id=?))",
 		// 2. evidence (via claim.project_id)
-		"DELETE FROM evidence WHERE claim_id IN "
-		"(SELECT id FROM claim WHERE project_id=?)",
+		("DELETE FROM evidence WHERE claim_id IN "
+		 " (SELECT id FROM claim WHERE project_id=?)"),
 		// 3. finding (has project_id)
 		"DELETE FROM finding WHERE project_id=?",
 		// 4. claim

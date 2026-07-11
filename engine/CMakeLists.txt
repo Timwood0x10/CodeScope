@@ -194,6 +194,7 @@ set(ENGINE_SOURCES
     src/query/impact_analysis.cpp
          src/lsp/lsp_client.cpp
     src/resolver/resolver.cpp
+	    src/resolver/pipeline.cpp
     src/resolver/project_index.cpp
 	    src/resolver/project_resolver.cpp
 		    src/verify/capability_verifier.cpp

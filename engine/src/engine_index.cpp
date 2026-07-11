@@ -29,8 +29,6 @@
 #include "ir/translators/js_visitor.h"
 
 // ─── Constants ─────────────────────────────────────────────────
-constexpr uint64_t kMaxFileSize = 5 * 1024 * 1024; // 5 MB default
-
 // ─── Index File ────────────────────────────────────────────────
 
 char *engine_index_file(uint64_t project_id, const char *file_path)

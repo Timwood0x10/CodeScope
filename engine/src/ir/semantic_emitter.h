@@ -56,6 +56,19 @@ class SemanticEmitter {
 	uint64_t emitExport(const std::string &name, SourceRange loc,
 			    uint64_t parent_id = 0);
 
+	// ── Scope Emitters ─────────────────────────────────────────
+
+	/// Emit a scope entry/exit. kind: 0=enter, 1=exit.
+	/// scope_kind: 0=Global, 1=Module, 2=Function, 3=Block, 4=Trait, 5=Impl
+	void emitScope(int kind, int scope_kind, const std::string &name,
+		       SourceRange loc);
+
+	// ── Reference Emitter ──────────────────────────────────────
+
+	/// Emit a call reference (no resolution).
+	uint64_t emitReference(const std::string &callee_name, SourceRange loc,
+			       uint64_t parent_id = 0, int arity = 0);
+
 	// ── Literal / Comment Emitters ─────────────────────────
 
 	uint64_t emitLiteral(const std::string &value, SourceRange loc,

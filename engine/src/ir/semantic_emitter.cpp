@@ -86,6 +86,30 @@ uint64_t SemanticEmitter::emitExport(const std::string &name, SourceRange loc,
 	return unit_->addRecord(RecordKind::Export, name, parent_id, loc);
 }
 
+// ── Scope Emitters ───────────────────────────────────────────
+
+void SemanticEmitter::emitScope(int kind, int scope_kind,
+				const std::string &name, SourceRange loc)
+{
+	// Scope entries/exits are stored as records with special kinds.
+	// kind=0 means scope enter, kind=1 means scope exit.
+	// The scope_kind is encoded in the arity field.
+	// scope_kind: 0=Global, 1=Module, 2=Function, 3=Block, 4=Trait, 5=Impl
+	RecordKind rk = (kind == 0) ? RecordKind::TranslationUnit :
+				      RecordKind::Comment;
+	unit_->addRecord(rk, name, 0, loc, scope_kind, false);
+}
+
+// ── Reference Emitter ────────────────────────────────────────
+
+uint64_t SemanticEmitter::emitReference(const std::string &callee_name,
+					SourceRange loc, uint64_t parent_id,
+					int arity)
+{
+	return unit_->addRecord(RecordKind::CallExpr, callee_name, parent_id,
+				loc, arity, false);
+}
+
 // ── Literal / Comment Emitters ───────────────────────────────
 
 uint64_t SemanticEmitter::emitLiteral(const std::string &value, SourceRange loc,

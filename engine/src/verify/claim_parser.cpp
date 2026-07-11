@@ -16,16 +16,6 @@ namespace verify
 namespace
 {
 
-// Trim leading and trailing ASCII whitespace from `s`.
-std::string trim(const std::string &s)
-{
-	size_t start = s.find_first_not_of(" \t\r\n");
-	if (start == std::string::npos)
-		return "";
-	size_t end = s.find_last_not_of(" \t\r\n");
-	return s.substr(start, end - start + 1);
-}
-
 // Truncate a captured capability subject at the first clause boundary.
 // The regex `[A-Za-z0-9_\- ]{1,50}` is greedy and includes spaces, so it
 // captures trailing prose like "incremental indexing and is thread-safe".

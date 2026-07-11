@@ -48,7 +48,7 @@ char *engine_find_symbol(uint64_t project_id, const char *symbol_name)
 		// Query project languages
 		std::string langs;
 		const char *lsql =
-			"SELECT DISTINCT language || ',' FROM graph_nodes WHERE project_id = ? AND node_type IN (0,1) LIMIT 5";
+			"SELECT DISTINCT language || ',' FROM entity WHERE project_id = ? AND kind IN (0,1) LIMIT 5";
 		sqlite3_stmt *lstmt = nullptr;
 		if (sqlite3_prepare_v2(g_store->handle(), lsql, -1, &lstmt,
 				       nullptr) == SQLITE_OK) {
@@ -70,7 +70,7 @@ char *engine_find_symbol(uint64_t project_id, const char *symbol_name)
 		// Check total symbols
 		int total = 0;
 		const char *csql =
-			"SELECT COUNT(*) FROM graph_nodes WHERE project_id = ? AND node_type IN (0,1)";
+			"SELECT COUNT(*) FROM entity WHERE project_id = ? AND kind IN (0,1)";
 		sqlite3_stmt *cstmt = nullptr;
 		if (sqlite3_prepare_v2(g_store->handle(), csql, -1, &cstmt,
 				       nullptr) == SQLITE_OK) {
@@ -352,7 +352,7 @@ char *engine_project_overview(uint64_t project_id)
 	// Languages
 	{
 		const char *sql =
-			"SELECT DISTINCT language FROM graph_nodes WHERE project_id = ? AND node_type IN (0,1)";
+			"SELECT DISTINCT language FROM entity WHERE project_id = ? AND kind IN (0,1)";
 		sqlite3_stmt *stmt = nullptr;
 		json << "\"languages\":[";
 		bool first = true;
