@@ -13,16 +13,16 @@ namespace verify
 
 /**
  * CapabilityVerifier checks that claimed capabilities actually exist in the
- * codebase. In the new Claim-driven flow it accepts CapabilityExists claims
- * and returns an EvidenceRecord (stub for now; Agent 3 fills the logic).
+ * codebase. In the Claim-driven flow it accepts CapabilityExists claims and
+ * returns an EvidenceRecord with supporting or contradicting evidence.
  *
- * Evidence chain (target design):
- *   Capability row -> Implementation entity -> Callers (relation type=1)
+ * Evidence chain:
+ *   Capability row -> graph_nodes entry -> Callers (graph_edges edge_type=1)
  *
  * Legacy path:
  *   The no-argument verify() returning std::vector<Finding> is preserved so
- *   engine_verify_integrity (engine_ffi.cpp) keeps compiling until Agent 4
- *   migrates it onto the VerifierRegistry. Agent 3/4 will remove it then.
+ *   engine_verify_integrity (engine_ffi.cpp) keeps compiling until that path
+ *   is migrated onto the VerifierRegistry.
  */
 class CapabilityVerifier : public Verifier {
     public:
@@ -38,12 +38,11 @@ class CapabilityVerifier : public Verifier {
 	bool accepts(const Claim &claim) const override;
 
 	/// Collect evidence for a CapabilityExists claim.
-	/// TODO(Agent 3): replace stub with real capability-table lookup.
 	EvidenceRecord verify(const Claim &claim) override;
 
 	/// Legacy integrity check returning Findings. Kept for the
 	/// engine_verify_integrity FFI call site; will be removed once that
-	/// path is migrated onto the registry by Agent 4.
+	/// path is migrated onto the VerifierRegistry.
 	std::vector<Finding> verify();
 
     private:

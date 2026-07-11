@@ -68,12 +68,13 @@ static std::string truncate(const std::string &s, size_t maxLen)
 }
 
 /// Read the full content of a file from disk.
-/// Returns empty string on failure (logged to stderr).
+/// Returns empty string on failure (logged to stderr with module/method).
 static std::string readFileContent(const std::string &path)
 {
 	std::ifstream ifs(path, std::ios::binary);
 	if (!ifs.is_open()) {
-		// File read failure is a soft error — skip this file.
+		fprintf(stderr, "KnowledgeBuilder: could not open file %s %s\n",
+			path.c_str(), kLogPrefix);
 		return {};
 	}
 	std::ostringstream oss;
@@ -314,13 +315,8 @@ bool KnowledgeBuilder::scanReadmeCapabilities()
 	bool ok = true;
 	for (const auto &path : readmePaths) {
 		std::string content = readFileContent(path);
-		if (content.empty()) {
-			fprintf(stderr,
-				"KnowledgeBuilder: could not read README %s "
-				"%s\n",
-				path.c_str(), kLogPrefix);
-			continue;
-		}
+		   if (content.empty())
+		    continue;
 
 		auto lines = splitLines(content);
 		std::string lowerContent = toLower(content);
@@ -387,8 +383,12 @@ bool KnowledgeBuilder::scanReadmeContracts()
 	bool ok = true;
 	for (const auto &path : readmePaths) {
 		std::string content = readFileContent(path);
-		if (content.empty())
+		if (content.empty()) {
+			fprintf(stderr,
+				"KnowledgeBuilder: empty content from %s %s\n",
+				path.c_str(), kLogPrefix);
 			continue;
+		}
 
 		auto lines = splitLines(content);
 
@@ -542,15 +542,15 @@ querySourceFiles(store::GraphStore *store, uint64_t project_id)
 	return files;
 }
 
-/// Check if a line contains a TODO or FIXME comment marker.
-/// Returns 0 if no marker found, 1 for TODO, 2 for FIXME.
+/// Check if a line contains a `TODO` or `FIXME` comment marker.
+/// Returns 0 if no marker found, 1 for `TODO`, 2 for `FIXME`.
 ///
-/// To avoid false positives (section headers like "─── TODO/FIXME Comment
-/// Scan ───" or prose mentioning TODO as a word), the marker must appear
+/// To avoid false positives (section headers like "─── `TODO`/`FIXME` Comment
+/// Scan ───" or prose mentioning `TODO` as a word), the marker must appear
 /// at the start of a comment: immediately after a comment introducer
 /// (`//`, `#`, `/*`, or `*` for block-comment continuation) with only
 /// optional whitespace between them. Patterns like `// TODO:`, `# TODO:`,
-/// `* TODO(Agent 3):` are accepted; `// step 5: TODO scan` is rejected.
+/// `* TODO(assignee):` are accepted; `// step 5: TODO scan` is rejected.
 static int findTodoOrFixme(const std::string &line, size_t &outPos)
 {
 	size_t todoPos = line.find("TODO");
@@ -627,8 +627,12 @@ bool KnowledgeBuilder::scanTodoFixme()
 			continue;
 
 		std::string content = readFileContent(path);
-		if (content.empty())
+		if (content.empty()) {
+			fprintf(stderr,
+				"KnowledgeBuilder: empty content from %s %s\n",
+				path.c_str(), kLogPrefix);
 			continue;
+		}
 
 		auto lines = splitLines(content);
 		for (int lineNum = 0; lineNum < static_cast<int>(lines.size());

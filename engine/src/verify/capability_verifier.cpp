@@ -5,6 +5,12 @@
 #include <cstdio>
 #include <sqlite3.h>
 
+// Confidence values for CapabilityVerifier verdicts.
+static constexpr double kConfCapabilityNotDeclared = 0.9;
+static constexpr double kConfCapabilityNoCallers = 0.7;
+static constexpr double kConfCapabilitySupported = 0.85;
+static constexpr double kConfDeadCapability = 0.95;
+
 namespace verify
 {
 
@@ -69,9 +75,7 @@ static bool capabilityDeclared(store::GraphStore *store, uint64_t project_id,
 // node with callers" -> the claim cannot be Supported.
 //
 // NOTE: We query graph_nodes/graph_edges (the production source of truth)
-// rather than entity/relation because buildGraph uses bulk SQL INSERT INTO
-// graph_nodes (store_graph.cpp) which bypasses the dual-write path. Once
-// the dual-write is fully wired in v0.4, this can revert to entity/relation.
+// because buildGraph writes to these tables via bulk SQL INSERT.
 static std::vector<int64_t> entitiesWithCallers(store::GraphStore *store,
 						uint64_t project_id,
 						const std::string &subject)
@@ -121,7 +125,7 @@ EvidenceRecord CapabilityVerifier::verify(const Claim &claim)
 	// Step 1: the capability must be declared in the knowledge layer.
 	if (!capabilityDeclared(store_, project_id_, claim.subject)) {
 		rec.verdict = Verdict::Contradicted;
-		rec.confidence = 0.9;
+		rec.confidence = kConfCapabilityNotDeclared;
 		rec.detail = "Capability '" + claim.subject +
 			     "' not declared in knowledge layer";
 		return rec;
@@ -132,7 +136,7 @@ EvidenceRecord CapabilityVerifier::verify(const Claim &claim)
 		entitiesWithCallers(store_, project_id_, claim.subject);
 	if (ids.empty()) {
 		rec.verdict = Verdict::Contradicted;
-		rec.confidence = 0.7;
+		rec.confidence = kConfCapabilityNoCallers;
 		rec.detail =
 			"Capability '" + claim.subject +
 			"' declared but no implementing entity with callers";
@@ -142,21 +146,20 @@ EvidenceRecord CapabilityVerifier::verify(const Claim &claim)
 	// Supported: populate facts with (entity_kind=0, entity_id) pairs so
 	// the caller can persist evidence_fact rows for traceability.
 	rec.verdict = Verdict::Supported;
-	rec.confidence = 0.85;
+	rec.confidence = kConfCapabilitySupported;
 	rec.detail = "Capability '" + claim.subject + "' supported by " +
 		     std::to_string(ids.size()) + " implementing entit" +
 		     (ids.size() == 1 ? "y" : "ies");
 	rec.facts.reserve(ids.size());
 	for (auto id : ids) {
-		// fact_kind 0 = entity (see EvidenceRecord comment in claim.h).
-		rec.facts.emplace_back(0, id);
+		rec.facts.emplace_back(kFactKindNode, id);
 	}
 	return rec;
 }
 
 // ── Legacy integrity check ───────────────────────────────────────────
 // Preserved verbatim so engine_verify_integrity (engine_ffi.cpp) keeps
-// compiling. Agent 4 will migrate that FFI path onto the registry and
+// compiling. The FFI path will be migrated onto the registry to
 // remove this method.
 
 std::vector<Finding> CapabilityVerifier::verify()
@@ -233,7 +236,7 @@ std::vector<Finding> CapabilityVerifier::verify()
 			f.type = "DeadCapability";
 			f.description = "Capability '" + cap_name +
 					"' exists but has 0 callers";
-			f.confidence = 0.95;
+			f.confidence = kConfDeadCapability;
 
 			Evidence ev;
 			ev.entity_name = cap_name;

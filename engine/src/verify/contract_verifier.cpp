@@ -8,6 +8,16 @@
 #include <string>
 #include <vector>
 
+// Confidence values for ContractVerifier verdicts.
+static constexpr double kConfContractUndeclared = 0.5;
+static constexpr double kConfZeroCopySupported = 0.6;
+static constexpr double kConfZeroCopyNotFound = 0.3;
+static constexpr double kConfUnrecognisedContract = 0.3;
+static constexpr double kConfThreadSafeSupported = 0.7;
+static constexpr double kConfThreadSafeContradicted = 0.6;
+static constexpr double kConfMemorySafeSupported = 0.6;
+static constexpr double kConfMemorySafeNotFound = 0.4;
+
 namespace verify
 {
 
@@ -55,10 +65,8 @@ static bool contractDeclared(store::GraphStore *store, uint64_t project_id,
 // is OR-ed together in a single query so only one prepare/step pass is
 // needed. Returns ids in SQLite row order; empty when no match.
 //
-// NOTE: We query graph_nodes (the production source of truth) rather than
-// entity because buildGraph uses bulk SQL INSERT INTO graph_nodes which
-// bypasses the dual-write path to entity. Revisit once v0.4 makes entity
-// the single source of truth.
+// NOTE: We query graph_nodes (the production source of truth) because
+// buildGraph writes to this table via bulk SQL INSERT.
 static std::vector<int64_t>
 entitiesMatchingAny(store::GraphStore *store, uint64_t project_id,
 		    const std::vector<std::string> &patterns)
@@ -114,7 +122,7 @@ static EvidenceRecord makeRecord(Verdict verdict, double confidence,
 	rec.detail = detail;
 	rec.facts.reserve(entity_ids.size());
 	for (auto id : entity_ids) {
-		rec.facts.emplace_back(0, id);
+		rec.facts.emplace_back(kFactKindNode, id);
 	}
 	return rec;
 }
@@ -130,8 +138,8 @@ EvidenceRecord ContractVerifier::verify(const Claim &claim)
 	// contradicted — we simply have no evidence. Unknown is the safe
 	// verdict.
 	if (!contractDeclared(store_, project_id_, claim.subject)) {
-		return makeRecord(Verdict::Unknown, 0.5, "No contract declared",
-				  {});
+		return makeRecord(Verdict::Unknown, kConfContractUndeclared,
+				  "No contract declared", {});
 	}
 
 	// Dispatch by contract name. The comparisons are case-insensitive so
@@ -157,12 +165,13 @@ EvidenceRecord ContractVerifier::verify(const Claim &claim)
 		std::vector<int64_t> ids = entitiesMatchingAny(
 			store_, project_id_, { "%view%", "%span%", "%slice%" });
 		if (!ids.empty()) {
-			return makeRecord(Verdict::Supported, 0.6,
+			return makeRecord(Verdict::Supported,
+					  kConfZeroCopySupported,
 					  "ZeroCopy: found view/span/slice "
 					  "entities",
 					  ids);
 		}
-		return makeRecord(Verdict::Unknown, 0.3,
+		return makeRecord(Verdict::Unknown, kConfZeroCopyNotFound,
 				  "ZeroCopy: no view/span/slice entities found",
 				  {});
 	}
@@ -170,7 +179,7 @@ EvidenceRecord ContractVerifier::verify(const Claim &claim)
 	// Unrecognised contract name: no verifier rule. Return Unknown so
 	// the caller knows the claim was not contradicted, just unverified.
 	return makeRecord(
-		Verdict::Unknown, 0.3,
+		Verdict::Unknown, kConfUnrecognisedContract,
 		"No verifier rule for contract '" + claim.subject + "'", {});
 }
 
@@ -185,10 +194,10 @@ EvidenceRecord ContractVerifier::verifyThreadSafe(const Claim &claim)
 		store_, project_id_, { "%mutex%", "%lock%", "%atomic%" });
 	if (!ids.empty()) {
 		return makeRecord(
-			Verdict::Supported, 0.7,
+			Verdict::Supported, kConfThreadSafeSupported,
 			"ThreadSafe: found mutex/lock/atomic entities", ids);
 	}
-	return makeRecord(Verdict::Contradicted, 0.6,
+	return makeRecord(Verdict::Contradicted, kConfThreadSafeContradicted,
 			  "No mutex/lock/atomic found despite ThreadSafe "
 			  "claim",
 			  {});
@@ -204,12 +213,12 @@ EvidenceRecord ContractVerifier::verifyMemorySafe(const Claim & /*claim*/)
 		store_, project_id_,
 		{ "%free%", "%alloc%", "%unique_ptr%", "%shared_ptr%" });
 	if (!ids.empty()) {
-		return makeRecord(Verdict::Supported, 0.6,
+		return makeRecord(Verdict::Supported, kConfMemorySafeSupported,
 				  "MemorySafe: found memory-management "
 				  "entities",
 				  ids);
 	}
-	return makeRecord(Verdict::Unknown, 0.4,
+	return makeRecord(Verdict::Unknown, kConfMemorySafeNotFound,
 			  "MemorySafe: no free/alloc/unique_ptr/shared_ptr "
 			  "entities found",
 			  {});
@@ -222,7 +231,7 @@ EvidenceRecord ContractVerifier::verifyMemorySafe(const Claim & /*claim*/)
 EvidenceRecord ContractVerifier::verifyGeneric(const Claim &claim)
 {
 	return makeRecord(
-		Verdict::Unknown, 0.3,
+		Verdict::Unknown, kConfUnrecognisedContract,
 		"No verifier rule for contract '" + claim.subject + "'", {});
 }
 

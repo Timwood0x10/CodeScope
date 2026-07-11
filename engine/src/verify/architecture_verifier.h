@@ -14,9 +14,16 @@ namespace verify
  * the codebase obeys a layered call-flow convention such as
  * "Controller -> Service -> Repository".
  *
- * The current implementation is a skeleton: it accepts ArchitectureFollows
- * claims but always returns Verdict::Unknown. Real architecture checking
- * is future work (see the TODO in the .cpp for the intended design).
+ * The claim encodes the flow as subject -> object -> scope, where subject
+ * is the top layer, object the middle layer, and scope the bottom layer.
+ * The verifier detects layer membership via naming conventions and file
+ * paths, then checks that no lower layer calls a higher layer (reverse
+ * calls). If reverse calls are found, the claim is Contradicted; otherwise
+ * it is Supported when at least one forward call exists between adjacent
+ * layers.
+ *
+ * fact_kind convention (see EvidenceRecord in claim.h):
+ *   0 = entity (graph_node), 1 = relation (graph_edge)
  */
 class ArchitectureVerifier : public Verifier {
     public:
@@ -30,8 +37,8 @@ class ArchitectureVerifier : public Verifier {
 	/// Accepts ArchitectureFollows claims.
 	bool accepts(const Claim &claim) const override;
 
-	/// Collect evidence for an ArchitectureFollows claim.
-	/// TODO: implement layered call-pattern verification.
+	/// Collect evidence for an ArchitectureFollows claim by checking
+	/// for reverse calls between layers and forward connectivity.
 	EvidenceRecord verify(const Claim &claim) override;
 
     private:

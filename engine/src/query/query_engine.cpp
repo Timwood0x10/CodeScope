@@ -114,9 +114,9 @@ std::string QueryEngine::findDefinition(uint64_t project_id,
 {
 	// Use parameterized query to prevent SQL injection
 	const char *sql =
-		"SELECT id AS node_id, name, qualified_name, kind AS node_type, file_path, "
+		"SELECT id AS node_id, name, qualified_name, node_type AS node_type, file_path, "
 		"start_row, start_col, end_row, end_col, language "
-		"FROM entity WHERE project_id = ? AND name = ?";
+		"FROM graph_nodes WHERE project_id = ? AND name = ?";
 
 	std::string sql_with_filter;
 	const char *final_sql;
@@ -193,13 +193,13 @@ std::string QueryEngine::findReferences(uint64_t project_id,
 {
 	// Use parameterized query to prevent SQL injection
 	const char *sql =
-		"SELECT gn.id AS node_id, gn.name, gn.qualified_name, gn.kind AS node_type, "
+		"SELECT gn.id AS node_id, gn.name, gn.qualified_name, gn.node_type AS node_type, "
 		"gn.file_path, gn.start_row, gn.start_col, gn.end_row, gn.end_col, "
 		"gn.language "
-		"FROM entity gn "
-		"JOIN relation ge ON gn.id = ge.source_id "
-		"JOIN entity target ON target.id = ge.target_id "
-		"WHERE gn.project_id = ? AND target.name = ? AND ge.type = 0";
+		"FROM graph_nodes gn "
+		"JOIN graph_edges ge ON gn.id = ge.source_node_id "
+		"JOIN graph_nodes target ON target.id = ge.target_node_id "
+		"WHERE gn.project_id = ? AND target.name = ? AND ge.edge_type = 0";
 
 	std::string sql_with_filter;
 	const char *final_sql;
@@ -279,14 +279,15 @@ std::string QueryEngine::getCallers(uint64_t project_id,
 	// Parameterized query with JOIN instead of IN (subquery)
 	// Uses: idx_ge_callers(edge_type, target_node_id) +
 	//       idx_graph_nodes_name(project_id, name)
-	const char *sql = "SELECT caller.id, caller.name, caller.file_path, "
-			  "caller.start_row, caller.start_col "
-			  "FROM entity caller "
-			  "JOIN relation r ON caller.id = r.source_id "
-			  "JOIN entity callee ON callee.id = r.target_id "
-			  "  AND callee.name = ? AND callee.project_id = ? "
-			  "WHERE r.type = 1 AND caller.project_id = ? "
-			  "LIMIT 100";
+	const char *sql =
+		"SELECT caller.id, caller.name, caller.file_path, "
+		"caller.start_row, caller.start_col "
+		"FROM graph_nodes caller "
+		"JOIN graph_edges r ON caller.id = r.source_node_id "
+		"JOIN graph_nodes callee ON callee.id = r.target_node_id "
+		"  AND callee.name = ? AND callee.project_id = ? "
+		"WHERE r.edge_type = 1 AND caller.project_id = ? "
+		"LIMIT 100";
 
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), sql, -1, &stmt, nullptr) !=
@@ -330,14 +331,15 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 	// Parameterized query with JOIN instead of IN (subquery)
 	// Uses: idx_ge_callees(edge_type, source_node_id) +
 	//       idx_graph_nodes_name(project_id, name)
-	const char *sql = "SELECT callee.id, callee.name, callee.file_path, "
-			  "callee.start_row, callee.start_col "
-			  "FROM entity callee "
-			  "JOIN relation r ON callee.id = r.target_id "
-			  "JOIN entity caller ON caller.id = r.source_id "
-			  "  AND caller.name = ? AND caller.project_id = ? "
-			  "WHERE r.type = 1 AND callee.project_id = ? "
-			  "LIMIT 100";
+	const char *sql =
+		"SELECT callee.id, callee.name, callee.file_path, "
+		"callee.start_row, callee.start_col "
+		"FROM graph_nodes callee "
+		"JOIN graph_edges r ON callee.id = r.target_node_id "
+		"JOIN graph_nodes caller ON caller.id = r.source_node_id "
+		"  AND caller.name = ? AND caller.project_id = ? "
+		"WHERE r.edge_type = 1 AND callee.project_id = ? "
+		"LIMIT 100";
 
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), sql, -1, &stmt, nullptr) !=
@@ -379,31 +381,31 @@ std::string QueryEngine::getNeighbors(uint64_t project_id, uint64_t node_id,
 	// BFS-based neighbor expansion (single hop for now, radius unused in v1)
 	const char *sql =
 		"SELECT gn.id AS neighbor_id, gn.name, gn.node_type, gn.file_path, "
-		"ge.type, 'outgoing' AS direction "
+		"ge.edge_type, 'outgoing' AS direction "
 		"FROM graph_nodes gn "
-		"JOIN graph_edges ge ON gn.id = ge.target_id "
-		"WHERE ge.source_id = ? AND ge.project_id = ?";
+		"JOIN graph_edges ge ON gn.id = ge.target_node_id "
+		"WHERE ge.source_node_id = ? AND ge.project_id = ?";
 
 	std::string sql_out;
 	std::string sql_in;
 	bool has_filter = edge_type_filter >= 0;
 
 	if (has_filter) {
-		sql_out = std::string(sql) + " AND ge.type = ?";
+		sql_out = std::string(sql) + " AND ge.edge_type = ?";
 		sql_in =
 			"SELECT gn.id AS neighbor_id, gn.name, gn.node_type, gn.file_path, "
-			"ge.type, 'incoming' AS direction "
+			"ge.edge_type, 'incoming' AS direction "
 			"FROM graph_nodes gn "
-			"JOIN graph_edges ge ON gn.id = ge.source_id "
-			"WHERE ge.target_id = ? AND ge.project_id = ? AND ge.type = ?";
+			"JOIN graph_edges ge ON gn.id = ge.source_node_id "
+			"WHERE ge.target_node_id = ? AND ge.project_id = ? AND ge.edge_type = ?";
 	} else {
 		sql_out = std::string(sql);
 		sql_in =
 			"SELECT gn.id AS neighbor_id, gn.name, gn.node_type, gn.file_path, "
-			"ge.type, 'incoming' AS direction "
+			"ge.edge_type, 'incoming' AS direction "
 			"FROM graph_nodes gn "
-			"JOIN graph_edges ge ON gn.id = ge.source_id "
-			"WHERE ge.target_id = ? AND ge.project_id = ?";
+			"JOIN graph_edges ge ON gn.id = ge.source_node_id "
+			"WHERE ge.target_node_id = ? AND ge.project_id = ?";
 	}
 
 	std::string final_sql = sql_out + " UNION ALL " + sql_in + " LIMIT 200";
@@ -561,9 +563,9 @@ std::string QueryEngine::getSubgraph(uint64_t project_id,
 		"SELECT DISTINCT gn.id, gn.name, gn.node_type, gn.file_path, "
 		"gn.language "
 		"FROM graph_nodes gn "
-		"JOIN graph_edges ge ON (gn.id = ge.source_id OR gn.id = "
-		"ge.target_id) "
-		"WHERE ge.project_id = ? AND (ge.source_id = ? OR ge.target_id = ?)";
+		"JOIN graph_edges ge ON (gn.id = ge.source_node_id OR gn.id = "
+		"ge.target_node_id) "
+		"WHERE ge.project_id = ? AND (ge.source_node_id = ? OR ge.target_node_id = ?)";
 
 	std::string final_sql = sql_base;
 
@@ -595,7 +597,7 @@ std::string QueryEngine::getSubgraph(uint64_t project_id,
 			}
 		}
 		if (valid) {
-			final_sql += " AND ge.type IN (" + filter + ")";
+			final_sql += " AND ge.edge_type IN (" + filter + ")";
 		}
 	}
 
@@ -656,9 +658,9 @@ std::string QueryEngine::locateNode(uint64_t project_id, uint64_t node_id,
 {
 	(void)context_lines; // v2: read actual file content
 	std::ostringstream sql;
-	sql << "SELECT id AS node_id, name, qualified_name, kind AS node_type, file_path, "
+	sql << "SELECT id AS node_id, name, qualified_name, node_type AS node_type, file_path, "
 	       "start_row, start_col, end_row, end_col, language "
-	       "FROM entity WHERE project_id = "
+	       "FROM graph_nodes WHERE project_id = "
 	    << project_id << " AND id = " << node_id;
 	return queryToJson(store_->handle(), sql.str().c_str(), "locations");
 }
@@ -667,9 +669,9 @@ std::string QueryEngine::locateByName(uint64_t project_id, const char *name)
 {
 	// Use parameterized query to prevent SQL injection
 	const char *sql =
-		"SELECT id AS node_id, name, qualified_name, kind AS node_type, file_path, "
+		"SELECT id AS node_id, name, qualified_name, node_type AS node_type, file_path, "
 		"start_row, start_col, end_row, end_col, language "
-		"FROM entity WHERE project_id = ? AND name = ? LIMIT 20";
+		"FROM graph_nodes WHERE project_id = ? AND name = ? LIMIT 20";
 
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), sql, -1, &stmt, nullptr) !=
@@ -728,7 +730,7 @@ std::string QueryEngine::getGraphStats(uint64_t project_id)
 	// Node count
 	{
 		std::ostringstream sql;
-		sql << "SELECT COUNT(*) FROM entity WHERE project_id = "
+		sql << "SELECT COUNT(*) FROM graph_nodes WHERE project_id = "
 		    << project_id;
 		sqlite3_stmt *stmt = nullptr;
 		if (sqlite3_prepare_v2(store_->handle(), sql.str().c_str(), -1,
@@ -749,7 +751,7 @@ std::string QueryEngine::getGraphStats(uint64_t project_id)
 	// Edge count
 	{
 		std::ostringstream sql;
-		sql << "SELECT COUNT(*) FROM relation WHERE project_id = "
+		sql << "SELECT COUNT(*) FROM graph_edges WHERE project_id = "
 		    << project_id;
 		sqlite3_stmt *stmt = nullptr;
 		if (sqlite3_prepare_v2(store_->handle(), sql.str().c_str(), -1,

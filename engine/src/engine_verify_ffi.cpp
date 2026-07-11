@@ -32,6 +32,34 @@
 
 namespace
 {
+// ─── Named Constants ─────────────────────────────────────────────
+
+// Trust score penalty per non-supported finding in engine_verify_integrity.
+static constexpr double kTrustScorePenalty = 0.1;
+
+// Maximum length of the source_ref string extracted from input text.
+static constexpr size_t kSourceRefMaxLen = 200;
+
+// Maximum number of entity sample rows returned by engine_explain_module.
+static constexpr int kEntitySampleLimit = 10;
+
+// Integrity score parameters for engine_explain_module.
+static constexpr int kIntegrityMax = 100;
+static constexpr int kIntegritySev2Penalty = 10;
+static constexpr int kIntegritySev1Penalty = 5;
+
+// ─── VerifyResult struct ────────────────────────────────────────
+
+// Holds both the heap-allocated JSON string from verify_one_claim and the
+// parsed Verdict enum so callers can tally verdicts without strstr.
+struct VerifyResult {
+	char *json =
+		nullptr; // heap-allocated JSON (must be freed via engine_free_string)
+	verify::Verdict verdict = verify::Verdict::Unknown;
+};
+
+// ─── JSON Helpers ───────────────────────────────────────────────
+
 // Extract a string field value from a flat JSON object.
 // Only handles the simple "key":"value" form used by MCP callers; it does
 // NOT implement a full JSON parser. Returns "" if the key is absent or the
@@ -146,17 +174,22 @@ makeVerifierForClaim(const verify::Claim &claim, store::GraphStore *store,
 }
 
 // Shared helper: persist the claim, dispatch to a verifier, persist evidence
-// + facts, and return the JSON result. Used by both engine_verify_claim and
-// engine_verify_summary to keep their output shapes identical.
+// + facts, and return the JSON result + verdict. Used by both engine_verify_claim
+// and engine_verify_summary to keep their output shapes identical.
 //
 // THREAD SAFETY: single-threaded only (relies on the GraphStore
 // single-writer invariant documented in store.h).
-char *verify_one_claim(uint64_t project_id, const verify::Claim &claim)
+VerifyResult verify_one_claim(uint64_t project_id, const verify::Claim &claim)
 {
+	VerifyResult result;
+
 	int64_t claim_id = g_store->insertClaim(project_id, claim);
 	if (claim_id < 0) {
-		return dupString("{\"error\":\"failed to persist claim "
-				 "[module=ffi, method=verify_one_claim]\"}");
+		result.json =
+			dupString("{\"error\":\"failed to persist claim "
+				  "[module=ffi, method=verify_one_claim]\"}");
+		result.verdict = verify::Verdict::Unknown;
+		return result;
 	}
 
 	ensureVerifiersRegistered();
@@ -169,7 +202,9 @@ char *verify_one_claim(uint64_t project_id, const verify::Claim &claim)
 		  << ",\"verifier\":null"
 		  << ",\"detail\":\"no verifier registered for this claim type\""
 		  << ",\"evidence_facts\":[]}";
-		return dupString(j.str());
+		result.json = dupString(j.str());
+		result.verdict = verify::Verdict::Unknown;
+		return result;
 	}
 
 	// Build a fresh verifier bound to the caller's project_id so verify()
@@ -184,7 +219,9 @@ char *verify_one_claim(uint64_t project_id, const verify::Claim &claim)
 		  << ",\"detail\":\"verifier "
 		     "implementation unavailable for this claim type\""
 		  << ",\"evidence_facts\":[]}";
-		return dupString(j.str());
+		result.json = dupString(j.str());
+		result.verdict = verify::Verdict::Unknown;
+		return result;
 	}
 
 	verify::EvidenceRecord rec = v->verify(claim);
@@ -194,8 +231,11 @@ char *verify_one_claim(uint64_t project_id, const verify::Claim &claim)
 		g_store->insertEvidence(claim_id, rec.verdict, rec.confidence,
 					rec.verifier_name, rec.detail);
 	if (evidence_id < 0) {
-		return dupString("{\"error\":\"failed to persist evidence "
-				 "[module=ffi, method=verify_one_claim]\"}");
+		result.json =
+			dupString("{\"error\":\"failed to persist evidence "
+				  "[module=ffi, method=verify_one_claim]\"}");
+		result.verdict = verify::Verdict::Unknown;
+		return result;
 	}
 
 	for (const auto &f : rec.facts) {
@@ -217,7 +257,9 @@ char *verify_one_claim(uint64_t project_id, const verify::Claim &claim)
 		j << "{\"kind\":" << f.first << ",\"ref\":" << f.second << "}";
 	}
 	j << "]}";
-	return dupString(j.str());
+	result.json = dupString(j.str());
+	result.verdict = rec.verdict;
+	return result;
 }
 
 } // namespace
@@ -286,9 +328,8 @@ extern "C" char *engine_verify_integrity(uint64_t project_id)
 		     << "\"confidence\":" << rec.confidence << "}";
 	}
 
-	// Iterate contracts -> ContractHolds claims (best-effort; Agent 3
-	// may not have shipped ContractVerifier yet, so makeVerifierForClaim
-	// returns nullptr and we skip gracefully).
+	// Iterate contracts -> ContractHolds claims. ContractVerifier is
+	// registered, so makeVerifierForClaim returns a valid verifier instance.
 	auto contracts = g_store->listContracts(project_id);
 	for (const auto &ct : contracts) {
 		verify::Claim claim;
@@ -331,9 +372,10 @@ extern "C" char *engine_verify_integrity(uint64_t project_id)
 
 	json << "],\"total\":" << (supported + contradicted + unknown);
 
-	// Trust score: 1.0 - 0.1 per non-supported finding, clamped to [0, 1].
+	// Trust score: 1.0 - kTrustScorePenalty per non-supported finding, clamped to [0, 1].
 	double trust_score = 1.0;
-	trust_score -= 0.1 * static_cast<double>(contradicted + unknown);
+	trust_score -= kTrustScorePenalty *
+		       static_cast<double>(contradicted + unknown);
 	if (trust_score < 0.0)
 		trust_score = 0.0;
 	json << ",\"trust_score\":" << trust_score
@@ -388,7 +430,8 @@ extern "C" char *engine_verify_claim(uint64_t project_id,
 				 "[module=ffi, method=engine_verify_claim]\"}");
 	}
 
-	return verify_one_claim(project_id, claim);
+	VerifyResult result = verify_one_claim(project_id, claim);
+	return result.json;
 }
 
 // engine_verify_summary — parse a natural-language summary into claims and
@@ -416,8 +459,9 @@ extern "C" char *engine_verify_summary(uint64_t project_id, const char *text)
 	// from the free-form text. source_kind="ai_summary" stamps each
 	// claim for traceability in the evidence table.
 	verify::ClaimParser parser;
-	auto claims = parser.parse(std::string(text), "ai_summary",
-				   std::string(text).substr(0, 200));
+	auto claims =
+		parser.parse(std::string(text), "ai_summary",
+			     std::string(text).substr(0, kSourceRefMaxLen));
 
 	std::ostringstream json;
 	json << "{\"claims_parsed\":" << claims.size() << ",\"results\":[";
@@ -427,20 +471,23 @@ extern "C" char *engine_verify_summary(uint64_t project_id, const char *text)
 		if (!first)
 			json << ",";
 		first = false;
-		// verify_one_claim returns a heap-allocated JSON string; we
-		// copy it into our stream and free the original.
-		char *one = verify_one_claim(project_id, c);
-		if (one) {
-			json << one;
-			// Tally verdict from the JSON we just emitted.
-			if (std::strstr(one, "\"verdict\":\"Supported\""))
+		// verify_one_claim returns the JSON string + parsed verdict.
+		// We copy the JSON into our stream and free the original.
+		VerifyResult result = verify_one_claim(project_id, c);
+		if (result.json) {
+			json << result.json;
+			switch (result.verdict) {
+			case verify::Verdict::Supported:
 				supported++;
-			else if (std::strstr(one,
-					     "\"verdict\":\"Contradicted\""))
+				break;
+			case verify::Verdict::Contradicted:
 				contradicted++;
-			else
+				break;
+			default:
 				unknown++;
-			engine_free_string(one);
+				break;
+			}
+			engine_free_string(result.json);
 		} else {
 			json << "null";
 			unknown++;
@@ -559,14 +606,15 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 	// paths with a leading "./" match consistently.
 	{
 		std::string like = "%/" + name + "/%";
-		const char *sql =
+		std::string sql_str =
 			"SELECT name, node_type, file_path FROM graph_nodes "
 			"WHERE project_id=? AND file_path LIKE ? "
-			"ORDER BY id LIMIT 10";
+			"ORDER BY id LIMIT " +
+			std::to_string(kEntitySampleLimit);
 		sqlite3_stmt *stmt = nullptr;
 		int total = 0;
 		// Count first
-		const char *csql = "SELECT COUNT(*) FROM entity "
+		const char *csql = "SELECT COUNT(*) FROM graph_nodes "
 				   "WHERE project_id=? AND file_path LIKE ?";
 		if (sqlite3_prepare_v2(db, csql, -1, &stmt, nullptr) ==
 		    SQLITE_OK) {
@@ -579,8 +627,8 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 			sqlite3_finalize(stmt);
 		}
 		json << "\"entities\":{\"count\":" << total << ",\"sample\":[";
-		if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
-		    SQLITE_OK) {
+		if (sqlite3_prepare_v2(db, sql_str.c_str(), -1, &stmt,
+				       nullptr) == SQLITE_OK) {
 			sqlite3_bind_int64(stmt, 1,
 					   static_cast<int64_t>(project_id));
 			sqlite3_bind_text(stmt, 2, like.c_str(), -1,
@@ -712,11 +760,12 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 			sqlite3_finalize(stmt);
 		}
 		json << "],";
-		int integrity = 100 - 10 * sev2 - 5 * sev1;
+		int integrity = kIntegrityMax - kIntegritySev2Penalty * sev2 -
+				kIntegritySev1Penalty * sev1;
 		if (integrity < 0)
 			integrity = 0;
-		if (integrity > 100)
-			integrity = 100;
+		if (integrity > kIntegrityMax)
+			integrity = kIntegrityMax;
 		json << "\"integrity\":" << integrity << "}";
 	}
 
