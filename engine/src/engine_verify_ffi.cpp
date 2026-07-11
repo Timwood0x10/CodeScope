@@ -27,6 +27,7 @@
 #include "verify/claim_parser.h"
 #include "verify/contract_verifier.h"
 #include "verify/registry.h"
+#include "verify/dead_code_inspector.h"
 
 // ─── Local Helpers ──────────────────────────────────────────────
 
@@ -371,6 +372,22 @@ extern "C" char *engine_verify_integrity(uint64_t project_id)
 	}
 
 	json << "],\"total\":" << (supported + contradicted + unknown);
+
+	// DeadCodeInspector: find orphan modules and functions
+	{
+		verify::DeadCodeInspector dci(g_store.get(), project_id);
+		auto findings = dci.inspect();
+		for (auto &f : findings) {
+			contradicted++;
+			if (!first)
+				json << ",";
+			first = false;
+			json << "{\"type\":\"DeadCodeInspector\","
+			     << "\"rule\":\"" << jsonEscape(f.type) << "\","
+			     << "\"description\":\"" << jsonEscape(f.description) << "\","
+			     << "\"confidence\":" << f.confidence << "}";
+		}
+	}
 
 	// Trust score: 1.0 - kTrustScorePenalty per non-supported finding, clamped to [0, 1].
 	double trust_score = 1.0;

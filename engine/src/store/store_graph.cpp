@@ -238,16 +238,127 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	}
 
 	// Phase 1.2: populate import table from semantic_records Import
+	// Parse raw import text to extract individual import paths.
 	{
-		std::string imp_sql =
-			"INSERT OR IGNORE INTO import "
-			"(project_id, source_scope_id, target_path, alias, is_pub) "
-			"SELECT sr.project_id, 0, sr.name, sr.name, 0 "
-			"FROM semantic_records sr "
-			"WHERE sr.project_id=" +
-			std::to_string(project_id) +
-			" AND sr.kind=11 AND sr.name != ''";
-		exec(imp_sql.c_str());
+		const char *fetch_sql =
+			"SELECT sr.name, sr.project_id, sr.file_path FROM semantic_records sr "
+			"WHERE sr.project_id=? AND sr.kind=11 AND sr.name != ''";
+		sqlite3_stmt *fetch_st = nullptr;
+		if (sqlite3_prepare_v2(db_, fetch_sql, -1, &fetch_st,
+				       nullptr) == SQLITE_OK) {
+			sqlite3_bind_int64(fetch_st, 1,
+					   static_cast<int64_t>(project_id));
+
+			const char *ins_sql =
+				"INSERT OR IGNORE INTO import "
+				"(project_id, source_scope_id, target_path, alias, file_path, is_pub) "
+				"VALUES (?,0,?,?,?,0)";
+			sqlite3_stmt *ins_st = nullptr;
+			sqlite3_prepare_v2(db_, ins_sql, -1, &ins_st, nullptr);
+
+			while (sqlite3_step(fetch_st) == SQLITE_ROW) {
+				const char *raw = reinterpret_cast<const char *>(
+					sqlite3_column_text(fetch_st, 0));
+				if (!raw)
+					continue;
+				std::string text(raw);
+
+				// Extract individual paths from import text.
+				// Handle formats:
+				//   Rust: "use crate::mod::func;"
+				//   Go: "import ( \"path\" )"  or  "import \"path\""
+				//   Python: "import module" or "from module import func"
+				//   C++: "#include \"header\""
+				//   JS: "import { x } from 'module'"
+				// Find all quoted strings and path-like tokens.
+				// Simple approach: find all strings between quotes
+				// or after "use"/"import" keywords.
+				std::vector<std::string> paths;
+				size_t pos = 0;
+				// Look for quoted strings: "path" or 'path'
+				while ((pos = text.find_first_of("\"'", pos)) !=
+				       std::string::npos) {
+					char q = text[pos];
+					size_t end = text.find(q, pos + 1);
+					if (end == std::string::npos)
+						break;
+					std::string p = text.substr(pos + 1,
+								  end - pos - 1);
+					// Skip empty and system paths
+					if (!p.empty() && p.find('.') != std::string::npos)
+						paths.push_back(p);
+					pos = end + 1;
+				}
+				// Also look for Rust-style use paths without quotes
+				// e.g. "use crate::module::func"
+				size_t use_pos = 0;
+				while ((use_pos = text.find("use ", use_pos)) !=
+				       std::string::npos) {
+					size_t semi = text.find(';', use_pos);
+					if (semi == std::string::npos)
+						break;
+					std::string p = text.substr(
+						use_pos + 4,
+						semi - use_pos - 4);
+					// Trim whitespace
+					p.erase(0, p.find_first_not_of(" \t"));
+					p.erase(p.find_last_not_of(" \t") + 1);
+					if (!p.empty() && p.find("::") != std::string::npos)
+						paths.push_back(p);
+					use_pos = semi + 1;
+				}
+				// Also look for Python-style "from X import Y"
+				size_t from_pos = 0;
+				while ((from_pos = text.find("from ", from_pos)) !=
+				       std::string::npos) {
+					size_t imp = text.find(" import ", from_pos);
+					if (imp == std::string::npos)
+						break;
+					std::string p = text.substr(
+						from_pos + 5,
+						imp - from_pos - 5);
+					p.erase(0, p.find_first_not_of(" \t"));
+					p.erase(p.find_last_not_of(" \t") + 1);
+					if (!p.empty())
+						paths.push_back(p);
+					from_pos = imp + 8;
+				}
+
+				// Insert each extracted path
+				for (auto &p : paths) {
+					if (ins_st) {
+						sqlite3_bind_int64(
+							ins_st, 1,
+							static_cast<int64_t>(
+								project_id));
+						sqlite3_bind_text(ins_st, 2,
+								  p.c_str(), -1,
+								  SQLITE_STATIC);
+						// Set alias to last segment
+						std::string alias;
+						size_t last_sep = p.rfind('/');
+						if (last_sep == std::string::npos)
+							last_sep = p.rfind("::");
+						if (last_sep != std::string::npos)
+							alias = p.substr(last_sep + 1);
+						else
+							alias = p;
+						sqlite3_bind_text(ins_st, 3, alias.c_str(), -1, SQLITE_STATIC);
+						// Bind file_path
+						const char *fp_c = reinterpret_cast<const char *>(sqlite3_column_text(fetch_st, 2));
+						std::string fp_str = fp_c ? fp_c : "";
+						sqlite3_bind_text(ins_st, 4, fp_str.c_str(), -1, SQLITE_STATIC);
+						// Bind is_pub
+						sqlite3_bind_int(ins_st, 5, 0);
+						sqlite3_step(ins_st);
+						sqlite3_reset(ins_st);
+					}
+				}
+			}
+			sqlite3_finalize(fetch_st);
+			if (ins_st)
+				sqlite3_finalize(ins_st);
+		}
 	}
 
 	// Phase 1.2: populate scope table from entity file paths.

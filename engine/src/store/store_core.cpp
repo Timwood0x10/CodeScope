@@ -516,6 +516,7 @@ bool GraphStore::createSchema()
             source_scope_id INTEGER NOT NULL, -- scope.id where import appears
             target_path TEXT NOT NULL,         -- full path, e.g. "crate::mod::func"
             alias TEXT DEFAULT '',             -- local alias, e.g. "verify"
+            file_path TEXT DEFAULT '',         -- source file path
             is_pub INTEGER DEFAULT 0,          -- 1 if pub use / pub import
             FOREIGN KEY (project_id) REFERENCES projects(id)
         );
