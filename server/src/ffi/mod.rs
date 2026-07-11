@@ -35,6 +35,14 @@ unsafe extern "C" {
     fn engine_verify_integrity(project_id: u64) -> *mut c_char;
     fn engine_explain_symbol(project_id: u64, symbol_name: *const c_char) -> *mut c_char;
 
+    // ── Knowledge + Evidence Layer (v0.3) ───────────────────────────
+    // All three return a heap-allocated JSON string that the caller MUST
+    // release via engine_free_string(). See engine_verify_ffi.cpp for the
+    // C++ implementation and output shape documentation.
+    fn engine_verify_claim(project_id: u64, claim_json: *const c_char) -> *mut c_char;
+    fn engine_verify_summary(project_id: u64, text: *const c_char) -> *mut c_char;
+    fn engine_explain_module(project_id: u64, module_name: *const c_char) -> *mut c_char;
+
     fn engine_build_fts(project_id: u64) -> *mut c_char;
 
     // ── Phase A: Fast Scan ────────────────────────────────────────
@@ -157,6 +165,44 @@ pub fn verify_integrity(project_id: u64) -> String {
 
 pub fn explain_symbol(project_id: u64, symbol_name: &str) -> String {
     take_string(unsafe { engine_explain_symbol(project_id, cstr(symbol_name).as_ptr()) })
+}
+
+// ── Knowledge + Evidence Layer (v0.3) ───────────────────────────
+//
+// Safe wrappers around the claim-driven verification FFI. Each function
+// returns a JSON string whose shape is documented in engine_verify_ffi.cpp.
+// On failure the JSON contains an "error" field with a tagged message.
+
+/// Verify a single claim expressed as a JSON object.
+///
+/// `claim_json` shape:
+/// ```json
+/// {"type":"capability_exists","subject":"X","predicate":"implemented_by",
+///  "object":"Y","scope":"repository","source_kind":"manual","source_ref":"..."}
+/// ```
+/// Returns JSON with `claim_id`, `verdict`, `confidence`, `verifier`,
+/// `detail`, and `evidence_facts` fields.
+pub fn verify_claim(project_id: u64, claim_json: &str) -> String {
+    take_string(unsafe { engine_verify_claim(project_id, cstr(claim_json).as_ptr()) })
+}
+
+/// Parse a natural-language summary into claims and verify each one.
+///
+/// `text` is free-form prose (README excerpt, AI summary, PR description).
+/// Returns JSON with aggregated `verdicts`, `trust_score`, and a `claims`
+/// array describing each parsed claim + its verdict.
+pub fn verify_summary(project_id: u64, text: &str) -> String {
+    take_string(unsafe { engine_verify_summary(project_id, cstr(text).as_ptr()) })
+}
+
+/// Build a Knowledge Card for a named module.
+///
+/// `module_name` is a module/directory name (e.g. "engine", "server").
+/// Returns JSON with `module`, `entities`, `capabilities`, `contracts`,
+/// `findings`, and `integrity_score` fields. Falls back to deriving module
+/// info from the `files` table when the `modules` table is empty.
+pub fn explain_module(project_id: u64, module_name: &str) -> String {
+    take_string(unsafe { engine_explain_module(project_id, cstr(module_name).as_ptr()) })
 }
 
 // ── Phase A: Fast Scan ────────────────────────────────────────

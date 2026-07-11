@@ -18,6 +18,15 @@ namespace ir
 struct Record;
 } // namespace ir
 
+// Forward declarations for the Knowledge/Evidence types defined in
+// verify/claim.h. Kept as forward decls to avoid pulling claim.h into
+// every store consumer; the implementations live in store_knowledge.cpp.
+namespace verify
+{
+struct Claim;
+enum class Verdict : uint8_t;
+} // namespace verify
+
 namespace store
 {
 
@@ -471,6 +480,58 @@ class GraphStore {
 	 */
 	std::string importArtifact(uint64_t project_id,
 				   const char *artifact_path);
+
+	// ── Knowledge + Evidence Layer (v0.3) ───────────────────────
+	// Persistence for capability/contract/claim/evidence/finding.
+	// Implemented in store_knowledge.cpp. Inserts use the prepared
+	// statement cache (see getCachedStmt) and SQLITE_STATIC for strings.
+
+	/** Insert a capability row. Returns true on success. */
+	bool insertCapability(uint64_t project_id, const std::string &name,
+			      const std::string &summary,
+			      const std::string &source_kind,
+			      const std::string &source_ref);
+
+	/** Insert a contract row. Returns true on success. */
+	bool insertContract(uint64_t project_id, const std::string &name,
+			    const std::string &origin,
+			    const std::string &claim_text,
+			    const std::string &source_file, int source_line);
+
+	/** Insert a claim row derived from a verify::Claim.
+	 *  @return new claim id, or -1 on error. */
+	int64_t insertClaim(uint64_t project_id, const verify::Claim &claim);
+
+	/** Insert an evidence row for a claim.
+	 *  @return new evidence id, or -1 on error. */
+	int64_t insertEvidence(int64_t claim_id, verify::Verdict verdict,
+			       double confidence,
+			       const std::string &verifier_name,
+			       const std::string &detail);
+
+	/** Link an evidence row to a fact (entity/relation/document). */
+	bool insertEvidenceFact(int64_t evidence_id, int fact_kind,
+				int64_t fact_ref, const std::string &detail);
+
+	/** Insert a finding row. claim_id may be 0 for manual findings.
+	 *  @return new finding id, or -1 on error. */
+	int64_t insertFinding(uint64_t project_id, const std::string &rule,
+			      int severity, int64_t claim_id,
+			      const std::string &description,
+			      double confidence);
+
+	/** Delete all knowledge/evidence rows for a project.
+	 *  Deletes in FK order: evidence_fact -> evidence -> finding ->
+	 *  claim -> contract -> capability. Returns true on success. */
+	bool clearProjectKnowledge(uint64_t project_id);
+
+	/** List (id, name) pairs of capabilities for a project. */
+	std::vector<std::pair<int64_t, std::string> >
+	listCapabilities(uint64_t project_id);
+
+	/** List (id, name) pairs of contracts for a project. */
+	std::vector<std::pair<int64_t, std::string> >
+	listContracts(uint64_t project_id);
 
     private:
 	sqlite3 *db_ = nullptr;

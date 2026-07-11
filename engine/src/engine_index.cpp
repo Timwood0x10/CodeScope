@@ -24,6 +24,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "knowledge/builder.h"
 #include "linker/linker.h"
 #include "ir/translators/js_visitor.h"
 
@@ -203,9 +204,12 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 
 	// Compute and persist complexity for functions/methods
 	{
-		// ComplexityAnalyzer removed
+		// ComplexityAnalyzer was removed; complexity is recorded as 0
+		// for all function/method nodes. The ir_node_map lookup is kept
+		// so future reintroduction of a complexity analyzer can plug in
+		// without re-adding the ir_node_id -> Node* index.
 
-		// Pre-build ir_node_id → ir::Node* map to avoid O(nodes × graph_nodes) scan
+		// Pre-build ir_node_id -> ir::Node* map to avoid O(nodes x graph_nodes) scan
 		std::unordered_map<uint64_t, ir::Node *> ir_node_map;
 		ir_node_map.reserve(unit->all_nodes.size());
 		for (auto *ir_node : unit->all_nodes) {
@@ -217,7 +221,6 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 			    gn.type == graph::NodeType::Method) {
 				auto it = ir_node_map.find(gn.ir_node_id);
 				if (it != ir_node_map.end()) {
-					// ComplexityAnalyzer removedit->second);
 					g_store->setComplexity(
 						project_id, gn.id, 0, 0, 0, 0);
 				}
@@ -1074,6 +1077,20 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	g_store->setProjectReadiness(project_id, "normal_ready", 1);
 	if (!mode_fast)
 		g_store->setProjectReadiness(project_id, "fts_ready", 1);
+
+	// ── Step 6: Knowledge Layer ──
+	// Build capability + contract tables from README / entity / comments.
+	// This is supplementary — failures are logged but do NOT fail the
+	// index, since the knowledge layer is not required for graph queries.
+	{
+		knowledge::KnowledgeBuilder kb(g_store.get(), project_id);
+		if (!kb.build()) {
+			fprintf(stderr,
+				"engine_index: knowledge build had errors "
+				"(non-fatal) "
+				"[module=engine, method=engine_index_project]\n");
+		}
+	}
 
 	// ── Result JSON ──────────────────────────────────────────────
 	std::ostringstream result;

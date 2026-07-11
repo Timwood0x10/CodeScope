@@ -197,3 +197,93 @@ code_fts / file_scan_state / adjacency / adjacency_rev / entity / relation
 | 表数量 | 11 |
 | MCP 工具 | 19 |
 | 测试通过率 | 100% |
+
+---
+
+## Phase 4: v0.3 Knowledge + Evidence Layer ✅ 已完成
+
+> 基于 `next_step.md` 的 Facts → Knowledge → Evidence 三层架构设计
+> 核心转型：从 Code Search 转为 Evidence-driven Repository Verification Engine
+
+### 4.1 新增数据库表（6 个）
+
+```
+capability    — 项目能力声明（来自 README 扫描）
+contract      — 项目契约声明（thread-safe, memory-safe, TODO 等）
+claim         — 统一中间表示（Claim IR）
+evidence      — 验证结果（Verdict + confidence）
+evidence_fact — Evidence → Fact 关联（traceability）
+finding       — Integrity 检查发现（DeadCapability, BrokenContract 等）
+```
+
+总表数：11 + 6 = **17 个**
+
+### 4.2 新增 MCP 工具（3 个）
+
+| 工具 | 功能 |
+|------|------|
+| `verify_claim` | 验证单个 Claim（JSON 输入），返回 Verdict + Evidence |
+| `verify_summary` | 解析自然语言摘要为 Claims，批量验证 |
+| `explain_module` | 返回模块的 Knowledge Card（能力 + 契约 + 入口函数） |
+
+总 MCP 工具数：19 + 3 = **22 个**
+
+### 4.3 核心组件
+
+| 组件 | 文件 | 功能 |
+|------|------|------|
+| **Claim IR** | `verify/claim.h` | ClaimType (4), Verdict (3), Claim, EvidenceRecord |
+| **Verifier 接口** | `verify/verifier.h` | accepts() + verify(Claim) → EvidenceRecord |
+| **VerifierRegistry** | `verify/registry.h/.cpp` | Meyers 单例，dispatch Claim 到 Verifier |
+| **CapabilityVerifier** | `verify/capability_verifier.h/.cpp` | 能力存在性验证（声明 + 实体 + 调用者三链验证） |
+| **ContractVerifier** | `verify/contract_verifier.h/.cpp` | 契约持有验证（声明 + 实体匹配） |
+| **ArchitectureVerifier** | `verify/architecture_verifier.h/.cpp` | 架构验证（骨架，返回 Unknown） |
+| **ClaimParser** | `verify/claim_parser.h/.cpp` | 7 种正则模式从自然语言提取 Claims |
+| **KnowledgeBuilder** | `knowledge/builder.h/.cpp` | 5 步构建：README 能力/契约扫描、入口函数、TODO/FIXME |
+| **Store CRUD** | `store/store_knowledge.cpp` | 6 新表的增删查改 |
+| **FFI** | `engine_verify_ffi.cpp` | 3 个 FFI 函数 + 重构 engine_verify_integrity |
+| **Rust FFI** | `server/src/ffi/mod.rs` | 3 个 FFI 声明 |
+| **MCP Handlers** | `server/src/tools/mod.rs` | 3 个 handler + Tool 定义 |
+
+### 4.4 ClaimParser 模式
+
+```
+1. "supports <subject>"     → CapabilityExists(supported_by)
+2. "implements <subject>"    → CapabilityExists(implemented_by)
+3. "thread-safe"            → ContractHolds(ThreadSafe)
+4. "memory-safe"            → ContractHolds(MemorySafe)
+5. "zero-copy"              → ContractHolds(ZeroCopy)
+6. "lock-free"              → ContractHolds(LockFree)
+7. "A -> B -> C" (whitelist)→ ArchitectureFollows
+```
+
+Subject 自动转 PascalCase 以匹配 KnowledgeBuilder 命名规范。
+
+### 4.5 验证流水线
+
+```
+Claim → ClaimParser → VerifierRegistry.match() → Verifier.verify()
+                                                    ↓
+                                              EvidenceRecord
+                                              (Verdict + facts)
+                                                    ↓
+                                              evidence + evidence_fact 表
+```
+
+### 4.6 测试覆盖
+
+| 测试文件 | 测试数 | 覆盖范围 |
+|---------|--------|---------|
+| `test_knowledge_builder.cpp` | 1 suite | README 扫描、入口函数、TODO、幂等性 |
+| `test_claim_parser.cpp` | 1 suite | 7 种正则模式 |
+| `test_verifier_registry.cpp` | 1 suite | 注册、匹配、分发 |
+| `test_knowledge_ffi.rs` | 8 tests | FFI 边界 + MCP 工具 |
+
+### 4.7 已知限制（v0.4 计划）
+
+| 限制 | 原因 | v0.4 计划 |
+|------|------|-----------|
+| entity/relation 表在生产中为空 | buildGraph 批量 SQL 绕过双写 | 修复双写或移除 entity/relation |
+| ArchitectureVerifier 返回 Unknown | 需要 architecture_edge 表 | 实现架构检测 |
+| 无 Test Verifier | 需要测试覆盖度分析 | 添加 test_verifier |
+| 无 Workflow 表 | 需要 workflow_step 数据模型 | 添加 workflow 模块 |

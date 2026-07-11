@@ -388,6 +388,94 @@ bool GraphStore::createSchema()
             src_blob BLOB                  -- packed u32[] of caller node IDs
         );
 
+        -- ============================================================
+        -- v0.3: Knowledge + Evidence Layer
+        -- capability/contract = Knowledge, claim/evidence/evidence_fact/
+        -- finding = Evidence. All tables use CREATE TABLE IF NOT EXISTS so
+        -- no migration is needed for pre-existing databases.
+        -- ============================================================
+
+        -- capability: a feature the project claims to provide.
+        CREATE TABLE IF NOT EXISTS capability (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            summary TEXT DEFAULT '',
+            source_kind TEXT NOT NULL,      -- 'readme' / 'doc' / 'heuristic'
+            source_ref TEXT DEFAULT '',     -- file path or rule name
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (project_id) REFERENCES projects(id)
+        );
+
+        -- contract: an architectural / quality promise (e.g. "ThreadSafe").
+        CREATE TABLE IF NOT EXISTS contract (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            origin TEXT NOT NULL,           -- 'readme' / 'comment' / 'architecture'
+            claim_text TEXT DEFAULT '',
+            source_file TEXT DEFAULT '',
+            source_line INTEGER DEFAULT 0,
+            FOREIGN KEY (project_id) REFERENCES projects(id)
+        );
+
+        -- claim: the unified intermediate representation fed to verifiers.
+        CREATE TABLE IF NOT EXISTS claim (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            claim_type INTEGER NOT NULL,    -- verify::ClaimType enum value
+            subject TEXT NOT NULL,
+            predicate TEXT NOT NULL,
+            object TEXT DEFAULT '',
+            scope TEXT DEFAULT 'repository',
+            source_kind TEXT NOT NULL,     -- 'readme' / 'ai_summary' / 'pr' / 'manual'
+            source_ref TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (project_id) REFERENCES projects(id)
+        );
+
+        -- evidence: outcome of a verifier run on a single claim.
+        CREATE TABLE IF NOT EXISTS evidence (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            claim_id INTEGER NOT NULL,
+            verdict INTEGER NOT NULL,      -- 0=SUPPORTED, 1=CONTRADICTED, 2=UNKNOWN
+            confidence REAL NOT NULL,      -- 0.0 - 1.0
+            verifier_name TEXT NOT NULL,
+            detail TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (claim_id) REFERENCES claim(id)
+        );
+
+        -- evidence_fact: links evidence back to entity/relation rows.
+        CREATE TABLE IF NOT EXISTS evidence_fact (
+            evidence_id INTEGER NOT NULL,
+            fact_kind INTEGER NOT NULL,    -- 0=entity, 1=relation, 2=document
+            fact_ref INTEGER NOT NULL,     -- entity.id / relation.id / doc rowid
+            detail TEXT DEFAULT '',
+            PRIMARY KEY (evidence_id, fact_kind, fact_ref),
+            FOREIGN KEY (evidence_id) REFERENCES evidence(id)
+        );
+
+        -- finding: a human-facing issue derived from evidence (may be manual).
+        CREATE TABLE IF NOT EXISTS finding (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            rule TEXT NOT NULL,            -- e.g. "DeadCapability"
+            severity INTEGER NOT NULL DEFAULT 1, -- 0=info, 1=warning, 2=error
+            claim_id INTEGER,             -- nullable: manual findings need no claim
+            description TEXT NOT NULL,
+            confidence REAL DEFAULT 0.0,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (project_id) REFERENCES projects(id),
+            FOREIGN KEY (claim_id) REFERENCES claim(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_capability_project ON capability(project_id, name);
+        CREATE INDEX IF NOT EXISTS idx_contract_project ON contract(project_id, name);
+        CREATE INDEX IF NOT EXISTS idx_claim_project ON claim(project_id, claim_type);
+        CREATE INDEX IF NOT EXISTS idx_evidence_claim ON evidence(claim_id);
+        CREATE INDEX IF NOT EXISTS idx_finding_project ON finding(project_id, rule);
+
         )SQL";
 
 	// Execute main schema

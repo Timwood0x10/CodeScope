@@ -793,7 +793,7 @@ std::string QueryEngine::getGraphStats(uint64_t project_id)
 // ── Knowledge Navigation (Phase 2.2) ───────────────────────
 
 std::string QueryEngine::explainSymbol(uint64_t project_id,
-					const char *symbol_name)
+				       const char *symbol_name)
 {
 	if (!symbol_name || !*symbol_name)
 		return "{\"error\":\"empty symbol name\"}";

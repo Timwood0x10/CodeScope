@@ -1,5 +1,6 @@
 #include "engine_internal.h"
 #include "platform_win.h"
+#include "verify/registry.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -67,6 +68,12 @@ void engine_shutdown()
 	//   destruct:    g_parser → g_query → g_store
 	// This guarantees that g_query's destructor (which may issue SQLite calls)
 	// runs while g_store is still alive, and g_store is closed last.
+
+	// Clear the verifier registry BEFORE g_store is torn down: every
+	// registered Verifier holds a raw pointer to g_store, so dropping
+	// them first avoids any dangling-pointer access during store close.
+	verify::VerifierRegistry::instance().clear();
+
 	g_parser.reset(); // independent, safe to drop first
 	g_query.reset(); // may do SQLite work via g_store, destruct BEFORE store closes
 	if (g_store) {
@@ -81,7 +88,22 @@ uint64_t engine_create_project(const char *root_path, const char *name)
 {
 	if (!g_store)
 		return 0;
-	return g_store->createProject(root_path, name);
+	uint64_t pid = g_store->createProject(root_path, name);
+	if (pid == 0)
+		return 0;
+
+	// Register the default verifier set for this project. The registry
+	// is a process-wide singleton bound to (store, project_id) at
+	// construction; clear() first so verifiers from a previous project
+	// (e.g. a re-index creating a fresh project row) are not left behind
+	// to receive dispatched claims for the wrong project. For genuine
+	// multi-project workflows this is a known v0.3 limitation — a
+	// future revision should key the registry by project_id.
+	verify::VerifierRegistry::instance().clear();
+	verify::VerifierRegistry::instance().register_default_verifiers(
+		g_store.get(), pid);
+
+	return pid;
 }
 
 uint64_t engine_get_latest_project_id()

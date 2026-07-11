@@ -258,6 +258,41 @@ fn h_explain_symbol(project_id: u64, args: &Value) -> String {
     ffi::explain_symbol(project_id, name)
 }
 
+// ── Knowledge + Evidence Layer (v0.3) ───────────────────────────
+
+/// Verify a single claim (JSON in, JSON out).
+/// The claim JSON carries type/subject/predicate/object/scope fields
+/// consumed by the C++ VerifierRegistry.
+fn h_verify_claim(project_id: u64, args: &Value) -> String {
+    let claim_json = args["claim"].as_str().unwrap_or("");
+    if claim_json.is_empty() {
+        return json!({"error": "claim field is required [module=mcp, tool=verify_claim]"})
+            .to_string();
+    }
+    ffi::verify_claim(project_id, claim_json)
+}
+
+/// Parse a natural-language summary into claims and verify each one.
+/// `text` is free-form prose (README excerpt, AI summary, PR description).
+fn h_verify_summary(project_id: u64, args: &Value) -> String {
+    let text = args["text"].as_str().unwrap_or("");
+    if text.is_empty() {
+        return json!({"error": "text field is required [module=mcp, tool=verify_summary]"})
+            .to_string();
+    }
+    ffi::verify_summary(project_id, text)
+}
+
+/// Build a Knowledge Card for a named module/directory.
+fn h_explain_module(project_id: u64, args: &Value) -> String {
+    let name = args["module_name"].as_str().unwrap_or("");
+    if name.is_empty() {
+        return json!({"error": "module_name field is required [module=mcp, tool=explain_module]"})
+            .to_string();
+    }
+    ffi::explain_module(project_id, name)
+}
+
 fn h_trace_flow(project_id: u64, args: &Value) -> String {
     let name = args["function_name"].as_str().unwrap_or("");
     let depth = args["depth"].as_i64().unwrap_or(3) as i32;
@@ -368,6 +403,10 @@ static TOOL_HANDLERS: Lazy<HashMap<&'static str, ToolHandler>> = Lazy::new(|| {
     m.insert("detect_changes", h_detect_changes as ToolHandler);
     m.insert("verify_integrity", h_verify_integrity as ToolHandler);
     m.insert("explain_symbol", h_explain_symbol as ToolHandler);
+    // Knowledge + Evidence Layer (v0.3)
+    m.insert("verify_claim", h_verify_claim as ToolHandler);
+    m.insert("verify_summary", h_verify_summary as ToolHandler);
+    m.insert("explain_module", h_explain_module as ToolHandler);
     m.insert("trace_flow", h_trace_flow as ToolHandler);
     // Fast scan
     m.insert("find_symbol", h_find_symbol as ToolHandler);
@@ -482,6 +521,48 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
             input_schema: json!({ "type": "object", "properties": {} }),
         },
         Tool {
+            name: "verify_claim".into(),
+            description: "Verify a single claim against the codebase. Dispatches the claim to the appropriate verifier (CapabilityVerifier, ContractVerifier, or ArchitectureVerifier) via the VerifierRegistry, persists the claim + evidence, and returns the verdict with confidence and evidence facts.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "claim": {
+                        "type": "string",
+                        "description": "JSON object describing the claim. Fields: type (capability_exists|contract_holds|architecture_follows|function_implements), subject, predicate, object, scope, source_kind, source_ref"
+                    }
+                },
+                "required": ["claim"]
+            }),
+        },
+        Tool {
+            name: "verify_summary".into(),
+            description: "Parse a natural-language summary (README excerpt, AI summary, PR description) into structured claims using the ClaimParser, then verify each claim. Returns aggregated verdicts and a trust_score. Useful for checking whether prose claims about the codebase are actually backed by code evidence.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "Free-form text to parse + verify (e.g. 'CodeScope supports incremental indexing and is thread-safe')"
+                    }
+                },
+                "required": ["text"]
+            }),
+        },
+        Tool {
+            name: "explain_module".into(),
+            description: "Build a Knowledge Card for a named module/directory. Returns module info, entities, capabilities, contracts, findings, and an integrity_score. Falls back to deriving module info from the files table by path prefix when the modules table is empty.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "module_name": {
+                        "type": "string",
+                        "description": "Name of the module/directory (e.g. 'engine', 'server')"
+                    }
+                },
+                "required": ["module_name"]
+            }),
+        },
+        Tool {
             name: "detect_changes".into(),
             description: "Analyze the impact of code changes across the call graph. Given a list of modified files, returns directly modified functions, their callers (who calls them), and their callees (who they call).".into(),
             input_schema: json!({
@@ -588,9 +669,7 @@ pub fn execute(project_id: u64, tool_name: &str, args: &Value) -> String {
         None => return json!({"error": "Unknown tool"}).to_string(),
     };
 
-    let result = handler(project_id, args);
-
-    result
+    handler(project_id, args)
 }
 
 // ─── Tests ──────────────────────────────────────────────────────

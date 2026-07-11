@@ -266,57 +266,16 @@ char *engine_get_hotspots(uint64_t project_id, int top_n)
 
 // ─── Code Understanding ────────────────────────────────────
 
-#include "verify/capability_verifier.h"
-
-extern "C" char *engine_verify_integrity(uint64_t project_id)
-{
-	if (!g_store)
-		return dupString("{\"error\":\"not initialized\"}");
-
-	verify::CapabilityVerifier cv(g_store.get(), project_id);
-	auto findings = cv.verify();
-
-	std::string json = "{\"findings\":[";
-	bool first = true;
-	for (auto &f : findings) {
-		if (!first)
-			json += ",";
-		first = false;
-		json += "{\"type\":\"" + f.type + "\",";
-		json += "\"description\":\"" + f.description + "\",";
-		json += "\"confidence\":" + std::to_string(f.confidence);
-		json += ",\"evidence\":[";
-		bool efirst = true;
-		for (auto &e : f.evidence) {
-			if (!efirst)
-				json += ",";
-			efirst = false;
-			json += "{\"entity\":\"" + e.entity_name + "\",";
-			json += "\"file\":\"" + e.file_path + "\",";
-			json += "\"line\":" + std::to_string(e.line) + "}";
-		}
-		json += "]}";
-	}
-	json += "],\"total\":" + std::to_string(findings.size()) + ",";
-
-	// Calculate trust score: start at 1.0, deduct for each finding
-	double trust_score = 1.0;
-	for (auto &f : findings)
-		trust_score -= f.confidence * 0.1;
-	if (trust_score < 0.0)
-		trust_score = 0.0;
-
-	json += "\"trust_score\":" + std::to_string(trust_score) + "}";
-	return dupString(json);
-}
+// engine_verify_integrity + engine_verify_claim + engine_verify_summary +
+// engine_explain_module live in engine_verify_ffi.cpp (split out to keep
+// this file under the 1000-line limit; see code_rules.md §1).
 
 extern "C" char *engine_explain_symbol(uint64_t project_id,
 				       const char *symbol_name)
 {
 	if (!g_query)
 		return dupString("{\"error\":\"not initialized\"}");
-	return dupString(
-		g_query->explainSymbol(project_id, symbol_name));
+	return dupString(g_query->explainSymbol(project_id, symbol_name));
 }
 
 char *engine_get_module_map(uint64_t project_id)

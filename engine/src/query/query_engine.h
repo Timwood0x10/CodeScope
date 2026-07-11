@@ -68,20 +68,20 @@ class QueryEngine {
 
 	// ── Change Impact Analysis ─────────────────────────────────
 
-	  // Analyze the impact of changes to given files. Returns JSON with
-	  // directly modified functions, their callers, and their callees.
-	  std::string detectChanges(uint64_t project_id,
-	       const char *modified_files_json);
+	// Analyze the impact of changes to given files. Returns JSON with
+	// directly modified functions, their callers, and their callees.
+	std::string detectChanges(uint64_t project_id,
+				  const char *modified_files_json);
 
-	  // ── Knowledge Navigation (Phase 2.2) ─────────────────────
+	// ── Knowledge Navigation (Phase 2.2) ─────────────────────
 
-	  /**
+	/**
 	   * Explain a symbol: returns structured information about what the symbol
 	   * does, where it's defined, who calls it, who it calls, and dependencies.
 	   *
 	   * Combines findDefinition, getCallers, getCallees into one response.
 	   */
-	  std::string explainSymbol(uint64_t project_id, const char *symbol_name);
+	std::string explainSymbol(uint64_t project_id, const char *symbol_name);
 
 	// ── Community Detection ────────────────────────────────────
 

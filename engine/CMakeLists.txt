@@ -149,6 +149,7 @@ set(ENGINE_SOURCES
     src/engine_scanner.cpp
     src/engine_queries.cpp
     src/engine_ffi.cpp
+    src/engine_verify_ffi.cpp
     src/parser/parser.cpp
     src/ir/ir.cpp
     src/ir/ir_visitor.cpp
@@ -185,6 +186,7 @@ set(ENGINE_SOURCES
     src/store/store_query.cpp
     src/store/store_project.cpp
     src/store/store_intern.cpp
+    src/store/store_knowledge.cpp
     src/query/query_engine.cpp
     src/query/query_analysis.cpp
     src/query/graph_query.cpp
@@ -192,14 +194,20 @@ set(ENGINE_SOURCES
          src/lsp/lsp_client.cpp
     src/resolver/resolver.cpp
     src/resolver/project_index.cpp
-    src/resolver/project_resolver.cpp
-	    src/verify/capability_verifier.cpp
-    src/resolver/resolve_cache.cpp
-    src/linker/linker.cpp
-    src/filter_policy.cpp
-    src/platform_win.cpp
-    ${SQLITE3_AMAL_SRC}
-    ${TREE_SITTER_SOURCES}
+	    src/resolver/project_resolver.cpp
+		    src/verify/capability_verifier.cpp
+	    src/verify/contract_verifier.cpp
+	    src/verify/architecture_verifier.cpp
+	    src/verify/claim_parser.cpp
+	    src/verify/claim.cpp
+	    src/verify/registry.cpp
+	    src/knowledge/builder.cpp
+	    src/resolver/resolve_cache.cpp
+	    src/linker/linker.cpp
+	    src/filter_policy.cpp
+	    src/platform_win.cpp
+	    ${SQLITE3_AMAL_SRC}
+	    ${TREE_SITTER_SOURCES}
 )
 
 # Add sqlite-vec.c if available
