@@ -257,6 +257,36 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		std::to_string(project_id);
 	exec(rel_sql.c_str());
 
+	// Phase 1.2: populate reference table from semantic_records CallExpr
+	// Uses _r2n mapping to resolve parent_id → caller_id before _r2n is dropped.
+	{
+		std::string ref_sql =
+			"INSERT OR IGNORE INTO reference "
+			"(project_id, caller_id, name, arity, start_row, start_col) "
+			"SELECT sr.project_id, r2n.node_id, sr.name, sr.arity, "
+			" sr.start_row, sr.start_col "
+			"FROM semantic_records sr "
+			"JOIN _r2n r2n ON sr.parent_id = r2n.original_id "
+			" AND sr.file_path = r2n.file_path "
+			"WHERE sr.project_id=" +
+			std::to_string(project_id) +
+			" AND sr.kind=9 AND sr.name != ''";
+		exec(ref_sql.c_str());
+	}
+
+	// Phase 1.2: populate import table from semantic_records Import
+	{
+		std::string imp_sql =
+			"INSERT OR IGNORE INTO import "
+			"(project_id, source_scope_id, target_path, alias, is_pub) "
+			"SELECT sr.project_id, 0, sr.name, sr.name, 0 "
+			"FROM semantic_records sr "
+			"WHERE sr.project_id=" +
+			std::to_string(project_id) +
+			" AND sr.kind=11 AND sr.name != ''";
+		exec(imp_sql.c_str());
+	}
+
 	// Phase timing breakdown
 	auto t_end = Clock::now();
 	auto ms = [](auto start, auto end) {

@@ -487,6 +487,21 @@ class GraphStore {
 	// statement cache (see getCachedStmt) and SQLITE_STATIC for strings.
 
 	/** Insert a document row. Returns true on success. */
+	int64_t insertReference(uint64_t project_id, uint64_t caller_id,
+				const std::string &name, int64_t scope_id,
+				int arity, int start_row, int start_col);
+	int64_t insertScope(uint64_t project_id, int64_t parent_id, int kind,
+			    const std::string &name, int start_row,
+			    int end_row);
+	int64_t insertImport(uint64_t project_id, int64_t source_scope_id,
+			     const std::string &target_path,
+			     const std::string &alias, int is_pub);
+
+	bool insertResolvedReference(uint64_t reference_id, uint64_t symbol_id,
+				     double confidence,
+				     const std::string &resolver,
+				     const std::string &reason);
+
 	bool insertDocument(uint64_t project_id, int type,
 			    const std::string &file_path,
 			    const std::string &content, int start_line,

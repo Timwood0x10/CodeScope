@@ -414,4 +414,108 @@ bool GraphStore::insertArchitectureEdge(uint64_t project_id,
 	return true;
 }
 
+// ── reference ────────────────────────────────────────────────────
+
+int64_t GraphStore::insertReference(uint64_t project_id, uint64_t caller_id,
+				    const std::string &name, int64_t scope_id,
+				    int arity, int start_row, int start_col)
+{
+	const char *sql = "INSERT INTO reference "
+			  "(project_id, caller_id, name, scope_id, arity, "
+			  " start_row, start_col) "
+			  "VALUES (?,?,?,?,?,?,?)";
+	sqlite3_stmt *stmt = getCachedStmt(sql);
+	if (!stmt)
+		return -1;
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(caller_id));
+	sqlite3_bind_text(stmt, 3, name.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_int64(stmt, 4, scope_id);
+	sqlite3_bind_int(stmt, 5, arity);
+	sqlite3_bind_int(stmt, 6, start_row);
+	sqlite3_bind_int(stmt, 7, start_col);
+	if (sqlite3_step(stmt) != SQLITE_DONE) {
+		error_ = "insertReference: step failed";
+		return -1;
+	}
+	return sqlite3_last_insert_rowid(db_);
+}
+
+// ── scope ────────────────────────────────────────────────────────
+
+int64_t GraphStore::insertScope(uint64_t project_id, int64_t parent_id,
+				int kind, const std::string &name,
+				int start_row, int end_row)
+{
+	const char *sql =
+		"INSERT INTO scope "
+		"(project_id, parent_id, kind, name, start_row, end_row) "
+		"VALUES (?,?,?,?,?,?)";
+	sqlite3_stmt *stmt = getCachedStmt(sql);
+	if (!stmt)
+		return -1;
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	sqlite3_bind_int64(stmt, 2, parent_id);
+	sqlite3_bind_int(stmt, 3, kind);
+	sqlite3_bind_text(stmt, 4, name.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_int(stmt, 5, start_row);
+	sqlite3_bind_int(stmt, 6, end_row);
+	if (sqlite3_step(stmt) != SQLITE_DONE) {
+		error_ = "insertScope: step failed";
+		return -1;
+	}
+	return sqlite3_last_insert_rowid(db_);
+}
+
+// ── import ───────────────────────────────────────────────────────
+
+int64_t GraphStore::insertImport(uint64_t project_id, int64_t source_scope_id,
+				 const std::string &target_path,
+				 const std::string &alias, int is_pub)
+{
+	const char *sql =
+		"INSERT INTO import "
+		"(project_id, source_scope_id, target_path, alias, is_pub) "
+		"VALUES (?,?,?,?,?)";
+	sqlite3_stmt *stmt = getCachedStmt(sql);
+	if (!stmt)
+		return -1;
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	sqlite3_bind_int64(stmt, 2, source_scope_id);
+	sqlite3_bind_text(stmt, 3, target_path.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_text(stmt, 4, alias.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_int(stmt, 5, is_pub);
+	if (sqlite3_step(stmt) != SQLITE_DONE) {
+		error_ = "insertImport: step failed";
+		return -1;
+	}
+	return sqlite3_last_insert_rowid(db_);
+}
+
+// ── resolved_reference ──────────────────────────────────────────
+
+bool GraphStore::insertResolvedReference(uint64_t reference_id,
+					 uint64_t symbol_id, double confidence,
+					 const std::string &resolver,
+					 const std::string &reason)
+{
+	const char *sql =
+		"INSERT INTO resolved_reference "
+		"(reference_id, symbol_id, confidence, resolver, reason) "
+		"VALUES (?,?,?,?,?)";
+	sqlite3_stmt *stmt = getCachedStmt(sql);
+	if (!stmt)
+		return false;
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(reference_id));
+	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(symbol_id));
+	sqlite3_bind_double(stmt, 3, confidence);
+	sqlite3_bind_text(stmt, 4, resolver.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_text(stmt, 5, reason.c_str(), -1, SQLITE_STATIC);
+	if (sqlite3_step(stmt) != SQLITE_DONE) {
+		error_ = "insertResolvedReference: step failed";
+		return false;
+	}
+	return true;
+}
+
 } // namespace store

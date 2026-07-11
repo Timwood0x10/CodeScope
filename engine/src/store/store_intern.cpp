@@ -111,9 +111,100 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 	{
 		constexpr int kP3PerCallerNameCap = 5;
 
-		// ── Step 3a: Load declarations into HashMap ──
-		// Key: name + '\0' + language + '\0' + arity + '\0' + is_static
-		// null separators avoid accidental collisions between fields.
+		// ── Step 3a: Load import map from semantic_records (kind=11=Import) ──
+		// Maps (file_path, imported_name) → target_qualified_name
+		// Used to resolve cross-module calls: if a call site's name
+		// matches an import in the same file, the callee is in the
+		// target module, not the local module.
+		std::unordered_map<std::string, std::string> import_map;
+		{
+			const char *imp_sql =
+				"SELECT sr.name, sr.qualified_name, sr.file_path "
+				"FROM semantic_records sr "
+				"WHERE sr.project_id=? AND sr.kind=11"
+				" AND sr.name != ''";
+			sqlite3_stmt *imp_st = nullptr;
+			if (sqlite3_prepare_v2(db_, imp_sql, -1, &imp_st,
+					       nullptr) == SQLITE_OK) {
+				sqlite3_bind_int64(
+					imp_st, 1,
+					static_cast<int64_t>(project_id));
+				while (sqlite3_step(imp_st) == SQLITE_ROW) {
+					const char *iname =
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								imp_st, 0));
+					const char *iqn =
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								imp_st, 1));
+					const char *ifp =
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								imp_st, 2));
+					if (!iname || !ifp)
+						continue;
+					// Use qualified_name if available, else name
+					std::string target =
+						(iqn && *iqn) ? iqn : iname;
+					// Clean the import text: strip "use ", "pub use ", ";" suffix
+					// e.g. "use crate::pass::resource::verify_candidate" → "crate::pass::resource::verify_candidate"
+					static const std::string prefixes[] = {
+						"pub use ", "use "
+					};
+					for (auto &p : prefixes) {
+						if (target.compare(0, p.size(),
+								   p) == 0) {
+							target = target.substr(
+								p.size());
+							break;
+						}
+					}
+					// Strip trailing ";"
+					if (!target.empty() &&
+					    target.back() == ';')
+						target.pop_back();
+					// Extract short name (last segment after ::)
+					// e.g. "crate::pass::resource::verify_candidate" → "verify_candidate"
+					std::string short_name;
+					size_t last = target.rfind("::");
+					if (last != std::string::npos)
+						short_name =
+							target.substr(last + 2);
+					else
+						short_name = target;
+					// Extract module path (everything before last ::)
+					// e.g. "crate::pass::resource::verify_candidate" → "crate::pass::resource"
+					std::string mod_path;
+					if (last != std::string::npos)
+						mod_path =
+							target.substr(0, last);
+					else
+						mod_path = target;
+					// Key: short_name only (module-independent) — allows cross-module lookup
+					import_map[short_name] = mod_path;
+				}
+				sqlite3_finalize(imp_st);
+			}
+			fprintf(stderr, "P3 import_map: %zu entries\n",
+				import_map.size());
+			// Show first 5 import map keys
+			int imp_n = 0;
+			for (auto &imp : import_map) {
+				if (imp_n >= 5)
+					break;
+				fprintf(stderr,
+					"[P3] import key='%s' -> '%s'\n",
+					imp.first.c_str(), imp.second.c_str());
+				imp_n++;
+			}
+		}
+
+		// ── Step 3b: Load declarations into HashMap ──
+		// Key: module_path + '\0' + name + '\0' + language + '\0' + arity + '\0' + is_static
+		// Module path is the directory part of file_path — enables
+		// same-module-first matching to reduce false positives from
+		// cross-module name collisions.
 		struct DeclInfo {
 			uint64_t node_id;
 			std::string file_path;
@@ -149,9 +240,18 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 					int st = sqlite3_column_int(ld_st, 6);
 					if (!name || !lang)
 						continue;
+					// Extract module path from file_path
+					std::string fp_str = fp ? fp : "";
+					size_t slash = fp_str.rfind('/');
+					std::string module_path =
+						(slash != std::string::npos) ?
+							fp_str.substr(0,
+								      slash) :
+							"";
 					// Build ResolutionKey:
-					// (name, language, arity, is_static)
-					std::string key = std::string(name) +
+					// (module_path, name, language, arity, is_static)
+					std::string key = module_path + "\0" +
+							  std::string(name) +
 							  "\0" + lang + "\0" +
 							  std::to_string(ar) +
 							  "\0" +
@@ -246,22 +346,98 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 						continue;
 
 					// Look up callees in HashMap by
-					// ResolutionKey: (name, language,
-					// arity, is_static)
-					std::string key =
+					// ResolutionKey: (module_path, name,
+					// language, arity, is_static)
+					//
+					// Priority 1: Import-resolved match.
+					// If the callee name matches an import
+					// in the same file, use the import's
+					// target module path as the key.
+					std::string caller_mod;
+					std::string import_mod;
+					std::string fp_s = fp_c ? fp_c : "";
+					std::string import_key = name_c;
+					auto imp_it =
+						import_map.find(import_key);
+					if (imp_it != import_map.end()) {
+						fprintf(stderr,
+							"[P3] import HIT: '%s' -> '%s'\n",
+							name_c,
+							imp_it->second.c_str());
+						import_mod = imp_it->second;
+						// Use caller's file path as the primary key
+						// (same-directory match is most reliable)
+						size_t slash = fp_s.rfind('/');
+						caller_mod =
+							(slash !=
+							 std::string::npos) ?
+								fp_s.substr(
+									0,
+									slash) :
+								"";
+					} else {
+						// Fallback: use caller's file path
+						// (same-directory match)
+						size_t slash = fp_s.rfind('/');
+						caller_mod =
+							(slash !=
+							 std::string::npos) ?
+								fp_s.substr(
+									0,
+									slash) :
+								"";
+					}
+					// Build the P3 key with the resolved module path
+					// Try three strategies in order:
+					// 1. Import-resolved module path (most precise)
+					// 2. Same-directory (caller's module)
+					// 3. Name-only (cross-module fallback)
+					std::string name_key =
 						std::string(name_c) + "\0" +
 						lang_c + "\0" +
 						std::to_string(call_arity) +
 						"\0" + "0";
-					auto it = decl_map.find(key);
+					std::string keys_to_try[3];
+					int n_keys = 0;
+					keys_to_try[n_keys++] =
+						caller_mod + "\0" + name_key;
+					if (!import_mod.empty() &&
+					    import_mod != caller_mod)
+						keys_to_try[n_keys++] =
+							import_mod + "\0" +
+							name_key;
+					keys_to_try[n_keys++] =
+						"\0" +
+						name_key; // cross-module fallback
+
+					auto it = decl_map.end();
+					for (int ki = 0; ki < n_keys; ki++) {
+						it = decl_map.find(
+							keys_to_try[ki]);
+						if (it != decl_map.end())
+							break;
+					}
 					if (it == decl_map.end()) {
-						// Fallback: try without arity
-						// for C-style variadic calls
+						// Fallback 1: cross-module
+						// (name + language only)
 						std::string key2 =
+							"\0" +
+							std::string(name_c) +
+							"\0" + lang_c + "\0" +
+							std::to_string(
+								call_arity) +
+							"\0" + "0";
+						it = decl_map.find(key2);
+					}
+					if (it == decl_map.end()) {
+						// Fallback 2: try without
+						// arity for C-style variadic
+						std::string key3 =
+							"\0" +
 							std::string(name_c) +
 							"\0" + lang_c + "\0" +
 							"0" + "\0" + "0";
-						it = decl_map.find(key2);
+						it = decl_map.find(key3);
 						if (it == decl_map.end())
 							continue;
 					}

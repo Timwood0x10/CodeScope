@@ -441,6 +441,7 @@ bool GraphStore::createSchema()
             verdict INTEGER NOT NULL,      -- 0=SUPPORTED, 1=CONTRADICTED, 2=UNKNOWN
             confidence REAL NOT NULL,      -- 0.0 - 1.0
             verifier_name TEXT NOT NULL,
+            source_type TEXT DEFAULT '',   -- 'code','test','comment','doc','config','runtime','git'
             detail TEXT DEFAULT '',
             created_at TEXT DEFAULT (datetime('now')),
             FOREIGN KEY (claim_id) REFERENCES claim(id)
@@ -482,6 +483,59 @@ bool GraphStore::createSchema()
             created_at TEXT DEFAULT (datetime('now')),
             FOREIGN KEY (project_id) REFERENCES projects(id)
         );
+
+        -- reference: call facts recorded by Parser (no resolution).
+        CREATE TABLE IF NOT EXISTS reference (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            caller_id INTEGER NOT NULL,      -- entity.id
+            name TEXT NOT NULL,              -- callee name
+            scope_id INTEGER DEFAULT 0,      -- scope.id (0 = unknown)
+            arity INTEGER DEFAULT 0,
+            start_row INTEGER DEFAULT 0,
+            start_col INTEGER DEFAULT 0,
+            FOREIGN KEY (project_id) REFERENCES projects(id)
+        );
+
+        -- scope: scope tree (Global / Module / Function / Block).
+        CREATE TABLE IF NOT EXISTS scope (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            parent_id INTEGER DEFAULT 0,     -- parent scope.id (0 = global)
+            kind INTEGER NOT NULL,           -- ScopeKind enum
+            name TEXT NOT NULL,               -- scope name
+            start_row INTEGER DEFAULT 0,
+            end_row INTEGER DEFAULT 0,
+            FOREIGN KEY (project_id) REFERENCES projects(id)
+        );
+
+        -- import: structured import statements (use/import/include).
+        CREATE TABLE IF NOT EXISTS import (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            source_scope_id INTEGER NOT NULL, -- scope.id where import appears
+            target_path TEXT NOT NULL,         -- full path, e.g. "crate::mod::func"
+            alias TEXT DEFAULT '',             -- local alias, e.g. "verify"
+            is_pub INTEGER DEFAULT 0,          -- 1 if pub use / pub import
+            FOREIGN KEY (project_id) REFERENCES projects(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_reference_project ON reference(project_id, name);
+        CREATE INDEX IF NOT EXISTS idx_scope_project ON scope(project_id, parent_id);
+        CREATE INDEX IF NOT EXISTS idx_import_project ON import(project_id, alias);
+
+        -- resolved_reference: resolution results for each reference.
+        CREATE TABLE IF NOT EXISTS resolved_reference (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            reference_id INTEGER NOT NULL,
+            symbol_id INTEGER NOT NULL,
+            confidence REAL NOT NULL DEFAULT 0.0,
+            resolver TEXT NOT NULL,
+            reason TEXT DEFAULT '',
+            FOREIGN KEY (reference_id) REFERENCES reference(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_resolved_ref_ref ON resolved_reference(reference_id);
 
         -- workflow: high-level business flow (e.g. "Login").
         CREATE TABLE IF NOT EXISTS workflow (
