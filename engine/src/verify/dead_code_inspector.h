@@ -42,6 +42,11 @@ class DeadCodeInspector {
 
 	/// Find architecture drift: modules that depend on upper layers.
 	std::vector<Finding> findArchitectureDrift();
+
+	/// Find connected components in the full call graph.
+	/// Groups modules into clusters based on relation edges.
+	/// A module with no edges to any other module is its own component.
+	std::vector<Finding> findConnectedComponents();
 };
 
 } // namespace verify

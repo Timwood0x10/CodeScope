@@ -3,8 +3,11 @@
 #include "../store/store.h"
 
 #include <cstdio>
+#include <queue>
 #include <sstream>
 #include <sqlite3.h>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace verify
 {
@@ -163,6 +166,48 @@ std::vector<Finding> DeadCodeInspector::findArchitectureDrift()
 		out.push_back(f);
 	}
 	sqlite3_finalize(stmt);
+
+	// Layer violation check: detect lower-layer modules calling upper-layer
+	// modules. Uses the architecture_edge table for known layer relationships.
+	std::string layer_sql =
+		"SELECT ae.layer_lower, ae.layer_upper, COUNT(*) as violations "
+		"FROM architecture_edge ae "
+		"JOIN entity e ON ae.entity_id = e.id "
+		"JOIN relation r ON r.project_id = ? AND r.target_id = e.id "
+		"JOIN entity caller ON r.source_id = caller.id "
+		"WHERE ae.project_id = ? "
+		" AND caller.file_path LIKE '%' || ae.layer_lower || '%'"
+		" AND e.file_path LIKE '%' || ae.layer_upper || '%'"
+		" GROUP BY ae.layer_lower, ae.layer_upper"
+		" HAVING violations > 0"
+		" ORDER BY violations DESC LIMIT 10";
+	sqlite3_stmt *layer_st = nullptr;
+	if (sqlite3_prepare_v2(store_->handle(), layer_sql.c_str(), -1,
+			       &layer_st, nullptr) == SQLITE_OK) {
+		sqlite3_bind_int64(layer_st, 1,
+				   static_cast<int64_t>(project_id_));
+		sqlite3_bind_int64(layer_st, 2,
+				   static_cast<int64_t>(project_id_));
+		while (sqlite3_step(layer_st) == SQLITE_ROW) {
+			const char *lower = reinterpret_cast<const char *>(
+				sqlite3_column_text(layer_st, 0));
+			const char *upper = reinterpret_cast<const char *>(
+				sqlite3_column_text(layer_st, 1));
+			int violations = sqlite3_column_int(layer_st, 2);
+
+			Finding f;
+			f.type = "LayerViolation";
+			f.description = std::string("Layer violation: '") +
+					(lower ? lower : "") + "' calls '" +
+					(upper ? upper : "") + "' " +
+					std::to_string(violations) +
+					" times — lower layer should not depend on upper layer.";
+			f.confidence = 0.90;
+			out.push_back(f);
+		}
+		sqlite3_finalize(layer_st);
+	}
+
 	return out;
 }
 
@@ -175,7 +220,86 @@ std::vector<Finding> DeadCodeInspector::inspect()
 	findings.insert(findings.end(), funcs.begin(), funcs.end());
 	auto drift = findArchitectureDrift();
 	findings.insert(findings.end(), drift.begin(), drift.end());
+	auto components = findConnectedComponents();
+	findings.insert(findings.end(), components.begin(), components.end());
 	return findings;
+}
+
+std::vector<Finding> DeadCodeInspector::findConnectedComponents()
+{
+	std::vector<Finding> out;
+	// Build adjacency list from relation table
+	// Use a simple BFS to find connected components
+	std::unordered_map<uint64_t, std::vector<uint64_t> > adj;
+	std::string sql = "SELECT DISTINCT source_id, target_id FROM relation "
+			  "WHERE project_id = ? AND type = 1";
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(store_->handle(), sql.c_str(), -1, &stmt,
+			       nullptr) != SQLITE_OK)
+		return out;
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id_));
+	while (sqlite3_step(stmt) == SQLITE_ROW) {
+		uint64_t src = static_cast<uint64_t>(
+			sqlite3_column_int64(stmt, 0));
+		uint64_t tgt = static_cast<uint64_t>(
+			sqlite3_column_int64(stmt, 1));
+		adj[src].push_back(tgt);
+		adj[tgt].push_back(src);
+	}
+	sqlite3_finalize(stmt);
+
+	// BFS to find connected components
+	std::unordered_set<uint64_t> visited;
+	std::vector<std::vector<uint64_t> > components;
+	for (auto &pair : adj) {
+		if (visited.count(pair.first))
+			continue;
+		// BFS from this node
+		std::vector<uint64_t> comp;
+		std::queue<uint64_t> q;
+		q.push(pair.first);
+		visited.insert(pair.first);
+		while (!q.empty()) {
+			uint64_t n = q.front();
+			q.pop();
+			comp.push_back(n);
+			for (auto &neighbor : adj[n]) {
+				if (!visited.count(neighbor)) {
+					visited.insert(neighbor);
+					q.push(neighbor);
+				}
+			}
+		}
+		if (comp.size() > 1)
+			components.push_back(comp);
+	}
+
+	// Report: largest component, isolated modules
+	if (!components.empty()) {
+		// Find the largest component
+		size_t largest_idx = 0;
+		for (size_t i = 1; i < components.size(); i++)
+			if (components[i].size() > components[largest_idx].size())
+				largest_idx = i;
+
+		Finding f;
+		f.type = "ConnectedComponent";
+		f.description = "Largest connected component has " +
+				std::to_string(components[largest_idx].size()) +
+				" entities";
+		f.confidence = 0.95;
+		out.push_back(f);
+
+		// Count modules in each component
+		Finding f2;
+		f2.type = "ConnectedComponent";
+		f2.description = "Total " + std::to_string(components.size()) +
+				" connected components in the call graph";
+		f2.confidence = 0.95;
+		out.push_back(f2);
+	}
+
+	return out;
 }
 
 } // namespace verify

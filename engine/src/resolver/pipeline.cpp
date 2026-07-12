@@ -94,12 +94,10 @@ std::string ResolverPipeline::checkImport(const std::string &caller_file,
 					  const std::string &callee_name)
 {
 	// Check if any import in the caller's file has an alias matching
-	// the callee name. Import records store target_path and alias.
+	// the callee name. Import records have file_path and target_path.
 	std::string sql =
 		"SELECT target_path FROM import i "
-		"JOIN scope s ON i.source_scope_id = s.id "
-		"JOIN entity e ON e.id = s.entity_id "
-		"WHERE e.project_id=? AND e.file_path=? "
+		"WHERE i.project_id=? AND i.file_path=? "
 		" AND (i.alias=? OR i.target_path LIKE '%' || ? || '%')"
 		" LIMIT 1";
 	sqlite3_stmt *stmt = nullptr;

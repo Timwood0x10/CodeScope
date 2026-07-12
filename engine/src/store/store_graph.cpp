@@ -275,8 +275,9 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// Backfill for symbols.node_id is no longer needed — symbols table
 	// has been eliminated. graph_nodes is the sole source of truth.
 
-	// Phase 1.2: populate reference table from semantic_records CallExpr
+	// Phase 1.2: populate reference table from semantic_records CallExpr + MemberExpr
 	// Uses _r2n mapping to resolve parent_id -> caller_id.
+	// MemberExpr captures struct method calls like a.submitToCoordinator(ctx).
 	{
 		std::string ref_sql =
 			"INSERT OR IGNORE INTO reference "
@@ -288,7 +289,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			" AND sr.file_path = r2n.file_path "
 			"WHERE sr.project_id=" +
 			std::to_string(project_id) +
-			" AND sr.kind=9 AND sr.name != ''";
+			" AND sr.kind IN (9,10) AND sr.name != ''";
 		exec(ref_sql.c_str());
 	}
 
