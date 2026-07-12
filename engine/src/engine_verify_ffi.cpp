@@ -28,18 +28,16 @@
 #include "verify/contract_verifier.h"
 #include "verify/registry.h"
 #include "verify/dead_code_inspector.h"
+#include "verify/ffi_internal.h"
 
 // ─── Local Helpers ──────────────────────────────────────────────
 
 namespace
 {
-// ─── Named Constants ─────────────────────────────────────────────
+// ─── Named Constants (local to this translation unit) ──────────
 
 // Trust score penalty per non-supported finding in engine_verify_integrity.
 static constexpr double kTrustScorePenalty = 0.1;
-
-// Maximum length of the source_ref string extracted from input text.
-static constexpr size_t kSourceRefMaxLen = 200;
 
 // Maximum number of entity sample rows returned by engine_explain_module.
 static constexpr int kEntitySampleLimit = 10;
@@ -48,16 +46,6 @@ static constexpr int kEntitySampleLimit = 10;
 static constexpr int kIntegrityMax = 100;
 static constexpr int kIntegritySev2Penalty = 10;
 static constexpr int kIntegritySev1Penalty = 5;
-
-// ─── VerifyResult struct ────────────────────────────────────────
-
-// Holds both the heap-allocated JSON string from verify_one_claim and the
-// parsed Verdict enum so callers can tally verdicts without strstr.
-struct VerifyResult {
-	char *json =
-		nullptr; // heap-allocated JSON (must be freed via engine_free_string)
-	verify::Verdict verdict = verify::Verdict::Unknown;
-};
 
 // ─── JSON Helpers ───────────────────────────────────────────────
 
@@ -175,11 +163,16 @@ makeVerifierForClaim(const verify::Claim &claim, store::GraphStore *store,
 }
 
 // Shared helper: persist the claim, dispatch to a verifier, persist evidence
-// + facts, and return the JSON result + verdict. Used by both engine_verify_claim
-// and engine_verify_summary to keep their output shapes identical.
+// + facts, and return the JSON result + verdict. Used by engine_verify_claim
+// directly and by verify_claim_batch (which backs engine_verify_summary,
+// engine_verify_review, and engine_verify_reality).
 //
 // THREAD SAFETY: single-threaded only (relies on the GraphStore
 // single-writer invariant documented in store.h).
+} // namespace
+
+namespace verify_ffi
+{
 VerifyResult verify_one_claim(uint64_t project_id, const verify::Claim &claim)
 {
 	VerifyResult result;
@@ -263,7 +256,48 @@ VerifyResult verify_one_claim(uint64_t project_id, const verify::Claim &claim)
 	return result;
 }
 
-} // namespace
+BatchResult verify_claim_batch(uint64_t project_id, const std::string &text,
+			       const char *source_kind,
+			       const std::string &source_ref)
+{
+	BatchResult out;
+	verify::ClaimParser parser;
+	auto claims = parser.parse(text, source_kind, source_ref);
+	out.claims_count = claims.size();
+
+	std::ostringstream json;
+	json << "[";
+	bool first = true;
+	for (const auto &c : claims) {
+		if (!first)
+			json << ",";
+		first = false;
+		VerifyResult result = verify_one_claim(project_id, c);
+		if (result.json) {
+			json << result.json;
+			switch (result.verdict) {
+			case verify::Verdict::Supported:
+				out.supported++;
+				break;
+			case verify::Verdict::Contradicted:
+				out.contradicted++;
+				break;
+			default:
+				out.unknown++;
+				break;
+			}
+			engine_free_string(result.json);
+		} else {
+			json << "null";
+			out.unknown++;
+		}
+	}
+	json << "]";
+	out.results_json = json.str();
+	return out;
+}
+
+} // namespace verify_ffi
 
 // ─── FFI Exports ────────────────────────────────────────────────
 
@@ -448,7 +482,8 @@ extern "C" char *engine_verify_claim(uint64_t project_id,
 				 "[module=ffi, method=engine_verify_claim]\"}");
 	}
 
-	VerifyResult result = verify_one_claim(project_id, claim);
+	verify_ffi::VerifyResult result =
+		verify_ffi::verify_one_claim(project_id, claim);
 	return result.json;
 }
 
@@ -473,50 +508,20 @@ extern "C" char *engine_verify_summary(uint64_t project_id, const char *text)
 			"{\"error\":\"text is empty "
 			"[module=ffi, method=engine_verify_summary]\"}");
 
-	// Use verify::ClaimParser to extract structured claims
-	// from the free-form text. source_kind="ai_summary" stamps each
-	// claim for traceability in the evidence table.
-	verify::ClaimParser parser;
-	auto claims =
-		parser.parse(std::string(text), "ai_summary",
-			     std::string(text).substr(0, kSourceRefMaxLen));
+	std::string src(text);
+	auto batch = verify_ffi::verify_claim_batch(
+		project_id, src, verify_ffi::kSourceKindAiSummary,
+		src.substr(0, verify_ffi::kSourceRefMaxLen));
 
 	std::ostringstream json;
-	json << "{\"claims_parsed\":" << claims.size() << ",\"results\":[";
-	int supported = 0, contradicted = 0, unknown = 0;
-	bool first = true;
-	for (const auto &c : claims) {
-		if (!first)
-			json << ",";
-		first = false;
-		// verify_one_claim returns the JSON string + parsed verdict.
-		// We copy the JSON into our stream and free the original.
-		VerifyResult result = verify_one_claim(project_id, c);
-		if (result.json) {
-			json << result.json;
-			switch (result.verdict) {
-			case verify::Verdict::Supported:
-				supported++;
-				break;
-			case verify::Verdict::Contradicted:
-				contradicted++;
-				break;
-			default:
-				unknown++;
-				break;
-			}
-			engine_free_string(result.json);
-		} else {
-			json << "null";
-			unknown++;
-		}
-	}
-	json << "],\"summary\":{\"supported\":" << supported
-	     << ",\"contradicted\":" << contradicted
-	     << ",\"unknown\":" << unknown << ",\"trust_score\":";
-	int denom = supported + contradicted;
+	json << "{\"claims_parsed\":" << batch.claims_count
+	     << ",\"results\":" << batch.results_json
+	     << ",\"summary\":{\"supported\":" << batch.supported
+	     << ",\"contradicted\":" << batch.contradicted
+	     << ",\"unknown\":" << batch.unknown << ",\"trust_score\":";
+	int denom = batch.supported + batch.contradicted;
 	if (denom > 0)
-		json << (static_cast<double>(supported) /
+		json << (static_cast<double>(batch.supported) /
 			 static_cast<double>(denom));
 	else
 		json << "0.0";

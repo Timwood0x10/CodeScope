@@ -147,10 +147,12 @@ set(ENGINE_SOURCES
     src/engine_lifecycle.cpp
     src/engine_index.cpp
 	    src/engine_index_project.cpp
+	    src/engine_index_metrics.cpp
     src/engine_scanner.cpp
     src/engine_queries.cpp
     src/engine_ffi.cpp
     src/engine_verify_ffi.cpp
+    src/engine_verify_drift_ffi.cpp
     src/parser/parser.cpp
     src/ir/ir.cpp
     src/ir/ir_visitor.cpp
@@ -179,6 +181,7 @@ set(ENGINE_SOURCES
     src/graph/graph_types.cpp
     src/graph/graph_builder.cpp
     src/store/store_core.cpp
+    src/store/store_schema.cpp
     src/store/store.cpp
     src/store/store_insert.cpp
     src/store/store_search.cpp
@@ -194,7 +197,8 @@ set(ENGINE_SOURCES
     src/query/impact_analysis.cpp
          src/lsp/lsp_client.cpp
     src/resolver/resolver.cpp
-	    src/resolver/pipeline.cpp
+    src/resolver/pipeline.cpp
+    src/resolver/fuzzy_resolver.cpp
 	    src/model/engine.cpp
 	    src/model/plugins/workflow.cpp
 	    src/model/plugins/capability.cpp
@@ -209,7 +213,6 @@ set(ENGINE_SOURCES
 	    src/verify/claim_parser.cpp
 	    src/verify/claim.cpp
 	    src/verify/registry.cpp
-	    src/knowledge/builder.cpp
 	    src/resolver/resolve_cache.cpp
 	    src/filter_policy.cpp
 	    src/filter_policy_ignore.cpp

@@ -1,6 +1,31 @@
-# CodeScope
+# CodeScope — Project Truth Engine
 
-**CodeScope** is an MCP (Model Context Protocol) code understanding service. It parses source code into a unified AST IR, builds multi-dimensional code graphs (call graph + symbol reference graph), persists them to SQLite, and exposes powerful queries via MCP tools — enabling AI to understand code structure, behavior, and relationships through graph traversal instead of reading raw source files.
+**CodeScope does not understand code. It verifies code.**
+
+It transforms source code into verifiable facts, understandable models, and inspectable evidence — enabling AI to validate claims against reality instead of hallucinating.
+
+---
+
+### What CodeScope is NOT
+
+CodeScope is **not** a code explainer, a semantic analyzer, or a replacement for reading code. It does not understand what `Arc<T>` means, why `Rc<T>` is not thread-safe, or how a JWT middleware works. **That is the AI's job.**
+
+### What CodeScope IS
+
+CodeScope is a **Project Truth Engine** that answers one question:
+
+> **"项目现在到底是什么状态？"**
+
+Not "what does this code mean", but "does the code actually do what you claim?"
+
+| AI says | CodeScope checks | Method |
+|---------|-----------------|--------|
+| "登录模块支持 JWT" | JWT 库存在吗？login 调了 jwt 吗？有测试吗？ | `entity` + `relation` + `import` 表 |
+| "这个模块已完成" | 所有功能有调用者吗？覆盖率够吗？ | `relation` 表 + `DeadCodeInspector` |
+| "PR 修复了内存泄漏" | 有对应的 free 吗？测试覆盖了 error path 吗？ | `relation` 表 + `test` 文件检查 |
+| "架构是 Controller→Service→Repository" | 代码真的遵守这个分层吗？ | `architecture_edge` 表 |
+
+**CodeScope 不解释代码，只验证代码。** 解释是 AI 的事，验证才是 CodeScope 的事。
 
 ---
 

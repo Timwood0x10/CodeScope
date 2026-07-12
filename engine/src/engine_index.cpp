@@ -24,7 +24,6 @@
 #include <unordered_set>
 #include <vector>
 
-#include "knowledge/builder.h"
 #include "ir/translators/js_visitor.h"
 
 // ─── Constants ─────────────────────────────────────────────────

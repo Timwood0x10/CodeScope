@@ -26,8 +26,58 @@
 #include "../graph/graph_builder.h"
 #include "../ir/semantic_unit.h"
 
+// ── Batch import helper ─────────────────────────────────────────
 namespace store
 {
+
+// ── Batch import helper ─────────────────────────────────────────
+struct PathRec {
+	std::string path;
+	std::string alias;
+	std::string file;
+};
+
+static void flushImportBatch(sqlite3 *db, uint64_t project_id,
+			     const std::vector<PathRec> &batch)
+{
+	if (batch.empty())
+		return;
+	std::string sql = "INSERT OR IGNORE INTO import "
+			  "(project_id, source_scope_id, target_path, alias, "
+			  " file_path, is_pub) VALUES ";
+	for (size_t i = 0; i < batch.size(); i++) {
+		if (i > 0)
+			sql += ",";
+		sql += "(?,0,?,?,?,0)";
+	}
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) !=
+	    SQLITE_OK) {
+		fprintf(stderr,
+			"[module=store, method=flushImportBatch] "
+			"prepare failed: %s\n",
+			sqlite3_errmsg(db));
+		return;
+	}
+	for (size_t i = 0; i < batch.size(); i++) {
+		int base = static_cast<int>(i * 4);
+		sqlite3_bind_int64(stmt, base + 1,
+				   static_cast<int64_t>(project_id));
+		sqlite3_bind_text(stmt, base + 2, batch[i].path.c_str(), -1,
+				  SQLITE_STATIC);
+		sqlite3_bind_text(stmt, base + 3, batch[i].alias.c_str(), -1,
+				  SQLITE_STATIC);
+		sqlite3_bind_text(stmt, base + 4, batch[i].file.c_str(), -1,
+				  SQLITE_STATIC);
+	}
+	int rc = sqlite3_step(stmt);
+	if (rc != SQLITE_DONE && rc != SQLITE_CONSTRAINT)
+		fprintf(stderr,
+			"[module=store, method=flushImportBatch] "
+			"step failed (rc=%d): %s\n",
+			rc, sqlite3_errmsg(db));
+	sqlite3_finalize(stmt);
+}
 
 bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			    const std::unordered_set<std::string> *changed_files)
@@ -254,12 +304,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			sqlite3_bind_int64(fetch_st, 1,
 					   static_cast<int64_t>(project_id));
 
-			const char *ins_sql =
-				"INSERT OR IGNORE INTO import "
-				"(project_id, source_scope_id, target_path, alias, file_path, is_pub) "
-				"VALUES (?,0,?,?,?,0)";
-			sqlite3_stmt *ins_st = nullptr;
-			sqlite3_prepare_v2(db_, ins_sql, -1, &ins_st, nullptr);
+			// Batch insert uses flushImportBatch() helper
 
 			while (sqlite3_step(fetch_st) == SQLITE_ROW) {
 				const char *raw = reinterpret_cast<const char *>(
@@ -333,54 +378,38 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 					from_pos = imp + 8;
 				}
 
-				// Insert each extracted path
+				// Batch insert extracted paths (500 per batch)
+				std::vector<PathRec> batch;
+				constexpr size_t kMaxBatch = 500;
 				for (auto &p : paths) {
-					if (ins_st) {
-						sqlite3_bind_int64(
-							ins_st, 1,
-							static_cast<int64_t>(
-								project_id));
-						sqlite3_bind_text(
-							ins_st, 2, p.c_str(),
-							-1, SQLITE_STATIC);
-						// Set alias to last segment
-						std::string alias;
-						size_t last_sep = p.rfind('/');
-						if (last_sep ==
-						    std::string::npos)
-							last_sep =
-								p.rfind("::");
-						if (last_sep !=
-						    std::string::npos)
-							alias = p.substr(
-								last_sep + 1);
-						else
-							alias = p;
-						sqlite3_bind_text(
-							ins_st, 3,
-							alias.c_str(), -1,
-							SQLITE_STATIC);
-						// Bind file_path
-						const char *fp_c = reinterpret_cast<
-							const char *>(
+					PathRec pr;
+					pr.path = p;
+					size_t last_sep = p.rfind('/');
+					if (last_sep == std::string::npos)
+						last_sep = p.rfind("::");
+					pr.alias =
+						(last_sep !=
+						 std::string::npos) ?
+							p.substr(last_sep + 1) :
+							p;
+					const char *fp_c =
+						reinterpret_cast<const char *>(
 							sqlite3_column_text(
 								fetch_st, 2));
-						std::string fp_str =
-							fp_c ? fp_c : "";
-						sqlite3_bind_text(
-							ins_st, 4,
-							fp_str.c_str(), -1,
-							SQLITE_STATIC);
-						// Bind is_pub
-						sqlite3_bind_int(ins_st, 5, 0);
-						sqlite3_step(ins_st);
-						sqlite3_reset(ins_st);
+					pr.file = fp_c ? fp_c : "";
+					batch.push_back(pr);
+					if (batch.size() >= kMaxBatch) {
+						flushImportBatch(
+							db_, project_id, batch);
+						batch.clear();
 					}
 				}
+				if (!batch.empty())
+					flushImportBatch(db_, project_id,
+							 batch);
 			}
 			sqlite3_finalize(fetch_st);
-			if (ins_st)
-				sqlite3_finalize(ins_st);
+			// Batch insert handles finalization via flushImportBatch
 		}
 	}
 

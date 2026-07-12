@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <climits>
+#include <cstdio>
 #include <cstring>
 #include <functional>
 #include <mutex>
@@ -61,12 +62,11 @@ uint64_t GraphStore::insertGraphNode(uint64_t project_id,
 	sqlite3_bind_int(stmt, 18, node.is_entry_point ? 1 : 0);
 
 	int rc = sqlite3_step(stmt);
-	if (rc != SQLITE_DONE) {
-		fprintf(stderr, "insertGraphNode: step failed (rc=%d): %s\n",
+	if (rc != SQLITE_DONE)
+		fprintf(stderr,
+			"insertGraphNode: step failed (rc=%d): %s "
+			"[module=store, method=insertGraphNode]\n",
 			rc, sqlite3_errmsg(db_));
-	}
-	fprintf(stderr, "insertGraphNode: calling insertEntity for %s\n",
-		node.name.c_str());
 	insertEntity(project_id, node);
 	return node.id;
 }
@@ -121,12 +121,12 @@ void GraphStore::insertGraphNodes(uint64_t project_id,
 		sqlite3_bind_int(stmt, 18, node.is_entry_point ? 1 : 0);
 
 		int rc = sqlite3_step(stmt);
-		if (rc != SQLITE_DONE) {
+		if (rc != SQLITE_DONE)
 			fprintf(stderr,
 				"insertGraphNodes: step failed (rc=%d) "
-				"for node '%s': %s\n",
+				"for node '%s': %s "
+				"[module=store, method=insertGraphNodes]\n",
 				rc, node.name.c_str(), sqlite3_errmsg(db_));
-		}
 		sqlite3_reset(stmt);
 		insertEntity(project_id, node);
 	}
@@ -162,6 +162,11 @@ uint64_t GraphStore::insertEntity(uint64_t project_id,
 	sqlite3_bind_int(stmt, 10, static_cast<int>(node.end_row));
 	sqlite3_bind_int(stmt, 11, static_cast<int>(node.end_col));
 	int rc = sqlite3_step(stmt);
+	if (rc != SQLITE_DONE && rc != SQLITE_CONSTRAINT)
+		fprintf(stderr,
+			"insertEntity step failed (rc=%d): %s "
+			"[module=store, method=insertEntity]\n",
+			rc, sqlite3_errmsg(db_));
 	return node.id;
 }
 
@@ -178,7 +183,12 @@ void GraphStore::insertRelation(uint64_t project_id, uint64_t source_id,
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(source_id));
 	sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(target_id));
 	sqlite3_bind_int(stmt, 4, type);
-	sqlite3_step(stmt);
+	int rc = sqlite3_step(stmt);
+	if (rc != SQLITE_DONE && rc != SQLITE_CONSTRAINT)
+		fprintf(stderr,
+			"insertRelation step failed (rc=%d): %s "
+			"[module=store, method=insertRelation]\n",
+			rc, sqlite3_errmsg(db_));
 }
 
 bool GraphStore::deleteGraphNodesByFile(uint64_t project_id,
@@ -225,7 +235,12 @@ uint64_t GraphStore::insertGraphEdge(uint64_t project_id,
 	sqlite3_bind_int(stmt, 7, edge.call_site_line);
 	sqlite3_bind_text(stmt, 8, edge.label.c_str(), -1, SQLITE_STATIC);
 
-	sqlite3_step(stmt);
+	int rc = sqlite3_step(stmt);
+	if (rc != SQLITE_DONE && rc != SQLITE_CONSTRAINT)
+		fprintf(stderr,
+			"insertGraphEdge step failed (rc=%d): %s "
+			"[module=store, method=insertGraphEdge]\n",
+			rc, sqlite3_errmsg(db_));
 	return static_cast<uint64_t>(sqlite3_last_insert_rowid(db_));
 }
 

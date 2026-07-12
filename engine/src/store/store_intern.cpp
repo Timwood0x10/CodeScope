@@ -473,7 +473,16 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 							SQLITE_TRANSIENT);
 						sqlite3_bind_int(ins_st, 5,
 								 start_row);
-						sqlite3_step(ins_st);
+						int ins_rc =
+							sqlite3_step(ins_st);
+						if (ins_rc != SQLITE_DONE &&
+						    ins_rc != SQLITE_CONSTRAINT)
+							fprintf(stderr,
+								"insertP3Edge step failed (rc=%d): %s "
+								"[module=store, method=buildCallGraph_p3]\n",
+								ins_rc,
+								sqlite3_errmsg(
+									db_));
 						sqlite3_reset(ins_st);
 						p3_edges++;
 					}
@@ -517,8 +526,7 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 				"FROM semantic_records sr "
 				"WHERE sr.project_id=? AND sr.kind=9 "
 				" AND sr.name != '' AND sr.ref_original_id = 0 "
-				" AND sr.name LIKE '%.%' "
-				" AND sr.ref_original_id != 0";
+				" AND sr.name LIKE '%.%'";
 
 			sqlite3_stmt *call_st = nullptr;
 			if (sqlite3_prepare_v2(db_, call_sql, -1, &call_st,
@@ -531,7 +539,6 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 				int64_t pid_i =
 					static_cast<int64_t>(project_id);
 				sqlite3_bind_int64(call_st, 1, pid_i);
-				sqlite3_bind_int64(call_st, 2, pid_i);
 
 				const char *callee_sql =
 					"SELECT d.node_id FROM _decls d "
@@ -643,7 +650,16 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 							SQLITE_TRANSIENT);
 						sqlite3_bind_int(ins_st, 5,
 								 start_row);
-						sqlite3_step(ins_st);
+						int sn_rc =
+							sqlite3_step(ins_st);
+						if (sn_rc != SQLITE_DONE &&
+						    sn_rc != SQLITE_CONSTRAINT)
+							fprintf(stderr,
+								"insertShortNameEdge step failed (rc=%d): %s "
+								"[module=store, method=buildCallGraph_shortName]\n",
+								sn_rc,
+								sqlite3_errmsg(
+									db_));
 						sqlite3_reset(ins_st);
 						short_name_edges++;
 						match_count++;

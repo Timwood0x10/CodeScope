@@ -105,7 +105,7 @@ build-server:
 test: test-engine test-server
 	@printf "$(CHECK) all tests passed\n"
 
-TEST_EXES := test_ir test_graph test_e2e test_go_e2e test_c_e2e test_cpp_e2e test_rust_e2e test_js_e2e test_ts_e2e test_java_e2e test_knowledge_builder test_claim_parser test_verifier_registry
+TEST_EXES := test_ir test_graph test_e2e test_go_e2e test_c_e2e test_cpp_e2e test_rust_e2e test_js_e2e test_ts_e2e test_java_e2e test_model_engine test_claim_parser test_verifier_registry test_fuzzy_resolver test_index_metrics
 
 test-engine: $(ENGINE_LIB)
 	@printf "$(CYAN)[test/engine]$(RESET) Building and running C++ tests...\n"
@@ -223,7 +223,7 @@ fmt-rust:
 	@printf "  $(CHECK) done\n"
 
 # ─── Check (CI) ──────────────────────────────────────────────────
-check: build lint test-server
+check: build lint test-engine test-server
 	@printf "$(CHECK) check complete\n"
 
 # ─── Clean ───────────────────────────────────────────────────────

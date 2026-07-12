@@ -283,6 +283,35 @@ fn h_verify_summary(project_id: u64, args: &Value) -> String {
     ffi::verify_summary(project_id, text)
 }
 
+/// Verify a code review comment by parsing it into claims.
+/// Each claim is stamped source_kind="code_review" for evidence filtering.
+fn h_verify_review(project_id: u64, args: &Value) -> String {
+    let text = args["text"].as_str().unwrap_or("");
+    if text.is_empty() {
+        return json!({"error": "text field is required [module=mcp, tool=verify_review]"})
+            .to_string();
+    }
+    ffi::verify_review(project_id, text)
+}
+
+/// Verify a single AI statement about the current project reality.
+/// Returns an aggregate verdict (Supported/Contradicted/PartiallyVerified/Unknown)
+/// with confidence and per-claim evidence.
+fn h_verify_reality(project_id: u64, args: &Value) -> String {
+    let text = args["text"].as_str().unwrap_or("");
+    if text.is_empty() {
+        return json!({"error": "text field is required [module=mcp, tool=verify_reality]"})
+            .to_string();
+    }
+    ffi::verify_reality(project_id, text)
+}
+
+/// Scan all declared capabilities and contracts for documentation/code drift.
+/// Persists each drift as a finding row and returns them in the JSON output.
+fn h_detect_drift(project_id: u64, _args: &Value) -> String {
+    ffi::detect_drift(project_id)
+}
+
 /// Build a Knowledge Card for a named module/directory.
 fn h_explain_module(project_id: u64, args: &Value) -> String {
     let name = args["module_name"].as_str().unwrap_or("");
@@ -407,6 +436,10 @@ static TOOL_HANDLERS: Lazy<HashMap<&'static str, ToolHandler>> = Lazy::new(|| {
     m.insert("verify_claim", h_verify_claim as ToolHandler);
     m.insert("verify_summary", h_verify_summary as ToolHandler);
     m.insert("explain_module", h_explain_module as ToolHandler);
+    // Verify + Drift Layer (v0.4)
+    m.insert("verify_review", h_verify_review as ToolHandler);
+    m.insert("verify_reality", h_verify_reality as ToolHandler);
+    m.insert("detect_drift", h_detect_drift as ToolHandler);
     m.insert("trace_flow", h_trace_flow as ToolHandler);
     // Fast scan
     m.insert("find_symbol", h_find_symbol as ToolHandler);
@@ -546,6 +579,42 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
                     }
                 },
                 "required": ["text"]
+            }),
+        },
+        Tool {
+            name: "verify_review".into(),
+            description: "Verify a code review comment by parsing it into claims and dispatching each through the Claim -> Verifier -> Evidence pipeline. Each claim is stamped source_kind=\"code_review\" so the evidence table can be filtered by origin. Output shape is identical to verify_summary.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "The review comment body (e.g. 'This function should be thread-safe and the README claims JWT support')"
+                    }
+                },
+                "required": ["text"]
+            }),
+        },
+        Tool {
+            name: "verify_reality".into(),
+            description: "Verify a single AI statement about the current project reality. Returns a structured evidence report with an aggregate verdict (Supported / Contradicted / PartiallyVerified / Unknown), a confidence score, and the per-claim results array. Use this to check whether an AI's claim about project state is backed by code evidence.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "A single natural-language statement (e.g. 'The login module supports JWT and Refresh tokens.')"
+                    }
+                },
+                "required": ["text"]
+            }),
+        },
+        Tool {
+            name: "detect_drift".into(),
+            description: "Scan all declared capabilities and contracts for drift between documentation/code comments and the actual codebase. Detects MissingCapability (declared in README but no implementing entity with callers) and BrokenContract (declared but no enforcing code). Each drift is persisted as a finding row and returned in the JSON output.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
             }),
         },
         Tool {

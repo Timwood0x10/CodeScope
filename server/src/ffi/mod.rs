@@ -43,6 +43,14 @@ unsafe extern "C" {
     fn engine_verify_summary(project_id: u64, text: *const c_char) -> *mut c_char;
     fn engine_explain_module(project_id: u64, module_name: *const c_char) -> *mut c_char;
 
+    // ── Verify + Drift Layer (v0.4) ───────────────────────────────
+    // See engine_verify_drift_ffi.cpp for the C++ implementation and
+    // output shape documentation. Each returns a heap-allocated JSON
+    // string that the caller MUST release via engine_free_string().
+    fn engine_verify_review(project_id: u64, text: *const c_char) -> *mut c_char;
+    fn engine_verify_reality(project_id: u64, text: *const c_char) -> *mut c_char;
+    fn engine_detect_drift(project_id: u64) -> *mut c_char;
+
     fn engine_build_fts(project_id: u64) -> *mut c_char;
 
     // ── Phase A: Fast Scan ────────────────────────────────────────
@@ -203,6 +211,42 @@ pub fn verify_summary(project_id: u64, text: &str) -> String {
 /// info from the `files` table when the `modules` table is empty.
 pub fn explain_module(project_id: u64, module_name: &str) -> String {
     take_string(unsafe { engine_explain_module(project_id, cstr(module_name).as_ptr()) })
+}
+
+// ── Verify + Drift Layer (v0.4) ───────────────────────────────
+//
+// Safe wrappers around the drift-detection FFI. Each function returns a
+// JSON string whose shape is documented in engine_verify_drift_ffi.cpp.
+// On failure the JSON contains an "error" field with a tagged message.
+
+/// Verify a code review comment by parsing it into claims and dispatching
+/// each through the standard Claim → Verifier → Evidence pipeline.
+///
+/// `text` is the review comment body. Each parsed claim is stamped
+/// `source_kind="code_review"` so the evidence table can be filtered by
+/// origin. Output JSON shape is identical to `verify_summary`.
+pub fn verify_review(project_id: u64, text: &str) -> String {
+    take_string(unsafe { engine_verify_review(project_id, cstr(text).as_ptr()) })
+}
+
+/// Verify a single AI statement about the current project reality.
+///
+/// Returns a structured evidence report with an aggregate verdict of
+/// `Supported`, `Contradicted`, `PartiallyVerified`, or `Unknown` plus
+/// a `confidence` score and the per-claim `results` array.
+pub fn verify_reality(project_id: u64, text: &str) -> String {
+    take_string(unsafe { engine_verify_reality(project_id, cstr(text).as_ptr()) })
+}
+
+/// Scan all declared capabilities and contracts for drift between
+/// documentation and the actual codebase.
+///
+/// Detects `MissingCapability` (declared but no implementing entity with
+/// callers) and `BrokenContract` (declared but no enforcing code). Each
+/// detected drift is persisted as a `finding` row and returned in the
+/// JSON output.
+pub fn detect_drift(project_id: u64) -> String {
+    take_string(unsafe { engine_detect_drift(project_id) })
 }
 
 // ── Phase A: Fast Scan ────────────────────────────────────────
