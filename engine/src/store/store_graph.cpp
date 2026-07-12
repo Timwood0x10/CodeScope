@@ -7,6 +7,7 @@
 #include "../model/plugins/capability.h"
 #include "../model/plugins/architecture.h"
 #include "../model/plugins/contract.h"
+#include "../model/state_builder.h"
 
 #include <algorithm>
 #include <climits>
@@ -249,15 +250,9 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// (caller_idx, callee_by_name, callee_by_short, decl_idx, ir_edge_target),
 	// consuming ~2-4GB for 4M nodes. The new approach uses SQL temp tables
 	// with indexes, keeping peak memory bounded by SQLite's cache (~64MB).
-	if (build_calls) {
-		int64_t n = buildCallEdgesSQL(project_id);
-		if (n < 0) {
-			fprintf(stderr,
-				"buildGraph: buildCallEdgesSQL failed for "
-				"project %s [module=store, method=buildGraph]\n",
-				pid.c_str());
-		}
-	}
+	// P3 HashMap (buildCallEdgesSQL) has been replaced by the new
+	// Resolver Pipeline (Phase 1.3) with multi-factor scoring.
+	(void)build_calls;
 	auto t_call = Clock::now();
 
 	// ── Build CSR adjacency from call edges ──
@@ -530,6 +525,12 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		me.addPlugin(std::make_unique<model::ArchitecturePlugin>(this));
 		me.addPlugin(std::make_unique<model::ContractPlugin>(this));
 		me.runAll(project_id);
+	}
+
+	// Phase 1.5: State Builder — build module summaries + state tables
+	{
+		model::StateBuilder sb(this, project_id);
+		sb.buildAll();
 	}
 
 	// Phase timing breakdown

@@ -494,28 +494,7 @@ int64_t GraphStore::insertImport(uint64_t project_id, int64_t source_scope_id,
 
 // ── resolved_reference ──────────────────────────────────────────
 
-bool GraphStore::insertResolvedReference(uint64_t reference_id,
-					 uint64_t symbol_id, double confidence,
-					 const std::string &resolver,
-					 const std::string &reason)
-{
-	const char *sql =
-		"INSERT INTO resolved_reference "
-		"(reference_id, symbol_id, confidence, resolver, reason) "
-		"VALUES (?,?,?,?,?)";
-	sqlite3_stmt *stmt = getCachedStmt(sql);
-	if (!stmt)
-		return false;
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(reference_id));
-	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(symbol_id));
-	sqlite3_bind_double(stmt, 3, confidence);
-	sqlite3_bind_text(stmt, 4, resolver.c_str(), -1, SQLITE_STATIC);
-	sqlite3_bind_text(stmt, 5, reason.c_str(), -1, SQLITE_STATIC);
-	if (sqlite3_step(stmt) != SQLITE_DONE) {
-		error_ = "insertResolvedReference: step failed";
-		return false;
-	}
-	return true;
-}
+// insertResolvedReference has been removed.
+// The resolved_reference table was replaced by relation.confidence + reason.
 
 } // namespace store

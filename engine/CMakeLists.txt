@@ -189,7 +189,6 @@ set(ENGINE_SOURCES
     src/store/store_graph.cpp
     src/store/store_query.cpp
     src/store/store_project.cpp
-    src/store/store_intern.cpp
     src/store/store_knowledge.cpp
     src/query/query_engine.cpp
     src/query/query_analysis.cpp
@@ -205,6 +204,7 @@ set(ENGINE_SOURCES
 	    src/model/plugins/capability.cpp
 	    src/model/plugins/architecture.cpp
 	    src/model/plugins/contract.cpp
+	    src/model/state_builder.cpp
     src/resolver/project_index.cpp
 	    src/resolver/project_resolver.cpp
 		    src/verify/capability_verifier.cpp

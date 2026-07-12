@@ -12,16 +12,9 @@ namespace resolver
 
 namespace
 {
-// Score bonuses for the constraint-based resolver. Centralized here so the
-// relative weights stay visible and tunable in one place.
-constexpr int kScoreModule = 100; // same module as caller
-constexpr int kScoreImport = 80; // imported target module
-constexpr int kScoreVisibilityPublic = 40; // exported/public symbol
-constexpr int kScoreVisibilityModulePrivate = 20; // module-private symbol
-constexpr int kScoreScopeSameLanguage = 30; // same source language
-constexpr int kScoreDistanceSameFile = 10; // same file as caller
-constexpr int kScoreDistanceSameDir = 5; // same directory as caller
-constexpr int kScoreNameExact = 2; // exact name match
+// Score constants have been replaced by the multi-factor scoring system
+// in factors.h. The applyConstraints() method now uses weighted factors
+// from FactorResult: ModuleMatch(0.30), ImportMatch(0.30), etc.
 
 // Fuzzy resolver candidate limit — enough alternatives without flooding.
 constexpr size_t kFuzzyCandidateLimit = 5;
@@ -29,13 +22,8 @@ constexpr size_t kFuzzyCandidateLimit = 5;
 // Relation type constant for call edges in the relation table.
 constexpr int kRelationTypeCall = 1;
 
-// Confidence thresholds for resolved references.
-constexpr double kConfExactMatch = 0.95; // exact-name + module match
-constexpr double kConfImportMatch = 0.85; // import-only match
-constexpr double kConfProximityMatch = 0.70; // same-file/directory match
-constexpr double kConfFuzzyMatch = 0.50; // fuzzy fallback (capped)
-constexpr int kConfThresholdExact = 100;
-constexpr int kConfThresholdImport = 50;
+// Confidence thresholds were removed when resolved_reference table was
+// deprecated. Score is now stored directly in relation.confidence.
 
 // Infer the source language from a file path's extension. Used by the
 // ScopeConstraint to prefer same-language candidates (a Rust symbol is
@@ -281,22 +269,8 @@ int64_t ResolverPipeline::run()
 	}
 	sqlite3_bind_int64(ref_st, 1, static_cast<int64_t>(project_id_));
 
-	// Prepare insert statement for resolved_reference
-	const char *ins_rr_sql =
-		"INSERT INTO resolved_reference "
-		"(reference_id, symbol_id, confidence, resolver, reason) "
-		"VALUES (?,?,?,?,?)";
-	sqlite3_stmt *ins_rr_st = nullptr;
-	if (sqlite3_prepare_v2(store_->handle(), ins_rr_sql, -1, &ins_rr_st,
-			       nullptr) != SQLITE_OK) {
-		fprintf(stderr,
-			"[module=resolver, method=run] "
-			"prepare resolved_reference insert failed: %s\n",
-			sqlite3_errmsg(store_->handle()));
-		sqlite3_finalize(ref_st);
-		return -1;
-	}
-
+	// resolved_reference table is deprecated.
+	// Confidence + reason are stored directly in the relation and graph_edges tables.
 	// Prepare insert statement for relation (call edge)
 	std::string ins_rel_sql =
 		"INSERT OR IGNORE INTO relation "
@@ -317,7 +291,7 @@ int64_t ResolverPipeline::run()
 			"prepare relation insert failed: %s\n",
 			sqlite3_errmsg(store_->handle()));
 		sqlite3_finalize(ref_st);
-		sqlite3_finalize(ins_rr_st);
+		// resolved_reference table is deprecated
 		return -1;
 	}
 
@@ -331,8 +305,8 @@ int64_t ResolverPipeline::run()
 	int64_t total_refs = 0;
 	while (sqlite3_step(ref_st) == SQLITE_ROW) {
 		total_refs++;
-		uint64_t ref_id =
-			static_cast<uint64_t>(sqlite3_column_int64(ref_st, 0));
+		// ref_id was used for resolved_reference (deprecated)
+		(void)sqlite3_column_int64(ref_st, 0);
 		const char *name_c = reinterpret_cast<const char *>(
 			sqlite3_column_text(ref_st, 1));
 		uint64_t caller_id =
@@ -349,7 +323,6 @@ int64_t ResolverPipeline::run()
 		// Find candidates by name (from pre-loaded HashMap).
 		// Use find() + move to avoid populating the map with empty
 		// entries for missed lookups.
-		bool is_fuzzy = false;
 		std::vector<Candidate> candidates;
 		auto it = entity_index.find(name);
 		if (it != entity_index.end())
@@ -359,7 +332,6 @@ int64_t ResolverPipeline::run()
 			// prefix, and suffix matching so references with
 			// case differences or partial names are still
 			// resolved instead of dropped.
-			is_fuzzy = true;
 			auto fuzzy_ids =
 				fuzzy_->resolve(name, kFuzzyCandidateLimit);
 			if (fuzzy_ids.empty())
@@ -419,40 +391,36 @@ int64_t ResolverPipeline::run()
 		if (best_id == 0)
 			continue;
 
-		// Confidence mapping: fuzzy results are always capped at
-		// kConfFuzzyMatch regardless of score, since the name did not
-		// match exactly. For exact-name matches, score>100 is nearly
-		// certain, score>50 is high, score>0 is medium.
-		double confidence;
-		if (is_fuzzy) {
-			confidence = kConfFuzzyMatch;
-		} else {
-			confidence = best_score > kConfThresholdExact ?
-					     kConfExactMatch :
-				     best_score > kConfThresholdImport ?
-					     kConfImportMatch :
-				     best_score > 0 ? kConfProximityMatch :
-						      kConfFuzzyMatch;
-		}
+		// Confidence was used for resolved_reference (deprecated).
+		// Score is now stored directly in relation.confidence.
+		(void)best_score;
 		std::string reason = "matched " + best_reason +
 				     " (score=" + std::to_string(best_score) +
 				     ")";
-		sqlite3_bind_int64(ins_rr_st, 1, static_cast<int64_t>(ref_id));
-		sqlite3_bind_int64(ins_rr_st, 2, static_cast<int64_t>(best_id));
-		sqlite3_bind_double(ins_rr_st, 3, confidence);
-		sqlite3_bind_text(ins_rr_st, 4, "pipeline", -1, SQLITE_STATIC);
-		sqlite3_bind_text(ins_rr_st, 5, reason.c_str(), -1,
-				  SQLITE_STATIC);
-		if (sqlite3_step(ins_rr_st) != SQLITE_DONE)
-			fprintf(stderr,
-				"[module=resolver, method=run] "
-				"insert resolved_reference failed (rc=%d): %s\n",
-				sqlite3_errcode(store_->handle()),
-				sqlite3_errmsg(store_->handle()));
-		else
-			resolved_count++;
-		sqlite3_reset(ins_rr_st);
-
+		// resolved_reference writes removed
+		// resolved_reference table is deprecated — confidence + reason stored in relation.
+		// Reason JSON is built from the best candidate's factors.
+		std::string reason_json = "[]";
+		for (auto &c : candidates) {
+			if (c.entity_id == best_id && !c.factors.empty()) {
+				std::string json = "[";
+				for (size_t fi = 0; fi < c.factors.size();
+				     fi++) {
+					if (fi > 0)
+						json += ",";
+					json += "{\"name\":\"" +
+						c.factors[fi].name +
+						"\",\"score\":" +
+						std::to_string(
+							c.factors[fi].score) +
+						"}";
+				}
+				json += "]";
+				reason_json = json;
+				break;
+			}
+		}
+		resolved_count++;
 		// Write to relation (call edge)
 		sqlite3_bind_int64(ins_rel_st, 1,
 				   static_cast<int64_t>(project_id_));
@@ -473,10 +441,49 @@ int64_t ResolverPipeline::run()
 				"insert relation failed (rc=%d): %s\n",
 				rel_rc, sqlite3_errmsg(store_->handle()));
 		sqlite3_reset(ins_rel_st);
+
+		// Also write to graph_edges for CSR compatibility
+		{
+			const char *ge_sql =
+				"INSERT OR IGNORE INTO graph_edges "
+				"(project_id, source_node_id, target_node_id, "
+				"edge_type) VALUES (?,?,?,?)";
+			sqlite3_stmt *ge_st = nullptr;
+			if (sqlite3_prepare_v2(store_->handle(), ge_sql, -1,
+					       &ge_st, nullptr) == SQLITE_OK) {
+				sqlite3_bind_int64(
+					ge_st, 1,
+					static_cast<int64_t>(project_id_));
+				sqlite3_bind_int64(
+					ge_st, 2,
+					static_cast<int64_t>(caller_id));
+				sqlite3_bind_int64(
+					ge_st, 3,
+					static_cast<int64_t>(best_id));
+				sqlite3_bind_int(ge_st, 4, 1);
+				int ge_rc = sqlite3_step(ge_st);
+				if (ge_rc != SQLITE_DONE &&
+				    ge_rc != SQLITE_CONSTRAINT)
+					fprintf(stderr,
+						"[module=resolver, method=run] "
+						"insert graph_edges failed "
+						"(rc=%d): %s\n",
+						ge_rc,
+						sqlite3_errmsg(
+							store_->handle()));
+				sqlite3_finalize(ge_st);
+			} else {
+				fprintf(stderr,
+					"[module=resolver, method=run] "
+					"prepare graph_edges insert failed: "
+					"%s\n",
+					sqlite3_errmsg(store_->handle()));
+			}
+		}
 	}
 
 	sqlite3_finalize(ref_st);
-	sqlite3_finalize(ins_rr_st);
+	// resolved_reference table is deprecated
 	sqlite3_finalize(ins_rel_st);
 	if (lk_st)
 		sqlite3_finalize(lk_st);

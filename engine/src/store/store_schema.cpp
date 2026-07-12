@@ -105,6 +105,7 @@ bool GraphStore::createSchema()
             start_col INTEGER NOT NULL,
             end_row INTEGER NOT NULL,
             end_col INTEGER NOT NULL,
+            module_state INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY (project_id) REFERENCES projects(id)
         );
 
@@ -407,19 +408,6 @@ bool GraphStore::createSchema()
         CREATE INDEX IF NOT EXISTS idx_scope_project ON scope(project_id, parent_id);
         CREATE INDEX IF NOT EXISTS idx_import_project ON import(project_id, alias);
 
-        -- resolved_reference: resolution results for each reference.
-        CREATE TABLE IF NOT EXISTS resolved_reference (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            reference_id INTEGER NOT NULL,
-            symbol_id INTEGER NOT NULL,
-            confidence REAL NOT NULL DEFAULT 0.0,
-            resolver TEXT NOT NULL,
-            reason TEXT DEFAULT '',
-            FOREIGN KEY (reference_id) REFERENCES reference(id)
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_resolved_ref_ref ON resolved_reference(reference_id);
-
         -- workflow: high-level business flow (e.g. "Login").
         CREATE TABLE IF NOT EXISTS workflow (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -551,6 +539,28 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 			if (!has_knowledge_ready) {
 				exec("ALTER TABLE project_readiness "
 				     "ADD COLUMN knowledge_ready INTEGER DEFAULT 0");
+			}
+		}
+	}
+
+	// Migration: add module_state column to entity table (v0.5+)
+	{
+		sqlite3_stmt *probe = nullptr;
+		if (sqlite3_prepare_v2(db_, "PRAGMA table_info(entity)", -1,
+				       &probe, nullptr) == SQLITE_OK) {
+			bool has_module_state = false;
+			while (sqlite3_step(probe) == SQLITE_ROW) {
+				const char *col =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(probe, 1));
+				if (col && std::string(col) == "module_state")
+					has_module_state = true;
+			}
+			sqlite3_finalize(probe);
+			if (!has_module_state) {
+				exec("ALTER TABLE entity "
+				     "ADD COLUMN module_state "
+				     "INTEGER NOT NULL DEFAULT 0");
 			}
 		}
 	}

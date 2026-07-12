@@ -497,11 +497,6 @@ class GraphStore {
 			     const std::string &target_path,
 			     const std::string &alias, int is_pub);
 
-	bool insertResolvedReference(uint64_t reference_id, uint64_t symbol_id,
-				     double confidence,
-				     const std::string &resolver,
-				     const std::string &reason);
-
 	bool insertDocument(uint64_t project_id, int type,
 			    const std::string &file_path,
 			    const std::string &content, int start_line,
@@ -616,7 +611,8 @@ class GraphStore {
 	 * @param project_id  Project to build call edges for.
 	 * @return Number of call edges inserted, or -1 on error.
 	 */
-	int64_t buildCallEdgesSQL(uint64_t project_id);
+	// buildCallEdgesSQL has been replaced by the new Resolver Pipeline
+	// (pipeline.cpp) with multi-factor scoring. The old function was removed.
 };
 
 // ── Index Progress (global, for client polling) ─────────────
