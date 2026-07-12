@@ -173,24 +173,6 @@ flowchart LR
 | `find_callees` | 调查函数调用了什么 | 不需要递归展开时 | **~10-50** | 同上 |
 | `get_hotspots` | 找最热门的函数 | 项目 <100 个函数 | **~500** | caller_count=0 说明调用边未构建 |
 
-### 4.3 社区检测 ⚠️
-
-> 通过 Label Propagation 算法将代码图节点按关系紧密程度分组。适用于理解代码模块边界、检测架构违规的场景，但 Token 消耗可能很大。
-
-| 场景 | 推荐用法 | 预期 Token |
-|------|---------|-----------|
-| **接手 legacy 项目** | `max_communities=20` | ~1K-10K |
-| **架构逆向** | `max_members=5, max_communities=50` | ~5K-50K |
-| **检测架构违规** | `include_members=true` | ~10K-200K |
-| **小型项目 (<500 节点)** | 默认参数 | ~1K |
-| **大型项目 (>10K 节点)** | ⚠️ `max_communities=10`, `include_members=false` | ~1K-50K |
-
-**副作用：**
-1. **Token 爆炸**：123K 节点项目可达 **200K tokens**
-2. **耗时**：全图 Label Propagation 算法数百 ms
-3. **信息密度**：`get_module_tree`（4 tok）通常足够；社区检测仅作补充
-4. **屏蔽策略**：调低 `max_communities`（10-20），保持 `include_members=false`
-
 ### 4.4 选择策略速查
 
 ```

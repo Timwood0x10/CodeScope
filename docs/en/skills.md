@@ -82,7 +82,6 @@ graph TB
         GB["Graph Builder<br/>(call + ref)"]
         CX["Complexity<br/>Analyzer"]
         LS["LSP Client"]
-        CD["Community<br/>Detection"]
     end
     subgraph "SQLite (WAL)"
         N["graph_nodes<br/>(nodes)"]
@@ -172,24 +171,6 @@ flowchart LR
 | `find_callers` | Investigate who calls a function (bug impact) | **When CALLS edges aren't built** | **~10-50** | Needs `buildGraph(true)` |
 | `find_callees` | What a function calls (behavior understanding) | When recursive expansion isn't needed | **~10-50** | Same as above |
 | `get_hotspots` | Find **most-called** functions (optimization targets) | Projects <100 functions | **~500** | caller_count=0 means call edges not built |
-
-### 4.3 Community Detection ⚠️
-
-> Uses Label Propagation to group graph nodes by relationship density. Useful for understanding module boundaries and detecting architecture violations, but token cost can be high.
-
-| Scenario | Recommended Usage | Expected Token Cost |
-|----------|-----------------|-------------------|
-| **Legacy project onboarding** | `max_communities=20` | ~1K-10K |
-| **Reverse architecture** | `max_members=5, max_communities=50` | ~5K-50K |
-| **Architecture violation detection** | `include_members=true` | ~10K-200K |
-| **Small projects (<500 nodes)** | Default params | ~1K |
-| **Large projects (>10K nodes)** | ⚠️ `max_communities=10`, `include_members=false` | ~1K-50K |
-
-**Side effects:**
-1. **Token explosion**: 123K-node project can hit **200K tokens** even with constraints
-2. **Latency**: Hundreds of ms on large projects
-3. **Information density**: `get_module_tree` (4 tok) is often sufficient; use community detection as supplement only
-4. **Mitigation**: Lower `max_communities` (10-20), keep `include_members=false` (default)
 
 ### 4.4 Tool Selection Strategy
 
