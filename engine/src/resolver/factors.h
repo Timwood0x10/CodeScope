@@ -8,6 +8,29 @@
 namespace resolver
 {
 
+// ── Named constants for factor weights ──────────────────────────────
+constexpr double kWeightModuleMatch        = 0.15;
+constexpr double kWeightImportMatch        = 0.80;  // Dominant for cross-module
+constexpr double kWeightNamespaceMatch     = 0.10;
+constexpr double kWeightSignatureMatch     = 0.10;
+constexpr double kWeightDistanceMatch      = 0.05;
+constexpr double kWeightConstructorMatch   = 0.10;
+constexpr double kWeightReceiverMatch      = 0.15;
+constexpr double kWeightCommonNamePenalty  = 0.10;
+
+// ── Named constants for scoring values ──────────────────────────────
+constexpr double kScoreExactMatch   = 1.0;
+constexpr double kScorePartialMatch = 0.5;
+constexpr double kScorePenalty      = -0.5;
+constexpr double kScoreSiblingModule = 0.5;
+constexpr double kScoreSameDirectory = 0.3;
+
+// ── Threshold ───────────────────────────────────────────────────────
+constexpr double kResolutionThreshold = 0.40;
+
+// ── Common name penalty value ───────────────────────────────────────
+constexpr double kCommonNamePenaltyValue = 0.25;
+
 /// A single factor's scoring result.
 struct FactorResult {
 	std::string name; // Factor name, e.g. "ImportMatch", "NamespaceMatch"
@@ -75,6 +98,11 @@ double factorReceiverMatch(const std::string &ref_name,
 			   const std::string &caller_file,
 			   const std::string &candidate_name,
 			   const std::string &candidate_file);
+
+/// Check if the name is a very common function name that causes
+/// high false-positive cross-module matches (e.g. Len, Init, Run).
+/// Returns kCommonNamePenaltyValue if the name is in the common list, 0.0 otherwise.
+double factorCommonNamePenalty(const std::string &name);
 
 } // namespace resolver
 

@@ -125,7 +125,7 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 		{
 			FactorResult f;
 			f.name = "ModuleMatch";
-			f.weight = 0.30;
+			f.weight = kWeightModuleMatch;
 			f.score =
 				factorNamespaceMatch(caller_file, c.file_path);
 			f.detail = (f.score > 0.0) ? "same module" :
@@ -133,11 +133,11 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 			factors.push_back(f);
 		}
 
-		// Factor 2: ImportMatch
+		// Factor 2: ImportMatch — dominant weight for cross-module calls
 		{
 			FactorResult f;
 			f.name = "ImportMatch";
-			f.weight = 0.30;
+			f.weight = kWeightImportMatch;
 			f.score = factorImportMatch(project_id_,
 						    store_->handle(),
 						    caller_file, c.file_path,
@@ -151,7 +151,7 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 		{
 			FactorResult f;
 			f.name = "NamespaceMatch";
-			f.weight = 0.20;
+			f.weight = kWeightNamespaceMatch;
 			f.score =
 				factorNamespaceMatch(caller_file, c.file_path);
 			f.detail = (f.score > 0.0) ? "shared namespace" :
@@ -163,7 +163,7 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 		{
 			FactorResult f;
 			f.name = "SignatureMatch";
-			f.weight = 0.15;
+			f.weight = kWeightSignatureMatch;
 			f.score = factorSignatureMatch(0, c.arity);
 			factors.push_back(f);
 		}
@@ -172,7 +172,7 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 		{
 			FactorResult f;
 			f.name = "DistanceMatch";
-			f.weight = 0.15;
+			f.weight = kWeightDistanceMatch;
 			f.score = factorDistanceMatch(caller_file, c.file_path);
 			factors.push_back(f);
 		}
@@ -181,7 +181,7 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 		{
 			FactorResult f;
 			f.name = "ConstructorMatch";
-			f.weight = 0.20;
+			f.weight = kWeightConstructorMatch;
 			f.score =
 				factorConstructorMatch(callee_name, c.name, 0);
 			f.detail = (f.score > 0.0) ? "constructor" :
@@ -193,11 +193,26 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 		{
 			FactorResult f;
 			f.name = "ReceiverMatch";
-			f.weight = 0.25;
+			f.weight = kWeightReceiverMatch;
 			f.score = factorReceiverMatch(callee_name, caller_file,
 						      c.name, c.file_path);
 			f.detail = (f.score > 0.0) ? "receiver match" :
 						     "no receiver match";
+			factors.push_back(f);
+		}
+
+		// Factor 8: CommonNamePenalty — reduce score for very common names
+		// Only applies to cross-module candidates (same-module should not be penalized).
+		{
+			FactorResult f;
+			f.name = "CommonNamePenalty";
+			f.weight = kWeightCommonNamePenalty;
+			// Only penalize if candidate is in a different module
+			bool same_module = (factorNamespaceMatch(caller_file, c.file_path) > 0.0);
+			double penalty = same_module ? 0.0 : factorCommonNamePenalty(callee_name);
+			f.score = -penalty;
+			f.detail = (f.score < 0.0) ? "common name penalty (cross-module)" :
+						     "unique or same-module name";
 			factors.push_back(f);
 		}
 
@@ -377,18 +392,18 @@ int64_t ResolverPipeline::run()
 
 		// Pick the best match (highest score), skip self-reference
 		uint64_t best_id = 0;
-		int best_score = -1;
+		double best_score = -1.0;
 		std::string best_reason;
 		for (auto &c : candidates) {
 			if (c.entity_id == caller_id)
 				continue;
-			if (c.score > best_score) {
+			if (c.total_score > best_score) {
 				best_id = c.entity_id;
-				best_score = c.score;
+				best_score = c.total_score;
 				best_reason = c.name;
 			}
 		}
-		if (best_id == 0)
+		if (best_id == 0 || best_score < kResolutionThreshold)
 			continue;
 
 		// Confidence was used for resolved_reference (deprecated).
