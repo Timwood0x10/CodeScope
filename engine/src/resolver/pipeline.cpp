@@ -264,9 +264,17 @@ int64_t ResolverPipeline::run()
 	}
 
 	// Prepare insert statement for relation (call edge)
-	std::string ins_rel_sql = "INSERT OR IGNORE INTO relation "
-				  "(project_id, source_id, target_id, type) "
-				  "VALUES (?,?,?,?)";
+	std::string ins_rel_sql =
+		"INSERT OR IGNORE INTO relation "
+		"(project_id, source_id, target_id, type) "
+		"SELECT ?, ?, ?, ? "
+		"WHERE NOT EXISTS ("
+		" SELECT 1 FROM entity e WHERE (e.id = ? OR e.id = ?)"
+		" AND (e.file_path LIKE '%_test.%'"
+		"  OR e.file_path LIKE '%/tests/%'"
+		"  OR e.file_path LIKE '%_spec.%'"
+		"  OR e.file_path LIKE '%/benches/%'"
+		"  OR e.file_path LIKE '%__test__%'))";
 	sqlite3_stmt *ins_rel_st = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), ins_rel_sql.c_str(), -1,
 			       &ins_rel_st, nullptr) != SQLITE_OK) {
@@ -419,6 +427,11 @@ int64_t ResolverPipeline::run()
 		sqlite3_bind_int64(ins_rel_st, 3,
 				   static_cast<int64_t>(best_id));
 		sqlite3_bind_int(ins_rel_st, 4, kRelationTypeCall);
+		// Bind filter params (source + target for test file check)
+		sqlite3_bind_int64(ins_rel_st, 5,
+				   static_cast<int64_t>(caller_id));
+		sqlite3_bind_int64(ins_rel_st, 6,
+				   static_cast<int64_t>(best_id));
 		int rel_rc = sqlite3_step(ins_rel_st);
 		if (rel_rc != SQLITE_DONE && rel_rc != SQLITE_CONSTRAINT)
 			fprintf(stderr,

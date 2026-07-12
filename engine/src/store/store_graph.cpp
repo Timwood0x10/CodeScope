@@ -289,7 +289,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			" AND sr.file_path = r2n.file_path "
 			"WHERE sr.project_id=" +
 			std::to_string(project_id) +
-			" AND sr.kind IN (9,10) AND sr.name != ''";
+			" AND sr.kind IN (9,10) AND sr.name != '' AND sr.file_path NOT LIKE '%_test.%' AND sr.file_path NOT LIKE '%/tests/%' AND sr.file_path NOT LIKE '%_spec.%' AND sr.file_path NOT LIKE '%/benches/%' AND sr.file_path NOT LIKE '%__test__%'";
 		exec(ref_sql.c_str());
 	}
 
@@ -298,7 +298,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	{
 		const char *fetch_sql =
 			"SELECT sr.name, sr.project_id, sr.file_path FROM semantic_records sr "
-			"WHERE sr.project_id=? AND sr.kind=11 AND sr.name != ''";
+			"WHERE sr.project_id=? AND sr.kind=11 AND sr.name != '' AND sr.file_path NOT LIKE '%_test.%' AND sr.file_path NOT LIKE '%/tests/%' AND sr.file_path NOT LIKE '%_spec.%' AND sr.file_path NOT LIKE '%/benches/%'";
 		sqlite3_stmt *fetch_st = nullptr;
 		if (sqlite3_prepare_v2(db_, fetch_sql, -1, &fetch_st,
 				       nullptr) == SQLITE_OK) {
@@ -485,7 +485,10 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 				 std::to_string(project_id) +
 				 " AND file_path NOT LIKE '%_test.%'"
 				 " AND file_path NOT LIKE '%/tests/%'"
-				 " AND file_path NOT LIKE '%test_%'";
+				 ""
+				 " AND file_path NOT LIKE '%_spec.%'"
+				 " AND file_path NOT LIKE '%/benches/%'"
+				 " AND file_path NOT LIKE '%__test__%'";
 	exec(entity_sql.c_str());
 
 	// Phase 1.1: dual-write to relation table (production code only)
@@ -498,11 +501,17 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		"JOIN graph_nodes src ON e.source_node_id = src.id"
 		" AND src.file_path NOT LIKE '%_test.%'"
 		" AND src.file_path NOT LIKE '%/tests/%'"
-		" AND src.file_path NOT LIKE '%test_%'"
+		""
+		" AND src.file_path NOT LIKE '%_spec.%'"
+		" AND src.file_path NOT LIKE '%/benches/%'"
+		" AND src.file_path NOT LIKE '%__test__%'"
 		"JOIN graph_nodes tgt ON e.target_node_id = tgt.id"
 		" AND tgt.file_path NOT LIKE '%_test.%'"
 		" AND tgt.file_path NOT LIKE '%/tests/%'"
-		" AND tgt.file_path NOT LIKE '%test_%'"
+		""
+		" AND tgt.file_path NOT LIKE '%_spec.%'"
+		" AND tgt.file_path NOT LIKE '%/benches/%'"
+		" AND tgt.file_path NOT LIKE '%__test__%'"
 		"WHERE e.project_id=" +
 		std::to_string(project_id);
 	exec(rel_sql.c_str());
