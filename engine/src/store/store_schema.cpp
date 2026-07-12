@@ -544,56 +544,57 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 	}
 
 	// Migration: add module_state column to entity table (v0.5+)
-	  {
-	   sqlite3_stmt *probe = nullptr;
-	   if (sqlite3_prepare_v2(db_, "PRAGMA table_info(entity)", -1,
-	            &probe, nullptr) == SQLITE_OK) {
-	    bool has_module_state = false;
-	    while (sqlite3_step(probe) == SQLITE_ROW) {
-	     const char *col =
-	      reinterpret_cast<const char *>(
-	       sqlite3_column_text(probe, 1));
-	     if (col && std::string(col) == "module_state")
-	      has_module_state = true;
-	    }
-	    sqlite3_finalize(probe);
-	    if (!has_module_state) {
-	     exec("ALTER TABLE entity "
-	          "ADD COLUMN module_state "
-	          "INTEGER NOT NULL DEFAULT 0");
-	    }
-	   }
-	  }
+	{
+		sqlite3_stmt *probe = nullptr;
+		if (sqlite3_prepare_v2(db_, "PRAGMA table_info(entity)", -1,
+				       &probe, nullptr) == SQLITE_OK) {
+			bool has_module_state = false;
+			while (sqlite3_step(probe) == SQLITE_ROW) {
+				const char *col =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(probe, 1));
+				if (col && std::string(col) == "module_state")
+					has_module_state = true;
+			}
+			sqlite3_finalize(probe);
+			if (!has_module_state) {
+				exec("ALTER TABLE entity "
+				     "ADD COLUMN module_state "
+				     "INTEGER NOT NULL DEFAULT 0");
+			}
+		}
+	}
 
-	  // Migration: add arity + is_static columns to semantic_records (v0.5+)
-	  {
-	   sqlite3_stmt *probe = nullptr;
-	   if (sqlite3_prepare_v2(db_, "PRAGMA table_info(semantic_records)", -1,
-	            &probe, nullptr) == SQLITE_OK) {
-	    bool has_arity = false;
-	    bool has_is_static = false;
-	    while (sqlite3_step(probe) == SQLITE_ROW) {
-	     const char *col =
-	      reinterpret_cast<const char *>(
-	       sqlite3_column_text(probe, 1));
-	     if (col) {
-	      if (std::string(col) == "arity")
-	       has_arity = true;
-	      if (std::string(col) == "is_static")
-	       has_is_static = true;
-	     }
-	    }
-	    sqlite3_finalize(probe);
-	    if (!has_arity) {
-	     exec("ALTER TABLE semantic_records "
-	          "ADD COLUMN arity INTEGER DEFAULT 0");
-	    }
-	    if (!has_is_static) {
-	     exec("ALTER TABLE semantic_records "
-	          "ADD COLUMN is_static INTEGER DEFAULT 0");
-	    }
-	   }
-	  }
+	// Migration: add arity + is_static columns to semantic_records (v0.5+)
+	{
+		sqlite3_stmt *probe = nullptr;
+		if (sqlite3_prepare_v2(db_,
+				       "PRAGMA table_info(semantic_records)",
+				       -1, &probe, nullptr) == SQLITE_OK) {
+			bool has_arity = false;
+			bool has_is_static = false;
+			while (sqlite3_step(probe) == SQLITE_ROW) {
+				const char *col =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(probe, 1));
+				if (col) {
+					if (std::string(col) == "arity")
+						has_arity = true;
+					if (std::string(col) == "is_static")
+						has_is_static = true;
+				}
+			}
+			sqlite3_finalize(probe);
+			if (!has_arity) {
+				exec("ALTER TABLE semantic_records "
+				     "ADD COLUMN arity INTEGER DEFAULT 0");
+			}
+			if (!has_is_static) {
+				exec("ALTER TABLE semantic_records "
+				     "ADD COLUMN is_static INTEGER DEFAULT 0");
+			}
+		}
+	}
 
 	// Note: vec0 embeddings table is created in engine_init() after
 	// sqlite-vec extension is loaded via dlopen. Not needed here.

@@ -1,18 +1,77 @@
 #include "python_visitor.h"
 #include <cstring>
 #include <tree_sitter/api.h>
+
 namespace ir
 {
+
+// ─── Python built-in functions ─────────────────────────────────────
+//
+// Reference: codebase-memory-mcp (MIT, https://github.com/DeusData/codebase-memory-mcp)
+//   internal/cbm/helpers.c :: python_resolvable_builtins
+//
+// Python built-in functions create false-positive cross-module edges
+// when the Resolver Pipeline matches them by name. Filter them out at
+// the parser level so no reference is created.
+//
+// Unlike codebase-memory-mcp which selectively keeps some resolvable
+// builtins (len, print, str, int, list, dict, range) via LSP, we
+// filter all builtins since we don't have a Go-equivalent LSP for
+// Python. If a Python LSP is added later, this list should be split
+// into "skip" and "resolvable" categories.
+static bool isPythonBuiltin(const std::string &name)
+{
+	static const char *kBuiltins[] = {
+		"abs",	    "all",	  "any",	 "ascii",
+		"bin",	    "bool",	  "bytearray",	 "bytes",
+		"callable", "chr",	  "classmethod", "compile",
+		"complex",  "delattr",	  "dict",	 "dir",
+		"divmod",   "enumerate",  "eval",	 "exec",
+		"filter",   "float",	  "format",	 "frozenset",
+		"getattr",  "globals",	  "hasattr",	 "hash",
+		"help",	    "hex",	  "id",		 "input",
+		"int",	    "isinstance", "issubclass",	 "iter",
+		"len",	    "list",	  "locals",	 "map",
+		"max",	    "memoryview", "min",	 "next",
+		"object",   "oct",	  "open",	 "ord",
+		"pow",	    "print",	  "property",	 "range",
+		"repr",	    "reversed",	  "round",	 "set",
+		"setattr",  "slice",	  "sorted",	 "staticmethod",
+		"str",	    "sum",	  "super",	 "tuple",
+		"type",	    "vars",	  "zip",	 "__import__",
+		nullptr,
+	};
+	for (const char **b = kBuiltins; *b; b++) {
+		if (name == *b)
+			return true;
+	}
+	return false;
+}
 PythonVisitor::PythonVisitor()
 {
 }
 SemanticUnit *PythonVisitor::visit(TSTree *tree, const char *source,
 				   const char *fp)
 {
-	SemanticUnit *unit = JsVisitor::visit(tree, source, fp);
-	if (unit)
-		unit->setLanguage("python");
-	return unit;
+	// Set language BEFORE tree traversal so IR nodes carry correct language.
+	// Reference: codebase-memory-mcp (MIT) helpers.c :: cbm_is_exported()
+	unit_ = new SemanticUnit();
+	SemanticEmitter emitter(unit_);
+	emitter_ = &emitter;
+	unit_->setFilePath(fp);
+	unit_->setLanguage("python");
+	source_ = source;
+
+	TSNode root_node = ts_tree_root_node(tree);
+	pushScope();
+	SourceRange root_loc = location(root_node);
+	uint64_t root_id = emitter_->emitVariable("", root_loc, 0);
+	(void)root_id;
+	visitChildren(root_node, 0);
+	popScope();
+
+	emitter_ = nullptr;
+	return unit_;
 }
 void PythonVisitor::visitNode(TSNode node, uint64_t parent_id)
 {
@@ -93,6 +152,15 @@ void PythonVisitor::handleCall(TSNode node, uint64_t parent_id)
 			break;
 		}
 	}
+
+	// Skip Python built-in functions — they are NOT user-defined calls
+	// and the Resolver Pipeline would generate false-positive edges.
+	// Reference: codebase-memory-mcp (MIT) helpers.c :: python_resolvable_builtins
+	if (!name.empty() && isPythonBuiltin(name)) {
+		visitChildren(node, parent_id);
+		return;
+	}
+
 	uint64_t id = emitter_->emitCall(name, loc, parent_id);
 	visitChildren(node, id);
 }

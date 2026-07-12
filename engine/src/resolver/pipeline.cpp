@@ -208,13 +208,27 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 			f.name = "CommonNamePenalty";
 			f.weight = kWeightCommonNamePenalty;
 			// Only penalize if candidate is in a different module
-			bool same_module = (factorNamespaceMatch(caller_file, c.file_path) > 0.0);
-			double penalty = same_module ? 0.0 : factorCommonNamePenalty(callee_name);
+			bool same_module =
+				(factorNamespaceMatch(caller_file,
+						      c.file_path) > 0.0);
+			double penalty =
+				same_module ?
+					0.0 :
+					factorCommonNamePenalty(callee_name);
 			f.score = -penalty;
-			f.detail = (f.score < 0.0) ? "common name penalty (cross-module)" :
-						     "unique or same-module name";
+			f.detail =
+				(f.score < 0.0) ?
+					"common name penalty (cross-module)" :
+					"unique or same-module name";
 			factors.push_back(f);
 		}
+
+		// Factor 9 is reserved for future use.
+		// VisibilityCheck was moved to a hard filter in run() to
+		// ensure language visibility rules (e.g. Go unexported names)
+		// are applied as hard rejections, not weighted factors — a
+		// weighted factor can be overcome by other factors, but a
+		// hard language rule must be absolute.
 
 		c.total_score = computeTotalScore(factors);
 		c.factors = factors;
@@ -390,12 +404,21 @@ int64_t ResolverPipeline::run()
 		// Apply constraints to rank
 		applyConstraints(candidates, caller_file, name);
 
-		// Pick the best match (highest score), skip self-reference
+		// Pick the best match (highest score), skip self-reference.
+		// Also apply hard language visibility rules: if the candidate
+		// is not visible from the caller's module (e.g. Go unexported
+		// names cannot be called cross-package), reject it outright.
+		// Reference: codebase-memory-mcp (MIT) helpers.c :: cbm_is_exported()
 		uint64_t best_id = 0;
 		double best_score = -1.0;
 		std::string best_reason;
 		for (auto &c : candidates) {
 			if (c.entity_id == caller_id)
+				continue;
+			// Hard rejection: language visibility rules
+			if (factorVisibilityCheck(c.language, c.name,
+						  caller_file,
+						  c.file_path) < 0.5)
 				continue;
 			if (c.total_score > best_score) {
 				best_id = c.entity_id;

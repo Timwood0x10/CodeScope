@@ -3,16 +3,91 @@
 #include <tree_sitter/api.h>
 namespace ir
 {
+
+// ─── Rust built-in functions / macros ──────────────────────────────
+//
+// Reference: codebase-memory-mcp (MIT, https://github.com/DeusData/codebase-memory-mcp)
+//   internal/cbm/lsp/c_lsp.c :: is_c_builtin_func() (pattern)
+//
+// Rust compiler built-in macros and core language items that should
+// NOT create reference entries. Without this filter, the Resolver
+// Pipeline matches them by name to any project entity, creating
+// false-positive cross-module edges.
+static bool isRustBuiltin(const std::string &name)
+{
+	static const char *kBuiltins[] = {
+		// Built-in macros (always available, no import needed)
+		"println",
+		"print",
+		"eprintln",
+		"eprint",
+		"format",
+		"write",
+		"writeln",
+		"assert",
+		"assert_eq",
+		"assert_ne",
+		"debug_assert",
+		"debug_assert_eq",
+		"debug_assert_ne",
+		"unreachable",
+		"unimplemented",
+		"todo",
+		"panic",
+		"compile_error",
+		"concat",
+		"env",
+		"option_env",
+		"file",
+		"line",
+		"column",
+		"stringify",
+		"include",
+		"include_str",
+		"include_bytes",
+		"module_path",
+		"cfg",
+		"matches",
+		// Core language items
+		"Some",
+		"None",
+		"Ok",
+		"Err",
+		"clone",
+		"copy",
+		"default",
+		"drop",
+		nullptr,
+	};
+	for (const char **b = kBuiltins; *b; b++) {
+		if (name == *b)
+			return true;
+	}
+	return false;
+}
 RustVisitor::RustVisitor()
 {
 }
 SemanticUnit *RustVisitor::visit(TSTree *tree, const char *source,
 				 const char *fp)
 {
-	SemanticUnit *unit = JsVisitor::visit(tree, source, fp);
-	if (unit)
-		unit->setLanguage("rust");
-	return unit;
+	unit_ = new SemanticUnit();
+	SemanticEmitter emitter(unit_);
+	emitter_ = &emitter;
+	unit_->setFilePath(fp);
+	unit_->setLanguage("rust");
+	source_ = source;
+
+	TSNode root_node = ts_tree_root_node(tree);
+	pushScope();
+	SourceRange root_loc = location(root_node);
+	uint64_t root_id = emitter_->emitVariable("", root_loc, 0);
+	(void)root_id;
+	visitChildren(root_node, 0);
+	popScope();
+
+	emitter_ = nullptr;
+	return unit_;
 }
 void RustVisitor::visitNode(TSNode node, uint64_t parent_id)
 {
@@ -143,6 +218,16 @@ void RustVisitor::handleCall(TSNode node, uint64_t parent_id)
 			break;
 		}
 	}
+
+	// Skip Rust built-in macros and core language items — they are NOT
+	// user-defined calls and the Resolver Pipeline would generate
+	// false-positive edges by matching them to entities with the same name.
+	// Reference: codebase-memory-mcp (MIT) c_lsp.c :: is_c_builtin_func() (pattern)
+	if (!name.empty() && isRustBuiltin(name)) {
+		visitChildren(node, parent_id);
+		return;
+	}
+
 	uint64_t id = emitter_->emitCall(name, loc, parent_id);
 	visitChildren(node, id);
 }

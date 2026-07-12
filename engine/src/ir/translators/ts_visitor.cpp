@@ -13,12 +13,23 @@ TsVisitor::TsVisitor()
 SemanticUnit *TsVisitor::visit(TSTree *tree, const char *source,
 			       const char *file_path)
 {
-	// Delegate to base visit(), then fix language
-	SemanticUnit *unit = JsVisitor::visit(tree, source, file_path);
-	if (unit) {
-		unit->setLanguage("typescript");
-	}
-	return unit;
+	unit_ = new SemanticUnit();
+	SemanticEmitter emitter(unit_);
+	emitter_ = &emitter;
+	unit_->setFilePath(file_path);
+	unit_->setLanguage("typescript");
+	source_ = source;
+
+	TSNode root_node = ts_tree_root_node(tree);
+	pushScope();
+	SourceRange root_loc = location(root_node);
+	uint64_t root_id = emitter_->emitVariable("", root_loc, 0);
+	(void)root_id;
+	visitChildren(root_node, 0);
+	popScope();
+
+	emitter_ = nullptr;
+	return unit_;
 }
 
 void TsVisitor::visitNode(TSNode node, uint64_t parent_id)

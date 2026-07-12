@@ -8,6 +8,61 @@
 namespace ir
 {
 
+// ─── JavaScript / TypeScript built-in functions ────────────────────
+//
+// Reference: codebase-memory-mcp (MIT, https://github.com/DeusData/codebase-memory-mcp)
+//   internal/cbm/lsp/ts_lsp.c :: builtins[] (type names)
+//   internal/cbm/lsp/c_lsp.c  :: is_c_builtin_func() (pattern)
+//
+// JS/TS global built-in functions and constructors. These are NOT
+// user-defined functions and should not create reference entries.
+// The Resolver Pipeline would otherwise match them by name to any
+// project entity with the same name, producing false positives.
+static bool isJsBuiltin(const std::string &name)
+{
+	static const char *kBuiltins[] = {
+		// Global built-in functions
+		"eval",
+		"parseInt",
+		"parseFloat",
+		"isNaN",
+		"isFinite",
+		"decodeURI",
+		"decodeURIComponent",
+		"encodeURI",
+		"encodeURIComponent",
+		"escape",
+		"unescape",
+		// Built-in constructors (used as functions)
+		"Array",
+		"Boolean",
+		"Date",
+		"Error",
+		"Function",
+		"Map",
+		"Number",
+		"Object",
+		"Promise",
+		"RegExp",
+		"Set",
+		"String",
+		"Symbol",
+		"WeakMap",
+		"WeakSet",
+		"BigInt",
+		"Infinity",
+		"NaN",
+		"undefined",
+		"null",
+		nullptr,
+	};
+	for (const char **b = kBuiltins; *b; b++) {
+		if (name == *b)
+			return true;
+	}
+	return false;
+}
+
 // ── Aho-Corasick dispatch table for visitNode ──────────────────
 
 static const ACAutomaton &getJsAC()
@@ -353,6 +408,23 @@ void JsVisitor::visitCallExpr(TSNode node, uint64_t parent_id)
 			callee_name = nodeText(child);
 			break;
 		}
+	}
+
+	// Skip JS/TS built-in global functions — they are NOT user-defined
+	// calls and the Resolver Pipeline would generate false-positive edges.
+	// Reference: codebase-memory-mcp (MIT) ts_lsp.c :: builtins[]
+	if (!callee_name.empty() && isJsBuiltin(callee_name)) {
+		// Still visit children to pick up nested calls/expressions
+		for (uint32_t i = 0; i < count; i++) {
+			TSNode child = ts_node_child(node, i);
+			if (!ts_node_is_named(child))
+				continue;
+			const char *t = ts_node_type(child);
+			if (strcmp(t, "identifier") == 0)
+				continue;
+			visitNode(child, parent_id);
+		}
+		return;
 	}
 
 	uint64_t call_id = emitter_->emitCall(callee_name, loc, parent_id);

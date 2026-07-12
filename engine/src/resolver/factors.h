@@ -9,19 +9,19 @@ namespace resolver
 {
 
 // ── Named constants for factor weights ──────────────────────────────
-constexpr double kWeightModuleMatch        = 0.15;
-constexpr double kWeightImportMatch        = 0.80;  // Dominant for cross-module
-constexpr double kWeightNamespaceMatch     = 0.10;
-constexpr double kWeightSignatureMatch     = 0.10;
-constexpr double kWeightDistanceMatch      = 0.05;
-constexpr double kWeightConstructorMatch   = 0.10;
-constexpr double kWeightReceiverMatch      = 0.15;
-constexpr double kWeightCommonNamePenalty  = 0.10;
+constexpr double kWeightModuleMatch = 0.15;
+constexpr double kWeightImportMatch = 0.80; // Dominant for cross-module
+constexpr double kWeightNamespaceMatch = 0.10;
+constexpr double kWeightSignatureMatch = 0.10;
+constexpr double kWeightDistanceMatch = 0.05;
+constexpr double kWeightConstructorMatch = 0.10;
+constexpr double kWeightReceiverMatch = 0.15;
+constexpr double kWeightCommonNamePenalty = 0.10;
 
 // ── Named constants for scoring values ──────────────────────────────
-constexpr double kScoreExactMatch   = 1.0;
+constexpr double kScoreExactMatch = 1.0;
 constexpr double kScorePartialMatch = 0.5;
-constexpr double kScorePenalty      = -0.5;
+constexpr double kScorePenalty = -0.5;
 constexpr double kScoreSiblingModule = 0.5;
 constexpr double kScoreSameDirectory = 0.3;
 
@@ -103,6 +103,20 @@ double factorReceiverMatch(const std::string &ref_name,
 /// high false-positive cross-module matches (e.g. Len, Init, Run).
 /// Returns kCommonNamePenaltyValue if the name is in the common list, 0.0 otherwise.
 double factorCommonNamePenalty(const std::string &name);
+
+/// Check language-specific visibility rules for cross-module calls.
+/// In Go, unexported names (lowercase first letter) cannot be called
+/// from another package. In Python, names starting with '_' are private.
+/// In Java, package-private names (no 'public' modifier) are restricted.
+/// Returns 0.0 if the candidate is NOT visible from the caller's module
+/// (i.e. the match is a false positive), 1.0 if visible or unknown.
+///
+/// Reference: codebase-memory-mcp (MIT, https://github.com/DeusData/codebase-memory-mcp)
+///   internal/cbm/helpers.c :: cbm_is_exported()
+double factorVisibilityCheck(const std::string &language,
+			     const std::string &candidate_name,
+			     const std::string &caller_file,
+			     const std::string &candidate_file);
 
 } // namespace resolver
 

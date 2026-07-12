@@ -9,10 +9,23 @@ CppVisitor::CppVisitor()
 SemanticUnit *CppVisitor::visit(TSTree *tree, const char *source,
 				const char *fp)
 {
-	SemanticUnit *unit = CVisitor::visit(tree, source, fp);
-	if (unit)
-		unit->setLanguage("cpp");
-	return unit;
+	unit_ = new SemanticUnit();
+	SemanticEmitter emitter(unit_);
+	emitter_ = &emitter;
+	unit_->setFilePath(fp);
+	unit_->setLanguage("cpp");
+	source_ = source;
+
+	TSNode root_node = ts_tree_root_node(tree);
+	pushScope();
+	SourceRange root_loc = location(root_node);
+	uint64_t root_id = emitter_->emitVariable("", root_loc, 0);
+	(void)root_id;
+	visitChildren(root_node, 0);
+	popScope();
+
+	emitter_ = nullptr;
+	return unit_;
 }
 void CppVisitor::visitNode(TSNode node, uint64_t parent_id)
 {

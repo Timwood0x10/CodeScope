@@ -3,16 +3,100 @@
 #include <tree_sitter/api.h>
 namespace ir
 {
+
+// ─── Java built-in / core language functions ───────────────────────
+//
+// Reference: codebase-memory-mcp (MIT, https://github.com/DeusData/codebase-memory-mcp)
+//   internal/cbm/lsp/c_lsp.c :: is_c_builtin_func() (pattern)
+//
+// Java language built-in methods and common JDK methods that should
+// NOT create reference entries. Without this filter the Resolver
+// Pipeline matches them by name to project entities.
+static bool isJavaBuiltin(const std::string &name)
+{
+	static const char *kBuiltins[] = {
+		// Object methods
+		"toString",
+		"equals",
+		"hashCode",
+		"clone",
+		"finalize",
+		"getClass",
+		"notify",
+		"notifyAll",
+		"wait",
+		// Common JDK methods that flood FPs
+		"valueOf",
+		"parseInt",
+		"parseDouble",
+		"parseLong",
+		"valueOf",
+		"format",
+		"print",
+		"println",
+		"printf",
+		"length",
+		"size",
+		"get",
+		"set",
+		"add",
+		"remove",
+		"isEmpty",
+		"contains",
+		"iterator",
+		"toArray",
+		"charAt",
+		"substring",
+		"indexOf",
+		"replace",
+		"toLowerCase",
+		"toUpperCase",
+		"trim",
+		"split",
+		"equalsIgnoreCase",
+		"compareTo",
+		"startsWith",
+		"endsWith",
+		"map",
+		"filter",
+		"forEach",
+		"collect",
+		"reduce",
+		"orElse",
+		"orElseGet",
+		"orElseThrow",
+		"ifPresent",
+		nullptr,
+	};
+	for (const char **b = kBuiltins; *b; b++) {
+		if (name == *b)
+			return true;
+	}
+	return false;
+}
 JavaVisitor::JavaVisitor()
 {
 }
 SemanticUnit *JavaVisitor::visit(TSTree *tree, const char *source,
 				 const char *fp)
 {
-	SemanticUnit *unit = JsVisitor::visit(tree, source, fp);
-	if (unit)
-		unit->setLanguage("java");
-	return unit;
+	unit_ = new SemanticUnit();
+	SemanticEmitter emitter(unit_);
+	emitter_ = &emitter;
+	unit_->setFilePath(fp);
+	unit_->setLanguage("java");
+	source_ = source;
+
+	TSNode root_node = ts_tree_root_node(tree);
+	pushScope();
+	SourceRange root_loc = location(root_node);
+	uint64_t root_id = emitter_->emitVariable("", root_loc, 0);
+	(void)root_id;
+	visitChildren(root_node, 0);
+	popScope();
+
+	emitter_ = nullptr;
+	return unit_;
 }
 void JavaVisitor::visitNode(TSNode node, uint64_t parent_id)
 {
@@ -110,6 +194,15 @@ void JavaVisitor::handleMethodInvocation(TSNode node, uint64_t parent_id)
 {
 	SourceRange loc = location(node);
 	std::string name = nodeText(node);
+
+	// Skip Java common JDK methods — they are NOT user-defined calls
+	// and the Resolver Pipeline would generate false-positive edges.
+	// Reference: codebase-memory-mcp (MIT) c_lsp.c :: is_c_builtin_func() (pattern)
+	if (!name.empty() && isJavaBuiltin(name)) {
+		visitChildren(node, parent_id);
+		return;
+	}
+
 	uint64_t id = emitter_->emitCall(name, loc, parent_id);
 	visitChildren(node, id);
 }
