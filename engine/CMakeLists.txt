@@ -199,6 +199,7 @@ set(ENGINE_SOURCES
     src/resolver/resolver.cpp
     src/resolver/pipeline.cpp
     src/resolver/fuzzy_resolver.cpp
+	    src/resolver/factors.cpp
 	    src/model/engine.cpp
 	    src/model/plugins/workflow.cpp
 	    src/model/plugins/capability.cpp

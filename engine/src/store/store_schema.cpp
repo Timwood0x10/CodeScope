@@ -442,7 +442,53 @@ bool GraphStore::createSchema()
         );
 
         -- architecture_edge: layer-to-layer call edges (Controller→Service).
-        CREATE TABLE IF NOT EXISTS architecture_edge (
+        CREATE TABLE IF NOT EXISTS module_summary (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    module_id INTEGER NOT NULL,
+    state INTEGER NOT NULL DEFAULT 0,
+    incoming_count INTEGER NOT NULL DEFAULT 0,
+    outgoing_count INTEGER NOT NULL DEFAULT 0,
+    internal_edges INTEGER NOT NULL DEFAULT 0,
+    dead_entities INTEGER NOT NULL DEFAULT 0,
+    utilization REAL NOT NULL DEFAULT 0.0,
+    confidence REAL NOT NULL DEFAULT 0.0,
+    FOREIGN KEY (project_id) REFERENCES projects(id),
+    FOREIGN KEY (module_id) REFERENCES scope(id)
+);
+
+CREATE TABLE IF NOT EXISTS capability_state (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    state TEXT NOT NULL,
+    entities TEXT NOT NULL DEFAULT '[]',
+    evidence TEXT NOT NULL DEFAULT '[]',
+    FOREIGN KEY (project_id) REFERENCES projects(id)
+);
+
+CREATE TABLE IF NOT EXISTS workflow_state (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    state TEXT NOT NULL,
+    steps_total INTEGER NOT NULL DEFAULT 0,
+    steps_done INTEGER NOT NULL DEFAULT 0,
+    evidence TEXT NOT NULL DEFAULT '[]',
+    FOREIGN KEY (project_id) REFERENCES projects(id)
+);
+
+CREATE TABLE IF NOT EXISTS architecture_state (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    layer TEXT NOT NULL,
+    violations INTEGER NOT NULL DEFAULT 0,
+    compliance REAL NOT NULL DEFAULT 1.0,
+    evidence TEXT NOT NULL DEFAULT '[]',
+    FOREIGN KEY (project_id) REFERENCES projects(id)
+);
+
+CREATE TABLE IF NOT EXISTS architecture_edge (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id INTEGER NOT NULL,
             layer_upper TEXT NOT NULL,        -- e.g. "Controller"

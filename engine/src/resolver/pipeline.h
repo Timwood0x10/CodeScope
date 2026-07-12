@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include "factors.h"
 #include "../store/store.h"
 
 namespace resolver
@@ -48,9 +49,12 @@ class ResolverPipeline {
 		uint64_t entity_id;
 		std::string name;
 		std::string file_path;
-		std::string module_path; // directory part of file_path
-		std::string language; // source language (e.g. "cpp", "rust")
-		int score; // higher = better match
+		std::string module_path;
+		std::string language;
+		int arity = 0;
+		int score = 0;
+		double total_score = 0.0;
+		std::vector<FactorResult> factors;
 	};
 
 	/// Apply constraints to rank candidates.

@@ -1,0 +1,81 @@
+#ifndef CODESCOPE_RESOLVER_FACTORS_H
+#define CODESCOPE_RESOLVER_FACTORS_H
+
+#include <string>
+#include <vector>
+#include <cstdint>
+
+namespace resolver
+{
+
+/// A single factor's scoring result.
+struct FactorResult {
+	std::string name; // Factor name, e.g. "ImportMatch", "NamespaceMatch"
+	double weight; // Factor weight (0.0 - 1.0)
+	double score; // Match score (0.0 - 1.0)
+	std::string detail; // Human-readable explanation
+};
+
+/// A candidate entity with per-factor scores.
+struct ScoredCandidate {
+	uint64_t entity_id;
+	std::string name;
+	std::string file_path;
+	std::string module_path;
+	std::string qualified_name;
+	int arity;
+	double total_score; // Weighted average of all factor scores
+	std::vector<FactorResult> factors;
+};
+
+/// Compute the total score as weighted average of factors.
+inline double computeTotalScore(const std::vector<FactorResult> &factors)
+{
+	double sum_weight = 0.0;
+	double sum_scored = 0.0;
+	for (auto &f : factors) {
+		sum_weight += f.weight;
+		sum_scored += f.weight * f.score;
+	}
+	return (sum_weight > 0.0) ? (sum_scored / sum_weight) : 0.0;
+}
+
+/// Check if a candidate's file imports the caller's module.
+/// Returns 1.0 if import found, 0.0 otherwise.
+/// Uses the import table: import.target_path contains the module path.
+double factorImportMatch(uint64_t project_id, void *db,
+			 const std::string &caller_file,
+			 const std::string &candidate_file,
+			 const std::string &candidate_name);
+
+/// Check if caller and candidate share the same namespace/module.
+/// Returns 1.0 if same module, 0.5 if sibling module, 0.0 otherwise.
+double factorNamespaceMatch(const std::string &caller_file,
+			    const std::string &candidate_file);
+
+/// Check if the candidate is in the same file as the caller.
+/// Returns 1.0 if same file, 0.3 if same directory, 0.0 otherwise.
+double factorDistanceMatch(const std::string &caller_file,
+			   const std::string &candidate_file);
+
+/// Check if arity (parameter count) matches.
+/// Returns 1.0 if exact match, 0.5 if candidate has unknown arity (0),
+/// -0.5 if known-different arity, 0.0 otherwise.
+double factorSignatureMatch(int caller_arity, int candidate_arity);
+
+/// Check if the candidate is a constructor for a class/struct.
+/// Returns 1.0 if candidate kind is Class/Struct and name matches.
+double factorConstructorMatch(const std::string &ref_name,
+			      const std::string &candidate_name,
+			      int candidate_kind);
+
+/// Check if the candidate is a receiver method for the caller's type.
+/// Returns 1.0 if receiver type matches, 0.0 otherwise.
+double factorReceiverMatch(const std::string &ref_name,
+			   const std::string &caller_file,
+			   const std::string &candidate_name,
+			   const std::string &candidate_file);
+
+} // namespace resolver
+
+#endif // CODESCOPE_RESOLVER_FACTORS_H

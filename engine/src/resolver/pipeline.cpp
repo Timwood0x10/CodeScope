@@ -1,5 +1,6 @@
 #include "pipeline.h"
 #include "fuzzy_resolver.h"
+#include "factors.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -128,64 +129,97 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 					const std::string &caller_file,
 					const std::string &callee_name)
 {
-	std::string caller_mod = modulePath(caller_file);
-	std::string caller_lang = languageFromPath(caller_file);
-	std::string import_target = checkImport(caller_file, callee_name);
-	std::string import_mod = modulePath(import_target);
-
+	// Build per-factor scores for each candidate using multi-factor scoring.
 	for (auto &c : candidates) {
-		int score = 0;
+		std::vector<FactorResult> factors;
 
-		// ModuleConstraint: same module = +100
-		if (c.module_path == caller_mod)
-			score += kScoreModule;
-
-		// ImportConstraint: imported target module = +80
-		if (!import_mod.empty() && c.module_path == import_mod)
-			score += kScoreImport;
-
-		// VisibilityConstraint: name-based visibility heuristic.
-		// The entity table has no explicit visibility column, so we
-		// approximate from the symbol's first character. This follows
-		// the Go convention (uppercase = exported) and loosely matches
-		// C++/Python conventions (leading _ = internal). Rust visibility
-		// is actually controlled by `pub`, not naming, so this heuristic
-		// is a weak signal for Rust — it serves as a tie-breaker only:
-		//   * uppercase first char  -> public/exported  (+40)
-		//   * lowercase first char  -> module-private     (+20)
-		//   * leading '_'           -> private/internal   (+0)
-		if (!c.name.empty()) {
-			char first = c.name[0];
-			if (std::isupper(static_cast<unsigned char>(first)))
-				score += kScoreVisibilityPublic;
-			else if (first != '_')
-				score += kScoreVisibilityModulePrivate;
+		// Factor 1: ModuleMatch
+		{
+			FactorResult f;
+			f.name = "ModuleMatch";
+			f.weight = 0.30;
+			f.score =
+				factorNamespaceMatch(caller_file, c.file_path);
+			f.detail = (f.score > 0.0) ? "same module" :
+						     "different module";
+			factors.push_back(f);
 		}
 
-		// ScopeConstraint: same source language = +30.
-		// Cross-language references are rare (only FFI boundaries), so
-		// a same-language match is a strong signal. Empty language
-		// (unrecognized extension) gets no bonus either way.
-		if (!c.language.empty() && c.language == caller_lang)
-			score += kScoreScopeSameLanguage;
+		// Factor 2: ImportMatch
+		{
+			FactorResult f;
+			f.name = "ImportMatch";
+			f.weight = 0.30;
+			f.score = factorImportMatch(project_id_,
+						    store_->handle(),
+						    caller_file, c.file_path,
+						    c.name);
+			f.detail = (f.score > 0.0) ? "imported" :
+						     "not imported";
+			factors.push_back(f);
+		}
 
-		// DistanceConstraint: same file = +10, same dir = +5
-		if (c.file_path == caller_file)
-			score += kScoreDistanceSameFile;
-		else if (c.module_path == caller_mod)
-			score += kScoreDistanceSameDir;
+		// Factor 3: NamespaceMatch
+		{
+			FactorResult f;
+			f.name = "NamespaceMatch";
+			f.weight = 0.20;
+			f.score =
+				factorNamespaceMatch(caller_file, c.file_path);
+			f.detail = (f.score > 0.0) ? "shared namespace" :
+						     "different namespace";
+			factors.push_back(f);
+		}
 
-		// Name match priority: exact match available
-		if (c.name == callee_name)
-			score += kScoreNameExact;
+		// Factor 4: SignatureMatch
+		{
+			FactorResult f;
+			f.name = "SignatureMatch";
+			f.weight = 0.15;
+			f.score = factorSignatureMatch(0, c.arity);
+			factors.push_back(f);
+		}
 
-		c.score = score;
+		// Factor 5: DistanceMatch
+		{
+			FactorResult f;
+			f.name = "DistanceMatch";
+			f.weight = 0.15;
+			f.score = factorDistanceMatch(caller_file, c.file_path);
+			factors.push_back(f);
+		}
+
+		// Factor 6: ConstructorMatch
+		{
+			FactorResult f;
+			f.name = "ConstructorMatch";
+			f.weight = 0.20;
+			f.score =
+				factorConstructorMatch(callee_name, c.name, 0);
+			f.detail = (f.score > 0.0) ? "constructor" :
+						     "not constructor";
+			factors.push_back(f);
+		}
+
+		// Factor 7: ReceiverMatch
+		{
+			FactorResult f;
+			f.name = "ReceiverMatch";
+			f.weight = 0.25;
+			f.score = factorReceiverMatch(callee_name, caller_file,
+						      c.name, c.file_path);
+			f.detail = (f.score > 0.0) ? "receiver match" :
+						     "no receiver match";
+			factors.push_back(f);
+		}
+
+		c.total_score = computeTotalScore(factors);
+		c.factors = factors;
 	}
 
-	// Sort by score descending
 	std::sort(candidates.begin(), candidates.end(),
 		  [](const Candidate &a, const Candidate &b) {
-			  return a.score > b.score;
+			  return a.total_score > b.total_score;
 		  });
 }
 

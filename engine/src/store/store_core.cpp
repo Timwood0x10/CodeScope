@@ -21,7 +21,9 @@ namespace store
 // ─── Lifecycle ─────────────────────────────────────────────────
 
 // Performance PRAGMA values
-static constexpr int kCacheSizePages = -64000; // 64 MB cache
+static constexpr int kCacheSizePages = -64000;
+
+// 64 MB cache
 static constexpr int kMmapSizeBytes = 268435456; // 256 MB mmap
 static constexpr int kPageSize =
 	65536; // 64 KB pages (matches codebase-memory-mcp)
