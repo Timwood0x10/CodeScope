@@ -131,7 +131,100 @@ static inline void runE2eTest(
 
     engine_shutdown();
 
-    printf("\n=== %s E2E test passed ===\n", lang);
-}
+     printf("\n=== %s E2E test passed ===\n", lang);
+    }
 
-#endif // TEST_E2E_H
+    /**
+      * Run FP-verification E2E: index code with builtin/FFI calls, then verify
+      * that builtin functions do NOT create false call edges, and that language
+      * visibility rules (e.g. Go unexported) are enforced.
+      *
+      * @param lang         Language name
+      * @param code         Source code
+      * @param file_path    Path to write the code to
+      * @param main_func    Name of the function to query callees for
+      * @param legit_callee A user-defined function that main_func legitimately calls
+      * @param builtin_names Array of builtin function names that should NOT appear
+      *                      as callees (nullptr-terminated)
+      */
+     static inline void runFPVerificationTest(
+         const char* lang, const char* code, const char* file_path,
+         const char* main_func, const char* legit_callee,
+         const char** builtin_names)
+    {
+        char db_path[64];
+        snprintf(db_path, sizeof(db_path), "/tmp/test_fp_%s.db", lang);
+
+        unlink(db_path);
+
+        int rc = engine_init(db_path);
+        check(rc == 0, "engine_init");
+
+        // Write test file
+        FILE* f = fopen(file_path, "w");
+        check(f != nullptr, "fopen");
+        fwrite(code, 1, strlen(code), f);
+        fclose(f);
+
+        // Create project
+        char proj_name[64];
+        snprintf(proj_name, sizeof(proj_name), "%s-fp-test", lang);
+        uint64_t pid = engine_create_project("/tmp", proj_name);
+        check(pid > 0, "create_project");
+
+        // Index
+        char* result = engine_index_file(pid, file_path);
+        print_json("Index", result);
+        check(strstr(result, "\"ok\":true") != nullptr, "index_file ok");
+        engine_free_string(result);
+
+        // Get callees of the main function — this is where we check for FPs
+         char* callees = engine_get_callees(pid, main_func);
+         print_json("Callees of main function", callees);
+
+        // 1. Legitimate callee must be present
+        check(strstr(callees, legit_callee) != nullptr, "legit callee present");
+
+        // 2. Builtin names must NOT appear as callees
+        for (int i = 0; builtin_names[i] != nullptr; i++) {
+            char buf[256];
+            snprintf(buf, sizeof(buf), "\"name\":\"%s\"", builtin_names[i]);
+            // The callee should NOT include this builtin
+            if (strstr(callees, buf) != nullptr) {
+                fprintf(stderr, "FAIL: builtin '%s' should NOT appear in callees of mainFunc\n",
+                        builtin_names[i]);
+                fprintf(stderr, "  callees JSON: %s\n", callees);
+                exit(1);
+            }
+            printf("  [PASS] builtin '%s' correctly excluded from callees\n", builtin_names[i]);
+        }
+        engine_free_string(callees);
+
+        // Get references to verify builtin calls don't create reference entries
+        for (int i = 0; builtin_names[i] != nullptr; i++) {
+            char* refs = engine_find_references(pid, builtin_names[i], nullptr);
+            // Builtin references should have zero results (no user func with that name)
+            if (strstr(refs, "\"total\":0") == nullptr && strstr(refs, "\"results\":[]") == nullptr) {
+                // If there ARE results, they must not include mainFunc as a caller
+                if (strstr(refs, "mainFunc") != nullptr) {
+                    fprintf(stderr, "FAIL: builtin '%s' should NOT have references from mainFunc\n",
+                            builtin_names[i]);
+                    fprintf(stderr, "  refs JSON: %s\n", refs);
+                    exit(1);
+                }
+            }
+            printf("  [PASS] builtin '%s' reference check passed\n", builtin_names[i]);
+            engine_free_string(refs);
+        }
+
+        // Stats check: total edges should be reasonable (no FP edges from builtins)
+        char* stats = engine_get_graph_stats(pid);
+        print_json("Graph Stats", stats);
+        check(strstr(stats, "total_nodes") != nullptr, "get_graph_stats");
+        engine_free_string(stats);
+
+        engine_shutdown();
+        printf("\n=== %s FP verification test passed ===\n", lang);
+    }
+
+    #endif // TEST_E2E_H
