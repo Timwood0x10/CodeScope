@@ -51,6 +51,8 @@ unsafe extern "C" {
     fn engine_verify_reality(project_id: u64, text: *const c_char) -> *mut c_char;
     fn engine_detect_drift(project_id: u64) -> *mut c_char;
     fn engine_detect_documentation_drift(project_id: u64) -> *mut c_char;
+    fn engine_detect_capability_drift(project_id: u64) -> *mut c_char;
+    fn engine_detect_architecture_drift(project_id: u64) -> *mut c_char;
 
     fn engine_build_fts(project_id: u64) -> *mut c_char;
 
@@ -258,6 +260,26 @@ pub fn detect_drift(project_id: u64) -> String {
 /// is persisted as a `finding` row and returned in the JSON output.
 pub fn detect_documentation_drift(project_id: u64) -> String {
     take_string(unsafe { engine_detect_documentation_drift(project_id) })
+}
+
+/// Scan declared capabilities and cross-reference with actual implementing
+/// entities in the codebase.
+///
+/// Detects `CapabilityDrift` (sev2): capability declared in README but no
+/// implementing entity with callers exists. Each drift is persisted as a
+/// `finding` row and returned in the JSON output.
+pub fn detect_capability_drift(project_id: u64) -> String {
+    take_string(unsafe { engine_detect_capability_drift(project_id) })
+}
+
+/// Scan call edges for architecture layer violations (e.g. Repository
+/// calling Controller, Controller calling another Controller directly).
+///
+/// Detects `ArchitectureDrift` (sev1): call edge violates the canonical
+/// layered flow Controller -> Service -> Repository. Each drift is
+/// persisted as a `finding` row and returned in the JSON output.
+pub fn detect_architecture_drift(project_id: u64) -> String {
+    take_string(unsafe { engine_detect_architecture_drift(project_id) })
 }
 
 // ── Phase A: Fast Scan ────────────────────────────────────────

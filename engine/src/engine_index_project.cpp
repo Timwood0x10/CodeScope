@@ -31,6 +31,7 @@
 #include "model/plugins/contract.h"
 #include "ir/translators/js_visitor.h"
 #include "engine_index_metrics.h"
+#include "async_knowledge.h"
 
 // ─── Constants ─────────────────────────────────────────────────
 constexpr uint64_t kMaxFileSize = 5 * 1024 * 1024; // 5 MB default
@@ -634,6 +635,16 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		me.runAll(project_id);
 	}
 
+	// ── Step 7: Async Knowledge Graph Construction ──
+	// Launch a background thread to populate the module_edge table
+	// (cross-module dependency edges). Non-blocking — the index result
+	// is returned immediately while the knowledge graph materialises
+	// concurrently. Callers can poll isAsyncKnowledgeBuilderRunning()
+	// or check the "knowledge_ready" readiness flag.
+	// NOTE: This is launched AFTER all g_store reads below, to avoid
+	// concurrent GraphStore access. The builder writes to module_edge
+	// while the main thread reads graph_nodes/graph_edges counts.
+
 	// ── Result JSON ──────────────────────────────────────────────
 	std::ostringstream result;
 	result << "{\"ok\":true,\"files_indexed\":" << total_indexed
@@ -709,5 +720,10 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		p.percent = 100;
 		store::setIndexProgress(p);
 	}
+
+	// Launch the async knowledge builder AFTER all g_store reads/writes
+	// above are complete, to avoid concurrent GraphStore access.
+	launchAsyncKnowledgeBuilder(project_id);
+
 	return dupString(result.str());
 }

@@ -1,5 +1,7 @@
 #include "engine_internal.h"
 #include "verify/ffi_internal.h"
+#include "verify/architecture_drift.h"
+#include "verify/capability_drift.h"
 #include "verify/documentation_drift.h"
 
 #include <sqlite3.h>
@@ -447,5 +449,135 @@ extern "C" char *engine_detect_documentation_drift(uint64_t project_id)
 		     << "\"}";
 	}
 	json << "],\"drifts_found\":" << drifts_found << "}";
+	return dupString(json.str());
+}
+
+// engine_detect_capability_drift — scan declared capabilities and
+// cross-reference with actual implementing entities in the codebase.
+//
+// Drift type detected:
+//   - CapabilityDrift (sev2): capability declared in README but no
+//     implementing entity with callers exists in the entity table.
+//
+// Each detected drift is persisted as a finding row and returned in the
+// JSON output.
+//
+// Output JSON:
+//   {"total_capabilities":N,
+//    "drifts":[{"type":"CapabilityDrift","severity":2,
+//               "subject":"...","detail":"..."},...],
+//    "drifts_found":N}
+//
+// MEMORY: caller MUST free the returned char* via engine_free_string().
+// THREAD SAFETY: single-threaded (GraphStore writer invariant).
+extern "C" char *engine_detect_capability_drift(uint64_t project_id)
+{
+	if (!g_store)
+		return dupString(
+			"{\"error\":\"not initialized "
+			"[module=ffi, method=engine_detect_capability_drift]\"}");
+
+	sqlite3 *db = g_store->handle();
+	if (!db)
+		return dupString(
+			"{\"error\":\"db not open "
+			"[module=ffi, method=engine_detect_capability_drift]\"}");
+
+	auto drifts = verify::detectCapabilityDrift(*g_store, project_id);
+
+	// Persist each drift as a finding row.
+	for (const auto &d : drifts) {
+		g_store->insertFinding(project_id, "CapabilityDrift",
+				       verify::kDriftSeverityCapability, 0,
+				       d.detail,
+				       verify::kDriftConfidenceCapability);
+	}
+
+	// Count total capabilities for the report.
+	int64_t total_caps = 0;
+	{
+		const char *sql = "SELECT COUNT(*) FROM capability "
+				  "WHERE project_id=?";
+		sqlite3_stmt *stmt = nullptr;
+		if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
+		    SQLITE_OK) {
+			sqlite3_bind_int64(stmt, 1,
+					   static_cast<int64_t>(project_id));
+			if (sqlite3_step(stmt) == SQLITE_ROW)
+				total_caps = sqlite3_column_int64(stmt, 0);
+			sqlite3_finalize(stmt);
+		} else {
+			fprintf(stderr,
+				"[module=ffi, method=engine_detect_capability_drift] "
+				"prepare failed: %s\n",
+				sqlite3_errmsg(db));
+		}
+	}
+
+	std::ostringstream json;
+	json << "{\"total_capabilities\":" << total_caps << ",\"drifts\":[";
+	for (size_t i = 0; i < drifts.size(); ++i) {
+		if (i > 0)
+			json << ",";
+		json << "{\"type\":\"CapabilityDrift\""
+		     << ",\"severity\":" << verify::kDriftSeverityCapability
+		     << ",\"subject\":\"" << jsonEscape(drifts[i].subject)
+		     << "\""
+		     << ",\"detail\":\"" << jsonEscape(drifts[i].detail)
+		     << "\"}";
+	}
+	json << "],\"drifts_found\":" << drifts.size() << "}";
+	return dupString(json.str());
+}
+
+// engine_detect_architecture_drift — scan call edges for layer violations
+// (e.g. Repository calling Controller, Controller calling Controller).
+//
+// Drift type detected:
+//   - ArchitectureDrift (sev1): call edge violates the canonical layered
+//     flow Controller -> Service -> Repository. Detects reverse calls
+//     (lower layer calling higher layer) and same-layer bypasses
+//     (Controller calling another Controller directly).
+//
+// Each detected drift is persisted as a finding row and returned in the
+// JSON output.
+//
+// Output JSON:
+//   {"drifts":[{"type":"ArchitectureDrift","severity":1,
+//               "subject":"Controller->Controller",
+//               "detail":"..."},...],
+//    "drifts_found":N}
+//
+// MEMORY: caller MUST free the returned char* via engine_free_string().
+// THREAD SAFETY: single-threaded (GraphStore writer invariant).
+extern "C" char *engine_detect_architecture_drift(uint64_t project_id)
+{
+	if (!g_store)
+		return dupString(
+			"{\"error\":\"not initialized "
+			"[module=ffi, method=engine_detect_architecture_drift]\"}");
+
+	auto drifts = verify::detectArchitectureDrift(*g_store, project_id);
+
+	// Persist each drift as a finding row.
+	for (const auto &d : drifts) {
+		g_store->insertFinding(project_id, "ArchitectureDrift",
+				       verify::kDriftSeverityArch, 0, d.detail,
+				       verify::kDriftConfidenceArch);
+	}
+
+	std::ostringstream json;
+	json << "{\"drifts\":[";
+	for (size_t i = 0; i < drifts.size(); ++i) {
+		if (i > 0)
+			json << ",";
+		json << "{\"type\":\"ArchitectureDrift\""
+		     << ",\"severity\":" << verify::kDriftSeverityArch
+		     << ",\"subject\":\"" << jsonEscape(drifts[i].subject)
+		     << "\""
+		     << ",\"detail\":\"" << jsonEscape(drifts[i].detail)
+		     << "\"}";
+	}
+	json << "],\"drifts_found\":" << drifts.size() << "}";
 	return dupString(json.str());
 }

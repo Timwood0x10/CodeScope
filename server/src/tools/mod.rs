@@ -319,6 +319,20 @@ fn h_detect_documentation_drift(project_id: u64, _args: &Value) -> String {
     ffi::detect_documentation_drift(project_id)
 }
 
+/// Scan declared capabilities and cross-reference with actual implementing
+/// entities. Reports CapabilityDrift for any declared capability with no
+/// implementing entity that has callers.
+fn h_detect_capability_drift(project_id: u64, _args: &Value) -> String {
+    ffi::detect_capability_drift(project_id)
+}
+
+/// Scan call edges for architecture layer violations (e.g. Repository
+/// calling Controller, Controller calling another Controller). Reports
+/// ArchitectureDrift for each violating call edge.
+fn h_detect_architecture_drift(project_id: u64, _args: &Value) -> String {
+    ffi::detect_architecture_drift(project_id)
+}
+
 /// Build a Knowledge Card for a named module/directory.
 fn h_explain_module(project_id: u64, args: &Value) -> String {
     let name = args["module_name"].as_str().unwrap_or("");
@@ -450,6 +464,14 @@ static TOOL_HANDLERS: Lazy<HashMap<&'static str, ToolHandler>> = Lazy::new(|| {
     m.insert(
         "detect_documentation_drift",
         h_detect_documentation_drift as ToolHandler,
+    );
+    m.insert(
+        "detect_capability_drift",
+        h_detect_capability_drift as ToolHandler,
+    );
+    m.insert(
+        "detect_architecture_drift",
+        h_detect_architecture_drift as ToolHandler,
     );
     m.insert("trace_flow", h_trace_flow as ToolHandler);
     // Fast scan
@@ -631,6 +653,22 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
         Tool {
             name: "detect_documentation_drift".into(),
             description: "Scan README for language support claims (e.g. 'supports C++, Python, Go') and cross-reference with actual entities in the codebase. Reports DocumentationDrift (severity 1) for any claimed language with zero entities. Returns claimed_languages, found_languages, missing_languages, and drifts arrays. Enables end-to-end verification: AI says X, CodeScope checks the tables.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        Tool {
+            name: "detect_capability_drift".into(),
+            description: "Scan declared capabilities and cross-reference with actual implementing entities in the codebase. Reports CapabilityDrift (severity 2) for any declared capability with no implementing entity that has callers. Returns total_capabilities count and drifts array. Part of end-to-end verification: AI says X, CodeScope checks the tables.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        Tool {
+            name: "detect_architecture_drift".into(),
+            description: "Scan call edges for architecture layer violations (e.g. Repository calling Controller, Controller calling another Controller directly). Classifies entities into Controller/Service/Repository layers by naming convention and file path, then checks the relation table for reverse calls and same-layer bypasses. Reports ArchitectureDrift (severity 1) for each violating call edge.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {}

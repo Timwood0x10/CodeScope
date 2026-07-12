@@ -22,10 +22,13 @@
 #include <vector>
 
 #include "verify/architecture_verifier.h"
+#include "verify/architecture_drift.h"
+#include "verify/capability_drift.h"
 #include "verify/capability_verifier.h"
 #include "verify/claim.h"
 #include "verify/claim_parser.h"
 #include "verify/contract_verifier.h"
+#include "verify/documentation_drift.h"
 #include "verify/registry.h"
 #include "verify/dead_code_inspector.h"
 #include "verify/ffi_internal.h"
@@ -41,6 +44,8 @@ static constexpr double kTrustScorePenalty = 0.1;
 
 // Maximum number of entity sample rows returned by engine_explain_module.
 static constexpr int kEntitySampleLimit = 10;
+/// Maximum number of cross-module dependency edges to return per direction.
+static constexpr int kCrossModuleEdgeLimit = 20;
 
 // Integrity score parameters for engine_explain_module.
 static constexpr int kIntegrityMax = 100;
@@ -488,21 +493,30 @@ extern "C" char *engine_verify_claim(uint64_t project_id,
 }
 
 // engine_verify_summary — parse a natural-language summary into claims and
-// verify each one. Aggregates verdicts into a trust_score.
+// verify each one. Also runs all three drift detectors (documentation,
+// capability, architecture) for end-to-end verification: "AI says X,
+// CodeScope checks tables." Aggregates verdicts + drifts into a trust_score.
 //
 // Input: free text (README excerpt, AI summary, PR description).
 // Output JSON:
 //   {"claims_parsed":N,
 //    "results":[<verify_one_claim output>,...],
+//    "drifts":[{"type":"DocumentationDrift","severity":1,
+//               "subject":"Go","detail":"..."},...],
 //    "summary":{"supported":X,"contradicted":Y,"unknown":Z,
-//               "trust_score":0.75}}
+//               "drifts_found":D,"trust_score":0.75}}
+//
+// Trust score = supported / (supported + contradicted + drifts_found).
+// When no claims and no drifts are found, trust_score is 1.0.
 //
 // MEMORY: caller MUST free the returned char* via engine_free_string().
 // THREAD SAFETY: single-threaded (GraphStore writer invariant).
 extern "C" char *engine_verify_summary(uint64_t project_id, const char *text)
 {
 	if (!g_store)
-		return dupString("{\"error\":\"not initialized\"}");
+		return dupString(
+			"{\"error\":\"not initialized "
+			"[module=ffi, method=engine_verify_summary]\"}");
 	if (!text || !*text)
 		return dupString(
 			"{\"error\":\"text is empty "
@@ -513,18 +527,55 @@ extern "C" char *engine_verify_summary(uint64_t project_id, const char *text)
 		project_id, src, verify_ffi::kSourceKindAiSummary,
 		src.substr(0, verify_ffi::kSourceRefMaxLen));
 
+	// ── End-to-end drift detection ──
+	// Cross-reference AI claims against the actual codebase state.
+	// Each drift finding represents a mismatch between documentation
+	// (or AI summary) and the code.
+	auto doc_drifts =
+		verify::detectDocumentationDrift(*g_store, project_id);
+	auto cap_drifts = verify::detectCapabilityDrift(*g_store, project_id);
+	auto arch_drifts =
+		verify::detectArchitectureDrift(*g_store, project_id);
+	size_t total_drifts = doc_drifts.size() + cap_drifts.size() + arch_drifts.size();
+
+	// Build drifts JSON array.
+	std::ostringstream drifts_json;
+	drifts_json << "[";
+	bool drift_first = true;
+	auto emit_drift = [&](const verify::DriftItem &d) {
+		if (!drift_first)
+			drifts_json << ",";
+		drift_first = false;
+		drifts_json
+			<< "{\"type\":\"" << jsonEscape(d.type) << "\""
+			<< ",\"severity\":" << d.severity << ",\"subject\":\""
+			<< jsonEscape(d.subject) << "\""
+			<< ",\"detail\":\"" << jsonEscape(d.detail) << "\"}";
+	};
+	for (const auto &d : doc_drifts)
+		emit_drift(d);
+	for (const auto &d : cap_drifts)
+		emit_drift(d);
+	for (const auto &d : arch_drifts)
+		emit_drift(d);
+	drifts_json << "]";
+
 	std::ostringstream json;
 	json << "{\"claims_parsed\":" << batch.claims_count
 	     << ",\"results\":" << batch.results_json
+	     << ",\"drifts\":" << drifts_json.str()
 	     << ",\"summary\":{\"supported\":" << batch.supported
 	     << ",\"contradicted\":" << batch.contradicted
-	     << ",\"unknown\":" << batch.unknown << ",\"trust_score\":";
-	int denom = batch.supported + batch.contradicted;
+	     << ",\"unknown\":" << batch.unknown
+	     << ",\"drifts_found\":" << total_drifts << ",\"trust_score\":";
+	size_t denom = batch.supported + batch.contradicted + total_drifts;
 	if (denom > 0)
 		json << (static_cast<double>(batch.supported) /
 			 static_cast<double>(denom));
+	else if (batch.claims_count > 0)
+		json << "0.0"; // all claims unknown — not trustworthy
 	else
-		json << "0.0";
+		json << "1.0"; // no claims and no drifts — nothing to dispute
 	json << "}}";
 	return dupString(json.str());
 }
@@ -548,7 +599,9 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 				       const char *module_name)
 {
 	if (!g_store)
-		return dupString("{\"error\":\"not initialized\"}");
+		return dupString(
+			"{\"error\":\"not initialized "
+			"[module=ffi, method=engine_explain_module]\"}");
 	if (!module_name || !*module_name)
 		return dupString(
 			"{\"error\":\"module_name is empty "
@@ -562,6 +615,10 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 			std::tolower(static_cast<unsigned char>(c)));
 
 	sqlite3 *db = g_store->handle();
+	if (!db)
+		return dupString(
+			"{\"error\":\"db not open "
+			"[module=ffi, method=engine_explain_module]\"}");
 
 	// Resolve module row (case-insensitive name match).
 	std::string summary;
@@ -789,8 +846,81 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 			integrity = 0;
 		if (integrity > kIntegrityMax)
 			integrity = kIntegrityMax;
-		json << "\"integrity\":" << integrity << "}";
+		json << "\"integrity\":" << integrity << ",";
 	}
 
+	// Cross-module dependencies from the pre-computed module_edge table.
+	// Populated by the async knowledge builder after indexing. When the
+	// table is empty (e.g. async build not yet complete), both arrays are
+	// empty — the card still returns successfully.
+	json << "\"cross_module\":{";
+
+	// depends_on: modules that this module calls (outgoing edges).
+	{
+		json << "\"depends_on\":[";
+		const char *sql = "SELECT tgt_module, edge_count "
+				  "FROM module_edge "
+				  "WHERE project_id=? AND src_module LIKE ? "
+				  "ORDER BY edge_count DESC LIMIT ?";
+		sqlite3_stmt *stmt = nullptr;
+		if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
+		    SQLITE_OK) {
+			std::string like = "%/" + name + "/%";
+			sqlite3_bind_int64(stmt, 1,
+					   static_cast<int64_t>(project_id));
+			sqlite3_bind_text(stmt, 2, like.c_str(), -1,
+					  SQLITE_STATIC);
+			sqlite3_bind_int(stmt, 3, kCrossModuleEdgeLimit);
+			bool first = true;
+			while (sqlite3_step(stmt) == SQLITE_ROW) {
+				if (!first)
+					json << ",";
+				first = false;
+				const char *m = reinterpret_cast<const char *>(
+					sqlite3_column_text(stmt, 0));
+				int64_t ec = sqlite3_column_int64(stmt, 1);
+				json << "{\"module\":\""
+				     << jsonEscape(m ? m : "") << "\""
+				     << ",\"edge_count\":" << ec << "}";
+			}
+			sqlite3_finalize(stmt);
+		}
+		json << "],";
+	}
+
+	// depended_by: modules that call this module (incoming edges).
+	{
+		json << "\"depended_by\":[";
+		const char *sql = "SELECT src_module, edge_count "
+				  "FROM module_edge "
+				  "WHERE project_id=? AND tgt_module LIKE ? "
+				  "ORDER BY edge_count DESC LIMIT ?";
+		sqlite3_stmt *stmt = nullptr;
+		if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
+		    SQLITE_OK) {
+			std::string like = "%/" + name + "/%";
+			sqlite3_bind_int64(stmt, 1,
+					   static_cast<int64_t>(project_id));
+			sqlite3_bind_text(stmt, 2, like.c_str(), -1,
+					  SQLITE_STATIC);
+			sqlite3_bind_int(stmt, 3, kCrossModuleEdgeLimit);
+			bool first = true;
+			while (sqlite3_step(stmt) == SQLITE_ROW) {
+				if (!first)
+					json << ",";
+				first = false;
+				const char *m = reinterpret_cast<const char *>(
+					sqlite3_column_text(stmt, 0));
+				int64_t ec = sqlite3_column_int64(stmt, 1);
+				json << "{\"module\":\""
+				     << jsonEscape(m ? m : "") << "\""
+				     << ",\"edge_count\":" << ec << "}";
+			}
+			sqlite3_finalize(stmt);
+		}
+		json << "]";
+	}
+
+	json << "}}";
 	return dupString(json.str());
 }

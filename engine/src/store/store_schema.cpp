@@ -40,6 +40,7 @@ bool GraphStore::createSchema()
             deep_ready INTEGER DEFAULT 0,
             fts_ready INTEGER DEFAULT 0,
             vector_ready INTEGER DEFAULT 0,
+            knowledge_ready INTEGER DEFAULT 0,
             FOREIGN KEY (project_id) REFERENCES projects(id)
         );
 
@@ -457,6 +458,24 @@ bool GraphStore::createSchema()
         CREATE INDEX IF NOT EXISTS idx_evidence_claim ON evidence(claim_id);
         CREATE INDEX IF NOT EXISTS idx_finding_project ON finding(project_id, rule);
 
+        -- module_edge: pre-computed cross-module call edges. Populated by
+        -- the async knowledge builder (async_knowledge.cpp) after indexing.
+        -- Each row aggregates all call edges (relation type=1) between two
+        -- modules into a single edge_count, enabling O(modules) cross-module
+        -- dependency queries instead of O(entities) JOINs.
+        CREATE TABLE IF NOT EXISTS module_edge (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            src_module TEXT NOT NULL,        -- source module directory path
+            tgt_module TEXT NOT NULL,        -- target module directory path
+            edge_count INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (project_id) REFERENCES projects(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_module_edge_project
+            ON module_edge(project_id, src_module);
+        CREATE INDEX IF NOT EXISTS idx_module_edge_tgt
+            ON module_edge(project_id, tgt_module);
+
         )SQL";
 
 	// Execute main schema
@@ -466,6 +485,29 @@ bool GraphStore::createSchema()
 	// CREATE TABLE IF NOT EXISTS skips when the table already exists, so columns
 	// added in later versions must be patched in here. SQLite has no
 	// "ADD COLUMN IF NOT EXISTS", so we probe PRAGMA table_info first.
+
+	// Migration: add knowledge_ready column to project_readiness (v0.5+)
+	{
+		sqlite3_stmt *probe = nullptr;
+		if (sqlite3_prepare_v2(db_,
+				       "PRAGMA table_info(project_readiness)",
+				       -1, &probe, nullptr) == SQLITE_OK) {
+			bool has_knowledge_ready = false;
+			while (sqlite3_step(probe) == SQLITE_ROW) {
+				const char *col =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(probe, 1));
+				if (col &&
+				    std::string(col) == "knowledge_ready")
+					has_knowledge_ready = true;
+			}
+			sqlite3_finalize(probe);
+			if (!has_knowledge_ready) {
+				exec("ALTER TABLE project_readiness "
+				     "ADD COLUMN knowledge_ready INTEGER DEFAULT 0");
+			}
+		}
+	}
 
 	// Note: vec0 embeddings table is created in engine_init() after
 	// sqlite-vec extension is loaded via dlopen. Not needed here.

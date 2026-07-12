@@ -214,6 +214,9 @@ set(ENGINE_SOURCES
 	    src/verify/claim.cpp
 	    src/verify/registry.cpp
 	    src/verify/documentation_drift.cpp
+	    src/verify/capability_drift.cpp
+	    src/verify/architecture_drift.cpp
+	    src/async_knowledge.cpp
 	    src/resolver/resolve_cache.cpp
 	    src/filter_policy.cpp
 	    src/filter_policy_ignore.cpp

@@ -1,3 +1,4 @@
+#include "async_knowledge.h"
 #include "engine_internal.h"
 #include "platform_win.h"
 #include "verify/registry.h"
@@ -73,6 +74,11 @@ void engine_shutdown()
 	// registered Verifier holds a raw pointer to g_store, so dropping
 	// them first avoids any dangling-pointer access during store close.
 	verify::VerifierRegistry::instance().clear();
+
+	// Wait for the async knowledge builder to finish before destroying
+	// g_store. The builder thread dereferences g_store, so failing to
+	// join here would cause a use-after-free.
+	joinAsyncKnowledgeBuilder();
 
 	g_parser.reset(); // independent, safe to drop first
 	g_query.reset(); // may do SQLite work via g_store, destruct BEFORE store closes
