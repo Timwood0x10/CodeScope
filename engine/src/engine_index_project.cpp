@@ -623,7 +623,7 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	// This is supplementary — failures are logged but do NOT fail the
 	// index, since the model layer is not required for graph queries.
 	{
-		model::ModelEngine me(g_store.get());
+		model::ModelEngine me;
 		me.addPlugin(
 			std::make_unique<model::WorkflowPlugin>(g_store.get()));
 		me.addPlugin(std::make_unique<model::CapabilityPlugin>(

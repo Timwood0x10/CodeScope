@@ -383,6 +383,77 @@ fn h_find_callees(project_id: u64, args: &Value) -> String {
     ffi::find_callees_adaptive(project_id, name)
 }
 
+// ── Graph path + component tools ───────────────────────────────
+
+/// Resolve a symbol name to its first graph node ID via `engine_locate_by_name`.
+/// Returns `Ok(node_id)` on the first match, or `Err(tagged_error_json)` if
+/// the name cannot be resolved or the JSON cannot be parsed.
+fn resolve_name_to_node_id(project_id: u64, name: &str, role: &str) -> Result<u64, String> {
+    let raw = ffi::locate_by_name(project_id, name);
+    let parsed: Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            return Err(format!(
+                "{{\"error\":\"failed to parse locate_by_name output for {}: {} [module=mcp, tool=shortest_path]\"}}",
+                role, e
+            ));
+        }
+    };
+    let node_id = parsed["locations"]
+        .get(0)
+        .and_then(|loc| loc.get("node_id"))
+        .and_then(|v| v.as_u64());
+    match node_id {
+        Some(id) if id > 0 => Ok(id),
+        _ => Err(format!(
+            "{{\"error\":\"symbol '{}' not found in graph (no node_id) [module=mcp, tool=shortest_path, role={}]\"}}",
+            name, role
+        )),
+    }
+}
+
+/// Resolve one endpoint of a shortest-path query. Prefers an explicit integer
+/// node ID (`id_key`); otherwise resolves the symbol name (`name_key`).
+fn resolve_endpoint(
+    project_id: u64,
+    args: &Value,
+    id_key: &str,
+    name_key: &str,
+    role: &str,
+) -> Result<u64, String> {
+    if let Some(id) = args.get(id_key).and_then(|v| v.as_u64()) {
+        return Ok(id);
+    }
+    let name = args[name_key].as_str().unwrap_or("");
+    if name.is_empty() {
+        return Err(format!(
+            "{{\"error\":\"either '{}' (symbol name) or '{}' (node id) is required [module=mcp, tool=shortest_path, role={}]\"}}",
+            name_key, id_key, role
+        ));
+    }
+    resolve_name_to_node_id(project_id, name, role)
+}
+
+/// Shortest path between two graph nodes. Heuristic: call graph edges are
+/// name-matched, so the BFS path may not reflect true runtime dispatch.
+fn h_shortest_path(project_id: u64, args: &Value) -> String {
+    let source_id = match resolve_endpoint(project_id, args, "from_id", "from", "from") {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
+    let target_id = match resolve_endpoint(project_id, args, "to_id", "to", "to") {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
+    ffi::find_shortest_path(project_id, source_id, target_id)
+}
+
+/// Find connected components in the call graph (heuristic: BFS over
+/// name-matched relation edges).
+fn h_connected_components(project_id: u64, _args: &Value) -> String {
+    ffi::find_connected_components(project_id)
+}
+
 fn h_get_entry_points(project_id: u64, _args: &Value) -> String {
     ffi::get_entry_points_new(project_id)
 }
@@ -481,6 +552,11 @@ static TOOL_HANDLERS: Lazy<HashMap<&'static str, ToolHandler>> = Lazy::new(|| {
     m.insert("search", h_search as ToolHandler);
     m.insert("find_callers", h_find_callers as ToolHandler);
     m.insert("find_callees", h_find_callees as ToolHandler);
+    m.insert("shortest_path", h_shortest_path as ToolHandler);
+    m.insert(
+        "connected_components",
+        h_connected_components as ToolHandler,
+    );
     m.insert("get_entry_points", h_get_entry_points as ToolHandler);
     m.insert("project_overview", h_project_overview as ToolHandler);
     // Unique tools
@@ -748,6 +824,24 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
                 },
                 "required": ["symbol_name"]
             }),
+        },
+        Tool {
+            name: "shortest_path".into(),
+            description: "Find the shortest call-graph path between two functions. Heuristic/approximate: the call graph is built from name-matched edges, so the BFS path may not reflect true runtime dispatch. Accepts either symbol names (from/to) or explicit graph node IDs (from_id/to_id).".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "from": {"type": "string", "description": "Source symbol name (resolved to a node ID via locate_by_name)"},
+                    "to": {"type": "string", "description": "Target symbol name (resolved to a node ID via locate_by_name)"},
+                    "from_id": {"type": "integer", "description": "Explicit source graph node ID (bypasses name resolution)"},
+                    "to_id": {"type": "integer", "description": "Explicit target graph node ID (bypasses name resolution)"}
+                }
+            }),
+        },
+        Tool {
+            name: "connected_components".into(),
+            description: "Find connected components in the call graph via BFS over name-matched relation edges. Heuristic/approximate: call edges are inferred from name matches, so reported components are a heuristic grouping of the module structure.".into(),
+            input_schema: json!({ "type": "object", "properties": {} }),
         },
         Tool {
             name: "get_entry_points".into(),

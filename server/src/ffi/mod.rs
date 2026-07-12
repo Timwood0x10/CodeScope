@@ -28,6 +28,14 @@ unsafe extern "C" {
     ) -> *mut c_char;
     fn engine_get_graph_stats(project_id: u64) -> *mut c_char;
 
+    // ── Graph path + location queries ────────────────────────────
+    // See engine_ffi.cpp for the C++ implementation. Each returns a
+    // heap-allocated JSON string that the caller MUST release via
+    // engine_free_string().
+    fn engine_find_shortest_path(project_id: u64, source_id: u64, target_id: u64) -> *mut c_char;
+    fn engine_locate_by_name(project_id: u64, name: *const c_char) -> *mut c_char;
+    fn engine_find_connected_components(project_id: u64) -> *mut c_char;
+
     fn engine_search_code(project_id: u64, query: *const c_char, limit: i32) -> *mut c_char;
 
     fn engine_detect_changes(project_id: u64, modified_files_json: *const c_char) -> *mut c_char;
@@ -156,6 +164,34 @@ pub fn find_references(project_id: u64, symbol_name: &str, file_filter: Option<&
 
 pub fn get_graph_stats(project_id: u64) -> String {
     take_string(unsafe { engine_get_graph_stats(project_id) })
+}
+
+/// Find the shortest call-graph path between two graph nodes by ID.
+///
+/// Returns the JSON produced by the C++ `QueryEngine::findShortestPath`
+/// (typically `{"path":[...],"error":"..."}`). When the engine is not
+/// initialized the C++ side returns `{"path":[],"error":"not initialized"}`.
+pub fn find_shortest_path(project_id: u64, source_id: u64, target_id: u64) -> String {
+    take_string(unsafe { engine_find_shortest_path(project_id, source_id, target_id) })
+}
+
+/// Resolve a symbol name to its graph node location(s).
+///
+/// Returns JSON `{"locations":[{"node_id":N,"name":"...",...}],"total":N}`.
+/// The MCP layer uses the first `node_id` to translate a user-supplied
+/// symbol name into the integer ID required by `find_shortest_path`.
+pub fn locate_by_name(project_id: u64, name: &str) -> String {
+    take_string(unsafe { engine_locate_by_name(project_id, cstr(name).as_ptr()) })
+}
+
+/// Find connected components in the call graph (heuristic, BFS over
+/// name-matched relation edges).
+///
+/// Returns JSON `{"components":[...],"total":N,"approximation":"heuristic",
+/// "note":"..."}`. On error the JSON contains an "error" field tagged with
+/// module/method per code_rules.md.
+pub fn find_connected_components(project_id: u64) -> String {
+    take_string(unsafe { engine_find_connected_components(project_id) })
 }
 
 pub fn search_code(project_id: u64, query: &str, limit: i32) -> String {

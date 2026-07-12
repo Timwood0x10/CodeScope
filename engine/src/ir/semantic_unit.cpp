@@ -89,4 +89,14 @@ std::vector<size_t> SemanticUnit::getChildren(uint64_t parent_id) const
 	return result;
 }
 
+bool SemanticUnit::setCallReference(uint64_t record_id,
+				    uint64_t ref_original_id)
+{
+	auto it = id_to_index_.find(record_id);
+	if (it == id_to_index_.end())
+		return false;
+	records_[it->second].ref_original_id = ref_original_id;
+	return true;
+}
+
 } // namespace ir

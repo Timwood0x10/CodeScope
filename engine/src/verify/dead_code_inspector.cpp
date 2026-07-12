@@ -197,11 +197,12 @@ std::vector<Finding> DeadCodeInspector::findArchitectureDrift()
 
 			Finding f;
 			f.type = "LayerViolation";
-			f.description = std::string("Layer violation: '") +
-					(lower ? lower : "") + "' calls '" +
-					(upper ? upper : "") + "' " +
-					std::to_string(violations) +
-					" times — lower layer should not depend on upper layer.";
+			f.description =
+				std::string("Layer violation: '") +
+				(lower ? lower : "") + "' calls '" +
+				(upper ? upper : "") + "' " +
+				std::to_string(violations) +
+				" times — lower layer should not depend on upper layer.";
 			f.confidence = 0.90;
 			out.push_back(f);
 		}
@@ -239,10 +240,10 @@ std::vector<Finding> DeadCodeInspector::findConnectedComponents()
 		return out;
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id_));
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
-		uint64_t src = static_cast<uint64_t>(
-			sqlite3_column_int64(stmt, 0));
-		uint64_t tgt = static_cast<uint64_t>(
-			sqlite3_column_int64(stmt, 1));
+		uint64_t src =
+			static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
+		uint64_t tgt =
+			static_cast<uint64_t>(sqlite3_column_int64(stmt, 1));
 		adj[src].push_back(tgt);
 		adj[tgt].push_back(src);
 	}
@@ -279,7 +280,8 @@ std::vector<Finding> DeadCodeInspector::findConnectedComponents()
 		// Find the largest component
 		size_t largest_idx = 0;
 		for (size_t i = 1; i < components.size(); i++)
-			if (components[i].size() > components[largest_idx].size())
+			if (components[i].size() >
+			    components[largest_idx].size())
 				largest_idx = i;
 
 		Finding f;
@@ -294,7 +296,7 @@ std::vector<Finding> DeadCodeInspector::findConnectedComponents()
 		Finding f2;
 		f2.type = "ConnectedComponent";
 		f2.description = "Total " + std::to_string(components.size()) +
-				" connected components in the call graph";
+				 " connected components in the call graph";
 		f2.confidence = 0.95;
 		out.push_back(f2);
 	}

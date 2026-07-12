@@ -8,6 +8,9 @@
 #include <unordered_map>
 #include <vector>
 
+#include "verify/dead_code_inspector.h"
+#include "verify/finding.h"
+
 // ─── Capability API ────────────────────────────────────────────
 
 char *engine_get_capabilities(uint64_t project_id)
@@ -113,6 +116,88 @@ char *engine_find_shortest_path(uint64_t project_id, uint64_t source_id,
 		return dupString("{\"path\":[],\"error\":\"not initialized\"}");
 	return dupString(
 		g_query->findShortestPath(project_id, source_id, target_id));
+}
+
+// ─── Connected Components ─────────────────────────────────────
+
+// Serialize a verify::Finding to a JSON object fragment (without the
+// surrounding braces). Used by engine_find_connected_components below.
+// Each finding becomes:
+//   "type":"...","description":"...","confidence":N,"evidence":[...]
+static void appendFindingJson(std::ostringstream &json,
+			      const verify::Finding &f)
+{
+	json << "\"type\":\"" << jsonEscape(f.type) << "\","
+	     << "\"description\":\"" << jsonEscape(f.description) << "\","
+	     << "\"confidence\":" << f.confidence << ","
+	     << "\"evidence\":[";
+	for (size_t i = 0; i < f.evidence.size(); i++) {
+		if (i > 0)
+			json << ",";
+		const verify::Evidence &e = f.evidence[i];
+		json << "{\"entity_name\":\"" << jsonEscape(e.entity_name)
+		     << "\",\"file_path\":\"" << jsonEscape(e.file_path)
+		     << "\",\"line\":" << e.line << ",\"detail\":\""
+		     << jsonEscape(e.detail) << "\"}";
+	}
+	json << "]";
+}
+
+char *engine_find_connected_components(uint64_t project_id)
+{
+	// Module/method tag for error messages per code_rules.md.
+	static const char *kModule = "ffi";
+	static const char *kMethod = "engine_find_connected_components";
+
+	if (!g_store) {
+		std::ostringstream err;
+		err << "{\"error\":\"engine not initialized [module=" << kModule
+		    << ", method=" << kMethod << "]\","
+		    << "\"components\":[],\"total\":0,"
+		    << "\"approximation\":\"heuristic\","
+		    << "\"note\":\"Connected components computed on name-matched "
+		       "call edges.\"}";
+		return dupString(err.str());
+	}
+
+	verify::DeadCodeInspector dci(g_store.get(), project_id);
+	std::vector<verify::Finding> findings;
+	try {
+		findings = dci.findConnectedComponents();
+	} catch (const std::exception &e) {
+		std::ostringstream err;
+		err << "{\"error\":\"exception: " << jsonEscape(e.what())
+		    << " [module=" << kModule << ", method=" << kMethod
+		    << "]\",\"components\":[],\"total\":0,"
+		    << "\"approximation\":\"heuristic\","
+		    << "\"note\":\"Connected components computed on name-matched "
+		       "call edges.\"}";
+		return dupString(err.str());
+	} catch (...) {
+		std::ostringstream err;
+		err << "{\"error\":\"unknown exception [module=" << kModule
+		    << ", method=" << kMethod
+		    << "]\",\"components\":[],\"total\":0,"
+		    << "\"approximation\":\"heuristic\","
+		    << "\"note\":\"Connected components computed on name-matched "
+		       "call edges.\"}";
+		return dupString(err.str());
+	}
+
+	std::ostringstream json;
+	json << "{\"components\":[";
+	for (size_t i = 0; i < findings.size(); i++) {
+		if (i > 0)
+			json << ",";
+		json << "{";
+		appendFindingJson(json, findings[i]);
+		json << "}";
+	}
+	json << "],\"total\":" << findings.size()
+	     << ",\"approximation\":\"heuristic\","
+	     << "\"note\":\"Connected components computed on name-matched "
+		"call edges.\"}";
+	return dupString(json.str());
 }
 
 char *engine_get_subgraph(uint64_t project_id, uint64_t center_node_id,

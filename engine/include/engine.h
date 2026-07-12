@@ -46,6 +46,16 @@ char* engine_locate_node(uint64_t project_id, uint64_t node_id,
 char* engine_locate_by_name(uint64_t project_id, const char* name);
 char* engine_get_graph_stats(uint64_t project_id);
 
+// Find connected components in the call graph via BFS over name-matched
+// relation edges. Returns JSON:
+//   {"components":[{"type":"...","description":"...","confidence":N,
+//                   "evidence":[{"entity_name":"...","file_path":"...",
+//                                 "line":N,"detail":"..."}]}],
+//    "total":N,"approximation":"heuristic",
+//    "note":"Connected components computed on name-matched call edges."}
+// On error returns JSON with an "error" field.
+char* engine_find_connected_components(uint64_t project_id);
+
 // ─── Interactive exploration ──────────────────────────────────
 // Explore a function's callers/callees recursively as a JSON tree.
 // Returns hierarchical JSON: {"name":"...","file":"...","line":N,"callers":[...],"callees":[...]}

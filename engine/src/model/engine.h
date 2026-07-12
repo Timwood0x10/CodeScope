@@ -15,7 +15,7 @@ namespace model
 /// (workflow, capability, architecture, contract) from Facts + Resolution.
 class ModelEngine {
     public:
-	ModelEngine(store::GraphStore *store);
+	ModelEngine() = default;
 
 	/// Register a plugin. Takes ownership.
 	void addPlugin(std::unique_ptr<ModelPlugin> plugin);
@@ -31,7 +31,6 @@ class ModelEngine {
 	std::vector<const char *> pluginNames() const;
 
     private:
-	store::GraphStore *store_;
 	std::vector<std::unique_ptr<ModelPlugin> > plugins_;
 };
 

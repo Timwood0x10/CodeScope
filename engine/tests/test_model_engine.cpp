@@ -154,7 +154,7 @@ int main()
 
 	// ── Test 1: ModelEngine registers all 4 plugins ───────────────
 	{
-		ModelEngine me(&store);
+		ModelEngine me;
 		me.addPlugin(std::make_unique<CapabilityPlugin>(&store));
 		me.addPlugin(std::make_unique<ContractPlugin>(&store));
 		me.addPlugin(std::make_unique<WorkflowPlugin>(&store));
@@ -170,7 +170,7 @@ int main()
 
 	// ── Test 2: runAll builds capability + contract models ────────
 	{
-		ModelEngine me(&store);
+		ModelEngine me;
 		me.addPlugin(std::make_unique<CapabilityPlugin>(&store));
 		me.addPlugin(std::make_unique<ContractPlugin>(&store));
 		me.addPlugin(std::make_unique<WorkflowPlugin>(&store));
@@ -226,7 +226,7 @@ int main()
 
 	// ── Test 5: run by name returns the right plugin ──────────────
 	{
-		ModelEngine me(&store);
+		ModelEngine me;
 		me.addPlugin(std::make_unique<CapabilityPlugin>(&store));
 		ModelResult r = me.run("Capability", pid);
 		assert(r.ok());
@@ -236,7 +236,7 @@ int main()
 
 	// ── Test 6: run by unknown name returns error ─────────────────
 	{
-		ModelEngine me(&store);
+		ModelEngine me;
 		me.addPlugin(std::make_unique<CapabilityPlugin>(&store));
 		ModelResult r = me.run("Nonexistent", pid);
 		assert(!r.ok());

@@ -4,10 +4,7 @@
 namespace model
 {
 
-ModelEngine::ModelEngine(store::GraphStore *store)
-	: store_(store)
-{
-}
+// ModelEngine constructor is defaulted in the header.
 
 void ModelEngine::addPlugin(std::unique_ptr<ModelPlugin> plugin)
 {

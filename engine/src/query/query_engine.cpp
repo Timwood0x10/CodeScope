@@ -4,12 +4,28 @@
 #include "impact_analysis.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
+#include <queue>
 #include <sqlite3.h>
 #include <sstream>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 namespace query
 {
+
+// Maximum BFS depth for findShortestPath. Limits traversal to prevent
+// unbounded walks over very large graphs; chosen to cover typical call
+// chains while keeping query latency bounded.
+static constexpr int kShortestPathMaxDepth = 10;
+
+// Standard note appended to findShortestPath results explaining the
+// heuristic nature of the call graph (name-matched, no virtual dispatch).
+static const char *const kShortestPathNote =
+	"Call graph edges are resolved by name matching; indirect calls "
+	"(virtual/pointer) may be missing.";
 
 // ─── JSON string escaping ──────────────────────────────────────
 
@@ -476,74 +492,177 @@ std::string QueryEngine::findShortestPath(uint64_t project_id,
 					  uint64_t source_id,
 					  uint64_t target_id)
 {
-	// Simplified: direct edge check + 1-hop path via BFS in SQL
-	// Full BFS shortest path requires C++ side implementation; v1 does direct +
-	// 1-hop only.
-	std::ostringstream json;
-	json << "{\"path\":[";
+	// Real iterative BFS over the in-memory call graph.
+	//
+	// Steps:
+	//   1. Load all CALLS edges (edge_type=1) for the project into an
+	//      adjacency list (unordered_map<node, vector<neighbor>>).
+	//   2. BFS from source_id to target_id with a visited set (encoded
+	//      in the depth map) and a parent-pointer map for reconstruction.
+	//   3. Enforce kShortestPathMaxDepth so traversal stays bounded.
+	//   4. Reconstruct source→target path via parent pointers.
+	//
+	// All sqlite errors are reported with [module=QueryEngine, method=...]
+	// tags; nothing is silently swallowed.
+	static constexpr const char *kModule = "QueryEngine";
+	static constexpr const char *kMethod = "findShortestPath";
 
-	// Check direct edge
-	std::ostringstream check;
-	check << "SELECT id FROM graph_edges WHERE source_node_id = "
-	      << source_id << " AND target_node_id = " << target_id
-	      << " AND project_id = " << project_id;
-	sqlite3_stmt *stmt = nullptr;
-	bool found = false;
-	if (sqlite3_prepare_v2(store_->handle(), check.str().c_str(), -1, &stmt,
-			       nullptr) != SQLITE_OK) {
-		// Prepare failed: cannot check direct edge — report no path
-		if (stmt)
-			sqlite3_finalize(stmt);
-		json << "{\"node_id\":" << source_id << "}],\"found\":false}";
+	std::ostringstream json;
+
+	// Helper to emit a "not found" / error payload with a consistent shape.
+	auto emitNotFound = [&](const char *error_msg) {
+		json << "{\"path\":[{\"node_id\":" << source_id << "}],"
+		     << "\"found\":false,"
+		     << "\"approximation\":\"heuristic\","
+		     << "\"note\":\"" << kShortestPathNote << "\","
+		     << "\"hops\":0";
+		if (error_msg) {
+			json << ",\"error\":\"" << jsonEscape(error_msg)
+			     << "\"";
+		}
+		json << "}";
+	};
+
+	// Validate store handle up front — without it nothing can be queried.
+	sqlite3 *db = store_ ? store_->handle() : nullptr;
+	if (!db) {
+		std::string err = std::string("[module=") + kModule +
+				  ", method=" + kMethod +
+				  "] store not initialized";
+		emitNotFound(err.c_str());
 		return json.str();
 	}
-	if (sqlite3_step(stmt) == SQLITE_ROW) {
-		// Direct edge: return source → target
-		json << "{\"node_id\":" << source_id
-		     << "},{\"edge\":true},{\"node_id\":" << target_id << "}";
-		found = true;
-	}
-	sqlite3_finalize(stmt);
 
-	if (!found) {
-		// Check 1-hop via intermediate node
-		std::ostringstream hop;
-		hop << "SELECT intermediate.id FROM graph_nodes intermediate "
-		       "JOIN graph_edges e1 ON intermediate.id = e1.target_node_id "
-		       "JOIN graph_edges e2 ON intermediate.id = e2.source_node_id "
-		       "WHERE e1.source_node_id = "
-		    << source_id << " AND e2.target_node_id = " << target_id
-		    << " AND intermediate.project_id = " << project_id
-		    << " LIMIT 1";
-		if (sqlite3_prepare_v2(store_->handle(), hop.str().c_str(), -1,
-				       &stmt, nullptr) != SQLITE_OK) {
-			// Prepare failed: cannot check 1-hop path — report no path
-			if (stmt)
-				sqlite3_finalize(stmt);
-			json << "{\"node_id\":" << source_id
-			     << "}],\"found\":false}";
+	// Self-to-self: trivial zero-hop path.
+	if (source_id == target_id) {
+		json << "{\"path\":[{\"node_id\":" << source_id << "}],"
+		     << "\"found\":true,"
+		     << "\"approximation\":\"heuristic\","
+		     << "\"note\":\"" << kShortestPathNote << "\","
+		     << "\"hops\":0}";
+		return json.str();
+	}
+
+	// ── Load all CALLS edges into an in-memory adjacency list.
+	// Scanning once is O(edges) and lets BFS run entirely against memory.
+	std::unordered_map<uint64_t, std::vector<uint64_t> > adj;
+	{
+		const char *sql =
+			"SELECT source_node_id, target_node_id FROM graph_edges "
+			"WHERE project_id = ? AND edge_type = 1";
+		sqlite3_stmt *stmt = nullptr;
+		if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) !=
+		    SQLITE_OK) {
+			std::string err =
+				std::string("[module=") + kModule +
+				", method=" + kMethod +
+				"] prepare failed: " + sqlite3_errmsg(db);
+			emitNotFound(err.c_str());
 			return json.str();
 		}
-		if (sqlite3_step(stmt) == SQLITE_ROW) {
-			uint64_t mid = static_cast<uint64_t>(
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		while (sqlite3_step(stmt) == SQLITE_ROW) {
+			uint64_t src = static_cast<uint64_t>(
 				sqlite3_column_int64(stmt, 0));
-			json << "{\"node_id\":" << source_id
-			     << "},{\"edge\":true},"
-				"{\"node_id\":"
-			     << mid
-			     << "},{\"edge\":true},"
-				"{\"node_id\":"
-			     << target_id << "}";
-			found = true;
+			uint64_t tgt = static_cast<uint64_t>(
+				sqlite3_column_int64(stmt, 1));
+			adj[src].push_back(tgt);
 		}
-		sqlite3_finalize(stmt);
+		int rc = sqlite3_finalize(stmt);
+		if (rc != SQLITE_OK) {
+			// Non-fatal: edges already loaded, but log the anomaly.
+			fprintf(stderr,
+				"[module=%s, method=%s] finalize rc=%d\n",
+				kModule, kMethod, rc);
+		}
+	}
+
+	// ── Iterative BFS with parent pointers for path reconstruction.
+	// The depth map doubles as the visited set: a node is visited iff it
+	// has an entry in depth. parent[] lets us walk back from target to
+	// source once a path is found.
+	std::unordered_map<uint64_t, uint64_t> parent;
+	std::unordered_map<uint64_t, int> depth;
+	std::queue<uint64_t> queue;
+	queue.push(source_id);
+	depth[source_id] = 0;
+	// parent[source_id] intentionally unset — reconstruction terminates
+	// when node == source_id before reading parent.
+
+	bool found = false;
+	while (!queue.empty()) {
+		uint64_t cur = queue.front();
+		queue.pop();
+		if (cur == target_id) {
+			found = true;
+			break;
+		}
+		int cur_depth = depth[cur];
+		// Do not expand beyond the max depth — neighbours would exceed
+		// the limit, so stop traversal here.
+		if (cur_depth >= kShortestPathMaxDepth) {
+			continue;
+		}
+		auto it = adj.find(cur);
+		if (it == adj.end()) {
+			continue;
+		}
+		for (uint64_t neighbor : it->second) {
+			if (depth.find(neighbor) != depth.end()) {
+				continue; // already visited
+			}
+			depth[neighbor] = cur_depth + 1;
+			parent[neighbor] = cur;
+			queue.push(neighbor);
+		}
 	}
 
 	if (!found) {
-		json << "{\"node_id\":" << source_id << "}";
+		emitNotFound(nullptr);
+		return json.str();
 	}
 
-	json << "],\"found\":" << (found ? "true" : "false") << "}";
+	// ── Reconstruct path: target → source via parent pointers, then reverse.
+	std::vector<uint64_t> path;
+	uint64_t node = target_id;
+	while (true) {
+		path.push_back(node);
+		if (node == source_id) {
+			break;
+		}
+		auto it = parent.find(node);
+		if (it == parent.end()) {
+			// Defensive: should not happen when found == true.
+			// Treat as a broken traversal and report no path.
+			path.clear();
+			found = false;
+			break;
+		}
+		node = it->second;
+	}
+
+	if (!found) {
+		emitNotFound(nullptr);
+		return json.str();
+	}
+	std::reverse(path.begin(), path.end());
+
+	// ── Emit JSON: path array + metadata.
+	json << "{\"path\":[";
+	bool first = true;
+	for (uint64_t n : path) {
+		if (!first) {
+			json << ",";
+		}
+		first = false;
+		json << "{\"node_id\":" << n << "}";
+	}
+	// hops = number of edges = number of nodes - 1 (clamped at 0).
+	size_t hops = path.size() > 0 ? path.size() - 1 : 0;
+	json << "],\"found\":true,"
+	     << "\"approximation\":\"heuristic\","
+	     << "\"note\":\"" << kShortestPathNote << "\","
+	     << "\"hops\":" << hops << "}";
 	return json.str();
 }
 

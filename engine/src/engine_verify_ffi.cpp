@@ -536,7 +536,8 @@ extern "C" char *engine_verify_summary(uint64_t project_id, const char *text)
 	auto cap_drifts = verify::detectCapabilityDrift(*g_store, project_id);
 	auto arch_drifts =
 		verify::detectArchitectureDrift(*g_store, project_id);
-	size_t total_drifts = doc_drifts.size() + cap_drifts.size() + arch_drifts.size();
+	size_t total_drifts =
+		doc_drifts.size() + cap_drifts.size() + arch_drifts.size();
 
 	// Build drifts JSON array.
 	std::ostringstream drifts_json;

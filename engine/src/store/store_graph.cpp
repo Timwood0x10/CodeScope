@@ -515,7 +515,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 
 	// Phase 1.4: Model Engine — build high-level models
 	{
-		model::ModelEngine me(this);
+		model::ModelEngine me;
 		me.addPlugin(std::make_unique<model::WorkflowPlugin>(this));
 		me.addPlugin(std::make_unique<model::CapabilityPlugin>(this));
 		me.addPlugin(std::make_unique<model::ArchitecturePlugin>(this));

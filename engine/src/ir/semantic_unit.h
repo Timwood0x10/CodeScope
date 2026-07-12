@@ -56,7 +56,8 @@ enum class RecordKind : uint8_t {
  * No children vector — tree structure is reconstructed from parent_id links.
  */
 struct Record {
-	uint64_t id = 0;
+	uint64_t id = 0; // internal sequential ID
+	uint64_t original_id = 0; // external/original ID (may differ from id)
 	RecordKind kind;
 	std::string name;
 	std::string qualified_name;
@@ -158,6 +159,16 @@ class SemanticUnit {
 
 	/** Get children of a record (records whose parent_id == id). */
 	std::vector<size_t> getChildren(uint64_t parent_id) const;
+
+	/**
+	 * Set the resolved callee reference (ref_original_id) on a CallExpr record.
+	 * Enables precise intra-file call resolution in GraphBuilder: when set,
+	 * the builder looks up the callee by this ID instead of name matching.
+	 * \param record_id        ID of the CallExpr record to update.
+	 * \param ref_original_id  original_id of the resolved callee (0 = unresolved).
+	 * \return true if the record was found and updated, false otherwise.
+	 */
+	bool setCallReference(uint64_t record_id, uint64_t ref_original_id);
 
     private:
 	std::vector<Record> records_;
