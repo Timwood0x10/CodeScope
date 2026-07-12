@@ -1,18 +1,79 @@
 # CodeScope Architecture
 
-**Version**: 0.2.0  
-**Date**: 2026-07-06
+**Version**: 0.4.0  
+**Date**: 2026-07-12
 
 ---
 
 ## 1. System Overview
 
-CodeScope is an MCP (Model Context Protocol) code understanding service. It parses source code through a multi-stage pipeline, builds call graphs and symbol dependency graphs, persists them to SQLite, and exposes query capabilities through MCP tools.
+CodeScope is a **Project Truth Engine**. It transforms source code into verifiable facts, understandable models, and inspectable evidence — enabling AI to validate claims against reality instead of hallucinating.
 
 ### Architecture
 
 ```mermaid
 flowchart TB
+    subgraph "AI Client"
+        Client["Claude Desktop / Cursor / Any MCP Client"]
+    end
+
+    subgraph "Rust MCP Server"
+        MCP["MCP Protocol (JSON-RPC 2.0)<br/>19 tools<br/>Locate / Understand / Verify / Index"]
+        DISPATCH["Tool Dispatch<br/>project_id auto-restore"]
+    end
+
+    subgraph "C++ Core Engine"
+        PARSER["Parser<br/>tree-sitter → unified IR<br/>Rust / Go / C/C++ / Python / Java / JS/TS"]
+        FACTS["Facts Repository<br/>entity / reference / scope / import"]
+        RESOLVER["Resolver Pipeline<br/>Constraint Chain<br/>Module / Import / Visibility / Scope / Distance"]
+        MODEL["Model Engine<br/>Plugin Architecture<br/>Workflow / Capability / Architecture / Contract"]
+        INSPECTOR["Inspector<br/>DeadCodeInspector<br/>verify_integrity"]
+    end
+
+    subgraph "SQLite (WAL mode)"
+        F_STORE["Facts Store<br/>entity / reference / scope / import / document"]
+        S_STORE["Semantic Store<br/>resolved_reference / relation"]
+        M_STORE["Model Store<br/>workflow / capability<br/>architecture / contract"]
+        E_STORE["Evidence Store<br/>claim / evidence / finding"]
+    end
+
+    Client -->|"MCP stdio"| MCP
+    MCP --> DISPATCH
+    DISPATCH -->|"FFI"| PARSER
+    DISPATCH -->|"FFI"| FACTS
+    DISPATCH -->|"FFI"| RESOLVER
+    DISPATCH -->|"FFI"| MODEL
+    DISPATCH -->|"FFI"| INSPECTOR
+
+    PARSER -->|"writes"| F_STORE
+    F_STORE -->|"reads"| RESOLVER
+    RESOLVER -->|"writes"| S_STORE
+    S_STORE -->|"reads"| MODEL
+    MODEL -->|"writes"| M_STORE
+    M_STORE -->|"reads"| INSPECTOR
+    INSPECTOR -->|"writes"| E_STORE
+```
+
+### Pipeline
+
+```
+Source Code
+    │
+    ▼
+Parser ──────────── entity / reference / scope / import
+    │
+    ▼
+Resolver ────────── resolved_reference / relation
+    │
+    ▼
+Model Engine ────── workflow / capability / architecture / contract
+    │
+    ▼
+Inspector ───────── evidence / finding
+    │
+    ▼
+MCP Tools ───────── AI response
+```
     Client["MCP Client<br/>(AtomGit IDE / CLI)<br/>tools/list → tools/call"]
 
     subgraph ServerProcess["CodeScope Server (Rust Process)"]

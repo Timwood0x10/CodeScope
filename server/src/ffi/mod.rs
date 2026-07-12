@@ -50,6 +50,7 @@ unsafe extern "C" {
     fn engine_verify_review(project_id: u64, text: *const c_char) -> *mut c_char;
     fn engine_verify_reality(project_id: u64, text: *const c_char) -> *mut c_char;
     fn engine_detect_drift(project_id: u64) -> *mut c_char;
+    fn engine_detect_documentation_drift(project_id: u64) -> *mut c_char;
 
     fn engine_build_fts(project_id: u64) -> *mut c_char;
 
@@ -247,6 +248,16 @@ pub fn verify_reality(project_id: u64, text: &str) -> String {
 /// JSON output.
 pub fn detect_drift(project_id: u64) -> String {
     take_string(unsafe { engine_detect_drift(project_id) })
+}
+
+/// Scan README for language support claims and cross-reference with
+/// actual entities in the codebase.
+///
+/// Detects `DocumentationDrift` (sev1): README mentions a language but no
+/// entities with that language exist in the entity table. Each detected drift
+/// is persisted as a `finding` row and returned in the JSON output.
+pub fn detect_documentation_drift(project_id: u64) -> String {
+    take_string(unsafe { engine_detect_documentation_drift(project_id) })
 }
 
 // ── Phase A: Fast Scan ────────────────────────────────────────

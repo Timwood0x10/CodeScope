@@ -1,5 +1,6 @@
 #include "engine_internal.h"
 #include "verify/ffi_internal.h"
+#include "verify/documentation_drift.h"
 
 #include <sqlite3.h>
 #include <sstream>
@@ -315,6 +316,136 @@ extern "C" char *engine_detect_drift(uint64_t project_id)
 		}
 	}
 
+	json << "],\"drifts_found\":" << drifts_found << "}";
+	return dupString(json.str());
+}
+
+// engine_detect_documentation_drift — scan README for language support
+// claims and cross-reference with actual entities in the codebase.
+//
+// Drift type detected:
+//   - DocumentationDrift (sev1): README mentions a language but no entities
+//     with that language exist in the entity table.
+//
+// Each detected drift is persisted as a finding row and returned in the
+// JSON output.
+//
+// Output JSON:
+//   {"claimed_languages":["C++","Python","Go","Rust"],
+//    "found_languages":["C++","Python","Rust"],
+//    "missing_languages":["Go"],
+//    "drifts":[{"type":"DocumentationDrift","severity":1,
+//               "subject":"Go","detail":"..."},...],
+//    "drifts_found":N}
+//
+// MEMORY: caller MUST free the returned char* via engine_free_string().
+// THREAD SAFETY: single-threaded (GraphStore writer invariant).
+extern "C" char *engine_detect_documentation_drift(uint64_t project_id)
+{
+	if (!g_store)
+		return dupString("{\"error\":\"not initialized\"}");
+
+	// Read README content from the document table.
+	sqlite3 *db = g_store->handle();
+	if (!db)
+		return dupString(
+			"{\"error\":\"db handle null "
+			"[module=ffi, "
+			"method=engine_detect_documentation_drift]\"}");
+
+	const char *sql = "SELECT content FROM document "
+			  "WHERE project_id=? AND type=0";
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+		return dupString(
+			"{\"error\":\"prepare failed "
+			"[module=ffi, "
+			"method=engine_detect_documentation_drift]\"}");
+
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	std::string readme_content;
+	int rc;
+	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+		const char *content = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 0));
+		if (content) {
+			readme_content += content;
+			readme_content += "\n";
+		}
+	}
+	if (rc != SQLITE_DONE)
+		fprintf(stderr,
+			"[module=ffi, method=engine_detect_documentation_drift] "
+			"step ended with rc=%d: %s\n",
+			rc, sqlite3_errmsg(db));
+	sqlite3_finalize(stmt);
+
+	// Extract language claims and cross-reference with the entity table.
+	auto claims = verify::extractLanguageClaims(readme_content);
+
+	std::vector<std::string> claimed;
+	std::vector<std::string> found;
+	std::vector<std::string> missing;
+	for (const auto &claim : claims) {
+		claimed.push_back(claim.display);
+		int64_t count = verify::countEntitiesByLanguage(
+			*g_store, project_id, claim.canonical);
+		if (count > 0)
+			found.push_back(claim.display);
+		else
+			missing.push_back(claim.display);
+	}
+
+	// Build detail strings once — reused for both insertFinding and JSON.
+	std::vector<std::string> missing_details;
+	missing_details.reserve(missing.size());
+	for (const auto &lang : missing) {
+		missing_details.push_back("README mentions '" + lang +
+					  "' but no " + lang +
+					  " entities found in codebase");
+	}
+
+	// Persist a finding row for each missing language.
+	for (size_t i = 0; i < missing.size(); ++i) {
+		g_store->insertFinding(project_id, "DocumentationDrift",
+				       verify::kDriftSeverityDoc, 0,
+				       missing_details[i],
+				       verify::kDriftConfidenceDoc);
+	}
+	int drifts_found = static_cast<int>(missing.size());
+
+	// Serialize to JSON:
+	// {"claimed_languages":[...],"found_languages":[...],
+	//  "missing_languages":[...],"drifts":[...],"drifts_found":N}
+	std::ostringstream json;
+	json << "{\"claimed_languages\":[";
+	for (size_t i = 0; i < claimed.size(); ++i) {
+		if (i > 0)
+			json << ",";
+		json << "\"" << jsonEscape(claimed[i]) << "\"";
+	}
+	json << "],\"found_languages\":[";
+	for (size_t i = 0; i < found.size(); ++i) {
+		if (i > 0)
+			json << ",";
+		json << "\"" << jsonEscape(found[i]) << "\"";
+	}
+	json << "],\"missing_languages\":[";
+	for (size_t i = 0; i < missing.size(); ++i) {
+		if (i > 0)
+			json << ",";
+		json << "\"" << jsonEscape(missing[i]) << "\"";
+	}
+	json << "],\"drifts\":[";
+	for (size_t i = 0; i < missing.size(); ++i) {
+		if (i > 0)
+			json << ",";
+		json << "{\"type\":\"DocumentationDrift\""
+		     << ",\"severity\":" << verify::kDriftSeverityDoc
+		     << ",\"subject\":\"" << jsonEscape(missing[i]) << "\""
+		     << ",\"detail\":\"" << jsonEscape(missing_details[i])
+		     << "\"}";
+	}
 	json << "],\"drifts_found\":" << drifts_found << "}";
 	return dupString(json.str());
 }

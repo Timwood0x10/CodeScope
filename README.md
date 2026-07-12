@@ -18,17 +18,38 @@ CodeScope is a **Project Truth Engine** that answers one question:
 
 Not "what does this code mean", but "does the code actually do what you claim?"
 
-| AI says | CodeScope checks | Method |
-|---------|-----------------|--------|
-| "登录模块支持 JWT" | JWT 库存在吗？login 调了 jwt 吗？有测试吗？ | `entity` + `relation` + `import` 表 |
-| "这个模块已完成" | 所有功能有调用者吗？覆盖率够吗？ | `relation` 表 + `DeadCodeInspector` |
-| "PR 修复了内存泄漏" | 有对应的 free 吗？测试覆盖了 error path 吗？ | `relation` 表 + `test` 文件检查 |
-| "架构是 Controller→Service→Repository" | 代码真的遵守这个分层吗？ | `architecture_edge` 表 |
+### By the Numbers
 
-**CodeScope 不解释代码，只验证代码。** 解释是 AI 的事，验证才是 CodeScope 的事。
+| Metric | Value |
+|--------|-------|
+| Languages | Rust, Go, C/C++, Python, Java, JS/TS |
+| Index speed | 1-10s (100+ files) |
+| Query latency | 0.3-1.5 ms |
+| Token savings | **98.5%** (260K lines → 40K tokens) |
+| MCP tools | 19 (Locate / Understand / Verify / Index) |
+| Architecture | Facts → Resolution → Models → Verification |
+
+### What It Can Do
+
+| AI says | CodeScope checks | Data source |
+|---------|----------------|-------------|
+| "登录模块支持 JWT" | JWT library exists? login calls jwt? tests exist? | `entity` + `relation` + `import` |
+| "This module is complete" | All functions have callers? coverage adequate? | `relation` + `DeadCodeInspector` |
+| "PR fixed memory leak" | Corresponding free exists? error path tested? | `relation` + test file check |
+| "Architecture is Controller→Service→Repository" | Does code actually follow this layering? | `architecture_edge` |
+| "Module supports 6 languages" | Do the adapters actually exist? | `entity` + `import` |
+
+### Knowledge Graph (Side Product)
+
+CodeScope builds a **module-level knowledge graph** as a side product of the verification pipeline. Starting from individual modules and scaling to the entire project, it provides:
+
+- **Module graph**: entities, references, imports within a module
+- **Cross-module graph**: call edges, dependency edges between modules  
+- **Project graph**: architecture layers, workflows, capabilities
+
+The knowledge graph is not the product — it is the infrastructure that powers verification.
 
 ---
-
 ## Quick Start
 
 ### 30 seconds to your first query
@@ -85,81 +106,69 @@ graph TB
     end
 
     subgraph "Rust MCP Server"
-        MCP["MCP Protocol (JSON-RPC 2.0)<br/>35+ tools / protocol / transport"]
-        DISPATCH["Tool Dispatch<br/>project_id auto-restore<br/>worker subprocess spawn"]
-        TQ["Task Queue (Tokio)<br/>background enhancement"]
+        MCP["MCP Protocol (JSON-RPC 2.0)<br/>19 tools / protocol / transport"]
+        DISPATCH["Tool Dispatch<br/>project_id auto-restore"]
     end
 
     subgraph "C++ Core Engine"
-        SCANNER["Fast Scanner<br/>ms-level declaration extraction"]
-        FILTER["FilterPolicy<br/>.gitignore / .codescopeignore<br/>skip dir at any depth"]
-        PARSER["Full Parser<br/>tree-sitter → unified IR"]
-        GRAPH["Graph Builder<br/>call graph (buildGraph=true)<br/>+ symbol reference graph"]
-        COMPLEXITY["Complexity Analyzer<br/>cyclomatic / cognitive"]
-        COMMUNITY["Community Detection<br/>Label Propagation<br/>max_communities / include_members"]
-        LSP["LSP Client<br/>type enhancement"]
+        PARSER["Parser<br/>tree-sitter → unified IR<br/>6 languages"]
+        FACTS["Facts Repository<br/>entity / reference / scope / import"]
+        RESOLVER["Resolver Pipeline<br/>Constraint Chain"]
+        MODEL["Model Engine<br/>Plugin: Workflow / Capability<br/>Architecture / Contract"]
+        INSPECTOR["Inspector<br/>DeadCodeInspector / verify_integrity"]
     end
 
     subgraph "SQLite (WAL mode)"
-        FACTS["Symbol tables<br/>modules / symbols / files<br/>dependency_edges / call_edges"]
-        INDICES["Index tables<br/>search_index (FTS5)<br/>embeddings (sqlite-vec)"]
-        METRICS["Metrics table<br/>complexity / symbol_status<br/>communities"]
+        F_STORE["Facts Store<br/>entity / reference / scope / import"]
+        S_STORE["Semantic Store<br/>resolved_reference / relation"]
+        M_STORE["Model Store<br/>workflow / capability<br/>architecture / contract"]
+        E_STORE["Evidence Store<br/>claim / evidence / finding"]
     end
 
     Client -->|"MCP stdio"| MCP
     MCP --> DISPATCH
-    DISPATCH --> FFI
-    DISPATCH -->|"spawn worker"| WORKER["Worker Subprocess<br/>memory isolation<br/>exits after indexing"]
-    WORKER -->|"write"| FACTS
-    FFI --> SCANNER
-    FFI --> FILTER
-    FFI --> PARSER
-    FFI --> GRAPH
-    FFI --> COMPLEXITY
-    FFI --> COMMUNITY
-    FFI --> LSP
+    DISPATCH -->|"FFI"| PARSER
+    DISPATCH -->|"FFI"| FACTS
+    DISPATCH -->|"FFI"| RESOLVER
+    DISPATCH -->|"FFI"| MODEL
+    DISPATCH -->|"FFI"| INSPECTOR
 
-    SCANNER --> FACTS
-    FILTER --> SCANNER
-    FILTER --> PARSER
-    PARSER --> GRAPH
-    GRAPH --> FACTS
-    COMPLEXITY --> METRICS
-    COMMUNITY --> METRICS
-    LSP --> FACTS
-    TQ --> GRAPH
+    PARSER -->|"writes"| F_STORE
+    F_STORE -->|"reads"| RESOLVER
+    RESOLVER -->|"writes"| S_STORE
+    S_STORE -->|"reads"| MODEL
+    MODEL -->|"writes"| M_STORE
+    M_STORE -->|"reads"| INSPECTOR
+    INSPECTOR -->|"writes"| E_STORE
+```
+
+### Pipeline
+
+```
+Source Code
+    |
+    v
+Parser ------------ entity / reference / scope / import
+    |
+    v
+Resolver ---------- resolved_reference / relation
+    |
+    v
+Model Engine ------ workflow / capability / architecture / contract
+    |
+    v
+Inspector --------- evidence / finding
 ```
 
 ### Data Flow
 
-```mermaid
-flowchart LR
-    subgraph "Phase A: Skeleton Index (ms)"
-        A0["discover files<br/>FilterPolicy: .gitignore + .codescopeignore<br/>skip dir at any depth"] --> A1["scan_project<br/>detectLanguage + detectDecl"]
-        A1 -->|"facts"| A2["symbols + modules +<br/>entry_points tables"]
-        A1 -->|"status"| A3["symbol_status<br/>flags = 0"]
-        A2 --> A4["✓ AI ready in ms<br/>query: get_module_tree<br/>find_symbol, get_entry_points"]
-    end
+```
+Facts Layer:      项目里有什么？          实体、引用、作用域、导入
+Resolution Layer: 谁调了谁？              调用边、依赖关系
+Model Layer:      项目怎么工作的？         工作流、能力、架构、契约
+Verify Layer:     真的吗？证据在哪？       证据、发现
+```
 
-    subgraph "Phase B: Knowledge Enhancement (async)"
-        B1["enhance_project<br/>background Tokio task"] --> B2["Full Parse<br/>tree-sitter all files"]
-        B2 --> B3["Build Call Graph<br/>buildGraph(project_id, true)<br/>CALLS edges (edge_type=1)"]
-        B2 --> B4["Compute Metrics<br/>cyclomatic + cognitive<br/>complexity table"]
-        B2 --> B5["Generate Embeddings<br/>search_index FTS5<br/>+ sqlite-vec vectors"]
-        B3 --> B6["set callgraph_ready=1"]
-        B4 --> B7["set metrics_ready=1"]
-        B5 --> B8["set embedding_ready=1"]
-    end
-
-    subgraph "Phase C: Full Index (on-demand)"
-        C1["index_project<br/>spawns worker subprocess<br/>memory isolation"] --> C2["Worker: Full Parse<br/>tree-sitter all files"]
-        C2 --> C3["Worker: Semantic Records<br/>insertSemanticRecordsBatch"]
-        C3 --> C4["Worker: buildGraph(true)<br/>call + ref edges"]
-        C4 --> C5["Worker: build FTS index<br/>+ vectors"]
-        C5 --> C6["Worker exits → RSS freed"]
-    end
-
-    A4 -.->|"triggers"| B1
 ```
 
 ### Query Flow (Tool Dispatch)
@@ -199,74 +208,59 @@ flowchart LR
     A -->|"trigger"| B
 ```
 
-## MCP Tools
+## MCP Tools (19 tools)
 
-### Skeleton Scan (Phase A)
-
-| Tool | Description | Input |
-|------|-------------|-------|
-| `codescope_scan` / `scan_project` | Fast scan project directory (ms-level) | `project_path`, `language_filter?` |
-| `codescope_find_symbol` / `find_symbol` | Find symbol by exact name | `symbol_name` |
-| `codescope_module_tree` / `get_module_tree` | Get hierarchical module tree | (none) |
-| `codescope_get_entry_points` / `get_entry_points` | Get entry points (main/init/run) | (none) |
-
-### Knowledge Enhancement (Phase B)
+### Locate (查位置)
 
 | Tool | Description | Input |
 |------|-------------|-------|
-| `codescope_enhance` / `enhance_project` | Run full background enhancement | (none) |
-| `get_enhancement_status` | Check enhancement progress | (none) |
+| `find_definition` | Find symbol definition location | `name` |
+| `find_references` | Find all references to a symbol | `name` |
+| `find_callers` | Find who calls a function | `name` |
+| `find_callees` | Find what a function calls | `name` |
+| `trace_flow` | Trace call path between functions | `function_name`, `depth` |
+| `search_code` | Full-text search | `query`, `limit?` |
 
-### Search & Query
-
-| Tool | Description | Input |
-|------|-------------|-------|
-| `codescope_search` / `search` | Unified FTS / semantic search | `query`, `limit?` |
-| `search_code` | [DEPRECATED] Legacy FTS search | `query`, `limit?` |
-
-### Call Graph
+### Understand (理解项目)
 
 | Tool | Description | Input |
 |------|-------------|-------|
-| `codescope_get_callers` / `find_callers` | Find who calls a function (adaptive) | `symbol_name` |
-| `codescope_get_callees` / `find_callees` | Find what a function calls (adaptive) | `symbol_name` |
-| `codescope_trace` | **NEW** Trace call path between two functions (BFS) | `from`, `to` |
-| `get_callers` | [DEPRECATED] Old caller query | `function_name` |
-| `get_callees` | [DEPRECATED] Old callee query | `function_name` |
+| `project_overview` | Comprehensive project overview | (none) |
+| `explain_module` | Module knowledge card | `name` |
+| `explain_symbol` | Symbol knowledge card | `name` |
+| `get_module_tree` | Hierarchical module tree | (none) |
+| `get_entry_points` | Get entry points (main/init/run) | (none) |
+| `get_graph_stats` | Code graph statistics | (none) |
 
-### Project Analysis
-
-| Tool | Description | Input |
-|------|-------------|-------|
-| `codescope_overview` / `project_overview` | Comprehensive project overview | (none) |
-| `find_definition` | [DEPRECATED] Find symbol definition | `symbol_name` |
-| `find_references` | Find all references to a symbol | `symbol_name` |
-| `get_graph_stats` | Get code graph statistics | (none) |
-| `get_complexity` | Cyclomatic + cognitive complexity | `node_id` |
-
-### Code Graph (Legacy)
+### Verify (验证)
 
 | Tool | Description | Input |
 |------|-------------|-------|
-| `get_neighbors` | Get neighbor nodes in graph | `node_id`, `edge_type?`, `radius?` |
-| `find_shortest_path` | Shortest path between nodes | `source_node_id`, `target_node_id` |
-| `get_subgraph` | Subgraph centered on a node | `center_node_id`, `radius?` |
-| `locate_code` | Locate code in source file | `identifier` |
-| `graph_query` | DSL: `MATCH (Func)-[Calls]->(Func)` | `query` |
+| `verify_integrity` | Project integrity check | (none) |
+| `verify_claim` | Verify a single claim | `subject`, `predicate`, `object` |
+| `verify_summary` | Verify AI summary against code | `summary` |
 | `detect_changes` | Change impact analysis | `modified_files` |
-| `get_communities` | Community detection | (none) |
+
+### Index (索引)
+
+| Tool | Description | Input |
+|------|-------------|-------|
+| `index_project` | Index a project | `project_path`, `language` |
+| `index_file` | Index a single file | `file_path` |
+| `search` | Unified search | `query`, `limit?` |
+
 
 ## Usage Skill
 
 ### Basic Workflow
 
 ```
-1. codescope_scan("/path/to/project")     ← 50-500ms, get project skeleton
-2. codescope_overview                      ← 1-2ms,  understand project structure
-3. codescope_find_symbol("malloc")         ← 10μs,   locate a symbol
-4. codescope_enhance                       ← 100ms-30s, full parse + call graph
-5. codescope_trace("main", "malloc")       ← BFS,    get execution path
-6. codescope_search("mutex_")              ← adaptive search (FTS / semantic)
+1. index_project("/path/to/project")    ← 1-30s, index the project
+2. project_overview                     ← 1-2ms, understand project structure
+3. find_definition("malloc")            ← 10μs,  locate a symbol
+4. trace_flow("main", "malloc")         ← BFS,   get execution path
+5. verify_claim("login", "supports", "JWT")  ← verify a claim
+6. verify_summary("已完成登录模块")     ← verify AI summary
 ```
 
 ### Real-World Execution Path Example

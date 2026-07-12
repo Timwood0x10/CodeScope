@@ -1,6 +1,6 @@
 # CodeScope — 完整功能参考
 
-CodeScope 是一个基于 MCP 协议的代码理解服务。它将源代码解析为统一的 AST IR，构建多维代码图（调用图 + 符号引用图），持久化到 SQLite，并通过 MCP 工具暴露强大的查询能力。
+CodeScope 是一个 **Project Truth Engine**。它把源码变成可验证的事实、可理解的模型、可检查的证据，让 AI 基于项目真相回答问题，而不是幻觉。
 
 ---
 
@@ -113,75 +113,46 @@ flowchart LR
 
 ---
 
-## 3. 所有 MCP 工具
+## 3. MCP 工具（19 个）
 
-### 3.1 项目索引
-
-| 工具 | 用途 | 输入 | 输出 | Token |
-|------|------|------|------|-------|
-| `index_project` | 全量索引（自动 worker 隔离） | `project_path`, `language_filter` | JSON: 文件数、耗时 | ~50 |
-| `index_file` | 索引单个文件 | `file_path` | JSON: 文件结果 | ~30 |
-| `index_batch` | 事务内批量索引多文件 | `files` (JSON 数组) | JSON: 批量结果 | ~30 |
-| `scan_project` | 快速扫描（ms 级，不全量解析） | `project_path`, `language_filter` | 模块 + 符号 + 入口点 | ~200 |
-| `enhance_project` | 后台全量增强（异步） | — | 状态 JSON | ~20 |
-
-### 3.2 符号查询
+### 索引
 
 | 工具 | 用途 | 输入 | 输出 | Token |
 |------|------|------|------|-------|
-| `find_definition` | 查找符号定义位置 | `symbol_name`, `file_filter` | 文件 + 行/列范围 | ~20 |
-| `find_references` | 查找所有引用该符号的位置 | `symbol_name`, `file_filter` | 所有引用位置 | ~30 |
-| `find_symbol` | 按名称精确查找符号 | `symbol_name` | id, kind, 文件, 行 | ~30 |
-| `locate_code` | 获取符号附近的代码上下文 | `identifier`, `context_lines` | 文件路径 + 源码行 | ~50-300 |
-| `get_complexity` | 获取圈复杂度/认知复杂度 | `node_id` | cyclomatic, cognitive, nesting depth | ~20 |
+| `index_project` | 全量索引项目 | `project_path`, `language` | JSON: files_indexed, timing | ~50 |
+| `index_file` | 索引单个文件 | `file_path` | JSON: file result | ~30 |
+| `search` | 统一搜索（FTS） | `query`, `limit?` | JSON: 搜索结果 | ~30 |
 
-### 3.3 调用图
+### 查位置
 
 | 工具 | 用途 | 输入 | 输出 | Token |
 |------|------|------|------|-------|
-| `find_callers` | 谁调用了这个函数？ | `symbol_name` | 调用者函数 | ~10-50 |
-| `find_callees` | 这个函数调用了什么？ | `symbol_name` | 被调用者函数 | ~10-50 |
-| `codescope_trace` | 两点间最短调用路径 | `from`, `to` | 完整调用链（文件+行号） | ~50-200 |
-| `get_hotspots` | 项目中最热门的函数 | `top_n` | 每个函数的 caller_count + complexity | ~500 |
-| `graph_query` | 自定义图模式查询 | `query` (DSL) | 匹配的三元组 | ~50-500 |
-| `get_neighbors` | 图节点的邻居节点 | `node_id`, `edge_type`, `radius` | 入边 + 出边邻居 | ~50 |
-| `find_shortest_path` | 两节点间最短路径 | `source_node_id`, `target_node_id` | 节点路径 | ~50 |
-| `get_subgraph` | 以节点为中心的子图 | `center_node_id`, `radius`, 过滤器 | 节点 + 边 | ~200 |
+| `find_definition` | 查找符号定义 | `name` | 文件 + 行/列 | ~20 |
+| `find_references` | 查找所有引用 | `name` | 所有引用位置 | ~30 |
+| `find_callers` | 谁调了这个函数？ | `name` | 调用者列表 | ~10-50 |
+| `find_callees` | 这个函数调了谁？ | `name` | 被调用者列表 | ~10-50 |
+| `trace_flow` | 追踪调用路径（BFS） | `function_name`, `depth` | 调用链 | ~50-200 |
+| `search_code` | 全文搜索 | `query`, `limit?` | 匹配行 | ~30 |
 
-### 3.4 搜索
+### 理解项目
 
 | 工具 | 用途 | 输入 | 输出 | Token |
 |------|------|------|------|-------|
-| `search` | 统一代码搜索（推荐） | `query`, `limit` | FTS + 语义搜索结果 | ~300-1000 |
-| `search_code` | 旧版 FTS 搜索（已废弃） | `query`, `limit` | 匹配节点 | ~300-1000 |
+| `project_overview` | 项目概览 | (none) | 模块、语言、统计 | ~71 |
+| `explain_module` | 模块知识卡片 | `name` | 实体、能力、工作流 | ~100-500 |
+| `explain_symbol` | 符号知识卡片 | `name` | 定义、调用者、被调用者 | ~50-200 |
+| `get_module_tree` | 模块层级树 | (none) | 嵌套模块树 | ~4 |
+| `get_entry_points` | 入口点 | (none) | 入口函数列表 | ~5 |
+| `get_graph_stats` | 图统计 | (none) | 节点数、边数、文件数 | ~10 |
 
-### 3.5 项目概览
-
-| 工具 | 用途 | 输入 | 输出 | Token |
-|------|------|------|------|-------|
-| `get_graph_stats` | 节点/边/文件计数 | — | total_nodes, total_edges, total_files | ~18 |
-| `get_project_info` | 许可证、语言、文件数 | — | name, license, language, file_count | ~44 |
-| `project_overview` | 项目综合摘要 | — | 语言、模块、入口点、进度 | ~71 |
-| `get_module_tree` | 分层模块结构 | — | 模块 id, parent_id, name, path, file_count | ~4 |
-| `get_entry_points` | main/init/setup/handler 入口点 | — | symbol id, name, file, line | ~5 |
-
-### 3.6 分析
+### 验证
 
 | 工具 | 用途 | 输入 | 输出 | Token |
 |------|------|------|------|-------|
-| `get_communities` | 社区检测（Label Propagation） | `max_members`, `max_communities`, `include_members` | 社区 + 成员 + 社区间边 | **1K-200K** ⚠️ |
-| `detect_changes` | 文件变更影响分析 | `modified_files` (JSON 数组) | 直接修改 + 调用者 + 被调用者 | ~100-500 |
-| `codescope_build_context` | AI 上下文构建（PRIMARY） | `query` | 代码问答上下文 | ~200-1000 |
-| `codescope_capabilities` | 功能就绪状态报告 | — | 每个功能的能力状态 | ~309 |
-
-### 3.7 工具
-
-| 工具 | 用途 | 输入 | 输出 | Token |
-|------|------|------|------|-------|
-| `count_tokens` | Token 估算（DeepSeek 公式） | `text` | tokens, chars (ascii/non-ascii) | ~10 |
-| `get_enhancement_status` | 检查异步增强进度 | — | total symbols, callgraph/cfg/embedding 计数 | ~30 |
-
----
+| `verify_integrity` | 项目完整性检查 | (none) | 孤儿模块、死代码 | ~100-500 |
+| `verify_claim` | 验证单个断言 | `subject`, `predicate`, `object` | 证据链 | ~100 |
+| `verify_summary` | 验证 AI 总结 | `summary` | 支持/矛盾/未知 | ~200 |
+| `detect_changes` | 变更影响分析 | `modified_files` | 受影响调用者 | ~100-500 |
 
 ## 4. 工具使用指南
 

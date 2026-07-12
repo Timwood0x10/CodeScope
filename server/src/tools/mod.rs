@@ -312,6 +312,13 @@ fn h_detect_drift(project_id: u64, _args: &Value) -> String {
     ffi::detect_drift(project_id)
 }
 
+/// Scan README for language support claims and cross-reference with actual
+/// entities in the codebase. Reports DocumentationDrift for any claimed
+/// language with zero entities.
+fn h_detect_documentation_drift(project_id: u64, _args: &Value) -> String {
+    ffi::detect_documentation_drift(project_id)
+}
+
 /// Build a Knowledge Card for a named module/directory.
 fn h_explain_module(project_id: u64, args: &Value) -> String {
     let name = args["module_name"].as_str().unwrap_or("");
@@ -440,6 +447,10 @@ static TOOL_HANDLERS: Lazy<HashMap<&'static str, ToolHandler>> = Lazy::new(|| {
     m.insert("verify_review", h_verify_review as ToolHandler);
     m.insert("verify_reality", h_verify_reality as ToolHandler);
     m.insert("detect_drift", h_detect_drift as ToolHandler);
+    m.insert(
+        "detect_documentation_drift",
+        h_detect_documentation_drift as ToolHandler,
+    );
     m.insert("trace_flow", h_trace_flow as ToolHandler);
     // Fast scan
     m.insert("find_symbol", h_find_symbol as ToolHandler);
@@ -612,6 +623,14 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
         Tool {
             name: "detect_drift".into(),
             description: "Scan all declared capabilities and contracts for drift between documentation/code comments and the actual codebase. Detects MissingCapability (declared in README but no implementing entity with callers) and BrokenContract (declared but no enforcing code). Each drift is persisted as a finding row and returned in the JSON output.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        Tool {
+            name: "detect_documentation_drift".into(),
+            description: "Scan README for language support claims (e.g. 'supports C++, Python, Go') and cross-reference with actual entities in the codebase. Reports DocumentationDrift (severity 1) for any claimed language with zero entities. Returns claimed_languages, found_languages, missing_languages, and drifts arrays. Enables end-to-end verification: AI says X, CodeScope checks the tables.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {}

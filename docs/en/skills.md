@@ -1,6 +1,6 @@
 # CodeScope — Complete Feature Reference
 
-CodeScope is an MCP-based code understanding service. It parses source code into a unified AST IR, builds multi-dimensional code graphs (call graph + symbol reference graph), persists them to SQLite, and exposes powerful queries via MCP tools.
+CodeScope is a **Project Truth Engine**. It transforms source code into verifiable facts, understandable models, and inspectable evidence — enabling AI to validate claims against reality instead of hallucinating.
 
 ---
 
@@ -113,75 +113,46 @@ flowchart LR
 
 ---
 
-## 3. All MCP Tools
+## 3. MCP Tools (19 tools)
 
-### 3.1 Project Indexing
+### Index (索引)
 
 | Tool | Purpose | Input | Output | Token |
 |------|---------|-------|--------|-------|
-| `index_project` | Full project index (spawns worker) | `project_path`, `language_filter` | JSON: files_indexed, timing | ~50 |
+| `index_project` | Full project index | `project_path`, `language` | JSON: files_indexed, timing | ~50 |
 | `index_file` | Index a single file | `file_path` | JSON: file result | ~30 |
-| `index_batch` | Index multiple files in one transaction | `files` (JSON array) | JSON: batch result | ~30 |
-| `scan_project` | Fast scan (ms-level, no full parse) | `project_path`, `language_filter` | modules + symbols + entry_points | ~200 |
-| `enhance_project` | Background full enhancement (async) | — | status JSON | ~20 |
+| `search` | Unified search (FTS) | `query`, `limit?` | JSON: matched results | ~30 |
 
-### 3.2 Symbol Queries
+### Locate (查位置)
 
 | Tool | Purpose | Input | Output | Token |
 |------|---------|-------|--------|-------|
-| `find_definition` | Find where a symbol is defined | `symbol_name`, `file_filter` | file + line/col range | ~20 |
-| `find_references` | Find all references to a symbol | `symbol_name`, `file_filter` | all referencing locations | ~30 |
-| `find_symbol` | Find symbol(s) by exact name | `symbol_name` | id, kind, file, line | ~30 |
-| `locate_code` | Get source code context around a symbol | `identifier`, `context_lines` | file path + source lines | ~50-300 |
-| `get_complexity` | Get cyclomatic/cognitive complexity | `node_id` | cyclomatic, cognitive, nesting depth | ~20 |
+| `find_definition` | Find symbol definition | `name` | file + line/col | ~20 |
+| `find_references` | Find all references | `name` | all referencing locations | ~30 |
+| `find_callers` | Who calls this function? | `name` | caller functions | ~10-50 |
+| `find_callees` | What does this function call? | `name` | callee functions | ~10-50 |
+| `trace_flow` | Trace call path (BFS) | `function_name`, `depth` | call chain | ~50-200 |
+| `search_code` | Full-text search | `query`, `limit?` | matched lines | ~30 |
 
-### 3.3 Call Graph
-
-| Tool | Purpose | Input | Output | Token |
-|------|---------|-------|--------|-------|
-| `find_callers` | Who calls this function? | `symbol_name` | caller functions | ~10-50 |
-| `find_callees` | What does this function call? | `symbol_name` | callee functions | ~10-50 |
-| `codescope_trace` | Shortest call path between two functions | `from`, `to` | full call chain with files + lines | ~50-200 |
-| `get_hotspots` | Most-called functions in the project | `top_n` | caller_count + complexity per function | ~500 |
-| `graph_query` | Custom graph pattern query | `query` (DSL) | matching triples | ~50-500 |
-| `get_neighbors` | Neighbor nodes of a graph node | `node_id`, `edge_type`, `radius` | incoming + outgoing neighbors | ~50 |
-| `find_shortest_path` | Shortest path between two nodes | `source_node_id`, `target_node_id` | node path | ~50 |
-| `get_subgraph` | Subgraph centered on a node | `center_node_id`, `radius`, filters | nodes + edges | ~200 |
-
-### 3.4 Search
+### Understand (理解项目)
 
 | Tool | Purpose | Input | Output | Token |
 |------|---------|-------|--------|-------|
-| `search` | Unified code search (recommended) | `query`, `limit` | FTS + semantic results | ~300-1000 |
-| `search_code` | Legacy FTS search (deprecated) | `query`, `limit` | matching nodes | ~300-1000 |
+| `project_overview` | Project overview | (none) | modules, languages, stats | ~71 |
+| `explain_module` | Module knowledge card | `name` | entities, capabilities, workflows | ~100-500 |
+| `explain_symbol` | Symbol knowledge card | `name` | definition, callers, callees | ~50-200 |
+| `get_module_tree` | Module hierarchy tree | (none) | nested module tree | ~4 |
+| `get_entry_points` | Entry points (main/init/run) | (none) | entry functions | ~5 |
+| `get_graph_stats` | Graph statistics | (none) | nodes, edges, files | ~10 |
 
-### 3.5 Project Overview
-
-| Tool | Purpose | Input | Output | Token |
-|------|---------|-------|--------|-------|
-| `get_graph_stats` | Node/edge/file counts | — | total_nodes, total_edges, total_files | ~18 |
-| `get_project_info` | License, language, file count | — | name, license, language, file_count | ~44 |
-| `project_overview` | Comprehensive project summary | — | languages, modules, entry points, progress | ~71 |
-| `get_module_tree` | Hierarchical module structure | — | modules with id, parent_id, name, path, file_count | ~4 |
-| `get_entry_points` | Main/init/setup/handler entry points | — | symbol id, name, file, line | ~5 |
-
-### 3.6 Analysis
+### Verify (验证)
 
 | Tool | Purpose | Input | Output | Token |
 |------|---------|-------|--------|-------|
-| `get_communities` | Community detection (Label Propagation) | `max_members`, `max_communities`, `include_members` | communities + members + inter-edges | **1K-200K** ⚠️ |
-| `detect_changes` | Impact analysis for modified files | `modified_files` (JSON array) | directly modified + callers + callees | ~100-500 |
-| `codescope_build_context` | AI context bundle (PRIMARY) | `query` | intelligent context for code questions | ~200-1000 |
-| `codescope_capabilities` | Feature readiness report | — | capability status per feature | ~309 |
-
-### 3.7 Utilities
-
-| Tool | Purpose | Input | Output | Token |
-|------|---------|-------|--------|-------|
-| `count_tokens` | Estimate token count (DeepSeek formula) | `text` | tokens, chars (ascii/non-ascii) | ~10 |
-| `get_enhancement_status` | Check async enhancement progress | — | total symbols, callgraph/cfg/embedding counts | ~30 |
-
----
+| `verify_integrity` | Project integrity check | (none) | orphan modules, dead code | ~100-500 |
+| `verify_claim` | Verify a single claim | `subject`, `predicate`, `object` | evidence chain | ~100 |
+| `verify_summary` | Verify AI summary | `summary` | verified/pending/refuted | ~200 |
+| `detect_changes` | Change impact analysis | `modified_files` | affected callers | ~100-500 |
 
 ## 4. Tool Usage Guide
 
