@@ -17,6 +17,13 @@ constexpr double kWeightDistanceMatch = 0.05;
 constexpr double kWeightConstructorMatch = 0.10;
 constexpr double kWeightReceiverMatch = 0.15;
 constexpr double kWeightCommonNamePenalty = 0.10;
+constexpr double kWeightCallKindMatch = 0.15; // call_kind-based boost/penalty
+
+// ── Named constants for call_kind values (matches ir::CallKind enum) ──
+constexpr int kCallKindDirect = 0;
+constexpr int kCallKindMethod = 1;
+constexpr int kCallKindInterface = 2;
+constexpr int kCallKindConstructor = 3;
 
 // ── Named constants for scoring values ──────────────────────────────
 constexpr double kScoreExactMatch = 1.0;

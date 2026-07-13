@@ -225,18 +225,19 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 		}
 
 		// Factor 9: CallKindMatch — adjust scoring based on call kind.
-		// Constructor (3): boost for cross-module (import expected).
-		// Interface dispatch (2): reduce confidence (harder to resolve).
-		if (call_kind != 0) {
+		// Constructor calls (3): boost for cross-module matching.
+		// Interface dispatches (2): reduce confidence (harder to resolve).
+		// Method calls (1): slight cross-module penalty.
+		if (call_kind != kCallKindDirect) {
 			FactorResult f;
 			f.name = "CallKindMatch";
-			f.weight = kWeightModuleMatch;
-			if (call_kind == 3)
-				f.score = 0.3;
-			else if (call_kind == 2)
-				f.score = -0.3;
-			else if (call_kind == 1)
-				f.score = -0.1;
+			f.weight = kWeightCallKindMatch;
+			if (call_kind == kCallKindConstructor)
+				f.score = 0.3; // boost: constructors expected to cross module
+			else if (call_kind == kCallKindInterface)
+				f.score = -0.3; // penalty: interface dispatch is harder to resolve
+			else if (call_kind == kCallKindMethod)
+				f.score = -0.1; // slight penalty: methods usually same-module
 			else
 				f.score = 0.0;
 			f.detail = "call_kind=" + std::to_string(call_kind);

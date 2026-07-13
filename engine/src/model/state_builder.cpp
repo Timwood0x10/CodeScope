@@ -48,8 +48,10 @@ int64_t StateBuilder::buildModuleSummaries()
 	int64_t count = 0;
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
 		uint64_t module_id =
-			static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
-		int total = sqlite3_column_int(stmt, 2);
+		  static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
+		 const char *p_name = reinterpret_cast<const char *>(
+		  sqlite3_column_text(stmt, 1));
+		 int total = sqlite3_column_int(stmt, 2);
 		int incoming = sqlite3_column_int(stmt, 3);
 		int outgoing = sqlite3_column_int(stmt, 4);
 		int dead = sqlite3_column_int(stmt, 5);
@@ -58,12 +60,16 @@ int64_t StateBuilder::buildModuleSummaries()
 				(1.0 - static_cast<double>(dead) / total) :
 				0.0;
 
+		// Classify module role based on path and metrics
+		std::string role = classifyModuleRole(
+		 p_name ? p_name : "", incoming, outgoing, total);
+
 		// Insert or update module_summary
 		std::string ins =
-			"INSERT OR REPLACE INTO module_summary "
-			"(project_id, module_id, state, incoming_count, outgoing_count, "
-			" internal_edges, dead_entities, utilization, confidence) "
-			"VALUES (?, ?, 0, ?, ?, 0, ?, ?, 0.85)";
+		 "INSERT OR REPLACE INTO module_summary "
+		 "(project_id, module_id, state, incoming_count, outgoing_count, "
+		 " internal_edges, dead_entities, utilization, confidence, role) "
+		 "VALUES (?, ?, 0, ?, ?, 0, ?, ?, 0.85, ?)";
 		sqlite3_stmt *ins_st = nullptr;
 		if (sqlite3_prepare_v2(store_->handle(), ins.c_str(), -1,
 				       &ins_st, nullptr) == SQLITE_OK) {
@@ -75,6 +81,8 @@ int64_t StateBuilder::buildModuleSummaries()
 			sqlite3_bind_int(ins_st, 4, outgoing);
 			sqlite3_bind_int(ins_st, 5, dead);
 			sqlite3_bind_double(ins_st, 6, utilization);
+			sqlite3_bind_text(ins_st, 7, role.c_str(), -1,
+			    SQLITE_STATIC);
 			int rc = sqlite3_step(ins_st);
 			if (rc != SQLITE_DONE && rc != SQLITE_CONSTRAINT)
 				fprintf(stderr,
@@ -283,6 +291,25 @@ int64_t StateBuilder::buildAll()
 	total += n;
 
 	return total;
+}
+
+// ── Module Role Classification ───────────────────────────────────
+std::string StateBuilder::classifyModuleRole(const std::string &module_path,
+					     int incoming, int outgoing,
+					     int total_entities)
+{
+	if (module_path.find("/examples/") != std::string::npos ||
+	    module_path.find("/example/") != std::string::npos)
+		return "example";
+	if (module_path.find("/cmd/") != std::string::npos)
+		return "entry";
+	if (module_path.find("/api/") != std::string::npos)
+		return "api";
+	if (incoming >= 10 && outgoing <= 5 && total_entities <= 20)
+		return "tool";
+	if (incoming >= 5 && outgoing >= 5)
+		return "business";
+	return "infra";
 }
 
 } // namespace model

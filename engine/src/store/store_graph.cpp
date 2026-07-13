@@ -228,17 +228,23 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// This populates all declaration nodes (functions, classes, etc.) with
 	// their text metadata and location info for downstream queries.
 	exec(std::string(
-		     "INSERT INTO graph_nodes (id, project_id, ir_node_id, node_type, "
-		     " name, qualified_name, signature, module_path, file_path, "
-		     " start_row, start_col, end_row, end_col, language) "
-		     "SELECT r2n.node_id, sr.project_id, sr.original_id, "
-		     " CASE sr.kind WHEN 0 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 "
-		     "  WHEN 3 THEN 4 WHEN 4 THEN 3 WHEN 5 THEN 3 ELSE 7 END, "
-		     " sr.name, COALESCE(NULLIF(sr.qualified_name, ''), sr.name), COALESCE(NULLIF(sr.qualified_name, ''), sr.name), sr.file_path, sr.file_path, "
-		     " sr.start_row, sr.start_col, sr.end_row, sr.end_col, sr.language "
-		     "FROM semantic_records sr "
-		     "JOIN _r2n r2n ON sr.rowid = r2n.rid")
-		     .c_str());
+	      "INSERT INTO graph_nodes (id, project_id, ir_node_id, node_type, "
+	      " name, qualified_name, signature, module_path, file_path, "
+	      " start_row, start_col, end_row, end_col, language, parent_id) "
+	      "SELECT r2n.node_id, sr.project_id, sr.original_id, "
+	      " CASE sr.kind WHEN 0 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 "
+	      "  WHEN 3 THEN 3 WHEN 4 THEN 4 WHEN 5 THEN 3 ELSE 7 END, "
+	      " sr.name, COALESCE(NULLIF(sr.qualified_name, ''), sr.name), "
+	      " COALESCE(NULLIF(sr.qualified_name, ''), sr.name), "
+	      " sr.file_path, sr.file_path, "
+	      " sr.start_row, sr.start_col, sr.end_row, sr.end_col, "
+	      " sr.language, "
+	      " COALESCE((SELECT parent_r2n.node_id FROM _r2n parent_r2n"
+	      "  WHERE parent_r2n.original_id = sr.parent_id"
+	      "  AND parent_r2n.file_path = sr.file_path), 0) "
+	      "FROM semantic_records sr "
+	      "JOIN _r2n r2n ON sr.rowid = r2n.rid")
+	      .c_str());
 	// Phase 1.1: dual-write to entity table
 	exec(std::string(
 		     "INSERT OR IGNORE INTO entity "
@@ -393,7 +399,49 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 
 	auto t_type = Clock::now();
 
-	// ── Build CSR adjacency from call edges ──
+	 // Phase 1.4: Interface implementation inference (Go structural typing).
+	 // Uses _r2n mapping (same approach as Phase 1.2) to match method records
+	 // to their interface/struct parents via parent_id → node_id chain.
+	 {
+	  // For each interface type, find structs in the same file that have
+	  // all the methods the interface requires. Record as type_ref(kind=3).
+	  // Uses graph_nodes (already populated by _r2n) instead of raw
+	  // semantic_records, because the parent_id → original_id chain is
+	  // already resolved through the _r2n mapping.
+	  exec(std::string(
+	        "INSERT OR IGNORE INTO type_ref "
+	        "(project_id, entity_id, type_name, kind, "
+	        " file_path, start_row, start_col) "
+	        "SELECT " +
+	        pid +
+	        ", struct_gn.id, iface_gn.name, 3, "
+	        " struct_gn.file_path, 0, 0 "
+	        "FROM graph_nodes iface_gn"
+	        " JOIN graph_nodes iface_method"
+	        "  ON iface_method.parent_id = iface_gn.id"
+	        "  AND iface_gn.project_id=" +
+	        pid +
+	        " AND iface_gn.node_type=3"   // Interface
+	        " AND iface_method.node_type=1"  // Method
+	        " JOIN graph_nodes struct_method"
+	        "  ON struct_method.name COLLATE NOCASE = iface_method.name"
+	        "  AND struct_method.node_type=1"  // Method
+	        "  AND struct_method.file_path = iface_gn.file_path"
+	        " JOIN graph_nodes struct_gn"
+	        "  ON struct_gn.id = struct_method.parent_id"
+	        "  AND struct_gn.node_type=2"   // Class/Struct
+	        "  AND struct_gn.file_path = iface_gn.file_path"
+	        " GROUP BY struct_gn.id, iface_gn.id"
+	        " HAVING COUNT(DISTINCT struct_method.name) = ("
+	        "  SELECT COUNT(DISTINCT im.name)"
+	        "  FROM graph_nodes im"
+	        "  WHERE im.parent_id = iface_gn.id"
+	        "   AND im.node_type=1"
+	        " )")
+	        .c_str());
+	}
+
+	 // ── Build CSR adjacency from call edges ──
 	// Aggregates graph_edges(edge_type=1) into src_id → [tgt_ids] BLOBs
 	// for O(1) caller/callee queries.
 	if (build_calls) {

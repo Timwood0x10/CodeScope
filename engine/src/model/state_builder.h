@@ -39,6 +39,12 @@ public:
 private:
     store::GraphStore *store_;
     uint64_t project_id_;
+
+    /// Classify a module into a role based on its path and call graph metrics.
+    /// Returns "example", "entry", "api", "tool", "business", or "infra".
+    std::string classifyModuleRole(const std::string &module_path,
+				   int incoming, int outgoing,
+				   int total_entities);
 };
 
 } // namespace model

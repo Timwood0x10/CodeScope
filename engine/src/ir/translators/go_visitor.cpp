@@ -96,6 +96,12 @@ SemanticUnit *GoVisitor::visit(TSTree *tree, const char *source, const char *fp)
 void GoVisitor::visitNode(TSNode node, uint64_t parent_id)
 {
 	const char *type = ts_node_type(node);
+	fprintf(stderr, "[GoVN] %s\n", type); fflush(stderr);
+	if (strcmp(type, "method_spec") == 0) {
+		fprintf(stderr, "[GoVN] method_spec FOUND! name=%s pid=%llu\n",
+			nodeText(node).c_str(), (unsigned long long)parent_id);
+		return handleInterfaceMethod(node, parent_id);
+	}
 	if (strcmp(type, "function_declaration") == 0)
 		return handleFuncDecl(node, parent_id);
 	if (strcmp(type, "method_declaration") == 0)
@@ -111,6 +117,8 @@ void GoVisitor::visitNode(TSNode node, uint64_t parent_id)
 		return handleVarDecl(node, parent_id);
 	if (strcmp(type, "short_var_declaration") == 0)
 		return handleShortVar(node, parent_id);
+	if (strcmp(type, "method_spec") == 0)
+		return handleInterfaceMethod(node, parent_id);
 	JsVisitor::visitNode(node, parent_id);
 }
 void GoVisitor::handleFuncDecl(TSNode node, uint64_t parent_id)
@@ -193,11 +201,37 @@ void GoVisitor::handleTypeDecl(TSNode node, uint64_t parent_id)
 		if (strcmp(ts_node_type(c), "type_spec") == 0) {
 			SourceRange loc = location(c);
 			std::string name = extractName(c);
-			if (!name.empty()) {
-				uint64_t id = emitter_->emitTypeAlias(
-					name, loc, parent_id);
-				defineSymbol(name, id);
+			if (name.empty())
+				continue;
+			// Determine type kind from the definition child
+			uint32_t sc = ts_node_child_count(c);
+			bool is_struct = false, is_interface = false;
+			for (uint32_t j = 0; j < sc; j++) {
+				TSNode def = ts_node_child(c, j);
+				if (!ts_node_is_named(def))
+					continue;
+				const char *dt = ts_node_type(def);
+				if (strcmp(dt, "struct_type") == 0) {
+					is_struct = true;
+					break;
+				}
+				if (strcmp(dt, "interface_type") == 0) {
+					is_interface = true;
+					break;
+				}
 			}
+			uint64_t id;
+			if (is_struct)
+				id = emitter_->emitClass(name, loc, parent_id);
+			else if (is_interface)
+				id = emitter_->emitInterface(name, loc, parent_id);
+			else
+				id = emitter_->emitTypeAlias(name, loc, parent_id);
+			defineSymbol(name, id);
+			// Visit type body (struct fields, interface methods)
+			fprintf(stderr, "[handleTypeDecl] %s id=%llu visiting children\n",
+				name.c_str(), (unsigned long long)id);
+			visitChildren(c, id);
 		}
 	}
 }
@@ -408,6 +442,15 @@ void GoVisitor::handleShortVar(TSNode node, uint64_t parent_id)
 			defineSymbol(name, id);
 		}
 	}
+}
+void GoVisitor::handleInterfaceMethod(TSNode node, uint64_t parent_id)
+{
+	fprintf(stderr, "[GoVisitor] handleInterfaceMethod called! parent_id=%llu\n",
+		(unsigned long long)parent_id);
+	SourceRange loc = location(node);
+	std::string name = extractName(node);
+	if (!name.empty())
+		emitter_->emitMethod(name, loc, parent_id);
 }
 std::string GoVisitor::extractName(TSNode node)
 {

@@ -20,6 +20,7 @@ class GoVisitor : public JsVisitor {
 	void handleImport(TSNode node, uint64_t parent_id);
 	void handleVarDecl(TSNode node, uint64_t parent_id);
 	void handleShortVar(TSNode node, uint64_t parent_id);
+	void handleInterfaceMethod(TSNode node, uint64_t parent_id);
 	std::string extractName(TSNode node);
 };
 } // namespace ir
