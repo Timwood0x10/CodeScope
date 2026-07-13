@@ -367,6 +367,45 @@ bool GraphStore::createSchema()
             FOREIGN KEY (project_id) REFERENCES projects(id)
         );
 
+        -- type_info: type definitions discovered during parsing.
+        -- Each row records one type declaration (struct, enum, trait, interface, etc.)
+        -- with its location and language for cross-file type resolution.
+        CREATE TABLE IF NOT EXISTS type_info (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            name TEXT NOT NULL,             -- type name (e.g. "User", "Vec<T>")
+            qualified_name TEXT DEFAULT '', -- fully qualified name
+            kind INTEGER NOT NULL,          -- 0=struct, 1=enum, 2=trait, 3=interface, 4=type_alias
+            file_path TEXT NOT NULL,
+            language TEXT DEFAULT '',
+            start_row INTEGER DEFAULT 0,
+            start_col INTEGER DEFAULT 0,
+            end_row INTEGER DEFAULT 0,
+            end_col INTEGER DEFAULT 0,
+            FOREIGN KEY (project_id) REFERENCES projects(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ti_name ON type_info(project_id, name);
+        CREATE INDEX IF NOT EXISTS idx_ti_qn ON type_info(project_id, qualified_name);
+
+        -- type_ref: type references (variable : type, parameter : type, etc.).
+        -- Each row records one usage of a type, linking the entity that uses it
+        -- to the type definition it references.
+        CREATE TABLE IF NOT EXISTS type_ref (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            entity_id INTEGER NOT NULL,       -- entity.id that references the type
+            type_name TEXT NOT NULL,           -- referenced type name (e.g. "User")
+            kind INTEGER NOT NULL,             -- 0=variable_type, 1=param_type, 2=return_type,
+                                               -- 3=field_type, 4=type_ref (generic arg)
+            file_path TEXT NOT NULL,
+            start_row INTEGER DEFAULT 0,
+            start_col INTEGER DEFAULT 0,
+            FOREIGN KEY (project_id) REFERENCES projects(id),
+            FOREIGN KEY (entity_id) REFERENCES entity(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_tr_type ON type_ref(project_id, type_name);
+        CREATE INDEX IF NOT EXISTS idx_tr_entity ON type_ref(project_id, entity_id);
+
         -- reference: call facts recorded by Parser (no resolution).
         CREATE TABLE IF NOT EXISTS reference (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -592,6 +631,68 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 			if (!has_is_static) {
 				exec("ALTER TABLE semantic_records "
 				     "ADD COLUMN is_static INTEGER DEFAULT 0");
+			}
+		}
+	}
+
+	// Migration: add type_info + type_ref tables (v0.6+)
+	{
+		sqlite3_stmt *probe = nullptr;
+		if (sqlite3_prepare_v2(db_,
+				       "SELECT name FROM sqlite_master "
+				       "WHERE type='table' AND name='type_info'",
+				       -1, &probe, nullptr) == SQLITE_OK) {
+			if (sqlite3_step(probe) != SQLITE_ROW) {
+				sqlite3_finalize(probe);
+				exec("CREATE TABLE IF NOT EXISTS type_info ("
+				     " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+				     " project_id INTEGER NOT NULL,"
+				     " name TEXT NOT NULL,"
+				     " qualified_name TEXT DEFAULT '',"
+				     " kind INTEGER NOT NULL,"
+				     " file_path TEXT NOT NULL,"
+				     " language TEXT DEFAULT '',"
+				     " start_row INTEGER DEFAULT 0,"
+				     " start_col INTEGER DEFAULT 0,"
+				     " end_row INTEGER DEFAULT 0,"
+				     " end_col INTEGER DEFAULT 0,"
+				     " FOREIGN KEY (project_id) REFERENCES projects(id)"
+				     ")");
+				exec("CREATE INDEX IF NOT EXISTS idx_ti_name "
+				     "ON type_info(project_id, name)");
+				exec("CREATE INDEX IF NOT EXISTS idx_ti_qn "
+				     "ON type_info(project_id, qualified_name)");
+			} else {
+				sqlite3_finalize(probe);
+			}
+		}
+	}
+	{
+		sqlite3_stmt *probe = nullptr;
+		if (sqlite3_prepare_v2(db_,
+				       "SELECT name FROM sqlite_master "
+				       "WHERE type='table' AND name='type_ref'",
+				       -1, &probe, nullptr) == SQLITE_OK) {
+			if (sqlite3_step(probe) != SQLITE_ROW) {
+				sqlite3_finalize(probe);
+				exec("CREATE TABLE IF NOT EXISTS type_ref ("
+				     " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+				     " project_id INTEGER NOT NULL,"
+				     " entity_id INTEGER NOT NULL,"
+				     " type_name TEXT NOT NULL,"
+				     " kind INTEGER NOT NULL,"
+				     " file_path TEXT NOT NULL,"
+				     " start_row INTEGER DEFAULT 0,"
+				     " start_col INTEGER DEFAULT 0,"
+				     " FOREIGN KEY (project_id) REFERENCES projects(id),"
+				     " FOREIGN KEY (entity_id) REFERENCES entity(id)"
+				     ")");
+				exec("CREATE INDEX IF NOT EXISTS idx_tr_type "
+				     "ON type_ref(project_id, type_name)");
+				exec("CREATE INDEX IF NOT EXISTS idx_tr_entity "
+				     "ON type_ref(project_id, entity_id)");
+			} else {
+				sqlite3_finalize(probe);
 			}
 		}
 	}

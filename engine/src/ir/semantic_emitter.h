@@ -69,6 +69,19 @@ class SemanticEmitter {
 	uint64_t emitReference(const std::string &callee_name, SourceRange loc,
 			       uint64_t parent_id = 0, int arity = 0);
 
+	// ── Type Emitters ───────────────────────────────────────────
+
+	/// Emit a type reference: variable/param/field has a type.
+	/// Creates a TypeRef record with variable_name and type_name.
+	uint64_t emitTypeRef(const std::string &variable_name,
+			     const std::string &type_name, SourceRange loc,
+			     uint64_t parent_id = 0);
+
+	/// Emit a type declaration: struct/enum/trait/interface definition.
+	/// Creates a TypeDecl record with the type name and location.
+	uint64_t emitTypeDecl(const std::string &name, SourceRange loc,
+			      uint64_t parent_id = 0);
+
 	// ── Literal / Comment Emitters ─────────────────────────
 
 	uint64_t emitLiteral(const std::string &value, SourceRange loc,

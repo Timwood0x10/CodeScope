@@ -110,6 +110,23 @@ uint64_t SemanticEmitter::emitReference(const std::string &callee_name,
 				loc, arity, false);
 }
 
+// ── Type Emitters ─────────────────────────────────────────────
+
+uint64_t SemanticEmitter::emitTypeRef(const std::string &variable_name,
+				      const std::string &type_name,
+				      SourceRange loc, uint64_t parent_id)
+{
+	return unit_->addTypedRecord(RecordKind::TypeRef, variable_name,
+				     type_name, parent_id, loc);
+}
+
+uint64_t SemanticEmitter::emitTypeDecl(const std::string &name, SourceRange loc,
+				       uint64_t parent_id)
+{
+	return unit_->addTypedRecord(RecordKind::TypeDecl, name, "", parent_id,
+				     loc);
+}
+
 // ── Literal / Comment Emitters ───────────────────────────────
 
 uint64_t SemanticEmitter::emitLiteral(const std::string &value, SourceRange loc,

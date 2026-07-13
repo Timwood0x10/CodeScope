@@ -444,48 +444,84 @@ void GraphBuilder::resolveCallEdges(const ir::Record &call_rec,
 	}
 }
 
-// ── Helpers ──────────────────────────────────────────────────
+// ─── Type Edge Builder ─────────────────────────────────────────
 
-NodeType GraphBuilder::recordKindToNodeType(ir::RecordKind kind)
+void GraphBuilder::buildTypeEdges(const ir::SemanticUnit &unit)
 {
-	switch (kind) {
-	case ir::RecordKind::Function:
-		return NodeType::Function;
-	case ir::RecordKind::Method:
-		return NodeType::Method;
-	case ir::RecordKind::Class:
-		return NodeType::Class;
-	case ir::RecordKind::Interface:
-		return NodeType::Interface;
-	case ir::RecordKind::Enum:
-		return NodeType::Module;
-	case ir::RecordKind::TypeAlias:
-		return NodeType::Module;
-	case ir::RecordKind::Variable:
-		return NodeType::Variable;
-	case ir::RecordKind::Import:
-		return NodeType::Module;
-	case ir::RecordKind::Export:
-		return NodeType::Module;
-	case ir::RecordKind::Field:
-		return NodeType::Variable;
-	default:
-		return NodeType::File; // sentinel
+	// Iterate TypeRef and TypeAssign records, creating USES_TYPE edges
+	// from the entity that references a type to its type declaration.
+	// Reference: codebase-memory-mcp (MIT) extract_type_refs.c
+	for (auto &rec : unit.allRecords()) {
+		if (rec.kind != ir::RecordKind::TypeRef &&
+		    rec.kind != ir::RecordKind::TypeAssign)
+			continue;
+		if (rec.name.empty() || rec.type_name.empty())
+			continue;
+		auto src_it = ir_to_graph_node_.find(rec.id);
+		if (src_it == ir_to_graph_node_.end())
+			continue;
+		uint64_t tgt_graph_id = 0;
+		for (auto &other : unit.allRecords()) {
+			if (other.kind == ir::RecordKind::TypeDecl &&
+			    other.name == rec.type_name) {
+				auto tgt_it = ir_to_graph_node_.find(other.id);
+				if (tgt_it != ir_to_graph_node_.end()) {
+					tgt_graph_id = tgt_it->second;
+					break;
+				}
+			}
+		}
+		if (tgt_graph_id == 0)
+			continue;
+		addGraphEdge(src_it->second, tgt_graph_id, EdgeType::UsesType);
 	}
 }
 
-bool GraphBuilder::isDeclarationKind(ir::RecordKind kind)
-{
-	switch (kind) {
-	case ir::RecordKind::Function:
-	case ir::RecordKind::Method:
-	case ir::RecordKind::Class:
-	case ir::RecordKind::Interface:
-	case ir::RecordKind::Enum:
-	case ir::RecordKind::TypeAlias:
-	case ir::RecordKind::Variable:
-	case ir::RecordKind::Field:
-	case ir::RecordKind::Import:
+// ── Helpers ──────────────────────────────────────────────────
+
+NodeType GraphBuilder::recordKindToNodeType(ir::RecordKind kind)
+ {
+  switch (kind) {
+  case ir::RecordKind::Function:
+   return NodeType::Function;
+  case ir::RecordKind::Method:
+   return NodeType::Method;
+  case ir::RecordKind::Class:
+   return NodeType::Class;
+  case ir::RecordKind::Interface:
+   return NodeType::Interface;
+  case ir::RecordKind::Enum:
+   return NodeType::Module;
+  case ir::RecordKind::TypeAlias:
+   return NodeType::Module;
+  case ir::RecordKind::TypeDecl:
+   return NodeType::Module;
+  case ir::RecordKind::Variable:
+   return NodeType::Variable;
+  case ir::RecordKind::Import:
+   return NodeType::Module;
+  case ir::RecordKind::Export:
+   return NodeType::Module;
+  case ir::RecordKind::Field:
+   return NodeType::Variable;
+  default:
+   return NodeType::File; // sentinel
+  }
+ }
+
+ bool GraphBuilder::isDeclarationKind(ir::RecordKind kind)
+ {
+  switch (kind) {
+  case ir::RecordKind::Function:
+  case ir::RecordKind::Method:
+  case ir::RecordKind::Class:
+  case ir::RecordKind::Interface:
+  case ir::RecordKind::Enum:
+  case ir::RecordKind::TypeAlias:
+  case ir::RecordKind::TypeDecl:
+  case ir::RecordKind::Variable:
+  case ir::RecordKind::Field:
+  case ir::RecordKind::Import:
 	case ir::RecordKind::Export:
 		return true;
 	default:

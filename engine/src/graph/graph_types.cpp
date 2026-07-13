@@ -43,6 +43,10 @@ const char *edgeTypeName(EdgeType t)
 		return "imports";
 	case EdgeType::Inherits:
 		return "inherits";
+	case EdgeType::UsesType:
+		return "uses_type";
+	case EdgeType::HasType:
+		return "has_type";
 	}
 	return "unknown";
 }

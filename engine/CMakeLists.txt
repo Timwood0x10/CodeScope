@@ -186,6 +186,7 @@ set(ENGINE_SOURCES
     src/store/store_insert.cpp
     src/store/store_search.cpp
     src/store/store_batch.cpp
+    src/store/store_type.cpp
     src/store/store_graph.cpp
     src/store/store_query.cpp
     src/store/store_project.cpp

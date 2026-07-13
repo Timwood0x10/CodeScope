@@ -30,6 +30,10 @@ struct SourceRange {
  * Kind of a semantic record.
  * Only semantically meaningful nodes get a record — structural wrappers
  * (blocks, parentheses, expression statements) are elided during visiting.
+ *
+ * Type-related kinds (TypeDecl, TypeRef, TypeAssign) are used by the
+ * type registry system to track type definitions, references, and
+ * variable-to-type assignments throughout the knowledge graph.
  */
 enum class RecordKind : uint8_t {
 	Function,
@@ -48,12 +52,31 @@ enum class RecordKind : uint8_t {
 	Literal,
 	Comment,
 	TranslationUnit,
+	/// Type definition: struct/class/enum/trait/interface declaration.
+	/// The `name` field stores the type name (e.g. "User", "Vec<T>").
+	/// The `type_name` field stores the qualified name if applicable.
+	TypeDecl,
+	/// Type reference: a usage of a type (e.g. parameter type, field type).
+	/// The `name` field stores the referenced type name.
+	/// The `type_name` field is unused for references.
+	TypeRef,
+	/// Type assignment: a variable/parameter/field is assigned a type.
+	/// The `name` field stores the variable name.
+	/// The `type_name` field stores the assigned type name.
+	TypeAssign,
 };
 
 /**
  * A single semantic fact extracted from the AST.
  * No pointers to other records — hierarchy is expressed via parent_id.
  * No children vector — tree structure is reconstructed from parent_id links.
+ *
+ * The `type_name` field stores the type associated with this record:
+ *   - For Variable/Field/Parameter: the declared type (e.g. "int", "User")
+ *   - For TypeDecl: the qualified type name
+ *   - For TypeRef: the referenced type name
+ *   - For TypeAssign: the assigned type
+ *   - For other kinds: empty string (unused)
  */
 struct Record {
 	uint64_t id = 0; // internal sequential ID
@@ -61,6 +84,7 @@ struct Record {
 	RecordKind kind;
 	std::string name;
 	std::string qualified_name;
+	std::string type_name; // type associated with this record (see above)
 	uint64_t parent_id = 0; // 0 = top-level (child of TranslationUnit)
 	uint64_t ref_original_id =
 		0; // for CallExpr: resolved callee's original_id (0 = unresolved cross-file)
@@ -103,6 +127,15 @@ class SemanticUnit {
 	uint64_t addRecord(RecordKind kind, const std::string &name,
 			   uint64_t parent_id, SourceRange loc, int arity = 0,
 			   bool is_static = false);
+
+	/**
+	 * Add a typed record (Variable/Field/Parameter/TypeRef/TypeAssign with type info).
+	 * The `type_name` field stores the type associated with this record.
+	 * Returns the assigned ID.
+	 */
+	uint64_t addTypedRecord(RecordKind kind, const std::string &name,
+				const std::string &type_name,
+				uint64_t parent_id, SourceRange loc);
 
 	/**
 	 * Add a record with explicit original_id and qualified_name (for DB rebuild).

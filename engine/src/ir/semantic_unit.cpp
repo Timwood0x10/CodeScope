@@ -26,6 +26,24 @@ uint64_t SemanticUnit::addRecord(RecordKind kind, const std::string &name,
 	return records_.back().id;
 }
 
+uint64_t SemanticUnit::addTypedRecord(RecordKind kind, const std::string &name,
+				      const std::string &type_name,
+				      uint64_t parent_id, SourceRange loc)
+{
+	Record rec;
+	rec.id = next_id_++;
+	rec.kind = kind;
+	rec.name = name;
+	rec.type_name = type_name;
+	rec.parent_id = parent_id;
+	rec.loc = loc;
+	rec.file_path = file_path_;
+	rec.language = language_;
+	id_to_index_[rec.id] = records_.size();
+	records_.push_back(std::move(rec));
+	return records_.back().id;
+}
+
 uint64_t SemanticUnit::addRecord(RecordKind kind, const std::string &name,
 				 const std::string &qualified_name,
 				 uint64_t original_id, uint64_t parent_id,

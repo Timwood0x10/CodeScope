@@ -31,6 +31,8 @@ enum class EdgeType : uint8_t {
 	Contains, // class contains method, module contains function
 	Imports, // import/include
 	Inherits, // class inheritance (v2)
+	UsesType, // entity uses a type (variable : Type, param : Type, etc.)
+	HasType, // type definition has fields/methods
 };
 
 // ─── Graph Node ────────────────────────────────────────────────

@@ -440,6 +440,39 @@ class GraphStore {
 	 */
 	bool createIndexesAfterBulkLoad(uint64_t project_id);
 
+	// ── Type Registry ─────────────────────────────────────────────
+
+	/**
+	 * Batch-insert type_info rows (type definitions).
+	 * Each entry contains: name, qualified_name, kind, file_path, language, location.
+	 * Uses a single multi-VALUES INSERT for efficiency.
+	 *
+	 * @param project_id  Project identifier.
+	 * @param rows        Vector of (name, qualified_name, kind, file_path, language,
+	 *                    start_row, start_col, end_row, end_col) tuples.
+	 * @return true on success.
+	 */
+	bool insertTypeInfoBatch(
+		uint64_t project_id,
+		const std::vector<
+			std::tuple<std::string, std::string, int, std::string,
+				   std::string, int, int, int, int> > &rows);
+
+	/**
+	 * Batch-insert type_ref rows (type references).
+	 * Each entry contains: entity_id, type_name, kind, file_path, location.
+	 * Uses a single multi-VALUES INSERT for efficiency.
+	 *
+	 * @param project_id  Project identifier.
+	 * @param rows        Vector of (entity_id, type_name, kind, file_path,
+	 *                    start_row, start_col) tuples.
+	 * @return true on success.
+	 */
+	bool insertTypeRefBatch(
+		uint64_t project_id,
+		const std::vector<std::tuple<uint64_t, std::string, int,
+					     std::string, int, int> > &rows);
+
 	sqlite3 *handle() const
 	{
 		return db_;

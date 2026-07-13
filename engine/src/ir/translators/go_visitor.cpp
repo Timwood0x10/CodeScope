@@ -121,8 +121,31 @@ void GoVisitor::handleFuncDecl(TSNode node, uint64_t parent_id)
 		if (!ts_node_is_named(c))
 			continue;
 		const char *t = ts_node_type(c);
-		if (strcmp(t, "parameter_list") == 0 || strcmp(t, "block") == 0)
+		if (strcmp(t, "parameter_list") == 0) {
+			// Visit parameters to register their types
 			visitChildren(c, id);
+			// Extract return type if present (next sibling after parameters)
+			for (uint32_t j = i + 1; j < cnt; j++) {
+				TSNode rt = ts_node_child(node, j);
+				if (!ts_node_is_named(rt))
+					continue;
+				const char *rt_type = ts_node_type(rt);
+				if (strcmp(rt_type, "type_identifier") == 0 ||
+				    strcmp(rt_type, "qualified_type") == 0 ||
+				    strcmp(rt_type, "pointer_type") == 0 ||
+				    strcmp(rt_type, "slice_type") == 0) {
+					std::string ret_type = nodeText(rt);
+					if (!ret_type.empty())
+						emitter_->emitTypeRef(
+							name + ".return",
+							ret_type, location(rt),
+							id);
+					break;
+				}
+			}
+		} else if (strcmp(t, "block") == 0) {
+			visitChildren(c, id);
+		}
 	}
 	popScope();
 }
@@ -216,6 +239,30 @@ void GoVisitor::handleVarDecl(TSNode node, uint64_t parent_id)
 				uint64_t id = emitter_->emitVariable(
 					name, location(c), parent_id);
 				defineSymbol(name, id);
+				// Extract type from var_spec children
+				uint32_t vc = ts_node_child_count(c);
+				for (uint32_t j = 0; j < vc; j++) {
+					TSNode child = ts_node_child(c, j);
+					if (!ts_node_is_named(child))
+						continue;
+					const char *t = ts_node_type(child);
+					if (strcmp(t, "type_identifier") == 0 ||
+					    strcmp(t, "qualified_type") == 0 ||
+					    strcmp(t, "pointer_type") == 0 ||
+					    strcmp(t, "slice_type") == 0 ||
+					    strcmp(t, "map_type") == 0 ||
+					    strcmp(t, "array_type") == 0 ||
+					    strcmp(t, "interface_type") == 0) {
+						std::string type =
+							nodeText(child);
+						if (!type.empty())
+							emitter_->emitTypeRef(
+								name, type,
+								location(child),
+								id);
+						break;
+					}
+				}
 			}
 		}
 	}

@@ -120,6 +120,14 @@ class GraphBuilder : public ir::Visitor {
 	void resolveCallEdges(const ir::Record &call_rec,
 			      uint64_t caller_graph_id,
 			      const CalleeIndex &index);
+
+	// ── Type graph helpers ─────────────────────────────────────
+	/**
+	 * Build type edges from TypeRef/TypeAssign records in a SemanticUnit.
+	 * Creates USES_TYPE edges from entities to the types they reference.
+	 * Called after buildSymbolGraph so ir_to_graph_node_ is populated.
+	 */
+	void buildTypeEdges(const ir::SemanticUnit &unit);
 };
 
 } // namespace graph
