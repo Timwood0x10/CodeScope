@@ -427,7 +427,17 @@ void JsVisitor::visitCallExpr(TSNode node, uint64_t parent_id)
 		return;
 	}
 
-	uint64_t call_id = emitter_->emitCall(callee_name, loc, parent_id);
+	// Classify call kind
+	CallKind call_kind = CallKind::Direct;
+	if (callee_name.find('.') != std::string::npos)
+		call_kind = CallKind::Method;
+	else if (callee_name.size() > 3 && callee_name[0] >= 'A' &&
+		 callee_name[0] <= 'Z')
+		call_kind = CallKind::Constructor;
+
+	uint64_t call_id = emitter_->emitCall(callee_name, loc, parent_id, 0,
+					      false,
+					      static_cast<int>(call_kind));
 
 	// Resolve callee — only for direct identifier calls
 	// (not member expression calls like console.log)

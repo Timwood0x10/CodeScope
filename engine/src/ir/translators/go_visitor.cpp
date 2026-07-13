@@ -212,10 +212,12 @@ void GoVisitor::handleCall(TSNode node, uint64_t parent_id)
 		if (!ts_node_is_named(c))
 			continue;
 		if (strcmp(ts_node_type(c), "selector_expression") == 0) {
-		  selector_name = nodeText(c);
-		  // Extract just the method name after the last dot
-		  size_t dot = selector_name.rfind('.');
-		  name = (dot != std::string::npos) ? selector_name.substr(dot + 1) : selector_name;
+			selector_name = nodeText(c);
+			// Extract just the method name after the last dot
+			size_t dot = selector_name.rfind('.');
+			name = (dot != std::string::npos) ?
+				       selector_name.substr(dot + 1) :
+				       selector_name;
 		} else if (strcmp(ts_node_type(c), "identifier") == 0) {
 			name = nodeText(c);
 		}
@@ -258,7 +260,8 @@ void GoVisitor::handleCall(TSNode node, uint64_t parent_id)
 				std::string route_path;
 				std::string handler_name;
 				bool route_found = false;
-				for (uint32_t j = 0; j < cnt && !route_found; j++) {
+				for (uint32_t j = 0; j < cnt && !route_found;
+				     j++) {
 					TSNode arg_node =
 						ts_node_child(node, j);
 					if (!ts_node_is_named(arg_node))
@@ -316,11 +319,11 @@ void GoVisitor::handleCall(TSNode node, uint64_t parent_id)
 					break;
 				}
 				if (!route_path.empty())
-				  emitter_->emitRoute(
-				   method + " " + route_path,
-				   handler_name, loc, parent_id);
-				 route_found = true;
-				 break;
+					emitter_->emitRoute(
+						method + " " + route_path,
+						handler_name, loc, parent_id);
+				route_found = true;
+				break;
 			}
 		}
 	}
@@ -331,16 +334,18 @@ void GoVisitor::handleCall(TSNode node, uint64_t parent_id)
 		// Method call: obj.Method() or pkg.Func()
 		call_kind = CallKind::Method;
 		// Check for constructor pattern: NewType()
-		if (name.size() > 3 && name[0] == 'N' && name[1] == 'e' && name[2] == 'w')
+		if (name.size() > 3 && name[0] == 'N' && name[1] == 'e' &&
+		    name[2] == 'w')
 			call_kind = CallKind::Constructor;
 	} else {
 		// Bare function call: check if it's a constructor
-		if (name.size() > 3 && name[0] == 'N' && name[1] == 'e' && name[2] == 'w')
+		if (name.size() > 3 && name[0] == 'N' && name[1] == 'e' &&
+		    name[2] == 'w')
 			call_kind = CallKind::Constructor;
 	}
 
 	uint64_t id = emitter_->emitCall(name, loc, parent_id, 0, false,
-	     static_cast<int>(call_kind));
+					 static_cast<int>(call_kind));
 	visitChildren(node, id);
 }
 void GoVisitor::handleImport(TSNode node, uint64_t parent_id)

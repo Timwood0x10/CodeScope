@@ -78,12 +78,13 @@ enum class RecordKind : uint8_t {
 /// interface dispatches, constructor calls, and method calls.
 /// Helps the resolver pipeline avoid false-positive cross-module edges.
 enum class CallKind : uint8_t {
-	Direct = 0,       // bare function call: doThing()
-	Method = 1,       // method call on a concrete receiver: obj.Method()
-	Interface = 2,    // interface dispatch: iface.Method() (Go/Java/C#)
-	Constructor = 3,  // constructor/factory call: NewService()
-	StaticMethod = 4, // static method call: ClassName.staticMethod() (Java/C++)
-	Virtual = 5,      // virtual dispatch / trait method (C++/Rust)
+	Direct = 0, // bare function call: doThing()
+	Method = 1, // method call on a concrete receiver: obj.Method()
+	Interface = 2, // interface dispatch: iface.Method() (Go/Java/C#)
+	Constructor = 3, // constructor/factory call: NewService()
+	StaticMethod =
+		4, // static method call: ClassName.staticMethod() (Java/C++)
+	Virtual = 5, // virtual dispatch / trait method (C++/Rust)
 };
 
 /**
@@ -113,7 +114,8 @@ struct Record {
 	std::string language;
 	int arity = 0; // number of parameters (for call resolution)
 	bool is_static = false; // static function/method (C++/Rust/Java)
-	CallKind call_kind = CallKind::Direct; // for CallExpr: direct/interface/constructor/method
+	CallKind call_kind = CallKind::
+		Direct; // for CallExpr: direct/interface/constructor/method
 };
 
 /**
@@ -224,7 +226,7 @@ class SemanticUnit {
 	 */
 	bool setCallReference(uint64_t record_id, uint64_t ref_original_id);
 
-		/**
+	/**
 		 * Set the call_kind on a CallExpr record (0=direct, 1=method, 2=interface,
 		 * 3=constructor, 4=static, 5=virtual). Allows the parser to classify
 		 * calls before persistence, enabling the resolver pipeline to
@@ -233,7 +235,7 @@ class SemanticUnit {
 		 * \param kind       CallKind value to assign.
 		 * \return true if the record was found and updated.
 		 */
-		bool setCallKind(uint64_t record_id, int kind);
+	bool setCallKind(uint64_t record_id, int kind);
 
     private:
 	std::vector<Record> records_;

@@ -229,7 +229,20 @@ void CVisitor::handleCall(TSNode node, uint64_t parent_id)
 		return;
 	}
 
-	uint64_t id = emitter_->emitCall(name, loc, parent_id);
+	// Classify call kind
+	CallKind call_kind = CallKind::Direct;
+	for (uint32_t i = 0; i < count; i++) {
+		TSNode child = ts_node_child(node, i);
+		if (!ts_node_is_named(child))
+			continue;
+		if (strcmp(ts_node_type(child), "field_expression") == 0) {
+			call_kind = CallKind::Method;
+			break;
+		}
+	}
+
+	uint64_t id = emitter_->emitCall(name, loc, parent_id, 0, false,
+					 static_cast<int>(call_kind));
 	for (uint32_t i = 0; i < count; i++) {
 		TSNode child = ts_node_child(node, i);
 		if (!ts_node_is_named(child))

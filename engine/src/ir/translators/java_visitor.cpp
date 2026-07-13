@@ -152,7 +152,30 @@ void JavaVisitor::handleClassDecl(TSNode node, uint64_t parent_id)
 	uint64_t id = emitter_->emitClass(name, loc, parent_id);
 	defineSymbol(name, id);
 	pushScope();
+	// Check for implements clause: "class Foo implements Bar, Baz"
 	uint32_t cnt = ts_node_child_count(node);
+	for (uint32_t i = 0; i < cnt; i++) {
+	 TSNode c = ts_node_child(node, i);
+	 if (!ts_node_is_named(c))
+	  continue;
+	 if (strcmp(ts_node_type(c), "super_interfaces") == 0) {
+	  uint32_t sc = ts_node_child_count(c);
+	  for (uint32_t j = 0; j < sc; j++) {
+	   TSNode iface = ts_node_child(c, j);
+	   if (!ts_node_is_named(iface))
+	    continue;
+	   if (strcmp(ts_node_type(iface),
+	       "type_identifier") == 0) {
+	    std::string iface_name =
+	     nodeText(iface);
+	    if (!iface_name.empty())
+	     emitter_->emitInterfaceImpl(
+	      name, iface_name,
+	      location(iface), id);
+	   }
+	  }
+	 }
+	}
 	for (uint32_t i = 0; i < cnt; i++) {
 		TSNode c = ts_node_child(node, i);
 		if (!ts_node_is_named(c))
@@ -196,14 +219,30 @@ void JavaVisitor::handleMethodInvocation(TSNode node, uint64_t parent_id)
 	std::string name = nodeText(node);
 
 	// Skip Java common JDK methods — they are NOT user-defined calls
-	// and the Resolver Pipeline would generate false-positive edges.
-	// Reference: codebase-memory-mcp (MIT) c_lsp.c :: is_c_builtin_func() (pattern)
 	if (!name.empty() && isJavaBuiltin(name)) {
 		visitChildren(node, parent_id);
 		return;
 	}
 
-	uint64_t id = emitter_->emitCall(name, loc, parent_id);
+	// Classify call kind
+	CallKind call_kind = CallKind::Direct;
+	// Check for method call: obj.method() or Class.method()
+	if (name.find('.') != std::string::npos) {
+		size_t dot = name.rfind('.');
+		std::string method = name.substr(dot + 1);
+		// Constructor detection: name starts with uppercase (Java convention)
+		if (!method.empty() && method[0] >= 'A' && method[0] <= 'Z')
+			call_kind = CallKind::Constructor;
+		else
+			call_kind = CallKind::Method;
+	} else {
+		// Bare function call - constructor?
+		if (!name.empty() && name[0] >= 'A' && name[0] <= 'Z')
+			call_kind = CallKind::Constructor;
+	}
+
+	uint64_t id = emitter_->emitCall(name, loc, parent_id, 0, false,
+					 static_cast<int>(call_kind));
 	visitChildren(node, id);
 }
 void JavaVisitor::handleVariableDecl(TSNode node, uint64_t parent_id)

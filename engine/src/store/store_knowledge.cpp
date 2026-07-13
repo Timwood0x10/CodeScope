@@ -418,12 +418,13 @@ bool GraphStore::insertArchitectureEdge(uint64_t project_id,
 
 int64_t GraphStore::insertReference(uint64_t project_id, uint64_t caller_id,
 				    const std::string &name, int64_t scope_id,
-				    int arity, int start_row, int start_col)
+				    int arity, int start_row, int start_col,
+				    int call_kind)
 {
 	const char *sql = "INSERT INTO reference "
 			  "(project_id, caller_id, name, scope_id, arity, "
-			  " start_row, start_col) "
-			  "VALUES (?,?,?,?,?,?,?)";
+			  " start_row, start_col, call_kind) "
+			  "VALUES (?,?,?,?,?,?,?,?)";
 	sqlite3_stmt *stmt = getCachedStmt(sql);
 	if (!stmt)
 		return -1;
@@ -434,6 +435,7 @@ int64_t GraphStore::insertReference(uint64_t project_id, uint64_t caller_id,
 	sqlite3_bind_int(stmt, 5, arity);
 	sqlite3_bind_int(stmt, 6, start_row);
 	sqlite3_bind_int(stmt, 7, start_col);
+	sqlite3_bind_int(stmt, 8, call_kind);
 	if (sqlite3_step(stmt) != SQLITE_DONE) {
 		error_ = "insertReference: step failed";
 		return -1;

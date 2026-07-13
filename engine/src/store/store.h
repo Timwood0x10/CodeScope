@@ -522,7 +522,8 @@ class GraphStore {
 	/** Insert a document row. Returns true on success. */
 	int64_t insertReference(uint64_t project_id, uint64_t caller_id,
 				const std::string &name, int64_t scope_id,
-				int arity, int start_row, int start_col);
+				int arity, int start_row, int start_col,
+				int call_kind = 0);
 	int64_t insertScope(uint64_t project_id, int64_t parent_id, int kind,
 			    const std::string &name, int start_row,
 			    int end_row);

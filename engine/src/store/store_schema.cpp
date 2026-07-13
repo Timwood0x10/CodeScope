@@ -416,6 +416,7 @@ bool GraphStore::createSchema()
             name TEXT NOT NULL,              -- callee name
             scope_id INTEGER DEFAULT 0,      -- scope.id (0 = unknown)
             arity INTEGER DEFAULT 0,
+            call_kind INTEGER DEFAULT 0, -- 0=direct, 1=method, 2=interface, 3=constructor
             start_row INTEGER DEFAULT 0,
             start_col INTEGER DEFAULT 0,
             FOREIGN KEY (project_id) REFERENCES projects(id)
@@ -671,27 +672,27 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 				       "PRAGMA table_info(semantic_records)",
 				       -1, &probe, nullptr) == SQLITE_OK) {
 			bool has_type_name = false;
-			 bool has_call_kind = false;
-			 while (sqlite3_step(probe) == SQLITE_ROW) {
-			  const char *col =
-			   reinterpret_cast<const char *>(
-			    sqlite3_column_text(probe, 1));
-			  if (col) {
-			   if (std::string(col) == "type_name")
-			    has_type_name = true;
-			   if (std::string(col) == "call_kind")
-			    has_call_kind = true;
-			  }
-			 }
-			 sqlite3_finalize(probe);
-			 if (!has_type_name) {
-			  exec("ALTER TABLE semantic_records "
-			       "ADD COLUMN type_name TEXT DEFAULT ''");
-			 }
-			 if (!has_call_kind) {
-			  exec("ALTER TABLE semantic_records "
-			       "ADD COLUMN call_kind INTEGER DEFAULT 0");
-			 }
+			bool has_call_kind = false;
+			while (sqlite3_step(probe) == SQLITE_ROW) {
+				const char *col =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(probe, 1));
+				if (col) {
+					if (std::string(col) == "type_name")
+						has_type_name = true;
+					if (std::string(col) == "call_kind")
+						has_call_kind = true;
+				}
+			}
+			sqlite3_finalize(probe);
+			if (!has_type_name) {
+				exec("ALTER TABLE semantic_records "
+				     "ADD COLUMN type_name TEXT DEFAULT ''");
+			}
+			if (!has_call_kind) {
+				exec("ALTER TABLE semantic_records "
+				     "ADD COLUMN call_kind INTEGER DEFAULT 0");
+			}
 		}
 
 		// Create type_info table if missing
@@ -757,6 +758,27 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 
 	// Note: vec0 embeddings table is created in engine_init() after
 	// sqlite-vec extension is loaded via dlopen. Not needed here.
+
+	// Migration: add call_kind column to reference table (v0.7+)
+	{
+		sqlite3_stmt *probe = nullptr;
+		if (sqlite3_prepare_v2(db_, "PRAGMA table_info(reference)", -1,
+				       &probe, nullptr) == SQLITE_OK) {
+			bool has_ck = false;
+			while (sqlite3_step(probe) == SQLITE_ROW) {
+				const char *col =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(probe, 1));
+				if (col && std::string(col) == "call_kind")
+					has_ck = true;
+			}
+			sqlite3_finalize(probe);
+			if (!has_ck) {
+				exec("ALTER TABLE reference "
+				     "ADD COLUMN call_kind INTEGER DEFAULT 0");
+			}
+		}
+	}
 	(void)ok;
 
 	return ok;

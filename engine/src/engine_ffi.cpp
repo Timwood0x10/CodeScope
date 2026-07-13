@@ -483,8 +483,8 @@ char *engine_get_routes(uint64_t project_id)
 		"FROM route WHERE project_id=? ORDER BY method, path LIMIT 500";
 
 	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(g_store->handle(), sql, -1, &stmt,
-			       nullptr) != SQLITE_OK) {
+	if (sqlite3_prepare_v2(g_store->handle(), sql, -1, &stmt, nullptr) !=
+	    SQLITE_OK) {
 		return dupString("{\"error\":\"query failed\",\"routes\":[]}");
 	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));

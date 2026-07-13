@@ -69,17 +69,18 @@ void GraphStore::insertSemanticRecords(uint64_t project_id,
 				  SQLITE_STATIC);
 		sqlite3_bind_int64(stmt, 6, static_cast<int64_t>(r.parent_id));
 		sqlite3_bind_int64(stmt, 7, static_cast<int64_t>(ref_id));
-		sqlite3_bind_int(stmt, 8, static_cast<int>(r.loc.start_row));
-		sqlite3_bind_int(stmt, 9, static_cast<int>(r.loc.start_col));
-		sqlite3_bind_int(stmt, 10, static_cast<int>(r.loc.end_row));
-		sqlite3_bind_int(stmt, 11, static_cast<int>(r.loc.end_col));
-		sqlite3_bind_text(stmt, 12, r.file_path.c_str(), -1,
+		sqlite3_bind_int(stmt, 8, r.arity);
+		sqlite3_bind_int(stmt, 9, r.is_static ? 1 : 0);
+		sqlite3_bind_text(stmt, 10, r.type_name.c_str(), -1,
 				  SQLITE_STATIC);
-		sqlite3_bind_text(stmt, 13, r.language.c_str(), -1,
+		sqlite3_bind_int(stmt, 11, static_cast<int>(r.call_kind));
+		sqlite3_bind_int(stmt, 12, static_cast<int>(r.loc.start_row));
+		sqlite3_bind_int(stmt, 13, static_cast<int>(r.loc.start_col));
+		sqlite3_bind_int(stmt, 14, static_cast<int>(r.loc.end_row));
+		sqlite3_bind_int(stmt, 15, static_cast<int>(r.loc.end_col));
+		sqlite3_bind_text(stmt, 16, r.file_path.c_str(), -1,
 				  SQLITE_STATIC);
-		sqlite3_bind_int(stmt, 14, r.arity);
-		sqlite3_bind_int(stmt, 15, r.is_static ? 1 : 0);
-		sqlite3_bind_text(stmt, 16, r.type_name.c_str(), -1,
+		sqlite3_bind_text(stmt, 17, r.language.c_str(), -1,
 				  SQLITE_STATIC);
 
 		int rc = sqlite3_step(stmt);
@@ -186,22 +187,25 @@ void GraphStore::insertSemanticRecordsBatch(
 					   static_cast<int64_t>(r.parent_id));
 			sqlite3_bind_int64(stmt, base + 7,
 					   static_cast<int64_t>(ref_id));
-			sqlite3_bind_int(stmt, base + 8,
-					 static_cast<int>(r.loc.start_row));
-			sqlite3_bind_int(stmt, base + 9,
-					 static_cast<int>(r.loc.start_col));
-			sqlite3_bind_int(stmt, base + 10,
-					 static_cast<int>(r.loc.end_row));
+			sqlite3_bind_int(stmt, base + 8, r.arity);
+			sqlite3_bind_int(stmt, base + 9, r.is_static ? 1 : 0);
+			sqlite3_bind_text(stmt, base + 10, r.type_name.c_str(),
+					  -1, SQLITE_STATIC);
 			sqlite3_bind_int(stmt, base + 11,
+					 static_cast<int>(r.call_kind));
+			sqlite3_bind_int(stmt, base + 12,
+					 static_cast<int>(r.loc.start_row));
+			sqlite3_bind_int(stmt, base + 13,
+					 static_cast<int>(r.loc.start_col));
+			sqlite3_bind_int(stmt, base + 14,
+					 static_cast<int>(r.loc.end_row));
+			sqlite3_bind_int(stmt, base + 15,
 					 static_cast<int>(r.loc.end_col));
-			sqlite3_bind_text(stmt, base + 12,
+			sqlite3_bind_text(stmt, base + 16,
 					  fr.file_path->c_str(), -1,
 					  SQLITE_STATIC);
-			sqlite3_bind_text(stmt, base + 13, r.language.c_str(),
-					  -1, SQLITE_STATIC);
-			sqlite3_bind_text(stmt, base + 14, r.type_name.c_str(),
-					  -1, SQLITE_STATIC);
-				sqlite3_bind_int(stmt, base + 15, static_cast<int>(r.call_kind));
+			sqlite3_bind_text(stmt, base + 17, r.language.c_str(),
+			    -1, SQLITE_STATIC);
 		}
 
 		int rc = sqlite3_step(stmt);
@@ -231,9 +235,9 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 	const char *sr_sql =
 		"INSERT INTO semantic_records "
 		"(original_id, project_id, kind, name, qualified_name, parent_id, "
-		 " ref_original_id, arity, is_static, type_name, call_kind,"
-		 " start_row, start_col, end_row, end_col, file_path, language) "
-		 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+		" ref_original_id, arity, is_static, type_name, call_kind,"
+		" start_row, start_col, end_row, end_col, file_path, language) "
+		"VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 	sqlite3_stmt *sr_st = nullptr;
 	if (sqlite3_prepare_v2(db_, sr_sql, -1, &sr_st, nullptr) != SQLITE_OK) {
 		error_ =
@@ -369,34 +373,34 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 					sqlite3_bind_int(batch_st, base + 9,
 							 r.is_static ? 1 : 0);
 					sqlite3_bind_text(batch_st, base + 10,
-					         r.type_name.c_str(),
-					         -1, SQLITE_STATIC);
-					      sqlite3_bind_int(
-					       batch_st, base + 11,
-					       static_cast<int>(r.call_kind));
-					      sqlite3_bind_int(
-					       batch_st, base + 12,
-					       static_cast<int>(
-					        r.loc.start_row));
-					      sqlite3_bind_int(
-					       batch_st, base + 13,
-					       static_cast<int>(
-					        r.loc.start_col));
-					      sqlite3_bind_int(
-					       batch_st, base + 14,
-					       static_cast<int>(
-					        r.loc.end_row));
-					      sqlite3_bind_int(
-					       batch_st, base + 15,
-					       static_cast<int>(
-					        r.loc.end_col));
-					      sqlite3_bind_text(
-					       batch_st, base + 16,
-					       all_recs[off + i].file->c_str(),
-					       -1, SQLITE_STATIC);
-					      sqlite3_bind_text(batch_st, base + 17,
-					          r.language.c_str(),
-					          -1, SQLITE_STATIC);
+							  r.type_name.c_str(),
+							  -1, SQLITE_STATIC);
+					sqlite3_bind_int(
+						batch_st, base + 11,
+						static_cast<int>(r.call_kind));
+					sqlite3_bind_int(
+						batch_st, base + 12,
+						static_cast<int>(
+							r.loc.start_row));
+					sqlite3_bind_int(
+						batch_st, base + 13,
+						static_cast<int>(
+							r.loc.start_col));
+					sqlite3_bind_int(
+						batch_st, base + 14,
+						static_cast<int>(
+							r.loc.end_row));
+					sqlite3_bind_int(
+						batch_st, base + 15,
+						static_cast<int>(
+							r.loc.end_col));
+					sqlite3_bind_text(
+						batch_st, base + 16,
+						all_recs[off + i].file->c_str(),
+						-1, SQLITE_STATIC);
+					sqlite3_bind_text(batch_st, base + 17,
+							  r.language.c_str(),
+							  -1, SQLITE_STATIC);
 				}
 				int rc = sqlite3_step(batch_st);
 				if (rc != SQLITE_DONE)

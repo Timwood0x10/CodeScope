@@ -115,7 +115,8 @@ std::string ResolverPipeline::checkImport(const std::string &caller_file,
 
 void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 					const std::string &caller_file,
-					const std::string &callee_name)
+					const std::string &callee_name,
+					int call_kind)
 {
 	// Build per-factor scores for each candidate using multi-factor scoring.
 	for (auto &c : candidates) {
@@ -223,7 +224,25 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 			factors.push_back(f);
 		}
 
-		// Factor 9 is reserved for future use.
+		// Factor 9: CallKindMatch — adjust scoring based on call kind.
+		// Constructor (3): boost for cross-module (import expected).
+		// Interface dispatch (2): reduce confidence (harder to resolve).
+		if (call_kind != 0) {
+			FactorResult f;
+			f.name = "CallKindMatch";
+			f.weight = kWeightModuleMatch;
+			if (call_kind == 3)
+				f.score = 0.3;
+			else if (call_kind == 2)
+				f.score = -0.3;
+			else if (call_kind == 1)
+				f.score = -0.1;
+			else
+				f.score = 0.0;
+			f.detail = "call_kind=" + std::to_string(call_kind);
+			factors.push_back(f);
+		}
+
 		// VisibilityCheck was moved to a hard filter in run() to
 		// ensure language visibility rules (e.g. Go unexported names)
 		// are applied as hard rejections, not weighted factors — a
@@ -282,11 +301,12 @@ int64_t ResolverPipeline::run()
 	}
 
 	// Step 1: Query all references for this project
-	std::string ref_sql = "SELECT r.id, r.name, r.caller_id, r.arity, "
-			      " r.start_row, r.start_col, e.file_path "
-			      "FROM reference r "
-			      "JOIN entity e ON r.caller_id = e.id "
-			      "WHERE r.project_id=?";
+	std::string ref_sql =
+		"SELECT r.id, r.name, r.caller_id, r.arity, "
+		" r.start_row, r.start_col, r.call_kind, e.file_path "
+		"FROM reference r "
+		"JOIN entity e ON r.caller_id = e.id "
+		"WHERE r.project_id=?";
 	sqlite3_stmt *ref_st = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), ref_sql.c_str(), -1, &ref_st,
 			       nullptr) != SQLITE_OK) {
@@ -341,7 +361,8 @@ int64_t ResolverPipeline::run()
 		uint64_t caller_id =
 			static_cast<uint64_t>(sqlite3_column_int64(ref_st, 2));
 		const char *fp_c = reinterpret_cast<const char *>(
-			sqlite3_column_text(ref_st, 6));
+			sqlite3_column_text(ref_st, 7));
+		int call_kind = sqlite3_column_int(ref_st, 6);
 
 		if (!name_c || !*name_c || !fp_c)
 			continue;
@@ -402,7 +423,7 @@ int64_t ResolverPipeline::run()
 		}
 
 		// Apply constraints to rank
-		applyConstraints(candidates, caller_file, name);
+		applyConstraints(candidates, caller_file, name, call_kind);
 
 		// Pick the best match (highest score), skip self-reference.
 		// Also apply hard language visibility rules: if the candidate

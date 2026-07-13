@@ -63,7 +63,8 @@ class ResolverPipeline {
 	/// @param callee_name The name being resolved (for import check).
 	void applyConstraints(std::vector<Candidate> &candidates,
 			      const std::string &caller_file,
-			      const std::string &callee_name);
+			      const std::string &callee_name,
+			      int call_kind = 0);
 
 	/// Check if `callee_name` is imported in the file at `caller_file`.
 	/// Returns the import target path if found, empty string otherwise.

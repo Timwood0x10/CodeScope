@@ -226,7 +226,15 @@ void PythonVisitor::handleCall(TSNode node, uint64_t parent_id)
 		return;
 	}
 
-	uint64_t id = emitter_->emitCall(name, loc, parent_id);
+	// Classify call kind
+	CallKind call_kind = CallKind::Direct;
+	if (name.find('.') != std::string::npos)
+		call_kind = CallKind::Method;
+	else if (name.size() > 4 && name[0] >= 'A' && name[0] <= 'Z')
+		call_kind = CallKind::Constructor;
+
+	uint64_t id = emitter_->emitCall(name, loc, parent_id, 0, false,
+					 static_cast<int>(call_kind));
 	visitChildren(node, id);
 }
 void PythonVisitor::handleImport(TSNode node, uint64_t parent_id)

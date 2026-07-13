@@ -155,4 +155,14 @@ uint64_t SemanticEmitter::emitRoute(const std::string &route_label,
 				parent_id, loc);
 }
 
+// ── Interface Impl Emitter ───────────────────────────────────
+
+uint64_t SemanticEmitter::emitInterfaceImpl(const std::string &impl_type,
+					    const std::string &iface_name,
+					    SourceRange loc, uint64_t parent_id)
+{
+	return unit_->addTypedRecord(RecordKind::InterfaceImpl, impl_type,
+				     iface_name, parent_id, loc);
+}
+
 } // namespace ir

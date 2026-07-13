@@ -173,6 +173,29 @@ void RustVisitor::handleTrait(TSNode node, uint64_t parent_id)
 void RustVisitor::handleImpl(TSNode node, uint64_t parent_id)
 {
 	uint32_t cnt = ts_node_child_count(node);
+	std::string trait_name;
+	std::string impl_type;
+
+	// Extract trait and type from impl: "impl Trait for Type" or "impl Type"
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (!ts_node_is_named(c))
+			continue;
+		const char *t = ts_node_type(c);
+		if (strcmp(t, "trait_type") == 0 ||
+		    strcmp(t, "type_identifier") == 0) {
+			if (trait_name.empty())
+				trait_name = nodeText(c);
+			else
+				impl_type = nodeText(c);
+		}
+	}
+
+	// Emit InterfaceImpl if trait impl: "impl Trait for Type"
+	if (!trait_name.empty() && !impl_type.empty())
+		emitter_->emitInterfaceImpl(impl_type, trait_name,
+					    location(node), parent_id);
+
 	for (uint32_t i = 0; i < cnt; i++) {
 		TSNode c = ts_node_child(node, i);
 		if (!ts_node_is_named(c))
@@ -228,7 +251,19 @@ void RustVisitor::handleCall(TSNode node, uint64_t parent_id)
 		return;
 	}
 
-	uint64_t id = emitter_->emitCall(name, loc, parent_id);
+	// Classify call kind
+	CallKind call_kind = CallKind::Direct;
+	if (name.find("::") != std::string::npos) {
+		call_kind = CallKind::Method;
+		if (name.find("::new") != std::string::npos ||
+		    name.find("::from") != std::string::npos)
+			call_kind = CallKind::Constructor;
+	} else if (name.find('.') != std::string::npos) {
+		call_kind = CallKind::Method;
+	}
+
+	uint64_t id = emitter_->emitCall(name, loc, parent_id, 0, false,
+					 static_cast<int>(call_kind));
 	visitChildren(node, id);
 }
 void RustVisitor::handleLet(TSNode node, uint64_t parent_id)
