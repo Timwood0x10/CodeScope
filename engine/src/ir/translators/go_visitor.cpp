@@ -9,8 +9,8 @@ namespace ir
 // Used to identify route registrations like r.GET("/path", handler).
 // Reference: codebase-memory-mcp (MIT) service_patterns.c
 static const char *kHttpMethods[] = {
-	"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS",
-	"HandleFunc", "Handle", // net/http
+	"GET",	 "POST",    "PUT",	  "DELETE", "PATCH",
+	"HEAD",	 "OPTIONS", "HandleFunc", "Handle", // net/http
 	nullptr,
 };
 
@@ -237,60 +237,89 @@ void GoVisitor::handleCall(TSNode node, uint64_t parent_id)
 			TSNode c = ts_node_child(node, i);
 			if (!ts_node_is_named(c))
 				continue;
-			if (strcmp(ts_node_type(c), "selector_expression") == 0) {
+			if (strcmp(ts_node_type(c), "selector_expression") ==
+			    0) {
 				std::string sel_text = nodeText(c);
-				// Find the method name after the dot
 				size_t dot_pos = sel_text.rfind('.');
-				if (dot_pos != std::string::npos) {
-					std::string method = sel_text.substr(dot_pos + 1);
-					// Check if it's an HTTP method
-					for (auto *hm : kHttpMethods) {
-						if (method == hm) {
-							// Extract route path from first argument
-							std::string route_path;
-							for (uint32_t j = i + 1; j < cnt; j++) {
-								TSNode arg = ts_node_child(node, j);
-								if (!ts_node_is_named(arg))
-									continue;
-								if (strcmp(ts_node_type(arg), "interpreted_string_literal") == 0 ||
-								    strcmp(ts_node_type(arg), "string_literal") == 0 ||
-								    strcmp(ts_node_type(arg), "raw_string_literal") == 0) {
-									route_path = nodeText(arg);
-									// Strip quotes
-									if (route_path.size() >= 2 &&
-									    route_path.front() == '"' &&
-									    route_path.back() == '"')
-										route_path = route_path.substr(1, route_path.size() - 2);
-									break;
-								}
-							}
-							// Extract handler name from second argument
-							std::string handler_name;
-							for (uint32_t j = i + 1; j < cnt; j++) {
-								TSNode arg = ts_node_child(node, j);
-								if (!ts_node_is_named(arg))
-									continue;
-								if (j > i + 1 || (j == i + 1 && !route_path.empty())) {
-									// Second named argument after the path is the handler
-									if (strcmp(ts_node_type(arg), "identifier") == 0) {
-										handler_name = nodeText(arg);
-									} else if (strcmp(ts_node_type(arg), "selector_expression") == 0) {
-										handler_name = nodeText(arg);
-									}
-									break;
-								}
-							}
-							// Emit route record
-							std::string route_label = method + " " + route_path;
-							if (!route_label.empty()) {
-								uint64_t route_id = emitter_->emitRoute(
-									route_label, handler_name, loc, parent_id);
-								(void)route_id;
-							}
-							break;
-						}
+				if (dot_pos == std::string::npos)
+					break;
+				std::string method =
+					sel_text.substr(dot_pos + 1);
+				bool is_http_method = false;
+				for (int hi = 0; kHttpMethods[hi] != nullptr;
+				     hi++) {
+					if (method == kHttpMethods[hi]) {
+						is_http_method = true;
+						break;
 					}
 				}
+				if (!is_http_method)
+					break;
+
+				// Find argument_list child — arguments are NOT direct children
+				std::string route_path;
+				std::string handler_name;
+				for (uint32_t j = 0; j < cnt; j++) {
+					TSNode arg_node =
+						ts_node_child(node, j);
+					if (!ts_node_is_named(arg_node))
+						continue;
+					if (strcmp(ts_node_type(arg_node),
+						   "argument_list") != 0)
+						continue;
+					uint32_t ac =
+						ts_node_child_count(arg_node);
+					bool found_path = false;
+					for (uint32_t k = 0; k < ac; k++) {
+						TSNode arg = ts_node_child(
+							arg_node, k);
+						if (!ts_node_is_named(arg))
+							continue;
+						const char *arg_type =
+							ts_node_type(arg);
+						if (!found_path) {
+							if (strcmp(arg_type,
+								   "interpreted_string_literal") ==
+								    0 ||
+							    strcmp(arg_type,
+								   "raw_string_literal") ==
+								    0) {
+								route_path = nodeText(
+									arg);
+								if (route_path.size() >=
+									    2 &&
+								    route_path.front() ==
+									    '"' &&
+								    route_path.back() ==
+									    '"')
+									route_path =
+										route_path
+											.substr(1,
+												route_path.size() -
+													2);
+								found_path =
+									true;
+							}
+						} else {
+							if (strcmp(arg_type,
+								   "identifier") ==
+								    0 ||
+							    strcmp(arg_type,
+								   "selector_expression") ==
+								    0) {
+								handler_name =
+									nodeText(
+										arg);
+								break;
+							}
+						}
+					}
+					break;
+				}
+				if (!route_path.empty())
+					emitter_->emitRoute(
+						method + " " + route_path,
+						handler_name, loc, parent_id);
 				break;
 			}
 		}

@@ -77,8 +77,8 @@ class SemanticEmitter {
 	/// \param loc          Source location
 	/// \param parent_id    Parent record ID
 	uint64_t emitRoute(const std::string &route_label,
-			   const std::string &handler_name,
-			   SourceRange loc, uint64_t parent_id = 0);
+			   const std::string &handler_name, SourceRange loc,
+			   uint64_t parent_id = 0);
 
 	// ── Type Emitters ───────────────────────────────────────────
 

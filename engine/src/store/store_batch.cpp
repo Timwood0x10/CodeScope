@@ -366,34 +366,33 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 					sqlite3_bind_int(batch_st, base + 8,
 							 r.arity);
 					sqlite3_bind_int(batch_st, base + 9,
-					        r.is_static ? 1 : 0);
-					      sqlite3_bind_text(
-					       batch_st, base + 10,
-					       r.type_name.c_str(), -1,
-					       SQLITE_STATIC);
-					      sqlite3_bind_int(
-					       batch_st, base + 11,
-					       static_cast<int>(
-					        r.loc.start_row));
-					      sqlite3_bind_int(
-					       batch_st, base + 12,
-					       static_cast<int>(
-					        r.loc.start_col));
-					      sqlite3_bind_int(
-					       batch_st, base + 13,
-					       static_cast<int>(
-					        r.loc.end_row));
-					      sqlite3_bind_int(
-					       batch_st, base + 14,
-					       static_cast<int>(
-					        r.loc.end_col));
-					      sqlite3_bind_text(
-					       batch_st, base + 15,
-					       all_recs[off + i].file->c_str(),
-					       -1, SQLITE_STATIC);
-					      sqlite3_bind_text(batch_st, base + 16,
-					          r.language.c_str(),
-					          -1, SQLITE_STATIC);
+							 r.is_static ? 1 : 0);
+					sqlite3_bind_text(batch_st, base + 10,
+							  r.type_name.c_str(),
+							  -1, SQLITE_STATIC);
+					sqlite3_bind_int(
+						batch_st, base + 11,
+						static_cast<int>(
+							r.loc.start_row));
+					sqlite3_bind_int(
+						batch_st, base + 12,
+						static_cast<int>(
+							r.loc.start_col));
+					sqlite3_bind_int(
+						batch_st, base + 13,
+						static_cast<int>(
+							r.loc.end_row));
+					sqlite3_bind_int(
+						batch_st, base + 14,
+						static_cast<int>(
+							r.loc.end_col));
+					sqlite3_bind_text(
+						batch_st, base + 15,
+						all_recs[off + i].file->c_str(),
+						-1, SQLITE_STATIC);
+					sqlite3_bind_text(batch_st, base + 16,
+							  r.language.c_str(),
+							  -1, SQLITE_STATIC);
 				}
 				int rc = sqlite3_step(batch_st);
 				if (rc != SQLITE_DONE)

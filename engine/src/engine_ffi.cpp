@@ -410,13 +410,11 @@ char *engine_get_type_info(uint64_t project_id, const char *type_name_filter)
 		// Escape special characters for SQL LIKE: % _ and '
 		std::string filter(type_name_filter);
 		size_t pos = 0;
-		// Escape backslash first (used as escape char)
 		while ((pos = filter.find('\\', pos)) != std::string::npos) {
 			filter.replace(pos, 1, "\\\\");
 			pos += 2;
 		}
 		pos = 0;
-		// Escape LIKE wildcards
 		while ((pos = filter.find('%', pos)) != std::string::npos) {
 			filter.replace(pos, 1, "\\%");
 			pos += 2;
@@ -427,7 +425,6 @@ char *engine_get_type_info(uint64_t project_id, const char *type_name_filter)
 			pos += 2;
 		}
 		pos = 0;
-		// Escape single quotes for SQL safety
 		while ((pos = filter.find('\'', pos)) != std::string::npos) {
 			filter.replace(pos, 1, "''");
 			pos += 2;
@@ -459,7 +456,6 @@ char *engine_get_type_info(uint64_t project_id, const char *type_name_filter)
 		const char *lang = reinterpret_cast<const char *>(
 			sqlite3_column_text(stmt, 4));
 		int row = sqlite3_column_int(stmt, 5);
-		// Use int64_t for COUNT(*) results to avoid 32-bit overflow on large projects.
 		int64_t ref_count = sqlite3_column_int64(stmt, 6);
 
 		result += "{\"name\":\"" + jsonEscape(n ? n : "") + "\"";
@@ -471,6 +467,50 @@ char *engine_get_type_info(uint64_t project_id, const char *type_name_filter)
 			  "\"";
 		result += ",\"line\":" + std::to_string(row);
 		result += ",\"ref_count\":" + std::to_string(ref_count) + "}";
+	}
+	sqlite3_finalize(stmt);
+	result += "]}";
+	return dupString(result.c_str());
+}
+
+char *engine_get_routes(uint64_t project_id)
+{
+	if (!g_store)
+		return dupString("{\"error\":\"not initialized\"}");
+
+	std::string sql =
+		std::string(
+			"SELECT method, path, handler_name, file_path, start_row "
+			"FROM route WHERE project_id=") +
+		std::to_string(project_id) + " ORDER BY method, path LIMIT 500";
+
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(g_store->handle(), sql.c_str(), -1, &stmt,
+			       nullptr) != SQLITE_OK) {
+		return dupString("{\"error\":\"query failed\",\"routes\":[]}");
+	}
+
+	std::string result = "{\"routes\":[";
+	bool first = true;
+	while (sqlite3_step(stmt) == SQLITE_ROW) {
+		if (!first)
+			result += ",";
+		first = false;
+		const char *m = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 0));
+		const char *p = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 1));
+		const char *h = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 2));
+		const char *f = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 3));
+		int line = sqlite3_column_int(stmt, 4);
+
+		result += "{\"method\":\"" + jsonEscape(m ? m : "") + "\"";
+		result += ",\"path\":\"" + jsonEscape(p ? p : "") + "\"";
+		result += ",\"handler\":\"" + jsonEscape(h ? h : "") + "\"";
+		result += ",\"file\":\"" + jsonEscape(f ? f : "") + "\"";
+		result += ",\"line\":" + std::to_string(line) + "}";
 	}
 	sqlite3_finalize(stmt);
 	result += "]}";

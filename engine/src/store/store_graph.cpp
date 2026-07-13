@@ -287,25 +287,25 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	auto t_call = Clock::now();
 
 	// Phase 1.3: Type edges — create USES_TYPE edges from TypeRef records
-	  {
-	   // Populate route table from Route records (kind=19 in semantic_records)
-	   exec(std::string(
-	         "INSERT OR IGNORE INTO route "
-	         "(project_id, method, path, handler_name, "
-	         " file_path, start_row, start_col) "
-	         "SELECT sr.project_id, "
-	         " SUBSTR(sr.name, 1, INSTR(sr.name, ' ') - 1), "
-	         " SUBSTR(sr.name, INSTR(sr.name, ' ') + 1), "
-	         " sr.qualified_name, "
-	         " sr.file_path, sr.start_row, sr.start_col "
-	         "FROM semantic_records sr "
-	         "WHERE sr.project_id=" +
-	         pid +
-	         " AND sr.kind = 19"  // Route
-	         " AND sr.name != '' AND sr.name LIKE '% %'")
-	         .c_str());
+	{
+		// Populate route table from Route records (kind=19 in semantic_records)
+		exec(std::string(
+			     "INSERT OR IGNORE INTO route "
+			     "(project_id, method, path, handler_name, "
+			     " file_path, start_row, start_col) "
+			     "SELECT sr.project_id, "
+			     " SUBSTR(sr.name, 1, INSTR(sr.name, ' ') - 1), "
+			     " SUBSTR(sr.name, INSTR(sr.name, ' ') + 1), "
+			     " sr.qualified_name, "
+			     " sr.file_path, sr.start_row, sr.start_col "
+			     "FROM semantic_records sr "
+			     "WHERE sr.project_id=" +
+			     pid +
+			     " AND sr.kind = 19" // Route
+			     " AND sr.name != '' AND sr.name LIKE '% %'")
+			     .c_str());
 
-	   // Build the type kind list for SQL IN clause.
+		// Build the type kind list for SQL IN clause.
 		// Visitors emit type declarations as Class/Interface/Enum/TypeAlias,
 		// not TypeDecl. Use these kinds directly to avoid a fragile
 		// find+replace that would silently fail if the SQL changes.

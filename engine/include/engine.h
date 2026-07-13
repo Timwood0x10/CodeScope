@@ -255,6 +255,9 @@ char* engine_get_capabilities(uint64_t project_id);
 // Returns JSON: { "types": [ { "name","qualified_name","kind","file_path","ref_count" } ] }
 char* engine_get_type_info(uint64_t project_id, const char* type_name_filter);
 
+// Get HTTP routes for a project. Returns JSON: { "routes": [ { "method","path","handler_name","file_path","line" } ] }
+char* engine_get_routes(uint64_t project_id);
+
 // ─── Memory ───────────────────────────────────────────────────
 
 void engine_free_string(char* ptr);

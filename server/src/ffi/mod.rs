@@ -78,6 +78,7 @@ unsafe extern "C" {
     fn engine_find_callees_adaptive(project_id: u64, symbol_name: *const c_char) -> *mut c_char;
     fn engine_get_entry_points_new(project_id: u64) -> *mut c_char;
     fn engine_get_type_info(project_id: u64, type_name_filter: *const c_char) -> *mut c_char;
+    fn engine_get_routes(project_id: u64) -> *mut c_char;
     fn engine_project_overview(project_id: u64) -> *mut c_char;
     fn engine_trace_path(
         project_id: u64,
@@ -351,6 +352,10 @@ pub fn get_entry_points_new(project_id: u64) -> String {
 
 pub fn get_type_info(project_id: u64, type_name_filter: &str) -> String {
     take_string(unsafe { engine_get_type_info(project_id, cstr(type_name_filter).as_ptr()) })
+}
+
+pub fn get_routes(project_id: u64) -> String {
+    take_string(unsafe { engine_get_routes(project_id) })
 }
 
 pub fn project_overview(project_id: u64) -> String {

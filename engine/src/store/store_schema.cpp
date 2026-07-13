@@ -638,34 +638,33 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 
 	// Migration: add type_info + type_ref tables (v0.6+)
 	{
-	 // Add route table if missing
-	 sqlite3_stmt *probe = nullptr;
-	 if (sqlite3_prepare_v2(db_,
-	          "SELECT name FROM sqlite_master "
-	          "WHERE type='table' AND name='route'",
-	          -1, &probe, nullptr) == SQLITE_OK) {
-	  if (sqlite3_step(probe) != SQLITE_ROW) {
-	   sqlite3_finalize(probe);
-	   exec(
-	    "CREATE TABLE IF NOT EXISTS route ("
-	    " id INTEGER PRIMARY KEY AUTOINCREMENT,"
-	    " project_id INTEGER NOT NULL,"
-	    " method TEXT NOT NULL,"
-	    " path TEXT NOT NULL,"
-	    " handler_name TEXT DEFAULT '',"
-	    " file_path TEXT NOT NULL,"
-	    " start_row INTEGER DEFAULT 0,"
-	    " start_col INTEGER DEFAULT 0,"
-	    " FOREIGN KEY (project_id) REFERENCES projects(id)"
-	    ")");
-	   exec("CREATE INDEX IF NOT EXISTS idx_route_path "
-	        "ON route(project_id, method, path)");
-	  } else {
-	   sqlite3_finalize(probe);
-	  }
-	 }
+		// Add route table if missing
+		sqlite3_stmt *rprobe = nullptr;
+		if (sqlite3_prepare_v2(db_,
+				       "SELECT name FROM sqlite_master "
+				       "WHERE type='table' AND name='route'",
+				       -1, &rprobe, nullptr) == SQLITE_OK) {
+			if (sqlite3_step(rprobe) != SQLITE_ROW) {
+				sqlite3_finalize(rprobe);
+				exec("CREATE TABLE IF NOT EXISTS route ("
+				     " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+				     " project_id INTEGER NOT NULL,"
+				     " method TEXT NOT NULL,"
+				     " path TEXT NOT NULL,"
+				     " handler_name TEXT DEFAULT '',"
+				     " file_path TEXT NOT NULL,"
+				     " start_row INTEGER DEFAULT 0,"
+				     " start_col INTEGER DEFAULT 0,"
+				     " FOREIGN KEY (project_id) REFERENCES projects(id)"
+				     ")");
+				exec("CREATE INDEX IF NOT EXISTS idx_route_path "
+				     "ON route(project_id, method, path)");
+			} else {
+				sqlite3_finalize(rprobe);
+			}
+		}
 
-	 // Add type_name column to semantic_records if missing
+		// Add type_name column to semantic_records if missing
 		sqlite3_stmt *probe = nullptr;
 		if (sqlite3_prepare_v2(db_,
 				       "PRAGMA table_info(semantic_records)",
