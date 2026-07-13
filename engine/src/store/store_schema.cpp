@@ -156,6 +156,7 @@ bool GraphStore::createSchema()
             ref_original_id INTEGER DEFAULT 0,
             arity INTEGER DEFAULT 0,
             is_static INTEGER DEFAULT 0,
+            type_name TEXT DEFAULT '', -- type for TypeRef/TypeAssign/TypeDecl records
             start_row INTEGER DEFAULT 0, start_col INTEGER DEFAULT 0,
             end_row INTEGER DEFAULT 0, end_col INTEGER DEFAULT 0,
             file_path TEXT NOT NULL,
@@ -637,13 +638,61 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 
 	// Migration: add type_info + type_ref tables (v0.6+)
 	{
+	 // Add route table if missing
+	 sqlite3_stmt *probe = nullptr;
+	 if (sqlite3_prepare_v2(db_,
+	          "SELECT name FROM sqlite_master "
+	          "WHERE type='table' AND name='route'",
+	          -1, &probe, nullptr) == SQLITE_OK) {
+	  if (sqlite3_step(probe) != SQLITE_ROW) {
+	   sqlite3_finalize(probe);
+	   exec(
+	    "CREATE TABLE IF NOT EXISTS route ("
+	    " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+	    " project_id INTEGER NOT NULL,"
+	    " method TEXT NOT NULL,"
+	    " path TEXT NOT NULL,"
+	    " handler_name TEXT DEFAULT '',"
+	    " file_path TEXT NOT NULL,"
+	    " start_row INTEGER DEFAULT 0,"
+	    " start_col INTEGER DEFAULT 0,"
+	    " FOREIGN KEY (project_id) REFERENCES projects(id)"
+	    ")");
+	   exec("CREATE INDEX IF NOT EXISTS idx_route_path "
+	        "ON route(project_id, method, path)");
+	  } else {
+	   sqlite3_finalize(probe);
+	  }
+	 }
+
+	 // Add type_name column to semantic_records if missing
 		sqlite3_stmt *probe = nullptr;
+		if (sqlite3_prepare_v2(db_,
+				       "PRAGMA table_info(semantic_records)",
+				       -1, &probe, nullptr) == SQLITE_OK) {
+			bool has_type_name = false;
+			while (sqlite3_step(probe) == SQLITE_ROW) {
+				const char *col =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(probe, 1));
+				if (col && std::string(col) == "type_name")
+					has_type_name = true;
+			}
+			sqlite3_finalize(probe);
+			if (!has_type_name) {
+				exec("ALTER TABLE semantic_records "
+				     "ADD COLUMN type_name TEXT DEFAULT ''");
+			}
+		}
+
+		// Create type_info table if missing
+		sqlite3_stmt *probe2 = nullptr;
 		if (sqlite3_prepare_v2(db_,
 				       "SELECT name FROM sqlite_master "
 				       "WHERE type='table' AND name='type_info'",
-				       -1, &probe, nullptr) == SQLITE_OK) {
-			if (sqlite3_step(probe) != SQLITE_ROW) {
-				sqlite3_finalize(probe);
+				       -1, &probe2, nullptr) == SQLITE_OK) {
+			if (sqlite3_step(probe2) != SQLITE_ROW) {
+				sqlite3_finalize(probe2);
 				exec("CREATE TABLE IF NOT EXISTS type_info ("
 				     " id INTEGER PRIMARY KEY AUTOINCREMENT,"
 				     " project_id INTEGER NOT NULL,"

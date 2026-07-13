@@ -69,6 +69,17 @@ class SemanticEmitter {
 	uint64_t emitReference(const std::string &callee_name, SourceRange loc,
 			       uint64_t parent_id = 0, int arity = 0);
 
+	// ── Route Emitter ───────────────────────────────────────────
+
+	/// Emit an HTTP route registration (e.g. "GET /api/users").
+	/// \param route_label  HTTP method + path, e.g. "GET /api/users"
+	/// \param handler_name Handler function name, e.g. "listUsers"
+	/// \param loc          Source location
+	/// \param parent_id    Parent record ID
+	uint64_t emitRoute(const std::string &route_label,
+			   const std::string &handler_name,
+			   SourceRange loc, uint64_t parent_id = 0);
+
 	// ── Type Emitters ───────────────────────────────────────────
 
 	/// Emit a type reference: variable/param/field has a type.

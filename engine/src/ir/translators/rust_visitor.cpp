@@ -234,6 +234,22 @@ void RustVisitor::handleCall(TSNode node, uint64_t parent_id)
 void RustVisitor::handleLet(TSNode node, uint64_t parent_id)
 {
 	uint32_t cnt = ts_node_child_count(node);
+	std::string type_name;
+	// First pass: look for type annotation
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (!ts_node_is_named(c))
+			continue;
+		const char *t = ts_node_type(c);
+		if (strcmp(t, "type_identifier") == 0 ||
+		    strcmp(t, "generic_type") == 0 ||
+		    strcmp(t, "reference_type") == 0 ||
+		    strcmp(t, "array_type") == 0 ||
+		    strcmp(t, "tuple_type") == 0) {
+			type_name = nodeText(c);
+		}
+	}
+	// Second pass: create variable with type reference
 	for (uint32_t i = 0; i < cnt; i++) {
 		TSNode c = ts_node_child(node, i);
 		if (!ts_node_is_named(c))
@@ -244,6 +260,9 @@ void RustVisitor::handleLet(TSNode node, uint64_t parent_id)
 				uint64_t id = emitter_->emitVariable(
 					name, location(c), parent_id);
 				defineSymbol(name, id);
+				if (!type_name.empty())
+					emitter_->emitTypeRef(name, type_name,
+							      location(c), id);
 			}
 		}
 	}

@@ -208,18 +208,46 @@ void JavaVisitor::handleMethodInvocation(TSNode node, uint64_t parent_id)
 }
 void JavaVisitor::handleVariableDecl(TSNode node, uint64_t parent_id)
 {
+	// In tree-sitter-java, variable_declarator only has 'identifier' and optional
+	// '= initializer' as children. The type (type_identifier, generic_type, etc.)
+	// is a sibling in the parent node (local_variable_declaration or field_declaration).
+	// Extract the variable name from this node, then get the type from the parent.
+	std::string name;
 	uint32_t cnt = ts_node_child_count(node);
 	for (uint32_t i = 0; i < cnt; i++) {
 		TSNode c = ts_node_child(node, i);
 		if (!ts_node_is_named(c))
 			continue;
 		if (strcmp(ts_node_type(c), "identifier") == 0) {
-			std::string name = nodeText(c);
-			if (!name.empty()) {
-				uint64_t id = emitter_->emitVariable(
-					name, location(c), parent_id);
-				defineSymbol(name, id);
-			}
+			name = nodeText(c);
+			break;
+		}
+	}
+	if (name.empty())
+		return;
+
+	uint64_t id = emitter_->emitVariable(name, location(node), parent_id);
+	defineSymbol(name, id);
+
+	// Look for the type in the parent node (local_variable_declaration or
+	// field_declaration). The type is a sibling of variable_declarator.
+	TSNode parent = ts_node_parent(node);
+	if (ts_node_is_null(parent))
+		return;
+	uint32_t pc = ts_node_child_count(parent);
+	for (uint32_t i = 0; i < pc; i++) {
+		TSNode c = ts_node_child(parent, i);
+		if (!ts_node_is_named(c))
+			continue;
+		const char *t = ts_node_type(c);
+		if (strcmp(t, "type_identifier") == 0 ||
+		    strcmp(t, "generic_type") == 0 ||
+		    strcmp(t, "array_type") == 0) {
+			std::string type_name = nodeText(c);
+			if (!type_name.empty())
+				emitter_->emitTypeRef(name, type_name,
+						      location(c), id);
+			break;
 		}
 	}
 }

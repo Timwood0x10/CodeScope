@@ -392,6 +392,91 @@ char *engine_get_project_overview(uint64_t project_id)
 	return dupString(g_query->getProjectOverview(project_id));
 }
 
+char *engine_get_type_info(uint64_t project_id, const char *type_name_filter)
+{
+	if (!g_store)
+		return dupString("{\"error\":\"not initialized\"}");
+
+	// Query type_info table for type definitions
+	std::string sql =
+		"SELECT ti.name, ti.qualified_name, ti.kind, ti.file_path, "
+		" ti.language, ti.start_row, "
+		" (SELECT COUNT(*) FROM type_ref tr WHERE tr.type_name = ti.name "
+		"  AND tr.project_id = ti.project_id) AS ref_count "
+		"FROM type_info ti WHERE ti.project_id=" +
+		std::to_string(project_id);
+
+	if (type_name_filter && *type_name_filter) {
+		// Escape special characters for SQL LIKE: % _ and '
+		std::string filter(type_name_filter);
+		size_t pos = 0;
+		// Escape backslash first (used as escape char)
+		while ((pos = filter.find('\\', pos)) != std::string::npos) {
+			filter.replace(pos, 1, "\\\\");
+			pos += 2;
+		}
+		pos = 0;
+		// Escape LIKE wildcards
+		while ((pos = filter.find('%', pos)) != std::string::npos) {
+			filter.replace(pos, 1, "\\%");
+			pos += 2;
+		}
+		pos = 0;
+		while ((pos = filter.find('_', pos)) != std::string::npos) {
+			filter.replace(pos, 1, "\\_");
+			pos += 2;
+		}
+		pos = 0;
+		// Escape single quotes for SQL safety
+		while ((pos = filter.find('\'', pos)) != std::string::npos) {
+			filter.replace(pos, 1, "''");
+			pos += 2;
+		}
+		sql += " AND ti.name LIKE '%" + filter + "%' ESCAPE '\\'";
+	}
+
+	sql += " ORDER BY ref_count DESC LIMIT 100";
+
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(g_store->handle(), sql.c_str(), -1, &stmt,
+			       nullptr) != SQLITE_OK) {
+		return dupString("{\"error\":\"query failed\",\"types\":[]}");
+	}
+
+	std::string result = "{\"types\":[";
+	bool first = true;
+	while (sqlite3_step(stmt) == SQLITE_ROW) {
+		if (!first)
+			result += ",";
+		first = false;
+		const char *n = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 0));
+		const char *qn = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 1));
+		int kind = sqlite3_column_int(stmt, 2);
+		const char *fp = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 3));
+		const char *lang = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 4));
+		int row = sqlite3_column_int(stmt, 5);
+		// Use int64_t for COUNT(*) results to avoid 32-bit overflow on large projects.
+		int64_t ref_count = sqlite3_column_int64(stmt, 6);
+
+		result += "{\"name\":\"" + jsonEscape(n ? n : "") + "\"";
+		result += ",\"qualified_name\":\"" + jsonEscape(qn ? qn : "") +
+			  "\"";
+		result += ",\"kind\":" + std::to_string(kind);
+		result += ",\"file_path\":\"" + jsonEscape(fp ? fp : "") + "\"";
+		result += ",\"language\":\"" + jsonEscape(lang ? lang : "") +
+			  "\"";
+		result += ",\"line\":" + std::to_string(row);
+		result += ",\"ref_count\":" + std::to_string(ref_count) + "}";
+	}
+	sqlite3_finalize(stmt);
+	result += "]}";
+	return dupString(result.c_str());
+}
+
 // ─── Memory ────────────────────────────────────────────────────
 
 void engine_free_string(char *ptr)

@@ -5,6 +5,15 @@
 namespace ir
 {
 
+// ─── HTTP method constants for route detection ──────────────────
+// Used to identify route registrations like r.GET("/path", handler).
+// Reference: codebase-memory-mcp (MIT) service_patterns.c
+static const char *kHttpMethods[] = {
+	"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS",
+	"HandleFunc", "Handle", // net/http
+	nullptr,
+};
+
 // ─── Language-specific builtin detection ───────────────────────────
 //
 // Reference: codebase-memory-mcp (MIT, https://github.com/DeusData/codebase-memory-mcp)
@@ -212,10 +221,79 @@ void GoVisitor::handleCall(TSNode node, uint64_t parent_id)
 	// by matching them to entities with the same name.
 	// Reference: codebase-memory-mcp (MIT) go_lsp.c :: is_go_builtin_func()
 	if (!name.empty() && isGoBuiltin(name)) {
-		// Still visit children to pick up any nested function calls
-		// or variable references inside the builtin's arguments.
 		visitChildren(node, parent_id);
 		return;
+	}
+
+	// ── Route detection ───────────────────────────────────────────
+	// Detect HTTP route registrations like:
+	//   r.GET("/path", handler)     — Gin
+	//   router.POST("/path", h)     — Echo/Chi
+	//   mux.HandleFunc("/path", h)  — net/http
+	// Reference: codebase-memory-mcp (MIT) service_patterns.c
+	{
+		// Check if this is a selector expression call (method call)
+		for (uint32_t i = 0; i < cnt; i++) {
+			TSNode c = ts_node_child(node, i);
+			if (!ts_node_is_named(c))
+				continue;
+			if (strcmp(ts_node_type(c), "selector_expression") == 0) {
+				std::string sel_text = nodeText(c);
+				// Find the method name after the dot
+				size_t dot_pos = sel_text.rfind('.');
+				if (dot_pos != std::string::npos) {
+					std::string method = sel_text.substr(dot_pos + 1);
+					// Check if it's an HTTP method
+					for (auto *hm : kHttpMethods) {
+						if (method == hm) {
+							// Extract route path from first argument
+							std::string route_path;
+							for (uint32_t j = i + 1; j < cnt; j++) {
+								TSNode arg = ts_node_child(node, j);
+								if (!ts_node_is_named(arg))
+									continue;
+								if (strcmp(ts_node_type(arg), "interpreted_string_literal") == 0 ||
+								    strcmp(ts_node_type(arg), "string_literal") == 0 ||
+								    strcmp(ts_node_type(arg), "raw_string_literal") == 0) {
+									route_path = nodeText(arg);
+									// Strip quotes
+									if (route_path.size() >= 2 &&
+									    route_path.front() == '"' &&
+									    route_path.back() == '"')
+										route_path = route_path.substr(1, route_path.size() - 2);
+									break;
+								}
+							}
+							// Extract handler name from second argument
+							std::string handler_name;
+							for (uint32_t j = i + 1; j < cnt; j++) {
+								TSNode arg = ts_node_child(node, j);
+								if (!ts_node_is_named(arg))
+									continue;
+								if (j > i + 1 || (j == i + 1 && !route_path.empty())) {
+									// Second named argument after the path is the handler
+									if (strcmp(ts_node_type(arg), "identifier") == 0) {
+										handler_name = nodeText(arg);
+									} else if (strcmp(ts_node_type(arg), "selector_expression") == 0) {
+										handler_name = nodeText(arg);
+									}
+									break;
+								}
+							}
+							// Emit route record
+							std::string route_label = method + " " + route_path;
+							if (!route_label.empty()) {
+								uint64_t route_id = emitter_->emitRoute(
+									route_label, handler_name, loc, parent_id);
+								(void)route_id;
+							}
+							break;
+						}
+					}
+				}
+				break;
+			}
+		}
 	}
 
 	uint64_t id = emitter_->emitCall(name, loc, parent_id);

@@ -251,6 +251,10 @@ char* engine_build_context(uint64_t project_id, const char* query);
  */
 char* engine_get_capabilities(uint64_t project_id);
 
+// Get type info for a project: returns type definitions and their references.
+// Returns JSON: { "types": [ { "name","qualified_name","kind","file_path","ref_count" } ] }
+char* engine_get_type_info(uint64_t project_id, const char* type_name_filter);
+
 // ─── Memory ───────────────────────────────────────────────────
 
 void engine_free_string(char* ptr);

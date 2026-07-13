@@ -458,6 +458,11 @@ fn h_get_entry_points(project_id: u64, _args: &Value) -> String {
     ffi::get_entry_points_new(project_id)
 }
 
+fn h_get_type_info(project_id: u64, args: &Value) -> String {
+    let type_name = args["type_name"].as_str().unwrap_or("");
+    ffi::get_type_info(project_id, type_name)
+}
+
 fn h_project_overview(project_id: u64, _args: &Value) -> String {
     ffi::project_overview(project_id)
 }
@@ -558,6 +563,7 @@ static TOOL_HANDLERS: Lazy<HashMap<&'static str, ToolHandler>> = Lazy::new(|| {
         h_connected_components as ToolHandler,
     );
     m.insert("get_entry_points", h_get_entry_points as ToolHandler);
+    m.insert("get_type_info", h_get_type_info as ToolHandler);
     m.insert("project_overview", h_project_overview as ToolHandler);
     // Unique tools
     m.insert("codescope_trace", h_codescope_trace as ToolHandler);
@@ -849,6 +855,19 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
             input_schema: json!({ "type": "object", "properties": {} }),
         },
         Tool {
+            name: "get_type_info".into(),
+            description: "Get type information for the project: type definitions (structs, enums, traits) and their reference counts. Optionally filter by type name. Returns JSON with types array.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "type_name": {
+                        "description": "Optional: filter types by name (substring match)",
+                        "type": "string"
+                    }
+                }
+            }),
+        },
+        Tool {
             name: "project_overview".into(),
             description: "Get a comprehensive project overview: languages, modules/symbols, entry points, analysis progress, and ready features. Call this first after initialization.".into(),
             input_schema: json!({ "type": "object", "properties": {} }),
@@ -948,6 +967,7 @@ mod tests {
             "find_callers",
             "find_callees",
             "get_entry_points",
+            "get_type_info",
             "project_overview",
             "get_module_tree",
         ];
@@ -966,6 +986,7 @@ mod tests {
             "codescope_get_callers",
             "codescope_get_callees",
             "codescope_get_entry_points",
+            "codescope_get_type_info",
             "codescope_overview",
             "codescope_enhance",
             "codescope_module_tree",

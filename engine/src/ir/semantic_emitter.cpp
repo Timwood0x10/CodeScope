@@ -141,4 +141,14 @@ uint64_t SemanticEmitter::emitComment(const std::string &text, SourceRange loc,
 	return unit_->addRecord(RecordKind::Comment, text, parent_id, loc);
 }
 
+// ── Route Emitter ─────────────────────────────────────────────
+
+uint64_t SemanticEmitter::emitRoute(const std::string &route_label,
+				     const std::string &handler_name,
+				     SourceRange loc, uint64_t parent_id)
+{
+	return unit_->addRecord(RecordKind::Route, route_label, handler_name, 0,
+				parent_id, loc);
+}
+
 } // namespace ir

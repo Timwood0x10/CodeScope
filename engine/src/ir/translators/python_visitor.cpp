@@ -108,8 +108,73 @@ void PythonVisitor::handleFuncDef(TSNode node, uint64_t parent_id)
 		const char *t = ts_node_type(c);
 		if (strcmp(t, "identifier") == 0)
 			continue;
-		if (strcmp(t, "parameters") == 0 || strcmp(t, "block") == 0)
+		if (strcmp(t, "parameters") == 0) {
+			// Extract parameter types from type annotations.
+			// In tree-sitter-python, typed parameters like `param: int`
+			// are wrapped in a `typed_parameter` node. The identifier
+			// and type are children of `typed_parameter`, not direct
+			// siblings in `parameters`. Handle both cases:
+			//   - bare identifier (untyped): `param`
+			//   - typed_parameter: `param: int`
+			uint32_t pc = ts_node_child_count(c);
+			for (uint32_t j = 0; j < pc; j++) {
+				TSNode param = ts_node_child(c, j);
+				if (!ts_node_is_named(param))
+					continue;
+				const char *pt = ts_node_type(param);
+				// Handle typed_parameter: param: int
+				if (strcmp(pt, "typed_parameter") == 0) {
+					std::string pname;
+					std::string ptype;
+					uint32_t tc =
+						ts_node_child_count(param);
+					for (uint32_t k = 0; k < tc; k++) {
+						TSNode child =
+							ts_node_child(param, k);
+						if (!ts_node_is_named(child))
+							continue;
+						if (strcmp(ts_node_type(child),
+							   "identifier") == 0)
+							pname = nodeText(child);
+						else if (strcmp(ts_node_type(
+									child),
+								"type") == 0)
+							ptype = nodeText(child);
+					}
+					if (!pname.empty() && !ptype.empty())
+						emitter_->emitTypeRef(
+							pname, ptype,
+							location(param), id);
+				}
+				// Handle bare identifier (untyped): param
+				if (strcmp(pt, "identifier") == 0) {
+					std::string pname = nodeText(param);
+					// Look for type annotation (":" type) as sibling
+					for (uint32_t k = j + 1; k < pc; k++) {
+						TSNode ann =
+							ts_node_child(c, k);
+						if (!ts_node_is_named(ann))
+							continue;
+						if (strcmp(ts_node_type(ann),
+							   "type") == 0) {
+							std::string ptype =
+								nodeText(ann);
+							if (!ptype.empty())
+								emitter_->emitTypeRef(
+									pname,
+									ptype,
+									location(
+										ann),
+									id);
+							break;
+						}
+					}
+				}
+			}
 			visitChildren(c, id);
+		} else if (strcmp(t, "block") == 0) {
+			visitChildren(c, id);
+		}
 	}
 	popScope();
 }

@@ -448,9 +448,21 @@ void GraphBuilder::resolveCallEdges(const ir::Record &call_rec,
 
 void GraphBuilder::buildTypeEdges(const ir::SemanticUnit &unit)
 {
+	// Build a name → graph_node_id index for TypeDecl records once,
+	// avoiding O(n²) nested loop for each TypeRef/TypeAssign lookup.
+	// Reference: codebase-memory-mcp (MIT) extract_type_refs.c
+	std::unordered_map<std::string, uint64_t> type_decl_map;
+	for (auto &other : unit.allRecords()) {
+		if (other.kind == ir::RecordKind::TypeDecl &&
+		    !other.name.empty()) {
+			auto it = ir_to_graph_node_.find(other.id);
+			if (it != ir_to_graph_node_.end())
+				type_decl_map[other.name] = it->second;
+		}
+	}
+
 	// Iterate TypeRef and TypeAssign records, creating USES_TYPE edges
 	// from the entity that references a type to its type declaration.
-	// Reference: codebase-memory-mcp (MIT) extract_type_refs.c
 	for (auto &rec : unit.allRecords()) {
 		if (rec.kind != ir::RecordKind::TypeRef &&
 		    rec.kind != ir::RecordKind::TypeAssign)
@@ -460,20 +472,13 @@ void GraphBuilder::buildTypeEdges(const ir::SemanticUnit &unit)
 		auto src_it = ir_to_graph_node_.find(rec.id);
 		if (src_it == ir_to_graph_node_.end())
 			continue;
-		uint64_t tgt_graph_id = 0;
-		for (auto &other : unit.allRecords()) {
-			if (other.kind == ir::RecordKind::TypeDecl &&
-			    other.name == rec.type_name) {
-				auto tgt_it = ir_to_graph_node_.find(other.id);
-				if (tgt_it != ir_to_graph_node_.end()) {
-					tgt_graph_id = tgt_it->second;
-					break;
-				}
-			}
-		}
-		if (tgt_graph_id == 0)
+
+		// O(1) lookup via the pre-built index
+		auto tgt_it = type_decl_map.find(rec.type_name);
+		if (tgt_it == type_decl_map.end())
 			continue;
-		addGraphEdge(src_it->second, tgt_graph_id, EdgeType::UsesType);
+
+		addGraphEdge(src_it->second, tgt_it->second, EdgeType::UsesType);
 	}
 }
 

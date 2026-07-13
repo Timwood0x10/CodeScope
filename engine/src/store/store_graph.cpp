@@ -13,6 +13,22 @@
 #include <climits>
 #include <cstring>
 #include <functional>
+#include <string>
+
+// ─── RecordKind named constants ─────────────────────────────────
+// Must match the definitions in semantic_unit.h. If the enum changes,
+// update these constants to keep SQL queries in sync.
+// Only the kinds used in SQL queries are listed here.
+// Reference: engine/src/ir/semantic_unit.h enum class RecordKind
+constexpr int kKindFunction = 0;
+constexpr int kKindMethod = 1;
+constexpr int kKindClass = 2;
+constexpr int kKindInterface = 3;
+constexpr int kKindEnum = 4;
+constexpr int kKindTypeAlias = 5;
+constexpr int kKindTypeDecl = 16;
+constexpr int kKindTypeRef = 17;
+constexpr int kKindTypeAssign = 18;
 #include <mutex>
 #include <queue>
 #include <sqlite3.h>
@@ -142,6 +158,23 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// Note: ROW_NUMBER() OVER () avoids ORDER BY sort cost.
 	// Node IDs are sequential but not sorted by file_path — sorting is
 	// not required for correctness since JOINs use indexes, not sequential scans.
+	static constexpr int kR2nKinds[] = {
+		kKindFunction,	kKindMethod,  kKindClass,
+		kKindInterface, kKindEnum,    kKindTypeAlias,
+		kKindTypeDecl,	kKindTypeRef, kKindTypeAssign,
+	};
+	static constexpr int kNumR2nKinds =
+		sizeof(kR2nKinds) / sizeof(kR2nKinds[0]);
+
+	// Build the kind list string for SQL IN clause
+	std::string kind_list = "(";
+	for (int i = 0; i < kNumR2nKinds; i++) {
+		if (i > 0)
+			kind_list += ",";
+		kind_list += std::to_string(kR2nKinds[i]);
+	}
+	kind_list += ")";
+
 	exec("DROP TABLE IF EXISTS _r2n");
 	exec(std::string(
 		     "CREATE TEMP TABLE _r2n AS "
@@ -153,8 +186,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		     "  AS INTEGER) as node_id "
 		     "FROM semantic_records sr "
 		     "WHERE sr.project_id=" +
-		     pid +
-		     " AND sr.kind IN (0,1,2,3,4,5)"
+		     pid + " AND sr.kind IN " + kind_list +
 		     " AND sr.name != ''"
 		     " AND sr.file_path IN (SELECT file_path FROM _rf)")
 		     .c_str());
@@ -168,8 +200,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 				 " AS INTEGER) as node_id "
 				 "FROM semantic_records sr "
 				 "WHERE sr.project_id=" +
-				 pid +
-				 " AND sr.kind IN (0,1,2,3,4,5)"
+				 pid + " AND sr.kind IN " + kind_list +
 				 " AND sr.name != ''"
 				 " AND sr.file_path IN (SELECT file_path FROM _rf)")
 				 .c_str()),
@@ -254,6 +285,113 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// Resolver Pipeline (Phase 1.3) with multi-factor scoring.
 	(void)build_calls;
 	auto t_call = Clock::now();
+
+	// Phase 1.3: Type edges — create USES_TYPE edges from TypeRef records
+	  {
+	   // Populate route table from Route records (kind=19 in semantic_records)
+	   exec(std::string(
+	         "INSERT OR IGNORE INTO route "
+	         "(project_id, method, path, handler_name, "
+	         " file_path, start_row, start_col) "
+	         "SELECT sr.project_id, "
+	         " SUBSTR(sr.name, 1, INSTR(sr.name, ' ') - 1), "
+	         " SUBSTR(sr.name, INSTR(sr.name, ' ') + 1), "
+	         " sr.qualified_name, "
+	         " sr.file_path, sr.start_row, sr.start_col "
+	         "FROM semantic_records sr "
+	         "WHERE sr.project_id=" +
+	         pid +
+	         " AND sr.kind = 19"  // Route
+	         " AND sr.name != '' AND sr.name LIKE '% %'")
+	         .c_str());
+
+	   // Build the type kind list for SQL IN clause.
+		// Visitors emit type declarations as Class/Interface/Enum/TypeAlias,
+		// not TypeDecl. Use these kinds directly to avoid a fragile
+		// find+replace that would silently fail if the SQL changes.
+		std::string type_kind_list =
+			"(" + std::to_string(kKindClass) + "," +
+			std::to_string(kKindInterface) + "," +
+			std::to_string(kKindEnum) + "," +
+			std::to_string(kKindTypeAlias) + ")";
+
+		// Create USES_TYPE edges from TypeRef records to type declaration records
+		// in the same file. Cross-file type resolution is handled later.
+		std::string type_sql =
+			std::string(
+				"INSERT OR IGNORE INTO graph_edges "
+				"(project_id, source_node_id, target_node_id, edge_type, graph_type) "
+				"SELECT DISTINCT ") +
+			pid +
+			", src.node_id, tgt.node_id, 6, 'type_ref' "
+			"FROM _r2n src "
+			"JOIN semantic_records sr ON sr.rowid = src.rid "
+			"AND sr.kind = " +
+			std::to_string(kKindTypeRef) +
+			" "
+			"JOIN _r2n tgt ON tgt.file_path = src.file_path "
+			"JOIN semantic_records td ON td.rowid = tgt.rid "
+			"AND td.kind IN " +
+			type_kind_list +
+			" "
+			"AND td.name = sr.type_name "
+			"WHERE sr.project_id=" +
+			pid + " AND sr.type_name != ''";
+		exec(type_sql.c_str());
+
+		// Populate type_info table from type declaration records.
+		// Visitors emit type declarations as Class/Interface/Enum/TypeAlias,
+		// not TypeDecl. Map RecordKind to type_info.kind values:
+		//   0=struct/class, 1=enum, 2=trait, 3=interface, 4=type_alias
+		exec(std::string(
+			     "INSERT OR IGNORE INTO type_info "
+			     "(project_id, name, qualified_name, kind, "
+			     " file_path, language, start_row, start_col, "
+			     " end_row, end_col) "
+			     "SELECT sr.project_id, sr.name, "
+			     " COALESCE(NULLIF(sr.qualified_name, ''), sr.name), "
+			     " CASE sr.kind"
+			     "  WHEN " +
+			     std::to_string(kKindClass) +
+			     " THEN 0 "
+			     "  WHEN " +
+			     std::to_string(kKindEnum) +
+			     " THEN 1 "
+			     "  WHEN " +
+			     std::to_string(kKindInterface) +
+			     " THEN 3 "
+			     "  WHEN " +
+			     std::to_string(kKindTypeAlias) +
+			     " THEN 4 "
+			     "  ELSE 0 END, "
+			     " sr.file_path, sr.language, "
+			     " sr.start_row, sr.start_col, sr.end_row, sr.end_col "
+			     "FROM semantic_records sr "
+			     "WHERE sr.project_id=" +
+			     pid + " AND sr.kind IN " + type_kind_list +
+			     " AND sr.name != ''")
+			     .c_str());
+
+		// Populate type_ref table from TypeRef records.
+		// Infer the ref kind from the variable name: names ending with ".return"
+		// indicate return type annotations (Go visitor pattern).
+		exec(std::string(
+			     "INSERT OR IGNORE INTO type_ref "
+			     "(project_id, entity_id, type_name, kind, "
+			     " file_path, start_row, start_col) "
+			     "SELECT sr.project_id, r2n.node_id, sr.type_name, "
+			     " CASE WHEN sr.name LIKE '%.return' THEN 2 ELSE 0 END, "
+			     " sr.file_path, sr.start_row, sr.start_col "
+			     "FROM semantic_records sr "
+			     "JOIN _r2n r2n ON sr.rowid = r2n.rid "
+			     "WHERE sr.project_id=" +
+			     pid +
+			     " AND sr.kind = " + std::to_string(kKindTypeRef) +
+			     " AND sr.name != '' AND sr.type_name != ''")
+			     .c_str());
+	}
+
+	auto t_type = Clock::now();
 
 	// ── Build CSR adjacency from call edges ──
 	// Aggregates graph_edges(edge_type=1) into src_id → [tgt_ids] BLOBs
@@ -544,6 +682,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		"buildGraph: %zu files"
 		" | file_list=%lldms delete=%lldms rf=%lldms r2n=%lldms"
 		" intern=%lldms nodes=%lldms edges=%lldms calls=%lldms"
+		" type=%lldms"
 		" total=%lldms\n",
 		rebuild_files.size(), (long long)ms(t0, t_file_list),
 		(long long)ms(t_file_list, t_delete),
@@ -551,7 +690,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		(long long)ms(t_r2n, t_intern),
 		(long long)ms(t_intern, t_nodes),
 		(long long)ms(t_nodes, t_edges), (long long)ms(t_edges, t_call),
-		(long long)ms(t0, t_end));
+		(long long)ms(t_call, t_type), (long long)ms(t0, t_end));
 
 	// Reclaim space: semantic_records are no longer needed after buildGraph.
 	// Incremental re-index will re-insert them on next build.

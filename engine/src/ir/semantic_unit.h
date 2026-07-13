@@ -57,13 +57,17 @@ enum class RecordKind : uint8_t {
 	/// The `type_name` field stores the qualified name if applicable.
 	TypeDecl,
 	/// Type reference: a usage of a type (e.g. parameter type, field type).
-	/// The `name` field stores the referenced type name.
-	/// The `type_name` field is unused for references.
+	/// The `name` field stores the variable/parameter name.
+	/// The `type_name` field stores the referenced type name.
 	TypeRef,
 	/// Type assignment: a variable/parameter/field is assigned a type.
 	/// The `name` field stores the variable name.
 	/// The `type_name` field stores the assigned type name.
 	TypeAssign,
+	/// Route registration: HTTP route handler (e.g. r.GET("/api", handler)).
+	/// The `name` field stores the HTTP method + path (e.g. "GET /api/users").
+	/// The `qualified_name` field stores the handler function name.
+	Route,
 };
 
 /**
