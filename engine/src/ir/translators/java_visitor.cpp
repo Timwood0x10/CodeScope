@@ -155,26 +155,26 @@ void JavaVisitor::handleClassDecl(TSNode node, uint64_t parent_id)
 	// Check for implements clause: "class Foo implements Bar, Baz"
 	uint32_t cnt = ts_node_child_count(node);
 	for (uint32_t i = 0; i < cnt; i++) {
-	 TSNode c = ts_node_child(node, i);
-	 if (!ts_node_is_named(c))
-	  continue;
-	 if (strcmp(ts_node_type(c), "super_interfaces") == 0) {
-	  uint32_t sc = ts_node_child_count(c);
-	  for (uint32_t j = 0; j < sc; j++) {
-	   TSNode iface = ts_node_child(c, j);
-	   if (!ts_node_is_named(iface))
-	    continue;
-	   if (strcmp(ts_node_type(iface),
-	       "type_identifier") == 0) {
-	    std::string iface_name =
-	     nodeText(iface);
-	    if (!iface_name.empty())
-	     emitter_->emitInterfaceImpl(
-	      name, iface_name,
-	      location(iface), id);
-	   }
-	  }
-	 }
+		TSNode c = ts_node_child(node, i);
+		if (!ts_node_is_named(c))
+			continue;
+		if (strcmp(ts_node_type(c), "super_interfaces") == 0) {
+			uint32_t sc = ts_node_child_count(c);
+			for (uint32_t j = 0; j < sc; j++) {
+				TSNode iface = ts_node_child(c, j);
+				if (!ts_node_is_named(iface))
+					continue;
+				if (strcmp(ts_node_type(iface),
+					   "type_identifier") == 0) {
+					std::string iface_name =
+						nodeText(iface);
+					if (!iface_name.empty())
+						emitter_->emitInterfaceImpl(
+							name, iface_name,
+							location(iface), id);
+				}
+			}
+		}
 	}
 	for (uint32_t i = 0; i < cnt; i++) {
 		TSNode c = ts_node_child(node, i);

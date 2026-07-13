@@ -414,9 +414,9 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	{
 		std::string ref_sql =
 			"INSERT OR IGNORE INTO reference "
-			"(project_id, caller_id, name, arity, start_row, start_col) "
+			"(project_id, caller_id, name, arity, call_kind, start_row, start_col) "
 			"SELECT sr.project_id, r2n.node_id, sr.name, sr.arity, "
-			" sr.start_row, sr.start_col "
+			" sr.call_kind, sr.start_row, sr.start_col "
 			"FROM semantic_records sr "
 			"JOIN _r2n r2n ON sr.parent_id = r2n.original_id "
 			" AND sr.file_path = r2n.file_path "

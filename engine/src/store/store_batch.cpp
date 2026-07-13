@@ -205,7 +205,7 @@ void GraphStore::insertSemanticRecordsBatch(
 					  fr.file_path->c_str(), -1,
 					  SQLITE_STATIC);
 			sqlite3_bind_text(stmt, base + 17, r.language.c_str(),
-			    -1, SQLITE_STATIC);
+					  -1, SQLITE_STATIC);
 		}
 
 		int rc = sqlite3_step(stmt);
