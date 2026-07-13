@@ -208,47 +208,106 @@ flowchart LR
     A -->|"trigger"| B
 ```
 
-## MCP Tools (19 tools)
+## MCP Tools (32 tools)
 
-### Locate (查位置)
+### Project & Stats
 
-| Tool | Description | Input |
-|------|-------------|-------|
-| `find_definition` | Find symbol definition location | `name` |
-| `find_references` | Find all references to a symbol | `name` |
-| `find_callers` | Find who calls a function | `name` |
-| `find_callees` | Find what a function calls | `name` |
-| `trace_flow` | Trace call path between functions | `function_name`, `depth` |
-| `search_code` | Full-text search | `query`, `limit?` |
+| Tool | Description | Token Cost |
+|------|-------------|:----------:|
+| `project_overview` | **Primary** — comprehensive overview: languages, modules, symbols, entry points | **~71** |
+| `get_graph_stats` | Quick statistics: nodes, edges, files | **~18** |
+| `get_module_tree` | Hierarchical module/directory tree | **~4** |
+| `get_entry_points` | Find entry points (main/init/setup/run/handler) | **~5** |
+| `get_routes` | Get registered HTTP routes (Gin/Echo/Chi/net/http) | **~50** |
+| `get_type_info` | Query type definitions (struct/enum/trait) with reference counts | **~50** |
 
-### Understand (理解项目)
+### Symbol Lookup
 
-| Tool | Description | Input |
-|------|-------------|-------|
-| `project_overview` | Comprehensive project overview | (none) |
-| `explain_module` | Module knowledge card | `name` |
-| `explain_symbol` | Symbol knowledge card | `name` |
-| `get_module_tree` | Hierarchical module tree | (none) |
-| `get_entry_points` | Get entry points (main/init/run) | (none) |
-| `get_graph_stats` | Code graph statistics | (none) |
+| Tool | Description | Token Cost | Note |
+|------|-------------|:----------:|------|
+| `find_symbol` | **Recommended** — find symbol by exact name (kind, file, line/col) | **~30** | |
+| `find_definition` | `[DEPRECATED]` Find symbol definition location | **~20** | Use `find_symbol` |
+| `find_references` | Find all locations referencing a symbol | **~30** | |
+| `explain_symbol` | Get comprehensive symbol info: definition, callers, callees, dependencies | **~50-200** | One-shot deep dive |
 
-### Verify (验证)
+### Call Graph
 
-| Tool | Description | Input |
-|------|-------------|-------|
-| `verify_integrity` | Project integrity check | (none) |
-| `verify_claim` | Verify a single claim | `subject`, `predicate`, `object` |
-| `verify_summary` | Verify AI summary against code | `summary` |
-| `detect_changes` | Change impact analysis | `modified_files` |
+| Tool | Description | Token Cost | Side Effects |
+|------|-------------|:----------:|--------------|
+| `find_callers` | Find who calls a function | **~10-50** | Requires CALLS edges |
+| `find_callees` | Find what a function calls | **~10-50** | Same |
+| `codescope_trace` | Interactive recursive call exploration (depth + direction) | **~50-200** | Large depth = large output |
+| `trace_flow` | Recursive execution flow tracing (caller→callee chain) | **~50-200** | Same |
+| `shortest_path` | Shortest call path between two functions (BFS) | **~50-100** | |
+| `connected_components` | Connected components in the call graph — find independent modules | **~50** | |
 
-### Index (索引)
+### Search
 
-| Tool | Description | Input |
-|------|-------------|-------|
-| `index_project` | Index a project | `project_path`, `language` |
-| `index_file` | Index a single file | `file_path` |
-| `search` | Unified search | `query`, `limit?` |
+| Tool | Description | Token Cost |
+|------|-------------|:----------:|
+| `search` | **Recommended** — unified search (auto-selects FTS5 or semantic) | **~300-1000** |
+| `search_code` | `[DEPRECATED]` Legacy FTS search, use `search` instead | **~300-1000** |
 
+### Verification Layer
+
+| Tool | Description | Token Cost |
+|------|-------------|:----------:|
+| `verify_integrity` | Check README-promised features actually exist in code | **~100** |
+| `verify_claim` | Verify a single claim (capability_exists / contract_holds / architecture_follows) | **~100** |
+| `verify_summary` | Parse natural-language summary and verify each claim | **~200-500** |
+| `verify_review` | Verify code review comment claims | **~200-500** |
+| `verify_reality` | Verify a single AI statement against code evidence | **~200-500** |
+
+### Drift Detection
+
+| Tool | Description | Token Cost |
+|------|-------------|:----------:|
+| `detect_drift` | Scan all declared capabilities & contracts for doc-vs-code drift | **~200** |
+| `detect_documentation_drift` | Check README language claims vs actual code entities | **~150** |
+| `detect_capability_drift` | Check declared capabilities have implementing entities | **~150** |
+| `detect_architecture_drift` | Check call edges for layer violations (Repository→Controller) | **~150** |
+
+### Change Impact & Module
+
+| Tool | Description | Token Cost |
+|------|-------------|:----------:|
+| `detect_changes` | Analyze impact of modified files: direct/indirect callers | **~100-500** |
+| `explain_module` | Build module knowledge card: entities, capabilities, integrity score | **~50-200** |
+
+### Utilities
+
+| Tool | Description | Token Cost |
+|------|-------------|:----------:|
+| `index_project` | Index entire project directory (parse → IR → graph) | **N/A** |
+| `index_file` | Index a single source file | **N/A** |
+| `count_tokens` | Estimate token count (DeepSeek formula) | **~10** |
+
+### Tools That Do NOT Exist
+
+The following tools appeared in old README versions but **are not implemented in the current codebase** — do not use:
+
+- ❌ `get_hotspots` — not implemented
+- ❌ `get_communities` — community detection not wired to MCP
+- ❌ `graph_query` — custom Cypher query not implemented
+- ❌ `locate_code` — not implemented
+- ❌ `get_project_info` — not implemented
+- ❌ `enhance_project` / `codescope_build_context` / `codescope_capabilities` — removed
+
+### Quick Decision Guide
+
+```
+New project       → project_overview (~71 tok)
+Module structure  → get_module_tree (~4 tok)
+Entry points      → get_entry_points (~5 tok)
+Search code       → search (~300-1000 tok)
+Call chain        → find_callers / find_callees (~10-50 tok)
+Deep dive symbol  → explain_symbol (~50-200 tok)
+HTTP routes       → get_routes (~50 tok)
+Type info         → get_type_info (~50 tok)
+Verify claim      → verify_claim (~100 tok)
+Detect drift      → detect_documentation_drift (~150 tok)
+Change impact     → detect_changes (~100-500 tok)
+```
 
 ## Usage Skill
 

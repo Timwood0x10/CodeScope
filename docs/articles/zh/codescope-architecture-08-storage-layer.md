@@ -16,9 +16,9 @@
 
 ---
 
-## 22 张表的设计
+## 28 张表的设计
 
-先看完整的 Schema 全景。22 张表按索引阶段划分：
+先看完整的 Schema 全景。28 张表按索引阶段划分：
 
 ```
 Phase A（快速扫描 — 毫秒级 就绪）
@@ -48,6 +48,12 @@ Phase C（深度索引）
 ├── code_fts              // FTS5 全文搜索索引
 ├── fts_node_map          // FTS 节点ID映射
 ├── embeddings            // vec0 384维嵌入表（可选）
+├── type_info             // 类型定义（struct/enum/trait/interface）
+├── type_ref              // 类型引用（变量 : 类型 映射）
+├── routes                // HTTP 路由注册（method + path + handler）
+├── capabilities          // 模块能力声明
+├── contracts             // 契约/接口实现声明
+├── findings              // 验证证据链持久化
 ```
 
 这些表不是同时创建的。`engine_init()` 在启动时创建全部 Schema，但填充数据的时机不同——Phase A 产生 `symbols` 和 `modules`，Phase B 填充 `call_edges` 和 `metrics`，Phase C 建立完整的 `graph_nodes` + `graph_edges`。
@@ -442,6 +448,9 @@ if (getCallersFromLegacy(...)) return;
 | **(八) 存储层** | **SQLite WAL + FTS5 + vec0 ← 本文** |
 | (九) 自适应查询 | Fallback 机制与就绪检测 |
 | (十) 性能真相 | 从 200 到 60,000 文件的实测 |
+| (十一) 验证层 | 让 AI 对自己的话负责 |
+| (十二) Model Engine | 从事实到理解 |
+| (十三) Parser + GraphBuilder | 解析与建图 |
 
 ---
 

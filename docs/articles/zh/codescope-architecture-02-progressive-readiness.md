@@ -236,7 +236,7 @@ Phase B 完成:
 
 Phase C 完成:
   codescope_trace    → ✅ 调用链追踪可用
-  get_communities    → ✅ 社区检测可用
+  get_communities ❌    → ✅ 社区检测可用
 ```
 
 ### 5.2 自适应降级

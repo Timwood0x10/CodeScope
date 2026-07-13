@@ -44,7 +44,7 @@ It incorrectly excluded `cmd/server` and `cmd/bot` — these are the project's m
 | **Hotspot Analysis** | ✅ Complete file paths | ❌ Some nodes missing file paths |
 | **High Complexity Functions** | ✅ Supports `get_complexity` query | ✅ `query_graph` supports |
 | **Module Tree** | ✅ Supported | ❌ Not supported |
-| **Community Detection** | ✅ Supported (Label Propagation) | ❌ Not supported |
+| **Community Detection** | ❌ C++ engine has impl, no MCP tool | ❌ Not supported |
 
 ---
 
@@ -73,7 +73,7 @@ Using DeepSeek formula: `tokens = ASCII characters × 0.3 + non-ASCII characters
 
 | Query | CodeScope | Tokens | codebase-memory-mcp | Tokens |
 |-------|-----------|--------|---------------------|--------|
-| Hotspots Top10 | `get_hotspots` | **466** | `get_architecture` (included) | Already included |
+| Hotspots Top10 | `get_hotspots` ❌ removed | — | — | Use explain_symbol instead |
 | Entry Points | `get_entry_points` | **5** | `get_architecture` (included) | Already included |
 | Project Info | `get_project_info` | **43** | — | — |
 | Caller Query | `find_callers("main")` | **7** | — | — |
@@ -127,7 +127,7 @@ These functions are recommended for refactoring to reduce complexity and mainten
 | **Data Completeness** | ✅ 95 files, 24,924 nodes, full coverage | ❌ **cmd/server incorrectly excluded** |
 | **Query Efficiency** | ✅ Minimum query only **17 tokens** | ❌ Minimum query 5,012 tokens |
 | **Typical Analysis Cost** | ✅ **~910 tokens** | ❌ **~6,048 tokens** |
-| **Community Detection** | ✅ Supported (output limiting required) | ❌ Not supported |
+| **Community Detection** | ❌ C++ engine has impl, no MCP tool | ❌ Not supported |
 | **Module Tree** | ✅ Supported (4 tokens) | ❌ Not supported |
 | **Entry Points** | ✅ 4/4 complete | ❌ 3/4, missing HTTP service |
 | **Incorrect Exclusions** | ✅ No incorrect exclusions (.gitignore-driven) | ❌ Incorrectly excluded cmd/server and cmd/bot |

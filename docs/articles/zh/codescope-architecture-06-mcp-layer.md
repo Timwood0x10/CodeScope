@@ -322,6 +322,9 @@ fn h_index_project(project_id: u64, args: &Value) -> String {
 | (八) 存储层 | SQLite WAL + FTS5 + vec0 |
 | (九) 自适应查询 | Fallback 机制与就绪检测 |
 | (十) 性能真相 | 从 200 到 60,000 文件的实测 |
+| (十一) 验证层 | 让 AI 对自己的话负责 |
+| (十二) Model Engine | 从事实到理解 |
+| (十三) Parser + GraphBuilder | 解析与建图 |
 
 ---
 

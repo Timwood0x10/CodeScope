@@ -273,13 +273,13 @@ sequenceDiagram
 | Query | Avg Latency | Notes |
 |-------|:-----------:|-------|
 | `get_graph_stats` | **<1 ms** | Pure SQL COUNT |
-| `get_hotspots` | **<2 ms** | SQL JOIN + GROUP BY |
+| `get_hotspots` | ❌ Not implemented — no MCP tool | — |
 | `find_callers` / `find_callees` | **<1 ms** | Index-covered JOIN |
 | `search` (FTS) | **<5 ms** | FTS5 full-text search |
 | `search` (graph fallback) | **<10 ms** | LIKE fallback search |
 | `get_module_tree` | **<1 ms** | Lightweight query |
 | `get_entry_points` | **<1 ms** | Indexed lookup |
-| `get_communities` | **50-500 ms** | Full graph Label Propagation |
+| `get_communities` | ❌ Engine impl exists, no MCP tool — use `connected_components` instead | — |
 | `get_index_progress` | **<1 ms** | Atomic global read |
 
 ---

@@ -28,7 +28,7 @@ codescope cli get_graph_stats '{}'
 echo "=== Entry Points ==="
 codescope cli get_entry_points '{}'
 echo "=== Hotspots (top 10) ==="
-codescope cli get_hotspots '{"top_n":10}'
+# codescope cli get_hotspots — ❌ not implemented, removed
 echo "=== Module Tree ==="
 codescope cli get_module_tree '{}'
 ```
@@ -170,17 +170,17 @@ flowchart LR
 |------|----------|---------|-----------|-------------|
 | `find_callers` | Investigate who calls a function (bug impact) | **When CALLS edges aren't built** | **~10-50** | Needs `buildGraph(true)` |
 | `find_callees` | What a function calls (behavior understanding) | When recursive expansion isn't needed | **~10-50** | Same as above |
-| `get_hotspots` | Find **most-called** functions (optimization targets) | Projects <100 functions | **~500** | caller_count=0 means call edges not built |
+| `get_hotspots` | ❌ Not implemented — no MCP tool (optimization targets) | Projects <100 functions | **~500** | caller_count=0 means call edges not built |
 
 ### 4.4 Tool Selection Strategy
 
 ```
 New project  → project_overview (71 tok) + get_module_tree (4 tok)
 Find entry points → get_entry_points (5 tok)
-Find hotspots    → get_hotspots (500 tok)
+# Find hotspots → ❌ get_hotspots not implemented
 Search code      → search (300-1000 tok)
 Trace calls      → find_callers / find_callees (10-50 tok)
-Architecture     → get_module_tree (4 tok) + optional get_communities (1K-200K tok)
+Architecture     → get_module_tree (4 tok) + optional get_communities ❌ (engine impl exists, no MCP tool) (1K-200K tok)
 Change impact    → detect_changes (100-500 tok)
 AI Q&A           → codescope_build_context (200-1000 tok)
 ```

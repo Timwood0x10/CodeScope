@@ -63,7 +63,7 @@ FTS     22,995ms  █████████████░░░░░░░�
 | Query | Tokens | Percentage |
 |-------|:------:|:----------:|
 | `get_graph_stats` | 19 | — |
-| `get_hotspots` top10 | ~500 | — |
+| `get_hotspots` top10 | ❌ 未实现 — 无 MCP 工具 | — | — |
 | `project_overview` | ~71 | — |
 | `get_module_tree` | 4 | — |
 | `get_entry_points` | 5 | — |
@@ -365,7 +365,7 @@ Aggregated from three projects in this test:
 | Query | rustc | Bun | ARES Agent | memscope-rs |
 |-------|:-----:|:---:|:----------:|:-----------:|
 | `get_graph_stats` | 19 | 19 | 18 | 18 |
-| `get_hotspots` top10 | 500 | ~488 | 488 | 488 |
+| `get_hotspots` top10 | ❌ 未实现 — 无 MCP 工具 | — | — | — |
 | `project_overview` | 71 | 71 | 71 | 71 |
 | `get_module_tree` | 4 | 4 | 4 | 4 |
 | `get_entry_points` | 5 | 5 | 5 | 5 |
@@ -525,13 +525,13 @@ JDK produces **405 nodes per file** (3.6× rustc). Java classes have more fields
 | Query | Avg Latency | Notes |
 |-------|:-----------:|-------|
 | `get_graph_stats` | **<1 ms** | Pure SQL COUNT |
-| `get_hotspots` | **<2 ms** | SQL JOIN + GROUP BY |
+| `get_hotspots` | ❌ Not implemented — no MCP tool | — |
 | `find_callers` / `find_callees` | **<1 ms** | Index-covered JOIN |
 | `search` (FTS) | **<5 ms** | FTS5 full-text |
 | `search` (graph fallback) | **<10 ms** | LIKE fallback search |
 | `get_module_tree` | **<1 ms** | Lightweight |
 | `get_entry_points` | **<1 ms** | Indexed lookup |
-| `get_communities` | **50-500 ms** | Full graph Label Propagation |
+| `get_communities` | ❌ Engine impl exists, no MCP tool | — |
 | `codescope_trace` | **<5 ms** | BFS path search |
 
 ### Cross-Project Benchmarks

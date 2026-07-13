@@ -212,13 +212,13 @@ sequenceDiagram
 | 查询 | 平均延迟 | 说明 |
 |------|:--------:|------|
 | `get_graph_stats` | **<1 ms** | 纯 SQL COUNT |
-| `get_hotspots` | **<2 ms** | SQL JOIN + GROUP BY |
+| `get_hotspots` | ❌ Not implemented — no MCP tool | — |
 | `find_callers` / `find_callees` | **<1 ms** | 索引覆盖的 JOIN |
 | `search`（FTS） | **<5 ms** | FTS5 全文搜索 |
 | `search`（graph fallback） | **<10 ms** | LIKE 降级搜索 |
 | `get_module_tree` | **<1 ms** | 轻量查询 |
 | `get_entry_points` | **<1 ms** | 索引查询 |
-| `get_communities` | **50-500 ms** | 全图 Label Propagation |
+| `get_communities` | ❌ 引擎有实现，未接 MCP — 改用 `connected_components` | — |
 | `get_index_progress` | **<1 ms** | 原子读全局变量 |
 
 ---

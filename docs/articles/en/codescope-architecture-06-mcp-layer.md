@@ -41,14 +41,14 @@
 | `get_call_graph` | Get subgraph around a function | ~10ms |
 | `search_semantic` | Semantic code search | ~50ms |
 | `get_complexity` | Cyclomatic/cognitive complexity | ~5ms |
-| `get_hotspots` | High-complexity, highly-called functions | ~50ms |
+| `get_hotspots` | ❌ Not implemented — no MCP tool | — |
 
 ### Phase C Tools (After Full Index)
 
 | Tool | Function | Response Time |
 |------|----------|:------------:|
 | `codescope_trace` | Call chain trace | ~5ms |
-| `get_communities` | Community detection | ~500ms |
+| `get_communities` | ❌ Engine impl exists, no MCP tool | — |
 | `get_module_map` | Module dependency map | ~10ms |
 | `trace_call_chain` | Cross-file call chain | ~6ms |
 | `export_artifact` | Export project artifact | ~1s |

@@ -153,8 +153,8 @@ flowchart LR
     Ready -.->|"自动触发"| PB
     Ready -->|"可查询"| Query1["find_symbol<br/>get_module_tree<br/>get_entry_points"]
     PB -.->|"自动触发"| PC
-    Enhanced -->|"可查询"| Query2["find_callers<br/>get_hotspots<br/>search(FTS)"]
-    Full -->|"可查询"| Query3["codescope_trace<br/>get_communities<br/>语义搜索"]
+    Enhanced -->|"可查询"| Query2["find_callers<br/>get_hotspots ❌<br/>search(FTS)"]
+    Full -->|"可查询"| Query3["codescope_trace<br/>get_communities ❌<br/>语义搜索"]
 ```
 
 | 阶段 | 耗时（小项目 ~200 文件） | DB 大小 | 能做什么 |

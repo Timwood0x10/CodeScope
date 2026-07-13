@@ -63,14 +63,14 @@ CodeScope reduces token consumption by ~98.9% on average vs raw source, and by ~
 | `project_overview` | **~71** | First step on new project |
 | `find_definition` / `find_references` | **~20-30** | Symbol location |
 | `get_complexity` | **~20** | Complexity metrics |
-| `locate_code` | **~50-300** | Source context |
+| `locate_code ❌` | **~50-300** | Source context |
 | `codescope_capabilities` | **~309** | Feature readiness |
 | `search` | **~300-1000** | Code search |
 | `codescope_trace` | **~50-200** | Call path tracing |
 | `detect_changes` | **~100-500** | Change impact |
-| `get_hotspots` | **~500** | Hot functions |
+| `get_hotspots` | ❌ Not implemented — no MCP tool | — |
 | `codescope_build_context` | **~200-1000** | AI context bundle |
-| `get_communities` (default) | **1K-200K** ⚠️ | Module boundary detection |
+| `get_communities` (default) | ❌ Engine impl exists, no MCP tool | — |
 
 ### Typical Analysis Pipeline
 

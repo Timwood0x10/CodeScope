@@ -207,7 +207,7 @@ CodeScope 有 35+ 个工具。它们不是随意堆叠的，而是按 AI 的工�
 | `find_callers` / `find_callees` | 调用关系 |
 | `search` | 统一搜索（FTS5 + 语义混合） |
 | `get_complexity` | 圈复杂度 |
-| `graph_query` | DSL 图查询 |
+| `graph_query ❌` | DSL 图查询 |
 
 ### 4.3 高级工具（Phase C 后可用）
 
@@ -216,7 +216,7 @@ CodeScope 有 35+ 个工具。它们不是随意堆叠的，而是按 AI 的工�
 | `codescope_trace` | 递归调用链追踪 |
 | `codescope_build_context` | 智能上下文构建 |
 | `detect_changes` | 变更影响分析 |
-| `get_communities` | 社区检测 |
+| `get_communities ❌` | 社区检测 |
 | `search_semantic` | 语义搜索 |
 
 ### 4.4 分层设计的意义

@@ -44,7 +44,7 @@ CodeScope 索引速度 **快 1.8 倍**（307ms vs 545ms），且通过 `.gitigno
 | **热点分析** | ✅ 有完整文件路径 | ❌ 部分节点缺失文件路径 |
 | **高复杂度函数** | ✅ 支持 `get_complexity` 查询 | ✅ `query_graph` 支持 |
 | **模块树** | ✅ 支持 | ❌ 不支持 |
-| **社区检测** | ✅ 支持（Label Propagation） | ❌ 不支持 |
+| **社区检测** | ❌ C++ 引擎有实现，MCP 未接入 | ❌ 不支持 |
 
 ---
 
@@ -73,7 +73,7 @@ CodeScope 索引速度 **快 1.8 倍**（307ms vs 545ms），且通过 `.gitigno
 
 | 查询 | CodeScope | Tokens | codebase-memory-mcp | Tokens |
 |------|-----------|--------|---------------------|--------|
-| 热点 Top10 | `get_hotspots` | **466** | `get_architecture`（含） | 已含 |
+| 热点 Top10 | `get_hotspots` ❌ 已移除 | — | — | 改用 explain_symbol |
 | 入口点 | `get_entry_points` | **5** | `get_architecture`（含） | 已含 |
 | 项目信息 | `get_project_info` | **43** | — | — |
 | 调用者查询 | `find_callers("main")` | **7** | — | — |
@@ -127,7 +127,7 @@ CodeScope 索引速度 **快 1.8 倍**（307ms vs 545ms），且通过 `.gitigno
 | **数据完整性** | ✅ 95 文件，24,924 节点，完整覆盖 | ❌ **cmd/server 被错误排除** |
 | **查询效率** | ✅ 最小查询仅 **17 tokens** | ❌ 最小查询 5,012 tokens |
 | **典型分析成本** | ✅ **~910 tokens** | ❌ **~6,048 tokens** |
-| **社区检测** | ✅ 支持（需限制输出） | ❌ 不支持 |
+| **社区检测** | ❌ C++ 引擎有实现，MCP 未接入 | ❌ 不支持 |
 | **模块树** | ✅ 支持（4 tokens） | ❌ 不支持 |
 | **入口点** | ✅ 4/4 完整 | ❌ 3/4，遗漏 HTTP 服务 |
 | **错误排除** | ✅ 无误排除（.gitignore 驱动） | ❌ 误排除 cmd/server 和 cmd/bot |

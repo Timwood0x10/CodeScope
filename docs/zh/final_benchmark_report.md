@@ -82,9 +82,9 @@ memscope-rs (219 files):
 | `find_callees` | ~100-500 bytes | **~30-150** | 被调用者列表 |
 | `codescope_trace` (depth=1) | ~200-900 bytes | **~50-270** | 交互展开深度1 |
 | `codescope_trace` (depth=2) | ~500-3000 bytes | **~150-900** | 交互展开深度2 |
-| `get_hotspots` | ~500 bytes | **~150** | Top-N 热点函数 |
+| `get_hotspots` | ❌ 未实现 — 无 MCP 工具 | — | — |
 | `search` (FTS) | ~1000-5000 bytes | **~300-1500** | 全文搜索 |
-| `get_communities` | 1K-200K bytes | **~300-60K** ⚠️ | 全图社区检测 |
+| `get_communities ❌` | 1K-200K bytes | **~300-60K** ⚠️ | 全图社区检测 |
 
 ### 与 CBM 对比
 

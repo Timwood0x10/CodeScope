@@ -36,7 +36,7 @@ CodeScope 相对于原始源码平均减少 **~98.9%** 的 token 消耗，相对
 | 搜索 "handler" | **~372** | ~830 (search_graph) + ~828 (search_code) | **55.2%** |
 | 入口点 | **~5** | ~5,012（含在架构报告） | **99.9%** |
 | 模块树 | **~4** | ❌ 不支持 | — |
-| 社区检测（默认） | **~1K-50K** | ❌ 不支持 | — |
+| 社区检测（默认） | ❌ 引擎有实现，MCP 未接入 | ❌ 不支持 | — |
 | 调用者查询 | **~7** | — | — |
 | **典型分析组合** | **~910** | **~6,048** | **85.0%** |
 
@@ -63,14 +63,14 @@ CodeScope 相对于原始源码平均减少 **~98.9%** 的 token 消耗，相对
 | `project_overview` | **~71** | 新项目第一步 |
 | `find_definition` / `find_references` | **~20-30** | 符号定位 |
 | `get_complexity` | **~20** | 复杂度指标 |
-| `locate_code` | **~50-300** | 源码上下文 |
+| `locate_code ❌` | **~50-300** | 源码上下文 |
 | `codescope_capabilities` | **~309** | 功能就绪状态 |
 | `search` | **~300-1000** | 代码搜索 |
 | `codescope_trace` | **~50-200** | 调用路径追踪 |
 | `detect_changes` | **~100-500** | 变更影响分析 |
-| `get_hotspots` | **~500** | 热点函数 |
+| `get_hotspots` | ❌ 未实现 — 无 MCP 工具 | — |
 | `codescope_build_context` | **~200-1000** | AI 上下文构建 |
-| `get_communities`（默认） | **1K-200K** ⚠️ | 模块边界检测 |
+| `get_communities`（默认） | ❌ 引擎有实现，MCP 未接入 | — |
 
 ### 典型分析流程
 

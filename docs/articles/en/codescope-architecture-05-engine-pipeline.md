@@ -120,13 +120,41 @@ Each language has a dedicated tree-sitter parser. Parsing produces a Concrete Sy
 
 The CST is language-specific. The IR translator converts it into a language-neutral Intermediate Representation.
 
-### Linker Passes
+### ResolverPipeline: Constraint-Chain Resolution
 
-Three sequential passes over the IR:
+The link between per-file IR and cross-file call graph is the **ResolverPipeline** (`engine/src/resolver/pipeline.h`). It replaced the old 3-pass Linker with a constraint-chain, multi-factor scoring system:
 
-1. **BuildSymbolIndexPass**: Indexes all symbols for cross-file resolution
-2. **ResolveCallPass**: Resolves function calls to their definitions
-3. **EmitGraphPass**: Emits graph nodes and edges to SQLite
+```
+Step 0: Pre-load entity table → in-memory HashMap<name, vector<Candidate>>
+        (avoids one SQL query per reference — the former bottleneck)
+
+Step 1: Iterate reference table → for each reference:
+  a. HashMap lookup by name
+  b. No candidates? → FuzzyResolver fallback (case-insensitive / prefix / suffix)
+  c. applyConstraints()  → 9-factor weighted scoring
+  d. Language visibility hard filter (Go lowercase = unexported, etc.)
+  e. Best score above 0.4 threshold → write to relation + graph_edges
+```
+
+#### 9 Scoring Factors
+
+| Factor | Weight | Purpose |
+|--------|:------:|---------|
+| ImportMatch | **0.80** | Dominant for cross-module resolution |
+| ModuleMatch | 0.15 | Same module bonus |
+| CallKindMatch | 0.15 | Direct/Method/Interface/Constructor awareness |
+| ReceiverMatch | 0.15 | Go/Python receiver method matching |
+| SignatureMatch | 0.10 | Parameter count matching |
+| NamespaceMatch | 0.10 | Shared namespace |
+| ConstructorMatch | 0.10 | Constructor call boost |
+| CommonNamePenalty | 0.10 | Penalize common names (Len, Init, Run) cross-module |
+| DistanceMatch | 0.05 | File path distance |
+
+#### Language Visibility (Hard Filter)
+
+- **Go**: lowercase names → not exported, cannot be called cross-package
+- **Python**: `_`-prefixed → private
+- **Java**: no `public` modifier → package-private
 
 ### Complexity Analyzer
 

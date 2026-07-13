@@ -143,8 +143,8 @@ flowchart LR
     Ready -.->|"auto-trigger"| PB
     Ready -->|"queryable"| Query1["find_symbol<br/>get_module_tree<br/>get_entry_points"]
     PB -.->|"auto-trigger"| PC
-    Enhanced -->|"queryable"| Query2["find_callers<br/>get_hotspots<br/>search(FTS)"]
-    Full -->|"queryable"| Query3["codescope_trace<br/>get_communities<br/>semantic search"]
+    Enhanced -->|"queryable"| Query2["find_callers<br/>get_hotspots ❌<br/>search(FTS)"]
+    Full -->|"queryable"| Query3["codescope_trace<br/>get_communities ❌<br/>semantic search"]
 ```
 
 | Phase | Time (small project ~200 files) | DB Size | Capabilities |

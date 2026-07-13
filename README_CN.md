@@ -193,98 +193,104 @@ Apache 2.0
 
 每个 MCP 工具有其适用的场景和副作用（主要是 Token 消耗）。以下指南帮助你在正确的场合选择合适的工具。
 
+> **工具总数：32 个**。一些旧工具标记为 `[DEPRECATED]`，建议使用推荐替代。
+
 ### 核心查询类
 
-| 工具 | 适用场景 | 不适用场景 | Token 消耗 | 副作用 |
-|------|---------|-----------|-----------|--------|
-| `get_graph_stats` | 快速了解项目规模（文件数、节点数、边数） | 不需要知道具体符号时 | **~18** | 无 |
-| `get_project_info` | 查看项目元信息（许可证、主语言、依赖数） | 不需要细节时 | **~44** | 无 |
-| `get_module_tree` | 了解项目的目录/模块结构 | 项目结构已经清晰时 | **~4** | 无 |
-| `project_overview` | 新接手项目的第一步总览 | 只需要统计数字时 | **~71** | 无 |
+| 工具 | 适用场景 | Token 消耗 |
+|------|---------|:----------:|
+| `project_overview` | **首选**——新接手项目的第一步总览（语言、模块、符号、入口点） | **~71** |
+| `get_graph_stats` | 快速了解项目规模（文件数、节点数、边数） | **~18** |
+| `get_module_tree` | 了解项目的目录/模块层级结构 | **~4** |
+| `get_entry_points` | 找项目入口点（main/init/setup/run/handler） | **~5** |
+| `get_routes` | 获取项目注册的 HTTP 路由（支持 Gin/Echo/Chi/net/http） | **~50** |
+| `get_type_info` | 查询类型定义（struct/enum/trait）及其引用数 | **~50** |
 
 ### 符号查询类
 
-| 工具 | 适用场景 | 不适用场景 | Token 消耗 | 副作用 |
-|------|---------|-----------|-----------|--------|
-| `find_definition` | 定位符号的定义位置 | 需要查看所有引用时 | **~20** | 无 |
-| `find_references` | 搜索符号被哪些地方引用 | 只想知道定义时 | **~30** | 无 |
-| `find_symbol` | 模糊匹配符号名称 | 知道精确位置时 | **~30** | 无 |
-| `locate_code` | 获取符号附近的代码上下文（含行号） | 只需要文件名时 | **~50-300** | 包含相邻行，量较大 |
+| 工具 | 适用场景 | Token 消耗 | 说明 |
+|------|---------|:----------:|------|
+| `find_symbol` | **推荐**——按精确名称查找符号（类型、文件、行列） | **~30** |  |
+| `find_definition` | `[DEPRECATED]` 查找符号定义位置 | **~20** | 改用 `find_symbol` |
+| `find_references` | 搜索符号被哪些位置引用 | **~30** |  |
+| `explain_symbol` | 获取符号的完整信息：定义、调用者、被调用者、依赖 | **~50-200** | 一键全方位理解一个函数 |
 
 ### 调用图查询类
 
-| 工具 | 适用场景 | 不适用场景 | Token 消耗 | 副作用 |
-|------|---------|-----------|-----------|--------|
-| `get_callers` / `find_callers` | 调查函数被谁调用——定位 bug 影响范围 | **CALLS 边未构建时 caller_count=0** | **~10-50** | 依赖 `buildGraph(true)` |
-| `get_callees` / `find_callees` | 调查函数调用了什么——理解函数行为 | 不需要递归展开时 | **~10-50** | 同上 |
-| `codescope_trace` | 两点之间的最短调用路径——追 data flow | 只需要直接调用者时 | **~50-200** | 路径过长时输出膨胀 |
-| `get_hotspots` | 找项目中**最热门的函数**（被调最多） | 项目 <100 个函数、热点不明显 | **~500** | caller_count=0 时说明调用边未构建 |
+| 工具 | 适用场景 | Token 消耗 | 副作用 |
+|------|---------|:----------:|--------|
+| `find_callers` | 调查函数被谁调用——定位 bug 影响范围 | **~10-50** | 依赖 CALLS 边构建 |
+| `find_callees` | 调查函数调用了什么——理解函数行为 | **~10-50** | 同上 |
+| `codescope_trace` | 交互式递归展开调用者/被调用者（方向+深度控制） | **~50-200** | 深度大时输出膨胀 |
+| `trace_flow` | 从函数开始递归追踪执行流（caller→callee 链） | **~50-200** | 同上 |
+| `shortest_path` | 两点之间的最短调用路径 | **~50-100** | BFS 近似结果 |
+| `connected_components` | 调用图中的连通分量——找独立的功能模块 | **~50** | |
 
 ### 搜索类
 
-| 工具 | 适用场景 | 不适用场景 | Token 消耗 | 副作用 |
-|------|---------|-----------|-----------|--------|
-| `search` | 按名称/关键词搜索代码**（推荐首选）** | 需要语法精确匹配时 | **~300-1000** | 结果较多时会增加 token |
-| `search_code` | 旧版 FTS 搜索，推荐改用 `search` | 已迁移到 `search` | **~300-1000** | 已废弃 |
-| `graph_query` | 自定义模式匹配，如 `MATCH (Function)-[Calls]->(Function)` | 标准调用链已覆盖时 | **~50-500** | DSL 语法错误会返回空结果 |
+| 工具 | 适用场景 | Token 消耗 |
+|------|---------|:----------:|
+| `search` | **推荐**——统一代码搜索（FTS5 + 语义搜索自动选择） | **~300-1000** |
+| `search_code` | `[DEPRECATED]` 旧版 FTS 搜索，推荐改用 `search` | **~300-1000** |
 
-### 社区检测（特殊工具 ⚠️）
+### 验证类（Verification Layer）
 
-> **社区检测通过 Label Propagation 算法将代码图中的节点按关系紧密程度分组。适用于需要理解代码模块边界、检测架构违规的场景，但 Token 消耗可能很大，使用前请确认参数。**
+| 工具 | 适用场景 | Token 消耗 |
+|------|---------|:----------:|
+| `verify_integrity` | 检查 README 承诺的功能是否在代码中真实存在 | **~100** |
+| `verify_claim` | 验证单条声明（capability_exists / contract_holds / architecture_follows） | **~100** |
+| `verify_summary` | 解析自然语言摘要并逐条验证所有声明 | **~200-500** |
+| `verify_review` | 验证 Code Review 评论中的声明 | **~200-500** |
+| `verify_reality` | 验证 AI 对项目的单条陈述是否被代码证据支持 | **~200-500** |
 
-| 场景 | 推荐用法 | 说明 |
-|------|---------|------|
-| **接手 legacy 项目** | ✅ `get_communities(max_communities=20)` | 快速了解代码模块划分 |
-| **架构逆向** | ✅ `get_communities(max_members=5, max_communities=50)` | 看社区之间的边，找模块间依赖 |
-| **检测架构违规** | ✅ `include_members=true` 查看社区成员 | 不该在一起的代码出现在同一社区需关注 |
-| **monorepo 模块发现** | ✅ 默认参数即可 | 区分各子项目边界 |
-| **小型项目 (<500 节点)** | ✅ 适用 | 社区数少，输出可控 |
-| **中型项目 (500-10K 节点)** | ✅ 推荐加 `max_communities=20` | 默认 20 社区约 **1K-50K tokens** |
-| **大型项目 (>10K 节点)** | ⚠️ **谨慎使用，必须加 `max_communities`** | 123K 节点示例：5社区×10成员 = **199K tokens** 🔴 |
+### 漂移检测类（Drift Detection）
 
-**`get_communities` 的副作用：**
-
-1. **Token 爆炸风险**：123K 节点的项目，即使限制 `max_members=5, max_communities=10`，因 `label` 字段包含完整路径，仍可达 **200K tokens**。**默认参数 (max_members=10, max_communities=20) 约 1K-50K tokens**。
-2. **耗时**：社区检测需要全图 Label Propagation 算法，大型项目耗时数百 ms。
-3. **信息密度**：对于目录结构清晰的项目，`get_module_tree`（4 tokens）比社区检测（200K tokens）更高效。
-4. **屏蔽策略**：
-   - `max_communities` 优先调低（10-20），限制社区总数
-   - `include_members=false`（默认），只返回摘要，需成员详情时再开启
-   - 先用 `get_module_tree` 了解结构，社区检测仅作补充
-
-### 热点分析
-
-| 场景 | 推荐用法 | 说明 |
-|------|---------|------|
-| **性能优化** | ✅ `get_hotspots(top_n=10)` | 找被调用最多的函数，优先优化 |
-| **代码审查** | ✅ `get_hotspots(top_n=20)` | 高复杂度 + 高调用数的函数需要关注 |
-| **重构决策** | ✅ 配合 `get_complexity` 交叉分析 | 高复杂度 + 高热点的函数最值得重构 |
-
-**前提条件**：`get_hotspots` 的 `caller_count` 依赖调用边构建。如果索引时 `buildGraph(project_id, false)`，所有 caller_count 为 0。确认方法：检查索引输出中是否有 `calls=XXms`（非零）。
+| 工具 | 适用场景 | Token 消耗 |
+|------|---------|:----------:|
+| `detect_drift` | 扫描所有声明的能力与契约，发现文档与代码之间的偏移 | **~200** |
+| `detect_documentation_drift` | 检测 README 声明的语言支持与实际代码的差异 | **~150** |
+| `detect_capability_drift` | 检测声明的能力是否有实际实现且有调用者 | **~150** |
+| `detect_architecture_drift` | 检测调用边中的架构层违规（如 Repository 调 Controller） | **~150** |
 
 ### 变更影响分析
 
 | 工具 | 适用场景 | Token 消耗 |
-|------|---------|-----------|
+|------|---------|:----------:|
 | `detect_changes` | 修改代码后分析影响范围——返回直接/间接调用者 | **~100-500** |
+| `explain_module` | 构建模块知识卡：实体、能力、契约、完整性评分 | **~50-200** |
 
-### 增强工具（Phase B）
+### 辅助工具
 
-| 工具 | 适用场景 | 说明 |
-|------|---------|------|
-| `enhance_project` | 触发后台全量分析（调用图 + 复杂度 + 向量索引） | 异步运行，`get_enhancement_status` 查看进度 |
-| `codescope_build_context` | **PRIMARY**：AI 问答上下文构建 | 自动判断需要什么信息 |
-| `codescope_capabilities` | 检查当前项目各功能的就绪状态 | 快速诊断"为什么查不到数据" |
+| 工具 | 适用场景 | Token 消耗 |
+|------|---------|:----------:|
+| `index_project` | 索引整个项目目录（解析+IR+图构建） | **N/A** |
+| `index_file` | 索引单个源文件 | **N/A** |
+| `count_tokens` | 估算文本的 token 数（DeepSeek 公式） | **~10** |
+
+### 不再存在的工具
+
+以下工具曾在旧版 README 中出现，但**实际代码中不存在**，不要使用：
+
+- ❌ `get_hotspots` — 未实现
+- ❌ `get_communities` — 社区检测未接入 MCP
+- ❌ `graph_query` — 自定义 Cypher 查询未实现
+- ❌ `locate_code` — 未实现
+- ❌ `get_project_info` — 未实现
+- ❌ `enhance_project` / `codescope_build_context` / `codescope_capabilities` — 已移除
 
 ### 总结选择策略
 
 ```
-新接手项目 → project_overview (71 tok) + get_module_tree (4 tok)
-找入口点   → get_entry_points (5 tok)
-查热点     → get_hotspots (500 tok)
-搜代码     → search (300-1000 tok)
-查调用链   → find_callers / find_callees (10-50 tok)
-做架构分析  → get_module_tree (4 tok) + 可选 get_communities (1K-200K tok)
-查变更影响  → detect_changes (100-500 tok)
+新接手项目     → project_overview (~71 tok)
+查结构         → get_module_tree (~4 tok)
+找入口点       → get_entry_points (~5 tok)
+搜代码         → search (~300-1000 tok)
+查调用链       → find_callers / find_callees (~10-50 tok)
+全量理解函数   → explain_symbol (~50-200 tok)
+查 HTTP 路由   → get_routes (~50 tok)
+查类型定义     → get_type_info (~50 tok)
+验证声明       → verify_claim (~100 tok)
+查文档偏移     → detect_documentation_drift (~150 tok)
+查变更影响     → detect_changes (~100-500 tok)
 ```
 

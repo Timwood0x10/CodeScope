@@ -287,7 +287,7 @@ The following analyses were conducted using **CodeScope's own MCP tools** — th
 
 ### Example 1: USB HID Device Identification
 
-**Tools used:** `index_file`, `find_definition`, `graph_query` (MATCH (Function)-[Calls]->(Function))
+**Tools used:** `index_file`, `find_definition`, `graph_query ❌` (MATCH (Function)-[Calls]->(Function))
 
 Key symbols located via CodeScope MCP:
 
@@ -299,7 +299,7 @@ Key symbols located via CodeScope MCP:
 | `usb_kbd_probe` | `usbkbd.c` | 261 | `find_definition` |
 | `hid_usb_ids` | `hid-core.c` | 1678 | `find_definition` |
 
-Call graph (via `graph_query`): 45 Call edges discovered across the USB HID driver chain.
+Call graph (via `graph_query ❌`): 45 Call edges discovered across the USB HID driver chain.
 
 Full analysis: `Runtimelog/scan_usb_hid_analysis.log`
 

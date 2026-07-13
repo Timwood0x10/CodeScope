@@ -300,7 +300,7 @@ SQLite DB:  7.06 GB  (~/.cache/codebase-memory-mcp/)
 
 ### 示例 1：USB HID 设备识别
 
-**使用工具：** `index_file`, `find_definition`, `graph_query` (MATCH (Function)-[Calls]->(Function))
+**使用工具：** `index_file`, `find_definition`, `graph_query ❌` (MATCH (Function)-[Calls]->(Function))
 
 关键符号定位（通过 CodeScope MCP）：
 
@@ -312,7 +312,7 @@ SQLite DB:  7.06 GB  (~/.cache/codebase-memory-mcp/)
 | `usb_kbd_probe` | `usbkbd.c` | 261 | `find_definition` |
 | `hid_usb_ids` | `hid-core.c` | 1678 | `find_definition` |
 
-调用图（通过 `graph_query`）：在 USB HID 驱动链中发现 45 条调用边。
+调用图（通过 `graph_query ❌`）：在 USB HID 驱动链中发现 45 条调用边。
 
 完整分析：`Runtimelog/scan_usb_hid_analysis.log`
 

@@ -271,6 +271,39 @@ protected:
 
 ---
 
+## CallKind：每个调用都有"类型"
+
+从 v0.4 开始，所有 CallExpr 记录都带一个 `call_kind` 字段，帮助 ResolverPipeline 区分不同性质的调用：
+
+```cpp
+// engine/src/ir/semantic_unit.h
+enum class CallKind : uint8_t {
+    Direct = 0,       // 裸函数调用: doThing()
+    Method = 1,       // 方法调用: obj.Method()
+    Interface = 2,    // 接口派发（当前未分配，预留）
+    Constructor = 3,  // 构造函数调用: new Foo()
+};
+```
+
+每种语言的 visitor 在 emitCall() 之前用启发式规则分类：
+
+| 语言 | Method 判断 | Constructor 判断 |
+|------|-----------|-----------------|
+| Go | `selector_name` 不为空 | 名以 `New` 开头 |
+| Java | 含 `.` | 名以大写字母开头 |
+| JS/TS | 含 `.` | 名以大写字母开头（>3 字符）|
+| Python | 含 `.` | 名以大写字母开头 |
+| Rust | 含 `::` 或 `.` | `::new()` / `::from()` |
+| C/C++ | `field_expression` 子节点 | 不支持（C 无构造） |
+
+CallKind 影响 ResolverPipeline 的 Factor 9（CallKindMatch）：
+- **Constructor** (+0.3)：跨模块构造函数调用是合理的，加分
+- **Interface** (-0.3)：接口派发更难精确解析，降分
+- **Method** (-0.1)：方法调用通常在同模块，跨模块略降分
+- **Direct** (0)：不影响
+
+---
+
 ## 语言差异的处理
 
 不同语言的 visitor 处理相同的语义结构时，语法差异被吸收在 visitor 内部：
@@ -370,6 +403,9 @@ void ScannerVisitor::scanFile(const char *source, size_t len) {
 | (八) 存储层 | SQLite WAL + FTS5 + vec0 |
 | (九) 自适应查询 | Fallback 机制与就绪检测 |
 | (十) 性能真相 | 从 200 到 60,000 文件的实测 |
+| (十一) 验证层 | 让 AI 对自己的话负责 |
+| (十二) Model Engine | 从事实到理解 |
+| (十三) Parser + GraphBuilder | 解析与建图 |
 
 ---
 

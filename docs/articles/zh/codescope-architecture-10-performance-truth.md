@@ -153,10 +153,10 @@ Phase A（快速扫描）是 CodeScope 最快的模式：
 模块树 (get_module_tree):         0.1-0.2ms
 查找调用者 (find_callers):         0.1-0.3ms
 查找被调用者 (find_callees):       0.1-0.3ms
-热点 (get_hotspots):              0.2-0.5ms
+热点 (get_hotspots ❌):              0.2-0.5ms
 路径追踪 (codescope_trace):       0.5-2.0ms
 FTS 搜索 (search_fts):            0.5-2.0ms
-社区检测 (get_communities):       30-200ms（最慢查询）
+社区检测 (get_communities ❌):       30-200ms（最慢查询）
 ```
 
 查询延迟与项目规模弱相关——`find_callers` 在小项目和 rustc 上都是亚毫秒级。原因是所有查询都走精确索引（`call_edges JOIN symbols`），索引的 B-tree 访问是 O(log N)。
@@ -200,11 +200,11 @@ E2E 流水线 Token 对比（GoAgent/ARES Agent 场景）：
 | get_entry_points | ~50 bytes | ~15 |
 | get_module_tree | ~100 bytes | ~30 |
 | find_callers | 100-500 bytes | 30-150 |
-| get_hotspots | ~500 bytes | ~150 |
+| get_hotspots ❌ | ~500 bytes | ~150 |
 | search (FTS) | 1K-5K bytes | 300-1,500 |
-| get_communities | 1K-200K bytes | 300-60K |
+| get_communities ❌ | 1K-200K bytes | 300-60K |
 
-注意 `get_communities` 的范围——当社区数量很大时，输出可能达到 200KB。这是唯一需要主动限流的工具（通过 `max_members` 参数）。
+注意 `get_communities ❌` 的范围——当社区数量很大时，输出可能达到 200KB。这是唯一需要主动限流的工具（通过 `max_members` 参数）。
 
 ---
 

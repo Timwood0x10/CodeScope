@@ -47,7 +47,7 @@ CodeScope is an MCP-based code understanding service. It parses source code into
 | `find_definition` | Find symbol definition location | symbol_name | ~20 |
 | `find_references` | Find all references | symbol_name | ~30 |
 | `find_symbol` | Exact symbol match | symbol_name | ~30 |
-| `locate_code` | Get context around a symbol | identifier, context_lines | ~50-300 |
+| `locate_code` | ❌ Not implemented — use `explain_symbol` instead | — | — |
 | `get_complexity` | Cyclomatic / cognitive complexity | node_id | ~20 |
 
 ### Call Graph
@@ -57,8 +57,8 @@ CodeScope is an MCP-based code understanding service. It parses source code into
 | `find_callers` | Who calls this function | symbol_name | ~10-50 | `buildGraph(true)` |
 | `find_callees` | What this function calls | symbol_name | ~10-50 | `buildGraph(true)` |
 | `codescope_trace` | Shortest call path between two symbols | from, to | ~50-200 | same as above |
-| `get_hotspots` | Hottest functions in the project | top_n | ~500 | same as above |
-| `graph_query` | Custom graph query (DSL) | query | ~50-500 | — |
+| `get_hotspots` | ❌ Not implemented — no MCP tool | — | — | — |
+| `graph_query` | ❌ Not implemented — use `find_callers`/`find_callees` instead | — | — | — |
 
 ### Project Overview
 
@@ -80,7 +80,7 @@ CodeScope is an MCP-based code understanding service. It parses source code into
 
 | Tool | Purpose | Token Cost | Notes |
 |------|---------|------------|-------|
-| `get_communities` ⚠️ | Community detection (Label Propagation) | **1K-200K** | Use with caution on large projects (see below) |
+| `get_communities` ⚠️ | ❌ Not wired to MCP — C++ engine has the implementation but no server tool | — | — |
 | `detect_changes` | Change impact analysis | ~100-500 | Input: list of modified files |
 | `codescope_build_context` | AI context builder **(main tool)** | ~200-1000 | Automatically determines required info |
 | `codescope_capabilities` | Feature readiness status | ~309 | Diagnose "why can't I find data" |
@@ -94,7 +94,7 @@ CodeScope is an MCP-based code understanding service. It parses source code into
 
 ---
 
-## Community Detection Guide ⚠️
+## Community Detection Guide ⚠️ (NOT AVAILABLE — C++ engine has it, MCP server doesn't) > **Note**: `get_communities` exists in the C++ engine but is not exposed as an MCP tool. The Label Propagation algorithm works on the full call graph, but wiring it to the server is pending. Until then, use `connected_components` as a lightweight alternative.
 
 > Groups code graph nodes by relationship density using Label Propagation. Useful for understanding module boundaries and detecting architecture violations.
 
@@ -119,10 +119,10 @@ CodeScope is an MCP-based code understanding service. It parses source code into
 ```
 New project       → project_overview (71 tok) + get_module_tree (4 tok)
 Find entry points → get_entry_points (5 tok)
-Hotspot analysis  → get_hotspots (500 tok)
+# Hotspot analysis → ❌ get_hotspots not implemented
 Code search       → search (300-1000 tok)
 Call chain query  → find_callers / find_callees (10-50 tok)
-Architecture      → get_module_tree (4 tok) + optional get_communities (1K-200K tok)
+# Architecture → get_module_tree (4 tok); get_communities ❌ not available
 Change impact     → detect_changes (100-500 tok)
 AI Q&A            → codescope_build_context (200-1000 tok)
 ```

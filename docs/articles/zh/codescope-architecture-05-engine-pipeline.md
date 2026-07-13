@@ -216,61 +216,94 @@ TranslationUnit
 
 ---
 
-## Linker：三趟编译器的精神
+## ResolverPipeline：约束链驱动的跨文件解析
 
-IR 翻译是逐文件进行的。文件之间的调用关系怎么处理？这就是 Linker 的工作。
+IR 翻译是逐文件进行的。文件之间的调用关系怎么处理？这就是 Resolver（解析器）的工作。
 
-Linker 在 `engine/src/linker/linker.h` 中定义，灵感来自编译器的 **多趟（multi-pass）后端**：
+最初版本有一个 `engine/src/linker/linker.h`，采用三趟 Pass 模式。经过重构，现已被 **`engine/src/resolver/pipeline.h`** 替代——一个基于约束链（constraint chain）的多因子评分管线。
 
-```cpp
-// engine/src/linker/linker.h
-class Linker {
-public:
-    void addPass(std::unique_ptr<LinkPass> pass);
-    int run(uint64_t project_id,
-            std::vector<std::unique_ptr<ir::TranslationUnit>> &units,
-            const std::vector<std::string> &file_paths,
-            store::GraphStore *store);
-};
+```
+旧 Linker（已删除）         新 ResolverPipeline（当前）
+──────────────────────    ──────────────────────────
+3 趟 Pass                 单趟 run() + applyConstraints()
+整数加分                  9 因子加权评分（0.0-1.0）
+无模糊匹配                FuzzyResolver 兜底
+无可见性检查              语言级可见性规则（Go/Python/Java）
+无 call kind 区分          CallKind 感知（Direct/Method/Interface/Constructor）
 ```
 
-Linker 有三趟内置的 Pass：
+### 架构：两步走
 
-### Pass 1：BuildSymbolIndexPass
+`ResolverPipeline::run()` 的核心逻辑只有两步：
 
-遍历所有 TranslationUnit，建立全局符号索引。只索引四种节点：`FunctionDecl`、`MethodDecl`、`ClassDecl`、`MacroDecl`。变量和表达式不进入索引。
+```
+Step 0: 预加载 entity 表 → HashMap<name, vector<Candidate>>
+        避免逐条 SQL 查询（之前的性能瓶颈）
 
-```cpp
-// engine/src/linker/linker.cpp:55-78
-switch (n->kind) {
-case ir::NodeKind::FunctionDecl:
-case ir::NodeKind::MethodDecl:
-case ir::NodeKind::ClassDecl:
-case ir::NodeKind::MacroDecl:
-    symbol_index.addEntry(ie);
-    break;
-}
+Step 1: 遍历 reference 表 → 对每个引用:
+  a. 从 HashMap 按名查找候选
+  b. 零候选？ → FuzzyResolver 兜底（大小写/前缀/后缀）
+  c. applyConstraints() → 9 因子加权评分
+  d. 语言可见性硬过滤（如 Go 小写名不可跨包调用）
+  e. 选最高分，阈值 0.4 以上写入 relation + graph_edges
 ```
 
-`ProjectSymbolIndex` 是线程安全的，内部用 `std::mutex` 保护 `std::unordered_map<std::string, std::vector<IndexEntry>>`。
+### 九因子评分系统
 
-### Pass 2：ResolveCallPass
+```cpp
+// engine/src/resolver/factors.h
+constexpr double kWeightModuleMatch     = 0.15;  // 同模块
+constexpr double kWeightImportMatch     = 0.80;  // 跨模块主导因子
+constexpr double kWeightNamespaceMatch  = 0.10;  // 同命名空间
+constexpr double kWeightSignatureMatch  = 0.10;  // 参数数量匹配
+constexpr double kWeightDistanceMatch   = 0.05;  // 文件路径距离
+constexpr double kWeightConstructorMatch = 0.10; // 构造函数匹配
+constexpr double kWeightReceiverMatch   = 0.15;  // Go/Python receiver
+constexpr double kWeightCommonNamePenalty = 0.10; // 常见名降权
+constexpr double kWeightCallKindMatch   = 0.15;  // 调用类型感知
+```
 
-跨文件调用解析。遍历每个 CallExpr，查找目标名称是否在全局符号索引中。如果在其他文件中找到，就创建一个**存根（stub）IR 节点**，添加 CallTarget 语义边。
+注意 `ImportMatch` 权重 **0.80**——这是跨模块解析的主导因子。如果目标名称在当前文件有 import 语句引用，基本可以确定。其他因子只在同模块或模糊匹配时起作用。
 
-候选排名使用纯结构启发式：
+### CallKind 感知
 
-| 规则 | 加分 |
-|---|---|
-| 定义文件（.c/.cpp）优于头文件 | +5 |
-| 同目录 | +3 |
-| 路径距离短 | +2 |
+从 `CallKind` 枚举看调用类型对解析的影响：
 
-注意，这里**没有类型信息**——排名完全基于文件路径的距离。这是刻意的设计选择：类型系统太复杂，不值得为了调用图的一个"可能"而引入完整类型推断。
+| 类型 | 值 | 行为 |
+|------|----|------|
+| `Direct` | 0 | 不应用 CallKind 因子 |
+| `Method` | 1 | 略降分：方法调用通常在同模块 |
+| `Interface` | 2 | 降分：接口派发更难解析 |
+| `Constructor` | 3 | 加分：构造函数跨模块调用是合理的 |
 
-### Pass 3：EmitGraphPass
+### FuzzyResolver 兜底
 
-运行 GraphBuilder，为每个 TranslationUnit 构建符号图和调用图，批量写入 SQLite。
+当精确名称查找零候选时，`FuzzyResolver` 尝试三种模糊匹配：
+
+- **大小写不敏感**（`getUser` ⇢ `getuser`）
+- **前缀匹配**（`parseJSON` ⇢ `parse`）
+- **后缀匹配**（`initDB` ⇢ `DB`）
+
+每种匹配都有独立的评分衰减。找到候选后再进入 `applyConstraints()` 走完整评分流程。
+
+### 语言可见性硬过滤
+
+这是**硬规则**，不是加权因子——加权因子可以被其他因子覆盖，但语言规则必须绝对遵守：
+
+- **Go**：小写字母开头的名称不可跨包调用
+- **Python**：`_` 开头的名称视为私有
+- **Java**：无 `public` 修饰符的为包内可见
+
+这个设计参考了 codebase-memory-mcp 的 `cbm_is_exported()`，但实现为绝对拒绝而非打分。
+
+### 写双表：relation + graph_edges
+
+解析结果同时写入两张表：
+
+- `relation` — 关系表（`source_id`, `target_id`, `type`, `confidence`）
+- `graph_edges` — 兼容 CSR 格式的图边表
+
+写双表是为了不同查询路径都能走索引，同时通过 `INSERT OR IGNORE` 保证幂等。
 
 ---
 
@@ -386,9 +419,11 @@ if (a && b && c && d && e)  // 实际有 5 个决策点，但只算 1 个
 
 这对认知复杂度的计算影响更大——因为 IR 中无法区分 `&&` 和 `||`，也就无法应用"每个条件运算符 +1"的规则。
 
-**4. Linker 的批量处理限制**
+**4. ResolverPipeline 的执行效率**
 
-当前的 Linker 要求所有 TranslationUnit 同时在内存中。对于超大型项目（百万行级别），这会导致内存压力。虽然可以通过分批处理（batch）来缓解（`run()` 支持外部 `ProjectSymbolIndex` 的累积模式），但每次批量处理仍然需要加载所有单元的 IR 子集。
+当前的 `run()` 会预加载整个 entity 表到 HashMap 中。对于大型项目（百万级 entity），这个 HashMap 可能占用数百 MB 内存。虽然有 SQL 索引和批量写入优化，但全量扫描 reference 表 + 逐条 `applyConstraints()` 仍然是索引阶段最耗时的部分。实测在 Linux 内核规模下，解析耗时约占全索引时间的 40%。
+
+`INSERT OR IGNORE INTO relation` 中的 `WHERE NOT EXISTS` 子查询也增加了写开销——这是为了过滤 test/bench 文件的调用边，避免被测试代码污染调用图。
 
 ---
 
@@ -406,6 +441,9 @@ if (a && b && c && d && e)  // 实际有 5 个决策点，但只算 1 个
 | (八) 存储层 | SQLite WAL + FTS5 + vec0 |
 | (九) 自适应查询 | Fallback 机制与就绪检测 |
 | (十) 性能真相 | 从 200 到 60,000 文件的实测 |
+| (十一) 验证层 | 让 AI 对自己的话负责 |
+| (十二) Model Engine | 从事实到理解 |
+| (十三) Parser + GraphBuilder | 解析与建图 |
 
 ---
 

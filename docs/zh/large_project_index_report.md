@@ -63,7 +63,7 @@ FTS     22,995ms  █████████████░░░░░░░�
 | 查询                   |   Tokens   |  占比 |
 | -------------------- | :--------: | :-: |
 | `get_graph_stats`    |     19     |  —  |
-| `get_hotspots` top10 |    \~500   |  —  |
+| `get_hotspots ❌` top10 |    \~500   |  —  |
 | `project_overview`   |    \~71    |  —  |
 | `get_module_tree`    |      4     |  —  |
 | `get_entry_points`   |      5     |  —  |
@@ -367,7 +367,7 @@ Arc 的线程安全性依赖于三个底层机制：
 | 查询                   | rustc |  Bun  | ARES Agent | memscope-rs |
 | -------------------- | :---: | :---: | :--------: | :---------: |
 | `get_graph_stats`    |   19  |   19  |     18     |      18     |
-| `get_hotspots` top10 |  500  | \~488 |     488    |     488     |
+| `get_hotspots ❌` top10 |  500  | \~488 |     488    |     488     |
 | `project_overview`   |   71  |   71  |     71     |      71     |
 | `get_module_tree`    |   4   |   4   |      4     |      4      |
 | `get_entry_points`   |   5   |   5   |      5     |      5      |
@@ -528,13 +528,13 @@ JDK 每文件平均产生 **405 个节点**（是 rustc 的 3.6 倍）。Java �
 | 查询 | 平均延迟 | 说明 |
 |------|:--------:|------|
 | `get_graph_stats` | **<1 ms** | 纯 SQL COUNT |
-| `get_hotspots` | **<2 ms** | SQL JOIN + GROUP BY |
+| `get_hotspots ❌` | **<2 ms** | SQL JOIN + GROUP BY |
 | `find_callers` / `find_callees` | **<1 ms** | 索引覆盖的 JOIN |
 | `search`（FTS） | **<5 ms** | FTS5 全文搜索 |
 | `search`（graph fallback） | **<10 ms** | LIKE 降级搜索 |
 | `get_module_tree` | **<1 ms** | 轻量查询 |
 | `get_entry_points` | **<1 ms** | 索引查询 |
-| `get_communities` | **50-500 ms** | 全图 Label Propagation |
+| `get_communities` | ❌ 引擎有实现，未接 MCP | — |
 | `codescope_trace` | **<5 ms** | BFS 路径搜索 |
 
 ### 跨项目基准

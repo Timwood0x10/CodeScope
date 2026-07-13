@@ -28,7 +28,7 @@ codescope cli get_graph_stats '{}'
 echo "=== 入口点 ==="
 codescope cli get_entry_points '{}'
 echo "=== 热点 Top10 ==="
-codescope cli get_hotspots '{"top_n":10}'
+# codescope cli get_hotspots — ❌ 未实现，已移除
 echo "=== 模块树 ==="
 codescope cli get_module_tree '{}'
 ```
@@ -171,17 +171,17 @@ flowchart LR
 |------|---------|-----------|-----------|--------|
 | `find_callers` | 调查函数被谁调用 | **CALLS 边未构建时 caller_count=0** | **~10-50** | 依赖 `buildGraph(true)` |
 | `find_callees` | 调查函数调用了什么 | 不需要递归展开时 | **~10-50** | 同上 |
-| `get_hotspots` | 找最热门的函数 | 项目 <100 个函数 | **~500** | caller_count=0 说明调用边未构建 |
+| `get_hotspots` | ❌ 未实现 — 无 MCP 工具 | 项目 <100 个函数 | **~500** | caller_count=0 说明调用边未构建 |
 
 ### 4.4 选择策略速查
 
 ```
 新项目      → project_overview (71 tok) + get_module_tree (4 tok)
 找入口点    → get_entry_points (5 tok)
-查热点      → get_hotspots (500 tok)
+# 查热点 → ❌ get_hotspots 未实现
 搜代码      → search (300-1000 tok)
 查调用链    → find_callers / find_callees (10-50 tok)
-架构分析    → get_module_tree (4 tok) + 可选 get_communities (1K-200K tok)
+架构分析    → get_module_tree (4 tok) + 可选 get_communities ❌ (引擎有实现，未接 MCP) (1K-200K tok)
 变更影响    → detect_changes (100-500 tok)
 AI 问答     → codescope_build_context (200-1000 tok)
 ```
