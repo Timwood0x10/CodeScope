@@ -59,10 +59,14 @@ uint64_t SemanticEmitter::emitVariable(const std::string &name, SourceRange loc,
 // ── Expression Emitters ───────────────────────────────────────
 
 uint64_t SemanticEmitter::emitCall(const std::string &callee_name,
-				   SourceRange loc, uint64_t parent_id)
+				   SourceRange loc, uint64_t parent_id,
+				   int arity, bool is_static, int call_kind)
 {
-	return unit_->addRecord(RecordKind::CallExpr, callee_name, parent_id,
-				loc);
+	uint64_t id = unit_->addRecord(RecordKind::CallExpr, callee_name,
+				       parent_id, loc, arity, is_static);
+	if (call_kind != 0)
+		unit_->setCallKind(id, call_kind);
+	return id;
 }
 
 uint64_t SemanticEmitter::emitMemberAccess(const std::string &name,

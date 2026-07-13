@@ -205,31 +205,29 @@ void GoVisitor::handleCall(TSNode node, uint64_t parent_id)
 {
 	SourceRange loc = location(node);
 	std::string name;
+	std::string selector_name;
 	uint32_t cnt = ts_node_child_count(node);
 	for (uint32_t i = 0; i < cnt; i++) {
 		TSNode c = ts_node_child(node, i);
 		if (!ts_node_is_named(c))
 			continue;
-		if (strcmp(ts_node_type(c), "identifier") == 0) {
+		if (strcmp(ts_node_type(c), "selector_expression") == 0) {
+		  selector_name = nodeText(c);
+		  // Extract just the method name after the last dot
+		  size_t dot = selector_name.rfind('.');
+		  name = (dot != std::string::npos) ? selector_name.substr(dot + 1) : selector_name;
+		} else if (strcmp(ts_node_type(c), "identifier") == 0) {
 			name = nodeText(c);
-			break;
 		}
 	}
 
-	// Skip Go built-in functions — they are NOT user-defined calls
-	// and the Resolver Pipeline would generate false-positive edges
-	// by matching them to entities with the same name.
-	// Reference: codebase-memory-mcp (MIT) go_lsp.c :: is_go_builtin_func()
 	if (!name.empty() && isGoBuiltin(name)) {
 		visitChildren(node, parent_id);
 		return;
 	}
 
 	// ── Route detection ───────────────────────────────────────────
-	// Detect HTTP route registrations like:
-	//   r.GET("/path", handler)     — Gin
-	//   router.POST("/path", h)     — Echo/Chi
-	//   mux.HandleFunc("/path", h)  — net/http
+	// Detect HTTP route registrations (Gin/Echo/Chi/net/http)
 	// Reference: codebase-memory-mcp (MIT) service_patterns.c
 	{
 		// Check if this is a selector expression call (method call)
@@ -259,7 +257,8 @@ void GoVisitor::handleCall(TSNode node, uint64_t parent_id)
 				// Find argument_list child — arguments are NOT direct children
 				std::string route_path;
 				std::string handler_name;
-				for (uint32_t j = 0; j < cnt; j++) {
+				bool route_found = false;
+				for (uint32_t j = 0; j < cnt && !route_found; j++) {
 					TSNode arg_node =
 						ts_node_child(node, j);
 					if (!ts_node_is_named(arg_node))
@@ -317,15 +316,31 @@ void GoVisitor::handleCall(TSNode node, uint64_t parent_id)
 					break;
 				}
 				if (!route_path.empty())
-					emitter_->emitRoute(
-						method + " " + route_path,
-						handler_name, loc, parent_id);
-				break;
+				  emitter_->emitRoute(
+				   method + " " + route_path,
+				   handler_name, loc, parent_id);
+				 route_found = true;
+				 break;
 			}
 		}
 	}
 
-	uint64_t id = emitter_->emitCall(name, loc, parent_id);
+	// ── Classify call kind ─────────────────────────────────────────
+	CallKind call_kind = CallKind::Direct;
+	if (!selector_name.empty()) {
+		// Method call: obj.Method() or pkg.Func()
+		call_kind = CallKind::Method;
+		// Check for constructor pattern: NewType()
+		if (name.size() > 3 && name[0] == 'N' && name[1] == 'e' && name[2] == 'w')
+			call_kind = CallKind::Constructor;
+	} else {
+		// Bare function call: check if it's a constructor
+		if (name.size() > 3 && name[0] == 'N' && name[1] == 'e' && name[2] == 'w')
+			call_kind = CallKind::Constructor;
+	}
+
+	uint64_t id = emitter_->emitCall(name, loc, parent_id, 0, false,
+	     static_cast<int>(call_kind));
 	visitChildren(node, id);
 }
 void GoVisitor::handleImport(TSNode node, uint64_t parent_id)

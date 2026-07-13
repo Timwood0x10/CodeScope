@@ -32,29 +32,30 @@ class SemanticEmitter {
 			    uint64_t parent_id = 0, int arity = 0,
 			    bool is_static = false);
 	uint64_t emitClass(const std::string &name, SourceRange loc,
-			   uint64_t parent_id = 0);
+	     uint64_t parent_id = 0);
 	uint64_t emitInterface(const std::string &name, SourceRange loc,
-			       uint64_t parent_id = 0);
+	         uint64_t parent_id = 0);
 	uint64_t emitEnum(const std::string &name, SourceRange loc,
-			  uint64_t parent_id = 0);
+	    uint64_t parent_id = 0);
 	uint64_t emitTypeAlias(const std::string &name, SourceRange loc,
-			       uint64_t parent_id = 0);
+	         uint64_t parent_id = 0);
 	uint64_t emitVariable(const std::string &name, SourceRange loc,
-			      uint64_t parent_id = 0);
+	        uint64_t parent_id = 0);
 
 	// ── Expression Emitters ──────────────────────────────────
 
 	uint64_t emitCall(const std::string &callee_name, SourceRange loc,
-			  uint64_t parent_id = 0);
+			  uint64_t parent_id = 0, int arity = 0,
+			  bool is_static = false, int call_kind = 0);
 	uint64_t emitMemberAccess(const std::string &name, SourceRange loc,
-				  uint64_t parent_id = 0);
+	     uint64_t parent_id = 0);
 
 	// ── Module Emitters ──────────────────────────────────────
 
 	uint64_t emitImport(const std::string &module_name, SourceRange loc,
-			    uint64_t parent_id = 0);
+	      uint64_t parent_id = 0);
 	uint64_t emitExport(const std::string &name, SourceRange loc,
-			    uint64_t parent_id = 0);
+	      uint64_t parent_id = 0);
 
 	// ── Scope Emitters ─────────────────────────────────────────
 
@@ -77,28 +78,28 @@ class SemanticEmitter {
 	/// \param loc          Source location
 	/// \param parent_id    Parent record ID
 	uint64_t emitRoute(const std::string &route_label,
-			   const std::string &handler_name, SourceRange loc,
-			   uint64_t parent_id = 0);
+	     const std::string &handler_name, SourceRange loc,
+	     uint64_t parent_id = 0);
 
 	// ── Type Emitters ───────────────────────────────────────────
 
 	/// Emit a type reference: variable/param/field has a type.
 	/// Creates a TypeRef record with variable_name and type_name.
 	uint64_t emitTypeRef(const std::string &variable_name,
-			     const std::string &type_name, SourceRange loc,
-			     uint64_t parent_id = 0);
+	       const std::string &type_name, SourceRange loc,
+	       uint64_t parent_id = 0);
 
 	/// Emit a type declaration: struct/enum/trait/interface definition.
 	/// Creates a TypeDecl record with the type name and location.
 	uint64_t emitTypeDecl(const std::string &name, SourceRange loc,
-			      uint64_t parent_id = 0);
+	        uint64_t parent_id = 0);
 
 	// ── Literal / Comment Emitters ─────────────────────────
 
 	uint64_t emitLiteral(const std::string &value, SourceRange loc,
-			     uint64_t parent_id = 0);
+	       uint64_t parent_id = 0);
 	uint64_t emitComment(const std::string &text, SourceRange loc,
-			     uint64_t parent_id = 0);
+	       uint64_t parent_id = 0);
 
 	// ── Accessors ────────────────────────────────────────────
 

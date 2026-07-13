@@ -117,4 +117,13 @@ bool SemanticUnit::setCallReference(uint64_t record_id,
 	return true;
 }
 
+bool SemanticUnit::setCallKind(uint64_t record_id, int kind)
+{
+	auto it = id_to_index_.find(record_id);
+	if (it == id_to_index_.end())
+		return false;
+	records_[it->second].call_kind = static_cast<CallKind>(kind);
+	return true;
+}
+
 } // namespace ir

@@ -478,17 +478,16 @@ char *engine_get_routes(uint64_t project_id)
 	if (!g_store)
 		return dupString("{\"error\":\"not initialized\"}");
 
-	std::string sql =
-		std::string(
-			"SELECT method, path, handler_name, file_path, start_row "
-			"FROM route WHERE project_id=") +
-		std::to_string(project_id) + " ORDER BY method, path LIMIT 500";
+	const char *sql =
+		"SELECT method, path, handler_name, file_path, start_row "
+		"FROM route WHERE project_id=? ORDER BY method, path LIMIT 500";
 
 	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(g_store->handle(), sql.c_str(), -1, &stmt,
+	if (sqlite3_prepare_v2(g_store->handle(), sql, -1, &stmt,
 			       nullptr) != SQLITE_OK) {
 		return dupString("{\"error\":\"query failed\",\"routes\":[]}");
 	}
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 
 	std::string result = "{\"routes\":[";
 	bool first = true;
