@@ -96,12 +96,8 @@ SemanticUnit *GoVisitor::visit(TSTree *tree, const char *source, const char *fp)
 void GoVisitor::visitNode(TSNode node, uint64_t parent_id)
 {
 	const char *type = ts_node_type(node);
-	fprintf(stderr, "[GoVN] %s\n", type); fflush(stderr);
-	if (strcmp(type, "method_spec") == 0) {
-		fprintf(stderr, "[GoVN] method_spec FOUND! name=%s pid=%llu\n",
-			nodeText(node).c_str(), (unsigned long long)parent_id);
+	if (std::string(type) == "method_elem")
 		return handleInterfaceMethod(node, parent_id);
-	}
 	if (strcmp(type, "function_declaration") == 0)
 		return handleFuncDecl(node, parent_id);
 	if (strcmp(type, "method_declaration") == 0)
@@ -224,13 +220,13 @@ void GoVisitor::handleTypeDecl(TSNode node, uint64_t parent_id)
 			if (is_struct)
 				id = emitter_->emitClass(name, loc, parent_id);
 			else if (is_interface)
-				id = emitter_->emitInterface(name, loc, parent_id);
+				id = emitter_->emitInterface(name, loc,
+							     parent_id);
 			else
-				id = emitter_->emitTypeAlias(name, loc, parent_id);
+				id = emitter_->emitTypeAlias(name, loc,
+							     parent_id);
 			defineSymbol(name, id);
 			// Visit type body (struct fields, interface methods)
-			fprintf(stderr, "[handleTypeDecl] %s id=%llu visiting children\n",
-				name.c_str(), (unsigned long long)id);
 			visitChildren(c, id);
 		}
 	}
@@ -445,8 +441,6 @@ void GoVisitor::handleShortVar(TSNode node, uint64_t parent_id)
 }
 void GoVisitor::handleInterfaceMethod(TSNode node, uint64_t parent_id)
 {
-	fprintf(stderr, "[GoVisitor] handleInterfaceMethod called! parent_id=%llu\n",
-		(unsigned long long)parent_id);
 	SourceRange loc = location(node);
 	std::string name = extractName(node);
 	if (!name.empty())

@@ -233,11 +233,14 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 			f.name = "CallKindMatch";
 			f.weight = kWeightCallKindMatch;
 			if (call_kind == kCallKindConstructor)
-				f.score = 0.3; // boost: constructors expected to cross module
+				f.score =
+					0.3; // boost: constructors expected to cross module
 			else if (call_kind == kCallKindInterface)
-				f.score = -0.3; // penalty: interface dispatch is harder to resolve
+				f.score =
+					-0.3; // penalty: interface dispatch is harder to resolve
 			else if (call_kind == kCallKindMethod)
-				f.score = -0.1; // slight penalty: methods usually same-module
+				f.score =
+					-0.1; // slight penalty: methods usually same-module
 			else
 				f.score = 0.0;
 			f.detail = "call_kind=" + std::to_string(call_kind);

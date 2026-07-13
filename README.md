@@ -540,6 +540,20 @@ Benchmarks measured on **Apple M3 Max (36 GB RAM)**.
 | Files processed | **489 files/s** |
 | Edges generated | **50,966 edges/s** |
 
+### Known Bottleneck (Knowledge Graph Queries)
+
+The current MCP knowledge graph service has a **~300k-500k node threshold** for fuzzy text search (`CONTAINS`, BM25 full-text, regex name matching) — queries on projects beyond this threshold may **time out at 30 seconds**.
+
+| Project Scale | Example | Exact-match queries | Fuzzy searches |
+|--------------|---------|:------------------:|:--------------:|
+| Small-Medium (<50K nodes) | goagent (23K) | ✅ &lt;10ms | ✅ Fast |
+| Large (50K-300K nodes) | zigcode (327K) | ✅ &lt;10ms | ⚠️ May time out |
+| Very Large (>500K nodes) | JDK (1.36M) | ✅ Exact match works | ❌ Time out |
+
+> **Root cause**: Full-node-set text scans (`CONTAINS`, `name_pattern` regex) iterate over millions of nodes, exceeding the 30s timeout limit. Index-assisted exact path matching (`ENDS WITH`) works fine.
+>
+> **Planned fix**: Add a custom exclusion paths parameter to skip `test/`, `doc/`, and other large non-core directories during indexing, keeping effective node count under 300K.
+
 ### Token Savings
 
 | Scenario | Raw Source | CodeScope | Savings |

@@ -761,24 +761,23 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 
 	// Migration: add role column to module_summary table (v0.7+)
 	{
-	 sqlite3_stmt *probe = nullptr;
-	 if (sqlite3_prepare_v2(db_,
-	          "PRAGMA table_info(module_summary)",
-	          -1, &probe, nullptr) == SQLITE_OK) {
-	  bool has_role = false;
-	  while (sqlite3_step(probe) == SQLITE_ROW) {
-	   const char *col =
-	    reinterpret_cast<const char *>(
-	     sqlite3_column_text(probe, 1));
-	   if (col && std::string(col) == "role")
-	    has_role = true;
-	  }
-	  sqlite3_finalize(probe);
-	  if (!has_role) {
-	   exec("ALTER TABLE module_summary "
-	        "ADD COLUMN role TEXT DEFAULT ''");
-	  }
-	 }
+		sqlite3_stmt *probe = nullptr;
+		if (sqlite3_prepare_v2(db_, "PRAGMA table_info(module_summary)",
+				       -1, &probe, nullptr) == SQLITE_OK) {
+			bool has_role = false;
+			while (sqlite3_step(probe) == SQLITE_ROW) {
+				const char *col =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(probe, 1));
+				if (col && std::string(col) == "role")
+					has_role = true;
+			}
+			sqlite3_finalize(probe);
+			if (!has_role) {
+				exec("ALTER TABLE module_summary "
+				     "ADD COLUMN role TEXT DEFAULT ''");
+			}
+		}
 	}
 
 	// Migration: add call_kind column to reference table (v0.7+)
@@ -796,35 +795,34 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 			}
 			sqlite3_finalize(probe);
 			if (!has_ck) {
-			  exec("ALTER TABLE reference "
-			       "ADD COLUMN call_kind INTEGER DEFAULT 0");
-			 }
+				exec("ALTER TABLE reference "
+				     "ADD COLUMN call_kind INTEGER DEFAULT 0");
 			}
 		}
+	}
 
-		// Migration: add parent_id column to graph_nodes (v0.8+)
-		{
-			sqlite3_stmt *probe = nullptr;
-			if (sqlite3_prepare_v2(db_,
-			         "PRAGMA table_info(graph_nodes)",
-			         -1, &probe, nullptr) == SQLITE_OK) {
-			 bool has_pid = false;
-			 while (sqlite3_step(probe) == SQLITE_ROW) {
-			  const char *col =
-			   reinterpret_cast<const char *>(
-			    sqlite3_column_text(probe, 1));
-			  if (col && std::string(col) == "parent_id")
-			   has_pid = true;
-			 }
-			 sqlite3_finalize(probe);
-			 if (!has_pid) {
-			  exec("ALTER TABLE graph_nodes "
-			       "ADD COLUMN parent_id INTEGER DEFAULT 0");
-			  exec("CREATE INDEX IF NOT EXISTS idx_gn_parent "
-			       "ON graph_nodes(project_id, parent_id)");
-			 }
+	// Migration: add parent_id column to graph_nodes (v0.8+)
+	{
+		sqlite3_stmt *probe = nullptr;
+		if (sqlite3_prepare_v2(db_, "PRAGMA table_info(graph_nodes)",
+				       -1, &probe, nullptr) == SQLITE_OK) {
+			bool has_pid = false;
+			while (sqlite3_step(probe) == SQLITE_ROW) {
+				const char *col =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(probe, 1));
+				if (col && std::string(col) == "parent_id")
+					has_pid = true;
+			}
+			sqlite3_finalize(probe);
+			if (!has_pid) {
+				exec("ALTER TABLE graph_nodes "
+				     "ADD COLUMN parent_id INTEGER DEFAULT 0");
+				exec("CREATE INDEX IF NOT EXISTS idx_gn_parent "
+				     "ON graph_nodes(project_id, parent_id)");
 			}
 		}
+	}
 	(void)ok;
 
 	return ok;
