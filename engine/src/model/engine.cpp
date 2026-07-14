@@ -243,6 +243,9 @@ int64_t ModelEngine::runAll(uint64_t project_id)
 		}
 	}
 
+	// ── NEW: Add timing measurement for total batch work ───
+	auto t_batch = std::chrono::steady_clock::now();
+
 	if (!store_->commitTransaction()) {
 		fprintf(stderr,
 			"[module=model, method=runAll] "
@@ -251,6 +254,12 @@ int64_t ModelEngine::runAll(uint64_t project_id)
 		store_->rollbackTransaction();
 		return 0;
 	}
+	auto ms_batch = std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::steady_clock::now() - t_batch)
+				.count();
+	fprintf(stderr, "[model] runAll batch_commit=%lldms\n",
+		(long long)ms_batch);
+
 	return total;
 }
 

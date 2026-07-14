@@ -493,12 +493,15 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	int num_workers =
 		std::min(static_cast<int>(jobs.size()),
 			 static_cast<int>(std::thread::hardware_concurrency()));
-	// Allow override via CODESCOPE_WORKERS env var (e.g. "4" for 4 workers)
+	// Default to 4 workers to leave CPU cores for other processes.
+	// Override via CODESCOPE_WORKERS env var (e.g. "8" for 8 workers).
 	const char *env_workers = getenv("CODESCOPE_WORKERS");
 	if (env_workers && env_workers[0]) {
 		int requested = std::atoi(env_workers);
 		if (requested > 0)
 			num_workers = std::min(requested, num_workers);
+	} else {
+		num_workers = std::min(num_workers, 4);
 	}
 	if (num_workers < 1)
 		num_workers = 1;
@@ -595,7 +598,16 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	// ── Step 5: Resolve staged metrics → metrics + symbol_status ──
 	// Pre-computed metrics (from parse workers) are resolved via
 	// (file_path, name, line) JOIN with symbols.
-	g_store->resolveStagedMetrics(project_id);
+	{
+		auto t_metrics = steady_clock::now();
+		g_store->resolveStagedMetrics(project_id);
+		fprintf(stderr,
+			"engine: resolveStagedMetrics=%lldms "
+			"[module=engine, method=engine_index_project]\n",
+			(long long)duration_cast<milliseconds>(
+				steady_clock::now() - t_metrics)
+				.count());
+	}
 
 	// DEEP mode: build vectors (NORMAL skips them)
 	if (mode_deep) {
@@ -615,7 +627,14 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	// run dedup DELETE + unique edge index creation.
 	{
 		store::GraphStore::BulkPragmaGuard guard(g_store.get());
+		auto t_idx = steady_clock::now();
 		g_store->createIndexesAfterBulkLoad(project_id, !is_reindex);
+		fprintf(stderr,
+			"engine: createIndexesAfterBulkLoad=%lldms "
+			"[module=engine, method=engine_index_project]\n",
+			(long long)duration_cast<milliseconds>(
+				steady_clock::now() - t_idx)
+				.count());
 	}
 
 	// Set readiness flag — core graph is queryable now.

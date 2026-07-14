@@ -48,6 +48,9 @@ inline constexpr int64_t kMaxModuleEdges = 5000;
 
 int64_t buildKnowledgeGraphSync(store::GraphStore &store, uint64_t project_id)
 {
+	using Clock = std::chrono::steady_clock;
+	auto t0 = Clock::now();
+
 	sqlite3 *db = store.handle();
 	if (!db) {
 		fprintf(stderr,
@@ -130,8 +133,12 @@ int64_t buildKnowledgeGraphSync(store::GraphStore &store, uint64_t project_id)
 
 	fprintf(stderr,
 		"[module=async, method=buildKnowledgeGraphSync] "
-		"populated %lld module_edge rows for project %s\n",
-		(long long)rows, pid.c_str());
+		"populated %lld module_edge rows for project %s"
+		" (%lldms)\n",
+		(long long)rows, pid.c_str(),
+		(long long)std::chrono::duration_cast<std::chrono::milliseconds>(
+			Clock::now() - t0)
+			.count());
 	return rows;
 }
 

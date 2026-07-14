@@ -287,7 +287,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	}
 	auto t_edges = Clock::now();
 
-	// ── 2e: Call edges ──
+	// ── 2e: Route + type edges + type_info + type_ref ──
 	// Phase 3: Use SQL-based call edge resolution instead of C++ hash maps.
 	// The old approach loaded all declarations into in-memory hash maps
 	// (caller_idx, callee_by_name, callee_by_short, decl_idx, ir_edge_target),
@@ -315,11 +315,14 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			     " AND sr.kind = 19" // Route
 			     " AND sr.name != '' AND sr.name LIKE '% %'")
 			     .c_str());
+	}
+	auto t_route = Clock::now();
 
-		// Build the type kind list for SQL IN clause.
-		// Visitors emit type declarations as Class/Interface/Enum/TypeAlias,
-		// not TypeDecl. Use these kinds directly to avoid a fragile
-		// find+replace that would silently fail if the SQL changes.
+	// Build the type kind list for SQL IN clause.
+	// Visitors emit type declarations as Class/Interface/Enum/TypeAlias,
+	// not TypeDecl. Use these kinds directly to avoid a fragile
+	// find+replace that would silently fail if the SQL changes.
+	{
 		std::string type_kind_list =
 			"(" + std::to_string(kKindClass) + "," +
 			std::to_string(kKindInterface) + "," +
@@ -349,11 +352,16 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			"WHERE sr.project_id=" +
 			pid + " AND sr.type_name != ''";
 		exec(type_sql.c_str());
+	}
+	auto t_type_edges = Clock::now();
 
-		// Populate type_info table from type declaration records.
-		// Visitors emit type declarations as Class/Interface/Enum/TypeAlias,
-		// not TypeDecl. Map RecordKind to type_info.kind values:
-		//   0=struct/class, 1=enum, 2=trait, 3=interface, 4=type_alias
+	// Populate type_info table from type declaration records.
+	{
+		std::string type_kind_list =
+			"(" + std::to_string(kKindClass) + "," +
+			std::to_string(kKindInterface) + "," +
+			std::to_string(kKindEnum) + "," +
+			std::to_string(kKindTypeAlias) + ")";
 		exec(std::string(
 			     "INSERT OR IGNORE INTO type_info "
 			     "(project_id, name, qualified_name, kind, "
@@ -382,10 +390,11 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			     pid + " AND sr.kind IN " + type_kind_list +
 			     " AND sr.name != ''")
 			     .c_str());
+	}
+	auto t_type_info = Clock::now();
 
-		// Populate type_ref table from TypeRef records.
-		// Infer the ref kind from the variable name: names ending with ".return"
-		// indicate return type annotations (Go visitor pattern).
+	// Populate type_ref table from TypeRef records.
+	{
 		exec(std::string(
 			     "INSERT OR IGNORE INTO type_ref "
 			     "(project_id, entity_id, type_name, kind, "
@@ -401,8 +410,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			     " AND sr.name != '' AND sr.type_name != ''")
 			     .c_str());
 	}
-
-	auto t_type = Clock::now();
+	auto t_type_ref = Clock::now();
 
 	// ── P0.5: CSR build moved to AFTER resolver ──
 	// Previously buildCSR ran here, before the resolver inserted call
@@ -584,7 +592,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	exec("DROP TABLE IF EXISTS _r2n");
 	exec("DROP TABLE IF EXISTS _rf");
 
-	// ── P2: Drop query indexes before bulk edge inserts ──────────
+	// ── P3: Drop query indexes before bulk edge inserts ──────────
 	// Full rebuild: drop all lookup + unique indexes for max insert
 	// throughput, recreate via createIndexesAfterBulkLoad(full_rebuild=true).
 	// Incremental: only drop idx_ge_unique_edge so INSERT OR IGNORE
@@ -699,9 +707,12 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	}
 
 	// Reclaim space: semantic_records are no longer needed after buildGraph.
-	// Incremental re-index will re-insert them on next build.
-	exec(std::string("DELETE FROM semantic_records WHERE project_id=" + pid)
-		     .c_str());
+	// For incremental re-index, the old data is not re-inserted for
+	// unchanged files, so we keep it. The next full rebuild will
+	// overwrite all rows. Skip DELETE entirely — the data is only
+	// read during buildGraph(), and subsequent builds will re-insert
+	// only changed files via the parse pipeline.
+	// ¯\_(ツ)_/¯
 	auto t_cleanup = Clock::now();
 
 	// ── Step 0: Fine-grained phase timing breakdown ───────────────
@@ -713,7 +724,8 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	fprintf(stderr,
 		"buildGraph: %zu files"
 		" | file_list=%lldms delete=%lldms rf=%lldms r2n=%lldms"
-		" nodes=%lldms edges=%lldms type=%lldms"
+		" nodes=%lldms edges=%lldms route=%lldms"
+		" type_edges=%lldms type_info=%lldms type_ref=%lldms"
 		" ref=%lldms import=%lldms scope=%lldms"
 		" ent_rel=%lldms resolver=%lldms csr=%lldms"
 		" cleanup=%lldms total=%lldms\n",
@@ -721,8 +733,11 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		(long long)ms(t_file_list, t_delete),
 		(long long)ms(t_delete, t_rf), (long long)ms(t_rf, t_r2n),
 		(long long)ms(t_r2n, t_nodes), (long long)ms(t_nodes, t_edges),
-		(long long)ms(t_edges, t_type),
-		(long long)ms(t_type, t_reference),
+		(long long)ms(t_edges, t_route),
+		(long long)ms(t_route, t_type_edges),
+		(long long)ms(t_type_edges, t_type_info),
+		(long long)ms(t_type_info, t_type_ref),
+		(long long)ms(t_type_ref, t_reference),
 		(long long)ms(t_reference, t_import),
 		(long long)ms(t_import, t_scope),
 		(long long)ms(t_scope, t_entity_relation),
