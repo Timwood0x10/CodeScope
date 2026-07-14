@@ -32,7 +32,7 @@ constexpr size_t kMaxCandidatesToScore = 50;
 // still proceed). Prevents pathological projects from spending most of
 // their resolve time in fruitless LIKE scans on names that will not
 // resolve anyway.
-constexpr int kFuzzyBudgetMs = 800;
+constexpr int kFuzzyBudgetMs = 500;
 
 // Relation type constant for call edges in the relation table.
 constexpr int kRelationTypeCall = 1;

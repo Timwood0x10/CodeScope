@@ -206,6 +206,9 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	}
 	exec("CREATE INDEX IF NOT EXISTS _r2n_fp_oid ON _r2n(file_path, original_id)");
 	exec("CREATE INDEX IF NOT EXISTS _r2n_name ON _r2n(name)");
+	// Index for type_ref JOIN: sr.rowid = r2n.rid speeds up the
+	// INSERT INTO type_ref ... FROM semantic_records JOIN _r2n query.
+	exec("CREATE INDEX IF NOT EXISTS _r2n_rid ON _r2n(rid)");
 	auto t_r2n = Clock::now();
 
 	// ── 2c: Graph nodes from declarations ──
