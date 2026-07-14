@@ -1,8 +1,15 @@
 #include "async_knowledge.h"
 #include "engine_internal.h"
 #include "store/store.h"
+#include "model/engine.h"
+#include "model/plugins/workflow.h"
+#include "model/plugins/capability.h"
+#include "model/plugins/architecture.h"
+#include "model/plugins/contract.h"
+#include "model/state_builder.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <exception>
 #include <mutex>
@@ -135,7 +142,92 @@ int64_t buildKnowledgeGraphSync(store::GraphStore &store, uint64_t project_id)
 	return rows;
 }
 
-void launchAsyncKnowledgeBuilder(uint64_t project_id)
+void runModelIndexSync(store::GraphStore &store, uint64_t project_id,
+		       bool run_fts)
+{
+	using Clock = std::chrono::steady_clock;
+	auto t0 = Clock::now();
+
+	// ── Model Engine: capability / contract / workflow / architecture ──
+	// Supplementary layer — failures are logged but do NOT abort the
+	// async path, since the core graph is already queryable.
+	auto t_model_start = Clock::now();
+	try {
+		model::ModelEngine me;
+		me.addPlugin(std::make_unique<model::WorkflowPlugin>(&store));
+		me.addPlugin(std::make_unique<model::CapabilityPlugin>(&store));
+		me.addPlugin(
+			std::make_unique<model::ArchitecturePlugin>(&store));
+		me.addPlugin(std::make_unique<model::ContractPlugin>(&store));
+		me.runAll(project_id);
+	} catch (const std::exception &e) {
+		fprintf(stderr,
+			"[module=async, method=runModelIndexSync] "
+			"ModelEngine failed: %s\n",
+			e.what());
+	} catch (...) {
+		fprintf(stderr, "[module=async, method=runModelIndexSync] "
+				"ModelEngine failed with unknown exception\n");
+	}
+	auto t_model = Clock::now();
+
+	// ── State Builder: module-level summaries ──
+	auto t_state_start = Clock::now();
+	try {
+		model::StateBuilder sb(&store, project_id);
+		sb.buildAll();
+	} catch (const std::exception &e) {
+		fprintf(stderr,
+			"[module=async, method=runModelIndexSync] "
+			"StateBuilder failed: %s\n",
+			e.what());
+	} catch (...) {
+		fprintf(stderr, "[module=async, method=runModelIndexSync] "
+				"StateBuilder failed with unknown exception\n");
+	}
+	auto t_state = Clock::now();
+
+	// ── FTS index (trigram + code_fts) ──
+	// Skipped in fast mode — the caller passes run_fts=false when
+	// CODESCOPE_INDEX_MODE=fast. FTS is the most expensive single step
+	// here, so skipping it gives the fastest "index done" in fast mode.
+	int64_t fts_ms = 0;
+	if (run_fts) {
+		auto t_fts_start = Clock::now();
+		try {
+			store.buildFTSFromGraph(project_id);
+			store.setProjectReadiness(project_id, "fts_ready", 1);
+		} catch (const std::exception &e) {
+			fprintf(stderr,
+				"[module=async, method=runModelIndexSync] "
+				"FTS build failed: %s\n",
+				e.what());
+		} catch (...) {
+			fprintf(stderr,
+				"[module=async, method=runModelIndexSync] "
+				"FTS build failed with unknown exception\n");
+		}
+		fts_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+				 Clock::now() - t_fts_start)
+				 .count();
+	}
+
+	auto ms = [](auto start, auto end) {
+		return std::chrono::duration_cast<std::chrono::milliseconds>(
+			       end - start)
+			.count();
+	};
+	fprintf(stderr,
+		"[module=async, method=runModelIndexSync] "
+		"project %llu | model=%lldms state=%lldms fts=%lldms"
+		" total=%lldms\n",
+		(unsigned long long)project_id,
+		(long long)ms(t_model_start, t_model),
+		(long long)ms(t_state_start, t_state), (long long)fts_ms,
+		(long long)ms(t0, Clock::now()));
+}
+
+void launchAsyncKnowledgeBuilder(uint64_t project_id, bool run_fts)
 {
 	std::lock_guard<std::mutex> lock(g_thread_mutex);
 
@@ -158,7 +250,7 @@ void launchAsyncKnowledgeBuilder(uint64_t project_id)
 		return;
 	}
 
-	g_builder_thread = std::thread([project_id]() {
+	g_builder_thread = std::thread([project_id, run_fts]() {
 		if (!g_store) {
 			fprintf(stderr,
 				"[module=async] g_store is null, aborting\n");
@@ -166,10 +258,15 @@ void launchAsyncKnowledgeBuilder(uint64_t project_id)
 			return;
 		}
 		fprintf(stderr,
-			"[module=async] starting knowledge graph build "
-			"for project %llu\n",
-			(unsigned long long)project_id);
+			"[module=async] starting model+state+fts+knowledge"
+			" build for project %llu (run_fts=%d)\n",
+			(unsigned long long)project_id, (int)run_fts);
 		try {
+			// P3: Model Engine + State Builder + FTS run in the
+			// background thread BEFORE the knowledge builder, so the
+			// synchronous index path returns as soon as the core graph
+			// + indexes are ready.
+			runModelIndexSync(*g_store, project_id, run_fts);
 			buildKnowledgeGraphSync(*g_store, project_id);
 		} catch (const std::exception &e) {
 			fprintf(stderr,

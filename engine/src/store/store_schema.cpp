@@ -869,6 +869,60 @@ bool GraphStore::createIndexesAfterBulkLoad(uint64_t project_id)
 			ok = false;
 		}
 	}
+
+	// Recreate the unique edge index (dropped by dropQueryIndexes during
+	// buildGraph). Deduplicate existing edges first — INSERT OR IGNORE
+	// during buildGraph may have produced duplicates when the unique
+	// index was absent.
+	if (!exec("DELETE FROM graph_edges WHERE id NOT IN ("
+		  " SELECT MIN(id) FROM graph_edges"
+		  " GROUP BY source_node_id, target_node_id, edge_type)")) {
+		fprintf(stderr,
+			"WARN: createIndexesAfterBulkLoad dedup: %s"
+			" [module=store, method=createIndexesAfterBulkLoad]\n",
+			error_.c_str());
+		ok = false;
+	}
+	if (!exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_ge_unique_edge"
+		  " ON graph_edges(source_node_id, target_node_id, edge_type)")) {
+		fprintf(stderr,
+			"WARN: createIndexesAfterBulkLoad unique edge: %s"
+			" [module=store, method=createIndexesAfterBulkLoad]\n",
+			error_.c_str());
+		ok = false;
+	}
+	return ok;
+}
+
+bool GraphStore::dropQueryIndexes()
+{
+	// Drop query-time indexes on graph_edges to avoid per-row index
+	// maintenance during bulk edge inserts (buildGraph + resolver).
+	// These are recreated by createIndexesAfterBulkLoad after all
+	// edges have been written.
+	//
+	// The unique edge index (idx_ge_unique_edge) is also dropped so
+	// that INSERT OR IGNORE does not pay the unique-check cost per row.
+	// Callers must dedup before recreating it (handled in
+	// createIndexesAfterBulkLoad).
+	const char *drop_sqls[] = {
+		"DROP INDEX IF EXISTS idx_graph_edges_src",
+		"DROP INDEX IF EXISTS idx_graph_edges_tgt",
+		"DROP INDEX IF EXISTS idx_graph_edges_project",
+		"DROP INDEX IF EXISTS idx_ge_callers",
+		"DROP INDEX IF EXISTS idx_ge_callees",
+		"DROP INDEX IF EXISTS idx_ge_unique_edge",
+	};
+	bool ok = true;
+	for (auto *sql : drop_sqls) {
+		if (!exec(sql)) {
+			fprintf(stderr,
+				"WARN: dropQueryIndexes: %s"
+				" [module=store, method=dropQueryIndexes]\n",
+				error_.c_str());
+			ok = false;
+		}
+	}
 	return ok;
 }
 

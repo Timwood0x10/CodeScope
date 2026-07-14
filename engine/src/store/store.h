@@ -484,6 +484,16 @@ class GraphStore {
 	 */
 	bool createIndexesAfterBulkLoad(uint64_t project_id);
 
+	/**
+	 * Drop query-time indexes on graph_edges before bulk edge inserts.
+	 * Maintaining these indexes during thousands of INSERTs is expensive.
+	 * Drop them before bulk load, then recreate via createIndexesAfterBulkLoad.
+	 * The unique edge index (idx_ge_unique_edge) is also dropped — callers
+	 * must dedup via SELECT DISTINCT or DELETE ... GROUP BY before recreating.
+	 * @return true on success (individual DROP failures are logged, not fatal).
+	 */
+	bool dropQueryIndexes();
+
 	// ── Type Registry ─────────────────────────────────────────────
 
 	/**

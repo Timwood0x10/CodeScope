@@ -2,12 +2,6 @@
 #include "store_internal.h"
 #include "platform_win.h"
 #include "../resolver/pipeline.h"
-#include "../model/engine.h"
-#include "../model/plugins/workflow.h"
-#include "../model/plugins/capability.h"
-#include "../model/plugins/architecture.h"
-#include "../model/plugins/contract.h"
-#include "../model/state_builder.h"
 
 #include <algorithm>
 #include <climits>
@@ -212,8 +206,6 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 
 	// ── 2c: Graph nodes from declarations ──
 
-	auto t_intern = Clock::now();
-
 	if (explain_env && explain_env[0]) {
 		explainQueryPlan(
 			"SELECT r2n.node_id, sr.project_id, sr.original_id, "
@@ -245,7 +237,11 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		     "FROM semantic_records sr "
 		     "JOIN _r2n r2n ON sr.rowid = r2n.rid")
 		     .c_str());
-	// Phase 1.1: dual-write to entity table
+	// Phase 1.1: dual-write to entity table (with test-file filter).
+	// Filter test/bench/spec files — AI only needs production code.
+	// This early insert feeds the scope table below, so it must happen
+	// before scope creation. The late insert after dropQueryIndexes is
+	// now redundant but kept as a safety net (INSERT OR IGNORE).
 	exec(std::string(
 		     "INSERT OR IGNORE INTO entity "
 		     "(id, project_id, kind, name, qualified_name, "
@@ -258,7 +254,12 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		     " sr.file_path, sr.language, "
 		     " sr.start_row, sr.start_col, sr.end_row, sr.end_col "
 		     "FROM semantic_records sr "
-		     "JOIN _r2n r2n ON sr.rowid = r2n.rid")
+		     "JOIN _r2n r2n ON sr.rowid = r2n.rid "
+		     "WHERE sr.file_path NOT LIKE '%_test.%'"
+		     " AND sr.file_path NOT LIKE '%/tests/%'"
+		     " AND sr.file_path NOT LIKE '%_spec.%'"
+		     " AND sr.file_path NOT LIKE '%/benches/%'"
+		     " AND sr.file_path NOT LIKE '%__test__%'")
 		     .c_str());
 	auto t_nodes = Clock::now();
 
@@ -290,7 +291,6 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// P3 HashMap (buildCallEdgesSQL) has been replaced by the new
 	// Resolver Pipeline (Phase 1.3) with multi-factor scoring.
 	(void)build_calls;
-	auto t_call = Clock::now();
 
 	// Phase 1.3: Type edges — create USES_TYPE edges from TypeRef records
 	{
@@ -399,20 +399,11 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 
 	auto t_type = Clock::now();
 
-	// ── Build CSR adjacency from call edges ──
-	// Aggregates graph_edges(edge_type=1) into src_id → [tgt_ids] BLOBs
-	// for O(1) caller/callee queries.
-	if (build_calls) {
-		if (!buildCSR(project_id)) {
-			fprintf(stderr,
-				"buildGraph: buildCSR failed for "
-				"project %s [module=store, method=buildGraph]\n",
-				pid.c_str());
-		}
-	}
-
-	// Backfill for symbols.node_id is no longer needed — symbols table
-	// has been eliminated. graph_nodes is the sole source of truth.
+	// ── P0.5: CSR build moved to AFTER resolver ──
+	// Previously buildCSR ran here, before the resolver inserted call
+	// edges. The CSR (adjacency BLOBs) therefore missed all resolver-
+	// generated call edges, making caller/callee lookups incomplete.
+	// CSR is now built after the resolver pipeline (see below).
 
 	// Phase 1.2: populate reference table from semantic_records CallExpr + MemberExpr
 	// Uses _r2n mapping to resolve parent_id -> caller_id.
@@ -431,6 +422,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			" AND sr.kind IN (9,10) AND sr.name != '' AND sr.file_path NOT LIKE '%_test.%' AND sr.file_path NOT LIKE '%/tests/%' AND sr.file_path NOT LIKE '%_spec.%' AND sr.file_path NOT LIKE '%/benches/%' AND sr.file_path NOT LIKE '%__test__%'";
 		exec(ref_sql.c_str());
 	}
+	auto t_reference = Clock::now();
 
 	// Phase 1.2: populate import table from semantic_records Import
 	// Parse raw import text to extract individual import paths.
@@ -444,28 +436,14 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			sqlite3_bind_int64(fetch_st, 1,
 					   static_cast<int64_t>(project_id));
 
-			// Batch insert uses flushImportBatch() helper
-
 			while (sqlite3_step(fetch_st) == SQLITE_ROW) {
 				const char *raw = reinterpret_cast<const char *>(
 					sqlite3_column_text(fetch_st, 0));
 				if (!raw)
 					continue;
 				std::string text(raw);
-
-				// Extract individual paths from import text.
-				// Handle formats:
-				//   Rust: "use crate::mod::func;"
-				//   Go: "import ( \"path\" )"  or  "import \"path\""
-				//   Python: "import module" or "from module import func"
-				//   C++: "#include \"header\""
-				//   JS: "import { x } from 'module'"
-				// Find all quoted strings and path-like tokens.
-				// Simple approach: find all strings between quotes
-				// or after "use"/"import" keywords.
 				std::vector<std::string> paths;
 				size_t pos = 0;
-				// Look for quoted strings: "path" or 'path'
 				while ((pos = text.find_first_of("\"'", pos)) !=
 				       std::string::npos) {
 					char q = text[pos];
@@ -474,14 +452,11 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 						break;
 					std::string p = text.substr(
 						pos + 1, end - pos - 1);
-					// Skip empty and system paths
 					if (!p.empty() &&
 					    p.find('.') != std::string::npos)
 						paths.push_back(p);
 					pos = end + 1;
 				}
-				// Also look for Rust-style use paths without quotes
-				// e.g. "use crate::module::func"
 				size_t use_pos = 0;
 				while ((use_pos = text.find("use ", use_pos)) !=
 				       std::string::npos) {
@@ -491,7 +466,6 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 					std::string p =
 						text.substr(use_pos + 4,
 							    semi - use_pos - 4);
-					// Trim whitespace
 					p.erase(0, p.find_first_not_of(" \t"));
 					p.erase(p.find_last_not_of(" \t") + 1);
 					if (!p.empty() &&
@@ -499,7 +473,6 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 						paths.push_back(p);
 					use_pos = semi + 1;
 				}
-				// Also look for Python-style "from X import Y"
 				size_t from_pos = 0;
 				while ((from_pos =
 						text.find("from ", from_pos)) !=
@@ -517,8 +490,6 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 						paths.push_back(p);
 					from_pos = imp + 8;
 				}
-
-				// Batch insert extracted paths (500 per batch)
 				std::vector<PathRec> batch;
 				constexpr size_t kMaxBatch = 500;
 				for (auto &p : paths) {
@@ -549,9 +520,9 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 							 batch);
 			}
 			sqlite3_finalize(fetch_st);
-			// Batch insert handles finalization via flushImportBatch
 		}
 	}
+	auto t_import = Clock::now();
 
 	// Phase 1.2: populate scope table from entity file paths.
 	// Module scopes: one per unique directory.
@@ -569,9 +540,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			" AND file_path LIKE '%/%'";
 		exec(scope_sql.c_str());
 	}
-
 	// Function scopes: each entity within its module scope.
-	// Find the module scope id by matching the directory of the file.
 	{
 		std::string func_sql =
 			"INSERT OR IGNORE INTO scope "
@@ -589,7 +558,6 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			std::to_string(project_id);
 		exec(func_sql.c_str());
 	}
-
 	// Update import.source_scope_id to point to the file's module scope.
 	{
 		std::string imp_scope_sql =
@@ -609,76 +577,103 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			std::to_string(project_id);
 		exec(imp_scope_sql.c_str());
 	}
+	auto t_scope = Clock::now();
 
 	exec("DROP TABLE IF EXISTS _r2n");
 	exec("DROP TABLE IF EXISTS _rf");
-	std::string entity_sql = "INSERT OR IGNORE INTO entity "
-				 "(id, project_id, kind, name, qualified_name, "
-				 " file_path, language, start_row, start_col, "
-				 " end_row, end_col) "
-				 "SELECT id, project_id, node_type, name, "
-				 " COALESCE(NULLIF(qualified_name, ''), name), "
-				 " file_path, language, "
-				 " start_row, start_col, end_row, end_col "
-				 "FROM graph_nodes WHERE project_id=" +
-				 std::to_string(project_id) +
-				 " AND file_path NOT LIKE '%_test.%'"
-				 " AND file_path NOT LIKE '%/tests/%'"
-				 ""
-				 " AND file_path NOT LIKE '%_spec.%'"
-				 " AND file_path NOT LIKE '%/benches/%'"
-				 " AND file_path NOT LIKE '%__test__%'";
-	exec(entity_sql.c_str());
+
+	// ── P2: Drop query indexes before bulk edge inserts ──────────
+	// Maintaining these indexes during thousands of edge INSERTs is
+	// expensive. Drop them here, let buildGraph insert edges without
+	// index maintenance, then recreate via createIndexesAfterBulkLoad
+	// (called by engine_index_project.cpp after buildGraph returns).
+	dropQueryIndexes();
+
+	// Phase 1.1: dual-write entity table (production code only)
+	{
+		std::string entity_sql =
+			"INSERT OR IGNORE INTO entity "
+			"(id, project_id, kind, name, qualified_name, "
+			" file_path, language, start_row, start_col, "
+			" end_row, end_col) "
+			"SELECT id, project_id, node_type, name, "
+			" COALESCE(NULLIF(qualified_name, ''), name), "
+			" file_path, language, "
+			" start_row, start_col, end_row, end_col "
+			"FROM graph_nodes WHERE project_id=" +
+			std::to_string(project_id) +
+			" AND file_path NOT LIKE '%_test.%'"
+			" AND file_path NOT LIKE '%/tests/%'"
+			" AND file_path NOT LIKE '%_spec.%'"
+			" AND file_path NOT LIKE '%/benches/%'"
+			" AND file_path NOT LIKE '%__test__%'";
+		exec(entity_sql.c_str());
+	}
 
 	// Phase 1.1: dual-write to relation table (production code only)
-	std::string rel_sql =
-		"INSERT OR IGNORE INTO relation "
-		"(project_id, source_id, target_id, type) "
-		"SELECT e.project_id, e.source_node_id, "
-		" e.target_node_id, e.edge_type "
-		"FROM graph_edges e "
-		"JOIN graph_nodes src ON e.source_node_id = src.id"
-		" AND src.file_path NOT LIKE '%_test.%'"
-		" AND src.file_path NOT LIKE '%/tests/%'"
-		""
-		" AND src.file_path NOT LIKE '%_spec.%'"
-		" AND src.file_path NOT LIKE '%/benches/%'"
-		" AND src.file_path NOT LIKE '%__test__%'"
-		"JOIN graph_nodes tgt ON e.target_node_id = tgt.id"
-		" AND tgt.file_path NOT LIKE '%_test.%'"
-		" AND tgt.file_path NOT LIKE '%/tests/%'"
-		""
-		" AND tgt.file_path NOT LIKE '%_spec.%'"
-		" AND tgt.file_path NOT LIKE '%/benches/%'"
-		" AND tgt.file_path NOT LIKE '%__test__%'"
-		"WHERE e.project_id=" +
-		std::to_string(project_id);
-	exec(rel_sql.c_str());
+	{
+		std::string rel_sql =
+			"INSERT OR IGNORE INTO relation "
+			"(project_id, source_id, target_id, type) "
+			"SELECT e.project_id, e.source_node_id, "
+			" e.target_node_id, e.edge_type "
+			"FROM graph_edges e "
+			"JOIN graph_nodes src ON e.source_node_id = src.id"
+			" AND src.file_path NOT LIKE '%_test.%'"
+			" AND src.file_path NOT LIKE '%/tests/%'"
+			" AND src.file_path NOT LIKE '%_spec.%'"
+			" AND src.file_path NOT LIKE '%/benches/%'"
+			" AND src.file_path NOT LIKE '%__test__%'"
+			"JOIN graph_nodes tgt ON e.target_node_id = tgt.id"
+			" AND tgt.file_path NOT LIKE '%_test.%'"
+			" AND tgt.file_path NOT LIKE '%/tests/%'"
+			" AND tgt.file_path NOT LIKE '%_spec.%'"
+			" AND tgt.file_path NOT LIKE '%/benches/%'"
+			" AND tgt.file_path NOT LIKE '%__test__%'"
+			"WHERE e.project_id=" +
+			std::to_string(project_id);
+		exec(rel_sql.c_str());
+	}
+	auto t_entity_relation = Clock::now();
 
 	// Phase 1.3: Resolver Pipeline — resolve references to entities
+	// Inserts resolved call edges into relation + graph_edges via a
+	// staging table (P1 batch optimization).
 	{
 		resolver::ResolverPipeline pipe(this, project_id);
 		pipe.run();
 	}
+	auto t_resolver = Clock::now();
 
-	// Phase 1.4: Model Engine — build high-level models
-	{
-		model::ModelEngine me;
-		me.addPlugin(std::make_unique<model::WorkflowPlugin>(this));
-		me.addPlugin(std::make_unique<model::CapabilityPlugin>(this));
-		me.addPlugin(std::make_unique<model::ArchitecturePlugin>(this));
-		me.addPlugin(std::make_unique<model::ContractPlugin>(this));
-		me.runAll(project_id);
+	// ── P0.5: Build CSR AFTER resolver ────────────────────────────
+	// Now that the resolver has inserted all call edges into
+	// graph_edges, build CSR adjacency BLOBs so they include resolver-
+	// generated edges. Previously CSR was built before the resolver,
+	// missing all resolved call edges.
+	if (build_calls) {
+		if (!buildCSR(project_id)) {
+			fprintf(stderr,
+				"buildGraph: buildCSR failed for "
+				"project %s [module=store, method=buildGraph]\n",
+				pid.c_str());
+		}
 	}
+	auto t_csr = Clock::now();
 
-	// Phase 1.5: State Builder — build module summaries + state tables
-	{
-		model::StateBuilder sb(this, project_id);
-		sb.buildAll();
-	}
+	// ── P3: Model Engine + State Builder moved to async path ──────
+	// Previously model/state ran synchronously inside buildGraph, blocking
+	// the user from querying until all high-level models were built.
+	// Now buildGraph returns after CSR (the core graph is complete and
+	// queryable), and model/state run in a background thread launched by
+	// engine_index_project.cpp after createIndexesAfterBulkLoad.
 
-	// Phase timing breakdown
-	auto t_end = Clock::now();
+	// Reclaim space: semantic_records are no longer needed after buildGraph.
+	// Incremental re-index will re-insert them on next build.
+	exec(std::string("DELETE FROM semantic_records WHERE project_id=" + pid)
+		     .c_str());
+	auto t_cleanup = Clock::now();
+
+	// ── Step 0: Fine-grained phase timing breakdown ───────────────
 	auto ms = [](auto start, auto end) {
 		return std::chrono::duration_cast<std::chrono::milliseconds>(
 			       end - start)
@@ -687,21 +682,22 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	fprintf(stderr,
 		"buildGraph: %zu files"
 		" | file_list=%lldms delete=%lldms rf=%lldms r2n=%lldms"
-		" intern=%lldms nodes=%lldms edges=%lldms calls=%lldms"
-		" type=%lldms"
-		" total=%lldms\n",
+		" nodes=%lldms edges=%lldms type=%lldms"
+		" ref=%lldms import=%lldms scope=%lldms"
+		" ent_rel=%lldms resolver=%lldms csr=%lldms"
+		" cleanup=%lldms total=%lldms\n",
 		rebuild_files.size(), (long long)ms(t0, t_file_list),
 		(long long)ms(t_file_list, t_delete),
 		(long long)ms(t_delete, t_rf), (long long)ms(t_rf, t_r2n),
-		(long long)ms(t_r2n, t_intern),
-		(long long)ms(t_intern, t_nodes),
-		(long long)ms(t_nodes, t_edges), (long long)ms(t_edges, t_call),
-		(long long)ms(t_call, t_type), (long long)ms(t0, t_end));
-
-	// Reclaim space: semantic_records are no longer needed after buildGraph.
-	// Incremental re-index will re-insert them on next build.
-	exec(std::string("DELETE FROM semantic_records WHERE project_id=" + pid)
-		     .c_str());
+		(long long)ms(t_r2n, t_nodes), (long long)ms(t_nodes, t_edges),
+		(long long)ms(t_edges, t_type),
+		(long long)ms(t_type, t_reference),
+		(long long)ms(t_reference, t_import),
+		(long long)ms(t_import, t_scope),
+		(long long)ms(t_scope, t_entity_relation),
+		(long long)ms(t_entity_relation, t_resolver),
+		(long long)ms(t_resolver, t_csr),
+		(long long)ms(t_csr, t_cleanup), (long long)ms(t0, t_cleanup));
 
 	return true;
 }

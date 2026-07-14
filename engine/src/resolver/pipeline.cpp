@@ -3,9 +3,11 @@
 #include "factors.h"
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <sqlite3.h>
 #include <sstream>
+#include <unordered_set>
 
 namespace resolver
 {
@@ -19,8 +21,34 @@ namespace
 // Fuzzy resolver candidate limit — enough alternatives without flooding.
 constexpr size_t kFuzzyCandidateLimit = 5;
 
+// Maximum candidates to score per reference. Names with more candidates
+// are too generic to resolve reliably — skip to avoid wasted scoring
+// and false-positive cross-module edges.
+constexpr size_t kMaxCandidatesToScore = 50;
+
 // Relation type constant for call edges in the relation table.
 constexpr int kRelationTypeCall = 1;
+
+// High-frequency names that skip fuzzy fallback entirely. These are
+// extremely common in Go/Java stdlib and produce too many false-positive
+// cross-module matches to be useful. Exact-name matches still proceed.
+const std::unordered_set<std::string> &skipFuzzyNames()
+{
+	static const std::unordered_set<std::string> kSet = {
+		"Error",  "Len",     "String", "Done",	"Contains",
+		"Errorf", "Sprintf", "Printf", "Print", "Println",
+		"Panic",  "Fatal",   "Append", "Make",	"Copy",
+		"Delete", "Close",   "Cap",    "Range", "Value",
+	};
+	return kSet;
+}
+
+/// Check if a name is high-frequency and should skip fuzzy fallback.
+/// Only applies to the fuzzy path — exact-name matches still proceed.
+bool shouldSkipFuzzy(const std::string &name)
+{
+	return skipFuzzyNames().count(name) > 0;
+}
 
 // Confidence thresholds were removed when resolved_reference table was
 // deprecated. Score is now stored directly in relation.confidence.
@@ -265,9 +293,34 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 
 int64_t ResolverPipeline::run()
 {
-	// Step 0: Pre-load all entities into a name-indexed HashMap
+	using Clock = std::chrono::steady_clock;
+	auto t_start = Clock::now();
+
+	// ── P1: Staging table for batch edge inserts ──────────────────
+	// Instead of preparing/finalizing an INSERT per resolved reference,
+	// we write lightweight rows into a temp table and batch-copy to
+	// relation + graph_edges at the end. This eliminates per-edge SQL
+	// prepare/step/finalize overhead and lets SQLite optimize the bulk
+	// insert. The entity table already excludes test/bench files
+	// (filtered during buildGraph), so no per-edge test-file check
+	// is needed here.
+	store_->exec("DROP TABLE IF EXISTS _resolved_edges");
+	if (!store_->exec("CREATE TEMP TABLE _resolved_edges ("
+			  " source_id INTEGER NOT NULL,"
+			  " target_id INTEGER NOT NULL,"
+			  " edge_type INTEGER NOT NULL,"
+			  " project_id INTEGER NOT NULL)")) {
+		fprintf(stderr,
+			"[module=resolver, method=run] "
+			"create staging table failed: %s\n",
+			store_->error().c_str());
+		return -1;
+	}
+
+	// ── Step 0: Pre-load all entities into a name-indexed HashMap ──
 	// This avoids one SQL query per reference (the main bottleneck).
 	std::unordered_map<std::string, std::vector<Candidate> > entity_index;
+	int64_t total_entities = 0;
 	{
 		std::string idx_sql =
 			"SELECT id, name, file_path, language FROM entity "
@@ -300,11 +353,12 @@ int64_t ResolverPipeline::run()
 			c.module_path = modulePath(c.file_path);
 			c.score = 0;
 			entity_index[c.name].push_back(c);
+			total_entities++;
 		}
 		sqlite3_finalize(idx_st);
 	}
 
-	// Step 1: Query all references for this project
+	// ── Query all references for this project ──
 	std::string ref_sql =
 		"SELECT r.id, r.name, r.caller_id, r.arity, "
 		" r.start_row, r.start_col, r.call_kind, e.file_path "
@@ -322,29 +376,22 @@ int64_t ResolverPipeline::run()
 	}
 	sqlite3_bind_int64(ref_st, 1, static_cast<int64_t>(project_id_));
 
-	// resolved_reference table is deprecated.
-	// Confidence + reason are stored directly in the relation and graph_edges tables.
-	// Prepare insert statement for relation (call edge)
-	std::string ins_rel_sql =
-		"INSERT OR IGNORE INTO relation "
-		"(project_id, source_id, target_id, type) "
-		"SELECT ?, ?, ?, ? "
-		"WHERE NOT EXISTS ("
-		" SELECT 1 FROM entity e WHERE (e.id = ? OR e.id = ?)"
-		" AND (e.file_path LIKE '%_test.%'"
-		"  OR e.file_path LIKE '%/tests/%'"
-		"  OR e.file_path LIKE '%_spec.%'"
-		"  OR e.file_path LIKE '%/benches/%'"
-		"  OR e.file_path LIKE '%__test__%'))";
-	sqlite3_stmt *ins_rel_st = nullptr;
-	if (sqlite3_prepare_v2(store_->handle(), ins_rel_sql.c_str(), -1,
-			       &ins_rel_st, nullptr) != SQLITE_OK) {
+	// ── P0.4: Prepare staging INSERT once (reused in loop) ────────
+	// Previously a graph_edges INSERT was prepared/finalized inside the
+	// loop for every resolved reference — thousands of prepare calls.
+	// Now we prepare once and bind/reset in the loop.
+	const char *ins_staging_sql =
+		"INSERT INTO _resolved_edges "
+		"(source_id, target_id, edge_type, project_id) "
+		"VALUES (?,?,?,?)";
+	sqlite3_stmt *ins_st = nullptr;
+	if (sqlite3_prepare_v2(store_->handle(), ins_staging_sql, -1, &ins_st,
+			       nullptr) != SQLITE_OK) {
 		fprintf(stderr,
 			"[module=resolver, method=run] "
-			"prepare relation insert failed: %s\n",
+			"prepare staging insert failed: %s\n",
 			sqlite3_errmsg(store_->handle()));
 		sqlite3_finalize(ref_st);
-		// resolved_reference table is deprecated
 		return -1;
 	}
 
@@ -354,12 +401,18 @@ int64_t ResolverPipeline::run()
 	sqlite3_stmt *lk_st = nullptr;
 	sqlite3_prepare_v2(store_->handle(), lk_sql, -1, &lk_st, nullptr);
 
+	// ── Step 0: Profiling counters ──
 	int64_t resolved_count = 0;
 	int64_t total_refs = 0;
+	int64_t exact_hits = 0;
+	int64_t fuzzy_hits = 0;
+	int64_t skipped_common = 0;
+	int64_t skipped_too_many = 0;
+	int64_t total_candidates_seen = 0;
+
 	while (sqlite3_step(ref_st) == SQLITE_ROW) {
 		total_refs++;
-		// ref_id was used for resolved_reference (deprecated)
-		(void)sqlite3_column_int64(ref_st, 0);
+		(void)sqlite3_column_int64(ref_st, 0); // ref_id unused
 		const char *name_c = reinterpret_cast<const char *>(
 			sqlite3_column_text(ref_st, 1));
 		uint64_t caller_id =
@@ -374,24 +427,34 @@ int64_t ResolverPipeline::run()
 		std::string name(name_c);
 		std::string caller_file(fp_c);
 
-		// Find candidates by name (from pre-loaded HashMap).
-		// Use find() + move to avoid populating the map with empty
-		// entries for missed lookups.
+		// ── P0.3: Find candidates by name — COPY, not move ──────
+		// Previously: candidates = std::move(it->second)
+		// This emptied the index entry so subsequent lookups of the
+		// same name got nothing and fell through to slow fuzzy
+		// matching, causing both missed resolutions and wasted time.
 		std::vector<Candidate> candidates;
 		auto it = entity_index.find(name);
-		if (it != entity_index.end())
-			candidates = std::move(it->second);
+		if (it != entity_index.end()) {
+			candidates = it->second; // copy — index stays intact
+			exact_hits++;
+		}
+
 		if (candidates.empty()) {
-			// FuzzyResolver fallback: try case-insensitive,
-			// prefix, and suffix matching so references with
-			// case differences or partial names are still
-			// resolved instead of dropped.
+			// Skip fuzzy for high-frequency names (Error, Len,
+			// String, Done, Contains, etc.) — they produce too
+			// many false-positive cross-module matches.
+			if (shouldSkipFuzzy(name)) {
+				skipped_common++;
+				continue;
+			}
+			// FuzzyResolver fallback: case-insensitive, prefix,
+			// and suffix matching so references with case
+			// differences or partial names are still resolved.
 			auto fuzzy_ids =
 				fuzzy_->resolve(name, kFuzzyCandidateLimit);
 			if (fuzzy_ids.empty())
 				continue;
-			// Hydrate candidates from the fuzzy IDs by looking
-			// up each entity's name + file_path + language.
+			fuzzy_hits++;
 			for (auto fid : fuzzy_ids) {
 				if (!lk_st)
 					break;
@@ -426,21 +489,27 @@ int64_t ResolverPipeline::run()
 			}
 		}
 
+		total_candidates_seen +=
+			static_cast<int64_t>(candidates.size());
+
+		// Candidate cap: too many candidates means the name is too
+		// generic to resolve reliably — skip to avoid wasted scoring.
+		if (candidates.size() > kMaxCandidatesToScore) {
+			skipped_too_many++;
+			continue;
+		}
+
 		// Apply constraints to rank
 		applyConstraints(candidates, caller_file, name, call_kind);
 
 		// Pick the best match (highest score), skip self-reference.
-		// Also apply hard language visibility rules: if the candidate
-		// is not visible from the caller's module (e.g. Go unexported
-		// names cannot be called cross-package), reject it outright.
-		// Reference: codebase-memory-mcp (MIT) helpers.c :: cbm_is_exported()
+		// Also apply hard language visibility rules: Go unexported
+		// names cannot be called cross-package, etc.
 		uint64_t best_id = 0;
 		double best_score = -1.0;
-		std::string best_reason;
 		for (auto &c : candidates) {
 			if (c.entity_id == caller_id)
 				continue;
-			// Hard rejection: language visibility rules
 			if (factorVisibilityCheck(c.language, c.name,
 						  caller_file,
 						  c.file_path) < 0.5)
@@ -448,113 +517,89 @@ int64_t ResolverPipeline::run()
 			if (c.total_score > best_score) {
 				best_id = c.entity_id;
 				best_score = c.total_score;
-				best_reason = c.name;
 			}
 		}
 		if (best_id == 0 || best_score < kResolutionThreshold)
 			continue;
 
-		// Confidence was used for resolved_reference (deprecated).
-		// Score is now stored directly in relation.confidence.
-		(void)best_score;
-		std::string reason = "matched " + best_reason +
-				     " (score=" + std::to_string(best_score) +
-				     ")";
-		// resolved_reference writes removed
-		// resolved_reference table is deprecated — confidence + reason stored in relation.
-		// Reason JSON is built from the best candidate's factors.
-		std::string reason_json = "[]";
-		for (auto &c : candidates) {
-			if (c.entity_id == best_id && !c.factors.empty()) {
-				std::string json = "[";
-				for (size_t fi = 0; fi < c.factors.size();
-				     fi++) {
-					if (fi > 0)
-						json += ",";
-					json += "{\"name\":\"" +
-						c.factors[fi].name +
-						"\",\"score\":" +
-						std::to_string(
-							c.factors[fi].score) +
-						"}";
-				}
-				json += "]";
-				reason_json = json;
-				break;
-			}
-		}
 		resolved_count++;
-		// Write to relation (call edge)
-		sqlite3_bind_int64(ins_rel_st, 1,
+
+		// P1: Insert into staging table (lightweight — no indexes)
+		sqlite3_bind_int64(ins_st, 1, static_cast<int64_t>(caller_id));
+		sqlite3_bind_int64(ins_st, 2, static_cast<int64_t>(best_id));
+		sqlite3_bind_int(ins_st, 3, kRelationTypeCall);
+		sqlite3_bind_int64(ins_st, 4,
 				   static_cast<int64_t>(project_id_));
-		sqlite3_bind_int64(ins_rel_st, 2,
-				   static_cast<int64_t>(caller_id));
-		sqlite3_bind_int64(ins_rel_st, 3,
-				   static_cast<int64_t>(best_id));
-		sqlite3_bind_int(ins_rel_st, 4, kRelationTypeCall);
-		// Bind filter params (source + target for test file check)
-		sqlite3_bind_int64(ins_rel_st, 5,
-				   static_cast<int64_t>(caller_id));
-		sqlite3_bind_int64(ins_rel_st, 6,
-				   static_cast<int64_t>(best_id));
-		int rel_rc = sqlite3_step(ins_rel_st);
-		if (rel_rc != SQLITE_DONE && rel_rc != SQLITE_CONSTRAINT)
+		int st_rc = sqlite3_step(ins_st);
+		if (st_rc != SQLITE_DONE && st_rc != SQLITE_CONSTRAINT)
 			fprintf(stderr,
 				"[module=resolver, method=run] "
-				"insert relation failed (rc=%d): %s\n",
-				rel_rc, sqlite3_errmsg(store_->handle()));
-		sqlite3_reset(ins_rel_st);
-
-		// Also write to graph_edges for CSR compatibility
-		{
-			const char *ge_sql =
-				"INSERT OR IGNORE INTO graph_edges "
-				"(project_id, source_node_id, target_node_id, "
-				"edge_type) VALUES (?,?,?,?)";
-			sqlite3_stmt *ge_st = nullptr;
-			if (sqlite3_prepare_v2(store_->handle(), ge_sql, -1,
-					       &ge_st, nullptr) == SQLITE_OK) {
-				sqlite3_bind_int64(
-					ge_st, 1,
-					static_cast<int64_t>(project_id_));
-				sqlite3_bind_int64(
-					ge_st, 2,
-					static_cast<int64_t>(caller_id));
-				sqlite3_bind_int64(
-					ge_st, 3,
-					static_cast<int64_t>(best_id));
-				sqlite3_bind_int(ge_st, 4, 1);
-				int ge_rc = sqlite3_step(ge_st);
-				if (ge_rc != SQLITE_DONE &&
-				    ge_rc != SQLITE_CONSTRAINT)
-					fprintf(stderr,
-						"[module=resolver, method=run] "
-						"insert graph_edges failed "
-						"(rc=%d): %s\n",
-						ge_rc,
-						sqlite3_errmsg(
-							store_->handle()));
-				sqlite3_finalize(ge_st);
-			} else {
-				fprintf(stderr,
-					"[module=resolver, method=run] "
-					"prepare graph_edges insert failed: "
-					"%s\n",
-					sqlite3_errmsg(store_->handle()));
-			}
-		}
+				"staging insert failed (rc=%d): %s\n",
+				st_rc, sqlite3_errmsg(store_->handle()));
+		sqlite3_reset(ins_st);
 	}
 
+	sqlite3_finalize(ins_st);
 	sqlite3_finalize(ref_st);
-	// resolved_reference table is deprecated
-	sqlite3_finalize(ins_rel_st);
 	if (lk_st)
 		sqlite3_finalize(lk_st);
 
+	// ── P1: Batch insert from staging to final tables ────────────
+	// One INSERT SELECT is far cheaper than N individual INSERTs
+	// because SQLite can optimize the bulk path and avoid per-row
+	// index maintenance (indexes are recreated after bulk load in P2).
+	auto t_sql = Clock::now();
+
+	if (!store_->exec("INSERT OR IGNORE INTO relation "
+			  "(project_id, source_id, target_id, type) "
+			  "SELECT project_id, source_id, target_id, edge_type "
+			  "FROM _resolved_edges")) {
+		fprintf(stderr,
+			"[module=resolver, method=run] "
+			"batch relation insert failed: %s\n",
+			store_->error().c_str());
+	}
+
+	if (!store_->exec("INSERT OR IGNORE INTO graph_edges "
+			  "(project_id, source_node_id, target_node_id, "
+			  " edge_type) "
+			  "SELECT project_id, source_id, target_id, edge_type "
+			  "FROM _resolved_edges")) {
+		fprintf(stderr,
+			"[module=resolver, method=run] "
+			"batch graph_edges insert failed: %s\n",
+			store_->error().c_str());
+	}
+
+	int64_t sql_batch_ms =
+		std::chrono::duration_cast<std::chrono::milliseconds>(
+			Clock::now() - t_sql)
+			.count();
+
+	// ── Cleanup staging table ──
+	store_->exec("DROP TABLE IF EXISTS _resolved_edges");
+
+	// ── Step 0: Log fine-grained resolver stats ──
+	int64_t total_ms =
+		std::chrono::duration_cast<std::chrono::milliseconds>(
+			Clock::now() - t_start)
+			.count();
+	double avg_candidates =
+		(total_refs > 0) ? static_cast<double>(total_candidates_seen) /
+					   static_cast<double>(total_refs) :
+				   0.0;
 	fprintf(stderr,
 		"[module=resolver, method=run] "
-		"resolved %lld / %lld references\n",
-		(long long)resolved_count, (long long)total_refs);
+		"resolved %lld / %lld refs"
+		" | exact=%lld fuzzy=%lld"
+		" skipped_common=%lld skipped_many=%lld"
+		" | avg_cands=%.1f entities=%lld"
+		" | sql_batch=%lldms total=%lldms\n",
+		(long long)resolved_count, (long long)total_refs,
+		(long long)exact_hits, (long long)fuzzy_hits,
+		(long long)skipped_common, (long long)skipped_too_many,
+		avg_candidates, (long long)total_entities,
+		(long long)sql_batch_ms, (long long)total_ms);
 
 	return resolved_count;
 }

@@ -24,11 +24,6 @@
 #include <unordered_set>
 #include <vector>
 
-#include "model/engine.h"
-#include "model/plugins/workflow.h"
-#include "model/plugins/capability.h"
-#include "model/plugins/architecture.h"
-#include "model/plugins/contract.h"
 #include "ir/translators/js_visitor.h"
 #include "engine_index_metrics.h"
 #include "async_knowledge.h"
@@ -546,59 +541,19 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		g_store->beginTransaction();
 		g_store->buildGraph(project_id, true);
 		g_store->commitTransaction();
-		// Phase 1.1: dual-write to entity/relation tables
-		// Filter out test files (*_test.*, */tests/*) — AI only needs production code
-		{
-			char sql[1024];
-			snprintf(sql, sizeof(sql),
-				 "INSERT OR IGNORE INTO entity "
-				 "(id, project_id, kind, name, qualified_name, "
-				 " file_path, language, start_row, start_col, "
-				 " end_row, end_col) "
-				 "SELECT id, project_id, node_type, name, "
-				 " COALESCE(NULLIF(qualified_name, ''), name), "
-				 " file_path, language, "
-				 " start_row, start_col, end_row, end_col "
-				 "FROM graph_nodes WHERE project_id=%llu"
-				 " AND file_path NOT LIKE '%%_test.%%'"
-				 " AND file_path NOT LIKE '%%/tests/%%'"
-				 " AND file_path NOT LIKE '%%test_%%'",
-				 (unsigned long long)project_id);
-			g_store->exec(sql);
-			snprintf(
-				sql, sizeof(sql),
-				"INSERT OR IGNORE INTO relation "
-				"(project_id, source_id, target_id, type) "
-				"SELECT e.project_id, e.source_node_id, "
-				" e.target_node_id, e.edge_type "
-				"FROM graph_edges e "
-				"JOIN graph_nodes src ON e.source_node_id = src.id"
-				" AND src.file_path NOT LIKE '%%_test.%%'"
-				" AND src.file_path NOT LIKE '%%/tests/%%'"
-				" AND src.file_path NOT LIKE '%%test_%%'"
-				"JOIN graph_nodes tgt ON e.target_node_id = tgt.id"
-				" AND tgt.file_path NOT LIKE '%%_test.%%'"
-				" AND tgt.file_path NOT LIKE '%%/tests/%%'"
-				" AND tgt.file_path NOT LIKE '%%test_%%'"
-				"WHERE e.project_id=%llu",
-				(unsigned long long)project_id);
-			g_store->exec(sql);
-		}
+		// P0.1: entity/relation dual-write now happens INSIDE buildGraph
+		// (store_graph.cpp). The previous duplicate INSERT...SELECT here
+		// ran the same work twice, doubling wall time for large projects.
 		time_buildgraph_ms =
 			duration_cast<milliseconds>(steady_clock::now() - t_bg)
 				.count();
 	}
 
-	// ── Step 4: Build FTS index ──
-	// Bulk-builds code_fts + fts_node_map from graph_nodes.
-	// Uses existing buildFTSFromGraph which does one SQL scan.
-	if (!mode_fast) {
-		auto t_f = steady_clock::now();
-		g_store->buildFTSFromGraph(project_id);
-		time_fts_ms =
-			duration_cast<milliseconds>(steady_clock::now() - t_f)
-				.count();
-	}
+	// P3: FTS index construction moved to the async path
+	// (runModelIndexSync in async_knowledge.cpp). This keeps the
+	// synchronous index path fast — the user sees "normal_ready" as
+	// soon as the core graph + indexes are built, while FTS materialises
+	// in the background. time_fts_ms stays 0 here (reported by async log).
 
 	// ── Step 5: Resolve staged metrics → metrics + symbol_status ──
 	// Pre-computed metrics (from parse workers) are resolved via
@@ -618,26 +573,15 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	// Build deferred indexes after bulk load
 	g_store->createIndexesAfterBulkLoad(project_id);
 
-	// Set readiness flags
+	// Set readiness flag — core graph is queryable now.
+	// fts_ready / knowledge_ready are set by the async path
+	// (runModelIndexSync + buildKnowledgeGraphSync).
 	g_store->setProjectReadiness(project_id, "normal_ready", 1);
-	if (!mode_fast)
-		g_store->setProjectReadiness(project_id, "fts_ready", 1);
 
-	// ── Step 6: Model Engine — build capability/contract/workflow ──
-	// This is supplementary — failures are logged but do NOT fail the
-	// index, since the model layer is not required for graph queries.
-	{
-		model::ModelEngine me;
-		me.addPlugin(
-			std::make_unique<model::WorkflowPlugin>(g_store.get()));
-		me.addPlugin(std::make_unique<model::CapabilityPlugin>(
-			g_store.get()));
-		me.addPlugin(std::make_unique<model::ArchitecturePlugin>(
-			g_store.get()));
-		me.addPlugin(
-			std::make_unique<model::ContractPlugin>(g_store.get()));
-		me.runAll(project_id);
-	}
+	// P0.2 / P3: Model Engine + State Builder + FTS moved to async path.
+	// Previously ran synchronously here AND inside buildGraph (double
+	// work). Now runs once, in the background thread launched below via
+	// launchAsyncKnowledgeBuilder(project_id, !mode_fast).
 
 	// ── Step 7: Async Knowledge Graph Construction ──
 	// Launch a background thread to populate the module_edge table
@@ -727,7 +671,9 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 
 	// Launch the async knowledge builder AFTER all g_store reads/writes
 	// above are complete, to avoid concurrent GraphStore access.
-	launchAsyncKnowledgeBuilder(project_id);
+	// run_fts=!mode_fast: fast mode skips FTS entirely; normal/deep
+	// modes build FTS in the background thread.
+	launchAsyncKnowledgeBuilder(project_id, !mode_fast);
 
 	return dupString(result.str());
 }

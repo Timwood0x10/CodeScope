@@ -22,6 +22,51 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
+# ── Build Speed Options ──────────────────────────────────────────
+# Unity build: merges translation units to reduce redundant header
+# parsing — can cut build time 20-40%. Off by default; changes error
+# locations (may point at unity blob instead of original source).
+option(ENABLE_UNITY_BUILD "Enable unity build for faster compilation" OFF)
+
+# Fast dev build: -O0, no LTO. Trades runtime speed for the fastest
+# compile/link cycle. Overrides Release optimization flags.
+option(BUILD_FAST "Fast dev build: -O0, no LTO, relaxed warnings" OFF)
+
+# ── Linux linker detection (mold / lld) ─────────────────────────
+# macOS uses its own linker (ld64); detection is Linux-only.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_program(MOLD_LINKER mold)
+    find_program(LLD_LINKER lld)
+    if(MOLD_LINKER)
+        set(CMAKE_LINKER_TYPE "MOLD")
+        message(STATUS "Linker: mold detected at ${MOLD_LINKER}")
+    elseif(LLD_LINKER)
+        set(CMAKE_LINKER_TYPE "LLD")
+        message(STATUS "Linker: lld detected at ${LLD_LINKER}")
+    else()
+        message(STATUS "Linker: neither mold nor lld found, using system default")
+    endif()
+endif()
+
+# ── Split debug info on Linux (Debug only) ───────────────────────
+# Keeps .dwo out of the executable for faster linking.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+    add_compile_options(-gsplit-dwarf)
+    message(STATUS "Debug: enabling -gsplit-dwarf for faster linking")
+endif()
+
+# ── BUILD_FAST ──────────────────────────────────────────────────
+if(BUILD_FAST)
+    message(STATUS "BUILD_FAST: ON — fast dev build (-O0 -g -UNDEBUG, no LTO)")
+    add_compile_options(-O0 -g -UNDEBUG)
+endif()
+# NOTE: ThinLTO (-flto=thin) was evaluated and removed. When the C++
+# engine is compiled with Homebrew LLVM 21 ThinLTO bitcode, the Rust
+# server's linker (Apple ld64, LLVM 17) cannot parse the bitcode and
+# fails with "Unknown attribute kind (102)". Cross-toolchain LTO is
+# not supported on macOS. Use BUILD_FAST for dev and plain Release
+# (no LTO) for production — the PCH + ccache already cut build time.
+
 # ── Warning Flags ────────────────────────────────────────────────
 add_compile_options(-Wall -Wextra -Wno-unused-parameter)
 
@@ -235,6 +280,17 @@ endif()
 
 add_library(astgraph_engine STATIC ${ENGINE_SOURCES})
 
+# ── Unity Build ──────────────────────────────────────────────────
+# Batches translation units together to reduce redundant header
+# parsing. Batch size 8 keeps memory bounded while still cutting
+# compile time on this ~100-file target.
+if(ENABLE_UNITY_BUILD)
+    set_target_properties(astgraph_engine PROPERTIES
+        UNITY_BUILD ON
+        UNITY_BUILD_BATCH_SIZE 8)
+    message(STATUS "Unity build: ON (batch size 8) for astgraph_engine")
+endif()
+
 # ── Precompiled Header ───────────────────────────────────────────
 # PCH cuts build time 30-50% by pre-parsing heavy headers once.
 target_precompile_headers(astgraph_engine PRIVATE
@@ -260,6 +316,18 @@ set_source_files_properties(${SQLITE3_AMAL_SRC} ${GRAMMAR_SOURCES}
     PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 set_source_files_properties(${TREE_SITTER_SOURCES}
     PROPERTIES LANGUAGE C SKIP_PRECOMPILE_HEADERS ON)
+
+# ── sqlite3.c: avoid -O0 bottleneck in BUILD_FAST mode ──────────
+# sqlite3.c is a ~250k-line amalgamation. Under -O0 it dominates
+# the build timeline. Bump to -O1 specifically for this file so
+# the dev cycle isn't blocked on a single translation unit.
+# (Applied only when BUILD_FAST is ON; Release already uses -O2/-O3.)
+if(BUILD_FAST)
+    set_source_files_properties(${SQLITE3_AMAL_SRC}
+        PROPERTIES COMPILE_OPTIONS "-O1")
+    message(STATUS "BUILD_FAST: sqlite3.c compiled with -O1 (avoid -O0 bottleneck)")
+endif()
+
 if(EXISTS "${SQLITE_VEC_SRC}")
     set_source_files_properties(${SQLITE_VEC_SRC} PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
     # Generate sqlite-vec.h from template with version substitution.
