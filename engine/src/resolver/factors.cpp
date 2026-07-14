@@ -2,11 +2,14 @@
 #include <sqlite3.h>
 #include <algorithm>
 #include <cstring>
+#include <unordered_set>
 
 namespace resolver
 {
 
-double factorImportMatch(uint64_t project_id, void *db,
+double factorImportMatch(uint64_t project_id,
+			 sqlite3_stmt *stmt_forward,
+			 sqlite3_stmt *stmt_reverse,
 			 const std::string &caller_file,
 			 const std::string &candidate_file,
 			 const std::string &candidate_name)
@@ -25,59 +28,46 @@ double factorImportMatch(uint64_t project_id, void *db,
 		}
 	}
 	// Check if the caller's file imports the candidate's module.
-	// Query: import table where file_path = caller_file
-	// and target_path contains candidate's module path.
-	// Returns 1.0 if import found, 0.0 otherwise.
-	sqlite3 *handle = static_cast<sqlite3 *>(db);
-	const char *sql = "SELECT COUNT(*) FROM import "
-			  "WHERE project_id=? AND file_path=? "
-			  "AND target_path LIKE ?";
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(handle, sql, -1, &stmt, nullptr) != SQLITE_OK)
-		return 0.0;
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_text(stmt, 2, caller_file.c_str(), -1, SQLITE_STATIC);
-
-	// Use the candidate's module path for matching
-	// target_path stores the full import path (e.g. "github.com/org/pkg"
-	// or "crate::module::func"), so we match the module directory name.
-	std::string module_path = candidate_file;
-	size_t slash = module_path.rfind('/');
-	if (slash != std::string::npos)
-		module_path = module_path.substr(0, slash);
-	// Extract the last component of the module path for matching
-	// against import target_path entries.
-	size_t prev_slash = module_path.rfind('/');
-	std::string module_name = (prev_slash != std::string::npos) ?
-					  module_path.substr(prev_slash + 1) :
-					  module_path;
-
-	std::string like_pattern = "%" + module_name + "%";
-	sqlite3_bind_text(stmt, 3, like_pattern.c_str(), -1, SQLITE_STATIC);
-
+	// Reuse pre-prepared statement (reset + clear_bindings to avoid
+	// prepare/finalize overhead — ~30s for 313k candidate evaluations).
 	double result = 0.0;
-	if (sqlite3_step(stmt) == SQLITE_ROW) {
-		int count = sqlite3_column_int(stmt, 0);
-		if (count > 0)
-			result = 1.0;
-	}
-	sqlite3_finalize(stmt);
-
-	// If no direct import found, also check if the candidate's file
-	// imports the caller's module (bidirectional reference).
-	if (result == 0.0) {
-		const char *rev_sql = "SELECT COUNT(*) FROM import "
-				      "WHERE project_id=? AND file_path=? "
-				      "AND target_path LIKE ?";
-		sqlite3_stmt *rev_st = nullptr;
-		if (sqlite3_prepare_v2(handle, rev_sql, -1, &rev_st, nullptr) !=
-		    SQLITE_OK)
-			return 0.0;
-		sqlite3_bind_int64(rev_st, 1, static_cast<int64_t>(project_id));
-		sqlite3_bind_text(rev_st, 2, candidate_file.c_str(), -1,
+	if (stmt_forward) {
+		sqlite3_reset(stmt_forward);
+		sqlite3_clear_bindings(stmt_forward);
+		sqlite3_bind_int64(stmt_forward, 1,
+				   static_cast<int64_t>(project_id));
+		sqlite3_bind_text(stmt_forward, 2, caller_file.c_str(), -1,
 				  SQLITE_STATIC);
 
-		// Extract caller's module name
+		// Use the candidate's module path for matching
+		std::string module_path = candidate_file;
+		size_t slash = module_path.rfind('/');
+		if (slash != std::string::npos)
+			module_path = module_path.substr(0, slash);
+		size_t prev_slash = module_path.rfind('/');
+		std::string module_name = (prev_slash != std::string::npos) ?
+						  module_path.substr(prev_slash + 1) :
+						  module_path;
+
+		std::string like_pattern = "%" + module_name + "%";
+		sqlite3_bind_text(stmt_forward, 3, like_pattern.c_str(), -1,
+				  SQLITE_STATIC);
+		if (sqlite3_step(stmt_forward) == SQLITE_ROW) {
+			int count = sqlite3_column_int(stmt_forward, 0);
+			if (count > 0)
+				result = 1.0;
+		}
+	}
+
+	// If no direct import found, also check reverse import.
+	if (result == 0.0 && stmt_reverse) {
+		sqlite3_reset(stmt_reverse);
+		sqlite3_clear_bindings(stmt_reverse);
+		sqlite3_bind_int64(stmt_reverse, 1,
+				   static_cast<int64_t>(project_id));
+		sqlite3_bind_text(stmt_reverse, 2, candidate_file.c_str(), -1,
+				  SQLITE_STATIC);
+
 		std::string caller_module = caller_file;
 		size_t c_slash = caller_module.rfind('/');
 		if (c_slash != std::string::npos)
@@ -89,15 +79,13 @@ double factorImportMatch(uint64_t project_id, void *db,
 				caller_module;
 
 		std::string rev_pattern = "%" + caller_mod_name + "%";
-		sqlite3_bind_text(rev_st, 3, rev_pattern.c_str(), -1,
+		sqlite3_bind_text(stmt_reverse, 3, rev_pattern.c_str(), -1,
 				  SQLITE_STATIC);
-
-		if (sqlite3_step(rev_st) == SQLITE_ROW) {
-			int count = sqlite3_column_int(rev_st, 0);
+		if (sqlite3_step(stmt_reverse) == SQLITE_ROW) {
+			int count = sqlite3_column_int(stmt_reverse, 0);
 			if (count > 0)
 				result = 1.0;
 		}
-		sqlite3_finalize(rev_st);
 	}
 
 	return result;

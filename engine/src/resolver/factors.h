@@ -5,6 +5,8 @@
 #include <vector>
 #include <cstdint>
 
+struct sqlite3_stmt;
+
 namespace resolver
 {
 
@@ -73,7 +75,11 @@ inline double computeTotalScore(const std::vector<FactorResult> &factors)
 /// Check if a candidate's file imports the caller's module.
 /// Returns 1.0 if import found, 0.0 otherwise.
 /// Uses the import table: import.target_path contains the module path.
-double factorImportMatch(uint64_t project_id, void *db,
+/// @param stmt_forward  Pre-prepared statement for forward import check.
+/// @param stmt_reverse  Pre-prepared statement for reverse import check.
+double factorImportMatch(uint64_t project_id,
+			 sqlite3_stmt *stmt_forward,
+			 sqlite3_stmt *stmt_reverse,
 			 const std::string &caller_file,
 			 const std::string &candidate_file,
 			 const std::string &candidate_name);

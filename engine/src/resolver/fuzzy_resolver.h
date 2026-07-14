@@ -50,15 +50,30 @@ class FuzzyResolver {
 	store::GraphStore *store_;
 	uint64_t project_id_;
 
-	// Single prepared statement for all fuzzy strategies (case-insensitive,
-	// prefix, suffix) combined into one OR query. Prepared once in the
-	// constructor, reused across resolve() calls via sqlite3_reset +
-	// sqlite3_clear_bindings, finalized in the destructor.
-	// 3 separate statements → 1 statement: -66% SQL overhead per fuzzy call.
-	sqlite3_stmt *stmt_fuzzy_ = nullptr;
+	// Prepared statements — created once in the constructor, reused
+	// across resolve() calls via sqlite3_reset + sqlite3_clear_bindings,
+	// and finalized in the destructor. Preparing per-call was a major
+	// cost in the fuzzy fallback path (3 prepares per missed name).
+	sqlite3_stmt *stmt_case_insensitive_ = nullptr;
+	sqlite3_stmt *stmt_prefix_ = nullptr;
+	sqlite3_stmt *stmt_suffix_ = nullptr;
 
-	/// Prepare the combined fuzzy statement. Returns true on success.
+	/// Prepare all three statements. Returns true on success. On partial
+	/// failure the affected member is left null and resolve() degrades
+	/// gracefully (returns empty for that strategy).
 	bool prepareStatements();
+
+	/// Strategy 1: case-insensitive exact name match.
+	std::vector<uint64_t> resolveCaseInsensitive(const std::string &name,
+						     size_t limit);
+
+	/// Strategy 2: entities whose name starts with `prefix`.
+	std::vector<uint64_t> resolvePrefix(const std::string &prefix,
+					    size_t limit);
+
+	/// Strategy 3: entities whose name ends with `suffix`.
+	std::vector<uint64_t> resolveSuffix(const std::string &suffix,
+					    size_t limit);
 };
 
 } // namespace resolver

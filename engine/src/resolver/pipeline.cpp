@@ -103,9 +103,32 @@ ResolverPipeline::ResolverPipeline(store::GraphStore *store,
 	, project_id_(project_id)
 	, fuzzy_(std::make_unique<FuzzyResolver>(store, project_id))
 {
+	// Prepare import match statements once (reused via sqlite3_reset).
+	// Avoids ~313k per-call prepare/finalize cycles for 108k refs × 2.9 avg candidates.
+	sqlite3 *db = store_ ? store_->handle() : nullptr;
+	if (db) {
+		static constexpr const char *kSqlImportForward =
+			"SELECT COUNT(*) FROM import "
+			"WHERE project_id=? AND file_path=? "
+			"AND target_path LIKE ?";
+		sqlite3_prepare_v2(db, kSqlImportForward, -1,
+				   &stmt_import_forward_, nullptr);
+		static constexpr const char *kSqlImportReverse =
+			"SELECT COUNT(*) FROM import "
+			"WHERE project_id=? AND file_path=? "
+			"AND target_path LIKE ?";
+		sqlite3_prepare_v2(db, kSqlImportReverse, -1,
+				   &stmt_import_reverse_, nullptr);
+	}
 }
 
-ResolverPipeline::~ResolverPipeline() = default;
+ResolverPipeline::~ResolverPipeline()
+{
+	if (stmt_import_forward_)
+		sqlite3_finalize(stmt_import_forward_);
+	if (stmt_import_reverse_)
+		sqlite3_finalize(stmt_import_reverse_);
+}
 
 std::string ResolverPipeline::modulePath(const std::string &file_path)
 {
@@ -176,9 +199,10 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 			f.name = "ImportMatch";
 			f.weight = kWeightImportMatch;
 			f.score = factorImportMatch(project_id_,
-						    store_->handle(),
-						    caller_file, c.file_path,
-						    c.name);
+			         stmt_import_forward_,
+			         stmt_import_reverse_,
+			         caller_file, c.file_path,
+			         c.name);
 			f.detail = (f.score > 0.0) ? "imported" :
 						     "not imported";
 			factors.push_back(f);
