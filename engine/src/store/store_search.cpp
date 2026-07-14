@@ -95,6 +95,43 @@ void GraphStore::buildFTSFromGraph(uint64_t project_id)
 		     "WHERE gn.project_id=" +
 		     std::to_string(project_id))
 		     .c_str());
+	// Bulk-build the trigram FTS5 index (name_trgm) in parallel with
+	// code_fts. Same source (graph_nodes), same WHERE filter. Uses
+	// INSERT OR IGNORE so re-runs after partial indexing are idempotent.
+	// The trigram index powers O(log n) substring search via MATCH,
+	// replacing the O(n) LIKE '%query%' scan in searchGraphFallback.
+	exec(std::string(
+		     "INSERT OR IGNORE INTO name_trgm "
+		     "(rowid, name, qualified_name, project_id, node_id, node_type) "
+		     "SELECT gn.id, gn.name, gn.qualified_name, " +
+		     std::to_string(project_id) +
+		     ", gn.id, gn.node_type "
+		     "FROM graph_nodes gn "
+		     "WHERE gn.project_id=" +
+		     std::to_string(project_id) + " AND gn.name != ''")
+		     .c_str());
+}
+
+bool GraphStore::isTrigramAvailable()
+{
+	// Probe the name_trgm table. If the table does not exist (older DB
+	// created before the trigram migration) or is empty, the prepare/step
+	// will fail or return no row. Returns true only when the table is
+	// queryable (i.e. at least one row can be selected).
+	sqlite3_stmt *stmt = nullptr;
+	int rc = sqlite3_prepare_v2(db_, "SELECT 1 FROM name_trgm LIMIT 1", -1,
+				    &stmt, nullptr);
+	if (rc != SQLITE_OK) {
+		// Table does not exist or schema is not loaded.
+		fprintf(stderr,
+			"isTrigramAvailable: prepare failed: %s "
+			"[module=store, method=isTrigramAvailable]\n",
+			sqlite3_errmsg(db_));
+		return false;
+	}
+	bool available = (sqlite3_step(stmt) == SQLITE_ROW);
+	sqlite3_finalize(stmt);
+	return available;
 }
 
 void GraphStore::buildVectorsFromGraph(uint64_t project_id)
@@ -110,87 +147,353 @@ std::string GraphStore::searchCode(uint64_t project_id, const char *query,
 		return "{\"total\":0,\"results\":[],\"error\":\"empty query\"}";
 	}
 
-	sqlite3_stmt *stmt = nullptr;
-	std::string sql =
-		"SELECT gn.id AS node_id, gn.name, gn.node_type, gn.file_path AS "
-		"file_path, "
-		"gn.start_row, gn.start_col, gn.end_row, gn.end_col, gn.language, "
-		"rank "
-		"FROM code_fts "
-		"JOIN graph_nodes gn ON gn.id = code_fts.node_id "
-		"WHERE code_fts MATCH ? AND code_fts.project_id = ? "
-		"ORDER BY "
-		"  CASE WHEN gn.node_type IN (2,3,4) THEN 0 ELSE 1 END, "
-		"  rank "
-		"LIMIT ?";
+	// Arm the query timeout for this search call. The guard disarms on
+	// scope exit (RAII), covering all return paths including exceptions.
+	QueryDeadlineGuard guard(this, kDefaultSearchTimeoutMs);
+	const int timeout_ms = kDefaultSearchTimeoutMs;
 
-	if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) !=
-	    SQLITE_OK) {
-		error_ = sqlite3_errmsg(db_);
-		return std::string("{\"total\":0,\"results\":[],\"error\":\"") +
-		       error_ + "\"}";
+	// Collect results into a vector, deduping by node_id. FTS results
+	// come first (preferred — ranked by FTS rank + node_type priority),
+	// trigram substring results are appended after (only those whose
+	// node_id is not already present in the FTS set).
+	struct Row {
+		int64_t node_id;
+		std::string name;
+		int node_type;
+		std::string file_path;
+		int start_row;
+		int start_col;
+		int end_row;
+		int end_col;
+		std::string language;
+		double score;
+	};
+	std::vector<Row> results;
+	std::unordered_set<int64_t> seen;
+
+	// 1. FTS5 prefix search via code_fts (word-based, ranked).
+	{
+		std::string sql =
+			"SELECT gn.id AS node_id, gn.name, gn.node_type, "
+			"gn.file_path AS file_path, "
+			"gn.start_row, gn.start_col, gn.end_row, gn.end_col, "
+			"gn.language, rank "
+			"FROM code_fts "
+			"JOIN graph_nodes gn ON gn.id = code_fts.node_id "
+			"WHERE code_fts MATCH ? AND code_fts.project_id = ? "
+			"ORDER BY "
+			"  CASE WHEN gn.node_type IN (2,3,4) THEN 0 ELSE 1 END, "
+			"  rank "
+			"LIMIT ?";
+
+		sqlite3_stmt *stmt = nullptr;
+		if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) !=
+		    SQLITE_OK) {
+			error_ = sqlite3_errmsg(db_);
+			return std::string(
+				       "{\"total\":0,\"results\":[],\"error\":\"") +
+			       error_ + "\"}";
+		}
+
+		// Escape the query for FTS5 — add prefix operator to each word
+		std::string fts_query;
+		const char *p = query;
+		while (*p) {
+			while (*p == ' ') {
+				fts_query += ' ';
+				p++;
+			}
+			if (!*p)
+				break;
+			while (*p && *p != ' ') {
+				fts_query += *p;
+				p++;
+			}
+			fts_query += '*';
+		}
+
+		sqlite3_bind_text(stmt, 1, fts_query.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
+		sqlite3_bind_int(stmt, 3, limit);
+
+		int rc;
+		while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+			Row r;
+			r.node_id = sqlite3_column_int64(stmt, 0);
+			const char *name_raw = reinterpret_cast<const char *>(
+				sqlite3_column_text(stmt, 1));
+			const char *fp_raw = reinterpret_cast<const char *>(
+				sqlite3_column_text(stmt, 3));
+			const char *lang_raw = reinterpret_cast<const char *>(
+				sqlite3_column_text(stmt, 8));
+			r.name = name_raw ? name_raw : "";
+			r.node_type = sqlite3_column_int(stmt, 2);
+			r.file_path = fp_raw ? fp_raw : "";
+			r.start_row = sqlite3_column_int(stmt, 4);
+			r.start_col = sqlite3_column_int(stmt, 5);
+			r.end_row = sqlite3_column_int(stmt, 6);
+			r.end_col = sqlite3_column_int(stmt, 7);
+			r.language = lang_raw ? lang_raw : "";
+			r.score = sqlite3_column_double(stmt, 9);
+			seen.insert(r.node_id);
+			results.push_back(std::move(r));
+		}
+		sqlite3_finalize(stmt);
+		if (rc == SQLITE_INTERRUPT) {
+			return "{\"error\":\"query timeout after " +
+			       std::to_string(timeout_ms) +
+			       "ms [module=store, method=searchCode]\"}";
+		}
 	}
 
-	// Escape the query for FTS5 — add prefix operator to each word
-	std::string fts_query;
-	const char *p = query;
-	while (*p) {
-		while (*p == ' ') {
-			fts_query += ' ';
-			p++;
+	// 2. Trigram substring search — appended after FTS results, deduped
+	// by node_id. Skipped when FTS already filled the limit, when the
+	// query is too short for trigrams, or when name_trgm is unavailable.
+	constexpr size_t kMinTrigramQueryLen = 3;
+	std::string qstr(query);
+	if (results.size() < static_cast<size_t>(limit) &&
+	    qstr.size() >= kMinTrigramQueryLen && isTrigramAvailable()) {
+		const char *sql =
+			"SELECT gn.id, gn.name, gn.node_type, gn.file_path, "
+			"gn.start_row, gn.start_col, gn.end_row, gn.end_col, "
+			"gn.language "
+			"FROM name_trgm "
+			"JOIN graph_nodes gn ON gn.id = name_trgm.node_id "
+			"WHERE name_trgm MATCH ? AND name_trgm.project_id = ? "
+			"ORDER BY LENGTH(gn.name) ASC LIMIT ?";
+		sqlite3_stmt *stmt = nullptr;
+		if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) ==
+		    SQLITE_OK) {
+			// Safe FTS5 phrase query (literal substring, not syntax).
+			std::string fts_phrase = fts5Phrase(qstr);
+
+			sqlite3_bind_text(stmt, 1, fts_phrase.c_str(), -1,
+					  SQLITE_TRANSIENT);
+			sqlite3_bind_int64(stmt, 2,
+					   static_cast<int64_t>(project_id));
+			sqlite3_bind_int(stmt, 3, limit);
+
+			int rc;
+			while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+				if (results.size() >=
+				    static_cast<size_t>(limit))
+					break;
+				int64_t nid = sqlite3_column_int64(stmt, 0);
+				if (seen.count(nid))
+					continue; // dedupe: FTS results preferred
+				Row r;
+				r.node_id = nid;
+				const char *name_raw =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(stmt, 1));
+				const char *fp_raw =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(stmt, 3));
+				const char *lang_raw =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(stmt, 8));
+				r.name = name_raw ? name_raw : "";
+				r.node_type = sqlite3_column_int(stmt, 2);
+				r.file_path = fp_raw ? fp_raw : "";
+				r.start_row = sqlite3_column_int(stmt, 4);
+				r.start_col = sqlite3_column_int(stmt, 5);
+				r.end_row = sqlite3_column_int(stmt, 6);
+				r.end_col = sqlite3_column_int(stmt, 7);
+				r.language = lang_raw ? lang_raw : "";
+				r.score =
+					0.0; // no FTS rank for trigram results
+				seen.insert(nid);
+				results.push_back(std::move(r));
+			}
+			sqlite3_finalize(stmt);
+			if (rc == SQLITE_INTERRUPT) {
+				return "{\"error\":\"query timeout after " +
+				       std::to_string(timeout_ms) +
+				       "ms [module=store, method=searchCode]\"}";
+			}
+		} else {
+			error_ = sqlite3_errmsg(db_);
+			fprintf(stderr,
+				"searchCode: name_trgm prepare failed: %s "
+				"[module=store, method=searchCode]\n",
+				error_.c_str());
 		}
-		if (!*p)
-			break;
-		// Collect the word
-		while (*p && *p != ' ') {
-			fts_query += *p;
-			p++;
-		}
-		fts_query += '*';
 	}
 
-	sqlite3_bind_text(stmt, 1, fts_query.c_str(), -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
-	sqlite3_bind_int(stmt, 3, limit);
-
+	// 3. Build JSON (same shape as the original searchCode response).
 	std::ostringstream json;
 	json << "{\"results\":[";
-	bool first = true;
-	int count = 0;
-
-	while (sqlite3_step(stmt) == SQLITE_ROW) {
-		if (!first)
+	for (size_t i = 0; i < results.size(); i++) {
+		if (i > 0)
 			json << ",";
-		first = false;
-		count++;
-
-		const char *name_raw = reinterpret_cast<const char *>(
-			sqlite3_column_text(stmt, 1));
-		const char *fp_raw = reinterpret_cast<const char *>(
-			sqlite3_column_text(stmt, 3));
 		json << "{"
-		     << "\"node_id\":" << sqlite3_column_int64(stmt, 0) << ","
-		     << "\"name\":\"" << jsonEscape(name_raw ? name_raw : "")
+		     << "\"node_id\":" << results[i].node_id << ","
+		     << "\"name\":\"" << jsonEscape(results[i].name) << "\","
+		     << "\"node_type\":" << results[i].node_type << ","
+		     << "\"file_path\":\"" << jsonEscape(results[i].file_path)
 		     << "\","
-		     << "\"node_type\":" << sqlite3_column_int(stmt, 2) << ","
-		     << "\"file_path\":\"" << jsonEscape(fp_raw ? fp_raw : "")
+		     << "\"start_row\":" << results[i].start_row << ","
+		     << "\"start_col\":" << results[i].start_col << ","
+		     << "\"end_row\":" << results[i].end_row << ","
+		     << "\"end_col\":" << results[i].end_col << ","
+		     << "\"language\":\"" << jsonEscape(results[i].language)
 		     << "\","
-		     << "\"start_row\":" << sqlite3_column_int(stmt, 4) << ","
-		     << "\"start_col\":" << sqlite3_column_int(stmt, 5) << ","
-		     << "\"end_row\":" << sqlite3_column_int(stmt, 6) << ","
-		     << "\"end_col\":" << sqlite3_column_int(stmt, 7) << ","
-		     << "\"language\":\""
-		     << (sqlite3_column_text(stmt, 8) ?
-				 reinterpret_cast<const char *>(
-					 sqlite3_column_text(stmt, 8)) :
-				 "")
-		     << "\","
-		     << "\"score\":" << sqlite3_column_double(stmt, 9) << "}";
+		     << "\"score\":" << results[i].score << "}";
+	}
+	json << "],\"total\":" << results.size() << "}";
+	return json.str();
+}
+
+// ─── Graph-based fallback search (trigram-accelerated) ─────────
+
+std::string GraphStore::searchGraphFallback(uint64_t project_id,
+					    const char *query, int limit)
+{
+	if (limit <= 0 || limit > 100)
+		limit = 20;
+
+	if (!query || !*query)
+		return "{\"method\":\"graph_fallback\",\"results\":[]}";
+
+	// Arm the query timeout for this search call. The guard disarms on
+	// scope exit (RAII), covering all return paths including exceptions.
+	QueryDeadlineGuard guard(this, kDefaultSearchTimeoutMs);
+	const int timeout_ms = kDefaultSearchTimeoutMs;
+
+	std::string qstr(query);
+	// Trigram tokenizer requires at least 3 characters to form a trigram.
+	constexpr size_t kMinTrigramQueryLen = 3;
+	bool is_short = qstr.size() < kMinTrigramQueryLen;
+
+	// O(log n) substring search via the trigram FTS5 inverted index.
+	// Only used when the query is long enough and the table is available.
+	if (!is_short && isTrigramAvailable()) {
+		const char *sql =
+			"SELECT gn.id, gn.name, gn.file_path, gn.node_type "
+			"FROM name_trgm "
+			"JOIN graph_nodes gn ON gn.id = name_trgm.node_id "
+			"WHERE name_trgm MATCH ? AND name_trgm.project_id = ? "
+			"ORDER BY LENGTH(gn.name) ASC "
+			"LIMIT ?";
+		sqlite3_stmt *stmt = nullptr;
+		if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) !=
+		    SQLITE_OK) {
+			error_ = sqlite3_errmsg(db_);
+			fprintf(stderr,
+				"searchGraphFallback: prepare failed: %s "
+				"[module=store, method=searchGraphFallback]\n",
+				error_.c_str());
+			// Fall through to LIKE path below
+		} else {
+			std::string fts_phrase = fts5Phrase(qstr);
+			sqlite3_bind_text(stmt, 1, fts_phrase.c_str(), -1,
+					  SQLITE_TRANSIENT);
+			sqlite3_bind_int64(stmt, 2,
+					   static_cast<int64_t>(project_id));
+			sqlite3_bind_int(stmt, 3, limit);
+
+			std::ostringstream json;
+			json << "{\"method\":\"graph_fallback\",\"results\":[";
+			bool first = true;
+			int rc;
+			while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+				if (!first)
+					json << ",";
+				first = false;
+				const char *name_raw =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(stmt, 1));
+				const char *fp_raw =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(stmt, 2));
+				json << "{"
+				     << "\"node_id\":"
+				     << sqlite3_column_int64(stmt, 0) << ","
+				     << "\"name\":\""
+				     << jsonEscape(name_raw ? name_raw : "")
+				     << "\","
+				     << "\"file_path\":\""
+				     << jsonEscape(fp_raw ? fp_raw : "")
+				     << "\","
+				     << "\"type\":"
+				     << sqlite3_column_int(stmt, 3) << "}";
+			}
+			sqlite3_finalize(stmt);
+			if (rc == SQLITE_INTERRUPT) {
+				return "{\"error\":\"query timeout after " +
+				       std::to_string(timeout_ms) +
+				       "ms [module=store, "
+				       "method=searchGraphFallback]\"}";
+			}
+			json << "]}";
+			return json.str();
+		}
 	}
 
-	sqlite3_finalize(stmt);
+	// LIKE fallback: used for short queries (< 3 chars) or when the
+	// trigram table is unavailable. Hard LIMIT 50 for short queries to
+	// avoid runaway full-table scans on million-node projects.
+	constexpr int kShortQueryScanLimit = 50;
+	int like_limit = is_short ? kShortQueryScanLimit : limit;
 
-	json << "],\"total\":" << count << "}";
+	std::string like_query = qstr;
+	for (auto &c : like_query) {
+		if (c == '%' || c == '_')
+			c = ' ';
+	}
+
+	const char *sql = "SELECT id, name, file_path, node_type "
+			  "FROM graph_nodes "
+			  "WHERE project_id=? AND name LIKE ? "
+			  "ORDER BY LENGTH(name) ASC "
+			  "LIMIT ?";
+	sqlite3_stmt *stmt = nullptr;
+	std::ostringstream json;
+	json << "{\"method\":\"graph_fallback\",\"results\":[";
+	bool first = true;
+	int rc = SQLITE_DONE;
+	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		std::string pat = "%" + like_query + "%";
+		sqlite3_bind_text(stmt, 2, pat.c_str(), -1, SQLITE_TRANSIENT);
+		sqlite3_bind_int(stmt, 3, like_limit);
+
+		while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+			if (!first)
+				json << ",";
+			first = false;
+			const char *name_raw = reinterpret_cast<const char *>(
+				sqlite3_column_text(stmt, 1));
+			const char *fp_raw = reinterpret_cast<const char *>(
+				sqlite3_column_text(stmt, 2));
+			json << "{"
+			     << "\"node_id\":" << sqlite3_column_int64(stmt, 0)
+			     << ","
+			     << "\"name\":\""
+			     << jsonEscape(name_raw ? name_raw : "") << "\","
+			     << "\"file_path\":\""
+			     << jsonEscape(fp_raw ? fp_raw : "") << "\","
+			     << "\"type\":" << sqlite3_column_int(stmt, 3)
+			     << "}";
+		}
+		sqlite3_finalize(stmt);
+	} else {
+		error_ = sqlite3_errmsg(db_);
+		fprintf(stderr,
+			"searchGraphFallback: LIKE prepare failed: %s "
+			"[module=store, method=searchGraphFallback]\n",
+			error_.c_str());
+	}
+	if (rc == SQLITE_INTERRUPT) {
+		return "{\"error\":\"query timeout after " +
+		       std::to_string(timeout_ms) +
+		       "ms [module=store, method=searchGraphFallback]\"}";
+	}
+	json << "]";
+	if (is_short)
+		json << ",\"note\":\"short query, limited scan\"";
+	json << "}";
 	return json.str();
 }
 

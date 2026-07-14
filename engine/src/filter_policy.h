@@ -90,6 +90,14 @@ class FilterPolicy {
 	bool loadIgnoreFile(const std::string &project_root);
 	// Load .gitignore patterns from project root.
 	bool loadGitignore(const std::string &project_root);
+	// Load CODESCOPE_EXCLUDE_PATHS env var — comma-separated glob
+	// patterns (e.g. "test/*,docs/*,vendor/*,third_party/*") that
+	// extend the built-in skip list at index time. Useful for trimming
+	// non-core directories on very large projects to keep graph_nodes
+	// under the FTS threshold. Defaults are NOT applied — only patterns
+	// the user explicitly sets are loaded.
+	// @return true if at least one pattern was loaded.
+	bool loadExcludeEnv();
 
 	// ── Gitignore-Only Check ────────────────────────────────────
 	// Check a relative path against loaded .gitignore rules only
@@ -155,6 +163,9 @@ class FilterPolicy {
 	std::vector<std::string> ignore_patterns_;
 	// .gitignore patterns (parsed rules)
 	std::vector<GitignoreRule> gitignore_rules_;
+	// CODESCOPE_EXCLUDE_PATHS patterns (comma-separated globs from env).
+	// Glob-matched against the relative path from project root.
+	std::vector<std::string> exclude_patterns_;
 
 	// Stats
 	mutable Stats stats_;

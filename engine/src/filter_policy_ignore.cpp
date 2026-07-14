@@ -1,9 +1,17 @@
 #include "filter_policy.h"
+#include <cstdlib>
 #include <cstring>
 #include <cstdio>
 #include <fstream>
 #include <iostream>
 #include <sstream>
+
+// ─── Constants ─────────────────────────────────────────────────
+// Env var name for user-specified exclude paths. Comma-separated glob
+// patterns (e.g. "test/*,docs/*,vendor/*,third_party/*") that extend
+// the built-in skip list at index time to reduce graph_nodes count on
+// very large projects. See FilterPolicy::loadExcludeEnv().
+static constexpr const char *kExcludePathsEnv = "CODESCOPE_EXCLUDE_PATHS";
 
 // ── Static gitignore matching helpers ────────────────────────
 
@@ -171,4 +179,41 @@ bool FilterPolicy::loadGitignore(const std::string &project_root)
 			gitignore_rules_.push_back(std::move(rule));
 	}
 	return !gitignore_rules_.empty();
+}
+
+bool FilterPolicy::loadExcludeEnv()
+{
+	// Read CODESCOPE_EXCLUDE_PATHS — comma-separated glob patterns that
+	// extend the built-in skip list at index time. Useful for trimming
+	// non-core directories on very large projects to keep graph_nodes
+	// under the FTS threshold.
+	//
+	// Default suggestions (NOT applied automatically — set explicitly):
+	//   CODESCOPE_EXCLUDE_PATHS="test/*,docs/*,vendor/*,third_party/*"
+	//
+	// Patterns are glob-matched against the relative path from the
+	// project root (e.g. "test/*" matches "test/foo.cpp" and
+	// "test/sub/bar.py" via the existing globMatch helper).
+	const char *env = getenv(kExcludePathsEnv);
+	if (!env || !*env) {
+		// Env var not set or empty — nothing to load.
+		// [module=FilterPolicy, method=loadExcludeEnv]
+		return false;
+	}
+	std::string raw(env);
+	size_t start = 0, end;
+	do {
+		end = raw.find(',', start);
+		std::string pat = raw.substr(start, end - start);
+		// Trim leading/trailing whitespace around each pattern.
+		auto b = pat.find_first_not_of(" \t");
+		if (b != std::string::npos) {
+			auto e = pat.find_last_not_of(" \t");
+			pat = pat.substr(b, e - b + 1);
+		}
+		if (!pat.empty())
+			exclude_patterns_.push_back(std::move(pat));
+		start = end + 1;
+	} while (end != std::string::npos);
+	return !exclude_patterns_.empty();
 }

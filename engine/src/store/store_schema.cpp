@@ -123,6 +123,10 @@ bool GraphStore::createSchema()
         CREATE INDEX IF NOT EXISTS idx_files_project ON files(project_id);
         CREATE INDEX IF NOT EXISTS idx_graph_nodes_project ON graph_nodes(project_id);
         CREATE INDEX IF NOT EXISTS idx_graph_nodes_name ON graph_nodes(project_id, name);
+        -- Composite index for FuzzyResolver prefix/suffix queries on entity
+        -- name. Without this, name LIKE 'prefix%' / LIKE '%suffix' do a full
+        -- table scan on the entity table.
+        CREATE INDEX IF NOT EXISTS idx_entity_name ON entity(project_id, name);
         -- Composite index for _r2n JOIN during buildGraph:
         -- graph_nodes JOIN semantic_records ON (project_id, file_path, start_row, node_type=kind)
         CREATE INDEX IF NOT EXISTS idx_gn_file_row_type ON graph_nodes(project_id, file_path, start_row, node_type);
@@ -186,6 +190,19 @@ bool GraphStore::createSchema()
             node_id UNINDEXED,
             node_kind UNINDEXED,
             tokenize='unicode61'
+        );
+
+        -- Trigram FTS5 index for O(log n) substring search on symbol names.
+        -- The trigram tokenizer (SQLite 3.34+) indexes all 3-character
+        -- substrings, enabling name LIKE '%substr%' to use the inverted
+        -- index instead of a full table scan. Critical for million-node
+        -- projects where LIKE scans exceed the 30s MCP timeout.
+        CREATE VIRTUAL TABLE IF NOT EXISTS name_trgm USING fts5(
+            name, qualified_name,
+            project_id UNINDEXED,
+            node_id UNINDEXED,
+            node_type UNINDEXED,
+            tokenize='trigram'
         );
 
         CREATE TABLE IF NOT EXISTS fts_node_map (

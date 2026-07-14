@@ -90,6 +90,10 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	// Load .codescopeignore + .gitignore patterns from project root
 	filter.loadIgnoreFile(dir);
 	filter.loadGitignore(dir);
+	// Load CODESCOPE_EXCLUDE_PATHS env var (comma-separated globs) so
+	// users can exclude non-core dirs (test/, docs/, vendor/) at index
+	// time to reduce node count on very large projects.
+	filter.loadExcludeEnv();
 
 	// Phase 1: collect file paths (single-threaded)
 	struct FileJob {

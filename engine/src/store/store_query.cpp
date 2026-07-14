@@ -125,7 +125,28 @@ std::string GraphStore::searchUnifiedJson(uint64_t project_id,
 	if (limit <= 0 || limit > 100)
 		limit = 20;
 
-	// Use code_fts FTS5 directly (search_index was removed — redundant).
+	if (!query || !*query)
+		return "{\"method\":\"legacy_fts\",\"results\":[]}";
+
+	// Arm the query timeout for this search call. The guard disarms on
+	// scope exit (RAII), covering all return paths including exceptions.
+	QueryDeadlineGuard guard(this, kDefaultSearchTimeoutMs);
+	const int timeout_ms = kDefaultSearchTimeoutMs;
+
+	// Collect results into a vector, deduping by node_id. FTS results
+	// come first (preferred — word-based prefix match with ranking),
+	// trigram substring results are appended after (only those whose
+	// node_id is not already present in the FTS set).
+	struct Row {
+		int64_t node_id;
+		std::string name;
+		std::string qualified_name;
+		std::string file_path;
+	};
+	std::vector<Row> results;
+	std::unordered_set<int64_t> seen;
+
+	// 1. FTS5 prefix search via code_fts (word-based, ranked by FTS rank).
 	{
 		std::string sql =
 			"SELECT node_id, name, qualified_name, file_path, rank "
@@ -143,88 +164,116 @@ std::string GraphStore::searchUnifiedJson(uint64_t project_id,
 					   static_cast<int64_t>(project_id));
 			sqlite3_bind_int(stmt, 3, limit);
 
-			std::ostringstream json;
-			json << "{\"method\":\"legacy_fts\",\"results\":[";
-			bool first = true;
-			while (sqlite3_step(stmt) == SQLITE_ROW) {
-				if (!first)
-					json << ",";
-				first = false;
-				int64_t nid = sqlite3_column_int64(stmt, 0);
+			int rc;
+			while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+				Row r;
+				r.node_id = sqlite3_column_int64(stmt, 0);
 				const char *n = reinterpret_cast<const char *>(
 					sqlite3_column_text(stmt, 1));
 				const char *qn = reinterpret_cast<const char *>(
 					sqlite3_column_text(stmt, 2));
 				const char *fp = reinterpret_cast<const char *>(
 					sqlite3_column_text(stmt, 3));
-				json << "{"
-				     << "\"node_id\":" << nid << ","
-				     << "\"name\":\"" << jsonEscape(n ? n : "")
-				     << "\","
-				     << "\"qualified_name\":\""
-				     << jsonEscape(qn ? qn : "") << "\","
-				     << "\"file_path\":\""
-				     << jsonEscape(fp ? fp : "") << "\""
-				     << "}";
+				r.name = n ? n : "";
+				r.qualified_name = qn ? qn : "";
+				r.file_path = fp ? fp : "";
+				seen.insert(r.node_id);
+				results.push_back(std::move(r));
 			}
 			sqlite3_finalize(stmt);
-			json << "]}";
-			return json.str();
+			if (rc == SQLITE_INTERRUPT) {
+				return "{\"error\":\"query timeout after " +
+				       std::to_string(timeout_ms) +
+				       "ms [module=store, "
+				       "method=searchUnifiedJson]\"}";
+			}
+		} else {
+			error_ = sqlite3_errmsg(db_);
+			fprintf(stderr,
+				"searchUnifiedJson: code_fts prepare failed: %s "
+				"[module=store, method=searchUnifiedJson]\n",
+				error_.c_str());
 		}
 	}
 
-	return "{\"method\":\"none\",\"results\":[]}";
-}
+	// 2. Trigram substring search — appended after FTS results, deduped
+	// by node_id. Skipped when FTS already filled the limit, when the
+	// query is too short for trigrams, or when name_trgm is unavailable.
+	constexpr size_t kMinTrigramQueryLen = 3;
+	std::string qstr(query);
+	if (results.size() < static_cast<size_t>(limit) &&
+	    qstr.size() >= kMinTrigramQueryLen && isTrigramAvailable()) {
+		const char *sql =
+			"SELECT gn.id, gn.name, gn.qualified_name, "
+			"gn.file_path "
+			"FROM name_trgm "
+			"JOIN graph_nodes gn ON gn.id = name_trgm.node_id "
+			"WHERE name_trgm MATCH ? AND name_trgm.project_id = ? "
+			"ORDER BY LENGTH(gn.name) ASC LIMIT ?";
+		sqlite3_stmt *stmt = nullptr;
+		if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) ==
+		    SQLITE_OK) {
+			// Safe FTS5 phrase query (literal substring, not syntax).
+			std::string fts_phrase = fts5Phrase(qstr);
 
-std::string GraphStore::searchGraphFallback(uint64_t project_id,
-					    const char *query, int limit)
-{
-	if (limit <= 0 || limit > 100)
-		limit = 20;
+			sqlite3_bind_text(stmt, 1, fts_phrase.c_str(), -1,
+					  SQLITE_TRANSIENT);
+			sqlite3_bind_int64(stmt, 2,
+					   static_cast<int64_t>(project_id));
+			sqlite3_bind_int(stmt, 3, limit);
 
-	std::string like_query = query;
-	// Escape % and _ for LIKE, then wrap
-	for (auto &c : like_query) {
-		if (c == '%' || c == '_')
-			c = ' ';
+			int rc;
+			while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+				if (results.size() >=
+				    static_cast<size_t>(limit))
+					break;
+				int64_t nid = sqlite3_column_int64(stmt, 0);
+				if (seen.count(nid))
+					continue; // dedupe: FTS results preferred
+				Row r;
+				r.node_id = nid;
+				const char *n = reinterpret_cast<const char *>(
+					sqlite3_column_text(stmt, 1));
+				const char *qn = reinterpret_cast<const char *>(
+					sqlite3_column_text(stmt, 2));
+				const char *fp = reinterpret_cast<const char *>(
+					sqlite3_column_text(stmt, 3));
+				r.name = n ? n : "";
+				r.qualified_name = qn ? qn : "";
+				r.file_path = fp ? fp : "";
+				seen.insert(nid);
+				results.push_back(std::move(r));
+			}
+			sqlite3_finalize(stmt);
+			if (rc == SQLITE_INTERRUPT) {
+				return "{\"error\":\"query timeout after " +
+				       std::to_string(timeout_ms) +
+				       "ms [module=store, "
+				       "method=searchUnifiedJson]\"}";
+			}
+		} else {
+			error_ = sqlite3_errmsg(db_);
+			fprintf(stderr,
+				"searchUnifiedJson: name_trgm prepare failed: %s "
+				"[module=store, method=searchUnifiedJson]\n",
+				error_.c_str());
+		}
 	}
-	if (like_query.empty())
-		return "{\"method\":\"graph_fallback\",\"results\":[]}";
 
-	const char *sql = "SELECT id, name, file_path, node_type "
-			  "FROM graph_nodes "
-			  "WHERE project_id=? AND name LIKE ? "
-			  "ORDER BY LENGTH(name) ASC "
-			  "LIMIT ?";
-	sqlite3_stmt *stmt = nullptr;
+	// 3. Build JSON (same shape as the original legacy_fts response).
 	std::ostringstream json;
-	json << "{\"method\":\"graph_fallback\",\"results\":[";
-	bool first = true;
-	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
-		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-		std::string pat = "%" + like_query + "%";
-		sqlite3_bind_text(stmt, 2, pat.c_str(), -1, SQLITE_TRANSIENT);
-		sqlite3_bind_int(stmt, 3, limit);
-
-		while (sqlite3_step(stmt) == SQLITE_ROW) {
-			if (!first)
-				json << ",";
-			first = false;
-			json << "{"
-			     << "\"node_id\":" << sqlite3_column_int64(stmt, 0)
-			     << ","
-			     << "\"name\":\""
-			     << jsonEscape(reinterpret_cast<const char *>(
-					sqlite3_column_text(stmt, 1)))
-			     << "\","
-			     << "\"file_path\":\""
-			     << jsonEscape(reinterpret_cast<const char *>(
-					sqlite3_column_text(stmt, 2)))
-			     << "\","
-			     << "\"type\":" << sqlite3_column_int(stmt, 3)
-			     << "}";
-		}
-		sqlite3_finalize(stmt);
+	json << "{\"method\":\"legacy_fts\",\"results\":[";
+	for (size_t i = 0; i < results.size(); i++) {
+		if (i > 0)
+			json << ",";
+		json << "{"
+		     << "\"node_id\":" << results[i].node_id << ","
+		     << "\"name\":\"" << jsonEscape(results[i].name) << "\","
+		     << "\"qualified_name\":\""
+		     << jsonEscape(results[i].qualified_name) << "\","
+		     << "\"file_path\":\"" << jsonEscape(results[i].file_path)
+		     << "\""
+		     << "}";
 	}
 	json << "]}";
 	return json.str();

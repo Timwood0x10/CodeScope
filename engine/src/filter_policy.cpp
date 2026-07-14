@@ -912,26 +912,39 @@ bool FilterPolicy::shouldSkipEntry(const std::string &rel_path,
 		//     so we never recurse into binary payloads / IDE project bundles.
 		if (shouldSkipDirSuffix(std::string(base)))
 			return true;
-		return false;
-	}
-
-	// ── File-only checks ──
-	// 2b. Exact filename + filename-prefix skip (.env, .env.local, lock files)
-	if (shouldSkipFile(std::string(base)))
-		return true;
-	// 2c. Suffix skip — case-insensitive (.EXE == .exe). Catches binaries,
-	//     archives, media, secrets, lock files, generated artifacts.
-	auto dot = base.rfind('.');
-	if (dot != std::string_view::npos) {
-		if (shouldSkipSuffix(std::string(base.substr(dot))))
+		// Dir-only checks done; fall through to the shared exclude-pattern
+		// check below so CODESCOPE_EXCLUDE_PATHS applies to directories too.
+	} else {
+		// ── File-only checks ──
+		// 2b. Exact filename + filename-prefix skip (.env, .env.local, ...)
+		if (shouldSkipFile(std::string(base)))
 			return true;
+		// 2c. Suffix skip — case-insensitive (.EXE == .exe). Catches
+		//     binaries, archives, media, secrets, lock files, generated
+		//     artifacts.
+		auto dot = base.rfind('.');
+		if (dot != std::string_view::npos) {
+			if (shouldSkipSuffix(std::string(base.substr(dot))))
+				return true;
+		}
+
+		// 2d. STRICT mode: whitelist gate — only files that
+		//     detectLanguage() recognizes as source code pass through.
+		//     Catches config/docs/data files that slipped past the
+		//     blacklist (.toml, .yaml, .json, .md).
+		if (mode_ == STRICT) {
+			if (detectLanguage(normalized.c_str()) == nullptr)
+				return true;
+		}
 	}
 
-	// 2d. STRICT mode: whitelist gate — only files that detectLanguage()
-	//     recognizes as source code pass through. Catches config/docs/data
-	//     files that slipped past the blacklist (.toml, .yaml, .json, .md).
-	if (mode_ == STRICT) {
-		if (detectLanguage(normalized.c_str()) == nullptr)
+	// 3. User-specified exclude patterns (CODESCOPE_EXCLUDE_PATHS env var).
+	//    Glob-matched against the full relative path so patterns like
+	//    "test/*" or "vendor/**" skip both the directory and its contents.
+	//    Applied LAST so it acts as a user override on top of all built-in
+	//    filters. See loadExcludeEnv() for the env var format.
+	for (const auto &pat : exclude_patterns_) {
+		if (globMatch(pat, normalized))
 			return true;
 	}
 

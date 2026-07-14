@@ -182,6 +182,9 @@
 *.lzma
 *.iso
 
+*.db-*
+*.db
+
 plan/
 
 **/build_*/

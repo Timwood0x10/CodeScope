@@ -2,7 +2,11 @@
 #include "platform_win.h"
 
 #include "posix_compat.h"
+#include <atomic>
+#include <cerrno>
+#include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <mutex>
@@ -24,9 +28,105 @@ namespace store
 static constexpr int kCacheSizePages = -64000;
 
 // 64 MB cache
-static constexpr int kMmapSizeBytes = 268435456; // 256 MB mmap
 static constexpr int kPageSize =
 	65536; // 64 KB pages (matches codebase-memory-mcp)
+
+// Pattern adapted from codebase-memory-mcp src/store/store.c:cbm_store_resolve_mmap_size
+// Resolves the SQLite mmap_size PRAGMA value from the CODESCOPE_MMAP_SIZE
+// environment variable. Allows runtime tuning of memory-mapped I/O without
+// recompiling — useful for very large projects that benefit from a bigger
+// mmap window, or for constraining memory on small machines.
+//
+// Semantics:
+//   - Unset or empty env var: return kDefaultMmapSize (256 MB)
+//   - Non-numeric value: return kDefaultMmapSize, log a warning to stderr
+//   - Negative value: return 0 (disables mmap, reverts to read()/pread())
+//   - Valid non-negative integer: return the parsed value
+static int64_t resolveMmapSize()
+{
+	static constexpr int64_t kDefaultMmapSize = 268435456; // 256 MB
+	const char *env = std::getenv("CODESCOPE_MMAP_SIZE");
+	if (!env || !*env)
+		return kDefaultMmapSize;
+
+	// Parse with strtoll — handles optional leading sign + whitespace.
+	// endptr verifies the ENTIRE string was consumed; trailing non-whitespace
+	// is rejected as garbage (e.g. "123abc" → default, not 123).
+	errno = 0;
+	char *endptr = nullptr;
+	long long parsed = std::strtoll(env, &endptr, 10);
+	if (endptr == env) {
+		// No digits consumed — pure garbage
+		fprintf(stderr,
+			"WARN: CODESCOPE_MMAP_SIZE=\"%s\" is not numeric, "
+			"using default %lld [module=store, "
+			"method=resolveMmapSize]\n",
+			env, static_cast<long long>(kDefaultMmapSize));
+		return kDefaultMmapSize;
+	}
+	if (errno == ERANGE) {
+		// Parsed value overflows long long — treat as invalid rather
+		// than silently clamping to LLONG_MAX (~9.2 EB), which would
+		// surprise users expecting a bounded mmap window.
+		fprintf(stderr,
+			"WARN: CODESCOPE_MMAP_SIZE=\"%s\" overflows, "
+			"using default %lld [module=store, "
+			"method=resolveMmapSize]\n",
+			env, static_cast<long long>(kDefaultMmapSize));
+		return kDefaultMmapSize;
+	}
+	// Allow trailing whitespace but reject other trailing characters
+	while (endptr && *endptr != '\0') {
+		if (*endptr != ' ' && *endptr != '\t') {
+			fprintf(stderr,
+				"WARN: CODESCOPE_MMAP_SIZE=\"%s\" has trailing "
+				"garbage, using default %lld [module=store, "
+				"method=resolveMmapSize]\n",
+				env, static_cast<long long>(kDefaultMmapSize));
+			return kDefaultMmapSize;
+		}
+		++endptr;
+	}
+	if (parsed < 0)
+		return 0; // negative disables mmap entirely
+	return static_cast<int64_t>(parsed);
+}
+
+// ── Query deadline (progress handler) ───────────────────────────
+//
+// Global atomic deadline in epoch milliseconds. 0 means "no limit" — the
+// progress handler returns 0 (continue) immediately. When armed by
+// setQueryDeadline(), the progress handler compares the current epoch ms
+// against this value on every kProgressHandlerStepInterval VM steps; if
+// exceeded, it returns 1 to abort the running query (sqlite3_step then
+// returns SQLITE_INTERRUPT).
+//
+// This is global (not per-connection) because sqlite3_progress_handler is
+// per-connection but the deadline semantics are per-search-call. The RAII
+// guard ensures the deadline is cleared on every exit path, so the window
+// of interference between concurrent search calls is small and bounded by
+// the search duration. Non-search queries (buildGraph, inserts, etc.) are
+// never affected because the deadline is 0 outside of a guard scope.
+static std::atomic<int64_t> g_query_deadline_ms{ 0 };
+
+/** Return the current epoch time in milliseconds. */
+static int64_t currentEpochMs()
+{
+	return std::chrono::duration_cast<std::chrono::milliseconds>(
+		       std::chrono::system_clock::now().time_since_epoch())
+		.count();
+}
+
+/** Progress handler registered with sqlite3_progress_handler.
+ *  Returns 1 (abort) when the armed deadline has passed, 0 otherwise.
+ *  When g_query_deadline_ms is 0 the handler is a no-op. */
+static int progressHandler(void * /*unused*/)
+{
+	int64_t deadline = g_query_deadline_ms.load(std::memory_order_relaxed);
+	if (deadline == 0)
+		return 0;
+	return currentEpochMs() > deadline ? 1 : 0;
+}
 
 GraphStore::~GraphStore()
 {
@@ -94,7 +194,15 @@ bool GraphStore::open(const char *db_path)
 		fprintf(stderr,
 			"WARN: PRAGMA busy_timeout=5000 failed [module=store, method=open]\n");
 	exec(("PRAGMA cache_size=" + std::to_string(kCacheSizePages)).c_str());
-	exec(("PRAGMA mmap_size=" + std::to_string(kMmapSizeBytes)).c_str());
+	exec(("PRAGMA mmap_size=" + std::to_string(resolveMmapSize())).c_str());
+
+	// Register the query-abort progress handler. The handler is invoked
+	// every kProgressHandlerStepInterval VM steps; it returns 1 (abort) only
+	// when a deadline has been armed via setQueryDeadline(). Outside of a
+	// QueryDeadlineGuard scope the deadline is 0, so the handler is a
+	// no-op and imposes no measurable overhead on bulk inserts/buildGraph.
+	sqlite3_progress_handler(db_, kProgressHandlerStepInterval,
+				 &progressHandler, nullptr);
 
 	if (!createSchema())
 		return false;
@@ -138,6 +246,37 @@ void GraphStore::close()
 		sqlite3_close(db_);
 		db_ = nullptr;
 	}
+}
+
+// ── Query deadline (progress handler) implementation ───────────
+
+void GraphStore::setQueryDeadline(int timeout_ms)
+{
+	if (timeout_ms <= 0) {
+		g_query_deadline_ms.store(0, std::memory_order_relaxed);
+		return;
+	}
+	int64_t deadline = currentEpochMs() + timeout_ms;
+	g_query_deadline_ms.store(deadline, std::memory_order_relaxed);
+}
+
+void GraphStore::clearQueryDeadline()
+{
+	g_query_deadline_ms.store(0, std::memory_order_relaxed);
+}
+
+GraphStore::QueryDeadlineGuard::QueryDeadlineGuard(GraphStore *store,
+						   int timeout_ms)
+	: store_(store)
+{
+	if (store_)
+		store_->setQueryDeadline(timeout_ms);
+}
+
+GraphStore::QueryDeadlineGuard::~QueryDeadlineGuard()
+{
+	if (store_)
+		store_->clearQueryDeadline();
 }
 
 // Schema DDL (createSchema, createIndexesAfterBulkLoad) lives in

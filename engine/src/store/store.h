@@ -415,6 +415,50 @@ class GraphStore {
 	std::string searchGraphFallback(uint64_t project_id, const char *query,
 					int limit);
 
+	// ── Trigram FTS5 capability ───────────────────────────────
+
+	/** Check if the name_trgm trigram FTS5 table exists and is queryable.
+	 *  Probes SELECT 1 FROM name_trgm LIMIT 1; returns true on success.
+	 *  Used as a capability check before issuing trigram MATCH queries
+	 *  so callers can gracefully fall back when the table is absent
+	 *  (older databases created before the trigram migration). */
+	bool isTrigramAvailable();
+
+	// ── Query timeout control ─────────────────────────────────
+	//
+	// The progress handler is registered once in open() and remains active
+	// for the lifetime of the connection. g_query_deadline_ms is a global
+	// atomic (0 = no limit); setQueryDeadline arms it, clearQueryDeadline
+	// disarms it. The RAII guard ensures the deadline is always released.
+
+	/** Default per-query timeout for search functions (ms). */
+	static constexpr int kDefaultSearchTimeoutMs = 5000;
+	/** Progress handler invocation interval (VM steps between callbacks). */
+	static constexpr int kProgressHandlerStepInterval = 1000;
+
+	/** Arm a query deadline `timeout_ms` from now. Queries whose VM step
+	 *  count exceeds the interval are checked against the deadline; if
+	 *  exceeded, sqlite3_step returns SQLITE_INTERRUPT. Pass 0 to disarm. */
+	void setQueryDeadline(int timeout_ms);
+	/** Disarm any previously armed query deadline. */
+	void clearQueryDeadline();
+
+	/** RAII guard that arms a deadline on construction and disarms it on
+	 *  destruction, ensuring the deadline is always released even on early
+	 *  returns or exceptions. Construct at the top of any search method
+	 *  that needs timeout protection. */
+	class QueryDeadlineGuard {
+	    public:
+		explicit QueryDeadlineGuard(GraphStore *store, int timeout_ms);
+		~QueryDeadlineGuard();
+		QueryDeadlineGuard(const QueryDeadlineGuard &) = delete;
+		QueryDeadlineGuard &
+		operator=(const QueryDeadlineGuard &) = delete;
+
+	    private:
+		GraphStore *store_;
+	};
+
 	/**
      * Find callers from the new call_edges table (requires callgraph_ready).
      * Returns JSON array of caller symbols.

@@ -20,6 +20,12 @@
 #include <unordered_set>
 #include <vector>
 
+// ─── Constants ─────────────────────────────────────────────────
+// Above this node count, a name LIKE '%query%' fallback scan is too
+// slow to complete within the 30s MCP timeout. Fast-fail with a JSON
+// error instead of running the fallback when FTS is not ready.
+static constexpr int64_t kLargeProjectNodeThreshold = 100000;
+
 // ─── Phase A: engine_get_module_tree ──────────────────────────
 
 char *engine_get_module_tree(uint64_t project_id)
@@ -286,7 +292,52 @@ char *engine_unified_search(uint64_t project_id, const char *query, int limit)
 			g_store->searchUnifiedJson(project_id, query, limit));
 	}
 
-	// FTS not ready — fall back to graph-based name matching
+	// FTS not ready — check project size before falling back to the
+	// name LIKE '%query%' scan. On large projects (>100k nodes) the
+	// fallback is a full table scan that blows past the 30s MCP
+	// timeout, so fast-fail with an actionable error instead.
+	// [module=engine, method=unified_search]
+	int64_t node_count = 0;
+	{
+		sqlite3_stmt *stmt = nullptr;
+		const char *sql =
+			"SELECT COUNT(*) FROM graph_nodes WHERE project_id = ?";
+		if (sqlite3_prepare_v2(g_store->handle(), sql, -1, &stmt,
+				       nullptr) != SQLITE_OK) {
+			// Prepare failed — cannot determine node count. Log and
+			// fall through to the fallback (let it run; the user gets
+			// the existing behaviour rather than a hard block).
+			// [module=engine, method=unified_search]
+			fprintf(stderr,
+				"unified_search: COUNT prepare failed: %s "
+				"[module=engine, method=unified_search]\n",
+				sqlite3_errmsg(g_store->handle()));
+			if (stmt)
+				sqlite3_finalize(stmt);
+			return dupString(g_store->searchGraphFallback(
+				project_id, query, limit));
+		}
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		if (sqlite3_step(stmt) == SQLITE_ROW)
+			node_count = sqlite3_column_int64(stmt, 0);
+		sqlite3_finalize(stmt);
+	}
+
+	if (node_count > kLargeProjectNodeThreshold) {
+		// Project is too large for the fallback scan — fast-fail so
+		// the caller gets an immediate, actionable error instead of a
+		// 30s timeout.
+		std::ostringstream err;
+		err << "{\"error\":\"FTS index not ready and project has "
+		    << node_count << " nodes (>" << kLargeProjectNodeThreshold
+		    << "); substring search would time out. Wait for indexing "
+		    << "to complete or use find_symbol for exact match. "
+		    << "[module=engine, method=unified_search]\","
+		    << "\"node_count\":" << node_count << ",\"fts_ready\":0}";
+		return dupString(err.str());
+	}
+
+	// Small project — the fallback scan is fast enough.
 	return dupString(
 		g_store->searchGraphFallback(project_id, query, limit));
 }
