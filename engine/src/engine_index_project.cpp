@@ -246,6 +246,10 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	std::atomic<int> files_queued{ 0 };
 	std::atomic<int> files_written{ 0 };
 	std::atomic<int> writer_error{ 0 };
+	// Progress reporting: log every 10% of total files
+	const int64_t total_files = static_cast<int64_t>(jobs.size());
+	const int64_t progress_interval =
+		std::max<int64_t>(1, total_files / 10);
 
 	// ── Writer thread ──────────────────────────────────────────
 	// Single writer owns the SQLite write path. Workers never touch SQLite.
@@ -344,6 +348,16 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 			if (idx >= static_cast<int>(jobs.size()))
 				break;
 			auto &job = jobs[idx];
+
+			// Progress log every 10%
+			int done = next_job.load();
+			if (done % progress_interval == 0 && done > 0)
+				fprintf(stderr,
+					"engine: parse progress %lld/%lld "
+					"(%d%%) [module=engine, "
+					"method=engine_index_project]\n",
+					(long long)done, (long long)total_files,
+					(int)(done * 100 / total_files));
 
 			// File size check
 			struct stat file_stat;
@@ -479,6 +493,13 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	int num_workers =
 		std::min(static_cast<int>(jobs.size()),
 			 static_cast<int>(std::thread::hardware_concurrency()));
+	// Allow override via CODESCOPE_WORKERS env var (e.g. "4" for 4 workers)
+	const char *env_workers = getenv("CODESCOPE_WORKERS");
+	if (env_workers && env_workers[0]) {
+		int requested = std::atoi(env_workers);
+		if (requested > 0)
+			num_workers = std::min(requested, num_workers);
+	}
 	if (num_workers < 1)
 		num_workers = 1;
 

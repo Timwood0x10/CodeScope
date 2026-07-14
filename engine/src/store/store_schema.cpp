@@ -647,8 +647,8 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 			sqlite3_finalize(probe);
 			if (!has_module_path) {
 				if (!exec("ALTER TABLE entity "
-				          "ADD COLUMN module_path "
-				          "TEXT NOT NULL DEFAULT ''")) {
+					  "ADD COLUMN module_path "
+					  "TEXT NOT NULL DEFAULT ''")) {
 					fprintf(stderr,
 						"[module=store, method=createSchema] "
 						"ALTER TABLE entity ADD module_path "
@@ -663,9 +663,9 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 				// for all existing entities, breaking scope creation,
 				// state_builder JOINs, and module_edge grouping.
 				if (!exec("UPDATE entity SET module_path = "
-				          "rtrim(file_path, "
-				          "replace(file_path, '/', 'x')) "
-				          "WHERE module_path = ''")) {
+					  "rtrim(file_path, "
+					  "replace(file_path, '/', 'x')) "
+					  "WHERE module_path = ''")) {
 					fprintf(stderr,
 						"[module=store, method=createSchema] "
 						"UPDATE entity backfill module_path "
@@ -674,8 +674,8 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 					return false;
 				}
 				if (!exec("CREATE INDEX IF NOT EXISTS "
-				          "idx_entity_module "
-				          "ON entity(project_id, module_path)")) {
+					  "idx_entity_module "
+					  "ON entity(project_id, module_path)")) {
 					fprintf(stderr,
 						"[module=store, method=createSchema] "
 						"CREATE INDEX idx_entity_module "

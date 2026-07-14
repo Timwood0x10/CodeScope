@@ -44,17 +44,17 @@ bool ModelEngine::populateModelContext(uint64_t project_id, ModelContext &ctx)
 			return false;
 		}
 		if (sqlite3_bind_int64(st, 1, pid) != SQLITE_OK) {
-		    fprintf(stderr,
-		     "[module=model, method=populateModelContext] "
-		     "bind entities failed: %s\n",
-		     sqlite3_errmsg(db));
-		    sqlite3_finalize(st);
-		    return false;
-		   }
-		   while (sqlite3_step(st) == SQLITE_ROW) {
-		    EntityInfo e;
-		    e.id = static_cast<uint64_t>(
-		     sqlite3_column_int64(st, 0));
+			fprintf(stderr,
+				"[module=model, method=populateModelContext] "
+				"bind entities failed: %s\n",
+				sqlite3_errmsg(db));
+			sqlite3_finalize(st);
+			return false;
+		}
+		while (sqlite3_step(st) == SQLITE_ROW) {
+			EntityInfo e;
+			e.id = static_cast<uint64_t>(
+				sqlite3_column_int64(st, 0));
 			const char *s = reinterpret_cast<const char *>(
 				sqlite3_column_text(st, 1));
 			e.name = s ? s : "";
@@ -95,17 +95,17 @@ bool ModelEngine::populateModelContext(uint64_t project_id, ModelContext &ctx)
 			return false;
 		}
 		if (sqlite3_bind_int64(st, 1, pid) != SQLITE_OK) {
-		    fprintf(stderr,
-		     "[module=model, method=populateModelContext] "
-		     "bind relations failed: %s\n",
-		     sqlite3_errmsg(db));
-		    sqlite3_finalize(st);
-		    return false;
-		   }
-		   while (sqlite3_step(st) == SQLITE_ROW) {
-		    RelationRow r;
-		    r.id = static_cast<uint64_t>(
-		     sqlite3_column_int64(st, 0));
+			fprintf(stderr,
+				"[module=model, method=populateModelContext] "
+				"bind relations failed: %s\n",
+				sqlite3_errmsg(db));
+			sqlite3_finalize(st);
+			return false;
+		}
+		while (sqlite3_step(st) == SQLITE_ROW) {
+			RelationRow r;
+			r.id = static_cast<uint64_t>(
+				sqlite3_column_int64(st, 0));
 			r.source_id = static_cast<uint64_t>(
 				sqlite3_column_int64(st, 1));
 			r.target_id = static_cast<uint64_t>(
@@ -136,15 +136,15 @@ bool ModelEngine::populateModelContext(uint64_t project_id, ModelContext &ctx)
 			return false;
 		}
 		if (sqlite3_bind_int64(st, 1, pid) != SQLITE_OK ||
-		       sqlite3_bind_int(st, 2, kScopeKindModule) != SQLITE_OK) {
-		    fprintf(stderr,
-		     "[module=model, method=populateModelContext] "
-		     "bind scopes failed: %s\n",
-		     sqlite3_errmsg(db));
-		    sqlite3_finalize(st);
-		    return false;
-		   }
-		   while (sqlite3_step(st) == SQLITE_ROW) {
+		    sqlite3_bind_int(st, 2, kScopeKindModule) != SQLITE_OK) {
+			fprintf(stderr,
+				"[module=model, method=populateModelContext] "
+				"bind scopes failed: %s\n",
+				sqlite3_errmsg(db));
+			sqlite3_finalize(st);
+			return false;
+		}
+		while (sqlite3_step(st) == SQLITE_ROW) {
 			ScopeInfo sc;
 			sc.id = static_cast<uint64_t>(
 				sqlite3_column_int64(st, 0));
@@ -175,16 +175,16 @@ bool ModelEngine::populateModelContext(uint64_t project_id, ModelContext &ctx)
 			return false;
 		}
 		if (sqlite3_bind_int64(st, 1, pid) != SQLITE_OK ||
-		       sqlite3_bind_int(st, 2, kDocumentTypeReadme) != SQLITE_OK ||
-		       sqlite3_bind_int(st, 3, kMaxReadmeDocuments) != SQLITE_OK) {
-		    fprintf(stderr,
-		     "[module=model, method=populateModelContext] "
-		     "bind documents failed: %s\n",
-		     sqlite3_errmsg(db));
-		    sqlite3_finalize(st);
-		    return false;
-		   }
-		   while (sqlite3_step(st) == SQLITE_ROW) {
+		    sqlite3_bind_int(st, 2, kDocumentTypeReadme) != SQLITE_OK ||
+		    sqlite3_bind_int(st, 3, kMaxReadmeDocuments) != SQLITE_OK) {
+			fprintf(stderr,
+				"[module=model, method=populateModelContext] "
+				"bind documents failed: %s\n",
+				sqlite3_errmsg(db));
+			sqlite3_finalize(st);
+			return false;
+		}
+		while (sqlite3_step(st) == SQLITE_ROW) {
 			DocumentInfo d;
 			const char *fp = reinterpret_cast<const char *>(
 				sqlite3_column_text(st, 0));

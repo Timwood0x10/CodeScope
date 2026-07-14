@@ -675,6 +675,29 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// queryable), and model/state run in a background thread launched by
 	// engine_index_project.cpp after createIndexesAfterBulkLoad.
 
+	// ── Sync graph to LadybugDB (if available) ────────────────
+	// After all graph_nodes, graph_edges, and resolver edges are
+	// committed to SQLite, mirror them to LadybugDB for Cypher queries.
+	// This is a non-fatal step: if LadybugDB is unavailable or fails,
+	// the SQLite graph remains the source of truth.
+	{
+		auto t_lbug = Clock::now();
+		if (!syncGraphToLadybugDB(project_id))
+			fprintf(stderr,
+				"buildGraph: syncGraphToLadybugDB failed "
+				"for project %s "
+				"[module=store, method=buildGraph]\n",
+				pid.c_str());
+		fprintf(stderr,
+			"buildGraph: ladybugdb=%lldms "
+			"for project %s\n",
+			(long long)std::chrono::duration_cast<
+				std::chrono::milliseconds>(Clock::now() -
+							   t_lbug)
+				.count(),
+			pid.c_str());
+	}
+
 	// Reclaim space: semantic_records are no longer needed after buildGraph.
 	// Incremental re-index will re-insert them on next build.
 	exec(std::string("DELETE FROM semantic_records WHERE project_id=" + pid)
@@ -978,41 +1001,39 @@ GraphStore::BulkPragmaGuard::BulkPragmaGuard(GraphStore *store)
 		return val;
 	};
 	sqlite3 *db = store_->handle();
-	  if (!db) {
-	   fprintf(stderr,
-	    "[module=store, method=BulkPragmaGuard] "
-	    "db handle is null, cannot save/set PRAGMAs\n");
-	   return;
-	  }
-	  saved_sync_ = read_pragma(db, "synchronous");
-	  saved_cache_ = read_pragma(db, "cache_size");
-	  if (!store_->exec("PRAGMA synchronous = OFF"))
-	   fprintf(stderr,
-	    "[module=store, method=BulkPragmaGuard] "
-	    "PRAGMA synchronous=OFF failed: %s\n",
-	    store_->error().c_str());
-	  if (!store_->exec(
-	       ("PRAGMA cache_size = " +
-	        std::to_string(kBulkCacheSizeKib))
-	        .c_str()))
-	   fprintf(stderr,
-	    "[module=store, method=BulkPragmaGuard] "
-	    "PRAGMA cache_size=%d failed: %s\n",
-	    kBulkCacheSizeKib, store_->error().c_str());
+	if (!db) {
+		fprintf(stderr, "[module=store, method=BulkPragmaGuard] "
+				"db handle is null, cannot save/set PRAGMAs\n");
+		return;
+	}
+	saved_sync_ = read_pragma(db, "synchronous");
+	saved_cache_ = read_pragma(db, "cache_size");
+	if (!store_->exec("PRAGMA synchronous = OFF"))
+		fprintf(stderr,
+			"[module=store, method=BulkPragmaGuard] "
+			"PRAGMA synchronous=OFF failed: %s\n",
+			store_->error().c_str());
+	if (!store_->exec(
+		    ("PRAGMA cache_size = " + std::to_string(kBulkCacheSizeKib))
+			    .c_str()))
+		fprintf(stderr,
+			"[module=store, method=BulkPragmaGuard] "
+			"PRAGMA cache_size=%d failed: %s\n",
+			kBulkCacheSizeKib, store_->error().c_str());
 }
 GraphStore::BulkPragmaGuard::~BulkPragmaGuard()
 {
 	if (!store_)
 		return;
 	auto restore = [&](const char *name, int val) {
-	   if (!store_->exec((std::string("PRAGMA ") + name + " = " +
-	        std::to_string(val))
-	        .c_str()))
-	    fprintf(stderr,
-	     "[module=store, method=~BulkPragmaGuard] "
-	     "PRAGMA %s=%d restore failed: %s\n",
-	     name, val, store_->error().c_str());
-	  };
+		if (!store_->exec((std::string("PRAGMA ") + name + " = " +
+				   std::to_string(val))
+					  .c_str()))
+			fprintf(stderr,
+				"[module=store, method=~BulkPragmaGuard] "
+				"PRAGMA %s=%d restore failed: %s\n",
+				name, val, store_->error().c_str());
+	};
 	restore("synchronous", saved_sync_);
 	restore("cache_size", saved_cache_);
 }

@@ -13,6 +13,19 @@
 struct sqlite3;
 struct sqlite3_stmt;
 
+// LadybugDB C API for graph storage (optional, guarded by HAS_LADYBUG)
+#ifdef HAS_LADYBUG
+#include <lbug.h>
+#else
+// Stub types so the member variables compile without LadybugDB
+typedef struct {
+	void *_database;
+} lbug_database;
+typedef struct {
+	void *_connection;
+} lbug_connection;
+#endif
+
 namespace ir
 {
 struct Record;
@@ -90,6 +103,29 @@ class GraphStore {
 	GraphStore &operator=(const GraphStore &) = delete;
 
 	bool open(const char *db_path);
+
+	// ── LadybugDB (graph storage) ──────────────────────────────
+	/** Initialize LadybugDB database alongside SQLite.
+	 *  Creates a .lbug file next to the SQLite DB path.
+	 *  Returns true on success, false on failure (non-fatal — graph
+	 *  storage falls back to SQLite-only). */
+	bool initLadybugDB();
+	/** Close LadybugDB connection and release resources. */
+	void closeLadybugDB();
+	/** Check if LadybugDB is available for use. */
+	bool hasLadybugDB() const
+	{
+		return lbug_initialized_;
+	}
+	/** Get the LadybugDB connection handle (for direct Cypher queries). */
+	lbug_connection *lbugHandle()
+	{
+		return lbug_initialized_ ? &lbug_conn_ : nullptr;
+	}
+	/** Sync graph_nodes and graph_edges from SQLite to LadybugDB.
+	 *  Called at the end of buildGraph(). No-op if LadybugDB is not
+	 *  initialized. Returns true on success. */
+	bool syncGraphToLadybugDB(uint64_t project_id);
 
 	/** Get the database file path (for opening additional connections). */
 	const std::string &dbPath() const
@@ -694,6 +730,11 @@ class GraphStore {
 	sqlite3 *db_ = nullptr;
 	std::string error_;
 	std::string db_path_;
+
+	// LadybugDB handles (graph storage, optional)
+	lbug_database lbug_db_;
+	lbug_connection lbug_conn_;
+	bool lbug_initialized_ = false;
 
 	// Cached prepared statements (initialized in open(), finalized in close())
 	sqlite3_stmt *stmt_fts_map_ = nullptr; // INSERT INTO fts_node_map

@@ -117,6 +117,12 @@ fn main() {
     }
     println!("cargo:rustc-link-lib=static=tree-sitter");
 
+    // LadybugDB (optional, for embedded graph storage via Cypher).
+    // Homebrew installs both static (liblbug.a) and dynamic (liblbug.dylib).
+    // Use static linking to avoid runtime dylib dependencies.
+    println!("cargo:rustc-link-search=native=/opt/homebrew/lib");
+    println!("cargo:rustc-link-lib=static=lbug");
+
     // C++ standard library: libc++ on macOS, libstdc++ on Linux/Windows
     match target_os.as_str() {
         "macos" => println!("cargo:rustc-link-lib=dylib=c++"),

@@ -41,6 +41,8 @@ int engine_init(const char *db_path)
 		g_store.reset(); // Auto-cleanup via unique_ptr
 		return -1;
 	}
+	// Initialize LadybugDB for graph storage (non-fatal if unavailable)
+	g_store->initLadybugDB();
 	g_query = std::make_unique<query::QueryEngine>(g_store.get());
 
 	// Initialize parser and register available grammars
@@ -83,6 +85,7 @@ void engine_shutdown()
 	g_parser.reset(); // independent, safe to drop first
 	g_query.reset(); // may do SQLite work via g_store, destruct BEFORE store closes
 	if (g_store) {
+		g_store->closeLadybugDB();
 		g_store->close();
 		g_store.reset();
 	}

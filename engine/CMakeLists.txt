@@ -236,6 +236,7 @@ set(ENGINE_SOURCES
     src/store/store_query.cpp
     src/store/store_project.cpp
     src/store/store_knowledge.cpp
+		    src/store/store_ladybug.cpp
     src/query/query_engine.cpp
     src/query/query_analysis.cpp
     src/query/graph_query.cpp
@@ -374,6 +375,23 @@ target_link_libraries(astgraph_engine PUBLIC
     ${SQLITE3_LIBRARIES}
     ${CMAKE_DL_LIBS}
 )
+
+# ── LadybugDB (embedded graph database for graph storage) ──────
+# Used via Homebrew on macOS: brew install ladybug
+# Provides liblbug.a (static) + lbug.h (C API).
+# When building with LBUG_STATIC_DEFINE, the static library is used
+# instead of the dynamic one, avoiding runtime dylib dependencies.
+find_library(LADYBUG_LIBRARY lbug PATHS /opt/homebrew/lib REQUIRED)
+find_path(LADYBUG_INCLUDE_DIR lbug.h PATHS /opt/homebrew/include REQUIRED)
+if(LADYBUG_LIBRARY AND LADYBUG_INCLUDE_DIR)
+    target_compile_definitions(astgraph_engine PRIVATE HAS_LADYBUG=1)
+    target_compile_definitions(astgraph_engine PRIVATE LBUG_STATIC_DEFINE)
+    target_include_directories(astgraph_engine PUBLIC ${LADYBUG_INCLUDE_DIR})
+    target_link_libraries(astgraph_engine PUBLIC ${LADYBUG_LIBRARY})
+    message(STATUS "LadybugDB: found at ${LADYBUG_LIBRARY}")
+else()
+    message(STATUS "LadybugDB: not found, graph storage will use SQLite only")
+endif()
 
 # ── Tests ────────────────────────────────────────────────────────
 option(BUILD_TESTS "Build tests" ON)
