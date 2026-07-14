@@ -427,75 +427,87 @@ int64_t ResolverPipeline::run()
 	Clock::duration fuzzy_time_used{};
 	bool fuzzy_budget_exhausted = false;
 
+	// ── Batch: read all references into memory first ────────────────
+	// Instead of sqlite3_step per row in the hot loop, read all 108k refs
+	// into a vector at once. This avoids 108k individual sqlite3_step
+	// calls and lets the hot loop run entirely in memory (~10MB for 108k refs).
+	struct RefRow {
+		uint64_t ref_id;
+		std::string name;
+		uint64_t caller_id;
+		std::string caller_file;
+		int call_kind;
+	};
+	std::vector<RefRow> refs;
+	refs.reserve(65536); // pre-allocate for 108k typical
+
 	while (sqlite3_step(ref_st) == SQLITE_ROW) {
-		total_refs++;
-		(void)sqlite3_column_int64(ref_st, 0); // ref_id unused
+		RefRow r;
+		r.ref_id =
+			static_cast<uint64_t>(sqlite3_column_int64(ref_st, 0));
 		const char *name_c = reinterpret_cast<const char *>(
 			sqlite3_column_text(ref_st, 1));
-		uint64_t caller_id =
+		r.caller_id =
 			static_cast<uint64_t>(sqlite3_column_int64(ref_st, 2));
 		const char *fp_c = reinterpret_cast<const char *>(
 			sqlite3_column_text(ref_st, 7));
-		int call_kind = sqlite3_column_int(ref_st, 6);
-
+		r.call_kind = sqlite3_column_int(ref_st, 6);
 		if (!name_c || !*name_c || !fp_c)
 			continue;
+		r.name = name_c;
+		r.caller_file = fp_c;
+		refs.push_back(std::move(r));
+	}
+	sqlite3_finalize(ref_st);
+	ref_st = nullptr;
+	total_refs = static_cast<int64_t>(refs.size());
 
-		std::string name(name_c);
-		std::string caller_file(fp_c);
+	// Free the entity_index right after the hot loop — it's no longer needed.
+	// Store results in a vector for batch insert.
+	struct ResolvedEdge {
+		uint64_t caller_id;
+		uint64_t target_id;
+		int edge_type;
+	};
+	std::vector<ResolvedEdge> resolved_edges;
+	resolved_edges.reserve(16384); // pre-allocate for 36k typical
 
+	// ── Hot loop: process all references in memory ──────────────────
+	// No SQLite round-trips inside this loop — pure in-memory processing.
+	// The entity_index (hash map) and fuzzy logic are already in memory.
+	for (auto &ref : refs) {
 		// ── P0.3: Find candidates by name — COPY, not move ──────
-		// Previously: candidates = std::move(it->second)
-		// This emptied the index entry so subsequent lookups of the
-		// same name got nothing and fell through to slow fuzzy
-		// matching, causing both missed resolutions and wasted time.
 		std::vector<Candidate> candidates;
-		auto it = entity_index.find(name);
+		auto it = entity_index.find(ref.name);
 		if (it != entity_index.end()) {
 			candidates = it->second; // copy — index stays intact
 			exact_hits++;
 		}
 
 		if (candidates.empty()) {
-			// Skip fuzzy for high-frequency names (Error, Len,
-			// String, Done, Contains, etc.) — they produce too
-			// many false-positive cross-module matches.
-			if (shouldSkipFuzzy(name)) {
+			// Skip fuzzy for high-frequency names
+			if (shouldSkipFuzzy(ref.name)) {
 				skipped_common++;
 				continue;
 			}
-			// Per-name miss cache: if a previous lookup for this
-			// name produced no fuzzy matches, skip the SQL
-			// entirely. The same unresolved name often appears at
-			// many call sites, so this avoids repeating 3
-			// fruitless LIKE scans per site.
-			if (fuzzy_miss_cache_.count(name) > 0) {
+			if (fuzzy_miss_cache_.count(ref.name) > 0) {
 				skipped_fuzzy_miss++;
 				continue;
 			}
-			// Wall-clock budget: once the fuzzy path has consumed
-			// more than kFuzzyBudgetMs, skip remaining fuzzy
-			// lookups. Exact hits via entity_index above are
-			// unaffected — only the slow fuzzy fallback is gated.
 			if (fuzzy_budget_exhausted) {
 				skipped_fuzzy_budget++;
 				continue;
 			}
-			// FuzzyResolver fallback: case-insensitive, prefix,
-			// and suffix matching so references with case
-			// differences or partial names are still resolved.
 			auto t_fuzzy = Clock::now();
 			auto fuzzy_ids =
-				fuzzy_->resolve(name, kFuzzyCandidateLimit);
+				fuzzy_->resolve(ref.name, kFuzzyCandidateLimit);
 			fuzzy_time_used += Clock::now() - t_fuzzy;
 			if (!fuzzy_budget_exhausted &&
 			    fuzzy_time_used >
 				    std::chrono::milliseconds(kFuzzyBudgetMs))
 				fuzzy_budget_exhausted = true;
 			if (fuzzy_ids.empty()) {
-				// Memoize the miss so subsequent lookups of
-				// the same name skip SQL entirely.
-				fuzzy_miss_cache_.insert(name);
+				fuzzy_miss_cache_.insert(ref.name);
 				continue;
 			}
 			fuzzy_hits++;
@@ -536,26 +548,21 @@ int64_t ResolverPipeline::run()
 		total_candidates_seen +=
 			static_cast<int64_t>(candidates.size());
 
-		// Candidate cap: too many candidates means the name is too
-		// generic to resolve reliably — skip to avoid wasted scoring.
 		if (candidates.size() > kMaxCandidatesToScore) {
 			skipped_too_many++;
 			continue;
 		}
 
-		// Apply constraints to rank
-		applyConstraints(candidates, caller_file, name, call_kind);
+		applyConstraints(candidates, ref.caller_file, ref.name,
+				 ref.call_kind);
 
-		// Pick the best match (highest score), skip self-reference.
-		// Also apply hard language visibility rules: Go unexported
-		// names cannot be called cross-package, etc.
 		uint64_t best_id = 0;
 		double best_score = -1.0;
 		for (auto &c : candidates) {
-			if (c.entity_id == caller_id)
+			if (c.entity_id == ref.caller_id)
 				continue;
 			if (factorVisibilityCheck(c.language, c.name,
-						  caller_file,
+						  ref.caller_file,
 						  c.file_path) < 0.5)
 				continue;
 			if (c.total_score > best_score) {
@@ -567,24 +574,45 @@ int64_t ResolverPipeline::run()
 			continue;
 
 		resolved_count++;
-
-		// P1: Insert into staging table (lightweight — no indexes)
-		sqlite3_bind_int64(ins_st, 1, static_cast<int64_t>(caller_id));
-		sqlite3_bind_int64(ins_st, 2, static_cast<int64_t>(best_id));
-		sqlite3_bind_int(ins_st, 3, kRelationTypeCall);
-		sqlite3_bind_int64(ins_st, 4,
-				   static_cast<int64_t>(project_id_));
-		int st_rc = sqlite3_step(ins_st);
-		if (st_rc != SQLITE_DONE && st_rc != SQLITE_CONSTRAINT)
-			fprintf(stderr,
-				"[module=resolver, method=run] "
-				"staging insert failed (rc=%d): %s\n",
-				st_rc, sqlite3_errmsg(store_->handle()));
-		sqlite3_reset(ins_st);
+		resolved_edges.push_back(
+			{ ref.caller_id, best_id, kRelationTypeCall });
 	}
 
+	// Free entity_index (no longer needed)
+	entity_index.clear();
+
+	// Free the references vector (no longer needed)
+	refs.clear();
+	refs.shrink_to_fit();
+
+	// ── Batch insert all resolved edges ────────────────────────────
+	// Single INSERT with multiple rows is faster than per-row INSERTs.
+	// Use a single transaction wrapping the batch for minimal WAL overhead.
+	if (!resolved_edges.empty()) {
+		store_->exec("BEGIN");
+		for (auto &e : resolved_edges) {
+			sqlite3_bind_int64(ins_st, 1,
+					   static_cast<int64_t>(e.caller_id));
+			sqlite3_bind_int64(ins_st, 2,
+					   static_cast<int64_t>(e.target_id));
+			sqlite3_bind_int(ins_st, 3, e.edge_type);
+			sqlite3_bind_int64(ins_st, 4,
+					   static_cast<int64_t>(project_id_));
+			int st_rc = sqlite3_step(ins_st);
+			if (st_rc != SQLITE_DONE && st_rc != SQLITE_CONSTRAINT)
+				fprintf(stderr,
+					"[module=resolver, method=run] "
+					"staging insert failed (rc=%d): %s\n",
+					st_rc,
+					sqlite3_errmsg(store_->handle()));
+			sqlite3_reset(ins_st);
+		}
+		store_->exec("COMMIT");
+	}
+	resolved_edges.clear();
+	resolved_edges.shrink_to_fit();
+
 	sqlite3_finalize(ins_st);
-	sqlite3_finalize(ref_st);
 	if (lk_st)
 		sqlite3_finalize(lk_st);
 

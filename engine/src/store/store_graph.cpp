@@ -205,16 +205,10 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			"_r2n");
 	}
 	exec("CREATE INDEX IF NOT EXISTS _r2n_fp_oid ON _r2n(file_path, original_id)");
-	  exec("CREATE INDEX IF NOT EXISTS _r2n_name ON _r2n(name)");
-	  // Index for type_ref JOIN: sr.rowid = r2n.rid speeds up the
-	  // INSERT INTO type_ref ... FROM semantic_records JOIN _r2n query.
-	  exec("CREATE INDEX IF NOT EXISTS _r2n_rid ON _r2n(rid)");
-	  // Index for type_edges JOIN: _r2n joined on file_path + rid.
-	  // The current query joins _r2n src → _r2n tgt ON file_path, then
-	  // filters by semantic_records.kind IN (type kinds) AND name match.
-	  // This composite index covers both the file_path JOIN and the
-	  // subsequent rid lookup, avoiding a full scan of _r2n per file.
-	  exec("CREATE INDEX IF NOT EXISTS _r2n_fp_rid ON _r2n(file_path, rid)");
+	exec("CREATE INDEX IF NOT EXISTS _r2n_name ON _r2n(name)");
+	// Index for type_ref JOIN: sr.rowid = r2n.rid speeds up the
+	// INSERT INTO type_ref ... FROM semantic_records JOIN _r2n query.
+	exec("CREATE INDEX IF NOT EXISTS _r2n_rid ON _r2n(rid)");
 	auto t_r2n = Clock::now();
 
 	// ── 2c: Graph nodes from declarations ──
@@ -579,23 +573,23 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		exec(func_sql.c_str());
 	}
 	// Update import.source_scope_id to point to the file's module scope.
-	  {
-	   std::string imp_scope_sql =
-	    "UPDATE import SET source_scope_id = "
-	    "(SELECT COALESCE(s.id, 0) FROM scope s "
-	    " JOIN entity e ON e.project_id = s.project_id"
-	    " AND s.kind = 1"
-	    " AND s.name = e.module_path "
-	    " WHERE e.project_id=import.project_id"
-	    " AND e.file_path = "
-	    "  (SELECT file_path FROM semantic_records sr"
-	    "   WHERE sr.rowid = import.id"
-	    "   AND sr.project_id=import.project_id)"
-	    " LIMIT 1) "
-	    "WHERE project_id=" +
-	    std::to_string(project_id);
-	   exec(imp_scope_sql.c_str());
-	  }
+	{
+		std::string imp_scope_sql =
+			"UPDATE import SET source_scope_id = "
+			"(SELECT COALESCE(s.id, 0) FROM scope s "
+			" JOIN entity e ON e.project_id = s.project_id"
+			" AND s.kind = 1"
+			" AND s.name = e.module_path "
+			" WHERE e.project_id=import.project_id"
+			" AND e.file_path = "
+			"  (SELECT file_path FROM semantic_records sr"
+			"   WHERE sr.rowid = import.id"
+			"   AND sr.project_id=import.project_id)"
+			" LIMIT 1) "
+			"WHERE project_id=" +
+			std::to_string(project_id);
+		exec(imp_scope_sql.c_str());
+	}
 	auto t_scope = Clock::now();
 
 	exec("DROP TABLE IF EXISTS _r2n");
