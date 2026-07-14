@@ -4,8 +4,7 @@
 #include <string>
 #include <vector>
 #include <cstdint>
-
-struct sqlite3_stmt;
+#include <unordered_map>
 
 namespace resolver
 {
@@ -72,17 +71,33 @@ inline double computeTotalScore(const std::vector<FactorResult> &factors)
 	return (sum_weight > 0.0) ? (sum_scored / sum_weight) : 0.0;
 }
 
-/// Check if a candidate's file imports the caller's module.
-/// Returns 1.0 if import found, 0.0 otherwise.
-/// Uses the import table: import.target_path contains the module path.
-/// @param stmt_forward  Pre-prepared statement for forward import check.
-/// @param stmt_reverse  Pre-prepared statement for reverse import check.
-double factorImportMatch(uint64_t project_id,
-			 sqlite3_stmt *stmt_forward,
-			 sqlite3_stmt *stmt_reverse,
-			 const std::string &caller_file,
-			 const std::string &candidate_file,
-			 const std::string &candidate_name);
+/// Check if the caller's file imports the candidate's module (forward)
+/// or the candidate's file imports the caller's module (reverse).
+/// Returns 1.0 if an import relationship is found, 0.0 otherwise.
+///
+/// Uses the pre-loaded import_index (file_path -> list of target_path
+/// strings) instead of per-candidate SQL queries, eliminating the
+/// non-sargable `target_path LIKE '%module_name%'` full table scans
+/// that dominated ResolverPipeline::run() (~174s for 108k refs).
+///
+/// Matching replicates the original SQL
+/// `target_path LIKE '%<module_name>%'` EXACTLY: '%' matches any
+/// sequence (including empty), '_' matches any single character, and
+/// ASCII letters compare case-insensitively (SQLite's default LIKE
+/// behavior; non-ASCII bytes compare as-is). This preserves IDENTICAL
+/// resolved edges versus the previous SQL-based implementation.
+///
+/// @param import_index   Pre-loaded map: file_path -> all import
+///                       target_path strings recorded for that file.
+/// @param caller_file    File path where the call site resides.
+/// @param candidate_file File path of the candidate entity.
+/// @param candidate_name Name of the candidate (retained for callers;
+///                       not used by the matching logic).
+double factorImportMatch(
+	const std::unordered_map<std::string, std::vector<std::string> >
+		&import_index,
+	const std::string &caller_file, const std::string &candidate_file,
+	const std::string &candidate_name);
 
 /// Check if caller and candidate share the same namespace/module.
 /// Returns 1.0 if same module, 0.5 if sibling module, 0.0 otherwise.

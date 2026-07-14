@@ -103,31 +103,18 @@ ResolverPipeline::ResolverPipeline(store::GraphStore *store,
 	, project_id_(project_id)
 	, fuzzy_(std::make_unique<FuzzyResolver>(store, project_id))
 {
-	// Prepare import match statements once (reused via sqlite3_reset).
-	// Avoids ~313k per-call prepare/finalize cycles for 108k refs × 2.9 avg candidates.
-	sqlite3 *db = store_ ? store_->handle() : nullptr;
-	if (db) {
-		static constexpr const char *kSqlImportForward =
-			"SELECT COUNT(*) FROM import "
-			"WHERE project_id=? AND file_path=? "
-			"AND target_path LIKE ?";
-		sqlite3_prepare_v2(db, kSqlImportForward, -1,
-				   &stmt_import_forward_, nullptr);
-		static constexpr const char *kSqlImportReverse =
-			"SELECT COUNT(*) FROM import "
-			"WHERE project_id=? AND file_path=? "
-			"AND target_path LIKE ?";
-		sqlite3_prepare_v2(db, kSqlImportReverse, -1,
-				   &stmt_import_reverse_, nullptr);
-	}
+	// Import matching no longer uses prepared SQL statements: run()
+	// pre-loads all import rows into import_index_ (file_path ->
+	// target_path list) and factorImportMatch matches against it
+	// in-memory with SQLite-exact LIKE semantics. This removes the
+	// 313k per-candidate full table scans that dominated run().
 }
 
 ResolverPipeline::~ResolverPipeline()
 {
-	if (stmt_import_forward_)
-		sqlite3_finalize(stmt_import_forward_);
-	if (stmt_import_reverse_)
-		sqlite3_finalize(stmt_import_reverse_);
+	// All resources are RAII-managed (unique_ptr fuzzy_, STL containers).
+	// The former prepared import statements were removed when import
+	// matching moved to the in-memory import_index_ hashmap.
 }
 
 std::string ResolverPipeline::modulePath(const std::string &file_path)
@@ -193,16 +180,16 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 			factors.push_back(f);
 		}
 
-		// Factor 2: ImportMatch — dominant weight for cross-module calls
+		// Factor 2: ImportMatch — dominant weight for cross-module calls.
+		// Uses the pre-loaded import_index_ hashmap instead of per-
+		// candidate SQL (the previous ~174s bottleneck). Matching keeps
+		// SQLite-exact LIKE semantics so resolved edges are unchanged.
 		{
 			FactorResult f;
 			f.name = "ImportMatch";
 			f.weight = kWeightImportMatch;
-			f.score = factorImportMatch(project_id_,
-			         stmt_import_forward_,
-			         stmt_import_reverse_,
-			         caller_file, c.file_path,
-			         c.name);
+			f.score = factorImportMatch(import_index_, caller_file,
+						    c.file_path, c.name);
 			f.detail = (f.score > 0.0) ? "imported" :
 						     "not imported";
 			factors.push_back(f);
@@ -388,6 +375,56 @@ int64_t ResolverPipeline::run()
 			total_entities++;
 		}
 		sqlite3_finalize(idx_st);
+	}
+
+	// ── Step 0b: Pre-load all imports into a file_path-indexed HashMap ──
+	// This is the core fix for the 174s bottleneck: factorImportMatch
+	// previously ran `SELECT COUNT(*) FROM import WHERE project_id=? AND
+	// file_path=? AND target_path LIKE '%module_name%'` per candidate.
+	// The leading-% LIKE is non-sargable, forcing a FULL TABLE SCAN on
+	// the import table for each of the ~313k candidate evaluations
+	// (108k refs × 2.9 avg candidates × 1-2 SQL queries each).
+	//
+	// We load every import row once into import_index_ (file_path ->
+	// list of target_path strings) and let factorImportMatch match
+	// in-memory with SQLite-exact LIKE semantics. Resolved edges are
+	// IDENTICAL to the SQL implementation; only the access path changes.
+	import_index_.clear();
+	int64_t total_imports = 0;
+	{
+		std::string imp_sql =
+			"SELECT file_path, target_path FROM import "
+			"WHERE project_id=?";
+		sqlite3_stmt *imp_st = nullptr;
+		if (sqlite3_prepare_v2(store_->handle(), imp_sql.c_str(), -1,
+				       &imp_st, nullptr) != SQLITE_OK) {
+			fprintf(stderr,
+				"[module=resolver, method=run] "
+				"prepare import index failed: %s\n",
+				sqlite3_errmsg(store_->handle()));
+			return -1;
+		}
+		sqlite3_bind_int64(imp_st, 1,
+				   static_cast<int64_t>(project_id_));
+		while (sqlite3_step(imp_st) == SQLITE_ROW) {
+			const char *fp = reinterpret_cast<const char *>(
+				sqlite3_column_text(imp_st, 0));
+			const char *tp = reinterpret_cast<const char *>(
+				sqlite3_column_text(imp_st, 1));
+			std::string file_path = fp ? fp : "";
+			std::string target_path = tp ? tp : "";
+			// NOTE: empty file_path rows are intentionally KEPT. The
+			// original SQL used an exact `file_path = ?` predicate,
+			// which matches empty-file_path rows when caller_file is
+			// also empty; dropping them would change matching results
+			// for such (rare) call sites and break identical-edge
+			// semantics. They land in the "" bucket and are only
+			// consulted when a caller's file_path is empty.
+			import_index_[file_path].push_back(
+				std::move(target_path));
+			total_imports++;
+		}
+		sqlite3_finalize(imp_st);
 	}
 
 	// ── Query all references for this project ──
@@ -577,6 +614,44 @@ int64_t ResolverPipeline::run()
 			continue;
 		}
 
+		// ── Single-candidate fast path (semantically safe) ───────
+		// When exactly one candidate exists AND it shares the caller's
+		// directory, factorImportMatch early-returns 1.0 (ImportMatch,
+		// weight 0.80) and the other same-module factors are also high,
+		// so the weighted total_score is always >= ~0.65 — well above
+		// kResolutionThreshold (0.40) for every call_kind. Therefore the
+		// original path would ACCEPT this candidate (subject to the same
+		// visibility + not-caller gates applied below), and emitting the
+		// edge directly produces an IDENTICAL result while skipping the
+		// full applyConstraints factor allocation/sort.
+		//
+		// Cross-module single candidates are NOT short-circuited: their
+		// threshold outcome depends on the import match, so the exact
+		// score must be computed to preserve identical edges.
+		if (candidates.size() == 1) {
+			const Candidate &c = candidates.front();
+			if (c.entity_id != ref.caller_id) {
+				size_t c_slash = ref.caller_file.rfind('/');
+				size_t t_slash = c.file_path.rfind('/');
+				bool same_dir =
+					(c_slash != std::string::npos &&
+					 t_slash != std::string::npos &&
+					 ref.caller_file.substr(0, c_slash) ==
+						 c.file_path.substr(0,
+								    t_slash));
+				if (same_dir &&
+				    factorVisibilityCheck(c.language, c.name,
+							  ref.caller_file,
+							  c.file_path) >= 0.5) {
+					resolved_count++;
+					resolved_edges.push_back(
+						{ ref.caller_id, c.entity_id,
+						  kRelationTypeCall });
+					continue;
+				}
+			}
+		}
+
 		applyConstraints(candidates, ref.caller_file, ref.name,
 				 ref.call_kind);
 
@@ -604,6 +679,9 @@ int64_t ResolverPipeline::run()
 
 	// Free entity_index (no longer needed)
 	entity_index.clear();
+
+	// Free import_index_ (no longer needed after the hot loop).
+	import_index_.clear();
 
 	// Free the references vector (no longer needed)
 	refs.clear();
@@ -690,14 +768,15 @@ int64_t ResolverPipeline::run()
 		" | exact=%lld fuzzy=%lld"
 		" skipped_common=%lld skipped_many=%lld"
 		" skipped_miss=%lld skipped_budget=%lld"
-		" | avg_cands=%.1f entities=%lld"
+		" | avg_cands=%.1f entities=%lld imports=%lld"
 		" | sql_batch=%lldms total=%lldms\n",
 		(long long)resolved_count, (long long)total_refs,
 		(long long)exact_hits, (long long)fuzzy_hits,
 		(long long)skipped_common, (long long)skipped_too_many,
 		(long long)skipped_fuzzy_miss, (long long)skipped_fuzzy_budget,
 		avg_candidates, (long long)total_entities,
-		(long long)sql_batch_ms, (long long)total_ms);
+		(long long)total_imports, (long long)sql_batch_ms,
+		(long long)total_ms);
 
 	return resolved_count;
 }

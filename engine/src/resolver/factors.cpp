@@ -1,5 +1,4 @@
 #include "factors.h"
-#include <sqlite3.h>
 #include <algorithm>
 #include <cstring>
 #include <unordered_set>
@@ -7,14 +6,103 @@
 namespace resolver
 {
 
-double factorImportMatch(uint64_t project_id,
-			 sqlite3_stmt *stmt_forward,
-			 sqlite3_stmt *stmt_reverse,
-			 const std::string &caller_file,
-			 const std::string &candidate_file,
-			 const std::string &candidate_name)
+namespace
 {
+/// Fold an ASCII byte to lowercase. SQLite's default LIKE folds only
+/// ASCII upper-case letters; all other bytes (including non-ASCII) are
+/// returned unchanged so they compare byte-for-byte, matching SQLite.
+inline unsigned char likeFold(unsigned char ch)
+{
+	if (ch >= 'A' && ch <= 'Z')
+		return static_cast<unsigned char>(ch + ('a' - 'A'));
+	return ch;
+}
+
+/// Replicate SQLite's default LIKE matching for a full-string pattern.
+/// '%' matches any sequence (including empty), '_' matches any single
+/// character, and ASCII letters compare case-insensitively. The match
+/// is anchored to the whole text (LIKE is not a substring search; the
+/// surrounding '%' in callers' patterns provides prefix/suffix freedom).
+///
+/// This is the standard greedy-with-backtrack wildcard matcher. It is
+/// used instead of std::string::find so that '_'/'%' inside a module
+/// name and ASCII case differences behave EXACTLY like the original
+/// `target_path LIKE '%module_name%'` SQL — preserving identical edges.
+bool sqliteLikeMatch(const std::string &pattern, const std::string &text)
+{
+	size_t p = 0; // pattern cursor
+	size_t t = 0; // text cursor
+	size_t star_p = std::string::npos; // position of last '%' in pattern
+	size_t match_t = 0; // text position aligned with that '%'
+	while (t < text.size()) {
+		if (p < pattern.size() && pattern[p] == '%') {
+			star_p = p;
+			match_t = t;
+			++p; // tentatively let '%' match zero chars
+		} else if (p < pattern.size() &&
+			   (pattern[p] == '_' ||
+			    likeFold(static_cast<unsigned char>(pattern[p])) ==
+				    likeFold(static_cast<unsigned char>(
+					    text[t])))) {
+			++p;
+			++t;
+		} else if (star_p != std::string::npos) {
+			// backtrack: let the previous '%' swallow one more char
+			p = star_p + 1;
+			match_t = t = match_t + 1;
+		} else {
+			return false;
+		}
+	}
+	while (p < pattern.size() && pattern[p] == '%')
+		++p;
+	return p == pattern.size();
+}
+
+/// Return true if any target_path in `targets` matches the LIKE pattern
+/// `"%<module_name>%"` (semantically identical to the original SQL
+/// `SELECT COUNT(*) ... WHERE target_path LIKE '%module_name%' > 0`).
+bool anyImportMatches(const std::vector<std::string> &targets,
+		      const std::string &module_name)
+{
+	std::string pattern = "%" + module_name + "%";
+	for (const auto &target : targets) {
+		if (sqliteLikeMatch(pattern, target))
+			return true;
+	}
+	return false;
+}
+
+/// Extract the module-name token used for import matching. Mirrors the
+/// original factors.cpp logic: strip the file name (last '/'), then take
+/// the last directory component. For "a/b/c.go" this yields "b"; for a
+/// bare "c.go" it yields "c.go"; for "/c.go" it yields "" (which, like
+/// the original SQL `LIKE '%%'`, matches any imported target_path).
+std::string moduleTokenFromPath(const std::string &file_path)
+{
+	std::string module_path = file_path;
+	size_t slash = module_path.rfind('/');
+	if (slash != std::string::npos)
+		module_path = module_path.substr(0, slash);
+	size_t prev_slash = module_path.rfind('/');
+	if (prev_slash != std::string::npos)
+		return module_path.substr(prev_slash + 1);
+	return module_path;
+}
+} // namespace
+
+double factorImportMatch(
+	const std::unordered_map<std::string, std::vector<std::string> >
+		&import_index,
+	const std::string &caller_file, const std::string &candidate_file,
+	const std::string &candidate_name)
+{
+	(void)candidate_name; // unused — kept for caller compatibility
+
 	// Same-module calls don't need an import statement — score 1.0.
+	// (Identical to the original early return: pure string comparison,
+	// no index lookup, so it is also the fast path for same-directory
+	// candidates.)
 	{
 		size_t c_slash = caller_file.rfind('/');
 		size_t t_slash = candidate_file.rfind('/');
@@ -27,65 +115,27 @@ double factorImportMatch(uint64_t project_id,
 				return 1.0;
 		}
 	}
-	// Check if the caller's file imports the candidate's module.
-	// Reuse pre-prepared statement (reset + clear_bindings to avoid
-	// prepare/finalize overhead — ~30s for 313k candidate evaluations).
+
+	// Forward check: does the caller's file import the candidate's
+	// module? Replaces `SELECT COUNT(*) FROM import WHERE file_path=?
+	// AND target_path LIKE '%candidate_module%'` with an in-memory
+	// lookup over the pre-loaded import_index.
+	std::string candidate_module = moduleTokenFromPath(candidate_file);
 	double result = 0.0;
-	if (stmt_forward) {
-		sqlite3_reset(stmt_forward);
-		sqlite3_clear_bindings(stmt_forward);
-		sqlite3_bind_int64(stmt_forward, 1,
-				   static_cast<int64_t>(project_id));
-		sqlite3_bind_text(stmt_forward, 2, caller_file.c_str(), -1,
-				  SQLITE_STATIC);
+	auto fwd_it = import_index.find(caller_file);
+	if (fwd_it != import_index.end() &&
+	    anyImportMatches(fwd_it->second, candidate_module))
+		result = 1.0;
 
-		// Use the candidate's module path for matching
-		std::string module_path = candidate_file;
-		size_t slash = module_path.rfind('/');
-		if (slash != std::string::npos)
-			module_path = module_path.substr(0, slash);
-		size_t prev_slash = module_path.rfind('/');
-		std::string module_name = (prev_slash != std::string::npos) ?
-						  module_path.substr(prev_slash + 1) :
-						  module_path;
-
-		std::string like_pattern = "%" + module_name + "%";
-		sqlite3_bind_text(stmt_forward, 3, like_pattern.c_str(), -1,
-				  SQLITE_STATIC);
-		if (sqlite3_step(stmt_forward) == SQLITE_ROW) {
-			int count = sqlite3_column_int(stmt_forward, 0);
-			if (count > 0)
-				result = 1.0;
-		}
-	}
-
-	// If no direct import found, also check reverse import.
-	if (result == 0.0 && stmt_reverse) {
-		sqlite3_reset(stmt_reverse);
-		sqlite3_clear_bindings(stmt_reverse);
-		sqlite3_bind_int64(stmt_reverse, 1,
-				   static_cast<int64_t>(project_id));
-		sqlite3_bind_text(stmt_reverse, 2, candidate_file.c_str(), -1,
-				  SQLITE_STATIC);
-
-		std::string caller_module = caller_file;
-		size_t c_slash = caller_module.rfind('/');
-		if (c_slash != std::string::npos)
-			caller_module = caller_module.substr(0, c_slash);
-		size_t c_prev = caller_module.rfind('/');
-		std::string caller_mod_name =
-			(c_prev != std::string::npos) ?
-				caller_module.substr(c_prev + 1) :
-				caller_module;
-
-		std::string rev_pattern = "%" + caller_mod_name + "%";
-		sqlite3_bind_text(stmt_reverse, 3, rev_pattern.c_str(), -1,
-				  SQLITE_STATIC);
-		if (sqlite3_step(stmt_reverse) == SQLITE_ROW) {
-			int count = sqlite3_column_int(stmt_reverse, 0);
-			if (count > 0)
-				result = 1.0;
-		}
+	// Reverse check: does the candidate's file import the caller's
+	// module? Only runs when the forward check found nothing, matching
+	// the original `result == 0.0` guard.
+	if (result == 0.0) {
+		std::string caller_module = moduleTokenFromPath(caller_file);
+		auto rev_it = import_index.find(candidate_file);
+		if (rev_it != import_index.end() &&
+		    anyImportMatches(rev_it->second, caller_module))
+			result = 1.0;
 	}
 
 	return result;

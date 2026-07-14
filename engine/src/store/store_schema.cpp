@@ -121,6 +121,12 @@ bool GraphStore::createSchema()
             FOREIGN KEY (target_id) REFERENCES entity(id)
         );
 
+        -- Indexes on relation table for JOIN performance. Without these,
+        -- buildArchitectureState and call-graph queries do full table scans
+        -- on relation (110k+ rows) for each entity lookup.
+        CREATE INDEX IF NOT EXISTS idx_relation_target ON relation(project_id, target_id);
+        CREATE INDEX IF NOT EXISTS idx_relation_source ON relation(project_id, source_id);
+
         CREATE INDEX IF NOT EXISTS idx_files_project ON files(project_id);
         CREATE INDEX IF NOT EXISTS idx_graph_nodes_project ON graph_nodes(project_id);
         CREATE INDEX IF NOT EXISTS idx_graph_nodes_name ON graph_nodes(project_id, name);
@@ -551,6 +557,8 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
             FOREIGN KEY (project_id) REFERENCES projects(id),
             FOREIGN KEY (entity_id) REFERENCES entity(id)
         );
+        -- Index for buildArchitectureState WHERE clause filtering by project
+        CREATE INDEX IF NOT EXISTS idx_arch_edge_project ON architecture_edge(project_id);
 
         CREATE INDEX IF NOT EXISTS idx_capability_project ON capability(project_id, name);
         CREATE INDEX IF NOT EXISTS idx_contract_project ON contract(project_id, name);

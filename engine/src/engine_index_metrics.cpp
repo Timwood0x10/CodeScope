@@ -41,11 +41,13 @@ computeMetricsFromCST(TSTree *tree, const char *source,
 
 	// Build parent→children index and record map
 	std::unordered_map<uint64_t, std::vector<uint64_t> > children_of;
+	children_of.reserve(records.size());
 	for (auto &r : records) {
 		if (r.parent_id > 0)
 			children_of[r.parent_id].push_back(r.id);
 	}
 	std::unordered_map<uint64_t, const ir::Record *> record_map;
+	record_map.reserve(records.size());
 	for (auto &r : records)
 		record_map[r.id] = &r;
 
@@ -57,6 +59,7 @@ computeMetricsFromCST(TSTree *tree, const char *source,
 		const ir::Record *rec;
 	};
 	std::vector<FuncEntry> funcs;
+	funcs.reserve(records.size() / 4);
 	for (auto &r : records) {
 		if (r.kind != ir::RecordKind::Function &&
 		    r.kind != ir::RecordKind::Method)
@@ -120,8 +123,13 @@ computeMetricsFromCST(TSTree *tree, const char *source,
 	};
 
 	// Initialize MetricRow per function, counting params and calls
-	// from records via parent_id tree walk.
+	// from records via an iterative DFS over the record subtree.
+	// Using an explicit stack instead of std::function avoids a heap
+	// allocation per recursive step (millions of allocations across
+	// a large project).
 	std::unordered_map<const ir::Record *, store::MetricRow> metrics_map;
+	metrics_map.reserve(funcs.size());
+	std::vector<uint64_t> desc_stack;
 	for (auto &fe : funcs) {
 		store::MetricRow m;
 		m.name = fe.rec->name;
@@ -131,72 +139,94 @@ computeMetricsFromCST(TSTree *tree, const char *source,
 					   fe.rec->loc.start_row + 1);
 		m.cyclomatic = 1;
 		bool has_call = false;
-		std::function<void(uint64_t)> count_desc = [&](uint64_t id) {
-			auto it = record_map.find(id);
-			if (it == record_map.end())
-				return;
-			if (it->second->kind == ir::RecordKind::Parameter)
-				m.param_count++;
-			else if (it->second->kind == ir::RecordKind::CallExpr) {
-				m.call_count++;
-				has_call = true;
-			}
-			auto ci = children_of.find(id);
-			if (ci != children_of.end())
-				for (auto cid : ci->second)
-					count_desc(cid);
-		};
+
+		// Iterative DFS over the record subtree rooted at this
+		// function. Order of traversal does not affect the counts
+		// (they are sums), so a plain LIFO stack is equivalent.
+		desc_stack.clear();
 		auto ci = children_of.find(fe.rec->id);
 		if (ci != children_of.end())
 			for (auto cid : ci->second)
-				count_desc(cid);
+				desc_stack.push_back(cid);
+		while (!desc_stack.empty()) {
+			uint64_t id = desc_stack.back();
+			desc_stack.pop_back();
+			auto it = record_map.find(id);
+			if (it == record_map.end())
+				continue;
+			const ir::Record *rec = it->second;
+			if (rec->kind == ir::RecordKind::Parameter)
+				m.param_count++;
+			else if (rec->kind == ir::RecordKind::CallExpr) {
+				m.call_count++;
+				has_call = true;
+			}
+			auto ci2 = children_of.find(id);
+			if (ci2 != children_of.end())
+				for (auto cid : ci2->second)
+					desc_stack.push_back(cid);
+		}
 		m.is_stub = !has_call;
 		metrics_map[fe.rec] = std::move(m);
 	}
 
-	// Walk CST recursively, count control-flow nodes per function.
-	// cf_depth tracks nesting of control-flow nodes; resets when
-	// entering a different function.
-	std::function<void(TSNode, int, const FuncEntry *)> walk =
-		[&](TSNode node, int cf_depth, const FuncEntry *cur_func) {
-			uint32_t start_byte = ts_node_start_byte(node);
-			const FuncEntry *fe = findContainingFunc(start_byte);
-			int eff_depth = cf_depth;
-			const FuncEntry *eff_func = cur_func;
-			if (fe && fe != cur_func) {
-				eff_depth = 0;
-				eff_func = fe;
-			}
+	// Walk the CST iteratively with an explicit stack, counting
+	// control-flow nodes per function. cf_depth tracks nesting of
+	// control-flow nodes and resets when entering a different
+	// function. Uses ts_node_child_count/ts_node_child (ALL children,
+	// not just named ones) to match the original recursive traversal.
+	// Metrics are sums and a max, so traversal order is irrelevant to
+	// the result; children are pushed in reverse so they pop
+	// left-to-right, preserving the original visitation order.
+	struct WalkFrame {
+		TSNode node;
+		int cf_depth;
+		const FuncEntry *cur_func;
+	};
+	std::vector<WalkFrame> walk_stack;
+	walk_stack.push_back({ ts_tree_root_node(tree), 0, nullptr });
+	while (!walk_stack.empty()) {
+		WalkFrame frame = walk_stack.back();
+		walk_stack.pop_back();
+		TSNode node = frame.node;
+		int cf_depth = frame.cf_depth;
+		const FuncEntry *cur_func = frame.cur_func;
 
-			const char *type = ts_node_type(node);
-			std::string_view sv(type);
-			bool is_branch = branch_types.count(sv) > 0;
-			bool is_loop = loop_types.count(sv) > 0;
+		uint32_t start_byte = ts_node_start_byte(node);
+		const FuncEntry *fe = findContainingFunc(start_byte);
+		int eff_depth = cf_depth;
+		const FuncEntry *eff_func = cur_func;
+		if (fe && fe != cur_func) {
+			eff_depth = 0;
+			eff_func = fe;
+		}
 
-			if (eff_func && (is_branch || is_loop)) {
-				if (is_branch)
-					metrics_map[eff_func->rec]
-						.branch_count++;
-				else
-					metrics_map[eff_func->rec].loop_count++;
-				eff_depth = eff_depth + 1;
-				if (eff_depth >
-				    metrics_map[eff_func->rec].nesting_depth)
-					metrics_map[eff_func->rec]
-						.nesting_depth = eff_depth;
-			}
+		const char *type = ts_node_type(node);
+		std::string_view sv(type);
+		bool is_branch = branch_types.count(sv) > 0;
+		bool is_loop = loop_types.count(sv) > 0;
 
-			uint32_t n = ts_node_child_count(node);
-			for (uint32_t i = 0; i < n; ++i)
-				walk(ts_node_child(node, i), eff_depth,
-				     eff_func);
-		};
+		if (eff_func && (is_branch || is_loop)) {
+			if (is_branch)
+				metrics_map[eff_func->rec].branch_count++;
+			else
+				metrics_map[eff_func->rec].loop_count++;
+			eff_depth = eff_depth + 1;
+			if (eff_depth >
+			    metrics_map[eff_func->rec].nesting_depth)
+				metrics_map[eff_func->rec].nesting_depth =
+					eff_depth;
+		}
 
-	TSNode root = ts_tree_root_node(tree);
-	walk(root, 0, nullptr);
+		uint32_t n = ts_node_child_count(node);
+		for (uint32_t i = n; i > 0; --i)
+			walk_stack.push_back({ ts_node_child(node, i - 1),
+					       eff_depth, eff_func });
+	}
 
 	// Finalize: cyclomatic = 1 + branches + loops,
 	// cognitive = cyclomatic + nesting_depth (approximation)
+	result.reserve(funcs.size());
 	for (auto &fe : funcs) {
 		auto &m = metrics_map[fe.rec];
 		m.cyclomatic = 1 + m.branch_count + m.loop_count;

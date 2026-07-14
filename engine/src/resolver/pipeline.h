@@ -4,12 +4,11 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #include "factors.h"
 #include "../store/store.h"
-
-struct sqlite3_stmt;
 
 namespace resolver
 {
@@ -56,19 +55,23 @@ class ResolverPipeline {
 	std::unique_ptr<FuzzyResolver> fuzzy_;
 
 	// Per-name miss cache: names that previously produced no fuzzy
-	  // matches. Before invoking fuzzy_->resolve() the pipeline checks
-	  // this set so the same fruitless name (which often appears at many
-	  // call sites) is looked up at most once per pipeline lifetime —
-	  // skipping 3 SQL LIKE scans per repeat occurrence.
-	  std::unordered_set<std::string> fuzzy_miss_cache_;
+	// matches. Before invoking fuzzy_->resolve() the pipeline checks
+	// this set so the same fruitless name (which often appears at many
+	// call sites) is looked up at most once per pipeline lifetime —
+	// skipping 3 SQL LIKE scans per repeat occurrence.
+	std::unordered_set<std::string> fuzzy_miss_cache_;
 
-	  // Pre-prepared import match statements — prepared once in the
-	  // constructor, reused via sqlite3_reset across candidate evaluations.
-	  // Avoids 313k per-call prepare/finalize cycles (~31s savings).
-	  sqlite3_stmt *stmt_import_forward_ = nullptr;
-	  sqlite3_stmt *stmt_import_reverse_ = nullptr;
+	// Pre-loaded import index: file_path -> all import target_path
+	// strings recorded for that file. Populated once in run() and
+	// consulted by factorImportMatch via applyConstraints, replacing
+	// the per-candidate `SELECT COUNT(*) FROM import ... target_path
+	// LIKE '%...%'` queries whose non-sargable leading-% caused a full
+	// table scan per candidate (~174s for 108k refs). Matching is
+	// performed in-memory with SQLite-exact LIKE semantics, so the
+	// resolved edges are IDENTICAL to the previous SQL implementation.
+	std::unordered_map<std::string, std::vector<std::string> > import_index_;
 
-	  /// Candidate: a potential match for a reference.
+	/// Candidate: a potential match for a reference.
 	struct Candidate {
 		uint64_t entity_id;
 		std::string name;
