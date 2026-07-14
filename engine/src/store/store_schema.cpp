@@ -131,6 +131,9 @@ bool GraphStore::createSchema()
         -- Composite index for module_path queries (scope JOIN, module_edge grouping).
         -- Replaces the non-sargable rtrim(file_path, replace(...)) expression.
         CREATE INDEX IF NOT EXISTS idx_entity_module ON entity(project_id, module_path);
+        -- Composite index for scope UPDATE JOIN: import.id → semantic_records.rowid → entity.file_path.
+        -- Without this, the scope UPDATE's correlated subquery does a full table scan on entity.
+        CREATE INDEX IF NOT EXISTS idx_entity_file ON entity(project_id, file_path);
         -- Composite index for _r2n JOIN during buildGraph:
         -- graph_nodes JOIN semantic_records ON (project_id, file_path, start_row, node_type=kind)
         CREATE INDEX IF NOT EXISTS idx_gn_file_row_type ON graph_nodes(project_id, file_path, start_row, node_type);
