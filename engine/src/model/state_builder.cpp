@@ -14,25 +14,47 @@ StateBuilder::StateBuilder(store::GraphStore *store, uint64_t project_id)
 
 int64_t StateBuilder::buildModuleSummaries()
 {
-	// Query all modules (scope.kind=1) and compute their statistics.
-	// For each module, count incoming/outgoing edges, dead entities, utilization.
+	// Single INSERT...SELECT replaces the per-row prepare/step/finalize
+	// loop. JOIN on entity.module_path = s.name uses idx_entity_module
+	// (sargable) instead of the non-sargable file_path LIKE s.name || '%'.
+	// Role classification is computed in SQL via CASE, matching the
+	// previous C++ classifyModuleRole logic exactly.
 	std::string sql =
-		"SELECT s.id, s.name, "
-		" COUNT(DISTINCT e.id) as total,"
-		" COUNT(DISTINCT r_in.source_id) as incoming,"
-		" COUNT(DISTINCT r_out.target_id) as outgoing,"
-		" COUNT(DISTINCT e.id) - COUNT(DISTINCT r_tgt.target_id) as dead"
-		" FROM scope s"
-		" JOIN entity e ON e.project_id = ? AND e.file_path LIKE s.name || '%'"
-		" LEFT JOIN relation r_in ON r_in.project_id = ?"
-		"  AND r_in.target_id = e.id AND r_in.source_id != e.id"
-		" LEFT JOIN relation r_out ON r_out.project_id = ?"
-		"  AND r_out.source_id = e.id AND r_out.target_id != e.id"
-		" LEFT JOIN relation r_tgt ON r_tgt.project_id = ?"
-		"  AND r_tgt.target_id = e.id"
-		" WHERE s.kind = 1 AND s.project_id = ?"
-		" GROUP BY s.id HAVING total >= 3"
-		" ORDER BY total DESC";
+		"INSERT OR REPLACE INTO module_summary "
+		"(project_id, module_id, state, incoming_count, outgoing_count, "
+		" internal_edges, dead_entities, utilization, confidence, role) "
+		"SELECT ?, module_id, 0, incoming, outgoing, 0, dead, "
+		"  CASE WHEN total > 0 "
+		"    THEN 1.0 - CAST(dead AS REAL) / total ELSE 0.0 END, "
+		"  0.85, "
+		"  CASE "
+		"    WHEN INSTR(module_name, '/examples/') > 0 "
+		"      OR INSTR(module_name, '/example/') > 0 THEN 'example' "
+		"    WHEN INSTR(module_name, '/cmd/') > 0 THEN 'entry' "
+		"    WHEN INSTR(module_name, '/api/') > 0 THEN 'api' "
+		"    WHEN incoming >= 10 AND outgoing <= 5 AND total <= 20 "
+		"      THEN 'tool' "
+		"    WHEN incoming >= 5 AND outgoing >= 5 THEN 'business' "
+		"    ELSE 'infra' END "
+		"FROM ("
+		"  SELECT s.id AS module_id, s.name AS module_name, "
+		"    COUNT(DISTINCT e.id) AS total, "
+		"    COUNT(DISTINCT r_in.source_id) AS incoming, "
+		"    COUNT(DISTINCT r_out.target_id) AS outgoing, "
+		"    COUNT(DISTINCT e.id) - COUNT(DISTINCT r_tgt.target_id) "
+		"      AS dead "
+		"  FROM scope s "
+		"  JOIN entity e ON e.project_id = ? AND e.module_path = s.name "
+		"  LEFT JOIN relation r_in ON r_in.project_id = ? "
+		"    AND r_in.target_id = e.id AND r_in.source_id != e.id "
+		"  LEFT JOIN relation r_out ON r_out.project_id = ? "
+		"    AND r_out.source_id = e.id AND r_out.target_id != e.id "
+		"  LEFT JOIN relation r_tgt ON r_tgt.project_id = ? "
+		"    AND r_tgt.target_id = e.id "
+		"  WHERE s.kind = 1 AND s.project_id = ? "
+		"  GROUP BY s.id, s.name "
+		"  HAVING total >= 3"
+		")";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), sql.c_str(), -1, &stmt,
 			       nullptr) != SQLITE_OK) {
@@ -42,76 +64,61 @@ int64_t StateBuilder::buildModuleSummaries()
 			sqlite3_errmsg(store_->handle()));
 		return -1;
 	}
-	for (int i = 1; i <= 5; i++)
-		sqlite3_bind_int64(stmt, i, static_cast<int64_t>(project_id_));
+	for (int i = 1; i <= 6; i++)
+		sqlite3_bind_int64(stmt, i,
+				   static_cast<int64_t>(project_id_));
 
-	int64_t count = 0;
-	while (sqlite3_step(stmt) == SQLITE_ROW) {
-		uint64_t module_id =
-		  static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
-		 const char *p_name = reinterpret_cast<const char *>(
-		  sqlite3_column_text(stmt, 1));
-		 int total = sqlite3_column_int(stmt, 2);
-		int incoming = sqlite3_column_int(stmt, 3);
-		int outgoing = sqlite3_column_int(stmt, 4);
-		int dead = sqlite3_column_int(stmt, 5);
-		double utilization =
-			(total > 0) ?
-				(1.0 - static_cast<double>(dead) / total) :
-				0.0;
-
-		// Classify module role based on path and metrics
-		std::string role = classifyModuleRole(
-		 p_name ? p_name : "", incoming, outgoing, total);
-
-		// Insert or update module_summary
-		std::string ins =
-		 "INSERT OR REPLACE INTO module_summary "
-		 "(project_id, module_id, state, incoming_count, outgoing_count, "
-		 " internal_edges, dead_entities, utilization, confidence, role) "
-		 "VALUES (?, ?, 0, ?, ?, 0, ?, ?, 0.85, ?)";
-		sqlite3_stmt *ins_st = nullptr;
-		if (sqlite3_prepare_v2(store_->handle(), ins.c_str(), -1,
-				       &ins_st, nullptr) == SQLITE_OK) {
-			sqlite3_bind_int64(ins_st, 1,
-					   static_cast<int64_t>(project_id_));
-			sqlite3_bind_int64(ins_st, 2,
-					   static_cast<int64_t>(module_id));
-			sqlite3_bind_int(ins_st, 3, incoming);
-			sqlite3_bind_int(ins_st, 4, outgoing);
-			sqlite3_bind_int(ins_st, 5, dead);
-			sqlite3_bind_double(ins_st, 6, utilization);
-			sqlite3_bind_text(ins_st, 7, role.c_str(), -1,
-			    SQLITE_STATIC);
-			int rc = sqlite3_step(ins_st);
-			if (rc != SQLITE_DONE && rc != SQLITE_CONSTRAINT)
-				fprintf(stderr,
-					"[module=state_builder, "
-					"method=buildModuleSummaries] "
-					"insert failed (rc=%d): %s\n",
-					rc, sqlite3_errmsg(store_->handle()));
-			sqlite3_finalize(ins_st);
-			if (rc == SQLITE_DONE)
-				count++;
-		}
-	}
+	int rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
-	return count;
+	if (rc != SQLITE_DONE) {
+		fprintf(stderr,
+			"[module=state_builder, method=buildModuleSummaries] "
+			"step failed (rc=%d): %s\n",
+			rc, sqlite3_errmsg(store_->handle()));
+		return -1;
+	}
+	return sqlite3_changes(store_->handle());
 }
 
 int64_t StateBuilder::buildCapabilityState()
 {
-	// Scan entity table for known capability patterns.
-	// A capability is a set of related functions that implement a feature.
-	// For now, detect capabilities from function naming patterns.
-	std::string sql = "SELECT name FROM entity "
-			  "WHERE project_id = ? AND kind = 0"
-			  " AND (name LIKE 'Auth%' OR name LIKE 'Login%'"
-			  "  OR name LIKE 'JWT%' OR name LIKE 'Token%'"
-			  "  OR name LIKE 'Rate%' OR name LIKE 'Cache%'"
-			  "  OR name LIKE 'Log%' OR name LIKE 'Metric%'"
-			  "  OR name LIKE 'Health%' OR name LIKE 'Config%')"
-			  " LIMIT 50";
+	// Single INSERT...SELECT with a recursive CTE to derive the
+	// capability name (prefix up to the first uppercase letter at
+	// position >= 1, matching the previous C++ substr/find_first_of
+	// logic). Replaces the per-row prepare/step/finalize loop.
+	std::string sql =
+		"INSERT OR IGNORE INTO capability_state "
+		"(project_id, name, state) "
+		"WITH RECURSIVE "
+		"matched(name) AS ("
+		"  SELECT name FROM entity "
+		"  WHERE project_id = ? AND kind = 0"
+		"    AND (name LIKE 'Auth%' OR name LIKE 'Login%'"
+		"     OR name LIKE 'JWT%' OR name LIKE 'Token%'"
+		"     OR name LIKE 'Rate%' OR name LIKE 'Cache%'"
+		"     OR name LIKE 'Log%' OR name LIKE 'Metric%'"
+		"     OR name LIKE 'Health%' OR name LIKE 'Config%')"
+		"  LIMIT 50"
+		"), "
+		"scan(name, pos, ch) AS ("
+		"  SELECT name, 2, substr(name, 2, 1) FROM matched "
+		"  WHERE length(name) >= 2 "
+		"  UNION ALL "
+		"  SELECT name, pos + 1, substr(name, pos + 1, 1) FROM scan "
+		"  WHERE pos < length(name)"
+		") "
+		"SELECT ?, "
+		"  CASE "
+		"    WHEN fu.pos IS NOT NULL "
+		"      THEN substr(m.name, 1, fu.pos - 1) "
+		"    ELSE m.name END, "
+		"  'Implemented' "
+		"FROM matched m "
+		"LEFT JOIN ("
+		"  SELECT name, MIN(pos) AS pos FROM scan "
+		"  WHERE ch GLOB '[A-Z]' "
+		"  GROUP BY name"
+		") fu ON fu.name = m.name";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), sql.c_str(), -1, &stmt,
 			       nullptr) != SQLITE_OK) {
@@ -122,45 +129,29 @@ int64_t StateBuilder::buildCapabilityState()
 		return -1;
 	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id_));
+	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id_));
 
-	int64_t count = 0;
-	while (sqlite3_step(stmt) == SQLITE_ROW) {
-		const char *name = reinterpret_cast<const char *>(
-			sqlite3_column_text(stmt, 0));
-		if (!name)
-			continue;
-		std::string cap(name);
-		// Derive capability name from function name prefix
-		std::string cap_name = cap.substr(
-			0, cap.find_first_of("ABCDEFGHIJKLMNOPQRSTUVWXYZ", 1));
-		if (cap_name.empty())
-			cap_name = cap;
-
-		std::string ins =
-			"INSERT OR IGNORE INTO capability_state "
-			"(project_id, name, state) VALUES (?, ?, 'Implemented')";
-		sqlite3_stmt *ins_st = nullptr;
-		if (sqlite3_prepare_v2(store_->handle(), ins.c_str(), -1,
-				       &ins_st, nullptr) == SQLITE_OK) {
-			sqlite3_bind_int64(ins_st, 1,
-					   static_cast<int64_t>(project_id_));
-			sqlite3_bind_text(ins_st, 2, cap_name.c_str(), -1,
-					  SQLITE_STATIC);
-			sqlite3_step(ins_st);
-			sqlite3_finalize(ins_st);
-			count++;
-		}
-	}
+	int rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
-	return count;
+	if (rc != SQLITE_DONE) {
+		fprintf(stderr,
+			"[module=state_builder, method=buildCapabilityState] "
+			"step failed (rc=%d): %s\n",
+			rc, sqlite3_errmsg(store_->handle()));
+		return -1;
+	}
+	return sqlite3_changes(store_->handle());
 }
 
 int64_t StateBuilder::buildWorkflowState()
 {
-	// Trace entry points from resolved_reference chains.
-	// Find functions that are called by main/init/run patterns.
+	// Single INSERT...SELECT replaces the per-row prepare/step/finalize
+	// loop.
 	std::string sql =
-		"SELECT DISTINCT e.name FROM entity e "
+		"INSERT OR IGNORE INTO workflow_state "
+		"(project_id, name, state, steps_total, steps_done) "
+		"SELECT DISTINCT ?, e.name, 'Partial', 5, 2 "
+		"FROM entity e "
 		"JOIN relation r ON r.project_id = ? AND r.target_id = e.id "
 		"JOIN entity caller ON r.source_id = caller.id "
 		"WHERE e.project_id = ?"
@@ -180,48 +171,40 @@ int64_t StateBuilder::buildWorkflowState()
 	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id_));
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id_));
+	sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(project_id_));
 
-	int64_t count = 0;
-	while (sqlite3_step(stmt) == SQLITE_ROW) {
-		const char *name = reinterpret_cast<const char *>(
-			sqlite3_column_text(stmt, 0));
-		if (!name)
-			continue;
-
-		std::string ins =
-			"INSERT OR IGNORE INTO workflow_state "
-			"(project_id, name, state, steps_total, steps_done) "
-			"VALUES (?, ?, 'Partial', 5, 2)";
-		sqlite3_stmt *ins_st = nullptr;
-		if (sqlite3_prepare_v2(store_->handle(), ins.c_str(), -1,
-				       &ins_st, nullptr) == SQLITE_OK) {
-			sqlite3_bind_int64(ins_st, 1,
-					   static_cast<int64_t>(project_id_));
-			sqlite3_bind_text(ins_st, 2, name, -1, SQLITE_STATIC);
-			sqlite3_step(ins_st);
-			sqlite3_finalize(ins_st);
-			count++;
-		}
-	}
+	int rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
-	return count;
+	if (rc != SQLITE_DONE) {
+		fprintf(stderr,
+			"[module=state_builder, method=buildWorkflowState] "
+			"step failed (rc=%d): %s\n",
+			rc, sqlite3_errmsg(store_->handle()));
+		return -1;
+	}
+	return sqlite3_changes(store_->handle());
 }
 
 int64_t StateBuilder::buildArchitectureState()
 {
-	// Check architecture_edge for violations: lower layer calling upper layer.
+	// Single INSERT...SELECT replaces the per-row prepare/step/finalize
+	// loop.
 	std::string sql =
-		"SELECT ae.layer_lower, ae.layer_upper, COUNT(*) as violations"
-		" FROM architecture_edge ae"
-		" JOIN entity e ON ae.entity_id = e.id"
-		" JOIN relation r ON r.project_id = ? AND r.target_id = e.id"
-		" JOIN entity caller ON r.source_id = caller.id"
-		" WHERE ae.project_id = ?"
+		"INSERT OR IGNORE INTO architecture_state "
+		"(project_id, layer, violations, compliance) "
+		"SELECT ?, ae.layer_lower || '->' || ae.layer_upper, "
+		"  COUNT(*), "
+		"  CASE WHEN COUNT(*) > 0 THEN 0.0 ELSE 1.0 END "
+		"FROM architecture_edge ae "
+		"JOIN entity e ON ae.entity_id = e.id "
+		"JOIN relation r ON r.project_id = ? AND r.target_id = e.id "
+		"JOIN entity caller ON r.source_id = caller.id "
+		"WHERE ae.project_id = ?"
 		" AND caller.file_path LIKE '%' || ae.layer_lower || '%'"
 		" AND e.file_path LIKE '%' || ae.layer_upper || '%'"
 		" GROUP BY ae.layer_lower, ae.layer_upper"
-		" HAVING violations > 0"
-		" ORDER BY violations DESC LIMIT 10";
+		" HAVING COUNT(*) > 0"
+		" ORDER BY COUNT(*) DESC LIMIT 10";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), sql.c_str(), -1, &stmt,
 			       nullptr) != SQLITE_OK) {
@@ -233,83 +216,91 @@ int64_t StateBuilder::buildArchitectureState()
 	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id_));
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id_));
+	sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(project_id_));
 
-	int64_t count = 0;
-	while (sqlite3_step(stmt) == SQLITE_ROW) {
-		const char *lower = reinterpret_cast<const char *>(
-			sqlite3_column_text(stmt, 0));
-		const char *upper = reinterpret_cast<const char *>(
-			sqlite3_column_text(stmt, 1));
-		int violations = sqlite3_column_int(stmt, 2);
-		if (!lower || !upper)
-			continue;
-		double compliance = (violations > 0) ? 0.0 : 1.0;
-
-		std::string ins = "INSERT OR IGNORE INTO architecture_state "
-				  "(project_id, layer, violations, compliance) "
-				  "VALUES (?, ?, ?, ?)";
-		sqlite3_stmt *ins_st = nullptr;
-		if (sqlite3_prepare_v2(store_->handle(), ins.c_str(), -1,
-				       &ins_st, nullptr) == SQLITE_OK) {
-			sqlite3_bind_int64(ins_st, 1,
-					   static_cast<int64_t>(project_id_));
-			std::string layer =
-				std::string(lower) + "->" + std::string(upper);
-			sqlite3_bind_text(ins_st, 2, layer.c_str(), -1,
-					  SQLITE_STATIC);
-			sqlite3_bind_int(ins_st, 3, violations);
-			sqlite3_bind_double(ins_st, 4, compliance);
-			sqlite3_step(ins_st);
-			sqlite3_finalize(ins_st);
-			count++;
-		}
-	}
+	int rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
-	return count;
+	if (rc != SQLITE_DONE) {
+		fprintf(stderr,
+			"[module=state_builder, method=buildArchitectureState] "
+			"step failed (rc=%d): %s\n",
+			rc, sqlite3_errmsg(store_->handle()));
+		return -1;
+	}
+	return sqlite3_changes(store_->handle());
 }
 
 int64_t StateBuilder::buildAll()
 {
+	// Wrap all builders in a single transaction so each INSERT does not
+	// auto-commit. This eliminates the per-statement fsync overhead.
+	if (!store_->beginTransaction()) {
+		fprintf(stderr,
+			"[module=state_builder, method=buildAll] "
+			"BEGIN failed: %s\n",
+			store_->error().c_str());
+		return -1;
+	}
+
 	int64_t total = 0;
+
 	int64_t n = buildModuleSummaries();
+	if (n < 0) {
+		fprintf(stderr,
+			"[module=state_builder, method=buildAll] "
+			"buildModuleSummaries failed, rolling back\n");
+		store_->rollbackTransaction();
+		return -1;
+	}
 	fprintf(stderr, "[model] ModuleSummary: created %lld items\n",
 		(long long)n);
 	total += n;
 
 	n = buildCapabilityState();
+	if (n < 0) {
+		fprintf(stderr,
+			"[module=state_builder, method=buildAll] "
+			"buildCapabilityState failed, rolling back\n");
+		store_->rollbackTransaction();
+		return -1;
+	}
 	fprintf(stderr, "[model] Capability: created %lld items\n",
 		(long long)n);
 	total += n;
 
 	n = buildWorkflowState();
+	if (n < 0) {
+		fprintf(stderr,
+			"[module=state_builder, method=buildAll] "
+			"buildWorkflowState failed, rolling back\n");
+		store_->rollbackTransaction();
+		return -1;
+	}
 	fprintf(stderr, "[model] Workflow: created %lld items\n", (long long)n);
 	total += n;
 
 	n = buildArchitectureState();
+	if (n < 0) {
+		fprintf(stderr,
+			"[module=state_builder, method=buildAll] "
+			"buildArchitectureState failed, rolling back\n");
+		store_->rollbackTransaction();
+		return -1;
+	}
 	fprintf(stderr, "[model] Architecture: created %lld items\n",
 		(long long)n);
 	total += n;
 
-	return total;
-}
+	if (!store_->commitTransaction()) {
+		fprintf(stderr,
+			"[module=state_builder, method=buildAll] "
+			"COMMIT failed: %s\n",
+			store_->error().c_str());
+		store_->rollbackTransaction();
+		return -1;
+	}
 
-// ── Module Role Classification ───────────────────────────────────
-std::string StateBuilder::classifyModuleRole(const std::string &module_path,
-					     int incoming, int outgoing,
-					     int total_entities)
-{
-	if (module_path.find("/examples/") != std::string::npos ||
-	    module_path.find("/example/") != std::string::npos)
-		return "example";
-	if (module_path.find("/cmd/") != std::string::npos)
-		return "entry";
-	if (module_path.find("/api/") != std::string::npos)
-		return "api";
-	if (incoming >= 10 && outgoing <= 5 && total_entities <= 20)
-		return "tool";
-	if (incoming >= 5 && outgoing >= 5)
-		return "business";
-	return "infra";
+	return total;
 }
 
 } // namespace model

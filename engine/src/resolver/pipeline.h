@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 #include "factors.h"
 #include "../store/store.h"
@@ -39,10 +40,25 @@ class ResolverPipeline {
 	/// Returns the number of successfully resolved references.
 	int64_t run();
 
+	/// Test-only accessor: returns the number of names currently cached
+	/// as fuzzy misses. Exposed for test_resolver_fuzzy_cache to verify
+	/// the miss cache populates without exposing other internals.
+	size_t fuzzyMissCacheSize() const
+	{
+		return fuzzy_miss_cache_.size();
+	}
+
     private:
 	store::GraphStore *store_;
 	uint64_t project_id_;
 	std::unique_ptr<FuzzyResolver> fuzzy_;
+
+	// Per-name miss cache: names that previously produced no fuzzy
+	// matches. Before invoking fuzzy_->resolve() the pipeline checks
+	// this set so the same fruitless name (which often appears at many
+	// call sites) is looked up at most once per pipeline lifetime —
+	// skipping 3 SQL LIKE scans per repeat occurrence.
+	std::unordered_set<std::string> fuzzy_miss_cache_;
 
 	/// Candidate: a potential match for a reference.
 	struct Candidate {

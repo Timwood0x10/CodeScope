@@ -106,6 +106,7 @@ bool GraphStore::createSchema()
             end_row INTEGER NOT NULL,
             end_col INTEGER NOT NULL,
             module_state INTEGER NOT NULL DEFAULT 0,
+            module_path TEXT NOT NULL DEFAULT '',
             FOREIGN KEY (project_id) REFERENCES projects(id)
         );
 
@@ -127,6 +128,9 @@ bool GraphStore::createSchema()
         -- name. Without this, name LIKE 'prefix%' / LIKE '%suffix' do a full
         -- table scan on the entity table.
         CREATE INDEX IF NOT EXISTS idx_entity_name ON entity(project_id, name);
+        -- Composite index for module_path queries (scope JOIN, module_edge grouping).
+        -- Replaces the non-sargable rtrim(file_path, replace(...)) expression.
+        CREATE INDEX IF NOT EXISTS idx_entity_module ON entity(project_id, module_path);
         -- Composite index for _r2n JOIN during buildGraph:
         -- graph_nodes JOIN semantic_records ON (project_id, file_path, start_row, node_type=kind)
         CREATE INDEX IF NOT EXISTS idx_gn_file_row_type ON graph_nodes(project_id, file_path, start_row, node_type);
@@ -624,6 +628,65 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 		}
 	}
 
+	// Migration: add module_path column to entity table (v0.9+)
+	// Denormalizes the directory portion of file_path so that scope
+	// JOINs and module_edge grouping can use an indexed equality predicate
+	// instead of the non-sargable rtrim(file_path, replace(...)) expression.
+	{
+		sqlite3_stmt *probe = nullptr;
+		if (sqlite3_prepare_v2(db_, "PRAGMA table_info(entity)", -1,
+				       &probe, nullptr) == SQLITE_OK) {
+			bool has_module_path = false;
+			while (sqlite3_step(probe) == SQLITE_ROW) {
+				const char *col =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(probe, 1));
+				if (col && std::string(col) == "module_path")
+					has_module_path = true;
+			}
+			sqlite3_finalize(probe);
+			if (!has_module_path) {
+				if (!exec("ALTER TABLE entity "
+				          "ADD COLUMN module_path "
+				          "TEXT NOT NULL DEFAULT ''")) {
+					fprintf(stderr,
+						"[module=store, method=createSchema] "
+						"ALTER TABLE entity ADD module_path "
+						"failed: %s\n",
+						error_.c_str());
+					return false;
+				}
+				// Backfill module_path for pre-existing entity rows
+				// using the same rtrim(replace(...)) expression
+				// used at INSERT time in store_graph.cpp. Without
+				// this, migrated databases would have module_path=''
+				// for all existing entities, breaking scope creation,
+				// state_builder JOINs, and module_edge grouping.
+				if (!exec("UPDATE entity SET module_path = "
+				          "rtrim(file_path, "
+				          "replace(file_path, '/', 'x')) "
+				          "WHERE module_path = ''")) {
+					fprintf(stderr,
+						"[module=store, method=createSchema] "
+						"UPDATE entity backfill module_path "
+						"failed: %s\n",
+						error_.c_str());
+					return false;
+				}
+				if (!exec("CREATE INDEX IF NOT EXISTS "
+				          "idx_entity_module "
+				          "ON entity(project_id, module_path)")) {
+					fprintf(stderr,
+						"[module=store, method=createSchema] "
+						"CREATE INDEX idx_entity_module "
+						"failed: %s\n",
+						error_.c_str());
+					return false;
+				}
+			}
+		}
+	}
+
 	// Migration: add arity + is_static columns to semantic_records (v0.5+)
 	{
 		sqlite3_stmt *probe = nullptr;
@@ -845,35 +908,42 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 	return ok;
 }
 
-bool GraphStore::createIndexesAfterBulkLoad(uint64_t project_id)
+bool GraphStore::createIndexesAfterBulkLoad(uint64_t project_id,
+					    bool full_rebuild)
 {
 	(void)project_id; // All indexes are global — project_id not needed
-	// Deferred indexes: created after bulk insert to avoid per-row index maintenance.
-	// Query-time indexes (graph_edges, symbols, call_edges, etc.) don't need to exist
-	// during bulk write — they only speed up user queries.
-	const char *indexes[] = {
-		"CREATE INDEX IF NOT EXISTS idx_graph_nodes_name ON graph_nodes(project_id, name)",
-		"CREATE INDEX IF NOT EXISTS idx_graph_edges_src ON graph_edges(source_node_id)",
-		"CREATE INDEX IF NOT EXISTS idx_graph_edges_tgt ON graph_edges(target_node_id)",
-		"CREATE INDEX IF NOT EXISTS idx_graph_edges_project ON graph_edges(project_id)",
-		"CREATE INDEX IF NOT EXISTS idx_ge_callers ON graph_edges(edge_type, target_node_id)",
-		"CREATE INDEX IF NOT EXISTS idx_ge_callees ON graph_edges(edge_type, source_node_id)",
-		"CREATE INDEX IF NOT EXISTS idx_graph_nodes_lang ON graph_nodes(project_id, language)",
-	};
 	bool ok = true;
-	for (auto *sql : indexes) {
-		if (!exec(sql)) {
-			fprintf(stderr,
-				"WARN: createIndexesAfterBulkLoad: %s [module=store, method=createIndexesAfterBulkLoad]\n",
-				error_.c_str());
-			ok = false;
+
+	// ── Lookup indexes ──
+	// Only recreate on full rebuild. On incremental re-index these were
+	// never dropped (dropUniqueEdgeIndex was used instead), so they are
+	// still valid and were maintained automatically by SQLite during the
+	// incremental edge INSERTs.
+	if (full_rebuild) {
+		const char *indexes[] = {
+			"CREATE INDEX IF NOT EXISTS idx_graph_nodes_name ON graph_nodes(project_id, name)",
+			"CREATE INDEX IF NOT EXISTS idx_graph_edges_src ON graph_edges(source_node_id)",
+			"CREATE INDEX IF NOT EXISTS idx_graph_edges_tgt ON graph_edges(target_node_id)",
+			"CREATE INDEX IF NOT EXISTS idx_graph_edges_project ON graph_edges(project_id)",
+			"CREATE INDEX IF NOT EXISTS idx_ge_callers ON graph_edges(edge_type, target_node_id)",
+			"CREATE INDEX IF NOT EXISTS idx_ge_callees ON graph_edges(edge_type, source_node_id)",
+			"CREATE INDEX IF NOT EXISTS idx_graph_nodes_lang ON graph_nodes(project_id, language)",
+		};
+		for (auto *sql : indexes) {
+			if (!exec(sql)) {
+				fprintf(stderr,
+					"WARN: createIndexesAfterBulkLoad: %s [module=store, method=createIndexesAfterBulkLoad]\n",
+					error_.c_str());
+				ok = false;
+			}
 		}
 	}
 
-	// Recreate the unique edge index (dropped by dropQueryIndexes during
-	// buildGraph). Deduplicate existing edges first — INSERT OR IGNORE
-	// during buildGraph may have produced duplicates when the unique
-	// index was absent.
+	// ── Dedup + unique edge index ──
+	// Always run (both full and incremental). The unique edge index was
+	// dropped by buildGraph (dropQueryIndexes or dropUniqueEdgeIndex) so
+	// INSERT OR IGNORE could skip the unique-check cost. Deduplicate
+	// first — duplicates may have accumulated while the index was absent.
 	if (!exec("DELETE FROM graph_edges WHERE id NOT IN ("
 		  " SELECT MIN(id) FROM graph_edges"
 		  " GROUP BY source_node_id, target_node_id, edge_type)")) {
@@ -894,35 +964,56 @@ bool GraphStore::createIndexesAfterBulkLoad(uint64_t project_id)
 	return ok;
 }
 
-bool GraphStore::dropQueryIndexes()
+bool GraphStore::dropUniqueEdgeIndex()
 {
-	// Drop query-time indexes on graph_edges to avoid per-row index
-	// maintenance during bulk edge inserts (buildGraph + resolver).
-	// These are recreated by createIndexesAfterBulkLoad after all
-	// edges have been written.
-	//
-	// The unique edge index (idx_ge_unique_edge) is also dropped so
-	// that INSERT OR IGNORE does not pay the unique-check cost per row.
-	// Callers must dedup before recreating it (handled in
-	// createIndexesAfterBulkLoad).
+	// Drop only the unique edge index so INSERT OR IGNORE skips the
+	// unique-check cost per row during incremental re-index. The 5
+	// lookup indexes remain valid for unchanged files and are maintained
+	// automatically by SQLite during incremental edge INSERTs.
+	if (!exec("DROP INDEX IF EXISTS idx_ge_unique_edge")) {
+		fprintf(stderr,
+			"WARN: dropUniqueEdgeIndex: %s"
+			" [module=store, method=dropUniqueEdgeIndex]\n",
+			error_.c_str());
+		return false;
+	}
+	return true;
+}
+
+bool GraphStore::dropLookupIndexes()
+{
+	// Drop the 5 query-time lookup indexes on graph_edges to avoid
+	// per-row index maintenance during full bulk edge inserts. These are
+	// recreated by createIndexesAfterBulkLoad(full_rebuild=true) after
+	// all edges have been written. Only called on full rebuild.
 	const char *drop_sqls[] = {
 		"DROP INDEX IF EXISTS idx_graph_edges_src",
 		"DROP INDEX IF EXISTS idx_graph_edges_tgt",
 		"DROP INDEX IF EXISTS idx_graph_edges_project",
 		"DROP INDEX IF EXISTS idx_ge_callers",
 		"DROP INDEX IF EXISTS idx_ge_callees",
-		"DROP INDEX IF EXISTS idx_ge_unique_edge",
 	};
 	bool ok = true;
 	for (auto *sql : drop_sqls) {
 		if (!exec(sql)) {
 			fprintf(stderr,
-				"WARN: dropQueryIndexes: %s"
-				" [module=store, method=dropQueryIndexes]\n",
+				"WARN: dropLookupIndexes: %s"
+				" [module=store, method=dropLookupIndexes]\n",
 				error_.c_str());
 			ok = false;
 		}
 	}
+	return ok;
+}
+
+bool GraphStore::dropQueryIndexes()
+{
+	// Drop ALL graph_edges indexes (5 lookup + 1 unique) for full
+	// rebuild. For incremental re-index, call dropUniqueEdgeIndex()
+	// directly instead — the lookup indexes are still valid.
+	bool ok = dropLookupIndexes();
+	if (!dropUniqueEdgeIndex())
+		ok = false;
 	return ok;
 }
 

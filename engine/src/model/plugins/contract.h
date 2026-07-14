@@ -16,7 +16,8 @@ class ContractPlugin : public ModelPlugin {
 	{
 		return "Contract";
 	}
-	ModelResult build(uint64_t project_id) override;
+	ModelResult build(uint64_t project_id,
+			  const ModelContext &ctx) override;
 
     private:
 	store::GraphStore *store_;

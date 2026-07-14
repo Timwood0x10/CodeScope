@@ -117,6 +117,42 @@ static void insertCallRelation(store::GraphStore &store, uint64_t project_id,
 	sqlite3_finalize(stmt);
 }
 
+/// Insert a module-level scope (kind=1) so ArchitecturePlugin can detect
+/// cross-module call edges by matching scope.name as a prefix of
+/// entity.file_path.
+static void insertModuleScope(store::GraphStore &store, uint64_t project_id,
+			      const char *name)
+{
+	sqlite3 *db = store.handle();
+	const char *sql = "INSERT INTO scope (project_id, parent_id, kind, "
+			  "name, start_row, end_row) VALUES (?,0,1,?,0,0)";
+	sqlite3_stmt *stmt = nullptr;
+	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	sqlite3_bind_text(stmt, 2, name, -1, SQLITE_TRANSIENT);
+	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	sqlite3_finalize(stmt);
+}
+
+/// Count rows in a table for a project. Used to verify each plugin
+/// produced output from the shared ModelContext.
+static int countRows(store::GraphStore &store, uint64_t project_id,
+		     const char *table)
+{
+	sqlite3 *db = store.handle();
+	std::string sql = std::string("SELECT COUNT(*) FROM ") + table +
+			  " WHERE project_id=?";
+	sqlite3_stmt *stmt = nullptr;
+	assert(sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) ==
+	       SQLITE_OK);
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	int count = 0;
+	if (sqlite3_step(stmt) == SQLITE_ROW)
+		count = sqlite3_column_int(stmt, 0);
+	sqlite3_finalize(stmt);
+	return count;
+}
+
 int main()
 {
 	unlink(kDbPath);
@@ -154,7 +190,7 @@ int main()
 
 	// ── Test 1: ModelEngine registers all 4 plugins ───────────────
 	{
-		ModelEngine me;
+		ModelEngine me(&store);
 		me.addPlugin(std::make_unique<CapabilityPlugin>(&store));
 		me.addPlugin(std::make_unique<ContractPlugin>(&store));
 		me.addPlugin(std::make_unique<WorkflowPlugin>(&store));
@@ -170,7 +206,7 @@ int main()
 
 	// ── Test 2: runAll builds capability + contract models ────────
 	{
-		ModelEngine me;
+		ModelEngine me(&store);
 		me.addPlugin(std::make_unique<CapabilityPlugin>(&store));
 		me.addPlugin(std::make_unique<ContractPlugin>(&store));
 		me.addPlugin(std::make_unique<WorkflowPlugin>(&store));
@@ -226,7 +262,7 @@ int main()
 
 	// ── Test 5: run by name returns the right plugin ──────────────
 	{
-		ModelEngine me;
+		ModelEngine me(&store);
 		me.addPlugin(std::make_unique<CapabilityPlugin>(&store));
 		ModelResult r = me.run("Capability", pid);
 		assert(r.ok());
@@ -236,12 +272,76 @@ int main()
 
 	// ── Test 6: run by unknown name returns error ─────────────────
 	{
-		ModelEngine me;
+		ModelEngine me(&store);
 		me.addPlugin(std::make_unique<CapabilityPlugin>(&store));
 		ModelResult r = me.run("Nonexistent", pid);
 		assert(!r.ok());
 		assert(r.error.find("not found") != std::string::npos);
 		printf("Test 6 (run unknown plugin): PASS\n");
+	}
+
+	// ── Test 7: ModelContext shared — all 4 plugins produce rows ────
+	// Verifies populateModelContext runs once and the resulting context is
+	// shared across all 4 plugins. Uses cross-module data (a callee in a
+	// different directory) so ArchitecturePlugin produces architecture_edge
+	// rows — the Test 2 data was all in one file so architecture_edge was
+	// empty there.
+	{
+		sqlite3 *db = store.handle();
+		// Clear model tables from Test 2's runAll so counts reflect
+		// only this test's output.
+		sqlite3_exec(db, "DELETE FROM capability", nullptr, nullptr,
+			    nullptr);
+		sqlite3_exec(db, "DELETE FROM contract", nullptr, nullptr,
+			    nullptr);
+		sqlite3_exec(db, "DELETE FROM workflow", nullptr, nullptr,
+			    nullptr);
+		sqlite3_exec(db, "DELETE FROM workflow_step", nullptr, nullptr,
+			    nullptr);
+		sqlite3_exec(db, "DELETE FROM architecture_edge", nullptr,
+			    nullptr, nullptr);
+
+		// Cross-module callee: Logger lives in /tmp/lib/, while main
+		// lives in /tmp/main.cpp. The module scopes below let
+		// ArchitecturePlugin detect this as a cross-module call.
+		insertGraphNode(store, pid, 4, 0, "Logger",
+				"/tmp/lib/logger.cpp", "cpp", 1);
+		insertEntity(store, pid, 4, 0, "Logger",
+			     "/tmp/lib/logger.cpp");
+
+		// Module scopes: "/tmp/" matches /tmp/main.cpp, "/tmp/lib/"
+		// matches /tmp/lib/logger.cpp. Both are prefixes, so Logger
+		// matches both scopes — the cross-module pair (/tmp/ ->
+		// /tmp/lib/) yields an architecture_edge row.
+		insertModuleScope(store, pid, "/tmp/");
+		insertModuleScope(store, pid, "/tmp/lib/");
+
+		// Cross-module call: main (/tmp/main.cpp) -> Logger
+		// (/tmp/lib/logger.cpp).
+		insertCallRelation(store, pid, 1, 4);
+
+		ModelEngine me(&store);
+		me.addPlugin(std::make_unique<CapabilityPlugin>(&store));
+		me.addPlugin(std::make_unique<ContractPlugin>(&store));
+		me.addPlugin(std::make_unique<WorkflowPlugin>(&store));
+		me.addPlugin(std::make_unique<ArchitecturePlugin>(&store));
+		int64_t total = me.runAll(pid);
+		assert(total > 0);
+
+		// All 4 plugins produced rows from the single shared
+		// ModelContext populated by runAll. If the context had not
+		// been populated (or not shared), these counts would be 0.
+		int cap_count = countRows(store, pid, "capability");
+		int contract_count = countRows(store, pid, "contract");
+		int workflow_count = countRows(store, pid, "workflow");
+		int arch_count = countRows(store, pid, "architecture_edge");
+		assert(cap_count > 0);
+		assert(contract_count > 0);
+		assert(workflow_count > 0);
+		assert(arch_count > 0);
+		printf("Test 7 (shared ModelContext: cap=%d contract=%d "
+		       "workflow=%d arch_edge=%d): PASS\n",
+		       cap_count, contract_count, workflow_count, arch_count);
 	}
 
 	unlink(kDbPath);

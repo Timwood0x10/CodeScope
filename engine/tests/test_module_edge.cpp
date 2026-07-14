@@ -22,20 +22,29 @@
 static const char *kDbPath = "/tmp/codescope_test_module_edge.db";
 
 /// Insert an entity row with the given id, name, and file path.
+/// module_path is populated with the same SQL expression that
+/// store_graph.cpp uses at INSERT time:
+///   rtrim(file_path, replace(file_path, '/', 'x'))
+/// This is required because buildKnowledgeGraphSync groups by
+/// entity.module_path (the denormalized directory), so the column
+/// must be non-empty for the test's module-pair assertions to hold.
 static void insertEntity(store::GraphStore &store, uint64_t project_id,
 			 int64_t id, const char *name, const char *file_path)
 {
 	sqlite3 *db = store.handle();
 	const char *sql = "INSERT INTO entity (id, project_id, kind, name, "
 			  "qualified_name, file_path, language, start_row, "
-			  "start_col, end_row, end_col) "
-			  "VALUES (?,?,0,?,'',?,'cpp',0,0,0,0)";
+			  "start_col, end_row, end_col, module_path) "
+			  "VALUES (?,?,0,?,'',?,'cpp',0,0,0,0,"
+			  "rtrim(?, replace(?, '/', 'x')))";
 	sqlite3_stmt *stmt = nullptr;
 	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, id);
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 3, name, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 4, file_path, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 5, file_path, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 6, file_path, -1, SQLITE_TRANSIENT);
 	assert(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }

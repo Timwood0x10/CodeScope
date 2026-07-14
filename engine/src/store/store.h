@@ -459,6 +459,24 @@ class GraphStore {
 		GraphStore *store_;
 	};
 
+	/** RAII guard that sets bulk-load PRAGMAs (synchronous=OFF, 64 MB
+	 *  cache) on construction and restores previous values on destruction.
+	 *  Matches the codebase-memory-mcp cbm_store_begin_bulk/end_bulk
+	 *  pattern. Wrap createIndexesAfterBulkLoad calls to speed up index
+	 *  creation and dedup DELETE. Safe with WAL mode (crash-safe). */
+	class BulkPragmaGuard {
+	    public:
+		explicit BulkPragmaGuard(GraphStore *store);
+		~BulkPragmaGuard();
+		BulkPragmaGuard(const BulkPragmaGuard &) = delete;
+		BulkPragmaGuard &operator=(const BulkPragmaGuard &) = delete;
+
+	    private:
+		GraphStore *store_;
+		int saved_sync_ = 1; // NORMAL
+		int saved_cache_ = -2000; // ~2 MB default
+	};
+
 	/**
      * Find callers from the new call_edges table (requires callgraph_ready).
      * Returns JSON array of caller symbols.
@@ -481,18 +499,41 @@ class GraphStore {
 	/**
 	 * Create indexes after bulk data load.
 	 * Call this once after all semantic_records and graph_nodes have been inserted.
+	 * @param project_id  Project identifier.
+	 * @param full_rebuild When true (default), recreates ALL deferred lookup
+	 *                     indexes + dedup + unique edge index. When false
+	 *                     (incremental re-index), skips lookup indexes (they
+	 *                     were never dropped) and only runs dedup DELETE +
+	 *                     unique edge index re-creation.
+	 * @return true on success (individual failures are logged, not fatal).
 	 */
-	bool createIndexesAfterBulkLoad(uint64_t project_id);
+	bool createIndexesAfterBulkLoad(uint64_t project_id,
+					bool full_rebuild = true);
 
 	/**
-	 * Drop query-time indexes on graph_edges before bulk edge inserts.
-	 * Maintaining these indexes during thousands of INSERTs is expensive.
-	 * Drop them before bulk load, then recreate via createIndexesAfterBulkLoad.
-	 * The unique edge index (idx_ge_unique_edge) is also dropped — callers
-	 * must dedup via SELECT DISTINCT or DELETE ... GROUP BY before recreating.
-	 * @return true on success (individual DROP failures are logged, not fatal).
+	 * Drop ALL graph_edges indexes (5 lookup + 1 unique) before a full
+	 * bulk edge insert. Wrapper that calls dropLookupIndexes() +
+	 * dropUniqueEdgeIndex(). Use this for full rebuild only — for
+	 * incremental re-index, call dropUniqueEdgeIndex() directly.
+	 * @return true on success (individual DROP failures are logged).
 	 */
 	bool dropQueryIndexes();
+
+	/**
+	 * Drop only the unique edge index (idx_ge_unique_edge) so INSERT OR
+	 * IGNORE skips the unique-check cost per row during incremental
+	 * re-index. Lookup indexes remain valid for unchanged files.
+	 * @return true on success.
+	 */
+	bool dropUniqueEdgeIndex();
+
+	/**
+	 * Drop the 5 lookup indexes on graph_edges (src, tgt, project,
+	 * callers, callees). Only needed for full rebuild — incremental
+	 * re-index keeps these indexes and lets SQLite maintain them.
+	 * @return true on success (individual DROP failures are logged).
+	 */
+	bool dropLookupIndexes();
 
 	// ── Type Registry ─────────────────────────────────────────────
 

@@ -23,12 +23,10 @@
 // module X depend on?" in O(modules) instead of O(entities). It is
 // populated by a single SQL GROUP BY query over the relation table.
 //
-// The module identifier is the directory portion of file_path, extracted
-// with the rtrim(replace(...)) trick used by scope creation in
-// store_graph.cpp:
-//   replace(file_path, '/', 'x')  →  all chars in the path minus '/'
-//   rtrim(file_path, <above>)     →  strips the filename, leaving the
-//                                    directory (trailing '/' preserved)
+// The module identifier is the denormalized entity.module_path column
+// (the directory portion of file_path, populated at entity INSERT time
+// in store_graph.cpp). Using the indexed column instead of the
+// rtrim(replace(...)) expression makes the GROUP BY sargable.
 
 namespace
 {
@@ -81,22 +79,17 @@ int64_t buildKnowledgeGraphSync(store::GraphStore &store, uint64_t project_id)
 	}
 
 	// Populate module_edge by grouping call edges (relation type=1) by
-	// source module and target module. The module is the directory of
-	// the entity's file_path. Same-file edges are excluded.
-	//
-	// The rtrim(replace(...)) expression extracts the directory:
-	//   file_path = "src/engine/foo.cpp"
-	//   replace(file_path, '/', 'x') = "srcxenginexfoo.cpp"
-	//   rtrim(file_path, "srcxenginexfoo.cpp") strips trailing chars
-	//   in that set → "src/engine/" (stops at '/' which is not in set)
+	// source module and target module. The module is the denormalized
+	// entity.module_path column (directory of file_path). Same-file
+	// edges are excluded.
 	std::string insert_sql =
 		"INSERT INTO module_edge "
 		"(project_id, src_module, tgt_module, edge_count) "
 		"SELECT " +
 		pid +
 		", "
-		"rtrim(src.file_path, replace(src.file_path, '/', 'x')), "
-		"rtrim(tgt.file_path, replace(tgt.file_path, '/', 'x')), "
+		"src.module_path, "
+		"tgt.module_path, "
 		"COUNT(*) "
 		"FROM relation r "
 		"JOIN entity src ON r.source_id = src.id "
@@ -108,8 +101,8 @@ int64_t buildKnowledgeGraphSync(store::GraphStore &store, uint64_t project_id)
 		"  AND src.file_path LIKE '%/%' "
 		"  AND tgt.file_path LIKE '%/%' "
 		"GROUP BY "
-		"rtrim(src.file_path, replace(src.file_path, '/', 'x')), "
-		"rtrim(tgt.file_path, replace(tgt.file_path, '/', 'x')) "
+		"src.module_path, "
+		"tgt.module_path "
 		"LIMIT " +
 		std::to_string(kMaxModuleEdges);
 	if (!store.exec(insert_sql.c_str())) {
@@ -153,7 +146,7 @@ void runModelIndexSync(store::GraphStore &store, uint64_t project_id,
 	// async path, since the core graph is already queryable.
 	auto t_model_start = Clock::now();
 	try {
-		model::ModelEngine me;
+		model::ModelEngine me(&store);
 		me.addPlugin(std::make_unique<model::WorkflowPlugin>(&store));
 		me.addPlugin(std::make_unique<model::CapabilityPlugin>(&store));
 		me.addPlugin(

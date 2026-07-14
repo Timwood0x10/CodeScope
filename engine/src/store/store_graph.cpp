@@ -95,6 +95,10 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 {
 	using Clock = std::chrono::steady_clock;
 
+	// Incremental vs full rebuild: when changed_files is non-null, only
+	// a subset of files are re-indexed — lookup indexes stay valid.
+	const bool full_rebuild = (changed_files == nullptr);
+
 	// Step 1: determine which files to rebuild
 	auto t0 = Clock::now();
 	std::string file_list_sql =
@@ -246,13 +250,14 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		     "INSERT OR IGNORE INTO entity "
 		     "(id, project_id, kind, name, qualified_name, "
 		     " file_path, language, start_row, start_col, "
-		     " end_row, end_col) "
+		     " end_row, end_col, module_path) "
 		     "SELECT r2n.node_id, sr.project_id, "
 		     " CASE sr.kind WHEN 0 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 "
 		     "  WHEN 3 THEN 4 WHEN 4 THEN 3 WHEN 5 THEN 3 ELSE 7 END, "
 		     " sr.name, COALESCE(NULLIF(sr.qualified_name, ''), sr.name), "
 		     " sr.file_path, sr.language, "
-		     " sr.start_row, sr.start_col, sr.end_row, sr.end_col "
+		     " sr.start_row, sr.start_col, sr.end_row, sr.end_col, "
+		     " rtrim(sr.file_path, replace(sr.file_path, '/', 'x')) "
 		     "FROM semantic_records sr "
 		     "JOIN _r2n r2n ON sr.rowid = r2n.rid "
 		     "WHERE sr.file_path NOT LIKE '%_test.%'"
@@ -524,20 +529,19 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	}
 	auto t_import = Clock::now();
 
-	// Phase 1.2: populate scope table from entity file paths.
-	// Module scopes: one per unique directory.
+	// Phase 1.2: populate scope table from entity module_path.
+	// Module scopes: one per unique directory (module_path is the
+	// denormalized directory portion of file_path, populated at INSERT).
 	{
 		std::string scope_sql =
 			"INSERT OR IGNORE INTO scope "
 			"(project_id, parent_id, kind, name, start_row, end_row) "
 			"SELECT DISTINCT " +
 			std::to_string(project_id) +
-			", 0, 1, "
-			"rtrim(file_path, replace(file_path, '/', 'x')), "
+			", 0, 1, module_path, "
 			"0, 0 "
 			"FROM entity WHERE project_id=" +
-			std::to_string(project_id) +
-			" AND file_path LIKE '%/%'";
+			std::to_string(project_id) + " AND module_path != ''";
 		exec(scope_sql.c_str());
 	}
 	// Function scopes: each entity within its module scope.
@@ -552,8 +556,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			"FROM entity e "
 			"JOIN scope s ON e.project_id = s.project_id"
 			" AND s.kind = 1"
-			" AND s.name = rtrim(e.file_path, "
-			"  replace(e.file_path, '/', 'x')) "
+			" AND s.name = e.module_path "
 			"WHERE e.project_id=" +
 			std::to_string(project_id);
 		exec(func_sql.c_str());
@@ -565,8 +568,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			"(SELECT COALESCE(s.id, 0) FROM scope s "
 			" JOIN entity e ON e.project_id = s.project_id"
 			" AND s.kind = 1"
-			" AND s.name = rtrim(e.file_path, "
-			"  replace(e.file_path, '/', 'x')) "
+			" AND s.name = e.module_path "
 			" WHERE e.project_id=import.project_id"
 			" AND e.file_path = "
 			"  (SELECT file_path FROM semantic_records sr"
@@ -583,11 +585,16 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	exec("DROP TABLE IF EXISTS _rf");
 
 	// ── P2: Drop query indexes before bulk edge inserts ──────────
-	// Maintaining these indexes during thousands of edge INSERTs is
-	// expensive. Drop them here, let buildGraph insert edges without
-	// index maintenance, then recreate via createIndexesAfterBulkLoad
-	// (called by engine_index_project.cpp after buildGraph returns).
-	dropQueryIndexes();
+	// Full rebuild: drop all lookup + unique indexes for max insert
+	// throughput, recreate via createIndexesAfterBulkLoad(full_rebuild=true).
+	// Incremental: only drop idx_ge_unique_edge so INSERT OR IGNORE
+	// skips the unique-check cost. Lookup indexes stay valid and are
+	// maintained automatically by SQLite during incremental inserts.
+	if (full_rebuild) {
+		dropQueryIndexes();
+	} else {
+		dropUniqueEdgeIndex();
+	}
 
 	// Phase 1.1: dual-write entity table (production code only)
 	{
@@ -595,11 +602,12 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			"INSERT OR IGNORE INTO entity "
 			"(id, project_id, kind, name, qualified_name, "
 			" file_path, language, start_row, start_col, "
-			" end_row, end_col) "
+			" end_row, end_col, module_path) "
 			"SELECT id, project_id, node_type, name, "
 			" COALESCE(NULLIF(qualified_name, ''), name), "
 			" file_path, language, "
-			" start_row, start_col, end_row, end_col "
+			" start_row, start_col, end_row, end_col, "
+			" rtrim(file_path, replace(file_path, '/', 'x')) "
 			"FROM graph_nodes WHERE project_id=" +
 			std::to_string(project_id) +
 			" AND file_path NOT LIKE '%_test.%'"
@@ -947,4 +955,65 @@ std::vector<uint64_t> GraphStore::getCallerIds(uint64_t node_id)
 	return ids;
 }
 
+// ── BulkPragmaGuard: RAII bulk-load PRAGMA tuning ───────────────
+// Matches codebase-memory-mcp cbm_store_begin_bulk/end_bulk. Saves
+// synchronous + cache_size, sets OFF + 64 MB, restores on destruction.
+// SQLite cache_size is in KiB when negative. -65536 = 64 MiB.
+constexpr int kBulkCacheSizeKib = -65536;
+GraphStore::BulkPragmaGuard::BulkPragmaGuard(GraphStore *store)
+	: store_(store)
+{
+	if (!store_)
+		return;
+	auto read_pragma = [](sqlite3 *db, const char *name) {
+		sqlite3_stmt *st = nullptr;
+		int val = 0;
+		std::string sql = std::string("PRAGMA ") + name;
+		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &st, nullptr) ==
+		    SQLITE_OK) {
+			if (sqlite3_step(st) == SQLITE_ROW)
+				val = sqlite3_column_int(st, 0);
+			sqlite3_finalize(st);
+		}
+		return val;
+	};
+	sqlite3 *db = store_->handle();
+	  if (!db) {
+	   fprintf(stderr,
+	    "[module=store, method=BulkPragmaGuard] "
+	    "db handle is null, cannot save/set PRAGMAs\n");
+	   return;
+	  }
+	  saved_sync_ = read_pragma(db, "synchronous");
+	  saved_cache_ = read_pragma(db, "cache_size");
+	  if (!store_->exec("PRAGMA synchronous = OFF"))
+	   fprintf(stderr,
+	    "[module=store, method=BulkPragmaGuard] "
+	    "PRAGMA synchronous=OFF failed: %s\n",
+	    store_->error().c_str());
+	  if (!store_->exec(
+	       ("PRAGMA cache_size = " +
+	        std::to_string(kBulkCacheSizeKib))
+	        .c_str()))
+	   fprintf(stderr,
+	    "[module=store, method=BulkPragmaGuard] "
+	    "PRAGMA cache_size=%d failed: %s\n",
+	    kBulkCacheSizeKib, store_->error().c_str());
+}
+GraphStore::BulkPragmaGuard::~BulkPragmaGuard()
+{
+	if (!store_)
+		return;
+	auto restore = [&](const char *name, int val) {
+	   if (!store_->exec((std::string("PRAGMA ") + name + " = " +
+	        std::to_string(val))
+	        .c_str()))
+	    fprintf(stderr,
+	     "[module=store, method=~BulkPragmaGuard] "
+	     "PRAGMA %s=%d restore failed: %s\n",
+	     name, val, store_->error().c_str());
+	  };
+	restore("synchronous", saved_sync_);
+	restore("cache_size", saved_cache_);
+}
 } // namespace store

@@ -17,7 +17,8 @@ class WorkflowPlugin : public ModelPlugin {
 	{
 		return "Workflow";
 	}
-	ModelResult build(uint64_t project_id) override;
+	ModelResult build(uint64_t project_id,
+			  const ModelContext &ctx) override;
 
     private:
 	store::GraphStore *store_;

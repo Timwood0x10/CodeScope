@@ -6,6 +6,8 @@
 #include <vector>
 #include "../store/store.h"
 
+struct sqlite3_stmt;
+
 namespace resolver
 {
 
@@ -29,6 +31,11 @@ namespace resolver
 class FuzzyResolver {
     public:
 	FuzzyResolver(store::GraphStore *store, uint64_t project_id);
+	~FuzzyResolver();
+
+	// Non-copyable due to owned sqlite3_stmt members.
+	FuzzyResolver(const FuzzyResolver &) = delete;
+	FuzzyResolver &operator=(const FuzzyResolver &) = delete;
 
 	/// Find candidate entities for `callee_name` using fuzzy strategies.
 	/// Returns at most `limit` candidates. Empty vector means no fuzzy
@@ -42,6 +49,19 @@ class FuzzyResolver {
     private:
 	store::GraphStore *store_;
 	uint64_t project_id_;
+
+	// Prepared statements — created once in the constructor, reused
+	// across resolve() calls via sqlite3_reset + sqlite3_clear_bindings,
+	// and finalized in the destructor. Preparing per-call was a major
+	// cost in the fuzzy fallback path (3 prepares per missed name).
+	sqlite3_stmt *stmt_case_insensitive_ = nullptr;
+	sqlite3_stmt *stmt_prefix_ = nullptr;
+	sqlite3_stmt *stmt_suffix_ = nullptr;
+
+	/// Prepare all three statements. Returns true on success. On partial
+	/// failure the affected member is left null and resolve() degrades
+	/// gracefully (returns empty for that strategy).
+	bool prepareStatements();
 
 	/// Strategy 1: case-insensitive exact name match.
 	std::vector<uint64_t> resolveCaseInsensitive(const std::string &name,

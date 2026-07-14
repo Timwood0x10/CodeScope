@@ -97,6 +97,10 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		size_t size = 0;
 	};
 	std::vector<FileJob> jobs;
+	// Track whether this is a re-index (some files already in DB). When
+	// true, buildGraph uses the incremental path: only cycles the unique
+	// edge index instead of dropping/recreating all 6 lookup indexes.
+	bool is_reindex = false;
 	try {
 		auto it = std::filesystem::recursive_directory_iterator(
 			dir, std::filesystem::directory_options::
@@ -143,6 +147,7 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 						mtime, fsize);
 				}
 				if (file_unchanged) {
+					is_reindex = true;
 					filter.stats().skipped_files++;
 					continue;
 				}
@@ -539,7 +544,18 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	{
 		auto t_bg = steady_clock::now();
 		g_store->beginTransaction();
-		g_store->buildGraph(project_id, true);
+		// Incremental re-index: pass changed files so buildGraph uses the
+		// optimized path (only cycles the unique edge index, not the 5
+		// lookup indexes). First index (is_reindex=false) passes nullptr
+		// for a full rebuild.
+		std::unordered_set<std::string> changed_files;
+		if (is_reindex) {
+			changed_files.reserve(jobs.size());
+			for (const auto &job : jobs)
+				changed_files.insert(job.path);
+		}
+		g_store->buildGraph(project_id, true,
+				    is_reindex ? &changed_files : nullptr);
 		g_store->commitTransaction();
 		// P0.1: entity/relation dual-write now happens INSIDE buildGraph
 		// (store_graph.cpp). The previous duplicate INSERT...SELECT here
@@ -570,8 +586,16 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 				.count();
 	}
 
-	// Build deferred indexes after bulk load
-	g_store->createIndexesAfterBulkLoad(project_id);
+	// Build deferred indexes after bulk load. BulkPragmaGuard tunes
+	// PRAGMA synchronous=OFF + cache_size=64 MB for maximum index-creation
+	// throughput (matches codebase-memory-mcp cbm_store_begin_bulk/end_bulk),
+	// then restores previous values. full_rebuild=!is_reindex: skip lookup
+	// index recreation on incremental runs (they were never dropped); always
+	// run dedup DELETE + unique edge index creation.
+	{
+		store::GraphStore::BulkPragmaGuard guard(g_store.get());
+		g_store->createIndexesAfterBulkLoad(project_id, !is_reindex);
+	}
 
 	// Set readiness flag — core graph is queryable now.
 	// fts_ready / knowledge_ready are set by the async path

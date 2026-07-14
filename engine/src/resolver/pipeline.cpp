@@ -26,6 +26,14 @@ constexpr size_t kFuzzyCandidateLimit = 5;
 // and false-positive cross-module edges.
 constexpr size_t kMaxCandidatesToScore = 50;
 
+// Wall-clock budget for the fuzzy fallback path per run() invocation.
+// Once this much time has been spent in fuzzy_->resolve() calls, the
+// remaining fuzzy lookups are skipped (exact-name hits via entity_index
+// still proceed). Prevents pathological projects from spending most of
+// their resolve time in fruitless LIKE scans on names that will not
+// resolve anyway.
+constexpr int kFuzzyBudgetMs = 800;
+
 // Relation type constant for call edges in the relation table.
 constexpr int kRelationTypeCall = 1;
 
@@ -408,7 +416,16 @@ int64_t ResolverPipeline::run()
 	int64_t fuzzy_hits = 0;
 	int64_t skipped_common = 0;
 	int64_t skipped_too_many = 0;
+	int64_t skipped_fuzzy_miss = 0;
+	int64_t skipped_fuzzy_budget = 0;
 	int64_t total_candidates_seen = 0;
+
+	// Wall-clock budget accumulator for the fuzzy path. Once the
+	// cumulative time spent in fuzzy_->resolve() exceeds kFuzzyBudgetMs,
+	// fuzzy_budget_exhausted is latched true and subsequent fuzzy
+	// lookups are skipped (exact hits via entity_index still proceed).
+	Clock::duration fuzzy_time_used{};
+	bool fuzzy_budget_exhausted = false;
 
 	while (sqlite3_step(ref_st) == SQLITE_ROW) {
 		total_refs++;
@@ -447,13 +464,40 @@ int64_t ResolverPipeline::run()
 				skipped_common++;
 				continue;
 			}
+			// Per-name miss cache: if a previous lookup for this
+			// name produced no fuzzy matches, skip the SQL
+			// entirely. The same unresolved name often appears at
+			// many call sites, so this avoids repeating 3
+			// fruitless LIKE scans per site.
+			if (fuzzy_miss_cache_.count(name) > 0) {
+				skipped_fuzzy_miss++;
+				continue;
+			}
+			// Wall-clock budget: once the fuzzy path has consumed
+			// more than kFuzzyBudgetMs, skip remaining fuzzy
+			// lookups. Exact hits via entity_index above are
+			// unaffected — only the slow fuzzy fallback is gated.
+			if (fuzzy_budget_exhausted) {
+				skipped_fuzzy_budget++;
+				continue;
+			}
 			// FuzzyResolver fallback: case-insensitive, prefix,
 			// and suffix matching so references with case
 			// differences or partial names are still resolved.
+			auto t_fuzzy = Clock::now();
 			auto fuzzy_ids =
 				fuzzy_->resolve(name, kFuzzyCandidateLimit);
-			if (fuzzy_ids.empty())
+			fuzzy_time_used += Clock::now() - t_fuzzy;
+			if (!fuzzy_budget_exhausted &&
+			    fuzzy_time_used >
+				    std::chrono::milliseconds(kFuzzyBudgetMs))
+				fuzzy_budget_exhausted = true;
+			if (fuzzy_ids.empty()) {
+				// Memoize the miss so subsequent lookups of
+				// the same name skip SQL entirely.
+				fuzzy_miss_cache_.insert(name);
 				continue;
+			}
 			fuzzy_hits++;
 			for (auto fid : fuzzy_ids) {
 				if (!lk_st)
@@ -593,11 +637,13 @@ int64_t ResolverPipeline::run()
 		"resolved %lld / %lld refs"
 		" | exact=%lld fuzzy=%lld"
 		" skipped_common=%lld skipped_many=%lld"
+		" skipped_miss=%lld skipped_budget=%lld"
 		" | avg_cands=%.1f entities=%lld"
 		" | sql_batch=%lldms total=%lldms\n",
 		(long long)resolved_count, (long long)total_refs,
 		(long long)exact_hits, (long long)fuzzy_hits,
 		(long long)skipped_common, (long long)skipped_too_many,
+		(long long)skipped_fuzzy_miss, (long long)skipped_fuzzy_budget,
 		avg_candidates, (long long)total_entities,
 		(long long)sql_batch_ms, (long long)total_ms);
 
