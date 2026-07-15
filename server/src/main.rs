@@ -9,9 +9,21 @@ use std::path::Path;
 fn main() {
     let args: Vec<String> = env::args().collect();
 
-    // ── Worker mode: codescope worker <db_path> <dir_path> <lang_filter> <project_name> <project_id> ─
+    // ── Discover mode: codescope discover <dir_path> ──────────────
+    // Quick scan: count candidate source files per top-level directory.
+    // No parsing, no SQLite — just filesystem walk with FilterPolicy rules.
+    // Outputs JSON with per-directory file counts for parallel module planning.
+    if args.len() >= 2 && args[1] == "discover" {
+        let dir_path = args.get(2).map(|s| s.as_str()).unwrap_or(".");
+        let result = tools::discover(dir_path);
+        println!("{}", result);
+        return;
+    }
+
+    // ── Worker mode: codescope worker <db_path> <dir_path> <lang_filter> <project_name> <project_id> [--file-list <json>] ─
     // Runs index_project in a subprocess, then exits. RSS is 100% returned to OS on exit.
     // Called by the MCP server to isolate indexing memory from the long-running server.
+    // With --file-list, indexes only the specified files (JSON array of paths).
     if args.len() >= 2 && args[1] == "worker" {
         let db_path = args
             .get(2)
@@ -20,21 +32,30 @@ fn main() {
         let dir_path = args.get(3).map(|s| s.as_str()).unwrap_or(".");
         let lang_filter = args.get(4).map(|s| s.as_str()).unwrap_or("");
         let project_name = args.get(5).map(|s| s.as_str()).unwrap_or("worker-project");
-        // Fix: project_id_arg should be the 6th argument (args[6]), not the 5th
         let project_id_arg = args.get(6).map(|s| s.as_str()).unwrap_or("0");
-        // project_id is the 6th arg if it's numeric, otherwise project_name is
 
-        // CODESCOPE_DB_PATH is set explicitly via env var at the call site
-        // (h_index_project in tools/mod.rs sets it before spawning worker),
-        // and the C++ engine receives the path via ffi::init(db_path) directly,
-        // so env::set_var here is intentionally omitted as dead code.
+        // Check for --file-list argument (path to JSON file containing file list)
+        let file_list = if args.len() >= 8 && args[7] == "--file-list" {
+            args.get(8).map(|s| {
+                // Read file list from the specified file
+                let path = s.as_str();
+                match std::fs::read_to_string(path) {
+                    Ok(content) => content,
+                    Err(e) => {
+                        eprintln!("codescope worker: failed to read file-list from {}: {}", path, e);
+                        String::new()
+                    }
+                }
+            })
+        } else {
+            None
+        };
 
         if ffi::init(db_path) != 0 {
             eprintln!("codescope worker: engine init failed");
             std::process::exit(1);
         }
 
-        // Use provided project_id if numeric, otherwise create a new project
         let pid = if project_id_arg.chars().all(|c| c.is_ascii_digit()) {
             project_id_arg
                 .parse::<u64>()
@@ -48,7 +69,9 @@ fn main() {
             pid, dir_path, lang_filter
         );
 
-        let result = if lang_filter.is_empty() {
+        let result = if let Some(files_json) = file_list {
+            ffi::index_files(pid, &files_json)
+        } else if lang_filter.is_empty() {
             ffi::index_project(pid, dir_path, std::ptr::null())
         } else {
             let c_lang = std::ffi::CString::new(lang_filter).unwrap_or_default();

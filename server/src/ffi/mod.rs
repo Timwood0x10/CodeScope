@@ -15,6 +15,7 @@ unsafe extern "C" {
         dir_path: *const c_char,
         language_filter: *const c_char,
     ) -> *mut c_char;
+    fn engine_index_files(project_id: u64, file_list_json: *const c_char) -> *mut c_char;
 
     fn engine_find_definition(
         project_id: u64,
@@ -140,6 +141,10 @@ pub fn index_project(project_id: u64, dir_path: &str, language_filter: *const c_
     take_string(unsafe {
         engine_index_project(project_id, cstr(dir_path).as_ptr(), language_filter)
     })
+}
+
+pub fn index_files(project_id: u64, file_list_json: &str) -> String {
+    take_string(unsafe { engine_index_files(project_id, cstr(file_list_json).as_ptr()) })
 }
 
 pub fn find_definition(project_id: u64, symbol_name: &str, file_filter: Option<&str>) -> String {

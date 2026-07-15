@@ -25,6 +25,11 @@ char* engine_index_file(uint64_t project_id, const char* file_path);
 char* engine_index_project(uint64_t project_id, const char* dir_path,
                            const char* language_filter);
 
+// Index a list of files (JSON array of file paths); returns JSON progress summary.
+// Skips directory scanning — uses the same parallel worker infrastructure.
+// file_list_json: ["/path/to/file1.c", "/path/to/file2.c", ...]
+char* engine_index_files(uint64_t project_id, const char* file_list_json);
+
 // ─── Queries ──────────────────────────────────────────────────
 
 char* engine_find_definition(uint64_t project_id, const char* symbol_name,
