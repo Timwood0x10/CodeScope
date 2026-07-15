@@ -399,20 +399,20 @@ void JsVisitor::visitCallExpr(TSNode node, uint64_t parent_id)
 	uint32_t count = ts_node_child_count(node);
 
 	// Extract callee name from first identifier child
-	  for (uint32_t i = 0; i < count; i++) {
-	   TSNode child = ts_node_child(node, i);
-	   if (!ts_node_is_named(child))
-	    continue;
-	   const char *t = ts_node_type(child);
-	   // Skip property_identifier (member expression targets
-	   // like obj.method) — they are NOT standalone function calls.
-	   if (strcmp(t, "property_identifier") == 0)
-	    continue;
-	   if (strcmp(t, "identifier") == 0) {
-	    callee_name = nodeText(child);
-	    break;
-	   }
-	  }
+	for (uint32_t i = 0; i < count; i++) {
+		TSNode child = ts_node_child(node, i);
+		if (!ts_node_is_named(child))
+			continue;
+		const char *t = ts_node_type(child);
+		// Skip property_identifier (member expression targets
+		// like obj.method) — they are NOT standalone function calls.
+		if (strcmp(t, "property_identifier") == 0)
+			continue;
+		if (strcmp(t, "identifier") == 0) {
+			callee_name = nodeText(child);
+			break;
+		}
+	}
 
 	// Skip JS/TS built-in global functions — they are NOT user-defined
 	// calls and the Resolver Pipeline would generate false-positive edges.

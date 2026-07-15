@@ -105,31 +105,31 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		"SELECT DISTINCT file_path FROM semantic_records WHERE project_id=" +
 		std::to_string(project_id);
 	sqlite3_stmt *fl_stmt = nullptr;
-if (sqlite3_prepare_v2(db_, file_list_sql.c_str(), -1, &fl_stmt,
+	if (sqlite3_prepare_v2(db_, file_list_sql.c_str(), -1, &fl_stmt,
 			       nullptr) != SQLITE_OK) {
-	fprintf(stderr,
-		"buildGraph: prepare file_list failed: %s "
-		"[module=store, method=buildGraph]\n",
-		sqlite3_errmsg(db_));
-	// Fall through: empty rebuild_files is a no-op, not a fatal error.
-	// The transaction is still committed below.
-}
-
-std::vector<std::string> rebuild_files;
-if (fl_stmt) {
-	while (sqlite3_step(fl_stmt) == SQLITE_ROW) {
-		const char *fp = reinterpret_cast<const char *>(
-			sqlite3_column_text(fl_stmt, 0));
-		if (!fp)
-			continue;
-		std::string file_path(fp);
-		if (changed_files &&
-		    changed_files->find(file_path) == changed_files->end())
-			continue;
-		rebuild_files.push_back(std::move(file_path));
+		fprintf(stderr,
+			"buildGraph: prepare file_list failed: %s "
+			"[module=store, method=buildGraph]\n",
+			sqlite3_errmsg(db_));
+		// Fall through: empty rebuild_files is a no-op, not a fatal error.
+		// The transaction is still committed below.
 	}
-	sqlite3_finalize(fl_stmt);
-}
+
+	std::vector<std::string> rebuild_files;
+	if (fl_stmt) {
+		while (sqlite3_step(fl_stmt) == SQLITE_ROW) {
+			const char *fp = reinterpret_cast<const char *>(
+				sqlite3_column_text(fl_stmt, 0));
+			if (!fp)
+				continue;
+			std::string file_path(fp);
+			if (changed_files && changed_files->find(file_path) ==
+						     changed_files->end())
+				continue;
+			rebuild_files.push_back(std::move(file_path));
+		}
+		sqlite3_finalize(fl_stmt);
+	}
 
 	// Wrap the entire buildGraph in a transaction so that a crash mid-way
 	// leaves the graph in a consistent state (all or nothing).
@@ -440,9 +440,29 @@ if (fl_stmt) {
 	// generated call edges, making caller/callee lookups incomplete.
 	// CSR is now built after the resolver pipeline (see below).
 
-	// Phase 1.2: populate reference table from semantic_records CallExpr + MemberExpr
+	// Phase 1.2: populate reference table from semantic_records CallExpr ONLY.
 	// Uses _r2n mapping to resolve parent_id -> caller_id.
-	// MemberExpr captures struct method calls like a.submitToCoordinator(ctx).
+	//
+	// FIX (FP edge elimination): previously this also included MemberExpr
+	// (kind=10, field/property accesses such as `params.agentId`). The
+	// ResolverPipeline (Phase 1.3) fuzzy-resolves EVERY row in `reference`
+	// as a CALL and emits a `Calls` edge (edge_type=1). A MemberExpr like
+	// `params.agentId` is NOT a call, yet could be loosely bound (prefix/
+	// suffix LIKE) to an unrelated function — e.g. getMemoryThreads's
+	// `params.agentId` member access resolving to `getAgent`, producing a
+	// false-positive `getMemoryThreads -> getAgent` edge with
+	// graph_type='symbol_reference'. MemberExpr field accesses are therefore
+	// excluded from the call-reference table (the `reference` table's
+	// documented purpose is "call facts recorded by Parser"). Field/property
+	// accesses that legitimately need a symbol-reference edge should be added
+	// by a dedicated pass that emits `References` edges via EXACT match, not
+	// by the fuzzy call resolver.
+	//
+	// Note: prior to this fix, the kind=10 inclusion was justified as
+	// "capturing struct method calls like a.submitToCoordinator(ctx)", but
+	// the fuzzy resolver matches the FULL member path (e.g.
+	// "a.submitToCoordinator") which never equals the bare method entity
+	// ("submitToCoordinator"), so it produced no correct edges — only FPs.
 	{
 		std::string ref_sql =
 			"INSERT OR IGNORE INTO reference "
@@ -454,7 +474,7 @@ if (fl_stmt) {
 			" AND sr.file_path = r2n.file_path "
 			"WHERE sr.project_id=" +
 			std::to_string(project_id) +
-			" AND sr.kind IN (9,10) AND sr.name != '' AND sr.file_path NOT LIKE '%_test.%' AND sr.file_path NOT LIKE '%/tests/%' AND sr.file_path NOT LIKE '%_spec.%' AND sr.file_path NOT LIKE '%/benches/%' AND sr.file_path NOT LIKE '%__test__%'";
+			" AND sr.kind = 9 AND sr.name != '' AND sr.file_path NOT LIKE '%_test.%' AND sr.file_path NOT LIKE '%/tests/%' AND sr.file_path NOT LIKE '%_spec.%' AND sr.file_path NOT LIKE '%/benches/%' AND sr.file_path NOT LIKE '%__test__%'";
 		exec(ref_sql.c_str());
 	}
 	auto t_reference = Clock::now();
