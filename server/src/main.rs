@@ -42,7 +42,10 @@ fn main() {
                 match std::fs::read_to_string(path) {
                     Ok(content) => content,
                     Err(e) => {
-                        eprintln!("codescope worker: failed to read file-list from {}: {}", path, e);
+                        eprintln!(
+                            "codescope worker: failed to read file-list from {}: {}",
+                            path, e
+                        );
                         String::new()
                     }
                 }

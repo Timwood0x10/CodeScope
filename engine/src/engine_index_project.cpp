@@ -795,7 +795,8 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 		if (!lang)
 			continue;
 
-		jobs.push_back({path, lang, static_cast<size_t>(file_stat.st_size)});
+		jobs.push_back(
+			{ path, lang, static_cast<size_t>(file_stat.st_size) });
 	}
 
 	if (jobs.empty())
@@ -839,13 +840,13 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 
 	const size_t kQueueCapacity =
 		std::max<size_t>(2 * std::thread::hardware_concurrency(), 8);
-	BoundedQueue<std::unique_ptr<store::FileResult>> result_queue(
+	BoundedQueue<std::unique_ptr<store::FileResult> > result_queue(
 		kQueueCapacity);
 
-	std::atomic<int> next_job{0};
-	std::atomic<int> files_queued{0};
-	std::atomic<int> files_written{0};
-	std::atomic<int> writer_error{0};
+	std::atomic<int> next_job{ 0 };
+	std::atomic<int> files_queued{ 0 };
+	std::atomic<int> files_written{ 0 };
+	std::atomic<int> writer_error{ 0 };
 	const int64_t total_files = static_cast<int64_t>(jobs.size());
 	const int64_t progress_interval =
 		std::max<int64_t>(1, total_files / 10);
@@ -899,20 +900,24 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 	// Same as engine_index_project: each worker pulls from next_job atomic.
 	auto parse_worker_fn = [&]() {
 		struct TSParserDeleter {
-			void operator()(TSParser *p) const {
-				if (p) ts_parser_delete(p);
+			void operator()(TSParser *p) const
+			{
+				if (p)
+					ts_parser_delete(p);
 			}
 		};
 		struct TSTreeDeleter {
-			void operator()(TSTree *t) const {
-				if (t) ts_tree_delete(t);
+			void operator()(TSTree *t) const
+			{
+				if (t)
+					ts_tree_delete(t);
 			}
 		};
 		thread_local static std::unordered_map<
-			std::string, std::unique_ptr<TSParser, TSParserDeleter>>
+			std::string, std::unique_ptr<TSParser, TSParserDeleter> >
 			tl_parsers;
 		thread_local static std::unordered_map<
-			std::string, std::unique_ptr<ir::JsVisitor>>
+			std::string, std::unique_ptr<ir::JsVisitor> >
 			tl_visitors;
 
 		while (true) {
@@ -940,7 +945,8 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 				auto lit = lang_ptrs.find(job.lang);
 				if (lit == lang_ptrs.end())
 					continue;
-				auto np = std::unique_ptr<TSParser, TSParserDeleter>(
+				auto np = std::unique_ptr<TSParser,
+							  TSParserDeleter>(
 					ts_parser_new());
 				ts_parser_set_language(np.get(), lit->second);
 				tl_parsers[job.lang] = std::move(np);
@@ -1001,22 +1007,34 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 					std::function<void(ir::Node *, uint64_t)>
 						flatten = [&](ir::Node *n,
 							      uint64_t parent) {
-							uint64_t my_id = flat_id++;
+							uint64_t my_id =
+								flat_id++;
 							ir::Record rec;
 							rec.id = my_id;
-							rec.kind = static_cast<ir::RecordKind>(
-								static_cast<int>(n->kind));
+							rec.kind = static_cast<
+								ir::RecordKind>(
+								static_cast<int>(
+									n->kind));
 							rec.name = n->name;
-							rec.qualified_name = n->qualified_name;
+							rec.qualified_name =
+								n->qualified_name;
 							rec.parent_id = parent;
-							rec.loc.start_row = n->loc.start_row;
-								rec.loc.start_col = n->loc.start_col;
-								rec.loc.end_row = n->loc.end_row;
-								rec.loc.end_col = n->loc.end_col;
-							rec.file_path = job.path;
-							result->records.push_back(std::move(rec));
-							for (auto *c : n->children)
-								flatten(c, my_id);
+							rec.loc.start_row =
+								n->loc.start_row;
+							rec.loc.start_col =
+								n->loc.start_col;
+							rec.loc.end_row =
+								n->loc.end_row;
+							rec.loc.end_col =
+								n->loc.end_col;
+							rec.file_path =
+								job.path;
+							result->records.push_back(
+								std::move(rec));
+							for (auto *c :
+							     n->children)
+								flatten(c,
+									my_id);
 						};
 					flatten(unit->root, 0);
 				}
@@ -1029,9 +1047,9 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 
 	// ── Spawn workers ──────────────────────────────────────────
 	t_parse_start = steady_clock::now();
-	int num_workers = std::min(static_cast<int>(jobs.size()),
-				   static_cast<int>(
-					   std::thread::hardware_concurrency()));
+	int num_workers =
+		std::min(static_cast<int>(jobs.size()),
+			 static_cast<int>(std::thread::hardware_concurrency()));
 	const char *env_workers = getenv("CODESCOPE_WORKERS");
 	if (env_workers && env_workers[0]) {
 		int requested = std::atoi(env_workers);
@@ -1040,7 +1058,8 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 	} else {
 		num_workers = std::min(num_workers, 4);
 	}
-	if (num_workers < 1) num_workers = 1;
+	if (num_workers < 1)
+		num_workers = 1;
 
 	std::vector<std::thread> workers;
 	for (int i = 0; i < num_workers; i++) {
@@ -1060,17 +1079,18 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 	result_queue.markDone();
 	if (writer_thread.joinable())
 		writer_thread.join();
-	time_parse_ms = duration_cast<milliseconds>(
-			       steady_clock::now() - t_parse_start)
-			       .count();
+	time_parse_ms =
+		duration_cast<milliseconds>(steady_clock::now() - t_parse_start)
+			.count();
 
 	// ── Build graph ────────────────────────────────────────────
 	if (writer_error == 0) {
 		t_parse_start = steady_clock::now();
 		g_store->buildGraph(project_id, mode_fast);
-		time_buildgraph_ms = duration_cast<milliseconds>(
-				     steady_clock::now() - t_parse_start)
-				     .count();
+		time_buildgraph_ms =
+			duration_cast<milliseconds>(steady_clock::now() -
+						    t_parse_start)
+				.count();
 	}
 
 	// ── Build result JSON ──────────────────────────────────────
@@ -1085,18 +1105,23 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 	{
 		sqlite3 *db = g_store->handle();
 		sqlite3_stmt *stmt = nullptr;
-		std::string sql = "SELECT COUNT(*) FROM graph_nodes WHERE project_id = " +
-				  std::to_string(project_id);
-		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {
+		std::string sql =
+			"SELECT COUNT(*) FROM graph_nodes WHERE project_id = " +
+			std::to_string(project_id);
+		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) ==
+		    SQLITE_OK) {
 			if (sqlite3_step(stmt) == SQLITE_ROW)
-				result << ",\"total_nodes\":" << sqlite3_column_int64(stmt, 0);
+				result << ",\"total_nodes\":"
+				       << sqlite3_column_int64(stmt, 0);
 			sqlite3_finalize(stmt);
 		}
 		sql = "SELECT COUNT(*) FROM graph_edges WHERE project_id = " +
 		      std::to_string(project_id);
-		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {
+		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) ==
+		    SQLITE_OK) {
 			if (sqlite3_step(stmt) == SQLITE_ROW)
-				result << ",\"total_edges\":" << sqlite3_column_int64(stmt, 0);
+				result << ",\"total_edges\":"
+				       << sqlite3_column_int64(stmt, 0);
 			sqlite3_finalize(stmt);
 		}
 	}
