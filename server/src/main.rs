@@ -60,9 +60,12 @@ fn main() {
         }
 
         let pid = if project_id_arg.chars().all(|c| c.is_ascii_digit()) {
-            project_id_arg
-                .parse::<u64>()
-                .unwrap_or_else(|_| ffi::create_project(dir_path, project_name))
+            let parsed = project_id_arg.parse::<u64>().unwrap_or(0);
+            if parsed == 0 {
+                ffi::create_project(dir_path, project_name)
+            } else {
+                parsed
+            }
         } else {
             ffi::create_project(dir_path, project_name)
         };

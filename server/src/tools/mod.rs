@@ -628,9 +628,9 @@ fn h_connected_components(project_id: u64, _args: &Value) -> String {
 
 /// Fetch a local region of the code graph centered on a node.
 fn h_get_subgraph(project_id: u64, args: &Value) -> String {
-    let node_id = match args["node_id"].as_u64() {
-        Some(id) => id,
-        None => {
+    let node_id = match args["node_id"].as_i64() {
+        Some(id) if id >= 0 => id as u64,
+        _ => {
             return json!({"error": "node_id (u64) is required [module=mcp, tool=get_subgraph]"})
                 .to_string();
         }
@@ -643,9 +643,9 @@ fn h_get_subgraph(project_id: u64, args: &Value) -> String {
 
 /// Fetch the direct neighbors (callers + callees) of a graph node.
 fn h_get_neighbors(project_id: u64, args: &Value) -> String {
-    let node_id = match args["node_id"].as_u64() {
-        Some(id) => id,
-        None => {
+    let node_id = match args["node_id"].as_i64() {
+        Some(id) if id >= 0 => id as u64,
+        _ => {
             return json!({"error": "node_id (u64) is required [module=mcp, tool=get_neighbors]"})
                 .to_string();
         }

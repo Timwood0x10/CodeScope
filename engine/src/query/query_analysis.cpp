@@ -578,7 +578,12 @@ std::string QueryEngine::getGraph(uint64_t project_id, int64_t node_offset,
 		appendRowsAsJson(stmt, json, first);
 		sqlite3_finalize(stmt);
 	}
-	bool nodes_has_more = (node_offset + node_limit) < total_nodes;
+	// Overflow-safe: total_nodes/offset are >= 0 (clamped), so the
+	// subtraction cannot underflow; avoids UB from a raw add that could
+	// wrap around for a maliciously large offset.
+	bool nodes_has_more =
+		(total_nodes > node_offset) &&
+		(total_nodes - node_offset > static_cast<int64_t>(node_limit));
 
 	json << "],\"edges\":[";
 
@@ -605,7 +610,9 @@ std::string QueryEngine::getGraph(uint64_t project_id, int64_t node_offset,
 		appendRowsAsJson(stmt, json, first);
 		sqlite3_finalize(stmt);
 	}
-	bool edges_has_more = (edge_offset + edge_limit) < total_edges;
+	bool edges_has_more =
+		(total_edges > edge_offset) &&
+		(total_edges - edge_offset > static_cast<int64_t>(edge_limit));
 
 	json << "],\"has_more\":{\"nodes\":"
 	     << (nodes_has_more ? "true" : "false")

@@ -80,7 +80,7 @@ static std::string buildSingleHopQuery(uint64_t project_id, int edge_type,
 		sql << " AND src.name = ?";
 	if (!tgt_name.empty())
 		sql << " AND tgt.name = ?";
-	sql << " LIMIT 200";
+	sql << " LIMIT 10000";
 	return sql.str();
 }
 
@@ -156,7 +156,7 @@ static std::string buildMultiHopQuery(uint64_t project_id, int edge_type,
 		sql << " AND src.name = ?";
 	if (!tgt_name.empty())
 		sql << " AND tgt.name = ?";
-	sql << " LIMIT 200";
+	sql << " LIMIT 10000";
 	return sql.str();
 }
 

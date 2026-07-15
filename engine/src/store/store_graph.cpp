@@ -105,9 +105,18 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		"SELECT DISTINCT file_path FROM semantic_records WHERE project_id=" +
 		std::to_string(project_id);
 	sqlite3_stmt *fl_stmt = nullptr;
-	sqlite3_prepare_v2(db_, file_list_sql.c_str(), -1, &fl_stmt, nullptr);
+if (sqlite3_prepare_v2(db_, file_list_sql.c_str(), -1, &fl_stmt,
+			       nullptr) != SQLITE_OK) {
+	fprintf(stderr,
+		"buildGraph: prepare file_list failed: %s "
+		"[module=store, method=buildGraph]\n",
+		sqlite3_errmsg(db_));
+	// Fall through: empty rebuild_files is a no-op, not a fatal error.
+	// The transaction is still committed below.
+}
 
-	std::vector<std::string> rebuild_files;
+std::vector<std::string> rebuild_files;
+if (fl_stmt) {
 	while (sqlite3_step(fl_stmt) == SQLITE_ROW) {
 		const char *fp = reinterpret_cast<const char *>(
 			sqlite3_column_text(fl_stmt, 0));
@@ -120,18 +129,18 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		rebuild_files.push_back(std::move(file_path));
 	}
 	sqlite3_finalize(fl_stmt);
+}
 
 	// Wrap the entire buildGraph in a transaction so that a crash mid-way
 	// leaves the graph in a consistent state (all or nothing).
-	if (!beginTransaction()) {
-		fprintf(stderr,
-			"buildGraph: beginTransaction failed [module=store, method=buildGraph]\n");
-		return false;
-	}
+	// NOTE: engine_index_project.cpp already wraps buildGraph in a
+	// transaction, so this is a no-op when called from there. Use SAVEPOINT
+	// to handle nested calls safely.
+	exec("SAVEPOINT buildGraph");
 	auto t_file_list = Clock::now();
 
 	if (rebuild_files.empty()) {
-		commitTransaction();
+		exec("RELEASE SAVEPOINT buildGraph");
 		return true;
 	}
 
@@ -758,7 +767,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		(long long)ms(t_resolver, t_csr),
 		(long long)ms(t_csr, t_cleanup), (long long)ms(t0, t_cleanup));
 
-	commitTransaction();
+	exec("RELEASE SAVEPOINT buildGraph");
 	return true;
 }
 

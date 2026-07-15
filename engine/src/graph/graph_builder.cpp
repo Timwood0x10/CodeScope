@@ -134,8 +134,18 @@ bool GraphBuilder::visitEnter(ir::Node *node)
 	}
 
 	// ── Process semantic edges ──────────────────────────────
-	for (auto &edge : node->semantic_edges) {
-		// Determine the effective source graph node
+	  for (auto &edge : node->semantic_edges) {
+	   // Skip CallTarget edges during symbol graph build.
+	   // They are only added during the call graph phase
+	   // (building_call_graph_ = true). Processing them during
+	   // the symbol phase creates false-positive call edges with
+	   // graph_type='symbol_reference' (e.g., a URL parameter
+	   // name like "agentId" being matched to a function "getAgent").
+	   if (!building_call_graph_ &&
+	       edge.relation == ir::Relation::CallTarget)
+	    continue;
+
+	   // Determine the effective source graph node
 		uint64_t effective_source = 0;
 
 		if (edge.relation == ir::Relation::CallTarget) {
