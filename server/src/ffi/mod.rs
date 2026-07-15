@@ -37,6 +37,34 @@ unsafe extern "C" {
     fn engine_locate_by_name(project_id: u64, name: *const c_char) -> *mut c_char;
     fn engine_find_connected_components(project_id: u64) -> *mut c_char;
 
+    // ── Graph region + full export queries ────────────────────
+    // See engine_ffi.cpp for the C++ implementations. Each returns a
+    // heap-allocated JSON string that the caller MUST release via
+    // engine_free_string().
+    fn engine_get_subgraph(
+        project_id: u64,
+        center_node_id: u64,
+        radius: i32,
+        node_type_filter: *const c_char,
+        edge_type_filter: *const c_char,
+    ) -> *mut c_char;
+    fn engine_get_neighbors(
+        project_id: u64,
+        node_id: u64,
+        edge_type_filter: i32,
+        radius: i32,
+    ) -> *mut c_char;
+    fn engine_graph_query(project_id: u64, dsl_query: *const c_char) -> *mut c_char;
+    fn engine_get_graph(
+        project_id: u64,
+        node_offset: i64,
+        node_limit: i32,
+        edge_offset: i64,
+        edge_limit: i32,
+        node_type_filter: *const c_char,
+        edge_type_filter: *const c_char,
+    ) -> *mut c_char;
+
     fn engine_search_code(project_id: u64, query: *const c_char, limit: i32) -> *mut c_char;
 
     fn engine_detect_changes(project_id: u64, modified_files_json: *const c_char) -> *mut c_char;
@@ -200,6 +228,86 @@ pub fn locate_by_name(project_id: u64, name: &str) -> String {
 /// module/method per code_rules.md.
 pub fn find_connected_components(project_id: u64) -> String {
     take_string(unsafe { engine_find_connected_components(project_id) })
+}
+
+/// Fetch a local region of the code graph centered on a node.
+///
+/// `center_node_id` is a graph node id; `radius` is reserved (currently 1 hop).
+/// `node_type_filter` / `edge_type_filter` are optional comma-separated integer
+/// id lists (e.g. "0,1"); pass `None` for all. Returns JSON
+/// `{"nodes":[...],"total":N}` produced by `QueryEngine::getSubgraph`.
+pub fn get_subgraph(
+    project_id: u64,
+    center_node_id: u64,
+    radius: i32,
+    node_type_filter: Option<&str>,
+    edge_type_filter: Option<&str>,
+) -> String {
+    let nt = node_type_filter.map(cstr);
+    let et = edge_type_filter.map(cstr);
+    take_string(unsafe {
+        engine_get_subgraph(
+            project_id,
+            center_node_id,
+            radius,
+            nt.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
+            et.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
+        )
+    })
+}
+
+/// Fetch the direct neighbors (callers + callees) of a graph node.
+///
+/// `edge_type_filter` selects a single edge type id, or -1 for all. `radius`
+/// is reserved (currently 1 hop). Returns JSON `{"neighbors":[...],"total":N}`
+/// from `QueryEngine::getNeighbors`.
+pub fn get_neighbors(project_id: u64, node_id: u64, edge_type_filter: i32, radius: i32) -> String {
+    take_string(unsafe { engine_get_neighbors(project_id, node_id, edge_type_filter, radius) })
+}
+
+/// Query the code graph with the Cypher-like DSL implemented by
+/// `QueryEngine::graphQuery`.
+///
+/// `dsl` syntax: `MATCH (srcType[:srcName])-[edgeType]->(tgtType[:tgtName])`.
+/// Node types: Function(0), Method(1), Class(2), Struct(3), Interface(4),
+/// Variable(5), Module(6), File(7). Edge types: References(0), Calls(1),
+/// Defines(2), Contains(3), Imports(4), Inherits(5). Multi-hop:
+/// `edgeType*min..max` (e.g. `MATCH (Function)-[Calls*1..3]->(Function)`).
+/// Returns JSON `{"results":[...],"total":N}`.
+pub fn graph_query(project_id: u64, dsl_query: &str) -> String {
+    take_string(unsafe { engine_graph_query(project_id, cstr(dsl_query).as_ptr()) })
+}
+
+/// Export the complete code graph in paginated pages.
+///
+/// Pages nodes (from `graph_nodes`) via `node_offset`/`node_limit` and edges
+/// (from `graph_edges`) via `edge_offset`/`edge_limit`. `node_type_filter` /
+/// `edge_type_filter` are optional comma-separated integer id lists. Returns
+/// JSON `{"totals":{"nodes":N,"edges":M},"nodes":[...],"edges":[...],
+/// "has_more":{"nodes":bool,"edges":bool}}`. Iterate while `has_more` is true
+/// to reconstruct the full graph. Bounds are clamped inside the engine.
+pub fn get_graph(
+    project_id: u64,
+    node_offset: i64,
+    node_limit: i32,
+    edge_offset: i64,
+    edge_limit: i32,
+    node_type_filter: Option<&str>,
+    edge_type_filter: Option<&str>,
+) -> String {
+    let nt = node_type_filter.map(cstr);
+    let et = edge_type_filter.map(cstr);
+    take_string(unsafe {
+        engine_get_graph(
+            project_id,
+            node_offset,
+            node_limit,
+            edge_offset,
+            edge_limit,
+            nt.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
+            et.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
+        )
+    })
 }
 
 pub fn search_code(project_id: u64, query: &str, limit: i32) -> String {

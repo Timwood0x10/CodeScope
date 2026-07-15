@@ -34,7 +34,8 @@ const LanguagePattern kLanguagePatterns[] = {
 	{ "javascript", "javascript", "JavaScript" },
 	{ "rust", "rust", "Rust" },
 	{ "golang", "go", "Go" },
-	{ "java", "java", "Java" },
+	// "java" is handled separately with word-boundary matching below
+	// to avoid false positives on "JavaScript".
 	// "Go" is checked separately with word-boundary matching to avoid
 	// false positives on "Google", "Going", etc.
 };
@@ -151,6 +152,29 @@ std::vector<LanguageClaim> extractLanguageClaims(const std::string &readme_text)
 				lc.canonical = "go";
 				lc.display = "Go";
 				lc.mention_count = go_count;
+				result.push_back(lc);
+			}
+		}
+	}
+
+	// Special handling for "Java" — use word-boundary matching to avoid
+	// false positives on "JavaScript" which contains "Java" as a substring.
+	{
+		size_t java_count = countStandaloneWord(readme_text, "java");
+		if (java_count > 0) {
+			bool already = false;
+			for (auto &c : result) {
+				if (c.canonical == "java") {
+					c.mention_count += java_count;
+					already = true;
+					break;
+				}
+			}
+			if (!already) {
+				LanguageClaim lc;
+				lc.canonical = "java";
+				lc.display = "Java";
+				lc.mention_count = java_count;
 				result.push_back(lc);
 			}
 		}

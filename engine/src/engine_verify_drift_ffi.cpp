@@ -270,19 +270,76 @@ extern "C" char *engine_detect_drift(uint64_t project_id)
 
 				// Coarse check: contract keyword must appear as
 				// part of some entity name in the project.
+				// Bind the probe to the specific contract keyword
+				// so a thread-safety claim checks for Mutex/Lock/Atomic
+				// while a memory-safety claim checks for free/alloc/unique_ptr.
 				const char *check_sql =
 					"SELECT EXISTS(SELECT 1 FROM entity "
 					"WHERE project_id=? AND ("
-					" name LIKE '%Mutex%' OR name LIKE '%Lock%'"
-					" OR name LIKE '%RwLock%' OR name LIKE '%Atomic%'))";
+					" name LIKE ? OR name LIKE ?"
+					" OR name LIKE ? OR name LIKE ?))";
 				sqlite3_stmt *check_st = nullptr;
 				bool enforced = false;
+				// Map contract name to relevant keywords
+				std::string kw1, kw2, kw3, kw4;
+				std::string cname = name;
+				// Check memory-safety FIRST to avoid "memory safe"
+				// being caught by the "safe" substring in thread-safety.
+				if (cname.find("memory") != std::string::npos ||
+				    cname.find("Memory") != std::string::npos ||
+				    cname.find("free") != std::string::npos ||
+				    cname.find("Free") != std::string::npos ||
+				    cname.find("alloc") != std::string::npos ||
+				    cname.find("Alloc") != std::string::npos) {
+					kw1 = "%free%";
+					kw2 = "%alloc%";
+					kw3 = "%unique_ptr%";
+					kw4 = "%shared_ptr%";
+				} else if (cname.find("thread") !=
+						   std::string::npos ||
+					   cname.find("Thread") !=
+						   std::string::npos ||
+					   cname.find("safe") !=
+						   std::string::npos ||
+					   cname.find("Safe") !=
+						   std::string::npos ||
+					   cname.find("concurrent") !=
+						   std::string::npos ||
+					   cname.find("Concurrent") !=
+						   std::string::npos ||
+					   cname.find("lock") !=
+						   std::string::npos ||
+					   cname.find("Lock") !=
+						   std::string::npos) {
+					kw1 = "%Mutex%";
+					kw2 = "%Lock%";
+					kw3 = "%RwLock%";
+					kw4 = "%Atomic%";
+				} else {
+					// Fallback for other contracts: use the contract name itself
+					kw1 = "%" + cname + "%";
+					kw2 = "%" + cname + "%";
+					kw3 = "%" + cname + "%";
+					kw4 = "%" + cname + "%";
+				}
 				if (sqlite3_prepare_v2(db, check_sql, -1,
 						       &check_st,
 						       nullptr) == SQLITE_OK) {
 					sqlite3_bind_int64(check_st, 1,
 							   static_cast<int64_t>(
 								   project_id));
+					sqlite3_bind_text(check_st, 2,
+							  kw1.c_str(), -1,
+							  SQLITE_TRANSIENT);
+					sqlite3_bind_text(check_st, 3,
+							  kw2.c_str(), -1,
+							  SQLITE_TRANSIENT);
+					sqlite3_bind_text(check_st, 4,
+							  kw3.c_str(), -1,
+							  SQLITE_TRANSIENT);
+					sqlite3_bind_text(check_st, 5,
+							  kw4.c_str(), -1,
+							  SQLITE_TRANSIENT);
 					if (sqlite3_step(check_st) ==
 					    SQLITE_ROW)
 						enforced = sqlite3_column_int(

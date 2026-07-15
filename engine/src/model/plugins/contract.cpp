@@ -60,7 +60,7 @@ ModelResult ContractPlugin::build(uint64_t project_id, const ModelContext &ctx)
 			"lock free",   "not safe",    "unsafe"
 		};
 		for (auto *kw : keywords) {
-			if (text.find(kw) != std::string::npos) {
+			if (containsCI(text, kw)) {
 				store_->insertContract(project_id, kw, "readme",
 						       kw, doc.file_path, 0);
 				++contracts;

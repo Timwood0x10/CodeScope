@@ -120,10 +120,20 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		rebuild_files.push_back(std::move(file_path));
 	}
 	sqlite3_finalize(fl_stmt);
+
+	// Wrap the entire buildGraph in a transaction so that a crash mid-way
+	// leaves the graph in a consistent state (all or nothing).
+	if (!beginTransaction()) {
+		fprintf(stderr,
+			"buildGraph: beginTransaction failed [module=store, method=buildGraph]\n");
+		return false;
+	}
 	auto t_file_list = Clock::now();
 
-	if (rebuild_files.empty())
+	if (rebuild_files.empty()) {
+		commitTransaction();
 		return true;
+	}
 
 	// Delete existing graph data for files being rebuilt
 	for (auto &fp : rebuild_files) {
@@ -748,6 +758,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		(long long)ms(t_resolver, t_csr),
 		(long long)ms(t_csr, t_cleanup), (long long)ms(t0, t_cleanup));
 
+	commitTransaction();
 	return true;
 }
 

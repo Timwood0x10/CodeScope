@@ -195,7 +195,9 @@ std::string GraphStore::searchCode(uint64_t project_id, const char *query,
 			       error_ + "\"}";
 		}
 
-		// Escape the query for FTS5 — add prefix operator to each word
+		// Escape the query for FTS5 — wrap each word in double quotes to prevent
+		// FTS5 syntax errors from user input containing meta-characters
+		// (", (, ), :, ^, -, AND/OR/NEAR).
 		std::string fts_query;
 		const char *p = query;
 		while (*p) {
@@ -205,11 +207,15 @@ std::string GraphStore::searchCode(uint64_t project_id, const char *query,
 			}
 			if (!*p)
 				break;
+			fts_query += '"';
 			while (*p && *p != ' ') {
+				// Escape any embedded double-quotes
+				if (*p == '"')
+					fts_query += '"'; // double it
 				fts_query += *p;
 				p++;
 			}
-			fts_query += '*';
+			fts_query += '"';
 		}
 
 		sqlite3_bind_text(stmt, 1, fts_query.c_str(), -1,

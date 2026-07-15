@@ -626,6 +626,84 @@ fn h_connected_components(project_id: u64, _args: &Value) -> String {
     ffi::find_connected_components(project_id)
 }
 
+/// Fetch a local region of the code graph centered on a node.
+fn h_get_subgraph(project_id: u64, args: &Value) -> String {
+    let node_id = match args["node_id"].as_u64() {
+        Some(id) => id,
+        None => {
+            return json!({"error": "node_id (u64) is required [module=mcp, tool=get_subgraph]"})
+                .to_string();
+        }
+    };
+    let radius = args["radius"].as_i64().unwrap_or(1).clamp(1, 3) as i32;
+    let node_types = args["node_types"].as_str();
+    let edge_types = args["edge_types"].as_str();
+    ffi::get_subgraph(project_id, node_id, radius, node_types, edge_types)
+}
+
+/// Fetch the direct neighbors (callers + callees) of a graph node.
+fn h_get_neighbors(project_id: u64, args: &Value) -> String {
+    let node_id = match args["node_id"].as_u64() {
+        Some(id) => id,
+        None => {
+            return json!({"error": "node_id (u64) is required [module=mcp, tool=get_neighbors]"})
+                .to_string();
+        }
+    };
+    let edge_type = args["edge_type"].as_i64().unwrap_or(-1) as i32;
+    let radius = args["radius"].as_i64().unwrap_or(1) as i32;
+    ffi::get_neighbors(project_id, node_id, edge_type, radius)
+}
+
+/// Query the code graph with the Cypher-like DSL.
+fn h_graph_query(project_id: u64, args: &Value) -> String {
+    let dsl = args["dsl"].as_str().unwrap_or("");
+    if dsl.is_empty() {
+        return json!({"error": "dsl query string is required [module=mcp, tool=graph_query]"})
+            .to_string();
+    }
+    ffi::graph_query(project_id, dsl)
+}
+
+/// Export the full code graph in paginated pages.
+fn h_get_graph(project_id: u64, args: &Value) -> String {
+    let node_offset = args["node_offset"].as_i64().unwrap_or(0).max(0);
+    let node_limit = args["node_limit"].as_i64().unwrap_or(5000).clamp(1, 50000) as i32;
+    let edge_offset = args["edge_offset"].as_i64().unwrap_or(0).max(0);
+    let edge_limit = args["edge_limit"]
+        .as_i64()
+        .unwrap_or(20000)
+        .clamp(1, 200000) as i32;
+    let node_types = args["node_types"].as_str();
+    let edge_types = args["edge_types"].as_str();
+    // Validate type filters: only digits, commas, and spaces allowed
+    let valid_filter = |s: &str| {
+        s.chars()
+            .all(|c| c.is_ascii_digit() || c == ',' || c == ' ')
+    };
+    if let Some(nt) = node_types
+        && !valid_filter(nt)
+    {
+        return json!({"error": "node_types: digits and commas only [module=mcp, tool=get_graph]"})
+            .to_string();
+    }
+    if let Some(et) = edge_types
+        && !valid_filter(et)
+    {
+        return json!({"error": "edge_types: digits and commas only [module=mcp, tool=get_graph]"})
+            .to_string();
+    }
+    ffi::get_graph(
+        project_id,
+        node_offset,
+        node_limit,
+        edge_offset,
+        edge_limit,
+        node_types,
+        edge_types,
+    )
+}
+
 fn h_get_entry_points(project_id: u64, _args: &Value) -> String {
     ffi::get_entry_points_new(project_id)
 }
@@ -753,6 +831,11 @@ static TOOL_HANDLERS: Lazy<HashMap<&'static str, ToolHandler>> = Lazy::new(|| {
     // Unique tools
     m.insert("codescope_trace", h_codescope_trace as ToolHandler);
     m.insert("count_tokens", h_count_tokens as ToolHandler);
+    // Graph region + full export tools (newly bound FFI)
+    m.insert("get_subgraph", h_get_subgraph as ToolHandler);
+    m.insert("get_neighbors", h_get_neighbors as ToolHandler);
+    m.insert("graph_query", h_graph_query as ToolHandler);
+    m.insert("get_graph", h_get_graph as ToolHandler);
     m
 });
 
@@ -1090,6 +1173,59 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
                     "text": {"type": "string", "description": "Text to estimate tokens for"}
                 },
                 "required": ["text"]
+            }),
+        },
+        Tool {
+            name: "get_subgraph".into(),
+            description: "Fetch a local region of the code graph centered on a node: the center node plus its direct graph neighbors (1 hop). Returns {nodes:[...], total:N}. Optional node_types/edge_types are comma-separated integer id lists (e.g. \"0,1\") to filter by type. Use this to drill into a specific area instead of pulling the whole graph.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "node_id": {"type": "integer", "description": "Center graph node id (required)"},
+                    "radius": {"type": "integer", "description": "Hop radius (reserved, currently 1)"},
+                    "node_types": {"type": "string", "description": "Optional comma-separated node type ids, e.g. \"0,1\""},
+                    "edge_types": {"type": "string", "description": "Optional comma-separated edge type ids, e.g. \"1\""}
+                },
+                "required": ["node_id"]
+            }),
+        },
+        Tool {
+            name: "get_neighbors".into(),
+            description: "Fetch the direct neighbors (callers AND callees) of a graph node. Returns {neighbors:[{id,name,node_type,file_path,edge_type,direction}], total:N}. Optional edge_type filters to a single edge type id (-1 = all).".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "node_id": {"type": "integer", "description": "Graph node id (required)"},
+                    "edge_type": {"type": "integer", "description": "Edge type id filter (-1 = all, default -1)"},
+                    "radius": {"type": "integer", "description": "Hop radius (reserved, currently 1)"}
+                },
+                "required": ["node_id"]
+            }),
+        },
+        Tool {
+            name: "graph_query".into(),
+            description: "Query the code graph with a Cypher-like DSL. Syntax: MATCH (srcType[:srcName])-[edgeType]->(tgtType[:tgtName]). Node types: Function(0), Method(1), Class(2), Struct(3), Interface(4), Variable(5), Module(6), File(7). Edge types: References(0), Calls(1), Defines(2), Contains(3), Imports(4), Inherits(5). Empty type matches any. Multi-hop: edgeType*min..max, e.g. MATCH (Function)-[Calls*1..3]->(Function). Returns {results:[{source, edge, target}], total:N}.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "dsl": {"type": "string", "description": "Graph query DSL string, e.g. \"MATCH (Function:main)-[Calls]->(Method)\""}
+                },
+                "required": ["dsl"]
+            }),
+        },
+        Tool {
+            name: "get_graph".into(),
+            description: "Retrieve the COMPLETE code graph in paginated pages (required for large projects). Returns {totals:{nodes,edges}, nodes:[...], edges:[...], has_more:{nodes,edges}}. Page nodes via node_offset/node_limit and edges via edge_offset/edge_limit. Optional node_types/edge_types filter by comma-separated integer ids. Iterate while has_more is true to reconstruct the entire graph.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "node_offset": {"type": "integer", "description": "Node page start offset (default 0)"},
+                    "node_limit": {"type": "integer", "description": "Max nodes per page (default 5000, max 50000)"},
+                    "edge_offset": {"type": "integer", "description": "Edge page start offset (default 0)"},
+                    "edge_limit": {"type": "integer", "description": "Max edges per page (default 20000, max 200000)"},
+                    "node_types": {"type": "string", "description": "Optional comma-separated node type ids to include"},
+                    "edge_types": {"type": "string", "description": "Optional comma-separated edge type ids to include"}
+                }
             }),
         },
     ]

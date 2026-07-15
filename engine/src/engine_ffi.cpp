@@ -286,6 +286,31 @@ char *engine_graph_query(uint64_t project_id, const char *dsl_query)
 	return dupString(g_query->graphQuery(project_id, dsl_query));
 }
 
+// ─── Full Graph Export (paginated) ──────────────────────────
+
+// Export the project's complete code graph in paginated pages.
+//
+// # Ownership / Lifetime
+// Returns a heap-allocated JSON string (via dupString) that the caller MUST
+// release with engine_free_string(). The filter strings
+// (node_type_filter / edge_type_filter) are borrowed read-only for the
+// duration of this call and are not retained afterwards.
+//
+// # Thread safety
+// Delegates to QueryEngine over read-only SQLite queries under the global
+// g_store guard. Safe to call from the MCP server thread.
+extern "C" char *engine_get_graph(uint64_t project_id, int64_t node_offset,
+				  int node_limit, int64_t edge_offset,
+				  int edge_limit, const char *node_type_filter,
+				  const char *edge_type_filter)
+{
+	if (!g_query)
+		return dupString("{\"error\":\"not initialized\"}");
+	return dupString(g_query->getGraph(project_id, node_offset, node_limit,
+					   edge_offset, edge_limit,
+					   node_type_filter, edge_type_filter));
+}
+
 // ─── Change Impact Analysis ─────────────────────────────────
 
 char *engine_detect_changes(uint64_t project_id,

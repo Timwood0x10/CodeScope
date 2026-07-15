@@ -4,6 +4,7 @@
 #include "impact_analysis.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <sqlite3.h>
@@ -411,6 +412,204 @@ std::string QueryEngine::getProjectOverview(uint64_t project_id)
 	json << ",\"hotspots\":" << hs_json;
 
 	json << "}";
+	return json.str();
+}
+
+// ─── Full Graph Export (paginated) ─────────────────────────
+
+// Serialize every remaining row of a prepared statement as a JSON object,
+// separated by commas, appending into `json`. `first` tracks whether a comma
+// is still needed (the caller initializes it to true before the first page).
+// All text columns are escaped via jsonEscape; integers are emitted verbatim;
+// NULL becomes the JSON literal null.
+static void appendRowsAsJson(sqlite3_stmt *stmt, std::ostringstream &json,
+			     bool &first)
+{
+	int col_count = sqlite3_column_count(stmt);
+	while (sqlite3_step(stmt) == SQLITE_ROW) {
+		if (!first)
+			json << ",";
+		first = false;
+		json << "{";
+		for (int i = 0; i < col_count; i++) {
+			if (i > 0)
+				json << ",";
+			const char *col_name = sqlite3_column_name(stmt, i);
+			json << "\"" << (col_name ? col_name : "?") << "\":";
+
+			int col_type = sqlite3_column_type(stmt, i);
+			if (col_type == SQLITE_NULL) {
+				json << "null";
+			} else if (col_type == SQLITE_INTEGER) {
+				json << sqlite3_column_int64(stmt, i);
+			} else {
+				const char *text =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(stmt, i));
+				json << "\"" << jsonEscape(text ? text : "")
+				     << "\"";
+			}
+		}
+		json << "}";
+	}
+}
+
+std::string QueryEngine::getGraph(uint64_t project_id, int64_t node_offset,
+				  int node_limit, int64_t edge_offset,
+				  int edge_limit, const char *node_type_filter,
+				  const char *edge_type_filter)
+{
+	sqlite3 *db = store_->handle();
+	if (!db) {
+		return "{\"error\":\"getGraph: null database handle "
+		       "[module=QueryEngine, method=getGraph]\"}";
+	}
+
+	// Clamp pagination to sane bounds. The FFI wrapper also clamps, but we
+	// never trust callers blindly (defensive, per code_rules.md).
+	constexpr int kNodeLimitMin = 1;
+	constexpr int kNodeLimitMax = 50000;
+	constexpr int kEdgeLimitMin = 1;
+	constexpr int kEdgeLimitMax = 200000;
+	if (node_limit < kNodeLimitMin)
+		node_limit = 5000;
+	if (node_limit > kNodeLimitMax)
+		node_limit = kNodeLimitMax;
+	if (edge_limit < kEdgeLimitMin)
+		edge_limit = 20000;
+	if (edge_limit > kEdgeLimitMax)
+		edge_limit = kEdgeLimitMax;
+	if (node_offset < 0)
+		node_offset = 0;
+	if (edge_offset < 0)
+		edge_offset = 0;
+
+	// Validate comma-separated integer filter strings. IN clauses cannot use
+	// bound parameters, so we reject anything but digits/commas/spaces to
+	// prevent SQL injection (mirrors getSubgraph's validation).
+	auto valid_filter = [](const char *f) -> bool {
+		if (!f || !*f)
+			return true; // empty filter means "all"
+		for (const char *p = f; *p; ++p) {
+			if (!std::isdigit(static_cast<unsigned char>(*p)) &&
+			    *p != ',' && *p != ' ')
+				return false;
+		}
+		return true;
+	};
+	if (!valid_filter(node_type_filter) ||
+	    !valid_filter(edge_type_filter)) {
+		return "{\"error\":\"getGraph: invalid type filter "
+		       "(digits and commas only) "
+		       "[module=QueryEngine, method=getGraph]\"}";
+	}
+
+	std::string node_filter_clause;
+	if (node_type_filter && *node_type_filter) {
+		node_filter_clause = " AND gn.node_type IN (" +
+				     std::string(node_type_filter) + ")";
+	}
+	std::string edge_filter_clause;
+	if (edge_type_filter && *edge_type_filter) {
+		edge_filter_clause = " AND ge.edge_type IN (" +
+				     std::string(edge_type_filter) + ")";
+	}
+
+	// Total counts (respecting the active filters) so callers know when the
+	// complete graph has been retrieved.
+	int64_t total_nodes = 0;
+	int64_t total_edges = 0;
+	{
+		std::string sql =
+			"SELECT COUNT(*) FROM graph_nodes gn WHERE gn.project_id = ?" +
+			node_filter_clause;
+		sqlite3_stmt *stmt = nullptr;
+		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) !=
+		    SQLITE_OK) {
+			return "{\"error\":\"getGraph: prepare node count "
+			       "failed [module=QueryEngine, "
+			       "method=getGraph]\"}";
+		}
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		if (sqlite3_step(stmt) == SQLITE_ROW)
+			total_nodes = sqlite3_column_int64(stmt, 0);
+		sqlite3_finalize(stmt);
+	}
+	{
+		std::string sql =
+			"SELECT COUNT(*) FROM graph_edges ge WHERE ge.project_id = ?" +
+			edge_filter_clause;
+		sqlite3_stmt *stmt = nullptr;
+		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) !=
+		    SQLITE_OK) {
+			return "{\"error\":\"getGraph: prepare edge count "
+			       "failed [module=QueryEngine, "
+			       "method=getGraph]\"}";
+		}
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		if (sqlite3_step(stmt) == SQLITE_ROW)
+			total_edges = sqlite3_column_int64(stmt, 0);
+		sqlite3_finalize(stmt);
+	}
+
+	std::ostringstream json;
+	json << "{\"totals\":{\"nodes\":" << total_nodes
+	     << ",\"edges\":" << total_edges << "},\"nodes\":[";
+
+	// Paginated node page.
+	{
+		std::string sql =
+			"SELECT gn.* FROM graph_nodes gn WHERE gn.project_id = ?" +
+			node_filter_clause + " ORDER BY gn.id LIMIT ? OFFSET ?";
+		sqlite3_stmt *stmt = nullptr;
+		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) !=
+		    SQLITE_OK) {
+			sqlite3_finalize(stmt);
+			json << "],\"edges\":[],\"has_more\":{\"nodes\":false,"
+				"\"edges\":false},\"error\":\"getGraph: prepare "
+				"nodes failed [module=QueryEngine, "
+				"method=getGraph]\"}";
+			return json.str();
+		}
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		sqlite3_bind_int(stmt, 2, node_limit);
+		sqlite3_bind_int64(stmt, 3, node_offset);
+		bool first = true;
+		appendRowsAsJson(stmt, json, first);
+		sqlite3_finalize(stmt);
+	}
+	bool nodes_has_more = (node_offset + node_limit) < total_nodes;
+
+	json << "],\"edges\":[";
+
+	// Paginated edge page.
+	{
+		std::string sql =
+			"SELECT ge.* FROM graph_edges ge WHERE ge.project_id = ?" +
+			edge_filter_clause + " ORDER BY ge.id LIMIT ? OFFSET ?";
+		sqlite3_stmt *stmt = nullptr;
+		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) !=
+		    SQLITE_OK) {
+			sqlite3_finalize(stmt);
+			json << "],\"has_more\":{\"nodes\":"
+			     << (nodes_has_more ? "true" : "false")
+			     << ",\"edges\":false},\"error\":\"getGraph: "
+				"prepare edges failed [module=QueryEngine, "
+				"method=getGraph]\"}";
+			return json.str();
+		}
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		sqlite3_bind_int(stmt, 2, edge_limit);
+		sqlite3_bind_int64(stmt, 3, edge_offset);
+		bool first = true;
+		appendRowsAsJson(stmt, json, first);
+		sqlite3_finalize(stmt);
+	}
+	bool edges_has_more = (edge_offset + edge_limit) < total_edges;
+
+	json << "],\"has_more\":{\"nodes\":"
+	     << (nodes_has_more ? "true" : "false")
+	     << ",\"edges\":" << (edges_has_more ? "true" : "false") << "}}";
 	return json.str();
 }
 

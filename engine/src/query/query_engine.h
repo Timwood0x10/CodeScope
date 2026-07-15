@@ -66,6 +66,34 @@ class QueryEngine {
 	// (srcType)-[edgeType]->(tgtType)
 	std::string graphQuery(uint64_t project_id, const char *dsl_query);
 
+	// ── Full Graph Export (paginated) ─────────────────────────
+
+	/**
+	 * Export the project's code graph in paginated pages.
+	 *
+	 * Returns nodes (from graph_nodes) and edges (from graph_edges) as two
+	 * separate JSON arrays, each bounded by an offset/limit window. This is
+	 * the only path that can return the COMPLETE knowledge graph; callers
+	 * iterate node_offset/edge_offset while "has_more" is true.
+	 *
+	 * @param node_offset 0-based row offset into the (filtered) node set.
+	 * @param node_limit  max nodes per page (clamped to [1, 50000]).
+	 * @param edge_offset 0-based row offset into the (filtered) edge set.
+	 * @param edge_limit  max edges per page (clamped to [1, 200000]).
+	 * @param node_type_filter optional comma-separated node type ids
+	 *        (e.g. "0,1"), or nullptr/"" for all. Digits/commas/spaces only.
+	 * @param edge_type_filter optional comma-separated edge type ids, or
+	 *        nullptr/"" for all. Digits/commas/spaces only.
+	 * @return JSON: {"totals":{"nodes":N,"edges":M},"nodes":[...],
+	 *         "edges":[...],"has_more":{"nodes":bool,"edges":bool}}.
+	 *         On error the JSON contains an "error" field tagged with
+	 *         [module=QueryEngine, method=getGraph].
+	 */
+	std::string getGraph(uint64_t project_id, int64_t node_offset,
+			     int node_limit, int64_t edge_offset,
+			     int edge_limit, const char *node_type_filter,
+			     const char *edge_type_filter);
+
 	// ── Change Impact Analysis ─────────────────────────────────
 
 	// Analyze the impact of changes to given files. Returns JSON with

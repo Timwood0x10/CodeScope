@@ -315,10 +315,12 @@ std::string QueryEngine::getCallers(uint64_t project_id,
 
 	std::string result = "{\"callers\":[";
 	bool first = true;
+	int count = 0;
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
 		if (!first)
 			result += ",";
 		first = false;
+		++count;
 		result += "{\"node_id\":" +
 			  std::to_string(sqlite3_column_int64(stmt, 0));
 		const char *n = reinterpret_cast<const char *>(
@@ -334,7 +336,7 @@ std::string QueryEngine::getCallers(uint64_t project_id,
 		result += "}";
 	}
 	sqlite3_finalize(stmt);
-	result += "],\"total\":" + std::to_string(first ? 0 : 100) + "}";
+	result += "],\"total\":" + std::to_string(count) + "}";
 	return result;
 }
 
@@ -367,10 +369,12 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 
 	std::string result = "{\"callees\":[";
 	bool first = true;
+	int count = 0;
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
 		if (!first)
 			result += ",";
 		first = false;
+		++count;
 		result += "{\"node_id\":" +
 			  std::to_string(sqlite3_column_int64(stmt, 0));
 		const char *n = reinterpret_cast<const char *>(
@@ -386,7 +390,7 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 		result += "}";
 	}
 	sqlite3_finalize(stmt);
-	result += "],\"total\":" + std::to_string(first ? 0 : 100) + "}";
+	result += "],\"total\":" + std::to_string(count) + "}";
 	return result;
 }
 
@@ -943,7 +947,7 @@ std::string QueryEngine::explainSymbol(uint64_t project_id,
 
 	// 4. Combine into a single response
 	std::string json = "{";
-	json += "\"symbol\":\"" + name + "\",";
+	json += "\"symbol\":\"" + jsonEscape(name.c_str()) + "\",";
 	json += "\"definition\":" + def_json + ",";
 	json += "\"callers\":" + callers_json + ",";
 	json += "\"callees\":" + callees_json + "}";
