@@ -231,6 +231,7 @@ char* engine_get_entry_points_new(uint64_t project_id);
  * This is the first tool AI should call after initialization.
  */
 char* engine_project_overview(uint64_t project_id);
+char* engine_detect_ffi_boundaries(uint64_t project_id);
 
 /**
  * Trace the shortest call path between two functions using BFS on call_edges.

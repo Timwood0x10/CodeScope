@@ -1086,7 +1086,7 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 	// ── Build graph ────────────────────────────────────────────
 	if (writer_error == 0) {
 		t_parse_start = steady_clock::now();
-		g_store->buildGraph(project_id, mode_fast);
+		g_store->buildGraph(project_id, true);
 		time_buildgraph_ms =
 			duration_cast<milliseconds>(steady_clock::now() -
 						    t_parse_start)

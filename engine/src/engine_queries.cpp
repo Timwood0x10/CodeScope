@@ -731,3 +731,174 @@ char *engine_build_context(uint64_t project_id, const char *query)
 	json << "}";
 	return dupString(json.str());
 }
+
+// ─── Phase C: FFI Boundary Detection ──────────────────────────
+
+char *engine_detect_ffi_boundaries(uint64_t project_id)
+{
+	if (!g_store)
+		return dupString("{\"error\":\"engine not initialized\"}");
+
+	auto db = g_store->handle();
+	std::ostringstream json;
+	json << "{";
+
+	// 1. Language distribution
+	{
+		const char *sql =
+			"SELECT language, COUNT(*) FROM graph_nodes "
+			"WHERE project_id = ? GROUP BY language ORDER BY COUNT(*) DESC";
+		sqlite3_stmt *stmt = nullptr;
+		json << "\"languages\":[";
+		bool first = true;
+		if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
+		    SQLITE_OK) {
+			sqlite3_bind_int64(stmt, 1,
+					   static_cast<int64_t>(project_id));
+			while (sqlite3_step(stmt) == SQLITE_ROW) {
+				if (!first)
+					json << ",";
+				first = false;
+				const char *lang =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(stmt, 0));
+				int count = sqlite3_column_int(stmt, 1);
+				json << "{\"language\":\""
+				     << jsonEscape(lang ? lang : "")
+				     << "\",\"node_count\":" << count << "}";
+			}
+			sqlite3_finalize(stmt);
+		}
+		json << "],";
+	}
+
+	// 2. Cross-language files
+	{
+		const char *sql =
+			"SELECT gn.file_path, GROUP_CONCAT(DISTINCT gn.language) AS langs, "
+			"COUNT(*) AS node_count FROM graph_nodes gn "
+			"WHERE gn.project_id = ? AND gn.language != '' "
+			"GROUP BY gn.file_path HAVING COUNT(DISTINCT gn.language) > 1 "
+			"ORDER BY node_count DESC LIMIT 20";
+		sqlite3_stmt *stmt = nullptr;
+		json << "\"cross_language_files\":[";
+		bool first = true;
+		if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
+		    SQLITE_OK) {
+			sqlite3_bind_int64(stmt, 1,
+					   static_cast<int64_t>(project_id));
+			while (sqlite3_step(stmt) == SQLITE_ROW) {
+				if (!first)
+					json << ",";
+				first = false;
+				const char *fp = reinterpret_cast<const char *>(
+					sqlite3_column_text(stmt, 0));
+				const char *langs =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(stmt, 1));
+				int count = sqlite3_column_int(stmt, 2);
+				json << "{\"file_path\":\""
+				     << jsonEscape(fp ? fp : "")
+				     << "\",\"languages\":\""
+				     << jsonEscape(langs ? langs : "")
+				     << "\",\"node_count\":" << count << "}";
+			}
+			sqlite3_finalize(stmt);
+		}
+		json << "],";
+	}
+
+	// 3. FFI-related symbols
+	{
+		const char *sql =
+			"SELECT gn.name, gn.file_path, gn.language, gn.start_row "
+			"FROM graph_nodes gn WHERE gn.project_id = ? "
+			"AND (gn.name LIKE 'extern_%' OR gn.name LIKE 'ffi_%' "
+			"     OR gn.name LIKE 'wasm_%' OR gn.name LIKE 'cabi_%' "
+			"     OR gn.name LIKE 'jni_%' OR gn.name LIKE 'JNI_%' "
+			"     OR gn.name LIKE 'CALLBACK_%') "
+			"AND gn.node_type IN (0,1,2) LIMIT 30";
+		sqlite3_stmt *stmt = nullptr;
+		json << "\"ffi_symbols\":[";
+		bool first = true;
+		if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
+		    SQLITE_OK) {
+			sqlite3_bind_int64(stmt, 1,
+					   static_cast<int64_t>(project_id));
+			while (sqlite3_step(stmt) == SQLITE_ROW) {
+				if (!first)
+					json << ",";
+				first = false;
+				const char *name =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(stmt, 0));
+				const char *fp = reinterpret_cast<const char *>(
+					sqlite3_column_text(stmt, 1));
+				const char *lang =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(stmt, 2));
+				int row = sqlite3_column_int(stmt, 3);
+				json << "{\"name\":\""
+				     << jsonEscape(name ? name : "")
+				     << "\",\"file_path\":\""
+				     << jsonEscape(fp ? fp : "")
+				     << "\",\"language\":\""
+				     << jsonEscape(lang ? lang : "")
+				     << "\",\"line\":" << row << "}";
+			}
+			sqlite3_finalize(stmt);
+		}
+		json << "],";
+	}
+
+	// 4. Orphan symbols (no callers, no callees — likely FFI entry points)
+	{
+		const char *sql =
+			"SELECT gn.name, gn.file_path, gn.language, gn.start_row "
+			"FROM graph_nodes gn WHERE gn.project_id = ? "
+			"AND gn.node_type = 2 AND gn.id NOT IN "
+			"(SELECT source_node_id FROM graph_edges WHERE project_id = ? AND edge_type = 1) "
+			"AND gn.id NOT IN "
+			"(SELECT target_node_id FROM graph_edges WHERE project_id = ? AND edge_type = 1) "
+			"AND gn.file_path NOT LIKE '%test%' AND gn.file_path NOT LIKE '%bench%' "
+			"LIMIT 20";
+		sqlite3_stmt *stmt = nullptr;
+		json << "\"orphan_symbols\":[";
+		bool first = true;
+		if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
+		    SQLITE_OK) {
+			sqlite3_bind_int64(stmt, 1,
+					   static_cast<int64_t>(project_id));
+			sqlite3_bind_int64(stmt, 2,
+					   static_cast<int64_t>(project_id));
+			sqlite3_bind_int64(stmt, 3,
+					   static_cast<int64_t>(project_id));
+			while (sqlite3_step(stmt) == SQLITE_ROW) {
+				if (!first)
+					json << ",";
+				first = false;
+				const char *name =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(stmt, 0));
+				const char *fp = reinterpret_cast<const char *>(
+					sqlite3_column_text(stmt, 1));
+				const char *lang =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(stmt, 2));
+				int row = sqlite3_column_int(stmt, 3);
+				json << "{\"name\":\""
+				     << jsonEscape(name ? name : "")
+				     << "\",\"file_path\":\""
+				     << jsonEscape(fp ? fp : "")
+				     << "\",\"language\":\""
+				     << jsonEscape(lang ? lang : "")
+				     << "\",\"line\":" << row << "}";
+			}
+			sqlite3_finalize(stmt);
+		}
+		json << "]";
+	}
+
+	json << "}";
+	return dupString(json.str());
+}

@@ -260,11 +260,21 @@ std::string GraphStore::getModuleTreeJson(uint64_t project_id)
 
 std::string GraphStore::findSymbolJson(uint64_t project_id, const char *name)
 {
-	const char *sql =
-		"SELECT gn.id, gn.node_type AS kind, gn.name, "
-		"COALESCE(gn.signature, gn.name), "
-		"gn.file_path, gn.language, gn.start_row AS line, gn.start_col AS column "
-		"FROM graph_nodes gn WHERE gn.project_id = ? AND gn.name = ?";
+	bool has_separator =
+		(strstr(name, "::") != nullptr || strstr(name, ".") != nullptr);
+
+	const char *sql;
+	if (has_separator) {
+		sql = "SELECT gn.id, gn.node_type AS kind, gn.name, "
+		      "COALESCE(gn.signature, gn.name), "
+		      "gn.file_path, gn.language, gn.start_row AS line, gn.start_col AS column "
+		      "FROM graph_nodes gn WHERE gn.project_id = ? AND gn.qualified_name = ?";
+	} else {
+		sql = "SELECT gn.id, gn.node_type AS kind, gn.name, "
+		      "COALESCE(gn.signature, gn.name), "
+		      "gn.file_path, gn.language, gn.start_row AS line, gn.start_col AS column "
+		      "FROM graph_nodes gn WHERE gn.project_id = ? AND gn.name = ?";
+	}
 	sqlite3_stmt *stmt = getCachedStmt(sql);
 	if (!stmt) {
 		return "{\"error\":\"findSymbolJson: prepare failed\",\"results\":[]}";

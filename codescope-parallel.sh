@@ -358,7 +358,43 @@ echo "  Quarantined files: $(find "$QUARANTINE_DIR" -name "*.txt" -exec wc -l {}
 log_metric "FINAL" "success=${SUCCESS} fail=${FAIL} total_nodes=${TOTAL_NODES} total_time=${TOTAL_TIME}s"
 log_system_metrics "FINAL"
 
-echo "=========================================="
+# ── Merge all module DBs into a single project DB ──
+echo ""
+echo "  Merging module databases..."
+FINAL_DB="${DB_PREFIX}_merged.db"
+rm -f "$FINAL_DB"
+
+FIRST=true
+for db in "${DB_PREFIX}"_*.db; do
+    [ "$db" = "${DB_PREFIX}_merged.db" ] && continue
+    [ ! -f "$db" ] && continue
+    MODULE=$(basename "$db" .db | sed "s/^${DB_PREFIX##*/}_//")
+    if [ "$FIRST" = true ]; then
+        cp "$db" "$FINAL_DB"
+        FIRST=false
+        echo "    Base: $MODULE"
+    else
+        echo "    Merge: $MODULE"
+        sqlite3 "$FINAL_DB" <<-EOSQL
+			ATTACH DATABASE '$db' AS other;
+			INSERT OR IGNORE INTO graph_nodes SELECT * FROM other.graph_nodes;
+			INSERT OR IGNORE INTO graph_edges SELECT * FROM other.graph_edges;
+			INSERT OR IGNORE INTO entity SELECT * FROM other.entity;
+			INSERT OR IGNORE INTO relation SELECT * FROM other.relation;
+			DETACH DATABASE other;
+		EOSQL
+    fi
+done
+
+if [ -f "$FINAL_DB" ]; then
+    TOTAL=$(sqlite3 "$FINAL_DB" "SELECT COUNT(*) FROM graph_nodes" 2>/dev/null || echo 0)
+    EDGES=$(sqlite3 "$FINAL_DB" "SELECT COUNT(*) FROM graph_edges" 2>/dev/null || echo 0)
+    echo "    Merged DB: $FINAL_DB"
+    echo "    Total nodes: $TOTAL"
+    echo "    Total edges: $EDGES"
+fi
+
+echo ""
 echo "  Metrics: $METRICS_FILE"
 echo "  DBs: ${DB_PREFIX}_*.db"
 echo "=========================================="

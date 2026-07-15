@@ -786,11 +786,22 @@ std::string QueryEngine::locateNode(uint64_t project_id, uint64_t node_id,
 
 std::string QueryEngine::locateByName(uint64_t project_id, const char *name)
 {
-	// Use parameterized query to prevent SQL injection
-	const char *sql =
-		"SELECT id AS node_id, name, qualified_name, node_type AS node_type, file_path, "
-		"start_row, start_col, end_row, end_col, language "
-		"FROM graph_nodes WHERE project_id = ? AND name = ? LIMIT 20";
+	// Support both simple name lookup and qualified_name lookup.
+	// When the input contains a scope separator (:: for Rust/C++, . for Java/Go),
+	// match against qualified_name first; otherwise match against name.
+	bool has_separator =
+		(strstr(name, "::") != nullptr || strstr(name, ".") != nullptr);
+
+	const char *sql;
+	if (has_separator) {
+		sql = "SELECT id AS node_id, name, qualified_name, node_type AS node_type, file_path, "
+		      "start_row, start_col, end_row, end_col, language "
+		      "FROM graph_nodes WHERE project_id = ? AND qualified_name = ? LIMIT 20";
+	} else {
+		sql = "SELECT id AS node_id, name, qualified_name, node_type AS node_type, file_path, "
+		      "start_row, start_col, end_row, end_col, language "
+		      "FROM graph_nodes WHERE project_id = ? AND name = ? LIMIT 20";
+	}
 
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), sql, -1, &stmt, nullptr) !=

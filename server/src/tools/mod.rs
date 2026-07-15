@@ -643,6 +643,10 @@ fn h_project_overview(project_id: u64, _args: &Value) -> String {
     ffi::project_overview(project_id)
 }
 
+fn h_detect_ffi_boundaries(project_id: u64, _args: &Value) -> String {
+    ffi::detect_ffi_boundaries(project_id)
+}
+
 fn h_codescope_trace(project_id: u64, args: &Value) -> String {
     // Interactive exploration mode: explore callers/callees recursively
     // Params: function_name, depth (default 1), direction (callers|callees|both, default both)
@@ -742,6 +746,10 @@ static TOOL_HANDLERS: Lazy<HashMap<&'static str, ToolHandler>> = Lazy::new(|| {
     m.insert("get_type_info", h_get_type_info as ToolHandler);
     m.insert("get_routes", h_get_routes as ToolHandler);
     m.insert("project_overview", h_project_overview as ToolHandler);
+    m.insert(
+        "detect_ffi_boundaries",
+        h_detect_ffi_boundaries as ToolHandler,
+    );
     // Unique tools
     m.insert("codescope_trace", h_codescope_trace as ToolHandler);
     m.insert("count_tokens", h_count_tokens as ToolHandler);
@@ -1052,6 +1060,11 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
         Tool {
             name: "project_overview".into(),
             description: "Get a comprehensive project overview: languages, modules/symbols, entry points, analysis progress, and ready features. Call this first after initialization.".into(),
+            input_schema: json!({ "type": "object", "properties": {} }),
+        },
+        Tool {
+            name: "detect_ffi_boundaries".into(),
+            description: "Detect FFI (Foreign Function Interface) boundaries in the project. Returns language distribution, cross-language files, FFI-related symbols (extern, wasm, jni, cabi), and orphan symbols that may serve as FFI entry points.".into(),
             input_schema: json!({ "type": "object", "properties": {} }),
         },
         Tool {

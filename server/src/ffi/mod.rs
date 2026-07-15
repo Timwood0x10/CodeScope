@@ -92,6 +92,7 @@ unsafe extern "C" {
         depth: i32,
         direction: *const c_char,
     ) -> *mut c_char;
+    fn engine_detect_ffi_boundaries(project_id: u64) -> *mut c_char;
 
     // ── Code Understanding (Phase C, missing bindings) ───────────
 
@@ -365,6 +366,10 @@ pub fn get_routes(project_id: u64) -> String {
 
 pub fn project_overview(project_id: u64) -> String {
     take_string(unsafe { engine_project_overview(project_id) })
+}
+
+pub fn detect_ffi_boundaries(project_id: u64) -> String {
+    take_string(unsafe { engine_detect_ffi_boundaries(project_id) })
 }
 
 pub fn trace_path(project_id: u64, from_name: &str, to_name: &str) -> String {
