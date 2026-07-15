@@ -214,11 +214,7 @@ FilterPolicy::FilterPolicy()
 
 	// ── Directory prefixes — catches build_test, build_master, etc. ──
 	skip_dir_prefixes_ = {
-		"build_",
-		"cmake-build-",
-		"_build",
-		"tools-",
-		"tools_",
+		"build_", "cmake-build-", "_build", "tools-", "tools_",
 	};
 
 	// Skip suffixes — non-source binaries, images, archives, etc.

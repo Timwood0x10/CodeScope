@@ -53,22 +53,45 @@ CodeScope 把知识图谱作为验证管线的副产品来构建。从模块级�
 
 ## 快速开始
 
-### 前置依赖
-
-- Rust 2024 Edition + 1.85+（`cargo`）
-- CMake 3.30+，C++23 编译器（Clang 17+）
-
-> 所有第三方依赖（tree-sitter 核心、SQLite3、sqlite-vec、8 种语言文法）均通过 CMake FetchContent 自动下载并编译进二进制——**零外部依赖**，无需 npm、brew、apt 安装任何包。
-
-### 构建与运行
+### 60 秒完成第一个索引
 
 ```bash
-# 构建全部 — tree-sitter、SQLite、sqlite-vec、文法
-# 均通过 CMake FetchContent 自动下载编译进二进制（零外部依赖）
-make build
+# 1. 一键构建（自动检测系统、安装依赖、编译）
+bash <(curl -fsSL https://raw.githubusercontent.com/Timwood0x10/CodeScope/master/bootstrap.sh)
 
-# 启动 MCP 服务
-cargo run --bin codescope
+# 2. 索引项目
+codescope cli index_project '{"project_path":"/path/to/your/project"}'
+
+# 3. 查询
+codescope cli get_graph_stats '{}'
+# → {"total_nodes":12345,"total_edges":6789,"total_files":99}
+
+# 4. 启动 MCP 服务（供 AI 客户端使用）
+codescope
+```
+
+📖 详细指南见 [QUICK_START.md](QUICK_START.md)
+
+### 前置依赖
+
+| 平台 | 依赖 | 一键命令 |
+|------|------|---------|
+| **macOS** | Xcode CLT, cmake, Rust | `bash bootstrap.sh` |
+| **Linux** | build-essential, cmake, Rust | `bash bootstrap.sh` |
+
+> 预编译二进制可在 [Releases 页面](https://github.com/Timwood0x10/CodeScope/releases) 下载。
+
+### 手动构建
+
+```bash
+# macOS:
+brew install llvm@21 cmake pkg-config sqlite3 ladybug
+cargo build --release
+
+# Linux (Ubuntu):
+sudo apt-get install -y build-essential cmake llvm-dev libclang-dev libsqlite3-dev
+curl -fsSL https://install.ladybugdb.com | sh
+cargo build --release
 ```
 
 ### 环境变量

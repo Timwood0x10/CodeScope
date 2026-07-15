@@ -382,11 +382,21 @@ target_link_libraries(astgraph_engine PUBLIC
 
 # ── LadybugDB (embedded graph database for graph storage) ──────
 # Used via Homebrew on macOS: brew install ladybug
+# Or via curl on Linux: curl -fsSL https://install.ladybugdb.com | sh
 # Provides liblbug.a (static) + lbug.h (C API).
-# When building with LBUG_STATIC_DEFINE, the static library is used
-# instead of the dynamic one, avoiding runtime dylib dependencies.
-find_library(LADYBUG_LIBRARY lbug PATHS /opt/homebrew/lib REQUIRED)
-find_path(LADYBUG_INCLUDE_DIR lbug.h PATHS /opt/homebrew/include REQUIRED)
+# Search order: Homebrew (macOS), system paths (Linux), pkg-config
+find_library(LADYBUG_LIBRARY lbug
+    PATHS /opt/homebrew/lib /usr/local/lib /usr/lib
+    NO_DEFAULT_PATH)
+if(NOT LADYBUG_LIBRARY)
+    find_library(LADYBUG_LIBRARY lbug)
+endif()
+find_path(LADYBUG_INCLUDE_DIR lbug.h
+    PATHS /opt/homebrew/include /usr/local/include /usr/include
+    NO_DEFAULT_PATH)
+if(NOT LADYBUG_INCLUDE_DIR)
+    find_path(LADYBUG_INCLUDE_DIR lbug.h)
+endif()
 if(LADYBUG_LIBRARY AND LADYBUG_INCLUDE_DIR)
     target_compile_definitions(astgraph_engine PRIVATE HAS_LADYBUG=1)
     target_compile_definitions(astgraph_engine PRIVATE LBUG_STATIC_DEFINE)

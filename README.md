@@ -52,47 +52,44 @@ The knowledge graph is not the product — it is the infrastructure that powers 
 ---
 ## Quick Start
 
-### 30 seconds to your first query
+### 60 seconds to your first index
 
 ```bash
-# 1. Download (or build from source)
-curl -LO https://github.com/your-org/codescope/releases/latest/download/codescope-x86_64-linux.tar.gz
-tar xzf codescope-x86_64-linux.tar.gz
-cd codescope
+# 1. One-command build (auto-detects OS, installs deps, compiles)
+bash <(curl -fsSL https://raw.githubusercontent.com/Timwood0x10/CodeScope/master/bootstrap.sh)
 
 # 2. Index a project
-./codescope worker codescope.db ./my-project "" my-project 1
+codescope cli index_project '{"project_path":"/path/to/your/project"}'
 
 # 3. Query
-./codescope cli get_graph_stats '{}'
+codescope cli get_graph_stats '{}'
 # → {"total_nodes":12345,"total_edges":6789,"total_files":99}
 
-# 4. Explore call graph
-./codescope cli codescope_trace '{"function_name":"main","depth":1,"direction":"both"}'
-# → {"name":"main","callers":[...],"callees":[...]}
-
-# 5. Start MCP server (for AI clients)
-./codescope
+# 4. Start MCP server (for AI clients)
+codescope
 ```
+
+📖 详细的中文快速开始指南见 [QUICK_START.md](QUICK_START.md)
 
 ### Prerequisites
 
-| Platform | Dependencies | Install |
-|----------|-------------|---------|
-| **macOS** | cmake, ninja, rust | `make build` or `bash install.sh` |
-| **Linux** | cmake, ninja, rust | `make build` or `bash install.sh` |
+| Platform | Dependencies | One-command |
+|----------|-------------|-------------|
+| **macOS** | Xcode CLT, cmake, Rust | `bash bootstrap.sh` |
+| **Linux** | build-essential, cmake, Rust | `bash bootstrap.sh` |
 
-> Pre-built binaries are available for **Linux** and **macOS** on the [Releases page](https://github.com/your-org/codescope/releases).
->
-> All dependencies (tree-sitter core, SQLite3, sqlite-vec, 8 language grammars) are compiled into the binary via CMake FetchContent — **zero external dependencies**. No npm, no brew, no apt packages required.
+> Pre-built binaries are available for **Linux** and **macOS** on the [Releases page](https://github.com/Timwood0x10/CodeScope/releases).
 
-### Build from source
+### Build from source manually
 
 ```bash
-git clone https://github.com/your-org/codescope.git
-cd codescope
-make build    # Build engine + grammars + server
-make test     # Run tests
+# macOS:
+brew install llvm@21 cmake pkg-config sqlite3
+cargo build --release
+
+# Linux (Ubuntu):
+sudo apt-get install -y build-essential cmake llvm-dev libclang-dev libsqlite3-dev
+cargo build --release
 ```
 
 ---
