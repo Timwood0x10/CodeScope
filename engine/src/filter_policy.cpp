@@ -182,7 +182,6 @@ FilterPolicy::FilterPolicy()
 		"samples",
 		"sample",
 		"scripts",
-		"tools",
 		"hack",
 		"migrations",
 		"seeds",
@@ -218,6 +217,8 @@ FilterPolicy::FilterPolicy()
 		"build_",
 		"cmake-build-",
 		"_build",
+		"tools-",
+		"tools_",
 	};
 
 	// Skip suffixes — non-source binaries, images, archives, etc.

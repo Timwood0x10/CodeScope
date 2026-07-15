@@ -315,6 +315,10 @@ if(EXISTS "${SQLITE_VEC_SRC}")
 endif()
 set_source_files_properties(${SQLITE3_AMAL_SRC} ${GRAMMAR_SOURCES}
     PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+# tree-sitter C grammar: compile with -O0 to work around SIGILL on Apple Silicon
+# (v0.24.2 generates code that triggers illegal instruction on arm64 at -O1+)
+set_source_files_properties(${GRAMMAR_SOURCE_DIR_c}/parser.c
+    PROPERTIES COMPILE_OPTIONS "-O0")
 set_source_files_properties(${TREE_SITTER_SOURCES}
     PROPERTIES LANGUAGE C SKIP_PRECOMPILE_HEADERS ON)
 
