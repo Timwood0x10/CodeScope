@@ -95,6 +95,10 @@
 *.dll
 *.dylib
 *.so
+# Keep vendored LadybugDB shared libraries + dev symlinks (committed binaries)
+!engine/third_party/ladybug/lib/**/*.so
+!engine/third_party/ladybug/lib/**/*.so.*
+!engine/third_party/ladybug/lib/**/*.dylib
 *.test
 **/target/
 **/go.work

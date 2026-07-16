@@ -355,13 +355,19 @@ target_link_libraries(astgraph_engine PUBLIC
 )
 
 # ── LadybugDB (embedded graph database for graph storage) ──────
-# Required dependency. Three install paths, tried in order:
+# Optional dependency. The engine builds and runs without it (SQLite
+# remains the source of truth for graph storage). When LadybugDB is
+# present, Cypher queries and native graph traversal are enabled via
+# the HAS_LADYBUG compile flag.
+#
+# Detection order:
 #   1. Vendored in third_party/ladybug/ (preferred, zero network)
-#   2. Already installed system-wide → find_library picks it up
-#   3. macOS Homebrew → `brew install ladybug` (auto-run if brew present)
-#   4. Linux curl installer → `curl -fsSL https://install.ladybugdb.com | sh`
-# If all four fail, error out with a clear message: LadybugDB is required,
-# not optional. Provides liblbug.so (shared) + lbug.h (C API).
+#   2. System-wide install → find_library picks it up
+#   3. macOS Homebrew → /opt/homebrew/lib, /usr/local/lib
+#
+# Set -DLADYBUG_REQUIRED=ON to make the build fail when LadybugDB
+# is not found (useful for production builds that require Cypher).
+option(LADYBUG_REQUIRED "Fail build if LadybugDB is not found" OFF)
 set(LADYBUG_VENDOR_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ladybug")
 if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     set(LADYBUG_VENDOR_LIB_DIR "${LADYBUG_VENDOR_DIR}/lib/macos")
@@ -386,48 +392,33 @@ if(NOT LADYBUG_INCLUDE_DIR)
     find_path(LADYBUG_INCLUDE_DIR lbug.h)
 endif()
 
-if(NOT (LADYBUG_LIBRARY AND LADYBUG_INCLUDE_DIR))
-    # LadybugDB not found — try to install it automatically.
-    message(STATUS "LadybugDB: not found, attempting auto-install...")
+# ── Fallback: search for versioned library names ───────────────
+# If the dev symlink (liblbug.so / liblbug.dylib) is missing but the
+# versioned shared object exists (e.g., liblbug.so.0.18.2), use it
+# directly and create the dev symlink so the linker can find it.
+if(NOT LADYBUG_LIBRARY AND EXISTS "${LADYBUG_VENDOR_LIB_DIR}")
     if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-        # macOS: use Homebrew if available
-        execute_process(
-            COMMAND brew --prefix ladybug
-            RESULT_VARIABLE BREW_RESULT
-            OUTPUT_QUIET ERROR_QUIET)
-        if(NOT BREW_RESULT EQUAL 0)
-            find_program(BREW_CMD brew)
-            if(BREW_CMD)
-                message(STATUS "LadybugDB: installing via Homebrew (brew install ladybug)...")
-                execute_process(
-                    COMMAND ${BREW_CMD} install ladybug
-                    RESULT_VARIABLE INSTALL_RESULT)
-                if(INSTALL_RESULT EQUAL 0)
-                    # Re-search after install
-                    find_library(LADYBUG_LIBRARY lbug
-                        PATHS /opt/homebrew/lib /usr/local/lib
-                        NO_DEFAULT_PATH)
-                    find_path(LADYBUG_INCLUDE_DIR lbug.h
-                        PATHS /opt/homebrew/include /usr/local/include
-                        NO_DEFAULT_PATH)
-                endif()
-            endif()
+        file(GLOB _LADYBUG_VERIFIED
+            "${LADYBUG_VENDOR_LIB_DIR}/liblbug.[0-9]*.dylib")
+    else()
+        file(GLOB _LADYBUG_VERIFIED
+            "${LADYBUG_VENDOR_LIB_DIR}/liblbug.so.[0-9]*")
+    endif()
+    if(_LADYBUG_VERIFIED)
+        list(GET _LADYBUG_VERIFIED 0 LADYBUG_LIBRARY)
+        # Create the dev symlink so the linker's -llbug resolves.
+        if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+            set(_LADYBUG_DEV_LINK "${LADYBUG_VENDOR_LIB_DIR}/liblbug.dylib")
+        else()
+            set(_LADYBUG_DEV_LINK "${LADYBUG_VENDOR_LIB_DIR}/liblbug.so")
         endif()
-    elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        # Linux: use the official curl installer
-        message(STATUS "LadybugDB: installing via curl (https://install.ladybugdb.com)...")
-        execute_process(
-            COMMAND bash -c "curl -fsSL https://install.ladybugdb.com | sh"
-            RESULT_VARIABLE INSTALL_RESULT)
-        if(INSTALL_RESULT EQUAL 0)
-            # Installer puts libs in /usr/local/lib, headers in /usr/local/include
-            find_library(LADYBUG_LIBRARY lbug
-                PATHS /usr/local/lib /usr/lib
-                NO_DEFAULT_PATH)
-            find_path(LADYBUG_INCLUDE_DIR lbug.h
-                PATHS /usr/local/include /usr/include
-                NO_DEFAULT_PATH)
+        if(NOT EXISTS "${_LADYBUG_DEV_LINK}")
+            execute_process(
+                COMMAND ${CMAKE_COMMAND} -E create_symlink
+                    "${LADYBUG_LIBRARY}" "${_LADYBUG_DEV_LINK}"
+                RESULT_VARIABLE _SYMLINK_RESULT)
         endif()
+        message(STATUS "LadybugDB: using versioned library ${LADYBUG_LIBRARY}")
     endif()
 endif()
 
@@ -437,13 +428,18 @@ if(LADYBUG_LIBRARY AND LADYBUG_INCLUDE_DIR)
     target_include_directories(astgraph_engine PUBLIC ${LADYBUG_INCLUDE_DIR})
     target_link_libraries(astgraph_engine PUBLIC ${LADYBUG_LIBRARY})
     message(STATUS "LadybugDB: found at ${LADYBUG_LIBRARY}")
-else()
+elseif(LADYBUG_REQUIRED)
     message(FATAL_ERROR
-        "LadybugDB is REQUIRED (not optional) for graph storage and Cypher queries.\n"
-        "Auto-install failed. Please install manually:\n"
+        "LadybugDB is REQUIRED (LADYBUG_REQUIRED=ON) but was not found.\n"
+        "Please install manually:\n"
         "  macOS:  brew install ladybug\n"
         "  Linux:  curl -fsSL https://install.ladybugdb.com | sh\n"
         "  Docs:   https://docs.ladybugdb.com/installation/")
+else()
+    message(WARNING
+        "LadybugDB not found — building without Cypher/graph query support.\n"
+        "The engine will use SQLite for all graph storage.\n"
+        "To enable: install LadybugDB or set -DLADYBUG_REQUIRED=ON to enforce.")
 endif()
 
 # ── Tests ────────────────────────────────────────────────────────

@@ -65,8 +65,7 @@ int64_t StateBuilder::buildModuleSummaries()
 		return -1;
 	}
 	for (int i = 1; i <= 6; i++)
-		sqlite3_bind_int64(stmt, i,
-				   static_cast<int64_t>(project_id_));
+		sqlite3_bind_int64(stmt, i, static_cast<int64_t>(project_id_));
 
 	int rc = sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
@@ -210,17 +209,16 @@ int64_t StateBuilder::buildArchitectureState()
 	// instead of architecture_edge × relation rows) but preserves
 	// relative ordering — more cross-module calls per layer pair
 	// produces a proportionally higher count.
-	std::string sql =
-		"INSERT OR IGNORE INTO architecture_state "
-		"(project_id, layer, violations, compliance) "
-		"SELECT ?, ae.layer_lower || '->' || ae.layer_upper, "
-		"  COUNT(*), "
-		"  CASE WHEN COUNT(*) > 0 THEN 0.0 ELSE 1.0 END "
-		"FROM architecture_edge ae "
-		"WHERE ae.project_id = ? "
-		"GROUP BY ae.layer_lower, ae.layer_upper "
-		"HAVING COUNT(*) > 0 "
-		"ORDER BY COUNT(*) DESC LIMIT 10";
+	std::string sql = "INSERT OR IGNORE INTO architecture_state "
+			  "(project_id, layer, violations, compliance) "
+			  "SELECT ?, ae.layer_lower || '->' || ae.layer_upper, "
+			  "  COUNT(*), "
+			  "  CASE WHEN COUNT(*) > 0 THEN 0.0 ELSE 1.0 END "
+			  "FROM architecture_edge ae "
+			  "WHERE ae.project_id = ? "
+			  "GROUP BY ae.layer_lower, ae.layer_upper "
+			  "HAVING COUNT(*) > 0 "
+			  "ORDER BY COUNT(*) DESC LIMIT 10";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), sql.c_str(), -1, &stmt,
 			       nullptr) != SQLITE_OK) {
@@ -261,9 +259,8 @@ int64_t StateBuilder::buildAll()
 
 	int64_t n = buildModuleSummaries();
 	if (n < 0) {
-		fprintf(stderr,
-			"[module=state_builder, method=buildAll] "
-			"buildModuleSummaries failed, rolling back\n");
+		fprintf(stderr, "[module=state_builder, method=buildAll] "
+				"buildModuleSummaries failed, rolling back\n");
 		store_->rollbackTransaction();
 		return -1;
 	}
@@ -273,9 +270,8 @@ int64_t StateBuilder::buildAll()
 
 	n = buildCapabilityState();
 	if (n < 0) {
-		fprintf(stderr,
-			"[module=state_builder, method=buildAll] "
-			"buildCapabilityState failed, rolling back\n");
+		fprintf(stderr, "[module=state_builder, method=buildAll] "
+				"buildCapabilityState failed, rolling back\n");
 		store_->rollbackTransaction();
 		return -1;
 	}
@@ -285,9 +281,8 @@ int64_t StateBuilder::buildAll()
 
 	n = buildWorkflowState();
 	if (n < 0) {
-		fprintf(stderr,
-			"[module=state_builder, method=buildAll] "
-			"buildWorkflowState failed, rolling back\n");
+		fprintf(stderr, "[module=state_builder, method=buildAll] "
+				"buildWorkflowState failed, rolling back\n");
 		store_->rollbackTransaction();
 		return -1;
 	}
