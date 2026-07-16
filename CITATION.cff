@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 title: "CodeScope: Project Truth Engine"
 type: software
-version: "0.2.1"
+version: "0.2.0"
 date-released: "2026-07-16"
 repository-code: "https://github.com/Timwood0x10/CodeScope"
 license: Apache-2.0

@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.2.1 (2026-07-16)
+## v0.2.0 (2026-07-16)
 
 Open-source release preparation — documentation accuracy and build portability fixes.
 

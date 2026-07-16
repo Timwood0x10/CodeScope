@@ -13,7 +13,7 @@ static double elapsed_s(Clock::time_point start) {
 }
 
 int main(int argc, char** argv) {
-    const char* project_dir = argc > 1 ? argv[1] : "/Users/scc/code/researcher/bun";
+    const char* project_dir = argc > 1 ? argv[1] : ".";
     const char* lang_filter = argc > 2 ? argv[2] : "typescript,tsx,javascript,go,c,cpp,rust,python,java";
 
     unlink("/tmp/bench_enhance.db");

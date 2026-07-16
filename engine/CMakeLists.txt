@@ -10,6 +10,10 @@ if(NOT CMAKE_GENERATOR)
 endif()
 find_program(CCACHE_PROGRAM ccache)
 if(CCACHE_PROGRAM)
+    # Cache BOTH C and C++ — the heavy translation units (sqlite3.c,
+    # tree-sitter parser.c/scanner.c) are C sources and were previously
+    # NOT cached, so every clean/rebuild recompiled them from scratch.
+    set(CMAKE_C_COMPILER_LAUNCHER ${CCACHE_PROGRAM})
     set(CMAKE_CXX_COMPILER_LAUNCHER ${CCACHE_PROGRAM})
     set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE "${CCACHE_PROGRAM}")
 endif()
@@ -48,6 +52,23 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     endif()
 endif()
 
+# ── Windows toolchain detection ─────────────────────────────────
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    if(MSVC)
+        # MSVC: enable Unicode source encoding and raise warning level
+        add_compile_options(/utf-8 /W4)
+        # Disable MSVC-specific noisy warnings from third-party headers
+        add_compile_options(/wd4996)  # 'strcpy' was deprecated (tree-sitter API)
+        message(STATUS "Windows/MSVC: /utf-8 /W4 enabled")
+    else()
+        # MinGW / Clang on Windows
+        add_compile_options(-Wall -Wextra)
+        message(STATUS "Windows/MinGW: GCC-compatible flags")
+    endif()
+    # Common Windows definitions
+    add_definitions(-DWIN32_LEAN_AND_MEAN -DNOMINMAX)
+endif()
+
 # ── Split debug info on Linux (Debug only) ───────────────────────
 # Keeps .dwo out of the executable for faster linking.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -73,116 +94,81 @@ add_compile_options(-Wall -Wextra -Wno-unused-parameter)
 # ── Dependency version pins ──────────────────────────────────────
 include(cmake/deps_versions.cmake)
 
-# ── FetchContent: tree-sitter core + sqlite amalgamation + grammars + sqlite-vec ──
-include(FetchContent)
-include(cmake/fetch_grammar.cmake)
+# ── Vendored third-party sources (zero network at configure time) ──
+# All generated C sources (tree-sitter grammars, tree-sitter core,
+# sqlite-vec, sqlite amalgamation) are committed under engine/third_party/.
+# This removes the ~286s serial git-clone / HTTP-download that used to
+# happen at cmake configure. Versions are pinned in deps_versions.cmake;
+# to refresh, run: scripts/vendor-deps.sh
+set(THIRD_PARTY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
+set(GRAMMAR_DIR "${THIRD_PARTY_DIR}/grammars")
 
-# ── tree-sitter core (build from source) ─────────────────────────
-message(STATUS "tree-sitter: fetching core v${TS_CORE_VERSION}...")
-FetchContent_Declare(ts_repo
-    GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter.git
-    GIT_TAG ${TS_CORE_VERSION}
-    GIT_SHALLOW TRUE
-    SOURCE_SUBDIR lib)
-set(BUILD_SHARED_LIBS OFF)
-set(TREE_SITTER_ENABLE_TESTING OFF)
-set(TREE_SITTER_ENABLE_EXAMPLES OFF)
-FetchContent_MakeAvailable(ts_repo)
-# IMPORTANT: Force using FetchContent-built tree-sitter, NOT the
-# system/Homebrew version. cmake's pkg-config may find libtree-sitter
-# from Homebrew first, which skips building the FetchContent source
-# entirely. This causes the grammar to compile against FetchContent
-# headers but link against Homebrew's library → SIGBUS from struct
-# layout mismatch. Fix: compile tree-sitter source directly into our
-# binary (like CBM's ts_runtime.c approach), bypassing the library
-# dependency entirely so there is NO external tree-sitter to resolve.
+# tree-sitter core runtime. lib.c amalgamates every file in lib/src/*.c
+# (alloc.c, language.c, parser.c, wasm_store.c, ...). We compile lib.c
+# directly into our static lib — no external tree-sitter to link against
+# (this avoids the Homebrew libtree-sitter SIGBUS struct-layout mismatch).
 set(TREE_SITTER_LIB "")
 set(TREE_SITTER_SOURCES
-    "${ts_repo_SOURCE_DIR}/lib/src/lib.c")
-set(TREE_SITTER_INCDIR "${ts_repo_SOURCE_DIR}/lib/include" "${ts_repo_BINARY_DIR}/lib/include")
-# Grammar compilation needs the core's internal parser.h (in lib/src/),
-# not just the public API (lib/include/). Adding lib/src/ here ensures
-# #include "tree_sitter/parser.h" resolves to the core's version FIRST,
-# before the grammar's bundled copy. Without this, grammars compile
-# against their OWN bundled parser.h which may have a different struct
-# layout than what the v0.26.10 core expects → SIGBUS.
-set(TREE_SITTER_SRCDIR "${ts_repo_SOURCE_DIR}/lib/src")
+    "${THIRD_PARTY_DIR}/tree-sitter/lib/src/lib.c")
+set(TREE_SITTER_INCDIR "${THIRD_PARTY_DIR}/tree-sitter/lib/include")
+# Grammar parser.c must resolve "tree_sitter/parser.h" to the CORE's
+# internal header FIRST, before the grammar's own bundled copy, otherwise
+# a struct-layout mismatch → SIGBUS. Keep this include dir before
+# TREE_SITTER_INCLUDE_DIRS in target_include_directories (below).
+set(TREE_SITTER_SRCDIR "${THIRD_PARTY_DIR}/tree-sitter/lib/src")
 
-# ── sqlite3 amalgamation (download once, compile as C) ──────────
-set(SQLITE3_DEPS_DIR "${CMAKE_BINARY_DIR}/_deps")
-set(SQLITE3_AMAL_SRC "${SQLITE3_DEPS_DIR}/sqlite3.c")
-if(NOT EXISTS "${SQLITE3_AMAL_SRC}")
-    message(STATUS "sqlite3: downloading amalgamation ${SQLITE_VERSION}...")
-    file(DOWNLOAD "https://www.sqlite.org/2025/sqlite-amalgamation-${SQLITE_VERSION}.zip"
-        "${SQLITE3_DEPS_DIR}/sqlite-amalgamation.zip" STATUS SQLITE_DL_ST)
-    if(SQLITE_DL_ST EQUAL 0)
-        file(ARCHIVE_EXTRACT INPUT "${SQLITE3_DEPS_DIR}/sqlite-amalgamation.zip"
-            DESTINATION "${SQLITE3_DEPS_DIR}/")
-        file(GLOB SQLITE_EXTRACTED LIST_DIRECTORIES true "${SQLITE3_DEPS_DIR}/sqlite-amalgamation-*")
-        if(SQLITE_EXTRACTED)
-            file(GLOB SQLITE_FILES "${SQLITE_EXTRACTED}/*")
-            file(COPY ${SQLITE_FILES} DESTINATION "${SQLITE3_DEPS_DIR}/")
-        endif()
-    else()
-        message(FATAL_ERROR "sqlite3: amalgamation download failed (status=${SQLITE_DL_ST})")
-    endif()
-endif()
-set(SQLITE3_INCLUDE_DIRS "${SQLITE3_DEPS_DIR}")
-set(SQLITE3_AMAL_SRC "${SQLITE3_DEPS_DIR}/sqlite3.c")
-set(SQLITE3_LIBRARIES "")
-set(CMAKE_DL_LIBS "")
-if(APPLE OR (UNIX AND NOT APPLE))
-    set(CMAKE_DL_LIBS dl)
-endif()
-
-# ── sqlite-vec (build from source, compiled directly into binary) ──
-# Uses FetchContent to clone the repo (like tree-sitter grammars).
-# Compiled as C — no runtime load_extension needed.
-include(FetchContent)
-cmake_policy(SET CMP0169 OLD)
-FetchContent_Declare(sqlite_vec
-    GIT_REPOSITORY https://github.com/asg017/sqlite-vec.git
-    GIT_TAG v0.1.10-alpha.4
-    GIT_SHALLOW TRUE)
-FetchContent_GetProperties(sqlite_vec)
-if(NOT sqlite_vec_POPULATED)
-    FetchContent_Populate(sqlite_vec)
-endif()
-set(SQLITE_VEC_SRC "${sqlite_vec_SOURCE_DIR}/sqlite-vec.c")
-message(STATUS "sqlite-vec: source at ${SQLITE_VEC_SRC}")
-
-# ── Grammar parser.c (FetchContent per grammar) ──────────────────
-# Swift omitted: parser.c incompatible with tree-sitter core v0.24.7.
+# ── Grammar parser.c / scanner.c (vendored generated sources) ──
+# Swift omitted: parser.c incompatible with tree-sitter core v0.26.11.
+set(GRAMMAR_C_PARSER "${GRAMMAR_DIR}/c/src/parser.c")
 set(GRAMMAR_SOURCES
-    ${GRAMMAR_SOURCE_DIR_c}/parser.c
-    ${GRAMMAR_SOURCE_DIR_cpp}/parser.c
-    ${GRAMMAR_SOURCE_DIR_cpp}/scanner.c
-    ${GRAMMAR_SOURCE_DIR_go}/parser.c
-    ${GRAMMAR_SOURCE_DIR_java}/parser.c
-    ${GRAMMAR_SOURCE_DIR_javascript}/parser.c
-    ${GRAMMAR_SOURCE_DIR_javascript}/scanner.c
-    ${GRAMMAR_SOURCE_DIR_python}/parser.c
-    ${GRAMMAR_SOURCE_DIR_python}/scanner.c
-    ${GRAMMAR_SOURCE_DIR_rust}/parser.c
-    ${GRAMMAR_SOURCE_DIR_rust}/scanner.c
-    ${tree-sitter-typescript_SOURCE_DIR}/typescript/src/parser.c
-    ${tree-sitter-typescript_SOURCE_DIR}/typescript/src/scanner.c
-    ${tree-sitter-typescript_SOURCE_DIR}/tsx/src/parser.c
-    ${tree-sitter-typescript_SOURCE_DIR}/tsx/src/scanner.c
+    ${GRAMMAR_DIR}/c/src/parser.c
+    ${GRAMMAR_DIR}/cpp/src/parser.c
+    ${GRAMMAR_DIR}/cpp/src/scanner.c
+    ${GRAMMAR_DIR}/go/src/parser.c
+    ${GRAMMAR_DIR}/java/src/parser.c
+    ${GRAMMAR_DIR}/javascript/src/parser.c
+    ${GRAMMAR_DIR}/javascript/src/scanner.c
+    ${GRAMMAR_DIR}/python/src/parser.c
+    ${GRAMMAR_DIR}/python/src/scanner.c
+    ${GRAMMAR_DIR}/rust/src/parser.c
+    ${GRAMMAR_DIR}/rust/src/scanner.c
+    ${GRAMMAR_DIR}/typescript/typescript/src/parser.c
+    ${GRAMMAR_DIR}/typescript/typescript/src/scanner.c
+    ${GRAMMAR_DIR}/typescript/tsx/src/parser.c
+    ${GRAMMAR_DIR}/typescript/tsx/src/scanner.c
 )
 
+# Include dirs: each grammar's src/ (for "./alloc.h" and bundled
+# tree_sitter/*.h) plus the typescript common/ dir (scanner.h).
 set(TREE_SITTER_INCLUDE_DIRS
-    ${GRAMMAR_SOURCE_DIR_c}
-    ${GRAMMAR_SOURCE_DIR_cpp}
-    ${GRAMMAR_SOURCE_DIR_go}
-    ${GRAMMAR_SOURCE_DIR_java}
-    ${GRAMMAR_SOURCE_DIR_javascript}
-    ${GRAMMAR_SOURCE_DIR_python}
-    ${GRAMMAR_SOURCE_DIR_rust}
-    ${tree-sitter-typescript_SOURCE_DIR}/typescript/src
-    ${tree-sitter-typescript_SOURCE_DIR}/tsx/src
-    ${tree-sitter-typescript_SOURCE_DIR}/common
+    ${GRAMMAR_DIR}/c/src
+    ${GRAMMAR_DIR}/cpp/src
+    ${GRAMMAR_DIR}/go/src
+    ${GRAMMAR_DIR}/java/src
+    ${GRAMMAR_DIR}/javascript/src
+    ${GRAMMAR_DIR}/python/src
+    ${GRAMMAR_DIR}/rust/src
+    ${GRAMMAR_DIR}/typescript/typescript/src
+    ${GRAMMAR_DIR}/typescript/tsx/src
+    ${GRAMMAR_DIR}/typescript/common
 )
+
+# ── sqlite3 amalgamation (vendored) ───────────────────────────────
+set(SQLITE3_DIR "${THIRD_PARTY_DIR}/sqlite")
+set(SQLITE3_INCLUDE_DIRS "${SQLITE3_DIR}")
+set(SQLITE3_AMAL_SRC "${SQLITE3_DIR}/sqlite3.c")
+set(SQLITE3_LIBRARIES "")
+# Linux needs -ldl for dlopen(); macOS has it in libc; Windows doesn't use dl
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(CMAKE_DL_LIBS dl)
+else()
+    set(CMAKE_DL_LIBS "")
+endif()
+
+# ── sqlite-vec (vendored source + pre-generated header) ──────────
+set(SQLITE_VEC_DIR "${THIRD_PARTY_DIR}/sqlite-vec")
+set(SQLITE_VEC_SRC "${SQLITE_VEC_DIR}/sqlite-vec.c")
+message(STATUS "sqlite-vec: source at ${SQLITE_VEC_SRC}")
 
 # ── Engine sources ───────────────────────────────────────────────
 set(ENGINE_SOURCES
@@ -191,8 +177,8 @@ set(ENGINE_SOURCES
     src/engine_helpers.cpp
     src/engine_lifecycle.cpp
     src/engine_index.cpp
-	    src/engine_index_project.cpp
-	    src/engine_index_metrics.cpp
+        src/engine_index_project.cpp
+        src/engine_index_metrics.cpp
     src/engine_scanner.cpp
     src/engine_queries.cpp
     src/engine_ffi.cpp
@@ -236,7 +222,7 @@ set(ENGINE_SOURCES
     src/store/store_query.cpp
     src/store/store_project.cpp
     src/store/store_knowledge.cpp
-		    src/store/store_ladybug.cpp
+        src/store/store_ladybug.cpp
     src/query/query_engine.cpp
     src/query/query_analysis.cpp
     src/query/graph_query.cpp
@@ -245,32 +231,32 @@ set(ENGINE_SOURCES
     src/resolver/resolver.cpp
     src/resolver/pipeline.cpp
     src/resolver/fuzzy_resolver.cpp
-	    src/resolver/factors.cpp
-	    src/model/engine.cpp
-	    src/model/plugins/workflow.cpp
-	    src/model/plugins/capability.cpp
-	    src/model/plugins/architecture.cpp
-	    src/model/plugins/contract.cpp
-	    src/model/state_builder.cpp
+        src/resolver/factors.cpp
+        src/model/engine.cpp
+        src/model/plugins/workflow.cpp
+        src/model/plugins/capability.cpp
+        src/model/plugins/architecture.cpp
+        src/model/plugins/contract.cpp
+        src/model/state_builder.cpp
     src/resolver/project_index.cpp
-	    src/resolver/project_resolver.cpp
-		    src/verify/capability_verifier.cpp
-	    src/verify/contract_verifier.cpp
-	    src/verify/architecture_verifier.cpp
-	    src/verify/dead_code_inspector.cpp
-	    src/verify/claim_parser.cpp
-	    src/verify/claim.cpp
-	    src/verify/registry.cpp
-	    src/verify/documentation_drift.cpp
-	    src/verify/capability_drift.cpp
-	    src/verify/architecture_drift.cpp
-	    src/async_knowledge.cpp
-	    src/resolver/resolve_cache.cpp
-	    src/filter_policy.cpp
-	    src/filter_policy_ignore.cpp
-	    src/platform_win.cpp
-	    ${SQLITE3_AMAL_SRC}
-	    ${TREE_SITTER_SOURCES}
+        src/resolver/project_resolver.cpp
+        src/verify/capability_verifier.cpp
+        src/verify/contract_verifier.cpp
+        src/verify/architecture_verifier.cpp
+        src/verify/dead_code_inspector.cpp
+        src/verify/claim_parser.cpp
+        src/verify/claim.cpp
+        src/verify/registry.cpp
+        src/verify/documentation_drift.cpp
+        src/verify/capability_drift.cpp
+        src/verify/architecture_drift.cpp
+        src/async_knowledge.cpp
+        src/resolver/resolve_cache.cpp
+        src/filter_policy.cpp
+        src/filter_policy_ignore.cpp
+        src/platform_win.cpp
+        ${SQLITE3_AMAL_SRC}
+        ${TREE_SITTER_SOURCES}
 )
 
 # Add sqlite-vec.c if available
@@ -317,7 +303,7 @@ set_source_files_properties(${SQLITE3_AMAL_SRC} ${GRAMMAR_SOURCES}
     PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 # tree-sitter C grammar: compile with -O0 to work around SIGILL on Apple Silicon
 # (v0.24.2 generates code that triggers illegal instruction on arm64 at -O1+)
-set_source_files_properties(${GRAMMAR_SOURCE_DIR_c}/parser.c
+set_source_files_properties(${GRAMMAR_C_PARSER}
     PROPERTIES COMPILE_OPTIONS "-O0")
 set_source_files_properties(${TREE_SITTER_SOURCES}
     PROPERTIES LANGUAGE C SKIP_PRECOMPILE_HEADERS ON)
@@ -334,21 +320,9 @@ if(BUILD_FAST)
 endif()
 
 if(EXISTS "${SQLITE_VEC_SRC}")
-    set_source_files_properties(${SQLITE_VEC_SRC} PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
-    # Generate sqlite-vec.h from template with version substitution.
-    # Parse the version string: v0.1.10-alpha.4 → major=0, minor=1, patch=10
-    string(REGEX MATCH "^v?([0-9]+)\\.([0-9]+)\\.([0-9]+)" _ ${SQLITE_VEC_VERSION})
-    set(VERSION_MAJOR ${CMAKE_MATCH_1})
-    set(VERSION_MINOR ${CMAKE_MATCH_2})
-    set(VERSION_PATCH ${CMAKE_MATCH_3})
-    set(VERSION "${SQLITE_VEC_VERSION}")  # full version string for SQLITE_VEC_VERSION macro
-    file(READ "${sqlite_vec_SOURCE_DIR}/sqlite-vec.h.tmpl" VEC_H_TMPL)
-    string(REPLACE "${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}-alpha.4"
-        "${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}" _dummy "${SQLITE_VEC_VERSION}")
-    string(CONFIGURE "${VEC_H_TMPL}" VEC_H_CONTENT)
-    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/sqlite-vec/include/sqlite-vec.h" "${VEC_H_CONTENT}")
-    target_include_directories(astgraph_engine PRIVATE
-        "${CMAKE_CURRENT_BINARY_DIR}/sqlite-vec/include")
+    set_source_files_properties(${SQLITE_VEC_SRC} PROPERTIES SKIP_PRECOMPILE_HEADERS ON LANGUAGE C)
+    # Header is pre-generated and committed at third_party/sqlite-vec/sqlite-vec.h.
+    target_include_directories(astgraph_engine PRIVATE "${SQLITE_VEC_DIR}")
 endif()
 
 target_compile_definitions(astgraph_engine PUBLIC
@@ -371,7 +345,7 @@ target_include_directories(astgraph_engine PUBLIC
 # (C++20's <version> would shadow against the repo's "version" file).
 if(EXISTS "${SQLITE_VEC_SRC}")
     target_compile_options(astgraph_engine PRIVATE
-        $<$<COMPILE_LANGUAGE:C>:-I${sqlite_vec_SOURCE_DIR}>)
+        $<$<COMPILE_LANGUAGE:C>:-I${SQLITE_VEC_DIR}>)
 endif()
 
 target_link_libraries(astgraph_engine PUBLIC

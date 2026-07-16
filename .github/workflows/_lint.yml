@@ -30,8 +30,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          # Cargo.lock is not yet committed; include Cargo.toml so the key
-          # still changes when dependencies change. Harmless once committed.
+          # Cargo.lock is committed — use it as the precise cache key
           key: lint-cargo-registry-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
           restore-keys: lint-cargo-registry-
 
@@ -44,7 +43,7 @@ jobs:
       - name: Lint C++ (clang-format)
         run: |
           set -e
-          FILES=$(find engine/src -name '*.cpp' -o -name '*.h')
+          FILES=$(find engine/src engine/include -name '*.cpp' -o -name '*.h' 2>/dev/null)
           if [ -n "$FILES" ]; then
             echo "$FILES" | xargs clang-format --dry-run --Werror
             echo "  ✓ clang-format passed"

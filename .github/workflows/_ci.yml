@@ -25,10 +25,19 @@ jobs:
         include:
           - os: ubuntu-24.04
             artifact: codescope-x86_64-linux
+          - os: ubuntu-24.04-arm
+            artifact: codescope-aarch64-linux
           - os: macos-15
             artifact: codescope-aarch64-macos
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    # ccache accelerates C/C++ compiles. On a dep-version cache miss
+    # (full recompile of ~377 TUs) this turns a multi-minute rebuild
+    # into mostly cache hits. CMakeLists already wires ccache as the
+    # compiler launcher when it is on PATH.
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 2G
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
@@ -42,7 +51,7 @@ jobs:
         if: matrix.os == 'ubuntu-24.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build git gcc g++ pkg-config libssl-dev
+          sudo apt-get install -y cmake ninja-build git gcc g++ pkg-config libssl-dev ccache
           # Install LadybugDB (graph storage engine)
           curl -fsSL https://install.ladybugdb.com | sh
           echo "/usr/local/lib" | sudo tee /etc/ld.so.conf.d/ladybug.conf
@@ -51,7 +60,7 @@ jobs:
       - name: Install deps (macOS)
         if: matrix.os == 'macos-15'
         run: |
-          brew install cmake ninja git ladybug
+          brew install cmake ninja git ladybug ccache
 
       - name: Cache Cargo registry
         uses: actions/cache@5a3ec84eff668545934eab1c4a9ef4d8fc6e8535 # v4.2.3
@@ -59,9 +68,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          # Cargo.lock is the precise cache key, but it is not yet committed
-          # to the repo; include Cargo.toml so the key still changes when
-          # dependencies change. Once Cargo.lock is committed this stays correct.
+          # Cargo.lock is committed — use it as the precise cache key
           key: ${{ matrix.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
           restore-keys: ${{ matrix.os }}-cargo-registry-
 
@@ -72,15 +79,36 @@ jobs:
           key: ${{ matrix.os }}-cargo-target-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
           restore-keys: ${{ matrix.os }}-cargo-target-
 
-      - name: Cache CMake build + deps
+      - name: Cache ccache
+        uses: actions/cache@5a3ec84eff668545934eab1c4a9ef4d8fc6e8535 # v4.2.3
+        with:
+          path: ${{ github.workspace }}/.ccache
+          # Same key family as the CMake cache: a dependency-version
+          # change invalidates both, forcing a clean (ccache-accelerated)
+          # rebuild instead of a slow from-scratch one.
+          key: ${{ matrix.os }}-ccache-${{ hashFiles('engine/cmake/deps_versions.cmake') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ matrix.os }}-ccache-${{ hashFiles('engine/cmake/deps_versions.cmake') }}-
+            ${{ matrix.os }}-ccache-
+
+      - name: Cache CMake build
         uses: actions/cache@5a3ec84eff668545934eab1c4a9ef4d8fc6e8535 # v4.2.3
         with:
           path: |
-            engine/build
-          key: ${{ matrix.os }}-cmake-${{ hashFiles('engine/CMakeLists.txt', 'engine/cmake/deps_versions.cmake') }}
-          restore-keys: ${{ matrix.os }}-cmake-
+            engine/build-tests
+            engine/build-release
+          # Dependencies are vendored (committed under engine/third_party/),
+          # so the cache only holds compiled build artifacts. deps_versions.cmake
+          # is the key: bumping a pinned version invalidates both this cache and
+          # ccache, forcing a clean (ccache-accelerated) rebuild.
+          key: ${{ matrix.os }}-cmake-${{ hashFiles('engine/cmake/deps_versions.cmake') }}
+          restore-keys: |
+            ${{ matrix.os }}-cmake-
 
-      - name: Build + test
+      # Dependencies are vendored under engine/third_party/ (committed, zero
+      # network at configure time), so no pre-fetch / clone step is needed.
+
+      - name: Build + test (Rust)
         shell: bash
         env:
           CBM_SKIP_PERF: ${{ inputs.skip_perf && '1' || '' }}
@@ -98,12 +126,15 @@ jobs:
       - name: Build + test C++ engine
         shell: bash
         run: |
-          # Configure with tests enabled in a separate build dir so the
-          # release build (engine/build, BUILD_TESTS=OFF) stays untouched.
+          # Configure with tests enabled. Dependencies are vendored under
+          # engine/third_party/ (committed), so configure is fully OFFLINE and
+          # sub-second. Ninja + ccache keep the compile fast.
           cmake -S engine -B engine/build-tests \
+            -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DBUILD_TESTS=ON \
-            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DFETCHCONTENT_BASE_DIR=$PWD/engine/.deps-cache
           cmake --build engine/build-tests -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 
           # Run every C++ test binary produced under the build dir.

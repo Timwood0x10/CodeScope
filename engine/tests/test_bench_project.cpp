@@ -97,6 +97,7 @@ int main(int argc, char **argv) {
     int repeat_count = repeat_env ? atoi(repeat_env) : 1;
     if (repeat_count < 1) repeat_count = 1;
     const char *compare_file = getenv("CODESCOPE_BENCH_COMPARE");
+    (void)compare_file; // reserved for future benchmark comparison feature
 
     // Map language filter to file extensions for counting
     std::string ext_filter;

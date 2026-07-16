@@ -10,8 +10,10 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CC");
     println!("cargo:rerun-if-env-changed=CXX");
 
-    // Build the C++ engine
-    let build_dir = format!("{}/build", engine_dir);
+    // Build the C++ engine in a separate directory from the Makefile's
+    // Debug+Tests build (engine/build). This avoids cmake cache
+    // invalidation when switching between Release (cargo) and Debug (make test).
+    let build_dir = format!("{}/build-release", engine_dir);
     let _ = std::fs::create_dir_all(&build_dir);
 
     // ── Detect platform ────────────────────────────────────────────
@@ -67,6 +69,8 @@ fn main() {
     };
 
     // ── CMake configure ────────────────────────────────────────────
+    // Sources are vendored under engine/third_party/ — zero network
+    // at configure time. Use Ninja if available for faster builds.
     let mut cmake_args = vec![
         "-S".to_string(),
         engine_dir.clone(),
@@ -77,6 +81,11 @@ fn main() {
         format!("-DCMAKE_C_COMPILER={}", cc_path),
         format!("-DCMAKE_CXX_COMPILER={}", cxx_path),
     ];
+    // Use Ninja generator if available (faster parallel builds)
+    if std::process::Command::new("ninja").arg("--version").output().is_ok() {
+        cmake_args.push("-G".to_string());
+        cmake_args.push("Ninja".to_string());
+    }
     if !sdk_arg.is_empty() {
         cmake_args.push(sdk_arg);
     }
@@ -101,21 +110,13 @@ fn main() {
     }
 
     // ── Linker flags ───────────────────────────────────────────────
-    // FetchContent mode: all deps (tree-sitter core, sqlite3 amalgamation,
-    // sqlite-vec, grammar sources) are compiled into astgraph_engine.a.
-    // Only tree-sitter core is a separate static lib.
+    // All deps (tree-sitter core lib.c, sqlite3 amalgamation, sqlite-vec,
+    // grammar sources) are compiled directly into astgraph_engine.a.
+    // No separate tree-sitter library is needed — the previous
+    // -ltree-sitter directive was accidentally linking Homebrew's
+    // libtree-sitter.a, which could cause ABI mismatches.
     println!("cargo:rustc-link-search=native={}", build_dir);
     println!("cargo:rustc-link-lib=static=astgraph_engine");
-
-    let ts_build_lib = format!("{}/_deps/ts_repo-build/lib", build_dir);
-    let ts_alt = format!("{}/_deps/ts_repo-build", build_dir);
-    if std::path::Path::new(&ts_build_lib).exists() {
-        println!("cargo:rustc-link-search=native={}", ts_build_lib);
-    }
-    if std::path::Path::new(&ts_alt).exists() {
-        println!("cargo:rustc-link-search=native={}", ts_alt);
-    }
-    println!("cargo:rustc-link-lib=static=tree-sitter");
 
     // LadybugDB (optional, for embedded graph storage via Cypher).
     // Read the CMake cache to determine whether CMake's find_library()

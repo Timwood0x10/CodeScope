@@ -187,6 +187,8 @@
 plan/
 
 **/build_*/
+**/build-release/
+**/.deps-cache/
 **/*.ll
 **/cmake/
 bin/

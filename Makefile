@@ -10,12 +10,22 @@ SERVER_DIR  := server
 BUILD_DIR   := $(ENGINE_DIR)/build
 TEST_DB     := /tmp/astgraph_test.db
 
+# ─── Platform Detection ────────────────────────────────────────
+UNAME_S := $(shell uname -s 2>/dev/null || echo Unknown)
+NPROC   := $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+
 # ─── Compiler Detection ─────────────────────────────────────────
-# Prefer Homebrew LLVM@21 if available, fall back to system clang/gcc
+# macOS: prefer Homebrew LLVM@21 if available, fall back to system clang/gcc
+# Linux/Windows: use system default (CC/CXX env vars respected by CMake)
+ifeq ($(UNAME_S),Darwin)
 LLVM21_CC  := /opt/homebrew/opt/llvm@21/bin/clang
 LLVM21_CXX := /opt/homebrew/opt/llvm@21/bin/clang++
 ENGINE_CC  := $(shell test -x $(LLVM21_CC) && echo $(LLVM21_CC) || echo clang)
 ENGINE_CXX := $(shell test -x $(LLVM21_CXX) && echo $(LLVM21_CXX) || echo clang++)
+else
+ENGINE_CC  := $(CC)
+ENGINE_CXX := $(CXX)
+endif
 
 # ─── Colors ──────────────────────────────────────────────────────
 CYAN   := \033[36m
@@ -30,15 +40,15 @@ CROSS  := $(RED)✗$(RESET)
 help:
 	@printf "$(CYAN)CodeScope Makefile$(RESET)\n"
 	@printf "\n"
-	@printf "  $(GREEN)make build$(RESET)          Build all (engine + server)\n"
+	@printf "  $(GREEN)make build$(RESET)          Build all (engine + server via cargo)\n"
 	@printf "  $(GREEN)make test$(RESET)           Run all tests\n"
 	@printf "  $(GREEN)make lint$(RESET)           Run all linters\n"
 	@printf "  $(GREEN)make fmt$(RESET)            Format all code\n"
 	@printf "  $(GREEN)make check$(RESET)          Run lint + test (CI check)\n"
 	@printf "\n"
 	@printf "  $(CYAN)Build:$(RESET)\n"
-	@printf "    make build-engine    Build C++ engine (static lib)\n"
-	@printf "    make build-server    Build Rust MCP server\n"
+	@printf "    make build-engine    Build C++ engine only (Debug+Tests, for dev)\n"
+	@printf "    make build-server    Build Rust MCP server (Release, triggers engine build)\n"
 	@printf "\n"
 	@printf "  $(CYAN)Test:$(RESET)\n"
 	@printf "    make test-engine     Run C++ engine tests\n"
@@ -61,15 +71,23 @@ help:
 all: build
 
 # ─── Build ───────────────────────────────────────────────────────
-# tree-sitter grammars are compiled into the binary via CMake/FetchContent.
-# No external .so files needed.
-build: build-engine build-server
+# `make build` only calls build-server, which triggers build.rs →
+# cmake (Release, no tests) → engine + Rust binary. This avoids the
+# previous double-build where build-engine (Debug+Tests) and build-server
+# (Release) both built the engine in the same directory.
+# Use `make build-engine` separately for the Debug+Tests engine build.
+build: build-server
 	@printf "$(CHECK) build complete\n"
 
 ENGINE_CMAKE_FLAGS := -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
                        -DCMAKE_C_COMPILER=$(ENGINE_CC) \
                        -DCMAKE_CXX_COMPILER=$(ENGINE_CXX) \
-                       -DCMAKE_OSX_SYSROOT=$(shell xcrun --show-sdk-path)
+                       -DFETCHCONTENT_BASE_DIR=$(CURDIR)/$(ENGINE_DIR)/.deps-cache
+
+# macOS needs the SDK sysroot for the C++ standard library headers
+ifneq (,$(findstring Darwin,$(UNAME_S)))
+ENGINE_CMAKE_FLAGS += -DCMAKE_OSX_SYSROOT=$(shell xcrun --show-sdk-path)
+endif
 
 # Use Ninja if available for faster builds
 BUILD_GENERATOR := $(shell which ninja >/dev/null 2>&1 && echo "Ninja" || echo "Unix Makefiles")
@@ -78,17 +96,27 @@ ENGINE_LIB      := $(BUILD_DIR)/libastgraph_engine.a
 $(BUILD_DIR):
 	@mkdir -p $(BUILD_DIR)
 
-$(BUILD_DIR)/build.ninja: | $(BUILD_DIR)
+# Dependencies are vendored under engine/third_party/ (committed, zero
+# network at configure time). No pre-fetch step is needed — cmake points
+# at the vendored sources. To refresh them, run scripts/vendor-deps.sh
+
+# Configure ONCE for the active generator. The previous Makefile
+# configured for BOTH Ninja and Unix Makefiles, which ran cmake twice
+# on every `make build`; under Ninja the Makefile rule never produced
+# a Makefile, so that second configure re-ran unconditionally.
+ifeq ($(BUILD_GENERATOR),Ninja)
+CMAKE_GEN_FILE := $(BUILD_DIR)/build.ninja
+else
+CMAKE_GEN_FILE := $(BUILD_DIR)/Makefile
+endif
+
+$(CMAKE_GEN_FILE): $(ENGINE_DIR)/CMakeLists.txt $(wildcard $(ENGINE_DIR)/cmake/*.cmake) | $(BUILD_DIR)
 	@printf "$(CYAN)[engine]$(RESET) Configuring CMake ($(BUILD_GENERATOR))...\n"
 	@cd $(BUILD_DIR) && cmake -G "$(BUILD_GENERATOR)" $(CURDIR)/$(ENGINE_DIR) $(ENGINE_CMAKE_FLAGS) 2>&1 | tail -3
 
-$(BUILD_DIR)/Makefile: | $(BUILD_DIR)
-	@printf "$(CYAN)[engine]$(RESET) Configuring CMake ($(BUILD_GENERATOR))...\n"
-	@cd $(BUILD_DIR) && cmake -G "$(BUILD_GENERATOR)" $(CURDIR)/$(ENGINE_DIR) $(ENGINE_CMAKE_FLAGS) 2>&1 | tail -3
-
-$(ENGINE_LIB): $(BUILD_DIR)/build.ninja $(BUILD_DIR)/Makefile
+$(ENGINE_LIB): $(CMAKE_GEN_FILE)
 	@printf "$(CYAN)[engine]$(RESET) Building C++ engine...\n"
-	@cmake --build $(BUILD_DIR) -j$$(nproc 2>/dev/null || sysctl -n hw.ncpu) 2>&1 \
+	@cmake --build $(BUILD_DIR) -j$(NPROC) 2>&1 \
 		&& printf "  $(CHECK) engine built: $(ENGINE_LIB)\n"
 
 build-engine: $(ENGINE_LIB)
@@ -138,7 +166,7 @@ test-engine: $(ENGINE_LIB)
 	@printf "$(CYAN)[test/engine]$(RESET) Building and running C++ tests...\n"
 	@rm -f $(TEST_DB) $(TEST_DB)-wal $(TEST_DB)-shm
 	@rm -f /tmp/test_*.db /tmp/test_*.db-wal /tmp/test_*.db-shm 2>/dev/null || true
-	@cd $(BUILD_DIR) && cmake --build . -j$$(nproc 2>/dev/null || sysctl -n hw.ncpu) 2>&1 | grep -E "(error|Error|Building|Linking)" || true
+	@cd $(BUILD_DIR) && cmake --build . -j$(NPROC) 2>&1 | grep -E "(error|Error|Building|Linking)" || true
 	@failed=0; \
 	for test in $(TEST_EXES); do \
 		printf "  Running $$test...\n"; \
@@ -153,7 +181,7 @@ test-engine: $(ENGINE_LIB)
 
 test-bench: $(ENGINE_LIB)
 	@printf "$(CYAN)[test/bench]$(RESET) Building benchmark...\n"
-	@cd $(BUILD_DIR) && cmake --build . --target test_bench -j$$(nproc 2>/dev/null || sysctl -n hw.ncpu) 2>&1 | tail -1
+	@cd $(BUILD_DIR) && cmake --build . --target test_bench -j$(NPROC) 2>&1 | tail -1
 	@printf "  Run with: $(BUILD_DIR)/test_bench <source_file.go|source_file.py>\n"
 
 test-server:
@@ -169,6 +197,9 @@ test-savings:
 BENCH_BIN   := $(BUILD_DIR)/test_bench_project
 BENCH_DIR   := benchmarks
 BENCH_RES   := $(BENCH_DIR)/results
+# External benchmark targets — set via environment or leave unset to skip
+BENCH_GOAGENT  ?=
+BENCH_KERNEL   ?=
 
 bench-check: $(BENCH_BIN)
 	@printf "$(CYAN)[bench/check]$(RESET) Quick benchmark (engine C++ + GoAgent)...\n"
@@ -176,9 +207,13 @@ bench-check: $(BENCH_BIN)
 	@printf "  Running engine C++ (48 files)...\n"
 	@CODESCOPE_BENCH_JSON=$(BENCH_RES)/engine_cpp_$$(git rev-parse --short HEAD).json \
 		$(BENCH_BIN) . $(ENGINE_DIR)/src 5 "cpp" 2>/dev/null
-	@printf "  Running GoAgent (1157 Go files)...\n"
+ifneq ($(BENCH_GOAGENT),)
+	@printf "  Running GoAgent...\n"
 	@CODESCOPE_BENCH_JSON=$(BENCH_RES)/goagent_go_$$(git rev-parse --short HEAD).json \
-		$(BENCH_BIN) . $(HOME)/go/src/goagent 5 "go" 2>/dev/null
+		$(BENCH_BIN) . $(BENCH_GOAGENT) 5 "go" 2>/dev/null || true
+else
+	@printf "  Skipping GoAgent benchmark (set BENCH_GOAGENT to enable)\n"
+endif
 	@printf "$(CHECK) bench-check complete\n"
 
 bench-full: $(BENCH_BIN)
@@ -187,16 +222,24 @@ bench-full: $(BENCH_BIN)
 	@printf "  Running engine C++ (48 files)...\n"
 	@CODESCOPE_BENCH_JSON=$(BENCH_RES)/engine_cpp_$$(git rev-parse --short HEAD).json \
 		$(BENCH_BIN) . $(ENGINE_DIR)/src 5 "cpp" 2>/dev/null
-	@printf "  Running GoAgent (1157 Go files)...\n"
+ifneq ($(BENCH_GOAGENT),)
+	@printf "  Running GoAgent...\n"
 	@CODESCOPE_BENCH_JSON=$(BENCH_RES)/goagent_go_$$(git rev-parse --short HEAD).json \
-		$(BENCH_BIN) . $(HOME)/go/src/goagent 5 "go" 2>/dev/null
-	@printf "  Running kernel subdir (541 C files)...\n"
+		$(BENCH_BIN) . $(BENCH_GOAGENT) 5 "go" 2>/dev/null || true
+else
+	@printf "  Skipping GoAgent benchmark (set BENCH_GOAGENT to enable)\n"
+endif
+ifneq ($(BENCH_KERNEL),)
+	@printf "  Running kernel subdir...\n"
 	@CODESCOPE_BENCH_JSON=$(BENCH_RES)/kernel_c_$$(git rev-parse --short HEAD).json \
-		$(BENCH_BIN) . $(HOME)/code/researcher/linux/linux-6.14.7/kernel 5 "c" 2>/dev/null
+		$(BENCH_BIN) . $(BENCH_KERNEL) 5 "c" 2>/dev/null || true
+else
+	@printf "  Skipping kernel benchmark (set BENCH_KERNEL to enable)\n"
+endif
 	@printf "$(CHECK) bench-full complete\n"
 
 $(BENCH_BIN): $(ENGINE_LIB)
-	@cmake --build $(BUILD_DIR) -j$$(nproc 2>/dev/null || sysctl -n hw.ncpu) 2>&1 | tail -1
+	@cmake --build $(BUILD_DIR) -j$(NPROC) 2>&1 | tail -1
 
 # ─── Lint ────────────────────────────────────────────────────────
 LINT_CPP_FILES := $(shell find $(ENGINE_DIR)/src -name '*.cpp' -o -name '*.h' | grep -v build)
@@ -227,7 +270,7 @@ tidy:
 	@cd $(ENGINE_DIR) && run-clang-tidy -p build -j 2 $(LINT_CPP_FILES) 2>&1 | tail -10
 	@printf "  $(CHECK) clang-tidy done\n"
 
-$(BUILD_DIR)/compile_commands.json: $(BUILD_DIR)/Makefile
+$(BUILD_DIR)/compile_commands.json: $(CMAKE_GEN_FILE)
 	@printf "$(CYAN)[engine]$(RESET) Generating compile_commands.json...\n"
 
 lint-rust:
@@ -254,13 +297,16 @@ check: build lint test-engine test-server
 	@printf "$(CHECK) check complete\n"
 
 # ─── Clean ───────────────────────────────────────────────────────
+# Dependencies are vendored under engine/third_party/ (committed, no
+# network), so `clean` can safely wipe the build dir — the next configure
+# is offline and fast.
 clean:
-	@printf "$(CYAN)[clean]$(RESET) Cleaning...\n"
-	@rm -rf $(BUILD_DIR)
+	@printf "$(CYAN)[clean]$(RESET) Cleaning build artifacts...\n"
+	@rm -rf $(BUILD_DIR) $(ENGINE_DIR)/build-release
 	@cd $(SERVER_DIR) && cargo clean 2>&1 | tail -1
 	@rm -f $(TEST_DB)
 	@printf "  $(CHECK) cleaned\n"
 
 distclean: clean
-	@printf "$(CYAN)[distclean]$(RESET) Done\n"
+	@printf "$(CYAN)[distclean]$(RESET) Build dir already removed by clean.\n"
 	@printf "  $(CHECK) distclean done\n"

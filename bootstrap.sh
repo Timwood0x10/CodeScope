@@ -179,8 +179,12 @@ fi
 
 # Quick test: index a small directory
 echo "  Testing index on a small directory..."
-"$BINARY" discover . 2>/dev/null | head -3 || true
-ok "codescope is ready"
+if "$BINARY" discover . 2>/dev/null | head -3; then
+  ok "codescope is ready"
+else
+  warn "codescope binary exists but 'discover' returned non-zero"
+  ok "codescope is ready (manual verification recommended)"
+fi
 
 # Install to PATH
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.codescope/bin}"

@@ -73,12 +73,14 @@ codescope
 
 ### Prerequisites
 
-| Platform | Dependencies | One-command |
-|----------|-------------|-------------|
-| **macOS** | Xcode CLT, cmake, Rust | `bash bootstrap.sh` |
-| **Linux** | build-essential, cmake, Rust | `bash bootstrap.sh` |
+| Platform | Dependencies | One-command | Status |
+|----------|-------------|-------------|--------|
+| **macOS** | Xcode CLT, cmake, Rust | `bash bootstrap.sh` | ✅ Supported |
+| **Linux** | build-essential, cmake, Rust | `bash bootstrap.sh` | ✅ Supported |
+| **Windows** | MinGW-w64 (gcc/g++), CMake 3.30+, Rust | `.\install.ps1` | 🚧 Planned |
 
-> Pre-built binaries are available for **Linux** and **macOS** on the [Releases page](https://github.com/Timwood0x10/CodeScope/releases).
+> Pre-built binaries are available for **Linux** and **macOS** on the [Releases page](https://github.com/Timwood0x10/CodeScope/releases).  
+> **Windows** support is planned for a future release. The C++ engine and Rust server build with MinGW-w64; see [#issue] for tracking progress.
 
 ### Build from source manually
 
@@ -338,37 +340,6 @@ codescope_trace(from="copy_process", to="dup_mm")
 #   ]}
 ```
 
-## Setup Script
-
-Save as `setup.sh` and run:
-
-```bash
-#!/bin/bash
-set -e
-
-echo "=== CodeScope Setup ==="
-
-# 1. Install dependencies
-if ! command -v rustc &> /dev/null; then
-    echo "Installing Rust..."
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-fi
-
-if ! command -v cmake &> /dev/null; then
-    echo "Please install CMake 3.30+ and C++23 compiler (Clang 17+)"
-    exit 1
-fi
-
-# 2. Build CodeScope (all deps auto-downloaded via CMake FetchContent)
-make build
-
-echo ""
-echo "=== CodeScope Ready ==="
-echo "Start server:  cargo run --bin codescope"
-echo "Set env:       export CODESCOPE_DB_PATH=/tmp/codescope.db"
-echo "              export GRAMMARS_DIR=\$(pwd)/grammars"
-```
-
 ## Performance Benchmarks
 
 ### Full Parse & Index (tree-sitter + Graph Builder + Linker)
@@ -512,14 +483,9 @@ kernel/sched/
 | `kernel/sched/core.c:7061`      | `__schedule()`         | Main scheduler; only switches when preempt_count==0 |
 | `kernel/sched/core.c:7316`      | `schedule()`           | Voluntary yield                                    |
 
-## Quick Start
+## Configuration
 
-### Prerequisites
-
-- Rust 2024 Edition + 1.85+ (`cargo`)
-- CMake 3.30+, C++23 compiler (Clang 17+)
-
-### Build & Run
+### Build from source
 
 ```bash
 # Build everything — tree-sitter, SQLite, sqlite-vec, grammars
@@ -535,7 +501,6 @@ cargo run --bin codescope
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CODESCOPE_DB_PATH` | `.codescope/codescope.db` | SQLite database path |
-| `GRAMMARS_DIR` | `grammars/` | Grammar .so files directory |
 | `CODESCOPE_LSP` | (unset) | LSP server command for type enhancement (e.g. `pylsp`) |
 | `CODESCOPE_INDEX_MODE` | `standard` | Index mode: `fast` / `standard` / `strict` |
 | `CODESCOPE_EXCLUDE_PATHS` | (unset) | Comma-separated glob patterns to exclude (e.g. `test/*,docs/*`) |
@@ -545,6 +510,13 @@ cargo run --bin codescope
 | `CODESCOPE_WORKER_TIMEOUT` | `300` | Worker subprocess timeout in seconds |
 | `CODESCOPE_VERBOSE` | `0` | Set to `1` to enable verbose logging |
 | `CODESCOPE_EXPLAIN` | (unset) | Set to `1` to print SQL `EXPLAIN QUERY PLAN` for graph queries |
+
+> **Note:** `GRAMMARS_DIR` is no longer needed — all tree-sitter grammars are compiled into the binary via CMake FetchContent.
+
+### Prerequisites
+
+- Rust 2024 Edition + 1.85+ (`cargo`)
+- CMake 3.30+, C++23 compiler (Clang 17+)
 
 ## Data Directory `.codescope/`
 
