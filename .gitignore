@@ -190,7 +190,6 @@ plan/
 **/build-release/
 **/.deps-cache/
 **/*.ll
-**/cmake/
 bin/
 
 # LadybugDB binary database files (accidentally committed `version` file was LBUG format)
