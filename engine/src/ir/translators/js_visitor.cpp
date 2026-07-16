@@ -443,16 +443,14 @@ void JsVisitor::visitCallExpr(TSNode node, uint64_t parent_id)
 					      false,
 					      static_cast<int>(call_kind));
 
-	// Resolve callee — only for direct identifier calls
-	// (not member expression calls like console.log)
+	// ── Intra-file callee resolution ───────────────────────────
+	// Store the resolved callee's record ID as ref_original_id on
+	// the CallExpr. Enables P1 call-edge construction in
+	// buildCallEdgesSQL (JOIN on ref_original_id > 0).
 	if (!callee_name.empty()) {
 		uint64_t target = resolveSymbol(callee_name);
-		if (target) {
-			// We could store a reference here in the future.
-			// For now, the caller name is sufficient for
-			// cross-file resolution in the Linker.
-			(void)target;
-		}
+		if (target)
+			unit_->setCallReference(call_id, target);
 	}
 
 	// Recurse into children (arguments, member expressions, etc.)

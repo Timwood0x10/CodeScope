@@ -264,6 +264,17 @@ void RustVisitor::handleCall(TSNode node, uint64_t parent_id)
 
 	uint64_t id = emitter_->emitCall(name, loc, parent_id, 0, false,
 					 static_cast<int>(call_kind));
+
+	// ── Intra-file callee resolution ───────────────────────────
+	// Store the resolved callee's record ID as ref_original_id on
+	// the CallExpr. Enables P1 call-edge construction in
+	// buildCallEdgesSQL (JOIN on ref_original_id > 0).
+	if (!name.empty()) {
+		uint64_t target = resolveSymbol(name);
+		if (target)
+			unit_->setCallReference(id, target);
+	}
+
 	// Recurse into children — skip identifier/field_expression/scoped_identifier
 	// (already extracted as the function name above). Only visit arguments
 	// and other expressions. This mirrors JsVisitor::visitCallExpr.

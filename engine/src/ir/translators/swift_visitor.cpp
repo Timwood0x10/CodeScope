@@ -121,7 +121,18 @@ void SwiftVisitor::handleProtocolDecl(TSNode node, uint64_t parent_id)
 }
 void SwiftVisitor::handleCall(TSNode node, uint64_t parent_id)
 {
-	emitter_->emitCall(nodeText(node), location(node), parent_id);
+	std::string name = nodeText(node);
+	uint64_t id = emitter_->emitCall(name, location(node), parent_id);
+
+	// ── Intra-file callee resolution ───────────────────────────
+	// Store the resolved callee's record ID as ref_original_id.
+	// Enables P1 call-edge construction in buildCallEdgesSQL.
+	if (!name.empty()) {
+		uint64_t target = resolveSymbol(name);
+		if (target)
+			unit_->setCallReference(id, target);
+	}
+
 	visitChildren(node, parent_id);
 }
 void SwiftVisitor::handleVarDecl(TSNode node, uint64_t parent_id)

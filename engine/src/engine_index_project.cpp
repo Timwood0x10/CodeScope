@@ -112,6 +112,81 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 				rel = rel.substr(dir.size() + 1);
 			else
 				rel.clear();
+
+			// ── README / document ingestion (BEFORE skip filter) ──
+			// .md files are in skip_suffixes_ (filter_policy.cpp:422)
+			// so they never reach the source-code indexing path.
+			// But the knowledge layer (CapabilityPlugin,
+			// ContractPlugin) needs README content in the
+			// document table to extract capabilities/contracts.
+			// Therefore we intercept README.md here — BEFORE
+			// shouldSkipEntry() drops it — and ingest it via
+			// insertDocument().
+			//
+			// Only the project-root README is ingested as a
+			// knowledge document; nested READMEs are ignored
+			// to avoid noise from vendored deps.
+			if (entry.is_regular_file()) {
+				const std::string &fp = entry.path().string();
+				std::string fname = fp;
+				size_t sl = fp.find_last_of("/\\");
+				if (sl != std::string::npos)
+					fname = fp.substr(sl + 1);
+				// Case-insensitive README.md match
+				std::string fname_lower = fname;
+				for (auto &c : fname_lower)
+					c = static_cast<char>(std::tolower(c));
+
+				// Check if this README is at project root
+				bool is_root_readme = false;
+				if (fname_lower == "readme.md" ||
+				    fname_lower == "readme.markdown" ||
+				    fname_lower == "readme") {
+					// Project-root README: its parent dir == dir
+					std::string parent = fp;
+					size_t ps = parent.find_last_of("/\\");
+					parent = (ps != std::string::npos) ?
+							 parent.substr(0, ps) :
+							 "";
+					is_root_readme = (parent == dir);
+				}
+
+				if (is_root_readme) {
+					// Ingest README content into document table.
+					// type=0 (kDocumentTypeReadme) signals the
+					// knowledge layer to parse capabilities.
+					std::string content =
+						readFile(fp.c_str());
+					if (!content.empty()) {
+						int doc_type =
+							0; // kDocumentTypeReadme
+						// insertDocument's 5th/6th params are
+						// start_line / end_line (1-based line
+						// numbers), NOT byte offsets. Count
+						// newlines to compute the line range.
+						int line_count = 1;
+						for (char c : content)
+							if (c == '\n')
+								++line_count;
+						if (!g_store->insertDocument(
+							    project_id,
+							    doc_type, fp,
+							    content, 1,
+							    line_count)) {
+							fprintf(stderr,
+								"engine: insertDocument failed for %s: %s "
+								"[module=engine, method=engine_index_project]\n",
+								fp.c_str(),
+								g_store->error()
+									.c_str());
+						}
+					}
+					// README is ingested as a document, NOT as
+					// source code — skip the rest of the loop.
+					continue;
+				}
+			}
+
 			if (!rel.empty()) {
 				bool entry_is_dir = entry.is_directory();
 				// Use the consolidated entry check (single source of
@@ -131,6 +206,7 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 			}
 			if (entry.is_regular_file()) {
 				filter.stats().seen_files++;
+
 				// Incremental: check file_scan_state to skip unchanged files
 				struct stat file_stat;
 				int64_t mtime = 0, fsize = 0;

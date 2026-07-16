@@ -265,6 +265,16 @@ void JavaVisitor::handleMethodInvocation(TSNode node, uint64_t parent_id)
 
 	uint64_t id = emitter_->emitCall(name, loc, parent_id, 0, false,
 					 static_cast<int>(call_kind));
+
+	// ── Intra-file callee resolution ───────────────────────────
+	// Store the resolved callee's record ID as ref_original_id.
+	// Enables P1 call-edge construction in buildCallEdgesSQL.
+	if (!name.empty()) {
+		uint64_t target = resolveSymbol(name);
+		if (target)
+			unit_->setCallReference(id, target);
+	}
+
 	// Recurse into children — skip identifier/scoped_identifier/field_access
 	// (already extracted as the method name above). Only visit arguments
 	// and other expressions. This mirrors JsVisitor::visitCallExpr.
