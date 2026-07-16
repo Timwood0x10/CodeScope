@@ -370,6 +370,9 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 else()
     set(LADYBUG_VENDOR_LIB_DIR "${LADYBUG_VENDOR_DIR}/lib")
 endif()
+# Force re-detection: clear stale cache entries from previous runs
+unset(LADYBUG_LIBRARY CACHE)
+unset(LADYBUG_INCLUDE_DIR CACHE)
 find_library(LADYBUG_LIBRARY lbug
     PATHS ${LADYBUG_VENDOR_LIB_DIR} /opt/homebrew/lib /usr/local/lib /usr/lib
     NO_DEFAULT_PATH)
