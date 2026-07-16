@@ -48,7 +48,7 @@ jobs:
         uses: taiki-e/install-action@a416626d420eb6777063d64a4348c7160cc5a3d3 # nextest
 
       - name: Install deps (Ubuntu)
-        if: matrix.os == 'ubuntu-24.04'
+        if: startsWith(matrix.os, 'ubuntu-')
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build git gcc g++ pkg-config libssl-dev ccache

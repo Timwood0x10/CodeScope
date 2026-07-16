@@ -14,7 +14,7 @@ CodeScope is **not** a code explainer, a semantic analyzer, or a replacement for
 
 CodeScope is a **Project Truth Engine** that answers one question:
 
-> **"项目现在到底是什么状态？"**
+> **"Does the code actually do what you claim?"**
 
 Not "what does this code mean", but "does the code actually do what you claim?"
 
@@ -281,16 +281,6 @@ flowchart LR
 | `index_project` | Index entire project directory (parse → IR → graph) | **N/A** |
 | `index_file` | Index a single source file | **N/A** |
 | `count_tokens` | Estimate token count (DeepSeek formula) | **~10** |
-
-### Tools That Do NOT Exist
-
-The following tools appeared in old README versions but **are not implemented in the current codebase** — do not use:
-
-- ❌ `get_hotspots` — not implemented
-- ❌ `get_communities` — community detection not wired to MCP
-- ❌ `locate_code` — not implemented
-- ❌ `get_project_info` — not implemented
-- ❌ `enhance_project` / `codescope_build_context` / `codescope_capabilities` — removed
 
 ### Quick Decision Guide
 
