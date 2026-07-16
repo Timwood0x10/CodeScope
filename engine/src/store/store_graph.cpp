@@ -728,13 +728,22 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// ── Sync graph to LadybugDB (if available) ────────────────
 	// After all graph_nodes, graph_edges, and resolver edges are
 	// committed to SQLite, mirror them to LadybugDB for Cypher queries.
-	// This is a non-fatal step: if LadybugDB is unavailable or fails,
-	// the SQLite graph remains the source of truth.
+	// Uses incremental sync (syncIncrementalToLadybugDB) so only newly
+	// added nodes/edges are pushed after the first full sync, tracked
+	// via the lbug_sync_state table. This is a non-fatal step: if
+	// LadybugDB is unavailable or fails, the SQLite graph remains the
+	// source of truth.
+	//
+	// Reset sync state before incremental sync: buildGraph may have
+	// deleted old graph_nodes/edges (via deleteGraphNodesByFile) that
+	// are still present in LadybugDB. Resetting forces a full sync
+	// (DELETE + COPY FROM) to clear stale data and re-import cleanly.
 	{
 		auto t_lbug = Clock::now();
-		if (!syncGraphToLadybugDB(project_id))
+		resetLadybugSyncState(project_id);
+		if (!syncIncrementalToLadybugDB(project_id))
 			fprintf(stderr,
-				"buildGraph: syncGraphToLadybugDB failed "
+				"buildGraph: syncIncrementalToLadybugDB failed "
 				"for project %s "
 				"[module=store, method=buildGraph]\n",
 				pid.c_str());

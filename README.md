@@ -22,11 +22,11 @@ Not "what does this code mean", but "does the code actually do what you claim?"
 
 | Metric | Value |
 |--------|-------|
-| Languages | Rust, Go, C/C++, Python, Java, JS/TS |
+| Languages | 8 (Rust, Go, C/C++, Python, Java, JS/TS) |
 | Index speed | 1-10s (100+ files) |
 | Query latency | 0.3-1.5 ms |
-| Token savings | **98.5%** (260K lines → 40K tokens) |
-| MCP tools | 19 (Locate / Understand / Verify / Index) |
+| Token savings | **98.9%** (260K lines → 40K tokens) |
+| MCP tools | 37 (Locate / Understand / Verify / Index) |
 | Architecture | Facts → Resolution → Models → Verification |
 
 ### What It Can Do
@@ -84,11 +84,12 @@ codescope
 
 ```bash
 # macOS:
-brew install llvm@21 cmake pkg-config sqlite3
+brew install llvm@21 cmake pkg-config sqlite3 ladybug
 cargo build --release
 
 # Linux (Ubuntu):
 sudo apt-get install -y build-essential cmake llvm-dev libclang-dev libsqlite3-dev
+curl -fsSL https://install.ladybugdb.com | sh
 cargo build --release
 ```
 
@@ -103,7 +104,7 @@ graph TB
     end
 
     subgraph "Rust MCP Server"
-        MCP["MCP Protocol (JSON-RPC 2.0)<br/>19 tools / protocol / transport"]
+        MCP["MCP Protocol (JSON-RPC 2.0)<br/>37 tools / protocol / transport"]
         DISPATCH["Tool Dispatch<br/>project_id auto-restore"]
     end
 
@@ -205,7 +206,7 @@ flowchart LR
     A -->|"trigger"| B
 ```
 
-## MCP Tools (32 tools)
+## MCP Tools (37 tools)
 
 ### Project & Stats
 
@@ -285,7 +286,6 @@ The following tools appeared in old README versions but **are not implemented in
 
 - ❌ `get_hotspots` — not implemented
 - ❌ `get_communities` — community detection not wired to MCP
-- ❌ `graph_query` — custom Cypher query not implemented
 - ❌ `locate_code` — not implemented
 - ❌ `get_project_info` — not implemented
 - ❌ `enhance_project` / `codescope_build_context` / `codescope_capabilities` — removed
@@ -453,7 +453,7 @@ The Linker's `ResolveCallPass` resolves function calls across file boundaries us
 
 ## Token Savings
 
-Using code graphs instead of raw source files saves **~98.8% tokens** on average across 5 common query scenarios:
+Using code graphs instead of raw source files saves **~98.9% tokens** on average across 5 common query scenarios:
 
 | Scenario                 | Graph (tokens) | Raw (tokens) | Savings   |
 | ------------------------ | -------------- | ------------ | --------- |
@@ -532,11 +532,19 @@ cargo run --bin codescope
 
 ### Environment Variables
 
-| Variable           | Default                     | Description                                    |
-| ------------------ | --------------------------- | ---------------------------------------------- |
-| `CODESCOPE_DB_PATH` | `.codescope/codescope.db`   | SQLite database path                           |
-| `GRAMMARS_DIR`     | `grammars/`                 | Grammar .so files directory                    |
-| `CODESCOPE_LSP`    | (unset)                     | LSP server for type enhancement (e.g. `pylsp`) |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CODESCOPE_DB_PATH` | `.codescope/codescope.db` | SQLite database path |
+| `GRAMMARS_DIR` | `grammars/` | Grammar .so files directory |
+| `CODESCOPE_LSP` | (unset) | LSP server command for type enhancement (e.g. `pylsp`) |
+| `CODESCOPE_INDEX_MODE` | `standard` | Index mode: `fast` / `standard` / `strict` |
+| `CODESCOPE_EXCLUDE_PATHS` | (unset) | Comma-separated glob patterns to exclude (e.g. `test/*,docs/*`) |
+| `CODESCOPE_MMAP_SIZE` | `268435456` (256 MB) | SQLite `mmap_size` pragma value in bytes |
+| `CODESCOPE_WORKERS` | `4` | Number of parallel index workers |
+| `CODESCOPE_MAX_FILE_SIZE` | (unset) | Max source file size to index in bytes; larger files are skipped |
+| `CODESCOPE_WORKER_TIMEOUT` | `300` | Worker subprocess timeout in seconds |
+| `CODESCOPE_VERBOSE` | `0` | Set to `1` to enable verbose logging |
+| `CODESCOPE_EXPLAIN` | (unset) | Set to `1` to print SQL `EXPLAIN QUERY PLAN` for graph queries |
 
 ## Data Directory `.codescope/`
 
@@ -550,21 +558,17 @@ All persistent data is stored here — no manual setup needed.
 └── *.log              ← Analysis run logs with timing + CPU + memory data
 ```
 
-The database contains 11 tables:
+The database contains 40 tables, grouped by purpose (see `engine/src/store/store_schema.cpp`):
 
-| Table | Description |
-|-------|-------------|
-| `modules` | Directory module tree |
-| `symbols` | Symbol declarations with `role` field |
-| `entry_points` | Entry points (main/probe/initcall) |
-| `call_edges` | Function call graph edges |
-| `dependency_edges` | Module dependency edges |
-| `metrics` | Complexity metrics (cyclomatic, cognitive, etc.) |
-| `search_index` | FTS5 full-text search index |
-| `embeddings` | vec0 vector embeddings |
-| `symbol_status` | Per-symbol analysis progress flags |
-| `index_tasks` | Background task tracking |
-| `file_scan_state` | File modification timestamps |
+| Category | Tables | Purpose |
+|----------|--------|---------|
+| Core / Project | `projects`, `project_readiness`, `files`, `modules`, `entry_points`, `index_tasks`, `file_scan_state` | Project metadata, file tracking, index phase progress |
+| Graph | `graph_nodes`, `graph_edges`, `entity`, `relation`, `semantic_records`, `adjacency`, `adjacency_rev`, `module_edge`, `module_summary` | Code graph nodes/edges, CSR BLOB adjacency, cross-module edges |
+| Search | `code_fts` (FTS5), `name_trgm` (FTS5 trigram), `fts_node_map`, `node_vectors` | Full-text + trigram + n-gram vector search |
+| Facts / Parser | `reference`, `scope`, `import`, `type_info`, `type_ref`, `route` | Call facts, scope tree, imports, type definitions, HTTP routes |
+| Knowledge + Evidence | `capability`, `contract`, `claim`, `evidence`, `evidence_fact`, `finding`, `document` | Verification pipeline: claims, evidence chains, findings |
+| Model State | `workflow`, `workflow_step`, `architecture_edge`, `capability_state`, `workflow_state`, `architecture_state` | Workflows, architecture layers, state caches |
+| LadybugDB Sync | `lbug_sync_state` | Incremental sync progress to LadybugDB graph store |
 
 > **Tip**: The database is portable — copy `.codescope/` along with your project to reuse analysis results on another machine.
 
@@ -581,20 +585,6 @@ Benchmarks measured on **Apple M3 Max (36 GB RAM)**.
 | Symbol definition query | **0.01–0.03 ms** |
 | Callers/callees query | **0.01–0.02 ms** |
 | 9 queries (total) | **0.17 ms** |
-
-### Full Kernel Index (codebase-memory-mcp)
-
-| Metric | Linux Kernel v6.x (89,465 files) |
-|--------|:-------------------------------:|
-| Total nodes | **4,877,492** |
-| Total edges | **9,326,238** |
-| DB size | **7.06 GB** |
-| Cache size | **6.7 GB** |
-| Index time | **183 s (~3 min)** |
-| Peak memory | **11.6 GB** |
-| Parallelism | **14 workers** |
-| Files processed | **489 files/s** |
-| Edges generated | **50,966 edges/s** |
 
 ### Known Bottleneck (Knowledge Graph Queries)
 

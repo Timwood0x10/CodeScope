@@ -1,6 +1,11 @@
 # Reusable: build → test → package (macOS + Linux only)
 name: CI
 
+# SECURITY TODO (before public release): pin every `uses:` action to a specific
+# commit SHA instead of a floating tag (e.g. @v4) to guard against tag
+# re-pointing / supply-chain attacks. See:
+#   https://docs.github.com/en/actions/security-for-github-actions/security-guides/security-hardening-for-github-actions#using-third-party-actions
+
 on:
   workflow_call:
     inputs:
@@ -28,7 +33,7 @@ jobs:
           - os: macos-15
             artifact: codescope-aarch64-macos
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 120
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -59,14 +64,17 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ matrix.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          # Cargo.lock is the precise cache key, but it is not yet committed
+          # to the repo; include Cargo.toml so the key still changes when
+          # dependencies change. Once Cargo.lock is committed this stays correct.
+          key: ${{ matrix.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
           restore-keys: ${{ matrix.os }}-cargo-registry-
 
       - name: Cache Cargo target
         uses: actions/cache@v4
         with:
           path: target
-          key: ${{ matrix.os }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ matrix.os }}-cargo-target-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
           restore-keys: ${{ matrix.os }}-cargo-target-
 
       - name: Cache CMake build + deps
@@ -84,6 +92,50 @@ jobs:
         run: |
           cargo build --release --bin codescope
           cargo nextest run --release --no-tests=pass
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          ./target/release/codescope --help || true
+          # Verify binary is not corrupted (prints Mach-O / ELF metadata).
+          file target/release/codescope
+
+      - name: Build + test C++ engine
+        shell: bash
+        run: |
+          # Configure with tests enabled in a separate build dir so the
+          # release build (engine/build, BUILD_TESTS=OFF) stays untouched.
+          cmake -S engine -B engine/build-tests \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_TESTS=ON \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          cmake --build engine/build-tests -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+
+          # Run every C++ test binary produced under the build dir.
+          # nullglob: unmatched globs expand to nothing instead of a literal.
+          shopt -s nullglob
+          failed=0
+          for test_bin in engine/build-tests/test_*; do
+            # Only run regular executable files (skip dirs / non-binaries).
+            [ -f "$test_bin" ] && [ -x "$test_bin" ] || continue
+            test_name=$(basename "$test_bin")
+            # Skip known manual/debug tools that need external args.
+            case "$test_name" in
+              test_bench|test_bench_enhance|test_bench_project|test_pipeline_bench|test_fast_scan_debug|test_verify_aiscope|test_bun)
+                echo "  SKIP $test_name (requires external args)"
+                continue
+                ;;
+            esac
+            echo "  Running $test_name..."
+            if "$test_bin" > /tmp/test_output.log 2>&1; then
+              echo "  ✓ $test_name passed"
+            else
+              echo "  ✗ $test_name failed"
+              cat /tmp/test_output.log
+              failed=1
+            fi
+          done
+          exit $failed
 
       - name: Strip binary
         if: inputs.skip_package != true

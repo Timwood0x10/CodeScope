@@ -1,33 +1,77 @@
-<!--
-CodeScope 代码审查模板 —— 对应 CODE_REVIEW_STANDARD.md
-作者开 PR 时逐域自检并勾选；reviewer 按 §3 定级。
--->
+---
+name: Pull Request
+about: Submit changes to CodeScope
+title: ""
+labels: ""
+assignees: ""
+---
 
-## 变更说明
-**为什么改（动机）：**
+## Summary
 
-**关联 issue：** (如 #123)
+**What does this PR change?** (1-2 sentences)
 
-**自测说明（怎么验证、看到什么）：**
+**Motivation:** Why is this change needed? (Link to related issue: `Closes #123`)
+
+**How was it tested?** (Manual steps, existing tests, new tests)
 
 ---
 
-## 代码审查自检（作者勾选，对应 CODE_REVIEW_STANDARD.md §2）
+## Self-Review Checklist (Author)
 
-- [ ] **§2.1 内存/资源**：裸指针已判空、`std::string::c_str()` 未越生命周期、句柄全路径关闭、所有权清晰（值类型不可拷贝已 `= delete` 或注释）
-- [ ] **§2.2 FFI**：`unsafe` 入参已判空、返回的 `*mut c_char` 释放权唯一、FFI 层无裸拼 SQL（走 `GraphStore` 方法）
-- [ ] **§2.3 SQLite**：单句柄已串行化（`SQLITE_CONFIG_SERIALIZED`/mutex/连接池）、已设 `busy_timeout`、事务边界清晰
-- [ ] **§2.4 JSON**：对外输出经转义/结构化构造、键唯一、解析外部输入坏数据不杀服务
-- [ ] **§2.5 跨平台**：新增 POSIX API 有 Windows 分支或 `#error`、路径用 `std::filesystem`、shell 调用无 shell 或严格校验元字符
-- [ ] **§2.6 性能**：性能改动已附 before/after benchmark、无未测量声明；无新增全表扫描/N+1 且无规模上限说明
-- [ ] **§2.7 测试**：核心逻辑（调用图/语义搜索/JSON/FFI 边界）改动已配单测或回归测试
+### Memory & Resources
+- [ ] Raw pointers are null-checked before use
+- [ ] `std::string::c_str()` does not outlive the source string
+- [ ] File handles / sockets are closed on all code paths
+- [ ] Ownership is clear (non-copyable types have `= delete` or comment)
+- [ ] No raw `new`/`delete` outside FFI boundaries (use RAII)
+
+### FFI Safety
+- [ ] `unsafe` block inputs are validated (null, bounds, type)
+- [ ] Returned `*mut c_char` has a single, documented owner responsible for freeing
+- [ ] FFI layer does not construct raw SQL queries (delegates to `GraphStore` methods)
+- [ ] Every `extern "C"` function wraps its body in `try/catch` (no exceptions cross FFI boundary)
+- [ ] FFI string inputs are null-checked (`if (!param || !*param) return error_json`)
+
+### SQLite
+- [ ] Single connection handle is serialized (mutex / connection pool)
+- [ ] `busy_timeout` is set
+- [ ] Transaction boundaries are well-defined (no open txns leaked)
+
+### JSON
+- [ ] Output is never hand-joined — uses `jsonEscape()` or structured builders
+- [ ] Malformed input does not crash the server (returns error instead)
+
+### Cross-Platform
+- [ ] New POSIX API calls have a Windows branch or `#error`
+- [ ] File paths use `std::filesystem` or platform-agnostic API
+- [ ] Shell commands avoid shell injection (no unchecked metacharacters)
+
+### Performance
+- [ ] Performance changes include before/after benchmark data
+- [ ] No new full-table scans or N+1 queries without a size-limit justification
+
+### Testing
+- [ ] Core logic changes (call graph, semantic search, JSON, FFI boundary) include unit tests or regression tests
+- [ ] New public functions have corresponding tests
+
+### Documentation
+- [ ] README updated if new tools/features added
+- [ ] CHANGELOG.md entry added
+- [ ] Code comments in English (per code_rules.md)
 
 ---
 
-## 审查要求（reviewer 参考 CODE_REVIEW_STANDARD.md §4.5）
-- 核心模块（FFI / store / parser / graph builder / lsp）：需 **2 approval**（含 1 名模块负责人，见 CODEOWNERS）
-- 安全相关：需 **2 approval**（含安全复核）
-- 性能相关：**1 approval + benchmark 数据**
+## Review Requirements
 
-## 严重程度速查
-🔴 Blocker（合入前必修）· 🟠 Major（应修，可建 issue 跟踪）· 🟡 Minor（可选）
+| Area | Required Approvals |
+|------|:------------------:|
+| Core modules (FFI / store / parser / graph builder / LSP) | **2 approvals** (including 1 module owner) |
+| Security-related changes | **2 approvals** (including security review) |
+| Performance changes | **1 approval + benchmark data** |
+| Other changes | **1 approval** |
+
+## Severity Quick Reference
+
+- 🔴 **Blocker** — Must fix before merge
+- 🟠 **Major** — Should fix (can track with issue)
+- 🟡 **Minor** — Optional

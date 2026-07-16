@@ -27,10 +27,11 @@ irm https://raw.githubusercontent.com/Timwood0x10/CodeScope/master/install.ps1 |
 ```bash
 # 1. 安装系统依赖
 # macOS:
-brew install llvm@21 cmake pkg-config sqlite3
+brew install llvm@21 cmake pkg-config sqlite3 ladybug
 
 # Linux (Ubuntu):
 sudo apt-get install -y build-essential cmake llvm-dev libclang-dev libsqlite3-dev
+curl -fsSL https://install.ladybugdb.com | sh
 
 # 2. 安装 Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -64,11 +65,11 @@ CODESCOPE_WORKERS=8 ./codescope-parallel.sh /path/to/your/project
 ## 四、启动 MCP 服务器
 
 ```bash
-# 启动 MCP 服务器（默认端口 8080）
+# 启动 MCP 服务器（MCP 协议使用 stdio 通信，无端口）
 ./target/release/codescope
 
-# 指定数据库路径
-./target/release/codescope --db-path /path/to/codescope.db
+# 指定数据库路径（通过环境变量，无 --db-path 参数）
+CODESCOPE_DB_PATH=/path/to/codescope.db ./target/release/codescope
 ```
 
 ## 五、支持的索引模式
@@ -86,7 +87,7 @@ CODESCOPE_WORKERS=8 ./codescope-parallel.sh /path/to/your/project
 | Rust | ✅ 稳定 | 所有项目测试通过 |
 | Go | ✅ 稳定 | 标准库 54/54 模块通过 |
 | Java | ✅ 可用 | JDK 56/69 模块通过 |
-| C/C++ | ⚠️ 部分可用 | 已知 SIGILL 问题（Apple Silicon） |
+| C/C++ | ✅ 稳定 | tree-sitter C grammar SIGILL 已通过 -O0 编译修复 |
 | Python | ✅ 稳定 | 基础支持 |
 | JavaScript/TypeScript | ✅ 稳定 | 基础支持 |
 
@@ -105,10 +106,7 @@ export CPPFLAGS="-I/opt/homebrew/opt/llvm@21/include"
 
 ### Q: 索引 C 项目时 SIGILL 崩溃
 
-这是 tree-sitter C grammar v0.24.2 在 Apple Silicon 上的已知问题。作为临时解决方案：
-
-- 使用 `--file-list` 分批处理，跳过崩溃文件
-- 或将 C 文件分成小批次索引
+这是 tree-sitter C grammar v0.24.2 在 Apple Silicon 上的已知问题。CodeScope 已通过将 C grammar 编译为 `-O0` 修复此问题，正常使用不会触发。如果仍遇到 SIGILL，请确认使用的是最新构建（`cargo build --release` 重新编译）。
 
 ### Q: 如何配合 AI 使用？
 

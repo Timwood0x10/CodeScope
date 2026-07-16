@@ -123,9 +123,44 @@ class GraphStore {
 		return lbug_initialized_ ? &lbug_conn_ : nullptr;
 	}
 	/** Sync graph_nodes and graph_edges from SQLite to LadybugDB.
-	 *  Called at the end of buildGraph(). No-op if LadybugDB is not
+	 *  Performs a FULL sync: clears the GraphNode and CALLS tables in
+	 *  LadybugDB, then bulk-imports all rows via COPY FROM. Called by
+	 *  syncIncrementalToLadybugDB() on the first sync (when no
+	 *  lbug_sync_state row exists yet). No-op if LadybugDB is not
 	 *  initialized. Returns true on success. */
 	bool syncGraphToLadybugDB(uint64_t project_id);
+
+	/// Sync only nodes/edges modified since the last sync to LadybugDB.
+	/// Uses lbug_sync_state table to track sync progress.
+	/// @param project_id The project to sync
+	/// @return true on success, false on failure (error logged to stderr)
+	bool syncIncrementalToLadybugDB(uint64_t project_id);
+
+	/// Get the last sync state for a project.
+	/// @param project_id The project to query
+	/// @param out_last_node_id Output: last synced node ID
+	/// @param out_last_edge_id Output: last synced edge ID
+	/// @return true if sync state exists, false if never synced or error
+	bool getLadybugSyncState(uint64_t project_id, int64_t &out_last_node_id,
+				 int64_t &out_last_edge_id);
+
+	/// Update the sync state after a successful incremental sync.
+	/// @param project_id The project
+	/// @param last_node_id The max node ID synced
+	/// @param last_edge_id The max edge ID synced
+	/// @param node_count Total nodes in LadybugDB
+	/// @param edge_count Total edges in LadybugDB
+	/// @return true on success, false on error
+	bool updateLadybugSyncState(uint64_t project_id, int64_t last_node_id,
+				    int64_t last_edge_id, int64_t node_count,
+				    int64_t edge_count);
+
+	/// Reset LadybugDB sync state for a project (called when project is
+	/// re-indexed). Forces the next syncIncrementalToLadybugDB call to do
+	/// a full sync.
+	/// @param project_id The project to reset
+	/// @return true on success, false on error
+	bool resetLadybugSyncState(uint64_t project_id);
 
 	/** Get the database file path (for opening additional connections). */
 	const std::string &dbPath() const

@@ -22,11 +22,11 @@ CodeScope 是一个 **Project Truth Engine**，回答一个问题：
 
 | 指标 | 值 |
 |------|-----|
-| 支持语言 | Rust, Go, C/C++, Python, Java, JS/TS |
+| 支持语言 | 8 种（Rust, Go, C/C++, Python, Java, JS/TS） |
 | 索引速度 | 1-10s（100+ 文件） |
 | 查询延迟 | 0.3-1.5 ms |
-| Token 节省 | **98.5%**（26 万行 → 4 万 token） |
-| MCP 工具 | 19 个（Locate / Understand / Verify / Index） |
+| Token 节省 | **98.9%**（26 万行 → 4 万 token） |
+| MCP 工具 | 37 个（Locate / Understand / Verify / Index） |
 | 架构 | Facts → Resolution → Models → Verification |
 
 ### 能验证什么
@@ -99,7 +99,16 @@ cargo build --release
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `CODESCOPE_DB_PATH` | `.codescope/codescope.db` | SQLite 数据库路径 |
-| `CODESCOPE_LSP` | 未设置 | LSP 服务器命令，用于类型增强 |
+| `GRAMMARS_DIR` | `grammars/` | Grammar .so 文件目录 |
+| `CODESCOPE_LSP` | 未设置 | LSP 服务器命令，用于类型增强（如 `pylsp`） |
+| `CODESCOPE_INDEX_MODE` | `standard` | 索引模式：`fast` / `standard` / `strict` |
+| `CODESCOPE_EXCLUDE_PATHS` | 未设置 | 逗号分隔的排除 glob 模式（如 `test/*,docs/*`） |
+| `CODESCOPE_MMAP_SIZE` | `268435456` (256 MB) | SQLite `mmap_size` pragma 值（字节） |
+| `CODESCOPE_WORKERS` | `4` | 并行索引 worker 数量 |
+| `CODESCOPE_MAX_FILE_SIZE` | 未设置 | 索引的最大源文件大小（字节）；超过则跳过 |
+| `CODESCOPE_WORKER_TIMEOUT` | `300` | Worker 子进程超时（秒） |
+| `CODESCOPE_VERBOSE` | `0` | 设为 `1` 启用详细日志 |
+| `CODESCOPE_EXPLAIN` | 未设置 | 设为 `1` 打印图查询的 SQL `EXPLAIN QUERY PLAN` |
 
 ## 数据目录 `.codescope/`
 
@@ -113,21 +122,17 @@ CodeScope 在首次运行时自动在项目根目录创建 `.codescope/` 目录�
 └── *.log              ← 分析运行日志（含时间、CPU、内存数据）
 ```
 
-数据库包含 11 张表：
+数据库包含 40 张表，按用途分组（见 `engine/src/store/store_schema.cpp`）：
 
-| 表 | 说明 |
-|------|-------------|
-| `modules` | 目录模块树 |
-| `symbols` | 符号声明（含 `role` 字段） |
-| `entry_points` | 入口点（main/probe/initcall） |
-| `call_edges` | 函数调用图边 |
-| `dependency_edges` | 模块依赖边 |
-| `metrics` | 复杂度指标（圈复杂度、认知复杂度等） |
-| `search_index` | FTS5 全文搜索索引 |
-| `embeddings` | vec0 向量嵌入 |
-| `symbol_status` | 逐符号分析进度标志 |
-| `index_tasks` | 后台任务跟踪 |
-| `file_scan_state` | 文件修改时间戳 |
+| 类别 | 表 | 用途 |
+|------|------|------|
+| 核心 / 项目 | `projects`, `project_readiness`, `files`, `modules`, `entry_points`, `index_tasks`, `file_scan_state` | 项目元数据、文件跟踪、索引阶段进度 |
+| 图 | `graph_nodes`, `graph_edges`, `entity`, `relation`, `semantic_records`, `adjacency`, `adjacency_rev`, `module_edge`, `module_summary` | 代码图节点/边、CSR BLOB 邻接表、跨模块边 |
+| 搜索 | `code_fts` (FTS5), `name_trgm` (FTS5 trigram), `fts_node_map`, `node_vectors` | 全文 + trigram + n-gram 向量搜索 |
+| 事实 / 解析 | `reference`, `scope`, `import`, `type_info`, `type_ref`, `route` | 调用事实、作用域树、导入、类型定义、HTTP 路由 |
+| 知识 + 证据 | `capability`, `contract`, `claim`, `evidence`, `evidence_fact`, `finding`, `document` | 验证管线：声明、证据链、发现 |
+| 模型状态 | `workflow`, `workflow_step`, `architecture_edge`, `capability_state`, `workflow_state`, `architecture_state` | 工作流、架构层、状态缓存 |
+| LadybugDB 同步 | `lbug_sync_state` | 到 LadybugDB 图存储的增量同步进度 |
 
 > **提示**：数据库是可移植的——将 `.codescope/` 随项目一起复制，即可在其他机器上复用分析结果。
 
@@ -144,20 +149,6 @@ CodeScope 在首次运行时自动在项目根目录创建 `.codescope/` 目录�
 | 符号定义查询 | **0.01–0.03 ms** |
 | 调用者/被调用者查询 | **0.01–0.02 ms** |
 | 9 次查询（总计） | **0.17 ms** |
-
-### 全量内核索引 (codebase-memory-mcp)
-
-| 指标 | Linux 内核 v6.x (89,465 文件) |
-|------|:---------------------------:|
-| 总节点数 | **4,877,492** |
-| 总边数 | **9,326,238** |
-| 数据库大小 | **7.06 GB** |
-| 缓存大小 | **6.7 GB** |
-| 索引耗时 | **183 s（约 3 分钟）** |
-| 峰值内存 | **11.6 GB** |
-| 并行度 | **14 workers** |
-| 文件处理速度 | **489 files/s** |
-| 边生成速度 | **50,966 edges/s** |
 
 ### 已知瓶颈（知识图谱查询）
 
@@ -216,7 +207,7 @@ Apache 2.0
 
 每个 MCP 工具有其适用的场景和副作用（主要是 Token 消耗）。以下指南帮助你在正确的场合选择合适的工具。
 
-> **工具总数：32 个**。一些旧工具标记为 `[DEPRECATED]`，建议使用推荐替代。
+> **工具总数：37 个**。一些旧工具标记为 `[DEPRECATED]`，建议使用推荐替代。
 
 ### 核心查询类
 
@@ -296,7 +287,6 @@ Apache 2.0
 
 - ❌ `get_hotspots` — 未实现
 - ❌ `get_communities` — 社区检测未接入 MCP
-- ❌ `graph_query` — 自定义 Cypher 查询未实现
 - ❌ `locate_code` — 未实现
 - ❌ `get_project_info` — 未实现
 - ❌ `enhance_project` / `codescope_build_context` / `codescope_capabilities` — 已移除

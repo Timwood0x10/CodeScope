@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: CodeScope Documentation
+    url: https://github.com/Timwood0x10/CodeScope/tree/master/docs/en
+    about: Check the documentation for usage guides and architecture details
+  - name: Discussion
+    url: https://github.com/Timwood0x10/CodeScope/discussions
+    about: Ask questions and discuss ideas

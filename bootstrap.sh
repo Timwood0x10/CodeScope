@@ -77,6 +77,13 @@ case "$OS" in
       brew install pkg-config
     fi
     ok "pkg-config"
+
+    # LadybugDB (required — server/build.rs links liblbug for graph storage)
+    if ! brew ls --versions ladybug &>/dev/null; then
+      info "Installing LadybugDB..."
+      brew install ladybug
+    fi
+    ok "LadybugDB"
     ;;
 
   linux)
@@ -123,6 +130,13 @@ case "$OS" in
       fi
     fi
     ok "sqlite3"
+
+    # LadybugDB (required — server/build.rs links liblbug for graph storage)
+    if ! command -v lbug &>/dev/null; then
+      info "Installing LadybugDB..."
+      curl -fsSL https://install.ladybugdb.com | sh
+    fi
+    ok "LadybugDB"
     ;;
 
   *)

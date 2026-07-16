@@ -118,10 +118,49 @@ fn main() {
     println!("cargo:rustc-link-lib=static=tree-sitter");
 
     // LadybugDB (optional, for embedded graph storage via Cypher).
-    // Homebrew installs both static (liblbug.a) and dynamic (liblbug.dylib).
-    // Use static linking to avoid runtime dylib dependencies.
-    println!("cargo:rustc-link-search=native=/opt/homebrew/lib");
-    println!("cargo:rustc-link-lib=static=lbug");
+    // Read the CMake cache to determine whether CMake's find_library()
+    // succeeded — this is the single source of truth, ensuring build.rs
+    // and CMakeLists.txt agree on whether HAS_LADYBUG is defined. If
+    // CMake found the library, build.rs links it too; otherwise neither
+    // side references lbug symbols and the C++ engine uses SQLite only.
+    let cmake_cache = format!("{}/CMakeCache.txt", build_dir);
+    let lbug_lib = std::fs::read_to_string(&cmake_cache)
+        .ok()
+        .and_then(|content| {
+            for line in content.lines() {
+                if line.starts_with("LADYBUG_LIBRARY:FILEPATH=") {
+                    let val = line.trim_start_matches("LADYBUG_LIBRARY:FILEPATH=");
+                    if !val.is_empty() && val != "LADYBUG_LIBRARY-NOTFOUND" && val != "NOTFOUND" {
+                        return Some(val.to_string());
+                    }
+                    return None;
+                }
+            }
+            None
+        });
+
+    if let Some(lib_path) = &lbug_lib {
+        // CMake found liblbug. Derive the directory and link mode from the path.
+        let lib_dir = std::path::Path::new(lib_path)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| ".".to_string());
+        let is_static = lib_path.ends_with(".a");
+        let link_mode = if is_static { "static" } else { "dylib" };
+        println!("cargo:rustc-link-search=native={}", lib_dir);
+        println!("cargo:rustc-link-lib={}=lbug", link_mode);
+        eprintln!(
+            "build.rs: LadybugDB {} lib found via CMake cache at {}",
+            if is_static { "static" } else { "dynamic" },
+            lib_path
+        );
+    } else if target_os == "macos" || target_os == "linux" {
+        // CMake did not find LadybugDB — consistent with HAS_LADYBUG not
+        // being defined. Emit a clear warning so users know Cypher queries
+        // will be unavailable.
+        eprintln!("WARNING: LadybugDB not found by CMake. Graph storage will use SQLite only.");
+        eprintln!("  Install LadybugDB: https://ladybugdb.com/docs/getting-started");
+    }
 
     // C++ standard library: libc++ on macOS, libstdc++ on Linux/Windows
     match target_os.as_str() {
@@ -134,13 +173,23 @@ fn main() {
 fn platform_default_compiler(target_os: &str) -> (String, String) {
     match target_os {
         "macos" => {
-            // macOS: prefer Homebrew LLVM@21 (C++23), fall back to Xcode CLT clang
-            let homebrew_cc = "/opt/homebrew/opt/llvm@21/bin/clang";
-            if std::path::Path::new(homebrew_cc).exists() {
-                eprintln!("build.rs: macOS → Homebrew LLVM@21");
+            // macOS: prefer Homebrew LLVM@21 (C++23), fall back to Xcode CLT clang.
+            // Apple Silicon installs Homebrew under /opt/homebrew; Intel Macs
+            // use /usr/local. Probe both so the build is portable across archs.
+            let homebrew_prefixes = ["/opt/homebrew", "/usr/local"];
+            let mut found = None;
+            for prefix in homebrew_prefixes {
+                let homebrew_cc = format!("{}/opt/llvm@21/bin/clang", prefix);
+                if std::path::Path::new(&homebrew_cc).exists() {
+                    found = Some(prefix);
+                    break;
+                }
+            }
+            if let Some(prefix) = found {
+                eprintln!("build.rs: macOS → Homebrew LLVM@21 at {}", prefix);
                 (
-                    homebrew_cc.to_string(),
-                    "/opt/homebrew/opt/llvm@21/bin/clang++".to_string(),
+                    format!("{}/opt/llvm@21/bin/clang", prefix),
+                    format!("{}/opt/llvm@21/bin/clang++", prefix),
                 )
             } else {
                 eprintln!("build.rs: macOS → system clang (Xcode CLT)");

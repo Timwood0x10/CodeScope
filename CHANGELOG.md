@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.2.1 (2026-07-16)
+
+Open-source release preparation — documentation accuracy and build portability fixes.
+
+### 🐛 Bug Fixes
+
+- **macOS install instructions missing LadybugDB**: `README.md`, `QUICK_START.md`, and `bootstrap.sh` did not list LadybugDB as a dependency, but `server/build.rs` unconditionally links `liblbug`. Added `brew install ladybug` (macOS) and `curl -fsSL https://install.ladybugdb.com | sh` (Linux) to all install paths.
+- **build.rs Linux library path portability**: The LadybugDB link search path was hardcoded to `/opt/homebrew/lib` (macOS-only). Now resolves the correct path per platform.
+- **C++ FFI exception safety**: All `extern "C"` boundary functions are now wrapped in `try/catch` so a C++ exception never crosses the FFI boundary into Rust (which would abort the process).
+- **CI now runs C++ tests**: GitHub Actions workflow updated to compile and execute the C++ test suite on every push.
+- **Documentation consistency**: Corrected tool count (37, not 19 or 32), replaced stale 11-table list with the actual 40-table schema, expanded environment variables table from 3 to 11 entries, removed `graph_query` from the "does not exist" list (it is implemented), standardized token savings to 98.9%, and removed the stale `codebase-memory-mcp` benchmark table.
+
+### 🚀 New Features
+
+- **LadybugDB incremental sync**: Added `lbug_sync_state` table to track incremental sync progress (last synced node id, edge rowid, and full-sync flag) so re-syncs only process new graph data.
+- **ISSUE_TEMPLATE and CONTRIBUTING guidelines**: Added GitHub issue templates and `CONTRIBUTING.md` to guide open-source contributors.
+
+### 🔒 Code Review Fixes
+
+- **LadybugDB stale data on re-index**: `buildGraph` now calls `resetLadybugSyncState` before sync to force a full sync when the SQLite graph was rebuilt, preventing stale nodes/edges from accumulating in LadybugDB.
+- **build.rs / CMakeLists.txt LadybugDB synchronization**: `build.rs` now reads the CMake cache (`CMakeCache.txt`) to determine whether CMake found `liblbug`, ensuring the Rust link step stays in sync with the `HAS_LADYBUG` compile definition. Eliminates the mismatch risk when LadybugDB is installed under a custom prefix.
+- **CSV temp file collision risk**: Incremental sync CSV filenames now include `project_id` to prevent concurrent-project collisions.
+- **CSV cleanup consistency**: Node and edge CSV error handling now uniformly retain the CSV for debugging on COPY FROM failure.
+- **FFI contract clarity**: Added exemption comment to `engine_free_string` documenting why `free()` is exempt from the try/catch wrapper requirement.
+- **Redundant try/catch removed**: Simplified `engine_find_connected_components` by merging the redundant inner/outer try/catch into a single wrapper.
+
+### 🧹 Chores
+
+- **Removed accidentally committed binary `version` file**: A stray binary artifact was removed from the repository.
+- **Committed Cargo.lock**: Required for reproducible builds of the binary crate. Was previously gitignored.
+- **Gitignored runtime artifacts**: `runtimelog/`, `llvm_ir/output/`, and `*.lbug` files are now properly ignored.
+
+---
+
 ## v0.2.0 (2026-07-15)
 
 ### 🚀 New Features
