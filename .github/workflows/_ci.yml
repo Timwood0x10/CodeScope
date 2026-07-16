@@ -54,15 +54,25 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build git gcc g++ pkg-config libssl-dev ccache
-          # Install LadybugDB CLI (dev library is vendored in engine/third_party/ladybug/)
+          # Install LadybugDB CLI
           curl -fsSL https://install.ladybugdb.com | sh
+          # Download liblbug to vendored path (CMake finds it via third_party/ladybug)
+          ARCH=$(uname -m)
+          [ "$ARCH" = "x86_64" ] && ARCH="x86_64" || ARCH="aarch64"
+          mkdir -p engine/third_party/ladybug/lib/linux
+          curl -sL "https://github.com/LadybugDB/ladybug/releases/latest/download/liblbug-linux-${ARCH}.tar.gz" \
+            | tar xz -C engine/third_party/ladybug/lib/linux
           echo "/usr/local/lib" | sudo tee /etc/ld.so.conf.d/ladybug.conf
           sudo ldconfig
 
       - name: Install deps (macOS)
         if: matrix.os == 'macos-15'
         run: |
-          brew install cmake ninja git ladybug ccache
+          brew install cmake ninja git ccache
+          # Download liblbug to vendored path
+          mkdir -p engine/third_party/ladybug/lib/macos
+          curl -sL "https://github.com/LadybugDB/ladybug/releases/latest/download/liblbug-osx-arm64.tar.gz" \
+            | tar xz -C engine/third_party/ladybug/lib/macos
 
       - name: Cache Cargo registry
         uses: actions/cache@v6 # v4.2.3
