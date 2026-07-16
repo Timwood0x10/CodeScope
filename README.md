@@ -56,7 +56,7 @@ The knowledge graph is not the product — it is the infrastructure that powers 
 
 ```bash
 # 1. One-command build (auto-detects OS, installs deps, compiles)
-bash <(curl -fsSL https://raw.githubusercontent.com/Timwood0x10/CodeScope/master/bootstrap.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/Timwood0x10/CodeScope/main/bootstrap.sh)
 
 # 2. Index a project
 codescope cli index_project '{"project_path":"/path/to/your/project"}'
