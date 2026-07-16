@@ -12,6 +12,11 @@ extern "C" {
 int   engine_init(const char* db_path);
 void  engine_shutdown();
 
+/// Returns the engine version string. The returned pointer is static
+/// and does NOT need to be freed.
+/// @return Static C string like "0.2.0"
+const char *engine_version(void);
+
 // ─── Project ──────────────────────────────────────────────────
 
 uint64_t engine_create_project(const char* root_path, const char* name);

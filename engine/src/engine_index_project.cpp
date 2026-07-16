@@ -238,7 +238,7 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	// Bounded queue: capacity = 2 * worker_count for natural backpressure
 	const size_t kQueueCapacity =
 		std::max<size_t>(2 * std::thread::hardware_concurrency(), 8);
-	BoundedQueue<std::unique_ptr<store::FileResult> > result_queue(
+	BoundedQueue<std::unique_ptr<store::FileResult>> result_queue(
 		kQueueCapacity);
 
 	// Thread-safe counters
@@ -334,10 +334,10 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 			}
 		};
 		thread_local static std::unordered_map<
-			std::string, std::unique_ptr<TSParser, TSParserDeleter> >
+			std::string, std::unique_ptr<TSParser, TSParserDeleter>>
 			tl_parsers;
 		thread_local static std::unordered_map<
-			std::string, std::unique_ptr<ir::JsVisitor> >
+			std::string, std::unique_ptr<ir::JsVisitor>>
 			tl_visitors;
 
 		// Metric computation extracted to engine_index_metrics.{h,cpp}
@@ -840,7 +840,7 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 
 	const size_t kQueueCapacity =
 		std::max<size_t>(2 * std::thread::hardware_concurrency(), 8);
-	BoundedQueue<std::unique_ptr<store::FileResult> > result_queue(
+	BoundedQueue<std::unique_ptr<store::FileResult>> result_queue(
 		kQueueCapacity);
 
 	std::atomic<int> next_job{ 0 };
@@ -914,10 +914,10 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 			}
 		};
 		thread_local static std::unordered_map<
-			std::string, std::unique_ptr<TSParser, TSParserDeleter> >
+			std::string, std::unique_ptr<TSParser, TSParserDeleter>>
 			tl_parsers;
 		thread_local static std::unordered_map<
-			std::string, std::unique_ptr<ir::JsVisitor> >
+			std::string, std::unique_ptr<ir::JsVisitor>>
 			tl_visitors;
 
 		while (true) {

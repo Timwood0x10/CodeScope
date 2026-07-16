@@ -62,7 +62,7 @@ struct EvidenceRecord {
 	double confidence = 0.0;
 	std::string verifier_name;
 	std::string detail;
-	std::vector<std::pair<int, int64_t> > facts;
+	std::vector<std::pair<int, int64_t>> facts;
 };
 
 // Human-readable name for a ClaimType (e.g. "CapabilityExists").

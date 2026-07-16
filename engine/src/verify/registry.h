@@ -74,7 +74,7 @@ class VerifierRegistry {
 	VerifierRegistry(const VerifierRegistry &) = delete;
 	VerifierRegistry &operator=(const VerifierRegistry &) = delete;
 
-	std::vector<std::unique_ptr<Verifier> > verifiers_;
+	std::vector<std::unique_ptr<Verifier>> verifiers_;
 };
 
 } // namespace verify

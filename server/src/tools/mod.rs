@@ -333,8 +333,18 @@ fn h_index_project(project_id: u64, args: &Value) -> String {
 
             let result = run_worker(exe.to_str().unwrap_or("codescope"), &args_list, &envs);
 
-            // Re-init engine after worker completes (regardless of success/failure)
-            crate::ffi::init(&db_path);
+            // Re-init engine after worker completes (regardless of success/failure).
+            // The worker subprocess may have left the SQLite WAL lock held briefly
+            // or the DB may be corrupted; checking the return value prevents the
+            // server from silently running with a null g_store for the rest of its
+            // lifetime (every subsequent tool call would return "not initialized").
+            let init_result = crate::ffi::init(&db_path);
+            if init_result != 0 {
+                return format!(
+                    "{{\"ok\":false,\"error\":\"engine re-initialization failed after index (code={}). The database may be locked or corrupted. [module=mcp, tool=index_project, method=ffi::init]\"}}",
+                    init_result
+                );
+            }
 
             match result {
                 Ok(out) => {

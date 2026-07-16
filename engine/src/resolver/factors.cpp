@@ -92,7 +92,7 @@ std::string moduleTokenFromPath(const std::string &file_path)
 } // namespace
 
 double factorImportMatch(
-	const std::unordered_map<std::string, std::vector<std::string> >
+	const std::unordered_map<std::string, std::vector<std::string>>
 		&import_index,
 	const std::string &caller_file, const std::string &candidate_file,
 	const std::string &candidate_name)

@@ -3,6 +3,7 @@
 
 #include "posix_compat.h"
 #include <atomic>
+#include <cctype>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
@@ -166,11 +167,11 @@ bool GraphStore::open(const char *db_path)
 	// on new databases; existing DBs keep their original page size.
 	exec(("PRAGMA page_size=" + std::to_string(kPageSize)).c_str());
 
-	// Performance PRAGMAs: WAL mode + MEMORY temp + synchronous OFF.
-	// WARNING: synchronous=OFF means fsync is never called — a power failure
-	// or crash may corrupt the database. Acceptable for CodeScope since the
-	// DB is a cache that can be rebuilt by re-indexing. Use synchronous=NORMAL
-	// if data safety is more important than write performance.
+	// Performance PRAGMAs: WAL mode + MEMORY temp + configurable synchronous.
+	// synchronous defaults to OFF (fsync never called) for cache performance —
+	// a power failure or crash may corrupt the DB, but it is a cache that can
+	// be rebuilt by re-indexing. Override via the CODESCOPE_SYNCHRONOUS env
+	// var (NORMAL/FULL) when data safety matters more than write speed.
 	if (!exec("PRAGMA journal_mode=WAL"))
 		fprintf(stderr,
 			"WARN: PRAGMA journal_mode=WAL failed: %s [module=store, method=open]\n",
@@ -181,9 +182,39 @@ bool GraphStore::open(const char *db_path)
 	if (!exec("PRAGMA locking_mode=NORMAL"))
 		fprintf(stderr,
 			"WARN: PRAGMA locking_mode=NORMAL failed [module=store, method=open]\n");
-	if (!exec("PRAGMA synchronous=OFF"))
+	// Configurable synchronous mode (default: OFF for cache performance).
+	// Set CODESCOPE_SYNCHRONOUS=NORMAL for safer writes (WAL + fsync on
+	// commit). Set CODESCOPE_SYNCHRONOUS=FULL for maximum safety (fsync
+	// after every write). Invalid values log a warning and fall back to OFF.
+	const char *sync_env = std::getenv("CODESCOPE_SYNCHRONOUS");
+	std::string sync_mode = "OFF";
+	if (sync_env && *sync_env) {
+		std::string val = sync_env;
+		for (auto &c : val)
+			c = static_cast<char>(
+				toupper(static_cast<unsigned char>(c)));
+		if (val == "NORMAL" || val == "FULL" || val == "OFF") {
+			sync_mode = val;
+		} else if (val == "0") {
+			sync_mode = "OFF";
+		} else if (val == "1" || val == "2") {
+			sync_mode = "FULL";
+		} else {
+			fprintf(stderr,
+				"[module=store, method=open] "
+				"Invalid CODESCOPE_SYNCHRONOUS='%s', using OFF\n",
+				sync_env);
+		}
+	}
+	std::string sync_pragma = "PRAGMA synchronous=" + sync_mode;
+	if (!exec(sync_pragma.c_str()))
 		fprintf(stderr,
-			"WARN: PRAGMA synchronous=OFF failed [module=store, method=open]\n");
+			"WARN: PRAGMA synchronous=%s failed: %s "
+			"[module=store, method=open]\n",
+			sync_mode.c_str(), sqlite3_errmsg(db_));
+	else
+		fprintf(stderr, "[module=store] synchronous=%s\n",
+			sync_mode.c_str());
 	if (!exec("PRAGMA temp_store=MEMORY"))
 		fprintf(stderr,
 			"WARN: PRAGMA temp_store=MEMORY failed [module=store, method=open]\n");

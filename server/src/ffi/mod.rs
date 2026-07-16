@@ -7,6 +7,8 @@ unsafe extern "C" {
     fn engine_init(db_path: *const c_char) -> i32;
     fn engine_shutdown();
 
+    fn engine_version() -> *const c_char;
+
     fn engine_create_project(root_path: *const c_char, name: *const c_char) -> u64;
     fn engine_get_latest_project_id() -> u64;
     fn engine_index_file(project_id: u64, file_path: *const c_char) -> *mut c_char;
@@ -152,6 +154,24 @@ pub fn init(db_path: &str) -> i32 {
 
 pub fn shutdown() {
     unsafe { engine_shutdown() }
+}
+
+/// Returns the engine version string.
+///
+/// Wraps the C++ `engine_version()` FFI function, which returns a static
+/// C string (no allocation, no free needed). Returns `"unknown"` if the
+/// engine returns a null pointer (defensive — the C++ side always returns
+/// a valid static string).
+pub fn version() -> String {
+    unsafe {
+        let ptr = engine_version();
+        if ptr.is_null() {
+            return String::from("unknown");
+        }
+        std::ffi::CStr::from_ptr(ptr)
+            .to_string_lossy()
+            .into_owned()
+    }
 }
 
 pub fn create_project(root_path: &str, name: &str) -> u64 {

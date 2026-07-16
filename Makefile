@@ -105,7 +105,34 @@ build-server:
 test: test-engine test-server
 	@printf "$(CHECK) all tests passed\n"
 
-TEST_EXES := test_ir test_graph test_graph_call_precision test_e2e test_go_e2e test_c_e2e test_cpp_e2e test_rust_e2e test_js_e2e test_ts_e2e test_java_e2e test_model_engine test_claim_parser test_verifier_registry test_fuzzy_resolver test_index_metrics test_documentation_drift test_capability_drift test_architecture_drift test_module_edge test_query_algorithms test_connected_components_ffi test_trigram_search test_exclude_paths test_state_builder_batch test_resolver_fuzzy_cache test_module_path_column test_ladybug_sync
+# Automated C++ test executables run by `make test-engine`.
+# Every automated test_*.cpp in engine/tests/ MUST be listed here so it
+# does not silently go unrun. Excluded tools are NOT automated tests:
+#   - test_fast_scan, test_fast_scan_debug, test_verify_aiscope: manual
+#     debug tools needing external args (<grammars_dir> <src_dir>);
+#     moved to engine/manual/ (built only with -DBUILD_MANUAL=ON).
+#   - test_bench, test_bench_enhance, test_bench_project,
+#     test_pipeline_bench, test_bun: benchmarks / manual debug, built
+#     on demand (see test-bench / bench-check targets).
+# Known-failing tests (tracked for future fix, NOT in TEST_EXES):
+#   - test_enhance_e2e: expects files_processed field not yet implemented
+#   - test_fp_rust: resolver does not find Rust main() callees (resolver gap)
+#   - test_fp_java: resolver does not find Java main() callees (resolver gap)
+#   - test_js_visitor, test_ts_visitor, test_tsx_visitor: need external
+#     grammar .so files loaded via GRAMMARS_DIR (not compiled-in grammars)
+TEST_EXES := \
+	test_ir test_graph test_graph_semantic test_graph_call_precision \
+	test_semantic_unit \
+	test_e2e test_c_e2e test_cpp_e2e test_go_e2e test_rust_e2e \
+	test_js_e2e test_ts_e2e test_java_e2e \
+	test_fp_c test_fp_cpp test_fp_go test_fp_js test_fp_ts test_fp_python \
+	test_type_extraction test_state_builder_batch test_module_edge \
+	test_module_path_column \
+	test_model_engine test_claim_parser test_verifier_registry \
+	test_fuzzy_resolver test_resolver_fuzzy_cache \
+	test_documentation_drift test_capability_drift test_architecture_drift \
+	test_query_algorithms test_connected_components_ffi test_trigram_search \
+	test_exclude_paths test_index_metrics test_ladybug_sync
 
 test-engine: $(ENGINE_LIB)
 	@printf "$(CYAN)[test/engine]$(RESET) Building and running C++ tests...\n"

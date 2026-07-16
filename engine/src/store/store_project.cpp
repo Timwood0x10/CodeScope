@@ -216,7 +216,7 @@ std::string GraphStore::getModuleTreeJson(uint64_t project_id)
 	json << "{\"modules\":[";
 	bool first = true;
 	// Build child map: parent_id → list of child module ids
-	std::unordered_map<uint64_t, std::vector<uint64_t> > children_of;
+	std::unordered_map<uint64_t, std::vector<uint64_t>> children_of;
 	for (const auto &m : modules)
 		children_of[m.parent_id].push_back(m.id);
 	std::function<void(uint64_t, int)> outMod = [&](uint64_t id,

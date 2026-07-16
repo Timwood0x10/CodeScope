@@ -95,7 +95,7 @@ void GraphStore::insertSemanticRecords(uint64_t project_id,
 
 void GraphStore::insertSemanticRecordsBatch(
 	uint64_t project_id,
-	const std::vector<std::pair<std::string, std::vector<ir::Record> > >
+	const std::vector<std::pair<std::string, std::vector<ir::Record>>>
 		&file_records)
 {
 	// Count total records to pre-compute size
@@ -277,9 +277,9 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 	constexpr int kColsPerMetric = 14;
 
 	// Step 1: Process file-level inserts + collect records/metrics
-	std::vector<std::pair<std::string, std::vector<ir::Record> > >
+	std::vector<std::pair<std::string, std::vector<ir::Record>>>
 		batch_records;
-	std::vector<std::pair<std::string, std::vector<store::MetricRow> > >
+	std::vector<std::pair<std::string, std::vector<store::MetricRow>>>
 		batch_metrics;
 
 	for (auto &fr : batch) {
@@ -427,7 +427,7 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 				batch_size = kMaxBatch;
 
 			std::vector<std::pair<const store::MetricRow *,
-					      const std::string *> >
+					      const std::string *>>
 				metric_ptrs;
 			metric_ptrs.reserve(batch_size);
 			size_t remaining = batch_size;

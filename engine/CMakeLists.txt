@@ -408,12 +408,35 @@ else()
 endif()
 
 # ── Tests ────────────────────────────────────────────────────────
-option(BUILD_TESTS "Build tests" ON)
+# Automated tests live in tests/. Each must run with no command-line
+# arguments and is exercised by `make test-engine` and CI.
+#
+# Decision (Option A): manual debugging tools that require external
+# args (e.g. <grammars_dir> <kernel_dir> or a large source tree to
+# scan) were moved to manual/ so the tests/ glob only picks up
+# automated tests. This prevents arg-requiring tools from being built
+# and run by default, which previously broke `make test-engine` / CI
+# (they exit 1 on missing args). Manual tools are still buildable on
+# demand with -DBUILD_MANUAL=ON.
+option(BUILD_TESTS "Build automated tests" ON)
 if(BUILD_TESTS)
     file(GLOB TEST_SOURCES tests/*.cpp)
     foreach(test_src ${TEST_SOURCES})
         get_filename_component(test_name ${test_src} NAME_WE)
         add_executable(${test_name} ${test_src})
         target_link_libraries(${test_name} astgraph_engine)
+    endforeach()
+endif()
+
+# ── Manual debug tools (not built by default) ────────────────────
+# These need command-line args and are not automated tests. Build
+# explicitly with: cmake -S engine -B build -DBUILD_MANUAL=ON
+option(BUILD_MANUAL "Build manual debug tools (require external args)" OFF)
+if(BUILD_MANUAL)
+    file(GLOB MANUAL_SOURCES manual/*.cpp)
+    foreach(tool_src ${MANUAL_SOURCES})
+        get_filename_component(tool_name ${tool_src} NAME_WE)
+        add_executable(${tool_name} ${tool_src})
+        target_link_libraries(${tool_name} astgraph_engine)
     endforeach()
 endif()

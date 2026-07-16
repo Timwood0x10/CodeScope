@@ -254,11 +254,13 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 		       << "}";
 		return dupString(result.str());
 	} catch (const std::exception &e) {
+		g_store->rollbackTransaction();
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_index_file] ") +
 			e.what() + "\"}");
 	} catch (...) {
+		g_store->rollbackTransaction();
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_index_file] unknown exception\"}");
 	}

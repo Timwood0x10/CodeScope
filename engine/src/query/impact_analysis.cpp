@@ -85,7 +85,7 @@ static std::vector<std::string> parseFileList(const char *json)
 static void
 findNodesInFiles(sqlite3 *db, uint64_t project_id,
 		 const std::vector<std::string> &file_list,
-		 std::vector<std::pair<uint64_t, std::string> > &out_nodes)
+		 std::vector<std::pair<uint64_t, std::string>> &out_nodes)
 {
 	if (file_list.empty())
 		return;
@@ -128,11 +128,11 @@ findNodesInFiles(sqlite3 *db, uint64_t project_id,
 //
 // Returns true on success. On prepare failure, sets *error_out to a
 // tagged message and returns false (callers report it in the JSON).
-static bool buildCallAdjacency(
-	sqlite3 *db, uint64_t project_id,
-	std::unordered_map<uint64_t, std::vector<uint64_t> > &forward,
-	std::unordered_map<uint64_t, std::vector<uint64_t> > &reverse,
-	std::string *error_out)
+static bool
+buildCallAdjacency(sqlite3 *db, uint64_t project_id,
+		   std::unordered_map<uint64_t, std::vector<uint64_t>> &forward,
+		   std::unordered_map<uint64_t, std::vector<uint64_t>> &reverse,
+		   std::string *error_out)
 {
 	const char *sql =
 		"SELECT source_node_id, target_node_id FROM graph_edges "
@@ -244,7 +244,7 @@ struct StackFrame {
 };
 
 static void
-dfsImpact(const std::unordered_map<uint64_t, std::vector<uint64_t> > &adj,
+dfsImpact(const std::unordered_map<uint64_t, std::vector<uint64_t>> &adj,
 	  const std::unordered_set<uint64_t> &seeds, int max_depth,
 	  std::vector<ImpactEntry> &out)
 {
@@ -351,7 +351,7 @@ std::string analyzeChangeImpact(uint64_t project_id, store::GraphStore *store,
 	}
 
 	// Find graph nodes in modified files.
-	std::vector<std::pair<uint64_t, std::string> > modified_nodes;
+	std::vector<std::pair<uint64_t, std::string>> modified_nodes;
 	findNodesInFiles(db, project_id, files, modified_nodes);
 
 	// Collect modified node IDs into a set for fast lookup.
@@ -362,8 +362,8 @@ std::string analyzeChangeImpact(uint64_t project_id, store::GraphStore *store,
 	}
 
 	// Build forward + reverse adjacency from CALLS edges.
-	std::unordered_map<uint64_t, std::vector<uint64_t> > forward_adj;
-	std::unordered_map<uint64_t, std::vector<uint64_t> > reverse_adj;
+	std::unordered_map<uint64_t, std::vector<uint64_t>> forward_adj;
+	std::unordered_map<uint64_t, std::vector<uint64_t>> reverse_adj;
 	if (!modified_ids.empty()) {
 		if (!buildCallAdjacency(db, project_id, forward_adj,
 					reverse_adj, &error_msg)) {

@@ -42,7 +42,7 @@ ModelResult WorkflowPlugin::build(uint64_t project_id, const ModelContext &ctx)
 	// Build callee adjacency from call edges (type == kRelationTypeCall).
 	// call_edges are in relation-id order, so the per-source target list
 	// preserves the same order as the original `LIMIT 20` query.
-	std::unordered_map<uint64_t, std::vector<uint64_t> > callees_by_source;
+	std::unordered_map<uint64_t, std::vector<uint64_t>> callees_by_source;
 	for (const auto &edge : ctx.call_edges)
 		callees_by_source[edge.source_id].push_back(edge.target_id);
 

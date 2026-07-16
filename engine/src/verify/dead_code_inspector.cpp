@@ -231,7 +231,7 @@ std::vector<Finding> DeadCodeInspector::findConnectedComponents()
 	std::vector<Finding> out;
 	// Build adjacency list from relation table
 	// Use a simple BFS to find connected components
-	std::unordered_map<uint64_t, std::vector<uint64_t> > adj;
+	std::unordered_map<uint64_t, std::vector<uint64_t>> adj;
 	std::string sql = "SELECT DISTINCT source_id, target_id FROM relation "
 			  "WHERE project_id = ? AND type = 1";
 	sqlite3_stmt *stmt = nullptr;
@@ -251,7 +251,7 @@ std::vector<Finding> DeadCodeInspector::findConnectedComponents()
 
 	// BFS to find connected components
 	std::unordered_set<uint64_t> visited;
-	std::vector<std::vector<uint64_t> > components;
+	std::vector<std::vector<uint64_t>> components;
 	for (auto &pair : adj) {
 		if (visited.count(pair.first))
 			continue;

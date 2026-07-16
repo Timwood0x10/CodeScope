@@ -33,6 +33,25 @@ extern std::unique_ptr<store::GraphStore> g_store;
 extern std::unique_ptr<query::QueryEngine> g_query;
 extern std::unique_ptr<Parser> g_parser;
 
+// ═══════════════════════════════════════════════════════════════════
+// Global Singleton Thread-Safety Contract
+// ═══════════════════════════════════════════════════════════════════
+// g_store, g_query, g_parser are process-global unique_ptr singletons.
+//
+// Thread-safety model:
+// - The Rust MCP server calls FFI functions SEQUENTIALLY from a single
+//   thread (the main event loop in server/src/mcp/server.rs). No
+//   concurrent FFI calls occur during normal operation.
+// - Index worker SUBPROCESSES have their own engine instance (fork+exec).
+//   They do NOT share memory with the server process.
+// - engine_shutdown() must only be called when no FFI query is in flight.
+//   The server serializes this via the single-threaded dispatch loop.
+//
+// If concurrent FFI access is ever needed in the future, wrap these
+// singletons in a shared_mutex (reader-writer lock) or return shared_ptr
+// copies via atomic load. See plan/rules/code_rules.md §4.
+// ═══════════════════════════════════════════════════════════════════
+
 // ─── Internal Helpers ────────────────────────────────────────────
 //
 // Not part of the public API; used internally by engine_*.cpp files.
@@ -56,12 +75,13 @@ inline bool isPathSep(char c)
 // Only used within engine_scanner.cpp; declared there.
 
 // ================================================================
-// BoundedQueue: 线程安全的有界队列（生产者-消费者）
+// BoundedQueue: thread-safe bounded queue (producer-consumer)
 // ================================================================
 //
-// 用于 parse workers → single writer 的异步流水线。
-// capacity = 2 * worker_count，DB 写慢时 worker 自然阻塞（背压）。
-// push/pop 均为 O(1)，内部以 std::queue 实现。
+// Used for the parse workers → single writer async pipeline.
+// capacity = 2 * worker_count; when DB writes are slow, workers block
+// naturally (backpressure). push/pop are both O(1), implemented
+// internally with std::queue.
 
 template <typename T> class BoundedQueue {
     public:
@@ -71,9 +91,9 @@ template <typename T> class BoundedQueue {
 	}
 
 	/**
-	 * 推送一个元素到队列尾部。
-	 * 队列满时阻塞，直到 writer pop 出元素腾出空间。
-	 * 线程安全。
+	 * Push an element to the tail of the queue.
+	 * Blocks when the queue is full until the writer pops an element
+	 * to make room. Thread-safe.
 	 */
 	void push(T value)
 	{
@@ -88,10 +108,12 @@ template <typename T> class BoundedQueue {
 	}
 
 	/**
-	 * 从队列头部弹出一个元素。
-	 * 队列空时阻塞，直到 worker push 或 markDone 被调用。
-	 * @param value 输出参数，接收弹出的元素。
-	 * @return true 成功弹出，false 队列已关闭且为空。
+	 * Pop an element from the head of the queue.
+	 * Blocks when the queue is empty until a worker pushes or markDone
+	 * is called.
+	 * @param value Output parameter that receives the popped element.
+	 * @return true on successful pop, false if the queue is closed and
+	 *         empty.
 	 */
 	bool pop(T &value)
 	{
@@ -107,11 +129,11 @@ template <typename T> class BoundedQueue {
 	}
 
 	/**
-	 * 批量弹出：最多弹出 max_count 个元素。
-	 * 队列空时阻塞。
-	 * @param values 输出参数，接收弹出的元素。
-	 * @param max_count 最大弹出数量。
-	 * @return 实际弹出的数量。
+	 * Batch pop: pops at most max_count elements.
+	 * Blocks when the queue is empty.
+	 * @param values Output parameter that receives the popped elements.
+	 * @param max_count Maximum number of elements to pop.
+	 * @return Actual number of elements popped.
 	 */
 	size_t popBatch(std::vector<T> &values, size_t max_count)
 	{
@@ -130,7 +152,7 @@ template <typename T> class BoundedQueue {
 	}
 
 	/**
-	 * 获取当前队列大小。
+	 * Get the current queue size.
 	 */
 	size_t size() const
 	{
@@ -139,7 +161,7 @@ template <typename T> class BoundedQueue {
 	}
 
 	/**
-	 * 标记队列为已完成。所有阻塞的 push/pop 将返回。
+	 * Mark the queue as done. All blocking push/pop calls will return.
 	 */
 	void markDone()
 	{

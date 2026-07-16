@@ -34,7 +34,7 @@ ModelResult ArchitecturePlugin::build(uint64_t project_id,
 
 	// Lazily compute the matching module scopes for each entity, cached
 	// so that entities appearing in multiple call edges are scanned once.
-	std::unordered_map<uint64_t, std::vector<const ScopeInfo *> >
+	std::unordered_map<uint64_t, std::vector<const ScopeInfo *>>
 		scopes_by_entity;
 	auto matchScopes = [&](const EntityInfo &e)
 		-> const std::vector<const ScopeInfo *> & {

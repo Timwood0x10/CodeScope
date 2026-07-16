@@ -60,10 +60,10 @@ class ProjectSymbolIndex {
     private:
 	// Primary index: name → entries
 	mutable std::mutex mutex_;
-	std::unordered_map<std::string, std::vector<IndexEntry> > name_index_;
+	std::unordered_map<std::string, std::vector<IndexEntry>> name_index_;
 
 	// Flat list of all entries (for iteration / stats)
-	std::vector<std::pair<std::string, IndexEntry> > entries_;
+	std::vector<std::pair<std::string, IndexEntry>> entries_;
 };
 
 } // namespace resolver

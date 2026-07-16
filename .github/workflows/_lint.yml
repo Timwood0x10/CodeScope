@@ -1,11 +1,6 @@
 # Reusable: lint (clang-format + cargo clippy + cargo fmt)
 name: Lint
 
-# SECURITY TODO (before public release): pin every `uses:` action to a specific
-# commit SHA instead of a floating tag (e.g. @v4) to guard against tag
-# re-pointing / supply-chain attacks. See:
-#   https://docs.github.com/en/actions/security-for-github-actions/security-guides/security-hardening-for-github-actions#using-third-party-actions
-
 on:
   workflow_call: {}
 
@@ -17,7 +12,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install system deps
         run: |
@@ -25,12 +20,12 @@ jobs:
           sudo apt-get install -y clang-format cmake ninja-build
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@e1397a0b7c06e2c0d9fbe862c4d8a4c3c1ef1d05 # stable
         with:
           components: clippy, rustfmt
 
       - name: Cache Cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@5a3ec84eff668545934eab1c4a9ef4d8fc6e8535 # v4.2.3
         with:
           path: |
             ~/.cargo/registry

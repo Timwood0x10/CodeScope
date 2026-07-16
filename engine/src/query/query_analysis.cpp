@@ -96,18 +96,20 @@ std::string QueryEngine::getHotspots(uint64_t project_id, int top_n)
 			     << "\"id\":" << sqlite3_column_int64(stmt, 0)
 			     << ","
 			     << "\"name\":\""
-			     << jsonEscape(sqlite3_column_text(stmt, 1) ?
-						   (const char *)
-							   sqlite3_column_text(
-								   stmt, 1) :
-						   "")
+			     << jsonEscape(
+					sqlite3_column_text(stmt, 1) ?
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								stmt, 1)) :
+						"")
 			     << "\","
 			     << "\"file\":\""
-			     << jsonEscape(sqlite3_column_text(stmt, 2) ?
-						   (const char *)
-							   sqlite3_column_text(
-								   stmt, 2) :
-						   "")
+			     << jsonEscape(
+					sqlite3_column_text(stmt, 2) ?
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								stmt, 2)) :
+						"")
 			     << "\","
 			     << "\"type\":" << sqlite3_column_int(stmt, 3)
 			     << ","
@@ -144,8 +146,10 @@ std::string QueryEngine::getModuleMap(uint64_t project_id)
 					   static_cast<int64_t>(project_id));
 			while (sqlite3_step(stmt) == SQLITE_ROW) {
 				if (sqlite3_column_text(stmt, 0)) {
-					std::string path = (const char *)
-						sqlite3_column_text(stmt, 0);
+					std::string path =
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								stmt, 0));
 					auto slash = path.rfind('/');
 					std::string dir =
 						(slash != std::string::npos) ?
@@ -186,16 +190,16 @@ std::string QueryEngine::getModuleMap(uint64_t project_id)
 			json << "{"
 			     << "\"name\":\""
 			     << (sqlite3_column_text(stmt, 0) ?
-					 (const char *)sqlite3_column_text(stmt,
-									   0) :
+					 reinterpret_cast<const char *>(
+						 sqlite3_column_text(stmt, 0)) :
 					 "")
 			     << "\","
 			     << "\"type\":" << sqlite3_column_int(stmt, 1)
 			     << ","
 			     << "\"file\":\""
 			     << (sqlite3_column_text(stmt, 2) ?
-					 (const char *)sqlite3_column_text(stmt,
-									   2) :
+					 reinterpret_cast<const char *>(
+						 sqlite3_column_text(stmt, 2)) :
 					 "")
 			     << "\","
 			     << "\"complexity\":" << sqlite3_column_int(stmt, 3)
@@ -239,16 +243,16 @@ std::string QueryEngine::getEntryPoints(uint64_t project_id)
 			     << ","
 			     << "\"name\":\""
 			     << (sqlite3_column_text(stmt, 1) ?
-					 (const char *)sqlite3_column_text(stmt,
-									   1) :
+					 reinterpret_cast<const char *>(
+						 sqlite3_column_text(stmt, 1)) :
 					 "")
 			     << "\","
 			     << "\"type\":" << sqlite3_column_int(stmt, 2)
 			     << ","
 			     << "\"file\":\""
 			     << (sqlite3_column_text(stmt, 3) ?
-					 (const char *)sqlite3_column_text(stmt,
-									   3) :
+					 reinterpret_cast<const char *>(
+						 sqlite3_column_text(stmt, 3)) :
 					 "")
 			     << "\","
 			     << "\"complexity\":" << sqlite3_column_int(stmt, 4)
@@ -313,7 +317,8 @@ std::string QueryEngine::traceCallChain(uint64_t project_id,
 		json << "{\"found\":true,"
 		     << "\"chain\":\""
 		     << (sqlite3_column_text(stmt, 0) ?
-				 (const char *)sqlite3_column_text(stmt, 0) :
+				 reinterpret_cast<const char *>(
+					 sqlite3_column_text(stmt, 0)) :
 				 "")
 		     << "\","
 		     << "\"depth\":" << sqlite3_column_int(stmt, 1) << "}";
@@ -396,8 +401,8 @@ std::string QueryEngine::getProjectOverview(uint64_t project_id)
 			first = false;
 			json << "{\"lang\":\""
 			     << (sqlite3_column_text(stmt, 0) ?
-					 (const char *)sqlite3_column_text(stmt,
-									   0) :
+					 reinterpret_cast<const char *>(
+						 sqlite3_column_text(stmt, 0)) :
 					 "")
 			     << "\","
 			     << "\"files\":" << sqlite3_column_int(stmt, 1)

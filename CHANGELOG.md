@@ -26,11 +26,29 @@ Open-source release preparation — documentation accuracy and build portability
 - **FFI contract clarity**: Added exemption comment to `engine_free_string` documenting why `free()` is exempt from the try/catch wrapper requirement.
 - **Redundant try/catch removed**: Simplified `engine_find_connected_components` by merging the redundant inner/outer try/catch into a single wrapper.
 
+### 🔒 Code Review Fixes (Round 2)
+
+- **ffi::init() return value checked**: `tools/mod.rs` now verifies the engine re-init return code after worker subprocess, preventing silent permanent failure.
+- **Rust server panic safety**: Replaced 4 `serde_json::to_value().expect()` calls in `server.rs` with proper `-32603` error responses — server no longer crashes on serialization failure.
+- **Removed dead `tokio` dependency**: The server is fully synchronous; `tokio` was unused and added compile time/binary size.
+- **`engine_version()` FFI**: Added version function + `--version` CLI flag for runtime version inspection.
+- **`.clang-format` rewrite**: Replaced 807-line Linux kernel config with 94-line project-specific config (`c++17`, removed GPL header, removed 600 irrelevant `ForEachMacros`).
+- **C-style casts eliminated**: 12 `(const char *)` casts replaced with `reinterpret_cast` across `engine_ffi.cpp` and `query_analysis.cpp`.
+- **Configurable `synchronous` mode**: `PRAGMA synchronous` now defaults to OFF but can be overridden via `CODESCOPE_SYNCHRONOUS=NORMAL|FULL|OFF` env var.
+- **Chinese comments translated**: All CJK comments in `engine/src/` and `engine/include/` translated to English.
+- **Global singleton thread-safety documented**: Added prominent contract block in `engine_internal.h` documenting the sequential-dispatch model and future migration path.
+
 ### 🧹 Chores
 
 - **Removed accidentally committed binary `version` file**: A stray binary artifact was removed from the repository.
 - **Committed Cargo.lock**: Required for reproducible builds of the binary crate. Was previously gitignored.
 - **Gitignored runtime artifacts**: `runtimelog/`, `llvm_ir/output/`, and `*.lbug` files are now properly ignored.
+- **Open-source community files**: Added `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `.github/CODEOWNERS`.
+- **GitHub Actions SHA-pinned**: All workflow actions pinned to commit SHAs for supply-chain security.
+- **Non-destructive release pipeline**: `build.yml` no longer force-pushes tags or deletes existing releases. Added semver monotonicity validation.
+- **CI timeout reduced**: 120min → 45min to fail fast on hangs.
+- **Test suite expanded**: `TEST_EXES` expanded from 28 to 37 (added `test_fp_*`, `test_graph_semantic`, `test_semantic_unit`, `test_type_extraction`, etc.). Manual debug tools moved to `engine/manual/`.
+- **Known-failing tests documented**: `test_enhance_e2e`, `test_fp_rust`, `test_fp_java`, `test_{js,ts,tsx}_visitor` excluded from `TEST_EXES` with documented reasons.
 
 ---
 

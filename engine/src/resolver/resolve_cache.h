@@ -65,7 +65,7 @@ class CachingResolver : public Resolver {
 
 	// Key:   caller_file_path
 	// Value: set of imported module/file paths
-	std::unordered_map<std::string, std::unordered_set<std::string> >
+	std::unordered_map<std::string, std::unordered_set<std::string>>
 		reach_cache_;
 
 	// Key:   import prefix (e.g. "os", "fmt")

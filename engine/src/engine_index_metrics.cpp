@@ -40,7 +40,7 @@ computeMetricsFromCST(TSTree *tree, const char *source,
 	};
 
 	// Build parent→children index and record map
-	std::unordered_map<uint64_t, std::vector<uint64_t> > children_of;
+	std::unordered_map<uint64_t, std::vector<uint64_t>> children_of;
 	children_of.reserve(records.size());
 	for (auto &r : records) {
 		if (r.parent_id > 0)

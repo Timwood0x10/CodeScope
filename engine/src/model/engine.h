@@ -45,7 +45,7 @@ class ModelEngine {
 	bool populateModelContext(uint64_t project_id, ModelContext &ctx);
 
 	store::GraphStore *store_ = nullptr;
-	std::vector<std::unique_ptr<ModelPlugin> > plugins_;
+	std::vector<std::unique_ptr<ModelPlugin>> plugins_;
 };
 
 } // namespace model

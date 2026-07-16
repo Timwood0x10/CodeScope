@@ -283,10 +283,10 @@ bool GraphStore::clearProjectKnowledge(uint64_t project_id)
 
 // ── listCapabilities / listContracts ───────────────────────────────
 
-std::vector<std::pair<int64_t, std::string> >
+std::vector<std::pair<int64_t, std::string>>
 GraphStore::listCapabilities(uint64_t project_id)
 {
-	std::vector<std::pair<int64_t, std::string> > out;
+	std::vector<std::pair<int64_t, std::string>> out;
 	const char *sql = "SELECT id, name FROM capability "
 			  "WHERE project_id=? ORDER BY id";
 	sqlite3_stmt *stmt = getCachedStmt(sql);
@@ -302,10 +302,10 @@ GraphStore::listCapabilities(uint64_t project_id)
 	return out;
 }
 
-std::vector<std::pair<int64_t, std::string> >
+std::vector<std::pair<int64_t, std::string>>
 GraphStore::listContracts(uint64_t project_id)
 {
-	std::vector<std::pair<int64_t, std::string> > out;
+	std::vector<std::pair<int64_t, std::string>> out;
 	const char *sql = "SELECT id, name FROM contract "
 			  "WHERE project_id=? ORDER BY id";
 	sqlite3_stmt *stmt = getCachedStmt(sql);

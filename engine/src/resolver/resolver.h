@@ -103,7 +103,7 @@ class ResolverChain : public Resolver {
 	}
 
     private:
-	std::vector<std::unique_ptr<Resolver> > resolvers_;
+	std::vector<std::unique_ptr<Resolver>> resolvers_;
 };
 
 } // namespace resolver

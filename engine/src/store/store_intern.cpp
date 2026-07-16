@@ -210,7 +210,7 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 			std::string file_path;
 			int start_row;
 		};
-		std::unordered_map<std::string, std::vector<DeclInfo> > decl_map;
+		std::unordered_map<std::string, std::vector<DeclInfo>> decl_map;
 
 		{
 			const char *load_sql =

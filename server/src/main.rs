@@ -7,6 +7,14 @@ use std::fs;
 use std::path::Path;
 
 fn main() {
+    // ── --version / -V: print version and exit ─────────────────────
+    // Handled before any other argument processing so it works regardless
+    // of mode (server/worker/cli/discover) and never touches the engine.
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        println!("CodeScope {}", crate::ffi::version());
+        std::process::exit(0);
+    }
+
     let args: Vec<String> = env::args().collect();
 
     // ── Discover mode: codescope discover <dir_path> ──────────────

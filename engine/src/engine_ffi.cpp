@@ -410,31 +410,16 @@ char *engine_search_code(uint64_t project_id, const char *query, int limit)
 
 // ─── Semantic Search ─────────────────────────────────────────
 
-// engine_search_semantic — active. Returns similar names via n-gram
-// vector similarity (see engine.h). Wrapping follows the FFI Safety Contract.
+// engine_search_semantic — not implemented since Phase 0 cut.
+// The underlying searchSemantic() was stubbed out.
+// Returns a clear error so callers are not misled by empty results.
 char *engine_search_semantic(uint64_t project_id, const char *query, int limit)
 {
-	try {
-		if (!g_store)
-			return dupString(
-				"{\"total\":0,\"results\":[],\"error\":\"not initialized\"}");
-		if (!query || !*query)
-			return dupString(
-				"{\"total\":0,\"results\":[],\"error\":\"empty query\"}");
-		if (limit <= 0 || limit > 50)
-			limit = 10;
-
-		return dupString(
-			g_store->searchSemantic(project_id, nullptr, 0, limit));
-	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_search_semantic] ") +
-			e.what() + "\"}");
-	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_search_semantic] unknown exception\"}");
-	}
+	(void)project_id;
+	(void)query;
+	(void)limit;
+	return dupString(
+		"{\"total\":0,\"results\":[],\"error\":\"not implemented — semantic search was removed in Phase 0\"}");
 }
 
 // ─── Complexity Analysis ──────────────────────────────────────
@@ -1141,11 +1126,13 @@ char *engine_index_batch(uint64_t project_id, const char *file_paths_json)
 		r << "]}";
 		return dupString(r.str());
 	} catch (const std::exception &e) {
+		g_store->rollbackTransaction();
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_index_batch] ") +
 			e.what() + "\"}");
 	} catch (...) {
+		g_store->rollbackTransaction();
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_index_batch] unknown exception\"}");
 	}
@@ -1192,13 +1179,15 @@ char *engine_get_project_info(uint64_t project_id)
 					static_cast<int64_t>(project_id));
 				if (sqlite3_step(stmt) == SQLITE_ROW) {
 					if (sqlite3_column_text(stmt, 0))
-						name = (const char *)
+						name = reinterpret_cast<
+							const char *>(
 							sqlite3_column_text(
-								stmt, 0);
+								stmt, 0));
 					if (sqlite3_column_text(stmt, 1))
-						root = (const char *)
+						root = reinterpret_cast<
+							const char *>(
 							sqlite3_column_text(
-								stmt, 1);
+								stmt, 1));
 				}
 				sqlite3_finalize(stmt);
 			}
@@ -1231,8 +1220,8 @@ char *engine_get_project_info(uint64_t project_id)
 					static_cast<int64_t>(project_id));
 				if (sqlite3_step(stmt) == SQLITE_ROW &&
 				    sqlite3_column_text(stmt, 0))
-					lang = (const char *)
-						sqlite3_column_text(stmt, 0);
+					lang = reinterpret_cast<const char *>(
+						sqlite3_column_text(stmt, 0));
 				sqlite3_finalize(stmt);
 			}
 		}
@@ -1327,4 +1316,16 @@ char *engine_import_artifact(uint64_t project_id, const char *artifact_path)
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_import_artifact] unknown exception\"}");
 	}
+}
+
+// ─── Version ────────────────────────────────────────────────────
+
+const char *engine_version(void)
+{
+	// Static string, no allocation, no free needed.
+	// No try/catch required — only a static string literal is returned,
+	// so no exceptions are possible.
+	// Keep in sync with RELEASE.md and Cargo.toml version.
+	static const char kVersion[] = "0.2.0";
+	return kVersion;
 }

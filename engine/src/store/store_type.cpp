@@ -31,7 +31,7 @@ static constexpr int kTypeBatchSize = 500;
 bool GraphStore::insertTypeInfoBatch(
 	uint64_t project_id,
 	const std::vector<std::tuple<std::string, std::string, int, std::string,
-				     std::string, int, int, int, int> > &rows)
+				     std::string, int, int, int, int>> &rows)
 {
 	if (rows.empty())
 		return true;
@@ -106,7 +106,7 @@ bool GraphStore::insertTypeInfoBatch(
 bool GraphStore::insertTypeRefBatch(
 	uint64_t project_id,
 	const std::vector<std::tuple<uint64_t, std::string, int, std::string,
-				     int, int> > &rows)
+				     int, int>> &rows)
 {
 	if (rows.empty())
 		return true;

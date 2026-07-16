@@ -69,7 +69,7 @@ class ResolverPipeline {
 	// table scan per candidate (~174s for 108k refs). Matching is
 	// performed in-memory with SQLite-exact LIKE semantics, so the
 	// resolved edges are IDENTICAL to the previous SQL implementation.
-	std::unordered_map<std::string, std::vector<std::string> > import_index_;
+	std::unordered_map<std::string, std::vector<std::string>> import_index_;
 
 	/// Candidate: a potential match for a reference.
 	struct Candidate {

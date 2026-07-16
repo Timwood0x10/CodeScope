@@ -338,7 +338,7 @@ int64_t ResolverPipeline::run()
 
 	// ── Step 0: Pre-load all entities into a name-indexed HashMap ──
 	// This avoids one SQL query per reference (the main bottleneck).
-	std::unordered_map<std::string, std::vector<Candidate> > entity_index;
+	std::unordered_map<std::string, std::vector<Candidate>> entity_index;
 	int64_t total_entities = 0;
 	{
 		std::string idx_sql =

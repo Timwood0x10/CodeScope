@@ -138,7 +138,14 @@ impl Server {
             },
         };
 
-        Ok(serde_json::to_value(result).expect("failed to serialize initialize result"))
+        match serde_json::to_value(result) {
+            Ok(v) => Ok(v),
+            Err(e) => Err(JsonRpcError {
+                code: -32603,
+                message: "Internal error: failed to serialize initialize result".into(),
+                data: Some(serde_json::Value::String(e.to_string())),
+            }),
+        }
     }
 
     // ── List Tools ──────────────────────────────────────────────
@@ -147,7 +154,14 @@ impl Server {
         let result = ListToolsResult {
             tools: tools::all_tools(),
         };
-        Ok(serde_json::to_value(result).expect("failed to serialize tools list"))
+        match serde_json::to_value(result) {
+            Ok(v) => Ok(v),
+            Err(e) => Err(JsonRpcError {
+                code: -32603,
+                message: "Internal error: failed to serialize tools list".into(),
+                data: Some(serde_json::Value::String(e.to_string())),
+            }),
+        }
     }
 
     // ── Call Tool ───────────────────────────────────────────────
@@ -191,7 +205,14 @@ impl Server {
 
         let result = CallToolResult { content, is_error };
 
-        Ok(serde_json::to_value(result).expect("failed to serialize call tool result"))
+        match serde_json::to_value(result) {
+            Ok(v) => Ok(v),
+            Err(e) => Err(JsonRpcError {
+                code: -32603,
+                message: "Internal error: failed to serialize call tool result".into(),
+                data: Some(serde_json::Value::String(e.to_string())),
+            }),
+        }
     }
 }
 
@@ -202,16 +223,30 @@ fn json_response(
     let response = match result {
         Ok(val) => Response {
             jsonrpc: "2.0",
-            id: Some(id),
+            id: Some(id.clone()),
             result: Some(val),
             error: None,
         },
         Err(err) => Response {
             jsonrpc: "2.0",
-            id: Some(id),
+            id: Some(id.clone()),
             result: None,
             error: Some(err),
         },
     };
-    serde_json::to_value(response).expect("failed to serialize JSON-RPC response")
+    // Never panic on serialization failure — a JSON-RPC server must return a
+    // -32603 internal error response, not crash the process. Construct a raw
+    // error response with the jsonrpc version and id for spec compliance.
+    match serde_json::to_value(response) {
+        Ok(v) => v,
+        Err(e) => serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": {
+                "code": -32603,
+                "message": "Internal error: failed to serialize JSON-RPC response",
+                "data": e.to_string()
+            }
+        }),
+    }
 }

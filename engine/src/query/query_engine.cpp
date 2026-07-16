@@ -549,7 +549,7 @@ std::string QueryEngine::findShortestPath(uint64_t project_id,
 
 	// ── Load all CALLS edges into an in-memory adjacency list.
 	// Scanning once is O(edges) and lets BFS run entirely against memory.
-	std::unordered_map<uint64_t, std::vector<uint64_t> > adj;
+	std::unordered_map<uint64_t, std::vector<uint64_t>> adj;
 	{
 		const char *sql =
 			"SELECT source_node_id, target_node_id FROM graph_edges "
