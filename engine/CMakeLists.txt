@@ -356,19 +356,28 @@ target_link_libraries(astgraph_engine PUBLIC
 
 # ── LadybugDB (embedded graph database for graph storage) ──────
 # Required dependency. Three install paths, tried in order:
-#   1. Already installed → find_library picks it up
-#   2. macOS Homebrew → `brew install ladybug` (auto-run if brew present)
-#   3. Linux curl installer → `curl -fsSL https://install.ladybugdb.com | sh`
-# If all three fail, error out with a clear message: LadybugDB is required,
-# not optional. Provides liblbug.a (static) + lbug.h (C API).
+#   1. Vendored in third_party/ladybug/ (preferred, zero network)
+#   2. Already installed system-wide → find_library picks it up
+#   3. macOS Homebrew → `brew install ladybug` (auto-run if brew present)
+#   4. Linux curl installer → `curl -fsSL https://install.ladybugdb.com | sh`
+# If all four fail, error out with a clear message: LadybugDB is required,
+# not optional. Provides liblbug.so (shared) + lbug.h (C API).
+set(LADYBUG_VENDOR_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ladybug")
+if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    set(LADYBUG_VENDOR_LIB_DIR "${LADYBUG_VENDOR_DIR}/lib/macos")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(LADYBUG_VENDOR_LIB_DIR "${LADYBUG_VENDOR_DIR}/lib/linux")
+else()
+    set(LADYBUG_VENDOR_LIB_DIR "${LADYBUG_VENDOR_DIR}/lib")
+endif()
 find_library(LADYBUG_LIBRARY lbug
-    PATHS /opt/homebrew/lib /usr/local/lib /usr/lib
+    PATHS ${LADYBUG_VENDOR_LIB_DIR} /opt/homebrew/lib /usr/local/lib /usr/lib
     NO_DEFAULT_PATH)
 if(NOT LADYBUG_LIBRARY)
     find_library(LADYBUG_LIBRARY lbug)
 endif()
 find_path(LADYBUG_INCLUDE_DIR lbug.h
-    PATHS /opt/homebrew/include /usr/local/include /usr/include
+    PATHS ${LADYBUG_VENDOR_DIR}/include /opt/homebrew/include /usr/local/include /usr/include
     NO_DEFAULT_PATH)
 if(NOT LADYBUG_INCLUDE_DIR)
     find_path(LADYBUG_INCLUDE_DIR lbug.h)
