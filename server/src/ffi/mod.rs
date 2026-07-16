@@ -168,9 +168,7 @@ pub fn version() -> String {
         if ptr.is_null() {
             return String::from("unknown");
         }
-        std::ffi::CStr::from_ptr(ptr)
-            .to_string_lossy()
-            .into_owned()
+        std::ffi::CStr::from_ptr(ptr).to_string_lossy().into_owned()
     }
 }
 

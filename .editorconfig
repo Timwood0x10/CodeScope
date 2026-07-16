@@ -1,0 +1,39 @@
+# CodeScope — .editorconfig
+
+root = true
+
+# ── Default for all files ─────────────────────────────────────────
+[*]
+end_of_line = lf
+insert_final_newline = true
+charset = utf-8
+trim_trailing_whitespace = true
+indent_style = space
+
+# ── C++ source ────────────────────────────────────────────────────
+[*.{cpp,h,cxx,hxx,cc,c}]
+indent_size = 2
+
+# ── Rust source ───────────────────────────────────────────────────
+[*.{rs,rust}]
+indent_size = 4
+
+# ── Markdown ──────────────────────────────────────────────────────
+[*.{md,mkd,mdown}]
+trim_trailing_whitespace = false
+
+# ── YAML / TOML / JSON ────────────────────────────────────────────
+[*.{yml,yaml,toml,json,jsonc}]
+indent_size = 2
+
+# ── Shell scripts ─────────────────────────────────────────────────
+[*.{sh,bash,zsh}]
+indent_size = 2
+
+# ── Makefiles ─────────────────────────────────────────────────────
+[Makefile]
+indent_style = tab
+
+# ── CMake ─────────────────────────────────────────────────────────
+[*.{cmake,in}]
+indent_size = 2

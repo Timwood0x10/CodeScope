@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+title: "CodeScope: Project Truth Engine"
+type: software
+version: "0.2.1"
+date-released: "2026-07-16"
+repository-code: "https://github.com/Timwood0x10/CodeScope"
+license: Apache-2.0
+license-url: "https://opensource.org/licenses/Apache-2.0"
+description: >
+  A Project Truth Engine that transforms source code into verifiable
+  facts, models, and inspectable evidence — enabling AI to validate
+  claims against reality instead of hallucinating.
+keywords:
+  - code-analysis
+  - static-analysis
+  - call-graph
+  - knowledge-graph
+  - code-verification
+  - ai-assisted-development
+  - mcp
+  - tree-sitter
+  - c++
+  - rust
+authors:
+  - family-names: Timwood
+    given-names: 0x10
+    github: Timwood0x10
+short-message: "v0.2.1 — open-source release"

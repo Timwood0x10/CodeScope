@@ -1,0 +1,49 @@
+# CodeScope — .pre-commit-config.yaml
+
+# Install pre-commit:
+#   pip install pre-commit
+#   pre-commit install
+#
+# Run manually:
+#   pre-commit run --all-files
+#
+# Skip in CI — CI uses `make check` instead.
+
+repos:
+  # ── General housekeeping ────────────────────────────────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+      - id: check-json
+      - id: check-toml
+      - id: check-added-large-files
+        args: ['--maxkb=5000']
+      - id: no-commit-to-branch
+        args: ['--branch', 'master']
+
+  # ── C++ formatting ──────────────────────────────────────────────
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v19.1.7
+    hooks:
+      - id: clang-format
+        types_or: [c, c++]
+        args: [--style=file]
+
+  # ── Rust formatting ─────────────────────────────────────────────
+  - repo: https://github.com/doublify/pre-commit-rust
+    rev: v1.0.0
+    hooks:
+      - id: fmt
+        args: [--all, --]
+      - id: cargo-check
+
+  # ── Markdown lint ───────────────────────────────────────────────
+  - repo: https://github.com/markdownlint/markdownlint
+    rev: v0.13.0
+    hooks:
+      - id: markdownlint
+        args: ['--config', '.markdownlint.yaml']

@@ -1,0 +1,44 @@
+# CodeScope — .gitattributes
+
+# ── Line endings: normalize to LF everywhere ──────────────────────
+* text=auto eol=lf
+
+# ── Binary files (prevent diff noise) ─────────────────────────────
+*.db binary
+*.lbug binary
+*.so binary
+*.dylib binary
+*.dll binary
+*.exe binary
+*.o binary
+*.obj binary
+
+# ── Images ────────────────────────────────────────────────────────
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.svg text
+*.ico binary
+
+# ── Archive / compressed ──────────────────────────────────────────
+*.zip binary
+*.tar.gz binary
+*.tgz binary
+*.tar.xz binary
+*.7z binary
+*.rar binary
+
+# ── Certificates / keys ──────────────────────────────────────────
+*.pem binary
+*.key binary
+*.crt binary
+
+# ── Linguist / GitHub file classification overrides ───────────────
+# Treat vendored/third-party code as generated so GitHub doesn't
+# count it in language stats.
+engine/_deps/** linguist-vendored
+engine/build*/** linguist-vendored
+
+# Cargo.lock is important for reproducibility — show diffs.
+Cargo.lock linguist-generated=false
