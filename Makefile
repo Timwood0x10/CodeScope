@@ -144,8 +144,6 @@ test: test-engine test-server
 #     on demand (see test-bench / bench-check targets).
 # Known-failing tests (tracked for future fix, NOT in TEST_EXES):
 #   - test_enhance_e2e: expects files_processed field not yet implemented
-#   - test_fp_rust: resolver does not find Rust main() callees (resolver gap)
-#   - test_fp_java: resolver does not find Java main() callees (resolver gap)
 #   - test_js_visitor, test_ts_visitor, test_tsx_visitor: need external
 #     grammar .so files loaded via GRAMMARS_DIR (not compiled-in grammars)
 TEST_EXES := \
@@ -154,6 +152,7 @@ TEST_EXES := \
 	test_e2e test_c_e2e test_cpp_e2e test_go_e2e test_rust_e2e \
 	test_js_e2e test_ts_e2e test_java_e2e \
 	test_fp_c test_fp_cpp test_fp_go test_fp_js test_fp_ts test_fp_python \
+	test_fp_rust test_fp_java \
 	test_type_extraction test_state_builder_batch test_module_edge \
 	test_module_path_column \
 	test_model_engine test_claim_parser test_verifier_registry \

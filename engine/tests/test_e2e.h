@@ -173,12 +173,16 @@ static inline void runE2eTest(
         check(pid > 0, "create_project");
 
         // Index
-        char* result = engine_index_file(pid, file_path);
-        print_json("Index", result);
-        check(strstr(result, "\"ok\":true") != nullptr, "index_file ok");
-        engine_free_string(result);
+         char* result = engine_index_file(pid, file_path);
+         print_json("Index", result);
+         check(strstr(result, "\"ok\":true") != nullptr, "index_file ok");
+         engine_free_string(result);
 
-        // Get callees of the main function — this is where we check for FPs
+         // Enhance: build the call graph so callee lookups work
+         char* enh = engine_enhance_project(pid);
+         engine_free_string(enh);
+
+         // Get callees of the main function — this is where we check for FPs
          char* callees = engine_get_callees(pid, main_func);
          print_json("Callees of main function", callees);
 

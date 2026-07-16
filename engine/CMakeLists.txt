@@ -372,7 +372,14 @@ set(LADYBUG_VENDOR_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ladybug")
 if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     set(LADYBUG_VENDOR_LIB_DIR "${LADYBUG_VENDOR_DIR}/lib/macos")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    set(LADYBUG_VENDOR_LIB_DIR "${LADYBUG_VENDOR_DIR}/lib/linux")
+    # Select the architecture-matched vendored library directory:
+    #   lib/linux       → x86-64
+    #   lib/linux-aarch64 → aarch64
+    if(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
+        set(LADYBUG_VENDOR_LIB_DIR "${LADYBUG_VENDOR_DIR}/lib/linux-aarch64")
+    else()
+        set(LADYBUG_VENDOR_LIB_DIR "${LADYBUG_VENDOR_DIR}/lib/linux")
+    endif()
 else()
     set(LADYBUG_VENDOR_LIB_DIR "${LADYBUG_VENDOR_DIR}/lib")
 endif()
@@ -385,6 +392,42 @@ find_library(LADYBUG_LIBRARY lbug
 if(NOT LADYBUG_LIBRARY)
     find_library(LADYBUG_LIBRARY lbug)
 endif()
+
+# ── Architecture compatibility check ───────────────────────────
+# find_library only checks the filename, not the binary architecture.
+# On aarch64 Linux the vendored liblbug.so is x86-64; without this
+# check CMake would define HAS_LADYBUG and the link step would fail
+# with "skipping incompatible liblbug.so".
+if(LADYBUG_LIBRARY)
+    execute_process(
+        COMMAND file -b "${LADYBUG_LIBRARY}"
+        OUTPUT_VARIABLE _LBUG_ARCH_INFO
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    set(_LBUG_ARCH_OK FALSE)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64" AND _LBUG_ARCH_INFO MATCHES "x86-64")
+            set(_LBUG_ARCH_OK TRUE)
+        elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64" AND _LBUG_ARCH_INFO MATCHES "aarch64")
+            set(_LBUG_ARCH_OK TRUE)
+        endif()
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+        if(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64" AND _LBUG_ARCH_INFO MATCHES "arm64")
+            set(_LBUG_ARCH_OK TRUE)
+        elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64" AND _LBUG_ARCH_INFO MATCHES "x86_64")
+            set(_LBUG_ARCH_OK TRUE)
+        endif()
+    else()
+        # Unknown platform — assume compatible (let linker decide)
+        set(_LBUG_ARCH_OK TRUE)
+    endif()
+    if(NOT _LBUG_ARCH_OK)
+        message(STATUS "LadybugDB: ${LADYBUG_LIBRARY} is [${_LBUG_ARCH_INFO}], "
+            "does not match ${CMAKE_SYSTEM_PROCESSOR} — skipping")
+        unset(LADYBUG_LIBRARY CACHE)
+    endif()
+endif()
+
 find_path(LADYBUG_INCLUDE_DIR lbug.h
     PATHS ${LADYBUG_VENDOR_DIR}/include /opt/homebrew/include /usr/local/include /usr/include
     NO_DEFAULT_PATH)
@@ -396,6 +439,7 @@ endif()
 # If the dev symlink (liblbug.so / liblbug.dylib) is missing but the
 # versioned shared object exists (e.g., liblbug.so.0.18.2), use it
 # directly and create the dev symlink so the linker can find it.
+# Also re-check architecture on the versioned library.
 if(NOT LADYBUG_LIBRARY AND EXISTS "${LADYBUG_VENDOR_LIB_DIR}")
     if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         file(GLOB _LADYBUG_VERIFIED
@@ -405,20 +449,48 @@ if(NOT LADYBUG_LIBRARY AND EXISTS "${LADYBUG_VENDOR_LIB_DIR}")
             "${LADYBUG_VENDOR_LIB_DIR}/liblbug.so.[0-9]*")
     endif()
     if(_LADYBUG_VERIFIED)
-        list(GET _LADYBUG_VERIFIED 0 LADYBUG_LIBRARY)
-        # Create the dev symlink so the linker's -llbug resolves.
-        if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-            set(_LADYBUG_DEV_LINK "${LADYBUG_VENDOR_LIB_DIR}/liblbug.dylib")
+        list(GET _LADYBUG_VERIFIED 0 _LBUG_CANDIDATE)
+        # Verify architecture of the versioned library too
+        set(_LBUG_VER_OK FALSE)
+        execute_process(
+            COMMAND file -b "${_LBUG_CANDIDATE}"
+            OUTPUT_VARIABLE _LBUG_VER_INFO
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET)
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64" AND _LBUG_VER_INFO MATCHES "x86-64")
+                set(_LBUG_VER_OK TRUE)
+            elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64" AND _LBUG_VER_INFO MATCHES "aarch64")
+                set(_LBUG_VER_OK TRUE)
+            endif()
+        elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+            if(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64" AND _LBUG_VER_INFO MATCHES "arm64")
+                set(_LBUG_VER_OK TRUE)
+            elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64" AND _LBUG_VER_INFO MATCHES "x86_64")
+                set(_LBUG_VER_OK TRUE)
+            endif()
         else()
-            set(_LADYBUG_DEV_LINK "${LADYBUG_VENDOR_LIB_DIR}/liblbug.so")
+            set(_LBUG_VER_OK TRUE)
         endif()
-        if(NOT EXISTS "${_LADYBUG_DEV_LINK}")
-            execute_process(
-                COMMAND ${CMAKE_COMMAND} -E create_symlink
-                    "${LADYBUG_LIBRARY}" "${_LADYBUG_DEV_LINK}"
-                RESULT_VARIABLE _SYMLINK_RESULT)
+        if(_LBUG_VER_OK)
+            set(LADYBUG_LIBRARY "${_LBUG_CANDIDATE}")
+            # Create the dev symlink so the linker's -llbug resolves.
+            if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+                set(_LADYBUG_DEV_LINK "${LADYBUG_VENDOR_LIB_DIR}/liblbug.dylib")
+            else()
+                set(_LADYBUG_DEV_LINK "${LADYBUG_VENDOR_LIB_DIR}/liblbug.so")
+            endif()
+            if(NOT EXISTS "${_LADYBUG_DEV_LINK}")
+                execute_process(
+                    COMMAND ${CMAKE_COMMAND} -E create_symlink
+                        "${LADYBUG_LIBRARY}" "${_LADYBUG_DEV_LINK}"
+                    RESULT_VARIABLE _SYMLINK_RESULT)
+            endif()
+            message(STATUS "LadybugDB: using versioned library ${LADYBUG_LIBRARY}")
+        else()
+            message(STATUS "LadybugDB: versioned library ${_LBUG_CANDIDATE} is "
+                "[${_LBUG_VER_INFO}], does not match ${CMAKE_SYSTEM_PROCESSOR} — skipping")
         endif()
-        message(STATUS "LadybugDB: using versioned library ${LADYBUG_LIBRARY}")
     endif()
 endif()
 

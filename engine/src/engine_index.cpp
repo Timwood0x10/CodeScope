@@ -58,7 +58,82 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 					 g_parser->error() + "\"}");
 		}
 
-		// Translate to IR
+		// ── Try new pipeline: Visitor → SemanticUnit ──────────────
+		// Use the visitor-based pipeline for Rust and Java, where the old
+		// Translator has known issues with call-edge resolution. The visitor
+		// produces flat SemanticUnit records with correct parent_id links,
+		// enabling proper call-edge resolution via name matching.
+		// Other languages (C, C++, Go, Python, JS, TS) still use the old
+		// Translator which provides precise semantic_edge-based resolution.
+		std::string lang_lower(language);
+		for (auto &ch : lang_lower)
+			ch = static_cast<char>(std::tolower(ch));
+		bool use_visitor = (lang_lower == "rust" ||
+				    lang_lower == "rs" || lang_lower == "java");
+		auto visitor = use_visitor ? ir::createJsVisitor(language) :
+					     nullptr;
+		if (visitor) {
+			ir::SemanticUnit *su =
+				visitor->visit(tree, source.c_str(), file_path);
+			ts_tree_delete(tree);
+			if (!su) {
+				return dupString(
+					"{\"ok\":false,\"error\":\"visitor returned null\"}");
+			}
+			auto su_guard = std::unique_ptr<ir::SemanticUnit>(su);
+
+			// Persist IR + build graph
+			g_store->beginTransaction();
+
+			// File record
+			std::string hash = simpleHash(source);
+			g_store->upsertFile(project_id, file_path, language,
+					    hash.c_str());
+
+			// Delete old graph data for this file
+			g_store->deleteGraphNodesByFile(project_id, file_path);
+
+			// Build graph from SemanticUnit
+			uint64_t start_node_id = 1;
+			{
+				sqlite3_stmt *stmt = nullptr;
+				const char *sql =
+					"SELECT COALESCE(MAX(id), 0) + 1 FROM graph_nodes";
+				if (sqlite3_prepare_v2(g_store->handle(), sql,
+						       -1, &stmt,
+						       nullptr) == SQLITE_OK) {
+					if (sqlite3_step(stmt) == SQLITE_ROW) {
+						start_node_id = static_cast<
+							uint64_t>(
+							sqlite3_column_int64(
+								stmt, 0));
+					}
+					sqlite3_finalize(stmt);
+				}
+			}
+			graph::GraphBuilder builder(project_id, start_node_id);
+			auto symbol_graph = builder.buildSymbolGraph(*su);
+			auto call_graph = builder.buildCallGraph(*su);
+
+			// Persist graph nodes + edges
+			g_store->insertGraphNodes(project_id,
+						  symbol_graph.nodes);
+			g_store->insertGraphEdges(project_id,
+						  symbol_graph.edges);
+			g_store->insertGraphEdges(project_id, call_graph.edges);
+
+			g_store->commitTransaction();
+
+			std::ostringstream result;
+			result << "{\"ok\":true,\"nodes\":"
+			       << symbol_graph.nodes.size() << ",\"edges\":"
+			       << (symbol_graph.edges.size() +
+				   call_graph.edges.size())
+			       << "}";
+			return dupString(result.str());
+		}
+
+		// ── Old pipeline fallback: Translator → TranslationUnit ────
 		auto translator = ir::createTranslator(language);
 		if (!translator) {
 			ts_tree_delete(tree);

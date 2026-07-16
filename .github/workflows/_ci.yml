@@ -54,12 +54,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build git gcc g++ pkg-config libssl-dev ccache
-          # LadybugDB shared library is vendored under engine/third_party/ladybug/lib/linux/
-          # (committed to git, including the liblbug.so dev symlink).
-          # On aarch64 Linux the vendored binary is x86-64, so CMake will
-          # skip LadybugDB and build with SQLite-only graph storage.
-          # Add the vendored lib dir to the linker path at runtime.
-          echo "$PWD/engine/third_party/ladybug/lib/linux" | sudo tee /etc/ld.so.conf.d/ladybug.conf
+          # LadybugDB shared libraries are vendored under engine/third_party/ladybug/lib/
+          # (committed to git, both x86-64 and aarch64). CMake selects the
+          # correct architecture at configure time. Add the lib dir to the
+          # linker path at runtime.
+          ARCH_DIR=$([ "$(uname -m)" = "aarch64" ] && echo "linux-aarch64" || echo "linux")
+          echo "$PWD/engine/third_party/ladybug/lib/$ARCH_DIR" | sudo tee /etc/ld.so.conf.d/ladybug.conf
           sudo ldconfig
 
       - name: Install deps (macOS)
@@ -170,7 +170,7 @@ jobs:
                 echo "  SKIP $test_name (requires external args)"
                 continue
                 ;;
-              test_enhance_e2e|test_fp_rust|test_fp_java|test_js_visitor|test_ts_visitor|test_tsx_visitor)
+              test_enhance_e2e|test_js_visitor|test_ts_visitor|test_tsx_visitor)
                 echo "  SKIP $test_name (known failure, tracked for future fix)"
                 continue
                 ;;

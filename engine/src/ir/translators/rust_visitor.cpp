@@ -264,7 +264,20 @@ void RustVisitor::handleCall(TSNode node, uint64_t parent_id)
 
 	uint64_t id = emitter_->emitCall(name, loc, parent_id, 0, false,
 					 static_cast<int>(call_kind));
-	visitChildren(node, id);
+	// Recurse into children — skip identifier/field_expression/scoped_identifier
+	// (already extracted as the function name above). Only visit arguments
+	// and other expressions. This mirrors JsVisitor::visitCallExpr.
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (!ts_node_is_named(c))
+			continue;
+		const char *t = ts_node_type(c);
+		if (strcmp(t, "identifier") == 0 ||
+		    strcmp(t, "field_expression") == 0 ||
+		    strcmp(t, "scoped_identifier") == 0)
+			continue;
+		visitNode(c, id);
+	}
 }
 void RustVisitor::handleLet(TSNode node, uint64_t parent_id)
 {
@@ -301,7 +314,24 @@ void RustVisitor::handleLet(TSNode node, uint64_t parent_id)
 			}
 		}
 	}
-	visitChildren(node, parent_id);
+	// Recurse into children — skip the identifier (variable name) and
+	// type nodes already processed above. Only visit the initializer
+	// expression (e.g., call_expression) so call edges are created.
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (!ts_node_is_named(c))
+			continue;
+		const char *t = ts_node_type(c);
+		if (strcmp(t, "identifier") == 0)
+			continue;
+		if (strcmp(t, "type_identifier") == 0 ||
+		    strcmp(t, "generic_type") == 0 ||
+		    strcmp(t, "reference_type") == 0 ||
+		    strcmp(t, "array_type") == 0 ||
+		    strcmp(t, "tuple_type") == 0)
+			continue;
+		visitNode(c, parent_id);
+	}
 }
 void RustVisitor::handleUse(TSNode node, uint64_t parent_id)
 {

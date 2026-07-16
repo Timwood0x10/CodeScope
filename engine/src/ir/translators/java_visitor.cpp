@@ -36,13 +36,6 @@ static bool isJavaBuiltin(const std::string &name)
 		"println",
 		"printf",
 		"length",
-		"size",
-		"get",
-		"set",
-		"add",
-		"remove",
-		"isEmpty",
-		"contains",
 		"iterator",
 		"toArray",
 		"charAt",
@@ -216,11 +209,40 @@ void JavaVisitor::handleEnumDecl(TSNode node, uint64_t parent_id)
 void JavaVisitor::handleMethodInvocation(TSNode node, uint64_t parent_id)
 {
 	SourceRange loc = location(node);
-	std::string name = nodeText(node);
+	// Extract the method name from the first identifier/scoped_identifier/
+	// field_access child — NOT nodeText(node) which would include args
+	// like "userFunction(5)" and break name-based call resolution.
+	std::string name;
+	uint32_t cnt = ts_node_child_count(node);
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (!ts_node_is_named(c))
+			continue;
+		const char *t = ts_node_type(c);
+		if (strcmp(t, "identifier") == 0 ||
+		    strcmp(t, "scoped_identifier") == 0) {
+			name = nodeText(c);
+			break;
+		}
+		if (strcmp(t, "field_access") == 0) {
+			name = nodeText(c);
+			break;
+		}
+	}
 
 	// Skip Java common JDK methods — they are NOT user-defined calls
 	if (!name.empty() && isJavaBuiltin(name)) {
-		visitChildren(node, parent_id);
+		for (uint32_t i = 0; i < cnt; i++) {
+			TSNode c = ts_node_child(node, i);
+			if (!ts_node_is_named(c))
+				continue;
+			const char *t = ts_node_type(c);
+			if (strcmp(t, "identifier") == 0 ||
+			    strcmp(t, "scoped_identifier") == 0 ||
+			    strcmp(t, "field_access") == 0)
+				continue;
+			visitNode(c, parent_id);
+		}
 		return;
 	}
 
@@ -243,7 +265,20 @@ void JavaVisitor::handleMethodInvocation(TSNode node, uint64_t parent_id)
 
 	uint64_t id = emitter_->emitCall(name, loc, parent_id, 0, false,
 					 static_cast<int>(call_kind));
-	visitChildren(node, id);
+	// Recurse into children — skip identifier/scoped_identifier/field_access
+	// (already extracted as the method name above). Only visit arguments
+	// and other expressions. This mirrors JsVisitor::visitCallExpr.
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (!ts_node_is_named(c))
+			continue;
+		const char *t = ts_node_type(c);
+		if (strcmp(t, "identifier") == 0 ||
+		    strcmp(t, "scoped_identifier") == 0 ||
+		    strcmp(t, "field_access") == 0)
+			continue;
+		visitNode(c, id);
+	}
 }
 void JavaVisitor::handleVariableDecl(TSNode node, uint64_t parent_id)
 {
@@ -288,6 +323,18 @@ void JavaVisitor::handleVariableDecl(TSNode node, uint64_t parent_id)
 						      location(c), id);
 			break;
 		}
+	}
+
+	// Visit the initializer (e.g., method_invocation) — skip the
+	// identifier already processed above. Without this, call edges
+	// inside variable initializers are never created.
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (!ts_node_is_named(c))
+			continue;
+		if (strcmp(ts_node_type(c), "identifier") == 0)
+			continue;
+		visitNode(c, parent_id);
 	}
 }
 void JavaVisitor::handleImport(TSNode node, uint64_t parent_id)
