@@ -54,8 +54,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build git gcc g++ pkg-config libssl-dev ccache
-          # Install LadybugDB (graph storage engine)
+          # Install LadybugDB CLI + development library
+          ARCH=$(uname -m)
+          [ "$ARCH" = "x86_64" ] && ARCH="x86_64" || ARCH="aarch64"
           curl -fsSL https://install.ladybugdb.com | sh
+          curl -sL "https://github.com/LadybugDB/ladybug/releases/latest/download/liblbug-linux-${ARCH}.tar.gz" \
+            | sudo tar xz -C /usr/local
           echo "/usr/local/lib" | sudo tee /etc/ld.so.conf.d/ladybug.conf
           sudo ldconfig
 
