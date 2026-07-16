@@ -2,7 +2,22 @@
 
 ## v0.2.0 (2026-07-16)
 
-Open-source release preparation — documentation accuracy and build portability fixes.
+Open-source release preparation — documentation accuracy, build portability fixes, and new developer tooling.
+
+### 🚀 New Features
+
+- **FFI Boundary Detection** (`codescope_ffi_boundaries`): Automatically detects cross-language FFI boundaries in the codebase — identifies `extern "C"` blocks, `#[no_mangle]` symbols, JNI declarations, and C ABI function exports. Helps developers audit unsafe interop surface.
+- **Paginated Graph Export** (`codescope_export_graph`): Full graph export with cursor-based pagination. Supports configurable page size, filter by edge type, and streaming output for large codebases. Integrates with MCP tooling for seamless client-side consumption.
+- **One-Click Bootstrap** (`codescope_bootstrap`): Zero-configuration project setup — auto-detects project language, runs indexing, and verifies the graph is ready. Single command from clone to queryable graph.
+- **LadybugDB Embedded Storage**: Optional LadybugDB backend for graph storage — provides faster local graph queries vs SQLite, with automatic fallback.
+- **LadybugDB incremental sync**: Added `lbug_sync_state` table to track incremental sync progress (last synced node id, edge rowid, and full-sync flag) so re-syncs only process new graph data.
+- **ISSUE_TEMPLATE and CONTRIBUTING guidelines**: Added GitHub issue templates and `CONTRIBUTING.md` to guide open-source contributors.
+
+### 🔧 Improvements
+
+- **Query Limits & Error Handling**: Added configurable query timeouts and result caps. Graceful error recovery for malformed queries — returns partial results instead of failing.
+- **Graph Building Logic**: Optimized buildGraph to handle orphaned nodes and broken references without crashing. Better error messages for cycle detection and constraint violations.
+- **MemberExpr False Positives Eliminated**: Fixed a bug where C++ `MemberExpr` (e.g., `obj.method()`) was incorrectly resolved as a direct call edge to unrelated functions. Now correctly distinguishes qualified member access from free function calls, improving call graph accuracy by ~15% on C++ codebases.
 
 ### 🐛 Bug Fixes
 
@@ -11,11 +26,9 @@ Open-source release preparation — documentation accuracy and build portability
 - **C++ FFI exception safety**: All `extern "C"` boundary functions are now wrapped in `try/catch` so a C++ exception never crosses the FFI boundary into Rust (which would abort the process).
 - **CI now runs C++ tests**: GitHub Actions workflow updated to compile and execute the C++ test suite on every push.
 - **Documentation consistency**: Corrected tool count (37, not 19 or 32), replaced stale 11-table list with the actual 40-table schema, expanded environment variables table from 3 to 11 entries, removed `graph_query` from the "does not exist" list (it is implemented), standardized token savings to 98.9%, and removed the stale `codebase-memory-mcp` benchmark table.
-
-### 🚀 New Features
-
-- **LadybugDB incremental sync**: Added `lbug_sync_state` table to track incremental sync progress (last synced node id, edge rowid, and full-sync flag) so re-syncs only process new graph data.
-- **ISSUE_TEMPLATE and CONTRIBUTING guidelines**: Added GitHub issue templates and `CONTRIBUTING.md` to guide open-source contributors.
+- **MemberExpr call edges**: C++ `a->foo()` and `b.foo()` no longer generate false positive edges to every function named `foo` in the project. Resolution now checks the qualifier type before matching.
+- **Query timeout**: Long-running fuzzy searches no longer block the server. Configurable `max_query_time_ms` (default 5000ms).
+- **Graph export OOM**: Paginated export prevents memory exhaustion on large graphs (100k+ nodes) by streaming results in pages of configurable size.
 
 ### 🔒 Code Review Fixes
 
@@ -49,29 +62,6 @@ Open-source release preparation — documentation accuracy and build portability
 - **CI timeout reduced**: 120min → 45min to fail fast on hangs.
 - **Test suite expanded**: `TEST_EXES` expanded from 28 to 37 (added `test_fp_*`, `test_graph_semantic`, `test_semantic_unit`, `test_type_extraction`, etc.). Manual debug tools moved to `engine/manual/`.
 - **Known-failing tests documented**: `test_enhance_e2e`, `test_fp_rust`, `test_fp_java`, `test_{js,ts,tsx}_visitor` excluded from `TEST_EXES` with documented reasons.
-
----
-
-## v0.2.0 (2026-07-15)
-
-### 🚀 New Features
-
-- **FFI Boundary Detection** (`codescope_ffi_boundaries`): Automatically detects cross-language FFI boundaries in the codebase — identifies `extern "C"` blocks, `#[no_mangle]` symbols, JNI declarations, and C ABI function exports. Helps developers audit unsafe interop surface.
-- **Paginated Graph Export** (`codescope_export_graph`): Full graph export with cursor-based pagination. Supports configurable page size, filter by edge type, and streaming output for large codebases. Integrates with MCP tooling for seamless client-side consumption.
-- **One-Click Bootstrap** (`codescope_bootstrap`): Zero-configuration project setup — auto-detects project language, runs indexing, and verifies the graph is ready. Single command from clone to queryable graph.
-- **LadybugDB Embedded Storage**: Optional LadybugDB backend for graph storage — provides faster local graph queries vs SQLite, with automatic fallback.
-
-### 🔧 Improvements
-
-- **Query Limits & Error Handling**: Added configurable query timeouts and result caps. Graceful error recovery for malformed queries — returns partial results instead of failing.
-- **Graph Building Logic**: Optimized buildGraph to handle orphaned nodes and broken references without crashing. Better error messages for cycle detection and constraint violations.
-- **MemberExpr False Positives Eliminated**: Fixed a bug where C++ `MemberExpr` (e.g., `obj.method()`) was incorrectly resolved as a direct call edge to unrelated functions. Now correctly distinguishes qualified member access from free function calls, improving call graph accuracy by ~15% on C++ codebases.
-
-### 🐛 Bug Fixes
-
-- **MemberExpr call edges**: C++ `a->foo()` and `b.foo()` no longer generate false positive edges to every function named `foo` in the project. Resolution now checks the qualifier type before matching.
-- **Query timeout**: Long-running fuzzy searches no longer block the server. Configurable `max_query_time_ms` (default 5000ms).
-- **Graph export OOM**: Paginated export prevents memory exhaustion on large graphs (100k+ nodes) by streaming results in pages of configurable size.
 
 ---
 
