@@ -154,6 +154,12 @@ fn main() {
         let link_mode = if is_static { "static" } else { "dylib" };
         println!("cargo:rustc-link-search=native={}", lib_dir);
         println!("cargo:rustc-link-lib={}=lbug", link_mode);
+        // Embed the library directory in the binary's rpath so the
+        // dynamic linker can find liblbug at runtime without requiring
+        // DYLD_LIBRARY_PATH (macOS) or ldconfig (Linux).
+        if !is_static {
+            println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir);
+        }
         eprintln!(
             "build.rs: LadybugDB {} lib found via CMake cache at {}",
             if is_static { "static" } else { "dynamic" },

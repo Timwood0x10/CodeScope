@@ -17,10 +17,20 @@ jobs:
       - name: Install system deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-format cmake ninja-build
+          sudo apt-get install -y cmake ninja-build
+          # Install clang-format 21 from LLVM apt to match the local
+          # dev environment (Homebrew LLVM 21). Ubuntu 24.04's default
+          # clang-format (v18) formats differently, causing spurious CI
+          # failures on code that passes locally.
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update
+          sudo apt-get install -y clang-format-21
+          sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-21 100
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable # stable
+        uses: dtolnay/rust-toolchain@1.95.0 # pinned to match local dev
         with:
           components: clippy, rustfmt
 
