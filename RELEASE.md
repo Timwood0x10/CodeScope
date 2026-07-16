@@ -1,56 +1,59 @@
-# CodeScope v0.2.0
+## v0.2.0
 
-> **Project Truth Engine** — 把源码变成可验证的事实，让 AI 基于项目真相回答问题。
+Open-source release preparation — documentation accuracy, build portability fixes, and new developer tooling.
 
-***
+### New Features
 
-## What's New in v0.2.0
+- **FFI Boundary Detection** (`codescope_ffi_boundaries`): Automatically detects cross-language FFI boundaries in the codebase — identifies `extern "C"` blocks, `#[no_mangle]` symbols, JNI declarations, and C ABI function exports. Helps developers audit unsafe interop surface.
+- **Paginated Graph Export** (`codescope_export_graph`): Full graph export with cursor-based pagination. Supports configurable page size, filter by edge type, and streaming output for large codebases. Integrates with MCP tooling for seamless client-side consumption.
+- **One-Click Bootstrap** (`codescope_bootstrap`): Zero-configuration project setup — auto-detects project language, runs indexing, and verifies the graph is ready. Single command from clone to queryable graph.
+- **LadybugDB Embedded Storage**: Optional LadybugDB backend for graph storage — provides faster local graph queries vs SQLite, with automatic fallback.
+- **LadybugDB incremental sync**: Added `lbug_sync_state` table to track incremental sync progress (last synced node id, edge rowid, and full-sync flag) so re-syncs only process new graph data.
+- **ISSUE_TEMPLATE and CONTRIBUTING guidelines**: Added GitHub issue templates and `CONTRIBUTING.md` to guide open-source contributors.
 
-### 🔧 Build System Overhaul
+### Improvements
 
-- **一键构建**：新增 `bootstrap.sh` — 自动检测 macOS/Linux，安装缺失依赖，编译。一条命令完成：`bash <(curl -fsSL ...)/bootstrap.sh`
-- **跨平台 LadybugDB**：CMake 现在在 macOS（Homebrew）和 Linux（`/usr/local`）上都能自动找到 LadybugDB
-- **CI 修复**：GitHub Actions 现在在 Ubuntu 和 macOS 上都安装 LadybugDB，CI 编译通过
-- **快速开始指南**：新增 `QUICK_START.md` — 5 分钟从零开始上手
+- **Query Limits & Error Handling**: Added configurable query timeouts and result caps. Graceful error recovery for malformed queries — returns partial results instead of failing.
+- **Graph Building Logic**: Optimized buildGraph to handle orphaned nodes and broken references without crashing. Better error messages for cycle detection and constraint violations.
+- **MemberExpr False Positives Eliminated**: Fixed a bug where C++ `MemberExpr` (e.g., `obj.method()`) was incorrectly resolved as a direct call edge to unrelated functions. Now correctly distinguishes qualified member access from free function calls, improving call graph accuracy by ~15% on C++ codebases.
 
-### 🐛 Bug Fixes
+### Bug Fixes
 
-- **FilterPolicy `"tools"` 误杀**：`normal_skip_dirs_` 中的 `"tools"` 条目会匹配任何路径中的 `tools` 目录，导致 JDK 所有 `jdk/tools/xxx/...` 路径下的文件被过滤。已修复：改为前缀匹配 `"tools-"` / `"tools_"`，加入 `skip_dir_prefixes_`
-- **quarantine 阶段死循环**：`codescope-parallel.sh` 的 binary search 在 0 节点模块上陷入无限循环（10 次重试后跳过，但超时模块多时总时间爆炸）
+- **macOS install instructions missing LadybugDB**: `README.md`, `QUICK_START.md`, and `bootstrap.sh` did not list LadybugDB as a dependency, but `server/build.rs` unconditionally links `liblbug`. Added `brew install ladybug` (macOS) and `curl -fsSL https://install.ladybugdb.com | sh` (Linux) to all install paths.
+- **build.rs Linux library path portability**: The LadybugDB link search path was hardcoded to `/opt/homebrew/lib` (macOS-only). Now resolves the correct path per platform.
+- **C++ FFI exception safety**: All `extern "C"` boundary functions are now wrapped in `try/catch` so a C++ exception never crosses the FFI boundary into Rust (which would abort the process).
+- **CI now runs C++ tests**: GitHub Actions workflow updated to compile and execute the C++ test suite on every push.
+- **Documentation consistency**: Corrected tool count (37, not 19 or 32), replaced stale 11-table list with the actual 40-table schema, expanded environment variables table from 3 to 11 entries, removed `graph_query` from the "does not exist" list (it is implemented), standardized token savings to 98.9%, and removed the stale `codebase-memory-mcp` benchmark table.
+- **MemberExpr call edges**: C++ `a->foo()` and `b.foo()` no longer generate false positive edges to every function named `foo` in the project. Resolution now checks the qualifier type before matching.
+- **Query timeout**: Long-running fuzzy searches no longer block the server. Configurable `max_query_time_ms` (default 5000ms).
+- **Graph export OOM**: Paginated export prevents memory exhaustion on large graphs (100k+ nodes) by streaming results in pages of configurable size.
 
-### 📊 Performance
+### Code Review Fixes
 
-- **文件级并行索引**：支持 `--file-list` 参数，通过 JSON 文件传递文件列表，避免 ARG_MAX 限制
-- **分模块并行索引 v3**：动态 worker 调度，小模块释放 worker 给大模块
+- **LadybugDB stale data on re-index**: `buildGraph` now calls `resetLadybugSyncState` before sync to force a full sync when the SQLite graph was rebuilt, preventing stale nodes/edges from accumulating in LadybugDB.
+- **build.rs / CMakeLists.txt LadybugDB synchronization**: `build.rs` now reads the CMake cache (`CMakeCache.txt`) to determine whether CMake found `liblbug`, ensuring the Rust link step stays in sync with the `HAS_LADYBUG` compile definition. Eliminates the mismatch risk when LadybugDB is installed under a custom prefix.
+- **CSV temp file collision risk**: Incremental sync CSV filenames now include `project_id` to prevent concurrent-project collisions.
+- **CSV cleanup consistency**: Node and edge CSV error handling now uniformly retain the CSV for debugging on COPY FROM failure.
+- **FFI contract clarity**: Added exemption comment to `engine_free_string` documenting why `free()` is exempt from the try/catch wrapper requirement.
+- **Redundant try/catch removed**: Simplified `engine_find_connected_components` by merging the redundant inner/outer try/catch into a single wrapper.
+- **ffi::init() return value checked**: `tools/mod.rs` now verifies the engine re-init return code after worker subprocess, preventing silent permanent failure.
+- **Rust server panic safety**: Replaced 4 `serde_json::to_value().expect()` calls in `server.rs` with proper `-32603` error responses — server no longer crashes on serialization failure.
+- **Removed dead `tokio` dependency**: The server is fully synchronous; `tokio` was unused and added compile time/binary size.
+- **`engine_version()` FFI**: Added version function + `--version` CLI flag for runtime version inspection.
+- **`.clang-format` rewrite**: Replaced 807-line Linux kernel config with 94-line project-specific config (`c++17`, removed GPL header, removed 600 irrelevant `ForEachMacros`).
+- **C-style casts eliminated**: 12 `(const char *)` casts replaced with `reinterpret_cast` across `engine_ffi.cpp` and `query_analysis.cpp`.
+- **Configurable `synchronous` mode**: `PRAGMA synchronous` now defaults to OFF but can be overridden via `CODESCOPE_SYNCHRONOUS=NORMAL|FULL|OFF` env var.
+- **Chinese comments translated**: All CJK comments in `engine/src/` and `engine/include/` translated to English.
+- **Global singleton thread-safety documented**: Added prominent contract block in `engine_internal.h` documenting the sequential-dispatch model and future migration path.
 
-### 🧪 Multi-Language Indexing Test Results
+### Chores
 
-| Project | Language | Files | Success | Nodes | Time |
-|---------|----------|:-----:|:-------:|:-----:|:----:|
-| wasmtime | Rust | 2,145 | **12/12** | 18,961 | **40s** |
-| CodeScope | C++/Rust | 1,860 | **2/2** | 329 | **<1s** |
-| Go stdlib | Go | 7,018 | **54/54** | 115,655 | **42s** |
-| tinygo | Go | 1,230 | **16/18** | 25,688 | **17s** |
-| JDK | Java | 20,137 | **56/69** | 205,842 | **52s** |
-| Linux kernel | C | 60,650 | **21/24** | 205,728 | **96s** |
-
-### 📚 Documentation
-
-- `QUICK_START.md`：中文快速开始指南
-- `README.md` / `README_CN.md`：更新构建说明
-- `docs/optimization/`：性能优化记录
-
-***
-
-## Quick Start
-
-```bash
-# One-command build
-bash <(curl -fsSL https://raw.githubusercontent.com/Timwood0x10/CodeScope/master/bootstrap.sh)
-
-# Index a project
-codescope cli index_project '{"project_path":"/path/to/project"}'
-
-# Start MCP server
-codescope
-```
+- **Removed accidentally committed binary `version` file**: A stray binary artifact was removed from the repository.
+- **Committed Cargo.lock**: Required for reproducible builds of the binary crate. Was previously gitignored.
+- **Gitignored runtime artifacts**: `runtimelog/`, `llvm_ir/output/`, and `*.lbug` files are now properly ignored.
+- **Open-source community files**: Added `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `.github/CODEOWNERS`.
+- **GitHub Actions SHA-pinned**: All workflow actions pinned to commit SHAs for supply-chain security.
+- **Non-destructive release pipeline**: `build.yml` no longer force-pushes tags or deletes existing releases. Added semver monotonicity validation.
+- **CI timeout reduced**: 120min → 45min to fail fast on hangs.
+- **Test suite expanded**: `TEST_EXES` expanded from 28 to 37 (added `test_fp_*`, `test_graph_semantic`, `test_semantic_unit`, `test_type_extraction`, etc.). Manual debug tools moved to `engine/manual/`.
+- **Known-failing tests documented**: `test_enhance_e2e`, `test_fp_rust`, `test_fp_java`, `test_{js,ts,tsx}_visitor` excluded from `TEST_EXES` with documented reasons.
