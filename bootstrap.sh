@@ -78,12 +78,21 @@ case "$OS" in
     fi
     ok "pkg-config"
 
-    # LadybugDB (required — server/build.rs links liblbug for graph storage)
+    # LadybugDB (required — graph storage backend, not optional)
+    # brew ls --versions exits non-zero if not installed; check the cellar directly
+    # because brew ls can be slow and return misleading codes on some brew versions.
     if ! brew ls --versions ladybug &>/dev/null; then
-      info "Installing LadybugDB..."
+      info "Installing LadybugDB (required for graph storage)..."
       brew install ladybug
+      # Refresh dyld cache so the freshly-linked liblbug.dylib is discoverable
+      sudo update_dyld_shared_cache 2>/dev/null || true
     fi
-    ok "LadybugDB"
+    # Verify the library actually landed where CMake will look
+    if [ -f /opt/homebrew/lib/liblbug.a ] || [ -f /usr/local/lib/liblbug.a ]; then
+      ok "LadybugDB"
+    else
+      fail "LadybugDB install succeeded but liblbug.a not found in /opt/homebrew/lib or /usr/local/lib"
+    fi
     ;;
 
   linux)
@@ -131,12 +140,21 @@ case "$OS" in
     fi
     ok "sqlite3"
 
-    # LadybugDB (required — server/build.rs links liblbug for graph storage)
-    if ! command -v lbug &>/dev/null; then
-      info "Installing LadybugDB..."
+    # LadybugDB (required — graph storage backend, not optional)
+    # Detect via liblbug.a in the standard loader paths, NOT `command -v lbug`,
+    # because the curl installer puts the CLI in /usr/local/bin which may not
+    # be on PATH yet, and the library is what CMake actually needs.
+    if [ ! -f /usr/local/lib/liblbug.a ] && [ ! -f /usr/lib/liblbug.a ]; then
+      info "Installing LadybugDB (required for graph storage)..."
       curl -fsSL https://install.ladybugdb.com | sh
+      # Installer drops libs in /usr/local/lib; refresh the dynamic linker cache
+      sudo ldconfig 2>/dev/null || true
     fi
-    ok "LadybugDB"
+    if [ -f /usr/local/lib/liblbug.a ] || [ -f /usr/lib/liblbug.a ]; then
+      ok "LadybugDB"
+    else
+      fail "LadybugDB install finished but liblbug.a not in /usr/local/lib or /usr/lib. Install manually: https://docs.ladybugdb.com/installation/"
+    fi
     ;;
 
   *)
