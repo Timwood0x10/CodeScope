@@ -282,13 +282,15 @@ std::string GraphStore::searchUnifiedJson(uint64_t project_id,
 std::string GraphStore::findCallersJson(uint64_t project_id,
 					const char *symbol_name)
 {
-	// Find the node ID first, then query graph_edges for callers.
-	// No call_edges/symbols dual-path — graph_edges is canonical.
-	uint64_t gn_id = 0;
+	// Collect ALL node IDs matching the name (a symbol may be declared
+	// many times: function/method/class/interface share a name). Edges
+	// point at specific declarations, so looking up only one id misses
+	// callers of the other declarations. No node_type restriction —
+	// all node_types qualify (function/method/class/interface/etc).
+	std::vector<uint64_t> gn_ids;
 	{
 		const char *id_sql =
-			"SELECT id FROM graph_nodes WHERE project_id = ? AND name = ? "
-			"AND node_type IN (0,1) LIMIT 1";
+			"SELECT id FROM graph_nodes WHERE project_id = ? AND name = ?";
 		sqlite3_stmt *id_stmt = nullptr;
 		if (sqlite3_prepare_v2(db_, id_sql, -1, &id_stmt, nullptr) ==
 		    SQLITE_OK) {
@@ -296,32 +298,42 @@ std::string GraphStore::findCallersJson(uint64_t project_id,
 					   static_cast<int64_t>(project_id));
 			sqlite3_bind_text(id_stmt, 2, symbol_name, -1,
 					  SQLITE_TRANSIENT);
-			if (sqlite3_step(id_stmt) == SQLITE_ROW)
-				gn_id = static_cast<uint64_t>(
-					sqlite3_column_int64(id_stmt, 0));
+			while (sqlite3_step(id_stmt) == SQLITE_ROW)
+				gn_ids.push_back(static_cast<uint64_t>(
+					sqlite3_column_int64(id_stmt, 0)));
 			sqlite3_finalize(id_stmt);
 		}
 	}
-	if (gn_id == 0)
+	if (gn_ids.empty())
 		return "{\"callers\":[]}";
 
 	std::ostringstream json;
 	json << "{\"callers\":[";
-	const char *ge_sql =
-		"SELECT gn.id, gn.name, gn.node_type, gn.file_path, gn.start_row "
-		"FROM graph_edges ge "
-		"JOIN graph_nodes gn ON gn.id = ge.source_node_id "
-		"WHERE ge.project_id = ? AND ge.target_node_id = ? "
-		"AND ge.edge_type = 1 ORDER BY gn.name LIMIT 50";
+	// edge_type 1=call, 3=symbol_reference (caller→callee). Both are
+	// call-like; restricting to edge_type=1 alone dropped 83% of edges.
+	// Build a parameterized IN (...) clause for all matching node ids.
+	std::string id_list;
+	for (size_t i = 0; i < gn_ids.size(); ++i) {
+		if (i > 0)
+			id_list += ",";
+		id_list += std::to_string(gn_ids[i]);
+	}
+	std::string ge_sql_str =
+		std::string("SELECT DISTINCT gn.id, gn.name, gn.node_type, "
+			    "gn.file_path, gn.start_row "
+			    "FROM graph_edges ge "
+			    "JOIN graph_nodes gn ON gn.id = ge.source_node_id "
+			    "WHERE ge.project_id = ? AND ge.edge_type IN (1,3) "
+			    "AND ge.target_node_id IN (") +
+		id_list + ") ORDER BY gn.name LIMIT 50";
 	sqlite3_stmt *ge_stmt = nullptr;
 	static const char *type_names[] = {
 		"function", "method", "class", "interface", "enum", "typealias",
 	};
-	if (sqlite3_prepare_v2(db_, ge_sql, -1, &ge_stmt, nullptr) ==
-	    SQLITE_OK) {
+	if (sqlite3_prepare_v2(db_, ge_sql_str.c_str(), -1, &ge_stmt,
+			       nullptr) == SQLITE_OK) {
 		sqlite3_bind_int64(ge_stmt, 1,
 				   static_cast<int64_t>(project_id));
-		sqlite3_bind_int64(ge_stmt, 2, static_cast<int64_t>(gn_id));
 		bool first = true;
 		while (sqlite3_step(ge_stmt) == SQLITE_ROW) {
 			if (!first)
@@ -352,13 +364,15 @@ std::string GraphStore::findCallersJson(uint64_t project_id,
 std::string GraphStore::findCalleesJson(uint64_t project_id,
 					const char *symbol_name)
 {
-	// Find the node ID first, then query graph_edges for callees.
-	// No call_edges/symbols dual-path — graph_edges is canonical.
-	uint64_t gn_id = 0;
+	// Collect ALL node IDs matching the name (a symbol may be declared
+	// many times: function/method/class/interface share a name). Edges
+	// point at specific declarations, so looking up only one id misses
+	// callees of the other declarations. No node_type restriction —
+	// all node_types qualify (function/method/class/interface/etc).
+	std::vector<uint64_t> gn_ids;
 	{
 		const char *id_sql =
-			"SELECT id FROM graph_nodes WHERE project_id = ? AND name = ? "
-			"AND node_type IN (0,1) LIMIT 1";
+			"SELECT id FROM graph_nodes WHERE project_id = ? AND name = ?";
 		sqlite3_stmt *id_stmt = nullptr;
 		if (sqlite3_prepare_v2(db_, id_sql, -1, &id_stmt, nullptr) ==
 		    SQLITE_OK) {
@@ -366,32 +380,42 @@ std::string GraphStore::findCalleesJson(uint64_t project_id,
 					   static_cast<int64_t>(project_id));
 			sqlite3_bind_text(id_stmt, 2, symbol_name, -1,
 					  SQLITE_TRANSIENT);
-			if (sqlite3_step(id_stmt) == SQLITE_ROW)
-				gn_id = static_cast<uint64_t>(
-					sqlite3_column_int64(id_stmt, 0));
+			while (sqlite3_step(id_stmt) == SQLITE_ROW)
+				gn_ids.push_back(static_cast<uint64_t>(
+					sqlite3_column_int64(id_stmt, 0)));
 			sqlite3_finalize(id_stmt);
 		}
 	}
-	if (gn_id == 0)
+	if (gn_ids.empty())
 		return "{\"callees\":[]}";
 
 	std::ostringstream json;
 	json << "{\"callees\":[";
-	const char *ge_sql =
-		"SELECT gn.id, gn.name, gn.node_type, gn.file_path, gn.start_row "
-		"FROM graph_edges ge "
-		"JOIN graph_nodes gn ON gn.id = ge.target_node_id "
-		"WHERE ge.project_id = ? AND ge.source_node_id = ? "
-		"AND ge.edge_type = 1 ORDER BY gn.name LIMIT 50";
+	// edge_type 1=call, 3=symbol_reference (caller→callee). Both are
+	// call-like; restricting to edge_type=1 alone dropped 83% of edges.
+	// Build a parameterized IN (...) clause for all matching node ids.
+	std::string id_list;
+	for (size_t i = 0; i < gn_ids.size(); ++i) {
+		if (i > 0)
+			id_list += ",";
+		id_list += std::to_string(gn_ids[i]);
+	}
+	std::string ge_sql_str =
+		std::string("SELECT DISTINCT gn.id, gn.name, gn.node_type, "
+			    "gn.file_path, gn.start_row "
+			    "FROM graph_edges ge "
+			    "JOIN graph_nodes gn ON gn.id = ge.target_node_id "
+			    "WHERE ge.project_id = ? AND ge.edge_type IN (1,3) "
+			    "AND ge.source_node_id IN (") +
+		id_list + ") ORDER BY gn.name LIMIT 50";
 	sqlite3_stmt *ge_stmt = nullptr;
 	static const char *type_names[] = {
 		"function", "method", "class", "interface", "enum", "typealias",
 	};
-	if (sqlite3_prepare_v2(db_, ge_sql, -1, &ge_stmt, nullptr) ==
-	    SQLITE_OK) {
+	if (sqlite3_prepare_v2(db_, ge_sql_str.c_str(), -1, &ge_stmt,
+			       nullptr) == SQLITE_OK) {
 		sqlite3_bind_int64(ge_stmt, 1,
 				   static_cast<int64_t>(project_id));
-		sqlite3_bind_int64(ge_stmt, 2, static_cast<int64_t>(gn_id));
 		bool first = true;
 		while (sqlite3_step(ge_stmt) == SQLITE_ROW) {
 			if (!first)
@@ -512,7 +536,7 @@ std::string GraphStore::tracePathJson(uint64_t project_id,
 	auto syms = [&](const char *name) -> uint64_t {
 		const char *sql =
 			"SELECT id FROM graph_nodes WHERE project_id = ? AND name = ? "
-			"AND node_type IN (0,1) LIMIT 1";
+			"ORDER BY node_type LIMIT 1";
 		sqlite3_stmt *stmt = nullptr;
 		if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) !=
 		    SQLITE_OK)
@@ -550,7 +574,7 @@ std::string GraphStore::tracePathJson(uint64_t project_id,
 
 		const char *sql =
 			"SELECT target_node_id FROM graph_edges "
-			"WHERE project_id = ? AND source_node_id = ? AND edge_type = 1";
+			"WHERE project_id = ? AND source_node_id = ? AND edge_type IN (1,3)";
 		sqlite3_stmt *stmt = nullptr;
 		if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) !=
 		    SQLITE_OK)
@@ -768,7 +792,7 @@ std::string GraphStore::exploreFunctionJson(uint64_t project_id,
 			bool has_fields =
 				true; // name, file, line already written
 
-			// Callers: graph_edges where target_node_id = id AND edge_type=1 (call)
+			// Callers: graph_edges where target_node_id = id (call + symbol_reference)
 			if (show_callers) {
 				if (has_fields)
 					json << ",";
@@ -776,7 +800,7 @@ std::string GraphStore::exploreFunctionJson(uint64_t project_id,
 				json << "\"callers\":[";
 				const char *csql =
 					"SELECT source_node_id FROM graph_edges "
-					"WHERE project_id = ? AND target_node_id = ? AND edge_type = 1 "
+					"WHERE project_id = ? AND target_node_id = ? AND edge_type IN (1,3) "
 					"AND source_node_id != ? LIMIT 20";
 				sqlite3_stmt *cstmt = nullptr;
 				bool first = true;
@@ -808,7 +832,7 @@ std::string GraphStore::exploreFunctionJson(uint64_t project_id,
 				json << "]";
 			}
 
-			// Callees: graph_edges where source_node_id = id AND edge_type=1 (call)
+			// Callees: graph_edges where source_node_id = id (call + symbol_reference)
 			if (show_callees) {
 				if (has_fields)
 					json << ",";
@@ -816,7 +840,7 @@ std::string GraphStore::exploreFunctionJson(uint64_t project_id,
 				json << "\"callees\":[";
 				const char *csql =
 					"SELECT target_node_id FROM graph_edges "
-					"WHERE project_id = ? AND source_node_id = ? AND edge_type = 1 "
+					"WHERE project_id = ? AND source_node_id = ? AND edge_type IN (1,3) "
 					"AND target_node_id != ? LIMIT 20";
 				sqlite3_stmt *cstmt = nullptr;
 				bool first = true;

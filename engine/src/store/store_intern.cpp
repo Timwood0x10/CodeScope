@@ -545,7 +545,7 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 					"WHERE d.name = ? AND d.language = ? "
 					" AND d.node_id NOT IN ("
 					"  SELECT target_node_id FROM graph_edges "
-					"  WHERE source_node_id = ? AND edge_type = 1)";
+					"  WHERE source_node_id = ? AND edge_type IN (1,3))";
 				sqlite3_stmt *callee_st = nullptr;
 				sqlite3_prepare_v2(db_, callee_sql, -1,
 						   &callee_st, nullptr);

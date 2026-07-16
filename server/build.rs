@@ -82,7 +82,11 @@ fn main() {
         format!("-DCMAKE_CXX_COMPILER={}", cxx_path),
     ];
     // Use Ninja generator if available (faster parallel builds)
-    if std::process::Command::new("ninja").arg("--version").output().is_ok() {
+    if std::process::Command::new("ninja")
+        .arg("--version")
+        .output()
+        .is_ok()
+    {
         cmake_args.push("-G".to_string());
         cmake_args.push("Ninja".to_string());
     }

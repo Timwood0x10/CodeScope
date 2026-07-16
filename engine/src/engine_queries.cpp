@@ -669,7 +669,7 @@ char *engine_build_context(uint64_t project_id, const char *query)
 			"SELECT gn1.name, gn2.name FROM graph_edges ge "
 			"JOIN graph_nodes gn1 ON gn1.id = ge.source_node_id "
 			"JOIN graph_nodes gn2 ON gn2.id = ge.target_node_id "
-			"WHERE ge.project_id = ? AND ge.edge_type = 1 LIMIT 10";
+			"WHERE ge.project_id = ? AND ge.edge_type IN (1,3) LIMIT 10";
 		sqlite3_stmt *cstmt = nullptr;
 		if (sqlite3_prepare_v2(db, csql, -1, &cstmt, nullptr) ==
 		    SQLITE_OK) {
@@ -857,9 +857,9 @@ char *engine_detect_ffi_boundaries(uint64_t project_id)
 			"SELECT gn.name, gn.file_path, gn.language, gn.start_row "
 			"FROM graph_nodes gn WHERE gn.project_id = ? "
 			"AND gn.node_type = 2 AND gn.id NOT IN "
-			"(SELECT source_node_id FROM graph_edges WHERE project_id = ? AND edge_type = 1) "
+			"(SELECT source_node_id FROM graph_edges WHERE project_id = ? AND edge_type IN (1,3)) "
 			"AND gn.id NOT IN "
-			"(SELECT target_node_id FROM graph_edges WHERE project_id = ? AND edge_type = 1) "
+			"(SELECT target_node_id FROM graph_edges WHERE project_id = ? AND edge_type IN (1,3)) "
 			"AND gn.file_path NOT LIKE '%test%' AND gn.file_path NOT LIKE '%bench%' "
 			"LIMIT 20";
 		sqlite3_stmt *stmt = nullptr;

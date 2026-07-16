@@ -88,7 +88,7 @@ static std::vector<int64_t> entitiesWithCallers(store::GraphStore *store,
 		"WHERE e.project_id=? AND LOWER(?) LIKE LOWER(e.name) || '%' "
 		"AND EXISTS (SELECT 1 FROM graph_edges r "
 		"            WHERE r.project_id=? AND r.target_node_id=e.id "
-		"            AND r.edge_type=1)";
+		"            AND r.edge_type IN (1,3))";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store->handle(), sql, -1, &stmt, nullptr) !=
 	    SQLITE_OK) {
@@ -214,10 +214,10 @@ std::vector<Finding> CapabilityVerifier::verify()
 		if (!found)
 			continue;
 
-		// Check if this node has any callers (incoming CALLS edges)
+		// Check if this node has any callers (incoming call + symbol_reference edges)
 		const char *caller_sql =
 			"SELECT COUNT(*) FROM graph_edges r "
-			"WHERE r.project_id = ? AND r.target_node_id = ? AND r.edge_type = 1";
+			"WHERE r.project_id = ? AND r.target_node_id = ? AND r.edge_type IN (1,3)";
 		sqlite3_stmt *cstmt = nullptr;
 		int caller_count = 0;
 		if (sqlite3_prepare_v2(store_->handle(), caller_sql, -1, &cstmt,
