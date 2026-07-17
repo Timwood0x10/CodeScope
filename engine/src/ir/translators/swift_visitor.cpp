@@ -59,6 +59,7 @@ void SwiftVisitor::handleFuncDecl(TSNode node, uint64_t parent_id)
 	uint64_t id = emitter_->emitFunction(name, loc, parent_id);
 	defineSymbol(name, id);
 	pushScope();
+	pushFunctionScope(id);
 	uint32_t cnt = ts_node_child_count(node);
 	for (uint32_t i = 0; i < cnt; i++) {
 		TSNode c = ts_node_child(node, i);
@@ -69,6 +70,7 @@ void SwiftVisitor::handleFuncDecl(TSNode node, uint64_t parent_id)
 		if (strcmp(ts_node_type(c), "body") == 0)
 			visitChildren(c, id);
 	}
+	popFunctionScope();
 	popScope();
 }
 void SwiftVisitor::handleClassDecl(TSNode node, uint64_t parent_id)
@@ -122,7 +124,15 @@ void SwiftVisitor::handleProtocolDecl(TSNode node, uint64_t parent_id)
 void SwiftVisitor::handleCall(TSNode node, uint64_t parent_id)
 {
 	std::string name = nodeText(node);
-	uint64_t id = emitter_->emitCall(name, location(node), parent_id);
+	// Use the containing function as parent_id (not the immediate
+	// syntactic parent, which may be another call record). Without
+	// this, nested calls would have their parent_id set to the
+	// outer call record, which is NOT in _r2n (only declarations
+	// are). The reference-table JOIN would fail and the nested
+	// call would be dropped.
+	uint64_t func_id = currentFunctionId();
+	uint64_t call_parent = (func_id != 0) ? func_id : parent_id;
+	uint64_t id = emitter_->emitCall(name, location(node), call_parent);
 
 	// ── Intra-file callee resolution ───────────────────────────
 	// Store the resolved callee's record ID as ref_original_id.

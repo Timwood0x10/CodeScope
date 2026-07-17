@@ -70,6 +70,27 @@ class JsVisitor {
   */
 	uint64_t resolveSymbol(const std::string &name);
 
+	// ── Function scope tracking ────────────────────────────
+	// Stack of containing function/method record IDs. Pushed on
+	// enter of a function body, popped on exit. Used by handleCall
+	// / visitCallExpr so that nested calls (calls inside another
+	// call's arguments) get their parent_id set to the containing
+	// function — NOT to the outer call record. This is critical
+	// for the SQL JOIN in store_graph.cpp (reference table):
+	//   JOIN _r2n r2n ON sr.parent_id = r2n.original_id
+	// _r2n only contains declaration records (Function, Method,
+	// Class, ...), not Call records. If a nested call's parent_id
+	// points to another call, the JOIN fails and the call is
+	// silently dropped from the reference table → missing edges.
+	std::vector<uint64_t> function_stack_;
+	void pushFunctionScope(uint64_t function_id);
+	void popFunctionScope();
+	/**
+	 * Returns the current containing function record ID, or 0 if
+	 * we are at module/top-level scope (no enclosing function).
+	 */
+	uint64_t currentFunctionId();
+
 	// ── Helpers ─────────────────────────────────────────────
 	SourceRange location(TSNode node);
 	std::string nodeText(TSNode node);

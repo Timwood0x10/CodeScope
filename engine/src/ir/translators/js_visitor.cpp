@@ -158,6 +158,7 @@ void JsVisitor::reset()
 {
 	// Clear scope stack but preserve vector capacity for reuse
 	scopes_.clear();
+	function_stack_.clear();
 	unit_ = nullptr;
 	emitter_ = nullptr;
 	source_ = nullptr;
@@ -172,6 +173,24 @@ void JsVisitor::popScope()
 {
 	if (!scopes_.empty())
 		scopes_.pop_back();
+}
+
+void JsVisitor::pushFunctionScope(uint64_t function_id)
+{
+	function_stack_.push_back(function_id);
+}
+
+void JsVisitor::popFunctionScope()
+{
+	if (!function_stack_.empty())
+		function_stack_.pop_back();
+}
+
+uint64_t JsVisitor::currentFunctionId()
+{
+	if (function_stack_.empty())
+		return 0;
+	return function_stack_.back();
 }
 
 void JsVisitor::defineSymbol(const std::string &name, uint64_t record_id)
@@ -302,6 +321,7 @@ void JsVisitor::visitFunctionDecl(TSNode node, uint64_t parent_id)
 	defineSymbol(name, func_id);
 
 	pushScope();
+	pushFunctionScope(func_id);
 
 	// Only recurse into formal_parameters and statement_block
 	for (uint32_t i = 0; i < count; i++) {
@@ -317,6 +337,7 @@ void JsVisitor::visitFunctionDecl(TSNode node, uint64_t parent_id)
 			visitChildren(child, func_id);
 	}
 
+	popFunctionScope();
 	popScope();
 }
 
@@ -326,7 +347,9 @@ void JsVisitor::visitArrowFunction(TSNode node, uint64_t parent_id)
 	uint64_t lambda_id = emitter_->emitFunction("", loc, parent_id);
 
 	pushScope();
+	pushFunctionScope(lambda_id);
 	visitChildren(node, lambda_id);
+	popFunctionScope();
 	popScope();
 }
 
@@ -372,6 +395,7 @@ void JsVisitor::visitMethodDef(TSNode node, uint64_t parent_id)
 	defineSymbol(name, method_id);
 
 	pushScope();
+	pushFunctionScope(method_id);
 
 	// Only recurse into formal_parameters and statement_block
 	for (uint32_t i = 0; i < count; i++) {
@@ -388,6 +412,7 @@ void JsVisitor::visitMethodDef(TSNode node, uint64_t parent_id)
 			visitChildren(child, method_id);
 	}
 
+	popFunctionScope();
 	popScope();
 }
 
@@ -439,7 +464,13 @@ void JsVisitor::visitCallExpr(TSNode node, uint64_t parent_id)
 		 callee_name[0] <= 'Z')
 		call_kind = CallKind::Constructor;
 
-	uint64_t call_id = emitter_->emitCall(callee_name, loc, parent_id, 0,
+	// Use the containing function as parent_id (not the immediate
+	// syntactic parent, which may be another call record). This
+	// ensures nested calls' parent_id points to a declaration
+	// record present in _r2n, so the reference-table JOIN succeeds.
+	uint64_t func_id = currentFunctionId();
+	uint64_t call_parent = (func_id != 0) ? func_id : parent_id;
+	uint64_t call_id = emitter_->emitCall(callee_name, loc, call_parent, 0,
 					      false,
 					      static_cast<int>(call_kind));
 

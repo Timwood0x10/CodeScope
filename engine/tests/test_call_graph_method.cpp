@@ -96,6 +96,38 @@ class Timeline:
 )";
 	writeFile(py_path, py_code);
 
+	// Python source with a NESTED call: make_timeline() calls
+	// fig.add_trace(Scatter(x, y)) — Scatter() is a call nested
+	// inside add_trace()'s argument list.
+	//
+	// Before the function_stack_ fix, the nested Scatter() call's
+	// parent_id was set to the outer add_trace CallExpr record
+	// (kind=9, not in _r2n), so the reference-table JOIN
+	//   JOIN _r2n r2n ON sr.parent_id = r2n.original_id
+	// failed and Scatter was dropped from the reference table →
+	// engine_get_callees("make_timeline") did NOT include Scatter.
+	//
+	// After the fix, Scatter's parent_id points to make_timeline
+	// (the containing function), so the JOIN succeeds.
+	const std::string nested_path_str =
+		std::string(proj_dir) + "/nested.py";
+	const char *nested_path = nested_path_str.c_str();
+	const char *nested_code = R"(
+class Scatter:
+    def __init__(self, x, y):
+        self.x = x
+
+class Figure:
+    def add_trace(self, trace):
+        return self
+
+def make_timeline():
+    fig = Figure()
+    fig.add_trace(Scatter(1, 2))
+    return fig
+)";
+	writeFile(nested_path, nested_code);
+
 	// ── Initialize engine and index the project ──────────────────
 	char db_path[] = "/tmp/call_graph_method.db";
 	unlink(db_path);
@@ -178,6 +210,60 @@ class Timeline:
 
 	check(py_call_arity == 0,
 	      "self._load_data() call must have arity=0 (no args)");
+
+	// ── Part 5: Python nested call parent_id ─────────────────────
+	// make_timeline() contains a nested call:
+	//   fig.add_trace(Scatter(1, 2))
+	// Scatter() is a CallExpr nested inside add_trace()'s argument
+	// list. Its parent_id MUST point to make_timeline (the
+	// containing function), NOT to the add_trace CallExpr record.
+	//
+	// Verify by querying semantic_records: the Scatter call's
+	// parent_id should equal make_timeline's record id.
+	const char *parent_sql =
+		"SELECT sr.parent_id FROM semantic_records sr "
+		"WHERE sr.project_id=? AND sr.kind=9 AND sr.name='Scatter' "
+		"LIMIT 1";
+	check(sqlite3_prepare_v2(db, parent_sql, -1, &stmt, nullptr) ==
+		      SQLITE_OK,
+	      "prepare nested-parent select");
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(pid));
+	int64_t scatter_parent = -1;
+	if (sqlite3_step(stmt) == SQLITE_ROW)
+		scatter_parent = sqlite3_column_int64(stmt, 0);
+	sqlite3_finalize(stmt);
+	check(scatter_parent > 0,
+	      "Scatter call record must exist in semantic_records");
+
+	// Look up make_timeline's record id (kind=0 for Function).
+	const char *fn_sql =
+		"SELECT original_id FROM semantic_records "
+		"WHERE project_id=? AND kind=0 AND name='make_timeline' "
+		"LIMIT 1";
+	check(sqlite3_prepare_v2(db, fn_sql, -1, &stmt, nullptr) ==
+		      SQLITE_OK,
+	      "prepare make_timeline select");
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(pid));
+	int64_t make_timeline_id = -1;
+	if (sqlite3_step(stmt) == SQLITE_ROW)
+		make_timeline_id = sqlite3_column_int64(stmt, 0);
+	sqlite3_finalize(stmt);
+	check(make_timeline_id > 0,
+	      "make_timeline function record must exist");
+
+	check(scatter_parent == make_timeline_id,
+	      "Scatter (nested call) parent_id must equal make_timeline "
+	      "(the containing function), not the outer add_trace call");
+
+	// Also verify via the public API: make_timeline's callees must
+	// include Scatter (the nested call). Before the fix, Scatter
+	// was dropped from the reference table because its parent_id
+	// pointed to a CallExpr record (not in _r2n), failing the JOIN.
+	char *nested_callees = engine_get_callees(pid, "make_timeline");
+	check(strstr(nested_callees, "Scatter") != nullptr,
+	      "make_timeline should call Scatter (nested call must "
+	      "appear in callees — was dropped before function_stack_ fix)");
+	engine_free_string(nested_callees);
 
 	sqlite3_close(db);
 

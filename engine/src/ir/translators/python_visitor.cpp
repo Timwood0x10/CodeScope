@@ -100,6 +100,7 @@ void PythonVisitor::handleFuncDef(TSNode node, uint64_t parent_id)
 	uint64_t id = emitter_->emitFunction(name, loc, parent_id);
 	defineSymbol(name, id);
 	pushScope();
+	pushFunctionScope(id);
 	uint32_t cnt = ts_node_child_count(node);
 	for (uint32_t i = 0; i < cnt; i++) {
 		TSNode c = ts_node_child(node, i);
@@ -176,6 +177,7 @@ void PythonVisitor::handleFuncDef(TSNode node, uint64_t parent_id)
 			visitChildren(c, id);
 		}
 	}
+	popFunctionScope();
 	popScope();
 }
 void PythonVisitor::handleClassDef(TSNode node, uint64_t parent_id)
@@ -254,7 +256,15 @@ void PythonVisitor::handleCall(TSNode node, uint64_t parent_id)
 	// as unknown-arity). Bug 2 in res.md.
 	int arity = countArguments(node, cnt);
 
-	uint64_t id = emitter_->emitCall(name, loc, parent_id, arity, false,
+	// Use the containing function as parent_id (not the immediate
+	// syntactic parent, which may be another call record). Without
+	// this, nested calls like fig.add_trace(Scatter(...)) would
+	// have their parent_id set to the outer add_trace call record,
+	// which is NOT in _r2n (only declarations are). The reference-
+	// table JOIN would fail and the nested call would be dropped.
+	uint64_t func_id = currentFunctionId();
+	uint64_t call_parent = (func_id != 0) ? func_id : parent_id;
+	uint64_t id = emitter_->emitCall(name, loc, call_parent, arity, false,
 					 static_cast<int>(call_kind));
 
 	// ── Intra-file callee resolution ───────────────────────────
@@ -315,17 +325,32 @@ std::string PythonVisitor::extractAttributeName(TSNode attr)
 {
 	// tree-sitter-python attribute children for "obj.method":
 	//   identifier (obj), identifier (method)
-	// For chained access "self.a.b()" the object is itself an
-	// attribute, but the LAST named identifier child is always the
-	// method name we want for resolution. We iterate all named
-	// children and keep the last identifier's text.
+	// For chained access "self.fig.add_trace()" the object is
+	// itself a nested attribute, so the attribute's first child
+	// is another attribute. We recurse into any attribute child
+	// first, and fall back to the LAST named identifier on the
+	// current level. This ensures the resolved name is the
+	// method being invoked ("add_trace"), not the receiver
+	// ("self.fig" or "fig"). Without recursion, "self.fig.add_trace"
+	// yielded name "fig" (or worse, "self"), so resolveSymbol()
+	// never matched the method definition → ref_original_id = 0
+	// → P1 call-edge construction skipped.
 	std::string last;
 	uint32_t cnt = ts_node_child_count(attr);
 	for (uint32_t i = 0; i < cnt; i++) {
 		TSNode c = ts_node_child(attr, i);
 		if (!ts_node_is_named(c))
 			continue;
-		if (strcmp(ts_node_type(c), "identifier") == 0)
+		const char *t = ts_node_type(c);
+		if (strcmp(t, "attribute") == 0) {
+			// Recurse into nested attribute first — its
+			// result is more specific than any identifier
+			// at the current level.
+			std::string inner = extractAttributeName(c);
+			if (!inner.empty())
+				return inner;
+		}
+		if (strcmp(t, "identifier") == 0)
 			last = nodeText(c);
 	}
 	if (!last.empty())

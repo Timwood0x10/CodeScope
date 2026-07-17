@@ -154,6 +154,7 @@ void CVisitor::handleFuncDef(TSNode node, uint64_t parent_id)
 	uint64_t id = emitter_->emitFunction(name, loc, parent_id);
 	defineSymbol(name, id);
 	pushScope();
+	pushFunctionScope(id);
 	uint32_t count = ts_node_child_count(node);
 	for (uint32_t i = 0; i < count; i++) {
 		TSNode child = ts_node_child(node, i);
@@ -168,6 +169,7 @@ void CVisitor::handleFuncDef(TSNode node, uint64_t parent_id)
 			   strcmp(t, "declaration") == 0) {
 		}
 	}
+	popFunctionScope();
 	popScope();
 }
 
@@ -275,7 +277,15 @@ void CVisitor::handleCall(TSNode node, uint64_t parent_id)
 	// as unknown-arity). Bug 2 in res.md.
 	int arity = countArguments(node, count);
 
-	uint64_t id = emitter_->emitCall(name, loc, parent_id, arity, false,
+	// Use the containing function as parent_id (not the immediate
+	// syntactic parent, which may be another call record). Without
+	// this, nested calls inside another call's argument_list would
+	// have their parent_id set to the outer call record, which is
+	// NOT in _r2n (only declarations are). The reference-table JOIN
+	// would fail and the nested call would be dropped.
+	uint64_t func_id = currentFunctionId();
+	uint64_t call_parent = (func_id != 0) ? func_id : parent_id;
+	uint64_t id = emitter_->emitCall(name, loc, call_parent, arity, false,
 					 static_cast<int>(call_kind));
 
 	// ── Intra-file callee resolution ───────────────────────────
@@ -361,6 +371,25 @@ std::string CVisitor::extractName(TSNode node)
 		// emitting a Function record or calling defineSymbol).
 		if (strcmp(t, "field_identifier") == 0)
 			return nodeText(child);
+		// qualified_identifier: out-of-class member function
+		// definitions like "int64_t GraphStore::buildCallEdgesSQL(
+		// uint64_t pid) { ... }". tree-sitter-cpp parses the
+		// function_declarator's declarator as qualified_identifier
+		// whose children are:
+		//   identifier (scope, e.g. "GraphStore"),
+		//   "::" (unnamed),
+		//   field_identifier (name, e.g. "buildCallEdgesSQL").
+		// Recurse so extractName walks into qualified_identifier and
+		// returns the field_identifier. Without this branch, name
+		// extraction returned "" for all out-of-class definitions,
+		// causing them to be emitted as Variable (kind=6) instead of
+		// Function (kind=0) — Bug 3-C in the buildCallEdgesSQL
+		// diagnostic. The resolved method name then enters the
+		// scope table via defineSymbol, allowing P1 intra-file
+		// call-edge construction for "this->method()" and
+		// "obj.method()" call sites.
+		if (strcmp(t, "qualified_identifier") == 0)
+			return extractName(child);
 		// function_declarator must be checked BEFORE type_identifier
 		// because in a function_definition the first child is the
 		// return type (type_identifier), and the actual function

@@ -121,6 +121,7 @@ void RustVisitor::handleFunction(TSNode node, uint64_t parent_id)
 	uint64_t id = emitter_->emitFunction(name, loc, parent_id);
 	defineSymbol(name, id);
 	pushScope();
+	pushFunctionScope(id);
 	uint32_t cnt = ts_node_child_count(node);
 	for (uint32_t i = 0; i < cnt; i++) {
 		TSNode c = ts_node_child(node, i);
@@ -132,6 +133,7 @@ void RustVisitor::handleFunction(TSNode node, uint64_t parent_id)
 		if (strcmp(t, "parameters") == 0 || strcmp(t, "block") == 0)
 			visitChildren(c, id);
 	}
+	popFunctionScope();
 	popScope();
 }
 void RustVisitor::handleStruct(TSNode node, uint64_t parent_id)
@@ -208,6 +210,7 @@ void RustVisitor::handleImpl(TSNode node, uint64_t parent_id)
 								   parent_id);
 				defineSymbol(name, id);
 				pushScope();
+				pushFunctionScope(id);
 				uint32_t cc = ts_node_child_count(c);
 				for (uint32_t j = 0; j < cc; j++) {
 					TSNode gc = ts_node_child(c, j);
@@ -220,6 +223,7 @@ void RustVisitor::handleImpl(TSNode node, uint64_t parent_id)
 					    strcmp(t, "block") == 0)
 						visitChildren(gc, id);
 				}
+				popFunctionScope();
 				popScope();
 			}
 		}
@@ -262,7 +266,15 @@ void RustVisitor::handleCall(TSNode node, uint64_t parent_id)
 		call_kind = CallKind::Method;
 	}
 
-	uint64_t id = emitter_->emitCall(name, loc, parent_id, 0, false,
+	// Use the containing function as parent_id (not the immediate
+	// syntactic parent, which may be another call record). Without
+	// this, nested calls inside another call's arguments would have
+	// their parent_id set to the outer call record, which is NOT
+	// in _r2n (only declarations are). The reference-table JOIN
+	// would fail and the nested call would be dropped.
+	uint64_t func_id = currentFunctionId();
+	uint64_t call_parent = (func_id != 0) ? func_id : parent_id;
+	uint64_t id = emitter_->emitCall(name, loc, call_parent, 0, false,
 					 static_cast<int>(call_kind));
 
 	// ── Intra-file callee resolution ───────────────────────────
