@@ -179,7 +179,22 @@ void CVisitor::handleDeclaration(TSNode node, uint64_t parent_id)
 void CVisitor::handleStruct(TSNode node, uint64_t parent_id)
 {
 	SourceRange loc = location(node);
-	std::string name = extractName(node);
+	// Extract struct/union name inline (not via extractName) because
+	// the name is in a type_identifier child, which extractName skips
+	// to avoid confusing function return types with function names.
+	std::string name;
+	uint32_t cnt = ts_node_child_count(node);
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (!ts_node_is_named(c))
+			continue;
+		const char *t = ts_node_type(c);
+		if (strcmp(t, "type_identifier") == 0 ||
+		    strcmp(t, "identifier") == 0) {
+			name = nodeText(c);
+			break;
+		}
+	}
 	uint64_t id = emitter_->emitClass(name, loc, parent_id);
 	if (!name.empty())
 		defineSymbol(name, id);
@@ -203,8 +218,21 @@ void CVisitor::handleCall(TSNode node, uint64_t parent_id)
 	uint32_t count = ts_node_child_count(node);
 	for (uint32_t i = 0; i < count; i++) {
 		TSNode child = ts_node_child(node, i);
-		if (strcmp(ts_node_type(child), "identifier") == 0) {
+		const char *child_type = ts_node_type(child);
+		if (strcmp(child_type, "identifier") == 0) {
 			name = nodeText(child);
+			break;
+		}
+		// For method calls like "a.adder(...)" the callee is a
+		// field_expression whose direct children are:
+		//   identifier (a), ".", field_identifier (adder).
+		// Extract just the method name ("adder") so resolveSymbol()
+		// can match the method definition in scope. The receiver
+		// "a." is captured by call_kind=Method below.
+		// Without this branch, name stayed empty for all method
+		// calls, producing zero call edges (Bug 1 in res.md).
+		if (strcmp(child_type, "field_expression") == 0) {
+			name = extractFieldMethodName(child);
 			break;
 		}
 	}
@@ -241,7 +269,13 @@ void CVisitor::handleCall(TSNode node, uint64_t parent_id)
 		}
 	}
 
-	uint64_t id = emitter_->emitCall(name, loc, parent_id, 0, false,
+	// Compute arity from the argument_list's named children count.
+	// Previously arity was hardcoded to 0, which degraded fuzzy
+	// resolver precision (factorSignatureMatch treated all calls
+	// as unknown-arity). Bug 2 in res.md.
+	int arity = countArguments(node, count);
+
+	uint64_t id = emitter_->emitCall(name, loc, parent_id, arity, false,
 					 static_cast<int>(call_kind));
 
 	// ── Intra-file callee resolution ───────────────────────────
@@ -318,6 +352,19 @@ std::string CVisitor::extractName(TSNode node)
 		const char *t = ts_node_type(child);
 		if (strcmp(t, "identifier") == 0)
 			return nodeText(child);
+		// field_identifier: method names inside structs/classes
+		// (e.g. "adder" in "Point adder(...) { }" inside a struct).
+		// tree-sitter-cpp parses member function names as
+		// field_identifier, not identifier. Without this, method
+		// definitions inside structs were skipped (name="" →
+		// handleFuncDef fell into the visitChildren path, never
+		// emitting a Function record or calling defineSymbol).
+		if (strcmp(t, "field_identifier") == 0)
+			return nodeText(child);
+		// function_declarator must be checked BEFORE type_identifier
+		// because in a function_definition the first child is the
+		// return type (type_identifier), and the actual function
+		// name is nested inside function_declarator.
 		if (strcmp(t, "function_declarator") == 0)
 			return extractName(child);
 		if (strcmp(t, "pointer_declarator") == 0 ||
@@ -326,6 +373,43 @@ std::string CVisitor::extractName(TSNode node)
 			return extractName(child);
 	}
 	return "";
+}
+
+std::string CVisitor::extractFieldMethodName(TSNode field_expr)
+{
+	// field_expression children for "a.adder":
+	//   identifier (a), ".", field_identifier (adder)
+	// For chained calls "a.b.c()" the object is itself a
+	// field_expression, but the LAST named child is always the
+	// field_identifier (the method name we want).
+	uint32_t count = ts_node_child_count(field_expr);
+	for (uint32_t i = 0; i < count; i++) {
+		TSNode child = ts_node_child(field_expr, i);
+		if (strcmp(ts_node_type(child), "field_identifier") == 0)
+			return nodeText(child);
+	}
+	return "";
+}
+
+int CVisitor::countArguments(TSNode call_node, uint32_t child_count)
+{
+	// Find the argument_list child of the call_expression and count
+	// its named children. Commas and parens are unnamed nodes in
+	// tree-sitter, so ts_node_is_named filters them automatically.
+	for (uint32_t i = 0; i < child_count; i++) {
+		TSNode child = ts_node_child(call_node, i);
+		if (strcmp(ts_node_type(child), "argument_list") != 0)
+			continue;
+		int argc = 0;
+		uint32_t ac = ts_node_child_count(child);
+		for (uint32_t j = 0; j < ac; j++) {
+			TSNode arg = ts_node_child(child, j);
+			if (ts_node_is_named(arg))
+				++argc;
+		}
+		return argc;
+	}
+	return 0;
 }
 
 } // namespace ir

@@ -282,11 +282,11 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		     " rtrim(sr.file_path, replace(sr.file_path, '/', 'x')) "
 		     "FROM semantic_records sr "
 		     "JOIN _r2n r2n ON sr.rowid = r2n.rid "
-		     "WHERE sr.file_path NOT LIKE '%_test.%'"
+		     "WHERE sr.file_path NOT LIKE '%\\_test.%' ESCAPE '\\'"
 		     " AND sr.file_path NOT LIKE '%/tests/%'"
-		     " AND sr.file_path NOT LIKE '%_spec.%'"
+		     " AND sr.file_path NOT LIKE '%\\_spec.%' ESCAPE '\\'"
 		     " AND sr.file_path NOT LIKE '%/benches/%'"
-		     " AND sr.file_path NOT LIKE '%__test__%'")
+		     " AND sr.file_path NOT LIKE '%\\_\\_test\\_\\_%' ESCAPE '\\'")
 		     .c_str());
 	auto t_nodes = Clock::now();
 
@@ -474,7 +474,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			" AND sr.file_path = r2n.file_path "
 			"WHERE sr.project_id=" +
 			std::to_string(project_id) +
-			" AND sr.kind = 9 AND sr.name != '' AND sr.file_path NOT LIKE '%_test.%' AND sr.file_path NOT LIKE '%/tests/%' AND sr.file_path NOT LIKE '%_spec.%' AND sr.file_path NOT LIKE '%/benches/%' AND sr.file_path NOT LIKE '%__test__%'";
+			" AND sr.kind = 9 AND sr.name != '' AND sr.file_path NOT LIKE '%\\_test.%' ESCAPE '\\' AND sr.file_path NOT LIKE '%/tests/%' AND sr.file_path NOT LIKE '%\\_spec.%' ESCAPE '\\' AND sr.file_path NOT LIKE '%/benches/%' AND sr.file_path NOT LIKE '%\\_\\_test\\_\\_%' ESCAPE '\\'";
 		exec(ref_sql.c_str());
 	}
 	auto t_reference = Clock::now();
@@ -484,7 +484,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	{
 		const char *fetch_sql =
 			"SELECT sr.name, sr.project_id, sr.file_path FROM semantic_records sr "
-			"WHERE sr.project_id=? AND sr.kind=11 AND sr.name != '' AND sr.file_path NOT LIKE '%_test.%' AND sr.file_path NOT LIKE '%/tests/%' AND sr.file_path NOT LIKE '%_spec.%' AND sr.file_path NOT LIKE '%/benches/%'";
+			"WHERE sr.project_id=? AND sr.kind=11 AND sr.name != '' AND sr.file_path NOT LIKE '%\\_test.%' ESCAPE '\\' AND sr.file_path NOT LIKE '%/tests/%' AND sr.file_path NOT LIKE '%\\_spec.%' ESCAPE '\\' AND sr.file_path NOT LIKE '%/benches/%'";
 		sqlite3_stmt *fetch_st = nullptr;
 		if (sqlite3_prepare_v2(db_, fetch_sql, -1, &fetch_st,
 				       nullptr) == SQLITE_OK) {
@@ -660,11 +660,11 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			" rtrim(file_path, replace(file_path, '/', 'x')) "
 			"FROM graph_nodes WHERE project_id=" +
 			std::to_string(project_id) +
-			" AND file_path NOT LIKE '%_test.%'"
+			" AND file_path NOT LIKE '%\\_test.%' ESCAPE '\\'"
 			" AND file_path NOT LIKE '%/tests/%'"
-			" AND file_path NOT LIKE '%_spec.%'"
+			" AND file_path NOT LIKE '%\\_spec.%' ESCAPE '\\'"
 			" AND file_path NOT LIKE '%/benches/%'"
-			" AND file_path NOT LIKE '%__test__%'";
+			" AND file_path NOT LIKE '%\\_\\_test\\_\\_%' ESCAPE '\\'";
 		exec(entity_sql.c_str());
 	}
 
@@ -677,17 +677,17 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			" e.target_node_id, e.edge_type "
 			"FROM graph_edges e "
 			"JOIN graph_nodes src ON e.source_node_id = src.id"
-			" AND src.file_path NOT LIKE '%_test.%'"
+			" AND src.file_path NOT LIKE '%\\_test.%' ESCAPE '\\'"
 			" AND src.file_path NOT LIKE '%/tests/%'"
-			" AND src.file_path NOT LIKE '%_spec.%'"
+			" AND src.file_path NOT LIKE '%\\_spec.%' ESCAPE '\\'"
 			" AND src.file_path NOT LIKE '%/benches/%'"
-			" AND src.file_path NOT LIKE '%__test__%'"
+			" AND src.file_path NOT LIKE '%\\_\\_test\\_\\_%' ESCAPE '\\'"
 			"JOIN graph_nodes tgt ON e.target_node_id = tgt.id"
-			" AND tgt.file_path NOT LIKE '%_test.%'"
+			" AND tgt.file_path NOT LIKE '%\\_test.%' ESCAPE '\\'"
 			" AND tgt.file_path NOT LIKE '%/tests/%'"
-			" AND tgt.file_path NOT LIKE '%_spec.%'"
+			" AND tgt.file_path NOT LIKE '%\\_spec.%' ESCAPE '\\'"
 			" AND tgt.file_path NOT LIKE '%/benches/%'"
-			" AND tgt.file_path NOT LIKE '%__test__%'"
+			" AND tgt.file_path NOT LIKE '%\\_\\_test\\_\\_%' ESCAPE '\\'"
 			"WHERE e.project_id=" +
 			std::to_string(project_id);
 		exec(rel_sql.c_str());

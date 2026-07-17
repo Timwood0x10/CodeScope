@@ -206,14 +206,29 @@ void PythonVisitor::handleCall(TSNode node, uint64_t parent_id)
 {
 	SourceRange loc = location(node);
 	std::string name;
+	bool is_attribute_call = false;
 	uint32_t cnt = ts_node_child_count(node);
 	for (uint32_t i = 0; i < cnt; i++) {
 		TSNode c = ts_node_child(node, i);
 		if (!ts_node_is_named(c))
 			continue;
-		if (strcmp(ts_node_type(c), "identifier") == 0 ||
-		    strcmp(ts_node_type(c), "attribute") == 0) {
+		const char *t = ts_node_type(c);
+		if (strcmp(t, "identifier") == 0) {
 			name = nodeText(c);
+			break;
+		}
+		// For "obj.method(...)" the callee is an attribute node.
+		// Previously we stored the full "obj.method" text as the
+		// name, but methods are defined with just "method", so
+		// resolveSymbol("obj.method") never matched → ref_original_id
+		// stayed 0 → P1 path skipped. Fix: drill into the attribute
+		// and extract just the method name ("method").
+		// is_attribute_call is tracked separately so call_kind can
+		// still be classified as Method even when the extracted
+		// name no longer contains a dot.
+		if (strcmp(t, "attribute") == 0) {
+			name = extractAttributeName(c);
+			is_attribute_call = true;
 			break;
 		}
 	}
@@ -228,12 +243,18 @@ void PythonVisitor::handleCall(TSNode node, uint64_t parent_id)
 
 	// Classify call kind
 	CallKind call_kind = CallKind::Direct;
-	if (name.find('.') != std::string::npos)
+	if (is_attribute_call)
 		call_kind = CallKind::Method;
 	else if (name.size() > 4 && name[0] >= 'A' && name[0] <= 'Z')
 		call_kind = CallKind::Constructor;
 
-	uint64_t id = emitter_->emitCall(name, loc, parent_id, 0, false,
+	// Compute arity from the arguments node's named children count.
+	// Previously arity was hardcoded to 0, which degraded fuzzy
+	// resolver precision (factorSignatureMatch treated all calls
+	// as unknown-arity). Bug 2 in res.md.
+	int arity = countArguments(node, cnt);
+
+	uint64_t id = emitter_->emitCall(name, loc, parent_id, arity, false,
 					 static_cast<int>(call_kind));
 
 	// ── Intra-file callee resolution ───────────────────────────
@@ -258,13 +279,21 @@ void PythonVisitor::handleAssignment(TSNode node, uint64_t parent_id)
 		TSNode c = ts_node_child(node, i);
 		if (!ts_node_is_named(c))
 			continue;
-		if (strcmp(ts_node_type(c), "identifier") == 0) {
+		const char *t = ts_node_type(c);
+		if (strcmp(t, "identifier") == 0) {
 			std::string name = nodeText(c);
 			if (!name.empty()) {
 				uint64_t id = emitter_->emitVariable(
 					name, location(c), parent_id);
 				defineSymbol(name, id);
 			}
+		} else {
+			// Visit non-identifier children (e.g. call, attribute,
+			// subscript) so that calls inside assignments like
+			// "self.data = self._load_data()" are detected.
+			// Previously, handleAssignment only looked for identifier
+			// children, so calls in the RHS were silently skipped.
+			visitNode(c, parent_id);
 		}
 	}
 }
@@ -281,4 +310,51 @@ std::string PythonVisitor::extractName(TSNode node)
 	}
 	return "";
 }
+
+std::string PythonVisitor::extractAttributeName(TSNode attr)
+{
+	// tree-sitter-python attribute children for "obj.method":
+	//   identifier (obj), identifier (method)
+	// For chained access "self.a.b()" the object is itself an
+	// attribute, but the LAST named identifier child is always the
+	// method name we want for resolution. We iterate all named
+	// children and keep the last identifier's text.
+	std::string last;
+	uint32_t cnt = ts_node_child_count(attr);
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(attr, i);
+		if (!ts_node_is_named(c))
+			continue;
+		if (strcmp(ts_node_type(c), "identifier") == 0)
+			last = nodeText(c);
+	}
+	if (!last.empty())
+		return last;
+	// Fallback: no identifier child (e.g. subscript-style callee).
+	// Return the full attribute text so downstream resolution can
+	// still attempt a name-only match.
+	return nodeText(attr);
+}
+
+int PythonVisitor::countArguments(TSNode call_node, uint32_t child_count)
+{
+	// Python call node's argument container is named "arguments".
+	// Count its named children — commas and parens are unnamed
+	// nodes in tree-sitter, so ts_node_is_named filters them.
+	for (uint32_t i = 0; i < child_count; i++) {
+		TSNode child = ts_node_child(call_node, i);
+		if (strcmp(ts_node_type(child), "arguments") != 0)
+			continue;
+		int argc = 0;
+		uint32_t ac = ts_node_child_count(child);
+		for (uint32_t j = 0; j < ac; j++) {
+			TSNode arg = ts_node_child(child, j);
+			if (ts_node_is_named(arg))
+				++argc;
+		}
+		return argc;
+	}
+	return 0;
+}
+
 } // namespace ir

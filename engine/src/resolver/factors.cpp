@@ -280,9 +280,6 @@ double factorVisibilityCheck(const std::string &language,
 			     const std::string &caller_file,
 			     const std::string &candidate_file)
 {
-	(void)caller_file;
-	(void)candidate_file;
-
 	if (candidate_name.empty())
 		return 1.0; // Unknown — allow
 
@@ -293,9 +290,17 @@ double factorVisibilityCheck(const std::string &language,
 	if (language == "go" && first >= 'a' && first <= 'z')
 		return 0.0; // Reject: unexported Go symbol
 
-	// Python: names starting with '_' are private (convention).
-	if (language == "python" && first == '_')
-		return 0.0;
+	// Python: names starting with '_' are private (module-level
+	// convention). They ARE accessible within the same module —
+	// only reject for cross-module resolution. Previously this
+	// rejected ALL '_'-prefixed names unconditionally, which
+	// dropped legitimate intra-class/intra-module calls like
+	// render() → self._load_data() (Bug 2 in res.md).
+	if (language == "python" && first == '_') {
+		if (caller_file == candidate_file)
+			return 1.0; // Same module — private is accessible
+		return 0.0; // Cross-module — reject
+	}
 
 	// Java/Kotlin/C#: names starting with lowercase are typically
 	// package-private or instance methods — heuristic rejection for

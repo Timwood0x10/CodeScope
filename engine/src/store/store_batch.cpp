@@ -366,8 +366,18 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 						batch_st, base + 6,
 						static_cast<int64_t>(
 							r.parent_id));
-					sqlite3_bind_int64(batch_st, base + 7,
-							   0);
+					// Bind the visitor-resolved callee ID (set via
+					// SemanticUnit::setCallReference during AST
+					// traversal). Previously this was hardcoded to 0,
+					// which discarded intra-file resolution done by
+					// CVisitor/PythonVisitor/etc. and caused the P1
+					// path in buildCallEdgesSQL (which JOINs on
+					// ref_original_id > 0) to skip ALL call edges.
+					// Bug 2 in res.md.
+					sqlite3_bind_int64(
+						batch_st, base + 7,
+						static_cast<int64_t>(
+							r.ref_original_id));
 					sqlite3_bind_int(batch_st, base + 8,
 							 r.arity);
 					sqlite3_bind_int(batch_st, base + 9,
