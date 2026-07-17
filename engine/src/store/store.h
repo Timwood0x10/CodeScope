@@ -814,24 +814,6 @@ class GraphStore {
 
     private:
 	bool createSchema();
-
-	// ── Internal: SQL-based call edge resolution ──────────────
-
-	/**
-	 * Build call graph edges (edge_type=1) using SQL JOINs instead of
-	 * C++ hash maps. Replaces the in-memory caller_idx / callee_by_name /
-	 * decl_idx / ir_edge_target maps with SQL temp tables + indexes.
-	 *
-	 * Memory: O(batch_size) instead of O(total_nodes). For 4M nodes,
-	 * this reduces peak RSS from ~2-4GB to ~64MB (SQLite cache).
-	 *
-	 * Prerequisites: _r2n temp table must exist (created by buildGraph).
-	 *
-	 * @param project_id  Project to build call edges for.
-	 * @return Number of call edges inserted, or -1 on error.
-	 */
-	// buildCallEdgesSQL has been replaced by the new Resolver Pipeline
-	// (pipeline.cpp) with multi-factor scoring. The old function was removed.
 };
 
 // ── Index Progress (global, for client polling) ─────────────
