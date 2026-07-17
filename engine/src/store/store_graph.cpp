@@ -291,16 +291,26 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	auto t_nodes = Clock::now();
 
 	// ── 2d: Containment edges ──
+	// edge_type=3 (symbol_reference) edges are parent→child containment
+	// relations. Back-fill resolve_strategy from the parent's
+	// semantic_records row so that findCalleesJson/findCallersJson can
+	// filter third-party (external) and unresolved symbols uniformly,
+	// regardless of edge_type. Without this, all edge_type=3 edges had
+	// empty resolve_strategy and leaked third-party imports (e.g.
+	// `__init__`, `_analyze_layer`) into callee/caller results.
 	{
 		std::string sql = std::string(
 			"INSERT OR IGNORE INTO graph_edges "
-			"(project_id, source_node_id, target_node_id, edge_type, graph_type) "
+			"(project_id, source_node_id, target_node_id, "
+			" edge_type, graph_type, resolve_strategy) "
 			"SELECT DISTINCT " +
 			pid +
-			", parent.node_id, child.node_id, 3, 'symbol_reference' "
+			", parent.node_id, child.node_id, 3, 'symbol_reference', "
+			" psr.resolve_strategy "
 			"FROM semantic_records sr "
 			"JOIN _r2n child ON sr.original_id = child.original_id AND sr.file_path = child.file_path "
 			"JOIN _r2n parent ON sr.parent_id = parent.original_id AND sr.file_path = parent.file_path "
+			"JOIN semantic_records psr ON psr.rowid = parent.rid "
 			"WHERE sr.project_id=" +
 			pid + " AND parent.node_id != child.node_id");
 		if (explain_env && explain_env[0])
@@ -466,9 +476,11 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	{
 		std::string ref_sql =
 			"INSERT OR IGNORE INTO reference "
-			"(project_id, caller_id, name, arity, call_kind, start_row, start_col) "
+			"(project_id, caller_id, name, arity, call_kind, "
+			" resolve_strategy, start_row, start_col) "
 			"SELECT sr.project_id, r2n.node_id, sr.name, sr.arity, "
-			" sr.call_kind, sr.start_row, sr.start_col "
+			" sr.call_kind, sr.resolve_strategy, "
+			" sr.start_row, sr.start_col "
 			"FROM semantic_records sr "
 			"JOIN _r2n r2n ON sr.parent_id = r2n.original_id "
 			" AND sr.file_path = r2n.file_path "

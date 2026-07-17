@@ -918,6 +918,30 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 				exec("ALTER TABLE reference "
 				     "ADD COLUMN call_kind INTEGER DEFAULT 0");
 			}
+			// Check for resolve_strategy column (v0.9+)
+			bool has_ref_rs = false;
+			// Reuse the same probe - re-prepare
+			probe = nullptr;
+			if (sqlite3_prepare_v2(
+				    db_, "PRAGMA table_info(reference)", -1,
+				    &probe, nullptr) == SQLITE_OK) {
+				while (sqlite3_step(probe) == SQLITE_ROW) {
+					const char *col =
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								probe, 1));
+					if (col && std::string(col) ==
+							   "resolve_strategy")
+						has_ref_rs = true;
+				}
+				sqlite3_finalize(probe);
+				probe = nullptr;
+			}
+			if (!has_ref_rs) {
+				exec("ALTER TABLE reference "
+				     "ADD COLUMN resolve_strategy "
+				     "TEXT DEFAULT ''");
+			}
 		}
 	}
 
@@ -945,9 +969,10 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 	}
 
 	// Migration: add resolve_strategy column to graph_edges (v0.9+)
-	// Stores the resolution strategy for each call edge:
-	// "p1_intra" = intra-file resolved, "p3_name" = cross-file name match,
-	// "external" = known builtin/third-party, "unresolved" = unknown.
+	// Propagated from semantic_records → reference → _resolved_edges
+	// by the Resolver Pipeline. Stores the resolution strategy for
+	// each call edge: "p1_intra" (intra-file resolved),
+	// "external" (known builtin/third-party), "unresolved" (unknown).
 	{
 		sqlite3_stmt *probe = nullptr;
 		if (sqlite3_prepare_v2(db_, "PRAGMA table_info(graph_edges)",

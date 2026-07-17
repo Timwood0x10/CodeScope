@@ -306,9 +306,13 @@ std::string QueryEngine::getCallers(uint64_t project_id,
 	// a name across files/classes (e.g. __init__, run, main) but are
 	// distinct symbols. Without this filter, getCallees("__init__")
 	// returns ~95 callees aggregated across all classes in the project.
+	//
+	// r.resolve_strategy is emitted so the frontend can filter out
+	// third-party (external) and unresolved callees. Populated by the
+	// Resolver Pipeline for edge_type=1 (call) edges.
 	std::string sql =
 		"SELECT caller.id, caller.name, caller.file_path, "
-		"caller.start_row, caller.start_col "
+		"caller.start_row, caller.start_col, r.resolve_strategy "
 		"FROM graph_nodes caller "
 		"JOIN graph_edges r ON caller.id = r.source_node_id "
 		"JOIN graph_nodes callee ON callee.id = r.target_node_id "
@@ -345,12 +349,16 @@ std::string QueryEngine::getCallers(uint64_t project_id,
 			sqlite3_column_text(stmt, 1));
 		const char *f = reinterpret_cast<const char *>(
 			sqlite3_column_text(stmt, 2));
+		const char *rs = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 5));
 		result += ",\"name\":\"" + jsonEscape(n ? n : "") + "\"";
 		result += ",\"file_path\":\"" + jsonEscape(f ? f : "") + "\"";
 		result += ",\"start_row\":" +
 			  std::to_string(sqlite3_column_int(stmt, 3));
 		result += ",\"start_col\":" +
 			  std::to_string(sqlite3_column_int(stmt, 4));
+		result += ",\"resolve_strategy\":\"" +
+			  jsonEscape(rs ? rs : "") + "\"";
 		result += "}";
 	}
 	sqlite3_finalize(stmt);
@@ -373,9 +381,13 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 	//
 	// file_filter (optional): when non-NULL, restricts the caller to a
 	// specific file. Disambiguates homonyms — see getCallers doc above.
+	//
+	// r.resolve_strategy is emitted so the frontend can filter out
+	// third-party (external) and unresolved callees. Populated by the
+	// Resolver Pipeline for edge_type=1 (call) edges.
 	std::string sql =
 		"SELECT callee.id, callee.name, callee.file_path, "
-		"callee.start_row, callee.start_col "
+		"callee.start_row, callee.start_col, r.resolve_strategy "
 		"FROM graph_nodes callee "
 		"JOIN graph_edges r ON callee.id = r.target_node_id "
 		"JOIN graph_nodes caller ON caller.id = r.source_node_id "
@@ -412,12 +424,16 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 			sqlite3_column_text(stmt, 1));
 		const char *f = reinterpret_cast<const char *>(
 			sqlite3_column_text(stmt, 2));
+		const char *rs = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 5));
 		result += ",\"name\":\"" + jsonEscape(n ? n : "") + "\"";
 		result += ",\"file_path\":\"" + jsonEscape(f ? f : "") + "\"";
 		result += ",\"start_row\":" +
 			  std::to_string(sqlite3_column_int(stmt, 3));
 		result += ",\"start_col\":" +
 			  std::to_string(sqlite3_column_int(stmt, 4));
+		result += ",\"resolve_strategy\":\"" +
+			  jsonEscape(rs ? rs : "") + "\"";
 		result += "}";
 	}
 	sqlite3_finalize(stmt);

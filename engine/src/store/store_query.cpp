@@ -332,6 +332,10 @@ std::string GraphStore::findCallersJson(uint64_t project_id,
 			id_list += ",";
 		id_list += std::to_string(gn_ids[i]);
 	}
+	// Read resolve_strategy so the frontend can filter out third-party
+	// and unresolved callees. Populated by the Resolver Pipeline for
+	// edge_type=1 (call) edges; edge_type=3 (symbol_reference) edges are
+	// back-filled by buildTypeRefEdges().
 	std::string ge_sql_str =
 		std::string("SELECT DISTINCT gn.id, gn.name, gn.node_type, "
 			    "gn.file_path, gn.start_row, "
@@ -371,7 +375,7 @@ std::string GraphStore::findCallersJson(uint64_t project_id,
 			     << ",\"kind\":\"" << tn << "\""
 			     << ",\"file_path\":\"" << (fp ? fp : "") << "\""
 			     << ",\"line\":" << ln << ",\"resolve_strategy\":\""
-			     << (rs && *rs ? rs : "") << "\"}";
+			     << (rs ? rs : "") << "\"}";
 		}
 		sqlite3_finalize(ge_stmt);
 	}
@@ -467,7 +471,7 @@ std::string GraphStore::findCalleesJson(uint64_t project_id,
 			     << ",\"kind\":\"" << tn << "\""
 			     << ",\"file_path\":\"" << (fp ? fp : "") << "\""
 			     << ",\"line\":" << ln << ",\"resolve_strategy\":\""
-			     << (rs && *rs ? rs : "") << "\"}";
+			     << (rs ? rs : "") << "\"}";
 		}
 		sqlite3_finalize(ge_stmt);
 	}

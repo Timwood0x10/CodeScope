@@ -328,7 +328,8 @@ int64_t ResolverPipeline::run()
 			  " source_id INTEGER NOT NULL,"
 			  " target_id INTEGER NOT NULL,"
 			  " edge_type INTEGER NOT NULL,"
-			  " project_id INTEGER NOT NULL)")) {
+			  " project_id INTEGER NOT NULL,"
+			  " resolve_strategy TEXT DEFAULT '')")) {
 		fprintf(stderr,
 			"[module=resolver, method=run] "
 			"create staging table failed: %s\n",
@@ -428,12 +429,12 @@ int64_t ResolverPipeline::run()
 	}
 
 	// ── Query all references for this project ──
-	std::string ref_sql =
-		"SELECT r.id, r.name, r.caller_id, r.arity, "
-		" r.start_row, r.start_col, r.call_kind, e.file_path "
-		"FROM reference r "
-		"JOIN entity e ON r.caller_id = e.id "
-		"WHERE r.project_id=?";
+	std::string ref_sql = "SELECT r.id, r.name, r.caller_id, r.arity, "
+			      " r.start_row, r.start_col, r.call_kind, "
+			      " r.resolve_strategy, e.file_path "
+			      "FROM reference r "
+			      "JOIN entity e ON r.caller_id = e.id "
+			      "WHERE r.project_id=?";
 	sqlite3_stmt *ref_st = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), ref_sql.c_str(), -1, &ref_st,
 			       nullptr) != SQLITE_OK) {
@@ -451,8 +452,8 @@ int64_t ResolverPipeline::run()
 	// Now we prepare once and bind/reset in the loop.
 	const char *ins_staging_sql =
 		"INSERT INTO _resolved_edges "
-		"(source_id, target_id, edge_type, project_id) "
-		"VALUES (?,?,?,?)";
+		"(source_id, target_id, edge_type, project_id, resolve_strategy) "
+		"VALUES (?,?,?,?,?)";
 	sqlite3_stmt *ins_st = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), ins_staging_sql, -1, &ins_st,
 			       nullptr) != SQLITE_OK) {
@@ -498,6 +499,7 @@ int64_t ResolverPipeline::run()
 		uint64_t caller_id;
 		std::string caller_file;
 		int call_kind;
+		std::string resolve_strategy;
 	};
 	std::vector<RefRow> refs;
 	refs.reserve(65536); // pre-allocate for 108k typical
@@ -511,12 +513,15 @@ int64_t ResolverPipeline::run()
 		r.caller_id =
 			static_cast<uint64_t>(sqlite3_column_int64(ref_st, 2));
 		const char *fp_c = reinterpret_cast<const char *>(
-			sqlite3_column_text(ref_st, 7));
+			sqlite3_column_text(ref_st, 8));
 		r.call_kind = sqlite3_column_int(ref_st, 6);
+		const char *rs_c = reinterpret_cast<const char *>(
+			sqlite3_column_text(ref_st, 7));
 		if (!name_c || !*name_c || !fp_c)
 			continue;
 		r.name = name_c;
 		r.caller_file = fp_c;
+		r.resolve_strategy = rs_c ? rs_c : "";
 		refs.push_back(std::move(r));
 	}
 	sqlite3_finalize(ref_st);
@@ -529,6 +534,7 @@ int64_t ResolverPipeline::run()
 		uint64_t caller_id;
 		uint64_t target_id;
 		int edge_type;
+		std::string resolve_strategy;
 	};
 	std::vector<ResolvedEdge> resolved_edges;
 	resolved_edges.reserve(16384); // pre-allocate for 36k typical
@@ -646,7 +652,8 @@ int64_t ResolverPipeline::run()
 					resolved_count++;
 					resolved_edges.push_back(
 						{ ref.caller_id, c.entity_id,
-						  kRelationTypeCall });
+						  kRelationTypeCall,
+						  ref.resolve_strategy });
 					continue;
 				}
 			}
@@ -673,8 +680,9 @@ int64_t ResolverPipeline::run()
 			continue;
 
 		resolved_count++;
-		resolved_edges.push_back(
-			{ ref.caller_id, best_id, kRelationTypeCall });
+		resolved_edges.push_back({ ref.caller_id, best_id,
+					   kRelationTypeCall,
+					   ref.resolve_strategy });
 	}
 
 	// Free entity_index (no longer needed)
@@ -700,6 +708,8 @@ int64_t ResolverPipeline::run()
 			sqlite3_bind_int(ins_st, 3, e.edge_type);
 			sqlite3_bind_int64(ins_st, 4,
 					   static_cast<int64_t>(project_id_));
+			sqlite3_bind_text(ins_st, 5, e.resolve_strategy.c_str(),
+					  -1, SQLITE_STATIC);
 			int st_rc = sqlite3_step(ins_st);
 			if (st_rc != SQLITE_DONE && st_rc != SQLITE_CONSTRAINT)
 				fprintf(stderr,
@@ -736,8 +746,9 @@ int64_t ResolverPipeline::run()
 
 	if (!store_->exec("INSERT OR IGNORE INTO graph_edges "
 			  "(project_id, source_node_id, target_node_id, "
-			  " edge_type) "
-			  "SELECT project_id, source_id, target_id, edge_type "
+			  " edge_type, resolve_strategy) "
+			  "SELECT project_id, source_id, target_id, edge_type, "
+			  " resolve_strategy "
 			  "FROM _resolved_edges")) {
 		fprintf(stderr,
 			"[module=resolver, method=run] "

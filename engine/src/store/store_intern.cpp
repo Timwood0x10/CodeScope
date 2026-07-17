@@ -68,13 +68,11 @@ int64_t GraphStore::buildCallEdgesSQL(uint64_t project_id)
 		std::string sql = std::string(
 			"INSERT OR IGNORE INTO graph_edges "
 			"(project_id, source_node_id, target_node_id, "
-			" edge_type, graph_type, call_site_file, call_site_line, "
-			" resolve_strategy) "
+			" edge_type, graph_type, call_site_file, call_site_line) "
 			"SELECT DISTINCT " +
 			pid +
 			", caller.node_id, callee.node_id, "
-			" 1, 'call_graph', sr.file_path, sr.start_row, "
-			" COALESCE(sr.resolve_strategy, 'p1_intra') "
+			" 1, 'call_graph', sr.file_path, sr.start_row "
 			"FROM semantic_records sr "
 			"JOIN _decls caller "
 			" ON sr.file_path = caller.file_path "

@@ -1,61 +1,79 @@
 #include "../include/engine.h"
 #include <cstdio>
 #include <cstring>
-#include <cstdlib>
-#include <chrono>
+#include <sqlite3.h>
 #include <unistd.h>
-#include <string>
 
-using Clock = std::chrono::steady_clock;
-
-static double elapsed(Clock::time_point start) {
-    auto end = Clock::now();
-    return std::chrono::duration<double, std::milli>(end - start).count();
+static void dump(const char *label, char *s)
+{
+    printf("--- %s ---\n%s\n\n", label, s ? s : "(null)");
+    if (s) engine_free_string(s);
 }
 
-int main(int argc, char** argv) {
-    const char* bun_dir = argc > 1 ? argv[1] : "～/code/researcher/bun";
+int main(int argc, char **argv)
+{
+    const char *bun_dir = argc > 1 ? argv[1] : "/Users/scc/code/researcher/bun";
+    const char *db = "/tmp/t_bun.db";
+    char lbug[512];
+    snprintf(lbug, sizeof(lbug), "%s.lbug", db);
+    unlink(db); unlink(lbug); unlink("/tmp/astgraph_test.db");
 
-    unlink("/tmp/test_bun.db");
+    engine_init(db);
+    uint64_t pid = engine_create_project(bun_dir, "bun");
+    char *idx = engine_index_project(pid, bun_dir, nullptr);
+    printf("index: %s\n", idx ? idx : "(null)");
+    if (idx) engine_free_string(idx);
 
-    int rc = engine_init("/tmp/test_bun.db");
-    if (rc != 0) {
-        fprintf(stderr, "FAIL: engine_init\n");
-        return 1;
+    for (int i = 0; i < 100; i++) {
+        usleep(100000);
+        char *st = engine_get_graph_stats(pid);
+        if (st && strstr(st, "total_nodes")) {
+            engine_free_string(st);
+            break;
+        }
+        if (st) engine_free_string(st);
     }
-    fprintf(stderr, "engine_init OK\n");
+    usleep(500000);
 
-    uint64_t pid = engine_create_project("/tmp", "bun-test");
-    if (pid == 0) {
-        fprintf(stderr, "FAIL: create_project\n");
-        return 1;
-    }
-    fprintf(stderr, "create_project OK (pid=%llu)\n", (unsigned long long)pid);
+    dump("stats", engine_get_graph_stats(pid));
 
-    fprintf(stderr, "Indexing %s ...\n", bun_dir);
-    auto t0 = Clock::now();
-    char* result = engine_index_project(pid, bun_dir, nullptr);
-    double ms = elapsed(t0);
-    fprintf(stderr, "index_project: %.0f ms\n", ms);
-
-    if (!result) {
-        fprintf(stderr, "FAIL: index_project returned null\n");
-        engine_shutdown();
-        return 1;
-    }
-
-    fprintf(stderr, "Result: %s\n", result);
-
-    bool ok = strstr(result, "\"ok\":true") != nullptr;
-    engine_free_string(result);
-
-    if (!ok) {
-        fprintf(stderr, "FAIL: index_project failed\n");
-        engine_shutdown();
-        return 1;
+    // Check some key functions
+    const char *funcs[] = {"main", "run", "init", nullptr};
+    for (int i = 0; funcs[i]; i++) {
+        char buf[256];
+        snprintf(buf, sizeof(buf), "callees(%s)", funcs[i]);
+        dump(buf, engine_get_callees(pid, funcs[i], nullptr));
+        snprintf(buf, sizeof(buf), "callers(%s)", funcs[i]);
+        dump(buf, engine_get_callers(pid, funcs[i], nullptr));
     }
 
-    fprintf(stderr, "\n=== bun index test passed ===\n");
+    // Dump resolve_strategy from semantic_records
+    sqlite3 *h = nullptr;
+    sqlite3_open(db, &h);
+    printf("=== resolve_strategy sample (first 20) ===\n");
+    sqlite3_stmt *st = nullptr;
+    sqlite3_prepare_v2(h,
+        "SELECT rowid, name, resolve_strategy, ref_original_id, "
+        "start_row, file_path "
+        "FROM semantic_records "
+        "WHERE project_id=? AND kind=9 AND name != '' "
+        "AND resolve_strategy != '' "
+        "ORDER BY start_row LIMIT 20",
+        -1, &st, nullptr);
+    sqlite3_bind_int64(st, 1, pid);
+    while (sqlite3_step(st) == SQLITE_ROW) {
+        const char *n = (const char *)sqlite3_column_text(st, 1);
+        const char *rs = (const char *)sqlite3_column_text(st, 2);
+        int ref = sqlite3_column_int(st, 3);
+        int row = sqlite3_column_int(st, 4);
+        const char *fp = (const char *)sqlite3_column_text(st, 5);
+        printf("  row=%-5d name=%-20s strategy=%-12s ref_oid=%-2d %s\n",
+               row, n ? n : "", rs ? rs : "", ref, fp ? fp : "");
+    }
+    sqlite3_finalize(st);
+    sqlite3_close(h);
+
     engine_shutdown();
+    printf("=== DONE ===\n");
     return 0;
 }
