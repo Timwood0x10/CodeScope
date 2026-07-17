@@ -102,6 +102,13 @@ unsafe extern "C" {
     fn engine_get_module_tree(project_id: u64) -> *mut c_char;
     fn engine_find_symbol(project_id: u64, symbol_name: *const c_char) -> *mut c_char;
 
+    // ── Knowledge Graph direct query (v0.2.1) ────────────────────────
+    fn engine_get_knowledge_graph(
+        project_id: u64,
+        table_name: *const c_char,
+        limit: i32,
+    ) -> *mut c_char;
+
     // ── Phase B: Background Enhancement ──────────────────────────
 
     // ── Phase C: Unified MCP Tools ───────────────────────────────
@@ -477,6 +484,22 @@ pub fn detect_architecture_drift(project_id: u64) -> String {
 
 pub fn get_module_tree(project_id: u64) -> String {
     take_string(unsafe { engine_get_module_tree(project_id) })
+}
+
+/// Direct-query a knowledge-layer table (v0.2.1).
+///
+/// Surfaces `entity` / `relation` / `architecture_edge` / `module_edge` /
+/// `capability` / `document` / `module_summary` so MCP clients can browse
+/// the knowledge graph directly. Block-level transfer — one call returns
+/// the entire result set bounded by `limit` (clamped to [0, 1000]).
+///
+/// Returns JSON `{"table":"...","rows":[{...}],"total":N,"truncated":bool}`
+/// from the C++ `engine_get_knowledge_graph`. On error the JSON contains
+/// an `"error"` field tagged with module/method per code_rules.md.
+pub fn get_knowledge_graph(project_id: u64, table_name: &str, limit: i32) -> String {
+    take_string(unsafe {
+        engine_get_knowledge_graph(project_id, cstr(table_name).as_ptr(), limit)
+    })
 }
 
 pub fn find_symbol(project_id: u64, symbol_name: &str) -> String {

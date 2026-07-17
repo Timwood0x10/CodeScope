@@ -290,6 +290,26 @@ char *engine_build_context(uint64_t project_id, const char *query);
  */
 char *engine_get_capabilities(uint64_t project_id);
 
+/**
+ * Direct-query the knowledge graph layer (v0.2.1).
+ *
+ * Surfaces the knowledge-layer tables so MCP clients can browse them
+ * directly instead of only benefiting indirectly via explain_module /
+ * detect_capability_drift / get_module_tree. Block-level transfer —
+ * one call returns the entire result set bounded by `limit`.
+ *
+ * @param project_id  The project to query.
+ * @param table_name  One of: "entity", "relation", "architecture_edge",
+ *                    "module_edge", "capability", "document", "module_summary".
+ *                    Any other value returns an error JSON.
+ * @param limit       Max rows to return, clamped to [0, 1000].
+ * @return  JSON `{"table":"...","rows":[{...},...],"total":N,"truncated":bool}`.
+ *          On error: `{"error":"[module=ffi, method=engine_get_knowledge_graph] ..."}`.
+ *          Caller must call `engine_free_string` on the result.
+ */
+char *engine_get_knowledge_graph(uint64_t project_id, const char *table_name,
+				 int32_t limit);
+
 // Get type info for a project: returns type definitions and their references.
 // Returns JSON: { "types": [ { "name","qualified_name","kind","file_path","ref_count" } ] }
 char *engine_get_type_info(uint64_t project_id, const char *type_name_filter);

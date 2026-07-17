@@ -41,16 +41,24 @@ bool CapabilityVerifier::accepts(const Claim &claim) const
 // Uses LOWER() on both sides so the LIKE match is case-insensitive. The
 // subject is bound as the LIKE pattern, so callers can include % wildcards
 // for fuzzy matching; a plain subject matches exactly (case-insensitive).
+//
+// Match direction: LOWER(name) LIKE LOWER(subject) || '%'
+// — capability name must start with (or equal) the subject. The subject
+// is derived from README prose (e.g. "IncrementalIndexing"); the
+// capability name is the KnowledgeBuilder short form (e.g.
+// "IncrementalIndex"). Requiring name LIKE subject||'%' lets the short
+// stored name match the longer README-derived subject.
+//
+// BUG 2026-07-17: previously written as LOWER(?) LIKE LOWER(name)||'%'
+// (subject LIKE name||'%'), which required the README-derived subject to
+// *start with* the short stored name — almost never true, so every
+// capability_exists claim was Contradicted even on perfect matches.
 static bool capabilityDeclared(store::GraphStore *store, uint64_t project_id,
 			       const std::string &subject)
 {
-	// Prefix match: subject LIKE name||'%' so "IncrementalIndexing"
-	// matches capability name "IncrementalIndex". This handles the
-	// trailing-word difference between ClaimParser subjects (derived
-	// from README prose) and KnowledgeBuilder capability names.
 	const char *sql =
 		"SELECT 1 FROM capability "
-		"WHERE project_id=? AND LOWER(?) LIKE LOWER(name) || '%' "
+		"WHERE project_id=? AND LOWER(name) LIKE LOWER(?) || '%' "
 		"LIMIT 1";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store->handle(), sql, -1, &stmt, nullptr) !=
@@ -76,16 +84,25 @@ static bool capabilityDeclared(store::GraphStore *store, uint64_t project_id,
 //
 // NOTE: We query graph_nodes/graph_edges (the production source of truth)
 // because buildGraph writes to these tables via bulk SQL INSERT.
+//
+// Match direction: LOWER(e.name) LIKE LOWER(?) || '%'
+// — entity name must start with (or equal) the subject. Same rationale
+// as capabilityDeclared above: the README-derived subject is the longer
+// form; the stored graph node name is the short form, so name LIKE
+// subject||'%' lets the short name match the longer subject.
+//
+// BUG 2026-07-17: previously written as LOWER(?) LIKE LOWER(e.name)||'%'
+// (subject LIKE name||'%'), same reversed-direction bug as
+// capabilityDeclared — caused every capability_exists claim to be
+// Contradicted even on perfect name matches.
 static std::vector<int64_t> entitiesWithCallers(store::GraphStore *store,
 						uint64_t project_id,
 						const std::string &subject)
 {
 	std::vector<int64_t> ids;
-	// Prefix match: subject LIKE name||'%' so "IncrementalIndexing"
-	// matches graph node name "IncrementalIndex".
 	const char *sql =
 		"SELECT e.id FROM graph_nodes e "
-		"WHERE e.project_id=? AND LOWER(?) LIKE LOWER(e.name) || '%' "
+		"WHERE e.project_id=? AND LOWER(e.name) LIKE LOWER(?) || '%' "
 		"AND EXISTS (SELECT 1 FROM graph_edges r "
 		"            WHERE r.project_id=? AND r.target_node_id=e.id "
 		"            AND r.edge_type IN (1,3))";

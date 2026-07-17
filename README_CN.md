@@ -49,6 +49,40 @@ CodeScope 把知识图谱作为验证管线的副产品来构建。从模块级�
 
 知识图谱不是产品，是支撑验证的基础设施。
 
+#### 知识图谱里落了什么（memscope-rs，215 文件）
+
+| 表 | 行数 | 含义 |
+|----|-----:|------|
+| `entity` | 4,310 | 细粒度代码实体（函数、类型、变量） |
+| `relation` | 726 | 实体间关系（type 3 = 包含/定义） |
+| `architecture_edge` | 3,351 | 模块/目录级架构依赖边（边权 = 调用次数） |
+| `module_edge` | 11 | 跨模块依赖边 |
+| `capability` | 3 | 从 README 提取的能力声明 |
+| `document` | 1 | README 文档记录 |
+| `module_summary` | 42 | 每模块知识卡片 |
+
+能了解到啥：
+
+- **架构依赖**——`architecture_edge` 告诉你哪些模块依赖哪些（如 `analysis/heap_scanner → unsafe_inference`，边权=调用次数）。驱动 `detect_architecture_drift`。
+- **能力声明**——`capability` + `document` 把 README 的「能干什么」结构化。驱动 `detect_capability_drift` / `verify_claim(capability_exists)`。
+- **模块摘要**——42 个模块的知识卡片，由 `explain_module` 浮出。
+
+#### 直接查询入口（v0.2.1）
+
+过去知识图谱是**隐式**的——`graph_query` 走的是*调用*图（`graph_nodes` / `graph_edges`），不是知识层表（`entity` / `relation` / `architecture_edge`）。你只能通过 `explain_module`、`detect_capability_drift`、`get_module_tree` 间接受益。
+
+v0.2.1 新增 `engine_get_knowledge_graph(project_id, table, limit)` + MCP 工具 `codescope_knowledge_graph`，现在可**直接浏览**任意知识层表：
+
+```jsonc
+codescope_knowledge_graph {"table":"architecture_edge","limit":5}
+// → [{"src_module":"analysis/heap_scanner","tgt_module":"unsafe_inference","weight":17}, ...]
+
+codescope_knowledge_graph {"table":"capability","limit":10}
+// → [{"name":"borrow_analysis","source":"README.md","line":42}, ...]
+```
+
+支持表：`entity`、`relation`、`architecture_edge`、`module_edge`、`capability`、`document`、`module_summary`。块级 FFI——单次调用返回整个结果集，绝不一条边一次调用。
+
 **CodeScope 不解释代码，只验证代码。** 解释是 AI 的事，验证才是 CodeScope 的事。
 
 ## 快速开始
@@ -137,6 +171,21 @@ CodeScope 在首次运行时自动在项目根目录创建 `.codescope/` 目录�
 > **提示**：数据库是可移植的——将 `.codescope/` 随项目一起复制，即可在其他机器上复用分析结果。
 
 ## 性能
+
+### 真实项目索引实测（v0.2.1，Apple M3 Max）
+
+| 项目 | 文件 | 节点 | 索引耗时 | 峰值 RSS |
+|------|----:|----:|--------:|---------:|
+| **memscope-rs**（Rust） | 215 | 4,344 | ~2 s | ~200 MB |
+| **CodeScope**（自身，C++/Rust） | 168 | 1,001 | 1.3 s | ~150 MB |
+| **ARES_POLIS** | 105 | 1,531 | ~2 s | ~180 MB |
+| **rustc**（Rust 编译器，单体库） | 6,029 | 81,033 | 81 s | 5.9 GB |
+
+**结论：**
+
+- **中小项目（<300 文件）：** 亚秒~2 秒索引，~200 MB RSS——体验极佳，日常开发速度。
+- **超大单体库（数万文件）：** 能用但需注意资源——rustc 耗 81 秒 + 5.9 GB 峰值内存。一次性索引可接受,需留意内存。
+- **查询延迟（stdio MCP 模式，含进程启动）：** 单次调用 ~60 ms；常驻 server 模式更低。
 
 基准测试在 **Apple M3 Max（36 GB 内存）** 上执行。
 

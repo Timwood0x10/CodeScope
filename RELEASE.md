@@ -1,3 +1,34 @@
+## v0.2.1 (2026-07-17)
+
+Bug-fix release. No new features; closes the gap between the Resolver Pipeline and the query/verify surfaces that caused third-party false positives, dead verifiers, and invalid JSON.
+
+### What broke (the bugs we hit)
+
+| # | Bug | Symptom | Class |
+|---|-----|---------|-------|
+| 1 | `resolve_strategy` not propagated to `graph_edges` | `find_callees` / `find_callers` / `engine_get_callees` / `engine_get_callers` always returned empty `resolve_strategy`; third-party symbols (`dropout`, `backward_hook`, `means`, `stds`, `LSTMLayer`) surfaced as in-project callees — frontends could not filter them | Data-flow break |
+| 2 | `buildCallEdgesSQL` dead code | `buildGraph()` casts `build_calls` to `(void)` (`store_graph.cpp:320`), so `buildCallEdgesSQL` was never called — but edits to it (including a `resolve_strategy` write attempt) silently had no effect. Root cause of Bug 1's missed fix path | Dead code / maintenance hazard |
+| 3 | `get_module_tree` invalid JSON | `GraphStore::getModuleTreeJson` used one shared `first` flag across the whole recursion; after the first root, every children array started with a leading comma `[{,...},{...}]` — `json.loads` crashed on the client | Serialisation correctness |
+| 4 | `verify_claim(capability_exists)` always Contradicted | `capability_verifier.cpp` LIKE direction reversed: `LOWER(?) LIKE LOWER(name)||'%'` (subject LIKE name) instead of `LOWER(name) LIKE LOWER(?)||'%'` (name LIKE subject). README-derived subject is the longer form, stored name is the short form — reversed direction matched nothing, even perfect name matches returned Contradicted | Verifier logic |
+| 5 | `modules` table always empty | `GraphStore::insertModule` existed but was never called; `explain_module` / `get_module_tree` degraded to reading only `module_edge` (dependency edges), no module hierarchy (`parent_id` / `name` / `path` / `language`) | Missing write call |
+
+### What we fixed (the bugs we solved)
+
+- **Bug 1 closed** by threading `resolve_strategy` through the full chain `semantic_records → reference → _resolved_edges → graph_edges`: schema migration in `store_schema.cpp:921-994`, staging in `pipeline.cpp:332/431/711/747-752`, output restored in `query_engine.cpp` (`QueryEngine::getCallers`/`getCallees` — the actual FFI path) + `store_query.cpp` (`findCallersJson`/`findCalleesJson`). Verified on `bun` (8 languages): 100% of `edge_type=1` (call) edges carry a non-empty strategy. Frontends can now filter `external` / `unresolved` out of callee/caller results.
+- **Bug 2 closed** by fully removing `buildCallEdgesSQL` (`store_intern.cpp` 704 → 17 lines) + the stale docstring in `store.h`. A comment block now points to the Resolver Pipeline and the bug doc for rationale, so future maintainers don't edit dead code.
+- **Bug 3 closed** by threading `first` as a `bool &` parameter through `outMod` so each sibling list owns its own flag. Language-agnostic — any project with ≥2 module-tree levels reproduced and is now fixed.
+- **Bug 4 closed** by flipping both LIKE clauses in `capability_verifier.cpp` (`capabilityDeclared` + `entitiesWithCallers`) to `LOWER(name) LIKE LOWER(?)||'%'`, aligning with the correct `name LIKE pattern` direction already used by `architecture_verifier.cpp` and `contract_verifier.cpp`.
+- **Bug 5 closed** by adding `populateModulesHierarchy` (`async_knowledge.cpp`) called after `buildKnowledgeGraphSync` COMMIT — collapses `entity.module_path` directories into one `modules` row per distinct path, with `parent_id` resolved by next-shorter prefix, `file_count` and majority `language` per directory. Idempotent via `insertModule`'s existence check. Verified on `bun`: 253 modules rows, 21 roots, nested tree JSON valid.
+
+### Also shipped
+
+- `test_bun.cpp` parameterised (`argv[1]` restored, hardcoded path retained as default).
+- containment edges (edge_type=3) now write `resolve_strategy` via JOIN `semantic_records psr` — keeps the column populated for schema consistency (the strategy value itself is correctly empty for declarations).
+- Bilingual bug-fix records in `docs/bugs/bug_resolve_strategy.{zh,en}.md`.
+- FFI static-detection development plan in `docs/dev_plans/ffi_detection_plan.md` (next-next step, not shipped in 0.2.1).
+
+---
+
 ## v0.2.0
 
 Open-source release preparation — documentation accuracy, build portability fixes, and new developer tooling.

@@ -542,6 +542,19 @@ fn h_get_module_tree(project_id: u64, _args: &Value) -> String {
     ffi::get_module_tree(project_id)
 }
 
+/// Direct-query a knowledge-layer table (v0.2.1).
+/// Surfaces entity / relation / architecture_edge / module_edge /
+/// capability / document / module_summary so MCP clients can browse
+/// the knowledge graph directly.
+fn h_get_knowledge_graph(project_id: u64, args: &Value) -> String {
+    let table = args["table"].as_str().unwrap_or("");
+    if table.is_empty() {
+        return json!({"error": "table field is required [module=mcp, tool=get_knowledge_graph]"}).to_string();
+    }
+    let limit = args["limit"].as_i64().unwrap_or(100) as i32;
+    ffi::get_knowledge_graph(project_id, table, limit)
+}
+
 // ── Phase B: Enhancement ─────────────────────────────────
 
 // ── Phase C: Unified MCP Tools ───────────────────────────
@@ -823,6 +836,8 @@ static TOOL_HANDLERS: Lazy<HashMap<&'static str, ToolHandler>> = Lazy::new(|| {
     // Fast scan
     m.insert("find_symbol", h_find_symbol as ToolHandler);
     m.insert("get_module_tree", h_get_module_tree as ToolHandler);
+    // Knowledge graph direct query (v0.2.1)
+    m.insert("get_knowledge_graph", h_get_knowledge_graph as ToolHandler);
     // Unified tools
     m.insert("search", h_search as ToolHandler);
     m.insert("find_callers", h_find_callers as ToolHandler);
@@ -1078,6 +1093,28 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
             input_schema: json!({ "type": "object", "properties": {} }),
         },
         Tool {
+            name: "get_knowledge_graph".into(),
+            description: "Direct-query a knowledge-layer table (v0.2.1). Surfaces entity / relation / architecture_edge / module_edge / capability / document / module_summary so you can browse the knowledge graph directly instead of only benefiting indirectly via explain_module / detect_capability_drift / get_module_tree. Block-level: one call returns the whole result set.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "table": {
+                        "type": "string",
+                        "enum": ["entity", "relation", "architecture_edge",
+                                 "module_edge", "capability", "document",
+                                 "module_summary"],
+                        "description": "Knowledge-layer table to query."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "default": 100,
+                        "description": "Max rows to return, clamped to [0, 1000]."
+                    }
+                },
+                "required": ["table"]
+            }),
+        },
+        Tool {
             name: "search".into(),
             description: "Unified code search: auto-selects between FTS5 and semantic search based on enhancement status. Supports prefix matching.".into(),
             input_schema: json!({
@@ -1316,6 +1353,7 @@ mod tests {
             "get_routes",
             "project_overview",
             "get_module_tree",
+            "get_knowledge_graph",
         ];
         for name in &canonical {
             assert!(

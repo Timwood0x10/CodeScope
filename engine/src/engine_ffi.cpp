@@ -101,6 +101,147 @@ char *engine_get_capabilities(uint64_t project_id)
 	}
 }
 
+// ─── Knowledge Graph direct query (v0.2.1) ─────────────────────────────
+//
+// Surfaces the knowledge-layer tables (entity / relation / architecture_edge /
+// module_edge / capability / document / module_summary) so MCP clients can
+// browse the knowledge graph directly, instead of only benefiting from it
+// indirectly via explain_module / detect_capability_drift / get_module_tree.
+//
+// Per plan/rules/code_rules.md §FFI: this is a block-level transfer — one
+// FFI call returns the entire result set (bounded by `limit`), never one
+// row per call. Error paths emit a stderr line tagged with module=ffi,
+// method=engine_get_knowledge_graph per §"Additional Rules".
+char *engine_get_knowledge_graph(uint64_t project_id, const char *table_name,
+				 int32_t limit)
+{
+	try {
+		if (!g_store)
+			return dupString(
+				"{\"error\":\"[module=ffi, method=engine_get_knowledge_graph] engine not initialized\"}");
+		if (!table_name || !*table_name)
+			return dupString(
+				"{\"error\":\"[module=ffi, method=engine_get_knowledge_graph] table_name is required\"}");
+
+		// Whitelist of knowledge-layer tables. We never let the caller pass
+		// arbitrary SQL — the table_name is matched against this fixed set
+		// and the SELECT is built with a hard-coded column list per table.
+		// This prevents SQL injection via the table_name parameter.
+		struct TableSpec {
+			const char *name;
+			const char *select; // hard-coded column list, no user input
+		};
+		static const TableSpec kTables[] = {
+			{"entity", "SELECT id, name, qualified_name, kind, "
+				   "file_path, start_row, start_col FROM entity "
+				   "WHERE project_id=? ORDER BY id LIMIT ?"},
+			{"relation", "SELECT id, source_id, target_id, type "
+				      "FROM relation WHERE project_id=? "
+				      "ORDER BY id LIMIT ?"},
+			{"architecture_edge", "SELECT id, layer_lower, layer_upper, "
+					      "entity_id FROM architecture_edge "
+					      "WHERE project_id=? ORDER BY id LIMIT ?"},
+			{"module_edge", "SELECT id, src_module, tgt_module, "
+					"weight FROM module_edge "
+					"WHERE project_id=? ORDER BY id LIMIT ?"},
+			{"capability", "SELECT id, name, summary FROM capability "
+				       "WHERE project_id=? ORDER BY id LIMIT ?"},
+			{"document", "SELECT id, path, kind FROM document "
+				     "WHERE project_id=? ORDER BY id LIMIT ?"},
+			{"module_summary", "SELECT id, module_path, summary "
+					   "FROM module_summary "
+					   "WHERE project_id=? ORDER BY id LIMIT ?"},
+		};
+		const TableSpec *spec = nullptr;
+		for (const auto &t : kTables) {
+			if (strcmp(t.name, table_name) == 0) {
+				spec = &t;
+				break;
+			}
+		}
+		if (!spec) {
+			std::string err = "{\"error\":\"[module=ffi, "
+			    "method=engine_get_knowledge_graph] unknown table '";
+			err += table_name;
+			err += "'. Supported: entity, relation, architecture_edge, "
+			       "module_edge, capability, document, module_summary\"}";
+			return dupString(err);
+		}
+
+		// Clamp limit to [0, 1000] — bounds the FFI transfer per
+		// block-level rule and prevents unbounded allocation.
+		int32_t clamped = limit < 0 ? 0 : (limit > 1000 ? 1000 : limit);
+
+		sqlite3 *db = g_store->handle();
+		sqlite3_stmt *stmt = nullptr;
+		if (sqlite3_prepare_v2(db, spec->select, -1, &stmt,
+				       nullptr) != SQLITE_OK) {
+			fprintf(stderr,
+				"[module=ffi, method=engine_get_knowledge_graph] "
+				"prepare failed for table '%s': %s\n",
+				table_name, sqlite3_errmsg(db));
+			return dupString(
+				"{\"error\":\"[module=ffi, method=engine_get_knowledge_graph] prepare failed\"}");
+		}
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		sqlite3_bind_int(stmt, 2, clamped);
+
+		std::string json = "{\"table\":\"";
+		json += table_name;
+		json += "\",\"rows\":[";
+		bool first = true;
+		int col_count = sqlite3_column_count(stmt);
+		while (sqlite3_step(stmt) == SQLITE_ROW) {
+			if (!first)
+				json.push_back(',');
+			first = false;
+			json.push_back('{');
+			for (int c = 0; c < col_count; ++c) {
+				if (c > 0)
+					json.push_back(',');
+				const char *cn = sqlite3_column_name(stmt, c);
+				json += '"';
+				json += cn;
+				json += "\":";
+				if (sqlite3_column_type(stmt, c) == SQLITE_NULL) {
+					json += "null";
+					continue;
+				}
+				// Numeric columns emit bare numbers; text columns
+				// get JSON-escaped via jsonEscape to stay safe
+				// against names containing quotes / newlines.
+				if (sqlite3_column_type(stmt, c) == SQLITE_INTEGER) {
+					json += std::to_string(
+						sqlite3_column_int64(stmt, c));
+				} else {
+					const char *t = reinterpret_cast<const char *>(
+						sqlite3_column_text(stmt, c));
+					json += '"';
+					json += jsonEscape(t ? t : "");
+					json += '"';
+				}
+			}
+			json.push_back('}');
+		}
+		int64_t total = 0;
+		sqlite3_finalize(stmt);
+		json += "],\"total\":";
+		json += std::to_string(total);
+		json += ",\"truncated\":";
+		json += (total >= clamped && clamped > 0) ? "true" : "false";
+		json += "}";
+		return dupString(json);
+	} catch (const std::exception &e) {
+		return dupString(
+			std::string(
+				"{\"error\":\"[module=ffi, method=engine_get_knowledge_graph] ") +
+			e.what() + "\"}");
+	} catch (...) {
+		return dupString(
+			"{\"error\":\"[module=ffi, method=engine_get_knowledge_graph] unknown exception\"}");
+	}
+}
+
 char *engine_find_definition(uint64_t project_id, const char *symbol_name,
 			     const char *file_filter)
 {

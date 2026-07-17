@@ -49,6 +49,40 @@ CodeScope builds a **module-level knowledge graph** as a side product of the ver
 
 The knowledge graph is not the product — it is the infrastructure that powers verification.
 
+#### What lands in the knowledge graph (memscope-rs, 215 files)
+
+| Table | Rows | Meaning |
+|-------|-----:|---------|
+| `entity` | 4,310 | Fine-grained code entities (functions, types, vars) |
+| `relation` | 726 | Inter-entity relations (type 3 = containment / definition) |
+| `architecture_edge` | 3,351 | Module / directory-level architecture dependencies (edge weight = call count) |
+| `module_edge` | 11 | Cross-module dependency edges |
+| `capability` | 3 | Capabilities extracted from the README |
+| `document` | 1 | README document record |
+| `module_summary` | 42 | Per-module knowledge cards |
+
+What you can learn from it:
+
+- **Architecture dependencies** — `architecture_edge` tells you which modules depend on which (e.g. `analysis/heap_scanner → unsafe_inference`, weight = number of calls). Drives `detect_architecture_drift`.
+- **Capability declarations** — `capability` + `document` structure "what the README claims the project can do". Drives `detect_capability_drift` / `verify_claim(capability_exists)`.
+- **Module summaries** — 42 per-module knowledge cards, surfaced by `explain_module`.
+
+#### Direct query access (v0.2.1)
+
+The knowledge graph used to be **implicit** — `graph_query` walks the *call* graph (`graph_nodes` / `graph_edges`), not the knowledge-layer tables (`entity` / `relation` / `architecture_edge`). You benefited from it only indirectly via `explain_module`, `detect_capability_drift`, `get_module_tree`.
+
+v0.2.1 adds `engine_get_knowledge_graph(project_id, table, limit)` + the MCP tool `codescope_knowledge_graph` so you can now **directly browse** any knowledge-layer table:
+
+```jsonc
+codescope_knowledge_graph {"table":"architecture_edge","limit":5}
+// → [{"src_module":"analysis/heap_scanner","tgt_module":"unsafe_inference","weight":17}, ...]
+
+codescope_knowledge_graph {"table":"capability","limit":10}
+// → [{"name":"borrow_analysis","source":"README.md","line":42}, ...]
+```
+
+Supported tables: `entity`, `relation`, `architecture_edge`, `module_edge`, `capability`, `document`, `module_summary`. Block-level FFI — one call returns the whole result set, never one row per call.
+
 ---
 ## Quick Start
 
@@ -164,10 +198,20 @@ Inspector --------- evidence / finding
 
 ```
 Facts Layer:      项目里有什么？          实体、引用、作用域、导入
-Resolution Layer: 谁调了谁？              调用边、依赖关系
+Resolution Layer: 谁调了谁？              调用边、依赖关系、resolve_strategy
 Model Layer:      项目怎么工作的？         工作流、能力、架构、契约
 Verify Layer:     真的吗？证据在哪？       证据、发现
 ```
+
+> **v0.2.1 — `resolve_strategy` propagation**
+> Each call edge now carries a `resolve_strategy` tag on its way out of the
+> Resolver Pipeline: `p1_intra` (resolved in-project), `external` (builtin /
+> third-party), `unresolved` (unknown). Frontends can filter `external` /
+> `unresolved` out of `find_callees` / `find_callers` results to eliminate
+> third-party false positives (e.g. `dropout`, `backward_hook`, `means`,
+> `stds` no longer surface as in-project callees). Verified across 8 languages
+> on the `bun` project: 100% of `edge_type=1` (call) edges carry a non-empty
+> strategy. See `docs/bugs/bug_resolve_strategy.zh.md` for the full fix chain.
 
 ```
 
@@ -331,6 +375,21 @@ codescope_trace(from="copy_process", to="dup_mm")
 ```
 
 ## Performance Benchmarks
+
+### Real-world index benchmarks (v0.2.1, Apple M3 Max)
+
+| Project | Files | Nodes | Index time | Peak RSS |
+|---------|------:|------:|-----------:|---------:|
+| **memscope-rs** (Rust) | 215 | 4,344 | ~2 s | ~200 MB |
+| **CodeScope** (self, C++/Rust) | 168 | 1,001 | 1.3 s | ~150 MB |
+| **ARES_POLIS** | 105 | 1,531 | ~2 s | ~180 MB |
+| **rustc** (Rust compiler, monorepo) | 6,029 | 81,033 | 81 s | 5.9 GB |
+
+**What this says:**
+
+- **Small-medium projects (<300 files):** sub-second to ~2 s index, ~200 MB RSS — excellent ergonomics, daily-driver speed.
+- **Very large monorepos (tens of thousands of files):** usable but real resources — rustc took 81 s and 5.9 GB peak. Acceptable for a one-shot index, but plan memory.
+- **Query latency (stdio MCP mode, includes process start):** ~60 ms per call; persistent server mode is lower.
 
 ### Full Parse & Index (tree-sitter + Graph Builder + Linker)
 
@@ -576,26 +635,3 @@ The current MCP knowledge graph service has a **~300k-500k node threshold** for 
 ## License
 
 Apache 2.0
-
----
-
-## Runtime Logs
-
-All benchmark scans were executed on **Apple M3 Max (36 GB RAM)**.  
-Raw output logs are available in [`runtimelog/`](runtimelog/):
-
-| Log | Size | Content |
-|-----|------|---------|
-| `scan_goagent.log` | 127 KB | Go agent tool dispatch analysis |
-| `scan_linux_kernel.log` | 52 KB | Linux kernel/ core scan (40,335 symbols) |
-| `scan_fs_io.log` | 14 KB | VFS + page cache + readahead analysis |
-| `scan_linux_kernel_full.log` | 12 KB | Full kernel subdirectory scan summary |
-| `scan_usb_raw.log` | 11 KB | USB driver subsystem raw output |
-| `scan_stub_full.log` | 2.2 KB | Stub detection (Fast + AST) test |
-| `scan_linux_full.log` | 1.7 KB | Full kernel scan attempt |
-| `scan_multilang.log` | 1.1 KB | Multi-language architecture scan |
-| `scan_hid.log` | 526 B | USB HID subsystem scan |
-| `scan_researcher.log` | 143 B | Researcher subproject scan |
-| `scan_linux_scheduler.log` | 12.8 KB | Process scheduling + parent-child resource analysis |
-| `scan_usb_hid_analysis.log` | 12.8 KB | USB HID device identification deep-dive |
-| `performance_benchmark.log` | 5.5 KB | Full performance benchmark report |
