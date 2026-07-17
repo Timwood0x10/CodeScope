@@ -55,6 +55,15 @@ bool isAsyncKnowledgeBuilderRunning();
 /// @return            Number of module_edge rows inserted, or -1 on error.
 int64_t buildKnowledgeGraphSync(store::GraphStore &store, uint64_t project_id);
 
+/// Synchronous entry point: populate the modules hierarchy table from
+/// entity.module_path. One row per distinct directory, parent_id
+/// resolved by path-prefix lookup so getModuleTreeJson can render a
+/// nested tree. Called by buildKnowledgeGraphSync after module_edge.
+/// @param store       The GraphStore to use.
+/// @param project_id  The project to populate modules for.
+/// @return            Number of modules rows inserted, or -1 on error.
+int64_t populateModulesHierarchy(store::GraphStore &store, uint64_t project_id);
+
 /// Synchronous entry point: run Model Engine + State Builder + FTS.
 /// Called by the background thread before the knowledge builder.
 /// Can also be called directly for synchronous indexing.
