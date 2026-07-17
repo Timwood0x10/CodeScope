@@ -11,6 +11,8 @@ unsafe extern "C" {
 
     fn engine_create_project(root_path: *const c_char, name: *const c_char) -> u64;
     fn engine_get_latest_project_id() -> u64;
+    fn engine_get_project_id_by_path(root_path: *const c_char) -> u64;
+    fn engine_get_project_node_count(project_id: u64) -> u64;
     fn engine_index_file(project_id: u64, file_path: *const c_char) -> *mut c_char;
     fn engine_index_project(
         project_id: u64,
@@ -186,6 +188,17 @@ pub fn create_project(root_path: &str, name: &str) -> u64 {
 
 pub fn get_latest_project_id() -> u64 {
     unsafe { engine_get_latest_project_id() }
+}
+
+/// Look up a project ID by its root_path without creating a new project.
+/// Returns 0 if no project matches.
+pub fn get_project_id_by_path(root_path: &str) -> u64 {
+    unsafe { engine_get_project_id_by_path(cstr(root_path).as_ptr()) }
+}
+
+/// Count graph_nodes for a project — 0 means no indexed data.
+pub fn get_project_node_count(project_id: u64) -> u64 {
+    unsafe { engine_get_project_node_count(project_id) }
 }
 
 pub fn index_file(project_id: u64, file_path: &str) -> String {

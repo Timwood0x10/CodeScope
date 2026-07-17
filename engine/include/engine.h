@@ -76,9 +76,23 @@ char *engine_find_connected_components(uint64_t project_id);
 char *engine_explore_function(uint64_t project_id, const char *function_name,
 			      int depth, const char *direction);
 
-// Get the latest project ID from the database (highest ID).
-// Returns 0 if no projects exist.
+// Get the latest project ID from the database.
+// Returns the project with the most indexed data (graph_nodes),
+// not just the highest id. This prevents project_id misalignment
+// when an empty "shell" project has a higher id than the data-bearing
+// project. Returns 0 if no projects exist.
 uint64_t engine_get_latest_project_id();
+
+// Get a project ID by its root_path.
+// Returns the project_id, or 0 if no project matches the root_path.
+// Unlike engine_create_project, this is a pure lookup — it does NOT
+// create a new project if the root_path is not found.
+uint64_t engine_get_project_id_by_path(const char *root_path);
+
+// Count graph_nodes for a project.
+// Returns the node count, or 0 if the project has no indexed data.
+// Used by MCP to decide whether to reuse existing data or re-index.
+uint64_t engine_get_project_node_count(uint64_t project_id);
 
 // ─── Full-text search ──────────────────────────────────────────
 

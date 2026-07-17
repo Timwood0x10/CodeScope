@@ -651,12 +651,18 @@ uint64_t GraphStore::createProject(const char *root_path, const char *name)
 			rc, sqlite3_errmsg(db_));
 	sqlite3_finalize(stmt);
 
-	uint64_t id = static_cast<uint64_t>(sqlite3_last_insert_rowid(db_));
-	if (id == 0) {
-		// Row already exists — query the existing ID
-		id = getProjectId(root_path);
+	// Use sqlite3_changes() to detect whether a row was actually
+	// inserted. sqlite3_last_insert_rowid() retains stale values from
+	// prior successful inserts on the same connection, so checking
+	// == 0 is unreliable once any insert has occurred. changes()
+	// returns the number of rows modified by the most recent
+	// INSERT/UPDATE/DELETE — 0 means INSERT OR IGNORE was ignored
+	// (root_path already exists), so we fall back to a lookup.
+	// [module=store, method=createProject]
+	if (sqlite3_changes(db_) > 0) {
+		return static_cast<uint64_t>(sqlite3_last_insert_rowid(db_));
 	}
-	return id;
+	return getProjectId(root_path);
 }
 
 uint64_t GraphStore::getProjectId(const char *root_path)
@@ -675,8 +681,21 @@ uint64_t GraphStore::getProjectId(const char *root_path)
 
 uint64_t GraphStore::getLatestProjectId()
 {
+	// Return the project with the most graph_nodes (actual indexed
+	// data), not just the highest id. This prevents project_id
+	// misalignment when an empty "shell" project has a higher id
+	// than the data-bearing project — e.g. CLI indexed id=1, then
+	// MCP created an empty id=2. Previously MAX(id) returned 2,
+	// causing all queries to read empty data.
+	// Ties are broken by id DESC (prefers the most recently created).
+	// [module=store, method=getLatestProjectId]
 	sqlite3_stmt *stmt = nullptr;
-	const char *sql = "SELECT id FROM projects ORDER BY id DESC LIMIT 1";
+	const char *sql =
+		"SELECT p.id FROM projects p "
+		"LEFT JOIN (SELECT project_id, COUNT(*) AS cnt "
+		"		   FROM graph_nodes GROUP BY project_id) g "
+		"ON p.id = g.project_id "
+		"ORDER BY COALESCE(g.cnt, 0) DESC, p.id DESC LIMIT 1";
 	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
 	uint64_t id = 0;
 	if (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -684,6 +703,24 @@ uint64_t GraphStore::getLatestProjectId()
 	}
 	sqlite3_finalize(stmt);
 	return id;
+}
+
+uint64_t GraphStore::getProjectNodeCount(uint64_t project_id)
+{
+	// Count graph_nodes for a project — used to determine whether
+	// a project already has indexed data (for MCP reuse decisions).
+	// [module=store, method=getProjectNodeCount]
+	sqlite3_stmt *stmt = nullptr;
+	const char *sql =
+		"SELECT COUNT(*) FROM graph_nodes WHERE project_id = ?";
+	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	uint64_t count = 0;
+	if (sqlite3_step(stmt) == SQLITE_ROW) {
+		count = static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
+	}
+	sqlite3_finalize(stmt);
+	return count;
 }
 
 // ─── File ──────────────────────────────────────────────────────

@@ -178,6 +178,16 @@ class GraphStore {
 	uint64_t getProjectId(const char *root_path);
 	uint64_t getLatestProjectId();
 
+	/**
+	 * Count graph_nodes belonging to a project.
+	 * Used to determine whether a project already has indexed data
+	 * (e.g. for MCP reuse decisions — skip re-indexing if data exists).
+	 *
+	 * @param project_id  Project identifier.
+	 * @return Number of graph_nodes, or 0 if the project has no data.
+	 */
+	uint64_t getProjectNodeCount(uint64_t project_id);
+
 	// ── File ───────────────────────────────────────────────────
 
 	uint64_t upsertFile(uint64_t project_id, const char *path,

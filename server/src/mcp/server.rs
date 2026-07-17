@@ -12,8 +12,10 @@ pub struct Server {
 
 impl Server {
     pub fn new() -> Self {
-        // Restore the most recent project_id from the database,
-        // so queries work immediately without re-indexing.
+        // Restore the project_id that has the most indexed data from the
+        // database, so queries work immediately without re-indexing.
+        // get_latest_project_id prefers projects with graph_nodes over
+        // empty shells, preventing project_id misalignment.
         let pid = ffi::get_latest_project_id();
         if pid > 0 {
             eprintln!("codescope: restored project_id={}", pid);
@@ -108,21 +110,40 @@ impl Server {
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("unnamed");
-            self.project_id = ffi::create_project(path, name);
-            if self.project_id > 0 {
-                eprintln!("Created project {} (id={})", name, self.project_id);
-                let result = ffi::index_project(self.project_id, path, std::ptr::null());
-                // Parse result to check for errors
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&result) {
-                    if let Some(error) = json.get("error").and_then(|e| e.as_str()) {
-                        if !error.is_empty() {
-                            eprintln!("Warning: index_project failed: {}", error);
+
+            // Prefer matching an existing project by rootPath before
+            // creating a new one. If a project with this rootPath already
+            // exists AND has indexed data (graph_nodes > 0), reuse it and
+            // skip re-indexing — this is the "MCP reuse" path that avoids
+            // project_id misalignment (e.g. CLI indexed id=1, MCP must not
+            // create an empty id=2 and read stale data).
+            let existing_pid = ffi::get_project_id_by_path(path);
+            if existing_pid > 0 && ffi::get_project_node_count(existing_pid) > 0 {
+                self.project_id = existing_pid;
+                eprintln!(
+                    "Reusing existing project {} (id={}, has data)",
+                    name, existing_pid
+                );
+            } else {
+                // Either no project matches this rootPath, or the matching
+                // project has no data yet. Create or get the project, then
+                // index it.
+                self.project_id = ffi::create_project(path, name);
+                if self.project_id > 0 {
+                    eprintln!("Created project {} (id={})", name, self.project_id);
+                    let result = ffi::index_project(self.project_id, path, std::ptr::null());
+                    // Parse result to check for errors
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&result) {
+                        if let Some(error) = json.get("error").and_then(|e| e.as_str()) {
+                            if !error.is_empty() {
+                                eprintln!("Warning: index_project failed: {}", error);
+                            }
+                        } else {
+                            eprintln!("Successfully indexed project {}", name);
                         }
                     } else {
-                        eprintln!("Successfully indexed project {}", name);
+                        eprintln!("Warning: index_project returned invalid JSON: {}", result);
                     }
-                } else {
-                    eprintln!("Warning: index_project returned invalid JSON: {}", result);
                 }
             }
         }
