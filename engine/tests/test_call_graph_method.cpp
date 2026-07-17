@@ -146,13 +146,13 @@ def make_timeline():
 	// ── Part 1: C++ method call via field_expression ─────────────
 	// Verify callees of AddPoints include "adder" (the method name,
 	// extracted from the field_expression "a.adder").
-	char *callees = engine_get_callees(pid, "AddPoints");
+	char *callees = engine_get_callees(pid, "AddPoints", nullptr);
 	check(strstr(callees, "adder") != nullptr,
 	      "AddPoints should call adder (field_expression callee extraction)");
 	engine_free_string(callees);
 
 	// Verify callers of adder include AddPoints.
-	char *callers = engine_get_callers(pid, "adder");
+	char *callers = engine_get_callers(pid, "adder", nullptr);
 	check(strstr(callers, "AddPoints") != nullptr,
 	      "adder should be called by AddPoints (intra-file P1 edge)");
 	engine_free_string(callers);
@@ -182,13 +182,13 @@ def make_timeline():
 
 	// ── Part 3: Python method call via attribute ─────────────────
 	// Verify render calls _load_data (intra-class method call).
-	char *py_callees = engine_get_callees(pid, "render");
+	char *py_callees = engine_get_callees(pid, "render", nullptr);
 	check(strstr(py_callees, "_load_data") != nullptr,
 	      "render should call _load_data (attribute callee extraction)");
 	engine_free_string(py_callees);
 
 	// Verify _load_data is called by render.
-	char *py_callers = engine_get_callers(pid, "_load_data");
+	char *py_callers = engine_get_callers(pid, "_load_data", nullptr);
 	check(strstr(py_callers, "render") != nullptr,
 	      "_load_data should be called by render (Python intra-file P1 edge)");
 	engine_free_string(py_callers);
@@ -259,7 +259,7 @@ def make_timeline():
 	// include Scatter (the nested call). Before the fix, Scatter
 	// was dropped from the reference table because its parent_id
 	// pointed to a CallExpr record (not in _r2n), failing the JOIN.
-	char *nested_callees = engine_get_callees(pid, "make_timeline");
+	char *nested_callees = engine_get_callees(pid, "make_timeline", nullptr);
 	check(strstr(nested_callees, "Scatter") != nullptr,
 	      "make_timeline should call Scatter (nested call must "
 	      "appear in callees — was dropped before function_stack_ fix)");

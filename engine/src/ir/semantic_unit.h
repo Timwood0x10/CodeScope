@@ -109,6 +109,13 @@ struct Record {
 	uint64_t parent_id = 0; // 0 = top-level (child of TranslationUnit)
 	uint64_t ref_original_id =
 		0; // for CallExpr: resolved callee's original_id (0 = unresolved cross-file)
+	/// Resolution strategy for this call record.
+	/// Empty string = not a call or not yet resolved.
+	/// "p1_intra"  = resolved within same file (ref_original_id > 0)
+	/// "p3_name"   = resolved by name match across files
+	/// "external"  = resolved to a known builtin/third-party symbol
+	/// "unresolved" = could not resolve to any known symbol
+	std::string resolve_strategy;
 	SourceRange loc;
 	std::string file_path;
 	std::string language;
@@ -227,15 +234,28 @@ class SemanticUnit {
 	bool setCallReference(uint64_t record_id, uint64_t ref_original_id);
 
 	/**
-		 * Set the call_kind on a CallExpr record (0=direct, 1=method, 2=interface,
-		 * 3=constructor, 4=static, 5=virtual). Allows the parser to classify
-		 * calls before persistence, enabling the resolver pipeline to
-		 * distinguish direct invocations from interface dispatches.
-		 * \param record_id  ID of the CallExpr record to update.
-		 * \param kind       CallKind value to assign.
-		 * \return true if the record was found and updated.
-		 */
+	  * Set the call_kind on a CallExpr record (0=direct, 1=method, 2=interface,
+	  * 3=constructor, 4=static, 5=virtual). Allows the parser to classify
+	  * calls before persistence, enabling the resolver pipeline to
+	  * distinguish direct invocations from interface dispatches.
+	  * \param record_id  ID of the CallExpr record to update.
+	  * \param kind       CallKind value to assign.
+	  * \return true if the record was found and updated.
+	  */
 	bool setCallKind(uint64_t record_id, int kind);
+
+	/**
+	  * Set the resolve_strategy on a CallExpr record.
+	  * Strategy values:
+	  *   "p1_intra"   — resolved within same file via ref_original_id
+	  *   "p3_name"    — resolved by name match across files
+	  *   "external"   — known builtin/third-party library symbol
+	  *   "unresolved" — could not resolve to any known symbol
+	  * \param record_id ID of the CallExpr record to update.
+	  * \param strategy  Resolution strategy string.
+	  * \return true if the record was found and updated.
+	  */
+	bool setCallStrategy(uint64_t record_id, const std::string &strategy);
 
     private:
 	std::vector<Record> records_;

@@ -553,16 +553,28 @@ class GraphStore {
 	/**
      * Find callers from the new call_edges table (requires callgraph_ready).
      * Returns JSON array of caller symbols.
+     *
+     * @param file_filter Optional absolute file path. When non-empty,
+     *        restricts callee node matching to the given file,
+     *        disambiguating homonyms (same name across files/classes,
+     *        e.g. __init__, run, main). Empty = aggregate all files
+     *        (legacy behavior, may produce noise on common names).
      */
 	std::string findCallersJson(uint64_t project_id,
-				    const char *symbol_name);
+				    const char *symbol_name,
+				    const char *file_filter = nullptr);
 
 	/**
      * Find callees from the new call_edges table (requires callgraph_ready).
      * Returns JSON array of callee symbols.
+     *
+     * @param file_filter Optional absolute file path. When non-empty,
+     *        restricts caller node matching to the given file,
+     *        disambiguating homonyms. See findCallersJson doc above.
      */
 	std::string findCalleesJson(uint64_t project_id,
-				    const char *symbol_name);
+				    const char *symbol_name,
+				    const char *file_filter = nullptr);
 
 	/** Get entry points from the new entry_points table. */
 	std::string getEntryPointsJson(uint64_t project_id);

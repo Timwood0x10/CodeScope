@@ -1,6 +1,7 @@
 #include "java_visitor.h"
 #include <cstring>
 #include <tree_sitter/api.h>
+#include "../builtin_registry.h"
 namespace ir
 {
 
@@ -282,8 +283,14 @@ void JavaVisitor::handleMethodInvocation(TSNode node, uint64_t parent_id)
 	// Enables P1 call-edge construction in buildCallEdgesSQL.
 	if (!name.empty()) {
 		uint64_t target = resolveSymbol(name);
-		if (target)
+		if (target) {
 			unit_->setCallReference(id, target);
+			unit_->setCallStrategy(id, "p1_intra");
+		} else {
+			unit_->setCallStrategy(
+				id, BuiltinRegistry::resolve(unit_->language(),
+							     name));
+		}
 	}
 
 	// Recurse into children — skip identifier/scoped_identifier/field_access

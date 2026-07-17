@@ -2,7 +2,7 @@
 
 #include <cstring>
 #include <tree_sitter/api.h>
-
+#include "../builtin_registry.h"
 #include "ahocorasick.h"
 
 namespace ir
@@ -480,8 +480,15 @@ void JsVisitor::visitCallExpr(TSNode node, uint64_t parent_id)
 	// buildCallEdgesSQL (JOIN on ref_original_id > 0).
 	if (!callee_name.empty()) {
 		uint64_t target = resolveSymbol(callee_name);
-		if (target)
+		if (target) {
 			unit_->setCallReference(call_id, target);
+			unit_->setCallStrategy(call_id, "p1_intra");
+		} else {
+			unit_->setCallStrategy(
+				call_id,
+				BuiltinRegistry::resolve(unit_->language(),
+							 callee_name));
+		}
 	}
 
 	// Recurse into children (arguments, member expressions, etc.)

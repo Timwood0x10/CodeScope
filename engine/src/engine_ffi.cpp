@@ -147,7 +147,8 @@ char *engine_find_references(uint64_t project_id, const char *symbol_name,
 	}
 }
 
-char *engine_get_callers(uint64_t project_id, const char *function_name)
+char *engine_get_callers(uint64_t project_id, const char *function_name,
+			 const char *file_filter)
 {
 	try {
 		if (!function_name || !*function_name)
@@ -156,8 +157,8 @@ char *engine_get_callers(uint64_t project_id, const char *function_name)
 		if (!g_query)
 			return dupString(
 				"{\"total\":0,\"callers\":[],\"error\":\"not initialized\"}");
-		return dupString(
-			g_query->getCallers(project_id, function_name));
+		return dupString(g_query->getCallers(project_id, function_name,
+						     file_filter));
 	} catch (const std::exception &e) {
 		return dupString(
 			std::string(
@@ -169,7 +170,8 @@ char *engine_get_callers(uint64_t project_id, const char *function_name)
 	}
 }
 
-char *engine_get_callees(uint64_t project_id, const char *function_name)
+char *engine_get_callees(uint64_t project_id, const char *function_name,
+			 const char *file_filter)
 {
 	try {
 		if (!function_name || !*function_name)
@@ -178,8 +180,8 @@ char *engine_get_callees(uint64_t project_id, const char *function_name)
 		if (!g_query)
 			return dupString(
 				"{\"total\":0,\"callees\":[],\"error\":\"not initialized\"}");
-		return dupString(
-			g_query->getCallees(project_id, function_name));
+		return dupString(g_query->getCallees(project_id, function_name,
+						     file_filter));
 	} catch (const std::exception &e) {
 		return dupString(
 			std::string(

@@ -172,7 +172,7 @@ int main() {
 	      "main must call buildGraph (gs.method() edge)");
 
 	// ── Assertion 5: engine_get_callees(buildGraph) ─────────────
-	char *callees_bg = engine_get_callees(cpp_pid, "buildGraph");
+	char *callees_bg = engine_get_callees(cpp_pid, "buildGraph", nullptr);
 	check(callees_bg != nullptr, "get_callees(buildGraph) non-null");
 	check(strstr(callees_bg, "buildCallEdgesSQL") != nullptr,
 	      "get_callees(buildGraph) must contain buildCallEdgesSQL");
@@ -180,7 +180,7 @@ int main() {
 
 	// ── Assertion 6: engine_get_callers(buildCallEdgesSQL) ──────
 	char *callers_bces =
-		engine_get_callers(cpp_pid, "buildCallEdgesSQL");
+		engine_get_callers(cpp_pid, "buildCallEdgesSQL", nullptr);
 	check(callers_bces != nullptr,
 	      "get_callers(buildCallEdgesSQL) non-null");
 	check(strstr(callers_bces, "buildGraph") != nullptr,
@@ -249,7 +249,7 @@ class Worker:
 	      "run must call compute (self.method() intra-file edge)");
 
 	// ── Assertion 8: engine_get_callees(run) ────────────────────
-	char *callees_run = engine_get_callees(py_pid, "run");
+	char *callees_run = engine_get_callees(py_pid, "run", nullptr);
 	check(callees_run != nullptr, "get_callees(run) non-null");
 	check(strstr(callees_run, "compute") != nullptr,
 	      "get_callees(run) must contain compute");

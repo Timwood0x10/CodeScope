@@ -105,8 +105,16 @@ unsafe extern "C" {
     // ── Phase C: Unified MCP Tools ───────────────────────────────
 
     fn engine_unified_search(project_id: u64, query: *const c_char, limit: i32) -> *mut c_char;
-    fn engine_find_callers_adaptive(project_id: u64, symbol_name: *const c_char) -> *mut c_char;
-    fn engine_find_callees_adaptive(project_id: u64, symbol_name: *const c_char) -> *mut c_char;
+    fn engine_find_callers_adaptive(
+        project_id: u64,
+        symbol_name: *const c_char,
+        file_filter: *const c_char,
+    ) -> *mut c_char;
+    fn engine_find_callees_adaptive(
+        project_id: u64,
+        symbol_name: *const c_char,
+        file_filter: *const c_char,
+    ) -> *mut c_char;
     fn engine_get_entry_points_new(project_id: u64) -> *mut c_char;
     fn engine_get_type_info(project_id: u64, type_name_filter: *const c_char) -> *mut c_char;
     fn engine_get_routes(project_id: u64) -> *mut c_char;
@@ -470,12 +478,26 @@ pub fn unified_search(project_id: u64, query: &str, limit: i32) -> String {
     take_string(unsafe { engine_unified_search(project_id, cstr(query).as_ptr(), limit) })
 }
 
-pub fn find_callers_adaptive(project_id: u64, symbol_name: &str) -> String {
-    take_string(unsafe { engine_find_callers_adaptive(project_id, cstr(symbol_name).as_ptr()) })
+pub fn find_callers_adaptive(
+    project_id: u64,
+    symbol_name: &str,
+    file_filter: Option<&str>,
+) -> String {
+    let ff = file_filter.unwrap_or("");
+    take_string(unsafe {
+        engine_find_callers_adaptive(project_id, cstr(symbol_name).as_ptr(), cstr(ff).as_ptr())
+    })
 }
 
-pub fn find_callees_adaptive(project_id: u64, symbol_name: &str) -> String {
-    take_string(unsafe { engine_find_callees_adaptive(project_id, cstr(symbol_name).as_ptr()) })
+pub fn find_callees_adaptive(
+    project_id: u64,
+    symbol_name: &str,
+    file_filter: Option<&str>,
+) -> String {
+    let ff = file_filter.unwrap_or("");
+    take_string(unsafe {
+        engine_find_callees_adaptive(project_id, cstr(symbol_name).as_ptr(), cstr(ff).as_ptr())
+    })
 }
 
 pub fn get_entry_points_new(project_id: u64) -> String {

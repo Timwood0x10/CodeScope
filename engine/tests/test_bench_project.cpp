@@ -204,11 +204,11 @@ int main(int argc, char **argv) {
         q_search_semantic = elapsed_ms(t0); engine_free_string(r);
     }
     {
-        t0 = Clock::now(); char *r = engine_get_callers(pid, "onRequest");
+        t0 = Clock::now(); char *r = engine_get_callers(pid, "onRequest", nullptr);
         q_callers = elapsed_ms(t0); engine_free_string(r);
     }
     {
-        t0 = Clock::now(); char *r = engine_get_callees(pid, "onRequest");
+        t0 = Clock::now(); char *r = engine_get_callees(pid, "onRequest", nullptr);
         q_callees = elapsed_ms(t0); engine_free_string(r);
     }
     {

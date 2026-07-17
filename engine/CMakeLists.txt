@@ -190,6 +190,7 @@ set(ENGINE_SOURCES
     src/ir/ir_translator.cpp
     src/ir/semantic_unit.cpp
     src/ir/semantic_emitter.cpp
+    src/ir/builtin_registry.cpp
     src/ir/translators/python_translator.cpp
     src/ir/translators/go_translator.cpp
     src/ir/translators/c_translator.cpp

@@ -38,7 +38,7 @@ static void benchRefs(const char* label, uint64_t pid, const char* name) {
 
 static void benchCallers(const char* label, uint64_t pid, const char* name) {
     auto q0 = Clock::now();
-    char* r = engine_get_callers(pid, name);
+    char* r = engine_get_callers(pid, name, nullptr);
     double ms = elapsed(q0);
     printf("query[callers/%s]: %.3f ms, chars=%zu\n", label, ms, strlen(r));
     engine_free_string(r);
@@ -46,7 +46,7 @@ static void benchCallers(const char* label, uint64_t pid, const char* name) {
 
 static void benchCallees(const char* label, uint64_t pid, const char* name) {
     auto q0 = Clock::now();
-    char* r = engine_get_callees(pid, name);
+    char* r = engine_get_callees(pid, name, nullptr);
     double ms = elapsed(q0);
     printf("query[callees/%s]: %.3f ms, chars=%zu\n", label, ms, strlen(r));
     engine_free_string(r);

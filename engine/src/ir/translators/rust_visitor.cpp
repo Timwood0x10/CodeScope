@@ -1,6 +1,7 @@
 #include "rust_visitor.h"
 #include <cstring>
 #include <tree_sitter/api.h>
+#include "../builtin_registry.h"
 namespace ir
 {
 
@@ -283,8 +284,14 @@ void RustVisitor::handleCall(TSNode node, uint64_t parent_id)
 	// buildCallEdgesSQL (JOIN on ref_original_id > 0).
 	if (!name.empty()) {
 		uint64_t target = resolveSymbol(name);
-		if (target)
+		if (target) {
 			unit_->setCallReference(id, target);
+			unit_->setCallStrategy(id, "p1_intra");
+		} else {
+			unit_->setCallStrategy(
+				id, BuiltinRegistry::resolve(unit_->language(),
+							     name));
+		}
 	}
 
 	// Recurse into children — skip identifier/field_expression/scoped_identifier

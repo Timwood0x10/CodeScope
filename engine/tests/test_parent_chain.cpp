@@ -84,7 +84,8 @@ def create_evolution_timeline():
 	// Expected: add_trace (intra-file edge via P1).
 	// Before fix: only 0 or 1 edge, missing add_trace.
 	char *callees = engine_get_callees(pid,
-					   "create_evolution_timeline");
+					   "create_evolution_timeline",
+					   nullptr);
 	check(callees != nullptr, "get_callees null");
 	printf("--- callees(create_evolution_timeline) ---\n%s\n",
 	       callees);

@@ -53,7 +53,7 @@ int main(int argc, char **argv) {
     printf("\n─── Callers (Router -> pages) ───\n");
     const char *calls[] = {"Home", "Attention", "Math"};
     for (auto name : calls) {
-        char *c = engine_get_callers(pid, name);
+        char *c = engine_get_callers(pid, name, nullptr);
         printf("  callers[%s]: %s\n", name, c);
         engine_free_string(c);
     }

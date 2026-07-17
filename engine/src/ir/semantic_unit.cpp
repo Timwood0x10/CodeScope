@@ -126,4 +126,14 @@ bool SemanticUnit::setCallKind(uint64_t record_id, int kind)
 	return true;
 }
 
+bool SemanticUnit::setCallStrategy(uint64_t record_id,
+				   const std::string &strategy)
+{
+	auto it = id_to_index_.find(record_id);
+	if (it == id_to_index_.end())
+		return false;
+	records_[it->second].resolve_strategy = strategy;
+	return true;
+}
+
 } // namespace ir

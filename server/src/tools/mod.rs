@@ -557,12 +557,14 @@ fn h_search(project_id: u64, args: &Value) -> String {
 
 fn h_find_callers(project_id: u64, args: &Value) -> String {
     let name = args["symbol_name"].as_str().unwrap_or("");
-    ffi::find_callers_adaptive(project_id, name)
+    let ff = args["file_filter"].as_str();
+    ffi::find_callers_adaptive(project_id, name, ff)
 }
 
 fn h_find_callees(project_id: u64, args: &Value) -> String {
     let name = args["symbol_name"].as_str().unwrap_or("");
-    ffi::find_callees_adaptive(project_id, name)
+    let ff = args["file_filter"].as_str();
+    ffi::find_callees_adaptive(project_id, name, ff)
 }
 
 // ── Graph path + component tools ───────────────────────────────
@@ -1093,7 +1095,8 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "symbol_name": {"type": "string", "description": "Name of the symbol to find callers for"}
+                    "symbol_name": {"type": "string", "description": "Name of the symbol to find callers for"},
+                    "file_filter": {"type": "string", "description": "Optional: absolute file path. Restricts the callee to the given file, disambiguating homonyms (same name across files/classes, e.g. __init__, run, main). Empty = aggregate all files (legacy behavior, may produce noise on common names)."}
                 },
                 "required": ["symbol_name"]
             }),
@@ -1104,7 +1107,8 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "symbol_name": {"type": "string", "description": "Name of the symbol to find callees for"}
+                    "symbol_name": {"type": "string", "description": "Name of the symbol to find callees for"},
+                    "file_filter": {"type": "string", "description": "Optional: absolute file path. Restricts the caller to the given file, disambiguating homonyms. See find_callers doc."}
                 },
                 "required": ["symbol_name"]
             }),

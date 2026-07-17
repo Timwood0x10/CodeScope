@@ -784,6 +784,7 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 				       -1, &probe, nullptr) == SQLITE_OK) {
 			bool has_type_name = false;
 			bool has_call_kind = false;
+			bool has_resolve_strategy = false;
 			while (sqlite3_step(probe) == SQLITE_ROW) {
 				const char *col =
 					reinterpret_cast<const char *>(
@@ -793,6 +794,9 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 						has_type_name = true;
 					if (std::string(col) == "call_kind")
 						has_call_kind = true;
+					if (std::string(col) ==
+					    "resolve_strategy")
+						has_resolve_strategy = true;
 				}
 			}
 			sqlite3_finalize(probe);
@@ -803,6 +807,11 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 			if (!has_call_kind) {
 				exec("ALTER TABLE semantic_records "
 				     "ADD COLUMN call_kind INTEGER DEFAULT 0");
+			}
+			if (!has_resolve_strategy) {
+				exec("ALTER TABLE semantic_records "
+				     "ADD COLUMN resolve_strategy "
+				     "TEXT DEFAULT ''");
 			}
 		}
 
@@ -931,6 +940,32 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 				     "ADD COLUMN parent_id INTEGER DEFAULT 0");
 				exec("CREATE INDEX IF NOT EXISTS idx_gn_parent "
 				     "ON graph_nodes(project_id, parent_id)");
+			}
+		}
+	}
+
+	// Migration: add resolve_strategy column to graph_edges (v0.9+)
+	// Stores the resolution strategy for each call edge:
+	// "p1_intra" = intra-file resolved, "p3_name" = cross-file name match,
+	// "external" = known builtin/third-party, "unresolved" = unknown.
+	{
+		sqlite3_stmt *probe = nullptr;
+		if (sqlite3_prepare_v2(db_, "PRAGMA table_info(graph_edges)",
+				       -1, &probe, nullptr) == SQLITE_OK) {
+			bool has_rs = false;
+			while (sqlite3_step(probe) == SQLITE_ROW) {
+				const char *col =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(probe, 1));
+				if (col &&
+				    std::string(col) == "resolve_strategy")
+					has_rs = true;
+			}
+			sqlite3_finalize(probe);
+			if (!has_rs) {
+				exec("ALTER TABLE graph_edges "
+				     "ADD COLUMN resolve_strategy "
+				     "TEXT DEFAULT ''");
 			}
 		}
 	}

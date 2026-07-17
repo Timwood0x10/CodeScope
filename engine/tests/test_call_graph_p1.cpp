@@ -70,14 +70,14 @@ int main() {
 	engine_free_string(idx);
 
 	// Verify callees of main include helper
-	char *callees = engine_get_callees(pid, "main");
+	char *callees = engine_get_callees(pid, "main", nullptr);
 	printf("--- Callees of main ---\n%s\n", callees);
 	check(strstr(callees, "helper") != nullptr,
 	      "main should call helper (P1 intra-file edge)");
 	engine_free_string(callees);
 
 	// Verify callers of helper include main
-	char *callers = engine_get_callers(pid, "helper");
+	char *callers = engine_get_callers(pid, "helper", nullptr);
 	printf("--- Callers of helper ---\n%s\n", callers);
 	check(strstr(callers, "main") != nullptr,
 	      "helper should be called by main (P1 intra-file edge)");

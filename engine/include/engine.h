@@ -41,8 +41,10 @@ char *engine_find_definition(uint64_t project_id, const char *symbol_name,
 			     const char *file_filter);
 char *engine_find_references(uint64_t project_id, const char *symbol_name,
 			     const char *file_filter);
-char *engine_get_callers(uint64_t project_id, const char *function_name);
-char *engine_get_callees(uint64_t project_id, const char *function_name);
+char *engine_get_callers(uint64_t project_id, const char *function_name,
+			 const char *file_filter);
+char *engine_get_callees(uint64_t project_id, const char *function_name,
+			 const char *file_filter);
 char *engine_get_neighbors(uint64_t project_id, uint64_t node_id,
 			   int edge_type_filter, int radius);
 char *engine_find_shortest_path(uint64_t project_id, uint64_t source_id,
@@ -216,16 +218,27 @@ char *engine_unified_search(uint64_t project_id, const char *query, int limit);
 /**
  * Find callers (adaptive): uses new call_edges table if callgraph_ready,
  * otherwise falls back to old graph query engine.
+ *
+ * @param file_filter Optional absolute file path. When non-NULL,
+ *        restricts the callee to the given file, disambiguating
+ *        homonyms (same name across files/classes). NULL = aggregate
+ *        all files (legacy behavior).
  */
 char *engine_find_callers_adaptive(uint64_t project_id,
-				   const char *symbol_name);
+				   const char *symbol_name,
+				   const char *file_filter);
 
 /**
  * Find callees (adaptive): uses new call_edges table if callgraph_ready,
  * otherwise falls back to old graph query engine.
+ *
+ * @param file_filter Optional absolute file path. When non-NULL,
+ *        restricts the caller to the given file, disambiguating
+ *        homonyms. NULL = aggregate all files (legacy behavior).
  */
 char *engine_find_callees_adaptive(uint64_t project_id,
-				   const char *symbol_name);
+				   const char *symbol_name,
+				   const char *file_filter);
 
 /**
  * Get entry points from the new schema.

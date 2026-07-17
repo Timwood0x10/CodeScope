@@ -43,8 +43,9 @@ void GraphStore::insertSemanticRecords(uint64_t project_id,
 		"INSERT INTO semantic_records "
 		"(original_id, project_id, kind, name, qualified_name, parent_id, "
 		" ref_original_id, arity, is_static, type_name, call_kind,"
+		" resolve_strategy,"
 		" start_row, start_col, end_row, end_col, file_path, language) "
-		"VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+		"VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -74,13 +75,15 @@ void GraphStore::insertSemanticRecords(uint64_t project_id,
 		sqlite3_bind_text(stmt, 10, r.type_name.c_str(), -1,
 				  SQLITE_STATIC);
 		sqlite3_bind_int(stmt, 11, static_cast<int>(r.call_kind));
-		sqlite3_bind_int(stmt, 12, static_cast<int>(r.loc.start_row));
-		sqlite3_bind_int(stmt, 13, static_cast<int>(r.loc.start_col));
-		sqlite3_bind_int(stmt, 14, static_cast<int>(r.loc.end_row));
-		sqlite3_bind_int(stmt, 15, static_cast<int>(r.loc.end_col));
-		sqlite3_bind_text(stmt, 16, r.file_path.c_str(), -1,
+		sqlite3_bind_text(stmt, 12, r.resolve_strategy.c_str(), -1,
 				  SQLITE_STATIC);
-		sqlite3_bind_text(stmt, 17, r.language.c_str(), -1,
+		sqlite3_bind_int(stmt, 13, static_cast<int>(r.loc.start_row));
+		sqlite3_bind_int(stmt, 14, static_cast<int>(r.loc.start_col));
+		sqlite3_bind_int(stmt, 15, static_cast<int>(r.loc.end_row));
+		sqlite3_bind_int(stmt, 16, static_cast<int>(r.loc.end_col));
+		sqlite3_bind_text(stmt, 17, r.file_path.c_str(), -1,
+				  SQLITE_STATIC);
+		sqlite3_bind_text(stmt, 18, r.language.c_str(), -1,
 				  SQLITE_STATIC);
 
 		int rc = sqlite3_step(stmt);
@@ -107,7 +110,7 @@ void GraphStore::insertSemanticRecordsBatch(
 
 	constexpr size_t kBatchSize = 500;
 	constexpr int kColsPerRow =
-		14; // 14 columns in semantic_records (incl. type_name)
+		15; // 15 columns in semantic_records (added resolve_strategy)
 
 	// Step 1: Flatten records into a contiguous vector for efficient batching.
 	// Each element stores (file_path, record_index) to reference the original.
@@ -135,12 +138,13 @@ void GraphStore::insertSemanticRecordsBatch(
 				  "(original_id, project_id, kind, name, "
 				  "qualified_name, parent_id, ref_original_id, "
 				  "arity, is_static, type_name, call_kind, "
+				  "resolve_strategy, "
 				  "start_row, start_col, end_row, end_col, "
 				  "file_path, language) VALUES ";
 		for (size_t i = 0; i < batch; i++) {
 			if (i > 0)
 				sql += ",";
-			sql += "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+			sql += "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 		}
 
 		sqlite3_stmt *stmt = nullptr;
@@ -193,18 +197,21 @@ void GraphStore::insertSemanticRecordsBatch(
 					  -1, SQLITE_STATIC);
 			sqlite3_bind_int(stmt, base + 11,
 					 static_cast<int>(r.call_kind));
-			sqlite3_bind_int(stmt, base + 12,
-					 static_cast<int>(r.loc.start_row));
+			sqlite3_bind_text(stmt, base + 12,
+					  r.resolve_strategy.c_str(), -1,
+					  SQLITE_STATIC);
 			sqlite3_bind_int(stmt, base + 13,
-					 static_cast<int>(r.loc.start_col));
+					 static_cast<int>(r.loc.start_row));
 			sqlite3_bind_int(stmt, base + 14,
-					 static_cast<int>(r.loc.end_row));
+					 static_cast<int>(r.loc.start_col));
 			sqlite3_bind_int(stmt, base + 15,
+					 static_cast<int>(r.loc.end_row));
+			sqlite3_bind_int(stmt, base + 16,
 					 static_cast<int>(r.loc.end_col));
-			sqlite3_bind_text(stmt, base + 16,
+			sqlite3_bind_text(stmt, base + 17,
 					  fr.file_path->c_str(), -1,
 					  SQLITE_STATIC);
-			sqlite3_bind_text(stmt, base + 17, r.language.c_str(),
+			sqlite3_bind_text(stmt, base + 18, r.language.c_str(),
 					  -1, SQLITE_STATIC);
 		}
 
@@ -236,8 +243,9 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 		"INSERT INTO semantic_records "
 		"(original_id, project_id, kind, name, qualified_name, parent_id, "
 		" ref_original_id, arity, is_static, type_name, call_kind,"
+		" resolve_strategy,"
 		" start_row, start_col, end_row, end_col, file_path, language) "
-		"VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+		"VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 	sqlite3_stmt *sr_st = nullptr;
 	if (sqlite3_prepare_v2(db_, sr_sql, -1, &sr_st, nullptr) != SQLITE_OK) {
 		error_ =
@@ -332,12 +340,13 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 				"(original_id, project_id, kind, name, "
 				"qualified_name, parent_id, "
 				"ref_original_id, arity, is_static, type_name, call_kind, "
+				"resolve_strategy, "
 				"start_row, start_col, end_row, end_col, "
 				"file_path, language) VALUES ";
 			for (size_t i = 0; i < batch_sz; i++) {
 				if (i > 0)
 					sql += ",";
-				sql += "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+				sql += "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 			}
 
 			sqlite3_stmt *batch_st = nullptr;
@@ -345,7 +354,7 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 					       nullptr) == SQLITE_OK) {
 				for (size_t i = 0; i < batch_sz; i++) {
 					auto &r = *all_recs[off + i].rec;
-					int base = static_cast<int>(i * 17);
+					int base = static_cast<int>(i * 18);
 					sqlite3_bind_int64(
 						batch_st, base + 1,
 						static_cast<int64_t>(r.id));
@@ -388,27 +397,31 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 					sqlite3_bind_int(
 						batch_st, base + 11,
 						static_cast<int>(r.call_kind));
-					sqlite3_bind_int(
+					sqlite3_bind_text(
 						batch_st, base + 12,
-						static_cast<int>(
-							r.loc.start_row));
+						r.resolve_strategy.c_str(), -1,
+						SQLITE_STATIC);
 					sqlite3_bind_int(
 						batch_st, base + 13,
 						static_cast<int>(
-							r.loc.start_col));
+							r.loc.start_row));
 					sqlite3_bind_int(
 						batch_st, base + 14,
 						static_cast<int>(
-							r.loc.end_row));
+							r.loc.start_col));
 					sqlite3_bind_int(
 						batch_st, base + 15,
 						static_cast<int>(
+							r.loc.end_row));
+					sqlite3_bind_int(
+						batch_st, base + 16,
+						static_cast<int>(
 							r.loc.end_col));
 					sqlite3_bind_text(
-						batch_st, base + 16,
+						batch_st, base + 17,
 						all_recs[off + i].file->c_str(),
 						-1, SQLITE_STATIC);
-					sqlite3_bind_text(batch_st, base + 17,
+					sqlite3_bind_text(batch_st, base + 18,
 							  r.language.c_str(),
 							  -1, SQLITE_STATIC);
 				}

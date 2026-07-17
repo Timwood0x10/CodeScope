@@ -141,7 +141,7 @@ int main()
 
 	// ── Check 5: sample some known functions to verify edges ──
 	// engine_get_callees on a known function
-	char *callees = engine_get_callees(pid, "buildCallEdgesSQL");
+	char *callees = engine_get_callees(pid, "buildCallEdgesSQL", nullptr);
 	if (callees) {
 		printf("--- Callees of buildCallEdgesSQL ---\n%s\n",
 		       callees);
@@ -152,7 +152,7 @@ int main()
 	}
 
 	// ── Check 6: find_callers on a known function ──
-	char *callers = engine_get_callers(pid, "buildCallEdgesSQL");
+	char *callers = engine_get_callers(pid, "buildCallEdgesSQL", nullptr);
 	if (callers) {
 		printf("--- Callers of buildCallEdgesSQL ---\n%s\n",
 		       callers);
