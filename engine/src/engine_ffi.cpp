@@ -129,28 +129,38 @@ char *engine_get_knowledge_graph(uint64_t project_id, const char *table_name,
 		// This prevents SQL injection via the table_name parameter.
 		struct TableSpec {
 			const char *name;
-			const char *select; // hard-coded column list, no user input
+			const char *
+				select; // hard-coded column list, no user input
 		};
 		static const TableSpec kTables[] = {
-			{"entity", "SELECT id, name, qualified_name, kind, "
-				   "file_path, start_row, start_col FROM entity "
-				   "WHERE project_id=? ORDER BY id LIMIT ?"},
-			{"relation", "SELECT id, source_id, target_id, type "
+			{ "entity",
+			  "SELECT id, name, qualified_name, kind, "
+			  "file_path, start_row, start_col FROM entity "
+			  "WHERE project_id=? ORDER BY id LIMIT ?" },
+			{ "relation", "SELECT id, source_id, target_id, type "
 				      "FROM relation WHERE project_id=? "
-				      "ORDER BY id LIMIT ?"},
-			{"architecture_edge", "SELECT id, layer_lower, layer_upper, "
-					      "entity_id FROM architecture_edge "
-					      "WHERE project_id=? ORDER BY id LIMIT ?"},
-			{"module_edge", "SELECT id, src_module, tgt_module, "
-					"weight FROM module_edge "
-					"WHERE project_id=? ORDER BY id LIMIT ?"},
-			{"capability", "SELECT id, name, summary FROM capability "
-				       "WHERE project_id=? ORDER BY id LIMIT ?"},
-			{"document", "SELECT id, path, kind FROM document "
-				     "WHERE project_id=? ORDER BY id LIMIT ?"},
-			{"module_summary", "SELECT id, module_path, summary "
-					   "FROM module_summary "
-					   "WHERE project_id=? ORDER BY id LIMIT ?"},
+				      "ORDER BY id LIMIT ?" },
+			{ "architecture_edge",
+			  "SELECT id, layer_lower, layer_upper, "
+			  "entity_id FROM architecture_edge "
+			  "WHERE project_id=? ORDER BY id LIMIT ?" },
+			{ "module_edge",
+			  "SELECT id, src_module, tgt_module, "
+			  "edge_count FROM module_edge "
+			  "WHERE project_id=? ORDER BY id LIMIT ?" },
+			{ "capability",
+			  "SELECT id, name, summary FROM capability "
+			  "WHERE project_id=? ORDER BY id LIMIT ?" },
+			{ "document",
+			  "SELECT id, type, file_path, start_line, end_line "
+			  "FROM document "
+			  "WHERE project_id=? ORDER BY id LIMIT ?" },
+			{ "module_summary",
+			  "SELECT id, module_id, state, incoming_count, "
+			  "outgoing_count, internal_edges, "
+			  "dead_entities, utilization, confidence "
+			  "FROM module_summary "
+			  "WHERE project_id=? ORDER BY id LIMIT ?" },
 		};
 		const TableSpec *spec = nullptr;
 		for (const auto &t : kTables) {
@@ -160,8 +170,9 @@ char *engine_get_knowledge_graph(uint64_t project_id, const char *table_name,
 			}
 		}
 		if (!spec) {
-			std::string err = "{\"error\":\"[module=ffi, "
-			    "method=engine_get_knowledge_graph] unknown table '";
+			std::string err =
+				"{\"error\":\"[module=ffi, "
+				"method=engine_get_knowledge_graph] unknown table '";
 			err += table_name;
 			err += "'. Supported: entity, relation, architecture_edge, "
 			       "module_edge, capability, document, module_summary\"}";
@@ -174,8 +185,8 @@ char *engine_get_knowledge_graph(uint64_t project_id, const char *table_name,
 
 		sqlite3 *db = g_store->handle();
 		sqlite3_stmt *stmt = nullptr;
-		if (sqlite3_prepare_v2(db, spec->select, -1, &stmt,
-				       nullptr) != SQLITE_OK) {
+		if (sqlite3_prepare_v2(db, spec->select, -1, &stmt, nullptr) !=
+		    SQLITE_OK) {
 			fprintf(stderr,
 				"[module=ffi, method=engine_get_knowledge_graph] "
 				"prepare failed for table '%s': %s\n",
@@ -203,19 +214,23 @@ char *engine_get_knowledge_graph(uint64_t project_id, const char *table_name,
 				json += '"';
 				json += cn;
 				json += "\":";
-				if (sqlite3_column_type(stmt, c) == SQLITE_NULL) {
+				if (sqlite3_column_type(stmt, c) ==
+				    SQLITE_NULL) {
 					json += "null";
 					continue;
 				}
 				// Numeric columns emit bare numbers; text columns
 				// get JSON-escaped via jsonEscape to stay safe
 				// against names containing quotes / newlines.
-				if (sqlite3_column_type(stmt, c) == SQLITE_INTEGER) {
+				if (sqlite3_column_type(stmt, c) ==
+				    SQLITE_INTEGER) {
 					json += std::to_string(
 						sqlite3_column_int64(stmt, c));
 				} else {
-					const char *t = reinterpret_cast<const char *>(
-						sqlite3_column_text(stmt, c));
+					const char *t =
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								stmt, c));
 					json += '"';
 					json += jsonEscape(t ? t : "");
 					json += '"';

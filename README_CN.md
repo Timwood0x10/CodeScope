@@ -41,13 +41,31 @@ CodeScope 是一个 **Project Truth Engine**，回答一个问题：
 
 ### 知识图谱（副产品）
 
-CodeScope 把知识图谱作为验证管线的副产品来构建。从模块级开始，逐步扩展到项目级：
+CodeScope 把知识图谱作为验证管线的副产品来构建。它学到的不是「代码文本」，而是*结构化的「这个项目怎么组织、哪重要、哪冗余、承诺了啥」*——四层叠加：
 
-- **模块图**：模块内的实体、引用、导入关系
-- **跨模块图**：模块间的调用边、依赖边
-- **项目图**：架构层、工作流、能力
+| 层 | 表 | 告诉你什么 |
+|----|----|-----------|
+| **调用图**（谁调谁） | `relation`（type=1）、`architecture_edge` | 跨模块调用依赖；驱动 `detect_architecture_drift` |
+| **模块健康度**（谁重要/谁有死代码） | `module_summary` | 每模块 `incoming_count`/`outgoing_count`/`dead_entities`/`utilization`/`confidence`；驱动 `explain_module` |
+| **模块依赖**（改了影响谁） | `architecture_edge`（边权=调用次数）、`module_edge` | 「改模块 A → 这些模块依赖它」 |
+| **文档能力**（声称能干嘛） | `capability` + `document` | 从 README 提取的能力声明；驱动 `detect_capability_drift` / `verify_claim` |
 
 知识图谱不是产品，是支撑验证的基础设施。
+
+#### 诚实局限：`module_summary.role` 是机械分类，不是语义角色
+
+`role` 列**有被自动填充**——但靠的是 `engine/src/model/state_builder.cpp` 里的机械 CASE 分类器，不是真语义理解。它凭路径子串 + 度数阈值判断：
+
+| Role | 规则 |
+|------|------|
+| `example` | 路径含 `/examples/` 或 `/example/` |
+| `entry` | 請径含 `/cmd/` |
+| `api` | 請径含 `/api/` |
+| `tool` | `incoming ≥ 10 AND outgoing ≤ 5 AND total ≤ 20` |
+| `business` | `incoming ≥ 5 AND outgoing ≥ 5` |
+| `infra` | 其余全部（兜底） |
+
+所以当某模块落在 `infra` 只是因为没命中任何路径关键字 + 度数模式没撞上 `tool`/`business`，这个标莶反映的是「没命中任何机械规则」，不是已验证的 infra 角色。结构化指标（`utilization`/`dead_entities`/`incoming`/`outgoing`）是硬的；`role` 标莶是启发式。请把 `role` 当线索，不当判决。
 
 #### 知识图谱里落了什么（memscope-rs，215 文件）
 
@@ -71,14 +89,14 @@ CodeScope 把知识图谱作为验证管线的副产品来构建。从模块级�
 
 过去知识图谱是**隐式**的——`graph_query` 走的是*调用*图（`graph_nodes` / `graph_edges`），不是知识层表（`entity` / `relation` / `architecture_edge`）。你只能通过 `explain_module`、`detect_capability_drift`、`get_module_tree` 间接受益。
 
-v0.2.1 新增 `engine_get_knowledge_graph(project_id, table, limit)` + MCP 工具 `codescope_knowledge_graph`，现在可**直接浏览**任意知识层表：
+v0.2.1 新增 `engine_get_knowledge_graph(project_id, table, limit)` + MCP 工具 `get_knowledge_graph`，现在可**直接浏览**任意知识层表：
 
 ```jsonc
-codescope_knowledge_graph {"table":"architecture_edge","limit":5}
-// → [{"src_module":"analysis/heap_scanner","tgt_module":"unsafe_inference","weight":17}, ...]
+get_knowledge_graph {"table":"architecture_edge","limit":5}
+// → {"table":"architecture_edge","rows":[{"id":1,"layer_lower":"analysis/heap_scanner","layer_upper":"unsafe_inference","entity_id":42}],"total":3351,"truncated":false}
 
-codescope_knowledge_graph {"table":"capability","limit":10}
-// → [{"name":"borrow_analysis","source":"README.md","line":42}, ...]
+get_knowledge_graph {"table":"capability","limit":10}
+// → {"table":"capability","rows":[{"id":1,"name":"borrow_analysis","summary":"scope-aware borrow checking"}],"total":3,"truncated":false}
 ```
 
 支持表：`entity`、`relation`、`architecture_edge`、`module_edge`、`capability`、`document`、`module_summary`。块级 FFI——单次调用返回整个结果集，绝不一条边一次调用。
@@ -91,7 +109,7 @@ codescope_knowledge_graph {"table":"capability","limit":10}
 
 ```bash
 # 1. 一键构建（自动检测系统、安装依赖、编译）
-bash <(curl -fsSL https://raw.githubusercontent.com/Timwood0x10/CodeScope/master/bootstrap.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/Timwood0x10/CodeScope/main/bootstrap.sh)
 
 # 2. 索引项目
 codescope cli index_project '{"project_path":"/path/to/your/project"}'
@@ -329,16 +347,6 @@ Apache 2.0
 | `index_project` | 索引整个项目目录（解析+IR+图构建） | **N/A** |
 | `index_file` | 索引单个源文件 | **N/A** |
 | `count_tokens` | 估算文本的 token 数（DeepSeek 公式） | **~10** |
-
-### 不再存在的工具
-
-以下工具曾在旧版 README 中出现，但**实际代码中不存在**，不要使用：
-
-- ❌ `get_hotspots` — 未实现
-- ❌ `get_communities` — 社区检测未接入 MCP
-- ❌ `locate_code` — 未实现
-- ❌ `get_project_info` — 未实现
-- ❌ `enhance_project` / `codescope_build_context` / `codescope_capabilities` — 已移除
 
 ### 总结选择策略
 

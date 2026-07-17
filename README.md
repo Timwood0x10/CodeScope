@@ -41,13 +41,31 @@ Not "what does this code mean", but "does the code actually do what you claim?"
 
 ### Knowledge Graph (Side Product)
 
-CodeScope builds a **module-level knowledge graph** as a side product of the verification pipeline. Starting from individual modules and scaling to the entire project, it provides:
+CodeScope builds a **module-level knowledge graph** as a side product of the verification pipeline. It learns not "code text" but *structured "how this project is organized, what's important, what's redundant, what it promises"* — a four-layer stack:
 
-- **Module graph**: entities, references, imports within a module
-- **Cross-module graph**: call edges, dependency edges between modules  
-- **Project graph**: architecture layers, workflows, capabilities
+| Layer | Table | What it tells you |
+|-------|-------|-------------------|
+| **Call graph** (who calls who) | `relation` (type=1), `architecture_edge` | Cross-module call dependencies; drives `detect_architecture_drift` |
+| **Module health** (who's important / who's dead) | `module_summary` | Per-module `incoming_count` / `outgoing_count` / `dead_entities` / `utilization` / `confidence`; drives `explain_module` |
+| **Module dependency** (who impacts whom) | `architecture_edge` (edge weight = call count), `module_edge` | "Change module A → these modules depend on it" |
+| **Documented capability** (what it claims it can do) | `capability` + `document` | README-extracted capabilities; drives `detect_capability_drift` / `verify_claim` |
 
 The knowledge graph is not the product — it is the infrastructure that powers verification.
+
+#### Honest limitation: `module_summary.role` is mechanical, not semantic
+
+The `role` column **is** auto-populated — but by a mechanical CASE classifier (`engine/src/model/state_builder.cpp`), not by true semantic understanding. It keys on path substrings + degree thresholds:
+
+| Role | Rule |
+|------|------|
+| `example` | path contains `/examples/` or `/example/` |
+| `entry` | path contains `/cmd/` |
+| `api` | path contains `/api/` |
+| `tool` | `incoming ≥ 10 AND outgoing ≤ 5 AND total ≤ 20` |
+| `business` | `incoming ≥ 5 AND outgoing ≥ 5` |
+| `infra` | everything else (fallback) |
+
+So when a module falls into `infra` because no path keyword matched and its degree pattern didn't hit `tool`/`business`, the label reflects "didn't match any mechanical rule", not a verified infra role. The structured metrics (`utilization`, `dead_entities`, `incoming/outgoing`) are solid; the `role` label is heuristic. Treat `role` as a hint, not a verdict.
 
 #### What lands in the knowledge graph (memscope-rs, 215 files)
 
@@ -71,14 +89,14 @@ What you can learn from it:
 
 The knowledge graph used to be **implicit** — `graph_query` walks the *call* graph (`graph_nodes` / `graph_edges`), not the knowledge-layer tables (`entity` / `relation` / `architecture_edge`). You benefited from it only indirectly via `explain_module`, `detect_capability_drift`, `get_module_tree`.
 
-v0.2.1 adds `engine_get_knowledge_graph(project_id, table, limit)` + the MCP tool `codescope_knowledge_graph` so you can now **directly browse** any knowledge-layer table:
+v0.2.1 adds `engine_get_knowledge_graph(project_id, table, limit)` + the MCP tool `get_knowledge_graph` so you can now **directly browse** any knowledge-layer table:
 
 ```jsonc
-codescope_knowledge_graph {"table":"architecture_edge","limit":5}
-// → [{"src_module":"analysis/heap_scanner","tgt_module":"unsafe_inference","weight":17}, ...]
+get_knowledge_graph {"table":"architecture_edge","limit":5}
+// → {"table":"architecture_edge","rows":[{"id":1,"layer_lower":"analysis/heap_scanner","layer_upper":"unsafe_inference","entity_id":42}],"total":3351,"truncated":false}
 
-codescope_knowledge_graph {"table":"capability","limit":10}
-// → [{"name":"borrow_analysis","source":"README.md","line":42}, ...]
+get_knowledge_graph {"table":"capability","limit":10}
+// → {"table":"capability","rows":[{"id":1,"name":"borrow_analysis","summary":"scope-aware borrow checking"}],"total":3,"truncated":false}
 ```
 
 Supported tables: `entity`, `relation`, `architecture_edge`, `module_edge`, `capability`, `document`, `module_summary`. Block-level FFI — one call returns the whole result set, never one row per call.

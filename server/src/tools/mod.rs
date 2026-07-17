@@ -549,7 +549,8 @@ fn h_get_module_tree(project_id: u64, _args: &Value) -> String {
 fn h_get_knowledge_graph(project_id: u64, args: &Value) -> String {
     let table = args["table"].as_str().unwrap_or("");
     if table.is_empty() {
-        return json!({"error": "table field is required [module=mcp, tool=get_knowledge_graph]"}).to_string();
+        return json!({"error": "table field is required [module=mcp, tool=get_knowledge_graph]"})
+            .to_string();
     }
     let limit = args["limit"].as_i64().unwrap_or(100) as i32;
     ffi::get_knowledge_graph(project_id, table, limit)

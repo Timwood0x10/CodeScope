@@ -497,9 +497,7 @@ pub fn get_module_tree(project_id: u64) -> String {
 /// from the C++ `engine_get_knowledge_graph`. On error the JSON contains
 /// an `"error"` field tagged with module/method per code_rules.md.
 pub fn get_knowledge_graph(project_id: u64, table_name: &str, limit: i32) -> String {
-    take_string(unsafe {
-        engine_get_knowledge_graph(project_id, cstr(table_name).as_ptr(), limit)
-    })
+    take_string(unsafe { engine_get_knowledge_graph(project_id, cstr(table_name).as_ptr(), limit) })
 }
 
 pub fn find_symbol(project_id: u64, symbol_name: &str) -> String {
