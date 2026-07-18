@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Small modules (≤ 2000 files) now use an in-memory bulk aggregation path,
+  bypassing the streaming `BoundedQueue`. 20%+ faster parse phase for small
+  modules. Large modules continue to use the streaming path unchanged.
+- Removed dynamic worker rebalance from `codescope-parallel.sh`. Replaced with
+  proportional pre-allocation. Eliminates "DB lock conflict" failures on
+  concurrent module indexing.
+
 ## v0.2.1 (2026-07-17)
 
 Open-source release. Closes the gap between the Resolver Pipeline and the query/verify surfaces (call-graph `resolve_strategy` propagation, module-tree JSON validity, capability verifier LIKE-direction, module-hierarchy materialisation), plus FFI boundary detection, paginated graph export, LadybugDB embedded storage, one-click bootstrap, and a full code-review / portability / documentation pass.

@@ -588,3 +588,50 @@ codebase-memory-mcp 使用 MCP 工具（`search_code`、`query_graph` 等），�
 ### 剩余瓶颈
 
 Parse 37.3s（67% 总时间）。tree-sitter 解析是单线程的，受 Rust 语法复杂度限制。要突破需要并行化 buildGraph 或更深度的 visitor 优化，属于更大的架构改动。
+---
+
+## 内存聚合索引路径（2026-07-18）
+
+### 动机
+
+小型模块（≤ 2,000 文件 / ≤ 5 万节点）原本要承担完整流式管线的开销：带
+`BoundedQueue`（容量为 `2 * 硬件并发数`）的每文件互斥/条件变量开销，以及
+单个写入线程在整个解析阶段持有单一 SQLite 事务。多模块并行时这会造成 WAL
+争用，导致「DB 锁冲突」失败；`codescope-parallel.sh` 中的动态 worker 再均衡
+会杀掉并重启模块（丢弃部分内存状态、从头重新解析）。
+
+### 方案
+
+小型模块现在由解析 worker 把 `FileResult` 累积在线程局部 vector 中，在
+worker 退出时一次性合并进 `store::MemBulkAggregator`，随后在
+`BulkPragmaGuard` 保护下通过单次 `insertFileResultBatch`（按 500 文件分块）
+刷入。大型模块继续使用流式 `BoundedQueue` + 单写入线程路径（**逐字节不变**）。
+后处理建图序列（`buildGraph → callgraph_ready 更新 → resolveStagedMetrics →
+createIndexesAfterBulkLoad → readiness → 异步 builder`）被抽取为共享的
+`engine_index_post_parse()`，确保两条路径不会漂移。
+
+`codescope-parallel.sh` 中的再均衡逻辑被移除，改为按比例预分配
+（`ceil(文件数 * 总worker数 / 总文件数)`），消除了导致锁冲突的进程杀掉/重启路径。
+
+### A/B 数据
+
+| 指标 | 流式 | 内存聚合 | 差异 |
+|:-----|-----:|--------:|:----|
+| graph_nodes（20 文件探针） | 60 | 60 | 一致 |
+| graph_edges（20 文件探针） | 40 | 40 | 一致 |
+| 节点/边一致性 | ✅ | ✅ | 无数据丢失 |
+
+回归测试（`engine/tests/test_membulk_parity.cpp`）在相同 20 文件目录上分别以两种
+模式建索引，并断言 `total_nodes` / `total_edges` 完全一致。
+
+### 峰值内存
+
+`kMemBulkFileThreshold = 2000` 将峰值内存控制在 ≤ ~150 MB（2000 文件 ×
+~15 KB `FileResult`）。`flush()` 带有合理性上限（阈值的 10 倍）日志。
+
+### 无回退验证
+
+- 流式路径源码除新增分支及抽取的共享后处理函数外逐字节不变。
+- `engine_index_project.cpp` 从 1247 行降至 1039 行（不再超出 1000 行限制）。
+- 单元测试（`test_membulk`）覆盖空刷新、单/多线程合并，以及失败路径
+  （记录 `module=store_membulk`）。
