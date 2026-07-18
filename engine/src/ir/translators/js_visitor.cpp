@@ -441,6 +441,29 @@ void JsVisitor::visitCallExpr(TSNode node, uint64_t parent_id)
 			callee_name = nodeText(child);
 			break;
 		}
+		// Handle member_expression: obj.method() produces a
+		// member_expression as the first named child (not an
+		// identifier). Previously this fell through, leaving
+		// callee_name empty and dropping the majority of JS/TS
+		// call edges. Extract the trailing property_identifier
+		// (the method name) from the member_expression, mirroring
+		// CVisitor::extractFieldMethodName for field_expression.
+		if (strcmp(t, "member_expression") == 0) {
+			uint32_t mc = ts_node_child_count(child);
+			for (uint32_t j = 0; j < mc; j++) {
+				TSNode mchild = ts_node_child(child, j);
+				if (!ts_node_is_named(mchild))
+					continue;
+				const char *mt = ts_node_type(mchild);
+				if (strcmp(mt, "property_identifier") == 0 ||
+				    strcmp(mt,
+					   "shorthand_property_identifier") ==
+					    0) {
+					callee_name = nodeText(mchild);
+				}
+			}
+			break;
+		}
 	}
 
 	// Skip JS/TS built-in global functions — they are NOT user-defined

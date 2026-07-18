@@ -667,7 +667,13 @@ uint64_t GraphStore::createProject(const char *root_path, const char *name)
 	sqlite3_stmt *stmt = nullptr;
 	const char *sql = "INSERT OR IGNORE INTO projects (root_path, name) "
 			  "VALUES (?, ?)";
-	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		fprintf(stderr,
+			"createProject prepare failed: %s "
+			"[module=store, method=createProject]\n",
+			sqlite3_errmsg(db_));
+		return 0;
+	}
 	sqlite3_bind_text(stmt, 1, effective_path, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 2, name, -1, SQLITE_TRANSIENT);
 	int rc = sqlite3_step(stmt);
@@ -698,7 +704,13 @@ uint64_t GraphStore::getProjectId(const char *root_path)
 	const char *effective_path = norm.empty() ? root_path : norm.c_str();
 	sqlite3_stmt *stmt = nullptr;
 	const char *sql = "SELECT id FROM projects WHERE root_path = ?";
-	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		fprintf(stderr,
+			"getProjectId prepare failed: %s "
+			"[module=store, method=getProjectId]\n",
+			sqlite3_errmsg(db_));
+		return 0;
+	}
 	sqlite3_bind_text(stmt, 1, effective_path, -1, SQLITE_TRANSIENT);
 	uint64_t id = 0;
 	if (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -725,7 +737,13 @@ uint64_t GraphStore::getLatestProjectId()
 		"		   FROM graph_nodes GROUP BY project_id) g "
 		"ON p.id = g.project_id "
 		"ORDER BY COALESCE(g.cnt, 0) DESC, p.id DESC LIMIT 1";
-	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		fprintf(stderr,
+			"getLatestProjectId prepare failed: %s "
+			"[module=store, method=getLatestProjectId]\n",
+			sqlite3_errmsg(db_));
+		return 0;
+	}
 	uint64_t id = 0;
 	if (sqlite3_step(stmt) == SQLITE_ROW) {
 		id = static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
@@ -742,7 +760,13 @@ uint64_t GraphStore::getProjectNodeCount(uint64_t project_id)
 	sqlite3_stmt *stmt = nullptr;
 	const char *sql =
 		"SELECT COUNT(*) FROM graph_nodes WHERE project_id = ?";
-	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		fprintf(stderr,
+			"getProjectNodeCount prepare failed: %s "
+			"[module=store, method=getProjectNodeCount]\n",
+			sqlite3_errmsg(db_));
+		return 0;
+	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	uint64_t count = 0;
 	if (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -762,7 +786,13 @@ uint64_t GraphStore::upsertFile(uint64_t project_id, const char *path,
 		"INSERT OR REPLACE INTO files (project_id, path, language, "
 		"content_hash, last_parsed_at) "
 		"VALUES (?, ?, ?, ?, datetime('now'))";
-	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		fprintf(stderr,
+			"upsertFile prepare failed: %s "
+			"[module=store, method=upsertFile]\n",
+			sqlite3_errmsg(db_));
+		return 0;
+	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 2, path, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 3, language, -1, SQLITE_TRANSIENT);
@@ -777,7 +807,13 @@ uint64_t GraphStore::upsertFile(uint64_t project_id, const char *path,
 
 	// Return file ID
 	sql = "SELECT id FROM files WHERE project_id = ? AND path = ?";
-	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		fprintf(stderr,
+			"upsertFile prepare (select) failed: %s "
+			"[module=store, method=upsertFile]\n",
+			sqlite3_errmsg(db_));
+		return 0;
+	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 2, path, -1, SQLITE_TRANSIENT);
 	uint64_t file_id = 0;

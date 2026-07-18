@@ -141,7 +141,10 @@ impl Server {
                 // so we don't race with the server's own g_store.
                 self.project_id = ffi::create_project(path, name);
                 if self.project_id > 0 {
-                    eprintln!("Created project {} (id={}), indexing via worker...", name, self.project_id);
+                    eprintln!(
+                        "Created project {} (id={}), indexing via worker...",
+                        name, self.project_id
+                    );
                     let tool_args = serde_json::json!({
                         "project_path": path,
                         "language_filter": "",

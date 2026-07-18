@@ -162,7 +162,7 @@ std::string ResolverPipeline::checkImport(const std::string &caller_file,
 void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 					const std::string &caller_file,
 					const std::string &callee_name,
-					int call_kind)
+					int call_kind, int caller_arity)
 {
 	// Build per-factor scores for each candidate using multi-factor scoring.
 	for (auto &c : candidates) {
@@ -207,12 +207,19 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 			factors.push_back(f);
 		}
 
-		// Factor 4: SignatureMatch
+		// Factor 4: SignatureMatch — compares the call site's arity
+		// (from the reference row) against each candidate's arity.
+		// Previously the caller arity was hardcoded to 0, which caused
+		// factorSignatureMatch to penalize every candidate with a known
+		// arity (returning -0.5) while rewarding candidates with unknown
+		// arity (returning +0.5) — the exact opposite of correct
+		// overload resolution. Thread the real reference arity through
+		// so exact-arity overloads score highest.
 		{
 			FactorResult f;
 			f.name = "SignatureMatch";
 			f.weight = kWeightSignatureMatch;
-			f.score = factorSignatureMatch(0, c.arity);
+			f.score = factorSignatureMatch(caller_arity, c.arity);
 			factors.push_back(f);
 		}
 
@@ -499,6 +506,7 @@ int64_t ResolverPipeline::run()
 		uint64_t caller_id;
 		std::string caller_file;
 		int call_kind;
+		int arity; // caller arity from reference row (column r.arity)
 		std::string resolve_strategy;
 	};
 	std::vector<RefRow> refs;
@@ -512,6 +520,10 @@ int64_t ResolverPipeline::run()
 			sqlite3_column_text(ref_st, 1));
 		r.caller_id =
 			static_cast<uint64_t>(sqlite3_column_int64(ref_st, 2));
+		// Column 3 is r.arity — the call site's arity. Previously this
+		// column was selected but never read, so the caller arity was
+		// always 0 in applyConstraints, breaking overload resolution.
+		r.arity = sqlite3_column_int(ref_st, 3);
 		const char *fp_c = reinterpret_cast<const char *>(
 			sqlite3_column_text(ref_st, 8));
 		r.call_kind = sqlite3_column_int(ref_st, 6);
@@ -660,7 +672,7 @@ int64_t ResolverPipeline::run()
 		}
 
 		applyConstraints(candidates, ref.caller_file, ref.name,
-				 ref.call_kind);
+				 ref.call_kind, ref.arity);
 
 		uint64_t best_id = 0;
 		double best_score = -1.0;

@@ -202,6 +202,12 @@ char *engine_get_knowledge_graph(uint64_t project_id, const char *table_name,
 		json += "\",\"rows\":[";
 		bool first = true;
 		int col_count = sqlite3_column_count(stmt);
+		// Count every row emitted so total/truncated are accurate. The
+		// previous code declared total after the loop and never
+		// incremented it, so total was always 0 and truncated was
+		// always false — any caller paginating on total missed rows
+		// beyond the clamped limit.
+		int64_t total = 0;
 		while (sqlite3_step(stmt) == SQLITE_ROW) {
 			if (!first)
 				json.push_back(',');
@@ -237,8 +243,8 @@ char *engine_get_knowledge_graph(uint64_t project_id, const char *table_name,
 				}
 			}
 			json.push_back('}');
+			total++;
 		}
-		int64_t total = 0;
 		sqlite3_finalize(stmt);
 		json += "],\"total\":";
 		json += std::to_string(total);
@@ -1185,7 +1191,8 @@ char *engine_index_batch(uint64_t project_id, const char *file_paths_json)
 			}
 
 			TSTree *tree = g_parser->parse(fp.c_str(),
-						       source.c_str(), lang);
+						       source.c_str(), lang,
+						       source.size());
 			if (!tree) {
 				errors.push_back(fp + ": parse failed");
 				continue;

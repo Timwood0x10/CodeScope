@@ -85,16 +85,15 @@ static bool capabilityDeclared(store::GraphStore *store, uint64_t project_id,
 // NOTE: We query graph_nodes/graph_edges (the production source of truth)
 // because buildGraph writes to these tables via bulk SQL INSERT.
 //
-// Match direction: LOWER(e.name) LIKE LOWER(?) || '%'
-// — entity name must start with (or equal) the subject. Same rationale
-// as capabilityDeclared above: the README-derived subject is the longer
-// form; the stored graph node name is the short form, so name LIKE
-// subject||'%' lets the short name match the longer subject.
-//
-// BUG 2026-07-17: previously written as LOWER(?) LIKE LOWER(e.name)||'%'
-// (subject LIKE name||'%'), same reversed-direction bug as
-// capabilityDeclared — caused every capability_exists claim to be
-// Contradicted even on perfect name matches.
+// Match direction: bidirectional prefix LIKE. The README-derived subject
+// is typically a long PascalCase form (e.g. "IncrementalIndexing") while
+// the stored graph node name is a short code symbol (e.g.
+// "incremental_index" or "IncrementalIndex"). A single direction
+// `name LIKE subject||'%'` requires the short name to START WITH the
+// longer subject — impossible when subject > name. The previous "fix"
+// (BUG 2026-07-17) flipped the direction but kept a single-sided test,
+// so it still failed whenever the subject was longer than the node name.
+// We now accept a match when either side starts with the other.
 static std::vector<int64_t> entitiesWithCallers(store::GraphStore *store,
 						uint64_t project_id,
 						const std::string &subject)
@@ -102,7 +101,9 @@ static std::vector<int64_t> entitiesWithCallers(store::GraphStore *store,
 	std::vector<int64_t> ids;
 	const char *sql =
 		"SELECT e.id FROM graph_nodes e "
-		"WHERE e.project_id=? AND LOWER(e.name) LIKE LOWER(?) || '%' "
+		"WHERE e.project_id=? "
+		"AND (LOWER(e.name) LIKE LOWER(?) || '%' "
+		"     OR LOWER(?) LIKE LOWER(e.name) || '%') "
 		"AND EXISTS (SELECT 1 FROM graph_edges r "
 		"            WHERE r.project_id=? AND r.target_node_id=e.id "
 		"            AND r.edge_type IN (1,3))";
@@ -117,7 +118,8 @@ static std::vector<int64_t> entitiesWithCallers(store::GraphStore *store,
 	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 2, subject.c_str(), -1, SQLITE_STATIC);
-	sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(project_id));
+	sqlite3_bind_text(stmt, 3, subject.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_int64(stmt, 4, static_cast<int64_t>(project_id));
 
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
 		ids.push_back(sqlite3_column_int64(stmt, 0));

@@ -110,8 +110,15 @@ void GraphStore::insertSemanticRecordsBatch(
 		return;
 
 	constexpr size_t kBatchSize = 500;
-	constexpr int kColsPerRow =
-		16; // 16 columns in semantic_records (added resolve_strategy + visibility)
+	// 19 columns in semantic_records: original_id, project_id, kind,
+	// name, qualified_name, parent_id, ref_original_id, arity,
+	// is_static, type_name, call_kind, resolve_strategy, visibility,
+	// start_row, start_col, end_row, end_col, file_path, language.
+	// Previously kColsPerRow was 16 while the INSERT listed 19 columns
+	// and 18 placeholders — the mismatch caused prepare to fail and
+	// silently dropped every batch. Must match the column count AND
+	// the placeholder count below.
+	constexpr int kColsPerRow = 19;
 
 	// Step 1: Flatten records into a contiguous vector for efficient batching.
 	// Each element stores (file_path, record_index) to reference the original.
@@ -145,7 +152,7 @@ void GraphStore::insertSemanticRecordsBatch(
 		for (size_t i = 0; i < batch; i++) {
 			if (i > 0)
 				sql += ",";
-			sql += "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+			sql += "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 		}
 
 		sqlite3_stmt *stmt = nullptr;

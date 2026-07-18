@@ -52,8 +52,8 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 				"{\"ok\":false,\"error\":\"cannot read file\"}");
 
 		// Parse
-		TSTree *tree =
-			g_parser->parse(file_path, source.c_str(), language);
+		TSTree *tree = g_parser->parse(file_path, source.c_str(),
+					       language, source.size());
 		if (!tree) {
 			return dupString("{\"ok\":false,\"error\":\"" +
 					 g_parser->error() + "\"}");

@@ -180,6 +180,44 @@ std::vector<LanguageClaim> extractLanguageClaims(const std::string &readme_text)
 		}
 	}
 
+	// Special handling for standalone uppercase "C" — the C programming
+	// language is commonly mentioned as a bare "C" in README prose
+	// (e.g. "written in C"). Use case-SENSITIVE word-boundary matching
+	// (unlike Go/Java which use case-insensitive) because lowercase "c"
+	// is far too common in English text. Map to canonical "cpp" to stay
+	// consistent with the existing "c language" → "cpp" rule and with
+	// countEntitiesByLanguage's c/cpp equivalence.
+	{
+		size_t c_count = 0;
+		size_t pos = 0;
+		const std::string needle = "C";
+		while ((pos = readme_text.find(needle, pos)) !=
+		       std::string::npos) {
+			size_t abs_end = pos + needle.size();
+			if (isWordBoundary(readme_text, pos) &&
+			    isWordBoundaryAfter(readme_text, abs_end))
+				c_count++;
+			pos = abs_end;
+		}
+		if (c_count > 0) {
+			bool already = false;
+			for (auto &c : result) {
+				if (c.canonical == "cpp") {
+					c.mention_count += c_count;
+					already = true;
+					break;
+				}
+			}
+			if (!already) {
+				LanguageClaim lc;
+				lc.canonical = "cpp";
+				lc.display = "C";
+				lc.mention_count = c_count;
+				result.push_back(lc);
+			}
+		}
+	}
+
 	return result;
 }
 
@@ -190,8 +228,22 @@ int64_t countEntitiesByLanguage(store::GraphStore &store, uint64_t project_id,
 	if (!db || language.empty())
 		return 0;
 
-	const char *sql = "SELECT COUNT(*) FROM entity "
-			  "WHERE project_id=? AND language=?";
+	// C and C++ share the "cpp" canonical tag in extractLanguageClaims
+	// (see kLanguagePatterns: "c language" → cpp). But entity.language
+	// stores the raw detectLanguage output, which is "c" for .c files and
+	// "cpp" for .cpp/.cc/.cxx files. A claim canonicalized to "cpp" must
+	// therefore count BOTH "c" and "cpp" entities, otherwise every pure-C
+	// project is falsely reported as DocumentationDrift even when the README
+	// correctly claims C/C++ support. The reverse (claim "c", entities
+	// "cpp") is handled the same way.
+	const char *sql;
+	if (language == "c" || language == "cpp") {
+		sql = "SELECT COUNT(*) FROM entity "
+		      "WHERE project_id=? AND language IN ('c','cpp')";
+	} else {
+		sql = "SELECT COUNT(*) FROM entity "
+		      "WHERE project_id=? AND language=?";
+	}
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
 		fprintf(stderr,
@@ -201,7 +253,12 @@ int64_t countEntitiesByLanguage(store::GraphStore &store, uint64_t project_id,
 		return 0;
 	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_text(stmt, 2, language.c_str(), -1, SQLITE_STATIC);
+	// Only bind the language parameter when the SQL uses a ?2
+	// placeholder. The c/cpp equivalence path uses an IN literal list
+	// instead, so binding ?2 would be a no-op (ignored by SQLite) but
+	// would mask a real mismatch if the SQL were changed again.
+	if (language != "c" && language != "cpp")
+		sqlite3_bind_text(stmt, 2, language.c_str(), -1, SQLITE_STATIC);
 
 	int64_t count = 0;
 	int rc = sqlite3_step(stmt);

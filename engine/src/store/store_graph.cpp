@@ -713,7 +713,24 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// staging table (P1 batch optimization).
 	{
 		resolver::ResolverPipeline pipe(this, project_id);
-		pipe.run();
+		int64_t resolved = pipe.run();
+		// pipe.run() returns -1 on prepare failure (it does NOT throw).
+		// The previous code ignored the return value, so a resolver
+		// failure was silently treated as success: no resolved edges
+		// were produced but buildGraph continued to buildCSR and
+		// returned true, and the SAVEPOINT was RELEASEd — losing the
+		// "all or nothing" guarantee for the resolver phase. Now we
+		// ROLLBACK TO SAVEPOINT and propagate the failure.
+		if (resolved < 0) {
+			fprintf(stderr,
+				"buildGraph: resolver pipeline failed (rc=%lld)"
+				" for project %s — rolling back savepoint "
+				"[module=store, method=buildGraph]\n",
+				(long long)resolved, pid.c_str());
+			exec("ROLLBACK TO SAVEPOINT buildGraph");
+			exec("RELEASE SAVEPOINT buildGraph");
+			return false;
+		}
 	}
 	auto t_resolver = Clock::now();
 
@@ -846,7 +863,7 @@ bool GraphStore::buildCSR(uint64_t project_id)
 
 	int64_t pid_i = static_cast<int64_t>(project_id);
 	int64_t current_src = -1;
-	std::vector<uint32_t> buf;
+	std::vector<uint64_t> buf;
 	buf.reserve(1024);
 	int64_t count = 0;
 
@@ -864,7 +881,7 @@ bool GraphStore::buildCSR(uint64_t project_id)
 				sqlite3_bind_blob(
 					ins, 3, buf.data(),
 					static_cast<int>(buf.size() *
-							 sizeof(uint32_t)),
+							 sizeof(uint64_t)),
 					SQLITE_STATIC);
 				if (sqlite3_step(ins) == SQLITE_DONE)
 					count++;
@@ -878,7 +895,7 @@ bool GraphStore::buildCSR(uint64_t project_id)
 			current_src = src;
 			buf.clear();
 		}
-		buf.push_back(static_cast<uint32_t>(tgt));
+		buf.push_back(static_cast<uint64_t>(tgt));
 	}
 	// Flush last group
 	if (current_src >= 0 && !buf.empty()) {
@@ -886,7 +903,7 @@ bool GraphStore::buildCSR(uint64_t project_id)
 		sqlite3_bind_int64(ins, 2, pid_i);
 		sqlite3_bind_blob(
 			ins, 3, buf.data(),
-			static_cast<int>(buf.size() * sizeof(uint32_t)),
+			static_cast<int>(buf.size() * sizeof(uint64_t)),
 			SQLITE_STATIC);
 		if (sqlite3_step(ins) == SQLITE_DONE)
 			count++;
@@ -931,7 +948,7 @@ bool GraphStore::buildCSR(uint64_t project_id)
 	}
 
 	int64_t current_tgt = -1;
-	std::vector<uint32_t> rev_buf;
+	std::vector<uint64_t> rev_buf;
 	rev_buf.reserve(1024);
 	int64_t rev_count = 0;
 
@@ -948,7 +965,7 @@ bool GraphStore::buildCSR(uint64_t project_id)
 				sqlite3_bind_blob(
 					rev_ins, 3, rev_buf.data(),
 					static_cast<int>(rev_buf.size() *
-							 sizeof(uint32_t)),
+							 sizeof(uint64_t)),
 					SQLITE_STATIC);
 				if (sqlite3_step(rev_ins) == SQLITE_DONE)
 					rev_count++;
@@ -962,14 +979,14 @@ bool GraphStore::buildCSR(uint64_t project_id)
 			current_tgt = tgt;
 			rev_buf.clear();
 		}
-		rev_buf.push_back(static_cast<uint32_t>(src));
+		rev_buf.push_back(static_cast<uint64_t>(src));
 	}
 	if (current_tgt >= 0 && !rev_buf.empty()) {
 		sqlite3_bind_int64(rev_ins, 1, current_tgt);
 		sqlite3_bind_int64(rev_ins, 2, pid_i);
 		sqlite3_bind_blob(
 			rev_ins, 3, rev_buf.data(),
-			static_cast<int>(rev_buf.size() * sizeof(uint32_t)),
+			static_cast<int>(rev_buf.size() * sizeof(uint64_t)),
 			SQLITE_STATIC);
 		if (sqlite3_step(rev_ins) == SQLITE_DONE)
 			rev_count++;
@@ -999,8 +1016,8 @@ std::vector<uint64_t> GraphStore::getCalleeIds(uint64_t node_id)
 	if (sqlite3_step(st) == SQLITE_ROW) {
 		const void *blob = sqlite3_column_blob(st, 0);
 		int bytes = sqlite3_column_bytes(st, 0);
-		int n = bytes / static_cast<int>(sizeof(uint32_t));
-		const uint32_t *arr = static_cast<const uint32_t *>(blob);
+		int n = bytes / static_cast<int>(sizeof(uint64_t));
+		const uint64_t *arr = static_cast<const uint64_t *>(blob);
 		ids.reserve(static_cast<size_t>(n));
 		for (int i = 0; i < n; i++)
 			ids.push_back(static_cast<uint64_t>(arr[i]));
@@ -1023,8 +1040,8 @@ std::vector<uint64_t> GraphStore::getCallerIds(uint64_t node_id)
 	if (sqlite3_step(st) == SQLITE_ROW) {
 		const void *blob = sqlite3_column_blob(st, 0);
 		int bytes = sqlite3_column_bytes(st, 0);
-		int n = bytes / static_cast<int>(sizeof(uint32_t));
-		const uint32_t *arr = static_cast<const uint32_t *>(blob);
+		int n = bytes / static_cast<int>(sizeof(uint64_t));
+		const uint64_t *arr = static_cast<const uint64_t *>(blob);
 		ids.reserve(static_cast<size_t>(n));
 		for (int i = 0; i < n; i++)
 			ids.push_back(static_cast<uint64_t>(arr[i]));
@@ -1045,9 +1062,9 @@ std::vector<uint64_t> GraphStore::getCallerIds(uint64_t node_id)
 		int64_t src = sqlite3_column_int64(st, 0);
 		const void *blob = sqlite3_column_blob(st, 1);
 		int bytes = sqlite3_column_bytes(st, 1);
-		int n = bytes / static_cast<int>(sizeof(uint32_t));
-		const uint32_t *arr = static_cast<const uint32_t *>(blob);
-		uint32_t target = static_cast<uint32_t>(node_id);
+		int n = bytes / static_cast<int>(sizeof(uint64_t));
+		const uint64_t *arr = static_cast<const uint64_t *>(blob);
+		uint64_t target = node_id;
 		for (int i = 0; i < n; i++) {
 			if (arr[i] == target) {
 				ids.push_back(static_cast<uint64_t>(src));

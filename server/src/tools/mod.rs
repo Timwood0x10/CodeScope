@@ -435,17 +435,17 @@ fn h_force_index_files(project_id: u64, args: &Value) -> String {
     let mut paths: Vec<String> = Vec::new();
     if let Some(arr) = args["paths"].as_array() {
         for v in arr {
-            if let Some(s) = v.as_str() {
-                if !s.is_empty() {
-                    paths.push(s.to_string());
-                }
+            if let Some(s) = v.as_str()
+                && !s.is_empty()
+            {
+                paths.push(s.to_string());
             }
         }
     }
-    if let Some(s) = args["path"].as_str() {
-        if !s.is_empty() {
-            paths.push(s.to_string());
-        }
+    if let Some(s) = args["path"].as_str()
+        && !s.is_empty()
+    {
+        paths.push(s.to_string());
     }
     if paths.is_empty() {
         return "{\"ok\":false,\"error\":\"paths is required (array of file/dir paths)\"}"
@@ -555,6 +555,7 @@ const SOURCE_EXTENSIONS: &[&str] = &[
 ///   - must be within max_size
 ///   - extension must be a recognised source extension
 ///   - must pass the optional language whitelist
+///
 /// Returns the absolute path string if acceptable, None otherwise.
 fn filter_acceptable_file(
     path: &std::path::Path,
