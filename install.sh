@@ -47,12 +47,16 @@ INSTALL_DIR="${INSTALL_DIR:-$HOME/.codescope/bin}"
 mkdir -p "$INSTALL_DIR"
 tar -xzf /tmp/codescope.tar.gz -C "$INSTALL_DIR"
 chmod +x "$INSTALL_DIR/codescope"
+# The release tar also bundles codescope-parallel.sh (multi-process indexer
+# for large projects). Make it executable if present.
+[ -f "$INSTALL_DIR/codescope-parallel.sh" ] && chmod +x "$INSTALL_DIR/codescope-parallel.sh"
 rm -f /tmp/codescope.tar.gz
 
 echo ""
 echo "=== Done ==="
 echo ""
 echo "Binary installed to: $INSTALL_DIR/codescope"
+[ -f "$INSTALL_DIR/codescope-parallel.sh" ] && echo "Parallel indexer: $INSTALL_DIR/codescope-parallel.sh"
 echo ""
 echo "Add to PATH:"
 echo "  export PATH=\"\$PATH:$INSTALL_DIR\""
@@ -62,3 +66,6 @@ echo "  codescope cli index_project '{\"project_path\":\"/path/to/project\"}'"
 echo ""
 echo "Or start MCP server:"
 echo "  codescope"
+echo ""
+echo "Large project? Use the parallel indexer:"
+echo "  codescope-parallel.sh /path/to/large/project   # multi-process, dynamic worker dispatch"

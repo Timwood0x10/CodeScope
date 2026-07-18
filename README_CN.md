@@ -142,6 +142,31 @@ codescope
 
 > 预编译二进制可在 [Releases 页面](https://github.com/Timwood0x10/CodeScope/releases) 下载。
 
+**Linux / macOS 一键安装**：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Timwood0x10/CodeScope/master/install.sh | bash
+```
+
+安装后 `~/.codescope/bin/` 下包含：
+
+| 文件 | 用途 |
+|------|------|
+| `codescope` | 主二进制（CLI + MCP server） |
+| `codescope-parallel.sh` | **大型项目加速索引脚本**——多进程模块级调度，动态 worker 回收，每文件 quarantine，自动合并 DB。AI 决定要不要加速时调这个脚本即可，详见下方[并行索引脚本](#并行索引脚本大型项目推荐)章节 |
+
+加入 PATH 后即可使用：
+
+```bash
+export PATH="$PATH:$HOME/.codescope/bin"
+
+# 中小项目直接索引
+codescope cli index_project '{"project_path":"/path/to/project"}'
+
+# 大型项目（数千~数万文件）用并行脚本加速
+codescope-parallel.sh /path/to/large/project
+```
+
 ### 手动构建
 
 ```bash
@@ -333,7 +358,77 @@ Apache 2.0
 |------|---------|:----------:|
 | `index_project` | 索引整个项目目录（解析+IR+图构建） | **N/A** |
 | `index_file` | 索引单个源文件 | **N/A** |
+| `force_index_files` | **强制索引**——绕过默认跳过规则（`test/`、`docs/`、`vendored/`、`node_modules/`、`.gitignore` 等）索引指定文件/目录。用户说"去吧 xxx/yyy 给我索引了吧"时使用 | **N/A** |
 | `count_tokens` | 估算文本的 token 数（DeepSeek 公式） | **~10** |
+
+#### `force_index_files` — 用户自定义增量索引
+
+当默认 `FilterPolicy` 把某些目录（测试夹具、vendored 依赖、生成代码、示例）整批跳过，而用户又想把这些路径拉进来索引时，用 `force_index_files`。它**绕过**默认 skip 规则，但仍然尊重：
+
+- 文件大小上限（`CODESCOPE_MAX_FILE_SIZE`，默认 5 MB）
+- 语言可识别性（`detectLanguage` 必须返回非 null）
+- 可选语言白名单（`language_filter`）
+
+**MCP 调用**：
+
+```json
+{
+  "paths": ["/abs/path/to/dir/or/file", "/another/path"],
+  "language_filter": "java,python"
+}
+```
+
+- `paths`：绝对路径数组，目录会递归展开
+- `language_filter`：可选，逗号分隔语言白名单；空 = 全部可识别语言
+
+**CLI 调用**：
+
+```bash
+codescope force-index [--lang java,python] [--db /path/to/codescope.db] /path/to/xxx /path/to/yyy
+```
+
+返回 `engine_index_files` 的 JSON（`files_indexed`/`nodes`/`edges`/`errors`），并附 `skipped_files`/`skipped_dirs`/`paths_requested` 统计。
+
+#### 并行索引脚本（大型项目推荐）
+
+对于**大型项目**（数千~数万源文件，如 Linux kernel、rustc 这种），单进程多线程索引可能受限于 RSS 峰值和崩溃隔离。`codescope-parallel.sh` 提供**多进程模块级调度**：
+
+- 按模块（顶级目录）拆分，每个模块起独立 `codescope worker` 子进程
+- 内存/崩溃隔离：一个模块崩溃不会带垮整个索引
+- 动态 worker 回收：模块完成后把 worker 重新分配给剩余模块
+- 每文件 quarantine：崩溃模块用二分搜索定位 crashing 文件，跳过后重试
+- 最后合并所有模块 DB 到单一项目 DB
+
+**通用入口**——用户或 AI 只需传一个目录，脚本自动探测二进制、grammars 目录、默认输出路径：
+
+```bash
+# 默认配置（8 workers），输出到 <dir>/.codescope/codescope.db
+./codescope-parallel.sh /path/to/large/project
+
+# 大项目用 16 workers
+CODESCOPE_WORKERS=16 ./codescope-parallel.sh /path/to/large/project
+
+# 自定义输出 DB
+./codescope-parallel.sh /path/to/large/project /tmp/my.db
+
+# 帮助
+./codescope-parallel.sh -h
+```
+
+环境变量（全部可选）：
+
+| 变量 | 默认 | 说明 |
+|------|------|------|
+| `CODESCOPE` | 自动探测 | codescope 二进制路径（按 `bin/codescope`、`target/release/codescope`、`./codescope`、`PATH` 顺序） |
+| `GRAMMARS_DIR` | 自动探测 | tree-sitter grammars 目录 |
+| `CODESCOPE_WORKERS` | `8` | 总 worker 数 |
+| `CODESCOPE_PARALLEL` | `= CODESCOPE_WORKERS` | 最大并发模块数 |
+
+**何时用脚本 vs 直接 `index_project`**：
+
+- 中小项目（<300 文件）：直接 `index_project` 即可，亚秒~2 秒搞定
+- 大型项目（数千文件以上）：用 `codescope-parallel.sh`，多进程隔离 + 动态调度更稳
+
 
 ### 总结选择策略
 

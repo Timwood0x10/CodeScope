@@ -117,6 +117,16 @@ impl Server {
             // skip re-indexing — this is the "MCP reuse" path that avoids
             // project_id misalignment (e.g. CLI indexed id=1, MCP must not
             // create an empty id=2 and read stale data).
+            //
+            // Bug3 fix: when reuse fails (path mismatch or empty project),
+            // we must NOT call ffi::index_project directly — that runs in
+            // the server process which already holds g_store (SQLite WAL),
+            // causing write contention and silently failing the index.
+            // The freshly created project_id would be an empty shell and
+            // every subsequent tool call returns 0 nodes. Instead route
+            // through tools::execute("index_project") which uses the worker
+            // subprocess path (shutdown → spawn worker → re-init) for
+            // memory + SQLite isolation.
             let existing_pid = ffi::get_project_id_by_path(path);
             if existing_pid > 0 && ffi::get_project_node_count(existing_pid) > 0 {
                 self.project_id = existing_pid;
@@ -126,13 +136,17 @@ impl Server {
                 );
             } else {
                 // Either no project matches this rootPath, or the matching
-                // project has no data yet. Create or get the project, then
-                // index it.
+                // project has no data yet. Create the project row first
+                // (cheap INSERT), then index via the worker subprocess path
+                // so we don't race with the server's own g_store.
                 self.project_id = ffi::create_project(path, name);
                 if self.project_id > 0 {
-                    eprintln!("Created project {} (id={})", name, self.project_id);
-                    let result = ffi::index_project(self.project_id, path, std::ptr::null());
-                    // Parse result to check for errors
+                    eprintln!("Created project {} (id={}), indexing via worker...", name, self.project_id);
+                    let tool_args = serde_json::json!({
+                        "project_path": path,
+                        "language_filter": "",
+                    });
+                    let result = tools::execute(self.project_id, "index_project", &tool_args);
                     if let Ok(json) = serde_json::from_str::<serde_json::Value>(&result) {
                         if let Some(error) = json.get("error").and_then(|e| e.as_str()) {
                             if !error.is_empty() {

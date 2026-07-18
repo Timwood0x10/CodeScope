@@ -1,33 +1,146 @@
 #!/bin/bash
 # ── codescope-parallel — Parallel module indexer with dynamic worker dispatch ──
 #
+# Universal entry: user or AI just passes a project directory, this script
+# handles the rest — binary discovery, grammar location, multi-process worker
+# dispatch, per-file quarantine, and DB merge.
+#
 # Strategy:
 #   1. `codescope discover` to scan project structure
 #   2. Workers are allocated proportionally to module file count
 #   3. When a module finishes, its workers are reassigned to remaining modules
 #   4. Per-file quarantine: crashed modules get binary-search retry
 #   5. All metrics (memory, CPU, time) recorded to METRICS file
+#   6. Module DBs merged into a single project DB
 #
 # Usage:
-#   CODESCOPE_WORKERS=8 CODESCOPE_PARALLEL=8 ./codescope-parallel.sh <dir> [db_prefix]
+#   ./codescope-parallel.sh <project_dir>                      # auto-discover binary, default 8 workers
+#   CODESCOPE_WORKERS=16 ./codescope-parallel.sh <project_dir> # use 16 parallel workers
+#   ./codescope-parallel.sh <project_dir> /path/to/output.db  # custom output DB path
+#   ./codescope-parallel.sh -h                                 # help
+#
+# Env vars (all optional):
+#   CODESCOPE          path to codescope binary (auto-detected if unset)
+#   GRAMMARS_DIR       path to tree-sitter grammars (auto-detected if unset)
+#   CODESCOPE_WORKERS  total worker count (default 8)
+#   CODESCOPE_PARALLEL max concurrent modules (default = CODESCOPE_WORKERS)
 
 set -euo pipefail
 
-CODESCOPE="${CODESCOPE:-./target/release/codescope}"
-PROJECT_DIR="${1:-}"
-DB_PREFIX="${2:-/tmp/parallel_$(date +%s)}"
-TOTAL_WORKERS="${CODESCOPE_WORKERS:-8}"
-PARALLEL="${CODESCOPE_PARALLEL:-8}"  # max concurrent modules
-GRAMMARS_DIR="${GRAMMARS_DIR:-engine/grammars}"
+# ── Help ────────────────────────────────────────────────────────
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+    cat <<'HELP'
+codescope-parallel — Parallel module indexer with dynamic worker dispatch
 
-if [ -z "$PROJECT_DIR" ] || [ "$1" = "-h" ]; then
-    echo "Usage: CODESCOPE_WORKERS=8 CODESCOPE_PARALLEL=8 $0 <project_dir> [db_prefix]"
+Usage:
+  codescope-parallel.sh <project_dir> [output_db]
+  codescope-parallel.sh -h | --help
+
+Arguments:
+  project_dir   Directory to index (required)
+  output_db     Output DB path (default: <project_dir>/.codescope/codescope.db)
+
+Environment:
+  CODESCOPE          Path to codescope binary (auto-detected: bin/codescope,
+                     target/release/codescope, or PATH)
+  GRAMMARS_DIR       Path to tree-sitter grammars (auto-detected relative to binary)
+  CODESCOPE_WORKERS  Total worker count (default: 8)
+  CODESCOPE_PARALLEL Max concurrent modules (default: = CODESCOPE_WORKERS)
+
+Examples:
+  # Index a project with default settings (8 workers)
+  ./codescope-parallel.sh /path/to/project
+
+  # Use 16 workers on a large project
+  CODESCOPE_WORKERS=16 ./codescope-parallel.sh /path/to/project
+
+  # Custom output location
+  ./codescope-parallel.sh /path/to/project /tmp/my.db
+
+Strategy:
+  1. discover: scan project structure, count files per module
+  2. dispatch: allocate workers proportionally to module size
+  3. quarantine: binary-search for crashing files, skip them, retry
+  4. merge: combine per-module DBs into the final output DB
+HELP
+    exit 0
+fi
+
+PROJECT_DIR="${1:-}"
+if [ -z "$PROJECT_DIR" ]; then
+    echo "Error: project_dir is required (try -h for help)"
     exit 1
 fi
 if [ ! -d "$PROJECT_DIR" ]; then
     echo "Error: directory not found: $PROJECT_DIR"
     exit 1
 fi
+
+# ── Binary discovery ────────────────────────────────────────────
+# Auto-detect the codescope binary if CODESCOPE is unset. Search order:
+#   1. bin/codescope            (project install layout)
+#   2. target/release/codescope (cargo build --release output)
+#   3. ./codescope               (current dir)
+#   4. `which codescope`         (PATH)
+if [ -z "${CODESCOPE:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    for candidate in \
+        "$SCRIPT_DIR/bin/codescope" \
+        "$SCRIPT_DIR/target/release/codescope" \
+        "$PWD/bin/codescope" \
+        "$PWD/target/release/codescope" \
+        "./codescope"; do
+        if [ -x "$candidate" ]; then
+            CODESCOPE="$candidate"
+            break
+        fi
+    done
+    if [ -z "${CODESCOPE:-}" ]; then
+        if command -v codescope >/dev/null 2>&1; then
+            CODESCOPE="$(command -v codescope)"
+        fi
+    fi
+fi
+if [ -z "${CODESCOPE:-}" ] || [ ! -x "$CODESCOPE" ]; then
+    echo "Error: codescope binary not found."
+    echo "Set CODESCOPE env var to the binary path, or place it at bin/codescope or target/release/codescope."
+    exit 1
+fi
+
+# ── Grammars directory discovery ────────────────────────────────
+if [ -z "${GRAMMARS_DIR:-}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    for candidate in \
+        "$SCRIPT_DIR/engine/grammars" \
+        "$SCRIPT_DIR/grammars" \
+        "$(dirname "$CODESCOPE")/../engine/grammars" \
+        "$(dirname "$CODESCOPE")/grammars"; do
+        if [ -d "$candidate" ]; then
+            GRAMMARS_DIR="$candidate"
+            break
+        fi
+    done
+fi
+if [ -z "${GRAMMARS_DIR:-}" ]; then
+    echo "Warning: GRAMMARS_DIR not found — tree-sitter grammars may not load."
+    echo "Set GRAMMARS_DIR env var to the grammars directory."
+fi
+
+# ── Output DB default ───────────────────────────────────────────
+# Default to <project_dir>/.codescope/codescope.db so the merged DB
+# lands where the MCP server / CLI expects to find it.
+if [ -n "${2:-}" ]; then
+    FINAL_DB="$2"
+elif [ -n "${CODESCOPE_DB_PATH:-}" ]; then
+    FINAL_DB="$CODESCOPE_DB_PATH"
+else
+    FINAL_DB="$PROJECT_DIR/.codescope/codescope.db"
+fi
+DB_PREFIX="${FINAL_DB%.db}"
+
+# ── Worker config ────────────────────────────────────────────────
+TOTAL_WORKERS="${CODESCOPE_WORKERS:-8}"
+PARALLEL="${CODESCOPE_PARALLEL:-$TOTAL_WORKERS}"  # max concurrent modules
 
 METRICS_FILE="${DB_PREFIX}_METRICS.txt"
 QUARANTINE_DIR="${DB_PREFIX}_quarantine"
@@ -361,12 +474,16 @@ log_system_metrics "FINAL"
 # ── Merge all module DBs into a single project DB ──
 echo ""
 echo "  Merging module databases..."
-FINAL_DB="${DB_PREFIX}_merged.db"
+# FINAL_DB was decided at the top of the script (default:
+# <project_dir>/.codescope/codescope.db, or arg 2, or CODESCOPE_DB_PATH).
+# Module DBs are ${DB_PREFIX}_<module>.db; the merged output is FINAL_DB.
+mkdir -p "$(dirname "$FINAL_DB")"
 rm -f "$FINAL_DB"
 
 FIRST=true
 for db in "${DB_PREFIX}"_*.db; do
-    [ "$db" = "${DB_PREFIX}_merged.db" ] && continue
+    # Skip the final DB itself if it accidentally matches the prefix glob.
+    [ "$db" = "$FINAL_DB" ] && continue
     [ ! -f "$db" ] && continue
     MODULE=$(basename "$db" .db | sed "s/^${DB_PREFIX##*/}_//")
     if [ "$FIRST" = true ]; then
@@ -396,5 +513,6 @@ fi
 
 echo ""
 echo "  Metrics: $METRICS_FILE"
-echo "  DBs: ${DB_PREFIX}_*.db"
+echo "  Per-module DBs: ${DB_PREFIX}_*.db"
+echo "  Final DB: $FINAL_DB"
 echo "=========================================="

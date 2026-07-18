@@ -143,6 +143,31 @@ codescope
 > Pre-built binaries are available for **Linux** and **macOS** on the [Releases page](https://github.com/Timwood0x10/CodeScope/releases).  
 > **Windows** support is planned for a future release. The C++ engine and Rust server build with MinGW-w64; see [#issue] for tracking progress.
 
+**One-command install (Linux / macOS)**:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Timwood0x10/CodeScope/master/install.sh | bash
+```
+
+After install, `~/.codescope/bin/` contains:
+
+| File | Purpose |
+|------|---------|
+| `codescope` | Main binary (CLI + MCP server) |
+| `codescope-parallel.sh` | **Parallel indexer for large projects** — multi-process module-level dispatch, dynamic worker recycling, per-file quarantine, auto-merges DBs. When the AI decides acceleration is warranted, just call this script; see [Parallel indexer script](#parallel-indexer-script-recommended-for-large-projects) below |
+
+Add to PATH and use:
+
+```bash
+export PATH="$PATH:$HOME/.codescope/bin"
+
+# Small-medium projects: index directly
+codescope cli index_project '{"project_path":"/path/to/project"}'
+
+# Large projects (thousands–tens of thousands of files): use the parallel script
+codescope-parallel.sh /path/to/large/project
+```
+
 ### Build from source manually
 
 ```bash
@@ -351,7 +376,77 @@ flowchart LR
 |------|-------------|:----------:|
 | `index_project` | Index entire project directory (parse → IR → graph) | **N/A** |
 | `index_file` | Index a single source file | **N/A** |
+| `force_index_files` | **Force-index** — bypass default skip rules (`test/`, `docs/`, `vendored/`, `node_modules/`, `.gitignore`, etc.) to index specific files/dirs. Use when the user says "go index xxx/yyy for me" | **N/A** |
 | `count_tokens` | Estimate token count (DeepSeek formula) | **~10** |
+
+#### `force_index_files` — user-directed incremental indexing
+
+When the default `FilterPolicy` skips entire directories (test fixtures, vendored deps, generated code, examples) but the user wants to pull those paths in, use `force_index_files`. It **bypasses** the default skip rules but still respects:
+
+- File size limit (`CODESCOPE_MAX_FILE_SIZE`, default 5 MB)
+- Language detectability (`detectLanguage` must return non-null)
+- Optional language whitelist (`language_filter`)
+
+**MCP call**:
+
+```json
+{
+  "paths": ["/abs/path/to/dir/or/file", "/another/path"],
+  "language_filter": "java,python"
+}
+```
+
+- `paths`: array of absolute paths; directories are walked recursively
+- `language_filter`: optional, comma-separated language whitelist; empty = all detectable languages
+
+**CLI call**:
+
+```bash
+codescope force-index [--lang java,python] [--db /path/to/codescope.db] /path/to/xxx /path/to/yyy
+```
+
+Returns the `engine_index_files` JSON (`files_indexed`/`nodes`/`edges`/`errors`) plus `skipped_files`/`skipped_dirs`/`paths_requested` stats.
+
+#### Parallel indexer script (recommended for large projects)
+
+For **large projects** (thousands–tens of thousands of source files, e.g. Linux kernel, rustc), single-process multi-threaded indexing can be limited by RSS peaks and crash isolation. `codescope-parallel.sh` provides **multi-process module-level dispatch**:
+
+- Splits by module (top-level directory); each module spawns an independent `codescope worker` subprocess
+- Memory/crash isolation: a crashing module doesn't take down the whole index
+- Dynamic worker recycling: when a module finishes, its workers are reassigned to remaining modules
+- Per-file quarantine: crashing modules use binary search to locate the crashing file, skip it, retry
+- Merges all module DBs into a single project DB at the end
+
+**Universal entry** — user or AI just passes a directory; the script auto-discovers binary, grammars dir, and default output path:
+
+```bash
+# Default config (8 workers), output to <dir>/.codescope/codescope.db
+./codescope-parallel.sh /path/to/large/project
+
+# 16 workers for a big project
+CODESCOPE_WORKERS=16 ./codescope-parallel.sh /path/to/large/project
+
+# Custom output DB
+./codescope-parallel.sh /path/to/large/project /tmp/my.db
+
+# Help
+./codescope-parallel.sh -h
+```
+
+Environment variables (all optional):
+
+| Var | Default | Description |
+|------|---------|------|
+| `CODESCOPE` | auto-detected | Path to codescope binary (search order: `bin/codescope`, `target/release/codescope`, `./codescope`, `PATH`) |
+| `GRAMMARS_DIR` | auto-detected | Path to tree-sitter grammars directory |
+| `CODESCOPE_WORKERS` | `8` | Total worker count |
+| `CODESCOPE_PARALLEL` | `= CODESCOPE_WORKERS` | Max concurrent modules |
+
+**When to use the script vs `index_project` directly**:
+
+- Small-medium projects (<300 files): `index_project` is fine — sub-second to ~2 s
+- Large projects (thousands+ files): use `codescope-parallel.sh` — multi-process isolation + dynamic dispatch is more robust
+
 
 ### Quick Decision Guide
 

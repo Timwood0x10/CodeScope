@@ -197,9 +197,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		     "CREATE TEMP TABLE _r2n AS "
 		     "SELECT sr.rowid as rid, sr.original_id, sr.file_path, sr.name,"
 		     " CAST(ROW_NUMBER() OVER () "
-		     "  + COALESCE((SELECT MAX(id) FROM graph_nodes WHERE project_id=" +
-		     pid +
-		     "), 0)"
+		     "  + COALESCE((SELECT MAX(id) FROM graph_nodes), 0)"
 		     "  AS INTEGER) as node_id "
 		     "FROM semantic_records sr "
 		     "WHERE sr.project_id=" +
@@ -212,8 +210,8 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		explainQueryPlan(
 			(std::string(
 				 "SELECT sr.rowid as rid, sr.original_id, sr.file_path, sr.name,"
-				 " CAST(ROW_NUMBER() OVER () + " +
-				 pid +
+				 " CAST(ROW_NUMBER() OVER () + "
+				 " COALESCE((SELECT MAX(id) FROM graph_nodes), 0)"
 				 " AS INTEGER) as node_id "
 				 "FROM semantic_records sr "
 				 "WHERE sr.project_id=" +
