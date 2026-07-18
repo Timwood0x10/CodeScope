@@ -1243,8 +1243,8 @@ char *engine_index_batch(uint64_t project_id, const char *file_paths_json)
 			std::string hash = simpleHash(b.source);
 			g_store->upsertFile(project_id, b.file_path.c_str(),
 					    b.language.c_str(), hash.c_str());
-			g_store->deleteGraphNodesByFile(project_id,
-							b.file_path.c_str());
+			g_store->deleteFileData(project_id,
+						b.file_path.c_str());
 
 			// No ir_nodes/ir_semantic_edges write — graph_nodes is canonical.
 			// FTS/vector writes skipped for single-file index path.

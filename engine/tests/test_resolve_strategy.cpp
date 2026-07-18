@@ -94,8 +94,8 @@ class Worker:
 		int64_t ref = sqlite3_column_int64(st, 3);
 		const char *rs = (const char *)sqlite3_column_text(st, 4);
 		int row = sqlite3_column_int(st, 5);
-		printf("id=%lld name=%q parent_id=%lld ref_oid=%lld "
-		       "strategy=%q row=%d\n",
+		printf("id=%lld name=%s parent_id=%lld ref_oid=%lld "
+		       "strategy=%s row=%d\n",
 		       (long long)id, name ? name : "(null)",
 		       (long long)par, (long long)ref,
 		       rs ? rs : "", row);

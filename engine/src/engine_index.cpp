@@ -91,8 +91,12 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 			g_store->upsertFile(project_id, file_path, language,
 					    hash.c_str());
 
-			// Delete old graph data for this file
-			g_store->deleteGraphNodesByFile(project_id, file_path);
+			// Delete old data for this file across ALL tables
+			// (graph_nodes, graph_edges, entity, relation, semantic_records)
+			// to prevent duplicate accumulation on re-index. Without this,
+			// insertGraphNodes → insertEntity appends to a non-empty entity
+			// table, causing entity count to grow on every index_file call.
+			g_store->deleteFileData(project_id, file_path);
 
 			// Build graph from SemanticUnit
 			uint64_t start_node_id = 1;
@@ -269,8 +273,10 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 		g_store->upsertFile(project_id, file_path, language,
 				    hash.c_str());
 
-		// Delete old graph data for this file
-		g_store->deleteGraphNodesByFile(project_id, file_path);
+		// Delete old data for this file across ALL tables
+		// (graph_nodes, graph_edges, entity, relation, semantic_records)
+		// to prevent duplicate accumulation on re-index.
+		g_store->deleteFileData(project_id, file_path);
 
 		// Build graph from IR — use unique node IDs across all projects
 		uint64_t start_node_id = 1;

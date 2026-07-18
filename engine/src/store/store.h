@@ -216,6 +216,28 @@ class GraphStore {
 
 	bool deleteGraphEdgesByFile(uint64_t project_id, const char *file_path);
 
+	/**
+	 * Delete ALL graph-layer data for a file: relation, graph_edges,
+	 * graph_nodes, and entity. Does NOT delete semantic_records —
+	 * buildGraph needs them intact to rebuild from.
+	 *
+	 * @param project_id  Project identifier.
+	 * @param file_path   Source file path.
+	 * @return true on success.
+	 */
+	bool deleteGraphDataByFile(uint64_t project_id, const char *file_path);
+
+	/**
+	 * Delete ALL data for a file across every table: semantic_records,
+	 * relation, graph_edges, graph_nodes, and entity. Used by index_file
+	 * to ensure a clean slate before re-inserting parsed data.
+	 *
+	 * @param project_id  Project identifier.
+	 * @param file_path   Source file path.
+	 * @return true on success.
+	 */
+	bool deleteFileData(uint64_t project_id, const char *file_path);
+
 	// ── Entity/Relation (Phase 1.1) ─────────────────────────
 
 	uint64_t insertEntity(uint64_t project_id,

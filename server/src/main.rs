@@ -215,15 +215,51 @@ fn main() {
     }
 
     // ── Server mode (default) ─────────────────────────────────
-    let default_dir = ".codescope";
-    let default_db = format!("{}/codescope.db", default_dir);
-
-    // Auto-create .codescope/ if it doesn't exist
-    if !Path::new(default_dir).exists() {
-        fs::create_dir_all(default_dir).expect("failed to create .codescope/ directory");
+    // Parse --rootPath / --root-path from CLI args. When provided, the
+    // server opens <rootPath>/.codescope/codescope.db instead of the
+    // cwd-relative default. This lets MCP clients point at an existing
+    // project DB without cd-ing into the project directory.
+    //
+    // Without this, `codescope mcp --rootPath /path/to/project` silently
+    // ignores --rootPath, opens cwd/.codescope/codescope.db (wrong DB),
+    // and handle_initialize creates an empty project shell because the
+    // rootPath doesn't match any project in the wrong DB.
+    let mut root_path: Option<String> = None;
+    {
+        let mut iter = args.iter().skip(1);
+        while let Some(arg) = iter.next() {
+            if (arg == "--rootPath" || arg == "--root-path")
+                && let Some(val) = iter.next()
+            {
+                root_path = Some(val.clone());
+            }
+        }
     }
 
-    let db_path = env::var("CODESCOPE_DB_PATH").unwrap_or(default_db);
+    let db_path = if let Some(ref rp) = root_path {
+        let codescope_dir = format!("{}/.codescope", rp);
+        if !Path::new(&codescope_dir).exists() {
+            fs::create_dir_all(&codescope_dir).unwrap_or_else(|e| {
+                eprintln!("codescope: failed to create {}: {}", codescope_dir, e);
+            });
+        }
+        let db = format!("{}/codescope.db", codescope_dir);
+        // Set env var so worker subprocesses (spawned by tools::execute)
+        // inherit the correct DB path.
+        // Safety: this runs before any threads are spawned (server.run()
+        // starts later), so there is no data race on the environment.
+        unsafe {
+            env::set_var("CODESCOPE_DB_PATH", &db);
+        }
+        db
+    } else {
+        let default_dir = ".codescope";
+        let default_db = format!("{}/codescope.db", default_dir);
+        if !Path::new(default_dir).exists() {
+            fs::create_dir_all(default_dir).expect("failed to create .codescope/ directory");
+        }
+        env::var("CODESCOPE_DB_PATH").unwrap_or(default_db)
+    };
 
     eprintln!("codescope: initializing with db={}", db_path);
 

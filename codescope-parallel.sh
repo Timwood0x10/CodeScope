@@ -292,6 +292,7 @@ echo "[1/3] Discovering project structure..."
 T0=$(date +%s)
 DISCOVER_JSON=$("$CODESCOPE_BIN" discover "$PROJECT_DIR" 2>/dev/null)
 TOTAL_FILES=$(echo "$DISCOVER_JSON" | json_get "total_files")
+TOTAL_FILES=${TOTAL_FILES:-0}
 echo "  Total source files: $TOTAL_FILES"
 
 # Parse modules into a temp file (name:count)
@@ -356,8 +357,10 @@ find_crashing_file() {
         local env_args=()
         [ -n "$INDEX_MODE" ] && env_args+=("CODESCOPE_INDEX_MODE=$INDEX_MODE")
         env_args+=("CODESCOPE_DB_PATH=$temp_db" "CODESCOPE_WORKERS=1")
-        env "${env_args[@]}" timeout 120 "$CODESCOPE_BIN" worker "$temp_db" "$test_dir" "" "q-${module_name}" 0 >/dev/null 2>&1 || true
-        local ec=$?
+        # Fix: capture real exit code without || true swallowing it.
+        # This is the standard bash idiom for "get exit code without set -e killing us".
+        local ec=0
+        env "${env_args[@]}" timeout 120 "$CODESCOPE_BIN" worker "$temp_db" "$test_dir" "" "q-${module_name}" 0 >/dev/null 2>&1 || ec=$?
         rm -rf "$test_dir" "$test_list"
         if [ "$ec" -eq 0 ] || [ "$ec" -eq 124 ]; then
             left=$((mid + 1))
@@ -400,10 +403,12 @@ index_module() {
     local env_args=()
     [ -n "$INDEX_MODE" ] && env_args+=("CODESCOPE_INDEX_MODE=$INDEX_MODE")
     env_args+=("CODESCOPE_DB_PATH=$module_db" "CODESCOPE_WORKERS=$workers")
+    # Fix: capture real exit code without || true swallowing it.
+    local ec=0
     env "${env_args[@]}" timeout 600 "$CODESCOPE_BIN" worker \
         "$module_db" "$module_dir" "" "$name" 0 \
-        > "$module_log" 2>&1 || true
-    local ec=$? dur=$(( $(date +%s) - t0 ))
+        > "$module_log" 2>&1 || ec=$?
+    local dur=$(( $(date +%s) - t0 ))
     local nodes
     nodes=$(sqlite3 "$module_db" "SELECT COUNT(*) FROM graph_nodes;" 2>/dev/null || echo 0)
     echo "$name:$ec:$nodes:$dur:$workers"

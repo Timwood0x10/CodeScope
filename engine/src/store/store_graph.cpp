@@ -144,10 +144,12 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		return true;
 	}
 
-	// Delete existing graph data for files being rebuilt
+	// Delete existing graph data for files being rebuilt.
+	// deleteGraphDataByFile cleans relation, graph_edges, graph_nodes,
+	// AND entity — the old code only deleted edges+nodes, leaving entity
+	// rows that caused duplicate accumulation on re-index.
 	for (auto &fp : rebuild_files) {
-		deleteGraphEdgesByFile(project_id, fp.c_str());
-		deleteGraphNodesByFile(project_id, fp.c_str());
+		deleteGraphDataByFile(project_id, fp.c_str());
 	}
 	auto t_delete = Clock::now();
 
@@ -346,7 +348,8 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			     "WHERE sr.project_id=" +
 			     pid +
 			     " AND sr.kind = 19" // Route
-			     " AND sr.name != '' AND sr.name LIKE '% %'")
+			     " AND sr.name != '' AND sr.name LIKE '% %'"
+			     " AND sr.file_path IN (SELECT file_path FROM _rf)")
 			     .c_str());
 	}
 	auto t_route = Clock::now();
@@ -421,7 +424,8 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			     "FROM semantic_records sr "
 			     "WHERE sr.project_id=" +
 			     pid + " AND sr.kind IN " + type_kind_list +
-			     " AND sr.name != ''")
+			     " AND sr.name != ''"
+			     " AND sr.file_path IN (SELECT file_path FROM _rf)")
 			     .c_str());
 	}
 	auto t_type_info = Clock::now();
@@ -440,7 +444,8 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			     "WHERE sr.project_id=" +
 			     pid +
 			     " AND sr.kind = " + std::to_string(kKindTypeRef) +
-			     " AND sr.name != '' AND sr.type_name != ''")
+			     " AND sr.name != '' AND sr.type_name != ''"
+			     " AND sr.file_path IN (SELECT file_path FROM _rf)")
 			     .c_str());
 	}
 	auto t_type_ref = Clock::now();
@@ -487,7 +492,8 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			" AND sr.file_path = r2n.file_path "
 			"WHERE sr.project_id=" +
 			std::to_string(project_id) +
-			" AND sr.kind = 9 AND sr.name != '' AND sr.file_path NOT LIKE '%\\_test.%' ESCAPE '\\' AND sr.file_path NOT LIKE '%/tests/%' AND sr.file_path NOT LIKE '%\\_spec.%' ESCAPE '\\' AND sr.file_path NOT LIKE '%/benches/%' AND sr.file_path NOT LIKE '%\\_\\_test\\_\\_%' ESCAPE '\\'";
+			" AND sr.kind = 9 AND sr.name != '' AND sr.file_path NOT LIKE '%\\_test.%' ESCAPE '\\' AND sr.file_path NOT LIKE '%/tests/%' AND sr.file_path NOT LIKE '%\\_spec.%' ESCAPE '\\' AND sr.file_path NOT LIKE '%/benches/%' AND sr.file_path NOT LIKE '%\\_\\_test\\_\\_%' ESCAPE '\\'"
+			" AND sr.file_path IN (SELECT file_path FROM _rf)";
 		exec(ref_sql.c_str());
 	}
 	auto t_reference = Clock::now();
@@ -497,7 +503,8 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	{
 		const char *fetch_sql =
 			"SELECT sr.name, sr.project_id, sr.file_path FROM semantic_records sr "
-			"WHERE sr.project_id=? AND sr.kind=11 AND sr.name != '' AND sr.file_path NOT LIKE '%\\_test.%' ESCAPE '\\' AND sr.file_path NOT LIKE '%/tests/%' AND sr.file_path NOT LIKE '%\\_spec.%' ESCAPE '\\' AND sr.file_path NOT LIKE '%/benches/%'";
+			"WHERE sr.project_id=? AND sr.kind=11 AND sr.name != '' AND sr.file_path NOT LIKE '%\\_test.%' ESCAPE '\\' AND sr.file_path NOT LIKE '%/tests/%' AND sr.file_path NOT LIKE '%\\_spec.%' ESCAPE '\\' AND sr.file_path NOT LIKE '%/benches/%'"
+			" AND sr.file_path IN (SELECT file_path FROM _rf)";
 		sqlite3_stmt *fetch_st = nullptr;
 		if (sqlite3_prepare_v2(db_, fetch_sql, -1, &fetch_st,
 				       nullptr) == SQLITE_OK) {
@@ -604,7 +611,9 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			", 0, 1, module_path, "
 			"0, 0 "
 			"FROM entity WHERE project_id=" +
-			std::to_string(project_id) + " AND module_path != ''";
+			std::to_string(project_id) +
+			" AND module_path != ''"
+			" AND entity.file_path IN (SELECT file_path FROM _rf)";
 		exec(scope_sql.c_str());
 	}
 	// Function scopes: each entity within its module scope.
@@ -621,7 +630,8 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			" AND s.kind = 1"
 			" AND s.name = e.module_path "
 			"WHERE e.project_id=" +
-			std::to_string(project_id);
+			std::to_string(project_id) +
+			" AND e.file_path IN (SELECT file_path FROM _rf)";
 		exec(func_sql.c_str());
 	}
 	// Update import.source_scope_id to point to the file's module scope.
@@ -678,7 +688,8 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			" AND file_path NOT LIKE '%/tests/%'"
 			" AND file_path NOT LIKE '%\\_spec.%' ESCAPE '\\'"
 			" AND file_path NOT LIKE '%/benches/%'"
-			" AND file_path NOT LIKE '%\\_\\_test\\_\\_%' ESCAPE '\\'";
+			" AND file_path NOT LIKE '%\\_\\_test\\_\\_%' ESCAPE '\\'"
+			" AND file_path IN (SELECT file_path FROM _rf)";
 		exec(entity_sql.c_str());
 	}
 
@@ -703,7 +714,9 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			" AND tgt.file_path NOT LIKE '%/benches/%'"
 			" AND tgt.file_path NOT LIKE '%\\_\\_test\\_\\_%' ESCAPE '\\'"
 			"WHERE e.project_id=" +
-			std::to_string(project_id);
+			std::to_string(project_id) +
+			" AND (src.file_path IN (SELECT file_path FROM _rf)"
+			" OR tgt.file_path IN (SELECT file_path FROM _rf))";
 		exec(rel_sql.c_str());
 	}
 	auto t_entity_relation = Clock::now();

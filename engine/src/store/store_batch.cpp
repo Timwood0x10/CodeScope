@@ -286,6 +286,22 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 		return false;
 	}
 
+	// Prepared statement: delete old semantic_records for a file before
+	// re-inserting. Without this, re-indexing a changed file appends new
+	// records to the old ones, causing buildGraph to create duplicate
+	// graph_nodes from the duplicated semantic_records.
+	const char *del_sr_sql =
+		"DELETE FROM semantic_records WHERE project_id = ? AND file_path = ?";
+	sqlite3_stmt *del_sr_st = nullptr;
+	if (sqlite3_prepare_v2(db_, del_sr_sql, -1, &del_sr_st, nullptr) !=
+	    SQLITE_OK) {
+		sqlite3_finalize(sr_st);
+		sqlite3_finalize(fss_st);
+		sqlite3_finalize(file_st);
+		error_ = "insertFileResultBatch: prepare del_sr failed";
+		return false;
+	}
+
 	// ── Process each file in the batch ─────────────────────────
 	// Collect semantic_records and staged_metrics across all files,
 	// then insert via multi-VALUES at the end for ~200x fewer step() calls.
@@ -320,6 +336,17 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 		sqlite3_bind_int64(fss_st, 4, fr.fsize);
 		sqlite3_step(fss_st);
 		sqlite3_reset(fss_st);
+
+		// Delete old semantic_records for this file to prevent
+		// duplicate accumulation on re-index. The multi-VALUES insert
+		// below uses plain INSERT (not OR REPLACE), so stale rows
+		// would survive and cause buildGraph to emit duplicate nodes.
+		sqlite3_bind_int64(del_sr_st, 1,
+				   static_cast<int64_t>(project_id));
+		sqlite3_bind_text(del_sr_st, 2, fr.file_path.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_step(del_sr_st);
+		sqlite3_reset(del_sr_st);
 
 		// Collect records and metrics for batch insert
 		batch_records.emplace_back(fr.file_path, fr.records);
@@ -553,6 +580,7 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 
 	sqlite3_finalize(sr_st);
 	sqlite3_finalize(fss_st);
+	sqlite3_finalize(del_sr_st);
 	if (file_st)
 		sqlite3_finalize(file_st);
 
