@@ -151,7 +151,8 @@ void CVisitor::handleFuncDef(TSNode node, uint64_t parent_id)
 		visitChildren(node, parent_id);
 		return;
 	}
-	uint64_t id = emitter_->emitFunction(name, loc, parent_id);
+	uint64_t id = emitter_->emitFunction(name, loc, parent_id, 0, false,
+					     detectVisibility(node));
 	defineSymbol(name, id);
 	pushScope();
 	pushFunctionScope(id);
@@ -197,7 +198,8 @@ void CVisitor::handleStruct(TSNode node, uint64_t parent_id)
 			break;
 		}
 	}
-	uint64_t id = emitter_->emitClass(name, loc, parent_id);
+	uint64_t id = emitter_->emitClass(name, loc, parent_id,
+					  detectVisibility(node));
 	if (!name.empty())
 		defineSymbol(name, id);
 	visitChildren(node, id);
@@ -207,7 +209,8 @@ void CVisitor::handleEnum(TSNode node, uint64_t parent_id)
 {
 	SourceRange loc = location(node);
 	std::string name = extractName(node);
-	uint64_t id = emitter_->emitEnum(name, loc, parent_id);
+	uint64_t id = emitter_->emitEnum(name, loc, parent_id,
+					 detectVisibility(node));
 	if (!name.empty())
 		defineSymbol(name, id);
 	visitChildren(node, id);
@@ -332,7 +335,8 @@ void CVisitor::handleTypeDef(TSNode node, uint64_t parent_id)
 		visitChildren(node, parent_id);
 		return;
 	}
-	uint64_t id = emitter_->emitTypeAlias(name, loc, parent_id);
+	uint64_t id = emitter_->emitTypeAlias(name, loc, parent_id,
+					      detectVisibility(node));
 	defineSymbol(name, id);
 }
 
@@ -354,7 +358,8 @@ void CVisitor::handlePreprocDef(TSNode node, uint64_t parent_id)
 		visitChildren(node, parent_id);
 		return;
 	}
-	uint64_t id = emitter_->emitVariable(name, loc, parent_id);
+	uint64_t id = emitter_->emitVariable(name, loc, parent_id,
+					     detectVisibility(node));
 	defineSymbol(name, id);
 }
 
@@ -445,6 +450,25 @@ int CVisitor::countArguments(TSNode call_node, uint32_t child_count)
 		return argc;
 	}
 	return 0;
+}
+
+int CVisitor::detectVisibility(TSNode node)
+{
+	// C default is external linkage (visibility=1). Only `static` storage
+	// class makes a function/file-scope variable internal (visibility=0).
+	// Scan named children for storage_class_specifier whose text is "static".
+	uint32_t cnt = ts_node_child_count(node);
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (!ts_node_is_named(c))
+			continue;
+		if (strcmp(ts_node_type(c), "storage_class_specifier") == 0) {
+			std::string txt = nodeText(c);
+			if (txt == "static")
+				return 0;
+		}
+	}
+	return 1;
 }
 
 } // namespace ir

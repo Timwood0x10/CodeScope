@@ -123,6 +123,13 @@ struct Record {
 	bool is_static = false; // static function/method (C++/Rust/Java)
 	CallKind call_kind = CallKind::
 		Direct; // for CallExpr: direct/interface/constructor/method
+	/// Visibility level for this declaration (v0.2.2 role classifier signal).
+	/// 0 = private (default), 1 = pub/public/export, 2 = protected (Java/C#).
+	/// Populated by Visitors per language; flows Record → SemanticUnit →
+	/// entity.visibility column via the staging pipeline. The role classifier
+	/// in state_builder.cpp fuses pub_count (visibility=1) with call-graph
+	/// counts — see docs/dev_plans/role_classifier_plan.md.
+	int visibility = 0;
 };
 
 /**
@@ -156,7 +163,7 @@ class SemanticUnit {
 	/** Add a record and return its assigned ID. */
 	uint64_t addRecord(RecordKind kind, const std::string &name,
 			   uint64_t parent_id, SourceRange loc, int arity = 0,
-			   bool is_static = false);
+			   bool is_static = false, int visibility = 0);
 
 	/**
 	 * Add a typed record (Variable/Field/Parameter/TypeRef/TypeAssign with type info).
@@ -165,7 +172,8 @@ class SemanticUnit {
 	 */
 	uint64_t addTypedRecord(RecordKind kind, const std::string &name,
 				const std::string &type_name,
-				uint64_t parent_id, SourceRange loc);
+				uint64_t parent_id, SourceRange loc,
+				int visibility = 0);
 
 	/**
 	 * Add a record with explicit original_id and qualified_name (for DB rebuild).

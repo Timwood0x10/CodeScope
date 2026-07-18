@@ -57,7 +57,8 @@ void SwiftVisitor::handleFuncDecl(TSNode node, uint64_t parent_id)
 		visitChildren(node, parent_id);
 		return;
 	}
-	uint64_t id = emitter_->emitFunction(name, loc, parent_id);
+	uint64_t id = emitter_->emitFunction(name, loc, parent_id, 0, false,
+					     detectVisibility(node));
 	defineSymbol(name, id);
 	pushScope();
 	pushFunctionScope(id);
@@ -82,7 +83,8 @@ void SwiftVisitor::handleClassDecl(TSNode node, uint64_t parent_id)
 		visitChildren(node, parent_id);
 		return;
 	}
-	uint64_t id = emitter_->emitClass(name, loc, parent_id);
+	uint64_t id = emitter_->emitClass(name, loc, parent_id,
+					  detectVisibility(node));
 	defineSymbol(name, id);
 	visitChildren(node, id);
 }
@@ -94,7 +96,8 @@ void SwiftVisitor::handleStructDecl(TSNode node, uint64_t parent_id)
 		visitChildren(node, parent_id);
 		return;
 	}
-	uint64_t id = emitter_->emitClass(name, loc, parent_id);
+	uint64_t id = emitter_->emitClass(name, loc, parent_id,
+					  detectVisibility(node));
 	defineSymbol(name, id);
 	visitChildren(node, id);
 }
@@ -106,7 +109,8 @@ void SwiftVisitor::handleEnumDecl(TSNode node, uint64_t parent_id)
 		visitChildren(node, parent_id);
 		return;
 	}
-	uint64_t id = emitter_->emitEnum(name, loc, parent_id);
+	uint64_t id = emitter_->emitEnum(name, loc, parent_id,
+					 detectVisibility(node));
 	defineSymbol(name, id);
 	visitChildren(node, id);
 }
@@ -118,7 +122,8 @@ void SwiftVisitor::handleProtocolDecl(TSNode node, uint64_t parent_id)
 		visitChildren(node, parent_id);
 		return;
 	}
-	uint64_t id = emitter_->emitInterface(name, loc, parent_id);
+	uint64_t id = emitter_->emitInterface(name, loc, parent_id,
+					      detectVisibility(node));
 	defineSymbol(name, id);
 	visitChildren(node, id);
 }
@@ -163,7 +168,8 @@ void SwiftVisitor::handleVarDecl(TSNode node, uint64_t parent_id)
 			std::string name = nodeText(c);
 			if (!name.empty()) {
 				uint64_t id = emitter_->emitVariable(
-					name, location(c), parent_id);
+					name, location(c), parent_id,
+					detectVisibility(c));
 				defineSymbol(name, id);
 			}
 		}
@@ -185,5 +191,26 @@ std::string SwiftVisitor::extractName(TSNode node)
 			return nodeText(c);
 	}
 	return "";
+}
+
+int SwiftVisitor::detectVisibility(TSNode node)
+{
+	// Swift access-level modifiers appear as named children of the declaration
+	// node (function_declaration/class_declaration/etc). Scan for:
+	//   public/open    → 1 (exported)
+	//   internal/fileprivate/private (default) → 0
+	uint32_t cnt = ts_node_child_count(node);
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (!ts_node_is_named(c))
+			continue;
+		std::string txt = nodeText(c);
+		if (txt == "public" || txt == "open")
+			return 1;
+		if (txt == "internal" || txt == "fileprivate" ||
+		    txt == "private")
+			return 0;
+	}
+	return 0; // Swift default = internal
 }
 } // namespace ir

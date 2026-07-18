@@ -41,6 +41,9 @@ class CVisitor : public JsVisitor {
 	/// \param call_node        The call_expression node.
 	/// \param child_count      Pre-computed child count of call_node.
 	int countArguments(TSNode call_node, uint32_t child_count);
+	/// Detect C visibility: returns 1 for external linkage (default, non-static),
+	/// 0 for static/internal. v0.2.2 role classifier signal.
+	int detectVisibility(TSNode node);
 };
 
 } // namespace ir

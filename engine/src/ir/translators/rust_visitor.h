@@ -22,6 +22,9 @@ class RustVisitor : public JsVisitor {
 	void handleLet(TSNode node, uint64_t parent_id);
 	void handleUse(TSNode node, uint64_t parent_id);
 	std::string extractName(TSNode node);
+	/// Detect Rust visibility: returns 1 if node has a `pub` visibility_modifier
+	/// child (pub fn/pub struct/pub enum/pub trait), else 0. v0.2.2 role classifier.
+	int detectVisibility(TSNode node);
 };
 } // namespace ir
 #endif

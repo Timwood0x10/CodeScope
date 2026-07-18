@@ -21,6 +21,9 @@ class JavaVisitor : public JsVisitor {
 	void handleVariableDecl(TSNode node, uint64_t parent_id);
 	void handleImport(TSNode node, uint64_t parent_id);
 	std::string extractName(TSNode node);
+	/// Detect Java visibility: 1=public, 2=protected, 0=private/package-private.
+	/// v0.2.2 role classifier signal.
+	int detectVisibility(TSNode node);
 };
 } // namespace ir
 #endif

@@ -317,7 +317,8 @@ void JsVisitor::visitFunctionDecl(TSNode node, uint64_t parent_id)
 		}
 	}
 
-	uint64_t func_id = emitter_->emitFunction(name, loc, parent_id);
+	uint64_t func_id = emitter_->emitFunction(
+		name, loc, parent_id, 0, false, detectVisibility(node));
 	defineSymbol(name, func_id);
 
 	pushScope();
@@ -344,7 +345,8 @@ void JsVisitor::visitFunctionDecl(TSNode node, uint64_t parent_id)
 void JsVisitor::visitArrowFunction(TSNode node, uint64_t parent_id)
 {
 	SourceRange loc = location(node);
-	uint64_t lambda_id = emitter_->emitFunction("", loc, parent_id);
+	uint64_t lambda_id = emitter_->emitFunction(
+		"", loc, parent_id, 0, false, detectVisibility(node));
 
 	pushScope();
 	pushFunctionScope(lambda_id);
@@ -367,7 +369,8 @@ void JsVisitor::visitClassDecl(TSNode node, uint64_t parent_id)
 		}
 	}
 
-	uint64_t cls_id = emitter_->emitClass(name, loc, parent_id);
+	uint64_t cls_id = emitter_->emitClass(name, loc, parent_id,
+					      detectVisibility(node));
 	defineSymbol(name, cls_id);
 
 	pushScope();
@@ -391,7 +394,8 @@ void JsVisitor::visitMethodDef(TSNode node, uint64_t parent_id)
 		}
 	}
 
-	uint64_t method_id = emitter_->emitMethod(name, loc, parent_id);
+	uint64_t method_id = emitter_->emitMethod(
+		name, loc, parent_id, 0, false, detectVisibility(node));
 	defineSymbol(name, method_id);
 
 	pushScope();
@@ -514,7 +518,7 @@ void JsVisitor::visitIdentifier(TSNode node, uint64_t parent_id)
 	// are already extracted in their respective handlers.
 	SourceRange loc = location(node);
 	std::string name = nodeText(node);
-	emitter_->emitVariable(name, loc, parent_id);
+	emitter_->emitVariable(name, loc, parent_id, detectVisibility(node));
 }
 
 void JsVisitor::visitVariableDecl(TSNode node, uint64_t parent_id)
@@ -532,7 +536,8 @@ void JsVisitor::visitVariableDecl(TSNode node, uint64_t parent_id)
 					SourceRange var_loc = location(child);
 					std::string var_name = nodeText(decl);
 					uint64_t var_id = emitter_->emitVariable(
-						var_name, var_loc, parent_id);
+						var_name, var_loc, parent_id,
+						detectVisibility(child));
 					defineSymbol(var_name, var_id);
 					found = true;
 					break;
@@ -586,6 +591,25 @@ void JsVisitor::visitExportStmt(TSNode node, uint64_t parent_id)
 			visitNode(child, export_id);
 		}
 	}
+}
+
+int JsVisitor::detectVisibility(TSNode node)
+{
+	// Walk ancestor chain looking for export_statement. JS/TS exports
+	// wrap the declaration as a child, so the parent of a function/class
+	// declaration under export is export_statement. tree-sitter exposes
+	// parent via ts_node_parent().
+	TSNode p = ts_node_parent(node);
+	while (ts_node_is_null(p) == false) {
+		const char *t = ts_node_type(p);
+		if (strcmp(t, "export_statement") == 0)
+			return 1;
+		// short-circuit: if we hit the module root, stop
+		if (strcmp(t, "program") == 0)
+			break;
+		p = ts_node_parent(p);
+	}
+	return 0;
 }
 
 void JsVisitor::visitMemberExpr(TSNode node, uint64_t parent_id)

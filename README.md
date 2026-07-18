@@ -52,20 +52,29 @@ CodeScope builds a **module-level knowledge graph** as a side product of the ver
 
 The knowledge graph is not the product — it is the infrastructure that powers verification.
 
-#### Honest limitation: `module_summary.role` is mechanical, not semantic
+#### `module_summary.role`: multi-signal fusion classifier (v0.2.2)
 
-The `role` column **is** auto-populated — but by a mechanical CASE classifier (`engine/src/model/state_builder.cpp`), not by true semantic understanding. It keys on path substrings + degree thresholds:
+The `role` column is auto-populated by a **multi-signal fusion CASE** classifier (`engine/src/model/state_builder.cpp`), not a single-source heuristic. It fuses call-graph counts with two signals the call graph cannot give:
 
-| Role | Rule |
-|------|------|
-| `example` | path contains `/examples/` or `/example/` |
-| `entry` | path contains `/cmd/` |
-| `api` | path contains `/api/` |
-| `tool` | `incoming ≥ 10 AND outgoing ≤ 5 AND total ≤ 20` |
-| `business` | `incoming ≥ 5 AND outgoing ≥ 5` |
-| `infra` | everything else (fallback) |
+| Signal | Source | What it adds |
+|--------|--------|--------------|
+| `pub_count` | `entity.visibility=1` (pub/public/export per language Visitor) | Distinguishes "对外接口层" from "内部实现层" — call-graph counts alone can't |
+| `entry_reachable` | `graph_nodes.is_entry_point` (main/init/setup/run/handler) | Whether this module is an entry layer |
 
-So when a module falls into `infra` because no path keyword matched and its degree pattern didn't hit `tool`/`business`, the label reflects "didn't match any mechanical rule", not a verified infra role. The structured metrics (`utilization`, `dead_entities`, `incoming/outgoing`) are solid; the `role` label is heuristic. Treat `role` as a hint, not a verdict.
+Rules match by **priority** (first hit stops):
+
+| Priority | Role | Rule (multi-signal) |
+|----------|------|---------------------|
+| 1 | `test` | module name contains `test`/`tests`/`_test`/`mod tests` |
+| 2 | `api` | `pub_count > 0 AND incoming ≥ 2×outgoing AND incoming ≥ 3 AND utilization ≥ 0.3` |
+| 3 | `entry` | `entry_reachable > 0` |
+| 4 | `core` | `incoming ≥ 10 AND outgoing ≤ incoming×0.8 AND utilization ≥ 0.7 AND pub_count > 0` |
+| 5 | `utility` | `outgoing ≤ 5 AND pub_count > 0 AND utilization ≥ 0.5` |
+| 6 | `business` | `pub_count > 0 AND incoming ≥ 10` (implementation layer — many depend, many deps; outgoing too high for core/api) |
+| 7 | `dead` | `incoming=0 AND outgoing=0`, OR `dead_entities = total` |
+| 8 | `infra` | true fallback — didn't match any semantic rule |
+
+Treat `role` as a hint informed by fusion, not a court verdict. Thresholds are `constexpr` in `state_builder.h` — retune against `bun` if your project's role distribution looks off (e.g. `infra > 30%` means thresholds too strict). See `docs/dev_plans/role_classifier_plan.md` for the full design and the v0.2.2 bun tuning log.
 
 #### What lands in the knowledge graph (memscope-rs, 215 files)
 

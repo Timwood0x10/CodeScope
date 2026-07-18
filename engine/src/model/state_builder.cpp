@@ -17,8 +17,16 @@ int64_t StateBuilder::buildModuleSummaries()
 	// Single INSERT...SELECT replaces the per-row prepare/step/finalize
 	// loop. JOIN on entity.module_path = s.name uses idx_entity_module
 	// (sargable) instead of the non-sargable file_path LIKE s.name || '%'.
-	// Role classification is computed in SQL via CASE, matching the
-	// previous C++ classifyModuleRole logic exactly.
+	//
+	// Role classification (v0.2.2) is a multi-signal fusion CASE, not the
+	// v0.2.1 mechanical path-keyword classifier. Two signals beyond the
+	// call-graph counts are fused:
+	//   - pub_count:      COUNT of entity.visibility=1 (pub/public/export)
+	//                     in the module — distinguishes "对外接口层" from
+	//                     "内部实现层", a signal the call graph cannot give.
+	//   - entry_reachable: MAX(graph_nodes.is_entry_point) — does this
+	//                     module contain a main/init/setup/run/handler?
+	// Rules match by PRIORITY (first hit stops, see role_classifier_plan.md).
 	std::string sql =
 		"INSERT OR REPLACE INTO module_summary "
 		"(project_id, module_id, state, incoming_count, outgoing_count, "
@@ -28,13 +36,39 @@ int64_t StateBuilder::buildModuleSummaries()
 		"    THEN 1.0 - CAST(dead AS REAL) / total ELSE 0.0 END, "
 		"  0.85, "
 		"  CASE "
-		"    WHEN INSTR(module_name, '/examples/') > 0 "
-		"      OR INSTR(module_name, '/example/') > 0 THEN 'example' "
-		"    WHEN INSTR(module_name, '/cmd/') > 0 THEN 'entry' "
-		"    WHEN INSTR(module_name, '/api/') > 0 THEN 'api' "
-		"    WHEN incoming >= 10 AND outgoing <= 5 AND total <= 20 "
-		"      THEN 'tool' "
-		"    WHEN incoming >= 5 AND outgoing >= 5 THEN 'business' "
+		// Priority 1: test layer — strong path signal
+		"    WHEN INSTR(module_name, 'test') > 0 "
+		"      OR INSTR(module_name, 'tests') > 0 "
+		"      OR INSTR(module_name, '_test') > 0 "
+		"      OR INSTR(module_name, 'mod tests') > 0 THEN 'test' "
+		// Priority 2: api layer — pub surface + cross-module called heavily
+		// Thresholds from state_builder.h constexpr (kRoleApi*), retunable.
+		"    WHEN pub_count > 0 AND incoming >= " + std::to_string(kRoleApiIncomingOutgoingRatio) + " * outgoing "
+		"      AND incoming >= " + std::to_string(kRoleApiIncomingMin) + " "
+		"      AND utilization >= " + std::to_string(kRoleApiUtilizationMin) + " THEN 'api' "
+		// Priority 3: entry layer — contains a main/init/setup/run/handler
+		"    WHEN entry_reachable > 0 THEN 'entry' "
+		// Priority 4: core hub — many depend on it, self deps low, utilized,
+		//              has pub surface (中枢). Thresholds from state_builder.h
+		//              constexpr (kRoleCore*), retunable.
+		"    WHEN incoming >= " + std::to_string(kRoleCoreIncomingMin) + " "
+		"      AND outgoing <= incoming * " + std::to_string(kRoleCoreOutgoingIncomingRatio) + " "
+		"      AND utilization >= " + std::to_string(kRoleCoreUtilizationMin) + " "
+		"      AND pub_count > 0 THEN 'core' "
+		// Priority 5: utility layer — called by others, has pub, few deps
+		// Thresholds from state_builder.h constexpr (kRoleUtility*).
+		"    WHEN outgoing <= " + std::to_string(kRoleUtilityOutgoingMax) + " AND pub_count > 0 "
+		"      AND utilization >= " + std::to_string(kRoleUtilityUtilizationMin) + " THEN 'utility' "
+		// Priority 6: business layer — implementation: many depend on it AND
+		//              it depends on many (high outgoing). Not core (outgoing too
+		//              high), not api (outgoing too high), but clearly not infra.
+		//              Rescues modules like bun's src/jsc/bindings (pub=3466,
+		//              incoming=2360, outgoing=1794, util=0.38) from infra兜底.
+		"    WHEN pub_count > 0 AND incoming >= " + std::to_string(kRoleBusinessIncomingMin) + " THEN 'business' "
+		// Priority 7: dead/leaf — no calls in or out, or all entities dead
+		"    WHEN (incoming = 0 AND outgoing = 0) "
+		"      OR dead = total THEN 'dead' "
+		// Priority 8: infra — true fallback (didn't match any semantic rule)
 		"    ELSE 'infra' END "
 		"FROM ("
 		"  SELECT s.id AS module_id, s.name AS module_name, "
@@ -42,7 +76,23 @@ int64_t StateBuilder::buildModuleSummaries()
 		"    COUNT(DISTINCT r_in.source_id) AS incoming, "
 		"    COUNT(DISTINCT r_out.target_id) AS outgoing, "
 		"    COUNT(DISTINCT e.id) - COUNT(DISTINCT r_tgt.target_id) "
-		"      AS dead "
+		"      AS dead, "
+		// pub_count: entity.visibility=1 (pub/public/export). visibility is
+		// populated by Visitors per language (pub→1, private→0). When the
+		// migration hasn't run yet visibility defaults to 0, making
+		// pub_count=0 — api/core/utility rules won't fire, role degrades
+		// gracefully to test/entry/dead/infra (still better than v0.2.1).
+		"    COUNT(DISTINCT CASE WHEN e.visibility = 1 THEN e.id END) "
+		"      AS pub_count, "
+		// entry_reachable: MAX(graph_nodes.is_entry_point) across the module
+		// — 1 if any node in the module is an entry point. Uses graph_nodes
+		// which is populated during enhance. When enhance hasn't run,
+		// is_entry_point defaults to 0 — entry rule won't fire, graceful.
+		"    MAX(COALESCE(gn.is_entry_point, 0)) AS entry_reachable, "
+		"    CASE WHEN COUNT(DISTINCT e.id) > 0 "
+		"      THEN 1.0 - CAST(COUNT(DISTINCT e.id) - "
+		"           COUNT(DISTINCT r_tgt.target_id) AS REAL) / "
+		"           COUNT(DISTINCT e.id) ELSE 0.0 END AS utilization "
 		"  FROM scope s "
 		"  JOIN entity e ON e.project_id = ? AND e.module_path = s.name "
 		"  LEFT JOIN relation r_in ON r_in.project_id = ? "
@@ -51,6 +101,11 @@ int64_t StateBuilder::buildModuleSummaries()
 		"    AND r_out.source_id = e.id AND r_out.target_id != e.id "
 		"  LEFT JOIN relation r_tgt ON r_tgt.project_id = ? "
 		"    AND r_tgt.target_id = e.id "
+		// graph_nodes JOIN for entry_reachable — LEFT JOIN so modules
+		// without graph_nodes (enhance not run) still appear, with
+		// entry_reachable=0 via COALESCE.
+		"  LEFT JOIN graph_nodes gn ON gn.project_id = ? "
+		"    AND gn.name = e.name AND gn.file_path = e.file_path "
 		"  WHERE s.kind = 1 AND s.project_id = ? "
 		"  GROUP BY s.id, s.name "
 		"  HAVING total >= 3"
@@ -64,7 +119,7 @@ int64_t StateBuilder::buildModuleSummaries()
 			sqlite3_errmsg(store_->handle()));
 		return -1;
 	}
-	for (int i = 1; i <= 6; i++)
+	for (int i = 1; i <= 7; i++)
 		sqlite3_bind_int64(stmt, i, static_cast<int64_t>(project_id_));
 
 	int rc = sqlite3_step(stmt);

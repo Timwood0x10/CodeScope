@@ -52,20 +52,29 @@ CodeScope 把知识图谱作为验证管线的副产品来构建。它学到的�
 
 知识图谱不是产品，是支撑验证的基础设施。
 
-#### 诚实局限：`module_summary.role` 是机械分类，不是语义角色
+#### `module_summary.role`：多信号融合分类器（v0.2.2）
 
-`role` 列**有被自动填充**——但靠的是 `engine/src/model/state_builder.cpp` 里的机械 CASE 分类器，不是真语义理解。它凭路径子串 + 度数阈值判断：
+`role` 列由**多信号融合 CASE** 分类器自动填充（`engine/src/model/state_builder.cpp`），不是单源启发式。它把调用图度数与调用图给不了的两类信号融合：
 
-| Role | 规则 |
-|------|------|
-| `example` | 路径含 `/examples/` 或 `/example/` |
-| `entry` | 請径含 `/cmd/` |
-| `api` | 請径含 `/api/` |
-| `tool` | `incoming ≥ 10 AND outgoing ≤ 5 AND total ≤ 20` |
-| `business` | `incoming ≥ 5 AND outgoing ≥ 5` |
-| `infra` | 其余全部（兜底） |
+| 信号 | 来源 | 增量信息 |
+|------|------|----------|
+| `pub_count` | `entity.visibility=1`（各语言 Visitor 域 pub/public/export） | 区分「对外接口层」vs「内部实现层」——调用图度数推不出 |
+| `entry_reachable` | `graph_nodes.is_entry_point`（main/init/setup/run/handler） | 该模块是否含入口层 |
 
-所以当某模块落在 `infra` 只是因为没命中任何路径关键字 + 度数模式没撞上 `tool`/`business`，这个标莶反映的是「没命中任何机械规则」，不是已验证的 infra 角色。结构化指标（`utilization`/`dead_entities`/`incoming`/`outgoing`）是硬的；`role` 标莶是启发式。请把 `role` 当线索，不当判决。
+规则按**优先级**匹配（命中即停）：
+
+| 优先级 | Role | 规则（多信号） |
+|--------|------|----------------|
+| 1 | `test` | 模块名含 `test`/`tests`/`_test`/`mod tests` |
+| 2 | `api` | `pub_count > 0 AND incoming ≥ 2×outgoing AND incoming ≥ 3 AND utilization ≥ 0.3` |
+| 3 | `entry` | `entry_reachable > 0` |
+| 4 | `core` | `incoming ≥ 10 AND outgoing ≤ incoming×0.8 AND utilization ≥ 0.7 AND pub_count > 0` |
+| 5 | `utility` | `outgoing ≤ 5 AND pub_count > 0 AND utilization ≥ 0.5` |
+| 6 | `business` | `pub_count > 0 AND incoming ≥ 10`（实现层——被多模块调且自己也调多；outgoing 偏高不命中 core/api） |
+| 7 | `dead` | `incoming=0 AND outgoing=0`，或 `dead_entities = total` |
+| 8 | `infra` | 真兜底——没命中任何语义规则 |
+
+请把 `role` 当融合后的线索，不当判决。阈值是 `state_builder.h` 里的 `constexpr`——若你项目的 role 分布看着不对（如 `infra > 30%` 说明阈值过严），凭 `bun` 调参。完整设计 + v0.2.2 bun 调参记录见 `docs/dev_plans/role_classifier_plan.md`。
 
 #### 知识图谱里落了什么（memscope-rs，215 文件）
 
@@ -247,28 +256,6 @@ CodeScope 在首次运行时自动在项目根目录创建 `.codescope/` 目录�
 Apache 2.0
 
 ***
-
-## 运行时日志
-
-所有基准测试在 **Apple M3 Max（36 GB 内存）** 上执行。\
-原始输出日志位于 [`runtimelog/`](runtimelog/)：
-
-| 日志 | 大小 | 内容 |
-|------|------|------|
-| `scan_goagent.log` | 127 KB | Go agent 工具调度分析 |
-| `scan_linux_kernel.log` | 52 KB | Linux kernel/ 核心扫描（40,335 符号） |
-| `scan_fs_io.log` | 14 KB | VFS + 页缓存 + 预读分析 |
-| `scan_linux_kernel_full.log` | 12 KB | 内核子目录全量扫描汇总 |
-| `scan_usb_raw.log` | 11 KB | USB 驱动子系统原始输出 |
-| `scan_stub_full.log` | 2.2 KB | 空实现检测（Fast + AST）测试 |
-| `scan_linux_full.log` | 1.7 KB | 全量内核扫描尝试 |
-| `scan_multilang.log` | 1.1 KB | 多语言架构扫描 |
-| `scan_hid.log` | 526 B | USB HID 子系统扫描 |
-| `scan_linux_scheduler.log` | 12.8 KB | 进程调度 + 父子进程资源分析 |
-| `scan_usb_hid_analysis.log` | 12.8 KB | USB HID 设备识别深度分析 |
-| `performance_benchmark.log` | 5.5 KB | 全量性能基准报告 |
-
----
 
 ## 工具使用指南
 

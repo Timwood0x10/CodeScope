@@ -97,7 +97,9 @@ void PythonVisitor::handleFuncDef(TSNode node, uint64_t parent_id)
 		visitChildren(node, parent_id);
 		return;
 	}
-	uint64_t id = emitter_->emitFunction(name, loc, parent_id);
+	uint64_t id =
+		emitter_->emitFunction(name, loc, parent_id, 0, false,
+				       name.compare(0, 2, "__") == 0 ? 0 : 1);
 	defineSymbol(name, id);
 	pushScope();
 	pushFunctionScope(id);
@@ -188,7 +190,8 @@ void PythonVisitor::handleClassDef(TSNode node, uint64_t parent_id)
 		visitChildren(node, parent_id);
 		return;
 	}
-	uint64_t id = emitter_->emitClass(name, loc, parent_id);
+	uint64_t id = emitter_->emitClass(
+		name, loc, parent_id, name.compare(0, 2, "__") == 0 ? 0 : 1);
 	defineSymbol(name, id);
 	pushScope();
 	uint32_t cnt = ts_node_child_count(node);
@@ -300,7 +303,8 @@ void PythonVisitor::handleAssignment(TSNode node, uint64_t parent_id)
 			std::string name = nodeText(c);
 			if (!name.empty()) {
 				uint64_t id = emitter_->emitVariable(
-					name, location(c), parent_id);
+					name, location(c), parent_id,
+					name.compare(0, 2, "__") == 0 ? 0 : 1);
 				defineSymbol(name, id);
 			}
 		} else {

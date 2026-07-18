@@ -120,6 +120,9 @@ class JsVisitor {
 	void visitImportStmt(TSNode node, uint64_t parent_id);
 	void visitExportStmt(TSNode node, uint64_t parent_id);
 	void visitMemberExpr(TSNode node, uint64_t parent_id);
+	/// Detect JS/TS visibility: returns 1 if node is exported (wrapped in
+	/// export_statement or marked export), else 0. v0.2.2 role classifier.
+	int detectVisibility(TSNode node);
 };
 
 } // namespace ir

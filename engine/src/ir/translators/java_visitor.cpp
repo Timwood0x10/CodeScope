@@ -119,7 +119,8 @@ void JavaVisitor::handleMethodDecl(TSNode node, uint64_t parent_id)
 		visitChildren(node, parent_id);
 		return;
 	}
-	uint64_t id = emitter_->emitMethod(name, loc, parent_id);
+	uint64_t id = emitter_->emitMethod(name, loc, parent_id, 0, false,
+					   detectVisibility(node));
 	defineSymbol(name, id);
 	pushScope();
 	pushFunctionScope(id);
@@ -145,7 +146,8 @@ void JavaVisitor::handleClassDecl(TSNode node, uint64_t parent_id)
 		visitChildren(node, parent_id);
 		return;
 	}
-	uint64_t id = emitter_->emitClass(name, loc, parent_id);
+	uint64_t id = emitter_->emitClass(name, loc, parent_id,
+					  detectVisibility(node));
 	defineSymbol(name, id);
 	pushScope();
 	// Check for implements clause: "class Foo implements Bar, Baz"
@@ -193,7 +195,8 @@ void JavaVisitor::handleInterfaceDecl(TSNode node, uint64_t parent_id)
 		visitChildren(node, parent_id);
 		return;
 	}
-	uint64_t id = emitter_->emitInterface(name, loc, parent_id);
+	uint64_t id = emitter_->emitInterface(name, loc, parent_id,
+					      detectVisibility(node));
 	defineSymbol(name, id);
 	visitChildren(node, id);
 }
@@ -205,7 +208,8 @@ void JavaVisitor::handleEnumDecl(TSNode node, uint64_t parent_id)
 		visitChildren(node, parent_id);
 		return;
 	}
-	uint64_t id = emitter_->emitEnum(name, loc, parent_id);
+	uint64_t id = emitter_->emitEnum(name, loc, parent_id,
+					 detectVisibility(node));
 	defineSymbol(name, id);
 	visitChildren(node, id);
 }
@@ -328,7 +332,8 @@ void JavaVisitor::handleVariableDecl(TSNode node, uint64_t parent_id)
 	if (name.empty())
 		return;
 
-	uint64_t id = emitter_->emitVariable(name, location(node), parent_id);
+	uint64_t id = emitter_->emitVariable(name, location(node), parent_id,
+					     detectVisibility(node));
 	defineSymbol(name, id);
 
 	// Look for the type in the parent node (local_variable_declaration or
@@ -381,5 +386,33 @@ std::string JavaVisitor::extractName(TSNode node)
 			return nodeText(c);
 	}
 	return "";
+}
+
+int JavaVisitor::detectVisibility(TSNode node)
+{
+	// Java modifiers sit in a `modifiers` child container. Scan it for
+	// public/protected/private. Default (no modifier) = package-private → 0.
+	uint32_t cnt = ts_node_child_count(node);
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (!ts_node_is_named(c))
+			continue;
+		if (strcmp(ts_node_type(c), "modifiers") == 0) {
+			uint32_t mcnt = ts_node_child_count(c);
+			for (uint32_t j = 0; j < mcnt; j++) {
+				TSNode m = ts_node_child(c, j);
+				if (!ts_node_is_named(m))
+					continue;
+				std::string txt = nodeText(m);
+				if (txt == "public")
+					return 1;
+				if (txt == "protected")
+					return 2;
+				if (txt == "private")
+					return 0;
+			}
+		}
+	}
+	return 0; // package-private
 }
 } // namespace ir

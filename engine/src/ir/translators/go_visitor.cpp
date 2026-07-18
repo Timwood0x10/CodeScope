@@ -1,4 +1,5 @@
 #include "go_visitor.h"
+#include <cctype>
 #include <cstring>
 #include <tree_sitter/api.h>
 #include "../builtin_registry.h"
@@ -125,7 +126,9 @@ void GoVisitor::handleFuncDecl(TSNode node, uint64_t parent_id)
 		visitChildren(node, parent_id);
 		return;
 	}
-	uint64_t id = emitter_->emitFunction(name, loc, parent_id);
+	uint64_t id = emitter_->emitFunction(
+		name, loc, parent_id, 0, false,
+		isupper(static_cast<unsigned char>(name[0])) ? 1 : 0);
 	defineSymbol(name, id);
 	pushScope();
 	pushFunctionScope(id);
@@ -172,7 +175,9 @@ void GoVisitor::handleMethodDecl(TSNode node, uint64_t parent_id)
 		visitChildren(node, parent_id);
 		return;
 	}
-	uint64_t id = emitter_->emitMethod(name, loc, parent_id);
+	uint64_t id = emitter_->emitMethod(
+		name, loc, parent_id, 0, false,
+		isupper(static_cast<unsigned char>(name[0])) ? 1 : 0);
 	defineSymbol(name, id);
 	pushScope();
 	pushFunctionScope(id);
@@ -222,13 +227,26 @@ void GoVisitor::handleTypeDecl(TSNode node, uint64_t parent_id)
 			}
 			uint64_t id;
 			if (is_struct)
-				id = emitter_->emitClass(name, loc, parent_id);
+				id = emitter_->emitClass(
+					name, loc, parent_id,
+					isupper(static_cast<unsigned char>(
+						name[0])) ?
+						1 :
+						0);
 			else if (is_interface)
-				id = emitter_->emitInterface(name, loc,
-							     parent_id);
+				id = emitter_->emitInterface(
+					name, loc, parent_id,
+					isupper(static_cast<unsigned char>(
+						name[0])) ?
+						1 :
+						0);
 			else
-				id = emitter_->emitTypeAlias(name, loc,
-							     parent_id);
+				id = emitter_->emitTypeAlias(
+					name, loc, parent_id,
+					isupper(static_cast<unsigned char>(
+						name[0])) ?
+						1 :
+						0);
 			defineSymbol(name, id);
 			// Visit type body (struct fields, interface methods)
 			visitChildren(c, id);
@@ -422,7 +440,11 @@ void GoVisitor::handleVarDecl(TSNode node, uint64_t parent_id)
 			std::string name = extractName(c);
 			if (!name.empty()) {
 				uint64_t id = emitter_->emitVariable(
-					name, location(c), parent_id);
+					name, location(c), parent_id,
+					isupper(static_cast<unsigned char>(
+						name[0])) ?
+						1 :
+						0);
 				defineSymbol(name, id);
 				// Extract type from var_spec children
 				uint32_t vc = ts_node_child_count(c);
@@ -461,8 +483,11 @@ void GoVisitor::handleShortVar(TSNode node, uint64_t parent_id)
 			continue;
 		if (strcmp(ts_node_type(c), "identifier") == 0) {
 			std::string name = nodeText(c);
-			uint64_t id = emitter_->emitVariable(name, location(c),
-							     parent_id);
+			uint64_t id = emitter_->emitVariable(
+				name, location(c), parent_id,
+				isupper(static_cast<unsigned char>(name[0])) ?
+					1 :
+					0);
 			defineSymbol(name, id);
 		}
 	}
@@ -472,7 +497,9 @@ void GoVisitor::handleInterfaceMethod(TSNode node, uint64_t parent_id)
 	SourceRange loc = location(node);
 	std::string name = extractName(node);
 	if (!name.empty())
-		emitter_->emitMethod(name, loc, parent_id);
+		emitter_->emitMethod(
+			name, loc, parent_id, 0, false,
+			isupper(static_cast<unsigned char>(name[0])) ? 1 : 0);
 }
 std::string GoVisitor::extractName(TSNode node)
 {

@@ -71,6 +71,7 @@ bool GraphStore::createSchema()
             language TEXT NOT NULL,
             signature TEXT DEFAULT '',
             is_stub INTEGER DEFAULT 0,
+            visibility INTEGER NOT NULL DEFAULT 0, -- v0.2.2: mirrors entity.visibility (0=private, 1=pub, 2=protected)
             callgraph_ready INTEGER DEFAULT 0,
             metrics_ready INTEGER DEFAULT 0,
             embedding_ready INTEGER DEFAULT 0,
@@ -195,6 +196,7 @@ bool GraphStore::createSchema()
             is_static INTEGER DEFAULT 0,
             type_name TEXT DEFAULT '', -- type for TypeRef/TypeAssign/TypeDecl records
             call_kind INTEGER DEFAULT 0, -- 0=direct, 1=method, 2=interface, 3=constructor, 4=static, 5=virtual
+            visibility INTEGER NOT NULL DEFAULT 0, -- v0.2.2: 0=private, 1=pub/public/export, 2=protected. role classifier signal.
             start_row INTEGER DEFAULT 0, start_col INTEGER DEFAULT 0,
             end_row INTEGER DEFAULT 0, end_col INTEGER DEFAULT 0,
             file_path TEXT NOT NULL,
@@ -896,6 +898,33 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 			if (!has_role) {
 				exec("ALTER TABLE module_summary "
 				     "ADD COLUMN role TEXT DEFAULT ''");
+			}
+		}
+	}
+
+	// Migration: add visibility column to entity table (v0.2.2)
+	// 0 = private (default), 1 = pub/public/export, 2 = protected (Java/C# reserved)
+	// Populated by Visitors per language: Rust pub→1, Go exported-uppercase→1,
+	// Python __leading→0 else→1, C/C++ header-declared→1 static-anon→0,
+	// Java public→1 private→0 protected→2, JS/TS export→1 else→0, Swift public/open→1.
+	// role classifier (state_builder.cpp buildModuleSummaries) fuses pub_count
+	// from this column with call-graph counts — see docs/dev_plans/role_classifier_plan.md.
+	{
+		sqlite3_stmt *probe = nullptr;
+		if (sqlite3_prepare_v2(db_, "PRAGMA table_info(entity)", -1,
+				       &probe, nullptr) == SQLITE_OK) {
+			bool has_visibility = false;
+			while (sqlite3_step(probe) == SQLITE_ROW) {
+				const char *col =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(probe, 1));
+				if (col && std::string(col) == "visibility")
+					has_visibility = true;
+			}
+			sqlite3_finalize(probe);
+			if (!has_visibility) {
+				exec("ALTER TABLE entity "
+				     "ADD COLUMN visibility INTEGER NOT NULL DEFAULT 0");
 			}
 		}
 	}

@@ -119,7 +119,8 @@ void RustVisitor::handleFunction(TSNode node, uint64_t parent_id)
 		visitChildren(node, parent_id);
 		return;
 	}
-	uint64_t id = emitter_->emitFunction(name, loc, parent_id);
+	uint64_t id = emitter_->emitFunction(name, loc, parent_id, 0, false,
+					     detectVisibility(node));
 	defineSymbol(name, id);
 	pushScope();
 	pushFunctionScope(id);
@@ -145,7 +146,8 @@ void RustVisitor::handleStruct(TSNode node, uint64_t parent_id)
 		visitChildren(node, parent_id);
 		return;
 	}
-	uint64_t id = emitter_->emitClass(name, loc, parent_id);
+	uint64_t id = emitter_->emitClass(name, loc, parent_id,
+					  detectVisibility(node));
 	defineSymbol(name, id);
 	visitChildren(node, id);
 }
@@ -157,7 +159,8 @@ void RustVisitor::handleEnum(TSNode node, uint64_t parent_id)
 		visitChildren(node, parent_id);
 		return;
 	}
-	uint64_t id = emitter_->emitEnum(name, loc, parent_id);
+	uint64_t id = emitter_->emitEnum(name, loc, parent_id,
+					 detectVisibility(node));
 	defineSymbol(name, id);
 	visitChildren(node, id);
 }
@@ -169,7 +172,8 @@ void RustVisitor::handleTrait(TSNode node, uint64_t parent_id)
 		visitChildren(node, parent_id);
 		return;
 	}
-	uint64_t id = emitter_->emitInterface(name, loc, parent_id);
+	uint64_t id = emitter_->emitInterface(name, loc, parent_id,
+					      detectVisibility(node));
 	defineSymbol(name, id);
 	visitChildren(node, id);
 }
@@ -207,8 +211,9 @@ void RustVisitor::handleImpl(TSNode node, uint64_t parent_id)
 			SourceRange loc = location(c);
 			std::string name = extractName(c);
 			if (!name.empty()) {
-				uint64_t id = emitter_->emitMethod(name, loc,
-								   parent_id);
+				uint64_t id = emitter_->emitMethod(
+					name, loc, parent_id, 0, false,
+					detectVisibility(c));
 				defineSymbol(name, id);
 				pushScope();
 				pushFunctionScope(id);
@@ -336,7 +341,8 @@ void RustVisitor::handleLet(TSNode node, uint64_t parent_id)
 			std::string name = nodeText(c);
 			if (!name.empty()) {
 				uint64_t id = emitter_->emitVariable(
-					name, location(c), parent_id);
+					name, location(c), parent_id,
+					detectVisibility(c));
 				defineSymbol(name, id);
 				if (!type_name.empty())
 					emitter_->emitTypeRef(name, type_name,
@@ -379,5 +385,22 @@ std::string RustVisitor::extractName(TSNode node)
 			return nodeText(c);
 	}
 	return "";
+}
+
+int RustVisitor::detectVisibility(TSNode node)
+{
+	// Rust tree-sitter grammar marks `pub` as a `visibility_modifier` child
+	// of function_item/struct_item/enum_item/trait_item/impl_item. Scan named
+	// children for that node type. pub(crate)/pub(super) also surface here as
+	// a visibility_modifier with child identifiers — still returns 1 (pub).
+	uint32_t cnt = ts_node_child_count(node);
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (!ts_node_is_named(c))
+			continue;
+		if (strcmp(ts_node_type(c), "visibility_modifier") == 0)
+			return 1;
+	}
+	return 0;
 }
 } // namespace ir

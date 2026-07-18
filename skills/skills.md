@@ -28,7 +28,7 @@ CodeScope parses source code into a unified AST IR, builds a call graph + refere
 | `relation` | Inter-entity relations (containment / definition) |
 | `document` | README / Architecture.md / comment documents |
 
-> **`module_summary.role` is heuristic, not semantic.** It is auto-populated by a mechanical CASE classifier (`engine/src/model/state_builder.cpp`) keyed on path substrings (`/examples/`, `/cmd/`, `/api/`) + degree thresholds (`tool`/`business`). Fallback `infra` only means "didn't match any rule", not a verified infra role. The structured metrics (`utilization`, `dead_entities`, `incoming/outgoing`) are solid; treat `role` as a hint, not a verdict.
+> **`module_summary.role` is a multi-signal fusion classifier (v0.2.2).** It auto-populates via CASE in `engine/src/model/state_builder.cpp`, fusing call-graph counts with two signals the call graph cannot give: `pub_count` (`entity.visibility=1`, pub/public/export per language Visitor — distinguishes "对外接口层" from internal) and `entry_reachable` (`graph_nodes.is_entry_point`). 8 roles by priority: `test` → `api` → `entry` → `core` → `utility` → `business` → `dead` → `infra` (true fallback). Thresholds are `constexpr` in `state_builder.h` — retune against `bun` if `infra > 30%`. See `docs/dev_plans/role_classifier_plan.md` (includes the v0.2.2 bun tuning log). Treat `role` as a fusion-informed hint, not a verdict.
 
 ---
 
