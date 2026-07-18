@@ -28,6 +28,85 @@ fn main() {
         return;
     }
 
+    // ── Force-index mode: codescope force-index <path> [<path>...] ─
+    // Index specific files/dirs, BYPASSING the default skip rules
+    // (test/, docs/, vendored/, node_modules/, .gitignore, ...).
+    // Use case: user says "go index xxx/yyy for me" — the AI runs
+    //   codescope force-index /path/to/xxx/yyy
+    // and CodeScope pulls in those files regardless of the default
+    // skip list.
+    //
+    // Flags:
+    //   --lang <filter>   comma-separated language whitelist
+    //   --db <path>       SQLite DB path (default .codescope/codescope.db)
+    if args.len() >= 2 && args[1] == "force-index" {
+        let mut paths: Vec<String> = Vec::new();
+        let mut lang_filter = String::new();
+        let mut db_path = std::env::var("CODESCOPE_DB_PATH")
+            .unwrap_or_else(|_| ".codescope/codescope.db".to_string());
+        let mut i = 2;
+        while i < args.len() {
+            match args[i].as_str() {
+                "--lang" => {
+                    if let Some(v) = args.get(i + 1) {
+                        lang_filter = v.clone();
+                        i += 2;
+                        continue;
+                    }
+                }
+                "--db" => {
+                    if let Some(v) = args.get(i + 1) {
+                        db_path = v.clone();
+                        i += 2;
+                        continue;
+                    }
+                }
+                "--help" | "-h" => {
+                    println!(
+                        "Usage: codescope force-index [--lang <filter>] [--db <path>] <path> [<path>...]"
+                    );
+                    println!("  Force-index specific files/dirs, bypassing default skip rules.");
+                    return;
+                }
+                p => {
+                    if !p.starts_with("--") {
+                        paths.push(p.to_string());
+                    }
+                    i += 1;
+                }
+            }
+        }
+        if paths.is_empty() {
+            eprintln!("force-index: no paths given (try --help)");
+            std::process::exit(1);
+        }
+
+        if ffi::init(&db_path) != 0 {
+            eprintln!("force-index: engine init failed (db={})", db_path);
+            std::process::exit(1);
+        }
+
+        // Restore latest project_id; create one if DB is fresh.
+        let mut pid = ffi::get_latest_project_id();
+        if pid == 0 {
+            pid = ffi::create_project(&db_path, "force-index");
+            eprintln!("force-index: created fresh project_id={}", pid);
+        }
+
+        // Build JSON args for tools::execute. We go through the same
+        // h_force_index_files handler the MCP server uses, so the
+        // semantics are identical.
+        let tool_args = serde_json::json!({
+            "paths": paths,
+            "language_filter": lang_filter,
+        });
+        let result = tools::execute(pid, "force_index_files", &tool_args);
+        println!("{}", result);
+
+        ffi::shutdown();
+        return;
+    }
+
     // ── Worker mode: codescope worker <db_path> <dir_path> <lang_filter> <project_name> <project_id> [--file-list <json>] ─
     // Runs index_project in a subprocess, then exits. RSS is 100% returned to OS on exit.
     // Called by the MCP server to isolate indexing memory from the long-running server.

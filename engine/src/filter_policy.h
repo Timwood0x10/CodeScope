@@ -141,6 +141,15 @@ class FilterPolicy {
 	// Combined for current mode
 	std::unordered_set<std::string> active_skip_dirs_;
 
+	// Top-only skip dirs: source-bearing but rarely the focus of
+	// analysis (test/, docs/, vendor/, bench/, samples/, ...).
+	// Matched ONLY against the first path component of rel_path,
+	// so they catch <root>/test/, <root>/docs/ etc. without
+	// clobbering same-named Java package components like
+	// org/springframework/samples/petclinic (the "samples"
+	// component must NOT be skipped). See shouldSkipPath().
+	std::unordered_set<std::string> top_only_skip_dirs_;
+
 	// Skip suffixes (always applied, case-insensitive) — for FILES
 	std::unordered_set<std::string> skip_suffixes_;
 	// FAST mode extra suffixes

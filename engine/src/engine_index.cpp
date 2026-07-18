@@ -1,6 +1,7 @@
 #include "engine_internal.h"
 #include "filter_policy.h"
 #include "platform_win.h"
+#include "async_knowledge.h"
 
 #include <algorithm>
 #include <chrono>
@@ -123,6 +124,12 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 			g_store->insertGraphEdges(project_id, call_graph.edges);
 
 			g_store->commitTransaction();
+
+			// Trigger async knowledge builder (modules/role/summary).
+			// Without this, index_file leaves the knowledge layer
+			// empty — engine_index_project launches the builder at
+			// its tail, but the index_file path never did.
+			launchAsyncKnowledgeBuilder(project_id, true);
 
 			std::ostringstream result;
 			result << "{\"ok\":true,\"nodes\":"
@@ -321,6 +328,11 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 		}
 
 		g_store->commitTransaction();
+
+		// Trigger async knowledge builder (modules/role/summary).
+		// index_file must build the same knowledge layer as
+		// index_project, otherwise MCP tools return empty results.
+		launchAsyncKnowledgeBuilder(project_id, true);
 
 		std::ostringstream result;
 		result << "{\"ok\":true,\"nodes\":" << symbol_graph.nodes.size()

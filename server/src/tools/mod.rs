@@ -413,6 +413,246 @@ fn h_index_file(project_id: u64, args: &Value) -> String {
     ffi::index_file(project_id, path)
 }
 
+/// Force-index specific files or directories, bypassing FilterPolicy's
+/// default skip rules (test/, docs/, vendored/, node_modules/, etc.).
+///
+/// Use case: user says "go index xxx/yyy for me" — the AI calls this
+/// tool with paths=[...]. Files under the given paths are indexed
+/// regardless of the default skip list, so the user can pull in
+/// test fixtures, vendored deps, or generated code on demand.
+///
+/// Args:
+///   paths: array of absolute file/dir paths to force-index.
+///   language_filter: optional comma-separated language whitelist
+///     (e.g. "java,python"). When empty, all detectable languages
+///     are indexed.
+///
+/// Returns the engine_index_files JSON result
+/// (files_indexed/nodes/edges/errors).
+fn h_force_index_files(project_id: u64, args: &Value) -> String {
+    // Collect paths: accept either `paths: [...]` or legacy
+    // `path: "..."` for single-path convenience.
+    let mut paths: Vec<String> = Vec::new();
+    if let Some(arr) = args["paths"].as_array() {
+        for v in arr {
+            if let Some(s) = v.as_str() {
+                if !s.is_empty() {
+                    paths.push(s.to_string());
+                }
+            }
+        }
+    }
+    if let Some(s) = args["path"].as_str() {
+        if !s.is_empty() {
+            paths.push(s.to_string());
+        }
+    }
+    if paths.is_empty() {
+        return "{\"ok\":false,\"error\":\"paths is required (array of file/dir paths)\"}"
+            .to_string();
+    }
+
+    let lang_filter = args["language_filter"].as_str().unwrap_or("");
+
+    // Expand directories into individual file paths, bypassing
+    // FilterPolicy's shouldSkipEntry. We DO still respect:
+    //   - file size limit (CODESCOPE_MAX_FILE_SIZE, default 5MB)
+    //   - language detectability (detectLanguage must return non-null)
+    //   - optional language_filter whitelist
+    // We DO NOT respect:
+    //   - normal_skip_dirs_ / top_only_skip_dirs_ (test/, docs/, ...)
+    //   - skip_suffixes_ for source extensions
+    //   - .gitignore / .codescopeignore
+    // This is the "user override" path.
+    let max_size: u64 = std::env::var("CODESCOPE_MAX_FILE_SIZE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5 * 1024 * 1024);
+
+    let mut lang_whitelist: Option<std::collections::HashSet<String>> = None;
+    if !lang_filter.is_empty() {
+        let mut set = std::collections::HashSet::new();
+        for part in lang_filter.split(',') {
+            let p = part.trim().to_lowercase();
+            if !p.is_empty() {
+                set.insert(p);
+            }
+        }
+        lang_whitelist = Some(set);
+    }
+
+    let mut all_files: Vec<String> = Vec::new();
+    let mut skipped_files = 0u64;
+    let mut skipped_dirs = 0u64;
+
+    for p in &paths {
+        let path = std::path::Path::new(p);
+        if !path.exists() {
+            skipped_files += 1;
+            continue;
+        }
+        if path.is_file() {
+            // Single file — index directly if detectable.
+            if let Some(fp) = filter_acceptable_file(path, max_size, lang_whitelist.as_ref()) {
+                all_files.push(fp);
+            } else {
+                skipped_files += 1;
+            }
+            continue;
+        }
+        // Directory — walk it, bypassing skip-dir rules but still
+        // respecting file-level detectability + size.
+        walk_force_index(
+            path,
+            max_size,
+            lang_whitelist.as_ref(),
+            &mut all_files,
+            &mut skipped_files,
+            &mut skipped_dirs,
+        );
+    }
+
+    if all_files.is_empty() {
+        return format!(
+            "{{\"ok\":true,\"files_indexed\":0,\"nodes\":0,\"edges\":0,\"errors\":0,\"skipped_files\":{},\"skipped_dirs\":{}}}",
+            skipped_files, skipped_dirs
+        );
+    }
+
+    // Build JSON file list and call engine_index_files.
+    let json_list = serde_json::Value::Array(
+        all_files
+            .iter()
+            .map(|s| serde_json::Value::String(s.clone()))
+            .collect(),
+    )
+    .to_string();
+
+    let result = ffi::index_files(project_id, &json_list);
+
+    // Annotate result with skip stats for transparency.
+    if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&result) {
+        if let Some(obj) = v.as_object_mut() {
+            obj.insert("skipped_files".into(), skipped_files.into());
+            obj.insert("skipped_dirs".into(), skipped_dirs.into());
+            obj.insert("paths_requested".into(), paths.len().into());
+        }
+        return v.to_string();
+    }
+    result
+}
+
+/// Source extensions recognised by the C++ FilterPolicy::detectLanguage.
+/// Mirrored here so the force-index walk can decide which files to
+/// accept without crossing the FFI boundary for every entry.
+const SOURCE_EXTENSIONS: &[&str] = &[
+    ".py", ".cpp", ".cc", ".cxx", ".c", ".h", ".hpp", ".hxx", ".hh", ".rs", ".swift", ".js",
+    ".mjs", ".cjs", ".ts", ".tsx", ".go", ".java", ".kt", ".kts", ".rb", ".scala",
+];
+
+/// Check a single file path against force-index rules:
+///   - must exist and be a regular file
+///   - must be within max_size
+///   - extension must be a recognised source extension
+///   - must pass the optional language whitelist
+/// Returns the absolute path string if acceptable, None otherwise.
+fn filter_acceptable_file(
+    path: &std::path::Path,
+    max_size: u64,
+    lang_whitelist: Option<&std::collections::HashSet<String>>,
+) -> Option<String> {
+    let meta = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(_) => return None,
+    };
+    if !meta.is_file() {
+        return None;
+    }
+    if meta.len() > max_size {
+        return None;
+    }
+
+    // Extension check (case-insensitive)
+    let ext = match path.extension().and_then(|e| e.to_str()) {
+        Some(e) => format!(".{}", e.to_lowercase()),
+        None => return None,
+    };
+    if !SOURCE_EXTENSIONS.iter().any(|&s| s == ext) {
+        return None;
+    }
+
+    // Language whitelist (maps extension -> language label)
+    if let Some(wl) = lang_whitelist {
+        let lang = match ext.as_str() {
+            ".py" => "python",
+            ".cpp" | ".cc" | ".cxx" | ".h" | ".hpp" | ".hxx" | ".hh" => "cpp",
+            ".c" => "c",
+            ".rs" => "rust",
+            ".swift" => "swift",
+            ".js" | ".mjs" | ".cjs" => "javascript",
+            ".ts" => "typescript",
+            ".tsx" => "tsx",
+            ".go" => "go",
+            ".java" => "java",
+            ".kt" | ".kts" => "kotlin",
+            ".rb" => "ruby",
+            ".scala" => "scala",
+            _ => "",
+        };
+        if !lang.is_empty() && !wl.contains(lang) {
+            return None;
+        }
+    }
+
+    // Return absolute path
+    let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    Some(canon.to_string_lossy().to_string())
+}
+
+/// Recursively walk `root` for force-index. Bypasses all skip-dir
+/// rules (test/, docs/, vendored/, node_modules/, etc.) — this is
+/// the whole point of the force-index tool. Still respects:
+///   - file size limit
+///   - extension detectability
+///   - optional language whitelist
+fn walk_force_index(
+    root: &std::path::Path,
+    max_size: u64,
+    lang_whitelist: Option<&std::collections::HashSet<String>>,
+    out_files: &mut Vec<String>,
+    skipped_files: &mut u64,
+    skipped_dirs: &mut u64,
+) {
+    let entries = match std::fs::read_dir(root) {
+        Ok(e) => e,
+        Err(_) => {
+            *skipped_dirs += 1;
+            return;
+        }
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            // Recurse unconditionally — bypass skip-dir rules.
+            walk_force_index(
+                &path,
+                max_size,
+                lang_whitelist,
+                out_files,
+                skipped_files,
+                skipped_dirs,
+            );
+            continue;
+        }
+        if path.is_file() {
+            match filter_acceptable_file(&path, max_size, lang_whitelist) {
+                Some(fp) => out_files.push(fp),
+                None => *skipped_files += 1,
+            }
+        }
+    }
+}
+
 fn h_get_graph_stats(project_id: u64, _args: &Value) -> String {
     ffi::get_graph_stats(project_id)
 }
@@ -809,6 +1049,7 @@ static TOOL_HANDLERS: Lazy<HashMap<&'static str, ToolHandler>> = Lazy::new(|| {
     // Core tools
     m.insert("index_project", h_index_project as ToolHandler);
     m.insert("index_file", h_index_file as ToolHandler);
+    m.insert("force_index_files", h_force_index_files as ToolHandler);
     m.insert("get_graph_stats", h_get_graph_stats as ToolHandler);
     m.insert("detect_changes", h_detect_changes as ToolHandler);
     m.insert("verify_integrity", h_verify_integrity as ToolHandler);
@@ -929,6 +1170,29 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
                     "file_path": {"type": "string", "description": "Absolute path to the source file"}
                 },
                 "required": ["file_path"]
+            }),
+        },
+        Tool {
+            name: "force_index_files".into(),
+            description: "Force-index specific files or directories, BYPASSING the default skip rules (test/, docs/, vendored/, node_modules/, .gitignore, etc.). Use this when the user asks to index a path that the default FilterPolicy would skip — e.g. 'go index xxx/yyy for me'. Files under the given paths are indexed regardless of the default skip list, so the user can pull in test fixtures, vendored deps, or generated code on demand. Still respects: file size limit, language detectability, optional language whitelist.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Array of absolute file/dir paths to force-index. Directories are walked recursively, bypassing skip-dir rules."
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Convenience single-path form (merged into `paths` if both given)."
+                    },
+                    "language_filter": {
+                        "type": "string",
+                        "description": "Optional comma-separated language whitelist (e.g. \"java,python\"). Empty = all detectable languages."
+                    }
+                },
+                "required": ["paths"]
             }),
         },
         Tool {

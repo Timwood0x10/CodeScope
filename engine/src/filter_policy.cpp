@@ -172,30 +172,14 @@ FilterPolicy::FilterPolicy()
 		"__test__",
 		// ── Source-bearing dirs rarely the focus of analysis ──
 		// Skipped in NORMAL to avoid 3-5x file count inflation.
-		"test",
-		"tests",
-		"docs",
-		"doc",
-		"documentation",
-		"examples",
-		"example",
-		"samples",
-		"sample",
-		"scripts",
-		"hack",
-		"migrations",
-		"seeds",
-		"e2e",
-		"integration",
-		"locale",
-		"locales",
-		"i18n",
-		"l10n",
-		"assets",
-		"static",
-		"public",
-		"media",
-		"external",
+		// IMPORTANT: these are moved to top_only_skip_dirs_ below —
+		// matching them at ANY path depth (the normal_skip_dirs_
+		// behavior) would falsely skip Java packages like
+		// org/springframework/samples/petclinic (component "samples")
+		// or src/test/java (component "test"). Top-only matching
+		// still catches <root>/test/, <root>/docs/, <root>/vendor/,
+		// etc. without clobbering same-named package components.
+		// ── Build artifacts & caches (match at ANY depth) ──
 		"bin",
 		"third_party",
 		"thirdparty",
@@ -557,6 +541,24 @@ FilterPolicy::FilterPolicy()
 	lowercaseAll(skip_filename_prefixes_);
 	lowercaseAll(skip_dir_prefixes_);
 
+	// Source-bearing dirs that are "rarely the focus of analysis"
+	// (test/, docs/, vendor/, bench/, samples/, examples/, ...).
+	// These are matched ONLY against the first component of the
+	// project-relative path — see shouldSkipPath(). This avoids
+	// falsely skipping Java packages like
+	// org/springframework/samples/petclinic where "samples" is a
+	// legitimate package component, not a docs folder.
+	top_only_skip_dirs_ = {
+		"test",		 "tests",    "docs",	    "doc",
+		"documentation", "examples", "example",	    "samples",
+		"sample",	 "scripts",  "hack",	    "migrations",
+		"seeds",	 "e2e",	     "integration", "locale",
+		"locales",	 "i18n",     "l10n",	    "assets",
+		"static",	 "public",   "media",	    "external",
+		"vendor",	 "vendored", "bench",	    "benchmarks",
+	};
+	lowercaseAll(top_only_skip_dirs_);
+
 	buildActiveSets();
 }
 
@@ -830,6 +832,54 @@ bool FilterPolicy::shouldSkipPath(const std::string &rel_path,
 	while (std::getline(ss, component, '/')) {
 		if (shouldSkipDir(component))
 			return true;
+	}
+
+	// 1b. Shallow skip dirs — source-bearing but "rarely the focus
+	//     of analysis" dirs (test/, tests/, docs/, vendor/, bench/,
+	//     samples/, ...). Matched against the first path components
+	//     only (up to depth 3), so they catch:
+	//       <root>/test/...           (depth 1)
+	//       <root>/src/test/...       (depth 2, Maven/Gradle)
+	//       <root>/crates/<name>/tests/... (depth 3, Cargo workspace)
+	//     but do NOT clobber same-named Java package components deep
+	//     in the path like
+	//       src/main/java/org/springframework/samples/petclinic
+	//     where "samples" is a legitimate package, not a docs folder.
+	//
+	//     Depth 3 covers the common project-layout conventions
+	//     (root/src/test, root/crates/<name>/tests,
+	//      root/packages/<name>/tests) without touching deep
+	//     package namespaces.
+	{
+		// Extract up to 3 leading path components.
+		std::string head;
+		size_t off = 0;
+		for (int depth = 0; depth < 3; ++depth) {
+			auto slash = rel_path.find('/', off);
+			if (slash == std::string::npos) {
+				head = rel_path;
+				break;
+			}
+			off = slash + 1;
+		}
+		if (head.empty()) {
+			// rel_path has at least 3 components — take first 3.
+			head = rel_path.substr(0, off);
+		}
+		// Lowercase for case-insensitive comparison.
+		for (auto &c : head)
+			c = static_cast<char>(std::tolower(c));
+		// Check each of the first 3 components against
+		// top_only_skip_dirs_. If any matches, skip.
+		std::istringstream ss2(head);
+		std::string comp;
+		while (std::getline(ss2, comp, '/')) {
+			if (comp.empty())
+				continue;
+			if (top_only_skip_dirs_.find(comp) !=
+			    top_only_skip_dirs_.end())
+				return true;
+		}
 	}
 
 	// 2. Check against .gitignore rules (whole-path matching)

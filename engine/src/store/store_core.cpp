@@ -633,15 +633,42 @@ void GraphStore::explainQueryPlan(const char *sql, const char *label)
 
 // ─── Project ───────────────────────────────────────────────────
 
+// Normalize root_path to an absolute, symlink-resolved canonical form.
+// This is critical for MCP --rootPath reuse: the CLI worker may pass
+// "." (relative) while MCP clients pass an absolute path. Without
+// normalization, getProjectId(absolute) fails to match the DB row
+// stored as ".", causing createProject to insert a NEW empty project
+// (id=2) instead of reusing the data-bearing one (id=1).
+// Falls back to the raw input if realpath fails (non-existent path,
+// permission denied) so create-by-name flows still work.
+static std::string normalizeRootPath(const char *root_path)
+{
+	if (!root_path || !*root_path)
+		return {};
+	namespace fs = std::filesystem;
+	std::error_code ec;
+	// weakly_canonical resolves symlinks AND makes the path absolute,
+	// even if the path doesn't fully exist (it canonicalizes the
+	// existing prefix). This handles ".", "./foo", "foo/../bar",
+	// and absolute paths uniformly.
+	fs::path can = fs::weakly_canonical(fs::path(root_path), ec);
+	if (ec)
+		return root_path;
+	// Use native string form so macOS / Linux DB rows match exactly.
+	return can.native();
+}
+
 uint64_t GraphStore::createProject(const char *root_path, const char *name)
 {
 	// Try INSERT; if root_path already exists (UNIQUE constraint),
 	// query the existing project ID instead.
+	std::string norm = normalizeRootPath(root_path);
+	const char *effective_path = norm.empty() ? root_path : norm.c_str();
 	sqlite3_stmt *stmt = nullptr;
 	const char *sql = "INSERT OR IGNORE INTO projects (root_path, name) "
 			  "VALUES (?, ?)";
 	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
-	sqlite3_bind_text(stmt, 1, root_path, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 1, effective_path, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 2, name, -1, SQLITE_TRANSIENT);
 	int rc = sqlite3_step(stmt);
 	if (rc != SQLITE_DONE && rc != SQLITE_CONSTRAINT)
@@ -662,15 +689,17 @@ uint64_t GraphStore::createProject(const char *root_path, const char *name)
 	if (sqlite3_changes(db_) > 0) {
 		return static_cast<uint64_t>(sqlite3_last_insert_rowid(db_));
 	}
-	return getProjectId(root_path);
+	return getProjectId(effective_path);
 }
 
 uint64_t GraphStore::getProjectId(const char *root_path)
 {
+	std::string norm = normalizeRootPath(root_path);
+	const char *effective_path = norm.empty() ? root_path : norm.c_str();
 	sqlite3_stmt *stmt = nullptr;
 	const char *sql = "SELECT id FROM projects WHERE root_path = ?";
 	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
-	sqlite3_bind_text(stmt, 1, root_path, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 1, effective_path, -1, SQLITE_TRANSIENT);
 	uint64_t id = 0;
 	if (sqlite3_step(stmt) == SQLITE_ROW) {
 		id = static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));

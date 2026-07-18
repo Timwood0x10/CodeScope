@@ -243,7 +243,7 @@ $(BENCH_BIN): $(ENGINE_LIB)
 	@cmake --build $(BUILD_DIR) -j$(NPROC) 2>&1 | tail -1
 
 # ─── Lint ────────────────────────────────────────────────────────
-LINT_CPP_FILES := $(shell find $(ENGINE_DIR)/src -name '*.cpp' -o -name '*.h' | grep -v build)
+LINT_CPP_FILES := $(shell find $(ENGINE_DIR)/src $(ENGINE_DIR)/include -name '*.cpp' -o -name '*.h' | grep -v build)
 
 lint: lint-cpp lint-rust
 	@printf "$(CHECK) lint complete\n"
@@ -260,7 +260,7 @@ lint-cpp: $(BUILD_DIR)/compile_commands.json
 		&& printf "  $(CHECK) clang-format: ok (checked $$RECENT_FILES)\n"
 
 # Full lint-cpp (all files) - use this for thorough checks
-lint-cpp-full: $(BUILD_DIR)/compile_commands.json
+lint-cpp-full:
 	@printf "$(CYAN)[lint/cpp-full]$(RESET) Running clang-format on all files...\n"
 	@clang-format --dry-run --Werror $(LINT_CPP_FILES) 2>&1 \
 		&& printf "  $(CHECK) clang-format: ok (all files)\n"

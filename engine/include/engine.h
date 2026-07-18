@@ -238,8 +238,7 @@ char *engine_unified_search(uint64_t project_id, const char *query, int limit);
  *        homonyms (same name across files/classes). NULL = aggregate
  *        all files (legacy behavior).
  */
-char *engine_find_callers_adaptive(uint64_t project_id,
-				   const char *symbol_name,
+char *engine_find_callers_adaptive(uint64_t project_id, const char *symbol_name,
 				   const char *file_filter);
 
 /**
@@ -250,8 +249,7 @@ char *engine_find_callers_adaptive(uint64_t project_id,
  *        restricts the caller to the given file, disambiguating
  *        homonyms. NULL = aggregate all files (legacy behavior).
  */
-char *engine_find_callees_adaptive(uint64_t project_id,
-				   const char *symbol_name,
+char *engine_find_callees_adaptive(uint64_t project_id, const char *symbol_name,
 				   const char *file_filter);
 
 /**

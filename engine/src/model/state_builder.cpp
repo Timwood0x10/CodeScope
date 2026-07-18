@@ -43,28 +43,46 @@ int64_t StateBuilder::buildModuleSummaries()
 		"      OR INSTR(module_name, 'mod tests') > 0 THEN 'test' "
 		// Priority 2: api layer — pub surface + cross-module called heavily
 		// Thresholds from state_builder.h constexpr (kRoleApi*), retunable.
-		"    WHEN pub_count > 0 AND incoming >= " + std::to_string(kRoleApiIncomingOutgoingRatio) + " * outgoing "
-		"      AND incoming >= " + std::to_string(kRoleApiIncomingMin) + " "
-		"      AND utilization >= " + std::to_string(kRoleApiUtilizationMin) + " THEN 'api' "
+		"    WHEN pub_count > 0 AND incoming >= " +
+		std::to_string(kRoleApiIncomingOutgoingRatio) +
+		" * outgoing "
+		"      AND incoming >= " +
+		std::to_string(kRoleApiIncomingMin) +
+		" "
+		"      AND utilization >= " +
+		std::to_string(kRoleApiUtilizationMin) +
+		" THEN 'api' "
 		// Priority 3: entry layer — contains a main/init/setup/run/handler
 		"    WHEN entry_reachable > 0 THEN 'entry' "
 		// Priority 4: core hub — many depend on it, self deps low, utilized,
 		//              has pub surface (中枢). Thresholds from state_builder.h
 		//              constexpr (kRoleCore*), retunable.
-		"    WHEN incoming >= " + std::to_string(kRoleCoreIncomingMin) + " "
-		"      AND outgoing <= incoming * " + std::to_string(kRoleCoreOutgoingIncomingRatio) + " "
-		"      AND utilization >= " + std::to_string(kRoleCoreUtilizationMin) + " "
+		"    WHEN incoming >= " +
+		std::to_string(kRoleCoreIncomingMin) +
+		" "
+		"      AND outgoing <= incoming * " +
+		std::to_string(kRoleCoreOutgoingIncomingRatio) +
+		" "
+		"      AND utilization >= " +
+		std::to_string(kRoleCoreUtilizationMin) +
+		" "
 		"      AND pub_count > 0 THEN 'core' "
 		// Priority 5: utility layer — called by others, has pub, few deps
 		// Thresholds from state_builder.h constexpr (kRoleUtility*).
-		"    WHEN outgoing <= " + std::to_string(kRoleUtilityOutgoingMax) + " AND pub_count > 0 "
-		"      AND utilization >= " + std::to_string(kRoleUtilityUtilizationMin) + " THEN 'utility' "
+		"    WHEN outgoing <= " +
+		std::to_string(kRoleUtilityOutgoingMax) +
+		" AND pub_count > 0 "
+		"      AND utilization >= " +
+		std::to_string(kRoleUtilityUtilizationMin) +
+		" THEN 'utility' "
 		// Priority 6: business layer — implementation: many depend on it AND
 		//              it depends on many (high outgoing). Not core (outgoing too
 		//              high), not api (outgoing too high), but clearly not infra.
 		//              Rescues modules like bun's src/jsc/bindings (pub=3466,
 		//              incoming=2360, outgoing=1794, util=0.38) from infra兜底.
-		"    WHEN pub_count > 0 AND incoming >= " + std::to_string(kRoleBusinessIncomingMin) + " THEN 'business' "
+		"    WHEN pub_count > 0 AND incoming >= " +
+		std::to_string(kRoleBusinessIncomingMin) +
+		" THEN 'business' "
 		// Priority 7: dead/leaf — no calls in or out, or all entities dead
 		"    WHEN (incoming = 0 AND outgoing = 0) "
 		"      OR dead = total THEN 'dead' "
