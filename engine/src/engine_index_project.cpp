@@ -657,6 +657,19 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		g_store->buildGraph(project_id, true,
 				    is_reindex ? &changed_files : nullptr);
 		g_store->commitTransaction();
+		// Indexing now builds the full call graph (buildGraph above),
+		// so mark every node callgraph_ready. This makes trace_path and
+		// the enhancement-status report reflect that the call graph is
+		// present immediately after index — even before any (now no-op)
+		// enhance pass. Enhance increments the flag idempotently, so
+		// reruns leave callgraph_ready unchanged.
+		{
+			std::string up =
+				"UPDATE graph_nodes SET callgraph_ready=1 "
+				"WHERE project_id=" +
+				std::to_string(project_id);
+			g_store->exec(up.c_str());
+		}
 		// P0.1: entity/relation dual-write now happens INSIDE buildGraph
 		// (store_graph.cpp). The previous duplicate INSERT...SELECT here
 		// ran the same work twice, doubling wall time for large projects.

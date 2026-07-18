@@ -119,9 +119,6 @@ static int internal_impl(int x) {
 	// Status may be 0 if project was already finalized during indexing
 	// (enhance is now a lightweight no-op). The graph is verified by
 	// subsequent callee/trace checks.
-	printf("PASS: status — total=%d cg=%d metrics=%d emb=%d\n%s\n",
-	       total_st, cg_st, met_st, emb_st, st);
-	engine_free_string(st);
 
 	// ─── Step 5: cross-file caller/callee checks ───
 	// main() calls helper(int) via `helper(42)` — cross-file edge from buildGraph

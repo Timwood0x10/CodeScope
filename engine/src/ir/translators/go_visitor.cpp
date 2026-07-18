@@ -489,6 +489,12 @@ void GoVisitor::handleShortVar(TSNode node, uint64_t parent_id)
 					1 :
 					0);
 			defineSymbol(name, id);
+		} else {
+			// Recurse into the RHS expression so call expressions such
+			// as `r := foo()` are visited and emitted as call edges.
+			// Without this, intra-file calls inside `:=` assignments
+			// were silently dropped (only `=` assignments recursed).
+			visitNode(c, parent_id);
 		}
 	}
 }

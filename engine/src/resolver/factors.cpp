@@ -286,10 +286,25 @@ double factorVisibilityCheck(const std::string &language,
 
 	char first = candidate_name[0];
 
-	// Go: unexported names (lowercase) cannot be called from another package.
-	// This is a hard language rule, not a heuristic.
-	if (language == "go" && first >= 'a' && first <= 'z')
-		return 0.0; // Reject: unexported Go symbol
+	// Go: unexported names (lowercase) cannot be called from ANOTHER
+	// package — this is a hard language rule. BUT they ARE callable within
+	// the SAME package (Go's unexported == package-private). A Go package
+	// maps 1:1 to a directory, so caller and candidate in the same directory
+	// are the same package and the unexported symbol is visible. Only
+	// cross-package (different directory) unexported calls are rejected.
+	if (language == "go" && first >= 'a' && first <= 'z') {
+		size_t c_slash = caller_file.rfind('/');
+		size_t t_slash = candidate_file.rfind('/');
+		std::string c_dir = (c_slash == std::string::npos) ?
+					    "" :
+					    caller_file.substr(0, c_slash);
+		std::string t_dir = (t_slash == std::string::npos) ?
+					    "" :
+					    candidate_file.substr(0, t_slash);
+		if (c_dir == t_dir)
+			return 1.0; // same package — unexported is accessible
+		return 0.0; // cross-package — reject unexported Go symbol
+	}
 
 	// Python: names starting with '_' are private (module-level
 	// convention). They ARE accessible within the same module —

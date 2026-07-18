@@ -5,14 +5,17 @@
 | 项目 | 值 |
 |------|----|
 | 编号 | #8 |
-| 标题 | 增量索引去重：重索引文件时未按 `file_path` 删除旧实体再整体插入 |
-| 因子文件 | `factors.cpp`（定义优先因子缺失） |
-| 状态 | ❌ 没修 |
-| 进度 | 0% —— 仍无该因子 |
-| 影响范围 | `index_file`（CLI + MCP）重索引已索引文件；`index_project` 重跑 |
+| 标题 | 增量索引去重：重索引文件时单文件索引与全量索引产出实体集不一致，导致重复累积 |
+| 修复文件 | `engine/src/engine_index.cpp`（`engine_index_file` 单文件索引路径） |
+| 状态 | ✅ 已修复 |
+| 进度 | 100% |
+| 影响范围 | `index_file`（CLI + MCP）重索引已索引文件 |
 | 复现语言 | Java（通用，所有语言均受影响） |
 | 验证二进制 | 17:03 构建（`~/.codescope/bin/codescope`，大小 13226000，与 16:35 行为一致） |
 | 测试项目 | `spring-petclinic`（Java，30 文件 / 136 实体基线） |
+
+> 注：本文件早期版本误将根因写成「`factors.cpp` 定义优先因子缺失」。该因子是
+> 另一项独立修复（C/C++ 定义优先评分），与本 bug 无关。真实根因见第 3 节。
 
 ---
 
@@ -61,33 +64,44 @@ sqlite3 .codescope/codescope.db \
 
 ## 3. 根因
 
-`factors.cpp` 中的「定义优先因子」缺失。重索引时引擎只做**插入**，没有先按
-`file_path` 删除该文件的旧实体/关系。
+**单文件索引（`index_file`）与全量索引（`index_project`）走了两条产物不一致的管线。**
 
-- 部分缓解已落地：仅对 `kind = method` 做了 upsert（`addPet` 不再重复）。
-- 但**字段 (field)、类型引用 (type-ref)、局部变量 (variable)** 仍被无条件追加，
-  每次编辑都会让这些符号翻倍累积。
+- `index_project` 的写入路径：IR → `store::FileResult`（`ir::Record` 列表）→
+  `insertFileResultBatch`（事务内按 `project_id + file_path` 删除旧
+  `semantic_records`）→ `buildGraph`（按 `file_path` 重建 `entity`/`relation`/
+  `graph`）。这条路径对单个文件天然幂等、不累积。
+- `index_file` 的旧写入路径（修复前）：IR → `buildSymbolGraph` 直接产出图节点 →
+  `insertGraphNodes` → `insertEntity` **直接写 `entity` 表**，完全绕过了
+  `semantic_records` 与 `buildGraph`。
 
-正确行为应是：重索引某文件时，先 `DELETE` 该 `file_path` 下的所有 `entity` +
-`relation`（及依赖表）行，**再**整体插入本次解析结果 —— 即以 `file_path` 为键的
-真正 upsert。
+两条路径对同一个文件产出的实体集不同：visitor/translator 把类型引用、局部变量
+按出现次数各自提取成一个节点（如 `String` 出现 4 次 → 4 个 `entity`），而
+`buildGraph` 路径不会这样爆炸。更关键的是，旧 `index_file` 路径在重索引时**没有
+先按 `file_path` 清理旧行**，只是把新节点追加进去，于是每次编辑都会让符号翻倍
+累积（实测 Owner.java 从 ~9 涨到 30+，重复组 `name×5`、`String×4` 等）。
+
+> 早期版本误判为「`factors.cpp` 定义优先因子缺失」——该因子与本 bug 无关，是另一
+> 项独立修复。
 
 ---
 
 ## 4. 如何修复（做法）
 
-在 `index_file` / `index_project` 的「写入单文件」路径里，插入前先做按 `file_path`
-的清理：
+**方案 B（架构一致）：让 `index_file` 复用与 `index_project` 完全相同的管线。**
 
-1. 在事务内，对目标 `file_path` 执行：
-   - `DELETE FROM relation WHERE source_id IN (SELECT id FROM entity WHERE file_path = ?) OR target_id IN (SELECT id FROM entity WHERE file_path = ?);`
-   - `DELETE FROM entity WHERE file_path = ?;`
-   - （如有 `module_state` / `module_path` / FTS 映射等依赖表，同样按 file_path 清理）
-2. 再插入本次解析出的实体与关系。
-3. `index_project` 重跑时复用同一「按 file_path 清理再插入」逻辑，使重跑幂等。
+在 `engine/src/engine_index.cpp` 的 `engine_index_file` 中：
 
-注意：`factors.cpp` 的定义优先因子应统一承载「重索引 = 先删后插」的判定，而非
-只在 method 分支特殊处理。
+1. 把 visitor / translator 两种 IR 都转成 `store::FileResult`
+   （`result->records = su->allRecords();`，`SemanticUnit` 已自动补全
+   `file_path` / `language`）。
+2. 调用 `g_store->insertFileResultBatch(project_id, &result, nullptr)` —— 它在事务内
+   按 `project_id + file_path` 删除旧的 `semantic_records`，再插入本次解析结果。
+3. 调用 `g_store->buildGraph(project_id, /*build_calls=*/true, &changed_files)`，
+   其中 `changed_files = {file_path}` —— 增量只重建这一个文件，复用与全量索引
+   一致的 `entity`/`relation`/`graph` 生成逻辑。
+
+修复后，`index_file` 重索引产出的实体集与 `index_project` 完全一致、幂等、不累积。
+实测验证见下一节「验收」中的复现表（修复后 Owner.java 稳定在 9，无重复）。
 
 ---
 

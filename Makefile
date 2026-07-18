@@ -142,10 +142,14 @@ test: test-engine test-server
 #   - test_bench, test_bench_enhance, test_bench_project,
 #     test_pipeline_bench, test_bun: benchmarks / manual debug, built
 #     on demand (see test-bench / bench-check targets).
-# Known-failing tests (tracked for future fix, NOT in TEST_EXES):
-#   - test_enhance_e2e: expects files_processed field not yet implemented
-#   - test_js_visitor, test_ts_visitor, test_tsx_visitor: need external
-#     grammar .so files loaded via GRAMMARS_DIR (not compiled-in grammars)
+# Previously-excluded tests (now passing, wired back into TEST_EXES):
+#   - test_enhance_e2e: was a duplicate engine_free_string(st) in the test
+#     (double-free SIGABRT) + trace_path gated on callgraph_ready which
+#     index_project now sets after buildGraph. Both fixed.
+#   - test_js_visitor, test_ts_visitor, test_tsx_visitor: unit tests for the
+#     Js/Ts/Tsx translators that dlopen the grammar .so at runtime — they need
+#     GRAMMARS_DIR set (see test-engine target below). They pass once the
+#     grammar .so files are on disk under engine/grammars.
 TEST_EXES := \
 	test_ir test_graph test_graph_semantic test_graph_call_precision \
 	test_semantic_unit \
@@ -161,7 +165,9 @@ TEST_EXES := \
 	test_query_algorithms test_connected_components_ffi test_trigram_search \
 	test_exclude_paths test_index_metrics test_ladybug_sync \
 	test_call_graph_p1 test_readme_ingestion test_call_graph_method \
-	test_project_id
+	test_project_id \
+	test_enhance_e2e \
+	test_js_visitor test_ts_visitor test_tsx_visitor
 
 test-engine: $(ENGINE_LIB)
 	@printf "$(CYAN)[test/engine]$(RESET) Building and running C++ tests...\n"
@@ -169,6 +175,7 @@ test-engine: $(ENGINE_LIB)
 	@rm -f /tmp/test_*.db /tmp/test_*.db-wal /tmp/test_*.db-shm 2>/dev/null || true
 	@cd $(BUILD_DIR) && cmake --build . -j$(NPROC) 2>&1 | grep -E "(error|Error|Building|Linking)" || true
 	@failed=0; \
+	export GRAMMARS_DIR="$(CURDIR)/engine/grammars"; \
 	for test in $(TEST_EXES); do \
 		printf "  Running $$test...\n"; \
 		if $(BUILD_DIR)/$$test 2>&1; then \
