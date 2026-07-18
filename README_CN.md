@@ -52,7 +52,7 @@ CodeScope 把知识图谱作为验证管线的副产品来构建。它学到的�
 
 知识图谱不是产品，是支撑验证的基础设施。
 
-#### `module_summary.role`：多信号融合分类器（v0.2.2）
+#### `module_summary.role`：多信号融合分类器（v0.2.1）
 
 `role` 列由**多信号融合 CASE** 分类器自动填充（`engine/src/model/state_builder.cpp`），不是单源启发式。它把调用图度数与调用图给不了的两类信号融合：
 
@@ -66,15 +66,15 @@ CodeScope 把知识图谱作为验证管线的副产品来构建。它学到的�
 | 优先级 | Role | 规则（多信号） |
 |--------|------|----------------|
 | 1 | `test` | 模块名含 `test`/`tests`/`_test`/`mod tests` |
-| 2 | `api` | `pub_count > 0 AND incoming ≥ 2×outgoing AND incoming ≥ 3 AND utilization ≥ 0.3` |
+| 2 | `api` | `pub_count > 0 AND incoming ≥ 2×outgoing AND incoming ≥ 3 AND utilization ≥ 0.1` |
 | 3 | `entry` | `entry_reachable > 0` |
-| 4 | `core` | `incoming ≥ 10 AND outgoing ≤ incoming×0.8 AND utilization ≥ 0.7 AND pub_count > 0` |
-| 5 | `utility` | `outgoing ≤ 5 AND pub_count > 0 AND utilization ≥ 0.5` |
+| 4 | `core` | `incoming ≥ 10 AND outgoing ≤ incoming×1.0 AND utilization ≥ 0.05 AND pub_count > 0` |
+| 5 | `utility` | `outgoing ≤ 5 AND pub_count > 0 AND utilization ≥ 0.05` |
 | 6 | `business` | `pub_count > 0 AND incoming ≥ 10`（实现层——被多模块调且自己也调多；outgoing 偏高不命中 core/api） |
 | 7 | `dead` | `incoming=0 AND outgoing=0`，或 `dead_entities = total` |
 | 8 | `infra` | 真兜底——没命中任何语义规则 |
 
-请把 `role` 当融合后的线索，不当判决。阈值是 `state_builder.h` 里的 `constexpr`——若你项目的 role 分布看着不对（如 `infra > 30%` 说明阈值过严），凭 `bun` 调参。完整设计 + v0.2.2 bun 调参记录见 `docs/dev_plans/role_classifier_plan.md`。
+请把 `role` 当融合后的线索，不当判决。阈值是 `state_builder.h` 里的 `constexpr`——若你项目的 role 分布看着不对（如 `infra > 30%` 说明阈值过严），凭 `bun` 调参。完整设计 + v0.2.1 阈值重调记录见 `docs/dev_plans/role_classifier_plan.md`。
 
 #### 知识图谱里落了什么（memscope-rs，215 文件）
 

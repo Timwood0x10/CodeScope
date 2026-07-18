@@ -2,31 +2,7 @@
 
 ## v0.2.1 (2026-07-17)
 
-Bug-fix release focused on **call-graph resolve_strategy propagation**, **module-tree JSON validity**, **capability verifier LIKE-direction**, and **module-hierarchy materialisation**. No new features; this closes the gap between the Resolver Pipeline and the query/verify surfaces that caused third-party false positives and dead verifiers.
-
-### 🐛 Bug Fixes
-
-- **`resolve_strategy` not propagated to `graph_edges`**: Visitor-level `resolve_strategy` (`p1_intra` / `external` / `unresolved`) was correctly written to `semantic_records` but never reached `graph_edges` through the Resolver Pipeline. `find_callees` / `find_callers` / `engine_get_callees` / `engine_get_callers` therefore always returned an empty `resolve_strategy`, surfacing third-party symbols (`dropout`, `backward_hook`, `means`, `stds`, `LSTMLayer`) as in-project callees. Fixed by closing the full chain `semantic_records → reference → _resolved_edges → graph_edges` (schema migration in `store_schema.cpp`, staging in `pipeline.cpp`, output restored in `query_engine.cpp` + `store_query.cpp`). Verified on `bun` (8 languages): 100% of `edge_type=1` (call) edges carry a non-empty strategy. See `docs/bugs/bug_resolve_strategy.{zh,en}.md` for the full fix chain.
-- **`get_module_tree` invalid JSON (leading comma in children arrays)**: `GraphStore::getModuleTreeJson` (`store_project.cpp`) used a single shared `first` flag across the whole recursion. After the first root was emitted, every children array started with a leading comma (`[{...},{...}]`) — invalid JSON that crashed client `json.loads`. Fixed by threading `first` as a `bool &` parameter so each sibling list owns its own flag. Language-agnostic (any project with ≥2 module-tree levels reproduced).
-- **`verify_claim(capability_exists)` always Contradicted**: `capability_verifier.cpp` had the LIKE match direction reversed in both `capabilityDeclared` and `entitiesWithCallers` — `LOWER(?) LIKE LOWER(name)||'%'` (subject LIKE name) instead of `LOWER(name) LIKE LOWER(?)||'%'` (name LIKE subject). Since the README-derived subject is the longer form and the stored capability/node name is the short form, the reversed direction matched almost nothing — even perfect name matches returned Contradicted. Fixed to align with the correct `name LIKE pattern` direction already used by `architecture_verifier.cpp` and `contract_verifier.cpp`.
-
-### 🔧 Improvements
-
-- **`modules` table now populated**: `GraphStore::insertModule` (`store_project.cpp`) existed but was never called — `modules` stayed empty, so `explain_module` / `get_module_tree` degraded to reading only `module_edge` (dependency edges) and could not render module hierarchy (`parent_id` / `name` / `path` / `language`). Added `populateModulesHierarchy` (`async_knowledge.cpp`) called after `buildKnowledgeGraphSync` COMMIT: collapses `entity.module_path` directories into one `modules` row per distinct path, with `parent_id` resolved by next-shorter prefix and `file_count` / majority `language` per directory. Idempotent via `insertModule`'s existence check. Verified on `bun`: 253 modules rows, 21 roots, nested tree JSON valid.
-- **`test_bun` parameterised**: `engine/tests/test_bun.cpp` previously hardcoded `/Users/scc/code/researcher/bun`. Restored `argv[1]` parameterisation with the hardcoded path retained as default (backward compatible).
-- **Dead code `buildCallEdgesSQL` fully removed**: `buildGraph()` casts `build_calls` to `(void)` (`store_graph.cpp:320`), so `buildCallEdgesSQL` (`store_intern.cpp`) was never called — but the 676-line function body was still maintained, inviting future maintainers to edit dead code. Removed the function body and the stale docstring in `store.h`; left a comment block pointing to the Resolver Pipeline and `docs/bugs/bug_resolve_strategy.zh.md` Bug 1 for rationale.
-- **containment edges (edge_type=3) now write `resolve_strategy`**: `store_graph.cpp` containment-edge INSERT now JOINs `semantic_records psr` and writes `psr.resolve_strategy`. Ineffectual for the strategy itself (parent is a declaration node; strategy semantics only apply to CallExpr kind=9) but keeps the column populated for schema consistency.
-
-### 📚 Documentation
-
-- **`docs/bugs/bug_resolve_strategy.{zh,en}.md`**: bilingual bug-fix process records for the `resolve_strategy` propagation defect — root cause, fix actions per file, verification data across `bun` / `Transformer_Explorer` / `Neural_Network_Math_Explorer`.
-- **`docs/dev_plans/ffi_detection_plan.md`**: development plan (next-next step, not shipped in 0.2.1) for turning CodeScope from an FFI *boundary locator* into an FFI *boundary correctness checker*. Scope narrowed to in-project source (excludes third-party / stdlib callees) with accuracy re-estimate Phase 1 95-98% / Phase 2 80-90% / Phase 3 60-75%. Includes independent `ffi_*` storage schema (`ffi_boundary` / `ffi_findings` / `ffi_scan_summary`) isolated from the main analysis tables, and the decision rule reusing existing `resolve_strategy` + `BuiltinRegistry::isKnownExternal` for in-project vs third-party discrimination.
-
----
-
-## v0.2.0 (2026-07-16)
-
-Open-source release preparation — documentation accuracy, build portability fixes, and new developer tooling.
+Open-source release. Closes the gap between the Resolver Pipeline and the query/verify surfaces (call-graph `resolve_strategy` propagation, module-tree JSON validity, capability verifier LIKE-direction, module-hierarchy materialisation), plus FFI boundary detection, paginated graph export, LadybugDB embedded storage, one-click bootstrap, and a full code-review / portability / documentation pass.
 
 ### 🚀 New Features
 
@@ -37,14 +13,11 @@ Open-source release preparation — documentation accuracy, build portability fi
 - **LadybugDB incremental sync**: Added `lbug_sync_state` table to track incremental sync progress (last synced node id, edge rowid, and full-sync flag) so re-syncs only process new graph data.
 - **ISSUE_TEMPLATE and CONTRIBUTING guidelines**: Added GitHub issue templates and `CONTRIBUTING.md` to guide open-source contributors.
 
-### 🔧 Improvements
-
-- **Query Limits & Error Handling**: Added configurable query timeouts and result caps. Graceful error recovery for malformed queries — returns partial results instead of failing.
-- **Graph Building Logic**: Optimized buildGraph to handle orphaned nodes and broken references without crashing. Better error messages for cycle detection and constraint violations.
-- **MemberExpr False Positives Eliminated**: Fixed a bug where C++ `MemberExpr` (e.g., `obj.method()`) was incorrectly resolved as a direct call edge to unrelated functions. Now correctly distinguishes qualified member access from free function calls, improving call graph accuracy by ~15% on C++ codebases.
-
 ### 🐛 Bug Fixes
 
+- **`resolve_strategy` not propagated to `graph_edges`**: Visitor-level `resolve_strategy` (`p1_intra` / `external` / `unresolved`) was correctly written to `semantic_records` but never reached `graph_edges` through the Resolver Pipeline. `find_callees` / `find_callers` / `engine_get_callees` / `engine_get_callers` therefore always returned an empty `resolve_strategy`, surfacing third-party symbols (`dropout`, `backward_hook`, `means`, `stds`, `LSTMLayer`) as in-project callees. Fixed by closing the full chain `semantic_records → reference → _resolved_edges → graph_edges` (schema migration in `store_schema.cpp`, staging in `pipeline.cpp`, output restored in `query_engine.cpp` + `store_query.cpp`). Verified on `bun` (8 languages): 100% of `edge_type=1` (call) edges carry a non-empty strategy. See `docs/bugs/bug_resolve_strategy.{zh,en}.md` for the full fix chain.
+- **`get_module_tree` invalid JSON (leading comma in children arrays)**: `GraphStore::getModuleTreeJson` (`store_project.cpp`) used a single shared `first` flag across the whole recursion. After the first root was emitted, every children array started with a leading comma (`[{...},{...}]`) — invalid JSON that crashed client `json.loads`. Fixed by threading `first` as a `bool &` parameter so each sibling list owns its own flag. Language-agnostic (any project with ≥2 module-tree levels reproduced).
+- **`verify_claim(capability_exists)` always Contradicted**: `capability_verifier.cpp` had the LIKE match direction reversed in both `capabilityDeclared` and `entitiesWithCallers` — `LOWER(?) LIKE LOWER(name)||'%'` (subject LIKE name) instead of `LOWER(name) LIKE LOWER(?)||'%'` (name LIKE subject). Since the README-derived subject is the longer form and the stored capability/node name is the short form, the reversed direction matched almost nothing — even perfect name matches returned Contradicted. Fixed to align with the correct `name LIKE pattern` direction already used by `architecture_verifier.cpp` and `contract_verifier.cpp`.
 - **macOS install instructions missing LadybugDB**: `README.md`, `QUICK_START.md`, and `bootstrap.sh` did not list LadybugDB as a dependency, but `server/build.rs` unconditionally links `liblbug`. Added `brew install ladybug` (macOS) and `curl -fsSL https://install.ladybugdb.com | sh` (Linux) to all install paths.
 - **build.rs Linux library path portability**: The LadybugDB link search path was hardcoded to `/opt/homebrew/lib` (macOS-only). Now resolves the correct path per platform.
 - **C++ FFI exception safety**: All `extern "C"` boundary functions are now wrapped in `try/catch` so a C++ exception never crosses the FFI boundary into Rust (which would abort the process).
@@ -54,6 +27,16 @@ Open-source release preparation — documentation accuracy, build portability fi
 - **Query timeout**: Long-running fuzzy searches no longer block the server. Configurable `max_query_time_ms` (default 5000ms).
 - **Graph export OOM**: Paginated export prevents memory exhaustion on large graphs (100k+ nodes) by streaming results in pages of configurable size.
 
+### 🔧 Improvements
+
+- **`modules` table now populated**: `GraphStore::insertModule` (`store_project.cpp`) existed but was never called — `modules` stayed empty, so `explain_module` / `get_module_tree` degraded to reading only `module_edge` (dependency edges) and could not render module hierarchy (`parent_id` / `name` / `path` / `language`). Added `populateModulesHierarchy` (`async_knowledge.cpp`) called after `buildKnowledgeGraphSync` COMMIT: collapses `entity.module_path` directories into one `modules` row per distinct path, with `parent_id` resolved by next-shorter prefix and `file_count` / majority `language` per directory. Idempotent via `insertModule`'s existence check. Verified on `bun`: 253 modules rows, 21 roots, nested tree JSON valid.
+- **Query Limits & Error Handling**: Added configurable query timeouts and result caps. Graceful error recovery for malformed queries — returns partial results instead of failing.
+- **Graph Building Logic**: Optimized buildGraph to handle orphaned nodes and broken references without crashing. Better error messages for cycle detection and constraint violations.
+- **MemberExpr False Positives Eliminated**: Fixed a bug where C++ `MemberExpr` (e.g., `obj.method()`) was incorrectly resolved as a direct call edge to unrelated functions. Now correctly distinguishes qualified member access from free function calls, improving call graph accuracy by ~15% on C++ codebases.
+- **`test_bun` parameterised**: `engine/tests/test_bun.cpp` previously hardcoded `/Users/scc/code/researcher/bun`. Restored `argv[1]` parameterisation with the hardcoded path retained as default (backward compatible).
+- **Dead code `buildCallEdgesSQL` fully removed**: `buildGraph()` casts `build_calls` to `(void)` (`store_graph.cpp:320`), so `buildCallEdgesSQL` (`store_intern.cpp`) was never called — but the 676-line function body was still maintained, inviting future maintainers to edit dead code. Removed the function body and the stale docstring in `store.h`; left a comment block pointing to the Resolver Pipeline and `docs/bugs/bug_resolve_strategy.zh.md` Bug 1 for rationale.
+- **containment edges (edge_type=3) now write `resolve_strategy`**: `store_graph.cpp` containment-edge INSERT now JOINs `semantic_records psr` and writes `psr.resolve_strategy`. Ineffectual for the strategy itself (parent is a declaration node; strategy semantics only apply to CallExpr kind=9) but keeps the column populated for schema consistency.
+
 ### 🔒 Code Review Fixes
 
 - **LadybugDB stale data on re-index**: `buildGraph` now calls `resetLadybugSyncState` before sync to force a full sync when the SQLite graph was rebuilt, preventing stale nodes/edges from accumulating in LadybugDB.
@@ -62,9 +45,6 @@ Open-source release preparation — documentation accuracy, build portability fi
 - **CSV cleanup consistency**: Node and edge CSV error handling now uniformly retain the CSV for debugging on COPY FROM failure.
 - **FFI contract clarity**: Added exemption comment to `engine_free_string` documenting why `free()` is exempt from the try/catch wrapper requirement.
 - **Redundant try/catch removed**: Simplified `engine_find_connected_components` by merging the redundant inner/outer try/catch into a single wrapper.
-
-### 🔒 Code Review Fixes (Round 2)
-
 - **ffi::init() return value checked**: `tools/mod.rs` now verifies the engine re-init return code after worker subprocess, preventing silent permanent failure.
 - **Rust server panic safety**: Replaced 4 `serde_json::to_value().expect()` calls in `server.rs` with proper `-32603` error responses — server no longer crashes on serialization failure.
 - **Removed dead `tokio` dependency**: The server is fully synchronous; `tokio` was unused and added compile time/binary size.
@@ -74,6 +54,11 @@ Open-source release preparation — documentation accuracy, build portability fi
 - **Configurable `synchronous` mode**: `PRAGMA synchronous` now defaults to OFF but can be overridden via `CODESCOPE_SYNCHRONOUS=NORMAL|FULL|OFF` env var.
 - **Chinese comments translated**: All CJK comments in `engine/src/` and `engine/include/` translated to English.
 - **Global singleton thread-safety documented**: Added prominent contract block in `engine_internal.h` documenting the sequential-dispatch model and future migration path.
+
+### 📚 Documentation
+
+- **`docs/bugs/bug_resolve_strategy.{zh,en}.md`**: bilingual bug-fix process records for the `resolve_strategy` propagation defect — root cause, fix actions per file, verification data across `bun` / `Transformer_Explorer` / `Neural_Network_Math_Explorer`.
+- **`docs/dev_plans/ffi_detection_plan.md`**: development plan (next-next step, not shipped in 0.2.1) for turning CodeScope from an FFI *boundary locator* into an FFI *boundary correctness checker*. Scope narrowed to in-project source (excludes third-party / stdlib callees) with accuracy re-estimate Phase 1 95-98% / Phase 2 80-90% / Phase 3 60-75%. Includes independent `ffi_*` storage schema (`ffi_boundary` / `ffi_findings` / `ffi_scan_summary`) isolated from the main analysis tables, and the decision rule reusing existing `resolve_strategy` + `BuiltinRegistry::isKnownExternal` for in-project vs third-party discrimination.
 
 ### 🧹 Chores
 
@@ -263,7 +248,7 @@ Open-source release preparation — documentation accuracy, build portability fi
 
 ### 🏗 Cross-Platform
 
-- **GitHub Actions CI**: Automated build on macOS ARM64, Linux x86_64, Windows x86_64 — all three run on every push.
+- **GitHub Actions CI**: Automated build on macOS ARM64, Linux x86_64, Windows x86_64.
 - **Windows CI**: Full CI pipeline with MSVC toolchain, vcpkg dependencies, and PowerShell-based setup.
 - **Pre-built Binaries**: CI artifacts available for all three platforms on every release.
 
@@ -349,7 +334,7 @@ Open-source release preparation — documentation accuracy, build portability fi
 
 - **GitHub Actions CI**: Automated build on macOS ARM64, Linux x86_64, Windows x86_64.
 - **Windows support**: Added `install.ps1` PowerShell script for Windows setup.
-- **Pre-built binaries**: CI artifacts available for all three platforms on every release.
+- **Pre-built Binaries**: CI artifacts available for all three platforms on every release.
 
 ### 📚 Documentation
 

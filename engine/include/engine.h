@@ -14,7 +14,7 @@ void engine_shutdown();
 
 /// Returns the engine version string. The returned pointer is static
 /// and does NOT need to be freed.
-/// @return Static C string like "0.2.0"
+/// @return Static C string like "0.2.1"
 const char *engine_version(void);
 
 // ─── Project ──────────────────────────────────────────────────

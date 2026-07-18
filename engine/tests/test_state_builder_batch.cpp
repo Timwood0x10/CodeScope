@@ -248,7 +248,10 @@ int main()
 	          row.incoming, row.outgoing, row.dead, row.role.c_str());
 	  }
 
-	// ── Test 4: lib module content (relation but no api/core match -> infra) ─
+	// ── Test 4: lib module content (small internal helper, pub>0,
+	//   incoming=1, outgoing=1, util=0.33 — matches utility rule under
+	//   v0.2.1 thresholds: outgoing<=5, pub>0, utilization>=0.05).
+	//   Was 'infra' under v0.2.2 because utility required utilization>=0.5.
 	  {
 	   int64_t lib_scope_id = getModuleScopeId(store, pid, "/src/lib/");
 	   assert(lib_scope_id > 0);
@@ -259,8 +262,8 @@ int main()
 	   assert(row.outgoing == 1);
 	   // 3 entities, only entity 8 is a target -> dead = 2.
 	   assert(row.dead == 2);
-	   // No special path or pub/incoming pattern -> role = 'infra'.
-	   assert(row.role == "infra");
+	   // v0.2.1: utility rule fires (outgoing<=5, pub>0, util>=0.05).
+	   assert(row.role == "utility");
 	   printf("Test 4 (lib module incoming=%d outgoing=%d dead=%d "
 	          "role=%s): PASS\n",
 	          row.incoming, row.outgoing, row.dead, row.role.c_str());

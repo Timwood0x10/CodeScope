@@ -27,13 +27,9 @@ Bug-fix release. No new features; closes the gap between the Resolver Pipeline a
 - Bilingual bug-fix records in `docs/bugs/bug_resolve_strategy.{zh,en}.md`.
 - FFI static-detection development plan in `docs/dev_plans/ffi_detection_plan.md` (next-next step, not shipped in 0.2.1).
 
----
+### Open-source release preparation — documentation accuracy, build portability fixes, and new developer tooling
 
-## v0.2.0
-
-Open-source release preparation — documentation accuracy, build portability fixes, and new developer tooling.
-
-### New Features
+#### New Features
 
 - **FFI Boundary Detection** (`codescope_ffi_boundaries`): Automatically detects cross-language FFI boundaries in the codebase — identifies `extern "C"` blocks, `#[no_mangle]` symbols, JNI declarations, and C ABI function exports. Helps developers audit unsafe interop surface.
 - **Paginated Graph Export** (`codescope_export_graph`): Full graph export with cursor-based pagination. Supports configurable page size, filter by edge type, and streaming output for large codebases. Integrates with MCP tooling for seamless client-side consumption.

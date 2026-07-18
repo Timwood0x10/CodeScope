@@ -493,7 +493,7 @@ $ ls -lh ～/go/src/goagent/.codescope/codescope.db
 
 ***
 
-*CodeScope v0.2.0 / codebase-memory-mcp v0.8.1 对比基准*
+*CodeScope v0.2.1 / codebase-memory-mcp v0.8.1 对比基准*
 *测试环境: Apple M3 Pro, macOS 15, 2026-07-06*
 *索引目标: ARES（*<https://github.com/Timwood0x10/ARES>*）*
 
