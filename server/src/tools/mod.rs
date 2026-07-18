@@ -17,6 +17,7 @@ pub fn discover(dir_path: &str) -> String {
     use std::path::Path;
 
     // Built-in skip dirs matching FilterPolicy's normal_skip_dirs_
+    // Applied to EVERY path component (any depth).
     fn is_skip_dir(name: &str) -> bool {
         let lower = name.to_lowercase();
         matches!(
@@ -48,6 +49,45 @@ pub fn discover(dir_path: &str) -> String {
                 | ".gem"
                 | "go_pkg"
                 | "pkg"
+        )
+    }
+
+    // Top-only skip dirs matching FilterPolicy's top_only_skip_dirs_
+    // Source-bearing dirs that are rarely the focus of analysis
+    // (test/, docs/, bench/, examples/, ...). Matched ONLY against the
+    // first path component (top-level dirs), so Java packages like
+    // org/springframework/samples/petclinic are NOT falsely skipped.
+    fn is_top_only_skip_dir(name: &str) -> bool {
+        let lower = name.to_lowercase();
+        matches!(
+            lower.as_str(),
+            "test"
+                | "tests"
+                | "docs"
+                | "doc"
+                | "documentation"
+                | "examples"
+                | "example"
+                | "samples"
+                | "sample"
+                | "scripts"
+                | "hack"
+                | "migrations"
+                | "seeds"
+                | "e2e"
+                | "integration"
+                | "locale"
+                | "locales"
+                | "i18n"
+                | "l10n"
+                | "assets"
+                | "static"
+                | "public"
+                | "media"
+                | "external"
+                | "vendored"
+                | "bench"
+                | "benchmarks"
         )
     }
 
@@ -130,7 +170,7 @@ pub fn discover(dir_path: &str) -> String {
 
             if path.is_dir() {
                 let base = name_str.clone();
-                if is_skip_dir(&base) || is_skip_prefix(&base) {
+                if is_skip_dir(&base) || is_top_only_skip_dir(&base) || is_skip_prefix(&base) {
                     skipped_dirs += 1;
                     continue;
                 }

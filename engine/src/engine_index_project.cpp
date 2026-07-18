@@ -668,7 +668,20 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 				"UPDATE graph_nodes SET callgraph_ready=1 "
 				"WHERE project_id=" +
 				std::to_string(project_id);
-			g_store->exec(up.c_str());
+			// This UPDATE runs AFTER commitTransaction() (line 659), so a
+			// failure here is NOT rolled back and leaves callgraph_ready=0
+			// on every node while the call graph itself IS committed.
+			// Downstream trace_path / enhancement-status would then
+			// silently misreport readiness. Log on failure so the silent
+			// misreport is at least observable, mirroring the
+			// [module=..., method=...] fprintf pattern used elsewhere.
+			if (!g_store->exec(up.c_str())) {
+				fprintf(stderr,
+					"engine_index_project: callgraph_ready UPDATE "
+					"failed: %s "
+					"[module=engine, method=engine_index_project]\n",
+					g_store->error().c_str());
+			}
 		}
 		// P0.1: entity/relation dual-write now happens INSIDE buildGraph
 		// (store_graph.cpp). The previous duplicate INSERT...SELECT here

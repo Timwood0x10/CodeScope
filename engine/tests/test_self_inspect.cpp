@@ -24,8 +24,40 @@ static inline void check(bool cond, const char *msg)
 
 int main()
 {
-	// Index CodeScope's own engine/src directory
-	std::string self_dir = "/Users/scc/code/cppCode/CodeScope/engine/src";
+	// Resolve CodeScope's own engine/src directory portably so the
+	// self-inspection test runs both locally and in CI (the checkout
+	// path differs between machines). Priority:
+	//   1. $CODESCOPE_ENGINE_SRC  — explicit override (e.g. set by CI)
+	//   2. relative candidates from the current working directory
+	//      (CI runs the binary with CWD = repo root, so "engine/src"
+	//       resolves; locally it may run from engine/build* etc.)
+	//   3. the local dev path, kept only as a last-resort fallback
+	std::string self_dir;
+	if (const char *env = std::getenv("CODESCOPE_ENGINE_SRC")) {
+		self_dir = env;
+	} else {
+		const char *candidates[] = {
+			"engine/src",
+			"../src",
+			"../engine/src",
+			"/Users/scc/code/cppCode/CodeScope/engine/src",
+			nullptr};
+		for (int i = 0; candidates[i]; ++i) {
+			if (access(candidates[i], F_OK) == 0) {
+				self_dir = candidates[i];
+				break;
+			}
+		}
+	}
+	if (self_dir.empty() || access(self_dir.c_str(), F_OK) != 0) {
+		fprintf(stderr,
+			"FAIL: cannot locate engine/src for self-inspection "
+			"(set CODESCOPE_ENGINE_SRC to the checked-out engine/src). "
+			"Tried $CODESCOPE_ENGINE_SRC, engine/src, ../src, "
+			"../engine/src.\n");
+		return 1;
+	}
+	fprintf(stderr, "[self-inspect] target dir: %s\n", self_dir.c_str());
 
 	char db_path[] = "/tmp/test_self_inspect.db";
 	unlink(db_path);

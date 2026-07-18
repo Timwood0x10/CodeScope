@@ -287,6 +287,31 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 					g_store->error() + "\"}");
 			}
 			g_store->commitTransaction();
+			// Indexing now builds the full call graph (buildGraph above),
+			// so mark every node callgraph_ready. This makes trace_path and
+			// the enhancement-status report reflect that the call graph is
+			// present immediately after index — mirroring
+			// engine_index_project.cpp:666-672 so the two paths cannot
+			// diverge. Enhance increments the flag idempotently, so reruns
+			// leave callgraph_ready unchanged.
+			{
+				std::string up =
+					"UPDATE graph_nodes SET callgraph_ready=1 "
+					"WHERE project_id=" +
+					std::to_string(project_id);
+				if (!g_store->exec(up.c_str())) {
+					// exec failure leaves callgraph_ready=0 on every node
+					// even though the call graph itself IS committed. Log
+					// so the silent misreport is at least observable, mirroring
+					// the [module=..., method=...] fprintf pattern used
+					// elsewhere in this file.
+					fprintf(stderr,
+						"engine_index_file: callgraph_ready UPDATE "
+						"failed: %s "
+						"[module=engine, method=engine_index_file]\n",
+						g_store->error().c_str());
+				}
+			}
 		}
 
 		// Async knowledge builder (modules/role/summary) — keeps the
