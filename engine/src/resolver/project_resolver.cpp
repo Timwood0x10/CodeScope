@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <filesystem>
 
+#include "factors.h"
+
 namespace resolver
 {
 
@@ -101,6 +103,15 @@ int ProjectResolver::rankCandidate(const IndexEntry &candidate,
 	// Not static: more likely to be visible across files
 	if (!candidate.is_static)
 		score += 1;
+
+	// C/C++ definition priority (Finding #8): prefer symbols defined in
+	// a source file (.c/.cpp/.cc/...) over header-only prototypes
+	// (.h/.hpp/...). Applied only to C/C++ extensions, so other
+	// languages are unaffected.
+	if (isCppSourceFile(candidate.file_path))
+		score += 2;
+	else if (isCppHeaderFile(candidate.file_path))
+		score -= 1;
 
 	// Shorter path distance = more likely related
 	// (heuristic: files in nearby directories are more likely related)

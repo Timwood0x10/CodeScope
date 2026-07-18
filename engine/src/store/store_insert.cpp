@@ -330,7 +330,18 @@ bool GraphStore::deleteGraphDataByFile(uint64_t project_id,
 	//   6. type_ref, type_info, import, route (all have file_path)
 	//   7. scope function entries (kind=2, name matches entity names)
 
+	// Track success across all DELETE statements so callers can detect
+	// partial cleanup failures. Previously this function unconditionally
+	// returned true after merely fprintf-ing on prepare/step failures,
+	// which masked SQLite errors (SQLITE_BUSY, schema drift) and left
+	// stale rows — the subsequent insertGraphNodes → insertEntity would
+	// then append to a non-empty entity table, exactly the duplicate
+	// accumulation this routine exists to prevent.
+	bool ok = true;
+
 	// Helper lambda: run a parameterized DELETE and log on failure.
+	// Flips the outer `ok` flag to false on any prepare or step failure
+	// so the caller sees a truthful boolean.
 	auto deleteByFile = [&](const char *sql, const char *label) {
 		sqlite3_stmt *stmt = nullptr;
 		if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) !=
@@ -339,14 +350,29 @@ bool GraphStore::deleteGraphDataByFile(uint64_t project_id,
 				"deleteGraphDataByFile: %s prepare failed: %s "
 				"[module=store, method=deleteGraphDataByFile]\n",
 				label, sqlite3_errmsg(db_));
+			ok = false;
 			return;
 		}
-		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-		sqlite3_bind_text(stmt, 2, file_path, -1, SQLITE_STATIC);
-		// Some statements need file_path bound twice (subqueries)
-		if (sqlite3_bind_parameter_count(stmt) >= 3)
-			sqlite3_bind_text(stmt, 3, file_path, -1,
-					  SQLITE_STATIC);
+		// Bind all parameters by position. Slot 1 is always project_id,
+		// slot 2 is always file_path. SQLite supports `?NN` index syntax
+		// in the SQL text for statements that need to bind the same value
+		// multiple times (e.g. relation DELETE filters entity subqueries
+		// by BOTH project_id and file_path), so we don't need a bespoke
+		// binding convention per statement — just walk every parameter
+		// slot and bind project_id for odd slots (1, 3, 5, ...) and
+		// file_path for even slots (2, 4, 6, ...). Statements that only
+		// use slots 1+2 (most of them) bind the same way; the SQL text
+		// uses `?`/`?1`/`?2`/`?3`/... so unused bindings are harmless.
+		const int n_params = sqlite3_bind_parameter_count(stmt);
+		for (int slot = 1; slot <= n_params; ++slot) {
+			if (slot % 2 == 1)
+				sqlite3_bind_int64(
+					stmt, slot,
+					static_cast<int64_t>(project_id));
+			else
+				sqlite3_bind_text(stmt, slot, file_path, -1,
+						  SQLITE_STATIC);
+		}
 		int rc = sqlite3_step(stmt);
 		sqlite3_finalize(stmt);
 		if (rc != SQLITE_DONE) {
@@ -355,16 +381,32 @@ bool GraphStore::deleteGraphDataByFile(uint64_t project_id,
 				"(rc=%d): %s "
 				"[module=store, method=deleteGraphDataByFile]\n",
 				label, rc, sqlite3_errmsg(db_));
+			ok = false;
 		}
 	};
 
 	// 1. Delete relations referencing entities from this file.
 	//    Must happen BEFORE entity deletion (FK references entity.id).
-	deleteByFile("DELETE FROM relation WHERE project_id = ? "
+	//
+	//    The entity subqueries MUST filter by BOTH project_id AND
+	//    file_path. entity.id is INTEGER PRIMARY KEY (globally unique
+	//    across projects per store_schema.cpp:118), so without the
+	//    project_id filter the subquery would return entity ids from
+	//    ANY project that has a file at the same path — every project
+	//    has README, Makefile, src/main.cpp, etc. A relation row in
+	//    project A whose source_id/target_id happens to collide by id
+	//    with project B's same-path file entities would be matched and
+	//    deleted, corrupting project A's relation table when re-indexing
+	//    a file in project B. We bind project_id to slots 1, 3, 5 and
+	//    file_path to slots 2, 4, 6 via the deleteByFile lambda's
+	//    odd-slot/even-slot convention.
+	deleteByFile("DELETE FROM relation WHERE project_id = ?1 "
 		     "AND (source_id IN ("
-		     "  SELECT id FROM entity WHERE file_path = ?"
+		     "  SELECT id FROM entity WHERE project_id = ?3 "
+		     "  AND file_path = ?4"
 		     ") OR target_id IN ("
-		     "  SELECT id FROM entity WHERE file_path = ?"
+		     "  SELECT id FROM entity WHERE project_id = ?5 "
+		     "  AND file_path = ?6"
 		     "))",
 		     "relation");
 
@@ -372,9 +414,15 @@ bool GraphStore::deleteGraphDataByFile(uint64_t project_id,
 	//    entities. The reference table has no file_path column, so we
 	//    must resolve via caller_id → entity.id → entity.file_path.
 	//    Must happen BEFORE entity deletion.
-	deleteByFile("DELETE FROM reference WHERE project_id = ? "
+	//
+	//    Same project_id filter requirement as relation DELETE above:
+	//    without it, the entity subquery returns ids from any project
+	//    sharing the same file path, causing cross-project reference
+	//    deletion. Bind project_id to slots 1, 3 and file_path to 2, 4.
+	deleteByFile("DELETE FROM reference WHERE project_id = ?1 "
 		     "AND caller_id IN ("
-		     "  SELECT id FROM entity WHERE file_path = ?"
+		     "  SELECT id FROM entity WHERE project_id = ?3 "
+		     "  AND file_path = ?4"
 		     ")",
 		     "reference");
 
@@ -386,9 +434,15 @@ bool GraphStore::deleteGraphDataByFile(uint64_t project_id,
 	//    subquery reads entity.name.
 	//    Module scopes (kind=1) are NOT deleted because they are shared
 	//    across files in the same directory.
-	deleteByFile("DELETE FROM scope WHERE project_id = ? AND kind = 2 "
+	//
+	//    Same project_id filter requirement as relation DELETE above:
+	//    without it, the entity subquery returns names from any project
+	//    sharing the same file path, causing cross-project scope deletion.
+	//    Bind project_id to slots 1, 3 and file_path to 2, 4.
+	deleteByFile("DELETE FROM scope WHERE project_id = ?1 AND kind = 2 "
 		     "AND name IN ("
-		     "  SELECT name FROM entity WHERE file_path = ?"
+		     "  SELECT name FROM entity WHERE project_id = ?3 "
+		     "  AND file_path = ?4"
 		     ")",
 		     "scope(function)");
 
@@ -417,7 +471,7 @@ bool GraphStore::deleteGraphDataByFile(uint64_t project_id,
 	deleteByFile("DELETE FROM route WHERE project_id = ? AND file_path = ?",
 		     "route");
 
-	return true;
+	return ok;
 }
 
 bool GraphStore::deleteFileData(uint64_t project_id, const char *file_path)
@@ -425,8 +479,14 @@ bool GraphStore::deleteFileData(uint64_t project_id, const char *file_path)
 	if (!file_path || !*file_path)
 		return false;
 
-	// Delete graph-layer data (relation, graph_edges, graph_nodes, entity)
-	deleteGraphDataByFile(project_id, file_path);
+	// Track success so callers can detect partial cleanup failures.
+	// Previously this function unconditionally returned true after merely
+	// fprintf-ing on prepare/step failures, which masked SQLite errors
+	// (SQLITE_BUSY, schema drift) and left stale rows — downstream
+	// buildGraph uses semantic_records to decide the rebuild file set;
+	// stale rows would cause buildGraph to attempt rebuilding a file whose
+	// graph was already cleared, leading to inconsistency.
+	bool ok = deleteGraphDataByFile(project_id, file_path);
 
 	// Delete semantic_records for this file
 	{
@@ -447,16 +507,18 @@ bool GraphStore::deleteFileData(uint64_t project_id, const char *file_path)
 					"failed (rc=%d): %s "
 					"[module=store, method=deleteFileData]\n",
 					rc, sqlite3_errmsg(db_));
+				ok = false;
 			}
 		} else {
 			fprintf(stderr,
 				"deleteFileData: semantic_records prepare failed: %s "
 				"[module=store, method=deleteFileData]\n",
 				sqlite3_errmsg(db_));
+			ok = false;
 		}
 	}
 
-	return true;
+	return ok;
 }
 
 } // namespace store

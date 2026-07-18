@@ -1243,8 +1243,16 @@ char *engine_index_batch(uint64_t project_id, const char *file_paths_json)
 			std::string hash = simpleHash(b.source);
 			g_store->upsertFile(project_id, b.file_path.c_str(),
 					    b.language.c_str(), hash.c_str());
-			g_store->deleteFileData(project_id,
-						b.file_path.c_str());
+			// Delete graph-layer data only (relation, graph_edges,
+			// graph_nodes, entity, type_ref, type_info, import, route).
+			// NOT semantic_records — this batch path re-inserts graph
+			// data directly from in-memory `b.unit` and never repopulates
+			// semantic_records. buildGraph later uses semantic_records to
+			// decide the file rebuild set; wiping it here would make
+			// subsequent engine_index_project skip rebuilding this file,
+			// leaving stale graph_nodes forever.
+			g_store->deleteGraphDataByFile(project_id,
+						       b.file_path.c_str());
 
 			// No ir_nodes/ir_semantic_edges write — graph_nodes is canonical.
 			// FTS/vector writes skipped for single-file index path.

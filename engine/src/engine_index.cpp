@@ -91,12 +91,18 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 			g_store->upsertFile(project_id, file_path, language,
 					    hash.c_str());
 
-			// Delete old data for this file across ALL tables
-			// (graph_nodes, graph_edges, entity, relation, semantic_records)
-			// to prevent duplicate accumulation on re-index. Without this,
-			// insertGraphNodes → insertEntity appends to a non-empty entity
-			// table, causing entity count to grow on every index_file call.
-			g_store->deleteFileData(project_id, file_path);
+			// Delete old graph-layer data for this file
+			// (relation, graph_edges, graph_nodes, entity, type_ref,
+			// type_info, import, route) to prevent duplicate accumulation
+			// on re-index. Without this, insertGraphNodes → insertEntity
+			// appends to a non-empty entity table, causing entity count to
+			// grow on every index_file call.
+			// NOT semantic_records — this path repopulates graph_nodes
+			// directly from in-memory IR and never re-inserts
+			// semantic_records. buildGraph uses semantic_records to decide
+			// the rebuild file set; wiping it would make subsequent
+			// engine_index_project skip this file, leaving stale data.
+			g_store->deleteGraphDataByFile(project_id, file_path);
 
 			// Build graph from SemanticUnit
 			uint64_t start_node_id = 1;
@@ -273,10 +279,16 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 		g_store->upsertFile(project_id, file_path, language,
 				    hash.c_str());
 
-		// Delete old data for this file across ALL tables
-		// (graph_nodes, graph_edges, entity, relation, semantic_records)
-		// to prevent duplicate accumulation on re-index.
-		g_store->deleteFileData(project_id, file_path);
+		// Delete old graph-layer data for this file
+		// (relation, graph_edges, graph_nodes, entity, type_ref,
+		// type_info, import, route) to prevent duplicate accumulation
+		// on re-index.
+		// NOT semantic_records — this path repopulates graph_nodes
+		// directly from in-memory IR and never re-inserts
+		// semantic_records. buildGraph uses semantic_records to decide
+		// the rebuild file set; wiping it would make subsequent
+		// engine_index_project skip this file, leaving stale data.
+		g_store->deleteGraphDataByFile(project_id, file_path);
 
 		// Build graph from IR — use unique node IDs across all projects
 		uint64_t start_node_id = 1;

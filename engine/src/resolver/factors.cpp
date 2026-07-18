@@ -1,5 +1,6 @@
 #include "factors.h"
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <unordered_set>
 
@@ -312,6 +313,67 @@ double factorVisibilityCheck(const std::string &language,
 		return 0.5; // Weak penalty, not hard rejection
 
 	return 1.0; // Visible — allow
+}
+
+// ─── C/C++ definition-priority helpers ─────────────────────────────
+//
+// Reference: Code Review Finding #8 — README promises that «.c/.cpp
+// definitions are preferred over .h prototypes», but neither the
+// multi-factor scorer nor project_resolver::rankCandidate distinguished
+// definition vs declaration. Previously, when a function was both
+// declared in a header and defined in a source file, both candidates
+// scored identically and the tie was broken by the arbitrary
+// entity_index insertion order, so C/C++ call targets were frequently
+// wrong.
+//
+// The disambiguation is purely extension-based, matching the documented
+// promise: a .c/.cpp/... translation unit is a definition site; a
+// .h/.hpp/... header is a (typically) declaration/prototype site. This
+// is intentionally simple and language-agnostic at the file level.
+
+/// Lowercase the substring after the last '.' (the file extension).
+static std::string lowerExtension(const std::string &file_path)
+{
+	size_t dot = file_path.rfind('.');
+	if (dot == std::string::npos)
+		return "";
+	std::string lower;
+	lower.reserve(file_path.size() - dot);
+	for (size_t i = dot; i < file_path.size(); ++i)
+		lower.push_back(static_cast<char>(std::tolower(
+			static_cast<unsigned char>(file_path[i]))));
+	return lower;
+}
+
+bool isCppSourceFile(const std::string &file_path)
+{
+	std::string ext = lowerExtension(file_path);
+	return ext == ".c" || ext == ".cpp" || ext == ".cc" || ext == ".cxx" ||
+	       ext == ".c++" || ext == ".m" || ext == ".mm";
+}
+
+bool isCppHeaderFile(const std::string &file_path)
+{
+	std::string ext = lowerExtension(file_path);
+	return ext == ".h" || ext == ".hpp" || ext == ".hh" || ext == ".hxx" ||
+	       ext == ".h++" || ext == ".inl" || ext == ".ipp" ||
+	       ext == ".tpp" || ext == ".tcc";
+}
+
+double factorDefinitionMatch(const std::string &language,
+			     const std::string &candidate_file)
+{
+	// Only meaningful for C/C++. Other languages have no header/source
+	// split that implies definition-priority, so stay neutral (1.0) to
+	// avoid perturbing their ranking or resolution threshold.
+	if (language != "cpp")
+		return 1.0;
+
+	if (isCppSourceFile(candidate_file))
+		return kScoreExactMatch; // 1.0 — boost source-file definition
+	if (isCppHeaderFile(candidate_file))
+		return kScorePenalty; // -0.5 — lower header-only prototype
+	return 1.0; // unrecognized cpp extension — neutral
 }
 
 } // namespace resolver

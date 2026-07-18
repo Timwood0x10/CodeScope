@@ -301,6 +301,25 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 			factors.push_back(f);
 		}
 
+		// Factor 10: DefinitionMatch — for C/C++, prefer symbols defined
+		// in a source file (.c/.cpp/.cc/...) over those declared only in
+		// a header (.h/.hpp/...). This breaks the previous arbitrary tie
+		// between a header prototype and a source definition that scored
+		// identically (Finding #8). Non-C/C++ languages return 1.0
+		// (neutral), so their ranking is unaffected.
+		{
+			FactorResult f;
+			f.name = "DefinitionMatch";
+			f.weight = kWeightDefinitionMatch;
+			f.score =
+				factorDefinitionMatch(c.language, c.file_path);
+			f.detail = (f.score > 0.0) ?
+					   "source def" :
+					   (f.score < 0.0 ? "header proto" :
+							    "neutral");
+			factors.push_back(f);
+		}
+
 		// VisibilityCheck was moved to a hard filter in run() to
 		// ensure language visibility rules (e.g. Go unexported names)
 		// are applied as hard rejections, not weighted factors — a
