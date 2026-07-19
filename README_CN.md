@@ -152,8 +152,7 @@ curl -fsSL https://raw.githubusercontent.com/Timwood0x10/CodeScope/master/instal
 
 | 文件 | 用途 |
 |------|------|
-| `codescope` | 主二进制（CLI + MCP server） |
-| `codescope-parallel.sh` | **大型项目加速索引脚本**——多进程模块级调度，动态 worker 回收，每文件 quarantine，自动合并 DB。AI 决定要不要加速时调这个脚本即可，详见下方[并行索引脚本](#并行索引脚本大型项目推荐)章节 |
+| `codescope` | 主二进制（CLI + MCP server）—— 单进程 `index` + 内置多进程 `index-parallel` 调度器（适合大项目） |
 
 加入 PATH 后即可使用：
 
@@ -163,8 +162,8 @@ export PATH="$PATH:$HOME/.codescope/bin"
 # 中小项目直接索引
 codescope cli index_project '{"project_path":"/path/to/project"}'
 
-# 大型项目（数千~数万文件）用并行脚本加速
-codescope-parallel.sh /path/to/large/project
+# 大型项目（数千~数万文件）用内置调度器加速
+codescope index-parallel /path/to/large/project
 ```
 
 ### 手动构建
@@ -388,46 +387,6 @@ codescope force-index [--lang java,python] [--db /path/to/codescope.db] /path/to
 ```
 
 返回 `engine_index_files` 的 JSON（`files_indexed`/`nodes`/`edges`/`errors`），并附 `skipped_files`/`skipped_dirs`/`paths_requested` 统计。
-
-#### 并行索引脚本（大型项目推荐）
-
-对于**大型项目**（数千~数万源文件，如 Linux kernel、rustc 这种），单进程多线程索引可能受限于 RSS 峰值和崩溃隔离。`codescope-parallel.sh` 提供**多进程模块级调度**：
-
-- 按模块（顶级目录）拆分，每个模块起独立 `codescope worker` 子进程
-- 内存/崩溃隔离：一个模块崩溃不会带垮整个索引
-- 动态 worker 回收：模块完成后把 worker 重新分配给剩余模块
-- 每文件 quarantine：崩溃模块用二分搜索定位 crashing 文件，跳过后重试
-- 最后合并所有模块 DB 到单一项目 DB
-
-**通用入口**——用户或 AI 只需传一个目录，脚本自动探测二进制、grammars 目录、默认输出路径：
-
-```bash
-# 默认配置（8 workers），输出到 <dir>/.codescope/codescope.db
-./codescope-parallel.sh /path/to/large/project
-
-# 大项目用 16 workers
-CODESCOPE_WORKERS=16 ./codescope-parallel.sh /path/to/large/project
-
-# 自定义输出 DB
-./codescope-parallel.sh /path/to/large/project /tmp/my.db
-
-# 帮助
-./codescope-parallel.sh -h
-```
-
-环境变量（全部可选）：
-
-| 变量 | 默认 | 说明 |
-|------|------|------|
-| `CODESCOPE` | 自动探测 | codescope 二进制路径（按 `bin/codescope`、`target/release/codescope`、`./codescope`、`PATH` 顺序） |
-| `GRAMMARS_DIR` | 自动探测 | tree-sitter grammars 目录 |
-| `CODESCOPE_WORKERS` | `8` | 总 worker 数 |
-| `CODESCOPE_PARALLEL` | `= CODESCOPE_WORKERS` | 最大并发模块数 |
-
-**何时用脚本 vs 直接 `index_project`**：
-
-- 中小项目（<300 文件）：直接 `index_project` 即可，亚秒~2 秒搞定
-- 大型项目（数千文件以上）：用 `codescope-parallel.sh`，多进程隔离 + 动态调度更稳
 
 
 ### 为什么 Java 是（唯一的）例外 —— 一段吐槽

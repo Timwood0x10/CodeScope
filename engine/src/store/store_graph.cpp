@@ -95,6 +95,12 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 {
 	using Clock = std::chrono::steady_clock;
 
+	// Increase SQLite cache to 256MB to reduce disk I/O during buildGraph.
+	// The default 2MB cache is too small for large projects (45053+ nodes),
+	// causing frequent page cache misses. 256MB fits comfortably in memory
+	// for projects up to ~1M nodes. Use negative value to specify KB.
+	exec("PRAGMA cache_size = -262144");
+
 	// Incremental vs full rebuild: when changed_files is non-null, only
 	// a subset of files are re-indexed — lookup indexes stay valid.
 	const bool full_rebuild = (changed_files == nullptr);
@@ -365,6 +371,27 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			std::to_string(kKindEnum) + "," +
 			std::to_string(kKindTypeAlias) + ")";
 
+		// Materialize type declarations into a temp table so the type_ref
+		// JOIN below scans _td (project-local, kind-filtered) instead of
+		// semantic_records twice. Avoids the second full-table scan that
+		// previously dominated the type_edges stage.
+		exec("DROP TABLE IF EXISTS _td");
+		exec(std::string(
+			     "CREATE TEMP TABLE _td AS "
+			     "SELECT sr.rowid as rid, sr.name, sr.file_path, sr.kind "
+			     "FROM semantic_records sr "
+			     "WHERE sr.project_id=" +
+			     pid + " AND sr.kind IN " + type_kind_list +
+			     " AND sr.name != ''")
+			     .c_str());
+		// _td_rid covers the JOIN `_td.rid = tgt.rid AND _td.name = sr.type_name`:
+		// B-tree leftmost-prefix means (rid, name) supports rid-only AND
+		// rid+name lookups, matching the JOIN condition exactly. The
+		// previous (name, rid) index was unusable for this JOIN because
+		// the lookup starts from tgt.rid, not from name.
+		exec("CREATE INDEX IF NOT EXISTS _td_rid ON _td(rid, name)");
+		exec("CREATE INDEX IF NOT EXISTS _td_name ON _td(name, rid)");
+
 		// Create USES_TYPE edges from TypeRef records to type declaration records
 		// in the same file. Cross-file type resolution is handled later.
 		std::string type_sql =
@@ -380,11 +407,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			std::to_string(kKindTypeRef) +
 			" "
 			"JOIN _r2n tgt ON tgt.file_path = src.file_path "
-			"JOIN semantic_records td ON td.rowid = tgt.rid "
-			"AND td.kind IN " +
-			type_kind_list +
-			" "
-			"AND td.name = sr.type_name "
+			"JOIN _td ON _td.rid = tgt.rid AND _td.name = sr.type_name "
 			"WHERE sr.project_id=" +
 			pid + " AND sr.type_name != ''";
 		exec(type_sql.c_str());
@@ -656,6 +679,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 
 	exec("DROP TABLE IF EXISTS _r2n");
 	exec("DROP TABLE IF EXISTS _rf");
+	exec("DROP TABLE IF EXISTS _td");
 
 	// ── P3: Drop query indexes before bulk edge inserts ──────────
 	// Full rebuild: drop all lookup + unique indexes for max insert
@@ -784,13 +808,21 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// (DELETE + COPY FROM) to clear stale data and re-import cleanly.
 	{
 		auto t_lbug = Clock::now();
-		resetLadybugSyncState(project_id);
-		if (!syncIncrementalToLadybugDB(project_id))
-			fprintf(stderr,
-				"buildGraph: syncIncrementalToLadybugDB failed "
-				"for project %s "
-				"[module=store, method=buildGraph]\n",
-				pid.c_str());
+		// Worker mode (scheduler subprocess) sets CODESCOPE_SKIP_ASYNC=1
+		// and uses an isolated DB — LadybugDB sync would fail and waste
+		// 5-10s. The unified main DB gets its sync once after merge.
+		const char *skip_async = getenv("CODESCOPE_SKIP_ASYNC");
+		if (skip_async && skip_async[0] == '1') {
+			// Skip LadybugDB sync in worker mode
+		} else {
+			resetLadybugSyncState(project_id);
+			if (!syncIncrementalToLadybugDB(project_id))
+				fprintf(stderr,
+					"buildGraph: syncIncrementalToLadybugDB "
+					"failed for project %s "
+					"[module=store, method=buildGraph]\n",
+					pid.c_str());
+		}
 		fprintf(stderr,
 			"buildGraph: ladybugdb=%lldms "
 			"for project %s\n",
