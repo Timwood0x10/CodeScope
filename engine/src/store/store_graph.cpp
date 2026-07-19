@@ -812,8 +812,22 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		// and uses an isolated DB — LadybugDB sync would fail and waste
 		// 5-10s. The unified main DB gets its sync once after merge.
 		const char *skip_async = getenv("CODESCOPE_SKIP_ASYNC");
-		if (skip_async && skip_async[0] == '1') {
-			// Skip LadybugDB sync in worker mode
+		// Worker mode (scheduler subprocess) sets CODESCOPE_SKIP_ASYNC=1
+		// and uses an isolated DB — LadybugDB sync would fail and waste
+		// 5-10s. The unified main DB gets its sync once after merge.
+		// Interpretation MUST match the sibling consumer in
+		// engine_index_post_parse.cpp:261 — skip on ANY truthy value
+		// (set AND not "0"), not just the literal "1". The two
+		// consumers diverged before (only "1" skipped here, "0" or
+		// unset ran; the sibling skipped unset-or-"0"-only-inverse)
+		// which let users/wrapper scripts setting truthy-but-not-"1"
+		// values (=2, =true, =yes, =on) trigger divergent async
+		// behavior between the two paths. Aligning on "skip when set
+		// and not '0'" makes both consumers share one contract.
+		if (skip_async && skip_async[0] != '0') {
+			// Skip LadybugDB sync in worker mode (or user explicitly
+			// asked to skip async via any truthy CODESCOPE_SKIP_ASYNC
+			// value other than "0").
 		} else {
 			resetLadybugSyncState(project_id);
 			if (!syncIncrementalToLadybugDB(project_id))

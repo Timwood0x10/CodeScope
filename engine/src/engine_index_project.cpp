@@ -18,6 +18,12 @@
 #include <string>
 #include <string_view>
 #include <sys/stat.h>
+#ifndef _WIN32
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 #include <thread>
 #include <tree_sitter/api.h>
 #include <unordered_map>
@@ -27,6 +33,125 @@
 #include "ir/translators/js_visitor.h"
 #include "engine_index_metrics.h"
 #include "async_knowledge.h"
+
+// ─── Dynamic Scheduler Shared State ──────────────────────────────
+// When CODESCOPE_SCHED_SHM points to a valid shared-memory file
+// created by the Rust scheduler (see server/src/scheduler/shm.rs),
+// the engine reads `available_cores` atomically and spawns temporary
+// parse threads to grab idle cores from the shared pool. When the env
+// var is unset or the file is invalid, the engine falls back to the
+// static CODESCOPE_WORKERS allocation — identical to pre-dynamic
+// behaviour. The static path is the default for non-scheduler
+// invocations (single-process `codescope index`, tests, etc.).
+//
+// Layout MUST match server/src/scheduler/shm.rs SchedState. The C++
+// side only reads atomic fields and performs a CAS on
+// available_cores in grab_cores(); no other writes.
+// SAFETY: the scheduler creates and mmap's the file before spawning
+// the worker subprocess, so g_sched_state is non-null only inside a
+// worker that the scheduler deliberately started.
+struct SchedState {
+	uint32_t magic; // 0x53434844 ("SCHD")
+	uint32_t version;
+	std::atomic<uint32_t> total_cores;
+	std::atomic<uint32_t> available_cores;
+	std::atomic<uint32_t> active_workers;
+	std::atomic<uint32_t> generation;
+	std::atomic<uint32_t> mem_limit_mb;
+	std::atomic<uint32_t> current_mem_mb;
+	std::atomic<uint32_t> aggressive;
+	uint32_t worker_count;
+	uint32_t reserved[8];
+	std::atomic<uint32_t> worker_status[64];
+	std::atomic<uint32_t> worker_cores[64];
+};
+
+static SchedState *g_sched_state = nullptr; // nullptr = static mode
+
+// Parse-phase coordination globals. Reset at the start of every
+// engine_index_project call; engine_index_files does not use them.
+// engine_index_project is invoked sequentially from the FFI thread,
+// so the globals are never concurrently re-initialised.
+static std::atomic<bool> g_parse_done{ false };
+static std::atomic<uint32_t> g_active_parse_threads{ 0 };
+
+// Try to open the shared memory (env CODESCOPE_SCHED_SHM=path).
+// On failure (file missing, too small, magic mismatch, mmap error)
+// returns nullptr — silent fallback to static scheduling. No error
+// is logged because the static path is the legitimate default.
+static SchedState *open_sched_state()
+{
+#ifndef _WIN32
+	const char *path = getenv("CODESCOPE_SCHED_SHM");
+	if (!path || !path[0])
+		return nullptr;
+	fprintf(stderr,
+		"engine: opening shm path=%s "
+		"[module=engine, method=open_sched_state]\n",
+		path);
+	// Open with O_RDWR: mmap below uses PROT_WRITE for CAS in grab_cores().
+	// O_RDONLY + PROT_WRITE mmap fails with EACCES on POSIX, which would
+	// silently disable dynamic scheduling.
+	int fd = open(path, O_RDWR);
+	if (fd < 0) {
+		fprintf(stderr,
+			"engine: shm open failed errno=%d path=%s "
+			"[module=engine, method=open_sched_state]\n",
+			errno, path);
+		return nullptr;
+	}
+	struct stat st;
+	if (fstat(fd, &st) != 0 ||
+	    st.st_size < static_cast<off_t>(sizeof(SchedState))) {
+		close(fd);
+		return nullptr;
+	}
+	// PROT_WRITE is required for the CAS in grab_cores(); the
+	// scheduler creates the shm file with rw perms for worker procs.
+	void *addr = mmap(nullptr, sizeof(SchedState), PROT_READ | PROT_WRITE,
+			  MAP_SHARED, fd, 0);
+	close(fd);
+	if (addr == MAP_FAILED)
+		return nullptr;
+	auto *s = static_cast<SchedState *>(addr);
+	if (s->magic != 0x53434844u) {
+		munmap(addr, sizeof(SchedState));
+		return nullptr;
+	}
+	return s;
+#else
+	return nullptr; // mmap-based dynamic scheduling not on Windows
+#endif
+}
+
+// Try to grab up to `max_want` cores from the shared pool via CAS.
+// Returns the number actually grabbed (0 if none available or static
+// mode). The caller must return_cores(count) when done.
+static uint32_t grab_cores(uint32_t max_want)
+{
+	if (!g_sched_state || max_want == 0)
+		return 0;
+	while (true) {
+		uint32_t avail = g_sched_state->available_cores.load(
+			std::memory_order_relaxed);
+		if (avail == 0)
+			return 0;
+		uint32_t take = std::min(max_want, avail);
+		if (g_sched_state->available_cores.compare_exchange_weak(
+			    avail, avail - take, std::memory_order_relaxed)) {
+			return take;
+		}
+	}
+}
+
+// Return `count` cores to the shared pool. No-op in static mode.
+static void return_cores(uint32_t count)
+{
+	if (!g_sched_state || count == 0)
+		return;
+	g_sched_state->available_cores.fetch_add(count,
+						 std::memory_order_relaxed);
+}
 
 // ─── Constants ─────────────────────────────────────────────────
 constexpr uint64_t kMaxFileSize = 5 * 1024 * 1024; // 5 MB default
@@ -329,6 +454,25 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 			lang_ptrs, is_reindex, mode_fast, mode_deep);
 	}
 
+	// ── Dynamic-scheduler init ────────────────────────────────
+	// Attach to the scheduler's shared-memory segment if the env var
+	// is set (worker spawned by the parallel scheduler). On failure
+	// g_sched_state stays nullptr and the engine falls back to the
+	// static CODESCOPE_WORKERS path with no monitoring overhead.
+	if (!g_sched_state)
+		g_sched_state = open_sched_state();
+	if (g_sched_state) {
+		fprintf(stderr,
+			"engine: dynamic sched attached shm, total=%u avail=%u "
+			"[module=engine, method=index_project_init]\n",
+			g_sched_state->total_cores.load(
+				std::memory_order_relaxed),
+			g_sched_state->available_cores.load(
+				std::memory_order_relaxed));
+	}
+	g_parse_done.store(false, std::memory_order_relaxed);
+	g_active_parse_threads.store(0, std::memory_order_relaxed);
+
 	// ── Streaming Pipeline ─────────────────────────────────────
 	// Replaces the old batch loop (BATCH_SIZE=100, accumulate units in vector,
 	// then persist and run linker passes) with a streaming pipeline:
@@ -424,8 +568,13 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	// ── Parse workers ──────────────────────────────────────────
 	// Each worker: readFile → parse → produce FileResult → push queue.
 	// Metrics are pre-computed here (no enhance re-parse needed).
+	// `is_temp=true` marks a worker spawned by the dynamic-scheduler
+	// monitor (a borrowed core); temp workers cooperatively yield when
+	// the scheduler pool is exhausted or the parse phase is ending.
+	// Static workers pass the default `is_temp=false` and run to
+	// completion, exactly like the pre-dynamic behaviour.
 
-	auto parse_worker_fn = [&]() {
+	auto parse_worker_fn = [&](bool is_temp = false) {
 		// RAII deleter for tree-sitter parsers so they are
 		// released when the thread_local map is destroyed.
 		struct TSParserDeleter {
@@ -453,6 +602,23 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		// See index_metrics::computeMetricsFromCST and computeMetricsFromUnit.
 
 		while (true) {
+			// Temp workers (borrowed cores) cooperatively yield
+			// before claiming the next file when:
+			//  - g_parse_done is set (parse phase ending), OR
+			//  - the scheduler pool is at 0 (another worker
+			//    wants a core — return ours so it can grab it).
+			// The check happens BEFORE next_job.fetch_add so no
+			// file is dropped: an unclaimed job stays in the
+			// queue for a static worker to pick up.
+			if (is_temp) {
+				if (g_parse_done.load(
+					    std::memory_order_relaxed))
+					break;
+				if (g_sched_state &&
+				    g_sched_state->available_cores.load(
+					    std::memory_order_relaxed) == 0)
+					break;
+			}
 			int idx = next_job.fetch_add(1);
 			if (idx >= static_cast<int>(jobs.size()))
 				break;
@@ -628,10 +794,86 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 				e.what());
 		}
 	}
+
+	// ── Dynamic-scheduler monitor thread ───────────────────────
+	// Periodically grabs idle cores from the shared pool and spawns
+	// temporary parse threads to consume them. In static mode
+	// (g_sched_state == nullptr) the monitor returns immediately and
+	// the loop below is a no-op — total overhead is one thread
+	// create/destroy. The monitor is joinable (not detached) so the
+	// main thread can synchronise its exit before continuing.
+	const uint32_t initial_cores = static_cast<uint32_t>(num_workers);
+	std::thread monitor_thread([&]() {
+		if (!g_sched_state)
+			return;
+		const uint64_t interval_ms =
+			g_sched_state->aggressive.load(
+				std::memory_order_relaxed) ?
+				50 :
+				100;
+		while (!g_parse_done.load(std::memory_order_relaxed)) {
+			std::this_thread::sleep_for(
+				std::chrono::milliseconds(interval_ms));
+			if (g_parse_done.load(std::memory_order_relaxed))
+				break;
+			uint32_t active = g_active_parse_threads.load(
+				std::memory_order_relaxed);
+			// Cap temp threads at 2x the initial allocation to
+			// avoid oversubscription on machines with many idle
+			// cores — beyond this, extra threads just contend on
+			// the result_queue mutex and SQLite writer.
+			if (active >= initial_cores * 2)
+				continue;
+			if (grab_cores(1) == 0)
+				continue;
+			// Grabbed a core — spawn a temp parse thread. The
+			// thread returns the core via return_cores(1) on
+			// exit, so the borrowed-core bookkeeping is local to
+			// the thread itself.
+			g_active_parse_threads.fetch_add(
+				1, std::memory_order_relaxed);
+			try {
+				std::thread([&]() {
+					parse_worker_fn(true);
+					return_cores(1);
+					g_active_parse_threads.fetch_sub(
+						1, std::memory_order_relaxed);
+				}).detach();
+			} catch (const std::system_error &e) {
+				// Thread creation failed — return the core
+				// and decrement the counter so the wait loop
+				// below doesn't hang.
+				return_cores(1);
+				g_active_parse_threads.fetch_sub(
+					1, std::memory_order_relaxed);
+				fprintf(stderr,
+					"engine: temp parse thread spawn failed: %s "
+					"[module=engine, method=monitor_thread]\n",
+					e.what());
+			}
+		}
+	});
+
 	for (auto &t : workers) {
 		if (t.joinable())
 			t.join();
 	}
+
+	// ── Parse-phase shutdown ───────────────────────────────────
+	// Signal temp threads and the monitor to exit, then wait for
+	// all temp threads to drain. Temp threads access `jobs`,
+	// `next_job`, `lang_ptrs`, and `result_queue` by reference (via
+	// parse_worker_fn's `[&]` capture) and must not outlive this
+	// function. Cores borrowed by temp threads are returned by the
+	// threads themselves on exit (return_cores(1) in the lambda
+	// above), so no bulk return is needed here.
+	g_parse_done.store(true, std::memory_order_relaxed);
+	if (monitor_thread.joinable())
+		monitor_thread.join();
+	while (g_active_parse_threads.load(std::memory_order_relaxed) > 0) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+
 	time_parse_ms =
 		duration_cast<milliseconds>(steady_clock::now() - t_parse_start)
 			.count();

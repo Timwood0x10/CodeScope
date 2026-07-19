@@ -666,7 +666,7 @@ cargo run --bin codescope
 | `CODESCOPE_INDEX_MODE` | `standard` | Index mode: `fast` / `standard` / `strict` |
 | `CODESCOPE_EXCLUDE_PATHS` | (unset) | Comma-separated glob patterns to exclude (e.g. `test/*,docs/*`) |
 | `CODESCOPE_MMAP_SIZE` | `268435456` (256 MB) | SQLite `mmap_size` pragma value in bytes |
-| `CODESCOPE_WORKERS` | `4` | Number of parallel index workers |
+| `CODESCOPE_WORKERS` | `4` | Total parse-worker cores for `codescope index-parallel` (overridable via `--workers N`) |
 | `CODESCOPE_MAX_FILE_SIZE` | (unset) | Max source file size to index in bytes; larger files are skipped |
 | `CODESCOPE_WORKER_TIMEOUT` | `300` | Worker subprocess timeout in seconds |
 | `CODESCOPE_VERBOSE` | `0` | Set to `1` to enable verbose logging |

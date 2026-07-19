@@ -85,7 +85,7 @@ pub(super) fn run_module_worker(
     if let Some(exclude) = quarantine_exclude {
         cmd.env("CODESCOPE_EXCLUDE_PATHS", exclude);
     }
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.stdout(Stdio::piped()).stderr(Stdio::inherit());
 
     let t0 = Instant::now();
     let mut child = match cmd.spawn() {

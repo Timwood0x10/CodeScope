@@ -189,7 +189,7 @@ cargo build --release
 | `CODESCOPE_INDEX_MODE` | `standard` | 索引模式：`fast` / `standard` / `strict` |
 | `CODESCOPE_EXCLUDE_PATHS` | 未设置 | 逗号分隔的排除 glob 模式（如 `test/*,docs/*`） |
 | `CODESCOPE_MMAP_SIZE` | `268435456` (256 MB) | SQLite `mmap_size` pragma 值（字节） |
-| `CODESCOPE_WORKERS` | `4` | 并行索引 worker 数量 |
+| `CODESCOPE_WORKERS` | `4` | `codescope index-parallel` 的总解析 worker 核心数（可用 `--workers N` 覆盖） |
 | `CODESCOPE_MAX_FILE_SIZE` | 未设置 | 索引的最大源文件大小（字节）；超过则跳过 |
 | `CODESCOPE_WORKER_TIMEOUT` | `300` | Worker 子进程超时（秒） |
 | `CODESCOPE_VERBOSE` | `0` | 设为 `1` 启用详细日志 |
