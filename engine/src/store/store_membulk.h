@@ -4,7 +4,8 @@
 #include <mutex>
 #include <vector>
 
-namespace store {
+namespace store
+{
 
 struct FileResult;
 class GraphStore;
@@ -21,7 +22,7 @@ class GraphStore;
  * logic (parse, store, read) is identical to the streaming path.
  */
 class MemBulkAggregator {
-      public:
+    public:
 	/**
 	 * Construct an aggregator with a hint about the total file count.
 	 * @param estimated_files  Expected number of FileResult objects; used
@@ -67,7 +68,7 @@ class MemBulkAggregator {
 	 */
 	size_t memoryEstimateBytes() const noexcept;
 
-      private:
+    private:
 	std::vector<FileResult> aggregated_;
 	mutable std::mutex merge_mtx_;
 	size_t per_worker_hint_ = 64;

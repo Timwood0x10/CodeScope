@@ -250,7 +250,23 @@ char *engine_index_post_parse(uint64_t project_id, const std::string &dir,
 	// above are complete, to avoid concurrent GraphStore access.
 	// run_fts=!mode_fast: fast mode skips FTS entirely; normal/deep
 	// modes build FTS in the background thread.
-	launchAsyncKnowledgeBuilder(project_id, !mode_fast);
+	//
+	// CODESCOPE_SKIP_ASYNC=1 lets the built-in parallel scheduler
+	// (server/src/scheduler/) skip the ~280ms state-builder work in
+	// per-module workers and run it ONCE on the merged DB at the end.
+	// This keeps the per-module worker fast so the overall wall-clock
+	// index time stays under 1s on small projects (see
+	// builtin-scheduler-design.md §4.5).
+	const char *skip_async = getenv("CODESCOPE_SKIP_ASYNC");
+	if (!skip_async || skip_async[0] == '0') {
+		launchAsyncKnowledgeBuilder(project_id, !mode_fast);
+	} else {
+		fprintf(stderr,
+			"[module=engine, method=engine_index_post_parse] "
+			"skipping async model/state/fts build "
+			"(CODESCOPE_SKIP_ASYNC=1) for project %llu\n",
+			(unsigned long long)project_id);
+	}
 
 	return dupString(result.str());
 }

@@ -35,11 +35,11 @@
 #include "engine_index_metrics.h"
 
 char *engine_index_project_membulk(
-    uint64_t project_id, const std::string &dir,
-    uint64_t max_file_size, const FilterPolicy &filter,
-    const std::vector<std::pair<std::string, std::string>> &job_lang,
-    const std::unordered_map<std::string, const TSLanguage *> &lang_ptrs,
-    bool is_reindex, bool mode_fast, bool mode_deep)
+	uint64_t project_id, const std::string &dir, uint64_t max_file_size,
+	const FilterPolicy &filter,
+	const std::vector<std::pair<std::string, std::string>> &job_lang,
+	const std::unordered_map<std::string, const TSLanguage *> &lang_ptrs,
+	bool is_reindex, bool mode_fast, bool mode_deep)
 {
 	if (!g_store)
 		return dupString(
@@ -164,8 +164,7 @@ char *engine_index_project_membulk(
 			store::FileResult result;
 			result.file_path = job.path;
 			result.language = job.lang;
-			result.mtime =
-				static_cast<int64_t>(file_stat.st_mtime);
+			result.mtime = static_cast<int64_t>(file_stat.st_mtime);
 			result.fsize = static_cast<int64_t>(file_stat.st_size);
 
 			// Try new pipeline: Visitor → SemanticUnit

@@ -1,5 +1,7 @@
+mod discover;
 mod ffi;
 mod mcp;
+mod scheduler;
 mod tools;
 
 use std::env;
@@ -24,6 +26,98 @@ fn main() {
     if args.len() >= 2 && args[1] == "discover" {
         let dir_path = args.get(2).map(|s| s.as_str()).unwrap_or(".");
         let result = tools::discover(dir_path);
+        println!("{}", result);
+        return;
+    }
+
+    // ── discover-modules: codescope discover-modules <dir_path> ───
+    // Built-in scheduler entry: list top-level modules + their source-file
+    // counts. Output schema is focused on scheduler use (no skipped_dirs/
+    // skipped_files fields). See builtin-scheduler-design.md §4.2.
+    // Exit code: 0 on success, 1 on missing dir.
+    if args.len() >= 2 && args[1] == "discover-modules" {
+        let dir_path = args.get(2).map(|s| s.as_str()).unwrap_or(".");
+        let result = discover::discover_modules(dir_path);
+        println!("{}", result);
+        return;
+    }
+
+    // ── discover-files: codescope discover-files <dir_path> ───────
+    // List all candidate source files under a directory, using the same
+    // skip rules as the worker's FilterPolicy. Used by the scheduler's
+    // quarantine binary search. The worker re-filters via C++ FilterPolicy,
+    // so any over-inclusion here is silently dropped by the worker.
+    // Exit code: 0 on success, 1 on missing dir.
+    if args.len() >= 2 && args[1] == "discover-files" {
+        let dir_path = args.get(2).map(|s| s.as_str()).unwrap_or(".");
+        let result = discover::discover_files(dir_path);
+        println!("{}", result);
+        return;
+    }
+
+    // ── index-parallel: codescope index-parallel <dir> [--workers N] [--parallel M] ──
+    // Built-in CPU-dynamic parallel indexer. Replaces codescope-parallel.sh.
+    // See builtin-scheduler-design.md §4. Dispatches one worker subprocess
+    // per top-level module with proportional parse-worker allocation; failed
+    // modules are quarantined via binary search.
+    // Exit code: 0 on success (>=1 module indexed with nodes), 1 on failure.
+    if args.len() >= 2 && args[1] == "index-parallel" {
+        let mut dir_path = ".".to_string();
+        let mut total_workers: u32 = 0;
+        let mut parallel: u32 = 0;
+
+        let mut i = 2;
+        while i < args.len() {
+            match args[i].as_str() {
+                "--workers" | "-w" => {
+                    // Handle "no value following the flag" explicitly:
+                    // falling through without bumping `i` would re-enter
+                    // this arm with the same `i` forever → hard CLI hang.
+                    match args.get(i + 1) {
+                        Some(v) => {
+                            total_workers = v.parse().unwrap_or(0);
+                            i += 2;
+                            continue;
+                        }
+                        None => {
+                            eprintln!("error: --workers requires a value");
+                            std::process::exit(2);
+                        }
+                    }
+                }
+                "--parallel" | "-p" => {
+                    // Same no-value guard as --workers above — without it
+                    // `codescope index-parallel --parallel` hangs in a
+                    // tight loop on this arm.
+                    match args.get(i + 1) {
+                        Some(v) => {
+                            parallel = v.parse().unwrap_or(0);
+                            i += 2;
+                            continue;
+                        }
+                        None => {
+                            eprintln!("error: --parallel requires a value");
+                            std::process::exit(2);
+                        }
+                    }
+                }
+                "--help" | "-h" => {
+                    println!("Usage: codescope index-parallel <dir> [--workers N] [--parallel M]");
+                    println!("  Built-in CPU-dynamic parallel indexer.");
+                    println!("  --workers N   total parse-worker cores (default 8)");
+                    println!("  --parallel M  max concurrent module workers (default 4)");
+                    return;
+                }
+                p => {
+                    if !p.starts_with("--") {
+                        dir_path = p.to_string();
+                    }
+                    i += 1;
+                }
+            }
+        }
+
+        let result = scheduler::index_parallel(&dir_path, total_workers, parallel);
         println!("{}", result);
         return;
     }

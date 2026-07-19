@@ -9,9 +9,11 @@
 #include "store.h"
 #include "ir/semantic_unit.h"
 
-namespace store {
+namespace store
+{
 
-namespace {
+namespace
+{
 
 // Flush batch size for insertFileResultBatch. Larger batches amortize SQL
 // prepare cost; 500 keeps peak memory bounded (~150 MB for 10k files).
@@ -27,7 +29,7 @@ constexpr size_t kMemBulkSanityMultiplier = 10;
 } // namespace
 
 MemBulkAggregator::MemBulkAggregator(size_t estimated_files)
-    : per_worker_hint_(kMemBulkPerWorkerHint)
+	: per_worker_hint_(kMemBulkPerWorkerHint)
 {
 	aggregated_.reserve(estimated_files);
 }

@@ -233,6 +233,18 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 					filter.stats().skipped_lang++;
 					continue;
 				}
+				// Detect Java projects on the fly — the FIRST .java
+				// file flips filter into Java mode so test/docs/samples
+				// collisions with Java package namespaces (e.g.
+				// org/springframework/samples/petclinic) get the
+				// top-only (depth ≤ 3) treatment instead of being
+				// skipped at any depth. See README.md "Why Java is
+				// the (only) exception". Idempotent — setLangContext
+				// is cheap and safe to repeat.
+				if (strcmp(lang, "java") == 0 &&
+				    filter.langContext() != "java") {
+					filter.setLangContext("java");
+				}
 				if (!filter.isLanguageAccepted(lang)) {
 					filter.stats().skipped_lang++;
 					continue;
@@ -651,9 +663,9 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	for (auto &job : jobs)
 		job_paths.push_back(job.path);
 
-	return engine_index_post_parse(
-		project_id, dir, job_paths, filter, is_reindex,
-		mode_fast, mode_deep, time_parse_ms, 0, total_indexed);
+	return engine_index_post_parse(project_id, dir, job_paths, filter,
+				       is_reindex, mode_fast, mode_deep,
+				       time_parse_ms, 0, total_indexed);
 }
 
 // ─── Index File List (Parallel) ──────────────────────────────────
@@ -708,6 +720,18 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 		const char *lang = filter.detectLanguage(path.c_str());
 		if (!lang)
 			continue;
+
+		// Detect Java projects on the fly — the FIRST .java file
+		// flips filter into Java mode so test/docs/samples collisions
+		// with Java package namespaces (e.g.
+		// org/springframework/samples/petclinic) get the top-only
+		// (depth ≤ 3) treatment instead of being skipped at any
+		// depth. See README.md "Why Java is the (only) exception".
+		// Idempotent — setLangContext is cheap and safe to repeat.
+		if (strcmp(lang, "java") == 0 &&
+		    filter.langContext() != "java") {
+			filter.setLangContext("java");
+		}
 
 		jobs.push_back(
 			{ path, lang, static_cast<size_t>(file_stat.st_size) });

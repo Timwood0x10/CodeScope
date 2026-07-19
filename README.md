@@ -448,6 +448,37 @@ Environment variables (all optional):
 - Large projects (thousands+ files): use `codescope-parallel.sh` — multi-process isolation + dynamic dispatch is more robust
 
 
+### Why Java is the (only) exception — a rant
+
+CodeScope skips `test/`, `tests/`, `docs/`, `examples/`, `samples/`, `bench/`, `vendor/`, ... at **any depth** in the path. This is the correct behavior for every sane project layout: Cargo workspaces nest `crates/<name>/tests/`, Lerna monorepos nest `packages/<name>/test/`, Gradle multi-module builds nest `subprojects/<name>/src/test/`, and users expect all of those to be skipped — they're not the analysis target, and indexing them inflates node counts 3-5x with noise.
+
+Then there's **Java**. Java, in its infinite wisdom, decided that `org/springframework/samples/petclinic` is a legitimate package name — `samples` is a package component, NOT a docs folder. `src/test/java/...` is the standard Maven test source root, but `src/main/java/.../test/...` can also be a legit package. `examples`, `integration`, `locale` — all fair game as Java package identifiers. Java conflated filesystem layout vocabulary with package naming, and now every tool in the ecosystem has to tiptoe around it.
+
+This is an **anti-human engineering design**. It forces every static analysis tool to either (a) skip test/ at any depth and break Java, or (b) gate test/ to top-only and leak deep-nested test dirs on every other language's monorepos. The noise on non-Java projects is enormous — rustc alone has `tools/rust-analyzer/crates/*/src/*/tests/` nested 7 deep, all of which were leaking through a depth-3 top-only gate.
+
+CodeScope picks option (c): **Java projects get a carve-out, everyone else gets the correct behavior.**
+
+When the indexer detects a `.java` file, it flips `FilterPolicy` into Java mode: `test/`/`docs/`/`samples/`/... collisions are gated to **top-only (depth ≤ 3)** via `java_protected_skip_dirs_`, so `org/.../samples/petclinic` (depth 5+) is NOT skipped but `<root>/test/`, `<root>/src/test/java/`, `<root>/packages/<name>/tests/` still are. Every other language (Rust, Go, Python, JS/TS, C/C++, Kotlin, Ruby, Scala, ...) keeps these names skipped at any depth — the way they should be.
+
+**If you're indexing a Java project**: nothing to do. The indexer auto-detects `.java` files and flips `FilterPolicy` into Java mode, which routes `test/`/`docs/`/`samples/`/... through `java_protected_skip_dirs_` at top-only (depth ≤ 3) — nested packages like `org/.../samples/petclinic` (depth 5+) are kept, `<root>/test/`/`src/test/java/`/`packages/<name>/tests/` are still skipped. This is the only working override mechanism.
+
+```bash
+# Java project — auto-detection handles it, no env var needed:
+codescope index <your-java-project>
+```
+
+```bash
+# If you actually want to skip NESTED test/docs on a Java project
+# (i.e. turn OFF the carve-out and apply any-depth skip everywhere),
+# CODESCOPE_EXCLUDE_PATHS only ADDS exclude patterns on top of the
+# built-in list — it cannot un-skip nested packages on its own. The
+# clean path is a project-local .codescopeignore pattern matching the
+# specific nested dirs you want dropped.
+```
+
+The trade-off is documented here in the open. Java's package naming collision is a design flaw in the language, not in CodeScope, and we refuse to let it degrade the experience for the other 99% of projects.
+
+
 ### Quick Decision Guide
 
 ```

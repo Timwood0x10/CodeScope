@@ -430,6 +430,36 @@ CODESCOPE_WORKERS=16 ./codescope-parallel.sh /path/to/large/project
 - 大型项目（数千文件以上）：用 `codescope-parallel.sh`，多进程隔离 + 动态调度更稳
 
 
+### 为什么 Java 是（唯一的）例外 —— 一段吐槽
+
+CodeScope 对 `test/`、`tests/`、`docs/`、`examples/`、`samples/`、`bench/`、`vendor/`…… 这类目录在路径**任意深度**都跳过。这对任何正常的项目布局都是正确行为：Cargo workspace 会嵌 `crates/<name>/tests/`，Lerna monorepo 会嵌 `packages/<name>/test/`，Gradle 多模块构建会嵌 `subprojects/<name>/src/test/`，用户都期望这些被跳过 —— 它们不是分析目标，索引它们只会让节点数膨胀 3-5x 的噪声。
+
+然后**Java**来了。Java 凭它无尽的智慧，决定 `org/springframework/samples/petclinic` 是一个合法的包名 —— `samples` 在这里是一个包组件，**不是** docs 文件夹。`src/test/java/...` 是 Maven 的标准测试源根，但 `src/main/java/.../test/...` 也可以是一个合法包。`examples`、`integration`、`locale` —— 全都可以当 Java 包标识符。Java 把文件系统布局词汇跟包命名混为一谈，现在生态里每个工具都得绕着它走。
+
+这是一种**反人类的工程设计**。它逼着每个静态分析工具要么 (a) 任意深度跳 test/ 然后坑了 Java，要么 (b) 把 test/ 限到 top-only 然后漏掉其他所有语言 monorepo 里深度嵌套的 test 目录。非 Java 项目上的噪声大得离谱 —— 光 rustc 一个项目就有 `tools/rust-analyzer/crates/*/src/*/tests/` 嵌到第 7 层，全从一个 depth-3 的 top-only 闸门里漏出去。
+
+CodeScope 选了方案 (c)：**Java 项目给一个例外，其他所有项目都拿到正确行为。**
+
+当索引器检测到一个 `.java` 文件时，会把 `FilterPolicy` 切到 Java 模式：`test/`/`docs/`/`samples/`/... 的冲突项被限定到 **top-only（深度 ≤ 3）**，通过 `java_protected_skip_dirs_` 处理，所以 `org/.../samples/petclinic`（深度 5+）**不**跳，但 `<root>/test/`、`<root>/src/test/java/`、`<root>/packages/<name>/tests/` 仍然跳。其他所有语言（Rust、Go、Python、JS/TS、C/C++、Kotlin、Ruby、Scala、...）都保持这些名字在任意深度被跳过 —— 本该如此。
+
+**如果你在索引 Java 项目**：什么都不用做。索引器自动检测 `.java` 文件并把 `FilterPolicy` 切到 Java 模式，把 `test/`/`docs/`/`samples/`/... 通过 `java_protected_skip_dirs_` 限定到 top-only（深度 ≤ 3）—— 嵌套包如 `org/.../samples/petclinic`（深度 5+）保留，`<root>/test/`/`src/test/java/`/`packages/<name>/tests/` 仍然跳。这是唯一能工作的 override 机制。
+
+```bash
+# Java 项目 —— 自动检测处理，不需要环境变量：
+codescope index <your-java-project>
+```
+
+```bash
+# 如果你确实想跳掉 Java 项目里嵌套的 test/docs
+# （即关掉这个例外，到处都任意深度跳），
+# CODESCOPE_EXCLUDE_PATHS 只能在 built-in 列表之上"加"exclude 模式
+# —— 它不能"un-skip"嵌套包。干净路径是项目级 .codescopeignore
+# pattern 精确匹配你想丢的具体嵌套目录。
+```
+
+这个 trade-off 在这里公开记录。Java 的包命名冲突是语言本身的设计缺陷，不是 CodeScope 的，我们拒绝让它拖累其他 99% 项目的体验。
+
+
 ### 总结选择策略
 
 ```

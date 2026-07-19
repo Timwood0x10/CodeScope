@@ -72,11 +72,11 @@ char *dupString(const std::string &s);
 
 /// In-memory bulk index path for small modules.
 char *engine_index_project_membulk(
-    uint64_t project_id, const std::string &dir,
-    uint64_t max_file_size, const FilterPolicy &filter,
-    const std::vector<std::pair<std::string, std::string>> &job_lang,
-    const std::unordered_map<std::string, const TSLanguage *> &lang_ptrs,
-    bool is_reindex, bool mode_fast, bool mode_deep);
+	uint64_t project_id, const std::string &dir, uint64_t max_file_size,
+	const FilterPolicy &filter,
+	const std::vector<std::pair<std::string, std::string>> &job_lang,
+	const std::unordered_map<std::string, const TSLanguage *> &lang_ptrs,
+	bool is_reindex, bool mode_fast, bool mode_deep);
 
 /// Shared post-parse sequence: buildGraph -> callgraph_ready UPDATE ->
 /// populateSymbols/resolveStagedMetrics -> (deep) vectors ->

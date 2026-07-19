@@ -171,23 +171,68 @@ FilterPolicy::FilterPolicy()
 		"__fixtures__",
 		"__test__",
 		// ── Source-bearing dirs rarely the focus of analysis ──
-		// Skipped in NORMAL to avoid 3-5x file count inflation.
-		// IMPORTANT: these are moved to top_only_skip_dirs_ below —
-		// matching them at ANY path depth (the normal_skip_dirs_
-		// behavior) would falsely skip Java packages like
-		// org/springframework/samples/petclinic (component "samples")
-		// or src/test/java (component "test"). Top-only matching
-		// still catches <root>/test/, <root>/docs/, <root>/vendor/,
-		// etc. without clobbering same-named package components.
-		// ── Build artifacts & caches (match at ANY depth) ──
+		// Skipped at ANY path depth to avoid 3-5x file count inflation
+		// from deep-nested test/docs dirs (e.g. rustc's
+		// tools/rust-analyzer/crates/*/src/*/tests/ nests at depth 7).
+		// Trade-off: this WILL skip Java packages whose components
+		// collide with these names (e.g. org/springframework/samples/
+		// petclinic's "samples", src/main/java/.../test/...). Java is
+		// the ONLY language with such a carve-out — when the indexer
+		// detects a .java file it flips lang_context_ to "java", which
+		// routes these names through java_protected_skip_dirs_ at
+		// top-only (depth ≤ 3) in shouldSkipDir()/shouldSkipPath(),
+		// protecting nested package namespaces. See README.md "Why
+		// Java is the (only) exception". NOTE: CODESCOPE_EXCLUDE_PATHS
+		// only ADDS exclude patterns; it CANNOT clear this list. The
+		// prior top-only (depth ≤ 3) matching leaked deep-nested test
+		// dirs, inflating node counts on monorepos (Lerna
+		// packages/*/test/, Gradle subprojects/*/src/test/).
 		"bin",
 		"third_party",
 		"thirdparty",
 		"3rdparty",
 		"vendor",
+		"vendored",
 		"bench",
 		"benchmark",
 		"benchmarks",
+		// ── Test / docs / samples dirs (match at ANY depth) ──
+		// Moved from top_only_skip_dirs_ so deep-nested test dirs
+		// (the common case in Cargo workspaces, Lerna monorepos,
+		// Gradle multi-module builds) are always skipped. Java users
+		// who need these as package names: see comment above.
+		//
+		// EXCEPTION: Java projects keep the old top-only (depth ≤ 3)
+		// behavior via java_protected_skip_dirs_ + the lang_context_
+		// gate in shouldSkipPath(). Java is the only language whose
+		// package namespaces collide with these names (samples/test/
+		// examples/ as legitimate org/.../samples/petclinic package
+		// components). All other languages (Rust, Go, Python, JS/TS,
+		// C/C++, ...) nest test/ at any depth and expect it skipped.
+		"test",
+		"tests",
+		"docs",
+		"doc",
+		"documentation",
+		"examples",
+		"example",
+		"samples",
+		"sample",
+		"scripts",
+		"hack",
+		"migrations",
+		"seeds",
+		"e2e",
+		"integration",
+		"locale",
+		"locales",
+		"i18n",
+		"l10n",
+		"assets",
+		"static",
+		"public",
+		"media",
+		"external",
 	};
 
 	// FAST mode skips even more — reserved for future FAST-only
@@ -541,14 +586,29 @@ FilterPolicy::FilterPolicy()
 	lowercaseAll(skip_filename_prefixes_);
 	lowercaseAll(skip_dir_prefixes_);
 
-	// Source-bearing dirs that are "rarely the focus of analysis"
-	// (test/, docs/, vendor/, bench/, samples/, examples/, ...).
-	// These are matched ONLY against the first component of the
-	// project-relative path — see shouldSkipPath(). This avoids
-	// falsely skipping Java packages like
-	// org/springframework/samples/petclinic where "samples" is a
-	// legitimate package component, not a docs folder.
-	top_only_skip_dirs_ = {
+	// Source-bearing dirs that were "rarely the focus of analysis"
+	// (test/, docs/, vendor/, bench/, samples/, examples/, ...) are
+	// now in normal_skip_dirs_ (matched at ANY depth). This set is
+	// kept empty intentionally — the prior top-only (depth ≤ 3)
+	// matching leaked deep-nested test dirs on monorepos. See the
+	// comment in normal_skip_dirs_ for the full rationale and the
+	// Java user override path (CODESCOPE_EXCLUDE_PATHS + .codescopeignore).
+	top_only_skip_dirs_ = {};
+	lowercaseAll(top_only_skip_dirs_);
+
+	// Java-protected skip dirs — the SAME source-bearing names that
+	// other languages get skipped at any depth (in normal_skip_dirs_),
+	// but Java needs them gated to top-only (depth ≤ 3) because Java
+	// package namespaces collide with these names (e.g. a legit
+	// package org/springframework/samples/petclinic has "samples" as
+	// a package component, NOT a docs folder). When lang_context_ ==
+	// "java", shouldSkipPath() consults THIS set at depth ≤ 3 instead
+	// of letting normal_skip_dirs_ clobber nested packages. This is
+	// the ONLY language with such a carve-out — other languages
+	// (Rust, Go, Python, JS/TS, C/C++, ...) nest test/ at any depth
+	// and expect it skipped unconditionally. See the rant in
+	// README.md "Why Java is the (only) exception".
+	java_protected_skip_dirs_ = {
 		"test",		 "tests",    "docs",	    "doc",
 		"documentation", "examples", "example",	    "samples",
 		"sample",	 "scripts",  "hack",	    "migrations",
@@ -557,7 +617,7 @@ FilterPolicy::FilterPolicy()
 		"static",	 "public",   "media",	    "external",
 		"vendor",	 "vendored", "bench",	    "benchmarks",
 	};
-	lowercaseAll(top_only_skip_dirs_);
+	lowercaseAll(java_protected_skip_dirs_);
 
 	buildActiveSets();
 }
@@ -605,8 +665,22 @@ bool FilterPolicy::shouldSkipDir(const std::string &dir_name) const
 	std::string lower = dir_name;
 	for (auto &c : lower)
 		c = static_cast<char>(std::tolower(c));
-	if (active_skip_dirs_.find(lower) != active_skip_dirs_.end())
+	if (active_skip_dirs_.find(lower) != active_skip_dirs_.end()) {
+		// Java carve-out: the test/tests/docs/samples/... names are
+		// in active_skip_dirs_ (so non-Java projects skip them at any
+		// depth), but Java package namespaces collide with these
+		// names (e.g. org/springframework/samples/petclinic). For Java
+		// projects, defer these to the top-only (depth ≤ 3) check in
+		// shouldSkipPath() via java_protected_skip_dirs_, so nested
+		// package components are NOT clobbered. See README.md "Why
+		// Java is the (only) exception".
+		if (lang_context_ == "java" &&
+		    java_protected_skip_dirs_.find(lower) !=
+			    java_protected_skip_dirs_.end()) {
+			return false;
+		}
 		return true;
+	}
 	// Prefix match — catches build_test, build_master, etc.
 	if (shouldSkipDirPrefix(lower))
 		return true;
@@ -836,21 +910,25 @@ bool FilterPolicy::shouldSkipPath(const std::string &rel_path,
 
 	// 1b. Shallow skip dirs — source-bearing but "rarely the focus
 	//     of analysis" dirs (test/, tests/, docs/, vendor/, bench/,
-	//     samples/, ...). Matched against the first path components
-	//     only (up to depth 3), so they catch:
-	//       <root>/test/...           (depth 1)
-	//       <root>/src/test/...       (depth 2, Maven/Gradle)
-	//       <root>/crates/<name>/tests/... (depth 3, Cargo workspace)
-	//     but do NOT clobber same-named Java package components deep
-	//     in the path like
-	//       src/main/java/org/springframework/samples/petclinic
-	//     where "samples" is a legitimate package, not a docs folder.
-	//
-	//     Depth 3 covers the common project-layout conventions
-	//     (root/src/test, root/crates/<name>/tests,
-	//      root/packages/<name>/tests) without touching deep
-	//     package namespaces.
+	//     samples/, ...). For non-Java projects these are already
+	//     caught at ANY depth by the active_skip_dirs_ check above
+	//     (step 1), so this block is a no-op for them. For Java
+	//     projects, the shouldSkipDir() Java carve-out defers these
+	//     names HERE so nested package components (e.g.
+	//     src/main/java/org/springframework/samples/petclinic) are
+	//     NOT clobbered — only the first 3 path components are checked
+	//     against java_protected_skip_dirs_, catching:
+	//       <root>/test/...                  (depth 1)
+	//       <root>/src/test/java/...         (depth 2, Maven/Gradle)
+	//       <root>/packages/<name>/tests/... (depth 3, Lerna monorepo)
+	//     without touching deep package namespaces. See README.md
+	//     "Why Java is the (only) exception".
 	{
+		// No-op for non-Java: their test/docs/etc. are already
+		// skipped at any depth via active_skip_dirs_ in step 1.
+		if (lang_context_ != "java")
+			goto skip_top_only_check;
+
 		// Extract up to 3 leading path components.
 		std::string head;
 		size_t off = 0;
@@ -870,17 +948,18 @@ bool FilterPolicy::shouldSkipPath(const std::string &rel_path,
 		for (auto &c : head)
 			c = static_cast<char>(std::tolower(c));
 		// Check each of the first 3 components against
-		// top_only_skip_dirs_. If any matches, skip.
+		// java_protected_skip_dirs_. If any matches, skip.
 		std::istringstream ss2(head);
 		std::string comp;
 		while (std::getline(ss2, comp, '/')) {
 			if (comp.empty())
 				continue;
-			if (top_only_skip_dirs_.find(comp) !=
-			    top_only_skip_dirs_.end())
+			if (java_protected_skip_dirs_.find(comp) !=
+			    java_protected_skip_dirs_.end())
 				return true;
 		}
 	}
+skip_top_only_check:;
 
 	// 2. Check against .gitignore rules (whole-path matching)
 	if (!gitignore_rules_.empty() &&
