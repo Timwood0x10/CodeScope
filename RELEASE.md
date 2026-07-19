@@ -1,4 +1,4 @@
-## v0.2.1 (2026-07-17)
+## v0.2.1 (2026-07-19)
 
 Bug-fix release. No new features; closes the gap between the Resolver Pipeline and the query/verify surfaces that caused third-party false positives, dead verifiers, and invalid JSON.
 

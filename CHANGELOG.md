@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## v0.2.1 (2026-07-17)
+## v0.2.1 (2026-07-19)
 
 Open-source release. Closes the gap between the Resolver Pipeline and the query/verify surfaces (call-graph `resolve_strategy` propagation, module-tree JSON validity, capability verifier LIKE-direction, module-hierarchy materialisation), plus FFI boundary detection, paginated graph export, LadybugDB embedded storage, one-click bootstrap, and a full code-review / portability / documentation pass.
 
