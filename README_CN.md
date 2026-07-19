@@ -41,13 +41,74 @@ CodeScope 是一个 **Project Truth Engine**，回答一个问题：
 
 ### 知识图谱（副产品）
 
-CodeScope 把知识图谱作为验证管线的副产品来构建。从模块级开始，逐步扩展到项目级：
+CodeScope 把知识图谱作为验证管线的副产品来构建。它学到的不是「代码文本」，而是*结构化的「这个项目怎么组织、哪重要、哪冗余、承诺了啥」*——四层叠加：
 
-- **模块图**：模块内的实体、引用、导入关系
-- **跨模块图**：模块间的调用边、依赖边
-- **项目图**：架构层、工作流、能力
+| 层 | 表 | 告诉你什么 |
+|----|----|-----------|
+| **调用图**（谁调谁） | `relation`（type=1）、`architecture_edge` | 跨模块调用依赖；驱动 `detect_architecture_drift` |
+| **模块健康度**（谁重要/谁有死代码） | `module_summary` | 每模块 `incoming_count`/`outgoing_count`/`dead_entities`/`utilization`/`confidence`；驱动 `explain_module` |
+| **模块依赖**（改了影响谁） | `architecture_edge`（边权=调用次数）、`module_edge` | 「改模块 A → 这些模块依赖它」 |
+| **文档能力**（声称能干嘛） | `capability` + `document` | 从 README 提取的能力声明；驱动 `detect_capability_drift` / `verify_claim` |
 
 知识图谱不是产品，是支撑验证的基础设施。
+
+#### `module_summary.role`：多信号融合分类器（v0.2.1）
+
+`role` 列由**多信号融合 CASE** 分类器自动填充（`engine/src/model/state_builder.cpp`），不是单源启发式。它把调用图度数与调用图给不了的两类信号融合：
+
+| 信号 | 来源 | 增量信息 |
+|------|------|----------|
+| `pub_count` | `entity.visibility=1`（各语言 Visitor 域 pub/public/export） | 区分「对外接口层」vs「内部实现层」——调用图度数推不出 |
+| `entry_reachable` | `graph_nodes.is_entry_point`（main/init/setup/run/handler） | 该模块是否含入口层 |
+
+规则按**优先级**匹配（命中即停）：
+
+| 优先级 | Role | 规则（多信号） |
+|--------|------|----------------|
+| 1 | `test` | 模块名含 `test`/`tests`/`_test`/`mod tests` |
+| 2 | `api` | `pub_count > 0 AND incoming ≥ 2×outgoing AND incoming ≥ 3 AND utilization ≥ 0.1` |
+| 3 | `entry` | `entry_reachable > 0` |
+| 4 | `core` | `incoming ≥ 10 AND outgoing ≤ incoming×1.0 AND utilization ≥ 0.05 AND pub_count > 0` |
+| 5 | `utility` | `outgoing ≤ 5 AND pub_count > 0 AND utilization ≥ 0.05` |
+| 6 | `business` | `pub_count > 0 AND incoming ≥ 10`（实现层——被多模块调且自己也调多；outgoing 偏高不命中 core/api） |
+| 7 | `dead` | `incoming=0 AND outgoing=0`，或 `dead_entities = total` |
+| 8 | `infra` | 真兜底——没命中任何语义规则 |
+
+请把 `role` 当融合后的线索，不当判决。阈值是 `state_builder.h` 里的 `constexpr`——若你项目的 role 分布看着不对（如 `infra > 30%` 说明阈值过严），凭 `bun` 调参。完整设计 + v0.2.1 阈值重调记录见 `docs/dev_plans/role_classifier_plan.md`。
+
+#### 知识图谱里落了什么（memscope-rs，215 文件）
+
+| 表 | 行数 | 含义 |
+|----|-----:|------|
+| `entity` | 4,310 | 细粒度代码实体（函数、类型、变量） |
+| `relation` | 726 | 实体间关系（type 3 = 包含/定义） |
+| `architecture_edge` | 3,351 | 模块/目录级架构依赖边（边权 = 调用次数） |
+| `module_edge` | 11 | 跨模块依赖边 |
+| `capability` | 3 | 从 README 提取的能力声明 |
+| `document` | 1 | README 文档记录 |
+| `module_summary` | 42 | 每模块知识卡片 |
+
+能了解到啥：
+
+- **架构依赖**——`architecture_edge` 告诉你哪些模块依赖哪些（如 `analysis/heap_scanner → unsafe_inference`，边权=调用次数）。驱动 `detect_architecture_drift`。
+- **能力声明**——`capability` + `document` 把 README 的「能干什么」结构化。驱动 `detect_capability_drift` / `verify_claim(capability_exists)`。
+- **模块摘要**——42 个模块的知识卡片，由 `explain_module` 浮出。
+
+#### 直接查询入口（v0.2.1）
+
+过去知识图谱是**隐式**的——`graph_query` 走的是*调用*图（`graph_nodes` / `graph_edges`），不是知识层表（`entity` / `relation` / `architecture_edge`）。你只能通过 `explain_module`、`detect_capability_drift`、`get_module_tree` 间接受益。
+
+v0.2.1 新增 `engine_get_knowledge_graph(project_id, table, limit)` + MCP 工具 `get_knowledge_graph`，现在可**直接浏览**任意知识层表：
+
+```jsonc
+get_knowledge_graph {"table":"architecture_edge","limit":5}
+// → {"table":"architecture_edge","rows":[{"id":1,"layer_lower":"analysis/heap_scanner","layer_upper":"unsafe_inference","entity_id":42}],"total":3351,"truncated":false}
+
+get_knowledge_graph {"table":"capability","limit":10}
+// → {"table":"capability","rows":[{"id":1,"name":"borrow_analysis","summary":"scope-aware borrow checking"}],"total":3,"truncated":false}
+```
+
+支持表：`entity`、`relation`、`architecture_edge`、`module_edge`、`capability`、`document`、`module_summary`。块级 FFI——单次调用返回整个结果集，绝不一条边一次调用。
 
 **CodeScope 不解释代码，只验证代码。** 解释是 AI 的事，验证才是 CodeScope 的事。
 
@@ -57,7 +118,7 @@ CodeScope 把知识图谱作为验证管线的副产品来构建。从模块级�
 
 ```bash
 # 1. 一键构建（自动检测系统、安装依赖、编译）
-bash <(curl -fsSL https://raw.githubusercontent.com/Timwood0x10/CodeScope/master/bootstrap.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/Timwood0x10/CodeScope/main/bootstrap.sh)
 
 # 2. 索引项目
 codescope cli index_project '{"project_path":"/path/to/your/project"}'
@@ -80,6 +141,30 @@ codescope
 | **Linux** | build-essential, cmake, Rust | `bash bootstrap.sh` |
 
 > 预编译二进制可在 [Releases 页面](https://github.com/Timwood0x10/CodeScope/releases) 下载。
+
+**Linux / macOS 一键安装**：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Timwood0x10/CodeScope/master/install.sh | bash
+```
+
+安装后 `~/.codescope/bin/` 下包含：
+
+| 文件 | 用途 |
+|------|------|
+| `codescope` | 主二进制（CLI + MCP server）—— 单进程 `index` + 内置多进程 `index-parallel` 调度器（适合大项目） |
+
+加入 PATH 后即可使用：
+
+```bash
+export PATH="$PATH:$HOME/.codescope/bin"
+
+# 中小项目直接索引
+codescope cli index_project '{"project_path":"/path/to/project"}'
+
+# 大型项目（数千~数万文件）用内置调度器加速
+codescope index-parallel /path/to/large/project
+```
 
 ### 手动构建
 
@@ -104,7 +189,7 @@ cargo build --release
 | `CODESCOPE_INDEX_MODE` | `standard` | 索引模式：`fast` / `standard` / `strict` |
 | `CODESCOPE_EXCLUDE_PATHS` | 未设置 | 逗号分隔的排除 glob 模式（如 `test/*,docs/*`） |
 | `CODESCOPE_MMAP_SIZE` | `268435456` (256 MB) | SQLite `mmap_size` pragma 值（字节） |
-| `CODESCOPE_WORKERS` | `4` | 并行索引 worker 数量 |
+| `CODESCOPE_WORKERS` | `4` | `codescope index-parallel` 的总解析 worker 核心数（可用 `--workers N` 覆盖） |
 | `CODESCOPE_MAX_FILE_SIZE` | 未设置 | 索引的最大源文件大小（字节）；超过则跳过 |
 | `CODESCOPE_WORKER_TIMEOUT` | `300` | Worker 子进程超时（秒） |
 | `CODESCOPE_VERBOSE` | `0` | 设为 `1` 启用详细日志 |
@@ -137,6 +222,21 @@ CodeScope 在首次运行时自动在项目根目录创建 `.codescope/` 目录�
 > **提示**：数据库是可移植的——将 `.codescope/` 随项目一起复制，即可在其他机器上复用分析结果。
 
 ## 性能
+
+### 真实项目索引实测（v0.2.1，Apple M3 Max）
+
+| 项目 | 文件 | 节点 | 索引耗时 | 峰值 RSS |
+|------|----:|----:|--------:|---------:|
+| **memscope-rs**（Rust） | 215 | 4,344 | ~2 s | ~200 MB |
+| **CodeScope**（自身，C++/Rust） | 168 | 1,001 | 1.3 s | ~150 MB |
+| **ARES_POLIS** | 105 | 1,531 | ~2 s | ~180 MB |
+| **rustc**（Rust 编译器，单体库） | 6,029 | 81,033 | 81 s | 5.9 GB |
+
+**结论：**
+
+- **中小项目（<300 文件）：** 亚秒~2 秒索引，~200 MB RSS——体验极佳，日常开发速度。
+- **超大单体库（数万文件）：** 能用但需注意资源——rustc 耗 81 秒 + 5.9 GB 峰值内存。一次性索引可接受,需留意内存。
+- **查询延迟（stdio MCP 模式，含进程启动）：** 单次调用 ~60 ms；常驻 server 模式更低。
 
 基准测试在 **Apple M3 Max（36 GB 内存）** 上执行。
 
@@ -180,28 +280,6 @@ CodeScope 在首次运行时自动在项目根目录创建 `.codescope/` 目录�
 Apache 2.0
 
 ***
-
-## 运行时日志
-
-所有基准测试在 **Apple M3 Max（36 GB 内存）** 上执行。\
-原始输出日志位于 [`runtimelog/`](runtimelog/)：
-
-| 日志 | 大小 | 内容 |
-|------|------|------|
-| `scan_goagent.log` | 127 KB | Go agent 工具调度分析 |
-| `scan_linux_kernel.log` | 52 KB | Linux kernel/ 核心扫描（40,335 符号） |
-| `scan_fs_io.log` | 14 KB | VFS + 页缓存 + 预读分析 |
-| `scan_linux_kernel_full.log` | 12 KB | 内核子目录全量扫描汇总 |
-| `scan_usb_raw.log` | 11 KB | USB 驱动子系统原始输出 |
-| `scan_stub_full.log` | 2.2 KB | 空实现检测（Fast + AST）测试 |
-| `scan_linux_full.log` | 1.7 KB | 全量内核扫描尝试 |
-| `scan_multilang.log` | 1.1 KB | 多语言架构扫描 |
-| `scan_hid.log` | 526 B | USB HID 子系统扫描 |
-| `scan_linux_scheduler.log` | 12.8 KB | 进程调度 + 父子进程资源分析 |
-| `scan_usb_hid_analysis.log` | 12.8 KB | USB HID 设备识别深度分析 |
-| `performance_benchmark.log` | 5.5 KB | 全量性能基准报告 |
-
----
 
 ## 工具使用指南
 
@@ -279,17 +357,67 @@ Apache 2.0
 |------|---------|:----------:|
 | `index_project` | 索引整个项目目录（解析+IR+图构建） | **N/A** |
 | `index_file` | 索引单个源文件 | **N/A** |
+| `force_index_files` | **强制索引**——绕过默认跳过规则（`test/`、`docs/`、`vendored/`、`node_modules/`、`.gitignore` 等）索引指定文件/目录。用户说"去吧 xxx/yyy 给我索引了吧"时使用 | **N/A** |
 | `count_tokens` | 估算文本的 token 数（DeepSeek 公式） | **~10** |
 
-### 不再存在的工具
+#### `force_index_files` — 用户自定义增量索引
 
-以下工具曾在旧版 README 中出现，但**实际代码中不存在**，不要使用：
+当默认 `FilterPolicy` 把某些目录（测试夹具、vendored 依赖、生成代码、示例）整批跳过，而用户又想把这些路径拉进来索引时，用 `force_index_files`。它**绕过**默认 skip 规则，但仍然尊重：
 
-- ❌ `get_hotspots` — 未实现
-- ❌ `get_communities` — 社区检测未接入 MCP
-- ❌ `locate_code` — 未实现
-- ❌ `get_project_info` — 未实现
-- ❌ `enhance_project` / `codescope_build_context` / `codescope_capabilities` — 已移除
+- 文件大小上限（`CODESCOPE_MAX_FILE_SIZE`，默认 5 MB）
+- 语言可识别性（`detectLanguage` 必须返回非 null）
+- 可选语言白名单（`language_filter`）
+
+**MCP 调用**：
+
+```json
+{
+  "paths": ["/abs/path/to/dir/or/file", "/another/path"],
+  "language_filter": "java,python"
+}
+```
+
+- `paths`：绝对路径数组，目录会递归展开
+- `language_filter`：可选，逗号分隔语言白名单；空 = 全部可识别语言
+
+**CLI 调用**：
+
+```bash
+codescope force-index [--lang java,python] [--db /path/to/codescope.db] /path/to/xxx /path/to/yyy
+```
+
+返回 `engine_index_files` 的 JSON（`files_indexed`/`nodes`/`edges`/`errors`），并附 `skipped_files`/`skipped_dirs`/`paths_requested` 统计。
+
+
+### 为什么 Java 是（唯一的）例外 —— 一段吐槽
+
+CodeScope 对 `test/`、`tests/`、`docs/`、`examples/`、`samples/`、`bench/`、`vendor/`…… 这类目录在路径**任意深度**都跳过。这对任何正常的项目布局都是正确行为：Cargo workspace 会嵌 `crates/<name>/tests/`，Lerna monorepo 会嵌 `packages/<name>/test/`，Gradle 多模块构建会嵌 `subprojects/<name>/src/test/`，用户都期望这些被跳过 —— 它们不是分析目标，索引它们只会让节点数膨胀 3-5x 的噪声。
+
+然后**Java**来了。Java 凭它无尽的智慧，决定 `org/springframework/samples/petclinic` 是一个合法的包名 —— `samples` 在这里是一个包组件，**不是** docs 文件夹。`src/test/java/...` 是 Maven 的标准测试源根，但 `src/main/java/.../test/...` 也可以是一个合法包。`examples`、`integration`、`locale` —— 全都可以当 Java 包标识符。Java 把文件系统布局词汇跟包命名混为一谈，现在生态里每个工具都得绕着它走。
+
+这是一种**反人类的工程设计**。它逼着每个静态分析工具要么 (a) 任意深度跳 test/ 然后坑了 Java，要么 (b) 把 test/ 限到 top-only 然后漏掉其他所有语言 monorepo 里深度嵌套的 test 目录。非 Java 项目上的噪声大得离谱 —— 光 rustc 一个项目就有 `tools/rust-analyzer/crates/*/src/*/tests/` 嵌到第 7 层，全从一个 depth-3 的 top-only 闸门里漏出去。
+
+CodeScope 选了方案 (c)：**Java 项目给一个例外，其他所有项目都拿到正确行为。**
+
+当索引器检测到一个 `.java` 文件时，会把 `FilterPolicy` 切到 Java 模式：`test/`/`docs/`/`samples/`/... 的冲突项被限定到 **top-only（深度 ≤ 3）**，通过 `java_protected_skip_dirs_` 处理，所以 `org/.../samples/petclinic`（深度 5+）**不**跳，但 `<root>/test/`、`<root>/src/test/java/`、`<root>/packages/<name>/tests/` 仍然跳。其他所有语言（Rust、Go、Python、JS/TS、C/C++、Kotlin、Ruby、Scala、...）都保持这些名字在任意深度被跳过 —— 本该如此。
+
+**如果你在索引 Java 项目**：什么都不用做。索引器自动检测 `.java` 文件并把 `FilterPolicy` 切到 Java 模式，把 `test/`/`docs/`/`samples/`/... 通过 `java_protected_skip_dirs_` 限定到 top-only（深度 ≤ 3）—— 嵌套包如 `org/.../samples/petclinic`（深度 5+）保留，`<root>/test/`/`src/test/java/`/`packages/<name>/tests/` 仍然跳。这是唯一能工作的 override 机制。
+
+```bash
+# Java 项目 —— 自动检测处理，不需要环境变量：
+codescope index <your-java-project>
+```
+
+```bash
+# 如果你确实想跳掉 Java 项目里嵌套的 test/docs
+# （即关掉这个例外，到处都任意深度跳），
+# CODESCOPE_EXCLUDE_PATHS 只能在 built-in 列表之上"加"exclude 模式
+# —— 它不能"un-skip"嵌套包。干净路径是项目级 .codescopeignore
+# pattern 精确匹配你想丢的具体嵌套目录。
+```
+
+这个 trade-off 在这里公开记录。Java 的包命名冲突是语言本身的设计缺陷，不是 CodeScope 的，我们拒绝让它拖累其他 99% 项目的体验。
+
 
 ### 总结选择策略
 

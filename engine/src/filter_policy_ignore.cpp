@@ -84,36 +84,50 @@ bool FilterPolicy::gitignoreMatches(const std::vector<GitignoreRule> &rules,
 bool FilterPolicy::globMatch(const std::string &pattern, const std::string &str)
 {
 	auto pi = pattern.begin(), si = str.begin();
-	return globImpl(pattern, str, pi, si);
+	return globImpl(pattern, str, pi, si, 0);
 }
+
+// Cap on `**` recursion depth. Each `**` segment in a pattern forks the
+// matcher at every position in the remaining string, so k `**` segments
+// against an n-char path cost O(n^k). A crafted .gitignore with 4+ `**`
+// segments against a long path can hang the indexer for seconds.
+// 8 is well above any realistic .gitignore (typical patterns have ≤ 2
+// `**` segments) while bounding worst-case depth to a constant.
+static constexpr int kGlobDoubleStarMaxDepth = 8;
 
 bool FilterPolicy::globImpl(const std::string &p, const std::string &s,
 			    std::string::const_iterator pi,
-			    std::string::const_iterator si)
+			    std::string::const_iterator si, int depth)
 {
 	while (pi != p.end()) {
 		if (*pi == '*') {
 			// ** matches anything
 			if (pi + 1 != p.end() && *(pi + 1) == '*') {
+				// Cap `**` recursion to prevent exponential
+				// blowup on crafted .gitignore patterns.
+				// Returning false here only means "this branch
+				// gave up"; other branches may still match.
+				if (depth >= kGlobDoubleStarMaxDepth)
+					return false;
 				pi += 2; // skip "**"
 				// **/ or /** - match any depth
 				if (pi != p.end() && *pi == '/')
 					pi++;
 				// Try matching rest of pattern at every position
 				while (si != s.end()) {
-					if (globImpl(p, s, pi, si))
+					if (globImpl(p, s, pi, si, depth + 1))
 						return true;
 					++si;
 				}
-				return globImpl(p, s, pi, si);
+				return globImpl(p, s, pi, si, depth + 1);
 			}
 			// * matches anything except /
 			while (si != s.end() && *si != '/') {
-				if (globImpl(p, s, pi + 1, si))
+				if (globImpl(p, s, pi + 1, si, depth))
 					return true;
 				++si;
 			}
-			return globImpl(p, s, pi + 1, si);
+			return globImpl(p, s, pi + 1, si, depth);
 		}
 		if (si == s.end())
 			return false;

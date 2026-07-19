@@ -103,14 +103,19 @@ std::string GraphStore::getTaskStatusJson(uint64_t project_id)
 		const char *ca = reinterpret_cast<const char *>(
 			sqlite3_column_text(stmt, 6));
 		std::ostringstream json;
+		// Mirror sibling functions (getEntryPointsJson, tracePathJson,
+		// exploreFunctionJson) and escape all free-form text fields so a
+		// '"' or '\' in task_type/status/error/timestamps cannot break the
+		// JSON. [module=store, method=getTaskStatusJson]
 		json << "{"
 		     << "\"id\":" << id << ","
-		     << "\"task_type\":\"" << (tt ? tt : "") << "\","
-		     << "\"status\":\"" << (st ? st : "") << "\","
+		     << "\"task_type\":\"" << jsonEscape(tt ? tt : "") << "\","
+		     << "\"status\":\"" << jsonEscape(st ? st : "") << "\","
 		     << "\"progress\":" << pr << ","
-		     << "\"error\":\"" << (er ? er : "") << "\","
-		     << "\"started_at\":\"" << (sa ? sa : "") << "\","
-		     << "\"completed_at\":\"" << (ca ? ca : "") << "\""
+		     << "\"error\":\"" << jsonEscape(er ? er : "") << "\","
+		     << "\"started_at\":\"" << jsonEscape(sa ? sa : "") << "\","
+		     << "\"completed_at\":\"" << jsonEscape(ca ? ca : "")
+		     << "\""
 		     << "}";
 		sqlite3_finalize(stmt);
 		return json.str();
@@ -280,24 +285,38 @@ std::string GraphStore::searchUnifiedJson(uint64_t project_id,
 }
 
 std::string GraphStore::findCallersJson(uint64_t project_id,
-					const char *symbol_name)
+					const char *symbol_name,
+					const char *file_filter)
 {
 	// Collect ALL node IDs matching the name (a symbol may be declared
 	// many times: function/method/class/interface share a name). Edges
 	// point at specific declarations, so looking up only one id misses
 	// callers of the other declarations. No node_type restriction —
 	// all node_types qualify (function/method/class/interface/etc).
+	//
+	// file_filter: when non-NULL/non-empty, restricts the matched
+	// callee nodes to the given file. This disambiguates homonyms
+	// — symbols that share a name across files/classes (e.g.
+	// __init__, run, main). Without this filter, findCallersJson
+	// on a common name returns callers aggregated across ALL files
+	// in the project, producing heavy noise on large codebases.
 	std::vector<uint64_t> gn_ids;
 	{
-		const char *id_sql =
-			"SELECT id FROM graph_nodes WHERE project_id = ? AND name = ?";
+		std::string id_sql = "SELECT id FROM graph_nodes "
+				     "WHERE project_id = ? AND name = ?";
+		if (file_filter && *file_filter)
+			id_sql += " AND file_path = ?";
 		sqlite3_stmt *id_stmt = nullptr;
-		if (sqlite3_prepare_v2(db_, id_sql, -1, &id_stmt, nullptr) ==
-		    SQLITE_OK) {
-			sqlite3_bind_int64(id_stmt, 1,
+		if (sqlite3_prepare_v2(db_, id_sql.c_str(), -1, &id_stmt,
+				       nullptr) == SQLITE_OK) {
+			int b = 1;
+			sqlite3_bind_int64(id_stmt, b++,
 					   static_cast<int64_t>(project_id));
-			sqlite3_bind_text(id_stmt, 2, symbol_name, -1,
+			sqlite3_bind_text(id_stmt, b++, symbol_name, -1,
 					  SQLITE_TRANSIENT);
+			if (file_filter && *file_filter)
+				sqlite3_bind_text(id_stmt, b++, file_filter, -1,
+						  SQLITE_TRANSIENT);
 			while (sqlite3_step(id_stmt) == SQLITE_ROW)
 				gn_ids.push_back(static_cast<uint64_t>(
 					sqlite3_column_int64(id_stmt, 0)));
@@ -318,9 +337,14 @@ std::string GraphStore::findCallersJson(uint64_t project_id,
 			id_list += ",";
 		id_list += std::to_string(gn_ids[i]);
 	}
+	// Read resolve_strategy so the frontend can filter out third-party
+	// and unresolved callees. Populated by the Resolver Pipeline for
+	// edge_type=1 (call) edges; edge_type=3 (symbol_reference) edges are
+	// back-filled by buildTypeRefEdges().
 	std::string ge_sql_str =
 		std::string("SELECT DISTINCT gn.id, gn.name, gn.node_type, "
-			    "gn.file_path, gn.start_row "
+			    "gn.file_path, gn.start_row, "
+			    "ge.resolve_strategy "
 			    "FROM graph_edges ge "
 			    "JOIN graph_nodes gn ON gn.id = ge.source_node_id "
 			    "WHERE ge.project_id = ? AND ge.edge_type IN (1,3) "
@@ -347,13 +371,21 @@ std::string GraphStore::findCallersJson(uint64_t project_id,
 			const char *fp = reinterpret_cast<const char *>(
 				sqlite3_column_text(ge_stmt, 3));
 			int ln = sqlite3_column_int(ge_stmt, 4);
+			const char *rs = reinterpret_cast<const char *>(
+				sqlite3_column_text(ge_stmt, 5));
 			const char *tn = (nt >= 0 && nt < 6) ? type_names[nt] :
 							       "symbol";
+			// Escape free-form text fields (name/file_path/resolve_strategy)
+			// so a '"' or '\' cannot break the JSON. kind (tn) is a fixed
+			// enum label and needs no escaping.
+			// [module=store, method=findCallersJson/findCalleesJson]
 			json << "{\"id\":" << gid << ",\"name\":\""
-			     << (gn ? gn : "") << "\""
+			     << jsonEscape(gn ? gn : "") << "\""
 			     << ",\"kind\":\"" << tn << "\""
-			     << ",\"file_path\":\"" << (fp ? fp : "") << "\""
-			     << ",\"line\":" << ln << "}";
+			     << ",\"file_path\":\"" << jsonEscape(fp ? fp : "")
+			     << "\""
+			     << ",\"line\":" << ln << ",\"resolve_strategy\":\""
+			     << jsonEscape(rs ? rs : "") << "\"}";
 		}
 		sqlite3_finalize(ge_stmt);
 	}
@@ -362,24 +394,34 @@ std::string GraphStore::findCallersJson(uint64_t project_id,
 }
 
 std::string GraphStore::findCalleesJson(uint64_t project_id,
-					const char *symbol_name)
+					const char *symbol_name,
+					const char *file_filter)
 {
 	// Collect ALL node IDs matching the name (a symbol may be declared
 	// many times: function/method/class/interface share a name). Edges
 	// point at specific declarations, so looking up only one id misses
 	// callees of the other declarations. No node_type restriction —
 	// all node_types qualify (function/method/class/interface/etc).
+	//
+	// file_filter: when non-NULL/non-empty, restricts the matched
+	// caller nodes to the given file. See findCallersJson doc.
 	std::vector<uint64_t> gn_ids;
 	{
-		const char *id_sql =
-			"SELECT id FROM graph_nodes WHERE project_id = ? AND name = ?";
+		std::string id_sql = "SELECT id FROM graph_nodes "
+				     "WHERE project_id = ? AND name = ?";
+		if (file_filter && *file_filter)
+			id_sql += " AND file_path = ?";
 		sqlite3_stmt *id_stmt = nullptr;
-		if (sqlite3_prepare_v2(db_, id_sql, -1, &id_stmt, nullptr) ==
-		    SQLITE_OK) {
-			sqlite3_bind_int64(id_stmt, 1,
+		if (sqlite3_prepare_v2(db_, id_sql.c_str(), -1, &id_stmt,
+				       nullptr) == SQLITE_OK) {
+			int b = 1;
+			sqlite3_bind_int64(id_stmt, b++,
 					   static_cast<int64_t>(project_id));
-			sqlite3_bind_text(id_stmt, 2, symbol_name, -1,
+			sqlite3_bind_text(id_stmt, b++, symbol_name, -1,
 					  SQLITE_TRANSIENT);
+			if (file_filter && *file_filter)
+				sqlite3_bind_text(id_stmt, b++, file_filter, -1,
+						  SQLITE_TRANSIENT);
 			while (sqlite3_step(id_stmt) == SQLITE_ROW)
 				gn_ids.push_back(static_cast<uint64_t>(
 					sqlite3_column_int64(id_stmt, 0)));
@@ -402,7 +444,8 @@ std::string GraphStore::findCalleesJson(uint64_t project_id,
 	}
 	std::string ge_sql_str =
 		std::string("SELECT DISTINCT gn.id, gn.name, gn.node_type, "
-			    "gn.file_path, gn.start_row "
+			    "gn.file_path, gn.start_row, "
+			    "ge.resolve_strategy "
 			    "FROM graph_edges ge "
 			    "JOIN graph_nodes gn ON gn.id = ge.target_node_id "
 			    "WHERE ge.project_id = ? AND ge.edge_type IN (1,3) "
@@ -429,13 +472,21 @@ std::string GraphStore::findCalleesJson(uint64_t project_id,
 			const char *fp = reinterpret_cast<const char *>(
 				sqlite3_column_text(ge_stmt, 3));
 			int ln = sqlite3_column_int(ge_stmt, 4);
+			const char *rs = reinterpret_cast<const char *>(
+				sqlite3_column_text(ge_stmt, 5));
 			const char *tn = (nt >= 0 && nt < 6) ? type_names[nt] :
 							       "symbol";
+			// Escape free-form text fields (name/file_path/resolve_strategy)
+			// so a '"' or '\' cannot break the JSON. kind (tn) is a fixed
+			// enum label and needs no escaping.
+			// [module=store, method=findCallersJson/findCalleesJson]
 			json << "{\"id\":" << gid << ",\"name\":\""
-			     << (gn ? gn : "") << "\""
+			     << jsonEscape(gn ? gn : "") << "\""
 			     << ",\"kind\":\"" << tn << "\""
-			     << ",\"file_path\":\"" << (fp ? fp : "") << "\""
-			     << ",\"line\":" << ln << "}";
+			     << ",\"file_path\":\"" << jsonEscape(fp ? fp : "")
+			     << "\""
+			     << ",\"line\":" << ln << ",\"resolve_strategy\":\""
+			     << jsonEscape(rs ? rs : "") << "\"}";
 		}
 		sqlite3_finalize(ge_stmt);
 	}

@@ -119,20 +119,17 @@ static int internal_impl(int x) {
 	// Status may be 0 if project was already finalized during indexing
 	// (enhance is now a lightweight no-op). The graph is verified by
 	// subsequent callee/trace checks.
-	printf("PASS: status — total=%d cg=%d metrics=%d emb=%d\n%s\n",
-	       total_st, cg_st, met_st, emb_st, st);
-	engine_free_string(st);
 
 	// ─── Step 5: cross-file caller/callee checks ───
 	// main() calls helper(int) via `helper(42)` — cross-file edge from buildGraph
-	char *callees_main = engine_get_callees(pid, "main");
+	char *callees_main = engine_get_callees(pid, "main", nullptr);
 	check(callees_main != nullptr, "callees of main");
 	check_json_has(callees_main, "helper", "callees of main: has helper");
 	printf("PASS: callees of main (cross-file) ok\n%s\n", callees_main);
 	engine_free_string(callees_main);
 
 	// helper(int) calls internal_impl — same-file regex edge
-	char *callees_helper = engine_get_callees(pid, "helper");
+	char *callees_helper = engine_get_callees(pid, "helper", nullptr);
 	check(callees_helper != nullptr, "callees of helper(int)");
 	check_json_has(callees_helper, "internal_impl",
 		       "callees of helper: has internal_impl");
@@ -140,7 +137,7 @@ static int internal_impl(int x) {
 	engine_free_string(callees_helper);
 
 	// internal_impl is called by helper(int)
-	char *callers_impl = engine_get_callers(pid, "internal_impl");
+	char *callers_impl = engine_get_callers(pid, "internal_impl", nullptr);
 	check(callers_impl != nullptr, "callers of internal_impl");
 	check_json_has(callers_impl, "helper",
 		       "callers of internal_impl: has helper");

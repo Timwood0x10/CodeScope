@@ -1,7 +1,28 @@
 #include "graph_builder.h"
 
+#include <unordered_set>
+
 namespace graph
 {
+
+// Entry-point function names per language. Functions matching these are
+// call-graph roots (program entry / FFI exports) and must be flagged
+// is_entry_point so downstream consumers (dead_code_inspector,
+// state_builder) treat them as reachable roots instead of orphans.
+// Go's `init` is an implicit entry point executed at package load.
+// [module=graph, method=isEntryPointName]
+static bool isEntryPointName(const std::string &name,
+			     const std::string &language)
+{
+	if (name == "main") {
+		return language == "c" || language == "cpp" ||
+		       language == "c++" || language == "go" ||
+		       language == "rust";
+	}
+	if (name == "init" && language == "go")
+		return true;
+	return false;
+}
 
 GraphBuilder::GraphBuilder(uint64_t project_id, uint64_t start_node_id)
 	: project_id_(project_id)
@@ -17,6 +38,7 @@ CodeGraph GraphBuilder::buildSymbolGraph(ir::TranslationUnit *unit)
 	next_edge_id_ = 1;
 	ir_to_graph_node_.clear();
 	function_stack_.clear();
+	added_edges_.clear();
 	building_call_graph_ = false;
 
 	traverse(unit);
@@ -29,6 +51,7 @@ CodeGraph GraphBuilder::buildCallGraph(ir::TranslationUnit *unit)
 	current_graph_.graph_type = "call_graph";
 	current_graph_.name = "call-graph";
 	next_edge_id_ = 1;
+	added_edges_.clear();
 	// NOTE: ir_to_graph_node_ and function_stack_ are intentionally NOT cleared
 	// here. buildSymbolGraph already populated them with node ID mappings. By
 	// keeping them, call edges reference the SAME graph node IDs, so the
@@ -250,12 +273,30 @@ void GraphBuilder::addGraphNode(const ir::Node *ir_node, NodeType type)
 	gn.end_col = ir_node->loc.end_col;
 	gn.language = ir_node->language;
 
+	// Flag call-graph roots (entry points) so dead_code_inspector and
+	// state_builder can exclude them from orphan/dead classification.
+	// The is_entry_point column previously defaulted to 0 everywhere,
+	// so entry-point detection never fired. [module=graph,
+	// method=addGraphNode]
+	if ((type == NodeType::Function || type == NodeType::Method) &&
+	    isEntryPointName(gn.name, gn.language)) {
+		gn.is_entry_point = true;
+	}
+
 	ir_to_graph_node_[ir_node->id] = gn.id;
 	current_graph_.nodes.push_back(std::move(gn));
 }
 
 void GraphBuilder::addGraphEdge(uint64_t src, uint64_t tgt, EdgeType type)
 {
+	// Dedup by (src, tgt, type, graph_type). Without this, the same edge
+	// can be pushed many times (e.g. multiple CallExpr records resolving
+	// to the same callee), and the DB has no unique constraint to filter
+	// them at INSERT time. The set is cleared at the start of each build.
+	auto key = std::make_tuple(src, tgt, type, current_graph_.graph_type);
+	if (!added_edges_.insert(key).second)
+		return; // duplicate edge — skip
+
 	GraphEdge ge;
 	ge.id = next_edge_id_++;
 	ge.source_id = src;
@@ -276,6 +317,7 @@ CodeGraph GraphBuilder::buildSymbolGraph(const ir::SemanticUnit &unit)
 	ir_to_graph_node_.clear();
 	function_stack_.clear();
 	parent_cache_.clear();
+	added_edges_.clear();
 	building_call_graph_ = false;
 
 	// Pass 1: Create GraphNode for each declaration record
@@ -360,6 +402,7 @@ CodeGraph GraphBuilder::buildCallGraphImpl(const ir::SemanticUnit &unit,
 	current_graph_.graph_type = "call_graph";
 	current_graph_.name = "call-graph";
 	next_edge_id_ = 1;
+	added_edges_.clear();
 	// Keep ir_to_graph_node_ from buildSymbolGraph — same node IDs
 	building_call_graph_ = true;
 
@@ -584,10 +627,17 @@ uint64_t GraphBuilder::findContainingFunction(const ir::SemanticUnit &unit,
 			return cache_it->second;
 	}
 
-	// Walk parent_id chain until we find a node that has a graph node
+	// Walk parent_id chain until we find a node that has a graph node.
 	// Cache each step so subsequent lookups skip the walk.
+	// A visited set guards against cycles in malformed IR (parent_id loop),
+	// which would otherwise hang this loop indefinitely. getRecord now
+	// returns nullptr for unknown ids, so we break the chain on miss
+	// instead of dereferencing a sentinel record.
+	std::unordered_set<uint64_t> visited;
 	uint64_t result = 0;
 	while (pid != 0) {
+		if (!visited.insert(pid).second)
+			break; // cycle detected — stop walking
 		auto it = ir_to_graph_node_.find(pid);
 		if (it != ir_to_graph_node_.end()) {
 			result = pid;
@@ -599,7 +649,10 @@ uint64_t GraphBuilder::findContainingFunction(const ir::SemanticUnit &unit,
 			result = cache_it->second;
 			break;
 		}
-		pid = unit.getRecord(pid).parent_id;
+		const auto *parent_rec = unit.getRecord(pid);
+		if (!parent_rec)
+			break; // id not found — stop walking
+		pid = parent_rec->parent_id;
 	}
 
 	// Cache the result for the starting pid so future lookups skip the walk

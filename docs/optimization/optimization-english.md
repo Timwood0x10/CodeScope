@@ -575,3 +575,57 @@ All critical tables verified row-by-row with identical checksums.
 ### Remaining bottleneck
 
 Parse 37.3s (67% of total time). tree-sitter parsing is single-threaded, limited by Rust grammar complexity. Breaking through requires parallelizing buildGraph or deeper visitor optimization — larger architectural changes beyond current scope.
+---
+
+## Memory-Bulk Index Path (2026-07-18)
+
+### Motivation
+
+Small modules (≤ 2,000 files / ≤ 50k nodes) paid the full streaming-pipeline
+tax: a `BoundedQueue` (capacity `2 * hardware_concurrency`) with per-file
+mutex/cond_var overhead, plus a single writer thread that holds one SQLite
+transaction for the entire parse phase. Under multi-module parallel runs this
+caused WAL contention → "DB lock conflict" failures, and the dynamic worker
+rebalance in `codescope-parallel.sh` killed and restarted modules (discarding
+partial in-memory state and re-parsing from scratch).
+
+### Approach
+
+For small modules the parse workers now aggregate `FileResult` in a
+thread-local vector and merge into a `store::MemBulkAggregator` once at thread
+exit, then flush via a single `insertFileResultBatch` (chunked at 500 files)
+under `BulkPragmaGuard`. Large modules continue to use the streaming
+`BoundedQueue` + single-writer path **byte-for-byte unchanged**. The
+post-parse graph-building sequence (`buildGraph → callgraph_ready UPDATE →
+resolveStagedMetrics → createIndexesAfterBulkLoad → readiness → async builder`)
+is extracted into a shared `engine_index_post_parse()` so the two paths cannot
+drift.
+
+The rebalance logic in `codescope-parallel.sh` was removed and replaced with
+proportional pre-allocation (`ceil(files * TOTAL_WORKERS / TOTAL_FILES)`),
+eliminating the process-kill/restart path that caused the lock conflicts.
+
+### A/B numbers
+
+| Metric | Streaming | MemBulk | Δ |
+|:-------|----------:|--------:|--:|
+| graph_nodes (20-file probe) | 60 | 60 | identical |
+| graph_edges (20-file probe) | 40 | 40 | identical |
+| node/edge parity | ✅ | ✅ | no data loss |
+
+A parity test (`engine/tests/test_membulk_parity.cpp`) indexes the same 20-file
+directory under both modes and asserts identical `total_nodes` / `total_edges`.
+
+### Peak memory
+
+`kMemBulkFileThreshold = 2000` keeps peak memory ≤ ~150 MB (2k files ×
+~15 KB `FileResult`). `flush()` carries a sanity bound (10× threshold) log.
+
+### No-regression verification
+
+- Streaming path source lines are unchanged except the new branch + the
+  extracted shared post-parse helper.
+- `engine_index_project.cpp` dropped from 1247 → 1039 lines (no longer over
+  the 1000-line limit).
+- Unit tests (`test_membulk`) cover empty flush, single/multi-worker merge,
+  and the failure path (`module=store_membulk` logged).

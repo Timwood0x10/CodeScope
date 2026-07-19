@@ -162,7 +162,7 @@ std::string ResolverPipeline::checkImport(const std::string &caller_file,
 void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 					const std::string &caller_file,
 					const std::string &callee_name,
-					int call_kind)
+					int call_kind, int caller_arity)
 {
 	// Build per-factor scores for each candidate using multi-factor scoring.
 	for (auto &c : candidates) {
@@ -207,12 +207,19 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 			factors.push_back(f);
 		}
 
-		// Factor 4: SignatureMatch
+		// Factor 4: SignatureMatch — compares the call site's arity
+		// (from the reference row) against each candidate's arity.
+		// Previously the caller arity was hardcoded to 0, which caused
+		// factorSignatureMatch to penalize every candidate with a known
+		// arity (returning -0.5) while rewarding candidates with unknown
+		// arity (returning +0.5) — the exact opposite of correct
+		// overload resolution. Thread the real reference arity through
+		// so exact-arity overloads score highest.
 		{
 			FactorResult f;
 			f.name = "SignatureMatch";
 			f.weight = kWeightSignatureMatch;
-			f.score = factorSignatureMatch(0, c.arity);
+			f.score = factorSignatureMatch(caller_arity, c.arity);
 			factors.push_back(f);
 		}
 
@@ -230,8 +237,8 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 			FactorResult f;
 			f.name = "ConstructorMatch";
 			f.weight = kWeightConstructorMatch;
-			f.score =
-				factorConstructorMatch(callee_name, c.name, 0);
+			f.score = factorConstructorMatch(callee_name, c.name,
+							 c.kind);
 			f.detail = (f.score > 0.0) ? "constructor" :
 						     "not constructor";
 			factors.push_back(f);
@@ -294,6 +301,25 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 			factors.push_back(f);
 		}
 
+		// Factor 10: DefinitionMatch — for C/C++, prefer symbols defined
+		// in a source file (.c/.cpp/.cc/...) over those declared only in
+		// a header (.h/.hpp/...). This breaks the previous arbitrary tie
+		// between a header prototype and a source definition that scored
+		// identically (Finding #8). Non-C/C++ languages return 1.0
+		// (neutral), so their ranking is unaffected.
+		{
+			FactorResult f;
+			f.name = "DefinitionMatch";
+			f.weight = kWeightDefinitionMatch;
+			f.score =
+				factorDefinitionMatch(c.language, c.file_path);
+			f.detail = (f.score > 0.0) ?
+					   "source def" :
+					   (f.score < 0.0 ? "header proto" :
+							    "neutral");
+			factors.push_back(f);
+		}
+
 		// VisibilityCheck was moved to a hard filter in run() to
 		// ensure language visibility rules (e.g. Go unexported names)
 		// are applied as hard rejections, not weighted factors — a
@@ -328,7 +354,8 @@ int64_t ResolverPipeline::run()
 			  " source_id INTEGER NOT NULL,"
 			  " target_id INTEGER NOT NULL,"
 			  " edge_type INTEGER NOT NULL,"
-			  " project_id INTEGER NOT NULL)")) {
+			  " project_id INTEGER NOT NULL,"
+			  " resolve_strategy TEXT DEFAULT '')")) {
 		fprintf(stderr,
 			"[module=resolver, method=run] "
 			"create staging table failed: %s\n",
@@ -342,7 +369,18 @@ int64_t ResolverPipeline::run()
 	int64_t total_entities = 0;
 	{
 		std::string idx_sql =
-			"SELECT id, name, file_path, language FROM entity "
+			// Include arity so factorSignatureMatch can distinguish
+			// same-name overloads (init()/init(int)/init(string)).
+			// entity.arity was added in v0.5+ migration (store_schema.cpp:470).
+			// Without this column in the SELECT, c.arity defaulted to 0
+			// and every candidate scored kScorePartialMatch (0.5),
+			// letting std::sort pick the winner by unstable order.
+			// See CODE_REVIEW_FINDINGS_2026-07-19.md C2.
+			// Include kind (appended as column 5) so
+			// factorConstructorMatch can prefer Class/Struct targets;
+			// previously kind was hardcoded 0 in the call, so the
+			// constructor factor always returned 0.0 (M-11).
+			"SELECT id, name, file_path, language, arity, kind FROM entity "
 			"WHERE project_id=? AND name != ''";
 		sqlite3_stmt *idx_st = nullptr;
 		if (sqlite3_prepare_v2(store_->handle(), idx_sql.c_str(), -1,
@@ -370,6 +408,15 @@ int64_t ResolverPipeline::run()
 			c.language = lang ? lang :
 					    languageFromPath(c.file_path);
 			c.module_path = modulePath(c.file_path);
+			// Column 4 is arity (added to SELECT above). Default 0
+			// if NULL — matches entity.arity DEFAULT 0 so callers
+			// that never set arity behave as "unknown arity".
+			c.arity = sqlite3_column_int(idx_st, 4);
+			// Column 5 is kind (RecordKind). Default 0 if NULL —
+			// matches entity.kind NOT NULL semantics; 0 = Function,
+			// so non-type candidates correctly score 0.0 on the
+			// constructor factor.
+			c.kind = sqlite3_column_int(idx_st, 5);
 			c.score = 0;
 			entity_index[c.name].push_back(c);
 			total_entities++;
@@ -428,12 +475,12 @@ int64_t ResolverPipeline::run()
 	}
 
 	// ── Query all references for this project ──
-	std::string ref_sql =
-		"SELECT r.id, r.name, r.caller_id, r.arity, "
-		" r.start_row, r.start_col, r.call_kind, e.file_path "
-		"FROM reference r "
-		"JOIN entity e ON r.caller_id = e.id "
-		"WHERE r.project_id=?";
+	std::string ref_sql = "SELECT r.id, r.name, r.caller_id, r.arity, "
+			      " r.start_row, r.start_col, r.call_kind, "
+			      " r.resolve_strategy, e.file_path "
+			      "FROM reference r "
+			      "JOIN entity e ON r.caller_id = e.id "
+			      "WHERE r.project_id=?";
 	sqlite3_stmt *ref_st = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), ref_sql.c_str(), -1, &ref_st,
 			       nullptr) != SQLITE_OK) {
@@ -451,8 +498,8 @@ int64_t ResolverPipeline::run()
 	// Now we prepare once and bind/reset in the loop.
 	const char *ins_staging_sql =
 		"INSERT INTO _resolved_edges "
-		"(source_id, target_id, edge_type, project_id) "
-		"VALUES (?,?,?,?)";
+		"(source_id, target_id, edge_type, project_id, resolve_strategy) "
+		"VALUES (?,?,?,?,?)";
 	sqlite3_stmt *ins_st = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), ins_staging_sql, -1, &ins_st,
 			       nullptr) != SQLITE_OK) {
@@ -465,7 +512,11 @@ int64_t ResolverPipeline::run()
 	}
 
 	// Prepare fuzzy hydration lookup (reused per fuzzy candidate)
-	const char *lk_sql = "SELECT name, file_path, language "
+	// Include arity so fuzzy-resolved candidates also get overload
+	// disambiguation via factorSignatureMatch (see C2 above).
+	// Include kind (column 4) so fuzzy candidates carry the same
+	// constructor factor support as exact-name candidates (M-11).
+	const char *lk_sql = "SELECT name, file_path, language, arity, kind "
 			     "FROM entity WHERE id=?";
 	sqlite3_stmt *lk_st = nullptr;
 	sqlite3_prepare_v2(store_->handle(), lk_sql, -1, &lk_st, nullptr);
@@ -498,6 +549,8 @@ int64_t ResolverPipeline::run()
 		uint64_t caller_id;
 		std::string caller_file;
 		int call_kind;
+		int arity; // caller arity from reference row (column r.arity)
+		std::string resolve_strategy;
 	};
 	std::vector<RefRow> refs;
 	refs.reserve(65536); // pre-allocate for 108k typical
@@ -510,13 +563,20 @@ int64_t ResolverPipeline::run()
 			sqlite3_column_text(ref_st, 1));
 		r.caller_id =
 			static_cast<uint64_t>(sqlite3_column_int64(ref_st, 2));
+		// Column 3 is r.arity — the call site's arity. Previously this
+		// column was selected but never read, so the caller arity was
+		// always 0 in applyConstraints, breaking overload resolution.
+		r.arity = sqlite3_column_int(ref_st, 3);
 		const char *fp_c = reinterpret_cast<const char *>(
-			sqlite3_column_text(ref_st, 7));
+			sqlite3_column_text(ref_st, 8));
 		r.call_kind = sqlite3_column_int(ref_st, 6);
+		const char *rs_c = reinterpret_cast<const char *>(
+			sqlite3_column_text(ref_st, 7));
 		if (!name_c || !*name_c || !fp_c)
 			continue;
 		r.name = name_c;
 		r.caller_file = fp_c;
+		r.resolve_strategy = rs_c ? rs_c : "";
 		refs.push_back(std::move(r));
 	}
 	sqlite3_finalize(ref_st);
@@ -529,6 +589,7 @@ int64_t ResolverPipeline::run()
 		uint64_t caller_id;
 		uint64_t target_id;
 		int edge_type;
+		std::string resolve_strategy;
 	};
 	std::vector<ResolvedEdge> resolved_edges;
 	resolved_edges.reserve(16384); // pre-allocate for 36k typical
@@ -599,6 +660,12 @@ int64_t ResolverPipeline::run()
 							languageFromPath(
 								c.file_path);
 					c.module_path = modulePath(c.file_path);
+					// Column 3 is arity (added to lk_sql SELECT above).
+					c.arity = sqlite3_column_int(lk_st, 3);
+					// Column 4 is kind (RecordKind), appended so
+					// constructor-target preference applies to
+					// fuzzy-resolved candidates too (M-11).
+					c.kind = sqlite3_column_int(lk_st, 4);
 				}
 				sqlite3_reset(lk_st);
 				c.score = 0;
@@ -646,14 +713,15 @@ int64_t ResolverPipeline::run()
 					resolved_count++;
 					resolved_edges.push_back(
 						{ ref.caller_id, c.entity_id,
-						  kRelationTypeCall });
+						  kRelationTypeCall,
+						  ref.resolve_strategy });
 					continue;
 				}
 			}
 		}
 
 		applyConstraints(candidates, ref.caller_file, ref.name,
-				 ref.call_kind);
+				 ref.call_kind, ref.arity);
 
 		uint64_t best_id = 0;
 		double best_score = -1.0;
@@ -673,8 +741,9 @@ int64_t ResolverPipeline::run()
 			continue;
 
 		resolved_count++;
-		resolved_edges.push_back(
-			{ ref.caller_id, best_id, kRelationTypeCall });
+		resolved_edges.push_back({ ref.caller_id, best_id,
+					   kRelationTypeCall,
+					   ref.resolve_strategy });
 	}
 
 	// Free entity_index (no longer needed)
@@ -700,6 +769,8 @@ int64_t ResolverPipeline::run()
 			sqlite3_bind_int(ins_st, 3, e.edge_type);
 			sqlite3_bind_int64(ins_st, 4,
 					   static_cast<int64_t>(project_id_));
+			sqlite3_bind_text(ins_st, 5, e.resolve_strategy.c_str(),
+					  -1, SQLITE_STATIC);
 			int st_rc = sqlite3_step(ins_st);
 			if (st_rc != SQLITE_DONE && st_rc != SQLITE_CONSTRAINT)
 				fprintf(stderr,
@@ -736,8 +807,9 @@ int64_t ResolverPipeline::run()
 
 	if (!store_->exec("INSERT OR IGNORE INTO graph_edges "
 			  "(project_id, source_node_id, target_node_id, "
-			  " edge_type) "
-			  "SELECT project_id, source_id, target_id, edge_type "
+			  " edge_type, resolve_strategy) "
+			  "SELECT project_id, source_id, target_id, edge_type, "
+			  " resolve_strategy "
 			  "FROM _resolved_edges")) {
 		fprintf(stderr,
 			"[module=resolver, method=run] "

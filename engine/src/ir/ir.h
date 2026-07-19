@@ -114,6 +114,12 @@ struct Node {
 	// Documentation comment attached to this node (if any)
 	std::string doc_comment;
 
+	// Receiver type name for a method declaration (Go: the type in the
+	// receiver, e.g. "MyType" in `func (m MyType) Greet()`). Populated by
+	// translators and consumed by a deferred resolution pass that builds the
+	// method → class (Receiver) edge after all type declarations are known.
+	std::string receiver_type_name;
+
 	// True if the parser encountered syntax errors in this subtree
 	bool has_error = false;
 

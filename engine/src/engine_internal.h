@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "engine.h"
+#include "filter_policy.h"
 #include "store/store.h"
 #include "query/query_engine.h"
 #include "parser/parser.h"
@@ -61,6 +62,32 @@ std::string jsonEscape(const std::string &s);
 std::string simpleHash(const std::string &s);
 const char *detectLanguage(const char *file_path);
 char *dupString(const std::string &s);
+
+// ─── Index Project: in-memory bulk path + shared post-parse ───────────
+//
+// For small modules (<= kMemBulkFileThreshold files) the parse workers
+// aggregate FileResult in memory instead of pushing through BoundedQueue,
+// then flush once via insertFileResultBatch. The post-parse graph-building
+// sequence is shared with the streaming path via engine_index_post_parse.
+
+/// In-memory bulk index path for small modules.
+char *engine_index_project_membulk(
+	uint64_t project_id, const std::string &dir, uint64_t max_file_size,
+	const FilterPolicy &filter,
+	const std::vector<std::pair<std::string, std::string>> &job_lang,
+	const std::unordered_map<std::string, const TSLanguage *> &lang_ptrs,
+	bool is_reindex, bool mode_fast, bool mode_deep);
+
+/// Shared post-parse sequence: buildGraph -> callgraph_ready UPDATE ->
+/// populateSymbols/resolveStagedMetrics -> (deep) vectors ->
+/// createIndexesAfterBulkLoad -> readiness -> result JSON.
+/// Returns a dupString()'d JSON result. Caller owns the pointer.
+char *engine_index_post_parse(uint64_t project_id, const std::string &dir,
+			      const std::vector<std::string> &job_paths,
+			      const FilterPolicy &filter, bool is_reindex,
+			      bool mode_fast, bool mode_deep,
+			      int64_t time_parse_ms, int64_t time_buildgraph_ms,
+			      int total_indexed);
 
 // ─── Path Helpers ─────────────────────────────────────────────────
 // Cross-platform path separator check: '/' on Unix, '/' and '\\' on

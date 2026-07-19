@@ -411,14 +411,46 @@ Node *RustTranslator::handleImpl(TSNode ts_node, Node *parent)
 {
 	uint32_t count = ts_node_child_count(ts_node);
 
+	// For `impl Trait for Type` the first type_identifier is the Trait
+	// being implemented, NOT the implementing Type — the previous code
+	// took Trait and broke, so receiver edges pointed at the trait
+	// instead of the implementing type. For `impl Type` (no `for`)
+	// the first type_identifier IS the implementing type. We scan all
+	// children: if a `for` keyword appears, the type_identifier AFTER
+	// it is the implementing type; otherwise we use the first
+	// type_identifier. See CODE_REVIEW_FINDINGS_2026-07-19.md H7.
 	std::string impl_type;
+	std::string first_type;
+	bool seen_for_keyword = false;
+	bool found_impl_type = false;
 	for (uint32_t i = 0; i < count; i++) {
 		TSNode child = ts_node_child(ts_node, i);
 		const char *t = ts_node_type(child);
-		if (strcmp(t, "type_identifier") == 0) {
-			impl_type = nodeText(child);
-			break;
+		// The `for` keyword is an anonymous node in tree-sitter-rust,
+		// accessible via ts_node_child (not ts_node_named_child).
+		if (strcmp(t, "for") == 0) {
+			seen_for_keyword = true;
+			continue;
 		}
+		if (strcmp(t, "type_identifier") == 0) {
+			if (seen_for_keyword) {
+				// This is the implementing Type in
+				// `impl Trait for Type`.
+				impl_type = nodeText(child);
+				found_impl_type = true;
+				break;
+			}
+			if (first_type.empty()) {
+				// Candidate for plain `impl Type` — keep
+				// scanning in case a `for` keyword follows.
+				first_type = nodeText(child);
+			}
+		}
+	}
+	if (!found_impl_type) {
+		// Plain `impl Type` (no `for` keyword) — use the first
+		// type_identifier encountered.
+		impl_type = first_type;
 	}
 
 	Node *impl_class = impl_type.empty() ? nullptr :

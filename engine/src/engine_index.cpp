@@ -1,13 +1,15 @@
 #include "engine_internal.h"
 #include "filter_policy.h"
 #include "platform_win.h"
+#include "async_knowledge.h"
 
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
 #include <cstring>
-#include "posix_compat.h"
+#include <functional>
+#include <posix_compat.h>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -50,113 +52,87 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 			return dupString(
 				"{\"ok\":false,\"error\":\"cannot read file\"}");
 
+		// File mtime/size — recorded by insertFileResultBatch into
+		// file_scan_state so subsequent incremental scans can skip
+		// unchanged files, identical to engine_index_project's behaviour.
+		struct stat file_stat_buf;
+		int64_t mtime = 0;
+		int64_t fsize = static_cast<int64_t>(source.size());
+		if (stat(file_path, &file_stat_buf) == 0) {
+			mtime = static_cast<int64_t>(file_stat_buf.st_mtime);
+			fsize = static_cast<int64_t>(file_stat_buf.st_size);
+		}
+
 		// Parse
-		TSTree *tree =
-			g_parser->parse(file_path, source.c_str(), language);
+		TSTree *tree = g_parser->parse(file_path, source.c_str(),
+					       language, source.size());
 		if (!tree) {
 			return dupString("{\"ok\":false,\"error\":\"" +
 					 g_parser->error() + "\"}");
 		}
 
-		// ── Try new pipeline: Visitor → SemanticUnit ──────────────
-		// Use the visitor-based pipeline for Rust and Java, where the old
-		// Translator has known issues with call-edge resolution. The visitor
-		// produces flat SemanticUnit records with correct parent_id links,
-		// enabling proper call-edge resolution via name matching.
-		// Other languages (C, C++, Go, Python, JS, TS) still use the old
-		// Translator which provides precise semantic_edge-based resolution.
-		std::string lang_lower(language);
-		for (auto &ch : lang_lower)
-			ch = static_cast<char>(std::tolower(ch));
-		bool use_visitor = (lang_lower == "rust" ||
-				    lang_lower == "rs" || lang_lower == "java");
-		auto visitor = use_visitor ? ir::createJsVisitor(language) :
-					     nullptr;
+		// ── Build IR: visitor (rust/java) or translator (others) ──
+		// Both paths ultimately produce the SAME store::FileResult shape
+		// that engine_index_project passes to insertFileResultBatch, so a
+		// single-file re-index yields an entity/graph set identical to a
+		// full project index. This fixes the duplicate-accumulation bug
+		// (docs/bugs/bug_incremental_dedup.zh.md): the old code wrote
+		// graph_nodes/entity directly from in-memory IR without going
+		// through semantic_records + buildGraph, so re-indexing appended
+		// instead of replacing.
+		// Build IR exactly like engine_index_project: prefer the visitor
+		// pipeline, which emits correctly-typed ir::Record values (so
+		// buildGraph's RecordKind-based passes — e.g. CallExpr = 9 for
+		// call-edge extraction — fire correctly). Fall back to the
+		// translator only for languages without a visitor. Routing through
+		// semantic_records + buildGraph (instead of writing graph_nodes/
+		// entity directly from in-memory IR) is what makes a single-file
+		// re-index idempotent and free of duplicate accumulation
+		// (docs/bugs/bug_incremental_dedup.zh.md).
+		ir::SemanticUnit *su = nullptr;
+		ir::TranslationUnit *unit_raw = nullptr;
+		std::unique_ptr<ir::SemanticUnit> su_guard;
+		std::unique_ptr<ir::TranslationUnit> unit_guard;
+		auto visitor = ir::createJsVisitor(language);
 		if (visitor) {
-			ir::SemanticUnit *su =
-				visitor->visit(tree, source.c_str(), file_path);
-			ts_tree_delete(tree);
-			if (!su) {
-				return dupString(
-					"{\"ok\":false,\"error\":\"visitor returned null\"}");
-			}
-			auto su_guard = std::unique_ptr<ir::SemanticUnit>(su);
-
-			// Persist IR + build graph
-			g_store->beginTransaction();
-
-			// File record
-			std::string hash = simpleHash(source);
-			g_store->upsertFile(project_id, file_path, language,
-					    hash.c_str());
-
-			// Delete old graph data for this file
-			g_store->deleteGraphNodesByFile(project_id, file_path);
-
-			// Build graph from SemanticUnit
-			uint64_t start_node_id = 1;
-			{
-				sqlite3_stmt *stmt = nullptr;
-				const char *sql =
-					"SELECT COALESCE(MAX(id), 0) + 1 FROM graph_nodes";
-				if (sqlite3_prepare_v2(g_store->handle(), sql,
-						       -1, &stmt,
-						       nullptr) == SQLITE_OK) {
-					if (sqlite3_step(stmt) == SQLITE_ROW) {
-						start_node_id = static_cast<
-							uint64_t>(
-							sqlite3_column_int64(
-								stmt, 0));
-					}
-					sqlite3_finalize(stmt);
-				}
-			}
-			graph::GraphBuilder builder(project_id, start_node_id);
-			auto symbol_graph = builder.buildSymbolGraph(*su);
-			auto call_graph = builder.buildCallGraph(*su);
-
-			// Persist graph nodes + edges
-			g_store->insertGraphNodes(project_id,
-						  symbol_graph.nodes);
-			g_store->insertGraphEdges(project_id,
-						  symbol_graph.edges);
-			g_store->insertGraphEdges(project_id, call_graph.edges);
-
-			g_store->commitTransaction();
-
-			std::ostringstream result;
-			result << "{\"ok\":true,\"nodes\":"
-			       << symbol_graph.nodes.size() << ",\"edges\":"
-			       << (symbol_graph.edges.size() +
-				   call_graph.edges.size())
-			       << "}";
-			return dupString(result.str());
+			su = visitor->visit(tree, source.c_str(), file_path);
+			su_guard.reset(su);
 		}
-
-		// ── Old pipeline fallback: Translator → TranslationUnit ────
-		auto translator = ir::createTranslator(language);
-		if (!translator) {
-			ts_tree_delete(tree);
-			return dupString(
-				"{\"ok\":false,\"error\":\"no translator for language\"}");
+		if (!su) {
+			auto translator = ir::createTranslator(language);
+			if (!translator) {
+				ts_tree_delete(tree);
+				return dupString("{\"ok\":false,"
+						 "\"error\":\"no translator "
+						 "for language\"}");
+			}
+			unit_raw = translator->translate(tree, source.c_str(),
+							 file_path);
+			unit_guard.reset(unit_raw);
 		}
-
-		ir::TranslationUnit *unit_raw =
-			translator->translate(tree, source.c_str(), file_path);
 		ts_tree_delete(tree);
 
-		if (!unit_raw) {
-			return dupString(
-				"{\"ok\":false,\"error\":\"translation failed\"}");
+		if (!su && !unit_raw) {
+			return dupString("{\"ok\":false,\"error\":"
+					 "\"IR build failed\"}");
 		}
-		auto unit = std::unique_ptr<ir::TranslationUnit>(unit_raw);
 
-		// ── Optional LSP & extern "C" enhancement ─────────────────
-		// Uses textDocument/documentSymbol (1 query per file, NOT per-node)
-		// to resolve all symbols locally, then only queries definition
-		// for external calls. This is ~50x faster than per-node queries.
-		{
-			// Detect extern "C" FFI calls statically (always enabled, no LSP)
+		// ── Convert IR → store::FileResult (flat records) ──────
+		store::FileResult fr;
+		fr.file_path = file_path;
+		fr.language = language;
+		fr.mtime = mtime;
+		fr.fsize = fsize;
+
+		if (su) {
+			// The visitor sets unit file_path/language during visit
+			// (js_visitor.cpp), matching index_project's branch exactly.
+			fr.records = su->allRecords();
+		} else {
+			ir::TranslationUnit *unit = unit_raw;
+
+			// Optional extern "C" FFI static resolution — preserves the
+			// previous single-file path's behaviour for C/C++ symbols.
 			for (auto *node : unit->all_nodes) {
 				if (node->kind == ir::NodeKind::CallExpr &&
 				    !node->name.empty()) {
@@ -177,7 +153,7 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 				}
 			}
 
-			// LSP-enhanced resolution (optional, set CODESCOPE_LSP)
+			// Optional LSP-enhanced resolution (set CODESCOPE_LSP).
 			const char *lsp_cmd = getenv("CODESCOPE_LSP");
 			if (lsp_cmd && *lsp_cmd &&
 			    LspClient::isAvailable(lsp_cmd)) {
@@ -185,8 +161,6 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 				if (lsp.start(lsp_cmd, "file://")) {
 					lsp.openDocument(file_path,
 							 source.c_str());
-
-					// Step 1: get all symbols in this file (1 LSP query)
 					std::unordered_map<std::string, int>
 						local_symbols;
 					std::string sym_resp =
@@ -197,8 +171,6 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 							sym_resp,
 							local_symbols);
 					}
-
-					// Step 2: resolve each CallExpr
 					std::unordered_map<std::string,
 							   std::string>
 						ext_cache;
@@ -210,9 +182,7 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 							continue;
 						if (!node->qualified_name
 							     .empty())
-							continue; // already resolved above
-
-						// Local symbol: mark as local://name
+							continue;
 						if (local_symbols.count(
 							    node->name)) {
 							node->qualified_name =
@@ -220,14 +190,12 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 								node->name;
 							continue;
 						}
-
-						// External symbol: check cache or query LSP once
-						if (ext_cache.count(
-							    node->name)) {
-							node->qualified_name = ext_cache
+						std::string def;
+						if (ext_cache.count(node->name))
+							def = ext_cache
 								[node->name];
-						} else {
-							std::string def = lsp.queryDefinition(
+						else {
+							def = lsp.queryDefinition(
 								file_path,
 								static_cast<int>(
 									node->loc
@@ -235,99 +203,170 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 								static_cast<int>(
 									node->loc
 										.start_col));
-							if (!def.empty()) {
-								std::string uri =
-									lsp.extractTargetUri(
-										def);
-								if (!uri.empty()) {
-									ext_cache[node->name] =
-										"external://" +
-										uri;
-									node->qualified_name = ext_cache
-										[node->name];
-								}
-							}
+							if (!def.empty())
+								ext_cache[node->name] =
+									def;
+						}
+						if (!def.empty()) {
+							std::string uri =
+								lsp.extractTargetUri(
+									def);
+							if (!uri.empty())
+								node->qualified_name =
+									"external://" +
+									uri;
 						}
 					}
 					lsp.stop();
 				}
 			}
+
+			// Flatten TranslationUnit → flat records (root only, so each
+			// node is visited exactly once — iterating all_nodes AND
+			// recursing would double-visit). Mirrors
+			// engine_index_project's translator branch.
+			uint64_t flat_id = 1;
+			std::function<void(ir::Node *, uint64_t)> flatten =
+				[&](ir::Node *n, uint64_t parent) {
+					uint64_t my_id = flat_id++;
+					ir::Record rec;
+					rec.id = my_id;
+					rec.kind = static_cast<ir::RecordKind>(
+						static_cast<int>(n->kind));
+					rec.name = n->name;
+					rec.qualified_name = n->qualified_name;
+					rec.parent_id = parent;
+					rec.loc.start_row = n->loc.start_row;
+					rec.loc.start_col = n->loc.start_col;
+					rec.loc.end_row = n->loc.end_row;
+					rec.loc.end_col = n->loc.end_col;
+					rec.file_path = file_path;
+					fr.records.push_back(std::move(rec));
+					for (auto *c : n->children)
+						flatten(c, my_id);
+				};
+			if (unit->root)
+				flatten(unit->root, 0);
 		}
 
-		// Persist IR + build graph
+		// ── Persist via the SAME batch + buildGraph pipeline as
+		//    engine_index_project ─────────────────────────────
+		// insertFileResultBatch deletes the file's old semantic_records
+		// (by project_id + file_path) before inserting; buildGraph then
+		// deletes the file's old graph/entity data before rebuilding from
+		// those records. The pair is idempotent, so re-indexing a file
+		// never accumulates duplicates.
 		g_store->beginTransaction();
-
-		// File record
 		std::string hash = simpleHash(source);
 		g_store->upsertFile(project_id, file_path, language,
 				    hash.c_str());
-
-		// Delete old graph data for this file
-		g_store->deleteGraphNodesByFile(project_id, file_path);
-
-		// Build graph from IR — use unique node IDs across all projects
-		uint64_t start_node_id = 1;
-		{
-			sqlite3_stmt *stmt = nullptr;
-			// graph_nodes.id is globally unique (INTEGER PRIMARY KEY), so query ALL
-			// projects
-			const char *sql =
-				"SELECT COALESCE(MAX(id), 0) + 1 FROM graph_nodes";
-			if (sqlite3_prepare_v2(g_store->handle(), sql, -1,
-					       &stmt, nullptr) == SQLITE_OK) {
-				if (sqlite3_step(stmt) == SQLITE_ROW) {
-					start_node_id = static_cast<uint64_t>(
-						sqlite3_column_int64(stmt, 0));
-				}
-				sqlite3_finalize(stmt);
-			}
+		if (!g_store->insertFileResultBatch(
+			    project_id, std::vector<store::FileResult>{ fr })) {
+			g_store->rollbackTransaction();
+			return dupString(
+				"{\"ok\":false,\"error\":\"insertFileResultBatch "
+				"failed: " +
+				g_store->error() + "\"}");
 		}
-		graph::GraphBuilder builder(project_id, start_node_id);
-		auto symbol_graph = builder.buildSymbolGraph(unit.get());
-		auto call_graph = builder.buildCallGraph(unit.get());
-
-		// Persist graph nodes + edges
-		// Persist graph nodes + edges — use batch insert APIs
-		g_store->insertGraphNodes(project_id, symbol_graph.nodes);
-		g_store->insertGraphEdges(project_id, symbol_graph.edges);
-		g_store->insertGraphEdges(project_id, call_graph.edges);
-
-		// Compute and persist complexity for functions/methods
-		{
-			// ComplexityAnalyzer was removed; complexity is recorded as 0
-			// for all function/method nodes. The ir_node_map lookup is kept
-			// so future reintroduction of a complexity analyzer can plug in
-			// without re-adding the ir_node_id -> Node* index.
-
-			// Pre-build ir_node_id -> ir::Node* map to avoid O(nodes x graph_nodes) scan
-			std::unordered_map<uint64_t, ir::Node *> ir_node_map;
-			ir_node_map.reserve(unit->all_nodes.size());
-			for (auto *ir_node : unit->all_nodes) {
-				ir_node_map[ir_node->id] = ir_node;
-			}
-
-			for (auto &gn : symbol_graph.nodes) {
-				if (gn.type == graph::NodeType::Function ||
-				    gn.type == graph::NodeType::Method) {
-					auto it =
-						ir_node_map.find(gn.ir_node_id);
-					if (it != ir_node_map.end()) {
-						g_store->setComplexity(
-							project_id, gn.id, 0, 0,
-							0, 0);
-					}
-				}
-			}
-		}
-
 		g_store->commitTransaction();
 
-		std::ostringstream result;
-		result << "{\"ok\":true,\"nodes\":" << symbol_graph.nodes.size()
-		       << ",\"edges\":"
-		       << (symbol_graph.edges.size() + call_graph.edges.size())
-		       << "}";
-		return dupString(result.str());
+		// Rebuild graph for THIS file only — wrap in its own transaction
+		// exactly like engine_index_project. buildGraph uses a SAVEPOINT
+		// internally, so an outer transaction is required to balance it;
+		// without it the SAVEPOINT leaks an implicit transaction that
+		// breaks the async knowledge builder.
+		{
+			g_store->beginTransaction();
+			std::unordered_set<std::string> changed{ std::string(
+				file_path) };
+			if (!g_store->buildGraph(project_id, true, &changed)) {
+				g_store->rollbackTransaction();
+				return dupString(
+					"{\"ok\":false,\"error\":\"buildGraph "
+					"failed: " +
+					g_store->error() + "\"}");
+			}
+			// Indexing now builds the full call graph (buildGraph above),
+			// so mark every node callgraph_ready. This makes trace_path and
+			// the enhancement-status report reflect that the call graph is
+			// present immediately after index — mirroring
+			// engine_index_project.cpp:666-672 so the two paths cannot
+			// diverge. Enhance increments the flag idempotently, so reruns
+			// leave callgraph_ready unchanged.
+			//
+			// The UPDATE runs INSIDE the same transaction as buildGraph so
+			// that a failure rolls back the call graph data too. Without
+			// this, a failed UPDATE would leave callgraph_ready=0 on every
+			// node while the call graph itself IS committed, putting the DB
+			// in an inconsistent state that trace_path cannot recover from.
+			std::string up =
+				"UPDATE graph_nodes SET callgraph_ready=1 "
+				"WHERE project_id=" +
+				std::to_string(project_id);
+			if (!g_store->exec(up.c_str())) {
+				std::string err = g_store->error();
+				g_store->rollbackTransaction();
+				fprintf(stderr,
+					"engine_index_file: callgraph_ready UPDATE "
+					"failed: %s "
+					"[module=engine, method=engine_index_file]\n",
+					err.c_str());
+				return dupString(
+					"{\"ok\":false,\"error\":\"callgraph_ready "
+					"UPDATE failed: " +
+					err + "\"}");
+			}
+			g_store->commitTransaction();
+		}
+
+		// Async knowledge builder (modules/role/summary) — keeps the
+		// knowledge layer consistent with engine_index_project so MCP
+		// tools return complete results after a single-file re-index.
+		launchAsyncKnowledgeBuilder(project_id, true);
+
+		// Report the actual persisted graph node/edge counts for the file.
+		auto countRows = [&](const char *table) -> int64_t {
+			// graph_edges has no file_path column; count its rows by
+			// joining through graph_nodes (which does).
+			std::string sql;
+			if (std::string(table) == "graph_edges") {
+				sql = "SELECT COUNT(*) FROM graph_edges ge "
+				      "JOIN graph_nodes gn ON ge.source_node_id "
+				      "= gn.id "
+				      "WHERE gn.project_id = ? AND "
+				      "gn.file_path = ?";
+			} else {
+				sql = std::string("SELECT COUNT(*) FROM ") +
+				      table +
+				      " WHERE project_id = ? AND file_path = ?";
+			}
+			sqlite3_stmt *st = nullptr;
+			int64_t n = 0;
+			if (sqlite3_prepare_v2(g_store->handle(), sql.c_str(),
+					       -1, &st, nullptr) != SQLITE_OK) {
+				fprintf(stderr,
+					"engine_index_file: countRows prepare "
+					"failed for %s: %s "
+					"[module=ffi, method=engine_index_file]\n",
+					table,
+					sqlite3_errmsg(g_store->handle()));
+				return 0;
+			}
+			sqlite3_bind_int64(st, 1,
+					   static_cast<int64_t>(project_id));
+			sqlite3_bind_text(st, 2, file_path, -1, SQLITE_STATIC);
+			if (sqlite3_step(st) == SQLITE_ROW)
+				n = sqlite3_column_int64(st, 0);
+			sqlite3_finalize(st);
+			return n;
+		};
+		int64_t node_count = countRows("graph_nodes");
+		int64_t edge_count = countRows("graph_edges");
+
+		std::ostringstream result_os;
+		result_os << "{\"ok\":true,\"nodes\":" << node_count
+			  << ",\"edges\":" << edge_count << "}";
+		return dupString(result_os.str());
 	} catch (const std::exception &e) {
 		g_store->rollbackTransaction();
 		return dupString(

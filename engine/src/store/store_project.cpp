@@ -90,10 +90,13 @@ uint64_t GraphStore::insertSymbol(uint64_t project_id, uint64_t module_id,
 		return 0;
 	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	if (module_id > 0)
-		sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(module_id));
-	else
-		sqlite3_bind_null(stmt, 2);
+	// NOTE: module_id is intentionally NOT bound here — graph_nodes has no
+	// module_id column (see the INSERT column list above:
+	// project_id, node_type, name, signature, file_path, language,
+	// start_row, start_col). The removed code bound ?2 to module_id and then
+	// OVERWROTE it with node_type, so ?2 always ended up as node_type (the
+	// correct value) but module_id was silently dropped. ?2 belongs to
+	// node_type only. (void)module_id; below documents the unused parameter.
 	// Map string kind to node_type integer
 	int node_type = 7;
 	if (kind) {
@@ -211,49 +214,53 @@ std::string GraphStore::getModuleTreeJson(uint64_t project_id)
 		return "{\"modules\":[]}";
 	}
 
-	// Build tree: find roots (parent_id == 0), then output nested children
+	// Build tree: find roots (parent_id == 0), then output nested children.
+	//
+	// IMPORTANT: the "first" flag controlling the leading-comma must be
+	// scoped PER array, not shared across the whole recursion. A shared
+	// flag would stay false after the first root and cause every children
+	// array to emit a leading comma (",{...},{...}") — invalid JSON that
+	// breaks json.loads on the client. We thread it as a parameter so
+	// each sibling list owns its own flag.
 	std::ostringstream json;
 	json << "{\"modules\":[";
-	bool first = true;
 	// Build child map: parent_id → list of child module ids
 	std::unordered_map<uint64_t, std::vector<uint64_t>> children_of;
 	for (const auto &m : modules)
 		children_of[m.parent_id].push_back(m.id);
-	std::function<void(uint64_t, int)> outMod = [&](uint64_t id,
-							int depth) {
-		auto it = std::find_if(modules.begin(), modules.end(),
-				       [id](const ModuleInfo &m) {
-					       return m.id == id;
-				       });
-		if (it == modules.end())
-			return;
-		if (!first)
-			json << ",";
-		first = false;
-		json << "{\"id\":" << it->id
-		     << ",\"parent_id\":" << it->parent_id
-		     << ",\"depth\":" << depth << ",\"name\":\""
-		     << jsonEscape(it->name) << "\""
-		     << ",\"path\":\"" << jsonEscape(it->path) << "\""
-		     << ",\"language\":\"" << jsonEscape(it->language) << "\""
-		     << ",\"file_count\":" << it->file_count;
-		auto ci = children_of.find(id);
-		if (ci != children_of.end() && !ci->second.empty()) {
-			json << ",\"children\":[";
-			bool cf = true;
-			for (auto cid : ci->second) {
-				if (!cf)
-					json << ",";
-				cf = false;
-				outMod(cid, depth + 1);
+	std::function<void(uint64_t, int, bool &)> outMod =
+		[&](uint64_t id, int depth, bool &first) {
+			auto it = std::find_if(modules.begin(), modules.end(),
+					       [id](const ModuleInfo &m) {
+						       return m.id == id;
+					       });
+			if (it == modules.end())
+				return;
+			if (!first)
+				json << ",";
+			first = false;
+			json << "{\"id\":" << it->id
+			     << ",\"parent_id\":" << it->parent_id
+			     << ",\"depth\":" << depth << ",\"name\":\""
+			     << jsonEscape(it->name) << "\""
+			     << ",\"path\":\"" << jsonEscape(it->path) << "\""
+			     << ",\"language\":\"" << jsonEscape(it->language)
+			     << "\""
+			     << ",\"file_count\":" << it->file_count;
+			auto ci = children_of.find(id);
+			if (ci != children_of.end() && !ci->second.empty()) {
+				json << ",\"children\":[";
+				bool cf = true;
+				for (auto cid : ci->second)
+					outMod(cid, depth + 1, cf);
+				json << "]";
 			}
-			json << "]";
-		}
-		json << "}";
-	};
+			json << "}";
+		};
+	bool root_first = true;
 	for (const auto &m : modules)
 		if (m.parent_id == 0)
-			outMod(m.id, 0);
+			outMod(m.id, 0, root_first);
 	json << "]}";
 	return json.str();
 }

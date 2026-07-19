@@ -60,7 +60,7 @@ ALL_FILES="${BASE}_files.txt"
 find "$PROJECT_DIR" -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" \
     -o -name "*.rs" -o -name "*.go" -o -name "*.py" -o -name "*.java" \
     -o -name "*.js" -o -name "*.ts" -o -name "*.tsx" -o -name "*.kt" \
-    2>/dev/null | grep -v -E "(/\.git/|/node_modules/|/target/|/build/|/venv/|/__pycache__/|/\.)" \
+    2>/dev/null | grep -v -E '/(\.git|node_modules|target|build|venv|__pycache__)(/|$)|/[.][^/]*/' \
     > "$ALL_FILES" || true
 
 TOTAL=$(wc -l < "$ALL_FILES" 2>/dev/null || echo 0)
@@ -111,6 +111,8 @@ print(json.dumps(files))
         echo "$file_list_json" > "$list_file"
 
         local t0=$(date +%s)
+        # Fix: capture real exit code without || true swallowing it.
+        local ec=0
         GRAMMARS_DIR="$GRAMMARS_DIR" \
         CODESCOPE_DB_PATH="$batch_db" \
         CODESCOPE_INDEX_MODE=fast \
@@ -122,9 +124,9 @@ print(json.dumps(files))
             "batch-${batch_name}" \
             0 \
             --file-list "$list_file" \
-            > "$batch_log" 2>&1 || true
+            > "$batch_log" 2>&1 || ec=$?
 
-        local ec=$? dur=$(( $(date +%s) - t0 ))
+        local dur=$(( $(date +%s) - t0 ))
         local nodes=$(sqlite3 "$batch_db" "SELECT COUNT(*) FROM graph_nodes;" 2>/dev/null || echo 0)
         local edges=$(sqlite3 "$batch_db" "SELECT COUNT(*) FROM graph_edges;" 2>/dev/null || echo 0)
 
@@ -164,6 +166,8 @@ print(json.dumps(files))
             echo "$test_json" > "$test_json_file"
 
             rm -f "${BASE}_test.db" 2>/dev/null
+            # Fix: capture real exit code without || true swallowing it.
+            local test_ec=0
             GRAMMARS_DIR="$GRAMMARS_DIR" \
             CODESCOPE_DB_PATH="${BASE}_test.db" \
             CODESCOPE_INDEX_MODE=fast \
@@ -175,9 +179,7 @@ print(json.dumps(files))
                 "test" \
                 0 \
                 --file-list "$test_json_file" \
-                > /dev/null 2>&1 || true
-
-            local test_ec=$?
+                > /dev/null 2>&1 || test_ec=$?
             rm -f "${BASE}_test.db" 2>/dev/null "$test_list" "$test_json_file"
 
             if [ "$test_ec" -eq 0 ] || [ "$test_ec" -eq 124 ]; then

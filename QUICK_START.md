@@ -58,8 +58,8 @@ cargo build --release
 # 索引整个项目
 ./target/release/codescope cli index_project '{"project_path":"/path/to/your/project"}'
 
-# 或者用并行索引脚本（更快，适合大项目）
-CODESCOPE_WORKERS=8 ./codescope-parallel.sh /path/to/your/project
+# 或者用内置调度器（更快，适合大项目）
+codescope index-parallel /path/to/your/project
 ```
 
 ## 四、启动 MCP 服务器

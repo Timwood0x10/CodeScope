@@ -178,6 +178,16 @@ class GraphStore {
 	uint64_t getProjectId(const char *root_path);
 	uint64_t getLatestProjectId();
 
+	/**
+	 * Count graph_nodes belonging to a project.
+	 * Used to determine whether a project already has indexed data
+	 * (e.g. for MCP reuse decisions — skip re-indexing if data exists).
+	 *
+	 * @param project_id  Project identifier.
+	 * @return Number of graph_nodes, or 0 if the project has no data.
+	 */
+	uint64_t getProjectNodeCount(uint64_t project_id);
+
 	// ── File ───────────────────────────────────────────────────
 
 	uint64_t upsertFile(uint64_t project_id, const char *path,
@@ -205,6 +215,28 @@ class GraphStore {
 			      const std::vector<graph::GraphEdge> &edges);
 
 	bool deleteGraphEdgesByFile(uint64_t project_id, const char *file_path);
+
+	/**
+	 * Delete ALL graph-layer data for a file: relation, graph_edges,
+	 * graph_nodes, and entity. Does NOT delete semantic_records —
+	 * buildGraph needs them intact to rebuild from.
+	 *
+	 * @param project_id  Project identifier.
+	 * @param file_path   Source file path.
+	 * @return true on success.
+	 */
+	bool deleteGraphDataByFile(uint64_t project_id, const char *file_path);
+
+	/**
+	 * Delete ALL data for a file across every table: semantic_records,
+	 * relation, graph_edges, graph_nodes, and entity. Used by index_file
+	 * to ensure a clean slate before re-inserting parsed data.
+	 *
+	 * @param project_id  Project identifier.
+	 * @param file_path   Source file path.
+	 * @return true on success.
+	 */
+	bool deleteFileData(uint64_t project_id, const char *file_path);
 
 	// ── Entity/Relation (Phase 1.1) ─────────────────────────
 
@@ -553,16 +585,28 @@ class GraphStore {
 	/**
      * Find callers from the new call_edges table (requires callgraph_ready).
      * Returns JSON array of caller symbols.
+     *
+     * @param file_filter Optional absolute file path. When non-empty,
+     *        restricts callee node matching to the given file,
+     *        disambiguating homonyms (same name across files/classes,
+     *        e.g. __init__, run, main). Empty = aggregate all files
+     *        (legacy behavior, may produce noise on common names).
      */
 	std::string findCallersJson(uint64_t project_id,
-				    const char *symbol_name);
+				    const char *symbol_name,
+				    const char *file_filter = nullptr);
 
 	/**
      * Find callees from the new call_edges table (requires callgraph_ready).
      * Returns JSON array of callee symbols.
+     *
+     * @param file_filter Optional absolute file path. When non-empty,
+     *        restricts caller node matching to the given file,
+     *        disambiguating homonyms. See findCallersJson doc above.
      */
 	std::string findCalleesJson(uint64_t project_id,
-				    const char *symbol_name);
+				    const char *symbol_name,
+				    const char *file_filter = nullptr);
 
 	/** Get entry points from the new entry_points table. */
 	std::string getEntryPointsJson(uint64_t project_id);
@@ -778,23 +822,22 @@ class GraphStore {
 	sqlite3_stmt *stmt_fts_ = nullptr; // INSERT INTO code_fts
 	sqlite3_stmt *stmt_vector_ = nullptr; // INSERT INTO node_vectors
 
-	// Dynamic statement cache keyed by SQL text. Reused across Phase B writes.
-	// The mutex only guards the cache map (insert/find/reset). The returned
-	// sqlite3_stmt* is bind/stepped by the caller WITHOUT the lock — so all
-	// GraphStore write paths must be serialized by the caller (single-threaded
-	// enhance/index, or external locking). Do NOT call GraphStore methods
-	// concurrently from multiple threads.
+	// Dynamic statement cache: one prepared statement PER THREAD (see
+	// getCachedStmt in store.cpp). A single sqlite3_stmt* is never shared
+	// across threads, so there is no cross-thread race on a shared cached
+	// statement. The connection itself is serialized via
+	// SQLITE_CONFIG_SERIALIZED (see open()), so concurrent use of DIFFERENT
+	// per-thread statements on the same connection is safe. Bounded to
+	// kStmtCacheMax entries per thread.
 	// Soft cap at kStmtCacheMax; exceeding it means a bug (dynamic SQL at runtime).
 	static constexpr size_t kStmtCacheMax = 32;
-	std::unordered_map<std::string, sqlite3_stmt *> stmt_cache_;
-	std::mutex stmt_cache_mutex_;
-	// Returns a cached + reset prepared statement for `sql`. Prepares on first
-	// use; caller must bind + step, and must NOT finalize (owned by cache).
-	// Returns nullptr on prepare failure (error_ is set).
+	// Returns a per-thread cached + reset prepared statement for `sql`.
+	// Prepares on first use per thread; caller must bind + step, and must
+	// NOT finalize (owned by the per-thread cache). Returns nullptr on
+	// prepare failure (error_ is set).
 	sqlite3_stmt *getCachedStmt(const char *sql);
-	// Release all cached prepared statements and clear the cache.
-	// Safe to call at any point; subsequent getCachedStmt calls will
-	// re-prepare. Already called by close().
+	// Finalize the calling thread's cached prepared statements. Other
+	// threads finalize their own caches on thread exit.
 	void clearStmtCache();
 
     public:
@@ -802,24 +845,6 @@ class GraphStore {
 
     private:
 	bool createSchema();
-
-	// ── Internal: SQL-based call edge resolution ──────────────
-
-	/**
-	 * Build call graph edges (edge_type=1) using SQL JOINs instead of
-	 * C++ hash maps. Replaces the in-memory caller_idx / callee_by_name /
-	 * decl_idx / ir_edge_target maps with SQL temp tables + indexes.
-	 *
-	 * Memory: O(batch_size) instead of O(total_nodes). For 4M nodes,
-	 * this reduces peak RSS from ~2-4GB to ~64MB (SQLite cache).
-	 *
-	 * Prerequisites: _r2n temp table must exist (created by buildGraph).
-	 *
-	 * @param project_id  Project to build call edges for.
-	 * @return Number of call edges inserted, or -1 on error.
-	 */
-	// buildCallEdgesSQL has been replaced by the new Resolver Pipeline
-	// (pipeline.cpp) with multi-factor scoring. The old function was removed.
 };
 
 // ── Index Progress (global, for client polling) ─────────────

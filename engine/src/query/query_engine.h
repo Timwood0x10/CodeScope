@@ -30,9 +30,11 @@ class QueryEngine {
 	std::string findReferences(uint64_t project_id, const char *symbol_name,
 				   const char *file_filter);
 
-	std::string getCallers(uint64_t project_id, const char *function_name);
+	std::string getCallers(uint64_t project_id, const char *function_name,
+			       const char *file_filter = nullptr);
 
-	std::string getCallees(uint64_t project_id, const char *function_name);
+	std::string getCallees(uint64_t project_id, const char *function_name,
+			       const char *file_filter = nullptr);
 
 	std::string getNeighbors(uint64_t project_id, uint64_t node_id,
 				 int edge_type_filter, int radius);

@@ -20,6 +20,15 @@ TOTAL_WORKERS="${CODESCOPE_WORKERS:-8}"
 PARALLEL="${CODESCOPE_PARALLEL:-8}"  # max concurrent modules
 GRAMMARS_DIR="${GRAMMARS_DIR:-engine/grammars}"
 
+# All supported source file extensions (matching FilterPolicy::isSourceFile)
+SOURCE_EXTENSIONS=(
+    "*.c" "*.h" "*.cpp" "*.hpp" "*.cc" "*.cxx" "*.hh" "*.hxx"
+    "*.rs" "*.go" "*.py" "*.java" "*.kt" "*.kts"
+    "*.js" "*.jsx" "*.ts" "*.tsx" "*.mjs" "*.cjs" "*.mts" "*.cts"
+    "*.swift" "*.rb" "*.php" "*.cs" "*.scala"
+    "*.zig" "*.mojo" "*.vue" "*.svelte"
+)
+
 if [ -z "$PROJECT_DIR" ] || [ "$1" = "-h" ]; then
     echo "Usage: CODESCOPE_WORKERS=8 CODESCOPE_PARALLEL=8 $0 <project_dir> [db_prefix]"
     exit 1
@@ -86,8 +95,19 @@ find_crashing_file() {
     local module_dir="$1" module_name="$2"
     local temp_db="${DB_PREFIX}_${module_name}_q.db"
     local all_files=$(mktemp)
-    find "$module_dir" -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" 2>/dev/null | sort > "$all_files"
-    local total=$(wc -l < "$all_files")
+
+    # Build find expression for all supported extensions
+    local find_expr=()
+    for ext in "${SOURCE_EXTENSIONS[@]}"; do
+        find_expr+=(-o -name "$ext")
+    done
+    find_expr=("${find_expr[@]:1}")  # Remove leading -o
+
+    find "$module_dir" -type f \( "${find_expr[@]}" \) 2>/dev/null | sort > "$all_files"
+    local total
+    total=$(wc -l < "$all_files" | tr -d ' ')
+    [ "$total" -eq 0 ] && { rm -f "$all_files"; echo ""; return; }
+
     echo "  [QUARANTINE] $module_name: binary searching $total files..."
     local left=0 right=$((total - 1)) crash_file=""
 
@@ -101,10 +121,15 @@ find_crashing_file() {
             local rel="${f#$module_dir/}"; mkdir -p "$test_dir/$(dirname "$rel")"
             ln -sf "$f" "$test_dir/$rel"
         done < "$test_list"
-        rm -f "$temp_db"*.db 2>/dev/null
+        rm -f "$temp_db" "$temp_db"-wal "$temp_db"-shm "$temp_db"-journal 2>/dev/null
+        # Capture the real exit code via `|| ec=$?` — `|| true` would
+        # force $? to 0 and make the binary search below always take
+        # the "slice OK" branch (ec 0 or timeout 124), never reducing
+        # `right`, so crash_file would stay empty and quarantine die.
+        local ec=0
         GRAMMARS_DIR="$GRAMMARS_DIR" CODESCOPE_DB_PATH="$temp_db" CODESCOPE_INDEX_MODE=fast \
-            CODESCOPE_WORKERS=1 timeout 120 "$CODESCOPE" worker "$temp_db" "$test_dir" "" "q-${module_name}" 0 >/dev/null 2>&1 || true
-        local ec=$?; rm -rf "$test_dir" "$test_list"
+            CODESCOPE_WORKERS=1 timeout 120 "$CODESCOPE" worker "$temp_db" "$test_dir" "" "q-${module_name}" 0 >/dev/null 2>&1 || ec=$?
+        rm -rf "$test_dir" "$test_list"
         if [ "$ec" -eq 0 ] || [ "$ec" -eq 124 ]; then
             left=$((mid + 1))
         else
@@ -112,13 +137,14 @@ find_crashing_file() {
             right=$mid
         fi
     done
-    rm -f "$all_files" "$temp_db"*.db 2>/dev/null
+    rm -f "$all_files" "$temp_db" "$temp_db"-wal "$temp_db"-shm "$temp_db"-journal 2>/dev/null
     [ -n "$crash_file" ] && [ -f "$crash_file" ] && echo "$crash_file" || echo ""
 }
 
-# ── Index a module ───────────────────────────────────────────────
+# ── Index a module ────────────────────────────────────────────────
 index_module() {
-    local name="$1" count="$2" workers="$3" module_dir="$PROJECT_DIR/$name"
+    local name="$1" count="$2" workers="$3"
+    local module_dir="$PROJECT_DIR/$name"
     local module_db="${DB_PREFIX}_${name}.db" module_log="${DB_PREFIX}_${name}.log"
     local quarantine_list="${QUARANTINE_DIR}/${name}.txt"
 
@@ -138,59 +164,75 @@ index_module() {
     fi
 
     local t0=$(date +%s)
+    # Build argv as an array so paths with spaces survive unquoted
+    # expansion. The 5 positional worker args are: db, dir, lang, name, id.
+    local worker_args=(
+        "$module_db" "$module_dir" "" "linux-${name}" 0
+    )
+    # Capture the real exit code via `|| ec=$?` — `|| true` would force
+    # $? to 0, hide failed modules from the FAILED_MODULES gate below
+    # (which routes crashes to quarantine), and break the SUMMARY record.
+    local ec=0
     GRAMMARS_DIR="$GRAMMARS_DIR" CODESCOPE_DB_PATH="$module_db" \
         CODESCOPE_INDEX_MODE=fast CODESCOPE_WORKERS="$workers" \
-        timeout 600 "$CODESCOPE" worker "$module_db" "$module_dir" "" "linux-${name}" 0 \
-        > "$module_log" 2>&1 || true
-    local ec=$? dur=$(( $(date +%s) - t0 ))
+        timeout 600 "$CODESCOPE" worker "${worker_args[@]}" \
+        > "$module_log" 2>&1 || ec=$?
+    local dur=$(( $(date +%s) - t0 ))
     local nodes=$(sqlite3 "$module_db" "SELECT COUNT(*) FROM graph_nodes;" 2>/dev/null || echo 0)
     echo "$name:$ec:$nodes:$dur:$workers"
 }
 
-# ── Step 2: Dynamic worker dispatch ──────────────────────────────
-echo "[2/3] Dynamic worker dispatch (${TOTAL_WORKERS} total workers)..."
+# ── Step 2: Proportional worker allocation (no rebalance) ──────────
+# Each module gets parse workers proportional to its file count. No
+# rebalancing — small modules use the in-memory bulk path and don't benefit
+# from extra workers; large modules are already streaming. Killing/restarting
+# modules caused WAL contention ("DB lock conflict") under the old scheme, so
+# we start each module exactly once with a fixed allocation.
+echo "[2/3] Proportional worker allocation (${TOTAL_WORKERS} total workers)..."
 echo ""
 
-# Read all modules
-declare -a MODULE_QUEUE=()  # "name:count"
+# Read modules (name:count) into an allocation array with proportional workers.
+declare -a MODULE_ALLOC=()  # "name:count:workers"
+TOTAL_FILES_SUM=0
 while IFS=: read -r name count; do
-    MODULE_QUEUE+=("$name:$count")
+    [ -z "$name" ] && continue
+    TOTAL_FILES_SUM=$((TOTAL_FILES_SUM + count))
+done < "$TMP_MODULES"
+
+[ "$TOTAL_FILES_SUM" -eq 0 ] && TOTAL_FILES_SUM=1
+while IFS=: read -r name count; do
+    [ -z "$name" ] && continue
+    # ceil(count * TOTAL_WORKERS / TOTAL_FILES_SUM), min 1.
+    alloc=$(( (count * TOTAL_WORKERS + TOTAL_FILES_SUM - 1) / TOTAL_FILES_SUM ))
+    [ "$alloc" -lt 1 ] && alloc=1
+    MODULE_ALLOC+=("$name:$count:$alloc")
 done < "$TMP_MODULES"
 
 rm -f "${DB_PREFIX}_SUMMARY.txt"
 
-# Start metrics background monitor
-( while true; do log_system_metrics "LIVE"; sleep 30; done ) &
-METRICS_PID=$!
+# Start metrics background monitor (kept — useful for profiling).
+# Self-terminates when the stop sentinel is created (no process killing).
+METRICS_STOP="${DB_PREFIX}_metrics_stop"
+rm -f "$METRICS_STOP"
+( while [ ! -f "$METRICS_STOP" ]; do log_system_metrics "LIVE"; sleep 30; done ) &
 
-# Track running modules using temp files (bash 3.2 compatible — no declare -A)
-MODULE_STATE_DIR="${DB_PREFIX}_state"
-mkdir -p "$MODULE_STATE_DIR"
-rm -f "${MODULE_STATE_DIR}"/*
-
+# Launch modules with bounded concurrency (PARALLEL concurrent at most).
+# A simple token gate: track active PIDs; when one finishes, launch the next.
+declare -a ACTIVE_PIDS=()
 ACTIVE=0
-NEXT_INDEX=0
-TOTAL_MODULES=${#MODULE_QUEUE[@]}
+TOTAL_MODULES=${#MODULE_ALLOC[@]}
 
-# Initial allocation: start with 1 worker per module, up to PARALLEL modules
-AVAILABLE_WORKERS=$TOTAL_WORKERS
-INITIAL_WORKERS=1
+echo "  Launching $TOTAL_MODULES modules (max $PARALLEL concurrent)..."
+for entry in "${MODULE_ALLOC[@]}"; do
+    IFS=: read -r name count alloc <<< "$entry"
 
-echo "  Initial dispatch: 1 worker per module, up to $PARALLEL modules..."
+    # Wait until a slot frees up if we're at the concurrency limit.
+    # `wait -n` blocks until ANY background module job exits.
+    while [ "$ACTIVE" -ge "$PARALLEL" ]; do
+        wait -n 2>/dev/null || sleep 0.5
+        ACTIVE=$((ACTIVE - 1))
+    done
 
-start_module() {
-    local idx=$1
-    if [ "$idx" -ge "$TOTAL_MODULES" ]; then return 1; fi
-    local entry="${MODULE_QUEUE[$idx]}"
-    IFS=: read -r name count <<< "$entry"
-    
-    local alloc=$INITIAL_WORKERS
-    [ "$alloc" -gt "$AVAILABLE_WORKERS" ] && alloc=$AVAILABLE_WORKERS
-    [ "$alloc" -lt 1 ] && alloc=1
-    
-    echo "$alloc" > "${MODULE_STATE_DIR}/${name}_workers"
-    AVAILABLE_WORKERS=$((AVAILABLE_WORKERS - alloc))
-    
     (
         result=$(index_module "$name" "$count" "$alloc")
         echo "$result" >> "${DB_PREFIX}_SUMMARY.txt"
@@ -198,96 +240,15 @@ start_module() {
         echo "  [DONE] $mname → ${nodes} nodes ${dur}s (${wkrs} workers)"
         log_metric "MODULE:${mname}" "exit=${ec} nodes=${nodes} duration=${dur}s workers=${wkrs}"
     ) &
-    local pid=$!
-    echo "$pid" > "${MODULE_STATE_DIR}/${name}_pid"
     ACTIVE=$((ACTIVE + 1))
-    NEXT_INDEX=$((idx + 1))
     log_metric "START:${name}" "workers=${alloc} files=${count}"
-}
-
-# Start initial batch
-while [ "$NEXT_INDEX" -lt "$TOTAL_MODULES" ] && [ "$ACTIVE" -lt "$PARALLEL" ]; do
-    start_module "$NEXT_INDEX"
 done
 
-# Main dispatch loop: when a module finishes, start next or rebalance
-while [ "$ACTIVE" -gt 0 ]; do
-    for pid_file in "${MODULE_STATE_DIR}"/*_pid; do
-        [ -f "$pid_file" ] || continue
-        pid=$(cat "$pid_file" 2>/dev/null)
-        [ -z "$pid" ] && continue
-        
-        if ! kill -0 "$pid" 2>/dev/null; then
-            wait "$pid" 2>/dev/null || true
-            
-            name=$(basename "$pid_file" _pid)
-            workers=$(cat "${MODULE_STATE_DIR}/${name}_workers" 2>/dev/null || echo 1)
-            rm -f "${MODULE_STATE_DIR}/${name}_pid" "${MODULE_STATE_DIR}/${name}_workers"
-            
-            ACTIVE=$((ACTIVE - 1))
-            AVAILABLE_WORKERS=$((AVAILABLE_WORKERS + workers))
-            
-            # Start next module if any remain
-            if [ "$NEXT_INDEX" -lt "$TOTAL_MODULES" ]; then
-                start_module "$NEXT_INDEX"
-            else
-                # No more modules — rebalance: restart largest remaining with more workers
-                max_files=0; max_name=""
-                for sf in "${MODULE_STATE_DIR}"/*_pid; do
-                    [ -f "$sf" ] || continue
-                    rname=$(basename "$sf" _pid)
-                    for entry in "${MODULE_QUEUE[@]}"; do
-                        IFS=: read -r ename ecount <<< "$entry"
-                        if [ "$ename" = "$rname" ] && [ "$ecount" -gt "$max_files" ]; then
-                            max_files=$ecount
-                            max_name=$rname
-                        fi
-                    done
-                done
-                
-                if [ -n "$max_name" ] && [ "$AVAILABLE_WORKERS" -gt 0 ]; then
-                    old_workers=$(cat "${MODULE_STATE_DIR}/${max_name}_workers" 2>/dev/null || echo 1)
-                    new_workers=$((old_workers + AVAILABLE_WORKERS))
-                    echo "  [REBALANCE] $max_name: ${old_workers}→${new_workers} workers"
-                    log_metric "REBALANCE:${max_name}" "old=${old_workers} new=${new_workers}"
-                    
-                    # Kill old process
-                    old_pid=$(cat "${MODULE_STATE_DIR}/${max_name}_pid" 2>/dev/null)
-                    if [ -n "$old_pid" ]; then
-                        kill "$old_pid" 2>/dev/null || true
-                        wait "$old_pid" 2>/dev/null || true
-                        rm -f "${MODULE_STATE_DIR}/${max_name}_pid"
-                        ACTIVE=$((ACTIVE - 1))
-                    fi
-                    
-                    AVAILABLE_WORKERS=0
-                    echo "$new_workers" > "${MODULE_STATE_DIR}/${max_name}_workers"
-                    
-                    fcount=0
-                    for entry in "${MODULE_QUEUE[@]}"; do
-                        IFS=: read -r ename ecount <<< "$entry"
-                        [ "$ename" = "$max_name" ] && fcount=$ecount && break
-                    done
-                    
-                    (
-                        result=$(index_module "$max_name" "$fcount" "$new_workers")
-                        echo "$result" >> "${DB_PREFIX}_SUMMARY.txt"
-                        IFS=: read -r mname ec nodes dur wkrs <<< "$result"
-                        echo "  [DONE] $mname → ${nodes} nodes ${dur}s (${wkrs} workers)"
-                        log_metric "MODULE:${mname}" "exit=${ec} nodes=${nodes} duration=${dur}s workers=${wkrs}"
-                    ) &
-                    new_pid=$!
-                    echo "$new_pid" > "${MODULE_STATE_DIR}/${max_name}_pid"
-                    ACTIVE=$((ACTIVE + 1))
-                fi
-            fi
-            break  # restart loop after state change
-        fi
-    done
-    sleep 0.5
-done
+# Reap remaining module processes.
+wait 2>/dev/null || true
 
-kill "$METRICS_PID" 2>/dev/null || true
+# Signal the metrics monitor to stop (self-terminating loop, no kill).
+touch "$METRICS_STOP" 2>/dev/null || true
 
 # ── Step 3: Per-file quarantine for failed modules ───────────────
 echo ""

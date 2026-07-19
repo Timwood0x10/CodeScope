@@ -109,6 +109,13 @@ struct Record {
 	uint64_t parent_id = 0; // 0 = top-level (child of TranslationUnit)
 	uint64_t ref_original_id =
 		0; // for CallExpr: resolved callee's original_id (0 = unresolved cross-file)
+	/// Resolution strategy for this call record.
+	/// Empty string = not a call or not yet resolved.
+	/// "p1_intra"  = resolved within same file (ref_original_id > 0)
+	/// "p3_name"   = resolved by name match across files
+	/// "external"  = resolved to a known builtin/third-party symbol
+	/// "unresolved" = could not resolve to any known symbol
+	std::string resolve_strategy;
 	SourceRange loc;
 	std::string file_path;
 	std::string language;
@@ -116,6 +123,13 @@ struct Record {
 	bool is_static = false; // static function/method (C++/Rust/Java)
 	CallKind call_kind = CallKind::
 		Direct; // for CallExpr: direct/interface/constructor/method
+	/// Visibility level for this declaration (v0.2.2 role classifier signal).
+	/// 0 = private (default), 1 = pub/public/export, 2 = protected (Java/C#).
+	/// Populated by Visitors per language; flows Record → SemanticUnit →
+	/// entity.visibility column via the staging pipeline. The role classifier
+	/// in state_builder.cpp fuses pub_count (visibility=1) with call-graph
+	/// counts — see docs/dev_plans/role_classifier_plan.md.
+	int visibility = 0;
 };
 
 /**
@@ -149,7 +163,7 @@ class SemanticUnit {
 	/** Add a record and return its assigned ID. */
 	uint64_t addRecord(RecordKind kind, const std::string &name,
 			   uint64_t parent_id, SourceRange loc, int arity = 0,
-			   bool is_static = false);
+			   bool is_static = false, int visibility = 0);
 
 	/**
 	 * Add a typed record (Variable/Field/Parameter/TypeRef/TypeAssign with type info).
@@ -158,7 +172,8 @@ class SemanticUnit {
 	 */
 	uint64_t addTypedRecord(RecordKind kind, const std::string &name,
 				const std::string &type_name,
-				uint64_t parent_id, SourceRange loc);
+				uint64_t parent_id, SourceRange loc,
+				int visibility = 0);
 
 	/**
 	 * Add a record with explicit original_id and qualified_name (for DB rebuild).
@@ -171,7 +186,12 @@ class SemanticUnit {
 			   SourceRange loc);
 
 	/** Accessors. */
-	const Record &getRecord(uint64_t id) const;
+	// Returns a pointer to the record with the given id, or nullptr if not
+	// found (e.g. when records_ is empty or the id was never added).
+	// Returning a pointer avoids the undefined behaviour of calling
+	// records_.back() on an empty container and forces callers to handle
+	// the "not found" case explicitly.
+	const Record *getRecord(uint64_t id) const;
 	const std::vector<Record> &allRecords() const
 	{
 		return records_;
@@ -227,15 +247,28 @@ class SemanticUnit {
 	bool setCallReference(uint64_t record_id, uint64_t ref_original_id);
 
 	/**
-		 * Set the call_kind on a CallExpr record (0=direct, 1=method, 2=interface,
-		 * 3=constructor, 4=static, 5=virtual). Allows the parser to classify
-		 * calls before persistence, enabling the resolver pipeline to
-		 * distinguish direct invocations from interface dispatches.
-		 * \param record_id  ID of the CallExpr record to update.
-		 * \param kind       CallKind value to assign.
-		 * \return true if the record was found and updated.
-		 */
+	  * Set the call_kind on a CallExpr record (0=direct, 1=method, 2=interface,
+	  * 3=constructor, 4=static, 5=virtual). Allows the parser to classify
+	  * calls before persistence, enabling the resolver pipeline to
+	  * distinguish direct invocations from interface dispatches.
+	  * \param record_id  ID of the CallExpr record to update.
+	  * \param kind       CallKind value to assign.
+	  * \return true if the record was found and updated.
+	  */
 	bool setCallKind(uint64_t record_id, int kind);
+
+	/**
+	  * Set the resolve_strategy on a CallExpr record.
+	  * Strategy values:
+	  *   "p1_intra"   — resolved within same file via ref_original_id
+	  *   "p3_name"    — resolved by name match across files
+	  *   "external"   — known builtin/third-party library symbol
+	  *   "unresolved" — could not resolve to any known symbol
+	  * \param record_id ID of the CallExpr record to update.
+	  * \param strategy  Resolution strategy string.
+	  * \return true if the record was found and updated.
+	  */
+	bool setCallStrategy(uint64_t record_id, const std::string &strategy);
 
     private:
 	std::vector<Record> records_;

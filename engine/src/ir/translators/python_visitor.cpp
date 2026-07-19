@@ -1,7 +1,7 @@
 #include "python_visitor.h"
 #include <cstring>
 #include <tree_sitter/api.h>
-
+#include "../builtin_registry.h"
 namespace ir
 {
 
@@ -97,9 +97,12 @@ void PythonVisitor::handleFuncDef(TSNode node, uint64_t parent_id)
 		visitChildren(node, parent_id);
 		return;
 	}
-	uint64_t id = emitter_->emitFunction(name, loc, parent_id);
+	uint64_t id =
+		emitter_->emitFunction(name, loc, parent_id, 0, false,
+				       name.compare(0, 2, "__") == 0 ? 0 : 1);
 	defineSymbol(name, id);
 	pushScope();
+	pushFunctionScope(id);
 	uint32_t cnt = ts_node_child_count(node);
 	for (uint32_t i = 0; i < cnt; i++) {
 		TSNode c = ts_node_child(node, i);
@@ -176,6 +179,7 @@ void PythonVisitor::handleFuncDef(TSNode node, uint64_t parent_id)
 			visitChildren(c, id);
 		}
 	}
+	popFunctionScope();
 	popScope();
 }
 void PythonVisitor::handleClassDef(TSNode node, uint64_t parent_id)
@@ -186,7 +190,8 @@ void PythonVisitor::handleClassDef(TSNode node, uint64_t parent_id)
 		visitChildren(node, parent_id);
 		return;
 	}
-	uint64_t id = emitter_->emitClass(name, loc, parent_id);
+	uint64_t id = emitter_->emitClass(
+		name, loc, parent_id, name.compare(0, 2, "__") == 0 ? 0 : 1);
 	defineSymbol(name, id);
 	pushScope();
 	uint32_t cnt = ts_node_child_count(node);
@@ -206,14 +211,29 @@ void PythonVisitor::handleCall(TSNode node, uint64_t parent_id)
 {
 	SourceRange loc = location(node);
 	std::string name;
+	bool is_attribute_call = false;
 	uint32_t cnt = ts_node_child_count(node);
 	for (uint32_t i = 0; i < cnt; i++) {
 		TSNode c = ts_node_child(node, i);
 		if (!ts_node_is_named(c))
 			continue;
-		if (strcmp(ts_node_type(c), "identifier") == 0 ||
-		    strcmp(ts_node_type(c), "attribute") == 0) {
+		const char *t = ts_node_type(c);
+		if (strcmp(t, "identifier") == 0) {
 			name = nodeText(c);
+			break;
+		}
+		// For "obj.method(...)" the callee is an attribute node.
+		// Previously we stored the full "obj.method" text as the
+		// name, but methods are defined with just "method", so
+		// resolveSymbol("obj.method") never matched → ref_original_id
+		// stayed 0 → P1 path skipped. Fix: drill into the attribute
+		// and extract just the method name ("method").
+		// is_attribute_call is tracked separately so call_kind can
+		// still be classified as Method even when the extracted
+		// name no longer contains a dot.
+		if (strcmp(t, "attribute") == 0) {
+			name = extractAttributeName(c);
+			is_attribute_call = true;
 			break;
 		}
 	}
@@ -228,13 +248,49 @@ void PythonVisitor::handleCall(TSNode node, uint64_t parent_id)
 
 	// Classify call kind
 	CallKind call_kind = CallKind::Direct;
-	if (name.find('.') != std::string::npos)
+	if (is_attribute_call)
 		call_kind = CallKind::Method;
-	else if (name.size() > 4 && name[0] >= 'A' && name[0] <= 'Z')
+	// Constructor detection: any non-empty capitalized name. The previous
+	// `name.size() > 4` threshold skipped short class names like `Foo()`,
+	// `Url()`, `Db()` → all were misclassified as Direct calls, so the
+	// Resolver Pipeline never applied the constructor boost factor and
+	// cross-module constructor resolution silently failed.
+	// See CODE_REVIEW_FINDINGS_2026-07-19.md H6.
+	else if (name.size() >= 1 && name[0] >= 'A' && name[0] <= 'Z')
 		call_kind = CallKind::Constructor;
 
-	uint64_t id = emitter_->emitCall(name, loc, parent_id, 0, false,
+	// Compute arity from the arguments node's named children count.
+	// Previously arity was hardcoded to 0, which degraded fuzzy
+	// resolver precision (factorSignatureMatch treated all calls
+	// as unknown-arity). Bug 2 in res.md.
+	int arity = countArguments(node, cnt);
+
+	// Use the containing function as parent_id (not the immediate
+	// syntactic parent, which may be another call record). Without
+	// this, nested calls like fig.add_trace(Scatter(...)) would
+	// have their parent_id set to the outer add_trace call record,
+	// which is NOT in _r2n (only declarations are). The reference-
+	// table JOIN would fail and the nested call would be dropped.
+	uint64_t func_id = currentFunctionId();
+	uint64_t call_parent = (func_id != 0) ? func_id : parent_id;
+	uint64_t id = emitter_->emitCall(name, loc, call_parent, arity, false,
 					 static_cast<int>(call_kind));
+
+	// ── Intra-file callee resolution ───────────────────────────
+	// Store the resolved callee's record ID as ref_original_id.
+	// Enables P1 call-edge construction in buildCallEdgesSQL.
+	if (!name.empty()) {
+		uint64_t target = resolveSymbol(name);
+		if (target) {
+			unit_->setCallReference(id, target);
+			unit_->setCallStrategy(id, "p1_intra");
+		} else {
+			unit_->setCallStrategy(
+				id, BuiltinRegistry::resolve(unit_->language(),
+							     name));
+		}
+	}
+
 	visitChildren(node, id);
 }
 void PythonVisitor::handleImport(TSNode node, uint64_t parent_id)
@@ -248,13 +304,22 @@ void PythonVisitor::handleAssignment(TSNode node, uint64_t parent_id)
 		TSNode c = ts_node_child(node, i);
 		if (!ts_node_is_named(c))
 			continue;
-		if (strcmp(ts_node_type(c), "identifier") == 0) {
+		const char *t = ts_node_type(c);
+		if (strcmp(t, "identifier") == 0) {
 			std::string name = nodeText(c);
 			if (!name.empty()) {
 				uint64_t id = emitter_->emitVariable(
-					name, location(c), parent_id);
+					name, location(c), parent_id,
+					name.compare(0, 2, "__") == 0 ? 0 : 1);
 				defineSymbol(name, id);
 			}
+		} else {
+			// Visit non-identifier children (e.g. call, attribute,
+			// subscript) so that calls inside assignments like
+			// "self.data = self._load_data()" are detected.
+			// Previously, handleAssignment only looked for identifier
+			// children, so calls in the RHS were silently skipped.
+			visitNode(c, parent_id);
 		}
 	}
 }
@@ -271,4 +336,66 @@ std::string PythonVisitor::extractName(TSNode node)
 	}
 	return "";
 }
+
+std::string PythonVisitor::extractAttributeName(TSNode attr)
+{
+	// tree-sitter-python attribute children for "obj.method":
+	//   identifier (obj), identifier (method)
+	// For chained access "self.fig.add_trace()" the object is
+	// itself a nested attribute, so the attribute's first child
+	// is another attribute. We recurse into any attribute child
+	// first, and fall back to the LAST named identifier on the
+	// current level. This ensures the resolved name is the
+	// method being invoked ("add_trace"), not the receiver
+	// ("self.fig" or "fig"). Without recursion, "self.fig.add_trace"
+	// yielded name "fig" (or worse, "self"), so resolveSymbol()
+	// never matched the method definition → ref_original_id = 0
+	// → P1 call-edge construction skipped.
+	std::string last;
+	uint32_t cnt = ts_node_child_count(attr);
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(attr, i);
+		if (!ts_node_is_named(c))
+			continue;
+		const char *t = ts_node_type(c);
+		if (strcmp(t, "attribute") == 0) {
+			// Recurse into nested attribute first — its
+			// result is more specific than any identifier
+			// at the current level.
+			std::string inner = extractAttributeName(c);
+			if (!inner.empty())
+				return inner;
+		}
+		if (strcmp(t, "identifier") == 0)
+			last = nodeText(c);
+	}
+	if (!last.empty())
+		return last;
+	// Fallback: no identifier child (e.g. subscript-style callee).
+	// Return the full attribute text so downstream resolution can
+	// still attempt a name-only match.
+	return nodeText(attr);
+}
+
+int PythonVisitor::countArguments(TSNode call_node, uint32_t child_count)
+{
+	// Python call node's argument container is named "arguments".
+	// Count its named children — commas and parens are unnamed
+	// nodes in tree-sitter, so ts_node_is_named filters them.
+	for (uint32_t i = 0; i < child_count; i++) {
+		TSNode child = ts_node_child(call_node, i);
+		if (strcmp(ts_node_type(child), "arguments") != 0)
+			continue;
+		int argc = 0;
+		uint32_t ac = ts_node_child_count(child);
+		for (uint32_t j = 0; j < ac; j++) {
+			TSNode arg = ts_node_child(child, j);
+			if (ts_node_is_named(arg))
+				++argc;
+		}
+		return argc;
+	}
+	return 0;
+}
+
 } // namespace ir

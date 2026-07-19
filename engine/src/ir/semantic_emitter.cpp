@@ -12,48 +12,55 @@ SemanticEmitter::SemanticEmitter(SemanticUnit *unit)
 
 uint64_t SemanticEmitter::emitFunction(const std::string &name, SourceRange loc,
 				       uint64_t parent_id, int arity,
-				       bool is_static)
+				       bool is_static, int visibility)
 {
 	return unit_->addRecord(RecordKind::Function, name, parent_id, loc,
-				arity, is_static);
+				arity, is_static, visibility);
 }
 
 uint64_t SemanticEmitter::emitMethod(const std::string &name, SourceRange loc,
 				     uint64_t parent_id, int arity,
-				     bool is_static)
+				     bool is_static, int visibility)
 {
 	return unit_->addRecord(RecordKind::Method, name, parent_id, loc, arity,
-				is_static);
+				is_static, visibility);
 }
 
 uint64_t SemanticEmitter::emitClass(const std::string &name, SourceRange loc,
-				    uint64_t parent_id)
+				    uint64_t parent_id, int visibility)
 {
-	return unit_->addRecord(RecordKind::Class, name, parent_id, loc);
+	return unit_->addRecord(RecordKind::Class, name, parent_id, loc, 0,
+				false, visibility);
 }
 
 uint64_t SemanticEmitter::emitInterface(const std::string &name,
-					SourceRange loc, uint64_t parent_id)
+					SourceRange loc, uint64_t parent_id,
+					int visibility)
 {
-	return unit_->addRecord(RecordKind::Interface, name, parent_id, loc);
+	return unit_->addRecord(RecordKind::Interface, name, parent_id, loc, 0,
+				false, visibility);
 }
 
 uint64_t SemanticEmitter::emitEnum(const std::string &name, SourceRange loc,
-				   uint64_t parent_id)
+				   uint64_t parent_id, int visibility)
 {
-	return unit_->addRecord(RecordKind::Enum, name, parent_id, loc);
+	return unit_->addRecord(RecordKind::Enum, name, parent_id, loc, 0,
+				false, visibility);
 }
 
 uint64_t SemanticEmitter::emitTypeAlias(const std::string &name,
-					SourceRange loc, uint64_t parent_id)
+					SourceRange loc, uint64_t parent_id,
+					int visibility)
 {
-	return unit_->addRecord(RecordKind::TypeAlias, name, parent_id, loc);
+	return unit_->addRecord(RecordKind::TypeAlias, name, parent_id, loc, 0,
+				false, visibility);
 }
 
 uint64_t SemanticEmitter::emitVariable(const std::string &name, SourceRange loc,
-				       uint64_t parent_id)
+				       uint64_t parent_id, int visibility)
 {
-	return unit_->addRecord(RecordKind::Variable, name, parent_id, loc);
+	return unit_->addRecord(RecordKind::Variable, name, parent_id, loc, 0,
+				false, visibility);
 }
 
 // ── Expression Emitters ───────────────────────────────────────

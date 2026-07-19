@@ -344,7 +344,8 @@ char *engine_unified_search(uint64_t project_id, const char *query, int limit)
 
 // ─── Phase C: Adaptive Find Callers ──────────────────────────
 
-char *engine_find_callers_adaptive(uint64_t project_id, const char *symbol_name)
+char *engine_find_callers_adaptive(uint64_t project_id, const char *symbol_name,
+				   const char *file_filter)
 {
 	if (!g_store)
 		return dupString("{\"error\":\"engine not initialized\"}");
@@ -352,12 +353,14 @@ char *engine_find_callers_adaptive(uint64_t project_id, const char *symbol_name)
 		return dupString("{\"error\":\"symbol_name is empty\"}");
 
 	// findCallersJson reads graph_edges directly (no call_edges dependency)
-	return dupString(g_store->findCallersJson(project_id, symbol_name));
+	return dupString(
+		g_store->findCallersJson(project_id, symbol_name, file_filter));
 }
 
 // ─── Phase C: Adaptive Find Callees ──────────────────────────
 
-char *engine_find_callees_adaptive(uint64_t project_id, const char *symbol_name)
+char *engine_find_callees_adaptive(uint64_t project_id, const char *symbol_name,
+				   const char *file_filter)
 {
 	if (!g_store)
 		return dupString("{\"error\":\"engine not initialized\"}");
@@ -365,7 +368,8 @@ char *engine_find_callees_adaptive(uint64_t project_id, const char *symbol_name)
 		return dupString("{\"error\":\"symbol_name is empty\"}");
 
 	// Try findCalleesJson first (new pipeline: graph_edges + graph_nodes)
-	std::string result = g_store->findCalleesJson(project_id, symbol_name);
+	std::string result =
+		g_store->findCalleesJson(project_id, symbol_name, file_filter);
 	if (result.find("\"callees\":[]") == std::string::npos ||
 	    result.find("\"callees\":[{") != std::string::npos) {
 		return dupString(result.c_str());
@@ -375,7 +379,8 @@ char *engine_find_callees_adaptive(uint64_t project_id, const char *symbol_name)
 	if (!g_query)
 		return dupString(
 			"{\"error\":\"query engine not initialized\"}");
-	return dupString(g_query->getCallees(project_id, symbol_name));
+	return dupString(
+		g_query->getCallees(project_id, symbol_name, file_filter));
 }
 
 // ─── Phase C: Get Entry Points (new schema) ──────────────────

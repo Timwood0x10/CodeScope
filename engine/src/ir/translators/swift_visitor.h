@@ -22,6 +22,9 @@ class SwiftVisitor : public JsVisitor {
 	void handleVarDecl(TSNode node, uint64_t parent_id);
 	void handleImport(TSNode node, uint64_t parent_id);
 	std::string extractName(TSNode node);
+	/// Detect Swift visibility: 1=public/open, 0=internal/fileprivate/private.
+	/// v0.2.2 role classifier signal.
+	int detectVisibility(TSNode node);
 };
 } // namespace ir
 #endif

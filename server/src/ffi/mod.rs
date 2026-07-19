@@ -11,6 +11,8 @@ unsafe extern "C" {
 
     fn engine_create_project(root_path: *const c_char, name: *const c_char) -> u64;
     fn engine_get_latest_project_id() -> u64;
+    fn engine_get_project_id_by_path(root_path: *const c_char) -> u64;
+    fn engine_get_project_node_count(project_id: u64) -> u64;
     fn engine_index_file(project_id: u64, file_path: *const c_char) -> *mut c_char;
     fn engine_index_project(
         project_id: u64,
@@ -100,13 +102,28 @@ unsafe extern "C" {
     fn engine_get_module_tree(project_id: u64) -> *mut c_char;
     fn engine_find_symbol(project_id: u64, symbol_name: *const c_char) -> *mut c_char;
 
+    // ── Knowledge Graph direct query (v0.2.1) ────────────────────────
+    fn engine_get_knowledge_graph(
+        project_id: u64,
+        table_name: *const c_char,
+        limit: i32,
+    ) -> *mut c_char;
+
     // ── Phase B: Background Enhancement ──────────────────────────
 
     // ── Phase C: Unified MCP Tools ───────────────────────────────
 
     fn engine_unified_search(project_id: u64, query: *const c_char, limit: i32) -> *mut c_char;
-    fn engine_find_callers_adaptive(project_id: u64, symbol_name: *const c_char) -> *mut c_char;
-    fn engine_find_callees_adaptive(project_id: u64, symbol_name: *const c_char) -> *mut c_char;
+    fn engine_find_callers_adaptive(
+        project_id: u64,
+        symbol_name: *const c_char,
+        file_filter: *const c_char,
+    ) -> *mut c_char;
+    fn engine_find_callees_adaptive(
+        project_id: u64,
+        symbol_name: *const c_char,
+        file_filter: *const c_char,
+    ) -> *mut c_char;
     fn engine_get_entry_points_new(project_id: u64) -> *mut c_char;
     fn engine_get_type_info(project_id: u64, type_name_filter: *const c_char) -> *mut c_char;
     fn engine_get_routes(project_id: u64) -> *mut c_char;
@@ -139,6 +156,19 @@ fn cstr(s: &str) -> CString {
     CString::new(sanitized).unwrap_or_else(|_| CString::new("").unwrap())
 }
 
+/// Take ownership of a heap-allocated C string returned by the engine.
+///
+/// # Safety
+///
+/// `ptr` MUST be a heap-allocated `char*` returned by an `engine_*` FFI
+/// function (allocated via `strdup`/`malloc` inside the C++ engine).
+/// The function calls `engine_free_string(ptr)` to release the memory,
+/// so `ptr` is invalid after this call and MUST NOT be used again.
+/// Passing a pointer to a static string (e.g. `""`) or calling
+/// `take_string` twice on the same pointer would cause a double-free.
+/// Every `engine_*` FFI function in this codebase documents its return
+/// value as "caller MUST free via engine_free_string()", so this
+/// contract is satisfied by construction.
 fn take_string(ptr: *mut c_char) -> String {
     if ptr.is_null() {
         return String::new();
@@ -178,6 +208,17 @@ pub fn create_project(root_path: &str, name: &str) -> u64 {
 
 pub fn get_latest_project_id() -> u64 {
     unsafe { engine_get_latest_project_id() }
+}
+
+/// Look up a project ID by its root_path without creating a new project.
+/// Returns 0 if no project matches.
+pub fn get_project_id_by_path(root_path: &str) -> u64 {
+    unsafe { engine_get_project_id_by_path(cstr(root_path).as_ptr()) }
+}
+
+/// Count graph_nodes for a project — 0 means no indexed data.
+pub fn get_project_node_count(project_id: u64) -> u64 {
+    unsafe { engine_get_project_node_count(project_id) }
 }
 
 pub fn index_file(project_id: u64, file_path: &str) -> String {
@@ -458,6 +499,20 @@ pub fn get_module_tree(project_id: u64) -> String {
     take_string(unsafe { engine_get_module_tree(project_id) })
 }
 
+/// Direct-query a knowledge-layer table (v0.2.1).
+///
+/// Surfaces `entity` / `relation` / `architecture_edge` / `module_edge` /
+/// `capability` / `document` / `module_summary` so MCP clients can browse
+/// the knowledge graph directly. Block-level transfer — one call returns
+/// the entire result set bounded by `limit` (clamped to [0, 1000]).
+///
+/// Returns JSON `{"table":"...","rows":[{...}],"total":N,"truncated":bool}`
+/// from the C++ `engine_get_knowledge_graph`. On error the JSON contains
+/// an `"error"` field tagged with module/method per code_rules.md.
+pub fn get_knowledge_graph(project_id: u64, table_name: &str, limit: i32) -> String {
+    take_string(unsafe { engine_get_knowledge_graph(project_id, cstr(table_name).as_ptr(), limit) })
+}
+
 pub fn find_symbol(project_id: u64, symbol_name: &str) -> String {
     take_string(unsafe { engine_find_symbol(project_id, cstr(symbol_name).as_ptr()) })
 }
@@ -470,12 +525,26 @@ pub fn unified_search(project_id: u64, query: &str, limit: i32) -> String {
     take_string(unsafe { engine_unified_search(project_id, cstr(query).as_ptr(), limit) })
 }
 
-pub fn find_callers_adaptive(project_id: u64, symbol_name: &str) -> String {
-    take_string(unsafe { engine_find_callers_adaptive(project_id, cstr(symbol_name).as_ptr()) })
+pub fn find_callers_adaptive(
+    project_id: u64,
+    symbol_name: &str,
+    file_filter: Option<&str>,
+) -> String {
+    let ff = file_filter.unwrap_or("");
+    take_string(unsafe {
+        engine_find_callers_adaptive(project_id, cstr(symbol_name).as_ptr(), cstr(ff).as_ptr())
+    })
 }
 
-pub fn find_callees_adaptive(project_id: u64, symbol_name: &str) -> String {
-    take_string(unsafe { engine_find_callees_adaptive(project_id, cstr(symbol_name).as_ptr()) })
+pub fn find_callees_adaptive(
+    project_id: u64,
+    symbol_name: &str,
+    file_filter: Option<&str>,
+) -> String {
+    let ff = file_filter.unwrap_or("");
+    take_string(unsafe {
+        engine_find_callees_adaptive(project_id, cstr(symbol_name).as_ptr(), cstr(ff).as_ptr())
+    })
 }
 
 pub fn get_entry_points_new(project_id: u64) -> String {

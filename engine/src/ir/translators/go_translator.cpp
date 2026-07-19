@@ -2,6 +2,7 @@
 
 #include <cstring>
 #include <functional>
+#include <utility>
 #include <tree_sitter/api.h>
 #include <unordered_map>
 #include <vector>
@@ -28,6 +29,12 @@ class GoTranslator : public Translator {
 		std::unordered_map<std::string, Node *> symbols;
 	};
 	std::vector<Scope> scopes_;
+
+	// Methods whose receiver → class edge is resolved after the whole file
+	// is translated (see translate()). Pair = (method node, receiver type
+	// name). Deferring avoids order-dependent resolution failures when a
+	// method is declared before its receiver type.
+	std::vector<std::pair<Node *, std::string>> deferred_receivers_;
 
 	Node *makeNode(NodeKind kind, TSNode ts_node);
 	void setLocation(Node *node, TSNode ts_node);
@@ -88,6 +95,23 @@ TranslationUnit *GoTranslator::translate(TSTree *tree, const char *source,
 	pushScope(); // package scope
 
 	translateChildren(root_node, root);
+
+	// Deferred receiver resolution: now that every top-level declaration
+	// (including type declarations) is registered in the package scope,
+	// resolve each method's receiver type to its class node and record the
+	// method → class (Receiver) semantic edge. Doing this per-method during
+	// handleMethodDecl would miss edges when a method precedes its type.
+	// [module=ir, method=translate]
+	for (auto &entry : deferred_receivers_) {
+		Node *method = entry.first;
+		const std::string &recv_type = entry.second;
+		Node *cls = resolveSymbol(recv_type);
+		if (cls) {
+			method->semantic_edges.push_back(
+				{ cls, Relation::Receiver });
+		}
+	}
+	deferred_receivers_.clear();
 
 	popScope();
 
@@ -262,6 +286,14 @@ Node *GoTranslator::handleMethodDecl(TSNode ts_node, Node *parent)
 			method->name = nodeText(child);
 		}
 		// Check parameter_list for receiver type
+		// Go func decl has TWO parameter_list nodes: receiver + params.
+		// The receiver is always the FIRST one. We MUST break the outer
+		// loop after extracting receiver_type from the first parameter_list
+		// — otherwise the second parameter_list's parameter types (e.g.
+		// `int` in `func (r *MyType) Method(a int)`) overwrite receiver_type
+		// → receiver edge points to `int` instead of `MyType`, breaking
+		// every Go method-to-type association. See
+		// CODE_REVIEW_FINDINGS_2026-07-19.md C4.
 		if (strcmp(t, "parameter_list") == 0) {
 			// First parameter_list is receiver
 			uint32_t pc = ts_node_child_count(child);
@@ -305,16 +337,22 @@ Node *GoTranslator::handleMethodDecl(TSNode ts_node, Node *parent)
 					}
 				}
 			}
+			// Receiver extracted from the first parameter_list — stop
+			// scanning so the second (params) parameter_list cannot
+			// overwrite receiver_type.
+			break;
 		}
 	}
 
-	// Resolve receiver -> class
+	// Defer receiver → class resolution to the end of translate().
+	// Resolving here would fail when a method is declared before its
+	// receiver type (Go permits arbitrary declaration order), dropping the
+	// method→class edge. After the full file is translated, all type
+	// declarations are registered in the package scope. [module=ir,
+	// method=handleMethodDecl]
+	method->receiver_type_name = receiver_type;
 	if (!receiver_type.empty()) {
-		Node *cls = resolveSymbol(std::string(receiver_type));
-		if (cls) {
-			method->semantic_edges.push_back(
-				{ cls, Relation::Receiver });
-		}
+		deferred_receivers_.push_back({ method, receiver_type });
 	}
 
 	defineSymbol(method->name, method);

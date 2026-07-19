@@ -14,7 +14,7 @@ void engine_shutdown();
 
 /// Returns the engine version string. The returned pointer is static
 /// and does NOT need to be freed.
-/// @return Static C string like "0.2.0"
+/// @return Static C string like "0.2.1"
 const char *engine_version(void);
 
 // ─── Project ──────────────────────────────────────────────────
@@ -41,8 +41,10 @@ char *engine_find_definition(uint64_t project_id, const char *symbol_name,
 			     const char *file_filter);
 char *engine_find_references(uint64_t project_id, const char *symbol_name,
 			     const char *file_filter);
-char *engine_get_callers(uint64_t project_id, const char *function_name);
-char *engine_get_callees(uint64_t project_id, const char *function_name);
+char *engine_get_callers(uint64_t project_id, const char *function_name,
+			 const char *file_filter);
+char *engine_get_callees(uint64_t project_id, const char *function_name,
+			 const char *file_filter);
 char *engine_get_neighbors(uint64_t project_id, uint64_t node_id,
 			   int edge_type_filter, int radius);
 char *engine_find_shortest_path(uint64_t project_id, uint64_t source_id,
@@ -74,9 +76,23 @@ char *engine_find_connected_components(uint64_t project_id);
 char *engine_explore_function(uint64_t project_id, const char *function_name,
 			      int depth, const char *direction);
 
-// Get the latest project ID from the database (highest ID).
-// Returns 0 if no projects exist.
+// Get the latest project ID from the database.
+// Returns the project with the most indexed data (graph_nodes),
+// not just the highest id. This prevents project_id misalignment
+// when an empty "shell" project has a higher id than the data-bearing
+// project. Returns 0 if no projects exist.
 uint64_t engine_get_latest_project_id();
+
+// Get a project ID by its root_path.
+// Returns the project_id, or 0 if no project matches the root_path.
+// Unlike engine_create_project, this is a pure lookup — it does NOT
+// create a new project if the root_path is not found.
+uint64_t engine_get_project_id_by_path(const char *root_path);
+
+// Count graph_nodes for a project.
+// Returns the node count, or 0 if the project has no indexed data.
+// Used by MCP to decide whether to reuse existing data or re-index.
+uint64_t engine_get_project_node_count(uint64_t project_id);
 
 // ─── Full-text search ──────────────────────────────────────────
 
@@ -216,16 +232,25 @@ char *engine_unified_search(uint64_t project_id, const char *query, int limit);
 /**
  * Find callers (adaptive): uses new call_edges table if callgraph_ready,
  * otherwise falls back to old graph query engine.
+ *
+ * @param file_filter Optional absolute file path. When non-NULL,
+ *        restricts the callee to the given file, disambiguating
+ *        homonyms (same name across files/classes). NULL = aggregate
+ *        all files (legacy behavior).
  */
-char *engine_find_callers_adaptive(uint64_t project_id,
-				   const char *symbol_name);
+char *engine_find_callers_adaptive(uint64_t project_id, const char *symbol_name,
+				   const char *file_filter);
 
 /**
  * Find callees (adaptive): uses new call_edges table if callgraph_ready,
  * otherwise falls back to old graph query engine.
+ *
+ * @param file_filter Optional absolute file path. When non-NULL,
+ *        restricts the caller to the given file, disambiguating
+ *        homonyms. NULL = aggregate all files (legacy behavior).
  */
-char *engine_find_callees_adaptive(uint64_t project_id,
-				   const char *symbol_name);
+char *engine_find_callees_adaptive(uint64_t project_id, const char *symbol_name,
+				   const char *file_filter);
 
 /**
  * Get entry points from the new schema.
@@ -262,6 +287,26 @@ char *engine_build_context(uint64_t project_id, const char *query);
  * available flag, and ready flag.
  */
 char *engine_get_capabilities(uint64_t project_id);
+
+/**
+ * Direct-query the knowledge graph layer (v0.2.1).
+ *
+ * Surfaces the knowledge-layer tables so MCP clients can browse them
+ * directly instead of only benefiting indirectly via explain_module /
+ * detect_capability_drift / get_module_tree. Block-level transfer —
+ * one call returns the entire result set bounded by `limit`.
+ *
+ * @param project_id  The project to query.
+ * @param table_name  One of: "entity", "relation", "architecture_edge",
+ *                    "module_edge", "capability", "document", "module_summary".
+ *                    Any other value returns an error JSON.
+ * @param limit       Max rows to return, clamped to [0, 1000].
+ * @return  JSON `{"table":"...","rows":[{...},...],"total":N,"truncated":bool}`.
+ *          On error: `{"error":"[module=ffi, method=engine_get_knowledge_graph] ..."}`.
+ *          Caller must call `engine_free_string` on the result.
+ */
+char *engine_get_knowledge_graph(uint64_t project_id, const char *table_name,
+				 int32_t limit);
 
 // Get type info for a project: returns type definitions and their references.
 // Returns JSON: { "types": [ { "name","qualified_name","kind","file_path","ref_count" } ] }

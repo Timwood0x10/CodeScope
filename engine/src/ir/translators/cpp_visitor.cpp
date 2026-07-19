@@ -65,7 +65,12 @@ void CppVisitor::handleClassSpec(TSNode node, uint64_t parent_id)
 		if (strcmp(t, "identifier") == 0 ||
 		    strcmp(t, "type_identifier") == 0)
 			continue;
-		if (strcmp(t, "class_body") == 0)
+		// tree-sitter-cpp's class/struct body node is
+		// `field_declaration_list`, NOT `class_body` (the latter is
+		// the Java grammar). The previous `class_body` check never
+		// matched, so all C++ class fields were silently dropped.
+		// See CODE_REVIEW_FINDINGS_2026-07-19.md H8.
+		if (strcmp(t, "field_declaration_list") == 0)
 			visitChildren(c, id);
 		else
 			visitNode(c, id);

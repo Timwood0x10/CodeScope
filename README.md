@@ -41,13 +41,74 @@ Not "what does this code mean", but "does the code actually do what you claim?"
 
 ### Knowledge Graph (Side Product)
 
-CodeScope builds a **module-level knowledge graph** as a side product of the verification pipeline. Starting from individual modules and scaling to the entire project, it provides:
+CodeScope builds a **module-level knowledge graph** as a side product of the verification pipeline. It learns not "code text" but *structured "how this project is organized, what's important, what's redundant, what it promises"* — a four-layer stack:
 
-- **Module graph**: entities, references, imports within a module
-- **Cross-module graph**: call edges, dependency edges between modules  
-- **Project graph**: architecture layers, workflows, capabilities
+| Layer | Table | What it tells you |
+|-------|-------|-------------------|
+| **Call graph** (who calls who) | `relation` (type=1), `architecture_edge` | Cross-module call dependencies; drives `detect_architecture_drift` |
+| **Module health** (who's important / who's dead) | `module_summary` | Per-module `incoming_count` / `outgoing_count` / `dead_entities` / `utilization` / `confidence`; drives `explain_module` |
+| **Module dependency** (who impacts whom) | `architecture_edge` (edge weight = call count), `module_edge` | "Change module A → these modules depend on it" |
+| **Documented capability** (what it claims it can do) | `capability` + `document` | README-extracted capabilities; drives `detect_capability_drift` / `verify_claim` |
 
 The knowledge graph is not the product — it is the infrastructure that powers verification.
+
+#### `module_summary.role`: multi-signal fusion classifier (v0.2.1)
+
+The `role` column is auto-populated by a **multi-signal fusion CASE** classifier (`engine/src/model/state_builder.cpp`), not a single-source heuristic. It fuses call-graph counts with two signals the call graph cannot give:
+
+| Signal | Source | What it adds |
+|--------|--------|--------------|
+| `pub_count` | `entity.visibility=1` (pub/public/export per language Visitor) | Distinguishes external interface layers from internal implementation |
+| `entry_reachable` | `graph_nodes.is_entry_point` (main/init/setup/run/handler) | Whether this module is an entry layer |
+
+Rules match by **priority** (first hit stops):
+
+| Priority | Role | Rule (multi-signal) |
+|----------|------|---------------------|
+| 1 | `test` | module name contains `test`/`tests`/`_test`/`mod tests` |
+| 2 | `api` | `pub_count > 0 AND incoming ≥ 2×outgoing AND incoming ≥ 3 AND utilization ≥ 0.1` |
+| 3 | `entry` | `entry_reachable > 0` |
+| 4 | `core` | `incoming ≥ 10 AND outgoing ≤ incoming×1.0 AND utilization ≥ 0.05 AND pub_count > 0` |
+| 5 | `utility` | `outgoing ≤ 5 AND pub_count > 0 AND utilization ≥ 0.05` |
+| 6 | `business` | `pub_count > 0 AND incoming ≥ 10` (implementation layer — many depend, many deps; outgoing too high for core/api) |
+| 7 | `dead` | `incoming=0 AND outgoing=0`, OR `dead_entities = total` |
+| 8 | `infra` | true fallback — didn't match any semantic rule |
+
+Treat `role` as a hint informed by fusion, not a court verdict. Thresholds are `constexpr` in `state_builder.h` — retune against `bun` if your project's role distribution looks off (e.g. `infra > 30%` means thresholds too strict). See `docs/dev_plans/role_classifier_plan.md` for the full design and the v0.2.1 threshold retune log.
+
+#### What lands in the knowledge graph (memscope-rs, 215 files)
+
+| Table | Rows | Meaning |
+|-------|-----:|---------|
+| `entity` | 4,310 | Fine-grained code entities (functions, types, vars) |
+| `relation` | 726 | Inter-entity relations (type 3 = containment / definition) |
+| `architecture_edge` | 3,351 | Module / directory-level architecture dependencies (edge weight = call count) |
+| `module_edge` | 11 | Cross-module dependency edges |
+| `capability` | 3 | Capabilities extracted from the README |
+| `document` | 1 | README document record |
+| `module_summary` | 42 | Per-module knowledge cards |
+
+What you can learn from it:
+
+- **Architecture dependencies** — `architecture_edge` tells you which modules depend on which (e.g. `analysis/heap_scanner → unsafe_inference`, weight = number of calls). Drives `detect_architecture_drift`.
+- **Capability declarations** — `capability` + `document` structure "what the README claims the project can do". Drives `detect_capability_drift` / `verify_claim(capability_exists)`.
+- **Module summaries** — 42 per-module knowledge cards, surfaced by `explain_module`.
+
+#### Direct query access (v0.2.1)
+
+The knowledge graph used to be **implicit** — `graph_query` walks the *call* graph (`graph_nodes` / `graph_edges`), not the knowledge-layer tables (`entity` / `relation` / `architecture_edge`). You benefited from it only indirectly via `explain_module`, `detect_capability_drift`, `get_module_tree`.
+
+v0.2.1 adds `engine_get_knowledge_graph(project_id, table, limit)` + the MCP tool `get_knowledge_graph` so you can now **directly browse** any knowledge-layer table:
+
+```jsonc
+get_knowledge_graph {"table":"architecture_edge","limit":5}
+// → {"table":"architecture_edge","rows":[{"id":1,"layer_lower":"analysis/heap_scanner","layer_upper":"unsafe_inference","entity_id":42}],"total":3351,"truncated":false}
+
+get_knowledge_graph {"table":"capability","limit":10}
+// → {"table":"capability","rows":[{"id":1,"name":"borrow_analysis","summary":"scope-aware borrow checking"}],"total":3,"truncated":false}
+```
+
+Supported tables: `entity`, `relation`, `architecture_edge`, `module_edge`, `capability`, `document`, `module_summary`. Block-level FFI — one call returns the whole result set, never one row per call.
 
 ---
 ## Quick Start
@@ -81,6 +142,30 @@ codescope
 
 > Pre-built binaries are available for **Linux** and **macOS** on the [Releases page](https://github.com/Timwood0x10/CodeScope/releases).  
 > **Windows** support is planned for a future release. The C++ engine and Rust server build with MinGW-w64; see [#issue] for tracking progress.
+
+**One-command install (Linux / macOS)**:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Timwood0x10/CodeScope/master/install.sh | bash
+```
+
+After install, `~/.codescope/bin/` contains:
+
+| File | Purpose |
+|------|---------|
+| `codescope` | Main binary (CLI + MCP server) — single-process `index` and built-in multi-process `index-parallel` scheduler for large projects |
+
+Add to PATH and use:
+
+```bash
+export PATH="$PATH:$HOME/.codescope/bin"
+
+# Small-medium projects: index directly
+codescope cli index_project '{"project_path":"/path/to/project"}'
+
+# Large projects (thousands–tens of thousands of files): use the built-in scheduler
+codescope index-parallel /path/to/large/project
+```
 
 ### Build from source manually
 
@@ -164,10 +249,20 @@ Inspector --------- evidence / finding
 
 ```
 Facts Layer:      项目里有什么？          实体、引用、作用域、导入
-Resolution Layer: 谁调了谁？              调用边、依赖关系
+Resolution Layer: 谁调了谁？              调用边、依赖关系、resolve_strategy
 Model Layer:      项目怎么工作的？         工作流、能力、架构、契约
 Verify Layer:     真的吗？证据在哪？       证据、发现
 ```
+
+> **v0.2.1 — `resolve_strategy` propagation**
+> Each call edge now carries a `resolve_strategy` tag on its way out of the
+> Resolver Pipeline: `p1_intra` (resolved in-project), `external` (builtin /
+> third-party), `unresolved` (unknown). Frontends can filter `external` /
+> `unresolved` out of `find_callees` / `find_callers` results to eliminate
+> third-party false positives (e.g. `dropout`, `backward_hook`, `means`,
+> `stds` no longer surface as in-project callees). Verified across 8 languages
+> on the `bun` project: 100% of `edge_type=1` (call) edges carry a non-empty
+> strategy. See `docs/bugs/bug_resolve_strategy.zh.md` for the full fix chain.
 
 ```
 
@@ -280,7 +375,68 @@ flowchart LR
 |------|-------------|:----------:|
 | `index_project` | Index entire project directory (parse → IR → graph) | **N/A** |
 | `index_file` | Index a single source file | **N/A** |
+| `force_index_files` | **Force-index** — bypass default skip rules (`test/`, `docs/`, `vendored/`, `node_modules/`, `.gitignore`, etc.) to index specific files/dirs. Use when the user says "go index xxx/yyy for me" | **N/A** |
 | `count_tokens` | Estimate token count (DeepSeek formula) | **~10** |
+
+#### `force_index_files` — user-directed incremental indexing
+
+When the default `FilterPolicy` skips entire directories (test fixtures, vendored deps, generated code, examples) but the user wants to pull those paths in, use `force_index_files`. It **bypasses** the default skip rules but still respects:
+
+- File size limit (`CODESCOPE_MAX_FILE_SIZE`, default 5 MB)
+- Language detectability (`detectLanguage` must return non-null)
+- Optional language whitelist (`language_filter`)
+
+**MCP call**:
+
+```json
+{
+  "paths": ["/abs/path/to/dir/or/file", "/another/path"],
+  "language_filter": "java,python"
+}
+```
+
+- `paths`: array of absolute paths; directories are walked recursively
+- `language_filter`: optional, comma-separated language whitelist; empty = all detectable languages
+
+**CLI call**:
+
+```bash
+codescope force-index [--lang java,python] [--db /path/to/codescope.db] /path/to/xxx /path/to/yyy
+```
+
+Returns the `engine_index_files` JSON (`files_indexed`/`nodes`/`edges`/`errors`) plus `skipped_files`/`skipped_dirs`/`paths_requested` stats.
+
+
+### Why Java is the (only) exception — a rant
+
+CodeScope skips `test/`, `tests/`, `docs/`, `examples/`, `samples/`, `bench/`, `vendor/`, ... at **any depth** in the path. This is the correct behavior for every sane project layout: Cargo workspaces nest `crates/<name>/tests/`, Lerna monorepos nest `packages/<name>/test/`, Gradle multi-module builds nest `subprojects/<name>/src/test/`, and users expect all of those to be skipped — they're not the analysis target, and indexing them inflates node counts 3-5x with noise.
+
+Then there's **Java**. Java, in its infinite wisdom, decided that `org/springframework/samples/petclinic` is a legitimate package name — `samples` is a package component, NOT a docs folder. `src/test/java/...` is the standard Maven test source root, but `src/main/java/.../test/...` can also be a legit package. `examples`, `integration`, `locale` — all fair game as Java package identifiers. Java conflated filesystem layout vocabulary with package naming, and now every tool in the ecosystem has to tiptoe around it.
+
+This is an **anti-human engineering design**. It forces every static analysis tool to either (a) skip test/ at any depth and break Java, or (b) gate test/ to top-only and leak deep-nested test dirs on every other language's monorepos. The noise on non-Java projects is enormous — rustc alone has `tools/rust-analyzer/crates/*/src/*/tests/` nested 7 deep, all of which were leaking through a depth-3 top-only gate.
+
+CodeScope picks option (c): **Java projects get a carve-out, everyone else gets the correct behavior.**
+
+When the indexer detects a `.java` file, it flips `FilterPolicy` into Java mode: `test/`/`docs/`/`samples/`/... collisions are gated to **top-only (depth ≤ 3)** via `java_protected_skip_dirs_`, so `org/.../samples/petclinic` (depth 5+) is NOT skipped but `<root>/test/`, `<root>/src/test/java/`, `<root>/packages/<name>/tests/` still are. Every other language (Rust, Go, Python, JS/TS, C/C++, Kotlin, Ruby, Scala, ...) keeps these names skipped at any depth — the way they should be.
+
+**If you're indexing a Java project**: nothing to do. The indexer auto-detects `.java` files and flips `FilterPolicy` into Java mode, which routes `test/`/`docs/`/`samples/`/... through `java_protected_skip_dirs_` at top-only (depth ≤ 3) — nested packages like `org/.../samples/petclinic` (depth 5+) are kept, `<root>/test/`/`src/test/java/`/`packages/<name>/tests/` are still skipped. This is the only working override mechanism.
+
+```bash
+# Java project — auto-detection handles it, no env var needed:
+codescope index <your-java-project>
+```
+
+```bash
+# If you actually want to skip NESTED test/docs on a Java project
+# (i.e. turn OFF the carve-out and apply any-depth skip everywhere),
+# CODESCOPE_EXCLUDE_PATHS only ADDS exclude patterns on top of the
+# built-in list — it cannot un-skip nested packages on its own. The
+# clean path is a project-local .codescopeignore pattern matching the
+# specific nested dirs you want dropped.
+```
+
+The trade-off is documented here in the open. Java's package naming collision is a design flaw in the language, not in CodeScope, and we refuse to let it degrade the experience for the other 99% of projects.
+
 
 ### Quick Decision Guide
 
@@ -331,6 +487,21 @@ codescope_trace(from="copy_process", to="dup_mm")
 ```
 
 ## Performance Benchmarks
+
+### Real-world index benchmarks (v0.2.1, Apple M3 Max)
+
+| Project | Files | Nodes | Index time | Peak RSS |
+|---------|------:|------:|-----------:|---------:|
+| **memscope-rs** (Rust) | 215 | 4,344 | ~2 s | ~200 MB |
+| **CodeScope** (self, C++/Rust) | 168 | 1,001 | 1.3 s | ~150 MB |
+| **ARES_POLIS** | 105 | 1,531 | ~2 s | ~180 MB |
+| **rustc** (Rust compiler, monorepo) | 6,029 | 81,033 | 81 s | 5.9 GB |
+
+**What this says:**
+
+- **Small-medium projects (<300 files):** sub-second to ~2 s index, ~200 MB RSS — excellent ergonomics, daily-driver speed.
+- **Very large monorepos (tens of thousands of files):** usable but real resources — rustc took 81 s and 5.9 GB peak. Acceptable for a one-shot index, but plan memory.
+- **Query latency (stdio MCP mode, includes process start):** ~60 ms per call; persistent server mode is lower.
 
 ### Full Parse & Index (tree-sitter + Graph Builder + Linker)
 
@@ -495,11 +666,15 @@ cargo run --bin codescope
 | `CODESCOPE_INDEX_MODE` | `standard` | Index mode: `fast` / `standard` / `strict` |
 | `CODESCOPE_EXCLUDE_PATHS` | (unset) | Comma-separated glob patterns to exclude (e.g. `test/*,docs/*`) |
 | `CODESCOPE_MMAP_SIZE` | `268435456` (256 MB) | SQLite `mmap_size` pragma value in bytes |
-| `CODESCOPE_WORKERS` | `4` | Number of parallel index workers |
+| `CODESCOPE_WORKERS` | `4` | Total parse-worker cores for `codescope index-parallel` (overridable via `--workers N`) |
 | `CODESCOPE_MAX_FILE_SIZE` | (unset) | Max source file size to index in bytes; larger files are skipped |
 | `CODESCOPE_WORKER_TIMEOUT` | `300` | Worker subprocess timeout in seconds |
 | `CODESCOPE_VERBOSE` | `0` | Set to `1` to enable verbose logging |
 | `CODESCOPE_EXPLAIN` | (unset) | Set to `1` to print SQL `EXPLAIN QUERY PLAN` for graph queries |
+| `CODESCOPE_DYNAMIC_SCHED` | `auto` | Dynamic CPU scheduling for `index-parallel`: `1` force on, `0` force off, unset = auto (modules > 4 AND total_files > 10000) |
+| `CODESCOPE_MEM_LIMIT_MB` | `4096` | Dynamic-scheduler memory ceiling (MB). New worker spawns pause when total child RSS exceeds this; existing workers keep running |
+| `CODESCOPE_AGGRESSIVE` | `0` | Set to `1` for 50ms dynamic-scheduler poll interval (default 100ms) |
+| `CODESCOPE_SCHED_SHM` | (auto) | Path to the dynamic-scheduler shared-memory file (auto-generated per scheduler PID; propagated to worker subprocesses) |
 
 > **Note:** `GRAMMARS_DIR` is no longer needed — all tree-sitter grammars are compiled into the binary via CMake FetchContent.
 
@@ -576,26 +751,3 @@ The current MCP knowledge graph service has a **~300k-500k node threshold** for 
 ## License
 
 Apache 2.0
-
----
-
-## Runtime Logs
-
-All benchmark scans were executed on **Apple M3 Max (36 GB RAM)**.  
-Raw output logs are available in [`runtimelog/`](runtimelog/):
-
-| Log | Size | Content |
-|-----|------|---------|
-| `scan_goagent.log` | 127 KB | Go agent tool dispatch analysis |
-| `scan_linux_kernel.log` | 52 KB | Linux kernel/ core scan (40,335 symbols) |
-| `scan_fs_io.log` | 14 KB | VFS + page cache + readahead analysis |
-| `scan_linux_kernel_full.log` | 12 KB | Full kernel subdirectory scan summary |
-| `scan_usb_raw.log` | 11 KB | USB driver subsystem raw output |
-| `scan_stub_full.log` | 2.2 KB | Stub detection (Fast + AST) test |
-| `scan_linux_full.log` | 1.7 KB | Full kernel scan attempt |
-| `scan_multilang.log` | 1.1 KB | Multi-language architecture scan |
-| `scan_hid.log` | 526 B | USB HID subsystem scan |
-| `scan_researcher.log` | 143 B | Researcher subproject scan |
-| `scan_linux_scheduler.log` | 12.8 KB | Process scheduling + parent-child resource analysis |
-| `scan_usb_hid_analysis.log` | 12.8 KB | USB HID device identification deep-dive |
-| `performance_benchmark.log` | 5.5 KB | Full performance benchmark report |

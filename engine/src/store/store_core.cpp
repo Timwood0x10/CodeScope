@@ -95,20 +95,23 @@ static int64_t resolveMmapSize()
 
 // ── Query deadline (progress handler) ───────────────────────────
 //
-// Global atomic deadline in epoch milliseconds. 0 means "no limit" — the
+// Per-thread deadline in epoch milliseconds. 0 means "no limit" — the
 // progress handler returns 0 (continue) immediately. When armed by
-// setQueryDeadline(), the progress handler compares the current epoch ms
-// against this value on every kProgressHandlerStepInterval VM steps; if
+// setQueryDeadline(), the progress handler (which fires on the SAME thread
+// that is executing the query via sqlite3_step) compares the current epoch
+// ms against this value on every kProgressHandlerStepInterval VM steps; if
 // exceeded, it returns 1 to abort the running query (sqlite3_step then
 // returns SQLITE_INTERRUPT).
 //
-// This is global (not per-connection) because sqlite3_progress_handler is
-// per-connection but the deadline semantics are per-search-call. The RAII
-// guard ensures the deadline is cleared on every exit path, so the window
-// of interference between concurrent search calls is small and bounded by
-// the search duration. Non-search queries (buildGraph, inserts, etc.) are
-// never affected because the deadline is 0 outside of a guard scope.
-static std::atomic<int64_t> g_query_deadline_ms{ 0 };
+// Stored thread_local (not in a process-global) so one search's RAII
+// QueryDeadlineGuard cannot clobber another concurrent search's deadline
+// (the old global caused spurious SQLITE_INTERRUPT or disabled timeouts).
+// The progress handler is per-connection but always runs on the thread
+// performing the step — the same thread that armed the deadline — so this
+// state is read/written by a single thread and needs no atomic/mutex.
+// Non-search queries never arm it (deadline stays 0).
+// [module=store]
+static thread_local int64_t g_query_deadline_ms = 0;
 
 /** Return the current epoch time in milliseconds. */
 static int64_t currentEpochMs()
@@ -123,7 +126,7 @@ static int64_t currentEpochMs()
  *  When g_query_deadline_ms is 0 the handler is a no-op. */
 static int progressHandler(void * /*unused*/)
 {
-	int64_t deadline = g_query_deadline_ms.load(std::memory_order_relaxed);
+	int64_t deadline = g_query_deadline_ms;
 	if (deadline == 0)
 		return 0;
 	return currentEpochMs() > deadline ? 1 : 0;
@@ -284,16 +287,16 @@ void GraphStore::close()
 void GraphStore::setQueryDeadline(int timeout_ms)
 {
 	if (timeout_ms <= 0) {
-		g_query_deadline_ms.store(0, std::memory_order_relaxed);
+		g_query_deadline_ms = 0;
 		return;
 	}
 	int64_t deadline = currentEpochMs() + timeout_ms;
-	g_query_deadline_ms.store(deadline, std::memory_order_relaxed);
+	g_query_deadline_ms = deadline;
 }
 
 void GraphStore::clearQueryDeadline()
 {
-	g_query_deadline_ms.store(0, std::memory_order_relaxed);
+	g_query_deadline_ms = 0;
 }
 
 GraphStore::QueryDeadlineGuard::QueryDeadlineGuard(GraphStore *store,
@@ -571,16 +574,46 @@ std::string GraphStore::importArtifact(uint64_t project_id,
 	std::string pid_str = std::to_string(project_id);
 	beginTransaction();
 	bool ok = true;
+	// Explicit column lists on BOTH the INSERT target and the SELECT source,
+	// aligned to the schema column order (store_schema.cpp). The previous
+	// SELECT * was fragile to column-order drift between the artifact DB and
+	// the current schema (a reordered/added column would misalign values).
+	// [module=store, method=importArtifact]
 	ok &= exec(
-		("INSERT OR IGNORE INTO semantic_records SELECT * FROM artifact.semantic_records WHERE project_id=" +
+		("INSERT OR IGNORE INTO semantic_records "
+		 "(rowid, original_id, project_id, kind, name, qualified_name, "
+		 " parent_id, ref_original_id, arity, is_static, type_name, "
+		 " call_kind, visibility, start_row, start_col, end_row, end_col, "
+		 " file_path, language) "
+		 "SELECT rowid, original_id, project_id, kind, name, qualified_name, "
+		 " parent_id, ref_original_id, arity, is_static, type_name, "
+		 " call_kind, visibility, start_row, start_col, end_row, end_col, "
+		 " file_path, language "
+		 "FROM artifact.semantic_records WHERE project_id=" +
 		 pid_str)
 			.c_str());
 	ok &= exec(
-		("INSERT OR IGNORE INTO graph_nodes SELECT * FROM artifact.graph_nodes WHERE project_id=" +
+		("INSERT OR IGNORE INTO graph_nodes "
+		 "(id, project_id, ir_node_id, node_type, name, qualified_name, "
+		 " module_path, package_name, class_name, start_row, start_col, "
+		 " end_row, end_col, file_path, language, signature, is_stub, "
+		 " visibility, callgraph_ready, metrics_ready, embedding_ready, "
+		 " is_entry_point) "
+		 "SELECT id, project_id, ir_node_id, node_type, name, qualified_name, "
+		 " module_path, package_name, class_name, start_row, start_col, "
+		 " end_row, end_col, file_path, language, signature, is_stub, "
+		 " visibility, callgraph_ready, metrics_ready, embedding_ready, "
+		 " is_entry_point "
+		 "FROM artifact.graph_nodes WHERE project_id=" +
 		 pid_str)
 			.c_str());
 	ok &= exec(
-		("INSERT OR IGNORE INTO graph_edges SELECT * FROM artifact.graph_edges WHERE project_id=" +
+		("INSERT OR IGNORE INTO graph_edges "
+		 "(id, project_id, source_node_id, target_node_id, edge_type, "
+		 " graph_type, call_site_file, call_site_line, label) "
+		 "SELECT id, project_id, source_node_id, target_node_id, edge_type, "
+		 " graph_type, call_site_file, call_site_line, label "
+		 "FROM artifact.graph_edges WHERE project_id=" +
 		 pid_str)
 			.c_str());
 	if (!ok) {
@@ -633,15 +666,48 @@ void GraphStore::explainQueryPlan(const char *sql, const char *label)
 
 // ─── Project ───────────────────────────────────────────────────
 
+// Normalize root_path to an absolute, symlink-resolved canonical form.
+// This is critical for MCP --rootPath reuse: the CLI worker may pass
+// "." (relative) while MCP clients pass an absolute path. Without
+// normalization, getProjectId(absolute) fails to match the DB row
+// stored as ".", causing createProject to insert a NEW empty project
+// (id=2) instead of reusing the data-bearing one (id=1).
+// Falls back to the raw input if realpath fails (non-existent path,
+// permission denied) so create-by-name flows still work.
+static std::string normalizeRootPath(const char *root_path)
+{
+	if (!root_path || !*root_path)
+		return {};
+	namespace fs = std::filesystem;
+	std::error_code ec;
+	// weakly_canonical resolves symlinks AND makes the path absolute,
+	// even if the path doesn't fully exist (it canonicalizes the
+	// existing prefix). This handles ".", "./foo", "foo/../bar",
+	// and absolute paths uniformly.
+	fs::path can = fs::weakly_canonical(fs::path(root_path), ec);
+	if (ec)
+		return root_path;
+	// Use native string form so macOS / Linux DB rows match exactly.
+	return can.native();
+}
+
 uint64_t GraphStore::createProject(const char *root_path, const char *name)
 {
 	// Try INSERT; if root_path already exists (UNIQUE constraint),
 	// query the existing project ID instead.
+	std::string norm = normalizeRootPath(root_path);
+	const char *effective_path = norm.empty() ? root_path : norm.c_str();
 	sqlite3_stmt *stmt = nullptr;
 	const char *sql = "INSERT OR IGNORE INTO projects (root_path, name) "
 			  "VALUES (?, ?)";
-	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
-	sqlite3_bind_text(stmt, 1, root_path, -1, SQLITE_TRANSIENT);
+	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		fprintf(stderr,
+			"createProject prepare failed: %s "
+			"[module=store, method=createProject]\n",
+			sqlite3_errmsg(db_));
+		return 0;
+	}
+	sqlite3_bind_text(stmt, 1, effective_path, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 2, name, -1, SQLITE_TRANSIENT);
 	int rc = sqlite3_step(stmt);
 	if (rc != SQLITE_DONE && rc != SQLITE_CONSTRAINT)
@@ -651,20 +717,34 @@ uint64_t GraphStore::createProject(const char *root_path, const char *name)
 			rc, sqlite3_errmsg(db_));
 	sqlite3_finalize(stmt);
 
-	uint64_t id = static_cast<uint64_t>(sqlite3_last_insert_rowid(db_));
-	if (id == 0) {
-		// Row already exists — query the existing ID
-		id = getProjectId(root_path);
+	// Use sqlite3_changes() to detect whether a row was actually
+	// inserted. sqlite3_last_insert_rowid() retains stale values from
+	// prior successful inserts on the same connection, so checking
+	// == 0 is unreliable once any insert has occurred. changes()
+	// returns the number of rows modified by the most recent
+	// INSERT/UPDATE/DELETE — 0 means INSERT OR IGNORE was ignored
+	// (root_path already exists), so we fall back to a lookup.
+	// [module=store, method=createProject]
+	if (sqlite3_changes(db_) > 0) {
+		return static_cast<uint64_t>(sqlite3_last_insert_rowid(db_));
 	}
-	return id;
+	return getProjectId(effective_path);
 }
 
 uint64_t GraphStore::getProjectId(const char *root_path)
 {
+	std::string norm = normalizeRootPath(root_path);
+	const char *effective_path = norm.empty() ? root_path : norm.c_str();
 	sqlite3_stmt *stmt = nullptr;
 	const char *sql = "SELECT id FROM projects WHERE root_path = ?";
-	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
-	sqlite3_bind_text(stmt, 1, root_path, -1, SQLITE_TRANSIENT);
+	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		fprintf(stderr,
+			"getProjectId prepare failed: %s "
+			"[module=store, method=getProjectId]\n",
+			sqlite3_errmsg(db_));
+		return 0;
+	}
+	sqlite3_bind_text(stmt, 1, effective_path, -1, SQLITE_TRANSIENT);
 	uint64_t id = 0;
 	if (sqlite3_step(stmt) == SQLITE_ROW) {
 		id = static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
@@ -675,15 +755,58 @@ uint64_t GraphStore::getProjectId(const char *root_path)
 
 uint64_t GraphStore::getLatestProjectId()
 {
+	// Return the project with the most graph_nodes (actual indexed
+	// data), not just the highest id. This prevents project_id
+	// misalignment when an empty "shell" project has a higher id
+	// than the data-bearing project — e.g. CLI indexed id=1, then
+	// MCP created an empty id=2. Previously MAX(id) returned 2,
+	// causing all queries to read empty data.
+	// Ties are broken by id DESC (prefers the most recently created).
+	// [module=store, method=getLatestProjectId]
 	sqlite3_stmt *stmt = nullptr;
-	const char *sql = "SELECT id FROM projects ORDER BY id DESC LIMIT 1";
-	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+	const char *sql =
+		"SELECT p.id FROM projects p "
+		"LEFT JOIN (SELECT project_id, COUNT(*) AS cnt "
+		"		   FROM graph_nodes GROUP BY project_id) g "
+		"ON p.id = g.project_id "
+		"ORDER BY COALESCE(g.cnt, 0) DESC, p.id DESC LIMIT 1";
+	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		fprintf(stderr,
+			"getLatestProjectId prepare failed: %s "
+			"[module=store, method=getLatestProjectId]\n",
+			sqlite3_errmsg(db_));
+		return 0;
+	}
 	uint64_t id = 0;
 	if (sqlite3_step(stmt) == SQLITE_ROW) {
 		id = static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
 	}
 	sqlite3_finalize(stmt);
 	return id;
+}
+
+uint64_t GraphStore::getProjectNodeCount(uint64_t project_id)
+{
+	// Count graph_nodes for a project — used to determine whether
+	// a project already has indexed data (for MCP reuse decisions).
+	// [module=store, method=getProjectNodeCount]
+	sqlite3_stmt *stmt = nullptr;
+	const char *sql =
+		"SELECT COUNT(*) FROM graph_nodes WHERE project_id = ?";
+	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		fprintf(stderr,
+			"getProjectNodeCount prepare failed: %s "
+			"[module=store, method=getProjectNodeCount]\n",
+			sqlite3_errmsg(db_));
+		return 0;
+	}
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	uint64_t count = 0;
+	if (sqlite3_step(stmt) == SQLITE_ROW) {
+		count = static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
+	}
+	sqlite3_finalize(stmt);
+	return count;
 }
 
 // ─── File ──────────────────────────────────────────────────────
@@ -696,7 +819,13 @@ uint64_t GraphStore::upsertFile(uint64_t project_id, const char *path,
 		"INSERT OR REPLACE INTO files (project_id, path, language, "
 		"content_hash, last_parsed_at) "
 		"VALUES (?, ?, ?, ?, datetime('now'))";
-	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		fprintf(stderr,
+			"upsertFile prepare failed: %s "
+			"[module=store, method=upsertFile]\n",
+			sqlite3_errmsg(db_));
+		return 0;
+	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 2, path, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 3, language, -1, SQLITE_TRANSIENT);
@@ -711,7 +840,13 @@ uint64_t GraphStore::upsertFile(uint64_t project_id, const char *path,
 
 	// Return file ID
 	sql = "SELECT id FROM files WHERE project_id = ? AND path = ?";
-	sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		fprintf(stderr,
+			"upsertFile prepare (select) failed: %s "
+			"[module=store, method=upsertFile]\n",
+			sqlite3_errmsg(db_));
+		return 0;
+	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 2, path, -1, SQLITE_TRANSIENT);
 	uint64_t file_id = 0;

@@ -1,5 +1,6 @@
 #include "factors.h"
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <unordered_set>
 
@@ -280,22 +281,42 @@ double factorVisibilityCheck(const std::string &language,
 			     const std::string &caller_file,
 			     const std::string &candidate_file)
 {
-	(void)caller_file;
-	(void)candidate_file;
-
 	if (candidate_name.empty())
 		return 1.0; // Unknown — allow
 
 	char first = candidate_name[0];
 
-	// Go: unexported names (lowercase) cannot be called from another package.
-	// This is a hard language rule, not a heuristic.
-	if (language == "go" && first >= 'a' && first <= 'z')
-		return 0.0; // Reject: unexported Go symbol
+	// Go: unexported names (lowercase) cannot be called from ANOTHER
+	// package — this is a hard language rule. BUT they ARE callable within
+	// the SAME package (Go's unexported == package-private). A Go package
+	// maps 1:1 to a directory, so caller and candidate in the same directory
+	// are the same package and the unexported symbol is visible. Only
+	// cross-package (different directory) unexported calls are rejected.
+	if (language == "go" && first >= 'a' && first <= 'z') {
+		size_t c_slash = caller_file.rfind('/');
+		size_t t_slash = candidate_file.rfind('/');
+		std::string c_dir = (c_slash == std::string::npos) ?
+					    "" :
+					    caller_file.substr(0, c_slash);
+		std::string t_dir = (t_slash == std::string::npos) ?
+					    "" :
+					    candidate_file.substr(0, t_slash);
+		if (c_dir == t_dir)
+			return 1.0; // same package — unexported is accessible
+		return 0.0; // cross-package — reject unexported Go symbol
+	}
 
-	// Python: names starting with '_' are private (convention).
-	if (language == "python" && first == '_')
-		return 0.0;
+	// Python: names starting with '_' are private (module-level
+	// convention). They ARE accessible within the same module —
+	// only reject for cross-module resolution. Previously this
+	// rejected ALL '_'-prefixed names unconditionally, which
+	// dropped legitimate intra-class/intra-module calls like
+	// render() → self._load_data() (Bug 2 in res.md).
+	if (language == "python" && first == '_') {
+		if (caller_file == candidate_file)
+			return 1.0; // Same module — private is accessible
+		return 0.0; // Cross-module — reject
+	}
 
 	// Java/Kotlin/C#: names starting with lowercase are typically
 	// package-private or instance methods — heuristic rejection for
@@ -307,6 +328,67 @@ double factorVisibilityCheck(const std::string &language,
 		return 0.5; // Weak penalty, not hard rejection
 
 	return 1.0; // Visible — allow
+}
+
+// ─── C/C++ definition-priority helpers ─────────────────────────────
+//
+// Reference: Code Review Finding #8 — README promises that «.c/.cpp
+// definitions are preferred over .h prototypes», but neither the
+// multi-factor scorer nor project_resolver::rankCandidate distinguished
+// definition vs declaration. Previously, when a function was both
+// declared in a header and defined in a source file, both candidates
+// scored identically and the tie was broken by the arbitrary
+// entity_index insertion order, so C/C++ call targets were frequently
+// wrong.
+//
+// The disambiguation is purely extension-based, matching the documented
+// promise: a .c/.cpp/... translation unit is a definition site; a
+// .h/.hpp/... header is a (typically) declaration/prototype site. This
+// is intentionally simple and language-agnostic at the file level.
+
+/// Lowercase the substring after the last '.' (the file extension).
+static std::string lowerExtension(const std::string &file_path)
+{
+	size_t dot = file_path.rfind('.');
+	if (dot == std::string::npos)
+		return "";
+	std::string lower;
+	lower.reserve(file_path.size() - dot);
+	for (size_t i = dot; i < file_path.size(); ++i)
+		lower.push_back(static_cast<char>(std::tolower(
+			static_cast<unsigned char>(file_path[i]))));
+	return lower;
+}
+
+bool isCppSourceFile(const std::string &file_path)
+{
+	std::string ext = lowerExtension(file_path);
+	return ext == ".c" || ext == ".cpp" || ext == ".cc" || ext == ".cxx" ||
+	       ext == ".c++" || ext == ".m" || ext == ".mm";
+}
+
+bool isCppHeaderFile(const std::string &file_path)
+{
+	std::string ext = lowerExtension(file_path);
+	return ext == ".h" || ext == ".hpp" || ext == ".hh" || ext == ".hxx" ||
+	       ext == ".h++" || ext == ".inl" || ext == ".ipp" ||
+	       ext == ".tpp" || ext == ".tcc";
+}
+
+double factorDefinitionMatch(const std::string &language,
+			     const std::string &candidate_file)
+{
+	// Only meaningful for C/C++. Other languages have no header/source
+	// split that implies definition-priority, so stay neutral (1.0) to
+	// avoid perturbing their ranking or resolution threshold.
+	if (language != "cpp")
+		return 1.0;
+
+	if (isCppSourceFile(candidate_file))
+		return kScoreExactMatch; // 1.0 — boost source-file definition
+	if (isCppHeaderFile(candidate_file))
+		return kScorePenalty; // -0.5 — lower header-only prototype
+	return 1.0; // unrecognized cpp extension — neutral
 }
 
 } // namespace resolver

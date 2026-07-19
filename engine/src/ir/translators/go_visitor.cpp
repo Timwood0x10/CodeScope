@@ -1,7 +1,8 @@
 #include "go_visitor.h"
+#include <cctype>
 #include <cstring>
 #include <tree_sitter/api.h>
-
+#include "../builtin_registry.h"
 namespace ir
 {
 
@@ -125,9 +126,12 @@ void GoVisitor::handleFuncDecl(TSNode node, uint64_t parent_id)
 		visitChildren(node, parent_id);
 		return;
 	}
-	uint64_t id = emitter_->emitFunction(name, loc, parent_id);
+	uint64_t id = emitter_->emitFunction(
+		name, loc, parent_id, 0, false,
+		isupper(static_cast<unsigned char>(name[0])) ? 1 : 0);
 	defineSymbol(name, id);
 	pushScope();
+	pushFunctionScope(id);
 	uint32_t cnt = ts_node_child_count(node);
 	for (uint32_t i = 0; i < cnt; i++) {
 		TSNode c = ts_node_child(node, i);
@@ -160,6 +164,7 @@ void GoVisitor::handleFuncDecl(TSNode node, uint64_t parent_id)
 			visitChildren(c, id);
 		}
 	}
+	popFunctionScope();
 	popScope();
 }
 void GoVisitor::handleMethodDecl(TSNode node, uint64_t parent_id)
@@ -170,9 +175,12 @@ void GoVisitor::handleMethodDecl(TSNode node, uint64_t parent_id)
 		visitChildren(node, parent_id);
 		return;
 	}
-	uint64_t id = emitter_->emitMethod(name, loc, parent_id);
+	uint64_t id = emitter_->emitMethod(
+		name, loc, parent_id, 0, false,
+		isupper(static_cast<unsigned char>(name[0])) ? 1 : 0);
 	defineSymbol(name, id);
 	pushScope();
+	pushFunctionScope(id);
 	uint32_t cnt = ts_node_child_count(node);
 	for (uint32_t i = 0; i < cnt; i++) {
 		TSNode c = ts_node_child(node, i);
@@ -185,6 +193,7 @@ void GoVisitor::handleMethodDecl(TSNode node, uint64_t parent_id)
 			continue;
 		visitChildren(c, id);
 	}
+	popFunctionScope();
 	popScope();
 }
 void GoVisitor::handleTypeDecl(TSNode node, uint64_t parent_id)
@@ -218,13 +227,26 @@ void GoVisitor::handleTypeDecl(TSNode node, uint64_t parent_id)
 			}
 			uint64_t id;
 			if (is_struct)
-				id = emitter_->emitClass(name, loc, parent_id);
+				id = emitter_->emitClass(
+					name, loc, parent_id,
+					isupper(static_cast<unsigned char>(
+						name[0])) ?
+						1 :
+						0);
 			else if (is_interface)
-				id = emitter_->emitInterface(name, loc,
-							     parent_id);
+				id = emitter_->emitInterface(
+					name, loc, parent_id,
+					isupper(static_cast<unsigned char>(
+						name[0])) ?
+						1 :
+						0);
 			else
-				id = emitter_->emitTypeAlias(name, loc,
-							     parent_id);
+				id = emitter_->emitTypeAlias(
+					name, loc, parent_id,
+					isupper(static_cast<unsigned char>(
+						name[0])) ?
+						1 :
+						0);
 			defineSymbol(name, id);
 			// Visit type body (struct fields, interface methods)
 			visitChildren(c, id);
@@ -363,19 +385,66 @@ void GoVisitor::handleCall(TSNode node, uint64_t parent_id)
 	if (!selector_name.empty()) {
 		// Method call: obj.Method() or pkg.Func()
 		call_kind = CallKind::Method;
-		// Check for constructor pattern: NewType()
-		if (name.size() > 3 && name[0] == 'N' && name[1] == 'e' &&
+		// Check for constructor pattern: NewType(). The previous
+		// `name.size() > 3` threshold excluded exactly "New" (3 chars),
+		// so a bare `New()` call was misclassified as Direct and never
+		// got the constructor boost in the Resolver Pipeline.
+		// See CODE_REVIEW_FINDINGS_2026-07-19.md H6.
+		if (name.size() >= 3 && name[0] == 'N' && name[1] == 'e' &&
 		    name[2] == 'w')
 			call_kind = CallKind::Constructor;
 	} else {
 		// Bare function call: check if it's a constructor
-		if (name.size() > 3 && name[0] == 'N' && name[1] == 'e' &&
+		// Same threshold fix as above (>= 3 includes "New" itself).
+		if (name.size() >= 3 && name[0] == 'N' && name[1] == 'e' &&
 		    name[2] == 'w')
 			call_kind = CallKind::Constructor;
 	}
 
-	uint64_t id = emitter_->emitCall(name, loc, parent_id, 0, false,
+	// Use the containing function as parent_id (not the immediate
+	// syntactic parent, which may be another call record). Without
+	// this, nested calls inside another call's argument_list would
+	// have their parent_id set to the outer call record, which is
+	// NOT in _r2n (only declarations are). The reference-table JOIN
+	// would fail and the nested call would be dropped.
+	uint64_t func_id = currentFunctionId();
+	uint64_t call_parent = (func_id != 0) ? func_id : parent_id;
+
+	// Compute arity from the `argument_list` child node's named children.
+	// Previously hardcoded to 0, which degraded overload disambiguation
+	// by arity in the Resolver Pipeline. Mirrors CVisitor::countArguments.
+	int arity = 0;
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (strcmp(ts_node_type(c), "argument_list") != 0)
+			continue;
+		uint32_t ac = ts_node_child_count(c);
+		for (uint32_t j = 0; j < ac; j++) {
+			TSNode arg = ts_node_child(c, j);
+			if (ts_node_is_named(arg))
+				++arity;
+		}
+		break;
+	}
+
+	uint64_t id = emitter_->emitCall(name, loc, call_parent, arity, false,
 					 static_cast<int>(call_kind));
+
+	// ── Intra-file callee resolution ───────────────────────────
+	// Store the resolved callee's record ID as ref_original_id.
+	// Enables P1 call-edge construction in buildCallEdgesSQL.
+	if (!name.empty()) {
+		uint64_t target = resolveSymbol(name);
+		if (target) {
+			unit_->setCallReference(id, target);
+			unit_->setCallStrategy(id, "p1_intra");
+		} else {
+			unit_->setCallStrategy(
+				id, BuiltinRegistry::resolve(unit_->language(),
+							     name));
+		}
+	}
+
 	visitChildren(node, id);
 }
 void GoVisitor::handleImport(TSNode node, uint64_t parent_id)
@@ -394,7 +463,11 @@ void GoVisitor::handleVarDecl(TSNode node, uint64_t parent_id)
 			std::string name = extractName(c);
 			if (!name.empty()) {
 				uint64_t id = emitter_->emitVariable(
-					name, location(c), parent_id);
+					name, location(c), parent_id,
+					isupper(static_cast<unsigned char>(
+						name[0])) ?
+						1 :
+						0);
 				defineSymbol(name, id);
 				// Extract type from var_spec children
 				uint32_t vc = ts_node_child_count(c);
@@ -433,9 +506,18 @@ void GoVisitor::handleShortVar(TSNode node, uint64_t parent_id)
 			continue;
 		if (strcmp(ts_node_type(c), "identifier") == 0) {
 			std::string name = nodeText(c);
-			uint64_t id = emitter_->emitVariable(name, location(c),
-							     parent_id);
+			uint64_t id = emitter_->emitVariable(
+				name, location(c), parent_id,
+				isupper(static_cast<unsigned char>(name[0])) ?
+					1 :
+					0);
 			defineSymbol(name, id);
+		} else {
+			// Recurse into the RHS expression so call expressions such
+			// as `r := foo()` are visited and emitted as call edges.
+			// Without this, intra-file calls inside `:=` assignments
+			// were silently dropped (only `=` assignments recursed).
+			visitNode(c, parent_id);
 		}
 	}
 }
@@ -444,7 +526,9 @@ void GoVisitor::handleInterfaceMethod(TSNode node, uint64_t parent_id)
 	SourceRange loc = location(node);
 	std::string name = extractName(node);
 	if (!name.empty())
-		emitter_->emitMethod(name, loc, parent_id);
+		emitter_->emitMethod(
+			name, loc, parent_id, 0, false,
+			isupper(static_cast<unsigned char>(name[0])) ? 1 : 0);
 }
 std::string GoVisitor::extractName(TSNode node)
 {

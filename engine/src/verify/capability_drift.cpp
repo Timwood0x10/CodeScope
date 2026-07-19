@@ -24,8 +24,19 @@ int64_t countImplementingEntities(store::GraphStore &store, uint64_t project_id,
 	// name and that has at least one incoming call edge (a caller in the
 	// relation table with type=1). Without callers the entity is dead
 	// code and cannot be said to "implement" an active capability.
+	//
+	// Match direction: bidirectional prefix LIKE. The capability name is
+	// README-derived PascalCase (e.g. "IncrementalIndexing") while the
+	// entity name is a short code symbol (e.g. "incremental_index" or
+	// "IncrementalIndex"). A single direction LIKE name||'%' misses one
+	// side: exact `e.name=?` (the previous code) missed almost every
+	// capability because README-derived names rarely equal code symbols.
+	// We accept a match when either name starts with the other, so both
+	// "IncrementalIndex" → "IncrementalIndexing" and the reverse work.
 	const char *sql = "SELECT COUNT(*) FROM entity e "
-			  "WHERE e.project_id=? AND e.name=? "
+			  "WHERE e.project_id=? "
+			  "AND (LOWER(e.name) LIKE LOWER(?) || '%' "
+			  "     OR LOWER(?) LIKE LOWER(e.name) || '%') "
 			  "AND EXISTS (SELECT 1 FROM relation r "
 			  "            WHERE r.project_id=? AND r.type=1 "
 			  "            AND r.target_id=e.id)";
@@ -39,7 +50,8 @@ int64_t countImplementingEntities(store::GraphStore &store, uint64_t project_id,
 	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 2, cap_name.c_str(), -1, SQLITE_STATIC);
-	sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(project_id));
+	sqlite3_bind_text(stmt, 3, cap_name.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_int64(stmt, 4, static_cast<int64_t>(project_id));
 
 	int64_t count = 0;
 	int rc = sqlite3_step(stmt);

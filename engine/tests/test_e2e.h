@@ -92,7 +92,7 @@ static inline void runE2eTest(
     engine_free_string(refs);
 
     // Callers
-    char* callers = engine_get_callers(pid, caller_name);
+    char* callers = engine_get_callers(pid, caller_name, nullptr);
     char caller_label[128];
     snprintf(caller_label, sizeof(caller_label), "Callers: %s", caller_name);
     print_json(caller_label, callers);
@@ -100,7 +100,7 @@ static inline void runE2eTest(
     engine_free_string(callers);
 
     // Callees
-    char* callees = engine_get_callees(pid, callee_name);
+    char* callees = engine_get_callees(pid, callee_name, nullptr);
     char callee_label[128];
     snprintf(callee_label, sizeof(callee_label), "Callees: %s", callee_name);
     print_json(callee_label, callees);
@@ -183,7 +183,7 @@ static inline void runE2eTest(
          engine_free_string(enh);
 
          // Get callees of the main function — this is where we check for FPs
-         char* callees = engine_get_callees(pid, main_func);
+         char* callees = engine_get_callees(pid, main_func, nullptr);
          print_json("Callees of main function", callees);
 
         // 1. Legitimate callee must be present

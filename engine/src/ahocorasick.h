@@ -57,6 +57,7 @@ class ACAutomaton {
 			cur = cur->next[idx];
 		}
 		cur->output = id;
+		cur->output_len = static_cast<int>(pattern.size());
 	}
 
 	/**
@@ -66,10 +67,12 @@ class ACAutomaton {
 	void build()
 	{
 		std::queue<Node *> q;
-		// Level 1: children of root → failure = root
+		// Level 1: children of root → failure = root. Root has no
+		// output, so out_link stays nullptr.
 		for (auto &n : root_.next) {
 			if (n) {
 				n->fail = &root_;
+				n->out_link = nullptr;
 				q.push(n);
 			}
 		}
@@ -86,9 +89,19 @@ class ACAutomaton {
 				while (f && !f->next[i])
 					f = f->fail;
 				child->fail = f ? f->next[i] : &root_;
-				// Propagate output from failure link
-				if (child->fail->output)
-					child->output = child->fail->output;
+				// Build dictionary suffix link (out_link) to the
+				// nearest ancestor in the fail chain that carries
+				// its own output. We do NOT overwrite child->output
+				// — the previous implementation did
+				// `child->output = child->fail->output`, which
+				// silently replaced the long pattern's id with the
+				// shorter suffix pattern's id.
+				Node *fail_node = child->fail;
+				if (fail_node != &root_ && fail_node->output) {
+					child->out_link = fail_node;
+				} else {
+					child->out_link = fail_node->out_link;
+				}
 				q.push(child);
 			}
 		}
@@ -97,23 +110,36 @@ class ACAutomaton {
 	/**
      * Match a single string against the automaton.
      * Returns the id of the longest matching pattern, or 0 if no match.
-     * O(len) single pass — vs O(N * len) for N strcmp calls.
+     * Walks the out_link chain at each position so suffix-pattern
+     * matches are not lost, and tracks the longest pattern length seen
+     * across the whole scan. O(len) single pass — vs O(N * len) for N
+     * strcmp calls.
      */
 	int match(const char *text) const
 	{
 		if (!text)
 			return 0;
 		Node *cur = const_cast<Node *>(&root_);
+		int best_id = 0;
+		int best_len = 0;
 		for (const char *p = text; *p; p++) {
 			int idx = static_cast<unsigned char>(*p);
 			while (cur != &root_ && !cur->next[idx])
 				cur = cur->fail;
 			if (cur->next[idx])
 				cur = cur->next[idx];
-			if (cur->output)
-				return cur->output;
+			// Walk the dictionary suffix chain: cur first (longest
+			// pattern ending here), then progressively shorter
+			// suffix patterns via out_link. Track the longest
+			// match across all positions.
+			for (Node *o = cur; o != nullptr; o = o->out_link) {
+				if (o->output && o->output_len > best_len) {
+					best_id = o->output;
+					best_len = o->output_len;
+				}
+			}
 		}
-		return cur->output;
+		return best_id;
 	}
 
 	int match(const std::string &text) const
@@ -125,7 +151,13 @@ class ACAutomaton {
 	struct Node {
 		Node *next[256] = {}; // ASCII
 		Node *fail = nullptr;
+		// Dictionary suffix link: points to the nearest node in the
+		// fail chain that has its own output. Forms a singly-linked
+		// list of all patterns that are suffixes of this node's
+		// string. nullptr when no such node exists.
+		Node *out_link = nullptr;
 		int output = 0; // pattern id (0 = none)
+		int output_len = 0; // length of the pattern at this node
 	};
 	Node root_;
 };

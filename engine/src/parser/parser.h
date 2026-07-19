@@ -29,9 +29,14 @@ class Parser {
 	bool hasLanguage(const char *name) const;
 
 	// Parse source code. file_path is used for error messages only.
+	// source_len is the byte length of `source` and MUST be provided
+	// by the caller — using strlen(source) would silently truncate
+	// files containing embedded NUL bytes (only the prefix before the
+	// first NUL would be parsed, with no error reported). Callers that
+	// already hold a std::string should pass source.size().
 	// Returns nullptr on error; error message available via error().
 	TSTree *parse(const char *file_path, const char *source,
-		      const char *language);
+		      const char *language, size_t source_len);
 
 	/** Get the TSLanguage pointer for a registered language.
   *  Thread-safe: the pointer is read-only after registration.

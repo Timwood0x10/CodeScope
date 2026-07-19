@@ -24,23 +24,27 @@ class SemanticEmitter {
 	explicit SemanticEmitter(SemanticUnit *unit);
 
 	// ── Declaration Emitters ─────────────────────────────────
+	//
+	// visibility (v0.2.2): 0=private, 1=pub/public/export, 2=protected.
+	// Defaulted so existing Visitors that don't pass it keep working
+	// (visibility=0 = private, the safe default).
 
 	uint64_t emitFunction(const std::string &name, SourceRange loc,
 			      uint64_t parent_id = 0, int arity = 0,
-			      bool is_static = false);
+			      bool is_static = false, int visibility = 0);
 	uint64_t emitMethod(const std::string &name, SourceRange loc,
 			    uint64_t parent_id = 0, int arity = 0,
-			    bool is_static = false);
+			    bool is_static = false, int visibility = 0);
 	uint64_t emitClass(const std::string &name, SourceRange loc,
-			   uint64_t parent_id = 0);
+			   uint64_t parent_id = 0, int visibility = 0);
 	uint64_t emitInterface(const std::string &name, SourceRange loc,
-			       uint64_t parent_id = 0);
+			       uint64_t parent_id = 0, int visibility = 0);
 	uint64_t emitEnum(const std::string &name, SourceRange loc,
-			  uint64_t parent_id = 0);
+			  uint64_t parent_id = 0, int visibility = 0);
 	uint64_t emitTypeAlias(const std::string &name, SourceRange loc,
-			       uint64_t parent_id = 0);
+			       uint64_t parent_id = 0, int visibility = 0);
 	uint64_t emitVariable(const std::string &name, SourceRange loc,
-			      uint64_t parent_id = 0);
+			      uint64_t parent_id = 0, int visibility = 0);
 
 	// ── Expression Emitters ──────────────────────────────────
 

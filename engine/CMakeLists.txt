@@ -178,6 +178,8 @@ set(ENGINE_SOURCES
     src/engine_lifecycle.cpp
     src/engine_index.cpp
         src/engine_index_project.cpp
+        src/engine_index_project_membulk.cpp
+        src/engine_index_post_parse.cpp
         src/engine_index_metrics.cpp
     src/engine_scanner.cpp
     src/engine_queries.cpp
@@ -190,6 +192,7 @@ set(ENGINE_SOURCES
     src/ir/ir_translator.cpp
     src/ir/semantic_unit.cpp
     src/ir/semantic_emitter.cpp
+    src/ir/builtin_registry.cpp
     src/ir/translators/python_translator.cpp
     src/ir/translators/go_translator.cpp
     src/ir/translators/c_translator.cpp
@@ -220,9 +223,11 @@ set(ENGINE_SOURCES
     src/store/store_type.cpp
     src/store/store_graph.cpp
     src/store/store_query.cpp
-    src/store/store_project.cpp
-    src/store/store_knowledge.cpp
+     src/store/store_project.cpp
+     src/store/store_parse_failure.cpp
+     src/store/store_knowledge.cpp
         src/store/store_ladybug.cpp
+     src/store/store_membulk.cpp
     src/query/query_engine.cpp
     src/query/query_analysis.cpp
     src/query/graph_query.cpp

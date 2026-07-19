@@ -19,6 +19,8 @@ constexpr double kWeightConstructorMatch = 0.10;
 constexpr double kWeightReceiverMatch = 0.15;
 constexpr double kWeightCommonNamePenalty = 0.10;
 constexpr double kWeightCallKindMatch = 0.15; // call_kind-based boost/penalty
+constexpr double kWeightDefinitionMatch =
+	0.20; // C/C++ source def over header proto
 
 // ── Named constants for call_kind values (matches ir::CallKind enum) ──
 constexpr int kCallKindDirect = 0;
@@ -144,6 +146,24 @@ double factorCommonNamePenalty(const std::string &name);
 double factorVisibilityCheck(const std::string &language,
 			     const std::string &candidate_name,
 			     const std::string &caller_file,
+			     const std::string &candidate_file);
+
+/// True if `file_path` ends in a C/C++ translation-unit (source)
+/// extension: .c .cpp .cc .cxx .c++ .m .mm
+bool isCppSourceFile(const std::string &file_path);
+
+/// True if `file_path` ends in a C/C++ header extension:
+/// .h .hpp .hh .hxx .h++ .inl .ipp .tpp .tcc
+bool isCppHeaderFile(const std::string &file_path);
+
+/// Definition-priority factor for C/C++.
+/// Returns kScoreExactMatch (1.0) for a symbol defined in a C/C++ source
+/// file, kScorePenalty (-0.5) for a symbol declared only in a header, and
+/// 1.0 (neutral) for non-C/C++ languages or unrecognized extensions.
+/// Implements the README promise that .c/.cpp definitions are preferred
+/// over .h prototypes, and breaks the arbitrary entity_index insertion-order
+/// tie that previously decided C/C++ resolution targets (Finding #8).
+double factorDefinitionMatch(const std::string &language,
 			     const std::string &candidate_file);
 
 } // namespace resolver

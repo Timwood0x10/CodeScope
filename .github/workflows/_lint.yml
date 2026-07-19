@@ -20,9 +20,10 @@ jobs:
           sudo apt-get install -y cmake ninja-build
           # Install clang-format via pip — the PyPI wheel provides an
           # exact version match (21.1.8) with the local dev environment
-          # (Homebrew LLVM 21). Ubuntu 24.04's default clang-format (v18)
-          # and the LLVM apt repo's clang-format-21 produce different
-          # formatting, causing spurious CI failures.
+          # (Homebrew llvm@21, which is what `which clang-format` resolves
+          # to on PATH). Ubuntu 24.04's default clang-format (v18) and the
+          # LLVM apt repo's clang-format-21 produce different formatting,
+          # causing spurious CI failures.
           pip install clang-format==21.1.8
           clang-format --version
 

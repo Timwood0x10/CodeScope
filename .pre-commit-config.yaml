@@ -26,8 +26,11 @@ repos:
         args: ['--branch', 'master']
 
   # ── C++ formatting ──────────────────────────────────────────────
+  # Pin clang-format to 21.1.8 — matches CI (pip clang-format==21.1.8)
+  # and local `which clang-format` (/opt/homebrew/opt/llvm@21/bin).
+  # Earlier this was v19.1.7, which produced different formatting than CI.
   - repo: https://github.com/pre-commit/mirrors-clang-format
-    rev: v19.1.7
+    rev: v21.1.8
     hooks:
       - id: clang-format
         types_or: [c, c++]

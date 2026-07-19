@@ -95,6 +95,12 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 {
 	using Clock = std::chrono::steady_clock;
 
+	// Increase SQLite cache to 256MB to reduce disk I/O during buildGraph.
+	// The default 2MB cache is too small for large projects (45053+ nodes),
+	// causing frequent page cache misses. 256MB fits comfortably in memory
+	// for projects up to ~1M nodes. Use negative value to specify KB.
+	exec("PRAGMA cache_size = -262144");
+
 	// Incremental vs full rebuild: when changed_files is non-null, only
 	// a subset of files are re-indexed — lookup indexes stay valid.
 	const bool full_rebuild = (changed_files == nullptr);
@@ -144,10 +150,12 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		return true;
 	}
 
-	// Delete existing graph data for files being rebuilt
+	// Delete existing graph data for files being rebuilt.
+	// deleteGraphDataByFile cleans relation, graph_edges, graph_nodes,
+	// AND entity — the old code only deleted edges+nodes, leaving entity
+	// rows that caused duplicate accumulation on re-index.
 	for (auto &fp : rebuild_files) {
-		deleteGraphEdgesByFile(project_id, fp.c_str());
-		deleteGraphNodesByFile(project_id, fp.c_str());
+		deleteGraphDataByFile(project_id, fp.c_str());
 	}
 	auto t_delete = Clock::now();
 
@@ -197,9 +205,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		     "CREATE TEMP TABLE _r2n AS "
 		     "SELECT sr.rowid as rid, sr.original_id, sr.file_path, sr.name,"
 		     " CAST(ROW_NUMBER() OVER () "
-		     "  + COALESCE((SELECT MAX(id) FROM graph_nodes WHERE project_id=" +
-		     pid +
-		     "), 0)"
+		     "  + COALESCE((SELECT MAX(id) FROM graph_nodes), 0)"
 		     "  AS INTEGER) as node_id "
 		     "FROM semantic_records sr "
 		     "WHERE sr.project_id=" +
@@ -212,8 +218,8 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		explainQueryPlan(
 			(std::string(
 				 "SELECT sr.rowid as rid, sr.original_id, sr.file_path, sr.name,"
-				 " CAST(ROW_NUMBER() OVER () + " +
-				 pid +
+				 " CAST(ROW_NUMBER() OVER () + "
+				 " COALESCE((SELECT MAX(id) FROM graph_nodes), 0)"
 				 " AS INTEGER) as node_id "
 				 "FROM semantic_records sr "
 				 "WHERE sr.project_id=" +
@@ -248,7 +254,8 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	exec(std::string(
 		     "INSERT INTO graph_nodes (id, project_id, ir_node_id, node_type, "
 		     " name, qualified_name, signature, module_path, file_path, "
-		     " start_row, start_col, end_row, end_col, language, parent_id) "
+		     " start_row, start_col, end_row, end_col, language, parent_id, "
+		     " visibility) "
 		     "SELECT r2n.node_id, sr.project_id, sr.original_id, "
 		     " CASE sr.kind WHEN 0 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 "
 		     "  WHEN 3 THEN 3 WHEN 4 THEN 4 WHEN 5 THEN 3 ELSE 7 END, "
@@ -259,7 +266,8 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		     " sr.language, "
 		     " COALESCE((SELECT parent_r2n.node_id FROM _r2n parent_r2n"
 		     "  WHERE parent_r2n.original_id = sr.parent_id"
-		     "  AND parent_r2n.file_path = sr.file_path), 0) "
+		     "  AND parent_r2n.file_path = sr.file_path), 0), "
+		     " sr.visibility "
 		     "FROM semantic_records sr "
 		     "JOIN _r2n r2n ON sr.rowid = r2n.rid")
 		     .c_str());
@@ -268,39 +276,54 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// This early insert feeds the scope table below, so it must happen
 	// before scope creation. The late insert after dropQueryIndexes is
 	// now redundant but kept as a safety net (INSERT OR IGNORE).
+	// Includes sr.arity so the Resolver Pipeline can disambiguate
+	// same-name overloads via factorSignatureMatch. See
+	// CODE_REVIEW_FINDINGS_2026-07-19.md C2.
 	exec(std::string(
 		     "INSERT OR IGNORE INTO entity "
 		     "(id, project_id, kind, name, qualified_name, "
 		     " file_path, language, start_row, start_col, "
-		     " end_row, end_col, module_path) "
+		     " end_row, end_col, module_path, visibility, arity) "
 		     "SELECT r2n.node_id, sr.project_id, "
 		     " CASE sr.kind WHEN 0 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 "
 		     "  WHEN 3 THEN 4 WHEN 4 THEN 3 WHEN 5 THEN 3 ELSE 7 END, "
 		     " sr.name, COALESCE(NULLIF(sr.qualified_name, ''), sr.name), "
 		     " sr.file_path, sr.language, "
 		     " sr.start_row, sr.start_col, sr.end_row, sr.end_col, "
-		     " rtrim(sr.file_path, replace(sr.file_path, '/', 'x')) "
+		     " rtrim(sr.file_path, replace(sr.file_path, '/', 'x')), "
+		     " sr.visibility, "
+		     " sr.arity "
 		     "FROM semantic_records sr "
 		     "JOIN _r2n r2n ON sr.rowid = r2n.rid "
-		     "WHERE sr.file_path NOT LIKE '%_test.%'"
+		     "WHERE sr.file_path NOT LIKE '%\\_test.%' ESCAPE '\\'"
 		     " AND sr.file_path NOT LIKE '%/tests/%'"
-		     " AND sr.file_path NOT LIKE '%_spec.%'"
+		     " AND sr.file_path NOT LIKE '%\\_spec.%' ESCAPE '\\'"
 		     " AND sr.file_path NOT LIKE '%/benches/%'"
-		     " AND sr.file_path NOT LIKE '%__test__%'")
+		     " AND sr.file_path NOT LIKE '%\\_\\_test\\_\\_%' ESCAPE '\\'")
 		     .c_str());
 	auto t_nodes = Clock::now();
 
 	// ── 2d: Containment edges ──
+	// edge_type=3 (symbol_reference) edges are parent→child containment
+	// relations. Back-fill resolve_strategy from the parent's
+	// semantic_records row so that findCalleesJson/findCallersJson can
+	// filter third-party (external) and unresolved symbols uniformly,
+	// regardless of edge_type. Without this, all edge_type=3 edges had
+	// empty resolve_strategy and leaked third-party imports (e.g.
+	// `__init__`, `_analyze_layer`) into callee/caller results.
 	{
 		std::string sql = std::string(
 			"INSERT OR IGNORE INTO graph_edges "
-			"(project_id, source_node_id, target_node_id, edge_type, graph_type) "
+			"(project_id, source_node_id, target_node_id, "
+			" edge_type, graph_type, resolve_strategy) "
 			"SELECT DISTINCT " +
 			pid +
-			", parent.node_id, child.node_id, 3, 'symbol_reference' "
+			", parent.node_id, child.node_id, 3, 'symbol_reference', "
+			" psr.resolve_strategy "
 			"FROM semantic_records sr "
 			"JOIN _r2n child ON sr.original_id = child.original_id AND sr.file_path = child.file_path "
 			"JOIN _r2n parent ON sr.parent_id = parent.original_id AND sr.file_path = parent.file_path "
+			"JOIN semantic_records psr ON psr.rowid = parent.rid "
 			"WHERE sr.project_id=" +
 			pid + " AND parent.node_id != child.node_id");
 		if (explain_env && explain_env[0])
@@ -335,7 +358,8 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			     "WHERE sr.project_id=" +
 			     pid +
 			     " AND sr.kind = 19" // Route
-			     " AND sr.name != '' AND sr.name LIKE '% %'")
+			     " AND sr.name != '' AND sr.name LIKE '% %'"
+			     " AND sr.file_path IN (SELECT file_path FROM _rf)")
 			     .c_str());
 	}
 	auto t_route = Clock::now();
@@ -350,6 +374,27 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			std::to_string(kKindInterface) + "," +
 			std::to_string(kKindEnum) + "," +
 			std::to_string(kKindTypeAlias) + ")";
+
+		// Materialize type declarations into a temp table so the type_ref
+		// JOIN below scans _td (project-local, kind-filtered) instead of
+		// semantic_records twice. Avoids the second full-table scan that
+		// previously dominated the type_edges stage.
+		exec("DROP TABLE IF EXISTS _td");
+		exec(std::string(
+			     "CREATE TEMP TABLE _td AS "
+			     "SELECT sr.rowid as rid, sr.name, sr.file_path, sr.kind "
+			     "FROM semantic_records sr "
+			     "WHERE sr.project_id=" +
+			     pid + " AND sr.kind IN " + type_kind_list +
+			     " AND sr.name != ''")
+			     .c_str());
+		// _td_rid covers the JOIN `_td.rid = tgt.rid AND _td.name = sr.type_name`:
+		// B-tree leftmost-prefix means (rid, name) supports rid-only AND
+		// rid+name lookups, matching the JOIN condition exactly. The
+		// previous (name, rid) index was unusable for this JOIN because
+		// the lookup starts from tgt.rid, not from name.
+		exec("CREATE INDEX IF NOT EXISTS _td_rid ON _td(rid, name)");
+		exec("CREATE INDEX IF NOT EXISTS _td_name ON _td(name, rid)");
 
 		// Create USES_TYPE edges from TypeRef records to type declaration records
 		// in the same file. Cross-file type resolution is handled later.
@@ -366,11 +411,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			std::to_string(kKindTypeRef) +
 			" "
 			"JOIN _r2n tgt ON tgt.file_path = src.file_path "
-			"JOIN semantic_records td ON td.rowid = tgt.rid "
-			"AND td.kind IN " +
-			type_kind_list +
-			" "
-			"AND td.name = sr.type_name "
+			"JOIN _td ON _td.rid = tgt.rid AND _td.name = sr.type_name "
 			"WHERE sr.project_id=" +
 			pid + " AND sr.type_name != ''";
 		exec(type_sql.c_str());
@@ -410,7 +451,8 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			     "FROM semantic_records sr "
 			     "WHERE sr.project_id=" +
 			     pid + " AND sr.kind IN " + type_kind_list +
-			     " AND sr.name != ''")
+			     " AND sr.name != ''"
+			     " AND sr.file_path IN (SELECT file_path FROM _rf)")
 			     .c_str());
 	}
 	auto t_type_info = Clock::now();
@@ -429,7 +471,8 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			     "WHERE sr.project_id=" +
 			     pid +
 			     " AND sr.kind = " + std::to_string(kKindTypeRef) +
-			     " AND sr.name != '' AND sr.type_name != ''")
+			     " AND sr.name != '' AND sr.type_name != ''"
+			     " AND sr.file_path IN (SELECT file_path FROM _rf)")
 			     .c_str());
 	}
 	auto t_type_ref = Clock::now();
@@ -466,15 +509,18 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	{
 		std::string ref_sql =
 			"INSERT OR IGNORE INTO reference "
-			"(project_id, caller_id, name, arity, call_kind, start_row, start_col) "
+			"(project_id, caller_id, name, arity, call_kind, "
+			" resolve_strategy, start_row, start_col) "
 			"SELECT sr.project_id, r2n.node_id, sr.name, sr.arity, "
-			" sr.call_kind, sr.start_row, sr.start_col "
+			" sr.call_kind, sr.resolve_strategy, "
+			" sr.start_row, sr.start_col "
 			"FROM semantic_records sr "
 			"JOIN _r2n r2n ON sr.parent_id = r2n.original_id "
 			" AND sr.file_path = r2n.file_path "
 			"WHERE sr.project_id=" +
 			std::to_string(project_id) +
-			" AND sr.kind = 9 AND sr.name != '' AND sr.file_path NOT LIKE '%_test.%' AND sr.file_path NOT LIKE '%/tests/%' AND sr.file_path NOT LIKE '%_spec.%' AND sr.file_path NOT LIKE '%/benches/%' AND sr.file_path NOT LIKE '%__test__%'";
+			" AND sr.kind = 9 AND sr.name != '' AND sr.file_path NOT LIKE '%\\_test.%' ESCAPE '\\' AND sr.file_path NOT LIKE '%/tests/%' AND sr.file_path NOT LIKE '%\\_spec.%' ESCAPE '\\' AND sr.file_path NOT LIKE '%/benches/%' AND sr.file_path NOT LIKE '%\\_\\_test\\_\\_%' ESCAPE '\\'"
+			" AND sr.file_path IN (SELECT file_path FROM _rf)";
 		exec(ref_sql.c_str());
 	}
 	auto t_reference = Clock::now();
@@ -484,7 +530,8 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	{
 		const char *fetch_sql =
 			"SELECT sr.name, sr.project_id, sr.file_path FROM semantic_records sr "
-			"WHERE sr.project_id=? AND sr.kind=11 AND sr.name != '' AND sr.file_path NOT LIKE '%_test.%' AND sr.file_path NOT LIKE '%/tests/%' AND sr.file_path NOT LIKE '%_spec.%' AND sr.file_path NOT LIKE '%/benches/%'";
+			"WHERE sr.project_id=? AND sr.kind=11 AND sr.name != '' AND sr.file_path NOT LIKE '%\\_test.%' ESCAPE '\\' AND sr.file_path NOT LIKE '%/tests/%' AND sr.file_path NOT LIKE '%\\_spec.%' ESCAPE '\\' AND sr.file_path NOT LIKE '%/benches/%'"
+			" AND sr.file_path IN (SELECT file_path FROM _rf)";
 		sqlite3_stmt *fetch_st = nullptr;
 		if (sqlite3_prepare_v2(db_, fetch_sql, -1, &fetch_st,
 				       nullptr) == SQLITE_OK) {
@@ -591,7 +638,9 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			", 0, 1, module_path, "
 			"0, 0 "
 			"FROM entity WHERE project_id=" +
-			std::to_string(project_id) + " AND module_path != ''";
+			std::to_string(project_id) +
+			" AND module_path != ''"
+			" AND entity.file_path IN (SELECT file_path FROM _rf)";
 		exec(scope_sql.c_str());
 	}
 	// Function scopes: each entity within its module scope.
@@ -608,7 +657,8 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			" AND s.kind = 1"
 			" AND s.name = e.module_path "
 			"WHERE e.project_id=" +
-			std::to_string(project_id);
+			std::to_string(project_id) +
+			" AND e.file_path IN (SELECT file_path FROM _rf)";
 		exec(func_sql.c_str());
 	}
 	// Update import.source_scope_id to point to the file's module scope.
@@ -633,6 +683,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 
 	exec("DROP TABLE IF EXISTS _r2n");
 	exec("DROP TABLE IF EXISTS _rf");
+	exec("DROP TABLE IF EXISTS _td");
 
 	// ── P3: Drop query indexes before bulk edge inserts ──────────
 	// Full rebuild: drop all lookup + unique indexes for max insert
@@ -652,19 +703,21 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			"INSERT OR IGNORE INTO entity "
 			"(id, project_id, kind, name, qualified_name, "
 			" file_path, language, start_row, start_col, "
-			" end_row, end_col, module_path) "
+			" end_row, end_col, module_path, visibility) "
 			"SELECT id, project_id, node_type, name, "
 			" COALESCE(NULLIF(qualified_name, ''), name), "
 			" file_path, language, "
 			" start_row, start_col, end_row, end_col, "
-			" rtrim(file_path, replace(file_path, '/', 'x')) "
+			" rtrim(file_path, replace(file_path, '/', 'x')), "
+			" visibility "
 			"FROM graph_nodes WHERE project_id=" +
 			std::to_string(project_id) +
-			" AND file_path NOT LIKE '%_test.%'"
+			" AND file_path NOT LIKE '%\\_test.%' ESCAPE '\\'"
 			" AND file_path NOT LIKE '%/tests/%'"
-			" AND file_path NOT LIKE '%_spec.%'"
+			" AND file_path NOT LIKE '%\\_spec.%' ESCAPE '\\'"
 			" AND file_path NOT LIKE '%/benches/%'"
-			" AND file_path NOT LIKE '%__test__%'";
+			" AND file_path NOT LIKE '%\\_\\_test\\_\\_%' ESCAPE '\\'"
+			" AND file_path IN (SELECT file_path FROM _rf)";
 		exec(entity_sql.c_str());
 	}
 
@@ -677,19 +730,21 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			" e.target_node_id, e.edge_type "
 			"FROM graph_edges e "
 			"JOIN graph_nodes src ON e.source_node_id = src.id"
-			" AND src.file_path NOT LIKE '%_test.%'"
+			" AND src.file_path NOT LIKE '%\\_test.%' ESCAPE '\\'"
 			" AND src.file_path NOT LIKE '%/tests/%'"
-			" AND src.file_path NOT LIKE '%_spec.%'"
+			" AND src.file_path NOT LIKE '%\\_spec.%' ESCAPE '\\'"
 			" AND src.file_path NOT LIKE '%/benches/%'"
-			" AND src.file_path NOT LIKE '%__test__%'"
+			" AND src.file_path NOT LIKE '%\\_\\_test\\_\\_%' ESCAPE '\\'"
 			"JOIN graph_nodes tgt ON e.target_node_id = tgt.id"
-			" AND tgt.file_path NOT LIKE '%_test.%'"
+			" AND tgt.file_path NOT LIKE '%\\_test.%' ESCAPE '\\'"
 			" AND tgt.file_path NOT LIKE '%/tests/%'"
-			" AND tgt.file_path NOT LIKE '%_spec.%'"
+			" AND tgt.file_path NOT LIKE '%\\_spec.%' ESCAPE '\\'"
 			" AND tgt.file_path NOT LIKE '%/benches/%'"
-			" AND tgt.file_path NOT LIKE '%__test__%'"
+			" AND tgt.file_path NOT LIKE '%\\_\\_test\\_\\_%' ESCAPE '\\'"
 			"WHERE e.project_id=" +
-			std::to_string(project_id);
+			std::to_string(project_id) +
+			" AND (src.file_path IN (SELECT file_path FROM _rf)"
+			" OR tgt.file_path IN (SELECT file_path FROM _rf))";
 		exec(rel_sql.c_str());
 	}
 	auto t_entity_relation = Clock::now();
@@ -699,7 +754,24 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// staging table (P1 batch optimization).
 	{
 		resolver::ResolverPipeline pipe(this, project_id);
-		pipe.run();
+		int64_t resolved = pipe.run();
+		// pipe.run() returns -1 on prepare failure (it does NOT throw).
+		// The previous code ignored the return value, so a resolver
+		// failure was silently treated as success: no resolved edges
+		// were produced but buildGraph continued to buildCSR and
+		// returned true, and the SAVEPOINT was RELEASEd — losing the
+		// "all or nothing" guarantee for the resolver phase. Now we
+		// ROLLBACK TO SAVEPOINT and propagate the failure.
+		if (resolved < 0) {
+			fprintf(stderr,
+				"buildGraph: resolver pipeline failed (rc=%lld)"
+				" for project %s — rolling back savepoint "
+				"[module=store, method=buildGraph]\n",
+				(long long)resolved, pid.c_str());
+			exec("ROLLBACK TO SAVEPOINT buildGraph");
+			exec("RELEASE SAVEPOINT buildGraph");
+			return false;
+		}
 	}
 	auto t_resolver = Clock::now();
 
@@ -740,13 +812,35 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// (DELETE + COPY FROM) to clear stale data and re-import cleanly.
 	{
 		auto t_lbug = Clock::now();
-		resetLadybugSyncState(project_id);
-		if (!syncIncrementalToLadybugDB(project_id))
-			fprintf(stderr,
-				"buildGraph: syncIncrementalToLadybugDB failed "
-				"for project %s "
-				"[module=store, method=buildGraph]\n",
-				pid.c_str());
+		// Worker mode (scheduler subprocess) sets CODESCOPE_SKIP_ASYNC=1
+		// and uses an isolated DB — LadybugDB sync would fail and waste
+		// 5-10s. The unified main DB gets its sync once after merge.
+		const char *skip_async = getenv("CODESCOPE_SKIP_ASYNC");
+		// Worker mode (scheduler subprocess) sets CODESCOPE_SKIP_ASYNC=1
+		// and uses an isolated DB — LadybugDB sync would fail and waste
+		// 5-10s. The unified main DB gets its sync once after merge.
+		// Interpretation MUST match the sibling consumer in
+		// engine_index_post_parse.cpp:261 — skip on ANY truthy value
+		// (set AND not "0"), not just the literal "1". The two
+		// consumers diverged before (only "1" skipped here, "0" or
+		// unset ran; the sibling skipped unset-or-"0"-only-inverse)
+		// which let users/wrapper scripts setting truthy-but-not-"1"
+		// values (=2, =true, =yes, =on) trigger divergent async
+		// behavior between the two paths. Aligning on "skip when set
+		// and not '0'" makes both consumers share one contract.
+		if (skip_async && skip_async[0] != '0') {
+			// Skip LadybugDB sync in worker mode (or user explicitly
+			// asked to skip async via any truthy CODESCOPE_SKIP_ASYNC
+			// value other than "0").
+		} else {
+			resetLadybugSyncState(project_id);
+			if (!syncIncrementalToLadybugDB(project_id))
+				fprintf(stderr,
+					"buildGraph: syncIncrementalToLadybugDB "
+					"failed for project %s "
+					"[module=store, method=buildGraph]\n",
+					pid.c_str());
+		}
 		fprintf(stderr,
 			"buildGraph: ladybugdb=%lldms "
 			"for project %s\n",
@@ -832,7 +926,7 @@ bool GraphStore::buildCSR(uint64_t project_id)
 
 	int64_t pid_i = static_cast<int64_t>(project_id);
 	int64_t current_src = -1;
-	std::vector<uint32_t> buf;
+	std::vector<uint64_t> buf;
 	buf.reserve(1024);
 	int64_t count = 0;
 
@@ -850,7 +944,7 @@ bool GraphStore::buildCSR(uint64_t project_id)
 				sqlite3_bind_blob(
 					ins, 3, buf.data(),
 					static_cast<int>(buf.size() *
-							 sizeof(uint32_t)),
+							 sizeof(uint64_t)),
 					SQLITE_STATIC);
 				if (sqlite3_step(ins) == SQLITE_DONE)
 					count++;
@@ -864,7 +958,7 @@ bool GraphStore::buildCSR(uint64_t project_id)
 			current_src = src;
 			buf.clear();
 		}
-		buf.push_back(static_cast<uint32_t>(tgt));
+		buf.push_back(static_cast<uint64_t>(tgt));
 	}
 	// Flush last group
 	if (current_src >= 0 && !buf.empty()) {
@@ -872,7 +966,7 @@ bool GraphStore::buildCSR(uint64_t project_id)
 		sqlite3_bind_int64(ins, 2, pid_i);
 		sqlite3_bind_blob(
 			ins, 3, buf.data(),
-			static_cast<int>(buf.size() * sizeof(uint32_t)),
+			static_cast<int>(buf.size() * sizeof(uint64_t)),
 			SQLITE_STATIC);
 		if (sqlite3_step(ins) == SQLITE_DONE)
 			count++;
@@ -917,7 +1011,7 @@ bool GraphStore::buildCSR(uint64_t project_id)
 	}
 
 	int64_t current_tgt = -1;
-	std::vector<uint32_t> rev_buf;
+	std::vector<uint64_t> rev_buf;
 	rev_buf.reserve(1024);
 	int64_t rev_count = 0;
 
@@ -934,7 +1028,7 @@ bool GraphStore::buildCSR(uint64_t project_id)
 				sqlite3_bind_blob(
 					rev_ins, 3, rev_buf.data(),
 					static_cast<int>(rev_buf.size() *
-							 sizeof(uint32_t)),
+							 sizeof(uint64_t)),
 					SQLITE_STATIC);
 				if (sqlite3_step(rev_ins) == SQLITE_DONE)
 					rev_count++;
@@ -948,14 +1042,14 @@ bool GraphStore::buildCSR(uint64_t project_id)
 			current_tgt = tgt;
 			rev_buf.clear();
 		}
-		rev_buf.push_back(static_cast<uint32_t>(src));
+		rev_buf.push_back(static_cast<uint64_t>(src));
 	}
 	if (current_tgt >= 0 && !rev_buf.empty()) {
 		sqlite3_bind_int64(rev_ins, 1, current_tgt);
 		sqlite3_bind_int64(rev_ins, 2, pid_i);
 		sqlite3_bind_blob(
 			rev_ins, 3, rev_buf.data(),
-			static_cast<int>(rev_buf.size() * sizeof(uint32_t)),
+			static_cast<int>(rev_buf.size() * sizeof(uint64_t)),
 			SQLITE_STATIC);
 		if (sqlite3_step(rev_ins) == SQLITE_DONE)
 			rev_count++;
@@ -985,8 +1079,8 @@ std::vector<uint64_t> GraphStore::getCalleeIds(uint64_t node_id)
 	if (sqlite3_step(st) == SQLITE_ROW) {
 		const void *blob = sqlite3_column_blob(st, 0);
 		int bytes = sqlite3_column_bytes(st, 0);
-		int n = bytes / static_cast<int>(sizeof(uint32_t));
-		const uint32_t *arr = static_cast<const uint32_t *>(blob);
+		int n = bytes / static_cast<int>(sizeof(uint64_t));
+		const uint64_t *arr = static_cast<const uint64_t *>(blob);
 		ids.reserve(static_cast<size_t>(n));
 		for (int i = 0; i < n; i++)
 			ids.push_back(static_cast<uint64_t>(arr[i]));
@@ -1009,8 +1103,8 @@ std::vector<uint64_t> GraphStore::getCallerIds(uint64_t node_id)
 	if (sqlite3_step(st) == SQLITE_ROW) {
 		const void *blob = sqlite3_column_blob(st, 0);
 		int bytes = sqlite3_column_bytes(st, 0);
-		int n = bytes / static_cast<int>(sizeof(uint32_t));
-		const uint32_t *arr = static_cast<const uint32_t *>(blob);
+		int n = bytes / static_cast<int>(sizeof(uint64_t));
+		const uint64_t *arr = static_cast<const uint64_t *>(blob);
 		ids.reserve(static_cast<size_t>(n));
 		for (int i = 0; i < n; i++)
 			ids.push_back(static_cast<uint64_t>(arr[i]));
@@ -1031,9 +1125,9 @@ std::vector<uint64_t> GraphStore::getCallerIds(uint64_t node_id)
 		int64_t src = sqlite3_column_int64(st, 0);
 		const void *blob = sqlite3_column_blob(st, 1);
 		int bytes = sqlite3_column_bytes(st, 1);
-		int n = bytes / static_cast<int>(sizeof(uint32_t));
-		const uint32_t *arr = static_cast<const uint32_t *>(blob);
-		uint32_t target = static_cast<uint32_t>(node_id);
+		int n = bytes / static_cast<int>(sizeof(uint64_t));
+		const uint64_t *arr = static_cast<const uint64_t *>(blob);
+		uint64_t target = node_id;
 		for (int i = 0; i < n; i++) {
 			if (arr[i] == target) {
 				ids.push_back(static_cast<uint64_t>(src));

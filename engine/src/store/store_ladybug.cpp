@@ -16,6 +16,20 @@
 namespace store
 {
 
+// Escape a path for inclusion inside a single-quoted SQL literal used by
+// LadybugDB's COPY ... FROM '<path>'. Doubles embedded single quotes per
+// SQLite string-literal rules, preventing a single quote in db_path_ (which
+// is concatenated raw into the COPY SQL) from breaking out of the literal or
+// injecting SQL. Mirrors the escaping used by exportArtifact() in store_core.cpp.
+// [module=store, method=store_ladybug]
+static std::string escapeSqlPathLiteral(const std::string &p)
+{
+	std::string out = p;
+	for (size_t i = 0; (i = out.find('\'', i)) != std::string::npos; i += 2)
+		out.insert(i, 1, '\'');
+	return out;
+}
+
 #ifdef HAS_LADYBUG
 
 bool GraphStore::initLadybugDB()
@@ -260,9 +274,13 @@ bool GraphStore::syncGraphToLadybugDB(uint64_t project_id)
 		fclose(fp);
 
 		// COPY FROM — bulk import, auto-commits. No explicit transaction needed.
+		// Escape the CSV path (derived from db_path_) before embedding it in
+		// the single-quoted COPY ... FROM '<path>' SQL literal.
+		// [module=store, method=syncGraphToLadybugDB]
 		lbug_query_result result;
-		std::string copy_sql =
-			"COPY GraphNode FROM '" + node_csv + "' (header=false)";
+		std::string copy_sql = "COPY GraphNode FROM '" +
+				       escapeSqlPathLiteral(node_csv) +
+				       "' (header=false)";
 		lbug_state state = lbug_connection_query(
 			&lbug_conn_, copy_sql.c_str(), &result);
 		if (state != LbugSuccess) {
@@ -342,9 +360,13 @@ bool GraphStore::syncGraphToLadybugDB(uint64_t project_id)
 
 		// COPY FROM for CALLS edge table — single FROM-TO pair, no from/to needed
 		// CSV: source_id, target_id, project_id, edge_type, call_site_line, label
+		// Escape the CSV path (derived from db_path_) before embedding it
+		// in the single-quoted COPY ... FROM '<path>' SQL literal.
+		// [module=store, method=syncGraphToLadybugDB]
 		lbug_query_result eresult;
-		std::string copy_sql =
-			"COPY CALLS FROM '" + edge_csv + "' (header=false)";
+		std::string copy_sql = "COPY CALLS FROM '" +
+				       escapeSqlPathLiteral(edge_csv) +
+				       "' (header=false)";
 		lbug_state state = lbug_connection_query(
 			&lbug_conn_, copy_sql.c_str(), &eresult);
 		if (state != LbugSuccess) {
@@ -536,9 +558,13 @@ bool GraphStore::syncIncrementalToLadybugDB(uint64_t project_id)
 		if (n > 0) {
 			// COPY FROM appends to GraphNode — no DELETE needed
 			// for incremental sync (full sync already cleared).
+			// Escape the CSV path before embedding it in the
+			// single-quoted COPY ... FROM '<path>' SQL literal.
+			// [module=store, method=syncIncrementalToLadybugDB]
 			lbug_query_result result;
 			std::string copy_sql = "COPY GraphNode FROM '" +
-					       node_csv + "' (header=false)";
+					       escapeSqlPathLiteral(node_csv) +
+					       "' (header=false)";
 			lbug_state state = lbug_connection_query(
 				&lbug_conn_, copy_sql.c_str(), &result);
 			if (state != LbugSuccess) {
@@ -611,8 +637,12 @@ bool GraphStore::syncIncrementalToLadybugDB(uint64_t project_id)
 		fclose(fp);
 
 		if (n > 0) {
+			// Escape the CSV path before embedding it in the
+			// single-quoted COPY ... FROM '<path>' SQL literal.
+			// [module=store, method=syncIncrementalToLadybugDB]
 			lbug_query_result eresult;
-			std::string copy_sql = "COPY CALLS FROM '" + edge_csv +
+			std::string copy_sql = "COPY CALLS FROM '" +
+					       escapeSqlPathLiteral(edge_csv) +
 					       "' (header=false)";
 			lbug_state state = lbug_connection_query(
 				&lbug_conn_, copy_sql.c_str(), &eresult);

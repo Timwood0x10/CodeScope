@@ -76,15 +76,33 @@ std::vector<Finding> DeadCodeInspector::findOrphanFunctions()
 {
 	std::vector<Finding> out;
 	// Find functions/types with 0 incoming edges and 0 outgoing edges.
-	std::string sql = "SELECT e.name, e.file_path, e.kind "
-			  "FROM entity e "
-			  "WHERE e.project_id = ? AND e.kind IN (0,1) "
-			  " AND NOT EXISTS ("
-			  "  SELECT 1 FROM relation r "
-			  "  WHERE r.project_id = ? "
-			  "  AND (r.source_id = e.id OR r.target_id = e.id)"
-			  " ) "
-			  "LIMIT 30";
+	// Exclusions (otherwise main(), FFI exports, and callback entry
+	// points get misclassified as dead — they have no in/out relation
+	// rows but are deliberately reachable from outside the graph):
+	//   - is_entry_point=1: main(), init(), FFI exports — these ARE the
+	//     roots of the call graph, not orphans. Joined via graph_nodes
+	//     because the entity table has no is_entry_point column.
+	//   - visibility=1: pub/public/export surface. These are external
+	//     API contracts; absence of internal callers does not mean dead.
+	// Pure-virtual methods are not excluded here because the schema has
+	// no is_pure_virtual flag (see store_schema.cpp semantic_records).
+	std::string sql =
+		"SELECT e.name, e.file_path, e.kind "
+		"FROM entity e "
+		"LEFT JOIN graph_nodes gn ON gn.project_id = e.project_id "
+		" AND gn.name = e.name AND gn.file_path = e.file_path "
+		"WHERE e.project_id = ? AND e.kind IN (0,1) "
+		// Exclude entry points: main/init/FFI exports are call-graph
+		// roots, not dead code.
+		" AND COALESCE(gn.is_entry_point, 0) = 0 "
+		// Exclude public/export surface: external API contract.
+		" AND e.visibility != 1 "
+		" AND NOT EXISTS ("
+		"  SELECT 1 FROM relation r "
+		"  WHERE r.project_id = ? "
+		"  AND (r.source_id = e.id OR r.target_id = e.id)"
+		" ) "
+		"LIMIT 30";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), sql.c_str(), -1, &stmt,
 			       nullptr) != SQLITE_OK)

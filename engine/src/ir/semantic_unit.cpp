@@ -9,7 +9,7 @@ namespace ir
 
 uint64_t SemanticUnit::addRecord(RecordKind kind, const std::string &name,
 				 uint64_t parent_id, SourceRange loc, int arity,
-				 bool is_static)
+				 bool is_static, int visibility)
 {
 	Record rec;
 	rec.id = next_id_++;
@@ -21,6 +21,7 @@ uint64_t SemanticUnit::addRecord(RecordKind kind, const std::string &name,
 	rec.language = language_;
 	rec.arity = arity;
 	rec.is_static = is_static;
+	rec.visibility = visibility;
 	id_to_index_[rec.id] = records_.size();
 	records_.push_back(std::move(rec));
 	return records_.back().id;
@@ -28,7 +29,8 @@ uint64_t SemanticUnit::addRecord(RecordKind kind, const std::string &name,
 
 uint64_t SemanticUnit::addTypedRecord(RecordKind kind, const std::string &name,
 				      const std::string &type_name,
-				      uint64_t parent_id, SourceRange loc)
+				      uint64_t parent_id, SourceRange loc,
+				      int visibility)
 {
 	Record rec;
 	rec.id = next_id_++;
@@ -39,6 +41,7 @@ uint64_t SemanticUnit::addTypedRecord(RecordKind kind, const std::string &name,
 	rec.loc = loc;
 	rec.file_path = file_path_;
 	rec.language = language_;
+	rec.visibility = visibility;
 	id_to_index_[rec.id] = records_.size();
 	records_.push_back(std::move(rec));
 	return records_.back().id;
@@ -66,14 +69,15 @@ uint64_t SemanticUnit::addRecord(RecordKind kind, const std::string &name,
 	return records_.back().id;
 }
 
-const Record &SemanticUnit::getRecord(uint64_t id) const
+const Record *SemanticUnit::getRecord(uint64_t id) const
 {
 	auto it = id_to_index_.find(id);
 	if (it != id_to_index_.end())
-		return records_[it->second];
-	// Return the last record as sentinel (caller must check).
-	// In practice, IDs are always valid.
-	return records_.back();
+		return &records_[it->second];
+	// Not found: return nullptr instead of dereferencing records_.back()
+	// on a possibly-empty container (undefined behaviour). Callers must
+	// check the return value before dereferencing.
+	return nullptr;
 }
 
 // ── Query ──────────────────────────────────────────────────────
@@ -123,6 +127,16 @@ bool SemanticUnit::setCallKind(uint64_t record_id, int kind)
 	if (it == id_to_index_.end())
 		return false;
 	records_[it->second].call_kind = static_cast<CallKind>(kind);
+	return true;
+}
+
+bool SemanticUnit::setCallStrategy(uint64_t record_id,
+				   const std::string &strategy)
+{
+	auto it = id_to_index_.find(record_id);
+	if (it == id_to_index_.end())
+		return false;
+	records_[it->second].resolve_strategy = strategy;
 	return true;
 }
 

@@ -204,6 +204,10 @@ jobs:
           cp target/release/codescope package/
           cp LICENSE package/
           [ -f install.sh ] && cp install.sh package/
+          # Bundle the parallel indexer script so users/AIs can opt into
+          # multi-process acceleration for large projects. The script is
+          # platform-independent bash and auto-discovers the binary.
+          [ -f codescope-parallel.sh ] && cp codescope-parallel.sh package/ && chmod +x package/codescope-parallel.sh
 
           cd package
           tar -czf "../${{ matrix.artifact }}.tar.gz" ./*

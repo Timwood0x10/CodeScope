@@ -101,6 +101,168 @@ char *engine_get_capabilities(uint64_t project_id)
 	}
 }
 
+// ─── Knowledge Graph direct query (v0.2.1) ─────────────────────────────
+//
+// Surfaces the knowledge-layer tables (entity / relation / architecture_edge /
+// module_edge / capability / document / module_summary) so MCP clients can
+// browse the knowledge graph directly, instead of only benefiting from it
+// indirectly via explain_module / detect_capability_drift / get_module_tree.
+//
+// Per plan/rules/code_rules.md §FFI: this is a block-level transfer — one
+// FFI call returns the entire result set (bounded by `limit`), never one
+// row per call. Error paths emit a stderr line tagged with module=ffi,
+// method=engine_get_knowledge_graph per §"Additional Rules".
+char *engine_get_knowledge_graph(uint64_t project_id, const char *table_name,
+				 int32_t limit)
+{
+	try {
+		if (!g_store)
+			return dupString(
+				"{\"error\":\"[module=ffi, method=engine_get_knowledge_graph] engine not initialized\"}");
+		if (!table_name || !*table_name)
+			return dupString(
+				"{\"error\":\"[module=ffi, method=engine_get_knowledge_graph] table_name is required\"}");
+
+		// Whitelist of knowledge-layer tables. We never let the caller pass
+		// arbitrary SQL — the table_name is matched against this fixed set
+		// and the SELECT is built with a hard-coded column list per table.
+		// This prevents SQL injection via the table_name parameter.
+		struct TableSpec {
+			const char *name;
+			const char *
+				select; // hard-coded column list, no user input
+		};
+		static const TableSpec kTables[] = {
+			{ "entity",
+			  "SELECT id, name, qualified_name, kind, "
+			  "file_path, start_row, start_col FROM entity "
+			  "WHERE project_id=? ORDER BY id LIMIT ?" },
+			{ "relation", "SELECT id, source_id, target_id, type "
+				      "FROM relation WHERE project_id=? "
+				      "ORDER BY id LIMIT ?" },
+			{ "architecture_edge",
+			  "SELECT id, layer_lower, layer_upper, "
+			  "entity_id FROM architecture_edge "
+			  "WHERE project_id=? ORDER BY id LIMIT ?" },
+			{ "module_edge",
+			  "SELECT id, src_module, tgt_module, "
+			  "edge_count FROM module_edge "
+			  "WHERE project_id=? ORDER BY id LIMIT ?" },
+			{ "capability",
+			  "SELECT id, name, summary FROM capability "
+			  "WHERE project_id=? ORDER BY id LIMIT ?" },
+			{ "document",
+			  "SELECT id, type, file_path, start_line, end_line "
+			  "FROM document "
+			  "WHERE project_id=? ORDER BY id LIMIT ?" },
+			{ "module_summary",
+			  "SELECT id, module_id, state, incoming_count, "
+			  "outgoing_count, internal_edges, "
+			  "dead_entities, utilization, confidence "
+			  "FROM module_summary "
+			  "WHERE project_id=? ORDER BY id LIMIT ?" },
+		};
+		const TableSpec *spec = nullptr;
+		for (const auto &t : kTables) {
+			if (strcmp(t.name, table_name) == 0) {
+				spec = &t;
+				break;
+			}
+		}
+		if (!spec) {
+			std::string err =
+				"{\"error\":\"[module=ffi, "
+				"method=engine_get_knowledge_graph] unknown table '";
+			err += table_name;
+			err += "'. Supported: entity, relation, architecture_edge, "
+			       "module_edge, capability, document, module_summary\"}";
+			return dupString(err);
+		}
+
+		// Clamp limit to [0, 1000] — bounds the FFI transfer per
+		// block-level rule and prevents unbounded allocation.
+		int32_t clamped = limit < 0 ? 0 : (limit > 1000 ? 1000 : limit);
+
+		sqlite3 *db = g_store->handle();
+		sqlite3_stmt *stmt = nullptr;
+		if (sqlite3_prepare_v2(db, spec->select, -1, &stmt, nullptr) !=
+		    SQLITE_OK) {
+			fprintf(stderr,
+				"[module=ffi, method=engine_get_knowledge_graph] "
+				"prepare failed for table '%s': %s\n",
+				table_name, sqlite3_errmsg(db));
+			return dupString(
+				"{\"error\":\"[module=ffi, method=engine_get_knowledge_graph] prepare failed\"}");
+		}
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		sqlite3_bind_int(stmt, 2, clamped);
+
+		std::string json = "{\"table\":\"";
+		json += table_name;
+		json += "\",\"rows\":[";
+		bool first = true;
+		int col_count = sqlite3_column_count(stmt);
+		// Count every row emitted so total/truncated are accurate. The
+		// previous code declared total after the loop and never
+		// incremented it, so total was always 0 and truncated was
+		// always false — any caller paginating on total missed rows
+		// beyond the clamped limit.
+		int64_t total = 0;
+		while (sqlite3_step(stmt) == SQLITE_ROW) {
+			if (!first)
+				json.push_back(',');
+			first = false;
+			json.push_back('{');
+			for (int c = 0; c < col_count; ++c) {
+				if (c > 0)
+					json.push_back(',');
+				const char *cn = sqlite3_column_name(stmt, c);
+				json += '"';
+				json += cn;
+				json += "\":";
+				if (sqlite3_column_type(stmt, c) ==
+				    SQLITE_NULL) {
+					json += "null";
+					continue;
+				}
+				// Numeric columns emit bare numbers; text columns
+				// get JSON-escaped via jsonEscape to stay safe
+				// against names containing quotes / newlines.
+				if (sqlite3_column_type(stmt, c) ==
+				    SQLITE_INTEGER) {
+					json += std::to_string(
+						sqlite3_column_int64(stmt, c));
+				} else {
+					const char *t =
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								stmt, c));
+					json += '"';
+					json += jsonEscape(t ? t : "");
+					json += '"';
+				}
+			}
+			json.push_back('}');
+			total++;
+		}
+		sqlite3_finalize(stmt);
+		json += "],\"total\":";
+		json += std::to_string(total);
+		json += ",\"truncated\":";
+		json += (total >= clamped && clamped > 0) ? "true" : "false";
+		json += "}";
+		return dupString(json);
+	} catch (const std::exception &e) {
+		return dupString(
+			std::string(
+				"{\"error\":\"[module=ffi, method=engine_get_knowledge_graph] ") +
+			e.what() + "\"}");
+	} catch (...) {
+		return dupString(
+			"{\"error\":\"[module=ffi, method=engine_get_knowledge_graph] unknown exception\"}");
+	}
+}
+
 char *engine_find_definition(uint64_t project_id, const char *symbol_name,
 			     const char *file_filter)
 {
@@ -147,7 +309,8 @@ char *engine_find_references(uint64_t project_id, const char *symbol_name,
 	}
 }
 
-char *engine_get_callers(uint64_t project_id, const char *function_name)
+char *engine_get_callers(uint64_t project_id, const char *function_name,
+			 const char *file_filter)
 {
 	try {
 		if (!function_name || !*function_name)
@@ -156,8 +319,8 @@ char *engine_get_callers(uint64_t project_id, const char *function_name)
 		if (!g_query)
 			return dupString(
 				"{\"total\":0,\"callers\":[],\"error\":\"not initialized\"}");
-		return dupString(
-			g_query->getCallers(project_id, function_name));
+		return dupString(g_query->getCallers(project_id, function_name,
+						     file_filter));
 	} catch (const std::exception &e) {
 		return dupString(
 			std::string(
@@ -169,7 +332,8 @@ char *engine_get_callers(uint64_t project_id, const char *function_name)
 	}
 }
 
-char *engine_get_callees(uint64_t project_id, const char *function_name)
+char *engine_get_callees(uint64_t project_id, const char *function_name,
+			 const char *file_filter)
 {
 	try {
 		if (!function_name || !*function_name)
@@ -178,8 +342,8 @@ char *engine_get_callees(uint64_t project_id, const char *function_name)
 		if (!g_query)
 			return dupString(
 				"{\"total\":0,\"callees\":[],\"error\":\"not initialized\"}");
-		return dupString(
-			g_query->getCallees(project_id, function_name));
+		return dupString(g_query->getCallees(project_id, function_name,
+						     file_filter));
 	} catch (const std::exception &e) {
 		return dupString(
 			std::string(
@@ -1027,7 +1191,8 @@ char *engine_index_batch(uint64_t project_id, const char *file_paths_json)
 			}
 
 			TSTree *tree = g_parser->parse(fp.c_str(),
-						       source.c_str(), lang);
+						       source.c_str(), lang,
+						       source.size());
 			if (!tree) {
 				errors.push_back(fp + ": parse failed");
 				continue;
@@ -1078,8 +1243,16 @@ char *engine_index_batch(uint64_t project_id, const char *file_paths_json)
 			std::string hash = simpleHash(b.source);
 			g_store->upsertFile(project_id, b.file_path.c_str(),
 					    b.language.c_str(), hash.c_str());
-			g_store->deleteGraphNodesByFile(project_id,
-							b.file_path.c_str());
+			// Delete graph-layer data only (relation, graph_edges,
+			// graph_nodes, entity, type_ref, type_info, import, route).
+			// NOT semantic_records — this batch path re-inserts graph
+			// data directly from in-memory `b.unit` and never repopulates
+			// semantic_records. buildGraph later uses semantic_records to
+			// decide the file rebuild set; wiping it here would make
+			// subsequent engine_index_project skip rebuilding this file,
+			// leaving stale graph_nodes forever.
+			g_store->deleteGraphDataByFile(project_id,
+						       b.file_path.c_str());
 
 			// No ir_nodes/ir_semantic_edges write — graph_nodes is canonical.
 			// FTS/vector writes skipped for single-file index path.
@@ -1326,6 +1499,6 @@ const char *engine_version(void)
 	// No try/catch required — only a static string literal is returned,
 	// so no exceptions are possible.
 	// Keep in sync with RELEASE.md and Cargo.toml version.
-	static const char kVersion[] = "0.2.0";
+	static const char kVersion[] = "0.2.1";
 	return kVersion;
 }

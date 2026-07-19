@@ -172,3 +172,44 @@ uint64_t engine_get_latest_project_id()
 		return 0;
 	}
 }
+
+uint64_t engine_get_project_id_by_path(const char *root_path)
+{
+	try {
+		if (!root_path || !*root_path) {
+			fprintf(stderr,
+				"[module=ffi, method=engine_get_project_id_by_path] root_path is required\n");
+			return 0;
+		}
+		if (!g_store)
+			return 0;
+		return g_store->getProjectId(root_path);
+	} catch (const std::exception &e) {
+		fprintf(stderr,
+			"[module=ffi, method=engine_get_project_id_by_path] %s\n",
+			e.what());
+		return 0;
+	} catch (...) {
+		fprintf(stderr,
+			"[module=ffi, method=engine_get_project_id_by_path] unknown exception\n");
+		return 0;
+	}
+}
+
+uint64_t engine_get_project_node_count(uint64_t project_id)
+{
+	try {
+		if (!g_store)
+			return 0;
+		return g_store->getProjectNodeCount(project_id);
+	} catch (const std::exception &e) {
+		fprintf(stderr,
+			"[module=ffi, method=engine_get_project_node_count] %s\n",
+			e.what());
+		return 0;
+	} catch (...) {
+		fprintf(stderr,
+			"[module=ffi, method=engine_get_project_node_count] unknown exception\n");
+		return 0;
+	}
+}

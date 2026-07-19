@@ -5,6 +5,9 @@
 #include "../ir/ir_visitor.h"
 #include "../ir/semantic_unit.h"
 
+#include <set>
+#include <string>
+#include <tuple>
 #include <unordered_map>
 
 namespace graph
@@ -82,6 +85,13 @@ class GraphBuilder : public ir::Visitor {
 	std::unordered_map<uint64_t, uint64_t>
 		ir_to_graph_node_; // ir_node_id → graph_node_id
 	std::vector<const ir::Node *> function_stack_;
+
+	// ── Edge dedup set ─────────────────────────────────────────
+	// Tracks (source_id, target_id, edge_type, graph_type) tuples
+	// already added to current_graph_ so addGraphEdge can skip
+	// duplicates. Cleared at the start of each build phase.
+	std::set<std::tuple<uint64_t, uint64_t, EdgeType, std::string>>
+		added_edges_;
 
 	// ── Shared helpers ─────────────────────────────────────────
 	void addGraphNode(const ir::Node *ir_node, NodeType type);

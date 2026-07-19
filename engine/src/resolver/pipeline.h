@@ -79,19 +79,27 @@ class ResolverPipeline {
 		std::string module_path;
 		std::string language;
 		int arity = 0;
+		// Entity kind (RecordKind enum): 2=Class, 3=Interface, etc.
+		// Propagated from entity.kind so factorConstructorMatch can
+		// prefer Class/Struct-shaped targets (see factors.cpp).
+		int kind = 0;
 		int score = 0;
 		double total_score = 0.0;
 		std::vector<FactorResult> factors;
 	};
 
 	/// Apply constraints to rank candidates.
-	/// @param candidates  Mutable list — sorted by score descending.
-	/// @param caller_file The file where the call site resides.
-	/// @param callee_name The name being resolved (for import check).
+	/// @param candidates   Mutable list — sorted by score descending.
+	/// @param caller_file  The file where the call site resides.
+	/// @param callee_name  The name being resolved (for import check).
+	/// @param call_kind    Kind of call (direct/method/interface/constructor).
+	/// @param caller_arity Arity of the call site from the reference row;
+	///                     used by factorSignatureMatch for overload
+	///                     resolution. 0 means unknown arity.
 	void applyConstraints(std::vector<Candidate> &candidates,
 			      const std::string &caller_file,
-			      const std::string &callee_name,
-			      int call_kind = 0);
+			      const std::string &callee_name, int call_kind = 0,
+			      int caller_arity = 0);
 
 	/// Check if `callee_name` is imported in the file at `caller_file`.
 	/// Returns the import target path if found, empty string otherwise.

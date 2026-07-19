@@ -2,7 +2,7 @@
 
 #include <cstring>
 #include <tree_sitter/api.h>
-
+#include "../builtin_registry.h"
 #include "ahocorasick.h"
 
 namespace ir
@@ -85,6 +85,7 @@ static const ACAutomaton &getJsAC()
 		ac.addPattern("export_statement", 108);
 		ac.addPattern("export", 108);
 		ac.addPattern("member_expression", 109);
+		ac.addPattern("new_expression", 110); // constructor call (M-9)
 		// Literals
 		ac.addPattern("number", 200);
 		ac.addPattern("string", 200);
@@ -113,7 +114,7 @@ static const ACAutomaton &getJsAC()
 		ac.addPattern("assignment_expression", 300);
 		ac.addPattern("ternary_expression", 300);
 		ac.addPattern("subscript_expression", 300);
-		ac.addPattern("new_expression", 300);
+
 		ac.addPattern("await_expression", 300);
 		ac.addPattern("yield_expression", 300);
 		ac.build();
@@ -158,6 +159,7 @@ void JsVisitor::reset()
 {
 	// Clear scope stack but preserve vector capacity for reuse
 	scopes_.clear();
+	function_stack_.clear();
 	unit_ = nullptr;
 	emitter_ = nullptr;
 	source_ = nullptr;
@@ -172,6 +174,24 @@ void JsVisitor::popScope()
 {
 	if (!scopes_.empty())
 		scopes_.pop_back();
+}
+
+void JsVisitor::pushFunctionScope(uint64_t function_id)
+{
+	function_stack_.push_back(function_id);
+}
+
+void JsVisitor::popFunctionScope()
+{
+	if (!function_stack_.empty())
+		function_stack_.pop_back();
+}
+
+uint64_t JsVisitor::currentFunctionId()
+{
+	if (function_stack_.empty())
+		return 0;
+	return function_stack_.back();
 }
 
 void JsVisitor::defineSymbol(const std::string &name, uint64_t record_id)
@@ -260,6 +280,8 @@ void JsVisitor::visitNode(TSNode node, uint64_t parent_id)
 		return visitExportStmt(node, parent_id);
 	case 109:
 		return visitMemberExpr(node, parent_id);
+	case 110:
+		return visitNewExpr(node, parent_id);
 
 	// ── Literals ──────────────────────────────────────────
 	case 200:
@@ -298,10 +320,12 @@ void JsVisitor::visitFunctionDecl(TSNode node, uint64_t parent_id)
 		}
 	}
 
-	uint64_t func_id = emitter_->emitFunction(name, loc, parent_id);
+	uint64_t func_id = emitter_->emitFunction(
+		name, loc, parent_id, 0, false, detectVisibility(node));
 	defineSymbol(name, func_id);
 
 	pushScope();
+	pushFunctionScope(func_id);
 
 	// Only recurse into formal_parameters and statement_block
 	for (uint32_t i = 0; i < count; i++) {
@@ -317,16 +341,20 @@ void JsVisitor::visitFunctionDecl(TSNode node, uint64_t parent_id)
 			visitChildren(child, func_id);
 	}
 
+	popFunctionScope();
 	popScope();
 }
 
 void JsVisitor::visitArrowFunction(TSNode node, uint64_t parent_id)
 {
 	SourceRange loc = location(node);
-	uint64_t lambda_id = emitter_->emitFunction("", loc, parent_id);
+	uint64_t lambda_id = emitter_->emitFunction(
+		"", loc, parent_id, 0, false, detectVisibility(node));
 
 	pushScope();
+	pushFunctionScope(lambda_id);
 	visitChildren(node, lambda_id);
+	popFunctionScope();
 	popScope();
 }
 
@@ -344,7 +372,8 @@ void JsVisitor::visitClassDecl(TSNode node, uint64_t parent_id)
 		}
 	}
 
-	uint64_t cls_id = emitter_->emitClass(name, loc, parent_id);
+	uint64_t cls_id = emitter_->emitClass(name, loc, parent_id,
+					      detectVisibility(node));
 	defineSymbol(name, cls_id);
 
 	pushScope();
@@ -368,10 +397,12 @@ void JsVisitor::visitMethodDef(TSNode node, uint64_t parent_id)
 		}
 	}
 
-	uint64_t method_id = emitter_->emitMethod(name, loc, parent_id);
+	uint64_t method_id = emitter_->emitMethod(
+		name, loc, parent_id, 0, false, detectVisibility(node));
 	defineSymbol(name, method_id);
 
 	pushScope();
+	pushFunctionScope(method_id);
 
 	// Only recurse into formal_parameters and statement_block
 	for (uint32_t i = 0; i < count; i++) {
@@ -388,6 +419,7 @@ void JsVisitor::visitMethodDef(TSNode node, uint64_t parent_id)
 			visitChildren(child, method_id);
 	}
 
+	popFunctionScope();
 	popScope();
 }
 
@@ -410,6 +442,29 @@ void JsVisitor::visitCallExpr(TSNode node, uint64_t parent_id)
 			continue;
 		if (strcmp(t, "identifier") == 0) {
 			callee_name = nodeText(child);
+			break;
+		}
+		// Handle member_expression: obj.method() produces a
+		// member_expression as the first named child (not an
+		// identifier). Previously this fell through, leaving
+		// callee_name empty and dropping the majority of JS/TS
+		// call edges. Extract the trailing property_identifier
+		// (the method name) from the member_expression, mirroring
+		// CVisitor::extractFieldMethodName for field_expression.
+		if (strcmp(t, "member_expression") == 0) {
+			uint32_t mc = ts_node_child_count(child);
+			for (uint32_t j = 0; j < mc; j++) {
+				TSNode mchild = ts_node_child(child, j);
+				if (!ts_node_is_named(mchild))
+					continue;
+				const char *mt = ts_node_type(mchild);
+				if (strcmp(mt, "property_identifier") == 0 ||
+				    strcmp(mt,
+					   "shorthand_property_identifier") ==
+					    0) {
+					callee_name = nodeText(mchild);
+				}
+			}
 			break;
 		}
 	}
@@ -435,23 +490,58 @@ void JsVisitor::visitCallExpr(TSNode node, uint64_t parent_id)
 	CallKind call_kind = CallKind::Direct;
 	if (callee_name.find('.') != std::string::npos)
 		call_kind = CallKind::Method;
-	else if (callee_name.size() > 3 && callee_name[0] >= 'A' &&
+	// Constructor detection: any non-empty capitalized name. The previous
+	// `callee_name.size() > 3` threshold skipped short class names like
+	// `Foo()`, `Url()`, `Db()` → all were misclassified as Direct calls,
+	// so the Resolver Pipeline never applied the constructor boost factor
+	// and cross-module constructor resolution silently failed.
+	// See CODE_REVIEW_FINDINGS_2026-07-19.md H6.
+	else if (callee_name.size() >= 1 && callee_name[0] >= 'A' &&
 		 callee_name[0] <= 'Z')
 		call_kind = CallKind::Constructor;
 
-	uint64_t call_id = emitter_->emitCall(callee_name, loc, parent_id, 0,
-					      false,
+	// Use the containing function as parent_id (not the immediate
+	// syntactic parent, which may be another call record). This
+	// ensures nested calls' parent_id points to a declaration
+	// record present in _r2n, so the reference-table JOIN succeeds.
+	uint64_t func_id = currentFunctionId();
+	uint64_t call_parent = (func_id != 0) ? func_id : parent_id;
+
+	// Compute arity from the `arguments` child node's named children.
+	// Previously hardcoded to 0, which degraded overload disambiguation
+	// by arity in the Resolver Pipeline. Mirrors CVisitor::countArguments.
+	int arity = 0;
+	for (uint32_t i = 0; i < count; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (strcmp(ts_node_type(c), "arguments") != 0)
+			continue;
+		uint32_t ac = ts_node_child_count(c);
+		for (uint32_t j = 0; j < ac; j++) {
+			TSNode arg = ts_node_child(c, j);
+			if (ts_node_is_named(arg))
+				++arity;
+		}
+		break;
+	}
+
+	uint64_t call_id = emitter_->emitCall(callee_name, loc, call_parent,
+					      arity, false,
 					      static_cast<int>(call_kind));
 
-	// Resolve callee — only for direct identifier calls
-	// (not member expression calls like console.log)
+	// ── Intra-file callee resolution ───────────────────────────
+	// Store the resolved callee's record ID as ref_original_id on
+	// the CallExpr. Enables P1 call-edge construction in
+	// buildCallEdgesSQL (JOIN on ref_original_id > 0).
 	if (!callee_name.empty()) {
 		uint64_t target = resolveSymbol(callee_name);
 		if (target) {
-			// We could store a reference here in the future.
-			// For now, the caller name is sufficient for
-			// cross-file resolution in the Linker.
-			(void)target;
+			unit_->setCallReference(call_id, target);
+			unit_->setCallStrategy(call_id, "p1_intra");
+		} else {
+			unit_->setCallStrategy(
+				call_id,
+				BuiltinRegistry::resolve(unit_->language(),
+							 callee_name));
 		}
 	}
 
@@ -478,7 +568,7 @@ void JsVisitor::visitIdentifier(TSNode node, uint64_t parent_id)
 	// are already extracted in their respective handlers.
 	SourceRange loc = location(node);
 	std::string name = nodeText(node);
-	emitter_->emitVariable(name, loc, parent_id);
+	emitter_->emitVariable(name, loc, parent_id, detectVisibility(node));
 }
 
 void JsVisitor::visitVariableDecl(TSNode node, uint64_t parent_id)
@@ -496,7 +586,8 @@ void JsVisitor::visitVariableDecl(TSNode node, uint64_t parent_id)
 					SourceRange var_loc = location(child);
 					std::string var_name = nodeText(decl);
 					uint64_t var_id = emitter_->emitVariable(
-						var_name, var_loc, parent_id);
+						var_name, var_loc, parent_id,
+						detectVisibility(child));
 					defineSymbol(var_name, var_id);
 					found = true;
 					break;
@@ -552,12 +643,143 @@ void JsVisitor::visitExportStmt(TSNode node, uint64_t parent_id)
 	}
 }
 
+int JsVisitor::detectVisibility(TSNode node)
+{
+	// Walk ancestor chain looking for export_statement. JS/TS exports
+	// wrap the declaration as a child, so the parent of a function/class
+	// declaration under export is export_statement. tree-sitter exposes
+	// parent via ts_node_parent().
+	TSNode p = ts_node_parent(node);
+	while (ts_node_is_null(p) == false) {
+		const char *t = ts_node_type(p);
+		if (strcmp(t, "export_statement") == 0)
+			return 1;
+		// short-circuit: if we hit the module root, stop
+		if (strcmp(t, "program") == 0)
+			break;
+		p = ts_node_parent(p);
+	}
+	return 0;
+}
+
 void JsVisitor::visitMemberExpr(TSNode node, uint64_t parent_id)
 {
 	SourceRange loc = location(node);
 	std::string name = nodeText(node);
 	uint64_t member_id = emitter_->emitMemberAccess(name, loc, parent_id);
 	visitChildren(node, member_id);
+}
+
+void JsVisitor::visitNewExpr(TSNode node, uint64_t parent_id)
+{
+	SourceRange loc = location(node);
+	std::string callee_name;
+	uint32_t count = ts_node_child_count(node);
+
+	// Extract the constructor name from the callee child. For `new Foo()`
+	// it is an identifier; for `new Foo.Bar()` it is a member_expression
+	// whose trailing property_identifier is the constructor. Mirrors
+	// visitCallExpr so the constructor resolves by bare name.
+	for (uint32_t i = 0; i < count; i++) {
+		TSNode child = ts_node_child(node, i);
+		if (!ts_node_is_named(child))
+			continue;
+		const char *t = ts_node_type(child);
+		if (strcmp(t, "member_expression") == 0) {
+			uint32_t mc = ts_node_child_count(child);
+			for (uint32_t j = 0; j < mc; j++) {
+				TSNode mchild = ts_node_child(child, j);
+				if (!ts_node_is_named(mchild))
+					continue;
+				const char *mt = ts_node_type(mchild);
+				if (strcmp(mt, "property_identifier") == 0 ||
+				    strcmp(mt,
+					   "shorthand_property_identifier") ==
+					    0) {
+					callee_name = nodeText(mchild);
+				}
+			}
+			break;
+		}
+		if (strcmp(t, "identifier") == 0) {
+			callee_name = nodeText(child);
+			break;
+		}
+	}
+
+	// Unknown constructor shape — still recurse to capture nested calls.
+	if (callee_name.empty()) {
+		visitChildren(node, parent_id);
+		return;
+	}
+
+	// Skip JS/TS built-in constructors (Array, Map, ...) — they are NOT
+	// user-defined calls; the Resolver Pipeline would generate FPs.
+	if (isJsBuiltin(callee_name)) {
+		for (uint32_t i = 0; i < count; i++) {
+			TSNode child = ts_node_child(node, i);
+			if (!ts_node_is_named(child))
+				continue;
+			const char *t = ts_node_type(child);
+			if (strcmp(t, "identifier") == 0 ||
+			    strcmp(t, "member_expression") == 0)
+				continue;
+			visitNode(child, parent_id);
+		}
+		return;
+	}
+
+	// Constructor calls are always Constructor kind.
+	CallKind call_kind = CallKind::Constructor;
+
+	uint64_t func_id = currentFunctionId();
+	uint64_t call_parent = (func_id != 0) ? func_id : parent_id;
+
+	// Compute arity from the `arguments` child node (M-10 mirror).
+	int arity = 0;
+	for (uint32_t i = 0; i < count; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (strcmp(ts_node_type(c), "arguments") != 0)
+			continue;
+		uint32_t ac = ts_node_child_count(c);
+		for (uint32_t j = 0; j < ac; j++) {
+			TSNode arg = ts_node_child(c, j);
+			if (ts_node_is_named(arg))
+				++arity;
+		}
+		break;
+	}
+
+	uint64_t call_id = emitter_->emitCall(callee_name, loc, call_parent,
+					      arity, false,
+					      static_cast<int>(call_kind));
+
+	// ── Intra-file callee resolution ───────────────────────────
+	if (!callee_name.empty()) {
+		uint64_t target = resolveSymbol(callee_name);
+		if (target) {
+			unit_->setCallReference(call_id, target);
+			unit_->setCallStrategy(call_id, "p1_intra");
+		} else {
+			unit_->setCallStrategy(
+				call_id,
+				BuiltinRegistry::resolve(unit_->language(),
+							 callee_name));
+		}
+	}
+
+	// Recurse into children (arguments, nested expressions), skipping the
+	// already-extracted constructor identifier / member_expression.
+	for (uint32_t i = 0; i < count; i++) {
+		TSNode child = ts_node_child(node, i);
+		if (!ts_node_is_named(child))
+			continue;
+		const char *t = ts_node_type(child);
+		if (strcmp(t, "identifier") == 0 ||
+		    strcmp(t, "member_expression") == 0)
+			continue;
+		visitNode(child, call_id);
+	}
 }
 
 } // namespace ir

@@ -48,6 +48,23 @@ class FilterPolicy {
 	void setLanguageFilter(const std::string &filter);
 	bool isLanguageAccepted(const std::string &lang) const;
 
+	// ── Language context (for path-component collision policy) ───
+	// Set by the indexer when it detects the project's primary
+	// language. "java" relaxes the test/docs/samples skip rule to
+	// top-only (depth ≤ 3) so Java package components like
+	// org/springframework/samples/petclinic are NOT falsely skipped.
+	// All other languages keep these names skipped at ANY depth.
+	// See shouldSkipPath() and the rant in README.md "Why Java is
+	// the (only) exception".
+	void setLangContext(const std::string &lang)
+	{
+		lang_context_ = lang;
+	}
+	const std::string &langContext() const
+	{
+		return lang_context_;
+	}
+
 	// ── File/Dir Checks ──────────────────────────────────────────
 	bool shouldSkipDir(const std::string &dir_name) const;
 	bool shouldSkipDirPrefix(const std::string &dir_name) const;
@@ -133,6 +150,12 @@ class FilterPolicy {
 	Mode mode_ = NORMAL;
 	std::unordered_set<std::string> lang_filter_set_;
 	bool has_lang_filter_ = false;
+	// Primary language of the project being indexed ("java" / "rust" /
+	// "" = unset). Drives the test/docs skip policy in
+	// shouldSkipPath(): "java" → top-only (depth ≤ 3) via
+	// java_protected_skip_dirs_; all other → any-depth via
+	// normal_skip_dirs_.
+	std::string lang_context_;
 
 	// Skip dirs: Normal mode
 	std::unordered_set<std::string> normal_skip_dirs_;
@@ -140,6 +163,24 @@ class FilterPolicy {
 	std::unordered_set<std::string> fast_extra_skip_dirs_;
 	// Combined for current mode
 	std::unordered_set<std::string> active_skip_dirs_;
+
+	// Top-only skip dirs: source-bearing but rarely the focus of
+	// analysis (test/, docs/, vendor/, bench/, samples/, ...).
+	// Matched ONLY against the first path component of rel_path,
+	// so they catch <root>/test/, <root>/docs/ etc. without
+	// clobbering same-named Java package components like
+	// org/springframework/samples/petclinic (the "samples"
+	// component must NOT be skipped). See shouldSkipPath().
+	std::unordered_set<std::string> top_only_skip_dirs_;
+
+	// Java-protected skip dirs: same set as the test/docs/samples
+	// names in normal_skip_dirs_, but applied ONLY when
+	// lang_context_ == "java" and ONLY against the first 3 path
+	// components. Lets Java keep the old top-only behavior
+	// (protecting nested package namespaces) while every other
+	// language gets these names skipped at any depth via
+	// normal_skip_dirs_.
+	std::unordered_set<std::string> java_protected_skip_dirs_;
 
 	// Skip suffixes (always applied, case-insensitive) — for FILES
 	std::unordered_set<std::string> skip_suffixes_;
@@ -179,7 +220,7 @@ class FilterPolicy {
 			      const std::string &str);
 	static bool globImpl(const std::string &p, const std::string &s,
 			     std::string::const_iterator pi,
-			     std::string::const_iterator si);
+			     std::string::const_iterator si, int depth = 0);
 };
 
 #endif // FILTER_POLICY_H

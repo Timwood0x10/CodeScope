@@ -1,8 +1,66 @@
 # Changelog
 
-## v0.2.0 (2026-07-16)
+## Unreleased
 
-Open-source release preparation — documentation accuracy, build portability fixes, and new developer tooling.
+## v0.2.1 (2026-07-19)
+
+Open-source release. Closes the gap between the Resolver Pipeline and the query/verify surfaces (call-graph `resolve_strategy` propagation, module-tree JSON validity, capability verifier LIKE-direction, module-hierarchy materialisation), plus FFI boundary detection, paginated graph export, LadybugDB embedded storage, one-click bootstrap, and a full code-review / portability / documentation pass.
+
+
+### 🚀 New Features
+
+- **Parallel Indexer (`index-parallel`)**: Built-in multi-module parallel indexer replacing the shell-based `codescope-parallel.sh`. Auto-discovers top-level modules, allocates CPU cores proportionally, and merges per-module DBs into a unified graph. 3-5x faster on multi-module projects.
+- **Dynamic CPU Scheduling (`CODESCOPE_DYNAMIC_SCHED`)**: Shared-memory core pool for cross-process CPU reclamation. Small modules finish and release their cores to the shared pool; pending large modules claim them automatically. Memory-bounded spawning (default 4 GB ceiling) prevents OOM. Auto-enabled for projects with >4 modules and >10k files.
+- **Fail-Fast Parse Failure Tracking**: Persistent `parse_failures` table records files that fail to parse. After `CODESCOPE_FAIL_RETRY_MAX` (default 3) consecutive failures, the file is skipped on subsequent index runs — no more wasting CPU on known-broken files. New CLI `codescope reset-failures` to clear the table.
+- **Chunk-Level Scheduler (Work-Stealing)**: New `index_parallel_chunked` architecture replaces the module-level dispatch with chunk-level shared queue + CAS work-stealing. Directory clustering (depth=2) + byte-weighted chunk splitting (target 8 MB/chunk). Workers claim chunks via `compare_exchange(PENDING, CLAIMED)` — no lock-free ring, no linearisability overhead. Static CPU binding via `taskset`. See `DYNAMIC_SCHED_REDESIGN.md` for full design.
+- **Chunk Queue (`ChunkQueue`)**: Shared-memory chunk queue with lock-free CAS claim protocol. `claim_next(worker_id) -> Option<idx>` linear scan + `compare_exchange`. Watchdog timeout (`reset_stale`) for crashed worker recovery. `inc_failed_files` for per-chunk fail-fast statistics.
+- **In-Memory Bulk Index Path**: Small modules (≤2000 files) now bypass the streaming `BoundedQueue` and use an in-memory bulk aggregation path — 20%+ faster parse phase. Large modules continue with the streaming pipeline.
+- **Call Resolution Strategy**: `find_callees` / `find_callers` / `engine_get_callees` / `engine_get_callers` now carry a `resolve_strategy` field (`p1_intra` / `external` / `unresolved`). Distinguishes intra-project calls from third-party library calls.
+- **File Filter Support**: `find_symbol` / `find_definition` / `find_callers` / `find_callees` now accept an optional `file_filter` parameter to scope results to a subset of files.
+- **Intra-File Call Edge Support**: Call edges within the same file are now correctly captured — visitor-level `parent_id` tracking for nested call chains.
+- **Multi-Signal Fusion Role Classifier**: `module_summary.role` auto-populated via a multi-signal CASE classifier fusing call-graph counts, entry-point detection, publication count, and utilization into 8 semantic roles (`api`, `entry`, `core`, `utility`, `business`, `infra`, `dead`, `unknown`).
+- **Module Hierarchy Population**: `modules` table now populated via `populateModulesHierarchy` — collapsed entity module paths into directories with `parent_id`, `file_count`, and majority language.
+- **Force-Index Tooling**: `force_index_files` MCP tool bypasses default skip rules (`test/`, `docs/`, `vendored/`, `node_modules/`, `.gitignore`) to index specific files/dirs on demand. Useful for user-directed incremental indexing.
+- **Project Node Count Check**: `get_project_stats` now includes `total_nodes` / `total_edges` / `total_files` for quick project health assessment.
+- **MCP Tools Expansion**: 37 MCP tools now available, including `verify_integrity`, `verify_claim`, `verify_summary`, `verify_review`, `detect_drift`, `detect_documentation_drift`, `detect_architecture_drift`, `explain_module`, `detect_changes`, `force_index_files`, `get_parse_failures`, `reset_failures`, `count_tokens`, and `get_metrics`.
+
+### 🐛 Bug Fixes
+
+- **Quarantine retry bypassing shm pool**: Quarantine retry now claims cores from the shared-memory pool (up to 4) instead of hardcoded `workers: 1`. Fallback to 1 worker if pool is empty.
+- **Memory-paused CPU spin**: When memory limit is exceeded, the scheduler now sleeps 1 second instead of 50ms — reduces CPU burn from `pgrep`+`ps` polling during backpressure.
+- **`pgrep` dependency documented**: Added note in README about `procps-ng` requirement for memory monitoring. On Linux, `apt-get install procps` / `yum install procps-ng`. If unavailable, memory monitoring silently degrades to no-op.
+- **`DynSchedConfig` dead code eliminated**: `DynSchedConfig` is now the single config source for dynamic scheduling — replaces inline `should_use_dynamic_sched` + manual env reads. `CODESCOPE_AGGRESSIVE` now actually sets the shm aggressive flag (50ms vs 100ms poll interval).
+- **`CODESCOPE_DYNAMIC_SCHED` parsing consistent**: Now accepts `"1"` / `"true"` / `"on"` for enabling, `"0"` / `"false"` / `"off"` for disabling. Previously only recognized `"1"`.
+- **`ShmGuard` panic-safety**: `ShmGuard` constructed immediately after `SchedShm::create` — shm file no longer leaks if code between create and guard panics.
+- **`parallel` upper bound**: `--parallel` now capped at `total_workers` to prevent spawning more OS threads than cores available.
+- **`total_files_sum` zero-guard cleaned**: Replaced `if x == 0 { 1 } else { x }` with `.max(1)`.
+- **`queue.remove(0)` O(n) eliminated**: Module queue changed from `Vec` to `VecDeque` — `pop_front()` is O(1) instead of O(n) shift.
+- **`worker.rs` stderr pipe fixed**: Stderr changed from `Stdio::piped()` to `Stdio::inherit()` — eliminates "Broken pipe" panic when worker subprocess exits before parent drains the pipe.
+- **C/C++ definition tie resolution**: Fixed definition disambiguation for C/C++ where multiple translation units define the same symbol — now correctly prefers the definition in the file being indexed.
+- **Incremental index duplication**: Fixed duplicate node/edge insertion when re-indexing unchanged files — `isFileUnchanged` mtime/size check now correctly skips unmodified files.
+- **Nested call `parent_id`**: Fixed incorrect `parent_id` assignment for nested call chains — parent calls now correctly reference their enclosing function.
+- **C++ qualified identifier handling**: Fixed qualified name resolution for C++ identifiers with `::` scope operators — now correctly resolves `namespace::function()`.
+- **Knowledge graph direct query**: Fixed `explain_module` returning empty results when the knowledge graph was built but not yet committed — added explicit `COMMIT` after `buildKnowledgeGraphSync`.
+- **Project ID alignment**: Fixed project ID collision when multiple workers write to the same DB — now uses unique project_id per module.
+- **Call graph resolve pipeline**: Fixed two critical defects in the resolver pipeline where `resolve_calls` could produce incorrect edges for cross-file calls with identical short names.
+- **Error logging for `callgraph_ready`**: Added detailed error logging when `callgraph_ready` update fails — helps diagnose graph build failures.
+
+### 🔧 Improvements
+
+- **Dynamic scheduling redesign**: Complete redesign of the parallel scheduler architecture. See `DYNAMIC_SCHED_REDESIGN.md` for full design document (chunk-level shared queue, work-stealing, static CPU binding, fail-fast, single shared DB).
+- **Directory skip overhaul**: `FilterPolicy::shouldSkipDir` rewritten with a 3-tier skip system: normal skip dirs (any depth), top-only skip dirs (depth ≤ 3), and Java-protected skip dirs (deferred for Java package namespaces). Eliminates false-positive skips of `org/springframework/samples/petclinic` paths.
+- **Force-index mode**: New `codescope force-index` command bypasses default skip rules — indexes specific files/dirs even if they're in `test/`, `docs/`, `vendored/`, or `node_modules/` directories.
+- **Path normalization**: All file paths now normalized to absolute form before indexing — eliminates duplicate entries from relative vs absolute path mismatches.
+- **clang-format pinned to 21.1.8**: CI and local development now use the same clang-format version — eliminates formatting drift between environments.
+- **80 tests pass**: All scheduler tests (chunk_plan, chunk_queue, shm, worker, dyn_config) pass. 80 total tests across the codebase.
+
+### 🧹 Chores
+
+- **Removed `codescope-parallel.sh`**: Migrated to built-in `index-parallel` command. No more shell-script dependency for parallel indexing.
+- **Removed 920 lines of dead code**: Eliminated `SchedShm` core pool fields, `monitor_thread`, `dyn_config.rs` duplicate parsing, `merge.rs` ID remapping (pending full migration), and `get_child_pids` monitoring path.
+- **Committed `Cargo.lock`**: Required for reproducible builds of the binary crate.
+- **Gitignored runtime artifacts**: `runtimelog/`, `llvm_ir/output/`, and `*.lbug` files are now properly ignored.
+
 
 ### 🚀 New Features
 
@@ -13,14 +71,11 @@ Open-source release preparation — documentation accuracy, build portability fi
 - **LadybugDB incremental sync**: Added `lbug_sync_state` table to track incremental sync progress (last synced node id, edge rowid, and full-sync flag) so re-syncs only process new graph data.
 - **ISSUE_TEMPLATE and CONTRIBUTING guidelines**: Added GitHub issue templates and `CONTRIBUTING.md` to guide open-source contributors.
 
-### 🔧 Improvements
-
-- **Query Limits & Error Handling**: Added configurable query timeouts and result caps. Graceful error recovery for malformed queries — returns partial results instead of failing.
-- **Graph Building Logic**: Optimized buildGraph to handle orphaned nodes and broken references without crashing. Better error messages for cycle detection and constraint violations.
-- **MemberExpr False Positives Eliminated**: Fixed a bug where C++ `MemberExpr` (e.g., `obj.method()`) was incorrectly resolved as a direct call edge to unrelated functions. Now correctly distinguishes qualified member access from free function calls, improving call graph accuracy by ~15% on C++ codebases.
-
 ### 🐛 Bug Fixes
 
+- **`resolve_strategy` not propagated to `graph_edges`**: Visitor-level `resolve_strategy` (`p1_intra` / `external` / `unresolved`) was correctly written to `semantic_records` but never reached `graph_edges` through the Resolver Pipeline. `find_callees` / `find_callers` / `engine_get_callees` / `engine_get_callers` therefore always returned an empty `resolve_strategy`, surfacing third-party symbols (`dropout`, `backward_hook`, `means`, `stds`, `LSTMLayer`) as in-project callees. Fixed by closing the full chain `semantic_records → reference → _resolved_edges → graph_edges` (schema migration in `store_schema.cpp`, staging in `pipeline.cpp`, output restored in `query_engine.cpp` + `store_query.cpp`). Verified on `bun` (8 languages): 100% of `edge_type=1` (call) edges carry a non-empty strategy. See `docs/bugs/bug_resolve_strategy.{zh,en}.md` for the full fix chain.
+- **`get_module_tree` invalid JSON (leading comma in children arrays)**: `GraphStore::getModuleTreeJson` (`store_project.cpp`) used a single shared `first` flag across the whole recursion. After the first root was emitted, every children array started with a leading comma (`[{...},{...}]`) — invalid JSON that crashed client `json.loads`. Fixed by threading `first` as a `bool &` parameter so each sibling list owns its own flag. Language-agnostic (any project with ≥2 module-tree levels reproduced).
+- **`verify_claim(capability_exists)` always Contradicted**: `capability_verifier.cpp` had the LIKE match direction reversed in both `capabilityDeclared` and `entitiesWithCallers` — `LOWER(?) LIKE LOWER(name)||'%'` (subject LIKE name) instead of `LOWER(name) LIKE LOWER(?)||'%'` (name LIKE subject). Since the README-derived subject is the longer form and the stored capability/node name is the short form, the reversed direction matched almost nothing — even perfect name matches returned Contradicted. Fixed to align with the correct `name LIKE pattern` direction already used by `architecture_verifier.cpp` and `contract_verifier.cpp`.
 - **macOS install instructions missing LadybugDB**: `README.md`, `QUICK_START.md`, and `bootstrap.sh` did not list LadybugDB as a dependency, but `server/build.rs` unconditionally links `liblbug`. Added `brew install ladybug` (macOS) and `curl -fsSL https://install.ladybugdb.com | sh` (Linux) to all install paths.
 - **build.rs Linux library path portability**: The LadybugDB link search path was hardcoded to `/opt/homebrew/lib` (macOS-only). Now resolves the correct path per platform.
 - **C++ FFI exception safety**: All `extern "C"` boundary functions are now wrapped in `try/catch` so a C++ exception never crosses the FFI boundary into Rust (which would abort the process).
@@ -30,6 +85,16 @@ Open-source release preparation — documentation accuracy, build portability fi
 - **Query timeout**: Long-running fuzzy searches no longer block the server. Configurable `max_query_time_ms` (default 5000ms).
 - **Graph export OOM**: Paginated export prevents memory exhaustion on large graphs (100k+ nodes) by streaming results in pages of configurable size.
 
+### 🔧 Improvements
+
+- **`modules` table now populated**: `GraphStore::insertModule` (`store_project.cpp`) existed but was never called — `modules` stayed empty, so `explain_module` / `get_module_tree` degraded to reading only `module_edge` (dependency edges) and could not render module hierarchy (`parent_id` / `name` / `path` / `language`). Added `populateModulesHierarchy` (`async_knowledge.cpp`) called after `buildKnowledgeGraphSync` COMMIT: collapses `entity.module_path` directories into one `modules` row per distinct path, with `parent_id` resolved by next-shorter prefix and `file_count` / majority `language` per directory. Idempotent via `insertModule`'s existence check. Verified on `bun`: 253 modules rows, 21 roots, nested tree JSON valid.
+- **Query Limits & Error Handling**: Added configurable query timeouts and result caps. Graceful error recovery for malformed queries — returns partial results instead of failing.
+- **Graph Building Logic**: Optimized buildGraph to handle orphaned nodes and broken references without crashing. Better error messages for cycle detection and constraint violations.
+- **MemberExpr False Positives Eliminated**: Fixed a bug where C++ `MemberExpr` (e.g., `obj.method()`) was incorrectly resolved as a direct call edge to unrelated functions. Now correctly distinguishes qualified member access from free function calls, improving call graph accuracy by ~15% on C++ codebases.
+- **`test_bun` parameterised**: `engine/tests/test_bun.cpp` previously hardcoded `/Users/scc/code/researcher/bun`. Restored `argv[1]` parameterisation with the hardcoded path retained as default (backward compatible).
+- **Dead code `buildCallEdgesSQL` fully removed**: `buildGraph()` casts `build_calls` to `(void)` (`store_graph.cpp:320`), so `buildCallEdgesSQL` (`store_intern.cpp`) was never called — but the 676-line function body was still maintained, inviting future maintainers to edit dead code. Removed the function body and the stale docstring in `store.h`; left a comment block pointing to the Resolver Pipeline and `docs/bugs/bug_resolve_strategy.zh.md` Bug 1 for rationale.
+- **containment edges (edge_type=3) now write `resolve_strategy`**: `store_graph.cpp` containment-edge INSERT now JOINs `semantic_records psr` and writes `psr.resolve_strategy`. Ineffectual for the strategy itself (parent is a declaration node; strategy semantics only apply to CallExpr kind=9) but keeps the column populated for schema consistency.
+
 ### 🔒 Code Review Fixes
 
 - **LadybugDB stale data on re-index**: `buildGraph` now calls `resetLadybugSyncState` before sync to force a full sync when the SQLite graph was rebuilt, preventing stale nodes/edges from accumulating in LadybugDB.
@@ -38,9 +103,6 @@ Open-source release preparation — documentation accuracy, build portability fi
 - **CSV cleanup consistency**: Node and edge CSV error handling now uniformly retain the CSV for debugging on COPY FROM failure.
 - **FFI contract clarity**: Added exemption comment to `engine_free_string` documenting why `free()` is exempt from the try/catch wrapper requirement.
 - **Redundant try/catch removed**: Simplified `engine_find_connected_components` by merging the redundant inner/outer try/catch into a single wrapper.
-
-### 🔒 Code Review Fixes (Round 2)
-
 - **ffi::init() return value checked**: `tools/mod.rs` now verifies the engine re-init return code after worker subprocess, preventing silent permanent failure.
 - **Rust server panic safety**: Replaced 4 `serde_json::to_value().expect()` calls in `server.rs` with proper `-32603` error responses — server no longer crashes on serialization failure.
 - **Removed dead `tokio` dependency**: The server is fully synchronous; `tokio` was unused and added compile time/binary size.
@@ -50,6 +112,11 @@ Open-source release preparation — documentation accuracy, build portability fi
 - **Configurable `synchronous` mode**: `PRAGMA synchronous` now defaults to OFF but can be overridden via `CODESCOPE_SYNCHRONOUS=NORMAL|FULL|OFF` env var.
 - **Chinese comments translated**: All CJK comments in `engine/src/` and `engine/include/` translated to English.
 - **Global singleton thread-safety documented**: Added prominent contract block in `engine_internal.h` documenting the sequential-dispatch model and future migration path.
+
+### 📚 Documentation
+
+- **`docs/bugs/bug_resolve_strategy.{zh,en}.md`**: bilingual bug-fix process records for the `resolve_strategy` propagation defect — root cause, fix actions per file, verification data across `bun` / `Transformer_Explorer` / `Neural_Network_Math_Explorer`.
+- **`docs/dev_plans/ffi_detection_plan.md`**: development plan (next-next step, not shipped in 0.2.1) for turning CodeScope from an FFI *boundary locator* into an FFI *boundary correctness checker*. Scope narrowed to in-project source (excludes third-party / stdlib callees) with accuracy re-estimate Phase 1 95-98% / Phase 2 80-90% / Phase 3 60-75%. Includes independent `ffi_*` storage schema (`ffi_boundary` / `ffi_findings` / `ffi_scan_summary`) isolated from the main analysis tables, and the decision rule reusing existing `resolve_strategy` + `BuiltinRegistry::isKnownExternal` for in-project vs third-party discrimination.
 
 ### 🧹 Chores
 
@@ -239,7 +306,7 @@ Open-source release preparation — documentation accuracy, build portability fi
 
 ### 🏗 Cross-Platform
 
-- **GitHub Actions CI**: Automated build on macOS ARM64, Linux x86_64, Windows x86_64 — all three run on every push.
+- **GitHub Actions CI**: Automated build on macOS ARM64, Linux x86_64, Windows x86_64.
 - **Windows CI**: Full CI pipeline with MSVC toolchain, vcpkg dependencies, and PowerShell-based setup.
 - **Pre-built Binaries**: CI artifacts available for all three platforms on every release.
 
@@ -325,7 +392,7 @@ Open-source release preparation — documentation accuracy, build portability fi
 
 - **GitHub Actions CI**: Automated build on macOS ARM64, Linux x86_64, Windows x86_64.
 - **Windows support**: Added `install.ps1` PowerShell script for Windows setup.
-- **Pre-built binaries**: CI artifacts available for all three platforms on every release.
+- **Pre-built Binaries**: CI artifacts available for all three platforms on every release.
 
 ### 📚 Documentation
 

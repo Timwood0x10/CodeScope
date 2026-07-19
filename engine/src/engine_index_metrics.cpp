@@ -244,6 +244,17 @@ std::vector<store::MetricRow> computeMetricsFromUnit(ir::TranslationUnit *unit)
 	if (!unit)
 		return result;
 
+	// Iterative DFS using an explicit stack. The original recursive
+	// std::function implementation could overflow the call stack on
+	// deeply nested ASTs (generated/minified code can reach 1000+
+	// levels). The primary path (computeMetricsFromCST) was already
+	// converted to iterative; this fallback path now matches.
+	// A single pass performs both metric counting and stub detection
+	// — the counts are sums so traversal order is irrelevant, and
+	// stub detection only needs to know whether ANY real statement
+	// exists in the subtree.
+	std::vector<ir::Node *> dfs_stack;
+
 	for (auto *node : unit->all_nodes) {
 		if (node->kind != ir::NodeKind::FunctionDecl &&
 		    node->kind != ir::NodeKind::MethodDecl)
@@ -256,8 +267,20 @@ std::vector<store::MetricRow> computeMetricsFromUnit(ir::TranslationUnit *unit)
 		m.lines = static_cast<int>(node->loc.end_row -
 					   node->loc.start_row + 1);
 
-		// Count params, calls, branches, loops
-		std::function<void(ir::Node *)> count = [&](ir::Node *n) {
+		// Single iterative DFS: count params/calls/branches/loops AND
+		// detect whether the body contains any real statement (for the
+		// stub flag). Pushing children in natural order is fine since
+		// the metrics are order-independent sums. The stub-flag kind
+		// set is intentionally a subset of the counted kinds — this
+		// preserves the exact behaviour of the original two separate
+		// recursive lambdas (count vs stub_check).
+		bool has_real_stmt = false;
+		dfs_stack.clear();
+		dfs_stack.push_back(node);
+		while (!dfs_stack.empty()) {
+			ir::Node *n = dfs_stack.back();
+			dfs_stack.pop_back();
+			// Counting pass (mirrors original `count` lambda).
 			switch (n->kind) {
 			case ir::NodeKind::ParameterDecl:
 				m.param_count++;
@@ -278,37 +301,30 @@ std::vector<store::MetricRow> computeMetricsFromUnit(ir::TranslationUnit *unit)
 			default:
 				break;
 			}
+			// Stub detection (mirrors original `stub_check` lambda).
+			// Only a subset of kinds set has_real_stmt.
+			if (!has_real_stmt) {
+				switch (n->kind) {
+				case ir::NodeKind::CallExpr:
+				case ir::NodeKind::IfStmt:
+				case ir::NodeKind::ForStmt:
+				case ir::NodeKind::WhileStmt:
+				case ir::NodeKind::VariableDecl:
+				case ir::NodeKind::TryStmt:
+					has_real_stmt = true;
+					break;
+				default:
+					break;
+				}
+			}
 			for (auto *c : n->children)
-				count(c);
-		};
-		count(node);
+				dfs_stack.push_back(c);
+		}
 
 		// Finalize: cyclomatic = 1 + branches + loops,
 		// cognitive = cyclomatic + nesting_depth (approximation)
 		m.cyclomatic = 1 + m.branch_count + m.loop_count;
 		m.cognitive = m.cyclomatic + m.nesting_depth;
-
-		// Stub detection
-		bool has_real_stmt = false;
-		std::function<void(ir::Node *)> stub_check = [&](ir::Node *n) {
-			if (has_real_stmt)
-				return;
-			switch (n->kind) {
-			case ir::NodeKind::CallExpr:
-			case ir::NodeKind::IfStmt:
-			case ir::NodeKind::ForStmt:
-			case ir::NodeKind::WhileStmt:
-			case ir::NodeKind::VariableDecl:
-			case ir::NodeKind::TryStmt:
-				has_real_stmt = true;
-				return;
-			default:
-				break;
-			}
-			for (auto *c : n->children)
-				stub_check(c);
-		};
-		stub_check(node);
 		m.is_stub = !has_real_stmt;
 
 		result.push_back(std::move(m));

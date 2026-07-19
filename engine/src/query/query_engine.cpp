@@ -289,7 +289,8 @@ std::string QueryEngine::findReferences(uint64_t project_id,
 }
 
 std::string QueryEngine::getCallers(uint64_t project_id,
-				    const char *function_name)
+				    const char *function_name,
+				    const char *file_filter)
 {
 	if (!function_name || !*function_name)
 		return "{\"callers\":[],\"total\":0}";
@@ -299,23 +300,40 @@ std::string QueryEngine::getCallers(uint64_t project_id,
 	//       idx_graph_nodes_name(project_id, name)
 	// edge_type 1=call, 3=symbol_reference (caller→callee). Both are
 	// call-like; edge_type=1 alone dropped 83% of edges in real Go projects.
-	const char *sql =
-		"SELECT caller.id, caller.name, caller.file_path, "
-		"caller.start_row, caller.start_col "
+	//
+	// file_filter (optional): when non-NULL, restricts the callee to a
+	// specific file. This disambiguates homonyms — functions that share
+	// a name across files/classes (e.g. __init__, run, main) but are
+	// distinct symbols. Without this filter, getCallees("__init__")
+	// returns ~95 callees aggregated across all classes in the project.
+	//
+	// r.resolve_strategy is emitted so the frontend can filter out
+	// third-party (external) and unresolved callees. Populated by the
+	// Resolver Pipeline for edge_type=1 (call) edges.
+	std::string sql =
+		"SELECT DISTINCT caller.id, caller.name, caller.file_path, "
+		"caller.start_row, caller.start_col, r.resolve_strategy "
 		"FROM graph_nodes caller "
 		"JOIN graph_edges r ON caller.id = r.source_node_id "
 		"JOIN graph_nodes callee ON callee.id = r.target_node_id "
-		"  AND callee.name = ? AND callee.project_id = ? "
-		"WHERE r.edge_type IN (1,3) AND caller.project_id = ? "
-		"LIMIT 100";
+		"  AND callee.name = ? AND callee.project_id = ? ";
+	if (file_filter && *file_filter)
+		sql += "AND callee.file_path = ? ";
+	sql += "WHERE r.edge_type IN (1,3) AND caller.project_id = ? "
+	       "LIMIT 100";
 
 	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(store_->handle(), sql, -1, &stmt, nullptr) !=
-	    SQLITE_OK)
+	if (sqlite3_prepare_v2(store_->handle(), sql.c_str(), -1, &stmt,
+			       nullptr) != SQLITE_OK)
 		return "{\"callers\":[],\"total\":0,\"error\":\"prepare failed\"}";
-	sqlite3_bind_text(stmt, 1, function_name, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
-	sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(project_id));
+	int bind_idx = 1;
+	sqlite3_bind_text(stmt, bind_idx++, function_name, -1,
+			  SQLITE_TRANSIENT);
+	sqlite3_bind_int64(stmt, bind_idx++, static_cast<int64_t>(project_id));
+	if (file_filter && *file_filter)
+		sqlite3_bind_text(stmt, bind_idx++, file_filter, -1,
+				  SQLITE_TRANSIENT);
+	sqlite3_bind_int64(stmt, bind_idx++, static_cast<int64_t>(project_id));
 
 	std::string result = "{\"callers\":[";
 	bool first = true;
@@ -331,12 +349,16 @@ std::string QueryEngine::getCallers(uint64_t project_id,
 			sqlite3_column_text(stmt, 1));
 		const char *f = reinterpret_cast<const char *>(
 			sqlite3_column_text(stmt, 2));
+		const char *rs = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 5));
 		result += ",\"name\":\"" + jsonEscape(n ? n : "") + "\"";
 		result += ",\"file_path\":\"" + jsonEscape(f ? f : "") + "\"";
 		result += ",\"start_row\":" +
 			  std::to_string(sqlite3_column_int(stmt, 3));
 		result += ",\"start_col\":" +
 			  std::to_string(sqlite3_column_int(stmt, 4));
+		result += ",\"resolve_strategy\":\"" +
+			  jsonEscape(rs ? rs : "") + "\"";
 		result += "}";
 	}
 	sqlite3_finalize(stmt);
@@ -345,7 +367,8 @@ std::string QueryEngine::getCallers(uint64_t project_id,
 }
 
 std::string QueryEngine::getCallees(uint64_t project_id,
-				    const char *function_name)
+				    const char *function_name,
+				    const char *file_filter)
 {
 	if (!function_name || !*function_name)
 		return "{\"callees\":[],\"total\":0}";
@@ -355,23 +378,37 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 	//       idx_graph_nodes_name(project_id, name)
 	// edge_type 1=call, 3=symbol_reference (caller→callee). Both are
 	// call-like; edge_type=1 alone dropped 83% of edges in real Go projects.
-	const char *sql =
-		"SELECT callee.id, callee.name, callee.file_path, "
-		"callee.start_row, callee.start_col "
+	//
+	// file_filter (optional): when non-NULL, restricts the caller to a
+	// specific file. Disambiguates homonyms — see getCallers doc above.
+	//
+	// r.resolve_strategy is emitted so the frontend can filter out
+	// third-party (external) and unresolved callees. Populated by the
+	// Resolver Pipeline for edge_type=1 (call) edges.
+	std::string sql =
+		"SELECT DISTINCT callee.id, callee.name, callee.file_path, "
+		"callee.start_row, callee.start_col, r.resolve_strategy "
 		"FROM graph_nodes callee "
 		"JOIN graph_edges r ON callee.id = r.target_node_id "
 		"JOIN graph_nodes caller ON caller.id = r.source_node_id "
-		"  AND caller.name = ? AND caller.project_id = ? "
-		"WHERE r.edge_type IN (1,3) AND callee.project_id = ? "
-		"LIMIT 100";
+		"  AND caller.name = ? AND caller.project_id = ? ";
+	if (file_filter && *file_filter)
+		sql += "AND caller.file_path = ? ";
+	sql += "WHERE r.edge_type IN (1,3) AND callee.project_id = ? "
+	       "LIMIT 100";
 
 	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(store_->handle(), sql, -1, &stmt, nullptr) !=
-	    SQLITE_OK)
+	if (sqlite3_prepare_v2(store_->handle(), sql.c_str(), -1, &stmt,
+			       nullptr) != SQLITE_OK)
 		return "{\"callees\":[],\"total\":0,\"error\":\"prepare failed\"}";
-	sqlite3_bind_text(stmt, 1, function_name, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
-	sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(project_id));
+	int bind_idx = 1;
+	sqlite3_bind_text(stmt, bind_idx++, function_name, -1,
+			  SQLITE_TRANSIENT);
+	sqlite3_bind_int64(stmt, bind_idx++, static_cast<int64_t>(project_id));
+	if (file_filter && *file_filter)
+		sqlite3_bind_text(stmt, bind_idx++, file_filter, -1,
+				  SQLITE_TRANSIENT);
+	sqlite3_bind_int64(stmt, bind_idx++, static_cast<int64_t>(project_id));
 
 	std::string result = "{\"callees\":[";
 	bool first = true;
@@ -387,12 +424,16 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 			sqlite3_column_text(stmt, 1));
 		const char *f = reinterpret_cast<const char *>(
 			sqlite3_column_text(stmt, 2));
+		const char *rs = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 5));
 		result += ",\"name\":\"" + jsonEscape(n ? n : "") + "\"";
 		result += ",\"file_path\":\"" + jsonEscape(f ? f : "") + "\"";
 		result += ",\"start_row\":" +
 			  std::to_string(sqlite3_column_int(stmt, 3));
 		result += ",\"start_col\":" +
 			  std::to_string(sqlite3_column_int(stmt, 4));
+		result += ",\"resolve_strategy\":\"" +
+			  jsonEscape(rs ? rs : "") + "\"";
 		result += "}";
 	}
 	sqlite3_finalize(stmt);

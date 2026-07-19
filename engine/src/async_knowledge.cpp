@@ -127,6 +127,14 @@ int64_t buildKnowledgeGraphSync(store::GraphStore &store, uint64_t project_id)
 		return -1;
 	}
 
+	// Populate the modules hierarchy table from entity.module_path.
+	// Each distinct directory becomes one modules row; parent_id is
+	// resolved by matching the next-shorter path prefix so that
+	// getModuleTreeJson can render a nested tree. file_count is the
+	// number of entity rows in that directory; language is the majority
+	// language among those rows.
+	populateModulesHierarchy(store, project_id);
+
 	// Set the knowledge_ready readiness flag so callers know the
 	// knowledge graph is available for queries.
 	store.setProjectReadiness(project_id, "knowledge_ready", 1);
@@ -140,6 +148,207 @@ int64_t buildKnowledgeGraphSync(store::GraphStore &store, uint64_t project_id)
 			Clock::now() - t0)
 			.count());
 	return rows;
+}
+
+// Populate the modules hierarchy table from entity.module_path.
+//
+// entity.module_path holds the absolute directory portion of each file
+// (populated at entity INSERT time in store_graph.cpp). This helper
+// collapses those directories into one modules row per distinct path,
+// with parent_id resolved by the next-shorter prefix so that
+// getModuleTreeJson can render a nested tree without further joins.
+//
+// Algorithm:
+//   1. Resolve the project root_path from the projects table and trim
+//      it from every module_path so modules.path stays project-relative
+//      (matches the schema comment in store_schema.cpp §"modules").
+//   2. Walk the distinct directories in path-length order so every
+//      parent is inserted before its children; insertModule's existence
+//      check then resolves parent_id by looking up the prefix path.
+//   3. file_count = entity rows in that exact directory; language =
+//      majority language among those rows (empty if no entity rows).
+//
+// All failures surface a stderr line tagged with module=async,
+// method=populateModulesHierarchy per the error-trace policy in
+// plan/rules/code_rules.md §"Additional Rules". Returns the number of
+// modules rows inserted; -1 on a hard failure.
+int64_t populateModulesHierarchy(store::GraphStore &store, uint64_t project_id)
+{
+	using Clock = std::chrono::steady_clock;
+	auto t0 = Clock::now();
+
+	sqlite3 *db = store.handle();
+	if (!db) {
+		fprintf(stderr,
+			"[module=async, method=populateModulesHierarchy] "
+			"db handle is null\n");
+		return -1;
+	}
+
+	// Resolve project root_path so modules.path can be stored
+	// project-relative (schema contract). projects.root_path is the
+	// canonical project root recorded at engine_create_project time.
+	std::string root_path;
+	{
+		sqlite3_stmt *rp = nullptr;
+		if (sqlite3_prepare_v2(
+			    db, "SELECT root_path FROM projects WHERE id=?", -1,
+			    &rp, nullptr) != SQLITE_OK) {
+			fprintf(stderr,
+				"[module=async, method=populateModulesHierarchy] "
+				"prepare root_path failed: %s\n",
+				sqlite3_errmsg(db));
+			return -1;
+		}
+		sqlite3_bind_int64(rp, 1, static_cast<int64_t>(project_id));
+		if (sqlite3_step(rp) == SQLITE_ROW) {
+			const char *p = reinterpret_cast<const char *>(
+				sqlite3_column_text(rp, 0));
+			if (p)
+				root_path = p;
+		}
+		sqlite3_finalize(rp);
+	}
+	// Normalise: ensure root ends with '/' so prefix trimming is a
+	// simple `root_path` removal without leaving a leading slash.
+	if (!root_path.empty() && root_path.back() != '/')
+		root_path.push_back('/');
+
+	// Pull every distinct module_path with its entity count and the
+	// majority language in one pass. module_path is already the
+	// directory portion, so one row per directory.
+	sqlite3_stmt *q = nullptr;
+	const char *qsql =
+		"SELECT module_path, COUNT(*) AS cnt, "
+		"  (SELECT language FROM entity e2 "
+		"   WHERE e2.project_id = ? AND e2.module_path = e.module_path "
+		"   GROUP BY language ORDER BY COUNT(*) DESC LIMIT 1) AS lang "
+		"FROM entity e "
+		"WHERE project_id = ? AND module_path != '' "
+		"GROUP BY module_path "
+		"ORDER BY module_path";
+	if (sqlite3_prepare_v2(db, qsql, -1, &q, nullptr) != SQLITE_OK) {
+		fprintf(stderr,
+			"[module=async, method=populateModulesHierarchy] "
+			"prepare modules failed: %s\n",
+			sqlite3_errmsg(db));
+		return -1;
+	}
+	sqlite3_bind_int64(q, 1, static_cast<int64_t>(project_id));
+	sqlite3_bind_int64(q, 2, static_cast<int64_t>(project_id));
+
+	// Materialise into a vector: we need two passes (parent insert
+	// requires the prefix row id, which is only known after insert).
+	// Ordering by module_path ASC guarantees parent directories
+	// (shorter prefixes) appear before their children, so insertModule
+	// can resolve parent_id by looking up the trimmed prefix path.
+	struct ModRow {
+		std::string rel_path; // project-relative
+		std::string name; // last path segment
+		std::string language;
+		int file_count;
+	};
+	std::vector<ModRow> rows;
+	while (sqlite3_step(q) == SQLITE_ROW) {
+		const char *mp = reinterpret_cast<const char *>(
+			sqlite3_column_text(q, 0));
+		int cnt = sqlite3_column_int(q, 1);
+		const char *lg = reinterpret_cast<const char *>(
+			sqlite3_column_text(q, 2));
+		if (!mp || !*mp)
+			continue;
+		std::string abs = mp;
+		// Strip project root to get the project-relative path stored
+		// in modules.path (schema contract).
+		std::string rel;
+		if (!root_path.empty() && abs.rfind(root_path, 0) == 0)
+			rel = abs.substr(root_path.size());
+		else
+			rel = abs;
+		if (!rel.empty() && rel.back() == '/')
+			rel.pop_back();
+		if (rel.empty())
+			continue;
+		// Module name = last non-empty path segment.
+		auto slash = rel.rfind('/');
+		std::string name = (slash == std::string::npos) ?
+					   rel :
+					   rel.substr(slash + 1);
+		rows.push_back({ rel, name, lg ? lg : "", cnt });
+	}
+	sqlite3_finalize(q);
+
+	// Insert each directory in path-length order so parents precede
+	// children. insertModule is idempotent (it checks path uniqueness
+	// first), so re-runs after partial indexing don't duplicate rows.
+	// parent_id is resolved by trimming the last path segment and
+	// looking up the resulting prefix via insertModule (which returns
+	// the existing row id without inserting when the path already
+	// exists).
+	int64_t inserted = 0;
+	for (const auto &r : rows) {
+		// Resolve parent: drop the trailing segment, look up its id.
+		uint64_t parent_id = 0;
+		auto slash = r.rel_path.rfind('/');
+		if (slash != std::string::npos) {
+			std::string parent_path = r.rel_path.substr(0, slash);
+			// insertModule returns the existing id when the path is
+			// already present, so this is a pure lookup for the
+			// parent (never inserts a stub).
+			parent_id = store.insertModule(project_id, 0,
+						       parent_path.c_str(),
+						       parent_path.c_str(), "");
+			// If the parent path wasn't already inserted (shouldn't
+			// happen given ASC ordering, but guard anyway), leave
+			// parent_id = 0 so the row becomes a root.
+			if (parent_id == 0 && !parent_path.empty()) {
+				// Insert the missing parent as a placeholder so
+				// the child has a real parent_id. Language is
+				// empty; file_count stays 0 until entity rows
+				// appear under it.
+				parent_id = store.insertModule(
+					project_id, 0, parent_path.c_str(),
+					parent_path.c_str(), "");
+			}
+		}
+		uint64_t mid = store.insertModule(project_id, parent_id,
+						  r.name.c_str(),
+						  r.rel_path.c_str(),
+						  r.language.c_str());
+		if (mid == 0) {
+			fprintf(stderr,
+				"[module=async, method=populateModulesHierarchy] "
+				"insertModule failed for path '%s': %s\n",
+				r.rel_path.c_str(), store.error().c_str());
+			continue;
+		}
+		// Update file_count for this module (insertModule does not
+		// set it; default 0). One UPDATE per row is acceptable for
+		// ~250 modules; for larger projects this could be batched.
+		// language value originates from entity.language (a fixed
+		// enum: c/cpp/python/rust/...), so single-quote wrapping is
+		// injection-safe here — no user-controlled characters.
+		std::string upd = "UPDATE modules SET file_count=" +
+				  std::to_string(r.file_count) +
+				  ", language='" + r.language +
+				  "' WHERE id=" + std::to_string(mid);
+		if (!store.exec(upd.c_str())) {
+			fprintf(stderr,
+				"[module=async, method=populateModulesHierarchy] "
+				"UPDATE file_count failed for id %llu: %s\n",
+				(unsigned long long)mid, store.error().c_str());
+		}
+		inserted++;
+	}
+
+	fprintf(stderr,
+		"[module=async, method=populateModulesHierarchy] "
+		"inserted %lld modules rows for project %llu (%lldms)\n",
+		(long long)inserted, (unsigned long long)project_id,
+		(long long)std::chrono::duration_cast<std::chrono::milliseconds>(
+			Clock::now() - t0)
+			.count());
+	return inserted;
 }
 
 void runModelIndexSync(store::GraphStore &store, uint64_t project_id,
