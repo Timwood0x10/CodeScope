@@ -4,6 +4,9 @@ mod mcp;
 mod scheduler;
 mod tools;
 
+use crate::scheduler::chunk_queue;
+use serde_json::{Value, json};
+
 use std::env;
 use std::fs;
 use std::path::Path;
@@ -272,45 +275,173 @@ fn main() {
         return;
     }
 
-    // ── Chunk-worker mode: codescope chunk-worker <shm_path> <worker_id> <shared_db> ─
+    // ── Chunk-worker mode: codescope chunk-worker <shm_path> <worker_id> <worker_db> <files_json> <project_id> ─
     // Spawned by the chunk-level scheduler (run_chunk_worker in worker.rs).
-    // Opens the ChunkQueue from shm, loops claim_next → parse chunk → mark_done,
-    // writes to the shared DB. Exits when all chunks are DONE/FAILED.
-    if args.len() >= 5 && args[1] == "chunk-worker" {
+    // Opens the ChunkQueue from shm, then loops:
+    //   claim_next → slice the GLOBAL file list by (file_start,file_count)
+    //   → ffi::index_files → mark_done. Reclaims stale chunks (a crashed
+    //   peer) via reset_all_stale, and exits when every chunk is
+    //   DONE/FAILED. Each worker owns its OWN DB — no shared-DB corruption.
+    // Requires the `chunk_queue` module (see scheduler/chunk_queue.rs).
+    if args.len() >= 7 && args[1] == "chunk-worker" {
         let shm_path = args[2].as_str();
-        let worker_id_str = args[3].as_str();
-        let shared_db = args[4].as_str();
-        let _worker_id: u32 = worker_id_str.parse().unwrap_or(0);
+        let worker_id: u32 = args[3].parse().unwrap_or(0);
+        let worker_db = args[4].as_str();
+        let files_json_path = args[5].as_str();
+        let project_id: u64 = args[6].parse().unwrap_or(0);
 
-        eprintln!(
-            "chunk-worker: worker={} shm={} db={}",
-            _worker_id, shm_path, shared_db
-        );
-
-        if ffi::init(shared_db) != 0 {
-            eprintln!("chunk-worker: engine init failed");
+        if ffi::init(worker_db) != 0 {
+            eprintln!("chunk-worker: engine init failed for {}", worker_db);
             std::process::exit(1);
         }
 
-        // Open the ChunkQueue from shm.
-        // The C++ engine's chunk worker loop will handle claim_next → parse → mark_done.
-        // For now, we run engine_index_project on the full project directory as a
-        // fallback — the chunk-level loop will be wired in a future step.
-        // Safety: shm_path is a valid NUL-terminated path.
-        let pid = ffi::get_latest_project_id();
-        let pid = if pid == 0 {
-            ffi::create_project(".", "chunk-worker-project")
-        } else {
-            pid
+        let queue = match chunk_queue::ChunkQueue::open(shm_path) {
+            Ok(q) => q,
+            Err(e) => {
+                eprintln!("chunk-worker: open queue {} failed: {}", shm_path, e);
+                ffi::shutdown();
+                std::process::exit(1);
+            }
         };
 
-        // Run index_project on the full project (temporary fallback until
-        // the C++ engine supports chunk-level file lists).
-        let result = ffi::index_project(pid, ".", std::ptr::null());
-        println!("{}", result);
+        // GLOBAL file list (absolute paths) shared by all workers; each
+        // chunk is a slice [file_start .. file_start+file_count].
+        let files_content = match std::fs::read_to_string(files_json_path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!(
+                    "chunk-worker: failed to read file list from {}: {} [module=scheduler, method=chunk_worker]",
+                    files_json_path, e
+                );
+                ffi::shutdown();
+                std::process::exit(1);
+            }
+        };
+        let all_paths: Vec<String> = match serde_json::from_str(&files_content) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!(
+                    "chunk-worker: failed to parse file list JSON: {} [module=scheduler, method=chunk_worker]",
+                    e
+                );
+                ffi::shutdown();
+                std::process::exit(1);
+            }
+        };
+
+        // Forced project_id (mirrors the static path); falls back to a
+        // fresh project if 0. Each worker's DB is independent, so a single
+        // project per worker keeps ids consistent within the DB.
+        let pid = if project_id > 0 {
+            project_id
+        } else {
+            let new_pid = ffi::create_project(".", &format!("chunk-worker-{}", worker_id));
+            if new_pid == 0 {
+                eprintln!(
+                    "chunk-worker: failed to create project [module=scheduler, method=chunk_worker]"
+                );
+                ffi::shutdown();
+                std::process::exit(1);
+            }
+            new_pid
+        };
+
+        // Watchdog window for reclaiming orphaned chunks (crashed peer).
+        // Set to match the scheduler's per-worker timeout so a chunk is
+        // only reclaimed once its owner has been killed — never while the
+        // owner is still alive (which would duplicate rows at merge time).
+        let stale_timeout_ms: u64 = std::env::var("CODESCOPE_STALE_TIMEOUT_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(600_000);
+
+        let mut total_nodes: u64 = 0;
+        let mut total_edges: u64 = 0;
+        let mut files_indexed: u64 = 0;
+        let mut chunks_done: u32 = 0;
+
+        loop {
+            match queue.claim_next(worker_id) {
+                Some(idx) => {
+                    let snap = match queue.chunk_state(idx) {
+                        Some(s) => s,
+                        None => {
+                            queue.mark_failed(idx);
+                            chunks_done += 1;
+                            continue;
+                        }
+                    };
+                    let start = snap.file_start as usize;
+                    let count = snap.file_count as usize;
+                    if count == 0 || start >= all_paths.len() {
+                        queue.mark_done(idx);
+                        chunks_done += 1;
+                        continue;
+                    }
+                    let end = (start + count).min(all_paths.len());
+                    let chunk_files: Vec<String> = all_paths[start..end].to_vec();
+                    let files_json = match serde_json::to_string(&chunk_files) {
+                        Ok(j) => j,
+                        Err(e) => {
+                            eprintln!("chunk-worker: serialize chunk {} failed: {}", idx, e);
+                            queue.mark_failed(idx);
+                            chunks_done += 1;
+                            continue;
+                        }
+                    };
+                    let result = ffi::index_files(pid, &files_json);
+                    if let Ok(v) = serde_json::from_str::<Value>(&result) {
+                        if v["ok"] == true {
+                            total_nodes += v["total_nodes"].as_u64().unwrap_or(0);
+                            total_edges += v["total_edges"].as_u64().unwrap_or(0);
+                            files_indexed += v["files_indexed"].as_u64().unwrap_or(0);
+                            queue.mark_done(idx);
+                        } else {
+                            let err = v["error"].as_str().unwrap_or("unknown");
+                            eprintln!(
+                                "chunk-worker: chunk {} failed: {} [module=scheduler, method=chunk_worker]",
+                                idx, err
+                            );
+                            queue.mark_failed(idx);
+                        }
+                    } else {
+                        eprintln!(
+                            "chunk-worker: chunk {} index_files returned invalid JSON [module=scheduler, method=chunk_worker]",
+                            idx
+                        );
+                        queue.mark_failed(idx);
+                    }
+                    chunks_done += 1;
+                }
+                None => {
+                    // No PENDING chunk. Reclaim any stale CLAIMED chunk so a
+                    // crashed peer's files aren't stranded, then check
+                    // completion. Sleep briefly to avoid a hot spin while
+                    // live peers finish their chunks.
+                    queue.reset_all_stale(stale_timeout_ms);
+                    if queue.is_complete() {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            }
+        }
+
+        let result_json = json!({
+            "ok": true,
+            "worker_id": worker_id,
+            "total_nodes": total_nodes,
+            "total_edges": total_edges,
+            "files_indexed": files_indexed,
+            "chunks_done": chunks_done,
+        });
+        println!("{}", result_json);
 
         ffi::shutdown();
-        eprintln!("chunk-worker: done");
+        eprintln!(
+            "chunk-worker {}: done (nodes={} edges={} files={} chunks={})",
+            worker_id, total_nodes, total_edges, files_indexed, chunks_done
+        );
         return;
     }
 

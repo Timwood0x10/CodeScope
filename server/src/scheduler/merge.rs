@@ -244,13 +244,21 @@ pub(super) fn merge_module_dbs(main_db: &str, module_db_paths: &[String]) -> Mer
     sql.push_str("PRAGMA journal_mode=MEMORY;\n");
     sql.push_str("PRAGMA synchronous=OFF;\n");
     sql.push_str("PRAGMA foreign_keys=OFF;\n");
-    sql.push_str("BEGIN;\n");
-    sql.push_str(&schema_sql);
-    sql.push('\n');
 
     // ── Step 4: merge each module ───────────────────────────────
     for (i, db_path) in module_db_paths.iter().enumerate() {
         let alias = format!("m{}", i);
+        // Each module is merged in its OWN transaction; the DB is
+        // DETACHed only AFTER COMMIT (see H4 in module docs) because
+        // DETACH inside an open transaction fails with "database mN
+        // is locked" when a temp table was built FROM the attached DB.
+        sql.push_str("BEGIN;\n");
+        if i == 0 {
+            // Module 0 lays down the schema (read from its
+            // sqlite_master) so the INSERTs below have a target.
+            sql.push_str(&schema_sql);
+            sql.push('\n');
+        }
         // Escape single quotes by doubling them (' -> ''). Module DB
         // paths embed the module name, which comes from a directory
         // name; a dir like `O'Brien` or `it's` would terminate the
@@ -303,6 +311,8 @@ pub(super) fn merge_module_dbs(main_db: &str, module_db_paths: &[String]) -> Mer
                     a = alias
                 ));
             }
+            // (Module 0's DB is detached after COMMIT — see the
+            // DETACH at the end of the loop body, outside the txn.)
         } else {
             // Module i > 0: use temp tables to remap ids so they
             // don't collide with previously-merged modules.
@@ -382,9 +392,14 @@ pub(super) fn merge_module_dbs(main_db: &str, module_db_paths: &[String]) -> Mer
 
             sql.push_str("DROP TABLE _offsets;\n");
         }
-    }
 
-    sql.push_str("COMMIT;\n");
+        // Commit this module's merge, THEN detach (DETACH must be
+        // outside the transaction — see H4 note at loop top). This
+        // keeps live attachments at <=1 and scales past SQLite's
+        // 10-attached-DB limit regardless of module/worker count.
+        sql.push_str("COMMIT;\n");
+        sql.push_str(&format!("DETACH DATABASE {};\n", alias));
+    }
 
     // Count total rows across all merged tables for reporting. Only
     // sum tables that exist in the main DB (whose schema comes from

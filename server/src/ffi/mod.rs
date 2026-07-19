@@ -156,6 +156,19 @@ fn cstr(s: &str) -> CString {
     CString::new(sanitized).unwrap_or_else(|_| CString::new("").unwrap())
 }
 
+/// Take ownership of a heap-allocated C string returned by the engine.
+///
+/// # Safety
+///
+/// `ptr` MUST be a heap-allocated `char*` returned by an `engine_*` FFI
+/// function (allocated via `strdup`/`malloc` inside the C++ engine).
+/// The function calls `engine_free_string(ptr)` to release the memory,
+/// so `ptr` is invalid after this call and MUST NOT be used again.
+/// Passing a pointer to a static string (e.g. `""`) or calling
+/// `take_string` twice on the same pointer would cause a double-free.
+/// Every `engine_*` FFI function in this codebase documents its return
+/// value as "caller MUST free via engine_free_string()", so this
+/// contract is satisfied by construction.
 fn take_string(ptr: *mut c_char) -> String {
     if ptr.is_null() {
         return String::new();

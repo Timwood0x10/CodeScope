@@ -22,20 +22,38 @@ pub struct DynSchedConfig {
     pub shm_path: Option<String>,
 }
 
+/// Parse a scheduling-flag env var into an explicit on/off decision.
+///
+/// Returns `Some(true)` for truthy, `Some(false)` for falsy, and `None`
+/// when the var is unset or holds an unrecognised value. `None` lets the
+/// caller fall through to the next alias or keep the static default, so a
+/// typo can never silently flip the scheduler into dynamic mode.
+fn parse_sched_flag(v: &Option<String>) -> Option<bool> {
+    match v {
+        Some(s) => match s.as_str() {
+            "1" | "true" | "on" => Some(true),
+            "0" | "false" | "off" => Some(false),
+            _ => None,
+        },
+        None => None,
+    }
+}
+
 impl DynSchedConfig {
-    /// Load from environment variables.
+    /// Load configuration from environment variables.
     ///
-    /// Recognised truthy values: `"1"`, `"true"`, `"on"`.
-    /// Recognised falsy values: `"0"`, `"false"`, `"off"`.
-    /// For `CODESCOPE_DYNAMIC_SCHED`, any other value falls back to
-    /// `Some(false)` (force off) so a typo doesn't silently enable
-    /// dynamic scheduling. For `CODESCOPE_AGGRESSIVE`, any other value
-    /// is treated as `false`.
+    /// CPU-dynamic (chunked work-stealing) scheduling is OPT-IN. It is
+    /// enabled ONLY when an explicit flag is set; we never auto-enable it
+    /// for large projects — that would violate the project's "static by
+    /// default" scheduling principle. Recognised flags (either enables):
+    ///   - `CODESCOPE_CPU_DYNAMIC`   (preferred, self-documenting)
+    ///   - `CODESCOPE_DYNAMIC_SCHED` (legacy alias)
+    /// - `"1"`/`"true"`/`"on"` → force on
+    /// - `"0"`/`"false"`/`"off"` → force off
+    /// - Any other explicit value is ignored (treated as unset, auto-detect).
     pub fn from_env() -> Self {
-        let force_on = match env::var("CODESCOPE_DYNAMIC_SCHED") {
-            Ok(v) => Some(matches!(v.as_str(), "1" | "true" | "on")),
-            Err(_) => None,
-        };
+        let force_on = parse_sched_flag(&env::var("CODESCOPE_CPU_DYNAMIC").ok())
+            .or_else(|| parse_sched_flag(&env::var("CODESCOPE_DYNAMIC_SCHED").ok()));
         let aggressive = env::var("CODESCOPE_AGGRESSIVE")
             .map(|v| matches!(v.as_str(), "1" | "true" | "on"))
             .unwrap_or(false);

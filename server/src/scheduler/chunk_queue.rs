@@ -103,8 +103,7 @@ impl ChunkState {
     /// already bounded by `DEFAULT_MAX_BYTES` × `MAX_CHUNKS`, so it
     /// never overflows.
     fn init(&self, module_id: u32, file_start: u32, file_count: u32, total_bytes: u64) {
-        self.status.store(STATUS_PENDING, Ordering::Relaxed);
-        self.claimer_id.store(u32::MAX, Ordering::Relaxed);
+        // Write non-atomic fields FIRST, then publish via Release store.
         // SAFETY: these are plain u32/u64 writes; the scheduler calls
         // init() before any worker opens the shm, so exclusive access
         // is guaranteed by the caller's happens-before relationship.
@@ -113,9 +112,11 @@ impl ChunkState {
         // NOTE: module_id/file_start/file_count/total_bytes are NOT
         // atomic — they're written once here and never mutated. Workers
         // must only read them after observing `status != PENDING` via
-        // an atomic load (acquire ordering not required because we use
-        // Relaxed everywhere and rely on the CAS in claim_next for
-        // visibility).
+        // an atomic load, guaranteed by the Release store below.
+        self.claimer_id.store(u32::MAX, Ordering::Relaxed);
+        self.started_at_ms.store(0, Ordering::Relaxed);
+        self.finished_at_ms.store(0, Ordering::Relaxed);
+        self.failed_files.store(0, Ordering::Relaxed);
         unsafe {
             let p = self as *const Self as *mut Self;
             (*p).module_id = module_id;
@@ -123,9 +124,12 @@ impl ChunkState {
             (*p).file_count = file_count;
             (*p).total_bytes = total_bytes;
         }
-        self.started_at_ms.store(0, Ordering::Relaxed);
-        self.finished_at_ms.store(0, Ordering::Relaxed);
-        self.failed_files.store(0, Ordering::Relaxed);
+        // Release store: all prior writes (non-atomic fields, atomic
+        // initialisation) are visible to any worker that reads PENDING
+        // via an Acquire load (or CAS with Acquire success). This
+        // fixes the UB where Relaxed store could let a worker see
+        // PENDING before the non-atomic field writes are committed.
+        self.status.store(STATUS_PENDING, Ordering::Release);
     }
 }
 
@@ -495,7 +499,7 @@ impl ChunkQueue {
             return;
         }
         let slot = &state.chunks[idx as usize];
-        slot.failed_files.fetch_add(1, Ordering::Relaxed);
+        slot.failed_files.fetch_add(1, Ordering::Release);
     }
 
     /// Reset a CLAIMED chunk back to PENDING if its worker has timed
@@ -512,7 +516,7 @@ impl ChunkQueue {
             return false;
         }
         let slot = &state.chunks[idx as usize];
-        let started = slot.started_at_ms.load(Ordering::Relaxed);
+        let started = slot.started_at_ms.load(Ordering::Acquire);
         if started == 0 {
             return false; // never claimed
         }
@@ -542,6 +546,26 @@ impl ChunkQueue {
 
     /// Returns true if every chunk is in DONE or FAILED state.
     /// Used by the scheduler's main loop to detect completion.
+    /// Scan every chunk and reclaim any `CLAIMED` chunk whose worker has
+    /// been silent longer than `timeout_ms` (orphaned by a crashed
+    /// worker). Returns the number of chunks reset to `PENDING`.
+    ///
+    /// Called by idle workers (when `claim_next` finds no `PENDING` chunk)
+    /// so a crash mid-chunk cannot permanently strand files: another
+    /// worker re-claims the orphaned chunk and re-indexes its files
+    /// (idempotent — the worker writes to its OWN per-worker DB, so no
+    /// duplicate rows appear in the final merge). See DYNAMIC_SCHED_REDESIGN.md §8.
+    pub fn reset_all_stale(&self, timeout_ms: u64) -> u32 {
+        let count = self.chunk_count();
+        let mut reclaimed = 0u32;
+        for i in 0..count {
+            if self.reset_stale(i, timeout_ms) {
+                reclaimed += 1;
+            }
+        }
+        reclaimed
+    }
+
     pub fn is_complete(&self) -> bool {
         // SAFETY: self.ptr is valid for the lifetime of self.
         let state = unsafe { &*self.ptr };

@@ -329,29 +329,48 @@ pub(super) fn make_relative_glob(abs_path: &str, module_dir: &str) -> String {
 ///
 /// Spawns a `codescope chunk-worker` subprocess that:
 /// 1. Opens the `ChunkQueue` from the shm path.
-/// 2. Loops: `claim_next()` → parse the chunk's files → stream-write shared DB → `mark_done()`.
+/// 2. Loops: `claim_next()` → parse the chunk's files → stream-write its OWN DB → `mark_done()`.
 /// 3. Exits when all chunks are DONE/FAILED.
 ///
 /// `worker_id` — 0-based index for CPU binding and `claim_next` identity.
 /// `cpu_set` — comma-separated CPU list for `taskset`, e.g. `"0-3"` or `"0,2,4,6"`.
 ///   Pass empty string to skip CPU binding (e.g., on unsupported platforms).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn run_chunk_worker(
     exe: &str,
     shm_path: &str,
     worker_id: u32,
     cpu_set: &str,
-    shared_db: &str,
+    worker_db: &str,
+    files_json_path: &str,
+    project_id: u64,
     grammars_dir: &str,
 ) -> ModuleResult {
     let t0 = Instant::now();
     let worker_id_str = worker_id.to_string();
+    let project_id_str = project_id.to_string();
+
+    // Start from a clean DB — a stale worker DB would carry outdated
+    // graph nodes from a crashed previous run.
+    let _ = std::fs::remove_file(worker_db);
+    let _ = std::fs::remove_file(format!("{}-wal", worker_db));
+    let _ = std::fs::remove_file(format!("{}-shm", worker_db));
 
     let mut cmd = Command::new(exe);
-    cmd.args(["chunk-worker", shm_path, &worker_id_str, shared_db]);
+    cmd.args([
+        "chunk-worker",
+        shm_path,
+        &worker_id_str,
+        worker_db,
+        files_json_path,
+        &project_id_str,
+    ]);
     cmd.env("GRAMMARS_DIR", grammars_dir);
     cmd.env("CODESCOPE_SCHED_SHM", shm_path);
     cmd.env("CODESCOPE_WORKER_ID", &worker_id_str);
-    cmd.env("CODESCOPE_DB_PATH", shared_db);
+    cmd.env("CODESCOPE_DB_PATH", worker_db);
+    cmd.env("CODESCOPE_FILES_JSON", files_json_path);
+    cmd.env("CODESCOPE_PROJECT_ID", &project_id_str);
     cmd.env("CODESCOPE_INDEX_MODE", "fast");
     cmd.env("CODESCOPE_SKIP_ASYNC", "1");
 
@@ -366,11 +385,20 @@ pub(super) fn run_chunk_worker(
         // taskset -c 0,1,2,3 codescope chunk-worker ...
         let mut taskset_cmd = std::process::Command::new("taskset");
         taskset_cmd.args(["-c", cpu_set, exe]);
-        taskset_cmd.args(["chunk-worker", shm_path, &worker_id_str, shared_db]);
+        taskset_cmd.args([
+            "chunk-worker",
+            shm_path,
+            &worker_id_str,
+            worker_db,
+            files_json_path,
+            &project_id_str,
+        ]);
         taskset_cmd.env("GRAMMARS_DIR", grammars_dir);
         taskset_cmd.env("CODESCOPE_SCHED_SHM", shm_path);
         taskset_cmd.env("CODESCOPE_WORKER_ID", &worker_id_str);
-        taskset_cmd.env("CODESCOPE_DB_PATH", shared_db);
+        taskset_cmd.env("CODESCOPE_DB_PATH", worker_db);
+        taskset_cmd.env("CODESCOPE_FILES_JSON", files_json_path);
+        taskset_cmd.env("CODESCOPE_PROJECT_ID", &project_id_str);
         taskset_cmd.env("CODESCOPE_INDEX_MODE", "fast");
         taskset_cmd.env("CODESCOPE_SKIP_ASYNC", "1");
         taskset_cmd.stdout(Stdio::piped()).stderr(Stdio::inherit());
@@ -392,8 +420,8 @@ pub(super) fn run_chunk_worker(
                 time_parse_ms: 0,
                 duration_secs: t0.elapsed().as_secs(),
                 workers: 1,
-                db_path: shared_db.to_string(),
-                project_id: 0,
+                db_path: worker_db.to_string(),
+                project_id,
                 error: Some(format!(
                     "spawn failed: {} [module=scheduler, method=run_chunk_worker]",
                     e
@@ -434,8 +462,8 @@ pub(super) fn run_chunk_worker(
                         time_parse_ms: 0,
                         duration_secs: t0.elapsed().as_secs(),
                         workers: 1,
-                        db_path: shared_db.to_string(),
-                        project_id: 0,
+                        db_path: worker_db.to_string(),
+                        project_id,
                         error: Some(format!(
                             "timeout after {}s [module=scheduler, method=run_chunk_worker]",
                             DEFAULT_WORKER_TIMEOUT_SECS
@@ -455,8 +483,8 @@ pub(super) fn run_chunk_worker(
                     time_parse_ms: 0,
                     duration_secs: t0.elapsed().as_secs(),
                     workers: 1,
-                    db_path: shared_db.to_string(),
-                    project_id: 0,
+                    db_path: worker_db.to_string(),
+                    project_id,
                     error: Some(format!(
                         "wait failed: {} [module=scheduler, method=run_chunk_worker]",
                         e
@@ -501,8 +529,8 @@ pub(super) fn run_chunk_worker(
         time_parse_ms,
         duration_secs: duration,
         workers: 1,
-        db_path: shared_db.to_string(),
-        project_id: 0,
+        db_path: worker_db.to_string(),
+        project_id,
         error,
     }
 }

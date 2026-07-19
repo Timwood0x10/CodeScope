@@ -5,6 +5,24 @@
 namespace graph
 {
 
+// Entry-point function names per language. Functions matching these are
+// call-graph roots (program entry / FFI exports) and must be flagged
+// is_entry_point so downstream consumers (dead_code_inspector,
+// state_builder) treat them as reachable roots instead of orphans.
+// Go's `init` is an implicit entry point executed at package load.
+// [module=graph, method=isEntryPointName]
+static bool isEntryPointName(const std::string &name, const std::string &language)
+{
+	if (name == "main") {
+		return language == "c" || language == "cpp" ||
+		       language == "c++" || language == "go" ||
+		       language == "rust";
+	}
+	if (name == "init" && language == "go")
+		return true;
+	return false;
+}
+
 GraphBuilder::GraphBuilder(uint64_t project_id, uint64_t start_node_id)
 	: project_id_(project_id)
 	, next_node_id_(start_node_id)
@@ -253,6 +271,16 @@ void GraphBuilder::addGraphNode(const ir::Node *ir_node, NodeType type)
 	gn.end_row = ir_node->loc.end_row;
 	gn.end_col = ir_node->loc.end_col;
 	gn.language = ir_node->language;
+
+	// Flag call-graph roots (entry points) so dead_code_inspector and
+	// state_builder can exclude them from orphan/dead classification.
+	// The is_entry_point column previously defaulted to 0 everywhere,
+	// so entry-point detection never fired. [module=graph,
+	// method=addGraphNode]
+	if ((type == NodeType::Function || type == NodeType::Method) &&
+	    isEntryPointName(gn.name, gn.language)) {
+		gn.is_entry_point = true;
+	}
 
 	ir_to_graph_node_[ir_node->id] = gn.id;
 	current_graph_.nodes.push_back(std::move(gn));
