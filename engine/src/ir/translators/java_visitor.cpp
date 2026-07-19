@@ -105,6 +105,8 @@ void JavaVisitor::visitNode(TSNode node, uint64_t parent_id)
 		return handleEnumDecl(node, parent_id);
 	if (strcmp(type, "method_invocation") == 0)
 		return handleMethodInvocation(node, parent_id);
+	if (strcmp(type, "object_creation_expression") == 0)
+		return handleObjectCreation(node, parent_id);
 	if (strcmp(type, "variable_declarator") == 0)
 		return handleVariableDecl(node, parent_id);
 	if (strcmp(type, "import_declaration") == 0)
@@ -305,6 +307,82 @@ void JavaVisitor::handleMethodInvocation(TSNode node, uint64_t parent_id)
 		if (strcmp(t, "identifier") == 0 ||
 		    strcmp(t, "scoped_identifier") == 0 ||
 		    strcmp(t, "field_access") == 0)
+			continue;
+		visitNode(c, id);
+	}
+}
+void JavaVisitor::handleObjectCreation(TSNode node, uint64_t parent_id)
+{
+	SourceRange loc = location(node);
+	// Extract the constructor (type) name from the `type` field of the
+	// object_creation_expression node. tree-sitter-java exposes the type
+	// via child_by_field_name("type"), which may be a type_identifier
+	// (`Foo`) or a generic_type (`Foo<Bar>`). Mirrors handleMethodInvocation's
+	// use of child_by_field_name for robust name extraction regardless of
+	// child order. See CODE_REVIEW_FINDINGS_2026-07-19.md C3 (same pattern).
+	std::string name;
+	TSNode type_node = ts_node_child_by_field_name(node, "type", 4);
+	if (!ts_node_is_null(type_node)) {
+		const char *tt = ts_node_type(type_node);
+		if (strcmp(tt, "generic_type") == 0 ||
+		    strcmp(tt, "scoped_type_identifier") == 0 ||
+		    strcmp(tt, "array_type") == 0) {
+			// For generic/scoped types, use the inner type_identifier
+			// as the constructor name (e.g. `Foo` in `Foo<Bar>`).
+			uint32_t gc = ts_node_child_count(type_node);
+			for (uint32_t k = 0; k < gc; k++) {
+				TSNode g = ts_node_child(type_node, k);
+				if (!ts_node_is_named(g))
+					continue;
+				if (strcmp(ts_node_type(g),
+					   "type_identifier") == 0) {
+					name = nodeText(g);
+					break;
+				}
+			}
+			if (name.empty())
+				name = nodeText(
+					type_node); // fallback: full type
+		} else {
+			name = nodeText(type_node);
+		}
+	}
+
+	uint32_t cnt = ts_node_child_count(node);
+
+	// Constructor calls are always Constructor kind (M-9).
+	CallKind call_kind = CallKind::Constructor;
+
+	uint64_t func_id = currentFunctionId();
+	uint64_t call_parent = (func_id != 0) ? func_id : parent_id;
+	uint64_t id = emitter_->emitCall(name, loc, call_parent, 0, false,
+					 static_cast<int>(call_kind));
+
+	// ── Intra-file callee resolution ───────────────────────────
+	if (!name.empty()) {
+		uint64_t target = resolveSymbol(name);
+		if (target) {
+			unit_->setCallReference(id, target);
+			unit_->setCallStrategy(id, "p1_intra");
+		} else {
+			unit_->setCallStrategy(
+				id, BuiltinRegistry::resolve(unit_->language(),
+							     name));
+		}
+	}
+
+	// Recurse into children — skip the type node (already extracted as the
+	// constructor name). Only visit arguments / anonymous-class body so
+	// nested calls are captured. Mirrors handleMethodInvocation.
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (!ts_node_is_named(c))
+			continue;
+		const char *t = ts_node_type(c);
+		if (strcmp(t, "type_identifier") == 0 ||
+		    strcmp(t, "generic_type") == 0 ||
+		    strcmp(t, "scoped_type_identifier") == 0 ||
+		    strcmp(t, "array_type") == 0)
 			continue;
 		visitNode(c, id);
 	}

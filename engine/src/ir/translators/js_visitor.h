@@ -120,6 +120,10 @@ class JsVisitor {
 	void visitImportStmt(TSNode node, uint64_t parent_id);
 	void visitExportStmt(TSNode node, uint64_t parent_id);
 	void visitMemberExpr(TSNode node, uint64_t parent_id);
+	/// Emit a Call record for a `new`-expression constructor call
+	/// (e.g. `new Foo(x)`), mirroring visitCallExpr. Captures the
+	/// constructor name so constructor call-edges are not dropped (M-9).
+	void visitNewExpr(TSNode node, uint64_t parent_id);
 	/// Detect JS/TS visibility: returns 1 if node is exported (wrapped in
 	/// export_statement or marked export), else 0. v0.2.2 role classifier.
 	int detectVisibility(TSNode node);

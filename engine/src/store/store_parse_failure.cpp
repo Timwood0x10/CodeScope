@@ -3,7 +3,7 @@
 // Implements the fail-fast design from DYNAMIC_SCHED_REDESIGN.md §7.3
 // and CODE_REVIEW_DYNAMIC_SCHED_2026-07-19.md (Part B, Phase 0).
 // Files that fail to parse N times (CODESCOPE_FAIL_RETRY_MAX, default
-// 3) are skipped on subsequent index runs. Reset via CLI reset-failures.
+// 1) are skipped on subsequent index runs. Reset via CLI reset-failures.
 //
 // Uses g_store (defined in engine.cpp, declared in engine_internal.h)
 // via the public handle() accessor. Prepared statements are wrapped in
@@ -16,6 +16,7 @@
 
 #include <cstdio>
 #include <memory>
+#include <mutex>
 #include <sqlite3.h>
 #include <string>
 
@@ -53,6 +54,8 @@ const char *failReasonToString(FailReason r)
 		return "read_empty";
 	case FailReason::StatFailed:
 		return "stat_failed";
+	case FailReason::FileTooLarge:
+		return "file_too_large";
 	case FailReason::VisitorException:
 		return "exception";
 	case FailReason::VisitorUnknownThrow:
@@ -91,12 +94,67 @@ bool isKnownParseFailure(uint64_t project_id, const std::string &file_path,
 	return false;
 }
 
+// Dedicated auxiliary connection for parse-failure writes that originate
+// from parse-worker threads. It is INDEPENDENT of the writer thread's
+// long-lived transaction (engine_index_project.cpp owns a single SQLite
+// write path via writer_thread). A separate connection guarantees that
+// fail-fast markers commit immediately and are NOT discarded if the
+// writer transaction rolls back (M1 in CODE_REVIEW_SCHED_CHANGES). The
+// connection is cached and re-opened if the underlying DB path changes
+// (e.g. several index runs within one process).
+static sqlite3 *auxFailureDb()
+{
+	// GUARD: parse-worker threads call recordParseFailure concurrently
+	// (engine_index_project.cpp spawns N workers). The static `db` /
+	// `cached_path` would otherwise race: two threads could both see
+	// `db == nullptr`, both sqlite3_open into the same `&db`, leaking
+	// one handle; or thread A could read `db` while thread B is
+	// mid-reopen after a path change. The mutex serialises the C++
+	// pointer/string management around the static connection.
+	static std::mutex mtx;
+	std::lock_guard<std::mutex> lk(mtx);
+
+	static std::string cached_path;
+	static sqlite3 *db = nullptr;
+	if (!g_store)
+		return nullptr;
+	const std::string path = g_store->dbPath();
+	if (db && cached_path != path) {
+		sqlite3_close(db);
+		db = nullptr;
+	}
+	if (!db) {
+		cached_path = path;
+		if (sqlite3_open(path.c_str(), &db) != SQLITE_OK) {
+			// Per SQLite docs: "Whether or not an error occurs when
+			// it is opened, resources associated with the database
+			// connection handle should be released by passing it to
+			// sqlite3_close()". sqlite3_open may allocate a partial
+			// handle (e.g. OOM during init) that must be closed.
+			fprintf(stderr,
+				"store: aux failure connection open failed: %s "
+				"[module=store, method=auxFailureDb]\n",
+				db ? sqlite3_errmsg(db) : "oom");
+			if (db)
+				sqlite3_close(db);
+			db = nullptr;
+			return nullptr;
+		}
+		// Match the main connection's concurrency pragmas so writes
+		// coordinate correctly under WAL. SQLITE_CONFIG_SERIALIZED
+		// (set process-wide at startup) already serialises access.
+		sqlite3_exec(db, "PRAGMA busy_timeout=5000;", nullptr, nullptr,
+			     nullptr);
+	}
+	return db;
+}
+
 void recordParseFailure(uint64_t project_id, const std::string &file_path,
 			const std::string &lang, const std::string &reason)
 {
-	sqlite3 *db = g_store ? g_store->handle() : nullptr;
+	sqlite3 *db = auxFailureDb();
 	if (!db) {
-		fprintf(stderr, "store: g_store not initialised "
+		fprintf(stderr, "store: aux failure db unavailable "
 				"[module=store, method=recordParseFailure]\n");
 		return;
 	}
@@ -122,6 +180,82 @@ void recordParseFailure(uint64_t project_id, const std::string &file_path,
 	sqlite3_bind_text(stmt.get(), 4, reason.c_str(), -1, SQLITE_TRANSIENT);
 	if (sqlite3_step(stmt.get()) != SQLITE_DONE)
 		logErr(db, "step", "recordParseFailure");
+}
+
+// ── In-memory parse failure buffer ───────────────────────────────
+// Parse workers buffer failures here to avoid SQLite lock contention.
+// flushParseFailures() batch-writes all buffered rows in one transaction.
+
+struct ParseFailureRecord {
+	uint64_t project_id;
+	std::string file_path;
+	std::string lang;
+	std::string reason;
+};
+
+static std::mutex g_failure_buf_mtx;
+static std::vector<ParseFailureRecord> g_failure_buf;
+
+void bufferParseFailure(uint64_t project_id, const std::string &file_path,
+			const std::string &lang, const std::string &reason)
+{
+	std::lock_guard<std::mutex> lk(g_failure_buf_mtx);
+	g_failure_buf.push_back({ project_id, file_path, lang, reason });
+}
+
+int flushParseFailures()
+{
+	// Swap out the buffer under the lock so we can flush without
+	// holding the lock during SQLite writes.
+	std::vector<ParseFailureRecord> batch;
+	{
+		std::lock_guard<std::mutex> lk(g_failure_buf_mtx);
+		batch.swap(g_failure_buf);
+	}
+	if (batch.empty())
+		return 0;
+
+	sqlite3 *db = auxFailureDb();
+	if (!db) {
+		fprintf(stderr, "store: aux failure db unavailable "
+				"[module=store, method=flushParseFailures]\n");
+		return -1;
+	}
+
+	const char *sql = "INSERT INTO parse_failures "
+			  "(project_id, file_path, language, fail_reason, "
+			  " fail_count, first_seen, last_seen) "
+			  "VALUES (?,?,?,?,1,strftime('%s','now'),"
+			  "        strftime('%s','now')) "
+			  "ON CONFLICT(project_id, file_path) DO UPDATE SET "
+			  "fail_count = fail_count + 1, "
+			  "last_seen = excluded.last_seen, "
+			  "fail_reason = excluded.fail_reason";
+	sqlite3_stmt *raw = nullptr;
+	if (sqlite3_prepare_v2(db, sql, -1, &raw, nullptr) != SQLITE_OK) {
+		logErr(db, "prepare", "flushParseFailures");
+		return -1;
+	}
+	StmtPtr stmt(raw);
+
+	// Single transaction for all buffered rows.
+	sqlite3_exec(db, "BEGIN", nullptr, nullptr, nullptr);
+	for (auto &r : batch) {
+		sqlite3_bind_int64(stmt.get(), 1,
+				   static_cast<int64_t>(r.project_id));
+		sqlite3_bind_text(stmt.get(), 2, r.file_path.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt.get(), 3, r.lang.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt.get(), 4, r.reason.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		if (sqlite3_step(stmt.get()) != SQLITE_DONE)
+			logErr(db, "step", "flushParseFailures");
+		sqlite3_reset(stmt.get());
+	}
+	sqlite3_exec(db, "COMMIT", nullptr, nullptr, nullptr);
+
+	return static_cast<int>(batch.size());
 }
 
 int resetParseFailures(uint64_t project_id)

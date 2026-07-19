@@ -131,6 +131,8 @@ void CVisitor::visitNode(TSNode node, uint64_t parent_id)
 		return handleEnum(node, parent_id);
 	if (strcmp(type, "call_expression") == 0)
 		return handleCall(node, parent_id);
+	if (strcmp(type, "new_expression") == 0)
+		return handleNewExpr(node, parent_id);
 	if (strcmp(type, "preproc_include") == 0)
 		return handleInclude(node, parent_id);
 	if (strcmp(type, "type_definition") == 0)
@@ -315,6 +317,88 @@ void CVisitor::handleCall(TSNode node, uint64_t parent_id)
 		if (strcmp(ts_node_type(child), "identifier") == 0)
 			continue;
 		if (strcmp(ts_node_type(child), "argument_list") == 0)
+			visitChildren(child, id);
+		else
+			visitNode(child, id);
+	}
+}
+
+void CVisitor::handleNewExpr(TSNode node, uint64_t parent_id)
+{
+	SourceRange loc = location(node);
+	// Extract the constructor name from the type/specifier child of the
+	// new_expression. Reuse extractName(), which descends into
+	// generic_type / qualified_identifier / pointer_type to obtain the
+	// bare type name (e.g. `Foo` from `Foo<Bar>` or `ns::Foo`).
+	std::string name;
+	uint32_t count = ts_node_child_count(node);
+	for (uint32_t i = 0; i < count; i++) {
+		TSNode child = ts_node_child(node, i);
+		if (!ts_node_is_named(child))
+			continue;
+		name = extractName(child);
+		if (!name.empty())
+			break;
+	}
+
+	// Skip if no constructor type could be resolved (malformed/placement
+	// new or non-nameable specifier) — still recurse to capture nested calls.
+	if (name.empty()) {
+		visitChildren(node, parent_id);
+		return;
+	}
+
+	// Skip C compiler builtins / common stdlib — NOT user-defined calls.
+	if (!name.empty() && isCBuiltin(name)) {
+		for (uint32_t i = 0; i < count; i++) {
+			TSNode child = ts_node_child(node, i);
+			if (!ts_node_is_named(child))
+				continue;
+			if (strcmp(ts_node_type(child), "argument_list") == 0)
+				visitChildren(child, parent_id);
+			else
+				visitNode(child, parent_id);
+		}
+		return;
+	}
+
+	// Constructor calls are always Constructor kind (M-9).
+	CallKind call_kind = CallKind::Constructor;
+	int arity = countArguments(node, count);
+
+	uint64_t func_id = currentFunctionId();
+	uint64_t call_parent = (func_id != 0) ? func_id : parent_id;
+	uint64_t id = emitter_->emitCall(name, loc, call_parent, arity, false,
+					 static_cast<int>(call_kind));
+
+	// ── Intra-file callee resolution ───────────────────────────
+	if (!name.empty()) {
+		uint64_t target = resolveSymbol(name);
+		if (target) {
+			unit_->setCallReference(id, target);
+			unit_->setCallStrategy(id, "p1_intra");
+		} else {
+			unit_->setCallStrategy(
+				id, BuiltinRegistry::resolve(unit_->language(),
+							     name));
+		}
+	}
+
+	// Recurse into children — skip the type specifier (already extracted
+	// as the constructor name). Visit the argument_list's children so
+	// nested calls are captured. Mirrors handleCall.
+	for (uint32_t i = 0; i < count; i++) {
+		TSNode child = ts_node_child(node, i);
+		if (!ts_node_is_named(child))
+			continue;
+		const char *t = ts_node_type(child);
+		if (strcmp(t, "identifier") == 0 ||
+		    strcmp(t, "type_identifier") == 0 ||
+		    strcmp(t, "generic_type") == 0 ||
+		    strcmp(t, "qualified_identifier") == 0 ||
+		    strcmp(t, "pointer_type") == 0)
+			continue;
+		if (strcmp(t, "argument_list") == 0)
 			visitChildren(child, id);
 		else
 			visitNode(child, id);

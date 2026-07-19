@@ -103,14 +103,19 @@ std::string GraphStore::getTaskStatusJson(uint64_t project_id)
 		const char *ca = reinterpret_cast<const char *>(
 			sqlite3_column_text(stmt, 6));
 		std::ostringstream json;
+		// Mirror sibling functions (getEntryPointsJson, tracePathJson,
+		// exploreFunctionJson) and escape all free-form text fields so a
+		// '"' or '\' in task_type/status/error/timestamps cannot break the
+		// JSON. [module=store, method=getTaskStatusJson]
 		json << "{"
 		     << "\"id\":" << id << ","
-		     << "\"task_type\":\"" << (tt ? tt : "") << "\","
-		     << "\"status\":\"" << (st ? st : "") << "\","
+		     << "\"task_type\":\"" << jsonEscape(tt ? tt : "") << "\","
+		     << "\"status\":\"" << jsonEscape(st ? st : "") << "\","
 		     << "\"progress\":" << pr << ","
-		     << "\"error\":\"" << (er ? er : "") << "\","
-		     << "\"started_at\":\"" << (sa ? sa : "") << "\","
-		     << "\"completed_at\":\"" << (ca ? ca : "") << "\""
+		     << "\"error\":\"" << jsonEscape(er ? er : "") << "\","
+		     << "\"started_at\":\"" << jsonEscape(sa ? sa : "") << "\","
+		     << "\"completed_at\":\"" << jsonEscape(ca ? ca : "")
+		     << "\""
 		     << "}";
 		sqlite3_finalize(stmt);
 		return json.str();
@@ -370,12 +375,17 @@ std::string GraphStore::findCallersJson(uint64_t project_id,
 				sqlite3_column_text(ge_stmt, 5));
 			const char *tn = (nt >= 0 && nt < 6) ? type_names[nt] :
 							       "symbol";
+			// Escape free-form text fields (name/file_path/resolve_strategy)
+			// so a '"' or '\' cannot break the JSON. kind (tn) is a fixed
+			// enum label and needs no escaping.
+			// [module=store, method=findCallersJson/findCalleesJson]
 			json << "{\"id\":" << gid << ",\"name\":\""
-			     << (gn ? gn : "") << "\""
+			     << jsonEscape(gn ? gn : "") << "\""
 			     << ",\"kind\":\"" << tn << "\""
-			     << ",\"file_path\":\"" << (fp ? fp : "") << "\""
+			     << ",\"file_path\":\"" << jsonEscape(fp ? fp : "")
+			     << "\""
 			     << ",\"line\":" << ln << ",\"resolve_strategy\":\""
-			     << (rs ? rs : "") << "\"}";
+			     << jsonEscape(rs ? rs : "") << "\"}";
 		}
 		sqlite3_finalize(ge_stmt);
 	}
@@ -466,12 +476,17 @@ std::string GraphStore::findCalleesJson(uint64_t project_id,
 				sqlite3_column_text(ge_stmt, 5));
 			const char *tn = (nt >= 0 && nt < 6) ? type_names[nt] :
 							       "symbol";
+			// Escape free-form text fields (name/file_path/resolve_strategy)
+			// so a '"' or '\' cannot break the JSON. kind (tn) is a fixed
+			// enum label and needs no escaping.
+			// [module=store, method=findCallersJson/findCalleesJson]
 			json << "{\"id\":" << gid << ",\"name\":\""
-			     << (gn ? gn : "") << "\""
+			     << jsonEscape(gn ? gn : "") << "\""
 			     << ",\"kind\":\"" << tn << "\""
-			     << ",\"file_path\":\"" << (fp ? fp : "") << "\""
+			     << ",\"file_path\":\"" << jsonEscape(fp ? fp : "")
+			     << "\""
 			     << ",\"line\":" << ln << ",\"resolve_strategy\":\""
-			     << (rs ? rs : "") << "\"}";
+			     << jsonEscape(rs ? rs : "") << "\"}";
 		}
 		sqlite3_finalize(ge_stmt);
 	}

@@ -409,7 +409,25 @@ void GoVisitor::handleCall(TSNode node, uint64_t parent_id)
 	// would fail and the nested call would be dropped.
 	uint64_t func_id = currentFunctionId();
 	uint64_t call_parent = (func_id != 0) ? func_id : parent_id;
-	uint64_t id = emitter_->emitCall(name, loc, call_parent, 0, false,
+
+	// Compute arity from the `argument_list` child node's named children.
+	// Previously hardcoded to 0, which degraded overload disambiguation
+	// by arity in the Resolver Pipeline. Mirrors CVisitor::countArguments.
+	int arity = 0;
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (strcmp(ts_node_type(c), "argument_list") != 0)
+			continue;
+		uint32_t ac = ts_node_child_count(c);
+		for (uint32_t j = 0; j < ac; j++) {
+			TSNode arg = ts_node_child(c, j);
+			if (ts_node_is_named(arg))
+				++arity;
+		}
+		break;
+	}
+
+	uint64_t id = emitter_->emitCall(name, loc, call_parent, arity, false,
 					 static_cast<int>(call_kind));
 
 	// ── Intra-file callee resolution ───────────────────────────

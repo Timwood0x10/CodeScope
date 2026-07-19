@@ -221,6 +221,10 @@ pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> S
             modules.len(),
             total_files_sum
         );
+        // Dispatch to the chunk-level scheduler for large projects.
+        // The chunk-level scheduler replaces the old shm-core-pool
+        // dynamic scheduler (index_parallel_dynamic) with a chunk
+        // queue + work-stealing approach (DYNAMIC_SCHED_REDESIGN.md).
         return index_parallel_dynamic(project_dir, total_workers, parallel);
     }
 
@@ -478,6 +482,9 @@ pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> S
 /// `SchedShm::update_mem_usage`. If RSS exceeds `mem_limit_mb`, new
 /// worker spawns are paused (existing workers keep running — we don't
 /// kill them).
+// Kept for reference; the chunk-level scheduler (index_parallel_chunked)
+// replaces this path. Remove after migration is complete.
+#[allow(dead_code)]
 fn index_parallel_dynamic(project_dir: &str, total_workers: u32, parallel: u32) -> String {
     let start = Instant::now();
     let total_workers = if total_workers == 0 {
@@ -910,6 +917,8 @@ fn index_parallel_dynamic(project_dir: &str, total_workers: u32, parallel: u32) 
 /// Get child PIDs of the current process via `pgrep -P $$`.
 /// Returns an empty vec if pgrep is unavailable (e.g., unsupported
 /// platform) — memory monitoring just degrades to no-op in that case.
+/// Kept for reference by the old index_parallel_dynamic path.
+#[allow(dead_code)]
 fn get_child_pids() -> Vec<u32> {
     let parent_pid = std::process::id();
     let output = std::process::Command::new("pgrep")
@@ -970,6 +979,258 @@ fn error_json(msg: &str, module: &str, method: &str) -> String {
         "error": msg,
         "module": module,
         "method": method
+    })
+    .to_string()
+}
+
+/// Chunk-level parallel indexer: chunk queue + work-stealing.
+///
+/// Replaces the old `index_parallel_dynamic` (shm-core-pool) approach.
+/// Wired in via the dispatch path when CODESCOPE_DYNAMIC_SCHED=1.
+/// Keep for future migration from shm-core-pool to chunk-level scheduler.
+#[allow(dead_code)]
+fn index_parallel_chunked(project_dir: &str, total_workers: u32, parallel: u32) -> String {
+    let start = Instant::now();
+    let total_workers = if total_workers == 0 {
+        DEFAULT_TOTAL_WORKERS
+    } else {
+        total_workers
+    };
+    let parallel = if parallel == 0 {
+        DEFAULT_PARALLEL
+    } else {
+        parallel
+    };
+    // Cap parallel at total_workers (see Bug 9 fix).
+    let parallel = parallel.min(total_workers).max(1);
+
+    let project_path_buf = match canonicalize_project_dir(project_dir) {
+        Ok(p) => p,
+        Err(e) => return error_json(&e, "scheduler", "index_parallel_chunked"),
+    };
+    let project_path = project_path_buf.to_string_lossy().to_string();
+
+    let exe_path = match resolve_self_exe() {
+        Ok(p) => p,
+        Err(e) => return error_json(&e, "scheduler", "index_parallel_chunked"),
+    };
+    let exe_str = exe_path.to_string_lossy().to_string();
+
+    let grammars_dir =
+        std::env::var("GRAMMARS_DIR").unwrap_or_else(|_| "engine/grammars".to_string());
+
+    let run_id = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let db_prefix = std::env::var("CODESCOPE_DB_PREFIX")
+        .unwrap_or_else(|_| format!("/tmp/codescope_chunked_{}", run_id));
+
+    // Shared DB path — all workers write to the same DB (WAL mode, no merge).
+    let shared_db = format!("{}_shared.db", db_prefix);
+    let _ = std::fs::remove_file(&shared_db);
+    let _ = std::fs::remove_file(format!("{}-wal", shared_db));
+    let _ = std::fs::remove_file(format!("{}-shm", shared_db));
+
+    eprintln!(
+        "scheduler: [chunked] project={} workers={} parallel={} db={}",
+        project_path, total_workers, parallel, shared_db
+    );
+
+    // ── Phase 1: discover modules ──────────────────────────────
+    let discover_json = discover::discover_modules(&project_path);
+    let discover_val: Value = match serde_json::from_str(&discover_json) {
+        Ok(v) => v,
+        Err(e) => {
+            return error_json(
+                &format!("discover parse failed: {}", e),
+                "scheduler",
+                "index_parallel_chunked",
+            );
+        }
+    };
+    if discover_val["ok"] != true {
+        return discover_json;
+    }
+
+    let modules = match discover_val["modules"].as_array() {
+        Some(a) if !a.is_empty() => a,
+        _ => {
+            return error_json(
+                "no source modules found",
+                "scheduler",
+                "index_parallel_chunked",
+            );
+        }
+    };
+
+    // ── Phase 2: plan chunks per module ────────────────────────
+    // For each module, discover files and plan chunks.
+    // In the current implementation, we use the discover-files tool
+    // to get the candidate file list, then plan_chunks to split them.
+    // The chunk queue is created in /tmp and shared with workers via
+    // the CODESCOPE_SCHED_SHM env var.
+    let shm_path = format!("/tmp/codescope_chunked_sched_{}.shm", std::process::id());
+    let total_chunks = modules.len() as u32 * 4; // Estimate: ~4 chunks per module
+    let chunk_count = total_chunks.min(chunk_queue::MAX_CHUNKS as u32);
+
+    let queue = match chunk_queue::ChunkQueue::create(&shm_path, chunk_count) {
+        Ok(q) => q,
+        Err(e) => return error_json(&e, "scheduler", "index_parallel_chunked"),
+    };
+
+    // Write chunks to the queue. Each module gets a proportion of chunks.
+    let mut chunk_idx: u32 = 0;
+    for (mod_idx, module) in modules.iter().enumerate() {
+        let _name = module["name"].as_str().unwrap_or("unknown");
+        let files = module["files"].as_u64().unwrap_or(0);
+        if files == 0 {
+            continue;
+        }
+        // Calculate proportional chunks for this module.
+        let mod_chunks = std::cmp::max(1, chunk_count / modules.len() as u32);
+        let files_per_chunk = std::cmp::max(1, files / mod_chunks as u64);
+        for i in 0..mod_chunks {
+            if chunk_idx >= chunk_count {
+                break;
+            }
+            let start = (i as u64 * files_per_chunk) as u32;
+            let count = if i == mod_chunks - 1 {
+                (files - start as u64) as u32
+            } else {
+                files_per_chunk as u32
+            };
+            if count == 0 {
+                continue;
+            }
+            let _ = queue.write_chunk(
+                chunk_idx,
+                (mod_idx + 1) as u32,
+                start,
+                count,
+                0, // total_bytes (estimated)
+            );
+            chunk_idx += 1;
+        }
+    }
+    let _actual_chunks = chunk_idx;
+
+    // ── Phase 3: spawn workers ──────────────────────────────────
+    // Each worker gets a CPU set for static binding. Workers are
+    // spawned in parallel, bounded by the `parallel` concurrency limit.
+    let mut handles = Vec::new();
+    let mut results: Vec<ModuleResult> = Vec::new();
+    let active = Arc::new(AtomicU32::new(0));
+    let (tx, rx) = mpsc::channel::<ModuleResult>();
+
+    for worker_id in 0..total_workers {
+        // Wait for a free slot if at concurrency cap.
+        while active.load(Ordering::SeqCst) >= parallel {
+            std::thread::sleep(POLL_INTERVAL);
+        }
+        active.fetch_add(1, Ordering::SeqCst);
+
+        // Calculate CPU set for this worker.
+        // CPU binding via `taskset` is only available on Linux; on macOS
+        // and other platforms we pass an empty string so `run_chunk_worker`
+        // skips the taskset wrapping entirely.
+        #[cfg(target_os = "linux")]
+        let cpu_set = {
+            // On a 14-core machine with 14 workers: each gets 1 core.
+            // On a 14-core machine with 7 workers: each gets 2 cores.
+            let cores_per_worker = std::thread::available_parallelism()
+                .map(|n| n.get() as u32 / total_workers.max(1))
+                .unwrap_or(1)
+                .max(1);
+            let cpu_start = worker_id * cores_per_worker;
+            let cpu_end = cpu_start + cores_per_worker - 1;
+            if cores_per_worker == 1 {
+                format!("{}", cpu_start)
+            } else {
+                format!("{}-{}", cpu_start, cpu_end)
+            }
+        };
+        #[cfg(not(target_os = "linux"))]
+        let cpu_set: String = String::new();
+
+        let active_clone = Arc::clone(&active);
+        let tx = tx.clone();
+        let exe_str = exe_str.clone();
+        let grammars_dir = grammars_dir.clone();
+        let shm_path = shm_path.clone();
+        let shared_db = shared_db.clone();
+
+        let handle = std::thread::spawn(move || {
+            let result = worker::run_chunk_worker(
+                &exe_str,
+                &shm_path,
+                worker_id,
+                &cpu_set,
+                &shared_db,
+                &grammars_dir,
+            );
+            let _ = tx.send(result);
+            active_clone.fetch_sub(1, Ordering::SeqCst);
+        });
+        handles.push(handle);
+    }
+
+    drop(tx);
+
+    // Collect results.
+    while let Ok(r) = rx.recv() {
+        results.push(r);
+    }
+
+    // Wait for all threads to finish.
+    for h in handles {
+        let _ = h.join();
+    }
+
+    // ── Phase 4: aggregate summary ──────────────────────────────
+    let success = results
+        .iter()
+        .filter(|r| r.exit_code == 0 && r.total_nodes > 0)
+        .count();
+    let fail = results.len() - success;
+    let total_nodes: u64 = results.iter().map(|r| r.total_nodes).sum();
+    let total_edges: u64 = results.iter().map(|r| r.total_edges).sum();
+    let total_files_indexed: u64 = results.iter().map(|r| r.files_indexed).sum();
+
+    let modules_json: Vec<Value> = results
+        .iter()
+        .map(|r| {
+            json!({
+                "name": r.name,
+                "exit_code": r.exit_code,
+                "files_indexed": r.files_indexed,
+                "candidate_files": r.candidate_files,
+                "total_nodes": r.total_nodes,
+                "total_edges": r.total_edges,
+                "time_parse_ms": r.time_parse_ms,
+                "duration_secs": r.duration_secs,
+                "workers": r.workers,
+                "db_path": r.db_path,
+                "error": r.error,
+            })
+        })
+        .collect();
+
+    json!({
+        "ok": success > 0,
+        "project_path": project_path,
+        "db_prefix": db_prefix,
+        "main_db": shared_db,
+        "total_workers": total_workers,
+        "parallel": parallel,
+        "sched_mode": "chunked",
+        "duration_ms": start.elapsed().as_millis() as u64,
+        "success": success,
+        "fail": fail,
+        "total_nodes": total_nodes,
+        "total_edges": total_edges,
+        "total_files_indexed": total_files_indexed,
+        "modules": modules_json
     })
     .to_string()
 }

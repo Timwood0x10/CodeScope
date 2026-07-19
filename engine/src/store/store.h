@@ -822,23 +822,22 @@ class GraphStore {
 	sqlite3_stmt *stmt_fts_ = nullptr; // INSERT INTO code_fts
 	sqlite3_stmt *stmt_vector_ = nullptr; // INSERT INTO node_vectors
 
-	// Dynamic statement cache keyed by SQL text. Reused across Phase B writes.
-	// The mutex only guards the cache map (insert/find/reset). The returned
-	// sqlite3_stmt* is bind/stepped by the caller WITHOUT the lock — so all
-	// GraphStore write paths must be serialized by the caller (single-threaded
-	// enhance/index, or external locking). Do NOT call GraphStore methods
-	// concurrently from multiple threads.
+	// Dynamic statement cache: one prepared statement PER THREAD (see
+	// getCachedStmt in store.cpp). A single sqlite3_stmt* is never shared
+	// across threads, so there is no cross-thread race on a shared cached
+	// statement. The connection itself is serialized via
+	// SQLITE_CONFIG_SERIALIZED (see open()), so concurrent use of DIFFERENT
+	// per-thread statements on the same connection is safe. Bounded to
+	// kStmtCacheMax entries per thread.
 	// Soft cap at kStmtCacheMax; exceeding it means a bug (dynamic SQL at runtime).
 	static constexpr size_t kStmtCacheMax = 32;
-	std::unordered_map<std::string, sqlite3_stmt *> stmt_cache_;
-	std::mutex stmt_cache_mutex_;
-	// Returns a cached + reset prepared statement for `sql`. Prepares on first
-	// use; caller must bind + step, and must NOT finalize (owned by cache).
-	// Returns nullptr on prepare failure (error_ is set).
+	// Returns a per-thread cached + reset prepared statement for `sql`.
+	// Prepares on first use per thread; caller must bind + step, and must
+	// NOT finalize (owned by the per-thread cache). Returns nullptr on
+	// prepare failure (error_ is set).
 	sqlite3_stmt *getCachedStmt(const char *sql);
-	// Release all cached prepared statements and clear the cache.
-	// Safe to call at any point; subsequent getCachedStmt calls will
-	// re-prepare. Already called by close().
+	// Finalize the calling thread's cached prepared statements. Other
+	// threads finalize their own caches on thread exit.
 	void clearStmtCache();
 
     public:

@@ -195,6 +195,31 @@ void RustVisitor::handleImpl(TSNode node, uint64_t parent_id)
 				trait_name = nodeText(c);
 			else
 				impl_type = nodeText(c);
+		} else if (strcmp(t, "generic_type") == 0) {
+			// For `impl Trait for Vec<T>` the self type is a
+			// generic_type node (e.g. `Vec<T>`). Extract just the
+			// inner type_identifier (`Vec`) so the InterfaceImpl
+			// edge is emitted. Without this, impl_type stayed empty
+			// and trait-impl edges were silently dropped for
+			// generic self types.
+			std::string inner;
+			uint32_t gc = ts_node_child_count(c);
+			for (uint32_t k = 0; k < gc; k++) {
+				TSNode gt = ts_node_child(c, k);
+				if (!ts_node_is_named(gt))
+					continue;
+				if (strcmp(ts_node_type(gt),
+					   "type_identifier") == 0) {
+					inner = nodeText(gt);
+					break;
+				}
+			}
+			if (inner.empty())
+				inner = nodeText(c); // fallback: full `Vec<T>`
+			if (trait_name.empty())
+				trait_name = inner;
+			else
+				impl_type = inner;
 		}
 	}
 
@@ -235,19 +260,55 @@ void RustVisitor::handleImpl(TSNode node, uint64_t parent_id)
 		}
 	}
 }
+// Extract only the final method/function segment from a qualified
+// callee path such as `obj.method` (field_expression) or `Type::new`
+// (scoped_identifier). The resolver matches entities by bare name, so
+// storing the full qualified text (`obj.method`/`Type::new`) made
+// resolveSymbol() fail. Returns the trailing segment after the last
+// '.' or "::". Falls back to the full text when no separator exists.
+static std::string bareCalleeName(const std::string &qualified)
+{
+	const size_t dot = qualified.rfind('.');
+	const size_t colon = qualified.rfind("::");
+	size_t sep = std::string::npos;
+	if (dot != std::string::npos && colon != std::string::npos)
+		sep = (dot > colon) ? dot : colon;
+	else if (dot != std::string::npos)
+		sep = dot;
+	else if (colon != std::string::npos)
+		sep = colon;
+	if (sep != std::string::npos)
+		return qualified.substr(sep + 1);
+	return qualified;
+}
+
 void RustVisitor::handleCall(TSNode node, uint64_t parent_id)
 {
 	SourceRange loc = location(node);
-	std::string name;
+	std::string qualified; // full qualified callee text (e.g. `Type::new`)
+	std::string name; // bare method/function name (final segment)
 	uint32_t cnt = ts_node_child_count(node);
 	for (uint32_t i = 0; i < cnt; i++) {
 		TSNode c = ts_node_child(node, i);
 		if (!ts_node_is_named(c))
 			continue;
-		if (strcmp(ts_node_type(c), "identifier") == 0 ||
-		    strcmp(ts_node_type(c), "field_expression") == 0 ||
-		    strcmp(ts_node_type(c), "scoped_identifier") == 0) {
-			name = nodeText(c);
+		const char *t = ts_node_type(c);
+		if (strcmp(t, "identifier") == 0) {
+			qualified = nodeText(c);
+			name = qualified;
+			break;
+		}
+		// For `obj.method()` / `Type::new()` the first named child is
+		// a field_expression / scoped_identifier whose text is the FULL
+		// qualified path. The resolver matches entities by bare name, so
+		// store only the final segment (the method/function name) — this
+		// mirrors CVisitor::extractFieldMethodName and JsVisitor's
+		// member_expression handling. The full `qualified` text is kept
+		// for the builtin check and constructor classification below.
+		if (strcmp(t, "field_expression") == 0 ||
+		    strcmp(t, "scoped_identifier") == 0) {
+			qualified = nodeText(c);
+			name = bareCalleeName(qualified);
 			break;
 		}
 	}
@@ -256,19 +317,21 @@ void RustVisitor::handleCall(TSNode node, uint64_t parent_id)
 	// user-defined calls and the Resolver Pipeline would generate
 	// false-positive edges by matching them to entities with the same name.
 	// Reference: codebase-memory-mcp (MIT) c_lsp.c :: is_c_builtin_func() (pattern)
-	if (!name.empty() && isRustBuiltin(name)) {
+	// Match against the full qualified text so `Type::new` (whose bare name
+	// `new` is in the builtin list) is NOT wrongly filtered out.
+	if (!qualified.empty() && isRustBuiltin(qualified)) {
 		visitChildren(node, parent_id);
 		return;
 	}
 
-	// Classify call kind
+	// Classify call kind (use full qualified text to detect `::new`/`::from`)
 	CallKind call_kind = CallKind::Direct;
-	if (name.find("::") != std::string::npos) {
+	if (qualified.find("::") != std::string::npos) {
 		call_kind = CallKind::Method;
-		if (name.find("::new") != std::string::npos ||
-		    name.find("::from") != std::string::npos)
+		if (qualified.find("::new") != std::string::npos ||
+		    qualified.find("::from") != std::string::npos)
 			call_kind = CallKind::Constructor;
-	} else if (name.find('.') != std::string::npos) {
+	} else if (qualified.find('.') != std::string::npos) {
 		call_kind = CallKind::Method;
 	}
 
@@ -280,7 +343,25 @@ void RustVisitor::handleCall(TSNode node, uint64_t parent_id)
 	// would fail and the nested call would be dropped.
 	uint64_t func_id = currentFunctionId();
 	uint64_t call_parent = (func_id != 0) ? func_id : parent_id;
-	uint64_t id = emitter_->emitCall(name, loc, call_parent, 0, false,
+
+	// Compute arity from the `arguments` child node's named children.
+	// Previously hardcoded to 0, which degraded overload disambiguation
+	// by arity in the Resolver Pipeline. Mirrors CVisitor::countArguments.
+	int arity = 0;
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (strcmp(ts_node_type(c), "arguments") != 0)
+			continue;
+		uint32_t ac = ts_node_child_count(c);
+		for (uint32_t j = 0; j < ac; j++) {
+			TSNode arg = ts_node_child(c, j);
+			if (ts_node_is_named(arg))
+				++arity;
+		}
+		break;
+	}
+
+	uint64_t id = emitter_->emitCall(name, loc, call_parent, arity, false,
 					 static_cast<int>(call_kind));
 
 	// ── Intra-file callee resolution ───────────────────────────

@@ -576,7 +576,7 @@ fn h_force_index_files(project_id: u64, args: &Value) -> String {
             continue;
         }
         // Directory — walk it, bypassing skip-dir rules but still
-        // respecting file-level detectability + size.
+        // respecting file-level detectability + size. Start at depth 0.
         walk_force_index(
             path,
             max_size,
@@ -584,6 +584,7 @@ fn h_force_index_files(project_id: u64, args: &Value) -> String {
             &mut all_files,
             &mut skipped_files,
             &mut skipped_dirs,
+            0,
         );
     }
 
@@ -616,6 +617,14 @@ fn h_force_index_files(project_id: u64, args: &Value) -> String {
     }
     result
 }
+
+/// Maximum recursion depth for `walk_force_index`. A deeply nested directory
+/// tree (e.g. a chain of node_modules) or a crafted path would otherwise
+/// consume the call stack until it overflows, panicking and crashing the
+/// MCP server (local DoS, see H-B). 256 levels is far deeper than any
+/// legitimate project tree; once reached we stop descending and log a
+/// warning so the walk always terminates.
+const MAX_WALK_DEPTH: u32 = 256;
 
 /// Source extensions recognised by the C++ FilterPolicy::detectLanguage.
 /// Mirrored here so the force-index walk can decide which files to
@@ -691,6 +700,11 @@ fn filter_acceptable_file(
 ///   - file size limit
 ///   - extension detectability
 ///   - optional language whitelist
+///
+/// `depth` is the current recursion depth (call with 0 at the top).
+/// Recursion stops once `depth >= MAX_WALK_DEPTH` to guarantee the walk
+/// always terminates and cannot exhaust the stack (H-B). When the limit
+/// is hit, a warning is logged and descent into that subtree is skipped.
 fn walk_force_index(
     root: &std::path::Path,
     max_size: u64,
@@ -698,6 +712,7 @@ fn walk_force_index(
     out_files: &mut Vec<String>,
     skipped_files: &mut u64,
     skipped_dirs: &mut u64,
+    depth: u32,
 ) {
     let entries = match std::fs::read_dir(root) {
         Ok(e) => e,
@@ -719,6 +734,16 @@ fn walk_force_index(
             .map(|m| m.is_dir())
             .unwrap_or(false);
         if is_real_dir {
+            // Guard against unbounded recursion: a pathologically deep
+            // directory tree would otherwise overflow the stack (H-B).
+            if depth >= MAX_WALK_DEPTH {
+                eprintln!(
+                    "warning: walk_force_index reached max depth {} at {:?}; skipping subtree to avoid stack overflow [module=mcp, tool=force_index_files, method=walk_force_index]",
+                    MAX_WALK_DEPTH, path
+                );
+                *skipped_dirs += 1;
+                continue;
+            }
             // Recurse unconditionally — bypass skip-dir rules.
             walk_force_index(
                 &path,
@@ -727,6 +752,7 @@ fn walk_force_index(
                 out_files,
                 skipped_files,
                 skipped_dirs,
+                depth + 1,
             );
             continue;
         }

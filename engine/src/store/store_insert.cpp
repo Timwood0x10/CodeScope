@@ -256,7 +256,44 @@ uint64_t GraphStore::insertGraphEdge(uint64_t project_id,
 	sqlite3_bind_text(stmt, 8, edge.label.c_str(), -1, SQLITE_STATIC);
 
 	int rc = sqlite3_step(stmt);
-	if (rc != SQLITE_DONE && rc != SQLITE_CONSTRAINT)
+	if (rc == SQLITE_CONSTRAINT) {
+		// INSERT OR IGNORE dropped the row (unique violation on
+		// (project_id, source_node_id, target_node_id, edge_type,
+		// graph_type)). sqlite3_last_insert_rowid() would otherwise
+		// return the id of a PRIOR insert on this connection, giving the
+		// caller the wrong edge. Look up the existing edge by its natural
+		// key and return that id instead.
+		// [module=store, method=insertGraphEdge]
+		sqlite3_stmt *sel = nullptr;
+		const char *sel_sql =
+			"SELECT id FROM graph_edges WHERE project_id=? "
+			"AND source_node_id=? AND target_node_id=? "
+			"AND edge_type=? AND graph_type=?";
+		uint64_t existing = 0;
+		if (sqlite3_prepare_v2(db_, sel_sql, -1, &sel, nullptr) ==
+		    SQLITE_OK) {
+			sqlite3_bind_int64(sel, 1,
+					   static_cast<int64_t>(project_id));
+			sqlite3_bind_int64(
+				sel, 2, static_cast<int64_t>(edge.source_id));
+			sqlite3_bind_int64(
+				sel, 3, static_cast<int64_t>(edge.target_id));
+			sqlite3_bind_int(sel, 4, static_cast<int>(edge.type));
+			sqlite3_bind_text(sel, 5, edge.graph_type.c_str(), -1,
+					  SQLITE_STATIC);
+			if (sqlite3_step(sel) == SQLITE_ROW)
+				existing = static_cast<uint64_t>(
+					sqlite3_column_int64(sel, 0));
+			sqlite3_finalize(sel);
+		} else {
+			fprintf(stderr,
+				"insertGraphEdge: existing-edge lookup prepare "
+				"failed: %s [module=store, method=insertGraphEdge]\n",
+				sqlite3_errmsg(db_));
+		}
+		return existing;
+	}
+	if (rc != SQLITE_DONE)
 		fprintf(stderr,
 			"insertGraphEdge step failed (rc=%d): %s "
 			"[module=store, method=insertGraphEdge]\n",

@@ -431,10 +431,15 @@ impl ChunkQueue {
         let count = state.header.chunk_count;
         for i in 0..count {
             let slot = &state.chunks[i as usize];
+            // Acquire on success pairs with the Release store in
+            // mark_done/mark_failed/reset_stale so a claimer observes
+            // the full prior state of the slot (weak memory: Apple
+            // Silicon reorders). Relaxed on failure — a lost CAS just
+            // retries the scan and carries no cross-thread dependency.
             match slot.status.compare_exchange(
                 STATUS_PENDING,
                 STATUS_CLAIMED,
-                Ordering::Relaxed,
+                Ordering::Acquire,
                 Ordering::Relaxed,
             ) {
                 Ok(_) => {
@@ -457,8 +462,11 @@ impl ChunkQueue {
             return;
         }
         let slot = &state.chunks[idx as usize];
+        // Write finished_at BEFORE the status store so a Release/Acquire
+        // pair makes it (and the worker's parse side-effects) visible to
+        // any observer that reads status == DONE via an Acquire load.
         slot.finished_at_ms.store(now_ms(), Ordering::Relaxed);
-        slot.status.store(STATUS_DONE, Ordering::Relaxed);
+        slot.status.store(STATUS_DONE, Ordering::Release);
     }
 
     /// Mark chunk `idx` as FAILED. Records `finished_at_ms`. No-op if
@@ -470,8 +478,11 @@ impl ChunkQueue {
             return;
         }
         let slot = &state.chunks[idx as usize];
+        // Same Release discipline as mark_done: publish finished_at (and
+        // the worker's parse side-effects) before the status store so an
+        // Acquire reader that observes FAILED also sees the prior writes.
         slot.finished_at_ms.store(now_ms(), Ordering::Relaxed);
-        slot.status.store(STATUS_FAILED, Ordering::Relaxed);
+        slot.status.store(STATUS_FAILED, Ordering::Release);
     }
 
     /// Increment the failed-file counter on chunk `idx`.
@@ -511,10 +522,13 @@ impl ChunkQueue {
         }
         // CAS CLAIMED → PENDING so we don't clobber a worker that just
         // finished (race between watchdog and worker completion).
+        // Release on success publishes the recycle so the next claimer's
+        // Acquire CAS in claim_next observes a clean slot; Relaxed on
+        // failure (a lost race carries no cross-thread dependency).
         match slot.status.compare_exchange(
             STATUS_CLAIMED,
             STATUS_PENDING,
-            Ordering::Relaxed,
+            Ordering::Release,
             Ordering::Relaxed,
         ) {
             Ok(_) => {
@@ -533,7 +547,11 @@ impl ChunkQueue {
         let state = unsafe { &*self.ptr };
         let count = state.header.chunk_count;
         for i in 0..count {
-            let s = state.chunks[i as usize].status.load(Ordering::Relaxed);
+            // Acquire pairs with the Release store in mark_done/mark_failed:
+            // once the scheduler observes every chunk DONE/FAILED it gates
+            // the resolve phase, so it must see all of each worker's prior
+            // writes (weak memory ordering on Apple Silicon).
+            let s = state.chunks[i as usize].status.load(Ordering::Acquire);
             if s != STATUS_DONE && s != STATUS_FAILED {
                 return false;
             }
@@ -548,7 +566,7 @@ impl ChunkQueue {
         let count = state.header.chunk_count;
         let mut n = 0u32;
         for i in 0..count {
-            if state.chunks[i as usize].status.load(Ordering::Relaxed) == STATUS_PENDING {
+            if state.chunks[i as usize].status.load(Ordering::Acquire) == STATUS_PENDING {
                 n += 1;
             }
         }
@@ -562,7 +580,7 @@ impl ChunkQueue {
         let count = state.header.chunk_count;
         let mut n = 0u32;
         for i in 0..count {
-            if state.chunks[i as usize].status.load(Ordering::Relaxed) == STATUS_DONE {
+            if state.chunks[i as usize].status.load(Ordering::Acquire) == STATUS_DONE {
                 n += 1;
             }
         }
@@ -576,7 +594,7 @@ impl ChunkQueue {
         let count = state.header.chunk_count;
         let mut n = 0u32;
         for i in 0..count {
-            if state.chunks[i as usize].status.load(Ordering::Relaxed) == STATUS_FAILED {
+            if state.chunks[i as usize].status.load(Ordering::Acquire) == STATUS_FAILED {
                 n += 1;
             }
         }
@@ -592,8 +610,12 @@ impl ChunkQueue {
             return None;
         }
         let slot = &state.chunks[idx as usize];
+        // Acquire on status first; the remaining Relaxed loads are ordered
+        // after it in program order, so a snapshot that sees DONE/FAILED
+        // also observes the finished_at/failed_files written before the
+        // producer's Release store.
         Some(ChunkStateSnapshot {
-            status: slot.status.load(Ordering::Relaxed),
+            status: slot.status.load(Ordering::Acquire),
             claimer_id: slot.claimer_id.load(Ordering::Relaxed),
             module_id: slot.module_id,
             file_start: slot.file_start,

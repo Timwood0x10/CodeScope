@@ -325,6 +325,188 @@ pub(super) fn make_relative_glob(abs_path: &str, module_dir: &str) -> String {
     }
 }
 
+/// Run one chunk worker subprocess.
+///
+/// Spawns a `codescope chunk-worker` subprocess that:
+/// 1. Opens the `ChunkQueue` from the shm path.
+/// 2. Loops: `claim_next()` → parse the chunk's files → stream-write shared DB → `mark_done()`.
+/// 3. Exits when all chunks are DONE/FAILED.
+///
+/// `worker_id` — 0-based index for CPU binding and `claim_next` identity.
+/// `cpu_set` — comma-separated CPU list for `taskset`, e.g. `"0-3"` or `"0,2,4,6"`.
+///   Pass empty string to skip CPU binding (e.g., on unsupported platforms).
+pub(super) fn run_chunk_worker(
+    exe: &str,
+    shm_path: &str,
+    worker_id: u32,
+    cpu_set: &str,
+    shared_db: &str,
+    grammars_dir: &str,
+) -> ModuleResult {
+    let t0 = Instant::now();
+    let worker_id_str = worker_id.to_string();
+
+    let mut cmd = Command::new(exe);
+    cmd.args(["chunk-worker", shm_path, &worker_id_str, shared_db]);
+    cmd.env("GRAMMARS_DIR", grammars_dir);
+    cmd.env("CODESCOPE_SCHED_SHM", shm_path);
+    cmd.env("CODESCOPE_WORKER_ID", &worker_id_str);
+    cmd.env("CODESCOPE_DB_PATH", shared_db);
+    cmd.env("CODESCOPE_INDEX_MODE", "fast");
+    cmd.env("CODESCOPE_SKIP_ASYNC", "1");
+
+    // CPU binding via taskset if a cpu_set is provided.
+    // `taskset` is a util-linux command and is NOT available on macOS
+    // or BSDs. Callers must gate cpu_set on `#[cfg(target_os = "linux")]`
+    // (see index_parallel_chunked) so non-Linux platforms pass an empty
+    // string and skip the taskset wrapping.
+    if !cpu_set.is_empty() {
+        // Use `taskset -c <cpu_set> <command>` to bind the worker.
+        // We wrap the command with taskset by prepending it.
+        // taskset -c 0,1,2,3 codescope chunk-worker ...
+        let mut taskset_cmd = std::process::Command::new("taskset");
+        taskset_cmd.args(["-c", cpu_set, exe]);
+        taskset_cmd.args(["chunk-worker", shm_path, &worker_id_str, shared_db]);
+        taskset_cmd.env("GRAMMARS_DIR", grammars_dir);
+        taskset_cmd.env("CODESCOPE_SCHED_SHM", shm_path);
+        taskset_cmd.env("CODESCOPE_WORKER_ID", &worker_id_str);
+        taskset_cmd.env("CODESCOPE_DB_PATH", shared_db);
+        taskset_cmd.env("CODESCOPE_INDEX_MODE", "fast");
+        taskset_cmd.env("CODESCOPE_SKIP_ASYNC", "1");
+        taskset_cmd.stdout(Stdio::piped()).stderr(Stdio::inherit());
+        cmd = taskset_cmd;
+    } else {
+        cmd.stdout(Stdio::piped()).stderr(Stdio::inherit());
+    }
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            return ModuleResult {
+                name: format!("chunk-worker-{}", worker_id),
+                exit_code: -1,
+                total_nodes: 0,
+                total_edges: 0,
+                files_indexed: 0,
+                candidate_files: 0,
+                time_parse_ms: 0,
+                duration_secs: t0.elapsed().as_secs(),
+                workers: 1,
+                db_path: shared_db.to_string(),
+                project_id: 0,
+                error: Some(format!(
+                    "spawn failed: {} [module=scheduler, method=run_chunk_worker]",
+                    e
+                )),
+            };
+        }
+    };
+
+    // Wait for the child with a timeout.
+    let timeout = Duration::from_secs(DEFAULT_WORKER_TIMEOUT_SECS);
+    let (status, stdout_bytes) = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                // Read stdout.
+                let stdout = child
+                    .stdout
+                    .take()
+                    .map(|mut s| {
+                        let mut buf = Vec::new();
+                        use std::io::Read;
+                        let _ = s.read_to_end(&mut buf);
+                        buf
+                    })
+                    .unwrap_or_default();
+                break (status, stdout);
+            }
+            Ok(None) => {
+                if t0.elapsed() > timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return ModuleResult {
+                        name: format!("chunk-worker-{}", worker_id),
+                        exit_code: -4,
+                        total_nodes: 0,
+                        total_edges: 0,
+                        files_indexed: 0,
+                        candidate_files: 0,
+                        time_parse_ms: 0,
+                        duration_secs: t0.elapsed().as_secs(),
+                        workers: 1,
+                        db_path: shared_db.to_string(),
+                        project_id: 0,
+                        error: Some(format!(
+                            "timeout after {}s [module=scheduler, method=run_chunk_worker]",
+                            DEFAULT_WORKER_TIMEOUT_SECS
+                        )),
+                    };
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => {
+                return ModuleResult {
+                    name: format!("chunk-worker-{}", worker_id),
+                    exit_code: -3,
+                    total_nodes: 0,
+                    total_edges: 0,
+                    files_indexed: 0,
+                    candidate_files: 0,
+                    time_parse_ms: 0,
+                    duration_secs: t0.elapsed().as_secs(),
+                    workers: 1,
+                    db_path: shared_db.to_string(),
+                    project_id: 0,
+                    error: Some(format!(
+                        "wait failed: {} [module=scheduler, method=run_chunk_worker]",
+                        e
+                    )),
+                };
+            }
+        }
+    };
+
+    let duration = t0.elapsed().as_secs();
+    let exit_code = status.code().unwrap_or(-4);
+    let stdout = String::from_utf8_lossy(&stdout_bytes).to_string();
+    let parsed = extract_worker_json(&stdout);
+
+    let (total_nodes, total_edges, files_indexed, candidate_files, time_parse_ms) = match &parsed {
+        Some(v) => (
+            v["total_nodes"].as_u64().unwrap_or(0),
+            v["total_edges"].as_u64().unwrap_or(0),
+            v["files_indexed"].as_u64().unwrap_or(0),
+            v["discovery"]["candidate_files"].as_u64().unwrap_or(0),
+            v["time_parse_ms"].as_u64().unwrap_or(0),
+        ),
+        None => (0, 0, 0, 0, 0),
+    };
+
+    let error = if exit_code == 0 && parsed.is_some() {
+        None
+    } else {
+        Some(format!(
+            "exit={} [module=scheduler, method=run_chunk_worker]",
+            exit_code
+        ))
+    };
+
+    ModuleResult {
+        name: format!("chunk-worker-{}", worker_id),
+        exit_code,
+        total_nodes,
+        total_edges,
+        files_indexed,
+        candidate_files,
+        time_parse_ms,
+        duration_secs: duration,
+        workers: 1,
+        db_path: shared_db.to_string(),
+        project_id: 0,
+        error,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

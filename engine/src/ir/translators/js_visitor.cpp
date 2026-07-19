@@ -85,6 +85,7 @@ static const ACAutomaton &getJsAC()
 		ac.addPattern("export_statement", 108);
 		ac.addPattern("export", 108);
 		ac.addPattern("member_expression", 109);
+		ac.addPattern("new_expression", 110); // constructor call (M-9)
 		// Literals
 		ac.addPattern("number", 200);
 		ac.addPattern("string", 200);
@@ -113,7 +114,7 @@ static const ACAutomaton &getJsAC()
 		ac.addPattern("assignment_expression", 300);
 		ac.addPattern("ternary_expression", 300);
 		ac.addPattern("subscript_expression", 300);
-		ac.addPattern("new_expression", 300);
+
 		ac.addPattern("await_expression", 300);
 		ac.addPattern("yield_expression", 300);
 		ac.build();
@@ -279,6 +280,8 @@ void JsVisitor::visitNode(TSNode node, uint64_t parent_id)
 		return visitExportStmt(node, parent_id);
 	case 109:
 		return visitMemberExpr(node, parent_id);
+	case 110:
+		return visitNewExpr(node, parent_id);
 
 	// ── Literals ──────────────────────────────────────────
 	case 200:
@@ -503,8 +506,26 @@ void JsVisitor::visitCallExpr(TSNode node, uint64_t parent_id)
 	// record present in _r2n, so the reference-table JOIN succeeds.
 	uint64_t func_id = currentFunctionId();
 	uint64_t call_parent = (func_id != 0) ? func_id : parent_id;
-	uint64_t call_id = emitter_->emitCall(callee_name, loc, call_parent, 0,
-					      false,
+
+	// Compute arity from the `arguments` child node's named children.
+	// Previously hardcoded to 0, which degraded overload disambiguation
+	// by arity in the Resolver Pipeline. Mirrors CVisitor::countArguments.
+	int arity = 0;
+	for (uint32_t i = 0; i < count; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (strcmp(ts_node_type(c), "arguments") != 0)
+			continue;
+		uint32_t ac = ts_node_child_count(c);
+		for (uint32_t j = 0; j < ac; j++) {
+			TSNode arg = ts_node_child(c, j);
+			if (ts_node_is_named(arg))
+				++arity;
+		}
+		break;
+	}
+
+	uint64_t call_id = emitter_->emitCall(callee_name, loc, call_parent,
+					      arity, false,
 					      static_cast<int>(call_kind));
 
 	// ── Intra-file callee resolution ───────────────────────────
@@ -647,6 +668,118 @@ void JsVisitor::visitMemberExpr(TSNode node, uint64_t parent_id)
 	std::string name = nodeText(node);
 	uint64_t member_id = emitter_->emitMemberAccess(name, loc, parent_id);
 	visitChildren(node, member_id);
+}
+
+void JsVisitor::visitNewExpr(TSNode node, uint64_t parent_id)
+{
+	SourceRange loc = location(node);
+	std::string callee_name;
+	uint32_t count = ts_node_child_count(node);
+
+	// Extract the constructor name from the callee child. For `new Foo()`
+	// it is an identifier; for `new Foo.Bar()` it is a member_expression
+	// whose trailing property_identifier is the constructor. Mirrors
+	// visitCallExpr so the constructor resolves by bare name.
+	for (uint32_t i = 0; i < count; i++) {
+		TSNode child = ts_node_child(node, i);
+		if (!ts_node_is_named(child))
+			continue;
+		const char *t = ts_node_type(child);
+		if (strcmp(t, "member_expression") == 0) {
+			uint32_t mc = ts_node_child_count(child);
+			for (uint32_t j = 0; j < mc; j++) {
+				TSNode mchild = ts_node_child(child, j);
+				if (!ts_node_is_named(mchild))
+					continue;
+				const char *mt = ts_node_type(mchild);
+				if (strcmp(mt, "property_identifier") == 0 ||
+				    strcmp(mt,
+					   "shorthand_property_identifier") ==
+					    0) {
+					callee_name = nodeText(mchild);
+				}
+			}
+			break;
+		}
+		if (strcmp(t, "identifier") == 0) {
+			callee_name = nodeText(child);
+			break;
+		}
+	}
+
+	// Unknown constructor shape — still recurse to capture nested calls.
+	if (callee_name.empty()) {
+		visitChildren(node, parent_id);
+		return;
+	}
+
+	// Skip JS/TS built-in constructors (Array, Map, ...) — they are NOT
+	// user-defined calls; the Resolver Pipeline would generate FPs.
+	if (isJsBuiltin(callee_name)) {
+		for (uint32_t i = 0; i < count; i++) {
+			TSNode child = ts_node_child(node, i);
+			if (!ts_node_is_named(child))
+				continue;
+			const char *t = ts_node_type(child);
+			if (strcmp(t, "identifier") == 0 ||
+			    strcmp(t, "member_expression") == 0)
+				continue;
+			visitNode(child, parent_id);
+		}
+		return;
+	}
+
+	// Constructor calls are always Constructor kind.
+	CallKind call_kind = CallKind::Constructor;
+
+	uint64_t func_id = currentFunctionId();
+	uint64_t call_parent = (func_id != 0) ? func_id : parent_id;
+
+	// Compute arity from the `arguments` child node (M-10 mirror).
+	int arity = 0;
+	for (uint32_t i = 0; i < count; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (strcmp(ts_node_type(c), "arguments") != 0)
+			continue;
+		uint32_t ac = ts_node_child_count(c);
+		for (uint32_t j = 0; j < ac; j++) {
+			TSNode arg = ts_node_child(c, j);
+			if (ts_node_is_named(arg))
+				++arity;
+		}
+		break;
+	}
+
+	uint64_t call_id = emitter_->emitCall(callee_name, loc, call_parent,
+					      arity, false,
+					      static_cast<int>(call_kind));
+
+	// ── Intra-file callee resolution ───────────────────────────
+	if (!callee_name.empty()) {
+		uint64_t target = resolveSymbol(callee_name);
+		if (target) {
+			unit_->setCallReference(call_id, target);
+			unit_->setCallStrategy(call_id, "p1_intra");
+		} else {
+			unit_->setCallStrategy(
+				call_id,
+				BuiltinRegistry::resolve(unit_->language(),
+							 callee_name));
+		}
+	}
+
+	// Recurse into children (arguments, nested expressions), skipping the
+	// already-extracted constructor identifier / member_expression.
+	for (uint32_t i = 0; i < count; i++) {
+		TSNode child = ts_node_child(node, i);
+		if (!ts_node_is_named(child))
+			continue;
+		const char *t = ts_node_type(child);
+		if (strcmp(t, "identifier") == 0 ||
+		    strcmp(t, "member_expression") == 0)
+			continue;
+		visitNode(child, call_id);
+	}
 }
 
 } // namespace ir

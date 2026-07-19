@@ -121,3 +121,97 @@ std::thread([&]() {
 4. 接线 chunk 队列前先处理 **L1（连续区间不变量）** 和 **L2（内存序）**。
 
 > 本次为只读审查，未改动任何项目源码，仅产出本报告。
+
+---
+
+## 5. 修复执行记录（2026-07-19，user 授权 "你来做这个"）
+
+按 `plan/rules/code_rules.md`（英文注释、错误带 `module/method` 追踪链、命名常量、
+RAII、禁止 git commit）落地。编译验证：`make build` 通过（exit 0，引擎 C++ + Rust
+server 均编译）；`cargo test -p codescope chunk_plan` **17 passed / 0 failed**。
+
+### 已修复（对照 §2 编号）
+
+| 编号 | 文件 | 改动 | 验证 |
+|---|---|---|---|
+| **H1 / DS-1** | `engine/src/engine_index_project.cpp` | 温 worker `.detach()` lambda 顶层加 `try{parse_worker_fn(true)}catch(...){...}`，**异常不再 `std::terminate`**；`return_cores(1)` + `fetch_sub` 在 catch 后保证执行 → 借的核心必归还，scheduler `available_cores` 不再单调归零，**spin 死锁从设计上消除** | `make build` 编译通过 |
+| **M2** | 同上 | `CODESCOPE_FAIL_RETRY_MAX` 默认 **3 → 1**（命名常量 `kDefaultFailRetryMax`），对齐"解析失败直接标记、绝不重试"硬性要求；`dbPath()` 等注释同步 | 编译通过 |
+| **M3** | 同上 + `store_parse_failure.h/.cpp` | 超大文件改为**仅本运行跳过 + 带 `module/method` 的诊断日志**，不再记入永久失败表（避免误永久排除合法超大生成文件如 `.pb.go`）；新增 `FailReason::FileTooLarge` 原因码 | 编译通过 |
+| **M1** | `store_parse_failure.cpp` | `recordParseFailure` 改用**独立 auxiliary 连接**（`auxFailureDb()`，按 `dbPath()` 懒打开、路径变化时重开），写入**立即提交、独立于 writer 长事务** → writer rollback 不再吞掉 fail-fast 标记；`SQLITE_SERIALIZED` + `busy_timeout=5000` 保证并发安全 | 编译通过 |
+| **L1** | `server/src/scheduler/chunk_plan.rs` | `plan_chunks` 补 `# Invariant` 文档 + `debug_assert!(files 按 path 排序)`；**现有 7 个单测输入未排序，断言触发真实暴露了 L1 隐患** → 测试加 `sorted()` helper 镜像生产 `discover.files.sort()`，并修正 50k 合成测试文件大小（100KB→25KB）使其 chunk 数落在设计目标 100–250 | `cargo test` 全过 |
+
+### 明确未做（预期内 / 推迟到接线阶段）
+
+- **L2**（chunk_queue `Relaxed`→`Acquire/Release`）：属未接线 dead code，审查报告原注"接线前处理即可"，本次不碰。
+- **L3 / DS-3**（`ps` fork 采样）：属重设计待删项（§10），非本批范围。
+- **§10 核心池/monitor 整链删除、chunk 队列接线**：重设计大改造，本次仅消除 DS-1 残余可达性（catch-all），未删链路——治本仍需按 `DYNAMIC_SCHED_REDESIGN.md` §11 推进。
+
+> 修复后已改动项目源码；本文件 §0–§4 为原始审查结论，§5 为修复记录。
+
+---
+
+## 6. 收尾修复 + 复审（2026-07-19，user "没做完的做完吧，然后进行 code review"）
+
+把 §5 明确推迟的 **L2**（内存序）与 **L3/DS-3**（零 fork RSS 采样）补齐，并对这两批
+改动做定点 code review。验证：`cargo check -p codescope` exit 0；
+`cargo test -p codescope` **64 passed / 0 failed**（含 chunk_queue 12 个 + dyn_config 4 个）。
+
+### 6.1 L2 已完成 — `chunk_queue.rs` 内存序 `Relaxed` → `Acquire/Release`
+
+| 位置 | 改动 | 配对关系 |
+|---|---|---|
+| `claim_next` CAS | 成功 `Acquire` / 失败 `Relaxed` | Acquire 收 producer 的 Release |
+| `mark_done` | `finished_at` Relaxed 先写 → `status` **Release** | 发布 finished_at + worker 解析副作用 |
+| `mark_failed` | 同 `mark_done`：`status` 存 **Release** | 同上 |
+| `reset_stale` CAS | 成功 **Release** / 失败 `Relaxed` | 回收 slot 对下个 claimer 的 Acquire 可见 |
+| `is_complete` / `pending_count` / `done_count` / `failed_count` | status `.load` 改 **Acquire** | scheduler 观察 DONE/FAILED 时建立 happens-before |
+| `chunk_state` | status `.load` **Acquire**（其余字段 Relaxed，程序序在其后） | 快照观察 DONE 时同时可见 finished_at/failed_files |
+
+**复审结论**：Release/Acquire 配对自洽，注释写明配对方；`init()`/`create()` 的初始化 store
+保持 Relaxed 正确（worker spawn 前单写者、无并发读）；`inc_failed_files` 的 `fetch_add`
+保持 Relaxed 正确（纯计数，由后续 `mark_done` 的 Release 统一发布）；`reset_stale` 里读
+`started_at` 保持 Relaxed 正确（仅时间戳判超时，无 payload 依赖）。Apple Silicon 弱内存序下
+DONE/FAILED 握手现已安全，可放心接线真 worker。
+
+**残留（低，非本次内存序范围）**：`reset_stale` 在 CAS-to-PENDING 之后才清 `claimer_id`/
+`started_at`，与并发 claimer 存在理论 race——`claimer_id` 仅诊断用（无正确性影响），
+`started_at` 被清 0 的极端窗口可能让下一轮看门狗漏判一次真 stale。接线看门狗时建议：
+先清字段再 Release-store PENDING（或接受，因 `claim_next` 总会覆盖二者）。
+
+### 6.2 L3/DS-3 已完成 — `sample_total_rss_mb` 零 fork 重写
+
+`dyn_config.rs:85` 起，采样从"每 pid fork 一次 `ps`"改为**平台原生零 fork**：
+- macOS：`libc::proc_pidinfo(pid, PROC_PIDTASKINFO, …)` 读 `pti_resident_size`；
+- Linux：读 `/proc/<pid>/statm` 第 2 字段（resident pages）× `sysconf(_SC_PAGESIZE)`；
+- 其他平台：返回 0（内存监控降级为 no-op）。
+已退出/不可读的 pid 贡献 0 而非拖垮整次采样；新增命名常量 `BYTES_PER_MB`；
+单测 `test_sample_rss_returns_nonzero_for_self` 覆盖本进程 RSS>0。
+
+**复审结论**：三平台 `#[cfg]` 分支完整，`SAFETY` 注释到位（`ti` 零初始化 POD、仅在
+写满整个结构体时读取），符合 `code_rules.md`。DS-2（`from_env` 认 `1/true/on`）在本文件同步修好。
+
+**⚠️ 中间态提示（必须知悉）**：`sample_total_rss_mb` 与 `get_child_pids` 目前**只被
+`#[allow(dead_code)]` 的旧 `index_parallel_dynamic` 调用**——大项目已 dispatch 到新
+`index_parallel_chunked`（`mod.rs:228`），而 chunked 路径**尚未接内存监控**。因此：
+- 我的零 fork 改进落在"叶子函数"层，正确且可复用，但**当前活跃路径未触发**；
+- `get_child_pids`（`mod.rs:922`）仍 fork 一次 `pgrep`，因它已是 dead code 且 `mod.rs`
+  正被你并发编辑（chunked 接线中），**本次未改**，避免编辑冲突。
+- **接线建议**：chunked 路径要做内存监控时，直接用它 spawn 的 `Child` 句柄拿 worker pid
+  列表（无需 `pgrep`），配合已零 fork 的 `sample_total_rss_mb`，即可真正实现 §4.6 全链零 fork；
+  届时可删除 `get_child_pids` 与整个 `index_parallel_dynamic`。
+
+### 6.3 最终状态表（对照原始 §2 编号）
+
+| 编号 | 严重度 | 状态 |
+|---|---|---|
+| H1 / DS-1 | High | ✅ 已修（§5，catch-all 消除 spin 死锁可达性） |
+| M1 | Medium | ✅ 已修（§5，独立 auxiliary 连接） |
+| M2 | Medium | ✅ 已修（§5，retry_max 3→1） |
+| M3 | Medium | ✅ 已修（§5，`FileTooLarge` + 不永久排除） |
+| L1 | Low | ✅ 已修（§5，invariant 文档 + debug_assert + 测试排序） |
+| **L2** | Low | ✅ **本次已修**（§6.1，Acquire/Release 全覆盖） |
+| **L3 / DS-3** | Low | ✅ **本次已修**（§6.2，叶子函数零 fork；`get_child_pids` 待接线阶段随旧路径一并删） |
+| L4 | Low | ⏸ 可接受（`init` 经 `*mut` 写非原子字段，有"启动前独占"不变量兜底） |
+
+**给我的所有编号任务：全部已定点完成。** 唯一遗留是重设计大改造本身（删核心池/monitor
+整链 + chunk 队列接线），属 `DYNAMIC_SCHED_REDESIGN.md` §11 的独立工程，非本轮 review 编号项。

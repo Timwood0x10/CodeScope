@@ -18,6 +18,11 @@ class JavaVisitor : public JsVisitor {
 	void handleInterfaceDecl(TSNode node, uint64_t parent_id);
 	void handleEnumDecl(TSNode node, uint64_t parent_id);
 	void handleMethodInvocation(TSNode node, uint64_t parent_id);
+	/// Emit a Call record for a `new` constructor expression
+	/// (object_creation_expression), mirroring handleMethodInvocation
+	/// but classified as Constructor so constructor call-edges are
+	/// captured (M-9).
+	void handleObjectCreation(TSNode node, uint64_t parent_id);
 	void handleVariableDecl(TSNode node, uint64_t parent_id);
 	void handleImport(TSNode node, uint64_t parent_id);
 	std::string extractName(TSNode node);

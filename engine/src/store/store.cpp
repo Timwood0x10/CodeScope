@@ -40,13 +40,44 @@ bool GraphStore::rollbackTransaction()
 
 // ── Statement Cache ───────────────────────────────────────────
 
+// ── Statement Cache (per-thread) ──────────────────────────────
+//
+// Each thread owns its own prepared statements. A single sqlite3_stmt* is
+// therefore never shared across threads, fixing the M-2 cross-thread race on
+// a shared cached statement under concurrent g_store access. The connection is
+// already serialized via SQLITE_CONFIG_SERIALIZED (see open()), so concurrent
+// use of DIFFERENT per-thread statements on the same connection is safe.
+// Bounded to kStmtCacheMax entries per thread; finalized by clearStmtCache()
+// (on the owning thread) and on thread exit via ThreadStmtCache's destructor.
+// [module=store]
+
+namespace
+{
+// Per-thread prepared-statement cache. The destructor finalizes all owned
+// statements when the thread exits, preventing leaks (bounded to one set of
+// <= kStmtCacheMax statements per thread).
+struct ThreadStmtCache {
+	std::unordered_map<std::string, sqlite3_stmt *> map;
+	void reset()
+	{
+		for (auto &kv : map)
+			sqlite3_finalize(kv.second);
+		map.clear();
+	}
+	~ThreadStmtCache()
+	{
+		reset();
+	}
+};
+thread_local ThreadStmtCache g_tls_stmt_cache;
+} // namespace
+
 sqlite3_stmt *GraphStore::getCachedStmt(const char *sql)
 {
 	if (!sql)
 		return nullptr;
-	std::lock_guard<std::mutex> lk(stmt_cache_mutex_);
-	auto it = stmt_cache_.find(sql);
-	if (it != stmt_cache_.end()) {
+	auto it = g_tls_stmt_cache.map.find(sql);
+	if (it != g_tls_stmt_cache.map.end()) {
 		sqlite3_reset(it->second);
 		sqlite3_clear_bindings(it->second);
 		return it->second;
@@ -54,9 +85,9 @@ sqlite3_stmt *GraphStore::getCachedStmt(const char *sql)
 	// Soft cap: if the cache exceeds kStmtCacheMax entries, something is
 	// dynamically constructing SQL at runtime — warn and return nullptr so
 	// the caller's existing failure path handles it without leaking.
-	if (stmt_cache_.size() >= kStmtCacheMax) {
+	if (g_tls_stmt_cache.map.size() >= kStmtCacheMax) {
 		fprintf(stderr,
-			"BUG: stmt_cache exceeded %zu entries (sql='%s')\n",
+			"BUG: per-thread stmt_cache exceeded %zu entries (sql='%s')\n",
 			kStmtCacheMax, sql);
 		error_ = "getCachedStmt: cache cap exceeded (dynamic SQL bug)";
 		return nullptr;
@@ -67,16 +98,16 @@ sqlite3_stmt *GraphStore::getCachedStmt(const char *sql)
 			 sqlite3_errmsg(db_);
 		return nullptr;
 	}
-	stmt_cache_[sql] = stmt;
+	g_tls_stmt_cache.map[sql] = stmt;
 	return stmt;
 }
 
 void GraphStore::clearStmtCache()
 {
-	std::lock_guard<std::mutex> lk(stmt_cache_mutex_);
-	for (auto &kv : stmt_cache_)
-		sqlite3_finalize(kv.second);
-	stmt_cache_.clear();
+	// Finalize the calling thread's per-thread cache. Other threads finalize
+	// their own caches on thread exit via ThreadStmtCache's destructor.
+	// [module=store, method=clearStmtCache]
+	g_tls_stmt_cache.reset();
 }
 
 // ── Shared JSON helper ─────────────────────────────────────────

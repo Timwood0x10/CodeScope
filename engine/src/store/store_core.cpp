@@ -95,20 +95,23 @@ static int64_t resolveMmapSize()
 
 // ── Query deadline (progress handler) ───────────────────────────
 //
-// Global atomic deadline in epoch milliseconds. 0 means "no limit" — the
+// Per-thread deadline in epoch milliseconds. 0 means "no limit" — the
 // progress handler returns 0 (continue) immediately. When armed by
-// setQueryDeadline(), the progress handler compares the current epoch ms
-// against this value on every kProgressHandlerStepInterval VM steps; if
+// setQueryDeadline(), the progress handler (which fires on the SAME thread
+// that is executing the query via sqlite3_step) compares the current epoch
+// ms against this value on every kProgressHandlerStepInterval VM steps; if
 // exceeded, it returns 1 to abort the running query (sqlite3_step then
 // returns SQLITE_INTERRUPT).
 //
-// This is global (not per-connection) because sqlite3_progress_handler is
-// per-connection but the deadline semantics are per-search-call. The RAII
-// guard ensures the deadline is cleared on every exit path, so the window
-// of interference between concurrent search calls is small and bounded by
-// the search duration. Non-search queries (buildGraph, inserts, etc.) are
-// never affected because the deadline is 0 outside of a guard scope.
-static std::atomic<int64_t> g_query_deadline_ms{ 0 };
+// Stored thread_local (not in a process-global) so one search's RAII
+// QueryDeadlineGuard cannot clobber another concurrent search's deadline
+// (the old global caused spurious SQLITE_INTERRUPT or disabled timeouts).
+// The progress handler is per-connection but always runs on the thread
+// performing the step — the same thread that armed the deadline — so this
+// state is read/written by a single thread and needs no atomic/mutex.
+// Non-search queries never arm it (deadline stays 0).
+// [module=store]
+static thread_local int64_t g_query_deadline_ms = 0;
 
 /** Return the current epoch time in milliseconds. */
 static int64_t currentEpochMs()
@@ -123,7 +126,7 @@ static int64_t currentEpochMs()
  *  When g_query_deadline_ms is 0 the handler is a no-op. */
 static int progressHandler(void * /*unused*/)
 {
-	int64_t deadline = g_query_deadline_ms.load(std::memory_order_relaxed);
+	int64_t deadline = g_query_deadline_ms;
 	if (deadline == 0)
 		return 0;
 	return currentEpochMs() > deadline ? 1 : 0;
@@ -284,16 +287,16 @@ void GraphStore::close()
 void GraphStore::setQueryDeadline(int timeout_ms)
 {
 	if (timeout_ms <= 0) {
-		g_query_deadline_ms.store(0, std::memory_order_relaxed);
+		g_query_deadline_ms = 0;
 		return;
 	}
 	int64_t deadline = currentEpochMs() + timeout_ms;
-	g_query_deadline_ms.store(deadline, std::memory_order_relaxed);
+	g_query_deadline_ms = deadline;
 }
 
 void GraphStore::clearQueryDeadline()
 {
-	g_query_deadline_ms.store(0, std::memory_order_relaxed);
+	g_query_deadline_ms = 0;
 }
 
 GraphStore::QueryDeadlineGuard::QueryDeadlineGuard(GraphStore *store,
@@ -571,16 +574,46 @@ std::string GraphStore::importArtifact(uint64_t project_id,
 	std::string pid_str = std::to_string(project_id);
 	beginTransaction();
 	bool ok = true;
+	// Explicit column lists on BOTH the INSERT target and the SELECT source,
+	// aligned to the schema column order (store_schema.cpp). The previous
+	// SELECT * was fragile to column-order drift between the artifact DB and
+	// the current schema (a reordered/added column would misalign values).
+	// [module=store, method=importArtifact]
 	ok &= exec(
-		("INSERT OR IGNORE INTO semantic_records SELECT * FROM artifact.semantic_records WHERE project_id=" +
+		("INSERT OR IGNORE INTO semantic_records "
+		 "(rowid, original_id, project_id, kind, name, qualified_name, "
+		 " parent_id, ref_original_id, arity, is_static, type_name, "
+		 " call_kind, visibility, start_row, start_col, end_row, end_col, "
+		 " file_path, language) "
+		 "SELECT rowid, original_id, project_id, kind, name, qualified_name, "
+		 " parent_id, ref_original_id, arity, is_static, type_name, "
+		 " call_kind, visibility, start_row, start_col, end_row, end_col, "
+		 " file_path, language "
+		 "FROM artifact.semantic_records WHERE project_id=" +
 		 pid_str)
 			.c_str());
 	ok &= exec(
-		("INSERT OR IGNORE INTO graph_nodes SELECT * FROM artifact.graph_nodes WHERE project_id=" +
+		("INSERT OR IGNORE INTO graph_nodes "
+		 "(id, project_id, ir_node_id, node_type, name, qualified_name, "
+		 " module_path, package_name, class_name, start_row, start_col, "
+		 " end_row, end_col, file_path, language, signature, is_stub, "
+		 " visibility, callgraph_ready, metrics_ready, embedding_ready, "
+		 " is_entry_point) "
+		 "SELECT id, project_id, ir_node_id, node_type, name, qualified_name, "
+		 " module_path, package_name, class_name, start_row, start_col, "
+		 " end_row, end_col, file_path, language, signature, is_stub, "
+		 " visibility, callgraph_ready, metrics_ready, embedding_ready, "
+		 " is_entry_point "
+		 "FROM artifact.graph_nodes WHERE project_id=" +
 		 pid_str)
 			.c_str());
 	ok &= exec(
-		("INSERT OR IGNORE INTO graph_edges SELECT * FROM artifact.graph_edges WHERE project_id=" +
+		("INSERT OR IGNORE INTO graph_edges "
+		 "(id, project_id, source_node_id, target_node_id, edge_type, "
+		 " graph_type, call_site_file, call_site_line, label) "
+		 "SELECT id, project_id, source_node_id, target_node_id, edge_type, "
+		 " graph_type, call_site_file, call_site_line, label "
+		 "FROM artifact.graph_edges WHERE project_id=" +
 		 pid_str)
 			.c_str());
 	if (!ok) {

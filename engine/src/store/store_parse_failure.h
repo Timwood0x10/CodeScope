@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <mutex>
 
 namespace store
 {
@@ -15,6 +16,7 @@ enum class FailReason : int {
 	ParseNullTree = 0, ///< tree-sitter returned a null tree
 	ReadEmpty, ///< file read returned empty bytes
 	StatFailed, ///< stat() failed (file vanished / perms)
+	FileTooLarge, ///< file exceeds max_file_size policy limit (not a parse error)
 	VisitorException, ///< visitor->visit() threw std::exception
 	VisitorUnknownThrow, ///< visitor->visit() threw unknown exception
 	LanguageMissing, ///< no TSLanguage registered for this lang
@@ -36,14 +38,31 @@ bool isKnownParseFailure(uint64_t project_id, const std::string &file_path,
 /// Record a parse failure for a file. If the row already exists,
 /// increments fail_count and updates last_seen. Otherwise inserts a
 /// new row with fail_count=1. Idempotent — safe to call concurrently
-/// from multiple threads within the same process (SQLite serialises
-/// via the writer-thread connection).
+/// from multiple threads within the same process: the auxiliary
+/// connection and its cached path are guarded by an internal mutex,
+/// and SQLite's SQLITE_CONFIG_SERIALIZED mode serialises the actual
+/// API calls on the shared connection.
 ///
 /// `lang` may be empty if the language was never identified.
 /// `reason` is one of FailReason above (exception variants should
 /// append the what() text after a colon, e.g. "exception: bad_alloc").
 void recordParseFailure(uint64_t project_id, const std::string &file_path,
 			const std::string &lang, const std::string &reason);
+
+/// Thread-safe in-memory buffer for parse failures.
+/// Parse workers call this instead of recordParseFailure to avoid
+/// SQLite lock contention. Call flushParseFailures() after all
+/// parsing is done to batch-write all buffered failures to SQLite.
+/// The buffer is cleared after flush.
+void bufferParseFailure(uint64_t project_id, const std::string &file_path,
+			const std::string &lang, const std::string &reason);
+
+/// Flush all buffered parse failures to the SQLite parse_failures
+/// table in a single transaction. Returns the number of rows written,
+/// or -1 on error. The buffer is cleared after successful flush.
+/// Idempotent: consecutive calls with no new bufferParseFailure calls
+/// write zero rows.
+int flushParseFailures();
 
 /// Reset (delete) all parse_failures rows for the given project_id.
 /// Called by the `codescope reset-failures` CLI. Returns the number

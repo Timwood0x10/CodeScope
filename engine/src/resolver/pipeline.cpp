@@ -237,8 +237,8 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 			FactorResult f;
 			f.name = "ConstructorMatch";
 			f.weight = kWeightConstructorMatch;
-			f.score =
-				factorConstructorMatch(callee_name, c.name, 0);
+			f.score = factorConstructorMatch(callee_name, c.name,
+							 c.kind);
 			f.detail = (f.score > 0.0) ? "constructor" :
 						     "not constructor";
 			factors.push_back(f);
@@ -376,7 +376,11 @@ int64_t ResolverPipeline::run()
 			// and every candidate scored kScorePartialMatch (0.5),
 			// letting std::sort pick the winner by unstable order.
 			// See CODE_REVIEW_FINDINGS_2026-07-19.md C2.
-			"SELECT id, name, file_path, language, arity FROM entity "
+			// Include kind (appended as column 5) so
+			// factorConstructorMatch can prefer Class/Struct targets;
+			// previously kind was hardcoded 0 in the call, so the
+			// constructor factor always returned 0.0 (M-11).
+			"SELECT id, name, file_path, language, arity, kind FROM entity "
 			"WHERE project_id=? AND name != ''";
 		sqlite3_stmt *idx_st = nullptr;
 		if (sqlite3_prepare_v2(store_->handle(), idx_sql.c_str(), -1,
@@ -408,6 +412,11 @@ int64_t ResolverPipeline::run()
 			// if NULL — matches entity.arity DEFAULT 0 so callers
 			// that never set arity behave as "unknown arity".
 			c.arity = sqlite3_column_int(idx_st, 4);
+			// Column 5 is kind (RecordKind). Default 0 if NULL —
+			// matches entity.kind NOT NULL semantics; 0 = Function,
+			// so non-type candidates correctly score 0.0 on the
+			// constructor factor.
+			c.kind = sqlite3_column_int(idx_st, 5);
 			c.score = 0;
 			entity_index[c.name].push_back(c);
 			total_entities++;
@@ -505,7 +514,9 @@ int64_t ResolverPipeline::run()
 	// Prepare fuzzy hydration lookup (reused per fuzzy candidate)
 	// Include arity so fuzzy-resolved candidates also get overload
 	// disambiguation via factorSignatureMatch (see C2 above).
-	const char *lk_sql = "SELECT name, file_path, language, arity "
+	// Include kind (column 4) so fuzzy candidates carry the same
+	// constructor factor support as exact-name candidates (M-11).
+	const char *lk_sql = "SELECT name, file_path, language, arity, kind "
 			     "FROM entity WHERE id=?";
 	sqlite3_stmt *lk_st = nullptr;
 	sqlite3_prepare_v2(store_->handle(), lk_sql, -1, &lk_st, nullptr);
@@ -651,6 +662,10 @@ int64_t ResolverPipeline::run()
 					c.module_path = modulePath(c.file_path);
 					// Column 3 is arity (added to lk_sql SELECT above).
 					c.arity = sqlite3_column_int(lk_st, 3);
+					// Column 4 is kind (RecordKind), appended so
+					// constructor-target preference applies to
+					// fuzzy-resolved candidates too (M-11).
+					c.kind = sqlite3_column_int(lk_st, 4);
 				}
 				sqlite3_reset(lk_st);
 				c.score = 0;

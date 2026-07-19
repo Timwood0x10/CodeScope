@@ -79,6 +79,10 @@ class ResolverPipeline {
 		std::string module_path;
 		std::string language;
 		int arity = 0;
+		// Entity kind (RecordKind enum): 2=Class, 3=Interface, etc.
+		// Propagated from entity.kind so factorConstructorMatch can
+		// prefer Class/Struct-shaped targets (see factors.cpp).
+		int kind = 0;
 		int score = 0;
 		double total_score = 0.0;
 		std::vector<FactorResult> factors;

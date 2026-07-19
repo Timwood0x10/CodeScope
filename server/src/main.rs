@@ -272,6 +272,48 @@ fn main() {
         return;
     }
 
+    // ── Chunk-worker mode: codescope chunk-worker <shm_path> <worker_id> <shared_db> ─
+    // Spawned by the chunk-level scheduler (run_chunk_worker in worker.rs).
+    // Opens the ChunkQueue from shm, loops claim_next → parse chunk → mark_done,
+    // writes to the shared DB. Exits when all chunks are DONE/FAILED.
+    if args.len() >= 5 && args[1] == "chunk-worker" {
+        let shm_path = args[2].as_str();
+        let worker_id_str = args[3].as_str();
+        let shared_db = args[4].as_str();
+        let _worker_id: u32 = worker_id_str.parse().unwrap_or(0);
+
+        eprintln!(
+            "chunk-worker: worker={} shm={} db={}",
+            _worker_id, shm_path, shared_db
+        );
+
+        if ffi::init(shared_db) != 0 {
+            eprintln!("chunk-worker: engine init failed");
+            std::process::exit(1);
+        }
+
+        // Open the ChunkQueue from shm.
+        // The C++ engine's chunk worker loop will handle claim_next → parse → mark_done.
+        // For now, we run engine_index_project on the full project directory as a
+        // fallback — the chunk-level loop will be wired in a future step.
+        // Safety: shm_path is a valid NUL-terminated path.
+        let pid = ffi::get_latest_project_id();
+        let pid = if pid == 0 {
+            ffi::create_project(".", "chunk-worker-project")
+        } else {
+            pid
+        };
+
+        // Run index_project on the full project (temporary fallback until
+        // the C++ engine supports chunk-level file lists).
+        let result = ffi::index_project(pid, ".", std::ptr::null());
+        println!("{}", result);
+
+        ffi::shutdown();
+        eprintln!("chunk-worker: done");
+        return;
+    }
+
     // ── CLI mode: codescope cli <tool_name> [json_args] ─────
     if args.len() >= 3 && args[1] == "cli" {
         let tool_name = &args[2];

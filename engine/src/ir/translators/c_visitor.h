@@ -21,6 +21,10 @@ class CVisitor : public JsVisitor {
 	void handleStruct(TSNode node, uint64_t parent_id);
 	void handleEnum(TSNode node, uint64_t parent_id);
 	void handleCall(TSNode node, uint64_t parent_id);
+	/// Emit a Call record for a C++ `new`-expression constructor call
+	/// (e.g. `new Foo(x)`), mirroring handleCall but classified as
+	/// Constructor so constructor call-edges are captured (M-9).
+	void handleNewExpr(TSNode node, uint64_t parent_id);
 	void handleInclude(TSNode node, uint64_t parent_id);
 	void handleTypeDef(TSNode node, uint64_t parent_id);
 	void handlePreprocDef(TSNode node, uint64_t parent_id);

@@ -505,15 +505,26 @@ codescope_trace(from="copy_process", to="dup_mm")
 
 ### Dynamic CPU Scheduling (`index-parallel`)
 
-For large multi-module projects, `codescope index-parallel` automatically switches from **static proportional** allocation to **dynamic scheduling with core reclaim**.
+For large multi-module projects, `codescope index-parallel` offers two scheduling modes:
 
-**When it activates** (auto):
+**Static mode (default):** Proportional pre-allocation — each module gets a fixed number of worker cores based on its file count (`ceil(files × total_workers / total_files)`). Simple, predictable, no shared-memory overhead. Best for small-to-medium projects.
+
+**Dynamic mode (auto-enabled):** Shared-memory core pool with work-stealing — small modules finish and release their cores to a shared pool; pending large modules claim them automatically. Best for large multi-module projects.
+
+**Auto-activation threshold:**
 
 ```
 total_modules > 4  AND  total_files > 10000
 ```
 
-Override with `CODESCOPE_DYNAMIC_SCHED=1` (force on) or `=0` (force off).
+Override manually:
+```bash
+# Force on (even for small projects)
+CODESCOPE_DYNAMIC_SCHED=1 codescope index-parallel /path/to/project
+
+# Force off (use static allocation)
+CODESCOPE_DYNAMIC_SCHED=0 codescope index-parallel /path/to/project
+```
 
 **How it works:**
 
@@ -522,39 +533,62 @@ Override with `CODESCOPE_DYNAMIC_SCHED=1` (force on) or `=0` (force off).
 3. **Core reclaim** — when a small module finishes, it releases its cores back to the pool; the next pending module claims them. This is the key advantage over static allocation: idle cores from finished small modules are recycled to still-running big modules.
 4. **Memory-bounded spawning** — the scheduler samples total child RSS every poll tick (50ms aggressive / 100ms normal). If RSS exceeds `CODESCOPE_MEM_LIMIT_MB` (default 4096), new worker spawns pause; existing workers keep running.
 
-**Measured impact (Apple M3 Max, 14 workers):**
+**When to use which mode:**
 
-| Project | Modules | Mode | Total time | Note |
-|---------|:-------:|:----:|:----------:|------|
-| **rustc** (monorepo) | 3 | static | 26s | CPU not the bottleneck — I/O bound |
-| **rustc** | 3 | dynamic | 27s | Cores redistributed (src 4→9, library 3→2) but total time unchanged — only 3 modules, reclaim has nothing to feed |
-| **goagent** (Go) | 7 | dynamic | 7s | internal (1,056 files) grabbed 12 cores as smaller modules released theirs |
-| **Bun** | 4 | dynamic | 28s | All 14 cores went to `src`; time went 22s→25s — thread contention overhead exceeded the parallelism gain |
+| Scenario | Recommended | Reason |
+|----------|:-----------:|--------|
+| ≤4 modules OR <10k files | **Static** | Dynamic adds shm overhead (~300ms) with no reclaim benefit |
+| 5-10 modules, 5k-20k files | **Either** | Dynamic may help if workload is CPU-bound; test both |
+| 10+ modules, 20k+ files | **Dynamic** | Small modules release cores that big modules absorb |
+| I/O-bound (SQLite writes) | **Static** | More cores don't help when the bottleneck is disk |
 
-**Where dynamic scheduling wins:** projects with **many small modules + one or few big modules** (the Linux-kernel-style 20-module layout). Small modules finish quickly and release cores that the big module can then absorb.
+**Recommended CPU `--workers` setting:**
 
-**Where it doesn't help (and may slightly hurt):**
-
-- **Few modules** (≤4): no small modules to reclaim cores from. Static allocation already gives the big module most of the cores.
-- **I/O-bound workloads**: when SQLite writes are the bottleneck (not parsing), more cores don't help — `goagent` and `rustc` both hit this.
-- **Thread contention overhead**: pushing a single module from 8 → 14 workers can *increase* parse time due to lock contention and thread scheduling, even though more cores are nominally available.
-
-**Inspection knobs:**
-
-```bash
-# Force-enable dynamic scheduling on a small project
-CODESCOPE_DYNAMIC_SCHED=1 codescope index-parallel /path/to/project
-
-# Tighter poll interval (50ms instead of 100ms) — lower latency, more CPU
-CODESCOPE_AGGRESSIVE=1 codescope index-parallel /path/to/project
-
-# Lower the memory ceiling to 2 GB (pauses new spawns above this)
-CODESCOPE_MEM_LIMIT_MB=2048 codescope index-parallel /path/to/project
 ```
+workers = min(host_cpus, total_files / 200)
+```
+
+E.g., on a 14-core machine:
+- 1k files → 5 workers (CPU not fully utilised, but avoids thread contention)
+- 10k files → 14 workers (plenty of work per core)
+- 60k files → 14 workers (I/O-bound, 14 is enough)
+
+**Environment variables:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CODESCOPE_DYNAMIC_SCHED` | auto | `1`/`true`/`on` = force dynamic, `0`/`false`/`off` = force static |
+| `CODESCOPE_AGGRESSIVE` | `0` (100ms) | `1` = 50ms poll interval (lower latency, more CPU) |
+| `CODESCOPE_MEM_LIMIT_MB` | `4096` | RSS ceiling in MB; new spawns pause above this |
+| `CODESCOPE_WORKERS` | auto | Worker thread count per worker subprocess |
+| `CODESCOPE_SKIP_ASYNC` | `0` | `1` = skip async model/state/FTS build (for parallel workers) |
 
 > **Note:** Dynamic scheduling's memory monitoring uses `pgrep -P <pid>` (from `procps-ng`) to enumerate child processes. On macOS this is available by default; on Linux, ensure `procps-ng` is installed (`apt-get install procps` / `yum install procps-ng`). If `pgrep` is unavailable, memory monitoring silently degrades to no-op (no memory limit enforcement).
 
 The scheduler prints `scheduler: [dynamic] ...` lines to stderr showing `shm_path`, `total_cores`, `mem_limit_mb`, module dispatch order, core-claim events, and memory-pressure pauses.
+
+### Tested Projects Benchmark
+
+All benchmarks run on **Apple M3 Max (14 cores, 36 GB RAM)** with `--workers 14 --parallel 4`.
+
+| Project | Lang | Files | Nodes | Edges | DB Size | Static Time | Dynamic Time | Modules | Best Mode |
+|---------|:----:|:-----:|:-----:|:-----:|:-------:|:-----------:|:------------:|:-------:|:---------:|
+| **CodeScope** (self) | Rust/C++ | 179 | 1,136 | 1,588 | 2 MB | **1.0s** | 1.4s | 2 | Static |
+| **memscope-rs** | Rust | 215 | 4,344 | 620 | 1 MB | **1.6s** | 1.9s | 3 | Static |
+| **Bun** | Rust/C++/TS | 3,177 | 33,312 | 21,654 | 25 MB | **23s** | 28s | 4 | Static |
+| **Rust compiler** | Rust | 6,029 | 81,039 | 63,697 | 117 MB | **26s** | 27s | 3 | Static |
+| **ARES (goagent)** | Go | 1,254 | 18,798 | 4,475 | 8 MB | 6s | **7s** | 7 | Either |
+| **Linux kernel** (partial) | C/ASM | 27,630 | 988,921 | 864,315 | — | 3min+† | 3min+† | 20 | **Dynamic** |
+
+† Linux kernel `drivers` module (31k files) did not complete within 300s due to SQLite I/O bottleneck. 18/20 modules finished in ~2.5 min.
+
+**Key takeaways:**
+
+- **Small projects (<1k files):** Static is always faster — dynamic adds unnecessary shm overhead.
+- **Medium projects (1k-10k files, ≤4 modules):** Static is preferred; dynamic doesn't help.
+- **Medium projects (1k-10k files, 5+ modules):** Either works; dynamic may help if CPU-bound.
+- **Large projects (10k+ files, 10+ modules):** Dynamic is the recommended mode — core reclaim matters.
+- **I/O-bound projects:** If SQLite writes are the bottleneck, more cores don't help regardless of mode.
 
 ### Full Parse & Index (tree-sitter + Graph Builder + Linker)
 

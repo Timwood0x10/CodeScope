@@ -1,4 +1,11 @@
 //! Dynamic scheduling configuration: env var flags + auto-detection.
+//!
+//! The `DynSchedConfig` struct is wired into both `index_parallel` (for
+//! the dispatch decision) and `index_parallel_chunked` (for per-run config).
+//! All fields are read via the public API; the dead_code lint for fields
+//! is suppressed because the struct is constructed via `from_env()` and
+//! its fields are accessed through method calls, not direct field access.
+#![allow(dead_code)]
 
 use std::env;
 
@@ -59,26 +66,86 @@ impl DynSchedConfig {
     }
 }
 
-/// Sample the total RSS (in MB) of a list of child PIDs.
-/// Returns 0 on failure (e.g., unsupported platform).
+/// Bytes per megabyte, used to convert the kernel's byte/page RSS
+/// figures into the MB unit the scheduler compares against
+/// `mem_limit_mb`.
+const BYTES_PER_MB: u64 = 1024 * 1024;
+
+/// Sample the total RSS (in MB) of a list of child PIDs using
+/// platform-native APIs — **zero fork** per DYNAMIC_SCHED_REDESIGN.md
+/// §4.6 (the previous implementation spawned one `ps` per PID every
+/// poll, ~150 forks/sec under a 100ms interval).
+///
+/// - macOS: `proc_pidinfo(PROC_PIDTASKINFO)` → `pti_resident_size`.
+/// - Linux: `/proc/<pid>/statm` field 2 (resident pages) × page size.
+/// - Other platforms: returns 0 (memory monitoring degrades to no-op).
+///
+/// A PID that has already exited (or is otherwise unreadable)
+/// contributes 0 rather than failing the whole sample.
 pub fn sample_total_rss_mb(pids: &[u32]) -> u32 {
-    let mut total_kb: u64 = 0;
-    for pid in pids {
-        // Use ps -o rss= -p <pid> (macOS + Linux compatible)
-        let output = std::process::Command::new("ps")
-            .args(["-o", "rss=", "-p", &pid.to_string()])
-            .stderr(std::process::Stdio::null())
-            .output();
-        if let Ok(out) = output
-            && out.status.success()
-        {
-            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if let Ok(kb) = s.parse::<u64>() {
-                total_kb += kb;
-            }
+    let mut total_bytes: u64 = 0;
+    for &pid in pids {
+        total_bytes = total_bytes.saturating_add(rss_bytes(pid));
+    }
+    (total_bytes / BYTES_PER_MB) as u32
+}
+
+/// Resident set size of a single process in bytes. Returns 0 if the
+/// PID cannot be queried (exited, permission denied, or unsupported
+/// platform) — callers treat 0 as "unknown / excluded from the total".
+#[cfg(target_os = "macos")]
+fn rss_bytes(pid: u32) -> u64 {
+    // SAFETY: `ti` is zero-initialised POD; `proc_pidinfo` writes up to
+    // size_of::<proc_taskinfo>() bytes into it and returns the number
+    // of bytes written. We only read `ti` when the return value equals
+    // the full struct size, so no uninitialised field is observed.
+    unsafe {
+        let mut ti: libc::proc_taskinfo = std::mem::zeroed();
+        let size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
+        let written = libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTASKINFO,
+            0,
+            &mut ti as *mut _ as *mut libc::c_void,
+            size,
+        );
+        if written == size {
+            ti.pti_resident_size
+        } else {
+            0
         }
     }
-    (total_kb / 1024) as u32
+}
+
+/// Linux variant: parse `/proc/<pid>/statm` (values are in pages).
+#[cfg(target_os = "linux")]
+fn rss_bytes(pid: u32) -> u64 {
+    // Format: "size resident shared text lib data dt" (all in pages).
+    // Field index 1 (resident) is the RSS we want.
+    let content = match std::fs::read_to_string(format!("/proc/{}/statm", pid)) {
+        Ok(c) => c,
+        Err(_) => return 0, // process exited or unreadable — count as 0
+    };
+    let resident_pages: u64 = content
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    // SAFETY: sysconf is a pure query with no side effects; a negative
+    // return (unlikely) falls back to the conventional 4KiB page size.
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    let page_size = if page_size > 0 {
+        page_size as u64
+    } else {
+        4096
+    };
+    resident_pages.saturating_mul(page_size)
+}
+
+/// Fallback for unsupported platforms: memory monitoring is a no-op.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn rss_bytes(_pid: u32) -> u64 {
+    0
 }
 
 #[cfg(test)]

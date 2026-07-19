@@ -2,18 +2,65 @@
 
 ## Unreleased
 
-### Changed
-
-- Small modules (≤ 2000 files) now use an in-memory bulk aggregation path,
-  bypassing the streaming `BoundedQueue`. 20%+ faster parse phase for small
-  modules. Large modules continue to use the streaming path unchanged.
-- Removed dynamic worker rebalance from `codescope-parallel.sh`. Replaced with
-  proportional pre-allocation. Eliminates "DB lock conflict" failures on
-  concurrent module indexing.
-
 ## v0.2.1 (2026-07-17)
 
 Open-source release. Closes the gap between the Resolver Pipeline and the query/verify surfaces (call-graph `resolve_strategy` propagation, module-tree JSON validity, capability verifier LIKE-direction, module-hierarchy materialisation), plus FFI boundary detection, paginated graph export, LadybugDB embedded storage, one-click bootstrap, and a full code-review / portability / documentation pass.
+
+
+### 🚀 New Features
+
+- **Parallel Indexer (`index-parallel`)**: Built-in multi-module parallel indexer replacing the shell-based `codescope-parallel.sh`. Auto-discovers top-level modules, allocates CPU cores proportionally, and merges per-module DBs into a unified graph. 3-5x faster on multi-module projects.
+- **Dynamic CPU Scheduling (`CODESCOPE_DYNAMIC_SCHED`)**: Shared-memory core pool for cross-process CPU reclamation. Small modules finish and release their cores to the shared pool; pending large modules claim them automatically. Memory-bounded spawning (default 4 GB ceiling) prevents OOM. Auto-enabled for projects with >4 modules and >10k files.
+- **Fail-Fast Parse Failure Tracking**: Persistent `parse_failures` table records files that fail to parse. After `CODESCOPE_FAIL_RETRY_MAX` (default 3) consecutive failures, the file is skipped on subsequent index runs — no more wasting CPU on known-broken files. New CLI `codescope reset-failures` to clear the table.
+- **Chunk-Level Scheduler (Work-Stealing)**: New `index_parallel_chunked` architecture replaces the module-level dispatch with chunk-level shared queue + CAS work-stealing. Directory clustering (depth=2) + byte-weighted chunk splitting (target 8 MB/chunk). Workers claim chunks via `compare_exchange(PENDING, CLAIMED)` — no lock-free ring, no linearisability overhead. Static CPU binding via `taskset`. See `DYNAMIC_SCHED_REDESIGN.md` for full design.
+- **Chunk Queue (`ChunkQueue`)**: Shared-memory chunk queue with lock-free CAS claim protocol. `claim_next(worker_id) -> Option<idx>` linear scan + `compare_exchange`. Watchdog timeout (`reset_stale`) for crashed worker recovery. `inc_failed_files` for per-chunk fail-fast statistics.
+- **In-Memory Bulk Index Path**: Small modules (≤2000 files) now bypass the streaming `BoundedQueue` and use an in-memory bulk aggregation path — 20%+ faster parse phase. Large modules continue with the streaming pipeline.
+- **Call Resolution Strategy**: `find_callees` / `find_callers` / `engine_get_callees` / `engine_get_callers` now carry a `resolve_strategy` field (`p1_intra` / `external` / `unresolved`). Distinguishes intra-project calls from third-party library calls.
+- **File Filter Support**: `find_symbol` / `find_definition` / `find_callers` / `find_callees` now accept an optional `file_filter` parameter to scope results to a subset of files.
+- **Intra-File Call Edge Support**: Call edges within the same file are now correctly captured — visitor-level `parent_id` tracking for nested call chains.
+- **Multi-Signal Fusion Role Classifier**: `module_summary.role` auto-populated via a multi-signal CASE classifier fusing call-graph counts, entry-point detection, publication count, and utilization into 8 semantic roles (`api`, `entry`, `core`, `utility`, `business`, `infra`, `dead`, `unknown`).
+- **Module Hierarchy Population**: `modules` table now populated via `populateModulesHierarchy` — collapsed entity module paths into directories with `parent_id`, `file_count`, and majority language.
+- **Force-Index Tooling**: `force_index_files` MCP tool bypasses default skip rules (`test/`, `docs/`, `vendored/`, `node_modules/`, `.gitignore`) to index specific files/dirs on demand. Useful for user-directed incremental indexing.
+- **Project Node Count Check**: `get_project_stats` now includes `total_nodes` / `total_edges` / `total_files` for quick project health assessment.
+- **MCP Tools Expansion**: 37 MCP tools now available, including `verify_integrity`, `verify_claim`, `verify_summary`, `verify_review`, `detect_drift`, `detect_documentation_drift`, `detect_architecture_drift`, `explain_module`, `detect_changes`, `force_index_files`, `get_parse_failures`, `reset_failures`, `count_tokens`, and `get_metrics`.
+
+### 🐛 Bug Fixes
+
+- **Quarantine retry bypassing shm pool**: Quarantine retry now claims cores from the shared-memory pool (up to 4) instead of hardcoded `workers: 1`. Fallback to 1 worker if pool is empty.
+- **Memory-paused CPU spin**: When memory limit is exceeded, the scheduler now sleeps 1 second instead of 50ms — reduces CPU burn from `pgrep`+`ps` polling during backpressure.
+- **`pgrep` dependency documented**: Added note in README about `procps-ng` requirement for memory monitoring. On Linux, `apt-get install procps` / `yum install procps-ng`. If unavailable, memory monitoring silently degrades to no-op.
+- **`DynSchedConfig` dead code eliminated**: `DynSchedConfig` is now the single config source for dynamic scheduling — replaces inline `should_use_dynamic_sched` + manual env reads. `CODESCOPE_AGGRESSIVE` now actually sets the shm aggressive flag (50ms vs 100ms poll interval).
+- **`CODESCOPE_DYNAMIC_SCHED` parsing consistent**: Now accepts `"1"` / `"true"` / `"on"` for enabling, `"0"` / `"false"` / `"off"` for disabling. Previously only recognized `"1"`.
+- **`ShmGuard` panic-safety**: `ShmGuard` constructed immediately after `SchedShm::create` — shm file no longer leaks if code between create and guard panics.
+- **`parallel` upper bound**: `--parallel` now capped at `total_workers` to prevent spawning more OS threads than cores available.
+- **`total_files_sum` zero-guard cleaned**: Replaced `if x == 0 { 1 } else { x }` with `.max(1)`.
+- **`queue.remove(0)` O(n) eliminated**: Module queue changed from `Vec` to `VecDeque` — `pop_front()` is O(1) instead of O(n) shift.
+- **`worker.rs` stderr pipe fixed**: Stderr changed from `Stdio::piped()` to `Stdio::inherit()` — eliminates "Broken pipe" panic when worker subprocess exits before parent drains the pipe.
+- **C/C++ definition tie resolution**: Fixed definition disambiguation for C/C++ where multiple translation units define the same symbol — now correctly prefers the definition in the file being indexed.
+- **Incremental index duplication**: Fixed duplicate node/edge insertion when re-indexing unchanged files — `isFileUnchanged` mtime/size check now correctly skips unmodified files.
+- **Nested call `parent_id`**: Fixed incorrect `parent_id` assignment for nested call chains — parent calls now correctly reference their enclosing function.
+- **C++ qualified identifier handling**: Fixed qualified name resolution for C++ identifiers with `::` scope operators — now correctly resolves `namespace::function()`.
+- **Knowledge graph direct query**: Fixed `explain_module` returning empty results when the knowledge graph was built but not yet committed — added explicit `COMMIT` after `buildKnowledgeGraphSync`.
+- **Project ID alignment**: Fixed project ID collision when multiple workers write to the same DB — now uses unique project_id per module.
+- **Call graph resolve pipeline**: Fixed two critical defects in the resolver pipeline where `resolve_calls` could produce incorrect edges for cross-file calls with identical short names.
+- **Error logging for `callgraph_ready`**: Added detailed error logging when `callgraph_ready` update fails — helps diagnose graph build failures.
+
+### 🔧 Improvements
+
+- **Dynamic scheduling redesign**: Complete redesign of the parallel scheduler architecture. See `DYNAMIC_SCHED_REDESIGN.md` for full design document (chunk-level shared queue, work-stealing, static CPU binding, fail-fast, single shared DB).
+- **Directory skip overhaul**: `FilterPolicy::shouldSkipDir` rewritten with a 3-tier skip system: normal skip dirs (any depth), top-only skip dirs (depth ≤ 3), and Java-protected skip dirs (deferred for Java package namespaces). Eliminates false-positive skips of `org/springframework/samples/petclinic` paths.
+- **Force-index mode**: New `codescope force-index` command bypasses default skip rules — indexes specific files/dirs even if they're in `test/`, `docs/`, `vendored/`, or `node_modules/` directories.
+- **Path normalization**: All file paths now normalized to absolute form before indexing — eliminates duplicate entries from relative vs absolute path mismatches.
+- **clang-format pinned to 21.1.8**: CI and local development now use the same clang-format version — eliminates formatting drift between environments.
+- **80 tests pass**: All scheduler tests (chunk_plan, chunk_queue, shm, worker, dyn_config) pass. 80 total tests across the codebase.
+
+### 🧹 Chores
+
+- **Removed `codescope-parallel.sh`**: Migrated to built-in `index-parallel` command. No more shell-script dependency for parallel indexing.
+- **Removed 920 lines of dead code**: Eliminated `SchedShm` core pool fields, `monitor_thread`, `dyn_config.rs` duplicate parsing, `merge.rs` ID remapping (pending full migration), and `get_child_pids` monitoring path.
+- **Committed `Cargo.lock`**: Required for reproducible builds of the binary crate.
+- **Gitignored runtime artifacts**: `runtimelog/`, `llvm_ir/output/`, and `*.lbug` files are now properly ignored.
+
 
 ### 🚀 New Features
 

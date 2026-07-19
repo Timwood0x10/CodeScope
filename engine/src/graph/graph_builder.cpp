@@ -264,8 +264,7 @@ void GraphBuilder::addGraphEdge(uint64_t src, uint64_t tgt, EdgeType type)
 	// can be pushed many times (e.g. multiple CallExpr records resolving
 	// to the same callee), and the DB has no unique constraint to filter
 	// them at INSERT time. The set is cleared at the start of each build.
-	auto key = std::make_tuple(src, tgt, type,
-				   current_graph_.graph_type);
+	auto key = std::make_tuple(src, tgt, type, current_graph_.graph_type);
 	if (!added_edges_.insert(key).second)
 		return; // duplicate edge — skip
 

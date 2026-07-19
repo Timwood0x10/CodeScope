@@ -90,10 +90,13 @@ uint64_t GraphStore::insertSymbol(uint64_t project_id, uint64_t module_id,
 		return 0;
 	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	if (module_id > 0)
-		sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(module_id));
-	else
-		sqlite3_bind_null(stmt, 2);
+	// NOTE: module_id is intentionally NOT bound here — graph_nodes has no
+	// module_id column (see the INSERT column list above:
+	// project_id, node_type, name, signature, file_path, language,
+	// start_row, start_col). The removed code bound ?2 to module_id and then
+	// OVERWROTE it with node_type, so ?2 always ended up as node_type (the
+	// correct value) but module_id was silently dropped. ?2 belongs to
+	// node_type only. (void)module_id; below documents the unused parameter.
 	// Map string kind to node_type integer
 	int node_type = 7;
 	if (kind) {
