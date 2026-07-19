@@ -124,6 +124,11 @@ class ACAutomaton {
 		int best_len = 0;
 		for (const char *p = text; *p; p++) {
 			int idx = static_cast<unsigned char>(*p);
+			// Follow failure links until we find a node with a
+			// child for this character, or reach the root.
+			// `next` is a fixed-size array (Node*[256]), so
+			// `!next[idx]` is a valid null-element check, not a
+			// null-pointer dereference (clang-tidy false positive).
 			while (cur != &root_ && !cur->next[idx])
 				cur = cur->fail;
 			if (cur->next[idx])
