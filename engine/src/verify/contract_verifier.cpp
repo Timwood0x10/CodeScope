@@ -21,6 +21,29 @@ static constexpr double kConfMemorySafeNotFound = 0.4;
 namespace verify
 {
 
+// Normalize a contract subject/name to its canonical form: lowercase
+// with all hyphens and spaces removed. Mirrors the helper in
+// ContractPlugin so that claim.subject ("thread-safe" / "ThreadSafe" /
+// "thread safe") and the stored contract name ("threadsafe") compare
+// equal regardless of the original keyword form. Without this, the
+// subject "thread-safe" lowercased to "thread-safe" (hyphen preserved)
+// would never equal the canonical "threadsafe" routing key, silently
+// returning Unknown for valid contracts.
+static std::string normalizeContractName(const std::string &s)
+{
+	std::string out;
+	out.reserve(s.size());
+	for (char c : s) {
+		if (c == '-' || c == ' ' || c == '\t')
+			continue;
+		if (c >= 'A' && c <= 'Z')
+			out.push_back(static_cast<char>(c - 'A' + 'a'));
+		else
+			out.push_back(c);
+	}
+	return out;
+}
+
 ContractVerifier::ContractVerifier(store::GraphStore *store,
 				   uint64_t project_id)
 	: store_(store)
@@ -36,12 +59,14 @@ bool ContractVerifier::accepts(const Claim &claim) const
 }
 
 // Helper: check whether the contract is declared in the `contract` table.
-// Case-insensitive exact-name match (LOWER(name) = LOWER(subject)).
+// Uses the canonical (normalized) form on both sides so "thread-safe" /
+// "thread safe" / "ThreadSafe" all match a stored "threadsafe" row.
 static bool contractDeclared(store::GraphStore *store, uint64_t project_id,
 			     const std::string &subject)
 {
+	const std::string canonical = normalizeContractName(subject);
 	const char *sql = "SELECT 1 FROM contract "
-			  "WHERE project_id=? AND LOWER(name)=LOWER(?) "
+			  "WHERE project_id=? AND name=? "
 			  "LIMIT 1";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store->handle(), sql, -1, &stmt, nullptr) !=
@@ -53,7 +78,7 @@ static bool contractDeclared(store::GraphStore *store, uint64_t project_id,
 		return false;
 	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_text(stmt, 2, subject.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_text(stmt, 2, canonical.c_str(), -1, SQLITE_STATIC);
 
 	bool found = (sqlite3_step(stmt) == SQLITE_ROW);
 	sqlite3_finalize(stmt);
@@ -142,16 +167,12 @@ EvidenceRecord ContractVerifier::verify(const Claim &claim)
 				  "No contract declared", {});
 	}
 
-	// Dispatch by contract name. The comparisons are case-insensitive so
-	// "ThreadSafe" / "threadsafe" / "THREADSAFE" all route to the same
-	// helper. This makes the verifier resilient to casing differences
-	// between the claim subject and the canonical contract name.
-	std::string subject = claim.subject;
-	// Convert subject to lowercase for comparison without altering the
-	// original claim. A small loop avoids locale-dependent functions.
-	for (auto &c : subject)
-		c = static_cast<char>(
-			std::tolower(static_cast<unsigned char>(c)));
+	// Dispatch by contract name. The subject is normalized (lowercased
+	// with hyphens and spaces removed) so "ThreadSafe" / "thread-safe" /
+	// "thread safe" / "THREADSAFE" all route to the same helper. This
+	// makes the verifier resilient to formatting differences between the
+	// claim subject and the canonical contract name.
+	std::string subject = normalizeContractName(claim.subject);
 
 	if (subject == "threadsafe") {
 		return verifyThreadSafe(claim);

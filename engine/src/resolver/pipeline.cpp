@@ -369,7 +369,14 @@ int64_t ResolverPipeline::run()
 	int64_t total_entities = 0;
 	{
 		std::string idx_sql =
-			"SELECT id, name, file_path, language FROM entity "
+			// Include arity so factorSignatureMatch can distinguish
+			// same-name overloads (init()/init(int)/init(string)).
+			// entity.arity was added in v0.5+ migration (store_schema.cpp:470).
+			// Without this column in the SELECT, c.arity defaulted to 0
+			// and every candidate scored kScorePartialMatch (0.5),
+			// letting std::sort pick the winner by unstable order.
+			// See CODE_REVIEW_FINDINGS_2026-07-19.md C2.
+			"SELECT id, name, file_path, language, arity FROM entity "
 			"WHERE project_id=? AND name != ''";
 		sqlite3_stmt *idx_st = nullptr;
 		if (sqlite3_prepare_v2(store_->handle(), idx_sql.c_str(), -1,
@@ -397,6 +404,10 @@ int64_t ResolverPipeline::run()
 			c.language = lang ? lang :
 					    languageFromPath(c.file_path);
 			c.module_path = modulePath(c.file_path);
+			// Column 4 is arity (added to SELECT above). Default 0
+			// if NULL — matches entity.arity DEFAULT 0 so callers
+			// that never set arity behave as "unknown arity".
+			c.arity = sqlite3_column_int(idx_st, 4);
 			c.score = 0;
 			entity_index[c.name].push_back(c);
 			total_entities++;
@@ -492,7 +503,9 @@ int64_t ResolverPipeline::run()
 	}
 
 	// Prepare fuzzy hydration lookup (reused per fuzzy candidate)
-	const char *lk_sql = "SELECT name, file_path, language "
+	// Include arity so fuzzy-resolved candidates also get overload
+	// disambiguation via factorSignatureMatch (see C2 above).
+	const char *lk_sql = "SELECT name, file_path, language, arity "
 			     "FROM entity WHERE id=?";
 	sqlite3_stmt *lk_st = nullptr;
 	sqlite3_prepare_v2(store_->handle(), lk_sql, -1, &lk_st, nullptr);
@@ -636,6 +649,8 @@ int64_t ResolverPipeline::run()
 							languageFromPath(
 								c.file_path);
 					c.module_path = modulePath(c.file_path);
+					// Column 3 is arity (added to lk_sql SELECT above).
+					c.arity = sqlite3_column_int(lk_st, 3);
 				}
 				sqlite3_reset(lk_st);
 				c.score = 0;

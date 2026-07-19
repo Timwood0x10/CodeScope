@@ -385,13 +385,18 @@ void GoVisitor::handleCall(TSNode node, uint64_t parent_id)
 	if (!selector_name.empty()) {
 		// Method call: obj.Method() or pkg.Func()
 		call_kind = CallKind::Method;
-		// Check for constructor pattern: NewType()
-		if (name.size() > 3 && name[0] == 'N' && name[1] == 'e' &&
+		// Check for constructor pattern: NewType(). The previous
+		// `name.size() > 3` threshold excluded exactly "New" (3 chars),
+		// so a bare `New()` call was misclassified as Direct and never
+		// got the constructor boost in the Resolver Pipeline.
+		// See CODE_REVIEW_FINDINGS_2026-07-19.md H6.
+		if (name.size() >= 3 && name[0] == 'N' && name[1] == 'e' &&
 		    name[2] == 'w')
 			call_kind = CallKind::Constructor;
 	} else {
 		// Bare function call: check if it's a constructor
-		if (name.size() > 3 && name[0] == 'N' && name[1] == 'e' &&
+		// Same threshold fix as above (>= 3 includes "New" itself).
+		if (name.size() >= 3 && name[0] == 'N' && name[1] == 'e' &&
 		    name[2] == 'w')
 			call_kind = CallKind::Constructor;
 	}

@@ -303,17 +303,14 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 	}
 
 	// ── Process each file in the batch ─────────────────────────
-	// Collect semantic_records and staged_metrics across all files,
-	// then insert via multi-VALUES at the end for ~200x fewer step() calls.
+	// Collect semantic_records across all files, then insert via
+	// multi-VALUES at the end for ~200x fewer step() calls.
 
-	// Buffers for batch multi-VALUES insert
-	constexpr int kColsPerMetric = 14;
-
-	// Step 1: Process file-level inserts + collect records/metrics
+	// Step 1: Process file-level inserts + collect records.
+	// NOTE: _staged_metrics table was removed — metrics are no longer
+	// stored, so we only collect semantic_records here.
 	std::vector<std::pair<std::string, std::vector<ir::Record>>>
 		batch_records;
-	std::vector<std::pair<std::string, std::vector<store::MetricRow>>>
-		batch_metrics;
 
 	for (auto &fr : batch) {
 		// Upsert file record (ignore if already exists)
@@ -348,7 +345,7 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 		sqlite3_step(del_sr_st);
 		sqlite3_reset(del_sr_st);
 
-		// Collect records and metrics for batch insert
+		// Collect records for batch insert
 		batch_records.emplace_back(fr.file_path, fr.records);
 	}
 
@@ -473,110 +470,11 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 		}
 	}
 
-	// Step 3: Batch-insert staged_metrics via multi-VALUES	// Step 3: Batch-insert staged_metrics via multi-VALUES
-	if (!batch_metrics.empty()) {
-		size_t total_metrics = 0;
-		for (auto &bm : batch_metrics)
-			total_metrics += bm.second.size();
-
-		constexpr size_t kMaxBatch = 500;
-		size_t offset = 0;
-		while (offset < total_metrics) {
-			size_t batch_size = total_metrics - offset;
-			if (batch_size > kMaxBatch)
-				batch_size = kMaxBatch;
-
-			std::vector<std::pair<const store::MetricRow *,
-					      const std::string *>>
-				metric_ptrs;
-			metric_ptrs.reserve(batch_size);
-			size_t remaining = batch_size;
-			for (auto &bm : batch_metrics) {
-				if (remaining == 0)
-					break;
-				size_t take = bm.second.size();
-				if (take > offset) {
-					take -= offset;
-					if (take > remaining)
-						take = remaining;
-					for (size_t i = 0; i < take; i++)
-						metric_ptrs.push_back(
-							{ &bm.second[offset + i],
-							  &bm.first });
-					remaining -= take;
-					offset += take;
-				} else {
-					offset -= take;
-				}
-			}
-
-			if (metric_ptrs.empty())
-				break;
-
-			std::string sql =
-				"INSERT INTO _staged_metrics "
-				"(project_id, file_path, name, line, col, "
-				"cyclomatic, nesting_depth, cognitive, "
-				"lines, param_count, call_count, "
-				"branch_count, loop_count, is_stub) "
-				"VALUES ";
-			for (size_t i = 0; i < metric_ptrs.size(); i++) {
-				if (i > 0)
-					sql += ",";
-				sql += "(?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
-			}
-
-			sqlite3_stmt *batch_st = nullptr;
-			if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &batch_st,
-					       nullptr) == SQLITE_OK) {
-				for (size_t i = 0; i < metric_ptrs.size();
-				     i++) {
-					auto &m = *metric_ptrs[i].first;
-					int base = static_cast<int>(
-						i * kColsPerMetric);
-					sqlite3_bind_int64(batch_st, base + 1,
-							   static_cast<int64_t>(
-								   project_id));
-					sqlite3_bind_text(
-						batch_st, base + 2,
-						metric_ptrs[i].second->c_str(),
-						-1, SQLITE_STATIC);
-					sqlite3_bind_text(batch_st, base + 3,
-							  m.name.c_str(), -1,
-							  SQLITE_STATIC);
-					sqlite3_bind_int(batch_st, base + 4,
-							 m.line);
-					sqlite3_bind_int(batch_st, base + 5,
-							 m.col);
-					sqlite3_bind_int(batch_st, base + 6,
-							 m.cyclomatic);
-					sqlite3_bind_int(batch_st, base + 7,
-							 m.nesting_depth);
-					sqlite3_bind_int(batch_st, base + 8,
-							 m.cognitive);
-					sqlite3_bind_int(batch_st, base + 9,
-							 m.lines);
-					sqlite3_bind_int(batch_st, base + 10,
-							 m.param_count);
-					sqlite3_bind_int(batch_st, base + 11,
-							 m.call_count);
-					sqlite3_bind_int(batch_st, base + 12,
-							 m.branch_count);
-					sqlite3_bind_int(batch_st, base + 13,
-							 m.loop_count);
-					sqlite3_bind_int(batch_st, base + 14,
-							 m.is_stub ? 1 : 0);
-				}
-				int rc = sqlite3_step(batch_st);
-				if (rc != SQLITE_DONE)
-					fprintf(stderr,
-						"insertFileResultBatch: metrics "
-						"multi-VALUES step %d: %s\n",
-						rc, sqlite3_errmsg(db_));
-				sqlite3_finalize(batch_st);
-			}
-		}
-	}
+	// NOTE: The _staged_metrics INSERT block previously here was dead code.
+	// The _staged_metrics table was deleted, and batch_metrics was never
+	// populated (the loop above only emplaces into batch_records), so the
+	// `if (!batch_metrics.empty())` guard was always false. Metrics are no
+	// longer stored in the DB. Removed per M5.
 
 	sqlite3_finalize(sr_st);
 	sqlite3_finalize(fss_st);

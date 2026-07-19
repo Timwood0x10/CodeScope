@@ -503,6 +503,57 @@ codescope_trace(from="copy_process", to="dup_mm")
 - **Very large monorepos (tens of thousands of files):** usable but real resources — rustc took 81 s and 5.9 GB peak. Acceptable for a one-shot index, but plan memory.
 - **Query latency (stdio MCP mode, includes process start):** ~60 ms per call; persistent server mode is lower.
 
+### Dynamic CPU Scheduling (`index-parallel`)
+
+For large multi-module projects, `codescope index-parallel` automatically switches from **static proportional** allocation to **dynamic scheduling with core reclaim**.
+
+**When it activates** (auto):
+
+```
+total_modules > 4  AND  total_files > 10000
+```
+
+Override with `CODESCOPE_DYNAMIC_SCHED=1` (force on) or `=0` (force off).
+
+**How it works:**
+
+1. **Shared-memory core pool** (`/tmp/codescope_sched_<pid>.shm`) — a fixed-size pool of `min(host_cpus, total_workers)` cores, atomically claimed/released via CAS by worker subprocesses across process boundaries.
+2. **Worker queue, largest-first** — modules are sorted by file count desc so the biggest module starts early and benefits most from reclaimed cores.
+3. **Core reclaim** — when a small module finishes, it releases its cores back to the pool; the next pending module claims them. This is the key advantage over static allocation: idle cores from finished small modules are recycled to still-running big modules.
+4. **Memory-bounded spawning** — the scheduler samples total child RSS every poll tick (50ms aggressive / 100ms normal). If RSS exceeds `CODESCOPE_MEM_LIMIT_MB` (default 4096), new worker spawns pause; existing workers keep running.
+
+**Measured impact (Apple M3 Max, 14 workers):**
+
+| Project | Modules | Mode | Total time | Note |
+|---------|:-------:|:----:|:----------:|------|
+| **rustc** (monorepo) | 3 | static | 26s | CPU not the bottleneck — I/O bound |
+| **rustc** | 3 | dynamic | 27s | Cores redistributed (src 4→9, library 3→2) but total time unchanged — only 3 modules, reclaim has nothing to feed |
+| **goagent** (Go) | 7 | dynamic | 7s | internal (1,056 files) grabbed 12 cores as smaller modules released theirs |
+| **Bun** | 4 | dynamic | 28s | All 14 cores went to `src`; time went 22s→25s — thread contention overhead exceeded the parallelism gain |
+
+**Where dynamic scheduling wins:** projects with **many small modules + one or few big modules** (the Linux-kernel-style 20-module layout). Small modules finish quickly and release cores that the big module can then absorb.
+
+**Where it doesn't help (and may slightly hurt):**
+
+- **Few modules** (≤4): no small modules to reclaim cores from. Static allocation already gives the big module most of the cores.
+- **I/O-bound workloads**: when SQLite writes are the bottleneck (not parsing), more cores don't help — `goagent` and `rustc` both hit this.
+- **Thread contention overhead**: pushing a single module from 8 → 14 workers can *increase* parse time due to lock contention and thread scheduling, even though more cores are nominally available.
+
+**Inspection knobs:**
+
+```bash
+# Force-enable dynamic scheduling on a small project
+CODESCOPE_DYNAMIC_SCHED=1 codescope index-parallel /path/to/project
+
+# Tighter poll interval (50ms instead of 100ms) — lower latency, more CPU
+CODESCOPE_AGGRESSIVE=1 codescope index-parallel /path/to/project
+
+# Lower the memory ceiling to 2 GB (pauses new spawns above this)
+CODESCOPE_MEM_LIMIT_MB=2048 codescope index-parallel /path/to/project
+```
+
+The scheduler prints `scheduler: [dynamic] ...` lines to stderr showing `shm_path`, `total_cores`, `mem_limit_mb`, module dispatch order, core-claim events, and memory-pressure pauses.
+
 ### Full Parse & Index (tree-sitter + Graph Builder + Linker)
 
 | Project | Files | Nodes | Functions | CALLS | ★Cross-File | Time |
@@ -671,6 +722,10 @@ cargo run --bin codescope
 | `CODESCOPE_WORKER_TIMEOUT` | `300` | Worker subprocess timeout in seconds |
 | `CODESCOPE_VERBOSE` | `0` | Set to `1` to enable verbose logging |
 | `CODESCOPE_EXPLAIN` | (unset) | Set to `1` to print SQL `EXPLAIN QUERY PLAN` for graph queries |
+| `CODESCOPE_DYNAMIC_SCHED` | `auto` | Dynamic CPU scheduling for `index-parallel`: `1` force on, `0` force off, unset = auto (modules > 4 AND total_files > 10000) |
+| `CODESCOPE_MEM_LIMIT_MB` | `4096` | Dynamic-scheduler memory ceiling (MB). New worker spawns pause when total child RSS exceeds this; existing workers keep running |
+| `CODESCOPE_AGGRESSIVE` | `0` | Set to `1` for 50ms dynamic-scheduler poll interval (default 100ms) |
+| `CODESCOPE_SCHED_SHM` | (auto) | Path to the dynamic-scheduler shared-memory file (auto-generated per scheduler PID; propagated to worker subprocesses) |
 
 > **Note:** `GRAMMARS_DIR` is no longer needed — all tree-sitter grammars are compiled into the binary via CMake FetchContent.
 

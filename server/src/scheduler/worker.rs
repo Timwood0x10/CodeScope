@@ -111,13 +111,13 @@ pub(super) fn run_module_worker(
         }
     };
 
-    // Take stdout/stderr so we can drain them in background threads.
-    // The child would block on pipe writes if we didn't drain them.
+    // Take stdout so we can drain it in a background thread.
+    // stderr is inherited directly (Stdio::inherit()), so the child
+    // writes to the parent's stderr — no drain needed.
     let child_stdout = child.stdout.take().expect("stdout piped");
-    let child_stderr = child.stderr.take().expect("stderr piped");
 
-    // Drain stdout/stderr in dedicated threads. They exit when the
-    // pipes close (i.e., when the child exits or is killed).
+    // Drain stdout in a dedicated thread. It exits when the pipe
+    // closes (i.e., when the child exits or is killed).
     let (stdout_tx, stdout_rx) = mpsc::channel::<Vec<u8>>();
     std::thread::spawn(move || {
         use std::io::Read;
@@ -125,14 +125,6 @@ pub(super) fn run_module_worker(
         let mut s = child_stdout;
         let _ = s.read_to_end(&mut buf);
         let _ = stdout_tx.send(buf);
-    });
-    let (stderr_tx, stderr_rx) = mpsc::channel::<Vec<u8>>();
-    std::thread::spawn(move || {
-        use std::io::Read;
-        let mut buf = Vec::new();
-        let mut s = child_stderr;
-        let _ = s.read_to_end(&mut buf);
-        let _ = stderr_tx.send(buf);
     });
 
     // Poll for child exit with timeout. Parent owns the Child handle,
@@ -192,12 +184,11 @@ pub(super) fn run_module_worker(
     let duration = t0.elapsed().as_secs();
     let exit_code = status.code().unwrap_or(-4);
 
-    // Collect drained stdout/stderr. recv() blocks until the drain
-    // thread sends; it always does once the child's pipes close.
+    // Collect drained stdout. recv() blocks until the drain thread
+    // sends; it always does once the child's pipes close.
+    // stderr is inherited directly, so no drain needed.
     let stdout_bytes = stdout_rx.recv().unwrap_or_default();
-    let stderr_bytes = stderr_rx.recv().unwrap_or_default();
     let stdout = String::from_utf8_lossy(&stdout_bytes).to_string();
-    let stderr = String::from_utf8_lossy(&stderr_bytes).to_string();
 
     // The worker prints its result JSON as the last line of stdout.
     // Extract it by finding the last balanced `{...}` block.
@@ -219,12 +210,12 @@ pub(super) fn run_module_worker(
     let error = if exit_code == 0 && parsed.is_some() {
         None
     } else {
-        // Surface the last stderr line so the caller sees the
-        // underlying engine error without digging through logs.
-        let last_err = stderr.lines().last().unwrap_or("");
+        // stderr is inherited (Stdio::inherit()), so the child's
+        // stderr goes directly to the parent's stderr. The caller
+        // can find the full error in the parent's stderr log.
         Some(format!(
-            "exit={} stderr_tail={:?} [module=scheduler, method=run_module_worker]",
-            exit_code, last_err
+            "exit={} [module=scheduler, method=run_module_worker]",
+            exit_code
         ))
     };
 
@@ -250,34 +241,61 @@ pub(super) fn run_module_worker(
 /// last line of stdout. To be robust against log noise, we find the
 /// last balanced `{...}` block in stdout and validate it parses.
 ///
-/// We locate the last `}`, then walk backwards tracking brace depth
-/// to find its matching `{`. This handles nested objects correctly
-/// (a naive `rfind('{')` would land on an inner object's open brace).
+/// We forward-scan stdout with a small state machine that tracks
+/// whether we're inside a JSON string literal (handling `\` escape
+/// sequences), and use a stack of `{` positions to match each `}`
+/// to its opener. When a `}` pops the stack back to empty, we've
+/// closed a top-level object — record it. The last such object is
+/// the candidate. This handles nested objects correctly AND ignores
+/// braces that appear inside string values (M9): a naive byte-level
+/// brace match would miscount on output like
+/// `{"path":"/some/}path","ok":true}`, fail to find the matching
+/// `{`, return None, and cause the module to be misjudged as having
+/// zero nodes (sending it to quarantine).
 pub(super) fn extract_worker_json(stdout: &str) -> Option<Value> {
     let bytes = stdout.as_bytes();
-    // Find the last '}' in stdout — this is the end of the worker's
-    // result JSON (or of any trailing JSON-like noise).
-    let end = bytes.iter().rposition(|&b| b == b'}')?;
-    // Walk backwards from `end` (inclusive) tracking brace depth.
-    // When depth returns to 0, we've found the matching `{`.
-    let mut depth: i32 = 0;
-    let mut start = end;
-    for i in (0..=end).rev() {
-        match bytes[i] {
-            b'}' => depth += 1,
-            b'{' => {
-                depth -= 1;
-                if depth == 0 {
-                    start = i;
-                    break;
+    let mut in_string = false;
+    // True if the next byte should be treated as literal (preceded by
+    // a backslash inside a string). Handles `\"`, `\\`, `\n`, etc.
+    let mut escape = false;
+    // Stack of `{` byte positions. Popped by the matching `}`.
+    let mut brace_stack: Vec<usize> = Vec::new();
+    // (start, end) of the last complete top-level `{...}` object.
+    let mut best: Option<(usize, usize)> = None;
+
+    for (i, &b) in bytes.iter().enumerate() {
+        if in_string {
+            if escape {
+                // Previous byte was a backslash; this byte is literal
+                // (e.g. the `"` in `\"` does NOT end the string).
+                escape = false;
+            } else if b == b'\\' {
+                escape = true;
+            } else if b == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_string = true,
+            b'{' => brace_stack.push(i),
+            b'}' => {
+                if let Some(start) = brace_stack.pop()
+                    && brace_stack.is_empty()
+                {
+                    // Stack emptied — `start..=i` is a complete
+                    // top-level object. Record it; later complete
+                    // objects overwrite this so we keep the LAST one.
+                    best = Some((start, i));
                 }
+                // An unbalanced `}` (empty stack) is ignored — it's
+                // noise, not part of any object we care about.
             }
             _ => {}
         }
     }
-    if depth != 0 {
-        return None;
-    }
+
+    let (start, end) = best?;
     let candidate = &stdout[start..=end];
     serde_json::from_str(candidate).ok()
 }

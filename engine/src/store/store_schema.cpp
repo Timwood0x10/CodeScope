@@ -91,7 +91,12 @@ bool GraphStore::createSchema()
             label TEXT DEFAULT '',
             FOREIGN KEY (project_id) REFERENCES projects(id),
             FOREIGN KEY (source_node_id) REFERENCES graph_nodes(id),
-            FOREIGN KEY (target_node_id) REFERENCES graph_nodes(id)
+            FOREIGN KEY (target_node_id) REFERENCES graph_nodes(id),
+            -- Unique constraint prevents duplicate (src,tgt,type,graph_type)
+            -- edges per project. graph_type is included because the same
+            -- (src,tgt,type) tuple may legitimately appear in both the
+            -- symbol_reference and call_graph graphs.
+            UNIQUE(project_id, source_node_id, target_node_id, edge_type, graph_type)
         );
 
         -- LadybugDB incremental sync state: tracks the last successful
@@ -128,6 +133,10 @@ bool GraphStore::createSchema()
             end_col INTEGER NOT NULL,
             module_state INTEGER NOT NULL DEFAULT 0,
             module_path TEXT NOT NULL DEFAULT '',
+            -- v0.5+: mirrors semantic_records.arity so the Resolver Pipeline
+            -- can disambiguate same-name overloads (init()/init(int)) without
+            -- a JOIN per candidate. See CODE_REVIEW_FINDINGS_2026-07-19.md C2.
+            arity INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY (project_id) REFERENCES projects(id)
         );
 
@@ -172,13 +181,19 @@ bool GraphStore::createSchema()
         -- getCallees: WHERE edge_type=1 AND source_node_id IN (SELECT id FROM graph_nodes WHERE name=?)
         CREATE INDEX IF NOT EXISTS idx_ge_callers ON graph_edges(edge_type, target_node_id);
         CREATE INDEX IF NOT EXISTS idx_ge_callees ON graph_edges(edge_type, source_node_id);
-        -- Deduplicate existing edges before creating unique constraint
+        -- Deduplicate existing edges before creating unique constraint.
+        -- Group by all 5 columns so edges with different graph_type
+        -- (e.g. symbol_reference vs call_graph) are NOT collapsed.
         DELETE FROM graph_edges WHERE id NOT IN (
           SELECT MIN(id) FROM graph_edges
-          GROUP BY source_node_id, target_node_id, edge_type
+          GROUP BY project_id, source_node_id, target_node_id, edge_type, graph_type
         );
+        -- Drop the old unique edge index (which lacked project_id and
+        -- graph_type) before creating the new one. DROP IF EXISTS makes
+        -- this safe on both fresh and pre-existing databases.
+        DROP INDEX IF EXISTS idx_ge_unique_edge;
         CREATE UNIQUE INDEX IF NOT EXISTS idx_ge_unique_edge
-          ON graph_edges(source_node_id, target_node_id, edge_type);
+          ON graph_edges(project_id, source_node_id, target_node_id, edge_type, graph_type);
 
         -- Semantic records table (flat, O(1) parse-time memory)
         -- Uses AUTOINCREMENT rowid to avoid per-file ID conflicts (each file's
@@ -679,6 +694,20 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 			}
 			sqlite3_finalize(probe);
 			if (!has_module_path) {
+				// Wrap ALTER + backfill UPDATE + CREATE INDEX in
+				// a single transaction. Without this, a crash after
+				// ALTER leaves the column existing with '' values;
+				// the next startup sees the column and skips the
+				// migration, so the backfill never reruns and
+				// scope/state_builder JOINs break silently.
+				if (!exec("BEGIN IMMEDIATE")) {
+					fprintf(stderr,
+						"[module=store, method=createSchema] "
+						"BEGIN module_path migration "
+						"failed: %s\n",
+						error_.c_str());
+					return false;
+				}
 				if (!exec("ALTER TABLE entity "
 					  "ADD COLUMN module_path "
 					  "TEXT NOT NULL DEFAULT ''")) {
@@ -687,6 +716,7 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 						"ALTER TABLE entity ADD module_path "
 						"failed: %s\n",
 						error_.c_str());
+					exec("ROLLBACK");
 					return false;
 				}
 				// Backfill module_path for pre-existing entity rows
@@ -704,6 +734,7 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 						"UPDATE entity backfill module_path "
 						"failed: %s\n",
 						error_.c_str());
+					exec("ROLLBACK");
 					return false;
 				}
 				if (!exec("CREATE INDEX IF NOT EXISTS "
@@ -714,6 +745,16 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 						"CREATE INDEX idx_entity_module "
 						"failed: %s\n",
 						error_.c_str());
+					exec("ROLLBACK");
+					return false;
+				}
+				if (!exec("COMMIT")) {
+					fprintf(stderr,
+						"[module=store, method=createSchema] "
+						"COMMIT module_path migration "
+						"failed: %s\n",
+						error_.c_str());
+					exec("ROLLBACK");
 					return false;
 				}
 			}
@@ -929,6 +970,60 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 		}
 	}
 
+	// Migration: add arity column to entity table (v0.5+, C2)
+	// The Resolver Pipeline (resolver/pipeline.cpp) SELECTs entity.arity to
+	// score same-name overload candidates via factorSignatureMatch. Without
+	// this column the SELECT fails with "no such column: arity", breaking
+	// the entire resolve run. Backfill from semantic_records (which already
+	// has arity populated by Visitors) so pre-existing entity rows get the
+	// correct arity without a re-index. Matches by (project_id, file_path,
+	// name, start_row) — the same identity used by buildGraph's _r2n JOIN.
+	{
+		sqlite3_stmt *probe = nullptr;
+		if (sqlite3_prepare_v2(db_, "PRAGMA table_info(entity)", -1,
+				       &probe, nullptr) == SQLITE_OK) {
+			bool has_arity = false;
+			while (sqlite3_step(probe) == SQLITE_ROW) {
+				const char *col =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(probe, 1));
+				if (col && std::string(col) == "arity")
+					has_arity = true;
+			}
+			sqlite3_finalize(probe);
+			if (!has_arity) {
+				if (!exec("ALTER TABLE entity "
+					  "ADD COLUMN arity INTEGER NOT NULL DEFAULT 0")) {
+					fprintf(stderr,
+						"[module=store, method=createSchema] "
+						"ALTER TABLE entity ADD arity "
+						"failed: %s\n",
+						error_.c_str());
+					return false;
+				}
+				// Backfill arity from semantic_records. Each
+				// declaration record (kind 0/1) carries the
+				// visitor-computed argument count. Call records
+				// (kind 9) are skipped — entity rows are
+				// declarations only.
+				if (!exec("UPDATE entity SET arity = COALESCE("
+					  " (SELECT sr.arity FROM semantic_records sr"
+					  "  WHERE sr.project_id = entity.project_id"
+					  "  AND sr.file_path = entity.file_path"
+					  "  AND sr.name = entity.name"
+					  "  AND sr.start_row = entity.start_row"
+					  "  AND sr.kind IN (0, 1)), 0)")) {
+					fprintf(stderr,
+						"[module=store, method=createSchema] "
+						"UPDATE entity backfill arity "
+						"failed: %s\n",
+						error_.c_str());
+					return false;
+				}
+			}
+		}
+	}
+
 	// Migration: add call_kind column to reference table (v0.7+)
 	{
 		sqlite3_stmt *probe = nullptr;
@@ -1048,11 +1143,25 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 			}
 			sqlite3_finalize(probe);
 			if (!has_last_sync_ts) {
+				// Wrap DROP + CREATE TABLE + CREATE INDEX in a
+				// single transaction. A crash after DROP would
+				// lose the sync cursor with no schema to receive
+				// future updates; the transaction makes the
+				// rebuild all-or-nothing.
+				if (!exec("BEGIN IMMEDIATE")) {
+					fprintf(stderr,
+						"[module=store, method=createSchema] "
+						"BEGIN lbug_sync_state migration "
+						"failed: %s\n",
+						error_.c_str());
+					return false;
+				}
 				if (!exec("DROP TABLE IF EXISTS lbug_sync_state")) {
 					fprintf(stderr,
 						"[module=store, method=createSchema] "
 						"DROP TABLE lbug_sync_state failed: %s\n",
 						error_.c_str());
+					exec("ROLLBACK");
 					return false;
 				}
 				if (!exec("CREATE TABLE IF NOT EXISTS lbug_sync_state ("
@@ -1069,6 +1178,7 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 						"[module=store, method=createSchema] "
 						"CREATE TABLE lbug_sync_state failed: %s\n",
 						error_.c_str());
+					exec("ROLLBACK");
 					return false;
 				}
 				if (!exec("CREATE INDEX IF NOT EXISTS "
@@ -1078,6 +1188,16 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 						"[module=store, method=createSchema] "
 						"CREATE INDEX idx_lbug_sync_project failed: %s\n",
 						error_.c_str());
+					exec("ROLLBACK");
+					return false;
+				}
+				if (!exec("COMMIT")) {
+					fprintf(stderr,
+						"[module=store, method=createSchema] "
+						"COMMIT lbug_sync_state migration "
+						"failed: %s\n",
+						error_.c_str());
+					exec("ROLLBACK");
 					return false;
 				}
 			}
@@ -1124,9 +1244,12 @@ bool GraphStore::createIndexesAfterBulkLoad(uint64_t project_id,
 	// dropped by buildGraph (dropQueryIndexes or dropUniqueEdgeIndex) so
 	// INSERT OR IGNORE could skip the unique-check cost. Deduplicate
 	// first — duplicates may have accumulated while the index was absent.
+	// Group by all 5 columns so edges with different graph_type are NOT
+	// collapsed (a (src,tgt,type) tuple may legitimately appear in both
+	// the symbol_reference and call_graph graphs).
 	if (!exec("DELETE FROM graph_edges WHERE id NOT IN ("
 		  " SELECT MIN(id) FROM graph_edges"
-		  " GROUP BY source_node_id, target_node_id, edge_type)")) {
+		  " GROUP BY project_id, source_node_id, target_node_id, edge_type, graph_type)")) {
 		fprintf(stderr,
 			"WARN: createIndexesAfterBulkLoad dedup: %s"
 			" [module=store, method=createIndexesAfterBulkLoad]\n",
@@ -1134,7 +1257,7 @@ bool GraphStore::createIndexesAfterBulkLoad(uint64_t project_id,
 		ok = false;
 	}
 	if (!exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_ge_unique_edge"
-		  " ON graph_edges(source_node_id, target_node_id, edge_type)")) {
+		  " ON graph_edges(project_id, source_node_id, target_node_id, edge_type, graph_type)")) {
 		fprintf(stderr,
 			"WARN: createIndexesAfterBulkLoad unique edge: %s"
 			" [module=store, method=createIndexesAfterBulkLoad]\n",

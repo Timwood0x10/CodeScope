@@ -69,14 +69,15 @@ uint64_t SemanticUnit::addRecord(RecordKind kind, const std::string &name,
 	return records_.back().id;
 }
 
-const Record &SemanticUnit::getRecord(uint64_t id) const
+const Record *SemanticUnit::getRecord(uint64_t id) const
 {
 	auto it = id_to_index_.find(id);
 	if (it != id_to_index_.end())
-		return records_[it->second];
-	// Return the last record as sentinel (caller must check).
-	// In practice, IDs are always valid.
-	return records_.back();
+		return &records_[it->second];
+	// Not found: return nullptr instead of dereferencing records_.back()
+	// on a possibly-empty container (undefined behaviour). Callers must
+	// check the return value before dereferencing.
+	return nullptr;
 }
 
 // ── Query ──────────────────────────────────────────────────────

@@ -311,7 +311,7 @@ std::string QueryEngine::getCallers(uint64_t project_id,
 	// third-party (external) and unresolved callees. Populated by the
 	// Resolver Pipeline for edge_type=1 (call) edges.
 	std::string sql =
-		"SELECT caller.id, caller.name, caller.file_path, "
+		"SELECT DISTINCT caller.id, caller.name, caller.file_path, "
 		"caller.start_row, caller.start_col, r.resolve_strategy "
 		"FROM graph_nodes caller "
 		"JOIN graph_edges r ON caller.id = r.source_node_id "
@@ -386,7 +386,7 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 	// third-party (external) and unresolved callees. Populated by the
 	// Resolver Pipeline for edge_type=1 (call) edges.
 	std::string sql =
-		"SELECT callee.id, callee.name, callee.file_path, "
+		"SELECT DISTINCT callee.id, callee.name, callee.file_path, "
 		"callee.start_row, callee.start_col, r.resolve_strategy "
 		"FROM graph_nodes callee "
 		"JOIN graph_edges r ON callee.id = r.target_node_id "

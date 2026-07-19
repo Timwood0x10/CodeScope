@@ -58,8 +58,13 @@ uint64_t GraphStore::insertGraphNode(uint64_t project_id,
 	sqlite3_bind_text(stmt, 14, node.file_path.c_str(), -1, SQLITE_STATIC);
 	sqlite3_bind_text(stmt, 15, node.language.c_str(), -1, SQLITE_STATIC);
 	sqlite3_bind_text(stmt, 16, node.signature.c_str(), -1, SQLITE_STATIC);
-	sqlite3_bind_int(stmt, 17, 0);
-	sqlite3_bind_int(stmt, 18, node.is_entry_point ? 1 : 0);
+	// Bind is_entry_point to slot 17 (matches the 17th ? placeholder).
+	// The previous code bound slot 17 to a hardcoded 0 and slot 18 to
+	// the real value — slot 18 is past the 17-placeholder SQL and
+	// sqlite3_bind_int returned SQLITE_RANGE, silently dropping the
+	// value so is_entry_point was ALWAYS 0. See
+	// CODE_REVIEW_FINDINGS_2026-07-19.md C1.
+	sqlite3_bind_int(stmt, 17, node.is_entry_point ? 1 : 0);
 
 	int rc = sqlite3_step(stmt);
 	if (rc != SQLITE_DONE)
@@ -117,8 +122,12 @@ void GraphStore::insertGraphNodes(uint64_t project_id,
 				  SQLITE_STATIC);
 		sqlite3_bind_text(stmt, 16, node.signature.c_str(), -1,
 				  SQLITE_STATIC);
-		sqlite3_bind_int(stmt, 17, 0);
-		sqlite3_bind_int(stmt, 18, node.is_entry_point ? 1 : 0);
+		// Bind is_entry_point to slot 17 (matches the 17th ? placeholder).
+		// Previous code bound slot 17 to hardcoded 0 and slot 18 to the
+		// real value — slot 18 is past the 17-placeholder SQL, SQLITE_RANGE
+		// silently dropped the value so is_entry_point was ALWAYS 0.
+		// See CODE_REVIEW_FINDINGS_2026-07-19.md C1.
+		sqlite3_bind_int(stmt, 17, node.is_entry_point ? 1 : 0);
 
 		int rc = sqlite3_step(stmt);
 		if (rc != SQLITE_DONE)
@@ -139,14 +148,20 @@ void GraphStore::insertGraphNodes(uint64_t project_id,
 uint64_t GraphStore::insertEntity(uint64_t project_id,
 				  const graph::GraphNode &node)
 {
+	// Includes arity column (added in v0.5+ migration, C2) so the
+	// Resolver Pipeline can disambiguate same-name overloads. GraphNode
+	// does not carry arity (it is set on semantic_records by Visitors),
+	// so we bind 0 here — the buildGraph path (store_graph.cpp) populates
+	// the real arity from semantic_records via SQL INSERT...SELECT.
 	const char *sql = "INSERT OR IGNORE INTO entity "
 			  "(id, project_id, kind, name, qualified_name, "
 			  " file_path, language, start_row, start_col, "
-			  " end_row, end_col) "
-			  "VALUES (?,?,?,?,?,?,?,?,?,?,?)";
+			  " end_row, end_col, arity) "
+			  "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)";
 	sqlite3_stmt *stmt = getCachedStmt(sql);
 	if (!stmt) {
-		fprintf(stderr, "insertEntity: getCachedStmt failed\n");
+		fprintf(stderr, "insertEntity: getCachedStmt failed "
+				"[module=store, method=insertEntity]\n");
 		return node.id;
 	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(node.id));
@@ -161,6 +176,11 @@ uint64_t GraphStore::insertEntity(uint64_t project_id,
 	sqlite3_bind_int(stmt, 9, static_cast<int>(node.start_col));
 	sqlite3_bind_int(stmt, 10, static_cast<int>(node.end_row));
 	sqlite3_bind_int(stmt, 11, static_cast<int>(node.end_col));
+	// Bind arity=0 (unknown). The buildGraph SQL path copies the real
+	// arity from semantic_records; INSERT OR IGNORE preserves that value
+	// when both paths target the same entity row.
+	constexpr int kEntityArityUnknown = 0;
+	sqlite3_bind_int(stmt, 12, kEntityArityUnknown);
 	int rc = sqlite3_step(stmt);
 	if (rc != SQLITE_DONE && rc != SQLITE_CONSTRAINT)
 		fprintf(stderr,

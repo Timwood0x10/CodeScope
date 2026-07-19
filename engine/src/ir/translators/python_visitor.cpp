@@ -250,7 +250,13 @@ void PythonVisitor::handleCall(TSNode node, uint64_t parent_id)
 	CallKind call_kind = CallKind::Direct;
 	if (is_attribute_call)
 		call_kind = CallKind::Method;
-	else if (name.size() > 4 && name[0] >= 'A' && name[0] <= 'Z')
+	// Constructor detection: any non-empty capitalized name. The previous
+	// `name.size() > 4` threshold skipped short class names like `Foo()`,
+	// `Url()`, `Db()` → all were misclassified as Direct calls, so the
+	// Resolver Pipeline never applied the constructor boost factor and
+	// cross-module constructor resolution silently failed.
+	// See CODE_REVIEW_FINDINGS_2026-07-19.md H6.
+	else if (name.size() >= 1 && name[0] >= 'A' && name[0] <= 'Z')
 		call_kind = CallKind::Constructor;
 
 	// Compute arity from the arguments node's named children count.

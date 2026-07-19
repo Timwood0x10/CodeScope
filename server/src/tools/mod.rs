@@ -253,6 +253,18 @@ static WORKER_TIMEOUT: Lazy<Duration> = Lazy::new(|| {
 });
 const MAX_RETRIES: usize = 3;
 
+/// Number of attempts to re-initialise the C++ engine after a worker
+/// run if the first `ffi::init` fails. The worker subprocess may hold
+/// the SQLite WAL lock briefly or leave the DB in a busy state; a
+/// short retry window recovers the engine instead of leaving the
+/// server in an unusable "g_store == null" state where every
+/// subsequent tool call returns "not initialised". See H4.
+const ENGINE_INIT_MAX_ATTEMPTS: usize = 3;
+/// Delay between engine re-init attempts. Chosen to be long enough
+/// for the worker's WAL lock to release on a busy system but short
+/// enough not to materially delay the index response.
+const ENGINE_INIT_RETRY_DELAY: Duration = Duration::from_millis(500);
+
 /// Upper bound for `limit` arguments accepted by query-style tools.
 /// Values above this are clamped down to prevent unbounded result sets.
 const MAX_QUERY_LIMIT: i64 = 100;
@@ -378,11 +390,34 @@ fn h_index_project(project_id: u64, args: &Value) -> String {
             // or the DB may be corrupted; checking the return value prevents the
             // server from silently running with a null g_store for the rest of its
             // lifetime (every subsequent tool call would return "not initialized").
-            let init_result = crate::ffi::init(&db_path);
-            if init_result != 0 {
+            //
+            // H4: A single failed init must NOT leave the server in an unusable
+            // state. We retry with the original (pre-shutdown) db_path a few
+            // times with a short delay — this recovers the engine when the
+            // failure was transient (e.g. WAL lock not yet released). Only if
+            // every attempt fails do we propagate the error; the caller (and
+            // the operator) must restart the server in that case.
+            let mut last_init_code: i32 = 0;
+            let mut engine_recovered = false;
+            for init_attempt in 1..=ENGINE_INIT_MAX_ATTEMPTS {
+                let code = crate::ffi::init(&db_path);
+                if code == 0 {
+                    engine_recovered = true;
+                    break;
+                }
+                last_init_code = code;
+                if init_attempt < ENGINE_INIT_MAX_ATTEMPTS {
+                    eprintln!(
+                        "engine re-init attempt {}/{} failed (code={}); retrying in {:?} [module=mcp, tool=index_project, method=ffi::init]",
+                        init_attempt, ENGINE_INIT_MAX_ATTEMPTS, code, ENGINE_INIT_RETRY_DELAY
+                    );
+                    std::thread::sleep(ENGINE_INIT_RETRY_DELAY);
+                }
+            }
+            if !engine_recovered {
                 return format!(
-                    "{{\"ok\":false,\"error\":\"engine re-initialization failed after index (code={}). The database may be locked or corrupted. [module=mcp, tool=index_project, method=ffi::init]\"}}",
-                    init_result
+                    "{{\"ok\":false,\"error\":\"engine re-initialization failed after index (code={}, attempts={}). The database may be locked or corrupted; the engine is now uninitialized — restart the server before issuing further tool calls. [module=mcp, tool=index_project, method=ffi::init]\"}}",
+                    last_init_code, ENGINE_INIT_MAX_ATTEMPTS
                 );
             }
 
@@ -673,7 +708,17 @@ fn walk_force_index(
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
+        // Use symlink_metadata (NOT following symlinks) to detect the
+        // entry's own type. Path::is_dir() follows symlinks, so a symlink
+        // loop (a -> b -> a) would make is_dir() always return true and
+        // the recursion would never terminate → stack overflow panic
+        // crashing the MCP server (local DoS). symlink_metadata gives us
+        // the link's own metadata without dereferencing, so we only recurse
+        // into real directories. See CODE_REVIEW_FINDINGS_2026-07-19.md C5.
+        let is_real_dir = std::fs::symlink_metadata(&path)
+            .map(|m| m.is_dir())
+            .unwrap_or(false);
+        if is_real_dir {
             // Recurse unconditionally — bypass skip-dir rules.
             walk_force_index(
                 &path,

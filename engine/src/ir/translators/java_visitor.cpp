@@ -216,26 +216,23 @@ void JavaVisitor::handleEnumDecl(TSNode node, uint64_t parent_id)
 void JavaVisitor::handleMethodInvocation(TSNode node, uint64_t parent_id)
 {
 	SourceRange loc = location(node);
-	// Extract the method name from the first identifier/scoped_identifier/
-	// field_access child — NOT nodeText(node) which would include args
-	// like "userFunction(5)" and break name-based call resolution.
+	// Extract the method name from the `name` field of the
+	// method_invocation node. tree-sitter-java's method_invocation
+	// has named children via field names: [object, name, arguments].
+	// The previous loop took the FIRST identifier child (which is
+	// the `object` receiver, e.g. `obj` in `obj.method()`), so
+	// callee names were always the receiver → resolveSymbol never
+	// matched → ref_original_id=0 → all Java call-edges were lost.
+	// ts_node_child_by_field_name fetches the `name` field directly
+	// regardless of child order. See CODE_REVIEW_FINDINGS_2026-07-19.md C3.
 	std::string name;
+	TSNode name_node = ts_node_child_by_field_name(node, "name", 4);
+	if (!ts_node_is_null(name_node))
+		name = nodeText(name_node);
+
+	// Total named-child count, reused both for the builtin short-circuit
+	// path and the post-emit recursion below.
 	uint32_t cnt = ts_node_child_count(node);
-	for (uint32_t i = 0; i < cnt; i++) {
-		TSNode c = ts_node_child(node, i);
-		if (!ts_node_is_named(c))
-			continue;
-		const char *t = ts_node_type(c);
-		if (strcmp(t, "identifier") == 0 ||
-		    strcmp(t, "scoped_identifier") == 0) {
-			name = nodeText(c);
-			break;
-		}
-		if (strcmp(t, "field_access") == 0) {
-			name = nodeText(c);
-			break;
-		}
-	}
 
 	// Skip Java common JDK methods — they are NOT user-defined calls
 	if (!name.empty() && isJavaBuiltin(name)) {

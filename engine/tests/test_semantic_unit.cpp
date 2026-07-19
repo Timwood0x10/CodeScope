@@ -75,13 +75,15 @@ static void test_add_records()
 	CHECK_EQ(id3, 3ULL, "third record id == 3");
 
 	// Verify parent_id
-	const auto &rec1 = unit.getRecord(id1);
-	const auto &rec3 = unit.getRecord(id3);
-	CHECK_EQ(rec1.parent_id, 0ULL, "foo is top-level");
-	CHECK_EQ(rec3.parent_id, id1, "baz has foo as parent");
-	CHECK(rec1.file_path == "/test/file.ts",
+	const auto *rec1 = unit.getRecord(id1);
+	const auto *rec3 = unit.getRecord(id3);
+	CHECK(rec1 != nullptr, "getRecord(id1) non-null");
+	CHECK(rec3 != nullptr, "getRecord(id3) non-null");
+	CHECK_EQ(rec1->parent_id, 0ULL, "foo is top-level");
+	CHECK_EQ(rec3->parent_id, id1, "baz has foo as parent");
+	CHECK(rec1->file_path == "/test/file.ts",
 	      "file path propagated");
-	CHECK(rec1.language == "typescript",
+	CHECK(rec1->language == "typescript",
 	      "language propagated");
 }
 
@@ -149,15 +151,19 @@ static void test_emitter()
 	// Verify containment
 	auto children = unit.getChildren(fn);
 	CHECK_EQ(children.size(), 2ULL, "main has 2 children");
-	CHECK_EQ(unit.getRecord(call).parent_id, fn,
+	CHECK(unit.getRecord(call) != nullptr,
+	      "getRecord(call) non-null");
+	CHECK(unit.getRecord(var) != nullptr,
+	      "getRecord(var) non-null");
+	CHECK_EQ(unit.getRecord(call)->parent_id, fn,
 		 "call parent is main");
-	CHECK_EQ(unit.getRecord(var).parent_id, fn,
+	CHECK_EQ(unit.getRecord(var)->parent_id, fn,
 		 "variable parent is main");
 
 	// Verify location preservation
-	CHECK_EQ(unit.getRecord(call).loc.start_row, 5U,
+	CHECK_EQ(unit.getRecord(call)->loc.start_row, 5U,
 		 "call start row preserved");
-	CHECK_EQ(unit.getRecord(call).loc.end_col, 15U,
+	CHECK_EQ(unit.getRecord(call)->loc.end_col, 15U,
 		 "call end col preserved");
 
 	// Verify export/import emitters

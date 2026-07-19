@@ -251,7 +251,18 @@ pub(super) fn merge_module_dbs(main_db: &str, module_db_paths: &[String]) -> Mer
     // ── Step 4: merge each module ───────────────────────────────
     for (i, db_path) in module_db_paths.iter().enumerate() {
         let alias = format!("m{}", i);
-        sql.push_str(&format!("ATTACH DATABASE '{}' AS {};\n", db_path, alias));
+        // Escape single quotes by doubling them (' -> ''). Module DB
+        // paths embed the module name, which comes from a directory
+        // name; a dir like `O'Brien` or `it's` would terminate the
+        // SQL string literal early and break the ATTACH (merge fails
+        // for the whole module). SQLite follows the SQL standard:
+        // `''` inside a `'...'` literal is a single quote. Alias is
+        // generated as `m{i}` so it never needs escaping. See H3.
+        let escaped_db_path = db_path.replace('\'', "''");
+        sql.push_str(&format!(
+            "ATTACH DATABASE '{}' AS {};\n",
+            escaped_db_path, alias
+        ));
 
         // Query the module DB's existing tables so we can skip
         // TABLE_SPECS entries that aren't present (e.g. adjacency /

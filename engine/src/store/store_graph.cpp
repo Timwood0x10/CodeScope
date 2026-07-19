@@ -276,11 +276,14 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// This early insert feeds the scope table below, so it must happen
 	// before scope creation. The late insert after dropQueryIndexes is
 	// now redundant but kept as a safety net (INSERT OR IGNORE).
+	// Includes sr.arity so the Resolver Pipeline can disambiguate
+	// same-name overloads via factorSignatureMatch. See
+	// CODE_REVIEW_FINDINGS_2026-07-19.md C2.
 	exec(std::string(
 		     "INSERT OR IGNORE INTO entity "
 		     "(id, project_id, kind, name, qualified_name, "
 		     " file_path, language, start_row, start_col, "
-		     " end_row, end_col, module_path, visibility) "
+		     " end_row, end_col, module_path, visibility, arity) "
 		     "SELECT r2n.node_id, sr.project_id, "
 		     " CASE sr.kind WHEN 0 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 "
 		     "  WHEN 3 THEN 4 WHEN 4 THEN 3 WHEN 5 THEN 3 ELSE 7 END, "
@@ -288,7 +291,8 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		     " sr.file_path, sr.language, "
 		     " sr.start_row, sr.start_col, sr.end_row, sr.end_col, "
 		     " rtrim(sr.file_path, replace(sr.file_path, '/', 'x')), "
-		     " sr.visibility "
+		     " sr.visibility, "
+		     " sr.arity "
 		     "FROM semantic_records sr "
 		     "JOIN _r2n r2n ON sr.rowid = r2n.rid "
 		     "WHERE sr.file_path NOT LIKE '%\\_test.%' ESCAPE '\\'"

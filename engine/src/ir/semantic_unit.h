@@ -186,7 +186,12 @@ class SemanticUnit {
 			   SourceRange loc);
 
 	/** Accessors. */
-	const Record &getRecord(uint64_t id) const;
+	// Returns a pointer to the record with the given id, or nullptr if not
+	// found (e.g. when records_ is empty or the id was never added).
+	// Returning a pointer avoids the undefined behaviour of calling
+	// records_.back() on an empty container and forces callers to handle
+	// the "not found" case explicitly.
+	const Record *getRecord(uint64_t id) const;
 	const std::vector<Record> &allRecords() const
 	{
 		return records_;

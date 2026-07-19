@@ -34,6 +34,28 @@ bool containsCI(const std::string &haystack, const char *needle)
 	return false;
 }
 
+// Normalize a contract keyword to its canonical form: lowercase with
+// all hyphens and spaces removed. This makes "thread safe",
+// "thread-safe", and "ThreadSafe" all collapse to "threadsafe" so the
+// ContractVerifier's lowercase exact-match routing (subject == "threadsafe")
+// can dispatch them consistently. Without this, "thread-safe" stored
+// verbatim would never match the verifier's "threadsafe" comparison
+// because the hyphen survives tolower().
+std::string normalizeContractName(const std::string &keyword)
+{
+	std::string out;
+	out.reserve(keyword.size());
+	for (char c : keyword) {
+		if (c == '-' || c == ' ' || c == '\t')
+			continue;
+		if (c >= 'A' && c <= 'Z')
+			out.push_back(static_cast<char>(c - 'A' + 'a'));
+		else
+			out.push_back(c);
+	}
+	return out;
+}
+
 } // namespace
 
 ContractPlugin::ContractPlugin(store::GraphStore *store)
@@ -61,8 +83,23 @@ ModelResult ContractPlugin::build(uint64_t project_id, const ModelContext &ctx)
 		};
 		for (auto *kw : keywords) {
 			if (containsCI(text, kw)) {
-				store_->insertContract(project_id, kw, "readme",
-						       kw, doc.file_path, 0);
+				// Canonicalise the contract name before insert so
+				// ContractVerifier's lowercase-exact router matches.
+				// The verifier lowercases claim.subject and compares
+				// == "threadsafe" / "memorysafe" / "zerocopy" — those
+				// have NO hyphens or spaces. But the keywords above
+				// include "thread-safe" / "memory safe" forms which
+				// lowercase to "thread-safe" / "memory safe" (still
+				// with separators) and NEVER match the router, so
+				// "thread-safe" claims silently returned Unknown and
+				// trust_score was penalised. See
+				// CODE_REVIEW_FINDINGS_2026-07-19.md H1.
+				// Canonical form: lowercase + strip '-' and spaces.
+				std::string canonical =
+					normalizeContractName(kw);
+				store_->insertContract(project_id, canonical,
+						       "readme", kw,
+						       doc.file_path, 0);
 				++contracts;
 			}
 		}

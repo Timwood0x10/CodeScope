@@ -36,11 +36,22 @@ int64_t StateBuilder::buildModuleSummaries()
 		"    THEN 1.0 - CAST(dead AS REAL) / total ELSE 0.0 END, "
 		"  0.85, "
 		"  CASE "
-		// Priority 1: test layer — strong path signal
-		"    WHEN INSTR(module_name, 'test') > 0 "
-		"      OR INSTR(module_name, 'tests') > 0 "
-		"      OR INSTR(module_name, '_test') > 0 "
-		"      OR INSTR(module_name, 'mod tests') > 0 THEN 'test' "
+		// Priority 1: test layer — strong path signal.
+		// Match "test" / "tests" as a full path component only, NOT as
+		// a substring. INSTR(module_name, 'test') matched "latest",
+		// "attestation", "protest", etc., misclassifying real source
+		// modules as test layers. module_name is a directory path
+		// (e.g. "src/test/", "test/", "src/utils/test/"), so path-
+		// component LIKE patterns cover all positions without matching
+		// substrings inside other words.
+		"    WHEN module_name = 'test' "
+		"      OR module_name LIKE 'test/%' "
+		"      OR module_name LIKE '%/test' "
+		"      OR module_name LIKE '%/test/%' "
+		"      OR module_name = 'tests' "
+		"      OR module_name LIKE 'tests/%' "
+		"      OR module_name LIKE '%/tests' "
+		"      OR module_name LIKE '%/tests/%' THEN 'test' "
 		// Priority 2: api layer — pub surface + cross-module called heavily
 		// Thresholds from state_builder.h constexpr (kRoleApi*), retunable.
 		"    WHEN pub_count > 0 AND incoming >= " +
@@ -155,9 +166,20 @@ int64_t StateBuilder::buildModuleSummaries()
 int64_t StateBuilder::buildCapabilityState()
 {
 	// Single INSERT...SELECT with a recursive CTE to derive the
-	// capability name (prefix up to the first uppercase letter at
-	// position >= 1, matching the previous C++ substr/find_first_of
-	// logic). Replaces the per-row prepare/step/finalize loop.
+	// capability name. The CTE scans each matched entity name and finds
+	// the first position >= 2 where an uppercase letter is followed by
+	// a lowercase letter — i.e. the start of a new CamelCase word. The
+	// capability name is the prefix before that position.
+	//
+	// Acronym handling: a run of uppercase letters like "JWT" in
+	// "JWTValidator" must be treated as ONE word, not three. The
+	// previous CTE matched ANY uppercase letter at pos >= 2, so for
+	// "JWTValidator" it found pos=2 ('W') and returned substr(name,1,1)
+	// = "J" — truncating the acronym to its first letter. Requiring
+	// next_ch GLOB '[a-z]' skips the W and T (followed by uppercase),
+	// finds 'V' at pos=4 (followed by 'a'), and returns "JWT".
+	// For "AuthValidator" the rule still finds 'V' at pos=5 and
+	// returns "Auth".
 	std::string sql =
 		"INSERT OR IGNORE INTO capability_state "
 		"(project_id, name, state) "
@@ -172,11 +194,19 @@ int64_t StateBuilder::buildCapabilityState()
 		"     OR name LIKE 'Health%' OR name LIKE 'Config%')"
 		"  LIMIT 50"
 		"), "
-		"scan(name, pos, ch) AS ("
-		"  SELECT name, 2, substr(name, 2, 1) FROM matched "
+		// scan carries the current char (ch) and the next char
+		// (next_ch) so the word-boundary filter can require an
+		// uppercase letter followed by a lowercase letter. substr
+		// returns '' past end-of-string, and '' GLOB '[a-z]' is 0,
+		// so a trailing uppercase letter is correctly rejected.
+		"scan(name, pos, ch, next_ch) AS ("
+		"  SELECT name, 2, substr(name, 2, 1), substr(name, 3, 1) "
+		"  FROM matched "
 		"  WHERE length(name) >= 2 "
 		"  UNION ALL "
-		"  SELECT name, pos + 1, substr(name, pos + 1, 1) FROM scan "
+		"  SELECT name, pos + 1, "
+		"    substr(name, pos + 1, 1), substr(name, pos + 2, 1) "
+		"  FROM scan "
 		"  WHERE pos < length(name)"
 		") "
 		"SELECT ?, "
@@ -188,7 +218,10 @@ int64_t StateBuilder::buildCapabilityState()
 		"FROM matched m "
 		"LEFT JOIN ("
 		"  SELECT name, MIN(pos) AS pos FROM scan "
-		"  WHERE ch GLOB '[A-Z]' "
+		// Word boundary: uppercase followed by lowercase. This skips
+		// intra-acronym uppercase letters (e.g. 'W','T' in "JWT")
+		// because they are followed by another uppercase letter.
+		"  WHERE ch GLOB '[A-Z]' AND next_ch GLOB '[a-z]' "
 		"  GROUP BY name"
 		") fu ON fu.name = m.name";
 	sqlite3_stmt *stmt = nullptr;

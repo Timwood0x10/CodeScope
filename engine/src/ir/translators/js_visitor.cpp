@@ -487,7 +487,13 @@ void JsVisitor::visitCallExpr(TSNode node, uint64_t parent_id)
 	CallKind call_kind = CallKind::Direct;
 	if (callee_name.find('.') != std::string::npos)
 		call_kind = CallKind::Method;
-	else if (callee_name.size() > 3 && callee_name[0] >= 'A' &&
+	// Constructor detection: any non-empty capitalized name. The previous
+	// `callee_name.size() > 3` threshold skipped short class names like
+	// `Foo()`, `Url()`, `Db()` → all were misclassified as Direct calls,
+	// so the Resolver Pipeline never applied the constructor boost factor
+	// and cross-module constructor resolution silently failed.
+	// See CODE_REVIEW_FINDINGS_2026-07-19.md H6.
+	else if (callee_name.size() >= 1 && callee_name[0] >= 'A' &&
 		 callee_name[0] <= 'Z')
 		call_kind = CallKind::Constructor;
 

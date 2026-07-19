@@ -220,7 +220,7 @@ class FilterPolicy {
 			      const std::string &str);
 	static bool globImpl(const std::string &p, const std::string &s,
 			     std::string::const_iterator pi,
-			     std::string::const_iterator si);
+			     std::string::const_iterator si, int depth = 0);
 };
 
 #endif // FILTER_POLICY_H
