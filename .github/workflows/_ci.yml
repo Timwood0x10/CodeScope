@@ -53,7 +53,7 @@ jobs:
         if: startsWith(matrix.os, 'ubuntu-')
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build git gcc g++ pkg-config libssl-dev ccache
+          sudo apt-get install -y cmake ninja-build git gcc g++ pkg-config libssl-dev ccache patchelf
           # LadybugDB shared libraries are vendored under engine/third_party/ladybug/lib/
           # (committed to git, both x86-64 and aarch64). CMake selects the
           # correct architecture at configure time. Add the lib dir to the
@@ -204,10 +204,33 @@ jobs:
           cp target/release/codescope package/
           cp LICENSE package/
           [ -f install.sh ] && cp install.sh package/
-          # Bundle the parallel indexer script so users/AIs can opt into
-          # multi-process acceleration for large projects. The script is
-          # platform-independent bash and auto-discovers the binary.
-          [ -f codescope-parallel.sh ] && cp codescope-parallel.sh package/ && chmod +x package/codescope-parallel.sh
+
+          # Bundle vendored LadybugDB shared library and set rpath so the
+          # binary can find it at runtime without Homebrew/system install.
+          # The binary links against @rpath/liblbug.0.dylib (macOS) or
+          # liblbug.so.0 (Linux), resolved via the embedded rpath.
+          case "${{ matrix.artifact }}" in
+            *-x86_64-linux)
+              LBUG_LIB="engine/third_party/ladybug/lib/linux/liblbug.so.0"
+              LBUG_FILE="liblbug.so.0"
+              ;;
+            *-aarch64-linux)
+              LBUG_LIB="engine/third_party/ladybug/lib/linux-aarch64/liblbug.so.0"
+              LBUG_FILE="liblbug.so.0"
+              ;;
+            *-macos)
+              LBUG_LIB="engine/third_party/ladybug/lib/macos/liblbug.0.dylib"
+              LBUG_FILE="liblbug.0.dylib"
+              ;;
+          esac
+          cp -L "$LBUG_LIB" "package/$LBUG_FILE"
+          # Set rpath to $ORIGIN (Linux) / @executable_path (macOS) so the
+          # dynamic linker finds the bundled library in the same directory.
+          if [[ "${{ matrix.os }}" == ubuntu-* ]]; then
+            patchelf --set-rpath '$ORIGIN' package/codescope
+          elif [[ "${{ matrix.os }}" == macos-* ]]; then
+            install_name_tool -add_rpath @executable_path/. package/codescope 2>/dev/null || true
+          fi
 
           cd package
           tar -czf "../${{ matrix.artifact }}.tar.gz" ./*
