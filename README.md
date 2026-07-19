@@ -4,13 +4,11 @@
 
 It transforms source code into verifiable facts, understandable models, and inspectable evidence — enabling AI to validate claims against reality instead of hallucinating.
 
+**Version**: v0.2.1 | **License**: Apache 2.0
+
 ---
 
-### What CodeScope is NOT
-
-CodeScope is **not** a code explainer, a semantic analyzer, or a replacement for reading code. It does not understand what `Arc<T>` means, why `Rc<T>` is not thread-safe, or how a JWT middleware works. **That is the AI's job.**
-
-### What CodeScope IS
+## 1. What Is CodeScope?
 
 CodeScope is a **Project Truth Engine** that answers one question:
 
@@ -18,171 +16,35 @@ CodeScope is a **Project Truth Engine** that answers one question:
 
 Not "what does this code mean", but "does the code actually do what you claim?"
 
-### By the Numbers
+It indexes source code into a structured code graph (call graph + reference graph + module knowledge), then exposes **37 MCP tools** that let AI agents locate symbols, trace call paths, verify claims, detect documentation drift, and analyze architecture — all with **~98.9% token savings** vs reading raw source files.
 
-| Metric | Value |
-|--------|-------|
-| Languages | 8 (Rust, Go, C/C++, Python, Java, JS/TS) |
-| Index speed | 1-10s (100+ files) |
-| Query latency | 0.3-1.5 ms |
-| Token savings | **98.9%** (260K lines → 40K tokens) |
-| MCP tools | 37 (Locate / Understand / Verify / Index) |
-| Architecture | Facts → Resolution → Models → Verification |
+### Supported Languages (8)
 
-### What It Can Do
+| Language | Parser | IR Translator | Verified |
+|----------|--------|---------------|----------|
+| Python | ✅ | ✅ | ✅ |
+| Go | ✅ | ✅ | ✅ |
+| C | ✅ | ✅ | ✅ |
+| C++ | ✅ | ✅ | ✅ |
+| Rust | ✅ | ✅ | ✅ |
+| JavaScript | ✅ | ✅ | ✅ |
+| TypeScript | ✅ | ✅ | ✅ |
+| Java | ✅ | ✅ | ✅ |
 
-| AI says | CodeScope checks | Data source |
-|---------|----------------|-------------|
-| "登录模块支持 JWT" | JWT library exists? login calls jwt? tests exist? | `entity` + `relation` + `import` |
-| "This module is complete" | All functions have callers? coverage adequate? | `relation` + `DeadCodeInspector` |
-| "PR fixed memory leak" | Corresponding free exists? error path tested? | `relation` + test file check |
-| "Architecture is Controller→Service→Repository" | Does code actually follow this layering? | `architecture_edge` |
-| "Module supports 6 languages" | Do the adapters actually exist? | `entity` + `import` |
+### Tech Stack
 
-### Knowledge Graph (Side Product)
-
-CodeScope builds a **module-level knowledge graph** as a side product of the verification pipeline. It learns not "code text" but *structured "how this project is organized, what's important, what's redundant, what it promises"* — a four-layer stack:
-
-| Layer | Table | What it tells you |
-|-------|-------|-------------------|
-| **Call graph** (who calls who) | `relation` (type=1), `architecture_edge` | Cross-module call dependencies; drives `detect_architecture_drift` |
-| **Module health** (who's important / who's dead) | `module_summary` | Per-module `incoming_count` / `outgoing_count` / `dead_entities` / `utilization` / `confidence`; drives `explain_module` |
-| **Module dependency** (who impacts whom) | `architecture_edge` (edge weight = call count), `module_edge` | "Change module A → these modules depend on it" |
-| **Documented capability** (what it claims it can do) | `capability` + `document` | README-extracted capabilities; drives `detect_capability_drift` / `verify_claim` |
-
-The knowledge graph is not the product — it is the infrastructure that powers verification.
-
-#### `module_summary.role`: multi-signal fusion classifier (v0.2.1)
-
-The `role` column is auto-populated by a **multi-signal fusion CASE** classifier (`engine/src/model/state_builder.cpp`), not a single-source heuristic. It fuses call-graph counts with two signals the call graph cannot give:
-
-| Signal | Source | What it adds |
-|--------|--------|--------------|
-| `pub_count` | `entity.visibility=1` (pub/public/export per language Visitor) | Distinguishes external interface layers from internal implementation |
-| `entry_reachable` | `graph_nodes.is_entry_point` (main/init/setup/run/handler) | Whether this module is an entry layer |
-
-Rules match by **priority** (first hit stops):
-
-| Priority | Role | Rule (multi-signal) |
-|----------|------|---------------------|
-| 1 | `test` | module name contains `test`/`tests`/`_test`/`mod tests` |
-| 2 | `api` | `pub_count > 0 AND incoming ≥ 2×outgoing AND incoming ≥ 3 AND utilization ≥ 0.1` |
-| 3 | `entry` | `entry_reachable > 0` |
-| 4 | `core` | `incoming ≥ 10 AND outgoing ≤ incoming×1.0 AND utilization ≥ 0.05 AND pub_count > 0` |
-| 5 | `utility` | `outgoing ≤ 5 AND pub_count > 0 AND utilization ≥ 0.05` |
-| 6 | `business` | `pub_count > 0 AND incoming ≥ 10` (implementation layer — many depend, many deps; outgoing too high for core/api) |
-| 7 | `dead` | `incoming=0 AND outgoing=0`, OR `dead_entities = total` |
-| 8 | `infra` | true fallback — didn't match any semantic rule |
-
-Treat `role` as a hint informed by fusion, not a court verdict. Thresholds are `constexpr` in `state_builder.h` — retune against `bun` if your project's role distribution looks off (e.g. `infra > 30%` means thresholds too strict). See `docs/dev_plans/role_classifier_plan.md` for the full design and the v0.2.1 threshold retune log.
-
-#### What lands in the knowledge graph (memscope-rs, 215 files)
-
-| Table | Rows | Meaning |
-|-------|-----:|---------|
-| `entity` | 4,310 | Fine-grained code entities (functions, types, vars) |
-| `relation` | 726 | Inter-entity relations (type 3 = containment / definition) |
-| `architecture_edge` | 3,351 | Module / directory-level architecture dependencies (edge weight = call count) |
-| `module_edge` | 11 | Cross-module dependency edges |
-| `capability` | 3 | Capabilities extracted from the README |
-| `document` | 1 | README document record |
-| `module_summary` | 42 | Per-module knowledge cards |
-
-What you can learn from it:
-
-- **Architecture dependencies** — `architecture_edge` tells you which modules depend on which (e.g. `analysis/heap_scanner → unsafe_inference`, weight = number of calls). Drives `detect_architecture_drift`.
-- **Capability declarations** — `capability` + `document` structure "what the README claims the project can do". Drives `detect_capability_drift` / `verify_claim(capability_exists)`.
-- **Module summaries** — 42 per-module knowledge cards, surfaced by `explain_module`.
-
-#### Direct query access (v0.2.1)
-
-The knowledge graph used to be **implicit** — `graph_query` walks the *call* graph (`graph_nodes` / `graph_edges`), not the knowledge-layer tables (`entity` / `relation` / `architecture_edge`). You benefited from it only indirectly via `explain_module`, `detect_capability_drift`, `get_module_tree`.
-
-v0.2.1 adds `engine_get_knowledge_graph(project_id, table, limit)` + the MCP tool `get_knowledge_graph` so you can now **directly browse** any knowledge-layer table:
-
-```jsonc
-get_knowledge_graph {"table":"architecture_edge","limit":5}
-// → {"table":"architecture_edge","rows":[{"id":1,"layer_lower":"analysis/heap_scanner","layer_upper":"unsafe_inference","entity_id":42}],"total":3351,"truncated":false}
-
-get_knowledge_graph {"table":"capability","limit":10}
-// → {"table":"capability","rows":[{"id":1,"name":"borrow_analysis","summary":"scope-aware borrow checking"}],"total":3,"truncated":false}
-```
-
-Supported tables: `entity`, `relation`, `architecture_edge`, `module_edge`, `capability`, `document`, `module_summary`. Block-level FFI — one call returns the whole result set, never one row per call.
-
----
-## Quick Start
-
-### 60 seconds to your first index
-
-```bash
-# 1. One-command build (auto-detects OS, installs deps, compiles)
-bash <(curl -fsSL https://raw.githubusercontent.com/Timwood0x10/CodeScope/master/bootstrap.sh)
-
-# 2. Index a project
-codescope cli index_project '{"project_path":"/path/to/your/project"}'
-
-# 3. Query
-codescope cli get_graph_stats '{}'
-# → {"total_nodes":12345,"total_edges":6789,"total_files":99}
-
-# 4. Start MCP server (for AI clients)
-codescope
-```
-
-📖 详细的中文快速开始指南见 [QUICK_START.md](QUICK_START.md)
-
-### Prerequisites
-
-| Platform | Dependencies | One-command | Status |
-|----------|-------------|-------------|--------|
-| **macOS** | Xcode CLT, cmake, Rust | `bash bootstrap.sh` | ✅ Supported |
-| **Linux** | build-essential, cmake, Rust | `bash bootstrap.sh` | ✅ Supported |
-| **Windows** | MinGW-w64 (gcc/g++), CMake 3.30+, Rust | `.\install.ps1` | 🚧 Planned |
-
-> Pre-built binaries are available for **Linux** and **macOS** on the [Releases page](https://github.com/Timwood0x10/CodeScope/releases).  
-> **Windows** support is planned for a future release. The C++ engine and Rust server build with MinGW-w64; see [#issue] for tracking progress.
-
-**One-command install (Linux / macOS)**:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Timwood0x10/CodeScope/master/install.sh | bash
-```
-
-After install, `~/.codescope/bin/` contains:
-
-| File | Purpose |
-|------|---------|
-| `codescope` | Main binary (CLI + MCP server) — single-process `index` and built-in multi-process `index-parallel` scheduler for large projects |
-
-Add to PATH and use:
-
-```bash
-export PATH="$PATH:$HOME/.codescope/bin"
-
-# Small-medium projects: index directly
-codescope cli index_project '{"project_path":"/path/to/project"}'
-
-# Large projects (thousands–tens of thousands of files): use the built-in scheduler
-codescope index-parallel /path/to/large/project
-```
-
-### Build from source manually
-
-```bash
-# macOS:
-brew install llvm@21 cmake pkg-config sqlite3 ladybug
-cargo build --release
-
-# Linux (Ubuntu):
-sudo apt-get install -y build-essential cmake llvm-dev libclang-dev libsqlite3-dev
-curl -fsSL https://install.ladybugdb.com | sh
-cargo build --release
-```
+| Layer | Technology |
+|-------|-----------|
+| Parser | tree-sitter (unified AST IR, 8 languages) |
+| Indexer | C++23 (Clang 17+), SQLite (WAL mode, FTS5) |
+| Server | Rust 2024 Edition, MCP Protocol (JSON-RPC 2.0, stdio transport) |
+| Graph Storage | SQLite (primary) + optional LadybugDB (Cypher queries) |
+| Scheduler | Built-in multi-process parallel indexer (chunk-level work-stealing) |
+| Build | CMake 3.30+ (C++), Cargo (Rust) |
 
 ---
 
-## Architecture
+## 2. Architecture
 
 ```mermaid
 graph TB
@@ -191,15 +53,15 @@ graph TB
     end
 
     subgraph "Rust MCP Server"
-        MCP["MCP Protocol (JSON-RPC 2.0)<br/>37 tools / protocol / transport"]
+        MCP["MCP Protocol (JSON-RPC 2.0)<br/>37 tools / stdio transport"]
         DISPATCH["Tool Dispatch<br/>project_id auto-restore"]
     end
 
     subgraph "C++ Core Engine"
-        PARSER["Parser<br/>tree-sitter → unified IR<br/>6 languages"]
+        PARSER["Parser<br/>tree-sitter → unified IR<br/>8 languages"]
         FACTS["Facts Repository<br/>entity / reference / scope / import"]
         RESOLVER["Resolver Pipeline<br/>Constraint Chain"]
-        MODEL["Model Engine<br/>Plugin: Workflow / Capability<br/>Architecture / Contract"]
+        MODEL["Model Engine<br/>Workflow / Capability<br/>Architecture / Contract"]
         INSPECTOR["Inspector<br/>DeadCodeInspector / verify_integrity"]
     end
 
@@ -245,32 +107,11 @@ Model Engine ------ workflow / capability / architecture / contract
 Inspector --------- evidence / finding
 ```
 
-### Data Flow
-
-```
-Facts Layer:      项目里有什么？          实体、引用、作用域、导入
-Resolution Layer: 谁调了谁？              调用边、依赖关系、resolve_strategy
-Model Layer:      项目怎么工作的？         工作流、能力、架构、契约
-Verify Layer:     真的吗？证据在哪？       证据、发现
-```
-
-> **v0.2.1 — `resolve_strategy` propagation**
-> Each call edge now carries a `resolve_strategy` tag on its way out of the
-> Resolver Pipeline: `p1_intra` (resolved in-project), `external` (builtin /
-> third-party), `unresolved` (unknown). Frontends can filter `external` /
-> `unresolved` out of `find_callees` / `find_callers` results to eliminate
-> third-party false positives (e.g. `dropout`, `backward_hook`, `means`,
-> `stds` no longer surface as in-project callees). Verified across 8 languages
-> on the `bun` project: 100% of `edge_type=1` (call) edges carry a non-empty
-> strategy. See `docs/bugs/bug_resolve_strategy.zh.md` for the full fix chain.
-
-```
-
-### Query Flow (Tool Dispatch)
+### Query Flow
 
 ```mermaid
 flowchart LR
-    Q["MCP Client<br/>tool call"] --> Q1["Server receives<br/>project_id auto-restore<br/>from DB (getLatestProjectId)"]
+    Q["MCP Client<br/>tool call"] --> Q1["Server receives<br/>project_id auto-restore"]
     Q1 --> Q2{"Tool type?"}
     Q2 -->|"index_project"| Q3["Spawn worker subprocess<br/>→ memory isolated<br/>→ exits after done"]
     Q2 -->|"query tools"| Q4["C++ FFI → SQLite query<br/>graph_nodes, graph_edges<br/>search_index, ..."]
@@ -281,7 +122,7 @@ flowchart LR
     Q6 --> R
 ```
 
-### Two-Phase Design
+### Two-Phase Indexing
 
 ```mermaid
 flowchart LR
@@ -303,248 +144,222 @@ flowchart LR
     A -->|"trigger"| B
 ```
 
-## MCP Tools (37 tools)
+---
 
-### Project & Stats
+## 3. Quick Start
 
-| Tool | Description | Token Cost |
-|------|-------------|:----------:|
-| `project_overview` | **Primary** — comprehensive overview: languages, modules, symbols, entry points | **~71** |
-| `get_graph_stats` | Quick statistics: nodes, edges, files | **~18** |
-| `get_module_tree` | Hierarchical module/directory tree | **~4** |
-| `get_entry_points` | Find entry points (main/init/setup/run/handler) | **~5** |
-| `get_routes` | Get registered HTTP routes (Gin/Echo/Chi/net/http) | **~50** |
-| `get_type_info` | Query type definitions (struct/enum/trait) with reference counts | **~50** |
+### Prerequisites
+
+| Platform | Dependencies |
+|----------|-------------|
+| **macOS** | Xcode CLT, cmake, Rust (1.85+) |
+| **Linux** | build-essential, cmake, Rust (1.85+) |
+
+### Install Pre-built Binary
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Timwood0x10/CodeScope/main/install.sh | bash
+export PATH="$PATH:$HOME/.codescope/bin"
+```
+
+### Build from Source
+
+```bash
+git clone https://github.com/Timwood0x10/CodeScope.git
+cd CodeScope
+
+# macOS:
+brew install llvm@21 cmake pkg-config
+cargo build --release
+
+# Linux (Ubuntu):
+sudo apt-get install -y build-essential cmake llvm-dev libclang-dev
+cargo build --release
+```
+
+### Index and Query
+
+```bash
+# Index a project
+codescope cli index_project '{"project_path":"/path/to/your/project"}'
+
+# Quick overview
+codescope cli project_overview '{}'
+
+# Start MCP server (for AI clients)
+codescope
+```
+
+### Large Projects
+
+For projects with thousands of files, use the built-in parallel scheduler:
+
+```bash
+codescope index-parallel /path/to/large/project
+```
+
+---
+
+## 4. MCP Tools (37 Tools)
+
+### Indexing
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `index_project` | Index a project directory: parse all source files, build IR, and construct the code graph. | `{"project_path": "string (required)", "language_filter": "string (optional)"}` |
+| `index_file` | Index a single source file. | `{"file_path": "string (required)"}` |
+| `force_index_files` | Force-index files/dirs bypassing default skip rules (test/, docs/, node_modules/, .gitignore, etc.). | `{"paths": ["string (required)"], "language_filter": "string (optional)"}` |
+
+### Project Overview
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `project_overview` | **Primary** — comprehensive project overview: languages, modules, symbols, entry points, analysis progress. | `{}` |
+| `get_graph_stats` | Quick statistics: nodes, edges, files. | `{}` |
+| `get_module_tree` | Hierarchical module/directory tree. | `{}` |
+| `get_entry_points` | Find entry points (main/init/setup/run/handler). | `{}` |
+| `get_routes` | Get registered HTTP routes (Gin/Echo/Chi/net/http). | `{}` |
+| `get_type_info` | Query type definitions (struct/enum/trait) with reference counts. | `{"type_name": "string (optional)"}` |
 
 ### Symbol Lookup
 
-| Tool | Description | Token Cost | Note |
-|------|-------------|:----------:|------|
-| `find_symbol` | **Recommended** — find symbol by exact name (kind, file, line/col) | **~30** | |
-| `find_definition` | `[DEPRECATED]` Find symbol definition location | **~20** | Use `find_symbol` |
-| `find_references` | Find all locations referencing a symbol | **~30** | |
-| `explain_symbol` | Get comprehensive symbol info: definition, callers, callees, dependencies | **~50-200** | One-shot deep dive |
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `find_symbol` | **Recommended** — find symbol by exact name (kind, file, line/col). | `{"symbol_name": "string (required)"}` |
+| `find_references` | Find all locations referencing a symbol. | `{"symbol_name": "string (required)", "file_filter": "string (optional)"}` |
+| `explain_symbol` | Get comprehensive symbol info: definition, callers, callees, dependencies. | `{"symbol_name": "string (required)"}` |
+| `find_definition` | [DEPRECATED — use find_symbol] | `{"symbol_name": "string (required)"}` |
 
 ### Call Graph
 
-| Tool | Description | Token Cost | Side Effects |
-|------|-------------|:----------:|--------------|
-| `find_callers` | Find who calls a function | **~10-50** | Requires CALLS edges |
-| `find_callees` | Find what a function calls | **~10-50** | Same |
-| `codescope_trace` | Interactive recursive call exploration (depth + direction) | **~50-200** | Large depth = large output |
-| `trace_flow` | Recursive execution flow tracing (caller→callee chain) | **~50-200** | Same |
-| `shortest_path` | Shortest call path between two functions (BFS) | **~50-100** | |
-| `connected_components` | Connected components in the call graph — find independent modules | **~50** | |
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `find_callers` | Find who calls a function. | `{"symbol_name": "string (required)", "file_filter": "string (optional)"}` |
+| `find_callees` | Find what a function calls. | `{"symbol_name": "string (required)", "file_filter": "string (optional)"}` |
+| `codescope_trace` | Interactive recursive call exploration (depth + direction) or shortest path. | `{"function_name": "string", "depth": "integer (default 1, max 5)", "direction": "callers|callees|both", "from": "string", "to": "string"}` |
+| `trace_flow` | Recursive execution flow tracing (caller→callee chain). | `{"function_name": "string (required)", "depth": "integer (default 3, max 10)"}` |
+| `shortest_path` | Shortest call path between two functions (BFS). | `{"from": "string", "to": "string", "from_id": "integer", "to_id": "integer"}` |
+| `connected_components` | Connected components in the call graph. | `{}` |
+
+### Graph Query
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `graph_query` | Cypher-like DSL query: `MATCH (Function:main)-[Calls]->(Method)`. | `{"dsl": "string (required)"}` |
+| `get_graph` | Retrieve the complete code graph in paginated pages. | `{"node_offset": "integer", "node_limit": "integer (max 50000)", "edge_offset": "integer", "edge_limit": "integer (max 200000)", "node_types": "string", "edge_types": "string"}` |
+| `get_subgraph` | Fetch a local region centered on a node (1-hop). | `{"node_id": "integer (required)", "radius": "integer", "node_types": "string", "edge_types": "string"}` |
+| `get_neighbors` | Fetch direct neighbors (callers + callees) of a graph node. | `{"node_id": "integer (required)", "edge_type": "integer (default -1)", "radius": "integer"}` |
 
 ### Search
 
-| Tool | Description | Token Cost |
-|------|-------------|:----------:|
-| `search` | **Recommended** — unified search (auto-selects FTS5 or semantic) | **~300-1000** |
-| `search_code` | `[DEPRECATED]` Legacy FTS search, use `search` instead | **~300-1000** |
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `search` | **Recommended** — unified search (auto-selects FTS5 or semantic). | `{"query": "string (required)", "limit": "integer (default 20, max 100)"}` |
+| `search_code` | [DEPRECATED — use search] | `{"query": "string (required)", "limit": "integer"}` |
 
-### Verification Layer
+### Verification
 
-| Tool | Description | Token Cost |
-|------|-------------|:----------:|
-| `verify_integrity` | Check README-promised features actually exist in code | **~100** |
-| `verify_claim` | Verify a single claim (capability_exists / contract_holds / architecture_follows) | **~100** |
-| `verify_summary` | Parse natural-language summary and verify each claim | **~200-500** |
-| `verify_review` | Verify code review comment claims | **~200-500** |
-| `verify_reality` | Verify a single AI statement against code evidence | **~200-500** |
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `verify_integrity` | Check README-promised features actually exist in code. | `{}` |
+| `verify_claim` | Verify a single claim (capability_exists / contract_holds / architecture_follows). | `{"claim": "string (required)"}` |
+| `verify_summary` | Parse natural-language summary and verify each claim. | `{"text": "string (required)"}` |
+| `verify_review` | Verify code review comment claims. | `{"text": "string (required)"}` |
+| `verify_reality` | Verify a single AI statement against code evidence. | `{"text": "string (required)"}` |
 
 ### Drift Detection
 
-| Tool | Description | Token Cost |
-|------|-------------|:----------:|
-| `detect_drift` | Scan all declared capabilities & contracts for doc-vs-code drift | **~200** |
-| `detect_documentation_drift` | Check README language claims vs actual code entities | **~150** |
-| `detect_capability_drift` | Check declared capabilities have implementing entities | **~150** |
-| `detect_architecture_drift` | Check call edges for layer violations (Repository→Controller) | **~150** |
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `detect_drift` | Scan all declared capabilities & contracts for doc-vs-code drift. | `{}` |
+| `detect_documentation_drift` | Check README language claims vs actual code entities. | `{}` |
+| `detect_capability_drift` | Check declared capabilities have implementing entities. | `{}` |
+| `detect_architecture_drift` | Check call edges for layer violations (Repository→Controller). | `{}` |
 
 ### Change Impact & Module
 
-| Tool | Description | Token Cost |
-|------|-------------|:----------:|
-| `detect_changes` | Analyze impact of modified files: direct/indirect callers | **~100-500** |
-| `explain_module` | Build module knowledge card: entities, capabilities, integrity score | **~50-200** |
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `detect_changes` | Analyze impact of modified files: direct/indirect callers. | `{"modified_files": "string (required)"}` |
+| `explain_module` | Build module knowledge card: entities, capabilities, integrity score. | `{"module_name": "string (required)"}` |
 
 ### Utilities
 
-| Tool | Description | Token Cost |
-|------|-------------|:----------:|
-| `index_project` | Index entire project directory (parse → IR → graph) | **N/A** |
-| `index_file` | Index a single source file | **N/A** |
-| `force_index_files` | **Force-index** — bypass default skip rules (`test/`, `docs/`, `vendored/`, `node_modules/`, `.gitignore`, etc.) to index specific files/dirs. Use when the user says "go index xxx/yyy for me" | **N/A** |
-| `count_tokens` | Estimate token count (DeepSeek formula) | **~10** |
-
-#### `force_index_files` — user-directed incremental indexing
-
-When the default `FilterPolicy` skips entire directories (test fixtures, vendored deps, generated code, examples) but the user wants to pull those paths in, use `force_index_files`. It **bypasses** the default skip rules but still respects:
-
-- File size limit (`CODESCOPE_MAX_FILE_SIZE`, default 5 MB)
-- Language detectability (`detectLanguage` must return non-null)
-- Optional language whitelist (`language_filter`)
-
-**MCP call**:
-
-```json
-{
-  "paths": ["/abs/path/to/dir/or/file", "/another/path"],
-  "language_filter": "java,python"
-}
-```
-
-- `paths`: array of absolute paths; directories are walked recursively
-- `language_filter`: optional, comma-separated language whitelist; empty = all detectable languages
-
-**CLI call**:
-
-```bash
-codescope force-index [--lang java,python] [--db /path/to/codescope.db] /path/to/xxx /path/to/yyy
-```
-
-Returns the `engine_index_files` JSON (`files_indexed`/`nodes`/`edges`/`errors`) plus `skipped_files`/`skipped_dirs`/`paths_requested` stats.
-
-
-### Why Java is the (only) exception — a rant
-
-CodeScope skips `test/`, `tests/`, `docs/`, `examples/`, `samples/`, `bench/`, `vendor/`, ... at **any depth** in the path. This is the correct behavior for every sane project layout: Cargo workspaces nest `crates/<name>/tests/`, Lerna monorepos nest `packages/<name>/test/`, Gradle multi-module builds nest `subprojects/<name>/src/test/`, and users expect all of those to be skipped — they're not the analysis target, and indexing them inflates node counts 3-5x with noise.
-
-Then there's **Java**. Java, in its infinite wisdom, decided that `org/springframework/samples/petclinic` is a legitimate package name — `samples` is a package component, NOT a docs folder. `src/test/java/...` is the standard Maven test source root, but `src/main/java/.../test/...` can also be a legit package. `examples`, `integration`, `locale` — all fair game as Java package identifiers. Java conflated filesystem layout vocabulary with package naming, and now every tool in the ecosystem has to tiptoe around it.
-
-This is an **anti-human engineering design**. It forces every static analysis tool to either (a) skip test/ at any depth and break Java, or (b) gate test/ to top-only and leak deep-nested test dirs on every other language's monorepos. The noise on non-Java projects is enormous — rustc alone has `tools/rust-analyzer/crates/*/src/*/tests/` nested 7 deep, all of which were leaking through a depth-3 top-only gate.
-
-CodeScope picks option (c): **Java projects get a carve-out, everyone else gets the correct behavior.**
-
-When the indexer detects a `.java` file, it flips `FilterPolicy` into Java mode: `test/`/`docs/`/`samples/`/... collisions are gated to **top-only (depth ≤ 3)** via `java_protected_skip_dirs_`, so `org/.../samples/petclinic` (depth 5+) is NOT skipped but `<root>/test/`, `<root>/src/test/java/`, `<root>/packages/<name>/tests/` still are. Every other language (Rust, Go, Python, JS/TS, C/C++, Kotlin, Ruby, Scala, ...) keeps these names skipped at any depth — the way they should be.
-
-**If you're indexing a Java project**: nothing to do. The indexer auto-detects `.java` files and flips `FilterPolicy` into Java mode, which routes `test/`/`docs/`/`samples/`/... through `java_protected_skip_dirs_` at top-only (depth ≤ 3) — nested packages like `org/.../samples/petclinic` (depth 5+) are kept, `<root>/test/`/`src/test/java/`/`packages/<name>/tests/` are still skipped. This is the only working override mechanism.
-
-```bash
-# Java project — auto-detection handles it, no env var needed:
-codescope index <your-java-project>
-```
-
-```bash
-# If you actually want to skip NESTED test/docs on a Java project
-# (i.e. turn OFF the carve-out and apply any-depth skip everywhere),
-# CODESCOPE_EXCLUDE_PATHS only ADDS exclude patterns on top of the
-# built-in list — it cannot un-skip nested packages on its own. The
-# clean path is a project-local .codescopeignore pattern matching the
-# specific nested dirs you want dropped.
-```
-
-The trade-off is documented here in the open. Java's package naming collision is a design flaw in the language, not in CodeScope, and we refuse to let it degrade the experience for the other 99% of projects.
-
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `detect_ffi_boundaries` | Detect FFI boundaries (extern/C, JNI, WASM, C ABI). | `{}` |
+| `count_tokens` | Estimate token count (DeepSeek formula). | `{"text": "string (required)"}` |
 
 ### Quick Decision Guide
 
 ```
-New project       → project_overview (~71 tok)
-Module structure  → get_module_tree (~4 tok)
-Entry points      → get_entry_points (~5 tok)
-Search code       → search (~300-1000 tok)
-Call chain        → find_callers / find_callees (~10-50 tok)
-Deep dive symbol  → explain_symbol (~50-200 tok)
-HTTP routes       → get_routes (~50 tok)
-Type info         → get_type_info (~50 tok)
-Verify claim      → verify_claim (~100 tok)
-Detect drift      → detect_documentation_drift (~150 tok)
-Change impact     → detect_changes (~100-500 tok)
+New project       → project_overview
+Module structure  → get_module_tree
+Entry points      → get_entry_points
+Search code       → search
+Call chain        → find_callers / find_callees
+Deep dive symbol  → explain_symbol
+HTTP routes       → get_routes
+Type info         → get_type_info
+Verify claim      → verify_claim
+Detect drift      → detect_documentation_drift
+Change impact     → detect_changes
 ```
 
-## Usage Skill
+---
 
-### Basic Workflow
+## 5. Knowledge Graph
 
-```
-1. index_project("/path/to/project")    ← 1-30s, index the project
-2. project_overview                     ← 1-2ms, understand project structure
-3. find_definition("malloc")            ← 10μs,  locate a symbol
-4. trace_flow("main", "malloc")         ← BFS,   get execution path
-5. verify_claim("login", "supports", "JWT")  ← verify a claim
-6. verify_summary("已完成登录模块")     ← verify AI summary
-```
+CodeScope builds a **module-level knowledge graph** as a side product of the verification pipeline. It learns structured metadata about how the project is organized, what's important, what's redundant, and what it promises:
 
-### Real-World Execution Path Example
+| Layer | Table | What it tells you |
+|-------|-------|-------------------|
+| **Call graph** | `relation`, `architecture_edge` | Cross-module call dependencies; drives `detect_architecture_drift` |
+| **Module health** | `module_summary` | Per-module `incoming_count` / `outgoing_count` / `dead_entities` / `utilization` / `role` |
+| **Module dependency** | `architecture_edge`, `module_edge` | "Change module A → these modules depend on it" |
+| **Documented capability** | `capability` + `document` | README-extracted capabilities; drives `detect_capability_drift` / `verify_claim` |
 
-```bash
-# After scan + enhance of Linux kernel:
-codescope_trace(from="copy_process", to="sched_fork")
-# → {"path": [
-#     {"name":"copy_process","file":"kernel/fork.c","line":1994},
-#     {"name":"sched_fork",  "file":"kernel/sched/core.c","line":4803}
-#   ]}
+All knowledge-layer tables are directly queryable via `get_knowledge_graph`:
 
-# Deeper trace:
-codescope_trace(from="copy_process", to="dup_mm")
-# → {"path": [
-#     {"name":"copy_process","file":"kernel/fork.c","line":1994},
-#     {"name":"copy_mm",     "file":"kernel/fork.c","line":1568},
-#     {"name":"dup_mm",      "file":"kernel/fork.c","line":1527}
-#   ]}
+```jsonc
+get_knowledge_graph {"table":"architecture_edge","limit":5}
+// → {"table":"architecture_edge","rows":[...],"total":3351}
+
+get_knowledge_graph {"table":"capability","limit":10}
+// → {"table":"capability","rows":[...],"total":3}
 ```
 
-## Performance Benchmarks
+Supported tables: `entity`, `relation`, `architecture_edge`, `module_edge`, `capability`, `document`, `module_summary`.
 
-### Real-world index benchmarks (v0.2.1, Apple M3 Max)
+---
 
-| Project | Files | Nodes | Index time | Peak RSS |
+## 6. Benchmark
+
+All benchmarks measured on **Apple M3 Max (36 GB RAM)**. Other hardware will produce different results — expect slower performance on less capable machines.
+
+### Index Time
+
+| Project | Files | Nodes | Index Time | Peak RSS |
 |---------|------:|------:|-----------:|---------:|
-| **memscope-rs** (Rust) | 215 | 4,344 | ~2 s | ~200 MB |
-| **CodeScope** (self, C++/Rust) | 168 | 1,001 | 1.3 s | ~150 MB |
-| **ARES_POLIS** | 105 | 1,531 | ~2 s | ~180 MB |
-| **rustc** (Rust compiler, monorepo) | 6,029 | 81,033 | 81 s | 5.9 GB |
+| **CodeScope** (self, C++/Rust) | 168 | 1,001 | **1.3 s** | ~150 MB |
+| **memscope-rs** (Rust) | 215 | 4,344 | **~2 s** | ~200 MB |
+| **ARES_POLIS** | 105 | 1,531 | **~2 s** | ~180 MB |
+| **goagent** (Go) | 2,651 | 155K | **30 s** | — |
+| **rustc** (Rust compiler, monorepo) | 6,029 | 81,033 | **81 s** | 5.9 GB |
+| **Linux kernel** (full) | 64,694 | 12M | **3 min 07 s** | — |
 
-**What this says:**
-
-- **Small-medium projects (<300 files):** sub-second to ~2 s index, ~200 MB RSS — excellent ergonomics, daily-driver speed.
-- **Very large monorepos (tens of thousands of files):** usable but real resources — rustc took 81 s and 5.9 GB peak. Acceptable for a one-shot index, but plan memory.
-- **Query latency (stdio MCP mode, includes process start):** ~60 ms per call; persistent server mode is lower.
-
-### Full Parse & Index (tree-sitter + Graph Builder + Linker)
-
-| Project | Files | Nodes | Functions | CALLS | ★Cross-File | Time |
-|---------|:----:|:-----:|:--------:|:-----:|:----------:|:----:|
-| **CodeScope** (self) | 47 | 12K | 3.8K | 23K | 13 | 3s |
-| **goagent** (Go) | 2,651 | 155K | 49K | 56K | 49K | 30s |
-| **Linux kernel** (full) | **64,694** | **12M** | **3.8M** | **3.7M** | **1.5M** | **3min 07s** |
-
-### Pipeline Architecture (v0.2)
-
-```
-Source Files
-     │
-     ▼  Phase 1: Collect
-┌──────────────┐
-│  Translator  │  Phase 2: Parallel translate
-│ (no resolver)│  Pure: Source → IR, 14 workers
-└──────┬───────┘
-       │ IR Units
-       ▼
-┌──────────────┐  Phase 3: Link (serial PassManager)
-│   Linker     │
-│  ├─ BuildSymbolIndex  (scan IR, ~ms)
-│  ├─ ResolveCallPass   (cross-file CALLS)
-│  └─ EmitGraphPass     (GraphBuilder → SQLite)
-└──────────────┘
-```
-
-### Indexing Throughput
+### Micro Benchmarks
 
 | Metric | Value |
 |--------|-------|
-| **Linux kernel**: 64,694 files | **3 min 07 sec** (~350 files/sec) |
-| Functions indexed | **3,840,680** |
-| CALLS edges | **3,727,864** |
-| Cross-file CALLS (★) | **1,502,432 (40%)** |
-| DB size | ~1.2 GB |
-| Workers | 14 × 8MB stack |
+| Engine init | **14.6 ms** |
+| Index throughput | **1,533 KB/s** |
+| Symbol definition query | **0.01–0.03 ms** |
+| Callers/callees query | **0.01–0.02 ms** |
+| 9 queries (total) | **0.17 ms** |
+| Query latency (stdio MCP, includes process start) | **~60 ms** |
 
 ### Cross-File Resolution
-
-The Linker's `ResolveCallPass` resolves function calls across file boundaries using a global symbol index built from all TranslationUnits. Candidate ranking prefers `.c`/`.cpp` definitions over `.h` prototypes.
 
 | Project | Cross-File CALLS | % of total CALLS |
 |---------|:---------------:|:----------------:|
@@ -558,196 +373,75 @@ The Linker's `ResolveCallPass` resolves function calls across file boundaries us
 |--------|:----:|:---------:|:-------:|
 | **CodeScope** (self) | **32 ms** | cpp, rust, c | 2,902 |
 | **goagent** (Go) | **493 ms** | go, c, cpp, python | 5,172 |
-| **Linux kernel/** (core) | **360 ms** | c | 40,335 |
-
-### C Declaration Detection Accuracy
-
-| Language           | Precision | Recall | Notes                             |
-| ------------------ | --------- | ------ | --------------------------------- |
-| **Go**             | ~97%      | ~96%   | `func` pattern is highly specific |
-| **Python**         | ~98%      | ~95%   | `def`/`class` nearly zero FP      |
-| **C/C++ (strict)** | ~85%      | ~90%   | Requires type keyword in return   |
-| **C/C++ (old)**    | ~65%      | ~95%   | Permissive, high FP               |
-| **Rust**           | ~90%      | ~90%   | `fn` is precise                   |
-
-### Supported Languages (8)
-
-| Language   | Parser | IR Translator | Verified |
-| ---------- | ------ | ------------- | -------- |
-| Python     | ✅      | ✅             | ✅        |
-| Go         | ✅      | ✅             | ✅        |
-| C          | ✅      | ✅             | ✅        |
-| C++        | ✅      | ✅             | ✅        |
-| Rust       | ✅      | ✅             | ✅        |
-| JavaScript | ✅      | ✅             | ✅        |
-| TypeScript | ✅      | ✅             | ✅        |
-| Java       | ✅      | ✅             | ✅        |
-
-## Token Savings
-
-Using code graphs instead of raw source files saves **~98.9% tokens** on average across 5 common query scenarios:
-
-| Scenario                 | Graph (tokens) | Raw (tokens) | Savings   |
-| ------------------------ | -------------- | ------------ | --------- |
-| Find function definition | ~21            | ~2,265       | **99.1%** |
-| Trace callers            | ~18            | ~2,000       | **99.1%** |
-| Architecture overview    | ~32            | ~1,875       | **98.3%** |
-| Function analysis        | ~43            | ~4,733       | **99.1%** |
-| Symbol search            | ~23            | ~958         | **97.6%** |
-
-## Real-World Case Study: Linux Kernel Scheduler
-
-Using CodeScope's Fast Scan on the Linux kernel v6.13 — **45 ms** to analyze the scheduler (36 files, 4,913 symbols). Enhanced in **27s** with **45,573 call_edges**.
-
-### Execution Path Tracing in Action
-
-```
-codescope_trace("copy_process","sched_fork")
-→ copy_process(kernel/fork.c:1994)
-    ↓ sched_fork(kernel/sched/core.c:4803)
-
-codescope_trace("copy_process","dup_mm")
-→ copy_process(kernel/fork.c:1994)
-    ↓ copy_mm(kernel/fork.c:1568)
-    ↓ dup_mm(kernel/fork.c:1527)
-```
-
-### Scheduler Code Layout
-
-```
-kernel/sched/
-├── core.c          — __schedule(), schedule()
-├── fair.c          — CFS Completely Fair Scheduler
-├── rt.c            — Real-time scheduler
-├── deadline.c      — Deadline scheduler
-├── idle.c          — Idle task
-├── sched.h         — Data structures
-└── ext/            — Extensible scheduler API
-```
-
-### Parent-Child Resource Handling → `kernel/fork.c`
-
-| Line   | Function              | Purpose                                                |
-| ------ | --------------------- | ------------------------------------------------------ |
-| **914**  | `dup_task_struct()`   | Copy parent's task_struct                              |
-| **1994** | `copy_process()`      | **Main entry** — creates new process                   |
-| **2115** | `p = dup_task_struct(current, node)` | Copy kernel stack + thread_info + task_struct |
-| **2259** | `sched_fork(clone_flags, p)` | Init child scheduling state, set non-runnable    |
-
-**Core mechanism: Copy-On-Write (COW)** — `copy_mm()` shares physical pages between parent and child as read-only.
-
-### Preemption Prevention
-
-| Location                        | Mechanism              | Description                                        |
-| ------------------------------- | ---------------------- | -------------------------------------------------- |
-| `include/linux/preempt.h:92`    | `preempt_count()`      | Per-task counter; >0 disables kernel preemption    |
-| `kernel/sched/core.c:7061`      | `__schedule()`         | Main scheduler; only switches when preempt_count==0 |
-| `kernel/sched/core.c:7316`      | `schedule()`           | Voluntary yield                                    |
-
-## Configuration
-
-### Build from source
-
-```bash
-# Build everything — tree-sitter, SQLite, sqlite-vec, grammars
-# are all auto-downloaded and compiled into the binary (zero deps)
-make build
-
-# Start MCP server
-cargo run --bin codescope
-```
-
-### Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CODESCOPE_DB_PATH` | `.codescope/codescope.db` | SQLite database path |
-| `CODESCOPE_LSP` | (unset) | LSP server command for type enhancement (e.g. `pylsp`) |
-| `CODESCOPE_INDEX_MODE` | `standard` | Index mode: `fast` / `standard` / `strict` |
-| `CODESCOPE_EXCLUDE_PATHS` | (unset) | Comma-separated glob patterns to exclude (e.g. `test/*,docs/*`) |
-| `CODESCOPE_MMAP_SIZE` | `268435456` (256 MB) | SQLite `mmap_size` pragma value in bytes |
-| `CODESCOPE_WORKERS` | `4` | Total parse-worker cores for `codescope index-parallel` (overridable via `--workers N`) |
-| `CODESCOPE_MAX_FILE_SIZE` | (unset) | Max source file size to index in bytes; larger files are skipped |
-| `CODESCOPE_WORKER_TIMEOUT` | `300` | Worker subprocess timeout in seconds |
-| `CODESCOPE_VERBOSE` | `0` | Set to `1` to enable verbose logging |
-| `CODESCOPE_EXPLAIN` | (unset) | Set to `1` to print SQL `EXPLAIN QUERY PLAN` for graph queries |
-| `CODESCOPE_DYNAMIC_SCHED` | `auto` | Dynamic CPU scheduling for `index-parallel`: `1` force on, `0` force off, unset = auto (modules > 4 AND total_files > 10000) |
-| `CODESCOPE_MEM_LIMIT_MB` | `4096` | Dynamic-scheduler memory ceiling (MB). New worker spawns pause when total child RSS exceeds this; existing workers keep running |
-| `CODESCOPE_AGGRESSIVE` | `0` | Set to `1` for 50ms dynamic-scheduler poll interval (default 100ms) |
-| `CODESCOPE_SCHED_SHM` | (auto) | Path to the dynamic-scheduler shared-memory file (auto-generated per scheduler PID; propagated to worker subprocesses) |
-
-> **Note:** `GRAMMARS_DIR` is no longer needed — all tree-sitter grammars are compiled into the binary via CMake FetchContent.
-
-### Prerequisites
-
-- Rust 2024 Edition + 1.85+ (`cargo`)
-- CMake 3.30+, C++23 compiler (Clang 17+)
-
-## Data Directory `.codescope/`
-
-CodeScope automatically creates a `.codescope/` directory in the project root on first run.  
-All persistent data is stored here — no manual setup needed.
-
-```
-.codescope/
-├── codescope.db       ← SQLite database (WAL mode): all facts, indexes, graphs
-├── skills.md          ← Quick start guide and command reference
-└── *.log              ← Analysis run logs with timing + CPU + memory data
-```
-
-The database contains 40 tables, grouped by purpose (see `engine/src/store/store_schema.cpp`):
-
-| Category | Tables | Purpose |
-|----------|--------|---------|
-| Core / Project | `projects`, `project_readiness`, `files`, `modules`, `entry_points`, `index_tasks`, `file_scan_state` | Project metadata, file tracking, index phase progress |
-| Graph | `graph_nodes`, `graph_edges`, `entity`, `relation`, `semantic_records`, `adjacency`, `adjacency_rev`, `module_edge`, `module_summary` | Code graph nodes/edges, CSR BLOB adjacency, cross-module edges |
-| Search | `code_fts` (FTS5), `name_trgm` (FTS5 trigram), `fts_node_map`, `node_vectors` | Full-text + trigram + n-gram vector search |
-| Facts / Parser | `reference`, `scope`, `import`, `type_info`, `type_ref`, `route` | Call facts, scope tree, imports, type definitions, HTTP routes |
-| Knowledge + Evidence | `capability`, `contract`, `claim`, `evidence`, `evidence_fact`, `finding`, `document` | Verification pipeline: claims, evidence chains, findings |
-| Model State | `workflow`, `workflow_step`, `architecture_edge`, `capability_state`, `workflow_state`, `architecture_state` | Workflows, architecture layers, state caches |
-| LadybugDB Sync | `lbug_sync_state` | Incremental sync progress to LadybugDB graph store |
-
-> **Tip**: The database is portable — copy `.codescope/` along with your project to reuse analysis results on another machine.
-
-## Performance
-
-Benchmarks measured on **Apple M3 Max (36 GB RAM)**.
-
-### Micro Benchmarks (test_bench)
-
-| Metric | Value |
-|--------|-------|
-| Engine init | **14.6 ms** |
-| Index throughput | **1,533 KB/s** |
-| Symbol definition query | **0.01–0.03 ms** |
-| Callers/callees query | **0.01–0.02 ms** |
-| 9 queries (total) | **0.17 ms** |
-
-### Known Bottleneck (Knowledge Graph Queries)
-
-The current MCP knowledge graph service has a **~300k-500k node threshold** for fuzzy text search (`CONTAINS`, BM25 full-text, regex name matching) — queries on projects beyond this threshold may **time out at 30 seconds**.
-
-| Project Scale | Example | Exact-match queries | Fuzzy searches |
-|--------------|---------|:------------------:|:--------------:|
-| Small-Medium (<50K nodes) | goagent (23K) | ✅ &lt;10ms | ✅ Fast |
-| Large (50K-300K nodes) | zigcode (327K) | ✅ &lt;10ms | ⚠️ May time out |
-| Very Large (>500K nodes) | JDK (1.36M) | ✅ Exact match works | ❌ Time out |
-
-> **Root cause**: Full-node-set text scans (`CONTAINS`, `name_pattern` regex) iterate over millions of nodes, exceeding the 30s timeout limit. Index-assisted exact path matching (`ENDS WITH`) works fine.
->
-> **Planned fix**: Add a custom exclusion paths parameter to skip `test/`, `doc/`, and other large non-core directories during indexing, keeping effective node count under 300K.
+| **Linux kernel** (core) | **360 ms** | c | 40,335 |
 
 ### Token Savings
+
+Using code graphs instead of raw source files saves **~98.9% tokens** on average:
 
 | Scenario | Raw Source | CodeScope | Savings |
 |----------|:----------:|:---------:|:-------:|
 | Find function definition | ~2,265 tokens | ~21 tokens | **99.1%** |
 | Trace function callers | ~2,000 tokens | ~18 tokens | **99.1%** |
-| Project architecture | ~1,875 tokens | ~32 tokens | **98.3%** |
+| Project architecture overview | ~1,875 tokens | ~32 tokens | **98.3%** |
 | USB subsystem overview | ~24,000 tokens | ~250 tokens | **99.0%** |
 | Scheduler analysis | ~15,000 tokens | ~180 tokens | **98.8%** |
-| **Average** | **~7,416 tokens** | **~81 tokens** | **98.9%** |
 
-## License
+---
 
-Apache 2.0
+## 7. Skills (Shell Wrappers)
+
+The `skills/` directory provides shell scripts that wrap common CodeScope queries so you don't need to remember the JSON schema:
+
+```bash
+cd CodeScope
+
+# Index a project
+./skills/index.sh ~/path/to/project
+
+# One-shot full analysis report
+./skills/analyze.sh ~/path/to/project
+
+# Graph statistics
+./skills/stats.sh
+
+# Module tree
+./skills/modules.sh
+
+# Trace call path A → B
+./skills/trace.sh func_a func_b
+
+# Top 20 hotspots
+./skills/hotspots.sh 20
+
+# Browse architecture dependencies
+./skills/knowledge.sh architecture_edge 20
+```
+
+Each script calls `codescope cli <tool_name> '<json_args>'` internally. See `skills/skills.md` for the full reference.
+
+---
+
+## 8. Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CODESCOPE_DB_PATH` | `.codescope/codescope.db` | SQLite database path |
+| `CODESCOPE_INDEX_MODE` | `standard` | Index mode: `fast` / `standard` / `strict` |
+| `CODESCOPE_EXCLUDE_PATHS` | (unset) | Comma-separated glob patterns to exclude |
+| `CODESCOPE_WORKERS` | `4` | Total parse-worker cores for `index-parallel` |
+| `CODESCOPE_WORKER_TIMEOUT` | `300` | Worker subprocess timeout in seconds |
+| `CODESCOPE_MAX_FILE_SIZE` | (unset) | Max source file size to index in bytes |
+| `CODESCOPE_MMAP_SIZE` | 256 MB | SQLite `mmap_size` pragma value |
+| `CODESCOPE_MEM_LIMIT_MB` | `4096` | Dynamic-scheduler memory ceiling |
+| `CODESCOPE_DYNAMIC_SCHED` | `auto` | Dynamic CPU scheduling: `1` on, `0` off, unset = auto |
+| `CODESCOPE_VERBOSE` | `0` | Set to `1` for verbose logging |
+| `CODESCOPE_LSP` | (unset) | LSP server command for type enhancement |
+
+---
+
+## 9. License
+
+Apache 2.0 — see [LICENSE](LICENSE).
+
+**CodeScope v0.2.1** — Built with Rust 2024 + C++23 + tree-sitter + SQLite.
