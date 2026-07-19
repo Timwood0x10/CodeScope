@@ -224,6 +224,7 @@ set(ENGINE_SOURCES
     src/store/store_graph.cpp
     src/store/store_query.cpp
      src/store/store_project.cpp
+     src/store/store_parse_failure.cpp
      src/store/store_knowledge.cpp
         src/store/store_ladybug.cpp
      src/store/store_membulk.cpp

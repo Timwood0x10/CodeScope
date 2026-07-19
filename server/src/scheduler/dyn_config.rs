@@ -17,13 +17,20 @@ pub struct DynSchedConfig {
 
 impl DynSchedConfig {
     /// Load from environment variables.
+    ///
+    /// Recognised truthy values: `"1"`, `"true"`, `"on"`.
+    /// Recognised falsy values: `"0"`, `"false"`, `"off"`.
+    /// For `CODESCOPE_DYNAMIC_SCHED`, any other value falls back to
+    /// `Some(false)` (force off) so a typo doesn't silently enable
+    /// dynamic scheduling. For `CODESCOPE_AGGRESSIVE`, any other value
+    /// is treated as `false`.
     pub fn from_env() -> Self {
         let force_on = match env::var("CODESCOPE_DYNAMIC_SCHED") {
-            Ok(v) => Some(v == "1" || v == "true"),
+            Ok(v) => Some(matches!(v.as_str(), "1" | "true" | "on")),
             Err(_) => None,
         };
         let aggressive = env::var("CODESCOPE_AGGRESSIVE")
-            .map(|v| v == "1" || v == "true")
+            .map(|v| matches!(v.as_str(), "1" | "true" | "on"))
             .unwrap_or(false);
         let mem_limit_mb = env::var("CODESCOPE_MEM_LIMIT_MB")
             .ok()

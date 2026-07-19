@@ -38,19 +38,21 @@
 //! `discover::*` for module/file listing and the worker's C++
 //! `FilterPolicy` for the authoritative skip rules.
 
-// dyn_config is loaded but not yet wired into the dispatch path —
-// another agent owns the mod.rs core scheduling logic. Suppress
-// dead_code warnings until the wiring lands.
-#[allow(dead_code)]
+// dyn_config is wired into the dispatch path via DynSchedConfig.
+// See index_parallel() -> DynSchedConfig::should_enable() and
+// index_parallel_dynamic() -> DynSchedConfig::from_env() usage.
+mod chunk_plan;
+mod chunk_queue;
 mod dyn_config;
 mod merge;
 mod quarantine;
 mod shm;
 mod worker;
 
-use dyn_config::sample_total_rss_mb;
+use dyn_config::{DynSchedConfig, sample_total_rss_mb};
 use serde_json::{Value, json};
 use shm::SchedShm;
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, mpsc};
@@ -200,20 +202,20 @@ pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> S
         }
     };
 
-    let total_files_sum: u64 = modules.iter().filter_map(|m| m["files"].as_u64()).sum();
-    let total_files_sum = if total_files_sum == 0 {
-        1
-    } else {
-        total_files_sum
-    };
+    let total_files_sum: u64 = modules
+        .iter()
+        .filter_map(|m| m["files"].as_u64())
+        .sum::<u64>()
+        .max(1);
 
     // ── Dispatch: dynamic mode for large projects ─────────────
     // Auto-enables when modules > 4 && total_files > 10000, or
-    // when CODESCOPE_DYNAMIC_SCHED=1 is set explicitly. The dynamic
+    // when CODESCOPE_DYNAMIC_SCHED=1/true is set explicitly. The dynamic
     // path uses a worker queue + shared-memory core reclaim so small
     // modules free their cores for pending big modules. Small projects
     // stay on the static proportional path (no shm overhead).
-    if should_use_dynamic_sched(modules.len(), total_files_sum) {
+    let dyn_config = dyn_config::DynSchedConfig::from_env();
+    if dyn_config.should_enable(modules.len(), total_files_sum) {
         eprintln!(
             "scheduler: dynamic mode enabled (modules={}, files={})",
             modules.len(),
@@ -455,16 +457,6 @@ pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> S
     .to_string()
 }
 
-/// Enable dynamic CPU scheduling (worker core reclaim + helper spawn).
-/// Auto-enabled for large projects (modules > 4 && total_files > 10000).
-/// Override with CODESCOPE_DYNAMIC_SCHED env var (1=force on, 0=force off).
-fn should_use_dynamic_sched(total_modules: usize, total_files: u64) -> bool {
-    if let Ok(v) = std::env::var("CODESCOPE_DYNAMIC_SCHED") {
-        return v == "1";
-    }
-    total_modules > 4 && total_files > 10000
-}
-
 /// Dynamic-mode parallel indexer with worker queue + core reclaim.
 ///
 /// Phases:
@@ -498,6 +490,11 @@ fn index_parallel_dynamic(project_dir: &str, total_workers: u32, parallel: u32) 
     } else {
         parallel
     };
+    // Cap parallel at total_workers to avoid spawning more OS threads
+    // than cores available. The shm pool caps cores, not thread count,
+    // so without this cap a user could pass --parallel 100 and spawn
+    // 100 idle threads all waiting for 0-core claims.
+    let parallel = parallel.min(total_workers).max(1);
 
     let project_path_buf = match canonicalize_project_dir(project_dir) {
         Ok(p) => p,
@@ -564,26 +561,26 @@ fn index_parallel_dynamic(project_dir: &str, total_workers: u32, parallel: u32) 
         }
     };
 
-    let total_files_sum: u64 = modules.iter().filter_map(|m| m["files"].as_u64()).sum();
-    let total_files_sum = if total_files_sum == 0 {
-        1
-    } else {
-        total_files_sum
-    };
+    let total_files_sum: u64 = modules
+        .iter()
+        .filter_map(|m| m["files"].as_u64())
+        .sum::<u64>()
+        .max(1);
 
     // ── Phase 2: create SchedShm ───────────────────────────────
     // total_cores caps at total_workers so the dynamic scheduler
     // never claims more than the user asked for. available_parallelism
     // gives us the host CPU count, which we then min with total_workers.
+    let dyn_config = DynSchedConfig::from_env();
     let host_cores: u32 = std::thread::available_parallelism()
         .map(|n| n.get() as u32)
         .unwrap_or(total_workers.max(1));
     let total_cores = host_cores.min(total_workers.max(1));
-    let mem_limit: u32 = std::env::var("CODESCOPE_MEM_LIMIT_MB")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(4096);
-    let shm_path = format!("/tmp/codescope_sched_{}.shm", std::process::id());
+    let mem_limit = dyn_config.mem_limit_mb;
+    let shm_path = dyn_config
+        .shm_path
+        .clone()
+        .unwrap_or_else(DynSchedConfig::default_shm_path);
 
     eprintln!(
         "scheduler: [dynamic] shm_path={} total_cores={} mem_limit_mb={}",
@@ -591,7 +588,11 @@ fn index_parallel_dynamic(project_dir: &str, total_workers: u32, parallel: u32) 
     );
 
     let shm = match SchedShm::create(&shm_path, total_cores, mem_limit) {
-        Ok(s) => s,
+        Ok(s) => {
+            // Set the aggressive poll flag from config (1 = 50ms, 0 = 100ms).
+            s.set_aggressive(dyn_config.aggressive);
+            s
+        }
         Err(e) => {
             // Graceful fallback: disable dynamic sched and recurse into
             // the static path. The env override is process-local and
@@ -611,19 +612,11 @@ fn index_parallel_dynamic(project_dir: &str, total_workers: u32, parallel: u32) 
         }
     };
 
-    // Propagate shm path via env so worker subprocesses can attach.
-    // Command inherits env vars by default, so setting this once on
-    // the scheduler process is enough.
-    // SAFETY: Rust 2024 marks set_var unsafe because it can race with
-    // concurrent getenv readers. This runs in the single-threaded
-    // scheduler init before any worker threads spawn, so no races.
-    unsafe {
-        std::env::set_var("CODESCOPE_SCHED_SHM", &shm_path);
-    }
-
-    // RAII guard: unlink the shm file when the scheduler exits, even
-    // on panic. The `Drop` impl runs when `_shm_guard` goes out of
-    // scope at the end of this function.
+    // RAII guard: remove the shm filesystem path when the scheduler
+    // exits, even on panic. Constructed IMMEDIATELY after create so
+    // nothing between create and guard can leak the shm file.
+    // SchedShm::drop also unlinks (via shm_unlink), so the second
+    // unlink is a no-op (ENOENT) — harmless redundancy.
     struct ShmGuard {
         path: String,
     }
@@ -636,11 +629,21 @@ fn index_parallel_dynamic(project_dir: &str, total_workers: u32, parallel: u32) 
         path: shm_path.clone(),
     };
 
+    // Propagate shm path via env so worker subprocesses can attach.
+    // Command inherits env vars by default, so setting this once on
+    // the scheduler process is enough.
+    // SAFETY: Rust 2024 marks set_var unsafe because it can race with
+    // concurrent getenv readers. This runs in the single-threaded
+    // scheduler init before any worker threads spawn, so no races.
+    unsafe {
+        std::env::set_var("CODESCOPE_SCHED_SHM", &shm_path);
+    }
+
     // ── Phase 3: sort modules by file count desc ─────────────
     // Largest first so big modules start early — they benefit most
     // from core reclaim since small modules finish and free cores
     // while the big module is still running.
-    let mut queue: Vec<(String, u64, u64)> = modules
+    let mut queue: VecDeque<(String, u64, u64)> = modules
         .iter()
         .enumerate()
         .filter_map(|(i, m)| {
@@ -650,7 +653,14 @@ fn index_parallel_dynamic(project_dir: &str, total_workers: u32, parallel: u32) 
             Some((name, files, (i as u64) + 1))
         })
         .collect();
-    queue.sort_by_key(|b| std::cmp::Reverse(b.1));
+    // VecDeque::from(Vec) preserves order; then sort in place.
+    // We convert to Vec, sort, then convert back since VecDeque
+    // has no built-in sort_by_key.
+    {
+        let mut v: Vec<_> = queue.drain(..).collect();
+        v.sort_by_key(|b| std::cmp::Reverse(b.1));
+        queue.extend(v);
+    }
 
     // ── Phase 4: dynamic worker dispatch with core reclaim ────
     let (tx, rx) = mpsc::channel::<ModuleResult>();
@@ -690,7 +700,8 @@ fn index_parallel_dynamic(project_dir: &str, total_workers: u32, parallel: u32) 
                 break;
             }
 
-            let (name, files, project_id) = queue.remove(0);
+            let (name, files, project_id) =
+                queue.pop_front().expect("queue non-empty in dispatch loop");
 
             // Desired core count: proportional to file count, capped
             // at total_workers. Matches the static allocation formula.
@@ -706,7 +717,7 @@ fn index_parallel_dynamic(project_dir: &str, total_workers: u32, parallel: u32) 
             // beat us to it — put the task back at the front and wait.
             let claimed = shm.claim_cores(want);
             if claimed == 0 {
-                queue.insert(0, (name, files, project_id));
+                queue.push_front((name, files, project_id));
                 break;
             }
 
@@ -748,7 +759,14 @@ fn index_parallel_dynamic(project_dir: &str, total_workers: u32, parallel: u32) 
             break;
         }
 
-        std::thread::sleep(POLL_INTERVAL);
+        // Sleep longer when memory-paused: existing workers need time to
+        // finish and release RSS. 50ms polling burns CPU on pgrep+ps for
+        // no benefit — 1s is a reasonable backoff.
+        if !mem_ok {
+            std::thread::sleep(Duration::from_secs(1));
+        } else {
+            std::thread::sleep(POLL_INTERVAL);
+        }
     }
 
     drop(tx);
@@ -764,9 +782,10 @@ fn index_parallel_dynamic(project_dir: &str, total_workers: u32, parallel: u32) 
     }
 
     // ── Phase 4b: quarantine failed modules ───────────────────
-    // Same logic as static mode: retry failed modules with crashing
-    // files excluded. Uses static allocation (1 worker) for retry —
-    // matches the static path's behaviour.
+    // Retry failed modules with crashing files excluded. Tries to claim
+    // cores from the shm pool so the retry benefits from available cores
+    // (e.g., after small modules finished and freed their cores).
+    // Falls back to 1 worker if the pool is empty or shm is unavailable.
     let mut final_results: Vec<ModuleResult> = Vec::new();
     for r in results {
         if r.exit_code == 0 && r.total_nodes > 0 {
@@ -789,17 +808,22 @@ fn index_parallel_dynamic(project_dir: &str, total_workers: u32, parallel: u32) 
             continue;
         }
         let excluded_env = quarantined.join(",");
+        // Try to claim up to 4 cores, or fall back to 1.
+        let retry_workers = shm.claim_cores(4);
+        let retry_workers = if retry_workers == 0 { 1 } else { retry_workers };
         let retry = run_module_worker(
             &exe_str,
             &project_path,
             &r.name,
             r.files_indexed,
-            1,
+            retry_workers,
             &grammars_dir,
             &db_prefix,
             r.project_id,
             Some(&excluded_env),
         );
+        // Release the claimed cores back to the pool.
+        shm.release_cores(retry_workers);
         final_results.push(retry);
     }
 

@@ -552,6 +552,8 @@ CODESCOPE_AGGRESSIVE=1 codescope index-parallel /path/to/project
 CODESCOPE_MEM_LIMIT_MB=2048 codescope index-parallel /path/to/project
 ```
 
+> **Note:** Dynamic scheduling's memory monitoring uses `pgrep -P <pid>` (from `procps-ng`) to enumerate child processes. On macOS this is available by default; on Linux, ensure `procps-ng` is installed (`apt-get install procps` / `yum install procps-ng`). If `pgrep` is unavailable, memory monitoring silently degrades to no-op (no memory limit enforcement).
+
 The scheduler prints `scheduler: [dynamic] ...` lines to stderr showing `shm_path`, `total_cores`, `mem_limit_mb`, module dispatch order, core-claim events, and memory-pressure pauses.
 
 ### Full Parse & Index (tree-sitter + Graph Builder + Linker)

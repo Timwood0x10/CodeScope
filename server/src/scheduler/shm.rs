@@ -230,6 +230,21 @@ impl SchedShm {
         })
     }
 
+    /// Set the aggressive polling flag (1=aggressive 50ms, 0=normal 100ms).
+    /// Scheduler calls this after create() to honor CODESCOPE_AGGRESSIVE.
+    /// Bumps `generation` so polling workers notice the change.
+    pub fn set_aggressive(&self, on: bool) {
+        // SAFETY: self.ptr is valid for the lifetime of self. We only
+        // access `aggressive` and `generation` (both AtomicU32) through
+        // a shared reference, which is safe because atomics support
+        // concurrent mutable access.
+        let state = unsafe { &*self.ptr };
+        state
+            .aggressive
+            .store(if on { 1 } else { 0 }, Ordering::Relaxed);
+        state.generation.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Worker opens an existing shared-memory file created by the scheduler.
     ///
     /// Verifies the magic number to ensure the scheduler initialised the

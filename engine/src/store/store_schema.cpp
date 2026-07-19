@@ -621,6 +621,25 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
         CREATE INDEX IF NOT EXISTS idx_module_edge_tgt
             ON module_edge(project_id, tgt_module);
 
+        -- parse_failures: persistent record of files that failed to parse.
+        -- Fail-fast design: once a file fails N times (CODESCOPE_FAIL_RETRY_MAX,
+        -- default 3), it is skipped on subsequent index runs to avoid wasting
+        -- CPU on known-broken files. Reset via CLI `codescope reset-failures`.
+        -- No separate index on (project_id, file_path): the composite
+        -- PRIMARY KEY already creates an implicit unique index covering
+        -- every query path (isKnownParseFailure, recordParseFailure
+        -- ON CONFLICT, loadKnownParseFailures, resetParseFailures).
+        CREATE TABLE IF NOT EXISTS parse_failures (
+            project_id  INTEGER NOT NULL,
+            file_path   TEXT    NOT NULL,
+            language    TEXT,
+            fail_reason TEXT,           -- "parse_null_tree" / "read_empty" / "exception:..." etc.
+            fail_count  INTEGER DEFAULT 1,
+            first_seen  INTEGER,        -- unix epoch seconds
+            last_seen   INTEGER,
+            PRIMARY KEY (project_id, file_path)
+        );
+
         )SQL";
 
 	// Execute main schema

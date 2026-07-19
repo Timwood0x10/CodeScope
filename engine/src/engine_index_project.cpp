@@ -33,6 +33,7 @@
 #include "ir/translators/js_visitor.h"
 #include "engine_index_metrics.h"
 #include "async_knowledge.h"
+#include "store/store_parse_failure.h"
 
 // ─── Dynamic Scheduler Shared State ──────────────────────────────
 // When CODESCOPE_SCHED_SHM points to a valid shared-memory file
@@ -164,6 +165,29 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	if (!g_store)
 		return dupString(
 			"{\"ok\":false,\"error\":\"engine not initialized\"}");
+
+	// Fail-fast: pre-load known parse failures so the parse loop can
+	// skip them without per-file DB queries. CODESCOPE_FAIL_RETRY_MAX
+	// sets the threshold (default 3) — files with fail_count >= this
+	// are skipped entirely.
+	const int kFailRetryMax = [] {
+		const char *e = getenv("CODESCOPE_FAIL_RETRY_MAX");
+		return e ? std::max(1, std::atoi(e)) : 3;
+	}();
+	std::unordered_set<std::string> known_failures;
+	{
+		std::vector<std::string> fail_vec;
+		if (!store::loadKnownParseFailures(project_id, kFailRetryMax,
+						   /*out*/ fail_vec)) {
+			// Non-fatal: continue indexing, just no skip set.
+			fprintf(stderr,
+				"engine: loadKnownParseFailures failed "
+				"(continuing) "
+				"[module=engine, method=engine_index_project]\n");
+		} else {
+			known_failures.insert(fail_vec.begin(), fail_vec.end());
+		}
+	}
 
 	std::string dir = dir_path ? dir_path : "";
 	if (dir.empty())
@@ -624,6 +648,13 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 				break;
 			auto &job = jobs[idx];
 
+			// Fail-fast: skip files that have failed >=
+			// CODESCOPE_FAIL_RETRY_MAX times.
+			if (known_failures.find(job.path) !=
+			    known_failures.end()) {
+				continue;
+			}
+
 			// Progress log every 10%
 			int done = next_job.load();
 			if (done % progress_interval == 0 && done > 0)
@@ -636,21 +667,46 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 
 			// File size check
 			struct stat file_stat;
-			if (stat(job.path.c_str(), &file_stat) == 0 &&
-			    static_cast<uint64_t>(file_stat.st_size) >
-				    max_file_size)
+			if (stat(job.path.c_str(), &file_stat) != 0) {
+				// stat() failed (file vanished / perms).
+				store::recordParseFailure(
+					project_id, job.path, job.lang,
+					store::failReasonToString(
+						store::FailReason::StatFailed));
 				continue;
+			}
+			if (static_cast<uint64_t>(file_stat.st_size) >
+			    max_file_size) {
+				// File too large — record as StatFailed per
+				// fail-fast spec.
+				store::recordParseFailure(
+					project_id, job.path, job.lang,
+					store::failReasonToString(
+						store::FailReason::StatFailed));
+				continue;
+			}
 
 			std::string source = readFile(job.path.c_str());
-			if (source.empty())
+			if (source.empty()) {
+				store::recordParseFailure(
+					project_id, job.path, job.lang,
+					store::failReasonToString(
+						store::FailReason::ReadEmpty));
 				continue;
+			}
 
 			// Per-thread parser
 			auto pit = tl_parsers.find(job.lang);
 			if (pit == tl_parsers.end()) {
 				auto lit = lang_ptrs.find(job.lang);
-				if (lit == lang_ptrs.end())
+				if (lit == lang_ptrs.end()) {
+					store::recordParseFailure(
+						project_id, job.path, job.lang,
+						store::failReasonToString(
+							store::FailReason::
+								LanguageMissing));
 					continue;
+				}
 				std::unique_ptr<TSParser, TSParserDeleter> np(
 					ts_parser_new());
 				ts_parser_set_language(np.get(), lit->second);
@@ -662,8 +718,14 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 					pit->second.get(), nullptr,
 					source.c_str(),
 					static_cast<uint32_t>(source.size())));
-			if (!tree)
+			if (!tree) {
+				store::recordParseFailure(
+					project_id, job.path, job.lang,
+					store::failReasonToString(
+						store::FailReason::
+							ParseNullTree));
 				continue;
+			}
 
 			auto result = std::make_unique<store::FileResult>();
 			result->file_path = job.path;
@@ -687,9 +749,27 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 			}
 
 			if (visitor) {
-				ir::SemanticUnit *su = visitor->visit(
-					tree.get(), source.c_str(),
-					job.path.c_str());
+				ir::SemanticUnit *su = nullptr;
+				try {
+					su = visitor->visit(tree.get(),
+							    source.c_str(),
+							    job.path.c_str());
+				} catch (const std::exception &e) {
+					store::recordParseFailure(
+						project_id, job.path, job.lang,
+						std::string(store::failReasonToString(
+							store::FailReason::
+								VisitorException)) +
+							": " + e.what());
+					continue;
+				} catch (...) {
+					store::recordParseFailure(
+						project_id, job.path, job.lang,
+						store::failReasonToString(
+							store::FailReason::
+								VisitorUnknownThrow));
+					continue;
+				}
 				if (su) {
 					result->records = su->allRecords();
 					result->metrics = index_metrics::
@@ -703,12 +783,34 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 				auto translator =
 					ir::createTranslator(job.lang.c_str());
 				if (!translator) {
+					store::recordParseFailure(
+						project_id, job.path, job.lang,
+						store::failReasonToString(
+							store::FailReason::
+								LanguageMissing));
 					continue;
 				}
-				ir::TranslationUnit *unit =
-					translator->translate(tree.get(),
-							      source.c_str(),
-							      job.path.c_str());
+				ir::TranslationUnit *unit = nullptr;
+				try {
+					unit = translator->translate(
+						tree.get(), source.c_str(),
+						job.path.c_str());
+				} catch (const std::exception &e) {
+					store::recordParseFailure(
+						project_id, job.path, job.lang,
+						std::string(store::failReasonToString(
+							store::FailReason::
+								VisitorException)) +
+							": " + e.what());
+					continue;
+				} catch (...) {
+					store::recordParseFailure(
+						project_id, job.path, job.lang,
+						store::failReasonToString(
+							store::FailReason::
+								VisitorUnknownThrow));
+					continue;
+				}
 				if (unit) {
 					// Convert TranslationUnit nodes to flat records.
 					// all_nodes is a flat list indexed by Node::id and
@@ -983,6 +1085,28 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 		return dupString(
 			"{\"ok\":true,\"files_indexed\":0,\"nodes\":0,\"edges\":0,\"errors\":0}");
 
+	// Fail-fast: pre-load known parse failures so the parse loop can
+	// skip them without per-file DB queries. Mirrors the logic in
+	// engine_index_project — kept inline rather than factored out to
+	// avoid a 1000+ line file (code_rules.md §1).
+	const int kFailRetryMax = [] {
+		const char *e = getenv("CODESCOPE_FAIL_RETRY_MAX");
+		return e ? std::max(1, std::atoi(e)) : 3;
+	}();
+	std::unordered_set<std::string> known_failures;
+	{
+		std::vector<std::string> fail_vec;
+		if (!store::loadKnownParseFailures(project_id, kFailRetryMax,
+						   /*out*/ fail_vec)) {
+			fprintf(stderr,
+				"engine: loadKnownParseFailures failed "
+				"(continuing) "
+				"[module=engine, method=engine_index_files]\n");
+		} else {
+			known_failures.insert(fail_vec.begin(), fail_vec.end());
+		}
+	}
+
 	// ── Reuse the same parallel processing pipeline ──────────────
 	// The rest of the function mirrors engine_index_project from the
 	// job-processing phase onward. Key sections are copied inline to
@@ -1106,6 +1230,13 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 				break;
 			auto &job = jobs[idx];
 
+			// Fail-fast: skip files that have failed >=
+			// CODESCOPE_FAIL_RETRY_MAX times.
+			if (known_failures.find(job.path) !=
+			    known_failures.end()) {
+				continue;
+			}
+
 			int done = next_job.load();
 			if (done % progress_interval == 0 && done > 0)
 				fprintf(stderr,
@@ -1116,15 +1247,26 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 					(int)(done * 100 / total_files));
 
 			std::string source = readFile(job.path.c_str());
-			if (source.empty())
+			if (source.empty()) {
+				store::recordParseFailure(
+					project_id, job.path, job.lang,
+					store::failReasonToString(
+						store::FailReason::ReadEmpty));
 				continue;
+			}
 
 			// Per-thread parser
 			auto pit = tl_parsers.find(job.lang);
 			if (pit == tl_parsers.end()) {
 				auto lit = lang_ptrs.find(job.lang);
-				if (lit == lang_ptrs.end())
+				if (lit == lang_ptrs.end()) {
+					store::recordParseFailure(
+						project_id, job.path, job.lang,
+						store::failReasonToString(
+							store::FailReason::
+								LanguageMissing));
 					continue;
+				}
 				auto np = std::unique_ptr<TSParser,
 							  TSParserDeleter>(
 					ts_parser_new());
@@ -1137,8 +1279,14 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 					pit->second.get(), nullptr,
 					source.c_str(),
 					static_cast<uint32_t>(source.size())));
-			if (!tree)
+			if (!tree) {
+				store::recordParseFailure(
+					project_id, job.path, job.lang,
+					store::failReasonToString(
+						store::FailReason::
+							ParseNullTree));
 				continue;
+			}
 
 			auto result = std::make_unique<store::FileResult>();
 			result->file_path = job.path;
@@ -1161,9 +1309,27 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 			}
 
 			if (visitor) {
-				ir::SemanticUnit *su = visitor->visit(
-					tree.get(), source.c_str(),
-					job.path.c_str());
+				ir::SemanticUnit *su = nullptr;
+				try {
+					su = visitor->visit(tree.get(),
+							    source.c_str(),
+							    job.path.c_str());
+				} catch (const std::exception &e) {
+					store::recordParseFailure(
+						project_id, job.path, job.lang,
+						std::string(store::failReasonToString(
+							store::FailReason::
+								VisitorException)) +
+							": " + e.what());
+					continue;
+				} catch (...) {
+					store::recordParseFailure(
+						project_id, job.path, job.lang,
+						store::failReasonToString(
+							store::FailReason::
+								VisitorUnknownThrow));
+					continue;
+				}
 				if (su) {
 					result->records = su->allRecords();
 					result->metrics = index_metrics::
@@ -1176,12 +1342,35 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 				// Old pipeline fallback
 				auto translator =
 					ir::createTranslator(job.lang.c_str());
-				if (!translator)
+				if (!translator) {
+					store::recordParseFailure(
+						project_id, job.path, job.lang,
+						store::failReasonToString(
+							store::FailReason::
+								LanguageMissing));
 					continue;
-				ir::TranslationUnit *unit =
-					translator->translate(tree.get(),
-							      source.c_str(),
-							      job.path.c_str());
+				}
+				ir::TranslationUnit *unit = nullptr;
+				try {
+					unit = translator->translate(
+						tree.get(), source.c_str(),
+						job.path.c_str());
+				} catch (const std::exception &e) {
+					store::recordParseFailure(
+						project_id, job.path, job.lang,
+						std::string(store::failReasonToString(
+							store::FailReason::
+								VisitorException)) +
+							": " + e.what());
+					continue;
+				} catch (...) {
+					store::recordParseFailure(
+						project_id, job.path, job.lang,
+						store::failReasonToString(
+							store::FailReason::
+								VisitorUnknownThrow));
+					continue;
+				}
 				if (unit && unit->root) {
 					uint64_t flat_id = 1;
 					std::function<void(ir::Node *, uint64_t)>
