@@ -11,7 +11,8 @@ namespace graph
 // state_builder) treat them as reachable roots instead of orphans.
 // Go's `init` is an implicit entry point executed at package load.
 // [module=graph, method=isEntryPointName]
-static bool isEntryPointName(const std::string &name, const std::string &language)
+static bool isEntryPointName(const std::string &name,
+			     const std::string &language)
 {
 	if (name == "main") {
 		return language == "c" || language == "cpp" ||
