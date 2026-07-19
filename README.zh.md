@@ -162,6 +162,12 @@ curl -fsSL https://raw.githubusercontent.com/Timwood0x10/CodeScope/main/install.
 export PATH="$PATH:$HOME/.codescope/bin"
 ```
 
+> **macOS 代码签名问题**：如果下载后二进制启动就被 kill（退出码 137 / SIGKILL），在本地重新签名即可：
+> ```bash
+> codesign --sign - --force ~/.codescope/bin/codescope
+> ```
+> 这是因为 CI 编译的二进制使用的是 ad-hoc 签名，较新的 macOS 版本可能会拒绝执行。用本地机器身份重新签名即可解决。
+
 ### 源码编译
 
 ```bash

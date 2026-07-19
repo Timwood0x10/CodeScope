@@ -162,6 +162,12 @@ curl -fsSL https://raw.githubusercontent.com/Timwood0x10/CodeScope/main/install.
 export PATH="$PATH:$HOME/.codescope/bin"
 ```
 
+> **macOS code signing issue**: If the binary is killed immediately on launch (exit code 137 / SIGKILL), re-sign it locally:
+> ```bash
+> codesign --sign - --force ~/.codescope/bin/codescope
+> ```
+> This happens because the CI-built binary uses ad-hoc signing, which newer macOS versions may reject. Re-signing with your local machine's identity resolves it.
+
 ### Build from Source
 
 ```bash
