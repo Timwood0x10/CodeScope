@@ -828,7 +828,8 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		// values (=2, =true, =yes, =on) trigger divergent async
 		// behavior between the two paths. Aligning on "skip when set
 		// and not '0'" makes both consumers share one contract.
-		if (skip_async && skip_async[0] != '0') {
+		if (skip_async && skip_async[0] != '\0' &&
+		    skip_async[0] != '0') {
 			// Skip LadybugDB sync in worker mode (or user explicitly
 			// asked to skip async via any truthy CODESCOPE_SKIP_ASYNC
 			// value other than "0").
