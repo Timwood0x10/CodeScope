@@ -164,6 +164,24 @@ class JsonParser {
 	}
 
     private:
+	// RAII guard for recursion depth tracking. Incremented on entry
+	// to parseValue, decremented on any return path. Prevents stack
+	// overflow from maliciously nested JSON (e.g. {{{...}}}).
+	struct DepthGuard {
+		int &depth;
+		explicit DepthGuard(int &d)
+			: depth(d)
+		{
+			++depth;
+		}
+		~DepthGuard()
+		{
+			--depth;
+		}
+	};
+
+	static constexpr int kMaxDepth = 64;
+
 	bool eof() const
 	{
 		return pos_ >= src_.size();
@@ -196,6 +214,11 @@ class JsonParser {
 
 	bool parseValue(JsonValue &out)
 	{
+		DepthGuard g(depth_);
+		if (depth_ > kMaxDepth) {
+			setError("maximum nesting depth exceeded");
+			return false;
+		}
 		skipWhitespace();
 		if (eof()) {
 			setError("unexpected end of input");
@@ -449,6 +472,7 @@ class JsonParser {
 	const std::string &src_;
 	size_t pos_ = 0;
 	std::string error_;
+	int depth_ = 0;
 };
 
 // ─── JSON value → rule struct extraction ─────────────────────────

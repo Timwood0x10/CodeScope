@@ -169,20 +169,22 @@ bool GraphStore::syncGraphToLadybugDB(uint64_t project_id)
 		lbug_state s = lbug_connection_query(
 			&lbug_conn_, "DELETE FROM GraphNode", &clr);
 		if (s != LbugSuccess) {
+			// Table may not exist on first sync (fresh database).
+			// Non-fatal — COPY FROM will create rows regardless.
 			fprintf(stderr,
 				"[module=store, method=syncGraphToLadybugDB] "
-				"DELETE FROM GraphNode failed: state=%d\n",
+				"DELETE FROM GraphNode skipped (state=%d): "
+				"table may be empty or not yet created\n",
 				(int)s);
-			return false;
 		}
 		s = lbug_connection_query(&lbug_conn_, "DELETE FROM CALLS",
 					  &clr);
 		if (s != LbugSuccess) {
 			fprintf(stderr,
 				"[module=store, method=syncGraphToLadybugDB] "
-				"DELETE FROM CALLS failed: state=%d\n",
+				"DELETE FROM CALLS skipped (state=%d): "
+				"table may be empty or not yet created\n",
 				(int)s);
-			return false;
 		}
 	}
 

@@ -176,15 +176,45 @@ char *engine_enhance_project(uint64_t project_id)
 	using Clock = std::chrono::steady_clock;
 	auto t_start = Clock::now();
 
+	// Step 0.5: Extract semantic facts
+	//
+	// Runs unconditionally (even when the project is already finalized)
+	// because the worker-mode index_project path sets normal_ready=1
+	// without ever triggering Step 1.5. The extractor is idempotent —
+	// it clears existing facts for the project before reinserting — so
+	// re-running on an already-enhanced project is safe and cheap.
+	// Without this, build_evidence would return only the test_quality
+	// rule (Count combine mode that does not depend on semantic_facts).
+	{
+		auto t = Clock::now();
+		g_store->beginTransaction();
+		model::SemanticFactExtractor extractor(g_store.get());
+		extractor.extractAll(project_id);
+		g_store->commitTransaction();
+		fprintf(stderr, "enhance: semantic_facts %lldms\n",
+			(long long)std::chrono::duration_cast<
+				std::chrono::milliseconds>(Clock::now() - t)
+				.count());
+	}
+
 	// Step 1: buildGraph
 	{
 		int ready = g_store->getProjectReadiness(project_id,
 							 "normal_ready");
 		if (ready) {
 			fprintf(stderr,
-				"enhance: project %llu already finalized\n",
+				"enhance: project %llu already finalized (semantic_facts re-extracted)\n",
 				(unsigned long long)project_id);
-			return dupString("{\"status\":\"already_finalized\"}");
+			int64_t total_ms = std::chrono::duration_cast<
+						   std::chrono::milliseconds>(
+						   Clock::now() - t_start)
+						   .count();
+			std::ostringstream json;
+			json << "{"
+			     << "\"status\":\"already_finalized\""
+			     << ",\"semantic_facts_refreshed\":true"
+			     << ",\"time_ms\":" << total_ms << "}";
+			return dupString(json.str());
 		}
 	}
 	{
@@ -193,19 +223,6 @@ char *engine_enhance_project(uint64_t project_id)
 		g_store->buildGraph(project_id, true);
 		g_store->commitTransaction();
 		fprintf(stderr, "enhance: buildGraph %lldms\n",
-			(long long)std::chrono::duration_cast<
-				std::chrono::milliseconds>(Clock::now() - t)
-				.count());
-	}
-
-	// Step 1.5: Extract semantic facts (v0.3 Phase 1)
-	{
-		auto t = Clock::now();
-		g_store->beginTransaction();
-		model::SemanticFactExtractor extractor(g_store.get());
-		extractor.extractAll(project_id);
-		g_store->commitTransaction();
-		fprintf(stderr, "enhance: semantic_facts %lldms\n",
 			(long long)std::chrono::duration_cast<
 				std::chrono::milliseconds>(Clock::now() - t)
 				.count());

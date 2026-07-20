@@ -688,6 +688,13 @@ int64_t SemanticFactExtractor::extractFrameworkFacts(uint64_t project_id)
 
 int64_t SemanticFactExtractor::extractFfiFacts(uint64_t project_id)
 {
+	// ── Query 1: Direct FFI patterns (semantic_records) ────────────
+	// Covers:
+	//   - C extern "C" function declarations
+	//   - JNIEXPORT macros
+	//   - Rust wasm_bindgen annotations
+	//   - Go cgo calls (C.CBytes, C.free, C.malloc, C.go_hash_bridge, …)
+	//   - Java JNA-style native methods (detected via class name "Native")
 	const char *sql =
 		"SELECT sr.name, sr.qualified_name, sr.language, "
 		"  sr.start_row, sr.file_path, sr.kind, "
@@ -704,9 +711,14 @@ int64_t SemanticFactExtractor::extractFfiFacts(uint64_t project_id)
 		"  OR sr.name LIKE 'JNIEXPORT_%' "
 		"  OR sr.qualified_name LIKE '%JNIEXPORT_%' "
 		"  OR (sr.language = 'rust' AND sr.name LIKE '%wasm_bindgen%') "
-		"  OR (sr.kind = ? AND sr.name LIKE 'C.CF%') "
 		"  OR (sr.kind = ? AND sr.language = 'go' "
-		"      AND sr.name LIKE 'C.CF%'))";
+		"      AND sr.file_path IN (SELECT DISTINCT file_path FROM semantic_records "
+		"        WHERE project_id = ? AND language = 'go' AND kind = ? "
+		"        AND name = 'import \"C\"')) "
+		"  OR (sr.language = 'java' AND sr.kind = 1 "
+		"      AND sr.file_path IN (SELECT DISTINCT file_path FROM semantic_records "
+		"        WHERE project_id = ? AND language = 'java' AND kind = 2 "
+		"        AND name LIKE '%Native%')))";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), sql, -1, &stmt, nullptr) !=
 	    SQLITE_OK) {
@@ -720,7 +732,9 @@ int64_t SemanticFactExtractor::extractFfiFacts(uint64_t project_id)
 	sqlite3_bind_int(stmt, 2, kNodeTypeMethod);
 	sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(project_id));
 	sqlite3_bind_int(stmt, 4, kKindCallExpr);
-	sqlite3_bind_int(stmt, 5, kKindCallExpr);
+	sqlite3_bind_int64(stmt, 5, static_cast<int64_t>(project_id));
+	sqlite3_bind_int(stmt, 6, kKindImport);
+	sqlite3_bind_int64(stmt, 7, static_cast<int64_t>(project_id));
 
 	std::vector<store::GraphStore::SemanticFactRow> facts;
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -749,11 +763,15 @@ int64_t SemanticFactExtractor::extractFfiFacts(uint64_t project_id)
 			   name.find("wasm_bindgen") != std::string::npos) {
 			primitive = "wasm";
 			kind = "export";
-		} else if (name.size() >= 5 &&
-			   name.compare(0, 4, "C.CF") == 0) {
-			primitive = "cgo_callback";
-			kind = "callback";
-			confidence = kConfidenceCgoCallback;
+		} else if (language == "go" && name.size() >= 3 &&
+			   name.compare(0, 2, "C.") == 0) {
+			// Go cgo call (C.CBytes, C.free, C.malloc, C.go_*, …)
+			primitive = "cgo_call";
+			kind = "call";
+		} else if (language == "java") {
+			// Java JNA native method
+			primitive = "jni";
+			kind = "export";
 		} else {
 			continue;
 		}
@@ -765,6 +783,82 @@ int64_t SemanticFactExtractor::extractFfiFacts(uint64_t project_id)
 				   primitive, kind, name, confidence, detail);
 	}
 	sqlite3_finalize(stmt);
+
+	// ── Query 2: Cross-language call edges (graph_edges) ──────────
+	// Detects Rust extern "C" functions and C functions declared in
+	// extern "C" blocks by finding functions whose callers come from a
+	// different language (e.g. Rust function called from C code).
+	const char *sql_xl =
+		"SELECT gn.name, gn.qualified_name, gn.language, "
+		"  gn.start_row, gn.file_path, gn.id AS fn_id "
+		"FROM graph_nodes gn "
+		"WHERE gn.project_id = ? "
+		"  AND gn.node_type IN (?, ?) "
+		"  AND gn.id IN ( "
+		"    SELECT ge.target_node_id "
+		"    FROM graph_edges ge "
+		"    JOIN graph_nodes gn_src ON ge.source_node_id = gn_src.id "
+		"    WHERE ge.project_id = ? "
+		"      AND gn_src.language != gn.language "
+		"      AND gn.language IN ('rust', 'c', 'cpp', 'zig')"
+		"  ) "
+		"  -- Exclude functions already detected by Query 1 "
+		"  AND gn.id NOT IN (SELECT function_id FROM semantic_fact "
+		"    WHERE project_id = ? AND category = 'ffi')";
+	sqlite3_stmt *stmt_xl = nullptr;
+	if (sqlite3_prepare_v2(store_->handle(), sql_xl, -1, &stmt_xl,
+			       nullptr) != SQLITE_OK) {
+		fprintf(stderr,
+			"[module=semantic_fact_extractor, "
+			"method=extractFfiFacts] cross-lang prepare failed: %s\n",
+			sqlite3_errmsg(store_->handle()));
+	} else {
+		sqlite3_bind_int64(stmt_xl, 1,
+				   static_cast<int64_t>(project_id));
+		sqlite3_bind_int(stmt_xl, 2, kNodeTypeFunction);
+		sqlite3_bind_int(stmt_xl, 3, kNodeTypeMethod);
+		sqlite3_bind_int64(stmt_xl, 4,
+				   static_cast<int64_t>(project_id));
+		sqlite3_bind_int64(stmt_xl, 5,
+				   static_cast<int64_t>(project_id));
+
+		while (sqlite3_step(stmt_xl) == SQLITE_ROW) {
+			std::string name = colText(stmt_xl, 0);
+			std::string qualified_name = colText(stmt_xl, 1);
+			std::string language = colText(stmt_xl, 2);
+			int start_row = sqlite3_column_int(stmt_xl, 3);
+			std::string file_path = colText(stmt_xl, 4);
+			int64_t fn_id = sqlite3_column_int64(stmt_xl, 5);
+			if (fn_id <= 0)
+				continue;
+
+			// Classify based on language: Rust extern "C" functions
+			// and C/C++ functions called from other languages.
+			std::string primitive;
+			std::string kind;
+			if (language == "rust") {
+				primitive = "extern_call";
+				kind = "call";
+			} else if (language == "c" || language == "cpp") {
+				primitive = "extern_call";
+				kind = "call";
+			} else if (language == "zig") {
+				primitive = "extern_call";
+				kind = "call";
+			} else {
+				continue;
+			}
+
+			std::string detail = buildDetailJson(
+				start_row,
+				name + " (" + file_path + ") [cross-lang]",
+				qualified_name);
+			facts.emplace_back(static_cast<uint64_t>(fn_id), "ffi",
+					   primitive, kind, name,
+					   kConfidenceDefault, detail);
+		}
+		sqlite3_finalize(stmt_xl);
+	}
 
 	if (!store_->insertSemanticFacts(project_id, facts)) {
 		fprintf(stderr,
