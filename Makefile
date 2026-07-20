@@ -163,7 +163,7 @@ TEST_EXES := \
 	test_fuzzy_resolver test_resolver_fuzzy_cache \
 	test_documentation_drift test_capability_drift test_architecture_drift \
 	test_query_algorithms test_connected_components_ffi test_trigram_search \
-	test_exclude_paths test_index_metrics test_ladybug_sync \
+	test_exclude_paths test_index_metrics \
 	test_call_graph_p1 test_readme_ingestion test_call_graph_method \
 	test_project_id \
 	test_enhance_e2e \

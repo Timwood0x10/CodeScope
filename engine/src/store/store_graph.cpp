@@ -798,24 +798,28 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// queryable), and model/state run in a background thread launched by
 	// engine_index_project.cpp after createIndexesAfterBulkLoad.
 
-	// ── Graph data stays in SQLite only ────────────────────────
-	// Per the db_res.md design, graph data is compiled into LadybugDB
-	// by a future Graph Compiler (M1). Until then, SQLite graph_nodes
-	// and graph_edges remain the source of truth for all graph queries.
-	// LadybugDB is initialized but not yet populated.
+	// ── Compile SQLite graph into LadybugDB ─────────────────────
+	// Compiles the SQLite graph_nodes/graph_edges into LadybugDB for
+	// Cypher queries. Non-fatal: if the compile fails, the SQLite
+	// graph remains the source of truth and isGraphReady() returns
+	// false, so all query paths fall back to SQLite.
 
 	auto t_lbug = Clock::now();
-	// Compile the SQLite graph into LadybugDB for Cypher queries.
-	// Non-fatal: if the compile fails, the SQLite graph remains the
-	// source of truth.
 	if (lbug_initialized_) {
-		compileGraphToLadybugDB(this, project_id);
+		if (!compileGraphToLadybugDB(this, project_id)) {
+			fprintf(stderr,
+				"buildGraph: compileGraphToLadybugDB failed "
+				"for project %s — SQLite graph remains the "
+				"source of truth "
+				"[module=store, method=buildGraph]\n",
+				pid.c_str());
+		}
 	}
 	fprintf(stderr,
 		"buildGraph: ladybugdb=%lldms "
 		"for project %s\n",
-		(long long)std::chrono::duration_cast<
-			std::chrono::milliseconds>(Clock::now() - t_lbug)
+		(long long)std::chrono::duration_cast<std::chrono::milliseconds>(
+			Clock::now() - t_lbug)
 			.count(),
 		pid.c_str());
 

@@ -84,7 +84,8 @@ bool GraphStore::initLadybugDB()
 	// Kuzu schema (GraphNode / CALLS / RELATES).
 	static const char *kGraphNodeSchema = R"(
 CREATE NODE TABLE IF NOT EXISTS GraphNode (
-  uid STRING, project_id INT64, ir_node_id INT64, node_type INT64,
+  uid STRING, project_id INT64, ir_node_id INT64, graph_node_id INT64,
+  node_type INT64,
   name STRING, qualified_name STRING, module_path STRING, package_name STRING,
   class_name STRING, start_row INT64, start_col INT64, end_row INT64, end_col INT64,
   file_path STRING, language STRING, signature STRING,
@@ -133,6 +134,7 @@ void GraphStore::closeLadybugDB()
 		lbug_connection_destroy(&lbug_conn_);
 		lbug_database_destroy(&lbug_db_);
 		lbug_initialized_ = false;
+		lbug_populated_ = false;
 	}
 }
 
