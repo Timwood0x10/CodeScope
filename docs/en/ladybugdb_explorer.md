@@ -1,6 +1,6 @@
 # LadybugDB Explorer with CodeScope
 
-> **Last Updated**: 2026-07-15
+> **Last Updated**: 2026-07-20
 
 This guide explains how to use [LadybugDB Explorer](https://docs.ladybugdb.com/visualization/lbug-explorer/) to visually explore CodeScope's code graph data.
 
@@ -29,48 +29,25 @@ codescope index_project
 
 ### Step 2: Sync data from SQLite to LadybugDB
 
-If the `.lbug` file is empty, run the sync:
+The sync from SQLite to LadybugDB is **automatic**. When you run `codescope index_project`, the engine automatically syncs graph data from SQLite to LadybugDB using batched Cypher `CREATE` statements. No manual steps are required.
+
+> **Note**: The engine uses Cypher `CREATE` instead of `COPY FROM` because `COPY FROM` (CSV bulk import) has a known bug in the vendored LadybugDB 0.18.2 that causes it to fail with `state=1`. Cypher `CREATE` is the reliable path.
 
 ```mermaid
 sequenceDiagram
     participant SQL as SQLite (.db)
-    participant CSV as CSV Temp File
+    participant ENG as CodeScope Engine
     participant LBUG as LadybugDB (.lbug)
-    participant CLI as lbug CLI
 
-    SQL->>CSV: Export graph_nodes (17,127 rows)
-    SQL->>CSV: Export graph_edges (3,341 rows)
-    CSV->>CLI: COPY GraphNode FROM 'nodes.csv'
-    CLI->>LBUG: Bulk import nodes
-    CSV->>CLI: COPY CALLS FROM 'edges.csv'
-    CLI->>LBUG: Bulk import edges
+    SQL->>ENG: Read graph_nodes / graph_edges
+    ENG->>LBUG: Batched Cypher CREATE (nodes)
+    ENG->>LBUG: Batched Cypher CREATE (edges)
     Note over LBUG: Sync complete ✓
 ```
 
-```bash
-# Export nodes from SQLite
-sqlite3 .codescope/codescope.db -csv -noheader \
-  "SELECT id, project_id, ir_node_id, node_type, name, qualified_name, \
-          signature, module_path, file_path, language, \
-          start_row, start_col, end_row, end_col, \
-          parent_id, is_entry_point, embedding_ready, metrics_ready \
-   FROM graph_nodes WHERE project_id = 1;" \
-  > /tmp/nodes.csv
+#### Troubleshooting
 
-# Export edges from SQLite
-sqlite3 .codescope/codescope.db -csv -noheader \
-  "SELECT source_node_id, target_node_id, 1, edge_type, call_site_line, label \
-   FROM graph_edges WHERE project_id = 1;" \
-  > /tmp/edges.csv
-
-# Import into LadybugDB using the CLI
-cat > /tmp/sync_lbug.cql << 'SCRIPT'
-COPY GraphNode FROM '/tmp/nodes.csv' (header=false);
-COPY CALLS FROM '/tmp/edges.csv' (header=false);
-SCRIPT
-
-lbug .codescope/codescope.lbug -i /tmp/sync_lbug.cql
-```
+If the `.lbug` file is empty after indexing, verify that the engine was compiled with `HAS_LADYBUG` (check build output for `LadybugDB: found at ...`). The engine uses Cypher `CREATE` as a reliable alternative to `COPY FROM`, which has a known issue in LadybugDB 0.18.2.
 
 ### Step 3: Launch LadybugDB Explorer
 
@@ -183,8 +160,7 @@ flowchart TB
     subgraph "CodeScope Indexing Pipeline"
         A["Source Code"] --> B["tree-sitter Parser"]
         B --> C["SQLite Storage<br/>codescope.db"]
-        C --> D["CSV Export"]
-        D --> E["LadybugDB Sync<br/>codescope.lbug"]
+        C --> E["Automatic Sync (Cypher CREATE)<br/>codescope.lbug"]
     end
 
     subgraph "LadybugDB Explorer Visualization"

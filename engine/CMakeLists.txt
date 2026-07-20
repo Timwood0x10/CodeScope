@@ -511,7 +511,12 @@ if(NOT LADYBUG_LIBRARY AND EXISTS "${LADYBUG_VENDOR_LIB_DIR}")
 endif()
 
 if(LADYBUG_LIBRARY AND LADYBUG_INCLUDE_DIR)
-    target_compile_definitions(astgraph_engine PRIVATE HAS_LADYBUG=1)
+    # HAS_LADYBUG must be PUBLIC because store.h uses #ifdef HAS_LADYBUG
+    # to conditionally include <lbug.h> and define real vs stub types
+    # for lbug_database/lbug_connection. Any source file that includes
+    # store.h (including test executables) needs the definition at
+    # compile time to match the ABI of the engine library.
+    target_compile_definitions(astgraph_engine PUBLIC HAS_LADYBUG=1)
     target_compile_definitions(astgraph_engine PRIVATE LBUG_STATIC_DEFINE)
     target_include_directories(astgraph_engine PUBLIC ${LADYBUG_INCLUDE_DIR})
     target_link_libraries(astgraph_engine PUBLIC ${LADYBUG_LIBRARY})

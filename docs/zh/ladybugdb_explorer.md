@@ -1,6 +1,6 @@
 # CodeScope 与 LadybugDB Explorer 可视化指南
 
-> **最后更新**: 2026-07-15
+> **最后更新**: 2026-07-20
 
 本指南介绍如何使用 [LadybugDB Explorer](https://docs.ladybugdb.com/visualization/lbug-explorer/) 对 CodeScope 的代码图数据进行交互式可视化探索。
 
@@ -29,49 +29,25 @@ codescope index_project
 
 ### 步骤2: 从 SQLite 同步数据到 LadybugDB
 
+从 SQLite 到 LadybugDB 的同步是**自动完成的**。当你运行 `codescope index_project` 时，引擎会自动使用批处理的 Cypher `CREATE` 语句将图数据从 SQLite 同步到 LadybugDB。无需任何手动步骤。
+
+> **注意**：引擎使用 Cypher `CREATE` 而非 `COPY FROM`，因为内嵌的 LadybugDB 0.18.2 中的 `COPY FROM`（CSV 批量导入）存在已知缺陷，会以 `state=1` 错误失败。Cypher `CREATE` 是可靠的替代方案。
+
 ```mermaid
 sequenceDiagram
     participant SQL as SQLite (.db)
-    participant CSV as CSV 临时文件
+    participant ENG as CodeScope 引擎
     participant LBUG as LadybugDB (.lbug)
-    participant CLI as lbug CLI
 
-    SQL->>CSV: 导出 graph_nodes (17,127 行)
-    SQL->>CSV: 导出 graph_edges (3,341 行)
-    CSV->>CLI: COPY GraphNode FROM 'nodes.csv'
-    CLI->>LBUG: 批量导入节点
-    CSV->>CLI: COPY CALLS FROM 'edges.csv'
-    CLI->>LBUG: 批量导入关系边
+    SQL->>ENG: 读取 graph_nodes / graph_edges
+    ENG->>LBUG: 批处理 Cypher CREATE（节点）
+    ENG->>LBUG: 批处理 Cypher CREATE（关系边）
     Note over LBUG: 同步完成 ✓
 ```
 
-如果 `.lbug` 文件为空，执行同步脚本：
+#### 故障排查
 
-```bash
-# 从 SQLite 导出节点
-sqlite3 .codescope/codescope.db -csv -noheader \
-  "SELECT id, project_id, ir_node_id, node_type, name, qualified_name, \
-          signature, module_path, file_path, language, \
-          start_row, start_col, end_row, end_col, \
-          parent_id, is_entry_point, embedding_ready, metrics_ready \
-   FROM graph_nodes WHERE project_id = 1;" \
-  > /tmp/nodes.csv
-
-# 从 SQLite 导出边
-sqlite3 .codescope/codescope.db -csv -noheader \
-  "SELECT source_node_id, target_node_id, 1, edge_type, call_site_line, label \
-   FROM graph_edges WHERE project_id = 1;" \
-  > /tmp/edges.csv
-
-# 创建同步脚本
-cat > /tmp/sync_lbug.cql << 'SCRIPT'
-COPY GraphNode FROM '/tmp/nodes.csv' (header=false);
-COPY CALLS FROM '/tmp/edges.csv' (header=false);
-SCRIPT
-
-# 执行同步
-lbug .codescope/codescope.lbug -i /tmp/sync_lbug.cql
-```
+如果索引后 `.lbug` 文件为空，请确认引擎已使用 `HAS_LADYBUG` 编译（检查构建输出中是否有 `LadybugDB: found at ...`）。引擎使用 Cypher `CREATE` 作为 `COPY FROM` 的可靠替代方案，后者在 LadybugDB 0.18.2 中存在已知问题。
 
 ### 步骤3: 启动 LadybugDB Explorer
 
@@ -231,8 +207,7 @@ flowchart TB
     subgraph "CodeScope 索引流程"
         A["源代码"] --> B["tree-sitter 解析器"]
         B --> C["SQLite 存储<br/>codescope.db"]
-        C --> D["CSV 导出"]
-        D --> E["LadybugDB 同步<br/>codescope.lbug"]
+        C --> E["自动同步（Cypher CREATE）<br/>codescope.lbug"]
     end
 
     subgraph "LadybugDB Explorer 可视化"

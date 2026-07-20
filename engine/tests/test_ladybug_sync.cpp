@@ -32,6 +32,11 @@
 #include <sqlite3.h>
 #include <unistd.h>
 
+// LadybugDB C API — only needed for the real-sync test (section 8).
+#ifdef HAS_LADYBUG
+#include <lbug.h>
+#endif
+
 using namespace store;
 
 static const char *kDbPath = "/tmp/codescope_test_ladybug_sync.db";
@@ -297,6 +302,88 @@ int main()
 
 		printf("  [PASS] incremental flow: cursor tracks max id, predicate selects only new rows\n");
 	}
+
+// ── 8. Real LadybugDB sync (HAS_LADYBUG only) ───────────────────
+//
+// When LadybugDB is compiled in, verify that syncGraphToLadybugDB
+// actually pushes data into LadybugDB by querying the GraphNode and
+// CALLS tables directly. This is the ONLY test that exercises the
+// Cypher CREATE path end-to-end and catches regressions in the
+// escaping/batching logic.
+//
+// At this point the SQLite DB has 8 graph_nodes (ids 1,2,3,10-14 from
+// sections 3 and 7) and 1 graph_edge (id=edge1, 1→2 from section 3)
+// for project_id. After sync, LadybugDB must mirror these counts.
+#ifdef HAS_LADYBUG
+	{
+		// Initialize LadybugDB alongside the existing SQLite store.
+		assert(store.initLadybugDB());
+		assert(store.hasLadybugDB());
+
+		// Full sync: SQLite → LadybugDB via batched Cypher CREATE.
+		assert(store.syncGraphToLadybugDB(project_id));
+
+		lbug_connection *conn = store.lbugHandle();
+		assert(conn != nullptr);
+
+		// Query 1: count GraphNode nodes in LadybugDB.
+		lbug_query_result qr;
+		lbug_state s = lbug_connection_query(
+			conn, "MATCH (n:GraphNode) RETURN count(n) AS cnt",
+			&qr);
+		assert(s == LbugSuccess);
+
+		lbug_flat_tuple tuple;
+		assert(lbug_query_result_get_next(&qr, &tuple) ==
+		       LbugSuccess);
+
+		lbug_value val;
+		assert(lbug_flat_tuple_get_value(&tuple, 0, &val) ==
+		       LbugSuccess);
+
+		int64_t node_count = 0;
+		assert(lbug_value_get_int64(&val, &node_count) ==
+		       LbugSuccess);
+		// 3 (alpha,beta,gamma) + 5 (n10-n14) = 8
+		assert(node_count == 8);
+
+		lbug_flat_tuple_destroy(&tuple);
+		lbug_query_result_destroy(&qr);
+		printf("  [PASS] HAS_LADYBUG: syncGraphToLadybugDB pushed %lld nodes\n",
+		       (long long)node_count);
+
+		// Query 2: count CALLS edges in LadybugDB.
+		s = lbug_connection_query(
+			conn,
+			"MATCH ()-[c:CALLS]->() RETURN count(c) AS cnt", &qr);
+		assert(s == LbugSuccess);
+		assert(lbug_query_result_get_next(&qr, &tuple) ==
+		       LbugSuccess);
+		assert(lbug_flat_tuple_get_value(&tuple, 0, &val) ==
+		       LbugSuccess);
+
+		int64_t edge_count = 0;
+		assert(lbug_value_get_int64(&val, &edge_count) ==
+		       LbugSuccess);
+		// 1 edge (alpha→beta from section 3)
+		assert(edge_count == 1);
+
+		lbug_flat_tuple_destroy(&tuple);
+		lbug_query_result_destroy(&qr);
+		printf("  [PASS] HAS_LADYBUG: syncGraphToLadybugDB pushed %lld edges\n",
+		       (long long)edge_count);
+
+		store.closeLadybugDB();
+		// Clean up the .lbug file created by initLadybugDB.
+		std::string lbug_path = kDbPath;
+		size_t dot = lbug_path.rfind('.');
+		if (dot != std::string::npos)
+			lbug_path = lbug_path.substr(0, dot) + ".lbug";
+		else
+			lbug_path += ".lbug";
+		unlink(lbug_path.c_str());
+	}
+#endif // HAS_LADYBUG
 
 	store.close();
 	unlink(kDbPath);

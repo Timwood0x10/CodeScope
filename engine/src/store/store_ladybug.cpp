@@ -16,21 +16,55 @@
 namespace store
 {
 
-// Escape a path for inclusion inside a single-quoted SQL literal used by
-// LadybugDB's COPY ... FROM '<path>'. Doubles embedded single quotes per
-// SQLite string-literal rules, preventing a single quote in db_path_ (which
-// is concatenated raw into the COPY SQL) from breaking out of the literal or
-// injecting SQL. Mirrors the escaping used by exportArtifact() in store_core.cpp.
+// Escape a string value for a Cypher single-quoted literal.
+// Uses doubled single quotes ('') per standard Cypher string-literal
+// rules (Neo4j/Kuzu/LadybugDB). Backslash escaping (\\') is NOT standard
+// Cypher and causes parse failures on names with apostrophes.
+// Returns '' for null/empty input so the literal is always valid.
 // [module=store, method=store_ladybug]
-static std::string escapeSqlPathLiteral(const std::string &p)
+static std::string escCypherLiteral(const char *s)
 {
-	std::string out = p;
-	for (size_t i = 0; (i = out.find('\'', i)) != std::string::npos; i += 2)
-		out.insert(i, 1, '\'');
+	if (!s || !*s)
+		return std::string("''");
+	std::string out;
+	out.reserve(strlen(s) + 8);
+	out += '\'';
+	for (; *s; s++) {
+		if (*s == '\'')
+			out += "''";
+		else
+			out += *s;
+	}
+	out += '\'';
 	return out;
 }
 
 #ifdef HAS_LADYBUG
+
+// Log a LadybugDB query failure with the actual error message retrieved
+// from the query result. Frees the error message string via
+// lbug_destroy_string. The query_result itself is NOT destroyed — the
+// caller remains responsible for that (or for reusing it).
+//
+// Why: lbug_connection_query returns only a state code (LbugError = 1),
+// which is too coarse to diagnose why a Cypher CREATE / COPY FROM /
+// BEGIN TRANSACTION fails. The error message in the query result has
+// the parser/runtime detail (e.g. "Parser exception: mismatched input
+// 'CREATE' expecting {'MATCH', ...}") needed to fix the actual issue.
+//
+// [module=store, method=store_ladybug]
+static void logLbugQueryError(const char *context_method, lbug_query_result *qr,
+			      lbug_state state)
+{
+	char *err = lbug_query_result_get_error_message(qr);
+	fprintf(stderr,
+		"[module=store, method=%s] "
+		"%s failed (state=%d): %s\n",
+		context_method, context_method, (int)state,
+		err ? err : "(no error message)");
+	if (err)
+		lbug_destroy_string(err);
+}
 
 bool GraphStore::initLadybugDB()
 {
@@ -93,12 +127,13 @@ bool GraphStore::initLadybugDB()
 	lbug_query_result result;
 	state = lbug_connection_query(&lbug_conn_, create_node_table, &result);
 	if (state != LbugSuccess) {
-		fprintf(stderr, "[module=store, method=initLadybugDB] "
-				"CREATE NODE TABLE failed\n");
+		logLbugQueryError("initLadybugDB", &result, state);
+		lbug_query_result_destroy(&result);
 		lbug_connection_destroy(&lbug_conn_);
 		lbug_database_destroy(&lbug_db_);
 		return false;
 	}
+	lbug_query_result_destroy(&result);
 
 	// CALLS edge: from caller GraphNode to callee GraphNode
 	const char *create_rel_table = "CREATE REL TABLE IF NOT EXISTS CALLS ("
@@ -110,12 +145,13 @@ bool GraphStore::initLadybugDB()
 				       ")";
 	state = lbug_connection_query(&lbug_conn_, create_rel_table, &result);
 	if (state != LbugSuccess) {
-		fprintf(stderr, "[module=store, method=initLadybugDB] "
-				"CREATE REL TABLE CALLS failed\n");
+		logLbugQueryError("initLadybugDB", &result, state);
+		lbug_query_result_destroy(&result);
 		lbug_connection_destroy(&lbug_conn_);
 		lbug_database_destroy(&lbug_db_);
 		return false;
 	}
+	lbug_query_result_destroy(&result);
 
 	// RELATES edge: generic relation (like relation table)
 	const char *create_rel_table2 =
@@ -126,12 +162,13 @@ bool GraphStore::initLadybugDB()
 		")";
 	state = lbug_connection_query(&lbug_conn_, create_rel_table2, &result);
 	if (state != LbugSuccess) {
-		fprintf(stderr, "[module=store, method=initLadybugDB] "
-				"CREATE REL TABLE RELATES failed\n");
+		logLbugQueryError("initLadybugDB", &result, state);
+		lbug_query_result_destroy(&result);
 		lbug_connection_destroy(&lbug_conn_);
 		lbug_database_destroy(&lbug_db_);
 		return false;
 	}
+	lbug_query_result_destroy(&result);
 
 	fprintf(stderr,
 		"[module=store, method=initLadybugDB] "
@@ -160,48 +197,71 @@ bool GraphStore::syncGraphToLadybugDB(uint64_t project_id)
 	using Clock = std::chrono::steady_clock;
 	auto t0 = Clock::now();
 
-	// ── Clear existing LadybugDB tables (full sync) ──────────────
-	// A full sync replaces all rows, so both GraphNode and CALLS must
-	// be emptied before the COPY FROM (which appends). Deleting up front
-	// avoids stale duplicates when buildGraph re-runs.
+	// ── Transaction: atomic full sync ────────────────────────────
+	// Wrap DELETE + CREATE in a transaction so a mid-sync failure
+	// rolls back and LadybugDB is not left in a partial state (nodes
+	// deleted but not re-created). If LadybugDB does not support
+	// BEGIN TRANSACTION via lbug_connection_query, the query fails and
+	// we log it — sync continues without atomicity (best-effort).
 	{
-		lbug_query_result clr;
-		lbug_state s = lbug_connection_query(
-			&lbug_conn_, "DELETE FROM GraphNode", &clr);
-		if (s != LbugSuccess) {
-			// Table may not exist on first sync (fresh database).
-			// Non-fatal — COPY FROM will create rows regardless.
+		lbug_query_result tx;
+		lbug_state ts = lbug_connection_query(&lbug_conn_,
+						      "BEGIN TRANSACTION", &tx);
+		if (ts != LbugSuccess) {
+			logLbugQueryError("syncGraphToLadybugDB", &tx, ts);
 			fprintf(stderr,
 				"[module=store, method=syncGraphToLadybugDB] "
-				"DELETE FROM GraphNode skipped (state=%d): "
-				"table may be empty or not yet created\n",
-				(int)s);
+				"BEGIN TRANSACTION failed: "
+				"continuing without atomicity\n");
 		}
-		s = lbug_connection_query(&lbug_conn_, "DELETE FROM CALLS",
-					  &clr);
-		if (s != LbugSuccess) {
-			fprintf(stderr,
-				"[module=store, method=syncGraphToLadybugDB] "
-				"DELETE FROM CALLS skipped (state=%d): "
-				"table may be empty or not yet created\n",
-				(int)s);
-		}
+		lbug_query_result_destroy(&tx);
 	}
 
-	// ── Sync graph_nodes → CSV → COPY FROM ──────────────────────
-	// LadybugDB's COPY FROM is the recommended bulk import path,
-	// ~100x faster than per-node CREATE queries.
-	std::string node_csv = db_path_ + ".nodes.csv";
+	// ── Clear existing LadybugDB tables (full sync) ──────────────
+	// Delete edges first (they reference nodes), then nodes. A full
+	// sync replaces all rows, so both CALLS and GraphNode must be
+	// emptied before the Cypher CREATE (which appends). Deleting up
+	// front avoids stale duplicates when buildGraph re-runs.
+	//
+	// NOTE: LadybugDB (Kùzu-based) does NOT support SQL-style
+	// "DELETE FROM <table>". Cypher requires MATCH ... DELETE:
+	//   - For REL tables: MATCH ()-[r:CALLS]->() DELETE r
+	//   - For NODE tables: MATCH (n:GraphNode) DELETE n
 	{
-		FILE *fp = fopen(node_csv.c_str(), "w");
-		if (!fp) {
+		lbug_query_result clr;
+		lbug_state s = lbug_connection_query(&lbug_conn_,
+						     "MATCH ()-[r:CALLS]->() "
+						     "DELETE r",
+						     &clr);
+		if (s != LbugSuccess) {
+			// Table may not exist on first sync (fresh database).
+			// Non-fatal — CREATE will populate rows regardless.
+			logLbugQueryError("syncGraphToLadybugDB", &clr, s);
 			fprintf(stderr,
 				"[module=store, method=syncGraphToLadybugDB] "
-				"failed to open %s\n",
-				node_csv.c_str());
-			return false;
+				"DELETE CALLS edges skipped: "
+				"table may be empty or not yet created\n");
 		}
+		lbug_query_result_destroy(&clr);
+		s = lbug_connection_query(&lbug_conn_,
+					  "MATCH (n:GraphNode) DELETE n", &clr);
+		if (s != LbugSuccess) {
+			logLbugQueryError("syncGraphToLadybugDB", &clr, s);
+			fprintf(stderr,
+				"[module=store, method=syncGraphToLadybugDB] "
+				"DELETE GraphNode nodes skipped: "
+				"table may be empty or not yet created\n");
+		}
+		lbug_query_result_destroy(&clr);
+	}
 
+	// ── Sync graph_nodes → batched Cypher CREATE ─────────────────
+	// COPY FROM is the preferred bulk path, but the vendored LadybugDB
+	// 0.18.2 library returns LbugError on COPY FROM (state=1). Fall
+	// back to batched Cypher CREATE statements, which are slower but
+	// reliable. Each batch creates up to 100 nodes in a single Cypher
+	// query to amortize FFI overhead (per code_rules.md FFI chunking).
+	{
 		const char *sql =
 			"SELECT id, project_id, ir_node_id, node_type, name, "
 			"qualified_name, signature, module_path, file_path, "
@@ -215,103 +275,144 @@ bool GraphStore::syncGraphToLadybugDB(uint64_t project_id)
 				"[module=store, method=syncGraphToLadybugDB] "
 				"prepare failed: %s\n",
 				sqlite3_errmsg(db_));
-			fclose(fp);
 			return false;
 		}
 		sqlite3_bind_int64(st, 1, static_cast<int64_t>(project_id));
 
 		int64_t n = 0;
+		std::string batch;
+		batch.reserve(65536);
+		batch = "CREATE ";
 		while (sqlite3_step(st) == SQLITE_ROW) {
-			auto t = [](const char *s) {
-				if (!s || !*s)
-					return std::string("");
-				std::string out;
-				out.reserve(strlen(s) + 2);
-				out += '"';
-				for (; *s; s++) {
-					if (*s == '"')
-						out += "\"\"";
-					else
-						out += *s;
-				}
-				out += '"';
-				return out;
-			};
-			fprintf(fp,
-				"%lld,%lld,%lld,%d,%s,%s,%s,%s,%s,%s,"
-				"%d,%d,%d,%d,%lld,%d,%d,%d\n",
-				(long long)sqlite3_column_int64(st, 0),
-				(long long)sqlite3_column_int64(st, 1),
-				(long long)sqlite3_column_int64(st, 2),
-				sqlite3_column_int(st, 3),
-				t(reinterpret_cast<const char *>(
-					  sqlite3_column_text(st, 4)))
-					.c_str(),
-				t(reinterpret_cast<const char *>(
-					  sqlite3_column_text(st, 5)))
-					.c_str(),
-				t(reinterpret_cast<const char *>(
-					  sqlite3_column_text(st, 6)))
-					.c_str(),
-				t(reinterpret_cast<const char *>(
-					  sqlite3_column_text(st, 7)))
-					.c_str(),
-				t(reinterpret_cast<const char *>(
-					  sqlite3_column_text(st, 8)))
-					.c_str(),
-				t(reinterpret_cast<const char *>(
-					  sqlite3_column_text(st, 9)))
-					.c_str(),
-				sqlite3_column_int(st, 10),
-				sqlite3_column_int(st, 11),
-				sqlite3_column_int(st, 12),
-				sqlite3_column_int(st, 13),
-				(long long)sqlite3_column_int64(st, 14),
-				sqlite3_column_int(st, 15),
-				sqlite3_column_int(st, 16),
-				sqlite3_column_int(st, 17));
+			if (n > 0)
+				batch += ",\n";
+			// No node variable needed — the nodes are never
+			// referenced later in the query. Dropping the
+			// variable name avoids unused-variable warnings in
+			// strict Cypher parsers.
+			batch += "(:GraphNode {";
+			batch += "id:" +
+				 std::to_string(sqlite3_column_int64(st, 0)) +
+				 ",";
+			batch += "project_id:" +
+				 std::to_string(sqlite3_column_int64(st, 1)) +
+				 ",";
+			batch += "ir_node_id:" +
+				 std::to_string(sqlite3_column_int64(st, 2)) +
+				 ",";
+			batch += "node_type:" +
+				 std::to_string(sqlite3_column_int(st, 3)) +
+				 ",";
+			batch +=
+				"name:" +
+				escCypherLiteral(reinterpret_cast<const char *>(
+					sqlite3_column_text(st, 4))) +
+				",";
+			batch +=
+				"qualified_name:" +
+				escCypherLiteral(reinterpret_cast<const char *>(
+					sqlite3_column_text(st, 5))) +
+				",";
+			batch +=
+				"signature:" +
+				escCypherLiteral(reinterpret_cast<const char *>(
+					sqlite3_column_text(st, 6))) +
+				",";
+			batch +=
+				"module_path:" +
+				escCypherLiteral(reinterpret_cast<const char *>(
+					sqlite3_column_text(st, 7))) +
+				",";
+			batch +=
+				"file_path:" +
+				escCypherLiteral(reinterpret_cast<const char *>(
+					sqlite3_column_text(st, 8))) +
+				",";
+			batch +=
+				"language:" +
+				escCypherLiteral(reinterpret_cast<const char *>(
+					sqlite3_column_text(st, 9))) +
+				",";
+			batch += "start_row:" +
+				 std::to_string(sqlite3_column_int(st, 10)) +
+				 ",";
+			batch += "start_col:" +
+				 std::to_string(sqlite3_column_int(st, 11)) +
+				 ",";
+			batch += "end_row:" +
+				 std::to_string(sqlite3_column_int(st, 12)) +
+				 ",";
+			batch += "end_col:" +
+				 std::to_string(sqlite3_column_int(st, 13)) +
+				 ",";
+			batch += "parent_id:" +
+				 std::to_string(sqlite3_column_int64(st, 14)) +
+				 ",";
+			batch += "is_entry_point:" +
+				 std::string(sqlite3_column_int(st, 15) ?
+						     "true" :
+						     "false") +
+				 ",";
+			batch += "embedding_ready:" +
+				 std::string(sqlite3_column_int(st, 16) ?
+						     "true" :
+						     "false") +
+				 ",";
+			batch += "metrics_ready:" +
+				 std::string(sqlite3_column_int(st, 17) ?
+						     "true" :
+						     "false");
+			batch += "})";
 			n++;
+
+			// Execute every 100 nodes to keep the query size
+			// manageable and avoid hitting LadybugDB's query
+			// length limit. This amortizes FFI overhead per
+			// code_rules.md (block-level chunking, not per-row).
+			if (n % 100 == 0) {
+				lbug_query_result result;
+				lbug_state state = lbug_connection_query(
+					&lbug_conn_, batch.c_str(), &result);
+				if (state != LbugSuccess) {
+					logLbugQueryError(
+						"syncGraphToLadybugDB", &result,
+						state);
+					lbug_query_result_destroy(&result);
+					sqlite3_finalize(st);
+					return false;
+				}
+				lbug_query_result_destroy(&result);
+				batch = "CREATE ";
+			}
 		}
 		sqlite3_finalize(st);
-		fclose(fp);
 
-		// COPY FROM — bulk import, auto-commits. No explicit transaction needed.
-		// Escape the CSV path (derived from db_path_) before embedding it in
-		// the single-quoted COPY ... FROM '<path>' SQL literal.
-		// [module=store, method=syncGraphToLadybugDB]
-		lbug_query_result result;
-		std::string copy_sql = "COPY GraphNode FROM '" +
-				       escapeSqlPathLiteral(node_csv) +
-				       "' (header=false)";
-		lbug_state state = lbug_connection_query(
-			&lbug_conn_, copy_sql.c_str(), &result);
-		if (state != LbugSuccess) {
-			fprintf(stderr,
-				"[module=store, method=syncGraphToLadybugDB] "
-				"COPY GraphNode failed: state=%d\n",
-				(int)state);
-			std::remove(node_csv.c_str());
-			return false;
+		// Execute the final (partial) batch
+		if (n % 100 != 0) {
+			lbug_query_result result;
+			lbug_state state = lbug_connection_query(
+				&lbug_conn_, batch.c_str(), &result);
+			if (state != LbugSuccess) {
+				logLbugQueryError("syncGraphToLadybugDB",
+						  &result, state);
+				lbug_query_result_destroy(&result);
+				return false;
+			}
+			lbug_query_result_destroy(&result);
 		}
 		fprintf(stderr,
 			"[module=store, method=syncGraphToLadybugDB] "
-			"synced %lld nodes via COPY FROM\n",
+			"synced %lld nodes via Cypher CREATE\n",
 			(long long)n);
 	}
-	std::remove(node_csv.c_str());
 
-	// ── Sync graph_edges → CSV → COPY FROM ──────────────────────
-	std::string edge_csv = db_path_ + ".edges.csv";
+	// ── Sync graph_edges → batched Cypher MATCH + CREATE ─────────
+	// Batch edges into a single multi-pattern Cypher query (up to 100
+	// edges per batch) to amortize FFI overhead. Each batch has all
+	// MATCHes in one clause and all CREATEs in another, which is
+	// standard Cypher and avoids one FFI call per edge (which would
+	// violate code_rules.md FFI chunking rules).
 	{
-		FILE *fp = fopen(edge_csv.c_str(), "w");
-		if (!fp) {
-			fprintf(stderr,
-				"[module=store, method=syncGraphToLadybugDB] "
-				"failed to open %s\n",
-				edge_csv.c_str());
-			return false;
-		}
-
 		const char *sql =
 			"SELECT source_node_id, target_node_id, edge_type, "
 			"call_site_line, label "
@@ -323,69 +424,103 @@ bool GraphStore::syncGraphToLadybugDB(uint64_t project_id)
 				"[module=store, method=syncGraphToLadybugDB] "
 				"prepare edges failed: %s\n",
 				sqlite3_errmsg(db_));
-			fclose(fp);
 			return false;
 		}
 		sqlite3_bind_int64(st, 1, static_cast<int64_t>(project_id));
 
-		auto esc = [](const char *s) {
-			if (!s || !*s)
-				return std::string("");
-			std::string out;
-			out.reserve(strlen(s) + 2);
-			out += '"';
-			for (; *s; s++) {
-				if (*s == '"')
-					out += "\"\"";
-				else
-					out += *s;
-			}
-			out += '"';
-			return out;
-		};
-
 		int64_t n = 0;
+		std::string match_clause;
+		std::string create_clause;
+		match_clause.reserve(32768);
+		create_clause.reserve(32768);
 		while (sqlite3_step(st) == SQLITE_ROW) {
-			fprintf(fp, "%lld,%lld,%lld,%d,%d,%s\n",
-				(long long)sqlite3_column_int64(st, 0),
-				(long long)sqlite3_column_int64(st, 1),
-				(long long)project_id,
-				sqlite3_column_int(st, 2),
-				sqlite3_column_int(st, 3),
-				esc(reinterpret_cast<const char *>(
-					    sqlite3_column_text(st, 4)))
-					.c_str());
+			int64_t src_id = sqlite3_column_int64(st, 0);
+			int64_t tgt_id = sqlite3_column_int64(st, 1);
+			int edge_type = sqlite3_column_int(st, 2);
+			int call_site_line = sqlite3_column_int(st, 3);
+			const char *label = reinterpret_cast<const char *>(
+				sqlite3_column_text(st, 4));
+
+			std::string a = "a" + std::to_string(n);
+			std::string b = "b" + std::to_string(n);
+			if (n > 0) {
+				match_clause += ", ";
+				create_clause += ", ";
+			}
+			match_clause += "(" + a + ":GraphNode {id:" +
+					std::to_string(src_id) + "}), (" + b +
+					":GraphNode {id:" +
+					std::to_string(tgt_id) + "})";
+			create_clause +=
+				"(" + a + ")-[:CALLS {project_id:" +
+				std::to_string(project_id) +
+				",edge_type:" + std::to_string(edge_type) +
+				",call_site_line:" +
+				std::to_string(call_site_line) +
+				",label:" + escCypherLiteral(label) + "}]->(" +
+				b + ")";
 			n++;
+
+			// Execute every 100 edges to keep the query size
+			// manageable. Each batch is a single FFI call.
+			if (n % 100 == 0) {
+				std::string cypher = "MATCH " + match_clause +
+						     " CREATE " + create_clause;
+				lbug_query_result eresult;
+				lbug_state state = lbug_connection_query(
+					&lbug_conn_, cypher.c_str(), &eresult);
+				if (state != LbugSuccess) {
+					logLbugQueryError(
+						"syncGraphToLadybugDB",
+						&eresult, state);
+					lbug_query_result_destroy(&eresult);
+					sqlite3_finalize(st);
+					return false;
+				}
+				lbug_query_result_destroy(&eresult);
+				match_clause.clear();
+				create_clause.clear();
+			}
 		}
 		sqlite3_finalize(st);
-		fclose(fp);
 
-		// COPY FROM for CALLS edge table — single FROM-TO pair, no from/to needed
-		// CSV: source_id, target_id, project_id, edge_type, call_site_line, label
-		// Escape the CSV path (derived from db_path_) before embedding it
-		// in the single-quoted COPY ... FROM '<path>' SQL literal.
-		// [module=store, method=syncGraphToLadybugDB]
-		lbug_query_result eresult;
-		std::string copy_sql = "COPY CALLS FROM '" +
-				       escapeSqlPathLiteral(edge_csv) +
-				       "' (header=false)";
-		lbug_state state = lbug_connection_query(
-			&lbug_conn_, copy_sql.c_str(), &eresult);
-		if (state != LbugSuccess) {
-			fprintf(stderr,
-				"[module=store, method=syncGraphToLadybugDB] "
-				"COPY CALLS failed: state=%d. "
-				"CSV kept at %s for debugging\n",
-				(int)state, edge_csv.c_str());
-			// Don't delete CSV on error so we can debug
-			return false;
+		// Execute the final (partial) batch
+		if (n % 100 != 0) {
+			std::string cypher = "MATCH " + match_clause +
+					     " CREATE " + create_clause;
+			lbug_query_result eresult;
+			lbug_state state = lbug_connection_query(
+				&lbug_conn_, cypher.c_str(), &eresult);
+			if (state != LbugSuccess) {
+				logLbugQueryError("syncGraphToLadybugDB",
+						  &eresult, state);
+				lbug_query_result_destroy(&eresult);
+				return false;
+			}
+			lbug_query_result_destroy(&eresult);
 		}
 		fprintf(stderr,
 			"[module=store, method=syncGraphToLadybugDB] "
-			"synced %lld edges via COPY FROM\n",
+			"synced %lld edges via batched Cypher MATCH+CREATE\n",
 			(long long)n);
 	}
-	std::remove(edge_csv.c_str());
+
+	// ── Commit transaction ───────────────────────────────────────
+	{
+		lbug_query_result tx;
+		lbug_state ts =
+			lbug_connection_query(&lbug_conn_, "COMMIT", &tx);
+		if (ts != LbugSuccess) {
+			// Non-fatal: data is already committed in LadybugDB's
+			// autocommit mode if BEGIN TRANSACTION was rejected.
+			logLbugQueryError("syncGraphToLadybugDB", &tx, ts);
+			fprintf(stderr,
+				"[module=store, method=syncGraphToLadybugDB] "
+				"COMMIT failed: data may already be "
+				"committed in autocommit mode\n");
+		}
+		lbug_query_result_destroy(&tx);
+	}
 
 	int64_t total_ms =
 		std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -408,24 +543,6 @@ bool GraphStore::syncIncrementalToLadybugDB(uint64_t project_id)
 
 	using Clock = std::chrono::steady_clock;
 	auto t0 = Clock::now();
-
-	// CSV escape helper — identical to the one in syncGraphToLadybugDB.
-	// Doubles embedded quotes and wraps the value in double quotes.
-	auto esc = [](const char *s) {
-		if (!s || !*s)
-			return std::string("");
-		std::string out;
-		out.reserve(strlen(s) + 2);
-		out += '"';
-		for (; *s; s++) {
-			if (*s == '"')
-				out += "\"\"";
-			else
-				out += *s;
-		}
-		out += '"';
-		return out;
-	};
 
 	// Helper: fetch a single int64 from a one-column query bound to
 	// project_id. Returns 0 on miss/error (suitable for MAX/COUNT).
@@ -454,6 +571,12 @@ bool GraphStore::syncIncrementalToLadybugDB(uint64_t project_id)
 
 	// No prior sync state → fall back to a full sync, then record the
 	// cursor so subsequent calls are incremental.
+	//
+	// NOTE: buildGraph (in store_graph.cpp) calls resetLadybugSyncState
+	// before this function, so has_state is always false in the current
+	// call chain — the full sync path is always taken. The incremental
+	// path below is preserved for future use when buildGraph stops
+	// resetting state (e.g., for append-only incremental indexing).
 	if (!has_state) {
 		if (!syncGraphToLadybugDB(project_id)) {
 			fprintf(stderr,
@@ -479,22 +602,12 @@ bool GraphStore::syncIncrementalToLadybugDB(uint64_t project_id)
 	}
 
 	// ── Incremental node sync: id > last_node_id ────────────────
-	// COPY FROM appends, so we only push rows with id greater than the
-	// last synced cursor. The SELECT column order matches the GraphNode
-	// table definition in initLadybugDB() exactly.
+	// Push only rows with id greater than the last synced cursor using
+	// batched Cypher CREATE (same approach as syncGraphToLadybugDB).
+	// The SELECT column order matches the GraphNode table definition
+	// in initLadybugDB() exactly.
 	int64_t new_max_node = last_node_id;
 	{
-		std::string node_csv = db_path_ + ".nodes." +
-				       std::to_string(project_id) + ".inc.csv";
-		FILE *fp = fopen(node_csv.c_str(), "w");
-		if (!fp) {
-			fprintf(stderr,
-				"[module=store, method=syncIncrementalToLadybugDB] "
-				"failed to open %s\n",
-				node_csv.c_str());
-			return false;
-		}
-
 		const char *sql =
 			"SELECT id, project_id, ir_node_id, node_type, name, "
 			"qualified_name, signature, module_path, file_path, "
@@ -508,100 +621,135 @@ bool GraphStore::syncIncrementalToLadybugDB(uint64_t project_id)
 				"[module=store, method=syncIncrementalToLadybugDB] "
 				"prepare nodes failed: %s\n",
 				sqlite3_errmsg(db_));
-			fclose(fp);
 			return false;
 		}
 		sqlite3_bind_int64(st, 1, static_cast<int64_t>(project_id));
 		sqlite3_bind_int64(st, 2, last_node_id);
 
 		int64_t n = 0;
+		std::string batch;
+		batch.reserve(65536);
+		batch = "CREATE ";
 		while (sqlite3_step(st) == SQLITE_ROW) {
 			int64_t row_id = sqlite3_column_int64(st, 0);
 			if (row_id > new_max_node)
 				new_max_node = row_id;
-			fprintf(fp,
-				"%lld,%lld,%lld,%d,%s,%s,%s,%s,%s,%s,"
-				"%d,%d,%d,%d,%lld,%d,%d,%d\n",
-				(long long)row_id,
-				(long long)sqlite3_column_int64(st, 1),
-				(long long)sqlite3_column_int64(st, 2),
-				sqlite3_column_int(st, 3),
-				esc(reinterpret_cast<const char *>(
-					    sqlite3_column_text(st, 4)))
-					.c_str(),
-				esc(reinterpret_cast<const char *>(
-					    sqlite3_column_text(st, 5)))
-					.c_str(),
-				esc(reinterpret_cast<const char *>(
-					    sqlite3_column_text(st, 6)))
-					.c_str(),
-				esc(reinterpret_cast<const char *>(
-					    sqlite3_column_text(st, 7)))
-					.c_str(),
-				esc(reinterpret_cast<const char *>(
-					    sqlite3_column_text(st, 8)))
-					.c_str(),
-				esc(reinterpret_cast<const char *>(
-					    sqlite3_column_text(st, 9)))
-					.c_str(),
-				sqlite3_column_int(st, 10),
-				sqlite3_column_int(st, 11),
-				sqlite3_column_int(st, 12),
-				sqlite3_column_int(st, 13),
-				(long long)sqlite3_column_int64(st, 14),
-				sqlite3_column_int(st, 15),
-				sqlite3_column_int(st, 16),
-				sqlite3_column_int(st, 17));
+			if (n > 0)
+				batch += ",\n";
+			batch += "(:GraphNode {";
+			batch += "id:" + std::to_string(row_id) + ",";
+			batch += "project_id:" +
+				 std::to_string(sqlite3_column_int64(st, 1)) +
+				 ",";
+			batch += "ir_node_id:" +
+				 std::to_string(sqlite3_column_int64(st, 2)) +
+				 ",";
+			batch += "node_type:" +
+				 std::to_string(sqlite3_column_int(st, 3)) +
+				 ",";
+			batch +=
+				"name:" +
+				escCypherLiteral(reinterpret_cast<const char *>(
+					sqlite3_column_text(st, 4))) +
+				",";
+			batch +=
+				"qualified_name:" +
+				escCypherLiteral(reinterpret_cast<const char *>(
+					sqlite3_column_text(st, 5))) +
+				",";
+			batch +=
+				"signature:" +
+				escCypherLiteral(reinterpret_cast<const char *>(
+					sqlite3_column_text(st, 6))) +
+				",";
+			batch +=
+				"module_path:" +
+				escCypherLiteral(reinterpret_cast<const char *>(
+					sqlite3_column_text(st, 7))) +
+				",";
+			batch +=
+				"file_path:" +
+				escCypherLiteral(reinterpret_cast<const char *>(
+					sqlite3_column_text(st, 8))) +
+				",";
+			batch +=
+				"language:" +
+				escCypherLiteral(reinterpret_cast<const char *>(
+					sqlite3_column_text(st, 9))) +
+				",";
+			batch += "start_row:" +
+				 std::to_string(sqlite3_column_int(st, 10)) +
+				 ",";
+			batch += "start_col:" +
+				 std::to_string(sqlite3_column_int(st, 11)) +
+				 ",";
+			batch += "end_row:" +
+				 std::to_string(sqlite3_column_int(st, 12)) +
+				 ",";
+			batch += "end_col:" +
+				 std::to_string(sqlite3_column_int(st, 13)) +
+				 ",";
+			batch += "parent_id:" +
+				 std::to_string(sqlite3_column_int64(st, 14)) +
+				 ",";
+			batch += "is_entry_point:" +
+				 std::string(sqlite3_column_int(st, 15) ?
+						     "true" :
+						     "false") +
+				 ",";
+			batch += "embedding_ready:" +
+				 std::string(sqlite3_column_int(st, 16) ?
+						     "true" :
+						     "false") +
+				 ",";
+			batch += "metrics_ready:" +
+				 std::string(sqlite3_column_int(st, 17) ?
+						     "true" :
+						     "false");
+			batch += "})";
 			n++;
+
+			if (n % 100 == 0) {
+				lbug_query_result result;
+				lbug_state state = lbug_connection_query(
+					&lbug_conn_, batch.c_str(), &result);
+				if (state != LbugSuccess) {
+					logLbugQueryError(
+						"syncIncrementalToLadybugDB",
+						&result, state);
+					lbug_query_result_destroy(&result);
+					sqlite3_finalize(st);
+					return false;
+				}
+				lbug_query_result_destroy(&result);
+				batch = "CREATE ";
+			}
 		}
 		sqlite3_finalize(st);
-		fclose(fp);
 
-		if (n > 0) {
-			// COPY FROM appends to GraphNode — no DELETE needed
-			// for incremental sync (full sync already cleared).
-			// Escape the CSV path before embedding it in the
-			// single-quoted COPY ... FROM '<path>' SQL literal.
-			// [module=store, method=syncIncrementalToLadybugDB]
+		if (n % 100 != 0) {
 			lbug_query_result result;
-			std::string copy_sql = "COPY GraphNode FROM '" +
-					       escapeSqlPathLiteral(node_csv) +
-					       "' (header=false)";
 			lbug_state state = lbug_connection_query(
-				&lbug_conn_, copy_sql.c_str(), &result);
+				&lbug_conn_, batch.c_str(), &result);
 			if (state != LbugSuccess) {
-				fprintf(stderr,
-					"[module=store, method=syncIncrementalToLadybugDB] "
-					"COPY GraphNode failed: state=%d. "
-					"CSV kept at %s for debugging\n",
-					(int)state, node_csv.c_str());
-				// Don't delete CSV on error so we can debug.
+				logLbugQueryError("syncIncrementalToLadybugDB",
+						  &result, state);
+				lbug_query_result_destroy(&result);
 				return false;
 			}
-			fprintf(stderr,
-				"[module=store, method=syncIncrementalToLadybugDB] "
-				"synced %lld new nodes via COPY FROM\n",
-				(long long)n);
+			lbug_query_result_destroy(&result);
 		}
-		std::remove(node_csv.c_str());
+		fprintf(stderr,
+			"[module=store, method=syncIncrementalToLadybugDB] "
+			"synced %lld new nodes via Cypher CREATE\n",
+			(long long)n);
 	}
 
 	// ── Incremental edge sync: id > last_edge_id ────────────────
-	// CSV layout: source_id, target_id, project_id, edge_type,
-	// call_site_line, label — same as syncGraphToLadybugDB.
+	// Batch edges into a single multi-pattern Cypher query (up to 100
+	// per batch), same as syncGraphToLadybugDB.
 	int64_t new_max_edge = last_edge_id;
 	{
-		std::string edge_csv = db_path_ + ".edges." +
-				       std::to_string(project_id) + ".inc.csv";
-		FILE *fp = fopen(edge_csv.c_str(), "w");
-		if (!fp) {
-			fprintf(stderr,
-				"[module=store, method=syncIncrementalToLadybugDB] "
-				"failed to open %s\n",
-				edge_csv.c_str());
-			return false;
-		}
-
 		const char *sql =
 			"SELECT id, source_node_id, target_node_id, edge_type, "
 			"call_site_line, label "
@@ -613,56 +761,86 @@ bool GraphStore::syncIncrementalToLadybugDB(uint64_t project_id)
 				"[module=store, method=syncIncrementalToLadybugDB] "
 				"prepare edges failed: %s\n",
 				sqlite3_errmsg(db_));
-			fclose(fp);
 			return false;
 		}
 		sqlite3_bind_int64(st, 1, static_cast<int64_t>(project_id));
 		sqlite3_bind_int64(st, 2, last_edge_id);
 
 		int64_t n = 0;
+		std::string match_clause;
+		std::string create_clause;
+		match_clause.reserve(32768);
+		create_clause.reserve(32768);
 		while (sqlite3_step(st) == SQLITE_ROW) {
 			int64_t row_id = sqlite3_column_int64(st, 0);
 			if (row_id > new_max_edge)
 				new_max_edge = row_id;
-			fprintf(fp, "%lld,%lld,%lld,%d,%d,%s\n",
-				(long long)sqlite3_column_int64(st, 1),
-				(long long)sqlite3_column_int64(st, 2),
-				(long long)project_id,
-				sqlite3_column_int(st, 3),
-				sqlite3_column_int(st, 4),
-				esc(reinterpret_cast<const char *>(
-					    sqlite3_column_text(st, 5)))
-					.c_str());
+			int64_t src_id = sqlite3_column_int64(st, 1);
+			int64_t tgt_id = sqlite3_column_int64(st, 2);
+			int edge_type = sqlite3_column_int(st, 3);
+			int call_site_line = sqlite3_column_int(st, 4);
+			const char *label = reinterpret_cast<const char *>(
+				sqlite3_column_text(st, 5));
+
+			std::string a = "a" + std::to_string(n);
+			std::string b = "b" + std::to_string(n);
+			if (n > 0) {
+				match_clause += ", ";
+				create_clause += ", ";
+			}
+			match_clause += "(" + a + ":GraphNode {id:" +
+					std::to_string(src_id) + "}), (" + b +
+					":GraphNode {id:" +
+					std::to_string(tgt_id) + "})";
+			create_clause +=
+				"(" + a + ")-[:CALLS {project_id:" +
+				std::to_string(project_id) +
+				",edge_type:" + std::to_string(edge_type) +
+				",call_site_line:" +
+				std::to_string(call_site_line) +
+				",label:" + escCypherLiteral(label) + "}]->(" +
+				b + ")";
 			n++;
+
+			if (n % 100 == 0) {
+				std::string cypher = "MATCH " + match_clause +
+						     " CREATE " + create_clause;
+				lbug_query_result eresult;
+				lbug_state state = lbug_connection_query(
+					&lbug_conn_, cypher.c_str(), &eresult);
+				if (state != LbugSuccess) {
+					logLbugQueryError(
+						"syncIncrementalToLadybugDB",
+						&eresult, state);
+					lbug_query_result_destroy(&eresult);
+					sqlite3_finalize(st);
+					return false;
+				}
+				lbug_query_result_destroy(&eresult);
+				match_clause.clear();
+				create_clause.clear();
+			}
 		}
 		sqlite3_finalize(st);
-		fclose(fp);
 
-		if (n > 0) {
-			// Escape the CSV path before embedding it in the
-			// single-quoted COPY ... FROM '<path>' SQL literal.
-			// [module=store, method=syncIncrementalToLadybugDB]
+		if (n % 100 != 0) {
+			std::string cypher = "MATCH " + match_clause +
+					     " CREATE " + create_clause;
 			lbug_query_result eresult;
-			std::string copy_sql = "COPY CALLS FROM '" +
-					       escapeSqlPathLiteral(edge_csv) +
-					       "' (header=false)";
 			lbug_state state = lbug_connection_query(
-				&lbug_conn_, copy_sql.c_str(), &eresult);
+				&lbug_conn_, cypher.c_str(), &eresult);
 			if (state != LbugSuccess) {
-				fprintf(stderr,
-					"[module=store, method=syncIncrementalToLadybugDB] "
-					"COPY CALLS failed: state=%d. "
-					"CSV kept at %s for debugging\n",
-					(int)state, edge_csv.c_str());
-				// Don't delete CSV on error so we can debug.
+				logLbugQueryError("syncIncrementalToLadybugDB",
+						  &eresult, state);
+				lbug_query_result_destroy(&eresult);
 				return false;
 			}
-			fprintf(stderr,
-				"[module=store, method=syncIncrementalToLadybugDB] "
-				"synced %lld new edges via COPY FROM\n",
-				(long long)n);
+			lbug_query_result_destroy(&eresult);
 		}
-		std::remove(edge_csv.c_str());
+		fprintf(stderr,
+			"[module=store, method=syncIncrementalToLadybugDB] "
+			"synced %lld new edges via batched Cypher MATCH+CREATE\n",
+			(long long)n);
 	}
 
 	// ── Update sync state with new cursors + totals ─────────────
@@ -703,16 +881,36 @@ void GraphStore::closeLadybugDB()
 
 bool GraphStore::syncGraphToLadybugDB(uint64_t /*project_id*/)
 {
-	// LadybugDB not compiled in — graph stays in SQLite only. Returning
-	// true (rather than false) keeps buildGraph silent: the absence of
-	// LadybugDB is a supported configuration, not a sync failure.
+	// LadybugDB not compiled in — graph stays in SQLite only. Log a
+	// one-time warning so operators know the feature is inactive, then
+	// return true to keep buildGraph's error path silent (absence of
+	// LadybugDB is a supported configuration, not a sync failure).
+	static bool warned = false;
+	if (!warned) {
+		fprintf(stderr,
+			"[module=store, method=syncGraphToLadybugDB] "
+			"LadybugDB not compiled in (HAS_LADYBUG undefined): "
+			"sync is a no-op, graph stays in SQLite only "
+			"(warning shown once)\n");
+		warned = true;
+	}
 	return true;
 }
 
 bool GraphStore::syncIncrementalToLadybugDB(uint64_t /*project_id*/)
 {
 	// LadybugDB not compiled in — incremental sync is a no-op. See
-	// syncGraphToLadybugDB for the rationale on returning true.
+	// syncGraphToLadybugDB for the rationale on returning true and the
+	// one-time warning.
+	static bool warned = false;
+	if (!warned) {
+		fprintf(stderr,
+			"[module=store, method=syncIncrementalToLadybugDB] "
+			"LadybugDB not compiled in (HAS_LADYBUG undefined): "
+			"incremental sync is a no-op "
+			"(warning shown once)\n");
+		warned = true;
+	}
 	return true;
 }
 

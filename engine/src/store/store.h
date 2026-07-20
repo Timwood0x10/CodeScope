@@ -127,9 +127,11 @@ class GraphStore {
 	}
 	/** Sync graph_nodes and graph_edges from SQLite to LadybugDB.
 	 *  Performs a FULL sync: clears the GraphNode and CALLS tables in
-	 *  LadybugDB, then bulk-imports all rows via COPY FROM. Called by
-	 *  syncIncrementalToLadybugDB() on the first sync (when no
-	 *  lbug_sync_state row exists yet). No-op if LadybugDB is not
+	 *  LadybugDB, then bulk-imports all rows via batched Cypher CREATE
+	 *  statements (100 nodes/edges per batch). COPY FROM is not used
+	 *  because the vendored LadybugDB 0.18.2 returns LbugError on it.
+	 *  Called by syncIncrementalToLadybugDB() on the first sync (when
+	 *  no lbug_sync_state row exists yet). No-op if LadybugDB is not
 	 *  initialized. Returns true on success. */
 	bool syncGraphToLadybugDB(uint64_t project_id);
 
