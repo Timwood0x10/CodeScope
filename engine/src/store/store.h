@@ -807,6 +807,32 @@ class GraphStore {
 	std::vector<std::pair<int64_t, std::string>>
 	listContracts(uint64_t project_id);
 
+	// ── Semantic Facts (v0.3 Phase 1) ───────────────────────────────
+	// Per-function semantic primitives (sync/memory/error/pattern/
+	// framework/ffi) detected by SemanticFactExtractor and persisted
+	// for the Phase 4 project_state snapshot. Implemented in
+	// store_semantic_fact.cpp.
+	/// Tuple shape: (function_id, category, primitive, kind, symbol,
+	/// confidence, detail_json).
+	using SemanticFactRow =
+		std::tuple<uint64_t, std::string, std::string, std::string,
+			   std::string, double, std::string>;
+
+	/** Batch-insert semantic_fact rows for a project.
+	 *  Uses a prepared statement cache; caller wraps in a single
+	 *  transaction (no BEGIN/COMMIT here so it composes with
+	 *  SemanticFactExtractor::extractAll). Each row in `facts` becomes
+	 *  one INSERT. Empty vector is a no-op success.
+	 *  @param project_id  Project identifier (bound on every row).
+	 *  @param facts       Vector of SemanticFactRow tuples.
+	 *  @return true on success; false sets error() with full trace. */
+	bool insertSemanticFacts(uint64_t project_id,
+				 const std::vector<SemanticFactRow> &facts);
+
+	/** Delete all semantic_fact rows for a project (before re-extraction).
+	 *  No transaction management — caller wraps in BEGIN/COMMIT. */
+	bool clearSemanticFacts(uint64_t project_id);
+
     private:
 	sqlite3 *db_ = nullptr;
 	std::string error_;

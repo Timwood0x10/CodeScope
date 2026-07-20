@@ -1,0 +1,22 @@
+{
+  "category": "framework",
+  "rules": [
+    {
+      "name": "framework_detected",
+      "description": "Detected web/ORM framework adoption via import table",
+      "need": [
+        { "category": "framework", "primitive": "gin", "kind": "router" },
+        { "category": "framework", "primitive": "echo", "kind": "router" },
+        { "category": "framework", "primitive": "django", "kind": "router" },
+        { "category": "framework", "primitive": "express", "kind": "router" },
+        { "category": "framework", "primitive": "gorm", "kind": "orm" }
+      ],
+      "combine": "collect",
+      "output": {
+        "severity": 1,
+        "title": "{count} framework(s) detected",
+        "message": "Framework import at {file}:{line}: {symbol}"
+      }
+    }
+  ]
+}

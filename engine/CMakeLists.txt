@@ -228,6 +228,7 @@ set(ENGINE_SOURCES
      src/store/store_knowledge.cpp
         src/store/store_ladybug.cpp
      src/store/store_membulk.cpp
+     src/store/store_semantic_fact.cpp
     src/query/query_engine.cpp
     src/query/query_analysis.cpp
     src/query/graph_query.cpp
@@ -243,6 +244,8 @@ set(ENGINE_SOURCES
         src/model/plugins/architecture.cpp
         src/model/plugins/contract.cpp
         src/model/state_builder.cpp
+        src/model/project_state_builder.cpp
+        src/model/semantic_fact_extractor.cpp
     src/resolver/project_index.cpp
         src/resolver/project_resolver.cpp
         src/verify/capability_verifier.cpp
@@ -255,11 +258,19 @@ set(ENGINE_SOURCES
         src/verify/documentation_drift.cpp
         src/verify/capability_drift.cpp
         src/verify/architecture_drift.cpp
+        src/verify/intent_parser.cpp
+        src/verify/planner.cpp
+        src/verify/verdict_builder.cpp
+        src/engine_verify_planner_ffi.cpp
         src/async_knowledge.cpp
         src/resolver/resolve_cache.cpp
         src/filter_policy.cpp
         src/filter_policy_ignore.cpp
         src/platform_win.cpp
+        src/evidence/rule.cpp
+        src/evidence/evidence_builder.cpp
+        src/engine_evidence_ffi.cpp
+        src/engine_project_state_ffi.cpp
         ${SQLITE3_AMAL_SRC}
         ${TREE_SITTER_SOURCES}
 )

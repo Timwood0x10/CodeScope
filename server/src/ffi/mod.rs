@@ -95,6 +95,17 @@ unsafe extern "C" {
     fn engine_detect_capability_drift(project_id: u64) -> *mut c_char;
     fn engine_detect_architecture_drift(project_id: u64) -> *mut c_char;
 
+    // ── v0.3 Evidence Pipeline ──────────────────────────────────
+    // See engine_evidence_ffi.cpp, engine_verify_planner_ffi.cpp,
+    // engine_project_state_ffi.cpp for the C++ implementations. Each
+    // returns a heap-allocated JSON string that the caller MUST release
+    // via engine_free_string().
+    fn engine_build_evidence(project_id: u64, category_filter: *const c_char) -> *mut c_char;
+    fn engine_verify_statement(project_id: u64, claim_text: *const c_char) -> *mut c_char;
+    fn engine_build_project_state(project_id: u64) -> *mut c_char;
+    fn engine_get_project_state(project_id: u64) -> *mut c_char;
+    fn engine_enhance_project(project_id: u64) -> *mut c_char;
+
     fn engine_build_fts(project_id: u64) -> *mut c_char;
 
     // ── Phase A: Fast Scan ────────────────────────────────────────
@@ -450,6 +461,72 @@ pub fn verify_review(project_id: u64, text: &str) -> String {
 /// a `confidence` score and the per-claim `results` array.
 pub fn verify_reality(project_id: u64, text: &str) -> String {
     take_string(unsafe { engine_verify_reality(project_id, cstr(text).as_ptr()) })
+}
+
+// ── v0.3 Evidence Pipeline ───────────────────────────────────────
+//
+// Safe wrappers around the v0.3 Evidence Builder + Verification Planner
+// + Project State FFI. Each function returns a JSON string whose shape
+// is documented in the corresponding engine_*_ffi.cpp file. On failure
+// the JSON contains an "error" field with a tagged message.
+
+/// Run background enhancement for a project: full tree-sitter parse,
+/// call graph construction, metrics resolution, FTS index build, and
+/// v0.3 semantic_fact extraction (Step 1.5). This is the prerequisite
+/// for `build_evidence` to produce non-empty findings — the semantic
+/// facts (sync/mutex/lock, memory/cstring/alloc, error/bare_except,
+/// pattern/todo, framework/gin, ffi/extern_call) are extracted here.
+///
+/// Returns the same JSON shape as `engine_enhance_project`: a summary
+/// with `files_processed`, `symbols_enhanced`, `call_edges`, and
+/// timing breakdowns. On error returns a JSON object with an "error"
+/// field tagged with module/method per code_rules.md.
+pub fn enhance_project(project_id: u64) -> String {
+    take_string(unsafe { engine_enhance_project(project_id) })
+}
+
+/// Build evidence findings for a project by applying the rule set
+/// (engine/src/evidence/rules JSON files, or $CODESCOPE_RULES_DIR) to
+/// the project's semantic_fact rows.
+///
+/// `category_filter` optionally restricts the run to one category
+/// ("sync", "memory", "error", "pattern", "framework", "ffi"); empty
+/// or `None` runs all categories. Returns a JSON array of Evidence
+/// objects (category, title, confidence, items[]).
+pub fn build_evidence(project_id: u64, category_filter: Option<&str>) -> String {
+    let cf = category_filter.map(cstr);
+    take_string(unsafe {
+        engine_build_evidence(
+            project_id,
+            cf.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
+        )
+    })
+}
+
+/// Verify a natural-language claim against the project's indexed
+/// evidence. The claim is parsed into an Intent by IntentParser,
+/// planned into evidence rule executions by Planner, executed via
+/// EvidenceBuilder, and aggregated into a Verdict by VerdictBuilder.
+///
+/// Returns JSON with `verdict`, `confidence`, `requirements[]`, and
+/// `evidence[]` fields. On error returns a JSON object with an
+/// "error" field tagged with module/method per code_rules.md.
+pub fn verify_statement(project_id: u64, claim_text: &str) -> String {
+    take_string(unsafe { engine_verify_statement(project_id, cstr(claim_text).as_ptr()) })
+}
+
+/// Build and persist the project state snapshot. Runs the full
+/// analysis pipeline (evidence aggregation + state queries + UPSERT
+/// into project_state) and returns the persisted snapshot JSON.
+pub fn build_project_state(project_id: u64) -> String {
+    take_string(unsafe { engine_build_project_state(project_id) })
+}
+
+/// Get the persisted project state snapshot (without rebuilding).
+/// Returns the snapshot_json string for the project, or a JSON error
+/// object if no snapshot exists yet.
+pub fn get_project_state(project_id: u64) -> String {
+    take_string(unsafe { engine_get_project_state(project_id) })
 }
 
 /// Scan all declared capabilities and contracts for drift between

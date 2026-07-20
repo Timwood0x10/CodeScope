@@ -877,6 +877,49 @@ fn h_explain_module(project_id: u64, args: &Value) -> String {
     ffi::explain_module(project_id, name)
 }
 
+// ── v0.3 Evidence Pipeline tools ───────────────────────────────
+
+/// Run background enhancement: full parse, call graph, metrics, FTS,
+/// and v0.3 semantic_fact extraction (Step 1.5). Prerequisite for
+/// `build_evidence` to produce non-empty findings.
+fn h_enhance_project(project_id: u64, _args: &Value) -> String {
+    ffi::enhance_project(project_id)
+}
+
+/// Build evidence findings by applying the rule set to the project's
+/// semantic_fact rows. Optional category filter restricts the run to
+/// one rule category (sync/memory/error/pattern/framework/ffi).
+fn h_build_evidence(project_id: u64, args: &Value) -> String {
+    let category = args["category"].as_str();
+    ffi::build_evidence(project_id, category)
+}
+
+/// Verify a natural-language claim against the project's indexed
+/// evidence. Runs IntentParser -> Planner -> EvidenceBuilder ->
+/// VerdictBuilder and returns the aggregate verdict + confidence.
+fn h_verify_statement(project_id: u64, args: &Value) -> String {
+    let claim = args["claim"].as_str().unwrap_or("");
+    if claim.is_empty() {
+        return json!({"error": "claim field is required [module=mcp, tool=verify_statement]"})
+            .to_string();
+    }
+    ffi::verify_statement(project_id, claim)
+}
+
+/// Build (or rebuild) and persist the project state snapshot.
+/// Returns the snapshot JSON describing what each inspector ran and
+/// what it found. The snapshot is also stored in the project_state
+/// table for later retrieval via get_project_state.
+fn h_build_project_state(project_id: u64, _args: &Value) -> String {
+    ffi::build_project_state(project_id)
+}
+
+/// Get the previously persisted project state snapshot (without
+/// rebuilding). Returns an error JSON if no snapshot exists yet.
+fn h_get_project_state(project_id: u64, _args: &Value) -> String {
+    ffi::get_project_state(project_id)
+}
+
 fn h_trace_flow(project_id: u64, args: &Value) -> String {
     let name = args["function_name"].as_str().unwrap_or("");
     let depth = args["depth"].as_i64().unwrap_or(3) as i32;
@@ -1170,6 +1213,12 @@ static TOOL_HANDLERS: Lazy<HashMap<&'static str, ToolHandler>> = Lazy::new(|| {
     m.insert("verify_claim", h_verify_claim as ToolHandler);
     m.insert("verify_summary", h_verify_summary as ToolHandler);
     m.insert("explain_module", h_explain_module as ToolHandler);
+    // v0.3 Evidence Pipeline
+    m.insert("enhance_project", h_enhance_project as ToolHandler);
+    m.insert("build_evidence", h_build_evidence as ToolHandler);
+    m.insert("verify_statement", h_verify_statement as ToolHandler);
+    m.insert("build_project_state", h_build_project_state as ToolHandler);
+    m.insert("get_project_state", h_get_project_state as ToolHandler);
     // Verify + Drift Layer (v0.4)
     m.insert("verify_review", h_verify_review as ToolHandler);
     m.insert("verify_reality", h_verify_reality as ToolHandler);
@@ -1440,6 +1489,58 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
                     }
                 },
                 "required": ["module_name"]
+            }),
+        },
+        Tool {
+            name: "enhance_project".into(),
+            description: "Run background enhancement for a project: full tree-sitter parse, call graph construction, metrics resolution, FTS index build, and v0.3 semantic_fact extraction (Step 1.5). This is the prerequisite for build_evidence to produce non-empty findings — the semantic facts (sync/mutex/lock, memory/cstring/alloc, error/bare_except, pattern/todo, framework/gin, ffi/extern_call) are extracted here. Returns a JSON summary with files_processed, symbols_enhanced, call_edges, and timing breakdowns.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        Tool {
+            name: "build_evidence".into(),
+            description: "Build evidence findings for the project by applying the v0.3 rule set (sync/memory/error/pattern/framework/ffi) to the indexed semantic_fact rows. Each rule declares its fact needs and a combine mode (Collect / MissingMatch / MissingMatchPerFunction / Count); the engine returns a JSON array of Evidence objects with category, title, confidence, and items[]. Run after index/enhance so semantic facts are populated.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "enum": ["sync", "memory", "error", "pattern", "framework", "ffi"],
+                        "description": "Optional: restrict the run to one rule category. Omit to run all categories."
+                    }
+                }
+            }),
+        },
+        Tool {
+            name: "verify_statement".into(),
+            description: "Verify a natural-language claim against the project's indexed evidence. The claim is parsed into an Intent by IntentParser, planned into evidence rule executions by Planner, executed via EvidenceBuilder, and aggregated into a Verdict by VerdictBuilder. Returns JSON with verdict (Supported|Contradicted|PartiallyVerified|Unknown), confidence, requirements[], and evidence[]. Use this for yes/no questions about code behavior (e.g. 'does this project safely handle CString?').".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "claim": {
+                        "type": "string",
+                        "description": "Natural-language claim (e.g. 'does this project safely handle CString?')"
+                    }
+                },
+                "required": ["claim"]
+            }),
+        },
+        Tool {
+            name: "build_project_state".into(),
+            description: "Build (or rebuild) and persist the project state snapshot. Runs the full v0.3 Evidence Pipeline (evidence aggregation + state queries) and UPSERTs the result into the project_state table. Returns the snapshot JSON describing what each inspector ran and what it found (category counts, confidence score, snapshot metadata). Use this after build_evidence to materialize a health snapshot.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        Tool {
+            name: "get_project_state".into(),
+            description: "Get the previously persisted project state snapshot (without rebuilding). Returns the snapshot_json string for the project, or a JSON error object if no snapshot exists yet (run build_project_state first). Use this for fast reads of the latest health snapshot.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
             }),
         },
         Tool {

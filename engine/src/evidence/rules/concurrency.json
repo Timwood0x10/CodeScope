@@ -1,0 +1,58 @@
+{
+  "category": "concurrency",
+  "rules": [
+    {
+      "name": "mutex_without_unlock",
+      "description": "Mutex locked without a matching defer Unlock is a deadlock risk",
+      "need": [
+        { "category": "sync", "primitive": "mutex", "kind": "lock" },
+        { "category": "sync", "primitive": "mutex", "kind": "defer_unlock", "optional": true }
+      ],
+      "combine": "missing_match",
+      "output": {
+        "severity": 2,
+        "title": "{count} function(s) lock mutex without defer Unlock (deadlock risk)",
+        "message": "{symbol} locked at {file}:{line} without defer Unlock (deadlock risk)"
+      }
+    },
+    {
+      "name": "rwmutex_usage",
+      "description": "RWMutex usage is a concurrency signal worth tracking",
+      "need": [
+        { "category": "sync", "primitive": "rwmutex", "kind": "lock" }
+      ],
+      "combine": "collect",
+      "output": {
+        "severity": 1,
+        "title": "{count} RWMutex lock(s) detected (concurrency signal)",
+        "message": "RWMutex locked at {file}:{line}: {symbol}"
+      }
+    },
+    {
+      "name": "atomic_operations",
+      "description": "Atomic operations are a concurrency signal worth tracking",
+      "need": [
+        { "category": "sync", "primitive": "atomic", "kind": "load" }
+      ],
+      "combine": "collect",
+      "output": {
+        "severity": 1,
+        "title": "{count} atomic operation(s) detected (concurrency signal)",
+        "message": "atomic op at {file}:{line}: {symbol}"
+      }
+    },
+    {
+      "name": "waitgroup_usage",
+      "description": "WaitGroup usage is a concurrency signal worth tracking",
+      "need": [
+        { "category": "sync", "primitive": "waitgroup", "kind": "add" }
+      ],
+      "combine": "collect",
+      "output": {
+        "severity": 1,
+        "title": "{count} WaitGroup add(s) detected (concurrency signal)",
+        "message": "WaitGroup add at {file}:{line}: {symbol}"
+      }
+    }
+  ]
+}

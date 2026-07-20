@@ -4,7 +4,7 @@
 
 It transforms source code into verifiable facts, understandable models, and inspectable evidence — enabling AI to validate claims against reality instead of hallucinating.
 
-**Version**: v0.2.1 | **License**: Apache 2.0
+**Version**: v0.3 | **License**: Apache 2.0
 
 ---
 
@@ -16,7 +16,7 @@ CodeScope is a **Project Truth Engine** that answers one question:
 
 Not "what does this code mean", but "does the code actually do what you claim?"
 
-It indexes source code into a structured code graph (call graph + reference graph + module knowledge), then exposes **37 MCP tools** that let AI agents locate symbols, trace call paths, verify claims, detect documentation drift, and analyze architecture — all with **~98.9% token savings** vs reading raw source files.
+It indexes source code into a structured code graph (call graph + reference graph + module knowledge), then exposes **41 MCP tools** that let AI agents locate symbols, trace call paths, verify claims, detect documentation drift, and analyze architecture — all with **~98.9% token savings** vs reading raw source files.
 
 ### Supported Languages (8)
 
@@ -53,7 +53,7 @@ graph TB
     end
 
     subgraph "Rust MCP Server"
-        MCP["MCP Protocol (JSON-RPC 2.0)<br/>37 tools / stdio transport"]
+        MCP["MCP Protocol (JSON-RPC 2.0)<br/>41 tools / stdio transport"]
         DISPATCH["Tool Dispatch<br/>project_id auto-restore"]
     end
 
@@ -200,7 +200,7 @@ codescope index-parallel /path/to/large/project
 
 ---
 
-## 4. MCP Tools (37 Tools)
+## 4. MCP Tools (41 Tools)
 
 ### Indexing
 
@@ -267,6 +267,17 @@ codescope index-parallel /path/to/large/project
 | `verify_review` | Verify code review comment claims. | `{"text": "string (required)"}` |
 | `verify_reality` | Verify a single AI statement against code evidence. | `{"text": "string (required)"}` |
 
+### Evidence Pipeline (v0.3)
+
+The v0.3 Evidence Pipeline transforms indexed code into verifiable evidence and project health snapshots. Flow: `Facts → SemanticFacts → Evidence → Verification → ProjectState`. Semantic facts are extracted by `engine_enhance_project` (Step 1.5); evidence is built by applying declarative rule files (`engine/src/evidence/rules/*.json`) to the semantic_fact table.
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `build_evidence` | Build evidence findings by applying the rule set (sync/memory/error/pattern/framework/ffi) to the project's semantic_fact rows. Each rule declares fact needs + a combine mode (Collect / MissingMatch / MissingMatchPerFunction / Count). Returns a JSON array of Evidence objects. Run after `enhance_project` so semantic facts are populated. | `{"category": "string (optional, one of: sync|memory|error|pattern|framework|ffi)"}` |
+| `verify_statement` | Verify a natural-language claim against the project's indexed evidence. Pipeline: IntentParser → Planner → EvidenceBuilder → VerdictBuilder. Returns JSON with `verdict` (Supported\|Contradicted\|PartiallyVerified\|Unknown), `confidence`, `requirements[]`, and `evidence[]`. Use this for yes/no questions about code behavior (e.g. "does this project safely handle CString?"). | `{"claim": "string (required)"}` |
+| `build_project_state` | Build (or rebuild) and persist the project state snapshot. Runs the full v0.3 Evidence Pipeline (evidence aggregation + state queries) and UPSERTs the result into the `project_state` table. Returns the snapshot JSON: overall confidence, capability/architecture/workflow/dead_code scores, per-category issue counts, and `last_updated` timestamp. | `{}` |
+| `get_project_state` | Get the previously persisted project state snapshot (without rebuilding). Returns the `snapshot_json` string for the project, or a JSON error object if no snapshot exists yet (run `build_project_state` first). Use this for fast reads of the latest health snapshot. | `{}` |
+
 ### Drift Detection
 
 | Tool | Description | Parameters |
@@ -302,6 +313,9 @@ Deep dive symbol  → explain_symbol
 HTTP routes       → get_routes
 Type info         → get_type_info
 Verify claim      → verify_claim
+Verify statement  → verify_statement
+Build evidence    → build_evidence
+Project health    → build_project_state
 Detect drift      → detect_documentation_drift
 Change impact     → detect_changes
 ```
@@ -444,4 +458,4 @@ Each script calls `codescope cli <tool_name> '<json_args>'` internally. See `ski
 
 Apache 2.0 — see [LICENSE](LICENSE).
 
-**CodeScope v0.2.1** — Built with Rust 2024 + C++23 + tree-sitter + SQLite.
+**CodeScope v0.3** — Built with Rust 2024 + C++23 + tree-sitter + SQLite.

@@ -191,6 +191,7 @@
 plan/
 
 **/build_*/
+**/build-*/
 **/build-release/
 **/.deps-cache/
 **/*.ll

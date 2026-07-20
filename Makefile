@@ -167,7 +167,12 @@ TEST_EXES := \
 	test_call_graph_p1 test_readme_ingestion test_call_graph_method \
 	test_project_id \
 	test_enhance_e2e \
-	test_js_visitor test_ts_visitor test_tsx_visitor
+	test_js_visitor test_ts_visitor test_tsx_visitor \
+	test_semantic_fact_extractor \
+	test_evidence_builder \
+	test_project_state \
+	test_verify_planner \
+	test_domain_rules
 
 test-engine: $(ENGINE_LIB)
 	@printf "$(CYAN)[test/engine]$(RESET) Building and running C++ tests...\n"

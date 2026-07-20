@@ -1,0 +1,19 @@
+{
+  "category": "memory",
+  "rules": [
+    {
+      "name": "cstring_leak",
+      "description": "C.CString allocated without matching C.free in the same function",
+      "need": [
+        { "category": "memory", "primitive": "cstring", "kind": "alloc" },
+        { "category": "memory", "primitive": "cstring", "kind": "free", "optional": true }
+      ],
+      "combine": "missing_match_per_function",
+      "output": {
+        "severity": 2,
+        "title": "{count} function(s) leak C.CString (alloc without free)",
+        "message": "{symbol} allocated at {file}:{line} without C.free"
+      }
+    }
+  ]
+}

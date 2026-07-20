@@ -1,0 +1,44 @@
+{
+  "category": "test_quality",
+  "rules": [
+    {
+      "name": "unwrap_in_non_test",
+      "description": "Rust .unwrap() in non-test code may panic and degrade quality",
+      "need": [
+        { "category": "pattern", "primitive": "unwrap", "kind": "risk" }
+      ],
+      "combine": "collect",
+      "output": {
+        "severity": 2,
+        "title": "{count} .unwrap() call(s) in non-test code (quality risk)",
+        "message": "{symbol} at {file}:{line} may panic in non-test code"
+      }
+    },
+    {
+      "name": "panic_in_non_test",
+      "description": "panic!() in non-test code aborts the process and degrades quality",
+      "need": [
+        { "category": "pattern", "primitive": "panic", "kind": "risk" }
+      ],
+      "combine": "collect",
+      "output": {
+        "severity": 2,
+        "title": "{count} panic call(s) in non-test code (quality risk)",
+        "message": "{symbol} at {file}:{line} panics in non-test code"
+      }
+    },
+    {
+      "name": "todo_accumulation",
+      "description": "Accumulating TODOs in tests indicate incomplete test coverage",
+      "need": [
+        { "category": "pattern", "primitive": "todo", "kind": "marker" }
+      ],
+      "combine": "count",
+      "output": {
+        "severity": 1,
+        "title": "{count} TODO marker(s) accumulating in code (test-quality signal)",
+        "message": "{count} TODO marker(s) indicate incomplete tests"
+      }
+    }
+  ]
+}

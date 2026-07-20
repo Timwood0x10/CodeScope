@@ -1,0 +1,31 @@
+{
+  "category": "error",
+  "rules": [
+    {
+      "name": "bare_except_collect",
+      "description": "Bare except clauses that swallow all exceptions",
+      "need": [
+        { "category": "error", "primitive": "bare_except", "kind": "suppression" }
+      ],
+      "combine": "collect",
+      "output": {
+        "severity": 2,
+        "title": "{count} bare except clause(s) suppress exceptions",
+        "message": "{symbol} at {file}:{line} swallows all exceptions"
+      }
+    },
+    {
+      "name": "empty_catch_collect",
+      "description": "Empty catch blocks that silently swallow errors",
+      "need": [
+        { "category": "error", "primitive": "empty_catch", "kind": "suppression" }
+      ],
+      "combine": "collect",
+      "output": {
+        "severity": 2,
+        "title": "{count} empty catch block(s) swallow errors",
+        "message": "{symbol} at {file}:{line} silently swallows errors"
+      }
+    }
+  ]
+}

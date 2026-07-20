@@ -1,0 +1,57 @@
+{
+  "category": "pattern",
+  "rules": [
+    {
+      "name": "todo_collect",
+      "description": "TODO markers in code comments",
+      "need": [
+        { "category": "pattern", "primitive": "todo", "kind": "marker" }
+      ],
+      "combine": "collect",
+      "output": {
+        "severity": 1,
+        "title": "{count} TODO marker(s) in code",
+        "message": "TODO at {file}:{line}: {symbol}"
+      }
+    },
+    {
+      "name": "unwrap_risk",
+      "description": "Rust .unwrap() calls that may panic",
+      "need": [
+        { "category": "pattern", "primitive": "unwrap", "kind": "risk" }
+      ],
+      "combine": "collect",
+      "output": {
+        "severity": 2,
+        "title": "{count} .unwrap() call(s) may panic",
+        "message": "{symbol} at {file}:{line} may panic on None/Err"
+      }
+    },
+    {
+      "name": "panic_risk",
+      "description": "panic! / panic() calls that abort the process",
+      "need": [
+        { "category": "pattern", "primitive": "panic", "kind": "risk" }
+      ],
+      "combine": "collect",
+      "output": {
+        "severity": 2,
+        "title": "{count} panic call(s) may abort",
+        "message": "{symbol} at {file}:{line} panics the process"
+      }
+    },
+    {
+      "name": "unsafe_risk",
+      "description": "Rust unsafe blocks that bypass memory safety",
+      "need": [
+        { "category": "pattern", "primitive": "unsafe", "kind": "risk" }
+      ],
+      "combine": "collect",
+      "output": {
+        "severity": 2,
+        "title": "{count} unsafe block(s) bypass memory safety",
+        "message": "{symbol} at {file}:{line} uses unsafe code"
+      }
+    }
+  ]
+}

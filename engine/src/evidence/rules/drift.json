@@ -1,0 +1,46 @@
+{
+  "_note": "Phase 5 v0.3 drift rules. Plan section 7.3 specifies a richer 'from'/'where' rule format with cross-category joins, but the current EvidenceBuilder (rule.cpp / evidence_builder.cpp) only supports the flat (category, primitive, kind) need schema plus Collect / MissingMatch / MissingMatchPerFunction / Count combine modes. For this delivery, drift rules reuse existing fact categories (pattern, framework, ffi) so they load with the current loader without an EB upgrade. A future EB version will introduce cross-category joins and replace these approximations.",
+  "category": "drift",
+  "rules": [
+    {
+      "name": "dead_pattern_todo",
+      "description": "TODO markers may indicate unfinished work drifting from the plan",
+      "need": [
+        { "category": "pattern", "primitive": "todo", "kind": "marker" }
+      ],
+      "combine": "collect",
+      "output": {
+        "severity": 1,
+        "title": "{count} TODO marker(s) may indicate plan-code drift",
+        "message": "TODO at {file}:{line}: {symbol} (potential drift)"
+      }
+    },
+    {
+      "name": "dead_pattern_fixme",
+      "description": "FIXME markers signal known issues that may indicate design drift",
+      "need": [
+        { "category": "pattern", "primitive": "fixme", "kind": "marker" }
+      ],
+      "combine": "collect",
+      "output": {
+        "severity": 2,
+        "title": "{count} FIXME marker(s) signal known issues",
+        "message": "FIXME at {file}:{line}: {symbol} (potential drift)"
+      }
+    },
+    {
+      "name": "framework_without_ffi",
+      "description": "Framework adoption (router/ORM) without a detected FFI boundary may indicate integration drift. Primary need is framework/gin/router; optional ffi/extern_call/call is the exclusion set. Other framework primitives (echo/django/express/gorm) are covered by separate rules of the same shape in future EB versions that support multi-primary joins.",
+      "need": [
+        { "category": "framework", "primitive": "gin", "kind": "router" },
+        { "category": "ffi", "primitive": "extern_call", "kind": "call", "optional": true }
+      ],
+      "combine": "missing_match",
+      "output": {
+        "severity": 1,
+        "title": "{count} framework import(s) without FFI boundary detected",
+        "message": "Framework import at {file}:{line} has no matching FFI boundary (potential drift)"
+      }
+    }
+  ]
+}

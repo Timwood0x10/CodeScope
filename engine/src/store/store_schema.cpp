@@ -640,6 +640,46 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
             PRIMARY KEY (project_id, file_path)
         );
 
+        -- ============================================================
+        -- v0.3 Phase 1: Semantic Facts Layer
+        -- ============================================================
+        -- semantic_fact: per-function semantic primitive detected from
+        -- code (sync/memory/error/pattern/framework/ffi). Each row is a
+        -- (function_id, category, primitive, kind) tuple with a JSON
+        -- detail blob and a confidence in [0,1]. Populated by
+        -- SemanticFactExtractor during engine_enhance_project.
+        CREATE TABLE IF NOT EXISTS semantic_fact (
+            id            INTEGER PRIMARY KEY,
+            project_id    INTEGER NOT NULL,
+            function_id   INTEGER NOT NULL,
+            category      TEXT NOT NULL,    -- sync/memory/error/pattern/framework/ffi
+            primitive     TEXT NOT NULL,    -- mutex/rwmutex/channel/atomic/waitgroup/defer/cstring/malloc/...
+            kind          TEXT NOT NULL,    -- lock/unlock/alloc/free/bare_except/unwrap/...
+            symbol        TEXT NOT NULL DEFAULT '',
+            confidence    REAL NOT NULL DEFAULT 1.0,
+            detail_json   TEXT,
+            created_at    TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (project_id) REFERENCES projects(id),
+            FOREIGN KEY (function_id) REFERENCES graph_nodes(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_sf_category ON semantic_fact(project_id, category);
+        CREATE INDEX IF NOT EXISTS idx_sf_primitive ON semantic_fact(project_id, primitive);
+        CREATE INDEX IF NOT EXISTS idx_sf_category_primitive ON semantic_fact(project_id, category, primitive);
+        CREATE INDEX IF NOT EXISTS idx_sf_function ON semantic_fact(project_id, function_id);
+
+        -- project_state: Phase 4 snapshot of project-level confidence +
+        -- semantic model state. Schema added now to avoid a future
+        -- migration; table is unused until Phase 4.
+        CREATE TABLE IF NOT EXISTS project_state (
+            id              INTEGER PRIMARY KEY,
+            project_id      INTEGER NOT NULL UNIQUE,
+            confidence      REAL NOT NULL DEFAULT 0.0,
+            snapshot_json   TEXT NOT NULL,
+            created_at      TEXT DEFAULT (datetime('now')),
+            updated_at      TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (project_id) REFERENCES projects(id)
+        );
+
         )SQL";
 
 	// Execute main schema
@@ -1219,6 +1259,111 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 					exec("ROLLBACK");
 					return false;
 				}
+			}
+		}
+	}
+
+	// Migration: add semantic_fact table (v0.3 Phase 1).
+	// The table is in the main schema string, but pre-existing
+	// databases created before v0.3 need it added here. Probing
+	// sqlite_master (not PRAGMA table_info) because the table may not
+	// exist at all on legacy databases.
+	{
+		sqlite3_stmt *probe = nullptr;
+		if (sqlite3_prepare_v2(
+			    db_,
+			    "SELECT name FROM sqlite_master "
+			    "WHERE type='table' AND name='semantic_fact'",
+			    -1, &probe, nullptr) == SQLITE_OK) {
+			if (sqlite3_step(probe) != SQLITE_ROW) {
+				sqlite3_finalize(probe);
+				if (!exec("CREATE TABLE IF NOT EXISTS semantic_fact ("
+					  " id            INTEGER PRIMARY KEY,"
+					  " project_id    INTEGER NOT NULL,"
+					  " function_id   INTEGER NOT NULL,"
+					  " category      TEXT NOT NULL,"
+					  " primitive     TEXT NOT NULL,"
+					  " kind          TEXT NOT NULL,"
+					  " symbol        TEXT NOT NULL DEFAULT '',"
+					  " confidence    REAL NOT NULL DEFAULT 1.0,"
+					  " detail_json   TEXT,"
+					  " created_at    TEXT DEFAULT (datetime('now')),"
+					  " FOREIGN KEY (project_id) REFERENCES projects(id),"
+					  " FOREIGN KEY (function_id) REFERENCES graph_nodes(id)"
+					  ")")) {
+					fprintf(stderr,
+						"[module=store, method=createSchema] "
+						"CREATE TABLE semantic_fact failed: %s\n",
+						error_.c_str());
+					return false;
+				}
+				if (!exec("CREATE INDEX IF NOT EXISTS idx_sf_category "
+					  "ON semantic_fact(project_id, category)")) {
+					fprintf(stderr,
+						"[module=store, method=createSchema] "
+						"CREATE INDEX idx_sf_category failed: %s\n",
+						error_.c_str());
+					return false;
+				}
+				if (!exec("CREATE INDEX IF NOT EXISTS idx_sf_primitive "
+					  "ON semantic_fact(project_id, primitive)")) {
+					fprintf(stderr,
+						"[module=store, method=createSchema] "
+						"CREATE INDEX idx_sf_primitive failed: %s\n",
+						error_.c_str());
+					return false;
+				}
+				if (!exec("CREATE INDEX IF NOT EXISTS idx_sf_category_primitive "
+					  "ON semantic_fact(project_id, category, primitive)")) {
+					fprintf(stderr,
+						"[module=store, method=createSchema] "
+						"CREATE INDEX idx_sf_category_primitive failed: %s\n",
+						error_.c_str());
+					return false;
+				}
+				if (!exec("CREATE INDEX IF NOT EXISTS idx_sf_function "
+					  "ON semantic_fact(project_id, function_id)")) {
+					fprintf(stderr,
+						"[module=store, method=createSchema] "
+						"CREATE INDEX idx_sf_function failed: %s\n",
+						error_.c_str());
+					return false;
+				}
+			} else {
+				sqlite3_finalize(probe);
+			}
+		}
+	}
+
+	// Migration: add project_state table (v0.3 Phase 4 prep).
+	// Schema is added now to avoid a future migration; the table is
+	// unused until Phase 4. Same sqlite_master probe pattern as above.
+	{
+		sqlite3_stmt *probe = nullptr;
+		if (sqlite3_prepare_v2(
+			    db_,
+			    "SELECT name FROM sqlite_master "
+			    "WHERE type='table' AND name='project_state'",
+			    -1, &probe, nullptr) == SQLITE_OK) {
+			if (sqlite3_step(probe) != SQLITE_ROW) {
+				sqlite3_finalize(probe);
+				if (!exec("CREATE TABLE IF NOT EXISTS project_state ("
+					  " id              INTEGER PRIMARY KEY,"
+					  " project_id      INTEGER NOT NULL UNIQUE,"
+					  " confidence      REAL NOT NULL DEFAULT 0.0,"
+					  " snapshot_json   TEXT NOT NULL,"
+					  " created_at      TEXT DEFAULT (datetime('now')),"
+					  " updated_at      TEXT DEFAULT (datetime('now')),"
+					  " FOREIGN KEY (project_id) REFERENCES projects(id)"
+					  ")")) {
+					fprintf(stderr,
+						"[module=store, method=createSchema] "
+						"CREATE TABLE project_state failed: %s\n",
+						error_.c_str());
+					return false;
+				}
+			} else {
+				sqlite3_finalize(probe);
 			}
 		}
 	}

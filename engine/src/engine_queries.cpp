@@ -1,4 +1,5 @@
 #include "engine_internal.h"
+#include "model/semantic_fact_extractor.h"
 #include "platform_win.h"
 
 #include <algorithm>
@@ -192,6 +193,19 @@ char *engine_enhance_project(uint64_t project_id)
 		g_store->buildGraph(project_id, true);
 		g_store->commitTransaction();
 		fprintf(stderr, "enhance: buildGraph %lldms\n",
+			(long long)std::chrono::duration_cast<
+				std::chrono::milliseconds>(Clock::now() - t)
+				.count());
+	}
+
+	// Step 1.5: Extract semantic facts (v0.3 Phase 1)
+	{
+		auto t = Clock::now();
+		g_store->beginTransaction();
+		model::SemanticFactExtractor extractor(g_store.get());
+		extractor.extractAll(project_id);
+		g_store->commitTransaction();
+		fprintf(stderr, "enhance: semantic_facts %lldms\n",
 			(long long)std::chrono::duration_cast<
 				std::chrono::milliseconds>(Clock::now() - t)
 				.count());
