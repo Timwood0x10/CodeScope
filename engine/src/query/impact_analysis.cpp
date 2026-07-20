@@ -10,6 +10,10 @@
 #include <unordered_set>
 #include <vector>
 
+#ifdef HAS_LADYBUG
+#include <lbug.h>
+#endif
+
 namespace query
 {
 
@@ -163,6 +167,65 @@ buildCallAdjacency(sqlite3 *db, uint64_t project_id,
 	sqlite3_finalize(stmt);
 	return true;
 }
+
+// Load call edges from LadybugDB into the forward/reverse adjacency maps.
+// Returns true on success. On failure, sets *error_out and returns false.
+#ifdef HAS_LADYBUG
+static bool buildCallAdjacencyFromLadybug(
+	store::GraphStore *store, uint64_t project_id,
+	std::unordered_map<uint64_t, std::vector<uint64_t>> &forward,
+	std::unordered_map<uint64_t, std::vector<uint64_t>> &reverse,
+	std::string *error_out)
+{
+	lbug_connection *conn = store->lbugHandle();
+	if (!conn) {
+		if (error_out)
+			*error_out = "LadybugDB not initialized";
+		return false;
+	}
+	std::string cypher = "MATCH (src:GraphNode {project_id:" +
+			     std::to_string(project_id) +
+			     "})-[r:CALLS]->(tgt:GraphNode) "
+			     "RETURN src.graph_node_id, tgt.graph_node_id";
+	lbug_query_result qr;
+	lbug_state s = lbug_connection_query(conn, cypher.c_str(), &qr);
+	if (s != LbugSuccess) {
+		char *err = lbug_query_result_get_error_message(&qr);
+		if (error_out)
+			*error_out = err ? err : "LadybugDB query failed";
+		if (err)
+			lbug_destroy_string(err);
+		lbug_query_result_destroy(&qr);
+		return false;
+	}
+	lbug_flat_tuple tuple;
+	while (lbug_query_result_get_next(&qr, &tuple) == LbugSuccess) {
+		lbug_value v;
+		uint64_t src = 0, tgt = 0;
+		bool src_ok = false, tgt_ok = false;
+		int64_t tmp = 0;
+		if (lbug_flat_tuple_get_value(&tuple, 0, &v) == LbugSuccess) {
+			if (lbug_value_get_int64(&v, &tmp) == LbugSuccess) {
+				src = static_cast<uint64_t>(tmp);
+				src_ok = true;
+			}
+		}
+		if (lbug_flat_tuple_get_value(&tuple, 1, &v) == LbugSuccess) {
+			if (lbug_value_get_int64(&v, &tmp) == LbugSuccess) {
+				tgt = static_cast<uint64_t>(tmp);
+				tgt_ok = true;
+			}
+		}
+		if (src_ok && tgt_ok) {
+			forward[src].push_back(tgt);
+			reverse[tgt].push_back(src);
+		}
+		lbug_flat_tuple_destroy(&tuple);
+	}
+	lbug_query_result_destroy(&qr);
+	return true;
+}
+#endif
 
 // ─── Node metadata lookup ──────────────────────────────────────
 //
@@ -365,8 +428,19 @@ std::string analyzeChangeImpact(uint64_t project_id, store::GraphStore *store,
 	std::unordered_map<uint64_t, std::vector<uint64_t>> forward_adj;
 	std::unordered_map<uint64_t, std::vector<uint64_t>> reverse_adj;
 	if (!modified_ids.empty()) {
-		if (!buildCallAdjacency(db, project_id, forward_adj,
-					reverse_adj, &error_msg)) {
+		bool adj_ok = false;
+#ifdef HAS_LADYBUG
+		if (store && store->isGraphReady()) {
+			adj_ok = buildCallAdjacencyFromLadybug(
+				store, project_id, forward_adj, reverse_adj,
+				&error_msg);
+		} else
+#endif
+		{
+			adj_ok = buildCallAdjacency(db, project_id, forward_adj,
+						    reverse_adj, &error_msg);
+		}
+		if (!adj_ok) {
 			// buildCallAdjacency already filled error_msg with a
 			// tagged message. Return the error payload.
 			std::ostringstream j;

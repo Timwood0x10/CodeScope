@@ -7,8 +7,15 @@
 #include <cctype>
 #include <cmath>
 #include <cstring>
+#include <queue>
 #include <sqlite3.h>
 #include <sstream>
+#include <unordered_map>
+#include <unordered_set>
+
+#ifdef HAS_LADYBUG
+#include <lbug.h>
+#endif
 
 namespace query
 {
@@ -64,6 +71,99 @@ std::string QueryEngine::getHotspots(uint64_t project_id, int top_n)
 	if (top_n > 100)
 		top_n = 100;
 
+	// Try LadybugDB first: count callers per function via Cypher.
+#ifdef HAS_LADYBUG
+	if (store_ && store_->isGraphReady()) {
+		lbug_connection *conn = store_->lbugHandle();
+		if (conn) {
+			std::string cypher =
+				"MATCH (n:GraphNode {project_id:" +
+				std::to_string(project_id) +
+				"})<-[r:CALLS]-() "
+				"WHERE n.node_type IN [0,1] "
+				"RETURN n.graph_node_id, n.name, "
+				"n.file_path, n.node_type, "
+				"count(*) AS caller_count "
+				"ORDER BY caller_count DESC LIMIT " +
+				std::to_string(top_n);
+			lbug_query_result qr;
+			lbug_state s = lbug_connection_query(
+				conn, cypher.c_str(), &qr);
+			if (s == LbugSuccess) {
+				std::ostringstream json;
+				json << "{\"hotspots\":[";
+				bool first = true;
+				int count = 0;
+				lbug_flat_tuple tuple;
+				while (lbug_query_result_get_next(
+					       &qr, &tuple) == LbugSuccess) {
+					if (!first)
+						json << ",";
+					first = false;
+					++count;
+					json << "{";
+					lbug_value v;
+					// Columns: 0=graph_node_id, 1=name,
+					// 2=file_path, 3=node_type,
+					// 4=caller_count
+					for (int i = 0; i < 5; i++) {
+						if (i > 0)
+							json << ",";
+						if (lbug_flat_tuple_get_value(
+							    &tuple, i, &v) !=
+						    LbugSuccess)
+							continue;
+						if (i == 0 || i == 3 ||
+						    i == 4) {
+							int64_t iv = 0;
+							lbug_value_get_int64(
+								&v, &iv);
+							const char *keys[] = {
+								"id", "", "",
+								"type",
+								"caller_count"
+							};
+							json << "\"" << keys[i]
+							     << "\":" << iv;
+						} else {
+							char *sv = nullptr;
+							if (lbug_value_get_string(
+								    &v, &sv) ==
+								    LbugSuccess &&
+							    sv) {
+								const char *keys[] = {
+									"",
+									"name",
+									"file",
+									"", ""
+								};
+								json << "\""
+								     << keys[i]
+								     << "\":\""
+								     << jsonEscape(
+										sv)
+								     << "\"";
+								lbug_destroy_string(
+									sv);
+							}
+						}
+					}
+					// Complexity not stored in
+					// LadybugDB; report 0.
+					json << ",\"complexity\":0";
+					json << "}";
+					lbug_flat_tuple_destroy(&tuple);
+				}
+				lbug_query_result_destroy(&qr);
+				json << "],\"total\":" << count << "}";
+				return json.str();
+			}
+			lbug_query_result_destroy(&qr);
+		}
+	}
+#endif
+
+	// Fallback: SQLite
 	sqlite3 *db = store_->handle();
 	sqlite3_stmt *stmt = nullptr;
 	std::string sql =
@@ -216,6 +316,90 @@ std::string QueryEngine::getModuleMap(uint64_t project_id)
 
 std::string QueryEngine::getEntryPoints(uint64_t project_id)
 {
+	// Try LadybugDB first (faster for name-based lookup).
+#ifdef HAS_LADYBUG
+	if (store_ && store_->isGraphReady()) {
+		lbug_connection *conn = store_->lbugHandle();
+		if (conn) {
+			std::string cypher =
+				"MATCH (n:GraphNode {project_id:" +
+				std::to_string(project_id) +
+				"}) WHERE n.node_type IN [0,1] "
+				"AND n.name IN ['main','Main','run','Run',"
+				"'start','Start','init','Init','setup','Setup'] "
+				"RETURN n.graph_node_id, n.name, n.node_type, "
+				"n.file_path ORDER BY n.file_path";
+			lbug_query_result qr;
+			lbug_state s = lbug_connection_query(
+				conn, cypher.c_str(), &qr);
+			if (s == LbugSuccess) {
+				std::ostringstream json;
+				json << "{\"entry_points\":[";
+				bool first = true;
+				int count = 0;
+				lbug_flat_tuple tuple;
+				while (lbug_query_result_get_next(
+					       &qr, &tuple) == LbugSuccess) {
+					if (!first)
+						json << ",";
+					first = false;
+					++count;
+					json << "{";
+					lbug_value v;
+					// Columns: 0=graph_node_id, 1=name,
+					// 2=node_type, 3=file_path
+					for (int i = 0; i < 4; i++) {
+						if (i > 0)
+							json << ",";
+						if (lbug_flat_tuple_get_value(
+							    &tuple, i, &v) !=
+						    LbugSuccess)
+							continue;
+						if (i == 0 || i == 2) {
+							int64_t iv = 0;
+							lbug_value_get_int64(
+								&v, &iv);
+							json << "\""
+							     << (i == 0 ?
+									 "id" :
+									 "type")
+							     << "\":" << iv;
+						} else {
+							char *sv = nullptr;
+							if (lbug_value_get_string(
+								    &v, &sv) ==
+								    LbugSuccess &&
+							    sv) {
+								json << "\""
+								     << (i == 1 ?
+										 "name" :
+										 "file")
+								     << "\":\""
+								     << jsonEscape(
+										sv)
+								     << "\"";
+								lbug_destroy_string(
+									sv);
+							}
+						}
+					}
+					// Complexity/nesting not in
+					// LadybugDB; report 0.
+					json << ",\"complexity\":0"
+					     << ",\"nesting\":0";
+					json << "}";
+					lbug_flat_tuple_destroy(&tuple);
+				}
+				lbug_query_result_destroy(&qr);
+				json << "],\"total\":" << count << "}";
+				return json.str();
+			}
+			lbug_query_result_destroy(&qr);
+		}
+	}
+#endif
+
+	// Fallback: SQLite
 	sqlite3 *db = store_->handle();
 	std::ostringstream json;
 	json << "{\"entry_points\":[";
@@ -277,6 +461,125 @@ std::string QueryEngine::traceCallChain(uint64_t project_id,
 		return "{\"error\":\"empty function name\"}";
 	}
 
+	// Try LadybugDB first: load edges and BFS in C++.
+#ifdef HAS_LADYBUG
+	if (store_ && store_->isGraphReady()) {
+		lbug_connection *conn = store_->lbugHandle();
+		if (conn) {
+			// Load all edges + names from LadybugDB.
+			std::string cypher =
+				"MATCH (src:GraphNode {project_id:" +
+				std::to_string(project_id) +
+				"})-[r:CALLS]->(tgt:GraphNode) "
+				"RETURN src.name, tgt.name";
+			lbug_query_result qr;
+			lbug_state s = lbug_connection_query(
+				conn, cypher.c_str(), &qr);
+			if (s == LbugSuccess) {
+				std::unordered_map<std::string,
+						   std::vector<std::string>>
+					adj;
+				lbug_flat_tuple tuple;
+				while (lbug_query_result_get_next(
+					       &qr, &tuple) == LbugSuccess) {
+					lbug_value v;
+					std::string src, tgt;
+					if (lbug_flat_tuple_get_value(&tuple, 0,
+								      &v) ==
+					    LbugSuccess) {
+						char *sv = nullptr;
+						if (lbug_value_get_string(
+							    &v, &sv) ==
+							    LbugSuccess &&
+						    sv) {
+							src = sv;
+							lbug_destroy_string(sv);
+						}
+					}
+					if (lbug_flat_tuple_get_value(&tuple, 1,
+								      &v) ==
+					    LbugSuccess) {
+						char *sv = nullptr;
+						if (lbug_value_get_string(
+							    &v, &sv) ==
+							    LbugSuccess &&
+						    sv) {
+							tgt = sv;
+							lbug_destroy_string(sv);
+						}
+					}
+					if (!src.empty() && !tgt.empty())
+						adj[src].push_back(tgt);
+					lbug_flat_tuple_destroy(&tuple);
+				}
+				lbug_query_result_destroy(&qr);
+
+				// BFS from from_function to to_function.
+				std::string from(from_function);
+				std::string to(to_function);
+				std::queue<std::string> queue;
+				std::unordered_map<std::string, std::string>
+					parent;
+				std::unordered_set<std::string> visited;
+				queue.push(from);
+				visited.insert(from);
+				bool found = false;
+
+				while (!queue.empty() && !found) {
+					std::string cur = queue.front();
+					queue.pop();
+					auto it = adj.find(cur);
+					if (it == adj.end())
+						continue;
+					for (const auto &nbr : it->second) {
+						if (visited.count(nbr))
+							continue;
+						visited.insert(nbr);
+						parent[nbr] = cur;
+						if (nbr == to) {
+							found = true;
+							break;
+						}
+						queue.push(nbr);
+					}
+				}
+
+				if (found) {
+					// Reconstruct path.
+					std::vector<std::string> path;
+					std::string node = to;
+					while (node != from) {
+						path.push_back(node);
+						node = parent[node];
+					}
+					path.push_back(from);
+					std::reverse(path.begin(), path.end());
+
+					// Build chain string.
+					std::string chain = path[0];
+					for (size_t i = 1; i < path.size();
+					     i++) {
+						chain += "→" + path[i];
+					}
+					std::ostringstream json;
+					json << "{\"found\":true,"
+					     << "\"chain\":\""
+					     << jsonEscape(chain.c_str())
+					     << "\","
+					     << "\"depth\":"
+					     << (path.size() - 1) << "}";
+					return json.str();
+				} else {
+					return "{\"found\":false,\"chain\":\"\","
+					       "\"depth\":0}";
+				}
+			}
+			lbug_query_result_destroy(&qr);
+		}
+	}
+#endif
+
+	// Fallback: SQLite recursive CTE.
 	sqlite3 *db = store_->handle();
 	// Use WITH RECURSIVE to find shortest call path
 	std::string sql =

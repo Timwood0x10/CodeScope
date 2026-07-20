@@ -1013,6 +1013,7 @@ std::string QueryEngine::findShortestPath(uint64_t project_id,
 	// ── Load all CALLS edges into an in-memory adjacency list.
 	// Try LadybugDB first (faster edge traversal), fall back to SQLite.
 	std::unordered_map<uint64_t, std::vector<uint64_t>> adj;
+	bool loaded = false;
 #ifdef HAS_LADYBUG
 	if (store_ && store_->isGraphReady()) {
 		lbug_connection *conn = store_->lbugHandle();
@@ -1046,14 +1047,13 @@ std::string QueryEngine::findShortestPath(uint64_t project_id,
 								tgt));
 					lbug_flat_tuple_destroy(&tuple);
 				}
-				lbug_query_result_destroy(&qr);
-			} else {
-				lbug_query_result_destroy(&qr);
+				loaded = true;
 			}
+			lbug_query_result_destroy(&qr);
 		}
-	} else
+	}
 #endif
-	{
+	if (!loaded) {
 		// Fallback: load edges from SQLite
 		const char *sql =
 			"SELECT source_node_id, target_node_id FROM graph_edges "

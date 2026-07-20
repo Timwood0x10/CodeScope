@@ -57,6 +57,12 @@ char *engine_locate_node(uint64_t project_id, uint64_t node_id,
 char *engine_locate_by_name(uint64_t project_id, const char *name);
 char *engine_get_graph_stats(uint64_t project_id);
 
+// Test/debug hook: toggle LadybugDB-first query routing. When disabled, all
+// graph queries fall back to SQLite. Used by the differential test
+// (test_ladybug_diff) to exercise both code paths. No effect on production
+// semantics when left at the default (enabled).
+void engine_set_ladybug_queries_enabled(int enabled);
+
 // Find connected components in the call graph via BFS over name-matched
 // relation edges. Returns JSON:
 //   {"components":[{"type":"...","description":"...","confidence":N,

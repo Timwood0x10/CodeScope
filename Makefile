@@ -172,7 +172,9 @@ TEST_EXES := \
 	test_evidence_builder \
 	test_project_state \
 	test_verify_planner \
-	test_domain_rules
+	test_domain_rules \
+	test_ladybug_diff \
+	test_self_bench
 
 test-engine: $(ENGINE_LIB)
 	@printf "$(CYAN)[test/engine]$(RESET) Building and running C++ tests...\n"

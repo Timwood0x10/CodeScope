@@ -124,12 +124,27 @@ class GraphStore {
 	 *  When false, all LadybugDB-first query paths fall back to SQLite. */
 	bool isGraphReady() const
 	{
-		return lbug_initialized_ && lbug_populated_;
+		return lbug_initialized_ && lbug_populated_ &&
+		       ladybug_query_enabled_;
 	}
 	/** Mark LadybugDB as populated (called by compileGraphToLadybugDB on success). */
 	void setGraphReady()
 	{
 		lbug_populated_ = true;
+	}
+	/** Reset the populated flag. Called at the START of every compile so a
+	 *  failed/partial compile drops queries back to the SQLite fallback
+	 *  instead of serving a stale or half-built subgraph. */
+	void resetGraphReady()
+	{
+		lbug_populated_ = false;
+	}
+	/** Test/debug hook: toggle LadybugDB-first query routing. When disabled,
+	 *  all graph queries fall back to SQLite so the two paths can be
+	 *  differential-tested. Defaults to true (normal operation). */
+	void setLadybugQueryEnabled(bool enabled)
+	{
+		ladybug_query_enabled_ = enabled;
 	}
 	/** Get the LadybugDB connection handle (for direct Cypher queries). */
 	lbug_connection *lbugHandle()
@@ -815,6 +830,7 @@ class GraphStore {
 	lbug_connection lbug_conn_;
 	bool lbug_initialized_ = false;
 	bool lbug_populated_ = false;
+	bool ladybug_query_enabled_ = true;
 
 	// Cached prepared statements (initialized in open(), finalized in close())
 	sqlite3_stmt *stmt_fts_map_ = nullptr; // INSERT INTO fts_node_map

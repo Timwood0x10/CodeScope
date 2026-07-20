@@ -15,6 +15,8 @@
 #define CORESCOPE_STORE_GRAPH_COMPILER_H_
 
 #include <cstdint>
+#include <string>
+#include <unordered_set>
 
 namespace store
 {
@@ -31,8 +33,14 @@ class GraphStore;
 ///
 /// @param store   The GraphStore with an open SQLite + LadybugDB connection.
 /// @param project_id  The project whose graph should be compiled.
+/// @param changed_files  When non-null and non-empty, only subgraph
+///        nodes/edges that touch these files are recompiled (incremental
+///        mode). When null or empty, the whole project graph is recompiled
+///        (full mode, backward-compatible default).
 /// @return true on success, false on failure (error logged to stderr).
-bool compileGraphToLadybugDB(GraphStore *store, uint64_t project_id);
+bool compileGraphToLadybugDB(
+	GraphStore *store, uint64_t project_id,
+	const std::unordered_set<std::string> *changed_files = nullptr);
 
 } // namespace store
 
