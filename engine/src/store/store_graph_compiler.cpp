@@ -14,6 +14,7 @@
 
 #include <sqlite3.h>
 
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -49,6 +50,39 @@ static std::string csvEscape(const std::string &s)
 	return out;
 }
 
+// Escape a string for safe embedding in a Cypher string literal.
+// Wraps in single quotes, escapes backslashes and single quotes.
+static std::string cypherEscape(const std::string &s)
+{
+	std::string out;
+	out.reserve(s.size() + 4);
+	out += '\'';
+	for (char ch : s) {
+		if (ch == '\\' || ch == '\'') {
+			out += '\\';
+		}
+		out += ch;
+	}
+	out += '\'';
+	return out;
+}
+
+// Escape a string for SQL: replace single quotes with doubled single quotes.
+// Used to safely embed internal file paths in SQL IN clauses.
+static std::string sqlEscape(const std::string &s)
+{
+	std::string out;
+	out.reserve(s.size() + 2);
+	for (char ch : s) {
+		if (ch == '\'') {
+			out += "''";
+		} else {
+			out += ch;
+		}
+	}
+	return out;
+}
+
 // Read a SQLite TEXT column as a std::string, returning "" on NULL.
 static std::string sqliteText(sqlite3_stmt *st, int col)
 {
@@ -57,21 +91,108 @@ static std::string sqliteText(sqlite3_stmt *st, int col)
 		   std::string();
 }
 
+// FNV-1a 64-bit hash for content-stable UID generation.
+// Same (project_id, file_path, qualified_name, node_type, start_row)
+// always produces the same hash, surviving re-indexes where
+// graph_nodes.id changes. Used for entity.uid (external consumers
+// like caches and cross-project references rely on uid stability).
+static uint64_t fnv1a64(const std::string &s)
+{
+	// FNV offset basis and prime for 64-bit.
+	constexpr uint64_t kFnvOffsetBasis = 14695981039346656037ULL;
+	constexpr uint64_t kFnvPrime = 1099511628211ULL;
+	uint64_t hash = kFnvOffsetBasis;
+	for (unsigned char c : s) {
+		hash ^= c;
+		hash *= kFnvPrime;
+	}
+	return hash;
+}
+
+// Build a content-stable UID for a graph node.
+// Format: "gn_" + hex(fnv1a(project_id:file_path:qualified_name:node_type:start_row))
+// The hex encoding keeps the UID compact and Cypher-safe (no special chars).
+static std::string makeNodeUid(uint64_t project_id,
+			       const std::string &file_path,
+			       const std::string &qualified_name, int node_type,
+			       int start_row)
+{
+	std::string key = std::to_string(project_id) + ":" + file_path + ":" +
+			  qualified_name + ":" + std::to_string(node_type) +
+			  ":" + std::to_string(start_row);
+	uint64_t hash = fnv1a64(key);
+	// Format as 16-char hex string.
+	char buf[24];
+	snprintf(buf, sizeof(buf), "gn_%016llx",
+		 static_cast<unsigned long long>(hash));
+	return std::string(buf);
+}
+
 #ifdef HAS_LADYBUG
 
-// Write a temporary CSV file for the GraphNode table.
-// Returns the file path on success, or empty string on failure.
-static std::string writeNodeCsv(sqlite3 *db, uint64_t project_id)
+// Build a SQL IN-clause value list from a set of file paths.
+// Paths are escaped via sqlEscape (single quotes doubled).
+// Returns "'p1','p2',..." (no surrounding parens).
+static std::string buildSqlInList(const std::unordered_set<std::string> &files)
 {
-	const char *node_sql = R"(
-SELECT id, project_id, ir_node_id, node_type, name, qualified_name,
-       module_path, package_name, class_name, start_row, start_col,
-       end_row, end_col, file_path, language, signature, is_stub,
-       visibility, callgraph_ready, is_entry_point
-FROM graph_nodes WHERE project_id = ? ORDER BY id)";
+	std::string out;
+	for (const auto &fp : files) {
+		if (!out.empty())
+			out += ",";
+		out += "'" + sqlEscape(fp) + "'";
+	}
+	return out;
+}
+
+// Build a Cypher list literal from a set of file paths.
+// Paths are escaped via cypherEscape (which wraps in quotes).
+// Returns "['p1','p2',...]".
+static std::string buildCypherList(const std::unordered_set<std::string> &files)
+{
+	std::string out = "[";
+	bool first = true;
+	for (const auto &fp : files) {
+		if (!first)
+			out += ",";
+		first = false;
+		out += cypherEscape(fp);
+	}
+	out += "]";
+	return out;
+}
+
+// Write a temporary CSV file for the GraphNode table.
+// When changed_files is non-null and non-empty, only nodes whose file_path
+// is in the set are emitted (incremental mode). Otherwise all nodes for
+// the project are emitted (full mode).
+// Returns the file path on success, or empty string on failure.
+static std::string
+writeNodeCsv(sqlite3 *db, uint64_t project_id,
+	     const std::unordered_set<std::string> *changed_files)
+{
+	std::string node_sql;
+	if (changed_files && !changed_files->empty()) {
+		std::string file_list = buildSqlInList(*changed_files);
+		node_sql = "SELECT id, project_id, ir_node_id, node_type, "
+			   "name, qualified_name, module_path, package_name, "
+			   "class_name, start_row, start_col, end_row, "
+			   "end_col, file_path, language, signature, is_stub, "
+			   "visibility, callgraph_ready, is_entry_point "
+			   "FROM graph_nodes WHERE project_id = ? AND "
+			   "file_path IN (" +
+			   file_list + ") ORDER BY id";
+	} else {
+		node_sql = "SELECT id, project_id, ir_node_id, node_type, "
+			   "name, qualified_name, module_path, package_name, "
+			   "class_name, start_row, start_col, end_row, "
+			   "end_col, file_path, language, signature, is_stub, "
+			   "visibility, callgraph_ready, is_entry_point "
+			   "FROM graph_nodes WHERE project_id = ? ORDER BY id";
+	}
 
 	sqlite3_stmt *st = nullptr;
-	if (sqlite3_prepare_v2(db, node_sql, -1, &st, nullptr) != SQLITE_OK) {
+	if (sqlite3_prepare_v2(db, node_sql.c_str(), -1, &st, nullptr) !=
+	    SQLITE_OK) {
 		fprintf(stderr,
 			"store: compileGraphToLadybugDB: prepare nodes failed: "
 			"%s [module=store, method=compileGraphToLadybugDB]\n",
@@ -107,9 +228,15 @@ FROM graph_nodes WHERE project_id = ? ORDER BY id)";
 		int64_t proj = sqlite3_column_int64(st, 1);
 		int64_t ir_id = sqlite3_column_int64(st, 2);
 		int nt = sqlite3_column_int(st, 3);
-		std::string uid = "gn_" + std::to_string(node_id) + "_" +
-				  std::to_string(project_id);
-		// These are the columns for COPY FROM
+		// M4: Content-stable UID — survives re-indexes where
+		// graph_nodes.id changes. graph_node_id (next column) still
+		// stores graph_nodes.id because impact analysis relies on
+		// that invariant (see M3 contract in impact_analysis.cpp).
+		std::string uid =
+			makeNodeUid(project_id, sqliteText(st, 13), // file_path
+				    sqliteText(st, 5), // qualified_name
+				    nt, // node_type
+				    sqlite3_column_int(st, 9)); // start_row
 		std::string line =
 			uid + "," + std::to_string(proj) + "," +
 			std::to_string(ir_id) + "," + std::to_string(node_id) +
@@ -146,24 +273,53 @@ FROM graph_nodes WHERE project_id = ? ORDER BY id)";
 }
 
 // Write temp CSV files for CALLS and RELATES edges.
+// When changed_files is non-null and non-empty, only edges whose source OR
+// target file_path is in the set are emitted (incremental mode). Otherwise
+// all edges for the project are emitted (full mode).
 // Returns the file paths, or empty strings on failure.
 struct EdgeCsvPaths {
 	std::string calls;
 	std::string relates;
 };
-static EdgeCsvPaths writeEdgeCsvs(sqlite3 *db, uint64_t project_id)
+static EdgeCsvPaths
+writeEdgeCsvs(sqlite3 *db, uint64_t project_id,
+	      const std::unordered_set<std::string> *changed_files)
 {
-	const char *edge_sql = R"(
-SELECT s.file_path, s.id, t.file_path, t.id, e.edge_type,
-       e.call_site_line, e.label, e.graph_type
-FROM graph_edges e
-JOIN graph_nodes s ON e.source_node_id = s.id
-JOIN graph_nodes t ON e.target_node_id = t.id
-WHERE e.project_id = ? ORDER BY e.id)";
+	// Columns:
+	//   0=s.file_path, 1=s.id, 2=s.qualified_name, 3=s.node_type,
+	//   4=s.start_row,
+	//   5=t.file_path, 6=t.id, 7=t.qualified_name, 8=t.node_type,
+	//   9=t.start_row,
+	//   10=e.edge_type, 11=e.call_site_line, 12=e.label,
+	//   13=e.graph_type
+	std::string edge_sql;
+	if (changed_files && !changed_files->empty()) {
+		std::string file_list = buildSqlInList(*changed_files);
+		edge_sql = "SELECT s.file_path, s.id, s.qualified_name, "
+			   "s.node_type, s.start_row, t.file_path, t.id, "
+			   "t.qualified_name, t.node_type, t.start_row, "
+			   "e.edge_type, e.call_site_line, e.label, "
+			   "e.graph_type FROM graph_edges e JOIN graph_nodes s "
+			   "ON e.source_node_id = s.id JOIN graph_nodes t ON "
+			   "e.target_node_id = t.id WHERE e.project_id = ? AND "
+			   "(s.file_path IN (" +
+			   file_list + ") OR t.file_path IN (" + file_list +
+			   ")) ORDER BY e.id";
+	} else {
+		edge_sql = "SELECT s.file_path, s.id, s.qualified_name, "
+			   "s.node_type, s.start_row, t.file_path, t.id, "
+			   "t.qualified_name, t.node_type, t.start_row, "
+			   "e.edge_type, e.call_site_line, e.label, "
+			   "e.graph_type FROM graph_edges e JOIN graph_nodes s "
+			   "ON e.source_node_id = s.id JOIN graph_nodes t ON "
+			   "e.target_node_id = t.id WHERE e.project_id = ? "
+			   "ORDER BY e.id";
+	}
 
 	sqlite3_stmt *st = nullptr;
 	EdgeCsvPaths paths;
-	if (sqlite3_prepare_v2(db, edge_sql, -1, &st, nullptr) != SQLITE_OK) {
+	if (sqlite3_prepare_v2(db, edge_sql.c_str(), -1, &st, nullptr) !=
+	    SQLITE_OK) {
 		fprintf(stderr,
 			"store: compileGraphToLadybugDB: prepare edges failed: "
 			"%s [module=store, method=compileGraphToLadybugDB]\n",
@@ -194,21 +350,24 @@ WHERE e.project_id = ? ORDER BY e.id)";
 	}
 
 	while (sqlite3_step(st) == SQLITE_ROW) {
-		int et = sqlite3_column_int(st, 4);
-		int64_t src_id = sqlite3_column_int64(st, 1);
-		int64_t tgt_id = sqlite3_column_int64(st, 3);
-		std::string src_uid = "gn_" + std::to_string(src_id) + "_" +
-				      std::to_string(project_id);
-		std::string tgt_uid = "gn_" + std::to_string(tgt_id) + "_" +
-				      std::to_string(project_id);
+		int et = sqlite3_column_int(st, 10);
+		// M4: content-stable UIDs (same as in writeNodeCsv).
+		std::string src_uid = makeNodeUid(project_id, sqliteText(st, 0),
+						  sqliteText(st, 2),
+						  sqlite3_column_int(st, 3),
+						  sqlite3_column_int(st, 4));
+		std::string tgt_uid = makeNodeUid(project_id, sqliteText(st, 5),
+						  sqliteText(st, 7),
+						  sqlite3_column_int(st, 8),
+						  sqlite3_column_int(st, 9));
 
 		// CSV: FROM,TO,project_id,edge_type,label,graph_type
 		// (CALLS also has call_site_line, RELATES doesn't)
-		std::string base = src_uid + "," + tgt_uid + "," +
-				   std::to_string(project_id) + "," +
-				   std::to_string(et) + "," +
-				   csvEscape(sqliteText(st, 6)) + "," + // label
-				   csvEscape(sqliteText(st, 7)); // graph_type
+		std::string base =
+			src_uid + "," + tgt_uid + "," +
+			std::to_string(project_id) + "," + std::to_string(et) +
+			"," + csvEscape(sqliteText(st, 12)) + "," + // label
+			csvEscape(sqliteText(st, 13)); // graph_type
 
 		if (et == 3) {
 			// RELATES: no call_site_line column
@@ -216,7 +375,8 @@ WHERE e.project_id = ? ORDER BY e.id)";
 		} else {
 			// CALLS: has call_site_line
 			fputs((base + "," +
-			       std::to_string(sqlite3_column_int(st, 5)) + "\n")
+			       std::to_string(sqlite3_column_int(st, 11)) +
+			       "\n")
 				      .c_str(),
 			      fc);
 		}
@@ -262,9 +422,13 @@ bool compileGraphToLadybugDB(
 	GraphStore *store, uint64_t project_id,
 	const std::unordered_set<std::string> *changed_files)
 {
-	(void)changed_files; // unused — always full compile for now
 	if (!store)
 		return false;
+
+	// H1: Reset the populated flag BEFORE any destructive operation so a
+	// failed/partial compile drops queries back to the SQLite fallback
+	// instead of serving a stale or half-built subgraph.
+	store->resetGraphReady();
 
 	lbug_connection *conn = store->lbugHandle();
 	if (!conn) {
@@ -279,10 +443,22 @@ bool compileGraphToLadybugDB(
 		return false;
 
 	// ── Step 1: Clear existing subgraph for this project ──
+	// M1: In incremental mode (changed_files non-empty), only delete
+	// GraphNodes whose file_path is in changed_files. In full mode,
+	// delete the entire project subgraph.
 	{
-		std::string clear = "MATCH (n:GraphNode {project_id:" +
-				    std::to_string(project_id) +
-				    "}) DETACH DELETE n";
+		std::string clear;
+		if (changed_files && !changed_files->empty()) {
+			std::string file_list = buildCypherList(*changed_files);
+			clear = "MATCH (n:GraphNode {project_id:" +
+				std::to_string(project_id) +
+				"}) WHERE n.file_path IN " + file_list +
+				" DETACH DELETE n";
+		} else {
+			clear = "MATCH (n:GraphNode {project_id:" +
+				std::to_string(project_id) +
+				"}) DETACH DELETE n";
+		}
 		lbug_query_result qr;
 		lbug_state state =
 			lbug_connection_query(conn, clear.c_str(), &qr);
@@ -304,7 +480,8 @@ bool compileGraphToLadybugDB(
 
 	// ── Step 2: Write nodes CSV and COPY FROM ──
 	{
-		std::string csv_path = writeNodeCsv(db, project_id);
+		std::string csv_path =
+			writeNodeCsv(db, project_id, changed_files);
 		if (csv_path.empty())
 			return false;
 		bool ok = copyFrom(conn, "GraphNode", csv_path.c_str(),
@@ -316,7 +493,8 @@ bool compileGraphToLadybugDB(
 
 	// ── Step 3: Write edges CSVs and COPY FROM ──
 	{
-		EdgeCsvPaths paths = writeEdgeCsvs(db, project_id);
+		EdgeCsvPaths paths =
+			writeEdgeCsvs(db, project_id, changed_files);
 		if (paths.calls.empty() && paths.relates.empty())
 			return false;
 
@@ -342,7 +520,9 @@ bool compileGraphToLadybugDB(
 
 #else // !HAS_LADYBUG
 
-bool compileGraphToLadybugDB(GraphStore * /*store*/, uint64_t /*project_id*/)
+bool compileGraphToLadybugDB(
+	GraphStore * /*store*/, uint64_t /*project_id*/,
+	const std::unordered_set<std::string> * /*changed_files*/)
 {
 	return false; // LadybugDB not compiled in
 }

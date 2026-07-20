@@ -28,6 +28,11 @@ char *engine_index_post_parse(uint64_t project_id, const std::string &dir,
 			      int64_t time_parse_ms, int64_t time_buildgraph_ms,
 			      int total_indexed)
 {
+	// Total wall-clock for the entire post-parse phase (graph build +
+	// metrics + indexes). Captured here so the breakdown in
+	// engine_index_project can attribute "other overhead" precisely.
+	auto t_post_parse_start = steady_clock::now();
+
 	// ── Post-loop: GraphFinalize ──────────────────────────────
 	// After all data is written, build the graph, populate symbols,
 	// copy cross-file call edges, build FTS, and resolve metrics.
@@ -267,6 +272,17 @@ char *engine_index_post_parse(uint64_t project_id, const std::string &dir,
 			"(CODESCOPE_SKIP_ASYNC=1) for project %llu\n",
 			(unsigned long long)project_id);
 	}
+
+	// Aggregate post-parse wall-clock (graph build + metrics + indexes +
+	// async launch). Lets engine_index_project attribute "other overhead"
+	// precisely: total - parse - post_parse_total = discovery + threading.
+	auto t_post_parse_end = steady_clock::now();
+	fprintf(stderr,
+		"engine: post_parse_total=%lldms "
+		"[module=engine, method=engine_index_post_parse]\n",
+		(long long)duration_cast<milliseconds>(t_post_parse_end -
+						       t_post_parse_start)
+			.count());
 
 	return dupString(result.str());
 }

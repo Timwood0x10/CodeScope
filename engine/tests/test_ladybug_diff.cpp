@@ -74,6 +74,46 @@ static bool sameNames(const char *a, const char *b)
 	return extractNames(a) == extractNames(b);
 }
 
+// Extract all "<field>":<number> values from a JSON string as a multiset.
+// Used to compare numeric field values (e.g. complexity, nesting) between
+// the two query paths at the value level, not just the name-set level.
+// A multiset is used (not a set) so that duplicate values are preserved
+// (e.g. two nodes with complexity 1 each contribute two entries).
+static std::multiset<int> extractFieldValues(const char *json,
+					     const char *field)
+{
+	std::multiset<int> out;
+	if (!json || !field || !*field)
+		return out;
+	std::string s(json);
+	std::string key = std::string("\"") + field + "\":";
+	size_t pos = 0;
+	while ((pos = s.find(key, pos)) != std::string::npos) {
+		pos += key.size();
+		// Skip whitespace between key and value.
+		while (pos < s.size() && (s[pos] == ' ' || s[pos] == '\t'))
+			pos++;
+		if (pos >= s.size())
+			break;
+		// Parse optional sign + digits.
+		int sign = 1;
+		if (s[pos] == '-') {
+			sign = -1;
+			pos++;
+		}
+		if (pos < s.size() && s[pos] >= '0' && s[pos] <= '9') {
+			int val = 0;
+			while (pos < s.size() && s[pos] >= '0' &&
+			       s[pos] <= '9') {
+				val = val * 10 + (s[pos] - '0');
+				pos++;
+			}
+			out.insert(sign * val);
+		}
+	}
+	return out;
+}
+
 // Run `call_expr` on both query paths and assert the returned name sets match.
 // Also asserts the Ladybug result is non-empty when expect_nonempty is set,
 // which proves LadybugDB was actually exercised (not a vacuous pass).
@@ -216,6 +256,116 @@ int main()
 	expectContains("findReferences(add)",
 		       engine_find_references(pid, "add", nullptr),
 		       {"multiply", "compute"});
+
+	// ── getHotspots: both paths agree on name sets ──
+	total++;
+	DIFF_CHECK("getHotspots",
+		   engine_get_hotspots(pid, 10), true);
+
+	// Value-consistency check: complexity values must match between the
+	// two paths (not just the name sets). Bug M2: LadybugDB path used
+	// to emit complexity:0 for all nodes.
+	{
+		total++;
+		engine_set_ladybug_queries_enabled(1);
+		char *lbug_hs = engine_get_hotspots(pid, 10);
+		engine_set_ladybug_queries_enabled(0);
+		char *sqlite_hs = engine_get_hotspots(pid, 10);
+		engine_set_ladybug_queries_enabled(1);
+		check(lbug_hs != nullptr && sqlite_hs != nullptr,
+		      "getHotspots value-check null");
+		auto lbug_cx = extractFieldValues(lbug_hs, "complexity");
+		auto sqlite_cx =
+			extractFieldValues(sqlite_hs, "complexity");
+		if (lbug_cx != sqlite_cx) {
+			fprintf(stderr,
+				"  [DIFF] getHotspots complexity\n");
+			fprintf(stderr, "    ladybug: %s\n", lbug_hs);
+			fprintf(stderr, "    sqlite : %s\n", sqlite_hs);
+		}
+		check(lbug_cx == sqlite_cx,
+		      "getHotspots complexity diverges between LadybugDB "
+		      "and SQLite");
+		engine_free_string(lbug_hs);
+		engine_free_string(sqlite_hs);
+		++passed;
+		fprintf(stderr, "  [PASS] getHotspots complexity\n");
+	}
+
+	// ── getEntryPoints: both paths agree on name sets ──
+	total++;
+	DIFF_CHECK("getEntryPoints",
+		   engine_get_entry_points(pid), true);
+
+	// Value-consistency check: complexity and nesting values must match
+	// between the two paths. Bug M2: LadybugDB path used to emit
+	// complexity:0 and nesting:0 for all nodes.
+	{
+		total++;
+		engine_set_ladybug_queries_enabled(1);
+		char *lbug_ep = engine_get_entry_points(pid);
+		engine_set_ladybug_queries_enabled(0);
+		char *sqlite_ep = engine_get_entry_points(pid);
+		engine_set_ladybug_queries_enabled(1);
+		check(lbug_ep != nullptr && sqlite_ep != nullptr,
+		      "getEntryPoints value-check null");
+		auto lbug_cx = extractFieldValues(lbug_ep, "complexity");
+		auto sqlite_cx =
+			extractFieldValues(sqlite_ep, "complexity");
+		auto lbug_nest = extractFieldValues(lbug_ep, "nesting");
+		auto sqlite_nest =
+			extractFieldValues(sqlite_ep, "nesting");
+		if (lbug_cx != sqlite_cx || lbug_nest != sqlite_nest) {
+			fprintf(stderr,
+				"  [DIFF] getEntryPoints values\n");
+			fprintf(stderr, "    ladybug: %s\n", lbug_ep);
+			fprintf(stderr, "    sqlite : %s\n", sqlite_ep);
+		}
+		check(lbug_cx == sqlite_cx,
+		      "getEntryPoints complexity diverges");
+		check(lbug_nest == sqlite_nest,
+		      "getEntryPoints nesting diverges");
+		engine_free_string(lbug_ep);
+		engine_free_string(sqlite_ep);
+		++passed;
+		fprintf(stderr, "  [PASS] getEntryPoints values\n");
+	}
+
+	// ── analyzeChangeImpact (detect_changes): both paths agree ──
+	// Coverage for M3: ensures the LadybugDB adjacency path produces the
+	// same caller/callee name sets as the SQLite fallback.
+	total++;
+	{
+		engine_set_ladybug_queries_enabled(1);
+		char *lbug = engine_detect_changes(
+			pid, "[\"/tmp/test_ladybug_diff/math.go\"]");
+		engine_set_ladybug_queries_enabled(0);
+		char *sqlite = engine_detect_changes(
+			pid, "[\"/tmp/test_ladybug_diff/math.go\"]");
+		engine_set_ladybug_queries_enabled(1);
+		check(lbug != nullptr && sqlite != nullptr,
+		      "detect_changes null");
+		// Both should report success (no error) and find modified
+		// nodes.
+		check(strstr(lbug, "\"error\":null") != nullptr,
+		      "detect_changes ladybug error:null");
+		check(strstr(sqlite, "\"error\":null") != nullptr,
+		      "detect_changes sqlite error:null");
+		// Compare name sets of callers and callees.
+		bool match = sameNames(lbug, sqlite);
+		if (!match) {
+			fprintf(stderr, "  [DIFF] detect_changes\n");
+			fprintf(stderr, "    ladybug: %s\n", lbug);
+			fprintf(stderr, "    sqlite : %s\n", sqlite);
+		}
+		check(match,
+		      "detect_changes diverges between LadybugDB and "
+		      "SQLite");
+		engine_free_string(lbug);
+		engine_free_string(sqlite);
+		++passed;
+		fprintf(stderr, "  [PASS] detect_changes\n");
+	}
 
 	// ── traceCallChain: both paths agree on found + endpoints ──
 	{

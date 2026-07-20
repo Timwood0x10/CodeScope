@@ -452,6 +452,14 @@ class GraphStore {
 
 	bool isFileUnchanged(uint64_t project_id, const char *file_path,
 			     int64_t mtime, int64_t size);
+	/** Load all (file_path, mtime, size) tuples for a project into an
+	 *  in-memory set for O(1) membership checks during file discovery.
+	 *  Replaces N per-file isFileUnchanged queries with a single SELECT.
+	 *  Each tuple is encoded as "path|mtime|size" for fast set lookup.
+	 *  @param project_id The project whose scan state to load.
+	 *  @return unordered_set of "path|mtime|size" strings. */
+	std::unordered_set<std::string>
+	loadFileScanStateBatch(uint64_t project_id);
 	void updateFileScanState(uint64_t project_id, const char *file_path,
 				 int64_t mtime, int64_t size);
 	void cleanupStaleFiles(uint64_t project_id,

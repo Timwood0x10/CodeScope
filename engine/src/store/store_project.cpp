@@ -591,6 +591,37 @@ bool GraphStore::isFileUnchanged(uint64_t project_id, const char *file_path,
 	return unchanged;
 }
 
+std::unordered_set<std::string>
+GraphStore::loadFileScanStateBatch(uint64_t project_id)
+{
+	std::unordered_set<std::string> result;
+	const char *sql =
+		"SELECT file_path, file_mtime, file_size FROM file_scan_state WHERE project_id=?";
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		fprintf(stderr,
+			"store: loadFileScanStateBatch prepare failed: %s "
+			"[module=store, method=loadFileScanStateBatch]\n",
+			sqlite3_errmsg(db_));
+		return result;
+	}
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	while (sqlite3_step(stmt) == SQLITE_ROW) {
+		const char *fp = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 0));
+		int64_t mtime = sqlite3_column_int64(stmt, 1);
+		int64_t fsize = sqlite3_column_int64(stmt, 2);
+		if (fp) {
+			std::string key = std::string(fp) + "|" +
+					  std::to_string(mtime) + "|" +
+					  std::to_string(fsize);
+			result.insert(std::move(key));
+		}
+	}
+	sqlite3_finalize(stmt);
+	return result;
+}
+
 void GraphStore::updateFileScanState(uint64_t project_id, const char *file_path,
 				     int64_t mtime, int64_t size)
 {
@@ -610,42 +641,68 @@ void GraphStore::updateFileScanState(uint64_t project_id, const char *file_path,
 void GraphStore::cleanupStaleFiles(uint64_t project_id,
 				   const std::vector<std::string> &active_files)
 {
-	// Build temp table of active files for efficient set-difference
-	const char *create_sql =
-		"CREATE TEMP TABLE IF NOT EXISTS _active_files (path TEXT PRIMARY KEY)";
-	sqlite3_exec(db_, create_sql, nullptr, nullptr, nullptr);
+	// Wrap in a transaction for atomicity + throughput (1 commit vs N).
+	exec("BEGIN IMMEDIATE");
 
+	// Create temp table if not exists (idempotent).
+	sqlite3_exec(
+		db_,
+		"CREATE TEMP TABLE IF NOT EXISTS _active_files (path TEXT PRIMARY KEY)",
+		nullptr, nullptr, nullptr);
+
+	// Clear previous active files in one shot.
+	sqlite3_exec(db_, "DELETE FROM _active_files", nullptr, nullptr,
+		     nullptr);
+
+	// Reuse a single prepared INSERT for all files (1 prepare vs N prepares).
 	sqlite3_stmt *stmt = nullptr;
-
-	// Clear previous active files
-	sqlite3_prepare_v2(db_, "DELETE FROM _active_files", -1, &stmt,
-			   nullptr);
-	sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-
-	// Insert current active files
-	sqlite3_prepare_v2(db_, "INSERT INTO _active_files (path) VALUES (?)",
-			   -1, &stmt, nullptr);
+	if (sqlite3_prepare_v2(
+		    db_,
+		    "INSERT OR IGNORE INTO _active_files (path) VALUES (?)", -1,
+		    &stmt, nullptr) != SQLITE_OK) {
+		fprintf(stderr,
+			"store: cleanupStaleFiles prepare insert failed: %s "
+			"[module=store, method=cleanupStaleFiles]\n",
+			sqlite3_errmsg(db_));
+		exec("ROLLBACK");
+		return;
+	}
 	for (const auto &f : active_files) {
-		sqlite3_bind_text(stmt, 1, f.c_str(), -1, SQLITE_TRANSIENT);
+		// SQLITE_STATIC: avoid SQLite internal memcpy (caller owns the
+		// string for the duration of the step call).
+		sqlite3_bind_text(stmt, 1, f.c_str(),
+				  static_cast<int>(f.size()), SQLITE_STATIC);
 		sqlite3_step(stmt);
 		sqlite3_reset(stmt);
 	}
 	sqlite3_finalize(stmt);
 
-	// Delete stale file_scan_state entries (files that no longer exist)
-	sqlite3_prepare_v2(db_,
-			   "DELETE FROM file_scan_state "
-			   "WHERE project_id=? AND file_path NOT IN "
-			   "(SELECT path FROM _active_files)",
-			   -1, &stmt, nullptr);
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
+	// Delete stale file_scan_state entries in one shot.
+	{
+		sqlite3_stmt *del = nullptr;
+		if (sqlite3_prepare_v2(db_,
+				       "DELETE FROM file_scan_state "
+				       "WHERE project_id=? AND file_path NOT IN "
+				       "(SELECT path FROM _active_files)",
+				       -1, &del, nullptr) == SQLITE_OK) {
+			sqlite3_bind_int64(del, 1,
+					   static_cast<int64_t>(project_id));
+			sqlite3_step(del);
+			sqlite3_finalize(del);
+		} else {
+			fprintf(stderr,
+				"store: cleanupStaleFiles prepare delete failed: %s "
+				"[module=store, method=cleanupStaleFiles]\n",
+				sqlite3_errmsg(db_));
+		}
+	}
 
-	// Drop temp table
+	// Drop temp table (kept for now to match existing behavior; could
+	// be retained across calls with a TRUNCATE pattern for further savings).
 	sqlite3_exec(db_, "DROP TABLE IF EXISTS _active_files", nullptr,
 		     nullptr, nullptr);
+
+	exec("COMMIT");
 }
 
 // ─── Interactive Function Exploration ──────────────────────────

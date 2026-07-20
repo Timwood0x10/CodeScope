@@ -170,6 +170,17 @@ buildCallAdjacency(sqlite3 *db, uint64_t project_id,
 
 // Load call edges from LadybugDB into the forward/reverse adjacency maps.
 // Returns true on success. On failure, sets *error_out and returns false.
+//
+// M3 CONTRACT: The adjacency maps are keyed by uint64_t graph_node_id,
+// which the LadybugDB compiler (store_graph_compiler.cpp) sets equal to
+// graph_nodes.id (the SQLite integer primary key). lookupNodeMetadata()
+// below queries `WHERE id IN (...)` against the SAME graph_nodes.id, so
+// the keys match. If graph_node_id is ever changed to a content-stable
+// uid (different from graph_nodes.id), BOTH this function's key type AND
+// lookupNodeMetadata's WHERE clause must be updated to use the same key.
+// See M4 (makeNodeUid) for the content-stable uid implementation that
+// intentionally lives in the separate `uid` column to preserve this
+// invariant.
 #ifdef HAS_LADYBUG
 static bool buildCallAdjacencyFromLadybug(
 	store::GraphStore *store, uint64_t project_id,

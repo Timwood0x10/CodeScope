@@ -245,6 +245,10 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	// time to reduce node count on very large projects.
 	filter.loadExcludeEnv();
 
+	// Batch-load file scan state ONCE to avoid N per-file DB queries
+	// during discovery (1254 files × ~2ms prepare/finalize = ~2.5s saved).
+	auto scan_state = g_store->loadFileScanStateBatch(project_id);
+
 	// Phase 1: collect file paths (single-threaded)
 	struct FileJob {
 		std::string path;

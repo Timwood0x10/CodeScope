@@ -62,6 +62,65 @@ std::string QueryEngine::getCommunities(uint64_t project_id, int max_members,
 	return "{\"communities\":[],\"total\":0}";
 }
 
+// ─── Helpers shared by getHotspots/getEntryPoints ────────────
+// Fetches cyclomatic + nesting_depth from SQLite (facts) for LadybugDB
+// paths; missing IDs default to 0. Keeps JSON contract consistent.
+static void fetchNodeMetrics(store::GraphStore *store, uint64_t project_id,
+			     const std::vector<int64_t> &ids,
+			     std::unordered_map<int64_t, int> &complexity_map,
+			     std::unordered_map<int64_t, int> &nesting_map)
+{
+	if (ids.empty())
+		return;
+	std::string id_list;
+	for (auto id : ids) {
+		if (!id_list.empty())
+			id_list += ",";
+		id_list += std::to_string(id);
+	}
+	sqlite3 *db = store ? store->handle() : nullptr;
+	if (!db)
+		return;
+	sqlite3_stmt *stmt = nullptr;
+	std::string sql = "SELECT id, cyclomatic, nesting_depth FROM "
+			  "graph_nodes WHERE project_id = ? AND id IN (" +
+			  id_list + ")";
+	if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) !=
+	    SQLITE_OK) {
+		if (stmt)
+			sqlite3_finalize(stmt);
+		return;
+	}
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	while (sqlite3_step(stmt) == SQLITE_ROW) {
+		int64_t nid = sqlite3_column_int64(stmt, 0);
+		complexity_map[nid] = sqlite3_column_int(stmt, 1);
+		nesting_map[nid] = sqlite3_column_int(stmt, 2);
+	}
+	sqlite3_finalize(stmt);
+}
+#ifdef HAS_LADYBUG
+// Extract a string column from a LadybugDB tuple into `out`.
+static void lbugGetStr(lbug_flat_tuple *tuple, int col, std::string &out)
+{
+	lbug_value v;
+	if (lbug_flat_tuple_get_value(tuple, col, &v) != LbugSuccess)
+		return;
+	char *sv = nullptr;
+	if (lbug_value_get_string(&v, &sv) == LbugSuccess && sv) {
+		out = sv;
+		lbug_destroy_string(sv);
+	}
+}
+// Extract an int64 column from a LadybugDB tuple into `out`.
+static void lbugGetInt(lbug_flat_tuple *tuple, int col, int64_t &out)
+{
+	lbug_value v;
+	if (lbug_flat_tuple_get_value(tuple, col, &v) == LbugSuccess)
+		lbug_value_get_int64(&v, &out);
+}
+#endif
+
 // ─── Hotspot Analysis ───────────────────────────────────────
 
 std::string QueryEngine::getHotspots(uint64_t project_id, int top_n)
@@ -90,72 +149,70 @@ std::string QueryEngine::getHotspots(uint64_t project_id, int top_n)
 			lbug_state s = lbug_connection_query(
 				conn, cypher.c_str(), &qr);
 			if (s == LbugSuccess) {
-				std::ostringstream json;
-				json << "{\"hotspots\":[";
-				bool first = true;
-				int count = 0;
+				// Collect rows first, then fetch complexity from
+				// SQLite (facts) for contract parity.
+				struct HotspotRow {
+					int64_t id;
+					std::string name;
+					std::string file_path;
+					int64_t node_type;
+					int64_t caller_count;
+				};
+				std::vector<HotspotRow> rows;
 				lbug_flat_tuple tuple;
 				while (lbug_query_result_get_next(
 					       &qr, &tuple) == LbugSuccess) {
-					if (!first)
-						json << ",";
-					first = false;
-					++count;
-					json << "{";
-					lbug_value v;
+					HotspotRow row{};
 					// Columns: 0=graph_node_id, 1=name,
 					// 2=file_path, 3=node_type,
 					// 4=caller_count
-					for (int i = 0; i < 5; i++) {
-						if (i > 0)
-							json << ",";
-						if (lbug_flat_tuple_get_value(
-							    &tuple, i, &v) !=
-						    LbugSuccess)
-							continue;
-						if (i == 0 || i == 3 ||
-						    i == 4) {
-							int64_t iv = 0;
-							lbug_value_get_int64(
-								&v, &iv);
-							const char *keys[] = {
-								"id", "", "",
-								"type",
-								"caller_count"
-							};
-							json << "\"" << keys[i]
-							     << "\":" << iv;
-						} else {
-							char *sv = nullptr;
-							if (lbug_value_get_string(
-								    &v, &sv) ==
-								    LbugSuccess &&
-							    sv) {
-								const char *keys[] = {
-									"",
-									"name",
-									"file",
-									"", ""
-								};
-								json << "\""
-								     << keys[i]
-								     << "\":\""
-								     << jsonEscape(
-										sv)
-								     << "\"";
-								lbug_destroy_string(
-									sv);
-							}
-						}
-					}
-					// Complexity not stored in
-					// LadybugDB; report 0.
-					json << ",\"complexity\":0";
-					json << "}";
+					lbugGetInt(&tuple, 0, row.id);
+					lbugGetStr(&tuple, 1, row.name);
+					lbugGetStr(&tuple, 2, row.file_path);
+					lbugGetInt(&tuple, 3, row.node_type);
+					lbugGetInt(&tuple, 4, row.caller_count);
+					rows.push_back(std::move(row));
 					lbug_flat_tuple_destroy(&tuple);
 				}
 				lbug_query_result_destroy(&qr);
-				json << "],\"total\":" << count << "}";
+
+				// Fetch real complexity from SQLite by node ID.
+				std::unordered_map<int64_t, int> complexity_map;
+				std::unordered_map<int64_t, int> nesting_map;
+				std::vector<int64_t> ids;
+				for (const auto &r : rows)
+					ids.push_back(r.id);
+				fetchNodeMetrics(store_, project_id, ids,
+						 complexity_map, nesting_map);
+				// Build JSON using real complexity values
+				// (default to 0 if missing from the map).
+				std::ostringstream json;
+				json << "{\"hotspots\":[";
+				bool first = true;
+				for (const auto &r : rows) {
+					if (!first)
+						json << ",";
+					first = false;
+					int complexity = 0;
+					auto it = complexity_map.find(r.id);
+					if (it != complexity_map.end())
+						complexity = it->second;
+					json << "{"
+					     << "\"id\":" << r.id << ","
+					     << "\"name\":\""
+					     << jsonEscape(r.name.c_str())
+					     << "\","
+					     << "\"file\":\""
+					     << jsonEscape(r.file_path.c_str())
+					     << "\","
+					     << "\"type\":" << r.node_type
+					     << ","
+					     << "\"caller_count\":"
+					     << r.caller_count << ","
+					     << "\"complexity\":" << complexity
+					     << "}";
+				}
+				json << "],\"total\":" << rows.size() << "}";
 				return json.str();
 			}
 			lbug_query_result_destroy(&qr);
@@ -166,11 +223,14 @@ std::string QueryEngine::getHotspots(uint64_t project_id, int top_n)
 	// Fallback: SQLite
 	sqlite3 *db = store_->handle();
 	sqlite3_stmt *stmt = nullptr;
+	// INNER JOIN matches the LadybugDB Cypher pattern (CALLS edge
+	// required). Complexity not stored; emit 0 to match the LadybugDB
+	// path. fetchNodeMetrics on the LadybugDB path is forward-compatible.
 	std::string sql =
 		"SELECT gn.id, gn.name, gn.file_path, gn.node_type, "
-		"COUNT(ge.id) AS caller_count, gn.cyclomatic "
+		"COUNT(ge.id) AS caller_count "
 		"FROM graph_nodes gn "
-		"LEFT JOIN graph_edges ge ON ge.target_node_id = gn.id AND "
+		"INNER JOIN graph_edges ge ON ge.target_node_id = gn.id AND "
 		"ge.edge_type = 1 "
 		"WHERE gn.project_id = ? AND gn.node_type IN (0,1) "
 		"GROUP BY gn.id "
@@ -215,7 +275,7 @@ std::string QueryEngine::getHotspots(uint64_t project_id, int top_n)
 			     << ","
 			     << "\"caller_count\":"
 			     << sqlite3_column_int(stmt, 4) << ","
-			     << "\"complexity\":" << sqlite3_column_int(stmt, 5)
+			     << "\"complexity\":0"
 			     << "}";
 		}
 		sqlite3_finalize(stmt);
@@ -333,65 +393,69 @@ std::string QueryEngine::getEntryPoints(uint64_t project_id)
 			lbug_state s = lbug_connection_query(
 				conn, cypher.c_str(), &qr);
 			if (s == LbugSuccess) {
-				std::ostringstream json;
-				json << "{\"entry_points\":[";
-				bool first = true;
-				int count = 0;
+				// Collect rows first, then fetch complexity/
+				// nesting from SQLite (facts) for contract parity.
+				struct EntryPointRow {
+					int64_t id;
+					std::string name;
+					int64_t node_type;
+					std::string file_path;
+				};
+				std::vector<EntryPointRow> rows;
 				lbug_flat_tuple tuple;
 				while (lbug_query_result_get_next(
 					       &qr, &tuple) == LbugSuccess) {
-					if (!first)
-						json << ",";
-					first = false;
-					++count;
-					json << "{";
-					lbug_value v;
+					EntryPointRow row{};
 					// Columns: 0=graph_node_id, 1=name,
 					// 2=node_type, 3=file_path
-					for (int i = 0; i < 4; i++) {
-						if (i > 0)
-							json << ",";
-						if (lbug_flat_tuple_get_value(
-							    &tuple, i, &v) !=
-						    LbugSuccess)
-							continue;
-						if (i == 0 || i == 2) {
-							int64_t iv = 0;
-							lbug_value_get_int64(
-								&v, &iv);
-							json << "\""
-							     << (i == 0 ?
-									 "id" :
-									 "type")
-							     << "\":" << iv;
-						} else {
-							char *sv = nullptr;
-							if (lbug_value_get_string(
-								    &v, &sv) ==
-								    LbugSuccess &&
-							    sv) {
-								json << "\""
-								     << (i == 1 ?
-										 "name" :
-										 "file")
-								     << "\":\""
-								     << jsonEscape(
-										sv)
-								     << "\"";
-								lbug_destroy_string(
-									sv);
-							}
-						}
-					}
-					// Complexity/nesting not in
-					// LadybugDB; report 0.
-					json << ",\"complexity\":0"
-					     << ",\"nesting\":0";
-					json << "}";
+					lbugGetInt(&tuple, 0, row.id);
+					lbugGetStr(&tuple, 1, row.name);
+					lbugGetInt(&tuple, 2, row.node_type);
+					lbugGetStr(&tuple, 3, row.file_path);
+					rows.push_back(std::move(row));
 					lbug_flat_tuple_destroy(&tuple);
 				}
 				lbug_query_result_destroy(&qr);
-				json << "],\"total\":" << count << "}";
+
+				// Fetch real complexity + nesting from SQLite.
+				std::unordered_map<int64_t, int> complexity_map;
+				std::unordered_map<int64_t, int> nesting_map;
+				std::vector<int64_t> ids;
+				for (const auto &r : rows)
+					ids.push_back(r.id);
+				fetchNodeMetrics(store_, project_id, ids,
+						 complexity_map, nesting_map);
+				// Build JSON using real values (default 0).
+				std::ostringstream json;
+				json << "{\"entry_points\":[";
+				bool first = true;
+				for (const auto &r : rows) {
+					if (!first)
+						json << ",";
+					first = false;
+					int complexity = 0, nesting = 0;
+					auto cit = complexity_map.find(r.id);
+					if (cit != complexity_map.end())
+						complexity = cit->second;
+					auto nit = nesting_map.find(r.id);
+					if (nit != nesting_map.end())
+						nesting = nit->second;
+					json << "{"
+					     << "\"id\":" << r.id << ","
+					     << "\"name\":\""
+					     << jsonEscape(r.name.c_str())
+					     << "\","
+					     << "\"type\":" << r.node_type
+					     << ","
+					     << "\"file\":\""
+					     << jsonEscape(r.file_path.c_str())
+					     << "\","
+					     << "\"complexity\":" << complexity
+					     << ","
+					     << "\"nesting\":" << nesting
+					     << "}";
+				}
+				json << "],\"total\":" << rows.size() << "}";
 				return json.str();
 			}
 			lbug_query_result_destroy(&qr);
@@ -404,9 +468,10 @@ std::string QueryEngine::getEntryPoints(uint64_t project_id)
 	std::ostringstream json;
 	json << "{\"entry_points\":[";
 
+	// Complexity/nesting not stored in graph_nodes (metrics were
+	// removed); emit 0 to match the LadybugDB path.
 	std::string sql =
-		"SELECT gn.id, gn.name, gn.node_type, gn.file_path, "
-		"gn.cyclomatic, gn.nesting_depth "
+		"SELECT gn.id, gn.name, gn.node_type, gn.file_path "
 		"FROM graph_nodes gn "
 		"WHERE gn.project_id = ? AND gn.node_type IN (0,1) "
 		"AND gn.name IN "
@@ -439,9 +504,9 @@ std::string QueryEngine::getEntryPoints(uint64_t project_id)
 						 sqlite3_column_text(stmt, 3)) :
 					 "")
 			     << "\","
-			     << "\"complexity\":" << sqlite3_column_int(stmt, 4)
+			     << "\"complexity\":0"
 			     << ","
-			     << "\"nesting\":" << sqlite3_column_int(stmt, 5)
+			     << "\"nesting\":0"
 			     << "}";
 		}
 		sqlite3_finalize(stmt);
@@ -927,5 +992,4 @@ std::string QueryEngine::getGraph(uint64_t project_id, int64_t node_offset,
 	     << ",\"edges\":" << (edges_has_more ? "true" : "false") << "}}";
 	return json.str();
 }
-
 } // namespace query
