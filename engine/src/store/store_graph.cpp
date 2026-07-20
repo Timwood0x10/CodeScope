@@ -834,13 +834,24 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			// asked to skip async via any truthy CODESCOPE_SKIP_ASYNC
 			// value other than "0").
 		} else {
+			// Best-effort sync of the SQLite graph into LadybugDB so
+			// the two stores stay cross-referenceable ("互相对照").
+			// We intentionally do NOT delete the SQLite graph here:
+			// existing graph queries (getCallees/getCallers/graph
+			// stats SQLite path) still read it, and LadybugDB is an
+			// additional graph store populated at parse time via the
+			// dual-write path. Deleting it would break those queries
+			// until they are migrated to read LadybugDB (a later
+			// phase). On sync failure we keep the SQLite graph as the
+			// source of truth so queries still work.
 			resetLadybugSyncState(project_id);
-			if (!syncIncrementalToLadybugDB(project_id))
+			if (!syncIncrementalToLadybugDB(project_id)) {
 				fprintf(stderr,
 					"buildGraph: syncIncrementalToLadybugDB "
 					"failed for project %s "
 					"[module=store, method=buildGraph]\n",
 					pid.c_str());
+			}
 		}
 		fprintf(stderr,
 			"buildGraph: ladybugdb=%lldms "

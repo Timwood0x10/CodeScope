@@ -46,6 +46,21 @@ char *engine_find_symbol(uint64_t project_id, const char *symbol_name)
 		return dupString(
 			"{\"error\":\"symbol_name is empty\",\"results\":[]}");
 
+	// Step 2: Try LadybugDB Cypher first, fall back to SQLite.
+	if (g_store->hasLadybugDB()) {
+		std::string result =
+			g_store->ladybugFindSymbol(project_id, symbol_name);
+		// On failure the query methods return "{}" (not
+		// {"error":...}), so we must check both signals.
+		if (result != "{}" &&
+		    result.find("\"error\"") == std::string::npos &&
+		    result.find("\"results\":[]") == std::string::npos)
+			return dupString(result);
+		fprintf(stderr, "[module=engine, method=find_symbol] "
+				"LadybugDB query returned empty or failed, "
+				"falling back to SQLite\n");
+	}
+
 	std::string result = g_store->findSymbolJson(project_id, symbol_name);
 
 	// Check if empty and add smart hints

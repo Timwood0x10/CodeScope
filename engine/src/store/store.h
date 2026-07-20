@@ -167,6 +167,38 @@ class GraphStore {
 	/// @return true on success, false on error
 	bool resetLadybugSyncState(uint64_t project_id);
 
+	// ── LadybugDB Cypher Query Methods ──────────────────────────
+	// All methods return JSON strings matching the format of their
+	// SQLite counterparts. When LadybugDB is not initialized, they
+	// return error JSON so callers can fall back to SQLite.
+
+	/** Find symbols by name via Cypher MATCH. */
+	std::string ladybugFindSymbol(uint64_t project_id,
+				      const char *symbol_name);
+	/** Get graph statistics via Cypher count queries. */
+	std::string ladybugGetGraphStats(uint64_t project_id);
+
+	/** Push a batch of parsed file results directly into LadybugDB
+	 *  during the parse stage. Graph data is split off from SQLite at
+	 *  parse time rather than rebuilt from SQLite later.
+	 *  Each file's existing subgraph is removed first (Step 0), making
+	 *  the call idempotent for re-index.
+	 *  No-op (returns true) when LadybugDB is not initialized.
+	 *  @param project_id The project owning the files
+	 *  @param batch The parsed FileResult batch (nodes + edges)
+	 *  @return true on success, false on failure (error logged) */
+	bool insertFileResultToLadybugDB(uint64_t project_id,
+					 const std::vector<FileResult> &batch);
+
+	/** Delete all LadybugDB nodes/edges belonging to a single file.
+	 *  Used by insertFileResultToLadybugDB (Step 0) and on re-index.
+	 *  @param project_id The project owning the file
+	 *  @param file_path The file whose subgraph should be removed
+	 *  @return true on success (or no-op when uninitialized),
+	 *          false on invalid path or failure */
+	bool deleteLadybugDataByFile(uint64_t project_id,
+				     const char *file_path);
+
 	/** Get the database file path (for opening additional connections). */
 	const std::string &dbPath() const
 	{

@@ -226,7 +226,9 @@ set(ENGINE_SOURCES
      src/store/store_project.cpp
      src/store/store_parse_failure.cpp
      src/store/store_knowledge.cpp
-        src/store/store_ladybug.cpp
+        src/store/store_ladybug_core.cpp
+        src/store/store_ladybug_dual.cpp
+        src/store/store_ladybug_query.cpp
      src/store/store_membulk.cpp
      src/store/store_semantic_fact.cpp
     src/query/query_engine.cpp
@@ -548,11 +550,13 @@ endif()
 # demand with -DBUILD_MANUAL=ON.
 option(BUILD_TESTS "Build automated tests" ON)
 if(BUILD_TESTS)
+    include(CTest)
     file(GLOB TEST_SOURCES tests/*.cpp)
     foreach(test_src ${TEST_SOURCES})
         get_filename_component(test_name ${test_src} NAME_WE)
         add_executable(${test_name} ${test_src})
         target_link_libraries(${test_name} astgraph_engine)
+        add_test(NAME ${test_name} COMMAND ${test_name})
     endforeach()
 endif()
 
