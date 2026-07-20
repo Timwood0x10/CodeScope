@@ -227,8 +227,7 @@ set(ENGINE_SOURCES
      src/store/store_parse_failure.cpp
      src/store/store_knowledge.cpp
         src/store/store_ladybug_core.cpp
-        src/store/store_ladybug_dual.cpp
-        src/store/store_ladybug_query.cpp
+     src/store/store_graph_compiler.cpp
      src/store/store_membulk.cpp
      src/store/store_semantic_fact.cpp
     src/query/query_engine.cpp

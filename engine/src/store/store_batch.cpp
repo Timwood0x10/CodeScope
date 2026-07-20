@@ -482,15 +482,11 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 	if (file_st)
 		sqlite3_finalize(file_st);
 
-	// ── Dual-write parsed graph data into LadybugDB (parse-stage split)
-	// Graph data is pushed straight to the graph store during parse
-	// rather than rebuilt from SQLite later. Non-fatal: SQLite remains
-	// the source of truth if the LadybugDB write fails.
-	if (!insertFileResultToLadybugDB(project_id, batch)) {
-		fprintf(stderr,
-			"store: insertFileResultBatch: LadybugDB dual-write "
-			"failed [module=store, method=insertFileResultBatch]\n");
-	}
+	// ── Parsed graph data remains in SQLite only ────────────────
+	// LadybugDB is not written during the parse phase. Graph data is
+	// compiled into LadybugDB by the Graph Compiler (future M1 pass).
+	// SQLite semantic_records → buildGraph → graph_nodes/edges is the
+	// current source of truth for all graph queries.
 
 	return true;
 }

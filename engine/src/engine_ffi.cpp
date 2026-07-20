@@ -533,19 +533,6 @@ char *engine_locate_by_name(uint64_t project_id, const char *name)
 char *engine_get_graph_stats(uint64_t project_id)
 {
 	try {
-		// Step 2: Try LadybugDB Cypher first, fall back to SQLite.
-		if (g_store && g_store->hasLadybugDB()) {
-			std::string result =
-				g_store->ladybugGetGraphStats(project_id);
-			// On failure the query methods return "{}" (not
-			// {"error":...}), so we must check both signals.
-			if (result != "{}" &&
-			    result.find("\"error\"") == std::string::npos)
-				return dupString(result);
-			fprintf(stderr,
-				"[module=ffi, method=engine_get_graph_stats] "
-				"LadybugDB query failed, falling back to SQLite\n");
-		}
 		if (!g_query)
 			return dupString("{\"error\":\"not initialized\"}");
 		return dupString(g_query->getGraphStats(project_id));
