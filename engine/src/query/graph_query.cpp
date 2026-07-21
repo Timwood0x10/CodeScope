@@ -3,9 +3,13 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
-#include <sqlite3.h>
 #include <sstream>
 #include <unordered_map>
+#include <vector>
+
+#ifdef HAS_LADYBUG
+#include <lbug.h>
+#endif
 
 namespace query
 {
@@ -40,124 +44,263 @@ static void parseNodeSpec(const std::string &spec, std::string &out_type,
 	}
 }
 
-// ─── Build a simple single-hop query ───────────────────────────
+// ─── LadybugDB helpers (Cypher escaping + tuple accessors) ──────
 
-static std::string buildSingleHopQuery(uint64_t project_id, int edge_type,
+// Escape a string for safe inclusion inside a Cypher single-quoted literal.
+// Prevents injection / query breakage from symbol names with quotes or
+// backslashes. Mirrors the cypherEscape in query_engine.cpp (both are
+// static, so TU-local — no ODR clash).
+static std::string cypherEscape(const char *s)
+{
+	if (!s)
+		return "";
+	std::string out;
+	out.reserve(std::strlen(s) + 8);
+	for (const char *p = s; *p; ++p) {
+		if (*p == '\\' || *p == '\'') {
+			out += '\\';
+		}
+		out += *p;
+	}
+	return out;
+}
+
+// Escape a string for safe inclusion inside a JSON double-quoted string.
+// Mirrors query::jsonEscape in query_engine.cpp; defined locally so
+// graph_query.cpp does not need to pull in the QueryEngine header.
+static std::string jsonEscape(const char *s)
+{
+	if (!s)
+		return "";
+	std::string out;
+	out.reserve(std::strlen(s) + 8);
+	for (const char *p = s; *p; ++p) {
+		switch (*p) {
+		case '"':
+			out += "\\\"";
+			break;
+		case '\\':
+			out += "\\\\";
+			break;
+		case '\n':
+			out += "\\n";
+			break;
+		case '\r':
+			out += "\\r";
+			break;
+		case '\t':
+			out += "\\t";
+			break;
+		default:
+			out += *p;
+			break;
+		}
+	}
+	return out;
+}
+
+// Map an integer edge_type from the DSL to a Cypher rel-type label.
+// LadybugDB stores CALLS (edge_type=1) and RELATES (other edge types)
+// as relationship labels; CALLS|RELATES matches both in a single
+// pattern. When edge_type is -1 (unspecified) we match both.
+static std::string edgeRelLabel(int edge_type)
+{
+	// CALLS|RELATES covers all relationship labels currently stored in
+	// LadybugDB. The caller may still apply a WHERE r.edge_type = N
+	// filter to narrow the result set when edge_type is specified.
+	(void)edge_type;
+	return "CALLS|RELATES";
+}
+
+#ifdef HAS_LADYBUG
+// Extract an int64 column from a flat tuple. Returns 0 on failure or NULL.
+static int64_t lbugTupleInt(lbug_flat_tuple *tuple, uint64_t col)
+{
+	if (!tuple)
+		return 0;
+	lbug_value v;
+	if (lbug_flat_tuple_get_value(tuple, col, &v) != LbugSuccess)
+		return 0;
+	if (lbug_value_is_null(&v))
+		return 0;
+	int64_t out = 0;
+	lbug_value_get_int64(&v, &out);
+	return out;
+}
+
+// Extract a string column from a flat tuple. Returns empty string on
+// failure or NULL. The std::string copies bytes before the lbug string
+// is destroyed, so callers do not need to free anything.
+static std::string lbugTupleStr(lbug_flat_tuple *tuple, uint64_t col)
+{
+	if (!tuple)
+		return "";
+	lbug_value v;
+	if (lbug_flat_tuple_get_value(tuple, col, &v) != LbugSuccess)
+		return "";
+	if (lbug_value_is_null(&v))
+		return "";
+	char *sv = nullptr;
+	if (lbug_value_get_string(&v, &sv) != LbugSuccess || !sv)
+		return "";
+	std::string out(sv);
+	lbug_destroy_string(sv);
+	return out;
+}
+
+// Extract a list-of-int64 column from a flat tuple (e.g. the result of
+// `[n IN nodes(p) | n.graph_node_id]`). Returns false on failure.
+static bool lbugTupleIntList(lbug_flat_tuple *tuple, uint64_t col,
+			     std::vector<int64_t> &out)
+{
+	if (!tuple)
+		return false;
+	lbug_value v;
+	if (lbug_flat_tuple_get_value(tuple, col, &v) != LbugSuccess)
+		return false;
+	if (lbug_value_is_null(&v))
+		return false;
+	uint64_t sz = 0;
+	if (lbug_value_get_list_size(&v, &sz) != LbugSuccess)
+		return false;
+	out.clear();
+	out.reserve(static_cast<size_t>(sz));
+	for (uint64_t i = 0; i < sz; ++i) {
+		lbug_value elem;
+		if (lbug_value_get_list_element(&v, i, &elem) != LbugSuccess)
+			continue;
+		if (lbug_value_is_null(&elem))
+			continue;
+		int64_t iv = 0;
+		lbug_value_get_int64(&elem, &iv);
+		out.push_back(iv);
+	}
+	return true;
+}
+#endif // HAS_LADYBUG
+
+// ─── Build a single-hop Cypher query ───────────────────────────
+//
+// Pattern: MATCH (src:GraphNode)-[r:CALLS|RELATES]->(tgt:GraphNode)
+//          WHERE src.project_id = N AND tgt.project_id = N
+//            [AND src.name = '...'] [AND tgt.name = '...']
+//            [AND src.node_type IN [..] / = N]
+//            [AND tgt.node_type IN [..] / = N]
+//            [AND r.edge_type = N]
+//          RETURN src.graph_node_id, src.name, src.node_type,
+//                 src.file_path, ID(r), r.edge_type,
+//                 tgt.graph_node_id, tgt.name, tgt.node_type,
+//                 tgt.file_path
+//          LIMIT 10000
+//
+// The Cypher is built with project_id spliced inline (a safe integer)
+// and name filters spliced via cypherEscape'd single-quoted literals.
+// node_type=0 (Function) is treated as IN (0,1) to mirror the legacy
+// SQL behaviour where "Function" matched both functions and methods.
+
+static std::string buildSingleHopCypher(uint64_t project_id, int edge_type,
+					int src_type_val, int tgt_type_val,
+					const std::string &src_name,
+					const std::string &tgt_name)
+{
+	std::ostringstream c;
+	c << "MATCH (src:GraphNode)-[r:" << edgeRelLabel(edge_type)
+	  << "]->(tgt:GraphNode) "
+	  << "WHERE src.project_id = " << project_id
+	  << " AND tgt.project_id = " << project_id;
+	if (edge_type >= 0)
+		c << " AND r.edge_type = " << edge_type;
+	if (src_type_val >= 0) {
+		if (src_type_val == 0)
+			c << " AND src.node_type IN [0,1]";
+		else
+			c << " AND src.node_type = " << src_type_val;
+	}
+	if (tgt_type_val >= 0) {
+		if (tgt_type_val == 0)
+			c << " AND tgt.node_type IN [0,1]";
+		else
+			c << " AND tgt.node_type = " << tgt_type_val;
+	}
+	if (!src_name.empty())
+		c << " AND src.name = '" << cypherEscape(src_name.c_str())
+		  << "'";
+	if (!tgt_name.empty())
+		c << " AND tgt.name = '" << cypherEscape(tgt_name.c_str())
+		  << "'";
+	c << " RETURN src.graph_node_id, src.name, src.node_type, "
+	  << "src.file_path, ID(r), r.edge_type, "
+	  << "tgt.graph_node_id, tgt.name, tgt.node_type, tgt.file_path "
+	  << "LIMIT 10000";
+	return c.str();
+}
+
+// ─── Build a multi-hop Cypher query ─────────────────────────────
+//
+// Pattern: MATCH p = (src:GraphNode)-[:CALLS|RELATES*min..max]->(tgt:GraphNode)
+//          WHERE src.project_id = N AND tgt.project_id = N
+//            [AND src.name = '...'] [AND tgt.name = '...']
+//            [AND src.node_type IN [..] / = N]
+//            [AND tgt.node_type IN [..] / = N]
+//          RETURN src.graph_node_id, src.name, src.node_type,
+//                 src.file_path,
+//                 tgt.graph_node_id, tgt.name, tgt.node_type,
+//                 tgt.file_path,
+//                 length(p),
+//                 [n IN nodes(p) | n.graph_node_id]
+//          LIMIT 10000
+//
+// `length(p)` gives the hop count (1 for a single-edge path).
+// `nodes(p)` returns the list of nodes along the path; the list
+// comprehension projects each node's graph_node_id, which we join
+// into the legacy "1->2->3" chain string in C++.
+
+static std::string buildMultiHopCypher(uint64_t project_id, int edge_type,
+				       int min_depth, int max_depth,
 				       int src_type_val, int tgt_type_val,
 				       const std::string &src_name,
 				       const std::string &tgt_name)
 {
-	std::ostringstream sql;
-	sql << "SELECT src.id AS src_id, src.name AS src_name, src.node_type AS "
-	       "src_type, "
-	       "src.file_path AS src_file, "
-	       "ge.id AS edge_id, ge.edge_type, "
-	       "tgt.id AS tgt_id, tgt.name AS tgt_name, tgt.node_type AS tgt_type, "
-	       "tgt.file_path AS tgt_file "
-	       "FROM graph_edges ge "
-	       "JOIN graph_nodes src ON src.id = ge.source_node_id "
-	       "JOIN graph_nodes tgt ON tgt.id = ge.target_node_id "
-	       "WHERE ge.project_id = "
-	    << project_id;
-
-	if (edge_type >= 0)
-		sql << " AND ge.edge_type = " << edge_type;
+	// Variable-length relationship with optional edge_type filter.
+	// Cypher syntax: -[:CALLS|RELATES*min..max]-> when edge_type is
+	// unspecified, otherwise add a WHERE r.edge_type = N filter (the
+	// edge_type property is preserved on every relationship in the
+	// path).
+	std::ostringstream c;
+	c << "MATCH p = (src:GraphNode)-[:" << edgeRelLabel(edge_type) << "*"
+	  << min_depth << ".." << max_depth << "]->(tgt:GraphNode) "
+	  << "WHERE src.project_id = " << project_id
+	  << " AND tgt.project_id = " << project_id;
+	if (edge_type >= 0) {
+		// r in a variable-length pattern refers to the list of
+		// relationships; filter via ALL(r IN relationships(p) WHERE
+		// r.edge_type = N) so every hop matches the requested type.
+		c << " AND ALL(r IN relationships(p) WHERE r.edge_type = "
+		  << edge_type << ")";
+	}
 	if (src_type_val >= 0) {
 		if (src_type_val == 0)
-			sql << " AND src.node_type IN (0,1)";
+			c << " AND src.node_type IN [0,1]";
 		else
-			sql << " AND src.node_type = " << src_type_val;
+			c << " AND src.node_type = " << src_type_val;
 	}
 	if (tgt_type_val >= 0) {
 		if (tgt_type_val == 0)
-			sql << " AND tgt.node_type IN (0,1)";
+			c << " AND tgt.node_type IN [0,1]";
 		else
-			sql << " AND tgt.node_type = " << tgt_type_val;
+			c << " AND tgt.node_type = " << tgt_type_val;
 	}
-	// Use parameter placeholders (?); values are bound by the caller
-	// after sqlite3_prepare_v2 to prevent SQL injection.
 	if (!src_name.empty())
-		sql << " AND src.name = ?";
+		c << " AND src.name = '" << cypherEscape(src_name.c_str())
+		  << "'";
 	if (!tgt_name.empty())
-		sql << " AND tgt.name = ?";
-	sql << " LIMIT 10000";
-	return sql.str();
-}
-
-// ─── Build a multi-hop recursive CTE query ─────────────────────
-
-static std::string buildMultiHopQuery(uint64_t project_id, int edge_type,
-				      int min_depth, int max_depth,
-				      int src_type_val, int tgt_type_val,
-				      const std::string &src_name,
-				      const std::string &tgt_name)
-{
-	// WITH RECURSIVE path(src_id, tgt_id, depth, chain) AS (
-	//   -- Base: single edge
-	//   SELECT ge.source_node_id, ge.target_node_id, 1,
-	//          printf('%d->%d', ge.source_node_id, ge.target_node_id)
-	//   FROM graph_edges ge WHERE ge.project_id = ? AND ge.edge_type = ?
-	//   UNION ALL
-	//   -- Recursive: extend by one hop
-	//   SELECT p.src_id, ge.target_node_id, p.depth + 1,
-	//          p.chain || printf('->%d', ge.target_node_id)
-	//   FROM path p
-	//   JOIN graph_edges ge ON ge.source_node_id = p.tgt_id
-	//   WHERE ge.project_id = ? AND ge.edge_type = ?
-	//     AND p.depth < ?
-	// )
-	// SELECT src.name, tgt.name, p.depth, p.chain
-	// FROM path p
-	// JOIN graph_nodes src ON src.id = p.src_id
-	// JOIN graph_nodes tgt ON tgt.id = p.tgt_id
-	// WHERE p.depth >= ?
-	//   AND (src.node_type = ? OR ? = -1)
-	//   AND (tgt.node_type = ? OR ? = -1)
-	std::ostringstream sql;
-	sql << "WITH RECURSIVE path(src_id, tgt_id, depth, chain) AS ("
-	    << "SELECT ge.source_node_id, ge.target_node_id, 1, "
-	    << "printf('%d->%d', ge.source_node_id, ge.target_node_id) "
-	    << "FROM graph_edges ge WHERE ge.project_id = " << project_id
-	    << " AND ge.edge_type = " << edge_type << " UNION ALL "
-	    << "SELECT p.src_id, ge.target_node_id, p.depth + 1, "
-	    << "p.chain || printf('->%d', ge.target_node_id) "
-	    << "FROM path p "
-	    << "JOIN graph_edges ge ON ge.source_node_id = p.tgt_id "
-	    << "WHERE ge.project_id = " << project_id
-	    << " AND ge.edge_type = " << edge_type << " AND p.depth < "
-	    << max_depth << ") "
-	    << "SELECT src.id AS src_id, src.name AS src_name, src.node_type AS "
-	       "src_type, "
-	    << "src.file_path AS src_file, "
-	    << "tgt.id AS tgt_id, tgt.name AS tgt_name, tgt.node_type AS tgt_type, "
-	    << "tgt.file_path AS tgt_file, "
-	    << "p.depth, p.chain "
-	    << "FROM path p "
-	    << "JOIN graph_nodes src ON src.id = p.src_id "
-	    << "JOIN graph_nodes tgt ON tgt.id = p.tgt_id "
-	    << "WHERE p.depth >= " << min_depth
-	    << " AND p.depth <= " << max_depth;
-
-	if (src_type_val >= 0) {
-		if (src_type_val == 0)
-			sql << " AND src.node_type IN (0,1)";
-		else
-			sql << " AND src.node_type = " << src_type_val;
-	}
-	if (tgt_type_val >= 0) {
-		if (tgt_type_val == 0)
-			sql << " AND tgt.node_type IN (0,1)";
-		else
-			sql << " AND tgt.node_type = " << tgt_type_val;
-	}
-	// Use parameter placeholders (?); values are bound by the caller
-	// after sqlite3_prepare_v2 to prevent SQL injection.
-	if (!src_name.empty())
-		sql << " AND src.name = ?";
-	if (!tgt_name.empty())
-		sql << " AND tgt.name = ?";
-	sql << " LIMIT 10000";
-	return sql.str();
+		c << " AND tgt.name = '" << cypherEscape(tgt_name.c_str())
+		  << "'";
+	c << " RETURN src.graph_node_id, src.name, src.node_type, "
+	  << "src.file_path, "
+	  << "tgt.graph_node_id, tgt.name, tgt.node_type, tgt.file_path, "
+	  << "length(p), [n IN nodes(p) | n.graph_node_id] LIMIT 10000";
+	return c.str();
 }
 
 // ─── Execute DSL query ─────────────────────────────────────────
@@ -315,45 +458,41 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 		tgt_type_val = it->second;
 	}
 
-	// Build SQL
-	std::string sql;
+	// Build Cypher
+	std::string cypher;
 	if (multi_hop) {
 		if (edge_type < 0) {
 			return "{\"total\":0,\"results\":[],\"error\":\"multi-hop queries "
 			       "require an edge type\"}";
 		}
-		sql = buildMultiHopQuery(project_id, edge_type, min_depth,
-					 max_depth, src_type_val, tgt_type_val,
-					 src_name, tgt_name);
+		cypher = buildMultiHopCypher(project_id, edge_type, min_depth,
+					     max_depth, src_type_val,
+					     tgt_type_val, src_name, tgt_name);
 	} else {
-		sql = buildSingleHopQuery(project_id, edge_type, src_type_val,
-					  tgt_type_val, src_name, tgt_name);
+		cypher = buildSingleHopCypher(project_id, edge_type,
+					      src_type_val, tgt_type_val,
+					      src_name, tgt_name);
 	}
 
-	// Execute and build JSON
-	sqlite3 *db = store->handle();
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) !=
-	    SQLITE_OK) {
-		return "{\"total\":0,\"results\":[],\"error\":\"" +
-		       std::string(sqlite3_errmsg(db)) + "\"}";
-	}
+	// Execute via LadybugDB. The graph-not-ready and no-connection
+	// errors are tagged with [module=graph_query, method=executeGraphQuery]
+	// so callers can distinguish them from query-parse errors above.
+	if (!store || !store->isGraphReady())
+		return "{\"total\":0,\"results\":[],\"error\":\"graph not ready "
+		       "[module=graph_query, method=executeGraphQuery]\"}";
 
-	// Bind the name filter parameters that were emitted as '?'
-	// placeholders. The order matches the SQL construction above:
-	// src_name first (if present), then tgt_name (if present).
-	{
-		int param_idx = 1;
-		if (!src_name.empty()) {
-			sqlite3_bind_text(stmt, param_idx, src_name.c_str(), -1,
-					  SQLITE_TRANSIENT);
-			++param_idx;
-		}
-		if (!tgt_name.empty()) {
-			sqlite3_bind_text(stmt, param_idx, tgt_name.c_str(), -1,
-					  SQLITE_TRANSIENT);
-			++param_idx;
-		}
+#ifdef HAS_LADYBUG
+	lbug_connection *conn = store->lbugHandle();
+	if (!conn)
+		return "{\"total\":0,\"results\":[],\"error\":\"no ladybug "
+		       "connection [module=graph_query, "
+		       "method=executeGraphQuery]\"}";
+
+	lbug_query_result qr;
+	if (lbug_connection_query(conn, cypher.c_str(), &qr) != LbugSuccess) {
+		lbug_query_result_destroy(&qr);
+		return "{\"total\":0,\"results\":[],\"error\":\"ladybug query "
+		       "failed [module=graph_query, method=executeGraphQuery]\"}";
 	}
 
 	std::ostringstream json;
@@ -361,89 +500,95 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 	bool first_row = true;
 	int row_count = 0;
 
-	while (sqlite3_step(stmt) == SQLITE_ROW) {
+	lbug_flat_tuple tuple;
+	while (lbug_query_result_get_next(&qr, &tuple) == LbugSuccess) {
 		if (!first_row)
 			json << ",";
 		first_row = false;
-		row_count++;
+		++row_count;
 
+		// Columns (single-hop):
+		//   0 src.graph_node_id (int64)
+		//   1 src.name          (string)
+		//   2 src.node_type     (int64)
+		//   3 src.file_path     (string)
+		//   4 ID(r)             (int64)
+		//   5 r.edge_type       (int64)
+		//   6 tgt.graph_node_id (int64)
+		//   7 tgt.name          (string)
+		//   8 tgt.node_type     (int64)
+		//   9 tgt.file_path     (string)
+		//
+		// Columns (multi-hop):
+		//   0..3 src.* (same as above)
+		//   4 tgt.graph_node_id
+		//   5 tgt.name
+		//   6 tgt.node_type
+		//   7 tgt.file_path
+		//   8 length(p)         (int64)
+		//   9 [n IN nodes(p) | n.graph_node_id]  (list<int64>)
 		json << "{"
 		     << "\"source\":{"
-		     << "\"id\":" << sqlite3_column_int64(stmt, 0) << ","
+		     << "\"id\":" << lbugTupleInt(&tuple, 0) << ","
 		     << "\"name\":\""
-		     << (sqlite3_column_text(stmt, 1) ?
-				 reinterpret_cast<const char *>(
-					 sqlite3_column_text(stmt, 1)) :
-				 "")
-		     << "\","
-		     << "\"type\":" << sqlite3_column_int(stmt, 2) << ","
+		     << jsonEscape(lbugTupleStr(&tuple, 1).c_str()) << "\","
+		     << "\"type\":" << lbugTupleInt(&tuple, 2) << ","
 		     << "\"file\":\""
-		     << (sqlite3_column_text(stmt, 3) ?
-				 reinterpret_cast<const char *>(
-					 sqlite3_column_text(stmt, 3)) :
-				 "")
-		     << "\""
+		     << jsonEscape(lbugTupleStr(&tuple, 3).c_str()) << "\""
 		     << "},";
 
 		if (multi_hop) {
-			// Multi-hop: edge is implicit, add depth + chain
+			// Build the chain string from the path node-id list.
+			// Matches the legacy "1->2->3" format produced by
+			// printf('%d->%d', ...) in the recursive SQL CTE.
+			std::vector<int64_t> ids;
+			lbugTupleIntList(&tuple, 9, ids);
+			std::string chain;
+			for (size_t i = 0; i < ids.size(); ++i) {
+				if (i > 0)
+					chain += "->";
+				chain += std::to_string(ids[i]);
+			}
 			json << "\"target\":{"
-			     << "\"id\":" << sqlite3_column_int64(stmt, 4)
-			     << ","
+			     << "\"id\":" << lbugTupleInt(&tuple, 4) << ","
 			     << "\"name\":\""
-			     << (sqlite3_column_text(stmt, 5) ?
-					 reinterpret_cast<const char *>(
-						 sqlite3_column_text(stmt, 5)) :
-					 "")
+			     << jsonEscape(lbugTupleStr(&tuple, 5).c_str())
 			     << "\","
-			     << "\"type\":" << sqlite3_column_int(stmt, 6)
-			     << ","
+			     << "\"type\":" << lbugTupleInt(&tuple, 6) << ","
 			     << "\"file\":\""
-			     << (sqlite3_column_text(stmt, 7) ?
-					 reinterpret_cast<const char *>(
-						 sqlite3_column_text(stmt, 7)) :
-					 "")
+			     << jsonEscape(lbugTupleStr(&tuple, 7).c_str())
 			     << "\""
 			     << "},"
-			     << "\"depth\":" << sqlite3_column_int(stmt, 8)
-			     << ","
-			     << "\"chain\":\""
-			     << (sqlite3_column_text(stmt, 9) ?
-					 reinterpret_cast<const char *>(
-						 sqlite3_column_text(stmt, 9)) :
-					 "")
+			     << "\"depth\":" << lbugTupleInt(&tuple, 8) << ","
+			     << "\"chain\":\"" << jsonEscape(chain.c_str())
 			     << "\"";
 		} else {
 			json << "\"edge\":{"
-			     << "\"id\":" << sqlite3_column_int64(stmt, 4)
-			     << ","
-			     << "\"type\":" << sqlite3_column_int(stmt, 5)
-			     << "},"
+			     << "\"id\":" << lbugTupleInt(&tuple, 4) << ","
+			     << "\"type\":" << lbugTupleInt(&tuple, 5) << "},"
 			     << "\"target\":{"
-			     << "\"id\":" << sqlite3_column_int64(stmt, 6)
-			     << ","
+			     << "\"id\":" << lbugTupleInt(&tuple, 6) << ","
 			     << "\"name\":\""
-			     << (sqlite3_column_text(stmt, 7) ?
-					 reinterpret_cast<const char *>(
-						 sqlite3_column_text(stmt, 7)) :
-					 "")
+			     << jsonEscape(lbugTupleStr(&tuple, 7).c_str())
 			     << "\","
-			     << "\"type\":" << sqlite3_column_int(stmt, 8)
-			     << ","
+			     << "\"type\":" << lbugTupleInt(&tuple, 8) << ","
 			     << "\"file\":\""
-			     << (sqlite3_column_text(stmt, 9) ?
-					 reinterpret_cast<const char *>(
-						 sqlite3_column_text(stmt, 9)) :
-					 "")
+			     << jsonEscape(lbugTupleStr(&tuple, 9).c_str())
 			     << "\""
 			     << "}";
 		}
 		json << "}";
+		lbug_flat_tuple_destroy(&tuple);
 	}
 
-	sqlite3_finalize(stmt);
+	lbug_query_result_destroy(&qr);
 	json << "],\"total\":" << row_count << "}";
 	return json.str();
+#else
+	(void)project_id;
+	return "{\"total\":0,\"results\":[],\"error\":\"LadybugDB not compiled "
+	       "[module=graph_query, method=executeGraphQuery]\"}";
+#endif
 }
 
 } // namespace query

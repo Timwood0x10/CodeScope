@@ -4,7 +4,6 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
-#include <sqlite3.h>
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
@@ -23,10 +22,6 @@ namespace query
 // prevent unbounded walks; 3 hops covers direct + 2 transitive levels,
 // matching the typical "what does this change affect?" radius.
 static constexpr int kImpactMaxDepth = 3;
-
-// Edge type value for CALLS edges in graph_edges. Kept as a named
-// constant rather than a magic number per the coding rules.
-static constexpr int kEdgeTypeCalls = 1;
 
 // Standard note appended to analyzeChangeImpact results explaining the
 // heuristic nature of the transitive impact (name-matched call edges).
@@ -81,48 +76,82 @@ static std::vector<std::string> parseFileList(const char *json)
 	return files;
 }
 
-// ─── Build a file-path → graph-node lookup via SQL ─────────────
+#ifdef HAS_LADYBUG
+// ─── LadybugDB helpers ─────────────────────────────────────────
+
+// Escape single quotes for Cypher string literals by doubling them.
+static std::string cypherEscapeStr(const std::string &s)
+{
+	std::string out;
+	out.reserve(s.size() + 4);
+	for (char c : s) {
+		if (c == '\'')
+			out += "''";
+		else
+			out += c;
+	}
+	return out;
+}
+
+// ─── Find graph nodes residing in the modified files ───────────
 //
 // Returns a vector of (graph_node_id, name) pairs for all graph nodes
-// residing in the modified files. Used to find which graph nodes live
-// in the modified files.
+// whose file_path matches one of the modified files. Uses a single
+// Cypher query with an IN list instead of one query per file.
 static void
-findNodesInFiles(sqlite3 *db, uint64_t project_id,
+findNodesInFiles(lbug_connection *conn, uint64_t project_id,
 		 const std::vector<std::string> &file_list,
 		 std::vector<std::pair<uint64_t, std::string>> &out_nodes)
 {
-	if (file_list.empty())
+	if (file_list.empty() || !conn)
 		return;
 
 	out_nodes.clear();
-	for (const auto &fp : file_list) {
-		sqlite3_stmt *stmt = nullptr;
-		std::string sql = "SELECT id, name FROM graph_nodes "
-				  "WHERE project_id = ? AND file_path = ?";
-		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) !=
-		    SQLITE_OK) {
-			// Prepare failed: log with module/method context and skip
-			// this file rather than risk a null stmt.
-			fprintf(stderr,
-				"[module=QueryEngine, method=analyzeChangeImpact/"
-				"findNodesInFiles] prepare failed: %s\n",
-				sqlite3_errmsg(db));
-			if (stmt)
-				sqlite3_finalize(stmt);
-			continue;
-		}
-		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-		sqlite3_bind_text(stmt, 2, fp.c_str(), -1, SQLITE_TRANSIENT);
 
-		while (sqlite3_step(stmt) == SQLITE_ROW) {
-			uint64_t nid = static_cast<uint64_t>(
-				sqlite3_column_int64(stmt, 0));
-			const char *name = reinterpret_cast<const char *>(
-				sqlite3_column_text(stmt, 1));
-			out_nodes.emplace_back(nid, name ? name : "");
-		}
-		sqlite3_finalize(stmt);
+	// Build Cypher IN list: ['path1','path2',...]
+	std::string in_list;
+	for (const auto &fp : file_list) {
+		if (!in_list.empty())
+			in_list += ",";
+		in_list += "'" + cypherEscapeStr(fp) + "'";
 	}
+
+	std::string cypher =
+		"MATCH (n:GraphNode {project_id:" + std::to_string(project_id) +
+		"}) WHERE n.file_path IN [" + in_list +
+		"] RETURN n.graph_node_id, n.name";
+	lbug_query_result qr;
+	lbug_state s = lbug_connection_query(conn, cypher.c_str(), &qr);
+	if (s != LbugSuccess) {
+		char *err = lbug_query_result_get_error_message(&qr);
+		fprintf(stderr,
+			"[module=impact, method=analyzeChangeImpact/"
+			"findNodesInFiles] query failed: %s\n",
+			err ? err : "(unknown)");
+		if (err)
+			lbug_destroy_string(err);
+		lbug_query_result_destroy(&qr);
+		return;
+	}
+	lbug_flat_tuple tuple;
+	while (lbug_query_result_get_next(&qr, &tuple) == LbugSuccess) {
+		lbug_value v;
+		int64_t id = 0;
+		std::string name;
+		if (lbug_flat_tuple_get_value(&tuple, 0, &v) == LbugSuccess)
+			lbug_value_get_int64(&v, &id);
+		char *sv = nullptr;
+		if (lbug_flat_tuple_get_value(&tuple, 1, &v) == LbugSuccess) {
+			if (lbug_value_get_string(&v, &sv) == LbugSuccess &&
+			    sv) {
+				name = sv;
+				lbug_destroy_string(sv);
+			}
+		}
+		out_nodes.emplace_back(static_cast<uint64_t>(id), name);
+		lbug_flat_tuple_destroy(&tuple);
+	}
+	lbug_query_result_destroy(&qr);
 }
 
 // ─── Build forward + reverse adjacency lists from CALLS edges ──
@@ -130,58 +159,19 @@ findNodesInFiles(sqlite3 *db, uint64_t project_id,
 // Forward edges (source → target) drive downstream (callees) traversal.
 // Reverse edges (target → source) drive upstream (callers) traversal.
 //
-// Returns true on success. On prepare failure, sets *error_out to a
-// tagged message and returns false (callers report it in the JSON).
-static bool
-buildCallAdjacency(sqlite3 *db, uint64_t project_id,
-		   std::unordered_map<uint64_t, std::vector<uint64_t>> &forward,
-		   std::unordered_map<uint64_t, std::vector<uint64_t>> &reverse,
-		   std::string *error_out)
-{
-	const char *sql =
-		"SELECT source_node_id, target_node_id FROM graph_edges "
-		"WHERE project_id = ? AND edge_type = ?";
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-		if (error_out) {
-			*error_out = std::string("[module=QueryEngine, "
-						 "method=analyzeChangeImpact/"
-						 "buildCallAdjacency] prepare "
-						 "failed: ") +
-				     sqlite3_errmsg(db);
-		}
-		if (stmt)
-			sqlite3_finalize(stmt);
-		return false;
-	}
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_int(stmt, 2, kEdgeTypeCalls);
-	while (sqlite3_step(stmt) == SQLITE_ROW) {
-		uint64_t src =
-			static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
-		uint64_t tgt =
-			static_cast<uint64_t>(sqlite3_column_int64(stmt, 1));
-		forward[src].push_back(tgt);
-		reverse[tgt].push_back(src);
-	}
-	sqlite3_finalize(stmt);
-	return true;
-}
-
-// Load call edges from LadybugDB into the forward/reverse adjacency maps.
-// Returns true on success. On failure, sets *error_out and returns false.
+// Returns true on success. On failure, sets *error_out to a tagged
+// message and returns false (callers report it in the JSON).
 //
 // M3 CONTRACT: The adjacency maps are keyed by uint64_t graph_node_id,
 // which the LadybugDB compiler (store_graph_compiler.cpp) sets equal to
 // graph_nodes.id (the SQLite integer primary key). lookupNodeMetadata()
-// below queries `WHERE id IN (...)` against the SAME graph_nodes.id, so
+// below queries `WHERE n.graph_node_id IN (...)` against the SAME id, so
 // the keys match. If graph_node_id is ever changed to a content-stable
 // uid (different from graph_nodes.id), BOTH this function's key type AND
 // lookupNodeMetadata's WHERE clause must be updated to use the same key.
 // See M4 (makeNodeUid) for the content-stable uid implementation that
 // intentionally lives in the separate `uid` column to preserve this
 // invariant.
-#ifdef HAS_LADYBUG
 static bool buildCallAdjacencyFromLadybug(
 	store::GraphStore *store, uint64_t project_id,
 	std::unordered_map<uint64_t, std::vector<uint64_t>> &forward,
@@ -236,24 +226,26 @@ static bool buildCallAdjacencyFromLadybug(
 	lbug_query_result_destroy(&qr);
 	return true;
 }
-#endif
 
 // ─── Node metadata lookup ──────────────────────────────────────
 //
-// Populates name_map / file_map for each requested id in one SQL
-// query. Missing IDs are simply left absent from the maps; callers
-// must guard with .count().
+// Populates name_map / file_map for each requested graph_node_id in
+// one Cypher query. Missing IDs are simply left absent from the maps;
+// callers must guard with .count().
 //
-// On prepare failure, sets *error_out to a tagged message. The maps
-// are left partially populated (whatever was read before the failure).
+// GraphNode schema has no cyclomatic/nesting_depth columns; callers
+// that need those fields must emit 0.
+//
+// On query failure, sets *error_out to a tagged message. The maps
+// are left empty (nothing was read).
 static void
-lookupNodeMetadata(sqlite3 *db, uint64_t project_id,
+lookupNodeMetadata(lbug_connection *conn, uint64_t project_id,
 		   const std::unordered_set<uint64_t> &ids,
 		   std::unordered_map<uint64_t, std::string> &name_map,
 		   std::unordered_map<uint64_t, std::string> &file_map,
 		   std::string *error_out)
 {
-	if (ids.empty())
+	if (ids.empty() || !conn)
 		return;
 	// Build IN clause from IDs (IDs are uint64 from our own DB —
 	// not user input, so safe to interpolate).
@@ -263,35 +255,55 @@ lookupNodeMetadata(sqlite3 *db, uint64_t project_id,
 			id_list += ",";
 		id_list += std::to_string(id);
 	}
-	std::string sql = "SELECT id, name, file_path FROM graph_nodes "
-			  "WHERE project_id = ? AND id IN (" +
-			  id_list + ")";
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) !=
-	    SQLITE_OK) {
+	std::string cypher =
+		"MATCH (n:GraphNode {project_id:" + std::to_string(project_id) +
+		"}) WHERE n.graph_node_id IN [" + id_list +
+		"] RETURN n.graph_node_id, n.name, n.file_path";
+	lbug_query_result qr;
+	lbug_state s = lbug_connection_query(conn, cypher.c_str(), &qr);
+	if (s != LbugSuccess) {
+		char *err = lbug_query_result_get_error_message(&qr);
 		if (error_out) {
-			*error_out = std::string("[module=QueryEngine, "
+			*error_out = std::string("[module=impact, "
 						 "method=analyzeChangeImpact/"
-						 "lookupNodeMetadata] prepare "
+						 "lookupNodeMetadata] query "
 						 "failed: ") +
-				     sqlite3_errmsg(db);
+				     (err ? err : "(unknown)");
 		}
-		if (stmt)
-			sqlite3_finalize(stmt);
+		if (err)
+			lbug_destroy_string(err);
+		lbug_query_result_destroy(&qr);
 		return;
 	}
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	while (sqlite3_step(stmt) == SQLITE_ROW) {
-		uint64_t id =
-			static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
-		const char *name = reinterpret_cast<const char *>(
-			sqlite3_column_text(stmt, 1));
-		const char *file = reinterpret_cast<const char *>(
-			sqlite3_column_text(stmt, 2));
-		name_map[id] = name ? name : "";
-		file_map[id] = file ? file : "";
+	lbug_flat_tuple tuple;
+	while (lbug_query_result_get_next(&qr, &tuple) == LbugSuccess) {
+		lbug_value v;
+		int64_t id = 0;
+		std::string name, file_path;
+		if (lbug_flat_tuple_get_value(&tuple, 0, &v) == LbugSuccess)
+			lbug_value_get_int64(&v, &id);
+		char *sv = nullptr;
+		if (lbug_flat_tuple_get_value(&tuple, 1, &v) == LbugSuccess) {
+			if (lbug_value_get_string(&v, &sv) == LbugSuccess &&
+			    sv) {
+				name = sv;
+				lbug_destroy_string(sv);
+			}
+		}
+		sv = nullptr;
+		if (lbug_flat_tuple_get_value(&tuple, 2, &v) == LbugSuccess) {
+			if (lbug_value_get_string(&v, &sv) == LbugSuccess &&
+			    sv) {
+				file_path = sv;
+				lbug_destroy_string(sv);
+			}
+		}
+		uint64_t uid = static_cast<uint64_t>(id);
+		name_map[uid] = name;
+		file_map[uid] = file_path;
+		lbug_flat_tuple_destroy(&tuple);
 	}
-	sqlite3_finalize(stmt);
+	lbug_query_result_destroy(&qr);
 }
 
 // ─── Multi-hop DFS traversal ───────────────────────────────────
@@ -365,6 +377,7 @@ dfsImpact(const std::unordered_map<uint64_t, std::vector<uint64_t>> &adj,
 		out.push_back({ kv.first, kv.second, via_seed[kv.first] });
 	}
 }
+#endif // HAS_LADYBUG
 
 // ─── Public API ───────────────────────────────────────────────
 
@@ -373,23 +386,24 @@ std::string analyzeChangeImpact(uint64_t project_id, store::GraphStore *store,
 {
 	static constexpr const char *kMethod = "analyzeChangeImpact";
 
-	// JSON builder — we accumulate fields and only emit at the end so
-	// the error field (set on any failure) can be filled in at any
-	// point. error_msg stays empty on success.
-	std::string error_msg;
-
-	sqlite3 *db = store ? store->handle() : nullptr;
-	if (!db) {
-		error_msg = std::string("[module=QueryEngine, method=") +
-			    kMethod + "] store not initialized";
+	// Build the standard error payload. Used by both the HAS_LADYBUG
+	// and non-HAS_LADYBUG branches so the JSON contract is identical
+	// regardless of compile configuration.
+	auto makeErrorJson = [](const std::string &msg) -> std::string {
 		std::ostringstream j;
-		j << "{\"error\":\"" << jsonEscape(error_msg.c_str())
+		j << "{\"error\":\"" << jsonEscape(msg.c_str())
 		  << "\",\"modified\":[],\"callers\":[],\"callees\":[],"
 		  << "\"total_impacted\":0,\"max_depth\":" << kImpactMaxDepth
 		  << ",\"approximation\":\"heuristic\","
 		  << "\"note\":\"" << kImpactNote << "\"}";
 		return j.str();
-	}
+	};
+
+#ifdef HAS_LADYBUG
+	// JSON builder — we accumulate fields and only emit at the end so
+	// the error field (set on any failure) can be filled in at any
+	// point. error_msg stays empty on success.
+	std::string error_msg;
 
 	// Parse input file list.
 	auto files = parseFileList(modified_files_json);
@@ -407,26 +421,34 @@ std::string analyzeChangeImpact(uint64_t project_id, store::GraphStore *store,
 				end++;
 			if (*end != ']') {
 				// Not a bare "[]" — something went wrong.
-				error_msg = std::string("[module=QueryEngine, "
+				error_msg = std::string("[module=impact, "
 							"method=") +
 					    kMethod +
 					    "] failed to parse file list";
-				std::ostringstream j;
-				j << "{\"error\":\""
-				  << jsonEscape(error_msg.c_str())
-				  << "\",\"modified\":[],\"callers\":[],"
-				  << "\"callees\":[],\"total_impacted\":0,"
-				  << "\"max_depth\":" << kImpactMaxDepth
-				  << ",\"approximation\":\"heuristic\","
-				  << "\"note\":\"" << kImpactNote << "\"}";
-				return j.str();
+				fprintf(stderr, "%s\n", error_msg.c_str());
+				return makeErrorJson(error_msg);
 			}
 		}
 	}
 
+	// LadybugDB is the only data source for graph queries.
+	if (!store || !store->isGraphReady()) {
+		error_msg = std::string("[module=impact, method=") + kMethod +
+			    "] LadybugDB graph not ready";
+		fprintf(stderr, "%s\n", error_msg.c_str());
+		return makeErrorJson(error_msg);
+	}
+	lbug_connection *conn = store->lbugHandle();
+	if (!conn) {
+		error_msg = std::string("[module=impact, method=") + kMethod +
+			    "] LadybugDB connection null";
+		fprintf(stderr, "%s\n", error_msg.c_str());
+		return makeErrorJson(error_msg);
+	}
+
 	// Find graph nodes in modified files.
 	std::vector<std::pair<uint64_t, std::string>> modified_nodes;
-	findNodesInFiles(db, project_id, files, modified_nodes);
+	findNodesInFiles(conn, project_id, files, modified_nodes);
 
 	// Collect modified node IDs into a set for fast lookup.
 	std::unordered_set<uint64_t> modified_ids;
@@ -435,33 +457,19 @@ std::string analyzeChangeImpact(uint64_t project_id, store::GraphStore *store,
 		modified_ids.insert(kv.first);
 	}
 
-	// Build forward + reverse adjacency from CALLS edges.
+	// Build forward + reverse adjacency from CALLS edges (LadybugDB
+	// only — no SQLite fallback).
 	std::unordered_map<uint64_t, std::vector<uint64_t>> forward_adj;
 	std::unordered_map<uint64_t, std::vector<uint64_t>> reverse_adj;
 	if (!modified_ids.empty()) {
-		bool adj_ok = false;
-#ifdef HAS_LADYBUG
-		if (store && store->isGraphReady()) {
-			adj_ok = buildCallAdjacencyFromLadybug(
-				store, project_id, forward_adj, reverse_adj,
-				&error_msg);
-		} else
-#endif
-		{
-			adj_ok = buildCallAdjacency(db, project_id, forward_adj,
-						    reverse_adj, &error_msg);
-		}
-		if (!adj_ok) {
-			// buildCallAdjacency already filled error_msg with a
-			// tagged message. Return the error payload.
-			std::ostringstream j;
-			j << "{\"error\":\"" << jsonEscape(error_msg.c_str())
-			  << "\",\"modified\":[],\"callers\":[],"
-			  << "\"callees\":[],\"total_impacted\":0,"
-			  << "\"max_depth\":" << kImpactMaxDepth
-			  << ",\"approximation\":\"heuristic\","
-			  << "\"note\":\"" << kImpactNote << "\"}";
-			return j.str();
+		if (!buildCallAdjacencyFromLadybug(store, project_id,
+						   forward_adj, reverse_adj,
+						   &error_msg)) {
+			// buildCallAdjacencyFromLadybug already filled
+			// error_msg with a tagged message.
+			fprintf(stderr, "[module=impact, method=%s] %s\n",
+				kMethod, error_msg.c_str());
+			return makeErrorJson(error_msg);
 		}
 	}
 
@@ -492,13 +500,13 @@ std::string analyzeChangeImpact(uint64_t project_id, store::GraphStore *store,
 	}
 	std::unordered_map<uint64_t, std::string> name_map;
 	std::unordered_map<uint64_t, std::string> file_map;
-	lookupNodeMetadata(db, project_id, need_metadata, name_map, file_map,
+	lookupNodeMetadata(conn, project_id, need_metadata, name_map, file_map,
 			   &error_msg);
 	if (!error_msg.empty()) {
 		// Metadata lookup failed mid-way: we still have partial data.
 		// Report the error but continue with whatever we have so the
 		// caller gets a useful (if incomplete) result.
-		fprintf(stderr, "[module=QueryEngine, method=%s] %s\n", kMethod,
+		fprintf(stderr, "[module=impact, method=%s] %s\n", kMethod,
 			error_msg.c_str());
 	}
 
@@ -623,6 +631,12 @@ std::string analyzeChangeImpact(uint64_t project_id, store::GraphStore *store,
 	json << "}";
 
 	return json.str();
+#else
+	std::string err = std::string("[module=impact, method=") + kMethod +
+			  "] LadybugDB not compiled";
+	fprintf(stderr, "%s\n", err.c_str());
+	return makeErrorJson(err);
+#endif
 }
 
 } // namespace query
