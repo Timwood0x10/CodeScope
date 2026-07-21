@@ -57,25 +57,13 @@ struct TableSpec {
 /// before children (tables with FKs to them), so offsets for parent
 /// tables are computed first.
 const TABLE_SPECS: &[TableSpec] = &[
-    TableSpec {
-        name: "graph_nodes",
-        remap_cols: &[("id", "self")],
-        skip_rowid: false,
-    },
-    TableSpec {
-        name: "graph_edges",
-        remap_cols: &[
-            ("id", "self"),
-            ("source_node_id", "graph_nodes"),
-            ("target_node_id", "graph_nodes"),
-        ],
-        skip_rowid: false,
-    },
+    // entity replaces graph_nodes (deprecated)
     TableSpec {
         name: "entity",
         remap_cols: &[("id", "self")],
         skip_rowid: false,
     },
+    // relation replaces graph_edges (deprecated)
     TableSpec {
         name: "relation",
         remap_cols: &[
@@ -127,16 +115,15 @@ const TABLE_SPECS: &[TableSpec] = &[
         remap_cols: &[],
         skip_rowid: false,
     },
-    // src_id IS the PK and equals graph_nodes.id; remap by gn offset.
+    // adjacency and adjacency_rev now reference entity.id instead of graph_nodes.id
     TableSpec {
         name: "adjacency",
-        remap_cols: &[("src_id", "graph_nodes")],
+        remap_cols: &[("src_id", "entity")],
         skip_rowid: false,
     },
-    // tgt_id IS the PK and equals graph_nodes.id; remap by gn offset.
     TableSpec {
         name: "adjacency_rev",
-        remap_cols: &[("tgt_id", "graph_nodes")],
+        remap_cols: &[("tgt_id", "entity")],
         skip_rowid: false,
     },
     // semantic_records has rowid INTEGER PRIMARY KEY AUTOINCREMENT.
@@ -154,8 +141,6 @@ const TABLE_SPECS: &[TableSpec] = &[
 
 /// Tables to read schema for from sqlite_master.
 const SCHEMA_TABLES: &[&str] = &[
-    "graph_nodes",
-    "graph_edges",
     "files",
     "file_scan_state",
     "entity",
@@ -173,8 +158,6 @@ const SCHEMA_TABLES: &[&str] = &[
 /// Tables that need an offset computed (have id column).
 /// Used to build the _offsets temp table.
 const OFFSET_TABLES: &[&str] = &[
-    "graph_nodes",
-    "graph_edges",
     "entity",
     "relation",
     "type_info",
@@ -828,15 +811,10 @@ mod tests {
         // The merge list MUST contain these core tables — if any is
         // missing, the unified DB loses data. This guard prevents
         // accidental removal during refactors.
+        // graph_nodes/graph_edges are deprecated; entity/relation
+        // are the canonical source tables.
         let names: Vec<&str> = TABLE_SPECS.iter().map(|s| s.name).collect();
-        for required in [
-            "graph_nodes",
-            "graph_edges",
-            "files",
-            "entity",
-            "relation",
-            "semantic_records",
-        ] {
+        for required in ["files", "entity", "relation", "semantic_records"] {
             assert!(
                 names.contains(&required),
                 "{} missing from TABLE_SPECS",
@@ -861,17 +839,16 @@ mod tests {
     }
 
     #[test]
-    fn test_graph_edges_remap_includes_fk_columns() {
-        // graph_edges has FKs source_node_id and target_node_id to
-        // graph_nodes.id. Both must be remapped by the graph_nodes
-        // offset, otherwise edges would point at the wrong nodes.
-        let spec = TABLE_SPECS
-            .iter()
-            .find(|s| s.name == "graph_edges")
-            .unwrap();
+    fn test_relation_remap_includes_fk_columns() {
+        // relation has FKs source_id and target_id to entity.id.
+        // Both must be remapped by the entity offset, otherwise
+        // edges would point at the wrong entities.
+        // graph_nodes/graph_edges are deprecated; entity/relation
+        // are the canonical source tables.
+        let spec = TABLE_SPECS.iter().find(|s| s.name == "relation").unwrap();
         let cols: Vec<&str> = spec.remap_cols.iter().map(|(c, _)| *c).collect();
-        assert!(cols.contains(&"source_node_id"));
-        assert!(cols.contains(&"target_node_id"));
+        assert!(cols.contains(&"source_id"));
+        assert!(cols.contains(&"target_id"));
     }
 
     /// Helper: create a temp DB with a table mimicking semantic_records
@@ -1006,11 +983,11 @@ mod tests {
         // used so all columns (including id) are copied.
         let spec = TABLE_SPECS
             .iter()
-            .find(|s| s.name == "graph_nodes")
-            .expect("graph_nodes spec must exist");
+            .find(|s| s.name == "entity")
+            .expect("entity spec must exist");
         let sql = build_insert_sql(spec, "m1", Some("should_be_ignored"));
         assert!(
-            sql.contains("SELECT * FROM m1.graph_nodes"),
+            sql.contains("SELECT * FROM m1.entity"),
             "non-skip_rowid should use SELECT *, got: {:?}",
             sql
         );

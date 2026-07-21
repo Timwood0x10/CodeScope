@@ -1002,9 +1002,9 @@ std::string QueryEngine::locateNode(uint64_t project_id, uint64_t node_id,
 {
 	(void)context_lines; // v2: read actual file content
 	std::ostringstream sql;
-	sql << "SELECT id AS node_id, name, qualified_name, node_type AS node_type, file_path, "
+	sql << "SELECT id AS node_id, name, qualified_name, kind AS node_type, file_path, "
 	       "start_row, start_col, end_row, end_col, language "
-	       "FROM graph_nodes WHERE project_id = "
+	       "FROM entity WHERE project_id = "
 	    << project_id << " AND id = " << node_id;
 	return queryToJson(store_->handle(), sql.str().c_str(), "locations");
 }
@@ -1019,13 +1019,13 @@ std::string QueryEngine::locateByName(uint64_t project_id, const char *name)
 
 	const char *sql;
 	if (has_separator) {
-		sql = "SELECT id AS node_id, name, qualified_name, node_type AS node_type, file_path, "
+		sql = "SELECT id AS node_id, name, qualified_name, kind AS node_type, file_path, "
 		      "start_row, start_col, end_row, end_col, language "
-		      "FROM graph_nodes WHERE project_id = ? AND qualified_name = ? LIMIT 20";
+		      "FROM entity WHERE project_id = ? AND qualified_name = ? LIMIT 20";
 	} else {
-		sql = "SELECT id AS node_id, name, qualified_name, node_type AS node_type, file_path, "
+		sql = "SELECT id AS node_id, name, qualified_name, kind AS node_type, file_path, "
 		      "start_row, start_col, end_row, end_col, language "
-		      "FROM graph_nodes WHERE project_id = ? AND name = ? LIMIT 20";
+		      "FROM entity WHERE project_id = ? AND name = ? LIMIT 20";
 	}
 
 	sqlite3_stmt *stmt = nullptr;

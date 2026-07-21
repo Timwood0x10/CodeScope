@@ -193,7 +193,7 @@ char *engine_index_post_parse(uint64_t project_id, const std::string &dir,
 	{
 		sqlite3_stmt *stmt = nullptr;
 		std::string sql;
-		sql = "SELECT COUNT(*) FROM graph_nodes WHERE project_id = " +
+		sql = "SELECT COUNT(*) FROM entity WHERE project_id = " +
 		      std::to_string(project_id);
 		if (sqlite3_prepare_v2(g_store->handle(), sql.c_str(), -1,
 				       &stmt, nullptr) == SQLITE_OK) {
@@ -202,7 +202,7 @@ char *engine_index_post_parse(uint64_t project_id, const std::string &dir,
 				       << sqlite3_column_int64(stmt, 0);
 			sqlite3_finalize(stmt);
 		}
-		sql = "SELECT COUNT(*) FROM graph_edges WHERE project_id = " +
+		sql = "SELECT COUNT(*) FROM relation WHERE project_id = " +
 		      std::to_string(project_id);
 		if (sqlite3_prepare_v2(g_store->handle(), sql.c_str(), -1,
 				       &stmt, nullptr) == SQLITE_OK) {

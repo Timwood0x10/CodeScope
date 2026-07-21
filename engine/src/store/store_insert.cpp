@@ -503,9 +503,8 @@ bool GraphStore::deleteGraphDataByFile(uint64_t project_id,
 		     ")",
 		     "scope(function)");
 
-	// 4+5. Delete graph_edges (subquery on graph_nodes) then graph_nodes.
-	//      deleteGraphNodesByFile calls deleteGraphEdgesByFile internally.
-	deleteGraphNodesByFile(project_id, file_path);
+	// 4+5. graph_nodes/graph_edges are deprecated — no longer written.
+	//      The old deleteGraphNodesByFile call is removed.
 
 	// 6. Delete entity rows for this file.
 	deleteByFile(

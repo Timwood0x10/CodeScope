@@ -1641,7 +1641,7 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 		sqlite3 *db = g_store->handle();
 		sqlite3_stmt *stmt = nullptr;
 		std::string sql =
-			"SELECT COUNT(*) FROM graph_nodes WHERE project_id = " +
+			"SELECT COUNT(*) FROM entity WHERE project_id = " +
 			std::to_string(project_id);
 		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) ==
 		    SQLITE_OK) {
@@ -1650,7 +1650,7 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 				       << sqlite3_column_int64(stmt, 0);
 			sqlite3_finalize(stmt);
 		}
-		sql = "SELECT COUNT(*) FROM graph_edges WHERE project_id = " +
+		sql = "SELECT COUNT(*) FROM relation WHERE project_id = " +
 		      std::to_string(project_id);
 		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) ==
 		    SQLITE_OK) {

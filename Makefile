@@ -150,6 +150,10 @@ test: test-engine test-server
 #     Js/Ts/Tsx translators that dlopen the grammar .so at runtime — they need
 #     GRAMMARS_DIR set (see test-engine target below). They pass once the
 #     grammar .so files are on disk under engine/grammars.
+# Tests excluded from CI (hardcoded local paths — run manually):
+#   - test_evidence_builder, test_project_state, test_verify_planner,
+#     test_domain_rules: load rules from /Users/scc/... paths, not portable
+#   - test_self_bench: hardcoded /Users/scc/... engine src path for self-index
 TEST_EXES := \
 	test_ir test_graph test_graph_semantic test_graph_call_precision \
 	test_semantic_unit \
@@ -169,12 +173,7 @@ TEST_EXES := \
 	test_enhance_e2e \
 	test_js_visitor test_ts_visitor test_tsx_visitor \
 	test_semantic_fact_extractor \
-	test_evidence_builder \
-	test_project_state \
-	test_verify_planner \
-	test_domain_rules \
-	test_ladybug_diff \
-	test_self_bench
+	test_ladybug_diff
 
 test-engine: $(ENGINE_LIB)
 	@printf "$(CYAN)[test/engine]$(RESET) Building and running C++ tests...\n"
