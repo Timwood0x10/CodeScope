@@ -50,12 +50,23 @@ class MemBulkAggregator {
 	 * Flush all aggregated FileResult objects into the store in a single
 	 * transaction, chunked into batches for insertFileResultBatch. On any
 	 * insert failure the transaction is rolled back and an error is logged.
+	 *
+	 * When is_reindex=false (fresh DB, e.g. worker subprocess), the 9
+	 * semantic_records indexes are dropped before the insert loop and
+	 * rebuilt in bulk after commit. This avoids ~144k random B-tree
+	 * updates for a 16k-row module and replaces them with 9 sorted
+	 * scans (5–10x faster). The DELETE-by-file-path statement is also
+	 * skipped because a fresh DB has no stale rows.
+	 *
 	 * @param store       Target GraphStore (must be open).
 	 * @param project_id  Project identifier for the insert.
+	 * @param is_reindex  false on fresh DB (drop/rebuild indexes, skip
+	 *                    DELETE); true on re-index (keep indexes, DELETE
+	 *                    stale rows per file).
 	 * @return true on success, false on any failure (error already logged).
 	 * @throws None — failures are returned, not thrown.
 	 */
-	bool flush(GraphStore &store, uint64_t project_id);
+	bool flush(GraphStore &store, uint64_t project_id, bool is_reindex);
 
 	/**
 	 * @return Total number of FileResult objects aggregated so far.

@@ -547,6 +547,12 @@ char *engine_get_graph_stats(uint64_t project_id)
 	}
 }
 
+void engine_set_ladybug_queries_enabled(int enabled)
+{
+	if (g_store)
+		g_store->setLadybugQueryEnabled(enabled != 0);
+}
+
 // ─── Full-text search ─────────────────────────────────────────
 
 char *engine_search_code(uint64_t project_id, const char *query, int limit)

@@ -46,28 +46,24 @@ struct TableSpec {
     /// Any other value means use that table's MAX(id) as the offset
     /// (i.e., the column is an FK to that table).
     remap_cols: &'static [(&'static str, &'static str)],
+    /// When true, use an explicit column list (excluding rowid) instead
+    /// of `SELECT *` so SQLite auto-assigns a fresh rowid. Required for
+    /// tables with `INTEGER PRIMARY KEY AUTOINCREMENT` whose rowid
+    /// would collide across module DBs.
+    skip_rowid: bool,
 }
 
 /// Tables to merge. Order matters: parents (referenced tables) must come
 /// before children (tables with FKs to them), so offsets for parent
 /// tables are computed first.
 const TABLE_SPECS: &[TableSpec] = &[
-    TableSpec {
-        name: "graph_nodes",
-        remap_cols: &[("id", "self")],
-    },
-    TableSpec {
-        name: "graph_edges",
-        remap_cols: &[
-            ("id", "self"),
-            ("source_node_id", "graph_nodes"),
-            ("target_node_id", "graph_nodes"),
-        ],
-    },
+    // entity replaces graph_nodes (deprecated)
     TableSpec {
         name: "entity",
         remap_cols: &[("id", "self")],
+        skip_rowid: false,
     },
+    // relation replaces graph_edges (deprecated)
     TableSpec {
         name: "relation",
         remap_cols: &[
@@ -75,24 +71,29 @@ const TABLE_SPECS: &[TableSpec] = &[
             ("source_id", "entity"),
             ("target_id", "entity"),
         ],
+        skip_rowid: false,
     },
     TableSpec {
         name: "type_info",
         remap_cols: &[("id", "self")],
+        skip_rowid: false,
     },
     TableSpec {
         name: "type_ref",
         remap_cols: &[("id", "self"), ("entity_id", "entity")],
+        skip_rowid: false,
     },
     // parent_id is a self-reference (scope.parent_id -> scope.id);
     // remapping by the same scope offset preserves intra-module refs.
     TableSpec {
         name: "scope",
         remap_cols: &[("id", "self"), ("parent_id", "self")],
+        skip_rowid: false,
     },
     TableSpec {
         name: "import",
         remap_cols: &[("id", "self"), ("source_scope_id", "scope")],
+        skip_rowid: false,
     },
     TableSpec {
         name: "reference",
@@ -101,32 +102,45 @@ const TABLE_SPECS: &[TableSpec] = &[
             ("caller_id", "entity"),
             ("scope_id", "scope"),
         ],
+        skip_rowid: false,
     },
     TableSpec {
         name: "files",
         remap_cols: &[("id", "self")],
+        skip_rowid: false,
     },
     // PK is (project_id, file_path) — no id column to remap.
     TableSpec {
         name: "file_scan_state",
         remap_cols: &[],
+        skip_rowid: false,
     },
-    // src_id IS the PK and equals graph_nodes.id; remap by gn offset.
+    // adjacency and adjacency_rev now reference entity.id instead of graph_nodes.id
     TableSpec {
         name: "adjacency",
-        remap_cols: &[("src_id", "graph_nodes")],
+        remap_cols: &[("src_id", "entity")],
+        skip_rowid: false,
     },
-    // tgt_id IS the PK and equals graph_nodes.id; remap by gn offset.
     TableSpec {
         name: "adjacency_rev",
-        remap_cols: &[("tgt_id", "graph_nodes")],
+        remap_cols: &[("tgt_id", "entity")],
+        skip_rowid: false,
+    },
+    // semantic_records has rowid INTEGER PRIMARY KEY AUTOINCREMENT.
+    // skip_rowid=true so SQLite auto-assigns fresh rowids (avoids
+    // cross-module rowid collisions that would silently drop rows
+    // under INSERT OR IGNORE). parent_id and ref_original_id reference
+    // original_id within the same project_id, which is unique per
+    // worker — no remap needed.
+    TableSpec {
+        name: "semantic_records",
+        remap_cols: &[],
+        skip_rowid: true,
     },
 ];
 
 /// Tables to read schema for from sqlite_master.
 const SCHEMA_TABLES: &[&str] = &[
-    "graph_nodes",
-    "graph_edges",
     "files",
     "file_scan_state",
     "entity",
@@ -138,13 +152,12 @@ const SCHEMA_TABLES: &[&str] = &[
     "type_ref",
     "adjacency",
     "adjacency_rev",
+    "semantic_records",
 ];
 
 /// Tables that need an offset computed (have id column).
 /// Used to build the _offsets temp table.
 const OFFSET_TABLES: &[&str] = &[
-    "graph_nodes",
-    "graph_edges",
     "entity",
     "relation",
     "type_info",
@@ -154,6 +167,95 @@ const OFFSET_TABLES: &[&str] = &[
     "reference",
     "files",
 ];
+
+/// Build the INSERT OR IGNORE SQL for a table.
+///
+/// When `spec.skip_rowid` is true, `cols` MUST be `Some(list)` — it
+/// provides the explicit column list (excluding the autoincrement
+/// rowid) so SQLite auto-assigns fresh rowids. Required for tables
+/// with `INTEGER PRIMARY KEY AUTOINCREMENT` whose rowids would collide
+/// across module DBs. When `skip_rowid` is false, `cols` is ignored
+/// and `SELECT *` is used.
+fn build_insert_sql(spec: &TableSpec, alias: &str, cols: Option<&str>) -> String {
+    if spec.skip_rowid {
+        let cols = cols.unwrap_or_else(|| {
+            panic!(
+                "build_insert_sql: skip_rowid=true for {} but cols=None",
+                spec.name
+            )
+        });
+        format!(
+            "INSERT OR IGNORE INTO {t} ({cols}) SELECT {cols} FROM {a}.{t};\n",
+            t = spec.name,
+            cols = cols,
+            a = alias
+        )
+    } else {
+        format!(
+            "INSERT OR IGNORE INTO {t} SELECT * FROM {a}.{t};\n",
+            t = spec.name,
+            a = alias
+        )
+    }
+}
+
+/// Fetch the column names of a table from a DB, excluding the `rowid`
+/// column. Used for `skip_rowid` tables (`INTEGER PRIMARY KEY
+/// AUTOINCREMENT`) so SQLite auto-assigns fresh rowids on INSERT.
+///
+/// Dynamically querying the column list (instead of hardcoding it)
+/// ensures future schema migrations (`ALTER TABLE ADD COLUMN`) are
+/// automatically picked up — preventing silent data loss where a new
+/// column's value would be filled with DEFAULT instead of the actual
+/// worker-written value.
+fn fetch_columns_excluding_rowid(db_path: &str, table_name: &str) -> Result<String, String> {
+    let query = format!("PRAGMA table_info({});", table_name);
+    let output = Command::new("sqlite3")
+        .arg(db_path)
+        .arg(&query)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| {
+            format!(
+                "spawn: {} [module=scheduler, method=fetch_columns_excluding_rowid]",
+                e
+            )
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        return Err(format!(
+            "sqlite3 exit={}: {} [module=scheduler, method=fetch_columns_excluding_rowid]",
+            output.status.code().unwrap_or(-1),
+            stderr
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    // PRAGMA table_info output: cid|name|type|notnull|dflt_value|pk
+    let mut cols: Vec<&str> = Vec::new();
+    for line in stdout.lines() {
+        let mut fields = line.split('|');
+        let _cid = fields.next();
+        let name = fields.next().unwrap_or("").trim();
+        // Skip the rowid column — for skip_rowid tables, this is the
+        // INTEGER PRIMARY KEY AUTOINCREMENT column that SQLite will
+        // auto-assign a fresh value for on INSERT.
+        if name.is_empty() || name == "rowid" {
+            continue;
+        }
+        cols.push(name);
+    }
+    if cols.is_empty() {
+        return Err(format!(
+            "no non-rowid columns found for table {} in {} [module=scheduler, method=fetch_columns_excluding_rowid]",
+            table_name, db_path
+        ));
+    }
+    Ok(cols.join(", "))
+}
 
 /// Merge per-module DBs into a single main DB using the sqlite3 CLI.
 ///
@@ -233,6 +335,40 @@ pub(super) fn merge_module_dbs(main_db: &str, module_db_paths: &[String]) -> Mer
         .filter(|s| main_db_existing_tables.contains(s.name))
         .count() as u32;
 
+    // ── Step 2b: fetch column lists for skip_rowid tables ──────
+    // Dynamically query column names (excluding `rowid`) from module
+    // 0's schema so future ALTER TABLE ADD COLUMN migrations are
+    // automatically picked up. A hardcoded column list would silently
+    // lose data for new columns (SQLite fills them with DEFAULT
+    // instead of the worker-written value on INSERT-with-fewer-cols).
+    // All modules share the same schema, so one fetch from module 0
+    // covers all modules.
+    let mut skip_rowid_cols: std::collections::HashMap<&'static str, String> =
+        std::collections::HashMap::new();
+    for spec in TABLE_SPECS {
+        if !spec.skip_rowid || !main_db_existing_tables.contains(spec.name) {
+            continue;
+        }
+        match fetch_columns_excluding_rowid(&module_db_paths[0], spec.name) {
+            Ok(cols) => {
+                skip_rowid_cols.insert(spec.name, cols);
+            }
+            Err(e) => {
+                return MergeResult {
+                    merged: false,
+                    main_db_path: main_db.to_string(),
+                    tables_merged: 0,
+                    rows_merged: 0,
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    error: Some(format!(
+                        "fetch_columns_excluding_rowid failed for {}: {} [module=scheduler, method=merge_module_dbs]",
+                        spec.name, e
+                    )),
+                };
+            }
+        }
+    }
+
     // ── Step 3: build merge SQL script ──────────────────────────
     // MEMORY journal mode avoids WAL mutex contention with the WAL-
     // mode attached module DBs. busy_timeout=10000 waits for any
@@ -305,11 +441,8 @@ pub(super) fn merge_module_dbs(main_db: &str, module_db_paths: &[String]) -> Mer
                 if !existing_tables.contains(spec.name) {
                     continue;
                 }
-                sql.push_str(&format!(
-                    "INSERT OR IGNORE INTO {t} SELECT * FROM {a}.{t};\n",
-                    t = spec.name,
-                    a = alias
-                ));
+                let cols = skip_rowid_cols.get(spec.name).map(|s| s.as_str());
+                sql.push_str(&build_insert_sql(spec, &alias, cols));
             }
             // (Module 0's DB is detached after COMMIT — see the
             // DETACH at the end of the loop body, outside the txn.)
@@ -341,12 +474,10 @@ pub(super) fn merge_module_dbs(main_db: &str, module_db_paths: &[String]) -> Mer
                 }
                 if spec.remap_cols.is_empty() {
                     // No id columns to remap (e.g., file_scan_state
-                    // whose PK is (project_id, file_path)).
-                    sql.push_str(&format!(
-                        "INSERT OR IGNORE INTO {t} SELECT * FROM {a}.{t};\n",
-                        t = spec.name,
-                        a = alias
-                    ));
+                    // whose PK is (project_id, file_path), or
+                    // semantic_records which uses skip_rowid).
+                    let cols = skip_rowid_cols.get(spec.name).map(|s| s.as_str());
+                    sql.push_str(&build_insert_sql(spec, &alias, cols));
                     continue;
                 }
 
@@ -680,8 +811,10 @@ mod tests {
         // The merge list MUST contain these core tables — if any is
         // missing, the unified DB loses data. This guard prevents
         // accidental removal during refactors.
+        // graph_nodes/graph_edges are deprecated; entity/relation
+        // are the canonical source tables.
         let names: Vec<&str> = TABLE_SPECS.iter().map(|s| s.name).collect();
-        for required in ["graph_nodes", "graph_edges", "files", "entity", "relation"] {
+        for required in ["files", "entity", "relation", "semantic_records"] {
             assert!(
                 names.contains(&required),
                 "{} missing from TABLE_SPECS",
@@ -706,16 +839,162 @@ mod tests {
     }
 
     #[test]
-    fn test_graph_edges_remap_includes_fk_columns() {
-        // graph_edges has FKs source_node_id and target_node_id to
-        // graph_nodes.id. Both must be remapped by the graph_nodes
-        // offset, otherwise edges would point at the wrong nodes.
+    fn test_relation_remap_includes_fk_columns() {
+        // relation has FKs source_id and target_id to entity.id.
+        // Both must be remapped by the entity offset, otherwise
+        // edges would point at the wrong entities.
+        // graph_nodes/graph_edges are deprecated; entity/relation
+        // are the canonical source tables.
+        let spec = TABLE_SPECS.iter().find(|s| s.name == "relation").unwrap();
+        let cols: Vec<&str> = spec.remap_cols.iter().map(|(c, _)| *c).collect();
+        assert!(cols.contains(&"source_id"));
+        assert!(cols.contains(&"target_id"));
+    }
+
+    /// Helper: create a temp DB with a table mimicking semantic_records
+    /// schema (rowid INTEGER PRIMARY KEY AUTOINCREMENT + data columns)
+    /// and return the DB path. `suffix` makes the path unique per test
+    /// so parallel test runs don't collide on the same file. Only the
+    /// schema is created — no rows are inserted (column-list tests
+    /// don't need data).
+    fn make_test_db(suffix: &str, table_sql: &str) -> String {
+        let pid = std::process::id();
+        let path = format!("/tmp/codescope_merge_test_{}_{}.db", pid, suffix);
+        let _ = std::fs::remove_file(&path);
+        let sql = format!("CREATE TABLE t ({});", table_sql);
+        let status = Command::new("sqlite3")
+            .arg(&path)
+            .arg(&sql)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("sqlite3 spawn failed");
+        assert!(status.success(), "sqlite3 create table failed");
+        path
+    }
+
+    #[test]
+    fn test_fetch_columns_excluding_rowid() {
+        // Schema mirrors semantic_records: rowid AUTOINCREMENT + data
+        // columns. The function must return all data columns, excluding
+        // only `rowid`.
+        let path = make_test_db(
+            "basic",
+            "rowid INTEGER PRIMARY KEY AUTOINCREMENT,\n\
+             original_id INTEGER NOT NULL,\n\
+             name TEXT,\n\
+             extra TEXT DEFAULT ''",
+        );
+        let cols = fetch_columns_excluding_rowid(&path, "t")
+            .expect("fetch_columns_excluding_rowid should succeed");
+        let col_list: Vec<&str> = cols.split(", ").collect();
+        // rowid must be excluded
+        assert!(
+            !col_list.contains(&"rowid"),
+            "rowid should be excluded, got: {:?}",
+            cols
+        );
+        // All data columns must be present
+        for required in ["original_id", "name", "extra"] {
+            assert!(
+                col_list.contains(&required),
+                "{} should be in column list, got: {:?}",
+                required,
+                cols
+            );
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_fetch_columns_excluding_rowid_picks_up_alter_table() {
+        // Simulate a schema migration: create table, then ALTER TABLE
+        // ADD COLUMN. The dynamic query must pick up the new column —
+        // this is the key property that prevents silent data loss on
+        // future migrations (the bug that hardcoded
+        // SEMANTIC_RECORDS_COLS would have caused).
+        let path = make_test_db(
+            "alter",
+            "rowid INTEGER PRIMARY KEY AUTOINCREMENT,\n\
+             original_id INTEGER NOT NULL,\n\
+             name TEXT",
+        );
+        // Simulate migration: add a column after creation
+        let status = Command::new("sqlite3")
+            .arg(&path)
+            .arg("ALTER TABLE t ADD COLUMN migrated_col TEXT DEFAULT '';")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("sqlite3 spawn failed");
+        assert!(status.success(), "ALTER TABLE failed");
+
+        let cols = fetch_columns_excluding_rowid(&path, "t")
+            .expect("fetch_columns_excluding_rowid should succeed");
+        assert!(
+            cols.contains("migrated_col"),
+            "ALTER TABLE-added column must be picked up, got: {:?}",
+            cols
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_build_insert_sql_skip_rowid_uses_provided_cols() {
+        // When skip_rowid=true, build_insert_sql MUST use the provided
+        // column list (not a hardcoded constant). This decouples the
+        // function from any specific table schema.
         let spec = TABLE_SPECS
             .iter()
-            .find(|s| s.name == "graph_edges")
-            .unwrap();
-        let cols: Vec<&str> = spec.remap_cols.iter().map(|(c, _)| *c).collect();
-        assert!(cols.contains(&"source_node_id"));
-        assert!(cols.contains(&"target_node_id"));
+            .find(|s| s.name == "semantic_records")
+            .expect("semantic_records spec must exist");
+        let cols = "original_id, name, kind";
+        let sql = build_insert_sql(spec, "m0", Some(cols));
+        assert!(
+            sql.contains("(original_id, name, kind)"),
+            "skip_rowid INSERT should use provided cols, got: {:?}",
+            sql
+        );
+        assert!(
+            sql.contains("SELECT original_id, name, kind FROM m0.semantic_records"),
+            "skip_rowid INSERT should SELECT provided cols, got: {:?}",
+            sql
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "skip_rowid=true")]
+    fn test_build_insert_sql_skip_rowid_panics_without_cols() {
+        // skip_rowid=true with cols=None is a programming error — the
+        // panic prevents silent fallback to SELECT * (which would
+        // include rowid and cause cross-module collisions).
+        let spec = TABLE_SPECS
+            .iter()
+            .find(|s| s.name == "semantic_records")
+            .expect("semantic_records spec must exist");
+        let _ = build_insert_sql(spec, "m0", None);
+    }
+
+    #[test]
+    fn test_build_insert_sql_non_skip_rowid_ignores_cols() {
+        // For skip_rowid=false, cols parameter is ignored — SELECT * is
+        // used so all columns (including id) are copied.
+        let spec = TABLE_SPECS
+            .iter()
+            .find(|s| s.name == "entity")
+            .expect("entity spec must exist");
+        let sql = build_insert_sql(spec, "m1", Some("should_be_ignored"));
+        assert!(
+            sql.contains("SELECT * FROM m1.entity"),
+            "non-skip_rowid should use SELECT *, got: {:?}",
+            sql
+        );
+        assert!(
+            !sql.contains("should_be_ignored"),
+            "non-skip_rowid should ignore cols param, got: {:?}",
+            sql
+        );
     }
 }

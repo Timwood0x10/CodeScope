@@ -85,7 +85,7 @@ static void testEmptyFlushReturnsTrue() {
 
 	MemBulkAggregator agg(0);
 	CHECK(agg.size() == 0, "empty size == 0");
-	CHECK(agg.flush(store, pid), "empty flush returns true");
+	CHECK(agg.flush(store, pid, false), "empty flush returns true");
 	CHECK(countSemanticRecords(store, pid) == 0, "empty flush -> 0 rows");
 }
 
@@ -106,7 +106,7 @@ static void testSingleWorkerMerge() {
 	local.push_back(makeFakeResult("/d.cpp", 1));
 	agg.mergeFrom(std::move(local));
 	CHECK(agg.size() == 4, "single worker size == 4");
-	CHECK(agg.flush(store, pid), "single worker flush returns true");
+	CHECK(agg.flush(store, pid, false), "single worker flush returns true");
 	CHECK(countSemanticRecords(store, pid) == 4,
 	      "single worker -> 4 rows");
 }
@@ -139,7 +139,7 @@ static void testMultiWorkerConcurrentMerge() {
 	for (auto &th : threads)
 		th.join();
 	CHECK(agg.size() == 128, "multi worker size == 128");
-	CHECK(agg.flush(store, pid), "multi worker flush returns true");
+	CHECK(agg.flush(store, pid, false), "multi worker flush returns true");
 	CHECK(countSemanticRecords(store, pid) == 128,
 	      "multi worker -> 128 rows");
 }
@@ -177,7 +177,7 @@ static void testFlushFailureRollsBackAndLogs() {
 	CHECK(ro_store.open(ro_uri.c_str()) || true, "ro open (best effort)");
 	// Only assert the contract if ro open succeeded; otherwise skip.
 	if (ro_store.handle() != nullptr) {
-		bool ok = agg.flush(ro_store, pid);
+		bool ok = agg.flush(ro_store, pid, false);
 		CHECK(!ok, "flush on read-only store returns false");
 	}
 }

@@ -89,6 +89,22 @@ char *engine_index_post_parse(uint64_t project_id, const std::string &dir,
 			      int64_t time_parse_ms, int64_t time_buildgraph_ms,
 			      int total_indexed);
 
+// ─── Evidence Builder FFI (v0.3 Phase 2) ─────────────────────────
+//
+// Implemented in engine_evidence_ffi.cpp. Loads rule JSON files from
+// engine/src/evidence/rules (or $CODESCOPE_RULES_DIR), runs all
+// rules (or one category when category_filter is non-empty) against
+// the project's semantic_fact rows, and returns a JSON array of
+// Evidence objects. Caller MUST release the returned pointer via
+// engine_free_string().
+//
+// @param project_id       Project to analyze.
+// @param category_filter  Optional category ("sync"/"memory"/"error"/
+//                         "pattern"/"framework"/"ffi"); NULL or ""
+//                         means run all categories.
+// @return Heap-allocated JSON array string (caller frees).
+char *engine_build_evidence(uint64_t project_id, const char *category_filter);
+
 // ─── Path Helpers ─────────────────────────────────────────────────
 // Cross-platform path separator check: '/' on Unix, '/' and '\\' on
 // Windows. Using std::filesystem::path for full path manipulation is

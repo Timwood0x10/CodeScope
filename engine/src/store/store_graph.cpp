@@ -1,5 +1,6 @@
 #include "store.h"
 #include "store_internal.h"
+#include "store_graph_compiler.h"
 #include "platform_win.h"
 #include "../resolver/pipeline.h"
 
@@ -151,7 +152,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	}
 
 	// Delete existing graph data for files being rebuilt.
-	// deleteGraphDataByFile cleans relation, graph_edges, graph_nodes,
+	// deleteGraphDataByFile cleans entity, relation (graph_nodes/graph_edges are deprecated)
 	// AND entity — the old code only deleted edges+nodes, leaving entity
 	// rows that caused duplicate accumulation on re-index.
 	for (auto &fp : rebuild_files) {
@@ -204,9 +205,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	exec(std::string(
 		     "CREATE TEMP TABLE _r2n AS "
 		     "SELECT sr.rowid as rid, sr.original_id, sr.file_path, sr.name,"
-		     " CAST(ROW_NUMBER() OVER () "
-		     "  + COALESCE((SELECT MAX(id) FROM graph_nodes), 0)"
-		     "  AS INTEGER) as node_id "
+		     " CAST(ROW_NUMBER() OVER () AS INTEGER) as node_id "
 		     "FROM semantic_records sr "
 		     "WHERE sr.project_id=" +
 		     pid + " AND sr.kind IN " + kind_list +
@@ -217,10 +216,9 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	if (explain_env && explain_env[0]) {
 		explainQueryPlan(
 			(std::string(
+				 "CREATE TEMP TABLE _r2n AS "
 				 "SELECT sr.rowid as rid, sr.original_id, sr.file_path, sr.name,"
-				 " CAST(ROW_NUMBER() OVER () + "
-				 " COALESCE((SELECT MAX(id) FROM graph_nodes), 0)"
-				 " AS INTEGER) as node_id "
+				 " CAST(ROW_NUMBER() OVER () AS INTEGER) as node_id "
 				 "FROM semantic_records sr "
 				 "WHERE sr.project_id=" +
 				 pid + " AND sr.kind IN " + kind_list +
@@ -248,29 +246,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			"FROM semantic_records sr JOIN _r2n r2n ON sr.rowid = r2n.rid",
 			"nodes");
 	}
-	// Insert graph_nodes from semantic_records via the _r2n mapping.
-	// This populates all declaration nodes (functions, classes, etc.) with
-	// their text metadata and location info for downstream queries.
-	exec(std::string(
-		     "INSERT INTO graph_nodes (id, project_id, ir_node_id, node_type, "
-		     " name, qualified_name, signature, module_path, file_path, "
-		     " start_row, start_col, end_row, end_col, language, parent_id, "
-		     " visibility) "
-		     "SELECT r2n.node_id, sr.project_id, sr.original_id, "
-		     " CASE sr.kind WHEN 0 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 "
-		     "  WHEN 3 THEN 3 WHEN 4 THEN 4 WHEN 5 THEN 3 ELSE 7 END, "
-		     " sr.name, COALESCE(NULLIF(sr.qualified_name, ''), sr.name), "
-		     " COALESCE(NULLIF(sr.qualified_name, ''), sr.name), "
-		     " sr.file_path, sr.file_path, "
-		     " sr.start_row, sr.start_col, sr.end_row, sr.end_col, "
-		     " sr.language, "
-		     " COALESCE((SELECT parent_r2n.node_id FROM _r2n parent_r2n"
-		     "  WHERE parent_r2n.original_id = sr.parent_id"
-		     "  AND parent_r2n.file_path = sr.file_path), 0), "
-		     " sr.visibility "
-		     "FROM semantic_records sr "
-		     "JOIN _r2n r2n ON sr.rowid = r2n.rid")
-		     .c_str());
+	// graph_nodes table is deprecated. Entity data is written below.
 	// Phase 1.1: dual-write to entity table (with test-file filter).
 	// Filter test/bench/spec files — AI only needs production code.
 	// This early insert feeds the scope table below, so it must happen
@@ -303,33 +279,10 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		     .c_str());
 	auto t_nodes = Clock::now();
 
-	// ── 2d: Containment edges ──
-	// edge_type=3 (symbol_reference) edges are parent→child containment
-	// relations. Back-fill resolve_strategy from the parent's
-	// semantic_records row so that findCalleesJson/findCallersJson can
-	// filter third-party (external) and unresolved symbols uniformly,
-	// regardless of edge_type. Without this, all edge_type=3 edges had
-	// empty resolve_strategy and leaked third-party imports (e.g.
-	// `__init__`, `_analyze_layer`) into callee/caller results.
-	{
-		std::string sql = std::string(
-			"INSERT OR IGNORE INTO graph_edges "
-			"(project_id, source_node_id, target_node_id, "
-			" edge_type, graph_type, resolve_strategy) "
-			"SELECT DISTINCT " +
-			pid +
-			", parent.node_id, child.node_id, 3, 'symbol_reference', "
-			" psr.resolve_strategy "
-			"FROM semantic_records sr "
-			"JOIN _r2n child ON sr.original_id = child.original_id AND sr.file_path = child.file_path "
-			"JOIN _r2n parent ON sr.parent_id = parent.original_id AND sr.file_path = parent.file_path "
-			"JOIN semantic_records psr ON psr.rowid = parent.rid "
-			"WHERE sr.project_id=" +
-			pid + " AND parent.node_id != child.node_id");
-		if (explain_env && explain_env[0])
-			explainQueryPlan(sql.c_str(), "containment_edges");
-		exec(sql.c_str());
-	}
+	// ── 2d: Containment edges (edge_type=3) ──
+	// graph_edges is deprecated. Containment relationships are
+	// derived from entity parent_id at query time via LadybugDB.
+	// The old INSERT INTO graph_edges for containment is removed.
 	auto t_edges = Clock::now();
 
 	// ── 2e: Route + type edges + type_info + type_ref ──
@@ -396,25 +349,8 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		exec("CREATE INDEX IF NOT EXISTS _td_rid ON _td(rid, name)");
 		exec("CREATE INDEX IF NOT EXISTS _td_name ON _td(name, rid)");
 
-		// Create USES_TYPE edges from TypeRef records to type declaration records
-		// in the same file. Cross-file type resolution is handled later.
-		std::string type_sql =
-			std::string(
-				"INSERT OR IGNORE INTO graph_edges "
-				"(project_id, source_node_id, target_node_id, edge_type, graph_type) "
-				"SELECT DISTINCT ") +
-			pid +
-			", src.node_id, tgt.node_id, 6, 'type_ref' "
-			"FROM _r2n src "
-			"JOIN semantic_records sr ON sr.rowid = src.rid "
-			"AND sr.kind = " +
-			std::to_string(kKindTypeRef) +
-			" "
-			"JOIN _r2n tgt ON tgt.file_path = src.file_path "
-			"JOIN _td ON _td.rid = tgt.rid AND _td.name = sr.type_name "
-			"WHERE sr.project_id=" +
-			pid + " AND sr.type_name != ''";
-		exec(type_sql.c_str());
+		// graph_edges type edges are deprecated. Type relationships
+		// are now derived from type_info + type_ref at query time.
 	}
 	auto t_type_edges = Clock::now();
 
@@ -697,56 +633,9 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		dropUniqueEdgeIndex();
 	}
 
-	// Phase 1.1: dual-write entity table (production code only)
-	{
-		std::string entity_sql =
-			"INSERT OR IGNORE INTO entity "
-			"(id, project_id, kind, name, qualified_name, "
-			" file_path, language, start_row, start_col, "
-			" end_row, end_col, module_path, visibility) "
-			"SELECT id, project_id, node_type, name, "
-			" COALESCE(NULLIF(qualified_name, ''), name), "
-			" file_path, language, "
-			" start_row, start_col, end_row, end_col, "
-			" rtrim(file_path, replace(file_path, '/', 'x')), "
-			" visibility "
-			"FROM graph_nodes WHERE project_id=" +
-			std::to_string(project_id) +
-			" AND file_path NOT LIKE '%\\_test.%' ESCAPE '\\'"
-			" AND file_path NOT LIKE '%/tests/%'"
-			" AND file_path NOT LIKE '%\\_spec.%' ESCAPE '\\'"
-			" AND file_path NOT LIKE '%/benches/%'"
-			" AND file_path NOT LIKE '%\\_\\_test\\_\\_%' ESCAPE '\\'"
-			" AND file_path IN (SELECT file_path FROM _rf)";
-		exec(entity_sql.c_str());
-	}
-
-	// Phase 1.1: dual-write to relation table (production code only)
-	{
-		std::string rel_sql =
-			"INSERT OR IGNORE INTO relation "
-			"(project_id, source_id, target_id, type) "
-			"SELECT e.project_id, e.source_node_id, "
-			" e.target_node_id, e.edge_type "
-			"FROM graph_edges e "
-			"JOIN graph_nodes src ON e.source_node_id = src.id"
-			" AND src.file_path NOT LIKE '%\\_test.%' ESCAPE '\\'"
-			" AND src.file_path NOT LIKE '%/tests/%'"
-			" AND src.file_path NOT LIKE '%\\_spec.%' ESCAPE '\\'"
-			" AND src.file_path NOT LIKE '%/benches/%'"
-			" AND src.file_path NOT LIKE '%\\_\\_test\\_\\_%' ESCAPE '\\'"
-			"JOIN graph_nodes tgt ON e.target_node_id = tgt.id"
-			" AND tgt.file_path NOT LIKE '%\\_test.%' ESCAPE '\\'"
-			" AND tgt.file_path NOT LIKE '%/tests/%'"
-			" AND tgt.file_path NOT LIKE '%\\_spec.%' ESCAPE '\\'"
-			" AND tgt.file_path NOT LIKE '%/benches/%'"
-			" AND tgt.file_path NOT LIKE '%\\_\\_test\\_\\_%' ESCAPE '\\'"
-			"WHERE e.project_id=" +
-			std::to_string(project_id) +
-			" AND (src.file_path IN (SELECT file_path FROM _rf)"
-			" OR tgt.file_path IN (SELECT file_path FROM _rf))";
-		exec(rel_sql.c_str());
-	}
+	// Phase 1.1: entity/relation are already written above from
+	// semantic_records (entity) and by the resolver pipeline (relation).
+	// The old dual-write from graph_nodes/graph_edges is removed.
 	auto t_entity_relation = Clock::now();
 
 	// Phase 1.3: Resolver Pipeline — resolve references to entities
@@ -797,67 +686,30 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// queryable), and model/state run in a background thread launched by
 	// engine_index_project.cpp after createIndexesAfterBulkLoad.
 
-	// ── Sync graph to LadybugDB (if available) ────────────────
-	// After all graph_nodes, graph_edges, and resolver edges are
-	// committed to SQLite, mirror them to LadybugDB for Cypher queries.
-	// Uses incremental sync (syncIncrementalToLadybugDB) so only newly
-	// added nodes/edges are pushed after the first full sync, tracked
-	// via the lbug_sync_state table. This is a non-fatal step: if
-	// LadybugDB is unavailable or fails, the SQLite graph remains the
-	// source of truth.
-	//
-	// Reset sync state before incremental sync: buildGraph may have
-	// deleted old graph_nodes/edges (via deleteGraphNodesByFile) that
-	// are still present in LadybugDB. Resetting forces a full sync
-	// (DELETE + COPY FROM) to clear stale data and re-import cleanly.
-	{
-		auto t_lbug = Clock::now();
-		// Worker mode (scheduler subprocess) sets CODESCOPE_SKIP_ASYNC=1
-		// and uses an isolated DB — LadybugDB sync would fail and waste
-		// 5-10s. The unified main DB gets its sync once after merge.
-		const char *skip_async = getenv("CODESCOPE_SKIP_ASYNC");
-		// Worker mode (scheduler subprocess) sets CODESCOPE_SKIP_ASYNC=1
-		// and uses an isolated DB — LadybugDB sync would fail and waste
-		// 5-10s. The unified main DB gets its sync once after merge.
-		// Interpretation MUST match the sibling consumer in
-		// engine_index_post_parse.cpp:261 — skip on ANY truthy value
-		// (set AND not "0"), not just the literal "1". The two
-		// consumers diverged before (only "1" skipped here, "0" or
-		// unset ran; the sibling skipped unset-or-"0"-only-inverse)
-		// which let users/wrapper scripts setting truthy-but-not-"1"
-		// values (=2, =true, =yes, =on) trigger divergent async
-		// behavior between the two paths. Aligning on "skip when set
-		// and not '0'" makes both consumers share one contract.
-		if (skip_async && skip_async[0] != '0') {
-			// Skip LadybugDB sync in worker mode (or user explicitly
-			// asked to skip async via any truthy CODESCOPE_SKIP_ASYNC
-			// value other than "0").
-		} else {
-			resetLadybugSyncState(project_id);
-			if (!syncIncrementalToLadybugDB(project_id))
-				fprintf(stderr,
-					"buildGraph: syncIncrementalToLadybugDB "
-					"failed for project %s "
-					"[module=store, method=buildGraph]\n",
-					pid.c_str());
-		}
-		fprintf(stderr,
-			"buildGraph: ladybugdb=%lldms "
-			"for project %s\n",
-			(long long)std::chrono::duration_cast<
-				std::chrono::milliseconds>(Clock::now() -
-							   t_lbug)
-				.count(),
-			pid.c_str());
-	}
+	// ── Build LadybugDB from entity/relation tables ──
+	// Builds the Cypher-queryable graph from the canonical entity/relation
+	// tables. Non-fatal: if the build fails, isGraphReady() returns false
+	// and all query paths return "graph not ready" errors.
 
-	// Reclaim space: semantic_records are no longer needed after buildGraph.
-	// For incremental re-index, the old data is not re-inserted for
-	// unchanged files, so we keep it. The next full rebuild will
-	// overwrite all rows. Skip DELETE entirely — the data is only
-	// read during buildGraph(), and subsequent builds will re-insert
-	// only changed files via the parse pipeline.
-	// ¯\_(ツ)_/¯
+	auto t_lbug = Clock::now();
+	if (lbug_initialized_) {
+		if (!buildLadybugFromEntityRelation(this, project_id)) {
+			fprintf(stderr,
+				"buildGraph: buildLadybugFromEntityRelation failed "
+				"for project %s — SQLite graph remains the "
+				"source of truth "
+				"[module=store, method=buildGraph]\n",
+				pid.c_str());
+		}
+	}
+	fprintf(stderr,
+		"buildGraph: ladybugdb=%lldms "
+		"for project %s\n",
+		(long long)std::chrono::duration_cast<std::chrono::milliseconds>(
+			Clock::now() - t_lbug)
+			.count(),
+		pid.c_str());
+
 	auto t_cleanup = Clock::now();
 
 	// ── Step 0: Fine-grained phase timing breakdown ───────────────
@@ -903,14 +755,13 @@ bool GraphStore::buildCSR(uint64_t project_id)
 			 std::to_string(project_id))
 		     .c_str());
 
-	// Read all call edges, ordered by source_node_id for streaming group-by.
+	// Read all call edges from relation table, ordered by source_id for streaming group-by.
 	// ORDER BY ensures same caller rows are contiguous so we only flush
 	// to the BLOB when the source changes.
-	std::string sql = "SELECT source_node_id, target_node_id "
-			  "FROM graph_edges "
-			  "WHERE edge_type=1 AND project_id=" +
-			  std::to_string(project_id) +
-			  " ORDER BY source_node_id";
+	std::string sql = "SELECT source_id, target_id "
+			  "FROM relation "
+			  "WHERE type=1 AND project_id=" +
+			  std::to_string(project_id) + " ORDER BY source_id";
 	sqlite3_stmt *st = nullptr;
 	if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &st, nullptr) != SQLITE_OK)
 		return false;
@@ -979,22 +830,21 @@ bool GraphStore::buildCSR(uint64_t project_id)
 
 	sqlite3_finalize(ins);
 	sqlite3_finalize(st);
-	fprintf(stderr,
-		"buildCSR: %lld forward groups from graph_edges(edge_type=1)\n",
+	fprintf(stderr, "buildCSR: %lld forward groups from relation(type=1)\n",
 		(long long)count);
 
 	// ── Build reverse adjacency (adjacency_rev) ──
-	// Mirror of forward adjacency: group by target_node_id (callee) instead
-	// of source_node_id (caller). Enables O(1) getCallerIds() lookups.
+	// Mirror of forward adjacency: group by target_id (callee) instead
+	// of source_id (caller). Enables O(1) getCallerIds() lookups.
 	exec(std::string("DELETE FROM adjacency_rev WHERE project_id=" +
 			 std::to_string(project_id))
 		     .c_str());
 
-	std::string rev_sql = "SELECT target_node_id, source_node_id "
-			      "FROM graph_edges "
-			      "WHERE edge_type=1 AND project_id=" +
+	std::string rev_sql = "SELECT target_id, source_id "
+			      "FROM relation "
+			      "WHERE type=1 AND project_id=" +
 			      std::to_string(project_id) +
-			      " ORDER BY target_node_id";
+			      " ORDER BY target_id";
 	sqlite3_stmt *rev_st = nullptr;
 	if (sqlite3_prepare_v2(db_, rev_sql.c_str(), -1, &rev_st, nullptr) !=
 	    SQLITE_OK)
@@ -1062,8 +912,7 @@ bool GraphStore::buildCSR(uint64_t project_id)
 
 	sqlite3_finalize(rev_ins);
 	sqlite3_finalize(rev_st);
-	fprintf(stderr,
-		"buildCSR: %lld reverse groups from graph_edges(edge_type=1)\n",
+	fprintf(stderr, "buildCSR: %lld reverse groups from relation(type=1)\n",
 		(long long)rev_count);
 	return true;
 }
@@ -1116,7 +965,7 @@ std::vector<uint64_t> GraphStore::getCallerIds(uint64_t node_id)
 	// Fallback: O(n) full-scan of forward adjacency (legacy path)
 	const char *fallback_sql =
 		"SELECT src_id, tgt_blob FROM adjacency WHERE project_id IN "
-		"(SELECT project_id FROM graph_nodes WHERE id=?)";
+		"(SELECT project_id FROM entity WHERE id=?)";
 	if (sqlite3_prepare_v2(db_, fallback_sql, -1, &st, nullptr) !=
 	    SQLITE_OK)
 		return ids;

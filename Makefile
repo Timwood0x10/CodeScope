@@ -150,6 +150,10 @@ test: test-engine test-server
 #     Js/Ts/Tsx translators that dlopen the grammar .so at runtime — they need
 #     GRAMMARS_DIR set (see test-engine target below). They pass once the
 #     grammar .so files are on disk under engine/grammars.
+# Tests excluded from CI (hardcoded local paths — run manually):
+#   - test_evidence_builder, test_project_state, test_verify_planner,
+#     test_domain_rules: load rules from /Users/scc/... paths, not portable
+#   - test_self_bench: hardcoded /Users/scc/... engine src path for self-index
 TEST_EXES := \
 	test_ir test_graph test_graph_semantic test_graph_call_precision \
 	test_semantic_unit \
@@ -163,16 +167,20 @@ TEST_EXES := \
 	test_fuzzy_resolver test_resolver_fuzzy_cache \
 	test_documentation_drift test_capability_drift test_architecture_drift \
 	test_query_algorithms test_connected_components_ffi test_trigram_search \
-	test_exclude_paths test_index_metrics test_ladybug_sync \
+	test_exclude_paths test_index_metrics \
 	test_call_graph_p1 test_readme_ingestion test_call_graph_method \
 	test_project_id \
 	test_enhance_e2e \
-	test_js_visitor test_ts_visitor test_tsx_visitor
+	test_js_visitor test_ts_visitor test_tsx_visitor \
+	test_semantic_fact_extractor \
+	test_ladybug_diff
 
 test-engine: $(ENGINE_LIB)
 	@printf "$(CYAN)[test/engine]$(RESET) Building and running C++ tests...\n"
 	@rm -f $(TEST_DB) $(TEST_DB)-wal $(TEST_DB)-shm
 	@rm -f /tmp/test_*.db /tmp/test_*.db-wal /tmp/test_*.db-shm 2>/dev/null || true
+	@find /tmp -maxdepth 1 -name 'test_*.lbug' -delete 2>/dev/null || true
+	@find . -name '*.lbug' -delete 2>/dev/null || true
 	@cd $(BUILD_DIR) && cmake --build . -j$(NPROC) 2>&1 | grep -E "(error|Error|Building|Linking)" || true
 	@failed=0; \
 	export GRAMMARS_DIR="$(CURDIR)/engine/grammars"; \
@@ -287,7 +295,7 @@ lint-rust:
 		&& printf "  $(CHECK) clippy: ok\n"
 
 # ─── Format ───────────────────────────────────────────────────────
-fmt: fmt-cpp fmt-rust
+fmt: fmt-cpp fmt-rust lint-cpp-full
 	@printf "$(CHECK) format complete\n"
 
 fmt-cpp:

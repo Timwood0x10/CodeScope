@@ -1,0 +1,19 @@
+{
+  "category": "sync",
+  "rules": [
+    {
+      "name": "mutex_without_defer_unlock",
+      "description": "Mutex locked but not deferred-unlock",
+      "need": [
+        { "category": "sync", "primitive": "mutex", "kind": "lock" },
+        { "category": "sync", "primitive": "mutex", "kind": "defer_unlock", "optional": true }
+      ],
+      "combine": "missing_match",
+      "output": {
+        "severity": 2,
+        "title": "{count} function(s) lock mutex without defer Unlock",
+        "message": "{symbol} locked at {file}:{line} without defer Unlock"
+      }
+    }
+  ]
+}

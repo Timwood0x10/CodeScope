@@ -1,0 +1,31 @@
+{
+  "category": "ffi",
+  "rules": [
+    {
+      "name": "extern_call_collect",
+      "description": "extern \"C\" declarations exposing FFI surface area",
+      "need": [
+        { "category": "ffi", "primitive": "extern_call", "kind": "call" }
+      ],
+      "combine": "collect",
+      "output": {
+        "severity": 1,
+        "title": "{count} extern \"C\" declaration(s) found",
+        "message": "extern \"C\" at {file}:{line}: {symbol}"
+      }
+    },
+    {
+      "name": "unchecked_c_error",
+      "description": "C calls whose return value is not checked for errors",
+      "need": [
+        { "category": "ffi", "primitive": "unchecked_error", "kind": "missing" }
+      ],
+      "combine": "collect",
+      "output": {
+        "severity": 2,
+        "title": "{count} unchecked C call(s) may miss errors",
+        "message": "{symbol} at {file}:{line} return value not checked"
+      }
+    }
+  ]
+}

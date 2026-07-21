@@ -764,12 +764,11 @@ uint64_t GraphStore::getLatestProjectId()
 	// Ties are broken by id DESC (prefers the most recently created).
 	// [module=store, method=getLatestProjectId]
 	sqlite3_stmt *stmt = nullptr;
-	const char *sql =
-		"SELECT p.id FROM projects p "
-		"LEFT JOIN (SELECT project_id, COUNT(*) AS cnt "
-		"		   FROM graph_nodes GROUP BY project_id) g "
-		"ON p.id = g.project_id "
-		"ORDER BY COALESCE(g.cnt, 0) DESC, p.id DESC LIMIT 1";
+	const char *sql = "SELECT p.id FROM projects p "
+			  "LEFT JOIN (SELECT project_id, COUNT(*) AS cnt "
+			  "           FROM entity GROUP BY project_id) g "
+			  "ON p.id = g.project_id "
+			  "ORDER BY COALESCE(g.cnt, 0) DESC, p.id DESC LIMIT 1";
 	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
 		fprintf(stderr,
 			"getLatestProjectId prepare failed: %s "
@@ -787,12 +786,12 @@ uint64_t GraphStore::getLatestProjectId()
 
 uint64_t GraphStore::getProjectNodeCount(uint64_t project_id)
 {
-	// Count graph_nodes for a project — used to determine whether
+	// Count entity rows for a project — used to determine whether
 	// a project already has indexed data (for MCP reuse decisions).
+	// graph_nodes is deprecated; entity is the canonical source.
 	// [module=store, method=getProjectNodeCount]
 	sqlite3_stmt *stmt = nullptr;
-	const char *sql =
-		"SELECT COUNT(*) FROM graph_nodes WHERE project_id = ?";
+	const char *sql = "SELECT COUNT(*) FROM entity WHERE project_id = ?";
 	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
 		fprintf(stderr,
 			"getProjectNodeCount prepare failed: %s "

@@ -226,8 +226,10 @@ set(ENGINE_SOURCES
      src/store/store_project.cpp
      src/store/store_parse_failure.cpp
      src/store/store_knowledge.cpp
-        src/store/store_ladybug.cpp
+        src/store/store_ladybug_core.cpp
+     src/store/store_graph_compiler.cpp
      src/store/store_membulk.cpp
+     src/store/store_semantic_fact.cpp
     src/query/query_engine.cpp
     src/query/query_analysis.cpp
     src/query/graph_query.cpp
@@ -243,6 +245,8 @@ set(ENGINE_SOURCES
         src/model/plugins/architecture.cpp
         src/model/plugins/contract.cpp
         src/model/state_builder.cpp
+        src/model/project_state_builder.cpp
+        src/model/semantic_fact_extractor.cpp
     src/resolver/project_index.cpp
         src/resolver/project_resolver.cpp
         src/verify/capability_verifier.cpp
@@ -255,11 +259,19 @@ set(ENGINE_SOURCES
         src/verify/documentation_drift.cpp
         src/verify/capability_drift.cpp
         src/verify/architecture_drift.cpp
+        src/verify/intent_parser.cpp
+        src/verify/planner.cpp
+        src/verify/verdict_builder.cpp
+        src/engine_verify_planner_ffi.cpp
         src/async_knowledge.cpp
         src/resolver/resolve_cache.cpp
         src/filter_policy.cpp
         src/filter_policy_ignore.cpp
         src/platform_win.cpp
+        src/evidence/rule.cpp
+        src/evidence/evidence_builder.cpp
+        src/engine_evidence_ffi.cpp
+        src/engine_project_state_ffi.cpp
         ${SQLITE3_AMAL_SRC}
         ${TREE_SITTER_SOURCES}
 )
@@ -500,7 +512,12 @@ if(NOT LADYBUG_LIBRARY AND EXISTS "${LADYBUG_VENDOR_LIB_DIR}")
 endif()
 
 if(LADYBUG_LIBRARY AND LADYBUG_INCLUDE_DIR)
-    target_compile_definitions(astgraph_engine PRIVATE HAS_LADYBUG=1)
+    # HAS_LADYBUG must be PUBLIC because store.h uses #ifdef HAS_LADYBUG
+    # to conditionally include <lbug.h> and define real vs stub types
+    # for lbug_database/lbug_connection. Any source file that includes
+    # store.h (including test executables) needs the definition at
+    # compile time to match the ABI of the engine library.
+    target_compile_definitions(astgraph_engine PUBLIC HAS_LADYBUG=1)
     target_compile_definitions(astgraph_engine PRIVATE LBUG_STATIC_DEFINE)
     target_include_directories(astgraph_engine PUBLIC ${LADYBUG_INCLUDE_DIR})
     target_link_libraries(astgraph_engine PUBLIC ${LADYBUG_LIBRARY})
@@ -532,11 +549,13 @@ endif()
 # demand with -DBUILD_MANUAL=ON.
 option(BUILD_TESTS "Build automated tests" ON)
 if(BUILD_TESTS)
+    include(CTest)
     file(GLOB TEST_SOURCES tests/*.cpp)
     foreach(test_src ${TEST_SOURCES})
         get_filename_component(test_name ${test_src} NAME_WE)
         add_executable(${test_name} ${test_src})
         target_link_libraries(${test_name} astgraph_engine)
+        add_test(NAME ${test_name} COMMAND ${test_name})
     endforeach()
 endif()
 

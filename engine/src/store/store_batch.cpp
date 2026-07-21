@@ -240,7 +240,8 @@ void GraphStore::insertSemanticRecordsBatch(
 // ─── Streaming Pipeline ─────────────────────────────────────────
 
 bool GraphStore::insertFileResultBatch(uint64_t project_id,
-				       const std::vector<FileResult> &batch)
+				       const std::vector<FileResult> &batch,
+				       bool is_reindex)
 {
 	if (batch.empty())
 		return true;
@@ -290,16 +291,25 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 	// re-inserting. Without this, re-indexing a changed file appends new
 	// records to the old ones, causing buildGraph to create duplicate
 	// graph_nodes from the duplicated semantic_records.
-	const char *del_sr_sql =
-		"DELETE FROM semantic_records WHERE project_id = ? AND file_path = ?";
+	//
+	// SKIPPED on fresh DB (is_reindex=false): worker subprocesses start
+	// from a clean DB file (worker.rs removes the .db before spawn), so
+	// there are never any stale rows to delete. Skipping the DELETE saves
+	// N full-table scans (one per file) — significant when
+	// dropSemanticRecordIndexes() has removed the (project_id, file_path)
+	// index that would otherwise make the DELETE an O(log n) seek.
 	sqlite3_stmt *del_sr_st = nullptr;
-	if (sqlite3_prepare_v2(db_, del_sr_sql, -1, &del_sr_st, nullptr) !=
-	    SQLITE_OK) {
-		sqlite3_finalize(sr_st);
-		sqlite3_finalize(fss_st);
-		sqlite3_finalize(file_st);
-		error_ = "insertFileResultBatch: prepare del_sr failed";
-		return false;
+	if (is_reindex) {
+		const char *del_sr_sql =
+			"DELETE FROM semantic_records WHERE project_id = ? AND file_path = ?";
+		if (sqlite3_prepare_v2(db_, del_sr_sql, -1, &del_sr_st,
+				       nullptr) != SQLITE_OK) {
+			sqlite3_finalize(sr_st);
+			sqlite3_finalize(fss_st);
+			sqlite3_finalize(file_st);
+			error_ = "insertFileResultBatch: prepare del_sr failed";
+			return false;
+		}
 	}
 
 	// ── Process each file in the batch ─────────────────────────
@@ -338,12 +348,14 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 		// duplicate accumulation on re-index. The multi-VALUES insert
 		// below uses plain INSERT (not OR REPLACE), so stale rows
 		// would survive and cause buildGraph to emit duplicate nodes.
-		sqlite3_bind_int64(del_sr_st, 1,
-				   static_cast<int64_t>(project_id));
-		sqlite3_bind_text(del_sr_st, 2, fr.file_path.c_str(), -1,
-				  SQLITE_TRANSIENT);
-		sqlite3_step(del_sr_st);
-		sqlite3_reset(del_sr_st);
+		if (del_sr_st) {
+			sqlite3_bind_int64(del_sr_st, 1,
+					   static_cast<int64_t>(project_id));
+			sqlite3_bind_text(del_sr_st, 2, fr.file_path.c_str(),
+					  -1, SQLITE_TRANSIENT);
+			sqlite3_step(del_sr_st);
+			sqlite3_reset(del_sr_st);
+		}
 
 		// Collect records for batch insert
 		batch_records.emplace_back(fr.file_path, fr.records);
@@ -478,9 +490,16 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 
 	sqlite3_finalize(sr_st);
 	sqlite3_finalize(fss_st);
-	sqlite3_finalize(del_sr_st);
+	if (del_sr_st)
+		sqlite3_finalize(del_sr_st);
 	if (file_st)
 		sqlite3_finalize(file_st);
+
+	// ── Parsed graph data remains in SQLite only ────────────────
+	// LadybugDB is not written during the parse phase. Graph data is
+	// compiled into LadybugDB by the Graph Compiler (future M1 pass).
+	// SQLite semantic_records → buildGraph → graph_nodes/edges is the
+	// current source of truth for all graph queries.
 
 	return true;
 }

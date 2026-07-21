@@ -296,11 +296,25 @@ char *engine_index_project_membulk(
 			.count();
 
 	// Flush all aggregated FileResult objects in a single transaction.
+	// Time this call so the SQLite write cost is visible separately from
+	// the parse phase — for 1000+ files this is where the bulk of INSERT
+	// I/O happens (multi-VALUES batches of 500 under BulkPragmaGuard).
+	// Pass is_reindex so flush() can drop/rebuild semantic_records
+	// indexes and skip the per-file DELETE on a fresh DB.
 	int total_indexed = static_cast<int>(agg.size());
-	if (!agg.flush(*g_store, project_id)) {
+	auto t_flush_start = steady_clock::now();
+	if (!agg.flush(*g_store, project_id, is_reindex)) {
 		return dupString(
 			"{\"ok\":false,\"error\":\"membulk flush failed\"}");
 	}
+	auto t_flush_end = steady_clock::now();
+	fprintf(stderr,
+		"engine: membulk_flush=%lldms (files=%d, is_reindex=%d) "
+		"[module=engine, method=engine_index_project_membulk]\n",
+		(long long)duration_cast<milliseconds>(t_flush_end -
+						       t_flush_start)
+			.count(),
+		total_indexed, is_reindex ? 1 : 0);
 
 	// Shared graph-building post-parse sequence (identical to streaming).
 	std::vector<std::string> post_paths;

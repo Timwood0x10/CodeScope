@@ -57,6 +57,12 @@ char *engine_locate_node(uint64_t project_id, uint64_t node_id,
 char *engine_locate_by_name(uint64_t project_id, const char *name);
 char *engine_get_graph_stats(uint64_t project_id);
 
+// Test/debug hook: toggle LadybugDB-first query routing. When disabled, all
+// graph queries fall back to SQLite. Used by the differential test
+// (test_ladybug_diff) to exercise both code paths. No effect on production
+// semantics when left at the default (enabled).
+void engine_set_ladybug_queries_enabled(int enabled);
+
 // Find connected components in the call graph via BFS over name-matched
 // relation edges. Returns JSON:
 //   {"components":[{"type":"...","description":"...","confidence":N,
@@ -367,6 +373,84 @@ char *engine_export_artifact(uint64_t project_id, const char *output_path);
  *         or {"ok":false, "error":"..."} on failure.
  */
 char *engine_import_artifact(uint64_t project_id, const char *artifact_path);
+
+// ─── Evidence Builder (v0.3 Phase 2) ────────────────────────────
+
+/**
+ * Build evidence findings for a project by applying the rule set
+ * (engine/src/evidence/rules/ JSON files, or $CODESCOPE_RULES_DIR) to
+ * the project's semantic_fact rows.
+ *
+ * @param project_id       Project to analyze.
+ * @param category_filter  Optional category filter ("sync", "memory",
+ *                         "error", "pattern", "framework", "ffi").
+ *                         NULL or empty string runs all categories.
+ * @return JSON array of Evidence objects. Each object has: category,
+ *         title, confidence, items[] (items may be empty for Count
+ *         combine). On error returns a JSON object with an "error"
+ *         field. Caller MUST free via engine_free_string().
+ */
+char *engine_build_evidence(uint64_t project_id, const char *category_filter);
+
+// ─── Verification Planner (v0.3 Phase 3) ───────────────────────
+
+/**
+ * Verify a natural-language claim against the project's indexed
+ * evidence. The claim is parsed into an Intent by IntentParser,
+ * planned into evidence rule executions by Planner, executed via
+ * EvidenceBuilder, and aggregated into a Verdict by VerdictBuilder.
+ *
+ * The returned JSON has the shape:
+ *   {
+ *     "verdict": "Supported|Contradicted|PartiallyVerified|Unknown",
+ *     "confidence": 0.0..1.0,
+ *     "requirements": [
+ *       {"id":"...","weight":N,"satisfied":bool,"confidence":N}, ...
+ *     ],
+ *     "evidence": [
+ *       {"category":"...","title":"...","confidence":N,
+ *        "item_count":N}, ...
+ *     ]
+ *   }
+ *
+ * On error (engine not initialized, empty claim, etc.) returns a
+ * JSON object with an "error" field. Caller MUST free via
+ * engine_free_string().
+ *
+ * @param project_id  The project whose semantic_fact rows to query.
+ * @param claim_text  The natural-language claim (e.g. "does this
+ *                    project safely handle CString?").
+ * @return Heap-allocated JSON string (caller frees). Never null.
+ */
+char *engine_verify_statement(uint64_t project_id, const char *claim_text);
+
+// ─── Project State (v0.3 Phase 4) ──────────────────────────────
+
+/**
+ * Build and persist the project state snapshot. Runs the full
+ * analysis pipeline (evidence aggregation + state queries + UPSERT
+ * into project_state) and returns the persisted snapshot JSON
+ * string. The snapshot describes what inspectors ran and what they
+ * found; see plan §6.2 for the schema.
+ *
+ * @param project_id  Project to analyze.
+ * @return Heap-allocated JSON string (the snapshot). On error
+ *         returns a JSON object with an "error" field. Caller MUST
+ *         free via engine_free_string().
+ */
+char *engine_build_project_state(uint64_t project_id);
+
+/**
+ * Get the persisted project state snapshot (without rebuilding).
+ * Returns the snapshot_json string for the project, or a JSON
+ * error object if no snapshot exists yet.
+ *
+ * @param project_id  Project to read.
+ * @return Heap-allocated JSON string. If no snapshot exists
+ *         returns a JSON object with an "error" field and the
+ *         project_id. Caller MUST free via engine_free_string().
+ */
+char *engine_get_project_state(uint64_t project_id);
 
 #ifdef __cplusplus
 }

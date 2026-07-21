@@ -4,7 +4,7 @@
 
 It transforms source code into verifiable facts, understandable models, and inspectable evidence — enabling AI to validate claims against reality instead of hallucinating.
 
-**Version**: v0.2.1 | **License**: Apache 2.0
+**Version**: v0.3 | **License**: Apache 2.0
 
 ---
 
@@ -16,7 +16,7 @@ CodeScope is a **Project Truth Engine** that answers one question:
 
 Not "what does this code mean", but "does the code actually do what you claim?"
 
-It indexes source code into a structured code graph (call graph + reference graph + module knowledge), then exposes **37 MCP tools** that let AI agents locate symbols, trace call paths, verify claims, detect documentation drift, and analyze architecture — all with **~98.9% token savings** vs reading raw source files.
+It indexes source code into a structured code graph (call graph + reference graph + module knowledge), then exposes **42 MCP tools** that let AI agents locate symbols, trace call paths, verify claims, detect documentation drift, and analyze architecture — all with **~98.9% token savings** vs reading raw source files.
 
 ### Supported Languages (8)
 
@@ -53,7 +53,7 @@ graph TB
     end
 
     subgraph "Rust MCP Server"
-        MCP["MCP Protocol (JSON-RPC 2.0)<br/>37 tools / stdio transport"]
+        MCP["MCP Protocol (JSON-RPC 2.0)<br/>42 tools / stdio transport"]
         DISPATCH["Tool Dispatch<br/>project_id auto-restore"]
     end
 
@@ -146,7 +146,84 @@ flowchart LR
 
 ---
 
-## 3. Quick Start
+## 3. 8-Layer Smart Filtering: Why Only 6,029 of 36,919 Files Are Indexed
+
+CodeScope does **not** index every file in a project. Instead, it applies an **8-layer cascade** that strips away noise so you only see what matters: the core source code.
+
+### The Problem
+
+A typical project looks like this (rustc, the Rust compiler):
+
+```
+Total source files:  36,919
+  tests/            26,293  ← 71%: test suites
+  src/tools/*/test/  3,802  ← 10%: embedded test directories
+  library/*/test/      339  ←  1%: library tests
+  compiler/*/test/     118  ← <1%: compiler tests
+  docs/vendor/bench/   368  ←  1%: documentation, vendored deps, benchmarks
+  ─────────────────────────────────────
+  Core code indexed: 6,029  ← 16%: the actual source code
+```
+
+Without filtering, CodeScope would waste 84% of its time indexing tests, vendored dependencies, documentation, and build artifacts — files no one needs to analyze.
+
+### The 8-Layer Filter Cascade
+
+```
+Layer 1: any-depth skip directories  (~120 patterns)
+  .git, .svn, .hg, node_modules, .venv, target, build, dist,
+  vendor, __pycache__, .github, deploy, docker, k8s, ...
+  → Catches VCS, build artifacts, dependencies, CI/CD, infra at ANY depth
+
+Layer 2: top-only skip directories  (depth ≤ 3, Java-safe)
+  test, tests, docs, examples, samples, scripts, e2e, integration,
+  assets, static, public, media, i18n, bench, benchmarks, ...
+  → For Java: protects package namespaces (org/.../samples/petclinic)
+
+Layer 3: file suffix skip  (always applied)
+  .md, .txt, .json, .yaml, .toml, .ini, .png, .jpg, .svg,
+  .pdf, .zip, .tar, .min.js, .d.ts, ...
+  → Non-source files, documentation, images, archives
+
+Layer 4: exact filename skip
+  package-lock.json, yarn.lock, .DS_Store, Thumbs.db,
+  .env, .env.local, .gitkeep, .gitignore, ...
+
+Layer 5: filename/directory prefix skip
+  File prefixes: ._*, ~$*, #*#
+  Directory prefixes: build_*, test_*, tmp_*
+
+Layer 6: .gitignore pattern matching
+  Respects every rule in the project's .gitignore
+
+Layer 7: .codescopeignore (user-defined)
+  Additional custom ignore patterns per project
+
+Layer 8: file size limit + language detection
+  • Max file size (default 10 MB, configurable via CODESCOPE_MAX_FILE_SIZE)
+  • Undetectable language files are silently skipped
+```
+
+### Real-World Impact
+
+| Project | Raw Source Files | After Filtering | Filtered Out | Time Saved |
+|---------|:-:|:-:|:-:|:-:|
+| rustc (Rust compiler) | 36,919 | **6,029** | 84% | ~2.5 min |
+| ARES (Go) | 2,651 | **1,254** | 53% | ~30 s |
+| CodeScope (self) | 356 | **168** | 53% | ~1 s |
+| Linux kernel (full) | 308,342 | **64,694** | 79% | ~12 min |
+
+### Override: `force_index_files`
+
+Need to index a specific test file or vendored directory? Use the `force_index_files` MCP tool — it **bypasses** all 8 layers:
+
+```bash
+codescope cli force_index_files '{"paths":["/path/to/test/file.rs"]}'
+```
+
+---
+
+## 4. Quick Start
 
 ### Prerequisites
 
@@ -206,7 +283,7 @@ codescope index-parallel /path/to/large/project
 
 ---
 
-## 4. MCP Tools (37 Tools)
+## 4. MCP Tools (42 Tools)
 
 ### Indexing
 
@@ -273,6 +350,18 @@ codescope index-parallel /path/to/large/project
 | `verify_review` | Verify code review comment claims. | `{"text": "string (required)"}` |
 | `verify_reality` | Verify a single AI statement against code evidence. | `{"text": "string (required)"}` |
 
+### Evidence Pipeline (v0.3)
+
+The v0.3 Evidence Pipeline transforms indexed code into verifiable evidence and project health snapshots. Flow: `Facts → SemanticFacts → Evidence → Verification → ProjectState`. Semantic facts are extracted by `enhance_project` (Step 1.5); evidence is built by applying declarative rule files (`engine/src/evidence/rules/*.json`) to the semantic_fact table.
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `enhance_project` | Run background enhancement: full tree-sitter parse, call graph, metrics, FTS, and v0.3 semantic_fact extraction. Prerequisite for `build_evidence` to produce non-empty findings. | `{}` |
+| `build_evidence` | Build evidence findings by applying the rule set (sync/memory/error/pattern/framework/ffi) to the project's semantic_fact rows. Each rule declares fact needs + a combine mode (Collect / MissingMatch / MissingMatchPerFunction / Count). Returns a JSON array of Evidence objects. Run after `enhance_project` so semantic facts are populated. | `{"category": "string (optional, one of: sync|memory|error|pattern|framework|ffi)"}` |
+| `verify_statement` | Verify a natural-language claim against the project's indexed evidence. Pipeline: IntentParser → Planner → EvidenceBuilder → VerdictBuilder. Returns JSON with `verdict` (Supported\|Contradicted\|PartiallyVerified\|Unknown), `confidence`, `requirements[]`, and `evidence[]`. Use this for yes/no questions about code behavior (e.g. "does this project safely handle CString?"). | `{"claim": "string (required)"}` |
+| `build_project_state` | Build (or rebuild) and persist the project state snapshot. Runs the full v0.3 Evidence Pipeline (evidence aggregation + state queries) and UPSERTs the result into the `project_state` table. Returns the snapshot JSON: overall confidence, capability/architecture/workflow/dead_code scores, per-category issue counts, and `last_updated` timestamp. | `{}` |
+| `get_project_state` | Get the previously persisted project state snapshot (without rebuilding). Returns the `snapshot_json` string for the project, or a JSON error object if no snapshot exists yet (run `build_project_state` first). Use this for fast reads of the latest health snapshot. | `{}` |
+
 ### Drift Detection
 
 | Tool | Description | Parameters |
@@ -308,6 +397,10 @@ Deep dive symbol  → explain_symbol
 HTTP routes       → get_routes
 Type info         → get_type_info
 Verify claim      → verify_claim
+Enhance project   → enhance_project
+Verify statement  → verify_statement
+Build evidence    → build_evidence
+Project health    → build_project_state
 Detect drift      → detect_documentation_drift
 Change impact     → detect_changes
 ```
@@ -345,14 +438,33 @@ All benchmarks measured on **Apple M3 Max (36 GB RAM)**. Other hardware will pro
 
 ### Index Time
 
-| Project | Files | Nodes | Index Time | Peak RSS |
-|---------|------:|------:|-----------:|---------:|
-| **CodeScope** (self, C++/Rust) | 168 | 1,001 | **1.3 s** | ~150 MB |
-| **memscope-rs** (Rust) | 215 | 4,344 | **~2 s** | ~200 MB |
-| **ARES_POLIS** | 105 | 1,531 | **~2 s** | ~180 MB |
-| **goagent** (Go) | 2,651 | 155K | **30 s** | — |
-| **rustc** (Rust compiler, monorepo) | 6,029 | 81,033 | **81 s** | 5.9 GB |
-| **Linux kernel** (full) | 64,694 | 12M | **3 min 07 s** | — |
+| Project | Files | Nodes | Edges | Index Time | Peak RSS |
+|---------|------:|------:|------:|-----------:|---------:|
+| **CodeScope** (self, C++/Rust) | 212 | 1,387 | 1,895 | **1.0 s** | ~150 MB |
+| **memscope-rs** (Rust) | 215 | 4,344 | — | **~2 s** | ~200 MB |
+| **ARES** (Go) | 1,254 | 18,798 | 4,475 | **4.3 s** | ~500 MB |
+| **rustc** (Rust compiler, monorepo) | 6,029 | 81,039 | 63,697 | **18.7 s** | 5.9 GB |
+| **Linux kernel** (full) | 64,694 | 12M | — | **3 min 07 s** | — |
+
+### LadybugDB Storage
+
+| Project | SQLite DB | LadybugDB | LadybugDB % of SQLite |
+|---------|:---------:|:---------:|:---------------------:|
+| **CodeScope** (self) | 77 MB | 3.4 MB | 4.4% |
+| **ARES** (Go) | 337 MB | 24 KB | <0.1% |
+| **rustc** (Rust compiler) | — | — | — |
+
+### Query Latency (LadybugDB Cypher)
+
+| Query | Latency | Notes |
+|-------|:-------:|-------|
+| `get_graph_stats` | ~1 ms | Cypher `count()` aggregation |
+| `find_callers("buildGraph")` | ~1 ms | Cypher `MATCH` with name filter |
+| `find_callees("buildGraph")` | ~1 ms | 54 callees returned |
+| `graph_query` (LIMIT 100) | ~1 ms | 2,590 edges, DSL → Cypher translation |
+| `shortest_path` | ~1 ms | Cypher `shortestPath()` BFS |
+| `get_neighbors` | ~1 ms | 1-hop `MATCH` with direction |
+| `get_subgraph` | ~1 ms | 1-hop `MATCH` with filters |
 
 ### Micro Benchmarks
 
@@ -370,7 +482,7 @@ All benchmarks measured on **Apple M3 Max (36 GB RAM)**. Other hardware will pro
 | Project | Cross-File CALLS | % of total CALLS |
 |---------|:---------------:|:----------------:|
 | CodeScope (C++) | 23 | 0.1% |
-| goagent (Go) | 49,258 | 86% |
+| ARES (Go) | 49,258 | 86% |
 | Linux kernel (C) | 1,502,432 | 40% |
 
 ### Fast Scan (Lightweight, ms-level)
@@ -378,7 +490,7 @@ All benchmarks measured on **Apple M3 Max (36 GB RAM)**. Other hardware will pro
 | Project | Time | Languages | Symbols |
 |--------|:----:|:---------:|:-------:|
 | **CodeScope** (self) | **32 ms** | cpp, rust, c | 2,902 |
-| **goagent** (Go) | **493 ms** | go, c, cpp, python | 5,172 |
+| **ARES** (Go) | **493 ms** | go, c, cpp, python | 5,172 |
 | **Linux kernel** (core) | **360 ms** | c | 40,335 |
 
 ### Token Savings
@@ -450,4 +562,4 @@ Each script calls `codescope cli <tool_name> '<json_args>'` internally. See `ski
 
 Apache 2.0 — see [LICENSE](LICENSE).
 
-**CodeScope v0.2.1** — Built with Rust 2024 + C++23 + tree-sitter + SQLite.
+**CodeScope v0.3** — Built with Rust 2024 + C++23 + tree-sitter + SQLite.

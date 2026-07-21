@@ -13,6 +13,10 @@
 #include <unordered_set>
 #include <vector>
 
+#ifdef HAS_LADYBUG
+#include <lbug.h>
+#endif
+
 namespace query
 {
 
@@ -54,6 +58,26 @@ std::string jsonEscape(const char *s)
 		default:
 			out += *p;
 			break;
+		}
+	}
+	return out;
+}
+
+// Escape a string for safe inclusion inside a Cypher single-quoted literal.
+// Prevents injection / query breakage from symbol names with quotes or
+// backslashes. Used by LadybugDB query paths.
+static std::string cypherEscape(const char *s)
+{
+	if (!s)
+		return "";
+	std::string out;
+	out.reserve(std::strlen(s) + 8);
+	for (const char *p = s; *p; p++) {
+		if (*p == '\\' || *p == '\'') {
+			out += '\\';
+			out += *p;
+		} else {
+			out += *p;
 		}
 	}
 	return out;
@@ -128,164 +152,211 @@ std::string QueryEngine::findDefinition(uint64_t project_id,
 					const char *symbol_name,
 					const char *file_filter)
 {
-	// Use parameterized query to prevent SQL injection
-	const char *sql =
-		"SELECT id AS node_id, name, qualified_name, node_type AS node_type, file_path, "
-		"start_row, start_col, end_row, end_col, language "
-		"FROM graph_nodes WHERE project_id = ? AND name = ?";
+#ifdef HAS_LADYBUG
+	if (!store_ || !store_->isGraphReady()) {
+		return "{\"total\":0,\"results\":[],\"error\":\"graph not ready "
+		       "[module=query, method=findDefinition]\"}";
+	}
+	lbug_connection *conn = store_->lbugHandle();
+	if (!conn) {
+		return "{\"total\":0,\"results\":[],\"error\":\"no ladybug "
+		       "connection [module=query, method=findDefinition]\"}";
+	}
 
-	std::string sql_with_filter;
-	const char *final_sql;
+	// Build Cypher: match GraphNode by name + project_id, optionally
+	// filtered by file_path substring (CONTAINS) when file_filter is set.
+	std::string cypher =
+		"MATCH (n:GraphNode {name:'" + cypherEscape(symbol_name) +
+		"', project_id:" + std::to_string(project_id) + "})";
 	bool has_filter = file_filter && strlen(file_filter) > 0;
-
 	if (has_filter) {
-		sql_with_filter =
-			std::string(sql) + " AND file_path LIKE ? LIMIT 20";
-		final_sql = sql_with_filter.c_str();
-	} else {
-		sql_with_filter = std::string(sql) + " LIMIT 20";
-		final_sql = sql_with_filter.c_str();
+		cypher += " WHERE n.file_path CONTAINS '" +
+			  cypherEscape(file_filter) + "'";
 	}
+	cypher += " RETURN n.graph_node_id, n.name, n.qualified_name, "
+		  "n.node_type, n.file_path, n.start_row, n.start_col, "
+		  "n.end_row, n.end_col, n.language LIMIT 20";
 
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(store_->handle(), final_sql, -1, &stmt,
-			       nullptr) != SQLITE_OK) {
-		return "{\"total\":0,\"results\":[],\"error\":\"prepare failed\"}";
-	}
-
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_text(stmt, 2, symbol_name, -1, SQLITE_TRANSIENT);
-
-	if (has_filter) {
-		std::string filter_pattern =
-			std::string("%") + file_filter + "%";
-		sqlite3_bind_text(stmt, 3, filter_pattern.c_str(), -1,
-				  SQLITE_TRANSIENT);
+	lbug_query_result qr;
+	lbug_state s = lbug_connection_query(conn, cypher.c_str(), &qr);
+	if (s != LbugSuccess) {
+		lbug_query_result_destroy(&qr);
+		fprintf(stderr,
+			"[module=query, method=findDefinition] query failed\n");
+		return "{\"total\":0,\"results\":[],\"error\":\"ladybug query "
+		       "failed [module=query, method=findDefinition]\"}";
 	}
 
 	std::ostringstream json;
 	json << "{\"results\":[";
-	int col_count = sqlite3_column_count(stmt);
-	bool first_row = true;
-	int row_count = 0;
-
-	while (sqlite3_step(stmt) == SQLITE_ROW) {
-		if (!first_row)
+	bool first = true;
+	int count = 0;
+	lbug_flat_tuple tuple;
+	while (lbug_query_result_get_next(&qr, &tuple) == LbugSuccess) {
+		if (!first)
 			json << ",";
-		first_row = false;
-		row_count++;
-
+		first = false;
+		++count;
 		json << "{";
-		for (int i = 0; i < col_count; i++) {
+		lbug_value v;
+		// 10 columns: graph_node_id, name, qualified_name, node_type,
+		// file_path, start_row, start_col, end_row, end_col, language.
+		for (int i = 0; i < 10; i++) {
 			if (i > 0)
 				json << ",";
-			const char *col_name = sqlite3_column_name(stmt, i);
-			json << "\"" << col_name << "\":";
-
-			int col_type = sqlite3_column_type(stmt, i);
-			if (col_type == SQLITE_NULL) {
-				json << "null";
-			} else if (col_type == SQLITE_INTEGER) {
-				json << sqlite3_column_int64(stmt, i);
+			if (lbug_flat_tuple_get_value(&tuple, i, &v) !=
+			    LbugSuccess)
+				continue;
+			if (i == 0 || i == 3 || i == 5 || i == 6 || i == 7 ||
+			    i == 8) {
+				int64_t iv = 0;
+				lbug_value_get_int64(&v, &iv);
+				const char *keys[] = { "node_id",   "",
+						       "",	    "node_type",
+						       "",	    "start_row",
+						       "start_col", "end_row",
+						       "end_col",   "" };
+				json << "\"" << keys[i] << "\":" << iv;
 			} else {
-				const char *text =
-					reinterpret_cast<const char *>(
-						sqlite3_column_text(stmt, i));
-				json << "\"" << jsonEscape(text ? text : "")
-				     << "\"";
+				char *sv = nullptr;
+				if (lbug_value_get_string(&v, &sv) ==
+					    LbugSuccess &&
+				    sv) {
+					const char *keys[] = { "",
+							       "name",
+							       "qualified_name",
+							       "",
+							       "file_path",
+							       "",
+							       "",
+							       "",
+							       "",
+							       "language" };
+					json << "\"" << keys[i] << "\":\""
+					     << jsonEscape(sv) << "\"";
+					lbug_destroy_string(sv);
+				}
 			}
 		}
 		json << "}";
+		lbug_flat_tuple_destroy(&tuple);
 	}
-
-	json << "],\"total\":" << row_count << "}";
-	sqlite3_finalize(stmt);
+	lbug_query_result_destroy(&qr);
+	json << "],\"total\":" << count << "}";
 	return json.str();
+#else
+	return "{\"total\":0,\"results\":[],\"error\":\"LadybugDB not compiled "
+	       "[module=query, method=findDefinition]\"}";
+#endif
 }
 
 std::string QueryEngine::findReferences(uint64_t project_id,
 					const char *symbol_name,
 					const char *file_filter)
 {
-	// Use parameterized query to prevent SQL injection
-	// edge_type 1=call, 3=symbol_reference (caller→callee). Both are
+	if (!symbol_name || !*symbol_name)
+		return "{\"total\":0,\"results\":[]}";
+
+#ifdef HAS_LADYBUG
+	if (!store_ || !store_->isGraphReady()) {
+		return "{\"total\":0,\"results\":[],\"error\":\"graph not ready "
+		       "[module=query, method=findReferences]\"}";
+	}
+	lbug_connection *conn = store_->lbugHandle();
+	if (!conn) {
+		return "{\"total\":0,\"results\":[],\"error\":\"no ladybug "
+		       "connection [module=query, method=findReferences]\"}";
+	}
+
+	// edge_type 1=call, 3=symbol_reference (caller->callee). Both are
 	// call-like; edge_type=0 alone dropped 83% of edges in real Go projects.
-	const char *sql =
-		"SELECT gn.id AS node_id, gn.name, gn.qualified_name, gn.node_type AS node_type, "
-		"gn.file_path, gn.start_row, gn.start_col, gn.end_row, gn.end_col, "
-		"gn.language "
-		"FROM graph_nodes gn "
-		"JOIN graph_edges ge ON gn.id = ge.source_node_id "
-		"JOIN graph_nodes target ON target.id = ge.target_node_id "
-		"WHERE gn.project_id = ? AND target.name = ? AND ge.edge_type IN (1,3)";
-
-	std::string sql_with_filter;
-	const char *final_sql;
+	// CALLS|RELATES in LadybugDB covers both edge types.
+	std::string cypher = "MATCH (ref:GraphNode)-[r:CALLS|RELATES]->"
+			     "(target:GraphNode {name:'" +
+			     cypherEscape(symbol_name) +
+			     "', project_id:" + std::to_string(project_id) +
+			     "}) "
+			     "WHERE ref.project_id = " +
+			     std::to_string(project_id);
 	bool has_filter = file_filter && strlen(file_filter) > 0;
-
 	if (has_filter) {
-		sql_with_filter =
-			std::string(sql) + " AND gn.file_path LIKE ? LIMIT 100";
-		final_sql = sql_with_filter.c_str();
-	} else {
-		sql_with_filter = std::string(sql) + " LIMIT 100";
-		final_sql = sql_with_filter.c_str();
+		cypher += " AND ref.file_path CONTAINS '" +
+			  cypherEscape(file_filter) + "'";
 	}
+	cypher += " RETURN ref.graph_node_id, ref.name, "
+		  "ref.qualified_name, ref.node_type, "
+		  "ref.file_path, ref.start_row, ref.start_col, "
+		  "ref.end_row, ref.end_col, ref.language LIMIT 100";
 
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(store_->handle(), final_sql, -1, &stmt,
-			       nullptr) != SQLITE_OK) {
-		return "{\"total\":0,\"results\":[],\"error\":\"prepare failed\"}";
-	}
-
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_text(stmt, 2, symbol_name, -1, SQLITE_TRANSIENT);
-
-	if (has_filter) {
-		std::string filter_pattern =
-			std::string("%") + file_filter + "%";
-		sqlite3_bind_text(stmt, 3, filter_pattern.c_str(), -1,
-				  SQLITE_TRANSIENT);
+	lbug_query_result qr;
+	lbug_state s = lbug_connection_query(conn, cypher.c_str(), &qr);
+	if (s != LbugSuccess) {
+		lbug_query_result_destroy(&qr);
+		fprintf(stderr,
+			"[module=query, method=findReferences] query failed\n");
+		return "{\"total\":0,\"results\":[],\"error\":\"ladybug query "
+		       "failed [module=query, method=findReferences]\"}";
 	}
 
 	std::ostringstream json;
 	json << "{\"results\":[";
-	int col_count = sqlite3_column_count(stmt);
-	bool first_row = true;
-	int row_count = 0;
-
-	while (sqlite3_step(stmt) == SQLITE_ROW) {
-		if (!first_row)
+	bool first = true;
+	int count = 0;
+	lbug_flat_tuple tuple;
+	while (lbug_query_result_get_next(&qr, &tuple) == LbugSuccess) {
+		if (!first)
 			json << ",";
-		first_row = false;
-		row_count++;
-
+		first = false;
+		++count;
 		json << "{";
-		for (int i = 0; i < col_count; i++) {
+		lbug_value v;
+		for (int i = 0; i < 10; i++) {
 			if (i > 0)
 				json << ",";
-			const char *col_name = sqlite3_column_name(stmt, i);
-			json << "\"" << col_name << "\":";
-
-			int col_type = sqlite3_column_type(stmt, i);
-			if (col_type == SQLITE_NULL) {
-				json << "null";
-			} else if (col_type == SQLITE_INTEGER) {
-				json << sqlite3_column_int64(stmt, i);
+			if (lbug_flat_tuple_get_value(&tuple, i, &v) !=
+			    LbugSuccess)
+				continue;
+			if (i == 0 || i == 3 || i == 5 || i == 6 || i == 7 ||
+			    i == 8) {
+				int64_t iv = 0;
+				lbug_value_get_int64(&v, &iv);
+				const char *keys[] = { "node_id",   "",
+						       "",	    "node_type",
+						       "",	    "start_row",
+						       "start_col", "end_row",
+						       "end_col",   "" };
+				json << "\"" << keys[i] << "\":" << iv;
 			} else {
-				const char *text =
-					reinterpret_cast<const char *>(
-						sqlite3_column_text(stmt, i));
-				json << "\"" << jsonEscape(text ? text : "")
-				     << "\"";
+				char *sv = nullptr;
+				if (lbug_value_get_string(&v, &sv) ==
+					    LbugSuccess &&
+				    sv) {
+					const char *keys[] = { "",
+							       "name",
+							       "qualified_name",
+							       "",
+							       "file_path",
+							       "",
+							       "",
+							       "",
+							       "",
+							       "language" };
+					json << "\"" << keys[i] << "\":\""
+					     << jsonEscape(sv) << "\"";
+					lbug_destroy_string(sv);
+				}
 			}
 		}
 		json << "}";
+		lbug_flat_tuple_destroy(&tuple);
 	}
-
-	json << "],\"total\":" << row_count << "}";
-	sqlite3_finalize(stmt);
+	lbug_query_result_destroy(&qr);
+	json << "],\"total\":" << count << "}";
 	return json.str();
+#else
+	return "{\"total\":0,\"results\":[],\"error\":\"LadybugDB not compiled "
+	       "[module=query, method=findReferences]\"}";
+#endif
 }
 
 std::string QueryEngine::getCallers(uint64_t project_id,
@@ -295,75 +366,101 @@ std::string QueryEngine::getCallers(uint64_t project_id,
 	if (!function_name || !*function_name)
 		return "{\"callers\":[],\"total\":0}";
 
-	// Parameterized query with JOIN instead of IN (subquery)
-	// Uses: idx_ge_callers(edge_type, target_node_id) +
-	//       idx_graph_nodes_name(project_id, name)
-	// edge_type 1=call, 3=symbol_reference (caller→callee). Both are
-	// call-like; edge_type=1 alone dropped 83% of edges in real Go projects.
-	//
-	// file_filter (optional): when non-NULL, restricts the callee to a
-	// specific file. This disambiguates homonyms — functions that share
-	// a name across files/classes (e.g. __init__, run, main) but are
-	// distinct symbols. Without this filter, getCallees("__init__")
-	// returns ~95 callees aggregated across all classes in the project.
-	//
-	// r.resolve_strategy is emitted so the frontend can filter out
-	// third-party (external) and unresolved callees. Populated by the
-	// Resolver Pipeline for edge_type=1 (call) edges.
-	std::string sql =
-		"SELECT DISTINCT caller.id, caller.name, caller.file_path, "
-		"caller.start_row, caller.start_col, r.resolve_strategy "
-		"FROM graph_nodes caller "
-		"JOIN graph_edges r ON caller.id = r.source_node_id "
-		"JOIN graph_nodes callee ON callee.id = r.target_node_id "
-		"  AND callee.name = ? AND callee.project_id = ? ";
-	if (file_filter && *file_filter)
-		sql += "AND callee.file_path = ? ";
-	sql += "WHERE r.edge_type IN (1,3) AND caller.project_id = ? "
-	       "LIMIT 100";
+#ifdef HAS_LADYBUG
+	if (!store_ || !store_->isGraphReady()) {
+		return "{\"callers\":[],\"total\":0,\"error\":\"graph not ready "
+		       "[module=query, method=getCallers]\"}";
+	}
+	lbug_connection *conn = store_->lbugHandle();
+	if (!conn) {
+		return "{\"callers\":[],\"total\":0,\"error\":\"no ladybug "
+		       "connection [module=query, method=getCallers]\"}";
+	}
 
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(store_->handle(), sql.c_str(), -1, &stmt,
-			       nullptr) != SQLITE_OK)
-		return "{\"callers\":[],\"total\":0,\"error\":\"prepare failed\"}";
-	int bind_idx = 1;
-	sqlite3_bind_text(stmt, bind_idx++, function_name, -1,
-			  SQLITE_TRANSIENT);
-	sqlite3_bind_int64(stmt, bind_idx++, static_cast<int64_t>(project_id));
-	if (file_filter && *file_filter)
-		sqlite3_bind_text(stmt, bind_idx++, file_filter, -1,
-				  SQLITE_TRANSIENT);
-	sqlite3_bind_int64(stmt, bind_idx++, static_cast<int64_t>(project_id));
+	// CALLS|RELATES in LadybugDB covers edge_type 1 (call) and 3
+	// (symbol_reference). resolve_strategy is a SQLite-only edge column;
+	// it is NOT a GraphNode/CALLS/RELATES property in LadybugDB, so we
+	// always emit an empty string to preserve JSON compatibility.
+	std::string cypher = "MATCH (callee:GraphNode {name:'" +
+			     cypherEscape(function_name) +
+			     "', project_id:" + std::to_string(project_id) +
+			     "})<-[r:CALLS|RELATES]-(caller:GraphNode) "
+			     "WHERE caller.project_id = " +
+			     std::to_string(project_id);
+	bool has_filter = file_filter && strlen(file_filter) > 0;
+	if (has_filter) {
+		cypher += " AND callee.file_path CONTAINS '" +
+			  cypherEscape(file_filter) + "'";
+	}
+	cypher += " RETURN caller.graph_node_id, caller.name, "
+		  "caller.file_path, caller.start_row, "
+		  "caller.start_col LIMIT 100";
+
+	lbug_query_result qr;
+	lbug_state s = lbug_connection_query(conn, cypher.c_str(), &qr);
+	if (s != LbugSuccess) {
+		lbug_query_result_destroy(&qr);
+		fprintf(stderr,
+			"[module=query, method=getCallers] query failed\n");
+		return "{\"callers\":[],\"total\":0,\"error\":\"ladybug query "
+		       "failed [module=query, method=getCallers]\"}";
+	}
 
 	std::string result = "{\"callers\":[";
 	bool first = true;
 	int count = 0;
-	while (sqlite3_step(stmt) == SQLITE_ROW) {
+	lbug_flat_tuple tuple;
+	while (lbug_query_result_get_next(&qr, &tuple) == LbugSuccess) {
 		if (!first)
 			result += ",";
 		first = false;
 		++count;
-		result += "{\"node_id\":" +
-			  std::to_string(sqlite3_column_int64(stmt, 0));
-		const char *n = reinterpret_cast<const char *>(
-			sqlite3_column_text(stmt, 1));
-		const char *f = reinterpret_cast<const char *>(
-			sqlite3_column_text(stmt, 2));
-		const char *rs = reinterpret_cast<const char *>(
-			sqlite3_column_text(stmt, 5));
-		result += ",\"name\":\"" + jsonEscape(n ? n : "") + "\"";
-		result += ",\"file_path\":\"" + jsonEscape(f ? f : "") + "\"";
-		result += ",\"start_row\":" +
-			  std::to_string(sqlite3_column_int(stmt, 3));
-		result += ",\"start_col\":" +
-			  std::to_string(sqlite3_column_int(stmt, 4));
-		result += ",\"resolve_strategy\":\"" +
-			  jsonEscape(rs ? rs : "") + "\"";
-		result += "}";
+		result += "{";
+		lbug_value v;
+		// 5 columns: graph_node_id, name, file_path, start_row,
+		// start_col.
+		for (int i = 0; i < 5; i++) {
+			if (i > 0)
+				result += ",";
+			if (lbug_flat_tuple_get_value(&tuple, i, &v) ==
+			    LbugSuccess) {
+				if (i == 0 || i == 3 || i == 4) {
+					int64_t iv = 0;
+					lbug_value_get_int64(&v, &iv);
+					const char *keys[] = { "node_id", "",
+							       "", "start_row",
+							       "start_col" };
+					result += std::string("\"") + keys[i] +
+						  "\":" + std::to_string(iv);
+				} else {
+					char *sv = nullptr;
+					if (lbug_value_get_string(&v, &sv) ==
+						    LbugSuccess &&
+					    sv) {
+						const char *keys[] = {
+							"", "name", "file_path",
+							"", ""
+						};
+						result += std::string("\"") +
+							  keys[i] + "\":\"" +
+							  jsonEscape(sv) + "\"";
+						lbug_destroy_string(sv);
+					}
+				}
+			}
+		}
+		// resolve_strategy is not a LadybugDB property; emit empty
+		// string for JSON compatibility with the previous SQLite path.
+		result += ",\"resolve_strategy\":\"\"}";
+		lbug_flat_tuple_destroy(&tuple);
 	}
-	sqlite3_finalize(stmt);
+	lbug_query_result_destroy(&qr);
 	result += "],\"total\":" + std::to_string(count) + "}";
 	return result;
+#else
+	return "{\"callers\":[],\"total\":0,\"error\":\"LadybugDB not compiled "
+	       "[module=query, method=getCallers]\"}";
+#endif
 }
 
 std::string QueryEngine::getCallees(uint64_t project_id,
@@ -373,170 +470,216 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 	if (!function_name || !*function_name)
 		return "{\"callees\":[],\"total\":0}";
 
-	// Parameterized query with JOIN instead of IN (subquery)
-	// Uses: idx_ge_callees(edge_type, source_node_id) +
-	//       idx_graph_nodes_name(project_id, name)
-	// edge_type 1=call, 3=symbol_reference (caller→callee). Both are
-	// call-like; edge_type=1 alone dropped 83% of edges in real Go projects.
-	//
-	// file_filter (optional): when non-NULL, restricts the caller to a
-	// specific file. Disambiguates homonyms — see getCallers doc above.
-	//
-	// r.resolve_strategy is emitted so the frontend can filter out
-	// third-party (external) and unresolved callees. Populated by the
-	// Resolver Pipeline for edge_type=1 (call) edges.
-	std::string sql =
-		"SELECT DISTINCT callee.id, callee.name, callee.file_path, "
-		"callee.start_row, callee.start_col, r.resolve_strategy "
-		"FROM graph_nodes callee "
-		"JOIN graph_edges r ON callee.id = r.target_node_id "
-		"JOIN graph_nodes caller ON caller.id = r.source_node_id "
-		"  AND caller.name = ? AND caller.project_id = ? ";
-	if (file_filter && *file_filter)
-		sql += "AND caller.file_path = ? ";
-	sql += "WHERE r.edge_type IN (1,3) AND callee.project_id = ? "
-	       "LIMIT 100";
+#ifdef HAS_LADYBUG
+	if (!store_ || !store_->isGraphReady()) {
+		return "{\"callees\":[],\"total\":0,\"error\":\"graph not ready "
+		       "[module=query, method=getCallees]\"}";
+	}
+	lbug_connection *conn = store_->lbugHandle();
+	if (!conn) {
+		return "{\"callees\":[],\"total\":0,\"error\":\"no ladybug "
+		       "connection [module=query, method=getCallees]\"}";
+	}
 
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(store_->handle(), sql.c_str(), -1, &stmt,
-			       nullptr) != SQLITE_OK)
-		return "{\"callees\":[],\"total\":0,\"error\":\"prepare failed\"}";
-	int bind_idx = 1;
-	sqlite3_bind_text(stmt, bind_idx++, function_name, -1,
-			  SQLITE_TRANSIENT);
-	sqlite3_bind_int64(stmt, bind_idx++, static_cast<int64_t>(project_id));
-	if (file_filter && *file_filter)
-		sqlite3_bind_text(stmt, bind_idx++, file_filter, -1,
-				  SQLITE_TRANSIENT);
-	sqlite3_bind_int64(stmt, bind_idx++, static_cast<int64_t>(project_id));
+	// CALLS|RELATES in LadybugDB covers edge_type 1 (call) and 3
+	// (symbol_reference). resolve_strategy is a SQLite-only edge column;
+	// it is NOT a GraphNode/CALLS/RELATES property in LadybugDB, so we
+	// always emit an empty string to preserve JSON compatibility.
+	std::string cypher = "MATCH (caller:GraphNode {name:'" +
+			     cypherEscape(function_name) +
+			     "', project_id:" + std::to_string(project_id) +
+			     "})-[r:CALLS|RELATES]->(callee:GraphNode) "
+			     "WHERE callee.project_id = " +
+			     std::to_string(project_id);
+	bool has_filter = file_filter && strlen(file_filter) > 0;
+	if (has_filter) {
+		cypher += " AND caller.file_path CONTAINS '" +
+			  cypherEscape(file_filter) + "'";
+	}
+	cypher += " RETURN callee.graph_node_id, callee.name, "
+		  "callee.file_path, callee.start_row, "
+		  "callee.start_col LIMIT 100";
+
+	lbug_query_result qr;
+	lbug_state s = lbug_connection_query(conn, cypher.c_str(), &qr);
+	if (s != LbugSuccess) {
+		lbug_query_result_destroy(&qr);
+		fprintf(stderr,
+			"[module=query, method=getCallees] query failed\n");
+		return "{\"callees\":[],\"total\":0,\"error\":\"ladybug query "
+		       "failed [module=query, method=getCallees]\"}";
+	}
 
 	std::string result = "{\"callees\":[";
 	bool first = true;
 	int count = 0;
-	while (sqlite3_step(stmt) == SQLITE_ROW) {
+	lbug_flat_tuple tuple;
+	while (lbug_query_result_get_next(&qr, &tuple) == LbugSuccess) {
 		if (!first)
 			result += ",";
 		first = false;
 		++count;
-		result += "{\"node_id\":" +
-			  std::to_string(sqlite3_column_int64(stmt, 0));
-		const char *n = reinterpret_cast<const char *>(
-			sqlite3_column_text(stmt, 1));
-		const char *f = reinterpret_cast<const char *>(
-			sqlite3_column_text(stmt, 2));
-		const char *rs = reinterpret_cast<const char *>(
-			sqlite3_column_text(stmt, 5));
-		result += ",\"name\":\"" + jsonEscape(n ? n : "") + "\"";
-		result += ",\"file_path\":\"" + jsonEscape(f ? f : "") + "\"";
-		result += ",\"start_row\":" +
-			  std::to_string(sqlite3_column_int(stmt, 3));
-		result += ",\"start_col\":" +
-			  std::to_string(sqlite3_column_int(stmt, 4));
-		result += ",\"resolve_strategy\":\"" +
-			  jsonEscape(rs ? rs : "") + "\"";
-		result += "}";
+		result += "{";
+		lbug_value v;
+		// 5 columns: graph_node_id, name, file_path, start_row,
+		// start_col.
+		for (int i = 0; i < 5; i++) {
+			if (i > 0)
+				result += ",";
+			if (lbug_flat_tuple_get_value(&tuple, i, &v) ==
+			    LbugSuccess) {
+				if (i == 0 || i == 3 || i == 4) {
+					// int64 columns
+					int64_t iv = 0;
+					lbug_value_get_int64(&v, &iv);
+					const char *keys[] = { "node_id", "",
+							       "", "start_row",
+							       "start_col" };
+					result += std::string("\"") + keys[i] +
+						  "\":" + std::to_string(iv);
+				} else {
+					// string columns
+					char *sv = nullptr;
+					if (lbug_value_get_string(&v, &sv) ==
+						    LbugSuccess &&
+					    sv) {
+						const char *keys[] = {
+							"", "name", "file_path",
+							"", ""
+						};
+						result += std::string("\"") +
+							  keys[i] + "\":\"" +
+							  jsonEscape(sv) + "\"";
+						lbug_destroy_string(sv);
+					}
+				}
+			}
+		}
+		// resolve_strategy is not a LadybugDB property; emit empty
+		// string for JSON compatibility with the previous SQLite path.
+		result += ",\"resolve_strategy\":\"\"}";
+		lbug_flat_tuple_destroy(&tuple);
 	}
-	sqlite3_finalize(stmt);
+	lbug_query_result_destroy(&qr);
 	result += "],\"total\":" + std::to_string(count) + "}";
 	return result;
+#else
+	return "{\"callees\":[],\"total\":0,\"error\":\"LadybugDB not compiled "
+	       "[module=query, method=getCallees]\"}";
+#endif
 }
 
 std::string QueryEngine::getNeighbors(uint64_t project_id, uint64_t node_id,
 				      int edge_type_filter, int radius)
 {
-	// Use parameterized query to prevent SQL injection
-	// BFS-based neighbor expansion (single hop for now, radius unused in v1)
-	const char *sql =
-		"SELECT gn.id AS neighbor_id, gn.name, gn.node_type, gn.file_path, "
-		"ge.edge_type, 'outgoing' AS direction "
-		"FROM graph_nodes gn "
-		"JOIN graph_edges ge ON gn.id = ge.target_node_id "
-		"WHERE ge.source_node_id = ? AND ge.project_id = ?";
-
-	std::string sql_out;
-	std::string sql_in;
-	bool has_filter = edge_type_filter >= 0;
-
-	if (has_filter) {
-		sql_out = std::string(sql) + " AND ge.edge_type = ?";
-		sql_in =
-			"SELECT gn.id AS neighbor_id, gn.name, gn.node_type, gn.file_path, "
-			"ge.edge_type, 'incoming' AS direction "
-			"FROM graph_nodes gn "
-			"JOIN graph_edges ge ON gn.id = ge.source_node_id "
-			"WHERE ge.target_node_id = ? AND ge.project_id = ? AND ge.edge_type = ?";
-	} else {
-		sql_out = std::string(sql);
-		sql_in =
-			"SELECT gn.id AS neighbor_id, gn.name, gn.node_type, gn.file_path, "
-			"ge.edge_type, 'incoming' AS direction "
-			"FROM graph_nodes gn "
-			"JOIN graph_edges ge ON gn.id = ge.source_node_id "
-			"WHERE ge.target_node_id = ? AND ge.project_id = ?";
+	(void)radius; // reserved for future multi-hop
+#ifdef HAS_LADYBUG
+	if (!store_ || !store_->isGraphReady()) {
+		return "{\"total\":0,\"neighbors\":[],\"error\":\"graph not "
+		       "ready [module=query, method=getNeighbors]\"}";
+	}
+	lbug_connection *conn = store_->lbugHandle();
+	if (!conn) {
+		return "{\"total\":0,\"neighbors\":[],\"error\":\"no ladybug "
+		       "connection [module=query, method=getNeighbors]\"}";
 	}
 
-	std::string final_sql = sql_out + " UNION ALL " + sql_in + " LIMIT 200";
-
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(store_->handle(), final_sql.c_str(), -1, &stmt,
-			       nullptr) != SQLITE_OK) {
-		return "{\"total\":0,\"neighbors\":[],\"error\":\"prepare failed\"}";
+	// CALLS|RELATES in LadybugDB covers both edge types. The direction
+	// column distinguishes outgoing (n is source) from incoming edges.
+	std::string filter_clause;
+	if (edge_type_filter >= 0) {
+		filter_clause = " AND r.edge_type = " +
+				std::to_string(edge_type_filter);
 	}
 
-	// Bind parameters for outgoing edges query
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(node_id));
-	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
-	if (has_filter) {
-		sqlite3_bind_int(stmt, 3, edge_type_filter);
-	}
-
-	// Bind parameters for incoming edges query
-	int next_param = has_filter ? 4 : 3;
-	sqlite3_bind_int64(stmt, next_param, static_cast<int64_t>(node_id));
-	sqlite3_bind_int64(stmt, next_param + 1,
-			   static_cast<int64_t>(project_id));
-	if (has_filter) {
-		sqlite3_bind_int(stmt, next_param + 2, edge_type_filter);
+	std::string cypher =
+		"MATCH (n:GraphNode {graph_node_id:" + std::to_string(node_id) +
+		", project_id:" + std::to_string(project_id) +
+		"})-[r:CALLS|RELATES]-(neighbor:GraphNode) "
+		"WHERE neighbor.project_id = " +
+		std::to_string(project_id) + filter_clause +
+		" RETURN neighbor.graph_node_id, neighbor.name, "
+		"neighbor.node_type, neighbor.file_path, "
+		"r.edge_type, "
+		"CASE WHEN r.edge_type = 3 THEN 'outgoing' "
+		"ELSE "
+		"(CASE WHEN start_node(r) = n THEN 'outgoing' "
+		"ELSE 'incoming' END) END AS direction "
+		"LIMIT 200";
+	lbug_query_result qr;
+	lbug_state s = lbug_connection_query(conn, cypher.c_str(), &qr);
+	if (s != LbugSuccess) {
+		lbug_query_result_destroy(&qr);
+		fprintf(stderr,
+			"[module=query, method=getNeighbors] query failed\n");
+		return "{\"total\":0,\"neighbors\":[],\"error\":\"ladybug query "
+		       "failed [module=query, method=getNeighbors]\"}";
 	}
 
 	std::ostringstream json;
 	json << "{\"neighbors\":[";
-	int col_count = sqlite3_column_count(stmt);
-	bool first_row = true;
-	int row_count = 0;
-
-	while (sqlite3_step(stmt) == SQLITE_ROW) {
-		if (!first_row)
+	bool first = true;
+	int count = 0;
+	lbug_flat_tuple tuple;
+	while (lbug_query_result_get_next(&qr, &tuple) == LbugSuccess) {
+		if (!first)
 			json << ",";
-		first_row = false;
-		row_count++;
-
+		first = false;
+		++count;
 		json << "{";
-		for (int i = 0; i < col_count; i++) {
+		lbug_value v;
+		for (int i = 0; i < 6; i++) {
 			if (i > 0)
 				json << ",";
-			const char *col_name = sqlite3_column_name(stmt, i);
-			json << "\"" << col_name << "\":";
-
-			int col_type = sqlite3_column_type(stmt, i);
-			if (col_type == SQLITE_NULL) {
-				json << "null";
-			} else if (col_type == SQLITE_INTEGER) {
-				json << sqlite3_column_int64(stmt, i);
-			} else {
-				const char *text =
-					reinterpret_cast<const char *>(
-						sqlite3_column_text(stmt, i));
-				json << "\"" << jsonEscape(text ? text : "")
-				     << "\"";
+			if (lbug_flat_tuple_get_value(&tuple, i, &v) !=
+			    LbugSuccess)
+				continue;
+			// Columns: 0=graph_node_id, 1=name, 2=node_type,
+			// 3=file_path, 4=edge_type, 5=direction
+			if (i == 0) {
+				int64_t iv = 0;
+				lbug_value_get_int64(&v, &iv);
+				json << "\"neighbor_id\":" << iv;
+			} else if (i == 1 || i == 3) {
+				char *sv = nullptr;
+				if (lbug_value_get_string(&v, &sv) ==
+					    LbugSuccess &&
+				    sv) {
+					json << "\""
+					     << (i == 1 ? "name" : "file_path")
+					     << "\":\"" << jsonEscape(sv)
+					     << "\"";
+					lbug_destroy_string(sv);
+				}
+			} else if (i == 2) {
+				int64_t iv = 0;
+				lbug_value_get_int64(&v, &iv);
+				json << "\"node_type\":" << iv;
+			} else if (i == 4) {
+				int64_t iv = 0;
+				lbug_value_get_int64(&v, &iv);
+				json << "\"edge_type\":" << iv;
+			} else if (i == 5) {
+				char *sv = nullptr;
+				if (lbug_value_get_string(&v, &sv) ==
+					    LbugSuccess &&
+				    sv) {
+					json << "\"direction\":\""
+					     << jsonEscape(sv) << "\"";
+					lbug_destroy_string(sv);
+				}
 			}
 		}
 		json << "}";
+		lbug_flat_tuple_destroy(&tuple);
 	}
-
-	json << "],\"total\":" << row_count << "}";
-	sqlite3_finalize(stmt);
+	lbug_query_result_destroy(&qr);
+	json << "],\"total\":" << count << "}";
 	return json.str();
+#else
+	return "{\"total\":0,\"neighbors\":[],\"error\":\"LadybugDB not "
+	       "compiled [module=query, method=getNeighbors]\"}";
+#endif
 }
 
 std::string QueryEngine::findShortestPath(uint64_t project_id,
@@ -546,41 +689,53 @@ std::string QueryEngine::findShortestPath(uint64_t project_id,
 	// Real iterative BFS over the in-memory call graph.
 	//
 	// Steps:
-	//   1. Load all CALLS edges (edge_type=1) for the project into an
-	//      adjacency list (unordered_map<node, vector<neighbor>>).
+	//   1. Load all CALLS|RELATES edges for the project from LadybugDB
+	//      into an adjacency list (unordered_map<node, vector<neighbor>>).
 	//   2. BFS from source_id to target_id with a visited set (encoded
 	//      in the depth map) and a parent-pointer map for reconstruction.
 	//   3. Enforce kShortestPathMaxDepth so traversal stays bounded.
 	//   4. Reconstruct source→target path via parent pointers.
 	//
-	// All sqlite errors are reported with [module=QueryEngine, method=...]
+	// All errors are reported with [module=query, method=findShortestPath]
 	// tags; nothing is silently swallowed.
-	static constexpr const char *kModule = "QueryEngine";
+#ifndef HAS_LADYBUG
+	(void)project_id;
+	(void)source_id;
+	(void)target_id;
+	return "{\"path\":[],\"found\":false,\"approximation\":\"heuristic\","
+	       "\"note\":\"" +
+	       std::string(kShortestPathNote) +
+	       "\",\"hops\":0,\"error\":\"LadybugDB not compiled "
+	       "[module=query, method=findShortestPath]\"}";
+#else
 	static constexpr const char *kMethod = "findShortestPath";
 
 	std::ostringstream json;
 
 	// Helper to emit a "not found" / error payload with a consistent shape.
-	auto emitNotFound = [&](const char *error_msg) {
+	auto emitNotFound = [&](const std::string &error_msg) {
 		json << "{\"path\":[{\"node_id\":" << source_id << "}],"
 		     << "\"found\":false,"
 		     << "\"approximation\":\"heuristic\","
 		     << "\"note\":\"" << kShortestPathNote << "\","
 		     << "\"hops\":0";
-		if (error_msg) {
-			json << ",\"error\":\"" << jsonEscape(error_msg)
+		if (!error_msg.empty()) {
+			json << ",\"error\":\"" << jsonEscape(error_msg.c_str())
 			     << "\"";
 		}
 		json << "}";
 	};
 
-	// Validate store handle up front — without it nothing can be queried.
-	sqlite3 *db = store_ ? store_->handle() : nullptr;
-	if (!db) {
-		std::string err = std::string("[module=") + kModule +
-				  ", method=" + kMethod +
-				  "] store not initialized";
-		emitNotFound(err.c_str());
+	// Validate LadybugDB up front — without it nothing can be queried.
+	if (!store_ || !store_->isGraphReady()) {
+		emitNotFound("graph not ready [module=query, method=" +
+			     std::string(kMethod) + "]");
+		return json.str();
+	}
+	lbug_connection *conn = store_->lbugHandle();
+	if (!conn) {
+		emitNotFound("no ladybug connection [module=query, method=" +
+			     std::string(kMethod) + "]");
 		return json.str();
 	}
 
@@ -594,38 +749,42 @@ std::string QueryEngine::findShortestPath(uint64_t project_id,
 		return json.str();
 	}
 
-	// ── Load all CALLS edges into an in-memory adjacency list.
-	// Scanning once is O(edges) and lets BFS run entirely against memory.
+	// ── Load all CALLS|RELATES edges into an in-memory adjacency list.
 	std::unordered_map<uint64_t, std::vector<uint64_t>> adj;
 	{
-		const char *sql =
-			"SELECT source_node_id, target_node_id FROM graph_edges "
-			"WHERE project_id = ? AND edge_type IN (1,3)";
-		sqlite3_stmt *stmt = nullptr;
-		if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) !=
-		    SQLITE_OK) {
-			std::string err =
-				std::string("[module=") + kModule +
-				", method=" + kMethod +
-				"] prepare failed: " + sqlite3_errmsg(db);
-			emitNotFound(err.c_str());
+		std::string cypher =
+			"MATCH (src:GraphNode {project_id:" +
+			std::to_string(project_id) +
+			"})-[r:CALLS|RELATES]->(tgt:GraphNode) "
+			"RETURN src.graph_node_id, tgt.graph_node_id";
+		lbug_query_result qr;
+		lbug_state s = lbug_connection_query(conn, cypher.c_str(), &qr);
+		if (s != LbugSuccess) {
+			lbug_query_result_destroy(&qr);
+			fprintf(stderr,
+				"[module=query, method=%s] query failed\n",
+				kMethod);
+			emitNotFound("ladybug query failed [module=query, "
+				     "method=" +
+				     std::string(kMethod) + "]");
 			return json.str();
 		}
-		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-		while (sqlite3_step(stmt) == SQLITE_ROW) {
-			uint64_t src = static_cast<uint64_t>(
-				sqlite3_column_int64(stmt, 0));
-			uint64_t tgt = static_cast<uint64_t>(
-				sqlite3_column_int64(stmt, 1));
-			adj[src].push_back(tgt);
+		lbug_flat_tuple tuple;
+		while (lbug_query_result_get_next(&qr, &tuple) == LbugSuccess) {
+			lbug_value v;
+			int64_t src = 0, tgt = 0;
+			if (lbug_flat_tuple_get_value(&tuple, 0, &v) ==
+			    LbugSuccess)
+				lbug_value_get_int64(&v, &src);
+			if (lbug_flat_tuple_get_value(&tuple, 1, &v) ==
+			    LbugSuccess)
+				lbug_value_get_int64(&v, &tgt);
+			if (src > 0 && tgt > 0)
+				adj[static_cast<uint64_t>(src)].push_back(
+					static_cast<uint64_t>(tgt));
+			lbug_flat_tuple_destroy(&tuple);
 		}
-		int rc = sqlite3_finalize(stmt);
-		if (rc != SQLITE_OK) {
-			// Non-fatal: edges already loaded, but log the anomaly.
-			fprintf(stderr,
-				"[module=%s, method=%s] finalize rc=%d\n",
-				kModule, kMethod, rc);
-		}
+		lbug_query_result_destroy(&qr);
 	}
 
 	// ── Iterative BFS with parent pointers for path reconstruction.
@@ -669,7 +828,7 @@ std::string QueryEngine::findShortestPath(uint64_t project_id,
 	}
 
 	if (!found) {
-		emitNotFound(nullptr);
+		emitNotFound("");
 		return json.str();
 	}
 
@@ -693,7 +852,7 @@ std::string QueryEngine::findShortestPath(uint64_t project_id,
 	}
 
 	if (!found) {
-		emitNotFound(nullptr);
+		emitNotFound("");
 		return json.str();
 	}
 	std::reverse(path.begin(), path.end());
@@ -715,6 +874,7 @@ std::string QueryEngine::findShortestPath(uint64_t project_id,
 	     << "\"note\":\"" << kShortestPathNote << "\","
 	     << "\"hops\":" << hops << "}";
 	return json.str();
+#endif
 }
 
 std::string QueryEngine::getSubgraph(uint64_t project_id,
@@ -722,105 +882,119 @@ std::string QueryEngine::getSubgraph(uint64_t project_id,
 				     const char *node_type_filter,
 				     const char *edge_type_filter)
 {
-	// Use parameterized query to prevent SQL injection
-	// v1: radius 1 subgraph = center + all direct neighbors
 	(void)radius; // reserved for future multi-hop
-
-	// Note: node_type_filter and edge_type_filter are expected to be comma-separated
-	// integer lists (e.g., "0,1,2"). We cannot use parameters for IN clauses directly,
-	// so we validate and safely construct these parts.
-	std::string sql_base =
-		"SELECT DISTINCT gn.id, gn.name, gn.node_type, gn.file_path, "
-		"gn.language "
-		"FROM graph_nodes gn "
-		"JOIN graph_edges ge ON (gn.id = ge.source_node_id OR gn.id = "
-		"ge.target_node_id) "
-		"WHERE ge.project_id = ? AND (ge.source_node_id = ? OR ge.target_node_id = ?)";
-
-	std::string final_sql = sql_base;
-
-	// Safely validate node_type_filter (should only contain digits and commas)
-	bool has_node_filter = node_type_filter && strlen(node_type_filter) > 0;
-	if (has_node_filter) {
-		std::string filter = node_type_filter;
-		bool valid = true;
-		for (char c : filter) {
-			if (!std::isdigit(c) && c != ',' && c != ' ') {
-				valid = false;
-				break;
-			}
-		}
-		if (valid) {
-			final_sql += " AND gn.node_type IN (" + filter + ")";
-		}
+#ifdef HAS_LADYBUG
+	if (!store_ || !store_->isGraphReady()) {
+		return "{\"total\":0,\"nodes\":[],\"error\":\"graph not ready "
+		       "[module=query, method=getSubgraph]\"}";
+	}
+	lbug_connection *conn = store_->lbugHandle();
+	if (!conn) {
+		return "{\"total\":0,\"nodes\":[],\"error\":\"no ladybug "
+		       "connection [module=query, method=getSubgraph]\"}";
 	}
 
-	// Safely validate edge_type_filter (should only contain digits and commas)
-	bool has_edge_filter = edge_type_filter && strlen(edge_type_filter) > 0;
-	if (has_edge_filter) {
-		std::string filter = edge_type_filter;
-		bool valid = true;
-		for (char c : filter) {
-			if (!std::isdigit(c) && c != ',' && c != ' ') {
-				valid = false;
-				break;
-			}
+	// Note: node_type_filter and edge_type_filter are expected to be
+	// comma-separated integer lists (e.g., "0,1,2"). Validate strictly
+	// (digits/commas/spaces only) before splicing into the Cypher —
+	// Cypher does not support parameterized IN lists.
+	auto valid_filter = [](const char *f) -> bool {
+		if (!f || !*f)
+			return true; // empty filter means "all"
+		for (const char *p = f; *p; ++p) {
+			if (!std::isdigit(static_cast<unsigned char>(*p)) &&
+			    *p != ',' && *p != ' ')
+				return false;
 		}
-		if (valid) {
-			final_sql += " AND ge.edge_type IN (" + filter + ")";
-		}
+		return true;
+	};
+	if (!valid_filter(node_type_filter) ||
+	    !valid_filter(edge_type_filter)) {
+		return "{\"total\":0,\"nodes\":[],\"error\":\"invalid type "
+		       "filter (digits and commas only) [module=query, "
+		       "method=getSubgraph]\"}";
 	}
 
-	final_sql += " LIMIT 200";
-
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(store_->handle(), final_sql.c_str(), -1, &stmt,
-			       nullptr) != SQLITE_OK) {
-		return "{\"total\":0,\"nodes\":[],\"error\":\"prepare failed\"}";
+	std::string cypher = "MATCH (center:GraphNode {graph_node_id:" +
+			     std::to_string(center_node_id) +
+			     ", project_id:" + std::to_string(project_id) +
+			     "})-[r:CALLS|RELATES]-(neighbor:GraphNode) "
+			     "WHERE neighbor.project_id = " +
+			     std::to_string(project_id);
+	if (node_type_filter && *node_type_filter) {
+		cypher += " AND neighbor.node_type IN [" +
+			  std::string(node_type_filter) + "]";
 	}
+	if (edge_type_filter && *edge_type_filter) {
+		cypher += " AND r.edge_type IN [" +
+			  std::string(edge_type_filter) + "]";
+	}
+	cypher += " RETURN DISTINCT neighbor.graph_node_id, "
+		  "neighbor.name, neighbor.node_type, "
+		  "neighbor.file_path, neighbor.language LIMIT 200";
 
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(center_node_id));
-	sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(center_node_id));
+	lbug_query_result qr;
+	lbug_state s = lbug_connection_query(conn, cypher.c_str(), &qr);
+	if (s != LbugSuccess) {
+		lbug_query_result_destroy(&qr);
+		fprintf(stderr,
+			"[module=query, method=getSubgraph] query failed\n");
+		return "{\"total\":0,\"nodes\":[],\"error\":\"ladybug query "
+		       "failed [module=query, method=getSubgraph]\"}";
+	}
 
 	std::ostringstream json;
 	json << "{\"nodes\":[";
-	int col_count = sqlite3_column_count(stmt);
-	bool first_row = true;
-	int row_count = 0;
-
-	while (sqlite3_step(stmt) == SQLITE_ROW) {
-		if (!first_row)
+	bool first = true;
+	int count = 0;
+	lbug_flat_tuple tuple;
+	while (lbug_query_result_get_next(&qr, &tuple) == LbugSuccess) {
+		if (!first)
 			json << ",";
-		first_row = false;
-		row_count++;
-
+		first = false;
+		++count;
 		json << "{";
-		for (int i = 0; i < col_count; i++) {
+		lbug_value v;
+		// Columns: 0=graph_node_id, 1=name, 2=node_type,
+		// 3=file_path, 4=language
+		for (int i = 0; i < 5; i++) {
 			if (i > 0)
 				json << ",";
-			const char *col_name = sqlite3_column_name(stmt, i);
-			json << "\"" << col_name << "\":";
-
-			int col_type = sqlite3_column_type(stmt, i);
-			if (col_type == SQLITE_NULL) {
-				json << "null";
-			} else if (col_type == SQLITE_INTEGER) {
-				json << sqlite3_column_int64(stmt, i);
-			} else {
-				const char *text =
-					reinterpret_cast<const char *>(
-						sqlite3_column_text(stmt, i));
-				json << "\"" << jsonEscape(text ? text : "")
-				     << "\"";
+			if (lbug_flat_tuple_get_value(&tuple, i, &v) !=
+			    LbugSuccess)
+				continue;
+			if (i == 0) {
+				int64_t id = 0;
+				lbug_value_get_int64(&v, &id);
+				json << "\"id\":" << id;
+			} else if (i == 1 || i == 3 || i == 4) {
+				char *sv = nullptr;
+				if (lbug_value_get_string(&v, &sv) ==
+					    LbugSuccess &&
+				    sv) {
+					const char *keys[] = { "", "name", "",
+							       "file_path",
+							       "language" };
+					json << "\"" << keys[i] << "\":\""
+					     << jsonEscape(sv) << "\"";
+					lbug_destroy_string(sv);
+				}
+			} else if (i == 2) {
+				int64_t nt = 0;
+				lbug_value_get_int64(&v, &nt);
+				json << "\"node_type\":" << nt;
 			}
 		}
 		json << "}";
+		lbug_flat_tuple_destroy(&tuple);
 	}
-
-	json << "],\"total\":" << row_count << "}";
-	sqlite3_finalize(stmt);
+	lbug_query_result_destroy(&qr);
+	json << "],\"total\":" << count << "}";
 	return json.str();
+#else
+	return "{\"total\":0,\"nodes\":[],\"error\":\"LadybugDB not compiled "
+	       "[module=query, method=getSubgraph]\"}";
+#endif
 }
 
 std::string QueryEngine::locateNode(uint64_t project_id, uint64_t node_id,
@@ -828,9 +1002,9 @@ std::string QueryEngine::locateNode(uint64_t project_id, uint64_t node_id,
 {
 	(void)context_lines; // v2: read actual file content
 	std::ostringstream sql;
-	sql << "SELECT id AS node_id, name, qualified_name, node_type AS node_type, file_path, "
+	sql << "SELECT id AS node_id, name, qualified_name, kind AS node_type, file_path, "
 	       "start_row, start_col, end_row, end_col, language "
-	       "FROM graph_nodes WHERE project_id = "
+	       "FROM entity WHERE project_id = "
 	    << project_id << " AND id = " << node_id;
 	return queryToJson(store_->handle(), sql.str().c_str(), "locations");
 }
@@ -845,13 +1019,13 @@ std::string QueryEngine::locateByName(uint64_t project_id, const char *name)
 
 	const char *sql;
 	if (has_separator) {
-		sql = "SELECT id AS node_id, name, qualified_name, node_type AS node_type, file_path, "
+		sql = "SELECT id AS node_id, name, qualified_name, kind AS node_type, file_path, "
 		      "start_row, start_col, end_row, end_col, language "
-		      "FROM graph_nodes WHERE project_id = ? AND qualified_name = ? LIMIT 20";
+		      "FROM entity WHERE project_id = ? AND qualified_name = ? LIMIT 20";
 	} else {
-		sql = "SELECT id AS node_id, name, qualified_name, node_type AS node_type, file_path, "
+		sql = "SELECT id AS node_id, name, qualified_name, kind AS node_type, file_path, "
 		      "start_row, start_col, end_row, end_col, language "
-		      "FROM graph_nodes WHERE project_id = ? AND name = ? LIMIT 20";
+		      "FROM entity WHERE project_id = ? AND name = ? LIMIT 20";
 	}
 
 	sqlite3_stmt *stmt = nullptr;
@@ -905,72 +1079,110 @@ std::string QueryEngine::locateByName(uint64_t project_id, const char *name)
 
 std::string QueryEngine::getGraphStats(uint64_t project_id)
 {
-	std::ostringstream json;
-	json << "{";
+#ifdef HAS_LADYBUG
+	if (!store_ || !store_->isGraphReady()) {
+		return "{\"error\":\"graph not ready [module=query, "
+		       "method=getGraphStats]\"}";
+	}
+	lbug_connection *conn = store_->lbugHandle();
+	if (!conn) {
+		return "{\"error\":\"no ladybug connection [module=query, "
+		       "method=getGraphStats]\"}";
+	}
+
+	int64_t total_nodes = 0;
+	int64_t total_edges = 0;
+	int64_t total_files = 0;
 
 	// Node count
 	{
-		std::ostringstream sql;
-		sql << "SELECT COUNT(*) FROM graph_nodes WHERE project_id = "
-		    << project_id;
-		sqlite3_stmt *stmt = nullptr;
-		if (sqlite3_prepare_v2(store_->handle(), sql.str().c_str(), -1,
-				       &stmt, nullptr) != SQLITE_OK) {
-			if (stmt)
-				sqlite3_finalize(stmt);
-			return "{\"error\":\"getGraphStats: prepare failed\"}";
+		std::string cypher = "MATCH (n:GraphNode {project_id:" +
+				     std::to_string(project_id) +
+				     "}) RETURN count(n)";
+		lbug_query_result qr;
+		lbug_state s = lbug_connection_query(conn, cypher.c_str(), &qr);
+		if (s == LbugSuccess) {
+			lbug_flat_tuple tuple;
+			if (lbug_query_result_get_next(&qr, &tuple) ==
+			    LbugSuccess) {
+				lbug_value v;
+				if (lbug_flat_tuple_get_value(&tuple, 0, &v) ==
+				    LbugSuccess) {
+					lbug_value_get_int64(&v, &total_nodes);
+				}
+				lbug_flat_tuple_destroy(&tuple);
+			}
+			lbug_query_result_destroy(&qr);
+		} else {
+			lbug_query_result_destroy(&qr);
+			fprintf(stderr, "[module=query, method=getGraphStats] "
+					"node count query failed\n");
 		}
-		if (sqlite3_step(stmt) == SQLITE_ROW) {
-			json << "\"total_nodes\":"
-			     << sqlite3_column_int64(stmt, 0);
-		}
-		sqlite3_finalize(stmt);
 	}
-
-	json << ",";
 
 	// Edge count
 	{
-		std::ostringstream sql;
-		sql << "SELECT COUNT(*) FROM graph_edges WHERE project_id = "
-		    << project_id;
-		sqlite3_stmt *stmt = nullptr;
-		if (sqlite3_prepare_v2(store_->handle(), sql.str().c_str(), -1,
-				       &stmt, nullptr) != SQLITE_OK) {
-			if (stmt)
-				sqlite3_finalize(stmt);
-			return "{\"error\":\"getGraphStats: prepare failed\"}";
+		std::string cypher = "MATCH ()-[r]->() WHERE r.project_id = " +
+				     std::to_string(project_id) +
+				     " RETURN count(r)";
+		lbug_query_result qr;
+		lbug_state s = lbug_connection_query(conn, cypher.c_str(), &qr);
+		if (s == LbugSuccess) {
+			lbug_flat_tuple tuple;
+			if (lbug_query_result_get_next(&qr, &tuple) ==
+			    LbugSuccess) {
+				lbug_value v;
+				if (lbug_flat_tuple_get_value(&tuple, 0, &v) ==
+				    LbugSuccess) {
+					lbug_value_get_int64(&v, &total_edges);
+				}
+				lbug_flat_tuple_destroy(&tuple);
+			}
+			lbug_query_result_destroy(&qr);
+		} else {
+			lbug_query_result_destroy(&qr);
+			fprintf(stderr, "[module=query, method=getGraphStats] "
+					"edge count query failed\n");
 		}
-		if (sqlite3_step(stmt) == SQLITE_ROW) {
-			json << "\"total_edges\":"
-			     << sqlite3_column_int64(stmt, 0);
-		}
-		sqlite3_finalize(stmt);
 	}
 
-	json << ",";
-
-	// File count
+	// File count: the SQLite `files` table is not replicated in
+	// LadybugDB, so we count DISTINCT file_path values among GraphNodes
+	// as a LadybugDB-native approximation.
 	{
-		std::ostringstream sql;
-		sql << "SELECT COUNT(*) FROM files WHERE project_id = "
-		    << project_id;
-		sqlite3_stmt *stmt = nullptr;
-		if (sqlite3_prepare_v2(store_->handle(), sql.str().c_str(), -1,
-				       &stmt, nullptr) != SQLITE_OK) {
-			if (stmt)
-				sqlite3_finalize(stmt);
-			return "{\"error\":\"getGraphStats: prepare failed\"}";
+		std::string cypher = "MATCH (n:GraphNode {project_id:" +
+				     std::to_string(project_id) +
+				     "}) RETURN count(DISTINCT n.file_path)";
+		lbug_query_result qr;
+		lbug_state s = lbug_connection_query(conn, cypher.c_str(), &qr);
+		if (s == LbugSuccess) {
+			lbug_flat_tuple tuple;
+			if (lbug_query_result_get_next(&qr, &tuple) ==
+			    LbugSuccess) {
+				lbug_value v;
+				if (lbug_flat_tuple_get_value(&tuple, 0, &v) ==
+				    LbugSuccess) {
+					lbug_value_get_int64(&v, &total_files);
+				}
+				lbug_flat_tuple_destroy(&tuple);
+			}
+			lbug_query_result_destroy(&qr);
+		} else {
+			lbug_query_result_destroy(&qr);
+			fprintf(stderr, "[module=query, method=getGraphStats] "
+					"file count query failed\n");
 		}
-		if (sqlite3_step(stmt) == SQLITE_ROW) {
-			json << "\"total_files\":"
-			     << sqlite3_column_int64(stmt, 0);
-		}
-		sqlite3_finalize(stmt);
 	}
 
-	json << "}";
+	std::ostringstream json;
+	json << "{\"total_nodes\":" << total_nodes
+	     << ",\"total_edges\":" << total_edges
+	     << ",\"total_files\":" << total_files << "}";
 	return json.str();
+#else
+	return "{\"error\":\"LadybugDB not compiled [module=query, "
+	       "method=getGraphStats]\"}";
+#endif
 }
 
 // ── Knowledge Navigation (Phase 2.2) ───────────────────────

@@ -120,50 +120,37 @@ class GraphStore {
 	{
 		return lbug_initialized_;
 	}
+	/** Check if LadybugDB has been successfully populated with graph data.
+	 *  When false, all LadybugDB-first query paths fall back to SQLite. */
+	bool isGraphReady() const
+	{
+		return lbug_initialized_ && lbug_populated_ &&
+		       ladybug_query_enabled_;
+	}
+	/** Mark LadybugDB as populated (called by compileGraphToLadybugDB on success). */
+	void setGraphReady()
+	{
+		lbug_populated_ = true;
+	}
+	/** Reset the populated flag. Called at the START of every compile so a
+	 *  failed/partial compile drops queries back to the SQLite fallback
+	 *  instead of serving a stale or half-built subgraph. */
+	void resetGraphReady()
+	{
+		lbug_populated_ = false;
+	}
+	/** Test/debug hook: toggle LadybugDB-first query routing. When disabled,
+	 *  all graph queries fall back to SQLite so the two paths can be
+	 *  differential-tested. Defaults to true (normal operation). */
+	void setLadybugQueryEnabled(bool enabled)
+	{
+		ladybug_query_enabled_ = enabled;
+	}
 	/** Get the LadybugDB connection handle (for direct Cypher queries). */
 	lbug_connection *lbugHandle()
 	{
 		return lbug_initialized_ ? &lbug_conn_ : nullptr;
 	}
-	/** Sync graph_nodes and graph_edges from SQLite to LadybugDB.
-	 *  Performs a FULL sync: clears the GraphNode and CALLS tables in
-	 *  LadybugDB, then bulk-imports all rows via COPY FROM. Called by
-	 *  syncIncrementalToLadybugDB() on the first sync (when no
-	 *  lbug_sync_state row exists yet). No-op if LadybugDB is not
-	 *  initialized. Returns true on success. */
-	bool syncGraphToLadybugDB(uint64_t project_id);
-
-	/// Sync only nodes/edges modified since the last sync to LadybugDB.
-	/// Uses lbug_sync_state table to track sync progress.
-	/// @param project_id The project to sync
-	/// @return true on success, false on failure (error logged to stderr)
-	bool syncIncrementalToLadybugDB(uint64_t project_id);
-
-	/// Get the last sync state for a project.
-	/// @param project_id The project to query
-	/// @param out_last_node_id Output: last synced node ID
-	/// @param out_last_edge_id Output: last synced edge ID
-	/// @return true if sync state exists, false if never synced or error
-	bool getLadybugSyncState(uint64_t project_id, int64_t &out_last_node_id,
-				 int64_t &out_last_edge_id);
-
-	/// Update the sync state after a successful incremental sync.
-	/// @param project_id The project
-	/// @param last_node_id The max node ID synced
-	/// @param last_edge_id The max edge ID synced
-	/// @param node_count Total nodes in LadybugDB
-	/// @param edge_count Total edges in LadybugDB
-	/// @return true on success, false on error
-	bool updateLadybugSyncState(uint64_t project_id, int64_t last_node_id,
-				    int64_t last_edge_id, int64_t node_count,
-				    int64_t edge_count);
-
-	/// Reset LadybugDB sync state for a project (called when project is
-	/// re-indexed). Forces the next syncIncrementalToLadybugDB call to do
-	/// a full sync.
-	/// @param project_id The project to reset
-	/// @return true on success, false on error
-	bool resetLadybugSyncState(uint64_t project_id);
 
 	/** Get the database file path (for opening additional connections). */
 	const std::string &dbPath() const
@@ -290,7 +277,8 @@ class GraphStore {
 	 * @return true on success.
 	 */
 	bool insertFileResultBatch(uint64_t project_id,
-				   const std::vector<FileResult> &batch);
+				   const std::vector<FileResult> &batch,
+				   bool is_reindex = true);
 
 	/**
 	 * Resolve pre-computed metrics from the staging temp table into
@@ -465,6 +453,14 @@ class GraphStore {
 
 	bool isFileUnchanged(uint64_t project_id, const char *file_path,
 			     int64_t mtime, int64_t size);
+	/** Load all (file_path, mtime, size) tuples for a project into an
+	 *  in-memory set for O(1) membership checks during file discovery.
+	 *  Replaces N per-file isFileUnchanged queries with a single SELECT.
+	 *  Each tuple is encoded as "path|mtime|size" for fast set lookup.
+	 *  @param project_id The project whose scan state to load.
+	 *  @return unordered_set of "path|mtime|size" strings. */
+	std::unordered_set<std::string>
+	loadFileScanStateBatch(uint64_t project_id);
 	void updateFileScanState(uint64_t project_id, const char *file_path,
 				 int64_t mtime, int64_t size);
 	void cleanupStaleFiles(uint64_t project_id,
@@ -652,6 +648,29 @@ class GraphStore {
 	 */
 	bool dropLookupIndexes();
 
+	/**
+	 * Drop the 9 lookup indexes on semantic_records before a bulk
+	 * INSERT. SQLite maintains every index on each row insert, so
+	 * inserting ~16k records with 9 indexes live costs ~144k B-tree
+	 * updates (random I/O, cache-unfriendly). Dropping the indexes
+	 * and recreating them in bulk after the insert (one sorted B-tree
+	 * build per index) is 5–10x faster for large modules.
+	 *
+	 * Only call on fresh databases (worker mode, is_reindex=false) —
+	 * on re-index the DELETE in insertFileResultBatch relies on
+	 * idx_sr_file to find stale rows efficiently.
+	 * @return true on success (individual DROP failures are logged).
+	 */
+	bool dropSemanticRecordIndexes();
+
+	/**
+	 * Recreate the 9 semantic_records indexes after a bulk INSERT.
+	 * Must be called before buildGraph, which JOINs semantic_records
+	 * on (project_id, file_path) and (project_id, kind, file_path).
+	 * @return true on success (individual CREATE failures are logged).
+	 */
+	bool createSemanticRecordIndexes();
+
 	// ── Type Registry ─────────────────────────────────────────────
 
 	/**
@@ -807,6 +826,32 @@ class GraphStore {
 	std::vector<std::pair<int64_t, std::string>>
 	listContracts(uint64_t project_id);
 
+	// ── Semantic Facts (v0.3 Phase 1) ───────────────────────────────
+	// Per-function semantic primitives (sync/memory/error/pattern/
+	// framework/ffi) detected by SemanticFactExtractor and persisted
+	// for the Phase 4 project_state snapshot. Implemented in
+	// store_semantic_fact.cpp.
+	/// Tuple shape: (function_id, category, primitive, kind, symbol,
+	/// confidence, detail_json).
+	using SemanticFactRow =
+		std::tuple<uint64_t, std::string, std::string, std::string,
+			   std::string, double, std::string>;
+
+	/** Batch-insert semantic_fact rows for a project.
+	 *  Uses a prepared statement cache; caller wraps in a single
+	 *  transaction (no BEGIN/COMMIT here so it composes with
+	 *  SemanticFactExtractor::extractAll). Each row in `facts` becomes
+	 *  one INSERT. Empty vector is a no-op success.
+	 *  @param project_id  Project identifier (bound on every row).
+	 *  @param facts       Vector of SemanticFactRow tuples.
+	 *  @return true on success; false sets error() with full trace. */
+	bool insertSemanticFacts(uint64_t project_id,
+				 const std::vector<SemanticFactRow> &facts);
+
+	/** Delete all semantic_fact rows for a project (before re-extraction).
+	 *  No transaction management — caller wraps in BEGIN/COMMIT. */
+	bool clearSemanticFacts(uint64_t project_id);
+
     private:
 	sqlite3 *db_ = nullptr;
 	std::string error_;
@@ -816,6 +861,8 @@ class GraphStore {
 	lbug_database lbug_db_;
 	lbug_connection lbug_conn_;
 	bool lbug_initialized_ = false;
+	bool lbug_populated_ = false;
+	bool ladybug_query_enabled_ = true;
 
 	// Cached prepared statements (initialized in open(), finalized in close())
 	sqlite3_stmt *stmt_fts_map_ = nullptr; // INSERT INTO fts_node_map

@@ -1,0 +1,57 @@
+{
+  "category": "security",
+  "rules": [
+    {
+      "name": "unsafe_code_risk",
+      "description": "Rust unsafe blocks bypass memory-safety guarantees and are security-relevant",
+      "need": [
+        { "category": "pattern", "primitive": "unsafe", "kind": "risk" }
+      ],
+      "combine": "collect",
+      "output": {
+        "severity": 2,
+        "title": "{count} unsafe block(s) bypass memory safety (security risk)",
+        "message": "unsafe block at {file}:{line}: {symbol} (security-relevant)"
+      }
+    },
+    {
+      "name": "unchecked_ffi",
+      "description": "extern \"C\" calls without error checking are a security risk (untrusted boundary)",
+      "need": [
+        { "category": "ffi", "primitive": "extern_call", "kind": "call" }
+      ],
+      "combine": "collect",
+      "output": {
+        "severity": 2,
+        "title": "{count} extern \"C\" call(s) may skip error checking (security risk)",
+        "message": "extern \"C\" at {file}:{line}: {symbol} (unchecked FFI boundary)"
+      }
+    },
+    {
+      "name": "jni_without_validation",
+      "description": "JNI exports should validate inputs; missing validation is a security risk",
+      "need": [
+        { "category": "ffi", "primitive": "jni", "kind": "export" }
+      ],
+      "combine": "collect",
+      "output": {
+        "severity": 2,
+        "title": "{count} JNI export(s) require input validation (security risk)",
+        "message": "JNI export at {file}:{line}: {symbol} (validate inputs)"
+      }
+    },
+    {
+      "name": "bare_except_security",
+      "description": "Bare except clauses can hide security-relevant errors (e.g. auth failures)",
+      "need": [
+        { "category": "error", "primitive": "bare_except", "kind": "suppression" }
+      ],
+      "combine": "collect",
+      "output": {
+        "severity": 2,
+        "title": "{count} bare except clause(s) may hide security errors",
+        "message": "bare except at {file}:{line}: {symbol} (may hide security errors)"
+      }
+    }
+  ]
+}
