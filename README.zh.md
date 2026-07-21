@@ -416,14 +416,32 @@ get_knowledge_graph {"table":"capability","limit":10}
 
 ### 索引时间
 
-| 项目 | 文件数 | 节点数 | 索引时间 | 峰值内存 |
-|------|------:|------:|---------:|---------:|
-| **CodeScope**（自身，C++/Rust） | 168 | 1,001 | **1.3 秒** | ~150 MB |
-| **memscope-rs**（Rust） | 215 | 4,344 | **~2 秒** | ~200 MB |
-| **ARES_POLIS** | 105 | 1,531 | **~2 秒** | ~180 MB |
-| **goagent**（Go） | 2,651 | 155K | **30 秒** | — |
-| **rustc**（Rust 编译器，monorepo） | 6,029 | 81,033 | **81 秒** | 5.9 GB |
-| **Linux 内核**（完整） | 64,694 | 12M | **3 分 07 秒** | — |
+| 项目 | 文件数 | 节点数 | 边数 | 索引时间 | 峰值内存 |
+|------|------:|------:|------:|---------:|---------:|
+| **CodeScope**（自身，C++/Rust） | 212 | 1,387 | 1,895 | **1.0 秒** | ~150 MB |
+| **memscope-rs**（Rust） | 215 | 4,344 | — | **~2 秒** | ~200 MB |
+| **ARES**（Go） | 1,254 | 18,798 | 4,475 | **4.3 秒** | ~500 MB |
+| **rustc**（Rust 编译器，monorepo） | 6,029 | 81,039 | 63,697 | **18.7 秒** | 5.9 GB |
+| **Linux 内核**（完整） | 64,694 | 12M | — | **3 分 07 秒** | — |
+
+### LadybugDB 存储对比
+
+| 项目 | SQLite DB | LadybugDB | LadybugDB 占 SQLite 比例 |
+|------|:---------:|:---------:|:-----------------------:|
+| **CodeScope**（自身） | 77 MB | 3.4 MB | 4.4% |
+| **ARES**（Go） | 337 MB | 24 KB | <0.1% |
+
+### 查询延迟（LadybugDB Cypher）
+
+| 查询 | 延迟 | 说明 |
+|------|:----:|------|
+| `get_graph_stats` | ~1 ms | Cypher `count()` 聚合 |
+| `find_callers("buildGraph")` | ~1 ms | Cypher `MATCH` 名称过滤 |
+| `find_callees("buildGraph")` | ~1 ms | 返回 54 个被调用者 |
+| `graph_query`（LIMIT 100） | ~1 ms | 2,590 条边，DSL → Cypher 翻译 |
+| `shortest_path` | ~1 ms | Cypher `shortestPath()` BFS |
+| `get_neighbors` | ~1 ms | 1 跳 `MATCH` 含方向 |
+| `get_subgraph` | ~1 ms | 1 跳 `MATCH` 含过滤器 |
 
 ### 微基准
 

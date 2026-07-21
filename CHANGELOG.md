@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+## v0.2.2 (2026-07-21)
+
+LadybugDB graph engine migration — all graph queries now go through LadybugDB Cypher, with `entity`/`relation` as the canonical source tables. `graph_nodes`/`graph_edges` are deprecated. Plus `enhance_project` now populates the full model layer even on already-finalized projects.
+
+### 🚀 New Features
+
+- **LadybugDB Graph Engine Migration**: All graph query tools (`find_callers`, `find_callees`, `get_neighbors`, `get_subgraph`, `graph_query`, `shortest_path`, `get_graph_stats`, `get_entry_points`, `find_definition`, `find_references`) now go through LadybugDB Cypher exclusively. SQLite `graph_nodes`/`graph_edges` fallback removed. Results served from KuzuDB property graph (`(:Entity)-[:RELATES]->(:Entity)`).
+- **`buildLadybugFromEntityRelation`**: New function that builds LadybugDB directly from `entity`/`relation` tables via CSV + Kuzu COPY FROM. Replaces the old `compileGraphToLadybugDB` which read from `graph_nodes`/`graph_edges`. 579ms for 1,387 nodes + 2,885 relations on CodeScope self-index. Legacy fallback preserved for unit tests.
+- **`enhance_project` model build on finalized projects**: Fixed `engine_enhance_project` to run `runModelIndexSync` + `buildKnowledgeGraphSync` even when the project is already finalized. Previously returned early with `already_finalized` status, leaving `module_summary`, `modules`, `architecture_edge`, and `module_edge` tables empty. Now populates all model tables unconditionally.
+- **8-Layer Smart Filtering**: Comprehensive filter system documented in README — 8 layers covering any-depth skip dirs (~120 patterns), top-only skip dirs, suffix skip, filename skip, prefix skip, `.gitignore`, `.codescopeignore`, and file size + language detection.
+
+### 🐛 Bug Fixes
+
+- **`enhance_project` empty model tables**: When `index-parallel` ran with `CODESCOPE_SKIP_ASYNC=1`, `enhance_project` returned `already_finalized` without running the async knowledge builder. `module_summary`, `modules`, `architecture_edge`, and `module_edge` tables stayed empty. Fixed by adding a `run_model_build` goto label that runs `runModelIndexSync` + `buildKnowledgeGraphSync` even on finalized projects.
+- **`find_callers`/`find_callees` empty on re-indexed projects**: LadybugDB was not populated because `buildGraph` skipped LadybugDB init when `CODESCOPE_SKIP_ASYNC=1`. Fixed by `buildLadybugFromEntityRelation` being called from `buildGraph` unconditionally (when LadybugDB is initialized).
+- **`compileGraphToLadybugDB` error message stale**: Error message in `store_graph.cpp` still referenced `compileGraphToLadybugDB` after migration to `buildLadybugFromEntityRelation`.
+
+### 🔧 Improvements
+
+- **`buildLadybugFromEntityRelation` performance**: 579ms for 1,387 nodes + 2,885 relations on CodeScope self-index. LadybugDB file: 3.4MB vs SQLite 77MB (4.4%).
+- **`enhance_project` timing**: total 2,655ms (semantic_facts 175ms, buildGraph 579ms, runModelIndexSync 1,894ms, buildKnowledgeGraphSync 1ms).
+- **8-Layer Filtering**: Documented in README with real-world impact data (rustc: 36,919 → 6,029 files, 84% filtered).
+- **goagent CLOSURE_PLAN.md**: Comprehensive closure plan for goagent project — P0-P3 priority, orphan module analysis, evolution loop closure, stability hardening.
+
+### 🔒 Code Review Fixes
+
+- **Double-close file descriptor risk**: `writeEntityEdgeCsvs` and `compileGraphToLadybugDBLegacy` error handlers had double-close on file descriptors when `fdopen` succeeded for one temp file but failed for another. Fixed by negating fd variables after successful `fdopen`.
+- **Temp file leak on fdopen failure**: `writeEntityNodeCsv` and `writeEntityEdgeCsvs` did not `unlink` temp files when `fdopen` failed. Fixed by adding `unlink()` calls in error paths.
+
+### 📚 Documentation
+
+- **README.md / README.zh.md**: Added 8-Layer Smart Filtering section with real-world impact data (rustc, goagent, CodeScope, Linux kernel). Updated benchmark data tables.
+- **goagent CLOSURE_PLAN.md**: Written to goagent project root. 4-phase plan (P0 Agent core loop, P1 Evolution loop, P2 Island elimination, P3 Stability hardening). ~20 person-days estimate.
+- **Benchmark data updated**: Index time, node/edge counts, and file counts updated for all benchmarked projects. Added LadybugDB storage comparison.
+
+### 🧹 Chores
+
+- **Version bump**: 0.2.1 → 0.2.2
+- **`graph_nodes`/`graph_edges` deprecated**: Query tools no longer read from these tables. Tables still written for backward compatibility; will be removed in v0.3.
+
+---
+
 ## v0.2.1 (2026-07-19)
 
 Open-source release. Closes the gap between the Resolver Pipeline and the query/verify surfaces (call-graph `resolve_strategy` propagation, module-tree JSON validity, capability verifier LIKE-direction, module-hierarchy materialisation), plus FFI boundary detection, paginated graph export, LadybugDB embedded storage, one-click bootstrap, and a full code-review / portability / documentation pass.

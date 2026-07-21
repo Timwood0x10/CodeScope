@@ -209,7 +209,7 @@ Layer 8: file size limit + language detection
 | Project | Raw Source Files | After Filtering | Filtered Out | Time Saved |
 |---------|:-:|:-:|:-:|:-:|
 | rustc (Rust compiler) | 36,919 | **6,029** | 84% | ~2.5 min |
-| goagent (Go) | 2,651 | **1,254** | 53% | ~30 s |
+| ARES (Go) | 2,651 | **1,254** | 53% | ~30 s |
 | CodeScope (self) | 356 | **168** | 53% | ~1 s |
 | Linux kernel (full) | 308,342 | **64,694** | 79% | ~12 min |
 
@@ -432,14 +432,33 @@ All benchmarks measured on **Apple M3 Max (36 GB RAM)**. Other hardware will pro
 
 ### Index Time
 
-| Project | Files | Nodes | Index Time | Peak RSS |
-|---------|------:|------:|-----------:|---------:|
-| **CodeScope** (self, C++/Rust) | 168 | 1,001 | **1.3 s** | ~150 MB |
-| **memscope-rs** (Rust) | 215 | 4,344 | **~2 s** | ~200 MB |
-| **ARES_POLIS** | 105 | 1,531 | **~2 s** | ~180 MB |
-| **goagent** (Go) | 2,651 | 155K | **30 s** | — |
-| **rustc** (Rust compiler, monorepo) | 6,029 | 81,033 | **81 s** | 5.9 GB |
-| **Linux kernel** (full) | 64,694 | 12M | **3 min 07 s** | — |
+| Project | Files | Nodes | Edges | Index Time | Peak RSS |
+|---------|------:|------:|------:|-----------:|---------:|
+| **CodeScope** (self, C++/Rust) | 212 | 1,387 | 1,895 | **1.0 s** | ~150 MB |
+| **memscope-rs** (Rust) | 215 | 4,344 | — | **~2 s** | ~200 MB |
+| **ARES** (Go) | 1,254 | 18,798 | 4,475 | **4.3 s** | ~500 MB |
+| **rustc** (Rust compiler, monorepo) | 6,029 | 81,039 | 63,697 | **18.7 s** | 5.9 GB |
+| **Linux kernel** (full) | 64,694 | 12M | — | **3 min 07 s** | — |
+
+### LadybugDB Storage
+
+| Project | SQLite DB | LadybugDB | LadybugDB % of SQLite |
+|---------|:---------:|:---------:|:---------------------:|
+| **CodeScope** (self) | 77 MB | 3.4 MB | 4.4% |
+| **ARES** (Go) | 337 MB | 24 KB | <0.1% |
+| **rustc** (Rust compiler) | — | — | — |
+
+### Query Latency (LadybugDB Cypher)
+
+| Query | Latency | Notes |
+|-------|:-------:|-------|
+| `get_graph_stats` | ~1 ms | Cypher `count()` aggregation |
+| `find_callers("buildGraph")` | ~1 ms | Cypher `MATCH` with name filter |
+| `find_callees("buildGraph")` | ~1 ms | 54 callees returned |
+| `graph_query` (LIMIT 100) | ~1 ms | 2,590 edges, DSL → Cypher translation |
+| `shortest_path` | ~1 ms | Cypher `shortestPath()` BFS |
+| `get_neighbors` | ~1 ms | 1-hop `MATCH` with direction |
+| `get_subgraph` | ~1 ms | 1-hop `MATCH` with filters |
 
 ### Micro Benchmarks
 
@@ -457,7 +476,7 @@ All benchmarks measured on **Apple M3 Max (36 GB RAM)**. Other hardware will pro
 | Project | Cross-File CALLS | % of total CALLS |
 |---------|:---------------:|:----------------:|
 | CodeScope (C++) | 23 | 0.1% |
-| goagent (Go) | 49,258 | 86% |
+| ARES (Go) | 49,258 | 86% |
 | Linux kernel (C) | 1,502,432 | 40% |
 
 ### Fast Scan (Lightweight, ms-level)
@@ -465,7 +484,7 @@ All benchmarks measured on **Apple M3 Max (36 GB RAM)**. Other hardware will pro
 | Project | Time | Languages | Symbols |
 |--------|:----:|:---------:|:-------:|
 | **CodeScope** (self) | **32 ms** | cpp, rust, c | 2,902 |
-| **goagent** (Go) | **493 ms** | go, c, cpp, python | 5,172 |
+| **ARES** (Go) | **493 ms** | go, c, cpp, python | 5,172 |
 | **Linux kernel** (core) | **360 ms** | c | 40,335 |
 
 ### Token Savings
