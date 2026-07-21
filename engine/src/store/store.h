@@ -277,7 +277,8 @@ class GraphStore {
 	 * @return true on success.
 	 */
 	bool insertFileResultBatch(uint64_t project_id,
-				   const std::vector<FileResult> &batch);
+				   const std::vector<FileResult> &batch,
+				   bool is_reindex = true);
 
 	/**
 	 * Resolve pre-computed metrics from the staging temp table into
@@ -646,6 +647,29 @@ class GraphStore {
 	 * @return true on success (individual DROP failures are logged).
 	 */
 	bool dropLookupIndexes();
+
+	/**
+	 * Drop the 9 lookup indexes on semantic_records before a bulk
+	 * INSERT. SQLite maintains every index on each row insert, so
+	 * inserting ~16k records with 9 indexes live costs ~144k B-tree
+	 * updates (random I/O, cache-unfriendly). Dropping the indexes
+	 * and recreating them in bulk after the insert (one sorted B-tree
+	 * build per index) is 5–10x faster for large modules.
+	 *
+	 * Only call on fresh databases (worker mode, is_reindex=false) —
+	 * on re-index the DELETE in insertFileResultBatch relies on
+	 * idx_sr_file to find stale rows efficiently.
+	 * @return true on success (individual DROP failures are logged).
+	 */
+	bool dropSemanticRecordIndexes();
+
+	/**
+	 * Recreate the 9 semantic_records indexes after a bulk INSERT.
+	 * Must be called before buildGraph, which JOINs semantic_records
+	 * on (project_id, file_path) and (project_id, kind, file_path).
+	 * @return true on success (individual CREATE failures are logged).
+	 */
+	bool createSemanticRecordIndexes();
 
 	// ── Type Registry ─────────────────────────────────────────────
 

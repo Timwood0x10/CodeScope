@@ -3,6 +3,7 @@
 #include "platform_win.h"
 #include "verify/registry.h"
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <sqlite3.h>
@@ -40,6 +41,11 @@ int engine_init(const char *db_path)
 		// If any constructor throws, previous allocations are auto-freed.
 		g_store = std::make_unique<store::GraphStore>();
 
+		// Time GraphStore::open() (PRAGMAs + createSchema) so the
+		// per-worker startup cost is visible in logs. createSchema runs
+		// ~100+ CREATE TABLE/INDEX IF NOT EXISTS statements on a fresh
+		// DB — significant in short-lived worker subprocesses.
+		auto t_open_start = std::chrono::steady_clock::now();
 		if (!g_store->open(db_path)) {
 			fprintf(stderr,
 				"engine_init: open failed: %s [module=engine, method=engine_init]\n",
@@ -47,8 +53,48 @@ int engine_init(const char *db_path)
 			g_store.reset(); // Auto-cleanup via unique_ptr
 			return -1;
 		}
-		// Initialize LadybugDB for graph storage (non-fatal if unavailable)
-		g_store->initLadybugDB();
+		auto t_open_end = std::chrono::steady_clock::now();
+		fprintf(stderr,
+			"engine_init: GraphStore::open=%lldms "
+			"[module=engine, method=engine_init]\n",
+			(long long)std::chrono::duration_cast<
+				std::chrono::milliseconds>(t_open_end -
+							   t_open_start)
+				.count());
+
+		// Initialize LadybugDB for graph storage (non-fatal if unavailable).
+		//
+		// SKIP in worker mode (CODESCOPE_SKIP_ASYNC=1): worker
+		// subprocesses only write to SQLite (buildGraph is SQL-only,
+		// see engine_index_post_parse.cpp). LadybugDB is a query-time
+		// graph store that is never populated during indexing —
+		// allocating its 256MB buffer pool + running Kuzu schema DDL
+		// in every worker is pure waste. The parent process (which
+		// serves queries) does not set CODESCOPE_SKIP_ASYNC and
+		// initializes LadybugDB normally. Query code checks
+		// hasLadybugDB() and falls back to SQLite when false.
+		const char *skip_async = std::getenv("CODESCOPE_SKIP_ASYNC");
+		const char *skip_ladybug =
+			std::getenv("CODESCOPE_SKIP_LADYBUG_INIT");
+		bool need_ladybug = !(skip_async && skip_async[0] == '1') &&
+				    !(skip_ladybug && skip_ladybug[0] == '1');
+		if (need_ladybug) {
+			auto t_lbug_start = std::chrono::steady_clock::now();
+			g_store->initLadybugDB();
+			auto t_lbug_end = std::chrono::steady_clock::now();
+			fprintf(stderr,
+				"engine_init: initLadybugDB=%lldms "
+				"[module=engine, method=engine_init]\n",
+				(long long)std::chrono::duration_cast<
+					std::chrono::milliseconds>(t_lbug_end -
+								   t_lbug_start)
+					.count());
+		} else {
+			fprintf(stderr,
+				"engine_init: skipping initLadybugDB "
+				"(CODESCOPE_SKIP_ASYNC/SKIP_LADYBUG=1) "
+				"[module=engine, method=engine_init]\n");
+		}
 		g_query = std::make_unique<query::QueryEngine>(g_store.get());
 
 		// Initialize parser and register available grammars

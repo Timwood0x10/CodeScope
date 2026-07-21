@@ -35,6 +35,11 @@
 #include "async_knowledge.h"
 #include "store/store_parse_failure.h"
 
+// TODO(file-size): This file is ~1675 lines, exceeding the 1000-line
+// limit in plan/rules/code_rules.md. Pre-existing debt — the file
+// discovery loop, worker pool, and writer thread should be split into
+// separate translation units in a follow-up refactor.
+
 // ─── Dynamic Scheduler Shared State ──────────────────────────────
 // When CODESCOPE_SCHED_SHM points to a valid shared-memory file
 // created by the Rust scheduler (see server/src/scheduler/shm.rs),
@@ -376,10 +381,13 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 						file_stat.st_mtime);
 					fsize = static_cast<int64_t>(
 						file_stat.st_size);
-					file_unchanged = g_store->isFileUnchanged(
-						project_id,
-						entry.path().string().c_str(),
-						mtime, fsize);
+					// O(1) in-memory lookup instead of per-file DB query
+					std::string key =
+						entry.path().string() + "|" +
+						std::to_string(mtime) + "|" +
+						std::to_string(fsize);
+					file_unchanged = scan_state.count(key) >
+							 0;
 				}
 				if (file_unchanged) {
 					is_reindex = true;
