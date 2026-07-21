@@ -93,6 +93,8 @@
 *.out
 *.app
 *.dll
+# But track the vendored Windows LadybugDB DLL (needed for CI packaging)
+!engine/third_party/ladybug/lib/windows/lbug_shared.dll
 *.dylib
 *.so
 # Keep vendored LadybugDB shared libraries + dev symlinks (committed binaries)
