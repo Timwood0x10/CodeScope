@@ -146,7 +146,84 @@ flowchart LR
 
 ---
 
-## 3. 快速开始
+## 3. 8 层智能过滤：为什么 36,919 个文件只索引了 6,029 个
+
+CodeScope **不会**索引项目中的每一个文件。它通过 **8 层级联过滤** 剥离噪声，只保留真正的核心源码。
+
+### 问题
+
+一个典型项目（以 rustc 编译器为例）的文件分布：
+
+```
+总源码文件数:       36,919
+  tests/            26,293  ← 71%: 测试套件
+  src/tools/*/test/  3,802  ← 10%: 嵌入的测试目录
+  library/*/test/      339  ←  1%: 库测试
+  compiler/*/test/     118  ← <1%: 编译器测试
+  docs/vendor/bench/   368  ←  1%: 文档、第三方依赖、基准测试
+  ─────────────────────────────────────
+  核心代码已索引:   6,029  ← 16%: 真正的源码
+```
+
+如果没有过滤，CodeScope 会把 84% 的时间浪费在索引测试、第三方依赖、文档和构建产物上——这些文件没人需要分析。
+
+### 8 层过滤级联
+
+```
+第 1 层：任意深度跳过目录（约 120 个模式）
+  .git, .svn, .hg, node_modules, .venv, target, build, dist,
+  vendor, __pycache__, .github, deploy, docker, k8s, ...
+  → 在任何深度捕获 VCS、构建产物、依赖、CI/CD、基础设施
+
+第 2 层：仅顶层跳过目录（深度 ≤ 3，Java 安全）
+  test, tests, docs, examples, samples, scripts, e2e, integration,
+  assets, static, public, media, i18n, bench, benchmarks, ...
+  → 对 Java 项目：保护包命名空间（org/.../samples/petclinic）
+
+第 3 层：文件后缀跳过（永远应用）
+  .md, .txt, .json, .yaml, .toml, .ini, .png, .jpg, .svg,
+  .pdf, .zip, .tar, .min.js, .d.ts, ...
+  → 非源码文件、文档、图片、压缩包
+
+第 4 层：精确文件名跳过
+  package-lock.json, yarn.lock, .DS_Store, Thumbs.db,
+  .env, .env.local, .gitkeep, .gitignore, ...
+
+第 5 层：文件名/目录前缀跳过
+  文件前缀：._*, ~$*, #*#
+  目录前缀：build_*, test_*, tmp_*
+
+第 6 层：.gitignore 模式匹配
+  尊重项目 .gitignore 中的每一条规则
+
+第 7 层：.codescopeignore（用户自定义）
+  每个项目可额外添加自定义忽略模式
+
+第 8 层：文件大小限制 + 语言检测
+  • 最大文件大小（默认 10 MB，可通过 CODESCOPE_MAX_FILE_SIZE 配置）
+  • 无法检测语言的文件静默跳过
+```
+
+### 实际效果
+
+| 项目 | 原始文件数 | 过滤后 | 过滤比例 | 节省时间 |
+|------|:--------:|:------:|:--------:|:--------:|
+| rustc（Rust 编译器） | 36,919 | **6,029** | 84% | ~2.5 分钟 |
+| goagent（Go） | 2,651 | **1,254** | 53% | ~30 秒 |
+| CodeScope（自身） | 356 | **168** | 53% | ~1 秒 |
+| Linux 内核（完整） | 308,342 | **64,694** | 79% | ~12 分钟 |
+
+### 强制覆盖：`force_index_files`
+
+需要索引某个测试文件或第三方目录？使用 `force_index_files` MCP 工具——它会**绕过所有 8 层过滤**：
+
+```bash
+codescope cli force_index_files '{"paths":["/path/to/test/file.rs"]}'
+```
+
+---
+
+## 4. 快速开始
 
 ### 前置依赖
 
