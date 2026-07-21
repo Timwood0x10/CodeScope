@@ -29,6 +29,8 @@ jobs:
             artifact: codescope-aarch64-linux
           - os: macos-15
             artifact: codescope-aarch64-macos
+          - os: windows-2022
+            artifact: codescope-x86_64-windows
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     # ccache accelerates C/C++ compiles. On a dep-version cache miss
@@ -72,6 +74,18 @@ jobs:
           echo "CXX=/opt/homebrew/opt/llvm@21/bin/clang++" >> $GITHUB_ENV
           # LadybugDB shared library is vendored under engine/third_party/ladybug/lib/macos/
           # (committed to git, including the liblbug.dylib dev symlink).
+
+      - name: Install deps (Windows)
+        if: matrix.os == 'windows-2022'
+        run: |
+          # Install MinGW-w64 toolchain (version pinned to match local dev: GCC 16.1.0)
+          choco install mingw --version=14.0.0 -y --no-progress
+          echo "C:\tools\mingw64\bin" >> $GITHUB_PATH
+          # Add Rust Windows GNU target (Rust version pinned to 1.95.0 by dtolnay/rust-toolchain@1.95.0)
+          rustup target add x86_64-pc-windows-gnu
+          echo "CC=x86_64-w64-mingw32-gcc" >> $GITHUB_ENV
+          echo "CXX=x86_64-w64-mingw32-g++" >> $GITHUB_ENV
+          # CMake 4.4.0 and Ninja 1.13.2 are pre-installed on GitHub Actions Windows runners
 
       - name: Cache Cargo registry
         uses: actions/cache@v6 # v4.2.3
@@ -124,17 +138,27 @@ jobs:
         env:
           CBM_SKIP_PERF: ${{ inputs.skip_perf && '1' || '' }}
         run: |
-          cargo build --release --bin codescope
-          cargo nextest run --release --no-tests=pass
+          if [ "${{ matrix.os }}" = "windows-2022" ]; then
+            cargo build --release --target x86_64-pc-windows-gnu --bin codescope
+          else
+            cargo build --release --bin codescope
+            cargo nextest run --release --no-tests=pass
+          fi
 
       - name: Smoke test
         shell: bash
         run: |
-          ./target/release/codescope --help || true
-          # Verify binary is not corrupted (prints Mach-O / ELF metadata).
-          file target/release/codescope
+          if [ "${{ matrix.os }}" = "windows-2022" ]; then
+            ./target/x86_64-pc-windows-gnu/release/codescope.exe --help || true
+            file target/x86_64-pc-windows-gnu/release/codescope.exe
+          else
+            ./target/release/codescope --help || true
+            # Verify binary is not corrupted (prints Mach-O / ELF metadata).
+            file target/release/codescope
+          fi
 
       - name: Build + test C++ engine
+        if: matrix.os != 'windows-2022'  # C++ engine is built by build.rs on Windows
         shell: bash
         run: |
           # Configure with tests enabled. Dependencies are vendored under
@@ -214,7 +238,11 @@ jobs:
         if: inputs.skip_package != true
         shell: bash
         run: |
-          strip target/release/codescope 2>/dev/null || true
+          if [ "${{ matrix.os }}" = "windows-2022" ]; then
+            strip target/x86_64-pc-windows-gnu/release/codescope.exe 2>/dev/null || true
+          else
+            strip target/release/codescope 2>/dev/null || true
+          fi
 
       - name: Ad-hoc sign macOS binary
         if: ${{ matrix.os == 'macos-15' && inputs.skip_package != true }}
@@ -225,7 +253,11 @@ jobs:
         shell: bash
         run: |
           mkdir -p package
-          cp target/release/codescope package/
+          if [ "${{ matrix.os }}" = "windows-2022" ]; then
+            cp target/x86_64-pc-windows-gnu/release/codescope.exe package/
+          else
+            cp target/release/codescope package/
+          fi
           cp LICENSE package/
           [ -f install.sh ] && cp install.sh package/
 
@@ -245,6 +277,11 @@ jobs:
             *-macos)
               LBUG_LIB="engine/third_party/ladybug/lib/macos/liblbug.0.dylib"
               LBUG_FILE="liblbug.0.dylib"
+              ;;
+            *-windows)
+              # Windows: bundle lbug_shared.dll next to the .exe
+              LBUG_LIB="engine/third_party/ladybug/lib/windows/lbug_shared.dll"
+              LBUG_FILE="lbug_shared.dll"
               ;;
           esac
           cp -L "$LBUG_LIB" "package/$LBUG_FILE"

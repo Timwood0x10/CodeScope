@@ -81,17 +81,23 @@ fn main() {
         format!("-DCMAKE_C_COMPILER={}", cc_path),
         format!("-DCMAKE_CXX_COMPILER={}", cxx_path),
     ];
-    // Cross-compilation: when targeting Windows, tell CMake the target
-    // system so it doesn't add host-specific flags (e.g. macOS -arch arm64).
+    // Cross-compilation: when targeting Windows FROM macOS/Linux, tell CMake
+    // the target system so it doesn't add host-specific flags (e.g. -arch arm64).
+    // On native Windows, CMake detects the system correctly and should NOT be
+    // overridden — setting CMAKE_SYSTEM_NAME on Windows would break detection.
     if target_os == "windows" {
-        cmake_args.push("-DCMAKE_SYSTEM_NAME=Windows".to_string());
-        // MinGW cross-compiler needs the RC compiler for Windows resources
-        cmake_args.push("-DCMAKE_RC_COMPILER=x86_64-w64-mingw32-windres".to_string());
-        // Disable tests (they use POSIX APIs not available in cross-compile)
+        let host_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+        let is_cross = host_os != "windows";
+        if is_cross {
+            cmake_args.push("-DCMAKE_SYSTEM_NAME=Windows".to_string());
+            // MinGW cross-compiler needs the RC compiler for Windows resources
+            cmake_args.push("-DCMAKE_RC_COMPILER=x86_64-w64-mingw32-windres".to_string());
+            // Skip compiler test (cross-compile toolchain may not pass detection)
+            cmake_args.push("-DCMAKE_C_COMPILER_WORKS=TRUE".to_string());
+            cmake_args.push("-DCMAKE_CXX_COMPILER_WORKS=TRUE".to_string());
+        }
+        // Disable tests (they use POSIX APIs not available on Windows)
         cmake_args.push("-DBUILD_TESTS=OFF".to_string());
-        // Skip compiler test (cross-compile toolchain may not pass detection)
-        cmake_args.push("-DCMAKE_C_COMPILER_WORKS=TRUE".to_string());
-        cmake_args.push("-DCMAKE_CXX_COMPILER_WORKS=TRUE".to_string());
     }
     // Use Ninja generator if available (faster parallel builds)
     if std::process::Command::new("ninja")

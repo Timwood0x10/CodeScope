@@ -2,6 +2,54 @@
 
 ## Unreleased
 
+## v0.2.3 (2026-07-21)
+
+Windows beta support — cross-compilation from macOS to `x86_64-pc-windows-gnu` (MinGW), vendored LadybugDB Windows DLL, and CI pipeline. Plus critical bug fixes for the v0.2.2 LadybugDB migration that broke all query tools.
+
+### 🚀 New Features
+
+- **Windows Beta Support**: Cross-compilation from macOS to Windows x86-64 via MinGW (`x86_64-w64-mingw32-gcc`). `codescope.exe` produced as a 16MB PE32+ executable. Vendored `lbug_shared.dll` bundled with the binary. CI pipeline added (`windows-2022` runner, `choco install mingw`, `--target x86_64-pc-windows-gnu`).
+- **LadybugDB Search** (`search`): Now queries LadybugDB directly via `MATCH (n) WHERE n.name CONTAINS 'query'` — no longer depends on async FTS build. Returns results synchronously in ~1ms.
+- **`isGraphReady()` cross-process probe**: `isGraphReady()` now probes LadybugDB directly via `MATCH (n) RETURN count(*)` when the in-memory flag is not set, handling cross-process scenarios where the flag was set in a worker subprocess but the current process is fresh.
+
+### 🐛 Bug Fixes
+
+- **`findSymbolJson` prepare failed**: SQL query referenced `graph_nodes` table (now empty). Fixed to query `entity` table instead. (`store_project.cpp`)
+- **`find_callers`/`find_callees`/`find_references`/`find_definition` all "graph not ready"**: `isGraphReady()` used a process-in-memory flag `lbug_populated_` that was set in the worker subprocess but not visible in the CLI process. Added `probeGraphReady()` that runs `MATCH (n) RETURN count(*)` on LadybugDB directly. (`store.h`, `store_ladybug_core.cpp`)
+- **`project_overview` shows `total_symbols:0`**: SQL query counted `graph_nodes` (empty). Fixed to count `entity` rows. (`engine_queries.cpp`)
+- **`search` returns empty results**: FTS was built on `graph_nodes` (empty) and there was no LadybugDB fallback. Added `searchLadybugJson()` — Cypher `CONTAINS` search via LadybugDB. (`store_ladybug_core.cpp`, `engine_queries.cpp`)
+- **`searchGraphFallback`/`searchUnifiedJson` trigram query empty**: Both referenced `graph_nodes`/`graph_edges` tables. Fixed to use `entity`/`relation`. (`store_search.cpp`, `store_query.cpp`)
+- **`buildFTSFromGraph` empty**: FTS tables (`code_fts`, `name_trgm`) were built from `graph_nodes` (empty). Fixed to build from `entity`. (`store_search.cpp`)
+- **`test_trigram_search` assertion failure**: Test `insertGraphNode` helper inserted into `graph_nodes` only, but `buildFTSFromGraph` now reads from `entity`. Added dual-write to `entity` in the test helper. (`test_trigram_search.cpp`)
+- **`engine_get_project_node_count` returns 0**: Queried `graph_nodes` (empty). Fixed to query `entity`. (`store_core.cpp`)
+- **`getLatestProjectId` returns wrong project**: Queried `graph_nodes` for node count. Fixed to query `entity`. (`store_core.cpp`)
+- **`engine_index_project` returns `total_nodes:0`**: Queried `graph_nodes` for the count. Fixed to query `entity`. (`engine_index_project.cpp`, `engine_index_post_parse.cpp`)
+- **`verify_integrity` hangs indefinitely**: No query timeout guard. Added `QueryDeadlineGuard` with 10s timeout. (`engine_verify_ffi.cpp`)
+- **`buildCSR` reverse query fails**: `ORDER BY target_node_id` column doesn't exist in `relation` table. Fixed to `ORDER BY target_id`. (`store_graph.cpp`)
+- **`buildCSR` reads from `graph_edges`**: Fixed to read from `relation` table. (`store_graph.cpp`)
+- **`locateNode`/`locateByName` query empty**: Referenced `graph_nodes`. Fixed to query `entity`. (`query_engine.cpp`)
+- **Version string still shows 0.2.1**: Hardcoded in `engine_ffi.cpp`. Updated to `"0.2.2"` (now `"0.2.3"`). (`engine_ffi.cpp`)
+
+### 🔧 Improvements
+
+- **`make fmt` now runs full lint check**: Changed `make fmt` to run `lint-cpp-full` (all files) instead of `lint-cpp` (recent files only), preventing CI from catching formatting issues that local `make fmt` missed. (`Makefile`)
+- **`QueryDeadlineGuard` added to `engine_verify_integrity`**: 10s timeout prevents infinite hangs. (`engine_verify_ffi.cpp`)
+- **`graph_nodes`/`graph_edges` fully removed from query path**: All SQL queries that referenced these tables have been migrated to `entity`/`relation`. `graph_nodes`/`graph_edges` tables still exist in the schema but are no longer written or queried.
+
+### 🔒 Cross-Platform Fixes
+
+- **Windows cross-compilation**: Fixed `mkstemps` → `mkstemp` (not available on MinGW), `filesystem::path::native()` → `string()` (returns `wstring` on MinGW), `FilterPolicy::STRICT`/`FAST` macro conflicts with Windows headers (`#undef`), `libc::MAP_FAILED` not available on Windows (`#[cfg(windows)]` fallback), scheduler module conditional on `#[cfg(not(windows))]` (uses Unix `mmap`), `index-parallel` command gated on non-Windows.
+- **`build.rs` cross-compile detection**: `-DCMAKE_SYSTEM_NAME=Windows` only set when cross-compiling from macOS/Linux, not on native Windows. (`build.rs`)
+- **LadybugDB Windows DLL vendored**: `lbug_shared.dll` + `lbug_shared.lib` downloaded to `engine/third_party/ladybug/lib/windows/`. CMake and `build.rs` updated to detect Windows library.
+
+### 🧹 Chores
+
+- **Version bump**: 0.2.2 → 0.2.3
+- **`engine/third_party/ladybug/lib/windows/`**: Added vendored Windows LadybugDB binary (lbug_shared.dll + lbug_shared.lib).
+- **CI added `windows-2022` runner**: MinGW-w64 14.0.0, Rust `x86_64-pc-windows-gnu` target, C++ engine tests skipped (built by `build.rs`), `codescope.exe` + `lbug_shared.dll` packaged.
+
+---
+
 ## v0.2.2 (2026-07-21)
 
 LadybugDB graph engine migration — all graph queries now go through LadybugDB Cypher, with `entity`/`relation` as the canonical source tables. `graph_nodes`/`graph_edges` are deprecated. Plus `enhance_project` now populates the full model layer even on already-finalized projects.
