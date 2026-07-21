@@ -74,41 +74,42 @@ void GraphStore::insertIntoFTS(uint64_t node_id, uint64_t project_id,
 
 void GraphStore::buildFTSFromGraph(uint64_t project_id)
 {
-	// Bulk-build FTS from graph_nodes: single SQL INSERT-SELECT
+	// Bulk-build FTS from entity: single SQL INSERT-SELECT
 	// No per-node prepare/finalize overhead.
+	// graph_nodes is deprecated; entity is the canonical source.
 	exec(std::string(
 		     "INSERT OR IGNORE INTO code_fts (rowid, name, qualified_name, "
 		     " file_path, content, project_id, node_id, node_kind) "
-		     "SELECT gn.id, gn.name, gn.qualified_name, gn.file_path, '', " +
+		     "SELECT e.id, e.name, e.qualified_name, e.file_path, '', " +
 		     std::to_string(project_id) +
-		     ", gn.id, gn.node_type "
-		     "FROM graph_nodes gn "
-		     "WHERE gn.project_id=" +
-		     std::to_string(project_id) + " AND gn.name != ''")
+		     ", e.id, e.kind "
+		     "FROM entity e "
+		     "WHERE e.project_id=" +
+		     std::to_string(project_id) + " AND e.name != ''")
 		     .c_str());
 	// Build fts_node_map mapping
 	exec(std::string(
 		     "INSERT OR IGNORE INTO fts_node_map (node_id, project_id, file_id) "
-		     "SELECT gn.id, gn.project_id, COALESCE(f.id, 0) "
-		     "FROM graph_nodes gn "
-		     "LEFT JOIN files f ON f.path = gn.file_path AND f.project_id=gn.project_id "
-		     "WHERE gn.project_id=" +
+		     "SELECT e.id, e.project_id, COALESCE(f.id, 0) "
+		     "FROM entity e "
+		     "LEFT JOIN files f ON f.path = e.file_path AND f.project_id=e.project_id "
+		     "WHERE e.project_id=" +
 		     std::to_string(project_id))
 		     .c_str());
 	// Bulk-build the trigram FTS5 index (name_trgm) in parallel with
-	// code_fts. Same source (graph_nodes), same WHERE filter. Uses
+	// code_fts. Same source (entity), same WHERE filter. Uses
 	// INSERT OR IGNORE so re-runs after partial indexing are idempotent.
 	// The trigram index powers O(log n) substring search via MATCH,
 	// replacing the O(n) LIKE '%query%' scan in searchGraphFallback.
 	exec(std::string(
 		     "INSERT OR IGNORE INTO name_trgm "
 		     "(rowid, name, qualified_name, project_id, node_id, node_type) "
-		     "SELECT gn.id, gn.name, gn.qualified_name, " +
+		     "SELECT e.id, e.name, e.qualified_name, " +
 		     std::to_string(project_id) +
-		     ", gn.id, gn.node_type "
-		     "FROM graph_nodes gn "
-		     "WHERE gn.project_id=" +
-		     std::to_string(project_id) + " AND gn.name != ''")
+		     ", e.id, e.kind "
+		     "FROM entity e "
+		     "WHERE e.project_id=" +
+		     std::to_string(project_id) + " AND e.name != ''")
 		     .c_str());
 }
 
@@ -376,9 +377,9 @@ std::string GraphStore::searchGraphFallback(uint64_t project_id,
 	// Only used when the query is long enough and the table is available.
 	if (!is_short && isTrigramAvailable()) {
 		const char *sql =
-			"SELECT gn.id, gn.name, gn.file_path, gn.node_type "
+			"SELECT gn.id, gn.name, gn.file_path, gn.kind "
 			"FROM name_trgm "
-			"JOIN graph_nodes gn ON gn.id = name_trgm.node_id "
+			"JOIN entity gn ON gn.id = name_trgm.node_id "
 			"WHERE name_trgm MATCH ? AND name_trgm.project_id = ? "
 			"ORDER BY LENGTH(gn.name) ASC "
 			"LIMIT ?";
@@ -449,8 +450,8 @@ std::string GraphStore::searchGraphFallback(uint64_t project_id,
 			c = ' ';
 	}
 
-	const char *sql = "SELECT id, name, file_path, node_type "
-			  "FROM graph_nodes "
+	const char *sql = "SELECT id, name, file_path, kind "
+			  "FROM entity "
 			  "WHERE project_id=? AND name LIKE ? "
 			  "ORDER BY LENGTH(name) ASC "
 			  "LIMIT ?";

@@ -81,6 +81,24 @@ fn main() {
         format!("-DCMAKE_C_COMPILER={}", cc_path),
         format!("-DCMAKE_CXX_COMPILER={}", cxx_path),
     ];
+    // Cross-compilation: when targeting Windows FROM macOS/Linux, tell CMake
+    // the target system so it doesn't add host-specific flags (e.g. -arch arm64).
+    // On native Windows, CMake detects the system correctly and should NOT be
+    // overridden — setting CMAKE_SYSTEM_NAME on Windows would break detection.
+    if target_os == "windows" {
+        let host_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+        let is_cross = host_os != "windows";
+        if is_cross {
+            cmake_args.push("-DCMAKE_SYSTEM_NAME=Windows".to_string());
+            // MinGW cross-compiler needs the RC compiler for Windows resources
+            cmake_args.push("-DCMAKE_RC_COMPILER=x86_64-w64-mingw32-windres".to_string());
+            // Skip compiler test (cross-compile toolchain may not pass detection)
+            cmake_args.push("-DCMAKE_C_COMPILER_WORKS=TRUE".to_string());
+            cmake_args.push("-DCMAKE_CXX_COMPILER_WORKS=TRUE".to_string());
+        }
+        // Disable tests (they use POSIX APIs not available on Windows)
+        cmake_args.push("-DBUILD_TESTS=OFF".to_string());
+    }
     // Use Ninja generator if available (faster parallel builds)
     if std::process::Command::new("ninja")
         .arg("--version")
@@ -146,26 +164,58 @@ fn main() {
 
     if let Some(lib_path) = &lbug_lib {
         // CMake found liblbug. Derive the directory and link mode from the path.
-        let lib_dir = std::path::Path::new(lib_path)
-            .parent()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| ".".to_string());
-        let is_static = lib_path.ends_with(".a");
-        let link_mode = if is_static { "static" } else { "dylib" };
+        let is_windows = target_os == "windows";
+        let (lib_dir, lib_name, link_mode, is_static) = if is_windows {
+            // Windows cross-compile: use vendored Windows library directly.
+            // CMake cache stores the macOS path (from the host build), so
+            // we ignore it and use the Windows-specific path.
+            let win_lib_dir = format!("{}/third_party/ladybug/lib/windows", engine_dir);
+            (
+                win_lib_dir,
+                "lbug_shared".to_string(),
+                "dylib".to_string(),
+                false,
+            )
+        } else {
+            let dir = std::path::Path::new(lib_path)
+                .parent()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| ".".to_string());
+            let is_static = lib_path.ends_with(".a");
+            let mode = if is_static {
+                "static".to_string()
+            } else {
+                "dylib".to_string()
+            };
+            (dir, "lbug".to_string(), mode, is_static)
+        };
         println!("cargo:rustc-link-search=native={}", lib_dir);
-        println!("cargo:rustc-link-lib={}=lbug", link_mode);
+        println!("cargo:rustc-link-lib={}={}", link_mode, lib_name);
         // Embed the library directory in the binary's rpath so the
         // dynamic linker can find liblbug at runtime without requiring
-        // DYLD_LIBRARY_PATH (macOS) or ldconfig (Linux).
-        if !is_static {
+        // DYLD_LIBRARY_PATH (macOS), ldconfig (Linux), or PATH (Windows).
+        if !is_static && !is_windows {
             println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir);
+        }
+        // Windows: copy lbug_shared.dll next to the executable
+        if is_windows {
+            let dll_name = format!("{}/lbug_shared.dll", lib_dir);
+            let out_dir = env::var("OUT_DIR").unwrap();
+            let out_path = std::path::Path::new(&out_dir);
+            // cargo's OUT_DIR is in the build tree; copy to target/release/
+            let target_dir = out_path.ancestors().nth(3).unwrap();
+            let dll_dest = format!("{}/lbug_shared.dll", target_dir.display());
+            if std::path::Path::new(&dll_name).exists() {
+                let _ = std::fs::copy(&dll_name, &dll_dest);
+                eprintln!("build.rs: Windows DLL copied to {}", dll_dest);
+            }
         }
         eprintln!(
             "build.rs: LadybugDB {} lib found via CMake cache at {}",
             if is_static { "static" } else { "dynamic" },
             lib_path
         );
-    } else if target_os == "macos" || target_os == "linux" {
+    } else if target_os == "macos" || target_os == "linux" || target_os == "windows" {
         // CMake did not find LadybugDB — consistent with HAS_LADYBUG not
         // being defined. Emit a clear warning so users know Cypher queries
         // will be unavailable.

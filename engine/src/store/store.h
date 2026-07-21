@@ -121,17 +121,27 @@ class GraphStore {
 		return lbug_initialized_;
 	}
 	/** Check if LadybugDB has been successfully populated with graph data.
-	 *  When false, all LadybugDB-first query paths fall back to SQLite. */
+	   *  When false, all LadybugDB-first query paths return "graph not ready".
+	   *  Checks the in-memory flag first; if false, probes LadybugDB
+	   *  directly (handles cross-process scenarios where the flag was
+	   *  set in a worker subprocess but the current process is fresh). */
 	bool isGraphReady() const
 	{
-		return lbug_initialized_ && lbug_populated_ &&
-		       ladybug_query_enabled_;
+		if (!lbug_initialized_ || !ladybug_query_enabled_)
+			return false;
+		if (lbug_populated_)
+			return true;
+		// Probe LadybugDB directly: if entity nodes exist, the
+		// graph was populated by a worker subprocess.
+		return const_cast<GraphStore *>(this)->probeGraphReady();
 	}
 	/** Mark LadybugDB as populated (called by compileGraphToLadybugDB on success). */
 	void setGraphReady()
 	{
 		lbug_populated_ = true;
 	}
+	/** Probe LadybugDB directly to check if graph data exists. */
+	bool probeGraphReady();
 	/** Reset the populated flag. Called at the START of every compile so a
 	 *  failed/partial compile drops queries back to the SQLite fallback
 	 *  instead of serving a stale or half-built subgraph. */
@@ -508,6 +518,9 @@ class GraphStore {
 	     * matching if FTS is not ready.
 	     */
 	std::string searchUnifiedJson(uint64_t project_id, const char *query,
+				      int limit);
+	/** Search via LadybugDB Cypher CONTAINS query. */
+	std::string searchLadybugJson(uint64_t project_id, const char *query,
 				      int limit);
 	/**
 	 * Graph-based search fallback: searches graph_nodes.name using LIKE.

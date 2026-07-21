@@ -361,11 +361,9 @@ char *engine_get_enhancement_status(uint64_t project_id)
 	auto db = g_store->handle();
 	const char *sql = "SELECT "
 			  "COUNT(*) as total, "
-			  "COALESCE(SUM(gn.callgraph_ready),0), "
-			  "COALESCE(SUM(gn.metrics_ready),0), "
-			  "COALESCE(SUM(gn.embedding_ready),0) "
-			  "FROM graph_nodes gn "
-			  "WHERE gn.project_id = ? AND gn.node_type IN (0,1)";
+			  "0, 0, 0 "
+			  "FROM entity e "
+			  "WHERE e.project_id = ? AND e.kind IN (0,1)";
 	sqlite3_stmt *stmt = nullptr;
 	int total = 0, cg = 0, metrics = 0, emb = 0;
 	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
@@ -400,6 +398,14 @@ char *engine_unified_search(uint64_t project_id, const char *query, int limit)
 	if (limit <= 0 || limit > 100)
 		limit = 20;
 
+	// LadybugDB path: when the graph is ready, search via Cypher
+	// MATCH (n) WHERE n.name CONTAINS 'query' RETURN n.
+	// This is the preferred path — fast, indexed, and cross-platform.
+	if (g_store->isGraphReady()) {
+		return dupString(
+			g_store->searchLadybugJson(project_id, query, limit));
+	}
+
 	// Check if FTS index is ready; if not, fall back to graph-based search
 	int fts_ready = g_store->getProjectReadiness(project_id, "fts_ready");
 	if (fts_ready) {
@@ -417,7 +423,7 @@ char *engine_unified_search(uint64_t project_id, const char *query, int limit)
 	{
 		sqlite3_stmt *stmt = nullptr;
 		const char *sql =
-			"SELECT COUNT(*) FROM graph_nodes WHERE project_id = ?";
+			"SELECT COUNT(*) FROM entity WHERE project_id = ?";
 		if (sqlite3_prepare_v2(g_store->handle(), sql, -1, &stmt,
 				       nullptr) != SQLITE_OK) {
 			// Prepare failed — cannot determine node count. Log and
@@ -556,15 +562,14 @@ char *engine_project_overview(uint64_t project_id)
 		}
 	}
 
-	// Symbol count + analysis state breakdown (via symbol_status)
+	// Symbol count + analysis state breakdown (via entity)
 	{
-		const char *sql =
-			"SELECT COUNT(*), "
-			"COALESCE(SUM(gn.callgraph_ready),0), "
-			"COALESCE(SUM(gn.metrics_ready),0), "
-			"COALESCE(SUM(gn.embedding_ready),0) "
-			"FROM graph_nodes gn "
-			"WHERE gn.project_id = ? AND gn.node_type IN (0,1)";
+		const char *sql = "SELECT COUNT(*), "
+				  "COUNT(*), "
+				  "COUNT(*), "
+				  "COUNT(*) "
+				  "FROM entity e "
+				  "WHERE e.project_id = ? AND e.kind IN (0,1)";
 		sqlite3_stmt *stmt = nullptr;
 		if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
 		    SQLITE_OK) {

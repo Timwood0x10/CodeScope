@@ -688,7 +688,11 @@ static std::string normalizeRootPath(const char *root_path)
 	if (ec)
 		return root_path;
 	// Use native string form so macOS / Linux DB rows match exactly.
+#ifdef _WIN32
+	return can.string();
+#else
 	return can.native();
+#endif
 }
 
 uint64_t GraphStore::createProject(const char *root_path, const char *name)

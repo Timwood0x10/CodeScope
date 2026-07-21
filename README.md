@@ -4,7 +4,7 @@
 
 It transforms source code into verifiable facts, understandable models, and inspectable evidence — enabling AI to validate claims against reality instead of hallucinating.
 
-**Version**: v0.3 | **License**: Apache 2.0
+**Version**: v0.2.3 | **License**: Apache 2.0
 
 ---
 
@@ -562,4 +562,4 @@ Each script calls `codescope cli <tool_name> '<json_args>'` internally. See `ski
 
 Apache 2.0 — see [LICENSE](LICENSE).
 
-**CodeScope v0.3** — Built with Rust 2024 + C++23 + tree-sitter + SQLite.
+**CodeScope v0.2.3** — Built with Rust 2024 + C++23 + tree-sitter + SQLite.

@@ -1,9 +1,11 @@
 mod discover;
 mod ffi;
 mod mcp;
+#[cfg(not(windows))]
 mod scheduler;
 mod tools;
 
+#[cfg(not(windows))]
 use crate::scheduler::chunk_queue;
 use serde_json::{Value, json};
 
@@ -64,19 +66,19 @@ fn main() {
     // per top-level module with proportional parse-worker allocation; failed
     // modules are quarantined via binary search.
     // Exit code: 0 on success (>=1 module indexed with nodes), 1 on failure.
+    // NOTE: This command uses Unix-specific shared memory (mmap) and is not
+    // available on Windows. Use `codescope index` instead on Windows.
     if args.len() >= 2 && args[1] == "index-parallel" {
-        let mut dir_path = ".".to_string();
-        let mut total_workers: u32 = 0;
-        let mut parallel: u32 = 0;
+        #[cfg(not(windows))]
+        {
+            let mut dir_path = ".".to_string();
+            let mut total_workers: u32 = 0;
+            let mut parallel: u32 = 0;
 
-        let mut i = 2;
-        while i < args.len() {
-            match args[i].as_str() {
-                "--workers" | "-w" => {
-                    // Handle "no value following the flag" explicitly:
-                    // falling through without bumping `i` would re-enter
-                    // this arm with the same `i` forever → hard CLI hang.
-                    match args.get(i + 1) {
+            let mut i = 2;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--workers" | "-w" => match args.get(i + 1) {
                         Some(v) => {
                             total_workers = v.parse().unwrap_or(0);
                             i += 2;
@@ -86,13 +88,8 @@ fn main() {
                             eprintln!("error: --workers requires a value");
                             std::process::exit(2);
                         }
-                    }
-                }
-                "--parallel" | "-p" => {
-                    // Same no-value guard as --workers above — without it
-                    // `codescope index-parallel --parallel` hangs in a
-                    // tight loop on this arm.
-                    match args.get(i + 1) {
+                    },
+                    "--parallel" | "-p" => match args.get(i + 1) {
                         Some(v) => {
                             parallel = v.parse().unwrap_or(0);
                             i += 2;
@@ -102,27 +99,36 @@ fn main() {
                             eprintln!("error: --parallel requires a value");
                             std::process::exit(2);
                         }
+                    },
+                    "--help" | "-h" => {
+                        println!(
+                            "Usage: codescope index-parallel <dir> [--workers N] [--parallel M]"
+                        );
+                        println!("  Built-in CPU-dynamic parallel indexer.");
+                        println!("  --workers N   total parse-worker cores (default 8)");
+                        println!("  --parallel M  max concurrent module workers (default 4)");
+                        return;
                     }
-                }
-                "--help" | "-h" => {
-                    println!("Usage: codescope index-parallel <dir> [--workers N] [--parallel M]");
-                    println!("  Built-in CPU-dynamic parallel indexer.");
-                    println!("  --workers N   total parse-worker cores (default 8)");
-                    println!("  --parallel M  max concurrent module workers (default 4)");
-                    return;
-                }
-                p => {
-                    if !p.starts_with("--") {
-                        dir_path = p.to_string();
+                    p => {
+                        if !p.starts_with("--") {
+                            dir_path = p.to_string();
+                        }
+                        i += 1;
                     }
-                    i += 1;
                 }
             }
-        }
 
-        let result = scheduler::index_parallel(&dir_path, total_workers, parallel);
-        println!("{}", result);
-        return;
+            let result = scheduler::index_parallel(&dir_path, total_workers, parallel);
+            println!("{}", result);
+            return;
+        }
+        #[cfg(windows)]
+        {
+            eprintln!(
+                "error: index-parallel is not available on Windows. Use `codescope index` instead."
+            );
+            std::process::exit(1);
+        }
     }
 
     // ── Force-index mode: codescope force-index <path> [<path>...] ─
@@ -283,6 +289,7 @@ fn main() {
     //   peer) via reset_all_stale, and exits when every chunk is
     //   DONE/FAILED. Each worker owns its OWN DB — no shared-DB corruption.
     // Requires the `chunk_queue` module (see scheduler/chunk_queue.rs).
+    #[cfg(not(windows))]
     if args.len() >= 7 && args[1] == "chunk-worker" {
         let shm_path = args[2].as_str();
         let worker_id: u32 = args[3].parse().unwrap_or(0);
