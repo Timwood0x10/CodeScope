@@ -202,8 +202,13 @@ writeNodeCsv(sqlite3 *db, uint64_t project_id,
 	sqlite3_bind_int64(st, 1, static_cast<int64_t>(project_id));
 
 	// Use mkstemp for safe temp file creation.
+	// On Windows, mkstemps is not available; use mkstemp instead.
 	char tmp_path[] = "/tmp/codescope_lbug_nodes_XXXXXX.csv";
+#ifdef _WIN32
+	int fd = mkstemp(tmp_path);
+#else
 	int fd = mkstemps(tmp_path, 4);
+#endif
 	if (fd < 0) {
 		fprintf(stderr,
 			"store: compileGraphToLadybugDB: mkstemps nodes failed "
@@ -331,8 +336,13 @@ writeEdgeCsvs(sqlite3 *db, uint64_t project_id,
 	// Create temp files.
 	char calls_path[] = "/tmp/codescope_lbug_calls_XXXXXX.csv";
 	char relates_path[] = "/tmp/codescope_lbug_relates_XXXXXX.csv";
+#ifdef _WIN32
+	int fd_calls = mkstemp(calls_path);
+	int fd_relates = mkstemp(relates_path);
+#else
 	int fd_calls = mkstemps(calls_path, 4);
 	int fd_relates = mkstemps(relates_path, 4);
+#endif
 	FILE *fc = fd_calls >= 0 ? fdopen(fd_calls, "w") : nullptr;
 	FILE *fr = fd_relates >= 0 ? fdopen(fd_relates, "w") : nullptr;
 
@@ -453,7 +463,11 @@ writeEntityNodeCsv(sqlite3 *db, uint64_t project_id,
 	sqlite3_bind_int64(st, 1, static_cast<int64_t>(project_id));
 
 	char tmp_path[] = "/tmp/codescope_lbug_entity_nodes_XXXXXX.csv";
+#ifdef _WIN32
+	int fd = mkstemp(tmp_path);
+#else
 	int fd = mkstemps(tmp_path, 4);
+#endif
 	if (fd < 0) {
 		fprintf(stderr,
 			"store: buildLadybugFromEntityRelation: mkstemps "
@@ -555,8 +569,13 @@ writeEntityEdgeCsvs(sqlite3 *db, uint64_t project_id,
 
 	char calls_path[] = "/tmp/codescope_lbug_entity_calls_XXXXXX.csv";
 	char relates_path[] = "/tmp/codescope_lbug_entity_relates_XXXXXX.csv";
+#ifdef _WIN32
+	int fd_calls = mkstemp(calls_path);
+	int fd_relates = mkstemp(relates_path);
+#else
 	int fd_calls = mkstemps(calls_path, 4);
 	int fd_relates = mkstemps(relates_path, 4);
+#endif
 	FILE *fc = fd_calls >= 0 ? fdopen(fd_calls, "w") : nullptr;
 	FILE *fr = fd_relates >= 0 ? fdopen(fd_relates, "w") : nullptr;
 
@@ -695,7 +714,11 @@ static bool compileGraphToLadybugDBLegacy(
 		sqlite3_bind_int64(st, 1, static_cast<int64_t>(project_id));
 
 		char tmp_path[] = "/tmp/codescope_lbug_legacy_nodes_XXXXXX.csv";
+#ifdef _WIN32
+		int fd = mkstemp(tmp_path);
+#else
 		int fd = mkstemps(tmp_path, 4);
+#endif
 		if (fd < 0) {
 			sqlite3_finalize(st);
 			return false;
@@ -784,8 +807,13 @@ static bool compileGraphToLadybugDBLegacy(
 			"/tmp/codescope_lbug_legacy_calls_XXXXXX.csv";
 		char relates_path[] =
 			"/tmp/codescope_lbug_legacy_relates_XXXXXX.csv";
+#ifdef _WIN32
+		int fd_calls = mkstemp(calls_path);
+		int fd_relates = mkstemp(relates_path);
+#else
 		int fd_calls = mkstemps(calls_path, 4);
 		int fd_relates = mkstemps(relates_path, 4);
+#endif
 		FILE *fc = fd_calls >= 0 ? fdopen(fd_calls, "w") : nullptr;
 		FILE *fr = fd_relates >= 0 ? fdopen(fd_relates, "w") : nullptr;
 

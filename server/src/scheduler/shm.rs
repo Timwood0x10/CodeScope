@@ -30,6 +30,8 @@ use libc::{
     MAP_SHARED, O_CREAT, O_RDWR, PROT_READ, PROT_WRITE, S_IRUSR, S_IWUSR, c_void, close, ftruncate,
     mmap, munmap, open, unlink,
 };
+#[cfg(windows)]
+const MAP_FAILED: *mut libc::c_void = !0 as *mut libc::c_void;
 
 /// Magic number stored in [`SchedState::magic`] — ASCII "SCHD" in
 /// little-endian. Workers check this on attach to verify the scheduler

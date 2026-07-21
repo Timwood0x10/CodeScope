@@ -2,6 +2,14 @@
 #include "filter_policy.h"
 #include "platform_win.h"
 
+// Undefine Windows macros that conflict with enum values
+#ifdef STRICT
+#undef STRICT
+#endif
+#ifdef FAST
+#undef FAST
+#endif
+
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>

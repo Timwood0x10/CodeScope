@@ -321,6 +321,12 @@ extern "C" char *engine_verify_integrity(uint64_t project_id)
 		if (!g_store)
 			return dupString("{\"error\":\"not initialized\"}");
 
+		// Arm the query timeout (10s) so a hung query never blocks
+		// the caller indefinitely. The guard disarms on scope exit.
+		store::GraphStore::QueryDeadlineGuard guard(g_store.get(),
+							    10000);
+		(void)guard;
+
 		int supported = 0, contradicted = 0, unknown = 0;
 
 		std::ostringstream json;

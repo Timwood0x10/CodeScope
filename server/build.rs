@@ -81,6 +81,18 @@ fn main() {
         format!("-DCMAKE_C_COMPILER={}", cc_path),
         format!("-DCMAKE_CXX_COMPILER={}", cxx_path),
     ];
+    // Cross-compilation: when targeting Windows, tell CMake the target
+    // system so it doesn't add host-specific flags (e.g. macOS -arch arm64).
+    if target_os == "windows" {
+        cmake_args.push("-DCMAKE_SYSTEM_NAME=Windows".to_string());
+        // MinGW cross-compiler needs the RC compiler for Windows resources
+        cmake_args.push("-DCMAKE_RC_COMPILER=x86_64-w64-mingw32-windres".to_string());
+        // Disable tests (they use POSIX APIs not available in cross-compile)
+        cmake_args.push("-DBUILD_TESTS=OFF".to_string());
+        // Skip compiler test (cross-compile toolchain may not pass detection)
+        cmake_args.push("-DCMAKE_C_COMPILER_WORKS=TRUE".to_string());
+        cmake_args.push("-DCMAKE_CXX_COMPILER_WORKS=TRUE".to_string());
+    }
     // Use Ninja generator if available (faster parallel builds)
     if std::process::Command::new("ninja")
         .arg("--version")
@@ -146,16 +158,31 @@ fn main() {
 
     if let Some(lib_path) = &lbug_lib {
         // CMake found liblbug. Derive the directory and link mode from the path.
-        let lib_dir = std::path::Path::new(lib_path)
-            .parent()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| ".".to_string());
-        let is_static = lib_path.ends_with(".a");
-        // Windows: the .lib file is an import library for the DLL.
         let is_windows = target_os == "windows";
-        let link_mode = if is_static { "static" } else { "dylib" };
-        // Windows DLL is named lbug_shared (not lbug)
-        let lib_name = if is_windows { "lbug_shared" } else { "lbug" };
+        let (lib_dir, lib_name, link_mode, is_static) = if is_windows {
+            // Windows cross-compile: use vendored Windows library directly.
+            // CMake cache stores the macOS path (from the host build), so
+            // we ignore it and use the Windows-specific path.
+            let win_lib_dir = format!("{}/third_party/ladybug/lib/windows", engine_dir);
+            (
+                win_lib_dir,
+                "lbug_shared".to_string(),
+                "dylib".to_string(),
+                false,
+            )
+        } else {
+            let dir = std::path::Path::new(lib_path)
+                .parent()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| ".".to_string());
+            let is_static = lib_path.ends_with(".a");
+            let mode = if is_static {
+                "static".to_string()
+            } else {
+                "dylib".to_string()
+            };
+            (dir, "lbug".to_string(), mode, is_static)
+        };
         println!("cargo:rustc-link-search=native={}", lib_dir);
         println!("cargo:rustc-link-lib={}={}", link_mode, lib_name);
         // Embed the library directory in the binary's rpath so the
