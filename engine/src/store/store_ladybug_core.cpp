@@ -488,6 +488,22 @@ void GraphStore::closeLadybugDB()
 {
 }
 
+// Probe LadybugDB. Not available without HAS_LADYBUG; returns false.
+bool GraphStore::probeGraphReady()
+{
+	return false;
+}
+
+// Search via LadybugDB. Not available without HAS_LADYBUG; returns empty.
+std::string GraphStore::searchLadybugJson(uint64_t project_id,
+					  const char *query, int limit)
+{
+	(void)project_id;
+	(void)query;
+	(void)limit;
+	return "{\"method\":\"ladybug\",\"results\":[],\"error\":\"LadybugDB not compiled\"}";
+}
+
 #endif // HAS_LADYBUG
 
 } // namespace store
