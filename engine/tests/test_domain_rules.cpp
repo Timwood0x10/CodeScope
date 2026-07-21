@@ -120,12 +120,10 @@ static std::string detailJson(int line, const std::string &snippet,
 static std::string findRulesDir()
 {
 	const char *candidates[] = {
-		"../src/evidence/rules",
-		"../../engine/src/evidence/rules",
-		"../../../engine/src/evidence/rules",
-		// Absolute fallback for the dev environment.
-		"/Users/scc/code/cppCode/CodeScope/engine/src/evidence/rules",
-	};
+	   "../src/evidence/rules",
+	   "../../engine/src/evidence/rules",
+	   "../../../engine/src/evidence/rules",
+	  };
 	for (const char *cand : candidates) {
 		std::error_code ec;
 		if (!std::filesystem::is_directory(cand, ec))

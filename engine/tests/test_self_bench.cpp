@@ -72,10 +72,9 @@ int main()
 	// ── Resolve engine/src directory ─────────────────────────────
 	std::string self_dir;
 	const char *candidates[] = {
-		"engine/src",
-		"../engine/src",
-		"/Users/scc/code/cppCode/CodeScope/engine/src",
-		nullptr};
+	   "engine/src",
+	   "../engine/src",
+	   nullptr};
 	for (int i = 0; candidates[i]; ++i) {
 		if (access(candidates[i], F_OK) == 0) {
 			self_dir = candidates[i];
