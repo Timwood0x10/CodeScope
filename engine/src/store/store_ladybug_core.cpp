@@ -274,6 +274,48 @@ CREATE REL TABLE IF NOT EXISTS RELATES (FROM GraphNode TO GraphNode,
 	}
 
 	lbug_initialized_ = true;
+
+	// H3: Detect existing graph data so a fresh process (e.g. CLI mode
+	// after a force-index run) can serve queries without a re-compile.
+	// lbug_populated_ is an in-memory flag set by compileGraphToLadybugDB
+	// during indexing, but it is NOT persisted. Without this probe, a new
+	// process would always see isGraphReady() == false and every graph
+	// query would return "graph not ready" even though the .lbug file on
+	// disk already holds thousands of nodes.
+	//
+	// The count query is cheap (Kuzu stores table cardinality in the
+	// catalog metadata) and runs once per process lifetime.
+	{
+		lbug_query_result cqr;
+		lbug_state cs = lbug_connection_query(
+			&lbug_conn_, "MATCH (n:GraphNode) RETURN count(n)",
+			&cqr);
+		if (cs == LbugSuccess) {
+			lbug_flat_tuple tuple;
+			if (lbug_query_result_get_next(&cqr, &tuple) ==
+			    LbugSuccess) {
+				lbug_value v;
+				int64_t node_count = 0;
+				if (lbug_flat_tuple_get_value(&tuple, 0, &v) ==
+				    LbugSuccess) {
+					lbug_value_get_int64(&v, &node_count);
+				}
+				if (node_count > 0) {
+					lbug_populated_ = true;
+				}
+				lbug_flat_tuple_destroy(&tuple);
+			}
+			lbug_query_result_destroy(&cqr);
+		} else {
+			// Non-fatal: the GraphNode table exists (we just
+			// created it above), so a query failure here is
+			// unexpected but shouldn't block init. lbug_populated_
+			// stays false and graph queries will return "not
+			// ready" — same as the empty-database case.
+			lbug_query_result_destroy(&cqr);
+		}
+	}
+
 	return true;
 }
 

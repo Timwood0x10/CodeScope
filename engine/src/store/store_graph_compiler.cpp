@@ -416,25 +416,220 @@ static bool copyFrom(lbug_connection *conn, const char *table,
 	return true;
 }
 
+// ── Write entity-based node CSV ─────────────────────────────
+// Reads from entity table (instead of graph_nodes) and writes
+// a CSV file compatible with the GraphNode table in LadybugDB.
+// Uses the same CSV column order as writeNodeCsv so the Kuzu
+// COPY FROM schema is identical.
+static std::string
+writeEntityNodeCsv(sqlite3 *db, uint64_t project_id,
+		   const std::unordered_set<std::string> *changed_files)
+{
+	std::string sql;
+	if (changed_files && !changed_files->empty()) {
+		std::string file_list = buildSqlInList(*changed_files);
+		sql = "SELECT id, kind, name, qualified_name, file_path, "
+		      "language, start_row, start_col, end_row, end_col, "
+		      "module_path FROM entity WHERE project_id = ? AND "
+		      "file_path IN (" +
+		      file_list + ") ORDER BY id";
+	} else {
+		sql = "SELECT id, kind, name, qualified_name, file_path, "
+		      "language, start_row, start_col, end_row, end_col, "
+		      "module_path FROM entity WHERE project_id = ? "
+		      "ORDER BY id";
+	}
+
+	sqlite3_stmt *st = nullptr;
+	if (sqlite3_prepare_v2(db, sql.c_str(), -1, &st, nullptr) !=
+	    SQLITE_OK) {
+		fprintf(stderr,
+			"store: buildLadybugFromEntityRelation: prepare "
+			"entity nodes failed: %s [module=store, "
+			"method=buildLadybugFromEntityRelation]\n",
+			sqlite3_errmsg(db));
+		return "";
+	}
+	sqlite3_bind_int64(st, 1, static_cast<int64_t>(project_id));
+
+	char tmp_path[] = "/tmp/codescope_lbug_entity_nodes_XXXXXX.csv";
+	int fd = mkstemps(tmp_path, 4);
+	if (fd < 0) {
+		fprintf(stderr,
+			"store: buildLadybugFromEntityRelation: mkstemps "
+			"failed [module=store, "
+			"method=buildLadybugFromEntityRelation]\n");
+		sqlite3_finalize(st);
+		return "";
+	}
+	FILE *f = fdopen(fd, "w");
+	if (!f) {
+		close(fd);
+		sqlite3_finalize(st);
+		return "";
+	}
+
+	// CSV columns (same order as writeNodeCsv for GraphNode):
+	// uid,project_id,ir_node_id,graph_node_id,node_type,
+	// name,qualified_name,module_path,package_name,class_name,
+	// start_row,start_col,end_row,end_col,file_path,language,
+	// signature,is_stub,visibility,callgraph_ready,is_entry_point
+	while (sqlite3_step(st) == SQLITE_ROW) {
+		int64_t entity_id = sqlite3_column_int64(st, 0);
+		int kind = sqlite3_column_int(st, 1);
+		std::string name = sqliteText(st, 2);
+		std::string qname = sqliteText(st, 3);
+		std::string fpath = sqliteText(st, 4);
+		std::string lang = sqliteText(st, 5);
+		int srow = sqlite3_column_int(st, 6);
+		int scol = sqlite3_column_int(st, 7);
+		int erow = sqlite3_column_int(st, 8);
+		int ecol = sqlite3_column_int(st, 9);
+		std::string mpath = sqliteText(st, 10);
+
+		std::string uid =
+			makeNodeUid(project_id, fpath, qname, kind, srow);
+		std::string line =
+			uid + "," + std::to_string(project_id) + ",0," +
+			std::to_string(entity_id) + "," + std::to_string(kind) +
+			"," + csvEscape(name) + "," + csvEscape(qname) + "," +
+			csvEscape(mpath) + ",\"\",\"\"," +
+			std::to_string(srow) + "," + std::to_string(scol) +
+			"," + std::to_string(erow) + "," +
+			std::to_string(ecol) + "," + csvEscape(fpath) + "," +
+			csvEscape(lang) + "," + csvEscape(name) + ",0,1,1,0\n";
+		fputs(line.c_str(), f);
+	}
+	sqlite3_finalize(st);
+	fclose(f);
+	return std::string(tmp_path);
+}
+
+// ── Write entity-based edge CSVs ────────────────────────────
+// Reads from relation table (instead of graph_edges) and writes
+// CSV files compatible with the CALLS/RELATES tables in LadybugDB.
+// Uses the same UID scheme as writeEntityNodeCsv so edges match.
+static EdgeCsvPaths
+writeEntityEdgeCsvs(sqlite3 *db, uint64_t project_id,
+		    const std::unordered_set<std::string> *changed_files)
+{
+	EdgeCsvPaths paths;
+	std::string sql;
+	if (changed_files && !changed_files->empty()) {
+		std::string file_list = buildSqlInList(*changed_files);
+		sql = "SELECT r.id, r.source_id, r.target_id, r.type, "
+		      "s.file_path, s.name, s.qualified_name, s.kind, "
+		      "s.start_row, t.file_path, t.name, t.qualified_name, "
+		      "t.kind, t.start_row "
+		      "FROM relation r "
+		      "JOIN entity s ON r.source_id = s.id AND s.project_id = ? "
+		      "JOIN entity t ON r.target_id = t.id AND t.project_id = ? "
+		      "WHERE r.project_id = ? AND "
+		      "(s.file_path IN (" +
+		      file_list + ") OR t.file_path IN (" + file_list +
+		      ")) ORDER BY r.id";
+	} else {
+		sql = "SELECT r.id, r.source_id, r.target_id, r.type, "
+		      "s.file_path, s.name, s.qualified_name, s.kind, "
+		      "s.start_row, t.file_path, t.name, t.qualified_name, "
+		      "t.kind, t.start_row "
+		      "FROM relation r "
+		      "JOIN entity s ON r.source_id = s.id AND s.project_id = ? "
+		      "JOIN entity t ON r.target_id = t.id AND t.project_id = ? "
+		      "WHERE r.project_id = ? ORDER BY r.id";
+	}
+
+	sqlite3_stmt *st = nullptr;
+	if (sqlite3_prepare_v2(db, sql.c_str(), -1, &st, nullptr) !=
+	    SQLITE_OK) {
+		fprintf(stderr,
+			"store: buildLadybugFromEntityRelation: prepare "
+			"edges failed: %s [module=store, "
+			"method=buildLadybugFromEntityRelation]\n",
+			sqlite3_errmsg(db));
+		return paths;
+	}
+	sqlite3_bind_int64(st, 1, static_cast<int64_t>(project_id));
+	sqlite3_bind_int64(st, 2, static_cast<int64_t>(project_id));
+	sqlite3_bind_int64(st, 3, static_cast<int64_t>(project_id));
+
+	char calls_path[] = "/tmp/codescope_lbug_entity_calls_XXXXXX.csv";
+	char relates_path[] = "/tmp/codescope_lbug_entity_relates_XXXXXX.csv";
+	int fd_calls = mkstemps(calls_path, 4);
+	int fd_relates = mkstemps(relates_path, 4);
+	FILE *fc = fd_calls >= 0 ? fdopen(fd_calls, "w") : nullptr;
+	FILE *fr = fd_relates >= 0 ? fdopen(fd_relates, "w") : nullptr;
+
+	if (!fc || !fr) {
+		if (fc)
+			fclose(fc);
+		if (fr)
+			fclose(fr);
+		if (fd_calls >= 0)
+			close(fd_calls);
+		if (fd_relates >= 0)
+			close(fd_relates);
+		sqlite3_finalize(st);
+		return paths;
+	}
+
+	while (sqlite3_step(st) == SQLITE_ROW) {
+		int rtype = sqlite3_column_int(st, 3);
+		std::string src_uid = makeNodeUid(project_id, sqliteText(st, 4),
+						  sqliteText(st, 6),
+						  sqlite3_column_int(st, 7),
+						  sqlite3_column_int(st, 8));
+		std::string tgt_uid = makeNodeUid(project_id, sqliteText(st, 9),
+						  sqliteText(st, 11),
+						  sqlite3_column_int(st, 12),
+						  sqlite3_column_int(st, 13));
+
+		std::string base = src_uid + "," + tgt_uid + "," +
+				   std::to_string(project_id) + "," +
+				   std::to_string(rtype) + ",,";
+
+		if (rtype >= 4) {
+			// RELATES (type >= 4: Imports, Inherits): 6 columns
+			// (FROM, TO, project_id, edge_type, label, graph_type).
+			fputs((base + "\n").c_str(), fr);
+		} else {
+			// CALLS (type 0-3: References, Calls, Defines,
+			// Contains): 7 columns (FROM, TO, project_id,
+			// edge_type, label, graph_type, call_site_line).
+			// The base already has 6 fields (label="" graph_type=""
+			// as two trailing commas); append call_site_line=0.
+			fputs((base + ",0\n").c_str(), fc);
+		}
+	}
+	sqlite3_finalize(st);
+	if (fc)
+		fclose(fc);
+	if (fr)
+		fclose(fr);
+	paths.calls = calls_path;
+	paths.relates = relates_path;
+	return paths;
+}
+
 // ── Public API ───────────────────────────────────────────────
 
-bool compileGraphToLadybugDB(
+/// Legacy fallback: reads from graph_nodes/graph_edges tables.
+/// Used when entity/relation tables are empty (e.g. unit tests
+/// that insert directly into graph_nodes). Keeps the old
+/// CSV-writing logic for backward compatibility.
+static bool compileGraphToLadybugDBLegacy(
 	GraphStore *store, uint64_t project_id,
 	const std::unordered_set<std::string> *changed_files)
 {
 	if (!store)
 		return false;
 
-	// H1: Reset the populated flag BEFORE any destructive operation so a
-	// failed/partial compile drops queries back to the SQLite fallback
-	// instead of serving a stale or half-built subgraph.
-	store->resetGraphReady();
-
 	lbug_connection *conn = store->lbugHandle();
 	if (!conn) {
 		fprintf(stderr,
-			"store: compileGraphToLadybugDB failed: LadybugDB not "
-			"initialized [module=store, method=compileGraphToLadybugDB]\n");
+			"store: compileGraphToLadybugDBLegacy: LadybugDB not "
+			"initialized [module=store, "
+			"method=compileGraphToLadybugDBLegacy]\n");
 		return false;
 	}
 
@@ -442,10 +637,7 @@ bool compileGraphToLadybugDB(
 	if (!db)
 		return false;
 
-	// ── Step 1: Clear existing subgraph for this project ──
-	// M1: In incremental mode (changed_files non-empty), only delete
-	// GraphNodes whose file_path is in changed_files. In full mode,
-	// delete the entire project subgraph.
+	// Clear existing subgraph
 	{
 		std::string clear;
 		if (changed_files && !changed_files->empty()) {
@@ -465,9 +657,10 @@ bool compileGraphToLadybugDB(
 		if (state != LbugSuccess) {
 			char *err = lbug_query_result_get_error_message(&qr);
 			fprintf(stderr,
-				"store: compileGraphToLadybugDB: DETACH DELETE "
-				"failed: %s (state=%d) [module=store, "
-				"method=compileGraphToLadybugDB]\n",
+				"store: compileGraphToLadybugDBLegacy: "
+				"DETACH DELETE failed: %s (state=%d) "
+				"[module=store, "
+				"method=compileGraphToLadybugDBLegacy]\n",
 				err ? err : "(no error message)",
 				static_cast<int>(state));
 			if (err)
@@ -478,35 +671,339 @@ bool compileGraphToLadybugDB(
 		lbug_query_result_destroy(&qr);
 	}
 
-	// ── Step 2: Write nodes CSV and COPY FROM ──
+	// Write nodes CSV from graph_nodes
+	{
+		std::string sql =
+			"SELECT id, project_id, ir_node_id, "
+			"node_type, name, qualified_name, module_path, "
+			"package_name, class_name, start_row, start_col, "
+			"end_row, end_col, file_path, language, signature, "
+			"is_stub, visibility, callgraph_ready, is_entry_point "
+			"FROM graph_nodes WHERE project_id = ? ORDER BY id";
+		(void)changed_files; // legacy: always full rebuild
+
+		sqlite3_stmt *st = nullptr;
+		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &st, nullptr) !=
+		    SQLITE_OK) {
+			fprintf(stderr,
+				"store: compileGraphToLadybugDBLegacy: "
+				"prepare nodes failed: %s [module=store, "
+				"method=compileGraphToLadybugDBLegacy]\n",
+				sqlite3_errmsg(db));
+			return false;
+		}
+		sqlite3_bind_int64(st, 1, static_cast<int64_t>(project_id));
+
+		char tmp_path[] = "/tmp/codescope_lbug_legacy_nodes_XXXXXX.csv";
+		int fd = mkstemps(tmp_path, 4);
+		if (fd < 0) {
+			sqlite3_finalize(st);
+			return false;
+		}
+		FILE *f = fdopen(fd, "w");
+		if (!f) {
+			close(fd);
+			sqlite3_finalize(st);
+			return false;
+		}
+
+		while (sqlite3_step(st) == SQLITE_ROW) {
+			int64_t node_id = sqlite3_column_int64(st, 0);
+			int64_t proj = sqlite3_column_int64(st, 1);
+			int64_t ir_id = sqlite3_column_int64(st, 2);
+			int nt = sqlite3_column_int(st, 3);
+			std::string uid =
+				makeNodeUid(project_id, sqliteText(st, 13),
+					    sqliteText(st, 5), nt,
+					    sqlite3_column_int(st, 9));
+			std::string line =
+				uid + "," + std::to_string(proj) + "," +
+				std::to_string(ir_id) + "," +
+				std::to_string(node_id) + "," +
+				std::to_string(nt) + "," +
+				csvEscape(sqliteText(st, 4)) + "," +
+				csvEscape(sqliteText(st, 5)) + "," +
+				csvEscape(sqliteText(st, 6)) + "," +
+				csvEscape(sqliteText(st, 7)) + "," +
+				csvEscape(sqliteText(st, 8)) + "," +
+				std::to_string(sqlite3_column_int(st, 9)) +
+				"," +
+				std::to_string(sqlite3_column_int(st, 10)) +
+				"," +
+				std::to_string(sqlite3_column_int(st, 11)) +
+				"," +
+				std::to_string(sqlite3_column_int(st, 12)) +
+				"," + csvEscape(sqliteText(st, 13)) + "," +
+				csvEscape(sqliteText(st, 14)) + "," +
+				csvEscape(sqliteText(st, 15)) + "," +
+				std::to_string(sqlite3_column_int(st, 16)) +
+				"," +
+				std::to_string(sqlite3_column_int(st, 17)) +
+				"," +
+				std::to_string(sqlite3_column_int(st, 18)) +
+				"," +
+				std::to_string(sqlite3_column_int(st, 19)) +
+				"\n";
+			fputs(line.c_str(), f);
+		}
+		sqlite3_finalize(st);
+		fclose(f);
+
+		bool ok = copyFrom(conn, "GraphNode", tmp_path,
+				   "compileGraphToLadybugDBLegacy");
+		unlink(tmp_path);
+		if (!ok)
+			return false;
+	}
+
+	// Write edges CSV from graph_edges
+	{
+		std::string sql =
+			"SELECT s.file_path, s.id, s.qualified_name, "
+			"s.node_type, s.start_row, t.file_path, t.id, "
+			"t.qualified_name, t.node_type, t.start_row, "
+			"e.edge_type, e.call_site_line, e.label, e.graph_type "
+			"FROM graph_edges e "
+			"JOIN graph_nodes s ON e.source_node_id = s.id "
+			"JOIN graph_nodes t ON e.target_node_id = t.id "
+			"WHERE e.project_id = ? ORDER BY e.id";
+
+		sqlite3_stmt *st = nullptr;
+		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &st, nullptr) !=
+		    SQLITE_OK) {
+			fprintf(stderr,
+				"store: compileGraphToLadybugDBLegacy: "
+				"prepare edges failed: %s [module=store, "
+				"method=compileGraphToLadybugDBLegacy]\n",
+				sqlite3_errmsg(db));
+			return false;
+		}
+		sqlite3_bind_int64(st, 1, static_cast<int64_t>(project_id));
+
+		char calls_path[] =
+			"/tmp/codescope_lbug_legacy_calls_XXXXXX.csv";
+		char relates_path[] =
+			"/tmp/codescope_lbug_legacy_relates_XXXXXX.csv";
+		int fd_calls = mkstemps(calls_path, 4);
+		int fd_relates = mkstemps(relates_path, 4);
+		FILE *fc = fd_calls >= 0 ? fdopen(fd_calls, "w") : nullptr;
+		FILE *fr = fd_relates >= 0 ? fdopen(fd_relates, "w") : nullptr;
+
+		if (!fc || !fr) {
+			if (fc)
+				fclose(fc);
+			if (fr)
+				fclose(fr);
+			if (fd_calls >= 0)
+				close(fd_calls);
+			if (fd_relates >= 0)
+				close(fd_relates);
+			sqlite3_finalize(st);
+			return false;
+		}
+
+		while (sqlite3_step(st) == SQLITE_ROW) {
+			int et = sqlite3_column_int(st, 10);
+			std::string src_uid = makeNodeUid(
+				project_id, sqliteText(st, 0),
+				sqliteText(st, 2), sqlite3_column_int(st, 3),
+				sqlite3_column_int(st, 4));
+			std::string tgt_uid = makeNodeUid(
+				project_id, sqliteText(st, 5),
+				sqliteText(st, 7), sqlite3_column_int(st, 8),
+				sqlite3_column_int(st, 9));
+			std::string base = src_uid + "," + tgt_uid + "," +
+					   std::to_string(project_id) + "," +
+					   std::to_string(et) + "," +
+					   csvEscape(sqliteText(st, 12)) + "," +
+					   csvEscape(sqliteText(st, 13));
+			if (et == 3) {
+				fputs((base + "\n").c_str(), fr);
+			} else {
+				fputs((base + "," +
+				       std::to_string(
+					       sqlite3_column_int(st, 11)) +
+				       "\n")
+					      .c_str(),
+				      fc);
+			}
+		}
+		sqlite3_finalize(st);
+		if (fc)
+			fclose(fc);
+		if (fr)
+			fclose(fr);
+
+		bool ok = true;
+		if (!copyFrom(conn, "CALLS", calls_path,
+			      "compileGraphToLadybugDBLegacy")) {
+			ok = false;
+		}
+		unlink(calls_path);
+		if (ok && !copyFrom(conn, "RELATES", relates_path,
+				    "compileGraphToLadybugDBLegacy")) {
+			ok = false;
+		}
+		unlink(relates_path);
+		if (!ok)
+			return false;
+	}
+
+	store->setGraphReady();
+	return true;
+}
+
+/// Build LadybugDB graph from entity/relation tables.
+///
+/// Reads entity and relation tables from SQLite, clears the project's
+/// existing subgraph in LadybugDB, then bulk-inserts all nodes and
+/// edges via CSV + Kuzu COPY FROM. Uses the same GraphNode label and
+/// CALLS/RELATES edge tables as compileGraphToLadybugDB, so query
+/// tools that already query LadybugDB work without changes.
+///
+/// This is the replacement for compileGraphToLadybugDB. The old
+/// function reads from graph_nodes/graph_edges; this one reads from
+/// entity/relation, which are the canonical source tables.
+bool buildLadybugFromEntityRelation(
+	GraphStore *store, uint64_t project_id,
+	const std::unordered_set<std::string> *changed_files)
+{
+	if (!store)
+		return false;
+
+	store->resetGraphReady();
+
+	lbug_connection *conn = store->lbugHandle();
+	if (!conn) {
+		fprintf(stderr, "store: buildLadybugFromEntityRelation failed: "
+				"LadybugDB not initialized [module=store, "
+				"method=buildLadybugFromEntityRelation]\n");
+		return false;
+	}
+
+	sqlite3 *db = store->handle();
+	if (!db)
+		return false;
+
+	// Debug: check entity table count
+	{
+		sqlite3_stmt *probe = nullptr;
+		std::string probe_sql =
+			"SELECT COUNT(*) FROM entity WHERE project_id = " +
+			std::to_string(project_id);
+		int64_t entity_count = 0;
+		if (sqlite3_prepare_v2(db, probe_sql.c_str(), -1, &probe,
+				       nullptr) == SQLITE_OK) {
+			if (sqlite3_step(probe) == SQLITE_ROW)
+				entity_count = sqlite3_column_int64(probe, 0);
+			sqlite3_finalize(probe);
+		}
+		fprintf(stderr,
+			"buildLadybugFromEntityRelation: project=%llu "
+			"entity_count=%lld [module=store, "
+			"method=buildLadybugFromEntityRelation]\n",
+			(unsigned long long)project_id,
+			(long long)entity_count);
+	}
+
+	// ── Check source table: prefer entity/relation, fall back to      ──
+	//    graph_nodes/graph_edges for backward compat (e.g. unit tests
+	//    that insert directly into graph_nodes).
+	{
+		sqlite3_stmt *probe = nullptr;
+		std::string probe_sql =
+			"SELECT COUNT(*) FROM entity WHERE project_id = " +
+			std::to_string(project_id);
+		bool use_entity = false;
+		if (sqlite3_prepare_v2(db, probe_sql.c_str(), -1, &probe,
+				       nullptr) == SQLITE_OK) {
+			if (sqlite3_step(probe) == SQLITE_ROW &&
+			    sqlite3_column_int64(probe, 0) > 0) {
+				use_entity = true;
+			}
+			sqlite3_finalize(probe);
+		}
+		if (!use_entity) {
+			fprintf(stderr,
+				"buildLadybugFromEntityRelation: entity "
+				"table empty, falling back to graph_nodes "
+				"[module=store, "
+				"method=buildLadybugFromEntityRelation]\n");
+			return compileGraphToLadybugDBLegacy(store, project_id,
+							     changed_files);
+		}
+	}
+
+	// ── Step 1: Clear existing subgraph for this project ──
+	{
+		std::string clear;
+		if (changed_files && !changed_files->empty()) {
+			std::string file_list = buildCypherList(*changed_files);
+			clear = "MATCH (n:GraphNode {project_id:" +
+				std::to_string(project_id) +
+				"}) WHERE n.file_path IN " + file_list +
+				" DETACH DELETE n";
+		} else {
+			clear = "MATCH (n:GraphNode {project_id:" +
+				std::to_string(project_id) +
+				"}) DETACH DELETE n";
+		}
+		lbug_query_result qr;
+		lbug_state state =
+			lbug_connection_query(conn, clear.c_str(), &qr);
+		if (state != LbugSuccess) {
+			char *err = lbug_query_result_get_error_message(&qr);
+			fprintf(stderr,
+				"store: buildLadybugFromEntityRelation: "
+				"DETACH DELETE failed: %s (state=%d) "
+				"[module=store, "
+				"method=buildLadybugFromEntityRelation]\n",
+				err ? err : "(no error message)",
+				static_cast<int>(state));
+			if (err)
+				lbug_destroy_string(err);
+			lbug_query_result_destroy(&qr);
+			return false;
+		}
+		lbug_query_result_destroy(&qr);
+	}
+
+	// ── Step 2: Write entity nodes CSV and COPY FROM ──
 	{
 		std::string csv_path =
-			writeNodeCsv(db, project_id, changed_files);
+			writeEntityNodeCsv(db, project_id, changed_files);
 		if (csv_path.empty())
 			return false;
 		bool ok = copyFrom(conn, "GraphNode", csv_path.c_str(),
-				   "compileGraphToLadybugDB");
+				   "buildLadybugFromEntityRelation");
 		unlink(csv_path.c_str());
 		if (!ok)
 			return false;
 	}
 
-	// ── Step 3: Write edges CSVs and COPY FROM ──
+	// ── Step 3: Write entity relation edges CSVs and COPY FROM ──
 	{
 		EdgeCsvPaths paths =
-			writeEdgeCsvs(db, project_id, changed_files);
-		if (paths.calls.empty() && paths.relates.empty())
-			return false;
+			writeEntityEdgeCsvs(db, project_id, changed_files);
+		if (paths.calls.empty() && paths.relates.empty()) {
+			fprintf(stderr,
+				"store: buildLadybugFromEntityRelation: no "
+				"edges for project %llu [module=store, "
+				"method=buildLadybugFromEntityRelation]\n",
+				(unsigned long long)project_id);
+			store->setGraphReady();
+			return true;
+		}
 
 		bool ok = true;
 		if (!paths.calls.empty()) {
 			ok = copyFrom(conn, "CALLS", paths.calls.c_str(),
-				      "compileGraphToLadybugDB");
+				      "buildLadybugFromEntityRelation");
 			unlink(paths.calls.c_str());
 		}
 		if (ok && !paths.relates.empty()) {
 			ok = copyFrom(conn, "RELATES", paths.relates.c_str(),
-				      "compileGraphToLadybugDB");
+				      "buildLadybugFromEntityRelation");
 			unlink(paths.relates.c_str());
 		}
 		if (!ok)
@@ -518,7 +1015,24 @@ bool compileGraphToLadybugDB(
 	return true;
 }
 
+/// DEPRECATED: Use buildLadybugFromEntityRelation instead.
+/// Reads graph_nodes/graph_edges tables (old schema) and compiles
+/// into LadybugDB. Kept for backward compatibility during migration.
+bool compileGraphToLadybugDB(
+	GraphStore *store, uint64_t project_id,
+	const std::unordered_set<std::string> *changed_files)
+{
+	return buildLadybugFromEntityRelation(store, project_id, changed_files);
+}
+
 #else // !HAS_LADYBUG
+
+bool buildLadybugFromEntityRelation(
+	GraphStore * /*store*/, uint64_t /*project_id*/,
+	const std::unordered_set<std::string> * /*changed_files*/)
+{
+	return false; // LadybugDB not compiled in
+}
 
 bool compileGraphToLadybugDB(
 	GraphStore * /*store*/, uint64_t /*project_id*/,

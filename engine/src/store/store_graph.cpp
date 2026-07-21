@@ -806,7 +806,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 
 	auto t_lbug = Clock::now();
 	if (lbug_initialized_) {
-		if (!compileGraphToLadybugDB(this, project_id)) {
+		if (!buildLadybugFromEntityRelation(this, project_id)) {
 			fprintf(stderr,
 				"buildGraph: compileGraphToLadybugDB failed "
 				"for project %s — SQLite graph remains the "

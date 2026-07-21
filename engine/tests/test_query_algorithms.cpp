@@ -307,6 +307,7 @@ static void testImpact2Hop(store::GraphStore &store, uint64_t project_id)
 	insertCallEdge(store, project_id, 201, 202);
 	insertCallEdge(store, project_id, 202, 203);
 	insertCallEdge(store, project_id, 203, 204);
+	syncLadybug(store, project_id);
 
 	std::string result = query::analyzeChangeImpact(project_id, &store,
 							"[\"/t/mod2.cpp\"]");
@@ -347,6 +348,7 @@ static void testImpact3Hop(store::GraphStore &store, uint64_t project_id)
 	insertCallEdge(store, project_id, 303, 304);
 	insertCallEdge(store, project_id, 304, 305);
 	insertCallEdge(store, project_id, 305, 306);
+	syncLadybug(store, project_id);
 
 	std::string result = query::analyzeChangeImpact(project_id, &store,
 							"[\"/t/mod3.cpp\"]");
@@ -386,6 +388,7 @@ static void testImpactDepthCap(store::GraphStore &store, uint64_t project_id)
 	for (int i = 0; i < 9; i++) {
 		insertCallEdge(store, project_id, 400 + i, 400 + i + 1);
 	}
+	syncLadybug(store, project_id);
 
 	std::string result = query::analyzeChangeImpact(project_id, &store,
 							"[\"/t/chain4.cpp\"]");
@@ -420,6 +423,7 @@ static void testImpactDisconnectedNode(store::GraphStore &store,
 {
 	// Node 500 is in a modified file but has no callers or callees.
 	insertGraphNode(store, project_id, 500, "lonely", "/t/lonely.cpp");
+	syncLadybug(store, project_id);
 
 	std::string result = query::analyzeChangeImpact(project_id, &store,
 							"[\"/t/lonely.cpp\"]");
@@ -470,6 +474,7 @@ static void testImpactMultipleModifiedFiles(store::GraphStore &store,
 	insertGraphNode(store, project_id, 602, "downC", "/t/fileC.cpp");
 	insertCallEdge(store, project_id, 600, 601);
 	insertCallEdge(store, project_id, 601, 602);
+	syncLadybug(store, project_id);
 
 	std::string result = query::analyzeChangeImpact(
 		project_id, &store, "[\"/t/fileA.cpp\",\"/t/fileB.cpp\"]");
@@ -494,6 +499,10 @@ int main()
 
 	store::GraphStore store;
 	assert(store.open(kDbPath));
+	// LadybugDB must be initialized before any graph query path can use
+	// it. compileGraphToLadybugDB (called by syncLadybug) requires the
+	// connection to exist.
+	assert(store.initLadybugDB());
 
 	uint64_t project_id = store.createProject("/test", "query_algos");
 	assert(project_id > 0);

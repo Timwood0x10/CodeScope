@@ -1,5 +1,6 @@
 #include "engine_internal.h"
 #include "model/semantic_fact_extractor.h"
+#include "async_knowledge.h"
 #include "platform_win.h"
 
 #include <algorithm>
@@ -261,24 +262,22 @@ char *engine_enhance_project(uint64_t project_id)
 				.count());
 	}
 
-	// Step 1: buildGraph
+	// Step 1: buildGraph (skip if already finalized)
 	{
 		int ready = g_store->getProjectReadiness(project_id,
 							 "normal_ready");
 		if (ready) {
 			fprintf(stderr,
-				"enhance: project %llu already finalized (semantic_facts re-extracted)\n",
+				"enhance: project %llu already finalized (semantic_facts re-extracted), "
+				"running model build [module=engine_queries, "
+				"method=engine_enhance_project]\n",
 				(unsigned long long)project_id);
-			int64_t total_ms = std::chrono::duration_cast<
-						   std::chrono::milliseconds>(
-						   Clock::now() - t_start)
-						   .count();
-			std::ostringstream json;
-			json << "{"
-			     << "\"status\":\"already_finalized\""
-			     << ",\"semantic_facts_refreshed\":true"
-			     << ",\"time_ms\":" << total_ms << "}";
-			return dupString(json.str());
+			// Still run the model building steps even when the
+			// project is already finalized. The async knowledge
+			// builder (which populates module_summary, modules,
+			// architecture_edge, module_edge) may not have run
+			// if the index was done with SKIP_ASYNC=1.
+			goto run_model_build;
 		}
 	}
 	{
@@ -316,6 +315,28 @@ char *engine_enhance_project(uint64_t project_id)
 	g_store->createIndexesAfterBulkLoad(project_id);
 	g_store->setProjectReadiness(project_id, "normal_ready", 1);
 	g_store->setProjectReadiness(project_id, "fts_ready", 1);
+
+run_model_build:
+	// ── Model building (module_summary, architecture_edge, etc.) ──
+	// Runs unconditionally (even when the project was already finalized)
+	// because the async knowledge builder may not have run if the index
+	// was done with SKIP_ASYNC=1.
+	{
+		auto t = Clock::now();
+		runModelIndexSync(*g_store, project_id, true);
+		fprintf(stderr, "enhance: runModelIndexSync %lldms\n",
+			(long long)std::chrono::duration_cast<
+				std::chrono::milliseconds>(Clock::now() - t)
+				.count());
+	}
+	{
+		auto t = Clock::now();
+		buildKnowledgeGraphSync(*g_store, project_id);
+		fprintf(stderr, "enhance: buildKnowledgeGraphSync %lldms\n",
+			(long long)std::chrono::duration_cast<
+				std::chrono::milliseconds>(Clock::now() - t)
+				.count());
+	}
 
 	int64_t total_ms =
 		std::chrono::duration_cast<std::chrono::milliseconds>(

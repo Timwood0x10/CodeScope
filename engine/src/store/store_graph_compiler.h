@@ -23,24 +23,33 @@ namespace store
 
 class GraphStore;
 
-/// Compile the SQLite graph for a project into LadybugDB.
+/// Build LadybugDB graph from entity/relation tables.
 ///
-/// Reads graph_nodes and graph_edges from SQLite, clears the project's
+/// Reads entity and relation tables from SQLite, clears the project's
 /// existing subgraph in LadybugDB (DETACH DELETE), then bulk-inserts
-/// all nodes and edges via CSV + Kuzu COPY FROM. Each node gets a
-/// content-stable UID derived from
-/// FNV-1a(project_id, file_path, qualified_name, node_type, start_row)
-/// (see makeNodeUid in the .cpp) so the UID survives re-indexes where
-/// graph_nodes.id changes.
+/// all nodes and edges via CSV + Kuzu COPY FROM. Uses the same
+/// GraphNode label and CALLS/RELATES edge tables as the old
+/// compileGraphToLadybugDB, so query tools that already query
+/// LadybugDB work without changes.
+///
+/// This is the replacement for compileGraphToLadybugDB. The old
+/// function reads from graph_nodes/graph_edges; this one reads from
+/// entity/relation, which are the canonical source tables.
 ///
 /// @param store   The GraphStore with an open SQLite + LadybugDB connection.
 /// @param project_id  The project whose graph should be compiled.
 /// @param changed_files  When non-null and non-empty, only subgraph
 ///        nodes/edges that touch these files are recompiled (incremental
-///        mode): DETACH DELETE filters by file_path, and CSV writes
-///        filter by file_path IN (changed_files). When null or empty,
-///        the whole project graph is recompiled (full mode).
+///        mode). When null or empty, the whole project graph is
+///        recompiled (full mode).
 /// @return true on success, false on failure (error logged to stderr).
+bool buildLadybugFromEntityRelation(
+	GraphStore *store, uint64_t project_id,
+	const std::unordered_set<std::string> *changed_files = nullptr);
+
+/// DEPRECATED: Use buildLadybugFromEntityRelation instead.
+/// Reads graph_nodes/graph_edges tables (old schema) and compiles
+/// into LadybugDB. Kept for backward compatibility during migration.
 bool compileGraphToLadybugDB(
 	GraphStore *store, uint64_t project_id,
 	const std::unordered_set<std::string> *changed_files = nullptr);
