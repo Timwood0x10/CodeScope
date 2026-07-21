@@ -295,7 +295,7 @@ lint-rust:
 		&& printf "  $(CHECK) clippy: ok\n"
 
 # ─── Format ───────────────────────────────────────────────────────
-fmt: fmt-cpp fmt-rust
+fmt: fmt-cpp fmt-rust lint-cpp-full
 	@printf "$(CHECK) format complete\n"
 
 fmt-cpp:

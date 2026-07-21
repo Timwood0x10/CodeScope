@@ -86,15 +86,13 @@ class EvidenceBuilder {
 	/// error / pattern / framework / ffi). Returns an empty vector
 	/// if no rules match the category.
 	std::vector<Evidence>
-	buildByCategory(uint64_t project_id,
-			const std::string &category) const;
+	buildByCategory(uint64_t project_id, const std::string &category) const;
 
 	/// Like buildAll but restricted to a single rule by name.
 	/// Returns an empty vector if the rule is not found or produces
 	/// no matches.
-	std::vector<Evidence>
-	buildByRule(uint64_t project_id,
-		    const std::string &rule_name) const;
+	std::vector<Evidence> buildByRule(uint64_t project_id,
+					  const std::string &rule_name) const;
 
 	/// Read-only access to the loaded rule sets (for tests).
 	const std::vector<RuleSet> &ruleSets() const

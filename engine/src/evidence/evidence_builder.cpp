@@ -53,7 +53,8 @@ namespace
 // semantic_fact_extractor.cpp but as a reusable guard.
 class StmtGuard {
     public:
-	explicit StmtGuard(sqlite3_stmt *stmt = nullptr) : stmt_(stmt)
+	explicit StmtGuard(sqlite3_stmt *stmt = nullptr)
+		: stmt_(stmt)
 	{
 	}
 	~StmtGuard()
@@ -63,7 +64,8 @@ class StmtGuard {
 	}
 	StmtGuard(const StmtGuard &) = delete;
 	StmtGuard &operator=(const StmtGuard &) = delete;
-	StmtGuard(StmtGuard &&other) noexcept : stmt_(other.stmt_)
+	StmtGuard(StmtGuard &&other) noexcept
+		: stmt_(other.stmt_)
 	{
 		other.stmt_ = nullptr;
 	}
@@ -96,8 +98,7 @@ std::string colText(sqlite3_stmt *stmt, int col)
 // detail_json schema written by buildDetailJson. Returns "" if the
 // key is absent or the value is not a string literal. Used to pull
 // the `snippet` field out of detail_json.
-std::string detailJsonString(const std::string &json,
-			     const std::string &key)
+std::string detailJsonString(const std::string &json, const std::string &key)
 {
 	std::string needle = "\"" + key + "\":\"";
 	size_t k = json.find(needle);
@@ -184,10 +185,10 @@ void applyDetailJson(const std::string &detail, EvidenceItem &item)
 	if (!item.snippet.empty()) {
 		size_t open = item.snippet.rfind('(');
 		size_t close = item.snippet.rfind(')');
-		if (open != std::string::npos &&
-		    close != std::string::npos && close > open) {
-			item.file = item.snippet.substr(
-				open + 1, close - open - 1);
+		if (open != std::string::npos && close != std::string::npos &&
+		    close > open) {
+			item.file =
+				item.snippet.substr(open + 1, close - open - 1);
 		}
 	}
 }
@@ -197,9 +198,9 @@ void applyDetailJson(const std::string &detail, EvidenceItem &item)
 // typo in a template should not blank the output). Used to fill
 // {count}, {symbol}, {file}, {line}, {name} in rule output
 // templates.
-std::string formatTemplate(const std::string &tmpl,
-			   const std::unordered_map<std::string,
-						    std::string> &vars)
+std::string
+formatTemplate(const std::string &tmpl,
+	       const std::unordered_map<std::string, std::string> &vars)
 {
 	std::string out;
 	out.reserve(tmpl.size() + 16);
@@ -242,9 +243,9 @@ struct MatchedFact {
 // project. Returns the rows as a vector of MatchedFact; logs a
 // prepare/step error to stderr with the [module=evidence, ...]
 // trace chain and returns what was collected so far (best-effort).
-std::vector<MatchedFact>
-queryFactsForNeed(store::GraphStore *store, uint64_t project_id,
-		  const FactNeed &need)
+std::vector<MatchedFact> queryFactsForNeed(store::GraphStore *store,
+					   uint64_t project_id,
+					   const FactNeed &need)
 {
 	std::vector<MatchedFact> out;
 	if (!store)
@@ -252,14 +253,12 @@ queryFactsForNeed(store::GraphStore *store, uint64_t project_id,
 	sqlite3 *db = store->handle();
 	if (!db)
 		return out;
-	const char *sql =
-		"SELECT id, function_id, category, primitive, kind, "
-		"symbol, confidence, IFNULL(detail_json, '') "
-		"FROM semantic_fact WHERE project_id = ? "
-		"AND category = ? AND primitive = ? AND kind = ?";
+	const char *sql = "SELECT id, function_id, category, primitive, kind, "
+			  "symbol, confidence, IFNULL(detail_json, '') "
+			  "FROM semantic_fact WHERE project_id = ? "
+			  "AND category = ? AND primitive = ? AND kind = ?";
 	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) !=
-	    SQLITE_OK) {
+	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
 		fprintf(stderr,
 			"[module=evidence, method=queryFactsForNeed] "
 			"prepare failed: %s\n",
@@ -268,18 +267,16 @@ queryFactsForNeed(store::GraphStore *store, uint64_t project_id,
 	}
 	StmtGuard guard(stmt);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_text(stmt, 2, need.category.c_str(), -1,
-			  SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 2, need.category.c_str(), -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 3, need.primitive.c_str(), -1,
 			  SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 4, need.kind.c_str(), -1,
-			  SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 4, need.kind.c_str(), -1, SQLITE_TRANSIENT);
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
 		MatchedFact mf;
-		mf.fact_id = static_cast<uint64_t>(
-			sqlite3_column_int64(stmt, 0));
-		mf.function_id = static_cast<uint64_t>(
-			sqlite3_column_int64(stmt, 1));
+		mf.fact_id =
+			static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
+		mf.function_id =
+			static_cast<uint64_t>(sqlite3_column_int64(stmt, 1));
 		mf.category = colText(stmt, 2);
 		mf.primitive = colText(stmt, 3);
 		mf.kind = colText(stmt, 4);
@@ -346,9 +343,8 @@ buildTemplateVars(const std::vector<MatchedFact> &facts,
 // Collect: every matched fact becomes an item. Multiple non-optional
 // needs are merged (deduplicated by fact_id). Optional needs are
 // ignored — they only matter for MissingMatch.
-std::vector<Evidence>
-combineCollect(store::GraphStore *store, uint64_t project_id,
-	       const Rule &rule)
+std::vector<Evidence> combineCollect(store::GraphStore *store,
+				     uint64_t project_id, const Rule &rule)
 {
 	std::vector<Evidence> result;
 	std::vector<MatchedFact> all;
@@ -379,15 +375,13 @@ combineCollect(store::GraphStore *store, uint64_t project_id,
 // difference is by function_id (a needs[0] fact is dropped if its
 // function_id appears in any needs[1] fact). Emits one Evidence with
 // all surviving needs[0] facts as items.
-std::vector<Evidence>
-combineMissingMatch(store::GraphStore *store, uint64_t project_id,
-		    const Rule &rule)
+std::vector<Evidence> combineMissingMatch(store::GraphStore *store,
+					  uint64_t project_id, const Rule &rule)
 {
 	std::vector<Evidence> result;
 	if (rule.needs.empty())
 		return result;
-	auto primary = queryFactsForNeed(store, project_id,
-					 rule.needs[0]);
+	auto primary = queryFactsForNeed(store, project_id, rule.needs[0]);
 	if (primary.empty())
 		return result;
 	// Collect function_ids of all optional needs (needs[1..]).
@@ -395,8 +389,8 @@ combineMissingMatch(store::GraphStore *store, uint64_t project_id,
 	for (size_t i = 1; i < rule.needs.size(); ++i) {
 		if (!rule.needs[i].optional)
 			continue;
-		auto secondary = queryFactsForNeed(store, project_id,
-						   rule.needs[i]);
+		auto secondary =
+			queryFactsForNeed(store, project_id, rule.needs[i]);
 		for (const auto &s : secondary)
 			excluded.insert(s.function_id);
 	}
@@ -425,16 +419,14 @@ combineMissingMatch(store::GraphStore *store, uint64_t project_id,
 // items. Returns multiple Evidence values (one per surviving
 // function), each titled with the rule template substituted with
 // that function's first fact.
-std::vector<Evidence>
-combineMissingMatchPerFunction(store::GraphStore *store,
-			       uint64_t project_id,
-			       const Rule &rule)
+std::vector<Evidence> combineMissingMatchPerFunction(store::GraphStore *store,
+						     uint64_t project_id,
+						     const Rule &rule)
 {
 	std::vector<Evidence> result;
 	if (rule.needs.empty())
 		return result;
-	auto primary = queryFactsForNeed(store, project_id,
-					 rule.needs[0]);
+	auto primary = queryFactsForNeed(store, project_id, rule.needs[0]);
 	if (primary.empty())
 		return result;
 	// Collect function_ids of all optional needs (needs[1..]).
@@ -442,21 +434,19 @@ combineMissingMatchPerFunction(store::GraphStore *store,
 	for (size_t i = 1; i < rule.needs.size(); ++i) {
 		if (!rule.needs[i].optional)
 			continue;
-		auto secondary = queryFactsForNeed(store, project_id,
-						   rule.needs[i]);
+		auto secondary =
+			queryFactsForNeed(store, project_id, rule.needs[i]);
 		for (const auto &s : secondary)
 			excluded.insert(s.function_id);
 	}
 	// Group primary by function_id, preserving first-seen order so
 	// the output is deterministic.
 	std::vector<uint64_t> order;
-	std::unordered_map<uint64_t, std::vector<MatchedFact>>
-		by_function;
+	std::unordered_map<uint64_t, std::vector<MatchedFact>> by_function;
 	for (auto &f : primary) {
 		if (excluded.find(f.function_id) != excluded.end())
 			continue;
-		if (by_function.find(f.function_id) ==
-		    by_function.end())
+		if (by_function.find(f.function_id) == by_function.end())
 			order.push_back(f.function_id);
 		by_function[f.function_id].push_back(std::move(f));
 	}
@@ -466,8 +456,7 @@ combineMissingMatchPerFunction(store::GraphStore *store,
 		ev.category = rule.category;
 		ev.confidence = minConfidence(facts);
 		auto vars = buildTemplateVars(facts, rule.name);
-		ev.title = formatTemplate(
-			rule.output.title_template, vars);
+		ev.title = formatTemplate(rule.output.title_template, vars);
 		for (const auto &f : facts)
 			ev.items.push_back(toEvidenceItem(f));
 		result.push_back(std::move(ev));
@@ -477,15 +466,13 @@ combineMissingMatchPerFunction(store::GraphStore *store,
 
 // Count: emit a single Evidence with count = needs[0] match count,
 // items empty. Used for aggregate counts (e.g. total TODO comments).
-std::vector<Evidence>
-combineCount(store::GraphStore *store, uint64_t project_id,
-	     const Rule &rule)
+std::vector<Evidence> combineCount(store::GraphStore *store,
+				   uint64_t project_id, const Rule &rule)
 {
 	std::vector<Evidence> result;
 	if (rule.needs.empty())
 		return result;
-	auto primary = queryFactsForNeed(store, project_id,
-					 rule.needs[0]);
+	auto primary = queryFactsForNeed(store, project_id, rule.needs[0]);
 	Evidence ev;
 	ev.category = rule.category;
 	ev.confidence = 1.0;
@@ -499,9 +486,8 @@ combineCount(store::GraphStore *store, uint64_t project_id,
 // Dispatch a single Rule through its CombineMode. Returns 0+ Evidence
 // values (0 = no matches, 1 = Collect/MissingMatch/Count, N =
 // MissingMatchPerFunction).
-std::vector<Evidence>
-applyRule(store::GraphStore *store, uint64_t project_id,
-	  const Rule &rule)
+std::vector<Evidence> applyRule(store::GraphStore *store, uint64_t project_id,
+				const Rule &rule)
 {
 	switch (rule.combine) {
 	case CombineMode::Collect:
@@ -509,8 +495,7 @@ applyRule(store::GraphStore *store, uint64_t project_id,
 	case CombineMode::MissingMatch:
 		return combineMissingMatch(store, project_id, rule);
 	case CombineMode::MissingMatchPerFunction:
-		return combineMissingMatchPerFunction(store, project_id,
-						      rule);
+		return combineMissingMatchPerFunction(store, project_id, rule);
 	case CombineMode::Count:
 		return combineCount(store, project_id, rule);
 	}
@@ -527,14 +512,12 @@ void EvidenceBuilder::loadRules(const std::string &dir_path)
 	rule_sets_ = loader.loadFromDirectory(dir_path);
 }
 
-std::vector<Evidence>
-EvidenceBuilder::buildAll(uint64_t project_id) const
+std::vector<Evidence> EvidenceBuilder::buildAll(uint64_t project_id) const
 {
 	std::vector<Evidence> result;
 	if (!store_) {
-		fprintf(stderr,
-			"[module=evidence, method=buildAll] "
-			"store is null\n");
+		fprintf(stderr, "[module=evidence, method=buildAll] "
+				"store is null\n");
 		return result;
 	}
 	for (const auto &rs : rule_sets_) {
@@ -547,14 +530,14 @@ EvidenceBuilder::buildAll(uint64_t project_id) const
 	return result;
 }
 
-std::vector<Evidence> EvidenceBuilder::buildByCategory(
-	uint64_t project_id, const std::string &category) const
+std::vector<Evidence>
+EvidenceBuilder::buildByCategory(uint64_t project_id,
+				 const std::string &category) const
 {
 	std::vector<Evidence> result;
 	if (!store_) {
-		fprintf(stderr,
-			"[module=evidence, method=buildByCategory] "
-			"store is null\n");
+		fprintf(stderr, "[module=evidence, method=buildByCategory] "
+				"store is null\n");
 		return result;
 	}
 	for (const auto &rs : rule_sets_) {
@@ -569,14 +552,14 @@ std::vector<Evidence> EvidenceBuilder::buildByCategory(
 	return result;
 }
 
-std::vector<Evidence> EvidenceBuilder::buildByRule(
-	uint64_t project_id, const std::string &rule_name) const
+std::vector<Evidence>
+EvidenceBuilder::buildByRule(uint64_t project_id,
+			     const std::string &rule_name) const
 {
 	std::vector<Evidence> result;
 	if (!store_) {
-		fprintf(stderr,
-			"[module=evidence, method=buildByRule] "
-			"store is null\n");
+		fprintf(stderr, "[module=evidence, method=buildByRule] "
+				"store is null\n");
 		return result;
 	}
 	for (const auto &rs : rule_sets_) {

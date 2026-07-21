@@ -55,7 +55,8 @@ namespace
 // evidence_builder.cpp.
 class StmtGuard {
     public:
-	explicit StmtGuard(sqlite3_stmt *stmt = nullptr) : stmt_(stmt)
+	explicit StmtGuard(sqlite3_stmt *stmt = nullptr)
+		: stmt_(stmt)
 	{
 	}
 	~StmtGuard()
@@ -65,7 +66,8 @@ class StmtGuard {
 	}
 	StmtGuard(const StmtGuard &) = delete;
 	StmtGuard &operator=(const StmtGuard &) = delete;
-	StmtGuard(StmtGuard &&other) noexcept : stmt_(other.stmt_)
+	StmtGuard(StmtGuard &&other) noexcept
+		: stmt_(other.stmt_)
 	{
 		other.stmt_ = nullptr;
 	}
@@ -113,10 +115,8 @@ std::string escapeJson(const std::string &s)
 		default:
 			if (static_cast<unsigned char>(c) < 0x20) {
 				char buf[8];
-				std::snprintf(buf, sizeof(buf),
-					      "\\u%04x",
-					      static_cast<unsigned char>(
-						      c));
+				std::snprintf(buf, sizeof(buf), "\\u%04x",
+					      static_cast<unsigned char>(c));
 				out += buf;
 			} else {
 				out += c;
@@ -157,8 +157,7 @@ std::string currentUtcIsoTimestamp()
 	gmtime_r(&now, &utc);
 #endif
 	char buf[32];
-	std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ",
-		      &utc);
+	std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &utc);
 	return buf;
 }
 
@@ -196,8 +195,7 @@ aggregateByCategory(const std::vector<evidence::Evidence> &evidences)
 
 // Serialize a vector of detail strings to a JSON array string.
 // Empty vector returns "[]". Each string is JSON-escaped.
-std::string
-serializeDetailsArray(const std::vector<std::string> &details)
+std::string serializeDetailsArray(const std::vector<std::string> &details)
 {
 	std::ostringstream ss;
 	ss << "[";
@@ -220,7 +218,7 @@ int64_t countRows(store::GraphStore *store, const std::string &sql,
 		return 0;
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store->handle(), sql.c_str(), -1, &stmt,
-			      nullptr) != SQLITE_OK) {
+			       nullptr) != SQLITE_OK) {
 		std::fprintf(stderr,
 			     "[module=project_state, method=countRows] "
 			     "prepare failed: %s\n",
@@ -228,8 +226,7 @@ int64_t countRows(store::GraphStore *store, const std::string &sql,
 		return 0;
 	}
 	StmtGuard guard(stmt);
-	sqlite3_bind_int64(stmt, 1,
-			  static_cast<int64_t>(project_id));
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	int64_t count = 0;
 	if (sqlite3_step(stmt) == SQLITE_ROW) {
 		count = sqlite3_column_int64(stmt, 0);
@@ -240,18 +237,17 @@ int64_t countRows(store::GraphStore *store, const std::string &sql,
 // Distinct framework primitives detected in semantic_fact for the
 // project under category='framework'. Returns a vector of unique
 // primitive names (e.g. "gin", "gorm"). Empty on error.
-std::vector<std::string>
-detectFrameworks(store::GraphStore *store, uint64_t project_id)
+std::vector<std::string> detectFrameworks(store::GraphStore *store,
+					  uint64_t project_id)
 {
 	std::vector<std::string> out;
 	if (!store || !store->handle())
 		return out;
-	const char *sql =
-		"SELECT DISTINCT primitive FROM semantic_fact "
-		"WHERE project_id = ? AND category = 'framework'";
+	const char *sql = "SELECT DISTINCT primitive FROM semantic_fact "
+			  "WHERE project_id = ? AND category = 'framework'";
 	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(store->handle(), sql, -1, &stmt,
-			      nullptr) != SQLITE_OK) {
+	if (sqlite3_prepare_v2(store->handle(), sql, -1, &stmt, nullptr) !=
+	    SQLITE_OK) {
 		std::fprintf(stderr,
 			     "[module=project_state, method=detectFrameworks] "
 			     "prepare failed: %s\n",
@@ -259,8 +255,7 @@ detectFrameworks(store::GraphStore *store, uint64_t project_id)
 		return out;
 	}
 	StmtGuard guard(stmt);
-	sqlite3_bind_int64(stmt, 1,
-			  static_cast<int64_t>(project_id));
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
 		out.push_back(colText(stmt, 0));
 	}
@@ -270,27 +265,26 @@ detectFrameworks(store::GraphStore *store, uint64_t project_id)
 // Query the count of findings for a project grouped by severity.
 // Returns a map: {1: "info", 2: "warning", 3: "error"} → count.
 // Used to populate the pattern.by_severity block in the snapshot.
-std::map<int, int>
-findingSeverityCounts(store::GraphStore *store, uint64_t project_id)
+std::map<int, int> findingSeverityCounts(store::GraphStore *store,
+					 uint64_t project_id)
 {
 	std::map<int, int> out;
 	if (!store || !store->handle())
 		return out;
-	const char *sql =
-		"SELECT severity, COUNT(*) FROM finding "
-		"WHERE project_id = ? GROUP BY severity";
+	const char *sql = "SELECT severity, COUNT(*) FROM finding "
+			  "WHERE project_id = ? GROUP BY severity";
 	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(store->handle(), sql, -1, &stmt,
-			      nullptr) != SQLITE_OK) {
-		std::fprintf(stderr,
-			     "[module=project_state, method=findingSeverityCounts] "
-			     "prepare failed: %s\n",
-			     sqlite3_errmsg(store->handle()));
+	if (sqlite3_prepare_v2(store->handle(), sql, -1, &stmt, nullptr) !=
+	    SQLITE_OK) {
+		std::fprintf(
+			stderr,
+			"[module=project_state, method=findingSeverityCounts] "
+			"prepare failed: %s\n",
+			sqlite3_errmsg(store->handle()));
 		return out;
 	}
 	StmtGuard guard(stmt);
-	sqlite3_bind_int64(stmt, 1,
-			  static_cast<int64_t>(project_id));
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
 		int sev = sqlite3_column_int(stmt, 0);
 		int cnt = sqlite3_column_int(stmt, 1);
@@ -301,28 +295,25 @@ findingSeverityCounts(store::GraphStore *store, uint64_t project_id)
 
 // Count verified capability_state rows (state='Implemented' or
 // 'Verified'). Used for capability.verified in the snapshot.
-int64_t
-countVerifiedCapabilities(store::GraphStore *store,
-			  uint64_t project_id)
+int64_t countVerifiedCapabilities(store::GraphStore *store, uint64_t project_id)
 {
 	if (!store || !store->handle())
 		return 0;
-	const char *sql =
-		"SELECT COUNT(*) FROM capability_state "
-		"WHERE project_id = ? AND state IN "
-		 "('Implemented','Verified')";
+	const char *sql = "SELECT COUNT(*) FROM capability_state "
+			  "WHERE project_id = ? AND state IN "
+			  "('Implemented','Verified')";
 	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(store->handle(), sql, -1, &stmt,
-			      nullptr) != SQLITE_OK) {
-		std::fprintf(stderr,
-			     "[module=project_state, method=countVerifiedCapabilities] "
-			     "prepare failed: %s\n",
-			     sqlite3_errmsg(store->handle()));
+	if (sqlite3_prepare_v2(store->handle(), sql, -1, &stmt, nullptr) !=
+	    SQLITE_OK) {
+		std::fprintf(
+			stderr,
+			"[module=project_state, method=countVerifiedCapabilities] "
+			"prepare failed: %s\n",
+			sqlite3_errmsg(store->handle()));
 		return 0;
 	}
 	StmtGuard guard(stmt);
-	sqlite3_bind_int64(stmt, 1,
-			  static_cast<int64_t>(project_id));
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	int64_t count = 0;
 	if (sqlite3_step(stmt) == SQLITE_ROW) {
 		count = sqlite3_column_int64(stmt, 0);
@@ -332,27 +323,24 @@ countVerifiedCapabilities(store::GraphStore *store,
 
 // Sum architecture_state.violations for a project. Returns 0 on
 // error or empty table.
-int64_t
-sumArchitectureViolations(store::GraphStore *store,
-			   uint64_t project_id)
+int64_t sumArchitectureViolations(store::GraphStore *store, uint64_t project_id)
 {
 	if (!store || !store->handle())
 		return 0;
-	const char *sql =
-		"SELECT COALESCE(SUM(violations), 0) "
-		"FROM architecture_state WHERE project_id = ?";
+	const char *sql = "SELECT COALESCE(SUM(violations), 0) "
+			  "FROM architecture_state WHERE project_id = ?";
 	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(store->handle(), sql, -1, &stmt,
-			      nullptr) != SQLITE_OK) {
-		std::fprintf(stderr,
-			     "[module=project_state, method=sumArchitectureViolations] "
-			     "prepare failed: %s\n",
-			     sqlite3_errmsg(store->handle()));
+	if (sqlite3_prepare_v2(store->handle(), sql, -1, &stmt, nullptr) !=
+	    SQLITE_OK) {
+		std::fprintf(
+			stderr,
+			"[module=project_state, method=sumArchitectureViolations] "
+			"prepare failed: %s\n",
+			sqlite3_errmsg(store->handle()));
 		return 0;
 	}
 	StmtGuard guard(stmt);
-	sqlite3_bind_int64(stmt, 1,
-			  static_cast<int64_t>(project_id));
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	int64_t count = 0;
 	if (sqlite3_step(stmt) == SQLITE_ROW) {
 		count = sqlite3_column_int64(stmt, 0);
@@ -367,28 +355,27 @@ struct WorkflowProgress {
 	int64_t steps_done = 0;
 	int64_t steps_total = 0;
 };
-WorkflowProgress
-sumWorkflowProgress(store::GraphStore *store, uint64_t project_id)
+WorkflowProgress sumWorkflowProgress(store::GraphStore *store,
+				     uint64_t project_id)
 {
 	WorkflowProgress wp;
 	if (!store || !store->handle())
 		return wp;
-	const char *sql =
-		"SELECT COALESCE(SUM(steps_done), 0), "
-		"       COALESCE(SUM(steps_total), 0) "
-		"FROM workflow_state WHERE project_id = ?";
+	const char *sql = "SELECT COALESCE(SUM(steps_done), 0), "
+			  "       COALESCE(SUM(steps_total), 0) "
+			  "FROM workflow_state WHERE project_id = ?";
 	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(store->handle(), sql, -1, &stmt,
-			      nullptr) != SQLITE_OK) {
-		std::fprintf(stderr,
-			     "[module=project_state, method=sumWorkflowProgress] "
-			     "prepare failed: %s\n",
-			     sqlite3_errmsg(store->handle()));
+	if (sqlite3_prepare_v2(store->handle(), sql, -1, &stmt, nullptr) !=
+	    SQLITE_OK) {
+		std::fprintf(
+			stderr,
+			"[module=project_state, method=sumWorkflowProgress] "
+			"prepare failed: %s\n",
+			sqlite3_errmsg(store->handle()));
 		return wp;
 	}
 	StmtGuard guard(stmt);
-	sqlite3_bind_int64(stmt, 1,
-			  static_cast<int64_t>(project_id));
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	if (sqlite3_step(stmt) == SQLITE_ROW) {
 		wp.steps_done = sqlite3_column_int64(stmt, 0);
 		wp.steps_total = sqlite3_column_int64(stmt, 1);
@@ -398,17 +385,15 @@ sumWorkflowProgress(store::GraphStore *store, uint64_t project_id)
 
 // Sum module_summary.dead_entities across all modules for a project.
 // Used for the dead_code.entities count in the snapshot.
-int64_t
-sumDeadEntities(store::GraphStore *store, uint64_t project_id)
+int64_t sumDeadEntities(store::GraphStore *store, uint64_t project_id)
 {
 	if (!store || !store->handle())
 		return 0;
-	const char *sql =
-		"SELECT COALESCE(SUM(dead_entities), 0) "
-		"FROM module_summary WHERE project_id = ?";
+	const char *sql = "SELECT COALESCE(SUM(dead_entities), 0) "
+			  "FROM module_summary WHERE project_id = ?";
 	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(store->handle(), sql, -1, &stmt,
-			      nullptr) != SQLITE_OK) {
+	if (sqlite3_prepare_v2(store->handle(), sql, -1, &stmt, nullptr) !=
+	    SQLITE_OK) {
 		std::fprintf(stderr,
 			     "[module=project_state, method=sumDeadEntities] "
 			     "prepare failed: %s\n",
@@ -416,8 +401,7 @@ sumDeadEntities(store::GraphStore *store, uint64_t project_id)
 		return 0;
 	}
 	StmtGuard guard(stmt);
-	sqlite3_bind_int64(stmt, 1,
-			  static_cast<int64_t>(project_id));
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	int64_t count = 0;
 	if (sqlite3_step(stmt) == SQLITE_ROW) {
 		count = sqlite3_column_int64(stmt, 0);
@@ -427,12 +411,11 @@ sumDeadEntities(store::GraphStore *store, uint64_t project_id)
 
 // Total entity count for a project (used to compute dead_code.pct =
 // dead / total). Returns 0 on error or empty project.
-int64_t
-countEntities(store::GraphStore *store, uint64_t project_id)
+int64_t countEntities(store::GraphStore *store, uint64_t project_id)
 {
 	return countRows(store,
-			"SELECT COUNT(*) FROM entity WHERE project_id = ?",
-			project_id);
+			 "SELECT COUNT(*) FROM entity WHERE project_id = ?",
+			 project_id);
 }
 
 // Compute the per-category block of the snapshot JSON. `agg` is the
@@ -442,8 +425,7 @@ countEntities(store::GraphStore *store, uint64_t project_id)
 // braces); the caller wraps it in "category": {...}.
 //
 // Fields: "issues" (item count), "details" (array of titles).
-std::string buildCategoryBlock(const CategoryAgg *agg,
-				int64_t fact_count)
+std::string buildCategoryBlock(const CategoryAgg *agg, int64_t fact_count)
 {
 	std::ostringstream ss;
 	int issue_count = agg ? agg->issue_count : 0;
@@ -462,8 +444,7 @@ std::string buildCategoryBlock(const CategoryAgg *agg,
 // state counts. Starts at 1.0 and subtracts a per-issue penalty for
 // each category, then clamps to [0.0, 1.0]. See penalty constants
 // in project_state_builder.h.
-double
-computeOverallConfidence(
+double computeOverallConfidence(
 	const std::unordered_map<std::string, CategoryAgg> &agg,
 	int64_t arch_violations, int64_t dead_entities)
 {
@@ -472,8 +453,8 @@ computeOverallConfidence(
 		auto it = agg.find(cat);
 		if (it == agg.end())
 			return;
-		confidence -= penalty *
-			      static_cast<double>(it->second.issue_count);
+		confidence -=
+			penalty * static_cast<double>(it->second.issue_count);
 	};
 	subtract("sync", kPenaltyPerSyncIssue);
 	subtract("memory", kPenaltyPerMemoryIssue);
@@ -482,8 +463,8 @@ computeOverallConfidence(
 	subtract("ffi", kPenaltyPerFfiIssue);
 	confidence -= kPenaltyPerArchitectureViolation *
 		      static_cast<double>(arch_violations);
-	confidence -= kPenaltyPerDeadEntity *
-		      static_cast<double>(dead_entities);
+	confidence -=
+		kPenaltyPerDeadEntity * static_cast<double>(dead_entities);
 	if (confidence < 0.0)
 		confidence = 0.0;
 	if (confidence > 1.0)
@@ -495,49 +476,46 @@ computeOverallConfidence(
 // Used for the "overall.inspectors_ran" field. The maximum is the
 // number of categories with rule files (sync/memory/error/pattern/
 // framework/ffi = 6).
-int countInspectorsRan(
-	const std::unordered_map<std::string, CategoryAgg> &agg)
+int countInspectorsRan(const std::unordered_map<std::string, CategoryAgg> &agg)
 {
 	return static_cast<int>(agg.size());
 }
 
 // Persist the snapshot + confidence to project_state via UPSERT.
 // Returns true on success, false on prepare/step failure (logged).
-bool upsertProjectState(store::GraphStore *store,
-			uint64_t project_id, double confidence,
-			const std::string &snapshot_json)
+bool upsertProjectState(store::GraphStore *store, uint64_t project_id,
+			double confidence, const std::string &snapshot_json)
 {
 	if (!store || !store->handle())
 		return false;
-	const char *sql =
-		"INSERT INTO project_state "
-		"(project_id, confidence, snapshot_json, updated_at) "
-		"VALUES (?,?,?,datetime('now')) "
-		"ON CONFLICT(project_id) DO UPDATE SET "
-		"confidence=excluded.confidence, "
-		"snapshot_json=excluded.snapshot_json, "
-		"updated_at=datetime('now')";
+	const char *sql = "INSERT INTO project_state "
+			  "(project_id, confidence, snapshot_json, updated_at) "
+			  "VALUES (?,?,?,datetime('now')) "
+			  "ON CONFLICT(project_id) DO UPDATE SET "
+			  "confidence=excluded.confidence, "
+			  "snapshot_json=excluded.snapshot_json, "
+			  "updated_at=datetime('now')";
 	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(store->handle(), sql, -1, &stmt,
-			      nullptr) != SQLITE_OK) {
-		std::fprintf(stderr,
-			     "[module=project_state, method=upsertProjectState] "
-			     "prepare failed: %s\n",
-			     sqlite3_errmsg(store->handle()));
+	if (sqlite3_prepare_v2(store->handle(), sql, -1, &stmt, nullptr) !=
+	    SQLITE_OK) {
+		std::fprintf(
+			stderr,
+			"[module=project_state, method=upsertProjectState] "
+			"prepare failed: %s\n",
+			sqlite3_errmsg(store->handle()));
 		return false;
 	}
 	StmtGuard guard(stmt);
-	sqlite3_bind_int64(stmt, 1,
-			  static_cast<int64_t>(project_id));
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_double(stmt, 2, confidence);
-	sqlite3_bind_text(stmt, 3, snapshot_json.c_str(), -1,
-			  SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 3, snapshot_json.c_str(), -1, SQLITE_TRANSIENT);
 	int rc = sqlite3_step(stmt);
 	if (rc != SQLITE_DONE) {
-		std::fprintf(stderr,
-			     "[module=project_state, method=upsertProjectState] "
-			     "step failed (rc=%d): %s\n",
-			     rc, sqlite3_errmsg(store->handle()));
+		std::fprintf(
+			stderr,
+			"[module=project_state, method=upsertProjectState] "
+			"step failed (rc=%d): %s\n",
+			rc, sqlite3_errmsg(store->handle()));
 		return false;
 	}
 	return true;
@@ -561,9 +539,8 @@ std::string resolveRulesDir()
 bool ProjectStateBuilder::build(uint64_t project_id)
 {
 	if (!store_) {
-		std::fprintf(stderr,
-			     "[module=project_state, method=build] "
-			     "store is null\n");
+		std::fprintf(stderr, "[module=project_state, method=build] "
+				     "store is null\n");
 		return false;
 	}
 
@@ -576,65 +553,63 @@ bool ProjectStateBuilder::build(uint64_t project_id)
 	auto agg = aggregateByCategory(evidences);
 
 	// 3. Query semantic_fact for per-category raw fact counts.
-	int64_t sync_facts = countRows(
-		store_,
-		"SELECT COUNT(*) FROM semantic_fact "
-		"WHERE project_id = ? AND category = 'sync'",
-		project_id);
-	int64_t memory_facts = countRows(
-		store_,
-		"SELECT COUNT(*) FROM semantic_fact "
-		"WHERE project_id = ? AND category = 'memory'",
-		project_id);
-	int64_t error_facts = countRows(
-		store_,
-		"SELECT COUNT(*) FROM semantic_fact "
-		"WHERE project_id = ? AND category = 'error'",
-		project_id);
-	int64_t pattern_facts = countRows(
-		store_,
-		"SELECT COUNT(*) FROM semantic_fact "
-		"WHERE project_id = ? AND category = 'pattern'",
-		project_id);
-	int64_t framework_facts = countRows(
-		store_,
-		"SELECT COUNT(*) FROM semantic_fact "
-		"WHERE project_id = ? AND category = 'framework'",
-		project_id);
-	int64_t ffi_facts = countRows(
-		store_,
-		"SELECT COUNT(*) FROM semantic_fact "
-		"WHERE project_id = ? AND category = 'ffi'",
-		project_id);
+	int64_t sync_facts =
+		countRows(store_,
+			  "SELECT COUNT(*) FROM semantic_fact "
+			  "WHERE project_id = ? AND category = 'sync'",
+			  project_id);
+	int64_t memory_facts =
+		countRows(store_,
+			  "SELECT COUNT(*) FROM semantic_fact "
+			  "WHERE project_id = ? AND category = 'memory'",
+			  project_id);
+	int64_t error_facts =
+		countRows(store_,
+			  "SELECT COUNT(*) FROM semantic_fact "
+			  "WHERE project_id = ? AND category = 'error'",
+			  project_id);
+	int64_t pattern_facts =
+		countRows(store_,
+			  "SELECT COUNT(*) FROM semantic_fact "
+			  "WHERE project_id = ? AND category = 'pattern'",
+			  project_id);
+	int64_t framework_facts =
+		countRows(store_,
+			  "SELECT COUNT(*) FROM semantic_fact "
+			  "WHERE project_id = ? AND category = 'framework'",
+			  project_id);
+	int64_t ffi_facts =
+		countRows(store_,
+			  "SELECT COUNT(*) FROM semantic_fact "
+			  "WHERE project_id = ? AND category = 'ffi'",
+			  project_id);
 
 	// 4. Query state tables for capability / architecture / workflow /
 	//    dead_code counts.
-	int64_t capability_total = countRows(
-		store_,
-		"SELECT COUNT(*) FROM capability_state "
-		"WHERE project_id = ?",
-		project_id);
+	int64_t capability_total =
+		countRows(store_,
+			  "SELECT COUNT(*) FROM capability_state "
+			  "WHERE project_id = ?",
+			  project_id);
 	int64_t capability_verified =
 		countVerifiedCapabilities(store_, project_id);
-	int64_t arch_violations =
-		sumArchitectureViolations(store_, project_id);
-	int64_t workflow_total = countRows(
-		store_,
-		"SELECT COUNT(*) FROM workflow_state "
-		"WHERE project_id = ?",
-		project_id);
+	int64_t arch_violations = sumArchitectureViolations(store_, project_id);
+	int64_t workflow_total =
+		countRows(store_,
+			  "SELECT COUNT(*) FROM workflow_state "
+			  "WHERE project_id = ?",
+			  project_id);
 	WorkflowProgress wp = sumWorkflowProgress(store_, project_id);
 	int64_t dead_entities = sumDeadEntities(store_, project_id);
 	int64_t total_entities = countEntities(store_, project_id);
 
 	// 5. Compute overall confidence (1.0 - sum of penalties).
-	double confidence = computeOverallConfidence(
-		agg, arch_violations, dead_entities);
+	double confidence =
+		computeOverallConfidence(agg, arch_violations, dead_entities);
 
 	// Architecture score = 1 - violations * penalty (clamped).
-	double arch_score = 1.0 -
-			    kPenaltyPerArchitectureViolation *
-				    static_cast<double>(arch_violations);
+	double arch_score = 1.0 - kPenaltyPerArchitectureViolation *
+					  static_cast<double>(arch_violations);
 	if (arch_score < 0.0)
 		arch_score = 0.0;
 	if (arch_score > 1.0)
@@ -644,8 +619,7 @@ bool ProjectStateBuilder::build(uint64_t project_id)
 	// capabilities are tracked).
 	double capability_score = 1.0;
 	if (capability_total > 0) {
-		capability_score = static_cast<double>(
-					   capability_verified) /
+		capability_score = static_cast<double>(capability_verified) /
 				   static_cast<double>(capability_total);
 		if (capability_score < 0.0)
 			capability_score = 0.0;
@@ -731,39 +705,36 @@ bool ProjectStateBuilder::build(uint64_t project_id)
 	// sync
 	auto sync_it = agg.find("sync");
 	ss << ",\"sync\":{"
-	   << buildCategoryBlock(sync_it != agg.end() ? &sync_it->second
-						     : nullptr,
+	   << buildCategoryBlock(sync_it != agg.end() ? &sync_it->second :
+							nullptr,
 				 sync_facts)
 	   << "}";
 
 	// memory
 	auto memory_it = agg.find("memory");
 	ss << ",\"memory\":{"
-	   << buildCategoryBlock(memory_it != agg.end()
-					 ? &memory_it->second
-					 : nullptr,
+	   << buildCategoryBlock(memory_it != agg.end() ? &memory_it->second :
+							  nullptr,
 				 memory_facts)
 	   << "}";
 
 	// error_handling
 	auto error_it = agg.find("error");
 	ss << ",\"error_handling\":{"
-	   << buildCategoryBlock(error_it != agg.end()
-					 ? &error_it->second
-					 : nullptr,
+	   << buildCategoryBlock(error_it != agg.end() ? &error_it->second :
+							 nullptr,
 				 error_facts)
 	   << "}";
 
 	// pattern
 	auto pattern_it = agg.find("pattern");
 	ss << ",\"pattern\":{"
-	   << buildCategoryBlock(pattern_it != agg.end()
-					 ? &pattern_it->second
-					 : nullptr,
+	   << buildCategoryBlock(pattern_it != agg.end() ? &pattern_it->second :
+							   nullptr,
 				 pattern_facts)
 	   << ",\"by_severity\":{\"info\":" << info_count
-	   << ",\"warning\":" << warning_count
-	   << ",\"error\":" << error_count << "}}";
+	   << ",\"warning\":" << warning_count << ",\"error\":" << error_count
+	   << "}}";
 
 	// framework
 	ss << ",\"framework\":{\"detected\":[";
@@ -777,14 +748,13 @@ bool ProjectStateBuilder::build(uint64_t project_id)
 	// ffi
 	auto ffi_it = agg.find("ffi");
 	ss << ",\"ffi\":{"
-	   << buildCategoryBlock(ffi_it != agg.end() ? &ffi_it->second
-						     : nullptr,
+	   << buildCategoryBlock(ffi_it != agg.end() ? &ffi_it->second :
+						       nullptr,
 				 ffi_facts)
 	   << ",\"boundaries\":" << ffi_facts << "}";
 
 	// last_updated
-	ss << ",\"last_updated\":\"" << currentUtcIsoTimestamp()
-	   << "\"";
+	ss << ",\"last_updated\":\"" << currentUtcIsoTimestamp() << "\"";
 	ss << "}";
 
 	std::string snapshot_json = ss.str();
@@ -798,22 +768,20 @@ bool ProjectStateBuilder::build(uint64_t project_id)
 	std::fprintf(stderr,
 		     "[model] ProjectState: project_id=%llu "
 		     "confidence=%.4f snapshot_bytes=%zu\n",
-		     static_cast<unsigned long long>(project_id),
-		     confidence, snapshot_json.size());
+		     static_cast<unsigned long long>(project_id), confidence,
+		     snapshot_json.size());
 	return true;
 }
 
-std::string
-ProjectStateBuilder::getSnapshotJson(uint64_t project_id) const
+std::string ProjectStateBuilder::getSnapshotJson(uint64_t project_id) const
 {
 	if (!store_ || !store_->handle())
 		return "";
-	const char *sql =
-		"SELECT snapshot_json FROM project_state "
-		"WHERE project_id = ?";
+	const char *sql = "SELECT snapshot_json FROM project_state "
+			  "WHERE project_id = ?";
 	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(store_->handle(), sql, -1, &stmt,
-			      nullptr) != SQLITE_OK) {
+	if (sqlite3_prepare_v2(store_->handle(), sql, -1, &stmt, nullptr) !=
+	    SQLITE_OK) {
 		std::fprintf(stderr,
 			     "[module=project_state, method=getSnapshotJson] "
 			     "prepare failed: %s\n",
@@ -821,8 +789,7 @@ ProjectStateBuilder::getSnapshotJson(uint64_t project_id) const
 		return "";
 	}
 	StmtGuard guard(stmt);
-	sqlite3_bind_int64(stmt, 1,
-			  static_cast<int64_t>(project_id));
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	std::string out;
 	if (sqlite3_step(stmt) == SQLITE_ROW) {
 		out = colText(stmt, 0);
@@ -834,12 +801,11 @@ double ProjectStateBuilder::getConfidence(uint64_t project_id) const
 {
 	if (!store_ || !store_->handle())
 		return 0.0;
-	const char *sql =
-		"SELECT confidence FROM project_state "
-		"WHERE project_id = ?";
+	const char *sql = "SELECT confidence FROM project_state "
+			  "WHERE project_id = ?";
 	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(store_->handle(), sql, -1, &stmt,
-			      nullptr) != SQLITE_OK) {
+	if (sqlite3_prepare_v2(store_->handle(), sql, -1, &stmt, nullptr) !=
+	    SQLITE_OK) {
 		std::fprintf(stderr,
 			     "[module=project_state, method=getConfidence] "
 			     "prepare failed: %s\n",
@@ -847,8 +813,7 @@ double ProjectStateBuilder::getConfidence(uint64_t project_id) const
 		return 0.0;
 	}
 	StmtGuard guard(stmt);
-	sqlite3_bind_int64(stmt, 1,
-			  static_cast<int64_t>(project_id));
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	double out = 0.0;
 	if (sqlite3_step(stmt) == SQLITE_ROW) {
 		out = sqlite3_column_double(stmt, 0);

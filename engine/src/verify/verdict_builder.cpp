@@ -144,8 +144,7 @@ std::string escapeJson(const std::string &s)
 		default:
 			if (static_cast<unsigned char>(c) < 0x20) {
 				char buf[8];
-				std::snprintf(buf, sizeof(buf),
-					      "\\u%04x",
+				std::snprintf(buf, sizeof(buf), "\\u%04x",
 					      static_cast<unsigned char>(c));
 				out += buf;
 			} else {
@@ -175,10 +174,9 @@ std::string serializeResult(const VerdictResult &result,
 			    const std::vector<evidence::Evidence> &evidences)
 {
 	std::ostringstream ss;
-	ss << "{\"verdict\":\""
-	   << escapeJson(verdictToString(result.verdict)) << "\""
-	   << ",\"confidence\":" << result.confidence
-	   << ",\"requirements\":[";
+	ss << "{\"verdict\":\"" << escapeJson(verdictToString(result.verdict))
+	   << "\""
+	   << ",\"confidence\":" << result.confidence << ",\"requirements\":[";
 	for (size_t i = 0; i < req_states.size(); ++i) {
 		if (i)
 			ss << ",";
@@ -210,9 +208,9 @@ std::string serializeResult(const VerdictResult &result,
 
 // ─── VerdictBuilder public API ───────────────────────────────────
 
-VerdictResult VerdictBuilder::build(
-	const Intent &intent,
-	const std::vector<evidence::Evidence> &evidences) const
+VerdictResult
+VerdictBuilder::build(const Intent &intent,
+		      const std::vector<evidence::Evidence> &evidences) const
 {
 	VerdictResult result;
 
@@ -230,8 +228,7 @@ VerdictResult VerdictBuilder::build(
 			std::string summary = ev.title + " (" +
 					      std::to_string(ev.items.size()) +
 					      " item(s))";
-			result.evidence_summary.push_back(
-				std::move(summary));
+			result.evidence_summary.push_back(std::move(summary));
 		}
 		std::vector<ReqState> empty_states;
 		result.raw_json =
@@ -311,9 +308,9 @@ VerdictResult VerdictBuilder::build(
 		if (ev.items.empty()) {
 			continue;
 		}
-		std::string summary =
-			ev.title + " (" +
-			std::to_string(ev.items.size()) + " item(s))";
+		std::string summary = ev.title + " (" +
+				      std::to_string(ev.items.size()) +
+				      " item(s))";
 		result.evidence_summary.push_back(std::move(summary));
 	}
 
