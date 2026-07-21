@@ -386,20 +386,22 @@ target_link_libraries(astgraph_engine PUBLIC
 # is not found (useful for production builds that require Cypher).
 option(LADYBUG_REQUIRED "Fail build if LadybugDB is not found" OFF)
 set(LADYBUG_VENDOR_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ladybug")
-if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    set(LADYBUG_VENDOR_LIB_DIR "${LADYBUG_VENDOR_DIR}/lib/macos")
-elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    # Select the architecture-matched vendored library directory:
-    #   lib/linux       → x86-64
-    #   lib/linux-aarch64 → aarch64
-    if(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
-        set(LADYBUG_VENDOR_LIB_DIR "${LADYBUG_VENDOR_DIR}/lib/linux-aarch64")
-    else()
-        set(LADYBUG_VENDOR_LIB_DIR "${LADYBUG_VENDOR_DIR}/lib/linux")
-    endif()
-else()
-    set(LADYBUG_VENDOR_LIB_DIR "${LADYBUG_VENDOR_DIR}/lib")
-endif()
+ if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+     set(LADYBUG_VENDOR_LIB_DIR "${LADYBUG_VENDOR_DIR}/lib/macos")
+ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+     # Select the architecture-matched vendored library directory:
+     #   lib/linux       → x86-64
+     #   lib/linux-aarch64 → aarch64
+     if(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
+         set(LADYBUG_VENDOR_LIB_DIR "${LADYBUG_VENDOR_DIR}/lib/linux-aarch64")
+     else()
+         set(LADYBUG_VENDOR_LIB_DIR "${LADYBUG_VENDOR_DIR}/lib/linux")
+     endif()
+ elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+     set(LADYBUG_VENDOR_LIB_DIR "${LADYBUG_VENDOR_DIR}/lib/windows")
+ else()
+     set(LADYBUG_VENDOR_LIB_DIR "${LADYBUG_VENDOR_DIR}/lib")
+ endif()
 # Force re-detection: clear stale cache entries from previous runs
 unset(LADYBUG_LIBRARY CACHE)
 unset(LADYBUG_INCLUDE_DIR CACHE)

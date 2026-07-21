@@ -24,6 +24,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <sstream>
 #include <string>
 
 #ifdef HAS_LADYBUG
@@ -329,6 +330,145 @@ void GraphStore::closeLadybugDB()
 		lbug_initialized_ = false;
 		lbug_populated_ = false;
 	}
+}
+
+// Probe LadybugDB directly to check if graph data exists.
+// Runs a Cypher MATCH (n) RETURN count(*) to see if any nodes
+// exist. Handles cross-process scenarios where the in-memory
+// lbug_populated_ flag was set in a worker subprocess but the
+// current process is fresh.
+bool GraphStore::probeGraphReady()
+{
+#ifdef HAS_LADYBUG
+	if (!lbug_initialized_ || !ladybug_query_enabled_)
+		return false;
+	lbug_query_result qr;
+	lbug_state s = lbug_connection_query(&lbug_conn_,
+					     "MATCH (n) RETURN count(*)", &qr);
+	if (s != LbugSuccess) {
+		lbug_query_result_destroy(&qr);
+		return false;
+	}
+	lbug_flat_tuple tuple;
+	bool has_data = false;
+	if (lbug_query_result_get_next(&qr, &tuple) == LbugSuccess) {
+		lbug_value v;
+		if (lbug_flat_tuple_get_value(&tuple, 0, &v) == LbugSuccess) {
+			int64_t cnt = 0;
+			lbug_value_get_int64(&v, &cnt);
+			has_data = (cnt > 0);
+		}
+	}
+	lbug_query_result_destroy(&qr);
+	return has_data;
+#else
+	return false;
+#endif
+}
+
+// Search via LadybugDB Cypher: MATCH (n) WHERE n.name CONTAINS 'query'
+// RETURN n.name, n.file_path, n.kind.
+std::string GraphStore::searchLadybugJson(uint64_t project_id,
+					  const char *query, int limit)
+{
+	if (!query || !*query || limit <= 0)
+		return "{\"method\":\"ladybug\",\"results\":[]}";
+	if (limit > 100)
+		limit = 100;
+#ifdef HAS_LADYBUG
+	if (!lbug_initialized_ || !ladybug_query_enabled_)
+		return "{\"error\":\"LadybugDB not initialized\",\"results\":[]}";
+	(void)project_id;
+	// Escape single quotes for Cypher
+	std::string q(query);
+	for (size_t i = 0; i < q.size(); i++) {
+		if (q[i] == '\'') {
+			q.insert(i, "'");
+			i++;
+		}
+	}
+	std::string cypher = "MATCH (n) WHERE n.name CONTAINS '" + q +
+			     "' RETURN n.name, n.file_path, n.node_type "
+			     "LIMIT " +
+			     std::to_string(limit);
+	lbug_query_result qr;
+	lbug_state s = lbug_connection_query(&lbug_conn_, cypher.c_str(), &qr);
+	if (s != LbugSuccess) {
+		lbug_query_result_destroy(&qr);
+		return "{\"error\":\"LadybugDB query failed\",\"results\":[]}";
+	}
+	// Build JSON manually without jsonEscape helper (not available in this TU)
+	auto jsonEscape = [](const std::string &s) -> std::string {
+		std::string r;
+		r.reserve(s.size() + 4);
+		for (char c : s) {
+			switch (c) {
+			case '"':
+				r += "\\\"";
+				break;
+			case '\\':
+				r += "\\\\";
+				break;
+			case '\n':
+				r += "\\n";
+				break;
+			case '\r':
+				r += "\\r";
+				break;
+			case '\t':
+				r += "\\t";
+				break;
+			default:
+				r += c;
+			}
+		}
+		return r;
+	};
+	std::ostringstream json;
+	json << "{\"method\":\"ladybug\",\"results\":[";
+	bool first = true;
+	lbug_flat_tuple tuple;
+	while (lbug_query_result_get_next(&qr, &tuple) == LbugSuccess) {
+		if (!first)
+			json << ",";
+		first = false;
+		json << "{";
+		lbug_value v;
+		for (int i = 0; i < 3; i++) {
+			if (i > 0)
+				json << ",";
+			if (lbug_flat_tuple_get_value(&tuple, i, &v) !=
+			    LbugSuccess)
+				continue;
+			if (i == 0) {
+				char *sv = nullptr;
+				if (lbug_value_get_string(&v, &sv) ==
+					    LbugSuccess &&
+				    sv)
+					json << "\"name\":\"" << jsonEscape(sv)
+					     << "\"";
+			} else if (i == 1) {
+				char *sv = nullptr;
+				if (lbug_value_get_string(&v, &sv) ==
+					    LbugSuccess &&
+				    sv)
+					json << "\"file_path\":\""
+					     << jsonEscape(sv) << "\"";
+			} else if (i == 2) {
+				int64_t iv = 0;
+				lbug_value_get_int64(&v, &iv);
+				json << "\"kind\":" << iv;
+			}
+		}
+		json << "}";
+	}
+	lbug_query_result_destroy(&qr);
+	json << "]}";
+	return json.str();
+#else
+	(void)project_id;
+	return "{\"method\":\"ladybug\",\"results\":[],\"error\":\"LadybugDB not compiled\"}";
+#endif
 }
 
 #else // !HAS_LADYBUG

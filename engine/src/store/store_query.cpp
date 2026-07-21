@@ -212,7 +212,7 @@ std::string GraphStore::searchUnifiedJson(uint64_t project_id,
 			"SELECT gn.id, gn.name, gn.qualified_name, "
 			"gn.file_path "
 			"FROM name_trgm "
-			"JOIN graph_nodes gn ON gn.id = name_trgm.node_id "
+			"JOIN entity gn ON gn.id = name_trgm.node_id "
 			"WHERE name_trgm MATCH ? AND name_trgm.project_id = ? "
 			"ORDER BY LENGTH(gn.name) ASC LIMIT ?";
 		sqlite3_stmt *stmt = nullptr;

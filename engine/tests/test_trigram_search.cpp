@@ -41,6 +41,21 @@ static void insertGraphNode(GraphStore &store, uint64_t project_id, int64_t id,
 	sqlite3_bind_text(stmt, 3, name, -1, SQLITE_TRANSIENT);
 	assert(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
+	// Also insert into entity (graph_nodes is deprecated, buildFTSFromGraph
+	// now reads from entity).
+	const char *entity_sql =
+		"INSERT OR IGNORE INTO entity "
+		"(id, project_id, kind, name, qualified_name, file_path, "
+		"language, start_row, start_col, end_row, end_col, module_path) "
+		"VALUES (?,?,0,?,'','/test.cpp','cpp',0,0,0,0,'')";
+	sqlite3_stmt *estmt = nullptr;
+	if (sqlite3_prepare_v2(db, entity_sql, -1, &estmt, nullptr) == SQLITE_OK) {
+		sqlite3_bind_int64(estmt, 1, id);
+		sqlite3_bind_int64(estmt, 2, static_cast<int64_t>(project_id));
+		sqlite3_bind_text(estmt, 3, name, -1, SQLITE_TRANSIENT);
+		sqlite3_step(estmt);
+		sqlite3_finalize(estmt);
+	}
 }
 
 /// Check if a JSON string contains a substring (case-sensitive).

@@ -151,21 +151,38 @@ fn main() {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| ".".to_string());
         let is_static = lib_path.ends_with(".a");
+        // Windows: the .lib file is an import library for the DLL.
+        let is_windows = target_os == "windows";
         let link_mode = if is_static { "static" } else { "dylib" };
+        // Windows DLL is named lbug_shared (not lbug)
+        let lib_name = if is_windows { "lbug_shared" } else { "lbug" };
         println!("cargo:rustc-link-search=native={}", lib_dir);
-        println!("cargo:rustc-link-lib={}=lbug", link_mode);
+        println!("cargo:rustc-link-lib={}={}", link_mode, lib_name);
         // Embed the library directory in the binary's rpath so the
         // dynamic linker can find liblbug at runtime without requiring
-        // DYLD_LIBRARY_PATH (macOS) or ldconfig (Linux).
-        if !is_static {
+        // DYLD_LIBRARY_PATH (macOS), ldconfig (Linux), or PATH (Windows).
+        if !is_static && !is_windows {
             println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir);
+        }
+        // Windows: copy lbug_shared.dll next to the executable
+        if is_windows {
+            let dll_name = format!("{}/lbug_shared.dll", lib_dir);
+            let out_dir = env::var("OUT_DIR").unwrap();
+            let out_path = std::path::Path::new(&out_dir);
+            // cargo's OUT_DIR is in the build tree; copy to target/release/
+            let target_dir = out_path.ancestors().nth(3).unwrap();
+            let dll_dest = format!("{}/lbug_shared.dll", target_dir.display());
+            if std::path::Path::new(&dll_name).exists() {
+                let _ = std::fs::copy(&dll_name, &dll_dest);
+                eprintln!("build.rs: Windows DLL copied to {}", dll_dest);
+            }
         }
         eprintln!(
             "build.rs: LadybugDB {} lib found via CMake cache at {}",
             if is_static { "static" } else { "dynamic" },
             lib_path
         );
-    } else if target_os == "macos" || target_os == "linux" {
+    } else if target_os == "macos" || target_os == "linux" || target_os == "windows" {
         // CMake did not find LadybugDB — consistent with HAS_LADYBUG not
         // being defined. Emit a clear warning so users know Cypher queries
         // will be unavailable.
