@@ -177,11 +177,15 @@ fn main() {
             .unwrap_or_else(|| ".".to_string());
 
         // Determine link mode from extension:
-        //   .a   → static (Unix/macOS static archive)
-        //   .lib → static (Windows/MinGW static archive)
-        //   .so / .dylib / .dll → dynamic
-        let is_static = lib_path.ends_with(".a")
-            || (std::env::consts::OS == "windows" && lib_path.ends_with(".lib"));
+        //   .a     → static (Unix/macOS static archive)
+        //   .lib   → static (Windows/MinGW static archive; `lbug.lib`
+        //             is a true static lib with all dependencies bundled)
+        //   .so / .dylib → dynamic
+        // NOTE: on macOS cross-compile to Windows, std::env::consts::OS
+        // is "macos", not "windows". Use target_os (from CARGO_CFG_TARGET_OS)
+        // to correctly detect the Windows target.
+        let is_static =
+            lib_path.ends_with(".a") || (target_os == "windows" && lib_path.ends_with(".lib"));
 
         // Extract library name from filename for the linker.
         //   liblbug.a       → lbug  (Unix convention: strip "lib" prefix + .a)

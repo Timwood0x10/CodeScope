@@ -406,15 +406,13 @@ unset(LADYBUG_INCLUDE_DIR CACHE)
 
 # ── LadybugDB library search ──────────────────────────────────
 # Priority:  1. Vendored platform directory (NO_DEFAULT_PATH)
-#            2. lbug_shared fallback (Windows: vendored lib is named
-#               lbug_shared.lib, not lbug.lib)
-#            3. System-wide find (macOS/Linux only — skipped on Windows
+#            2. System-wide find (macOS/Linux only — skipped on Windows
 #               to avoid finding Host Homebrew liblbug.a during cross-compile)
 #
 # Vendored library naming per platform:
 #   macOS: liblbug.0.dylib     (versioned symlink → liblbug.0.18.3.dylib)
 #   Linux: liblbug.so.0        (versioned symlink → liblbug.so.0.18.3)
-#   Windows (shared): lbug_shared.lib + lbug_shared.dll
+#   Windows (static): lbug.lib (static archive from liblbug-static-*.zip)
 
 # Vendored dir only (platform-specific). On Windows cross-compile we must
 # NOT include /opt/homebrew/lib in PATHS or it picks up the host's liblbug.a.
@@ -427,13 +425,6 @@ endif()
 find_library(LADYBUG_LIBRARY lbug
     PATHS ${_LADYBUG_SEARCH_DIRS}
     NO_DEFAULT_PATH)
-
-# Windows: vendored library named lbug_shared.lib (not lbug.lib)
-if(NOT LADYBUG_LIBRARY AND CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    find_library(LADYBUG_LIBRARY lbug_shared
-        PATHS ${LADYBUG_VENDOR_LIB_DIR}
-        NO_DEFAULT_PATH)
-endif()
 
 # System-wide fallback (macOS/Linux only). On Windows (including cross-compile
 # from macOS), the system path contains the Host's liblbug.a which is
