@@ -1,6 +1,27 @@
 # Changelog
 
-## Unreleased
+## v0.2.4 (2026-07-24)
+
+Windows compilation stability — fully static-linked `codescope.exe` (zero MinGW runtime DLLs), LadybugDB disabled on Windows (SQLite-only), and critical cross-compilation bug fixes.
+
+### 🚀 New Features
+
+- **Fully static Windows binary**: `codescope.exe` statically links `libstdc++`, `libgcc`, and `libwinpthread` via `.cargo/config.toml` `-static` rustflag. Zero MinGW runtime DLL dependencies at runtime — no more `libstdc++-6.dll` / `libgcc_s_seh-1.dll` / `libwinpthread-1.dll` version conflicts. (`engine/CMakeLists.txt`, `server/build.rs`)
+- **Dev branch CI for Windows**: New `.github/workflows/dev.yml` validates Windows cross-compilation on push to `dev` branch (manual `workflow_dispatch` also supported). (`dev.yml`)
+
+### 🐛 Bug Fixes
+
+- **Cross-compile host OS detection**: `build.rs` previously used `CARGO_CFG_TARGET_OS` to detect the build host, but during cross-compilation this returns the *target* OS ("windows"), causing `-DCMAKE_SYSTEM_NAME=Windows` to never be passed to CMake. Fixed to use `std::env::consts::OS` for the actual build host. (`server/build.rs`)
+- **Cross-compile compiler selection**: `platform_default_compiler("windows")` returned `gcc`/`g++` on macOS, which resolves to native clang, not the MinGW cross-compiler. Fixed to detect cross-compilation and use `x86_64-w64-mingw32-gcc`/`x86_64-w64-mingw32-g++`. (`server/build.rs`)
+- **Stale LadybugDB CMake cache on cross-compile**: The shared `build-release/` directory retained LadybugDB cache entries from a previous native macOS build. When cross-compiling to Windows, the stale macOS `.dylib` path was passed to the MinGW linker. Fixed by `unset(LADYBUG_LIBRARY CACHE)` in the Windows CMake branch and a Rust-side guard that skips all LadybugDB cache reading on Windows. (`engine/CMakeLists.txt`, `server/build.rs`)
+- **LadybugDB now skipped on Windows**: The vendored `lbug_shared.lib` is a static archive of unverified MinGW ABI with no corresponding `.dll`. Windows builds now compile with `HAS_LADYBUG` undefined and use SQLite as the sole graph store. (`engine/CMakeLists.txt`)
+
+### 🧹 Chores
+
+- **Version bump**: 0.2.3 → 0.2.4
+- **Windows support now explicitly documented as "beta"** in both README.md and README.zh.md.
+
+---
 
 ## v0.2.3 (2026-07-21)
 

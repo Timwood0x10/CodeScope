@@ -4,7 +4,7 @@
 
 它将源代码转化为可验证的事实、可理解的模型和可检查的证据 — 让 AI 能够根据现实验证断言，而非凭空编造。
 
-**版本**: v0.2.3 | **许可证**: Apache 2.0
+**版本**: v0.2.4 | **许可证**: Apache 2.0
 
 ---
 
@@ -231,6 +231,7 @@ codescope cli force_index_files '{"paths":["/path/to/test/file.rs"]}'
 |------|------|
 | **macOS** | Xcode CLT, cmake, Rust (1.85+) |
 | **Linux** | build-essential, cmake, Rust (1.85+) |
+| **Windows** ⚠️ **Beta** | MinGW-w64 14.0.0+，Rust `x86_64-pc-windows-gnu` 目标，cmake。不支持 LadybugDB/Cypher（仅 SQLite）。|
 
 ### 安装预编译二进制
 
@@ -539,4 +540,4 @@ cd CodeScope
 
 Apache 2.0 — 详见 [LICENSE](LICENSE)。
 
-**CodeScope v0.2.3** — 使用 Rust 2024 + C++23 + tree-sitter + SQLite 构建。
+**CodeScope v0.2.4** — 使用 Rust 2024 + C++23 + tree-sitter + SQLite 构建。
