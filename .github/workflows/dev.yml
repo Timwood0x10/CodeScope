@@ -1,0 +1,51 @@
+# Dev branch validation: cross-compile Windows binary from macOS runner
+# to catch regressions in build.rs cross-compilation logic early.
+name: Dev CI (Windows Cross-Compile)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [hhh]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dev-ci-${{ github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  cross-compile-windows:
+    name: Cross-compile codescope.exe (macOS → Windows)
+    # Use macOS runner to test the macOS→Windows cross-compilation path
+    # (build.rs host-OS detection + MinGW cross-compiler selection).
+    # Native Windows builds are covered by the main CI on PR/main.
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7 # v4.2.2
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.95.0 # pinned to match local dev
+
+      - name: Install MinGW cross-compiler
+        run: |
+          brew install mingw-w64
+          # Verify the cross-compiler is on PATH
+          x86_64-w64-mingw32-gcc --version
+
+      - name: Add Windows GNU target
+        run: rustup target add x86_64-pc-windows-gnu
+
+      - name: Cross-compile codescope.exe
+        run: cargo build --release --target x86_64-pc-windows-gnu --bin codescope
+
+      - name: Verify binary
+        run: |
+          ls -lh target/x86_64-pc-windows-gnu/release/codescope.exe
+          file target/x86_64-pc-windows-gnu/release/codescope.exe
+
+      - name: Check binary is PE (Windows executable)
+        run: |
+          file target/x86_64-pc-windows-gnu/release/codescope.exe | grep -i "PE32"
+          echo "✅ Windows cross-compile succeeded"

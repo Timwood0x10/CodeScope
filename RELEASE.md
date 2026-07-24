@@ -1,52 +1,36 @@
-## v0.2.3 (2026-07-21)
+## v0.2.4 (2026-07-24)
 
-Windows beta support — cross-compilation from macOS to `x86_64-pc-windows-gnu` (MinGW), vendored LadybugDB Windows DLL, and CI pipeline. Plus critical bug fixes for the v0.2.2 LadybugDB migration that broke all query tools.
+Windows compilation stability — fully static-linked `codescope.exe` (zero MinGW runtime DLLs), LadybugDB disabled on Windows (SQLite-only), and critical cross-compilation bug fixes.
 
 ### What changed
 
 | Area | Before | After |
 |------|--------|-------|
-| **Windows support** | Not supported | Beta: cross-compiled `codescope.exe` (16MB PE32+), `lbug_shared.dll` bundled, CI `windows-2022` |
-| **`search` tool** | Async FTS on `graph_nodes` (empty), returned no results | Synchronous `MATCH (n) WHERE n.name CONTAINS 'query'` via LadybugDB, ~1ms |
-| **`isGraphReady()`** | Process-in-memory flag only (broken across worker/CLI processes) | Probes LadybugDB directly via `MATCH (n) RETURN count(*)` |
-| **All query tools** | `findSymbolJson` prepare failed, `find_callers`/`find_callees` etc. "graph not ready" | All queries go through `entity`/`relation` tables or LadybugDB |
-| **`graph_nodes`/`graph_edges`** | Still referenced by >20 SQL queries (returning empty) | Fully removed from all query paths. Tables still exist but unused |
-| **`verify_integrity`** | Hangs indefinitely (no timeout) | 10s `QueryDeadlineGuard` |
-| **`make fmt`** | Only checked recently modified files | Full project lint check (`lint-cpp-full`) |
-| **Cross-compilation** | N/A | `build.rs` detects cross-compile vs native Windows, sets `CMAKE_SYSTEM_NAME` only when needed |
+| **Windows runtime deps** | Depended on `libstdc++-6.dll`, `libgcc_s_seh-1.dll`, `libwinpthread-1.dll` — crash if MinGW version mismatched | Fully static via `-static` rustflag — single `codescope.exe` with zero MinGW DLL deps |
+| **Windows LadybugDB** | Vendored `lbug_shared.lib` + `lbug_shared.dll` of unverified MinGW ABI | Disabled entirely — SQLite-only on Windows (`HAS_LADYBUG` undefined) |
+| **Cross-compile host detection** | `build.rs` compared `CARGO_CFG_TARGET_OS` (returns *target* = "windows" during cross-compile) → `-DCMAKE_SYSTEM_NAME=Windows` never set | Uses `std::env::consts::OS` for actual build host |
+| **Cross-compile compiler** | `platform_default_compiler("windows")` returned `gcc`/`g++` (macOS native clang) | Returns `x86_64-w64-mingw32-gcc`/`x86_64-w64-mingw32-g++` when cross-compiling |
+| **Stale CMake cache** | macOS LadybugDB path persisted in shared `build-release/`, passed to MinGW linker | `unset(LADYBUG_LIBRARY CACHE)` on Windows branch + build.rs skips cache reading on Windows |
+| **Dev branch CI** | No automated Windows validation on `dev` | New `.github/workflows/dev.yml`: triggers on push to `dev` (or manual dispatch) |
+| **Windows support** | Unmarked | Documented as **beta** in README |
 
 ### Upgrade notes
 
-- **Windows**: Use `--target x86_64-pc-windows-gnu` for Rust builds. Requires MinGW-w64 14.0.0+. `lbug_shared.dll` must be in the same directory as `codescope.exe` (bundled in the package).
+- **Windows**: The single `codescope.exe` is now fully self-contained — no DLLs to bundle. LadybugDB/Cypher queries are unavailable on Windows; graph storage uses SQLite only.
 - **No breaking API changes**: All MCP tools maintain the same JSON response schema.
-- **`graph_nodes`/`graph_edges` tables are no longer written**: If you have custom scripts that query these tables, migrate to `entity`/`relation`.
-- **LadybugDB is now required for graph queries**: Without LadybugDB, all query tools return "graph not ready" or "LadybugDB not compiled".
 
-### Bug fixes (v0.2.2 migration fallout)
+### Bug fixes
 
 | # | Bug | Root cause | Fix |
 |---|-----|------------|-----|
-| 1 | `findSymbolJson` prepare failed | SQL query referenced `graph_nodes` (empty) | Query `entity` instead |
-| 2 | All tools "graph not ready" | `isGraphReady()` in-memory flag not shared across processes | `probeGraphReady()` queries LadybugDB directly |
-| 3 | `project_overview` total_symbols:0 | Counted `graph_nodes` rows | Count `entity` rows |
-| 4 | `search` returns empty | FTS built on `graph_nodes` (empty), no fallback | `searchLadybugJson()` via LadybugDB Cypher |
-| 5 | `buildFTSFromGraph` empty | FTS tables built from `graph_nodes` | Build from `entity` |
-| 6 | `engine_get_project_node_count` returns 0 | Queried `graph_nodes` | Query `entity` |
-| 7 | `getLatestProjectId` wrong project | Queried `graph_nodes` for node count | Query `entity` |
-| 8 | `verify_integrity` hangs | No query timeout | 10s `QueryDeadlineGuard` |
-| 9 | `buildCSR` reverse query fails | `ORDER BY target_node_id` (wrong column name) | `ORDER BY target_id` |
-| 10 | Version string still 0.2.1 | Hardcoded in `engine_ffi.cpp` | Updated to 0.2.3 |
-
-### Performance
-
-| Metric | Value |
-|--------|-------|
-| CodeScope self-index (212 files) | 899ms |
-| Windows binary size | 16MB (PE32+ executable) |
-| LadybugDB search latency | ~1ms (Cypher CONTAINS) |
-| Query latency (all graph tools) | ~1ms |
-| `make check` | 85 Rust tests + all C++ tests pass |
+| 1 | Cross-compile build.rs ignored cmake system name | `CARGO_CFG_TARGET_OS` returns target during cross-compile | `std::env::consts::OS` for build host |
+| 2 | Wrong compiler used for cross-compile | `platform_default_compiler` returned native `gcc` on macOS | Detect cross-compile → use MinGW cross-compiler |
+| 3 | Stale LadybugDB cache breaks Windows link | macOS `.dylib` path persisted in shared build dir | `unset()` + Rust-side Windows guard |
+| 4 | Windows crash at startup (runtime DLL mismatch) | MinGW libstdc++/libgcc/libwinpthread version conflict | `-static` rustflag bakes all runtime into .exe |
+| 5 | LadybugDB ABI risk on Windows | Vendored `.lib` of unverified MinGW version | Disable LadybugDB on Windows entirely |
 
 ### Full changelog
 
-See [CHANGELOG.md](./CHANGELOG.md) for the complete list of changes, bug fixes, and cross-platform fixes.
+See [CHANGELOG.md](./CHANGELOG.md) for the complete list of changes.
+
+---

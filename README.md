@@ -4,7 +4,7 @@
 
 It transforms source code into verifiable facts, understandable models, and inspectable evidence — enabling AI to validate claims against reality instead of hallucinating.
 
-**Version**: v0.2.3 | **License**: Apache 2.0
+**Version**: v0.2.4 | **License**: Apache 2.0
 
 ---
 
@@ -231,6 +231,7 @@ codescope cli force_index_files '{"paths":["/path/to/test/file.rs"]}'
 |----------|-------------|
 | **macOS** | Xcode CLT, cmake, Rust (1.85+) |
 | **Linux** | build-essential, cmake, Rust (1.85+) |
+| **Windows** ⚠️ **Beta** | MinGW-w64 14.0.0+, Rust `x86_64-pc-windows-gnu` target, cmake. LadybugDB/Cypher not available (SQLite-only). |
 
 ### Install Pre-built Binary
 
@@ -283,7 +284,7 @@ codescope index-parallel /path/to/large/project
 
 ---
 
-## 4. MCP Tools (42 Tools)
+## 5. MCP Tools (42 Tools)
 
 ### Indexing
 
@@ -407,7 +408,7 @@ Change impact     → detect_changes
 
 ---
 
-## 5. Knowledge Graph
+## 6. Knowledge Graph
 
 CodeScope builds a **module-level knowledge graph** as a side product of the verification pipeline. It learns structured metadata about how the project is organized, what's important, what's redundant, and what it promises:
 
@@ -432,7 +433,7 @@ Supported tables: `entity`, `relation`, `architecture_edge`, `module_edge`, `cap
 
 ---
 
-## 6. Benchmark
+## 7. Benchmark
 
 All benchmarks measured on **Apple M3 Max (36 GB RAM)**. Other hardware will produce different results — expect slower performance on less capable machines.
 
@@ -507,7 +508,7 @@ Using code graphs instead of raw source files saves **~98.9% tokens** on average
 
 ---
 
-## 7. Skills (Shell Wrappers)
+## 8. Skills (Shell Wrappers)
 
 The `skills/` directory provides shell scripts that wrap common CodeScope queries so you don't need to remember the JSON schema:
 
@@ -540,7 +541,7 @@ Each script calls `codescope cli <tool_name> '<json_args>'` internally. See `ski
 
 ---
 
-## 8. Environment Variables
+## 9. Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -558,8 +559,8 @@ Each script calls `codescope cli <tool_name> '<json_args>'` internally. See `ski
 
 ---
 
-## 9. License
+## 10. License
 
 Apache 2.0 — see [LICENSE](LICENSE).
 
-**CodeScope v0.2.3** — Built with Rust 2024 + C++23 + tree-sitter + SQLite.
+**CodeScope v0.2.4** — Built with Rust 2024 + C++23 + tree-sitter + SQLite.

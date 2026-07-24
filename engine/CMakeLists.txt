@@ -385,6 +385,32 @@ target_link_libraries(astgraph_engine PUBLIC
 # Set -DLADYBUG_REQUIRED=ON to make the build fail when LadybugDB
 # is not found (useful for production builds that require Cypher).
 option(LADYBUG_REQUIRED "Fail build if LadybugDB is not found" OFF)
+
+# ── Windows: LadybugDB intentionally disabled ───────────────────
+# The vendored engine/third_party/ladybug/lib/windows/ ships only
+# lbug_shared.lib (a static `ar` archive) with no lbug_shared.dll, and its
+# MinGW ABI/runtime is unverified against the build toolchain. CMake's
+# find_library(lbug) cannot match lbug_shared.lib by name anyway. Rather than
+# risk an ABI-mismatch access violation at initLadybugDB() time, Windows
+# builds compile with HAS_LADYBUG undefined and use SQLite as the sole graph
+# store (the pre-existing effective behavior, now made explicit).
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    if(LADYBUG_REQUIRED)
+        message(FATAL_ERROR
+            "LADYBUG_REQUIRED=ON is not supported on Windows. "
+            "LadybugDB is intentionally disabled on Windows (SQLite-only).")
+    endif()
+    # Clear stale LadybugDB cache entries from a previous native (macOS/Linux)
+    # cmake run in the same build directory. Without this, find_library() in the
+    # else() branch below never re-runs (the cache persists), and the stale value
+    # remains — typically pointing at the host platform's LadybugDB path, which is
+    # incompatible with cross-compilation (e.g. macOS .dylib → MinGW linker).
+    unset(LADYBUG_LIBRARY CACHE)
+    unset(LADYBUG_INCLUDE_DIR CACHE)
+    message(STATUS
+        "LadybugDB: skipped on Windows (SQLite-only graph storage; "
+        "HAS_LADYBUG undefined by design).")
+else()
 set(LADYBUG_VENDOR_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ladybug")
  if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
      set(LADYBUG_VENDOR_LIB_DIR "${LADYBUG_VENDOR_DIR}/lib/macos")
@@ -537,6 +563,7 @@ else()
         "The engine will use SQLite for all graph storage.\n"
         "To enable: install LadybugDB or set -DLADYBUG_REQUIRED=ON to enforce.")
 endif()
+endif() # Windows LadybugDB-skip guard
 
 # ── Tests ────────────────────────────────────────────────────────
 # Automated tests live in tests/. Each must run with no command-line
