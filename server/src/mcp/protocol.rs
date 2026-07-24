@@ -42,8 +42,13 @@ pub struct JsonRpcError {
 }
 
 // ── MCP specific types ─────────────────────────────────────────
+// All structs in this section use #[serde(rename_all = "camelCase")]
+// to conform to the MCP protocol spec, which requires camelCase
+// field names in JSON-RPC messages (e.g. "protocolVersion" not
+// "protocol_version", "serverInfo" not "server_info").
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct InitializeResult {
     pub protocol_version: String,
     pub capabilities: ServerCapabilities,
@@ -51,6 +56,7 @@ pub struct InitializeResult {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ServerCapabilities {
     pub tools: ToolCapability,
 }
@@ -62,6 +68,7 @@ pub struct ToolCapability {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ServerInfo {
     pub name: String,
     pub version: String,
@@ -112,8 +119,9 @@ mod tests {
             },
         };
         let json = serde_json::to_value(&r).unwrap();
-        assert_eq!(json["protocol_version"], "2024-11-05");
-        assert_eq!(json["server_info"]["name"], "codescope");
+        // After rename_all = "camelCase", field names use camelCase
+        assert_eq!(json["protocolVersion"], "2024-11-05");
+        assert_eq!(json["serverInfo"]["name"], "codescope");
         assert!(
             json["capabilities"]["tools"]["listChanged"]
                 .as_bool()
