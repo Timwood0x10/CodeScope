@@ -386,38 +386,10 @@ target_link_libraries(astgraph_engine PUBLIC
 # is not found (useful for production builds that require Cypher).
 option(LADYBUG_REQUIRED "Fail build if LadybugDB is not found" OFF)
 
-# ── Windows: LadybugDB intentionally disabled ───────────────────
-# The vendored engine/third_party/ladybug/lib/windows/ ships only
-# lbug_shared.lib (a static `ar` archive) with no lbug_shared.dll, and its
-# MinGW ABI/runtime is unverified against the build toolchain. CMake's
-# find_library(lbug) cannot match lbug_shared.lib by name anyway. Rather than
-# risk an ABI-mismatch access violation at initLadybugDB() time, Windows
-# builds compile with HAS_LADYBUG undefined and use SQLite as the sole graph
-# store (the pre-existing effective behavior, now made explicit).
-if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    if(LADYBUG_REQUIRED)
-        message(FATAL_ERROR
-            "LADYBUG_REQUIRED=ON is not supported on Windows. "
-            "LadybugDB is intentionally disabled on Windows (SQLite-only).")
-    endif()
-    # Clear stale LadybugDB cache entries from a previous native (macOS/Linux)
-    # cmake run in the same build directory. Without this, find_library() in the
-    # else() branch below never re-runs (the cache persists), and the stale value
-    # remains — typically pointing at the host platform's LadybugDB path, which is
-    # incompatible with cross-compilation (e.g. macOS .dylib → MinGW linker).
-    unset(LADYBUG_LIBRARY CACHE)
-    unset(LADYBUG_INCLUDE_DIR CACHE)
-    message(STATUS
-        "LadybugDB: skipped on Windows (SQLite-only graph storage; "
-        "HAS_LADYBUG undefined by design).")
-else()
 set(LADYBUG_VENDOR_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ladybug")
  if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
      set(LADYBUG_VENDOR_LIB_DIR "${LADYBUG_VENDOR_DIR}/lib/macos")
  elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-     # Select the architecture-matched vendored library directory:
-     #   lib/linux       → x86-64
-     #   lib/linux-aarch64 → aarch64
      if(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
          set(LADYBUG_VENDOR_LIB_DIR "${LADYBUG_VENDOR_DIR}/lib/linux-aarch64")
      else()
@@ -431,10 +403,42 @@ set(LADYBUG_VENDOR_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ladybug")
 # Force re-detection: clear stale cache entries from previous runs
 unset(LADYBUG_LIBRARY CACHE)
 unset(LADYBUG_INCLUDE_DIR CACHE)
+
+# ── LadybugDB library search ──────────────────────────────────
+# Priority:  1. Vendored platform directory (NO_DEFAULT_PATH)
+#            2. lbug_shared fallback (Windows: vendored lib is named
+#               lbug_shared.lib, not lbug.lib)
+#            3. System-wide find (macOS/Linux only — skipped on Windows
+#               to avoid finding Host Homebrew liblbug.a during cross-compile)
+#
+# Vendored library naming per platform:
+#   macOS: liblbug.0.dylib     (versioned symlink → liblbug.0.18.3.dylib)
+#   Linux: liblbug.so.0        (versioned symlink → liblbug.so.0.18.3)
+#   Windows (shared): lbug_shared.lib + lbug_shared.dll
+
+# Vendored dir only (platform-specific). On Windows cross-compile we must
+# NOT include /opt/homebrew/lib in PATHS or it picks up the host's liblbug.a.
+set(_LADYBUG_SEARCH_DIRS ${LADYBUG_VENDOR_LIB_DIR})
+if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    list(APPEND _LADYBUG_SEARCH_DIRS /opt/homebrew/lib /usr/local/lib /usr/lib)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    list(APPEND _LADYBUG_SEARCH_DIRS /usr/local/lib /usr/lib)
+endif()
 find_library(LADYBUG_LIBRARY lbug
-    PATHS ${LADYBUG_VENDOR_LIB_DIR} /opt/homebrew/lib /usr/local/lib /usr/lib
+    PATHS ${_LADYBUG_SEARCH_DIRS}
     NO_DEFAULT_PATH)
-if(NOT LADYBUG_LIBRARY)
+
+# Windows: vendored library named lbug_shared.lib (not lbug.lib)
+if(NOT LADYBUG_LIBRARY AND CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    find_library(LADYBUG_LIBRARY lbug_shared
+        PATHS ${LADYBUG_VENDOR_LIB_DIR}
+        NO_DEFAULT_PATH)
+endif()
+
+# System-wide fallback (macOS/Linux only). On Windows (including cross-compile
+# from macOS), the system path contains the Host's liblbug.a which is
+# incompatible — skip the system search entirely.
+if(NOT LADYBUG_LIBRARY AND NOT CMAKE_SYSTEM_NAME STREQUAL "Windows")
     find_library(LADYBUG_LIBRARY lbug)
 endif()
 
@@ -474,7 +478,7 @@ if(LADYBUG_LIBRARY)
 endif()
 
 find_path(LADYBUG_INCLUDE_DIR lbug.h
-    PATHS ${LADYBUG_VENDOR_DIR}/include /opt/homebrew/include /usr/local/include /usr/include
+    PATHS ${LADYBUG_VENDOR_DIR}/include ${LADYBUG_VENDOR_LIB_DIR} /opt/homebrew/include /usr/local/include /usr/include
     NO_DEFAULT_PATH)
 if(NOT LADYBUG_INCLUDE_DIR)
     find_path(LADYBUG_INCLUDE_DIR lbug.h)
@@ -563,7 +567,6 @@ else()
         "The engine will use SQLite for all graph storage.\n"
         "To enable: install LadybugDB or set -DLADYBUG_REQUIRED=ON to enforce.")
 endif()
-endif() # Windows LadybugDB-skip guard
 
 # ── Tests ────────────────────────────────────────────────────────
 # Automated tests live in tests/. Each must run with no command-line

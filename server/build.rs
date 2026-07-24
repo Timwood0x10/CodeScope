@@ -151,54 +151,55 @@ fn main() {
     // and CMakeLists.txt agree on whether HAS_LADYBUG is defined. If
     // CMake found the library, build.rs links it too; otherwise neither
     // side references lbug symbols and the C++ engine uses SQLite only.
-    //
-    // Windows: always None. engine/CMakeLists.txt unconditionally skips
-    // LadybugDB on Windows (stale entries from a previous native cmake
-    // run in the same build-release/ directory are proactively purged by
-    // unset(LADYBUG_LIBRARY CACHE) in the Windows branch, but the defense
-    // also lives here — no cache-reading on Windows at all).
-    let lbug_lib: Option<String> = if target_os == "windows" {
-        None
-    } else {
-        let cmake_cache = format!("{}/CMakeCache.txt", build_dir);
-        std::fs::read_to_string(&cmake_cache)
-            .ok()
-            .and_then(|content| {
-                for line in content.lines() {
-                    if line.starts_with("LADYBUG_LIBRARY:FILEPATH=") {
-                        let val = line.trim_start_matches("LADYBUG_LIBRARY:FILEPATH=");
-                        if !val.is_empty() && val != "LADYBUG_LIBRARY-NOTFOUND" && val != "NOTFOUND"
-                        {
-                            return Some(val.to_string());
-                        }
-                        return None;
+    let cmake_cache = format!("{}/CMakeCache.txt", build_dir);
+    let lbug_lib = std::fs::read_to_string(&cmake_cache)
+        .ok()
+        .and_then(|content| {
+            for line in content.lines() {
+                if line.starts_with("LADYBUG_LIBRARY:FILEPATH=") {
+                    let val = line.trim_start_matches("LADYBUG_LIBRARY:FILEPATH=");
+                    if !val.is_empty() && val != "LADYBUG_LIBRARY-NOTFOUND" && val != "NOTFOUND" {
+                        return Some(val.to_string());
                     }
+                    return None;
                 }
-                None
-            })
-    };
+            }
+            None
+        });
 
     if let Some(lib_path) = &lbug_lib {
-        // CMake found liblbug. Derive the directory and link mode from the path.
-        //
-        // NOTE: Windows never reaches this branch. engine/CMakeLists.txt skips
-        // the LadybugDB find_library() on Windows (the vendored lbug_shared.lib
-        // is a static archive of unverified MinGW ABI, and no lbug_shared.dll
-        // exists), so `lbug_lib` stays None on Windows and the `else if` warning
-        // branch below handles it instead. Graph storage uses SQLite only on
-        // Windows — this is by design, not a regression.
-        let lib_dir = std::path::Path::new(lib_path)
+        // CMake found liblbug. Derive the directory, link mode, and
+        // library name from the path.
+        let lib_file = std::path::Path::new(lib_path);
+        let lib_dir = lib_file
             .parent()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| ".".to_string());
-        let is_static = lib_path.ends_with(".a");
-        let link_mode = if is_static {
-            "static".to_string()
+
+        // Determine link mode from extension:
+        //   .a   → static (Unix/macOS static archive)
+        //   .lib → static (Windows/MinGW static archive)
+        //   .so / .dylib / .dll → dynamic
+        let is_static = lib_path.ends_with(".a")
+            || (std::env::consts::OS == "windows" && lib_path.ends_with(".lib"));
+
+        // Extract library name from filename for the linker.
+        //   liblbug.a       → lbug  (Unix convention: strip "lib" prefix + .a)
+        //   lbug_shared.lib → lbug_shared  (Windows convention: strip .lib)
+        let fname = lib_file
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("lbug")
+            .to_string();
+        let lib_name = if cfg!(target_os = "windows") && lib_path.ends_with(".lib") {
+            fname
         } else {
-            "dylib".to_string()
+            fname.strip_prefix("lib").unwrap_or(&fname).to_string()
         };
+
+        let link_mode = if is_static { "static" } else { "dylib" };
         println!("cargo:rustc-link-search=native={}", lib_dir);
-        println!("cargo:rustc-link-lib={}=lbug", link_mode);
+        println!("cargo:rustc-link-lib={}={}", link_mode, lib_name);
         // Embed the library directory in the binary's rpath so the
         // dynamic linker can find liblbug at runtime without requiring
         // DYLD_LIBRARY_PATH (macOS) or ldconfig (Linux). Windows never
