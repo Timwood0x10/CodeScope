@@ -294,10 +294,8 @@ jobs:
               LBUG_FILE="liblbug.0.dylib"
               ;;
             *-windows)
-              # Windows: LadybugDB is intentionally disabled (see
-              # engine/CMakeLists.txt — HAS_LADYBUG undefined). No shared
-              # library to bundle; graph storage uses SQLite only.
-              LBUG_LIB=""
+              LBUG_LIB="engine/third_party/ladybug/lib/windows/lbug_shared.dll"
+              LBUG_FILE="lbug_shared.dll"
               ;;
           esac
           # Bundle LadybugDB shared lib (Linux/macOS only). Windows builds

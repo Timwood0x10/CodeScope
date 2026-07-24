@@ -4,11 +4,7 @@
 # runs `cargo build --release --target x86_64-pc-windows-gnu --bin codescope`).
 # The per-crate `server/.cargo/config.toml` (profile/lto tuning) is NOT
 # consulted for root-level builds, so cross-cutting target flags belong here.
-
-[build]
-# Use all available CPU cores for parallel compilation
-jobs = -1
-
+#
 # Windows GNU target: statically link the MinGW runtime so `codescope.exe` is
 # self-contained. This eliminates dynamic dependencies on libgcc_s_seh-1.dll,
 # libstdc++-6.dll, and libwinpthread-1.dll — the root cause of:

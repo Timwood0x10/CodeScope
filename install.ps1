@@ -96,6 +96,13 @@ if (-not (Test-Path "$InstallDir\codescope.exe")) {
     exit 1
 }
 
+# Verify LadybugDB DLL exists (bundled in the tarball)
+if (Test-Path "$InstallDir\lbug_shared.dll") {
+    Write-Host "  LadybugDB DLL installed to: $InstallDir\lbug_shared.dll" -ForegroundColor Green
+} else {
+    Write-Host "  ⚠  LadybugDB DLL not found — graph queries will be unavailable" -ForegroundColor Yellow
+}
+
 Write-Host ""
 Write-Host "=== Done ===" -ForegroundColor Green
 Write-Host ""
