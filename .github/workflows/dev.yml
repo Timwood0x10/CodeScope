@@ -4,6 +4,8 @@ name: Dev CI (Windows Cross-Compile)
 
 on:
   workflow_dispatch:
+  push:
+    branches: [dev]
 
 permissions:
   contents: read
