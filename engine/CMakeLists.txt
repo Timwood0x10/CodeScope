@@ -400,6 +400,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
             "LADYBUG_REQUIRED=ON is not supported on Windows. "
             "LadybugDB is intentionally disabled on Windows (SQLite-only).")
     endif()
+    # Clear stale LadybugDB cache entries from a previous native (macOS/Linux)
+    # cmake run in the same build directory. Without this, find_library() in the
+    # else() branch below never re-runs (the cache persists), and the stale value
+    # remains — typically pointing at the host platform's LadybugDB path, which is
+    # incompatible with cross-compilation (e.g. macOS .dylib → MinGW linker).
+    unset(LADYBUG_LIBRARY CACHE)
+    unset(LADYBUG_INCLUDE_DIR CACHE)
     message(STATUS
         "LadybugDB: skipped on Windows (SQLite-only graph storage; "
         "HAS_LADYBUG undefined by design).")

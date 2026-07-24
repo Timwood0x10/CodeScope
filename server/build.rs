@@ -86,8 +86,13 @@ fn main() {
     // On native Windows, CMake detects the system correctly and should NOT be
     // overridden — setting CMAKE_SYSTEM_NAME on Windows would break detection.
     if target_os == "windows" {
-        let host_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-        let is_cross = host_os != "windows";
+        // NOTE: CARGO_CFG_TARGET_OS gives the CROSS target, not the host.
+        // Use std::env::consts::OS to get the actual build host:
+        //   "macos" on macOS, "linux" on Linux, "windows" on Windows.
+        // Previously this line read CARGO_CFG_TARGET_OS again, which during a
+        // cross-compile returns "windows" and made is_cross always false.
+        let build_host = std::env::consts::OS;
+        let is_cross = build_host != "windows";
         if is_cross {
             cmake_args.push("-DCMAKE_SYSTEM_NAME=Windows".to_string());
             // MinGW cross-compiler needs the RC compiler for Windows resources
@@ -140,27 +145,40 @@ fn main() {
     println!("cargo:rustc-link-search=native={}", build_dir);
     println!("cargo:rustc-link-lib=static=astgraph_engine");
 
-    // LadybugDB (optional, for embedded graph storage via Cypher).
+    // ── LadybugDB (optional, for embedded graph storage via Cypher) ──
     // Read the CMake cache to determine whether CMake's find_library()
     // succeeded — this is the single source of truth, ensuring build.rs
     // and CMakeLists.txt agree on whether HAS_LADYBUG is defined. If
     // CMake found the library, build.rs links it too; otherwise neither
     // side references lbug symbols and the C++ engine uses SQLite only.
-    let cmake_cache = format!("{}/CMakeCache.txt", build_dir);
-    let lbug_lib = std::fs::read_to_string(&cmake_cache)
-        .ok()
-        .and_then(|content| {
-            for line in content.lines() {
-                if line.starts_with("LADYBUG_LIBRARY:FILEPATH=") {
-                    let val = line.trim_start_matches("LADYBUG_LIBRARY:FILEPATH=");
-                    if !val.is_empty() && val != "LADYBUG_LIBRARY-NOTFOUND" && val != "NOTFOUND" {
-                        return Some(val.to_string());
+    //
+    // Windows: always None. engine/CMakeLists.txt unconditionally skips
+    // LadybugDB on Windows (stale entries from a previous native cmake
+    // run in the same build-release/ directory are proactively purged by
+    // unset(LADYBUG_LIBRARY CACHE) in the Windows branch, but the defense
+    // also lives here — no cache-reading on Windows at all).
+    let lbug_lib: Option<String> = if target_os == "windows" {
+        None
+    } else {
+        let cmake_cache = format!("{}/CMakeCache.txt", build_dir);
+        std::fs::read_to_string(&cmake_cache)
+            .ok()
+            .and_then(|content| {
+                for line in content.lines() {
+                    if line.starts_with("LADYBUG_LIBRARY:FILEPATH=") {
+                        let val = line.trim_start_matches("LADYBUG_LIBRARY:FILEPATH=");
+                        if !val.is_empty()
+                            && val != "LADYBUG_LIBRARY-NOTFOUND"
+                            && val != "NOTFOUND"
+                        {
+                            return Some(val.to_string());
+                        }
+                        return None;
                     }
-                    return None;
                 }
-            }
-            None
-        });
+                None
+            })
+    };
 
     if let Some(lib_path) = &lbug_lib {
         // CMake found liblbug. Derive the directory and link mode from the path.
@@ -204,10 +222,12 @@ fn main() {
     }
 
     // C++ standard library: libc++ on macOS, libstdc++ on Linux/Windows.
-    // On Windows (MinGW GNU ABI) link libstdc++ STATICALLY. Combined with the
-    // `-static` rustflag in .cargo/config.toml [target.x86_64-pc-windows-gnu],
-    // this bakes the C++ runtime into codescope.exe so it no longer depends on
-    // libstdc++-6.dll / libgcc_s_seh-1.dll / libwinpthread-1.dll at runtime —
+    // On Windows (MinGW GNU ABI) link libstdc++ STATICALLY. This is intentionally
+    // redundant with the `-static` rustflag in .cargo/config.toml
+    // [target.x86_64-pc-windows-gnu] — the explicit `static=` mode here provides
+    // defense in depth (works even if config.toml is absent). Together they bake
+    // the C++ runtime into codescope.exe so it no longer depends on
+    // libstdc++-6.dll / libgcc_s_seh-1.dll / libwinpthread-1.dll at runtime,
     // eliminating the MinGW 14.0.0 vs 16.1.0 runtime-DLL mismatch that caused
     // access-violation crashes after SQLite init and PowerShell DLL pollution.
     match target_os.as_str() {
@@ -250,9 +270,24 @@ fn platform_default_compiler(target_os: &str) -> (String, String) {
             ("gcc".to_string(), "g++".to_string())
         }
         "windows" => {
-            // Windows: MinGW gcc/g++ (installed via choco)
-            eprintln!("build.rs: Windows → gcc/g++ (MinGW)");
-            ("gcc".to_string(), "g++".to_string())
+            // Native Windows: MinGW gcc/g++ (installed via choco).
+            // Cross-compilation (macOS/Linux → Windows): use the MinGW
+            // cross-compiler (x86_64-w64-mingw32-gcc) from mingw-w64 Homebrew
+            // formula, which is on PATH when installed.
+            let build_host = std::env::consts::OS;
+            if build_host == "windows" {
+                eprintln!("build.rs: Windows native → gcc/g++ (MinGW)");
+                ("gcc".to_string(), "g++".to_string())
+            } else {
+                eprintln!(
+                    "build.rs: cross-compile {}→windows → x86_64-w64-mingw32-gcc/g++",
+                    build_host
+                );
+                (
+                    "x86_64-w64-mingw32-gcc".to_string(),
+                    "x86_64-w64-mingw32-g++".to_string(),
+                )
+            }
         }
         _ => {
             eprintln!("build.rs: unknown OS {} → clang fallback", target_os);
