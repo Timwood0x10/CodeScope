@@ -277,7 +277,7 @@ codescope index-parallel /path/to/large/project
 
 ---
 
-## 4. MCP 工具（37 个工具）
+## 5. MCP 工具（37 个工具）
 
 ### 索引
 
@@ -385,7 +385,7 @@ HTTP 路由         → get_routes
 
 ---
 
-## 5. 知识图谱
+## 6. 知识图谱
 
 CodeScope 在验证管线的副产品中构建了一个**模块级知识图谱**。它学习的是结构化的元数据 — 项目如何组织、什么重要、什么冗余、承诺了什么：
 
@@ -410,7 +410,7 @@ get_knowledge_graph {"table":"capability","limit":10}
 
 ---
 
-## 6. 性能基准
+## 7. 性能基准
 
 所有基准测试在 **Apple M3 Max（36 GB RAM）** 上测得。其他硬件会产生不同的结果 — 性能较低的机器上预期会慢一些。
 
@@ -484,7 +484,7 @@ get_knowledge_graph {"table":"capability","limit":10}
 
 ---
 
-## 7. Skills（Shell 封装脚本）
+## 8. Skills（Shell 封装脚本）
 
 `skills/` 目录提供了一系列 Shell 脚本，封装了常用的 CodeScope 查询，无需记忆 JSON 参数格式：
 
@@ -517,7 +517,7 @@ cd CodeScope
 
 ---
 
-## 8. 环境变量
+## 9. 环境变量
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
@@ -535,7 +535,7 @@ cd CodeScope
 
 ---
 
-## 9. 许可证
+## 10. 许可证
 
 Apache 2.0 — 详见 [LICENSE](LICENSE)。
 

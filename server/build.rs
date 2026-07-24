@@ -164,51 +164,31 @@ fn main() {
 
     if let Some(lib_path) = &lbug_lib {
         // CMake found liblbug. Derive the directory and link mode from the path.
-        let is_windows = target_os == "windows";
-        let (lib_dir, lib_name, link_mode, is_static) = if is_windows {
-            // Windows cross-compile: use vendored Windows library directly.
-            // CMake cache stores the macOS path (from the host build), so
-            // we ignore it and use the Windows-specific path.
-            let win_lib_dir = format!("{}/third_party/ladybug/lib/windows", engine_dir);
-            (
-                win_lib_dir,
-                "lbug_shared".to_string(),
-                "dylib".to_string(),
-                false,
-            )
+        //
+        // NOTE: Windows never reaches this branch. engine/CMakeLists.txt skips
+        // the LadybugDB find_library() on Windows (the vendored lbug_shared.lib
+        // is a static archive of unverified MinGW ABI, and no lbug_shared.dll
+        // exists), so `lbug_lib` stays None on Windows and the `else if` warning
+        // branch below handles it instead. Graph storage uses SQLite only on
+        // Windows — this is by design, not a regression.
+        let lib_dir = std::path::Path::new(lib_path)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| ".".to_string());
+        let is_static = lib_path.ends_with(".a");
+        let link_mode = if is_static {
+            "static".to_string()
         } else {
-            let dir = std::path::Path::new(lib_path)
-                .parent()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|| ".".to_string());
-            let is_static = lib_path.ends_with(".a");
-            let mode = if is_static {
-                "static".to_string()
-            } else {
-                "dylib".to_string()
-            };
-            (dir, "lbug".to_string(), mode, is_static)
+            "dylib".to_string()
         };
         println!("cargo:rustc-link-search=native={}", lib_dir);
-        println!("cargo:rustc-link-lib={}={}", link_mode, lib_name);
+        println!("cargo:rustc-link-lib={}=lbug", link_mode);
         // Embed the library directory in the binary's rpath so the
         // dynamic linker can find liblbug at runtime without requiring
-        // DYLD_LIBRARY_PATH (macOS), ldconfig (Linux), or PATH (Windows).
-        if !is_static && !is_windows {
+        // DYLD_LIBRARY_PATH (macOS) or ldconfig (Linux). Windows never
+        // reaches here (see NOTE above), so no PATH-copy logic is needed.
+        if !is_static {
             println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir);
-        }
-        // Windows: copy lbug_shared.dll next to the executable
-        if is_windows {
-            let dll_name = format!("{}/lbug_shared.dll", lib_dir);
-            let out_dir = env::var("OUT_DIR").unwrap();
-            let out_path = std::path::Path::new(&out_dir);
-            // cargo's OUT_DIR is in the build tree; copy to target/release/
-            let target_dir = out_path.ancestors().nth(3).unwrap();
-            let dll_dest = format!("{}/lbug_shared.dll", target_dir.display());
-            if std::path::Path::new(&dll_name).exists() {
-                let _ = std::fs::copy(&dll_name, &dll_dest);
-                eprintln!("build.rs: Windows DLL copied to {}", dll_dest);
-            }
         }
         eprintln!(
             "build.rs: LadybugDB {} lib found via CMake cache at {}",
@@ -223,9 +203,16 @@ fn main() {
         eprintln!("  Install LadybugDB: https://ladybugdb.com/docs/getting-started");
     }
 
-    // C++ standard library: libc++ on macOS, libstdc++ on Linux/Windows
+    // C++ standard library: libc++ on macOS, libstdc++ on Linux/Windows.
+    // On Windows (MinGW GNU ABI) link libstdc++ STATICALLY. Combined with the
+    // `-static` rustflag in .cargo/config.toml [target.x86_64-pc-windows-gnu],
+    // this bakes the C++ runtime into codescope.exe so it no longer depends on
+    // libstdc++-6.dll / libgcc_s_seh-1.dll / libwinpthread-1.dll at runtime —
+    // eliminating the MinGW 14.0.0 vs 16.1.0 runtime-DLL mismatch that caused
+    // access-violation crashes after SQLite init and PowerShell DLL pollution.
     match target_os.as_str() {
         "macos" => println!("cargo:rustc-link-lib=dylib=c++"),
+        "windows" => println!("cargo:rustc-link-lib=static=stdc++"),
         _ => println!("cargo:rustc-link-lib=dylib=stdc++"),
     }
 }

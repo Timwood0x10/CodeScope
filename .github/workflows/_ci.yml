@@ -77,15 +77,30 @@ jobs:
 
       - name: Install deps (Windows)
         if: matrix.os == 'windows-2022'
+        shell: bash
         run: |
-          # Install MinGW-w64 toolchain (version pinned to match local dev: GCC 16.1.0)
-          choco install mingw --version=14.0.0 -y --no-progress
-          echo "C:\tools\mingw64\bin" >> $GITHUB_PATH
+          # WinLibs portable MinGW-w64: GCC 16.1.0 + MinGW-w64 14.0.0 + UCRT +
+          # SEH + POSIX threads (x86_64), pinned to match local dev toolchain.
+          #
+          # Why not chocolatey: the `mingw` chocolatey package version number
+          # does NOT correspond to the GCC version (package 14.0.0 ships a
+          # different GCC), so it cannot reliably pin GCC 16.1.0. WinLibs
+          # portable builds give a deterministic, exact toolchain. Combined
+          # with the static-link rustflags in .cargo/config.toml
+          # ([target.x86_64-pc-windows-gnu] -static), codescope.exe becomes
+          # self-contained and no longer depends on MinGW runtime DLLs, so
+          # the official release and local builds can no longer clash on
+          # libgcc_s_seh-1.dll / libstdc++-6.dll / libwinpthread-1.dll.
+          WINLIBS_URL="https://github.com/brechtsanders/winlibs_mingw/releases/download/16.1.0posix-14.0.0-ucrt-r3/winlibs-x86_64-posix-seh-gcc-16.1.0-mingw-w64ucrt-14.0.0-r3.7z"
+          curl -fsSL -o winlibs.7z "$WINLIBS_URL"
+          7z x winlibs.7z -o"C:/winlibs" -y -bd
+          echo "C:\winlibs\mingw64\bin" >> $GITHUB_PATH
           # Add Rust Windows GNU target (Rust version pinned to 1.95.0 by dtolnay/rust-toolchain@1.95.0)
           rustup target add x86_64-pc-windows-gnu
-          echo "CC=x86_64-w64-mingw32-gcc" >> $GITHUB_ENV
-          echo "CXX=x86_64-w64-mingw32-g++" >> $GITHUB_ENV
+          echo "CC=gcc" >> $GITHUB_ENV
+          echo "CXX=g++" >> $GITHUB_ENV
           # CMake 4.4.0 and Ninja 1.13.2 are pre-installed on GitHub Actions Windows runners
+          /C/winlibs/mingw64/bin/gcc --version
 
       - name: Cache Cargo registry
         uses: actions/cache@v6 # v4.2.3
@@ -279,12 +294,17 @@ jobs:
               LBUG_FILE="liblbug.0.dylib"
               ;;
             *-windows)
-              # Windows: bundle lbug_shared.dll next to the .exe
-              LBUG_LIB="engine/third_party/ladybug/lib/windows/lbug_shared.dll"
-              LBUG_FILE="lbug_shared.dll"
+              # Windows: LadybugDB is intentionally disabled (see
+              # engine/CMakeLists.txt — HAS_LADYBUG undefined). No shared
+              # library to bundle; graph storage uses SQLite only.
+              LBUG_LIB=""
               ;;
           esac
-          cp -L "$LBUG_LIB" "package/$LBUG_FILE"
+          # Bundle LadybugDB shared lib (Linux/macOS only). Windows builds
+          # without LadybugDB, so LBUG_LIB is empty there — skip the copy.
+          if [ -n "$LBUG_LIB" ]; then
+            cp -L "$LBUG_LIB" "package/$LBUG_FILE"
+          fi
           # Set rpath to $ORIGIN (Linux) / @executable_path (macOS) so the
           # dynamic linker finds the bundled library in the same directory.
           if [[ "${{ matrix.os }}" == ubuntu-* ]]; then

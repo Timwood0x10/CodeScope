@@ -1,0 +1,21 @@
+# Workspace-level Cargo configuration.
+#
+# This file is read by `cargo` invocations from the repository root (where CI
+# runs `cargo build --release --target x86_64-pc-windows-gnu --bin codescope`).
+# The per-crate `server/.cargo/config.toml` (profile/lto tuning) is NOT
+# consulted for root-level builds, so cross-cutting target flags belong here.
+#
+# Windows GNU target: statically link the MinGW runtime so `codescope.exe` is
+# self-contained. This eliminates dynamic dependencies on libgcc_s_seh-1.dll,
+# libstdc++-6.dll, and libwinpthread-1.dll — the root cause of:
+#   * ABI incompatibility between MinGW 14.0.0 (official release) and 16.1.0
+#     (local dev) runtime DLLs.
+#   * Access-violation crashes after SQLite init (heap/exception-model
+#     mismatch between the statically-linked engine and a mismatched runtime
+#     DLL on PATH).
+#   * System-wide DLL pollution (PowerShell memory access violations).
+# `-static` makes the gcc linker prefer static archives for every `-l` flag;
+# Windows system DLLs (KERNEL32 / msvcrt / ucrtbase / ADVAPI32) only ship as
+# import libraries and are linked dynamically regardless, so they are unaffected.
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "link-arg=-static"]
