@@ -167,9 +167,7 @@ fn main() {
                 for line in content.lines() {
                     if line.starts_with("LADYBUG_LIBRARY:FILEPATH=") {
                         let val = line.trim_start_matches("LADYBUG_LIBRARY:FILEPATH=");
-                        if !val.is_empty()
-                            && val != "LADYBUG_LIBRARY-NOTFOUND"
-                            && val != "NOTFOUND"
+                        if !val.is_empty() && val != "LADYBUG_LIBRARY-NOTFOUND" && val != "NOTFOUND"
                         {
                             return Some(val.to_string());
                         }
