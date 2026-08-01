@@ -243,34 +243,56 @@ void RustVisitor::handleImpl(TSNode node, uint64_t parent_id)
 	std::string self_type = impl_type.empty() ? trait_name : impl_type;
 	pushImplScope(self_type);
 
+	// Rust's impl_item grammar nests methods inside a `declaration_list`
+	// body (impl_item.body = declaration_list), so `fn method() {...}`
+	// is NOT a direct child of impl_item. Previously only direct
+	// children were scanned, so every method inside an impl block was
+	// silently dropped (memscope-rs entity kind=1 count was 0, and
+	// method-internal calls like self.foo() never reached handleCall).
+	// Walk the declaration_list (and keep direct function_item handling
+	// for robustness) so method entities + bodies are extracted.
+	auto handleImplMethod = [&](TSNode fn_node) {
+		SourceRange loc = location(fn_node);
+		std::string name = extractName(fn_node);
+		if (name.empty())
+			return;
+		uint64_t id = emitter_->emitMethod(
+			name, loc, parent_id, 0, false, detectVisibility(fn_node));
+		defineSymbol(name, id);
+		pushScope();
+		pushFunctionScope(id);
+		uint32_t cc = ts_node_child_count(fn_node);
+		for (uint32_t j = 0; j < cc; j++) {
+			TSNode gc = ts_node_child(fn_node, j);
+			if (!ts_node_is_named(gc))
+				continue;
+			const char *t = ts_node_type(gc);
+			if (strcmp(t, "identifier") == 0)
+				continue;
+			if (strcmp(t, "parameters") == 0 ||
+			    strcmp(t, "block") == 0)
+				visitChildren(gc, id);
+		}
+		popFunctionScope();
+		popScope();
+	};
+
 	for (uint32_t i = 0; i < cnt; i++) {
 		TSNode c = ts_node_child(node, i);
 		if (!ts_node_is_named(c))
 			continue;
-		if (strcmp(ts_node_type(c), "function_item") == 0) {
-			SourceRange loc = location(c);
-			std::string name = extractName(c);
-			if (!name.empty()) {
-				uint64_t id = emitter_->emitMethod(
-					name, loc, parent_id, 0, false,
-					detectVisibility(c));
-				defineSymbol(name, id);
-				pushScope();
-				pushFunctionScope(id);
-				uint32_t cc = ts_node_child_count(c);
-				for (uint32_t j = 0; j < cc; j++) {
-					TSNode gc = ts_node_child(c, j);
-					if (!ts_node_is_named(gc))
-						continue;
-					const char *t = ts_node_type(gc);
-					if (strcmp(t, "identifier") == 0)
-						continue;
-					if (strcmp(t, "parameters") == 0 ||
-					    strcmp(t, "block") == 0)
-						visitChildren(gc, id);
-				}
-				popFunctionScope();
-				popScope();
+		const char *ct = ts_node_type(c);
+		if (strcmp(ct, "function_item") == 0) {
+			handleImplMethod(c);
+		} else if (strcmp(ct, "declaration_list") == 0) {
+			// Methods are nested here per the grammar.
+			uint32_t dc = ts_node_child_count(c);
+			for (uint32_t d = 0; d < dc; d++) {
+				TSNode mc = ts_node_child(c, d);
+				if (!ts_node_is_named(mc))
+					continue;
+				if (strcmp(ts_node_type(mc), "function_item") == 0)
+					handleImplMethod(mc);
 			}
 		}
 	}
@@ -287,14 +309,19 @@ static std::string bareCalleeName(const std::string &qualified)
 	const size_t dot = qualified.rfind('.');
 	const size_t colon = qualified.rfind("::");
 	size_t sep = std::string::npos;
+	bool sep_is_colon = false;
 	if (dot != std::string::npos && colon != std::string::npos)
-		sep = (dot > colon) ? dot : colon;
+		sep = (dot > colon) ? dot : colon,
+		sep_is_colon = (colon > dot);
 	else if (dot != std::string::npos)
 		sep = dot;
 	else if (colon != std::string::npos)
-		sep = colon;
+		sep = colon, sep_is_colon = true;
 	if (sep != std::string::npos)
-		return qualified.substr(sep + 1);
+		// "::" is a two-char separator: skip BOTH colons so
+		// "Type::new" yields "new" (not ":new"). A single "." skips
+		// one char, so "obj.method" yields "method".
+		return qualified.substr(sep + (sep_is_colon ? 2 : 1));
 	return qualified;
 }
 
