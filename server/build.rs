@@ -199,12 +199,47 @@ fn main() {
         };
         println!("cargo:rustc-link-search=native={}", lib_dir);
         println!("cargo:rustc-link-lib={}=lbug", link_mode);
-        // Embed the library directory in the binary's rpath so the
-        // dynamic linker can find liblbug at runtime without requiring
-        // DYLD_LIBRARY_PATH (macOS) or ldconfig (Linux). Windows never
-        // reaches here (see NOTE above), so no PATH-copy logic is needed.
+        // Embed RELATIVE rpaths so the binary stays portable: a hardcoded
+        // build-machine absolute path (the previous behavior) made the
+        // binary fail on any other machine — dyld reported
+        // "Library not loaded: @rpath/liblbug.0.dylib" when the embedded
+        // /Users/.../engine/third_party/ladybug/lib/macos path did not
+        // exist. @executable_path (macOS) / $ORIGIN (Linux) resolve
+        // relative to the binary's own location, so moving the whole
+        // repository (or re-cloning it elsewhere) keeps the library
+        // findable. Two candidates cover the `target/release/codescope`
+        // and `bin/codescope` layouts; dyld tries each in order. Windows
+        // never reaches here (see NOTE above), so no PATH-copy is needed.
         if !is_static {
-            println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir);
+            // Windows never reaches this branch (lbug_lib is always None
+            // there — LadybugDB is disabled on Windows, SQLite only), so
+            // no Windows RPATH is needed.
+            if target_os == "macos" {
+                println!(
+                    "cargo:rustc-link-arg=-Wl,-rpath,@executable_path/../../engine/third_party/ladybug/lib/macos"
+                );
+                println!(
+                    "cargo:rustc-link-arg=-Wl,-rpath,@executable_path/../engine/third_party/ladybug/lib/macos"
+                );
+            } else if target_os == "linux" {
+                // Linux has per-arch vendored dirs: x86_64 -> "linux",
+                // aarch64 -> "linux-aarch64". Pick by target arch so the
+                // relative RPATH resolves on both.
+                let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+                let linux_lib_dir = if target_arch == "aarch64" {
+                    "linux-aarch64"
+                } else {
+                    "linux"
+                };
+                println!(
+                    "cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN/../../engine/third_party/ladybug/lib/{}",
+                    linux_lib_dir
+                );
+                println!(
+                    "cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN/../engine/third_party/ladybug/lib/{}",
+                    linux_lib_dir
+                );
+            }
         }
         eprintln!(
             "build.rs: LadybugDB {} lib found via CMake cache at {}",

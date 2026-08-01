@@ -273,6 +273,35 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	// true, buildGraph uses the incremental path: only cycles the unique
 	// edge index instead of dropping/recreating all 6 lookup indexes.
 	bool is_reindex = false;
+
+	// Pre-detect Java projects BEFORE the directory walk. The FilterPolicy
+	// Java carve-out defers test/docs/example/samples/... dirs to a
+	// top-only check ONLY when lang_context_ == "java", but lang_context_
+	// previously flipped only upon seeing the FIRST .java file during the
+	// walk — and that file may itself live under an example/samples/...
+	// dir which is skipped at any depth while lang_context_ is still
+	// empty. That chicken-and-egg made Java projects with such package
+	// dirs index 0 files (e.g. spring-petclinic's
+	// org/springframework/samples/petclinic). Fix: cheap recursive scan
+	// for any *.java before the main walk and flip lang_context_ early.
+	{
+		std::error_code ec;
+		auto pit = std::filesystem::recursive_directory_iterator(
+			dir,
+			std::filesystem::directory_options::skip_permission_denied,
+			ec);
+		std::filesystem::recursive_directory_iterator pend;
+		while (!ec && pit != pend) {
+			const auto &pent = *pit;
+			if (pent.is_regular_file() &&
+			    pent.path().extension() == ".java") {
+				filter.setLangContext("java");
+				break;
+			}
+			pit.increment(ec);
+		}
+	}
+
 	try {
 		auto it = std::filesystem::recursive_directory_iterator(
 			dir, std::filesystem::directory_options::

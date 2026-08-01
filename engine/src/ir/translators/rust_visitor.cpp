@@ -256,8 +256,9 @@ void RustVisitor::handleImpl(TSNode node, uint64_t parent_id)
 		std::string name = extractName(fn_node);
 		if (name.empty())
 			return;
-		uint64_t id = emitter_->emitMethod(
-			name, loc, parent_id, 0, false, detectVisibility(fn_node));
+		uint64_t id = emitter_->emitMethod(name, loc, parent_id, 0,
+						   false,
+						   detectVisibility(fn_node));
 		defineSymbol(name, id);
 		pushScope();
 		pushFunctionScope(id);
@@ -291,7 +292,8 @@ void RustVisitor::handleImpl(TSNode node, uint64_t parent_id)
 				TSNode mc = ts_node_child(c, d);
 				if (!ts_node_is_named(mc))
 					continue;
-				if (strcmp(ts_node_type(mc), "function_item") == 0)
+				if (strcmp(ts_node_type(mc), "function_item") ==
+				    0)
 					handleImplMethod(mc);
 			}
 		}
@@ -311,8 +313,7 @@ static std::string bareCalleeName(const std::string &qualified)
 	size_t sep = std::string::npos;
 	bool sep_is_colon = false;
 	if (dot != std::string::npos && colon != std::string::npos)
-		sep = (dot > colon) ? dot : colon,
-		sep_is_colon = (colon > dot);
+		sep = (dot > colon) ? dot : colon, sep_is_colon = (colon > dot);
 	else if (dot != std::string::npos)
 		sep = dot;
 	else if (colon != std::string::npos)
