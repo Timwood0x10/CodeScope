@@ -433,6 +433,7 @@ void JsVisitor::visitCallExpr(TSNode node, uint64_t parent_id)
 {
 	SourceRange loc = location(node);
 	std::string callee_name;
+	bool has_member_expr = false; // obj.method() — member expression call
 
 	uint32_t count = ts_node_child_count(node);
 
@@ -458,6 +459,12 @@ void JsVisitor::visitCallExpr(TSNode node, uint64_t parent_id)
 		// (the method name) from the member_expression, mirroring
 		// CVisitor::extractFieldMethodName for field_expression.
 		if (strcmp(t, "member_expression") == 0) {
+			// obj.method() — mark as a method call so the Resolver's
+			// CallKindMatch factor and receiver evidence apply. The
+			// bare method name below has no '.', so the
+			// callee_name.find('.') classification below would
+			// otherwise mislabel every method call as Direct.
+			has_member_expr = true;
 			uint32_t mc = ts_node_child_count(child);
 			for (uint32_t j = 0; j < mc; j++) {
 				TSNode mchild = ts_node_child(child, j);
@@ -492,9 +499,13 @@ void JsVisitor::visitCallExpr(TSNode node, uint64_t parent_id)
 		return;
 	}
 
-	// Classify call kind
+	// Classify call kind. obj.method() member-expression calls carry only
+	// the bare method name (property_identifier), so callee_name has no
+	// '.' — without has_member_expr every method call was mislabeled
+	// Direct, skipping the Resolver's CallKindMatch factor and receiver
+	// evidence. Mark them Method explicitly.
 	CallKind call_kind = CallKind::Direct;
-	if (callee_name.find('.') != std::string::npos)
+	if (has_member_expr || callee_name.find('.') != std::string::npos)
 		call_kind = CallKind::Method;
 	// Constructor detection: any non-empty capitalized name. The previous
 	// `callee_name.size() > 3` threshold skipped short class names like

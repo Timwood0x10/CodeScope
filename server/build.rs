@@ -216,6 +216,9 @@ fn main() {
             // no Windows RPATH is needed.
             if target_os == "macos" {
                 println!(
+                    "cargo:rustc-link-arg=-Wl,-rpath,@executable_path/../../../engine/third_party/ladybug/lib/macos"
+                );
+                println!(
                     "cargo:rustc-link-arg=-Wl,-rpath,@executable_path/../../engine/third_party/ladybug/lib/macos"
                 );
                 println!(
@@ -231,6 +234,10 @@ fn main() {
                 } else {
                     "linux"
                 };
+                println!(
+                    "cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN/../../../engine/third_party/ladybug/lib/{}",
+                    linux_lib_dir
+                );
                 println!(
                     "cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN/../../engine/third_party/ladybug/lib/{}",
                     linux_lib_dir

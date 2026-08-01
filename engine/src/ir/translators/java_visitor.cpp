@@ -259,10 +259,18 @@ void JavaVisitor::handleMethodInvocation(TSNode node, uint64_t parent_id)
 		return;
 	}
 
-	// Classify call kind
+	// Classify call kind. obj.method() / Class.method() — the
+	// method_invocation node carries an optional `object` field (the
+	// receiver). `name` above is the bare method name (no '.'), so the
+	// old find('.') check never matched and every method call was
+	// mislabeled Direct, skipping the Resolver's CallKindMatch factor
+	// and receiver evidence. Detect the receiver to mark Method.
+	TSNode obj_node = ts_node_child_by_field_name(node, "object", 6);
+	bool has_receiver = !ts_node_is_null(obj_node);
 	CallKind call_kind = CallKind::Direct;
-	// Check for method call: obj.method() or Class.method()
-	if (name.find('.') != std::string::npos) {
+	if (has_receiver) {
+		call_kind = CallKind::Method;
+	} else if (name.find('.') != std::string::npos) {
 		size_t dot = name.rfind('.');
 		std::string method = name.substr(dot + 1);
 		// Constructor detection: name starts with uppercase (Java convention)
@@ -458,6 +466,7 @@ void JavaVisitor::handleVariableDecl(TSNode node, uint64_t parent_id)
 	TSNode parent = ts_node_parent(node);
 	if (ts_node_is_null(parent))
 		return;
+	bool have_type = false;
 	uint32_t pc = ts_node_child_count(parent);
 	for (uint32_t i = 0; i < pc; i++) {
 		TSNode c = ts_node_child(parent, i);
@@ -476,7 +485,51 @@ void JavaVisitor::handleVariableDecl(TSNode node, uint64_t parent_id)
 				// handleMethodInvocation can resolve
 				// receiver_type for obj.method() calls.
 				recordVarType(name, type_name);
+				have_type = true;
 			}
+			break;
+		}
+	}
+
+	// `var x = new Foo()` has no explicit type_identifier sibling — the
+	// parent's type is the `var` keyword. Infer the type from the
+	// initializer's object_creation_expression (`new Foo(...)` → "Foo")
+	// so receiver_type resolves for x.method() calls.
+	if (!have_type) {
+		for (uint32_t i = 0; i < cnt; i++) {
+			TSNode c = ts_node_child(node, i);
+			if (!ts_node_is_named(c))
+				continue;
+			if (strcmp(ts_node_type(c),
+				   "object_creation_expression") != 0)
+				continue;
+			TSNode type_node =
+				ts_node_child_by_field_name(c, "type", 4);
+			if (ts_node_is_null(type_node))
+				break;
+			const char *tt = ts_node_type(type_node);
+			std::string inferred;
+			if (strcmp(tt, "generic_type") == 0 ||
+			    strcmp(tt, "scoped_type_identifier") == 0) {
+				// Inner type_identifier: `Foo` in `Foo<Bar>`.
+				uint32_t gc = ts_node_child_count(type_node);
+				for (uint32_t k = 0; k < gc; k++) {
+					TSNode g = ts_node_child(type_node, k);
+					if (!ts_node_is_named(g))
+						continue;
+					if (strcmp(ts_node_type(g),
+						   "type_identifier") == 0) {
+						inferred = nodeText(g);
+						break;
+					}
+				}
+				if (inferred.empty())
+					inferred = nodeText(type_node);
+			} else {
+				inferred = nodeText(type_node);
+			}
+			if (!inferred.empty() && inferred != "var")
+				recordVarType(name, inferred);
 			break;
 		}
 	}

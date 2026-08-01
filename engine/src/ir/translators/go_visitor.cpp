@@ -186,6 +186,74 @@ void GoVisitor::handleMethodDecl(TSNode node, uint64_t parent_id)
 	defineSymbol(name, id);
 	pushScope();
 	pushFunctionScope(id);
+
+	// Step 4: register the method receiver's type so method-internal
+	// selector calls (e.g. e.helper()) can resolve receiver_type.
+	// tree-sitter-go exposes the receiver as a `receiver` field on
+	// method_declaration — itself a parameter_list like `(e *Engine)`.
+	// Unwrap pointer_type (`*Engine` → `Engine`) so the Resolver can
+	// match `e.helper()` against the method's declaring class.
+	{
+		TSNode recv = ts_node_child_by_field_name(node, "receiver", 8);
+		if (!ts_node_is_null(recv)) {
+			uint32_t rc = ts_node_child_count(recv);
+			for (uint32_t j = 0; j < rc; j++) {
+				TSNode pd = ts_node_child(recv, j);
+				if (!ts_node_is_named(pd))
+					continue;
+				std::string pname;
+				std::string ptype;
+				uint32_t pc = ts_node_child_count(pd);
+				for (uint32_t k = 0; k < pc; k++) {
+					TSNode g = ts_node_child(pd, k);
+					if (!ts_node_is_named(g))
+						continue;
+					const char *gt = ts_node_type(g);
+					if (strcmp(gt, "identifier") == 0) {
+						pname = nodeText(g);
+					} else if (strcmp(gt, "pointer_type") ==
+							   0 ||
+						   strcmp(gt,
+							  "type_identifier") ==
+							   0 ||
+						   strcmp(gt,
+							  "qualified_type") ==
+							   0 ||
+						   strcmp(gt, "slice_type") ==
+							   0 ||
+						   strcmp(gt, "map_type") ==
+							   0) {
+						ptype = nodeText(g);
+						if (strcmp(gt,
+							   "pointer_type") ==
+						    0) {
+							// Unwrap `*Engine` → `Engine`.
+							uint32_t gc =
+								ts_node_child_count(
+									g);
+							for (uint32_t m = 0;
+							     m < gc; m++) {
+								TSNode inner =
+									ts_node_child(
+										g,
+										m);
+								if (ts_node_is_named(
+									    inner) &&
+								    std::string(ts_node_type(
+									    inner)) ==
+									    "type_identifier")
+									ptype = nodeText(
+										inner);
+							}
+						}
+					}
+				}
+				if (!pname.empty() && !ptype.empty())
+					recordVarType(pname, ptype);
+			}
+		}
+	}
+
 	uint32_t cnt = ts_node_child_count(node);
 	for (uint32_t i = 0; i < cnt; i++) {
 		TSNode c = ts_node_child(node, i);
