@@ -448,12 +448,25 @@ bool GraphStore::insertEmbedding(uint64_t symbol_id, const float *vector_data,
 }
 
 // ── Phase B: Enhancement — Ready Flags ────────────────────────
+//
+// Step 10 (sunset): these setters target the deprecated `graph_nodes` table
+// (which is empty in the canonical schema — `entity`/`relation` are the
+// source of truth). They are kept as dead-code defensive seams so any future
+// caller that tries to mark metrics/embedding ready cannot accidentally flip
+// the flag without real data backing it. metrics_ready is structurally 0
+// (metrics producer sunset); embedding_ready is structurally 0 (vector
+// builder sunset). Only callgraph_ready is a legitimate signal, and even
+// that is now set via the canonical path in engine_index_post_parse.cpp.
 
 bool GraphStore::markCallgraphAndMetricsReady(uint64_t symbol_id)
 {
+	// Sunset: do NOT set metrics_ready=1 — there is no metrics data.
+	// Setting it here would re-introduce the A18 "fake ready" bug. Only
+	// callgraph_ready is set, and only on the deprecated graph_nodes row
+	// (canonical callgraph readiness is computed from relation.type=1
+	// coverage in engine_get_enhancement_status / engine_get_capabilities).
 	const char *sql =
-		"UPDATE graph_nodes SET callgraph_ready=1, metrics_ready=1 "
-		"WHERE id = ?";
+		"UPDATE graph_nodes SET callgraph_ready=1 WHERE id = ?";
 	sqlite3_stmt *stmt = getCachedStmt(sql);
 	if (!stmt) {
 		return false;
@@ -468,17 +481,14 @@ bool GraphStore::markCallgraphAndMetricsReady(uint64_t symbol_id)
 
 bool GraphStore::markEmbeddingReady(uint64_t symbol_id)
 {
-	const char *sql =
-		"UPDATE graph_nodes SET embedding_ready=1 WHERE id = ?";
-	sqlite3_stmt *stmt = getCachedStmt(sql);
-	if (!stmt) {
-		return false;
-	}
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(symbol_id));
-	if (sqlite3_step(stmt) != SQLITE_DONE) {
-		error_ = "markEmbeddingReady: step failed";
-		return false;
-	}
+	// Sunset: embedding producer (buildVectorsFromGraph) is a no-op, so
+	// node_vectors stays empty. Setting embedding_ready=1 here would
+	// re-introduce the A19 "fake ready" bug. The flag is structurally 0
+	// and canonical embedding readiness is computed from node_vectors
+	// row count in engine_get_enhancement_status / engine_get_capabilities.
+	// This function is retained as a no-op defensive seam so any future
+	// caller cannot silently flip the flag.
+	(void)symbol_id;
 	return true;
 }
 

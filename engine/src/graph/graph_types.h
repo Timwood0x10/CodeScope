@@ -81,6 +81,42 @@ struct CodeGraph {
 const char *nodeTypeName(NodeType t);
 const char *edgeTypeName(EdgeType t);
 
+// ─── Relation Type Contract ────────────────────────────────────
+// The SQLite `relation.type` column stores an integer that mirrors
+// `EdgeType`. To keep call-graph semantics pure, only `EdgeType::Calls`
+// (function/method invocations) is allowed in the LadybugDB `CALLS`
+// table; every other typed relation goes to `RELATES` and retains its
+// `edge_type` column for downstream disambiguation.
+//
+// This contract is the single source of truth for the SQLite ↔ LadybugDB
+// mapping. Production code MUST NOT branch on raw integer thresholds
+// such as `rtype >= 4`; it MUST call one of the helpers below.
+//
+// See `plan/rules/relation_contract.md` and Step 0 of
+// `ACCURACY_IMPROVEMENT_DEVELOPMENT_PLAN.md` for the full rationale.
+
+/// Convert an integer `relation.type` value to a strongly-typed EdgeType.
+/// Out-of-range values map to `EdgeType::References` (a safe non-call
+/// fallback) so unknown relation kinds never accidentally become CALLS.
+EdgeType relationTypeFromInt(int rtype);
+
+/// Convert an EdgeType to its integer storage form.
+int relationTypeToInt(EdgeType type);
+
+/// Whether a typed relation belongs in the LadybugDB `CALLS` table.
+/// Only `EdgeType::Calls` (function/method invocations) returns true;
+/// all other kinds (References, Defines, Contains, Imports, Inherits,
+/// UsesType, HasType) return false and must be compiled to `RELATES`.
+bool isCallsEdge(int rtype);
+bool isCallsEdge(EdgeType type);
+
+/// Whether a typed relation belongs in the LadybugDB `RELATES` table.
+/// This is the logical complement of `isCallsEdge`. Non-call relations
+/// retain their `edge_type` column so callers can still distinguish
+/// References from Defines, Contains, Imports, etc.
+bool isRelatesEdge(int rtype);
+bool isRelatesEdge(EdgeType type);
+
 } // namespace graph
 
 #endif // GRAPH_TYPES_H

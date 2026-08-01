@@ -82,6 +82,11 @@ SemanticUnit *GoVisitor::visit(TSTree *tree, const char *source, const char *fp)
 	unit_->setFilePath(fp);
 	unit_->setLanguage("go");
 	source_ = source;
+	// Step 4: reset per-file receiver-type & import-alias tracking so the
+	// visitor arena can reuse the same GoVisitor across files without
+	// leaking stale variable bindings from the previous file.
+	var_types_.clear();
+	import_aliases_.clear();
 
 	TSNode root_node = ts_tree_root_node(tree);
 	pushScope();
@@ -430,6 +435,37 @@ void GoVisitor::handleCall(TSNode node, uint64_t parent_id)
 	uint64_t id = emitter_->emitCall(name, loc, call_parent, arity, false,
 					 static_cast<int>(call_kind));
 
+	// ── Step 4 (plan §4A): structured call facts ──────────────────
+	// For selector calls (obj.Method() or pkg.Func()), record the full
+	// qualified target, the receiver expression, the inferred receiver
+	// type, and the import alias (if the receiver is an imported package
+	// alias). Bare calls leave all fields empty — an empty receiver_text
+	// is the meaningful "no receiver" signal for the Resolver.
+	if (!selector_name.empty()) {
+		std::string qualified_target = selector_name;
+		std::string receiver_text;
+		std::string receiver_type;
+		std::string import_alias;
+		size_t dot = selector_name.rfind('.');
+		if (dot != std::string::npos)
+			receiver_text = selector_name.substr(0, dot);
+		// If the receiver is a known import alias, this is a
+		// package-qualified call (e.g. fmt.Println). Otherwise, if the
+		// receiver is a local variable with a known type, record the
+		// type so the Resolver can match the method by receiver type.
+		if (!receiver_text.empty()) {
+			if (import_aliases_.count(receiver_text) > 0) {
+				import_alias = receiver_text;
+			} else {
+				auto vt = var_types_.find(receiver_text);
+				if (vt != var_types_.end())
+					receiver_type = vt->second;
+			}
+		}
+		emitter_->setCallFacts(id, qualified_target, receiver_text,
+				       receiver_type, import_alias);
+	}
+
 	// ── Intra-file callee resolution ───────────────────────────
 	// Store the resolved callee's record ID as ref_original_id.
 	// Enables P1 call-edge construction in buildCallEdgesSQL.
@@ -450,6 +486,73 @@ void GoVisitor::handleCall(TSNode node, uint64_t parent_id)
 void GoVisitor::handleImport(TSNode node, uint64_t parent_id)
 {
 	emitter_->emitImport(nodeText(node), location(node), parent_id);
+	// Step 4 (plan §4A): record package aliases so handleCall can mark
+	// `pkg.Func()` calls with import_alias="pkg". Go import forms:
+	//   import "fmt"              → alias "fmt" (default: package name)
+	//   import f "fmt"            → alias "f" (explicit alias)
+	//   import . "fmt"            → dot-import (no alias; skip)
+	//   import _ "fmt"            → blank-import (no alias; skip)
+	// The default alias is the last path component of the import string.
+	// We walk the import_declaration children to find each import_spec.
+	uint32_t cnt = ts_node_child_count(node);
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (!ts_node_is_named(c))
+			continue;
+		// import_declaration → import_spec list (possibly inside
+		// import_list for grouped imports).
+		std::string ctype = ts_node_type(c);
+		if (ctype == "import_spec") {
+			recordImportAlias(c);
+		} else if (ctype == "import_list") {
+			uint32_t lc = ts_node_child_count(c);
+			for (uint32_t j = 0; j < lc; j++) {
+				TSNode spec = ts_node_child(c, j);
+				if (ts_node_is_named(spec) &&
+				    std::string(ts_node_type(spec)) ==
+					    "import_spec")
+					recordImportAlias(spec);
+			}
+		}
+	}
+}
+
+/// Extract the alias from a single import_spec and record it.
+/// Called only from handleImport.
+void GoVisitor::recordImportAlias(TSNode spec)
+{
+	std::string text = nodeText(spec);
+	// Strip quotes and whitespace; handle optional alias prefix.
+	// Forms: `f "path"`, `_ "path"`, `. "path"`, `"path"`.
+	// Find the quoted string.
+	size_t q = text.find('"');
+	if (q == std::string::npos)
+		return;
+	size_t qe = text.find('"', q + 1);
+	if (qe == std::string::npos)
+		return;
+	std::string path = text.substr(q + 1, qe - q - 1);
+	// Default alias = last component of the path.
+	size_t slash = path.find_last_of('/');
+	std::string alias = (slash == std::string::npos) ?
+				    path :
+				    path.substr(slash + 1);
+	if (alias.empty())
+		return;
+	// Explicit alias prefix: everything before the quoted string, trimmed.
+	std::string prefix = text.substr(0, q);
+	// Trim whitespace.
+	size_t s = prefix.find_first_not_of(" \t");
+	if (s != std::string::npos) {
+		size_t e = prefix.find_last_not_of(" \t");
+		std::string a = prefix.substr(s, e - s + 1);
+		// Skip dot-import (.) and blank-import (_).
+		if (a != "." && a != "_")
+			alias = a;
+		else
+			return; // dot/blank import: no alias usable in calls
+	}
+	import_aliases_.insert(alias);
 }
 void GoVisitor::handleVarDecl(TSNode node, uint64_t parent_id)
 {
@@ -470,36 +573,62 @@ void GoVisitor::handleVarDecl(TSNode node, uint64_t parent_id)
 						0);
 				defineSymbol(name, id);
 				// Extract type from var_spec children
-				uint32_t vc = ts_node_child_count(c);
-				for (uint32_t j = 0; j < vc; j++) {
-					TSNode child = ts_node_child(c, j);
-					if (!ts_node_is_named(child))
-						continue;
-					const char *t = ts_node_type(child);
-					if (strcmp(t, "type_identifier") == 0 ||
-					    strcmp(t, "qualified_type") == 0 ||
-					    strcmp(t, "pointer_type") == 0 ||
-					    strcmp(t, "slice_type") == 0 ||
-					    strcmp(t, "map_type") == 0 ||
-					    strcmp(t, "array_type") == 0 ||
-					    strcmp(t, "interface_type") == 0) {
-						std::string type =
-							nodeText(child);
-						if (!type.empty())
-							emitter_->emitTypeRef(
-								name, type,
-								location(child),
-								id);
-						break;
+					uint32_t vc = ts_node_child_count(c);
+					for (uint32_t j = 0; j < vc; j++) {
+						TSNode child = ts_node_child(c, j);
+						if (!ts_node_is_named(child))
+							continue;
+						const char *t = ts_node_type(child);
+						if (strcmp(t, "type_identifier") == 0 ||
+						    strcmp(t, "qualified_type") == 0 ||
+						    strcmp(t, "pointer_type") == 0 ||
+						    strcmp(t, "slice_type") == 0 ||
+						    strcmp(t, "map_type") == 0 ||
+						    strcmp(t, "array_type") == 0 ||
+						    strcmp(t, "interface_type") == 0) {
+							std::string type =
+								nodeText(child);
+							if (!type.empty()) {
+								emitter_->emitTypeRef(
+									name, type,
+									location(child),
+									id);
+								// Step 4: record the
+								// variable → type
+								// binding so handleCall
+								// can resolve receiver
+								// types for method calls.
+								recordVarType(name,
+									      type);
+							}
+							break;
+						}
 					}
-				}
 			}
 		}
 	}
 }
 void GoVisitor::handleShortVar(TSNode node, uint64_t parent_id)
 {
+	// Step 4 (plan §4A): short_var_declaration has the form
+	// `name := expr` or `name, name2 := expr1, expr2`. tree-sitter
+	// exposes the left-hand identifiers and the right-hand expressions
+	// as siblings. We pair them positionally to infer variable types
+	// from composite literals (e.g. `b := Box{...}` → type "Box").
 	uint32_t cnt = ts_node_child_count(node);
+	// First pass: collect LHS identifier names in order.
+	std::vector<std::string> lhs_names;
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (!ts_node_is_named(c))
+			continue;
+		if (strcmp(ts_node_type(c), "identifier") == 0)
+			lhs_names.push_back(nodeText(c));
+	}
+	// Second pass: emit variables, recurse into RHS, and infer types.
+	// rhs_idx tracks the Nth RHS expression so it pairs with
+	// lhs_names[N] (Go requires LHS and RHS counts to match for `:=`).
+	size_t rhs_idx = 0;
 	for (uint32_t i = 0; i < cnt; i++) {
 		TSNode c = ts_node_child(node, i);
 		if (!ts_node_is_named(c))
@@ -518,8 +647,63 @@ void GoVisitor::handleShortVar(TSNode node, uint64_t parent_id)
 			// Without this, intra-file calls inside `:=` assignments
 			// were silently dropped (only `=` assignments recursed).
 			visitNode(c, parent_id);
+			// Step 4: infer type from composite literal RHS
+			// (e.g. `b := Box{val: 5}` → recordVarType("b","Box")).
+			if (rhs_idx < lhs_names.size()) {
+				std::string inferred = inferCompositeType(c);
+				if (!inferred.empty())
+					recordVarType(lhs_names[rhs_idx],
+						      inferred);
+			}
+			++rhs_idx;
 		}
 	}
+}
+
+/// Infer the type name from a composite literal expression like
+/// `Box{...}` or `*Box{...}`. Returns the type name (e.g. "Box") or
+/// empty string if the expression is not a composite literal.
+std::string GoVisitor::inferCompositeType(TSNode expr)
+{
+	// Unwrap parentheses / unary_expression to find the composite literal.
+	std::string t = ts_node_type(expr);
+	if (t == "parenthesized_expression" || t == "unary_expression") {
+		uint32_t cc = ts_node_child_count(expr);
+		for (uint32_t i = 0; i < cc; i++) {
+			TSNode child = ts_node_child(expr, i);
+			if (ts_node_is_named(child)) {
+				std::string r = inferCompositeType(child);
+				if (!r.empty())
+					return r;
+			}
+		}
+		return "";
+	}
+	if (t != "composite_literal")
+		return "";
+	// composite_literal → type { ... }. The first named child is the
+	// type (type_identifier, qualified_type, or pointer_type).
+	uint32_t cc = ts_node_child_count(expr);
+	for (uint32_t i = 0; i < cc; i++) {
+		TSNode child = ts_node_child(expr, i);
+		if (!ts_node_is_named(child))
+			continue;
+		std::string ct = ts_node_type(child);
+		if (ct == "type_identifier" || ct == "qualified_type")
+			return nodeText(child);
+		if (ct == "pointer_type") {
+			// `*Box{...}` — unwrap the inner type_identifier.
+			uint32_t pc = ts_node_child_count(child);
+			for (uint32_t j = 0; j < pc; j++) {
+				TSNode inner = ts_node_child(child, j);
+				if (ts_node_is_named(inner) &&
+				    std::string(ts_node_type(inner)) ==
+					    "type_identifier")
+					return nodeText(inner);
+			}
+		}
+	}
+	return "";
 }
 void GoVisitor::handleInterfaceMethod(TSNode node, uint64_t parent_id)
 {

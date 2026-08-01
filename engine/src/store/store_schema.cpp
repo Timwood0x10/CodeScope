@@ -156,6 +156,20 @@ bool GraphStore::createSchema()
         -- on relation (110k+ rows) for each entity lookup.
         CREATE INDEX IF NOT EXISTS idx_relation_target ON relation(project_id, target_id);
         CREATE INDEX IF NOT EXISTS idx_relation_source ON relation(project_id, source_id);
+        -- Step 1 (plan §2.5 A3): deduplicate existing typed relations
+        -- before creating the unique index. Without dedup, CREATE UNIQUE
+        -- INDEX would fail on pre-existing duplicate rows. We keep the
+        -- row with MIN(id) per (project_id, source_id, target_id, type)
+        -- group — the earliest-inserted row is the canonical fact.
+        DELETE FROM relation WHERE id NOT IN (
+          SELECT MIN(id) FROM relation
+          GROUP BY project_id, source_id, target_id, type
+        );
+        -- Typed-relation unique constraint. Prevents INSERT OR IGNORE
+        -- from silently re-adding duplicate (project, source, target,
+        -- type) edges, which previously inflated caller/callee counts.
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_relation_unique_typed
+          ON relation(project_id, source_id, target_id, type);
 
         CREATE INDEX IF NOT EXISTS idx_files_project ON files(project_id);
         CREATE INDEX IF NOT EXISTS idx_graph_nodes_project ON graph_nodes(project_id);
@@ -215,7 +229,16 @@ bool GraphStore::createSchema()
             start_row INTEGER DEFAULT 0, start_col INTEGER DEFAULT 0,
             end_row INTEGER DEFAULT 0, end_col INTEGER DEFAULT 0,
             file_path TEXT NOT NULL,
-            language TEXT DEFAULT ''
+            language TEXT DEFAULT '',
+            -- Step 3 (plan §3.1): structured call facts for CallExpr records.
+            -- Populated by per-language Visitors; flow through to the
+            -- `reference` table so the Resolver can disambiguate
+            -- method/static/constructor calls with structured evidence
+            -- instead of bare-name + directory heuristics. Empty = unknown.
+            qualified_target TEXT DEFAULT '', -- full call text, e.g. "b.Get"
+            receiver_text TEXT DEFAULT '',     -- syntactic receiver, e.g. "b"
+            receiver_type TEXT DEFAULT '',     -- inferred receiver type, e.g. "Box"
+            import_alias TEXT DEFAULT ''       -- import alias used, e.g. "fmt"
         );
         CREATE INDEX IF NOT EXISTS idx_sr_project ON semantic_records(project_id);
         CREATE INDEX IF NOT EXISTS idx_sr_parent ON semantic_records(project_id, parent_id);
@@ -486,6 +509,16 @@ bool GraphStore::createSchema()
             call_kind INTEGER DEFAULT 0, -- 0=direct, 1=method, 2=interface, 3=constructor
             start_row INTEGER DEFAULT 0,
             start_col INTEGER DEFAULT 0,
+            -- Step 3 (plan §3.1): structured call facts. Copied from
+            -- semantic_records at reference-population time so the Resolver
+            -- Pipeline has the evidence it needs for exact-first method
+            -- disambiguation. Empty = unknown; direct calls have empty
+            -- receiver_text (a meaningful "no receiver" signal).
+            qualified_target TEXT DEFAULT '', -- full call text, e.g. "b.Get"
+            receiver_text TEXT DEFAULT '',     -- syntactic receiver, e.g. "b"
+            receiver_type TEXT DEFAULT '',     -- inferred receiver type, e.g. "Box"
+            import_alias TEXT DEFAULT '',      -- import alias used, e.g. "fmt"
+            call_site_file TEXT DEFAULT '',    -- file path of the call site
             FOREIGN KEY (project_id) REFERENCES projects(id)
         );
 
@@ -887,18 +920,30 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 			bool has_type_name = false;
 			bool has_call_kind = false;
 			bool has_resolve_strategy = false;
+			bool has_qualified_target = false;
+			bool has_receiver_text = false;
+			bool has_receiver_type = false;
+			bool has_import_alias = false;
 			while (sqlite3_step(probe) == SQLITE_ROW) {
 				const char *col =
 					reinterpret_cast<const char *>(
 						sqlite3_column_text(probe, 1));
 				if (col) {
-					if (std::string(col) == "type_name")
+					const std::string c(col);
+					if (c == "type_name")
 						has_type_name = true;
-					if (std::string(col) == "call_kind")
+					if (c == "call_kind")
 						has_call_kind = true;
-					if (std::string(col) ==
-					    "resolve_strategy")
+					if (c == "resolve_strategy")
 						has_resolve_strategy = true;
+					if (c == "qualified_target")
+						has_qualified_target = true;
+					if (c == "receiver_text")
+						has_receiver_text = true;
+					if (c == "receiver_type")
+						has_receiver_type = true;
+					if (c == "import_alias")
+						has_import_alias = true;
 				}
 			}
 			sqlite3_finalize(probe);
@@ -914,6 +959,80 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 				exec("ALTER TABLE semantic_records "
 				     "ADD COLUMN resolve_strategy "
 				     "TEXT DEFAULT ''");
+			}
+			// Step 3 (plan §3.1): structured call-fact columns.
+			if (!has_qualified_target) {
+				exec("ALTER TABLE semantic_records "
+				     "ADD COLUMN qualified_target "
+				     "TEXT DEFAULT ''");
+			}
+			if (!has_receiver_text) {
+				exec("ALTER TABLE semantic_records "
+				     "ADD COLUMN receiver_text "
+				     "TEXT DEFAULT ''");
+			}
+			if (!has_receiver_type) {
+				exec("ALTER TABLE semantic_records "
+				     "ADD COLUMN receiver_type "
+				     "TEXT DEFAULT ''");
+			}
+			if (!has_import_alias) {
+				exec("ALTER TABLE semantic_records "
+				     "ADD COLUMN import_alias "
+				     "TEXT DEFAULT ''");
+			}
+		}
+
+		// Step 3 (plan §3.1): migrate the `reference` table with the
+		// same structured call-fact columns plus call_site_file. SQLite
+		// has no ADD COLUMN IF NOT EXISTS, so probe table_info first.
+		{
+			sqlite3_stmt *ref_probe = nullptr;
+			if (sqlite3_prepare_v2(db_,
+					       "PRAGMA table_info(reference)",
+					       -1, &ref_probe, nullptr) ==
+				SQLITE_OK) {
+				bool has_qualified_target = false;
+				bool has_receiver_text = false;
+				bool has_receiver_type = false;
+				bool has_import_alias = false;
+				bool has_call_site_file = false;
+				while (sqlite3_step(ref_probe) ==
+				       SQLITE_ROW) {
+					const char *col =
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								ref_probe, 1));
+					if (col) {
+						const std::string c(col);
+						if (c == "qualified_target")
+							has_qualified_target = true;
+						if (c == "receiver_text")
+							has_receiver_text = true;
+						if (c == "receiver_type")
+							has_receiver_type = true;
+						if (c == "import_alias")
+							has_import_alias = true;
+						if (c == "call_site_file")
+							has_call_site_file = true;
+					}
+				}
+				sqlite3_finalize(ref_probe);
+				if (!has_qualified_target)
+					exec("ALTER TABLE reference ADD COLUMN "
+					     "qualified_target TEXT DEFAULT ''");
+				if (!has_receiver_text)
+					exec("ALTER TABLE reference ADD COLUMN "
+					     "receiver_text TEXT DEFAULT ''");
+				if (!has_receiver_type)
+					exec("ALTER TABLE reference ADD COLUMN "
+					     "receiver_type TEXT DEFAULT ''");
+				if (!has_import_alias)
+					exec("ALTER TABLE reference ADD COLUMN "
+					     "import_alias TEXT DEFAULT ''");
+				if (!has_call_site_file)
+					exec("ALTER TABLE reference ADD COLUMN "
+					     "call_site_file TEXT DEFAULT ''");
 			}
 		}
 

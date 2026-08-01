@@ -424,6 +424,41 @@ char *engine_build_evidence(uint64_t project_id, const char *category_filter);
  */
 char *engine_verify_statement(uint64_t project_id, const char *claim_text);
 
+// ─── Claim-driven Verification (v0.3) ──────────────────────────
+
+/**
+ * Verify a single claim expressed as a JSON object. Dispatches to the
+ * matching Verifier via the VerifierRegistry, persists the claim +
+ * evidence + facts, and returns the verdict.
+ *
+ * Claim JSON shape (flat object, string fields only):
+ *   {"type":"capability_exists","subject":"X","predicate":"implemented_by",
+ *    "object":"Y","scope":"repository","source_kind":"manual",
+ *    "source_ref":"..."}
+ * Recognized `type` values: "capability_exists", "contract_holds",
+ * "architecture_follows", "function_implements". Any other value returns
+ * a JSON object with `error_code: "claim_type_unsupported"` (Step 9.4 —
+ * unknown types no longer silently fall back to CapabilityExists).
+ *
+ * Output JSON (success):
+ *   {"claim_id":N,"verdict":"Supported|Contradicted|Unknown",
+ *    "confidence":0.85,"verifier":"CapabilityVerifier","detail":"...",
+ *    "evidence_facts":[{"kind":0,"ref":123},...]}
+ * Output JSON (lifecycle/coverage error — Step 9.6):
+ *   {"claim_id":N,"verdict":"Unknown","confidence":0,"verifier":null,
+ *    "error_code":"registry_empty|claim_type_unsupported|"
+ *                  "evidence_backend_not_ready|verifier_execution_failed",
+ *    "detail":"...","evidence_facts":[]}
+ * The `error_code` field lets MCP clients distinguish a broken verifier
+ * subsystem from a normal Unknown verdict.
+ *
+ * @param project_id  The project whose evidence to verify against.
+ * @param claim_json  JSON object describing the claim.
+ * @return Heap-allocated JSON string (caller frees via
+ *         engine_free_string). Never null.
+ */
+char *engine_verify_claim(uint64_t project_id, const char *claim_json);
+
 // ─── Project State (v0.3 Phase 4) ──────────────────────────────
 
 /**
@@ -451,6 +486,35 @@ char *engine_build_project_state(uint64_t project_id);
  *         project_id. Caller MUST free via engine_free_string().
  */
 char *engine_get_project_state(uint64_t project_id);
+
+/**
+ * Inspect the VerifierRegistry health and claim-type coverage.
+ *
+ * Returns a machine-readable JSON object describing whether the
+ * verifier subsystem is armed and which public claim types are
+ * supported. This is the observability surface for Step 9.2: it
+ * lets MCP clients distinguish "registry is empty (engine_init not
+ * called / engine_shutdown cleared it)" from "claim type is not in
+ * the public schema" before attempting a verify_claim call.
+ *
+ * Output JSON shape:
+ *   {"registry_empty":bool,"verifier_count":N,
+ *    "verifier_names":["CapabilityVerifier",...],
+ *    "supported_claim_types":["capability_exists",...],
+ *    "unsupported_claim_types":["..."],
+ *    "evidence_backend_ready":bool,
+ *    "entity_count":N,"relation_count":N}
+ *
+ * When project_id is 0 or the store is not initialized, the
+ * evidence_backend_ready / entity_count / relation_count fields
+ * reflect that (ready=false, counts=0); the registry fields are
+ * still populated because the registry is process-global.
+ *
+ * @param project_id  Project to probe for evidence backend readiness.
+ *                    Pass 0 to skip the backend probe.
+ * @return Heap-allocated JSON string (caller frees). Never null.
+ */
+char *engine_get_verifier_registry_status(uint64_t project_id);
 
 #ifdef __cplusplus
 }

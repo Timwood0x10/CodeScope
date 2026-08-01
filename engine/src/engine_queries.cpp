@@ -353,36 +353,184 @@ run_model_build:
 
 // ─── Phase B: engine_get_enhancement_status ────────────────────
 
+// Helper: count eligible function/method entities (entity.kind IN 0,1) for a
+// project — the denominator for every capability coverage ratio. Reads the
+// canonical `entity` table. Returns 0 on any error.
+static int queries_count_eligible_entities(sqlite3 *db, uint64_t project_id)
+{
+	sqlite3_stmt *stmt = nullptr;
+	int total = 0;
+	const char *sql =
+		"SELECT COUNT(*) FROM entity WHERE project_id=? AND kind IN (0,1)";
+	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		if (sqlite3_step(stmt) == SQLITE_ROW)
+			total = sqlite3_column_int(stmt, 0);
+		sqlite3_finalize(stmt);
+	} else {
+		fprintf(stderr,
+			"engine_get_enhancement_status: entity count probe failed: %s "
+			"[module=queries, method=engine_get_enhancement_status]\n",
+			sqlite3_errmsg(db));
+	}
+	return total;
+}
+
+// Helper: count distinct function/method entities that participate in at least
+// one Calls relation (relation.type=1). This is the canonical callgraph-ready
+// count. Returns 0 on any error.
+static int queries_count_callgraph_ready(sqlite3 *db, uint64_t project_id)
+{
+	sqlite3_stmt *stmt = nullptr;
+	int ready = 0;
+	const char *sql =
+		"SELECT COUNT(*) FROM ("
+		" SELECT DISTINCT src FROM ("
+		"  SELECT source_id AS src FROM relation WHERE project_id=? AND type=1"
+		"  UNION"
+		"  SELECT target_id AS src FROM relation WHERE project_id=? AND type=1"
+		" )"
+		")";
+	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
+		if (sqlite3_step(stmt) == SQLITE_ROW)
+			ready = sqlite3_column_int(stmt, 0);
+		sqlite3_finalize(stmt);
+	} else {
+		fprintf(stderr,
+			"engine_get_enhancement_status: callgraph count probe failed: %s "
+			"[module=queries, method=engine_get_enhancement_status]\n",
+			sqlite3_errmsg(db));
+	}
+	return ready;
+}
+
+// Helper: count node_vectors rows for a project — the canonical embedding
+// coverage count. Returns 0 if the table is missing or empty. Used both for
+// the embedding_ready count and to guard the project_readiness.vector_ready
+// flag against the A19 "fake ready" regression.
+static int64_t queries_count_node_vectors(sqlite3 *db, uint64_t project_id)
+{
+	sqlite3_stmt *stmt = nullptr;
+	int64_t ready = 0;
+	const char *sql =
+		"SELECT COUNT(*) FROM node_vectors WHERE project_id=?";
+	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		if (sqlite3_step(stmt) == SQLITE_ROW)
+			ready = sqlite3_column_int64(stmt, 0);
+		sqlite3_finalize(stmt);
+	} else {
+		// node_vectors table may not exist on legacy DBs — log and treat
+		// as 0 (embedding sunset means 0 is the expected value).
+		fprintf(stderr,
+			"engine_get_enhancement_status: node_vectors count probe failed: %s "
+			"[module=queries, method=engine_get_enhancement_status]\n",
+			sqlite3_errmsg(db));
+	}
+	return ready;
+}
+
+// Helper: compute coverage ratio as a JSON-friendly string in [0.0, 1.0].
+// Returns "0.0" when eligible == 0 to avoid divide-by-zero.
+static std::string queries_coverage_ratio(int ready, int eligible)
+{
+	if (eligible <= 0)
+		return "0.0";
+	char buf[32];
+	std::snprintf(buf, sizeof(buf), "%.4f",
+		      static_cast<double>(ready) /
+			      static_cast<double>(eligible));
+	return std::string(buf);
+}
+
 char *engine_get_enhancement_status(uint64_t project_id)
 {
 	if (!g_store)
 		return dupString("{\"error\":\"engine not initialized\"}");
 
 	auto db = g_store->handle();
-	const char *sql = "SELECT "
-			  "COUNT(*) as total, "
-			  "0, 0, 0 "
-			  "FROM entity e "
-			  "WHERE e.project_id = ? AND e.kind IN (0,1)";
-	sqlite3_stmt *stmt = nullptr;
-	int total = 0, cg = 0, metrics = 0, emb = 0;
-	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
-		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-		if (sqlite3_step(stmt) == SQLITE_ROW) {
-			total = sqlite3_column_int(stmt, 0);
-			cg = sqlite3_column_int(stmt, 1);
-			metrics = sqlite3_column_int(stmt, 2);
-			emb = sqlite3_column_int(stmt, 3);
-		}
-		sqlite3_finalize(stmt);
-	}
+
+	// Step 10 (sunset): replace the hardcoded `SELECT 0,0,0` with real
+	// counts from canonical data (entity / relation / node_vectors). The
+	// legacy int fields (total_symbols/callgraph_ready/metrics_ready/
+	// embedding_ready) are preserved at the start of the JSON so existing
+	// MCP clients / sscanf parsers keep working; the richer
+	// `capabilities` block carries eligible/ready/coverage/
+	// unavailable_reason so callers can distinguish "sunset" from
+	// "not yet run".
+	const int total = queries_count_eligible_entities(db, project_id);
+	const int cg_ready = queries_count_callgraph_ready(db, project_id);
+	const int64_t vec_rows = queries_count_node_vectors(db, project_id);
+	// metrics_ready is structurally 0 — metrics producer is sunset
+	// (resolveStagedMetrics is a no-op, no metrics table is populated).
+	const int metrics_ready = 0;
+	const int embedding_ready = static_cast<int>(vec_rows);
+
+	// fts_ready is read from project_readiness (set by the async path).
+	const int fts_ready =
+		g_store->getProjectReadiness(project_id, "fts_ready");
+
+	// coverage ratios — real numbers in [0.0, 1.0], never a placeholder 0.
+	const std::string cg_coverage = queries_coverage_ratio(cg_ready, total);
+	const std::string metrics_coverage =
+		queries_coverage_ratio(metrics_ready, total);
+	const std::string embedding_coverage =
+		queries_coverage_ratio(embedding_ready, total);
 
 	std::ostringstream json;
+	// Legacy int fields — kept stable for backward-compat parsers.
 	json << "{"
 	     << "\"total_symbols\":" << total << ","
-	     << "\"callgraph_ready\":" << cg << ","
-	     << "\"metrics_ready\":" << metrics << ","
-	     << "\"embedding_ready\":" << emb << "}";
+	     << "\"callgraph_ready\":" << cg_ready << ","
+	     << "\"metrics_ready\":" << metrics_ready << ","
+	     << "\"embedding_ready\":" << embedding_ready
+	     << ","
+	     // Richer per-capability block: eligible/ready/failed/coverage +
+	     // producer_version + unavailable_reason. NO hardcoded 0 — every
+	     // count comes from a canonical table probe above.
+	     << "\"capabilities\":{"
+	     << "\"callgraph\":{"
+	     << "\"available\":true,"
+	     << "\"ready\":" << (cg_ready > 0 ? "true" : "false") << ","
+	     << "\"eligible\":" << total << ","
+	     << "\"ready_count\":" << cg_ready << ","
+	     << "\"failed\":0,"
+	     << "\"coverage\":" << cg_coverage << ","
+	     << "\"producer_version\":\"buildGraph\""
+	     << "},"
+	     << "\"metrics\":{"
+	     << "\"available\":false,"
+	     << "\"ready\":false,"
+	     << "\"eligible\":" << total << ","
+	     << "\"ready_count\":" << metrics_ready << ","
+	     << "\"failed\":0,"
+	     << "\"coverage\":" << metrics_coverage << ","
+	     << "\"producer_version\":null,"
+	     << "\"unavailable_reason\":\"sunset\""
+	     << "},"
+	     << "\"embedding\":{"
+	     << "\"available\":false,"
+	     << "\"ready\":" << (embedding_ready > 0 ? "true" : "false") << ","
+	     << "\"eligible\":" << total << ","
+	     << "\"ready_count\":" << embedding_ready << ","
+	     << "\"failed\":0,"
+	     << "\"coverage\":" << embedding_coverage << ","
+	     << "\"producer_version\":null,"
+	     << "\"unavailable_reason\":\"sunset\""
+	     << "},"
+	     << "\"semantic_search\":{"
+	     << "\"available\":false,"
+	     << "\"ready\":" << (embedding_ready > 0 ? "true" : "false") << ","
+	     << "\"mode\":\"fts\","
+	     << "\"unavailable_reason\":\"sunset\""
+	     << "},"
+	     << "\"fts\":{"
+	     << "\"available\":true,"
+	     << "\"ready\":" << (fts_ready ? "true" : "false") << "}"
+	     << "}"
+	     << "}";
 	return dupString(json.str());
 }
 

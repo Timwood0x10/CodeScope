@@ -1,0 +1,16 @@
+{
+  "language": "cpp",
+  "expected_calls": [
+    {"caller": "mainFunc", "caller_file": "a.cpp", "callee": "alpha", "callee_file": "a.cpp"},
+    {"caller": "alpha", "caller_file": "a.cpp", "callee": "bravo", "callee_file": "b.cpp"}
+  ],
+  "forbidden_calls": [
+    {"caller": "mainFunc", "callee": "sort"},
+    {"caller": "mainFunc", "callee": "begin"},
+    {"caller": "mainFunc", "callee": "end"}
+  ],
+  "allowed_unresolved": [
+    {"caller": "mainFunc", "callee": "adder", "note": "method call via field_expression; receiver type not yet propagated"}
+  ],
+  "external_calls": ["std::sort", "std::vector"]
+}

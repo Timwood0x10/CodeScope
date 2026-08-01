@@ -140,4 +140,21 @@ bool SemanticUnit::setCallStrategy(uint64_t record_id,
 	return true;
 }
 
+bool SemanticUnit::setCallFacts(uint64_t record_id,
+				const std::string &qualified_target,
+				const std::string &receiver_text,
+				const std::string &receiver_type,
+				const std::string &import_alias)
+{
+	auto it = id_to_index_.find(record_id);
+	if (it == id_to_index_.end())
+		return false;
+	auto &rec = records_[it->second];
+	rec.qualified_target = qualified_target;
+	rec.receiver_text = receiver_text;
+	rec.receiver_type = receiver_type;
+	rec.import_alias = import_alias;
+	return true;
+}
+
 } // namespace ir

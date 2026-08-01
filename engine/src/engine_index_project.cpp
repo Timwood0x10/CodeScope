@@ -440,9 +440,48 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		    << jsonEscape(e.what()) << "\"}";
 		return dupString(err.str());
 	}
-	if (jobs.empty())
+	if (jobs.empty()) {
+		// No files need (re)indexing. This is either a first index of an
+		// empty directory, or a re-index where every file is unchanged.
+		// In the re-index case the full post-parse pipeline is skipped
+		// (no graph rebuild needed), but we MUST still refresh the
+		// data-dependent readiness flags so they cannot go stale.
+		// Specifically, `vector_ready` is derived from the
+		// `node_vectors` row count, which can drift from the stored flag
+		// when: (a) the builder is a no-op (sunset) but a prior buggy
+		// run left vector_ready=1 (A19 regression), or (b) the table was
+		// modified externally. Refreshing the flag here on every
+		// re-index — even a no-op one — keeps readiness consistent with
+		// canonical data. See engine_index_post_parse for the primary
+		// (non-empty-jobs) path that sets the same flag.
+		if (is_reindex && env_mode && strcmp(env_mode, "deep") == 0) {
+			sqlite3_stmt *vstmt = nullptr;
+			const char *vsql =
+				"SELECT COUNT(*) FROM node_vectors WHERE project_id = ?";
+			if (sqlite3_prepare_v2(g_store->handle(), vsql, -1,
+					       &vstmt, nullptr) == SQLITE_OK) {
+				sqlite3_bind_int64(
+					vstmt, 1,
+					static_cast<int64_t>(project_id));
+				int64_t vec_rows = 0;
+				if (sqlite3_step(vstmt) == SQLITE_ROW)
+					vec_rows =
+						sqlite3_column_int64(vstmt, 0);
+				sqlite3_finalize(vstmt);
+				g_store->setProjectReadiness(
+					project_id, "vector_ready",
+					vec_rows > 0 ? 1 : 0);
+			} else {
+				fprintf(stderr,
+					"engine_index_project: node_vectors count "
+					"probe failed (no-op re-index): %s "
+					"[module=engine, method=engine_index_project]\n",
+					sqlite3_errmsg(g_store->handle()));
+			}
+		}
 		return dupString(
 			"{\"ok\":true,\"files_indexed\":0,\"nodes\":0,\"edges\":0,\"errors\":0}");
+	}
 
 	// Init progress tracking
 	{

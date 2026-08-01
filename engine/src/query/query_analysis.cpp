@@ -167,8 +167,11 @@ std::string QueryEngine::getHotspots(uint64_t project_id, int top_n)
 	}
 	lbug_query_result_destroy(&qr);
 
-	// GraphNode schema has no cyclomatic/nesting_depth columns;
-	// emit 0 for complexity to preserve the JSON contract.
+	// Step 10 (sunset): metrics storage is sunset, so complexity is
+	// NOT a real measurement here. Emit JSON `null` (not 0) plus an
+	// `unavailable` marker so MCP clients can distinguish "not computed"
+	// from a genuine complexity of 0 on a trivial function. caller_count
+	// is still real (it comes from the call graph).
 	std::ostringstream json;
 	json << "{\"hotspots\":[";
 	bool first = true;
@@ -183,7 +186,9 @@ std::string QueryEngine::getHotspots(uint64_t project_id, int top_n)
 		     << "\","
 		     << "\"type\":" << r.node_type << ","
 		     << "\"caller_count\":" << r.caller_count << ","
-		     << "\"complexity\":0}";
+		     << "\"complexity\":null,"
+		     << "\"complexity_unavailable\":true,"
+		     << "\"unavailable_reason\":\"sunset\"}";
 	}
 	json << "],\"total\":" << rows.size() << "}";
 	return json.str();
@@ -358,8 +363,11 @@ std::string QueryEngine::getEntryPoints(uint64_t project_id)
 	}
 	lbug_query_result_destroy(&qr);
 
-	// GraphNode schema has no cyclomatic/nesting_depth columns;
-	// emit 0 for both to preserve the JSON contract.
+	// Step 10 (sunset): metrics storage is sunset, so complexity/nesting
+	// are NOT real measurements here. Emit JSON `null` (not 0) plus an
+	// `unavailable` marker so MCP clients can distinguish "not computed"
+	// from a genuine 0 on a trivial function. id/name/type/file are still
+	// real (they come from the call graph).
 	std::ostringstream json;
 	json << "{\"entry_points\":[";
 	bool first = true;
@@ -373,8 +381,10 @@ std::string QueryEngine::getEntryPoints(uint64_t project_id)
 		     << "\"type\":" << r.node_type << ","
 		     << "\"file\":\"" << jsonEscape(r.file_path.c_str())
 		     << "\","
-		     << "\"complexity\":0,"
-		     << "\"nesting\":0}";
+		     << "\"complexity\":null,"
+		     << "\"nesting\":null,"
+		     << "\"complexity_unavailable\":true,"
+		     << "\"unavailable_reason\":\"sunset\"}";
 	}
 	json << "],\"total\":" << rows.size() << "}";
 	return json.str();

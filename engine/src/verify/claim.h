@@ -45,11 +45,14 @@ struct Claim {
 
 // EvidenceRecord is the output of Verifier::verify(Claim). It is persisted
 // into the `evidence` table, and each fact reference is written to
-// `evidence_fact` for traceability back to graph_nodes/graph_edges rows.
+// `evidence_fact` for traceability back to the canonical entity/relation
+// rows that backed the verdict.
 //
-// `facts` is a list of (fact_kind, fact_ref) pairs where:
-//   fact_kind 0 = graph_node, 1 = graph_edge, 2 = document
-//   fact_ref   graph_nodes.id / graph_edges.id / document rowid
+// Step 9.5: `facts` is a list of (fact_kind, fact_ref) pairs where:
+//   fact_kind 0 = entity (fact_ref = entity.id)
+//   fact_kind 1 = relation (fact_ref = relation.id)
+//   fact_kind 2 = document (fact_ref = document rowid)
+// Verifiers no longer reference graph_nodes/graph_edges ids.
 
 // Fact kind constants shared across all verifiers.
 inline constexpr int kFactKindNode = 0;

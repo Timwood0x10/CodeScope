@@ -106,6 +106,13 @@ unsafe extern "C" {
     fn engine_get_project_state(project_id: u64) -> *mut c_char;
     fn engine_enhance_project(project_id: u64) -> *mut c_char;
 
+    // ── Verifier Registry introspection (Step 9.2) ─────────────
+    // See engine_verify_ffi.cpp for the C++ implementation. Returns a
+    // heap-allocated JSON string that the caller MUST release via
+    // engine_free_string(). Describes registry health, claim-type
+    // coverage, and evidence backend readiness.
+    fn engine_get_verifier_registry_status(project_id: u64) -> *mut c_char;
+
     fn engine_build_fts(project_id: u64) -> *mut c_char;
 
     // ── Phase A: Fast Scan ────────────────────────────────────────
@@ -527,6 +534,16 @@ pub fn build_project_state(project_id: u64) -> String {
 /// object if no snapshot exists yet.
 pub fn get_project_state(project_id: u64) -> String {
     take_string(unsafe { engine_get_project_state(project_id) })
+}
+
+/// Inspect the VerifierRegistry health and claim-type coverage (Step 9.2).
+///
+/// Returns a JSON string describing whether the verifier subsystem is armed,
+/// which public claim types are supported, and whether the canonical
+/// evidence backend (entity/relation) has data for the given project.
+/// Pass `project_id = 0` to skip the evidence backend probe.
+pub fn get_verifier_registry_status(project_id: u64) -> String {
+    take_string(unsafe { engine_get_verifier_registry_status(project_id) })
 }
 
 /// Scan all declared capabilities and contracts for drift between

@@ -1,5 +1,6 @@
 #include "capability_verifier.h"
 #include "claim.h"
+#include "registry.h"
 #include "../store/store.h"
 
 #include <cstdio>
@@ -10,6 +11,15 @@ static constexpr double kConfCapabilityNotDeclared = 0.9;
 static constexpr double kConfCapabilityNoCallers = 0.7;
 static constexpr double kConfCapabilitySupported = 0.85;
 static constexpr double kConfDeadCapability = 0.95;
+static constexpr double kConfBackendNotReady = 0.2;
+static constexpr double kConfNoStore = 0.0;
+
+// relation.type value for Calls edges (mirrors graph::EdgeType::Calls).
+// Step 9.5: migrated from graph_edges.edge_type IN (1,3) to relation.type=1.
+// Per plan/rules/relation_contract.md only type=1 is a Calls edge; the old
+// IN (1,3) mixed the legacy graph_edges numbering (1=call_graph,
+// 3=symbol_reference) and let non-call references pollute the caller set.
+static constexpr int kRelationTypeCalls = 1;
 
 namespace verify
 {
@@ -23,7 +33,7 @@ CapabilityVerifier::CapabilityVerifier(store::GraphStore *store,
 
 // ── New Claim-driven interface ──────────────────────────────────────
 //
-// Evidence chain:
+// Evidence chain (Step 9.5: canonical facts only):
 //   capability row (declared) -> entity row (implemented) -> callers
 //   (relation type=1 incoming). A claim is Supported only when all three
 //   links are present. If the capability is not declared, the claim is
@@ -77,22 +87,24 @@ static bool capabilityDeclared(store::GraphStore *store, uint64_t project_id,
 	return found;
 }
 
-// Step 2: collect node ids that (a) match the subject name and (b) have at
-// least one incoming CALLS edge (graph_edges.edge_type=1). Returns the ids
+// Step 2: collect entity ids that (a) match the subject name and (b) have
+// at least one incoming Calls relation (relation.type=1). Returns the ids
 // in the order produced by SQLite. Empty result means "no implementing
-// node with callers" -> the claim cannot be Supported.
+// entity with callers" -> the claim cannot be Supported.
 //
-// NOTE: We query graph_nodes/graph_edges (the production source of truth)
-// because buildGraph writes to these tables via bulk SQL INSERT.
+// Step 9.5: migrated from graph_nodes/graph_edges to canonical
+// entity/relation. Per plan/rules/relation_contract.md only relation.type=1
+// is a Calls edge — the old `edge_type IN (1,3)` mixed the legacy
+// graph_edges numbering and let non-call references pollute the caller set.
 //
 // Match direction: bidirectional prefix LIKE. The README-derived subject
 // is typically a long PascalCase form (e.g. "IncrementalIndexing") while
-// the stored graph node name is a short code symbol (e.g.
+// the stored entity name is a short code symbol (e.g.
 // "incremental_index" or "IncrementalIndex"). A single direction
 // `name LIKE subject||'%'` requires the short name to START WITH the
 // longer subject — impossible when subject > name. The previous "fix"
 // (BUG 2026-07-17) flipped the direction but kept a single-sided test,
-// so it still failed whenever the subject was longer than the node name.
+// so it still failed whenever the subject was longer than the entity name.
 // We now accept a match when either side starts with the other.
 static std::vector<int64_t> entitiesWithCallers(store::GraphStore *store,
 						uint64_t project_id,
@@ -100,13 +112,13 @@ static std::vector<int64_t> entitiesWithCallers(store::GraphStore *store,
 {
 	std::vector<int64_t> ids;
 	const char *sql =
-		"SELECT e.id FROM graph_nodes e "
+		"SELECT e.id FROM entity e "
 		"WHERE e.project_id=? "
 		"AND (LOWER(e.name) LIKE LOWER(?) || '%' "
 		"     OR LOWER(?) LIKE LOWER(e.name) || '%') "
-		"AND EXISTS (SELECT 1 FROM graph_edges r "
-		"            WHERE r.project_id=? AND r.target_node_id=e.id "
-		"            AND r.edge_type IN (1,3))";
+		"AND EXISTS (SELECT 1 FROM relation r "
+		"            WHERE r.project_id=? AND r.target_id=e.id "
+		"            AND r.type=?)";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store->handle(), sql, -1, &stmt, nullptr) !=
 	    SQLITE_OK) {
@@ -120,6 +132,7 @@ static std::vector<int64_t> entitiesWithCallers(store::GraphStore *store,
 	sqlite3_bind_text(stmt, 2, subject.c_str(), -1, SQLITE_STATIC);
 	sqlite3_bind_text(stmt, 3, subject.c_str(), -1, SQLITE_STATIC);
 	sqlite3_bind_int64(stmt, 4, static_cast<int64_t>(project_id));
+	sqlite3_bind_int(stmt, 5, kRelationTypeCalls);
 
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
 		ids.push_back(sqlite3_column_int64(stmt, 0));
@@ -136,8 +149,26 @@ EvidenceRecord CapabilityVerifier::verify(const Claim &claim)
 
 	if (!store_) {
 		rec.verdict = Verdict::Unknown;
-		rec.confidence = 0.0;
+		rec.confidence = kConfNoStore;
 		rec.detail = "CapabilityVerifier: store unavailable";
+		return rec;
+	}
+
+	// Evidence backend readiness gate (Step 9.5/9.6): when canonical
+	// entity/relation tables are empty, return Unknown + reason instead
+	// of fabricating a Contradicted "capability not declared" verdict
+	// from missing data.
+	int64_t entity_count = 0;
+	int64_t relation_count = 0;
+	if (!evidence_backend_ready(store_, project_id_, &entity_count,
+				    &relation_count)) {
+		rec.verdict = Verdict::Unknown;
+		rec.confidence = kConfBackendNotReady;
+		rec.detail = "CapabilityVerifier: evidence backend not "
+			     "ready (entity=" +
+			     std::to_string(entity_count) +
+			     ", relation=" + std::to_string(relation_count) +
+			     ")";
 		return rec;
 	}
 
@@ -185,8 +216,8 @@ std::vector<Finding> CapabilityVerifier::verify()
 {
 	std::vector<Finding> findings;
 
-	// Check each known capability by querying the entity/relation graph
-	// Known capabilities defined by convention in the codebase
+	// Check each known capability by querying the canonical entity graph.
+	// Known capabilities defined by convention in the codebase.
 	const char *known_capabilities[] = {
 		"IncrementalIndex",
 		"CallGraph",
@@ -200,11 +231,10 @@ std::vector<Finding> CapabilityVerifier::verify()
 	for (const char **cap = known_capabilities; *cap; cap++) {
 		std::string cap_name = *cap;
 
-		// Query graph nodes with this name (production source of truth).
-		// entity/relation tables are not populated by the bulk buildGraph
-		// path; graph_nodes/graph_edges are.
+		// Query canonical entity rows with this name (Step 9.5:
+		// migrated from graph_nodes to entity).
 		const char *sql = "SELECT e.id, e.file_path, e.start_row "
-				  "FROM graph_nodes e "
+				  "FROM entity e "
 				  "WHERE e.project_id = ? AND e.name = ?";
 		sqlite3_stmt *stmt = nullptr;
 		if (sqlite3_prepare_v2(store_->handle(), sql, -1, &stmt,
@@ -233,10 +263,12 @@ std::vector<Finding> CapabilityVerifier::verify()
 		if (!found)
 			continue;
 
-		// Check if this node has any callers (incoming call + symbol_reference edges)
+		// Check if this entity has any callers (incoming Calls relation,
+		// type=1). Step 9.5: migrated from graph_edges.edge_type IN (1,3)
+		// to relation.type=1 (Calls only) per relation_contract.md.
 		const char *caller_sql =
-			"SELECT COUNT(*) FROM graph_edges r "
-			"WHERE r.project_id = ? AND r.target_node_id = ? AND r.edge_type IN (1,3)";
+			"SELECT COUNT(*) FROM relation r "
+			"WHERE r.project_id = ? AND r.target_id = ? AND r.type = ?";
 		sqlite3_stmt *cstmt = nullptr;
 		int caller_count = 0;
 		if (sqlite3_prepare_v2(store_->handle(), caller_sql, -1, &cstmt,
@@ -245,6 +277,7 @@ std::vector<Finding> CapabilityVerifier::verify()
 					   static_cast<int64_t>(project_id_));
 			sqlite3_bind_int64(cstmt, 2,
 					   static_cast<int64_t>(entity_id));
+			sqlite3_bind_int(cstmt, 3, kRelationTypeCalls);
 			if (sqlite3_step(cstmt) == SQLITE_ROW)
 				caller_count = sqlite3_column_int(cstmt, 0);
 			sqlite3_finalize(cstmt);

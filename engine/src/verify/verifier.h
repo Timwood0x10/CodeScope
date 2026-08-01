@@ -18,9 +18,13 @@ namespace verify
  * collects EvidenceRecord for a single Claim (via verify()). The registry
  * dispatches a Claim to the first Verifier whose accepts() returns true.
  *
- * Verifiers read the Knowledge Graph (graph_nodes/graph_edges tables) and
- * documents through the store API; they must not mutate facts. Evidence +
- * findings are persisted by the caller after verify() returns.
+ * Step 9.5: Verifiers read the canonical fact layer (entity/relation tables)
+ * and documents through the store API; they must NOT read the deprecated
+ * graph_nodes/graph_edges tables as a production source of truth. When the
+ * canonical evidence backend is not ready (empty entity/relation), verifiers
+ * must return Unknown + reason instead of fabricating a verdict from missing
+ * data. Evidence + findings are persisted by the caller after verify()
+ * returns.
  */
 class Verifier {
     public:

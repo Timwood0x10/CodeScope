@@ -121,6 +121,16 @@ uint64_t SemanticEmitter::emitReference(const std::string &callee_name,
 				loc, arity, false);
 }
 
+bool SemanticEmitter::setCallFacts(uint64_t call_record_id,
+				   const std::string &qualified_target,
+				   const std::string &receiver_text,
+				   const std::string &receiver_type,
+				   const std::string &import_alias)
+{
+	return unit_->setCallFacts(call_record_id, qualified_target,
+				   receiver_text, receiver_type, import_alias);
+}
+
 // ── Type Emitters ─────────────────────────────────────────────
 
 uint64_t SemanticEmitter::emitTypeRef(const std::string &variable_name,

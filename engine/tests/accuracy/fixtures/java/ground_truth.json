@@ -1,0 +1,18 @@
+{
+  "language": "java",
+  "expected_calls": [
+    {"caller": "mainFunc", "caller_file": "A.java", "callee": "alpha", "callee_file": "A.java"},
+    {"caller": "mainFunc", "caller_file": "A.java", "callee": "B", "callee_file": "B.java", "note": "constructor call new B()"},
+    {"caller": "alpha", "caller_file": "A.java", "callee": "bravo", "callee_file": "B.java"}
+  ],
+  "forbidden_calls": [
+    {"caller": "mainFunc", "callee": "max"},
+    {"caller": "mainFunc", "callee": "println"},
+    {"caller": "mainFunc", "callee": "out"}
+  ],
+  "allowed_unresolved": [
+    {"caller": "mainFunc", "callee": "run", "note": "instance method via b.run(); receiver type not yet propagated"},
+    {"caller": "mainFunc", "callee": "bravo", "note": "static call B.bravo; qualified target not yet propagated"}
+  ],
+  "external_calls": ["Math.max", "System.out.println"]
+}

@@ -36,6 +36,66 @@
 
 // ─── Capability API ────────────────────────────────────────────
 
+// Helper: count eligible function/method entities (entity.kind IN 0,1) for a
+// project. Returns 0 on any error. Eligible entities are the denominator for
+// every capability coverage ratio. Reads the canonical `entity` table — never
+// the deprecated `graph_nodes`/`symbols` tables — so the count reflects real
+// indexed data.
+static int ffi_count_eligible_entities(uint64_t project_id)
+{
+	sqlite3_stmt *stmt = nullptr;
+	int total = 0;
+	const char *sql =
+		"SELECT COUNT(*) FROM entity WHERE project_id = ? AND kind IN (0,1)";
+	if (sqlite3_prepare_v2(g_store->handle(), sql, -1, &stmt, nullptr) ==
+	    SQLITE_OK) {
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		if (sqlite3_step(stmt) == SQLITE_ROW)
+			total = sqlite3_column_int(stmt, 0);
+		sqlite3_finalize(stmt);
+	} else {
+		fprintf(stderr,
+			"engine_get_capabilities: entity count probe failed: %s "
+			"[module=ffi, method=engine_get_capabilities]\n",
+			sqlite3_errmsg(g_store->handle()));
+	}
+	return total;
+}
+
+// Helper: count distinct function/method entities that participate in at least
+// one Calls relation (relation.type=1) as source or target. This is the
+// canonical signal that the call graph has been built for them. Returns 0 on
+// any error. Used to compute the call_graph coverage ratio.
+static int ffi_count_callgraph_ready_entities(uint64_t project_id)
+{
+	sqlite3_stmt *stmt = nullptr;
+	int ready = 0;
+	// DISTINCT over the UNION of source and target ids so a function counts
+	// once whether it only calls others, is only called, or both.
+	const char *sql =
+		"SELECT COUNT(*) FROM ("
+		" SELECT DISTINCT src FROM ("
+		"  SELECT source_id AS src FROM relation WHERE project_id=? AND type=1"
+		"  UNION"
+		"  SELECT target_id AS src FROM relation WHERE project_id=? AND type=1"
+		" )"
+		")";
+	if (sqlite3_prepare_v2(g_store->handle(), sql, -1, &stmt, nullptr) ==
+	    SQLITE_OK) {
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
+		if (sqlite3_step(stmt) == SQLITE_ROW)
+			ready = sqlite3_column_int(stmt, 0);
+		sqlite3_finalize(stmt);
+	} else {
+		fprintf(stderr,
+			"engine_get_capabilities: callgraph count probe failed: %s "
+			"[module=ffi, method=engine_get_capabilities]\n",
+			sqlite3_errmsg(g_store->handle()));
+	}
+	return ready;
+}
+
 char *engine_get_capabilities(uint64_t project_id)
 {
 	try {
@@ -43,24 +103,17 @@ char *engine_get_capabilities(uint64_t project_id)
 			return dupString(
 				"{\"error\":\"engine not initialized\"}");
 
-		double cg =
-			g_store->getReadyRatio(project_id, "callgraph_ready");
-		double me = g_store->getReadyRatio(project_id, "metrics_ready");
-		double em =
-			g_store->getReadyRatio(project_id, "embedding_ready");
-
-		int total = 0;
-		const char *sql =
-			"SELECT COUNT(*) FROM symbols WHERE project_id = ?";
-		sqlite3_stmt *stmt = nullptr;
-		if (sqlite3_prepare_v2(g_store->handle(), sql, -1, &stmt,
-				       nullptr) == SQLITE_OK) {
-			sqlite3_bind_int64(stmt, 1,
-					   static_cast<int64_t>(project_id));
-			if (sqlite3_step(stmt) == SQLITE_ROW)
-				total = sqlite3_column_int(stmt, 0);
-			sqlite3_finalize(stmt);
-		}
+		// Step 10 (sunset): metrics and embedding/semantic_search are
+		// formally sunset this sprint — their producers are no-ops and
+		// canonical storage is empty. We report `available=false` with
+		// a structured reason instead of "available=true, ready=false"
+		// + a misleading "run codescope_enhance to enable" hint, so
+		// MCP clients can distinguish "not yet run" from "not
+		// implemented". FTS stays available (already wired).
+		const int total = ffi_count_eligible_entities(project_id);
+		const int cg_ready_count =
+			ffi_count_callgraph_ready_entities(project_id);
+		const bool cg_ready = cg_ready_count > 0;
 
 		std::ostringstream json;
 		json << "{"
@@ -74,20 +127,34 @@ char *engine_get_capabilities(uint64_t project_id)
 		     << (total > 0 ? "true" : "false")
 		     << ",\"description\":\"main/initcall/probe detection\"},"
 		     << "\"call_graph\":{\"available\":true,\"ready\":"
-		     << (cg > 0.1 ? "true" : "false")
-		     << ",\"description\":\"function call edges — run codescope_enhance to enable\"},"
+		     << (cg_ready ? "true" : "false")
+		     << ",\"coverage\":{\"eligible\":" << total
+		     << ",\"ready\":" << cg_ready_count << "}"
+		     << ",\"description\":\"function call edges (built during index)\"},"
 		     << "\"path_tracing\":{\"available\":true,\"ready\":"
-		     << (cg > 0.1 ? "true" : "false")
+		     << (cg_ready ? "true" : "false")
 		     << ",\"description\":\"BFS shortest path between functions\"},"
-		     << "\"metrics\":{\"available\":true,\"ready\":"
-		     << (me > 0.1 ? "true" : "false")
-		     << ",\"description\":\"complexity metrics — run codescope_enhance\"},"
-		     << "\"semantic_search\":{\"available\":true,\"ready\":"
-		     << (em > 0.1 ? "true" : "false")
-		     << ",\"description\":\"vector embedding search — run codescope_enhance\"},"
+		     // Sunset capabilities: available=false + structured reason.
+		     // `ready` is reported as false (not "null") to keep the JSON
+		     // shape stable for existing MCP clients that read it as a
+		     // bool; `unavailable_reason` carries the structured signal.
+		     << "\"metrics\":{\"available\":false,\"ready\":false,"
+		     << "\"unavailable_reason\":\"sunset\","
+		     << "\"description\":\"complexity metrics — not implemented (sunset); see engine_get_enhancement_status\"},"
+		     << "\"semantic_search\":{\"available\":false,\"ready\":false,"
+		     << "\"unavailable_reason\":\"sunset\",\"mode\":\"fts\","
+		     << "\"description\":\"vector embedding search — not implemented (sunset); FTS fallback is used\"},"
+		     // FTS is the only supported search path post-sunset. Exposed
+		     // explicitly so callers can see that search IS available, just
+		     // via FTS rather than vectors.
+		     << "\"fts\":{\"available\":true,\"ready\":"
+		     << (g_store->getProjectReadiness(project_id, "fts_ready") ?
+				 "true" :
+				 "false")
+		     << ",\"description\":\"FTS5 full-text search (the only search path; semantic is sunset)\"},"
 		     << "\"context_builder\":{\"available\":true,\"ready\":true,\"description\":\"intelligent context assembly\"}"
 		     << "},"
-		     << "\"enhancement_needed\":\"Run codescope_enhance to enable call graph, metrics, and semantic search\""
+		     << "\"enhancement_needed\":\"Call graph is built during index. Metrics and semantic search are sunset (unavailable); FTS powers search.\""
 		     << "}";
 		return dupString(json.str());
 	} catch (const std::exception &e) {

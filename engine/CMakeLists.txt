@@ -252,6 +252,7 @@ set(ENGINE_SOURCES
         src/verify/capability_verifier.cpp
         src/verify/contract_verifier.cpp
         src/verify/architecture_verifier.cpp
+        src/verify/function_implements_verifier.cpp
         src/verify/dead_code_inspector.cpp
         src/verify/claim_parser.cpp
         src/verify/claim.cpp

@@ -127,11 +127,46 @@ char *engine_index_post_parse(uint64_t project_id, const std::string &dir,
 				.count());
 	}
 
-	// DEEP mode: build vectors (NORMAL skips them)
+	// DEEP mode: build vectors (NORMAL skips them).
+	// Step 10 (sunset): buildVectorsFromGraph() is currently a no-op, so
+	// node_vectors stays empty. The vector_ready flag MUST reflect actual
+	// data coverage, not the mode we ran in — setting it unconditionally
+	// here produced the A19 "fake ready" bug (vector_ready=1 with
+	// node_vectors=0). Now we only raise the flag when the table actually
+	// has rows for this project, so readiness matches canonical data.
 	if (mode_deep) {
 		auto t_v = steady_clock::now();
 		g_store->buildVectorsFromGraph(project_id);
-		g_store->setProjectReadiness(project_id, "vector_ready", 1);
+		// Probe canonical data: count node_vectors rows for this project.
+		// If the builder is a no-op (sunset), count stays 0 and the flag
+		// stays 0 — exactly what we want, since semantically
+		// `vector_ready=1` would otherwise mislead callers into thinking
+		// semantic search is available.
+		int64_t vec_rows = 0;
+		{
+			sqlite3_stmt *vstmt = nullptr;
+			const char *vsql =
+				"SELECT COUNT(*) FROM node_vectors WHERE project_id = ?";
+			if (sqlite3_prepare_v2(g_store->handle(), vsql, -1,
+					       &vstmt, nullptr) == SQLITE_OK) {
+				sqlite3_bind_int64(
+					vstmt, 1,
+					static_cast<int64_t>(project_id));
+				if (sqlite3_step(vstmt) == SQLITE_ROW)
+					vec_rows =
+						sqlite3_column_int64(vstmt, 0);
+				sqlite3_finalize(vstmt);
+			} else {
+				// node_vectors table missing — log and keep flag 0.
+				fprintf(stderr,
+					"engine_index_post_parse: node_vectors "
+					"count probe failed: %s "
+					"[module=engine, method=engine_index_post_parse]\n",
+					sqlite3_errmsg(g_store->handle()));
+			}
+		}
+		g_store->setProjectReadiness(project_id, "vector_ready",
+					     vec_rows > 0 ? 1 : 0);
 		time_vector_ms =
 			duration_cast<milliseconds>(steady_clock::now() - t_v)
 				.count();

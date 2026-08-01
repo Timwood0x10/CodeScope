@@ -446,10 +446,17 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		std::string ref_sql =
 			"INSERT OR IGNORE INTO reference "
 			"(project_id, caller_id, name, arity, call_kind, "
-			" resolve_strategy, start_row, start_col) "
+			" resolve_strategy, start_row, start_col, "
+			// Step 3 (plan §3.1): structured call facts copied from
+			// semantic_records so the Resolver can disambiguate
+			// method/static/constructor calls with structured evidence.
+			" qualified_target, receiver_text, receiver_type, "
+			" import_alias, call_site_file) "
 			"SELECT sr.project_id, r2n.node_id, sr.name, sr.arity, "
 			" sr.call_kind, sr.resolve_strategy, "
-			" sr.start_row, sr.start_col "
+			" sr.start_row, sr.start_col, "
+			" sr.qualified_target, sr.receiver_text, "
+			" sr.receiver_type, sr.import_alias, sr.file_path "
 			"FROM semantic_records sr "
 			"JOIN _r2n r2n ON sr.parent_id = r2n.original_id "
 			" AND sr.file_path = r2n.file_path "

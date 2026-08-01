@@ -41,7 +41,14 @@ namespace store
 // version mismatches, the entire .lbug is dropped and recreated
 // (Kuzu's CREATE TABLE IF NOT EXISTS does NOT add missing columns
 // to existing tables, so a version bump is the only safe upgrade path).
-static constexpr uint32_t kLbugSchemaVersion = 2;
+//
+// v2 → v3 (Step 1): the Graph Compiler split now routes only Calls(1)
+// relations to the CALLS table (all other typed relations go to
+// RELATES), and getCallers/getCallees query CALLS with an explicit
+// `r.edge_type=1` filter. Bumping the version forces a full recompile
+// of any `.lbug` produced by an older binary so stale non-Calls edges
+// that were previously written to CALLS are purged.
+static constexpr uint32_t kLbugSchemaVersion = 3;
 
 // Initialize LadybugDB alongside the SQLite database.
 //

@@ -1,0 +1,16 @@
+{
+  "language": "python",
+  "expected_calls": [
+    {"caller": "main_func", "caller_file": "a.py", "callee": "alpha", "callee_file": "a.py"},
+    {"caller": "main_func", "caller_file": "a.py", "callee": "Timeline", "callee_file": "a.py", "note": "constructor call Timeline()"},
+    {"caller": "alpha", "caller_file": "a.py", "callee": "bravo", "callee_file": "b.py"}
+  ],
+  "forbidden_calls": [
+    {"caller": "main_func", "callee": "len"},
+    {"caller": "main_func", "callee": "range"}
+  ],
+  "allowed_unresolved": [
+    {"caller": "main_func", "callee": "render", "note": "instance method call; receiver type not yet propagated"}
+  ],
+  "external_calls": ["len"]
+}

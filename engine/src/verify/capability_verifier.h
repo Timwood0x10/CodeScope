@@ -16,8 +16,8 @@ namespace verify
  * codebase. In the Claim-driven flow it accepts CapabilityExists claims and
  * returns an EvidenceRecord with supporting or contradicting evidence.
  *
- * Evidence chain:
- *   Capability row -> graph_nodes entry -> Callers (graph_edges edge_type=1)
+ * Evidence chain (Step 9.5 migrated to canonical facts):
+ *   Capability row -> entity row -> Callers (relation type=1 incoming)
  *
  * Legacy path:
  *   The no-argument verify() returning std::vector<Finding> is preserved so

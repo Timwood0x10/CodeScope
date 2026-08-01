@@ -137,8 +137,8 @@ flowchart LR
         E1["enhance_project"]
         E2["full tree-sitter"]
         E3["call graph"]
-        E4["complexity metrics"]
-        E5["embeddings + FTS"]
+        E4["FTS index"]
+        E5["semantic_fact (v0.3)"]
     end
 
     A -->|"trigger"| B
@@ -332,7 +332,7 @@ codescope index-parallel /path/to/large/project
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
-| `search` | **Recommended** — unified search (auto-selects FTS5 or semantic). | `{"query": "string (required)", "limit": "integer (default 20, max 100)"}` |
+| `search` | **Recommended** — unified search (FTS5-based; semantic/vector search is sunset this sprint, so FTS5 is the only path). | `{"query": "string (required)", "limit": "integer (default 20, max 100)"}` |
 | `search_code` | [DEPRECATED — use search] | `{"query": "string (required)", "limit": "integer"}` |
 
 ### Verification
@@ -351,7 +351,7 @@ The v0.3 Evidence Pipeline transforms indexed code into verifiable evidence and 
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
-| `enhance_project` | Run background enhancement: full tree-sitter parse, call graph, metrics, FTS, and v0.3 semantic_fact extraction. Prerequisite for `build_evidence` to produce non-empty findings. | `{}` |
+| `enhance_project` | Run background enhancement: full tree-sitter parse, call graph, FTS, and v0.3 semantic_fact extraction. Prerequisite for `build_evidence` to produce non-empty findings. Note (Step 10): complexity metrics and vector/semantic search are sunset this sprint — `enhance_project` no longer claims to enable them. | `{}` |
 | `build_evidence` | Build evidence findings by applying the rule set (sync/memory/error/pattern/framework/ffi) to the project's semantic_fact rows. Each rule declares fact needs + a combine mode (Collect / MissingMatch / MissingMatchPerFunction / Count). Returns a JSON array of Evidence objects. Run after `enhance_project` so semantic facts are populated. | `{"category": "string (optional, one of: sync|memory|error|pattern|framework|ffi)"}` |
 | `verify_statement` | Verify a natural-language claim against the project's indexed evidence. Pipeline: IntentParser → Planner → EvidenceBuilder → VerdictBuilder. Returns JSON with `verdict` (Supported\|Contradicted\|PartiallyVerified\|Unknown), `confidence`, `requirements[]`, and `evidence[]`. Use this for yes/no questions about code behavior (e.g. "does this project safely handle CString?"). | `{"claim": "string (required)"}` |
 | `build_project_state` | Build (or rebuild) and persist the project state snapshot. Runs the full v0.3 Evidence Pipeline (evidence aggregation + state queries) and UPSERTs the result into the `project_state` table. Returns the snapshot JSON: overall confidence, capability/architecture/workflow/dead_code scores, per-category issue counts, and `last_updated` timestamp. | `{}` |

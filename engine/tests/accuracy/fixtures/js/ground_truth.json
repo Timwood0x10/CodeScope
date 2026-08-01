@@ -1,0 +1,15 @@
+{
+  "language": "js",
+  "expected_calls": [
+    {"caller": "mainFunc", "caller_file": "a.js", "callee": "alpha", "callee_file": "a.js"},
+    {"caller": "alpha", "caller_file": "a.js", "callee": "bravo", "callee_file": "b.js"}
+  ],
+  "forbidden_calls": [
+    {"caller": "mainFunc", "callee": "max"},
+    {"caller": "mainFunc", "callee": "log"}
+  ],
+  "allowed_unresolved": [
+    {"caller": "mainFunc", "callee": "render", "note": "dynamic method call; JS conservative resolution"}
+  ],
+  "external_calls": ["Math.max"]
+}

@@ -137,8 +137,8 @@ flowchart LR
         E1["enhance_project"]
         E2["完整 tree-sitter"]
         E3["调用图"]
-        E4["复杂度指标"]
-        E5["embeddings + FTS"]
+        E4["FTS 索引"]
+        E5["semantic_fact (v0.3)"]
     end
 
     A -->|"触发"| B
@@ -332,7 +332,7 @@ codescope index-parallel /path/to/large/project
 
 | 工具 | 用途 | 参数 |
 |------|------|------|
-| `search` | **推荐** — 统一搜索（自动选择 FTS5 或语义搜索）。 | `{"query": "string (必填)", "limit": "integer (默认 20, 最大 100)"}` |
+| `search` | **推荐** — 统一搜索（基于 FTS5；本 sprint 已下线语义/向量搜索，FTS5 是唯一路径）。 | `{"query": "string (必填)", "limit": "integer (默认 20, 最大 100)"}` |
 | `search_code` | [已废弃 — 使用 search] | `{"query": "string (必填)", "limit": "integer"}` |
 
 ### 验证

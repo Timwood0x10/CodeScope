@@ -377,16 +377,23 @@ std::string QueryEngine::getCallers(uint64_t project_id,
 		       "connection [module=query, method=getCallers]\"}";
 	}
 
-	// CALLS|RELATES in LadybugDB covers edge_type 1 (call) and 3
-	// (symbol_reference). resolve_strategy is a SQLite-only edge column;
-	// it is NOT a GraphNode/CALLS/RELATES property in LadybugDB, so we
-	// always emit an empty string to preserve JSON compatibility.
+	// Step 1 (plan §2.5 A1): restrict traversal to the CALLS rel table
+	// only and require edge_type=Calls(1). Previously the query matched
+	// `CALLS|RELATES`, which leaked References/Defines/Contains edges
+	// into caller/callee results. The Graph Compiler (Step 0) now writes
+	// only Calls(1) relations to the CALLS table, but the explicit
+	// `r.edge_type=1` filter is kept as a defensive guard against stale
+	// `.lbug` files compiled by older binaries.
+	// resolve_strategy is a SQLite-only edge column; it is NOT a
+	// GraphNode/CALLS/RELATES property in LadybugDB, so we always emit
+	// an empty string to preserve JSON compatibility.
 	std::string cypher = "MATCH (callee:GraphNode {name:'" +
 			     cypherEscape(function_name) +
 			     "', project_id:" + std::to_string(project_id) +
-			     "})<-[r:CALLS|RELATES]-(caller:GraphNode) "
+			     "})<-[r:CALLS]-(caller:GraphNode) "
 			     "WHERE caller.project_id = " +
-			     std::to_string(project_id);
+			     std::to_string(project_id) +
+			     " AND r.edge_type = 1";
 	bool has_filter = file_filter && strlen(file_filter) > 0;
 	if (has_filter) {
 		cypher += " AND callee.file_path CONTAINS '" +
@@ -409,49 +416,71 @@ std::string QueryEngine::getCallers(uint64_t project_id,
 	std::string result = "{\"callers\":[";
 	bool first = true;
 	int count = 0;
+	// Defensive dedup: stale `.lbug` files compiled before the unique
+	// index migration (Step 1) may still contain duplicate CALLS edges.
+	// Dedup by "node_id|file_path|start_row" so each caller entity is
+	// reported at most once. The key is the semantic identity triple
+	// (graph_node_id + file_path + start_row); start_col is excluded
+	// because two CALLS edges from the same entity always share the
+	// caller's location.
+	std::unordered_set<std::string> seen;
 	lbug_flat_tuple tuple;
 	while (lbug_query_result_get_next(&qr, &tuple) == LbugSuccess) {
-		if (!first)
-			result += ",";
-		first = false;
-		++count;
-		result += "{";
 		lbug_value v;
+		int64_t node_id = 0;
+		int64_t start_row = 0;
+		int64_t start_col = 0;
+		std::string name_str;
+		std::string file_str;
 		// 5 columns: graph_node_id, name, file_path, start_row,
 		// start_col.
 		for (int i = 0; i < 5; i++) {
-			if (i > 0)
-				result += ",";
-			if (lbug_flat_tuple_get_value(&tuple, i, &v) ==
-			    LbugSuccess) {
-				if (i == 0 || i == 3 || i == 4) {
-					int64_t iv = 0;
-					lbug_value_get_int64(&v, &iv);
-					const char *keys[] = { "node_id", "",
-							       "", "start_row",
-							       "start_col" };
-					result += std::string("\"") + keys[i] +
-						  "\":" + std::to_string(iv);
-				} else {
-					char *sv = nullptr;
-					if (lbug_value_get_string(&v, &sv) ==
-						    LbugSuccess &&
-					    sv) {
-						const char *keys[] = {
-							"", "name", "file_path",
-							"", ""
-						};
-						result += std::string("\"") +
-							  keys[i] + "\":\"" +
-							  jsonEscape(sv) + "\"";
-						lbug_destroy_string(sv);
-					}
+			if (lbug_flat_tuple_get_value(&tuple, i, &v) !=
+			    LbugSuccess)
+				continue;
+			if (i == 0 || i == 3 || i == 4) {
+				int64_t iv = 0;
+				lbug_value_get_int64(&v, &iv);
+				if (i == 0)
+					node_id = iv;
+				else if (i == 3)
+					start_row = iv;
+				else
+					start_col = iv;
+			} else {
+				char *sv = nullptr;
+				if (lbug_value_get_string(&v, &sv) ==
+					    LbugSuccess &&
+				    sv) {
+					if (i == 1)
+						name_str = sv;
+					else if (i == 2)
+						file_str = sv;
+					lbug_destroy_string(sv);
 				}
 			}
 		}
-		// resolve_strategy is not a LadybugDB property; emit empty
-		// string for JSON compatibility with the previous SQLite path.
-		result += ",\"resolve_strategy\":\"\"}";
+		std::string key = std::to_string(node_id) + "|" + file_str +
+				  "|" + std::to_string(start_row);
+		if (seen.insert(key).second) {
+			if (!first)
+				result += ",";
+			first = false;
+			++count;
+			result +=
+				"{\"node_id\":" + std::to_string(node_id) +
+				",\"name\":\"" + jsonEscape(name_str.c_str()) +
+				"\",\"file_path\":\"" +
+				jsonEscape(file_str.c_str()) +
+				"\",\"start_row\":" +
+				std::to_string(start_row) +
+				",\"start_col\":" + std::to_string(start_col) +
+				// resolve_strategy is not a LadybugDB property;
+				// emit empty string for JSON compatibility.
+				",\"resolve_strategy\":\"\"}";
+			lbug_flat_tuple_destroy(&tuple);
+			continue;
+		}
 		lbug_flat_tuple_destroy(&tuple);
 	}
 	lbug_query_result_destroy(&qr);
@@ -481,16 +510,23 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 		       "connection [module=query, method=getCallees]\"}";
 	}
 
-	// CALLS|RELATES in LadybugDB covers edge_type 1 (call) and 3
-	// (symbol_reference). resolve_strategy is a SQLite-only edge column;
-	// it is NOT a GraphNode/CALLS/RELATES property in LadybugDB, so we
-	// always emit an empty string to preserve JSON compatibility.
+	// Step 1 (plan §2.5 A1): restrict traversal to the CALLS rel table
+	// only and require edge_type=Calls(1). Previously the query matched
+	// `CALLS|RELATES`, which leaked References/Defines/Contains edges
+	// into caller/callee results. The Graph Compiler (Step 0) now writes
+	// only Calls(1) relations to the CALLS table, but the explicit
+	// `r.edge_type=1` filter is kept as a defensive guard against stale
+	// `.lbug` files compiled by older binaries.
+	// resolve_strategy is a SQLite-only edge column; it is NOT a
+	// GraphNode/CALLS/RELATES property in LadybugDB, so we always emit
+	// an empty string to preserve JSON compatibility.
 	std::string cypher = "MATCH (caller:GraphNode {name:'" +
 			     cypherEscape(function_name) +
 			     "', project_id:" + std::to_string(project_id) +
-			     "})-[r:CALLS|RELATES]->(callee:GraphNode) "
+			     "})-[r:CALLS]->(callee:GraphNode) "
 			     "WHERE callee.project_id = " +
-			     std::to_string(project_id);
+			     std::to_string(project_id) +
+			     " AND r.edge_type = 1";
 	bool has_filter = file_filter && strlen(file_filter) > 0;
 	if (has_filter) {
 		cypher += " AND caller.file_path CONTAINS '" +
@@ -513,51 +549,68 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 	std::string result = "{\"callees\":[";
 	bool first = true;
 	int count = 0;
+	// Defensive dedup: stale `.lbug` files compiled before the unique
+	// index migration (Step 1) may still contain duplicate CALLS edges.
+	// Dedup by "node_id|file_path|start_row" so each callee entity is
+	// reported at most once.
+	std::unordered_set<std::string> seen;
 	lbug_flat_tuple tuple;
 	while (lbug_query_result_get_next(&qr, &tuple) == LbugSuccess) {
-		if (!first)
-			result += ",";
-		first = false;
-		++count;
-		result += "{";
 		lbug_value v;
+		int64_t node_id = 0;
+		int64_t start_row = 0;
+		int64_t start_col = 0;
+		std::string name_str;
+		std::string file_str;
 		// 5 columns: graph_node_id, name, file_path, start_row,
 		// start_col.
 		for (int i = 0; i < 5; i++) {
-			if (i > 0)
-				result += ",";
-			if (lbug_flat_tuple_get_value(&tuple, i, &v) ==
-			    LbugSuccess) {
-				if (i == 0 || i == 3 || i == 4) {
-					// int64 columns
-					int64_t iv = 0;
-					lbug_value_get_int64(&v, &iv);
-					const char *keys[] = { "node_id", "",
-							       "", "start_row",
-							       "start_col" };
-					result += std::string("\"") + keys[i] +
-						  "\":" + std::to_string(iv);
-				} else {
-					// string columns
-					char *sv = nullptr;
-					if (lbug_value_get_string(&v, &sv) ==
-						    LbugSuccess &&
-					    sv) {
-						const char *keys[] = {
-							"", "name", "file_path",
-							"", ""
-						};
-						result += std::string("\"") +
-							  keys[i] + "\":\"" +
-							  jsonEscape(sv) + "\"";
-						lbug_destroy_string(sv);
-					}
+			if (lbug_flat_tuple_get_value(&tuple, i, &v) !=
+			    LbugSuccess)
+				continue;
+			if (i == 0 || i == 3 || i == 4) {
+				int64_t iv = 0;
+				lbug_value_get_int64(&v, &iv);
+				if (i == 0)
+					node_id = iv;
+				else if (i == 3)
+					start_row = iv;
+				else
+					start_col = iv;
+			} else {
+				char *sv = nullptr;
+				if (lbug_value_get_string(&v, &sv) ==
+					    LbugSuccess &&
+				    sv) {
+					if (i == 1)
+						name_str = sv;
+					else if (i == 2)
+						file_str = sv;
+					lbug_destroy_string(sv);
 				}
 			}
 		}
-		// resolve_strategy is not a LadybugDB property; emit empty
-		// string for JSON compatibility with the previous SQLite path.
-		result += ",\"resolve_strategy\":\"\"}";
+		std::string key = std::to_string(node_id) + "|" + file_str +
+				  "|" + std::to_string(start_row);
+		if (seen.insert(key).second) {
+			if (!first)
+				result += ",";
+			first = false;
+			++count;
+			result +=
+				"{\"node_id\":" + std::to_string(node_id) +
+				",\"name\":\"" + jsonEscape(name_str.c_str()) +
+				"\",\"file_path\":\"" +
+				jsonEscape(file_str.c_str()) +
+				"\",\"start_row\":" +
+				std::to_string(start_row) +
+				",\"start_col\":" + std::to_string(start_col) +
+				// resolve_strategy is not a LadybugDB property;
+				// emit empty string for JSON compatibility.
+				",\"resolve_strategy\":\"\"}";
+			lbug_flat_tuple_destroy(&tuple);
+			continue;
+		}
 		lbug_flat_tuple_destroy(&tuple);
 	}
 	lbug_query_result_destroy(&qr);

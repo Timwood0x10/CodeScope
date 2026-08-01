@@ -475,9 +475,16 @@ int64_t ResolverPipeline::run()
 	}
 
 	// ── Query all references for this project ──
+	// Step 3 (plan §3.1): select the structured call-fact columns so the
+	// Resolver can use receiver/qualified target/import alias as primary
+	// evidence. These are populated by per-language Visitors and copied
+	// from semantic_records at reference-population time.
 	std::string ref_sql = "SELECT r.id, r.name, r.caller_id, r.arity, "
 			      " r.start_row, r.start_col, r.call_kind, "
-			      " r.resolve_strategy, e.file_path "
+			      " r.resolve_strategy, e.file_path, "
+			      " r.qualified_target, r.receiver_text, "
+			      " r.receiver_type, r.import_alias, "
+			      " COALESCE(r.call_site_file, e.file_path) "
 			      "FROM reference r "
 			      "JOIN entity e ON r.caller_id = e.id "
 			      "WHERE r.project_id=?";
@@ -551,6 +558,14 @@ int64_t ResolverPipeline::run()
 		int call_kind;
 		int arity; // caller arity from reference row (column r.arity)
 		std::string resolve_strategy;
+		// Step 3 (plan §3.1): structured call facts. Populated by
+		// per-language Visitors; used by the exact-first candidate
+		// generation in Step 5. Empty = unknown.
+		std::string qualified_target; // full call text, e.g. "b.Get"
+		std::string receiver_text;    // syntactic receiver, e.g. "b"
+		std::string receiver_type;    // inferred receiver type, e.g. "Box"
+		std::string import_alias;     // import alias used, e.g. "fmt"
+		std::string call_site_file;   // file path of the call site
 	};
 	std::vector<RefRow> refs;
 	refs.reserve(65536); // pre-allocate for 108k typical
@@ -572,11 +587,27 @@ int64_t ResolverPipeline::run()
 		r.call_kind = sqlite3_column_int(ref_st, 6);
 		const char *rs_c = reinterpret_cast<const char *>(
 			sqlite3_column_text(ref_st, 7));
+		// Step 3: read structured call facts (columns 9-13).
+		const char *qt_c = reinterpret_cast<const char *>(
+			sqlite3_column_text(ref_st, 9));
+		const char *rtx_c = reinterpret_cast<const char *>(
+			sqlite3_column_text(ref_st, 10));
+		const char *rty_c = reinterpret_cast<const char *>(
+			sqlite3_column_text(ref_st, 11));
+		const char *ia_c = reinterpret_cast<const char *>(
+			sqlite3_column_text(ref_st, 12));
+		const char *csf_c = reinterpret_cast<const char *>(
+			sqlite3_column_text(ref_st, 13));
 		if (!name_c || !*name_c || !fp_c)
 			continue;
 		r.name = name_c;
 		r.caller_file = fp_c;
 		r.resolve_strategy = rs_c ? rs_c : "";
+		r.qualified_target = qt_c ? qt_c : "";
+		r.receiver_text = rtx_c ? rtx_c : "";
+		r.receiver_type = rty_c ? rty_c : "";
+		r.import_alias = ia_c ? ia_c : "";
+		r.call_site_file = csf_c ? csf_c : fp_c;
 		refs.push_back(std::move(r));
 	}
 	sqlite3_finalize(ref_st);

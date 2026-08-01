@@ -12,6 +12,8 @@
 #include "store_graph_compiler.h"
 #include "store.h"
 
+#include "graph/graph_types.h"
+
 #include <sqlite3.h>
 
 #include <cstdint>
@@ -379,6 +381,13 @@ writeEdgeCsvs(sqlite3 *db, uint64_t project_id,
 			"," + csvEscape(sqliteText(st, 12)) + "," + // label
 			csvEscape(sqliteText(st, 13)); // graph_type
 
+		// NOTE: legacy `graph_edges.edge_type` uses a different
+		// numbering than the canonical `relation.type` contract in
+		// graph_types.h (legacy: 1=call_graph, 3=symbol_reference;
+		// canonical: 0=References, 1=Calls, 2=Defines, 3=Contains).
+		// This legacy fallback path is deprecated and only runs when
+		// entity/relation tables are empty. The canonical path above
+		// uses `graph::isCallsEdge()` per the Step 0 contract.
 		if (et == 3) {
 			// RELATES: no call_site_line column
 			fputs((base + "\n").c_str(), fr);
@@ -607,17 +616,24 @@ writeEntityEdgeCsvs(sqlite3 *db, uint64_t project_id,
 				   std::to_string(project_id) + "," +
 				   std::to_string(rtype) + ",,";
 
-		if (rtype >= 4) {
-			// RELATES (type >= 4: Imports, Inherits): 6 columns
-			// (FROM, TO, project_id, edge_type, label, graph_type).
-			fputs((base + "\n").c_str(), fr);
-		} else {
-			// CALLS (type 0-3: References, Calls, Defines,
-			// Contains): 7 columns (FROM, TO, project_id,
-			// edge_type, label, graph_type, call_site_line).
-			// The base already has 6 fields (label="" graph_type=""
-			// as two trailing commas); append call_site_line=0.
+		// Relation type contract (see graph_types.h): only
+		// `EdgeType::Calls` is compiled to the LadybugDB CALLS
+		// table. References, Defines, Contains, Imports, Inherits,
+		// UsesType and HasType all go to RELATES and retain their
+		// `edge_type` column for downstream disambiguation. This is
+		// the single sanctioned split point — code MUST NOT branch
+		// on raw integer thresholds like `rtype >= 4`.
+		if (graph::isCallsEdge(rtype)) {
+			// CALLS: 7 columns (FROM, TO, project_id, edge_type,
+			// label, graph_type, call_site_line). The base already
+			// has 6 fields (label="" graph_type="" as two trailing
+			// commas); append call_site_line=0.
 			fputs((base + ",0\n").c_str(), fc);
+		} else {
+			// RELATES: 6 columns (FROM, TO, project_id, edge_type,
+			// label, graph_type). All non-Calls typed relations
+			// land here.
+			fputs((base + "\n").c_str(), fr);
 		}
 	}
 	sqlite3_finalize(st);

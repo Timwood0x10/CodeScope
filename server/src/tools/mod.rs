@@ -879,9 +879,13 @@ fn h_explain_module(project_id: u64, args: &Value) -> String {
 
 // ── v0.3 Evidence Pipeline tools ───────────────────────────────
 
-/// Run background enhancement: full parse, call graph, metrics, FTS,
+/// Run background enhancement: full parse, call graph, FTS,
 /// and v0.3 semantic_fact extraction (Step 1.5). Prerequisite for
 /// `build_evidence` to produce non-empty findings.
+/// Note (Step 10): complexity metrics and vector/semantic search are
+/// sunset this sprint — `enhance_project` no longer claims to enable
+/// them. Call graph is built during `index_project`; this tool exists
+/// mainly for the v0.3 semantic_fact extraction pipeline.
 fn h_enhance_project(project_id: u64, _args: &Value) -> String {
     ffi::enhance_project(project_id)
 }
@@ -1493,7 +1497,7 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
         },
         Tool {
             name: "enhance_project".into(),
-            description: "Run background enhancement for a project: full tree-sitter parse, call graph construction, metrics resolution, FTS index build, and v0.3 semantic_fact extraction (Step 1.5). This is the prerequisite for build_evidence to produce non-empty findings — the semantic facts (sync/mutex/lock, memory/cstring/alloc, error/bare_except, pattern/todo, framework/gin, ffi/extern_call) are extracted here. Returns a JSON summary with files_processed, symbols_enhanced, call_edges, and timing breakdowns.".into(),
+            description: "Run background enhancement for a project: full tree-sitter parse, call graph construction, FTS index build, and v0.3 semantic_fact extraction (Step 1.5). This is the prerequisite for build_evidence to produce non-empty findings — the semantic facts (sync/mutex/lock, memory/cstring/alloc, error/bare_except, pattern/todo, framework/gin, ffi/extern_call) are extracted here. Returns a JSON summary with files_processed, symbols_enhanced, call_edges, and timing breakdowns. Note (Step 10): complexity metrics and vector/semantic search are sunset this sprint — enhance_project no longer claims to enable them; use engine_get_capabilities / engine_get_enhancement_status to see the structured unavailable_reason.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {}
@@ -1594,7 +1598,7 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
         },
         Tool {
             name: "search".into(),
-            description: "Unified code search: auto-selects between FTS5 and semantic search based on enhancement status. Supports prefix matching.".into(),
+            description: "Unified code search: FTS5-based (Step 10: semantic/vector search is sunset this sprint, so this always uses FTS5; the mode=fts fallback is the only path). Supports prefix matching.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {

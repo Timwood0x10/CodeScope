@@ -1,5 +1,6 @@
 #include "contract_verifier.h"
 #include "claim.h"
+#include "registry.h"
 #include "../store/store.h"
 
 #include <cctype>
@@ -17,6 +18,8 @@ static constexpr double kConfThreadSafeSupported = 0.7;
 static constexpr double kConfThreadSafeContradicted = 0.6;
 static constexpr double kConfMemorySafeSupported = 0.6;
 static constexpr double kConfMemorySafeNotFound = 0.4;
+static constexpr double kConfBackendNotReady = 0.2;
+static constexpr double kConfNoStore = 0.0;
 
 namespace verify
 {
@@ -85,13 +88,12 @@ static bool contractDeclared(store::GraphStore *store, uint64_t project_id,
 	return found;
 }
 
-// Helper: collect node ids whose name matches ANY of the LIKE patterns.
+// Helper: collect entity ids whose name matches ANY of the LIKE patterns.
 // Patterns must include SQL LIKE wildcards (e.g. "%mutex%"). Each pattern
 // is OR-ed together in a single query so only one prepare/step pass is
 // needed. Returns ids in SQLite row order; empty when no match.
 //
-// NOTE: We query graph_nodes (the production source of truth) because
-// buildGraph writes to this table via bulk SQL INSERT.
+// Step 9.5: migrated from graph_nodes to canonical entity table.
 static std::vector<int64_t>
 entitiesMatchingAny(store::GraphStore *store, uint64_t project_id,
 		    const std::vector<std::string> &patterns)
@@ -102,7 +104,7 @@ entitiesMatchingAny(store::GraphStore *store, uint64_t project_id,
 
 	// Build "LOWER(name) LIKE LOWER(?) OR LOWER(name) LIKE LOWER(?) ..."
 	// dynamically. The number of ? placeholders equals patterns.size().
-	std::string sql = "SELECT id FROM graph_nodes WHERE project_id=? AND (";
+	std::string sql = "SELECT id FROM entity WHERE project_id=? AND (";
 	for (size_t i = 0; i < patterns.size(); ++i) {
 		if (i > 0)
 			sql += " OR ";
@@ -155,8 +157,24 @@ static EvidenceRecord makeRecord(Verdict verdict, double confidence,
 EvidenceRecord ContractVerifier::verify(const Claim &claim)
 {
 	if (!store_) {
-		return makeRecord(Verdict::Unknown, 0.0,
+		return makeRecord(Verdict::Unknown, kConfNoStore,
 				  "ContractVerifier: store unavailable", {});
+	}
+
+	// Evidence backend readiness gate (Step 9.5): when the canonical
+	// entity/relation tables are empty, return Unknown + reason instead
+	// of fabricating a verdict from missing data.
+	int64_t entity_count = 0;
+	int64_t relation_count = 0;
+	if (!evidence_backend_ready(store_, project_id_, &entity_count,
+				    &relation_count)) {
+		return makeRecord(
+			Verdict::Unknown, kConfBackendNotReady,
+			"ContractVerifier: evidence backend not ready "
+			"(entity=" +
+				std::to_string(entity_count) + ", relation=" +
+				std::to_string(relation_count) + ")",
+			{});
 	}
 
 	// A contract that is not declared in the knowledge layer cannot be

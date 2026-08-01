@@ -504,28 +504,45 @@ std::string GraphStore::searchGraphFallback(uint64_t project_id,
 	return json.str();
 }
 
-// ─── Complexity (removed — metrics no longer stored) ─────────
+// ─── Complexity (sunset — metrics not stored) ─────────────────
+//
+// Step 10 decision: metrics storage is sunset this sprint. The metric
+// COMPUTATION helpers in engine_index_metrics.cpp still exist (and are
+// unit-tested by test_index_metrics), but no producer persists their
+// output to canonical storage — `resolveStagedMetrics()` is a no-op and
+// there is no `metrics`/`complexity` table. To avoid masquerading "0" as
+// a real measurement, the read API returns a structured `unavailable`
+// marker (null + reason) instead of an empty/fake-0 JSON object.
 
 bool GraphStore::setComplexity(uint64_t project_id, uint64_t graph_node_id,
 			       uint64_t cyclomatic, uint64_t cognitive,
 			       uint64_t nesting_depth, uint64_t decision_points)
 {
+	// Sunset: complexity persistence is not wired. Returns false so any
+	// future caller can detect that the write did not happen, rather
+	// than silently succeeding with no effect.
 	(void)project_id;
 	(void)graph_node_id;
 	(void)cyclomatic;
 	(void)cognitive;
 	(void)nesting_depth;
 	(void)decision_points;
-	return true;
+	return false;
 }
 
-// getComplexityJson removed — metrics are no longer stored.
+// Returns a structured `unavailable` JSON marker so callers can
+// distinguish "metric not computed (sunset)" from a real complexity of 0.
+// The `complexity` field is JSON `null` (not `{}` or `0`) so MCP clients
+// reading it as an object will not mistake the placeholder for a real
+// measurement.
 std::string GraphStore::getComplexityJson(uint64_t project_id,
 					  uint64_t graph_node_id)
 {
 	(void)project_id;
 	(void)graph_node_id;
-	return "{\"complexity\":{}}";
+	return "{\"complexity\":null,\"unavailable\":true,"
+	       "\"reason\":\"metrics_sunset\","
+	       "\"unavailable_reason\":\"sunset\"}";
 }
 
 // ─── Vector Search (removed) ──────────────────────────────────

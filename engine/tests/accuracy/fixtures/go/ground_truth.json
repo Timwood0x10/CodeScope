@@ -1,0 +1,18 @@
+{
+  "language": "go",
+  "expected_calls": [
+    {"caller": "mainFunc", "caller_file": "a.go", "callee": "alpha", "callee_file": "a.go"},
+    {"caller": "alpha", "caller_file": "a.go", "callee": "bravo", "callee_file": "b.go"}
+  ],
+  "forbidden_calls": [
+    {"caller": "mainFunc", "callee": "len"},
+    {"caller": "mainFunc", "callee": "make"},
+    {"caller": "mainFunc", "callee": "append"},
+    {"caller": "mainFunc", "callee": "Println"}
+  ],
+  "allowed_unresolved": [
+    {"caller": "mainFunc", "callee": "Get"},
+    {"caller": "mainFunc", "callee": "Println", "note": "stdlib selector call; bare-name resolver may not wire it"}
+  ],
+  "external_calls": ["len", "fmt.Println"]
+}

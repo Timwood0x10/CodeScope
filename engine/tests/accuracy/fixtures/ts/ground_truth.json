@@ -1,0 +1,16 @@
+{
+  "language": "ts",
+  "expected_calls": [
+    {"caller": "mainFunc", "caller_file": "a.ts", "callee": "alpha", "callee_file": "a.ts"},
+    {"caller": "mainFunc", "caller_file": "a.ts", "callee": "Renderer", "callee_file": "a.ts", "note": "constructor call new Renderer()"},
+    {"caller": "alpha", "caller_file": "a.ts", "callee": "bravo", "callee_file": "b.ts"}
+  ],
+  "forbidden_calls": [
+    {"caller": "mainFunc", "callee": "max"},
+    {"caller": "mainFunc", "callee": "log"}
+  ],
+  "allowed_unresolved": [
+    {"caller": "mainFunc", "callee": "render", "note": "instance method call; receiver type not yet propagated"}
+  ],
+  "external_calls": ["Math.max"]
+}

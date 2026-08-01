@@ -1,0 +1,15 @@
+{
+  "language": "rust",
+  "expected_calls": [
+    {"caller": "main_func", "caller_file": "a.rs", "callee": "alpha", "callee_file": "a.rs"},
+    {"caller": "alpha", "caller_file": "a.rs", "callee": "bravo", "callee_file": "b.rs"}
+  ],
+  "forbidden_calls": [
+    {"caller": "main_func", "callee": "len"},
+    {"caller": "main_func", "callee": "vec"}
+  ],
+  "allowed_unresolved": [
+    {"caller": "main_func", "callee": "get", "note": "method call; receiver type not yet propagated"}
+  ],
+  "external_calls": ["vec!", "len"]
+}
