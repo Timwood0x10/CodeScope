@@ -392,10 +392,20 @@ writeEdgeCsvs(sqlite3 *db, uint64_t project_id,
 			// RELATES: no call_site_line column
 			fputs((base + "\n").c_str(), fr);
 		} else {
-			// CALLS: has call_site_line
-			fputs((base + "," +
+			// CALLS: 10 columns in Kuzu schema order (FROM, TO,
+			// project_id, edge_type, call_site_line, label,
+			// graph_type, confidence, resolver, resolution_kind).
+			// Legacy graph_edges rows have no Step 6 provenance,
+			// so confidence/resolver/resolution_kind are emitted
+			// as empty (0.0 / "" / "").
+			fputs((src_uid + "," + tgt_uid + "," +
+			       std::to_string(project_id) + "," +
+			       std::to_string(et) + "," +
 			       std::to_string(sqlite3_column_int(st, 11)) +
-			       "\n")
+			       "," + csvEscape(sqliteText(st, 12)) +
+			       "," + // label
+			       csvEscape(sqliteText(st, 13)) + // graph_type
+			       ",0.0,,\n")
 				      .c_str(),
 			      fc);
 		}
@@ -543,7 +553,8 @@ writeEntityEdgeCsvs(sqlite3 *db, uint64_t project_id,
 		sql = "SELECT r.id, r.source_id, r.target_id, r.type, "
 		      "s.file_path, s.name, s.qualified_name, s.kind, "
 		      "s.start_row, t.file_path, t.name, t.qualified_name, "
-		      "t.kind, t.start_row "
+		      "t.kind, t.start_row, "
+		      "r.confidence, r.resolver, r.resolution_kind "
 		      "FROM relation r "
 		      "JOIN entity s ON r.source_id = s.id AND s.project_id = ? "
 		      "JOIN entity t ON r.target_id = t.id AND t.project_id = ? "
@@ -555,7 +566,8 @@ writeEntityEdgeCsvs(sqlite3 *db, uint64_t project_id,
 		sql = "SELECT r.id, r.source_id, r.target_id, r.type, "
 		      "s.file_path, s.name, s.qualified_name, s.kind, "
 		      "s.start_row, t.file_path, t.name, t.qualified_name, "
-		      "t.kind, t.start_row "
+		      "t.kind, t.start_row, "
+		      "r.confidence, r.resolver, r.resolution_kind "
 		      "FROM relation r "
 		      "JOIN entity s ON r.source_id = s.id AND s.project_id = ? "
 		      "JOIN entity t ON r.target_id = t.id AND t.project_id = ? "
@@ -612,10 +624,6 @@ writeEntityEdgeCsvs(sqlite3 *db, uint64_t project_id,
 						  sqlite3_column_int(st, 12),
 						  sqlite3_column_int(st, 13));
 
-		std::string base = src_uid + "," + tgt_uid + "," +
-				   std::to_string(project_id) + "," +
-				   std::to_string(rtype) + ",,";
-
 		// Relation type contract (see graph_types.h): only
 		// `EdgeType::Calls` is compiled to the LadybugDB CALLS
 		// table. References, Defines, Contains, Imports, Inherits,
@@ -624,16 +632,32 @@ writeEntityEdgeCsvs(sqlite3 *db, uint64_t project_id,
 		// the single sanctioned split point — code MUST NOT branch
 		// on raw integer thresholds like `rtype >= 4`.
 		if (graph::isCallsEdge(rtype)) {
-			// CALLS: 7 columns (FROM, TO, project_id, edge_type,
-			// label, graph_type, call_site_line). The base already
-			// has 6 fields (label="" graph_type="" as two trailing
-			// commas); append call_site_line=0.
-			fputs((base + ",0\n").c_str(), fc);
+			// CALLS: 10 columns in Kuzu schema order
+			// (FROM, TO, project_id, edge_type, call_site_line,
+			// label, graph_type, confidence, resolver,
+			// resolution_kind). Columns 14-16 of the SELECT are the
+			// Step 6 provenance fields (confidence/resolver/
+			// resolution_kind); call_site_line stays 0 (the SQLite
+			// relation table owns the precise call-site row/col).
+			std::string resolver_str = sqliteText(st, 15);
+			std::string rkind_str = sqliteText(st, 16);
+			fputs((src_uid + "," + tgt_uid + "," +
+			       std::to_string(project_id) + "," +
+			       std::to_string(rtype) + ",0,,," +
+			       std::to_string(sqlite3_column_double(st, 14)) +
+			       "," + csvEscape(resolver_str) + "," +
+			       csvEscape(rkind_str) + "\n")
+				      .c_str(),
+			      fc);
 		} else {
 			// RELATES: 6 columns (FROM, TO, project_id, edge_type,
 			// label, graph_type). All non-Calls typed relations
 			// land here.
-			fputs((base + "\n").c_str(), fr);
+			fputs((src_uid + "," + tgt_uid + "," +
+			       std::to_string(project_id) + "," +
+			       std::to_string(rtype) + ",,\n")
+				      .c_str(),
+			      fr);
 		}
 	}
 	sqlite3_finalize(st);
@@ -864,10 +888,23 @@ static bool compileGraphToLadybugDBLegacy(
 			if (et == 3) {
 				fputs((base + "\n").c_str(), fr);
 			} else {
-				fputs((base + "," +
+				// CALLS: 10 columns in Kuzu schema order (FROM,
+				// TO, project_id, edge_type, call_site_line,
+				// label, graph_type, confidence, resolver,
+				// resolution_kind). Legacy graph_edges rows have
+				// no Step 6 provenance, so confidence/resolver/
+				// resolution_kind are emitted as empty
+				// (0.0 / "" / "").
+				fputs((src_uid + "," + tgt_uid + "," +
+				       std::to_string(project_id) + "," +
+				       std::to_string(et) + "," +
 				       std::to_string(
 					       sqlite3_column_int(st, 11)) +
-				       "\n")
+				       "," + csvEscape(sqliteText(st, 12)) +
+				       "," + // label
+				       csvEscape(sqliteText(st,
+							    13)) + // graph_type
+				       ",0.0,,\n")
 					      .c_str(),
 				      fc);
 			}

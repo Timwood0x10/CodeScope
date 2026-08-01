@@ -260,10 +260,12 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 							  c.qualified_name,
 							  c.name, c.file_path);
 			if (!receiver_type.empty()) {
-				f.detail = (f.score >= kScoreExactMatch) ?
-						   "receiver type match" :
-						   (f.score > 0.0 ? "partial receiver" :
-								    "receiver mismatch");
+				f.detail =
+					(f.score >= kScoreExactMatch) ?
+						"receiver type match" :
+						(f.score > 0.0 ?
+							 "partial receiver" :
+							 "receiver mismatch");
 			} else {
 				f.detail = "no receiver evidence (neutral)";
 			}
@@ -527,10 +529,14 @@ int64_t ResolverPipeline::run()
 			sqlite3_bind_int64(iface_st, 1,
 					   static_cast<int64_t>(project_id_));
 			while (sqlite3_step(iface_st) == SQLITE_ROW) {
-				const char *impl = reinterpret_cast<const char *>(
-					sqlite3_column_text(iface_st, 0));
-				const char *iface = reinterpret_cast<const char *>(
-					sqlite3_column_text(iface_st, 1));
+				const char *impl =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(iface_st,
+								    0));
+				const char *iface =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(iface_st,
+								    1));
 				if (impl && iface)
 					interface_impl_index_[iface].push_back(
 						impl);
@@ -609,9 +615,10 @@ int64_t ResolverPipeline::run()
 	int64_t skipped_fuzzy_budget = 0;
 	int64_t total_candidates_seen = 0;
 	// Step 5: new gate counters.
-	int64_t skipped_ambiguous = 0;    // top-1/top-2 margin not met
-	int64_t skipped_fuzzy_no_evidence = 0; // fuzzy without structured evidence
-	int64_t skipped_lang_mismatch = 0;     // caller/candidate language mismatch
+	int64_t skipped_ambiguous = 0; // top-1/top-2 margin not met
+	int64_t skipped_fuzzy_no_evidence =
+		0; // fuzzy without structured evidence
+	int64_t skipped_lang_mismatch = 0; // caller/candidate language mismatch
 
 	// Wall-clock budget accumulator for the fuzzy path. Once the
 	// cumulative time spent in fuzzy_->resolve() exceeds kFuzzyBudgetMs,
@@ -638,10 +645,10 @@ int64_t ResolverPipeline::run()
 		// per-language Visitors; used by the exact-first candidate
 		// generation in Step 5. Empty = unknown.
 		std::string qualified_target; // full call text, e.g. "b.Get"
-		std::string receiver_text;    // syntactic receiver, e.g. "b"
-		std::string receiver_type;    // inferred receiver type, e.g. "Box"
-		std::string import_alias;     // import alias used, e.g. "fmt"
-		std::string call_site_file;   // file path of the call site
+		std::string receiver_text; // syntactic receiver, e.g. "b"
+		std::string receiver_type; // inferred receiver type, e.g. "Box"
+		std::string import_alias; // import alias used, e.g. "fmt"
+		std::string call_site_file; // file path of the call site
 	};
 	std::vector<RefRow> refs;
 	refs.reserve(65536); // pre-allocate for 108k typical
@@ -883,16 +890,15 @@ int64_t ResolverPipeline::run()
 		if ((ref.call_kind == kCallKindInterface ||
 		     ref.call_kind == kCallKindVirtual) &&
 		    !ref.receiver_type.empty()) {
-			auto impl_it = interface_impl_index_.find(
-				ref.receiver_type);
+			auto impl_it =
+				interface_impl_index_.find(ref.receiver_type);
 			if (impl_it != interface_impl_index_.end() &&
 			    !impl_it->second.empty()) {
 				// Expand: for each implementing type, find
 				// candidates whose qualified_name matches
 				// "ImplType::method" or "ImplType.method".
 				int dispatch_count = 0;
-				for (const auto &impl_type :
-				     impl_it->second) {
+				for (const auto &impl_type : impl_it->second) {
 					std::string prefix1 = impl_type + "::";
 					std::string prefix2 = impl_type + ".";
 					for (const auto &c : candidates) {
@@ -928,8 +934,10 @@ int64_t ResolverPipeline::run()
 								  "dispatch",
 								  "interface=" +
 									  ref.receiver_type +
-									  " impl=" + impl_type +
-									  " method=" + ref.name,
+									  " impl=" +
+									  impl_type +
+									  " method=" +
+									  ref.name,
 								  ref.call_site_file,
 								  ref.start_row,
 								  ref.start_col });
@@ -1001,8 +1009,48 @@ int64_t ResolverPipeline::run()
 		// reliable edges, not maximum edges.
 		if (second_id != 0 &&
 		    (best_score - second_score) < kAmbiguityMargin) {
-			skipped_ambiguous++;
-			continue;
+			// Step 5 (plan §5.4): receiver strong-evidence bypass.
+			// When the best candidate carries an EXACT receiver-type
+			// match (factorReceiverTypeMatch == 1.0) and no other
+			// candidate carries any receiver evidence, the type
+			// evidence deterministically identifies the target.
+			// Same-directory fixture layouts (all files copied into
+			// one dir) give Module/Import/Distance no discriminating
+			// power for homonym methods; after weighted-average
+			// normalization the receiver factor contributes only
+			// ~0.08 to the margin, below kAmbiguityMargin — so
+			// abstaining here would drop a certain edge. The bypass
+			// fires only when receiver evidence is unique: an exact
+			// match for best and NO receiver evidence for any other
+			// candidate. If any other candidate also has receiver
+			// evidence (even partial), the gate stays closed.
+			bool receiver_bypass = false;
+			if (!ref.receiver_type.empty()) {
+				double best_rec = 0.0;
+				double other_rec = 0.0;
+				for (auto &c : candidates) {
+					if (c.entity_id == ref.caller_id)
+						continue;
+					double rec = 0.0;
+					for (auto &f : c.factors) {
+						if (f.name == "ReceiverMatch") {
+							rec = f.score;
+							break;
+						}
+					}
+					if (c.entity_id == best_id)
+						best_rec = rec;
+					else if (rec > other_rec)
+						other_rec = rec;
+				}
+				receiver_bypass =
+					(best_rec >= kScoreExactMatch &&
+					 other_rec <= 0.0);
+			}
+			if (!receiver_bypass) {
+				skipped_ambiguous++;
+				continue;
+			}
 		}
 
 		// Step 5: fuzzy-resolved edges must clear a higher threshold.
@@ -1043,16 +1091,14 @@ int64_t ResolverPipeline::run()
 		}
 
 		resolved_count++;
-		resolved_edges.push_back({ ref.caller_id, best_id,
-					   kRelationTypeCall,
-					   ref.resolve_strategy,
-					   best_score, // confidence
-					   "pipeline", // resolver
-					   res_kind,   // resolution_kind
-					   reason,     // reason
-					   ref.call_site_file,
-					   ref.start_row,
-					   ref.start_col });
+		resolved_edges.push_back(
+			{ ref.caller_id, best_id, kRelationTypeCall,
+			  ref.resolve_strategy,
+			  best_score, // confidence
+			  "pipeline", // resolver
+			  res_kind, // resolution_kind
+			  reason, // reason
+			  ref.call_site_file, ref.start_row, ref.start_col });
 	}
 
 	// Free entity_index (no longer needed)
@@ -1082,12 +1128,12 @@ int64_t ResolverPipeline::run()
 					  -1, SQLITE_STATIC);
 			// Step 6: bind provenance columns (6-12).
 			sqlite3_bind_double(ins_st, 6, e.confidence);
-			sqlite3_bind_text(ins_st, 7, e.resolver.c_str(),
-					  -1, SQLITE_STATIC);
+			sqlite3_bind_text(ins_st, 7, e.resolver.c_str(), -1,
+					  SQLITE_STATIC);
 			sqlite3_bind_text(ins_st, 8, e.resolution_kind.c_str(),
 					  -1, SQLITE_STATIC);
-			sqlite3_bind_text(ins_st, 9, e.reason.c_str(),
-					  -1, SQLITE_STATIC);
+			sqlite3_bind_text(ins_st, 9, e.reason.c_str(), -1,
+					  SQLITE_STATIC);
 			sqlite3_bind_text(ins_st, 10, e.call_site_file.c_str(),
 					  -1, SQLITE_STATIC);
 			sqlite3_bind_int(ins_st, 11, e.call_site_row);
@@ -1174,8 +1220,7 @@ int64_t ResolverPipeline::run()
 		(long long)skipped_common, (long long)skipped_too_many,
 		(long long)skipped_fuzzy_miss, (long long)skipped_fuzzy_budget,
 		(long long)skipped_fuzzy_no_evidence,
-		(long long)skipped_ambiguous,
-		(long long)skipped_lang_mismatch,
+		(long long)skipped_ambiguous, (long long)skipped_lang_mismatch,
 		avg_candidates, (long long)total_entities,
 		(long long)total_imports, (long long)sql_batch_ms,
 		(long long)total_ms);

@@ -1,26 +1,27 @@
-// test_homonym_filter.cpp — verify file_filter disambiguates homonyms.
+// test_homonym_filter.cpp — verify homonym disambiguation.
 //
 // Step 2.3 (plan §Step 2): replaced the previous version that depended
 // on the local /Users/scc/code/pycode/Transformer_Explorer project and
 // returned 0 even on failure. This version is fully portable: it
-// creates a tiny fixture in /tmp, indexes it, and verifies that
-// file_filter narrows same-name (homonym) query results.
+// creates a tiny fixture in /tmp, indexes it, and verifies homonym
+// handling end to end.
 //
-// Symptom (before disambiguation): engine_get_callees(pid, "handler")
-// aggregates callees across ALL entities named "handler" in every file.
-// This is noise — each file's "handler" is a distinct symbol.
+// Step 7 (plan §7.3): the bare-name API no longer silently aggregates
+// across all entities that share a name. When multiple entities match
+// the bare name, getCallers/getCallees return ambiguous=true with a
+// candidate list; a file_filter that narrows to a single entity
+// proceeds normally. This test verifies BOTH behaviors:
 //
-// Fix under test: engine_get_callees(pid, "handler", file_filter)
-// restricts the caller to the given file. With file_filter, callees
-// should return only that file's handler callees, not the union.
+//   - Without a filter, "handler" is ambiguous (2 entities) — the query
+//     must return ambiguous=true + candidates, not merged callees.
+//   - With file_filter=first.go, only first.go's handler is queried and
+//     only helperOne appears.
+//   - With file_filter=second.go, only helperTwo appears.
 //
 // The fixture has two files, each defining a function named "handler"
-// that calls a different helper. Without filter, callees("handler")
-// should mention BOTH helpers. With filter, only the filtered file's
-// helper should appear.
+// that calls a different helper.
 //
-// Gate: returns nonzero if file_filter fails to reduce the result set
-// or if the filtered result contains callees from the wrong file.
+// Gate: returns nonzero on any failure.
 
 #include "../include/engine.h"
 
@@ -134,10 +135,14 @@ int main()
 	std::string second_file = std::string(proj_dir) + "/second.go";
 
 	// ── Test 1: callees("handler") WITHOUT file_filter ───────────
-	// Without filter, the query aggregates callees across ALL entities
-	// named "handler". Both helperOne and helperTwo should appear.
+	// Step 7 semantics: two entities named "handler" exist, so the bare
+	// name is ambiguous. The API must return ambiguous=true with a
+	// candidate list instead of silently merging both callees.
 	char *callees_no_filter = engine_get_callees(pid, "handler", nullptr);
-	int total_no_filter = countTotal(callees_no_filter);
+	bool no_filter_ambiguous =
+		callees_no_filter && strstr(callees_no_filter, "\"ambiguous\":true");
+	int candidates_count = countOccurrences(
+		callees_no_filter ? callees_no_filter : "", "\"graph_node_id\"");
 	int helperOne_no_filter =
 		countOccurrences(callees_no_filter, "helperOne");
 	int helperTwo_no_filter =
@@ -169,23 +174,38 @@ int main()
 	engine_free_string(callees_second);
 
 	printf("=== SUMMARY ===\n");
-	printf("callees(handler) NO filter:    total=%d helperOne=%d helperTwo=%d\n",
-	       total_no_filter, helperOne_no_filter, helperTwo_no_filter);
+	printf("callees(handler) NO filter:  ambiguous=%s candidates=%d "
+	       "helperOne=%d helperTwo=%d\n",
+	       no_filter_ambiguous ? "true" : "false", candidates_count,
+	       helperOne_no_filter, helperTwo_no_filter);
 	printf("callees(handler) first.go:     total=%d helperOne=%d helperTwo=%d\n",
 	       total_first, helperOne_first, helperTwo_first);
 	printf("callees(handler) second.go:    total=%d helperOne=%d helperTwo=%d\n",
 	       total_second, helperOne_second, helperTwo_second);
 
 	// ── Gate ──────────────────────────────────────────────────────
-	// The gate verifies that file_filter disambiguates homonyms:
-	//   1. Without filter, both helpers appear (aggregation).
-	//   2. With first.go filter, only helperOne appears.
-	//   3. With second.go filter, only helperTwo appears.
+	// 1. Without filter, the bare name is ambiguous: the response must
+	//    carry ambiguous=true and list 2 candidates, and must NOT merge
+	//    callees from both files (helperOne/helperTwo absent from the
+	//    callee list).
+	// 2. With first.go filter, only helperOne appears.
+	// 3. With second.go filter, only helperTwo appears.
 	// Any failure returns nonzero (plan: "任何失败返回非零").
 	bool pass = true;
 
-	if (helperOne_no_filter < 1 || helperTwo_no_filter < 1) {
-		printf("\nFAIL: without filter, both helpers should appear "
+	if (!no_filter_ambiguous) {
+		printf("\nFAIL: without filter, homonym should be ambiguous "
+		       "(ambiguous=true expected)\n");
+		pass = false;
+	}
+	if (candidates_count != 2) {
+		printf("\nFAIL: without filter, expected 2 candidates "
+		       "(got %d)\n",
+		       candidates_count);
+		pass = false;
+	}
+	if (helperOne_no_filter > 0 || helperTwo_no_filter > 0) {
+		printf("\nFAIL: without filter, callees must NOT be merged "
 		       "(helperOne=%d helperTwo=%d)\n",
 		       helperOne_no_filter, helperTwo_no_filter);
 		pass = false;
@@ -214,19 +234,12 @@ int main()
 		       helperOne_second);
 		pass = false;
 	}
-	// The filtered totals must be less than or equal to the unfiltered
-	// total (filter narrows, never expands).
-	if (total_first > total_no_filter || total_second > total_no_filter) {
-		printf("\nFAIL: filter should narrow results "
-		       "(no=%d first=%d second=%d)\n",
-		       total_no_filter, total_first, total_second);
-		pass = false;
-	}
 
 	if (pass) {
-		printf("\nPASS: file_filter disambiguates homonyms "
-		       "(no=%d, first=%d, second=%d)\n",
-		       total_no_filter, total_first, total_second);
+		printf("\nPASS: homonym disambiguation works "
+		       "(ambiguous=%s candidates=%d first=%d second=%d)\n",
+		       no_filter_ambiguous ? "true" : "false",
+		       candidates_count, total_first, total_second);
 		engine_shutdown();
 		return 0;
 	}

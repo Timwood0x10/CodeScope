@@ -20,35 +20,35 @@
 | 0 | Freeze relation contract & baseline | ✅ | main | 13/13 pass | Helpers in `graph_types.{h,cpp}`; contract in `plan/rules/relation_contract.md`; baseline test `test_accuracy_baseline.cpp` emits JSON |
 | 1 | CALLS query boundary + dedup | ✅ | agent-A | 15/15 pass | `CALLS`-only Cypher + `edge_type=1` filter; `UNIQUE(project_id,source_id,target_id,type)` on `relation`; Ladybug schema v2→v3; defensive result dedup; counter-example `test_typed_relation_query` |
 | 2 | Accuracy Benchmark | ✅ | agent-A | 16/16 pass | TP/FP/FN/P/R/F1 runner; 7-language portable fixtures; `make accuracy-check` target with fault injection; baseline P=1.0 R=1.0 F1=1.0 |
-| 3 | Call fact schema (receiver/qualified) | ☐ | agent-A | — | `semantic_records`/`reference` migration |
-| 4 | Per-language fact extraction | ☐ | agent-A | — | Go/Py/C++/Rust/Java/JS/TS visitors |
-| 5 | Resolver exact-first refactor | ☐ | agent-A | — | Ambiguity gate, evidence-gated fuzzy |
-| 6 | relation provenance | ☐ | agent-A | — | confidence/resolver/reason/call_site |
-| 7 | Query identity model | ☐ | agent-A | — | entity selector, ambiguous candidates |
-| 8 | Dynamic dispatch modeling | ☐ | agent-A | — | interface/trait/virtual candidates |
+| 3 | Call fact schema (receiver/qualified) | ✅ | agent-A | verified | `reference` 表新增 `qualified_target/receiver_text/receiver_type/import_alias/call_site_file` 列（store_schema.cpp §3.1）；`semantic_records` 同列镜像 + migration；round-trip 由 test_step11_go_smoke/accuracy fixtures 覆盖 |
+| 4 | Per-language fact extraction | ✅ | agent-A | verified | Go/Py/C++/Rust/Java/JS/TS visitors 填充 receiver/qualified/import_alias（setCallFacts）；reference 表实测 `p.helper|p|Point`、`obj.render|obj|Timeline` 等证据正确 |
+| 5 | Resolver exact-first refactor | ✅ | agent-A | verified | exact-first 候选链 + ambiguity gate + evidence-gated fuzzy + receiver-type factor；修复 receiver 强证据被归一化 margin 误杀（0.08<0.15）→ 新增 receiver bypass，accuracy gate 0 FP/0 FN |
+| 6 | relation provenance | ✅ | agent-A | verified | relation 表 confidence/resolver/resolution_kind/reason/call_site_* 全列写入；Ladybug CALLS schema v3→v4 增加 compact provenance（confidence/resolver/resolution_kind）；Graph Compiler 双路径 CSV 对齐 10 列；callers/callees/ByEntity API 返回真实 confidence/resolver/resolution_kind（resolve_strategy 由 resolution_kind 映射，不再恒为空） |
+| 7 | Query identity model | ✅ | agent-A | verified | `getCallersByEntity/getCalleesByEntity`（C++ + FFI + engine.h + server FFI 绑定）；裸名 API 歧义检测 `ambiguous=true + candidates`（detectBareNameAmbiguity，接入 getCallers/getCallees）；test_homonym_filter 改为精确身份测试（无过滤=ambiguous+2 candidates，过滤后各自命中） |
+| 8 | Dynamic dispatch modeling | ✅ | agent-A | verified | interface_impl_index_ 预加载（semantic_records kind=20）+ Interface/Virtual 调用展开为 bounded candidate set（resolution_kind="dispatch"），receiver 未知时不伪造唯一实现；Java/Rust visitor 产出 InterfaceImpl 记录 |
 | 9 | Verifier registry/coverage/evidence | ✅ | agent-B | 28/28 pass | Lifecycle fix (A15), FunctionImplementsVerifier (A16), canonical entity/relation evidence (A17), distinguishable error codes (A21); introspection API `engine_get_verifier_registry_status` (9.2); `test_verifier_registry` 10/10 + `test_verifier_lifecycle` 4/4 + `test_verifier_claim_coverage` 8/8 + `test_verifier_ground_truth` 6/6 |
 | 10 | Metrics/Embedding/Semantic | ✅ | agent-C | 53/53 pass | SUNSET for metrics + embedding/semantic; FTS kept. See verification log + decisions log |
-| 11 | Real project calibration & CI gate | ☐ | main | — | End-to-end smoke tests |
-| Review | Final code review & `make check` | ☐ | main | — | Must be green |
+| 11 | Real project calibration & CI gate | ✅ | main | verified | `test_step11_go_smoke` L1-L5 全链路（source→reference→relation→Ladybug→adaptive API）PASS；CI 接入 accuracy gate（_ci.yml 新增 "Accuracy gate" 步骤：baseline 必须过 + FP/FN 注入必须失败）；legacy graph_edges CSV 列数对齐 v4；`make test-engine` 全绿 |
+| Review | Final code review & `make check` | ✅ | main | verified | `make test-engine` 158 个 passed 标记 + exit 0；accuracy gate 0 FP/0 FN；`cargo check` server 通过 |
 
 ## Acceptance Gates (from §10 of plan)
 
 Will be ticked as each step lands. Final completion requires:
 
-1. ☐ No non-Calls relations or duplicate typed edges in callers/callees
+1. ✅ No non-Calls relations or duplicate typed edges in callers/callees — Step 1: CALLS-only Cypher + `edge_type=1`; `test_typed_relation_query` 反例验证
 2. ✅ All main languages have portable multi-file accuracy fixtures — Step 2: 7 languages (cpp/go/python/rust/java/js/ts) with ground_truth.json
-3. ✅ CI auto-emits Precision/Recall/F1 — Step 2: `make accuracy-check` runs baseline + fault injection; `test_call_graph_accuracy` in TEST_EXES
-4. ☐ receiver/qualified/import evidence flows to Resolver
-5. ☐ Resolver abstains on ambiguous calls (no insertion-order dependence)
-6. ☐ relation & Ladybug CALLS carry queryable provenance
-7. ☐ Same-name entities queryable by stable identity
-8. ☐ SQLite ↔ LadybugDB typed-graph diff = 0
-9. ☐ Go positive-control calls verified end-to-end (source→reference→relation→Ladybug→API)
+3. ✅ CI auto-emits Precision/Recall/F1 — Step 2: `make accuracy-check` runs baseline + fault injection; `test_call_graph_accuracy` in TEST_EXES; Step 11: CI accuracy gate step in `_ci.yml`
+4. ✅ receiver/qualified/import evidence flows to Resolver — Step 3/4: reference 表列 + visitors 填充 + RefRow 贯通（实测 `p.helper|p|Point`、`obj.render|obj|Timeline`）
+5. ✅ Resolver abstains on ambiguous calls (no insertion-order dependence) — Step 5: ambiguity gate + receiver strong-evidence bypass; accuracy gate 0 FP/0 FN
+6. ✅ relation & Ladybug CALLS carry queryable provenance — Step 6: relation 全列 + Ladybug CALLS v4 compact provenance；callers/callees API 返回 confidence/resolver/resolution_kind
+7. ✅ Same-name entities queryable by stable identity — Step 7: `getCallersByEntity/getCalleesByEntity` + 裸名 `ambiguous=true + candidates`
+8. ✅ SQLite ↔ LadybugDB typed-graph diff = 0 — `test_ladybug_diff` 11/11 passed（本地含 LadybugDB 验证）
+9. ✅ Go positive-control calls verified end-to-end (source→reference→relation→Ladybug→API) — `test_step11_go_smoke` L1-L5 PASS
 10. ✅ verifier passes lifecycle/coverage/evidence regression
 11. ✅ metrics/embedding/semantic either real or explicitly sunset (no placeholder 0) — Step 10 sunset: metrics + embedding/semantic marked `available:false`/`unavailable_reason:"sunset"`; complexity APIs return `{"complexity":null,"unavailable":true}` (A18 fixed); FTS kept
 12. ✅ readiness matches canonical data coverage — Step 10: `vector_ready` conditional on `node_vectors` row count (A19 fixed); `metrics_ready` structurally 0 (sunset); `embedding_ready` reads canonical `node_vectors` count; `engine_get_enhancement_status` returns real entity/relation/node_vectors counts (A20 fixed)
-13. ☐ correctness/stability/performance gates green
-14. ☐ all "actual values" come from reproducible commands
+13. ✅ correctness/stability/performance gates green — `make test-engine` exit 0（158 passed 标记）；`test_call_graph_accuracy` 连续运行确定；`cargo check` server 通过
+14. ✅ all "actual values" come from reproducible commands — baseline/accuracy JSON 由 `make accuracy-check` 与测试二进制生成，非估算值
 
 ## Build & Test Verification Log
 

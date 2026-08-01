@@ -234,9 +234,8 @@ void TsVisitor::visitVariableDecl(TSNode node, uint64_t parent_id)
 			// Step 4: if there's a type annotation, extract the
 			// bare type name and record it for receiver inference.
 			if (has_type_annotation) {
-				std::string type_name =
-					extractTsTypeAnnotation(
-						type_annotation_node);
+				std::string type_name = extractTsTypeAnnotation(
+					type_annotation_node);
 				if (!type_name.empty())
 					recordVarType(var_name, type_name);
 			}
@@ -309,8 +308,7 @@ std::string TsVisitor::extractTsTypeAnnotation(TSNode type_node)
 			TSNode g = ts_node_child(inner, i);
 			if (!ts_node_is_named(g))
 				continue;
-			if (strcmp(ts_node_type(g), "type_identifier") ==
-			    0)
+			if (strcmp(ts_node_type(g), "type_identifier") == 0)
 				return nodeText(g);
 		}
 		// Fallback: use the text before '<' if no identifier found.

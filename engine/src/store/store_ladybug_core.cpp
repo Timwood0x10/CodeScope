@@ -48,7 +48,14 @@ namespace store
 // `r.edge_type=1` filter. Bumping the version forces a full recompile
 // of any `.lbug` produced by an older binary so stale non-Calls edges
 // that were previously written to CALLS are purged.
-static constexpr uint32_t kLbugSchemaVersion = 3;
+//
+// v3 → v4 (Step 6): CALLS carries compact provenance columns
+// (confidence/resolver/resolution_kind) so callers/callees queries can
+// return the resolution evidence without joining SQLite. Detailed
+// `reason` text stays in the SQLite `relation` table (per plan §8:
+// "仅同步查询所需字段，详细 reason 留 SQLite | Ladybug 仅保留 compact
+// provenance").
+static constexpr uint32_t kLbugSchemaVersion = 4;
 
 // Initialize LadybugDB alongside the SQLite database.
 //
@@ -226,7 +233,8 @@ CREATE NODE TABLE IF NOT EXISTS GraphNode (
   PRIMARY KEY (uid)))";
 	static const char *kCallsSchema = R"(
 CREATE REL TABLE IF NOT EXISTS CALLS (FROM GraphNode TO GraphNode,
-  project_id INT64, edge_type INT64, call_site_line INT64, label STRING, graph_type STRING))";
+  project_id INT64, edge_type INT64, call_site_line INT64, label STRING, graph_type STRING,
+  confidence DOUBLE, resolver STRING, resolution_kind STRING))";
 	static const char *kRelatesSchema = R"(
 CREATE REL TABLE IF NOT EXISTS RELATES (FROM GraphNode TO GraphNode,
   project_id INT64, edge_type INT64, label STRING, graph_type STRING))";

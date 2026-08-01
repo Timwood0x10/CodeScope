@@ -42,10 +42,8 @@ class QueryEngine {
 	// entities share the same name (e.g. multiple __init__ methods).
 	// The entity ID is resolved to (name, file_path, start_row) in
 	// SQLite, then used to build a precise LadybugDB query.
-	std::string getCallersByEntity(uint64_t project_id,
-				       uint64_t entity_id);
-	std::string getCalleesByEntity(uint64_t project_id,
-				       uint64_t entity_id);
+	std::string getCallersByEntity(uint64_t project_id, uint64_t entity_id);
+	std::string getCalleesByEntity(uint64_t project_id, uint64_t entity_id);
 
 	std::string getNeighbors(uint64_t project_id, uint64_t node_id,
 				 int edge_type_filter, int radius);

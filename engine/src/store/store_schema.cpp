@@ -1000,17 +1000,15 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 		// has no ADD COLUMN IF NOT EXISTS, so probe table_info first.
 		{
 			sqlite3_stmt *ref_probe = nullptr;
-			if (sqlite3_prepare_v2(db_,
-					       "PRAGMA table_info(reference)",
-					       -1, &ref_probe, nullptr) ==
-				SQLITE_OK) {
+			if (sqlite3_prepare_v2(
+				    db_, "PRAGMA table_info(reference)", -1,
+				    &ref_probe, nullptr) == SQLITE_OK) {
 				bool has_qualified_target = false;
 				bool has_receiver_text = false;
 				bool has_receiver_type = false;
 				bool has_import_alias = false;
 				bool has_call_site_file = false;
-				while (sqlite3_step(ref_probe) ==
-				       SQLITE_ROW) {
+				while (sqlite3_step(ref_probe) == SQLITE_ROW) {
 					const char *col =
 						reinterpret_cast<const char *>(
 							sqlite3_column_text(
@@ -1018,15 +1016,19 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 					if (col) {
 						const std::string c(col);
 						if (c == "qualified_target")
-							has_qualified_target = true;
+							has_qualified_target =
+								true;
 						if (c == "receiver_text")
-							has_receiver_text = true;
+							has_receiver_text =
+								true;
 						if (c == "receiver_type")
-							has_receiver_type = true;
+							has_receiver_type =
+								true;
 						if (c == "import_alias")
 							has_import_alias = true;
 						if (c == "call_site_file")
-							has_call_site_file = true;
+							has_call_site_file =
+								true;
 					}
 				}
 				sqlite3_finalize(ref_probe);
@@ -1055,8 +1057,9 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 		// not affected.
 		{
 			sqlite3_stmt *probe = nullptr;
-			if (sqlite3_prepare_v2(db_, "PRAGMA table_info(relation)",
-					       -1, &probe, nullptr) == SQLITE_OK) {
+			if (sqlite3_prepare_v2(
+				    db_, "PRAGMA table_info(relation)", -1,
+				    &probe, nullptr) == SQLITE_OK) {
 				bool has_confidence = false;
 				bool has_resolver = false;
 				bool has_res_kind = false;
@@ -1067,17 +1070,25 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 				while (sqlite3_step(probe) == SQLITE_ROW) {
 					const char *col =
 						reinterpret_cast<const char *>(
-							sqlite3_column_text(probe, 1));
+							sqlite3_column_text(
+								probe, 1));
 					if (!col)
 						continue;
 					std::string c = col;
-					if (c == "confidence") has_confidence = true;
-					else if (c == "resolver") has_resolver = true;
-					else if (c == "resolution_kind") has_res_kind = true;
-					else if (c == "reason") has_reason = true;
-					else if (c == "call_site_file") has_csf = true;
-					else if (c == "call_site_row") has_csr = true;
-					else if (c == "call_site_col") has_csc = true;
+					if (c == "confidence")
+						has_confidence = true;
+					else if (c == "resolver")
+						has_resolver = true;
+					else if (c == "resolution_kind")
+						has_res_kind = true;
+					else if (c == "reason")
+						has_reason = true;
+					else if (c == "call_site_file")
+						has_csf = true;
+					else if (c == "call_site_row")
+						has_csr = true;
+					else if (c == "call_site_col")
+						has_csc = true;
 				}
 				sqlite3_finalize(probe);
 				if (!has_confidence)

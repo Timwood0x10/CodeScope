@@ -217,8 +217,8 @@ double factorConstructorMatch(const std::string &ref_name,
 
 double factorReceiverMatch(const std::string &ref_name,
 			   const std::string &caller_file,
-				   const std::string &candidate_name,
-				   const std::string &candidate_file)
+			   const std::string &candidate_name,
+			   const std::string &candidate_file)
 {
 	// Receiver match: for method calls like a.method(),
 	// check if the candidate is a method of the caller's receiver type.

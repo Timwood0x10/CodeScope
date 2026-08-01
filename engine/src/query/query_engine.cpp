@@ -359,6 +359,88 @@ std::string QueryEngine::findReferences(uint64_t project_id,
 #endif
 }
 
+/// Step 7 (plan §7.3): bare-name ambiguity detection helper.
+/// Counts GraphNode entities matching (project_id, name, optional file
+/// filter). When more than one entity matches, the bare-name query is
+/// ambiguous — we cannot know which entity the caller means. Returns
+/// true and fills `candidates` with a JSON array of entity descriptors
+/// (graph_node_id, name, file_path, start_row) so the caller can either
+/// pick one and re-query via getCallersByEntity/getCalleesByEntity, or
+/// present the choices to the user. Query failure returns false so the
+/// normal path proceeds (fail-open, preserves legacy behavior).
+static bool detectBareNameAmbiguity(lbug_connection *conn, uint64_t project_id,
+				    const char *name, const char *file_filter,
+				    std::string &candidates)
+{
+	std::string cypher =
+		"MATCH (n:GraphNode {name:'" + cypherEscape(name) +
+		"', project_id:" + std::to_string(project_id) +
+		"}) WHERE n.project_id = " + std::to_string(project_id);
+	bool has_filter = file_filter && strlen(file_filter) > 0;
+	if (has_filter) {
+		cypher += " AND n.file_path CONTAINS '" +
+			  cypherEscape(file_filter) + "'";
+	}
+	cypher += " RETURN n.graph_node_id, n.name, n.file_path, n.start_row";
+
+	lbug_query_result qr;
+	lbug_state s = lbug_connection_query(conn, cypher.c_str(), &qr);
+	if (s != LbugSuccess) {
+		lbug_query_result_destroy(&qr);
+		return false; // fail-open: fall through to normal path
+	}
+
+	std::string list;
+	bool first = true;
+	int count = 0;
+	lbug_flat_tuple tuple;
+	while (lbug_query_result_get_next(&qr, &tuple) == LbugSuccess) {
+		lbug_value v;
+		int64_t node_id = 0, start_row = 0;
+		std::string name_str, file_str;
+		for (int i = 0; i < 4; i++) {
+			if (lbug_flat_tuple_get_value(&tuple, i, &v) !=
+			    LbugSuccess)
+				continue;
+			if (i == 0 || i == 3) {
+				int64_t iv = 0;
+				lbug_value_get_int64(&v, &iv);
+				if (i == 0)
+					node_id = iv;
+				else
+					start_row = iv;
+			} else {
+				char *sv = nullptr;
+				if (lbug_value_get_string(&v, &sv) ==
+					    LbugSuccess &&
+				    sv) {
+					if (i == 1)
+						name_str = sv;
+					else if (i == 2)
+						file_str = sv;
+					lbug_destroy_string(sv);
+				}
+			}
+		}
+		if (!first)
+			list += ",";
+		first = false;
+		++count;
+		list += "{\"graph_node_id\":" + std::to_string(node_id) +
+			",\"name\":\"" + jsonEscape(name_str.c_str()) +
+			"\",\"file_path\":\"" + jsonEscape(file_str.c_str()) +
+			"\",\"start_row\":" + std::to_string(start_row) + "}";
+		lbug_flat_tuple_destroy(&tuple);
+	}
+	lbug_query_result_destroy(&qr);
+
+	if (count > 1) {
+		candidates = "[" + list + "]";
+		return true;
+	}
+	return false;
+}
+
 std::string QueryEngine::getCallers(uint64_t project_id,
 				    const char *function_name,
 				    const char *file_filter)
@@ -375,6 +457,25 @@ std::string QueryEngine::getCallers(uint64_t project_id,
 	if (!conn) {
 		return "{\"callers\":[],\"total\":0,\"error\":\"no ladybug "
 		       "connection [module=query, method=getCallers]\"}";
+	}
+
+	// Step 7 (plan §7.3): bare-name ambiguity detection. When multiple
+	// entities share the bare name, the query cannot know which one the
+	// caller means. Instead of silently aggregating all of them (the
+	// pre-Step-7 behavior that produced homonym noise), return
+	// ambiguous=true with a candidate list; callers can then use
+	// getCallersByEntity with the precise entity id. With a file_filter
+	// that narrows to a single entity, the query proceeds as before.
+	{
+		std::string candidates_json;
+		bool ambiguous =
+			detectBareNameAmbiguity(conn, project_id, function_name,
+						file_filter, candidates_json);
+		if (ambiguous) {
+			return "{\"callers\":[],\"total\":0,\"ambiguous\":true,"
+			       "\"candidates\":" +
+			       candidates_json + "}";
+		}
 	}
 
 	// Step 1 (plan §2.5 A1): restrict traversal to the CALLS rel table
@@ -401,7 +502,8 @@ std::string QueryEngine::getCallers(uint64_t project_id,
 	}
 	cypher += " RETURN caller.graph_node_id, caller.name, "
 		  "caller.file_path, caller.start_row, "
-		  "caller.start_col LIMIT 100";
+		  "caller.start_col, r.confidence, r.resolver, "
+		  "r.resolution_kind LIMIT 100";
 
 	lbug_query_result qr;
 	lbug_state s = lbug_connection_query(conn, cypher.c_str(), &qr);
@@ -432,9 +534,14 @@ std::string QueryEngine::getCallers(uint64_t project_id,
 		int64_t start_col = 0;
 		std::string name_str;
 		std::string file_str;
-		// 5 columns: graph_node_id, name, file_path, start_row,
-		// start_col.
-		for (int i = 0; i < 5; i++) {
+		std::string resolver_str;
+		std::string rkind_str;
+		double confidence = 0.0;
+		// 8 columns: graph_node_id, name, file_path, start_row,
+		// start_col, confidence, resolver, resolution_kind (Step 6
+		// provenance — compact evidence, detailed reason stays in
+		// the SQLite relation table per plan §8).
+		for (int i = 0; i < 8; i++) {
 			if (lbug_flat_tuple_get_value(&tuple, i, &v) !=
 			    LbugSuccess)
 				continue;
@@ -447,6 +554,10 @@ std::string QueryEngine::getCallers(uint64_t project_id,
 					start_row = iv;
 				else
 					start_col = iv;
+			} else if (i == 5) {
+				double dv = 0.0;
+				lbug_value_get_double(&v, &dv);
+				confidence = dv;
 			} else {
 				char *sv = nullptr;
 				if (lbug_value_get_string(&v, &sv) ==
@@ -456,6 +567,10 @@ std::string QueryEngine::getCallers(uint64_t project_id,
 						name_str = sv;
 					else if (i == 2)
 						file_str = sv;
+					else if (i == 6)
+						resolver_str = sv;
+					else if (i == 7)
+						rkind_str = sv;
 					lbug_destroy_string(sv);
 				}
 			}
@@ -475,9 +590,20 @@ std::string QueryEngine::getCallers(uint64_t project_id,
 				"\",\"start_row\":" +
 				std::to_string(start_row) +
 				",\"start_col\":" + std::to_string(start_col) +
-				// resolve_strategy is not a LadybugDB property;
-				// emit empty string for JSON compatibility.
-				",\"resolve_strategy\":\"\"}";
+				// Step 6: compact provenance from the CALLS
+				// rel table (confidence/resolver/
+				// resolution_kind). resolve_strategy is mapped
+				// from resolution_kind so callers no longer see
+				// a fixed empty value (plan §6.2); the detailed
+				// reason text stays in the SQLite relation table.
+				",\"confidence\":" +
+				std::to_string(confidence) +
+				",\"resolver\":\"" +
+				jsonEscape(resolver_str.c_str()) +
+				"\",\"resolution_kind\":\"" +
+				jsonEscape(rkind_str.c_str()) +
+				"\",\"resolve_strategy\":\"" +
+				jsonEscape(rkind_str.c_str()) + "\"}";
 			lbug_flat_tuple_destroy(&tuple);
 			continue;
 		}
@@ -510,6 +636,23 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 		       "connection [module=query, method=getCallees]\"}";
 	}
 
+	// Step 7 (plan §7.3): bare-name ambiguity detection — same semantics
+	// as getCallers. Multiple entities sharing the bare name cannot be
+	// disambiguated by name alone; return ambiguous=true + candidates
+	// instead of silently aggregating their callees. A file_filter that
+	// narrows to a single entity proceeds normally.
+	{
+		std::string candidates_json;
+		bool ambiguous =
+			detectBareNameAmbiguity(conn, project_id, function_name,
+						file_filter, candidates_json);
+		if (ambiguous) {
+			return "{\"callees\":[],\"total\":0,\"ambiguous\":true,"
+			       "\"candidates\":" +
+			       candidates_json + "}";
+		}
+	}
+
 	// Step 1 (plan §2.5 A1): restrict traversal to the CALLS rel table
 	// only and require edge_type=Calls(1). Previously the query matched
 	// `CALLS|RELATES`, which leaked References/Defines/Contains edges
@@ -534,7 +677,8 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 	}
 	cypher += " RETURN callee.graph_node_id, callee.name, "
 		  "callee.file_path, callee.start_row, "
-		  "callee.start_col LIMIT 100";
+		  "callee.start_col, r.confidence, r.resolver, "
+		  "r.resolution_kind LIMIT 100";
 
 	lbug_query_result qr;
 	lbug_state s = lbug_connection_query(conn, cypher.c_str(), &qr);
@@ -562,9 +706,14 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 		int64_t start_col = 0;
 		std::string name_str;
 		std::string file_str;
-		// 5 columns: graph_node_id, name, file_path, start_row,
-		// start_col.
-		for (int i = 0; i < 5; i++) {
+		std::string resolver_str;
+		std::string rkind_str;
+		double confidence = 0.0;
+		// 8 columns: graph_node_id, name, file_path, start_row,
+		// start_col, confidence, resolver, resolution_kind (Step 6
+		// provenance — compact evidence, detailed reason stays in
+		// the SQLite relation table per plan §8).
+		for (int i = 0; i < 8; i++) {
 			if (lbug_flat_tuple_get_value(&tuple, i, &v) !=
 			    LbugSuccess)
 				continue;
@@ -577,6 +726,10 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 					start_row = iv;
 				else
 					start_col = iv;
+			} else if (i == 5) {
+				double dv = 0.0;
+				lbug_value_get_double(&v, &dv);
+				confidence = dv;
 			} else {
 				char *sv = nullptr;
 				if (lbug_value_get_string(&v, &sv) ==
@@ -586,6 +739,10 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 						name_str = sv;
 					else if (i == 2)
 						file_str = sv;
+					else if (i == 6)
+						resolver_str = sv;
+					else if (i == 7)
+						rkind_str = sv;
 					lbug_destroy_string(sv);
 				}
 			}
@@ -605,9 +762,20 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 				"\",\"start_row\":" +
 				std::to_string(start_row) +
 				",\"start_col\":" + std::to_string(start_col) +
-				// resolve_strategy is not a LadybugDB property;
-				// emit empty string for JSON compatibility.
-				",\"resolve_strategy\":\"\"}";
+				// Step 6: compact provenance from the CALLS
+				// rel table (confidence/resolver/
+				// resolution_kind). resolve_strategy is mapped
+				// from resolution_kind so callers no longer see
+				// a fixed empty value (plan §6.2); the detailed
+				// reason text stays in the SQLite relation table.
+				",\"confidence\":" +
+				std::to_string(confidence) +
+				",\"resolver\":\"" +
+				jsonEscape(resolver_str.c_str()) +
+				"\",\"resolution_kind\":\"" +
+				jsonEscape(rkind_str.c_str()) +
+				"\",\"resolve_strategy\":\"" +
+				jsonEscape(rkind_str.c_str()) + "\"}";
 			lbug_flat_tuple_destroy(&tuple);
 			continue;
 		}
@@ -653,7 +821,8 @@ std::string QueryEngine::getCallersByEntity(uint64_t project_id,
 		sqlite3_stmt *st = nullptr;
 		const char *sql = "SELECT name, file_path, start_row "
 				  "FROM entity WHERE id=? AND project_id=?";
-		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) != SQLITE_OK) {
+		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) !=
+		    SQLITE_OK) {
 			return "{\"callers\":[],\"total\":0,\"error\":\"entity "
 			       "lookup failed [module=query, "
 			       "method=getCallersByEntity]\"}";
@@ -685,20 +854,20 @@ std::string QueryEngine::getCallersByEntity(uint64_t project_id,
 	// Build a precise Cypher query: filter by name AND file_path AND
 	// start_row to target exactly one entity. This is the entity
 	// selector from plan §7.1.
-	std::string cypher = "MATCH (callee:GraphNode {name:'" +
-			     cypherEscape(name.c_str()) +
-			     "', project_id:" + std::to_string(project_id) +
-			     "})<-[r:CALLS]-(caller:GraphNode) "
-			     "WHERE caller.project_id = " +
-			     std::to_string(project_id) +
-			     " AND r.edge_type = 1"
-			     " AND callee.file_path = '" +
-			     cypherEscape(file_path.c_str()) + "'" +
-			     " AND callee.start_row = " +
-			     std::to_string(start_row) +
-			     " RETURN caller.graph_node_id, caller.name, "
-			     "caller.file_path, caller.start_row, "
-			     "caller.start_col LIMIT 100";
+	std::string cypher =
+		"MATCH (callee:GraphNode {name:'" + cypherEscape(name.c_str()) +
+		"', project_id:" + std::to_string(project_id) +
+		"})<-[r:CALLS]-(caller:GraphNode) "
+		"WHERE caller.project_id = " +
+		std::to_string(project_id) +
+		" AND r.edge_type = 1"
+		" AND callee.file_path = '" +
+		cypherEscape(file_path.c_str()) + "'" +
+		" AND callee.start_row = " + std::to_string(start_row) +
+		" RETURN caller.graph_node_id, caller.name, "
+		"caller.file_path, caller.start_row, "
+		"caller.start_col, r.confidence, r.resolver, "
+		"r.resolution_kind LIMIT 100";
 
 	lbug_query_result qr;
 	lbug_state s = lbug_connection_query(conn, cypher.c_str(), &qr);
@@ -716,31 +885,51 @@ std::string QueryEngine::getCallersByEntity(uint64_t project_id,
 	while (lbug_query_result_get_next(&qr, &tuple) == LbugSuccess) {
 		lbug_value v;
 		int64_t node_id = 0, sr = 0, sc = 0;
-		std::string nm, fp;
-		for (int i = 0; i < 5; i++) {
+		std::string nm, fp, rsv, rk;
+		double conf = 0.0;
+		// 8 columns: graph_node_id, name, file_path, start_row,
+		// start_col, confidence, resolver, resolution_kind (Step 6
+		// provenance — compact evidence, detailed reason stays in
+		// the SQLite relation table per plan §8).
+		for (int i = 0; i < 8; i++) {
 			if (lbug_flat_tuple_get_value(&tuple, i, &v) !=
 			    LbugSuccess)
 				continue;
 			if (i == 0 || i == 3 || i == 4) {
 				int64_t iv = 0;
 				lbug_value_get_int64(&v, &iv);
-				if (i == 0) node_id = iv;
-				else if (i == 3) sr = iv;
-				else sc = iv;
+				if (i == 0)
+					node_id = iv;
+				else if (i == 3)
+					sr = iv;
+				else
+					sc = iv;
+			} else if (i == 5) {
+				double dv = 0.0;
+				lbug_value_get_double(&v, &dv);
+				conf = dv;
 			} else {
 				char *sv = nullptr;
 				if (lbug_value_get_string(&v, &sv) ==
-					    LbugSuccess && sv) {
-					if (i == 1) nm = sv;
-					else fp = sv;
+					    LbugSuccess &&
+				    sv) {
+					if (i == 1)
+						nm = sv;
+					else if (i == 2)
+						fp = sv;
+					else if (i == 6)
+						rsv = sv;
+					else if (i == 7)
+						rk = sv;
 					lbug_destroy_string(sv);
 				}
 			}
 		}
-		std::string key = std::to_string(node_id) + "|" + fp +
-				  "|" + std::to_string(sr);
+		std::string key = std::to_string(node_id) + "|" + fp + "|" +
+				  std::to_string(sr);
 		if (seen.insert(key).second) {
-			if (!first) result += ",";
+			if (!first)
+				result += ",";
 			first = false;
 			++count;
 			result += "{\"node_id\":" + std::to_string(node_id) +
@@ -749,7 +938,15 @@ std::string QueryEngine::getCallersByEntity(uint64_t project_id,
 				  jsonEscape(fp.c_str()) +
 				  "\",\"start_row\":" + std::to_string(sr) +
 				  ",\"start_col\":" + std::to_string(sc) +
-				  ",\"resolve_strategy\":\"\"}";
+				  // Step 6: compact provenance from the CALLS
+				  // rel table; resolve_strategy mapped from
+				  // resolution_kind (plan §6.2).
+				  ",\"confidence\":" + std::to_string(conf) +
+				  ",\"resolver\":\"" + jsonEscape(rsv.c_str()) +
+				  "\",\"resolution_kind\":\"" +
+				  jsonEscape(rk.c_str()) +
+				  "\",\"resolve_strategy\":\"" +
+				  jsonEscape(rk.c_str()) + "\"}";
 		}
 		lbug_flat_tuple_destroy(&tuple);
 	}
@@ -778,7 +975,8 @@ std::string QueryEngine::getCalleesByEntity(uint64_t project_id,
 		sqlite3_stmt *st = nullptr;
 		const char *sql = "SELECT name, file_path, start_row "
 				  "FROM entity WHERE id=? AND project_id=?";
-		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) != SQLITE_OK) {
+		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) !=
+		    SQLITE_OK) {
 			return "{\"callees\":[],\"total\":0,\"error\":\"entity "
 			       "lookup failed [module=query, "
 			       "method=getCalleesByEntity]\"}";
@@ -807,20 +1005,20 @@ std::string QueryEngine::getCalleesByEntity(uint64_t project_id,
 		       "connection [module=query, method=getCalleesByEntity]\"}";
 	}
 
-	std::string cypher = "MATCH (caller:GraphNode {name:'" +
-			     cypherEscape(name.c_str()) +
-			     "', project_id:" + std::to_string(project_id) +
-			     "})-[r:CALLS]->(callee:GraphNode) "
-			     "WHERE callee.project_id = " +
-			     std::to_string(project_id) +
-			     " AND r.edge_type = 1"
-			     " AND caller.file_path = '" +
-			     cypherEscape(file_path.c_str()) + "'" +
-			     " AND caller.start_row = " +
-			     std::to_string(start_row) +
-			     " RETURN callee.graph_node_id, callee.name, "
-			     "callee.file_path, callee.start_row, "
-			     "callee.start_col LIMIT 100";
+	std::string cypher =
+		"MATCH (caller:GraphNode {name:'" + cypherEscape(name.c_str()) +
+		"', project_id:" + std::to_string(project_id) +
+		"})-[r:CALLS]->(callee:GraphNode) "
+		"WHERE callee.project_id = " +
+		std::to_string(project_id) +
+		" AND r.edge_type = 1"
+		" AND caller.file_path = '" +
+		cypherEscape(file_path.c_str()) + "'" +
+		" AND caller.start_row = " + std::to_string(start_row) +
+		" RETURN callee.graph_node_id, callee.name, "
+		"callee.file_path, callee.start_row, "
+		"callee.start_col, r.confidence, r.resolver, "
+		"r.resolution_kind LIMIT 100";
 
 	lbug_query_result qr;
 	lbug_state s = lbug_connection_query(conn, cypher.c_str(), &qr);
@@ -838,31 +1036,51 @@ std::string QueryEngine::getCalleesByEntity(uint64_t project_id,
 	while (lbug_query_result_get_next(&qr, &tuple) == LbugSuccess) {
 		lbug_value v;
 		int64_t node_id = 0, sr = 0, sc = 0;
-		std::string nm, fp;
-		for (int i = 0; i < 5; i++) {
+		std::string nm, fp, rsv, rk;
+		double conf = 0.0;
+		// 8 columns: graph_node_id, name, file_path, start_row,
+		// start_col, confidence, resolver, resolution_kind (Step 6
+		// provenance — compact evidence, detailed reason stays in
+		// the SQLite relation table per plan §8).
+		for (int i = 0; i < 8; i++) {
 			if (lbug_flat_tuple_get_value(&tuple, i, &v) !=
 			    LbugSuccess)
 				continue;
 			if (i == 0 || i == 3 || i == 4) {
 				int64_t iv = 0;
 				lbug_value_get_int64(&v, &iv);
-				if (i == 0) node_id = iv;
-				else if (i == 3) sr = iv;
-				else sc = iv;
+				if (i == 0)
+					node_id = iv;
+				else if (i == 3)
+					sr = iv;
+				else
+					sc = iv;
+			} else if (i == 5) {
+				double dv = 0.0;
+				lbug_value_get_double(&v, &dv);
+				conf = dv;
 			} else {
 				char *sv = nullptr;
 				if (lbug_value_get_string(&v, &sv) ==
-					    LbugSuccess && sv) {
-					if (i == 1) nm = sv;
-					else fp = sv;
+					    LbugSuccess &&
+				    sv) {
+					if (i == 1)
+						nm = sv;
+					else if (i == 2)
+						fp = sv;
+					else if (i == 6)
+						rsv = sv;
+					else if (i == 7)
+						rk = sv;
 					lbug_destroy_string(sv);
 				}
 			}
 		}
-		std::string key = std::to_string(node_id) + "|" + fp +
-				  "|" + std::to_string(sr);
+		std::string key = std::to_string(node_id) + "|" + fp + "|" +
+				  std::to_string(sr);
 		if (seen.insert(key).second) {
-			if (!first) result += ",";
+			if (!first)
+				result += ",";
 			first = false;
 			++count;
 			result += "{\"node_id\":" + std::to_string(node_id) +
@@ -871,7 +1089,15 @@ std::string QueryEngine::getCalleesByEntity(uint64_t project_id,
 				  jsonEscape(fp.c_str()) +
 				  "\",\"start_row\":" + std::to_string(sr) +
 				  ",\"start_col\":" + std::to_string(sc) +
-				  ",\"resolve_strategy\":\"\"}";
+				  // Step 6: compact provenance from the CALLS
+				  // rel table; resolve_strategy mapped from
+				  // resolution_kind (plan §6.2).
+				  ",\"confidence\":" + std::to_string(conf) +
+				  ",\"resolver\":\"" + jsonEscape(rsv.c_str()) +
+				  "\",\"resolution_kind\":\"" +
+				  jsonEscape(rk.c_str()) +
+				  "\",\"resolve_strategy\":\"" +
+				  jsonEscape(rk.c_str()) + "\"}";
 		}
 		lbug_flat_tuple_destroy(&tuple);
 	}

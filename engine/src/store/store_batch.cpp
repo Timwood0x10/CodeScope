@@ -121,133 +121,133 @@ void GraphStore::insertSemanticRecordsBatch(
 		return;
 
 	constexpr size_t kBatchSize = 500;
-		// 23 columns in semantic_records: original_id, project_id, kind,
-		// name, qualified_name, parent_id, ref_original_id, arity,
-		// is_static, type_name, call_kind, resolve_strategy, visibility,
-		// start_row, start_col, end_row, end_col, file_path, language,
-		// qualified_target, receiver_text, receiver_type, import_alias.
-		// (Step 3 added the last 4 call-fact columns.) Must match the
-		// column count AND the placeholder count below.
-		constexpr int kColsPerRow = 23;
+	// 23 columns in semantic_records: original_id, project_id, kind,
+	// name, qualified_name, parent_id, ref_original_id, arity,
+	// is_static, type_name, call_kind, resolve_strategy, visibility,
+	// start_row, start_col, end_row, end_col, file_path, language,
+	// qualified_target, receiver_text, receiver_type, import_alias.
+	// (Step 3 added the last 4 call-fact columns.) Must match the
+	// column count AND the placeholder count below.
+	constexpr int kColsPerRow = 23;
 
-		// Step 1: Flatten records into a contiguous vector for efficient batching.
-		// Each element stores (file_path, record_index) to reference the original.
-		struct FlatRecord {
-			const ir::Record *rec;
-			const std::string *file_path;
-		};
-		std::vector<FlatRecord> flat;
-		flat.reserve(total);
-		for (auto &fr : file_records)
-			for (auto &r : fr.second)
-				flat.push_back({ &r, &fr.first });
+	// Step 1: Flatten records into a contiguous vector for efficient batching.
+	// Each element stores (file_path, record_index) to reference the original.
+	struct FlatRecord {
+		const ir::Record *rec;
+		const std::string *file_path;
+	};
+	std::vector<FlatRecord> flat;
+	flat.reserve(total);
+	for (auto &fr : file_records)
+		for (auto &r : fr.second)
+			flat.push_back({ &r, &fr.first });
 
-		// Step 2: Process in batches using multi-VALUES INSERT.
-		// Build SQL: INSERT INTO t VALUES (?,?,...), (?,?,...), ...
-		// This reduces prepare/bind/step/reset overhead by ~13x per batch.
-		size_t offset = 0;
-		while (offset < flat.size()) {
-			size_t batch = flat.size() - offset;
-			if (batch > kBatchSize)
-				batch = kBatchSize;
+	// Step 2: Process in batches using multi-VALUES INSERT.
+	// Build SQL: INSERT INTO t VALUES (?,?,...), (?,?,...), ...
+	// This reduces prepare/bind/step/reset overhead by ~13x per batch.
+	size_t offset = 0;
+	while (offset < flat.size()) {
+		size_t batch = flat.size() - offset;
+		if (batch > kBatchSize)
+			batch = kBatchSize;
 
-			// Build multi-VALUES SQL
-			std::string sql = "INSERT INTO semantic_records "
-					  "(original_id, project_id, kind, name, "
-					  "qualified_name, parent_id, ref_original_id, "
-					  "arity, is_static, type_name, call_kind, "
-					  "resolve_strategy, visibility, "
-					  "start_row, start_col, end_row, end_col, "
-					  "file_path, language, "
-					  "qualified_target, receiver_text, "
-					  "receiver_type, import_alias) VALUES ";
-			for (size_t i = 0; i < batch; i++) {
-				if (i > 0)
-					sql += ",";
-				sql += "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+		// Build multi-VALUES SQL
+		std::string sql = "INSERT INTO semantic_records "
+				  "(original_id, project_id, kind, name, "
+				  "qualified_name, parent_id, ref_original_id, "
+				  "arity, is_static, type_name, call_kind, "
+				  "resolve_strategy, visibility, "
+				  "start_row, start_col, end_row, end_col, "
+				  "file_path, language, "
+				  "qualified_target, receiver_text, "
+				  "receiver_type, import_alias) VALUES ";
+		for (size_t i = 0; i < batch; i++) {
+			if (i > 0)
+				sql += ",";
+			sql += "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+		}
+
+		sqlite3_stmt *stmt = nullptr;
+		if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) !=
+		    SQLITE_OK) {
+			error_ = "insertSemanticRecordsBatch: prepare failed";
+			return;
+		}
+
+		// Build intra-file declaration maps for ref_original_id
+		std::unordered_map<std::string, uint64_t> decl_by_name;
+		for (size_t i = 0; i < batch; i++) {
+			auto &fr = flat[offset + i];
+			auto k = static_cast<int>(fr.rec->kind);
+			if ((k == 0 || k == 1) && !fr.rec->name.empty())
+				decl_by_name[fr.rec->name] = fr.rec->id;
+		}
+
+		// Bind all rows in batch
+		for (size_t i = 0; i < batch; i++) {
+			auto &fr = flat[offset + i];
+			auto &r = *fr.rec;
+			int base = static_cast<int>(i * kColsPerRow);
+
+			uint64_t ref_id = 0;
+			if (static_cast<int>(r.kind) == 9 && !r.name.empty()) {
+				auto it = decl_by_name.find(r.name);
+				if (it != decl_by_name.end())
+					ref_id = it->second;
 			}
 
-			sqlite3_stmt *stmt = nullptr;
-			if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) !=
-			    SQLITE_OK) {
-				error_ = "insertSemanticRecordsBatch: prepare failed";
-				return;
-			}
-
-			// Build intra-file declaration maps for ref_original_id
-			std::unordered_map<std::string, uint64_t> decl_by_name;
-			for (size_t i = 0; i < batch; i++) {
-				auto &fr = flat[offset + i];
-				auto k = static_cast<int>(fr.rec->kind);
-				if ((k == 0 || k == 1) && !fr.rec->name.empty())
-					decl_by_name[fr.rec->name] = fr.rec->id;
-			}
-
-			// Bind all rows in batch
-			for (size_t i = 0; i < batch; i++) {
-				auto &fr = flat[offset + i];
-				auto &r = *fr.rec;
-				int base = static_cast<int>(i * kColsPerRow);
-
-				uint64_t ref_id = 0;
-				if (static_cast<int>(r.kind) == 9 && !r.name.empty()) {
-					auto it = decl_by_name.find(r.name);
-					if (it != decl_by_name.end())
-						ref_id = it->second;
-				}
-
-				sqlite3_bind_int64(stmt, base + 1,
-						   static_cast<int64_t>(r.id));
-				sqlite3_bind_int64(stmt, base + 2,
-						   static_cast<int64_t>(project_id));
-				sqlite3_bind_int(stmt, base + 3,
-						 static_cast<int>(r.kind));
-				sqlite3_bind_text(stmt, base + 4, r.name.c_str(), -1,
-						  SQLITE_STATIC);
-				sqlite3_bind_text(stmt, base + 5,
-						  r.qualified_name.c_str(), -1,
-						  SQLITE_STATIC);
-				sqlite3_bind_int64(stmt, base + 6,
-						   static_cast<int64_t>(r.parent_id));
-				sqlite3_bind_int64(stmt, base + 7,
-						   static_cast<int64_t>(ref_id));
-				sqlite3_bind_int(stmt, base + 8, r.arity);
-				sqlite3_bind_int(stmt, base + 9, r.is_static ? 1 : 0);
-				sqlite3_bind_text(stmt, base + 10, r.type_name.c_str(),
-						  -1, SQLITE_STATIC);
-				sqlite3_bind_int(stmt, base + 11,
-						 static_cast<int>(r.call_kind));
-				sqlite3_bind_text(stmt, base + 12,
-						  r.resolve_strategy.c_str(), -1,
-						  SQLITE_STATIC);
-				sqlite3_bind_int(stmt, base + 13, r.visibility);
-				sqlite3_bind_int(stmt, base + 14,
-						 static_cast<int>(r.loc.start_row));
-				sqlite3_bind_int(stmt, base + 15,
-						 static_cast<int>(r.loc.start_col));
-				sqlite3_bind_int(stmt, base + 16,
-						 static_cast<int>(r.loc.end_row));
-				sqlite3_bind_int(stmt, base + 17,
-						 static_cast<int>(r.loc.end_col));
-				sqlite3_bind_text(stmt, base + 18,
-						  fr.file_path->c_str(), -1,
-						  SQLITE_STATIC);
-				sqlite3_bind_text(stmt, base + 19, r.language.c_str(),
-						  -1, SQLITE_STATIC);
-				// Step 3: bind structured call facts.
-				sqlite3_bind_text(stmt, base + 20,
-						  r.qualified_target.c_str(), -1,
-						  SQLITE_STATIC);
-				sqlite3_bind_text(stmt, base + 21,
-						  r.receiver_text.c_str(), -1,
-						  SQLITE_STATIC);
-				sqlite3_bind_text(stmt, base + 22,
-						  r.receiver_type.c_str(), -1,
-						  SQLITE_STATIC);
-				sqlite3_bind_text(stmt, base + 23,
-						  r.import_alias.c_str(), -1,
-						  SQLITE_STATIC);
-			}
+			sqlite3_bind_int64(stmt, base + 1,
+					   static_cast<int64_t>(r.id));
+			sqlite3_bind_int64(stmt, base + 2,
+					   static_cast<int64_t>(project_id));
+			sqlite3_bind_int(stmt, base + 3,
+					 static_cast<int>(r.kind));
+			sqlite3_bind_text(stmt, base + 4, r.name.c_str(), -1,
+					  SQLITE_STATIC);
+			sqlite3_bind_text(stmt, base + 5,
+					  r.qualified_name.c_str(), -1,
+					  SQLITE_STATIC);
+			sqlite3_bind_int64(stmt, base + 6,
+					   static_cast<int64_t>(r.parent_id));
+			sqlite3_bind_int64(stmt, base + 7,
+					   static_cast<int64_t>(ref_id));
+			sqlite3_bind_int(stmt, base + 8, r.arity);
+			sqlite3_bind_int(stmt, base + 9, r.is_static ? 1 : 0);
+			sqlite3_bind_text(stmt, base + 10, r.type_name.c_str(),
+					  -1, SQLITE_STATIC);
+			sqlite3_bind_int(stmt, base + 11,
+					 static_cast<int>(r.call_kind));
+			sqlite3_bind_text(stmt, base + 12,
+					  r.resolve_strategy.c_str(), -1,
+					  SQLITE_STATIC);
+			sqlite3_bind_int(stmt, base + 13, r.visibility);
+			sqlite3_bind_int(stmt, base + 14,
+					 static_cast<int>(r.loc.start_row));
+			sqlite3_bind_int(stmt, base + 15,
+					 static_cast<int>(r.loc.start_col));
+			sqlite3_bind_int(stmt, base + 16,
+					 static_cast<int>(r.loc.end_row));
+			sqlite3_bind_int(stmt, base + 17,
+					 static_cast<int>(r.loc.end_col));
+			sqlite3_bind_text(stmt, base + 18,
+					  fr.file_path->c_str(), -1,
+					  SQLITE_STATIC);
+			sqlite3_bind_text(stmt, base + 19, r.language.c_str(),
+					  -1, SQLITE_STATIC);
+			// Step 3: bind structured call facts.
+			sqlite3_bind_text(stmt, base + 20,
+					  r.qualified_target.c_str(), -1,
+					  SQLITE_STATIC);
+			sqlite3_bind_text(stmt, base + 21,
+					  r.receiver_text.c_str(), -1,
+					  SQLITE_STATIC);
+			sqlite3_bind_text(stmt, base + 22,
+					  r.receiver_type.c_str(), -1,
+					  SQLITE_STATIC);
+			sqlite3_bind_text(stmt, base + 23,
+					  r.import_alias.c_str(), -1,
+					  SQLITE_STATIC);
+		}
 
 		int rc = sqlite3_step(stmt);
 		if (rc != SQLITE_DONE)
@@ -499,18 +499,22 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 							  r.language.c_str(),
 							  -1, SQLITE_STATIC);
 					// Step 3: bind structured call facts.
-					sqlite3_bind_text(batch_st, base + 20,
-							  r.qualified_target.c_str(),
-							  -1, SQLITE_STATIC);
-					sqlite3_bind_text(batch_st, base + 21,
-							  r.receiver_text.c_str(),
-							  -1, SQLITE_STATIC);
-					sqlite3_bind_text(batch_st, base + 22,
-							  r.receiver_type.c_str(),
-							  -1, SQLITE_STATIC);
-					sqlite3_bind_text(batch_st, base + 23,
-							  r.import_alias.c_str(),
-							  -1, SQLITE_STATIC);
+					sqlite3_bind_text(
+						batch_st, base + 20,
+						r.qualified_target.c_str(), -1,
+						SQLITE_STATIC);
+					sqlite3_bind_text(
+						batch_st, base + 21,
+						r.receiver_text.c_str(), -1,
+						SQLITE_STATIC);
+					sqlite3_bind_text(
+						batch_st, base + 22,
+						r.receiver_type.c_str(), -1,
+						SQLITE_STATIC);
+					sqlite3_bind_text(
+						batch_st, base + 23,
+						r.import_alias.c_str(), -1,
+						SQLITE_STATIC);
 				}
 				int rc = sqlite3_step(batch_st);
 				if (rc != SQLITE_DONE)

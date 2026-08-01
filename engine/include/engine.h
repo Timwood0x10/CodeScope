@@ -269,8 +269,7 @@ char *engine_find_callees_adaptive(uint64_t project_id, const char *symbol_name,
  * @param entity_id The entity.id from the entity table.
  * @return JSON: {"callers":[...],"total":N,"entity_id":ID}
  */
-char *engine_find_callers_by_entity(uint64_t project_id,
-				    uint64_t entity_id);
+char *engine_find_callers_by_entity(uint64_t project_id, uint64_t entity_id);
 
 /**
  * Step 7 (plan §7.2): Find callees by entity ID.
@@ -280,8 +279,7 @@ char *engine_find_callers_by_entity(uint64_t project_id,
  * @param entity_id The entity.id from the entity table.
  * @return JSON: {"callees":[...],"total":N,"entity_id":ID}
  */
-char *engine_find_callees_by_entity(uint64_t project_id,
-				    uint64_t entity_id);
+char *engine_find_callees_by_entity(uint64_t project_id, uint64_t entity_id);
 
 /**
  * Get entry points from the new schema.

@@ -358,8 +358,7 @@ void PythonVisitor::handleCall(TSNode node, uint64_t parent_id)
 	// (if the receiver is an imported module alias). Bare calls leave
 	// all fields empty — an empty receiver_text is the meaningful
 	// "no receiver" signal for the Resolver.
-	if (is_attribute_call && has_attr_node &&
-	    !qualified_target.empty()) {
+	if (is_attribute_call && has_attr_node && !qualified_target.empty()) {
 		std::string receiver_text = extractReceiverText(attr_node);
 		std::string receiver_type;
 		std::string import_alias;
@@ -660,8 +659,7 @@ std::string PythonVisitor::inferConstructorType(TSNode expr)
 		std::string ct = ts_node_type(child);
 		if (ct == "identifier") {
 			std::string name = nodeText(child);
-			if (!name.empty() && name[0] >= 'A' &&
-			    name[0] <= 'Z')
+			if (!name.empty() && name[0] >= 'A' && name[0] <= 'Z')
 				return name;
 			return ""; // lowercase — not a constructor
 		}
@@ -690,8 +688,8 @@ std::string PythonVisitor::extractReceiverText(TSNode attr)
 		// dotted receiver (e.g. "self.fig"), which is what we want
 		// for receiver_text.
 		std::string ct = ts_node_type(c);
-		if (ct == "identifier" || ct == "attribute" ||
-		    ct == "call" || ct == "subscript") {
+		if (ct == "identifier" || ct == "attribute" || ct == "call" ||
+		    ct == "subscript") {
 			return nodeText(c);
 		}
 	}

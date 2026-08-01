@@ -980,6 +980,39 @@ fn h_find_callees(project_id: u64, args: &Value) -> String {
     ffi::find_callees_adaptive(project_id, name, ff)
 }
 
+// Step 7 (plan §7.2): entity-precise caller/callee queries. These
+// unambiguously target a single entity via its id (resolved to
+// name+file_path+start_row in the engine), so homonyms are never
+// aggregated. Bare-name queries that hit multiple entities return
+// ambiguous=true with candidates; callers can feed one candidate's id
+// back into these tools.
+
+fn h_find_callers_by_entity(project_id: u64, args: &Value) -> String {
+    let entity_id = args["entity_id"].as_u64().unwrap_or(0);
+    if entity_id == 0 {
+        return json!({"error": "entity_id is required [module=mcp, tool=find_callers_by_entity]"})
+            .to_string();
+    }
+    ffi::find_callers_by_entity(project_id, entity_id)
+}
+
+fn h_find_callees_by_entity(project_id: u64, args: &Value) -> String {
+    let entity_id = args["entity_id"].as_u64().unwrap_or(0);
+    if entity_id == 0 {
+        return json!({"error": "entity_id is required [module=mcp, tool=find_callees_by_entity]"})
+            .to_string();
+    }
+    ffi::find_callees_by_entity(project_id, entity_id)
+}
+
+// Step 9 (plan §9.2): verifier registry introspection. Reports whether
+// the verifier subsystem is armed, which public claim types are
+// supported, and whether the canonical evidence backend has data.
+fn h_verifier_registry_status(project_id: u64, args: &Value) -> String {
+    let _ = args;
+    ffi::get_verifier_registry_status(project_id)
+}
+
 // ── Graph path + component tools ───────────────────────────────
 
 /// Resolve a symbol name to its first graph node ID via `engine_locate_by_name`.
@@ -1249,6 +1282,20 @@ static TOOL_HANDLERS: Lazy<HashMap<&'static str, ToolHandler>> = Lazy::new(|| {
     m.insert("search", h_search as ToolHandler);
     m.insert("find_callers", h_find_callers as ToolHandler);
     m.insert("find_callees", h_find_callees as ToolHandler);
+    // Step 7 (plan §7.2): entity-precise queries (no homonym aggregation).
+    m.insert(
+        "find_callers_by_entity",
+        h_find_callers_by_entity as ToolHandler,
+    );
+    m.insert(
+        "find_callees_by_entity",
+        h_find_callees_by_entity as ToolHandler,
+    );
+    // Step 9 (plan §9.2): verifier registry introspection.
+    m.insert(
+        "get_verifier_registry_status",
+        h_verifier_registry_status as ToolHandler,
+    );
     m.insert("shortest_path", h_shortest_path as ToolHandler);
     m.insert(
         "connected_components",
@@ -1630,6 +1677,39 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
                     "file_filter": {"type": "string", "description": "Optional: absolute file path. Restricts the caller to the given file, disambiguating homonyms. See find_callers doc."}
                 },
                 "required": ["symbol_name"]
+            }),
+        },
+        Tool {
+            name: "find_callers_by_entity".into(),
+            description: "Find all symbols that call the specified entity (Step 7, plan §7.2). Targets a single entity by its id, so homonyms (same name across files/classes, e.g. __init__, run, main) are never aggregated. Use the candidates returned by find_callers/find_callees when a bare name is ambiguous, or locate the entity first via find_symbol, then pass its id here.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "entity_id": {"type": "integer", "description": "Entity id from the entity table (e.g. from the candidates list of an ambiguous bare-name query, or from find_symbol output)."}
+                },
+                "required": ["entity_id"]
+            }),
+        },
+        Tool {
+            name: "find_callees_by_entity".into(),
+            description: "Find all symbols called by the specified entity (Step 7, plan §7.2). Targets a single entity by its id, so homonyms are never aggregated.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "entity_id": {"type": "integer", "description": "Entity id from the entity table (e.g. from the candidates list of an ambiguous bare-name query, or from find_symbol output)."}
+                },
+                "required": ["entity_id"]
+            }),
+        },
+        Tool {
+            name: "get_verifier_registry_status".into(),
+            description: "Report verifier subsystem health (Step 9, plan §9.2): whether the verifier registry is armed, which public claim types are supported, and whether the canonical evidence backend (entity/relation) has data for the project. Pass project_id=0 to skip the evidence probe.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "integer", "description": "Project id; 0 skips the evidence backend probe."}
+                },
+                "required": []
             }),
         },
         Tool {

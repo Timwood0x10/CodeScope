@@ -142,6 +142,11 @@ unsafe extern "C" {
         symbol_name: *const c_char,
         file_filter: *const c_char,
     ) -> *mut c_char;
+    // Step 7 (plan §7.2): entity-precise caller/callee queries. Unlike the
+    // bare-name APIs, these unambiguously target a single entity even when
+    // multiple entities share the same name.
+    fn engine_find_callers_by_entity(project_id: u64, entity_id: u64) -> *mut c_char;
+    fn engine_find_callees_by_entity(project_id: u64, entity_id: u64) -> *mut c_char;
     fn engine_get_entry_points_new(project_id: u64) -> *mut c_char;
     fn engine_get_type_info(project_id: u64, type_name_filter: *const c_char) -> *mut c_char;
     fn engine_get_routes(project_id: u64) -> *mut c_char;
@@ -639,6 +644,18 @@ pub fn find_callees_adaptive(
     take_string(unsafe {
         engine_find_callees_adaptive(project_id, cstr(symbol_name).as_ptr(), cstr(ff).as_ptr())
     })
+}
+
+/// Step 7 (plan §7.2): find callers of a precise entity by its id.
+/// The entity id is resolved to (name, file_path, start_row) in the
+/// engine, so the query never aggregates homonyms.
+pub fn find_callers_by_entity(project_id: u64, entity_id: u64) -> String {
+    take_string(unsafe { engine_find_callers_by_entity(project_id, entity_id) })
+}
+
+/// Step 7 (plan §7.2): find callees of a precise entity by its id.
+pub fn find_callees_by_entity(project_id: u64, entity_id: u64) -> String {
+    take_string(unsafe { engine_find_callees_by_entity(project_id, entity_id) })
 }
 
 pub fn get_entry_points_new(project_id: u64) -> String {

@@ -534,9 +534,8 @@ void GoVisitor::recordImportAlias(TSNode spec)
 	std::string path = text.substr(q + 1, qe - q - 1);
 	// Default alias = last component of the path.
 	size_t slash = path.find_last_of('/');
-	std::string alias = (slash == std::string::npos) ?
-				    path :
-				    path.substr(slash + 1);
+	std::string alias =
+		(slash == std::string::npos) ? path : path.substr(slash + 1);
 	if (alias.empty())
 		return;
 	// Explicit alias prefix: everything before the quoted string, trimmed.
@@ -573,37 +572,37 @@ void GoVisitor::handleVarDecl(TSNode node, uint64_t parent_id)
 						0);
 				defineSymbol(name, id);
 				// Extract type from var_spec children
-					uint32_t vc = ts_node_child_count(c);
-					for (uint32_t j = 0; j < vc; j++) {
-						TSNode child = ts_node_child(c, j);
-						if (!ts_node_is_named(child))
-							continue;
-						const char *t = ts_node_type(child);
-						if (strcmp(t, "type_identifier") == 0 ||
-						    strcmp(t, "qualified_type") == 0 ||
-						    strcmp(t, "pointer_type") == 0 ||
-						    strcmp(t, "slice_type") == 0 ||
-						    strcmp(t, "map_type") == 0 ||
-						    strcmp(t, "array_type") == 0 ||
-						    strcmp(t, "interface_type") == 0) {
-							std::string type =
-								nodeText(child);
-							if (!type.empty()) {
-								emitter_->emitTypeRef(
-									name, type,
-									location(child),
-									id);
-								// Step 4: record the
-								// variable → type
-								// binding so handleCall
-								// can resolve receiver
-								// types for method calls.
-								recordVarType(name,
-									      type);
-							}
-							break;
+				uint32_t vc = ts_node_child_count(c);
+				for (uint32_t j = 0; j < vc; j++) {
+					TSNode child = ts_node_child(c, j);
+					if (!ts_node_is_named(child))
+						continue;
+					const char *t = ts_node_type(child);
+					if (strcmp(t, "type_identifier") == 0 ||
+					    strcmp(t, "qualified_type") == 0 ||
+					    strcmp(t, "pointer_type") == 0 ||
+					    strcmp(t, "slice_type") == 0 ||
+					    strcmp(t, "map_type") == 0 ||
+					    strcmp(t, "array_type") == 0 ||
+					    strcmp(t, "interface_type") == 0) {
+						std::string type =
+							nodeText(child);
+						if (!type.empty()) {
+							emitter_->emitTypeRef(
+								name, type,
+								location(child),
+								id);
+							// Step 4: record the
+							// variable → type
+							// binding so handleCall
+							// can resolve receiver
+							// types for method calls.
+							recordVarType(name,
+								      type);
 						}
+						break;
 					}
+				}
 			}
 		}
 	}

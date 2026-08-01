@@ -386,8 +386,8 @@ void RustVisitor::handleCall(TSNode node, uint64_t parent_id)
 	// target, the receiver expression, and the inferred receiver type.
 	// Bare free function calls leave all fields empty.
 	if (!qualified.empty() && qualified != name) {
-		std::string receiver_text = extractReceiverText(node,
-								qualified);
+		std::string receiver_text =
+			extractReceiverText(node, qualified);
 		std::string receiver_type;
 		std::string import_alias;
 		// Resolve receiver_type: self/Self → current impl type;
@@ -556,13 +556,11 @@ void RustVisitor::handleUse(TSNode node, uint64_t parent_id)
 					size_t start = i;
 					while (i < last.size() &&
 					       last[i] != ',' &&
-					       last[i] != '}' &&
-					       last[i] != ' ')
+					       last[i] != '}' && last[i] != ' ')
 						i++;
 					if (i > start) {
-						use_aliases_.insert(
-							last.substr(start,
-								    i - start));
+						use_aliases_.insert(last.substr(
+							start, i - start));
 					}
 				}
 			} else {

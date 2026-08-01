@@ -249,6 +249,45 @@ jobs:
           done
           exit $failed
 
+      # Step 11 (plan §Step 11, task 8): accuracy gate in CI. Mirrors the
+      # `make accuracy-check` target semantics: the baseline run must pass
+      # (0 FP / 0 FN across all 7-language fixtures), and the FP/FN fault
+      # injections must FAIL (nonzero exit) — proving the gate actually
+      # catches precision/recall regressions. Runs on the same
+      # engine/build-tests tree built above; skipped on Windows where
+      # LadybugDB is disabled.
+      - name: Accuracy gate (call-graph P/R/F1)
+        if: matrix.os != 'windows-2022'
+        shell: bash
+        run: |
+          ACC_BIN=engine/build-tests/test_call_graph_accuracy
+          if [ ! -x "$ACC_BIN" ]; then
+            echo "✗ accuracy runner not built"
+            exit 1
+          fi
+          # 1. Baseline must pass (exit 0).
+          CODESCOPE_SKIP_ASYNC=1 "$ACC_BIN" > /tmp/acc_baseline.log 2>&1
+          BASE_RC=$?
+          if [ $BASE_RC -ne 0 ]; then
+            echo "✗ accuracy baseline FAILED (exit $BASE_RC)"
+            tail -30 /tmp/acc_baseline.log
+            exit 1
+          fi
+          echo "✓ accuracy baseline passed"
+          # 2. FP injection must fail (exit != 0) — gate catches false positives.
+          if CODESCOPE_SKIP_ASYNC=1 CODESCOPE_INJECT_FP=1 "$ACC_BIN" > /dev/null 2>&1; then
+            echo "✗ FP injection did NOT fail (gate broken)"
+            exit 1
+          fi
+          echo "✓ FP injection correctly failed"
+          # 3. FN injection must fail (exit != 0) — gate catches false negatives.
+          if CODESCOPE_SKIP_ASYNC=1 CODESCOPE_INJECT_FN=1 "$ACC_BIN" > /dev/null 2>&1; then
+            echo "✗ FN injection did NOT fail (gate broken)"
+            exit 1
+          fi
+          echo "✓ FN injection correctly failed"
+          echo "✓ accuracy gate PASSED"
+
       - name: Strip binary
         if: inputs.skip_package != true
         shell: bash

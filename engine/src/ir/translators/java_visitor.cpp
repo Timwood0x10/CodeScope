@@ -293,7 +293,8 @@ void JavaVisitor::handleMethodInvocation(TSNode node, uint64_t parent_id)
 	// Class.staticMethod()), record the qualified target, receiver text,
 	// and inferred receiver type. Bare calls leave all fields empty.
 	{
-		TSNode obj_node = ts_node_child_by_field_name(node, "object", 6);
+		TSNode obj_node =
+			ts_node_child_by_field_name(node, "object", 6);
 		if (!ts_node_is_null(obj_node)) {
 			std::string qualified_target =
 				nodeText(obj_node) + "." + name;
@@ -306,11 +307,12 @@ void JavaVisitor::handleMethodInvocation(TSNode node, uint64_t parent_id)
 					std::string cls = currentClassName();
 					if (!cls.empty())
 						receiver_type = cls;
-				} else if (import_aliases_.count(receiver_text) >
-					   0) {
+				} else if (import_aliases_.count(
+						   receiver_text) > 0) {
 					import_alias = receiver_text;
 				} else {
-					auto vt = var_types_.find(receiver_text);
+					auto vt =
+						var_types_.find(receiver_text);
 					if (vt != var_types_.end())
 						receiver_type = vt->second;
 				}

@@ -406,11 +406,11 @@ void CVisitor::handleCall(TSNode node, uint64_t parent_id)
 		std::string receiver_text;
 		std::string receiver_type;
 		if (has_field_expr) {
-			receiver_text = extractFieldReceiverText(
-				field_expr_node);
+			receiver_text =
+				extractFieldReceiverText(field_expr_node);
 		} else if (has_qual_id) {
-			receiver_text = extractQualifiedReceiverText(
-				qual_id_node);
+			receiver_text =
+				extractQualifiedReceiverText(qual_id_node);
 		}
 		// Resolve receiver_type: `this` → enclosing class;
 		// local variable → var_types_ lookup.

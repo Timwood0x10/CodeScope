@@ -376,7 +376,7 @@ void JsVisitor::visitClassDecl(TSNode node, uint64_t parent_id)
 	}
 
 	uint64_t cls_id = emitter_->emitClass(name, loc, parent_id,
-						      detectVisibility(node));
+					      detectVisibility(node));
 	defineSymbol(name, cls_id);
 
 	pushScope();
