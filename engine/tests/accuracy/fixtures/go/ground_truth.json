@@ -2,7 +2,9 @@
   "language": "go",
   "expected_calls": [
     {"caller": "mainFunc", "caller_file": "a.go", "callee": "alpha", "callee_file": "a.go"},
-    {"caller": "alpha", "caller_file": "a.go", "callee": "bravo", "callee_file": "b.go"}
+    {"caller": "alpha", "caller_file": "a.go", "callee": "bravo", "callee_file": "b.go"},
+    {"caller": "mainFunc", "caller_file": "a.go", "callee": "Get", "callee_file": "a.go", "note": "b.Get() selector call from function body"},
+    {"caller": "Get", "caller_file": "a.go", "callee": "double", "callee_file": "a.go", "note": "b.double() selector call from METHOD body (regression: method bodies previously not walked)"}
   ],
   "forbidden_calls": [
     {"caller": "mainFunc", "callee": "len"},
@@ -11,7 +13,6 @@
     {"caller": "mainFunc", "callee": "Println"}
   ],
   "allowed_unresolved": [
-    {"caller": "mainFunc", "callee": "Get"},
     {"caller": "mainFunc", "callee": "Println", "note": "stdlib selector call; bare-name resolver may not wire it"}
   ],
   "external_calls": ["len", "fmt.Println"]

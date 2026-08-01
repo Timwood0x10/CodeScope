@@ -193,9 +193,17 @@ void GoVisitor::handleMethodDecl(TSNode node, uint64_t parent_id)
 			continue;
 		const char *t = ts_node_type(c);
 		if (strcmp(t, "parameter_list") == 0 ||
-		    strcmp(t, "block") == 0 ||
 		    strcmp(t, "type_identifier") == 0)
 			continue;
+		if (strcmp(t, "block") == 0) {
+			// Walk the method body so calls inside methods are
+			// extracted (fixes selector calls like
+			// e.emitToolEvent() inside a method — the body was
+			// previously skipped, so method-internal references
+			// never reached handleCall).
+			visitChildren(c, id);
+			continue;
+		}
 		visitChildren(c, id);
 	}
 	popFunctionScope();
