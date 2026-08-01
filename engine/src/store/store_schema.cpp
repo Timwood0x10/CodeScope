@@ -146,6 +146,18 @@ bool GraphStore::createSchema()
             source_id INTEGER NOT NULL,
             target_id INTEGER NOT NULL,
             type INTEGER NOT NULL,
+            -- Step 6 (plan §6.1): relation provenance. Each resolved
+            -- CALLS edge carries the evidence that produced it, so any
+            -- FP can be traced back to the resolver, resolution kind,
+            -- and reason. Nullable/empty for non-call relations and
+            -- pre-migration rows.
+            confidence REAL DEFAULT 0.0,
+            resolver TEXT DEFAULT '',
+            resolution_kind TEXT DEFAULT '',
+            reason TEXT DEFAULT '',
+            call_site_file TEXT DEFAULT '',
+            call_site_row INTEGER DEFAULT 0,
+            call_site_col INTEGER DEFAULT 0,
             FOREIGN KEY (project_id) REFERENCES projects(id),
             FOREIGN KEY (source_id) REFERENCES entity(id),
             FOREIGN KEY (target_id) REFERENCES entity(id)
@@ -1033,6 +1045,62 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 				if (!has_call_site_file)
 					exec("ALTER TABLE reference ADD COLUMN "
 					     "call_site_file TEXT DEFAULT ''");
+			}
+		}
+
+		// Step 6 (plan §6.1): migrate the `relation` table with
+		// provenance columns. SQLite has no ADD COLUMN IF NOT EXISTS,
+		// so probe table_info first. Each new column is nullable with
+		// a default so pre-existing rows and non-call relations are
+		// not affected.
+		{
+			sqlite3_stmt *probe = nullptr;
+			if (sqlite3_prepare_v2(db_, "PRAGMA table_info(relation)",
+					       -1, &probe, nullptr) == SQLITE_OK) {
+				bool has_confidence = false;
+				bool has_resolver = false;
+				bool has_res_kind = false;
+				bool has_reason = false;
+				bool has_csf = false;
+				bool has_csr = false;
+				bool has_csc = false;
+				while (sqlite3_step(probe) == SQLITE_ROW) {
+					const char *col =
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(probe, 1));
+					if (!col)
+						continue;
+					std::string c = col;
+					if (c == "confidence") has_confidence = true;
+					else if (c == "resolver") has_resolver = true;
+					else if (c == "resolution_kind") has_res_kind = true;
+					else if (c == "reason") has_reason = true;
+					else if (c == "call_site_file") has_csf = true;
+					else if (c == "call_site_row") has_csr = true;
+					else if (c == "call_site_col") has_csc = true;
+				}
+				sqlite3_finalize(probe);
+				if (!has_confidence)
+					exec("ALTER TABLE relation ADD COLUMN "
+					     "confidence REAL DEFAULT 0.0");
+				if (!has_resolver)
+					exec("ALTER TABLE relation ADD COLUMN "
+					     "resolver TEXT DEFAULT ''");
+				if (!has_res_kind)
+					exec("ALTER TABLE relation ADD COLUMN "
+					     "resolution_kind TEXT DEFAULT ''");
+				if (!has_reason)
+					exec("ALTER TABLE relation ADD COLUMN "
+					     "reason TEXT DEFAULT ''");
+				if (!has_csf)
+					exec("ALTER TABLE relation ADD COLUMN "
+					     "call_site_file TEXT DEFAULT ''");
+				if (!has_csr)
+					exec("ALTER TABLE relation ADD COLUMN "
+					     "call_site_row INTEGER DEFAULT 0");
+				if (!has_csc)
+					exec("ALTER TABLE relation ADD COLUMN "
+					     "call_site_col INTEGER DEFAULT 0");
 			}
 		}
 

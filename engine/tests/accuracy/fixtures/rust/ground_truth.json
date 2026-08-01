@@ -6,10 +6,14 @@
   ],
   "forbidden_calls": [
     {"caller": "main_func", "callee": "len"},
-    {"caller": "main_func", "callee": "vec"}
+    {"caller": "main_func", "callee": "vec"},
+    {"caller": "main_func", "callee": "helper", "note": "b.rs:helper is a free function, NOT the method c.helper()"}
   ],
   "allowed_unresolved": [
-    {"caller": "main_func", "callee": "get", "note": "method call; receiver type not yet propagated"}
+    {"caller": "main_func", "callee": "new", "note": "Container::new() — associated function; receiver_type=Container, resolver not yet using it"},
+    {"caller": "main_func", "callee": "get", "note": "c.get() — method call; receiver_type=Container, resolver not yet using it"},
+    {"caller": "main_func", "callee": "helper", "note": "c.helper() — method call; receiver_type=Container, resolver not yet using it"},
+    {"caller": "helper", "caller_file": "a.rs", "callee": "get", "note": "self.get() — receiver_type=Container, resolver not yet using it"}
   ],
   "external_calls": ["vec!", "len"]
 }

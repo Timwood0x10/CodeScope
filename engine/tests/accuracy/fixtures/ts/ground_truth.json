@@ -3,14 +3,15 @@
   "expected_calls": [
     {"caller": "mainFunc", "caller_file": "a.ts", "callee": "alpha", "callee_file": "a.ts"},
     {"caller": "mainFunc", "caller_file": "a.ts", "callee": "Renderer", "callee_file": "a.ts", "note": "constructor call new Renderer()"},
+    {"caller": "mainFunc", "caller_file": "a.ts", "callee": "Logger", "callee_file": "a.ts", "note": "constructor call new Logger()"},
     {"caller": "alpha", "caller_file": "a.ts", "callee": "bravo", "callee_file": "b.ts"}
   ],
   "forbidden_calls": [
-    {"caller": "mainFunc", "callee": "max"},
-    {"caller": "mainFunc", "callee": "log"}
+    {"caller": "mainFunc", "callee": "max"}
   ],
   "allowed_unresolved": [
-    {"caller": "mainFunc", "callee": "render", "note": "instance method call; receiver type not yet propagated"}
+    {"caller": "mainFunc", "callee": "render", "note": "instance method call obj.render(); receiver_type=Renderer now extracted but cross-method resolution still in progress"},
+    {"caller": "mainFunc", "callee": "log", "note": "instance method call logger.log(); receiver_type=Logger now extracted; bare-name edge ignored as allowed_unresolved"}
   ],
   "external_calls": ["Math.max"]
 }

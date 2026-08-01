@@ -80,6 +80,10 @@ SemanticUnit *JavaVisitor::visit(TSTree *tree, const char *source,
 	unit_->setFilePath(fp);
 	unit_->setLanguage("java");
 	source_ = source;
+	// Step 4: reset per-file tracking.
+	var_types_.clear();
+	class_scope_stack_.clear();
+	import_aliases_.clear();
 
 	TSNode root_node = ts_tree_root_node(tree);
 	pushScope();
@@ -152,6 +156,8 @@ void JavaVisitor::handleClassDecl(TSNode node, uint64_t parent_id)
 					  detectVisibility(node));
 	defineSymbol(name, id);
 	pushScope();
+	// Step 4: push class scope for this.method() receiver inference.
+	pushClassScope(name);
 	// Check for implements clause: "class Foo implements Bar, Baz"
 	uint32_t cnt = ts_node_child_count(node);
 	for (uint32_t i = 0; i < cnt; i++) {
@@ -187,6 +193,7 @@ void JavaVisitor::handleClassDecl(TSNode node, uint64_t parent_id)
 		else
 			visitNode(c, id);
 	}
+	popClassScope();
 	popScope();
 }
 void JavaVisitor::handleInterfaceDecl(TSNode node, uint64_t parent_id)
@@ -280,6 +287,39 @@ void JavaVisitor::handleMethodInvocation(TSNode node, uint64_t parent_id)
 	uint64_t call_parent = (func_id != 0) ? func_id : parent_id;
 	uint64_t id = emitter_->emitCall(name, loc, call_parent, 0, false,
 					 static_cast<int>(call_kind));
+
+	// ── Step 4 (plan §4E): structured call facts ──────────────────
+	// For method invocations with a receiver (obj.method(), this.method(),
+	// Class.staticMethod()), record the qualified target, receiver text,
+	// and inferred receiver type. Bare calls leave all fields empty.
+	{
+		TSNode obj_node = ts_node_child_by_field_name(node, "object", 6);
+		if (!ts_node_is_null(obj_node)) {
+			std::string qualified_target =
+				nodeText(obj_node) + "." + name;
+			std::string receiver_text = nodeText(obj_node);
+			std::string receiver_type;
+			std::string import_alias;
+			if (!receiver_text.empty()) {
+				if (receiver_text == "this" ||
+				    receiver_text == "super") {
+					std::string cls = currentClassName();
+					if (!cls.empty())
+						receiver_type = cls;
+				} else if (import_aliases_.count(receiver_text) >
+					   0) {
+					import_alias = receiver_text;
+				} else {
+					auto vt = var_types_.find(receiver_text);
+					if (vt != var_types_.end())
+						receiver_type = vt->second;
+				}
+			}
+			emitter_->setCallFacts(id, qualified_target,
+					       receiver_text, receiver_type,
+					       import_alias);
+		}
+	}
 
 	// ── Intra-file callee resolution ───────────────────────────
 	// Store the resolved callee's record ID as ref_original_id.
@@ -424,11 +464,17 @@ void JavaVisitor::handleVariableDecl(TSNode node, uint64_t parent_id)
 		const char *t = ts_node_type(c);
 		if (strcmp(t, "type_identifier") == 0 ||
 		    strcmp(t, "generic_type") == 0 ||
-		    strcmp(t, "array_type") == 0) {
-			std::string type_name = nodeText(c);
-			if (!type_name.empty())
+		    strcmp(t, "array_type") == 0 ||
+		    strcmp(t, "scoped_type_identifier") == 0) {
+			std::string type_name = normalizeTypeName(c);
+			if (!type_name.empty()) {
 				emitter_->emitTypeRef(name, type_name,
 						      location(c), id);
+				// Step 4: record variable → type binding so
+				// handleMethodInvocation can resolve
+				// receiver_type for obj.method() calls.
+				recordVarType(name, type_name);
+			}
 			break;
 		}
 	}
@@ -448,6 +494,34 @@ void JavaVisitor::handleVariableDecl(TSNode node, uint64_t parent_id)
 void JavaVisitor::handleImport(TSNode node, uint64_t parent_id)
 {
 	emitter_->emitImport(nodeText(node), location(node), parent_id);
+	// Step 4: record imported class names so handleMethodInvocation can
+	// identify `Class.method()` calls as import-qualified. Java imports:
+	//   import foo.Bar;     → "Bar" is an imported class
+	//   import foo.*;        → glob import (skip)
+	//   import static foo.Bar.method; → static import (skip)
+	std::string text = nodeText(node);
+	// Strip "import " prefix.
+	size_t sp = text.find(' ');
+	if (sp != std::string::npos)
+		text = text.substr(sp + 1);
+	// Strip "static " prefix.
+	if (text.compare(0, 7, "static ") == 0)
+		text = text.substr(7);
+	// Strip trailing ";".
+	if (!text.empty() && text.back() == ';')
+		text.pop_back();
+	// Skip glob imports.
+	if (text.back() == '*')
+		return;
+	// Extract the last segment after ".".
+	size_t dot = text.rfind('.');
+	if (dot != std::string::npos) {
+		std::string last = text.substr(dot + 1);
+		if (!last.empty())
+			import_aliases_.insert(last);
+	} else if (!text.empty()) {
+		import_aliases_.insert(text);
+	}
 }
 std::string JavaVisitor::extractName(TSNode node)
 {
@@ -489,5 +563,52 @@ int JavaVisitor::detectVisibility(TSNode node)
 		}
 	}
 	return 0; // package-private
+}
+
+/// Normalize a Java type node to its bare type name.
+/// `List<String>` → "List", `int[]` → "int", `Map.Entry` → "Entry".
+std::string JavaVisitor::normalizeTypeName(TSNode type_node)
+{
+	std::string t = ts_node_type(type_node);
+	if (t == "type_identifier" || t == "primitive_type") {
+		return nodeText(type_node);
+	}
+	if (t == "generic_type") {
+		// generic_type → type_identifier < type_arguments
+		// Return the first type_identifier child.
+		uint32_t cc = ts_node_child_count(type_node);
+		for (uint32_t i = 0; i < cc; i++) {
+			TSNode c = ts_node_child(type_node, i);
+			if (ts_node_is_named(c) &&
+			    std::string(ts_node_type(c)) == "type_identifier")
+				return nodeText(c);
+		}
+		return "";
+	}
+	if (t == "array_type") {
+		// array_type → element_type [dimensions]
+		// Return the element type (first named child).
+		uint32_t cc = ts_node_child_count(type_node);
+		for (uint32_t i = 0; i < cc; i++) {
+			TSNode c = ts_node_child(type_node, i);
+			if (ts_node_is_named(c))
+				return normalizeTypeName(c);
+		}
+		return "";
+	}
+	if (t == "scoped_type_identifier") {
+		// scoped_type_identifier → type_identifier . type_identifier
+		// Return the LAST type_identifier.
+		std::string last;
+		uint32_t cc = ts_node_child_count(type_node);
+		for (uint32_t i = 0; i < cc; i++) {
+			TSNode c = ts_node_child(type_node, i);
+			if (ts_node_is_named(c) &&
+			    std::string(ts_node_type(c)) == "type_identifier")
+				last = nodeText(c);
+		}
+		return last;
+	}
+	return nodeText(type_node);
 }
 } // namespace ir

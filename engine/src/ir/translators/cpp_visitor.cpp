@@ -57,6 +57,9 @@ void CppVisitor::handleClassSpec(TSNode node, uint64_t parent_id)
 	if (!name.empty())
 		defineSymbol(name, id);
 	pushScope();
+	// Step 4: push class scope so `this->method()` inside member
+	// functions can resolve receiver_type to the enclosing class.
+	pushClassScope(name);
 	for (uint32_t i = 0; i < cnt; i++) {
 		TSNode c = ts_node_child(node, i);
 		if (!ts_node_is_named(c))
@@ -75,6 +78,7 @@ void CppVisitor::handleClassSpec(TSNode node, uint64_t parent_id)
 		else
 			visitNode(c, id);
 	}
+	popClassScope();
 	popScope();
 }
 void CppVisitor::handleNamespace(TSNode node, uint64_t parent_id)

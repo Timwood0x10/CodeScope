@@ -645,6 +645,30 @@ char *engine_find_callees_adaptive(uint64_t project_id, const char *symbol_name,
 		g_query->getCallees(project_id, symbol_name, file_filter));
 }
 
+// ─── Step 7 (plan §7.2): Entity-precise caller/callee queries ────
+
+char *engine_find_callers_by_entity(uint64_t project_id,
+				    uint64_t entity_id)
+{
+	if (!g_query || !g_store || !g_store->isGraphReady())
+		return dupString("{\"error\":\"graph not ready [module=engine_"
+				 "queries, method=find_callers_by_entity]\"}");
+	if (entity_id == 0)
+		return dupString("{\"error\":\"entity_id is 0\"}");
+	return dupString(g_query->getCallersByEntity(project_id, entity_id));
+}
+
+char *engine_find_callees_by_entity(uint64_t project_id,
+				    uint64_t entity_id)
+{
+	if (!g_query || !g_store || !g_store->isGraphReady())
+		return dupString("{\"error\":\"graph not ready [module=engine_"
+				 "queries, method=find_callees_by_entity]\"}");
+	if (entity_id == 0)
+		return dupString("{\"error\":\"entity_id is 0\"}");
+	return dupString(g_query->getCalleesByEntity(project_id, entity_id));
+}
+
 // ─── Phase C: Get Entry Points (new schema) ──────────────────
 
 char *engine_get_entry_points_new(uint64_t project_id)

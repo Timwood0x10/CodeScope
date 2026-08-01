@@ -2,15 +2,17 @@
   "language": "cpp",
   "expected_calls": [
     {"caller": "mainFunc", "caller_file": "a.cpp", "callee": "alpha", "callee_file": "a.cpp"},
-    {"caller": "alpha", "caller_file": "a.cpp", "callee": "bravo", "callee_file": "b.cpp"}
+    {"caller": "mainFunc", "caller_file": "a.cpp", "callee": "adder", "callee_file": "a.cpp", "note": "p.adder() with receiver_type=Point"},
+    {"caller": "mainFunc", "caller_file": "a.cpp", "callee": "create", "callee_file": "a.cpp", "note": "Point::create() static method"},
+    {"caller": "mainFunc", "caller_file": "a.cpp", "callee": "helper", "callee_file": "a.cpp", "note": "p.helper() with receiver_type=Point"},
+    {"caller": "alpha", "caller_file": "a.cpp", "callee": "bravo", "callee_file": "b.cpp"},
+    {"caller": "helper", "caller_file": "a.cpp", "callee": "adder", "callee_file": "a.cpp", "note": "this->adder() with receiver_type=Point"}
   ],
   "forbidden_calls": [
     {"caller": "mainFunc", "callee": "sort"},
     {"caller": "mainFunc", "callee": "begin"},
     {"caller": "mainFunc", "callee": "end"}
   ],
-  "allowed_unresolved": [
-    {"caller": "mainFunc", "callee": "adder", "note": "method call via field_expression; receiver type not yet propagated"}
-  ],
+  "allowed_unresolved": [],
   "external_calls": ["std::sort", "std::vector"]
 }

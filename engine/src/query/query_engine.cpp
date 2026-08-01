@@ -622,6 +622,269 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 #endif
 }
 
+// ── Step 7 (plan §7.2): entity-precise query APIs ────────────────────
+//
+// These methods resolve an entity ID to (name, file_path, start_row) in
+// SQLite, then build a LadybugDB Cypher query that filters by all three
+// fields. This eliminates the homonym aggregation problem: multiple
+// entities named "__init__" in different classes/files are no longer
+// merged into a single result set.
+//
+// The old bare-name APIs (getCallers/getCallees) are retained for
+// backward compatibility but now detect ambiguity: when multiple
+// entities match the bare name, they return ambiguous=true with a
+// candidate list instead of silently aggregating.
+
+std::string QueryEngine::getCallersByEntity(uint64_t project_id,
+					    uint64_t entity_id)
+{
+#ifdef HAS_LADYBUG
+	if (!store_ || !store_->isGraphReady()) {
+		return "{\"callers\":[],\"total\":0,\"error\":\"graph not ready "
+		       "[module=query, method=getCallersByEntity]\"}";
+	}
+	// Resolve entity_id to (name, file_path, start_row) for precise
+	// LadybugDB filtering. This is the key difference from the bare-name
+	// API: we use all three fields to target exactly one entity.
+	sqlite3 *db = store_->handle();
+	std::string name, file_path;
+	int64_t start_row = 0;
+	{
+		sqlite3_stmt *st = nullptr;
+		const char *sql = "SELECT name, file_path, start_row "
+				  "FROM entity WHERE id=? AND project_id=?";
+		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) != SQLITE_OK) {
+			return "{\"callers\":[],\"total\":0,\"error\":\"entity "
+			       "lookup failed [module=query, "
+			       "method=getCallersByEntity]\"}";
+		}
+		sqlite3_bind_int64(st, 1, static_cast<int64_t>(entity_id));
+		sqlite3_bind_int64(st, 2, static_cast<int64_t>(project_id));
+		if (sqlite3_step(st) == SQLITE_ROW) {
+			const char *n = reinterpret_cast<const char *>(
+				sqlite3_column_text(st, 0));
+			const char *f = reinterpret_cast<const char *>(
+				sqlite3_column_text(st, 1));
+			name = n ? n : "";
+			file_path = f ? f : "";
+			start_row = sqlite3_column_int64(st, 2);
+		}
+		sqlite3_finalize(st);
+	}
+	if (name.empty()) {
+		return "{\"callers\":[],\"total\":0,\"error\":\"entity not found "
+		       "[module=query, method=getCallersByEntity]\"}";
+	}
+
+	lbug_connection *conn = store_->lbugHandle();
+	if (!conn) {
+		return "{\"callers\":[],\"total\":0,\"error\":\"no ladybug "
+		       "connection [module=query, method=getCallersByEntity]\"}";
+	}
+
+	// Build a precise Cypher query: filter by name AND file_path AND
+	// start_row to target exactly one entity. This is the entity
+	// selector from plan §7.1.
+	std::string cypher = "MATCH (callee:GraphNode {name:'" +
+			     cypherEscape(name.c_str()) +
+			     "', project_id:" + std::to_string(project_id) +
+			     "})<-[r:CALLS]-(caller:GraphNode) "
+			     "WHERE caller.project_id = " +
+			     std::to_string(project_id) +
+			     " AND r.edge_type = 1"
+			     " AND callee.file_path = '" +
+			     cypherEscape(file_path.c_str()) + "'" +
+			     " AND callee.start_row = " +
+			     std::to_string(start_row) +
+			     " RETURN caller.graph_node_id, caller.name, "
+			     "caller.file_path, caller.start_row, "
+			     "caller.start_col LIMIT 100";
+
+	lbug_query_result qr;
+	lbug_state s = lbug_connection_query(conn, cypher.c_str(), &qr);
+	if (s != LbugSuccess) {
+		lbug_query_result_destroy(&qr);
+		return "{\"callers\":[],\"total\":0,\"error\":\"ladybug query "
+		       "failed [module=query, method=getCallersByEntity]\"}";
+	}
+
+	std::string result = "{\"callers\":[";
+	bool first = true;
+	int count = 0;
+	std::unordered_set<std::string> seen;
+	lbug_flat_tuple tuple;
+	while (lbug_query_result_get_next(&qr, &tuple) == LbugSuccess) {
+		lbug_value v;
+		int64_t node_id = 0, sr = 0, sc = 0;
+		std::string nm, fp;
+		for (int i = 0; i < 5; i++) {
+			if (lbug_flat_tuple_get_value(&tuple, i, &v) !=
+			    LbugSuccess)
+				continue;
+			if (i == 0 || i == 3 || i == 4) {
+				int64_t iv = 0;
+				lbug_value_get_int64(&v, &iv);
+				if (i == 0) node_id = iv;
+				else if (i == 3) sr = iv;
+				else sc = iv;
+			} else {
+				char *sv = nullptr;
+				if (lbug_value_get_string(&v, &sv) ==
+					    LbugSuccess && sv) {
+					if (i == 1) nm = sv;
+					else fp = sv;
+					lbug_destroy_string(sv);
+				}
+			}
+		}
+		std::string key = std::to_string(node_id) + "|" + fp +
+				  "|" + std::to_string(sr);
+		if (seen.insert(key).second) {
+			if (!first) result += ",";
+			first = false;
+			++count;
+			result += "{\"node_id\":" + std::to_string(node_id) +
+				  ",\"name\":\"" + jsonEscape(nm.c_str()) +
+				  "\",\"file_path\":\"" +
+				  jsonEscape(fp.c_str()) +
+				  "\",\"start_row\":" + std::to_string(sr) +
+				  ",\"start_col\":" + std::to_string(sc) +
+				  ",\"resolve_strategy\":\"\"}";
+		}
+		lbug_flat_tuple_destroy(&tuple);
+	}
+	lbug_query_result_destroy(&qr);
+	result += "],\"total\":" + std::to_string(count) +
+		  ",\"entity_id\":" + std::to_string(entity_id) + "}";
+	return result;
+#else
+	return "{\"callers\":[],\"total\":0,\"error\":\"LadybugDB not compiled "
+	       "[module=query, method=getCallersByEntity]\"}";
+#endif
+}
+
+std::string QueryEngine::getCalleesByEntity(uint64_t project_id,
+					    uint64_t entity_id)
+{
+#ifdef HAS_LADYBUG
+	if (!store_ || !store_->isGraphReady()) {
+		return "{\"callees\":[],\"total\":0,\"error\":\"graph not ready "
+		       "[module=query, method=getCalleesByEntity]\"}";
+	}
+	sqlite3 *db = store_->handle();
+	std::string name, file_path;
+	int64_t start_row = 0;
+	{
+		sqlite3_stmt *st = nullptr;
+		const char *sql = "SELECT name, file_path, start_row "
+				  "FROM entity WHERE id=? AND project_id=?";
+		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) != SQLITE_OK) {
+			return "{\"callees\":[],\"total\":0,\"error\":\"entity "
+			       "lookup failed [module=query, "
+			       "method=getCalleesByEntity]\"}";
+		}
+		sqlite3_bind_int64(st, 1, static_cast<int64_t>(entity_id));
+		sqlite3_bind_int64(st, 2, static_cast<int64_t>(project_id));
+		if (sqlite3_step(st) == SQLITE_ROW) {
+			const char *n = reinterpret_cast<const char *>(
+				sqlite3_column_text(st, 0));
+			const char *f = reinterpret_cast<const char *>(
+				sqlite3_column_text(st, 1));
+			name = n ? n : "";
+			file_path = f ? f : "";
+			start_row = sqlite3_column_int64(st, 2);
+		}
+		sqlite3_finalize(st);
+	}
+	if (name.empty()) {
+		return "{\"callees\":[],\"total\":0,\"error\":\"entity not found "
+		       "[module=query, method=getCalleesByEntity]\"}";
+	}
+
+	lbug_connection *conn = store_->lbugHandle();
+	if (!conn) {
+		return "{\"callees\":[],\"total\":0,\"error\":\"no ladybug "
+		       "connection [module=query, method=getCalleesByEntity]\"}";
+	}
+
+	std::string cypher = "MATCH (caller:GraphNode {name:'" +
+			     cypherEscape(name.c_str()) +
+			     "', project_id:" + std::to_string(project_id) +
+			     "})-[r:CALLS]->(callee:GraphNode) "
+			     "WHERE callee.project_id = " +
+			     std::to_string(project_id) +
+			     " AND r.edge_type = 1"
+			     " AND caller.file_path = '" +
+			     cypherEscape(file_path.c_str()) + "'" +
+			     " AND caller.start_row = " +
+			     std::to_string(start_row) +
+			     " RETURN callee.graph_node_id, callee.name, "
+			     "callee.file_path, callee.start_row, "
+			     "callee.start_col LIMIT 100";
+
+	lbug_query_result qr;
+	lbug_state s = lbug_connection_query(conn, cypher.c_str(), &qr);
+	if (s != LbugSuccess) {
+		lbug_query_result_destroy(&qr);
+		return "{\"callees\":[],\"total\":0,\"error\":\"ladybug query "
+		       "failed [module=query, method=getCalleesByEntity]\"}";
+	}
+
+	std::string result = "{\"callees\":[";
+	bool first = true;
+	int count = 0;
+	std::unordered_set<std::string> seen;
+	lbug_flat_tuple tuple;
+	while (lbug_query_result_get_next(&qr, &tuple) == LbugSuccess) {
+		lbug_value v;
+		int64_t node_id = 0, sr = 0, sc = 0;
+		std::string nm, fp;
+		for (int i = 0; i < 5; i++) {
+			if (lbug_flat_tuple_get_value(&tuple, i, &v) !=
+			    LbugSuccess)
+				continue;
+			if (i == 0 || i == 3 || i == 4) {
+				int64_t iv = 0;
+				lbug_value_get_int64(&v, &iv);
+				if (i == 0) node_id = iv;
+				else if (i == 3) sr = iv;
+				else sc = iv;
+			} else {
+				char *sv = nullptr;
+				if (lbug_value_get_string(&v, &sv) ==
+					    LbugSuccess && sv) {
+					if (i == 1) nm = sv;
+					else fp = sv;
+					lbug_destroy_string(sv);
+				}
+			}
+		}
+		std::string key = std::to_string(node_id) + "|" + fp +
+				  "|" + std::to_string(sr);
+		if (seen.insert(key).second) {
+			if (!first) result += ",";
+			first = false;
+			++count;
+			result += "{\"node_id\":" + std::to_string(node_id) +
+				  ",\"name\":\"" + jsonEscape(nm.c_str()) +
+				  "\",\"file_path\":\"" +
+				  jsonEscape(fp.c_str()) +
+				  "\",\"start_row\":" + std::to_string(sr) +
+				  ",\"start_col\":" + std::to_string(sc) +
+				  ",\"resolve_strategy\":\"\"}";
+		}
+		lbug_flat_tuple_destroy(&tuple);
+	}
+	lbug_query_result_destroy(&qr);
+	result += "],\"total\":" + std::to_string(count) +
+		  ",\"entity_id\":" + std::to_string(entity_id) + "}";
+	return result;
+#else
+	return "{\"callees\":[],\"total\":0,\"error\":\"LadybugDB not compiled "
+	       "[module=query, method=getCalleesByEntity]\"}";
+#endif
+}
+
 std::string QueryEngine::getNeighbors(uint64_t project_id, uint64_t node_id,
 				      int edge_type_filter, int radius)
 {

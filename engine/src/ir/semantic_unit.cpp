@@ -157,4 +157,14 @@ bool SemanticUnit::setCallFacts(uint64_t record_id,
 	return true;
 }
 
+bool SemanticUnit::setQualifiedName(uint64_t record_id,
+				    const std::string &qualified_name)
+{
+	auto it = id_to_index_.find(record_id);
+	if (it == id_to_index_.end())
+		return false;
+	records_[it->second].qualified_name = qualified_name;
+	return true;
+}
+
 } // namespace ir

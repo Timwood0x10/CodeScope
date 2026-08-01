@@ -48,18 +48,25 @@ static void insertEntity(store::GraphStore &store, uint64_t project_id,
 }
 
 /// Insert a reference row: caller_id calls `name`.
+/// `receiver_type` carries structured call evidence (Step 5, plan §5.6):
+/// the Resolver's evidence gate only attempts fuzzy fallback when at
+/// least one of receiver_type/qualified_target/import_alias is non-empty.
+/// Empty `receiver_type` mirrors a bare direct call (no evidence).
 static void insertReference(store::GraphStore &store, uint64_t project_id,
-			    int64_t caller_id, const char *name)
+			    int64_t caller_id, const char *name,
+			    const char *receiver_type = "")
 {
 	sqlite3 *db = store.handle();
 	const char *sql = "INSERT INTO reference (project_id, caller_id, name, "
-			  "arity, call_kind, start_row, start_col) "
-			  "VALUES (?,?,?,0,0,0,0)";
+			  "arity, call_kind, start_row, start_col, "
+			  "receiver_type) "
+			  "VALUES (?,?,?,0,0,0,0,?)";
 	sqlite3_stmt *stmt = nullptr;
 	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_int64(stmt, 2, caller_id);
 	sqlite3_bind_text(stmt, 3, name, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 4, receiver_type, -1, SQLITE_TRANSIENT);
 	assert(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
@@ -100,11 +107,14 @@ int main()
 	// never enters the fuzzy path (unaffected by the budget).
 	insertReference(store, pid, 1, "RealFunc");
 	// References 2 + 3: name with no entity and no fuzzy match.
-	// The first occurrence triggers a fuzzy lookup (which misses) and
-	// caches the name; the second occurrence is a cache hit and skips
-	// the 3 SQL LIKE scans entirely.
-	insertReference(store, pid, 1, "GhostFunc");
-	insertReference(store, pid, 1, "GhostFunc");
+	// Step 5 evidence gate: a non-empty receiver_type marks this as a
+	// structured method call (e.g. `obj.GhostFunc()`), so the Resolver
+	// attempts fuzzy fallback. The lookup misses and caches the name;
+	// the second occurrence is a cache hit and skips the SQL LIKE scans.
+	// Without evidence the gate would skip fuzzy entirely
+	// (skipped_fuzzy_no_ev) and never populate the miss cache.
+	insertReference(store, pid, 1, "GhostFunc", "Receiver");
+	insertReference(store, pid, 1, "GhostFunc", "Receiver");
 
 	// ── Test 1: miss cache is empty before run() ─────────────────
 	{

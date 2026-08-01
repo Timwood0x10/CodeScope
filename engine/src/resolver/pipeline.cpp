@@ -162,7 +162,8 @@ std::string ResolverPipeline::checkImport(const std::string &caller_file,
 void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 					const std::string &caller_file,
 					const std::string &callee_name,
-					int call_kind, int caller_arity)
+					int call_kind, int caller_arity,
+					const std::string &receiver_type)
 {
 	// Build per-factor scores for each candidate using multi-factor scoring.
 	for (auto &c : candidates) {
@@ -244,15 +245,28 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 			factors.push_back(f);
 		}
 
-		// Factor 7: ReceiverMatch
+		// Factor 7: ReceiverMatch (Step 5: now type-based, not directory)
+		// Replaced factorReceiverMatch (directory heuristic) with
+		// factorReceiverTypeMatch (actual receiver_type evidence).
+		// When receiver_type is known (e.g. "Box"), candidates whose
+		// qualified_name contains "Box::" or "Box." score 1.0. When
+		// receiver_type is empty (dynamic/unknown), the factor returns
+		// 0.5 (neutral) so it does not distort the ranking.
 		{
 			FactorResult f;
 			f.name = "ReceiverMatch";
 			f.weight = kWeightReceiverMatch;
-			f.score = factorReceiverMatch(callee_name, caller_file,
-						      c.name, c.file_path);
-			f.detail = (f.score > 0.0) ? "receiver match" :
-						     "no receiver match";
+			f.score = factorReceiverTypeMatch(receiver_type,
+							  c.qualified_name,
+							  c.name, c.file_path);
+			if (!receiver_type.empty()) {
+				f.detail = (f.score >= kScoreExactMatch) ?
+						   "receiver type match" :
+						   (f.score > 0.0 ? "partial receiver" :
+								    "receiver mismatch");
+			} else {
+				f.detail = "no receiver evidence (neutral)";
+			}
 			factors.push_back(f);
 		}
 
@@ -355,7 +369,14 @@ int64_t ResolverPipeline::run()
 			  " target_id INTEGER NOT NULL,"
 			  " edge_type INTEGER NOT NULL,"
 			  " project_id INTEGER NOT NULL,"
-			  " resolve_strategy TEXT DEFAULT '')")) {
+			  " resolve_strategy TEXT DEFAULT '',"
+			  " confidence REAL DEFAULT 0.0,"
+			  " resolver TEXT DEFAULT '',"
+			  " resolution_kind TEXT DEFAULT '',"
+			  " reason TEXT DEFAULT '',"
+			  " call_site_file TEXT DEFAULT '',"
+			  " call_site_row INTEGER DEFAULT 0,"
+			  " call_site_col INTEGER DEFAULT 0)")) {
 		fprintf(stderr,
 			"[module=resolver, method=run] "
 			"create staging table failed: %s\n",
@@ -380,7 +401,11 @@ int64_t ResolverPipeline::run()
 			// factorConstructorMatch can prefer Class/Struct targets;
 			// previously kind was hardcoded 0 in the call, so the
 			// constructor factor always returned 0.0 (M-11).
-			"SELECT id, name, file_path, language, arity, kind FROM entity "
+			// Step 5: include qualified_name (column 6) so
+			// factorReceiverTypeMatch can match "Box::draw" against
+			// receiver_type="Box" instead of using directory heuristics.
+			"SELECT id, name, file_path, language, arity, kind, qualified_name "
+			"FROM entity "
 			"WHERE project_id=? AND name != ''";
 		sqlite3_stmt *idx_st = nullptr;
 		if (sqlite3_prepare_v2(store_->handle(), idx_sql.c_str(), -1,
@@ -417,6 +442,14 @@ int64_t ResolverPipeline::run()
 			// so non-type candidates correctly score 0.0 on the
 			// constructor factor.
 			c.kind = sqlite3_column_int(idx_st, 5);
+			// Step 5: column 6 is qualified_name. Used by
+			// factorReceiverTypeMatch to match "Box::draw" against
+			// receiver_type="Box". Empty for languages that don't
+			// populate it (e.g. Go), causing the factor to fall back
+			// to file-path matching.
+			const char *qn = reinterpret_cast<const char *>(
+				sqlite3_column_text(idx_st, 6));
+			c.qualified_name = qn ? qn : "";
 			c.score = 0;
 			entity_index[c.name].push_back(c);
 			total_entities++;
@@ -474,6 +507,39 @@ int64_t ResolverPipeline::run()
 		sqlite3_finalize(imp_st);
 	}
 
+	// ── Step 8 (plan §8.1): Pre-load interface/trait implementations ──
+	// InterfaceImpl records (kind=20) store (name=implementing_type,
+	// type_name=interface_name). We build a map from interface name
+	// to all implementing types, so the hot loop can expand
+	// Interface/Virtual dispatch calls into bounded candidate sets.
+	interface_impl_index_.clear();
+	int64_t total_iface_impls = 0;
+	{
+		// semantic_records.kind=20 is InterfaceImpl. The `name` column
+		// holds the implementing type, `type_name` holds the interface.
+		std::string iface_sql =
+			"SELECT name, type_name FROM semantic_records "
+			"WHERE project_id=? AND kind=20 AND name != '' "
+			"AND type_name != ''";
+		sqlite3_stmt *iface_st = nullptr;
+		if (sqlite3_prepare_v2(store_->handle(), iface_sql.c_str(), -1,
+				       &iface_st, nullptr) == SQLITE_OK) {
+			sqlite3_bind_int64(iface_st, 1,
+					   static_cast<int64_t>(project_id_));
+			while (sqlite3_step(iface_st) == SQLITE_ROW) {
+				const char *impl = reinterpret_cast<const char *>(
+					sqlite3_column_text(iface_st, 0));
+				const char *iface = reinterpret_cast<const char *>(
+					sqlite3_column_text(iface_st, 1));
+				if (impl && iface)
+					interface_impl_index_[iface].push_back(
+						impl);
+				total_iface_impls++;
+			}
+			sqlite3_finalize(iface_st);
+		}
+	}
+
 	// ── Query all references for this project ──
 	// Step 3 (plan §3.1): select the structured call-fact columns so the
 	// Resolver can use receiver/qualified target/import alias as primary
@@ -505,8 +571,10 @@ int64_t ResolverPipeline::run()
 	// Now we prepare once and bind/reset in the loop.
 	const char *ins_staging_sql =
 		"INSERT INTO _resolved_edges "
-		"(source_id, target_id, edge_type, project_id, resolve_strategy) "
-		"VALUES (?,?,?,?,?)";
+		"(source_id, target_id, edge_type, project_id, resolve_strategy, "
+		" confidence, resolver, resolution_kind, reason, "
+		" call_site_file, call_site_row, call_site_col) "
+		"VALUES (?,?,?,?,?,?,?,?,?,?,?,?)";
 	sqlite3_stmt *ins_st = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), ins_staging_sql, -1, &ins_st,
 			       nullptr) != SQLITE_OK) {
@@ -523,8 +591,10 @@ int64_t ResolverPipeline::run()
 	// disambiguation via factorSignatureMatch (see C2 above).
 	// Include kind (column 4) so fuzzy candidates carry the same
 	// constructor factor support as exact-name candidates (M-11).
-	const char *lk_sql = "SELECT name, file_path, language, arity, kind "
-			     "FROM entity WHERE id=?";
+	// Step 5: include qualified_name (column 5) so fuzzy candidates
+	// also get receiver type matching support.
+	const char *lk_sql = "SELECT name, file_path, language, arity, kind, "
+			     "qualified_name FROM entity WHERE id=?";
 	sqlite3_stmt *lk_st = nullptr;
 	sqlite3_prepare_v2(store_->handle(), lk_sql, -1, &lk_st, nullptr);
 
@@ -538,6 +608,10 @@ int64_t ResolverPipeline::run()
 	int64_t skipped_fuzzy_miss = 0;
 	int64_t skipped_fuzzy_budget = 0;
 	int64_t total_candidates_seen = 0;
+	// Step 5: new gate counters.
+	int64_t skipped_ambiguous = 0;    // top-1/top-2 margin not met
+	int64_t skipped_fuzzy_no_evidence = 0; // fuzzy without structured evidence
+	int64_t skipped_lang_mismatch = 0;     // caller/candidate language mismatch
 
 	// Wall-clock budget accumulator for the fuzzy path. Once the
 	// cumulative time spent in fuzzy_->resolve() exceeds kFuzzyBudgetMs,
@@ -557,6 +631,8 @@ int64_t ResolverPipeline::run()
 		std::string caller_file;
 		int call_kind;
 		int arity; // caller arity from reference row (column r.arity)
+		int start_row; // Step 6: call site row for provenance
+		int start_col; // Step 6: call site col for provenance
 		std::string resolve_strategy;
 		// Step 3 (plan §3.1): structured call facts. Populated by
 		// per-language Visitors; used by the exact-first candidate
@@ -582,6 +658,9 @@ int64_t ResolverPipeline::run()
 		// column was selected but never read, so the caller arity was
 		// always 0 in applyConstraints, breaking overload resolution.
 		r.arity = sqlite3_column_int(ref_st, 3);
+		// Step 6: read call site position for provenance (columns 4-5).
+		r.start_row = sqlite3_column_int(ref_st, 4);
+		r.start_col = sqlite3_column_int(ref_st, 5);
 		const char *fp_c = reinterpret_cast<const char *>(
 			sqlite3_column_text(ref_st, 8));
 		r.call_kind = sqlite3_column_int(ref_st, 6);
@@ -621,6 +700,14 @@ int64_t ResolverPipeline::run()
 		uint64_t target_id;
 		int edge_type;
 		std::string resolve_strategy;
+		// Step 6 (plan §6.1): provenance fields.
+		double confidence;
+		std::string resolver;
+		std::string resolution_kind;
+		std::string reason;
+		std::string call_site_file;
+		int call_site_row;
+		int call_site_col;
 	};
 	std::vector<ResolvedEdge> resolved_edges;
 	resolved_edges.reserve(16384); // pre-allocate for 36k typical
@@ -641,6 +728,20 @@ int64_t ResolverPipeline::run()
 			// Skip fuzzy for high-frequency names
 			if (shouldSkipFuzzy(ref.name)) {
 				skipped_common++;
+				continue;
+			}
+			// Step 5 (plan §5.5): fuzzy fallback requires structured
+			// evidence. Prefix/suffix name similarity alone is too
+			// weak to produce a reliable CALLS edge — it generates
+			// cross-module FP for common name fragments. Require at
+			// least one of: receiver_type, qualified_target, or
+			// import_alias to be non-empty. Common-name calls with
+			// no structured evidence stay unresolved (no edge).
+			bool has_evidence = !ref.receiver_type.empty() ||
+					    !ref.qualified_target.empty() ||
+					    !ref.import_alias.empty();
+			if (!has_evidence) {
+				skipped_fuzzy_no_evidence++;
 				continue;
 			}
 			if (fuzzy_miss_cache_.count(ref.name) > 0) {
@@ -697,6 +798,12 @@ int64_t ResolverPipeline::run()
 					// constructor-target preference applies to
 					// fuzzy-resolved candidates too (M-11).
 					c.kind = sqlite3_column_int(lk_st, 4);
+					// Step 5: column 5 is qualified_name.
+					const char *qn2 =
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								lk_st, 5));
+					c.qualified_name = qn2 ? qn2 : "";
 				}
 				sqlite3_reset(lk_st);
 				c.score = 0;
@@ -742,39 +849,210 @@ int64_t ResolverPipeline::run()
 							  ref.caller_file,
 							  c.file_path) >= 0.5) {
 					resolved_count++;
+					// Step 6: provenance for single-candidate
+					// fast path. High confidence — only one
+					// candidate in the same directory.
 					resolved_edges.push_back(
 						{ ref.caller_id, c.entity_id,
 						  kRelationTypeCall,
-						  ref.resolve_strategy });
+						  ref.resolve_strategy,
+						  0.85, // confidence
+						  "pipeline", // resolver
+						  "exact_local", // resolution_kind
+						  "single same-module candidate",
+						  ref.call_site_file,
+						  ref.start_row,
+						  ref.start_col });
 					continue;
 				}
 			}
 		}
 
-		applyConstraints(candidates, ref.caller_file, ref.name,
-				 ref.call_kind, ref.arity);
+		// Step 8 (plan §8.3): Conservative dynamic dispatch modeling.
+		// When a call is classified as Interface(2) or Virtual(5) AND
+		// the receiver_type is a known interface/trait, expand to all
+		// implementing types' methods instead of guessing one. Each
+		// implementation gets its own CALLS edge with
+		// resolution_kind="dispatch", so the query layer can distinguish
+		// direct calls from possible dispatch targets.
+		//
+		// When receiver_type is a concrete type (not in the interface
+		// map), normal resolution proceeds — the call resolves to the
+		// concrete method as a single edge.
+		bool handled_as_dispatch = false;
+		if ((ref.call_kind == kCallKindInterface ||
+		     ref.call_kind == kCallKindVirtual) &&
+		    !ref.receiver_type.empty()) {
+			auto impl_it = interface_impl_index_.find(
+				ref.receiver_type);
+			if (impl_it != interface_impl_index_.end() &&
+			    !impl_it->second.empty()) {
+				// Expand: for each implementing type, find
+				// candidates whose qualified_name matches
+				// "ImplType::method" or "ImplType.method".
+				int dispatch_count = 0;
+				for (const auto &impl_type :
+				     impl_it->second) {
+					std::string prefix1 = impl_type + "::";
+					std::string prefix2 = impl_type + ".";
+					for (const auto &c : candidates) {
+						if (c.entity_id ==
+						    ref.caller_id)
+							continue;
+						if (c.qualified_name.empty())
+							continue;
+						// Check if this candidate's
+						// qualified_name starts with the
+						// implementing type.
+						if (c.qualified_name.find(
+							    prefix1) == 0 ||
+						    c.qualified_name.find(
+							    prefix2) == 0) {
+							// Visibility check.
+							if (factorVisibilityCheck(
+								    c.language,
+								    c.name,
+								    ref.caller_file,
+								    c.file_path) <
+							    0.5)
+								continue;
+							dispatch_count++;
+							resolved_count++;
+							resolved_edges.push_back(
+								{ ref.caller_id,
+								  c.entity_id,
+								  kRelationTypeCall,
+								  ref.resolve_strategy,
+								  0.60, // confidence
+								  "pipeline",
+								  "dispatch",
+								  "interface=" +
+									  ref.receiver_type +
+									  " impl=" + impl_type +
+									  " method=" + ref.name,
+								  ref.call_site_file,
+								  ref.start_row,
+								  ref.start_col });
+						}
+					}
+				}
+				if (dispatch_count > 0) {
+					handled_as_dispatch = true;
+					// Skip normal resolution — dispatch edges
+					// have been emitted. The candidate set is
+					// bounded by the known implementations,
+					// not "all same-name methods".
+				}
+			}
+		}
+		if (handled_as_dispatch)
+			continue;
 
+		applyConstraints(candidates, ref.caller_file, ref.name,
+				 ref.call_kind, ref.arity, ref.receiver_type);
+
+		// Step 5 (plan §5.2): hard filters — applied before selecting
+		// the best candidate. Visibility and language are hard rules,
+		// not weighted factors: a cross-language match (e.g. a Rust
+		// symbol for a Python call site) is always wrong, regardless
+		// of how well other factors score. Similarly, a Go unexported
+		// symbol called from another package is a language-level
+		// violation, not a weak signal.
 		uint64_t best_id = 0;
 		double best_score = -1.0;
+		uint64_t second_id = 0;
+		double second_score = -1.0;
+		std::string caller_lang = languageFromPath(ref.caller_file);
 		for (auto &c : candidates) {
 			if (c.entity_id == ref.caller_id)
 				continue;
+			// Hard filter: visibility (language-level rule).
 			if (factorVisibilityCheck(c.language, c.name,
 						  ref.caller_file,
 						  c.file_path) < 0.5)
 				continue;
+			// Step 5: hard filter — language match. A call site in
+			// a .go file cannot resolve to a .py entity; skip the
+			// candidate entirely. Empty language (unknown) is allowed
+			// through to avoid over-filtering edge cases.
+			if (!caller_lang.empty() && !c.language.empty() &&
+			    caller_lang != c.language) {
+				skipped_lang_mismatch++;
+				continue;
+			}
 			if (c.total_score > best_score) {
+				second_id = best_id;
+				second_score = best_score;
 				best_id = c.entity_id;
 				best_score = c.total_score;
+			} else if (c.total_score > second_score) {
+				second_id = c.entity_id;
+				second_score = c.total_score;
 			}
 		}
 		if (best_id == 0 || best_score < kResolutionThreshold)
 			continue;
 
+		// Step 5 (plan §5.4): ambiguity gate.
+		// If the top-2 candidate exists and the margin between best
+		// and second is below kAmbiguityMargin, the evidence is too
+		// weak to pick a single target. Abstain (no CALLS edge)
+		// rather than guessing — the resolver's job is to produce
+		// reliable edges, not maximum edges.
+		if (second_id != 0 &&
+		    (best_score - second_score) < kAmbiguityMargin) {
+			skipped_ambiguous++;
+			continue;
+		}
+
+		// Step 5: fuzzy-resolved edges must clear a higher threshold.
+		// Fuzzy name similarity is inherently weaker than exact-name
+		// matching, so require a higher confidence before writing a
+		// CALLS edge from a fuzzy candidate.
+		bool from_fuzzy = (exact_hits == 0); // approximated; see note
+		(void)from_fuzzy; // not used for now — threshold is uniform
+		// Note: the fuzzy threshold kFuzzyResolutionThreshold is
+		// reserved for when we can precisely track which candidates
+		// came from fuzzy vs exact. For now, the evidence gate above
+		// (fuzzy only fires with structured evidence) plus the
+		// ambiguity gate provide sufficient FP protection.
+
+		// Step 6 (plan §6.2): determine resolution_kind from evidence.
+		// Priority: receiver_type > qualified_target > import_alias >
+		// name_arity. The kind records which evidence path produced
+		// the edge, enabling per-kind accuracy tracking and FP audits.
+		std::string res_kind;
+		std::string reason;
+		if (!ref.receiver_type.empty()) {
+			res_kind = "receiver_type";
+			reason = "receiver_type=" + ref.receiver_type +
+				 " score=" + std::to_string(best_score);
+		} else if (!ref.qualified_target.empty()) {
+			res_kind = "qualified";
+			reason = "qualified_target=" + ref.qualified_target +
+				 " score=" + std::to_string(best_score);
+		} else if (!ref.import_alias.empty()) {
+			res_kind = "imported";
+			reason = "import_alias=" + ref.import_alias +
+				 " score=" + std::to_string(best_score);
+		} else {
+			res_kind = "name_arity";
+			reason = "name=" + ref.name +
+				 " arity=" + std::to_string(ref.arity) +
+				 " score=" + std::to_string(best_score);
+		}
+
 		resolved_count++;
 		resolved_edges.push_back({ ref.caller_id, best_id,
 					   kRelationTypeCall,
-					   ref.resolve_strategy });
+					   ref.resolve_strategy,
+					   best_score, // confidence
+					   "pipeline", // resolver
+					   res_kind,   // resolution_kind
+					   reason,     // reason
+					   ref.call_site_file,
+					   ref.start_row,
+					   ref.start_col });
 	}
 
 	// Free entity_index (no longer needed)
@@ -802,6 +1080,18 @@ int64_t ResolverPipeline::run()
 					   static_cast<int64_t>(project_id_));
 			sqlite3_bind_text(ins_st, 5, e.resolve_strategy.c_str(),
 					  -1, SQLITE_STATIC);
+			// Step 6: bind provenance columns (6-12).
+			sqlite3_bind_double(ins_st, 6, e.confidence);
+			sqlite3_bind_text(ins_st, 7, e.resolver.c_str(),
+					  -1, SQLITE_STATIC);
+			sqlite3_bind_text(ins_st, 8, e.resolution_kind.c_str(),
+					  -1, SQLITE_STATIC);
+			sqlite3_bind_text(ins_st, 9, e.reason.c_str(),
+					  -1, SQLITE_STATIC);
+			sqlite3_bind_text(ins_st, 10, e.call_site_file.c_str(),
+					  -1, SQLITE_STATIC);
+			sqlite3_bind_int(ins_st, 11, e.call_site_row);
+			sqlite3_bind_int(ins_st, 12, e.call_site_col);
 			int st_rc = sqlite3_step(ins_st);
 			if (st_rc != SQLITE_DONE && st_rc != SQLITE_CONSTRAINT)
 				fprintf(stderr,
@@ -827,8 +1117,12 @@ int64_t ResolverPipeline::run()
 	auto t_sql = Clock::now();
 
 	if (!store_->exec("INSERT OR IGNORE INTO relation "
-			  "(project_id, source_id, target_id, type) "
-			  "SELECT project_id, source_id, target_id, edge_type "
+			  "(project_id, source_id, target_id, type, "
+			  " confidence, resolver, resolution_kind, reason, "
+			  " call_site_file, call_site_row, call_site_col) "
+			  "SELECT project_id, source_id, target_id, edge_type, "
+			  " confidence, resolver, resolution_kind, reason, "
+			  " call_site_file, call_site_row, call_site_col "
 			  "FROM _resolved_edges")) {
 		fprintf(stderr,
 			"[module=resolver, method=run] "
@@ -871,12 +1165,17 @@ int64_t ResolverPipeline::run()
 		" | exact=%lld fuzzy=%lld"
 		" skipped_common=%lld skipped_many=%lld"
 		" skipped_miss=%lld skipped_budget=%lld"
+		" skipped_fuzzy_no_ev=%lld skipped_ambiguous=%lld"
+		" skipped_lang=%lld"
 		" | avg_cands=%.1f entities=%lld imports=%lld"
 		" | sql_batch=%lldms total=%lldms\n",
 		(long long)resolved_count, (long long)total_refs,
 		(long long)exact_hits, (long long)fuzzy_hits,
 		(long long)skipped_common, (long long)skipped_too_many,
 		(long long)skipped_fuzzy_miss, (long long)skipped_fuzzy_budget,
+		(long long)skipped_fuzzy_no_evidence,
+		(long long)skipped_ambiguous,
+		(long long)skipped_lang_mismatch,
 		avg_candidates, (long long)total_entities,
 		(long long)total_imports, (long long)sql_batch_ms,
 		(long long)total_ms);

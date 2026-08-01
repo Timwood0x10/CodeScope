@@ -160,6 +160,9 @@ void JsVisitor::reset()
 	// Clear scope stack but preserve vector capacity for reuse
 	scopes_.clear();
 	function_stack_.clear();
+	// Step 4: reset per-file tracking.
+	var_types_.clear();
+	class_scope_stack_.clear();
 	unit_ = nullptr;
 	emitter_ = nullptr;
 	source_ = nullptr;
@@ -373,11 +376,14 @@ void JsVisitor::visitClassDecl(TSNode node, uint64_t parent_id)
 	}
 
 	uint64_t cls_id = emitter_->emitClass(name, loc, parent_id,
-					      detectVisibility(node));
+						      detectVisibility(node));
 	defineSymbol(name, cls_id);
 
 	pushScope();
+	// Step 4: push class scope for this.method() receiver inference.
+	pushClassScope(name);
 	visitChildren(node, cls_id);
+	popClassScope();
 	popScope();
 }
 

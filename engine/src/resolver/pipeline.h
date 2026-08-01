@@ -71,6 +71,16 @@ class ResolverPipeline {
 	// resolved edges are IDENTICAL to the previous SQL implementation.
 	std::unordered_map<std::string, std::vector<std::string>> import_index_;
 
+	// Step 8 (plan §8.1): interface/trait implementation index.
+	// Maps interface/trait name → list of implementing type names.
+	// Populated once in run() from semantic_records (kind=20,
+	// InterfaceImpl). Used by the hot loop to expand Interface/Virtual
+	// dispatch calls into bounded candidate sets: when a call's
+	// receiver_type is an interface, all known implementations become
+	// candidates instead of guessing one.
+	std::unordered_map<std::string, std::vector<std::string>>
+		interface_impl_index_;
+
 	/// Candidate: a potential match for a reference.
 	struct Candidate {
 		uint64_t entity_id;
@@ -78,6 +88,7 @@ class ResolverPipeline {
 		std::string file_path;
 		std::string module_path;
 		std::string language;
+		std::string qualified_name; // Step 5: for receiver_type matching
 		int arity = 0;
 		// Entity kind (RecordKind enum): 2=Class, 3=Interface, etc.
 		// Propagated from entity.kind so factorConstructorMatch can
@@ -96,10 +107,15 @@ class ResolverPipeline {
 	/// @param caller_arity Arity of the call site from the reference row;
 	///                     used by factorSignatureMatch for overload
 	///                     resolution. 0 means unknown arity.
+	/// @param receiver_type Step 5: inferred receiver type for method
+	///                     calls (empty for direct calls). Used by
+	///                     factorReceiverTypeMatch instead of the old
+	///                     directory heuristic.
 	void applyConstraints(std::vector<Candidate> &candidates,
 			      const std::string &caller_file,
 			      const std::string &callee_name, int call_kind = 0,
-			      int caller_arity = 0);
+			      int caller_arity = 0,
+			      const std::string &receiver_type = "");
 
 	/// Check if `callee_name` is imported in the file at `caller_file`.
 	/// Returns the import target path if found, empty string otherwise.

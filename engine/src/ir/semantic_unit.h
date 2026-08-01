@@ -320,6 +320,20 @@ class SemanticUnit {
 			  const std::string &receiver_type,
 			  const std::string &import_alias);
 
+	/**
+	 * Set the qualified_name on any record (Step 4/5, plan §4B/§4C).
+	 * Visitors call this after emitFunction/emitMethod when the function
+	 * is declared inside a class, so the qualified_name includes the
+	 * class prefix (e.g. "Timeline.render", "Point::helper"). The
+	 * Resolver's factorReceiverTypeMatch uses this to match a call's
+	 * receiver_type against the candidate's declaring class.
+	 * \param record_id      ID of the record to update.
+	 * \param qualified_name The qualified name (e.g. "Box::draw").
+	 * \return true if the record was found and updated.
+	 */
+	bool setQualifiedName(uint64_t record_id,
+			      const std::string &qualified_name);
+
     private:
 	std::vector<Record> records_;
 	std::unordered_map<uint64_t, size_t>
