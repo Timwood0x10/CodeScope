@@ -546,6 +546,200 @@ int64_t ResolverPipeline::run()
 		}
 	}
 
+	// ── Step 8 (plan §8.1b): cross-file interface method-set matching ──
+	// The visitor's kind=20 records only cover same-file (struct,
+	// interface) pairs — Go interfaces are usually declared in one file
+	// and implemented in another, so those never match in-file. This
+	// global pass reconstructs method sets from the per-method qualified
+	// names ("Struct.method" set by handleMethodDecl, "Interface.method"
+	// set by handleInterfaceMethod) and re-runs the subset check across
+	// ALL files, supplementing interface_impl_index_ with cross-file
+	// implementations.
+	{
+		// Interface entity names (kind=3) — used to classify a method's
+		// qualified-name prefix as an interface vs a struct.
+		std::unordered_set<std::string> iface_names;
+		{
+			std::string names_sql =
+				"SELECT name FROM semantic_records "
+				"WHERE project_id=? AND kind=3 AND name != ''";
+			sqlite3_stmt *nst = nullptr;
+			if (sqlite3_prepare_v2(store_->handle(),
+					       names_sql.c_str(), -1, &nst,
+					       nullptr) == SQLITE_OK) {
+				sqlite3_bind_int64(
+					nst, 1,
+					static_cast<int64_t>(project_id_));
+				while (sqlite3_step(nst) == SQLITE_ROW) {
+					const char *n =
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(nst,
+									    0));
+					if (n)
+						iface_names.insert(n);
+				}
+				sqlite3_finalize(nst);
+			}
+		}
+		// Method records with qualified names — split "Type.method".
+		std::unordered_map<std::string, std::vector<std::string>>
+			iface_methods; // interface name -> its methods
+		std::unordered_map<std::string, std::vector<std::string>>
+			struct_methods; // struct type -> its methods
+		{
+			std::string meth_sql =
+				"SELECT qualified_name FROM semantic_records "
+				"WHERE project_id=? AND kind=1 AND "
+				"qualified_name != ''";
+			sqlite3_stmt *mst = nullptr;
+			if (sqlite3_prepare_v2(store_->handle(),
+					       meth_sql.c_str(), -1, &mst,
+					       nullptr) == SQLITE_OK) {
+				sqlite3_bind_int64(
+					mst, 1,
+					static_cast<int64_t>(project_id_));
+				while (sqlite3_step(mst) == SQLITE_ROW) {
+					const char *qn =
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(mst,
+									    0));
+					if (!qn)
+						continue;
+					std::string q(qn);
+					size_t dot = q.find('.');
+					if (dot == std::string::npos)
+						continue;
+					std::string type_name =
+						q.substr(0, dot);
+					std::string method = q.substr(dot + 1);
+					if (type_name.empty() || method.empty())
+						continue;
+					if (iface_names.count(type_name) > 0)
+						iface_methods[type_name]
+							.push_back(method);
+					else
+						struct_methods[type_name]
+							.push_back(method);
+				}
+				sqlite3_finalize(mst);
+			}
+		}
+		// Global subset check: struct implements interface iff the
+		// struct's method set contains every interface method.
+		for (const auto &iface_entry : iface_methods) {
+			const std::string &iface = iface_entry.first;
+			const auto &imethods = iface_entry.second;
+			if (imethods.empty())
+				continue;
+			for (const auto &sentry : struct_methods) {
+				const std::string &stype = sentry.first;
+				const auto &smethods = sentry.second;
+				if (stype == iface)
+					continue;
+				bool implements_all = true;
+				for (const auto &m : imethods) {
+					if (std::find(smethods.begin(),
+						      smethods.end(),
+						      m) == smethods.end()) {
+						implements_all = false;
+						break;
+					}
+				}
+				if (implements_all) {
+					// Avoid duplicating an entry the
+					// visitor's kind=20 pass already added.
+					auto &impls =
+						interface_impl_index_[iface];
+					if (std::find(impls.begin(),
+						      impls.end(),
+						      stype) == impls.end()) {
+						impls.push_back(stype);
+						total_iface_impls++;
+					}
+				}
+			}
+		}
+		if (total_iface_impls > 0) {
+			fprintf(stderr,
+				"[module=resolver, method=run] interface_impl_index: "
+				"%lld implementation(s) loaded (%d interface(s))\n",
+				static_cast<long long>(total_iface_impls),
+				static_cast<int>(interface_impl_index_.size()));
+		}
+	}
+
+	// ── Step 8 (plan §8.1c): rebuild the global struct field table ──
+	// The Go visitor persists each struct field as a TypeRef record
+	// (kind=14) under the struct entity (kind=2): name = field name,
+	// type_name = field type. Rebuilding here makes the table complete
+	// across files, so field-chain receivers (r.pluginBus.AfterStep)
+	// whose receiver_type was empty at visit time (struct declared in
+	// another file) can be resolved before dispatch expansion.
+	global_struct_fields_.clear();
+	{
+		std::string field_sql =
+			"SELECT p.name, t.name, t.type_name "
+			"FROM semantic_records t "
+			"JOIN semantic_records p ON t.parent_id = p.original_id "
+			"WHERE t.project_id=? AND t.kind=17 AND p.kind=2 "
+			"AND t.name != '' AND t.type_name != ''";
+		sqlite3_stmt *fst = nullptr;
+		if (sqlite3_prepare_v2(store_->handle(), field_sql.c_str(), -1,
+				       &fst, nullptr) == SQLITE_OK) {
+			sqlite3_bind_int64(fst, 1,
+					   static_cast<int64_t>(project_id_));
+			while (sqlite3_step(fst) == SQLITE_ROW) {
+				const char *stype =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(fst, 0));
+				const char *fname =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(fst, 1));
+				const char *ftype =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(fst, 2));
+				if (stype && fname && ftype)
+					global_struct_fields_[stype][fname] =
+						ftype;
+			}
+			sqlite3_finalize(fst);
+		}
+	}
+
+	// ── Step 8.1c (plan §8): global caller variable-type table ──
+	// The Go visitor persists method receivers and declared variables
+	// as TypeRef records (kind=14) under the containing function/method
+	// entity (kind=0/1): name = variable name, type_name = its type.
+	// Rebuilding here gives the field-chain resolver the first-segment
+	// type ("r" -> "Runner") when resolving "r.pluginBus.AfterStep".
+	global_var_types_.clear();
+	{
+		std::string vtype_sql =
+			"SELECT t.name, t.type_name FROM semantic_records t "
+			"JOIN semantic_records p ON t.parent_id = p.original_id "
+			"WHERE t.project_id=? AND t.kind=17 "
+			"AND p.kind IN (0,1) "
+			"AND t.name != '' AND t.type_name != ''";
+		sqlite3_stmt *vst = nullptr;
+		if (sqlite3_prepare_v2(store_->handle(), vtype_sql.c_str(), -1,
+				       &vst, nullptr) == SQLITE_OK) {
+			sqlite3_bind_int64(vst, 1,
+					   static_cast<int64_t>(project_id_));
+			while (sqlite3_step(vst) == SQLITE_ROW) {
+				const char *vname =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(vst, 0));
+				const char *vtype =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(vst, 1));
+				if (vname && vtype)
+					global_var_types_[vname].push_back(
+						vtype);
+			}
+			sqlite3_finalize(vst);
+		}
+	}
+
 	// ── Query all references for this project ──
 	// Step 3 (plan §3.1): select the structured call-fact columns so the
 	// Resolver can use receiver/qualified target/import alias as primary
@@ -876,22 +1070,80 @@ int64_t ResolverPipeline::run()
 		}
 
 		// Step 8 (plan §8.3): Conservative dynamic dispatch modeling.
-		// When a call is classified as Interface(2) or Virtual(5) AND
-		// the receiver_type is a known interface/trait, expand to all
-		// implementing types' methods instead of guessing one. Each
+		// When the receiver_type is a known interface/trait, expand to
+		// all implementing types' methods instead of guessing one. Each
 		// implementation gets its own CALLS edge with
 		// resolution_kind="dispatch", so the query layer can distinguish
 		// direct calls from possible dispatch targets.
 		//
-		// When receiver_type is a concrete type (not in the interface
-		// map), normal resolution proceeds — the call resolves to the
+		// The trigger is NOT limited to call_kind==Interface/Virtual:
+		// Go selector calls on interface-typed receivers are classified
+		// as Method(1) when the interface is declared in a different
+		// file (the visitor's per-file interface set can't see it), so
+		// any call whose receiver_type appears in the cross-file
+		// interface_impl_index_ is treated as a dispatch site. When
+		// receiver_type is a concrete type (not in the interface map),
+		// normal resolution proceeds — the call resolves to the
 		// concrete method as a single edge.
 		bool handled_as_dispatch = false;
-		if ((ref.call_kind == kCallKindInterface ||
-		     ref.call_kind == kCallKindVirtual) &&
-		    !ref.receiver_type.empty()) {
+		// Step 8.1c: resolve field-chain receivers whose type is empty
+		// at visit time (struct declared in another file) using the
+		// global field table: "r.pluginBus" -> resolve r via caller
+		// scope types, then walk pluginBus through global_struct_fields_.
+		std::string resolved_receiver = ref.receiver_type;
+		if (resolved_receiver.empty() &&
+		    ref.receiver_text.find('.') != std::string::npos) {
+			std::string cur = ref.receiver_text;
+			size_t first_dot = cur.find('.');
+			std::string first = cur.substr(0, first_dot);
+			// The variable name (e.g. "r") appears across many files
+			// with DIFFERENT types, so global_var_types_ holds all of
+			// them. Try each candidate type: walk the remaining field
+			// segments through global_struct_fields_; the first type
+			// that resolves the entire chain wins.
+			auto fv = global_var_types_.find(first);
+			if (fv != global_var_types_.end()) {
+				for (const auto &cand_type : fv->second) {
+					std::string cur_type = cand_type;
+					bool chain_ok = true;
+					size_t pos = first_dot;
+					while (chain_ok &&
+					       pos != std::string::npos) {
+						size_t next =
+							cur.find('.', pos + 1);
+						std::string field = cur.substr(
+							pos + 1,
+							(next ==
+							 std::string::npos) ?
+								std::string::npos :
+								next - pos - 1);
+						auto ft =
+							global_struct_fields_
+								.find(cur_type);
+						if (ft == global_struct_fields_
+								  .end()) {
+							chain_ok = false;
+							break;
+						}
+						auto fld =
+							ft->second.find(field);
+						if (fld == ft->second.end()) {
+							chain_ok = false;
+							break;
+						}
+						cur_type = fld->second;
+						pos = next;
+					}
+					if (chain_ok && !cur_type.empty()) {
+						resolved_receiver = cur_type;
+						break;
+					}
+				}
+			}
+		}
+		if (!resolved_receiver.empty()) {
 			auto impl_it =
-				interface_impl_index_.find(ref.receiver_type);
+				interface_impl_index_.find(resolved_receiver);
 			if (impl_it != interface_impl_index_.end() &&
 			    !impl_it->second.empty()) {
 				// Expand: for each implementing type, find

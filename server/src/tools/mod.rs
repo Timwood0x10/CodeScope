@@ -899,8 +899,10 @@ fn h_build_evidence(project_id: u64, args: &Value) -> String {
 }
 
 /// Verify a natural-language claim against the project's indexed
-/// evidence. Runs IntentParser -> Planner -> EvidenceBuilder ->
-/// VerdictBuilder and returns the aggregate verdict + confidence.
+/// evidence. Thin wrapper over the structured verify_claim path:
+/// IntentParser → Claim mapping (capability/contract) →
+/// verify_one_claim. Unrecognized intents return
+/// error_code="intent_unrecognized".
 fn h_verify_statement(project_id: u64, args: &Value) -> String {
     let claim = args["claim"].as_str().unwrap_or("");
     if claim.is_empty() {
@@ -1566,7 +1568,7 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
         },
         Tool {
             name: "verify_statement".into(),
-            description: "Verify a natural-language claim against the project's indexed evidence. The claim is parsed into an Intent by IntentParser, planned into evidence rule executions by Planner, executed via EvidenceBuilder, and aggregated into a Verdict by VerdictBuilder. Returns JSON with verdict (Supported|Contradicted|PartiallyVerified|Unknown), confidence, requirements[], and evidence[]. Use this for yes/no questions about code behavior (e.g. 'does this project safely handle CString?').".into(),
+            description: "Verify a natural-language claim against the project's indexed evidence. Thin wrapper over the structured verify_claim path: the claim is parsed into an Intent (IntentParser), mapped to a structured Claim (capability_question -> capability_exists, safety/pattern_question -> contract_holds), and dispatched through the same verify_one_claim core as verify_claim. Returns JSON with verdict (Supported|Contradicted|PartiallyVerified|Unknown), confidence, and verifier-specific detail. Unrecognized intents return error_code=intent_unrecognized. Use this for yes/no questions about code behavior (e.g. 'does this project safely handle CString?'); for function-implements or architecture checks use verify_claim with the explicit type.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {

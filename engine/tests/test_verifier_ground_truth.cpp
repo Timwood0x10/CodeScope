@@ -163,20 +163,25 @@ int main()
 		printf("Test 1 (introspection API healthy): PASS\n");
 	}
 
-	// ── Test 2: FunctionImplements Supported with evidence facts ─
+	// ── Test 2: FunctionImplements Supported with low confidence ──
 	// `compute` exists and has call-graph edges (main calls it, it calls
-	// multiply). The verdict must be Supported AND the evidence_facts
-	// array must be non-empty (at least one entity ref + one relation ref).
+	// multiply). Verdict stays Supported but confidence is downgraded
+	// (0.8 → 0.55) because only presence + edges are confirmed — the
+	// claim's object field is NOT semantically validated. The
+	// evidence_facts array must be non-empty (entity ref + relation ref).
 	{
 		char *r = verifyClaimOk(pid,
 					"{\"type\":\"function_implements\","
 					"\"subject\":\"compute\"}");
 		assert(extractVerdict(r) == "Supported");
 		assert(strstr(r, "FunctionImplementsVerifier") != nullptr);
+		// Downgraded confidence: structural check only.
+		assert(strstr(r, "\"confidence\":0.55") != nullptr ||
+		       strstr(r, "\"confidence\": 0.55") != nullptr);
 		int facts = countEvidenceFacts(r);
 		assert(facts >= 2); // at least 1 entity + 1 relation
 		engine_free_string(r);
-		printf("Test 2 (FunctionImplements Supported + facts): PASS\n");
+		printf("Test 2 (FunctionImplements Supported, low confidence): PASS\n");
 	}
 
 	// ── Test 3: FunctionImplements isolated → Unknown ────────────

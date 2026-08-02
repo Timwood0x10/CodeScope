@@ -243,7 +243,10 @@ int main()
 	// `multiply` (exists, has callers via compute, has callees via add).
 	// A non-existent function name yields Contradicted.
 	{
-		// Supported: `compute` exists and is wired into the call graph.
+		// Supported with LOW confidence: `compute` exists and is
+		// wired into the call graph, but only presence + edges are
+		// confirmed — the claim's object field is NOT semantically
+		// validated (confidence downgraded 0.8 → 0.55).
 		char *r_supported =
 			verifyClaimOk(pid, "{\"type\":\"function_implements\","
 					   "\"subject\":\"compute\"}");
@@ -251,6 +254,9 @@ int main()
 		assert(v_supported == "Supported");
 		assert(strstr(r_supported, "FunctionImplementsVerifier") !=
 		       nullptr);
+		// Downgraded confidence: structural check only.
+		assert(strstr(r_supported, "\"confidence\":0.55") != nullptr ||
+		       strstr(r_supported, "\"confidence\": 0.55") != nullptr);
 		engine_free_string(r_supported);
 
 		// Contradicted: `nonexistent_function` does not exist.

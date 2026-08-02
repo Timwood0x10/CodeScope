@@ -41,6 +41,35 @@ class GoVisitor : public JsVisitor {
 	std::unordered_map<std::string, std::string> var_types_;
 	std::unordered_set<std::string> import_aliases_;
 
+	// ── Step 8 (plan §8): Go interface dispatch support ──────────
+	// Go implements interfaces implicitly (no `implements` clause), so
+	// the visitor collects each interface's method set and each struct
+	// type's method set while walking the file; at end-of-file the
+	// method sets are compared and emitInterfaceImpl() is called for
+	// every (struct, interface) pair where the struct implements ALL of
+	// the interface's methods. handleCall then classifies selector calls
+	// whose receiver's static type is a known interface as
+	// CallKind::Interface with receiver_type = interface name, letting
+	// the Resolver's dispatch expansion build bounded candidate sets.
+	// All maps are per-file: cleared in visit() alongside var_types_.
+	std::unordered_map<std::string, std::vector<std::string>>
+		interface_methods_; // interface name -> method names
+	std::unordered_map<std::string, std::vector<std::string>>
+		struct_methods_; // struct type -> method names (incl. pointer receivers)
+	std::string
+		current_interface_; // interface being walked (set by handleTypeDecl)
+
+	// ── Step 8 (plan §8.1c): struct field type table ─────────────
+	// Maps struct type -> field name -> field type, collected while
+	// handleTypeDecl walks field_declaration_list. handleCall uses it to
+	// resolve field-chain receivers (`r.pluginBus.AfterStep`): resolve
+	// the first segment via var_types_, then walk subsequent segments
+	// through this table so receiver_type becomes the field's type
+	// (e.g. an interface) instead of empty. Cleared per-file in visit().
+	std::unordered_map<std::string,
+			   std::unordered_map<std::string, std::string>>
+		struct_fields_;
+
 	/// Record a variable → type binding (no-op if type is empty).
 	void recordVarType(const std::string &name, const std::string &type)
 	{

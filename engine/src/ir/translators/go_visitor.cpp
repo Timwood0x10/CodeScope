@@ -87,6 +87,11 @@ SemanticUnit *GoVisitor::visit(TSTree *tree, const char *source, const char *fp)
 	// leaking stale variable bindings from the previous file.
 	var_types_.clear();
 	import_aliases_.clear();
+	// Step 8: reset per-file interface/struct method sets.
+	interface_methods_.clear();
+	struct_methods_.clear();
+	current_interface_.clear();
+	struct_fields_.clear();
 
 	TSNode root_node = ts_tree_root_node(tree);
 	pushScope();
@@ -95,6 +100,40 @@ SemanticUnit *GoVisitor::visit(TSTree *tree, const char *source, const char *fp)
 	(void)root_id;
 	visitChildren(root_node, 0);
 	popScope();
+
+	// ── Step 8 (plan §8): emit interface implementations ─────────
+	// Go interfaces are satisfied implicitly — a struct implements an
+	// interface iff its method set contains every interface method.
+	// After walking the whole file we have both method sets; emit an
+	// InterfaceImpl record (kind=20) for every (struct, interface)
+	// pair where the struct provides all of the interface's methods.
+	// The Resolver preloads these into interface_impl_index_ so
+	// dispatch expansion can build bounded candidate sets.
+	for (const auto &iface_entry : interface_methods_) {
+		const std::string &iface = iface_entry.first;
+		const auto &iface_methods = iface_entry.second;
+		if (iface_methods.empty())
+			continue;
+		for (const auto &struct_entry : struct_methods_) {
+			const std::string &stype = struct_entry.first;
+			const auto &smethods = struct_entry.second;
+			if (stype == iface)
+				continue;
+			// Every interface method must appear in the
+			// struct's method set (subset check).
+			bool implements_all = true;
+			for (const auto &m : iface_methods) {
+				if (std::find(smethods.begin(), smethods.end(),
+					      m) == smethods.end()) {
+					implements_all = false;
+					break;
+				}
+			}
+			if (implements_all)
+				emitter_->emitInterfaceImpl(stype, iface,
+							    root_loc, 0);
+		}
+	}
 
 	emitter_ = nullptr;
 	return unit_;
@@ -248,8 +287,32 @@ void GoVisitor::handleMethodDecl(TSNode node, uint64_t parent_id)
 						}
 					}
 				}
-				if (!pname.empty() && !ptype.empty())
+				if (!pname.empty() && !ptype.empty()) {
 					recordVarType(pname, ptype);
+					// Persist variable -> type as a
+					// TypeRef record so the Resolver can
+					// rebuild the caller variable-type
+					// table globally for field-chain
+					// receiver resolution (e.g. `r`
+					// in `r.pluginBus.AfterStep`).
+					emitter_->emitTypeRef(pname, ptype,
+							      location(recv),
+							      id);
+				}
+				// Step 8: collect struct method set — the
+				// receiver type is the struct this method
+				// belongs to (pointer receivers `*Engine`
+				// are unwrapped to `Engine` above).
+				if (!ptype.empty() && !name.empty()) {
+					struct_methods_[ptype].push_back(name);
+					// Also set the method's qualified
+					// name ("Engine.helper") so the
+					// Resolver's global interface-dispatch
+					// preload can match cross-file
+					// implementations by receiver type.
+					unit_->setQualifiedName(
+						id, ptype + "." + name);
+				}
 			}
 		}
 	}
@@ -329,8 +392,124 @@ void GoVisitor::handleTypeDecl(TSNode node, uint64_t parent_id)
 						1 :
 						0);
 			defineSymbol(name, id);
-			// Visit type body (struct fields, interface methods)
-			visitChildren(c, id);
+			if (is_interface) {
+				// Step 8: walk the interface body with
+				// current_interface_ set so handleInterfaceMethod
+				// collects the interface's method set.
+				current_interface_ = name;
+				visitChildren(c, id);
+				current_interface_.clear();
+			} else if (is_struct) {
+				// Visit type body (struct fields).
+				visitChildren(c, id);
+				// Step 8.1c: collect struct field -> type so
+				// handleCall can resolve field-chain receivers
+				// (r.pluginBus.AfterStep): first segment from
+				// var_types_, then walk fields via this table.
+				uint32_t sc = ts_node_child_count(c);
+				for (uint32_t j = 0; j < sc; j++) {
+					TSNode def = ts_node_child(c, j);
+					if (!ts_node_is_named(def))
+						continue;
+					if (strcmp(ts_node_type(def),
+						   "struct_type") != 0)
+						continue;
+					// struct_type -> field_declaration_list
+					uint32_t dc = ts_node_child_count(def);
+					for (uint32_t k = 0; k < dc; k++) {
+						TSNode dl =
+							ts_node_child(def, k);
+						if (!ts_node_is_named(dl))
+							continue;
+						if (strcmp(ts_node_type(dl),
+							   "field_declaration_list") !=
+						    0)
+							continue;
+						uint32_t fc =
+							ts_node_child_count(dl);
+						for (uint32_t m = 0; m < fc;
+						     m++) {
+							TSNode fd =
+								ts_node_child(
+									dl, m);
+							if (!ts_node_is_named(
+								    fd))
+								continue;
+							if (strcmp(ts_node_type(
+									   fd),
+								   "field_declaration") !=
+							    0)
+								continue;
+							TSNode fname =
+								ts_node_child_by_field_name(
+									fd,
+									"name",
+									4);
+							TSNode ftype =
+								ts_node_child_by_field_name(
+									fd,
+									"type",
+									4);
+							if (ts_node_is_null(
+								    fname) ||
+							    ts_node_is_null(
+								    ftype))
+								continue;
+							std::string fname_txt =
+								nodeText(fname);
+							std::string ftype_txt =
+								nodeText(ftype);
+							// Unwrap pointer_type
+							// (`*PluginBus` → `PluginBus`).
+							if (strcmp(ts_node_type(
+									   ftype),
+								   "pointer_type") ==
+							    0) {
+								uint32_t pc = ts_node_child_count(
+									ftype);
+								for (uint32_t n =
+									     0;
+								     n < pc;
+								     n++) {
+									TSNode inner = ts_node_child(
+										ftype,
+										n);
+									if (ts_node_is_named(
+										    inner) &&
+									    std::string(ts_node_type(
+										    inner)) ==
+										    "type_identifier")
+										ftype_txt = nodeText(
+											inner);
+								}
+							}
+							if (!fname_txt.empty() &&
+							    !ftype_txt.empty()) {
+								struct_fields_
+									[name]
+									[fname_txt] =
+										ftype_txt;
+								// Persist field -> type as
+								// a TypeRef record under the
+								// struct entity so the
+								// Resolver can rebuild the
+								// field table GLOBALLY
+								// (cross-file) for field
+								// chain receivers.
+								emitter_->emitTypeRef(
+									fname_txt,
+									ftype_txt,
+									location(
+										fd),
+									id);
+							}
+						}
+					}
+				}
+			} else {
+				// Visit type body (type aliases, etc.)
+				visitChildren(c, id);
+			}
 		}
 	}
 }
@@ -466,13 +645,32 @@ void GoVisitor::handleCall(TSNode node, uint64_t parent_id)
 	if (!selector_name.empty()) {
 		// Method call: obj.Method() or pkg.Func()
 		call_kind = CallKind::Method;
+		// Step 8 (plan §8): interface dispatch. If the receiver's
+		// static type is a known interface (declared in this file),
+		// classify the call as Interface so the Resolver's dispatch
+		// expansion builds a bounded candidate set from
+		// interface_impl_index_ instead of guessing one method. The
+		// receiver_type field (filled in setCallFacts below from
+		// var_types_) carries the interface name — required by
+		// pipeline.cpp's `!ref.receiver_type.empty()` gate.
+		size_t dot = selector_name.rfind('.');
+		std::string recv_text = (dot != std::string::npos) ?
+						selector_name.substr(0, dot) :
+						std::string();
+		if (!recv_text.empty() &&
+		    import_aliases_.count(recv_text) == 0) {
+			auto vt = var_types_.find(recv_text);
+			if (vt != var_types_.end() &&
+			    interface_methods_.count(vt->second) > 0)
+				call_kind = CallKind::Interface;
+		}
 		// Check for constructor pattern: NewType(). The previous
 		// `name.size() > 3` threshold excluded exactly "New" (3 chars),
 		// so a bare `New()` call was misclassified as Direct and never
 		// got the constructor boost in the Resolver Pipeline.
 		// See CODE_REVIEW_FINDINGS_2026-07-19.md H6.
-		if (name.size() >= 3 && name[0] == 'N' && name[1] == 'e' &&
-		    name[2] == 'w')
+		if (call_kind == CallKind::Method && name.size() >= 3 &&
+		    name[0] == 'N' && name[1] == 'e' && name[2] == 'w')
 			call_kind = CallKind::Constructor;
 	} else {
 		// Bare function call: check if it's a constructor
@@ -533,9 +731,66 @@ void GoVisitor::handleCall(TSNode node, uint64_t parent_id)
 			if (import_aliases_.count(receiver_text) > 0) {
 				import_alias = receiver_text;
 			} else {
+				// Step 8.1c: resolve field-chain receivers
+				// (`r.pluginBus.AfterStep`). Resolve the first
+				// segment via var_types_, then walk each
+				// subsequent field through struct_fields_ so
+				// receiver_type becomes the field's type (e.g.
+				// an interface) instead of empty. A field-chain
+				// must resolve EVERY segment; if any lookup fails
+				// the whole chain is treated as unknown (empty
+				// receiver_type) rather than falling back to the
+				// first segment's type — an incorrect concrete
+				// type would misroute the Resolver into a false
+				// positive edge.
 				auto vt = var_types_.find(receiver_text);
-				if (vt != var_types_.end())
+				if (vt != var_types_.end()) {
 					receiver_type = vt->second;
+				} else if (receiver_text.find('.') !=
+					   std::string::npos) {
+					std::string cur = receiver_text;
+					std::string cur_type;
+					bool chain_ok = false;
+					// First segment: variable type.
+					size_t first_dot = cur.find('.');
+					std::string first =
+						cur.substr(0, first_dot);
+					auto fv = var_types_.find(first);
+					if (fv != var_types_.end()) {
+						cur_type = fv->second;
+						chain_ok = true;
+					}
+					// Remaining segments: struct fields.
+					size_t pos = first_dot;
+					while (chain_ok &&
+					       pos != std::string::npos) {
+						size_t next =
+							cur.find('.', pos + 1);
+						std::string field = cur.substr(
+							pos + 1,
+							(next ==
+							 std::string::npos) ?
+								std::string::npos :
+								next - pos - 1);
+						auto ft = struct_fields_.find(
+							cur_type);
+						if (ft ==
+						    struct_fields_.end()) {
+							chain_ok = false;
+							break;
+						}
+						auto fld =
+							ft->second.find(field);
+						if (fld == ft->second.end()) {
+							chain_ok = false;
+							break;
+						}
+						cur_type = fld->second;
+						pos = next;
+					}
+					if (chain_ok && !cur_type.empty())
+						receiver_type = cur_type;
+				}
 			}
 		}
 		emitter_->setCallFacts(id, qualified_target, receiver_text,
@@ -784,10 +1039,23 @@ void GoVisitor::handleInterfaceMethod(TSNode node, uint64_t parent_id)
 {
 	SourceRange loc = location(node);
 	std::string name = extractName(node);
-	if (!name.empty())
-		emitter_->emitMethod(
+	if (!name.empty()) {
+		uint64_t mid = emitter_->emitMethod(
 			name, loc, parent_id, 0, false,
 			isupper(static_cast<unsigned char>(name[0])) ? 1 : 0);
+		// Step 8: collect the interface's method set (only meaningful
+		// while handleTypeDecl is walking an interface body), and set
+		// the interface-method record's qualified name
+		// ("InterfaceName.method") so the Resolver's global
+		// interface-dispatch preload can collect interface method sets
+		// cross-file (the interface may be declared in another file).
+		if (!current_interface_.empty()) {
+			interface_methods_[current_interface_].push_back(name);
+			if (mid != 0)
+				unit_->setQualifiedName(
+					mid, current_interface_ + "." + name);
+		}
+	}
 }
 std::string GoVisitor::extractName(TSNode node)
 {

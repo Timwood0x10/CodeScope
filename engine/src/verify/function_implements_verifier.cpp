@@ -13,7 +13,11 @@ namespace verify
 // Confidence values for FunctionImplementsVerifier verdicts.
 static constexpr double kConfFunctionNotFound = 0.85;
 static constexpr double kConfFunctionIsolated = 0.55;
-static constexpr double kConfFunctionSupported = 0.8;
+// Function exists AND is wired into the call graph — but only presence
+// + edges are confirmed, not that the function semantically implements
+// the claimed behavior (the claim's object field is not validated).
+// Downgraded from Supported to PartiallyVerified with low confidence.
+static constexpr double kConfFunctionPartiallyVerified = 0.55;
 static constexpr double kConfNoStore = 0.0;
 static constexpr double kConfBackendNotReady = 0.2;
 
@@ -182,11 +186,22 @@ EvidenceRecord FunctionImplementsVerifier::verify(const Claim &claim)
 		return rec;
 	}
 
-	// Supported: function exists AND is wired into the call graph.
+	// Supported (low confidence): function exists AND is wired into the
+	// call graph — but only presence + edges are confirmed, not that the
+	// function semantically implements the claimed behavior (the claim's
+	// object is not validated; a wrong object like "init_logging
+	// implements TCP_server" would still pass this structural check).
+	// Downgraded from confidence 0.8 to 0.55 so callers can distinguish
+	// "structurally plausible" from "proven". (verify::Verdict has only
+	// Supported/Contradicted/Unknown — PartiallyVerified lives in the
+	// planner namespace — so the downgrade is expressed via confidence
+	// + detail rather than a new verdict value.)
 	rec.verdict = Verdict::Supported;
-	rec.confidence = kConfFunctionSupported;
+	rec.confidence = kConfFunctionPartiallyVerified;
 	rec.detail = "Function '" + claim.subject +
-		     "' implements claimed behavior; " +
+		     "' exists and participates in the call graph "
+		     "(structural check only); semantic implementation of '" +
+		     claim.object + "' is not verified — " +
 		     std::to_string(fn_ids.size()) + " entit(y/ies) and " +
 		     std::to_string(edges.size()) +
 		     " call edge(s) found in canonical facts";

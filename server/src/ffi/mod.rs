@@ -516,13 +516,17 @@ pub fn build_evidence(project_id: u64, category_filter: Option<&str>) -> String 
 }
 
 /// Verify a natural-language claim against the project's indexed
-/// evidence. The claim is parsed into an Intent by IntentParser,
-/// planned into evidence rule executions by Planner, executed via
-/// EvidenceBuilder, and aggregated into a Verdict by VerdictBuilder.
+/// evidence. This is a thin wrapper over the structured verify_claim
+/// path: the claim is parsed into an Intent by IntentParser, mapped to
+/// a structured Claim (capability_question → capability_exists,
+/// safety/pattern_question → contract_holds), and dispatched through
+/// the same verify_one_claim core used by verify_claim. Intents that
+/// match no known category return verdict Unknown with
+/// error_code="intent_unrecognized" instead of silently guessing.
 ///
-/// Returns JSON with `verdict`, `confidence`, `requirements[]`, and
-/// `evidence[]` fields. On error returns a JSON object with an
-/// "error" field tagged with module/method per code_rules.md.
+/// Returns JSON with `verdict`, `confidence`, and verifier-specific
+/// detail fields. On error returns a JSON object with an "error" field
+/// tagged with module/method per code_rules.md.
 pub fn verify_statement(project_id: u64, claim_text: &str) -> String {
     take_string(unsafe { engine_verify_statement(project_id, cstr(claim_text).as_ptr()) })
 }

@@ -81,6 +81,28 @@ class ResolverPipeline {
 	std::unordered_map<std::string, std::vector<std::string>>
 		interface_impl_index_;
 
+	// Step 8.1c (plan §8): global struct field -> type table.
+	// Maps struct type name → field name → field type, rebuilt in run()
+	// from semantic_records TypeRef records (kind=14) whose parent is a
+	// struct entity (kind=2). The Go visitor persists each struct field
+	// as a TypeRef under the struct entity, so this table is complete
+	// across files. Used to resolve field-chain receivers
+	// (r.pluginBus.AfterStep) whose receiver_type is empty at visit
+	// time because the struct is declared in another file.
+	std::unordered_map<std::string,
+			   std::unordered_map<std::string, std::string>>
+		global_struct_fields_;
+
+	// Step 8.1c (plan §8): global caller variable -> type table.
+	// Maps variable/parameter name → ALL its types across the project
+	// (a name like "r" or "ctx" appears in many files with different
+	// types, so a single value would be wrong). Used to resolve
+	// field-chain receivers ("r" in "r.pluginBus.AfterStep"): each
+	// candidate type is walked through global_struct_fields_ and the
+	// first that resolves the whole chain wins.
+	std::unordered_map<std::string, std::vector<std::string>>
+		global_var_types_;
+
 	/// Candidate: a potential match for a reference.
 	struct Candidate {
 		uint64_t entity_id;
