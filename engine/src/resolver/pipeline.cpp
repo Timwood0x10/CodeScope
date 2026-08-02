@@ -1135,7 +1135,27 @@ int64_t ResolverPipeline::run()
 						pos = next;
 					}
 					if (chain_ok && !cur_type.empty()) {
-						resolved_receiver = cur_type;
+						// Normalize the resolved type so it
+						// can hit interface_impl_index_:
+						// strip a leading pointer marker
+						// (`*PluginBus` → `PluginBus`) and
+						// drop a package qualifier
+						// (`ares_runtime.PluginBus` →
+						// `PluginBus`), matching how the
+						// visitor records interface names.
+						std::string norm = cur_type;
+						if (!norm.empty() &&
+						    norm[0] == '*')
+							norm.erase(0, 1);
+						size_t last_dot =
+							norm.rfind('.');
+						if (last_dot !=
+						    std::string::npos)
+							norm = norm.substr(
+								last_dot + 1);
+						if (!norm.empty())
+							resolved_receiver =
+								norm;
 						break;
 					}
 				}

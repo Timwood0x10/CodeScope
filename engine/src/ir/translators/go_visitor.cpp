@@ -158,6 +158,10 @@ void GoVisitor::visitNode(TSNode node, uint64_t parent_id)
 		return handleVarDecl(node, parent_id);
 	if (strcmp(type, "short_var_declaration") == 0)
 		return handleShortVar(node, parent_id);
+	if (strcmp(type, "for_statement") == 0)
+		return handleRange(node, parent_id);
+	if (strcmp(type, "parameter_declaration") == 0)
+		return handleParameterDecl(node, parent_id);
 	if (strcmp(type, "method_spec") == 0)
 		return handleInterfaceMethod(node, parent_id);
 	JsVisitor::visitNode(node, parent_id);
@@ -1056,6 +1060,100 @@ void GoVisitor::handleInterfaceMethod(TSNode node, uint64_t parent_id)
 					mid, current_interface_ + "." + name);
 		}
 	}
+}
+void GoVisitor::handleRange(TSNode node, uint64_t parent_id)
+{
+	// Step 8.1d: `for _, nh := range hooks` — nh takes the slice's
+	// element type (hooks []*Hook → nh *Hook), so field-chain
+	// receivers inside the loop body (nh.hook.AfterStep) can resolve.
+	uint32_t cnt = ts_node_child_count(node);
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (!ts_node_is_named(c))
+			continue;
+		if (strcmp(ts_node_type(c), "range_clause") != 0)
+			continue;
+		// right: the iterated expression (e.g. `hooks`).
+		TSNode right = ts_node_child_by_field_name(c, "right", 5);
+		TSNode left = ts_node_child_by_field_name(c, "left", 4);
+		if (ts_node_is_null(right) || ts_node_is_null(left))
+			break;
+		std::string right_text = nodeText(right);
+		// Element type of the slice: strip "[]" then a leading "*".
+		auto vt = var_types_.find(right_text);
+		if (vt != var_types_.end()) {
+			std::string elem = vt->second;
+			if (elem.size() >= 2 && elem[0] == '[' &&
+			    elem[1] == ']')
+				elem.erase(0, 2);
+			if (!elem.empty() && elem[0] == '*')
+				elem.erase(0, 1);
+			// left is an expression_list: first item is the
+			// index (often `_`), second is the value variable.
+			uint32_t lc = ts_node_child_count(left);
+			int value_idx = -1;
+			for (uint32_t j = 0; j < lc; j++) {
+				TSNode item = ts_node_child(left, j);
+				if (!ts_node_is_named(item))
+					continue;
+				++value_idx;
+				if (value_idx == 1) {
+					// The left items are identifier
+					// LEAF nodes — extractName returns
+					// "" for leaves (no named
+					// children), so take the text
+					// directly.
+					std::string vname =
+						nodeText(item);
+					if (!vname.empty() &&
+					    vname != "_" &&
+					    !elem.empty())
+						recordVarType(vname,
+							      elem);
+					break;
+				}
+			}
+		}
+		break;
+	}
+	// Continue walking the loop body.
+	visitChildren(node, parent_id);
+}
+void GoVisitor::handleParameterDecl(TSNode node, uint64_t parent_id)
+{
+	// Step 8.1d: `func run(hooks []*Hook, n int)` — register each
+	// parameter name → its declared type in var_types_ (and persist as
+	// a TypeRef under the containing function/method) so handleRange
+	// can derive the slice element type for the range value variable.
+	TSNode ptype_node = ts_node_child_by_field_name(node, "type", 4);
+	if (ts_node_is_null(ptype_node)) {
+		visitChildren(node, parent_id);
+		return;
+	}
+	std::string ptype = nodeText(ptype_node);
+	if (ptype.empty()) {
+		visitChildren(node, parent_id);
+		return;
+	}
+	// A parameter_declaration may declare several names (`a, b int`).
+	uint32_t cnt = ts_node_child_count(node);
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (!ts_node_is_named(c))
+			continue;
+		if (strcmp(ts_node_type(c), "identifier") != 0)
+			continue;
+		std::string pname = nodeText(c);
+		if (pname.empty() || pname == "_")
+			continue;
+		recordVarType(pname, ptype);
+		// Persist for the Resolver's global variable-type table
+		// (kind=17 TypeRef under function/method entity).
+		emitter_->emitTypeRef(pname, ptype, location(c),
+				      parent_id);
+	}
+	// Keep walking (the type child may contain nested type nodes).
+	visitChildren(node, parent_id);
 }
 std::string GoVisitor::extractName(TSNode node)
 {

@@ -536,7 +536,28 @@ cd CodeScope
 
 ---
 
-## 10. 许可证
+## 10. 备用方案：语义搜索（Embedding）— 暂缓
+
+**当前状态**：向量/语义搜索已**下线**（Step 10 决策）——`buildVectorsFromGraph` 为 no-op、`searchSemantic` 已 stub、能力报告返回 `"available":false,"unavailable_reason":"sunset","mode":"fts"`。`search_code` 使用 FTS5（词 + trigram），已覆盖基于标识符的搜索。当前未集成任何 embedding 模型。
+
+**备用选型（若将来恢复语义搜索）**：**jina-embeddings-v2-base-code**（161M 参数，encoder-only 编码器——**非 LLM**，不生成文本）。
+- ✅ 明确支持 C/C++ 与 Rust，8k 上下文，可导出 ONNX
+- ✅ Apache-2.0 许可证
+- 备选：StarEncoder（125M，The Stack 80+ 语言）。`all-MiniLM-L6-v2` 是 **NL 句子模型——不适合代码**（384 维只是巧合）。
+- 注意：其输出为 **768 维**，与当前 `TARGET_DIM=384` 约束冲突。
+
+**计划接入路径（若恢复）**：
+1. 本地 ONNX Runtime 运行模型（161M，无外部 API）。
+2. Schema：`TARGET_DIM` 384 → 768（或加投影层）。
+3. 修复 `insertEmbedding` 使用 canonical `entity.id`（当前读取 legacy `graph_nodes`）。
+4. 实现真实的 `searchSemantic` / `buildVectorsFromGraph` 读写路径。
+5. readiness 采用数据不变量：`vector_ready = valid_vectors / eligible_entities`（不设假 ready 标志）。
+
+这是完整功能开发（模型依赖 + schema 变更 + 端到端管线）——有意推迟，优先保障调用图精度工作。
+
+---
+
+## 11. 许可证
 
 Apache 2.0 — 详见 [LICENSE](LICENSE)。
 

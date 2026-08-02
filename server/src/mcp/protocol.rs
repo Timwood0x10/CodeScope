@@ -44,6 +44,7 @@ pub struct JsonRpcError {
 // ── MCP specific types ─────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct InitializeResult {
     pub protocol_version: String,
     pub capabilities: ServerCapabilities,
@@ -112,8 +113,8 @@ mod tests {
             },
         };
         let json = serde_json::to_value(&r).unwrap();
-        assert_eq!(json["protocol_version"], "2024-11-05");
-        assert_eq!(json["server_info"]["name"], "codescope");
+        assert_eq!(json["protocolVersion"], "2024-11-05");
+        assert_eq!(json["serverInfo"]["name"], "codescope");
         assert!(
             json["capabilities"]["tools"]["listChanged"]
                 .as_bool()

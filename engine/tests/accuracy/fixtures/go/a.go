@@ -25,6 +25,27 @@ func alpha(x int) int {
 	return bravo(x)
 }
 
+// ── Interface dispatch fixture ─────────────────────────────────
+// Formatter is an interface; Box implements it via method set
+// (Format() below). useFormatterLocal calls f.Format() where f is a
+// Formatter-typed variable — the Resolver's cross-file dispatch
+// expansion should produce a dispatch edge to Box.Format.
+type Formatter interface {
+	Format() string
+}
+
+// Format makes Box implement Formatter (implicit interface satisfaction).
+func (b Box) Format() string {
+	return "box"
+}
+
+// useFormatterLocal calls the interface method through an interface
+// variable — dispatch edge expected: useFormatterLocal -> Format.
+func useFormatterLocal() string {
+	var f Formatter = Box{val: 5}
+	return f.Format()
+}
+
 // mainFunc calls alpha (intra-file bare name), len (builtin), and
 // b.Get() (method call). It also calls fmt.Println (stdlib, selector).
 func mainFunc() {

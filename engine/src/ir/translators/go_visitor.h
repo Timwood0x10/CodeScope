@@ -76,6 +76,18 @@ class GoVisitor : public JsVisitor {
 		if (!name.empty() && !type.empty())
 			var_types_[name] = type;
 	}
+
+	// Step 8 (plan §8.1d): range-loop variable type propagation.
+	// `for _, nh := range hooks` — nh takes the slice's ELEMENT type
+	// (e.g. hooks []*Hook → nh Hook). Propagating it lets field-chain
+	// receivers inside the loop body resolve (e.g. nh.hook.AfterStep).
+	void handleRange(TSNode node, uint64_t parent_id);
+
+	// Step 8 (plan §8.1d): function/method parameter type registration.
+	// `func run(hooks []*Hook)` — register hooks → "[]*Hook" in
+	// var_types_ (and persist as TypeRef) so handleRange can derive the
+	// slice's element type for the range value variable.
+	void handleParameterDecl(TSNode node, uint64_t parent_id);
 };
 } // namespace ir
 #endif

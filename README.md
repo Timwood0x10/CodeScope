@@ -553,7 +553,28 @@ Each script calls `codescope cli <tool_name> '<json_args>'` internally. See `ski
 
 ---
 
-## 10. License
+## 10. Backup: Semantic Search (Embedding) — On-Hold
+
+**Current status**: vector/semantic search is **sunset** (Step 10 decision) — `buildVectorsFromGraph` is a no-op, `searchSemantic` is stubbed, and capability reporting returns `"available":false,"unavailable_reason":"sunset","mode":"fts"`. `search_code` uses FTS5 (word + trigram), which covers identifier-based search. No embedding model is integrated.
+
+**Backup selection (if semantic search is ever restored)**: **jina-embeddings-v2-base-code** (161M params, encoder-only — NOT an LLM, no text generation).
+- ✅ Explicitly supports C/C++ and Rust, 8k context, ONNX-exportable
+- ✅ Apache-2.0 license
+- Alternative: StarEncoder (125M, The Stack 80+ languages). `all-MiniLM-L6-v2` is a **NL sentence model — unsuitable** for code (only coincidentally 384-dim).
+- Note: its output is **768-dim**, which conflicts with the current `TARGET_DIM=384` constraint.
+
+**Planned integration path (if resumed)**:
+1. Run the model locally via ONNX Runtime (161M, no external API).
+2. Schema: bump `TARGET_DIM` 384 → 768 (or add a projection layer).
+3. Fix `insertEmbedding` to use canonical `entity.id` (currently reads legacy `graph_nodes`).
+4. Implement real `searchSemantic` / `buildVectorsFromGraph` read-write paths.
+5. Readiness as data invariants: `vector_ready = valid_vectors / eligible_entities` (no fake-ready flags).
+
+This is a full feature build (model dependency + schema change + end-to-end pipeline) — deliberately deferred in favor of call-graph accuracy work.
+
+---
+
+## 11. License
 
 Apache 2.0 — see [LICENSE](LICENSE).
 

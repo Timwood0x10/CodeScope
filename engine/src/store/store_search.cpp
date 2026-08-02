@@ -25,6 +25,51 @@ namespace store
 
 // ─── FTS5 Full-Text Search ─────────────────────────────────────
 
+// Split a camelCase / snake_case / kebab-case identifier into its
+// constituent words so an FTS5 query can match both styles:
+//   "findByLastName"  -> find by last name
+//   "find_by_last_name" -> find by last name
+// The unicode61 tokenizer treats underscore and case boundaries as part
+// of a single token, so a bare `"findByLastName"` MATCH never hits
+// snake_case code and vice versa. Splitting at lower->upper boundaries
+// and at '_'/'-' yields the shared words.
+static std::vector<std::string> splitIdentifierWords(const std::string &word)
+{
+	std::vector<std::string> out;
+	std::string cur;
+	auto flush = [&]() {
+		if (!cur.empty()) {
+			out.push_back(cur);
+			cur.clear();
+		}
+	};
+	for (size_t i = 0; i < word.size(); ++i) {
+		char c = word[i];
+		if (c == '_' || c == '-' || c == '.' || c == '/' || c == ':' ||
+		    c == '(' || c == ')') {
+			flush();
+			continue;
+		}
+		if (std::isupper(static_cast<unsigned char>(c)) &&
+		    !cur.empty()) {
+			// Lower -> upper boundary (camelCase: "lastName").
+			// Keep an acronym run together ("JSONParser" stays one
+			// split unless the next char is lower).
+			char prev = cur.back();
+			if (!std::isupper(static_cast<unsigned char>(prev)) ||
+			    (i + 1 < word.size() &&
+			     std::islower(static_cast<unsigned char>(
+				     word[i + 1])))) {
+				flush();
+			}
+		}
+		cur += static_cast<char>(
+			std::tolower(static_cast<unsigned char>(c)));
+	}
+	flush();
+	return out;
+}
+
 void GraphStore::insertIntoFTS(uint64_t node_id, uint64_t project_id,
 			       const char *name, const char *qualified_name,
 			       const char *file_path, const char *content,
@@ -175,15 +220,15 @@ std::string GraphStore::searchCode(uint64_t project_id, const char *query,
 	// 1. FTS5 prefix search via code_fts (word-based, ranked).
 	{
 		std::string sql =
-			"SELECT gn.id AS node_id, gn.name, gn.node_type, "
+			"SELECT gn.id AS node_id, gn.name, gn.kind AS node_type, "
 			"gn.file_path AS file_path, "
 			"gn.start_row, gn.start_col, gn.end_row, gn.end_col, "
 			"gn.language, rank "
 			"FROM code_fts "
-			"JOIN graph_nodes gn ON gn.id = code_fts.node_id "
+			"JOIN entity gn ON gn.id = code_fts.node_id "
 			"WHERE code_fts MATCH ? AND code_fts.project_id = ? "
 			"ORDER BY "
-			"  CASE WHEN gn.node_type IN (2,3,4) THEN 0 ELSE 1 END, "
+			"  CASE WHEN gn.kind IN (2,3,4) THEN 0 ELSE 1 END, "
 			"  rank "
 			"LIMIT ?";
 
@@ -198,7 +243,11 @@ std::string GraphStore::searchCode(uint64_t project_id, const char *query,
 
 		// Escape the query for FTS5 — wrap each word in double quotes to prevent
 		// FTS5 syntax errors from user input containing meta-characters
-		// (", (, ), :, ^, -, AND/OR/NEAR).
+		// (", (, ), :, ^, -, AND/OR/NEAR). Additionally, split each word
+		// into its camelCase/snake_case constituents and OR them in, so
+		// "findByLastName" also matches snake_case "find_by_last_name"
+		// code (the unicode61 tokenizer would otherwise treat each style
+		// as one opaque token).
 		std::string fts_query;
 		const char *p = query;
 		while (*p) {
@@ -208,15 +257,30 @@ std::string GraphStore::searchCode(uint64_t project_id, const char *query,
 			}
 			if (!*p)
 				break;
-			fts_query += '"';
+			std::string word;
 			while (*p && *p != ' ') {
-				// Escape any embedded double-quotes
 				if (*p == '"')
-					fts_query += '"'; // double it
-				fts_query += *p;
+					word += '"'; // escape embedded double-quotes
+				word += *p;
 				p++;
 			}
-			fts_query += '"';
+			fts_query += '"' + word + '"';
+			// OR in the split identifier words (dedup, skip empties).
+			std::string plain = word;
+			std::string unescaped;
+			for (size_t i = 0; i < plain.size(); ++i) {
+				if (plain[i] != '"')
+					unescaped += plain[i];
+			}
+			auto parts = splitIdentifierWords(unescaped);
+			std::unordered_set<std::string> seen_parts;
+			for (const auto &part : parts) {
+				if (part.empty() || part == unescaped)
+					continue;
+				if (!seen_parts.insert(part).second)
+					continue;
+				fts_query += " OR \"" + part + '"';
+			}
 		}
 
 		sqlite3_bind_text(stmt, 1, fts_query.c_str(), -1,
@@ -262,11 +326,11 @@ std::string GraphStore::searchCode(uint64_t project_id, const char *query,
 	if (results.size() < static_cast<size_t>(limit) &&
 	    qstr.size() >= kMinTrigramQueryLen && isTrigramAvailable()) {
 		const char *sql =
-			"SELECT gn.id, gn.name, gn.node_type, gn.file_path, "
+			"SELECT gn.id, gn.name, gn.kind AS node_type, gn.file_path, "
 			"gn.start_row, gn.start_col, gn.end_row, gn.end_col, "
 			"gn.language "
 			"FROM name_trgm "
-			"JOIN graph_nodes gn ON gn.id = name_trgm.node_id "
+			"JOIN entity gn ON gn.id = name_trgm.node_id "
 			"WHERE name_trgm MATCH ? AND name_trgm.project_id = ? "
 			"ORDER BY LENGTH(gn.name) ASC LIMIT ?";
 		sqlite3_stmt *stmt = nullptr;
