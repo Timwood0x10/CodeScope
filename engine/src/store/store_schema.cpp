@@ -12,9 +12,11 @@
 #include "store.h"
 #include "platform_win.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <sqlite3.h>
 #include <string>
+#include <vector>
 
 namespace store
 {
@@ -41,6 +43,13 @@ bool GraphStore::createSchema()
             fts_ready INTEGER DEFAULT 0,
             vector_ready INTEGER DEFAULT 0,
             knowledge_ready INTEGER DEFAULT 0,
+            -- v0.2.5: metrics_ready reflects whether the metrics producer
+            -- (resolveStagedMetrics) resolved cyclomatic onto >=1 entity row
+            -- for the project. Kept as a flag separate from the canonical
+            -- count probe so the API can answer "was the producer run?" fast,
+            -- while engine_get_enhancement_status always re-probes the
+            -- canonical entity table for the true coverage count.
+            metrics_ready INTEGER DEFAULT 0,
             FOREIGN KEY (project_id) REFERENCES projects(id)
         );
 
@@ -137,8 +146,53 @@ bool GraphStore::createSchema()
             -- can disambiguate same-name overloads (init()/init(int)) without
             -- a JOIN per candidate. See CODE_REVIEW_FINDINGS_2026-07-19.md C2.
             arity INTEGER NOT NULL DEFAULT 0,
+            -- v0.2.5: per-function code metrics. Computed once in the parse
+            -- worker (computeMetricsFromCST/computeMetricsFromUnit), staged in
+            -- _staged_metrics during insertFileResultBatch, then resolved onto
+            -- the canonical entity row by resolveStagedMetrics (after
+            -- buildGraph creates the entity ids). These are real measurements
+            -- — not placeholder 0s. cyclomatic = 1 + branches + loops;
+            -- cognitive = cyclomatic + nesting_depth (approx).
+            cyclomatic INTEGER NOT NULL DEFAULT 0,
+            nesting_depth INTEGER NOT NULL DEFAULT 0,
+            cognitive INTEGER NOT NULL DEFAULT 0,
+            param_count INTEGER NOT NULL DEFAULT 0,
+            call_count INTEGER NOT NULL DEFAULT 0,
+            branch_count INTEGER NOT NULL DEFAULT 0,
+            loop_count INTEGER NOT NULL DEFAULT 0,
+            lines INTEGER NOT NULL DEFAULT 0,
+            is_stub INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY (project_id) REFERENCES projects(id)
         );
+
+        -- _staged_metrics: temporary staging table that carries per-function
+        -- MetricRow data from the parse-phase insert into the post-buildGraph
+        -- resolveStagedMetrics() JOIN. It exists only to bridge the id gap:
+        -- entity ids are created by buildGraph/populateSymbolsFromGraph, which
+        -- runs AFTER the streaming insert. Keyed by (project_id, file_path,
+        -- start_row, kind) so resolveStagedMetrics can JOIN onto entity rows
+        -- (which carry the same semantic tuple). Deleted per project after
+        -- resolve so a re-index never re-applies stale metrics.
+        CREATE TABLE IF NOT EXISTS _staged_metrics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            file_path TEXT NOT NULL,
+            start_row INTEGER NOT NULL,
+            start_col INTEGER NOT NULL,
+            kind INTEGER NOT NULL DEFAULT 0,
+            name TEXT NOT NULL DEFAULT '',
+            cyclomatic INTEGER NOT NULL DEFAULT 0,
+            nesting_depth INTEGER NOT NULL DEFAULT 0,
+            cognitive INTEGER NOT NULL DEFAULT 0,
+            param_count INTEGER NOT NULL DEFAULT 0,
+            call_count INTEGER NOT NULL DEFAULT 0,
+            branch_count INTEGER NOT NULL DEFAULT 0,
+            loop_count INTEGER NOT NULL DEFAULT 0,
+            lines INTEGER NOT NULL DEFAULT 0,
+            is_stub INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_staged_metrics_lookup
+            ON _staged_metrics(project_id, file_path, start_row, kind);
 
         CREATE TABLE IF NOT EXISTS relation (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -893,6 +947,75 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 				exec("ALTER TABLE semantic_records "
 				     "ADD COLUMN is_static INTEGER DEFAULT 0");
 			}
+		}
+	}
+
+	// Migration (v0.2.5): add code-metrics columns to entity for databases
+	// created before the metrics restore. Each column defaults to 0 so
+	// existing rows stay valid; resolveStagedMetrics fills them on the next
+	// index/enhance run. Mirrors the entity DDL in createSchema().
+	{
+		struct EntityMetricCol {
+			const char *name;
+			const char *dflt;
+		};
+		static const EntityMetricCol kCols[] = {
+			{ "cyclomatic", "0" }, { "nesting_depth", "0" },
+			{ "cognitive", "0" },  { "param_count", "0" },
+			{ "call_count", "0" }, { "branch_count", "0" },
+			{ "loop_count", "0" }, { "lines", "0" },
+			{ "is_stub", "0" },
+		};
+		sqlite3_stmt *probe = nullptr;
+		if (sqlite3_prepare_v2(db_, "PRAGMA table_info(entity)", -1,
+				       &probe, nullptr) == SQLITE_OK) {
+			std::vector<std::string> existing;
+			while (sqlite3_step(probe) == SQLITE_ROW) {
+				const char *col =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(probe, 1));
+				if (col)
+					existing.emplace_back(col);
+			}
+			sqlite3_finalize(probe);
+			for (const auto &c : kCols) {
+				if (std::find(existing.begin(), existing.end(),
+					      c.name) != existing.end())
+					continue;
+				exec(("ALTER TABLE entity ADD COLUMN " +
+				      std::string(c.name) +
+				      " INTEGER NOT NULL DEFAULT " + c.dflt)
+					     .c_str());
+			}
+		} else {
+			fprintf(stderr,
+				"createSchema: entity metrics migration probe "
+				"failed: %s [module=store, method=createSchema]\n",
+				sqlite3_errmsg(db_));
+		}
+	}
+
+	// Migration (v0.2.5): add metrics_ready to project_readiness for
+	// databases created before the metrics restore. Mirrors the DDL column
+	// in createSchema().
+	{
+		sqlite3_stmt *rprobe = nullptr;
+		bool has_metrics_ready = false;
+		if (sqlite3_prepare_v2(db_,
+				       "PRAGMA table_info(project_readiness)",
+				       -1, &rprobe, nullptr) == SQLITE_OK) {
+			while (sqlite3_step(rprobe) == SQLITE_ROW) {
+				const char *col =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(rprobe, 1));
+				if (col && std::string(col) == "metrics_ready")
+					has_metrics_ready = true;
+			}
+			sqlite3_finalize(rprobe);
+		}
+		if (!has_metrics_ready) {
+			exec("ALTER TABLE project_readiness "
+			     "ADD COLUMN metrics_ready INTEGER DEFAULT 0");
 		}
 	}
 

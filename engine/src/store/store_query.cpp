@@ -265,6 +265,67 @@ std::string GraphStore::searchUnifiedJson(uint64_t project_id,
 		}
 	}
 
+	// 2.5 Semantic complement: when FTS + trigram did not fill the limit,
+	// append n-gram hash vector results (embedding). This is additive — it
+	// never removes FTS/trigram results — so exact-prefix matching that the
+	// accuracy fixtures depend on is preserved, while lexically-similar
+	// names that share n-grams ("user_dao" for "user_repository") are
+	// recalled. node_id is deduped against the FTS/trigram set.
+	if (results.size() < static_cast<size_t>(limit)) {
+		const int remaining = limit - static_cast<int>(results.size());
+		std::string sem =
+			searchSemanticJson(project_id, query, remaining);
+		// Parse the semantic JSON results (method=semantic) and merge.
+		// Lightweight scan: each result is `"node_id":N,...`.
+		size_t pos = 0;
+		while (results.size() < static_cast<size_t>(limit)) {
+			const std::string key = "\"node_id\":";
+			pos = sem.find(key, pos);
+			if (pos == std::string::npos)
+				break;
+			size_t vstart = pos + key.size();
+			size_t vend = sem.find(',', vstart);
+			if (vend == std::string::npos)
+				vend = sem.find('}', vstart);
+			if (vend == std::string::npos)
+				break;
+			int64_t nid = 0;
+			try {
+				nid = std::stoll(
+					sem.substr(vstart, vend - vstart));
+			} catch (...) {
+				pos = vend;
+				continue;
+			}
+			pos = vend;
+			if (seen.count(nid))
+				continue; // already have it from FTS/trigram
+			Row r;
+			r.node_id = nid;
+			// Pull name/qualified_name/file_path from the same result.
+			{
+				auto grab = [&sem, &pos](const char *k,
+							 std::string &out) {
+					size_t p = sem.find(k, pos);
+					if (p == std::string::npos)
+						return;
+					p += strlen(k);
+					if (p < sem.size() && sem[p] == '"')
+						++p;
+					size_t e = sem.find('"', p);
+					if (e == std::string::npos)
+						return;
+					out = sem.substr(p, e - p);
+				};
+				grab("\"name\":", r.name);
+				grab("\"qualified_name\":", r.qualified_name);
+				grab("\"file_path\":", r.file_path);
+			}
+			seen.insert(nid);
+			results.push_back(std::move(r));
+		}
+	}
+
 	// 3. Build JSON (same shape as the original legacy_fts response).
 	std::ostringstream json;
 	json << "{\"method\":\"legacy_fts\",\"results\":[";

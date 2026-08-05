@@ -408,17 +408,20 @@ bool GraphStore::insertEmbedding(uint64_t symbol_id, const float *vector_data,
 	       static_cast<size_t>(copy_dim) * sizeof(float));
 
 	// Write to node_vectors FIRST — this is the table that searchSemantic
-	// actually reads from (store.cpp ~771). This always works because
-	// node_vectors is a regular SQLite table, not a vec0 virtual table.
+	// actually reads from. This always works because node_vectors is a
+	// regular SQLite table, not a vec0 virtual table.
 	// On platforms where vec0.dll isn't available (e.g. Windows without
 	// the extension), the embeddings INSERT below will fail, but the
 	// node_vectors path still succeeds, providing graceful degradation.
+	// v0.2.5: resolve the project id from the canonical `entity` table
+	// (entity.id) — the deprecated `graph_nodes` table is empty in the
+	// canonical schema, so the old query could never resolve a project.
 	{
 		uint64_t proj_id = 0;
 		sqlite3_stmt *pid_st = nullptr;
 		if (sqlite3_prepare_v2(
 			    db_,
-			    "SELECT project_id FROM graph_nodes WHERE id=?", -1,
+			    "SELECT project_id FROM entity WHERE id=?", -1,
 			    &pid_st, nullptr) == SQLITE_OK) {
 			sqlite3_bind_int64(pid_st, 1,
 					   static_cast<int64_t>(symbol_id));
@@ -449,22 +452,23 @@ bool GraphStore::insertEmbedding(uint64_t symbol_id, const float *vector_data,
 
 // ── Phase B: Enhancement — Ready Flags ────────────────────────
 //
-// Step 10 (sunset): these setters target the deprecated `graph_nodes` table
-// (which is empty in the canonical schema — `entity`/`relation` are the
-// source of truth). They are kept as dead-code defensive seams so any future
-// caller that tries to mark metrics/embedding ready cannot accidentally flip
-// the flag without real data backing it. metrics_ready is structurally 0
-// (metrics producer sunset); embedding_ready is structurally 0 (vector
-// builder sunset). Only callgraph_ready is a legitimate signal, and even
-// that is now set via the canonical path in engine_index_post_parse.cpp.
+// v0.2.5: the metrics and embedding producers are RESTORED (see
+// resolveStagedMetrics / buildVectorsFromGraph). These two setters remain as
+// defensive seams that operate on the DEPRECATED `graph_nodes` table (empty
+// in the canonical schema — `entity`/`relation`/`node_vectors` are the source
+// of truth). They deliberately do NOT flip canonical readiness: true
+// metrics_ready / vector_ready are derived from the canonical entity
+// cyclomatic count and node_vectors row count in
+// engine_get_enhancement_status / engine_get_capabilities /
+// engine_index_post_parse, so readiness always matches real data and the
+// A18/A19 "fake ready" bugs cannot recur regardless of these seams.
 
 bool GraphStore::markCallgraphAndMetricsReady(uint64_t symbol_id)
 {
-	// Sunset: do NOT set metrics_ready=1 — there is no metrics data.
-	// Setting it here would re-introduce the A18 "fake ready" bug. Only
-	// callgraph_ready is set, and only on the deprecated graph_nodes row
-	// (canonical callgraph readiness is computed from relation.type=1
-	// coverage in engine_get_enhancement_status / engine_get_capabilities).
+	// Compatibility seam: only touches the deprecated graph_nodes row.
+	// Canonical callgraph readiness is computed from relation.type=1
+	// coverage; canonical metrics_ready from entity cyclomatic — never
+	// set here.
 	const char *sql =
 		"UPDATE graph_nodes SET callgraph_ready=1 WHERE id = ?";
 	sqlite3_stmt *stmt = getCachedStmt(sql);
@@ -481,13 +485,11 @@ bool GraphStore::markCallgraphAndMetricsReady(uint64_t symbol_id)
 
 bool GraphStore::markEmbeddingReady(uint64_t symbol_id)
 {
-	// Sunset: embedding producer (buildVectorsFromGraph) is a no-op, so
-	// node_vectors stays empty. Setting embedding_ready=1 here would
-	// re-introduce the A19 "fake ready" bug. The flag is structurally 0
-	// and canonical embedding readiness is computed from node_vectors
-	// row count in engine_get_enhancement_status / engine_get_capabilities.
-	// This function is retained as a no-op defensive seam so any future
-	// caller cannot silently flip the flag.
+	// v0.2.5: embedding producer (buildVectorsFromGraph) is restored and
+	// populates node_vectors. This seam deliberately does NOT flip a flag:
+	// canonical embedding readiness is derived from the node_vectors row
+	// count, so it tracks real data and the A19 "fake ready" bug cannot
+	// recur. Retained so a caller cannot silently over-claim readiness.
 	(void)symbol_id;
 	return true;
 }

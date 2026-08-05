@@ -96,6 +96,55 @@ static int ffi_count_callgraph_ready_entities(uint64_t project_id)
 	return ready;
 }
 
+// Count function/method entities whose code metrics were resolved onto the
+// canonical entity rows (cyclomatic > 0). This is the metrics_ready signal —
+// it reflects real producer output from resolveStagedMetrics, never a flag.
+static int ffi_count_metrics_ready_entities(uint64_t project_id)
+{
+	sqlite3_stmt *stmt = nullptr;
+	int ready = 0;
+	const char *sql =
+		"SELECT COUNT(*) FROM entity "
+		"WHERE project_id = ? AND kind IN (0,1) AND cyclomatic > 0";
+	if (sqlite3_prepare_v2(g_store->handle(), sql, -1, &stmt, nullptr) ==
+	    SQLITE_OK) {
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		if (sqlite3_step(stmt) == SQLITE_ROW)
+			ready = sqlite3_column_int(stmt, 0);
+		sqlite3_finalize(stmt);
+	} else {
+		fprintf(stderr,
+			"engine_get_capabilities: metrics count probe failed: %s "
+			"[module=ffi, method=engine_get_capabilities]\n",
+			sqlite3_errmsg(g_store->handle()));
+	}
+	return ready;
+}
+
+// Count node_vectors rows for the project — the canonical embedding_ready
+// signal for semantic search. 0 when the builder has not run or wrote nothing
+// (avoids the A19 "fake ready" regression).
+static int ffi_count_vector_entities(uint64_t project_id)
+{
+	sqlite3_stmt *stmt = nullptr;
+	int ready = 0;
+	const char *sql =
+		"SELECT COUNT(*) FROM node_vectors WHERE project_id = ?";
+	if (sqlite3_prepare_v2(g_store->handle(), sql, -1, &stmt, nullptr) ==
+	    SQLITE_OK) {
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		if (sqlite3_step(stmt) == SQLITE_ROW)
+			ready = sqlite3_column_int(stmt, 0);
+		sqlite3_finalize(stmt);
+	} else {
+		fprintf(stderr,
+			"engine_get_capabilities: vector count probe failed: %s "
+			"[module=ffi, method=engine_get_capabilities]\n",
+			sqlite3_errmsg(g_store->handle()));
+	}
+	return ready;
+}
+
 char *engine_get_capabilities(uint64_t project_id)
 {
 	try {
@@ -103,13 +152,13 @@ char *engine_get_capabilities(uint64_t project_id)
 			return dupString(
 				"{\"error\":\"engine not initialized\"}");
 
-		// Step 10 (sunset): metrics and embedding/semantic_search are
-		// formally sunset this sprint — their producers are no-ops and
-		// canonical storage is empty. We report `available=false` with
-		// a structured reason instead of "available=true, ready=false"
-		// + a misleading "run codescope_enhance to enable" hint, so
-		// MCP clients can distinguish "not yet run" from "not
-		// implemented". FTS stays available (already wired).
+		// v0.2.5: metrics and embedding/semantic_search are restored;
+		// their producers are live and readiness is derived from canonical
+		// data below (metrics via ffi_count_metrics_ready_entities,
+		// semantic via ffi_count_vector_entities). `ready` reflects
+		// whether the producer has actually populated data for this
+		// project, so clients can distinguish "built" from "not yet
+		// indexed in DEEP mode". FTS stays available (already wired).
 		const int total = ffi_count_eligible_entities(project_id);
 		const int cg_ready_count =
 			ffi_count_callgraph_ready_entities(project_id);
@@ -134,27 +183,32 @@ char *engine_get_capabilities(uint64_t project_id)
 		     << "\"path_tracing\":{\"available\":true,\"ready\":"
 		     << (cg_ready ? "true" : "false")
 		     << ",\"description\":\"BFS shortest path between functions\"},"
-		     // Sunset capabilities: available=false + structured reason.
-		     // `ready` is reported as false (not "null") to keep the JSON
-		     // shape stable for existing MCP clients that read it as a
-		     // bool; `unavailable_reason` carries the structured signal.
-		     << "\"metrics\":{\"available\":false,\"ready\":false,"
-		     << "\"unavailable_reason\":\"sunset\","
-		     << "\"description\":\"complexity metrics — not implemented (sunset); see engine_get_enhancement_status\"},"
-		     << "\"semantic_search\":{\"available\":false,\"ready\":false,"
-		     << "\"unavailable_reason\":\"sunset\",\"mode\":\"fts\","
-		     << "\"description\":\"vector embedding search — not implemented (sunset); FTS fallback is used\"},"
-		     // FTS is the only supported search path post-sunset. Exposed
-		     // explicitly so callers can see that search IS available, just
-		     // via FTS rather than vectors.
+		     // v0.2.5: metrics + semantic search restored. Metrics are
+		     // produced by computeMetricsFromCST in the parse worker and
+		     // resolved onto entity by resolveStagedMetrics; semantic
+		     // search is an n-gram hash vector (buildVectorsFromGraph).
+		     // `ready` reflects canonical data (entity cyclomatic > 0 /
+		     // node_vectors rows), never a hardcoded flag.
+		     << "\"metrics\":{\"available\":true,\"ready\":"
+		     << (ffi_count_metrics_ready_entities(project_id) > 0 ?
+				 "true" :
+				 "false")
+		     << ",\"description\":\"cyclomatic/cognitive/nesting complexity (computed during index, resolved onto entity)\"},"
+		     << "\"semantic_search\":{\"available\":true,\"ready\":"
+		     << (ffi_count_vector_entities(project_id) > 0 ? "true" :
+								     "false")
+		     << ",\"mode\":\"ngram_hash\","
+		     << "\"description\":\"n-gram hash vector lexical similarity (restored in v0.2.5); complements FTS exact search\"},"
+		     // FTS remains the exact-match workhorse; semantic search
+		     // is additive (never replaces it).
 		     << "\"fts\":{\"available\":true,\"ready\":"
 		     << (g_store->getProjectReadiness(project_id, "fts_ready") ?
 				 "true" :
 				 "false")
-		     << ",\"description\":\"FTS5 full-text search (the only search path; semantic is sunset)\"},"
+		     << ",\"description\":\"FTS5 full-text search for exact/prefix matching\"},"
 		     << "\"context_builder\":{\"available\":true,\"ready\":true,\"description\":\"intelligent context assembly\"}"
 		     << "},"
-		     << "\"enhancement_needed\":\"Call graph is built during index. Metrics and semantic search are sunset (unavailable); FTS powers search.\""
+		     << "\"enhancement_needed\":\"Call graph, complexity metrics, and n-gram semantic vectors are built during index; FTS powers exact search.\""
 		     << "}";
 		return dupString(json.str());
 	} catch (const std::exception &e) {
@@ -647,16 +701,24 @@ char *engine_search_code(uint64_t project_id, const char *query, int limit)
 
 // ─── Semantic Search ─────────────────────────────────────────
 
-// engine_search_semantic — not implemented since Phase 0 cut.
-// The underlying searchSemantic() was stubbed out.
-// Returns a clear error so callers are not misled by empty results.
+// engine_search_semantic — restored in v0.2.5. Routes to the n-gram hash
+// vector search (searchSemanticJson), which computes an L2-normalized
+// trigram-hash vector for the query and returns the top-K function/method
+// entities by cosine similarity. When no vectors exist for the project it
+// returns an empty result with reason="embedding_not_built" so callers can
+// fall back to FTS — never a misleading "not implemented".
 char *engine_search_semantic(uint64_t project_id, const char *query, int limit)
 {
-	(void)project_id;
-	(void)query;
-	(void)limit;
-	return dupString(
-		"{\"total\":0,\"results\":[],\"error\":\"not implemented — semantic search was removed in Phase 0\"}");
+	try {
+		if (!g_store || !g_store->handle() || !query)
+			return dupString("{\"total\":0,\"results\":[],"
+					 "\"error\":\"not initialized\"}");
+		return dupString(
+			g_store->searchSemanticJson(project_id, query, limit));
+	} catch (const std::exception &e) {
+		return dupString(std::string("{\"error\":\"") + e.what() +
+				 "\"}");
+	}
 }
 
 // ─── Complexity Analysis ──────────────────────────────────────
@@ -1572,6 +1634,6 @@ const char *engine_version(void)
 	// No try/catch required — only a static string literal is returned,
 	// so no exceptions are possible.
 	// Keep in sync with RELEASE.md and Cargo.toml version.
-	static const char kVersion[] = "0.2.4";
+	static const char kVersion[] = "0.2.5";
 	return kVersion;
 }

@@ -423,9 +423,35 @@ static int64_t queries_count_node_vectors(sqlite3 *db, uint64_t project_id)
 		sqlite3_finalize(stmt);
 	} else {
 		// node_vectors table may not exist on legacy DBs — log and treat
-		// as 0 (embedding sunset means 0 is the expected value).
+		// as 0 (readiness tracks canonical data; an absent table means 0).
 		fprintf(stderr,
 			"engine_get_enhancement_status: node_vectors count probe failed: %s "
+			"[module=queries, method=engine_get_enhancement_status]\n",
+			sqlite3_errmsg(db));
+	}
+	return ready;
+}
+
+// Helper: count function/method entities that carry resolved code metrics
+// (cyclomatic > 0), i.e. the canonical metrics_ready count. metrics are
+// resolved onto entity by resolveStagedMetrics after buildGraph, so this
+// probe reflects real producer output — never a placeholder. Returns 0 on
+// any error or on a pre-metrics database.
+static int queries_count_metrics_ready(sqlite3 *db, uint64_t project_id)
+{
+	sqlite3_stmt *stmt = nullptr;
+	int ready = 0;
+	const char *sql =
+		"SELECT COUNT(*) FROM entity "
+		"WHERE project_id = ? AND kind IN (0,1) AND cyclomatic > 0";
+	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		if (sqlite3_step(stmt) == SQLITE_ROW)
+			ready = sqlite3_column_int(stmt, 0);
+		sqlite3_finalize(stmt);
+	} else {
+		fprintf(stderr,
+			"engine_get_enhancement_status: metrics count probe failed: %s "
 			"[module=queries, method=engine_get_enhancement_status]\n",
 			sqlite3_errmsg(db));
 	}
@@ -452,20 +478,20 @@ char *engine_get_enhancement_status(uint64_t project_id)
 
 	auto db = g_store->handle();
 
-	// Step 10 (sunset): replace the hardcoded `SELECT 0,0,0` with real
-	// counts from canonical data (entity / relation / node_vectors). The
-	// legacy int fields (total_symbols/callgraph_ready/metrics_ready/
-	// embedding_ready) are preserved at the start of the JSON so existing
-	// MCP clients / sscanf parsers keep working; the richer
+	// v0.2.5: report real counts from canonical data (entity / relation /
+	// node_vectors). The legacy int fields (total_symbols/callgraph_ready/
+	// metrics_ready/embedding_ready) are preserved at the start of the JSON
+	// so existing MCP clients / sscanf parsers keep working; the richer
 	// `capabilities` block carries eligible/ready/coverage/
-	// unavailable_reason so callers can distinguish "sunset" from
-	// "not yet run".
+	// producer_version so callers can tell "not yet run" from "not built".
 	const int total = queries_count_eligible_entities(db, project_id);
 	const int cg_ready = queries_count_callgraph_ready(db, project_id);
 	const int64_t vec_rows = queries_count_node_vectors(db, project_id);
-	// metrics_ready is structurally 0 — metrics producer is sunset
-	// (resolveStagedMetrics is a no-op, no metrics table is populated).
-	const int metrics_ready = 0;
+	// metrics_ready comes from canonical data: entity rows (kind 0/1) whose
+	// cyclomatic was resolved by resolveStagedMetrics. It is a real count —
+	// the metrics producer was restored in v0.2.5, so a fresh index produces
+	// a positive value, while a pre-metrics DB reports 0 honestly.
+	const int metrics_ready = queries_count_metrics_ready(db, project_id);
 	const int embedding_ready = static_cast<int>(vec_rows);
 
 	// fts_ready is read from project_readiness (set by the async path).
@@ -501,30 +527,29 @@ char *engine_get_enhancement_status(uint64_t project_id)
 	     << "\"producer_version\":\"buildGraph\""
 	     << "},"
 	     << "\"metrics\":{"
-	     << "\"available\":false,"
-	     << "\"ready\":false,"
+	     << "\"available\":true,"
+	     << "\"ready\":" << (metrics_ready > 0 ? "true" : "false") << ","
 	     << "\"eligible\":" << total << ","
 	     << "\"ready_count\":" << metrics_ready << ","
 	     << "\"failed\":0,"
 	     << "\"coverage\":" << metrics_coverage << ","
-	     << "\"producer_version\":null,"
-	     << "\"unavailable_reason\":\"sunset\""
+	     << "\"producer_version\":\"resolveStagedMetrics\""
 	     << "},"
 	     << "\"embedding\":{"
-	     << "\"available\":false,"
+	     << "\"available\":true,"
 	     << "\"ready\":" << (embedding_ready > 0 ? "true" : "false") << ","
 	     << "\"eligible\":" << total << ","
 	     << "\"ready_count\":" << embedding_ready << ","
 	     << "\"failed\":0,"
 	     << "\"coverage\":" << embedding_coverage << ","
-	     << "\"producer_version\":null,"
-	     << "\"unavailable_reason\":\"sunset\""
+	     << "\"producer_version\":\"buildVectorsFromGraph\""
 	     << "},"
 	     << "\"semantic_search\":{"
-	     << "\"available\":false,"
+	     << "\"available\":true,"
 	     << "\"ready\":" << (embedding_ready > 0 ? "true" : "false") << ","
-	     << "\"mode\":\"fts\","
-	     << "\"unavailable_reason\":\"sunset\""
+	     << "\"mode\":\"ngram_hash\","
+	     << "\"description\":\"n-gram hash vector lexical similarity "
+		"(restored in v0.2.5); complements FTS exact search\""
 	     << "},"
 	     << "\"fts\":{"
 	     << "\"available\":true,"

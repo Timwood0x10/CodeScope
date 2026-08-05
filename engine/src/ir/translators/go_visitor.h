@@ -59,6 +59,22 @@ class GoVisitor : public JsVisitor {
 	std::string
 		current_interface_; // interface being walked (set by handleTypeDecl)
 
+	// ── Step 8 (plan §8, v0.2.5): interface embedding (composition) ──
+	// Go allows an interface to embed another interface:
+	//     type ReadWriter interface { Reader; Writer }  // Reader/Writer are
+	//                                                    // interface types
+	// A struct implements ReadWriter only if it provides Reader's AND
+	// Writer's methods. interface_embeds_[A] = { B, C } records that A
+	// embeds B and C (detected when handleTypeDecl walks A's interface body
+	// and finds a type_identifier referencing a known interface). At
+	// end-of-file the method-set check expands each interface's direct
+	// methods with the transitive closure of its embedded interfaces'
+	// methods, so structs that implement the embedded interfaces' methods
+	// are correctly matched against the composed interface. Per-file,
+	// cleared in visit() alongside interface_methods_.
+	std::unordered_map<std::string, std::vector<std::string>>
+		interface_embeds_; // interface name -> embedded interface names
+
 	// ── Step 8 (plan §8.1c): struct field type table ─────────────
 	// Maps struct type -> field name -> field type, collected while
 	// handleTypeDecl walks field_declaration_list. handleCall uses it to

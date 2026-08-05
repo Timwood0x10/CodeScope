@@ -473,17 +473,20 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		// No files need (re)indexing. This is either a first index of an
 		// empty directory, or a re-index where every file is unchanged.
 		// In the re-index case the full post-parse pipeline is skipped
-		// (no graph rebuild needed), but we MUST still refresh the
-		// data-dependent readiness flags so they cannot go stale.
-		// Specifically, `vector_ready` is derived from the
-		// `node_vectors` row count, which can drift from the stored flag
-		// when: (a) the builder is a no-op (sunset) but a prior buggy
-		// run left vector_ready=1 (A19 regression), or (b) the table was
-		// modified externally. Refreshing the flag here on every
-		// re-index — even a no-op one — keeps readiness consistent with
-		// canonical data. See engine_index_post_parse for the primary
-		// (non-empty-jobs) path that sets the same flag.
+		// (no graph rebuild needed), but we MUST still keep canonical data
+		// (node_vectors) and the data-dependent readiness flags fresh so
+		// they cannot go stale.
+		//
+		// v0.2.5: in DEEP mode we REBUILD the n-gram vectors here even when
+		// no file changed. This keeps node_vectors self-healing: if an
+		// external process truncated the table (or a prior run left it
+		// empty), a no-op re-index restores it instead of leaving semantic
+		// search permanently empty. The builder is idempotent (DELETE +
+		// re-INSERT), and vector_ready is then derived from the actual
+		// rebuilt row count — preserving the A19 "readiness matches
+		// canonical data" invariant.
 		if (is_reindex && env_mode && strcmp(env_mode, "deep") == 0) {
+			g_store->buildVectorsFromGraph(project_id);
 			sqlite3_stmt *vstmt = nullptr;
 			const char *vsql =
 				"SELECT COUNT(*) FROM node_vectors WHERE project_id = ?";

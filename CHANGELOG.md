@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.2.5 (2026-08-05)
+
+Restores the three capabilities that the Step 10 sprint had formally sunset (complexity metrics, n-gram semantic vector search, and metrics-driven readiness), hardens FunctionImplements verification with real call-chain + signature evidence, and fixes Go interface embedding (composition) dispatch.
+
+### 🚀 New Features
+
+- **Complexity metrics restored**: `cyclomatic` / `cognitive` / `nesting_depth` / `branch_count` / `loop_count` / `param_count` / `call_count` / `lines` / `is_stub` are computed in the parse worker (`computeMetricsFromCST` / `computeMetricsFromUnit`), staged in a new `_staged_metrics` table during `insertFileResultBatch`, and resolved onto the canonical `entity` rows by `resolveStagedMetrics` (rebuilt from no-op). `engine_get_complexity` now returns real measurements (`"cyclomatic":4,"cognitive":7,...`, `"available":true`) instead of the sunset `{"complexity":null}` marker. (`store_schema.cpp`, `store_batch.cpp`, `store_search.cpp`, `query_analysis.cpp`)
+- **Semantic search restored (n-gram hash vectors)**: `buildVectorsFromGraph` (rebuilt from no-op) computes an L2-normalized n-gram hash vector per function/method entity and writes it to `node_vectors` (192-dim, raw float32 BLOB, no external model). `searchSemanticJson` vectorizes the query with the same scheme and returns the top-K entities by cosine similarity. `searchUnifiedJson` appends semantic results as a complement when FTS + trigram do not fill the limit — FTS exact/prefix search is preserved. **Accuracy-first**: semantic results are gated by a cosine-similarity floor (`kSemanticScoreFloor = 0.3`); strong matches score > 0.6 while unrelated names cluster below 0.23, so the floor keeps every relevant hit and rejects noise — semantic search never pollutes results with weak/incidental matches. `engine_search_semantic` (previously a Phase-0 stub returning `"not implemented — semantic search was removed in Phase 0"`) now routes to the real implementation. (`store_search.cpp`, `store_query.cpp`, `engine_ffi.cpp`)
+- **Metrics/embedding readiness is now real, not structural 0**: `engine_get_enhancement_status` and `engine_get_capabilities` derive `metrics_ready` from the actual resolved `entity` count and `embedding_ready` from `node_vectors` rows. The `metrics`/`semantic_search` capabilities now report `available:true` with real coverage ratios and producer versions, replacing `unavailable_reason:"sunset"`. A `metrics_ready` column + migration was added to `project_readiness`. (`engine_queries.cpp`, `engine_ffi.cpp`, `engine_index_post_parse.cpp`, `engine_index_project.cpp`, `store_core.cpp`, `store_schema.cpp`)
+- **Re-index self-heals vectors**: a no-change re-index in DEEP mode now re-runs `buildVectorsFromGraph`, so an externally-truncated `node_vectors` table is repopulated instead of leaving semantic search permanently empty — while still deriving `vector_ready` from the actual rebuilt row count (A19 invariant preserved). (`engine_index_project.cpp`)
+- **Go interface embedding (composition)**: `interface A { B; foo() }` now expands to the transitive closure of B's methods before the struct-method-set subset check, so a struct implementing B's methods is correctly matched against the composed interface A. (`go_visitor.h`, `go_visitor.cpp`)
+
+### 🐛 Bug Fixes
+
+- **`engine_search_semantic` was a dead Phase-0 stub**: it returned `"not implemented — semantic search was removed in Phase 0"` even after the vector pipeline was restored, so the semantic search MCP tool was always broken. Now routes to `searchSemanticJson`. (`engine_ffi.cpp`)
+- **`buildVectorsFromGraph` / `getComplexityJson` queried a nonexistent column**: both referenced `entity.node_id`, but the canonical column is `entity.id`. Fixed the SQL (vectors now actually populate; complexity returns real data). (`store_search.cpp`)
+- **`setProjectReadiness` / `getProjectReadiness` rejected `metrics_ready`**: the field was not in the whitelist, so the new metrics flag could never be persisted. Added it. (`store_core.cpp`)
+- **FunctionImplementsVerifier returned a misleading "Supported" for any function with a call edge** (a wrong object like `init_logging implements TCP_server` passed): now performs signature + call-chain matching. It finds graph entities that represent the claimed `object` and checks whether the subject's call chain actually reaches them. Object-linked claims get higher confidence (0.75) with the linking relations as evidence facts; missing anchors or absent links are reported transparently in the detail instead of being silently treated as proven. (`function_implements_verifier.cpp`)
+- **`getModuleMap` referenced the deprecated `graph_nodes` table and its nonexistent `cyclomatic` column**: migrated to the canonical `entity` table with real `cyclomatic`/`cognitive`/`nesting_depth`. (`query_analysis.cpp`)
+- **`getHotspots` / `getEntryPoints` emitted `complexity:null, unavailable_reason:"sunset"`**: the LadybugDB branches still reported metrics as sunset even after the restore. They now batch-read real `cyclomatic`/`cognitive`/`nesting_depth` from the canonical `entity` table and emit them (JSON `null` only when a specific entity truly has no resolved metrics). (`query_analysis.cpp`)
+- **`insertEmbedding` still resolved the project id from the deprecated `graph_nodes` table**: it could never resolve a project in the canonical schema (graph_nodes is empty). Migrated to `entity.id`. (`store_project.cpp`)
+- **`engine_explain_module` still read entity samples from `graph_nodes`**: the legacy table is empty in the canonical schema, so it always returned zero entities. Migrated to the canonical `entity` table. (`engine_verify_ffi.cpp`)
+- **Stale Step-10 sunset comments removed**: the metrics/embedding/semantic code paths in `store_project.cpp`, `store_search.cpp`, `engine_ffi.cpp`, `engine_queries.cpp`, and `engine_index_post_parse.cpp` no longer claim the producers are no-ops; the inert `setComplexity`/`markEmbeddingReady`/`markCallgraphAndMetricsReady` seams are documented as compatibility layers whose canonical readiness is always derived from real entity/vector data. (`store_project.cpp`, `store_search.cpp`, `engine_ffi.cpp`, `engine_queries.cpp`, `engine_index_post_parse.cpp`)
+
+### 🧹 Chores
+
+- **Version bump**: 0.2.4 → 0.2.5 (server `Cargo.toml`, engine `kVersion`).
+- **Server tool descriptions updated**: `enhance_project` and `unified_search` no longer claim metrics/semantic search are "sunset". (`server/src/tools/mod.rs`)
+- **`test_metrics_readiness` rewritten**: it previously asserted the sunset state (`metrics_ready == 0`, `available:false`); it now guards the restored behaviour — real counts, real complexity, real vectors, A19 "readiness tracks canonical data" (including a full drop → re-index → repopulate cycle).
+
+---
+
 ## v0.2.4 (2026-07-24)
 
 Windows compilation stability — fully static-linked `codescope.exe` (zero MinGW runtime DLLs), LadybugDB disabled on Windows (SQLite-only), and critical cross-compilation bug fixes.

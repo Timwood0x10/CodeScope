@@ -519,6 +519,17 @@ class GraphStore {
 	     */
 	std::string searchUnifiedJson(uint64_t project_id, const char *query,
 				      int limit);
+	/**
+	 * Semantic (n-gram hash vector) search: vectorizes the query with the
+	 * same n-gram hash scheme as buildVectorsFromGraph and returns the
+	 * function/method entities with the highest cosine similarity from
+	 * node_vectors. Returns an empty result array when node_vectors has
+	 * no rows for the project (embedding not built). This complements FTS
+	 * — it never replaces it — so callers that need exact prefix match
+	 * are unaffected.
+	 */
+	std::string searchSemanticJson(uint64_t project_id, const char *query,
+				       int limit);
 	/** Search via LadybugDB Cypher CONTAINS query. */
 	std::string searchLadybugJson(uint64_t project_id, const char *query,
 				      int limit);

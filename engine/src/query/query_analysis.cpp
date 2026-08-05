@@ -4,6 +4,7 @@
 #include "impact_analysis.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -167,11 +168,44 @@ std::string QueryEngine::getHotspots(uint64_t project_id, int top_n)
 	}
 	lbug_query_result_destroy(&qr);
 
-	// Step 10 (sunset): metrics storage is sunset, so complexity is
-	// NOT a real measurement here. Emit JSON `null` (not 0) plus an
-	// `unavailable` marker so MCP clients can distinguish "not computed"
-	// from a genuine complexity of 0 on a trivial function. caller_count
-	// is still real (it comes from the call graph).
+	// v0.2.5: metrics are restored. caller_count comes from the call graph
+	// (LadybugDB); complexity/cognitive/nesting come from the canonical
+	// entity table (SQLite), which resolveStagedMetrics populated during
+	// index. Batch-read them for all hotspots in one query to avoid N+1.
+	std::unordered_map<int64_t, std::array<int64_t, 3>>
+		metrics_by_id; // id -> {cyc,cog,nest}
+	if (!rows.empty() && store_ && store_->handle()) {
+		std::string ids;
+		for (size_t i = 0; i < rows.size(); ++i) {
+			if (i > 0)
+				ids += ",";
+			ids += std::to_string(rows[i].id);
+		}
+		std::string sql =
+			"SELECT id, cyclomatic, cognitive, nesting_depth "
+			"FROM entity WHERE project_id = ? AND id IN (" +
+			ids + ")";
+		sqlite3_stmt *stmt = nullptr;
+		if (sqlite3_prepare_v2(store_->handle(), sql.c_str(), -1, &stmt,
+				       nullptr) == SQLITE_OK) {
+			sqlite3_bind_int64(stmt, 1,
+					   static_cast<int64_t>(project_id));
+			while (sqlite3_step(stmt) == SQLITE_ROW) {
+				int64_t id = sqlite3_column_int64(stmt, 0);
+				metrics_by_id[id] = {
+					sqlite3_column_int64(stmt, 1),
+					sqlite3_column_int64(stmt, 2),
+					sqlite3_column_int64(stmt, 3)
+				};
+			}
+			sqlite3_finalize(stmt);
+		} else {
+			fprintf(stderr,
+				"[module=query, method=%s] hotspot metrics batch "
+				"prepare failed: %s\n",
+				kMethod, sqlite3_errmsg(store_->handle()));
+		}
+	}
 	std::ostringstream json;
 	json << "{\"hotspots\":[";
 	bool first = true;
@@ -179,6 +213,8 @@ std::string QueryEngine::getHotspots(uint64_t project_id, int top_n)
 		if (!first)
 			json << ",";
 		first = false;
+		auto it = metrics_by_id.find(r.id);
+		bool has_metrics = (it != metrics_by_id.end());
 		json << "{"
 		     << "\"id\":" << r.id << ","
 		     << "\"name\":\"" << jsonEscape(r.name.c_str()) << "\","
@@ -186,9 +222,15 @@ std::string QueryEngine::getHotspots(uint64_t project_id, int top_n)
 		     << "\","
 		     << "\"type\":" << r.node_type << ","
 		     << "\"caller_count\":" << r.caller_count << ","
-		     << "\"complexity\":null,"
-		     << "\"complexity_unavailable\":true,"
-		     << "\"unavailable_reason\":\"sunset\"}";
+		     << "\"complexity\":"
+		     << (has_metrics ? std::to_string(it->second[0]) : "null")
+		     << ","
+		     << "\"cognitive\":"
+		     << (has_metrics ? std::to_string(it->second[1]) : "null")
+		     << ","
+		     << "\"nesting_depth\":"
+		     << (has_metrics ? std::to_string(it->second[2]) : "null")
+		     << "}";
 	}
 	json << "],\"total\":" << rows.size() << "}";
 	return json.str();
@@ -249,12 +291,16 @@ std::string QueryEngine::getModuleMap(uint64_t project_id)
 		first_dir = false;
 		json << "{\"path\":\"" << dir << "\",\"files\":[";
 
-		// Functions in this directory
+		// Functions in this directory. entity is the canonical fact source
+		// (the legacy graph_nodes table was migrated to entity); metrics
+		// columns (cyclomatic etc.) are filled during indexing by
+		// resolveStagedMetrics.
 		std::string func_sql =
-			"SELECT gn.name, gn.node_type, gn.file_path, gn.cyclomatic "
-			"FROM graph_nodes gn "
-			"WHERE gn.project_id = ? AND gn.file_path LIKE ? "
-			"AND gn.node_type IN (0,1) ORDER BY gn.file_path";
+			"SELECT e.name, e.kind, e.file_path, e.cyclomatic, "
+			"       e.cognitive, e.nesting_depth "
+			"FROM entity e "
+			"WHERE e.project_id = ? AND e.file_path LIKE ? "
+			"AND e.kind IN (0,1) ORDER BY e.file_path";
 		sqlite3_prepare_v2(db, func_sql.c_str(), -1, &stmt, nullptr);
 		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 		sqlite3_bind_text(stmt, 2, (dir + "/%").c_str(), -1,
@@ -281,7 +327,11 @@ std::string QueryEngine::getModuleMap(uint64_t project_id)
 					 "")
 			     << "\","
 			     << "\"complexity\":" << sqlite3_column_int(stmt, 3)
-			     << "}";
+			     << ","
+			     << "\"cognitive\":" << sqlite3_column_int(stmt, 4)
+			     << ","
+			     << "\"nesting_depth\":"
+			     << sqlite3_column_int(stmt, 5) << "}";
 		}
 		sqlite3_finalize(stmt);
 		json << "]}";
@@ -363,11 +413,43 @@ std::string QueryEngine::getEntryPoints(uint64_t project_id)
 	}
 	lbug_query_result_destroy(&qr);
 
-	// Step 10 (sunset): metrics storage is sunset, so complexity/nesting
-	// are NOT real measurements here. Emit JSON `null` (not 0) plus an
-	// `unavailable` marker so MCP clients can distinguish "not computed"
-	// from a genuine 0 on a trivial function. id/name/type/file are still
-	// real (they come from the call graph).
+	// v0.2.5: metrics are restored. id/name/type/file come from the call
+	// graph (LadybugDB); complexity/cognitive/nesting come from the
+	// canonical entity table (SQLite), batch-read for all entry points.
+	std::unordered_map<int64_t, std::array<int64_t, 3>>
+		metrics_by_id; // id -> {cyc,cog,nest}
+	if (!rows.empty() && store_ && store_->handle()) {
+		std::string ids;
+		for (size_t i = 0; i < rows.size(); ++i) {
+			if (i > 0)
+				ids += ",";
+			ids += std::to_string(rows[i].id);
+		}
+		std::string sql =
+			"SELECT id, cyclomatic, cognitive, nesting_depth "
+			"FROM entity WHERE project_id = ? AND id IN (" +
+			ids + ")";
+		sqlite3_stmt *stmt = nullptr;
+		if (sqlite3_prepare_v2(store_->handle(), sql.c_str(), -1, &stmt,
+				       nullptr) == SQLITE_OK) {
+			sqlite3_bind_int64(stmt, 1,
+					   static_cast<int64_t>(project_id));
+			while (sqlite3_step(stmt) == SQLITE_ROW) {
+				int64_t id = sqlite3_column_int64(stmt, 0);
+				metrics_by_id[id] = {
+					sqlite3_column_int64(stmt, 1),
+					sqlite3_column_int64(stmt, 2),
+					sqlite3_column_int64(stmt, 3)
+				};
+			}
+			sqlite3_finalize(stmt);
+		} else {
+			fprintf(stderr,
+				"[module=query, method=%s] entry-point metrics batch "
+				"prepare failed: %s\n",
+				kMethod, sqlite3_errmsg(store_->handle()));
+		}
+	}
 	std::ostringstream json;
 	json << "{\"entry_points\":[";
 	bool first = true;
@@ -375,16 +457,23 @@ std::string QueryEngine::getEntryPoints(uint64_t project_id)
 		if (!first)
 			json << ",";
 		first = false;
+		auto it = metrics_by_id.find(r.id);
+		bool has_metrics = (it != metrics_by_id.end());
 		json << "{"
 		     << "\"id\":" << r.id << ","
 		     << "\"name\":\"" << jsonEscape(r.name.c_str()) << "\","
 		     << "\"type\":" << r.node_type << ","
 		     << "\"file\":\"" << jsonEscape(r.file_path.c_str())
 		     << "\","
-		     << "\"complexity\":null,"
-		     << "\"nesting\":null,"
-		     << "\"complexity_unavailable\":true,"
-		     << "\"unavailable_reason\":\"sunset\"}";
+		     << "\"complexity\":"
+		     << (has_metrics ? std::to_string(it->second[0]) : "null")
+		     << ","
+		     << "\"cognitive\":"
+		     << (has_metrics ? std::to_string(it->second[1]) : "null")
+		     << ","
+		     << "\"nesting\":"
+		     << (has_metrics ? std::to_string(it->second[2]) : "null")
+		     << "}";
 	}
 	json << "],\"total\":" << rows.size() << "}";
 	return json.str();

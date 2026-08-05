@@ -838,8 +838,12 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 		// paths with a leading "./" match consistently.
 		{
 			std::string like = "%/" + name + "/%";
+			// v0.2.5: read from the canonical `entity` table (the legacy
+			// graph_nodes table is empty in the canonical schema, so this
+			// previously always returned zero entities). entity.id
+			// preserves the legacy graph node identity.
 			std::string sql_str =
-				"SELECT name, node_type, file_path FROM graph_nodes "
+				"SELECT name, kind, file_path FROM entity "
 				"WHERE project_id=? AND file_path LIKE ? "
 				"ORDER BY id LIMIT " +
 				std::to_string(kEntitySampleLimit);
@@ -847,7 +851,7 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 			int total = 0;
 			// Count first
 			const char *csql =
-				"SELECT COUNT(*) FROM graph_nodes "
+				"SELECT COUNT(*) FROM entity "
 				"WHERE project_id=? AND file_path LIKE ?";
 			if (sqlite3_prepare_v2(db, csql, -1, &stmt, nullptr) ==
 			    SQLITE_OK) {

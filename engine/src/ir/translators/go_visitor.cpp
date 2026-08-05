@@ -92,6 +92,7 @@ SemanticUnit *GoVisitor::visit(TSTree *tree, const char *source, const char *fp)
 	struct_methods_.clear();
 	current_interface_.clear();
 	struct_fields_.clear();
+	interface_embeds_.clear();
 
 	TSNode root_node = ts_tree_root_node(tree);
 	pushScope();
@@ -109,20 +110,65 @@ SemanticUnit *GoVisitor::visit(TSTree *tree, const char *source, const char *fp)
 	// pair where the struct provides all of the interface's methods.
 	// The Resolver preloads these into interface_impl_index_ so
 	// dispatch expansion can build bounded candidate sets.
+	//
+	// v0.2.5: interface embedding (composition). Go lets an interface
+	// embed other interfaces:
+	//     type ReadWriter interface { Reader; Writer }
+	// ReadWriter's method set is the union of Reader's and Writer's
+	// methods. We expand each interface's method set with the transitive
+	// closure of its embedded interfaces' methods before the subset
+	// check, so a struct implementing Reader's+Writer's methods is
+	// correctly matched against ReadWriter. (Embedded interface names
+	// are captured in handleTypeDecl when the interface body references
+	// a known interface type.)
 	for (const auto &iface_entry : interface_methods_) {
 		const std::string &iface = iface_entry.first;
-		const auto &iface_methods = iface_entry.second;
-		if (iface_methods.empty())
+		if (iface_entry.second.empty())
+			continue;
+		// Expanded method set: direct + transitive embedded methods,
+		// deduped. Guard against cycles with a small visited set.
+		std::vector<std::string> expanded = iface_entry.second;
+		std::unordered_set<std::string> visited{ iface };
+		std::vector<std::string> frontier = iface_entry.second;
+		if (interface_embeds_.count(iface)) {
+			frontier.push_back(iface); // re-trigger BFS from self
+			visited.erase(iface);
+		}
+		while (!frontier.empty()) {
+			std::vector<std::string> next;
+			for (const auto &cur : frontier) {
+				auto it = interface_embeds_.find(cur);
+				if (it == interface_embeds_.end())
+					continue;
+				for (const auto &emb : it->second) {
+					if (!visited.insert(emb).second)
+						continue;
+					auto eit = interface_methods_.find(emb);
+					if (eit == interface_methods_.end())
+						continue; // embedded iface not in this file
+					for (const auto &m : eit->second) {
+						if (std::find(expanded.begin(),
+							      expanded.end(),
+							      m) ==
+						    expanded.end())
+							expanded.push_back(m);
+					}
+					next.push_back(emb);
+				}
+			}
+			frontier = std::move(next);
+		}
+		if (expanded.empty())
 			continue;
 		for (const auto &struct_entry : struct_methods_) {
 			const std::string &stype = struct_entry.first;
 			const auto &smethods = struct_entry.second;
 			if (stype == iface)
 				continue;
-			// Every interface method must appear in the
+			// Every (expanded) interface method must appear in the
 			// struct's method set (subset check).
 			bool implements_all = true;
-			for (const auto &m : iface_methods) {
+			for (const auto &m : expanded) {
 				if (std::find(smethods.begin(), smethods.end(),
 					      m) == smethods.end()) {
 					implements_all = false;
@@ -401,6 +447,49 @@ void GoVisitor::handleTypeDecl(TSNode node, uint64_t parent_id)
 				// current_interface_ set so handleInterfaceMethod
 				// collects the interface's method set.
 				current_interface_ = name;
+				// v0.2.5: capture embedded interfaces. An interface
+				// body may embed another interface by naming its type
+				// (type A interface { B; foo() }). That embedded
+				// name is a type_identifier child of interface_type
+				// (not a method_elem), so handleInterfaceMethod never
+				// sees it. Scan the body's named children for
+				// type_identifier / embedded_interface entries whose
+				// text names a known interface and record the embed so
+				// the end-of-file method-set check can expand A with B's
+				// methods (transitively).
+				{
+					uint32_t body_count =
+						ts_node_child_count(c);
+					for (uint32_t bi = 0; bi < body_count;
+					     bi++) {
+						TSNode child =
+							ts_node_child(c, bi);
+						if (!ts_node_is_named(child))
+							continue;
+						const char *ct =
+							ts_node_type(child);
+						// A Go interface body embeds other
+						// interfaces by naming them as a plain
+						// type (type A interface { B; foo() }).
+						// Record the name unconditionally — the
+						// end-of-file expansion skips embedded
+						// interfaces that were declared in
+						// another file (not in interface_methods_).
+						if (strcmp(ct,
+							   "type_identifier") ==
+							    0 ||
+						    strcmp(ct,
+							   "embedded_interface") ==
+							    0) {
+							std::string emb =
+								nodeText(child);
+							if (!emb.empty())
+								interface_embeds_[name]
+									.push_back(
+										emb);
+						}
+					}
+				}
 				visitChildren(c, id);
 				current_interface_.clear();
 			} else if (is_struct) {
@@ -1103,13 +1192,10 @@ void GoVisitor::handleRange(TSNode node, uint64_t parent_id)
 					// "" for leaves (no named
 					// children), so take the text
 					// directly.
-					std::string vname =
-						nodeText(item);
-					if (!vname.empty() &&
-					    vname != "_" &&
+					std::string vname = nodeText(item);
+					if (!vname.empty() && vname != "_" &&
 					    !elem.empty())
-						recordVarType(vname,
-							      elem);
+						recordVarType(vname, elem);
 					break;
 				}
 			}
@@ -1149,8 +1235,7 @@ void GoVisitor::handleParameterDecl(TSNode node, uint64_t parent_id)
 		recordVarType(pname, ptype);
 		// Persist for the Resolver's global variable-type table
 		// (kind=17 TypeRef under function/method entity).
-		emitter_->emitTypeRef(pname, ptype, location(c),
-				      parent_id);
+		emitter_->emitTypeRef(pname, ptype, location(c), parent_id);
 	}
 	// Keep walking (the type child may contain nested type nodes).
 	visitChildren(node, parent_id);
