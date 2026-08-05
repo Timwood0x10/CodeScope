@@ -412,6 +412,15 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
         "LadybugDB: skipped on Windows (SQLite-only graph storage; "
         "HAS_LADYBUG undefined by design).")
 else()
+# CODESCOPE_SQLITE_ONLY forces SQLite-only graph storage even on platforms
+# where LadybugDB IS present (macOS/Linux). This is the exact configuration
+# Windows ships with (HAS_LADYBUG undefined), so developers on any host can
+# build and test the SQLite graph-query backend without a Windows box.
+# Pass -DCODESCOPE_SQLITE_ONLY=ON to opt in.
+option(CODESCOPE_SQLITE_ONLY
+    "Build with SQLite-only graph storage (HAS_LADYBUG undefined) even if LadybugDB is present"
+    OFF)
+if(NOT CODESCOPE_SQLITE_ONLY)
 set(LADYBUG_VENDOR_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ladybug")
  if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
      set(LADYBUG_VENDOR_LIB_DIR "${LADYBUG_VENDOR_DIR}/lib/macos")
@@ -538,6 +547,11 @@ if(NOT LADYBUG_LIBRARY AND EXISTS "${LADYBUG_VENDOR_LIB_DIR}")
                 "[${_LBUG_VER_INFO}], does not match ${CMAKE_SYSTEM_PROCESSOR} — skipping")
         endif()
     endif()
+endif()
+else()
+    message(STATUS
+        "LadybugDB: skipped (CODESCOPE_SQLITE_ONLY=ON) — SQLite-only graph "
+        "storage; HAS_LADYBUG undefined by design.")
 endif()
 
 if(LADYBUG_LIBRARY AND LADYBUG_INCLUDE_DIR)

@@ -235,12 +235,68 @@ std::string QueryEngine::getHotspots(uint64_t project_id, int top_n)
 	json << "],\"total\":" << rows.size() << "}";
 	return json.str();
 #else
-	std::string err = std::string("[module=query, method=") + kMethod +
-			  "] LadybugDB not compiled";
-	fprintf(stderr, "%s\n", err.c_str());
+	// ── v0.2.5: SQLite graph-query backend (Windows / SQLite-only) ──
+	// Hotspots = the top `top_n` nodes by incoming CALLS edge count,
+	// joined to entity metadata and code metrics. Mirrors the LadybugDB
+	// branch's JSON: {id, name, file, type, caller_count, complexity,
+	// cognitive, nesting_depth}.
+	if (!store_ || !store_->handle()) {
+		std::ostringstream j;
+		j << "{\"error\":\"graph not ready [module=query, method="
+		  << kMethod << "]\",\"hotspots\":[],\"total\":0}";
+		return j.str();
+	}
+	sqlite3 *db = store_->handle();
+	const char *sql = "SELECT e.id, e.name, e.file_path, e.kind, "
+			  "       COUNT(r.id) AS caller_count, "
+			  "       e.cyclomatic, e.cognitive, e.nesting_depth "
+			  "FROM relation r JOIN entity e ON e.id = r.target_id "
+			  "WHERE r.project_id=? AND r.type=1 "
+			  "GROUP BY e.id "
+			  "ORDER BY caller_count DESC "
+			  "LIMIT ?";
 	std::ostringstream j;
-	j << "{\"error\":\"" << jsonEscape(err.c_str())
-	  << "\",\"hotspots\":[],\"total\":0}";
+	j << "{\"hotspots\":[";
+	bool first = true;
+	int count = 0;
+	sqlite3_stmt *st = nullptr;
+	if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) == SQLITE_OK) {
+		sqlite3_bind_int64(st, 1, static_cast<int64_t>(project_id));
+		sqlite3_bind_int(st, 2, top_n);
+		while (sqlite3_step(st) == SQLITE_ROW) {
+			int64_t id = sqlite3_column_int64(st, 0);
+			std::string name =
+				reinterpret_cast<const char *>(
+					sqlite3_column_text(st, 1)) ?
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(st, 1)) :
+					"";
+			std::string file =
+				reinterpret_cast<const char *>(
+					sqlite3_column_text(st, 2)) ?
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(st, 2)) :
+					"";
+			int kind = sqlite3_column_int(st, 3);
+			int64_t caller_count = sqlite3_column_int64(st, 4);
+			int64_t cyclomatic = sqlite3_column_int64(st, 5);
+			int64_t cognitive = sqlite3_column_int64(st, 6);
+			int64_t nesting = sqlite3_column_int64(st, 7);
+			if (!first)
+				j << ",";
+			first = false;
+			++count;
+			j << "{\"id\":" << id << ",\"name\":\""
+			  << jsonEscape(name.c_str()) << "\",\"file\":\""
+			  << jsonEscape(file.c_str()) << "\",\"type\":" << kind
+			  << ",\"caller_count\":" << caller_count
+			  << ",\"complexity\":" << cyclomatic
+			  << ",\"cognitive\":" << cognitive
+			  << ",\"nesting_depth\":" << nesting << "}";
+		}
+		sqlite3_finalize(st);
+	}
+	j << "],\"total\":" << count << "}";
 	return j.str();
 #endif
 }
@@ -478,12 +534,63 @@ std::string QueryEngine::getEntryPoints(uint64_t project_id)
 	json << "],\"total\":" << rows.size() << "}";
 	return json.str();
 #else
-	std::string err = std::string("[module=query, method=") + kMethod +
-			  "] LadybugDB not compiled";
-	fprintf(stderr, "%s\n", err.c_str());
+	if (!store_ || !store_->handle()) {
+		std::ostringstream j;
+		j << "{\"error\":\"graph not ready [module=query, method="
+		  << kMethod << "]\",\"entry_points\":[],\"total\":0}";
+		return j.str();
+	}
+	// ── v0.2.5: SQLite graph-query backend (Windows / SQLite-only) ──
+	// Entry points are function/method entities whose name is a common
+	// program entry (main/run/start/init/setup), matching the LadybugDB
+	// branch's name whitelist. Joined to code metrics.
+	sqlite3 *db = store_->handle();
+	const char *sql =
+		"SELECT id, name, kind, file_path, cyclomatic, cognitive, "
+		"       nesting_depth FROM entity "
+		"WHERE project_id=? AND kind IN (0,1) "
+		"AND name IN ('main','Main','run','Run','start','Start',"
+		"'init','Init','setup','Setup') "
+		"ORDER BY file_path";
 	std::ostringstream j;
-	j << "{\"error\":\"" << jsonEscape(err.c_str())
-	  << "\",\"entry_points\":[],\"total\":0}";
+	j << "{\"entry_points\":[";
+	bool first = true;
+	int count = 0;
+	sqlite3_stmt *st = nullptr;
+	if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) == SQLITE_OK) {
+		sqlite3_bind_int64(st, 1, static_cast<int64_t>(project_id));
+		while (sqlite3_step(st) == SQLITE_ROW) {
+			int64_t id = sqlite3_column_int64(st, 0);
+			std::string name =
+				reinterpret_cast<const char *>(
+					sqlite3_column_text(st, 1)) ?
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(st, 1)) :
+					"";
+			int kind = sqlite3_column_int(st, 2);
+			std::string file =
+				reinterpret_cast<const char *>(
+					sqlite3_column_text(st, 3)) ?
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(st, 3)) :
+					"";
+			int64_t cyc = sqlite3_column_int64(st, 4);
+			int64_t cog = sqlite3_column_int64(st, 5);
+			int64_t nest = sqlite3_column_int64(st, 6);
+			if (!first)
+				j << ",";
+			first = false;
+			++count;
+			j << "{\"id\":" << id << ",\"name\":\""
+			  << jsonEscape(name.c_str()) << "\",\"type\":" << kind
+			  << ",\"file\":\"" << jsonEscape(file.c_str())
+			  << "\",\"complexity\":" << cyc
+			  << ",\"cognitive\":" << cog << ",\"nesting\":" << nest
+			  << "}";
+		}
+		sqlite3_finalize(st);
+	}
+	j << "],\"total\":" << count << "}";
 	return j.str();
 #endif
 }
@@ -624,13 +731,97 @@ std::string QueryEngine::traceCallChain(uint64_t project_id,
 	}
 	return "{\"found\":false,\"chain\":\"\",\"depth\":0}";
 #else
-	std::string err = std::string("[module=query, method=") + kMethod +
-			  "] LadybugDB not compiled";
-	fprintf(stderr, "%s\n", err.c_str());
-	std::ostringstream j;
-	j << "{\"error\":\"" << jsonEscape(err.c_str())
-	  << "\",\"found\":false,\"chain\":\"\",\"depth\":0}";
-	return j.str();
+	// ── v0.2.5: SQLite graph-query backend (Windows / SQLite-only) ──
+	// Load the project's CALLS edges as (src_name → tgt_name) from the
+	// canonical relation + entity tables, then run the same name-based BFS
+	// the LadybugDB branch does. JSON shape is identical: {found, chain,
+	// depth}.
+	if (!store_ || !store_->handle()) {
+		std::ostringstream j;
+		j << "{\"error\":\"graph not ready [module=query, method="
+		  << kMethod << "]\",\"found\":false,\"chain\":\"\","
+		  << "\"depth\":0}";
+		return j.str();
+	}
+	sqlite3 *db = store_->handle();
+	std::unordered_map<std::string, std::vector<std::string>> adj;
+	{
+		const char *sql = "SELECT e1.name, e2.name "
+				  "FROM relation r "
+				  "JOIN entity e1 ON e1.id = r.source_id "
+				  "JOIN entity e2 ON e2.id = r.target_id "
+				  "WHERE r.project_id=? AND r.type=1";
+		sqlite3_stmt *st = nullptr;
+		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) ==
+		    SQLITE_OK) {
+			sqlite3_bind_int64(st, 1,
+					   static_cast<int64_t>(project_id));
+			while (sqlite3_step(st) == SQLITE_ROW) {
+				std::string src =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(st, 0)) ?
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								st, 0)) :
+						"";
+				std::string tgt =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(st, 1)) ?
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								st, 1)) :
+						"";
+				if (!src.empty() && !tgt.empty())
+					adj[src].push_back(tgt);
+			}
+			sqlite3_finalize(st);
+		}
+	}
+	std::string from(from_function);
+	std::string to(to_function);
+	std::queue<std::string> queue;
+	std::unordered_map<std::string, std::string> parent;
+	std::unordered_set<std::string> visited;
+	queue.push(from);
+	visited.insert(from);
+	bool found = false;
+	while (!queue.empty() && !found) {
+		std::string cur = queue.front();
+		queue.pop();
+		auto it = adj.find(cur);
+		if (it == adj.end())
+			continue;
+		for (const auto &nbr : it->second) {
+			if (visited.count(nbr))
+				continue;
+			visited.insert(nbr);
+			parent[nbr] = cur;
+			if (nbr == to) {
+				found = true;
+				break;
+			}
+			queue.push(nbr);
+		}
+	}
+	if (found) {
+		std::vector<std::string> path;
+		std::string node = to;
+		while (node != from) {
+			path.push_back(node);
+			node = parent[node];
+		}
+		path.push_back(from);
+		std::reverse(path.begin(), path.end());
+		std::string chain = path[0];
+		for (size_t i = 1; i < path.size(); i++)
+			chain += "→" + path[i];
+		std::ostringstream json;
+		json << "{\"found\":true,\"chain\":\""
+		     << jsonEscape(chain.c_str())
+		     << "\",\"depth\":" << (path.size() - 1) << "}";
+		return json.str();
+	}
+	return "{\"found\":false,\"chain\":\"\",\"depth\":0}";
 #endif
 }
 

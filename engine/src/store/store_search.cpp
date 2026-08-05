@@ -271,6 +271,60 @@ void GraphStore::buildVectorsFromGraph(uint64_t project_id)
 	if (ents.empty())
 		return;
 
+	// ── TF-IDF identifier weighting (v0.2.5) ──────────────────────
+	// Tokenize every entity's qualified_name + name via camel/snake/kebab
+	// splitting and count per-entity token frequencies, so we can weight
+	// each token's vector contribution by inverse document frequency (idf =
+	// log(1 + N/(1+df))). Rare, discriminative tokens (e.g. "ledger" in
+	// getUserByLedgerId) then contribute far more to the vector than common
+	// ones ("get"), which sharply improves semantic-search precision: a
+	// query matching a rare token ranks the correct entity far above
+	// incidental trigram-overlap noise. The same split is applied on the
+	// query side, so no project statistics are needed at query time.
+	struct TokMap {
+		std::vector<std::string> toks;
+		std::vector<float> idfs;
+	};
+	std::vector<TokMap> ent_toks(ents.size());
+	{
+		std::unordered_map<std::string, size_t> df;
+		df.reserve(ents.size() * 4);
+		for (const auto &e : ents) {
+			auto toks = splitIdentifierWords(e.text);
+			// Dedupe within this entity (df counts entities, not
+			// occurrences).
+			std::sort(toks.begin(), toks.end());
+			toks.erase(std::unique(toks.begin(), toks.end()),
+				   toks.end());
+			for (auto &t : toks) {
+				if (t.empty())
+					continue;
+				++df[t];
+			}
+			ent_toks[&e - ents.data()].toks = std::move(toks);
+		}
+		const size_t N = ents.size();
+		for (size_t ei = 0; ei < ents.size(); ++ei) {
+			auto &tm = ent_toks[ei];
+			tm.idfs.reserve(tm.toks.size());
+			for (const auto &t : tm.toks) {
+				size_t d = 0;
+				auto it = df.find(t);
+				if (it != df.end())
+					d = it->second;
+				float idf = static_cast<float>(std::log(
+					1.0 +
+					static_cast<double>(N) /
+						(1.0 + static_cast<double>(d))));
+				// Cap the weight so one dominant token cannot
+				// overwhelm the trigram signal entirely.
+				if (idf > 3.0f)
+					idf = 3.0f;
+				tm.idfs.push_back(idf);
+			}
+		}
+	}
+
 	// Clear stale vectors for this project, then write fresh ones.
 	const char *clear_sql = "DELETE FROM node_vectors WHERE project_id = ?";
 	sqlite3_stmt *del = nullptr;
@@ -305,6 +359,9 @@ void GraphStore::buildVectorsFromGraph(uint64_t project_id)
 		const std::string &t = e.text;
 		// Character trigrams (lowercased) — captures identifier substrings
 		// and cross-casing boundaries ("userDao" → "use","ser","erD",...).
+		// Kept unweighted as a lexical-similarity fallback so a query
+		// that only partially overlaps an identifier (or crosses a casing
+		// boundary) still gets a signal.
 		for (size_t i = 0; i + 3 <= t.size(); ++i) {
 			std::string gram = t.substr(i, 3);
 			for (char &ch : gram)
@@ -317,15 +374,25 @@ void GraphStore::buildVectorsFromGraph(uint64_t project_id)
 			vec[b1] += (h & 1) ? 1.0f : -1.0f;
 			vec[b2] += (h & 2) ? 1.0f : -1.0f;
 		}
-		if (!t.empty()) {
-			// Whole-token contribution (the name itself) so exact-name
-			// searches rank highest.
-			uint64_t h = hashMix(std::hash<std::string>{}(t) ^
-					     static_cast<uint64_t>(project_id));
-			int b1 = static_cast<int>(h % kVecDim);
-			int b2 = static_cast<int>(hashMix(h) % kVecDim);
-			vec[b1] += (h & 1) ? 1.0f : -1.0f;
-			vec[b2] += (h & 2) ? 1.0f : -1.0f;
+		// TF-IDF weighted camel/snake token contribution (v0.2.5). Each
+		// split token (get/user/by/id ...) is hashed and accumulated with
+		// magnitude proportional to its idf — rare discriminative tokens
+		// dominate, so semantically distinctive names rank correctly.
+		{
+			const TokMap &tm = ent_toks[&e - ents.data()];
+			for (size_t ti = 0; ti < tm.toks.size(); ++ti) {
+				const std::string &tok = tm.toks[ti];
+				if (tok.empty())
+					continue;
+				uint64_t h = hashMix(
+					std::hash<std::string>{}(tok) ^
+					static_cast<uint64_t>(project_id));
+				int b1 = static_cast<int>(h % kVecDim);
+				int b2 = static_cast<int>(hashMix(h) % kVecDim);
+				const float w = tm.idfs[ti];
+				vec[b1] += (h & 1) ? w : -w;
+				vec[b2] += (h & 2) ? w : -w;
+			}
 		}
 		// L2-normalize.
 		double norm = 0.0;
@@ -371,10 +438,17 @@ std::string GraphStore::searchSemanticJson(uint64_t project_id,
 	if (limit <= 0 || limit > 100)
 		limit = 20;
 
-	// Vectorize the query exactly as buildVectorsFromGraph vectorizes each
-	// entity: lowercased character trigrams + the whole-token contribution,
-	// double-hash accumulated, L2-normalized. Cosine similarity over the
-	// stored normalized vectors is then a dot product.
+	// Vectorize the query to mirror buildVectorsFromGraph: lowercased
+	// character trigrams + camel/snake-split identifier tokens, double-hash
+	// accumulated, L2-normalized. Cosine similarity over the stored
+	// normalized vectors is then a dot product.
+	//
+	// v0.2.5: the query is also split into identifier tokens (matching the
+	// TF-IDF-weighted token contribution the builder wrote). Query tokens are
+	// hashed at equal magnitude — the builder already baked each token's idf
+	// weight into the stored entity vectors, so an equal-weight query token
+	// automatically scores higher against the entity that shares that token
+	// at high weight (i.e. the rare, discriminative one).
 	std::vector<float> qvec(kVecDim, 0.0f);
 	{
 		const std::string t = query;
@@ -390,12 +464,18 @@ std::string GraphStore::searchSemanticJson(uint64_t project_id,
 			qvec[b1] += (h & 1) ? 1.0f : -1.0f;
 			qvec[b2] += (h & 2) ? 1.0f : -1.0f;
 		}
-		uint64_t h = hashMix(std::hash<std::string>{}(t) ^
-				     static_cast<uint64_t>(project_id));
-		int b1 = static_cast<int>(h % kVecDim);
-		int b2 = static_cast<int>(hashMix(h) % kVecDim);
-		qvec[b1] += (h & 1) ? 1.0f : -1.0f;
-		qvec[b2] += (h & 2) ? 1.0f : -1.0f;
+		// Identifier-token contributions (equal weight; idf lives in the
+		// stored entity vectors).
+		for (const std::string &tok : splitIdentifierWords(t)) {
+			if (tok.empty())
+				continue;
+			uint64_t h = hashMix(std::hash<std::string>{}(tok) ^
+					     static_cast<uint64_t>(project_id));
+			int b1 = static_cast<int>(h % kVecDim);
+			int b2 = static_cast<int>(hashMix(h) % kVecDim);
+			qvec[b1] += (h & 1) ? 1.0f : -1.0f;
+			qvec[b2] += (h & 2) ? 1.0f : -1.0f;
+		}
 		double norm = 0.0;
 		for (float v : qvec)
 			norm += static_cast<double>(v) * v;

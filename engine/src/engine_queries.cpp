@@ -642,10 +642,12 @@ char *engine_unified_search(uint64_t project_id, const char *query, int limit)
 char *engine_find_callers_adaptive(uint64_t project_id, const char *symbol_name,
 				   const char *file_filter)
 {
-	// LadybugDB is the only data source. graph-not-ready is reported with
-	// the [module=engine_queries, method=find_callers_adaptive] tag so
-	// callers can distinguish an indexing-pending state from a query error.
-	if (!g_query || !g_store || !g_store->isGraphReady())
+	// v0.2.5: getCallers has its own LadybugDB/SQLite backend, so the
+	// graph-not-ready guard only requires the SQLite handle (works on
+	// SQLite-only/Windows builds). The [module=engine_queries,
+	// method=find_callers_adaptive] tag is kept so callers can still
+	// distinguish an indexing-pending state from a query error.
+	if (!g_query || !g_store || !g_store->handle())
 		return dupString("{\"error\":\"graph not ready [module=engine_"
 				 "queries, method=find_callers_adaptive]\"}");
 	if (!symbol_name || !*symbol_name)
@@ -659,9 +661,10 @@ char *engine_find_callers_adaptive(uint64_t project_id, const char *symbol_name,
 char *engine_find_callees_adaptive(uint64_t project_id, const char *symbol_name,
 				   const char *file_filter)
 {
-	// LadybugDB is the only data source — no SQLite fallback. The previous
-	// two-stage path (findCalleesJson → QueryEngine fallback) is gone.
-	if (!g_query || !g_store || !g_store->isGraphReady())
+	// v0.2.5: getCallees has its own LadybugDB/SQLite backend, so the
+	// graph-not-ready guard only requires the SQLite handle (works on
+	// SQLite-only/Windows builds).
+	if (!g_query || !g_store || !g_store->handle())
 		return dupString("{\"error\":\"graph not ready [module=engine_"
 				 "queries, method=find_callees_adaptive]\"}");
 	if (!symbol_name || !*symbol_name)
@@ -674,7 +677,10 @@ char *engine_find_callees_adaptive(uint64_t project_id, const char *symbol_name,
 
 char *engine_find_callers_by_entity(uint64_t project_id, uint64_t entity_id)
 {
-	if (!g_query || !g_store || !g_store->isGraphReady())
+	// v0.2.5: getCallersByEntity has its own LadybugDB/SQLite backend, so
+	// the graph-not-ready guard is only required on the LadybugDB path and
+	// is enforced inside that backend; here we only guard the store handle.
+	if (!g_query || !g_store || !g_store->handle())
 		return dupString("{\"error\":\"graph not ready [module=engine_"
 				 "queries, method=find_callers_by_entity]\"}");
 	if (entity_id == 0)
@@ -684,7 +690,9 @@ char *engine_find_callers_by_entity(uint64_t project_id, uint64_t entity_id)
 
 char *engine_find_callees_by_entity(uint64_t project_id, uint64_t entity_id)
 {
-	if (!g_query || !g_store || !g_store->isGraphReady())
+	// v0.2.5: getCalleesByEntity has its own LadybugDB/SQLite backend; the
+	// guard here only requires the SQLite handle (works on SQLite-only).
+	if (!g_query || !g_store || !g_store->handle())
 		return dupString("{\"error\":\"graph not ready [module=engine_"
 				 "queries, method=find_callees_by_entity]\"}");
 	if (entity_id == 0)
@@ -698,7 +706,9 @@ char *engine_get_entry_points_new(uint64_t project_id)
 {
 	// LadybugDB is the only data source. graph-not-ready is reported with
 	// the [module=engine_queries, method=get_entry_points_new] tag.
-	if (!g_query || !g_store || !g_store->isGraphReady())
+	// v0.2.5: getEntryPoints has its own LadybugDB/SQLite backend; the guard
+	// here only requires the SQLite handle (works on SQLite-only).
+	if (!g_query || !g_store || !g_store->handle())
 		return dupString("{\"error\":\"graph not ready [module=engine_"
 				 "queries, method=get_entry_points_new]\"}");
 	return dupString(g_query->getEntryPoints(project_id));
@@ -831,14 +841,19 @@ char *engine_trace_path(uint64_t project_id, const char *from_name,
 	// BFS to QueryEngine::findShortestPath (LadybugDB-backed), then
 	// hydrate each node_id in the resulting path back into {name,file,line}
 	// via a second Cypher lookup.
-	if (!g_query || !g_store || !g_store->isGraphReady())
-		return dupString("{\"error\":\"graph not ready [module=engine_"
-				 "queries, method=trace_path]\",\"path\":[]}");
+	//
+	// v0.2.5: the graph-not-ready guard is LadybugDB-specific (isGraphReady
+	// is never true on SQLite-only builds) and is therefore inside the
+	// #ifdef; the SQLite backend (the #else branch) has its own
+	// !g_store->handle() guard.
 	if (!from_name || !*from_name || !to_name || !*to_name)
 		return dupString(
 			"{\"error\":\"empty symbol name\",\"path\":[]}");
 
 #ifdef HAS_LADYBUG
+	if (!g_query || !g_store || !g_store->isGraphReady())
+		return dupString("{\"error\":\"graph not ready [module=engine_"
+				 "queries, method=trace_path]\",\"path\":[]}");
 	// Trivial self-to-self case: skip the BFS and emit a single-node
 	// path with the "trivial" flag, matching the legacy schema.
 	if (strcmp(from_name, to_name) == 0) {
@@ -991,8 +1006,127 @@ char *engine_trace_path(uint64_t project_id, const char *from_name,
 	json << "]}";
 	return dupString(json.str());
 #else
-	return dupString("{\"path\":[],\"error\":\"LadybugDB not compiled "
-			 "[module=engine_queries, method=trace_path]\"}");
+	// ── v0.2.5: SQLite graph-query backend (Windows / SQLite-only) ──
+	// Trace a path from from_function to to_function using the SQLite
+	// shortest-path backend (QueryEngine::findShortestPath, CSR BFS) and
+	// hydrate the node ids from the canonical entity table. JSON shape
+	// matches the LadybugDB branch: {"path":[{name,file,line}]}.
+	if (!g_store || !g_store->handle()) {
+		return dupString("{\"error\":\"graph not ready [module="
+				 "engine_queries, method=trace_path]\","
+				 "\"path\":[]}");
+	}
+	sqlite3 *db = g_store->handle();
+	auto resolveName = [&](const char *name, uint64_t &out_id) -> bool {
+		const char *sql = "SELECT id FROM entity WHERE project_id=? "
+				  "AND name=? ORDER BY id LIMIT 1";
+		sqlite3_stmt *st = nullptr;
+		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) != SQLITE_OK)
+			return false;
+		sqlite3_bind_int64(st, 1, static_cast<int64_t>(project_id));
+		sqlite3_bind_text(st, 2, name, -1, SQLITE_TRANSIENT);
+		bool ok = false;
+		if (sqlite3_step(st) == SQLITE_ROW) {
+			out_id = static_cast<uint64_t>(
+				sqlite3_column_int64(st, 0));
+			ok = true;
+		}
+		sqlite3_finalize(st);
+		return ok;
+	};
+	uint64_t from_id = 0, to_id = 0;
+	if (!resolveName(from_name, from_id) || !resolveName(to_name, to_id))
+		return dupString(
+			"{\"path\":[],\"error\":\"symbol not found\"}");
+	std::string bfs_json =
+		g_query->findShortestPath(project_id, from_id, to_id);
+	bool found = bfs_json.find("\"found\":true") != std::string::npos;
+	if (!found)
+		return dupString("{\"path\":[],\"error\":\"no path found\"}");
+	std::vector<uint64_t> node_ids;
+	{
+		const std::string needle = "\"node_id\":";
+		size_t pos = 0;
+		while ((pos = bfs_json.find(needle, pos)) !=
+		       std::string::npos) {
+			pos += needle.size();
+			while (pos < bfs_json.size() &&
+			       (bfs_json[pos] == ' ' || bfs_json[pos] == '\t'))
+				++pos;
+			std::string num;
+			while (pos < bfs_json.size() &&
+			       std::isdigit(static_cast<unsigned char>(
+				       bfs_json[pos]))) {
+				num += bfs_json[pos++];
+			}
+			if (!num.empty())
+				node_ids.push_back(static_cast<uint64_t>(
+					std::strtoull(num.c_str(), nullptr,
+						      10)));
+		}
+	}
+	if (node_ids.empty())
+		return dupString("{\"path\":[],\"error\":\"no path found\"}");
+	std::unordered_map<uint64_t, std::tuple<std::string, std::string, int>>
+		lookup;
+	{
+		std::string id_list;
+		for (size_t i = 0; i < node_ids.size(); ++i) {
+			if (i > 0)
+				id_list += ",";
+			id_list += std::to_string(node_ids[i]);
+		}
+		std::string sql = "SELECT id, name, file_path, start_row "
+				  "FROM entity WHERE project_id=? AND id IN (" +
+				  id_list + ")";
+		sqlite3_stmt *st = nullptr;
+		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &st, nullptr) ==
+		    SQLITE_OK) {
+			sqlite3_bind_int64(st, 1,
+					   static_cast<int64_t>(project_id));
+			while (sqlite3_step(st) == SQLITE_ROW) {
+				uint64_t id = static_cast<uint64_t>(
+					sqlite3_column_int64(st, 0));
+				std::string name =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(st, 1)) ?
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								st, 1)) :
+						"";
+				std::string file =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(st, 2)) ?
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								st, 2)) :
+						"";
+				int line = sqlite3_column_int(st, 3);
+				lookup.emplace(id, std::make_tuple(name, file,
+								   line));
+			}
+			sqlite3_finalize(st);
+		}
+	}
+	std::ostringstream json;
+	json << "{\"path\":[";
+	bool first = true;
+	for (uint64_t id : node_ids) {
+		if (!first)
+			json << ",";
+		first = false;
+		auto it = lookup.find(id);
+		if (it == lookup.end()) {
+			json << "{\"name\":\"?\",\"file\":\"\",\"line\":0}";
+		} else {
+			const auto &tup = it->second;
+			json << "{\"name\":\"" << jsonEscape(std::get<0>(tup))
+			     << "\",\"file\":\"" << jsonEscape(std::get<1>(tup))
+			     << "\",\"line\":" << std::get<2>(tup) << "}";
+		}
+	}
+	json << "]}";
+	return dupString(json.str());
 #endif
 }
 
@@ -1007,10 +1141,10 @@ char *engine_explore_function(uint64_t project_id, const char *function_name,
 	//    "callers":[{...recursive...}],"callees":[{...recursive...}]}
 	//   {"error":"function '...' not found","name":"...",
 	//    "callers":[],"callees":[]}
-	if (!g_query || !g_store || !g_store->isGraphReady())
-		return dupString("{\"error\":\"graph not ready [module=engine_"
-				 "queries, method=explore_function]\","
-				 "\"callers\":[],\"callees\":[]}");
+	//
+	// v0.2.5: the graph-not-ready guard is LadybugDB-specific and lives
+	// inside the #ifdef; the SQLite backend has its own !g_store->handle()
+	// guard in the #else branch.
 	if (!function_name || !*function_name)
 		return dupString(
 			"{\"error\":\"empty function name\",\"callers\":[],"
@@ -1018,6 +1152,11 @@ char *engine_explore_function(uint64_t project_id, const char *function_name,
 	const char *dir = direction ? direction : "both";
 
 #ifdef HAS_LADYBUG
+	if (!g_query || !g_store || !g_store->isGraphReady())
+		return dupString("{\"error\":\"graph not ready [module=engine_"
+				 "queries, method=explore_function]\","
+				 "\"callers\":[],\"callees\":[]}");
+
 	// Clamp depth to [0,5] to prevent runaway recursion (legacy cap).
 	int max_depth = depth > 5 ? 5 : (depth < 0 ? 0 : depth);
 	bool show_callers =
@@ -1188,10 +1327,130 @@ char *engine_explore_function(uint64_t project_id, const char *function_name,
 	buildNode(result, func_id, max_depth);
 	return dupString(result.str());
 #else
-	(void)dir;
-	return dupString("{\"error\":\"LadybugDB not compiled [module=engine_"
-			 "queries, method=explore_function]\","
-			 "\"callers\":[],\"callees\":[]}");
+	// ── v0.2.5: SQLite graph-query backend (Windows / SQLite-only) ──
+	// Recursively explore callers/callees of a function using CSR
+	// adjacency (getCallerIds / getCalleeIds) and entity metadata.
+	// JSON shape matches the LadybugDB branch: nested {name,file,line,
+	// callers,callees}.
+	int max_depth = depth > 5 ? 5 : (depth < 0 ? 0 : depth);
+	if (!g_store || !g_store->handle()) {
+		return dupString("{\"error\":\"graph not ready [module=engine_"
+				 "queries, method=explore_function]\","
+				 "\"callers\":[],\"callees\":[]}");
+	}
+	sqlite3 *db = g_store->handle();
+	auto fetchNode = [&](uint64_t id, std::string &name, std::string &file,
+			     int &line) {
+		const char *sql =
+			"SELECT name, file_path, start_row FROM entity "
+			"WHERE id=?";
+		sqlite3_stmt *st = nullptr;
+		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) != SQLITE_OK)
+			return;
+		sqlite3_bind_int64(st, 1, static_cast<int64_t>(id));
+		if (sqlite3_step(st) == SQLITE_ROW) {
+			name = reinterpret_cast<const char *>(
+				       sqlite3_column_text(st, 0)) ?
+				       reinterpret_cast<const char *>(
+					       sqlite3_column_text(st, 0)) :
+				       "";
+			file = reinterpret_cast<const char *>(
+				       sqlite3_column_text(st, 1)) ?
+				       reinterpret_cast<const char *>(
+					       sqlite3_column_text(st, 1)) :
+				       "";
+			line = sqlite3_column_int(st, 2);
+		}
+		sqlite3_finalize(st);
+	};
+	auto fetchNeighbors = [&](uint64_t id, bool callers,
+				  std::vector<uint64_t> &out) {
+		auto ids = callers ? g_store->getCallerIds(id) :
+				     g_store->getCalleeIds(id);
+		for (uint64_t nid : ids)
+			out.push_back(nid);
+	};
+	std::function<void(std::ostringstream &, uint64_t, int)> buildNode =
+		[&](std::ostringstream &json, uint64_t id, int remaining) {
+			std::string name = "?";
+			std::string file_path;
+			int line = 0;
+			fetchNode(id, name, file_path, line);
+			json << "{\"name\":\"" << jsonEscape(name.c_str())
+			     << "\",\"file\":\""
+			     << jsonEscape(file_path.c_str())
+			     << "\",\"line\":" << line;
+			if (remaining <= 0) {
+				json << "}";
+				return;
+			}
+			bool show_callers = strcmp(dir, "callers") == 0 ||
+					    strcmp(dir, "both") == 0;
+			bool show_callees = strcmp(dir, "callees") == 0 ||
+					    strcmp(dir, "both") == 0;
+			if (show_callers) {
+				json << ",\"callers\":[";
+				std::vector<uint64_t> ids;
+				fetchNeighbors(id, true, ids);
+				bool first = true;
+				for (uint64_t cid : ids) {
+					if (cid == id)
+						continue;
+					if (!first)
+						json << ",";
+					first = false;
+					buildNode(json, cid, remaining - 1);
+				}
+				json << "]";
+			}
+			if (show_callees) {
+				json << ",\"callees\":[";
+				std::vector<uint64_t> ids;
+				fetchNeighbors(id, false, ids);
+				bool first = true;
+				for (uint64_t cid : ids) {
+					if (cid == id)
+						continue;
+					if (!first)
+						json << ",";
+					first = false;
+					buildNode(json, cid, remaining - 1);
+				}
+				json << "]";
+			}
+			json << "}";
+		};
+	// Find the starting function (kind IN (0,1,6)).
+	uint64_t func_id = 0;
+	{
+		const char *sql =
+			"SELECT id FROM entity WHERE project_id=? AND name=? "
+			"AND kind IN (0,1,6) ORDER BY id LIMIT 1";
+		sqlite3_stmt *st = nullptr;
+		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) ==
+		    SQLITE_OK) {
+			sqlite3_bind_int64(st, 1,
+					   static_cast<int64_t>(project_id));
+			sqlite3_bind_text(st, 2, function_name, -1,
+					  SQLITE_TRANSIENT);
+			if (sqlite3_step(st) == SQLITE_ROW)
+				func_id = static_cast<uint64_t>(
+					sqlite3_column_int64(st, 0));
+			sqlite3_finalize(st);
+		}
+	}
+	if (!func_id) {
+		std::ostringstream err;
+		err << "{\"error\":\"function '"
+		    << jsonEscape(std::string(function_name))
+		    << "' not found\",\"name\":\""
+		    << jsonEscape(std::string(function_name))
+		    << "\",\"callers\":[],\"callees\":[]}";
+		return dupString(err.str());
+	}
+	std::ostringstream result;
+	buildNode(result, func_id, max_depth);
+	return dupString(result.str());
 #endif
 }
 
@@ -1398,11 +1657,16 @@ char *engine_detect_ffi_boundaries(uint64_t project_id)
 	//    "cross_language_files":[{file_path,languages,node_count}],
 	//    "ffi_symbols":[{name,file_path,language,line}],
 	//    "orphan_symbols":[{name,file_path,language,line}]}
+	//
+	// v0.2.5: the graph-not-ready guard is LadybugDB-specific and lives
+	// inside the #ifdef; the SQLite backend has its own !g_store->handle()
+	// guard in the #else branch.
+
+#ifdef HAS_LADYBUG
 	if (!g_query || !g_store || !g_store->isGraphReady())
 		return dupString("{\"error\":\"graph not ready [module=engine_"
 				 "queries, method=detect_ffi_boundaries]\"}");
 
-#ifdef HAS_LADYBUG
 	lbug_connection *conn = g_store->lbugHandle();
 	if (!conn)
 		return dupString("{\"error\":\"no ladybug connection "
@@ -1600,7 +1864,203 @@ char *engine_detect_ffi_boundaries(uint64_t project_id)
 	json << "}";
 	return dupString(json.str());
 #else
-	return dupString("{\"error\":\"LadybugDB not compiled [module=engine_"
-			 "queries, method=detect_ffi_boundaries]\"}");
+	// ── v0.2.5: SQLite graph-query backend (Windows / SQLite-only) ──
+	// FFI-boundary diagnosis over the canonical entity table. The four
+	// sections (languages, cross_language_files, ffi_symbols,
+	// orphan_symbols) mirror the LadybugDB branch's output schema.
+	if (!g_store || !g_store->handle()) {
+		return dupString("{\"error\":\"graph not ready [module=engine_"
+				 "queries, method=detect_ffi_boundaries]\"}");
+	}
+	sqlite3 *db = g_store->handle();
+	std::ostringstream json;
+	json << "{";
+	auto esc = [](const std::string &s) { return jsonEscape(s.c_str()); };
+
+	// 1. Language distribution.
+	json << "\"languages\":[";
+	{
+		const char *sql = "SELECT language, COUNT(*) FROM entity "
+				  "WHERE project_id=? GROUP BY language "
+				  "ORDER BY COUNT(*) DESC";
+		sqlite3_stmt *st = nullptr;
+		bool first = true;
+		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) ==
+		    SQLITE_OK) {
+			sqlite3_bind_int64(st, 1,
+					   static_cast<int64_t>(project_id));
+			while (sqlite3_step(st) == SQLITE_ROW) {
+				if (!first)
+					json << ",";
+				first = false;
+				std::string lang =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(st, 0)) ?
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								st, 0)) :
+						"";
+				int64_t count = sqlite3_column_int64(st, 1);
+				json << "{\"language\":\"" << esc(lang)
+				     << "\",\"node_count\":" << count << "}";
+			}
+			sqlite3_finalize(st);
+		}
+	}
+	json << "],";
+
+	// 2. Cross-language files.
+	json << "\"cross_language_files\":[";
+	{
+		const char *sql =
+			"SELECT file_path, GROUP_CONCAT(DISTINCT language), "
+			"       COUNT(*) FROM entity "
+			"WHERE project_id=? AND language <> '' "
+			"GROUP BY file_path HAVING COUNT(DISTINCT language) > 1 "
+			"ORDER BY COUNT(*) DESC LIMIT 20";
+		sqlite3_stmt *st = nullptr;
+		bool first = true;
+		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) ==
+		    SQLITE_OK) {
+			sqlite3_bind_int64(st, 1,
+					   static_cast<int64_t>(project_id));
+			while (sqlite3_step(st) == SQLITE_ROW) {
+				if (!first)
+					json << ",";
+				first = false;
+				std::string fp =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(st, 0)) ?
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								st, 0)) :
+						"";
+				std::string langs =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(st, 1)) ?
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								st, 1)) :
+						"";
+				int64_t cnt = sqlite3_column_int64(st, 2);
+				json << "{\"file_path\":\"" << esc(fp)
+				     << "\",\"languages\":\"" << esc(langs)
+				     << "\",\"node_count\":" << cnt << "}";
+			}
+			sqlite3_finalize(st);
+		}
+	}
+	json << "],";
+
+	// 3. FFI-related symbols (name prefix match, mirroring the Cypher
+	// STARTS WITH list).
+	json << "\"ffi_symbols\":[";
+	{
+		const char *sql =
+			"SELECT name, file_path, language, start_row FROM entity "
+			"WHERE project_id=? AND kind IN (0,1,2) AND ("
+			"substr(name,1,7)='extern_' OR substr(name,1,4)='ffi_' "
+			"OR substr(name,1,5)='wasm_' OR substr(name,1,5)='cabi_' "
+			"OR substr(name,1,4)='jni_' OR substr(name,1,4)='JNI_' "
+			"OR substr(name,1,9)='CALLBACK_') LIMIT 30";
+		sqlite3_stmt *st = nullptr;
+		bool first = true;
+		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) ==
+		    SQLITE_OK) {
+			sqlite3_bind_int64(st, 1,
+					   static_cast<int64_t>(project_id));
+			while (sqlite3_step(st) == SQLITE_ROW) {
+				if (!first)
+					json << ",";
+				first = false;
+				std::string name =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(st, 0)) ?
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								st, 0)) :
+						"";
+				std::string fp =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(st, 1)) ?
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								st, 1)) :
+						"";
+				std::string lang =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(st, 2)) ?
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								st, 2)) :
+						"";
+				int64_t row = sqlite3_column_int64(st, 3);
+				json << "{\"name\":\"" << esc(name)
+				     << "\",\"file_path\":\"" << esc(fp)
+				     << "\",\"language\":\"" << esc(lang)
+				     << "\",\"line\":" << row << "}";
+			}
+			sqlite3_finalize(st);
+		}
+	}
+	json << "],";
+
+	// 4. Orphan symbols: kind=2 (no edges) excluding test/bench files.
+	json << "\"orphan_symbols\":[";
+	{
+		const char *sql =
+			"SELECT e.name, e.file_path, e.language, e.start_row "
+			"FROM entity e WHERE e.project_id=? AND e.kind=2 "
+			"AND e.file_path NOT LIKE '%test%' "
+			"AND e.file_path NOT LIKE '%bench%' "
+			"AND NOT EXISTS (SELECT 1 FROM relation r "
+			"                WHERE r.project_id=? "
+			"                AND (r.source_id=e.id OR "
+			"                     r.target_id=e.id)) "
+			"LIMIT 20";
+		sqlite3_stmt *st = nullptr;
+		bool first = true;
+		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) ==
+		    SQLITE_OK) {
+			sqlite3_bind_int64(st, 1,
+					   static_cast<int64_t>(project_id));
+			sqlite3_bind_int64(st, 2,
+					   static_cast<int64_t>(project_id));
+			while (sqlite3_step(st) == SQLITE_ROW) {
+				if (!first)
+					json << ",";
+				first = false;
+				std::string name =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(st, 0)) ?
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								st, 0)) :
+						"";
+				std::string fp =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(st, 1)) ?
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								st, 1)) :
+						"";
+				std::string lang =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(st, 2)) ?
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								st, 2)) :
+						"";
+				int64_t row = sqlite3_column_int64(st, 3);
+				json << "{\"name\":\"" << esc(name)
+				     << "\",\"file_path\":\"" << esc(fp)
+				     << "\",\"language\":\"" << esc(lang)
+				     << "\",\"line\":" << row << "}";
+			}
+			sqlite3_finalize(st);
+		}
+	}
+	json << "]}";
+	return dupString(json.str());
 #endif
 }
