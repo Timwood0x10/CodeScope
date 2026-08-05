@@ -1,4 +1,5 @@
 #include "go_visitor.h"
+#include <algorithm>
 #include <cctype>
 #include <cstring>
 #include <tree_sitter/api.h>

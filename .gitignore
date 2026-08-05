@@ -1,3 +1,5 @@
+# AI Generated
+
 # AI Tools
 .claude
 .gemini
@@ -8,7 +10,7 @@
 .codescope/
 .cursh/
 .mcp.json
-.trae/
+
 
 # IDE and Editors
 **/.idea/

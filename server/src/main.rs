@@ -7,6 +7,11 @@ mod tools;
 
 #[cfg(not(windows))]
 use crate::scheduler::chunk_queue;
+// `Value`/`json` are used on non-Windows cfg branches but are otherwise
+// referenced via fully-qualified `serde_json::` paths on Windows, so the
+// import can appear unused when cross-compiling. Allow it to keep the
+// Windows build warning-free.
+#[allow(unused_imports)]
 use serde_json::{Value, json};
 
 use std::env;

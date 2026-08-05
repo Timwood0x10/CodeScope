@@ -433,9 +433,12 @@ set(LADYBUG_VENDOR_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ladybug")
      else()
          set(LADYBUG_VENDOR_LIB_DIR "${LADYBUG_VENDOR_DIR}/lib/linux")
      endif()
- elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-     set(LADYBUG_VENDOR_LIB_DIR "${LADYBUG_VENDOR_DIR}/lib/windows")
  else()
+     # Windows / unknown platform: LadybugDB has no usable library here
+     # (no vendored Windows lib; the old lib/windows/ directory was removed
+     # in v0.2.5). Point at a directory that find_library won't match so
+     # HAS_LADYBUG stays undefined and the engine uses SQLite-only — which is
+     # the intended Windows configuration.
      set(LADYBUG_VENDOR_LIB_DIR "${LADYBUG_VENDOR_DIR}/lib")
  endif()
 # Force re-detection: clear stale cache entries from previous runs

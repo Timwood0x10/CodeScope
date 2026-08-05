@@ -13,11 +13,25 @@ fn main() {
     // Build the C++ engine in a separate directory from the Makefile's
     // Debug+Tests build (engine/build). This avoids cmake cache
     // invalidation when switching between Release (cargo) and Debug (make test).
-    let build_dir = format!("{}/build-release", engine_dir);
+    //
+    // v0.2.5 (cross-compile isolation): when cross-compiling (e.g. targeting
+    // Windows FROM macOS/Linux) use a per-target build directory
+    // (build-release-<target>) instead of the shared build-release. The shared
+    // dir caches the HOST platform's cmake settings (e.g. -arch arm64 on
+    // Apple Silicon), which leaks into the cross toolchain and breaks the
+    // MinGW compile ("unrecognized command-line option '-arch'"). Isolating
+    // per target makes cross-compilation deterministic.
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let build_host = std::env::consts::OS;
+    let build_dir = if build_host != target_os && !target_os.is_empty() {
+        format!("{}/build-release-{}", engine_dir, target_os)
+    } else {
+        format!("{}/build-release", engine_dir)
+    };
     let _ = std::fs::create_dir_all(&build_dir);
 
     // ── Detect platform ────────────────────────────────────────────
-    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    // (target_os / build_host are already bound above.)
 
     // ── Windows: enforce GNU ABI ────────────────────────────────────
     // CodeScope's C++ engine (CMake + MinGW gcc) produces a static
@@ -87,11 +101,11 @@ fn main() {
     // overridden — setting CMAKE_SYSTEM_NAME on Windows would break detection.
     if target_os == "windows" {
         // NOTE: CARGO_CFG_TARGET_OS gives the CROSS target, not the host.
-        // Use std::env::consts::OS to get the actual build host:
-        //   "macos" on macOS, "linux" on Linux, "windows" on Windows.
-        // Previously this line read CARGO_CFG_TARGET_OS again, which during a
-        // cross-compile returns "windows" and made is_cross always false.
-        let build_host = std::env::consts::OS;
+        // build_host (std::env::consts::OS) was already computed above and
+        // gives the actual build host: "macos" on macOS, "linux" on Linux,
+        // "windows" on Windows. Previously this line read
+        // CARGO_CFG_TARGET_OS again, which during a cross-compile returns
+        // "windows" and made is_cross always false.
         let is_cross = build_host != "windows";
         if is_cross {
             cmake_args.push("-DCMAKE_SYSTEM_NAME=Windows".to_string());

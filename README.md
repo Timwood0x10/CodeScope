@@ -4,7 +4,7 @@
 
 It transforms source code into verifiable facts, understandable models, and inspectable evidence — enabling AI to validate claims against reality instead of hallucinating.
 
-**Version**: v0.2.4 | **License**: Apache 2.0
+**Version**: v0.2.5 | **License**: Apache 2.0
 
 ---
 
@@ -16,7 +16,7 @@ CodeScope is a **Project Truth Engine** that answers one question:
 
 Not "what does this code mean", but "does the code actually do what you claim?"
 
-It indexes source code into a structured code graph (call graph + reference graph + module knowledge), then exposes **42 MCP tools** that let AI agents locate symbols, trace call paths, verify claims, detect documentation drift, and analyze architecture — all with **~98.9% token savings** vs reading raw source files.
+It indexes source code into a structured code graph (call graph + reference graph + module knowledge), then exposes **47 MCP tools** that let AI agents locate symbols, trace call paths, verify claims, detect documentation drift, and analyze architecture — all with **~98.9% token savings** vs reading raw source files.
 
 ### Supported Languages (8)
 
@@ -53,7 +53,7 @@ graph TB
     end
 
     subgraph "Rust MCP Server"
-        MCP["MCP Protocol (JSON-RPC 2.0)<br/>42 tools / stdio transport"]
+        MCP["MCP Protocol (JSON-RPC 2.0)<br/>47 tools / stdio transport"]
         DISPATCH["Tool Dispatch<br/>project_id auto-restore"]
     end
 
@@ -231,7 +231,7 @@ codescope cli force_index_files '{"paths":["/path/to/test/file.rs"]}'
 |----------|-------------|
 | **macOS** | Xcode CLT, cmake, Rust (1.85+) |
 | **Linux** | build-essential, cmake, Rust (1.85+) |
-| **Windows** ⚠️ **Beta** | MinGW-w64 14.0.0+, Rust `x86_64-pc-windows-gnu` target, cmake. LadybugDB/Cypher not available (SQLite-only). |
+| **Windows** ⚠️ **Beta** | MinGW-w64 14.0.0+, Rust `x86_64-pc-windows-gnu` target, cmake. LadybugDB has no official Windows library, so Windows ships **SQLite-only**; every graph-query tool (shortest_path, get_neighbors, get_callers/callees, graph_query, subgraph, entry_points, trace_path, hotspots, impact_analysis, ...) works via a built-in SQLite graph-query backend (CSR adjacency, sub-millisecond call-graph lookups). |
 
 ### Install Pre-built Binary
 
@@ -278,7 +278,7 @@ codescope index-parallel /path/to/large/project
 
 ---
 
-## 5. MCP Tools (42 Tools)
+## 5. MCP Tools (47 Tools)
 
 ### Indexing
 
@@ -314,6 +314,9 @@ codescope index-parallel /path/to/large/project
 |------|-------------|------------|
 | `find_callers` | Find who calls a function. | `{"symbol_name": "string (required)", "file_filter": "string (optional)"}` |
 | `find_callees` | Find what a function calls. | `{"symbol_name": "string (required)", "file_filter": "string (optional)"}` |
+| `find_callers_by_entity` | Find callers of a symbol by its graph entity id. | `{"entity_id": "integer (required)"}` |
+| `find_callees_by_entity` | Find callees of a symbol by its graph entity id. | `{"entity_id": "integer (required)"}` |
+| `get_verifier_registry_status` | Inspect the registered verifiers and their health (supported claim types, unsupported list, backend readiness). | `{}` |
 | `codescope_trace` | Interactive recursive call exploration (depth + direction) or shortest path. | `{"function_name": "string", "depth": "integer (default 1, max 5)", "direction": "callers|callees|both", "from": "string", "to": "string"}` |
 | `trace_flow` | Recursive execution flow tracing (caller→callee chain). | `{"function_name": "string (required)", "depth": "integer (default 3, max 10)"}` |
 | `shortest_path` | Shortest call path between two functions (BFS). | `{"from": "string", "to": "string", "from_id": "integer", "to_id": "integer"}` |
@@ -332,7 +335,7 @@ codescope index-parallel /path/to/large/project
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
-| `search` | **Recommended** — unified search (FTS5-based; semantic/vector search is sunset this sprint, so FTS5 is the only path). | `{"query": "string (required)", "limit": "integer (default 20, max 100)"}` |
+| `search` | **Recommended** — unified search: FTS5 exact/prefix matching **complemented by n-gram semantic vector search** (restored in v0.2.5; lexical similarity, no external model) when results run short. | `{"query": "string (required)", "limit": "integer (default 20, max 100)"}` |
 | `search_code` | [DEPRECATED — use search] | `{"query": "string (required)", "limit": "integer"}` |
 
 ### Verification
@@ -351,7 +354,7 @@ The v0.3 Evidence Pipeline transforms indexed code into verifiable evidence and 
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
-| `enhance_project` | Run background enhancement: full tree-sitter parse, call graph, FTS, and v0.3 semantic_fact extraction. Prerequisite for `build_evidence` to produce non-empty findings. Note (Step 10): complexity metrics and vector/semantic search are sunset this sprint — `enhance_project` no longer claims to enable them. | `{}` |
+| `enhance_project` | Run background enhancement: full tree-sitter parse, call graph, FTS, and v0.3 semantic_fact extraction. Prerequisite for `build_evidence` to produce non-empty findings. Complexity metrics and n-gram semantic vectors are built during `index_project` (restored in v0.2.5). | `{}` |
 | `build_evidence` | Build evidence findings by applying the rule set (sync/memory/error/pattern/framework/ffi) to the project's semantic_fact rows. Each rule declares fact needs + a combine mode (Collect / MissingMatch / MissingMatchPerFunction / Count). Returns a JSON array of Evidence objects. Run after `enhance_project` so semantic facts are populated. | `{"category": "string (optional, one of: sync|memory|error|pattern|framework|ffi)"}` |
 | `verify_statement` | Verify a natural-language claim against the project's indexed evidence. Pipeline: IntentParser → Planner → EvidenceBuilder → VerdictBuilder. Returns JSON with `verdict` (Supported\|Contradicted\|PartiallyVerified\|Unknown), `confidence`, `requirements[]`, and `evidence[]`. Use this for yes/no questions about code behavior (e.g. "does this project safely handle CString?"). | `{"claim": "string (required)"}` |
 | `build_project_state` | Build (or rebuild) and persist the project state snapshot. Runs the full v0.3 Evidence Pipeline (evidence aggregation + state queries) and UPSERTs the result into the `project_state` table. Returns the snapshot JSON: overall confidence, capability/architecture/workflow/dead_code scores, per-category issue counts, and `last_updated` timestamp. | `{}` |
@@ -449,17 +452,19 @@ All benchmarks measured on **Apple M3 Max (36 GB RAM)**. Other hardware will pro
 | **ARES** (Go) | 337 MB | 24 KB | <0.1% |
 | **rustc** (Rust compiler) | — | — | — |
 
-### Query Latency (LadybugDB Cypher)
+### Query Latency
 
-| Query | Latency | Notes |
-|-------|:-------:|-------|
-| `get_graph_stats` | ~1 ms | Cypher `count()` aggregation |
-| `find_callers("buildGraph")` | ~1 ms | Cypher `MATCH` with name filter |
-| `find_callees("buildGraph")` | ~1 ms | 54 callees returned |
-| `graph_query` (LIMIT 100) | ~1 ms | 2,590 edges, DSL → Cypher translation |
-| `shortest_path` | ~1 ms | Cypher `shortestPath()` BFS |
-| `get_neighbors` | ~1 ms | 1-hop `MATCH` with direction |
-| `get_subgraph` | ~1 ms | 1-hop `MATCH` with filters |
+macOS/Linux use the LadybugDB Cypher backend; Windows and SQLite-only builds use the built-in SQLite graph-query backend (CSR adjacency tables). Both are millisecond-scale for the same queries.
+
+| Query | LadybugDB | SQLite backend (Windows/SQLite-only) |
+|-------|:---------:|:-------------------------------------:|
+| `get_graph_stats` | ~1 ms (Cypher `count()`) | ~0.1 ms |
+| `find_callers("buildGraph")` | ~1 ms (Cypher `MATCH`) | ~0.2 ms (sub-ms) |
+| `find_callees("buildGraph")` | ~1 ms (54 callees) | ~0.2 ms |
+| `graph_query` (full call-graph scan) | ~1 ms (LIMIT 100) | ~37 ms (full 2,590-edge scan, JOIN-optimized) |
+| `shortest_path` | ~1 ms (Cypher BFS) | O(E) CSR BFS, sub-ms |
+| `get_neighbors` | ~1 ms | O(degree) CSR adjacency, sub-ms |
+| `get_subgraph` | ~1 ms | O(E) CSR BFS, sub-ms |
 
 ### Micro Benchmarks
 
@@ -553,24 +558,15 @@ Each script calls `codescope cli <tool_name> '<json_args>'` internally. See `ski
 
 ---
 
-## 10. Backup: Semantic Search (Embedding) — On-Hold
+## 10. Semantic Search (n-gram hash vectors, zero-model)
 
-**Current status**: vector/semantic search is **sunset** (Step 10 decision) — `buildVectorsFromGraph` is a no-op, `searchSemantic` is stubbed, and capability reporting returns `"available":false,"unavailable_reason":"sunset","mode":"fts"`. `search_code` uses FTS5 (word + trigram), which covers identifier-based search. No embedding model is integrated.
+**Status (v0.2.5)**: semantic search is **restored** with a pure-static, zero-model design that fits the project's 0-LLM positioning. It complements FTS5 exact/prefix matching and requires **no model files, no ONNX runtime, and no network**.
 
-**Backup selection (if semantic search is ever restored)**: **jina-embeddings-v2-base-code** (161M params, encoder-only — NOT an LLM, no text generation).
-- ✅ Explicitly supports C/C++ and Rust, 8k context, ONNX-exportable
-- ✅ Apache-2.0 license
-- Alternative: StarEncoder (125M, The Stack 80+ languages). `all-MiniLM-L6-v2` is a **NL sentence model — unsuitable** for code (only coincidentally 384-dim).
-- Note: its output is **768-dim**, which conflicts with the current `TARGET_DIM=384` constraint.
-
-**Planned integration path (if resumed)**:
-1. Run the model locally via ONNX Runtime (161M, no external API).
-2. Schema: bump `TARGET_DIM` 384 → 768 (or add a projection layer).
-3. Fix `insertEmbedding` to use canonical `entity.id` (currently reads legacy `graph_nodes`).
-4. Implement real `searchSemantic` / `buildVectorsFromGraph` read-write paths.
-5. Readiness as data invariants: `vector_ready = valid_vectors / eligible_entities` (no fake-ready flags).
-
-This is a full feature build (model dependency + schema change + end-to-end pipeline) — deliberately deferred in favor of call-graph accuracy work.
+- **Vectors**: `buildVectorsFromGraph` (during DEEP index) computes a **192-dim n-gram hash vector** per function/method entity and stores it in `node_vectors` (raw float32 blob). `vector_ready` is derived from the actual row count — never a fake-ready flag.
+- **TF-IDF weighting**: each entity's name is camel/snake/kebab-split, and each token's vector contribution is weighted by its inverse document frequency (`idf = log(1+N/(1+df))`). Rare, discriminative tokens dominate, so a query for `getLedger` ranks `getLedgerBalance` above unrelated `get*` functions.
+- **Accuracy floor**: `searchSemanticJson` ranks by cosine similarity but only returns scores ≥ `0.3`, so weak/incidental trigram overlap is rejected — semantic search never pollutes results.
+- **Query path**: `searchSemanticJson` vectorizes the query with the same scheme; `search` (unified search) appends semantic results when FTS5 + trigram do not fill the limit. `engine_search_semantic` routes to the real implementation.
+- **Why not a real embedding model**: the project is a **0-LLM** static-analysis tool — accuracy comes from graph + FTS + token-IDF signals, and pulling in a 161M-param ONNX model (e.g. jina-embeddings-v2-base-code) would make configuration heavy for marginal recall gain. If true semantic-embedding recall is ever needed, `TARGET_DIM` would need to rise to the model's 768 dims and `node_vectors` re-dimensioned — deliberately out of scope for the 0-LLM positioning.
 
 ---
 
@@ -578,4 +574,4 @@ This is a full feature build (model dependency + schema change + end-to-end pipe
 
 Apache 2.0 — see [LICENSE](LICENSE).
 
-**CodeScope v0.2.4** — Built with Rust 2024 + C++23 + tree-sitter + SQLite.
+**CodeScope v0.2.5** — Built with Rust 2024 + C++23 + tree-sitter + SQLite.

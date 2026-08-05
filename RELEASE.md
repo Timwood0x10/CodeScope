@@ -39,6 +39,8 @@ Restores the three capabilities formally sunset in the Step 10 sprint (complexit
 | 12 | All graph tools errored on Windows | Query layer hard-routed to LadybugDB with no SQLite path | Implement the full SQLite graph-query backend (CSR adjacency + `entity`/`relation`), same JSON schema |
 | 13 | `graph_query` full-graph scan did per-edge lookups | Each edge ran 2 `readEntity` queries (N+1) | JOIN `entity` in one query — full call-graph scan dropped to ~37ms on the engine source |
 | 7 | Go interface embedding dropped embedded methods | Method-set check used direct methods only | Expand to transitive closure of embedded interfaces |
+| 14 | Windows cross-compile reused host cmake cache | `build.rs` always used `build-release/`, leaking macOS `-arch arm64` into MinGW | Per-target build dir (`build-release-<target>`) when cross-compiling |
+| 15 | `go_visitor.cpp` failed to compile on MinGW | Missing `<algorithm>` for `std::find`/`std::sort` (Clang compiled via indirect include) | Add the `<algorithm>` include |
 
 ### Full changelog
 
