@@ -605,6 +605,13 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		exec(func_sql.c_str());
 	}
 	// Update import.source_scope_id to point to the file's module scope.
+	// v0.6 (perf): the old form nested a second correlated subquery to look
+	// up the import's file via semantic_records.rowid=import.id. That nested
+	// lookup is inlined into the JOIN below (sr.rowid=import.id AND
+	// sr.file_path=e.file_path), so SQLite resolves the whole scope match in
+	// a single flat join instead of running a subquery per import row.
+	// Results are identical: same s.id for the same (scope,entity,sr-file)
+	// combination, with the same COALESCE(...,0) fallback and LIMIT 1.
 	{
 		std::string imp_scope_sql =
 			"UPDATE import SET source_scope_id = "
@@ -612,11 +619,10 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			" JOIN entity e ON e.project_id = s.project_id"
 			" AND s.kind = 1"
 			" AND s.name = e.module_path "
-			" WHERE e.project_id=import.project_id"
-			" AND e.file_path = "
-			"  (SELECT file_path FROM semantic_records sr"
-			"   WHERE sr.rowid = import.id"
-			"   AND sr.project_id=import.project_id)"
+			" JOIN semantic_records sr ON sr.rowid = import.id"
+			" AND sr.project_id = import.project_id"
+			" AND sr.file_path = e.file_path"
+			" WHERE e.project_id = import.project_id"
 			" LIMIT 1) "
 			"WHERE project_id=" +
 			std::to_string(project_id);
@@ -773,8 +779,11 @@ bool GraphStore::buildCSR(uint64_t project_id)
 	if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &st, nullptr) != SQLITE_OK)
 		return false;
 
+	// v0.6 (perf): rows for this project were just DELETEd above (line 767),
+	// so no PK conflicts can exist — plain INSERT is equivalent to INSERT OR
+	// REPLACE here but skips the replace path's conflict bookkeeping.
 	const char *ins_sql =
-		"INSERT OR REPLACE INTO adjacency (src_id, project_id, tgt_blob) "
+		"INSERT INTO adjacency (src_id, project_id, tgt_blob) "
 		"VALUES (?, ?, ?)";
 	sqlite3_stmt *ins = nullptr;
 	if (sqlite3_prepare_v2(db_, ins_sql, -1, &ins, nullptr) != SQLITE_OK) {
@@ -857,8 +866,10 @@ bool GraphStore::buildCSR(uint64_t project_id)
 	    SQLITE_OK)
 		return false;
 
+	// v0.6 (perf): rows for this project were just DELETEd above, so no PK
+	// conflicts can exist — plain INSERT equals INSERT OR REPLACE here.
 	const char *rev_ins_sql =
-		"INSERT OR REPLACE INTO adjacency_rev (tgt_id, project_id, "
+		"INSERT INTO adjacency_rev (tgt_id, project_id, "
 		"src_blob) VALUES (?, ?, ?)";
 	sqlite3_stmt *rev_ins = nullptr;
 	if (sqlite3_prepare_v2(db_, rev_ins_sql, -1, &rev_ins, nullptr) !=

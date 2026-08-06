@@ -118,6 +118,17 @@ class ResolverPipeline {
 		int kind = 0;
 		int score = 0;
 		double total_score = 0.0;
+		// v0.6 (perf): precomputed path components derived once when the
+		// entity_index is loaded. applyConstraints recomputed dir/parent/
+		// module via rfind+substr for every candidate on every ref; since a
+		// candidate's file_path is fixed, caching these eliminates repeated
+		// heap allocations in the hot loop without changing any score.
+		// cand_dir      = file_path up to the last '/', or "" if none.
+		// cand_parent   = cand_dir up to its last '/', or "" if none.
+		// cand_module   = token after the last '/' of cand_dir, else cand_dir.
+		std::string cand_dir;
+		std::string cand_parent;
+		std::string cand_module;
 		// v0.2.5 (perf fix): ReceiverMatch's per-candidate score, captured
 		// during applyConstraints WITHOUT building the full FactorResult
 		// vector (name/detail strings). The ambiguity gate (receiver_bypass)

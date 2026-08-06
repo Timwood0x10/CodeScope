@@ -56,6 +56,20 @@ fn take_string(ptr: *mut c_char) -> String {
 /// Unique temp DB path per test invocation to avoid lock contention.
 static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// The engine is a process-wide singleton (g_store). Rust runs tests in
+/// parallel threads by default, so concurrent engine_init/engine_shutdown
+/// from different tests races the singleton and aborts (SIGABRT). Serialize
+/// engine access with a global mutex: each test takes the guard as its
+/// first statement and drops it (RAII) when the test ends — equivalent to
+/// `--test-threads=1` for engine tests without serializing the rest.
+static ENGINE_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn lock_engine() -> std::sync::MutexGuard<'static, ()> {
+    ENGINE_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
 fn temp_db_path() -> PathBuf {
     let pid = std::process::id();
     let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -93,6 +107,7 @@ fn teardown_engine() {
 
 #[test]
 fn test_find_connected_components_empty_db_returns_envelope() {
+    let _engine_guard = lock_engine();
     let pid = setup_engine();
     let result = take_string(unsafe { engine_find_connected_components(pid) });
     teardown_engine();
@@ -130,6 +145,7 @@ fn test_find_connected_components_empty_db_returns_envelope() {
 
 #[test]
 fn test_find_connected_components_zero_project_id_does_not_crash() {
+    let _engine_guard = lock_engine();
     let _pid = setup_engine();
     // project_id 0 does not exist; the inspector must not crash and must
     // still return the documented envelope.
@@ -154,6 +170,7 @@ fn test_find_connected_components_zero_project_id_does_not_crash() {
 
 #[test]
 fn test_find_shortest_path_zero_ids_returns_json() {
+    let _engine_guard = lock_engine();
     let pid = setup_engine();
     // source_id=target_id=0 cannot exist; the query engine must still
     // return valid JSON (empty path or error), not crash.
@@ -171,6 +188,7 @@ fn test_find_shortest_path_zero_ids_returns_json() {
 
 #[test]
 fn test_locate_by_name_empty_db_returns_locations_array() {
+    let _engine_guard = lock_engine();
     let pid = setup_engine();
     let name_c = cstr("nonexistent_symbol");
     let result = take_string(unsafe { engine_locate_by_name(pid, name_c.as_ptr()) });

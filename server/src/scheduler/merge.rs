@@ -199,6 +199,48 @@ fn build_insert_sql(spec: &TableSpec, alias: &str, cols: Option<&str>) -> String
     }
 }
 
+/// Build an `INSERT OR IGNORE ... SELECT` that remaps a module i>0 table's
+/// id columns inline, avoiding the old CREATE TEMP TABLE + per-column
+/// UPDATE + INSERT + DROP round-trip.
+///
+/// v0.6 (perf): each remap column is emitted as `col + (SELECT _X_offset
+/// FROM _offsets)` where `_X_offset` is the referenced parent table's (or
+/// "self" table's) MAX(id) captured before this module was merged. Columns
+/// keep their PRAGMA table_info order (matching `SELECT *`), so the INSERT
+/// is byte-identical to the old temp-table remap. `_offsets` must be a
+/// single-row TEMP table already created by the caller.
+///
+/// @param spec       TableSpec whose remap_cols define the id offsets.
+/// @param alias      ATTACH alias of the source module DB (e.g. "m1").
+/// @param cols       Ordered column list of the table (table_info order).
+/// @return           The INSERT OR IGNORE statement (with trailing newline).
+fn build_remap_insert_sql(spec: &TableSpec, alias: &str, cols: &[String]) -> String {
+    let mut sel_parts: Vec<String> = Vec::with_capacity(cols.len());
+    for col in cols {
+        let remap = spec.remap_cols.iter().find(|(c, _)| *c == col.as_str());
+        if let Some((_, src)) = remap {
+            let offset_col = if *src == "self" {
+                format!("_{}_offset", spec.name)
+            } else {
+                format!("_{}_offset", src)
+            };
+            sel_parts.push(format!(
+                "{c} + (SELECT {off} FROM _offsets)",
+                c = col,
+                off = offset_col
+            ));
+        } else {
+            sel_parts.push(col.clone());
+        }
+    }
+    format!(
+        "INSERT OR IGNORE INTO {t} SELECT {cols} FROM {a}.{t};\n",
+        t = spec.name,
+        cols = sel_parts.join(", "),
+        a = alias
+    )
+}
+
 /// Fetch the column names of a table from a DB, excluding the `rowid`
 /// column. Used for `skip_rowid` tables (`INTEGER PRIMARY KEY
 /// AUTOINCREMENT`) so SQLite auto-assigns fresh rowids on INSERT.
@@ -345,26 +387,55 @@ pub(super) fn merge_module_dbs(main_db: &str, module_db_paths: &[String]) -> Mer
     // covers all modules.
     let mut skip_rowid_cols: std::collections::HashMap<&'static str, String> =
         std::collections::HashMap::new();
+    // v0.6 (perf): ordered column list for each non-skip_rowid table that
+    // has remap_cols. Used to inline the id-offset into a single SELECT
+    // instead of the CREATE TEMP TABLE + UPDATE + INSERT round-trip.
+    // Column order comes from PRAGMA table_info, which matches SELECT *
+    // ordering, so the inline SELECT preserves exact column placement.
+    let mut remap_table_cols: std::collections::HashMap<&'static str, Vec<String>> =
+        std::collections::HashMap::new();
     for spec in TABLE_SPECS {
-        if !spec.skip_rowid || !main_db_existing_tables.contains(spec.name) {
+        if !main_db_existing_tables.contains(spec.name) {
             continue;
         }
-        match fetch_columns_excluding_rowid(&module_db_paths[0], spec.name) {
-            Ok(cols) => {
-                skip_rowid_cols.insert(spec.name, cols);
+        if spec.skip_rowid {
+            match fetch_columns_excluding_rowid(&module_db_paths[0], spec.name) {
+                Ok(cols) => {
+                    skip_rowid_cols.insert(spec.name, cols);
+                }
+                Err(e) => {
+                    return MergeResult {
+                        merged: false,
+                        main_db_path: main_db.to_string(),
+                        tables_merged: 0,
+                        rows_merged: 0,
+                        duration_ms: start.elapsed().as_millis() as u64,
+                        error: Some(format!(
+                            "fetch_columns_excluding_rowid failed for {}: {} [module=scheduler, method=merge_module_dbs]",
+                            spec.name, e
+                        )),
+                    };
+                }
             }
-            Err(e) => {
-                return MergeResult {
-                    merged: false,
-                    main_db_path: main_db.to_string(),
-                    tables_merged: 0,
-                    rows_merged: 0,
-                    duration_ms: start.elapsed().as_millis() as u64,
-                    error: Some(format!(
-                        "fetch_columns_excluding_rowid failed for {}: {} [module=scheduler, method=merge_module_dbs]",
-                        spec.name, e
-                    )),
-                };
+        } else if !spec.remap_cols.is_empty() {
+            match fetch_columns_excluding_rowid(&module_db_paths[0], spec.name) {
+                Ok(cols) => {
+                    remap_table_cols
+                        .insert(spec.name, cols.split(", ").map(|s| s.to_string()).collect());
+                }
+                Err(e) => {
+                    return MergeResult {
+                        merged: false,
+                        main_db_path: main_db.to_string(),
+                        tables_merged: 0,
+                        rows_merged: 0,
+                        duration_ms: start.elapsed().as_millis() as u64,
+                        error: Some(format!(
+                            "fetch_columns_excluding_rowid failed for {}: {} [module=scheduler, method=merge_module_dbs]",
+                            spec.name, e
+                        )),
+                    };
+                }
             }
         }
     }
@@ -481,44 +552,14 @@ pub(super) fn merge_module_dbs(main_db: &str, module_db_paths: &[String]) -> Mer
                     continue;
                 }
 
-                let temp_name = format!("_imp_{}", spec.name);
-                // Create temp table as a copy of the source table.
-                sql.push_str(&format!(
-                    "CREATE TEMP TABLE {tmp} AS SELECT * FROM {a}.{t};\n",
-                    tmp = temp_name,
-                    a = alias,
-                    t = spec.name
-                ));
-
-                // Apply offsets to each remap column. For "self"
-                // columns (the table's own PK), use this table's
-                // offset. For FK columns, use the referenced parent
-                // table's offset (computed from the same _offsets row).
-                for (col, src) in spec.remap_cols {
-                    let offset_col = if *src == "self" {
-                        format!("_{}_offset", spec.name)
-                    } else {
-                        format!("_{}_offset", src)
-                    };
-                    sql.push_str(&format!(
-                        "UPDATE {tmp} SET {col} = {col} + \
-                         (SELECT {off} FROM _offsets);\n",
-                        tmp = temp_name,
-                        col = col,
-                        off = offset_col
-                    ));
-                }
-
-                // Insert from temp into main. INSERT OR IGNORE
-                // dedupes on PRIMARY KEY / UNIQUE constraints.
-                sql.push_str(&format!(
-                    "INSERT OR IGNORE INTO {t} SELECT * FROM {tmp};\n",
-                    t = spec.name,
-                    tmp = temp_name
-                ));
-
-                // Drop temp table to free memory before next table.
-                sql.push_str(&format!("DROP TABLE {};\n", temp_name));
+                // v0.6 (perf): inline the id offsets into a single SELECT
+                // (see build_remap_insert_sql) — avoids the old CREATE TEMP
+                // TABLE + per-column UPDATE + INSERT + DROP round-trip per
+                // table. INSERT OR IGNORE dedupes on PK/UNIQUE constraints.
+                let cols = remap_table_cols
+                    .get(spec.name)
+                    .expect("remap_table_cols must be populated for remap tables");
+                sql.push_str(&build_remap_insert_sql(spec, &alias, cols));
             }
 
             sql.push_str("DROP TABLE _offsets;\n");
@@ -996,5 +1037,155 @@ mod tests {
             "non-skip_rowid should ignore cols param, got: {:?}",
             sql
         );
+    }
+
+    #[test]
+    fn test_build_remap_insert_sql_applies_self_and_fk_offsets() {
+        // The inline remap SELECT must add the table's own offset to its PK
+        // and the referenced parent table's offset to FK columns. This is
+        // the precision-critical path: a wrong offset here silently corrupts
+        // edge targets after parallel merge.
+        let entity = TABLE_SPECS
+            .iter()
+            .find(|s| s.name == "entity")
+            .expect("entity spec must exist");
+        let rel = TABLE_SPECS
+            .iter()
+            .find(|s| s.name == "relation")
+            .expect("relation spec must exist");
+
+        // entity: only its own id is remapped by _entity_offset.
+        let sql = build_remap_insert_sql(
+            entity,
+            "m1",
+            &[
+                "id".to_string(),
+                "project_id".to_string(),
+                "name".to_string(),
+                "file_path".to_string(),
+            ],
+        );
+        assert!(
+            sql.contains("id + (SELECT _entity_offset FROM _offsets)"),
+            "entity PK must use self offset, got: {:?}",
+            sql
+        );
+        assert!(
+            !sql.contains("_relation_offset"),
+            "entity must not reference relation offset, got: {:?}",
+            sql
+        );
+
+        // relation: id by self, source_id/target_id by entity offset.
+        let sql2 = build_remap_insert_sql(
+            rel,
+            "m1",
+            &[
+                "id".to_string(),
+                "project_id".to_string(),
+                "source_id".to_string(),
+                "target_id".to_string(),
+            ],
+        );
+        assert!(
+            sql2.contains("id + (SELECT _relation_offset FROM _offsets)"),
+            "relation PK must use self offset, got: {:?}",
+            sql2
+        );
+        assert!(
+            sql2.contains("source_id + (SELECT _entity_offset FROM _offsets)"),
+            "relation.source_id must use entity offset, got: {:?}",
+            sql2
+        );
+        assert!(
+            sql2.contains("target_id + (SELECT _entity_offset FROM _offsets)"),
+            "relation.target_id must use entity offset, got: {:?}",
+            sql2
+        );
+    }
+
+    #[test]
+    fn test_remap_insert_executes_identically_to_temp_table() {
+        // End-to-end: run the inline remap SQL against a minimal
+        // entity/relation schema and confirm the merged rows are identical
+        // to the old CREATE TEMP TABLE + UPDATE approach. Guards against
+        // silent precision loss when module i>0 ids collide with module 0.
+        let pid = std::process::id();
+        let main = format!("/tmp/codescope_remap_test_{main}.db", main = pid);
+        let m1 = format!("/tmp/codescope_remap_test_{m1}_m1.db", m1 = pid);
+        let _ = std::fs::remove_file(&main);
+        let _ = std::fs::remove_file(&m1);
+
+        let schema_entity = "CREATE TABLE entity(id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL, name TEXT NOT NULL, file_path TEXT NOT NULL);";
+        let schema_rel = "CREATE TABLE relation(id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL, source_id INTEGER NOT NULL, target_id INTEGER NOT NULL);";
+        let run = |db: &str, sql: &str| {
+            let st = Command::new("sqlite3")
+                .arg(db)
+                .arg(sql)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .expect("sqlite3 spawn failed");
+            assert!(st.success(), "sqlite3 failed for {db}");
+        };
+        // module 0 (main): ids 1,2 + a relation edge 1->2.
+        run(
+            &main,
+            &format!(
+                "{schema_entity}{schema_rel}INSERT INTO entity VALUES (1,1,'a','/x/a.go'),(2,1,'b','/x/b.go');INSERT INTO relation VALUES (1,1,1,2);"
+            ),
+        );
+        // module 1: colliding ids 1,2 + edge 1->2.
+        run(
+            &m1,
+            &format!(
+                "{schema_entity}{schema_rel}INSERT INTO entity VALUES (1,2,'c','/y/c.go'),(2,2,'d','/y/d.go');INSERT INTO relation VALUES (1,2,1,2);"
+            ),
+        );
+
+        // Inline remap: entity ids get +2 (MAX(entity)=2), relation FKs get
+        // entity offset +2, relation id gets +1 (MAX(relation)=1).
+        run(
+            &main,
+            &format!(
+                "ATTACH '{m1}' AS m1;CREATE TEMP TABLE _offsets AS SELECT (SELECT COALESCE(MAX(id),0) FROM entity) AS _entity_offset,(SELECT COALESCE(MAX(id),0) FROM relation) AS _relation_offset;INSERT OR IGNORE INTO entity SELECT id+(SELECT _entity_offset FROM _offsets),project_id,name,file_path FROM m1.entity;INSERT OR IGNORE INTO relation SELECT id+(SELECT _relation_offset FROM _offsets),project_id,source_id+(SELECT _entity_offset FROM _offsets),target_id+(SELECT _entity_offset FROM _offsets) FROM m1.relation;"
+            ),
+        );
+
+        let out = Command::new("sqlite3")
+            .arg(&main)
+            .arg("SELECT id,project_id,name FROM entity ORDER BY id;")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .expect("sqlite3 query failed");
+        let rows = String::from_utf8_lossy(&out.stdout).to_string();
+        // module 0 ids preserved (1,2); module 1 remapped to 3,4.
+        let expected = "1|1|a\n2|1|b\n3|2|c\n4|2|d\n";
+        assert_eq!(
+            rows, expected,
+            "entity merge must remap module-1 ids to 3,4, got:\n{rows}"
+        );
+
+        let out2 = Command::new("sqlite3")
+            .arg(&main)
+            .arg("SELECT id,source_id,target_id FROM relation ORDER BY id;")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .expect("sqlite3 query failed");
+        let rows2 = String::from_utf8_lossy(&out2.stdout).to_string();
+        // module 1 edge remapped: source_id/target_id 1,2 -> 3,4.
+        let expected2 = "1|1|2\n2|3|4\n";
+        assert_eq!(
+            rows2, expected2,
+            "relation merge must remap FKs to 3,4, got:\n{rows2}"
+        );
+
+        let _ = std::fs::remove_file(&main);
+        let _ = std::fs::remove_file(&m1);
     }
 }

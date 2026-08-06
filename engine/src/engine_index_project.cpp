@@ -789,7 +789,11 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 				continue;
 			}
 
-			std::string source = readFile(job.path.c_str());
+			// v0.6 (perf): st_size was just obtained above, so reuse it to
+			// skip readFile's ate-seek + tellg round-trip per file.
+			std::string source = readFilePrealloc(
+				job.path.c_str(),
+				static_cast<size_t>(file_stat.st_size));
 			if (source.empty()) {
 				store::bufferParseFailure(
 					project_id, job.path, job.lang,

@@ -240,23 +240,13 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 			sum_scored += weight * score;
 		};
 
-		// ── Pre-parse this candidate's path once (perf fix #2) ──
-		size_t cand_slash = c.file_path.rfind('/');
-		std::string cand_dir =
-			(cand_slash != std::string::npos) ?
-				c.file_path.substr(0, cand_slash) :
-				"";
-		size_t cand_parent_slash = cand_dir.rfind('/');
-		std::string cand_parent =
-			(cand_parent_slash != std::string::npos) ?
-				cand_dir.substr(0, cand_parent_slash) :
-				"";
-		std::string cand_module = cand_dir;
-		{
-			size_t ms = cand_dir.rfind('/');
-			if (ms != std::string::npos)
-				cand_module = cand_dir.substr(ms + 1);
-		}
+		// ── Candidate path components (v0.6) ──
+		// Precomputed once when the entity_index was loaded (pipeline.cpp
+		// entity_index build); values are byte-identical to the old inline
+		// rfind+substr derivation, so this is a pure-allocation win.
+		const std::string &cand_dir = c.cand_dir;
+		const std::string &cand_parent = c.cand_parent;
+		const std::string &cand_module = c.cand_module;
 
 		// ── NamespaceMatch score (reused by ModuleMatch and the
 		//    CommonNamePenalty same-module gate) ──
@@ -501,6 +491,28 @@ int64_t ResolverPipeline::run()
 			c.language = lang ? lang :
 					    languageFromPath(c.file_path);
 			c.module_path = modulePath(c.file_path);
+			// v0.6 (perf): precompute the path components that
+			// applyConstraints derives from c.file_path on every candidate.
+			// Computing them once here (dir/parent/module token) removes
+			// per-ref heap allocations in the hot loop; the values are
+			// byte-identical to the old inline rfind+substr derivation so no
+			// score changes.
+			{
+				size_t cs = c.file_path.rfind('/');
+				c.cand_dir = (cs != std::string::npos) ?
+						     c.file_path.substr(0, cs) :
+						     std::string();
+				size_t cps = c.cand_dir.rfind('/');
+				c.cand_parent =
+					(cps != std::string::npos) ?
+						c.cand_dir.substr(0, cps) :
+						std::string();
+				c.cand_module = c.cand_dir;
+				size_t cms = c.cand_dir.rfind('/');
+				if (cms != std::string::npos)
+					c.cand_module =
+						c.cand_dir.substr(cms + 1);
+			}
 			// Column 4 is arity (added to SELECT above). Default 0
 			// if NULL — matches entity.arity DEFAULT 0 so callers
 			// that never set arity behave as "unknown arity".
@@ -1095,6 +1107,38 @@ int64_t ResolverPipeline::run()
 							languageFromPath(
 								c.file_path);
 					c.module_path = modulePath(c.file_path);
+					// v0.6 (perf): precompute path components for fuzzy
+					// candidates too, so applyConstraints' dir/module
+					// scoring is identical to the exact-match path (an
+					// empty cand_dir here would silently zero the module
+					// and namespace scores and lose resolution precision).
+					{
+						size_t cs =
+							c.file_path.rfind('/');
+						c.cand_dir =
+							(cs !=
+							 std::string::npos) ?
+								c.file_path.substr(
+									0, cs) :
+								std::string();
+						size_t cps =
+							c.cand_dir.rfind('/');
+						c.cand_parent =
+							(cps !=
+							 std::string::npos) ?
+								c.cand_dir.substr(
+									0,
+									cps) :
+								std::string();
+						c.cand_module = c.cand_dir;
+						size_t cms =
+							c.cand_dir.rfind('/');
+						if (cms != std::string::npos)
+							c.cand_module =
+								c.cand_dir.substr(
+									cms +
+									1);
+					}
 					// Column 3 is arity (added to lk_sql SELECT above).
 					c.arity = sqlite3_column_int(lk_st, 3);
 					// Column 4 is kind (RecordKind), appended so

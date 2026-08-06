@@ -1309,8 +1309,15 @@ std::string QueryEngine::getCallersByEntity(uint64_t project_id,
 	int64_t start_row = 0;
 	{
 		sqlite3_stmt *st = nullptr;
+		// entity.id is globally unique after parallel merge (each
+		// module's ids are offset-remapped), so query by id alone —
+		// no project_id filter. In serial products this is equally
+		// correct (single project). Filtering by project_id here would
+		// break parallel products where the MCP layer's project_id
+		// (the latest/restored project) differs from the module that
+		// owns this entity.
 		const char *sql = "SELECT name, file_path, start_row "
-				  "FROM entity WHERE id=? AND project_id=?";
+				  "FROM entity WHERE id=?";
 		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) !=
 		    SQLITE_OK) {
 			return "{\"callers\":[],\"total\":0,\"error\":\"entity "
@@ -1318,7 +1325,6 @@ std::string QueryEngine::getCallersByEntity(uint64_t project_id,
 			       "method=getCallersByEntity]\"}";
 		}
 		sqlite3_bind_int64(st, 1, static_cast<int64_t>(entity_id));
-		sqlite3_bind_int64(st, 2, static_cast<int64_t>(project_id));
 		if (sqlite3_step(st) == SQLITE_ROW) {
 			const char *n = reinterpret_cast<const char *>(
 				sqlite3_column_text(st, 0));
@@ -1343,14 +1349,14 @@ std::string QueryEngine::getCallersByEntity(uint64_t project_id,
 
 	// Build a precise Cypher query: filter by name AND file_path AND
 	// start_row to target exactly one entity. This is the entity
-	// selector from plan §7.1.
+	// selector from plan §7.1. No project_id filter: after parallel
+	// merge the (name, file_path, start_row) triple is globally unique,
+	// and the MCP layer's restored project_id may differ from the
+	// owning module's project_id in parallel products.
 	std::string cypher =
 		"MATCH (callee:GraphNode {name:'" + cypherEscape(name.c_str()) +
-		"', project_id:" + std::to_string(project_id) +
-		"})<-[r:CALLS]-(caller:GraphNode) "
-		"WHERE caller.project_id = " +
-		std::to_string(project_id) +
-		" AND r.edge_type = 1"
+		"'})<-[r:CALLS]-(caller:GraphNode) "
+		"WHERE r.edge_type = 1"
 		" AND callee.file_path = '" +
 		cypherEscape(file_path.c_str()) + "'" +
 		" AND callee.start_row = " + std::to_string(start_row) +
@@ -1553,8 +1559,11 @@ std::string QueryEngine::getCalleesByEntity(uint64_t project_id,
 	int64_t start_row = 0;
 	{
 		sqlite3_stmt *st = nullptr;
+		// entity.id is globally unique after parallel merge — query by
+		// id alone (no project_id filter); see getCallersByEntity for
+		// the rationale.
 		const char *sql = "SELECT name, file_path, start_row "
-				  "FROM entity WHERE id=? AND project_id=?";
+				  "FROM entity WHERE id=?";
 		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) !=
 		    SQLITE_OK) {
 			return "{\"callees\":[],\"total\":0,\"error\":\"entity "
@@ -1562,7 +1571,6 @@ std::string QueryEngine::getCalleesByEntity(uint64_t project_id,
 			       "method=getCalleesByEntity]\"}";
 		}
 		sqlite3_bind_int64(st, 1, static_cast<int64_t>(entity_id));
-		sqlite3_bind_int64(st, 2, static_cast<int64_t>(project_id));
 		if (sqlite3_step(st) == SQLITE_ROW) {
 			const char *n = reinterpret_cast<const char *>(
 				sqlite3_column_text(st, 0));
@@ -1587,11 +1595,8 @@ std::string QueryEngine::getCalleesByEntity(uint64_t project_id,
 
 	std::string cypher =
 		"MATCH (caller:GraphNode {name:'" + cypherEscape(name.c_str()) +
-		"', project_id:" + std::to_string(project_id) +
-		"})-[r:CALLS]->(callee:GraphNode) "
-		"WHERE callee.project_id = " +
-		std::to_string(project_id) +
-		" AND r.edge_type = 1"
+		"'})-[r:CALLS]->(callee:GraphNode) "
+		"WHERE r.edge_type = 1"
 		" AND caller.file_path = '" +
 		cypherEscape(file_path.c_str()) + "'" +
 		" AND caller.start_row = " + std::to_string(start_row) +

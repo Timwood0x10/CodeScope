@@ -58,6 +58,9 @@ extern std::unique_ptr<Parser> g_parser;
 // Not part of the public API; used internally by engine_*.cpp files.
 
 std::string readFile(const char *path);
+// v0.6: read a file whose size is already known (avoids the ate-seek +
+// tellg round-trip in readFile). Semantics identical for a stable file.
+std::string readFilePrealloc(const char *path, size_t known_size);
 std::string jsonEscape(const std::string &s);
 std::string simpleHash(const std::string &s);
 const char *detectLanguage(const char *file_path);

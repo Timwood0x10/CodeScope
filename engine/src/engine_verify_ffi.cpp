@@ -766,20 +766,20 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 				"[module=ffi, method=engine_explain_module]\"}");
 
 		// Resolve module row (case-insensitive name match).
+		// No project_id filter: module names are globally unique in
+		// both serial (single project) and parallel (merged) products,
+		// and the MCP layer's restored project_id may differ from the
+		// owning module's project_id in parallel products.
 		std::string summary;
 		bool found = false;
 		{
-			const char *sql =
-				"SELECT name FROM modules "
-				"WHERE project_id=? AND LOWER(name)=? "
-				"LIMIT 1";
+			const char *sql = "SELECT name FROM modules "
+					  "WHERE LOWER(name)=? "
+					  "LIMIT 1";
 			sqlite3_stmt *stmt = nullptr;
 			if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
 			    SQLITE_OK) {
-				sqlite3_bind_int64(
-					stmt, 1,
-					static_cast<int64_t>(project_id));
-				sqlite3_bind_text(stmt, 2, name_lower.c_str(),
+				sqlite3_bind_text(stmt, 1, name_lower.c_str(),
 						  -1, SQLITE_STATIC);
 				if (sqlite3_step(stmt) == SQLITE_ROW) {
 					found = true;
@@ -801,17 +801,21 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 		// still match. The slashes prevent partial segment matches (e.g. a
 		// query for "engine" won't match "./my_engine/foo").
 		if (!found) {
-			std::string like = "%/" + name + "/%";
+			// Build the LIKE pattern. The fallback targets files under
+			// `name`, so an absolute path (leading '/') must not gain a
+			// second slash: "%/" + "/Users/..." would produce
+			// "%//Users/..." which never matches a single-slash path.
+			// Relative module names keep the leading "/" to avoid
+			// partial-segment matches ("engine" vs "./my_engine").
+			std::string like = name[0] == '/' ? "%" + name + "/%" :
+							    "%/" + name + "/%";
 			const char *sql = "SELECT COUNT(*) FROM files "
-					  "WHERE project_id=? AND path LIKE ?";
+					  "WHERE path LIKE ?";
 			sqlite3_stmt *stmt = nullptr;
 			int count = 0;
 			if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
 			    SQLITE_OK) {
-				sqlite3_bind_int64(
-					stmt, 1,
-					static_cast<int64_t>(project_id));
-				sqlite3_bind_text(stmt, 2, like.c_str(), -1,
+				sqlite3_bind_text(stmt, 1, like.c_str(), -1,
 						  SQLITE_STATIC);
 				if (sqlite3_step(stmt) == SQLITE_ROW)
 					count = sqlite3_column_int(stmt, 0);
@@ -844,21 +848,17 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 			// preserves the legacy graph node identity.
 			std::string sql_str =
 				"SELECT name, kind, file_path FROM entity "
-				"WHERE project_id=? AND file_path LIKE ? "
+				"WHERE file_path LIKE ? "
 				"ORDER BY id LIMIT " +
 				std::to_string(kEntitySampleLimit);
 			sqlite3_stmt *stmt = nullptr;
 			int total = 0;
 			// Count first
-			const char *csql =
-				"SELECT COUNT(*) FROM entity "
-				"WHERE project_id=? AND file_path LIKE ?";
+			const char *csql = "SELECT COUNT(*) FROM entity "
+					   "WHERE file_path LIKE ?";
 			if (sqlite3_prepare_v2(db, csql, -1, &stmt, nullptr) ==
 			    SQLITE_OK) {
-				sqlite3_bind_int64(
-					stmt, 1,
-					static_cast<int64_t>(project_id));
-				sqlite3_bind_text(stmt, 2, like.c_str(), -1,
+				sqlite3_bind_text(stmt, 1, like.c_str(), -1,
 						  SQLITE_STATIC);
 				if (sqlite3_step(stmt) == SQLITE_ROW)
 					total = sqlite3_column_int(stmt, 0);
@@ -868,10 +868,7 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 			     << ",\"sample\":[";
 			if (sqlite3_prepare_v2(db, sql_str.c_str(), -1, &stmt,
 					       nullptr) == SQLITE_OK) {
-				sqlite3_bind_int64(
-					stmt, 1,
-					static_cast<int64_t>(project_id));
-				sqlite3_bind_text(stmt, 2, like.c_str(), -1,
+				sqlite3_bind_text(stmt, 1, like.c_str(), -1,
 						  SQLITE_STATIC);
 				bool first = true;
 				while (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -904,13 +901,10 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 			json << "\"capabilities\":[";
 			const char *sql =
 				"SELECT id, name, summary FROM capability "
-				"WHERE project_id=? ORDER BY id";
+				"ORDER BY id";
 			sqlite3_stmt *stmt = nullptr;
 			if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
 			    SQLITE_OK) {
-				sqlite3_bind_int64(
-					stmt, 1,
-					static_cast<int64_t>(project_id));
 				bool first = true;
 				while (sqlite3_step(stmt) == SQLITE_ROW) {
 					if (!first)
@@ -942,13 +936,10 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 			json << "\"contracts\":[";
 			const char *sql =
 				"SELECT id, name, origin, claim_text FROM contract "
-				"WHERE project_id=? ORDER BY id";
+				"ORDER BY id";
 			sqlite3_stmt *stmt = nullptr;
 			if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
 			    SQLITE_OK) {
-				sqlite3_bind_int64(
-					stmt, 1,
-					static_cast<int64_t>(project_id));
 				bool first = true;
 				while (sqlite3_step(stmt) == SQLITE_ROW) {
 					if (!first)
@@ -986,14 +977,11 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 			json << "\"findings\":[";
 			const char *sql =
 				"SELECT id, rule, severity, description, confidence "
-				"FROM finding WHERE project_id=? ORDER BY id";
+				"FROM finding ORDER BY id";
 			sqlite3_stmt *stmt = nullptr;
 			int sev2 = 0, sev1 = 0;
 			if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
 			    SQLITE_OK) {
-				sqlite3_bind_int64(
-					stmt, 1,
-					static_cast<int64_t>(project_id));
 				bool first = true;
 				while (sqlite3_step(stmt) == SQLITE_ROW) {
 					if (!first)

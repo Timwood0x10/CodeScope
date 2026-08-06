@@ -16,6 +16,7 @@
 
 #include <sqlite3.h>
 
+#include <charconv>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -91,6 +92,18 @@ static std::string sqliteText(sqlite3_stmt *st, int col)
 	const unsigned char *p = sqlite3_column_text(st, col);
 	return p ? std::string(reinterpret_cast<const char *>(p)) :
 		   std::string();
+}
+
+// Append the decimal representation of a signed integer to `out` using
+// std::to_chars (C++17+). This avoids the per-value allocation that
+// std::to_string() would introduce when building large CSV lines. The
+// emitted digits are identical to std::to_string, so CSV output is
+// byte-for-byte unchanged.
+static void appendInt(std::string &out, long long v)
+{
+	char buf[24];
+	auto res = std::to_chars(buf, buf + sizeof(buf), v);
+	out.append(buf, res.ptr);
 }
 
 // FNV-1a 64-bit hash for content-stable UID generation.
@@ -514,6 +527,8 @@ writeEntityNodeCsv(sqlite3 *db, uint64_t project_id,
 	// name,qualified_name,module_path,package_name,class_name,
 	// start_row,start_col,end_row,end_col,file_path,language,
 	// signature,is_stub,visibility,callgraph_ready,is_entry_point
+	std::string line;
+	line.reserve(512);
 	while (sqlite3_step(st) == SQLITE_ROW) {
 		int64_t entity_id = sqlite3_column_int64(st, 0);
 		int kind = sqlite3_column_int(st, 1);
@@ -529,15 +544,41 @@ writeEntityNodeCsv(sqlite3 *db, uint64_t project_id,
 
 		std::string uid =
 			makeNodeUid(project_id, fpath, qname, kind, srow, scol);
-		std::string line =
-			uid + "," + std::to_string(project_id) + ",0," +
-			std::to_string(entity_id) + "," + std::to_string(kind) +
-			"," + csvEscape(name) + "," + csvEscape(qname) + "," +
-			csvEscape(mpath) + ",\"\",\"\"," +
-			std::to_string(srow) + "," + std::to_string(scol) +
-			"," + std::to_string(erow) + "," +
-			std::to_string(ecol) + "," + csvEscape(fpath) + "," +
-			csvEscape(lang) + "," + csvEscape(name) + ",0,1,1,0\n";
+		// Reuse one line buffer: clear + append avoids the many small
+		// temporaries the old chained + concatenation created per row.
+		// Escaped values are computed once and reused (csvEscape(name)
+		// appears in both the name and signature columns), keeping the
+		// CSV bytes identical.
+		line.clear();
+		line.append(uid);
+		line.append(",");
+		appendInt(line, static_cast<long long>(project_id));
+		line.append(",0,");
+		appendInt(line, entity_id);
+		line.append(",");
+		appendInt(line, kind);
+		line.append(",");
+		std::string esc_name = csvEscape(name);
+		line.append(esc_name);
+		line.append(",");
+		line.append(csvEscape(qname));
+		line.append(",");
+		line.append(csvEscape(mpath));
+		line.append(",\"\",\"\",");
+		appendInt(line, srow);
+		line.append(",");
+		appendInt(line, scol);
+		line.append(",");
+		appendInt(line, erow);
+		line.append(",");
+		appendInt(line, ecol);
+		line.append(",");
+		line.append(csvEscape(fpath));
+		line.append(",");
+		line.append(csvEscape(lang));
+		line.append(",");
+		line.append(esc_name);
+		line.append(",0,1,1,0\n");
 		fputs(line.c_str(), f);
 	}
 	sqlite3_finalize(st);
@@ -620,6 +661,8 @@ writeEntityEdgeCsvs(sqlite3 *db, uint64_t project_id,
 		return paths;
 	}
 
+	std::string line;
+	line.reserve(256);
 	while (sqlite3_step(st) == SQLITE_ROW) {
 		int rtype = sqlite3_column_int(st, 3);
 		std::string src_uid = makeNodeUid(project_id, sqliteText(st, 4),
@@ -647,25 +690,42 @@ writeEntityEdgeCsvs(sqlite3 *db, uint64_t project_id,
 			// Step 6 provenance fields (confidence/resolver/
 			// resolution_kind); call_site_line stays 0 (the SQLite
 			// relation table owns the precise call-site row/col).
-			std::string resolver_str = sqliteText(st, 17);
-			std::string rkind_str = sqliteText(st, 18);
-			fputs((src_uid + "," + tgt_uid + "," +
-			       std::to_string(project_id) + "," +
-			       std::to_string(rtype) + ",0,,," +
-			       std::to_string(sqlite3_column_double(st, 16)) +
-			       "," + csvEscape(resolver_str) + "," +
-			       csvEscape(rkind_str) + "\n")
-				      .c_str(),
-			      fc);
+			// Reuse one line buffer; the bytes match the old
+			// chained concatenation exactly.
+			line.clear();
+			line.append(src_uid);
+			line.append(",");
+			line.append(tgt_uid);
+			line.append(",");
+			appendInt(line, static_cast<long long>(project_id));
+			line.append(",");
+			appendInt(line, rtype);
+			line.append(",0,,,");
+			// Confidence is a double; keep std::to_string to
+			// preserve the exact 6-decimal representation that
+			// Kuzu COPY FROM expects (appendInt is int-only).
+			line.append(
+				std::to_string(sqlite3_column_double(st, 16)));
+			line.append(",");
+			line.append(csvEscape(sqliteText(st, 17)));
+			line.append(",");
+			line.append(csvEscape(sqliteText(st, 18)));
+			line.append("\n");
+			fputs(line.c_str(), fc);
 		} else {
 			// RELATES: 6 columns (FROM, TO, project_id, edge_type,
 			// label, graph_type). All non-Calls typed relations
 			// land here.
-			fputs((src_uid + "," + tgt_uid + "," +
-			       std::to_string(project_id) + "," +
-			       std::to_string(rtype) + ",,\n")
-				      .c_str(),
-			      fr);
+			line.clear();
+			line.append(src_uid);
+			line.append(",");
+			line.append(tgt_uid);
+			line.append(",");
+			appendInt(line, static_cast<long long>(project_id));
+			line.append(",");
+			appendInt(line, rtype);
+			line.append(",,\n");
+			fputs(line.c_str(), fr);
 		}
 	}
 	sqlite3_finalize(st);
@@ -974,17 +1034,24 @@ bool buildLadybugFromEntityRelation(
 	if (!db)
 		return false;
 
-	// Debug: check entity table count
+	// ── Check source table: prefer entity/relation, fall back to      ──
+	//    graph_nodes/graph_edges for backward compat (e.g. unit tests
+	//    that insert directly into graph_nodes). A single COUNT scan
+	//    serves both the fallback decision and the debug log (the two
+	//    were previously separate full-table scans over `entity`).
 	{
 		sqlite3_stmt *probe = nullptr;
 		std::string probe_sql =
 			"SELECT COUNT(*) FROM entity WHERE project_id = " +
 			std::to_string(project_id);
 		int64_t entity_count = 0;
+		bool use_entity = false;
 		if (sqlite3_prepare_v2(db, probe_sql.c_str(), -1, &probe,
 				       nullptr) == SQLITE_OK) {
-			if (sqlite3_step(probe) == SQLITE_ROW)
+			if (sqlite3_step(probe) == SQLITE_ROW) {
 				entity_count = sqlite3_column_int64(probe, 0);
+				use_entity = entity_count > 0;
+			}
 			sqlite3_finalize(probe);
 		}
 		fprintf(stderr,
@@ -993,25 +1060,6 @@ bool buildLadybugFromEntityRelation(
 			"method=buildLadybugFromEntityRelation]\n",
 			(unsigned long long)project_id,
 			(long long)entity_count);
-	}
-
-	// ── Check source table: prefer entity/relation, fall back to      ──
-	//    graph_nodes/graph_edges for backward compat (e.g. unit tests
-	//    that insert directly into graph_nodes).
-	{
-		sqlite3_stmt *probe = nullptr;
-		std::string probe_sql =
-			"SELECT COUNT(*) FROM entity WHERE project_id = " +
-			std::to_string(project_id);
-		bool use_entity = false;
-		if (sqlite3_prepare_v2(db, probe_sql.c_str(), -1, &probe,
-				       nullptr) == SQLITE_OK) {
-			if (sqlite3_step(probe) == SQLITE_ROW &&
-			    sqlite3_column_int64(probe, 0) > 0) {
-				use_entity = true;
-			}
-			sqlite3_finalize(probe);
-		}
 		if (!use_entity) {
 			fprintf(stderr,
 				"buildLadybugFromEntityRelation: entity "

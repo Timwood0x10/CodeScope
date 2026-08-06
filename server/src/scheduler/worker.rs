@@ -44,15 +44,21 @@ pub(super) fn run_module_worker(
     db_prefix: &str,
     project_id: u64,
     quarantine_exclude: Option<&str>,
+    keep_db: bool,
 ) -> ModuleResult {
     let module_dir = Path::new(project_dir).join(module_name);
     let module_db = format!("{}_{}.db", db_prefix, module_name);
 
-    // Always start from a clean DB file — a stale DB would have
+    // Normally start from a clean DB file — a stale DB would have
     // outdated graph_nodes from a previous (possibly crashed) run.
-    let _ = std::fs::remove_file(&module_db);
-    let _ = std::fs::remove_file(format!("{}-wal", module_db));
-    let _ = std::fs::remove_file(format!("{}-shm", module_db));
+    // When keep_db is set (caller pinned CODESCOPE_DB_PREFIX for an
+    // incremental run), preserve the module DB so the engine's
+    // file_scan_state mtime check skips unchanged files.
+    if !keep_db {
+        let _ = std::fs::remove_file(&module_db);
+        let _ = std::fs::remove_file(format!("{}-wal", module_db));
+        let _ = std::fs::remove_file(format!("{}-shm", module_db));
+    }
 
     let project_name = format!("parallel-{}", module_name);
     let workers_str = workers.to_string();

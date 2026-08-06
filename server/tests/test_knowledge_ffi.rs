@@ -58,6 +58,20 @@ fn take_string(ptr: *mut c_char) -> String {
 /// parallel.
 static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// The engine is a process-wide singleton (g_store). Rust runs tests in
+/// parallel threads by default, so concurrent engine_init/engine_shutdown
+/// from different tests races the singleton and aborts (SIGABRT). Serialize
+/// engine access with a global mutex held from setup_engine until
+/// teardown_engine — this matches `--test-threads=1` semantics without
+/// giving up parallel execution of non-engine tests.
+static ENGINE_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+fn lock_engine() -> std::sync::MutexGuard<'static, ()> {
+    ENGINE_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
 fn temp_db_path() -> PathBuf {
     let pid = std::process::id();
     let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -99,6 +113,7 @@ fn teardown_engine() {
 
 #[test]
 fn test_verify_summary_parses_claims() {
+    let _engine_guard = lock_engine();
     let pid = setup_engine();
     // The summary text exercises both the "supports <capability>" pattern
     // (-> CapabilityExists claim) and the "thread-safe" keyword
@@ -143,6 +158,7 @@ fn test_verify_summary_parses_claims() {
 
 #[test]
 fn test_verify_summary_aggregates_trust_score() {
+    let _engine_guard = lock_engine();
     let pid = setup_engine();
     let text = "This library is memory-safe, zero-copy, and lock-free.";
     let text_c = cstr(text);
@@ -179,6 +195,7 @@ fn test_verify_summary_aggregates_trust_score() {
 
 #[test]
 fn test_verify_summary_empty_text() {
+    let _engine_guard = lock_engine();
     let pid = setup_engine();
     let text_c = cstr("");
     let result = take_string(unsafe { engine_verify_summary(pid, text_c.as_ptr()) });
@@ -197,6 +214,7 @@ fn test_verify_summary_empty_text() {
 
 #[test]
 fn test_verify_claim_single_capability() {
+    let _engine_guard = lock_engine();
     let pid = setup_engine();
     let claim_json = r#"{"type":"capability_exists","subject":"incremental indexing","predicate":"implemented_by","object":"engine","scope":"repository","source_kind":"manual","source_ref":"test-1"}"#;
     let claim_c = cstr(claim_json);
@@ -241,6 +259,7 @@ fn test_verify_claim_single_capability() {
 
 #[test]
 fn test_verify_claim_empty_json() {
+    let _engine_guard = lock_engine();
     let pid = setup_engine();
     let claim_c = cstr("");
     let result = take_string(unsafe { engine_verify_claim(pid, claim_c.as_ptr()) });
@@ -259,6 +278,7 @@ fn test_verify_claim_empty_json() {
 
 #[test]
 fn test_verify_claim_missing_subject() {
+    let _engine_guard = lock_engine();
     let pid = setup_engine();
     // Valid JSON but missing the required "subject" field.
     let claim_json = r#"{"type":"capability_exists"}"#;
@@ -278,6 +298,7 @@ fn test_verify_claim_missing_subject() {
 
 #[test]
 fn test_explain_module_returns_knowledge_card() {
+    let _engine_guard = lock_engine();
     let pid = setup_engine();
     let module_c = cstr("engine");
     let result = take_string(unsafe { engine_explain_module(pid, module_c.as_ptr()) });
@@ -325,6 +346,7 @@ fn test_explain_module_returns_knowledge_card() {
 
 #[test]
 fn test_explain_module_empty_name() {
+    let _engine_guard = lock_engine();
     let pid = setup_engine();
     let module_c = cstr("");
     let result = take_string(unsafe { engine_explain_module(pid, module_c.as_ptr()) });
@@ -346,6 +368,7 @@ fn test_explain_module_empty_name() {
 
 #[test]
 fn test_verify_integrity_returns_findings() {
+    let _engine_guard = lock_engine();
     let pid = setup_engine();
     let result = take_string(unsafe { engine_verify_integrity(pid) });
 
