@@ -102,11 +102,52 @@ std::vector<LanguageClaim> extractLanguageClaims(const std::string &readme_text)
 	if (readme_text.empty())
 		return result;
 
+	// Mask out ```mermaid ... ``` fenced blocks before language scanning:
+	// diagram text uses single-letter participant aliases ("participant C
+	// as Coordinator", "A->>C: Submit evidence") that a word-boundary
+	// match would misread as a claimed language (the goagent README's
+	// sequence diagram made standalone "C" look like a language claim).
+	// Block contents are blanked (newlines preserved) so all downstream
+	// matching sees only the prose around the diagrams.
+	std::string masked = readme_text;
+	{
+		const std::string fence = "```";
+		size_t pos = 0;
+		while (pos < masked.size()) {
+			size_t open = masked.find(fence, pos);
+			if (open == std::string::npos)
+				break;
+			size_t lang_pos = open + fence.size();
+			// Skip spaces after the opening fence, read the tag.
+			while (lang_pos < masked.size() &&
+			       std::isspace(static_cast<unsigned char>(
+				       masked[lang_pos])))
+				lang_pos++;
+			size_t lang_end = lang_pos;
+			while (lang_end < masked.size() &&
+			       !std::isspace(static_cast<unsigned char>(
+				       masked[lang_end])))
+				lang_end++;
+			const std::string lang =
+				masked.substr(lang_pos, lang_end - lang_pos);
+			size_t close = masked.find(fence, lang_end);
+			if (close == std::string::npos)
+				break;
+			if (lang == "mermaid") {
+				for (size_t i = lang_end; i < close; ++i)
+					if (masked[i] != '\n' &&
+					    masked[i] != '\r')
+						masked[i] = ' ';
+			}
+			pos = close + fence.size();
+		}
+	}
+
 	for (const auto &pat : kLanguagePatterns) {
 		std::string pattern(pat.pattern);
 		size_t count = 0;
 		size_t pos = 0;
-		while ((pos = findCaseInsensitive(readme_text, pattern, pos)) !=
+		while ((pos = findCaseInsensitive(masked, pattern, pos)) !=
 		       std::string::npos) {
 			count++;
 			pos += pattern.size();
@@ -136,7 +177,7 @@ std::vector<LanguageClaim> extractLanguageClaims(const std::string &readme_text)
 	// Special handling for "Go" as a standalone word — not part of
 	// kLanguagePatterns because "go" is too common as a substring.
 	{
-		size_t go_count = countStandaloneWord(readme_text, "go");
+		size_t go_count = countStandaloneWord(masked, "go");
 		if (go_count > 0) {
 			// Check if "go" is already claimed via "golang"
 			bool already = false;
@@ -160,7 +201,7 @@ std::vector<LanguageClaim> extractLanguageClaims(const std::string &readme_text)
 	// Special handling for "Java" — use word-boundary matching to avoid
 	// false positives on "JavaScript" which contains "Java" as a substring.
 	{
-		size_t java_count = countStandaloneWord(readme_text, "java");
+		size_t java_count = countStandaloneWord(masked, "java");
 		if (java_count > 0) {
 			bool already = false;
 			for (auto &c : result) {
@@ -191,11 +232,11 @@ std::vector<LanguageClaim> extractLanguageClaims(const std::string &readme_text)
 		size_t c_count = 0;
 		size_t pos = 0;
 		const std::string needle = "C";
-		while ((pos = readme_text.find(needle, pos)) !=
+		while ((pos = masked.find(needle, pos)) !=
 		       std::string::npos) {
 			size_t abs_end = pos + needle.size();
-			if (isWordBoundary(readme_text, pos) &&
-			    isWordBoundaryAfter(readme_text, abs_end))
+			if (isWordBoundary(masked, pos) &&
+			    isWordBoundaryAfter(masked, abs_end))
 				c_count++;
 			pos = abs_end;
 		}

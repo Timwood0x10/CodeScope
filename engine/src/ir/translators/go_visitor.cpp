@@ -122,13 +122,30 @@ SemanticUnit *GoVisitor::visit(TSTree *tree, const char *source, const char *fp)
 	// correctly matched against ReadWriter. (Embedded interface names
 	// are captured in handleTypeDecl when the interface body references
 	// a known interface type.)
+	//
+	// v0.2.5 (perf fix): pre-index every struct's method set into a hash set
+	// once, and track the expanded method set with a hash set, so the
+	// interface-implements check is O(1) per method instead of a linear
+	// std::find — the previous code was O(interfaces × structs × methods)
+	// per file, quadratic on files with many interfaces/structs.
+	std::unordered_map<std::string, std::unordered_set<std::string>>
+		struct_method_set;
+	struct_method_set.reserve(struct_methods_.size());
+	for (const auto &se : struct_methods_) {
+		auto &s = struct_method_set[se.first];
+		s.reserve(se.second.size());
+		s.insert(se.second.begin(), se.second.end());
+	}
 	for (const auto &iface_entry : interface_methods_) {
 		const std::string &iface = iface_entry.first;
 		if (iface_entry.second.empty())
 			continue;
 		// Expanded method set: direct + transitive embedded methods,
-		// deduped. Guard against cycles with a small visited set.
+		// deduped via a hash set (O(1) membership). Guard against cycles
+		// with a small visited set.
 		std::vector<std::string> expanded = iface_entry.second;
+		std::unordered_set<std::string> expanded_set(
+			iface_entry.second.begin(), iface_entry.second.end());
 		std::unordered_set<std::string> visited{ iface };
 		std::vector<std::string> frontier = iface_entry.second;
 		if (interface_embeds_.count(iface)) {
@@ -148,10 +165,7 @@ SemanticUnit *GoVisitor::visit(TSTree *tree, const char *source, const char *fp)
 					if (eit == interface_methods_.end())
 						continue; // embedded iface not in this file
 					for (const auto &m : eit->second) {
-						if (std::find(expanded.begin(),
-							      expanded.end(),
-							      m) ==
-						    expanded.end())
+						if (expanded_set.insert(m).second)
 							expanded.push_back(m);
 					}
 					next.push_back(emb);
@@ -163,15 +177,17 @@ SemanticUnit *GoVisitor::visit(TSTree *tree, const char *source, const char *fp)
 			continue;
 		for (const auto &struct_entry : struct_methods_) {
 			const std::string &stype = struct_entry.first;
-			const auto &smethods = struct_entry.second;
 			if (stype == iface)
 				continue;
+			auto smit = struct_method_set.find(stype);
+			if (smit == struct_method_set.end())
+				continue;
+			const auto &smethods = smit->second;
 			// Every (expanded) interface method must appear in the
-			// struct's method set (subset check).
+			// struct's method set (subset check, O(1) per method).
 			bool implements_all = true;
 			for (const auto &m : expanded) {
-				if (std::find(smethods.begin(), smethods.end(),
-					      m) == smethods.end()) {
+				if (smethods.find(m) == smethods.end()) {
 					implements_all = false;
 					break;
 				}

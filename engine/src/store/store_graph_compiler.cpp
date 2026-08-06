@@ -117,11 +117,18 @@ static uint64_t fnv1a64(const std::string &s)
 static std::string makeNodeUid(uint64_t project_id,
 			       const std::string &file_path,
 			       const std::string &qualified_name, int node_type,
-			       int start_row)
+			       int start_row, int start_col = 0)
 {
+	// start_col disambiguates multiple entities that share the same
+	// file/name/kind/start_row — e.g. Go parameter TypeRefs on one
+	// declaration line ("reg, name, present, ... ctx, waitFn ..."):
+	// without start_col two "ctx" params on the same row collide and
+	// LadybugDB's COPY rejects the duplicated primary key, making
+	// isGraphReady() false and every graph query return empty.
 	std::string key = std::to_string(project_id) + ":" + file_path + ":" +
 			  qualified_name + ":" + std::to_string(node_type) +
-			  ":" + std::to_string(start_row);
+			  ":" + std::to_string(start_row) + ":" +
+			  std::to_string(start_col);
 	uint64_t hash = fnv1a64(key);
 	// Format as 16-char hex string.
 	char buf[24];
@@ -521,7 +528,7 @@ writeEntityNodeCsv(sqlite3 *db, uint64_t project_id,
 		std::string mpath = sqliteText(st, 10);
 
 		std::string uid =
-			makeNodeUid(project_id, fpath, qname, kind, srow);
+			makeNodeUid(project_id, fpath, qname, kind, srow, scol);
 		std::string line =
 			uid + "," + std::to_string(project_id) + ",0," +
 			std::to_string(entity_id) + "," + std::to_string(kind) +
@@ -552,8 +559,8 @@ writeEntityEdgeCsvs(sqlite3 *db, uint64_t project_id,
 		std::string file_list = buildSqlInList(*changed_files);
 		sql = "SELECT r.id, r.source_id, r.target_id, r.type, "
 		      "s.file_path, s.name, s.qualified_name, s.kind, "
-		      "s.start_row, t.file_path, t.name, t.qualified_name, "
-		      "t.kind, t.start_row, "
+		      "s.start_row, s.start_col, t.file_path, t.name, "
+		      "t.qualified_name, t.kind, t.start_row, t.start_col, "
 		      "r.confidence, r.resolver, r.resolution_kind "
 		      "FROM relation r "
 		      "JOIN entity s ON r.source_id = s.id AND s.project_id = ? "
@@ -565,8 +572,8 @@ writeEntityEdgeCsvs(sqlite3 *db, uint64_t project_id,
 	} else {
 		sql = "SELECT r.id, r.source_id, r.target_id, r.type, "
 		      "s.file_path, s.name, s.qualified_name, s.kind, "
-		      "s.start_row, t.file_path, t.name, t.qualified_name, "
-		      "t.kind, t.start_row, "
+		      "s.start_row, s.start_col, t.file_path, t.name, "
+		      "t.qualified_name, t.kind, t.start_row, t.start_col, "
 		      "r.confidence, r.resolver, r.resolution_kind "
 		      "FROM relation r "
 		      "JOIN entity s ON r.source_id = s.id AND s.project_id = ? "
@@ -618,11 +625,13 @@ writeEntityEdgeCsvs(sqlite3 *db, uint64_t project_id,
 		std::string src_uid = makeNodeUid(project_id, sqliteText(st, 4),
 						  sqliteText(st, 6),
 						  sqlite3_column_int(st, 7),
-						  sqlite3_column_int(st, 8));
-		std::string tgt_uid = makeNodeUid(project_id, sqliteText(st, 9),
-						  sqliteText(st, 11),
-						  sqlite3_column_int(st, 12),
-						  sqlite3_column_int(st, 13));
+						  sqlite3_column_int(st, 8),
+						  sqlite3_column_int(st, 9));
+		std::string tgt_uid = makeNodeUid(project_id, sqliteText(st, 10),
+						  sqliteText(st, 12),
+						  sqlite3_column_int(st, 13),
+						  sqlite3_column_int(st, 14),
+						  sqlite3_column_int(st, 15));
 
 		// Relation type contract (see graph_types.h): only
 		// `EdgeType::Calls` is compiled to the LadybugDB CALLS
@@ -635,16 +644,16 @@ writeEntityEdgeCsvs(sqlite3 *db, uint64_t project_id,
 			// CALLS: 10 columns in Kuzu schema order
 			// (FROM, TO, project_id, edge_type, call_site_line,
 			// label, graph_type, confidence, resolver,
-			// resolution_kind). Columns 14-16 of the SELECT are the
+			// resolution_kind). Columns 16-18 of the SELECT are the
 			// Step 6 provenance fields (confidence/resolver/
 			// resolution_kind); call_site_line stays 0 (the SQLite
 			// relation table owns the precise call-site row/col).
-			std::string resolver_str = sqliteText(st, 15);
-			std::string rkind_str = sqliteText(st, 16);
+			std::string resolver_str = sqliteText(st, 17);
+			std::string rkind_str = sqliteText(st, 18);
 			fputs((src_uid + "," + tgt_uid + "," +
 			       std::to_string(project_id) + "," +
 			       std::to_string(rtype) + ",0,,," +
-			       std::to_string(sqlite3_column_double(st, 14)) +
+			       std::to_string(sqlite3_column_double(st, 16)) +
 			       "," + csvEscape(resolver_str) + "," +
 			       csvEscape(rkind_str) + "\n")
 				      .c_str(),
@@ -1089,6 +1098,49 @@ bool buildLadybugFromEntityRelation(
 		}
 		if (!ok)
 			return false;
+	}
+
+	// Record the data fingerprint (entity_count × 1_000_000 +
+	// relation_count) so initLadybugDB can detect a stale .lbug on the
+	// next open and rebuild it. Matches the live-totals query used in
+	// store_ladybug_core.cpp H2 (kLbugSchemaVersion v5).
+	{
+		int64_t fp = -1;
+		{
+			sqlite3_stmt *fp_st = nullptr;
+			const char *fp_sql =
+				"SELECT (SELECT COUNT(*) FROM entity) * "
+				"1000000 + "
+				"(SELECT COUNT(*) FROM relation)";
+			if (sqlite3_prepare_v2(db, fp_sql, -1, &fp_st, nullptr) ==
+			    SQLITE_OK) {
+				if (sqlite3_step(fp_st) == SQLITE_ROW)
+					fp = sqlite3_column_int64(fp_st, 0);
+				sqlite3_finalize(fp_st);
+			}
+		}
+		if (fp >= 0) {
+			lbug_query_result fqr;
+			std::string fp_cypher =
+				"MATCH (m:LbugMeta) SET m.fingerprint = " +
+				std::to_string(fp);
+			lbug_state fs = lbug_connection_query(
+				conn, fp_cypher.c_str(), &fqr);
+			if (fs != LbugSuccess) {
+				char *err =
+					lbug_query_result_get_error_message(
+						&fqr);
+				fprintf(stderr,
+					"store: buildLadybugFromEntityRelation "
+					"fingerprint update failed: %s "
+					"[module=store, "
+					"method=buildLadybugFromEntityRelation]\n",
+					err ? err : "(no error)");
+				if (err)
+					lbug_destroy_string(err);
+			}
+			lbug_query_result_destroy(&fqr);
+		}
 	}
 
 	// Mark the graph as successfully populated.

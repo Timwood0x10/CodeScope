@@ -168,17 +168,25 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 	// Build per-factor scores for each candidate using multi-factor scoring.
 	for (auto &c : candidates) {
 		std::vector<FactorResult> factors;
+		factors.reserve(10);
+
+		// Module/namespace match is pure (caller_file, c.file_path) —
+		// computed once and reused by ModuleMatch, NamespaceMatch and
+		// the CommonNamePenalty same-module gate below. Recomputing it
+		// three times per candidate tripled the string work in the hot
+		// loop (20073 refs × ~5 candidates each).
+		const double ns_score =
+			factorNamespaceMatch(caller_file, c.file_path);
 
 		// Factor 1: ModuleMatch
 		{
 			FactorResult f;
 			f.name = "ModuleMatch";
 			f.weight = kWeightModuleMatch;
-			f.score =
-				factorNamespaceMatch(caller_file, c.file_path);
+			f.score = ns_score;
 			f.detail = (f.score > 0.0) ? "same module" :
 						     "different module";
-			factors.push_back(f);
+			factors.push_back(std::move(f));
 		}
 
 		// Factor 2: ImportMatch — dominant weight for cross-module calls.
@@ -193,7 +201,7 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 						    c.file_path, c.name);
 			f.detail = (f.score > 0.0) ? "imported" :
 						     "not imported";
-			factors.push_back(f);
+			factors.push_back(std::move(f));
 		}
 
 		// Factor 3: NamespaceMatch
@@ -201,11 +209,10 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 			FactorResult f;
 			f.name = "NamespaceMatch";
 			f.weight = kWeightNamespaceMatch;
-			f.score =
-				factorNamespaceMatch(caller_file, c.file_path);
+			f.score = ns_score;
 			f.detail = (f.score > 0.0) ? "shared namespace" :
 						     "different namespace";
-			factors.push_back(f);
+			factors.push_back(std::move(f));
 		}
 
 		// Factor 4: SignatureMatch — compares the call site's arity
@@ -221,7 +228,7 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 			f.name = "SignatureMatch";
 			f.weight = kWeightSignatureMatch;
 			f.score = factorSignatureMatch(caller_arity, c.arity);
-			factors.push_back(f);
+			factors.push_back(std::move(f));
 		}
 
 		// Factor 5: DistanceMatch
@@ -230,7 +237,7 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 			f.name = "DistanceMatch";
 			f.weight = kWeightDistanceMatch;
 			f.score = factorDistanceMatch(caller_file, c.file_path);
-			factors.push_back(f);
+			factors.push_back(std::move(f));
 		}
 
 		// Factor 6: ConstructorMatch
@@ -242,7 +249,7 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 							 c.kind);
 			f.detail = (f.score > 0.0) ? "constructor" :
 						     "not constructor";
-			factors.push_back(f);
+			factors.push_back(std::move(f));
 		}
 
 		// Factor 7: ReceiverMatch (Step 5: now type-based, not directory)
@@ -269,7 +276,7 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 			} else {
 				f.detail = "no receiver evidence (neutral)";
 			}
-			factors.push_back(f);
+			factors.push_back(std::move(f));
 		}
 
 		// Factor 8: CommonNamePenalty — reduce score for very common names
@@ -279,9 +286,7 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 			f.name = "CommonNamePenalty";
 			f.weight = kWeightCommonNamePenalty;
 			// Only penalize if candidate is in a different module
-			bool same_module =
-				(factorNamespaceMatch(caller_file,
-						      c.file_path) > 0.0);
+			bool same_module = (ns_score > 0.0);
 			double penalty =
 				same_module ?
 					0.0 :
@@ -291,7 +296,7 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 				(f.score < 0.0) ?
 					"common name penalty (cross-module)" :
 					"unique or same-module name";
-			factors.push_back(f);
+			factors.push_back(std::move(f));
 		}
 
 		// Factor 9: CallKindMatch — adjust scoring based on call kind.
@@ -314,7 +319,7 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 			else
 				f.score = 0.0;
 			f.detail = "call_kind=" + std::to_string(call_kind);
-			factors.push_back(f);
+			factors.push_back(std::move(f));
 		}
 
 		// Factor 10: DefinitionMatch — for C/C++, prefer symbols defined
@@ -333,7 +338,7 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 					   "source def" :
 					   (f.score < 0.0 ? "header proto" :
 							    "neutral");
-			factors.push_back(f);
+			factors.push_back(std::move(f));
 		}
 
 		// VisibilityCheck was moved to a hard filter in run() to
@@ -343,7 +348,7 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 		// hard language rule must be absolute.
 
 		c.total_score = computeTotalScore(factors);
-		c.factors = factors;
+		c.factors = std::move(factors);
 	}
 
 	std::sort(candidates.begin(), candidates.end(),
@@ -626,6 +631,20 @@ int64_t ResolverPipeline::run()
 		}
 		// Global subset check: struct implements interface iff the
 		// struct's method set contains every interface method.
+		// v0.2.5 (perf fix): pre-index each struct's method set into a
+		// hash set once, then the interface-implements check is O(1) per
+		// method instead of a linear std::find. Without this, the
+		// for-interface × for-struct × for-method triple loop was O(I×S×M)
+		// — quadratic and noticeable on large Go projects with many
+		// interfaces/structs.
+		std::unordered_map<std::string, std::unordered_set<std::string>>
+			struct_method_set;
+		struct_method_set.reserve(struct_methods.size());
+		for (const auto &sentry : struct_methods) {
+			auto &s = struct_method_set[sentry.first];
+			s.reserve(sentry.second.size());
+			s.insert(sentry.second.begin(), sentry.second.end());
+		}
 		for (const auto &iface_entry : iface_methods) {
 			const std::string &iface = iface_entry.first;
 			const auto &imethods = iface_entry.second;
@@ -633,14 +652,15 @@ int64_t ResolverPipeline::run()
 				continue;
 			for (const auto &sentry : struct_methods) {
 				const std::string &stype = sentry.first;
-				const auto &smethods = sentry.second;
 				if (stype == iface)
 					continue;
+				auto smit = struct_method_set.find(stype);
+				if (smit == struct_method_set.end())
+					continue;
+				const auto &smethods = smit->second;
 				bool implements_all = true;
 				for (const auto &m : imethods) {
-					if (std::find(smethods.begin(),
-						      smethods.end(),
-						      m) == smethods.end()) {
+					if (smethods.find(m) == smethods.end()) {
 						implements_all = false;
 						break;
 					}
@@ -681,6 +701,7 @@ int64_t ResolverPipeline::run()
 			"SELECT p.name, t.name, t.type_name "
 			"FROM semantic_records t "
 			"JOIN semantic_records p ON t.parent_id = p.original_id "
+			"AND p.project_id = t.project_id "
 			"WHERE t.project_id=? AND t.kind=17 AND p.kind=2 "
 			"AND t.name != '' AND t.type_name != ''";
 		sqlite3_stmt *fst = nullptr;
@@ -717,6 +738,7 @@ int64_t ResolverPipeline::run()
 		std::string vtype_sql =
 			"SELECT t.name, t.type_name FROM semantic_records t "
 			"JOIN semantic_records p ON t.parent_id = p.original_id "
+			"AND p.project_id = t.project_id "
 			"WHERE t.project_id=? AND t.kind=17 "
 			"AND p.kind IN (0,1) "
 			"AND t.name != '' AND t.type_name != ''";
@@ -916,16 +938,34 @@ int64_t ResolverPipeline::run()
 	// ── Hot loop: process all references in memory ──────────────────
 	// No SQLite round-trips inside this loop — pure in-memory processing.
 	// The entity_index (hash map) and fuzzy logic are already in memory.
+
+	// Memoize field-chain receiver resolution (Step 8.1c): the same
+	// receiver_text (e.g. "r.pluginBus") appears in dozens of references
+	// across the project, and each walk re-iterates global_var_types_ /
+	// global_struct_fields_ string maps. Caching the resolved receiver
+	// type per receiver_text keeps the result identical while removing
+	// the repeated chain walks from the hot loop.
+	std::unordered_map<std::string, std::string> field_chain_cache;
+	field_chain_cache.reserve(refs.size() / 4);
 	for (auto &ref : refs) {
-		// ── P0.3: Find candidates by name — COPY, not move ──────
+		// ── P0.3: Find candidates by name — borrow the index entry ──
+		// Instead of deep-copying it->second on every reference (each
+		// Candidate carries 6 std::strings; 24k refs × ~6.7 candidates
+		// = ~160k string copies), take a pointer into the immutable
+		// index and only materialize a local vector when mutation is
+		// actually required (fuzzy fallback appends, applyConstraints
+		// sorts/scores). Single-candidate fast path and dispatch
+		// expansion only read, so they use the shared reference —
+		// results are bit-identical.
 		std::vector<Candidate> candidates;
+		const std::vector<Candidate> *cands = nullptr;
 		auto it = entity_index.find(ref.name);
 		if (it != entity_index.end()) {
-			candidates = it->second; // copy — index stays intact
+			cands = &it->second; // borrow — index stays intact
 			exact_hits++;
 		}
 
-		if (candidates.empty()) {
+		if (!cands || cands->empty()) {
 			// Skip fuzzy for high-frequency names
 			if (shouldSkipFuzzy(ref.name)) {
 				skipped_common++;
@@ -1010,12 +1050,16 @@ int64_t ResolverPipeline::run()
 				c.score = 0;
 				candidates.push_back(c);
 			}
+			// Fuzzy results were materialized into the local vector —
+			// point cands at it so subsequent reads (size/front/
+			// dispatch) see them.
+			cands = &candidates;
 		}
 
 		total_candidates_seen +=
-			static_cast<int64_t>(candidates.size());
+			static_cast<int64_t>(cands->size());
 
-		if (candidates.size() > kMaxCandidatesToScore) {
+		if (cands->size() > kMaxCandidatesToScore) {
 			skipped_too_many++;
 			continue;
 		}
@@ -1034,8 +1078,8 @@ int64_t ResolverPipeline::run()
 		// Cross-module single candidates are NOT short-circuited: their
 		// threshold outcome depends on the import match, so the exact
 		// score must be computed to preserve identical edges.
-		if (candidates.size() == 1) {
-			const Candidate &c = candidates.front();
+		if (cands->size() == 1) {
+			const Candidate &c = cands->front();
 			if (c.entity_id != ref.caller_id) {
 				size_t c_slash = ref.caller_file.rfind('/');
 				size_t t_slash = c.file_path.rfind('/');
@@ -1093,30 +1137,48 @@ int64_t ResolverPipeline::run()
 		std::string resolved_receiver = ref.receiver_type;
 		if (resolved_receiver.empty() &&
 		    ref.receiver_text.find('.') != std::string::npos) {
-			std::string cur = ref.receiver_text;
-			size_t first_dot = cur.find('.');
-			std::string first = cur.substr(0, first_dot);
-			// The variable name (e.g. "r") appears across many files
-			// with DIFFERENT types, so global_var_types_ holds all of
-			// them. Try each candidate type: walk the remaining field
-			// segments through global_struct_fields_; the first type
-			// that resolves the entire chain wins.
-			auto fv = global_var_types_.find(first);
-			if (fv != global_var_types_.end()) {
-				for (const auto &cand_type : fv->second) {
-					std::string cur_type = cand_type;
-					bool chain_ok = true;
-					size_t pos = first_dot;
-					while (chain_ok &&
-					       pos != std::string::npos) {
-						size_t next =
-							cur.find('.', pos + 1);
-						std::string field = cur.substr(
-							pos + 1,
-							(next ==
-							 std::string::npos) ?
-								std::string::npos :
-								next - pos - 1);
+			// Memoized: identical receiver_text always resolves to
+			// the same receiver type (global tables are immutable
+			// for the duration of run()), so a cache hit skips the
+			// whole chain walk.
+			auto cache_it = field_chain_cache.find(ref.receiver_text);
+			if (cache_it != field_chain_cache.end()) {
+				resolved_receiver = cache_it->second;
+			} else {
+				std::string cur = ref.receiver_text;
+				size_t first_dot = cur.find('.');
+				std::string first = cur.substr(0, first_dot);
+				// The variable name (e.g. "r") appears across
+				// many files with DIFFERENT types, so
+				// global_var_types_ holds all of them. Try each
+				// candidate type: walk the remaining field
+				// segments through global_struct_fields_; the
+				// first type that resolves the entire chain wins.
+				auto fv = global_var_types_.find(first);
+				if (fv != global_var_types_.end()) {
+					for (const auto &cand_type :
+					     fv->second) {
+						std::string cur_type =
+							cand_type;
+						bool chain_ok = true;
+						size_t pos = first_dot;
+						while (chain_ok &&
+						       pos !=
+							       std::string::
+								       npos) {
+							size_t next = cur.find(
+								'.',
+								pos + 1);
+							std::string field =
+								cur.substr(
+									pos + 1,
+									(next ==
+									 std::string::
+										 npos) ?
+										std::string::
+											npos :
+										next - pos -
+											1);
 						auto ft =
 							global_struct_fields_
 								.find(cur_type);
@@ -1159,7 +1221,10 @@ int64_t ResolverPipeline::run()
 						break;
 					}
 				}
+				field_chain_cache[ref.receiver_text] =
+					resolved_receiver;
 			}
+		}
 		}
 		if (!resolved_receiver.empty()) {
 			auto impl_it =
@@ -1170,51 +1235,70 @@ int64_t ResolverPipeline::run()
 				// candidates whose qualified_name matches
 				// "ImplType::method" or "ImplType.method".
 				int dispatch_count = 0;
+				// Each candidate's qualified_name has a single type
+				// prefix, so it can match at most one impl_type;
+				// once every candidate emitted a dispatch edge, the
+				// outer impl loop can stop too.
+				bool dispatch_done = false;
 				for (const auto &impl_type : impl_it->second) {
-					std::string prefix1 = impl_type + "::";
-					std::string prefix2 = impl_type + ".";
-					for (const auto &c : candidates) {
-						if (c.entity_id ==
-						    ref.caller_id)
+					// Prefix match without allocating "Impl::" /
+					// "Impl." temporaries per impl_type (the old
+					// code built two std::strings per impl and ran
+					// substring find per candidate). Equivalent to
+					// `qn.find(impl + "::") == 0 || qn.find(impl +
+					// ".") == 0` — compare the prefix, then check
+					// the separator character.
+					const size_t impl_len = impl_type.size();
+					for (const auto &c : *cands) {
+						if (c.entity_id == ref.caller_id)
 							continue;
-						if (c.qualified_name.empty())
+						const std::string &qn =
+							c.qualified_name;
+						if (qn.size() <= impl_len ||
+						    qn.compare(0, impl_len,
+								       impl_type) != 0)
 							continue;
-						// Check if this candidate's
-						// qualified_name starts with the
-						// implementing type.
-						if (c.qualified_name.find(
-							    prefix1) == 0 ||
-						    c.qualified_name.find(
-							    prefix2) == 0) {
-							// Visibility check.
-							if (factorVisibilityCheck(
-								    c.language,
-								    c.name,
-								    ref.caller_file,
-								    c.file_path) <
-							    0.5)
-								continue;
-							dispatch_count++;
-							resolved_count++;
-							resolved_edges.push_back(
-								{ ref.caller_id,
-								  c.entity_id,
-								  kRelationTypeCall,
-								  ref.resolve_strategy,
-								  0.60, // confidence
-								  "pipeline",
-								  "dispatch",
-								  "interface=" +
-									  ref.receiver_type +
-									  " impl=" +
-									  impl_type +
-									  " method=" +
-									  ref.name,
-								  ref.call_site_file,
-								  ref.start_row,
-								  ref.start_col });
+						const char sep = qn[impl_len];
+						if (sep != '.' &&
+						    !(sep == ':' &&
+							      qn.size() > impl_len + 1 &&
+							      qn[impl_len + 1] == ':'))
+							continue;
+						// Visibility check.
+						if (factorVisibilityCheck(
+							    c.language,
+							    c.name,
+							    ref.caller_file,
+							    c.file_path) <
+						    0.5)
+							continue;
+						dispatch_count++;
+						resolved_count++;
+						resolved_edges.push_back(
+							{ ref.caller_id,
+							  c.entity_id,
+							  kRelationTypeCall,
+							  ref.resolve_strategy,
+							  0.60, // confidence
+							  "pipeline",
+							  "dispatch",
+							  "interface=" +
+								  ref.receiver_type +
+								  " impl=" +
+								  impl_type +
+								  " method=" +
+								  ref.name,
+							  ref.call_site_file,
+							  ref.start_row,
+							  ref.start_col });
+						if (dispatch_count >=
+						    static_cast<int>(cands->size())) {
+							dispatch_done = true;
+							break;
 						}
 					}
+					if (dispatch_done)
+						break;
 				}
 				if (dispatch_count > 0) {
 					handled_as_dispatch = true;
@@ -1228,6 +1312,12 @@ int64_t ResolverPipeline::run()
 		if (handled_as_dispatch)
 			continue;
 
+		// applyConstraints sorts and mutates the candidate vector, so a
+		// mutable local copy is required only here — the borrowed index
+		// entry stays intact (unless fuzzy already materialized the local
+		// vector, in which case cands already points at it).
+		if (cands != &candidates)
+			candidates = *cands;
 		applyConstraints(candidates, ref.caller_file, ref.name,
 				 ref.call_kind, ref.arity, ref.receiver_type);
 

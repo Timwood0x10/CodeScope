@@ -648,60 +648,32 @@ bool GraphStore::resolveStagedMetrics(uint64_t project_id)
 	// 1. Copy staged metrics onto entity rows that match the semantic tuple.
 	//    Only function/method entities (kind 0/1) are eligible; other kinds
 	//    (e.g. class, module) carry no code metrics.
+	//
+	//    Single UPDATE ... FROM JOIN (SQLite >= 3.33): the previous form ran
+	//    eleven per-column correlated subqueries, each re-scanning
+	//    _staged_metrics per candidate entity row. With 13k+ staged rows
+	//    (goagent) times 11 subqueries that resolve pass took minutes
+	//    instead of milliseconds. One JOIN updates all columns in a single
+	//    scan; the (project_id, file_path, start_row, start_col) lookup
+	//    index makes each match an index seek.
 	const char *resolve_sql =
 		"UPDATE entity SET "
-		" cyclomatic = (SELECT m.cyclomatic FROM _staged_metrics m "
-		"               WHERE m.project_id = entity.project_id "
-		"                 AND m.file_path = entity.file_path "
-		"                 AND m.start_row = entity.start_row "
-		"                 AND m.start_col = entity.start_col), "
-		" nesting_depth = (SELECT m.nesting_depth FROM _staged_metrics m "
-		"                  WHERE m.project_id = entity.project_id "
-		"                    AND m.file_path = entity.file_path "
-		"                    AND m.start_row = entity.start_row "
-		"                    AND m.start_col = entity.start_col), "
-		" cognitive = (SELECT m.cognitive FROM _staged_metrics m "
-		"              WHERE m.project_id = entity.project_id "
-		"                AND m.file_path = entity.file_path "
-		"                AND m.start_row = entity.start_row "
-		"                AND m.start_col = entity.start_col), "
-		" param_count = (SELECT m.param_count FROM _staged_metrics m "
-		"                WHERE m.project_id = entity.project_id "
-		"                  AND m.file_path = entity.file_path "
-		"                  AND m.start_row = entity.start_row "
-		"                  AND m.start_col = entity.start_col), "
-		" call_count = (SELECT m.call_count FROM _staged_metrics m "
-		"               WHERE m.project_id = entity.project_id "
-		"                 AND m.file_path = entity.file_path "
-		"                 AND m.start_row = entity.start_row "
-		"                 AND m.start_col = entity.start_col), "
-		" branch_count = (SELECT m.branch_count FROM _staged_metrics m "
-		"                 WHERE m.project_id = entity.project_id "
-		"                   AND m.file_path = entity.file_path "
-		"                   AND m.start_row = entity.start_row "
-		"                   AND m.start_col = entity.start_col), "
-		" loop_count = (SELECT m.loop_count FROM _staged_metrics m "
-		"               WHERE m.project_id = entity.project_id "
-		"                 AND m.file_path = entity.file_path "
-		"                 AND m.start_row = entity.start_row "
-		"                 AND m.start_col = entity.start_col), "
-		" lines = (SELECT m.lines FROM _staged_metrics m "
-		"          WHERE m.project_id = entity.project_id "
-		"            AND m.file_path = entity.file_path "
-		"            AND m.start_row = entity.start_row "
-		"            AND m.start_col = entity.start_col), "
-		" is_stub = (SELECT m.is_stub FROM _staged_metrics m "
-		"            WHERE m.project_id = entity.project_id "
-		"              AND m.file_path = entity.file_path "
-		"              AND m.start_row = entity.start_row "
-		"              AND m.start_col = entity.start_col) "
-		"WHERE entity.project_id = ? "
-		"  AND entity.kind IN (0,1) "
-		"  AND EXISTS (SELECT 1 FROM _staged_metrics m "
-		"              WHERE m.project_id = entity.project_id "
-		"                AND m.file_path = entity.file_path "
-		"                AND m.start_row = entity.start_row "
-		"                AND m.start_col = entity.start_col)";
+		" cyclomatic = m.cyclomatic, "
+		" nesting_depth = m.nesting_depth, "
+		" cognitive = m.cognitive, "
+		" param_count = m.param_count, "
+		" call_count = m.call_count, "
+		" branch_count = m.branch_count, "
+		" loop_count = m.loop_count, "
+		" lines = m.lines, "
+		" is_stub = m.is_stub "
+		"FROM _staged_metrics m "
+		"WHERE entity.project_id = m.project_id "
+		"  AND entity.file_path = m.file_path "
+		"  AND entity.start_row = m.start_row "
+		"  AND entity.start_col = m.start_col "
+		"  AND entity.project_id = ? "
+		"  AND entity.kind IN (0,1)";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db_, resolve_sql, -1, &stmt, nullptr) !=
 	    SQLITE_OK) {

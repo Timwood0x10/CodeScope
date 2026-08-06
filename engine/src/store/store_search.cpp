@@ -353,6 +353,15 @@ void GraphStore::buildVectorsFromGraph(uint64_t project_id)
 		return;
 	}
 
+	// v0.2.5 (perf fix): wrap the whole batch of INSERTs in a single
+	// transaction. In autocommit mode every row INSERT issues its own
+	// fsync/commit, which made vector build take tens of seconds on large
+	// projects (thousands of function entities). One BEGIN/COMMIT collapses
+	// all writes into a single commit — order-of-magnitude faster, and the
+	// table is our own scratch (vector_ready is derived from the row count,
+	// so partial/rolled-back writes still yield correct readiness).
+	exec("BEGIN IMMEDIATE TRANSACTION");
+
 	std::vector<float> vec(kVecDim, 0.0f);
 	for (const auto &e : ents) {
 		std::fill(vec.begin(), vec.end(), 0.0f);
@@ -427,6 +436,8 @@ void GraphStore::buildVectorsFromGraph(uint64_t project_id)
 		sqlite3_reset(ins);
 	}
 	sqlite3_finalize(ins);
+	// Commit the batch (see the BEGIN above). exec() logs on failure.
+	exec("COMMIT");
 }
 
 std::string GraphStore::searchSemanticJson(uint64_t project_id,

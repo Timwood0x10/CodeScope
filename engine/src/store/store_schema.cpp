@@ -191,8 +191,16 @@ bool GraphStore::createSchema()
             lines INTEGER NOT NULL DEFAULT 0,
             is_stub INTEGER NOT NULL DEFAULT 0
         );
+        -- Lookup index for resolveStagedMetrics: the resolve UPDATE joins
+        -- _staged_metrics on (project_id, file_path, start_row, start_col).
+        -- The previous index used `kind` as the 4th column, which never
+        -- matches the JOIN predicate — every resolve subquery fell back to
+        -- scanning all rows of a (project, file, start_row) group and the
+        -- 11 per-column subqueries ran one full group scan each per entity
+        -- row. With 13k+ staged rows (goagent) times 11 subqueries this
+        -- made the post-buildGraph resolve take minutes instead of ms.
         CREATE INDEX IF NOT EXISTS idx_staged_metrics_lookup
-            ON _staged_metrics(project_id, file_path, start_row, kind);
+            ON _staged_metrics(project_id, file_path, start_row, start_col);
 
         CREATE TABLE IF NOT EXISTS relation (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -244,6 +252,14 @@ bool GraphStore::createSchema()
         -- name. Without this, name LIKE 'prefix%' / LIKE '%suffix' do a full
         -- table scan on the entity table.
         CREATE INDEX IF NOT EXISTS idx_entity_name ON entity(project_id, name);
+        -- Lookup index for resolveStagedMetrics' UPDATE ... FROM JOIN:
+        -- the JOIN matches entity rows on (project_id, file_path, start_row,
+        -- start_col) against _staged_metrics. Without this index the planner
+        -- had to scan all entity rows per staged row (or vice versa); with
+        -- 13k+ functions (goagent) that turned the resolve pass into a
+        -- multi-minute operation. Same fix as idx_staged_metrics_lookup.
+        CREATE INDEX IF NOT EXISTS idx_entity_loc
+            ON entity(project_id, file_path, start_row, start_col);
         -- Composite index for module_path queries (scope JOIN, module_edge grouping).
         -- Replaces the non-sargable rtrim(file_path, replace(...)) expression.
         CREATE INDEX IF NOT EXISTS idx_entity_module ON entity(project_id, module_path);
@@ -316,6 +332,15 @@ bool GraphStore::createSchema()
         CREATE INDEX IF NOT EXISTS idx_sr_kind ON semantic_records(project_id, kind);
         -- Index for containment edges parent JOIN: (file_path, parent_id)
         CREATE INDEX IF NOT EXISTS idx_sr_fp_parent ON semantic_records(file_path, parent_id);
+        -- Index for ResolverPipeline self-joins: the global field/variable
+        -- type passes JOIN semantic_records t ON t.parent_id = p.original_id
+        -- (kind=17 TypeRef → parent entity). Without an index on
+        -- (project_id, original_id) SQLite SCANs the whole p side per t row
+        -- — for goagent's ~680k semantic_records rows that is ~2.5k×680k
+        -- comparisons and the resolver phase alone exceeded 110s (the build
+        -- previously timed out; api/ at 46k rows finished in 2.4s).
+        CREATE INDEX IF NOT EXISTS idx_sr_oid
+            ON semantic_records(project_id, original_id);
         -- Index for call edges name matching: (project_id, kind, name) covers the WHERE + JOIN
         -- Language added for P3 cross-file matching: sr.language = callee.language
         CREATE INDEX IF NOT EXISTS idx_sr_kind_name ON semantic_records(project_id, kind, name, language);
