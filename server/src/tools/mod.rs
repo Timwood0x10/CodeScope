@@ -345,7 +345,12 @@ fn run_worker(
     }
 }
 
-fn h_index_project(project_id: u64, args: &Value) -> String {
+/// Internal worker-subprocess indexer used by the MCP session auto-index
+/// path. NOT registered as a public tool: index-parallel (with keep_db
+/// incremental) fully replaces the serial index_project tool, so the
+/// MCP tool list no longer exposes it (47→46 tools). The engine and the
+/// worker subprocess entry point are shared with index-parallel and stay.
+pub fn index_project_via_worker(project_id: u64, args: &Value) -> String {
     let path = args["project_path"].as_str().unwrap_or("");
 
     // Use worker subprocess for memory isolation
@@ -1241,7 +1246,6 @@ static TOOL_HANDLERS: Lazy<HashMap<&'static str, ToolHandler>> = Lazy::new(|| {
     m.insert("find_references", h_find_references as ToolHandler);
     m.insert("search_code", h_search_code as ToolHandler);
     // Core tools
-    m.insert("index_project", h_index_project as ToolHandler);
     m.insert("index_file", h_index_file as ToolHandler);
     m.insert("force_index_files", h_force_index_files as ToolHandler);
     m.insert("get_graph_stats", h_get_graph_stats as ToolHandler);
@@ -1361,18 +1365,6 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
                     "limit": {"type": "integer", "description": "Max results (default 20, max 100)"}
                 },
                 "required": ["query"]
-            }),
-        },
-        Tool {
-            name: "index_project".into(),
-            description: "Index a project directory: parse all source files, build IR, and construct the code graph.".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "project_path": {"type": "string", "description": "Absolute path to project root"},
-                    "language_filter": {"type": "string", "description": "Optional: only index files of this language"}
-                },
-                "required": ["project_path"]
             }),
         },
         Tool {

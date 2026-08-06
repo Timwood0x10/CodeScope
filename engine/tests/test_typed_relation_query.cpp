@@ -120,8 +120,16 @@ static int countOccurrences(const std::string &haystack,
 
 int main()
 {
+	// Remove the DB and LadybugDB plus their WAL/SHM companions: a stale
+	// -wal/-shm from an aborted prior run (e.g. make test-engine) makes
+	// Kuzu's lbug_database_init fail on open. Clean all companion files,
+	// not just the main files, so the test is hermetic.
 	unlink(kDbPath);
+	unlink((std::string(kDbPath) + "-wal").c_str());
+	unlink((std::string(kDbPath) + "-shm").c_str());
 	unlink("/tmp/codescope_test_typed_relation.lbug");
+	unlink("/tmp/codescope_test_typed_relation.lbug-wal");
+	unlink("/tmp/codescope_test_typed_relation.lbug-shm");
 
 	store::GraphStore store;
 	assert(store.open(kDbPath));

@@ -149,7 +149,11 @@ impl Server {
                         "project_path": path,
                         "language_filter": "",
                     });
-                    let result = tools::execute(self.project_id, "index_project", &tool_args);
+                    // index_project is no longer a registered MCP tool —
+                    // index-parallel + keep_db incremental replaced it. The
+                    // session auto-index still needs a worker-subprocess
+                    // index, so it calls the internal helper directly.
+                    let result = tools::index_project_via_worker(self.project_id, &tool_args);
                     if let Ok(json) = serde_json::from_str::<serde_json::Value>(&result) {
                         if let Some(error) = json.get("error").and_then(|e| e.as_str()) {
                             if !error.is_empty() {
