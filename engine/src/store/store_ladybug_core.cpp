@@ -115,161 +115,153 @@ bool GraphStore::initLadybugDB()
 		return false;
 	}
 
-		// H2: Check schema version + data fingerprint. If the .lbug was
-		// created by an older binary (or columns changed), or its data
-		// no longer matches the SQLite totals (stale .lbug left over
-		// from a previous index pass), drop all tables and recreate.
-		// Kuzu's CREATE TABLE IF NOT EXISTS won't add missing columns,
-		// so a version mismatch requires a full drop.
-		//
-		// fingerprint packs (entity_count, relation_count) into one
-		// INT64 (entity_count * 1_000_000 + relation_count). It is
-		// written by buildLadybugFromEntityRelation after a successful
-		// compile; a fingerprint mismatch here means the .lbug was
-		// built against different SQLite data than what exists now.
-		//
-		// need_recreate is hoisted to function scope: H2b below uses it
-		// to recompile the graph after a drop+recreate, so a fresh
-		// schema is not left empty.
-		bool need_recreate = false;
+	// H2: Check schema version + data fingerprint. If the .lbug was
+	// created by an older binary (or columns changed), or its data
+	// no longer matches the SQLite totals (stale .lbug left over
+	// from a previous index pass), drop all tables and recreate.
+	// Kuzu's CREATE TABLE IF NOT EXISTS won't add missing columns,
+	// so a version mismatch requires a full drop.
+	//
+	// fingerprint packs (entity_count, relation_count) into one
+	// INT64 (entity_count * 1_000_000 + relation_count). It is
+	// written by buildLadybugFromEntityRelation after a successful
+	// compile; a fingerprint mismatch here means the .lbug was
+	// built against different SQLite data than what exists now.
+	//
+	// need_recreate is hoisted to function scope: H2b below uses it
+	// to recompile the graph after a drop+recreate, so a fresh
+	// schema is not left empty.
+	bool need_recreate = false;
+	{
+		// Live totals from SQLite (source of truth).
+		int64_t live_fingerprint = 0;
 		{
-			// Live totals from SQLite (source of truth).
-			int64_t live_fingerprint = 0;
-			{
-				sqlite3_stmt *fp_st = nullptr;
-				const char *fp_sql =
-					"SELECT (SELECT COUNT(*) FROM entity) * "
-					"1000000 + "
-					"(SELECT COUNT(*) FROM relation)";
-				if (sqlite3_prepare_v2(db_, fp_sql, -1, &fp_st,
-						       nullptr) == SQLITE_OK) {
-					if (sqlite3_step(fp_st) == SQLITE_ROW)
-						live_fingerprint =
-							sqlite3_column_int64(
-								fp_st, 0);
-					sqlite3_finalize(fp_st);
-				}
+			sqlite3_stmt *fp_st = nullptr;
+			const char *fp_sql =
+				"SELECT (SELECT COUNT(*) FROM entity) * "
+				"1000000 + "
+				"(SELECT COUNT(*) FROM relation)";
+			if (sqlite3_prepare_v2(db_, fp_sql, -1, &fp_st,
+					       nullptr) == SQLITE_OK) {
+				if (sqlite3_step(fp_st) == SQLITE_ROW)
+					live_fingerprint =
+						sqlite3_column_int64(fp_st, 0);
+				sqlite3_finalize(fp_st);
 			}
+		}
 
-			lbug_query_result qr;
-			// Try CREATE NODE TABLE IF NOT EXISTS LbugMeta (version
-			// INT64, fingerprint INT64, PRIMARY KEY(version)). On
-			// first init this creates the table; on subsequent inits
-			// it's a no-op.
+		lbug_query_result qr;
+		// Try CREATE NODE TABLE IF NOT EXISTS LbugMeta (version
+		// INT64, fingerprint INT64, PRIMARY KEY(version)). On
+		// first init this creates the table; on subsequent inits
+		// it's a no-op.
+		state = lbug_connection_query(
+			&lbug_conn_,
+			"CREATE NODE TABLE IF NOT EXISTS LbugMeta "
+			"(version INT64, fingerprint INT64, "
+			"PRIMARY KEY(version))",
+			&qr);
+		if (state == LbugSuccess) {
+			lbug_query_result_destroy(&qr);
+			// Read the stored version + fingerprint.
 			state = lbug_connection_query(
 				&lbug_conn_,
-				"CREATE NODE TABLE IF NOT EXISTS LbugMeta "
-				"(version INT64, fingerprint INT64, "
-				"PRIMARY KEY(version))",
+				"MATCH (m:LbugMeta) RETURN m.version, "
+				"m.fingerprint LIMIT 1",
 				&qr);
 			if (state == LbugSuccess) {
-				lbug_query_result_destroy(&qr);
-				// Read the stored version + fingerprint.
-				state = lbug_connection_query(
-					&lbug_conn_,
-					"MATCH (m:LbugMeta) RETURN m.version, "
-					"m.fingerprint LIMIT 1",
-					&qr);
-				if (state == LbugSuccess) {
-					lbug_flat_tuple tuple;
-					if (lbug_query_result_get_next(
-						    &qr, &tuple) ==
+				lbug_flat_tuple tuple;
+				if (lbug_query_result_get_next(&qr, &tuple) ==
+				    LbugSuccess) {
+					lbug_value v;
+					int64_t stored_version = 0;
+					int64_t stored_fp = -1;
+					if (lbug_flat_tuple_get_value(&tuple, 0,
+								      &v) ==
 					    LbugSuccess) {
-						lbug_value v;
-						int64_t stored_version = 0;
-						int64_t stored_fp = -1;
-						if (lbug_flat_tuple_get_value(
-							    &tuple, 0, &v) ==
-						    LbugSuccess) {
-							lbug_value_get_int64(
-								&v,
-								&stored_version);
-						}
-						// Column 1 may not exist on
-						// older schemas — Kuzu
-						// returns failure for a
-						// missing property, so a
-						// stale .lbug fails here and
-						// gets recreated.
-						if (lbug_flat_tuple_get_value(
-							    &tuple, 1,
-							    &v) ==
-						    LbugSuccess) {
-							lbug_value_get_int64(
-								&v,
-								&stored_fp);
-						} else {
-							// Missing fingerprint
-							// column → old schema.
-							stored_fp = -1;
-						}
-						if (static_cast<uint32_t>(
-							    stored_version) !=
-						    kLbugSchemaVersion) {
-							need_recreate = true;
-							fprintf(stderr,
-								"store: "
-								"initLadybugDB "
-								"schema version "
-								"mismatch "
-								"(stored=%lld, "
-								"current=%u) — "
-								"recreating "
-								".lbug "
-								"[module=store, "
-								"method=initLadybugDB]\n",
-								(long long)
-									stored_version,
-								kLbugSchemaVersion);
-						} else if (stored_fp >= 0 &&
-							   stored_fp !=
-								   live_fingerprint) {
-							need_recreate = true;
-							fprintf(stderr,
-								"store: "
-								"initLadybugDB "
-								"data fingerprint "
-								"mismatch "
-								"(stored=%lld, "
-								"live=%lld) — "
-								"recreating "
-								".lbug "
-								"[module=store, "
-								"method=initLadybugDB]\n",
-								(long long)
-									stored_fp,
-								(long long)
-									live_fingerprint);
-						}
-						lbug_flat_tuple_destroy(&tuple);
+						lbug_value_get_int64(
+							&v, &stored_version);
 					}
-					// else: no rows in LbugMeta — first
-					// init with this binary, no drop
-					// needed. The meta row will be
-					// inserted below.
-					lbug_query_result_destroy(&qr);
-				} else {
-					// Read failed — table might not exist
-					// yet (old .lbug). Drop and recreate
-					// to be safe.
-					need_recreate = true;
-					lbug_query_result_destroy(&qr);
+					// Column 1 may not exist on
+					// older schemas — Kuzu
+					// returns failure for a
+					// missing property, so a
+					// stale .lbug fails here and
+					// gets recreated.
+					if (lbug_flat_tuple_get_value(&tuple, 1,
+								      &v) ==
+					    LbugSuccess) {
+						lbug_value_get_int64(
+							&v, &stored_fp);
+					} else {
+						// Missing fingerprint
+						// column → old schema.
+						stored_fp = -1;
+					}
+					if (static_cast<uint32_t>(
+						    stored_version) !=
+					    kLbugSchemaVersion) {
+						need_recreate = true;
+						fprintf(stderr,
+							"store: "
+							"initLadybugDB "
+							"schema version "
+							"mismatch "
+							"(stored=%lld, "
+							"current=%u) — "
+							"recreating "
+							".lbug "
+							"[module=store, "
+							"method=initLadybugDB]\n",
+							(long long)
+								stored_version,
+							kLbugSchemaVersion);
+					} else if (stored_fp >= 0 &&
+						   stored_fp !=
+							   live_fingerprint) {
+						need_recreate = true;
+						fprintf(stderr,
+							"store: "
+							"initLadybugDB "
+							"data fingerprint "
+							"mismatch "
+							"(stored=%lld, "
+							"live=%lld) — "
+							"recreating "
+							".lbug "
+							"[module=store, "
+							"method=initLadybugDB]\n",
+							(long long)stored_fp,
+							(long long)
+								live_fingerprint);
+					}
+					lbug_flat_tuple_destroy(&tuple);
 				}
+				// else: no rows in LbugMeta — first
+				// init with this binary, no drop
+				// needed. The meta row will be
+				// inserted below.
+				lbug_query_result_destroy(&qr);
 			} else {
-				// CREATE failed — log and continue; schema
-				// loop below will surface any deeper error.
-				char *err =
-					lbug_query_result_get_error_message(
-						&qr);
-				fprintf(stderr,
-					"store: initLadybugDB LbugMeta create "
-					"failed: %s [module=store, "
-					"method=initLadybugDB]\n",
-					err ? err : "(no error)");
-				if (err)
-					lbug_destroy_string(err);
+				// Read failed — table might not exist
+				// yet (old .lbug). Drop and recreate
+				// to be safe.
+				need_recreate = true;
 				lbug_query_result_destroy(&qr);
 			}
+		} else {
+			// CREATE failed — log and continue; schema
+			// loop below will surface any deeper error.
+			char *err = lbug_query_result_get_error_message(&qr);
+			fprintf(stderr,
+				"store: initLadybugDB LbugMeta create "
+				"failed: %s [module=store, "
+				"method=initLadybugDB]\n",
+				err ? err : "(no error)");
+			if (err)
+				lbug_destroy_string(err);
+			lbug_query_result_destroy(&qr);
+		}
 
 		if (need_recreate) {
 			// Drop all tables so they get recreated with the

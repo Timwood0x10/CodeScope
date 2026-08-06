@@ -2628,15 +2628,19 @@ std::string QueryEngine::getGraphStats(uint64_t project_id)
 		       "method=getGraphStats]\"}";
 	}
 
+	// Aggregate across ALL projects so serial and parallel products
+	// return identical totals: parallel indexing stores each module as
+	// its own project in the merged DB, and get_graph_stats must report
+	// the complete graph regardless of indexing mode. `project_id` is
+	// intentionally ignored (see the SQLite branch below for the same
+	// policy).
 	int64_t total_nodes = 0;
 	int64_t total_edges = 0;
 	int64_t total_files = 0;
 
-	// Node count
+	// Node count (all projects)
 	{
-		std::string cypher = "MATCH (n:GraphNode {project_id:" +
-				     std::to_string(project_id) +
-				     "}) RETURN count(n)";
+		std::string cypher = "MATCH (n:GraphNode) RETURN count(n)";
 		lbug_query_result qr;
 		lbug_state s = lbug_connection_query(conn, cypher.c_str(), &qr);
 		if (s == LbugSuccess) {
@@ -2658,11 +2662,9 @@ std::string QueryEngine::getGraphStats(uint64_t project_id)
 		}
 	}
 
-	// Edge count
+	// Edge count (all projects)
 	{
-		std::string cypher = "MATCH ()-[r]->() WHERE r.project_id = " +
-				     std::to_string(project_id) +
-				     " RETURN count(r)";
+		std::string cypher = "MATCH ()-[r]->() RETURN count(r)";
 		lbug_query_result qr;
 		lbug_state s = lbug_connection_query(conn, cypher.c_str(), &qr);
 		if (s == LbugSuccess) {
@@ -2686,11 +2688,10 @@ std::string QueryEngine::getGraphStats(uint64_t project_id)
 
 	// File count: the SQLite `files` table is not replicated in
 	// LadybugDB, so we count DISTINCT file_path values among GraphNodes
-	// as a LadybugDB-native approximation.
+	// as a LadybugDB-native approximation (all projects).
 	{
-		std::string cypher = "MATCH (n:GraphNode {project_id:" +
-				     std::to_string(project_id) +
-				     "}) RETURN count(DISTINCT n.file_path)";
+		std::string cypher =
+			"MATCH (n:GraphNode) RETURN count(DISTINCT n.file_path)";
 		lbug_query_result qr;
 		lbug_state s = lbug_connection_query(conn, cypher.c_str(), &qr);
 		if (s == LbugSuccess) {
@@ -2721,6 +2722,11 @@ std::string QueryEngine::getGraphStats(uint64_t project_id)
 	// ── v0.2.5: SQLite graph-query backend (Windows / SQLite-only) ──
 	// Graph statistics via COUNT(*) over the canonical tables. Mirrors
 	// the LadybugDB branch's {total_nodes, total_edges, total_files} JSON.
+	// Aggregate across ALL projects: parallel indexing stores each module
+	// as its own project in the merged DB, and get_graph_stats must
+	// report the complete graph regardless of indexing mode (serial =
+	// one project, parallel = N projects). `project_id` is ignored on
+	// purpose so serial and parallel products return identical totals.
 	if (!store_ || !store_->handle()) {
 		return "{\"error\":\"graph not ready [module=query, "
 		       "method=getGraphStats]\"}";
@@ -2728,42 +2734,33 @@ std::string QueryEngine::getGraphStats(uint64_t project_id)
 	sqlite3 *db = store_->handle();
 	int64_t total_nodes = 0, total_edges = 0, total_files = 0;
 	{
-		const char *sql =
-			"SELECT COUNT(*) FROM entity WHERE project_id=?";
+		const char *sql = "SELECT COUNT(*) FROM entity";
 		sqlite3_stmt *st = nullptr;
 		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) ==
 		    SQLITE_OK) {
-			sqlite3_bind_int64(st, 1,
-					   static_cast<int64_t>(project_id));
 			if (sqlite3_step(st) == SQLITE_ROW)
 				total_nodes = sqlite3_column_int64(st, 0);
 			sqlite3_finalize(st);
 		}
 	}
 	{
-		const char *sql =
-			"SELECT COUNT(*) FROM relation WHERE project_id=?";
+		const char *sql = "SELECT COUNT(*) FROM relation";
 		sqlite3_stmt *st = nullptr;
 		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) ==
 		    SQLITE_OK) {
-			sqlite3_bind_int64(st, 1,
-					   static_cast<int64_t>(project_id));
 			if (sqlite3_step(st) == SQLITE_ROW)
 				total_edges = sqlite3_column_int64(st, 0);
 			sqlite3_finalize(st);
 		}
 	}
 	{
-		// Distinct file paths across the project's entities (matches the
+		// Distinct file paths across all entities (matches the
 		// LadybugDB branch's "count DISTINCT n.file_path").
 		const char *sql =
-			"SELECT COUNT(DISTINCT file_path) FROM entity "
-			"WHERE project_id=?";
+			"SELECT COUNT(DISTINCT file_path) FROM entity";
 		sqlite3_stmt *st = nullptr;
 		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) ==
 		    SQLITE_OK) {
-			sqlite3_bind_int64(st, 1,
-					   static_cast<int64_t>(project_id));
 			if (sqlite3_step(st) == SQLITE_ROW)
 				total_files = sqlite3_column_int64(st, 0);
 			sqlite3_finalize(st);

@@ -73,6 +73,23 @@ void engine_set_ladybug_queries_enabled(int enabled);
 // On error returns JSON with an "error" field.
 char *engine_find_connected_components(uint64_t project_id);
 
+// ─── Graph rebuild (parallel-index normalization) ─────────────
+// Rebuild the LadybugDB graph (call graph + relations) for a project from
+// its already-populated SQLite `entity`/`relation` tables. This is used to
+// normalize the output of the parallel indexer, which skips LadybugDB
+// construction per worker (CODESCOPE_SKIP_ASYNC=1) and therefore produces a
+// merged SQLite-only main.db with no graph. After merging, the caller invokes
+// this once per project_id so the unified DB gains the same full graph that a
+// serial index produces.
+//
+// @param db_path   Absolute path to the SQLite DB (the engine opens it fresh).
+// @param project_id The project whose graph to (re)build.
+// @return 0 on success, non-zero on failure. On failure the caller can still
+//         query graph data via the SQLite fallback (graph queries degrade
+//         gracefully to entity/relation), but Cypher/graph-native queries may
+//         be unavailable for this project until a serial re-index.
+int engine_rebuild_ladybug_graph(const char *db_path, uint64_t project_id);
+
 // ─── Interactive exploration ──────────────────────────────────
 // Explore a function's callers/callees recursively as a JSON tree.
 // Returns hierarchical JSON: {"name":"...","file":"...","line":N,"callers":[...],"callees":[...]}

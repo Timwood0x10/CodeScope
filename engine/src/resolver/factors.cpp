@@ -310,6 +310,63 @@ double factorReceiverTypeMatch(const std::string &receiver_type,
 	return 0.0;
 }
 
+// v0.2.5 (perf): pre-parsed receiver matching. Build the ref-level context
+// (prefix1/prefix2/rtype_lower) once per reference so the resolver hot loop
+// does not reallocate them for every candidate.
+ReceiverMatchContext buildReceiverMatchContext(const std::string &receiver_type)
+{
+	ReceiverMatchContext ctx;
+	if (receiver_type.empty()) {
+		ctx.empty = true;
+		return ctx;
+	}
+	ctx.prefix1 = receiver_type + "::";
+	ctx.prefix2 = receiver_type + ".";
+	ctx.rtype_lower = receiver_type;
+	for (auto &ch : ctx.rtype_lower)
+		ch = static_cast<char>(
+			std::tolower(static_cast<unsigned char>(ch)));
+	return ctx;
+}
+
+// Scoring is byte-identical to factorReceiverTypeMatch: same prefixes, same
+// strong/partial/file-fallback rules. Only the string construction differs
+// (precomputed ref-level strings; per-candidate file basename is still
+// derived here because it is candidate-specific).
+double factorReceiverTypeMatchPrecomp(const ReceiverMatchContext &ctx,
+				      const std::string &candidate_qname,
+				      const std::string &candidate_file)
+{
+	if (ctx.empty)
+		return 0.5; // neutral, no receiver evidence
+
+	// Strong match: qualified_name contains the receiver type as a prefix.
+	if (!candidate_qname.empty()) {
+		if (candidate_qname.find(ctx.prefix1) == 0 ||
+		    candidate_qname.find(ctx.prefix2) == 0)
+			return kScoreExactMatch;
+		if (candidate_qname.find(ctx.prefix1) != std::string::npos ||
+		    candidate_qname.find(ctx.prefix2) != std::string::npos)
+			return kScorePartialMatch;
+	}
+
+	// Weak fallback: candidate file basename contains the lowercased
+	// receiver type (mirrors factorReceiverTypeMatch lines 292-308).
+	size_t slash = candidate_file.rfind('/');
+	std::string fname = (slash != std::string::npos) ?
+				    candidate_file.substr(slash + 1) :
+				    candidate_file;
+	std::string fname_lower = fname;
+	for (auto &ch : fname_lower)
+		ch = static_cast<char>(
+			std::tolower(static_cast<unsigned char>(ch)));
+	if (!ctx.rtype_lower.empty() &&
+	    fname_lower.find(ctx.rtype_lower) != std::string::npos)
+		return kScorePartialMatch;
+
+	return 0.0;
+}
+
 double factorCommonNamePenalty(const std::string &name)
 {
 	static const std::unordered_set<std::string> kCommonNames = {

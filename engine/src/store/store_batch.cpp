@@ -656,24 +656,23 @@ bool GraphStore::resolveStagedMetrics(uint64_t project_id)
 	//    instead of milliseconds. One JOIN updates all columns in a single
 	//    scan; the (project_id, file_path, start_row, start_col) lookup
 	//    index makes each match an index seek.
-	const char *resolve_sql =
-		"UPDATE entity SET "
-		" cyclomatic = m.cyclomatic, "
-		" nesting_depth = m.nesting_depth, "
-		" cognitive = m.cognitive, "
-		" param_count = m.param_count, "
-		" call_count = m.call_count, "
-		" branch_count = m.branch_count, "
-		" loop_count = m.loop_count, "
-		" lines = m.lines, "
-		" is_stub = m.is_stub "
-		"FROM _staged_metrics m "
-		"WHERE entity.project_id = m.project_id "
-		"  AND entity.file_path = m.file_path "
-		"  AND entity.start_row = m.start_row "
-		"  AND entity.start_col = m.start_col "
-		"  AND entity.project_id = ? "
-		"  AND entity.kind IN (0,1)";
+	const char *resolve_sql = "UPDATE entity SET "
+				  " cyclomatic = m.cyclomatic, "
+				  " nesting_depth = m.nesting_depth, "
+				  " cognitive = m.cognitive, "
+				  " param_count = m.param_count, "
+				  " call_count = m.call_count, "
+				  " branch_count = m.branch_count, "
+				  " loop_count = m.loop_count, "
+				  " lines = m.lines, "
+				  " is_stub = m.is_stub "
+				  "FROM _staged_metrics m "
+				  "WHERE entity.project_id = m.project_id "
+				  "  AND entity.file_path = m.file_path "
+				  "  AND entity.start_row = m.start_row "
+				  "  AND entity.start_col = m.start_col "
+				  "  AND entity.project_id = ? "
+				  "  AND entity.kind IN (0,1)";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db_, resolve_sql, -1, &stmt, nullptr) !=
 	    SQLITE_OK) {

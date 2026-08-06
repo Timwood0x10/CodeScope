@@ -627,11 +627,10 @@ writeEntityEdgeCsvs(sqlite3 *db, uint64_t project_id,
 						  sqlite3_column_int(st, 7),
 						  sqlite3_column_int(st, 8),
 						  sqlite3_column_int(st, 9));
-		std::string tgt_uid = makeNodeUid(project_id, sqliteText(st, 10),
-						  sqliteText(st, 12),
-						  sqlite3_column_int(st, 13),
-						  sqlite3_column_int(st, 14),
-						  sqlite3_column_int(st, 15));
+		std::string tgt_uid = makeNodeUid(
+			project_id, sqliteText(st, 10), sqliteText(st, 12),
+			sqlite3_column_int(st, 13), sqlite3_column_int(st, 14),
+			sqlite3_column_int(st, 15));
 
 		// Relation type contract (see graph_types.h): only
 		// `EdgeType::Calls` is compiled to the LadybugDB CALLS
@@ -1112,8 +1111,8 @@ bool buildLadybugFromEntityRelation(
 				"SELECT (SELECT COUNT(*) FROM entity) * "
 				"1000000 + "
 				"(SELECT COUNT(*) FROM relation)";
-			if (sqlite3_prepare_v2(db, fp_sql, -1, &fp_st, nullptr) ==
-			    SQLITE_OK) {
+			if (sqlite3_prepare_v2(db, fp_sql, -1, &fp_st,
+					       nullptr) == SQLITE_OK) {
 				if (sqlite3_step(fp_st) == SQLITE_ROW)
 					fp = sqlite3_column_int64(fp_st, 0);
 				sqlite3_finalize(fp_st);
@@ -1127,9 +1126,8 @@ bool buildLadybugFromEntityRelation(
 			lbug_state fs = lbug_connection_query(
 				conn, fp_cypher.c_str(), &fqr);
 			if (fs != LbugSuccess) {
-				char *err =
-					lbug_query_result_get_error_message(
-						&fqr);
+				char *err = lbug_query_result_get_error_message(
+					&fqr);
 				fprintf(stderr,
 					"store: buildLadybugFromEntityRelation "
 					"fingerprint update failed: %s "

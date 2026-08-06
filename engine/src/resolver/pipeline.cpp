@@ -166,54 +166,145 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 					const std::string &receiver_type)
 {
 	// Build per-factor scores for each candidate using multi-factor scoring.
+	//
+	// v0.2.5 (perf fix): the original code built a full
+	// std::vector<FactorResult> (name/detail heap strings) per candidate and
+	// fed it to computeTotalScore(). On large projects that is ~166k
+	// candidate evaluations × ~20 string allocations each ≈ 3.3M heap
+	// allocations — measured as the 90µs-per-candidate cost that made the
+	// resolver 93.8% of index time (goagent: 14.9s of 15.9s). Here we
+	// accumulate the weighted sum directly (pure double math, no strings)
+	// and capture only the ReceiverMatch score that the ambiguity gate needs
+	// (see receiver_bypass in run()). Every factor's weight/score pair and
+	// the final weighted-average formula are identical to the previous
+	// computeTotalScore path, so resolved edges are byte-for-byte unchanged.
+	//
+	// v0.2.5 (perf fix #2): the path-based factors (ImportMatch,
+	// NamespaceMatch, DistanceMatch) each re-derived caller_file's directory
+	// and module token with rfind/substr on every candidate. caller_file is
+	// fixed for the whole ref, so we parse it ONCE here (caller_dir /
+	// caller_parent / caller_module) and parse each candidate's path ONCE
+	// inside the loop, then compute the three path factors from those
+	// pre-parsed values. This removes ~N×3 redundant substring allocations
+	// per candidate. The scoring rules are kept IDENTICAL to
+	// factorImportMatch/factorNamespaceMatch/factorDistanceMatch in
+	// factors.cpp — do not change them independently.
+	size_t caller_slash = caller_file.rfind('/');
+	std::string caller_dir = (caller_slash != std::string::npos) ?
+					 caller_file.substr(0, caller_slash) :
+					 "";
+	size_t caller_parent_slash = caller_dir.rfind('/');
+	std::string caller_parent =
+		(caller_parent_slash != std::string::npos) ?
+			caller_dir.substr(0, caller_parent_slash) :
+			"";
+	// moduleTokenFromPath: the last path token (file's directory name).
+	// Mirrors the anonymous helper in factors.cpp used by
+	// factorImportMatch. When there is no slash, the whole dir is returned.
+	std::string caller_module = caller_dir;
+	{
+		size_t ms = caller_dir.rfind('/');
+		if (ms != std::string::npos)
+			caller_module = caller_dir.substr(ms + 1);
+	}
+	auto anyImportMatches = [&](const std::vector<std::string> &paths,
+				    const std::string &mod) {
+		for (const auto &p : paths) {
+			if (p.find(mod) != std::string::npos)
+				return true;
+		}
+		return false;
+	};
+	// ── Ref-level factor precompute (perf fix #3) ──
+	// factorCommonNamePenalty depends ONLY on the ref's callee_name, which
+	// is fixed across all candidates of this ref, yet it was called once per
+	// candidate (~166k calls). Compute it once here.
+	const double common_name_penalty = factorCommonNamePenalty(callee_name);
+	// When receiver_type is empty (dynamic/unknown), factorReceiverTypeMatch
+	// returns a constant neutral 0.5 regardless of the candidate — compute it
+	// once here instead of per candidate. When non-empty, build the ref-level
+	// context (prefix1/prefix2/rtype_lower) once so the per-candidate match
+	// does not reallocate those strings (perf fix #3).
+	const bool receiver_is_known = !receiver_type.empty();
+	const double neutral_receiver_score = 0.5;
+	const ReceiverMatchContext receiver_ctx =
+		buildReceiverMatchContext(receiver_type);
 	for (auto &c : candidates) {
-		std::vector<FactorResult> factors;
-		factors.reserve(10);
+		double sum_weight = 0.0;
+		double sum_scored = 0.0;
+		// Accumulate one (weight, score) pair into the weighted sums.
+		// This mirrors computeTotalScore's loop without materializing a
+		// vector<FactorResult> per candidate.
+		auto acc = [&](double weight, double score) {
+			sum_weight += weight;
+			sum_scored += weight * score;
+		};
 
-		// Module/namespace match is pure (caller_file, c.file_path) —
-		// computed once and reused by ModuleMatch, NamespaceMatch and
-		// the CommonNamePenalty same-module gate below. Recomputing it
-		// three times per candidate tripled the string work in the hot
-		// loop (20073 refs × ~5 candidates each).
-		const double ns_score =
-			factorNamespaceMatch(caller_file, c.file_path);
-
-		// Factor 1: ModuleMatch
+		// ── Pre-parse this candidate's path once (perf fix #2) ──
+		size_t cand_slash = c.file_path.rfind('/');
+		std::string cand_dir =
+			(cand_slash != std::string::npos) ?
+				c.file_path.substr(0, cand_slash) :
+				"";
+		size_t cand_parent_slash = cand_dir.rfind('/');
+		std::string cand_parent =
+			(cand_parent_slash != std::string::npos) ?
+				cand_dir.substr(0, cand_parent_slash) :
+				"";
+		std::string cand_module = cand_dir;
 		{
-			FactorResult f;
-			f.name = "ModuleMatch";
-			f.weight = kWeightModuleMatch;
-			f.score = ns_score;
-			f.detail = (f.score > 0.0) ? "same module" :
-						     "different module";
-			factors.push_back(std::move(f));
+			size_t ms = cand_dir.rfind('/');
+			if (ms != std::string::npos)
+				cand_module = cand_dir.substr(ms + 1);
 		}
 
+		// ── NamespaceMatch score (reused by ModuleMatch and the
+		//    CommonNamePenalty same-module gate) ──
+		// Mirrors factorNamespaceMatch(caller_file, c.file_path):
+		//   same dir → 1.0; same parent dir → 0.5; else 0.0.
+		double ns_score = 0.0;
+		if (!cand_dir.empty() && !caller_dir.empty()) {
+			if (caller_dir == cand_dir)
+				ns_score = kScoreExactMatch;
+			else if (caller_parent == cand_parent &&
+				 !caller_parent.empty())
+				ns_score = kScoreSiblingModule;
+		}
+
+		// Factor 1: ModuleMatch
+		acc(kWeightModuleMatch, ns_score);
+
 		// Factor 2: ImportMatch — dominant weight for cross-module calls.
-		// Uses the pre-loaded import_index_ hashmap instead of per-
-		// candidate SQL (the previous ~174s bottleneck). Matching keeps
-		// SQLite-exact LIKE semantics so resolved edges are unchanged.
+		// Mirrors factorImportMatch(import_index_, caller_file,
+		// c.file_path, c.name):
+		//   1. same directory → 1.0 (no import needed)
+		//   2. forward: caller imports candidate_module → 1.0
+		//   3. reverse: candidate imports caller_module → 1.0
+		//   4. else 0.0
 		{
-			FactorResult f;
-			f.name = "ImportMatch";
-			f.weight = kWeightImportMatch;
-			f.score = factorImportMatch(import_index_, caller_file,
-						    c.file_path, c.name);
-			f.detail = (f.score > 0.0) ? "imported" :
-						     "not imported";
-			factors.push_back(std::move(f));
+			double import_score = 0.0;
+			if (!caller_dir.empty() && caller_dir == cand_dir) {
+				import_score = 1.0;
+			} else {
+				auto fwd_it = import_index_.find(caller_file);
+				if (fwd_it != import_index_.end() &&
+				    anyImportMatches(fwd_it->second,
+						     cand_module))
+					import_score = 1.0;
+				else {
+					auto rev_it =
+						import_index_.find(c.file_path);
+					if (rev_it != import_index_.end() &&
+					    anyImportMatches(rev_it->second,
+							     caller_module))
+						import_score = 1.0;
+				}
+			}
+			acc(kWeightImportMatch, import_score);
 		}
 
 		// Factor 3: NamespaceMatch
-		{
-			FactorResult f;
-			f.name = "NamespaceMatch";
-			f.weight = kWeightNamespaceMatch;
-			f.score = ns_score;
-			f.detail = (f.score > 0.0) ? "shared namespace" :
-						     "different namespace";
-			factors.push_back(std::move(f));
-		}
+		acc(kWeightNamespaceMatch, ns_score);
 
 		// Factor 4: SignatureMatch — compares the call site's arity
 		// (from the reference row) against each candidate's arity.
@@ -223,34 +314,23 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 		// arity (returning +0.5) — the exact opposite of correct
 		// overload resolution. Thread the real reference arity through
 		// so exact-arity overloads score highest.
-		{
-			FactorResult f;
-			f.name = "SignatureMatch";
-			f.weight = kWeightSignatureMatch;
-			f.score = factorSignatureMatch(caller_arity, c.arity);
-			factors.push_back(std::move(f));
-		}
+		acc(kWeightSignatureMatch,
+		    factorSignatureMatch(caller_arity, c.arity));
 
-		// Factor 5: DistanceMatch
+		// Factor 5: DistanceMatch — mirrors factorDistanceMatch:
+		//   same file → 1.0; same directory → 0.3; else 0.0.
 		{
-			FactorResult f;
-			f.name = "DistanceMatch";
-			f.weight = kWeightDistanceMatch;
-			f.score = factorDistanceMatch(caller_file, c.file_path);
-			factors.push_back(std::move(f));
+			double dist_score = 0.0;
+			if (caller_file == c.file_path)
+				dist_score = kScoreExactMatch;
+			else if (!caller_dir.empty() && caller_dir == cand_dir)
+				dist_score = kScoreSameDirectory;
+			acc(kWeightDistanceMatch, dist_score);
 		}
 
 		// Factor 6: ConstructorMatch
-		{
-			FactorResult f;
-			f.name = "ConstructorMatch";
-			f.weight = kWeightConstructorMatch;
-			f.score = factorConstructorMatch(callee_name, c.name,
-							 c.kind);
-			f.detail = (f.score > 0.0) ? "constructor" :
-						     "not constructor";
-			factors.push_back(std::move(f));
-		}
+		acc(kWeightConstructorMatch,
+		    factorConstructorMatch(callee_name, c.name, c.kind));
 
 		// Factor 7: ReceiverMatch (Step 5: now type-based, not directory)
 		// Replaced factorReceiverMatch (directory heuristic) with
@@ -259,44 +339,36 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 		// qualified_name contains "Box::" or "Box." score 1.0. When
 		// receiver_type is empty (dynamic/unknown), the factor returns
 		// 0.5 (neutral) so it does not distort the ranking.
+		//
+		// The per-candidate ReceiverMatch score is captured separately
+		// (c.receiver_score) because the ambiguity gate in run()
+		// (receiver_bypass) reads only this one factor — no other part of
+		// the hot loop consumes the full FactorResult vector.
 		{
-			FactorResult f;
-			f.name = "ReceiverMatch";
-			f.weight = kWeightReceiverMatch;
-			f.score = factorReceiverTypeMatch(receiver_type,
-							  c.qualified_name,
-							  c.name, c.file_path);
-			if (!receiver_type.empty()) {
-				f.detail =
-					(f.score >= kScoreExactMatch) ?
-						"receiver type match" :
-						(f.score > 0.0 ?
-							 "partial receiver" :
-							 "receiver mismatch");
-			} else {
-				f.detail = "no receiver evidence (neutral)";
+			// v0.2.5 (perf fix #3): when receiver_type is empty the score
+			// is a constant neutral 0.5 (precomputed). When non-empty, use
+			// the ref-level pre-parsed context so per-candidate string
+			// allocations (prefix1/prefix2/rtype_lower) are avoided.
+			double recv = neutral_receiver_score;
+			if (receiver_is_known) {
+				recv = factorReceiverTypeMatchPrecomp(
+					receiver_ctx, c.qualified_name,
+					c.file_path);
 			}
-			factors.push_back(std::move(f));
+			c.receiver_score = recv;
+			acc(kWeightReceiverMatch, recv);
 		}
 
 		// Factor 8: CommonNamePenalty — reduce score for very common names
-		// Only applies to cross-module candidates (same-module should not be penalized).
+		// Only applies to cross-module candidates (same-module should not be
+		// penalized). The penalty value itself depends only on the ref's
+		// callee_name and is precomputed once per ref (perf fix #3).
 		{
-			FactorResult f;
-			f.name = "CommonNamePenalty";
-			f.weight = kWeightCommonNamePenalty;
 			// Only penalize if candidate is in a different module
 			bool same_module = (ns_score > 0.0);
-			double penalty =
-				same_module ?
-					0.0 :
-					factorCommonNamePenalty(callee_name);
-			f.score = -penalty;
-			f.detail =
-				(f.score < 0.0) ?
-					"common name penalty (cross-module)" :
-					"unique or same-module name";
-			factors.push_back(std::move(f));
+			double penalty = same_module ? 0.0 :
+						       common_name_penalty;
+			acc(kWeightCommonNamePenalty, -penalty);
 		}
 
 		// Factor 9: CallKindMatch — adjust scoring based on call kind.
@@ -304,22 +376,17 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 		// Interface dispatches (2): reduce confidence (harder to resolve).
 		// Method calls (1): slight cross-module penalty.
 		if (call_kind != kCallKindDirect) {
-			FactorResult f;
-			f.name = "CallKindMatch";
-			f.weight = kWeightCallKindMatch;
+			double kscore = 0.0;
 			if (call_kind == kCallKindConstructor)
-				f.score =
+				kscore =
 					0.3; // boost: constructors expected to cross module
 			else if (call_kind == kCallKindInterface)
-				f.score =
+				kscore =
 					-0.3; // penalty: interface dispatch is harder to resolve
 			else if (call_kind == kCallKindMethod)
-				f.score =
+				kscore =
 					-0.1; // slight penalty: methods usually same-module
-			else
-				f.score = 0.0;
-			f.detail = "call_kind=" + std::to_string(call_kind);
-			factors.push_back(std::move(f));
+			acc(kWeightCallKindMatch, kscore);
 		}
 
 		// Factor 10: DefinitionMatch — for C/C++, prefer symbols defined
@@ -328,18 +395,8 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 		// between a header prototype and a source definition that scored
 		// identically (Finding #8). Non-C/C++ languages return 1.0
 		// (neutral), so their ranking is unaffected.
-		{
-			FactorResult f;
-			f.name = "DefinitionMatch";
-			f.weight = kWeightDefinitionMatch;
-			f.score =
-				factorDefinitionMatch(c.language, c.file_path);
-			f.detail = (f.score > 0.0) ?
-					   "source def" :
-					   (f.score < 0.0 ? "header proto" :
-							    "neutral");
-			factors.push_back(std::move(f));
-		}
+		acc(kWeightDefinitionMatch,
+		    factorDefinitionMatch(c.language, c.file_path));
 
 		// VisibilityCheck was moved to a hard filter in run() to
 		// ensure language visibility rules (e.g. Go unexported names)
@@ -347,8 +404,12 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 		// weighted factor can be overcome by other factors, but a
 		// hard language rule must be absolute.
 
-		c.total_score = computeTotalScore(factors);
-		c.factors = std::move(factors);
+		// Weighted average, identical to computeTotalScore's formula.
+		c.total_score = (sum_weight > 0.0) ? (sum_scored / sum_weight) :
+						     0.0;
+		// c.factors is intentionally NOT populated here (perf); the hot
+		// loop never reads it. If a future debug path needs factor detail,
+		// rebuild it lazily for the resolved candidate only.
 	}
 
 	std::sort(candidates.begin(), candidates.end(),
@@ -660,7 +721,8 @@ int64_t ResolverPipeline::run()
 				const auto &smethods = smit->second;
 				bool implements_all = true;
 				for (const auto &m : imethods) {
-					if (smethods.find(m) == smethods.end()) {
+					if (smethods.find(m) ==
+					    smethods.end()) {
 						implements_all = false;
 						break;
 					}
@@ -1056,8 +1118,7 @@ int64_t ResolverPipeline::run()
 			cands = &candidates;
 		}
 
-		total_candidates_seen +=
-			static_cast<int64_t>(cands->size());
+		total_candidates_seen += static_cast<int64_t>(cands->size());
 
 		if (cands->size() > kMaxCandidatesToScore) {
 			skipped_too_many++;
@@ -1141,7 +1202,8 @@ int64_t ResolverPipeline::run()
 			// the same receiver type (global tables are immutable
 			// for the duration of run()), so a cache hit skips the
 			// whole chain walk.
-			auto cache_it = field_chain_cache.find(ref.receiver_text);
+			auto cache_it =
+				field_chain_cache.find(ref.receiver_text);
 			if (cache_it != field_chain_cache.end()) {
 				resolved_receiver = cache_it->second;
 			} else {
@@ -1163,68 +1225,73 @@ int64_t ResolverPipeline::run()
 						bool chain_ok = true;
 						size_t pos = first_dot;
 						while (chain_ok &&
-						       pos !=
-							       std::string::
-								       npos) {
+						       pos != std::string::npos) {
 							size_t next = cur.find(
-								'.',
-								pos + 1);
-							std::string field =
-								cur.substr(
-									pos + 1,
-									(next ==
-									 std::string::
-										 npos) ?
-										std::string::
-											npos :
-										next - pos -
-											1);
-						auto ft =
-							global_struct_fields_
-								.find(cur_type);
-						if (ft == global_struct_fields_
-								  .end()) {
-							chain_ok = false;
+								'.', pos + 1);
+							std::string field = cur.substr(
+								pos + 1,
+								(next ==
+								 std::string::
+									 npos) ?
+									std::string::
+										npos :
+									next - pos -
+										1);
+							auto ft =
+								global_struct_fields_
+									.find(cur_type);
+							if (ft ==
+							    global_struct_fields_
+								    .end()) {
+								chain_ok =
+									false;
+								break;
+							}
+							auto fld =
+								ft->second.find(
+									field);
+							if (fld ==
+							    ft->second.end()) {
+								chain_ok =
+									false;
+								break;
+							}
+							cur_type = fld->second;
+							pos = next;
+						}
+						if (chain_ok &&
+						    !cur_type.empty()) {
+							// Normalize the resolved type so it
+							// can hit interface_impl_index_:
+							// strip a leading pointer marker
+							// (`*PluginBus` → `PluginBus`) and
+							// drop a package qualifier
+							// (`ares_runtime.PluginBus` →
+							// `PluginBus`), matching how the
+							// visitor records interface names.
+							std::string norm =
+								cur_type;
+							if (!norm.empty() &&
+							    norm[0] == '*')
+								norm.erase(0,
+									   1);
+							size_t last_dot =
+								norm.rfind('.');
+							if (last_dot !=
+							    std::string::npos)
+								norm = norm.substr(
+									last_dot +
+									1);
+							if (!norm.empty())
+								resolved_receiver =
+									norm;
 							break;
 						}
-						auto fld =
-							ft->second.find(field);
-						if (fld == ft->second.end()) {
-							chain_ok = false;
-							break;
-						}
-						cur_type = fld->second;
-						pos = next;
 					}
-					if (chain_ok && !cur_type.empty()) {
-						// Normalize the resolved type so it
-						// can hit interface_impl_index_:
-						// strip a leading pointer marker
-						// (`*PluginBus` → `PluginBus`) and
-						// drop a package qualifier
-						// (`ares_runtime.PluginBus` →
-						// `PluginBus`), matching how the
-						// visitor records interface names.
-						std::string norm = cur_type;
-						if (!norm.empty() &&
-						    norm[0] == '*')
-							norm.erase(0, 1);
-						size_t last_dot =
-							norm.rfind('.');
-						if (last_dot !=
-						    std::string::npos)
-							norm = norm.substr(
-								last_dot + 1);
-						if (!norm.empty())
-							resolved_receiver =
-								norm;
-						break;
-					}
+					field_chain_cache[ref.receiver_text] =
+						resolved_receiver;
 				}
-				field_chain_cache[ref.receiver_text] =
-					resolved_receiver;
 			}
-		}
 		}
 		if (!resolved_receiver.empty()) {
 			auto impl_it =
@@ -1248,29 +1315,30 @@ int64_t ResolverPipeline::run()
 					// `qn.find(impl + "::") == 0 || qn.find(impl +
 					// ".") == 0` — compare the prefix, then check
 					// the separator character.
-					const size_t impl_len = impl_type.size();
+					const size_t impl_len =
+						impl_type.size();
 					for (const auto &c : *cands) {
-						if (c.entity_id == ref.caller_id)
+						if (c.entity_id ==
+						    ref.caller_id)
 							continue;
 						const std::string &qn =
 							c.qualified_name;
 						if (qn.size() <= impl_len ||
 						    qn.compare(0, impl_len,
-								       impl_type) != 0)
+							       impl_type) != 0)
 							continue;
 						const char sep = qn[impl_len];
 						if (sep != '.' &&
 						    !(sep == ':' &&
-							      qn.size() > impl_len + 1 &&
-							      qn[impl_len + 1] == ':'))
+						      qn.size() >
+							      impl_len + 1 &&
+						      qn[impl_len + 1] == ':'))
 							continue;
 						// Visibility check.
 						if (factorVisibilityCheck(
-							    c.language,
-							    c.name,
+							    c.language, c.name,
 							    ref.caller_file,
-							    c.file_path) <
-						    0.5)
+							    c.file_path) < 0.5)
 							continue;
 						dispatch_count++;
 						resolved_count++;
@@ -1292,7 +1360,8 @@ int64_t ResolverPipeline::run()
 							  ref.start_row,
 							  ref.start_col });
 						if (dispatch_count >=
-						    static_cast<int>(cands->size())) {
+						    static_cast<int>(
+							    cands->size())) {
 							dispatch_done = true;
 							break;
 						}
@@ -1393,13 +1462,12 @@ int64_t ResolverPipeline::run()
 				for (auto &c : candidates) {
 					if (c.entity_id == ref.caller_id)
 						continue;
-					double rec = 0.0;
-					for (auto &f : c.factors) {
-						if (f.name == "ReceiverMatch") {
-							rec = f.score;
-							break;
-						}
-					}
+					// v0.2.5 (perf fix): read the ReceiverMatch score that
+					// applyConstraints captured directly on the candidate,
+					// instead of scanning c.factors for a "ReceiverMatch"
+					// entry (which no longer exists — the hot loop no longer
+					// builds the FactorResult vector).
+					double rec = c.receiver_score;
 					if (c.entity_id == best_id)
 						best_rec = rec;
 					else if (rec > other_rec)

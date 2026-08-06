@@ -165,7 +165,8 @@ SemanticUnit *GoVisitor::visit(TSTree *tree, const char *source, const char *fp)
 					if (eit == interface_methods_.end())
 						continue; // embedded iface not in this file
 					for (const auto &m : eit->second) {
-						if (expanded_set.insert(m).second)
+						if (expanded_set.insert(m)
+							    .second)
 							expanded.push_back(m);
 					}
 					next.push_back(emb);

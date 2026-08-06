@@ -41,6 +41,11 @@ unsafe extern "C" {
     fn engine_locate_by_name(project_id: u64, name: *const c_char) -> *mut c_char;
     fn engine_find_connected_components(project_id: u64) -> *mut c_char;
 
+    // ── Graph rebuild (parallel-index normalization) ───────────
+    // Rebuild a project's LadybugDB graph from its SQLite entity/relation
+    // tables after a parallel index merge. Returns 0 on success.
+    fn engine_rebuild_ladybug_graph(db_path: *const c_char, project_id: u64) -> i32;
+
     // ── Graph region + full export queries ────────────────────
     // See engine_ffi.cpp for the C++ implementations. Each returns a
     // heap-allocated JSON string that the caller MUST release via
@@ -310,6 +315,27 @@ pub fn locate_by_name(project_id: u64, name: &str) -> String {
 /// module/method per code_rules.md.
 pub fn find_connected_components(project_id: u64) -> String {
     take_string(unsafe { engine_find_connected_components(project_id) })
+}
+
+/// Rebuild a project's LadybugDB graph from its SQLite `entity`/`relation`
+/// tables, opening `db_path` fresh. Used to normalize the output of the
+/// parallel indexer: parallel workers skip LadybugDB construction
+/// (`CODESCOPE_SKIP_ASYNC=1`), so after merging their per-module DBs the
+/// `main.db` has full SQLite graph data but no `.lbug` graph; calling this
+/// once per project_id makes the merged DB match a serial index.
+///
+/// Returns `Ok(())` on success, `Err(reason)` on failure. On failure the
+/// SQLite fallback still serves graph queries, so this is best-effort.
+pub fn rebuild_ladybug_graph(db_path: &str, project_id: u64) -> Result<(), String> {
+    let rc = unsafe { engine_rebuild_ladybug_graph(cstr(db_path).as_ptr(), project_id) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "engine_rebuild_ladybug_graph failed (rc={}) for project {}",
+            rc, project_id
+        ))
+    }
 }
 
 /// Fetch a local region of the code graph centered on a node.

@@ -117,6 +117,82 @@ pub(super) struct ModuleResult {
 ///  "duration_ms":N,"success":N,"fail":N,"total_nodes":N,"total_edges":N,
 ///  "total_files_indexed":N,"modules":[{...per-module...}]}
 /// ```
+///
+/// Enumerate the project ids present in a merged parallel-index DB so the
+/// caller can rebuild each project's LadybugDB graph after the SQLite merge.
+/// Uses the sqlite3 CLI (consistent with `merge::merge_module_dbs` — the
+/// scheduler deliberately avoids a rusqlite dependency). Returns the ids in
+/// ascending order; on any failure returns `Err` with a descriptive message.
+///
+/// NOTE: the merged main.db deliberately omits bookkeeping tables — it only
+/// carries the data tables (entity/relation/reference/semantic_records/...),
+/// so `projects` does not exist there. Project ids are therefore enumerated
+/// from `entity.project_id` (every module writes entities; a project with
+/// zero entities contributes nothing to the graph anyway). Fall back to
+/// `semantic_records` if entity is somehow empty.
+fn list_project_ids(db_path: &str) -> Result<Vec<u64>, String> {
+    let query = "SELECT DISTINCT project_id FROM entity ORDER BY project_id;";
+    let output = std::process::Command::new("sqlite3")
+        .arg(db_path)
+        .arg(query)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output();
+    let output = output.map_err(|e| format!("failed to run sqlite3: {}", e))?;
+    let mut ids = Vec::new();
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            match line.parse::<u64>() {
+                Ok(id) => ids.push(id),
+                Err(e) => eprintln!(
+                    "[scheduler] list_project_ids: non-numeric project id '{}': {}",
+                    line, e
+                ),
+            }
+        }
+    } else {
+        // Fallback: entity table may be empty in unusual cases; try
+        // semantic_records before giving up.
+        let fallback = "SELECT DISTINCT project_id FROM semantic_records ORDER BY project_id;";
+        let out2 = std::process::Command::new("sqlite3")
+            .arg(db_path)
+            .arg(fallback)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output();
+        let out2 = out2.map_err(|e| format!("failed to run sqlite3: {}", e))?;
+        if !out2.status.success() {
+            return Err(format!(
+                "sqlite3 failed ({}): {}",
+                out2.status,
+                String::from_utf8_lossy(&out2.stderr)
+            ));
+        }
+        let stdout = String::from_utf8_lossy(&out2.stdout);
+        for line in stdout.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            match line.parse::<u64>() {
+                Ok(id) => ids.push(id),
+                Err(e) => eprintln!(
+                    "[scheduler] list_project_ids: non-numeric project id '{}': {}",
+                    line, e
+                ),
+            }
+        }
+    }
+    Ok(ids)
+}
+
 pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> String {
     let start = Instant::now();
 
@@ -416,6 +492,45 @@ pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> S
     } else {
         merge::merge_module_dbs(&main_db, &module_db_paths)
     };
+
+    // ── Rebuild LadybugDB graphs on the merged DB ─────────────────
+    // Parallel workers run with CODESCOPE_SKIP_ASYNC=1, so they never build
+    // the LadybugDB graph (.lbug); the merge above only stitches SQLite
+    // tables. Without this step the merged main.db has no graph-native data,
+    // so find_callers/graph_query etc. would need a separate serial re-index.
+    // To normalize the parallel output to match a serial index, open the
+    // merged DB and rebuild each project's graph from its SQLite
+    // entity/relation tables. This is best-effort: on failure the SQLite
+    // fallback still serves graph queries.
+    if merge_result.merged {
+        let t_graph = std::time::Instant::now();
+        match list_project_ids(&main_db) {
+            Ok(ids) => {
+                let mut rebuilt = 0;
+                for pid in &ids {
+                    match crate::ffi::rebuild_ladybug_graph(&main_db, *pid) {
+                        Ok(()) => rebuilt += 1,
+                        Err(e) => eprintln!(
+                            "[scheduler] rebuild graph failed for project {}: {}",
+                            pid, e
+                        ),
+                    }
+                }
+                eprintln!(
+                    "[scheduler] rebuilt LadybugDB graphs for {}/{} projects in {}ms",
+                    rebuilt,
+                    ids.len(),
+                    t_graph.elapsed().as_millis()
+                );
+            }
+            Err(e) => {
+                eprintln!(
+                    "[scheduler] could not enumerate projects in {}: {}",
+                    main_db, e
+                );
+            }
+        }
+    }
 
     let modules_json: Vec<Value> = final_results
         .iter()
@@ -893,6 +1008,45 @@ fn index_parallel_dynamic(project_dir: &str, total_workers: u32, parallel: u32) 
     } else {
         merge::merge_module_dbs(&main_db, &module_db_paths)
     };
+
+    // ── Rebuild LadybugDB graphs on the merged DB ─────────────────
+    // Parallel workers run with CODESCOPE_SKIP_ASYNC=1, so they never build
+    // the LadybugDB graph (.lbug); the merge above only stitches SQLite
+    // tables. Without this step the merged main.db has no graph-native data,
+    // so find_callers/graph_query etc. would need a separate serial re-index.
+    // To normalize the parallel output to match a serial index, open the
+    // merged DB and rebuild each project's graph from its SQLite
+    // entity/relation tables. This is best-effort: on failure the SQLite
+    // fallback still serves graph queries.
+    if merge_result.merged {
+        let t_graph = std::time::Instant::now();
+        match list_project_ids(&main_db) {
+            Ok(ids) => {
+                let mut rebuilt = 0;
+                for pid in &ids {
+                    match crate::ffi::rebuild_ladybug_graph(&main_db, *pid) {
+                        Ok(()) => rebuilt += 1,
+                        Err(e) => eprintln!(
+                            "[scheduler] rebuild graph failed for project {}: {}",
+                            pid, e
+                        ),
+                    }
+                }
+                eprintln!(
+                    "[scheduler] rebuilt LadybugDB graphs for {}/{} projects in {}ms",
+                    rebuilt,
+                    ids.len(),
+                    t_graph.elapsed().as_millis()
+                );
+            }
+            Err(e) => {
+                eprintln!(
+                    "[scheduler] could not enumerate projects in {}: {}",
+                    main_db, e
+                );
+            }
+        }
+    }
 
     let modules_json: Vec<Value> = final_results
         .iter()

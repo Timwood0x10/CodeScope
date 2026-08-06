@@ -10,6 +10,7 @@
 
 #include "verify/dead_code_inspector.h"
 #include "verify/finding.h"
+#include "store/store_graph_compiler.h"
 
 // ═══════════════════════════════════════════════════════════════════
 // FFI Safety Contract
@@ -539,6 +540,72 @@ static void appendFindingJson(std::ostringstream &json,
 		     << jsonEscape(e.detail) << "\"}";
 	}
 	json << "]";
+}
+
+int engine_rebuild_ladybug_graph(const char *db_path, uint64_t project_id)
+{
+	try {
+		// Module/method tag for error messages per code_rules.md.
+		static const char *kModule = "ffi";
+		static const char *kMethod = "engine_rebuild_ladybug_graph";
+
+		// Null / empty guard (FFI safety contract).
+		if (!db_path || !*db_path) {
+			fprintf(stderr,
+				"[module=%s, method=%s] null/empty db_path\n",
+				kModule, kMethod);
+			return 1;
+		}
+
+		// Use a LOCAL GraphStore instance so this normalization call does
+		// not disturb the global g_store (which may be serving queries on a
+		// different DB). We open db_path fresh, initialize LadybugDB, and
+		// recompile the project's graph from its SQLite entity/relation
+		// tables into the parallel .lbug file. This makes a merged
+		// parallel-index main.db gain the same full graph a serial index
+		// produces (the parallel workers skip LadybugDB construction via
+		// CODESCOPE_SKIP_ASYNC=1, so without this the merged DB has no
+		// graph-native data).
+		store::GraphStore local_store;
+		if (!local_store.open(db_path)) {
+			fprintf(stderr,
+				"[module=%s, method=%s] open failed: %s\n",
+				kModule, kMethod, db_path);
+			return 1;
+		}
+		// Ensure LadybugDB is initialized (its fingerprint check will
+		// auto-drop/recreate a stale schema, then rebuild via
+		// buildLadybugFromEntityRelation on the latest project).
+		local_store.initLadybugDB();
+		if (!local_store.hasLadybugDB()) {
+			fprintf(stderr,
+				"[module=%s, method=%s] LadybugDB init failed\n",
+				kModule, kMethod);
+			return 1;
+		}
+		bool ok = buildLadybugFromEntityRelation(&local_store,
+							 project_id, nullptr);
+		if (!ok) {
+			fprintf(stderr,
+				"[module=%s, method=%s] graph build failed for "
+				"project %llu\n",
+				kModule, kMethod,
+				(unsigned long long)project_id);
+			return 1;
+		}
+		fprintf(stderr,
+			"[module=%s, method=%s] rebuilt graph for project %llu "
+			"from %s\n",
+			kModule, kMethod, (unsigned long long)project_id,
+			db_path);
+		return 0;
+	} catch (const std::exception &e) {
+		fprintf(stderr,
+			"[module=ffi, method=engine_rebuild_ladybug_graph] "
+			"exception: %s\n",
+			e.what());
+		return 1;
+	}
 }
 
 char *engine_find_connected_components(uint64_t project_id)

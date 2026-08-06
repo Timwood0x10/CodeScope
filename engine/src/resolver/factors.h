@@ -163,6 +163,32 @@ double factorReceiverTypeMatch(const std::string &receiver_type,
 			       const std::string &candidate_name,
 			       const std::string &candidate_file);
 
+// ── v0.2.5 (perf): receiver-type match with pre-parsed ref-level strings ──
+//
+// factorReceiverTypeMatch re-derives `receiver_type + "::"`,
+// `receiver_type + "."` and the lowercased receiver_type on EVERY candidate.
+// All three depend only on the REF's receiver_type (fixed across candidates),
+// so in the resolver hot loop we build them once per ref and hand them to a
+// pre-parsed variant that skips those allocations. Scoring is IDENTICAL to
+// factorReceiverTypeMatch — do not change it independently.
+struct ReceiverMatchContext {
+	std::string prefix1; // receiver_type + "::"
+	std::string prefix2; // receiver_type + "."
+	std::string rtype_lower; // lowercased receiver_type
+	bool empty = false; // receiver_type was empty (neutral 0.5)
+};
+
+/// Build the ref-level context for receiver matching once per reference.
+ReceiverMatchContext
+buildReceiverMatchContext(const std::string &receiver_type);
+
+/// Same scoring as factorReceiverTypeMatch but uses a pre-parsed context so
+/// the per-candidate prefix/prefix2/lowercase allocations are eliminated.
+/// candidate_file's lowercased base name is computed inside (per candidate).
+double factorReceiverTypeMatchPrecomp(const ReceiverMatchContext &ctx,
+				      const std::string &candidate_qname,
+				      const std::string &candidate_file);
+
 /// Check if the name is a very common function name that causes
 /// high false-positive cross-module matches (e.g. Len, Init, Run).
 /// Returns kCommonNamePenaltyValue if the name is in the common list, 0.0 otherwise.

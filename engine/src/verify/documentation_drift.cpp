@@ -232,8 +232,7 @@ std::vector<LanguageClaim> extractLanguageClaims(const std::string &readme_text)
 		size_t c_count = 0;
 		size_t pos = 0;
 		const std::string needle = "C";
-		while ((pos = masked.find(needle, pos)) !=
-		       std::string::npos) {
+		while ((pos = masked.find(needle, pos)) != std::string::npos) {
 			size_t abs_end = pos + needle.size();
 			if (isWordBoundary(masked, pos) &&
 			    isWordBoundaryAfter(masked, abs_end))

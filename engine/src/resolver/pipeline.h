@@ -118,6 +118,16 @@ class ResolverPipeline {
 		int kind = 0;
 		int score = 0;
 		double total_score = 0.0;
+		// v0.2.5 (perf fix): ReceiverMatch's per-candidate score, captured
+		// during applyConstraints WITHOUT building the full FactorResult
+		// vector (name/detail strings). The ambiguity gate (receiver_bypass)
+		// only needs this one factor's score, so keeping it as a plain double
+		// avoids ~20 heap-string allocations per candidate in the hot loop
+		// (goagent: ~166k candidate evaluations).
+		double receiver_score = 0.0;
+		// `factors` is retained for API/debug compatibility but is no longer
+		// populated by applyConstraints (the hot path computes total_score
+		// directly). Do not rely on it in the resolver hot loop.
 		std::vector<FactorResult> factors;
 	};
 
