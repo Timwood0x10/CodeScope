@@ -41,21 +41,6 @@ unsafe extern "C" {
     fn engine_locate_by_name(project_id: u64, name: *const c_char) -> *mut c_char;
     fn engine_find_connected_components(project_id: u64) -> *mut c_char;
 
-    // ── Graph rebuild (parallel-index normalization) ───────────
-    // Rebuild a project's LadybugDB graph from its SQLite entity/relation
-    // tables after a parallel index merge. Returns 0 on success.
-    fn engine_rebuild_ladybug_graph(db_path: *const c_char, project_id: u64) -> i32;
-
-    // Rebuild EVERY project's LadybugDB graph in one open/init with
-    // parallel CSV export + serial Kuzu COPY FROM (see
-    // engine_rebuild_ladybug_graphs in engine_ffi.cpp). project_ids_json
-    // is a JSON array of u64; ignored by the C++ side (it enumerates all
-    // projects from entity). Returns 0 on success.
-    fn engine_rebuild_ladybug_graphs(
-        db_path: *const c_char,
-        project_ids_json: *const c_char,
-    ) -> i32;
-
     // ── Graph region + full export queries ────────────────────
     // See engine_ffi.cpp for the C++ implementations. Each returns a
     // heap-allocated JSON string that the caller MUST release via
@@ -325,44 +310,6 @@ pub fn locate_by_name(project_id: u64, name: &str) -> String {
 /// module/method per code_rules.md.
 pub fn find_connected_components(project_id: u64) -> String {
     take_string(unsafe { engine_find_connected_components(project_id) })
-}
-
-/// Rebuild a project's LadybugDB graph from its SQLite `entity`/`relation`
-/// tables, opening `db_path` fresh. Used to normalize the output of the
-/// parallel indexer: parallel workers skip LadybugDB construction
-/// (`CODESCOPE_SKIP_ASYNC=1`), so after merging their per-module DBs the
-/// `main.db` has full SQLite graph data but no `.lbug` graph; calling this
-/// once per project_id makes the merged DB match a serial index.
-///
-/// Returns `Ok(())` on success, `Err(reason)` on failure. On failure the
-/// SQLite fallback still serves graph queries, so this is best-effort.
-pub fn rebuild_ladybug_graph(db_path: &str, project_id: u64) -> Result<(), String> {
-    let rc = unsafe { engine_rebuild_ladybug_graph(cstr(db_path).as_ptr(), project_id) };
-    if rc == 0 {
-        Ok(())
-    } else {
-        Err(format!(
-            "engine_rebuild_ladybug_graph failed (rc={}) for project {}",
-            rc, project_id
-        ))
-    }
-}
-
-/// Rebuild EVERY project's LadybugDB graph in one open/init with parallel
-/// CSV export (see engine_rebuild_ladybug_graphs). This is the fast path
-/// after a parallel-index merge — the serial per-project loop that opened
-/// and re-initialized LadybugDB N times is replaced by a single open plus
-/// threaded CSV generation. Returns `Ok(())` on success.
-pub fn rebuild_ladybug_graphs(db_path: &str) -> Result<(), String> {
-    let rc = unsafe { engine_rebuild_ladybug_graphs(cstr(db_path).as_ptr(), cstr("[]").as_ptr()) };
-    if rc == 0 {
-        Ok(())
-    } else {
-        Err(format!(
-            "engine_rebuild_ladybug_graphs failed (rc={}) for {}",
-            rc, db_path
-        ))
-    }
 }
 
 /// Fetch a local region of the code graph centered on a node.

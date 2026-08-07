@@ -20,7 +20,6 @@
 #include "../src/query/query_engine.h"
 #include "../src/query/impact_analysis.h"
 #include "../src/store/store.h"
-#include "../src/store/store_graph_compiler.h"
 
 #include <cassert>
 #include <cstdio>
@@ -31,20 +30,20 @@
 
 static const char *kDbPath = "/tmp/codescope_test_query_algorithms.db";
 
-/// Insert a graph_node row with an explicit ID and the minimum required
-/// columns. node_type=0 (Function) is used for all test nodes.
+/// Insert an entity row (the SQLite-only canonical node source) with an
+/// explicit ID and the minimum required columns. kind=0 (Function) is used
+/// for all test nodes. analyzeChangeImpact's SQLite backend resolves
+/// node-in-file and metadata via the entity table, so the test must seed it
+/// (graph_nodes is the deprecated legacy table).
 static void insertGraphNode(store::GraphStore &store, uint64_t project_id,
 			    int64_t id, const char *name, const char *file_path)
 {
 	sqlite3 *db = store.handle();
 	const char *sql =
-		"INSERT INTO graph_nodes (id, project_id, ir_node_id, "
-		"node_type, name, qualified_name, module_path, "
-		"package_name, class_name, start_row, start_col, "
-		"end_row, end_col, file_path, language, signature, "
-		"is_entry_point) "
-		"VALUES (?, ?, 0, 0, ?, ?, '', '', '', 0, 0, 0, 0, ?, "
-		"'cpp', '', 0)";
+		"INSERT INTO entity (id, project_id, kind, name, "
+		"qualified_name, file_path, language, start_row, start_col, "
+		"end_row, end_col) "
+		"VALUES (?, ?, 0, ?, ?, ?, 'cpp', 0, 0, 0, 0)";
 	sqlite3_stmt *stmt = nullptr;
 	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, id);
@@ -56,15 +55,16 @@ static void insertGraphNode(store::GraphStore &store, uint64_t project_id,
 	sqlite3_finalize(stmt);
 }
 
-/// Insert a CALLS edge (edge_type=1) from source_id to target_id.
+/// Insert a CALLS relation edge (type=1) from source_id to target_id.
+/// The SQLite-only graph backends read edges from the relation table, which
+/// buildCSR compiles into the adjacency CSR (type=1 is the CALLS edge type).
 static void insertCallEdge(store::GraphStore &store, uint64_t project_id,
 			   int64_t source_id, int64_t target_id)
 {
 	sqlite3 *db = store.handle();
 	const char *sql =
-		"INSERT INTO graph_edges (project_id, source_node_id, "
-		"target_node_id, edge_type, graph_type) "
-		"VALUES (?, ?, ?, 1, 'call_graph')";
+		"INSERT INTO relation (project_id, source_id, target_id, type) "
+		"VALUES (?, ?, ?, 1)";
 	sqlite3_stmt *stmt = nullptr;
 	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
@@ -80,14 +80,19 @@ static bool jsonContains(const std::string &json, const char *needle)
 	return json.find(needle) != std::string::npos;
 }
 
-/// Sync SQLite graph data into LadybugDB so that LadybugDB-only query
-/// paths (findShortestPath, analyzeChangeImpact, etc.) can read the
-/// freshly-inserted nodes/edges. Must be called after every batch of
-/// insertGraphNode/insertCallEdge calls and before the query that
-/// consumes them.
+/// After inserting entity/relation rows, compile them into the CSR
+/// adjacency tables so the SQLite-only graph backends (findShortestPath,
+/// analyzeChangeImpact) can read them. Must be called after every batch of
+/// insertGraphNode/insertCallEdge calls and before the query that consumes
+/// them — buildCSR builds adjacency/adjacency_rev from relation (type=1).
 static void syncLadybug(store::GraphStore &store, uint64_t project_id)
 {
-	assert(store::compileGraphToLadybugDB(&store, project_id, nullptr));
+	// LadybugDB has been removed: the SQLite store (entity/relation/
+	// adjacency) is the sole graph backend. Rebuild the CSR so the
+	// freshly-inserted edges are visible to the CSR-based queries.
+	bool ok = store.buildCSR(project_id);
+	assert(ok);
+	(void)project_id;
 }
 
 // ─── findShortestPath tests ────────────────────────────────────
@@ -499,10 +504,6 @@ int main()
 
 	store::GraphStore store;
 	assert(store.open(kDbPath));
-	// LadybugDB must be initialized before any graph query path can use
-	// it. compileGraphToLadybugDB (called by syncLadybug) requires the
-	// connection to exist.
-	assert(store.initLadybugDB());
 
 	uint64_t project_id = store.createProject("/test", "query_algos");
 	assert(project_id > 0);

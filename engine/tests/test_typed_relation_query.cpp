@@ -24,7 +24,6 @@
 #include "../src/graph/graph_types.h"
 #include "../src/query/query_engine.h"
 #include "../src/store/store.h"
-#include "../src/store/store_graph_compiler.h"
 
 #include <cassert>
 #include <cstdio>
@@ -137,7 +136,6 @@ int main()
 
 	store::GraphStore store;
 	assert(store.open(kDbPath));
-	assert(store.initLadybugDB());
 
 	uint64_t project_id = store.createProject("/typed-rel", "typed-rel");
 	assert(project_id > 0);
@@ -171,10 +169,6 @@ int main()
 	       "index (INSERT OR IGNORE should report 0 changes)");
 	assert(countRelations(store, project_id, 1, 2, 1) == 1 &&
 	       "exactly one Calls(1) relation must exist for the pair");
-
-	// ── Compile SQLite relations into LadybugDB ──
-	assert(store::buildLadybugFromEntityRelation(&store, project_id,
-						     nullptr));
 
 	// ── Query boundary: callees of "caller" must be ONLY "callee" ──
 	// Before Step 1 the query matched `CALLS|RELATES` and returned all

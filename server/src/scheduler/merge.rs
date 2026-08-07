@@ -366,8 +366,7 @@ fn fetch_all_columns_excluding_rowid(
     // Output rows are `table_name|cid|column_name` (sqlite3 default '|'
     // separator). Group columns per table in cid order.
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let mut out: std::collections::HashMap<&'static str, String> =
-        std::collections::HashMap::new();
+    let mut out: std::collections::HashMap<&'static str, String> = std::collections::HashMap::new();
     for line in stdout.lines() {
         if line.is_empty() {
             continue;
@@ -510,8 +509,7 @@ pub(super) fn merge_module_dbs(main_db: &str, module_db_paths: &[String]) -> Mer
             cols_to_fetch.push(spec.name);
         }
     }
-    let all_cols = match fetch_all_columns_excluding_rowid(&module_db_paths[0], &cols_to_fetch)
-    {
+    let all_cols = match fetch_all_columns_excluding_rowid(&module_db_paths[0], &cols_to_fetch) {
         Ok(m) => m,
         Err(e) => {
             return MergeResult {
@@ -586,29 +584,19 @@ pub(super) fn merge_module_dbs(main_db: &str, module_db_paths: &[String]) -> Mer
             escaped_db_path, alias
         ));
 
-        // Query the module DB's existing tables so we can skip
-        // TABLE_SPECS entries that aren't present (e.g. adjacency /
-        // adjacency_rev, which are created by the async pass the
-        // worker skips via CODESCOPE_SKIP_ASYNC=1). Without this
-        // check, `SELECT * FROM {a}.{t}` fails at parse time with
-        // "no such table" — the SQL-side `WHERE EXISTS` guard runs
-        // at execution time, too late to skip the table reference.
-        let existing_tables = match list_tables_in_db(db_path) {
-            Ok(t) => t,
-            Err(e) => {
-                return MergeResult {
-                    merged: false,
-                    main_db_path: main_db.to_string(),
-                    tables_merged: 0,
-                    rows_merged: 0,
-                    duration_ms: start.elapsed().as_millis() as u64,
-                    error: Some(format!(
-                        "list_tables_in_db failed for {}: {} [module=scheduler, method=merge_module_dbs]",
-                        db_path, e
-                    )),
-                };
-            }
-        };
+        // v0.6 (perf): every worker builds the full schema via
+        // createSchema() (CREATE TABLE IF NOT EXISTS is idempotent), so all
+        // modules share the SAME table set as module 0. We reuse
+        // `main_db_existing_tables` instead of spawning `list_tables_in_db`
+        // once per module — each such spawn opens a large module DB (~59ms),
+        // so for N modules this removes N expensive sqlite3 processes. The
+        // only tables a module may lack (adjacency/adjacency_rev, created by
+        // the async pass the worker skips via CODESCOPE_SKIP_ASYNC=1) are
+        // consistently absent from EVERY module, including module 0, so the
+        // shared set is still accurate. `SELECT * FROM {a}.{t}` for a table
+        // missing from module 0 is skipped because the loop guards on
+        // main_db_existing_tables.
+        let existing_tables = &main_db_existing_tables;
 
         if i == 0 {
             // Module 0: INSERT OR IGNORE directly. project_ids are
@@ -913,29 +901,6 @@ fn read_schema_and_tables(
 /// `CODESCOPE_SKIP_ASYNC=1`). Calling `SELECT * FROM {alias}.{t}`
 /// when `{t}` doesn't exist fails at parse time; checking here in
 /// Rust lets us skip the statement before it's emitted.
-fn list_tables_in_db(db_path: &str) -> Result<std::collections::HashSet<String>, String> {
-    let output = Command::new("sqlite3")
-        .arg(db_path)
-        .arg("SELECT name FROM sqlite_master WHERE type='table';")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|e| format!("spawn: {} [module=scheduler, method=list_tables_in_db]", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        return Err(format!(
-            "sqlite3 exit={}: {} [module=scheduler, method=list_tables_in_db]",
-            output.status.code().unwrap_or(-1),
-            stderr
-        ));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(stdout.lines().map(|s| s.trim().to_string()).collect())
-}
-
 /// Run `PRAGMA wal_checkpoint(TRUNCATE)` on a module DB to flush the
 /// WAL and release any pending file locks. This prevents "database is
 /// locked" errors when the main merge later ATTACHes the DB.

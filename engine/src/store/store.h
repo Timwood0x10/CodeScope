@@ -13,19 +13,6 @@
 struct sqlite3;
 struct sqlite3_stmt;
 
-// LadybugDB C API for graph storage (optional, guarded by HAS_LADYBUG)
-#ifdef HAS_LADYBUG
-#include <lbug.h>
-#else
-// Stub types so the member variables compile without LadybugDB
-typedef struct {
-	void *_database;
-} lbug_database;
-typedef struct {
-	void *_connection;
-} lbug_connection;
-#endif
-
 namespace ir
 {
 struct Record;
@@ -106,61 +93,6 @@ class GraphStore {
 	GraphStore &operator=(const GraphStore &) = delete;
 
 	bool open(const char *db_path);
-
-	// ── LadybugDB (graph storage) ──────────────────────────────
-	/** Initialize LadybugDB database alongside SQLite.
-	 *  Creates a .lbug file next to the SQLite DB path.
-	 *  Returns true on success, false on failure (non-fatal — graph
-	 *  storage falls back to SQLite-only). */
-	bool initLadybugDB();
-	/** Close LadybugDB connection and release resources. */
-	void closeLadybugDB();
-	/** Check if LadybugDB is available for use. */
-	bool hasLadybugDB() const
-	{
-		return lbug_initialized_;
-	}
-	/** Check if LadybugDB has been successfully populated with graph data.
-	   *  When false, all LadybugDB-first query paths return "graph not ready".
-	   *  Checks the in-memory flag first; if false, probes LadybugDB
-	   *  directly (handles cross-process scenarios where the flag was
-	   *  set in a worker subprocess but the current process is fresh). */
-	bool isGraphReady() const
-	{
-		if (!lbug_initialized_ || !ladybug_query_enabled_)
-			return false;
-		if (lbug_populated_)
-			return true;
-		// Probe LadybugDB directly: if entity nodes exist, the
-		// graph was populated by a worker subprocess.
-		return const_cast<GraphStore *>(this)->probeGraphReady();
-	}
-	/** Mark LadybugDB as populated (called by compileGraphToLadybugDB on success). */
-	void setGraphReady()
-	{
-		lbug_populated_ = true;
-	}
-	/** Probe LadybugDB directly to check if graph data exists. */
-	bool probeGraphReady();
-	/** Reset the populated flag. Called at the START of every compile so a
-	 *  failed/partial compile drops queries back to the SQLite fallback
-	 *  instead of serving a stale or half-built subgraph. */
-	void resetGraphReady()
-	{
-		lbug_populated_ = false;
-	}
-	/** Test/debug hook: toggle LadybugDB-first query routing. When disabled,
-	 *  all graph queries fall back to SQLite so the two paths can be
-	 *  differential-tested. Defaults to true (normal operation). */
-	void setLadybugQueryEnabled(bool enabled)
-	{
-		ladybug_query_enabled_ = enabled;
-	}
-	/** Get the LadybugDB connection handle (for direct Cypher queries). */
-	lbug_connection *lbugHandle()
-	{
-		return lbug_initialized_ ? &lbug_conn_ : nullptr;
-	}
 
 	/** Get the database file path (for opening additional connections). */
 	const std::string &dbPath() const
@@ -530,9 +462,6 @@ class GraphStore {
 	 */
 	std::string searchSemanticJson(uint64_t project_id, const char *query,
 				       int limit);
-	/** Search via LadybugDB Cypher CONTAINS query. */
-	std::string searchLadybugJson(uint64_t project_id, const char *query,
-				      int limit);
 	/**
 	 * Graph-based search fallback: searches graph_nodes.name using LIKE.
 	 * Used when FTS is not yet built (fts_ready=0).
@@ -880,13 +809,6 @@ class GraphStore {
 	sqlite3 *db_ = nullptr;
 	std::string error_;
 	std::string db_path_;
-
-	// LadybugDB handles (graph storage, optional)
-	lbug_database lbug_db_;
-	lbug_connection lbug_conn_;
-	bool lbug_initialized_ = false;
-	bool lbug_populated_ = false;
-	bool ladybug_query_enabled_ = true;
 
 	// Cached prepared statements (initialized in open(), finalized in close())
 	sqlite3_stmt *stmt_fts_map_ = nullptr; // INSERT INTO fts_node_map

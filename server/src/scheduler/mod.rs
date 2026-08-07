@@ -103,108 +103,6 @@ pub(super) struct ModuleResult {
     pub error: Option<String>,
 }
 
-/// Whether the LadybugDB graph rebuild can be skipped for an incremental
-/// no-change run.
-///
-/// v0.6 (perf): when `keep_db` (incremental mode) is active and no file was
-/// re-indexed this run (`total_files_indexed == 0`), the module DBs were not
-/// modified, so the freshly merged entity/relation tables are byte-identical
-/// to the prior run and the existing `.lbug` (if present) is still valid.
-/// Rebuilding it would be pure wasted work (rust: 23.8s). The existing `.lbug`
-/// fingerprint check in initLadybugDB drops+rebuilds on the next open if the
-/// stored fingerprint ever mismatches the live SQLite totals, so no precision
-/// can be lost even if we skip here.
-///
-/// @param keep_db              True if this is an incremental (prefix) run.
-/// @param total_files_indexed  Total files re-indexed across all modules.
-/// @param lbug_exists          True if the .lbug file already exists on disk.
-fn should_skip_graph_rebuild(keep_db: bool, total_files_indexed: u64, lbug_exists: bool) -> bool {
-    keep_db && total_files_indexed == 0 && lbug_exists
-}
-
-/// Rebuild each project's LadybugDB (.lbug) graph on the merged SQLite DB.
-///
-/// v0.6 (perf): see `should_skip_graph_rebuild` — in incremental no-change
-/// runs the rebuild is skipped and the existing `.lbug` (validated by its
-/// fingerprint on next open) is reused.
-///
-/// @param main_db              Path to the merged main.db.
-/// @param keep_db              True if this is an incremental (prefix) run.
-/// @param total_files_indexed  Total files re-indexed across all modules.
-/// @return Number of projects whose graph was rebuilt (0 if skipped).
-fn rebuild_ladybug_graphs_if_needed(
-    main_db: &str,
-    keep_db: bool,
-    total_files_indexed: u64,
-) -> usize {
-    // Derive the .lbug path exactly as the engine does (store_ladybug_core.cpp
-    // initLadybugDB): replace everything after the last '.' with ".lbug",
-    // or append ".lbug" if there is no '.'. Must match or the existence
-    // check below won't reflect the real .lbug on disk.
-    let lbug_path = match main_db.rfind('.') {
-        Some(dot) => format!("{}.lbug", &main_db[..dot]),
-        None => format!("{}.lbug", main_db),
-    };
-    let skip_graph_rebuild = should_skip_graph_rebuild(
-        keep_db,
-        total_files_indexed,
-        std::path::Path::new(&lbug_path).exists(),
-    );
-    if skip_graph_rebuild {
-        eprintln!(
-            "[scheduler] keep_db incremental with no file changes; skipping \
-             LadybugDB graph rebuild for {} (existing .lbug stays valid) \
-             [module=scheduler, method=rebuild_ladybug_graphs_if_needed]",
-            main_db
-        );
-        return 0;
-    }
-    match list_project_ids(main_db) {
-        Ok(ids) => {
-            // Fast path: rebuild ALL projects in one open/init with
-            // parallel CSV export (engine_rebuild_ladybug_graphs). The old
-            // serial per-project loop opened + re-initialized LadybugDB N
-            // times; on rust that serialized ~24s of CSV generation.
-            let rebuilt = match crate::ffi::rebuild_ladybug_graphs(main_db) {
-                Ok(()) => ids.len(),
-                Err(e) => {
-                    eprintln!(
-                        "[scheduler] parallel rebuild failed ({}); falling \
-                         back to per-project rebuild [module=scheduler, \
-                         method=rebuild_ladybug_graphs_if_needed]",
-                        e
-                    );
-                    let mut n = 0;
-                    for pid in &ids {
-                        match crate::ffi::rebuild_ladybug_graph(main_db, *pid) {
-                            Ok(()) => n += 1,
-                            Err(e2) => eprintln!(
-                                "[scheduler] rebuild graph failed for \
-                                 project {}: {}",
-                                pid, e2
-                            ),
-                        }
-                    }
-                    n
-                }
-            };
-            eprintln!(
-                "[scheduler] rebuilt LadybugDB graphs for {}/{} projects",
-                rebuilt,
-                ids.len()
-            );
-            rebuilt
-        }
-        Err(e) => {
-            eprintln!(
-                "[scheduler] could not enumerate projects in {}: {}",
-                main_db, e
-            );
-            0
-        }
-    }
-}
-
 /// Entry point: discover modules, dispatch workers, quarantine failures,
 /// return aggregated JSON summary.
 ///
@@ -220,81 +118,6 @@ fn rebuild_ladybug_graphs_if_needed(
 ///  "total_files_indexed":N,"modules":[{...per-module...}]}
 /// ```
 ///
-/// Enumerate the project ids present in a merged parallel-index DB so the
-/// caller can rebuild each project's LadybugDB graph after the SQLite merge.
-/// Uses the sqlite3 CLI (consistent with `merge::merge_module_dbs` — the
-/// scheduler deliberately avoids a rusqlite dependency). Returns the ids in
-/// ascending order; on any failure returns `Err` with a descriptive message.
-///
-/// NOTE: the merged main.db deliberately omits bookkeeping tables — it only
-/// carries the data tables (entity/relation/reference/semantic_records/...),
-/// so `projects` does not exist there. Project ids are therefore enumerated
-/// from `entity.project_id` (every module writes entities; a project with
-/// zero entities contributes nothing to the graph anyway). Fall back to
-/// `semantic_records` if entity is somehow empty.
-fn list_project_ids(db_path: &str) -> Result<Vec<u64>, String> {
-    let query = "SELECT DISTINCT project_id FROM entity ORDER BY project_id;";
-    let output = std::process::Command::new("sqlite3")
-        .arg(db_path)
-        .arg(query)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output();
-    let output = output.map_err(|e| format!("failed to run sqlite3: {}", e))?;
-    let mut ids = Vec::new();
-    if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            match line.parse::<u64>() {
-                Ok(id) => ids.push(id),
-                Err(e) => eprintln!(
-                    "[scheduler] list_project_ids: non-numeric project id '{}': {}",
-                    line, e
-                ),
-            }
-        }
-    } else {
-        // Fallback: entity table may be empty in unusual cases; try
-        // semantic_records before giving up.
-        let fallback = "SELECT DISTINCT project_id FROM semantic_records ORDER BY project_id;";
-        let out2 = std::process::Command::new("sqlite3")
-            .arg(db_path)
-            .arg(fallback)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output();
-        let out2 = out2.map_err(|e| format!("failed to run sqlite3: {}", e))?;
-        if !out2.status.success() {
-            return Err(format!(
-                "sqlite3 failed ({}): {}",
-                out2.status,
-                String::from_utf8_lossy(&out2.stderr)
-            ));
-        }
-        let stdout = String::from_utf8_lossy(&out2.stdout);
-        for line in stdout.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            match line.parse::<u64>() {
-                Ok(id) => ids.push(id),
-                Err(e) => eprintln!(
-                    "[scheduler] list_project_ids: non-numeric project id '{}': {}",
-                    line, e
-                ),
-            }
-        }
-    }
-    Ok(ids)
-}
-
 pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> String {
     let start = Instant::now();
 
@@ -624,17 +447,6 @@ pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> S
     } else {
         merge::merge_module_dbs(&main_db, &module_db_paths)
     };
-
-    // ── Rebuild LadybugDB graphs on the merged DB ─────────────────
-    // Parallel workers run with CODESCOPE_SKIP_ASYNC=1, so they never build
-    // the LadybugDB graph (.lbug); the merge above only stitches SQLite
-    // tables. Without this step the merged main.db has no graph-native data,
-    // so find_callers/graph_query etc. would need a separate serial re-index.
-    // v0.6 (perf): helper skips the rebuild in incremental no-change runs,
-    // relying on the .lbug fingerprint check to stay consistent with SQLite.
-    if merge_result.merged {
-        rebuild_ladybug_graphs_if_needed(&main_db, keep_db, total_files_indexed);
-    }
 
     let modules_json: Vec<Value> = final_results
         .iter()
@@ -1120,17 +932,6 @@ fn index_parallel_dynamic(project_dir: &str, total_workers: u32, parallel: u32) 
         merge::merge_module_dbs(&main_db, &module_db_paths)
     };
 
-    // ── Rebuild LadybugDB graphs on the merged DB ─────────────────
-    // Parallel workers run with CODESCOPE_SKIP_ASYNC=1, so they never build
-    // the LadybugDB graph (.lbug); the merge above only stitches SQLite
-    // tables. Without this step the merged main.db has no graph-native data,
-    // so find_callers/graph_query etc. would need a separate serial re-index.
-    // v0.6 (perf): helper skips the rebuild in incremental no-change runs,
-    // relying on the .lbug fingerprint check to stay consistent with SQLite.
-    if merge_result.merged {
-        rebuild_ladybug_graphs_if_needed(&main_db, keep_db, total_files_indexed);
-    }
-
     let modules_json: Vec<Value> = final_results
         .iter()
         .map(|r| {
@@ -1602,23 +1403,6 @@ mod tests {
         assert_eq!(v["module"], "scheduler");
         assert_eq!(v["method"], "test_method");
         assert!(v["error"].as_str().unwrap().contains("boom"));
-    }
-
-    #[test]
-    fn test_should_skip_graph_rebuild_gates_on_all_conditions() {
-        // Skip only when: keep_db AND no files changed AND .lbug already
-        // exists. Any other combination MUST rebuild to avoid losing graph
-        // data — these are the precision guarantees for incremental runs.
-        // 1. Incremental no-change with an existing .lbug → skip.
-        assert!(should_skip_graph_rebuild(true, 0, true));
-        // 2. Fresh run (not keep_db) → never skip, even if .lbug exists.
-        assert!(!should_skip_graph_rebuild(false, 0, true));
-        // 3. Files changed → must rebuild (stale graph risk).
-        assert!(!should_skip_graph_rebuild(true, 1, true));
-        // 4. No .lbug on disk → must rebuild (nothing to reuse).
-        assert!(!should_skip_graph_rebuild(true, 0, false));
-        // 5. Everything false → rebuild.
-        assert!(!should_skip_graph_rebuild(false, 5, false));
     }
 
     #[test]

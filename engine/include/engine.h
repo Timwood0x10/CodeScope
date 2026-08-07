@@ -57,12 +57,6 @@ char *engine_locate_node(uint64_t project_id, uint64_t node_id,
 char *engine_locate_by_name(uint64_t project_id, const char *name);
 char *engine_get_graph_stats(uint64_t project_id);
 
-// Test/debug hook: toggle LadybugDB-first query routing. When disabled, all
-// graph queries fall back to SQLite. Used by the differential test
-// (test_ladybug_diff) to exercise both code paths. No effect on production
-// semantics when left at the default (enabled).
-void engine_set_ladybug_queries_enabled(int enabled);
-
 // Find connected components in the call graph via BFS over name-matched
 // relation edges. Returns JSON:
 //   {"components":[{"type":"...","description":"...","confidence":N,
@@ -72,31 +66,6 @@ void engine_set_ladybug_queries_enabled(int enabled);
 //    "note":"Connected components computed on name-matched call edges."}
 // On error returns JSON with an "error" field.
 char *engine_find_connected_components(uint64_t project_id);
-
-// ─── Graph rebuild (parallel-index normalization) ─────────────
-// Rebuild the LadybugDB graph (call graph + relations) for a project from
-// its already-populated SQLite `entity`/`relation` tables. This is used to
-// normalize the output of the parallel indexer, which skips LadybugDB
-// construction per worker (CODESCOPE_SKIP_ASYNC=1) and therefore produces a
-// merged SQLite-only main.db with no graph. After merging, the caller invokes
-// this once per project_id so the unified DB gains the same full graph that a
-// serial index produces.
-//
-// @param db_path   Absolute path to the SQLite DB (the engine opens it fresh).
-// @param project_id The project whose graph to (re)build.
-// @return 0 on success, non-zero on failure. On failure the caller can still
-//         query graph data via the SQLite fallback (graph queries degrade
-//         gracefully to entity/relation), but Cypher/graph-native queries may
-//         be unavailable for this project until a serial re-index.
-int engine_rebuild_ladybug_graph(const char *db_path, uint64_t project_id);
-
-// Batch parallel rebuild of EVERY project's LadybugDB graph in one
-// open/init (parallel CSV export + serial Kuzu COPY FROM). Faster than
-// looping engine_rebuild_ladybug_graph on large merged DBs (rust: ~24s →
-// ~8s). project_ids_json is a JSON array of u64; ignored (all projects
-// are enumerated from entity). Returns 0 on success.
-int engine_rebuild_ladybug_graphs(const char *db_path,
-				  const char *project_ids_json);
 
 // ─── Interactive exploration ──────────────────────────────────
 // Explore a function's callers/callees recursively as a JSON tree.

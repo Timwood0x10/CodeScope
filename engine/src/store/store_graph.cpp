@@ -1,6 +1,5 @@
 #include "store.h"
 #include "store_internal.h"
-#include "store_graph_compiler.h"
 #include "platform_win.h"
 #include "../resolver/pipeline.h"
 
@@ -698,30 +697,6 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// Now buildGraph returns after CSR (the core graph is complete and
 	// queryable), and model/state run in a background thread launched by
 	// engine_index_project.cpp after createIndexesAfterBulkLoad.
-
-	// ── Build LadybugDB from entity/relation tables ──
-	// Builds the Cypher-queryable graph from the canonical entity/relation
-	// tables. Non-fatal: if the build fails, isGraphReady() returns false
-	// and all query paths return "graph not ready" errors.
-
-	auto t_lbug = Clock::now();
-	if (lbug_initialized_) {
-		if (!buildLadybugFromEntityRelation(this, project_id)) {
-			fprintf(stderr,
-				"buildGraph: buildLadybugFromEntityRelation failed "
-				"for project %s — SQLite graph remains the "
-				"source of truth "
-				"[module=store, method=buildGraph]\n",
-				pid.c_str());
-		}
-	}
-	fprintf(stderr,
-		"buildGraph: ladybugdb=%lldms "
-		"for project %s\n",
-		(long long)std::chrono::duration_cast<std::chrono::milliseconds>(
-			Clock::now() - t_lbug)
-			.count(),
-		pid.c_str());
 
 	auto t_cleanup = Clock::now();
 

@@ -571,14 +571,6 @@ char *engine_unified_search(uint64_t project_id, const char *query, int limit)
 	if (limit <= 0 || limit > 100)
 		limit = 20;
 
-	// LadybugDB path: when the graph is ready, search via Cypher
-	// MATCH (n) WHERE n.name CONTAINS 'query' RETURN n.
-	// This is the preferred path — fast, indexed, and cross-platform.
-	if (g_store->isGraphReady()) {
-		return dupString(
-			g_store->searchLadybugJson(project_id, query, limit));
-	}
-
 	// Check if FTS index is ready; if not, fall back to graph-based search
 	int fts_ready = g_store->getProjectReadiness(project_id, "fts_ready");
 	if (fts_ready) {

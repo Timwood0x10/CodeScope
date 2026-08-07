@@ -217,7 +217,7 @@ jobs:
                 echo "  SKIP $test_name (hardcoded local paths, run manually)"
                 continue
                 ;;
-              test_rust_e2e|test_qualified_id_ast|test_ts_e2e|test_type_extraction|test_ladybug_diff)
+              test_rust_e2e|test_qualified_id_ast|test_ts_e2e|test_type_extraction)
                 echo "  SKIP $test_name (requires LadybugDB, not available on CI)"
                 continue
                 ;;

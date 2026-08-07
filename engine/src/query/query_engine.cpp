@@ -2091,7 +2091,11 @@ std::string QueryEngine::findShortestPath(uint64_t project_id,
 			break;
 	}
 	if (!found) {
-		json << "{\"path\":[],\"found\":false,"
+		// v0.2.5: no-path payload keeps the source node in the path array
+		// (path:[source]), matching the LadybugDB emitNotFound contract
+		// so callers can rely on a stable JSON shape across backends.
+		json << "{\"path\":[{\"node_id\":" << source_id << "}],"
+		     << "\"found\":false,"
 		     << "\"approximation\":\"heuristic\","
 		     << "\"note\":\"" << kShortestPathNote << "\",\"hops\":0}";
 		return json.str();
@@ -2112,7 +2116,9 @@ std::string QueryEngine::findShortestPath(uint64_t project_id,
 		node = it->second;
 	}
 	if (!found) {
-		json << "{\"path\":[],\"found\":false,"
+		// See no-path contract above (path:[source]).
+		json << "{\"path\":[{\"node_id\":" << source_id << "}],"
+		     << "\"found\":false,"
 		     << "\"approximation\":\"heuristic\","
 		     << "\"note\":\"" << kShortestPathNote << "\",\"hops\":0}";
 		return json.str();

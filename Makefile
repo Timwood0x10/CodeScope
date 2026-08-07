@@ -175,7 +175,6 @@ TEST_EXES := \
 	test_enhance_e2e \
 	test_js_visitor test_ts_visitor test_tsx_visitor \
 	test_semantic_fact_extractor \
-	test_ladybug_diff \
 	test_accuracy_baseline \
 	test_verifier_lifecycle test_verifier_claim_coverage \
         test_verifier_ground_truth \
