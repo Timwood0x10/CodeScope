@@ -14,9 +14,6 @@
 #include <memory>
 #include <mutex>
 #include <sqlite3.h>
-#ifdef HAS_LADYBUG
-#include <lbug.h>
-#endif
 #include <sstream>
 #include <string>
 #include <sys/stat.h>
@@ -31,66 +28,6 @@
 // slow to complete within the 30s MCP timeout. Fast-fail with a JSON
 // error instead of running the fallback when FTS is not ready.
 static constexpr int64_t kLargeProjectNodeThreshold = 100000;
-
-// ─── LadybugDB helpers (Cypher string escaping + tuple accessors) ───────
-// These wrap the lbug C API so the migrated FFI functions below can stay
-// terse. All helpers are no-ops (or return zero/empty) when HAS_LADYBUG
-// is undefined so the file still compiles without the optional dependency.
-
-// Escape a string for safe inclusion inside a Cypher single-quoted literal.
-// Prevents injection / query breakage from symbol names with quotes or
-// backslashes. Used by every LadybugDB-first query path in this file.
-static std::string cypherEscape(const char *s)
-{
-	if (!s)
-		return "";
-	std::string out;
-	out.reserve(std::strlen(s) + 8);
-	for (const char *p = s; *p; ++p) {
-		if (*p == '\\' || *p == '\'') {
-			out += '\\';
-		}
-		out += *p;
-	}
-	return out;
-}
-
-#ifdef HAS_LADYBUG
-// Extract an int64 column from a flat tuple. Returns 0 on failure or NULL.
-static int64_t lbugTupleInt(lbug_flat_tuple *tuple, uint64_t col)
-{
-	if (!tuple)
-		return 0;
-	lbug_value v;
-	if (lbug_flat_tuple_get_value(tuple, col, &v) != LbugSuccess)
-		return 0;
-	if (lbug_value_is_null(&v))
-		return 0;
-	int64_t out = 0;
-	lbug_value_get_int64(&v, &out);
-	return out;
-}
-
-// Extract a string column from a flat tuple. Returns empty string on
-// failure or NULL. Caller does NOT need to free — the returned std::string
-// copies the bytes before the lbug string is destroyed.
-static std::string lbugTupleStr(lbug_flat_tuple *tuple, uint64_t col)
-{
-	if (!tuple)
-		return "";
-	lbug_value v;
-	if (lbug_flat_tuple_get_value(tuple, col, &v) != LbugSuccess)
-		return "";
-	if (lbug_value_is_null(&v))
-		return "";
-	char *sv = nullptr;
-	if (lbug_value_get_string(&v, &sv) != LbugSuccess || !sv)
-		return "";
-	std::string out(sv);
-	lbug_destroy_string(sv);
-	return out;
-}
-#endif // HAS_LADYBUG
 
 // ─── Phase A: engine_get_module_tree ──────────────────────────
 
@@ -634,7 +571,7 @@ char *engine_unified_search(uint64_t project_id, const char *query, int limit)
 char *engine_find_callers_adaptive(uint64_t project_id, const char *symbol_name,
 				   const char *file_filter)
 {
-	// v0.2.5: getCallers has its own LadybugDB/SQLite backend, so the
+	// v0.2.5: getCallers has its own SQLite/SQLite backend, so the
 	// graph-not-ready guard only requires the SQLite handle (works on
 	// SQLite-only/Windows builds). The [module=engine_queries,
 	// method=find_callers_adaptive] tag is kept so callers can still
@@ -653,7 +590,7 @@ char *engine_find_callers_adaptive(uint64_t project_id, const char *symbol_name,
 char *engine_find_callees_adaptive(uint64_t project_id, const char *symbol_name,
 				   const char *file_filter)
 {
-	// v0.2.5: getCallees has its own LadybugDB/SQLite backend, so the
+	// v0.2.5: getCallees has its own SQLite/SQLite backend, so the
 	// graph-not-ready guard only requires the SQLite handle (works on
 	// SQLite-only/Windows builds).
 	if (!g_query || !g_store || !g_store->handle())
@@ -669,8 +606,8 @@ char *engine_find_callees_adaptive(uint64_t project_id, const char *symbol_name,
 
 char *engine_find_callers_by_entity(uint64_t project_id, uint64_t entity_id)
 {
-	// v0.2.5: getCallersByEntity has its own LadybugDB/SQLite backend, so
-	// the graph-not-ready guard is only required on the LadybugDB path and
+	// v0.2.5: getCallersByEntity has its own SQLite/SQLite backend, so
+	// the graph-not-ready guard is only required on the SQLite path and
 	// is enforced inside that backend; here we only guard the store handle.
 	if (!g_query || !g_store || !g_store->handle())
 		return dupString("{\"error\":\"graph not ready [module=engine_"
@@ -682,7 +619,7 @@ char *engine_find_callers_by_entity(uint64_t project_id, uint64_t entity_id)
 
 char *engine_find_callees_by_entity(uint64_t project_id, uint64_t entity_id)
 {
-	// v0.2.5: getCalleesByEntity has its own LadybugDB/SQLite backend; the
+	// v0.2.5: getCalleesByEntity has its own SQLite/SQLite backend; the
 	// guard here only requires the SQLite handle (works on SQLite-only).
 	if (!g_query || !g_store || !g_store->handle())
 		return dupString("{\"error\":\"graph not ready [module=engine_"
@@ -696,9 +633,9 @@ char *engine_find_callees_by_entity(uint64_t project_id, uint64_t entity_id)
 
 char *engine_get_entry_points_new(uint64_t project_id)
 {
-	// LadybugDB is the only data source. graph-not-ready is reported with
+	// SQLite is the only data source. graph-not-ready is reported with
 	// the [module=engine_queries, method=get_entry_points_new] tag.
-	// v0.2.5: getEntryPoints has its own LadybugDB/SQLite backend; the guard
+	// v0.2.5: getEntryPoints has its own SQLite/SQLite backend; the guard
 	// here only requires the SQLite handle (works on SQLite-only).
 	if (!g_query || !g_store || !g_store->handle())
 		return dupString("{\"error\":\"graph not ready [module=engine_"
@@ -822,187 +759,16 @@ char *engine_project_overview(uint64_t project_id)
 char *engine_trace_path(uint64_t project_id, const char *from_name,
 			const char *to_name)
 {
-	// LadybugDB-only path tracing.
-	//
-	// The legacy tracePathJson output schema is preserved:
+	// Trace a path from from_function to to_function using the SQLite
+	// shortest-path backend (QueryEngine::findShortestPath, CSR BFS) and
+	// hydrate the node ids from the canonical entity table. The legacy
+	// tracePathJson output schema is preserved:
 	//   {"path":[{"name":"...","file":"...","line":N}, ...]}
 	//   {"path":[],"error":"..."}
 	//   {"path":[{"name":"..."}],"trivial":true}
-	//
-	// We resolve names → node IDs via Cypher, then delegate the actual
-	// BFS to QueryEngine::findShortestPath (LadybugDB-backed), then
-	// hydrate each node_id in the resulting path back into {name,file,line}
-	// via a second Cypher lookup.
-	//
-	// v0.2.5: the graph-not-ready guard is LadybugDB-specific (isGraphReady
-	// is never true on SQLite-only builds) and is therefore inside the
-	// #ifdef; the SQLite backend (the #else branch) has its own
-	// !g_store->handle() guard.
 	if (!from_name || !*from_name || !to_name || !*to_name)
 		return dupString(
 			"{\"error\":\"empty symbol name\",\"path\":[]}");
-
-#ifdef HAS_LADYBUG
-	if (!g_query || !g_store || !g_store->isGraphReady())
-		return dupString("{\"error\":\"graph not ready [module=engine_"
-				 "queries, method=trace_path]\",\"path\":[]}");
-	// Trivial self-to-self case: skip the BFS and emit a single-node
-	// path with the "trivial" flag, matching the legacy schema.
-	if (strcmp(from_name, to_name) == 0) {
-		std::ostringstream out;
-		out << "{\"path\":[{\"name\":\""
-		    << jsonEscape(std::string(from_name))
-		    << "\"}],\"trivial\":true}";
-		return dupString(out.str());
-	}
-
-	lbug_connection *conn = g_store->lbugHandle();
-	if (!conn)
-		return dupString("{\"error\":\"no ladybug connection [module="
-				 "engine_queries, method=trace_path]\","
-				 "\"path\":[]}");
-
-	// Resolve from_name → from_id and to_name → to_id via Cypher.
-	// Picks the lowest graph_node_id when several nodes share a name
-	// (homonyms) so the result is deterministic.
-	auto resolveName = [&](const char *name, uint64_t &out_id) -> bool {
-		std::string cypher =
-			"MATCH (n:GraphNode {name:'" + cypherEscape(name) +
-			"', project_id:" + std::to_string(project_id) +
-			"}) RETURN n.graph_node_id ORDER BY n.graph_node_id "
-			"LIMIT 1";
-		lbug_query_result qr;
-		if (lbug_connection_query(conn, cypher.c_str(), &qr) !=
-		    LbugSuccess) {
-			lbug_query_result_destroy(&qr);
-			return false;
-		}
-		bool ok = false;
-		lbug_flat_tuple tuple;
-		if (lbug_query_result_get_next(&qr, &tuple) == LbugSuccess) {
-			int64_t id = lbugTupleInt(&tuple, 0);
-			if (id > 0) {
-				out_id = static_cast<uint64_t>(id);
-				ok = true;
-			}
-			lbug_flat_tuple_destroy(&tuple);
-		}
-		lbug_query_result_destroy(&qr);
-		return ok;
-	};
-
-	uint64_t from_id = 0, to_id = 0;
-	if (!resolveName(from_name, from_id) || !resolveName(to_name, to_id))
-		return dupString(
-			"{\"path\":[],\"error\":\"symbol not found\"}");
-
-	// Delegate BFS to QueryEngine::findShortestPath (LadybugDB-backed).
-	std::string bfs_json =
-		g_query->findShortestPath(project_id, from_id, to_id);
-
-	// Parse the BFS result: look for "found":true and extract node_id
-	// values. We do a minimal JSON walk — findShortestPath emits
-	// {"path":[{"node_id":N},...],"found":bool,...}.
-	bool found = bfs_json.find("\"found\":true") != std::string::npos;
-	if (!found)
-		return dupString("{\"path\":[],\"error\":\"no path found\"}");
-
-	// Collect every node_id value in order. The path array is the only
-	// place "node_id" appears in the findShortestPath output.
-	std::vector<uint64_t> node_ids;
-	{
-		const std::string needle = "\"node_id\":";
-		size_t pos = 0;
-		while ((pos = bfs_json.find(needle, pos)) !=
-		       std::string::npos) {
-			pos += needle.size();
-			// Skip optional whitespace, then parse digits.
-			while (pos < bfs_json.size() &&
-			       (bfs_json[pos] == ' ' || bfs_json[pos] == '\t'))
-				++pos;
-			std::string num;
-			while (pos < bfs_json.size() &&
-			       std::isdigit(static_cast<unsigned char>(
-				       bfs_json[pos]))) {
-				num += bfs_json[pos++];
-			}
-			if (!num.empty())
-				node_ids.push_back(static_cast<uint64_t>(
-					std::strtoull(num.c_str(), nullptr,
-						      10)));
-		}
-	}
-	if (node_ids.empty())
-		return dupString("{\"path\":[],\"error\":\"no path found\"}");
-
-	// Hydrate each node_id → {name,file,line} via a single Cypher
-	// query that returns all nodes by id, then build a lookup map so
-	// we can emit them in path order.
-	std::unordered_map<uint64_t, std::tuple<std::string, std::string, int>>
-		lookup;
-	{
-		std::string id_list;
-		for (size_t i = 0; i < node_ids.size(); ++i) {
-			if (i > 0)
-				id_list += ",";
-			id_list += std::to_string(node_ids[i]);
-		}
-		std::string cypher =
-			"MATCH (n:GraphNode) WHERE n.graph_node_id IN [" +
-			id_list +
-			"] AND n.project_id = " + std::to_string(project_id) +
-			" RETURN n.graph_node_id, n.name, n.file_path, "
-			"n.start_row";
-		lbug_query_result qr;
-		if (lbug_connection_query(conn, cypher.c_str(), &qr) !=
-		    LbugSuccess) {
-			lbug_query_result_destroy(&qr);
-			return dupString("{\"path\":[],\"error\":\"ladybug "
-					 "query failed [module=engine_"
-					 "queries, method=trace_path]\"}");
-		}
-		lbug_flat_tuple tuple;
-		while (lbug_query_result_get_next(&qr, &tuple) == LbugSuccess) {
-			uint64_t id =
-				static_cast<uint64_t>(lbugTupleInt(&tuple, 0));
-			std::string name = lbugTupleStr(&tuple, 1);
-			std::string file = lbugTupleStr(&tuple, 2);
-			int line = static_cast<int>(lbugTupleInt(&tuple, 3));
-			lookup.emplace(id, std::make_tuple(name, file, line));
-			lbug_flat_tuple_destroy(&tuple);
-		}
-		lbug_query_result_destroy(&qr);
-	}
-
-	// Emit JSON in path order, preserving the legacy schema.
-	std::ostringstream json;
-	json << "{\"path\":[";
-	bool first = true;
-	for (uint64_t id : node_ids) {
-		if (!first)
-			json << ",";
-		first = false;
-		auto it = lookup.find(id);
-		if (it == lookup.end()) {
-			// Defensive: node vanished between BFS and hydrate.
-			json << "{\"name\":\"?\",\"file\":\"\",\"line\":0}";
-		} else {
-			const auto &tup = it->second;
-			json << "{\"name\":\"" << jsonEscape(std::get<0>(tup))
-			     << "\","
-			     << "\"file\":\"" << jsonEscape(std::get<1>(tup))
-			     << "\","
-			     << "\"line\":" << std::get<2>(tup) << "}";
-		}
-	}
-	json << "]}";
-	return dupString(json.str());
-#else
-	// ── v0.2.5: SQLite graph-query backend (Windows / SQLite-only) ──
-	// Trace a path from from_function to to_function using the SQLite
-	// shortest-path backend (QueryEngine::findShortestPath, CSR BFS) and
-	// hydrate the node ids from the canonical entity table. JSON shape
-	// matches the LadybugDB branch: {"path":[{name,file,line}]}.
 	if (!g_store || !g_store->handle()) {
 		return dupString("{\"error\":\"graph not ready [module="
 				 "engine_queries, method=trace_path]\","
@@ -1119,7 +885,6 @@ char *engine_trace_path(uint64_t project_id, const char *from_name,
 	}
 	json << "]}";
 	return dupString(json.str());
-#endif
 }
 
 // ─── Interactive Function Exploration ─────────────────────────
@@ -1127,14 +892,14 @@ char *engine_trace_path(uint64_t project_id, const char *from_name,
 char *engine_explore_function(uint64_t project_id, const char *function_name,
 			      int depth, const char *direction)
 {
-	// LadybugDB-only recursive exploration. The legacy output schema is
+	// SQLite-only recursive exploration. The legacy output schema is
 	// preserved:
 	//   {"name":"...","file":"...","line":N,
 	//    "callers":[{...recursive...}],"callees":[{...recursive...}]}
 	//   {"error":"function '...' not found","name":"...",
 	//    "callers":[],"callees":[]}
 	//
-	// v0.2.5: the graph-not-ready guard is LadybugDB-specific and lives
+	// v0.2.5: the graph-not-ready guard is SQLite-specific and lives
 	// inside the #ifdef; the SQLite backend has its own !g_store->handle()
 	// guard in the #else branch.
 	if (!function_name || !*function_name)
@@ -1143,186 +908,10 @@ char *engine_explore_function(uint64_t project_id, const char *function_name,
 			"\"callees\":[]}");
 	const char *dir = direction ? direction : "both";
 
-#ifdef HAS_LADYBUG
-	if (!g_query || !g_store || !g_store->isGraphReady())
-		return dupString("{\"error\":\"graph not ready [module=engine_"
-				 "queries, method=explore_function]\","
-				 "\"callers\":[],\"callees\":[]}");
-
-	// Clamp depth to [0,5] to prevent runaway recursion (legacy cap).
-	int max_depth = depth > 5 ? 5 : (depth < 0 ? 0 : depth);
-	bool show_callers =
-		(strcmp(dir, "callers") == 0 || strcmp(dir, "both") == 0);
-	bool show_callees =
-		(strcmp(dir, "callees") == 0 || strcmp(dir, "both") == 0);
-
-	lbug_connection *conn = g_store->lbugHandle();
-	if (!conn)
-		return dupString("{\"error\":\"no ladybug connection "
-				 "[module=engine_queries, "
-				 "method=explore_function]\","
-				 "\"callers\":[],\"callees\":[]}");
-
-	// Fetch node metadata (name, file_path, start_row) for a single id.
-	auto fetchNode = [&](uint64_t id, std::string &out_name,
-			     std::string &out_file, int &out_line) -> bool {
-		std::string cypher =
-			"MATCH (n:GraphNode {graph_node_id:" +
-			std::to_string(id) +
-			", project_id:" + std::to_string(project_id) +
-			"}) RETURN n.name, n.file_path, n.start_row LIMIT 1";
-		lbug_query_result qr;
-		if (lbug_connection_query(conn, cypher.c_str(), &qr) !=
-		    LbugSuccess) {
-			lbug_query_result_destroy(&qr);
-			return false;
-		}
-		bool ok = false;
-		lbug_flat_tuple tuple;
-		if (lbug_query_result_get_next(&qr, &tuple) == LbugSuccess) {
-			out_name = lbugTupleStr(&tuple, 0);
-			out_file = lbugTupleStr(&tuple, 1);
-			out_line = static_cast<int>(lbugTupleInt(&tuple, 2));
-			ok = true;
-			lbug_flat_tuple_destroy(&tuple);
-		}
-		lbug_query_result_destroy(&qr);
-		return ok;
-	};
-
-	// Fetch neighbor ids (incoming for callers, outgoing for callees).
-	// CALLS|RELATES covers edge_type 1 (call) and 3 (symbol_reference).
-	auto fetchNeighbors = [&](uint64_t id, bool callers,
-				  std::vector<uint64_t> &out) {
-		std::string cypher;
-		if (callers) {
-			cypher = "MATCH (caller:GraphNode)-[:CALLS|RELATES]->"
-				 "(n:GraphNode {graph_node_id:" +
-				 std::to_string(id) +
-				 ", project_id:" + std::to_string(project_id) +
-				 "}) WHERE caller.project_id = " +
-				 std::to_string(project_id) +
-				 " RETURN caller.graph_node_id LIMIT 20";
-		} else {
-			cypher = "MATCH (n:GraphNode {graph_node_id:" +
-				 std::to_string(id) +
-				 ", project_id:" + std::to_string(project_id) +
-				 "})-[:CALLS|RELATES]->(callee:GraphNode) "
-				 "WHERE callee.project_id = " +
-				 std::to_string(project_id) +
-				 " RETURN callee.graph_node_id LIMIT 20";
-		}
-		lbug_query_result qr;
-		if (lbug_connection_query(conn, cypher.c_str(), &qr) !=
-		    LbugSuccess) {
-			lbug_query_result_destroy(&qr);
-			return;
-		}
-		lbug_flat_tuple tuple;
-		while (lbug_query_result_get_next(&qr, &tuple) == LbugSuccess) {
-			int64_t nid = lbugTupleInt(&tuple, 0);
-			if (nid > 0)
-				out.push_back(static_cast<uint64_t>(nid));
-			lbug_flat_tuple_destroy(&tuple);
-		}
-		lbug_query_result_destroy(&qr);
-	};
-
-	// Recursive JSON builder. std::function is required so the lambda
-	// can name itself; a plain `auto` recursive lambda is awkward here
-	// because we capture by reference.
-	std::function<void(std::ostringstream &, uint64_t, int)> buildNode =
-		[&](std::ostringstream &json, uint64_t id, int remaining) {
-			std::string name = "?";
-			std::string file_path;
-			int line = 0;
-			fetchNode(id, name, file_path, line);
-			json << "{\"name\":\"" << jsonEscape(name)
-			     << "\",\"file\":\"" << jsonEscape(file_path)
-			     << "\",\"line\":" << line;
-
-			if (remaining <= 0) {
-				json << "}";
-				return;
-			}
-
-			if (show_callers) {
-				json << ",\"callers\":[";
-				std::vector<uint64_t> ids;
-				fetchNeighbors(id, true, ids);
-				bool first = true;
-				for (uint64_t cid : ids) {
-					if (cid == id)
-						continue;
-					if (!first)
-						json << ",";
-					first = false;
-					buildNode(json, cid, remaining - 1);
-				}
-				json << "]";
-			}
-			if (show_callees) {
-				json << ",\"callees\":[";
-				std::vector<uint64_t> ids;
-				fetchNeighbors(id, false, ids);
-				bool first = true;
-				for (uint64_t cid : ids) {
-					if (cid == id)
-						continue;
-					if (!first)
-						json << ",";
-					first = false;
-					buildNode(json, cid, remaining - 1);
-				}
-				json << "]";
-			}
-			json << "}";
-		};
-
-	// Find the starting function by name. Picks the first GraphNode
-	// with node_type IN (0,1,6) — function / method / module — to mirror
-	// the legacy exploreFunctionJson lookup that preferred graph_nodes
-	// over symbols.
-	uint64_t func_id = 0;
-	{
-		std::string cypher =
-			"MATCH (n:GraphNode {name:'" +
-			cypherEscape(function_name) +
-			"', project_id:" + std::to_string(project_id) +
-			"}) WHERE n.node_type IN [0,1,6] RETURN "
-			"n.graph_node_id ORDER BY n.graph_node_id LIMIT 1";
-		lbug_query_result qr;
-		if (lbug_connection_query(conn, cypher.c_str(), &qr) ==
-		    LbugSuccess) {
-			lbug_flat_tuple tuple;
-			if (lbug_query_result_get_next(&qr, &tuple) ==
-			    LbugSuccess) {
-				int64_t id = lbugTupleInt(&tuple, 0);
-				if (id > 0)
-					func_id = static_cast<uint64_t>(id);
-				lbug_flat_tuple_destroy(&tuple);
-			}
-			lbug_query_result_destroy(&qr);
-		}
-	}
-	if (!func_id) {
-		std::ostringstream err;
-		err << "{\"error\":\"function '"
-		    << jsonEscape(std::string(function_name))
-		    << "' not found\",\"name\":\""
-		    << jsonEscape(std::string(function_name))
-		    << "\",\"callers\":[],\"callees\":[]}";
-		return dupString(err.str());
-	}
-
-	std::ostringstream result;
-	buildNode(result, func_id, max_depth);
-	return dupString(result.str());
-#else
 	// ── v0.2.5: SQLite graph-query backend (Windows / SQLite-only) ──
 	// Recursively explore callers/callees of a function using CSR
 	// adjacency (getCallerIds / getCalleeIds) and entity metadata.
-	// JSON shape matches the LadybugDB branch: nested {name,file,line,
+	// JSON shape matches the SQLite branch: nested {name,file,line,
 	// callers,callees}.
 	int max_depth = depth > 5 ? 5 : (depth < 0 ? 0 : depth);
 	if (!g_store || !g_store->handle()) {
@@ -1443,7 +1032,6 @@ char *engine_explore_function(uint64_t project_id, const char *function_name,
 	std::ostringstream result;
 	buildNode(result, func_id, max_depth);
 	return dupString(result.str());
-#endif
 }
 
 // ─── Context Builder ─────────────────────────────────────────
@@ -1643,223 +1231,21 @@ char *engine_build_context(uint64_t project_id, const char *query)
 
 char *engine_detect_ffi_boundaries(uint64_t project_id)
 {
-	// LadybugDB-only FFI boundary detection. The legacy output schema is
+	// SQLite-only FFI boundary detection. The legacy output schema is
 	// preserved:
 	//   {"languages":[{language,node_count}],
 	//    "cross_language_files":[{file_path,languages,node_count}],
 	//    "ffi_symbols":[{name,file_path,language,line}],
 	//    "orphan_symbols":[{name,file_path,language,line}]}
 	//
-	// v0.2.5: the graph-not-ready guard is LadybugDB-specific and lives
+	// v0.2.5: the graph-not-ready guard is SQLite-specific and lives
 	// inside the #ifdef; the SQLite backend has its own !g_store->handle()
 	// guard in the #else branch.
 
-#ifdef HAS_LADYBUG
-	if (!g_query || !g_store || !g_store->isGraphReady())
-		return dupString("{\"error\":\"graph not ready [module=engine_"
-				 "queries, method=detect_ffi_boundaries]\"}");
-
-	lbug_connection *conn = g_store->lbugHandle();
-	if (!conn)
-		return dupString("{\"error\":\"no ladybug connection "
-				 "[module=engine_queries, "
-				 "method=detect_ffi_boundaries]\"}");
-
-	std::ostringstream json;
-	json << "{";
-
-	// 1. Language distribution: GROUP BY language, ORDER BY count DESC.
-	// LadybugDB Cypher uses count(n) and ORDER BY count(n) DESC.
-	{
-		std::string cypher =
-			"MATCH (n:GraphNode {project_id:" +
-			std::to_string(project_id) +
-			"}) RETURN n.language, count(n) ORDER BY count(n) DESC";
-		lbug_query_result qr;
-		json << "\"languages\":[";
-		bool first = true;
-		if (lbug_connection_query(conn, cypher.c_str(), &qr) ==
-		    LbugSuccess) {
-			lbug_flat_tuple tuple;
-			while (lbug_query_result_get_next(&qr, &tuple) ==
-			       LbugSuccess) {
-				if (!first)
-					json << ",";
-				first = false;
-				std::string lang = lbugTupleStr(&tuple, 0);
-				int64_t count = lbugTupleInt(&tuple, 1);
-				json << "{\"language\":\"" << jsonEscape(lang)
-				     << "\",\"node_count\":" << count << "}";
-				lbug_flat_tuple_destroy(&tuple);
-			}
-			lbug_query_result_destroy(&qr);
-		}
-		json << "],";
-	}
-
-	// 2. Cross-language files: files where COUNT(DISTINCT language) > 1.
-	// Cypher: GROUP BY file_path, collect distinct languages as a
-	// comma-joined string, count nodes. LIMIT 20.
-	{
-		std::string cypher =
-			"MATCH (n:GraphNode {project_id:" +
-			std::to_string(project_id) +
-			"}) WHERE n.language IS NOT NULL AND n.language <> '' "
-			"WITH n.file_path AS fp, collect(DISTINCT n.language) AS "
-			"langs, count(n) AS cnt "
-			"WHERE size(langs) > 1 RETURN fp, langs, cnt "
-			"ORDER BY cnt DESC LIMIT 20";
-		lbug_query_result qr;
-		json << "\"cross_language_files\":[";
-		bool first = true;
-		if (lbug_connection_query(conn, cypher.c_str(), &qr) ==
-		    LbugSuccess) {
-			lbug_flat_tuple tuple;
-			while (lbug_query_result_get_next(&qr, &tuple) ==
-			       LbugSuccess) {
-				if (!first)
-					json << ",";
-				first = false;
-				std::string fp = lbugTupleStr(&tuple, 0);
-				// langs is a LIST value — extract elements and
-				// join with commas to preserve the legacy
-				// "languages":"c,rust" string format.
-				std::string langs_str;
-				{
-					lbug_value v;
-					if (lbug_flat_tuple_get_value(&tuple, 1,
-								      &v) ==
-					    LbugSuccess) {
-						uint64_t sz = 0;
-						lbug_value_get_list_size(&v,
-									 &sz);
-						for (uint64_t i = 0; i < sz;
-						     ++i) {
-							lbug_value elem;
-							if (lbug_value_get_list_element(
-								    &v, i,
-								    &elem) ==
-							    LbugSuccess) {
-								char *sv =
-									nullptr;
-								if (lbug_value_get_string(
-									    &elem,
-									    &sv) ==
-									    LbugSuccess &&
-								    sv) {
-									if (!langs_str
-										     .empty())
-										langs_str +=
-											",";
-									langs_str +=
-										sv;
-									lbug_destroy_string(
-										sv);
-								}
-							}
-						}
-					}
-				}
-				int64_t cnt = lbugTupleInt(&tuple, 2);
-				json << "{\"file_path\":\"" << jsonEscape(fp)
-				     << "\",\"languages\":\""
-				     << jsonEscape(langs_str)
-				     << "\",\"node_count\":" << cnt << "}";
-				lbug_flat_tuple_destroy(&tuple);
-			}
-			lbug_query_result_destroy(&qr);
-		}
-		json << "],";
-	}
-
-	// 3. FFI-related symbols: names starting with extern_, ffi_, wasm_,
-	// cabi_, jni_, JNI_, CALLBACK_. node_type IN (0,1,2). LIMIT 30.
-	{
-		std::string cypher =
-			"MATCH (n:GraphNode {project_id:" +
-			std::to_string(project_id) +
-			"}) WHERE n.node_type IN [0,1,2] AND ("
-			"n.name STARTS WITH 'extern_' OR "
-			"n.name STARTS WITH 'ffi_' OR "
-			"n.name STARTS WITH 'wasm_' OR "
-			"n.name STARTS WITH 'cabi_' OR "
-			"n.name STARTS WITH 'jni_' OR "
-			"n.name STARTS WITH 'JNI_' OR "
-			"n.name STARTS WITH 'CALLBACK_') "
-			"RETURN n.name, n.file_path, n.language, n.start_row "
-			"LIMIT 30";
-		lbug_query_result qr;
-		json << "\"ffi_symbols\":[";
-		bool first = true;
-		if (lbug_connection_query(conn, cypher.c_str(), &qr) ==
-		    LbugSuccess) {
-			lbug_flat_tuple tuple;
-			while (lbug_query_result_get_next(&qr, &tuple) ==
-			       LbugSuccess) {
-				if (!first)
-					json << ",";
-				first = false;
-				std::string name = lbugTupleStr(&tuple, 0);
-				std::string fp = lbugTupleStr(&tuple, 1);
-				std::string lang = lbugTupleStr(&tuple, 2);
-				int64_t row = lbugTupleInt(&tuple, 3);
-				json << "{\"name\":\"" << jsonEscape(name)
-				     << "\",\"file_path\":\"" << jsonEscape(fp)
-				     << "\",\"language\":\"" << jsonEscape(lang)
-				     << "\",\"line\":" << row << "}";
-				lbug_flat_tuple_destroy(&tuple);
-			}
-			lbug_query_result_destroy(&qr);
-		}
-		json << "],";
-	}
-
-	// 4. Orphan symbols: node_type=2 with no incoming or outgoing
-	// CALLS|RELATES edges, excluding files matching %test% or %bench%.
-	// LIMIT 20. Cypher uses NOT (n)-[:CALLS|RELATES]-() to express the
-	// "no edges" predicate.
-	{
-		std::string cypher =
-			"MATCH (n:GraphNode {project_id:" +
-			std::to_string(project_id) +
-			"}) WHERE n.node_type = 2 AND NOT (n)-[:CALLS|RELATES]-() "
-			"AND NOT n.file_path CONTAINS 'test' "
-			"AND NOT n.file_path CONTAINS 'bench' "
-			"RETURN n.name, n.file_path, n.language, n.start_row "
-			"LIMIT 20";
-		lbug_query_result qr;
-		json << "\"orphan_symbols\":[";
-		bool first = true;
-		if (lbug_connection_query(conn, cypher.c_str(), &qr) ==
-		    LbugSuccess) {
-			lbug_flat_tuple tuple;
-			while (lbug_query_result_get_next(&qr, &tuple) ==
-			       LbugSuccess) {
-				if (!first)
-					json << ",";
-				first = false;
-				std::string name = lbugTupleStr(&tuple, 0);
-				std::string fp = lbugTupleStr(&tuple, 1);
-				std::string lang = lbugTupleStr(&tuple, 2);
-				int64_t row = lbugTupleInt(&tuple, 3);
-				json << "{\"name\":\"" << jsonEscape(name)
-				     << "\",\"file_path\":\"" << jsonEscape(fp)
-				     << "\",\"language\":\"" << jsonEscape(lang)
-				     << "\",\"line\":" << row << "}";
-				lbug_flat_tuple_destroy(&tuple);
-			}
-			lbug_query_result_destroy(&qr);
-		}
-		json << "]";
-	}
-
-	json << "}";
-	return dupString(json.str());
-#else
 	// ── v0.2.5: SQLite graph-query backend (Windows / SQLite-only) ──
 	// FFI-boundary diagnosis over the canonical entity table. The four
 	// sections (languages, cross_language_files, ffi_symbols,
-	// orphan_symbols) mirror the LadybugDB branch's output schema.
+	// orphan_symbols) mirror the SQLite branch's output schema.
 	if (!g_store || !g_store->handle()) {
 		return dupString("{\"error\":\"graph not ready [module=engine_"
 				 "queries, method=detect_ffi_boundaries]\"}");
@@ -2054,5 +1440,4 @@ char *engine_detect_ffi_boundaries(uint64_t project_id)
 	}
 	json << "]}";
 	return dupString(json.str());
-#endif
 }

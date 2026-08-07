@@ -138,9 +138,7 @@ int main()
 {
 	const char *proj_dir = "/tmp/test_verifier_coverage_proj";
 	const char *db_path = "/tmp/test_verifier_coverage.db";
-	const char *lbug_path = "/tmp/test_verifier_coverage.lbug";
 	unlink(db_path);
-	unlink(lbug_path);
 	writeFixture(proj_dir);
 	uint64_t pid = indexFixture(db_path, proj_dir, "verifier-coverage");
 

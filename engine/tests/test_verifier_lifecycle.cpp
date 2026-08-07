@@ -113,7 +113,6 @@ int main()
 {
 	const char *proj_dir = "/tmp/test_verifier_lifecycle_proj";
 	const char *db_path = "/tmp/test_verifier_lifecycle.db";
-	const char *lbug_path = "/tmp/test_verifier_lifecycle.lbug";
 
 	// ── Test 1: init → verify → shutdown → init → verify (3 cycles) ──
 	// The A15 regression: after engine_shutdown() the registry was cleared
@@ -123,7 +122,6 @@ int main()
 	{
 		for (int cycle = 0; cycle < 3; ++cycle) {
 			unlink(db_path);
-			unlink(lbug_path);
 			writeFixture(proj_dir);
 
 			uint64_t pid = indexFixture(db_path, proj_dir,
@@ -172,7 +170,6 @@ int main()
 	// verify_claim after engine_init must dispatch successfully.
 	{
 		unlink(db_path);
-		unlink(lbug_path);
 		writeFixture(proj_dir);
 
 		// First init: create + index the project normally.
@@ -212,7 +209,6 @@ int main()
 	// pid-B-bound verifiers. We verify both projects dispatch correctly.
 	{
 		unlink(db_path);
-		unlink(lbug_path);
 		std::string dir_a = "/tmp/test_verifier_lifecycle_proj_a";
 		std::string dir_b = "/tmp/test_verifier_lifecycle_proj_b";
 		writeFixture(dir_a);
@@ -260,7 +256,6 @@ int main()
 	// CapabilityExists.
 	{
 		unlink(db_path);
-		unlink(lbug_path);
 		writeFixture(proj_dir);
 		uint64_t pid = indexFixture(db_path, proj_dir, "unknown-claim");
 		char *r = engine_verify_claim(

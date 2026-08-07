@@ -188,13 +188,6 @@ test-engine: $(ENGINE_LIB)
 	@rm -f $(TEST_DB) $(TEST_DB)-wal $(TEST_DB)-shm
 	@rm -f /tmp/test_*.db /tmp/test_*.db-wal /tmp/test_*.db-shm 2>/dev/null || true
 	@rm -f /tmp/codescope_test_*.db /tmp/codescope_test_*.db-wal /tmp/codescope_test_*.db-shm 2>/dev/null || true
-	@find /tmp -maxdepth 1 -name 'test_*.lbug' -delete 2>/dev/null || true
-	@find /tmp -maxdepth 1 -name 'test_*.lbug-*' -delete 2>/dev/null || true
-	@find /tmp -maxdepth 1 -name 'test_*.lbug.*' -delete 2>/dev/null || true
-	@find /tmp -maxdepth 1 -name 'codescope_test_*.lbug' -delete 2>/dev/null || true
-	@find /tmp -maxdepth 1 -name 'codescope_test_*.lbug-*' -delete 2>/dev/null || true
-	@find /tmp -maxdepth 1 -name 'codescope_test_*.lbug.*' -delete 2>/dev/null || true
-	@find . -name '*.lbug' -delete 2>/dev/null || true
 	@cd $(BUILD_DIR) && cmake --build . -j$(NPROC) 2>&1 | grep -E "(error|Error|Building|Linking)" || true
 	@failed=0; \
 	export GRAMMARS_DIR="$(CURDIR)/engine/grammars"; \

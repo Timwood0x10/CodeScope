@@ -109,7 +109,6 @@ int main()
 
 	char db_path[] = "/tmp/test_accuracy_baseline.db";
 	unlink(db_path);
-	unlink("/tmp/test_accuracy_baseline.lbug");
 
 	check(engine_init(db_path) == 0, "engine_init");
 
@@ -122,7 +121,7 @@ int main()
 	check(strstr(idx, "\"ok\":true") != nullptr, "index_project ok");
 	engine_free_string(idx);
 
-	// Allow the synchronous LadybugDB compile to settle.
+	// Allow the synchronous SQLite compile to settle.
 	usleep(200000);
 
 	// Open the SQLite DB directly to inspect raw counts.

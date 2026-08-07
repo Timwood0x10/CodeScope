@@ -258,7 +258,7 @@ char *engine_find_callees_adaptive(uint64_t project_id, const char *symbol_name,
  * Unlike the bare-name API, this unambiguously targets a single entity
  * even when multiple entities share the same name. The entity ID is
  * resolved to (name, file_path, start_row) in SQLite, then used to
- * build a precise LadybugDB query.
+ * build a precise call-graph query.
  *
  * @param entity_id The entity.id from the entity table.
  * @return JSON: {"callers":[...],"total":N,"entity_id":ID}

@@ -617,11 +617,9 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 	if (file_st)
 		sqlite3_finalize(file_st);
 
-	// ── Parsed graph data remains in SQLite only ────────────────
-	// LadybugDB is not written during the parse phase. Graph data is
-	// compiled into LadybugDB by the Graph Compiler (future M1 pass).
-	// SQLite semantic_records → buildGraph → graph_nodes/edges is the
-	// current source of truth for all graph queries.
+	// ── Parsed graph data is SQLite-only ───────────────────────
+	// Graph data is stored in SQLite: semantic_records → buildGraph →
+	// graph_nodes/edges is the source of truth for all graph queries.
 
 	return true;
 }

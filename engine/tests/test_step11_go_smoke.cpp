@@ -24,7 +24,7 @@
 //                            caller_id=<compute entity> AND name='multiply'.
 //   L3  relation (resolver)— SQLite `relation` has a type=1 (Calls) row
 //                            source_id=<compute> → target_id=<multiply>.
-//   L4  LadybugDB CALLS    — engine_get_callers (which queries the Ladybug
+//   L4  SQLite CALLS    — engine_get_callers (which queries the SQLite
 //                            CALLS table with edge_type=1) returns compute.
 //   L5  adaptive API       — engine_find_callers_adaptive also returns
 //                            compute (no SQLite fallback gap, A13).
@@ -125,9 +125,7 @@ int main()
 	}
 
 	char db_path[] = "/tmp/test_step11_go_smoke.db";
-	char lbug_path[] = "/tmp/test_step11_go_smoke.db.lbug";
 	unlink(db_path);
-	unlink(lbug_path);
 
 	if (engine_init(db_path) != 0)
 		fail("engine", "engine_init");
@@ -142,8 +140,7 @@ int main()
 	}
 	engine_free_string(idx);
 
-	// Allow the synchronous LadybugDB compile to settle. The graph
-	// compiler runs as part of indexing but the .lbug write may lag by
+	// Allow the synchronous SQLite compile to settle. The graph
 	// a few hundred milliseconds.
 	usleep(300000);
 
@@ -176,7 +173,7 @@ int main()
 	char *code = engine_search_code(pid, "multiply", 10);
 	// FTS (code search) depends on the async FTS build which may not
 	// have completed yet. This is a secondary check — the critical
-	// layers are L2-L5 below (reference, relation, Ladybug, API).
+	// layers are L2-L5 below (reference, relation, SQLite, API).
 	// Warn but do NOT abort so the call-chain verification still runs.
 	if (!code || !strstr(code, "multiply"))
 		fprintf(stderr,
@@ -214,21 +211,21 @@ int main()
 		     "no type=1 relation for compute→multiply — resolver did "
 		     "not resolve the call");
 
-	// ── L4: LadybugDB CALLS ──────────────────────────────────────
-	// engine_get_callers queries the LadybugDB CALLS table with an
+	// ── L4: SQLite CALLS ──────────────────────────────────────
+	// engine_get_callers queries the SQLite CALLS table with an
 	// explicit edge_type=1 filter (Step 1). If the graph compiler failed
-	// to compile the relation into LadybugDB, this returns empty even
+	// to compile the relation into SQLite, this returns empty even
 	// though L3 passed — exactly the A13 "no fallback" gap.
 	char *callers = engine_get_callers(pid, "multiply", nullptr);
 	if (!callers || !strstr(callers, "compute"))
-		fail("L4/ladybug",
+		fail("L4",
 		     "engine_get_callers(multiply) did not return compute — "
 		     "graph compiler did not write the CALLS edge");
 	engine_free_string(callers);
 
 	// ── L5: adaptive API ─────────────────────────────────────────
 	// engine_find_callers_adaptive is the MCP-facing entry point. It
-	// must agree with the direct LadybugDB query.
+	// must agree with the direct SQLite query.
 	char *adaptive =
 		engine_find_callers_adaptive(pid, "multiply", nullptr);
 	if (!adaptive || !strstr(adaptive, "compute"))
@@ -245,7 +242,7 @@ int main()
 	// test (this smoke test focuses on the positive control).
 	char *add_callers = engine_get_callers(pid, "add", nullptr);
 	if (!add_callers || !strstr(add_callers, "multiply"))
-		fail("L4/ladybug",
+		fail("L4",
 		     "engine_get_callers(add) did not return multiply");
 	engine_free_string(add_callers);
 
@@ -276,7 +273,7 @@ int main()
 	printf("  L3 relation(type=1):   OK (compute→multiply, %lld "
 	       "row)\n",
 	       (long long)rel_count);
-	printf("  L4 Ladybug CALLS:      OK (get_callers returned "
+	printf("  L4 SQLite CALLS:      OK (get_callers returned "
 	       "compute)\n");
 	printf("  L5 adaptive API:       OK (find_callers_adaptive "
 	       "returned compute)\n");

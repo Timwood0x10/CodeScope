@@ -38,7 +38,7 @@ It indexes source code into a structured code graph (call graph + reference grap
 | Parser | tree-sitter (unified AST IR, 8 languages) |
 | Indexer | C++23 (Clang 17+), SQLite (WAL mode, FTS5) |
 | Server | Rust 2024 Edition, MCP Protocol (JSON-RPC 2.0, stdio transport) |
-| Graph Storage | SQLite (primary) + optional LadybugDB (Cypher queries) |
+| Graph Storage | SQLite (sole graph store, CSR adjacency for sub-ms call-graph queries) |
 | Scheduler | Built-in multi-process parallel indexer (chunk-level work-stealing) |
 | Build | CMake 3.30+ (C++), Cargo (Rust) |
 
@@ -231,7 +231,7 @@ codescope cli force_index_files '{"paths":["/path/to/test/file.rs"]}'
 |----------|-------------|
 | **macOS** | Xcode CLT, cmake, Rust (1.85+) |
 | **Linux** | build-essential, cmake, Rust (1.85+) |
-| **Windows** ⚠️ **Beta** | MinGW-w64 14.0.0+, Rust `x86_64-pc-windows-gnu` target, cmake. LadybugDB has no official Windows library, so Windows ships **SQLite-only**; every graph-query tool (shortest_path, get_neighbors, get_callers/callees, graph_query, subgraph, entry_points, trace_path, hotspots, impact_analysis, ...) works via a built-in SQLite graph-query backend (CSR adjacency, sub-millisecond call-graph lookups). |
+| **Windows** ⚠️ **Beta** | MinGW-w64 14.0.0+, Rust `x86_64-pc-windows-gnu` target, cmake. Every graph-query tool (shortest_path, get_neighbors, get_callers/callees, graph_query, subgraph, entry_points, trace_path, hotspots, impact_analysis, ...) works via the built-in SQLite graph-query backend (CSR adjacency, sub-millisecond call-graph lookups). |
 
 ### Install Pre-built Binary
 
@@ -444,27 +444,19 @@ All benchmarks measured on **Apple M3 Max (36 GB RAM)**. Other hardware will pro
 | **rustc** (Rust compiler, monorepo) | 6,029 | 81,039 | 63,697 | **18.7 s** | 5.9 GB |
 | **Linux kernel** (full) | 64,694 | 12M | — | **3 min 07 s** | — |
 
-### LadybugDB Storage
-
-| Project | SQLite DB | LadybugDB | LadybugDB % of SQLite |
-|---------|:---------:|:---------:|:---------------------:|
-| **CodeScope** (self) | 77 MB | 3.4 MB | 4.4% |
-| **ARES** (Go) | 337 MB | 24 KB | <0.1% |
-| **rustc** (Rust compiler) | — | — | — |
-
 ### Query Latency
 
-macOS/Linux use the LadybugDB Cypher backend; Windows and SQLite-only builds use the built-in SQLite graph-query backend (CSR adjacency tables). Both are millisecond-scale for the same queries.
+All graph queries run on the built-in SQLite graph-query backend (CSR adjacency tables), sub-millisecond for typical call-graph lookups.
 
-| Query | LadybugDB | SQLite backend (Windows/SQLite-only) |
-|-------|:---------:|:-------------------------------------:|
-| `get_graph_stats` | ~1 ms (Cypher `count()`) | ~0.1 ms |
-| `find_callers("buildGraph")` | ~1 ms (Cypher `MATCH`) | ~0.2 ms (sub-ms) |
-| `find_callees("buildGraph")` | ~1 ms (54 callees) | ~0.2 ms |
-| `graph_query` (full call-graph scan) | ~1 ms (LIMIT 100) | ~37 ms (full 2,590-edge scan, JOIN-optimized) |
-| `shortest_path` | ~1 ms (Cypher BFS) | O(E) CSR BFS, sub-ms |
-| `get_neighbors` | ~1 ms | O(degree) CSR adjacency, sub-ms |
-| `get_subgraph` | ~1 ms | O(E) CSR BFS, sub-ms |
+| Query | SQLite backend |
+|-------|:--------------:|
+| `get_graph_stats` | ~0.1 ms |
+| `find_callers("buildGraph")` | ~0.2 ms (sub-ms) |
+| `find_callees("buildGraph")` | ~0.2 ms (54 callees) |
+| `graph_query` (full call-graph scan) | ~37 ms (full 2,590-edge scan, JOIN-optimized) |
+| `shortest_path` | O(E) CSR BFS, sub-ms |
+| `get_neighbors` | O(degree) CSR adjacency, sub-ms |
+| `get_subgraph` | O(E) CSR BFS, sub-ms |
 
 ### Micro Benchmarks
 

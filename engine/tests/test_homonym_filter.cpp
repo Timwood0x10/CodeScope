@@ -101,10 +101,7 @@ int main()
 	}
 
 	const char *db_path = "/tmp/test_homonym_filter.db";
-	char lbug_path[256];
-	snprintf(lbug_path, sizeof(lbug_path), "%s.lbug", db_path);
 	unlink(db_path);
-	unlink(lbug_path);
 
 	if (engine_init(db_path) != 0) {
 		fprintf(stderr, "FAIL: engine_init\n");

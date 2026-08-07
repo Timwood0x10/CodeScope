@@ -38,7 +38,7 @@ CodeScope 是一个 **项目真相引擎（Project Truth Engine）**，回答一
 | 解析器 | tree-sitter（统一 AST IR，8 种语言） |
 | 索引引擎 | C++23（Clang 17+），SQLite（WAL 模式，FTS5） |
 | 服务端 | Rust 2024 Edition，MCP 协议（JSON-RPC 2.0，stdio 传输） |
-| 图存储 | SQLite（主存储）+ 可选 LadybugDB（Cypher 查询） |
+| 图存储 | SQLite（唯一图存储，CSR 邻接表实现亚毫秒级调用图查询） |
 | 调度器 | 内置多进程并行索引器（chunk 级 work-stealing） |
 | 构建 | CMake 3.30+（C++），Cargo（Rust） |
 
@@ -231,7 +231,7 @@ codescope cli force_index_files '{"paths":["/path/to/test/file.rs"]}'
 |------|------|
 | **macOS** | Xcode CLT, cmake, Rust (1.85+) |
 | **Linux** | build-essential, cmake, Rust (1.85+) |
-| **Windows** ⚠️ **Beta** | MinGW-w64 14.0.0+，Rust `x86_64-pc-windows-gnu` 目标，cmake。不支持 LadybugDB/Cypher（仅 SQLite）。|
+| **Windows** ⚠️ **Beta** | MinGW-w64 14.0.0+，Rust `x86_64-pc-windows-gnu` 目标，cmake。所有图查询工具均通过内置 SQLite 图查询后端（CSR 邻接表）工作。|
 
 ### 安装预编译二进制
 
@@ -425,24 +425,19 @@ get_knowledge_graph {"table":"capability","limit":10}
 | **rustc**（Rust 编译器，monorepo） | 6,029 | 81,039 | 63,697 | **18.7 秒** | 5.9 GB |
 | **Linux 内核**（完整） | 64,694 | 12M | — | **3 分 07 秒** | — |
 
-### LadybugDB 存储对比
+### 查询延迟（SQLite 图查询后端）
 
-| 项目 | SQLite DB | LadybugDB | LadybugDB 占 SQLite 比例 |
-|------|:---------:|:---------:|:-----------------------:|
-| **CodeScope**（自身） | 77 MB | 3.4 MB | 4.4% |
-| **ARES**（Go） | 337 MB | 24 KB | <0.1% |
-
-### 查询延迟（LadybugDB Cypher）
+所有图查询均基于内置 SQLite 图查询后端（CSR 邻接表），典型调用图查询为亚毫秒级。
 
 | 查询 | 延迟 | 说明 |
 |------|:----:|------|
-| `get_graph_stats` | ~1 ms | Cypher `count()` 聚合 |
-| `find_callers("buildGraph")` | ~1 ms | Cypher `MATCH` 名称过滤 |
-| `find_callees("buildGraph")` | ~1 ms | 返回 54 个被调用者 |
-| `graph_query`（LIMIT 100） | ~1 ms | 2,590 条边，DSL → Cypher 翻译 |
-| `shortest_path` | ~1 ms | Cypher `shortestPath()` BFS |
-| `get_neighbors` | ~1 ms | 1 跳 `MATCH` 含方向 |
-| `get_subgraph` | ~1 ms | 1 跳 `MATCH` 含过滤器 |
+| `get_graph_stats` | ~0.1 ms | SQL 聚合 |
+| `find_callers("buildGraph")` | ~0.2 ms | 名称过滤（sub-ms） |
+| `find_callees("buildGraph")` | ~0.2 ms | 返回 54 个被调用者 |
+| `graph_query`（LIMIT 100） | ~37 ms | 2,590 条边，JOIN 优化全扫描 |
+| `shortest_path` | sub-ms | O(E) CSR BFS |
+| `get_neighbors` | sub-ms | O(degree) CSR 邻接 |
+| `get_subgraph` | sub-ms | O(E) CSR BFS |
 
 ### 微基准
 

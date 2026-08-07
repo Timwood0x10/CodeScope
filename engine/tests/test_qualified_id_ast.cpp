@@ -119,7 +119,6 @@ int main() {
 	// ── Index C++ fixture ───────────────────────────────────────
 	char cpp_db[] = "/tmp/test_qualified_id_cpp.db";
 	unlink(cpp_db);
-	unlink("/tmp/test_qualified_id_cpp.lbug");
 	check(engine_init(cpp_db) == 0, "engine_init cpp");
 
 	uint64_t cpp_pid =
@@ -224,7 +223,6 @@ class Worker:
 	// ── Index Python fixture ────────────────────────────────────
 	char py_db[] = "/tmp/test_qualified_id_py.db";
 	unlink(py_db);
-	unlink("/tmp/test_qualified_id_py.lbug");
 	check(engine_init(py_db) == 0, "engine_init py");
 
 	uint64_t py_pid =

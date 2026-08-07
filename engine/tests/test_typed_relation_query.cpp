@@ -13,12 +13,11 @@
 //   2. The UNIQUE(project_id, source_id, target_id, type) index rejects
 //      a duplicate Calls(1) row, so duplicate typed relation rate is 0%.
 //   3. The defensive result-layer dedup collapses any stale duplicate
-//      CALLS edges that a pre-migration `.lbug` might still hold.
 //
 // The test uses the store directly (like test_query_algorithms.cpp) so it
 // controls exactly which typed relations exist, then compiles them to
-// LadybugDB via buildLadybugFromEntityRelation and queries through
-// QueryEngine — exercising the full SQLite → Graph Compiler → LadybugDB
+// SQLite via buildSQLiteFromEntityRelation and queries through
+// QueryEngine — exercising the full SQLite → Graph Compiler → SQLite
 // → query boundary.
 
 #include "../src/graph/graph_types.h"
@@ -119,20 +118,13 @@ static int countOccurrences(const std::string &haystack,
 
 int main()
 {
-	// Remove the DB and LadybugDB plus their WAL/SHM companions: a stale
+	// Remove the DB and SQLite plus their WAL/SHM companions: a stale
 	// -wal/-shm from an aborted prior run (e.g. make test-engine) makes
-	// Kuzu's lbug_database_init fail on open. Clean all companion files,
 	// not just the main files, so the test is hermetic.
 	unlink(kDbPath);
 	unlink((std::string(kDbPath) + "-wal").c_str());
 	unlink((std::string(kDbPath) + "-shm").c_str());
-	unlink("/tmp/codescope_test_typed_relation.lbug");
-	unlink("/tmp/codescope_test_typed_relation.lbug-wal");
-	unlink("/tmp/codescope_test_typed_relation.lbug-shm");
-	// Kuzu uses DOT-separated companions (.lbug.wal/.lbug.shm), unlike
 	// SQLite's dash form — clean both spellings.
-	unlink("/tmp/codescope_test_typed_relation.lbug.wal");
-	unlink("/tmp/codescope_test_typed_relation.lbug.shm");
 
 	store::GraphStore store;
 	assert(store.open(kDbPath));
@@ -215,7 +207,6 @@ int main()
 
 	store.close();
 	unlink(kDbPath);
-	unlink("/tmp/codescope_test_typed_relation.lbug");
 
 	printf("\n=== test_typed_relation_query PASSED ===\n");
 	printf("Step 1 contract verified:\n");

@@ -9,10 +9,6 @@
 #include <unordered_set>
 #include <vector>
 
-#ifdef HAS_LADYBUG
-#include <lbug.h>
-#endif
-
 namespace query
 {
 
@@ -46,7 +42,7 @@ static void parseNodeSpec(const std::string &spec, std::string &out_type,
 	}
 }
 
-// ─── LadybugDB helpers (Cypher escaping + tuple accessors) ──────
+// ─── SQLite helpers (Cypher escaping + tuple accessors) ──────
 
 // Escape a string for safe inclusion inside a Cypher single-quoted literal.
 // Prevents injection / query breakage from symbol names with quotes or
@@ -102,84 +98,17 @@ static std::string jsonEscape(const char *s)
 }
 
 // Map an integer edge_type from the DSL to a Cypher rel-type label.
-// LadybugDB stores CALLS (edge_type=1) and RELATES (other edge types)
+// SQLite stores CALLS (edge_type=1) and RELATES (other edge types)
 // as relationship labels; CALLS|RELATES matches both in a single
 // pattern. When edge_type is -1 (unspecified) we match both.
 static std::string edgeRelLabel(int edge_type)
 {
 	// CALLS|RELATES covers all relationship labels currently stored in
-	// LadybugDB. The caller may still apply a WHERE r.edge_type = N
+	// SQLite. The caller may still apply a WHERE r.edge_type = N
 	// filter to narrow the result set when edge_type is specified.
 	(void)edge_type;
 	return "CALLS|RELATES";
 }
-
-#ifdef HAS_LADYBUG
-// Extract an int64 column from a flat tuple. Returns 0 on failure or NULL.
-static int64_t lbugTupleInt(lbug_flat_tuple *tuple, uint64_t col)
-{
-	if (!tuple)
-		return 0;
-	lbug_value v;
-	if (lbug_flat_tuple_get_value(tuple, col, &v) != LbugSuccess)
-		return 0;
-	if (lbug_value_is_null(&v))
-		return 0;
-	int64_t out = 0;
-	lbug_value_get_int64(&v, &out);
-	return out;
-}
-
-// Extract a string column from a flat tuple. Returns empty string on
-// failure or NULL. The std::string copies bytes before the lbug string
-// is destroyed, so callers do not need to free anything.
-static std::string lbugTupleStr(lbug_flat_tuple *tuple, uint64_t col)
-{
-	if (!tuple)
-		return "";
-	lbug_value v;
-	if (lbug_flat_tuple_get_value(tuple, col, &v) != LbugSuccess)
-		return "";
-	if (lbug_value_is_null(&v))
-		return "";
-	char *sv = nullptr;
-	if (lbug_value_get_string(&v, &sv) != LbugSuccess || !sv)
-		return "";
-	std::string out(sv);
-	lbug_destroy_string(sv);
-	return out;
-}
-
-// Extract a list-of-int64 column from a flat tuple (e.g. the result of
-// `[n IN nodes(p) | n.graph_node_id]`). Returns false on failure.
-static bool lbugTupleIntList(lbug_flat_tuple *tuple, uint64_t col,
-			     std::vector<int64_t> &out)
-{
-	if (!tuple)
-		return false;
-	lbug_value v;
-	if (lbug_flat_tuple_get_value(tuple, col, &v) != LbugSuccess)
-		return false;
-	if (lbug_value_is_null(&v))
-		return false;
-	uint64_t sz = 0;
-	if (lbug_value_get_list_size(&v, &sz) != LbugSuccess)
-		return false;
-	out.clear();
-	out.reserve(static_cast<size_t>(sz));
-	for (uint64_t i = 0; i < sz; ++i) {
-		lbug_value elem;
-		if (lbug_value_get_list_element(&v, i, &elem) != LbugSuccess)
-			continue;
-		if (lbug_value_is_null(&elem))
-			continue;
-		int64_t iv = 0;
-		lbug_value_get_int64(&elem, &iv);
-		out.push_back(iv);
-	}
-	return true;
-}
-#endif // HAS_LADYBUG
 
 // ─── Build a single-hop Cypher query ───────────────────────────
 //
@@ -476,128 +405,15 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 					      src_name, tgt_name);
 	}
 
-	// Execute via LadybugDB. The graph-not-ready and no-connection
-	// errors are tagged with [module=graph_query, method=executeGraphQuery]
-	// so callers can distinguish them from query-parse errors above.
-	// v0.2.5: the graph-not-ready guard is LadybugDB-specific — it checks
-	// isGraphReady() (i.e. an initialized lbug connection), which is never
-	// true on SQLite-only builds. The SQLite backend (the #else branch
-	// below) has its own store->handle() guard instead, so a SQLite-only
-	// build can still run graph queries without a LadybugDB connection.
-#ifdef HAS_LADYBUG
-	if (!store || !store->isGraphReady())
-		return "{\"total\":0,\"results\":[],\"error\":\"graph not ready "
-		       "[module=graph_query, method=executeGraphQuery]\"}";
-
-	lbug_connection *conn = store->lbugHandle();
-	if (!conn)
-		return "{\"total\":0,\"results\":[],\"error\":\"no ladybug "
-		       "connection [module=graph_query, "
-		       "method=executeGraphQuery]\"}";
-
-	lbug_query_result qr;
-	if (lbug_connection_query(conn, cypher.c_str(), &qr) != LbugSuccess) {
-		lbug_query_result_destroy(&qr);
-		return "{\"total\":0,\"results\":[],\"error\":\"ladybug query "
-		       "failed [module=graph_query, method=executeGraphQuery]\"}";
-	}
-
-	std::ostringstream json;
-	json << "{\"results\":[";
-	bool first_row = true;
-	int row_count = 0;
-
-	lbug_flat_tuple tuple;
-	while (lbug_query_result_get_next(&qr, &tuple) == LbugSuccess) {
-		if (!first_row)
-			json << ",";
-		first_row = false;
-		++row_count;
-
-		// Columns (single-hop):
-		//   0 src.graph_node_id (int64)
-		//   1 src.name          (string)
-		//   2 src.node_type     (int64)
-		//   3 src.file_path     (string)
-		//   4 ID(r)             (int64)
-		//   5 r.edge_type       (int64)
-		//   6 tgt.graph_node_id (int64)
-		//   7 tgt.name          (string)
-		//   8 tgt.node_type     (int64)
-		//   9 tgt.file_path     (string)
-		//
-		// Columns (multi-hop):
-		//   0..3 src.* (same as above)
-		//   4 tgt.graph_node_id
-		//   5 tgt.name
-		//   6 tgt.node_type
-		//   7 tgt.file_path
-		//   8 length(p)         (int64)
-		//   9 [n IN nodes(p) | n.graph_node_id]  (list<int64>)
-		json << "{"
-		     << "\"source\":{"
-		     << "\"id\":" << lbugTupleInt(&tuple, 0) << ","
-		     << "\"name\":\""
-		     << jsonEscape(lbugTupleStr(&tuple, 1).c_str()) << "\","
-		     << "\"type\":" << lbugTupleInt(&tuple, 2) << ","
-		     << "\"file\":\""
-		     << jsonEscape(lbugTupleStr(&tuple, 3).c_str()) << "\""
-		     << "},";
-
-		if (multi_hop) {
-			// Build the chain string from the path node-id list.
-			// Matches the legacy "1->2->3" format produced by
-			// printf('%d->%d', ...) in the recursive SQL CTE.
-			std::vector<int64_t> ids;
-			lbugTupleIntList(&tuple, 9, ids);
-			std::string chain;
-			for (size_t i = 0; i < ids.size(); ++i) {
-				if (i > 0)
-					chain += "->";
-				chain += std::to_string(ids[i]);
-			}
-			json << "\"target\":{"
-			     << "\"id\":" << lbugTupleInt(&tuple, 4) << ","
-			     << "\"name\":\""
-			     << jsonEscape(lbugTupleStr(&tuple, 5).c_str())
-			     << "\","
-			     << "\"type\":" << lbugTupleInt(&tuple, 6) << ","
-			     << "\"file\":\""
-			     << jsonEscape(lbugTupleStr(&tuple, 7).c_str())
-			     << "\""
-			     << "},"
-			     << "\"depth\":" << lbugTupleInt(&tuple, 8) << ","
-			     << "\"chain\":\"" << jsonEscape(chain.c_str())
-			     << "\"";
-		} else {
-			json << "\"edge\":{"
-			     << "\"id\":" << lbugTupleInt(&tuple, 4) << ","
-			     << "\"type\":" << lbugTupleInt(&tuple, 5) << "},"
-			     << "\"target\":{"
-			     << "\"id\":" << lbugTupleInt(&tuple, 6) << ","
-			     << "\"name\":\""
-			     << jsonEscape(lbugTupleStr(&tuple, 7).c_str())
-			     << "\","
-			     << "\"type\":" << lbugTupleInt(&tuple, 8) << ","
-			     << "\"file\":\""
-			     << jsonEscape(lbugTupleStr(&tuple, 9).c_str())
-			     << "\""
-			     << "}";
-		}
-		json << "}";
-		lbug_flat_tuple_destroy(&tuple);
-	}
-
-	lbug_query_result_destroy(&qr);
-	json << "],\"total\":" << row_count << "}";
-	return json.str();
-#else
-	// ── v0.2.5: SQLite graph-query backend (Windows / SQLite-only builds) ──
+	// Execute via SQLite. Query errors are tagged with
+	// [module=graph_query, method=executeGraphQuery] so callers can
+	// distinguish them from query-parse errors above.
+	// ── SQLite graph-query backend ──
 	// The DSL parser above is platform-independent; only the execution
 	// engine differs. Here we run the same structural query (single-hop or
 	// variable-length-hop) against the canonical SQLite store — the
 	// `entity` table for node metadata and the `relation`/`adjacency` tables
-	// for edges — and emit the exact same JSON shape the LadybugDB branch
+	// for edges — and emit the exact same JSON shape the SQLite branch
 	// produces (source / edge|target / depth / chain). Edge type is the
 	// relation.type column (1 = Calls, 2 = Defines, 3 = Contains, ...).
 	if (!store || !store->handle()) {
@@ -765,7 +581,7 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 		// hop count in [min_depth, max_depth], using the CSR forward
 		// adjacency table (O(E) per level). Emits source + target + depth
 		// + "1->2->3" chain (target node's graph id), matching the
-		// LadybugDB branch's output shape.
+		// SQLite branch's output shape.
 		std::unordered_set<int64_t> src_set(src_ids.begin(),
 						    src_ids.end());
 		std::unordered_set<int64_t> tgt_set(tgt_ids.begin(),
@@ -862,7 +678,6 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 
 	json << "],\"total\":" << row_count << "}";
 	return json.str();
-#endif
 }
 
 } // namespace query

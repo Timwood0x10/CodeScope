@@ -54,7 +54,7 @@ const char *edgeTypeName(EdgeType t)
 // ─── Relation Type Contract Implementation ─────────────────────
 // See graph_types.h for the full contract. These helpers are the only
 // sanctioned way to map between SQLite `relation.type` integers and
-// the LadybugDB CALLS / RELATES tables.
+// the CALLS (call) / RELATES (non-call) edge classification.
 
 EdgeType relationTypeFromInt(int rtype)
 {

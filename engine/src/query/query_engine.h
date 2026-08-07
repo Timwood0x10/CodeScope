@@ -41,7 +41,7 @@ class QueryEngine {
 	// unambiguously target a single entity even when multiple
 	// entities share the same name (e.g. multiple __init__ methods).
 	// The entity ID is resolved to (name, file_path, start_row) in
-	// SQLite, then used to build a precise LadybugDB query.
+	// SQLite, then used to build a precise SQLite query.
 	std::string getCallersByEntity(uint64_t project_id, uint64_t entity_id);
 	std::string getCalleesByEntity(uint64_t project_id, uint64_t entity_id);
 

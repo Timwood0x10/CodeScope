@@ -371,9 +371,7 @@ target_link_libraries(astgraph_engine PUBLIC
 )
 
 # ── Graph storage: SQLite-only ──────────────────────────────────
-# LadybugDB support has been removed. The engine uses SQLite as the
-# sole graph store on all platforms. HAS_LADYBUG is never defined;
-# the #ifndef HAS_LADYBUG SQLite branches are the only compiled path.
+# The engine uses SQLite as the sole graph store on all platforms.
 
 # ── Tests ────────────────────────────────────────────────────────
 # Automated tests live in tests/. Each must run with no command-line

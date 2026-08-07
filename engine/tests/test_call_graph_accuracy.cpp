@@ -453,9 +453,6 @@ static FixtureResult runFixture(const std::string &fixture_dir, bool inject_fp,
 	snprintf(db_path, sizeof(db_path), "/tmp/codescope_accuracy_%s.db",
 		 r.language.c_str());
 	unlink(db_path);
-	std::string lbug_path = std::string(db_path);
-	lbug_path.replace(lbug_path.size() - 3, 3, ".lbug");
-	unlink(lbug_path.c_str());
 
 	if (engine_init(db_path) != 0) {
 		fprintf(stderr, "FAIL: engine_init for %s\n",
@@ -483,7 +480,7 @@ static FixtureResult runFixture(const std::string &fixture_dir, bool inject_fp,
 	}
 	engine_free_string(idx);
 
-	// Allow the synchronous LadybugDB compile to settle.
+	// Allow the synchronous SQLite compile to settle.
 	usleep(150000);
 
 	// Enumerate actual CALLS.

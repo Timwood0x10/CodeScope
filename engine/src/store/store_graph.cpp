@@ -279,9 +279,8 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	auto t_nodes = Clock::now();
 
 	// ── 2d: Containment edges (edge_type=3) ──
-	// graph_edges is deprecated. Containment relationships are
-	// derived from entity parent_id at query time via LadybugDB.
-	// The old INSERT INTO graph_edges for containment is removed.
+	// graph_edges is deprecated. Containment relationships are derived
+	// from entity parent_id at query time.
 	auto t_edges = Clock::now();
 
 	// ── 2e: Route + type edges + type_info + type_ref ──

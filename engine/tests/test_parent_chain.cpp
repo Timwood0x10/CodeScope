@@ -54,9 +54,7 @@ def create_evolution_timeline():
 	fclose(f);
 
 	char db[] = "/tmp/test_parent_chain.db";
-	char lbug[] = "/tmp/test_parent_chain.lbug";
 	unlink(db);
-	unlink(lbug);
 	check(engine_init(db) == 0, "engine_init");
 
 	uint64_t pid = engine_create_project(proj_dir, "parent-chain");

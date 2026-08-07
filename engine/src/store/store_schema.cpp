@@ -108,26 +108,6 @@ bool GraphStore::createSchema()
             UNIQUE(project_id, source_node_id, target_node_id, edge_type, graph_type)
         );
 
-        -- LadybugDB incremental sync state: tracks the last successful
-        -- sync per project so only newly-added nodes/edges are pushed.
-        -- last_sync_ts: Unix timestamp of last successful sync.
-        -- last_node_id: max graph_nodes.id that has been synced.
-        -- last_edge_id: max graph_edges.id that has been synced.
-        -- node_count / edge_count: total rows mirrored to LadybugDB.
-        -- sync_status: pending / syncing / complete / failed.
-        CREATE TABLE IF NOT EXISTS lbug_sync_state (
-            project_id    INTEGER PRIMARY KEY,
-            last_sync_ts  INTEGER NOT NULL,
-            last_node_id  INTEGER NOT NULL,
-            last_edge_id  INTEGER NOT NULL,
-            node_count    INTEGER NOT NULL DEFAULT 0,
-            edge_count    INTEGER NOT NULL DEFAULT 0,
-            sync_status   TEXT NOT NULL DEFAULT 'pending',
-            FOREIGN KEY (project_id) REFERENCES projects(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_lbug_sync_project
-            ON lbug_sync_state(project_id);
-
         CREATE TABLE IF NOT EXISTS entity (
             id INTEGER PRIMARY KEY,
             project_id INTEGER NOT NULL,
@@ -1520,91 +1500,6 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 				exec("ALTER TABLE graph_edges "
 				     "ADD COLUMN resolve_strategy "
 				     "TEXT DEFAULT ''");
-			}
-		}
-	}
-
-	// Migration: rebuild lbug_sync_state with the new schema.
-	// The old schema had (project_id, last_node_id, last_edge_rowid,
-	// synced_at, full_sync_done). The new schema tracks last_sync_ts,
-	// last_node_id, last_edge_id, node_count, edge_count, sync_status.
-	// CREATE TABLE IF NOT EXISTS skips pre-existing tables, so probe for
-	// the last_sync_ts column; if absent, DROP and recreate so the new
-	// columns are available. The old sync cursor is discarded — the next
-	// syncIncrementalToLadybugDB call will detect no valid state and
-	// fall back to a full sync.
-	{
-		sqlite3_stmt *probe = nullptr;
-		if (sqlite3_prepare_v2(db_,
-				       "PRAGMA table_info(lbug_sync_state)", -1,
-				       &probe, nullptr) == SQLITE_OK) {
-			bool has_last_sync_ts = false;
-			while (sqlite3_step(probe) == SQLITE_ROW) {
-				const char *col =
-					reinterpret_cast<const char *>(
-						sqlite3_column_text(probe, 1));
-				if (col && std::string(col) == "last_sync_ts")
-					has_last_sync_ts = true;
-			}
-			sqlite3_finalize(probe);
-			if (!has_last_sync_ts) {
-				// Wrap DROP + CREATE TABLE + CREATE INDEX in a
-				// single transaction. A crash after DROP would
-				// lose the sync cursor with no schema to receive
-				// future updates; the transaction makes the
-				// rebuild all-or-nothing.
-				if (!exec("BEGIN IMMEDIATE")) {
-					fprintf(stderr,
-						"[module=store, method=createSchema] "
-						"BEGIN lbug_sync_state migration "
-						"failed: %s\n",
-						error_.c_str());
-					return false;
-				}
-				if (!exec("DROP TABLE IF EXISTS lbug_sync_state")) {
-					fprintf(stderr,
-						"[module=store, method=createSchema] "
-						"DROP TABLE lbug_sync_state failed: %s\n",
-						error_.c_str());
-					exec("ROLLBACK");
-					return false;
-				}
-				if (!exec("CREATE TABLE IF NOT EXISTS lbug_sync_state ("
-					  " project_id    INTEGER PRIMARY KEY,"
-					  " last_sync_ts  INTEGER NOT NULL,"
-					  " last_node_id  INTEGER NOT NULL,"
-					  " last_edge_id  INTEGER NOT NULL,"
-					  " node_count    INTEGER NOT NULL DEFAULT 0,"
-					  " edge_count    INTEGER NOT NULL DEFAULT 0,"
-					  " sync_status   TEXT NOT NULL DEFAULT 'pending',"
-					  " FOREIGN KEY (project_id) REFERENCES projects(id)"
-					  ")")) {
-					fprintf(stderr,
-						"[module=store, method=createSchema] "
-						"CREATE TABLE lbug_sync_state failed: %s\n",
-						error_.c_str());
-					exec("ROLLBACK");
-					return false;
-				}
-				if (!exec("CREATE INDEX IF NOT EXISTS "
-					  "idx_lbug_sync_project "
-					  "ON lbug_sync_state(project_id)")) {
-					fprintf(stderr,
-						"[module=store, method=createSchema] "
-						"CREATE INDEX idx_lbug_sync_project failed: %s\n",
-						error_.c_str());
-					exec("ROLLBACK");
-					return false;
-				}
-				if (!exec("COMMIT")) {
-					fprintf(stderr,
-						"[module=store, method=createSchema] "
-						"COMMIT lbug_sync_state migration "
-						"failed: %s\n",
-						error_.c_str());
-					exec("ROLLBACK");
-					return false;
-				}
 			}
 		}
 	}

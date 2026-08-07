@@ -45,9 +45,7 @@ int main()
 {
 	// ── Test 1: ffi_call (C++) ──────────────────────────────
 	const char *ffi_db = "/tmp/t_ffi_strat.db";
-	char lbug[512];
-	snprintf(lbug, sizeof(lbug), "%s.lbug", ffi_db);
-	unlink(ffi_db); unlink(lbug); unlink("/tmp/astgraph_test.db");
+	unlink(ffi_db); unlink("/tmp/astgraph_test.db");
 
 	engine_init(ffi_db);
 	uint64_t pid1 = engine_create_project(
@@ -67,8 +65,7 @@ int main()
 
 	// ── Test 2: Transformer_Explorer (Python) ────────────────
 	const char *tf_db = "/tmp/t_tf_strat.db";
-	snprintf(lbug, sizeof(lbug), "%s.lbug", tf_db);
-	unlink(tf_db); unlink(lbug); unlink("/tmp/astgraph_test.db");
+	unlink(tf_db); unlink("/tmp/astgraph_test.db");
 
 	engine_init(tf_db);
 	uint64_t pid2 = engine_create_project(

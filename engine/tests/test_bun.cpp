@@ -14,9 +14,7 @@ int main(int argc, char **argv)
 {
     const char *bun_dir = argc > 1 ? argv[1] : "/Users/scc/code/researcher/bun";
     const char *db = "/tmp/t_bun.db";
-    char lbug[512];
-    snprintf(lbug, sizeof(lbug), "%s.lbug", db);
-    unlink(db); unlink(lbug); unlink("/tmp/astgraph_test.db");
+    unlink(db); unlink("/tmp/astgraph_test.db");
 
     engine_init(db);
     uint64_t pid = engine_create_project(bun_dir, "bun");

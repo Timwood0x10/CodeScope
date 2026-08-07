@@ -2,7 +2,7 @@
 //
 // Comprehensive benchmark + correctness test: indexes CodeScope's own
 // engine/src, records timing for each phase, and runs every migrated
-// query through the LadybugDB path. Verifies structural validity of
+// query through the SQLite path. Verifies structural validity of
 // results and cross-references with SQLite where possible.
 //
 // Output: per-phase timing + query results + PASS/FAIL summary.
@@ -90,7 +90,6 @@ int main()
 	// ── Init engine ──────────────────────────────────────────────
 	char db_path[] = "/tmp/test_self_bench.db";
 	unlink(db_path);
-	unlink("/tmp/test_self_bench.lbug");
 
 	auto t0 = Clock::now();
 	check(engine_init(db_path) == 0, "engine_init");
@@ -132,10 +131,10 @@ int main()
 	auto t_async = Clock::now();
 
 	// ── Query Tests ─────────────────────────────────────────────
-	// Each query goes through the LadybugDB path (isGraphReady).
+	// Each query goes through the SQLite path (isGraphReady).
 	// We verify structural validity and compare against SQLite where
 	// possible.
-	fprintf(stderr, "\n--- Query Tests (LadybugDB path) ---\n");
+	fprintf(stderr, "\n--- Query Tests (SQLite path) ---\n");
 
 	// 1. getGraphStats
 	{
@@ -170,12 +169,12 @@ int main()
 	// 3. getCallers (known function)
 	{
 		auto tq = Clock::now();
-		char *r = engine_get_callers(pid, "compileGraphToLadybugDB",
+		char *r = engine_get_callers(pid, "compileGraphToSQLite",
 					     nullptr);
 		auto te = Clock::now();
 		check(r != nullptr && jsonIsOk(r) && jsonHasKey(r, "callers"),
-		      "getCallers(compileGraphToLadybugDB)");
-		print_json("getCallers(compileGraphToLadybugDB)", r);
+		      "getCallers(compileGraphToSQLite)");
+		print_json("getCallers(compileGraphToSQLite)", r);
 		fprintf(stderr, "  [timing] %lld ms\n",
 			(long long)std::chrono::duration_cast<
 				std::chrono::milliseconds>(te - tq)
@@ -356,10 +355,10 @@ int main()
 						"  SQLite graph_nodes: %lld\n",
 						(long long)sqlite_nodes);
 					fprintf(stderr,
-						"  LadybugDB total_nodes: %lld\n",
+						"  SQLite total_nodes: %lld\n",
 						(long long)n_nodes);
 					check(sqlite_nodes == n_nodes,
-					      "node count match: SQLite == LadybugDB");
+					      "node count match: SQLite == SQLite");
 				}
 				sqlite3_finalize(stmt);
 			}
@@ -376,10 +375,10 @@ int main()
 						"  SQLite graph_edges: %lld\n",
 						(long long)sqlite_edges);
 					fprintf(stderr,
-						"  LadybugDB total_edges: %lld\n",
+						"  SQLite total_edges: %lld\n",
 						(long long)n_edges);
 					check(sqlite_edges == n_edges,
-					      "edge count match: SQLite == LadybugDB");
+					      "edge count match: SQLite == SQLite");
 				}
 				sqlite3_finalize(stmt);
 			}
@@ -396,10 +395,10 @@ int main()
 						"  SQLite call_edges: %lld\n",
 						(long long)sqlite_calls);
 					fprintf(stderr,
-						"  LadybugDB call_edges: %lld\n",
+						"  SQLite call_edges: %lld\n",
 						(long long)n_call);
 					check(sqlite_calls == n_call,
-					      "call edge count match: SQLite == LadybugDB");
+					      "call edge count match: SQLite == SQLite");
 				}
 				sqlite3_finalize(stmt);
 			}
@@ -434,6 +433,5 @@ int main()
 
 	engine_shutdown();
 	unlink(db_path);
-	unlink("/tmp/test_self_bench.lbug");
 	return passed == total ? 0 : 1;
 }

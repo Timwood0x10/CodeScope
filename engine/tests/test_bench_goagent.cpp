@@ -9,7 +9,6 @@ int main() {
     using Clock = std::chrono::steady_clock;
     char db_path[] = "/tmp/test_goagent_bench.db";
     unlink(db_path);
-    unlink("/tmp/test_goagent_bench.lbug");
 
     auto t0 = Clock::now();
     int rc = engine_init(db_path);
@@ -69,7 +68,6 @@ int main() {
     engine_free_string(result);
     engine_shutdown();
     unlink(db_path);
-    unlink("/tmp/test_goagent_bench.lbug");
 
     fprintf(stderr, "\n=== README reference: goagent 2,651 files, 155K nodes, 30s ===\n");
     return 0;
