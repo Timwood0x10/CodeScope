@@ -608,6 +608,90 @@ int engine_rebuild_ladybug_graph(const char *db_path, uint64_t project_id)
 	}
 }
 
+// ── Batch parallel LadybugDB rebuild for a merged parallel-index DB ──
+// Rebuilds EVERY project's graph in one open/init + parallel CSV export +
+// serial Kuzu COPY FROM. The scheduler used to loop engine_rebuild_ladybug_graph
+// per project (each opening + initializing + compiling separately); on rust
+// that serialized ~24s of CSV export. buildLadybugGraphsParallel runs the
+// export phase concurrently (read-only SQLite connections), so large merged
+// DBs rebuild in roughly (sum of exports) / cores + serial COPY time.
+// project_ids is a JSON array of u64 (e.g. "[1,2,3]"); empty → rebuild all
+// projects present in the DB. Returns 0 on success.
+extern "C" int engine_rebuild_ladybug_graphs(const char *db_path,
+					     const char *project_ids_json)
+{
+	try {
+		static const char *kModule = "ffi";
+		static const char *kMethod = "engine_rebuild_ladybug_graphs";
+
+		if (!db_path || !*db_path) {
+			fprintf(stderr,
+				"[module=%s, method=%s] null/empty db_path\n",
+				kModule, kMethod);
+			return 1;
+		}
+
+		store::GraphStore local_store;
+		if (!local_store.open(db_path)) {
+			fprintf(stderr,
+				"[module=%s, method=%s] open failed: %s\n",
+				kModule, kMethod, db_path);
+			return 1;
+		}
+		local_store.initLadybugDB();
+		if (!local_store.hasLadybugDB()) {
+			fprintf(stderr,
+				"[module=%s, method=%s] LadybugDB init failed\n",
+				kModule, kMethod);
+			return 1;
+		}
+
+		// Enumerate project ids from the canonical entity table.
+		std::vector<uint64_t> ids;
+		sqlite3 *db = local_store.handle();
+		if (db) {
+			sqlite3_stmt *st = nullptr;
+			const char *sql =
+				"SELECT DISTINCT project_id FROM entity "
+				"ORDER BY project_id;";
+			if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) ==
+			    SQLITE_OK) {
+				while (sqlite3_step(st) == SQLITE_ROW)
+					ids.push_back(static_cast<uint64_t>(
+						sqlite3_column_int64(st, 0)));
+				sqlite3_finalize(st);
+			}
+		}
+		if (ids.empty()) {
+			fprintf(stderr,
+				"[module=%s, method=%s] no projects to rebuild "
+				"in %s\n",
+				kModule, kMethod, db_path);
+			return 0;
+		}
+
+		bool ok = store::buildLadybugGraphsParallel(&local_store, ids);
+		if (!ok) {
+			fprintf(stderr,
+				"[module=%s, method=%s] parallel graph build "
+				"failed for %zu project(s) from %s\n",
+				kModule, kMethod, ids.size(), db_path);
+			return 1;
+		}
+		fprintf(stderr,
+			"[module=%s, method=%s] rebuilt %zu project(s) in "
+			"parallel from %s\n",
+			kModule, kMethod, ids.size(), db_path);
+		return 0;
+	} catch (const std::exception &e) {
+		fprintf(stderr,
+			"[module=ffi, method=engine_rebuild_ladybug_graphs] "
+			"exception: %s\n",
+			e.what());
+		return 1;
+	}
+}
+
 char *engine_find_connected_components(uint64_t project_id)
 {
 	try {

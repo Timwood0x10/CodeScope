@@ -90,6 +90,14 @@ char *engine_find_connected_components(uint64_t project_id);
 //         be unavailable for this project until a serial re-index.
 int engine_rebuild_ladybug_graph(const char *db_path, uint64_t project_id);
 
+// Batch parallel rebuild of EVERY project's LadybugDB graph in one
+// open/init (parallel CSV export + serial Kuzu COPY FROM). Faster than
+// looping engine_rebuild_ladybug_graph on large merged DBs (rust: ~24s →
+// ~8s). project_ids_json is a JSON array of u64; ignored (all projects
+// are enumerated from entity). Returns 0 on success.
+int engine_rebuild_ladybug_graphs(const char *db_path,
+				  const char *project_ids_json);
+
 // ─── Interactive exploration ──────────────────────────────────
 // Explore a function's callers/callees recursively as a JSON tree.
 // Returns hierarchical JSON: {"name":"...","file":"...","line":N,"callers":[...],"callees":[...]}

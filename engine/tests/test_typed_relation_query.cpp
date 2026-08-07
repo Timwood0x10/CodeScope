@@ -130,6 +130,10 @@ int main()
 	unlink("/tmp/codescope_test_typed_relation.lbug");
 	unlink("/tmp/codescope_test_typed_relation.lbug-wal");
 	unlink("/tmp/codescope_test_typed_relation.lbug-shm");
+	// Kuzu uses DOT-separated companions (.lbug.wal/.lbug.shm), unlike
+	// SQLite's dash form — clean both spellings.
+	unlink("/tmp/codescope_test_typed_relation.lbug.wal");
+	unlink("/tmp/codescope_test_typed_relation.lbug.shm");
 
 	store::GraphStore store;
 	assert(store.open(kDbPath));

@@ -175,7 +175,7 @@ pub fn discover_modules(dir_path: &str) -> String {
         .to_string();
     }
 
-    let mut modules: Vec<(String, u64)> = Vec::new();
+    let mut modules: Vec<(String, u64, u64)> = Vec::new();
     let mut total_files: u64 = 0;
 
     let entries = match std::fs::read_dir(root) {
@@ -203,6 +203,12 @@ pub fn discover_modules(dir_path: &str) -> String {
 
         // Recursively count source files in this top-level module.
         let mut count: u64 = 0;
+        // Total source bytes in this module. Parse cost scales with file
+        // SIZE (line count), not file count — rustc's compiler/ files are
+        // far larger than library/ files, so a pure file-count weight
+        // under-allocates workers to the slowest module. The scheduler
+        // uses this as the worker-allocation weight.
+        let mut bytes: u64 = 0;
         let walk = WalkDir::new(&path).into_iter().filter_entry(|e| {
             let fname = e.file_name().to_string_lossy();
             if e.depth() == 0 {
@@ -219,11 +225,14 @@ pub fn discover_modules(dir_path: &str) -> String {
                 let fname = entry.file_name().to_string_lossy();
                 if is_source_file(&fname) {
                     count += 1;
+                    if let Ok(meta) = entry.metadata() {
+                        bytes += meta.len();
+                    }
                 }
             }
         }
         if count > 0 {
-            modules.push((name_str, count));
+            modules.push((name_str, count, bytes));
             total_files += count;
         }
     }
@@ -235,7 +244,7 @@ pub fn discover_modules(dir_path: &str) -> String {
 
     let modules_json: Vec<Value> = modules
         .iter()
-        .map(|(n, c)| json!({"name": n, "files": c}))
+        .map(|(n, c, b)| json!({"name": n, "files": c, "bytes": b}))
         .collect();
 
     json!({

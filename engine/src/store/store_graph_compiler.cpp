@@ -17,11 +17,16 @@
 #include <sqlite3.h>
 
 #include <charconv>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <sys/stat.h>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <thread>
+#include <atomic>
+#include <algorithm>
 #include <unistd.h>
 #include <vector>
 
@@ -1072,6 +1077,10 @@ bool buildLadybugFromEntityRelation(
 	}
 
 	// ── Step 1: Clear existing subgraph for this project ──
+	// v0.6: per-step timing lets large-project rebuilds (rust: ~24s for 3
+	// projects) be attributed to DETACH DELETE vs CSV generation vs Kuzu
+	// COPY FROM, so future optimizations target the real hot spot.
+	auto t0 = std::chrono::steady_clock::now();
 	{
 		std::string clear;
 		if (changed_files && !changed_files->empty()) {
@@ -1104,24 +1113,33 @@ bool buildLadybugFromEntityRelation(
 		}
 		lbug_query_result_destroy(&qr);
 	}
+	auto t1 = std::chrono::steady_clock::now();
 
 	// ── Step 2: Write entity nodes CSV and COPY FROM ──
+	// v0.6: time CSV generation and Kuzu COPY separately so per-function
+	// cost (SQLite read + CSV build vs Kuzu import) is visible per project.
+	auto t2a = std::chrono::steady_clock::now();
+	std::string node_csv;
 	{
-		std::string csv_path =
-			writeEntityNodeCsv(db, project_id, changed_files);
-		if (csv_path.empty())
+		node_csv = writeEntityNodeCsv(db, project_id, changed_files);
+		if (node_csv.empty())
 			return false;
-		bool ok = copyFrom(conn, "GraphNode", csv_path.c_str(),
+	}
+	auto t2b = std::chrono::steady_clock::now();
+	{
+		bool ok = copyFrom(conn, "GraphNode", node_csv.c_str(),
 				   "buildLadybugFromEntityRelation");
-		unlink(csv_path.c_str());
+		unlink(node_csv.c_str());
 		if (!ok)
 			return false;
 	}
+	auto t2 = std::chrono::steady_clock::now();
 
 	// ── Step 3: Write entity relation edges CSVs and COPY FROM ──
+	auto t3a = std::chrono::steady_clock::now();
+	EdgeCsvPaths paths;
 	{
-		EdgeCsvPaths paths =
-			writeEntityEdgeCsvs(db, project_id, changed_files);
+		paths = writeEntityEdgeCsvs(db, project_id, changed_files);
 		if (paths.calls.empty() && paths.relates.empty()) {
 			fprintf(stderr,
 				"store: buildLadybugFromEntityRelation: no "
@@ -1131,7 +1149,9 @@ bool buildLadybugFromEntityRelation(
 			store->setGraphReady();
 			return true;
 		}
-
+	}
+	auto t3b = std::chrono::steady_clock::now();
+	{
 		bool ok = true;
 		if (!paths.calls.empty()) {
 			ok = copyFrom(conn, "CALLS", paths.calls.c_str(),
@@ -1146,6 +1166,34 @@ bool buildLadybugFromEntityRelation(
 		if (!ok)
 			return false;
 	}
+	auto t3 = std::chrono::steady_clock::now();
+	// v0.6: attribute the rebuild time so large-project bottlenecks can be
+	// located. Step2/Step3 are split into CSV-generation vs Kuzu-COPY so a
+	// slow SQLite read + CSV build is distinguishable from a slow Kuzu COPY.
+	fprintf(stderr,
+		"buildLadybugFromEntityRelation: project=%llu step1_clear=%lldms "
+		"step2_nodecsv_gen=%lldms step2_node_copy=%lldms "
+		"step3_edgecsv_gen=%lldms step3_edge_copy=%lldms total=%lldms "
+		"[module=store, method=buildLadybugFromEntityRelation]\n",
+		(unsigned long long)project_id,
+		(long long)std::chrono::duration_cast<std::chrono::milliseconds>(
+			t1 - t0)
+			.count(),
+		(long long)std::chrono::duration_cast<std::chrono::milliseconds>(
+			t2b - t2a)
+			.count(),
+		(long long)std::chrono::duration_cast<std::chrono::milliseconds>(
+			t2 - t2b)
+			.count(),
+		(long long)std::chrono::duration_cast<std::chrono::milliseconds>(
+			t3b - t3a)
+			.count(),
+		(long long)std::chrono::duration_cast<std::chrono::milliseconds>(
+			t3 - t3b)
+			.count(),
+		(long long)std::chrono::duration_cast<std::chrono::milliseconds>(
+			t3 - t0)
+			.count());
 
 	// Record the data fingerprint (entity_count × 1_000_000 +
 	// relation_count) so initLadybugDB can detect a stale .lbug on the
@@ -1202,6 +1250,214 @@ bool compileGraphToLadybugDB(
 	const std::unordered_set<std::string> *changed_files)
 {
 	return buildLadybugFromEntityRelation(store, project_id, changed_files);
+}
+
+/// Per-project CSV bundle produced by the parallel export phase.
+struct ProjectCsvBundle {
+	std::string nodes;
+	EdgeCsvPaths edges;
+};
+
+// ── Parallel multi-project LadybugDB rebuild ─────────────────────
+// Rebuilds several projects' graphs into the single .lbug file. The
+// hot part on large repos is CSV generation (SQL SELECT + escaped CSV
+// rows for ~130k nodes/edges on rust), which only touches SQLite and
+// /tmp scratch files — it never touches the lbug_connection. We therefore
+// run CSV export on a thread pool, one read-only SQLite connection per
+// worker, then do the Kuzu writes (DETACH DELETE + COPY FROM) serially on
+// the single connection. Result is byte-identical to a serial loop of
+// buildLadybugFromEntityRelation: same rows, same order per project.
+bool buildLadybugGraphsParallel(GraphStore *store,
+				const std::vector<uint64_t> &project_ids)
+{
+	if (!store || project_ids.empty())
+		return false;
+	sqlite3 *db = store->handle();
+	if (!db)
+		return false;
+	lbug_connection *conn = store->lbugHandle();
+	if (!conn) {
+		fprintf(stderr, "store: buildLadybugGraphsParallel: "
+				"LadybugDB not initialized [module=store, "
+				"method=buildLadybugGraphsParallel]\n");
+		return false;
+	}
+
+	// ── Phase 1 (parallel): export every project's CSV ──
+	std::vector<ProjectCsvBundle> bundles(project_ids.size());
+	std::atomic<size_t> next{ 0 };
+	unsigned hw = std::thread::hardware_concurrency();
+	unsigned nthreads =
+		std::max(1u, std::min(hw, (unsigned)project_ids.size()));
+	std::string db_path = store->dbPath();
+	std::vector<std::thread> workers;
+	workers.reserve(nthreads);
+	for (unsigned t = 0; t < nthreads; ++t) {
+		workers.emplace_back([&]() {
+			// Each worker opens its own connection so the shared
+			// handle is never touched concurrently. NOT read-only:
+			// WAL-mode DBs cannot be opened with SQLITE_OPEN_READONLY
+			// ("unable to open database file") because the -shm/-wal
+			// sidecar needs write access — a read-only open yields
+			// empty CSV exports and a silently half-populated .lbug.
+			sqlite3 *ro = nullptr;
+			if (sqlite3_open_v2(db_path.c_str(), &ro,
+					    SQLITE_OPEN_READWRITE,
+					    nullptr) != SQLITE_OK) {
+				if (ro)
+					sqlite3_close(ro);
+				return;
+			}
+			for (;;) {
+				size_t i = next.fetch_add(1);
+				if (i >= project_ids.size())
+					break;
+				bundles[i].nodes = writeEntityNodeCsv(
+					ro, project_ids[i], nullptr);
+				bundles[i].edges = writeEntityEdgeCsvs(
+					ro, project_ids[i], nullptr);
+				// Diagnostic: report CSV file sizes (empty file
+				// with non-empty path = export produced 0 rows).
+				auto csv_size =
+					[](const std::string &p) -> long {
+					if (p.empty())
+						return -1;
+					struct stat st;
+					if (stat(p.c_str(), &st) == 0)
+						return (long)st.st_size;
+					return -2;
+				};
+				fprintf(stderr,
+					"buildLadybugGraphsParallel: project %llu "
+					"csv nodes='%s'(%ldB) calls='%s'(%ldB) "
+					"relates='%s'(%ldB) [module=store, "
+					"method=buildLadybugGraphsParallel]\n",
+					(unsigned long long)project_ids[i],
+					bundles[i].nodes.empty() ?
+						"(empty)" :
+						bundles[i].nodes.c_str(),
+					csv_size(bundles[i].nodes),
+					bundles[i].edges.calls.empty() ?
+						"(empty)" :
+						bundles[i].edges.calls.c_str(),
+					csv_size(bundles[i].edges.calls),
+					bundles[i].edges.relates.empty() ?
+						"(empty)" :
+						bundles[i].edges.relates.c_str(),
+					csv_size(bundles[i].edges.relates));
+			}
+			sqlite3_close(ro);
+		});
+	}
+	for (auto &w : workers)
+		w.join();
+
+	// ── Phase 2 (serial): DETACH DELETE + COPY FROM per project ──
+	bool all_ok = true;
+	for (size_t i = 0; i < project_ids.size(); ++i) {
+		uint64_t pid = project_ids[i];
+		{
+			std::string clear = "MATCH (n:GraphNode {project_id:" +
+					    std::to_string(pid) +
+					    "}) DETACH DELETE n";
+			lbug_query_result qr;
+			lbug_state st =
+				lbug_connection_query(conn, clear.c_str(), &qr);
+			lbug_query_result_destroy(&qr);
+			fprintf(stderr,
+				"buildLadybugGraphsParallel: project %llu DETACH "
+				"DELETE st=%d [module=store, "
+				"method=buildLadybugGraphsParallel]\n",
+				(unsigned long long)pid, (int)st);
+			if (st != LbugSuccess) {
+				all_ok = false;
+				continue;
+			}
+		}
+		bool ok_nodes = true, ok_calls = true, ok_relates = true;
+		if (!bundles[i].nodes.empty()) {
+			ok_nodes = copyFrom(conn, "GraphNode",
+					    bundles[i].nodes.c_str(),
+					    "buildLadybugGraphsParallel");
+			if (!ok_nodes)
+				all_ok = false;
+			unlink(bundles[i].nodes.c_str());
+		}
+		if (!bundles[i].edges.calls.empty()) {
+			ok_calls = copyFrom(conn, "CALLS",
+					    bundles[i].edges.calls.c_str(),
+					    "buildLadybugGraphsParallel");
+			if (!ok_calls)
+				all_ok = false;
+			unlink(bundles[i].edges.calls.c_str());
+		}
+		if (!bundles[i].edges.relates.empty()) {
+			ok_relates = copyFrom(conn, "RELATES",
+					      bundles[i].edges.relates.c_str(),
+					      "buildLadybugGraphsParallel");
+			if (!ok_relates)
+				all_ok = false;
+			unlink(bundles[i].edges.relates.c_str());
+		}
+		fprintf(stderr,
+			"buildLadybugGraphsParallel: project %llu copy "
+			"nodes=%d calls=%d relates=%d [module=store, "
+			"method=buildLadybugGraphsParallel]\n",
+			(unsigned long long)pid, (int)ok_nodes, (int)ok_calls,
+			(int)ok_relates);
+	}
+
+	// Record the data fingerprint (entity_count × 1_000_000 +
+	// relation_count) so initLadybugDB can detect a stale .lbug on the
+	// next open and rebuild it. Mirrors buildLadybugFromEntityRelation —
+	// WITHOUT this, the next engine init sees a fingerprint mismatch,
+	// drops the freshly-written .lbug and rebuilds only the latest
+	// project, silently discarding all other projects' graphs.
+	{
+		int64_t fp = -1;
+		{
+			sqlite3_stmt *fp_st = nullptr;
+			const char *fp_sql =
+				"SELECT (SELECT COUNT(*) FROM entity) * "
+				"1000000 + "
+				"(SELECT COUNT(*) FROM relation)";
+			if (sqlite3_prepare_v2(db, fp_sql, -1, &fp_st,
+					       nullptr) == SQLITE_OK) {
+				if (sqlite3_step(fp_st) == SQLITE_ROW)
+					fp = sqlite3_column_int64(fp_st, 0);
+				sqlite3_finalize(fp_st);
+			}
+		}
+		if (fp >= 0) {
+			lbug_query_result fqr;
+			std::string fp_cypher =
+				"MATCH (m:LbugMeta) SET m.fingerprint = " +
+				std::to_string(fp);
+			lbug_state fs = lbug_connection_query(
+				conn, fp_cypher.c_str(), &fqr);
+			if (fs != LbugSuccess) {
+				char *err = lbug_query_result_get_error_message(
+					&fqr);
+				fprintf(stderr,
+					"store: buildLadybugGraphsParallel "
+					"fingerprint update failed: %s "
+					"[module=store, "
+					"method=buildLadybugGraphsParallel]\n",
+					err ? err : "(no error)");
+				if (err)
+					lbug_destroy_string(err);
+			}
+			lbug_query_result_destroy(&fqr);
+		}
+	}
+
+	fprintf(stderr,
+		"buildLadybugGraphsParallel: rebuilt %zu project(s) "
+		"(threads=%u) [module=store, "
+		"method=buildLadybugGraphsParallel]\n",
+		project_ids.size(), nthreads);
+	store->setGraphReady();
+	return all_ok;
 }
 
 #else // !HAS_LADYBUG

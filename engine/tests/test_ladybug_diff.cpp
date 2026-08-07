@@ -149,6 +149,11 @@ int main()
 	char db_path[] = "/tmp/test_ladybug_diff.db";
 	unlink(db_path);
 	unlink("/tmp/test_ladybug_diff.lbug");
+	// Kuzu uses DOT-separated companions (.lbug.wal/.lbug.shm); stale
+	// ones from an aborted prior run make lbug_database_init fail on
+	// open. Clean them here so the test is hermetic.
+	unlink("/tmp/test_ladybug_diff.lbug.wal");
+	unlink("/tmp/test_ladybug_diff.lbug.shm");
 
 	check(engine_init(db_path) == 0, "engine_init");
 
@@ -313,6 +318,11 @@ int main()
 	std::filesystem::remove_all(proj_dir);
 	unlink(db_path);
 	unlink("/tmp/test_ladybug_diff.lbug");
+	// Kuzu uses DOT-separated companions (.lbug.wal/.lbug.shm); stale
+	// ones from an aborted prior run make lbug_database_init fail on
+	// open. Clean them here so the test is hermetic.
+	unlink("/tmp/test_ladybug_diff.lbug.wal");
+	unlink("/tmp/test_ladybug_diff.lbug.shm");
 
 	return passed == total ? 0 : 1;
 }

@@ -161,16 +161,33 @@ fn rebuild_ladybug_graphs_if_needed(
     }
     match list_project_ids(main_db) {
         Ok(ids) => {
-            let mut rebuilt = 0;
-            for pid in &ids {
-                match crate::ffi::rebuild_ladybug_graph(main_db, *pid) {
-                    Ok(()) => rebuilt += 1,
-                    Err(e) => eprintln!(
-                        "[scheduler] rebuild graph failed for project {}: {}",
-                        pid, e
-                    ),
+            // Fast path: rebuild ALL projects in one open/init with
+            // parallel CSV export (engine_rebuild_ladybug_graphs). The old
+            // serial per-project loop opened + re-initialized LadybugDB N
+            // times; on rust that serialized ~24s of CSV generation.
+            let rebuilt = match crate::ffi::rebuild_ladybug_graphs(main_db) {
+                Ok(()) => ids.len(),
+                Err(e) => {
+                    eprintln!(
+                        "[scheduler] parallel rebuild failed ({}); falling \
+                         back to per-project rebuild [module=scheduler, \
+                         method=rebuild_ladybug_graphs_if_needed]",
+                        e
+                    );
+                    let mut n = 0;
+                    for pid in &ids {
+                        match crate::ffi::rebuild_ladybug_graph(main_db, *pid) {
+                            Ok(()) => n += 1,
+                            Err(e2) => eprintln!(
+                                "[scheduler] rebuild graph failed for \
+                                 project {}: {}",
+                                pid, e2
+                            ),
+                        }
+                    }
+                    n
                 }
-            }
+            };
             eprintln!(
                 "[scheduler] rebuilt LadybugDB graphs for {}/{} projects",
                 rebuilt,
@@ -373,6 +390,14 @@ pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> S
         .filter_map(|m| m["files"].as_u64())
         .sum::<u64>()
         .max(1);
+    // Parse cost scales with source bytes, not file count (rustc
+    // compiler/ files are far larger than library/ files). Weight worker
+    // allocation by bytes when discover provides it, falling back to the
+    // file count. Discovered via discover_modules() → modules[].bytes.
+    let total_bytes_sum: u64 = modules
+        .iter()
+        .filter_map(|m| m["bytes"].as_u64())
+        .sum::<u64>();
 
     // ── Dispatch: STATIC by default ──────────────────────────
     // The project's scheduling principle is "static analysis by default;
@@ -404,10 +429,22 @@ pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> S
         .filter_map(|m| {
             let name = m["name"].as_str()?.to_string();
             let files = m["files"].as_u64().unwrap_or(0);
-            let alloc = if files == 0 {
+            // Weight by source bytes when available (parse cost ∝ size);
+            // fall back to file count otherwise.
+            let weight: u128 = if total_bytes_sum > 0 {
+                m["bytes"].as_u64().unwrap_or(0) as u128
+            } else {
+                files as u128
+            };
+            let weight_sum: u128 = if total_bytes_sum > 0 {
+                total_bytes_sum as u128
+            } else {
+                total_files_sum as u128
+            };
+            let alloc = if weight == 0 {
                 1
             } else {
-                let raw = (files as u128 * total_workers as u128).div_ceil(total_files_sum as u128);
+                let raw = (weight * total_workers as u128).div_ceil(weight_sum);
                 let a = u32::try_from(raw as u64).unwrap_or(total_workers);
                 std::cmp::max(1, std::cmp::min(a, total_workers))
             };

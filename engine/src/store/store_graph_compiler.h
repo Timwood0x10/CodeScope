@@ -47,6 +47,13 @@ bool buildLadybugFromEntityRelation(
 	GraphStore *store, uint64_t project_id,
 	const std::unordered_set<std::string> *changed_files = nullptr);
 
+/// Parallel multi-project LadybugDB rebuild: exports every project's
+/// CSV concurrently (read-only SQLite connections) then COPY FROMs each
+/// project serially on the single Kuzu connection. Produces the same
+/// graph as calling buildLadybugFromEntityRelation per project.
+bool buildLadybugGraphsParallel(GraphStore *store,
+				const std::vector<uint64_t> &project_ids);
+
 /// DEPRECATED: Use buildLadybugFromEntityRelation instead.
 /// Reads graph_nodes/graph_edges tables (old schema) and compiles
 /// into LadybugDB. Kept for backward compatibility during migration.
