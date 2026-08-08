@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.2.6 (2026-08-08)
+
+Removes the LadybugDB (Kuzu) dependency entirely — SQLite is now the **sole graph store** on all platforms (CSR `adjacency`/`adjacency_rev` tables + C++ BFS). Graph queries, verifiers, and self-check tools behave identically to the LadybugDB-backed build, with faster indexing (rust: 52.6s → 31.6s, -40%; no graph-rebuild pass) and zero external runtime dependencies. Also fixes three self-check defects found while dogfooding the new backend.
+
+### 🚀 New Features
+
+- **LadybugDB removed — SQLite is the sole graph store**: the embedded Kuzu graph database (`liblbug`) and its build wiring are deleted. `HAS_LADYBUG` is never defined; the existing `#ifndef HAS_LADYBUG` SQLite branches are the only compiled path. Graph traversal (get_callers/get_callees/find_shortest_path/get_neighbors/get_subgraph) runs on the CSR forward/reverse adjacency tables (`adjacency`/`adjacency_rev` via `getCalleeIds`/`getCallerIds`) with in-memory BFS — no `.lbug` file, no 256MB Kuzu buffer pool, no post-merge graph rebuild. Removed `store_ladybug_core.cpp`, `store_graph_compiler.{h,cpp}`, `engine_rebuild_ladybug_graph(s)` FFI, and the scheduler's `rebuild_ladybug_graphs_if_needed` pass. The parallel indexer no longer emits CSV → Kuzu `COPY FROM`; `buildCSR` builds the adjacency tables directly from `relation(type=1)`. (`engine/CMakeLists.txt`, `store.h`, `store_graph.cpp`, `engine_lifecycle.cpp`, `engine_ffi.cpp`, `engine_queries.cpp`, `server/src/ffi/mod.rs`, `server/src/scheduler/mod.rs`)
+- **Verify self-check tools are now honest**: `verify_integrity` no longer emits malformed JSON (the DeadCodeInspector block ran after the findings array was closed, producing `],"total":N{...}` that MCP clients could not parse — fixed by running it before the array closes). `detect_capability_drift` now reports `"status":"no_capabilities_declared"` when the capability table is empty, instead of silently returning 0 (which callers misread as "no drift found"). The dead-code inspector raises its orphan scan limit from 30 to 500 so real orphan counts are no longer truncated. (`engine_verify_ffi.cpp`, `engine_verify_drift_ffi.cpp`, `dead_code_inspector.cpp`)
+
 ## v0.2.5 (2026-08-05)
 
 Restores the three capabilities that the Step 10 sprint had formally sunset (complexity metrics, n-gram semantic vector search, and metrics-driven readiness), hardens FunctionImplements verification with real call-chain + signature evidence, and fixes Go interface embedding (composition) dispatch.

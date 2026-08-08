@@ -43,7 +43,7 @@ std::vector<Finding> DeadCodeInspector::findOrphanModules()
 			  " ) "
 			  "GROUP BY s.name "
 			  "HAVING entities >= 10 "
-			  "ORDER BY entities DESC LIMIT 30";
+			  "ORDER BY entities DESC LIMIT 500";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), sql.c_str(), -1, &stmt,
 			       nullptr) != SQLITE_OK)
@@ -109,7 +109,7 @@ std::vector<Finding> DeadCodeInspector::findOrphanFunctions()
 		"  WHERE r.project_id = ? "
 		"  AND (r.source_id = e.id OR r.target_id = e.id)"
 		" ) "
-		"LIMIT 30";
+		"LIMIT 500";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), sql.c_str(), -1, &stmt,
 			       nullptr) != SQLITE_OK)

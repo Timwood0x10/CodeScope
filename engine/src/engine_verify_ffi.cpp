@@ -494,9 +494,10 @@ extern "C" char *engine_verify_integrity(uint64_t project_id)
 			     << "\"confidence\":" << rec.confidence << "}";
 		}
 
-		json << "],\"total\":" << (supported + contradicted + unknown);
-
-		// DeadCodeInspector: find orphan modules and functions
+		// DeadCodeInspector: find orphan modules and functions.
+		// Runs BEFORE the findings array is closed so orphan findings
+		// land inside the JSON array (previously they were appended
+		// after `],"total":N`, producing invalid JSON).
 		{
 			verify::DeadCodeInspector dci(g_store.get(),
 						      project_id);
@@ -515,6 +516,8 @@ extern "C" char *engine_verify_integrity(uint64_t project_id)
 				     << "}";
 			}
 		}
+
+		json << "],\"total\":" << (supported + contradicted + unknown);
 
 		// Trust score: 1.0 - kTrustScorePenalty per non-supported finding, clamped to [0, 1].
 		double trust_score = 1.0;
