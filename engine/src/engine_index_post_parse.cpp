@@ -70,7 +70,7 @@ char *engine_index_post_parse(uint64_t project_id, const std::string &dir,
 			for (const auto &path : job_paths)
 				changed_files.insert(path);
 		}
-		// v0.2.6 (C2 fix): in the parallel index path the worker builds
+		// v0.2.5 (C2 fix): in the parallel index path the worker builds
 		// CSR adjacency from LOCAL entity ids, but the merge step only
 		// remaps the adjacency src_id/tgt_id row key — the packed
 		// tgt_blob/src_blob ids stay local and become dangling after merge,

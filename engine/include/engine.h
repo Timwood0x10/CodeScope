@@ -359,7 +359,7 @@ void engine_free_string(char *ptr);
 
 /// Rebuild a project's CSR adjacency/adjacency_rev tables on the given DB.
 ///
-/// v0.2.6 (C2 fix): parallel index workers build CSR from local entity ids
+/// v0.2.5 (C2 fix): parallel index workers build CSR from local entity ids
 /// that merge cannot remap inside packed BLOBs; after merge the scheduler
 /// calls this to rebuild CSR from the globally-remapped relation table so
 /// CSR-based graph queries return valid neighbor ids. Opens a local store on
@@ -533,7 +533,7 @@ char *engine_build_project_state(uint64_t project_id);
  */
 char *engine_get_project_state(uint64_t project_id);
 
-// ─── Missing FFI declarations (v0.2.6 completeness fix) ───────
+// ─── Missing FFI declarations (v0.2.5 completeness fix) ───────
 // These entry points are implemented in the engine and bound by the Rust
 // server, but were missing from this header, leaving the header not a
 // single source of truth. They are declared here with the exact C ABI the

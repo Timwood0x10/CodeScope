@@ -448,7 +448,7 @@ pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> S
         merge::merge_module_dbs(&main_db, &module_db_paths)
     };
 
-    // v0.2.6 (C2 fix): parallel workers deferred CSR construction because
+    // v0.2.5 (C2 fix): parallel workers deferred CSR construction because
     // their packed BLOBs hold local entity ids that merge cannot remap.
     // Rebuild each project's CSR from the globally-remapped relation table.
     if merge_result.merged {
@@ -939,7 +939,7 @@ fn index_parallel_dynamic(project_dir: &str, total_workers: u32, parallel: u32) 
         merge::merge_module_dbs(&main_db, &module_db_paths)
     };
 
-    // v0.2.6 (C2 fix): parallel workers deferred CSR construction because
+    // v0.2.5 (C2 fix): parallel workers deferred CSR construction because
     // their packed BLOBs hold local entity ids that merge cannot remap.
     // Rebuild each project's CSR from the globally-remapped relation table.
     if merge_result.merged {
@@ -1062,7 +1062,7 @@ fn error_json(msg: &str, module: &str, method: &str) -> String {
 
 /// Rebuild CSR adjacency for every project in a merged DB.
 ///
-/// v0.2.6 (C2 fix): parallel index workers defer CSR construction
+/// v0.2.5 (C2 fix): parallel index workers defer CSR construction
 /// (`CODESCOPE_DEFER_CSR=1`) because their packed BLOBs hold LOCAL entity
 /// ids that merge cannot remap inside binary columns. This function rebuilds
 /// each project's CSR from the merged DB's now-globally-remapped relation
@@ -1407,7 +1407,7 @@ fn index_parallel_chunked(project_dir: &str, total_workers: u32, parallel: u32) 
         merge::merge_module_dbs(&main_db, &worker_db_paths)
     };
 
-    // v0.2.6 (C2 fix): parallel chunk workers deferred CSR construction;
+    // v0.2.5 (C2 fix): parallel chunk workers deferred CSR construction;
     // rebuild each project's CSR from the globally-remapped relation table.
     if merge_result.merged {
         rebuild_csr_all_projects(&main_db, "index_parallel_chunked");

@@ -21,7 +21,7 @@ unsafe extern "C" {
     ) -> *mut c_char;
     fn engine_index_files(project_id: u64, file_list_json: *const c_char) -> *mut c_char;
 
-    // v0.2.6 (C2 fix): rebuild a project's CSR adjacency on the given DB
+    // v0.2.5 (C2 fix): rebuild a project's CSR adjacency on the given DB
     // (used after parallel merge, where local-id BLOBs would be dangling).
     fn engine_rebuild_csr(db_path: *const c_char, project_id: u64) -> *mut c_char;
 

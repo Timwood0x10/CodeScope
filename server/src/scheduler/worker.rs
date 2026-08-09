@@ -88,7 +88,7 @@ pub(super) fn run_module_worker(
     // Skip the ~280ms state-builder work in per-module workers; the
     // unified DB gets its async pass once after merge (see merge::merge_module_dbs).
     cmd.env("CODESCOPE_SKIP_ASYNC", "1");
-    // v0.2.6 (C2 fix): parallel workers build CSR adjacency from LOCAL
+    // v0.2.5 (C2 fix): parallel workers build CSR adjacency from LOCAL
     // entity ids, which merge cannot remap inside the packed tgt_blob /
     // src_blob (binary, not a SQL remap column). Defer CSR construction to
     // the merged main.db where relation ids are already global, so CSR-based

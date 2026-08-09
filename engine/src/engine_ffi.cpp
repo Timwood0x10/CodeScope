@@ -1623,7 +1623,7 @@ char *engine_import_artifact(uint64_t project_id, const char *artifact_path)
 // ─── CSR Rebuild (C2 fix: parallel merge) ─────────────────────
 // Rebuild a project's CSR adjacency/adjacency_rev tables on the given DB.
 //
-// v0.2.6 (C2 fix): parallel index workers build CSR adjacency from LOCAL
+// v0.2.5 (C2 fix): parallel index workers build CSR adjacency from LOCAL
 // entity ids. The merge step remaps only the adjacency src_id/tgt_id row
 // key — the packed tgt_blob/src_blob ids stay local and become dangling in
 // the merged main.db, corrupting every CSR-based graph traversal. After
