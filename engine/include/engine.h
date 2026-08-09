@@ -17,6 +17,21 @@ void engine_shutdown();
 /// @return Static C string like "0.2.1"
 const char *engine_version(void);
 
+// ─── FFI binding status (L3 fix) ───────────────────────────────
+// The Rust MCP server (server/src/ffi/mod.rs) binds a subset of the FFI
+// functions declared in this header; the rest are legacy / CLI-oriented
+// entry points that are NOT called by the server. They are declared here
+// for completeness and are kept (not removed) because some are used by
+// scripts or a future CLI, but they must NOT be treated as server-backed
+// APIs. Functions NOT bound by the server include:
+//   engine_get_communities, engine_get_hotspots, engine_get_module_map,
+//   engine_get_entry_points, engine_trace_call_chain, engine_get_callers,
+//   engine_get_callees, engine_get_complexity, engine_get_capabilities,
+//   engine_get_index_progress, engine_scan_project, engine_search_semantic,
+//   engine_get_project_overview, engine_get_enhancement_status,
+//   engine_build_context, engine_locate_node, engine_index_batch,
+//   engine_get_project_info, engine_export_artifact, engine_import_artifact.
+
 // ─── Project ──────────────────────────────────────────────────
 
 uint64_t engine_create_project(const char *root_path, const char *name);
@@ -342,6 +357,20 @@ char *engine_get_routes(uint64_t project_id);
 
 void engine_free_string(char *ptr);
 
+/// Rebuild a project's CSR adjacency/adjacency_rev tables on the given DB.
+///
+/// v0.2.6 (C2 fix): parallel index workers build CSR from local entity ids
+/// that merge cannot remap inside packed BLOBs; after merge the scheduler
+/// calls this to rebuild CSR from the globally-remapped relation table so
+/// CSR-based graph queries return valid neighbor ids. Opens a local store on
+/// db_path and does not disturb the process-wide engine.
+///
+/// @param db_path    Path to the (merged) SQLite DB.
+/// @param project_id Project whose CSR to rebuild.
+/// @return JSON `{"ok":true,"project_id":N}` on success, or a JSON error
+///         object. Caller MUST free via engine_free_string().
+char *engine_rebuild_csr(const char *db_path, uint64_t project_id);
+
 // ─── Batch Indexing ────────────────────────────────────────────
 
 /**
@@ -503,6 +532,43 @@ char *engine_build_project_state(uint64_t project_id);
  *         project_id. Caller MUST free via engine_free_string().
  */
 char *engine_get_project_state(uint64_t project_id);
+
+// ─── Missing FFI declarations (v0.2.6 completeness fix) ───────
+// These entry points are implemented in the engine and bound by the Rust
+// server, but were missing from this header, leaving the header not a
+// single source of truth. They are declared here with the exact C ABI the
+// Rust ffi layer links against. Each returns a heap-allocated JSON string
+// that the caller MUST free via engine_free_string().
+
+/// Run integrity verification (dispatch via VerifierRegistry). Returns JSON.
+char *engine_verify_integrity(uint64_t project_id);
+
+/// Parse a natural-language summary into claims and verify them.
+char *engine_verify_summary(uint64_t project_id, const char *text);
+
+/// Verify the project against a review checklist (natural language text).
+char *engine_verify_review(uint64_t project_id, const char *text);
+
+/// Verify whether the project's reality matches a described expectation.
+char *engine_verify_reality(uint64_t project_id, const char *text);
+
+/// Scan declared capabilities/contracts for documentation-vs-code drift.
+char *engine_detect_drift(uint64_t project_id);
+
+/// Detect documentation drift specifically (comments vs actual code).
+char *engine_detect_documentation_drift(uint64_t project_id);
+
+/// Detect capability drift specifically (declared vs implemented).
+char *engine_detect_capability_drift(uint64_t project_id);
+
+/// Detect architecture drift specifically (modules/layers vs actual deps).
+char *engine_detect_architecture_drift(uint64_t project_id);
+
+/// Explain a symbol in natural language. Returns JSON.
+char *engine_explain_symbol(uint64_t project_id, const char *symbol_name);
+
+/// Explain a module in natural language. Returns JSON.
+char *engine_explain_module(uint64_t project_id, const char *module_name);
 
 /**
  * Inspect the VerifierRegistry health and claim-type coverage.

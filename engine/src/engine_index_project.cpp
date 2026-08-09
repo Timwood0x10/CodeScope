@@ -418,13 +418,33 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 						file_stat.st_mtime);
 					fsize = static_cast<int64_t>(
 						file_stat.st_size);
-					// O(1) in-memory lookup instead of per-file DB query
-					std::string key =
+					// O(1) in-memory lookup instead of per-file DB query.
+					// M2: two-stage incremental gate. Stage 1 is the cheap
+					// mtime|size gate (no file read). Only when it matches do
+					// we hash the file and check the mtime|size|hash gate,
+					// closing the "same size + same mtime but changed content"
+					// hole. Files whose mtime/size differ skip without being
+					// read, so incremental performance is preserved.
+					std::string base =
 						entry.path().string() + "|" +
 						std::to_string(mtime) + "|" +
 						std::to_string(fsize);
-					file_unchanged = scan_state.count(key) >
-							 0;
+					if (scan_state.count(base) > 0) {
+						std::string ch = fileContentHash(
+							entry.path()
+								.string()
+								.c_str());
+						if (!ch.empty())
+							file_unchanged =
+								scan_state.count(
+									base +
+									"|" +
+									ch) > 0;
+						// If hashing failed (unreadable), fall back to
+						// treating as unchanged on the mtime|size gate.
+						else
+							file_unchanged = true;
+					}
 				}
 				if (file_unchanged) {
 					is_reindex = true;
@@ -1666,7 +1686,14 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 		// + unique-edge indexes. Unlike engine_index_project (which
 		// reaches this via engine_index_post_parse), this path must
 		// recreate those indexes itself or they stay missing (M-12).
-		g_store->buildGraph(project_id, true);
+		// P2 fix: a resolver-pipeline failure makes buildGraph roll back
+		// its graph savepoint and return false; flag it as a writer error
+		// so the result JSON reports failure instead of a false success
+		// (the outer transaction is rolled back by the caller when it
+		// sees ok:false).
+		if (!g_store->buildGraph(project_id, true)) {
+			writer_error = 1;
+		}
 		time_buildgraph_ms =
 			duration_cast<milliseconds>(steady_clock::now() -
 						    t_parse_start)
@@ -1713,7 +1740,7 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 
 	// ── Build result JSON ──────────────────────────────────────
 	std::ostringstream result;
-	result << "{\"ok\":true"
+	result << "{\"ok\":" << (writer_error == 0 ? "true" : "false")
 	       << ",\"files_indexed\":" << files_written.load()
 	       << ",\"workers\":" << num_workers
 	       << ",\"time_parse_ms\":" << time_parse_ms

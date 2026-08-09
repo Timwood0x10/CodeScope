@@ -395,7 +395,7 @@ extern "C" char *engine_verify_integrity(uint64_t project_id)
 							    10000);
 		(void)guard;
 
-		int supported = 0, contradicted = 0, unknown = 0;
+		int supported = 0, contradicted = 0, unknown = 0, orphans = 0;
 
 		std::ostringstream json;
 		json << "{\"findings\":[";
@@ -503,7 +503,14 @@ extern "C" char *engine_verify_integrity(uint64_t project_id)
 						      project_id);
 			auto findings = dci.inspect();
 			for (auto &f : findings) {
-				contradicted++;
+				// Orphan findings are informational, not a
+				// verification contradiction: a function may be
+				// intentionally unreferenced (entry points via
+				// reflection, exported API, dead-but-harmless code).
+				// Count them separately so trust_score reflects
+				// actual claim verdicts instead of collapsing to 0
+				// whenever any orphan exists.
+				orphans++;
 				if (!first)
 					json << ",";
 				first = false;
@@ -517,9 +524,12 @@ extern "C" char *engine_verify_integrity(uint64_t project_id)
 			}
 		}
 
-		json << "],\"total\":" << (supported + contradicted + unknown);
+		json << "],\"total\":"
+		     << (supported + contradicted + unknown + orphans);
 
 		// Trust score: 1.0 - kTrustScorePenalty per non-supported finding, clamped to [0, 1].
+		// Orphans are excluded: they are informational findings, not
+		// claim verdicts, so they must not drag the trust score to 0.
 		double trust_score = 1.0;
 		trust_score -= kTrustScorePenalty *
 			       static_cast<double>(contradicted + unknown);
@@ -528,7 +538,8 @@ extern "C" char *engine_verify_integrity(uint64_t project_id)
 		json << ",\"trust_score\":" << trust_score
 		     << ",\"supported\":" << supported
 		     << ",\"contradicted\":" << contradicted
-		     << ",\"unknown\":" << unknown << "}";
+		     << ",\"unknown\":" << unknown << ",\"orphans\":" << orphans
+		     << "}";
 		return dupString(json.str());
 	} catch (const std::exception &e) {
 		return dupString(

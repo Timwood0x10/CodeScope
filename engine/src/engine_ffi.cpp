@@ -1620,6 +1620,53 @@ char *engine_import_artifact(uint64_t project_id, const char *artifact_path)
 	}
 }
 
+// ─── CSR Rebuild (C2 fix: parallel merge) ─────────────────────
+// Rebuild a project's CSR adjacency/adjacency_rev tables on the given DB.
+//
+// v0.2.6 (C2 fix): parallel index workers build CSR adjacency from LOCAL
+// entity ids. The merge step remaps only the adjacency src_id/tgt_id row
+// key — the packed tgt_blob/src_blob ids stay local and become dangling in
+// the merged main.db, corrupting every CSR-based graph traversal. After
+// merge, the scheduler calls this to rebuild CSR from the globally-remapped
+// relation table (buildCSR reads relation type=1 edges), so all neighbor
+// ids are global again. It opens a LOCAL GraphStore on db_path so it does
+// not disturb the process-wide g_store.
+//
+// @param db_path    Path to the (merged) SQLite DB.
+// @param project_id Project whose CSR to rebuild.
+// @return JSON `{"ok":true,"project_id":N}` on success, or a JSON error
+//         object. Caller MUST free via engine_free_string().
+extern "C" char *engine_rebuild_csr(const char *db_path, uint64_t project_id)
+{
+	try {
+		if (!db_path || !*db_path) {
+			return dupString(
+				"{\"error\":\"[module=ffi, "
+				"method=engine_rebuild_csr] db_path required\"}");
+		}
+		store::GraphStore local_store;
+		if (!local_store.open(db_path)) {
+			return dupString(
+				"{\"error\":\"[module=ffi, "
+				"method=engine_rebuild_csr] cannot open db: " +
+				std::string(db_path) + "\"}");
+		}
+		if (!local_store.buildCSR(project_id)) {
+			return dupString(
+				"{\"error\":\"[module=ffi, "
+				"method=engine_rebuild_csr] buildCSR failed for "
+				"project " +
+				std::to_string(project_id) + "\"}");
+		}
+		return dupString("{\"ok\":true,\"project_id\":" +
+				 std::to_string(project_id) + "}");
+	} catch (const std::exception &e) {
+		return dupString(std::string("{\"error\":\"[module=ffi, "
+					     "method=engine_rebuild_csr] ") +
+				 e.what() + "\"}");
+	}
+}
+
 // ─── Version ────────────────────────────────────────────────────
 
 const char *engine_version(void)

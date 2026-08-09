@@ -61,6 +61,14 @@ std::string readFile(const char *path);
 // v0.6: read a file whose size is already known (avoids the ate-seek +
 // tellg round-trip in readFile). Semantics identical for a stable file.
 std::string readFilePrealloc(const char *path, size_t known_size);
+
+// M2: stable 64-bit FNV-1a hash of a file's contents, hex-encoded lowercase.
+// Returns "" if the file cannot be read. Used to close the "same size + same
+// mtime but changed content" hole in incremental indexing: mtime|size is the
+// cheap fast-path gate, and the content hash confirms the file really is
+// unchanged before the incremental skip. Computed on the file path so the
+// caller does not need to hold file bytes in memory.
+std::string fileContentHash(const char *path);
 std::string jsonEscape(const std::string &s);
 std::string simpleHash(const std::string &s);
 const char *detectLanguage(const char *file_path);

@@ -209,9 +209,7 @@ CodeScope **不会**索引项目中的每一个文件。它通过 **8 层级联�
 | 项目 | 原始文件数 | 过滤后 | 过滤比例 | 节省时间 |
 |------|:--------:|:------:|:--------:|:--------:|
 | rustc（Rust 编译器） | 36,919 | **6,029** | 84% | ~2.5 分钟 |
-| goagent（Go） | 2,651 | **1,254** | 53% | ~30 秒 |
 | CodeScope（自身） | 356 | **168** | 53% | ~1 秒 |
-| Linux 内核（完整） | 308,342 | **64,694** | 79% | ~12 分钟 |
 
 ### 强制覆盖：`force_index_files`
 
@@ -417,13 +415,13 @@ get_knowledge_graph {"table":"capability","limit":10}
 
 ### 索引时间
 
-| 项目 | 文件数 | 节点数 | 边数 | 索引时间 | 峰值内存 |
-|------|------:|------:|------:|---------:|---------:|
-| **CodeScope**（自身，C++/Rust） | 212 | 1,387 | 1,895 | **1.0 秒** | ~150 MB |
-| **memscope-rs**（Rust） | 215 | 4,344 | — | **~2 秒** | ~200 MB |
-| **ARES**（Go） | 1,254 | 18,798 | 4,475 | **4.3 秒** | ~500 MB |
-| **rustc**（Rust 编译器，monorepo） | 6,029 | 81,039 | 63,697 | **18.7 秒** | 5.9 GB |
-| **Linux 内核**（完整） | 64,694 | 12M | — | **3 分 07 秒** | — |
+基于纯 SQLite 图后端实测（无 LadybugDB/Kuzu 依赖）。最新一次运行：2026-08-08。
+
+| 项目 | 语言 | 文件数 | 节点数 | 边数 | 索引时间 | 峰值内存 |
+|------|------|------:|------:|------:|---------:|---------:|
+| **CodeScope**（自身） | C++/Rust | 221 | 1,481 | 1,204 | **1.2 秒** | ~150 MB |
+| **goagent** | Go | 1,344 | 26,425 | 6,352 | **16.0 秒** | ~500 MB |
+| **rustc**（Rust 编译器，monorepo） | Rust | 6,029 | 129,918 | 118,154 | **31.6 秒** | 5.9 GB |
 
 ### 查询延迟（SQLite 图查询后端）
 
@@ -433,8 +431,8 @@ get_knowledge_graph {"table":"capability","limit":10}
 |------|:----:|------|
 | `get_graph_stats` | ~0.1 ms | SQL 聚合 |
 | `find_callers("buildGraph")` | ~0.2 ms | 名称过滤（sub-ms） |
-| `find_callees("buildGraph")` | ~0.2 ms | 返回 54 个被调用者 |
-| `graph_query`（LIMIT 100） | ~37 ms | 2,590 条边，JOIN 优化全扫描 |
+| `find_callees("parse")` | ~0.2 ms | 名称过滤（sub-ms） |
+| `graph_query`（LIMIT 100） | ~37 ms | 118,154 条边，JOIN 优化全扫描 |
 | `shortest_path` | sub-ms | O(E) CSR BFS |
 | `get_neighbors` | sub-ms | O(degree) CSR 邻接 |
 | `get_subgraph` | sub-ms | O(E) CSR BFS |
@@ -454,17 +452,15 @@ get_knowledge_graph {"table":"capability","limit":10}
 
 | 项目 | 跨文件 CALLS | 占 CALLS 总数百分比 |
 |------|:-----------:|:------------------:|
-| CodeScope（C++） | 23 | 0.1% |
-| goagent（Go） | 49,258 | 86% |
-| Linux 内核（C） | 1,502,432 | 40% |
+| CodeScope（C++） | 588 | 46.7% |
+| goagent（Go） | 2,930 | 53.0% |
+| rustc（Rust） | 70,833 | 59.9% |
 
 ### 快速扫描（轻量，毫秒级）
 
 | 项目 | 时间 | 语言 | 符号数 |
 |------|:----:|:----:|:------:|
 | **CodeScope**（自身） | **32 ms** | cpp, rust, c | 2,902 |
-| **goagent**（Go） | **493 ms** | go, c, cpp, python | 5,172 |
-| **Linux 内核**（核心） | **360 ms** | c | 40,335 |
 
 ### Token 节省
 

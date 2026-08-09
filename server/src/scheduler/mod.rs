@@ -448,6 +448,13 @@ pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> S
         merge::merge_module_dbs(&main_db, &module_db_paths)
     };
 
+    // v0.2.6 (C2 fix): parallel workers deferred CSR construction because
+    // their packed BLOBs hold local entity ids that merge cannot remap.
+    // Rebuild each project's CSR from the globally-remapped relation table.
+    if merge_result.merged {
+        rebuild_csr_all_projects(&main_db, "index_parallel");
+    }
+
     let modules_json: Vec<Value> = final_results
         .iter()
         .map(|r| {
@@ -932,6 +939,13 @@ fn index_parallel_dynamic(project_dir: &str, total_workers: u32, parallel: u32) 
         merge::merge_module_dbs(&main_db, &module_db_paths)
     };
 
+    // v0.2.6 (C2 fix): parallel workers deferred CSR construction because
+    // their packed BLOBs hold local entity ids that merge cannot remap.
+    // Rebuild each project's CSR from the globally-remapped relation table.
+    if merge_result.merged {
+        rebuild_csr_all_projects(&main_db, "index_parallel");
+    }
+
     let modules_json: Vec<Value> = final_results
         .iter()
         .map(|r| {
@@ -1044,6 +1058,63 @@ fn error_json(msg: &str, module: &str, method: &str) -> String {
         "method": method
     })
     .to_string()
+}
+
+/// Rebuild CSR adjacency for every project in a merged DB.
+///
+/// v0.2.6 (C2 fix): parallel index workers defer CSR construction
+/// (`CODESCOPE_DEFER_CSR=1`) because their packed BLOBs hold LOCAL entity
+/// ids that merge cannot remap inside binary columns. This function rebuilds
+/// each project's CSR from the merged DB's now-globally-remapped relation
+/// table, so CSR-based graph queries (callers/callees/shortest_path/impact)
+/// return valid neighbor ids. Best-effort: on failure the SQLite relation
+/// table still answers graph queries via the full-scan fallback.
+///
+/// @param main_db   Path to the merged main.db.
+/// @param method    Caller method name for error tagging.
+fn rebuild_csr_all_projects(main_db: &str, method: &str) {
+    // Enumerate project ids from the merged DB via sqlite3 CLI (consistent
+    // with merge.rs, which drives SQLite the same way).
+    let out = std::process::Command::new("sqlite3")
+        .arg(main_db)
+        .arg("SELECT DISTINCT project_id FROM entity ORDER BY project_id;")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output();
+    let ids: Vec<u64> = match out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .filter_map(|l| l.trim().parse::<u64>().ok())
+            .collect(),
+        _ => {
+            eprintln!(
+                "[scheduler] rebuild_csr_all_projects: could not list \
+                 project ids from {} [module=scheduler, method={}]",
+                main_db, method
+            );
+            return;
+        }
+    };
+    let mut rebuilt = 0;
+    let total = ids.len();
+    for &pid in &ids {
+        let resp = crate::ffi::rebuild_csr(main_db, pid);
+        if resp.contains("\"ok\":true") {
+            rebuilt += 1;
+        } else {
+            eprintln!(
+                "[scheduler] rebuild_csr failed for project {}: {} \
+                 [module=scheduler, method={}]",
+                pid, resp, method
+            );
+        }
+    }
+    eprintln!(
+        "[scheduler] rebuilt CSR adjacency for {}/{} projects on {} \
+         [module=scheduler, method={}]",
+        rebuilt, total, main_db, method
+    );
 }
 
 /// Chunk-level parallel indexer with work-stealing (CPU-dynamic scheduling).
@@ -1335,6 +1406,12 @@ fn index_parallel_chunked(project_dir: &str, total_workers: u32, parallel: u32) 
     } else {
         merge::merge_module_dbs(&main_db, &worker_db_paths)
     };
+
+    // v0.2.6 (C2 fix): parallel chunk workers deferred CSR construction;
+    // rebuild each project's CSR from the globally-remapped relation table.
+    if merge_result.merged {
+        rebuild_csr_all_projects(&main_db, "index_parallel_chunked");
+    }
 
     // ── Phase 5: aggregate summary ────────────────────────────
     let success = results

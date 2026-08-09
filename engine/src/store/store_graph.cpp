@@ -200,31 +200,49 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	}
 	kind_list += ")";
 
+	// C1 (data-loss fix): in incremental rebuilds (changed_files != null),
+	// `deleteGraphDataByFile` above only removed entity rows for the files
+	// being rebuilt, so unchanged files still hold entity.id values starting
+	// at 1. ROW_NUMBER() OVER () restarts at 1 every call, which collides
+	// with those retained ids and makes the downstream INSERT OR IGNORE INTO
+	// entity silently skip the rebuilt file's entities — losing data on every
+	// incremental run (confirmed: 1477 -> 1476 entities after editing one
+	// file). Shift new node_ids above the current max entity.id in the
+	// incremental case; a full rebuild deletes ALL entity rows first, so
+	// MAX(entity.id) is NULL and the offset is 0. All downstream edges
+	// (relation, type_ref, import) reference r2n.node_id, so they stay
+	// consistent with the shifted id automatically.
+	long long id_offset = 0;
+	if (changed_files != nullptr) {
+		sqlite3_stmt *mx = nullptr;
+		if (sqlite3_prepare_v2(db_,
+				       "SELECT COALESCE(MAX(id),0) FROM entity "
+				       "WHERE project_id=?",
+				       -1, &mx, nullptr) == SQLITE_OK) {
+			sqlite3_bind_int64(mx, 1,
+					   static_cast<int64_t>(project_id));
+			if (sqlite3_step(mx) == SQLITE_ROW)
+				id_offset = sqlite3_column_int64(mx, 0);
+			sqlite3_finalize(mx);
+		}
+	}
+
 	exec("DROP TABLE IF EXISTS _r2n");
-	exec(std::string(
-		     "CREATE TEMP TABLE _r2n AS "
-		     "SELECT sr.rowid as rid, sr.original_id, sr.file_path, sr.name,"
-		     " CAST(ROW_NUMBER() OVER () AS INTEGER) as node_id "
-		     "FROM semantic_records sr "
-		     "WHERE sr.project_id=" +
-		     pid + " AND sr.kind IN " + kind_list +
-		     " AND sr.name != ''"
-		     " AND sr.file_path IN (SELECT file_path FROM _rf)")
-		     .c_str());
+	std::string r2n_sql =
+		"CREATE TEMP TABLE _r2n AS "
+		"SELECT sr.rowid as rid, sr.original_id, sr.file_path, sr.name,"
+		" CAST(ROW_NUMBER() OVER () AS INTEGER) + " +
+		std::to_string(id_offset) +
+		" as node_id "
+		"FROM semantic_records sr "
+		"WHERE sr.project_id=" +
+		pid + " AND sr.kind IN " + kind_list +
+		" AND sr.name != ''"
+		" AND sr.file_path IN (SELECT file_path FROM _rf)";
+	exec(r2n_sql.c_str());
 	const char *explain_env = getenv("CODESCOPE_EXPLAIN");
 	if (explain_env && explain_env[0]) {
-		explainQueryPlan(
-			(std::string(
-				 "CREATE TEMP TABLE _r2n AS "
-				 "SELECT sr.rowid as rid, sr.original_id, sr.file_path, sr.name,"
-				 " CAST(ROW_NUMBER() OVER () AS INTEGER) as node_id "
-				 "FROM semantic_records sr "
-				 "WHERE sr.project_id=" +
-				 pid + " AND sr.kind IN " + kind_list +
-				 " AND sr.name != ''"
-				 " AND sr.file_path IN (SELECT file_path FROM _rf)")
-				 .c_str()),
-			"_r2n");
+		explainQueryPlan(r2n_sql.c_str(), "_r2n");
 	}
 	exec("CREATE INDEX IF NOT EXISTS _r2n_fp_oid ON _r2n(file_path, original_id)");
 	exec("CREATE INDEX IF NOT EXISTS _r2n_name ON _r2n(name)");
@@ -680,11 +698,23 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// graph_edges, build CSR adjacency BLOBs so they include resolver-
 	// generated edges. Previously CSR was built before the resolver,
 	// missing all resolved call edges.
+	//
+	// P2 fix: a buildCSR failure is NON-FATAL — CSR is an acceleration
+	// structure, and graph queries fall back to a full relation scan when
+	// adjacency is missing. Rolling back the whole savepoint here would
+	// silently discard the just-built entity/relation graph (and the
+	// callers that ignored buildGraph's return value would then commit an
+	// empty graph and report success). So on failure we log and continue,
+	// leaving entity/relation intact; only CSR is absent and will be
+	// rebuilt by the post-merge rebuild (C2) or lazily by the full-scan
+	// query fallback.
 	if (build_calls) {
 		if (!buildCSR(project_id)) {
 			fprintf(stderr,
 				"buildGraph: buildCSR failed for "
-				"project %s [module=store, method=buildGraph]\n",
+				"project %s — CSR skipped (graph queries "
+				"will fall back to relation scan) "
+				"[module=store, method=buildGraph]\n",
 				pid.c_str());
 		}
 	}
@@ -737,6 +767,21 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 
 bool GraphStore::buildCSR(uint64_t project_id)
 {
+	// Wrap the full rebuild (DELETE + forward inserts + reverse inserts)
+	// in a SAVEPOINT so a mid-build failure rolls back atomically:
+	// without this, a crash between the DELETE and the final INSERT leaves
+	// a half-populated CSR (some edges silently missing from queries).
+	// SAVEPOINT (not BEGIN) is required because buildGraph always runs
+	// with an active transaction (SAVEPOINT buildGraph / caller BEGIN),
+	// and SQLite forbids BEGIN inside an active transaction.
+	if (!exec("SAVEPOINT buildCSR")) {
+		fprintf(stderr,
+			"[module=store, method=buildCSR] SAVEPOINT buildCSR "
+			"failed: %s\n",
+			sqlite3_errmsg(db_));
+		return false;
+	}
+
 	// Clear previous entries for this project
 	exec(std::string("DELETE FROM adjacency WHERE project_id=" +
 			 std::to_string(project_id))
@@ -750,8 +795,12 @@ bool GraphStore::buildCSR(uint64_t project_id)
 			  "WHERE type=1 AND project_id=" +
 			  std::to_string(project_id) + " ORDER BY source_id";
 	sqlite3_stmt *st = nullptr;
-	if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &st, nullptr) != SQLITE_OK)
+	if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &st, nullptr) !=
+	    SQLITE_OK) {
+		exec("ROLLBACK TO SAVEPOINT buildCSR");
+		exec("RELEASE SAVEPOINT buildCSR");
 		return false;
+	}
 
 	// v0.6 (perf): rows for this project were just DELETEd above (line 767),
 	// so no PK conflicts can exist — plain INSERT is equivalent to INSERT OR
@@ -762,6 +811,8 @@ bool GraphStore::buildCSR(uint64_t project_id)
 	sqlite3_stmt *ins = nullptr;
 	if (sqlite3_prepare_v2(db_, ins_sql, -1, &ins, nullptr) != SQLITE_OK) {
 		sqlite3_finalize(st);
+		exec("ROLLBACK TO SAVEPOINT buildCSR");
+		exec("RELEASE SAVEPOINT buildCSR");
 		return false;
 	}
 
@@ -837,8 +888,11 @@ bool GraphStore::buildCSR(uint64_t project_id)
 			      " ORDER BY target_id";
 	sqlite3_stmt *rev_st = nullptr;
 	if (sqlite3_prepare_v2(db_, rev_sql.c_str(), -1, &rev_st, nullptr) !=
-	    SQLITE_OK)
+	    SQLITE_OK) {
+		exec("ROLLBACK TO SAVEPOINT buildCSR");
+		exec("RELEASE SAVEPOINT buildCSR");
 		return false;
+	}
 
 	// v0.6 (perf): rows for this project were just DELETEd above, so no PK
 	// conflicts can exist — plain INSERT equals INSERT OR REPLACE here.
@@ -849,6 +903,8 @@ bool GraphStore::buildCSR(uint64_t project_id)
 	if (sqlite3_prepare_v2(db_, rev_ins_sql, -1, &rev_ins, nullptr) !=
 	    SQLITE_OK) {
 		sqlite3_finalize(rev_st);
+		exec("ROLLBACK TO SAVEPOINT buildCSR");
+		exec("RELEASE SAVEPOINT buildCSR");
 		return false;
 	}
 
@@ -906,7 +962,51 @@ bool GraphStore::buildCSR(uint64_t project_id)
 	sqlite3_finalize(rev_st);
 	fprintf(stderr, "buildCSR: %lld reverse groups from relation(type=1)\n",
 		(long long)rev_count);
+	// Release the atomic rebuild savepoint; a failure here leaves the
+	// savepoint open, so roll back explicitly rather than leaking a
+	// pending savepoint into the caller's transaction.
+	if (!exec("RELEASE SAVEPOINT buildCSR")) {
+		fprintf(stderr,
+			"[module=store, method=buildCSR] RELEASE SAVEPOINT "
+			"buildCSR failed: %s\n",
+			sqlite3_errmsg(db_));
+		exec("ROLLBACK TO SAVEPOINT buildCSR");
+		exec("RELEASE SAVEPOINT buildCSR");
+		return false;
+	}
 	return true;
+}
+
+/// Decode a packed uint64_t BLOB into a vector of node IDs.
+///
+/// The CSR adjacency tables store neighbor IDs as a packed array of
+/// uint64_t. The BLOB length must be an exact multiple of sizeof(uint64_t);
+/// a non-multiple indicates corruption or an externally-written row. The
+/// trailing partial element is dropped and a diagnostic is emitted so the
+/// caller is never silently handed a truncated neighbor list.
+///
+/// @param blob   Pointer to the BLOB bytes (may be null when length is 0).
+/// @param bytes  Length of the BLOB in bytes.
+/// @return The decoded neighbor IDs.
+static std::vector<uint64_t> decodeAdjacencyBlob(const void *blob, int bytes)
+{
+	constexpr int kUint64Bytes = static_cast<int>(sizeof(uint64_t));
+	if (bytes % kUint64Bytes != 0) {
+		fprintf(stderr,
+			"[module=store, method=decodeAdjacencyBlob] BLOB "
+			"length %d is not a multiple of %d — trailing %d "
+			"byte(s) dropped\n",
+			bytes, kUint64Bytes, bytes % kUint64Bytes);
+	}
+	const int n = bytes / kUint64Bytes;
+	std::vector<uint64_t> ids;
+	ids.reserve(static_cast<size_t>(n));
+	if (n > 0) {
+		const auto *arr = static_cast<const uint64_t *>(blob);
+		for (int i = 0; i < n; i++)
+			ids.push_back(static_cast<uint64_t>(arr[i]));
+	}
+	return ids;
 }
 
 std::vector<uint64_t> GraphStore::getCalleeIds(uint64_t node_id)
@@ -918,13 +1018,8 @@ std::vector<uint64_t> GraphStore::getCalleeIds(uint64_t node_id)
 		return ids;
 	sqlite3_bind_int64(st, 1, static_cast<int64_t>(node_id));
 	if (sqlite3_step(st) == SQLITE_ROW) {
-		const void *blob = sqlite3_column_blob(st, 0);
-		int bytes = sqlite3_column_bytes(st, 0);
-		int n = bytes / static_cast<int>(sizeof(uint64_t));
-		const uint64_t *arr = static_cast<const uint64_t *>(blob);
-		ids.reserve(static_cast<size_t>(n));
-		for (int i = 0; i < n; i++)
-			ids.push_back(static_cast<uint64_t>(arr[i]));
+		ids = decodeAdjacencyBlob(sqlite3_column_blob(st, 0),
+					  sqlite3_column_bytes(st, 0));
 	}
 	sqlite3_finalize(st);
 	return ids;
@@ -942,13 +1037,8 @@ std::vector<uint64_t> GraphStore::getCallerIds(uint64_t node_id)
 		return ids;
 	sqlite3_bind_int64(st, 1, static_cast<int64_t>(node_id));
 	if (sqlite3_step(st) == SQLITE_ROW) {
-		const void *blob = sqlite3_column_blob(st, 0);
-		int bytes = sqlite3_column_bytes(st, 0);
-		int n = bytes / static_cast<int>(sizeof(uint64_t));
-		const uint64_t *arr = static_cast<const uint64_t *>(blob);
-		ids.reserve(static_cast<size_t>(n));
-		for (int i = 0; i < n; i++)
-			ids.push_back(static_cast<uint64_t>(arr[i]));
+		ids = decodeAdjacencyBlob(sqlite3_column_blob(st, 0),
+					  sqlite3_column_bytes(st, 0));
 		sqlite3_finalize(st);
 		return ids;
 	}
@@ -964,13 +1054,11 @@ std::vector<uint64_t> GraphStore::getCallerIds(uint64_t node_id)
 	sqlite3_bind_int64(st, 1, static_cast<int64_t>(node_id));
 	while (sqlite3_step(st) == SQLITE_ROW) {
 		int64_t src = sqlite3_column_int64(st, 0);
-		const void *blob = sqlite3_column_blob(st, 1);
-		int bytes = sqlite3_column_bytes(st, 1);
-		int n = bytes / static_cast<int>(sizeof(uint64_t));
-		const uint64_t *arr = static_cast<const uint64_t *>(blob);
+		auto src_ids = decodeAdjacencyBlob(sqlite3_column_blob(st, 1),
+						   sqlite3_column_bytes(st, 1));
 		uint64_t target = node_id;
-		for (int i = 0; i < n; i++) {
-			if (arr[i] == target) {
+		for (uint64_t id : src_ids) {
+			if (id == target) {
 				ids.push_back(static_cast<uint64_t>(src));
 				break;
 			}

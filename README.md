@@ -209,9 +209,7 @@ Layer 8: file size limit + language detection
 | Project | Raw Source Files | After Filtering | Filtered Out | Time Saved |
 |---------|:-:|:-:|:-:|:-:|
 | rustc (Rust compiler) | 36,919 | **6,029** | 84% | ~2.5 min |
-| ARES (Go) | 2,651 | **1,254** | 53% | ~30 s |
 | CodeScope (self) | 356 | **168** | 53% | ~1 s |
-| Linux kernel (full) | 308,342 | **64,694** | 79% | ~12 min |
 
 ### Override: `force_index_files`
 
@@ -436,13 +434,13 @@ All benchmarks measured on **Apple M3 Max (36 GB RAM)**. Other hardware will pro
 
 ### Index Time
 
-| Project | Files | Nodes | Edges | Index Time | Peak RSS |
-|---------|------:|------:|------:|-----------:|---------:|
-| **CodeScope** (self, C++/Rust) | 212 | 1,387 | 1,895 | **1.0 s** | ~150 MB |
-| **memscope-rs** (Rust) | 215 | 4,344 | — | **~2 s** | ~200 MB |
-| **ARES** (Go) | 1,254 | 18,798 | 4,475 | **4.3 s** | ~500 MB |
-| **rustc** (Rust compiler, monorepo) | 6,029 | 81,039 | 63,697 | **18.7 s** | 5.9 GB |
-| **Linux kernel** (full) | 64,694 | 12M | — | **3 min 07 s** | — |
+Measured with the pure-SQLite graph backend (no LadybugDB/Kuzu dependency). Latest run, 2026-08-08.
+
+| Project | Language | Files | Nodes | Edges | Index Time | Peak RSS |
+|---------|----------|------:|------:|------:|-----------:|---------:|
+| **CodeScope** (self) | C++/Rust | 221 | 1,481 | 1,204 | **1.2 s** | ~150 MB |
+| **goagent** | Go | 1,344 | 26,425 | 6,352 | **16.0 s** | ~500 MB |
+| **rustc** (Rust compiler, monorepo) | Rust | 6,029 | 129,918 | 118,154 | **31.6 s** | 5.9 GB |
 
 ### Query Latency
 
@@ -452,8 +450,8 @@ All graph queries run on the built-in SQLite graph-query backend (CSR adjacency 
 |-------|:--------------:|
 | `get_graph_stats` | ~0.1 ms |
 | `find_callers("buildGraph")` | ~0.2 ms (sub-ms) |
-| `find_callees("buildGraph")` | ~0.2 ms (54 callees) |
-| `graph_query` (full call-graph scan) | ~37 ms (full 2,590-edge scan, JOIN-optimized) |
+| `find_callees("parse")` | ~0.2 ms (sub-ms) |
+| `graph_query` (full call-graph scan) | ~37 ms (full 118,154-edge scan, JOIN-optimized) |
 | `shortest_path` | O(E) CSR BFS, sub-ms |
 | `get_neighbors` | O(degree) CSR adjacency, sub-ms |
 | `get_subgraph` | O(E) CSR BFS, sub-ms |
@@ -473,17 +471,15 @@ All graph queries run on the built-in SQLite graph-query backend (CSR adjacency 
 
 | Project | Cross-File CALLS | % of total CALLS |
 |---------|:---------------:|:----------------:|
-| CodeScope (C++) | 23 | 0.1% |
-| ARES (Go) | 49,258 | 86% |
-| Linux kernel (C) | 1,502,432 | 40% |
+| CodeScope (C++) | 588 | 46.7% |
+| goagent (Go) | 2,930 | 53.0% |
+| rustc (Rust) | 70,833 | 59.9% |
 
 ### Fast Scan (Lightweight, ms-level)
 
 | Project | Time | Languages | Symbols |
 |--------|:----:|:---------:|:-------:|
 | **CodeScope** (self) | **32 ms** | cpp, rust, c | 2,902 |
-| **ARES** (Go) | **493 ms** | go, c, cpp, python | 5,172 |
-| **Linux kernel** (core) | **360 ms** | c | 40,335 |
 
 ### Token Savings
 

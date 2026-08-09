@@ -70,8 +70,40 @@ char *engine_index_post_parse(uint64_t project_id, const std::string &dir,
 			for (const auto &path : job_paths)
 				changed_files.insert(path);
 		}
-		g_store->buildGraph(project_id, true,
-				    is_reindex ? &changed_files : nullptr);
+		// v0.2.6 (C2 fix): in the parallel index path the worker builds
+		// CSR adjacency from LOCAL entity ids, but the merge step only
+		// remaps the adjacency src_id/tgt_id row key — the packed
+		// tgt_blob/src_blob ids stay local and become dangling after merge,
+		// corrupting every CSR-based graph traversal (callers/callees/
+		// shortest_path/impact). To fix this the parallel worker defers CSR
+		// construction (CODESCOPE_DEFER_CSR=1) so only the merged main.db
+		// builds it from the globally-remapped relation table. The single
+		// process path (index_project, no CODESCOPE_DEFER_CSR) still builds
+		// CSR here because its entity ids are already global.
+		// P3b fix: treat "0" as "not set" so `CODESCOPE_DEFER_CSR=0`
+		// disables deferral, matching the CODESCOPE_SKIP_ASYNC convention
+		// ([0]=='0' means off). A bare export (=set, any non-'0') defers.
+		const char *defer_env = std::getenv("CODESCOPE_DEFER_CSR");
+		const bool defer_csr = defer_env && defer_env[0] &&
+				       defer_env[0] != '0';
+		// P2 fix: check buildGraph's return value. A resolver-pipeline
+		// failure makes buildGraph roll back the graph savepoint and
+		// return false; committing here would persist an empty graph and
+		// report success. Instead, roll back the outer transaction and
+		// propagate a JSON error so the caller (and the user) knows the
+		// index did not fully succeed. (CSR failures are non-fatal inside
+		// buildGraph and still return true.)
+		if (!g_store->buildGraph(project_id, !defer_csr,
+					 is_reindex ? &changed_files :
+						      nullptr)) {
+			g_store->rollbackTransaction();
+			return dupString(
+				"{\"ok\":false,\"error\":\"buildGraph failed "
+				"for project " +
+				std::to_string(project_id) +
+				" (resolver stage)\",\"module\":\"engine\","
+				"\"method\":\"engine_index_post_parse\"}");
+		}
 		g_store->commitTransaction();
 		// Indexing now builds the full call graph (buildGraph above),
 		// so mark every node callgraph_ready. This makes trace_path and

@@ -420,18 +420,18 @@ bool GraphStore::createSchema()
         -- after buildGraph. Each row packs all callee node IDs for a caller into a
         -- contiguous u32 BLOB. Queries are O(1) B-tree lookup + pointer arithmetic.
         CREATE TABLE IF NOT EXISTS adjacency (
-            src_id INTEGER PRIMARY KEY,    -- graph_nodes.id (caller)
+            src_id INTEGER PRIMARY KEY,    -- entity.id (caller)
             project_id INTEGER NOT NULL,
-            tgt_blob BLOB                  -- packed u32[] of callee node IDs
+            tgt_blob BLOB                  -- packed u32[] of callee entity IDs
         );
 
         -- Phase 2: reverse adjacency (CSR BLOB). Mirror of adjacency for
         -- caller lookups: each row packs all caller node IDs for a callee.
         -- Enables O(1) getCallerIds() instead of O(n) full-scan.
         CREATE TABLE IF NOT EXISTS adjacency_rev (
-            tgt_id INTEGER PRIMARY KEY,    -- graph_nodes.id (callee)
+            tgt_id INTEGER PRIMARY KEY,    -- entity.id (callee)
             project_id INTEGER NOT NULL,
-            src_blob BLOB                  -- packed u32[] of caller node IDs
+            src_blob BLOB                  -- packed u32[] of caller entity IDs
         );
 
         -- ============================================================

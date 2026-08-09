@@ -94,7 +94,10 @@ std::string queryToJson(sqlite3 *db, const char *sql, const char *result_key)
 			if (i > 0)
 				json << ",";
 			const char *col_name = sqlite3_column_name(stmt, i);
-			json << "\"" << col_name << "\":";
+			// L2 fix: escape the column name so a name containing a quote
+			// or control char cannot produce invalid JSON.
+			json << "\"" << jsonEscape(col_name ? col_name : "")
+			     << "\":";
 
 			int col_type = sqlite3_column_type(stmt, i);
 			if (col_type == SQLITE_NULL) {
@@ -143,10 +146,12 @@ std::string QueryEngine::findDefinition(uint64_t project_id,
 		"SELECT id, name, qualified_name, kind, file_path, "
 		"       start_row, start_col, end_row, end_col, language "
 		"FROM entity WHERE project_id=? AND (name=? OR qualified_name=?)";
+	// M3 fix: bind the file_filter as a parameter instead of splicing it
+	// into the LIKE literal. Splicing let a filter containing a quote or
+	// % break the query or inject SQL; a bound `%filter%` value is safe.
 	bool has_filter = file_filter && strlen(file_filter) > 0;
 	if (has_filter)
-		sql += " AND file_path LIKE '%" + std::string(file_filter) +
-		       "%'";
+		sql += " AND file_path LIKE ?";
 	sql += " LIMIT 20";
 	std::ostringstream json;
 	json << "{\"results\":[";
@@ -158,6 +163,11 @@ std::string QueryEngine::findDefinition(uint64_t project_id,
 		sqlite3_bind_int64(st, 1, static_cast<int64_t>(project_id));
 		sqlite3_bind_text(st, 2, symbol_name, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_text(st, 3, symbol_name, -1, SQLITE_TRANSIENT);
+		if (has_filter) {
+			std::string like = "%" + std::string(file_filter) + "%";
+			sqlite3_bind_text(st, 4, like.c_str(), -1,
+					  SQLITE_TRANSIENT);
+		}
 		while (sqlite3_step(st) == SQLITE_ROW) {
 			if (!first)
 				json << ",";
@@ -236,10 +246,10 @@ std::string QueryEngine::findReferences(uint64_t project_id,
 		"AND r.target_id IN (SELECT id FROM entity WHERE "
 		"                     project_id=? AND (name=? OR "
 		"                     qualified_name=?)) ";
+	// M3 fix: bind the file_filter as a parameter (see findDefinition).
 	bool has_filter = file_filter && strlen(file_filter) > 0;
 	if (has_filter)
-		sql += " AND e.file_path LIKE '%" + std::string(file_filter) +
-		       "%'";
+		sql += " AND e.file_path LIKE ?";
 	sql += " GROUP BY e.id ORDER BY e.id LIMIT 100";
 	std::ostringstream json;
 	json << "{\"results\":[";
@@ -252,6 +262,11 @@ std::string QueryEngine::findReferences(uint64_t project_id,
 		sqlite3_bind_int64(st, 2, static_cast<int64_t>(project_id));
 		sqlite3_bind_text(st, 3, symbol_name, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_text(st, 4, symbol_name, -1, SQLITE_TRANSIENT);
+		if (has_filter) {
+			std::string like = "%" + std::string(file_filter) + "%";
+			sqlite3_bind_text(st, 5, like.c_str(), -1,
+					  SQLITE_TRANSIENT);
+		}
 		while (sqlite3_step(st) == SQLITE_ROW) {
 			if (!first)
 				json << ",";
@@ -1303,7 +1318,10 @@ std::string QueryEngine::locateByName(uint64_t project_id, const char *name)
 			if (i > 0)
 				json << ",";
 			const char *col_name = sqlite3_column_name(stmt, i);
-			json << "\"" << col_name << "\":";
+			// L2 fix: escape the column name so a name containing a quote
+			// or control char cannot produce invalid JSON.
+			json << "\"" << jsonEscape(col_name ? col_name : "")
+			     << "\":";
 
 			int col_type = sqlite3_column_type(stmt, i);
 			if (col_type == SQLITE_NULL) {

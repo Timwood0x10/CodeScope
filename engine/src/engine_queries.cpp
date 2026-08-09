@@ -220,7 +220,20 @@ char *engine_enhance_project(uint64_t project_id)
 	{
 		auto t = Clock::now();
 		g_store->beginTransaction();
-		g_store->buildGraph(project_id, true);
+		// P2 fix: a resolver-pipeline failure makes buildGraph roll back its
+		// graph savepoint and return false. Committing here would persist a
+		// truncated graph and report success, so propagate the failure and
+		// skip the graph-commit step (the outer enhance continues to the
+		// model build below, which is independent of buildGraph).
+		if (!g_store->buildGraph(project_id, true)) {
+			g_store->rollbackTransaction();
+			fprintf(stderr,
+				"enhance: buildGraph failed for project %llu — "
+				"skipping graph rebuild [module=engine, "
+				"method=engine_enhance_project]\n",
+				(unsigned long long)project_id);
+			goto run_model_build;
+		}
 		g_store->commitTransaction();
 		fprintf(stderr, "enhance: buildGraph %lldms\n",
 			(long long)std::chrono::duration_cast<

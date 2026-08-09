@@ -606,8 +606,12 @@ std::unordered_set<std::string>
 GraphStore::loadFileScanStateBatch(uint64_t project_id)
 {
 	std::unordered_set<std::string> result;
+	// M2: also read content_hash so the incremental skip can verify that a
+	// file with the same mtime+size really is byte-identical (closes the
+	// "same size + same mtime but changed content" hole).
 	const char *sql =
-		"SELECT file_path, file_mtime, file_size FROM file_scan_state WHERE project_id=?";
+		"SELECT file_path, file_mtime, file_size, COALESCE(content_hash,'') "
+		"FROM file_scan_state WHERE project_id=?";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
 		fprintf(stderr,
@@ -622,11 +626,20 @@ GraphStore::loadFileScanStateBatch(uint64_t project_id)
 			sqlite3_column_text(stmt, 0));
 		int64_t mtime = sqlite3_column_int64(stmt, 1);
 		int64_t fsize = sqlite3_column_int64(stmt, 2);
+		const char *ch = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 3));
 		if (fp) {
-			std::string key = std::string(fp) + "|" +
-					  std::to_string(mtime) + "|" +
-					  std::to_string(fsize);
-			result.insert(std::move(key));
+			// Two keys per row: the mtime|size gate (fast, stat-only) and
+			// the mtime|size|hash gate (requires reading the file to hash
+			// it). The detection code checks the gate first (cheap) and
+			// only hashes when the gate matches, so unchanged files with
+			// different mtime/size skip without being read.
+			std::string base = std::string(fp) + "|" +
+					   std::to_string(mtime) + "|" +
+					   std::to_string(fsize);
+			result.insert(base);
+			if (ch && *ch)
+				result.insert(base + "|" + std::string(ch));
 		}
 	}
 	sqlite3_finalize(stmt);

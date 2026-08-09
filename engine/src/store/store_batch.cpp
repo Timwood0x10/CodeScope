@@ -1,6 +1,7 @@
 #include "store.h"
 #include "store_internal.h"
 #include "platform_win.h"
+#include "engine_internal.h"
 
 #include <algorithm>
 #include <climits>
@@ -289,9 +290,14 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 		return false;
 	}
 
+	// M2: record content_hash so the next incremental run can verify a file
+	// with matching mtime+size is truly unchanged (closes the "same size +
+	// same mtime but changed content" hole). Computed from disk on the file
+	// path; cheap relative to the parse that just happened.
 	const char *fss_sql = "INSERT OR REPLACE INTO file_scan_state "
-			      "(project_id, file_path, file_mtime, file_size) "
-			      "VALUES (?,?,?,?)";
+			      "(project_id, file_path, file_mtime, file_size, "
+			      "content_hash) "
+			      "VALUES (?,?,?,?,?)";
 	sqlite3_stmt *fss_st = nullptr;
 	if (sqlite3_prepare_v2(db_, fss_sql, -1, &fss_st, nullptr) !=
 	    SQLITE_OK) {
@@ -364,12 +370,19 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 			sqlite3_reset(file_st);
 		}
 
-		// Update file_scan_state
+		// Update file_scan_state (with content_hash for M2)
+		std::string ch = fileContentHash(fr.file_path.c_str());
 		sqlite3_bind_int64(fss_st, 1, static_cast<int64_t>(project_id));
 		sqlite3_bind_text(fss_st, 2, fr.file_path.c_str(), -1,
 				  SQLITE_TRANSIENT);
 		sqlite3_bind_int64(fss_st, 3, fr.mtime);
 		sqlite3_bind_int64(fss_st, 4, fr.fsize);
+		if (ch.empty()) {
+			sqlite3_bind_null(fss_st, 5);
+		} else {
+			sqlite3_bind_text(fss_st, 5, ch.c_str(), -1,
+					  SQLITE_TRANSIENT);
+		}
 		sqlite3_step(fss_st);
 		sqlite3_reset(fss_st);
 

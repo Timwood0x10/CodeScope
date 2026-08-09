@@ -60,6 +60,37 @@ std::string readFilePrealloc(const char *path, size_t known_size)
 	return result;
 }
 
+// M2: stable 64-bit FNV-1a hash of a file's contents, hex-encoded lowercase.
+// Reads the file from disk (streamed, not into memory) and returns the hash,
+// or "" if the file cannot be read. See declaration in engine_internal.h.
+std::string fileContentHash(const char *path)
+{
+	if (!path || !*path)
+		return "";
+	std::ifstream ifs(path, std::ios::binary);
+	if (!ifs)
+		return "";
+	constexpr uint64_t kFnvOffsetBasis = 14695981039346656037ULL;
+	constexpr uint64_t kFnvPrime = 1099511628211ULL;
+	uint64_t h = kFnvOffsetBasis;
+	char buf[65536];
+	while (ifs) {
+		ifs.read(buf, sizeof(buf));
+		std::streamsize n = ifs.gcount();
+		for (std::streamsize i = 0; i < n; ++i) {
+			h ^= static_cast<unsigned char>(buf[i]);
+			h *= kFnvPrime;
+		}
+	}
+	static const char *hex = "0123456789abcdef";
+	std::string out(16, '0');
+	for (int i = 0; i < 16; ++i) {
+		out[15 - i] = hex[h & 0xF];
+		h >>= 4;
+	}
+	return out;
+}
+
 // Escape a string for safe embedding in JSON (RFC 8259)
 std::string jsonEscape(const std::string &s)
 {

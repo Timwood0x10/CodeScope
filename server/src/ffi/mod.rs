@@ -21,6 +21,10 @@ unsafe extern "C" {
     ) -> *mut c_char;
     fn engine_index_files(project_id: u64, file_list_json: *const c_char) -> *mut c_char;
 
+    // v0.2.6 (C2 fix): rebuild a project's CSR adjacency on the given DB
+    // (used after parallel merge, where local-id BLOBs would be dangling).
+    fn engine_rebuild_csr(db_path: *const c_char, project_id: u64) -> *mut c_char;
+
     fn engine_find_definition(
         project_id: u64,
         symbol_name: *const c_char,
@@ -194,7 +198,14 @@ fn cstr(s: &str) -> CString {
 /// contract is satisfied by construction.
 fn take_string(ptr: *mut c_char) -> String {
     if ptr.is_null() {
-        return String::new();
+        // M1 fix: a NULL engine return previously collapsed to an empty
+        // string, which MCP tools then failed to parse as JSON (returning
+        // malformed responses to clients). Return a valid JSON error object
+        // instead so every tool can uniformly parse the response and route
+        // it to its error path instead of panicking or emitting invalid JSON.
+        return "{\"ok\":false,\"error\":\"engine returned NULL \
+                [module=ffi, method=take_string]\"}"
+            .to_string();
     }
     let s = unsafe { CStr::from_ptr(ptr).to_string_lossy().into_owned() };
     unsafe { engine_free_string(ptr) };
@@ -207,6 +218,19 @@ pub fn init(db_path: &str) -> i32 {
 
 pub fn shutdown() {
     unsafe { engine_shutdown() }
+}
+
+/// Rebuild a project's CSR adjacency on the given DB (C2 fix).
+///
+/// Opens a local store on `db_path` in the engine and rebuilds the project's
+/// CSR from its relation table. Returns the engine's JSON string; the caller
+/// must parse it. The returned string is heap-allocated and freed by
+/// `take_string`.
+pub fn rebuild_csr(db_path: &str, project_id: u64) -> String {
+    unsafe {
+        let ptr = engine_rebuild_csr(cstr(db_path).as_ptr(), project_id);
+        take_string(ptr)
+    }
 }
 
 /// Returns the engine version string.

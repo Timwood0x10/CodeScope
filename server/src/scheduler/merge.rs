@@ -137,6 +137,26 @@ const TABLE_SPECS: &[TableSpec] = &[
         remap_cols: &[],
         skip_rowid: true,
     },
+    // H2 fix: document (README/architecture extraction) and parse_failures
+    // were absent from TABLE_SPECS, so parallel workers' rows in these
+    // tables were silently dropped at merge time (the main.db only merged
+    // the tables listed here). document.id is INTEGER PRIMARY KEY
+    // AUTOINCREMENT but the column is literally named `id` (not `rowid`),
+    // so fetch_columns_excluding_rowid cannot skip it — we remap it with
+    // the document offset instead (id + offset lands above every module's
+    // max, so INSERT OR IGNORE never collides across modules).
+    // parse_failures has a composite PK (project_id, file_path) with no id
+    // column, so a plain INSERT OR IGNORE dedupes naturally.
+    TableSpec {
+        name: "document",
+        remap_cols: &[("id", "self")],
+        skip_rowid: false,
+    },
+    TableSpec {
+        name: "parse_failures",
+        remap_cols: &[],
+        skip_rowid: false,
+    },
 ];
 
 /// Tables to read schema for from sqlite_master.
@@ -153,6 +173,8 @@ const SCHEMA_TABLES: &[&str] = &[
     "adjacency",
     "adjacency_rev",
     "semantic_records",
+    "document",
+    "parse_failures",
 ];
 
 /// Tables that need an offset computed (have id column).
@@ -166,6 +188,7 @@ const OFFSET_TABLES: &[&str] = &[
     "import",
     "reference",
     "files",
+    "document",
 ];
 
 /// Build the INSERT OR IGNORE SQL for a table.
