@@ -16,9 +16,11 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <optional>
 #include <sqlite3.h>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "verify/architecture_verifier.h"
@@ -29,6 +31,7 @@
 #include "verify/claim_parser.h"
 #include "verify/contract_verifier.h"
 #include "verify/documentation_drift.h"
+#include "verify/function_implements_verifier.h"
 #include "verify/registry.h"
 #include "verify/dead_code_inspector.h"
 #include "verify/ffi_internal.h"
@@ -101,9 +104,13 @@ std::string jsonField(const std::string &json, const std::string &key)
 }
 
 // Map a ClaimType string (as accepted by the MCP schema) to the enum.
-// Defaults to CapabilityExists for unknown strings so callers can't crash
-// the verifier dispatch.
-verify::ClaimType parseClaimType(const std::string &s)
+// Returns std::nullopt for unrecognized strings so the caller can return
+// an explicit input error instead of silently rewriting the claim type to
+// CapabilityExists (Step 9.4: unknown claim type → input error, not silent
+// fallback). The four recognized strings mirror the wire names in
+// verify::claimTypeWireName() and the MCP schema in
+// server/src/tools/mod.rs (verify_claim tool description).
+std::optional<verify::ClaimType> parseClaimType(const std::string &s)
 {
 	if (s == "capability_exists")
 		return verify::ClaimType::CapabilityExists;
@@ -113,30 +120,24 @@ verify::ClaimType parseClaimType(const std::string &s)
 		return verify::ClaimType::ArchitectureFollows;
 	if (s == "function_implements")
 		return verify::ClaimType::FunctionImplements;
-	return verify::ClaimType::CapabilityExists;
+	return std::nullopt;
 }
 
-// Lazily register verifiers into the global registry.
-// CapabilityVerifier/ContractVerifier/ArchitectureVerifier are registered
-// with a nullptr store + project_id=0 because their accepts() only inspects
-// claim.type (not store state). The actual verify() call is dispatched on a
-// freshly-constructed verifier bound to the caller's project_id, avoiding
-// cross-project state leaks. Idempotent — safe to call on every FFI entry.
+// Idempotent registration of the default sentinel verifiers into the
+// global registry. Delegates to VerifierRegistry::ensureDefaultVerifiers,
+// which checks the actual registry state (not a process-level static flag)
+// and only re-registers when empty. This fixes the lifecycle bug A15:
+//   engine_shutdown() cleared the registry but the old `static bool
+//   initialized` flag stayed true, so the next ensureVerifiersRegistered()
+//   was a no-op and the registry stayed empty → every claim returned
+//   "no verifier registered".
+// The sentinels use nullptr/0 because their accepts() only inspects
+// claim.type — the actual verify() call is dispatched on a freshly-
+// constructed verifier bound to the caller's project_id (see
+// makeVerifierForClaim), avoiding cross-project state leaks.
 void ensureVerifiersRegistered()
 {
-	static bool initialized = false;
-	if (initialized)
-		return;
-	auto &reg = verify::VerifierRegistry::instance();
-	// Sentinel verifiers for matching only. accepts() does not touch
-	// store_ or project_id_, so nullptr/0 are safe here.
-	reg.register_verifier(
-		std::make_unique<verify::CapabilityVerifier>(nullptr, 0));
-	reg.register_verifier(
-		std::make_unique<verify::ContractVerifier>(nullptr, 0));
-	reg.register_verifier(
-		std::make_unique<verify::ArchitectureVerifier>(nullptr, 0));
-	initialized = true;
+	verify::VerifierRegistry::instance().ensureDefaultVerifiers(nullptr, 0);
 }
 
 // Build a fresh verifier bound to the given project_id for the claim type.
@@ -157,10 +158,11 @@ makeVerifierForClaim(const verify::Claim &claim, store::GraphStore *store,
 		return std::make_unique<verify::ArchitectureVerifier>(
 			store, project_id);
 	case verify::ClaimType::FunctionImplements:
-		// No dedicated verifier yet — FunctionImplements claims fall
-		// back to CapabilityVerifier which inspects the entity graph.
-		return std::make_unique<verify::CapabilityVerifier>(store,
-								    project_id);
+		// Step 9.3: dedicated FunctionImplementsVerifier reads
+		// canonical entity/relation facts to confirm the named
+		// function exists and participates in the call graph.
+		return std::make_unique<verify::FunctionImplementsVerifier>(
+			store, project_id);
 	}
 	(void)store;
 	(void)project_id;
@@ -192,14 +194,34 @@ VerifyResult verify_one_claim(uint64_t project_id, const verify::Claim &claim)
 	}
 
 	ensureVerifiersRegistered();
-	verify::Verifier *matched =
-		verify::VerifierRegistry::instance().match(claim);
+	verify::VerifierRegistry &reg = verify::VerifierRegistry::instance();
+	verify::Verifier *matched = reg.match(claim);
 	if (!matched) {
+		// Step 9.6: distinguish registry_empty from claim_type_unsupported
+		// via a machine-readable `error_code` field. Previously both cases
+		// collapsed into the same Unknown string and callers could not tell
+		// whether the verifier subsystem was broken (registry empty) or
+		// whether the claim type was simply not in the public schema.
+		const std::string code = (reg.verifier_count() == 0) ?
+						 "registry_empty" :
+						 "claim_type_unsupported";
+		const std::string detail =
+			(reg.verifier_count() == 0) ?
+				std::string("verifier registry is empty "
+					    "(engine_init not called or "
+					    "engine_shutdown cleared it) "
+					    "[module=ffi, method="
+					    "verify_one_claim]") :
+				(std::string(
+					 "no verifier accepts claim type '") +
+				 verify::claimTypeWireName(claim.type) +
+				 "' [module=ffi, method=verify_one_claim]");
 		std::ostringstream j;
 		j << "{\"claim_id\":" << claim_id
 		  << ",\"verdict\":\"Unknown\",\"confidence\":0"
 		  << ",\"verifier\":null"
-		  << ",\"detail\":\"no verifier registered for this claim type\""
+		  << ",\"error_code\":\"" << code << "\""
+		  << ",\"detail\":\"" << jsonEscape(detail) << "\""
 		  << ",\"evidence_facts\":[]}";
 		result.json = dupString(j.str());
 		result.verdict = verify::Verdict::Unknown;
@@ -215,15 +237,47 @@ VerifyResult verify_one_claim(uint64_t project_id, const verify::Claim &claim)
 		j << "{\"claim_id\":" << claim_id
 		  << ",\"verdict\":\"Unknown\",\"confidence\":0"
 		  << ",\"verifier\":null"
+		  << ",\"error_code\":\"verifier_execution_failed\""
 		  << ",\"detail\":\"verifier "
-		     "implementation unavailable for this claim type\""
+		     "implementation unavailable for this claim type "
+		     "[module=ffi, method=verify_one_claim]\""
 		  << ",\"evidence_facts\":[]}";
 		result.json = dupString(j.str());
 		result.verdict = verify::Verdict::Unknown;
 		return result;
 	}
 
-	verify::EvidenceRecord rec = v->verify(claim);
+	// Step 9.6: wrap verify() in try/catch so a verifier exception is
+	// reported as verifier_execution_failed instead of bubbling up to the
+	// FFI boundary and producing a generic "unknown exception" error.
+	verify::EvidenceRecord rec;
+	try {
+		rec = v->verify(claim);
+	} catch (const std::exception &e) {
+		std::ostringstream j;
+		j << "{\"claim_id\":" << claim_id
+		  << ",\"verdict\":\"Unknown\",\"confidence\":0"
+		  << ",\"verifier\":\"" << jsonEscape(v->name()) << "\""
+		  << ",\"error_code\":\"verifier_execution_failed\""
+		  << ",\"detail\":\"verifier threw: " << jsonEscape(e.what())
+		  << " [module=ffi, method=verify_one_claim]\""
+		  << ",\"evidence_facts\":[]}";
+		result.json = dupString(j.str());
+		result.verdict = verify::Verdict::Unknown;
+		return result;
+	} catch (...) {
+		std::ostringstream j;
+		j << "{\"claim_id\":" << claim_id
+		  << ",\"verdict\":\"Unknown\",\"confidence\":0"
+		  << ",\"verifier\":\"" << jsonEscape(v->name()) << "\""
+		  << ",\"error_code\":\"verifier_execution_failed\""
+		  << ",\"detail\":\"verifier threw unknown exception "
+		     "[module=ffi, method=verify_one_claim]\""
+		  << ",\"evidence_facts\":[]}";
+		result.json = dupString(j.str());
+		result.verdict = verify::Verdict::Unknown;
+		return result;
+	}
 	rec.claim_id = claim_id;
 
 	int64_t evidence_id =
@@ -241,12 +295,26 @@ VerifyResult verify_one_claim(uint64_t project_id, const verify::Claim &claim)
 		g_store->insertEvidenceFact(evidence_id, f.first, f.second, "");
 	}
 
+	// Step 9.6: when the verifier returned Unknown because the evidence
+	// backend was not ready, surface a machine-readable error_code so
+	// callers can distinguish "no evidence yet" from a normal Unknown
+	// verdict. The verifier signals this via a low confidence + the
+	// "evidence backend not ready" prefix in the detail string.
 	std::ostringstream j;
 	j << "{\"claim_id\":" << claim_id << ",\"verdict\":\""
 	  << verify::verdictName(rec.verdict) << "\""
 	  << ",\"confidence\":" << rec.confidence << ",\"verifier\":\""
-	  << jsonEscape(rec.verifier_name) << "\""
-	  << ",\"detail\":\"" << jsonEscape(rec.detail) << "\""
+	  << jsonEscape(rec.verifier_name) << "\"";
+	// Tag evidence_backend_not_ready when the verifier reported it. The
+	// detail string is the canonical signal (set by evidence_backend_ready
+	// helpers in each verifier) so we don't need a separate enum field on
+	// EvidenceRecord.
+	if (rec.verdict == verify::Verdict::Unknown &&
+	    rec.detail.find("evidence backend not ready") !=
+		    std::string::npos) {
+		j << ",\"error_code\":\"evidence_backend_not_ready\"";
+	}
+	j << ",\"detail\":\"" << jsonEscape(rec.detail) << "\""
 	  << ",\"evidence_facts\":[";
 	bool first = true;
 	for (const auto &f : rec.facts) {
@@ -327,7 +395,7 @@ extern "C" char *engine_verify_integrity(uint64_t project_id)
 							    10000);
 		(void)guard;
 
-		int supported = 0, contradicted = 0, unknown = 0;
+		int supported = 0, contradicted = 0, unknown = 0, orphans = 0;
 
 		std::ostringstream json;
 		json << "{\"findings\":[";
@@ -426,15 +494,23 @@ extern "C" char *engine_verify_integrity(uint64_t project_id)
 			     << "\"confidence\":" << rec.confidence << "}";
 		}
 
-		json << "],\"total\":" << (supported + contradicted + unknown);
-
-		// DeadCodeInspector: find orphan modules and functions
+		// DeadCodeInspector: find orphan modules and functions.
+		// Runs BEFORE the findings array is closed so orphan findings
+		// land inside the JSON array (previously they were appended
+		// after `],"total":N`, producing invalid JSON).
 		{
 			verify::DeadCodeInspector dci(g_store.get(),
 						      project_id);
 			auto findings = dci.inspect();
 			for (auto &f : findings) {
-				contradicted++;
+				// Orphan findings are informational, not a
+				// verification contradiction: a function may be
+				// intentionally unreferenced (entry points via
+				// reflection, exported API, dead-but-harmless code).
+				// Count them separately so trust_score reflects
+				// actual claim verdicts instead of collapsing to 0
+				// whenever any orphan exists.
+				orphans++;
 				if (!first)
 					json << ",";
 				first = false;
@@ -448,7 +524,12 @@ extern "C" char *engine_verify_integrity(uint64_t project_id)
 			}
 		}
 
+		json << "],\"total\":"
+		     << (supported + contradicted + unknown + orphans);
+
 		// Trust score: 1.0 - kTrustScorePenalty per non-supported finding, clamped to [0, 1].
+		// Orphans are excluded: they are informational findings, not
+		// claim verdicts, so they must not drag the trust score to 0.
 		double trust_score = 1.0;
 		trust_score -= kTrustScorePenalty *
 			       static_cast<double>(contradicted + unknown);
@@ -457,7 +538,8 @@ extern "C" char *engine_verify_integrity(uint64_t project_id)
 		json << ",\"trust_score\":" << trust_score
 		     << ",\"supported\":" << supported
 		     << ",\"contradicted\":" << contradicted
-		     << ",\"unknown\":" << unknown << "}";
+		     << ",\"unknown\":" << unknown << ",\"orphans\":" << orphans
+		     << "}";
 		return dupString(json.str());
 	} catch (const std::exception &e) {
 		return dupString(
@@ -498,7 +580,27 @@ extern "C" char *engine_verify_claim(uint64_t project_id,
 
 		std::string input(claim_json);
 		verify::Claim claim;
-		claim.type = parseClaimType(jsonField(input, "type"));
+		// Step 9.4: unknown claim type → input error, not silent fallback
+		// to CapabilityExists. Previously parseClaimType defaulted to
+		// CapabilityExists for any unrecognized string, which silently
+		// rewrote the caller's intent and dispatched the wrong verifier.
+		// Now parseClaimType returns std::optional and we surface a
+		// machine-readable error_code so MCP clients can distinguish a
+		// bad `type` field from a missing one.
+		std::string type_str = jsonField(input, "type");
+		auto parsed_type = parseClaimType(type_str);
+		if (!parsed_type) {
+			std::ostringstream err;
+			err << "{\"error\":\"unknown claim type '"
+			    << jsonEscape(type_str)
+			    << "'. Supported types: capability_exists, "
+			       "contract_holds, architecture_follows, "
+			       "function_implements "
+			       "[module=ffi, method=engine_verify_claim]\""
+			    << ",\"error_code\":\"claim_type_unsupported\"}";
+			return dupString(err.str());
+		}
+		claim.type = *parsed_type;
 		claim.subject = jsonField(input, "subject");
 		claim.predicate = jsonField(input, "predicate");
 		if (claim.predicate.empty())
@@ -678,20 +780,20 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 				"[module=ffi, method=engine_explain_module]\"}");
 
 		// Resolve module row (case-insensitive name match).
+		// No project_id filter: module names are globally unique in
+		// both serial (single project) and parallel (merged) products,
+		// and the MCP layer's restored project_id may differ from the
+		// owning module's project_id in parallel products.
 		std::string summary;
 		bool found = false;
 		{
-			const char *sql =
-				"SELECT name FROM modules "
-				"WHERE project_id=? AND LOWER(name)=? "
-				"LIMIT 1";
+			const char *sql = "SELECT name FROM modules "
+					  "WHERE LOWER(name)=? "
+					  "LIMIT 1";
 			sqlite3_stmt *stmt = nullptr;
 			if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
 			    SQLITE_OK) {
-				sqlite3_bind_int64(
-					stmt, 1,
-					static_cast<int64_t>(project_id));
-				sqlite3_bind_text(stmt, 2, name_lower.c_str(),
+				sqlite3_bind_text(stmt, 1, name_lower.c_str(),
 						  -1, SQLITE_STATIC);
 				if (sqlite3_step(stmt) == SQLITE_ROW) {
 					found = true;
@@ -713,17 +815,21 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 		// still match. The slashes prevent partial segment matches (e.g. a
 		// query for "engine" won't match "./my_engine/foo").
 		if (!found) {
-			std::string like = "%/" + name + "/%";
+			// Build the LIKE pattern. The fallback targets files under
+			// `name`, so an absolute path (leading '/') must not gain a
+			// second slash: "%/" + "/Users/..." would produce
+			// "%//Users/..." which never matches a single-slash path.
+			// Relative module names keep the leading "/" to avoid
+			// partial-segment matches ("engine" vs "./my_engine").
+			std::string like = name[0] == '/' ? "%" + name + "/%" :
+							    "%/" + name + "/%";
 			const char *sql = "SELECT COUNT(*) FROM files "
-					  "WHERE project_id=? AND path LIKE ?";
+					  "WHERE path LIKE ?";
 			sqlite3_stmt *stmt = nullptr;
 			int count = 0;
 			if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
 			    SQLITE_OK) {
-				sqlite3_bind_int64(
-					stmt, 1,
-					static_cast<int64_t>(project_id));
-				sqlite3_bind_text(stmt, 2, like.c_str(), -1,
+				sqlite3_bind_text(stmt, 1, like.c_str(), -1,
 						  SQLITE_STATIC);
 				if (sqlite3_step(stmt) == SQLITE_ROW)
 					count = sqlite3_column_int(stmt, 0);
@@ -750,23 +856,23 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 		// paths with a leading "./" match consistently.
 		{
 			std::string like = "%/" + name + "/%";
+			// v0.2.5: read from the canonical `entity` table (the legacy
+			// graph_nodes table is empty in the canonical schema, so this
+			// previously always returned zero entities). entity.id
+			// preserves the legacy graph node identity.
 			std::string sql_str =
-				"SELECT name, node_type, file_path FROM graph_nodes "
-				"WHERE project_id=? AND file_path LIKE ? "
+				"SELECT name, kind, file_path FROM entity "
+				"WHERE file_path LIKE ? "
 				"ORDER BY id LIMIT " +
 				std::to_string(kEntitySampleLimit);
 			sqlite3_stmt *stmt = nullptr;
 			int total = 0;
 			// Count first
-			const char *csql =
-				"SELECT COUNT(*) FROM graph_nodes "
-				"WHERE project_id=? AND file_path LIKE ?";
+			const char *csql = "SELECT COUNT(*) FROM entity "
+					   "WHERE file_path LIKE ?";
 			if (sqlite3_prepare_v2(db, csql, -1, &stmt, nullptr) ==
 			    SQLITE_OK) {
-				sqlite3_bind_int64(
-					stmt, 1,
-					static_cast<int64_t>(project_id));
-				sqlite3_bind_text(stmt, 2, like.c_str(), -1,
+				sqlite3_bind_text(stmt, 1, like.c_str(), -1,
 						  SQLITE_STATIC);
 				if (sqlite3_step(stmt) == SQLITE_ROW)
 					total = sqlite3_column_int(stmt, 0);
@@ -776,10 +882,7 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 			     << ",\"sample\":[";
 			if (sqlite3_prepare_v2(db, sql_str.c_str(), -1, &stmt,
 					       nullptr) == SQLITE_OK) {
-				sqlite3_bind_int64(
-					stmt, 1,
-					static_cast<int64_t>(project_id));
-				sqlite3_bind_text(stmt, 2, like.c_str(), -1,
+				sqlite3_bind_text(stmt, 1, like.c_str(), -1,
 						  SQLITE_STATIC);
 				bool first = true;
 				while (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -812,13 +915,10 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 			json << "\"capabilities\":[";
 			const char *sql =
 				"SELECT id, name, summary FROM capability "
-				"WHERE project_id=? ORDER BY id";
+				"ORDER BY id";
 			sqlite3_stmt *stmt = nullptr;
 			if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
 			    SQLITE_OK) {
-				sqlite3_bind_int64(
-					stmt, 1,
-					static_cast<int64_t>(project_id));
 				bool first = true;
 				while (sqlite3_step(stmt) == SQLITE_ROW) {
 					if (!first)
@@ -850,13 +950,10 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 			json << "\"contracts\":[";
 			const char *sql =
 				"SELECT id, name, origin, claim_text FROM contract "
-				"WHERE project_id=? ORDER BY id";
+				"ORDER BY id";
 			sqlite3_stmt *stmt = nullptr;
 			if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
 			    SQLITE_OK) {
-				sqlite3_bind_int64(
-					stmt, 1,
-					static_cast<int64_t>(project_id));
 				bool first = true;
 				while (sqlite3_step(stmt) == SQLITE_ROW) {
 					if (!first)
@@ -894,14 +991,11 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 			json << "\"findings\":[";
 			const char *sql =
 				"SELECT id, rule, severity, description, confidence "
-				"FROM finding WHERE project_id=? ORDER BY id";
+				"FROM finding ORDER BY id";
 			sqlite3_stmt *stmt = nullptr;
 			int sev2 = 0, sev1 = 0;
 			if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
 			    SQLITE_OK) {
-				sqlite3_bind_int64(
-					stmt, 1,
-					static_cast<int64_t>(project_id));
 				bool first = true;
 				while (sqlite3_step(stmt) == SQLITE_ROW) {
 					if (!first)
@@ -1040,5 +1134,102 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_explain_module] unknown exception\"}");
+	}
+}
+
+// engine_get_verifier_registry_status — VerifierRegistry introspection API.
+//
+// Step 9.2: exposes the registry's internal state so MCP clients and tests
+// can observe whether the verifier subsystem is armed and which public claim
+// types have coverage. This is the observability counterpart to the
+// distinguishable error codes (Step 9.6): instead of discovering a broken
+// registry via a failed verify_claim, callers can probe up-front.
+//
+// The registry is process-global (Meyers singleton), so the registry fields
+// are always populated regardless of project_id. The evidence backend
+// (entity/relation) probe is project-scoped: when project_id is 0 or the
+// store is not initialized, ready=false and counts are 0.
+//
+// Output JSON:
+//   {"registry_empty":bool,"verifier_count":N,
+//    "verifier_names":["CapabilityVerifier",...],
+//    "supported_claim_types":["capability_exists",...],
+//    "unsupported_claim_types":["..."],
+//    "evidence_backend_ready":bool,
+//    "entity_count":N,"relation_count":N}
+//
+// MEMORY: caller MUST free the returned char* via engine_free_string().
+// THREAD SAFETY: single-threaded (GraphStore writer invariant).
+extern "C" char *engine_get_verifier_registry_status(uint64_t project_id)
+{
+	try {
+		// Idempotent: arms the registry if empty without relying on a
+		// static flag (Step 9.1 fix for lifecycle bug A15).
+		ensureVerifiersRegistered();
+
+		verify::VerifierRegistry &reg =
+			verify::VerifierRegistry::instance();
+		const size_t count = reg.verifier_count();
+		auto names = reg.verifier_names();
+		auto supported = reg.supported_claim_types();
+
+		// Compute unsupported = all_public - supported.
+		auto all = verify::all_public_claim_types();
+		std::unordered_set<uint8_t> supported_keys;
+		for (auto t : supported)
+			supported_keys.insert(static_cast<uint8_t>(t));
+		std::vector<verify::ClaimType> unsupported;
+		for (auto t : all) {
+			if (!supported_keys.count(static_cast<uint8_t>(t)))
+				unsupported.push_back(t);
+		}
+
+		// Evidence backend probe (project-scoped). Skip when no store or
+		// project_id is 0 so the registry fields are still useful.
+		int64_t entity_count = 0;
+		int64_t relation_count = 0;
+		bool backend_ready = false;
+		if (g_store && project_id != 0) {
+			backend_ready = verify::evidence_backend_ready(
+				g_store.get(), project_id, &entity_count,
+				&relation_count);
+		}
+
+		std::ostringstream j;
+		j << "{\"registry_empty\":" << (count == 0 ? "true" : "false")
+		  << ",\"verifier_count\":" << count << ",\"verifier_names\":[";
+		for (size_t i = 0; i < names.size(); ++i) {
+			if (i > 0)
+				j << ",";
+			j << "\"" << jsonEscape(names[i]) << "\"";
+		}
+		j << "],\"supported_claim_types\":[";
+		for (size_t i = 0; i < supported.size(); ++i) {
+			if (i > 0)
+				j << ",";
+			j << "\"" << verify::claimTypeWireName(supported[i])
+			  << "\"";
+		}
+		j << "],\"unsupported_claim_types\":[";
+		for (size_t i = 0; i < unsupported.size(); ++i) {
+			if (i > 0)
+				j << ",";
+			j << "\"" << verify::claimTypeWireName(unsupported[i])
+			  << "\"";
+		}
+		j << "],\"evidence_backend_ready\":"
+		  << (backend_ready ? "true" : "false")
+		  << ",\"entity_count\":" << entity_count
+		  << ",\"relation_count\":" << relation_count << "}";
+		return dupString(j.str());
+	} catch (const std::exception &e) {
+		return dupString(
+			std::string("{\"error\":\"[module=ffi, method="
+				    "engine_get_verifier_registry_status] ") +
+			e.what() + "\"}");
+	} catch (...) {
+		return dupString(
+			"{\"error\":\"[module=ffi, method="
+			"engine_get_verifier_registry_status] unknown exception\"}");
 	}
 }

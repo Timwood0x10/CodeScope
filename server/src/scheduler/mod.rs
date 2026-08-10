@@ -117,6 +117,7 @@ pub(super) struct ModuleResult {
 ///  "duration_ms":N,"success":N,"fail":N,"total_nodes":N,"total_edges":N,
 ///  "total_files_indexed":N,"modules":[{...per-module...}]}
 /// ```
+///
 pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> String {
     let start = Instant::now();
 
@@ -156,12 +157,17 @@ pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> S
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let db_prefix = std::env::var("CODESCOPE_DB_PREFIX")
-        .unwrap_or_else(|_| format!("/tmp/codescope_parallel_{}", run_id));
+    // When CODESCOPE_DB_PREFIX is explicitly pinned, treat this as an
+    // incremental run: keep module/main DBs so the engine's
+    // file_scan_state mtime check skips unchanged files on the next pass.
+    // Otherwise (auto run_id prefix) always start clean.
+    let prefix_env = std::env::var("CODESCOPE_DB_PREFIX");
+    let keep_db = prefix_env.is_ok();
+    let db_prefix = prefix_env.unwrap_or_else(|_| format!("/tmp/codescope_parallel_{}", run_id));
 
     eprintln!(
-        "scheduler: project={} workers={} parallel={} db_prefix={}",
-        project_path, total_workers, parallel, db_prefix
+        "scheduler: project={} workers={} parallel={} db_prefix={} keep_db={}",
+        project_path, total_workers, parallel, db_prefix, keep_db
     );
 
     // ── Phase 1: discover modules ──────────────────────────────
@@ -207,6 +213,14 @@ pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> S
         .filter_map(|m| m["files"].as_u64())
         .sum::<u64>()
         .max(1);
+    // Parse cost scales with source bytes, not file count (rustc
+    // compiler/ files are far larger than library/ files). Weight worker
+    // allocation by bytes when discover provides it, falling back to the
+    // file count. Discovered via discover_modules() → modules[].bytes.
+    let total_bytes_sum: u64 = modules
+        .iter()
+        .filter_map(|m| m["bytes"].as_u64())
+        .sum::<u64>();
 
     // ── Dispatch: STATIC by default ──────────────────────────
     // The project's scheduling principle is "static analysis by default;
@@ -238,10 +252,22 @@ pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> S
         .filter_map(|m| {
             let name = m["name"].as_str()?.to_string();
             let files = m["files"].as_u64().unwrap_or(0);
-            let alloc = if files == 0 {
+            // Weight by source bytes when available (parse cost ∝ size);
+            // fall back to file count otherwise.
+            let weight: u128 = if total_bytes_sum > 0 {
+                m["bytes"].as_u64().unwrap_or(0) as u128
+            } else {
+                files as u128
+            };
+            let weight_sum: u128 = if total_bytes_sum > 0 {
+                total_bytes_sum as u128
+            } else {
+                total_files_sum as u128
+            };
+            let alloc = if weight == 0 {
                 1
             } else {
-                let raw = (files as u128 * total_workers as u128).div_ceil(total_files_sum as u128);
+                let raw = (weight * total_workers as u128).div_ceil(weight_sum);
                 let a = u32::try_from(raw as u64).unwrap_or(total_workers);
                 std::cmp::max(1, std::cmp::min(a, total_workers))
             };
@@ -305,6 +331,7 @@ pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> S
                 &db_prefix,
                 project_id,
                 None, // no quarantine initially
+                keep_db,
             );
             let _ = tx.send(result);
             active_clone.fetch_sub(1, Ordering::SeqCst);
@@ -334,7 +361,7 @@ pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> S
     // data for that slot).
     let mut final_results: Vec<ModuleResult> = Vec::new();
     for r in results {
-        if r.exit_code == 0 && r.total_nodes > 0 {
+        if r.exit_code == 0 && (r.total_nodes > 0 || r.files_indexed == 0) {
             final_results.push(r);
             continue;
         }
@@ -372,6 +399,7 @@ pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> S
             &db_prefix,
             r.project_id,
             Some(&excluded_env),
+            keep_db,
         );
         final_results.push(retry);
     }
@@ -379,7 +407,7 @@ pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> S
     // ── Phase 5: aggregate summary ────────────────────────────
     let success = final_results
         .iter()
-        .filter(|r| r.exit_code == 0 && r.total_nodes > 0)
+        .filter(|r| r.exit_code == 0 && (r.total_nodes > 0 || r.files_indexed == 0))
         .count();
     let fail = final_results.len() - success;
     let total_nodes: u64 = final_results.iter().map(|r| r.total_nodes).sum();
@@ -394,13 +422,16 @@ pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> S
     // deps). Per-module project_ids are preserved so cross-module
     // queries can disambiguate via project_id.
     let main_db = format!("{}_main.db", db_prefix);
+    // main.db is ALWAYS rebuilt from the module DBs below — keep_db only
+    // preserves the per-module DBs so workers can skip unchanged files.
+    // Keeping main.db too would double-count rows on INSERT OR IGNORE.
     let _ = std::fs::remove_file(&main_db);
     let _ = std::fs::remove_file(format!("{}-wal", main_db));
     let _ = std::fs::remove_file(format!("{}-shm", main_db));
 
     let module_db_paths: Vec<String> = final_results
         .iter()
-        .filter(|r| r.exit_code == 0 && r.total_nodes > 0)
+        .filter(|r| r.exit_code == 0 && (r.total_nodes > 0 || r.files_indexed == 0))
         .map(|r| r.db_path.clone())
         .collect();
 
@@ -416,6 +447,13 @@ pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> S
     } else {
         merge::merge_module_dbs(&main_db, &module_db_paths)
     };
+
+    // v0.2.5 (C2 fix): parallel workers deferred CSR construction because
+    // their packed BLOBs hold local entity ids that merge cannot remap.
+    // Rebuild each project's CSR from the globally-remapped relation table.
+    if merge_result.merged {
+        rebuild_csr_all_projects(&main_db, "index_parallel");
+    }
 
     let modules_json: Vec<Value> = final_results
         .iter()
@@ -522,8 +560,10 @@ fn index_parallel_dynamic(project_dir: &str, total_workers: u32, parallel: u32) 
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let db_prefix = std::env::var("CODESCOPE_DB_PREFIX")
-        .unwrap_or_else(|_| format!("/tmp/codescope_parallel_{}", run_id));
+    let prefix_env = std::env::var("CODESCOPE_DB_PREFIX");
+    let keep_db = prefix_env.is_ok();
+    let db_prefix = prefix_env.unwrap_or_else(|_| format!("/tmp/codescope_parallel_{}", run_id));
+    let _ = keep_db; // keep_db consumed in run_module_worker calls below
 
     eprintln!(
         "scheduler: [dynamic] project={} workers={} parallel={} db_prefix={}",
@@ -750,6 +790,7 @@ fn index_parallel_dynamic(project_dir: &str, total_workers: u32, parallel: u32) 
                         &db_prefix,
                         project_id,
                         None,
+                        keep_db,
                     )
                 }));
                 // Release the cores we claimed so the next pending
@@ -820,7 +861,7 @@ fn index_parallel_dynamic(project_dir: &str, total_workers: u32, parallel: u32) 
     // Falls back to 1 worker if the pool is empty or shm is unavailable.
     let mut final_results: Vec<ModuleResult> = Vec::new();
     for r in results {
-        if r.exit_code == 0 && r.total_nodes > 0 {
+        if r.exit_code == 0 && (r.total_nodes > 0 || r.files_indexed == 0) {
             final_results.push(r);
             continue;
         }
@@ -853,6 +894,7 @@ fn index_parallel_dynamic(project_dir: &str, total_workers: u32, parallel: u32) 
             &db_prefix,
             r.project_id,
             Some(&excluded_env),
+            keep_db,
         );
         // Release the claimed cores back to the pool.
         shm.release_cores(retry_workers);
@@ -862,7 +904,7 @@ fn index_parallel_dynamic(project_dir: &str, total_workers: u32, parallel: u32) 
     // ── Phase 5: aggregate summary ────────────────────────────
     let success = final_results
         .iter()
-        .filter(|r| r.exit_code == 0 && r.total_nodes > 0)
+        .filter(|r| r.exit_code == 0 && (r.total_nodes > 0 || r.files_indexed == 0))
         .count();
     let fail = final_results.len() - success;
     let total_nodes: u64 = final_results.iter().map(|r| r.total_nodes).sum();
@@ -871,13 +913,16 @@ fn index_parallel_dynamic(project_dir: &str, total_workers: u32, parallel: u32) 
 
     // ── Phase 6: merge per-module DBs into unified main DB ────
     let main_db = format!("{}_main.db", db_prefix);
+    // main.db is ALWAYS rebuilt from the module DBs below — keep_db only
+    // preserves the per-module DBs so workers can skip unchanged files.
+    // Keeping main.db too would double-count rows on INSERT OR IGNORE.
     let _ = std::fs::remove_file(&main_db);
     let _ = std::fs::remove_file(format!("{}-wal", main_db));
     let _ = std::fs::remove_file(format!("{}-shm", main_db));
 
     let module_db_paths: Vec<String> = final_results
         .iter()
-        .filter(|r| r.exit_code == 0 && r.total_nodes > 0)
+        .filter(|r| r.exit_code == 0 && (r.total_nodes > 0 || r.files_indexed == 0))
         .map(|r| r.db_path.clone())
         .collect();
 
@@ -893,6 +938,13 @@ fn index_parallel_dynamic(project_dir: &str, total_workers: u32, parallel: u32) 
     } else {
         merge::merge_module_dbs(&main_db, &module_db_paths)
     };
+
+    // v0.2.5 (C2 fix): parallel workers deferred CSR construction because
+    // their packed BLOBs hold local entity ids that merge cannot remap.
+    // Rebuild each project's CSR from the globally-remapped relation table.
+    if merge_result.merged {
+        rebuild_csr_all_projects(&main_db, "index_parallel");
+    }
 
     let modules_json: Vec<Value> = final_results
         .iter()
@@ -1008,6 +1060,63 @@ fn error_json(msg: &str, module: &str, method: &str) -> String {
     .to_string()
 }
 
+/// Rebuild CSR adjacency for every project in a merged DB.
+///
+/// v0.2.5 (C2 fix): parallel index workers defer CSR construction
+/// (`CODESCOPE_DEFER_CSR=1`) because their packed BLOBs hold LOCAL entity
+/// ids that merge cannot remap inside binary columns. This function rebuilds
+/// each project's CSR from the merged DB's now-globally-remapped relation
+/// table, so CSR-based graph queries (callers/callees/shortest_path/impact)
+/// return valid neighbor ids. Best-effort: on failure the SQLite relation
+/// table still answers graph queries via the full-scan fallback.
+///
+/// @param main_db   Path to the merged main.db.
+/// @param method    Caller method name for error tagging.
+fn rebuild_csr_all_projects(main_db: &str, method: &str) {
+    // Enumerate project ids from the merged DB via sqlite3 CLI (consistent
+    // with merge.rs, which drives SQLite the same way).
+    let out = std::process::Command::new("sqlite3")
+        .arg(main_db)
+        .arg("SELECT DISTINCT project_id FROM entity ORDER BY project_id;")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output();
+    let ids: Vec<u64> = match out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .filter_map(|l| l.trim().parse::<u64>().ok())
+            .collect(),
+        _ => {
+            eprintln!(
+                "[scheduler] rebuild_csr_all_projects: could not list \
+                 project ids from {} [module=scheduler, method={}]",
+                main_db, method
+            );
+            return;
+        }
+    };
+    let mut rebuilt = 0;
+    let total = ids.len();
+    for &pid in &ids {
+        let resp = crate::ffi::rebuild_csr(main_db, pid);
+        if resp.contains("\"ok\":true") {
+            rebuilt += 1;
+        } else {
+            eprintln!(
+                "[scheduler] rebuild_csr failed for project {}: {} \
+                 [module=scheduler, method={}]",
+                pid, resp, method
+            );
+        }
+    }
+    eprintln!(
+        "[scheduler] rebuilt CSR adjacency for {}/{} projects on {} \
+         [module=scheduler, method={}]",
+        rebuilt, total, main_db, method
+    );
+}
+
 /// Chunk-level parallel indexer with work-stealing (CPU-dynamic scheduling).
 ///
 /// OPT-IN path: entered only when `CODESCOPE_CPU_DYNAMIC` /
@@ -1052,8 +1161,10 @@ fn index_parallel_chunked(project_dir: &str, total_workers: u32, parallel: u32) 
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let db_prefix = std::env::var("CODESCOPE_DB_PREFIX")
-        .unwrap_or_else(|_| format!("/tmp/codescope_chunked_{}", run_id));
+    let prefix_env = std::env::var("CODESCOPE_DB_PREFIX");
+    let keep_db = prefix_env.is_ok();
+    let db_prefix = prefix_env.unwrap_or_else(|_| format!("/tmp/codescope_chunked_{}", run_id));
+    let _ = keep_db; // keep_db consumed in run_module_worker calls below
 
     // ── Phase 1: discover the GLOBAL file list ───────────────
     // One walk of the whole project yields every candidate source file.
@@ -1267,13 +1378,16 @@ fn index_parallel_chunked(project_dir: &str, total_workers: u32, parallel: u32) 
     // (worker_id + 1) and merge_module_dbs remaps ids to avoid
     // cross-worker collisions (same as the static path).
     let main_db = format!("{}_main.db", db_prefix);
+    // main.db is ALWAYS rebuilt from the module DBs below — keep_db only
+    // preserves the per-module DBs so workers can skip unchanged files.
+    // Keeping main.db too would double-count rows on INSERT OR IGNORE.
     let _ = std::fs::remove_file(&main_db);
     let _ = std::fs::remove_file(format!("{}-wal", main_db));
     let _ = std::fs::remove_file(format!("{}-shm", main_db));
 
     let worker_db_paths: Vec<String> = results
         .iter()
-        .filter(|r| r.exit_code == 0 && r.total_nodes > 0)
+        .filter(|r| r.exit_code == 0 && (r.total_nodes > 0 || r.files_indexed == 0))
         .map(|r| r.db_path.clone())
         .collect();
 
@@ -1293,10 +1407,16 @@ fn index_parallel_chunked(project_dir: &str, total_workers: u32, parallel: u32) 
         merge::merge_module_dbs(&main_db, &worker_db_paths)
     };
 
+    // v0.2.5 (C2 fix): parallel chunk workers deferred CSR construction;
+    // rebuild each project's CSR from the globally-remapped relation table.
+    if merge_result.merged {
+        rebuild_csr_all_projects(&main_db, "index_parallel_chunked");
+    }
+
     // ── Phase 5: aggregate summary ────────────────────────────
     let success = results
         .iter()
-        .filter(|r| r.exit_code == 0 && r.total_nodes > 0)
+        .filter(|r| r.exit_code == 0 && (r.total_nodes > 0 || r.files_indexed == 0))
         .count();
     let fail = results.len() - success;
     let total_nodes: u64 = results.iter().map(|r| r.total_nodes).sum();

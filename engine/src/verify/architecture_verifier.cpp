@@ -1,5 +1,6 @@
 #include "architecture_verifier.h"
 #include "claim.h"
+#include "registry.h"
 #include "../store/store.h"
 
 #include <cstdio>
@@ -18,9 +19,12 @@ static constexpr double kConfidenceContradicted = 0.75;
 static constexpr double kConfidenceLayerNotFound = 0.4;
 static constexpr double kConfidenceNoEdges = 0.5;
 static constexpr double kConfidenceNoStore = 0.0;
+static constexpr double kConfidenceBackendNotReady = 0.2;
 
-// Edge type for CALLS edges in graph_edges.
-static constexpr int kEdgeTypeCalls = 1;
+// relation.type value for Calls edges (mirrors graph::EdgeType::Calls).
+// Step 9.5: migrated from graph_edges.edge_type=1 to relation.type=1.
+// Only type=1 is a Calls edge per plan/rules/relation_contract.md.
+static constexpr int kRelationTypeCalls = 1;
 
 // ── Helper functions ────────────────────────────────────────────────
 
@@ -56,9 +60,9 @@ static std::string joinIds(const std::vector<int64_t> &ids)
 	return result;
 }
 
-// Collect graph_nodes IDs belonging to a layer. Layer membership is
-// determined by naming convention (name suffix) and file path patterns.
-// The layer type is detected from the layer name:
+// Collect entity IDs belonging to a layer. Layer membership is determined
+// by naming convention (name suffix) and file path patterns. The layer
+// type is detected from the layer name:
 //   Controller  -> name ends with "Controller" OR path has /controllers/
 //                 or /api/
 //   Service     -> name ends with "Service" OR path has /services/
@@ -66,7 +70,9 @@ static std::string joinIds(const std::vector<int64_t> &ids)
 //                 OR path has /repository/ or /data/
 //   Generic     -> name ends with the layer name OR path has
 //                 /<lowername>s/
-// Returns node IDs in SQLite row order; empty when no match.
+// Returns entity IDs in SQLite row order; empty when no match.
+//
+// Step 9.5: migrated from graph_nodes to canonical entity table.
 static std::vector<int64_t> collectLayerNodes(store::GraphStore *store,
 					      uint64_t project_id,
 					      const std::string &layerName)
@@ -108,7 +114,8 @@ static std::vector<int64_t> collectLayerNodes(store::GraphStore *store,
 	// Build the SQL dynamically. Each name suffix contributes one
 	// "LOWER(name) LIKE '%' || LOWER(?) ESCAPE '\\'" clause; each path pattern
 	// contributes one "file_path LIKE ?" clause. All are OR-ed.
-	std::string sql = "SELECT id FROM graph_nodes "
+	// Step 9.5: read from canonical `entity` table (was graph_nodes).
+	std::string sql = "SELECT id FROM entity "
 			  "WHERE project_id=? AND (";
 	bool first = true;
 	for (size_t i = 0; i < nameSuffixes.size(); ++i) {
@@ -156,9 +163,12 @@ static std::vector<int64_t> collectLayerNodes(store::GraphStore *store,
 	return ids;
 }
 
-// Find CALLS edges from sink-layer nodes to source-layer nodes — the
-// violation direction in a layered flow (lower layer calling a higher
-// layer). Returns the graph_edges.id values of violating edges.
+// Find Calls relations from sink-layer entities to source-layer entities —
+// the violation direction in a layered flow (lower layer calling a higher
+// layer). Returns the relation.id values of violating edges.
+//
+// Step 9.5: migrated from graph_edges (edge_type, source_node_id,
+// target_node_id) to relation (type, source_id, target_id).
 static std::vector<int64_t>
 findReverseCalls(store::GraphStore *store, uint64_t project_id,
 		 const std::vector<int64_t> &source_ids,
@@ -172,12 +182,12 @@ findReverseCalls(store::GraphStore *store, uint64_t project_id,
 	std::string sourceList = joinIds(source_ids);
 	std::string sinkList = joinIds(sink_ids);
 
-	std::string sql = "SELECT id FROM graph_edges "
-			  "WHERE project_id=? AND edge_type=? "
-			  "AND source_node_id IN (" +
+	std::string sql = "SELECT id FROM relation "
+			  "WHERE project_id=? AND type=? "
+			  "AND source_id IN (" +
 			  sinkList +
 			  ") "
-			  "AND target_node_id IN (" +
+			  "AND target_id IN (" +
 			  sourceList + ")";
 
 	sqlite3_stmt *stmt = nullptr;
@@ -191,7 +201,7 @@ findReverseCalls(store::GraphStore *store, uint64_t project_id,
 		return edgeIds;
 	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_int(stmt, 2, kEdgeTypeCalls);
+	sqlite3_bind_int(stmt, 2, kRelationTypeCalls);
 
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
 		edgeIds.push_back(sqlite3_column_int64(stmt, 0));
@@ -200,9 +210,11 @@ findReverseCalls(store::GraphStore *store, uint64_t project_id,
 	return edgeIds;
 }
 
-// Count forward CALLS edges from upper-layer nodes to lower-layer nodes.
-// Used to verify that the claimed flow is actually connected (at least
-// one edge exists between adjacent layers). Returns the edge count.
+// Count forward Calls relations from upper-layer entities to lower-layer
+// entities. Used to verify that the claimed flow is actually connected
+// (at least one edge exists between adjacent layers). Returns the count.
+//
+// Step 9.5: migrated from graph_edges to relation.
 static int countForwardCalls(store::GraphStore *store, uint64_t project_id,
 			     const std::vector<int64_t> &upper_ids,
 			     const std::vector<int64_t> &lower_ids)
@@ -214,12 +226,12 @@ static int countForwardCalls(store::GraphStore *store, uint64_t project_id,
 	std::string upperList = joinIds(upper_ids);
 	std::string lowerList = joinIds(lower_ids);
 
-	std::string sql = "SELECT COUNT(*) FROM graph_edges "
-			  "WHERE project_id=? AND edge_type=? "
-			  "AND source_node_id IN (" +
+	std::string sql = "SELECT COUNT(*) FROM relation "
+			  "WHERE project_id=? AND type=? "
+			  "AND source_id IN (" +
 			  upperList +
 			  ") "
-			  "AND target_node_id IN (" +
+			  "AND target_id IN (" +
 			  lowerList + ")";
 
 	sqlite3_stmt *stmt = nullptr;
@@ -233,7 +245,7 @@ static int countForwardCalls(store::GraphStore *store, uint64_t project_id,
 		return 0;
 	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_int(stmt, 2, kEdgeTypeCalls);
+	sqlite3_bind_int(stmt, 2, kRelationTypeCalls);
 
 	int count = 0;
 	if (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -280,7 +292,24 @@ EvidenceRecord ArchitectureVerifier::verify(const Claim &claim)
 		return rec;
 	}
 
-	// Collect node IDs for each of the three layers.
+	// Evidence backend readiness gate (Step 9.5/9.6): when canonical
+	// entity/relation tables are empty, return Unknown + reason instead
+	// of fabricating a "layer not found" verdict from missing data.
+	int64_t entity_count = 0;
+	int64_t relation_count = 0;
+	if (!evidence_backend_ready(store_, project_id_, &entity_count,
+				    &relation_count)) {
+		rec.verdict = Verdict::Unknown;
+		rec.confidence = kConfidenceBackendNotReady;
+		rec.detail = "ArchitectureVerifier: evidence backend not "
+			     "ready (entity=" +
+			     std::to_string(entity_count) +
+			     ", relation=" + std::to_string(relation_count) +
+			     ")";
+		return rec;
+	}
+
+	// Collect entity IDs for each of the three layers.
 	std::vector<int64_t> layer1 =
 		collectLayerNodes(store_, project_id_, claim.subject);
 	std::vector<int64_t> layer2 =
@@ -288,7 +317,7 @@ EvidenceRecord ArchitectureVerifier::verify(const Claim &claim)
 	std::vector<int64_t> layer3 =
 		collectLayerNodes(store_, project_id_, claim.scope);
 
-	// Each layer must have at least one member node in the codebase.
+	// Each layer must have at least one member entity in the codebase.
 	if (layer1.empty()) {
 		rec.verdict = Verdict::Unknown;
 		rec.confidence = kConfidenceLayerNotFound;
@@ -335,7 +364,7 @@ EvidenceRecord ArchitectureVerifier::verify(const Claim &claim)
 			     " reverse call(s) violating the layered flow";
 		rec.facts.reserve(violations.size());
 		for (auto id : violations) {
-			// fact_kind 1 = relation (graph_edge).
+			// fact_kind 1 = relation.
 			rec.facts.emplace_back(kFactKindEdge, id);
 		}
 		return rec;
@@ -360,8 +389,8 @@ EvidenceRecord ArchitectureVerifier::verify(const Claim &claim)
 	rec.detail = "Layered flow verified: " + claim.subject + " -> " +
 		     claim.object + " -> " + claim.scope + " (" +
 		     std::to_string(forward1 + forward2) + " forward calls)";
-	// Record one representative node from each layer as supporting facts.
-	// fact_kind 0 = entity (graph_node).
+	// Record one representative entity from each layer as supporting facts.
+	// fact_kind 0 = entity.
 	rec.facts.emplace_back(kFactKindNode, layer1.front());
 	rec.facts.emplace_back(kFactKindNode, layer2.front());
 	rec.facts.emplace_back(kFactKindNode, layer3.front());

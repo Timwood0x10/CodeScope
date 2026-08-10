@@ -56,13 +56,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build git gcc g++ pkg-config libssl-dev ccache patchelf
-          # LadybugDB shared libraries are vendored under engine/third_party/ladybug/lib/
-          # (committed to git, both x86-64 and aarch64). CMake selects the
-          # correct architecture at configure time. Add the lib dir to the
-          # linker path at runtime.
-          ARCH_DIR=$([ "$(uname -m)" = "aarch64" ] && echo "linux-aarch64" || echo "linux")
-          echo "$PWD/engine/third_party/ladybug/lib/$ARCH_DIR" | sudo tee /etc/ld.so.conf.d/ladybug.conf
-          sudo ldconfig
 
       - name: Install deps (macOS)
         if: matrix.os == 'macos-15'
@@ -72,8 +65,6 @@ jobs:
           # direct cmake call use the same compiler as local dev.
           echo "CC=/opt/homebrew/opt/llvm@21/bin/clang" >> $GITHUB_ENV
           echo "CXX=/opt/homebrew/opt/llvm@21/bin/clang++" >> $GITHUB_ENV
-          # LadybugDB shared library is vendored under engine/third_party/ladybug/lib/macos/
-          # (committed to git, including the liblbug.dylib dev symlink).
 
       - name: Install deps (Windows)
         if: matrix.os == 'windows-2022'
@@ -205,7 +196,7 @@ jobs:
             # and known-failing tests tracked for future fix.
             # This list must match the Makefile's TEST_EXES skip list.
             case "$test_name" in
-              test_bench|test_bench_enhance|test_bench_project|test_pipeline_bench|test_fast_scan_debug|test_verify_aiscope|test_bun)
+              test_bench|test_bench_enhance|test_bench_project|test_pipeline_bench|test_fast_scan_debug|test_verify_aiscope)
                 echo "  SKIP $test_name (requires external args)"
                 continue
                 ;;
@@ -213,16 +204,12 @@ jobs:
                 echo "  SKIP $test_name (known failure, tracked for future fix)"
                 continue
                 ;;
-              test_verify_planner|test_evidence_builder|test_project_state|test_domain_rules|test_self_bench)
-                echo "  SKIP $test_name (hardcoded local paths, run manually)"
-                continue
-                ;;
-              test_rust_e2e|test_qualified_id_ast|test_ts_e2e|test_type_extraction|test_ladybug_diff)
-                echo "  SKIP $test_name (requires LadybugDB, not available on CI)"
+              test_rust_e2e|test_qualified_id_ast|test_ts_e2e|test_type_extraction)
+                echo "  SKIP $test_name (requires removed LadybugDB graph feature)"
                 continue
                 ;;
               test_c_e2e|test_cpp_e2e|test_e2e|test_go_e2e|test_java_e2e|test_js_e2e)
-                echo "  SKIP $test_name (find_def requires LadybugDB, not available on CI)"
+                echo "  SKIP $test_name (find_def requires removed LadybugDB graph feature)"
                 continue
                 ;;
               test_fp_c|test_fp_cpp|test_fp_go|test_fp_java|test_fp_js|test_fp_python|test_fp_rust|test_fp_ts)
@@ -231,10 +218,6 @@ jobs:
                 ;;
               test_call_graph_method|test_call_graph_p1|test_membulk_parity|test_query_algorithms)
                 echo "  SKIP $test_name (requires graph_nodes table, migrated to entity/relation)"
-                continue
-                ;;
-              test_bench_goagent)
-                echo "  SKIP $test_name (requires external goagent project)"
                 continue
                 ;;
             esac
@@ -248,6 +231,44 @@ jobs:
             fi
           done
           exit $failed
+
+      # Step 11 (plan §Step 11, task 8): accuracy gate in CI. Mirrors the
+      # `make accuracy-check` target semantics: the baseline run must pass
+      # (0 FP / 0 FN across all 7-language fixtures), and the FP/FN fault
+      # injections must FAIL (nonzero exit) — proving the gate actually
+      # catches precision/recall regressions. Runs on the same
+      # engine/build-tests tree built above; skipped on Windows.
+      - name: Accuracy gate (call-graph P/R/F1)
+        if: matrix.os != 'windows-2022'
+        shell: bash
+        run: |
+          ACC_BIN=engine/build-tests/test_call_graph_accuracy
+          if [ ! -x "$ACC_BIN" ]; then
+            echo "✗ accuracy runner not built"
+            exit 1
+          fi
+          # 1. Baseline must pass (exit 0).
+          CODESCOPE_SKIP_ASYNC=1 "$ACC_BIN" > /tmp/acc_baseline.log 2>&1
+          BASE_RC=$?
+          if [ $BASE_RC -ne 0 ]; then
+            echo "✗ accuracy baseline FAILED (exit $BASE_RC)"
+            tail -30 /tmp/acc_baseline.log
+            exit 1
+          fi
+          echo "✓ accuracy baseline passed"
+          # 2. FP injection must fail (exit != 0) — gate catches false positives.
+          if CODESCOPE_SKIP_ASYNC=1 CODESCOPE_INJECT_FP=1 "$ACC_BIN" > /dev/null 2>&1; then
+            echo "✗ FP injection did NOT fail (gate broken)"
+            exit 1
+          fi
+          echo "✓ FP injection correctly failed"
+          # 3. FN injection must fail (exit != 0) — gate catches false negatives.
+          if CODESCOPE_SKIP_ASYNC=1 CODESCOPE_INJECT_FN=1 "$ACC_BIN" > /dev/null 2>&1; then
+            echo "✗ FN injection did NOT fail (gate broken)"
+            exit 1
+          fi
+          echo "✓ FN injection correctly failed"
+          echo "✓ accuracy gate PASSED"
 
       - name: Strip binary
         if: inputs.skip_package != true
@@ -276,51 +297,9 @@ jobs:
           cp LICENSE package/
           [ -f install.sh ] && cp install.sh package/
 
-          # Bundle vendored LadybugDB shared library and set rpath so the
-          # binary can find it at runtime without Homebrew/system install.
-          # The binary links against @rpath/liblbug.0.dylib (macOS) or
-          # liblbug.so.0 (Linux), resolved via the embedded rpath.
-          case "${{ matrix.artifact }}" in
-            *-x86_64-linux)
-              LBUG_LIB="engine/third_party/ladybug/lib/linux/liblbug.so.0"
-              LBUG_FILE="liblbug.so.0"
-              ;;
-            *-aarch64-linux)
-              LBUG_LIB="engine/third_party/ladybug/lib/linux-aarch64/liblbug.so.0"
-              LBUG_FILE="liblbug.so.0"
-              ;;
-            *-macos)
-              LBUG_LIB="engine/third_party/ladybug/lib/macos/liblbug.0.dylib"
-              LBUG_FILE="liblbug.0.dylib"
-              ;;
-            *-windows)
-              LBUG_LIB="engine/third_party/ladybug/lib/windows/lbug_shared.dll"
-              LBUG_FILE="lbug_shared.dll"
-              # Windows also needs OpenSSL + MSVC CRT DLLs (transitive
-              # dependencies of lbug_shared.dll). All vendored under the
-              # same directory — copy them alongside the main DLL.
-              WIN_DEPS="engine/third_party/ladybug/lib/windows/libcrypto-3-x64-*.dll engine/third_party/ladybug/lib/windows/libssl-3-x64-*.dll engine/third_party/ladybug/lib/windows/msvcp140-*.dll"
-              ;;
-          esac
-          # Bundle LadybugDB shared lib + transitive DLL dependencies.
-          # Windows bundles OpenSSL/MSVC CRT DLLs alongside lbug_shared.dll
-          # so the binary finds them in its own directory at runtime.
-          if [ -n "$LBUG_LIB" ]; then
-            cp -L "$LBUG_LIB" "package/$LBUG_FILE"
-            # Copy Windows dependency DLLs
-            if [ "${{ matrix.os }}" = "windows-2022" ]; then
-              for dep in $WIN_DEPS; do
-                [ -f "$dep" ] && cp -L "$dep" package/ || true
-              done
-            fi
-          fi
-          # Set rpath to $ORIGIN (Linux) / @executable_path (macOS) so the
-          # dynamic linker finds the bundled library in the same directory.
-          if [[ "${{ matrix.os }}" == ubuntu-* ]]; then
-            patchelf --set-rpath '$ORIGIN' package/codescope
-          elif [[ "${{ matrix.os }}" == macos-* ]]; then
-            install_name_tool -add_rpath @executable_path/. package/codescope 2>/dev/null || true
-          fi
+          # The binary is statically linked (tree-sitter, SQLite, grammars
+          # are all bundled), so no external shared libraries need to be
+          # copied into the package.
 
           cd package
           tar -czf "../${{ matrix.artifact }}.tar.gz" ./*

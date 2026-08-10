@@ -52,9 +52,7 @@ class Worker:
 	fclose(f);
 
 	char db[] = "/tmp/test_resolve_strategy.db";
-	char lbug[] = "/tmp/test_resolve_strategy.lbug";
 	unlink(db);
-	unlink(lbug);
 	check(engine_init(db) == 0, "engine_init");
 
 	uint64_t pid = engine_create_project(proj_dir, "resolve-test");

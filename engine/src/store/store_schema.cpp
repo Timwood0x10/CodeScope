@@ -12,9 +12,11 @@
 #include "store.h"
 #include "platform_win.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <sqlite3.h>
 #include <string>
+#include <vector>
 
 namespace store
 {
@@ -41,6 +43,13 @@ bool GraphStore::createSchema()
             fts_ready INTEGER DEFAULT 0,
             vector_ready INTEGER DEFAULT 0,
             knowledge_ready INTEGER DEFAULT 0,
+            -- v0.2.5: metrics_ready reflects whether the metrics producer
+            -- (resolveStagedMetrics) resolved cyclomatic onto >=1 entity row
+            -- for the project. Kept as a flag separate from the canonical
+            -- count probe so the API can answer "was the producer run?" fast,
+            -- while engine_get_enhancement_status always re-probes the
+            -- canonical entity table for the true coverage count.
+            metrics_ready INTEGER DEFAULT 0,
             FOREIGN KEY (project_id) REFERENCES projects(id)
         );
 
@@ -99,26 +108,6 @@ bool GraphStore::createSchema()
             UNIQUE(project_id, source_node_id, target_node_id, edge_type, graph_type)
         );
 
-        -- LadybugDB incremental sync state: tracks the last successful
-        -- sync per project so only newly-added nodes/edges are pushed.
-        -- last_sync_ts: Unix timestamp of last successful sync.
-        -- last_node_id: max graph_nodes.id that has been synced.
-        -- last_edge_id: max graph_edges.id that has been synced.
-        -- node_count / edge_count: total rows mirrored to LadybugDB.
-        -- sync_status: pending / syncing / complete / failed.
-        CREATE TABLE IF NOT EXISTS lbug_sync_state (
-            project_id    INTEGER PRIMARY KEY,
-            last_sync_ts  INTEGER NOT NULL,
-            last_node_id  INTEGER NOT NULL,
-            last_edge_id  INTEGER NOT NULL,
-            node_count    INTEGER NOT NULL DEFAULT 0,
-            edge_count    INTEGER NOT NULL DEFAULT 0,
-            sync_status   TEXT NOT NULL DEFAULT 'pending',
-            FOREIGN KEY (project_id) REFERENCES projects(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_lbug_sync_project
-            ON lbug_sync_state(project_id);
-
         CREATE TABLE IF NOT EXISTS entity (
             id INTEGER PRIMARY KEY,
             project_id INTEGER NOT NULL,
@@ -137,8 +126,61 @@ bool GraphStore::createSchema()
             -- can disambiguate same-name overloads (init()/init(int)) without
             -- a JOIN per candidate. See CODE_REVIEW_FINDINGS_2026-07-19.md C2.
             arity INTEGER NOT NULL DEFAULT 0,
+            -- v0.2.5: per-function code metrics. Computed once in the parse
+            -- worker (computeMetricsFromCST/computeMetricsFromUnit), staged in
+            -- _staged_metrics during insertFileResultBatch, then resolved onto
+            -- the canonical entity row by resolveStagedMetrics (after
+            -- buildGraph creates the entity ids). These are real measurements
+            -- — not placeholder 0s. cyclomatic = 1 + branches + loops;
+            -- cognitive = cyclomatic + nesting_depth (approx).
+            cyclomatic INTEGER NOT NULL DEFAULT 0,
+            nesting_depth INTEGER NOT NULL DEFAULT 0,
+            cognitive INTEGER NOT NULL DEFAULT 0,
+            param_count INTEGER NOT NULL DEFAULT 0,
+            call_count INTEGER NOT NULL DEFAULT 0,
+            branch_count INTEGER NOT NULL DEFAULT 0,
+            loop_count INTEGER NOT NULL DEFAULT 0,
+            lines INTEGER NOT NULL DEFAULT 0,
+            is_stub INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY (project_id) REFERENCES projects(id)
         );
+
+        -- _staged_metrics: temporary staging table that carries per-function
+        -- MetricRow data from the parse-phase insert into the post-buildGraph
+        -- resolveStagedMetrics() JOIN. It exists only to bridge the id gap:
+        -- entity ids are created by buildGraph/populateSymbolsFromGraph, which
+        -- runs AFTER the streaming insert. Keyed by (project_id, file_path,
+        -- start_row, kind) so resolveStagedMetrics can JOIN onto entity rows
+        -- (which carry the same semantic tuple). Deleted per project after
+        -- resolve so a re-index never re-applies stale metrics.
+        CREATE TABLE IF NOT EXISTS _staged_metrics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            file_path TEXT NOT NULL,
+            start_row INTEGER NOT NULL,
+            start_col INTEGER NOT NULL,
+            kind INTEGER NOT NULL DEFAULT 0,
+            name TEXT NOT NULL DEFAULT '',
+            cyclomatic INTEGER NOT NULL DEFAULT 0,
+            nesting_depth INTEGER NOT NULL DEFAULT 0,
+            cognitive INTEGER NOT NULL DEFAULT 0,
+            param_count INTEGER NOT NULL DEFAULT 0,
+            call_count INTEGER NOT NULL DEFAULT 0,
+            branch_count INTEGER NOT NULL DEFAULT 0,
+            loop_count INTEGER NOT NULL DEFAULT 0,
+            lines INTEGER NOT NULL DEFAULT 0,
+            is_stub INTEGER NOT NULL DEFAULT 0
+        );
+        -- Lookup index for resolveStagedMetrics: the resolve UPDATE joins
+        -- _staged_metrics on (project_id, file_path, start_row, start_col).
+        -- The previous index used `kind` as the 4th column, which never
+        -- matches the JOIN predicate — every resolve subquery fell back to
+        -- scanning all rows of a (project, file, start_row) group and the
+        -- 11 per-column subqueries ran one full group scan each per entity
+        -- row. With 13k+ staged rows (goagent) times 11 subqueries this
+        -- made the post-buildGraph resolve take minutes instead of ms.
+        CREATE INDEX IF NOT EXISTS idx_staged_metrics_lookup
+            ON _staged_metrics(project_id, file_path, start_row, start_col);
 
         CREATE TABLE IF NOT EXISTS relation (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -146,6 +188,18 @@ bool GraphStore::createSchema()
             source_id INTEGER NOT NULL,
             target_id INTEGER NOT NULL,
             type INTEGER NOT NULL,
+            -- Step 6 (plan §6.1): relation provenance. Each resolved
+            -- CALLS edge carries the evidence that produced it, so any
+            -- FP can be traced back to the resolver, resolution kind,
+            -- and reason. Nullable/empty for non-call relations and
+            -- pre-migration rows.
+            confidence REAL DEFAULT 0.0,
+            resolver TEXT DEFAULT '',
+            resolution_kind TEXT DEFAULT '',
+            reason TEXT DEFAULT '',
+            call_site_file TEXT DEFAULT '',
+            call_site_row INTEGER DEFAULT 0,
+            call_site_col INTEGER DEFAULT 0,
             FOREIGN KEY (project_id) REFERENCES projects(id),
             FOREIGN KEY (source_id) REFERENCES entity(id),
             FOREIGN KEY (target_id) REFERENCES entity(id)
@@ -156,6 +210,20 @@ bool GraphStore::createSchema()
         -- on relation (110k+ rows) for each entity lookup.
         CREATE INDEX IF NOT EXISTS idx_relation_target ON relation(project_id, target_id);
         CREATE INDEX IF NOT EXISTS idx_relation_source ON relation(project_id, source_id);
+        -- Step 1 (plan §2.5 A3): deduplicate existing typed relations
+        -- before creating the unique index. Without dedup, CREATE UNIQUE
+        -- INDEX would fail on pre-existing duplicate rows. We keep the
+        -- row with MIN(id) per (project_id, source_id, target_id, type)
+        -- group — the earliest-inserted row is the canonical fact.
+        DELETE FROM relation WHERE id NOT IN (
+          SELECT MIN(id) FROM relation
+          GROUP BY project_id, source_id, target_id, type
+        );
+        -- Typed-relation unique constraint. Prevents INSERT OR IGNORE
+        -- from silently re-adding duplicate (project, source, target,
+        -- type) edges, which previously inflated caller/callee counts.
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_relation_unique_typed
+          ON relation(project_id, source_id, target_id, type);
 
         CREATE INDEX IF NOT EXISTS idx_files_project ON files(project_id);
         CREATE INDEX IF NOT EXISTS idx_graph_nodes_project ON graph_nodes(project_id);
@@ -164,6 +232,14 @@ bool GraphStore::createSchema()
         -- name. Without this, name LIKE 'prefix%' / LIKE '%suffix' do a full
         -- table scan on the entity table.
         CREATE INDEX IF NOT EXISTS idx_entity_name ON entity(project_id, name);
+        -- Lookup index for resolveStagedMetrics' UPDATE ... FROM JOIN:
+        -- the JOIN matches entity rows on (project_id, file_path, start_row,
+        -- start_col) against _staged_metrics. Without this index the planner
+        -- had to scan all entity rows per staged row (or vice versa); with
+        -- 13k+ functions (goagent) that turned the resolve pass into a
+        -- multi-minute operation. Same fix as idx_staged_metrics_lookup.
+        CREATE INDEX IF NOT EXISTS idx_entity_loc
+            ON entity(project_id, file_path, start_row, start_col);
         -- Composite index for module_path queries (scope JOIN, module_edge grouping).
         -- Replaces the non-sargable rtrim(file_path, replace(...)) expression.
         CREATE INDEX IF NOT EXISTS idx_entity_module ON entity(project_id, module_path);
@@ -215,7 +291,16 @@ bool GraphStore::createSchema()
             start_row INTEGER DEFAULT 0, start_col INTEGER DEFAULT 0,
             end_row INTEGER DEFAULT 0, end_col INTEGER DEFAULT 0,
             file_path TEXT NOT NULL,
-            language TEXT DEFAULT ''
+            language TEXT DEFAULT '',
+            -- Step 3 (plan §3.1): structured call facts for CallExpr records.
+            -- Populated by per-language Visitors; flow through to the
+            -- `reference` table so the Resolver can disambiguate
+            -- method/static/constructor calls with structured evidence
+            -- instead of bare-name + directory heuristics. Empty = unknown.
+            qualified_target TEXT DEFAULT '', -- full call text, e.g. "b.Get"
+            receiver_text TEXT DEFAULT '',     -- syntactic receiver, e.g. "b"
+            receiver_type TEXT DEFAULT '',     -- inferred receiver type, e.g. "Box"
+            import_alias TEXT DEFAULT ''       -- import alias used, e.g. "fmt"
         );
         CREATE INDEX IF NOT EXISTS idx_sr_project ON semantic_records(project_id);
         CREATE INDEX IF NOT EXISTS idx_sr_parent ON semantic_records(project_id, parent_id);
@@ -227,6 +312,15 @@ bool GraphStore::createSchema()
         CREATE INDEX IF NOT EXISTS idx_sr_kind ON semantic_records(project_id, kind);
         -- Index for containment edges parent JOIN: (file_path, parent_id)
         CREATE INDEX IF NOT EXISTS idx_sr_fp_parent ON semantic_records(file_path, parent_id);
+        -- Index for ResolverPipeline self-joins: the global field/variable
+        -- type passes JOIN semantic_records t ON t.parent_id = p.original_id
+        -- (kind=17 TypeRef → parent entity). Without an index on
+        -- (project_id, original_id) SQLite SCANs the whole p side per t row
+        -- — for goagent's ~680k semantic_records rows that is ~2.5k×680k
+        -- comparisons and the resolver phase alone exceeded 110s (the build
+        -- previously timed out; api/ at 46k rows finished in 2.4s).
+        CREATE INDEX IF NOT EXISTS idx_sr_oid
+            ON semantic_records(project_id, original_id);
         -- Index for call edges name matching: (project_id, kind, name) covers the WHERE + JOIN
         -- Language added for P3 cross-file matching: sr.language = callee.language
         CREATE INDEX IF NOT EXISTS idx_sr_kind_name ON semantic_records(project_id, kind, name, language);
@@ -326,18 +420,18 @@ bool GraphStore::createSchema()
         -- after buildGraph. Each row packs all callee node IDs for a caller into a
         -- contiguous u32 BLOB. Queries are O(1) B-tree lookup + pointer arithmetic.
         CREATE TABLE IF NOT EXISTS adjacency (
-            src_id INTEGER PRIMARY KEY,    -- graph_nodes.id (caller)
+            src_id INTEGER PRIMARY KEY,    -- entity.id (caller)
             project_id INTEGER NOT NULL,
-            tgt_blob BLOB                  -- packed u32[] of callee node IDs
+            tgt_blob BLOB                  -- packed u32[] of callee entity IDs
         );
 
         -- Phase 2: reverse adjacency (CSR BLOB). Mirror of adjacency for
         -- caller lookups: each row packs all caller node IDs for a callee.
         -- Enables O(1) getCallerIds() instead of O(n) full-scan.
         CREATE TABLE IF NOT EXISTS adjacency_rev (
-            tgt_id INTEGER PRIMARY KEY,    -- graph_nodes.id (callee)
+            tgt_id INTEGER PRIMARY KEY,    -- entity.id (callee)
             project_id INTEGER NOT NULL,
-            src_blob BLOB                  -- packed u32[] of caller node IDs
+            src_blob BLOB                  -- packed u32[] of caller entity IDs
         );
 
         -- ============================================================
@@ -486,6 +580,16 @@ bool GraphStore::createSchema()
             call_kind INTEGER DEFAULT 0, -- 0=direct, 1=method, 2=interface, 3=constructor
             start_row INTEGER DEFAULT 0,
             start_col INTEGER DEFAULT 0,
+            -- Step 3 (plan §3.1): structured call facts. Copied from
+            -- semantic_records at reference-population time so the Resolver
+            -- Pipeline has the evidence it needs for exact-first method
+            -- disambiguation. Empty = unknown; direct calls have empty
+            -- receiver_text (a meaningful "no receiver" signal).
+            qualified_target TEXT DEFAULT '', -- full call text, e.g. "b.Get"
+            receiver_text TEXT DEFAULT '',     -- syntactic receiver, e.g. "b"
+            receiver_type TEXT DEFAULT '',     -- inferred receiver type, e.g. "Box"
+            import_alias TEXT DEFAULT '',      -- import alias used, e.g. "fmt"
+            call_site_file TEXT DEFAULT '',    -- file path of the call site
             FOREIGN KEY (project_id) REFERENCES projects(id)
         );
 
@@ -851,6 +955,75 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 		}
 	}
 
+	// Migration (v0.2.5): add code-metrics columns to entity for databases
+	// created before the metrics restore. Each column defaults to 0 so
+	// existing rows stay valid; resolveStagedMetrics fills them on the next
+	// index/enhance run. Mirrors the entity DDL in createSchema().
+	{
+		struct EntityMetricCol {
+			const char *name;
+			const char *dflt;
+		};
+		static const EntityMetricCol kCols[] = {
+			{ "cyclomatic", "0" }, { "nesting_depth", "0" },
+			{ "cognitive", "0" },  { "param_count", "0" },
+			{ "call_count", "0" }, { "branch_count", "0" },
+			{ "loop_count", "0" }, { "lines", "0" },
+			{ "is_stub", "0" },
+		};
+		sqlite3_stmt *probe = nullptr;
+		if (sqlite3_prepare_v2(db_, "PRAGMA table_info(entity)", -1,
+				       &probe, nullptr) == SQLITE_OK) {
+			std::vector<std::string> existing;
+			while (sqlite3_step(probe) == SQLITE_ROW) {
+				const char *col =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(probe, 1));
+				if (col)
+					existing.emplace_back(col);
+			}
+			sqlite3_finalize(probe);
+			for (const auto &c : kCols) {
+				if (std::find(existing.begin(), existing.end(),
+					      c.name) != existing.end())
+					continue;
+				exec(("ALTER TABLE entity ADD COLUMN " +
+				      std::string(c.name) +
+				      " INTEGER NOT NULL DEFAULT " + c.dflt)
+					     .c_str());
+			}
+		} else {
+			fprintf(stderr,
+				"createSchema: entity metrics migration probe "
+				"failed: %s [module=store, method=createSchema]\n",
+				sqlite3_errmsg(db_));
+		}
+	}
+
+	// Migration (v0.2.5): add metrics_ready to project_readiness for
+	// databases created before the metrics restore. Mirrors the DDL column
+	// in createSchema().
+	{
+		sqlite3_stmt *rprobe = nullptr;
+		bool has_metrics_ready = false;
+		if (sqlite3_prepare_v2(db_,
+				       "PRAGMA table_info(project_readiness)",
+				       -1, &rprobe, nullptr) == SQLITE_OK) {
+			while (sqlite3_step(rprobe) == SQLITE_ROW) {
+				const char *col =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(rprobe, 1));
+				if (col && std::string(col) == "metrics_ready")
+					has_metrics_ready = true;
+			}
+			sqlite3_finalize(rprobe);
+		}
+		if (!has_metrics_ready) {
+			exec("ALTER TABLE project_readiness "
+			     "ADD COLUMN metrics_ready INTEGER DEFAULT 0");
+		}
+	}
+
 	// Migration: add type_info + type_ref tables (v0.6+)
 	{
 		// Add route table if missing
@@ -887,18 +1060,30 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 			bool has_type_name = false;
 			bool has_call_kind = false;
 			bool has_resolve_strategy = false;
+			bool has_qualified_target = false;
+			bool has_receiver_text = false;
+			bool has_receiver_type = false;
+			bool has_import_alias = false;
 			while (sqlite3_step(probe) == SQLITE_ROW) {
 				const char *col =
 					reinterpret_cast<const char *>(
 						sqlite3_column_text(probe, 1));
 				if (col) {
-					if (std::string(col) == "type_name")
+					const std::string c(col);
+					if (c == "type_name")
 						has_type_name = true;
-					if (std::string(col) == "call_kind")
+					if (c == "call_kind")
 						has_call_kind = true;
-					if (std::string(col) ==
-					    "resolve_strategy")
+					if (c == "resolve_strategy")
 						has_resolve_strategy = true;
+					if (c == "qualified_target")
+						has_qualified_target = true;
+					if (c == "receiver_text")
+						has_receiver_text = true;
+					if (c == "receiver_type")
+						has_receiver_type = true;
+					if (c == "import_alias")
+						has_import_alias = true;
 				}
 			}
 			sqlite3_finalize(probe);
@@ -914,6 +1099,147 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 				exec("ALTER TABLE semantic_records "
 				     "ADD COLUMN resolve_strategy "
 				     "TEXT DEFAULT ''");
+			}
+			// Step 3 (plan §3.1): structured call-fact columns.
+			if (!has_qualified_target) {
+				exec("ALTER TABLE semantic_records "
+				     "ADD COLUMN qualified_target "
+				     "TEXT DEFAULT ''");
+			}
+			if (!has_receiver_text) {
+				exec("ALTER TABLE semantic_records "
+				     "ADD COLUMN receiver_text "
+				     "TEXT DEFAULT ''");
+			}
+			if (!has_receiver_type) {
+				exec("ALTER TABLE semantic_records "
+				     "ADD COLUMN receiver_type "
+				     "TEXT DEFAULT ''");
+			}
+			if (!has_import_alias) {
+				exec("ALTER TABLE semantic_records "
+				     "ADD COLUMN import_alias "
+				     "TEXT DEFAULT ''");
+			}
+		}
+
+		// Step 3 (plan §3.1): migrate the `reference` table with the
+		// same structured call-fact columns plus call_site_file. SQLite
+		// has no ADD COLUMN IF NOT EXISTS, so probe table_info first.
+		{
+			sqlite3_stmt *ref_probe = nullptr;
+			if (sqlite3_prepare_v2(
+				    db_, "PRAGMA table_info(reference)", -1,
+				    &ref_probe, nullptr) == SQLITE_OK) {
+				bool has_qualified_target = false;
+				bool has_receiver_text = false;
+				bool has_receiver_type = false;
+				bool has_import_alias = false;
+				bool has_call_site_file = false;
+				while (sqlite3_step(ref_probe) == SQLITE_ROW) {
+					const char *col =
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								ref_probe, 1));
+					if (col) {
+						const std::string c(col);
+						if (c == "qualified_target")
+							has_qualified_target =
+								true;
+						if (c == "receiver_text")
+							has_receiver_text =
+								true;
+						if (c == "receiver_type")
+							has_receiver_type =
+								true;
+						if (c == "import_alias")
+							has_import_alias = true;
+						if (c == "call_site_file")
+							has_call_site_file =
+								true;
+					}
+				}
+				sqlite3_finalize(ref_probe);
+				if (!has_qualified_target)
+					exec("ALTER TABLE reference ADD COLUMN "
+					     "qualified_target TEXT DEFAULT ''");
+				if (!has_receiver_text)
+					exec("ALTER TABLE reference ADD COLUMN "
+					     "receiver_text TEXT DEFAULT ''");
+				if (!has_receiver_type)
+					exec("ALTER TABLE reference ADD COLUMN "
+					     "receiver_type TEXT DEFAULT ''");
+				if (!has_import_alias)
+					exec("ALTER TABLE reference ADD COLUMN "
+					     "import_alias TEXT DEFAULT ''");
+				if (!has_call_site_file)
+					exec("ALTER TABLE reference ADD COLUMN "
+					     "call_site_file TEXT DEFAULT ''");
+			}
+		}
+
+		// Step 6 (plan §6.1): migrate the `relation` table with
+		// provenance columns. SQLite has no ADD COLUMN IF NOT EXISTS,
+		// so probe table_info first. Each new column is nullable with
+		// a default so pre-existing rows and non-call relations are
+		// not affected.
+		{
+			sqlite3_stmt *probe = nullptr;
+			if (sqlite3_prepare_v2(
+				    db_, "PRAGMA table_info(relation)", -1,
+				    &probe, nullptr) == SQLITE_OK) {
+				bool has_confidence = false;
+				bool has_resolver = false;
+				bool has_res_kind = false;
+				bool has_reason = false;
+				bool has_csf = false;
+				bool has_csr = false;
+				bool has_csc = false;
+				while (sqlite3_step(probe) == SQLITE_ROW) {
+					const char *col =
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								probe, 1));
+					if (!col)
+						continue;
+					std::string c = col;
+					if (c == "confidence")
+						has_confidence = true;
+					else if (c == "resolver")
+						has_resolver = true;
+					else if (c == "resolution_kind")
+						has_res_kind = true;
+					else if (c == "reason")
+						has_reason = true;
+					else if (c == "call_site_file")
+						has_csf = true;
+					else if (c == "call_site_row")
+						has_csr = true;
+					else if (c == "call_site_col")
+						has_csc = true;
+				}
+				sqlite3_finalize(probe);
+				if (!has_confidence)
+					exec("ALTER TABLE relation ADD COLUMN "
+					     "confidence REAL DEFAULT 0.0");
+				if (!has_resolver)
+					exec("ALTER TABLE relation ADD COLUMN "
+					     "resolver TEXT DEFAULT ''");
+				if (!has_res_kind)
+					exec("ALTER TABLE relation ADD COLUMN "
+					     "resolution_kind TEXT DEFAULT ''");
+				if (!has_reason)
+					exec("ALTER TABLE relation ADD COLUMN "
+					     "reason TEXT DEFAULT ''");
+				if (!has_csf)
+					exec("ALTER TABLE relation ADD COLUMN "
+					     "call_site_file TEXT DEFAULT ''");
+				if (!has_csr)
+					exec("ALTER TABLE relation ADD COLUMN "
+					     "call_site_row INTEGER DEFAULT 0");
+				if (!has_csc)
+					exec("ALTER TABLE relation ADD COLUMN "
+					     "call_site_col INTEGER DEFAULT 0");
 			}
 		}
 
@@ -1174,91 +1500,6 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 				exec("ALTER TABLE graph_edges "
 				     "ADD COLUMN resolve_strategy "
 				     "TEXT DEFAULT ''");
-			}
-		}
-	}
-
-	// Migration: rebuild lbug_sync_state with the new schema.
-	// The old schema had (project_id, last_node_id, last_edge_rowid,
-	// synced_at, full_sync_done). The new schema tracks last_sync_ts,
-	// last_node_id, last_edge_id, node_count, edge_count, sync_status.
-	// CREATE TABLE IF NOT EXISTS skips pre-existing tables, so probe for
-	// the last_sync_ts column; if absent, DROP and recreate so the new
-	// columns are available. The old sync cursor is discarded — the next
-	// syncIncrementalToLadybugDB call will detect no valid state and
-	// fall back to a full sync.
-	{
-		sqlite3_stmt *probe = nullptr;
-		if (sqlite3_prepare_v2(db_,
-				       "PRAGMA table_info(lbug_sync_state)", -1,
-				       &probe, nullptr) == SQLITE_OK) {
-			bool has_last_sync_ts = false;
-			while (sqlite3_step(probe) == SQLITE_ROW) {
-				const char *col =
-					reinterpret_cast<const char *>(
-						sqlite3_column_text(probe, 1));
-				if (col && std::string(col) == "last_sync_ts")
-					has_last_sync_ts = true;
-			}
-			sqlite3_finalize(probe);
-			if (!has_last_sync_ts) {
-				// Wrap DROP + CREATE TABLE + CREATE INDEX in a
-				// single transaction. A crash after DROP would
-				// lose the sync cursor with no schema to receive
-				// future updates; the transaction makes the
-				// rebuild all-or-nothing.
-				if (!exec("BEGIN IMMEDIATE")) {
-					fprintf(stderr,
-						"[module=store, method=createSchema] "
-						"BEGIN lbug_sync_state migration "
-						"failed: %s\n",
-						error_.c_str());
-					return false;
-				}
-				if (!exec("DROP TABLE IF EXISTS lbug_sync_state")) {
-					fprintf(stderr,
-						"[module=store, method=createSchema] "
-						"DROP TABLE lbug_sync_state failed: %s\n",
-						error_.c_str());
-					exec("ROLLBACK");
-					return false;
-				}
-				if (!exec("CREATE TABLE IF NOT EXISTS lbug_sync_state ("
-					  " project_id    INTEGER PRIMARY KEY,"
-					  " last_sync_ts  INTEGER NOT NULL,"
-					  " last_node_id  INTEGER NOT NULL,"
-					  " last_edge_id  INTEGER NOT NULL,"
-					  " node_count    INTEGER NOT NULL DEFAULT 0,"
-					  " edge_count    INTEGER NOT NULL DEFAULT 0,"
-					  " sync_status   TEXT NOT NULL DEFAULT 'pending',"
-					  " FOREIGN KEY (project_id) REFERENCES projects(id)"
-					  ")")) {
-					fprintf(stderr,
-						"[module=store, method=createSchema] "
-						"CREATE TABLE lbug_sync_state failed: %s\n",
-						error_.c_str());
-					exec("ROLLBACK");
-					return false;
-				}
-				if (!exec("CREATE INDEX IF NOT EXISTS "
-					  "idx_lbug_sync_project "
-					  "ON lbug_sync_state(project_id)")) {
-					fprintf(stderr,
-						"[module=store, method=createSchema] "
-						"CREATE INDEX idx_lbug_sync_project failed: %s\n",
-						error_.c_str());
-					exec("ROLLBACK");
-					return false;
-				}
-				if (!exec("COMMIT")) {
-					fprintf(stderr,
-						"[module=store, method=createSchema] "
-						"COMMIT lbug_sync_state migration "
-						"failed: %s\n",
-						error_.c_str());
-					exec("ROLLBACK");
-					return false;
-				}
 			}
 		}
 	}

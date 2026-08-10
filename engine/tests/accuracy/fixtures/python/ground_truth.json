@@ -1,0 +1,19 @@
+{
+  "language": "python",
+  "expected_calls": [
+    {"caller": "main_func", "caller_file": "a.py", "callee": "alpha", "callee_file": "a.py"},
+    {"caller": "main_func", "caller_file": "a.py", "callee": "Timeline", "callee_file": "a.py", "note": "constructor call Timeline()"},
+    {"caller": "main_func", "caller_file": "a.py", "callee": "Box", "callee_file": "a.py", "note": "constructor call Box()"},
+    {"caller": "main_func", "caller_file": "a.py", "callee": "render", "callee_file": "a.py", "note": "obj.render() and box.render() — same-name method homonym"},
+    {"caller": "alpha", "caller_file": "a.py", "callee": "bravo", "callee_file": "b.py"},
+    {"caller": "render", "caller_file": "a.py", "callee": "_internal", "callee_file": "a.py", "note": "self._internal() with receiver_type=Timeline"},
+    {"caller": "create", "caller_file": "a.py", "callee": "render", "callee_file": "a.py", "note": "cls.render() with receiver_type=Timeline"}
+  ],
+  "forbidden_calls": [
+    {"caller": "main_func", "callee": "len"},
+    {"caller": "main_func", "callee": "range"},
+    {"caller": "main_func", "callee": "helper", "note": "b.py:helper is NOT called from a.py"}
+  ],
+  "allowed_unresolved": [],
+  "external_calls": ["len"]
+}

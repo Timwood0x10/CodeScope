@@ -408,17 +408,19 @@ bool GraphStore::insertEmbedding(uint64_t symbol_id, const float *vector_data,
 	       static_cast<size_t>(copy_dim) * sizeof(float));
 
 	// Write to node_vectors FIRST — this is the table that searchSemantic
-	// actually reads from (store.cpp ~771). This always works because
-	// node_vectors is a regular SQLite table, not a vec0 virtual table.
+	// actually reads from. This always works because node_vectors is a
+	// regular SQLite table, not a vec0 virtual table.
 	// On platforms where vec0.dll isn't available (e.g. Windows without
 	// the extension), the embeddings INSERT below will fail, but the
 	// node_vectors path still succeeds, providing graceful degradation.
+	// v0.2.5: resolve the project id from the canonical `entity` table
+	// (entity.id) — the deprecated `graph_nodes` table is empty in the
+	// canonical schema, so the old query could never resolve a project.
 	{
 		uint64_t proj_id = 0;
 		sqlite3_stmt *pid_st = nullptr;
 		if (sqlite3_prepare_v2(
-			    db_,
-			    "SELECT project_id FROM graph_nodes WHERE id=?", -1,
+			    db_, "SELECT project_id FROM entity WHERE id=?", -1,
 			    &pid_st, nullptr) == SQLITE_OK) {
 			sqlite3_bind_int64(pid_st, 1,
 					   static_cast<int64_t>(symbol_id));
@@ -448,12 +450,26 @@ bool GraphStore::insertEmbedding(uint64_t symbol_id, const float *vector_data,
 }
 
 // ── Phase B: Enhancement — Ready Flags ────────────────────────
+//
+// v0.2.5: the metrics and embedding producers are RESTORED (see
+// resolveStagedMetrics / buildVectorsFromGraph). These two setters remain as
+// defensive seams that operate on the DEPRECATED `graph_nodes` table (empty
+// in the canonical schema — `entity`/`relation`/`node_vectors` are the source
+// of truth). They deliberately do NOT flip canonical readiness: true
+// metrics_ready / vector_ready are derived from the canonical entity
+// cyclomatic count and node_vectors row count in
+// engine_get_enhancement_status / engine_get_capabilities /
+// engine_index_post_parse, so readiness always matches real data and the
+// A18/A19 "fake ready" bugs cannot recur regardless of these seams.
 
 bool GraphStore::markCallgraphAndMetricsReady(uint64_t symbol_id)
 {
+	// Compatibility seam: only touches the deprecated graph_nodes row.
+	// Canonical callgraph readiness is computed from relation.type=1
+	// coverage; canonical metrics_ready from entity cyclomatic — never
+	// set here.
 	const char *sql =
-		"UPDATE graph_nodes SET callgraph_ready=1, metrics_ready=1 "
-		"WHERE id = ?";
+		"UPDATE graph_nodes SET callgraph_ready=1 WHERE id = ?";
 	sqlite3_stmt *stmt = getCachedStmt(sql);
 	if (!stmt) {
 		return false;
@@ -468,17 +484,12 @@ bool GraphStore::markCallgraphAndMetricsReady(uint64_t symbol_id)
 
 bool GraphStore::markEmbeddingReady(uint64_t symbol_id)
 {
-	const char *sql =
-		"UPDATE graph_nodes SET embedding_ready=1 WHERE id = ?";
-	sqlite3_stmt *stmt = getCachedStmt(sql);
-	if (!stmt) {
-		return false;
-	}
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(symbol_id));
-	if (sqlite3_step(stmt) != SQLITE_DONE) {
-		error_ = "markEmbeddingReady: step failed";
-		return false;
-	}
+	// v0.2.5: embedding producer (buildVectorsFromGraph) is restored and
+	// populates node_vectors. This seam deliberately does NOT flip a flag:
+	// canonical embedding readiness is derived from the node_vectors row
+	// count, so it tracks real data and the A19 "fake ready" bug cannot
+	// recur. Retained so a caller cannot silently over-claim readiness.
+	(void)symbol_id;
 	return true;
 }
 
@@ -595,8 +606,12 @@ std::unordered_set<std::string>
 GraphStore::loadFileScanStateBatch(uint64_t project_id)
 {
 	std::unordered_set<std::string> result;
+	// M2: also read content_hash so the incremental skip can verify that a
+	// file with the same mtime+size really is byte-identical (closes the
+	// "same size + same mtime but changed content" hole).
 	const char *sql =
-		"SELECT file_path, file_mtime, file_size FROM file_scan_state WHERE project_id=?";
+		"SELECT file_path, file_mtime, file_size, COALESCE(content_hash,'') "
+		"FROM file_scan_state WHERE project_id=?";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
 		fprintf(stderr,
@@ -611,11 +626,20 @@ GraphStore::loadFileScanStateBatch(uint64_t project_id)
 			sqlite3_column_text(stmt, 0));
 		int64_t mtime = sqlite3_column_int64(stmt, 1);
 		int64_t fsize = sqlite3_column_int64(stmt, 2);
+		const char *ch = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 3));
 		if (fp) {
-			std::string key = std::string(fp) + "|" +
-					  std::to_string(mtime) + "|" +
-					  std::to_string(fsize);
-			result.insert(std::move(key));
+			// Two keys per row: the mtime|size gate (fast, stat-only) and
+			// the mtime|size|hash gate (requires reading the file to hash
+			// it). The detection code checks the gate first (cheap) and
+			// only hashes when the gate matches, so unchanged files with
+			// different mtime/size skip without being read.
+			std::string base = std::string(fp) + "|" +
+					   std::to_string(mtime) + "|" +
+					   std::to_string(fsize);
+			result.insert(base);
+			if (ch && *ch)
+				result.insert(base + "|" + std::string(ch));
 		}
 	}
 	sqlite3_finalize(stmt);

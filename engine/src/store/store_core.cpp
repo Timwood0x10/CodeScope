@@ -390,8 +390,8 @@ void GraphStore::setProjectReadiness(uint64_t project_id, const char *field,
 {
 	// Whitelist allowed field names to prevent SQL injection
 	static const std::unordered_set<std::string> allowed_fields = {
-		"fast_ready", "normal_ready", "deep_ready",
-		"fts_ready",  "vector_ready", "knowledge_ready"
+		"fast_ready",	"normal_ready",	   "deep_ready",   "fts_ready",
+		"vector_ready", "knowledge_ready", "metrics_ready"
 	};
 	if (!field || allowed_fields.find(field) == allowed_fields.end())
 		return;
@@ -411,8 +411,8 @@ int GraphStore::getProjectReadiness(uint64_t project_id, const char *field)
 {
 	// Whitelist allowed field names to prevent SQL injection
 	static const std::unordered_set<std::string> allowed_fields = {
-		"fast_ready", "normal_ready", "deep_ready",
-		"fts_ready",  "vector_ready", "knowledge_ready"
+		"fast_ready",	"normal_ready",	   "deep_ready",   "fts_ready",
+		"vector_ready", "knowledge_ready", "metrics_ready"
 	};
 	if (!field || allowed_fields.find(field) == allowed_fields.end())
 		return 0;

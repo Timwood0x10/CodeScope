@@ -5,13 +5,10 @@
 #include <cstdio>
 #include <cstring>
 #include <sstream>
+#include <sqlite3.h>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-
-#ifdef HAS_LADYBUG
-#include <lbug.h>
-#endif
 
 namespace query
 {
@@ -76,309 +73,6 @@ static std::vector<std::string> parseFileList(const char *json)
 	return files;
 }
 
-#ifdef HAS_LADYBUG
-// ─── LadybugDB helpers ─────────────────────────────────────────
-
-// Escape single quotes for Cypher string literals by doubling them.
-static std::string cypherEscapeStr(const std::string &s)
-{
-	std::string out;
-	out.reserve(s.size() + 4);
-	for (char c : s) {
-		if (c == '\'')
-			out += "''";
-		else
-			out += c;
-	}
-	return out;
-}
-
-// ─── Find graph nodes residing in the modified files ───────────
-//
-// Returns a vector of (graph_node_id, name) pairs for all graph nodes
-// whose file_path matches one of the modified files. Uses a single
-// Cypher query with an IN list instead of one query per file.
-static void
-findNodesInFiles(lbug_connection *conn, uint64_t project_id,
-		 const std::vector<std::string> &file_list,
-		 std::vector<std::pair<uint64_t, std::string>> &out_nodes)
-{
-	if (file_list.empty() || !conn)
-		return;
-
-	out_nodes.clear();
-
-	// Build Cypher IN list: ['path1','path2',...]
-	std::string in_list;
-	for (const auto &fp : file_list) {
-		if (!in_list.empty())
-			in_list += ",";
-		in_list += "'" + cypherEscapeStr(fp) + "'";
-	}
-
-	std::string cypher =
-		"MATCH (n:GraphNode {project_id:" + std::to_string(project_id) +
-		"}) WHERE n.file_path IN [" + in_list +
-		"] RETURN n.graph_node_id, n.name";
-	lbug_query_result qr;
-	lbug_state s = lbug_connection_query(conn, cypher.c_str(), &qr);
-	if (s != LbugSuccess) {
-		char *err = lbug_query_result_get_error_message(&qr);
-		fprintf(stderr,
-			"[module=impact, method=analyzeChangeImpact/"
-			"findNodesInFiles] query failed: %s\n",
-			err ? err : "(unknown)");
-		if (err)
-			lbug_destroy_string(err);
-		lbug_query_result_destroy(&qr);
-		return;
-	}
-	lbug_flat_tuple tuple;
-	while (lbug_query_result_get_next(&qr, &tuple) == LbugSuccess) {
-		lbug_value v;
-		int64_t id = 0;
-		std::string name;
-		if (lbug_flat_tuple_get_value(&tuple, 0, &v) == LbugSuccess)
-			lbug_value_get_int64(&v, &id);
-		char *sv = nullptr;
-		if (lbug_flat_tuple_get_value(&tuple, 1, &v) == LbugSuccess) {
-			if (lbug_value_get_string(&v, &sv) == LbugSuccess &&
-			    sv) {
-				name = sv;
-				lbug_destroy_string(sv);
-			}
-		}
-		out_nodes.emplace_back(static_cast<uint64_t>(id), name);
-		lbug_flat_tuple_destroy(&tuple);
-	}
-	lbug_query_result_destroy(&qr);
-}
-
-// ─── Build forward + reverse adjacency lists from CALLS edges ──
-//
-// Forward edges (source → target) drive downstream (callees) traversal.
-// Reverse edges (target → source) drive upstream (callers) traversal.
-//
-// Returns true on success. On failure, sets *error_out to a tagged
-// message and returns false (callers report it in the JSON).
-//
-// M3 CONTRACT: The adjacency maps are keyed by uint64_t graph_node_id,
-// which the LadybugDB compiler (store_graph_compiler.cpp) sets equal to
-// graph_nodes.id (the SQLite integer primary key). lookupNodeMetadata()
-// below queries `WHERE n.graph_node_id IN (...)` against the SAME id, so
-// the keys match. If graph_node_id is ever changed to a content-stable
-// uid (different from graph_nodes.id), BOTH this function's key type AND
-// lookupNodeMetadata's WHERE clause must be updated to use the same key.
-// See M4 (makeNodeUid) for the content-stable uid implementation that
-// intentionally lives in the separate `uid` column to preserve this
-// invariant.
-static bool buildCallAdjacencyFromLadybug(
-	store::GraphStore *store, uint64_t project_id,
-	std::unordered_map<uint64_t, std::vector<uint64_t>> &forward,
-	std::unordered_map<uint64_t, std::vector<uint64_t>> &reverse,
-	std::string *error_out)
-{
-	lbug_connection *conn = store->lbugHandle();
-	if (!conn) {
-		if (error_out)
-			*error_out = "LadybugDB not initialized";
-		return false;
-	}
-	std::string cypher = "MATCH (src:GraphNode {project_id:" +
-			     std::to_string(project_id) +
-			     "})-[r:CALLS]->(tgt:GraphNode) "
-			     "RETURN src.graph_node_id, tgt.graph_node_id";
-	lbug_query_result qr;
-	lbug_state s = lbug_connection_query(conn, cypher.c_str(), &qr);
-	if (s != LbugSuccess) {
-		char *err = lbug_query_result_get_error_message(&qr);
-		if (error_out)
-			*error_out = err ? err : "LadybugDB query failed";
-		if (err)
-			lbug_destroy_string(err);
-		lbug_query_result_destroy(&qr);
-		return false;
-	}
-	lbug_flat_tuple tuple;
-	while (lbug_query_result_get_next(&qr, &tuple) == LbugSuccess) {
-		lbug_value v;
-		uint64_t src = 0, tgt = 0;
-		bool src_ok = false, tgt_ok = false;
-		int64_t tmp = 0;
-		if (lbug_flat_tuple_get_value(&tuple, 0, &v) == LbugSuccess) {
-			if (lbug_value_get_int64(&v, &tmp) == LbugSuccess) {
-				src = static_cast<uint64_t>(tmp);
-				src_ok = true;
-			}
-		}
-		if (lbug_flat_tuple_get_value(&tuple, 1, &v) == LbugSuccess) {
-			if (lbug_value_get_int64(&v, &tmp) == LbugSuccess) {
-				tgt = static_cast<uint64_t>(tmp);
-				tgt_ok = true;
-			}
-		}
-		if (src_ok && tgt_ok) {
-			forward[src].push_back(tgt);
-			reverse[tgt].push_back(src);
-		}
-		lbug_flat_tuple_destroy(&tuple);
-	}
-	lbug_query_result_destroy(&qr);
-	return true;
-}
-
-// ─── Node metadata lookup ──────────────────────────────────────
-//
-// Populates name_map / file_map for each requested graph_node_id in
-// one Cypher query. Missing IDs are simply left absent from the maps;
-// callers must guard with .count().
-//
-// GraphNode schema has no cyclomatic/nesting_depth columns; callers
-// that need those fields must emit 0.
-//
-// On query failure, sets *error_out to a tagged message. The maps
-// are left empty (nothing was read).
-static void
-lookupNodeMetadata(lbug_connection *conn, uint64_t project_id,
-		   const std::unordered_set<uint64_t> &ids,
-		   std::unordered_map<uint64_t, std::string> &name_map,
-		   std::unordered_map<uint64_t, std::string> &file_map,
-		   std::string *error_out)
-{
-	if (ids.empty() || !conn)
-		return;
-	// Build IN clause from IDs (IDs are uint64 from our own DB —
-	// not user input, so safe to interpolate).
-	std::string id_list;
-	for (auto id : ids) {
-		if (!id_list.empty())
-			id_list += ",";
-		id_list += std::to_string(id);
-	}
-	std::string cypher =
-		"MATCH (n:GraphNode {project_id:" + std::to_string(project_id) +
-		"}) WHERE n.graph_node_id IN [" + id_list +
-		"] RETURN n.graph_node_id, n.name, n.file_path";
-	lbug_query_result qr;
-	lbug_state s = lbug_connection_query(conn, cypher.c_str(), &qr);
-	if (s != LbugSuccess) {
-		char *err = lbug_query_result_get_error_message(&qr);
-		if (error_out) {
-			*error_out = std::string("[module=impact, "
-						 "method=analyzeChangeImpact/"
-						 "lookupNodeMetadata] query "
-						 "failed: ") +
-				     (err ? err : "(unknown)");
-		}
-		if (err)
-			lbug_destroy_string(err);
-		lbug_query_result_destroy(&qr);
-		return;
-	}
-	lbug_flat_tuple tuple;
-	while (lbug_query_result_get_next(&qr, &tuple) == LbugSuccess) {
-		lbug_value v;
-		int64_t id = 0;
-		std::string name, file_path;
-		if (lbug_flat_tuple_get_value(&tuple, 0, &v) == LbugSuccess)
-			lbug_value_get_int64(&v, &id);
-		char *sv = nullptr;
-		if (lbug_flat_tuple_get_value(&tuple, 1, &v) == LbugSuccess) {
-			if (lbug_value_get_string(&v, &sv) == LbugSuccess &&
-			    sv) {
-				name = sv;
-				lbug_destroy_string(sv);
-			}
-		}
-		sv = nullptr;
-		if (lbug_flat_tuple_get_value(&tuple, 2, &v) == LbugSuccess) {
-			if (lbug_value_get_string(&v, &sv) == LbugSuccess &&
-			    sv) {
-				file_path = sv;
-				lbug_destroy_string(sv);
-			}
-		}
-		uint64_t uid = static_cast<uint64_t>(id);
-		name_map[uid] = name;
-		file_map[uid] = file_path;
-		lbug_flat_tuple_destroy(&tuple);
-	}
-	lbug_query_result_destroy(&qr);
-}
-
-// ─── Multi-hop DFS traversal ───────────────────────────────────
-//
-// Walks the adjacency list starting from each seed node, recording the
-// minimum depth at which each impacted node is reached. Seeds
-// themselves are excluded from the output (they're reported in the
-// "modified" section, not in callers/callees).
-//
-// Uses an explicit stack (iterative DFS) to avoid stack overflow on
-// deep graphs. The depth map doubles as the visited set; a node is
-// revisited only if a strictly smaller depth is found, which keeps
-// the traversal correct while bounding redundant work.
-struct ImpactEntry {
-	uint64_t node_id;
-	int depth;
-	uint64_t via_seed; // modified node from which this entry was reached
-};
-
-struct StackFrame {
-	uint64_t node;
-	int depth;
-	uint64_t seed;
-};
-
-static void
-dfsImpact(const std::unordered_map<uint64_t, std::vector<uint64_t>> &adj,
-	  const std::unordered_set<uint64_t> &seeds, int max_depth,
-	  std::vector<ImpactEntry> &out)
-{
-	// Per-node minimum depth + the seed that reached it at that depth.
-	std::unordered_map<uint64_t, int> min_depth;
-	std::unordered_map<uint64_t, uint64_t> via_seed;
-
-	std::vector<StackFrame> stack;
-	stack.reserve(seeds.size() * 2);
-	for (uint64_t seed : seeds) {
-		stack.push_back({ seed, 0, seed });
-	}
-
-	while (!stack.empty()) {
-		StackFrame frame = stack.back();
-		stack.pop_back();
-
-		auto it = min_depth.find(frame.node);
-		if (it != min_depth.end() && it->second <= frame.depth) {
-			// Already reached at same or smaller depth — skip.
-			continue;
-		}
-		min_depth[frame.node] = frame.depth;
-		via_seed[frame.node] = frame.seed;
-
-		if (frame.depth >= max_depth) {
-			continue; // neighbours would exceed the limit
-		}
-		auto adj_it = adj.find(frame.node);
-		if (adj_it == adj.end()) {
-			continue;
-		}
-		for (uint64_t neighbor : adj_it->second) {
-			stack.push_back(
-				{ neighbor, frame.depth + 1, frame.seed });
-		}
-	}
-
-	// Emit entries for all reached non-seed nodes.
-	for (const auto &kv : min_depth) {
-		if (seeds.count(kv.first) > 0) {
-			continue; // seeds are reported separately
-		}
-		out.push_back({ kv.first, kv.second, via_seed[kv.first] });
-	}
-}
-#endif // HAS_LADYBUG
-
 // ─── Public API ───────────────────────────────────────────────
 
 std::string analyzeChangeImpact(uint64_t project_id, store::GraphStore *store,
@@ -386,8 +80,8 @@ std::string analyzeChangeImpact(uint64_t project_id, store::GraphStore *store,
 {
 	static constexpr const char *kMethod = "analyzeChangeImpact";
 
-	// Build the standard error payload. Used by both the HAS_LADYBUG
-	// and non-HAS_LADYBUG branches so the JSON contract is identical
+	// Build the standard error payload. The SQLite-only backend keeps the
+	// JSON contract identical regardless of compile configuration.
 	// regardless of compile configuration.
 	auto makeErrorJson = [](const std::string &msg) -> std::string {
 		std::ostringstream j;
@@ -399,96 +93,149 @@ std::string analyzeChangeImpact(uint64_t project_id, store::GraphStore *store,
 		return j.str();
 	};
 
-#ifdef HAS_LADYBUG
-	// JSON builder — we accumulate fields and only emit at the end so
-	// the error field (set on any failure) can be filled in at any
-	// point. error_msg stays empty on success.
-	std::string error_msg;
-
-	// Parse input file list.
+	// ── v0.2.5: SQLite graph-query backend (Windows / SQLite-only) ──
+	// Impact analysis over the canonical SQLite store. Uses CSR forward
+	// adjacency (store->getCalleeIds) and reverse adjacency
+	// (store->getCallerIds) for O(E) BFS, and the entity table for
+	// node-in-file and metadata lookups. JSON shape is identical to the
+	// SQLite branch. parseFileList is platform-independent (defined
+	// above the #ifdef), so it is available in both branches.
 	auto files = parseFileList(modified_files_json);
-	if (files.empty() && modified_files_json && *modified_files_json) {
-		// Empty result could mean either a valid empty array "[]" or a
-		// parse error. Only report error if input looks like an array
-		// but we got nothing.
-		const char *p = modified_files_json;
-		while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
-			p++;
-		if (*p == '[') {
-			const char *end = p + 1;
-			while (*end == ' ' || *end == '\t' || *end == '\n' ||
-			       *end == '\r')
-				end++;
-			if (*end != ']') {
-				// Not a bare "[]" — something went wrong.
-				error_msg = std::string("[module=impact, "
-							"method=") +
-					    kMethod +
-					    "] failed to parse file list";
-				fprintf(stderr, "%s\n", error_msg.c_str());
-				return makeErrorJson(error_msg);
+	if (!store || !store->handle()) {
+		std::string err = std::string("[module=impact, method=") +
+				  kMethod + "] graph not ready";
+		fprintf(stderr, "%s\n", err.c_str());
+		return makeErrorJson(err);
+	}
+	sqlite3 *db = store->handle();
+
+	// Find nodes in modified files (function/method entities).
+	std::vector<std::pair<uint64_t, std::string>> modified_nodes;
+	if (!files.empty()) {
+		std::string in_clause;
+		for (size_t i = 0; i < files.size(); ++i) {
+			if (i)
+				in_clause += ",";
+			in_clause += "?";
+		}
+		std::string sql = "SELECT id, name FROM entity "
+				  "WHERE project_id=? AND kind IN (0,1) "
+				  "AND file_path IN (" +
+				  in_clause + ")";
+		sqlite3_stmt *st = nullptr;
+		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &st, nullptr) ==
+		    SQLITE_OK) {
+			sqlite3_bind_int64(st, 1,
+					   static_cast<int64_t>(project_id));
+			for (size_t i = 0; i < files.size(); ++i)
+				sqlite3_bind_text(st, static_cast<int>(2 + i),
+						  files[i].c_str(), -1,
+						  SQLITE_TRANSIENT);
+			while (sqlite3_step(st) == SQLITE_ROW) {
+				modified_nodes.push_back(
+					{ static_cast<uint64_t>(
+						  sqlite3_column_int64(st, 0)),
+					  reinterpret_cast<const char *>(
+						  sqlite3_column_text(st, 1)) ?
+						  reinterpret_cast<const char *>(
+							  sqlite3_column_text(
+								  st, 1)) :
+						  "" });
+			}
+			sqlite3_finalize(st);
+		}
+	}
+	std::unordered_set<uint64_t> modified_ids;
+	for (const auto &kv : modified_nodes)
+		modified_ids.insert(kv.first);
+
+	// Name + file metadata lookup for a set of node ids.
+	auto lookupMeta = [&](const std::unordered_set<uint64_t> &ids,
+			      std::unordered_map<uint64_t, std::string>
+				      &name_map,
+			      std::unordered_map<uint64_t, std::string>
+				      &file_map) {
+		for (uint64_t id : ids) {
+			const char *sql =
+				"SELECT name, file_path FROM entity WHERE id=?";
+			sqlite3_stmt *st = nullptr;
+			if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) !=
+			    SQLITE_OK)
+				continue;
+			sqlite3_bind_int64(st, 1, static_cast<int64_t>(id));
+			if (sqlite3_step(st) == SQLITE_ROW) {
+				name_map[id] =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(st, 0)) ?
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								st, 0)) :
+						"";
+				file_map[id] =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(st, 1)) ?
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								st, 1)) :
+						"";
+			}
+			sqlite3_finalize(st);
+		}
+	};
+
+	// DFS over adjacency (forward for callees, reverse for callers),
+	// recording min depth per node and the seed it was reached from.
+	struct ImpactEntry {
+		uint64_t node_id;
+		uint64_t via_seed;
+		int depth;
+	};
+	auto dfsImpact = [&](bool reverse, std::vector<ImpactEntry> &out) {
+		std::unordered_map<uint64_t, int> min_depth;
+		std::unordered_map<uint64_t, uint64_t> seed_of;
+		std::vector<std::pair<uint64_t, int>> stack; // {node, depth}
+		for (uint64_t seed : modified_ids) {
+			min_depth[seed] = 0;
+			seed_of[seed] = seed;
+			stack.push_back({ seed, 0 });
+		}
+		while (!stack.empty()) {
+			auto [node, depth] = stack.back();
+			stack.pop_back();
+			if (depth >= kImpactMaxDepth)
+				continue;
+			auto nbrs = reverse ? store->getCallerIds(node) :
+					      store->getCalleeIds(node);
+			for (uint64_t nb : nbrs) {
+				int nd = depth + 1;
+				auto it = min_depth.find(nb);
+				if (it != min_depth.end() && it->second <= nd)
+					continue;
+				min_depth[nb] = nd;
+				seed_of[nb] = seed_of[node];
+				stack.push_back({ nb, nd });
 			}
 		}
-	}
-
-	// LadybugDB is the only data source for graph queries.
-	if (!store || !store->isGraphReady()) {
-		error_msg = std::string("[module=impact, method=") + kMethod +
-			    "] LadybugDB graph not ready";
-		fprintf(stderr, "%s\n", error_msg.c_str());
-		return makeErrorJson(error_msg);
-	}
-	lbug_connection *conn = store->lbugHandle();
-	if (!conn) {
-		error_msg = std::string("[module=impact, method=") + kMethod +
-			    "] LadybugDB connection null";
-		fprintf(stderr, "%s\n", error_msg.c_str());
-		return makeErrorJson(error_msg);
-	}
-
-	// Find graph nodes in modified files.
-	std::vector<std::pair<uint64_t, std::string>> modified_nodes;
-	findNodesInFiles(conn, project_id, files, modified_nodes);
-
-	// Collect modified node IDs into a set for fast lookup.
-	std::unordered_set<uint64_t> modified_ids;
-	modified_ids.reserve(modified_nodes.size());
-	for (const auto &kv : modified_nodes) {
-		modified_ids.insert(kv.first);
-	}
-
-	// Build forward + reverse adjacency from CALLS edges (LadybugDB
-	// only — no SQLite fallback).
-	std::unordered_map<uint64_t, std::vector<uint64_t>> forward_adj;
-	std::unordered_map<uint64_t, std::vector<uint64_t>> reverse_adj;
-	if (!modified_ids.empty()) {
-		if (!buildCallAdjacencyFromLadybug(store, project_id,
-						   forward_adj, reverse_adj,
-						   &error_msg)) {
-			// buildCallAdjacencyFromLadybug already filled
-			// error_msg with a tagged message.
-			fprintf(stderr, "[module=impact, method=%s] %s\n",
-				kMethod, error_msg.c_str());
-			return makeErrorJson(error_msg);
+		for (auto &kv : min_depth) {
+			if (modified_ids.count(kv.first))
+				continue; // seeds are reported in "modified"
+			ImpactEntry e;
+			e.node_id = kv.first;
+			e.via_seed = seed_of[kv.first];
+			e.depth = kv.second;
+			out.push_back(e);
 		}
-	}
+		std::sort(out.begin(), out.end(),
+			  [](const ImpactEntry &a, const ImpactEntry &b) {
+				  if (a.node_id != b.node_id)
+					  return a.node_id < b.node_id;
+				  return a.depth < b.depth;
+			  });
+	};
+	std::vector<ImpactEntry> caller_entries, callee_entries;
+	dfsImpact(true, caller_entries); // callers (reverse)
+	dfsImpact(false, callee_entries); // callees (forward)
 
-	// ── DFS upstream (callers) + downstream (callees) ─────────────
-	// Callers come from reverse-adjacency traversal: each modified
-	// node is a target, and we walk back to its callers.
-	// Callees come from forward-adjacency traversal: each modified
-	// node is a source, and we walk forward to its callees.
-	std::vector<ImpactEntry> caller_entries;
-	std::vector<ImpactEntry> callee_entries;
-	if (!modified_ids.empty()) {
-		dfsImpact(reverse_adj, modified_ids, kImpactMaxDepth,
-			  caller_entries);
-		dfsImpact(forward_adj, modified_ids, kImpactMaxDepth,
-			  callee_entries);
-	}
-
-	// ── Look up names + file paths for all referenced node IDs ────
-	// (impacted nodes + the seeds they were reached from).
 	std::unordered_set<uint64_t> need_metadata = modified_ids;
 	for (const auto &e : caller_entries) {
 		need_metadata.insert(e.node_id);
@@ -498,58 +245,12 @@ std::string analyzeChangeImpact(uint64_t project_id, store::GraphStore *store,
 		need_metadata.insert(e.node_id);
 		need_metadata.insert(e.via_seed);
 	}
-	std::unordered_map<uint64_t, std::string> name_map;
-	std::unordered_map<uint64_t, std::string> file_map;
-	lookupNodeMetadata(conn, project_id, need_metadata, name_map, file_map,
-			   &error_msg);
-	if (!error_msg.empty()) {
-		// Metadata lookup failed mid-way: we still have partial data.
-		// Report the error but continue with whatever we have so the
-		// caller gets a useful (if incomplete) result.
-		fprintf(stderr, "[module=impact, method=%s] %s\n", kMethod,
-			error_msg.c_str());
-	}
+	std::unordered_map<uint64_t, std::string> name_map, file_map;
+	lookupMeta(need_metadata, name_map, file_map);
 
-	// ── Deduplicate impacted nodes by ID (minimum depth wins) ────
-	// A node reached from multiple seeds (or via multiple paths) at
-	// different depths should appear at its minimum depth. dfsImpact
-	// already records min depth per node, but the same node could in
-	// principle appear in both caller_entries and callee_entries —
-	// we dedup within each list independently to keep the JSON
-	// arrays stable (callers vs callees are conceptually distinct).
-	auto dedup_entries = [](std::vector<ImpactEntry> &entries) {
-		std::sort(entries.begin(), entries.end(),
-			  [](const ImpactEntry &a, const ImpactEntry &b) {
-				  if (a.node_id != b.node_id)
-					  return a.node_id < b.node_id;
-				  // Same node: smaller depth first so it wins
-				  // the dedup below.
-				  return a.depth < b.depth;
-			  });
-		entries.erase(std::unique(entries.begin(), entries.end(),
-					  [](const ImpactEntry &a,
-					     const ImpactEntry &b) {
-						  return a.node_id == b.node_id;
-					  }),
-			      entries.end());
-	};
-	dedup_entries(caller_entries);
-	dedup_entries(callee_entries);
-
-	// ── Build JSON output ────────────────────────────────────────
+	// ── Build JSON output (mirrors the SQLite branch) ──────────
 	std::ostringstream json;
-	json << "{";
-
-	// error field — null on success, tagged message on failure.
-	if (error_msg.empty()) {
-		json << "\"error\":null,";
-	} else {
-		json << "\"error\":\"" << jsonEscape(error_msg.c_str())
-		     << "\",";
-	}
-
-	// ── Modified nodes ───────────────────────────────────────────
-	json << "\"modified\":[";
+	json << "{\"error\":null,\"modified\":[";
 	bool first = true;
 	for (const auto &kv : modified_nodes) {
 		if (!first)
@@ -558,85 +259,44 @@ std::string analyzeChangeImpact(uint64_t project_id, store::GraphStore *store,
 		json << "{\"id\":" << kv.first << ",\"name\":\""
 		     << jsonEscape(kv.second.c_str()) << "\"}";
 	}
-	json << "],";
-
-	// ── Callers ──────────────────────────────────────────────────
-	// Each entry: id, name, file, depth, caller_of (name of the
-	// modified node this caller transitively calls).
-	json << "\"callers\":[";
+	json << "],\"callers\":[";
 	first = true;
 	for (const auto &e : caller_entries) {
 		if (!first)
 			json << ",";
 		first = false;
-		auto name_it = name_map.find(e.node_id);
-		auto file_it = file_map.find(e.node_id);
-		auto seed_name_it = name_map.find(e.via_seed);
 		json << "{\"id\":" << e.node_id << ",\"name\":\""
-		     << jsonEscape((name_it != name_map.end()) ?
-					   name_it->second.c_str() :
-					   "")
+		     << jsonEscape(name_map[e.node_id].c_str())
 		     << "\",\"file\":\""
-		     << jsonEscape((file_it != file_map.end()) ?
-					   file_it->second.c_str() :
-					   "")
+		     << jsonEscape(file_map[e.node_id].c_str())
 		     << "\",\"depth\":" << e.depth << ",\"caller_of\":\""
-		     << jsonEscape((seed_name_it != name_map.end()) ?
-					   seed_name_it->second.c_str() :
-					   "")
-		     << "\"}";
+		     << jsonEscape(name_map[e.via_seed].c_str()) << "\"}";
 	}
-	json << "],";
-
-	// ── Callees ──────────────────────────────────────────────────
-	// Each entry: id, name, file, depth, callee_of (name of the
-	// modified node that transitively calls this callee).
-	json << "\"callees\":[";
+	json << "],\"callees\":[";
 	first = true;
 	for (const auto &e : callee_entries) {
 		if (!first)
 			json << ",";
 		first = false;
-		auto name_it = name_map.find(e.node_id);
-		auto file_it = file_map.find(e.node_id);
-		auto seed_name_it = name_map.find(e.via_seed);
 		json << "{\"id\":" << e.node_id << ",\"name\":\""
-		     << jsonEscape((name_it != name_map.end()) ?
-					   name_it->second.c_str() :
-					   "")
+		     << jsonEscape(name_map[e.node_id].c_str())
 		     << "\",\"file\":\""
-		     << jsonEscape((file_it != file_map.end()) ?
-					   file_it->second.c_str() :
-					   "")
+		     << jsonEscape(file_map[e.node_id].c_str())
 		     << "\",\"depth\":" << e.depth << ",\"callee_of\":\""
-		     << jsonEscape((seed_name_it != name_map.end()) ?
-					   seed_name_it->second.c_str() :
-					   "")
-		     << "\"}";
+		     << jsonEscape(name_map[e.via_seed].c_str()) << "\"}";
 	}
 	json << "],";
-
-	// ── Total impacted (unique node IDs across modified+callers+callees)
 	std::unordered_set<uint64_t> all_impacted = modified_ids;
-	for (const auto &e : caller_entries) {
+	for (const auto &e : caller_entries)
 		all_impacted.insert(e.node_id);
-	}
-	for (const auto &e : callee_entries) {
+	for (const auto &e : callee_entries)
 		all_impacted.insert(e.node_id);
-	}
 	json << "\"total_impacted\":" << all_impacted.size();
 	json << ",\"max_depth\":" << kImpactMaxDepth;
 	json << ",\"approximation\":\"heuristic\"";
 	json << ",\"note\":\"" << kImpactNote << "\"";
 	json << "}";
-
 	return json.str();
-#else
-	std::string err = std::string("[module=impact, method=") + kMethod +
-			  "] LadybugDB not compiled";
-	fprintf(stderr, "%s\n", err.c_str());
-	return makeErrorJson(err);
-#endif
 }
 
 } // namespace query

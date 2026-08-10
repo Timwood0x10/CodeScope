@@ -51,11 +51,8 @@ INSTALL_DIR="${INSTALL_DIR:-$HOME/.codescope/bin}"
 mkdir -p "$INSTALL_DIR"
 tar -xzf /tmp/codescope.tar.gz -C "$INSTALL_DIR"
 if [ -n "$IS_WINDOWS" ]; then
-  # Windows: codescope.exe + lbug_shared.dll are both in the tarball
+  # Windows: codescope.exe is the binary; graph storage uses SQLite only.
   chmod +x "$INSTALL_DIR/codescope.exe" 2>/dev/null || true
-  if [ -f "$INSTALL_DIR/lbug_shared.dll" ]; then
-    echo "  LadybugDB DLL installed to: $INSTALL_DIR/lbug_shared.dll"
-  fi
 else
   chmod +x "$INSTALL_DIR/codescope"
 fi

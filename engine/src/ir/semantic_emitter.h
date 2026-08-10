@@ -74,6 +74,17 @@ class SemanticEmitter {
 	uint64_t emitReference(const std::string &callee_name, SourceRange loc,
 			       uint64_t parent_id = 0, int arity = 0);
 
+	/// Attach structured call facts to a previously-emitted CallExpr record
+	/// (Step 3, plan §3.1). Visitors call this after emitCall() to record
+	/// the receiver/qualified target/import alias evidence. Empty strings
+	/// mean "unknown"; callers must NOT fabricate a receiver for bare
+	/// direct calls. Returns true if the record was found and updated.
+	bool setCallFacts(uint64_t call_record_id,
+			  const std::string &qualified_target,
+			  const std::string &receiver_text,
+			  const std::string &receiver_type,
+			  const std::string &import_alias);
+
 	// ── Route Emitter ───────────────────────────────────────────
 
 	/// Emit an HTTP route registration (e.g. "GET /api/users").

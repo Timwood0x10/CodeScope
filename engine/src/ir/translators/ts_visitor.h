@@ -40,7 +40,15 @@ class TsVisitor : public JsVisitor {
 	void visitNode(TSNode node, uint64_t parent_id) override;
 
 	// TS grammar uses type_identifier for class/interface names.
+	// Also pushes class scope so `this.method()` can resolve
+	// receiver_type to the enclosing class.
 	void visitClassDecl(TSNode node, uint64_t parent_id) override;
+
+	// TS override: extracts type annotations from variable
+	// declarations (e.g. `let r: Renderer = ...`) and records
+	// them in var_types_ so visitCallExpr can infer receiver_type
+	// for `r.render()`.
+	void visitVariableDecl(TSNode node, uint64_t parent_id) override;
 
 	// ── TypeScript-specific handlers ───────────────────────────
 	/**
@@ -62,6 +70,13 @@ class TsVisitor : public JsVisitor {
 	 * Members are visited under the enum record.
 	 */
 	void visitEnumDecl(TSNode node, uint64_t parent_id);
+
+    private:
+	/// Extract the bare type name from a TS type annotation node,
+	/// stripping generics (`Array<T>` → "Array"), union/intersection
+	/// (takes first member), and array brackets (`T[]` → "T").
+	/// Returns empty string if the type cannot be determined.
+	std::string extractTsTypeAnnotation(TSNode type_node);
 };
 
 } // namespace ir

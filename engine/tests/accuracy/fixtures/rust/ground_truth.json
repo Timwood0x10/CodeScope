@@ -1,0 +1,18 @@
+{
+  "language": "rust",
+  "expected_calls": [
+    {"caller": "main_func", "caller_file": "a.rs", "callee": "alpha", "callee_file": "a.rs"},
+    {"caller": "alpha", "caller_file": "a.rs", "callee": "bravo", "callee_file": "b.rs"},
+    {"caller": "main_func", "caller_file": "a.rs", "callee": "new", "callee_file": "a.rs", "note": "Container::new() associated function"},
+    {"caller": "main_func", "caller_file": "a.rs", "callee": "get", "callee_file": "a.rs", "note": "c.get() method call with receiver_type=Container"},
+    {"caller": "main_func", "caller_file": "a.rs", "callee": "helper", "callee_file": "a.rs", "note": "c.helper() method call with receiver_type=Container (b.rs free helper must NOT be matched)"},
+    {"caller": "helper", "caller_file": "a.rs", "callee": "get", "callee_file": "a.rs", "note": "self.get() — method-internal selector call (regression: impl methods previously not extracted)"}
+  ],
+  "forbidden_calls": [
+    {"caller": "main_func", "callee": "len"},
+    {"caller": "main_func", "callee": "vec"},
+    {"caller": "alpha", "callee": "helper", "note": "b.rs:helper is a free function with no call site; must not be wired"}
+  ],
+  "allowed_unresolved": [],
+  "external_calls": ["vec!", "len"]
+}

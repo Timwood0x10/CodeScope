@@ -36,6 +36,115 @@
 
 // ─── Capability API ────────────────────────────────────────────
 
+// Helper: count eligible function/method entities (entity.kind IN 0,1) for a
+// project. Returns 0 on any error. Eligible entities are the denominator for
+// every capability coverage ratio. Reads the canonical `entity` table — never
+// the deprecated `graph_nodes`/`symbols` tables — so the count reflects real
+// indexed data.
+static int ffi_count_eligible_entities(uint64_t project_id)
+{
+	sqlite3_stmt *stmt = nullptr;
+	int total = 0;
+	const char *sql =
+		"SELECT COUNT(*) FROM entity WHERE project_id = ? AND kind IN (0,1)";
+	if (sqlite3_prepare_v2(g_store->handle(), sql, -1, &stmt, nullptr) ==
+	    SQLITE_OK) {
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		if (sqlite3_step(stmt) == SQLITE_ROW)
+			total = sqlite3_column_int(stmt, 0);
+		sqlite3_finalize(stmt);
+	} else {
+		fprintf(stderr,
+			"engine_get_capabilities: entity count probe failed: %s "
+			"[module=ffi, method=engine_get_capabilities]\n",
+			sqlite3_errmsg(g_store->handle()));
+	}
+	return total;
+}
+
+// Helper: count distinct function/method entities that participate in at least
+// one Calls relation (relation.type=1) as source or target. This is the
+// canonical signal that the call graph has been built for them. Returns 0 on
+// any error. Used to compute the call_graph coverage ratio.
+static int ffi_count_callgraph_ready_entities(uint64_t project_id)
+{
+	sqlite3_stmt *stmt = nullptr;
+	int ready = 0;
+	// DISTINCT over the UNION of source and target ids so a function counts
+	// once whether it only calls others, is only called, or both.
+	const char *sql =
+		"SELECT COUNT(*) FROM ("
+		" SELECT DISTINCT src FROM ("
+		"  SELECT source_id AS src FROM relation WHERE project_id=? AND type=1"
+		"  UNION"
+		"  SELECT target_id AS src FROM relation WHERE project_id=? AND type=1"
+		" )"
+		")";
+	if (sqlite3_prepare_v2(g_store->handle(), sql, -1, &stmt, nullptr) ==
+	    SQLITE_OK) {
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
+		if (sqlite3_step(stmt) == SQLITE_ROW)
+			ready = sqlite3_column_int(stmt, 0);
+		sqlite3_finalize(stmt);
+	} else {
+		fprintf(stderr,
+			"engine_get_capabilities: callgraph count probe failed: %s "
+			"[module=ffi, method=engine_get_capabilities]\n",
+			sqlite3_errmsg(g_store->handle()));
+	}
+	return ready;
+}
+
+// Count function/method entities whose code metrics were resolved onto the
+// canonical entity rows (cyclomatic > 0). This is the metrics_ready signal —
+// it reflects real producer output from resolveStagedMetrics, never a flag.
+static int ffi_count_metrics_ready_entities(uint64_t project_id)
+{
+	sqlite3_stmt *stmt = nullptr;
+	int ready = 0;
+	const char *sql =
+		"SELECT COUNT(*) FROM entity "
+		"WHERE project_id = ? AND kind IN (0,1) AND cyclomatic > 0";
+	if (sqlite3_prepare_v2(g_store->handle(), sql, -1, &stmt, nullptr) ==
+	    SQLITE_OK) {
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		if (sqlite3_step(stmt) == SQLITE_ROW)
+			ready = sqlite3_column_int(stmt, 0);
+		sqlite3_finalize(stmt);
+	} else {
+		fprintf(stderr,
+			"engine_get_capabilities: metrics count probe failed: %s "
+			"[module=ffi, method=engine_get_capabilities]\n",
+			sqlite3_errmsg(g_store->handle()));
+	}
+	return ready;
+}
+
+// Count node_vectors rows for the project — the canonical embedding_ready
+// signal for semantic search. 0 when the builder has not run or wrote nothing
+// (avoids the A19 "fake ready" regression).
+static int ffi_count_vector_entities(uint64_t project_id)
+{
+	sqlite3_stmt *stmt = nullptr;
+	int ready = 0;
+	const char *sql =
+		"SELECT COUNT(*) FROM node_vectors WHERE project_id = ?";
+	if (sqlite3_prepare_v2(g_store->handle(), sql, -1, &stmt, nullptr) ==
+	    SQLITE_OK) {
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		if (sqlite3_step(stmt) == SQLITE_ROW)
+			ready = sqlite3_column_int(stmt, 0);
+		sqlite3_finalize(stmt);
+	} else {
+		fprintf(stderr,
+			"engine_get_capabilities: vector count probe failed: %s "
+			"[module=ffi, method=engine_get_capabilities]\n",
+			sqlite3_errmsg(g_store->handle()));
+	}
+	return ready;
+}
+
 char *engine_get_capabilities(uint64_t project_id)
 {
 	try {
@@ -43,24 +152,17 @@ char *engine_get_capabilities(uint64_t project_id)
 			return dupString(
 				"{\"error\":\"engine not initialized\"}");
 
-		double cg =
-			g_store->getReadyRatio(project_id, "callgraph_ready");
-		double me = g_store->getReadyRatio(project_id, "metrics_ready");
-		double em =
-			g_store->getReadyRatio(project_id, "embedding_ready");
-
-		int total = 0;
-		const char *sql =
-			"SELECT COUNT(*) FROM symbols WHERE project_id = ?";
-		sqlite3_stmt *stmt = nullptr;
-		if (sqlite3_prepare_v2(g_store->handle(), sql, -1, &stmt,
-				       nullptr) == SQLITE_OK) {
-			sqlite3_bind_int64(stmt, 1,
-					   static_cast<int64_t>(project_id));
-			if (sqlite3_step(stmt) == SQLITE_ROW)
-				total = sqlite3_column_int(stmt, 0);
-			sqlite3_finalize(stmt);
-		}
+		// v0.2.5: metrics and embedding/semantic_search are restored;
+		// their producers are live and readiness is derived from canonical
+		// data below (metrics via ffi_count_metrics_ready_entities,
+		// semantic via ffi_count_vector_entities). `ready` reflects
+		// whether the producer has actually populated data for this
+		// project, so clients can distinguish "built" from "not yet
+		// indexed in DEEP mode". FTS stays available (already wired).
+		const int total = ffi_count_eligible_entities(project_id);
+		const int cg_ready_count =
+			ffi_count_callgraph_ready_entities(project_id);
+		const bool cg_ready = cg_ready_count > 0;
 
 		std::ostringstream json;
 		json << "{"
@@ -74,20 +176,39 @@ char *engine_get_capabilities(uint64_t project_id)
 		     << (total > 0 ? "true" : "false")
 		     << ",\"description\":\"main/initcall/probe detection\"},"
 		     << "\"call_graph\":{\"available\":true,\"ready\":"
-		     << (cg > 0.1 ? "true" : "false")
-		     << ",\"description\":\"function call edges — run codescope_enhance to enable\"},"
+		     << (cg_ready ? "true" : "false")
+		     << ",\"coverage\":{\"eligible\":" << total
+		     << ",\"ready\":" << cg_ready_count << "}"
+		     << ",\"description\":\"function call edges (built during index)\"},"
 		     << "\"path_tracing\":{\"available\":true,\"ready\":"
-		     << (cg > 0.1 ? "true" : "false")
+		     << (cg_ready ? "true" : "false")
 		     << ",\"description\":\"BFS shortest path between functions\"},"
+		     // v0.2.5: metrics + semantic search restored. Metrics are
+		     // produced by computeMetricsFromCST in the parse worker and
+		     // resolved onto entity by resolveStagedMetrics; semantic
+		     // search is an n-gram hash vector (buildVectorsFromGraph).
+		     // `ready` reflects canonical data (entity cyclomatic > 0 /
+		     // node_vectors rows), never a hardcoded flag.
 		     << "\"metrics\":{\"available\":true,\"ready\":"
-		     << (me > 0.1 ? "true" : "false")
-		     << ",\"description\":\"complexity metrics — run codescope_enhance\"},"
+		     << (ffi_count_metrics_ready_entities(project_id) > 0 ?
+				 "true" :
+				 "false")
+		     << ",\"description\":\"cyclomatic/cognitive/nesting complexity (computed during index, resolved onto entity)\"},"
 		     << "\"semantic_search\":{\"available\":true,\"ready\":"
-		     << (em > 0.1 ? "true" : "false")
-		     << ",\"description\":\"vector embedding search — run codescope_enhance\"},"
+		     << (ffi_count_vector_entities(project_id) > 0 ? "true" :
+								     "false")
+		     << ",\"mode\":\"ngram_hash\","
+		     << "\"description\":\"n-gram hash vector lexical similarity (restored in v0.2.5); complements FTS exact search\"},"
+		     // FTS remains the exact-match workhorse; semantic search
+		     // is additive (never replaces it).
+		     << "\"fts\":{\"available\":true,\"ready\":"
+		     << (g_store->getProjectReadiness(project_id, "fts_ready") ?
+				 "true" :
+				 "false")
+		     << ",\"description\":\"FTS5 full-text search for exact/prefix matching\"},"
 		     << "\"context_builder\":{\"available\":true,\"ready\":true,\"description\":\"intelligent context assembly\"}"
 		     << "},"
-		     << "\"enhancement_needed\":\"Run codescope_enhance to enable call graph, metrics, and semantic search\""
+		     << "\"enhancement_needed\":\"Call graph, complexity metrics, and n-gram semantic vectors are built during index; FTS powers exact search.\""
 		     << "}";
 		return dupString(json.str());
 	} catch (const std::exception &e) {
@@ -547,12 +668,6 @@ char *engine_get_graph_stats(uint64_t project_id)
 	}
 }
 
-void engine_set_ladybug_queries_enabled(int enabled)
-{
-	if (g_store)
-		g_store->setLadybugQueryEnabled(enabled != 0);
-}
-
 // ─── Full-text search ─────────────────────────────────────────
 
 char *engine_search_code(uint64_t project_id, const char *query, int limit)
@@ -580,16 +695,24 @@ char *engine_search_code(uint64_t project_id, const char *query, int limit)
 
 // ─── Semantic Search ─────────────────────────────────────────
 
-// engine_search_semantic — not implemented since Phase 0 cut.
-// The underlying searchSemantic() was stubbed out.
-// Returns a clear error so callers are not misled by empty results.
+// engine_search_semantic — restored in v0.2.5. Routes to the n-gram hash
+// vector search (searchSemanticJson), which computes an L2-normalized
+// trigram-hash vector for the query and returns the top-K function/method
+// entities by cosine similarity. When no vectors exist for the project it
+// returns an empty result with reason="embedding_not_built" so callers can
+// fall back to FTS — never a misleading "not implemented".
 char *engine_search_semantic(uint64_t project_id, const char *query, int limit)
 {
-	(void)project_id;
-	(void)query;
-	(void)limit;
-	return dupString(
-		"{\"total\":0,\"results\":[],\"error\":\"not implemented — semantic search was removed in Phase 0\"}");
+	try {
+		if (!g_store || !g_store->handle() || !query)
+			return dupString("{\"total\":0,\"results\":[],"
+					 "\"error\":\"not initialized\"}");
+		return dupString(
+			g_store->searchSemanticJson(project_id, query, limit));
+	} catch (const std::exception &e) {
+		return dupString(std::string("{\"error\":\"") + e.what() +
+				 "\"}");
+	}
 }
 
 // ─── Complexity Analysis ──────────────────────────────────────
@@ -1497,6 +1620,53 @@ char *engine_import_artifact(uint64_t project_id, const char *artifact_path)
 	}
 }
 
+// ─── CSR Rebuild (C2 fix: parallel merge) ─────────────────────
+// Rebuild a project's CSR adjacency/adjacency_rev tables on the given DB.
+//
+// v0.2.5 (C2 fix): parallel index workers build CSR adjacency from LOCAL
+// entity ids. The merge step remaps only the adjacency src_id/tgt_id row
+// key — the packed tgt_blob/src_blob ids stay local and become dangling in
+// the merged main.db, corrupting every CSR-based graph traversal. After
+// merge, the scheduler calls this to rebuild CSR from the globally-remapped
+// relation table (buildCSR reads relation type=1 edges), so all neighbor
+// ids are global again. It opens a LOCAL GraphStore on db_path so it does
+// not disturb the process-wide g_store.
+//
+// @param db_path    Path to the (merged) SQLite DB.
+// @param project_id Project whose CSR to rebuild.
+// @return JSON `{"ok":true,"project_id":N}` on success, or a JSON error
+//         object. Caller MUST free via engine_free_string().
+extern "C" char *engine_rebuild_csr(const char *db_path, uint64_t project_id)
+{
+	try {
+		if (!db_path || !*db_path) {
+			return dupString(
+				"{\"error\":\"[module=ffi, "
+				"method=engine_rebuild_csr] db_path required\"}");
+		}
+		store::GraphStore local_store;
+		if (!local_store.open(db_path)) {
+			return dupString(
+				"{\"error\":\"[module=ffi, "
+				"method=engine_rebuild_csr] cannot open db: " +
+				std::string(db_path) + "\"}");
+		}
+		if (!local_store.buildCSR(project_id)) {
+			return dupString(
+				"{\"error\":\"[module=ffi, "
+				"method=engine_rebuild_csr] buildCSR failed for "
+				"project " +
+				std::to_string(project_id) + "\"}");
+		}
+		return dupString("{\"ok\":true,\"project_id\":" +
+				 std::to_string(project_id) + "}");
+	} catch (const std::exception &e) {
+		return dupString(std::string("{\"error\":\"[module=ffi, "
+					     "method=engine_rebuild_csr] ") +
+				 e.what() + "\"}");
+	}
+}
+
 // ─── Version ────────────────────────────────────────────────────
 
 const char *engine_version(void)
@@ -1505,6 +1675,6 @@ const char *engine_version(void)
 	// No try/catch required — only a static string literal is returned,
 	// so no exceptions are possible.
 	// Keep in sync with RELEASE.md and Cargo.toml version.
-	static const char kVersion[] = "0.2.4";
+	static const char kVersion[] = "0.2.5";
 	return kVersion;
 }

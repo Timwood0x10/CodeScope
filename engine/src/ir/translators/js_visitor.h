@@ -91,6 +91,38 @@ class JsVisitor {
 	 */
 	uint64_t currentFunctionId();
 
+	// ── Step 4 (plan §4F): receiver type & class scope tracking ──
+	// var_types_ maps a local variable name to its declared type
+	// (from TS type annotations or constructor inference), so
+	// visitCallExpr can fill receiver_type for `obj.method()`.
+	// class_scope_stack_ tracks the enclosing class name so
+	// `this.method()` resolves receiver_type to the enclosing class.
+	// Shared between JS and TS visitors.
+	std::unordered_map<std::string, std::string> var_types_;
+	std::vector<std::string> class_scope_stack_;
+
+	void recordVarType(const std::string &name, const std::string &type)
+	{
+		if (!name.empty() && !type.empty())
+			var_types_[name] = type;
+	}
+	void pushClassScope(const std::string &class_name)
+	{
+		if (!class_name.empty())
+			class_scope_stack_.push_back(class_name);
+	}
+	void popClassScope()
+	{
+		if (!class_scope_stack_.empty())
+			class_scope_stack_.pop_back();
+	}
+	std::string currentClassName() const
+	{
+		if (class_scope_stack_.empty())
+			return "";
+		return class_scope_stack_.back();
+	}
+
 	// ── Helpers ─────────────────────────────────────────────
 	SourceRange location(TSNode node);
 	std::string nodeText(TSNode node);
@@ -116,7 +148,9 @@ class JsVisitor {
 	virtual void visitMethodDef(TSNode node, uint64_t parent_id);
 	void visitCallExpr(TSNode node, uint64_t parent_id);
 	void visitIdentifier(TSNode node, uint64_t parent_id);
-	void visitVariableDecl(TSNode node, uint64_t parent_id);
+	// Virtual so TsVisitor can override it to extract TS type
+	// annotations (e.g. `let r: Renderer`) for receiver inference.
+	virtual void visitVariableDecl(TSNode node, uint64_t parent_id);
 	void visitImportStmt(TSNode node, uint64_t parent_id);
 	void visitExportStmt(TSNode node, uint64_t parent_id);
 	void visitMemberExpr(TSNode node, uint64_t parent_id);

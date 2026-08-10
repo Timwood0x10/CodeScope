@@ -103,6 +103,11 @@ SemanticUnit *CVisitor::visit(TSTree *tree, const char *source,
 	unit_->setFilePath(file_path);
 	unit_->setLanguage("c");
 	source_ = source;
+	// Step 4: reset per-file tracking so the visitor arena can reuse
+	// the same CVisitor across files without leaking stale variable
+	// bindings or class scope from the previous file.
+	var_types_.clear();
+	class_scope_stack_.clear();
 
 	TSNode root_node = ts_tree_root_node(tree);
 	pushScope();
@@ -156,6 +161,22 @@ void CVisitor::handleFuncDef(TSNode node, uint64_t parent_id)
 	uint64_t id = emitter_->emitFunction(name, loc, parent_id, 0, false,
 					     detectVisibility(node));
 	defineSymbol(name, id);
+	// Step 4/5 (plan §4C/§5): tag methods with a qualified name so the
+	// Resolver's factorReceiverTypeMatch can match a call's receiver_type
+	// (e.g. "Point") against the candidate's declaring class. Out-of-class
+	// definitions (Type::method) carry the scope in the source text; in-class
+	// methods use the enclosing class from class_scope_stack_. Without this,
+	// a same-name method and free function (Point::helper vs free helper in
+	// another file) tie on every factor and the ambiguity gate abstains,
+	// producing false negatives. Free functions keep an empty qualified_name.
+	std::string qname = extractQualifiedName(node);
+	if (qname.empty()) {
+		std::string cls = currentClassName();
+		if (!cls.empty())
+			qname = cls + "::" + name;
+	}
+	if (!qname.empty())
+		unit_->setQualifiedName(id, qname);
 	pushScope();
 	pushFunctionScope(id);
 	uint32_t count = ts_node_child_count(node);
@@ -178,6 +199,51 @@ void CVisitor::handleFuncDef(TSNode node, uint64_t parent_id)
 
 void CVisitor::handleDeclaration(TSNode node, uint64_t parent_id)
 {
+	// Step 4 (plan §4C): extract variable → type bindings from
+	// declarations like `Box b;`, `Point p{1,2};`, `Box* ptr = new Box();`.
+	// tree-sitter-cpp declaration children include:
+	//   type_identifier / qualified_identifier / primitive_type (the type)
+	//   identifier / init_declarator (the variable name)
+	// We scan for a type child and a name child, then record the binding.
+	std::string var_name;
+	std::string var_type;
+	uint32_t cnt = ts_node_child_count(node);
+	// First pass: find the type (first type-like child).
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (!ts_node_is_named(c))
+			continue;
+		const char *t = ts_node_type(c);
+		if (strcmp(t, "type_identifier") == 0 ||
+		    strcmp(t, "qualified_identifier") == 0 ||
+		    strcmp(t, "primitive_type") == 0 ||
+		    strcmp(t, "sized_type_specifier") == 0) {
+			var_type = nodeText(c);
+			break;
+		}
+	}
+	// Second pass: find the variable name (identifier or init_declarator).
+	if (!var_type.empty()) {
+		for (uint32_t i = 0; i < cnt; i++) {
+			TSNode c = ts_node_child(node, i);
+			if (!ts_node_is_named(c))
+				continue;
+			const char *t = ts_node_type(c);
+			if (strcmp(t, "identifier") == 0) {
+				var_name = nodeText(c);
+				break;
+			}
+			if (strcmp(t, "init_declarator") == 0) {
+				// init_declarator → declarator [= initializer]
+				// The declarator may wrap the identifier in
+				// pointer_declarator etc., so recurse.
+				var_name = extractName(c);
+				break;
+			}
+		}
+	}
+	if (!var_name.empty() && !var_type.empty())
+		recordVarType(var_name, var_type);
 	visitChildren(node, parent_id);
 }
 
@@ -204,7 +270,11 @@ void CVisitor::handleStruct(TSNode node, uint64_t parent_id)
 					  detectVisibility(node));
 	if (!name.empty())
 		defineSymbol(name, id);
+	// Step 4: push class scope so `this->method()` inside member
+	// functions can resolve receiver_type to the enclosing class.
+	pushClassScope(name);
 	visitChildren(node, id);
+	popClassScope();
 }
 
 void CVisitor::handleEnum(TSNode node, uint64_t parent_id)
@@ -222,6 +292,14 @@ void CVisitor::handleCall(TSNode node, uint64_t parent_id)
 {
 	SourceRange loc = location(node);
 	std::string name;
+	// Step 4: track the callee node and its full text for structured
+	// call facts. field_expr_node / qual_id_node are kept so we can
+	// extract the receiver expression text after emitCall.
+	TSNode field_expr_node;
+	bool has_field_expr = false;
+	TSNode qual_id_node;
+	bool has_qual_id = false;
+	std::string qualified_target;
 	uint32_t count = ts_node_child_count(node);
 	for (uint32_t i = 0; i < count; i++) {
 		TSNode child = ts_node_child(node, i);
@@ -240,6 +318,35 @@ void CVisitor::handleCall(TSNode node, uint64_t parent_id)
 		// calls, producing zero call edges (Bug 1 in res.md).
 		if (strcmp(child_type, "field_expression") == 0) {
 			name = extractFieldMethodName(child);
+			field_expr_node = child;
+			has_field_expr = true;
+			qualified_target = nodeText(child);
+			break;
+		}
+		// Step 4: handle `Type::staticMethod()` calls where the callee
+		// is a qualified_identifier (e.g. `std::sort`, `Box::create`).
+		// Extract the method name (last identifier) so resolveSymbol
+		// can match it. The receiver "Type" is captured as
+		// receiver_text for structured call facts.
+		if (strcmp(child_type, "qualified_identifier") == 0) {
+			// qualified_identifier children: identifier (scope),
+			// "::", identifier/field_identifier (name).
+			// The LAST named identifier is the method name.
+			std::string last;
+			uint32_t qc = ts_node_child_count(child);
+			for (uint32_t j = 0; j < qc; j++) {
+				TSNode qchild = ts_node_child(child, j);
+				if (!ts_node_is_named(qchild))
+					continue;
+				const char *qt = ts_node_type(qchild);
+				if (strcmp(qt, "identifier") == 0 ||
+				    strcmp(qt, "field_identifier") == 0)
+					last = nodeText(qchild);
+			}
+			name = last;
+			qual_id_node = child;
+			has_qual_id = true;
+			qualified_target = nodeText(child);
 			break;
 		}
 	}
@@ -266,14 +373,11 @@ void CVisitor::handleCall(TSNode node, uint64_t parent_id)
 
 	// Classify call kind
 	CallKind call_kind = CallKind::Direct;
-	for (uint32_t i = 0; i < count; i++) {
-		TSNode child = ts_node_child(node, i);
-		if (!ts_node_is_named(child))
-			continue;
-		if (strcmp(ts_node_type(child), "field_expression") == 0) {
-			call_kind = CallKind::Method;
-			break;
-		}
+	if (has_field_expr) {
+		call_kind = CallKind::Method;
+	} else if (has_qual_id) {
+		// `Type::staticMethod()` is a static method call.
+		call_kind = CallKind::StaticMethod;
 	}
 
 	// Compute arity from the argument_list's named children count.
@@ -292,6 +396,39 @@ void CVisitor::handleCall(TSNode node, uint64_t parent_id)
 	uint64_t call_parent = (func_id != 0) ? func_id : parent_id;
 	uint64_t id = emitter_->emitCall(name, loc, call_parent, arity, false,
 					 static_cast<int>(call_kind));
+
+	// ── Step 4 (plan §4C): structured call facts ──────────────────
+	// For field_expression calls (obj.method(), ptr->method()) and
+	// qualified_identifier calls (Type::staticMethod()), record the
+	// full qualified target, the receiver expression, and the inferred
+	// receiver type. Bare calls leave all fields empty.
+	if (!qualified_target.empty()) {
+		std::string receiver_text;
+		std::string receiver_type;
+		if (has_field_expr) {
+			receiver_text =
+				extractFieldReceiverText(field_expr_node);
+		} else if (has_qual_id) {
+			receiver_text =
+				extractQualifiedReceiverText(qual_id_node);
+		}
+		// Resolve receiver_type: `this` → enclosing class;
+		// local variable → var_types_ lookup.
+		if (!receiver_text.empty()) {
+			if (receiver_text == "this") {
+				std::string cls = currentClassName();
+				if (!cls.empty())
+					receiver_type = cls;
+			} else {
+				auto vt = var_types_.find(receiver_text);
+				if (vt != var_types_.end())
+					receiver_type = vt->second;
+			}
+		}
+		// import_alias is empty for C/C++ (no import alias concept).
+		emitter_->setCallFacts(id, qualified_target, receiver_text,
+				       receiver_type, "");
+	}
 
 	// ── Intra-file callee resolution ───────────────────────────
 	// When the callee name resolves to a record in the current scope,
@@ -499,6 +636,52 @@ std::string CVisitor::extractName(TSNode node)
 	return "";
 }
 
+std::string CVisitor::extractQualifiedName(TSNode node)
+{
+	// Walk the function_definition's declarator chain for a
+	// qualified_identifier (e.g. `GraphStore::buildCallEdgesSQL`) and
+	// return "Scope::name". The qualified_identifier's named children are:
+	//   identifier (scope), "::" (unnamed), field_identifier (name).
+	// Returns "" when no qualified scope is present; the caller then falls
+	// back to currentClassName() for in-class methods.
+	uint32_t count = ts_node_child_count(node);
+	for (uint32_t i = 0; i < count; i++) {
+		TSNode child = ts_node_child(node, i);
+		if (!ts_node_is_named(child))
+			continue;
+		const char *t = ts_node_type(child);
+		if (strcmp(t, "qualified_identifier") == 0) {
+			std::string scope;
+			std::string method;
+			uint32_t qc = ts_node_child_count(child);
+			for (uint32_t j = 0; j < qc; j++) {
+				TSNode q = ts_node_child(child, j);
+				if (!ts_node_is_named(q))
+					continue;
+				const char *qt = ts_node_type(q);
+				if (strcmp(qt, "identifier") == 0 &&
+				    scope.empty())
+					scope = nodeText(q);
+				else if (strcmp(qt, "field_identifier") == 0)
+					method = nodeText(q);
+			}
+			if (!scope.empty() && !method.empty())
+				return scope + "::" + method;
+			return "";
+		}
+		// Recurse into declarator wrappers that may contain the
+		// qualified_identifier (function_declarator, pointer_declarator).
+		if (strcmp(t, "function_declarator") == 0 ||
+		    strcmp(t, "pointer_declarator") == 0 ||
+		    strcmp(t, "parenthesized_declarator") == 0) {
+			std::string r = extractQualifiedName(child);
+			if (!r.empty())
+				return r;
+		}
+	}
+	return "";
+}
+
 std::string CVisitor::extractFieldMethodName(TSNode field_expr)
 {
 	// field_expression children for "a.adder":
@@ -553,6 +736,57 @@ int CVisitor::detectVisibility(TSNode node)
 		}
 	}
 	return 1;
+}
+
+/// Extract the receiver text from a field_expression.
+/// For `a.adder` returns "a"; for `a->adder` returns "a";
+/// for `a.b.c` returns "a.b" (the full receiver expression before
+/// the final dot/arrow). The receiver is the FIRST named child of
+/// the field_expression (everything before the "." or "->" operator).
+std::string CVisitor::extractFieldReceiverText(TSNode field_expr)
+{
+	uint32_t count = ts_node_child_count(field_expr);
+	for (uint32_t i = 0; i < count; i++) {
+		TSNode child = ts_node_child(field_expr, i);
+		if (!ts_node_is_named(child))
+			continue;
+		const char *t = ts_node_type(child);
+		// The first named child is the object/receiver expression.
+		// For `a.adder`, it's identifier "a". For `a.b.adder`, it's
+		// a nested field_expression "a.b". For `this->method`, it's
+		// identifier "this".
+		if (strcmp(t, "identifier") == 0 ||
+		    strcmp(t, "field_expression") == 0 ||
+		    strcmp(t, "call_expression") == 0 ||
+		    strcmp(t, "subscript_expression") == 0) {
+			return nodeText(child);
+		}
+	}
+	return "";
+}
+
+/// Extract the receiver text from a qualified_identifier callee.
+/// For `Type::method` returns "Type"; for `ns::Type::method` returns
+/// "ns::Type" (everything before the last "::"). The receiver is the
+/// FIRST named identifier child.
+std::string CVisitor::extractQualifiedReceiverText(TSNode qual_id)
+{
+	uint32_t count = ts_node_child_count(qual_id);
+	for (uint32_t i = 0; i < count; i++) {
+		TSNode child = ts_node_child(qual_id, i);
+		if (!ts_node_is_named(child))
+			continue;
+		const char *t = ts_node_type(child);
+		if (strcmp(t, "identifier") == 0 ||
+		    strcmp(t, "field_identifier") == 0) {
+			return nodeText(child);
+		}
+		// qualified_identifier can nest: `ns::Type::method` has a
+		// qualified_identifier child for `ns::Type`. Return its text.
+		if (strcmp(t, "qualified_identifier") == 0)
+			return nodeText(child);
+	}
+	return "";
 }
 
 } // namespace ir

@@ -345,7 +345,12 @@ fn run_worker(
     }
 }
 
-fn h_index_project(project_id: u64, args: &Value) -> String {
+/// Internal worker-subprocess indexer used by the MCP session auto-index
+/// path. NOT registered as a public tool: index-parallel (with keep_db
+/// incremental) fully replaces the serial index_project tool, so the
+/// MCP tool list no longer exposes it (47→46 tools). The engine and the
+/// worker subprocess entry point are shared with index-parallel and stay.
+pub fn index_project_via_worker(project_id: u64, args: &Value) -> String {
     let path = args["project_path"].as_str().unwrap_or("");
 
     // Use worker subprocess for memory isolation
@@ -879,9 +884,13 @@ fn h_explain_module(project_id: u64, args: &Value) -> String {
 
 // ── v0.3 Evidence Pipeline tools ───────────────────────────────
 
-/// Run background enhancement: full parse, call graph, metrics, FTS,
+/// Run background enhancement: full parse, call graph, FTS,
 /// and v0.3 semantic_fact extraction (Step 1.5). Prerequisite for
 /// `build_evidence` to produce non-empty findings.
+/// v0.2.5: complexity metrics and n-gram semantic vectors are restored —
+/// they are produced during `index_project` (resolveStagedMetrics +
+/// buildVectorsFromGraph); this tool additionally re-runs semantic_fact
+/// extraction and the model build. Call graph is built during index.
 fn h_enhance_project(project_id: u64, _args: &Value) -> String {
     ffi::enhance_project(project_id)
 }
@@ -895,8 +904,10 @@ fn h_build_evidence(project_id: u64, args: &Value) -> String {
 }
 
 /// Verify a natural-language claim against the project's indexed
-/// evidence. Runs IntentParser -> Planner -> EvidenceBuilder ->
-/// VerdictBuilder and returns the aggregate verdict + confidence.
+/// evidence. Thin wrapper over the structured verify_claim path:
+/// IntentParser → Claim mapping (capability/contract) →
+/// verify_one_claim. Unrecognized intents return
+/// error_code="intent_unrecognized".
 fn h_verify_statement(project_id: u64, args: &Value) -> String {
     let claim = args["claim"].as_str().unwrap_or("");
     if claim.is_empty() {
@@ -974,6 +985,39 @@ fn h_find_callees(project_id: u64, args: &Value) -> String {
     let name = args["symbol_name"].as_str().unwrap_or("");
     let ff = args["file_filter"].as_str();
     ffi::find_callees_adaptive(project_id, name, ff)
+}
+
+// Step 7 (plan §7.2): entity-precise caller/callee queries. These
+// unambiguously target a single entity via its id (resolved to
+// name+file_path+start_row in the engine), so homonyms are never
+// aggregated. Bare-name queries that hit multiple entities return
+// ambiguous=true with candidates; callers can feed one candidate's id
+// back into these tools.
+
+fn h_find_callers_by_entity(project_id: u64, args: &Value) -> String {
+    let entity_id = args["entity_id"].as_u64().unwrap_or(0);
+    if entity_id == 0 {
+        return json!({"error": "entity_id is required [module=mcp, tool=find_callers_by_entity]"})
+            .to_string();
+    }
+    ffi::find_callers_by_entity(project_id, entity_id)
+}
+
+fn h_find_callees_by_entity(project_id: u64, args: &Value) -> String {
+    let entity_id = args["entity_id"].as_u64().unwrap_or(0);
+    if entity_id == 0 {
+        return json!({"error": "entity_id is required [module=mcp, tool=find_callees_by_entity]"})
+            .to_string();
+    }
+    ffi::find_callees_by_entity(project_id, entity_id)
+}
+
+// Step 9 (plan §9.2): verifier registry introspection. Reports whether
+// the verifier subsystem is armed, which public claim types are
+// supported, and whether the canonical evidence backend has data.
+fn h_verifier_registry_status(project_id: u64, args: &Value) -> String {
+    let _ = args;
+    ffi::get_verifier_registry_status(project_id)
 }
 
 // ── Graph path + component tools ───────────────────────────────
@@ -1202,7 +1246,6 @@ static TOOL_HANDLERS: Lazy<HashMap<&'static str, ToolHandler>> = Lazy::new(|| {
     m.insert("find_references", h_find_references as ToolHandler);
     m.insert("search_code", h_search_code as ToolHandler);
     // Core tools
-    m.insert("index_project", h_index_project as ToolHandler);
     m.insert("index_file", h_index_file as ToolHandler);
     m.insert("force_index_files", h_force_index_files as ToolHandler);
     m.insert("get_graph_stats", h_get_graph_stats as ToolHandler);
@@ -1245,6 +1288,20 @@ static TOOL_HANDLERS: Lazy<HashMap<&'static str, ToolHandler>> = Lazy::new(|| {
     m.insert("search", h_search as ToolHandler);
     m.insert("find_callers", h_find_callers as ToolHandler);
     m.insert("find_callees", h_find_callees as ToolHandler);
+    // Step 7 (plan §7.2): entity-precise queries (no homonym aggregation).
+    m.insert(
+        "find_callers_by_entity",
+        h_find_callers_by_entity as ToolHandler,
+    );
+    m.insert(
+        "find_callees_by_entity",
+        h_find_callees_by_entity as ToolHandler,
+    );
+    // Step 9 (plan §9.2): verifier registry introspection.
+    m.insert(
+        "get_verifier_registry_status",
+        h_verifier_registry_status as ToolHandler,
+    );
     m.insert("shortest_path", h_shortest_path as ToolHandler);
     m.insert(
         "connected_components",
@@ -1308,18 +1365,6 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
                     "limit": {"type": "integer", "description": "Max results (default 20, max 100)"}
                 },
                 "required": ["query"]
-            }),
-        },
-        Tool {
-            name: "index_project".into(),
-            description: "Index a project directory: parse all source files, build IR, and construct the code graph.".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "project_path": {"type": "string", "description": "Absolute path to project root"},
-                    "language_filter": {"type": "string", "description": "Optional: only index files of this language"}
-                },
-                "required": ["project_path"]
             }),
         },
         Tool {
@@ -1493,7 +1538,7 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
         },
         Tool {
             name: "enhance_project".into(),
-            description: "Run background enhancement for a project: full tree-sitter parse, call graph construction, metrics resolution, FTS index build, and v0.3 semantic_fact extraction (Step 1.5). This is the prerequisite for build_evidence to produce non-empty findings — the semantic facts (sync/mutex/lock, memory/cstring/alloc, error/bare_except, pattern/todo, framework/gin, ffi/extern_call) are extracted here. Returns a JSON summary with files_processed, symbols_enhanced, call_edges, and timing breakdowns.".into(),
+            description: "Run background enhancement for a project: full tree-sitter parse, call graph construction, FTS index build, and v0.3 semantic_fact extraction (Step 1.5). This is the prerequisite for build_evidence to produce non-empty findings — the semantic facts (sync/mutex/lock, memory/cstring/alloc, error/bare_except, pattern/todo, framework/gin, ffi/extern_call) are extracted here. Returns a JSON summary with files_processed, symbols_enhanced, call_edges, and timing breakdowns. v0.2.5: complexity metrics (cyclomatic/cognitive/nesting) and n-gram semantic vectors are restored and built during index; use engine_get_capabilities / engine_get_enhancement_status to see readiness.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {}
@@ -1515,7 +1560,7 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
         },
         Tool {
             name: "verify_statement".into(),
-            description: "Verify a natural-language claim against the project's indexed evidence. The claim is parsed into an Intent by IntentParser, planned into evidence rule executions by Planner, executed via EvidenceBuilder, and aggregated into a Verdict by VerdictBuilder. Returns JSON with verdict (Supported|Contradicted|PartiallyVerified|Unknown), confidence, requirements[], and evidence[]. Use this for yes/no questions about code behavior (e.g. 'does this project safely handle CString?').".into(),
+            description: "Verify a natural-language claim against the project's indexed evidence. Thin wrapper over the structured verify_claim path: the claim is parsed into an Intent (IntentParser), mapped to a structured Claim (capability_question -> capability_exists, safety/pattern_question -> contract_holds), and dispatched through the same verify_one_claim core as verify_claim. Returns JSON with verdict (Supported|Contradicted|PartiallyVerified|Unknown), confidence, and verifier-specific detail. Unrecognized intents return error_code=intent_unrecognized. Use this for yes/no questions about code behavior (e.g. 'does this project safely handle CString?'); for function-implements or architecture checks use verify_claim with the explicit type.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -1594,7 +1639,7 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
         },
         Tool {
             name: "search".into(),
-            description: "Unified code search: auto-selects between FTS5 and semantic search based on enhancement status. Supports prefix matching.".into(),
+            description: "Unified code search: FTS5 exact/prefix matching, complemented by n-gram semantic vector search (restored in v0.2.5) that adds lexically-similar name recall when FTS results run short. Supports prefix matching.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -1626,6 +1671,39 @@ pub fn all_tools() -> Vec<super::mcp::protocol::Tool> {
                     "file_filter": {"type": "string", "description": "Optional: absolute file path. Restricts the caller to the given file, disambiguating homonyms. See find_callers doc."}
                 },
                 "required": ["symbol_name"]
+            }),
+        },
+        Tool {
+            name: "find_callers_by_entity".into(),
+            description: "Find all symbols that call the specified entity (Step 7, plan §7.2). Targets a single entity by its id, so homonyms (same name across files/classes, e.g. __init__, run, main) are never aggregated. Use the candidates returned by find_callers/find_callees when a bare name is ambiguous, or locate the entity first via find_symbol, then pass its id here.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "entity_id": {"type": "integer", "description": "Entity id from the entity table (e.g. from the candidates list of an ambiguous bare-name query, or from find_symbol output)."}
+                },
+                "required": ["entity_id"]
+            }),
+        },
+        Tool {
+            name: "find_callees_by_entity".into(),
+            description: "Find all symbols called by the specified entity (Step 7, plan §7.2). Targets a single entity by its id, so homonyms are never aggregated.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "entity_id": {"type": "integer", "description": "Entity id from the entity table (e.g. from the candidates list of an ambiguous bare-name query, or from find_symbol output)."}
+                },
+                "required": ["entity_id"]
+            }),
+        },
+        Tool {
+            name: "get_verifier_registry_status".into(),
+            description: "Report verifier subsystem health (Step 9, plan §9.2): whether the verifier registry is armed, which public claim types are supported, and whether the canonical evidence backend (entity/relation) has data for the project. Pass project_id=0 to skip the evidence probe.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "integer", "description": "Project id; 0 skips the evidence backend probe."}
+                },
+                "required": []
             }),
         },
         Tool {

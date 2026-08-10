@@ -273,6 +273,35 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	// true, buildGraph uses the incremental path: only cycles the unique
 	// edge index instead of dropping/recreating all 6 lookup indexes.
 	bool is_reindex = false;
+
+	// Pre-detect Java projects BEFORE the directory walk. The FilterPolicy
+	// Java carve-out defers test/docs/example/samples/... dirs to a
+	// top-only check ONLY when lang_context_ == "java", but lang_context_
+	// previously flipped only upon seeing the FIRST .java file during the
+	// walk — and that file may itself live under an example/samples/...
+	// dir which is skipped at any depth while lang_context_ is still
+	// empty. That chicken-and-egg made Java projects with such package
+	// dirs index 0 files (e.g. spring-petclinic's
+	// org/springframework/samples/petclinic). Fix: cheap recursive scan
+	// for any *.java before the main walk and flip lang_context_ early.
+	{
+		std::error_code ec;
+		auto pit = std::filesystem::recursive_directory_iterator(
+			dir,
+			std::filesystem::directory_options::skip_permission_denied,
+			ec);
+		std::filesystem::recursive_directory_iterator pend;
+		while (!ec && pit != pend) {
+			const auto &pent = *pit;
+			if (pent.is_regular_file() &&
+			    pent.path().extension() == ".java") {
+				filter.setLangContext("java");
+				break;
+			}
+			pit.increment(ec);
+		}
+	}
+
 	try {
 		auto it = std::filesystem::recursive_directory_iterator(
 			dir, std::filesystem::directory_options::
@@ -389,13 +418,33 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 						file_stat.st_mtime);
 					fsize = static_cast<int64_t>(
 						file_stat.st_size);
-					// O(1) in-memory lookup instead of per-file DB query
-					std::string key =
+					// O(1) in-memory lookup instead of per-file DB query.
+					// M2: two-stage incremental gate. Stage 1 is the cheap
+					// mtime|size gate (no file read). Only when it matches do
+					// we hash the file and check the mtime|size|hash gate,
+					// closing the "same size + same mtime but changed content"
+					// hole. Files whose mtime/size differ skip without being
+					// read, so incremental performance is preserved.
+					std::string base =
 						entry.path().string() + "|" +
 						std::to_string(mtime) + "|" +
 						std::to_string(fsize);
-					file_unchanged = scan_state.count(key) >
-							 0;
+					if (scan_state.count(base) > 0) {
+						std::string ch = fileContentHash(
+							entry.path()
+								.string()
+								.c_str());
+						if (!ch.empty())
+							file_unchanged =
+								scan_state.count(
+									base +
+									"|" +
+									ch) > 0;
+						// If hashing failed (unreadable), fall back to
+						// treating as unchanged on the mtime|size gate.
+						else
+							file_unchanged = true;
+					}
 				}
 				if (file_unchanged) {
 					is_reindex = true;
@@ -440,9 +489,51 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		    << jsonEscape(e.what()) << "\"}";
 		return dupString(err.str());
 	}
-	if (jobs.empty())
+	if (jobs.empty()) {
+		// No files need (re)indexing. This is either a first index of an
+		// empty directory, or a re-index where every file is unchanged.
+		// In the re-index case the full post-parse pipeline is skipped
+		// (no graph rebuild needed), but we MUST still keep canonical data
+		// (node_vectors) and the data-dependent readiness flags fresh so
+		// they cannot go stale.
+		//
+		// v0.2.5: in DEEP mode we REBUILD the n-gram vectors here even when
+		// no file changed. This keeps node_vectors self-healing: if an
+		// external process truncated the table (or a prior run left it
+		// empty), a no-op re-index restores it instead of leaving semantic
+		// search permanently empty. The builder is idempotent (DELETE +
+		// re-INSERT), and vector_ready is then derived from the actual
+		// rebuilt row count — preserving the A19 "readiness matches
+		// canonical data" invariant.
+		if (is_reindex && env_mode && strcmp(env_mode, "deep") == 0) {
+			g_store->buildVectorsFromGraph(project_id);
+			sqlite3_stmt *vstmt = nullptr;
+			const char *vsql =
+				"SELECT COUNT(*) FROM node_vectors WHERE project_id = ?";
+			if (sqlite3_prepare_v2(g_store->handle(), vsql, -1,
+					       &vstmt, nullptr) == SQLITE_OK) {
+				sqlite3_bind_int64(
+					vstmt, 1,
+					static_cast<int64_t>(project_id));
+				int64_t vec_rows = 0;
+				if (sqlite3_step(vstmt) == SQLITE_ROW)
+					vec_rows =
+						sqlite3_column_int64(vstmt, 0);
+				sqlite3_finalize(vstmt);
+				g_store->setProjectReadiness(
+					project_id, "vector_ready",
+					vec_rows > 0 ? 1 : 0);
+			} else {
+				fprintf(stderr,
+					"engine_index_project: node_vectors count "
+					"probe failed (no-op re-index): %s "
+					"[module=engine, method=engine_index_project]\n",
+					sqlite3_errmsg(g_store->handle()));
+			}
+		}
 		return dupString(
 			"{\"ok\":true,\"files_indexed\":0,\"nodes\":0,\"edges\":0,\"errors\":0}");
+	}
 
 	// Init progress tracking
 	{
@@ -718,7 +809,11 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 				continue;
 			}
 
-			std::string source = readFile(job.path.c_str());
+			// v0.6 (perf): st_size was just obtained above, so reuse it to
+			// skip readFile's ate-seek + tellg round-trip per file.
+			std::string source = readFilePrealloc(
+				job.path.c_str(),
+				static_cast<size_t>(file_stat.st_size));
 			if (source.empty()) {
 				store::bufferParseFailure(
 					project_id, job.path, job.lang,
@@ -1591,7 +1686,14 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 		// + unique-edge indexes. Unlike engine_index_project (which
 		// reaches this via engine_index_post_parse), this path must
 		// recreate those indexes itself or they stay missing (M-12).
-		g_store->buildGraph(project_id, true);
+		// P2 fix: a resolver-pipeline failure makes buildGraph roll back
+		// its graph savepoint and return false; flag it as a writer error
+		// so the result JSON reports failure instead of a false success
+		// (the outer transaction is rolled back by the caller when it
+		// sees ok:false).
+		if (!g_store->buildGraph(project_id, true)) {
+			writer_error = 1;
+		}
 		time_buildgraph_ms =
 			duration_cast<milliseconds>(steady_clock::now() -
 						    t_parse_start)
@@ -1638,7 +1740,7 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 
 	// ── Build result JSON ──────────────────────────────────────
 	std::ostringstream result;
-	result << "{\"ok\":true"
+	result << "{\"ok\":" << (writer_error == 0 ? "true" : "false")
 	       << ",\"files_indexed\":" << files_written.load()
 	       << ",\"workers\":" << num_workers
 	       << ",\"time_parse_ms\":" << time_parse_ms

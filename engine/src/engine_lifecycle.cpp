@@ -62,39 +62,6 @@ int engine_init(const char *db_path)
 							   t_open_start)
 				.count());
 
-		// Initialize LadybugDB for graph storage (non-fatal if unavailable).
-		//
-		// SKIP in worker mode (CODESCOPE_SKIP_ASYNC=1): worker
-		// subprocesses only write to SQLite (buildGraph is SQL-only,
-		// see engine_index_post_parse.cpp). LadybugDB is a query-time
-		// graph store that is never populated during indexing —
-		// allocating its 256MB buffer pool + running Kuzu schema DDL
-		// in every worker is pure waste. The parent process (which
-		// serves queries) does not set CODESCOPE_SKIP_ASYNC and
-		// initializes LadybugDB normally. Query code checks
-		// hasLadybugDB() and falls back to SQLite when false.
-		const char *skip_async = std::getenv("CODESCOPE_SKIP_ASYNC");
-		const char *skip_ladybug =
-			std::getenv("CODESCOPE_SKIP_LADYBUG_INIT");
-		bool need_ladybug = !(skip_async && skip_async[0] == '1') &&
-				    !(skip_ladybug && skip_ladybug[0] == '1');
-		if (need_ladybug) {
-			auto t_lbug_start = std::chrono::steady_clock::now();
-			g_store->initLadybugDB();
-			auto t_lbug_end = std::chrono::steady_clock::now();
-			fprintf(stderr,
-				"engine_init: initLadybugDB=%lldms "
-				"[module=engine, method=engine_init]\n",
-				(long long)std::chrono::duration_cast<
-					std::chrono::milliseconds>(t_lbug_end -
-								   t_lbug_start)
-					.count());
-		} else {
-			fprintf(stderr,
-				"engine_init: skipping initLadybugDB "
-				"(CODESCOPE_SKIP_ASYNC/SKIP_LADYBUG=1) "
-				"[module=engine, method=engine_init]\n");
-		}
 		g_query = std::make_unique<query::QueryEngine>(g_store.get());
 
 		// Initialize parser and register available grammars
@@ -148,7 +115,6 @@ void engine_shutdown()
 		g_parser.reset(); // independent, safe to drop first
 		g_query.reset(); // may do SQLite work via g_store, destruct BEFORE store closes
 		if (g_store) {
-			g_store->closeLadybugDB();
 			g_store->close();
 			g_store.reset();
 		}

@@ -20,7 +20,6 @@
 #include "../src/query/query_engine.h"
 #include "../src/query/impact_analysis.h"
 #include "../src/store/store.h"
-#include "../src/store/store_graph_compiler.h"
 
 #include <cassert>
 #include <cstdio>
@@ -31,20 +30,20 @@
 
 static const char *kDbPath = "/tmp/codescope_test_query_algorithms.db";
 
-/// Insert a graph_node row with an explicit ID and the minimum required
-/// columns. node_type=0 (Function) is used for all test nodes.
+/// Insert an entity row (the SQLite-only canonical node source) with an
+/// explicit ID and the minimum required columns. kind=0 (Function) is used
+/// for all test nodes. analyzeChangeImpact's SQLite backend resolves
+/// node-in-file and metadata via the entity table, so the test must seed it
+/// (graph_nodes is the deprecated legacy table).
 static void insertGraphNode(store::GraphStore &store, uint64_t project_id,
 			    int64_t id, const char *name, const char *file_path)
 {
 	sqlite3 *db = store.handle();
 	const char *sql =
-		"INSERT INTO graph_nodes (id, project_id, ir_node_id, "
-		"node_type, name, qualified_name, module_path, "
-		"package_name, class_name, start_row, start_col, "
-		"end_row, end_col, file_path, language, signature, "
-		"is_entry_point) "
-		"VALUES (?, ?, 0, 0, ?, ?, '', '', '', 0, 0, 0, 0, ?, "
-		"'cpp', '', 0)";
+		"INSERT INTO entity (id, project_id, kind, name, "
+		"qualified_name, file_path, language, start_row, start_col, "
+		"end_row, end_col) "
+		"VALUES (?, ?, 0, ?, ?, ?, 'cpp', 0, 0, 0, 0)";
 	sqlite3_stmt *stmt = nullptr;
 	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, id);
@@ -56,15 +55,16 @@ static void insertGraphNode(store::GraphStore &store, uint64_t project_id,
 	sqlite3_finalize(stmt);
 }
 
-/// Insert a CALLS edge (edge_type=1) from source_id to target_id.
+/// Insert a CALLS relation edge (type=1) from source_id to target_id.
+/// The SQLite-only graph backends read edges from the relation table, which
+/// buildCSR compiles into the adjacency CSR (type=1 is the CALLS edge type).
 static void insertCallEdge(store::GraphStore &store, uint64_t project_id,
 			   int64_t source_id, int64_t target_id)
 {
 	sqlite3 *db = store.handle();
 	const char *sql =
-		"INSERT INTO graph_edges (project_id, source_node_id, "
-		"target_node_id, edge_type, graph_type) "
-		"VALUES (?, ?, ?, 1, 'call_graph')";
+		"INSERT INTO relation (project_id, source_id, target_id, type) "
+		"VALUES (?, ?, ?, 1)";
 	sqlite3_stmt *stmt = nullptr;
 	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
@@ -80,14 +80,19 @@ static bool jsonContains(const std::string &json, const char *needle)
 	return json.find(needle) != std::string::npos;
 }
 
-/// Sync SQLite graph data into LadybugDB so that LadybugDB-only query
-/// paths (findShortestPath, analyzeChangeImpact, etc.) can read the
-/// freshly-inserted nodes/edges. Must be called after every batch of
-/// insertGraphNode/insertCallEdge calls and before the query that
-/// consumes them.
-static void syncLadybug(store::GraphStore &store, uint64_t project_id)
+/// After inserting entity/relation rows, compile them into the CSR
+/// adjacency tables so the SQLite-only graph backends (findShortestPath,
+/// analyzeChangeImpact) can read them. Must be called after every batch of
+/// insertGraphNode/insertCallEdge calls and before the query that consumes
+/// them — buildCSR builds adjacency/adjacency_rev from relation (type=1).
+static void syncSQLite(store::GraphStore &store, uint64_t project_id)
 {
-	assert(store::compileGraphToLadybugDB(&store, project_id, nullptr));
+	// SQLite has been removed: the SQLite store (entity/relation/
+	// adjacency) is the sole graph backend. Rebuild the CSR so the
+	// freshly-inserted edges are visible to the CSR-based queries.
+	bool ok = store.buildCSR(project_id);
+	assert(ok);
+	(void)project_id;
 }
 
 // ─── findShortestPath tests ────────────────────────────────────
@@ -99,7 +104,7 @@ static void testShortestPathDirectEdge(store::GraphStore &store,
 	insertGraphNode(store, project_id, 1, "caller", "/t/a.cpp");
 	insertGraphNode(store, project_id, 2, "callee", "/t/b.cpp");
 	insertCallEdge(store, project_id, 1, 2);
-	syncLadybug(store, project_id);
+	syncSQLite(store, project_id);
 
 	query::QueryEngine engine(&store);
 	std::string result = engine.findShortestPath(project_id, 1, 2);
@@ -121,7 +126,7 @@ static void testShortestPath2Hop(store::GraphStore &store, uint64_t project_id)
 	insertGraphNode(store, project_id, 12, "c", "/t/c.cpp");
 	insertCallEdge(store, project_id, 10, 11);
 	insertCallEdge(store, project_id, 11, 12);
-	syncLadybug(store, project_id);
+	syncSQLite(store, project_id);
 
 	query::QueryEngine engine(&store);
 	std::string result = engine.findShortestPath(project_id, 10, 12);
@@ -145,7 +150,7 @@ static void testShortestPath3Hop(store::GraphStore &store, uint64_t project_id)
 	insertCallEdge(store, project_id, 20, 21);
 	insertCallEdge(store, project_id, 21, 22);
 	insertCallEdge(store, project_id, 22, 23);
-	syncLadybug(store, project_id);
+	syncSQLite(store, project_id);
 
 	query::QueryEngine engine(&store);
 	std::string result = engine.findShortestPath(project_id, 20, 23);
@@ -169,7 +174,7 @@ static void testShortestPathNoPath(store::GraphStore &store,
 	insertGraphNode(store, project_id, 33, "x4", "/t/d.cpp");
 	insertCallEdge(store, project_id, 30, 31);
 	insertCallEdge(store, project_id, 32, 33);
-	syncLadybug(store, project_id);
+	syncSQLite(store, project_id);
 
 	query::QueryEngine engine(&store);
 	std::string result = engine.findShortestPath(project_id, 30, 33);
@@ -186,7 +191,7 @@ static void testShortestPathSelfToSelf(store::GraphStore &store,
 				       uint64_t project_id)
 {
 	insertGraphNode(store, project_id, 40, "self", "/t/a.cpp");
-	syncLadybug(store, project_id);
+	syncSQLite(store, project_id);
 
 	query::QueryEngine engine(&store);
 	std::string result = engine.findShortestPath(project_id, 40, 40);
@@ -212,7 +217,7 @@ static void testShortestPathDepthLimit(store::GraphStore &store,
 	for (int i = 0; i < kChainLen - 1; i++) {
 		insertCallEdge(store, project_id, 50 + i, 50 + i + 1);
 	}
-	syncLadybug(store, project_id);
+	syncSQLite(store, project_id);
 
 	query::QueryEngine engine(&store);
 	std::string result = engine.findShortestPath(project_id, 50, 61);
@@ -239,7 +244,7 @@ static void testShortestPathWithinDepthLimit(store::GraphStore &store,
 	for (int i = 0; i < kChainLen - 1; i++) {
 		insertCallEdge(store, project_id, 70 + i, 70 + i + 1);
 	}
-	syncLadybug(store, project_id);
+	syncSQLite(store, project_id);
 
 	query::QueryEngine engine(&store);
 	std::string result = engine.findShortestPath(project_id, 70, 80);
@@ -266,7 +271,7 @@ static void testImpact1Hop(store::GraphStore &store, uint64_t project_id)
 	insertGraphNode(store, project_id, 102, "callee_fn", "/t/callee.cpp");
 	insertCallEdge(store, project_id, 100, 101); // caller → modified
 	insertCallEdge(store, project_id, 101, 102); // modified → callee
-	syncLadybug(store, project_id);
+	syncSQLite(store, project_id);
 
 	std::string result = query::analyzeChangeImpact(
 		project_id, &store, "[\"/t/modified.cpp\"]");
@@ -307,7 +312,7 @@ static void testImpact2Hop(store::GraphStore &store, uint64_t project_id)
 	insertCallEdge(store, project_id, 201, 202);
 	insertCallEdge(store, project_id, 202, 203);
 	insertCallEdge(store, project_id, 203, 204);
-	syncLadybug(store, project_id);
+	syncSQLite(store, project_id);
 
 	std::string result = query::analyzeChangeImpact(project_id, &store,
 							"[\"/t/mod2.cpp\"]");
@@ -348,7 +353,7 @@ static void testImpact3Hop(store::GraphStore &store, uint64_t project_id)
 	insertCallEdge(store, project_id, 303, 304);
 	insertCallEdge(store, project_id, 304, 305);
 	insertCallEdge(store, project_id, 305, 306);
-	syncLadybug(store, project_id);
+	syncSQLite(store, project_id);
 
 	std::string result = query::analyzeChangeImpact(project_id, &store,
 							"[\"/t/mod3.cpp\"]");
@@ -388,7 +393,7 @@ static void testImpactDepthCap(store::GraphStore &store, uint64_t project_id)
 	for (int i = 0; i < 9; i++) {
 		insertCallEdge(store, project_id, 400 + i, 400 + i + 1);
 	}
-	syncLadybug(store, project_id);
+	syncSQLite(store, project_id);
 
 	std::string result = query::analyzeChangeImpact(project_id, &store,
 							"[\"/t/chain4.cpp\"]");
@@ -423,7 +428,7 @@ static void testImpactDisconnectedNode(store::GraphStore &store,
 {
 	// Node 500 is in a modified file but has no callers or callees.
 	insertGraphNode(store, project_id, 500, "lonely", "/t/lonely.cpp");
-	syncLadybug(store, project_id);
+	syncSQLite(store, project_id);
 
 	std::string result = query::analyzeChangeImpact(project_id, &store,
 							"[\"/t/lonely.cpp\"]");
@@ -474,7 +479,7 @@ static void testImpactMultipleModifiedFiles(store::GraphStore &store,
 	insertGraphNode(store, project_id, 602, "downC", "/t/fileC.cpp");
 	insertCallEdge(store, project_id, 600, 601);
 	insertCallEdge(store, project_id, 601, 602);
-	syncLadybug(store, project_id);
+	syncSQLite(store, project_id);
 
 	std::string result = query::analyzeChangeImpact(
 		project_id, &store, "[\"/t/fileA.cpp\",\"/t/fileB.cpp\"]");
@@ -499,10 +504,6 @@ int main()
 
 	store::GraphStore store;
 	assert(store.open(kDbPath));
-	// LadybugDB must be initialized before any graph query path can use
-	// it. compileGraphToLadybugDB (called by syncLadybug) requires the
-	// connection to exist.
-	assert(store.initLadybugDB());
 
 	uint64_t project_id = store.createProject("/test", "query_algos");
 	assert(project_id > 0);

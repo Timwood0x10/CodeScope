@@ -38,7 +38,7 @@ CodeScope 是一个 **项目真相引擎（Project Truth Engine）**，回答一
 | 解析器 | tree-sitter（统一 AST IR，8 种语言） |
 | 索引引擎 | C++23（Clang 17+），SQLite（WAL 模式，FTS5） |
 | 服务端 | Rust 2024 Edition，MCP 协议（JSON-RPC 2.0，stdio 传输） |
-| 图存储 | SQLite（主存储）+ 可选 LadybugDB（Cypher 查询） |
+| 图存储 | SQLite（唯一图存储，CSR 邻接表实现亚毫秒级调用图查询） |
 | 调度器 | 内置多进程并行索引器（chunk 级 work-stealing） |
 | 构建 | CMake 3.30+（C++），Cargo（Rust） |
 
@@ -137,8 +137,8 @@ flowchart LR
         E1["enhance_project"]
         E2["完整 tree-sitter"]
         E3["调用图"]
-        E4["复杂度指标"]
-        E5["embeddings + FTS"]
+        E4["FTS 索引"]
+        E5["semantic_fact (v0.3)"]
     end
 
     A -->|"触发"| B
@@ -209,9 +209,7 @@ CodeScope **不会**索引项目中的每一个文件。它通过 **8 层级联�
 | 项目 | 原始文件数 | 过滤后 | 过滤比例 | 节省时间 |
 |------|:--------:|:------:|:--------:|:--------:|
 | rustc（Rust 编译器） | 36,919 | **6,029** | 84% | ~2.5 分钟 |
-| goagent（Go） | 2,651 | **1,254** | 53% | ~30 秒 |
 | CodeScope（自身） | 356 | **168** | 53% | ~1 秒 |
-| Linux 内核（完整） | 308,342 | **64,694** | 79% | ~12 分钟 |
 
 ### 强制覆盖：`force_index_files`
 
@@ -231,7 +229,7 @@ codescope cli force_index_files '{"paths":["/path/to/test/file.rs"]}'
 |------|------|
 | **macOS** | Xcode CLT, cmake, Rust (1.85+) |
 | **Linux** | build-essential, cmake, Rust (1.85+) |
-| **Windows** ⚠️ **Beta** | MinGW-w64 14.0.0+，Rust `x86_64-pc-windows-gnu` 目标，cmake。不支持 LadybugDB/Cypher（仅 SQLite）。|
+| **Windows** ⚠️ **Beta** | MinGW-w64 14.0.0+，Rust `x86_64-pc-windows-gnu` 目标，cmake。所有图查询工具均通过内置 SQLite 图查询后端（CSR 邻接表）工作。|
 
 ### 安装预编译二进制
 
@@ -338,7 +336,7 @@ codescope index-parallel /path/to/large/project
 
 | 工具 | 用途 | 参数 |
 |------|------|------|
-| `search` | **推荐** — 统一搜索（自动选择 FTS5 或语义搜索）。 | `{"query": "string (必填)", "limit": "integer (默认 20, 最大 100)"}` |
+| `search` | **推荐** — 统一搜索（基于 FTS5；本 sprint 已下线语义/向量搜索，FTS5 是唯一路径）。 | `{"query": "string (必填)", "limit": "integer (默认 20, 最大 100)"}` |
 | `search_code` | [已废弃 — 使用 search] | `{"query": "string (必填)", "limit": "integer"}` |
 
 ### 验证
@@ -423,32 +421,27 @@ get_knowledge_graph {"table":"capability","limit":10}
 
 ### 索引时间
 
-| 项目 | 文件数 | 节点数 | 边数 | 索引时间 | 峰值内存 |
-|------|------:|------:|------:|---------:|---------:|
-| **CodeScope**（自身，C++/Rust） | 212 | 1,387 | 1,895 | **1.0 秒** | ~150 MB |
-| **memscope-rs**（Rust） | 215 | 4,344 | — | **~2 秒** | ~200 MB |
-| **ARES**（Go） | 1,254 | 18,798 | 4,475 | **4.3 秒** | ~500 MB |
-| **rustc**（Rust 编译器，monorepo） | 6,029 | 81,039 | 63,697 | **18.7 秒** | 5.9 GB |
-| **Linux 内核**（完整） | 64,694 | 12M | — | **3 分 07 秒** | — |
+基于纯 SQLite 图后端实测（无 LadybugDB/Kuzu 依赖）。最新一次运行：2026-08-08。
 
-### LadybugDB 存储对比
+| 项目 | 语言 | 文件数 | 节点数 | 边数 | 索引时间 | 峰值内存 |
+|------|------|------:|------:|------:|---------:|---------:|
+| **CodeScope**（自身） | C++/Rust | 221 | 1,481 | 1,204 | **1.2 秒** | ~150 MB |
+| **goagent** | Go | 1,344 | 26,425 | 6,352 | **16.0 秒** | ~500 MB |
+| **rustc**（Rust 编译器，monorepo） | Rust | 6,029 | 129,918 | 118,154 | **31.6 秒** | 5.9 GB |
 
-| 项目 | SQLite DB | LadybugDB | LadybugDB 占 SQLite 比例 |
-|------|:---------:|:---------:|:-----------------------:|
-| **CodeScope**（自身） | 77 MB | 3.4 MB | 4.4% |
-| **ARES**（Go） | 337 MB | 24 KB | <0.1% |
+### 查询延迟（SQLite 图查询后端）
 
-### 查询延迟（LadybugDB Cypher）
+所有图查询均基于内置 SQLite 图查询后端（CSR 邻接表），典型调用图查询为亚毫秒级。
 
 | 查询 | 延迟 | 说明 |
 |------|:----:|------|
-| `get_graph_stats` | ~1 ms | Cypher `count()` 聚合 |
-| `find_callers("buildGraph")` | ~1 ms | Cypher `MATCH` 名称过滤 |
-| `find_callees("buildGraph")` | ~1 ms | 返回 54 个被调用者 |
-| `graph_query`（LIMIT 100） | ~1 ms | 2,590 条边，DSL → Cypher 翻译 |
-| `shortest_path` | ~1 ms | Cypher `shortestPath()` BFS |
-| `get_neighbors` | ~1 ms | 1 跳 `MATCH` 含方向 |
-| `get_subgraph` | ~1 ms | 1 跳 `MATCH` 含过滤器 |
+| `get_graph_stats` | ~0.1 ms | SQL 聚合 |
+| `find_callers("buildGraph")` | ~0.2 ms | 名称过滤（sub-ms） |
+| `find_callees("parse")` | ~0.2 ms | 名称过滤（sub-ms） |
+| `graph_query`（LIMIT 100） | ~37 ms | 118,154 条边，JOIN 优化全扫描 |
+| `shortest_path` | sub-ms | O(E) CSR BFS |
+| `get_neighbors` | sub-ms | O(degree) CSR 邻接 |
+| `get_subgraph` | sub-ms | O(E) CSR BFS |
 
 ### 微基准
 
@@ -465,17 +458,15 @@ get_knowledge_graph {"table":"capability","limit":10}
 
 | 项目 | 跨文件 CALLS | 占 CALLS 总数百分比 |
 |------|:-----------:|:------------------:|
-| CodeScope（C++） | 23 | 0.1% |
-| goagent（Go） | 49,258 | 86% |
-| Linux 内核（C） | 1,502,432 | 40% |
+| CodeScope（C++） | 588 | 46.7% |
+| goagent（Go） | 2,930 | 53.0% |
+| rustc（Rust） | 70,833 | 59.9% |
 
 ### 快速扫描（轻量，毫秒级）
 
 | 项目 | 时间 | 语言 | 符号数 |
 |------|:----:|:----:|:------:|
 | **CodeScope**（自身） | **32 ms** | cpp, rust, c | 2,902 |
-| **goagent**（Go） | **493 ms** | go, c, cpp, python | 5,172 |
-| **Linux 内核**（核心） | **360 ms** | c | 40,335 |
 
 ### Token 节省
 
@@ -546,4 +537,4 @@ cd CodeScope
 
 Apache 2.0 — 详见 [LICENSE](LICENSE)。
 
-**CodeScope v0.2.4** — 使用 Rust 2024 + C++23 + tree-sitter + SQLite 构建。
+**CodeScope v0.2.5** — 使用 Rust 2024 + C++23 + tree-sitter + SQLite 构建。

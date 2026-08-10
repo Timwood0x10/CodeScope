@@ -130,6 +130,37 @@ struct Record {
 	/// in state_builder.cpp fuses pub_count (visibility=1) with call-graph
 	/// counts — see docs/dev_plans/role_classifier_plan.md.
 	int visibility = 0;
+
+	// ── Call fact fields (Step 3, plan §3.1) ────────────────────────
+	// Populated by per-language Visitors for CallExpr records so the
+	// Resolver Pipeline can disambiguate method/static/constructor calls
+	// using structured evidence instead of bare-name + directory heuristics.
+	// All fields default to empty (unknown). Direct calls must NOT
+	// fabricate a receiver — an empty receiver_text means "no receiver"
+	// (a bare function call), which is itself a meaningful signal.
+
+	/// Full qualified call target text as written in source, e.g. "b.Get",
+	/// "fmt.Println", "Type::method", "self.handler". For a bare call
+	/// `alpha()` this is empty (the bare name already lives in `name`).
+	/// Keeping the full qualifier lets the Resolver distinguish
+	/// `pkg.Func()` from `obj.Method()` and from `Func()`.
+	std::string qualified_target;
+	/// Receiver expression text as written, e.g. "b", "fmt", "obj", "self".
+	/// Empty for bare/free function calls. For `Type::staticMethod()` the
+	/// receiver is "Type". This is the syntactic receiver only — its
+	/// inferred type lives in receiver_type.
+	std::string receiver_text;
+	/// Statically inferred type of the receiver, e.g. "Box" for `b.Get()`
+	/// when `b` is declared `Box b`. Empty when the type cannot be
+	/// determined from local context (dynamic receivers, unknown variable).
+	/// The Resolver uses this as the PRIMARY evidence for method-target
+	/// disambiguation (replacing the old directory heuristic).
+	std::string receiver_type;
+	/// Import alias used in the call, if any. For `pkg.Func()` where `pkg`
+	/// is an imported alias, this stores "pkg" and the canonical import
+	/// target is resolved via the import table. Empty for calls that do
+	/// not go through an import alias.
+	std::string import_alias;
 };
 
 /**
@@ -269,6 +300,39 @@ class SemanticUnit {
 	  * \return true if the record was found and updated.
 	  */
 	bool setCallStrategy(uint64_t record_id, const std::string &strategy);
+
+	/**
+	 * Set the structured call facts on a CallExpr record (Step 3, plan §3.1).
+	 * Visitors call this after emitCall() to attach the receiver/qualified
+	 * target/import alias evidence that the Resolver uses for exact-first
+	 * method disambiguation. Empty strings mean "unknown"; callers must NOT
+	 * fabricate a receiver for bare direct calls.
+	 * \param record_id        ID of the CallExpr record to update.
+	 * \param qualified_target Full qualified call text (e.g. "b.Get").
+	 * \param receiver_text    Syntactic receiver expression (e.g. "b").
+	 * \param receiver_type    Inferred receiver type (e.g. "Box"); empty if unknown.
+	 * \param import_alias     Import alias used in the call, if any.
+	 * \return true if the record was found and updated.
+	 */
+	bool setCallFacts(uint64_t record_id,
+			  const std::string &qualified_target,
+			  const std::string &receiver_text,
+			  const std::string &receiver_type,
+			  const std::string &import_alias);
+
+	/**
+	 * Set the qualified_name on any record (Step 4/5, plan §4B/§4C).
+	 * Visitors call this after emitFunction/emitMethod when the function
+	 * is declared inside a class, so the qualified_name includes the
+	 * class prefix (e.g. "Timeline.render", "Point::helper"). The
+	 * Resolver's factorReceiverTypeMatch uses this to match a call's
+	 * receiver_type against the candidate's declaring class.
+	 * \param record_id      ID of the record to update.
+	 * \param qualified_name The qualified name (e.g. "Box::draw").
+	 * \return true if the record was found and updated.
+	 */
+	bool setQualifiedName(uint64_t record_id,
+			      const std::string &qualified_name);
 
     private:
 	std::vector<Record> records_;

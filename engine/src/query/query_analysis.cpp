@@ -4,6 +4,7 @@
 #include "impact_analysis.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -13,10 +14,6 @@
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
-
-#ifdef HAS_LADYBUG
-#include <lbug.h>
-#endif
 
 namespace query
 {
@@ -63,28 +60,6 @@ std::string QueryEngine::getCommunities(uint64_t project_id, int max_members,
 	return "{\"communities\":[],\"total\":0}";
 }
 
-#ifdef HAS_LADYBUG
-// Extract a string column from a LadybugDB tuple into `out`.
-static void lbugGetStr(lbug_flat_tuple *tuple, int col, std::string &out)
-{
-	lbug_value v;
-	if (lbug_flat_tuple_get_value(tuple, col, &v) != LbugSuccess)
-		return;
-	char *sv = nullptr;
-	if (lbug_value_get_string(&v, &sv) == LbugSuccess && sv) {
-		out = sv;
-		lbug_destroy_string(sv);
-	}
-}
-// Extract an int64 column from a LadybugDB tuple into `out`.
-static void lbugGetInt(lbug_flat_tuple *tuple, int col, int64_t &out)
-{
-	lbug_value v;
-	if (lbug_flat_tuple_get_value(tuple, col, &v) == LbugSuccess)
-		lbug_value_get_int64(&v, &out);
-}
-#endif
-
 // ─── Hotspot Analysis ───────────────────────────────────────
 
 std::string QueryEngine::getHotspots(uint64_t project_id, int top_n)
@@ -95,107 +70,69 @@ std::string QueryEngine::getHotspots(uint64_t project_id, int top_n)
 	if (top_n > 100)
 		top_n = 100;
 
-#ifdef HAS_LADYBUG
-	// LadybugDB is the only data source for graph queries.
-	if (!store_ || !store_->isGraphReady()) {
-		std::string err = std::string("[module=query, method=") +
-				  kMethod + "] LadybugDB graph not ready";
-		fprintf(stderr, "%s\n", err.c_str());
+	// ── v0.2.5: SQLite graph-query backend (Windows / SQLite-only) ──
+	// Hotspots = the top `top_n` nodes by incoming CALLS edge count,
+	// joined to entity metadata and code metrics. Mirrors the SQLite
+	// branch's JSON: {id, name, file, type, caller_count, complexity,
+	// cognitive, nesting_depth}.
+	if (!store_ || !store_->handle()) {
 		std::ostringstream j;
-		j << "{\"error\":\"" << jsonEscape(err.c_str())
-		  << "\",\"hotspots\":[],\"total\":0}";
+		j << "{\"error\":\"graph not ready [module=query, method="
+		  << kMethod << "]\",\"hotspots\":[],\"total\":0}";
 		return j.str();
 	}
-	lbug_connection *conn = store_->lbugHandle();
-	if (!conn) {
-		std::string err = std::string("[module=query, method=") +
-				  kMethod + "] LadybugDB connection null";
-		fprintf(stderr, "%s\n", err.c_str());
-		std::ostringstream j;
-		j << "{\"error\":\"" << jsonEscape(err.c_str())
-		  << "\",\"hotspots\":[],\"total\":0}";
-		return j.str();
-	}
-
-	// Count callers per function via Cypher.
-	std::string cypher =
-		"MATCH (n:GraphNode {project_id:" + std::to_string(project_id) +
-		"})<-[r:CALLS]-() "
-		"WHERE n.node_type IN [0,1] "
-		"RETURN n.graph_node_id, n.name, "
-		"n.file_path, n.node_type, "
-		"count(*) AS caller_count "
-		"ORDER BY caller_count DESC LIMIT " +
-		std::to_string(top_n);
-	lbug_query_result qr;
-	lbug_state s = lbug_connection_query(conn, cypher.c_str(), &qr);
-	if (s != LbugSuccess) {
-		char *err_msg = lbug_query_result_get_error_message(&qr);
-		std::string err = std::string("[module=query, method=") +
-				  kMethod + "] LadybugDB query failed: " +
-				  (err_msg ? err_msg : "(unknown)");
-		fprintf(stderr, "%s\n", err.c_str());
-		if (err_msg)
-			lbug_destroy_string(err_msg);
-		lbug_query_result_destroy(&qr);
-		std::ostringstream j;
-		j << "{\"error\":\"" << jsonEscape(err.c_str())
-		  << "\",\"hotspots\":[],\"total\":0}";
-		return j.str();
-	}
-
-	struct HotspotRow {
-		int64_t id;
-		std::string name;
-		std::string file_path;
-		int64_t node_type;
-		int64_t caller_count;
-	};
-	std::vector<HotspotRow> rows;
-	lbug_flat_tuple tuple;
-	while (lbug_query_result_get_next(&qr, &tuple) == LbugSuccess) {
-		HotspotRow row{};
-		// Columns: 0=graph_node_id, 1=name,
-		// 2=file_path, 3=node_type, 4=caller_count
-		lbugGetInt(&tuple, 0, row.id);
-		lbugGetStr(&tuple, 1, row.name);
-		lbugGetStr(&tuple, 2, row.file_path);
-		lbugGetInt(&tuple, 3, row.node_type);
-		lbugGetInt(&tuple, 4, row.caller_count);
-		rows.push_back(std::move(row));
-		lbug_flat_tuple_destroy(&tuple);
-	}
-	lbug_query_result_destroy(&qr);
-
-	// GraphNode schema has no cyclomatic/nesting_depth columns;
-	// emit 0 for complexity to preserve the JSON contract.
-	std::ostringstream json;
-	json << "{\"hotspots\":[";
-	bool first = true;
-	for (const auto &r : rows) {
-		if (!first)
-			json << ",";
-		first = false;
-		json << "{"
-		     << "\"id\":" << r.id << ","
-		     << "\"name\":\"" << jsonEscape(r.name.c_str()) << "\","
-		     << "\"file\":\"" << jsonEscape(r.file_path.c_str())
-		     << "\","
-		     << "\"type\":" << r.node_type << ","
-		     << "\"caller_count\":" << r.caller_count << ","
-		     << "\"complexity\":0}";
-	}
-	json << "],\"total\":" << rows.size() << "}";
-	return json.str();
-#else
-	std::string err = std::string("[module=query, method=") + kMethod +
-			  "] LadybugDB not compiled";
-	fprintf(stderr, "%s\n", err.c_str());
+	sqlite3 *db = store_->handle();
+	const char *sql = "SELECT e.id, e.name, e.file_path, e.kind, "
+			  "       COUNT(r.id) AS caller_count, "
+			  "       e.cyclomatic, e.cognitive, e.nesting_depth "
+			  "FROM relation r JOIN entity e ON e.id = r.target_id "
+			  "WHERE r.project_id=? AND r.type=1 "
+			  "GROUP BY e.id "
+			  "ORDER BY caller_count DESC "
+			  "LIMIT ?";
 	std::ostringstream j;
-	j << "{\"error\":\"" << jsonEscape(err.c_str())
-	  << "\",\"hotspots\":[],\"total\":0}";
+	j << "{\"hotspots\":[";
+	bool first = true;
+	int count = 0;
+	sqlite3_stmt *st = nullptr;
+	if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) == SQLITE_OK) {
+		sqlite3_bind_int64(st, 1, static_cast<int64_t>(project_id));
+		sqlite3_bind_int(st, 2, top_n);
+		while (sqlite3_step(st) == SQLITE_ROW) {
+			int64_t id = sqlite3_column_int64(st, 0);
+			std::string name =
+				reinterpret_cast<const char *>(
+					sqlite3_column_text(st, 1)) ?
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(st, 1)) :
+					"";
+			std::string file =
+				reinterpret_cast<const char *>(
+					sqlite3_column_text(st, 2)) ?
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(st, 2)) :
+					"";
+			int kind = sqlite3_column_int(st, 3);
+			int64_t caller_count = sqlite3_column_int64(st, 4);
+			int64_t cyclomatic = sqlite3_column_int64(st, 5);
+			int64_t cognitive = sqlite3_column_int64(st, 6);
+			int64_t nesting = sqlite3_column_int64(st, 7);
+			if (!first)
+				j << ",";
+			first = false;
+			++count;
+			j << "{\"id\":" << id << ",\"name\":\""
+			  << jsonEscape(name.c_str()) << "\",\"file\":\""
+			  << jsonEscape(file.c_str()) << "\",\"type\":" << kind
+			  << ",\"caller_count\":" << caller_count
+			  << ",\"complexity\":" << cyclomatic
+			  << ",\"cognitive\":" << cognitive
+			  << ",\"nesting_depth\":" << nesting << "}";
+		}
+		sqlite3_finalize(st);
+	}
+	j << "],\"total\":" << count << "}";
 	return j.str();
-#endif
 }
 
 // ─── Code Understanding Queries ─────────────────────────────
@@ -244,12 +181,16 @@ std::string QueryEngine::getModuleMap(uint64_t project_id)
 		first_dir = false;
 		json << "{\"path\":\"" << dir << "\",\"files\":[";
 
-		// Functions in this directory
+		// Functions in this directory. entity is the canonical fact source
+		// (the legacy graph_nodes table was migrated to entity); metrics
+		// columns (cyclomatic etc.) are filled during indexing by
+		// resolveStagedMetrics.
 		std::string func_sql =
-			"SELECT gn.name, gn.node_type, gn.file_path, gn.cyclomatic "
-			"FROM graph_nodes gn "
-			"WHERE gn.project_id = ? AND gn.file_path LIKE ? "
-			"AND gn.node_type IN (0,1) ORDER BY gn.file_path";
+			"SELECT e.name, e.kind, e.file_path, e.cyclomatic, "
+			"       e.cognitive, e.nesting_depth "
+			"FROM entity e "
+			"WHERE e.project_id = ? AND e.file_path LIKE ? "
+			"AND e.kind IN (0,1) ORDER BY e.file_path";
 		sqlite3_prepare_v2(db, func_sql.c_str(), -1, &stmt, nullptr);
 		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 		sqlite3_bind_text(stmt, 2, (dir + "/%").c_str(), -1,
@@ -276,7 +217,11 @@ std::string QueryEngine::getModuleMap(uint64_t project_id)
 					 "")
 			     << "\","
 			     << "\"complexity\":" << sqlite3_column_int(stmt, 3)
-			     << "}";
+			     << ","
+			     << "\"cognitive\":" << sqlite3_column_int(stmt, 4)
+			     << ","
+			     << "\"nesting_depth\":"
+			     << sqlite3_column_int(stmt, 5) << "}";
 		}
 		sqlite3_finalize(stmt);
 		json << "]}";
@@ -291,102 +236,64 @@ std::string QueryEngine::getEntryPoints(uint64_t project_id)
 {
 	static constexpr const char *kMethod = "getEntryPoints";
 
-#ifdef HAS_LADYBUG
-	// LadybugDB is the only data source for graph queries.
-	if (!store_ || !store_->isGraphReady()) {
-		std::string err = std::string("[module=query, method=") +
-				  kMethod + "] LadybugDB graph not ready";
-		fprintf(stderr, "%s\n", err.c_str());
+	if (!store_ || !store_->handle()) {
 		std::ostringstream j;
-		j << "{\"error\":\"" << jsonEscape(err.c_str())
-		  << "\",\"entry_points\":[],\"total\":0}";
+		j << "{\"error\":\"graph not ready [module=query, method="
+		  << kMethod << "]\",\"entry_points\":[],\"total\":0}";
 		return j.str();
 	}
-	lbug_connection *conn = store_->lbugHandle();
-	if (!conn) {
-		std::string err = std::string("[module=query, method=") +
-				  kMethod + "] LadybugDB connection null";
-		fprintf(stderr, "%s\n", err.c_str());
-		std::ostringstream j;
-		j << "{\"error\":\"" << jsonEscape(err.c_str())
-		  << "\",\"entry_points\":[],\"total\":0}";
-		return j.str();
-	}
-
-	std::string cypher =
-		"MATCH (n:GraphNode {project_id:" + std::to_string(project_id) +
-		"}) WHERE n.node_type IN [0,1] "
-		"AND n.name IN ['main','Main','run','Run',"
-		"'start','Start','init','Init','setup','Setup'] "
-		"RETURN n.graph_node_id, n.name, n.node_type, "
-		"n.file_path ORDER BY n.file_path";
-	lbug_query_result qr;
-	lbug_state s = lbug_connection_query(conn, cypher.c_str(), &qr);
-	if (s != LbugSuccess) {
-		char *err_msg = lbug_query_result_get_error_message(&qr);
-		std::string err = std::string("[module=query, method=") +
-				  kMethod + "] LadybugDB query failed: " +
-				  (err_msg ? err_msg : "(unknown)");
-		fprintf(stderr, "%s\n", err.c_str());
-		if (err_msg)
-			lbug_destroy_string(err_msg);
-		lbug_query_result_destroy(&qr);
-		std::ostringstream j;
-		j << "{\"error\":\"" << jsonEscape(err.c_str())
-		  << "\",\"entry_points\":[],\"total\":0}";
-		return j.str();
-	}
-
-	struct EntryPointRow {
-		int64_t id;
-		std::string name;
-		int64_t node_type;
-		std::string file_path;
-	};
-	std::vector<EntryPointRow> rows;
-	lbug_flat_tuple tuple;
-	while (lbug_query_result_get_next(&qr, &tuple) == LbugSuccess) {
-		EntryPointRow row{};
-		// Columns: 0=graph_node_id, 1=name,
-		// 2=node_type, 3=file_path
-		lbugGetInt(&tuple, 0, row.id);
-		lbugGetStr(&tuple, 1, row.name);
-		lbugGetInt(&tuple, 2, row.node_type);
-		lbugGetStr(&tuple, 3, row.file_path);
-		rows.push_back(std::move(row));
-		lbug_flat_tuple_destroy(&tuple);
-	}
-	lbug_query_result_destroy(&qr);
-
-	// GraphNode schema has no cyclomatic/nesting_depth columns;
-	// emit 0 for both to preserve the JSON contract.
-	std::ostringstream json;
-	json << "{\"entry_points\":[";
-	bool first = true;
-	for (const auto &r : rows) {
-		if (!first)
-			json << ",";
-		first = false;
-		json << "{"
-		     << "\"id\":" << r.id << ","
-		     << "\"name\":\"" << jsonEscape(r.name.c_str()) << "\","
-		     << "\"type\":" << r.node_type << ","
-		     << "\"file\":\"" << jsonEscape(r.file_path.c_str())
-		     << "\","
-		     << "\"complexity\":0,"
-		     << "\"nesting\":0}";
-	}
-	json << "],\"total\":" << rows.size() << "}";
-	return json.str();
-#else
-	std::string err = std::string("[module=query, method=") + kMethod +
-			  "] LadybugDB not compiled";
-	fprintf(stderr, "%s\n", err.c_str());
+	// ── v0.2.5: SQLite graph-query backend (Windows / SQLite-only) ──
+	// Entry points are function/method entities whose name is a common
+	// program entry (main/run/start/init/setup), matching the SQLite
+	// branch's name whitelist. Joined to code metrics.
+	sqlite3 *db = store_->handle();
+	const char *sql =
+		"SELECT id, name, kind, file_path, cyclomatic, cognitive, "
+		"       nesting_depth FROM entity "
+		"WHERE project_id=? AND kind IN (0,1) "
+		"AND name IN ('main','Main','run','Run','start','Start',"
+		"'init','Init','setup','Setup') "
+		"ORDER BY file_path";
 	std::ostringstream j;
-	j << "{\"error\":\"" << jsonEscape(err.c_str())
-	  << "\",\"entry_points\":[],\"total\":0}";
+	j << "{\"entry_points\":[";
+	bool first = true;
+	int count = 0;
+	sqlite3_stmt *st = nullptr;
+	if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) == SQLITE_OK) {
+		sqlite3_bind_int64(st, 1, static_cast<int64_t>(project_id));
+		while (sqlite3_step(st) == SQLITE_ROW) {
+			int64_t id = sqlite3_column_int64(st, 0);
+			std::string name =
+				reinterpret_cast<const char *>(
+					sqlite3_column_text(st, 1)) ?
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(st, 1)) :
+					"";
+			int kind = sqlite3_column_int(st, 2);
+			std::string file =
+				reinterpret_cast<const char *>(
+					sqlite3_column_text(st, 3)) ?
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(st, 3)) :
+					"";
+			int64_t cyc = sqlite3_column_int64(st, 4);
+			int64_t cog = sqlite3_column_int64(st, 5);
+			int64_t nest = sqlite3_column_int64(st, 6);
+			if (!first)
+				j << ",";
+			first = false;
+			++count;
+			j << "{\"id\":" << id << ",\"name\":\""
+			  << jsonEscape(name.c_str()) << "\",\"type\":" << kind
+			  << ",\"file\":\"" << jsonEscape(file.c_str())
+			  << "\",\"complexity\":" << cyc
+			  << ",\"cognitive\":" << cog << ",\"nesting\":" << nest
+			  << "}";
+		}
+		sqlite3_finalize(st);
+	}
+	j << "],\"total\":" << count << "}";
 	return j.str();
-#endif
 }
 
 // ─── Trace Call Chain ──────────────────────────────────────
@@ -401,78 +308,52 @@ std::string QueryEngine::traceCallChain(uint64_t project_id,
 		return "{\"error\":\"empty function name\"}";
 	}
 
-#ifdef HAS_LADYBUG
-	// LadybugDB is the only data source for graph queries.
-	if (!store_ || !store_->isGraphReady()) {
-		std::string err = std::string("[module=query, method=") +
-				  kMethod + "] LadybugDB graph not ready";
-		fprintf(stderr, "%s\n", err.c_str());
+	// ── v0.2.5: SQLite graph-query backend (Windows / SQLite-only) ──
+	// Load the project's CALLS edges as (src_name → tgt_name) from the
+	// canonical relation + entity tables, then run the same name-based BFS
+	// the SQLite branch does. JSON shape is identical: {found, chain,
+	// depth}.
+	if (!store_ || !store_->handle()) {
 		std::ostringstream j;
-		j << "{\"error\":\"" << jsonEscape(err.c_str())
-		  << "\",\"found\":false,\"chain\":\"\",\"depth\":0}";
+		j << "{\"error\":\"graph not ready [module=query, method="
+		  << kMethod << "]\",\"found\":false,\"chain\":\"\","
+		  << "\"depth\":0}";
 		return j.str();
 	}
-	lbug_connection *conn = store_->lbugHandle();
-	if (!conn) {
-		std::string err = std::string("[module=query, method=") +
-				  kMethod + "] LadybugDB connection null";
-		fprintf(stderr, "%s\n", err.c_str());
-		std::ostringstream j;
-		j << "{\"error\":\"" << jsonEscape(err.c_str())
-		  << "\",\"found\":false,\"chain\":\"\",\"depth\":0}";
-		return j.str();
-	}
-
-	// Load all edges + names from LadybugDB.
-	std::string cypher = "MATCH (src:GraphNode {project_id:" +
-			     std::to_string(project_id) +
-			     "})-[r:CALLS]->(tgt:GraphNode) "
-			     "RETURN src.name, tgt.name";
-	lbug_query_result qr;
-	lbug_state s = lbug_connection_query(conn, cypher.c_str(), &qr);
-	if (s != LbugSuccess) {
-		char *err_msg = lbug_query_result_get_error_message(&qr);
-		std::string err = std::string("[module=query, method=") +
-				  kMethod + "] LadybugDB query failed: " +
-				  (err_msg ? err_msg : "(unknown)");
-		fprintf(stderr, "%s\n", err.c_str());
-		if (err_msg)
-			lbug_destroy_string(err_msg);
-		lbug_query_result_destroy(&qr);
-		std::ostringstream j;
-		j << "{\"error\":\"" << jsonEscape(err.c_str())
-		  << "\",\"found\":false,\"chain\":\"\",\"depth\":0}";
-		return j.str();
-	}
-
+	sqlite3 *db = store_->handle();
 	std::unordered_map<std::string, std::vector<std::string>> adj;
-	lbug_flat_tuple tuple;
-	while (lbug_query_result_get_next(&qr, &tuple) == LbugSuccess) {
-		lbug_value v;
-		std::string src, tgt;
-		if (lbug_flat_tuple_get_value(&tuple, 0, &v) == LbugSuccess) {
-			char *sv = nullptr;
-			if (lbug_value_get_string(&v, &sv) == LbugSuccess &&
-			    sv) {
-				src = sv;
-				lbug_destroy_string(sv);
+	{
+		const char *sql = "SELECT e1.name, e2.name "
+				  "FROM relation r "
+				  "JOIN entity e1 ON e1.id = r.source_id "
+				  "JOIN entity e2 ON e2.id = r.target_id "
+				  "WHERE r.project_id=? AND r.type=1";
+		sqlite3_stmt *st = nullptr;
+		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) ==
+		    SQLITE_OK) {
+			sqlite3_bind_int64(st, 1,
+					   static_cast<int64_t>(project_id));
+			while (sqlite3_step(st) == SQLITE_ROW) {
+				std::string src =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(st, 0)) ?
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								st, 0)) :
+						"";
+				std::string tgt =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(st, 1)) ?
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								st, 1)) :
+						"";
+				if (!src.empty() && !tgt.empty())
+					adj[src].push_back(tgt);
 			}
+			sqlite3_finalize(st);
 		}
-		if (lbug_flat_tuple_get_value(&tuple, 1, &v) == LbugSuccess) {
-			char *sv = nullptr;
-			if (lbug_value_get_string(&v, &sv) == LbugSuccess &&
-			    sv) {
-				tgt = sv;
-				lbug_destroy_string(sv);
-			}
-		}
-		if (!src.empty() && !tgt.empty())
-			adj[src].push_back(tgt);
-		lbug_flat_tuple_destroy(&tuple);
 	}
-	lbug_query_result_destroy(&qr);
-
-	// BFS from from_function to to_function.
 	std::string from(from_function);
 	std::string to(to_function);
 	std::queue<std::string> queue;
@@ -481,7 +362,6 @@ std::string QueryEngine::traceCallChain(uint64_t project_id,
 	queue.push(from);
 	visited.insert(from);
 	bool found = false;
-
 	while (!queue.empty() && !found) {
 		std::string cur = queue.front();
 		queue.pop();
@@ -500,9 +380,7 @@ std::string QueryEngine::traceCallChain(uint64_t project_id,
 			queue.push(nbr);
 		}
 	}
-
 	if (found) {
-		// Reconstruct path.
 		std::vector<std::string> path;
 		std::string node = to;
 		while (node != from) {
@@ -511,28 +389,16 @@ std::string QueryEngine::traceCallChain(uint64_t project_id,
 		}
 		path.push_back(from);
 		std::reverse(path.begin(), path.end());
-
-		// Build chain string.
 		std::string chain = path[0];
-		for (size_t i = 1; i < path.size(); i++) {
+		for (size_t i = 1; i < path.size(); i++)
 			chain += "→" + path[i];
-		}
 		std::ostringstream json;
-		json << "{\"found\":true,"
-		     << "\"chain\":\"" << jsonEscape(chain.c_str()) << "\","
-		     << "\"depth\":" << (path.size() - 1) << "}";
+		json << "{\"found\":true,\"chain\":\""
+		     << jsonEscape(chain.c_str())
+		     << "\",\"depth\":" << (path.size() - 1) << "}";
 		return json.str();
 	}
 	return "{\"found\":false,\"chain\":\"\",\"depth\":0}";
-#else
-	std::string err = std::string("[module=query, method=") + kMethod +
-			  "] LadybugDB not compiled";
-	fprintf(stderr, "%s\n", err.c_str());
-	std::ostringstream j;
-	j << "{\"error\":\"" << jsonEscape(err.c_str())
-	  << "\",\"found\":false,\"chain\":\"\",\"depth\":0}";
-	return j.str();
-#endif
 }
 
 // ─── Project Overview ──────────────────────────────────────

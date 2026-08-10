@@ -27,11 +27,10 @@ irm https://raw.githubusercontent.com/Timwood0x10/CodeScope/master/install.ps1 |
 ```bash
 # 1. 安装系统依赖
 # macOS:
-brew install llvm@21 cmake pkg-config sqlite3 ladybug
+brew install llvm@21 cmake pkg-config sqlite3
 
 # Linux (Ubuntu):
 sudo apt-get install -y build-essential cmake llvm-dev libclang-dev libsqlite3-dev
-curl -fsSL https://install.ladybugdb.com | sh
 
 # 2. 安装 Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh

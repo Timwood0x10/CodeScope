@@ -32,6 +32,8 @@
 #include "verify/intent_parser.h"
 #include "verify/planner.h"
 #include "verify/verdict_builder.h"
+#include "verify/claim.h"
+#include "verify/ffi_internal.h"
 #include "evidence/evidence_builder.h"
 
 #include <cstdlib>
@@ -39,17 +41,6 @@
 #include <string>
 #include <utility>
 #include <vector>
-
-// ─── Local helpers ──────────────────────────────────────────────
-
-namespace
-{
-
-// Default rules directory relative to CWD. Mirrors the fallback used
-// by engine_evidence_ffi.cpp so both FFIs resolve rules identically.
-constexpr const char *kDefaultRulesDir = "engine/src/evidence/rules";
-
-} // namespace
 
 // ─── FFI entry point ────────────────────────────────────────────
 
@@ -71,29 +62,44 @@ char *engine_verify_statement(uint64_t project_id, const char *claim_text)
 		return dupString("{\"verdict\":\"Unknown\",\"confidence\":0"
 				 ",\"error\":\"empty claim\"}");
 
+	// Thin wrapper over the structured verify_claim path (VP4 → Step 9):
+	// parse the natural-language intent, map it to a structured Claim,
+	// and dispatch through verify_one_claim — the SAME core used by
+	// verify_claim. This replaces the old IntentParser → Planner →
+	// EvidenceBuilder → VerdictBuilder chain, which silently returned
+	// Unknown for any intent that did not map to a known evidence rule
+	// (no way to distinguish "unrecognized question" from "evidence
+	// insufficient"). Unrecognized intents now return a machine-readable
+	// error_code so MCP clients can tell the two apart.
 	verify::planner::IntentParser parser;
 	verify::planner::Intent intent = parser.parse(claim_text);
 
-	verify::planner::Planner planner(g_store.get());
-	verify::planner::Plan plan = planner.plan(intent);
-
-	// Load rules and execute the plan. The EvidenceBuilder is
-	// constructed fresh on each call so the FFI is stateless across
-	// invocations.
-	evidence::EvidenceBuilder builder(g_store.get());
-	const char *env_dir = std::getenv("CODESCOPE_RULES_DIR");
-	std::string rules_dir = (env_dir && *env_dir) ? env_dir :
-							kDefaultRulesDir;
-	builder.loadRules(rules_dir);
-
-	std::vector<evidence::Evidence> evidences;
-	for (const auto &step : plan.steps) {
-		auto ev = builder.buildByRule(project_id, step.rule_name);
-		for (auto &e : ev)
-			evidences.push_back(std::move(e));
+	verify::Claim claim;
+	if (intent.type == "capability_question") {
+		claim.type = verify::ClaimType::CapabilityExists;
+	} else if (intent.type == "safety_question" ||
+		   intent.type == "pattern_question") {
+		claim.type = verify::ClaimType::ContractHolds;
+	} else {
+		return dupString("{\"verdict\":\"Unknown\",\"confidence\":0,"
+				 "\"error_code\":\"intent_unrecognized\","
+				 "\"error\":\"claim intent not recognized; use "
+				 "verify_claim with type capability_exists|"
+				 "contract_holds|architecture_follows|"
+				 "function_implements [module=ffi, "
+				 "method=engine_verify_statement]\"}");
 	}
+	claim.subject = intent.subject.empty() ? claim_text : intent.subject;
+	claim.predicate = "implemented_by";
+	claim.scope = "repository";
+	claim.source_kind = "manual";
 
-	verify::planner::VerdictBuilder vb;
-	auto result = vb.build(intent, evidences);
-	return dupString(result.raw_json);
+	verify_ffi::VerifyResult result =
+		verify_ffi::verify_one_claim(project_id, claim);
+	char *json = result.json;
+	// result.json is heap-allocated and owned by us (MUST NOT free twice:
+	// dupString copies, so the caller's free on our return value is the
+	// only free). verify_one_claim's caller contract: caller frees the
+	// returned pointer. We return it directly.
+	return json;
 }

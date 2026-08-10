@@ -1,0 +1,20 @@
+{
+  "language": "go",
+  "expected_calls": [
+    {"caller": "mainFunc", "caller_file": "a.go", "callee": "alpha", "callee_file": "a.go"},
+    {"caller": "alpha", "caller_file": "a.go", "callee": "bravo", "callee_file": "b.go"},
+    {"caller": "mainFunc", "caller_file": "a.go", "callee": "Get", "callee_file": "a.go", "note": "b.Get() selector call from function body"},
+    {"caller": "Get", "caller_file": "a.go", "callee": "double", "callee_file": "a.go", "note": "b.double() selector call from METHOD body (regression: method bodies previously not walked)"},
+    {"caller": "useFormatterLocal", "caller_file": "a.go", "callee": "Format", "callee_file": "a.go", "note": "interface dispatch: f.Format() where f is Formatter-typed variable; Box implements Formatter via method set"}
+  ],
+  "forbidden_calls": [
+    {"caller": "mainFunc", "callee": "len"},
+    {"caller": "mainFunc", "callee": "make"},
+    {"caller": "mainFunc", "callee": "append"},
+    {"caller": "mainFunc", "callee": "Println"}
+  ],
+  "allowed_unresolved": [
+    {"caller": "mainFunc", "callee": "Println", "note": "stdlib selector call; bare-name resolver may not wire it"}
+  ],
+  "external_calls": ["len", "fmt.Println"]
+}

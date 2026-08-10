@@ -36,6 +36,61 @@ std::string readFile(const char *path)
 	return result;
 }
 
+// v0.6 (perf): file read that avoids the ate-seek + tellg round-trip when
+// the caller already knows the file size (e.g. it just stat()'d the file for
+// the size limit check). Semantics are identical to readFile for a stable
+// file: we open, read exactly `known_size` bytes and return them. If the
+// file is smaller than known_size (truncated between stat and read), the
+// read falls short and we return the bytes actually read; if it is larger,
+// we return exactly the stat'd prefix — matching what the caller's size
+// check already assumed. Returns "" on open failure or empty read.
+std::string readFilePrealloc(const char *path, size_t known_size)
+{
+	if (!path || !*path || known_size == 0)
+		return "";
+
+	std::ifstream ifs(path, std::ios::binary);
+	if (!ifs)
+		return "";
+
+	std::string result(known_size, '\0');
+	std::streamsize n = static_cast<std::streamsize>(known_size);
+	if (!ifs.read(&result[0], n))
+		result.resize(static_cast<size_t>(ifs.gcount()));
+	return result;
+}
+
+// M2: stable 64-bit FNV-1a hash of a file's contents, hex-encoded lowercase.
+// Reads the file from disk (streamed, not into memory) and returns the hash,
+// or "" if the file cannot be read. See declaration in engine_internal.h.
+std::string fileContentHash(const char *path)
+{
+	if (!path || !*path)
+		return "";
+	std::ifstream ifs(path, std::ios::binary);
+	if (!ifs)
+		return "";
+	constexpr uint64_t kFnvOffsetBasis = 14695981039346656037ULL;
+	constexpr uint64_t kFnvPrime = 1099511628211ULL;
+	uint64_t h = kFnvOffsetBasis;
+	char buf[65536];
+	while (ifs) {
+		ifs.read(buf, sizeof(buf));
+		std::streamsize n = ifs.gcount();
+		for (std::streamsize i = 0; i < n; ++i) {
+			h ^= static_cast<unsigned char>(buf[i]);
+			h *= kFnvPrime;
+		}
+	}
+	static const char *hex = "0123456789abcdef";
+	std::string out(16, '0');
+	for (int i = 0; i < 16; ++i) {
+		out[15 - i] = hex[h & 0xF];
+		h >>= 4;
+	}
+	return out;
+}
+
 // Escape a string for safe embedding in JSON (RFC 8259)
 std::string jsonEscape(const std::string &s)
 {

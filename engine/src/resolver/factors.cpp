@@ -243,6 +243,130 @@ double factorReceiverMatch(const std::string &ref_name,
 	return 0.0;
 }
 
+// Step 5 (plan §5.3): receiver type evidence factor.
+//
+// Replaces the directory-heuristic factorReceiverMatch with actual
+// type-based matching. The key insight: when a reference carries a
+// known receiver_type (e.g. "Box" from `let b: Box = ...; b.draw()`),
+// the candidate's qualified_name should contain that type as a prefix
+// (e.g. "Box::draw", "Box.draw", "Box::draw"). This is strong
+// structural evidence — far more reliable than "same directory".
+//
+// When receiver_type is empty (dynamic/unknown receiver), we return
+// 0.5 (neutral) rather than 0.0. This is critical: returning 0.0 would
+// penalize ALL candidates equally (no differentiation), while 0.5
+// ensures the receiver factor does not distort the ranking when we
+// lack type evidence. The decision then falls to other factors
+// (Import, Namespace, Signature) as before.
+double factorReceiverTypeMatch(const std::string &receiver_type,
+			       const std::string &candidate_qname,
+			       const std::string &candidate_name,
+			       const std::string &candidate_file)
+{
+	// No receiver type evidence → neutral, do not fabricate evidence.
+	if (receiver_type.empty())
+		return 0.5;
+
+	// Strong match: qualified_name contains the receiver type as a
+	// prefix. Covers "Box::draw", "Box.draw", "MyClass::method", etc.
+	if (!candidate_qname.empty()) {
+		// Check "Type::method" and "Type.method" patterns.
+		std::string prefix1 = receiver_type + "::";
+		std::string prefix2 = receiver_type + ".";
+		if (candidate_qname.find(prefix1) == 0 ||
+		    candidate_qname.find(prefix2) == 0)
+			return kScoreExactMatch;
+		// Also check if receiver_type appears as a component anywhere
+		// in the qualified_name (e.g. "module::Box::draw").
+		if (candidate_qname.find(prefix1) != std::string::npos ||
+		    candidate_qname.find(prefix2) != std::string::npos)
+			return kScorePartialMatch;
+	}
+
+	// Weak fallback: if the candidate's file path contains the receiver
+	// type name (e.g. file "box.go" containing methods of Box), give a
+	// partial score. This is less reliable than qualified_name but
+	// better than nothing for languages that don't populate
+	// qualified_name (e.g. Go, where methods are defined as
+	// `func (b Box) draw()` and qualified_name may be empty).
+	size_t slash = candidate_file.rfind('/');
+	std::string fname = (slash != std::string::npos) ?
+				    candidate_file.substr(slash + 1) :
+				    candidate_file;
+	// Convert to lowercase for case-insensitive comparison (Go file
+	// names are typically lowercase: "box.go", "renderer.ts").
+	std::string fname_lower = fname;
+	std::string rtype_lower = receiver_type;
+	for (auto &ch : fname_lower)
+		ch = static_cast<char>(
+			std::tolower(static_cast<unsigned char>(ch)));
+	for (auto &ch : rtype_lower)
+		ch = static_cast<char>(
+			std::tolower(static_cast<unsigned char>(ch)));
+	if (!rtype_lower.empty() &&
+	    fname_lower.find(rtype_lower) != std::string::npos)
+		return kScorePartialMatch;
+
+	return 0.0;
+}
+
+// v0.2.5 (perf): pre-parsed receiver matching. Build the ref-level context
+// (prefix1/prefix2/rtype_lower) once per reference so the resolver hot loop
+// does not reallocate them for every candidate.
+ReceiverMatchContext buildReceiverMatchContext(const std::string &receiver_type)
+{
+	ReceiverMatchContext ctx;
+	if (receiver_type.empty()) {
+		ctx.empty = true;
+		return ctx;
+	}
+	ctx.prefix1 = receiver_type + "::";
+	ctx.prefix2 = receiver_type + ".";
+	ctx.rtype_lower = receiver_type;
+	for (auto &ch : ctx.rtype_lower)
+		ch = static_cast<char>(
+			std::tolower(static_cast<unsigned char>(ch)));
+	return ctx;
+}
+
+// Scoring is byte-identical to factorReceiverTypeMatch: same prefixes, same
+// strong/partial/file-fallback rules. Only the string construction differs
+// (precomputed ref-level strings; per-candidate file basename is still
+// derived here because it is candidate-specific).
+double factorReceiverTypeMatchPrecomp(const ReceiverMatchContext &ctx,
+				      const std::string &candidate_qname,
+				      const std::string &candidate_file)
+{
+	if (ctx.empty)
+		return 0.5; // neutral, no receiver evidence
+
+	// Strong match: qualified_name contains the receiver type as a prefix.
+	if (!candidate_qname.empty()) {
+		if (candidate_qname.find(ctx.prefix1) == 0 ||
+		    candidate_qname.find(ctx.prefix2) == 0)
+			return kScoreExactMatch;
+		if (candidate_qname.find(ctx.prefix1) != std::string::npos ||
+		    candidate_qname.find(ctx.prefix2) != std::string::npos)
+			return kScorePartialMatch;
+	}
+
+	// Weak fallback: candidate file basename contains the lowercased
+	// receiver type (mirrors factorReceiverTypeMatch lines 292-308).
+	size_t slash = candidate_file.rfind('/');
+	std::string fname = (slash != std::string::npos) ?
+				    candidate_file.substr(slash + 1) :
+				    candidate_file;
+	std::string fname_lower = fname;
+	for (auto &ch : fname_lower)
+		ch = static_cast<char>(
+			std::tolower(static_cast<unsigned char>(ch)));
+	if (!ctx.rtype_lower.empty() &&
+	    fname_lower.find(ctx.rtype_lower) != std::string::npos)
+		return kScorePartialMatch;
+
+	return 0.0;
+}
+
 double factorCommonNamePenalty(const std::string &name)
 {
 	static const std::unordered_set<std::string> kCommonNames = {

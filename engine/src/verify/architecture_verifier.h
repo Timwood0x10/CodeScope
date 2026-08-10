@@ -23,7 +23,10 @@ namespace verify
  * layers.
  *
  * fact_kind convention (see EvidenceRecord in claim.h):
- *   0 = entity (graph_node), 1 = relation (graph_edge)
+ *   0 = entity, 1 = relation
+ *
+ * Step 9.5: evidence queries migrated from graph_nodes/graph_edges to
+ * canonical entity/relation tables.
  */
 class ArchitectureVerifier : public Verifier {
     public:

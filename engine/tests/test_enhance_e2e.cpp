@@ -60,22 +60,23 @@ int main() {
 }
 )");
 
-	// helper.h — declaration
+	// helper.h — declaration. A single overload is used deliberately:
+	// the Resolver's Step 5 ambiguity gate abstains on same-arity
+	// overload sets (param-type inference is a non-goal per plan §9),
+	// so two `helper(int)`/`helper(double)` overloads would tie on
+	// every factor and produce no CALLS edge. This test exercises
+	// cross-file resolution + enhance idempotency, not overload
+	// disambiguation (which belongs in the accuracy fixtures).
 	write_file(std::string(kProjDir) + "/helper.h", R"(#pragma once
 int helper(int x);
-int helper(double x);
 )");
 
-	// helper.cpp — two overloaded helpers + internal helper
+	// helper.cpp — single helper definition + internal helper.
 	write_file(std::string(kProjDir) + "/helper.cpp", R"(#include "helper.h"
 #include <cstdio>
 
 int helper(int x) {
     return internal_impl(x) + 1;
-}
-
-int helper(double x) {
-    return static_cast<int>(x);
 }
 
 static int internal_impl(int x) {

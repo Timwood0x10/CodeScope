@@ -120,6 +120,7 @@ static std::string detailJson(int line, const std::string &snippet,
 static std::string findRulesDir()
 {
 	const char *candidates[] = {
+	   "engine/src/evidence/rules",
 	   "../src/evidence/rules",
 	   "../../engine/src/evidence/rules",
 	   "../../../engine/src/evidence/rules",

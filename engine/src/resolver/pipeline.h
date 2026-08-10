@@ -71,6 +71,38 @@ class ResolverPipeline {
 	// resolved edges are IDENTICAL to the previous SQL implementation.
 	std::unordered_map<std::string, std::vector<std::string>> import_index_;
 
+	// Step 8 (plan §8.1): interface/trait implementation index.
+	// Maps interface/trait name → list of implementing type names.
+	// Populated once in run() from semantic_records (kind=20,
+	// InterfaceImpl). Used by the hot loop to expand Interface/Virtual
+	// dispatch calls into bounded candidate sets: when a call's
+	// receiver_type is an interface, all known implementations become
+	// candidates instead of guessing one.
+	std::unordered_map<std::string, std::vector<std::string>>
+		interface_impl_index_;
+
+	// Step 8.1c (plan §8): global struct field -> type table.
+	// Maps struct type name → field name → field type, rebuilt in run()
+	// from semantic_records TypeRef records (kind=14) whose parent is a
+	// struct entity (kind=2). The Go visitor persists each struct field
+	// as a TypeRef under the struct entity, so this table is complete
+	// across files. Used to resolve field-chain receivers
+	// (r.pluginBus.AfterStep) whose receiver_type is empty at visit
+	// time because the struct is declared in another file.
+	std::unordered_map<std::string,
+			   std::unordered_map<std::string, std::string>>
+		global_struct_fields_;
+
+	// Step 8.1c (plan §8): global caller variable -> type table.
+	// Maps variable/parameter name → ALL its types across the project
+	// (a name like "r" or "ctx" appears in many files with different
+	// types, so a single value would be wrong). Used to resolve
+	// field-chain receivers ("r" in "r.pluginBus.AfterStep"): each
+	// candidate type is walked through global_struct_fields_ and the
+	// first that resolves the whole chain wins.
+	std::unordered_map<std::string, std::vector<std::string>>
+		global_var_types_;
+
 	/// Candidate: a potential match for a reference.
 	struct Candidate {
 		uint64_t entity_id;
@@ -78,6 +110,7 @@ class ResolverPipeline {
 		std::string file_path;
 		std::string module_path;
 		std::string language;
+		std::string qualified_name; // Step 5: for receiver_type matching
 		int arity = 0;
 		// Entity kind (RecordKind enum): 2=Class, 3=Interface, etc.
 		// Propagated from entity.kind so factorConstructorMatch can
@@ -85,6 +118,27 @@ class ResolverPipeline {
 		int kind = 0;
 		int score = 0;
 		double total_score = 0.0;
+		// v0.6 (perf): precomputed path components derived once when the
+		// entity_index is loaded. applyConstraints recomputed dir/parent/
+		// module via rfind+substr for every candidate on every ref; since a
+		// candidate's file_path is fixed, caching these eliminates repeated
+		// heap allocations in the hot loop without changing any score.
+		// cand_dir      = file_path up to the last '/', or "" if none.
+		// cand_parent   = cand_dir up to its last '/', or "" if none.
+		// cand_module   = token after the last '/' of cand_dir, else cand_dir.
+		std::string cand_dir;
+		std::string cand_parent;
+		std::string cand_module;
+		// v0.2.5 (perf fix): ReceiverMatch's per-candidate score, captured
+		// during applyConstraints WITHOUT building the full FactorResult
+		// vector (name/detail strings). The ambiguity gate (receiver_bypass)
+		// only needs this one factor's score, so keeping it as a plain double
+		// avoids ~20 heap-string allocations per candidate in the hot loop
+		// (goagent: ~166k candidate evaluations).
+		double receiver_score = 0.0;
+		// `factors` is retained for API/debug compatibility but is no longer
+		// populated by applyConstraints (the hot path computes total_score
+		// directly). Do not rely on it in the resolver hot loop.
 		std::vector<FactorResult> factors;
 	};
 
@@ -96,10 +150,15 @@ class ResolverPipeline {
 	/// @param caller_arity Arity of the call site from the reference row;
 	///                     used by factorSignatureMatch for overload
 	///                     resolution. 0 means unknown arity.
+	/// @param receiver_type Step 5: inferred receiver type for method
+	///                     calls (empty for direct calls). Used by
+	///                     factorReceiverTypeMatch instead of the old
+	///                     directory heuristic.
 	void applyConstraints(std::vector<Candidate> &candidates,
 			      const std::string &caller_file,
 			      const std::string &callee_name, int call_kind = 0,
-			      int caller_arity = 0);
+			      int caller_arity = 0,
+			      const std::string &receiver_type = "");
 
 	/// Check if `callee_name` is imported in the file at `caller_file`.
 	/// Returns the import target path if found, empty string otherwise.

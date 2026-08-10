@@ -660,7 +660,15 @@ extern "C" char *engine_detect_capability_drift(uint64_t project_id)
 			     << ",\"detail\":\"" << jsonEscape(drifts[i].detail)
 			     << "\"}";
 		}
-		json << "],\"drifts_found\":" << drifts.size() << "}";
+		json << "],\"drifts_found\":" << drifts.size();
+		// Honest reporting: when the capability table is empty there is
+		// nothing to check — drifts_found=0 means "no declarations to
+		// verify", NOT "all declared capabilities are implemented".
+		// Expose that state explicitly so callers can distinguish an
+		// empty input from a clean result.
+		if (total_caps == 0)
+			json << ",\"status\":\"no_capabilities_declared\"";
+		json << "}";
 		return dupString(json.str());
 	} catch (const std::exception &e) {
 		return dupString(

@@ -1,4 +1,5 @@
 #include "python_visitor.h"
+#include <cctype>
 #include <cstring>
 #include <tree_sitter/api.h>
 #include "../builtin_registry.h"
@@ -61,6 +62,13 @@ SemanticUnit *PythonVisitor::visit(TSTree *tree, const char *source,
 	unit_->setFilePath(fp);
 	unit_->setLanguage("python");
 	source_ = source;
+	// Step 4: reset per-file tracking so the visitor arena can reuse
+	// the same PythonVisitor across files without leaking stale
+	// variable bindings, import aliases, or class scope from the
+	// previous file.
+	var_types_.clear();
+	import_aliases_.clear();
+	class_scope_stack_.clear();
 
 	TSNode root_node = ts_tree_root_node(tree);
 	pushScope();
@@ -101,6 +109,17 @@ void PythonVisitor::handleFuncDef(TSNode node, uint64_t parent_id)
 		emitter_->emitFunction(name, loc, parent_id, 0, false,
 				       name.compare(0, 2, "__") == 0 ? 0 : 1);
 	defineSymbol(name, id);
+	// Step 4/5 (plan §4B/§5): tag methods declared inside a class with a
+	// qualified name "Class.method" so the Resolver's
+	// factorReceiverTypeMatch can match a call's receiver_type (e.g.
+	// "Timeline") against the candidate's declaring class. Without this,
+	// same-name methods on different classes (Timeline.render vs
+	// Box.render) tie on every factor and the ambiguity gate abstains,
+	// producing false negatives. Top-level functions keep an empty
+	// qualified_name (currentClassName() is empty outside a class).
+	std::string cls = currentClassName();
+	if (!cls.empty())
+		unit_->setQualifiedName(id, cls + "." + name);
 	pushScope();
 	pushFunctionScope(id);
 	uint32_t cnt = ts_node_child_count(node);
@@ -144,10 +163,29 @@ void PythonVisitor::handleFuncDef(TSNode node, uint64_t parent_id)
 								"type") == 0)
 							ptype = nodeText(child);
 					}
-					if (!pname.empty() && !ptype.empty())
+					if (!pname.empty() && !ptype.empty()) {
 						emitter_->emitTypeRef(
 							pname, ptype,
 							location(param), id);
+						// Step 4: record `self: ClassName` and
+						// `cls: ClassName` bindings so
+						// handleCall can resolve receiver_type
+						// for self.method()/cls.method().
+						// Also record any typed parameter so
+						// `obj: Foo` enables obj.method().
+						if (pname == "self" ||
+						    pname == "cls") {
+							std::string cls =
+								currentClassName();
+							if (!cls.empty())
+								recordVarType(
+									pname,
+									cls);
+						} else {
+							recordVarType(pname,
+								      ptype);
+						}
+					}
 				}
 				// Handle bare identifier (untyped): param
 				if (strcmp(pt, "identifier") == 0) {
@@ -162,13 +200,32 @@ void PythonVisitor::handleFuncDef(TSNode node, uint64_t parent_id)
 							   "type") == 0) {
 							std::string ptype =
 								nodeText(ann);
-							if (!ptype.empty())
+							if (!ptype.empty()) {
 								emitter_->emitTypeRef(
 									pname,
 									ptype,
 									location(
 										ann),
 									id);
+								// Step 4: same self/cls
+								// handling as
+								// typed_parameter.
+								if (pname ==
+									    "self" ||
+								    pname ==
+									    "cls") {
+									std::string cls =
+										currentClassName();
+									if (!cls.empty())
+										recordVarType(
+											pname,
+											cls);
+								} else {
+									recordVarType(
+										pname,
+										ptype);
+								}
+							}
 							break;
 						}
 					}
@@ -194,6 +251,12 @@ void PythonVisitor::handleClassDef(TSNode node, uint64_t parent_id)
 		name, loc, parent_id, name.compare(0, 2, "__") == 0 ? 0 : 1);
 	defineSymbol(name, id);
 	pushScope();
+	// Step 4: push the class name onto the class scope stack so that
+	// methods defined inside can resolve `self`/`cls` receivers to
+	// this class. Without this, `self.method()` inside the class body
+	// would have an empty receiver_type and fall back to directory
+	// heuristics in the Resolver.
+	pushClassScope(name);
 	uint32_t cnt = ts_node_child_count(node);
 	for (uint32_t i = 0; i < cnt; i++) {
 		TSNode c = ts_node_child(node, i);
@@ -205,6 +268,7 @@ void PythonVisitor::handleClassDef(TSNode node, uint64_t parent_id)
 		if (strcmp(t, "block") == 0)
 			visitChildren(c, id);
 	}
+	popClassScope();
 	popScope();
 }
 void PythonVisitor::handleCall(TSNode node, uint64_t parent_id)
@@ -212,6 +276,14 @@ void PythonVisitor::handleCall(TSNode node, uint64_t parent_id)
 	SourceRange loc = location(node);
 	std::string name;
 	bool is_attribute_call = false;
+	// The full attribute text (e.g. "self.method", "obj.render",
+	// "pkg.func") captured for structured call facts. Empty for bare
+	// calls like `alpha()`.
+	std::string qualified_target;
+	// The attribute node itself, kept so we can extract the receiver
+	// expression text after emitCall.
+	TSNode attr_node;
+	bool has_attr_node = false;
 	uint32_t cnt = ts_node_child_count(node);
 	for (uint32_t i = 0; i < cnt; i++) {
 		TSNode c = ts_node_child(node, i);
@@ -234,6 +306,9 @@ void PythonVisitor::handleCall(TSNode node, uint64_t parent_id)
 		if (strcmp(t, "attribute") == 0) {
 			name = extractAttributeName(c);
 			is_attribute_call = true;
+			qualified_target = nodeText(c);
+			attr_node = c;
+			has_attr_node = true;
 			break;
 		}
 	}
@@ -276,6 +351,45 @@ void PythonVisitor::handleCall(TSNode node, uint64_t parent_id)
 	uint64_t id = emitter_->emitCall(name, loc, call_parent, arity, false,
 					 static_cast<int>(call_kind));
 
+	// ── Step 4 (plan §4B): structured call facts ──────────────────
+	// For attribute calls (obj.method(), self.method(), cls.method(),
+	// pkg.func()), record the full qualified target, the receiver
+	// expression, the inferred receiver type, and the import alias
+	// (if the receiver is an imported module alias). Bare calls leave
+	// all fields empty — an empty receiver_text is the meaningful
+	// "no receiver" signal for the Resolver.
+	if (is_attribute_call && has_attr_node && !qualified_target.empty()) {
+		std::string receiver_text = extractReceiverText(attr_node);
+		std::string receiver_type;
+		std::string import_alias;
+		// Resolve receiver_type: self/cls → enclosing class;
+		// local variable → var_types_ lookup;
+		// import alias → mark import_alias and leave type empty.
+		if (!receiver_text.empty()) {
+			if (import_aliases_.count(receiver_text) > 0) {
+				// Module-qualified call (e.g. np.array, pd.DataFrame).
+				import_alias = receiver_text;
+			} else {
+				auto vt = var_types_.find(receiver_text);
+				if (vt != var_types_.end())
+					receiver_type = vt->second;
+				// self/cls without an explicit annotation fall
+				// back to the enclosing class scope (recorded by
+				// pushClassScope). var_types_ already covers the
+				// annotated case; this guards against untyped
+				// `self` parameters.
+				else if (receiver_text == "self" ||
+					 receiver_text == "cls") {
+					std::string cls = currentClassName();
+					if (!cls.empty())
+						receiver_type = cls;
+				}
+			}
+		}
+		emitter_->setCallFacts(id, qualified_target, receiver_text,
+				       receiver_type, import_alias);
+	}
+
 	// ── Intra-file callee resolution ───────────────────────────
 	// Store the resolved callee's record ID as ref_original_id.
 	// Enables P1 call-edge construction in buildCallEdgesSQL.
@@ -296,10 +410,54 @@ void PythonVisitor::handleCall(TSNode node, uint64_t parent_id)
 void PythonVisitor::handleImport(TSNode node, uint64_t parent_id)
 {
 	emitter_->emitImport(nodeText(node), location(node), parent_id);
+	// Step 4 (plan §4B): record module aliases so handleCall can mark
+	// `alias.func()` calls with import_alias="alias". Python import forms:
+	//   import m            → alias "m"
+	//   import m as alias   → alias "alias"
+	//   import m.n          → aliases "m" (and "m.n" as a dotted form)
+	//   from m import x     → "m" is the module; "x" is a name, not an alias
+	//   from m import x as y → "y" is a local alias for name x in module m
+	// We only record top-level module aliases usable as `alias.func()`
+	// call receivers. `from m import x` does NOT make `m` callable as a
+	// receiver (you can't write `m.x()` after `from m import x`), so we
+	// skip import_from_statement for the import_aliases_ set.
+	recordImportAliases(node);
 }
 void PythonVisitor::handleAssignment(TSNode node, uint64_t parent_id)
 {
 	uint32_t cnt = ts_node_child_count(node);
+	// First pass: find the RHS expression node to infer type from
+	// constructor calls (e.g. `obj = Foo()` → recordVarType("obj","Foo")).
+	TSNode rhs_node;
+	bool has_rhs = false;
+	std::vector<std::string> lhs_names;
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (!ts_node_is_named(c))
+			continue;
+		const char *t = ts_node_type(c);
+		if (strcmp(t, "identifier") == 0) {
+			lhs_names.push_back(nodeText(c));
+		} else {
+			// First non-identifier named child is the RHS.
+			if (!has_rhs) {
+				rhs_node = c;
+				has_rhs = true;
+			}
+		}
+	}
+	// Step 4: infer variable type from constructor call RHS
+	// (e.g. `obj = Foo()` → recordVarType("obj","Foo")). Only infer
+	// when there's exactly one LHS identifier (Python tuple assignment
+	// makes positional pairing unreliable for `a, b = Foo(), Bar()`).
+	if (has_rhs && lhs_names.size() == 1) {
+		std::string inferred = inferConstructorType(rhs_node);
+		if (!inferred.empty())
+			recordVarType(lhs_names[0], inferred);
+	}
+
+	// Second pass: emit variables and visit RHS so calls inside
+	// assignments like "self.data = self._load_data()" are detected.
 	for (uint32_t i = 0; i < cnt; i++) {
 		TSNode c = ts_node_child(node, i);
 		if (!ts_node_is_named(c))
@@ -396,6 +554,146 @@ int PythonVisitor::countArguments(TSNode call_node, uint32_t child_count)
 		return argc;
 	}
 	return 0;
+}
+
+/// Extract import aliases from an import statement.
+/// For `import m` and `import m as alias`, records the alias usable as
+/// a call receiver (`alias.func()` or `m.func()`). For `from m import x`,
+/// does NOT record an alias (you cannot write `m.x()` after a from-import).
+void PythonVisitor::recordImportAliases(TSNode node)
+{
+	std::string node_type = ts_node_type(node);
+	if (node_type == "import_from_statement") {
+		// `from m import x` — the module `m` is not callable as a
+		// receiver, and imported names are values, not module aliases.
+		// Skip: no alias to record for call-receiver purposes.
+		return;
+	}
+	// `import_statement` → one or more `dotted_name` children, each
+	// optionally followed by an `as` pattern. tree-sitter-python
+	// represents `import m as a` as:
+	//   import_statement
+	//     "import"
+	//     aliased_import
+	//       dotted_name (m)
+	//       "as"
+	//       identifier (a)
+	// And `import m` as:
+	//   import_statement
+	//     "import"
+	//     dotted_name (m)
+	uint32_t cnt = ts_node_child_count(node);
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (!ts_node_is_named(c))
+			continue;
+		std::string ctype = ts_node_type(c);
+		if (ctype == "aliased_import") {
+			// `import m as a` → alias is the identifier after "as".
+			// Children: dotted_name, "as", identifier.
+			uint32_t ac = ts_node_child_count(c);
+			std::string alias;
+			for (uint32_t j = 0; j < ac; j++) {
+				TSNode child = ts_node_child(c, j);
+				if (!ts_node_is_named(child))
+					continue;
+				std::string ct = ts_node_type(child);
+				if (ct == "identifier") {
+					// The identifier after "as" is the alias.
+					// dotted_name comes first, then identifier.
+					// Take the LAST named identifier.
+					alias = nodeText(child);
+				}
+			}
+			if (!alias.empty())
+				import_aliases_.insert(alias);
+		} else if (ctype == "dotted_name") {
+			// `import m` or `import m.n` → the first identifier is
+			// the top-level module alias usable as `m.func()`.
+			// For `import m.n`, only `m` is callable as a receiver
+			// (you write `m.n.func()`, not `n.func()`).
+			uint32_t dc = ts_node_child_count(c);
+			for (uint32_t j = 0; j < dc; j++) {
+				TSNode child = ts_node_child(c, j);
+				if (!ts_node_is_named(child))
+					continue;
+				if (std::string(ts_node_type(child)) ==
+				    "identifier") {
+					import_aliases_.insert(nodeText(child));
+					break; // only first identifier
+				}
+			}
+		}
+	}
+}
+
+/// Infer the type name from a constructor call expression.
+/// For `Foo(...)` returns "Foo". For `Foo` (not a call) returns "".
+/// Unwraps parentheses to handle `(Foo())`.
+std::string PythonVisitor::inferConstructorType(TSNode expr)
+{
+	std::string t = ts_node_type(expr);
+	// Unwrap parentheses.
+	if (t == "parenthesized_expression") {
+		uint32_t cc = ts_node_child_count(expr);
+		for (uint32_t i = 0; i < cc; i++) {
+			TSNode child = ts_node_child(expr, i);
+			if (ts_node_is_named(child)) {
+				std::string r = inferConstructorType(child);
+				if (!r.empty())
+					return r;
+			}
+		}
+		return "";
+	}
+	if (t != "call")
+		return "";
+	// call → [identifier | attribute] arguments. A constructor call
+	// has an identifier callee whose first character is uppercase.
+	// `Foo()` → "Foo". `obj.method()` is NOT a constructor.
+	uint32_t cc = ts_node_child_count(expr);
+	for (uint32_t i = 0; i < cc; i++) {
+		TSNode child = ts_node_child(expr, i);
+		if (!ts_node_is_named(child))
+			continue;
+		std::string ct = ts_node_type(child);
+		if (ct == "identifier") {
+			std::string name = nodeText(child);
+			if (!name.empty() && name[0] >= 'A' && name[0] <= 'Z')
+				return name;
+			return ""; // lowercase — not a constructor
+		}
+		// Attribute callee (obj.method) — not a constructor.
+		if (ct == "attribute")
+			return "";
+	}
+	return "";
+}
+
+/// Extract the receiver text (the object expression before the final dot)
+/// from an attribute node. For `self.fig.add_trace` this returns
+/// "self.fig". For `obj.method` this returns "obj". For a single-level
+/// `self.method` this returns "self".
+std::string PythonVisitor::extractReceiverText(TSNode attr)
+{
+	// attribute children: object_expr, "." identifier
+	// The first named child is the object expression.
+	uint32_t cnt = ts_node_child_count(attr);
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(attr, i);
+		if (!ts_node_is_named(c))
+			continue;
+		// The first named child is the object/receiver expression.
+		// Return its text — for nested attributes this is the full
+		// dotted receiver (e.g. "self.fig"), which is what we want
+		// for receiver_text.
+		std::string ct = ts_node_type(c);
+		if (ct == "identifier" || ct == "attribute" || ct == "call" ||
+		    ct == "subscript") {
+			return nodeText(c);
+		}
+	}
+	return "";
 }
 
 } // namespace ir

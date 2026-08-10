@@ -13,11 +13,25 @@ fn main() {
     // Build the C++ engine in a separate directory from the Makefile's
     // Debug+Tests build (engine/build). This avoids cmake cache
     // invalidation when switching between Release (cargo) and Debug (make test).
-    let build_dir = format!("{}/build-release", engine_dir);
+    //
+    // v0.2.5 (cross-compile isolation): when cross-compiling (e.g. targeting
+    // Windows FROM macOS/Linux) use a per-target build directory
+    // (build-release-<target>) instead of the shared build-release. The shared
+    // dir caches the HOST platform's cmake settings (e.g. -arch arm64 on
+    // Apple Silicon), which leaks into the cross toolchain and breaks the
+    // MinGW compile ("unrecognized command-line option '-arch'"). Isolating
+    // per target makes cross-compilation deterministic.
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let build_host = std::env::consts::OS;
+    let build_dir = if build_host != target_os && !target_os.is_empty() {
+        format!("{}/build-release-{}", engine_dir, target_os)
+    } else {
+        format!("{}/build-release", engine_dir)
+    };
     let _ = std::fs::create_dir_all(&build_dir);
 
     // ── Detect platform ────────────────────────────────────────────
-    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    // (target_os / build_host are already bound above.)
 
     // ── Windows: enforce GNU ABI ────────────────────────────────────
     // CodeScope's C++ engine (CMake + MinGW gcc) produces a static
@@ -87,11 +101,11 @@ fn main() {
     // overridden — setting CMAKE_SYSTEM_NAME on Windows would break detection.
     if target_os == "windows" {
         // NOTE: CARGO_CFG_TARGET_OS gives the CROSS target, not the host.
-        // Use std::env::consts::OS to get the actual build host:
-        //   "macos" on macOS, "linux" on Linux, "windows" on Windows.
-        // Previously this line read CARGO_CFG_TARGET_OS again, which during a
-        // cross-compile returns "windows" and made is_cross always false.
-        let build_host = std::env::consts::OS;
+        // build_host (std::env::consts::OS) was already computed above and
+        // gives the actual build host: "macos" on macOS, "linux" on Linux,
+        // "windows" on Windows. Previously this line read
+        // CARGO_CFG_TARGET_OS again, which during a cross-compile returns
+        // "windows" and made is_cross always false.
         let is_cross = build_host != "windows";
         if is_cross {
             cmake_args.push("-DCMAKE_SYSTEM_NAME=Windows".to_string());
@@ -145,84 +159,8 @@ fn main() {
     println!("cargo:rustc-link-search=native={}", build_dir);
     println!("cargo:rustc-link-lib=static=astgraph_engine");
 
-    // ── LadybugDB (optional, for embedded graph storage via Cypher) ──
-    // Read the CMake cache to determine whether CMake's find_library()
-    // succeeded — this is the single source of truth, ensuring build.rs
-    // and CMakeLists.txt agree on whether HAS_LADYBUG is defined. If
-    // CMake found the library, build.rs links it too; otherwise neither
-    // side references lbug symbols and the C++ engine uses SQLite only.
-    let cmake_cache = format!("{}/CMakeCache.txt", build_dir);
-    let lbug_lib = std::fs::read_to_string(&cmake_cache)
-        .ok()
-        .and_then(|content| {
-            for line in content.lines() {
-                if line.starts_with("LADYBUG_LIBRARY:FILEPATH=") {
-                    let val = line.trim_start_matches("LADYBUG_LIBRARY:FILEPATH=");
-                    if !val.is_empty() && val != "LADYBUG_LIBRARY-NOTFOUND" && val != "NOTFOUND" {
-                        return Some(val.to_string());
-                    }
-                    return None;
-                }
-            }
-            None
-        });
-
-    if let Some(lib_path) = &lbug_lib {
-        // CMake found liblbug. Derive the directory, link mode, and
-        // library name from the path.
-        let lib_file = std::path::Path::new(lib_path);
-        let lib_dir = lib_file
-            .parent()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| ".".to_string());
-
-        // Determine link mode from extension:
-        //   .a     → static (Unix/macOS static archive)
-        //   .lib   → static (Windows/MinGW static archive; `lbug.lib`
-        //             is a true static lib with all dependencies bundled)
-        //   .so / .dylib → dynamic
-        // NOTE: on macOS cross-compile to Windows, std::env::consts::OS
-        // is "macos", not "windows". Use target_os (from CARGO_CFG_TARGET_OS)
-        // to correctly detect the Windows target.
-        let is_static =
-            lib_path.ends_with(".a") || (target_os == "windows" && lib_path.ends_with(".lib"));
-
-        // Extract library name from filename for the linker.
-        //   liblbug.a       → lbug  (Unix convention: strip "lib" prefix + .a)
-        //   lbug_shared.lib → lbug_shared  (Windows convention: strip .lib)
-        let fname = lib_file
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("lbug")
-            .to_string();
-        let lib_name = if cfg!(target_os = "windows") && lib_path.ends_with(".lib") {
-            fname
-        } else {
-            fname.strip_prefix("lib").unwrap_or(&fname).to_string()
-        };
-
-        let link_mode = if is_static { "static" } else { "dylib" };
-        println!("cargo:rustc-link-search=native={}", lib_dir);
-        println!("cargo:rustc-link-lib={}={}", link_mode, lib_name);
-        // Embed the library directory in the binary's rpath so the
-        // dynamic linker can find liblbug at runtime without requiring
-        // DYLD_LIBRARY_PATH (macOS) or ldconfig (Linux). Windows never
-        // reaches here (see NOTE above), so no PATH-copy logic is needed.
-        if !is_static {
-            println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir);
-        }
-        eprintln!(
-            "build.rs: LadybugDB {} lib found via CMake cache at {}",
-            if is_static { "static" } else { "dynamic" },
-            lib_path
-        );
-    } else if target_os == "macos" || target_os == "linux" || target_os == "windows" {
-        // CMake did not find LadybugDB — consistent with HAS_LADYBUG not
-        // being defined. Emit a clear warning so users know Cypher queries
-        // will be unavailable.
-        eprintln!("WARNING: LadybugDB not found by CMake. Graph storage will use SQLite only.");
-        eprintln!("  Install LadybugDB: https://ladybugdb.com/docs/getting-started");
-    }
+    // The engine statically bundles all deps (tree-sitter, sqlite3,
+    // grammars), so only astgraph_engine is linked.
 
     // C++ standard library: libc++ on macOS, libstdc++ on Linux/Windows.
     // On Windows (MinGW GNU ABI) link libstdc++ STATICALLY. This is intentionally

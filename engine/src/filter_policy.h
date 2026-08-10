@@ -34,6 +34,14 @@ class FilterPolicy {
 	FilterPolicy();
 
 	// ── Mode ─────────────────────────────────────────────────────
+	// Windows SDK (windows.h) defines STRICT / FAST as macros; undef them
+	// so the enum values below compile (same guard as engine_index_project.cpp).
+#ifdef STRICT
+#undef STRICT
+#endif
+#ifdef FAST
+#undef FAST
+#endif
 	enum Mode { NORMAL, FAST, STRICT };
 	void setMode(Mode m)
 	{
@@ -71,6 +79,18 @@ class FilterPolicy {
 	bool shouldSkipFile(const std::string &filename) const;
 	bool shouldSkipSuffix(const std::string &ext) const;
 	bool isSourceFile(const std::string &path) const;
+
+	/// Whether a directory basename is in the Java-protected set
+	/// (test/tests/docs/example/samples/vendor/...). For Java projects
+	/// these names are deferred to a top-only (depth ≤ 3) check so nested
+	/// package namespaces (org/springframework/samples/petclinic) are not
+	/// clobbered; for non-Java projects they are skipped at any depth.
+	/// Exposed so the indexer can pre-detect .java files BEFORE the walk
+	/// and flip lang_context_ to "java" — otherwise the first .java file
+	/// (which may live under an example/samples/... dir) is never reached
+	/// because that dir is skipped while lang_context_ is still empty
+	/// (chicken-and-egg: Java projects index 0 files).
+	bool isJavaProtectedDir(const std::string &dir_name) const;
 
 	// ── Path-based check (gitignore-aware, any depth) ────────────
 	// Check ALL path components against skip_dirs AND full path

@@ -1,6 +1,7 @@
 SHELL := /bin/bash
 .PHONY: all build build-engine build-server \
         test test-engine test-server test-bench test-savings \
+        accuracy-check \
         lint lint-cpp lint-rust fmt fmt-cpp fmt-rust check \
         clean distclean help
 
@@ -55,6 +56,7 @@ help:
 	@printf "    make test-server     Run Rust server tests\n"
 	@printf "    make test-bench      Build benchmark\n"
 	@printf "    make test-savings    Run token savings analysis\n"
+	@printf "    make accuracy-check  Run call-graph accuracy gate (P/R/F1 + fault injection)\n"
 	@printf "\n"
 	@printf "  $(CYAN)Lint & Format:$(RESET)\n"
 	@printf "    make lint-cpp        Fast clang-format check (recent files, <3s)\n"
@@ -62,9 +64,6 @@ help:
 	@printf "    make lint-rust       Run cargo clippy\n"
 	@printf "    make fmt-cpp         Format C++ code\n"
 	@printf "    make fmt-rust        Format Rust code\n"
-	@printf "\n"
-	@printf "  $(CYAN)Update:$(RESET)\n"
-	@printf "    make update-ladybug  Download latest LadybugDB for all platforms\n"
 	@printf "\n"
 	@printf "  $(CYAN)Clean:$(RESET)\n"
 	@printf "    make clean           Clean build artifacts\n"
@@ -153,10 +152,13 @@ test: test-engine test-server
 #     Js/Ts/Tsx translators that dlopen the grammar .so at runtime — they need
 #     GRAMMARS_DIR set (see test-engine target below). They pass once the
 #     grammar .so files are on disk under engine/grammars.
-# Tests excluded from CI (hardcoded local paths — run manually):
-#   - test_evidence_builder, test_project_state, test_verify_planner,
-#     test_domain_rules: load rules from /Users/scc/... paths, not portable
-#   - test_self_bench: hardcoded /Users/scc/... engine src path for self-index
+# test_evidence_builder, test_project_state, test_domain_rules,
+# test_verify_planner, and test_self_bench were previously excluded for
+# hardcoded local paths; they now resolve rules/CWD portably, and the
+# three that pass are wired into TEST_EXES above. The other two
+# (test_verify_planner, test_self_bench) were removed: their assertions
+# referenced pre-v0.2.5 verify-pipeline / graph_nodes-table behavior
+# that the SQLite-only store no longer fills.
 TEST_EXES := \
 	test_ir test_graph test_graph_semantic test_graph_call_precision \
 	test_semantic_unit \
@@ -176,14 +178,20 @@ TEST_EXES := \
 	test_enhance_e2e \
 	test_js_visitor test_ts_visitor test_tsx_visitor \
 	test_semantic_fact_extractor \
-	test_ladybug_diff
+	test_accuracy_baseline \
+	test_verifier_lifecycle test_verifier_claim_coverage \
+        test_verifier_ground_truth \
+        test_typed_relation_query \
+        test_metrics_readiness \
+        test_call_graph_accuracy \
+        test_step11_go_smoke \
+        test_evidence_builder test_project_state test_domain_rules
 
 test-engine: $(ENGINE_LIB)
 	@printf "$(CYAN)[test/engine]$(RESET) Building and running C++ tests...\n"
 	@rm -f $(TEST_DB) $(TEST_DB)-wal $(TEST_DB)-shm
 	@rm -f /tmp/test_*.db /tmp/test_*.db-wal /tmp/test_*.db-shm 2>/dev/null || true
-	@find /tmp -maxdepth 1 -name 'test_*.lbug' -delete 2>/dev/null || true
-	@find . -name '*.lbug' -delete 2>/dev/null || true
+	@rm -f /tmp/codescope_test_*.db /tmp/codescope_test_*.db-wal /tmp/codescope_test_*.db-shm 2>/dev/null || true
 	@cd $(BUILD_DIR) && cmake --build . -j$(NPROC) 2>&1 | grep -E "(error|Error|Building|Linking)" || true
 	@failed=0; \
 	export GRAMMARS_DIR="$(CURDIR)/engine/grammars"; \
@@ -211,6 +219,44 @@ test-savings:
 	@printf "$(CYAN)[test/savings]$(RESET) Running token savings integration test...\n"
 	@bash tests/test_token_savings.sh 2>&1
 	@printf "  Report: tests/token_savings_report.md\n"
+
+# ─── Accuracy Benchmark ──────────────────────────────────────────
+# Step 2 (plan §Step 2): quantifiable call-graph accuracy gate.
+# Runs the accuracy runner (test_call_graph_accuracy) three times:
+#   1. Baseline — records /tmp/codescope_accuracy_baseline.json.
+#   2. FP injection — must fail (proves the gate catches false positives).
+#   3. FN injection — must fail (proves the gate catches false negatives).
+# The baseline run must pass (exit 0) for the gate to be green.
+accuracy-check: $(ENGINE_LIB)
+	@printf "$(CYAN)[accuracy]$(RESET) Running call-graph accuracy benchmark...\n"
+	@cd $(BUILD_DIR) && cmake --build . --target test_call_graph_accuracy -j$(NPROC) 2>&1 | tail -1
+	@printf "  $(CYAN)baseline run...$(RESET)\n"
+	@CODESCOPE_SKIP_ASYNC=1 $(BUILD_DIR)/test_call_graph_accuracy 2>/tmp/acc_baseline_stderr.txt; \
+	BASE_RC=$$?; \
+	cp /tmp/codescope_accuracy_report.json /tmp/codescope_accuracy_baseline.json 2>/dev/null || true; \
+	cat /tmp/codescope_accuracy_baseline.json 2>/dev/null | grep -E '"(tp|fp|fn|precision|recall|f1)"' | head -6; \
+	if [ $$BASE_RC -ne 0 ]; then \
+		printf "  $(CROSS) baseline gate FAILED (exit $$BASE_RC)\n"; \
+		exit 1; \
+	fi
+	@printf "  $(CYAN)FP injection (must fail)...$(RESET)\n"
+	@CODESCOPE_SKIP_ASYNC=1 CODESCOPE_INJECT_FP=1 $(BUILD_DIR)/test_call_graph_accuracy > /dev/null 2>&1; \
+	FP_RC=$$?; \
+	if [ $$FP_RC -eq 0 ]; then \
+		printf "  $(CROSS) FP injection did NOT fail (gate broken)\n"; \
+		exit 1; \
+	fi
+	@printf "  $(CHECK) FP injection correctly failed\n"
+	@printf "  $(CYAN)FN injection (must fail)...$(RESET)\n"
+	@CODESCOPE_SKIP_ASYNC=1 CODESCOPE_INJECT_FN=1 $(BUILD_DIR)/test_call_graph_accuracy > /dev/null 2>&1; \
+	FN_RC=$$?; \
+	if [ $$FN_RC -eq 0 ]; then \
+		printf "  $(CROSS) FN injection did NOT fail (gate broken)\n"; \
+		exit 1; \
+	fi
+	@printf "  $(CHECK) FN injection correctly failed\n"
+	@printf "  $(CHECK) accuracy gate PASSED\n"
+	@printf "  Report: /tmp/codescope_accuracy_baseline.json\n"
 
 # ─── Benchmark ────────────────────────────────────────────────────
 BENCH_BIN   := $(BUILD_DIR)/test_bench_project
@@ -314,11 +360,6 @@ fmt-rust:
 # ─── Check (CI) ──────────────────────────────────────────────────
 check: build lint test-engine test-server
 	@printf "$(CHECK) check complete\n"
-
-# ─── Update LadybugDB ──────────────────────────────────────────
-update-ladybug:
-	@printf "$(CYAN)[update/ladybug]$(RESET) Downloading latest LadybugDB for all platforms...\n"
-	@bash scripts/update-ladybug.sh
 
 # ─── Clean ───────────────────────────────────────────────────────
 # Dependencies are vendored under engine/third_party/ (committed, no

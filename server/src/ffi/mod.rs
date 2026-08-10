@@ -21,6 +21,10 @@ unsafe extern "C" {
     ) -> *mut c_char;
     fn engine_index_files(project_id: u64, file_list_json: *const c_char) -> *mut c_char;
 
+    // v0.2.5 (C2 fix): rebuild a project's CSR adjacency on the given DB
+    // (used after parallel merge, where local-id BLOBs would be dangling).
+    fn engine_rebuild_csr(db_path: *const c_char, project_id: u64) -> *mut c_char;
+
     fn engine_find_definition(
         project_id: u64,
         symbol_name: *const c_char,
@@ -106,6 +110,13 @@ unsafe extern "C" {
     fn engine_get_project_state(project_id: u64) -> *mut c_char;
     fn engine_enhance_project(project_id: u64) -> *mut c_char;
 
+    // ── Verifier Registry introspection (Step 9.2) ─────────────
+    // See engine_verify_ffi.cpp for the C++ implementation. Returns a
+    // heap-allocated JSON string that the caller MUST release via
+    // engine_free_string(). Describes registry health, claim-type
+    // coverage, and evidence backend readiness.
+    fn engine_get_verifier_registry_status(project_id: u64) -> *mut c_char;
+
     fn engine_build_fts(project_id: u64) -> *mut c_char;
 
     // ── Phase A: Fast Scan ────────────────────────────────────────
@@ -135,6 +146,11 @@ unsafe extern "C" {
         symbol_name: *const c_char,
         file_filter: *const c_char,
     ) -> *mut c_char;
+    // Step 7 (plan §7.2): entity-precise caller/callee queries. Unlike the
+    // bare-name APIs, these unambiguously target a single entity even when
+    // multiple entities share the same name.
+    fn engine_find_callers_by_entity(project_id: u64, entity_id: u64) -> *mut c_char;
+    fn engine_find_callees_by_entity(project_id: u64, entity_id: u64) -> *mut c_char;
     fn engine_get_entry_points_new(project_id: u64) -> *mut c_char;
     fn engine_get_type_info(project_id: u64, type_name_filter: *const c_char) -> *mut c_char;
     fn engine_get_routes(project_id: u64) -> *mut c_char;
@@ -182,7 +198,14 @@ fn cstr(s: &str) -> CString {
 /// contract is satisfied by construction.
 fn take_string(ptr: *mut c_char) -> String {
     if ptr.is_null() {
-        return String::new();
+        // M1 fix: a NULL engine return previously collapsed to an empty
+        // string, which MCP tools then failed to parse as JSON (returning
+        // malformed responses to clients). Return a valid JSON error object
+        // instead so every tool can uniformly parse the response and route
+        // it to its error path instead of panicking or emitting invalid JSON.
+        return "{\"ok\":false,\"error\":\"engine returned NULL \
+                [module=ffi, method=take_string]\"}"
+            .to_string();
     }
     let s = unsafe { CStr::from_ptr(ptr).to_string_lossy().into_owned() };
     unsafe { engine_free_string(ptr) };
@@ -195,6 +218,19 @@ pub fn init(db_path: &str) -> i32 {
 
 pub fn shutdown() {
     unsafe { engine_shutdown() }
+}
+
+/// Rebuild a project's CSR adjacency on the given DB (C2 fix).
+///
+/// Opens a local store on `db_path` in the engine and rebuilds the project's
+/// CSR from its relation table. Returns the engine's JSON string; the caller
+/// must parse it. The returned string is heap-allocated and freed by
+/// `take_string`.
+pub fn rebuild_csr(db_path: &str, project_id: u64) -> String {
+    unsafe {
+        let ptr = engine_rebuild_csr(cstr(db_path).as_ptr(), project_id);
+        take_string(ptr)
+    }
 }
 
 /// Returns the engine version string.
@@ -504,13 +540,17 @@ pub fn build_evidence(project_id: u64, category_filter: Option<&str>) -> String 
 }
 
 /// Verify a natural-language claim against the project's indexed
-/// evidence. The claim is parsed into an Intent by IntentParser,
-/// planned into evidence rule executions by Planner, executed via
-/// EvidenceBuilder, and aggregated into a Verdict by VerdictBuilder.
+/// evidence. This is a thin wrapper over the structured verify_claim
+/// path: the claim is parsed into an Intent by IntentParser, mapped to
+/// a structured Claim (capability_question → capability_exists,
+/// safety/pattern_question → contract_holds), and dispatched through
+/// the same verify_one_claim core used by verify_claim. Intents that
+/// match no known category return verdict Unknown with
+/// error_code="intent_unrecognized" instead of silently guessing.
 ///
-/// Returns JSON with `verdict`, `confidence`, `requirements[]`, and
-/// `evidence[]` fields. On error returns a JSON object with an
-/// "error" field tagged with module/method per code_rules.md.
+/// Returns JSON with `verdict`, `confidence`, and verifier-specific
+/// detail fields. On error returns a JSON object with an "error" field
+/// tagged with module/method per code_rules.md.
 pub fn verify_statement(project_id: u64, claim_text: &str) -> String {
     take_string(unsafe { engine_verify_statement(project_id, cstr(claim_text).as_ptr()) })
 }
@@ -527,6 +567,16 @@ pub fn build_project_state(project_id: u64) -> String {
 /// object if no snapshot exists yet.
 pub fn get_project_state(project_id: u64) -> String {
     take_string(unsafe { engine_get_project_state(project_id) })
+}
+
+/// Inspect the VerifierRegistry health and claim-type coverage (Step 9.2).
+///
+/// Returns a JSON string describing whether the verifier subsystem is armed,
+/// which public claim types are supported, and whether the canonical
+/// evidence backend (entity/relation) has data for the given project.
+/// Pass `project_id = 0` to skip the evidence backend probe.
+pub fn get_verifier_registry_status(project_id: u64) -> String {
+    take_string(unsafe { engine_get_verifier_registry_status(project_id) })
 }
 
 /// Scan all declared capabilities and contracts for drift between
@@ -622,6 +672,18 @@ pub fn find_callees_adaptive(
     take_string(unsafe {
         engine_find_callees_adaptive(project_id, cstr(symbol_name).as_ptr(), cstr(ff).as_ptr())
     })
+}
+
+/// Step 7 (plan §7.2): find callers of a precise entity by its id.
+/// The entity id is resolved to (name, file_path, start_row) in the
+/// engine, so the query never aggregates homonyms.
+pub fn find_callers_by_entity(project_id: u64, entity_id: u64) -> String {
+    take_string(unsafe { engine_find_callers_by_entity(project_id, entity_id) })
+}
+
+/// Step 7 (plan §7.2): find callees of a precise entity by its id.
+pub fn find_callees_by_entity(project_id: u64, entity_id: u64) -> String {
+    take_string(unsafe { engine_find_callees_by_entity(project_id, entity_id) })
 }
 
 pub fn get_entry_points_new(project_id: u64) -> String {

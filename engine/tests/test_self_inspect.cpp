@@ -31,7 +31,6 @@ int main()
 	//   2. relative candidates from the current working directory
 	//      (CI runs the binary with CWD = repo root, so "engine/src"
 	//       resolves; locally it may run from engine/build* etc.)
-	//   3. the local dev path, kept only as a last-resort fallback
 	std::string self_dir;
 	if (const char *env = std::getenv("CODESCOPE_ENGINE_SRC")) {
 		self_dir = env;
@@ -40,7 +39,6 @@ int main()
 			"engine/src",
 			"../src",
 			"../engine/src",
-			"/Users/scc/code/cppCode/CodeScope/engine/src",
 			nullptr};
 		for (int i = 0; candidates[i]; ++i) {
 			if (access(candidates[i], F_OK) == 0) {

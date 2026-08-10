@@ -4,7 +4,7 @@
 
 It transforms source code into verifiable facts, understandable models, and inspectable evidence — enabling AI to validate claims against reality instead of hallucinating.
 
-**Version**: v0.2.4 | **License**: Apache 2.0
+**Version**: v0.2.5 | **License**: Apache 2.0
 
 ---
 
@@ -16,7 +16,7 @@ CodeScope is a **Project Truth Engine** that answers one question:
 
 Not "what does this code mean", but "does the code actually do what you claim?"
 
-It indexes source code into a structured code graph (call graph + reference graph + module knowledge), then exposes **42 MCP tools** that let AI agents locate symbols, trace call paths, verify claims, detect documentation drift, and analyze architecture — all with **~98.9% token savings** vs reading raw source files.
+It indexes source code into a structured code graph (call graph + reference graph + module knowledge), then exposes **47 MCP tools** that let AI agents locate symbols, trace call paths, verify claims, detect documentation drift, and analyze architecture — all with **~98.9% token savings** vs reading raw source files.
 
 ### Supported Languages (8)
 
@@ -38,7 +38,7 @@ It indexes source code into a structured code graph (call graph + reference grap
 | Parser | tree-sitter (unified AST IR, 8 languages) |
 | Indexer | C++23 (Clang 17+), SQLite (WAL mode, FTS5) |
 | Server | Rust 2024 Edition, MCP Protocol (JSON-RPC 2.0, stdio transport) |
-| Graph Storage | SQLite (primary) + optional LadybugDB (Cypher queries) |
+| Graph Storage | SQLite (sole graph store, CSR adjacency for sub-ms call-graph queries) |
 | Scheduler | Built-in multi-process parallel indexer (chunk-level work-stealing) |
 | Build | CMake 3.30+ (C++), Cargo (Rust) |
 
@@ -53,7 +53,7 @@ graph TB
     end
 
     subgraph "Rust MCP Server"
-        MCP["MCP Protocol (JSON-RPC 2.0)<br/>42 tools / stdio transport"]
+        MCP["MCP Protocol (JSON-RPC 2.0)<br/>47 tools / stdio transport"]
         DISPATCH["Tool Dispatch<br/>project_id auto-restore"]
     end
 
@@ -137,8 +137,8 @@ flowchart LR
         E1["enhance_project"]
         E2["full tree-sitter"]
         E3["call graph"]
-        E4["complexity metrics"]
-        E5["embeddings + FTS"]
+        E4["FTS index"]
+        E5["semantic_fact (v0.3)"]
     end
 
     A -->|"trigger"| B
@@ -209,9 +209,7 @@ Layer 8: file size limit + language detection
 | Project | Raw Source Files | After Filtering | Filtered Out | Time Saved |
 |---------|:-:|:-:|:-:|:-:|
 | rustc (Rust compiler) | 36,919 | **6,029** | 84% | ~2.5 min |
-| ARES (Go) | 2,651 | **1,254** | 53% | ~30 s |
 | CodeScope (self) | 356 | **168** | 53% | ~1 s |
-| Linux kernel (full) | 308,342 | **64,694** | 79% | ~12 min |
 
 ### Override: `force_index_files`
 
@@ -231,7 +229,7 @@ codescope cli force_index_files '{"paths":["/path/to/test/file.rs"]}'
 |----------|-------------|
 | **macOS** | Xcode CLT, cmake, Rust (1.85+) |
 | **Linux** | build-essential, cmake, Rust (1.85+) |
-| **Windows** ⚠️ **Beta** | MinGW-w64 14.0.0+, Rust `x86_64-pc-windows-gnu` target, cmake. LadybugDB/Cypher not available (SQLite-only). |
+| **Windows** ⚠️ **Beta** | MinGW-w64 14.0.0+, Rust `x86_64-pc-windows-gnu` target, cmake. Every graph-query tool (shortest_path, get_neighbors, get_callers/callees, graph_query, subgraph, entry_points, trace_path, hotspots, impact_analysis, ...) works via the built-in SQLite graph-query backend (CSR adjacency, sub-millisecond call-graph lookups). |
 
 ### Install Pre-built Binary
 
@@ -284,7 +282,7 @@ codescope index-parallel /path/to/large/project
 
 ---
 
-## 5. MCP Tools (42 Tools)
+## 5. MCP Tools (47 Tools)
 
 ### Indexing
 
@@ -320,6 +318,9 @@ codescope index-parallel /path/to/large/project
 |------|-------------|------------|
 | `find_callers` | Find who calls a function. | `{"symbol_name": "string (required)", "file_filter": "string (optional)"}` |
 | `find_callees` | Find what a function calls. | `{"symbol_name": "string (required)", "file_filter": "string (optional)"}` |
+| `find_callers_by_entity` | Find callers of a symbol by its graph entity id. | `{"entity_id": "integer (required)"}` |
+| `find_callees_by_entity` | Find callees of a symbol by its graph entity id. | `{"entity_id": "integer (required)"}` |
+| `get_verifier_registry_status` | Inspect the registered verifiers and their health (supported claim types, unsupported list, backend readiness). | `{}` |
 | `codescope_trace` | Interactive recursive call exploration (depth + direction) or shortest path. | `{"function_name": "string", "depth": "integer (default 1, max 5)", "direction": "callers|callees|both", "from": "string", "to": "string"}` |
 | `trace_flow` | Recursive execution flow tracing (caller→callee chain). | `{"function_name": "string (required)", "depth": "integer (default 3, max 10)"}` |
 | `shortest_path` | Shortest call path between two functions (BFS). | `{"from": "string", "to": "string", "from_id": "integer", "to_id": "integer"}` |
@@ -338,7 +339,7 @@ codescope index-parallel /path/to/large/project
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
-| `search` | **Recommended** — unified search (auto-selects FTS5 or semantic). | `{"query": "string (required)", "limit": "integer (default 20, max 100)"}` |
+| `search` | **Recommended** — unified search: FTS5 exact/prefix matching **complemented by n-gram semantic vector search** (restored in v0.2.5; lexical similarity, no external model) when results run short. | `{"query": "string (required)", "limit": "integer (default 20, max 100)"}` |
 | `search_code` | [DEPRECATED — use search] | `{"query": "string (required)", "limit": "integer"}` |
 
 ### Verification
@@ -357,7 +358,7 @@ The v0.3 Evidence Pipeline transforms indexed code into verifiable evidence and 
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
-| `enhance_project` | Run background enhancement: full tree-sitter parse, call graph, metrics, FTS, and v0.3 semantic_fact extraction. Prerequisite for `build_evidence` to produce non-empty findings. | `{}` |
+| `enhance_project` | Run background enhancement: full tree-sitter parse, call graph, FTS, and v0.3 semantic_fact extraction. Prerequisite for `build_evidence` to produce non-empty findings. Complexity metrics and n-gram semantic vectors are built during `index_project` (restored in v0.2.5). | `{}` |
 | `build_evidence` | Build evidence findings by applying the rule set (sync/memory/error/pattern/framework/ffi) to the project's semantic_fact rows. Each rule declares fact needs + a combine mode (Collect / MissingMatch / MissingMatchPerFunction / Count). Returns a JSON array of Evidence objects. Run after `enhance_project` so semantic facts are populated. | `{"category": "string (optional, one of: sync|memory|error|pattern|framework|ffi)"}` |
 | `verify_statement` | Verify a natural-language claim against the project's indexed evidence. Pipeline: IntentParser → Planner → EvidenceBuilder → VerdictBuilder. Returns JSON with `verdict` (Supported\|Contradicted\|PartiallyVerified\|Unknown), `confidence`, `requirements[]`, and `evidence[]`. Use this for yes/no questions about code behavior (e.g. "does this project safely handle CString?"). | `{"claim": "string (required)"}` |
 | `build_project_state` | Build (or rebuild) and persist the project state snapshot. Runs the full v0.3 Evidence Pipeline (evidence aggregation + state queries) and UPSERTs the result into the `project_state` table. Returns the snapshot JSON: overall confidence, capability/architecture/workflow/dead_code scores, per-category issue counts, and `last_updated` timestamp. | `{}` |
@@ -439,33 +440,27 @@ All benchmarks measured on **Apple M3 Max (36 GB RAM)**. Other hardware will pro
 
 ### Index Time
 
-| Project | Files | Nodes | Edges | Index Time | Peak RSS |
-|---------|------:|------:|------:|-----------:|---------:|
-| **CodeScope** (self, C++/Rust) | 212 | 1,387 | 1,895 | **1.0 s** | ~150 MB |
-| **memscope-rs** (Rust) | 215 | 4,344 | — | **~2 s** | ~200 MB |
-| **ARES** (Go) | 1,254 | 18,798 | 4,475 | **4.3 s** | ~500 MB |
-| **rustc** (Rust compiler, monorepo) | 6,029 | 81,039 | 63,697 | **18.7 s** | 5.9 GB |
-| **Linux kernel** (full) | 64,694 | 12M | — | **3 min 07 s** | — |
+Measured with the pure-SQLite graph backend (no LadybugDB/Kuzu dependency). Latest run, 2026-08-08.
 
-### LadybugDB Storage
+| Project | Language | Files | Nodes | Edges | Index Time | Peak RSS |
+|---------|----------|------:|------:|------:|-----------:|---------:|
+| **CodeScope** (self) | C++/Rust | 221 | 1,481 | 1,204 | **1.2 s** | ~150 MB |
+| **goagent** | Go | 1,344 | 26,425 | 6,352 | **16.0 s** | ~500 MB |
+| **rustc** (Rust compiler, monorepo) | Rust | 6,029 | 129,918 | 118,154 | **31.6 s** | 5.9 GB |
 
-| Project | SQLite DB | LadybugDB | LadybugDB % of SQLite |
-|---------|:---------:|:---------:|:---------------------:|
-| **CodeScope** (self) | 77 MB | 3.4 MB | 4.4% |
-| **ARES** (Go) | 337 MB | 24 KB | <0.1% |
-| **rustc** (Rust compiler) | — | — | — |
+### Query Latency
 
-### Query Latency (LadybugDB Cypher)
+All graph queries run on the built-in SQLite graph-query backend (CSR adjacency tables), sub-millisecond for typical call-graph lookups.
 
-| Query | Latency | Notes |
-|-------|:-------:|-------|
-| `get_graph_stats` | ~1 ms | Cypher `count()` aggregation |
-| `find_callers("buildGraph")` | ~1 ms | Cypher `MATCH` with name filter |
-| `find_callees("buildGraph")` | ~1 ms | 54 callees returned |
-| `graph_query` (LIMIT 100) | ~1 ms | 2,590 edges, DSL → Cypher translation |
-| `shortest_path` | ~1 ms | Cypher `shortestPath()` BFS |
-| `get_neighbors` | ~1 ms | 1-hop `MATCH` with direction |
-| `get_subgraph` | ~1 ms | 1-hop `MATCH` with filters |
+| Query | SQLite backend |
+|-------|:--------------:|
+| `get_graph_stats` | ~0.1 ms |
+| `find_callers("buildGraph")` | ~0.2 ms (sub-ms) |
+| `find_callees("parse")` | ~0.2 ms (sub-ms) |
+| `graph_query` (full call-graph scan) | ~37 ms (full 118,154-edge scan, JOIN-optimized) |
+| `shortest_path` | O(E) CSR BFS, sub-ms |
+| `get_neighbors` | O(degree) CSR adjacency, sub-ms |
+| `get_subgraph` | O(E) CSR BFS, sub-ms |
 
 ### Micro Benchmarks
 
@@ -482,17 +477,15 @@ All benchmarks measured on **Apple M3 Max (36 GB RAM)**. Other hardware will pro
 
 | Project | Cross-File CALLS | % of total CALLS |
 |---------|:---------------:|:----------------:|
-| CodeScope (C++) | 23 | 0.1% |
-| ARES (Go) | 49,258 | 86% |
-| Linux kernel (C) | 1,502,432 | 40% |
+| CodeScope (C++) | 588 | 46.7% |
+| goagent (Go) | 2,930 | 53.0% |
+| rustc (Rust) | 70,833 | 59.9% |
 
 ### Fast Scan (Lightweight, ms-level)
 
 | Project | Time | Languages | Symbols |
 |--------|:----:|:---------:|:-------:|
 | **CodeScope** (self) | **32 ms** | cpp, rust, c | 2,902 |
-| **ARES** (Go) | **493 ms** | go, c, cpp, python | 5,172 |
-| **Linux kernel** (core) | **360 ms** | c | 40,335 |
 
 ### Token Savings
 
@@ -563,4 +556,4 @@ Each script calls `codescope cli <tool_name> '<json_args>'` internally. See `ski
 
 Apache 2.0 — see [LICENSE](LICENSE).
 
-**CodeScope v0.2.4** — Built with Rust 2024 + C++23 + tree-sitter + SQLite.
+**CodeScope v0.2.5** — Built with Rust 2024 + C++23 + tree-sitter + SQLite.

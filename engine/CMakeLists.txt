@@ -226,8 +226,6 @@ set(ENGINE_SOURCES
      src/store/store_project.cpp
      src/store/store_parse_failure.cpp
      src/store/store_knowledge.cpp
-        src/store/store_ladybug_core.cpp
-     src/store/store_graph_compiler.cpp
      src/store/store_membulk.cpp
      src/store/store_semantic_fact.cpp
     src/query/query_engine.cpp
@@ -252,6 +250,7 @@ set(ENGINE_SOURCES
         src/verify/capability_verifier.cpp
         src/verify/contract_verifier.cpp
         src/verify/architecture_verifier.cpp
+        src/verify/function_implements_verifier.cpp
         src/verify/dead_code_inspector.cpp
         src/verify/claim_parser.cpp
         src/verify/claim.cpp
@@ -262,18 +261,18 @@ set(ENGINE_SOURCES
         src/verify/intent_parser.cpp
         src/verify/planner.cpp
         src/verify/verdict_builder.cpp
-        src/engine_verify_planner_ffi.cpp
-        src/async_knowledge.cpp
-        src/resolver/resolve_cache.cpp
-        src/filter_policy.cpp
-        src/filter_policy_ignore.cpp
-        src/platform_win.cpp
-        src/evidence/rule.cpp
-        src/evidence/evidence_builder.cpp
-        src/engine_evidence_ffi.cpp
-        src/engine_project_state_ffi.cpp
-        ${SQLITE3_AMAL_SRC}
-        ${TREE_SITTER_SOURCES}
+    src/engine_verify_planner_ffi.cpp
+    src/async_knowledge.cpp
+    src/resolver/resolve_cache.cpp
+    src/filter_policy.cpp
+    src/filter_policy_ignore.cpp
+    src/platform_win.cpp
+    src/evidence/rule.cpp
+    src/evidence/evidence_builder.cpp
+    src/engine_evidence_ffi.cpp
+    src/engine_project_state_ffi.cpp
+    ${SQLITE3_AMAL_SRC}
+    ${TREE_SITTER_SOURCES}
 )
 
 # Add sqlite-vec.c if available
@@ -371,193 +370,8 @@ target_link_libraries(astgraph_engine PUBLIC
     ${CMAKE_DL_LIBS}
 )
 
-# ── LadybugDB (embedded graph database for graph storage) ──────
-# Optional dependency. The engine builds and runs without it (SQLite
-# remains the source of truth for graph storage). When LadybugDB is
-# present, Cypher queries and native graph traversal are enabled via
-# the HAS_LADYBUG compile flag.
-#
-# Detection order:
-#   1. Vendored in third_party/ladybug/ (preferred, zero network)
-#   2. System-wide install → find_library picks it up
-#   3. macOS Homebrew → /opt/homebrew/lib, /usr/local/lib
-#
-# Set -DLADYBUG_REQUIRED=ON to make the build fail when LadybugDB
-# is not found (useful for production builds that require Cypher).
-option(LADYBUG_REQUIRED "Fail build if LadybugDB is not found" OFF)
-
-set(LADYBUG_VENDOR_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ladybug")
- if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-     set(LADYBUG_VENDOR_LIB_DIR "${LADYBUG_VENDOR_DIR}/lib/macos")
- elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-     if(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
-         set(LADYBUG_VENDOR_LIB_DIR "${LADYBUG_VENDOR_DIR}/lib/linux-aarch64")
-     else()
-         set(LADYBUG_VENDOR_LIB_DIR "${LADYBUG_VENDOR_DIR}/lib/linux")
-     endif()
- elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-     set(LADYBUG_VENDOR_LIB_DIR "${LADYBUG_VENDOR_DIR}/lib/windows")
- else()
-     set(LADYBUG_VENDOR_LIB_DIR "${LADYBUG_VENDOR_DIR}/lib")
- endif()
-# Force re-detection: clear stale cache entries from previous runs
-unset(LADYBUG_LIBRARY CACHE)
-unset(LADYBUG_INCLUDE_DIR CACHE)
-
-# ── LadybugDB library search ──────────────────────────────────
-# Priority:  1. Vendored platform directory (NO_DEFAULT_PATH)
-#            2. System-wide find (macOS/Linux only — skipped on Windows
-#               to avoid finding Host Homebrew liblbug.a during cross-compile)
-#
-# Vendored library naming per platform:
-#   macOS: liblbug.0.dylib     (versioned symlink → liblbug.0.18.3.dylib)
-#   Linux: liblbug.so.0        (versioned symlink → liblbug.so.0.18.3)
-#   Windows (static): lbug.lib (static archive from liblbug-static-*.zip)
-
-# Vendored dir only (platform-specific). On Windows cross-compile we must
-# NOT include /opt/homebrew/lib in PATHS or it picks up the host's liblbug.a.
-set(_LADYBUG_SEARCH_DIRS ${LADYBUG_VENDOR_LIB_DIR})
-if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    list(APPEND _LADYBUG_SEARCH_DIRS /opt/homebrew/lib /usr/local/lib /usr/lib)
-elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    list(APPEND _LADYBUG_SEARCH_DIRS /usr/local/lib /usr/lib)
-endif()
-find_library(LADYBUG_LIBRARY lbug
-    PATHS ${_LADYBUG_SEARCH_DIRS}
-    NO_DEFAULT_PATH)
-
-# System-wide fallback (macOS/Linux only). On Windows (including cross-compile
-# from macOS), the system path contains the Host's liblbug.a which is
-# incompatible — skip the system search entirely.
-if(NOT LADYBUG_LIBRARY AND NOT CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    find_library(LADYBUG_LIBRARY lbug)
-endif()
-
-# ── Architecture compatibility check ───────────────────────────
-# find_library only checks the filename, not the binary architecture.
-# On aarch64 Linux the vendored liblbug.so is x86-64; without this
-# check CMake would define HAS_LADYBUG and the link step would fail
-# with "skipping incompatible liblbug.so".
-if(LADYBUG_LIBRARY)
-    execute_process(
-        COMMAND file -b "${LADYBUG_LIBRARY}"
-        OUTPUT_VARIABLE _LBUG_ARCH_INFO
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        ERROR_QUIET)
-    set(_LBUG_ARCH_OK FALSE)
-    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64" AND _LBUG_ARCH_INFO MATCHES "x86-64")
-            set(_LBUG_ARCH_OK TRUE)
-        elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64" AND _LBUG_ARCH_INFO MATCHES "aarch64")
-            set(_LBUG_ARCH_OK TRUE)
-        endif()
-    elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-        if(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64" AND _LBUG_ARCH_INFO MATCHES "arm64")
-            set(_LBUG_ARCH_OK TRUE)
-        elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64" AND _LBUG_ARCH_INFO MATCHES "x86_64")
-            set(_LBUG_ARCH_OK TRUE)
-        endif()
-    else()
-        # Unknown platform — assume compatible (let linker decide)
-        set(_LBUG_ARCH_OK TRUE)
-    endif()
-    if(NOT _LBUG_ARCH_OK)
-        message(STATUS "LadybugDB: ${LADYBUG_LIBRARY} is [${_LBUG_ARCH_INFO}], "
-            "does not match ${CMAKE_SYSTEM_PROCESSOR} — skipping")
-        unset(LADYBUG_LIBRARY CACHE)
-    endif()
-endif()
-
-find_path(LADYBUG_INCLUDE_DIR lbug.h
-    PATHS ${LADYBUG_VENDOR_DIR}/include ${LADYBUG_VENDOR_LIB_DIR} /opt/homebrew/include /usr/local/include /usr/include
-    NO_DEFAULT_PATH)
-if(NOT LADYBUG_INCLUDE_DIR)
-    find_path(LADYBUG_INCLUDE_DIR lbug.h)
-endif()
-
-# ── Fallback: search for versioned library names ───────────────
-# If the dev symlink (liblbug.so / liblbug.dylib) is missing but the
-# versioned shared object exists (e.g., liblbug.so.0.18.2), use it
-# directly and create the dev symlink so the linker can find it.
-# Also re-check architecture on the versioned library.
-if(NOT LADYBUG_LIBRARY AND EXISTS "${LADYBUG_VENDOR_LIB_DIR}")
-    if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-        file(GLOB _LADYBUG_VERIFIED
-            "${LADYBUG_VENDOR_LIB_DIR}/liblbug.[0-9]*.dylib")
-    else()
-        file(GLOB _LADYBUG_VERIFIED
-            "${LADYBUG_VENDOR_LIB_DIR}/liblbug.so.[0-9]*")
-    endif()
-    if(_LADYBUG_VERIFIED)
-        list(GET _LADYBUG_VERIFIED 0 _LBUG_CANDIDATE)
-        # Verify architecture of the versioned library too
-        set(_LBUG_VER_OK FALSE)
-        execute_process(
-            COMMAND file -b "${_LBUG_CANDIDATE}"
-            OUTPUT_VARIABLE _LBUG_VER_INFO
-            OUTPUT_STRIP_TRAILING_WHITESPACE
-            ERROR_QUIET)
-        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-            if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64" AND _LBUG_VER_INFO MATCHES "x86-64")
-                set(_LBUG_VER_OK TRUE)
-            elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64" AND _LBUG_VER_INFO MATCHES "aarch64")
-                set(_LBUG_VER_OK TRUE)
-            endif()
-        elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-            if(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64" AND _LBUG_VER_INFO MATCHES "arm64")
-                set(_LBUG_VER_OK TRUE)
-            elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64" AND _LBUG_VER_INFO MATCHES "x86_64")
-                set(_LBUG_VER_OK TRUE)
-            endif()
-        else()
-            set(_LBUG_VER_OK TRUE)
-        endif()
-        if(_LBUG_VER_OK)
-            set(LADYBUG_LIBRARY "${_LBUG_CANDIDATE}")
-            # Create the dev symlink so the linker's -llbug resolves.
-            if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-                set(_LADYBUG_DEV_LINK "${LADYBUG_VENDOR_LIB_DIR}/liblbug.dylib")
-            else()
-                set(_LADYBUG_DEV_LINK "${LADYBUG_VENDOR_LIB_DIR}/liblbug.so")
-            endif()
-            if(NOT EXISTS "${_LADYBUG_DEV_LINK}")
-                execute_process(
-                    COMMAND ${CMAKE_COMMAND} -E create_symlink
-                        "${LADYBUG_LIBRARY}" "${_LADYBUG_DEV_LINK}"
-                    RESULT_VARIABLE _SYMLINK_RESULT)
-            endif()
-            message(STATUS "LadybugDB: using versioned library ${LADYBUG_LIBRARY}")
-        else()
-            message(STATUS "LadybugDB: versioned library ${_LBUG_CANDIDATE} is "
-                "[${_LBUG_VER_INFO}], does not match ${CMAKE_SYSTEM_PROCESSOR} — skipping")
-        endif()
-    endif()
-endif()
-
-if(LADYBUG_LIBRARY AND LADYBUG_INCLUDE_DIR)
-    # HAS_LADYBUG must be PUBLIC because store.h uses #ifdef HAS_LADYBUG
-    # to conditionally include <lbug.h> and define real vs stub types
-    # for lbug_database/lbug_connection. Any source file that includes
-    # store.h (including test executables) needs the definition at
-    # compile time to match the ABI of the engine library.
-    target_compile_definitions(astgraph_engine PUBLIC HAS_LADYBUG=1)
-    target_compile_definitions(astgraph_engine PRIVATE LBUG_STATIC_DEFINE)
-    target_include_directories(astgraph_engine PUBLIC ${LADYBUG_INCLUDE_DIR})
-    target_link_libraries(astgraph_engine PUBLIC ${LADYBUG_LIBRARY})
-    message(STATUS "LadybugDB: found at ${LADYBUG_LIBRARY}")
-elseif(LADYBUG_REQUIRED)
-    message(FATAL_ERROR
-        "LadybugDB is REQUIRED (LADYBUG_REQUIRED=ON) but was not found.\n"
-        "Please install manually:\n"
-        "  macOS:  brew install ladybug\n"
-        "  Linux:  curl -fsSL https://install.ladybugdb.com | sh\n"
-        "  Docs:   https://docs.ladybugdb.com/installation/")
-else()
-    message(WARNING
-        "LadybugDB not found — building without Cypher/graph query support.\n"
-        "The engine will use SQLite for all graph storage.\n"
-        "To enable: install LadybugDB or set -DLADYBUG_REQUIRED=ON to enforce.")
-endif()
+# ── Graph storage: SQLite-only ──────────────────────────────────
+# The engine uses SQLite as the sole graph store on all platforms.
 
 # ── Tests ────────────────────────────────────────────────────────
 # Automated tests live in tests/. Each must run with no command-line

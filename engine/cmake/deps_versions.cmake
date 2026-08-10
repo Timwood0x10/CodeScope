@@ -21,10 +21,3 @@ set(TS_TYPESCRIPT_VERSION v0.23.2)
 
 # sqlite-vec amalgamation (vector search extension, compiled into binary)
 set(SQLITE_VEC_VERSION v0.1.10-alpha.4)
-
-# LadybugDB (embedded graph database, vendored shared library)
-# All three architectures are committed under third_party/ladybug/lib/:
-#   linux/          → x86-64 Linux
-#   linux-aarch64/  → aarch64 Linux
-#   macos/          → arm64 macOS
-set(LADYBUG_VERSION    v0.18.2)

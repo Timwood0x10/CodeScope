@@ -44,15 +44,21 @@ pub(super) fn run_module_worker(
     db_prefix: &str,
     project_id: u64,
     quarantine_exclude: Option<&str>,
+    keep_db: bool,
 ) -> ModuleResult {
     let module_dir = Path::new(project_dir).join(module_name);
     let module_db = format!("{}_{}.db", db_prefix, module_name);
 
-    // Always start from a clean DB file — a stale DB would have
+    // Normally start from a clean DB file — a stale DB would have
     // outdated graph_nodes from a previous (possibly crashed) run.
-    let _ = std::fs::remove_file(&module_db);
-    let _ = std::fs::remove_file(format!("{}-wal", module_db));
-    let _ = std::fs::remove_file(format!("{}-shm", module_db));
+    // When keep_db is set (caller pinned CODESCOPE_DB_PREFIX for an
+    // incremental run), preserve the module DB so the engine's
+    // file_scan_state mtime check skips unchanged files.
+    if !keep_db {
+        let _ = std::fs::remove_file(&module_db);
+        let _ = std::fs::remove_file(format!("{}-wal", module_db));
+        let _ = std::fs::remove_file(format!("{}-shm", module_db));
+    }
 
     let project_name = format!("parallel-{}", module_name);
     let workers_str = workers.to_string();
@@ -82,6 +88,12 @@ pub(super) fn run_module_worker(
     // Skip the ~280ms state-builder work in per-module workers; the
     // unified DB gets its async pass once after merge (see merge::merge_module_dbs).
     cmd.env("CODESCOPE_SKIP_ASYNC", "1");
+    // v0.2.5 (C2 fix): parallel workers build CSR adjacency from LOCAL
+    // entity ids, which merge cannot remap inside the packed tgt_blob /
+    // src_blob (binary, not a SQL remap column). Defer CSR construction to
+    // the merged main.db where relation ids are already global, so CSR-based
+    // graph queries don't return dangling neighbor ids.
+    cmd.env("CODESCOPE_DEFER_CSR", "1");
     if let Some(exclude) = quarantine_exclude {
         cmd.env("CODESCOPE_EXCLUDE_PATHS", exclude);
     }
@@ -373,6 +385,9 @@ pub(super) fn run_chunk_worker(
     cmd.env("CODESCOPE_PROJECT_ID", &project_id_str);
     cmd.env("CODESCOPE_INDEX_MODE", "fast");
     cmd.env("CODESCOPE_SKIP_ASYNC", "1");
+    // P3a (C2): chunk workers are parallel modules too — defer CSR so it is
+    // rebuilt once on the merged DB from globally-remapped relation ids.
+    cmd.env("CODESCOPE_DEFER_CSR", "1");
 
     // CPU binding via taskset if a cpu_set is provided.
     // `taskset` is a util-linux command and is NOT available on macOS
@@ -401,6 +416,8 @@ pub(super) fn run_chunk_worker(
         taskset_cmd.env("CODESCOPE_PROJECT_ID", &project_id_str);
         taskset_cmd.env("CODESCOPE_INDEX_MODE", "fast");
         taskset_cmd.env("CODESCOPE_SKIP_ASYNC", "1");
+        // P3a (C2): defer CSR on chunk workers too (see plain branch above).
+        taskset_cmd.env("CODESCOPE_DEFER_CSR", "1");
         taskset_cmd.stdout(Stdio::piped()).stderr(Stdio::inherit());
         cmd = taskset_cmd;
     } else {

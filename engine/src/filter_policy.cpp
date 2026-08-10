@@ -697,6 +697,15 @@ bool FilterPolicy::shouldSkipDirPrefix(const std::string &dir_name) const
 	return false;
 }
 
+bool FilterPolicy::isJavaProtectedDir(const std::string &dir_name) const
+{
+	std::string lower = dir_name;
+	for (auto &c : lower)
+		c = static_cast<char>(std::tolower(c));
+	return java_protected_skip_dirs_.find(lower) !=
+	       java_protected_skip_dirs_.end();
+}
+
 bool FilterPolicy::shouldSkipFile(const std::string &filename) const
 {
 	// Case-insensitive: lowercase before lookup so .ENV.LOCAL matches.

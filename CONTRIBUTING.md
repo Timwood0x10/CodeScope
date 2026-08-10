@@ -19,12 +19,11 @@ version:
 
 ```bash
 # macOS
-brew install llvm@21 cmake pkg-config sqlite3 ladybug
+brew install llvm@21 cmake pkg-config sqlite3
 make build          # builds C++ engine + Rust server
 
 # Linux (Ubuntu)
 sudo apt-get install -y build-essential cmake llvm-dev libclang-dev libsqlite3-dev
-curl -fsSL https://install.ladybugdb.com | sh
 make build
 ```
 

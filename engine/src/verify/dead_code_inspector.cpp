@@ -43,7 +43,7 @@ std::vector<Finding> DeadCodeInspector::findOrphanModules()
 			  " ) "
 			  "GROUP BY s.name "
 			  "HAVING entities >= 10 "
-			  "ORDER BY entities DESC LIMIT 30";
+			  "ORDER BY entities DESC LIMIT 500";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), sql.c_str(), -1, &stmt,
 			       nullptr) != SQLITE_OK)
@@ -79,9 +79,13 @@ std::vector<Finding> DeadCodeInspector::findOrphanFunctions()
 	// Exclusions (otherwise main(), FFI exports, and callback entry
 	// points get misclassified as dead — they have no in/out relation
 	// rows but are deliberately reachable from outside the graph):
-	//   - is_entry_point=1: main(), init(), FFI exports — these ARE the
-	//     roots of the call graph, not orphans. Joined via graph_nodes
-	//     because the entity table has no is_entry_point column.
+	//   - Entry-point names: main() / Go init() are call-graph roots,
+	//     not orphans. Step 9.5: previously this excluded rows by
+	//     JOINing graph_nodes.is_entry_point, but that legacy table is
+	//     empty on canonical-fact projects and the entity table has no
+	//     is_entry_point column. We now mirror isEntryPointName() from
+	//     graph_builder.cpp directly in SQL so the exclusion works on
+	//     canonical entity/relation data without any legacy JOIN.
 	//   - visibility=1: pub/public/export surface. These are external
 	//     API contracts; absence of internal callers does not mean dead.
 	// Pure-virtual methods are not excluded here because the schema has
@@ -89,20 +93,23 @@ std::vector<Finding> DeadCodeInspector::findOrphanFunctions()
 	std::string sql =
 		"SELECT e.name, e.file_path, e.kind "
 		"FROM entity e "
-		"LEFT JOIN graph_nodes gn ON gn.project_id = e.project_id "
-		" AND gn.name = e.name AND gn.file_path = e.file_path "
 		"WHERE e.project_id = ? AND e.kind IN (0,1) "
-		// Exclude entry points: main/init/FFI exports are call-graph
-		// roots, not dead code.
-		" AND COALESCE(gn.is_entry_point, 0) = 0 "
 		// Exclude public/export surface: external API contract.
 		" AND e.visibility != 1 "
+		// Exclude entry points: main() / Go init() are call-graph
+		// roots, not dead code. Mirrors isEntryPointName() in
+		// graph_builder.cpp (main for c/cpp/go/rust, init for go).
+		" AND NOT ("
+		"  (LOWER(e.name) = 'main' AND e.language IN "
+		"   ('c','cpp','c++','go','rust'))"
+		"  OR (LOWER(e.name) = 'init' AND e.language = 'go')"
+		" ) "
 		" AND NOT EXISTS ("
 		"  SELECT 1 FROM relation r "
 		"  WHERE r.project_id = ? "
 		"  AND (r.source_id = e.id OR r.target_id = e.id)"
 		" ) "
-		"LIMIT 30";
+		"LIMIT 500";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), sql.c_str(), -1, &stmt,
 			       nullptr) != SQLITE_OK)

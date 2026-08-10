@@ -27,6 +27,8 @@ constexpr int kCallKindDirect = 0;
 constexpr int kCallKindMethod = 1;
 constexpr int kCallKindInterface = 2;
 constexpr int kCallKindConstructor = 3;
+constexpr int kCallKindStaticMethod = 4;
+constexpr int kCallKindVirtual = 5;
 
 // ── Named constants for scoring values ──────────────────────────────
 constexpr double kScoreExactMatch = 1.0;
@@ -37,6 +39,17 @@ constexpr double kScoreSameDirectory = 0.3;
 
 // ── Threshold ───────────────────────────────────────────────────────
 constexpr double kResolutionThreshold = 0.40;
+
+// Step 5 (plan §5.4): ambiguity gate margin. The top-1 candidate must
+// lead the top-2 candidate by at least this much to produce a single-
+// target CALLS edge. If the margin is not met, the reference is marked
+// ambiguous and no CALLS edge is written (conservative abstain).
+constexpr double kAmbiguityMargin = 0.15;
+
+// Step 5 (plan §5.6): absolute threshold for evidence-gated fuzzy
+// fallback. Fuzzy matches must clear this higher bar (vs 0.40 for
+// exact-name) because fuzzy name similarity is inherently weaker.
+constexpr double kFuzzyResolutionThreshold = 0.55;
 
 // ── Common name penalty value ───────────────────────────────────────
 constexpr double kCommonNamePenaltyValue = 0.25;
@@ -128,6 +141,53 @@ double factorReceiverMatch(const std::string &ref_name,
 			   const std::string &caller_file,
 			   const std::string &candidate_name,
 			   const std::string &candidate_file);
+
+/// Step 5 (plan §5.3): receiver type evidence factor.
+/// Replaces the directory-heuristic factorReceiverMatch with actual
+/// type-based matching. If the reference carries a known receiver_type
+/// (e.g. "Box"), this checks whether the candidate's qualified_name
+/// contains that type name (e.g. "Box::draw", "Box.draw"). When
+/// receiver_type is empty (unknown/dynamic), returns 0.5 (neutral) —
+/// neither boosting nor penalizing — rather than the previous directory
+/// heuristic that fabricated positive evidence from file paths.
+///
+/// @param receiver_type   Inferred receiver type from the reference
+///                        (empty = unknown/dynamic).
+/// @param candidate_qname Candidate's qualified_name from the entity
+///                        table (e.g. "Box::draw", "MyClass.method").
+/// @param candidate_name  Candidate's bare name (fallback).
+/// @param candidate_file  Candidate's file path (fallback for
+///                        extracting class prefix from path).
+double factorReceiverTypeMatch(const std::string &receiver_type,
+			       const std::string &candidate_qname,
+			       const std::string &candidate_name,
+			       const std::string &candidate_file);
+
+// ── v0.2.5 (perf): receiver-type match with pre-parsed ref-level strings ──
+//
+// factorReceiverTypeMatch re-derives `receiver_type + "::"`,
+// `receiver_type + "."` and the lowercased receiver_type on EVERY candidate.
+// All three depend only on the REF's receiver_type (fixed across candidates),
+// so in the resolver hot loop we build them once per ref and hand them to a
+// pre-parsed variant that skips those allocations. Scoring is IDENTICAL to
+// factorReceiverTypeMatch — do not change it independently.
+struct ReceiverMatchContext {
+	std::string prefix1; // receiver_type + "::"
+	std::string prefix2; // receiver_type + "."
+	std::string rtype_lower; // lowercased receiver_type
+	bool empty = false; // receiver_type was empty (neutral 0.5)
+};
+
+/// Build the ref-level context for receiver matching once per reference.
+ReceiverMatchContext
+buildReceiverMatchContext(const std::string &receiver_type);
+
+/// Same scoring as factorReceiverTypeMatch but uses a pre-parsed context so
+/// the per-candidate prefix/prefix2/lowercase allocations are eliminated.
+/// candidate_file's lowercased base name is computed inside (per candidate).
+double factorReceiverTypeMatchPrecomp(const ReceiverMatchContext &ctx,
+				      const std::string &candidate_qname,
+				      const std::string &candidate_file);
 
 /// Check if the name is a very common function name that causes
 /// high false-positive cross-module matches (e.g. Len, Init, Run).
