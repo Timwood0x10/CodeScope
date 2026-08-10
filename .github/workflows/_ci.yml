@@ -56,13 +56,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build git gcc g++ pkg-config libssl-dev ccache patchelf
-          # LadybugDB shared libraries are vendored under engine/third_party/ladybug/lib/
-          # (committed to git, both x86-64 and aarch64). CMake selects the
-          # correct architecture at configure time. Add the lib dir to the
-          # linker path at runtime.
-          ARCH_DIR=$([ "$(uname -m)" = "aarch64" ] && echo "linux-aarch64" || echo "linux")
-          echo "$PWD/engine/third_party/ladybug/lib/$ARCH_DIR" | sudo tee /etc/ld.so.conf.d/ladybug.conf
-          sudo ldconfig
 
       - name: Install deps (macOS)
         if: matrix.os == 'macos-15'
@@ -72,8 +65,6 @@ jobs:
           # direct cmake call use the same compiler as local dev.
           echo "CC=/opt/homebrew/opt/llvm@21/bin/clang" >> $GITHUB_ENV
           echo "CXX=/opt/homebrew/opt/llvm@21/bin/clang++" >> $GITHUB_ENV
-          # LadybugDB shared library is vendored under engine/third_party/ladybug/lib/macos/
-          # (committed to git, including the liblbug.dylib dev symlink).
 
       - name: Install deps (Windows)
         if: matrix.os == 'windows-2022'
@@ -325,16 +316,25 @@ jobs:
               LBUG_FILE="liblbug.0.dylib"
               ;;
             *-windows)
-              # Windows: LadybugDB is intentionally disabled (see
-              # engine/CMakeLists.txt — HAS_LADYBUG undefined). No shared
-              # library to bundle; graph storage uses SQLite only.
-              LBUG_LIB=""
+              LBUG_LIB="engine/third_party/ladybug/lib/windows/lbug_shared.dll"
+              LBUG_FILE="lbug_shared.dll"
+              # Windows also needs OpenSSL + MSVC CRT DLLs (transitive
+              # dependencies of lbug_shared.dll). All vendored under the
+              # same directory — copy them alongside the main DLL.
+              WIN_DEPS="engine/third_party/ladybug/lib/windows/libcrypto-3-x64-*.dll engine/third_party/ladybug/lib/windows/libssl-3-x64-*.dll engine/third_party/ladybug/lib/windows/msvcp140-*.dll"
               ;;
           esac
-          # Bundle LadybugDB shared lib (Linux/macOS only). Windows builds
-          # without LadybugDB, so LBUG_LIB is empty there — skip the copy.
+          # Bundle LadybugDB shared lib + transitive DLL dependencies.
+          # Windows bundles OpenSSL/MSVC CRT DLLs alongside lbug_shared.dll
+          # so the binary finds them in its own directory at runtime.
           if [ -n "$LBUG_LIB" ]; then
             cp -L "$LBUG_LIB" "package/$LBUG_FILE"
+            # Copy Windows dependency DLLs
+            if [ "${{ matrix.os }}" = "windows-2022" ]; then
+              for dep in $WIN_DEPS; do
+                [ -f "$dep" ] && cp -L "$dep" package/ || true
+              done
+            fi
           fi
           # Set rpath to $ORIGIN (Linux) / @executable_path (macOS) so the
           # dynamic linker finds the bundled library in the same directory.

@@ -65,6 +65,9 @@ help:
 	@printf "    make fmt-cpp         Format C++ code\n"
 	@printf "    make fmt-rust        Format Rust code\n"
 	@printf "\n"
+	@printf "  $(CYAN)Update:$(RESET)\n"
+	@printf "    make update-ladybug  Download latest LadybugDB for all platforms\n"
+	@printf "\n"
 	@printf "  $(CYAN)Clean:$(RESET)\n"
 	@printf "    make clean           Clean build artifacts\n"
 	@printf "    make distclean       Clean everything\n"
@@ -360,6 +363,11 @@ fmt-rust:
 # ─── Check (CI) ──────────────────────────────────────────────────
 check: build lint test-engine test-server
 	@printf "$(CHECK) check complete\n"
+
+# ─── Update LadybugDB ──────────────────────────────────────────
+update-ladybug:
+	@printf "$(CYAN)[update/ladybug]$(RESET) Downloading latest LadybugDB for all platforms...\n"
+	@bash scripts/update-ladybug.sh
 
 # ─── Clean ───────────────────────────────────────────────────────
 # Dependencies are vendored under engine/third_party/ (committed, no
