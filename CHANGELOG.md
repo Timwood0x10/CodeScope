@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.2.6 (2026-08-10)
+
+Improves full-index (non-fast) performance on large projects and fixes a resolver JOIN defect that both slowed indexing and silently over-matched cross-file references.
+
+### 🚀 Performance
+
+- **Dropped dead `semantic_records` rows at the DB write path** (`insertFileResultBatch`): `Literal` records (emitted for every numeric/string literal token, consumed by no downstream stage) and `Variable` records (only the in-memory GraphBuilder uses them; the full-index SQL `buildGraph` and all queries ignore them) are skipped when writing the DB, while `FileResult.records` stays intact so single-file symbol-graph queries keep Variable nodes. Measured on CodeScope's own `engine/src` (171 files): `semantic_records` 95,944 → 25,146 rows, SQLite flush 1,135ms → ~310ms, full-index `index_time` 2.18s → ~1.36s (**-38%**). (`store_batch.cpp`)
+
+- **Fixed a resolver self-join missing the `file_path` term**: the `global_var_types_` / `global_struct_fields_` preloads joined `semantic_records` on `parent_id = original_id AND project_id = project_id` but not `file_path`. Because `original_id` is **per-file** (it restarts each file, so different files reuse the same ids), one TypeRef row matched several files' same-`original_id` parents, inflating the join ~35x (variable-type query: 705k rows) and slowing the preloads. Adding `AND p.file_path = t.file_path` cut resolver time 11.2s → 5.4s (**-52%**) and the goagent full index 20.6s → 14.6s (**-29%**), while **resolving more refs correctly** (8,034 → 8,043) — the accuracy gate stays P/R/F1 = 1.0 (0 FP / 0 FN). (`resolver/pipeline.cpp`)
+
+- Added opt-in per-stage resolver timing (`CODESCOPE_PROFILE_RESOLVER=1`) that prints each load/resolve phase's wall time to stderr (a no-op when unset). (`resolver/pipeline.cpp`)
+
 ## v0.2.5 (2026-08-05)
 
 Removes the LadybugDB (Kuzu) dependency entirely — SQLite is now the **sole graph store** on all platforms (CSR `adjacency`/`adjacency_rev` tables + C++ BFS). Graph queries, verifiers, and self-check tools behave identically to the LadybugDB-backed build, with faster indexing (rust: 52.6s → 31.6s, -40%; no graph-rebuild pass) and zero external runtime dependencies. Also fixes three self-check defects found while dogfooding the new backend. Restores the three capabilities that the Step 10 sprint had formally sunset (complexity metrics, n-gram semantic vector search, and metrics-driven readiness), hardens FunctionImplements verification with real call-chain + signature evidence, and fixes Go interface embedding (composition) dispatch.

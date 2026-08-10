@@ -1675,6 +1675,6 @@ const char *engine_version(void)
 	// No try/catch required — only a static string literal is returned,
 	// so no exceptions are possible.
 	// Keep in sync with RELEASE.md and Cargo.toml version.
-	static const char kVersion[] = "0.2.5";
+	static const char kVersion[] = "0.2.6";
 	return kVersion;
 }

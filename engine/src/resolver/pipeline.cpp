@@ -442,7 +442,10 @@ int64_t ResolverPipeline::run()
 {
 	using Clock = std::chrono::steady_clock;
 	auto t_start = Clock::now();
-	// TEMP-PROFILE: per-stage timing for resolver profiling.
+	// Per-stage timing for resolver profiling. Enable with
+	// CODESCOPE_PROFILE_RESOLVER=1 to print each load/resolve phase's
+	// wall time to stderr; it is a no-op when the env var is unset, so
+	// the default path pays only one steady_clock::now() per phase.
 	const bool profile_resolver = getenv("CODESCOPE_PROFILE_RESOLVER") != nullptr;
 	auto t_prev = t_start;
 	const auto mark = [&](const char *label) {
@@ -577,6 +580,7 @@ int64_t ResolverPipeline::run()
 		}
 		sqlite3_finalize(idx_st);
 	}
+	mark("load_entities");
 
 	// ── Step 0b: Pre-load all imports into a file_path-indexed HashMap ──
 	// This is the core fix for the 174s bottleneck: factorImportMatch
@@ -627,6 +631,7 @@ int64_t ResolverPipeline::run()
 		}
 		sqlite3_finalize(imp_st);
 	}
+	mark("load_imports");
 
 	// ── Step 8 (plan §8.1): Pre-load interface/trait implementations ──
 	// InterfaceImpl records (kind=20) store (name=implementing_type,
@@ -817,6 +822,7 @@ int64_t ResolverPipeline::run()
 			"FROM semantic_records t "
 			"JOIN semantic_records p ON t.parent_id = p.original_id "
 			"AND p.project_id = t.project_id "
+			"AND p.file_path = t.file_path "
 			"WHERE t.project_id=? AND t.kind=17 AND p.kind=2 "
 			"AND t.name != '' AND t.type_name != ''";
 		sqlite3_stmt *fst = nullptr;
@@ -854,6 +860,7 @@ int64_t ResolverPipeline::run()
 			"SELECT t.name, t.type_name FROM semantic_records t "
 			"JOIN semantic_records p ON t.parent_id = p.original_id "
 			"AND p.project_id = t.project_id "
+			"AND p.file_path = t.file_path "
 			"WHERE t.project_id=? AND t.kind=17 "
 			"AND p.kind IN (0,1) "
 			"AND t.name != '' AND t.type_name != ''";
@@ -876,6 +883,7 @@ int64_t ResolverPipeline::run()
 			sqlite3_finalize(vst);
 		}
 	}
+	mark("load_var_types_struct");
 
 	// ── Query all references for this project ──
 	// Step 3 (plan §3.1): select the structured call-fact columns so the
@@ -1062,6 +1070,7 @@ int64_t ResolverPipeline::run()
 	// the repeated chain walks from the hot loop.
 	std::unordered_map<std::string, std::string> field_chain_cache;
 	field_chain_cache.reserve(refs.size() / 4);
+	mark("load_refs");
 	for (auto &ref : refs) {
 		// ── P0.3: Find candidates by name — borrow the index entry ──
 		// Instead of deep-copying it->second on every reference (each
@@ -1615,6 +1624,7 @@ int64_t ResolverPipeline::run()
 			  reason, // reason
 			  ref.call_site_file, ref.start_row, ref.start_col });
 	}
+	mark("resolve_loop");
 
 	// Free entity_index (no longer needed)
 	entity_index.clear();
@@ -1702,6 +1712,7 @@ int64_t ResolverPipeline::run()
 			"batch graph_edges insert failed: %s\n",
 			store_->error().c_str());
 	}
+	mark("sql_batch");
 
 	int64_t sql_batch_ms =
 		std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1739,6 +1750,7 @@ int64_t ResolverPipeline::run()
 		avg_candidates, (long long)total_entities,
 		(long long)total_imports, (long long)sql_batch_ms,
 		(long long)total_ms);
+	mark("finalize_total");
 
 	return resolved_count;
 }
