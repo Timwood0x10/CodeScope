@@ -442,6 +442,17 @@ int64_t ResolverPipeline::run()
 {
 	using Clock = std::chrono::steady_clock;
 	auto t_start = Clock::now();
+	// TEMP-PROFILE: per-stage timing for resolver profiling.
+	const bool profile_resolver = getenv("CODESCOPE_PROFILE_RESOLVER") != nullptr;
+	auto t_prev = t_start;
+	const auto mark = [&](const char *label) {
+		auto t_now = Clock::now();
+		if (profile_resolver)
+			fprintf(stderr, "RP[%s]=%lldms\n", label,
+				(long long)std::chrono::duration_cast<std::chrono::milliseconds>(
+					t_now - t_prev).count());
+		t_prev = t_now;
+	};
 
 	// ── P1: Staging table for batch edge inserts ──────────────────
 	// Instead of preparing/finalizing an INSERT per resolved reference,

@@ -431,6 +431,18 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 				// shrinking the bulk INSERT and index rebuild hot spots.
 				if (r.kind == ir::RecordKind::Literal)
 					continue;
+				// Skip Variable records: buildGraph's node pass only
+				// materializes Function/Class entities from
+				// semantic_records and ignores Variable rows, and no
+				// query (symbol lookup, call graph, FTS) reads them from
+				// the DB — they are emitted for every declared variable
+				// and account for ~57% of semantic_records rows on
+				// typical C/C++ trees. The in-memory GraphBuilder still
+				// sees fr.records unchanged, so single-file symbol-graph
+				// queries keep Variable nodes; only the bulk DB write
+				// (used by full-index buildGraph) drops them.
+				if (r.kind == ir::RecordKind::Variable)
+					continue;
 				all_recs.push_back({ &r, &br.first });
 			}
 
