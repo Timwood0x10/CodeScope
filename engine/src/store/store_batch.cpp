@@ -422,8 +422,17 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 		};
 		std::vector<RecRef> all_recs;
 		for (auto &br : batch_records)
-			for (auto &r : br.second)
+			for (auto &r : br.second) {
+				// Skip Literal records: they are produced for every
+				// numeric/string literal token but are consumed by no
+				// downstream stage (buildGraph, resolver, FTS, entity all
+				// ignore kind=Literal). Dropping them here reduces
+				// semantic_records rows ~16% on typical C/C++ trees,
+				// shrinking the bulk INSERT and index rebuild hot spots.
+				if (r.kind == ir::RecordKind::Literal)
+					continue;
 				all_recs.push_back({ &r, &br.first });
+			}
 
 		constexpr size_t kMaxBatch = 500;
 		for (size_t off = 0; off < all_recs.size(); off += kMaxBatch) {
