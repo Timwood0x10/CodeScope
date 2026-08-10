@@ -95,17 +95,8 @@
 *.out
 *.app
 *.dll
-# But track the vendored Windows LadybugDB DLL (needed for CI packaging)
-!engine/third_party/ladybug/lib/windows/lbug_shared.dll
-!engine/third_party/ladybug/lib/windows/libcrypto-3-x64-*.dll
-!engine/third_party/ladybug/lib/windows/libssl-3-x64-*.dll
-!engine/third_party/ladybug/lib/windows/msvcp140-*.dll
 *.dylib
 *.so
-# Keep vendored LadybugDB shared libraries + dev symlinks (committed binaries)
-!engine/third_party/ladybug/lib/**/*.so
-!engine/third_party/ladybug/lib/**/*.so.*
-!engine/third_party/ladybug/lib/**/*.dylib
 *.test
 **/target/
 **/go.work
