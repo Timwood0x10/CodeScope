@@ -12,6 +12,12 @@ Improves full-index (non-fast) performance on large projects and fixes a resolve
 
 - Added opt-in per-stage resolver timing (`CODESCOPE_PROFILE_RESOLVER=1`) that prints each load/resolve phase's wall time to stderr (a no-op when unset). (`resolver/pipeline.cpp`)
 
+- **Split `StateBuilder::buildModuleSummaries` into two CTEs**: the previous single 6-table `INSERT...SELECT` combined three `relation` LEFT JOINs with `graph_nodes`; SQLite then built four `COUNT(DISTINCT)` temp B-trees over a blown-up intermediate result (~29s on a 26k-node Go tree, the dominant `enhance_project` cost). Isolating the `graph_nodes` scan into its own `entry` CTE (joined only on `module_id` afterwards) plus `INDEXED BY` on each relation join cuts `buildModuleSummaries` from 17.1s → 174ms and `enhance_project` on goagent from 18.6s → 1.15s (**-94%**), with identical `module_summary` rows (184 modules). (`model/state_builder.cpp`)
+
+### 🐛 Bug Fixes
+
+- **`get_graph` (and `getProjectOverview`'s stats) still read the deprecated, empty `graph_nodes` / `graph_edges` tables**: `getGraph` counted and paged nodes from `graph_nodes` (no longer written since the v0.2.5 canonical-schema migration, so `nodes` always returned 0) and edges from `graph_edges` (which accumulates stale legacy rows — 16,089 rows vs. 4,415 canonical `relation` rows). Now `getGraph` pages `entity` (nodes) + `relation` (edges) with the columns aliased back to `node_type` / `source_node_id` / `target_node_id` / `edge_type` so the public JSON schema is unchanged; `node_type_filter` maps to `entity.kind` and `edge_type_filter` to `relation.type`. Verified: `get_graph` returns `{total_nodes:39686, total_edges:4415}` matching `get_graph_stats`. (`query_analysis.cpp`)
+
 ## v0.2.5 (2026-08-05)
 
 Removes the LadybugDB (Kuzu) dependency entirely — SQLite is now the **sole graph store** on all platforms (CSR `adjacency`/`adjacency_rev` tables + C++ BFS). Graph queries, verifiers, and self-check tools behave identically to the LadybugDB-backed build, with faster indexing (rust: 52.6s → 31.6s, -40%; no graph-rebuild pass) and zero external runtime dependencies. Also fixes three self-check defects found while dogfooding the new backend. Restores the three capabilities that the Step 10 sprint had formally sunset (complexity metrics, n-gram semantic vector search, and metrics-driven readiness), hardens FunctionImplements verification with real call-chain + signature evidence, and fixes Go interface embedding (composition) dispatch.

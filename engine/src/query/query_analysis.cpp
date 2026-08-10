@@ -426,9 +426,11 @@ std::string QueryEngine::getProjectOverview(uint64_t project_id)
 	// Stats
 	{
 		sqlite3_stmt *stmt = nullptr;
+		// v0.2.6: count from the canonical entity/relation tables.
+		// graph_nodes/graph_edges are deprecated and no longer written.
 		sqlite3_prepare_v2(
 			db,
-			"SELECT COUNT(*) FROM graph_nodes WHERE project_id=?",
+			"SELECT COUNT(*) FROM entity WHERE project_id=?",
 			-1, &stmt, nullptr);
 		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 		if (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -439,7 +441,7 @@ std::string QueryEngine::getProjectOverview(uint64_t project_id)
 
 		sqlite3_prepare_v2(
 			db,
-			"SELECT COUNT(*) FROM graph_edges WHERE project_id=?",
+			"SELECT COUNT(*) FROM relation WHERE project_id=?",
 			-1, &stmt, nullptr);
 		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 		if (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -581,14 +583,24 @@ std::string QueryEngine::getGraph(uint64_t project_id, int64_t node_offset,
 		       "[module=QueryEngine, method=getGraph]\"}";
 	}
 
+	// ── v0.2.6: query the canonical tables. graph_nodes/graph_edges are
+	// deprecated and no longer written (store_graph.cpp removed the
+	// dual-write; only graph_edges accumulates stale legacy rows). The
+	// canonical graph is entity (nodes) + relation (edges), matching
+	// getGraphStats. entity.kind is the RecordKind enum (0=Function,
+	// 1=Method, 2=Class, 3=Interface, 4=Enum, ... 14=File); relation.type
+	// is the edge kind (1=Calls). Alias columns back to the graph_nodes /
+	// graph_edges names so the public JSON schema is unchanged for
+	// callers that already parse source_node_id / target_node_id /
+	// edge_type / node_type.
 	std::string node_filter_clause;
 	if (node_type_filter && *node_type_filter) {
-		node_filter_clause = " AND gn.node_type IN (" +
+		node_filter_clause = " AND e.kind IN (" +
 				     std::string(node_type_filter) + ")";
 	}
 	std::string edge_filter_clause;
 	if (edge_type_filter && *edge_type_filter) {
-		edge_filter_clause = " AND ge.edge_type IN (" +
+		edge_filter_clause = " AND r.type IN (" +
 				     std::string(edge_type_filter) + ")";
 	}
 
@@ -598,7 +610,7 @@ std::string QueryEngine::getGraph(uint64_t project_id, int64_t node_offset,
 	int64_t total_edges = 0;
 	{
 		std::string sql =
-			"SELECT COUNT(*) FROM graph_nodes gn WHERE gn.project_id = ?" +
+			"SELECT COUNT(*) FROM entity e WHERE e.project_id = ?" +
 			node_filter_clause;
 		sqlite3_stmt *stmt = nullptr;
 		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) !=
@@ -614,7 +626,7 @@ std::string QueryEngine::getGraph(uint64_t project_id, int64_t node_offset,
 	}
 	{
 		std::string sql =
-			"SELECT COUNT(*) FROM graph_edges ge WHERE ge.project_id = ?" +
+			"SELECT COUNT(*) FROM relation r WHERE r.project_id = ?" +
 			edge_filter_clause;
 		sqlite3_stmt *stmt = nullptr;
 		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) !=
@@ -636,8 +648,14 @@ std::string QueryEngine::getGraph(uint64_t project_id, int64_t node_offset,
 	// Paginated node page.
 	{
 		std::string sql =
-			"SELECT gn.* FROM graph_nodes gn WHERE gn.project_id = ?" +
-			node_filter_clause + " ORDER BY gn.id LIMIT ? OFFSET ?";
+			"SELECT e.id AS id, e.project_id AS project_id, "
+			"e.kind AS node_type, e.name AS name, "
+			"e.qualified_name AS qualified_name, e.file_path AS file_path, "
+			"e.language AS language, e.start_row AS start_row, "
+			"e.start_col AS start_col, e.end_row AS end_row, "
+			"e.end_col AS end_col, e.module_path AS module_path "
+			"FROM entity e WHERE e.project_id = ?" +
+			node_filter_clause + " ORDER BY e.id LIMIT ? OFFSET ?";
 		sqlite3_stmt *stmt = nullptr;
 		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) !=
 		    SQLITE_OK) {
@@ -667,8 +685,13 @@ std::string QueryEngine::getGraph(uint64_t project_id, int64_t node_offset,
 	// Paginated edge page.
 	{
 		std::string sql =
-			"SELECT ge.* FROM graph_edges ge WHERE ge.project_id = ?" +
-			edge_filter_clause + " ORDER BY ge.id LIMIT ? OFFSET ?";
+			"SELECT r.id AS id, r.source_id AS source_node_id, "
+			"r.target_id AS target_node_id, r.type AS edge_type, "
+			"r.confidence AS confidence, r.call_site_file AS call_site_file, "
+			"r.call_site_row AS call_site_line, "
+			"r.call_site_col AS call_site_col "
+			"FROM relation r WHERE r.project_id = ?" +
+			edge_filter_clause + " ORDER BY r.id LIMIT ? OFFSET ?";
 		sqlite3_stmt *stmt = nullptr;
 		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) !=
 		    SQLITE_OK) {
