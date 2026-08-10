@@ -34,6 +34,14 @@ class FilterPolicy {
 	FilterPolicy();
 
 	// ── Mode ─────────────────────────────────────────────────────
+	// Windows SDK (windows.h) defines STRICT / FAST as macros; undef them
+	// so the enum values below compile (same guard as engine_index_project.cpp).
+#ifdef STRICT
+#undef STRICT
+#endif
+#ifdef FAST
+#undef FAST
+#endif
 	enum Mode { NORMAL, FAST, STRICT };
 	void setMode(Mode m)
 	{

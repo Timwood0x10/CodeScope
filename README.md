@@ -238,6 +238,12 @@ curl -fsSL https://raw.githubusercontent.com/Timwood0x10/CodeScope/main/install.
 export PATH="$PATH:$HOME/.codescope/bin"
 ```
 
+> **macOS code signing issue**: If the binary is killed immediately on launch (exit code 137 / SIGKILL), re-sign it locally:
+> ```bash
+> codesign --sign - --force ~/.codescope/bin/codescope
+> ```
+> This happens because the CI-built binary uses ad-hoc signing, which newer macOS versions may reject. Re-signing with your local machine's identity resolves it.
+
 ### Build from Source
 
 ```bash
@@ -546,19 +552,7 @@ Each script calls `codescope cli <tool_name> '<json_args>'` internally. See `ski
 
 ---
 
-## 10. Semantic Search (n-gram hash vectors, zero-model)
-
-**Status (v0.2.5)**: semantic search is **restored** with a pure-static, zero-model design that fits the project's 0-LLM positioning. It complements FTS5 exact/prefix matching and requires **no model files, no ONNX runtime, and no network**.
-
-- **Vectors**: `buildVectorsFromGraph` (during DEEP index) computes a **192-dim n-gram hash vector** per function/method entity and stores it in `node_vectors` (raw float32 blob). `vector_ready` is derived from the actual row count — never a fake-ready flag.
-- **TF-IDF weighting**: each entity's name is camel/snake/kebab-split, and each token's vector contribution is weighted by its inverse document frequency (`idf = log(1+N/(1+df))`). Rare, discriminative tokens dominate, so a query for `getLedger` ranks `getLedgerBalance` above unrelated `get*` functions.
-- **Accuracy floor**: `searchSemanticJson` ranks by cosine similarity but only returns scores ≥ `0.3`, so weak/incidental trigram overlap is rejected — semantic search never pollutes results.
-- **Query path**: `searchSemanticJson` vectorizes the query with the same scheme; `search` (unified search) appends semantic results when FTS5 + trigram do not fill the limit. `engine_search_semantic` routes to the real implementation.
-- **Why not a real embedding model**: the project is a **0-LLM** static-analysis tool — accuracy comes from graph + FTS + token-IDF signals, and pulling in a 161M-param ONNX model (e.g. jina-embeddings-v2-base-code) would make configuration heavy for marginal recall gain. If true semantic-embedding recall is ever needed, `TARGET_DIM` would need to rise to the model's 768 dims and `node_vectors` re-dimensioned — deliberately out of scope for the 0-LLM positioning.
-
----
-
-## 11. License
+## 10. License
 
 Apache 2.0 — see [LICENSE](LICENSE).
 

@@ -18,7 +18,11 @@ case "$OS" in
                exit 1 ;;
       *) echo "❌ Unsupported macOS arch: $ARCH"; exit 1 ;;
     esac ;;
-  *) echo "❌ Unsupported OS: $OS (only Linux/macOS)"; exit 1 ;;
+  mingw*|msys*|cygwin*)
+    ARTIFACT="codescope-x86_64-windows"
+    IS_WINDOWS=1
+    ;;
+  *) echo "❌ Unsupported OS: $OS (only Linux/macOS/Windows)"; exit 1 ;;
 esac
 
 # ── Resolve latest tag ──
@@ -46,7 +50,12 @@ curl -fsSL "$DOWNLOAD_URL" -o /tmp/codescope.tar.gz
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.codescope/bin}"
 mkdir -p "$INSTALL_DIR"
 tar -xzf /tmp/codescope.tar.gz -C "$INSTALL_DIR"
-chmod +x "$INSTALL_DIR/codescope"
+if [ -n "$IS_WINDOWS" ]; then
+  # Windows: codescope.exe is the binary; graph storage uses SQLite only.
+  chmod +x "$INSTALL_DIR/codescope.exe" 2>/dev/null || true
+else
+  chmod +x "$INSTALL_DIR/codescope"
+fi
 rm -f /tmp/codescope.tar.gz
 
 echo ""
