@@ -1,10 +1,9 @@
 // test_homonym_filter.cpp — verify homonym disambiguation.
 //
 // Step 2.3 (plan §Step 2): replaced the previous version that depended
-// on the local /Users/scc/code/pycode/Transformer_Explorer project and
-// returned 0 even on failure. This version is fully portable: it
-// creates a tiny fixture in /tmp, indexes it, and verifies homonym
-// handling end to end.
+// on a local project path and returned 0 even on failure. This version
+// is fully portable: it creates a tiny fixture in /tmp, indexes it, and
+// verifies homonym handling end to end.
 //
 // Step 7 (plan §7.3): the bare-name API no longer silently aggregates
 // across all entities that share a name. When multiple entities match

@@ -152,10 +152,13 @@ test: test-engine test-server
 #     Js/Ts/Tsx translators that dlopen the grammar .so at runtime — they need
 #     GRAMMARS_DIR set (see test-engine target below). They pass once the
 #     grammar .so files are on disk under engine/grammars.
-# Tests excluded from CI (hardcoded local paths — run manually):
-#   - test_evidence_builder, test_project_state, test_verify_planner,
-#     test_domain_rules: load rules from /Users/scc/... paths, not portable
-#   - test_self_bench: hardcoded /Users/scc/... engine src path for self-index
+# test_evidence_builder, test_project_state, test_domain_rules,
+# test_verify_planner, and test_self_bench were previously excluded for
+# hardcoded local paths; they now resolve rules/CWD portably, and the
+# three that pass are wired into TEST_EXES above. The other two
+# (test_verify_planner, test_self_bench) were removed: their assertions
+# referenced pre-v0.2.5 verify-pipeline / graph_nodes-table behavior
+# that the SQLite-only store no longer fills.
 TEST_EXES := \
 	test_ir test_graph test_graph_semantic test_graph_call_precision \
 	test_semantic_unit \
@@ -181,7 +184,8 @@ TEST_EXES := \
         test_typed_relation_query \
         test_metrics_readiness \
         test_call_graph_accuracy \
-        test_step11_go_smoke
+        test_step11_go_smoke \
+        test_evidence_builder test_project_state test_domain_rules
 
 test-engine: $(ENGINE_LIB)
 	@printf "$(CYAN)[test/engine]$(RESET) Building and running C++ tests...\n"

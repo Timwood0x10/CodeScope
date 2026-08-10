@@ -139,6 +139,7 @@ insertArchitectureState(GraphStore &store, uint64_t project_id,
 static std::string findRulesDir()
 {
 	const char *candidates[] = {
+	   "engine/src/evidence/rules",
 	   "../src/evidence/rules",
 	   "../../engine/src/evidence/rules",
 	   "../../../engine/src/evidence/rules",

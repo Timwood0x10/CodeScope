@@ -205,16 +205,12 @@ jobs:
             # and known-failing tests tracked for future fix.
             # This list must match the Makefile's TEST_EXES skip list.
             case "$test_name" in
-              test_bench|test_bench_enhance|test_bench_project|test_pipeline_bench|test_fast_scan_debug|test_verify_aiscope|test_bun)
+              test_bench|test_bench_enhance|test_bench_project|test_pipeline_bench|test_fast_scan_debug|test_verify_aiscope)
                 echo "  SKIP $test_name (requires external args)"
                 continue
                 ;;
               test_enhance_e2e|test_js_visitor|test_ts_visitor|test_tsx_visitor)
                 echo "  SKIP $test_name (known failure, tracked for future fix)"
-                continue
-                ;;
-              test_verify_planner|test_evidence_builder|test_project_state|test_domain_rules|test_self_bench)
-                echo "  SKIP $test_name (hardcoded local paths, run manually)"
                 continue
                 ;;
               test_rust_e2e|test_qualified_id_ast|test_ts_e2e|test_type_extraction)
@@ -231,10 +227,6 @@ jobs:
                 ;;
               test_call_graph_method|test_call_graph_p1|test_membulk_parity|test_query_algorithms)
                 echo "  SKIP $test_name (requires graph_nodes table, migrated to entity/relation)"
-                continue
-                ;;
-              test_bench_goagent)
-                echo "  SKIP $test_name (requires external goagent project)"
                 continue
                 ;;
             esac
