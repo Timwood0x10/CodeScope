@@ -582,6 +582,19 @@ int64_t ResolverPipeline::run()
 	}
 	mark("load_entities");
 
+	// Build an id -> Candidate map so fuzzy-resolved entity ids can be
+	// hydrated into full candidates without a per-id SQL lookup. The
+	// entity_index above already carries every field the old lk_sql
+	// lookup returned (name, file_path, language, arity, kind,
+	// qualified_name) plus precomputed path components; copying from it
+	// is byte-identical to the previous SQL materialization.
+	std::unordered_map<uint64_t, const Candidate *> entity_by_id;
+	entity_by_id.reserve(static_cast<size_t>(total_entities));
+	for (const auto &entry : entity_index) {
+		for (const auto &c : entry.second)
+			entity_by_id[c.entity_id] = &c;
+	}
+
 	// ── Step 0b: Pre-load all imports into a file_path-indexed HashMap ──
 	// This is the core fix for the 174s bottleneck: factorImportMatch
 	// previously ran `SELECT COUNT(*) FROM import WHERE project_id=? AND
@@ -931,17 +944,9 @@ int64_t ResolverPipeline::run()
 		return -1;
 	}
 
-	// Prepare fuzzy hydration lookup (reused per fuzzy candidate)
-	// Include arity so fuzzy-resolved candidates also get overload
-	// disambiguation via factorSignatureMatch (see C2 above).
-	// Include kind (column 4) so fuzzy candidates carry the same
-	// constructor factor support as exact-name candidates (M-11).
-	// Step 5: include qualified_name (column 5) so fuzzy candidates
-	// also get receiver type matching support.
-	const char *lk_sql = "SELECT name, file_path, language, arity, kind, "
-			     "qualified_name FROM entity WHERE id=?";
-	sqlite3_stmt *lk_st = nullptr;
-	sqlite3_prepare_v2(store_->handle(), lk_sql, -1, &lk_st, nullptr);
+	// Fuzzy candidates are hydrated from the in-memory entity_index
+	// (id -> Candidate map built right after Step 0), so no per-id
+	// SQL lookup is needed in the hot loop anymore.
 
 	// ── Step 0: Profiling counters ──
 	int64_t resolved_count = 0;
@@ -1131,80 +1136,17 @@ int64_t ResolverPipeline::run()
 			}
 			fuzzy_hits++;
 			for (auto fid : fuzzy_ids) {
-				if (!lk_st)
-					break;
-				Candidate c;
-				c.entity_id = fid;
-				sqlite3_bind_int64(lk_st, 1,
-						   static_cast<int64_t>(fid));
-				if (sqlite3_step(lk_st) == SQLITE_ROW) {
-					const char *n2 =
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(
-								lk_st, 0));
-					const char *fp2 =
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(
-								lk_st, 1));
-					const char *lang2 =
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(
-								lk_st, 2));
-					c.name = n2 ? n2 : "";
-					c.file_path = fp2 ? fp2 : "";
-					c.language =
-						lang2 ? lang2 :
-							languageFromPath(
-								c.file_path);
-					c.module_path = modulePath(c.file_path);
-					// v0.6 (perf): precompute path components for fuzzy
-					// candidates too, so applyConstraints' dir/module
-					// scoring is identical to the exact-match path (an
-					// empty cand_dir here would silently zero the module
-					// and namespace scores and lose resolution precision).
-					{
-						size_t cs =
-							c.file_path.rfind('/');
-						c.cand_dir =
-							(cs !=
-							 std::string::npos) ?
-								c.file_path.substr(
-									0, cs) :
-								std::string();
-						size_t cps =
-							c.cand_dir.rfind('/');
-						c.cand_parent =
-							(cps !=
-							 std::string::npos) ?
-								c.cand_dir.substr(
-									0,
-									cps) :
-								std::string();
-						c.cand_module = c.cand_dir;
-						size_t cms =
-							c.cand_dir.rfind('/');
-						if (cms != std::string::npos)
-							c.cand_module =
-								c.cand_dir.substr(
-									cms +
-									1);
-					}
-					// Column 3 is arity (added to lk_sql SELECT above).
-					c.arity = sqlite3_column_int(lk_st, 3);
-					// Column 4 is kind (RecordKind), appended so
-					// constructor-target preference applies to
-					// fuzzy-resolved candidates too (M-11).
-					c.kind = sqlite3_column_int(lk_st, 4);
-					// Step 5: column 5 is qualified_name.
-					const char *qn2 =
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(
-								lk_st, 5));
-					c.qualified_name = qn2 ? qn2 : "";
-				}
-				sqlite3_reset(lk_st);
+				// Hydrate the full candidate from the in-memory
+				// entity_by_id map (built in Step 0) instead of a
+				// per-id SQL lookup — all fields + precomputed path
+				// components are byte-identical to the old lk_sql
+				// materialization.
+				auto eit = entity_by_id.find(fid);
+				if (eit == entity_by_id.end())
+					continue;
+				Candidate c = *(eit->second);
 				c.score = 0;
-				candidates.push_back(c);
+				candidates.push_back(std::move(c));
 			}
 			// Fuzzy results were materialized into the local vector —
 			// point cands at it so subsequent reads (size/front/
@@ -1678,8 +1620,6 @@ int64_t ResolverPipeline::run()
 	resolved_edges.shrink_to_fit();
 
 	sqlite3_finalize(ins_st);
-	if (lk_st)
-		sqlite3_finalize(lk_st);
 
 	// ── P1: Batch insert from staging to final tables ────────────
 	// One INSERT SELECT is far cheaper than N individual INSERTs

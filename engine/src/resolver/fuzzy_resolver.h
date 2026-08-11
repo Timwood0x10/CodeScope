@@ -3,10 +3,9 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include "../store/store.h"
-
-struct sqlite3_stmt;
 
 namespace resolver
 {
@@ -28,12 +27,22 @@ namespace resolver
 /// because it produces too many false positives on short names. The
 /// three strategies above cover the common cases (case differences,
 /// abbreviations, partial names) without that risk.
+///
+/// Performance: the constructor loads every entity (id, name) for the
+/// project once into memory and resolves all three strategies against
+/// that index (ASCII-folded exact map + linear LIKE scans). This
+/// replaces the original implementation's three SQL queries per missed
+/// reference (case-insensitive/prefix/suffix on the entity table) with
+/// pure in-memory lookups. Matching semantics are IDENTICAL to the old
+/// SQL: case-insensitive exact folds only ASCII A-Z (SQLite LOWER), and
+/// prefix/suffix use SQLite's default ASCII-insensitive LIKE with '%'
+/// and '_' wildcards (see sqliteLikeMatch in factors.h).
 class FuzzyResolver {
     public:
 	FuzzyResolver(store::GraphStore *store, uint64_t project_id);
-	~FuzzyResolver();
+	~FuzzyResolver() = default;
 
-	// Non-copyable due to owned sqlite3_stmt members.
+	// Non-copyable: owns the loaded entity index.
 	FuzzyResolver(const FuzzyResolver &) = delete;
 	FuzzyResolver &operator=(const FuzzyResolver &) = delete;
 
@@ -47,21 +56,23 @@ class FuzzyResolver {
 				      size_t limit = 5);
 
     private:
-	store::GraphStore *store_;
-	uint64_t project_id_;
+	// One loaded entity row: id + raw name. kept_ = load order
+	// (rowid order), which matches the original SQL full-table-scan
+	// result order, so LIMIT semantics are preserved.
+	struct EntityName {
+		uint64_t id;
+		std::string raw; // original name (for LIKE matching)
+	};
+	std::vector<EntityName> entities_;
 
-	// Prepared statements — created once in the constructor, reused
-	// across resolve() calls via sqlite3_reset + sqlite3_clear_bindings,
-	// and finalized in the destructor. Preparing per-call was a major
-	// cost in the fuzzy fallback path (3 prepares per missed name).
-	sqlite3_stmt *stmt_case_insensitive_ = nullptr;
-	sqlite3_stmt *stmt_prefix_ = nullptr;
-	sqlite3_stmt *stmt_suffix_ = nullptr;
+	// ASCII-folded name -> entity ids (in load order). O(1) lookup
+	// for the case-insensitive exact strategy.
+	std::unordered_map<std::string, std::vector<uint64_t>> folded_index_;
 
-	/// Prepare all three statements. Returns true on success. On partial
-	/// failure the affected member is left null and resolve() degrades
-	/// gracefully (returns empty for that strategy).
-	bool prepareStatements();
+	/// Load all (id, name) entity rows for the project. Returns true
+	/// on success; on failure resolve() degrades to empty results
+	/// (no crash) and the caller logs the error.
+	bool loadEntities(store::GraphStore *store, uint64_t project_id);
 
 	/// Strategy 1: case-insensitive exact name match.
 	std::vector<uint64_t> resolveCaseInsensitive(const std::string &name,

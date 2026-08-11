@@ -9,6 +9,57 @@
 namespace resolver
 {
 
+/// Fold an ASCII byte to lowercase. SQLite's default LIKE folds only
+/// ASCII upper-case letters; all other bytes (including non-ASCII) are
+/// returned unchanged so they compare byte-for-byte, matching SQLite.
+inline unsigned char likeFold(unsigned char ch)
+{
+	if (ch >= 'A' && ch <= 'Z')
+		return static_cast<unsigned char>(ch + ('a' - 'A'));
+	return ch;
+}
+
+/// Replicate SQLite's default LIKE matching for a full-string pattern.
+/// '%' matches any sequence (including empty), '_' matches any single
+/// character, and ASCII letters compare case-insensitively. The match
+/// is anchored to the whole text (LIKE is not a substring search; the
+/// surrounding '%' in callers' patterns provides prefix/suffix freedom).
+///
+/// This is the standard greedy-with-backtrack wildcard matcher. It is
+/// used instead of std::string::find so that '_'/'%' inside a module
+/// name and ASCII case differences behave EXACTLY like the original
+/// SQL LIKE predicates — preserving identical edges.
+inline bool sqliteLikeMatch(const std::string &pattern, const std::string &text)
+{
+	size_t p = 0; // pattern cursor
+	size_t t = 0; // text cursor
+	size_t star_p = std::string::npos; // position of last '%' in pattern
+	size_t match_t = 0; // text position aligned with that '%'
+	while (t < text.size()) {
+		if (p < pattern.size() && pattern[p] == '%') {
+			star_p = p;
+			match_t = t;
+			++p; // tentatively let '%' match zero chars
+		} else if (p < pattern.size() &&
+			   (pattern[p] == '_' ||
+			    likeFold(static_cast<unsigned char>(pattern[p])) ==
+				    likeFold(static_cast<unsigned char>(
+					    text[t])))) {
+			++p;
+			++t;
+		} else if (star_p != std::string::npos) {
+			// backtrack: let the previous '%' swallow one more char
+			p = star_p + 1;
+			match_t = t = match_t + 1;
+		} else {
+			return false;
+		}
+	}
+	while (p < pattern.size() && pattern[p] == '%')
+		++p;
+	return p == pattern.size();
+}
+
 // ── Named constants for factor weights ──────────────────────────────
 constexpr double kWeightModuleMatch = 0.15;
 constexpr double kWeightImportMatch = 0.80; // Dominant for cross-module

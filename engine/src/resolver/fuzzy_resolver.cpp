@@ -1,4 +1,5 @@
 #include "fuzzy_resolver.h"
+#include "factors.h"
 #include <cstdio>
 #include <sqlite3.h>
 
@@ -6,108 +7,87 @@ namespace resolver
 {
 
 FuzzyResolver::FuzzyResolver(store::GraphStore *store, uint64_t project_id)
-	: store_(store)
-	, project_id_(project_id)
 {
-	if (!prepareStatements()) {
-		// prepareStatements() already logged the per-statement error.
-		// The resolver stays usable in degraded mode: resolve() checks
-		// for null statements and returns empty results so the pipeline
-		// falls through to the miss path instead of crashing.
+	if (!loadEntities(store, project_id)) {
+		// loadEntities() already logged the per-statement error. The
+		// resolver stays usable in degraded mode: resolve() returns
+		// empty results so the pipeline falls through to the miss path
+		// instead of crashing.
 		fprintf(stderr,
-			"[module=resolver, method=FuzzyResolver::"
-			"FuzzyResolver] one or more statements failed to "
-			"prepare; fuzzy matching will be degraded\n");
+			"[module=resolver, method=FuzzyResolver::FuzzyResolver] "
+			"failed to load entity index; fuzzy matching will be "
+			"degraded\n");
 	}
 }
 
-FuzzyResolver::~FuzzyResolver()
+bool FuzzyResolver::loadEntities(store::GraphStore *store, uint64_t project_id)
 {
-	if (stmt_case_insensitive_)
-		sqlite3_finalize(stmt_case_insensitive_);
-	if (stmt_prefix_)
-		sqlite3_finalize(stmt_prefix_);
-	if (stmt_suffix_)
-		sqlite3_finalize(stmt_suffix_);
-}
-
-bool FuzzyResolver::prepareStatements()
-{
-	// Prepare all three fuzzy lookup statements once. Each carries an
-	// explicit `name != ''` filter so empty-name entity rows (which can
-	// appear for anonymous symbols) never pollute fuzzy results, and a
-	// LIMIT cap so a single wildcard never scans the whole table.
-	static constexpr const char *kSqlCaseInsensitive =
-		"SELECT id FROM entity "
-		"WHERE project_id=? AND name != '' "
-		"AND LOWER(name) = LOWER(?) LIMIT ?";
-	static constexpr const char *kSqlPrefix =
-		"SELECT id FROM entity "
-		"WHERE project_id=? AND name != '' "
-		"AND name LIKE ? || '%' LIMIT ?";
-	static constexpr const char *kSqlSuffix =
-		"SELECT id FROM entity "
-		"WHERE project_id=? AND name != '' "
-		"AND name LIKE '%' || ? LIMIT ?";
-
-	sqlite3 *db = store_ ? store_->handle() : nullptr;
+	if (!store)
+		return false;
+	sqlite3 *db = store->handle();
 	if (!db)
 		return false;
 
-	bool ok = true;
-	if (sqlite3_prepare_v2(db, kSqlCaseInsensitive, -1,
-			       &stmt_case_insensitive_, nullptr) != SQLITE_OK) {
-		fprintf(stderr,
-			"[module=resolver, method=FuzzyResolver::"
-			"prepareStatements] case-insensitive prepare "
-			"failed: %s\n",
-			sqlite3_errmsg(db));
-		stmt_case_insensitive_ = nullptr;
-		ok = false;
-	}
-	if (sqlite3_prepare_v2(db, kSqlPrefix, -1, &stmt_prefix_, nullptr) !=
+	// Load every (id, name) entity row once. The original implementation
+	// issued up to three SQL queries per unresolved reference against
+	// this table; loading it once into memory replaces all of them.
+	// `name != ''` mirrors the original SQL filters; load order is rowid
+	// order (no ORDER BY), which matches the old full-table-scan result
+	// order so LIMIT semantics are preserved.
+	static constexpr const char *kSqlLoadEntities =
+		"SELECT id, name FROM entity "
+		"WHERE project_id=? AND name != ''";
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(db, kSqlLoadEntities, -1, &stmt, nullptr) !=
 	    SQLITE_OK) {
 		fprintf(stderr,
-			"[module=resolver, method=FuzzyResolver::"
-			"prepareStatements] prefix prepare failed: %s\n",
+			"[module=resolver, method=FuzzyResolver::loadEntities] "
+			"prepare failed: %s\n",
 			sqlite3_errmsg(db));
-		stmt_prefix_ = nullptr;
-		ok = false;
+		return false;
 	}
-	if (sqlite3_prepare_v2(db, kSqlSuffix, -1, &stmt_suffix_, nullptr) !=
-	    SQLITE_OK) {
-		fprintf(stderr,
-			"[module=resolver, method=FuzzyResolver::"
-			"prepareStatements] suffix prepare failed: %s\n",
-			sqlite3_errmsg(db));
-		stmt_suffix_ = nullptr;
-		ok = false;
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	while (sqlite3_step(stmt) == SQLITE_ROW) {
+		EntityName e;
+		e.id = static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
+		const char *name_c = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 1));
+		if (!name_c || !*name_c)
+			continue; // empty names excluded by the SQL, be safe
+		e.raw = name_c;
+		// Fold once at load time so case-insensitive lookups are O(1)
+		// map hits instead of re-folding every candidate name.
+		std::string folded;
+		folded.reserve(e.raw.size());
+		for (unsigned char ch : e.raw)
+			folded.push_back(static_cast<char>(likeFold(ch)));
+		folded_index_[folded].push_back(e.id);
+		entities_.push_back(std::move(e));
 	}
-	return ok;
+	sqlite3_finalize(stmt);
+	return true;
 }
 
 std::vector<uint64_t>
 FuzzyResolver::resolveCaseInsensitive(const std::string &name, size_t limit)
 {
 	std::vector<uint64_t> out;
-	if (name.empty() || !stmt_case_insensitive_)
+	if (name.empty())
 		return out;
 
-	// Reuse the prepared statement: reset clears the VM state so the
-	// statement can be stepped again; clear_bindings drops stale bound
-	// values from the previous call.
-	sqlite3_reset(stmt_case_insensitive_);
-	sqlite3_clear_bindings(stmt_case_insensitive_);
-	sqlite3_bind_int64(stmt_case_insensitive_, 1,
-			   static_cast<int64_t>(project_id_));
-	sqlite3_bind_text(stmt_case_insensitive_, 2, name.c_str(), -1,
-			  SQLITE_STATIC);
-	sqlite3_bind_int64(stmt_case_insensitive_, 3,
-			   static_cast<int64_t>(limit));
-	while (sqlite3_step(stmt_case_insensitive_) == SQLITE_ROW) {
-		out.push_back(static_cast<uint64_t>(
-			sqlite3_column_int64(stmt_case_insensitive_, 0)));
-	}
+	// ASCII-fold the query once (SQLite LOWER folds only A-Z; likeFold
+	// replicates exactly that), then an O(1) map hit.
+	std::string folded;
+	folded.reserve(name.size());
+	for (unsigned char ch : name)
+		folded.push_back(static_cast<char>(likeFold(ch)));
+
+	auto it = folded_index_.find(folded);
+	if (it == folded_index_.end())
+		return out;
+	const auto &ids = it->second;
+	for (size_t i = 0; i < ids.size() && out.size() < limit; ++i)
+		out.push_back(ids[i]);
 	return out;
 }
 
@@ -115,17 +95,20 @@ std::vector<uint64_t> FuzzyResolver::resolvePrefix(const std::string &prefix,
 						   size_t limit)
 {
 	std::vector<uint64_t> out;
-	if (prefix.empty() || prefix.size() < 3 || !stmt_prefix_)
+	if (prefix.empty() || prefix.size() < 3)
 		return out; // short prefixes match too many entities
 
-	sqlite3_reset(stmt_prefix_);
-	sqlite3_clear_bindings(stmt_prefix_);
-	sqlite3_bind_int64(stmt_prefix_, 1, static_cast<int64_t>(project_id_));
-	sqlite3_bind_text(stmt_prefix_, 2, prefix.c_str(), -1, SQLITE_STATIC);
-	sqlite3_bind_int64(stmt_prefix_, 3, static_cast<int64_t>(limit));
-	while (sqlite3_step(stmt_prefix_) == SQLITE_ROW) {
-		out.push_back(static_cast<uint64_t>(
-			sqlite3_column_int64(stmt_prefix_, 0)));
+	// Replicate the original `name LIKE ? || '%'` exactly: SQLite's
+	// default LIKE is ASCII-case-insensitive and treats '%'/'_' as
+	// wildcards, so sqliteLikeMatch(pattern = prefix + "%", name) is the
+	// faithful in-memory equivalent. Load order == old scan order.
+	std::string pattern = prefix + "%";
+	for (const auto &e : entities_) {
+		if (sqliteLikeMatch(pattern, e.raw)) {
+			out.push_back(e.id);
+			if (out.size() >= limit)
+				break;
+		}
 	}
 	return out;
 }
@@ -134,17 +117,17 @@ std::vector<uint64_t> FuzzyResolver::resolveSuffix(const std::string &suffix,
 						   size_t limit)
 {
 	std::vector<uint64_t> out;
-	if (suffix.empty() || suffix.size() < 3 || !stmt_suffix_)
+	if (suffix.empty() || suffix.size() < 3)
 		return out;
 
-	sqlite3_reset(stmt_suffix_);
-	sqlite3_clear_bindings(stmt_suffix_);
-	sqlite3_bind_int64(stmt_suffix_, 1, static_cast<int64_t>(project_id_));
-	sqlite3_bind_text(stmt_suffix_, 2, suffix.c_str(), -1, SQLITE_STATIC);
-	sqlite3_bind_int64(stmt_suffix_, 3, static_cast<int64_t>(limit));
-	while (sqlite3_step(stmt_suffix_) == SQLITE_ROW) {
-		out.push_back(static_cast<uint64_t>(
-			sqlite3_column_int64(stmt_suffix_, 0)));
+	// Replicate the original `name LIKE '%' || ?`.
+	std::string pattern = "%" + suffix;
+	for (const auto &e : entities_) {
+		if (sqliteLikeMatch(pattern, e.raw)) {
+			out.push_back(e.id);
+			if (out.size() >= limit)
+				break;
+		}
 	}
 	return out;
 }
@@ -153,7 +136,7 @@ std::vector<uint64_t> FuzzyResolver::resolve(const std::string &callee_name,
 					     size_t limit)
 {
 	std::vector<uint64_t> out;
-	if (callee_name.empty() || !store_)
+	if (callee_name.empty() || entities_.empty())
 		return out;
 
 	// Strategy 1: case-insensitive exact match (cheapest, most precise).
