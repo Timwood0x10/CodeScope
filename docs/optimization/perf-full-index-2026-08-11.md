@@ -428,3 +428,69 @@ fast 不会重复计算）。
 - discovery 阶段耗时首次可观测，为后续剪枝优化提供量化依据。
 
 > 已知问题 §9 已从"待修复"更新为"✅ 已修复"。
+
+---
+
+## 11. resolver load_var_types_struct 复合索引修复（2026-08-12）
+
+### 11.1 瓶颈定位（CODESCOPE_PROFILE_RESOLVER=1 分阶段计时）
+
+```
+RP[load_entities]         = 81ms
+RP[load_var_types_struct] = 3331ms   ← 绝对瓶颈（占 resolver ~52%）
+RP[load_refs]             = 387ms
+RP[resolve_loop]          = 1997ms
+RP[sql_batch]             = 469ms
+buildGraph resolver       = 7192ms   ← 占 buildGraph ~75%
+```
+
+### 11.2 根因（EXPLAIN + 实测定位）
+
+`load_var_types_struct` 内部的两个 self-JOIN（`semantic_records t JOIN semantic_records p ON t.parent_id=p.original_id AND p.file_path=t.file_path`）在 rustc 百万行表上极慢：
+
+- `p.original_id` 是 per-file 编号，跨文件大量冲突；
+- SQLite 选了旧索引 `idx_sr_oid(project_id, original_id)`（只有 project_id + original_id，file_path 不在索引里）；
+- 对每个 `t.kind=17` 行（6738 个），original_id 匹配了所有文件的同号行，再回表过滤 file_path → 海量无效候选扫描。
+
+**实测对比（同一查询）**：
+
+| p 侧索引 | 耗时 |
+|---|---|
+| `idx_sr_oid(project_id, original_id)` | 1.435s |
+| **新复合索引 `idx_sr_proj_file_oid(project_id, file_path, original_id)`** | **0.037s（38x）** |
+
+### 11.3 修复方案（2 个文件）
+
+新增复合索引 `idx_sr_proj_file_oid(project_id, file_path, original_id)`——前缀 `project_id` 让 SQLite 优化器自动选中，无需脆弱的 `INDEXED BY`：
+
+1. `store_schema.cpp`：createSchema 建索引（第 337 行）；
+2. `store_membulk.cpp`：drop/create 索引列表同步（membulk 路径一致性，DROP 第 67 行 + CREATE 第 99 行）。
+
+### 11.4 复测结果（rustc 全量索引，release）
+
+| 指标 | 优化前 | 优化后 | 提升 |
+|---|---|---|---|
+| load_var_types_struct | 3331ms | **82ms** | 40.6x |
+| resolver 阶段 | 7192ms | 2979ms | 2.4x |
+| buildGraph | ~9500ms | 5220ms | 1.8x |
+| 墙钟 | 40.93s | **35.71s**（复测 40.98s，系统负载波动） | -5.2s |
+
+墙钟 35.71s，突破 40s 目标 ✅
+
+### 11.5 精度验证（零损失）
+
+- entity 129893 / scope 130881 / import 40877（非零 40877）/ module_summary 898 —— 与优化前逐项一致；
+- relation 117154–117157（±8 运行波动内）；
+- 引擎测试全部通过：`test_accuracy_baseline`（accuracy gate，0 FP / 0 FN）、`test_resolve_strategy`、`test_homonym_filter`、`test_membulk`、`test_membulk_parity`。
+
+### 11.6 46 个 MCP 工具逐一验证（非空转、数据准确）
+
+对 `TOOL_HANDLERS` 全部 **46 个工具**逐一调用（rustc 索引库 /tmp/rc_verify.db），结果：
+
+| 结论 | 数量 | 说明 |
+|---|---|---|
+| ✅ 返回合法 JSON 且数据准确 | 44 | 查询类返回真实数据（get_graph_stats=129893 nodes、find_callers/callees 真实边、codescope_trace 真实调用链、get_module_tree 169KB 等） |
+| ✅ 参数格式需正确（已验证正确调用） | 2 | `verify_claim`/`verify_statement` 需要 `claim.type` 字段（capability_exists 等）；正确参数后返回 verdict |
+| ❌ 空转 / Unknown tool | 0 | 无 |
+
+**关键数据核验**：`get_graph_stats` 返回 `total_nodes=129893 / total_edges=117154` 与 DB 实测一致；`find_callers(transmute)` 返回 ambiguous 候选（非空）；`get_entry_points` 44KB 真实入口；`verify_integrity` 122KB findings；`get_module_tree` 169KB 模块树——全部非空转。

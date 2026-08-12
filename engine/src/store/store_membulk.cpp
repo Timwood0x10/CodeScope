@@ -64,6 +64,7 @@ bool GraphStore::dropSemanticRecordIndexes()
 		"DROP INDEX IF EXISTS idx_sr_fp_parent",
 		"DROP INDEX IF EXISTS idx_sr_kind_name",
 		"DROP INDEX IF EXISTS idx_sr_kind_fp",
+		"DROP INDEX IF EXISTS idx_sr_proj_file_oid",
 	};
 	bool ok = true;
 	for (auto *sql : drop_sqls) {
@@ -98,6 +99,7 @@ bool GraphStore::createSemanticRecordIndexes()
 		"CREATE INDEX IF NOT EXISTS idx_sr_fp_parent ON semantic_records(file_path, parent_id)",
 		"CREATE INDEX IF NOT EXISTS idx_sr_kind_name ON semantic_records(project_id, kind, name, language)",
 		"CREATE INDEX IF NOT EXISTS idx_sr_kind_fp ON semantic_records(project_id, kind, file_path)",
+		"CREATE INDEX IF NOT EXISTS idx_sr_proj_file_oid ON semantic_records(project_id, file_path, original_id)",
 	};
 	bool ok = true;
 	for (auto *sql : create_sqls) {

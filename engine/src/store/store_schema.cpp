@@ -321,6 +321,21 @@ bool GraphStore::createSchema()
         -- previously timed out; api/ at 46k rows finished in 2.4s).
         CREATE INDEX IF NOT EXISTS idx_sr_oid
             ON semantic_records(project_id, original_id);
+        -- Index for ResolverPipeline's global field/variable type self-joins
+        -- (loadVarTypesStruct): those JOIN semantic_records t ON
+        -- t.parent_id = p.original_id AND p.file_path = t.file_path
+        -- (kind=17 TypeRef -> parent entity). idx_sr_oid alone covers only
+        -- (project_id, original_id); because original_id is PER-FILE it
+        -- collides across files, so SQLite pulls every same-numbered row
+        -- from every file and then filters file_path by a rowid lookup —
+        -- on rustc (1M semantic_records) that made this single phase
+        -- ~1.4s and the whole resolver ~7.2s. This composite index keys on
+        -- (project_id, file_path, original_id) so the join becomes an
+        -- index seek (measured ~38ms, ~37x faster). Kept separate from
+        -- idx_sr_oid because plain (project_id, original_id) lookups (no
+        -- file_path) still need the latter's leading columns.
+        CREATE INDEX IF NOT EXISTS idx_sr_proj_file_oid
+            ON semantic_records(project_id, file_path, original_id);
         -- Index for call edges name matching: (project_id, kind, name) covers the WHERE + JOIN
         -- Language added for P3 cross-file matching: sr.language = callee.language
         CREATE INDEX IF NOT EXISTS idx_sr_kind_name ON semantic_records(project_id, kind, name, language);

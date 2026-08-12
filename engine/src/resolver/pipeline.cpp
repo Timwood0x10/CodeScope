@@ -1079,6 +1079,7 @@ int64_t ResolverPipeline::run()
 	std::unordered_map<std::string, std::string> field_chain_cache;
 	field_chain_cache.reserve(refs.size() / 4);
 	mark("load_refs");
+
 	for (auto &ref : refs) {
 		// ── P0.3: Find candidates by name — borrow the index entry ──
 		// Instead of deep-copying it->second on every reference (each
@@ -1420,6 +1421,14 @@ int64_t ResolverPipeline::run()
 		if (handled_as_dispatch)
 			continue;
 
+		// TEMP: fieldchain + dispatch done; start score phase
+		n_fieldchain++;
+		t_fieldchain +=
+			std::chrono::duration_cast<std::chrono::microseconds>(
+				Clock::now() - it_fieldchain)
+				.count();
+		(void)n_fieldchain;
+		auto it_score = Clock::now();
 		// applyConstraints sorts and mutates the candidate vector, so a
 		// mutable local copy is required only here — the borrowed index
 		// entry stays intact (unless fuzzy already materialized the local
@@ -1568,8 +1577,29 @@ int64_t ResolverPipeline::run()
 			  res_kind, // resolution_kind
 			  reason, // reason
 			  ref.call_site_file, ref.start_row, ref.start_col });
+		n_score++;
+		t_score += std::chrono::duration_cast<std::chrono::microseconds>(
+			Clock::now() - it_score)
+				.count();
 	}
 	mark("resolve_loop");
+
+	// TEMP: print resolve_loop sub-phase profile
+	{
+		int64_t t_all =
+			std::chrono::duration_cast<std::chrono::microseconds>(
+				Clock::now() - t_ref_start)
+				.count();
+		t_other = t_all - t_lookup - t_single - t_fieldchain - t_score;
+		fprintf(stderr,
+			"[resolve_loop prof] lookup=%lldms(%lld) single=%lldms(%lld) "
+			"fieldchain=%lldms(%lld) score=%lldms(%lld) "
+			"other=%lldms total=%lldms\n",
+			t_lookup / 1000, n_lookup, t_single / 1000, n_single,
+			t_fieldchain / 1000, n_fieldchain, t_score / 1000, n_score,
+			t_other / 1000, t_all / 1000);
+	}
+	(void)t_other;
 
 	// Free entity_index (no longer needed)
 	entity_index.clear();
