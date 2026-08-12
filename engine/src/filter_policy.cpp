@@ -235,11 +235,29 @@ FilterPolicy::FilterPolicy()
 		"external",
 	};
 
-	// FAST mode skips even more — reserved for future FAST-only
-	// additions. test/, docs/, vendor/, bench/ are already in
-	// normal_skip_dirs_ so NORMAL mode skips them; FAST mode skips
-	// everything NORMAL skips (plus anything added here).
-	fast_extra_skip_dirs_ = {};
+	// FAST mode skips even more — build/test artifacts that NORMAL
+	// mode keeps (they are generated, rarely the focus of analysis,
+	// and can dominate file counts on large repos). Everything in
+	// normal_skip_dirs_ is skipped in both modes; this set is merged
+	// into active_skip_dirs_ only when mode_ == FAST/STRICT (see
+	// buildActiveSets()).
+	fast_extra_skip_dirs_ = {
+		// ── Frontend build output & generated code ──
+		".output", // Next.js/Remix/Astro build output
+		"storybook-static", // Storybook static build
+		"__generated__", // GraphQL/Prisma/typed codegen output
+		// ── Test reports (large, machine-generated) ──
+		"playwright-report",
+		"test-results",
+		"allure-results",
+		"allure-report",
+		// ── CSS preprocessor caches ──
+		".sass-cache",
+		".scss-cache",
+		// ── Runtime logs ──
+		"logs",
+		".logs",
+	};
 
 	// ── Directory prefixes — catches build_test, build_master, etc. ──
 	skip_dir_prefixes_ = {
@@ -480,6 +498,22 @@ FilterPolicy::FilterPolicy()
 		".min.css",
 	};
 
+	// FAST mode extra exact filenames — linter/formatter/build caches
+	// that NORMAL mode keeps. These are single files (not suffixes), so
+	// they can't go into fast_extra_suffixes_; checked in
+	// shouldSkipFile() only when mode_ == FAST.
+	fast_extra_filenames_ = {
+		".eslintcache", // ESLint incremental cache
+		".stylelintcache", // Stylelint cache
+		".prettiercache", // Prettier cache
+		"tsconfig.tsbuildinfo", // TypeScript incremental build info
+	};
+
+	// FAST mode extra filename prefixes (e.g. build-info.*). Empty for
+	// now — reserved for future additions; kept symmetric with the other
+	// fast_extra_* sets so the FAST path is uniform.
+	fast_extra_filename_prefixes_ = {};
+
 	// Directory suffixes — bundle / package / IDE project DIRECTORIES.
 	// Matched case-insensitively against the directory's basename so
 	// "Foo.app", "Foo.APP" and "GLFW.framework" are all skipped.
@@ -581,6 +615,8 @@ FilterPolicy::FilterPolicy()
 	lowercaseAll(fast_extra_skip_dirs_);
 	lowercaseAll(skip_suffixes_);
 	lowercaseAll(fast_extra_suffixes_);
+	lowercaseAll(fast_extra_filenames_);
+	lowercaseAll(fast_extra_filename_prefixes_);
 	lowercaseAll(skip_dir_suffixes_);
 	lowercaseAll(skip_filenames_);
 	lowercaseAll(skip_filename_prefixes_);
@@ -625,7 +661,12 @@ FilterPolicy::FilterPolicy()
 void FilterPolicy::buildActiveSets()
 {
 	active_skip_dirs_ = normal_skip_dirs_;
-	if (mode_ == FAST || mode_ == STRICT) {
+	if (mode_ == FAST) {
+		// fast_extra_skip_dirs_ is FAST-exclusive: STRICT mode keeps its
+		// whitelist-only semantics (detectLanguage gate) and must NOT
+		// silently drop these dirs before the whitelist check. This
+		// matches the FAST-only gating of fast_extra_filenames_ /
+		// fast_extra_filename_prefixes_ in shouldSkipFile().
 		active_skip_dirs_.insert(fast_extra_skip_dirs_.begin(),
 					 fast_extra_skip_dirs_.end());
 	}
@@ -714,6 +755,17 @@ bool FilterPolicy::shouldSkipFile(const std::string &filename) const
 		c = static_cast<char>(std::tolower(c));
 	if (skip_filenames_.find(lower) != skip_filenames_.end())
 		return true;
+	// FAST-only exact filenames (linter/build caches, tsbuildinfo).
+	if (mode_ == FAST) {
+		if (fast_extra_filenames_.find(lower) !=
+		    fast_extra_filenames_.end())
+			return true;
+		for (const auto &pfx : fast_extra_filename_prefixes_) {
+			if (lower.size() >= pfx.size() &&
+			    lower.compare(0, pfx.size(), pfx) == 0)
+				return true;
+		}
+	}
 	// Prefix check — catches .env.local, .env.production, etc.
 	for (const auto &pfx : skip_filename_prefixes_) {
 		if (lower.size() >= pfx.size() &&

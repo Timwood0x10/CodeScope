@@ -446,14 +446,17 @@ int64_t ResolverPipeline::run()
 	// CODESCOPE_PROFILE_RESOLVER=1 to print each load/resolve phase's
 	// wall time to stderr; it is a no-op when the env var is unset, so
 	// the default path pays only one steady_clock::now() per phase.
-	const bool profile_resolver = getenv("CODESCOPE_PROFILE_RESOLVER") != nullptr;
+	const bool profile_resolver = getenv("CODESCOPE_PROFILE_RESOLVER") !=
+				      nullptr;
 	auto t_prev = t_start;
 	const auto mark = [&](const char *label) {
 		auto t_now = Clock::now();
 		if (profile_resolver)
 			fprintf(stderr, "RP[%s]=%lldms\n", label,
-				(long long)std::chrono::duration_cast<std::chrono::milliseconds>(
-					t_now - t_prev).count());
+				(long long)std::chrono::duration_cast<
+					std::chrono::milliseconds>(t_now -
+								   t_prev)
+					.count());
 		t_prev = t_now;
 	};
 

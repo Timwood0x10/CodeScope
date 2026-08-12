@@ -429,8 +429,7 @@ std::string QueryEngine::getProjectOverview(uint64_t project_id)
 		// v0.2.6: count from the canonical entity/relation tables.
 		// graph_nodes/graph_edges are deprecated and no longer written.
 		sqlite3_prepare_v2(
-			db,
-			"SELECT COUNT(*) FROM entity WHERE project_id=?",
+			db, "SELECT COUNT(*) FROM entity WHERE project_id=?",
 			-1, &stmt, nullptr);
 		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 		if (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -440,8 +439,7 @@ std::string QueryEngine::getProjectOverview(uint64_t project_id)
 		sqlite3_finalize(stmt);
 
 		sqlite3_prepare_v2(
-			db,
-			"SELECT COUNT(*) FROM relation WHERE project_id=?",
+			db, "SELECT COUNT(*) FROM relation WHERE project_id=?",
 			-1, &stmt, nullptr);
 		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 		if (sqlite3_step(stmt) == SQLITE_ROW) {

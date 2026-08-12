@@ -303,11 +303,23 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	}
 
 	try {
+		// P0-2: standalone discovery timing. Previously this phase only
+		// reported entry counts (seen_dirs/skipped_files/...); wall-clock
+		// cost was invisible. Instrument the full walk so discovery can
+		// be compared against parse/buildGraph stages.
+		using namespace std::chrono;
+		auto t_discovery_start = steady_clock::now();
 		auto it = std::filesystem::recursive_directory_iterator(
 			dir, std::filesystem::directory_options::
 				     skip_permission_denied);
 		for (auto &entry : it) {
-			filter.stats().seen_dirs++;
+			// seen_dirs counts ONLY directory entries — recursive_
+			// directory_iterator yields files too, so counting every
+			// entry here inflated the metric with file visits. JSON
+			// discovery.seen_dirs and the discovery= log share this
+			// counter, so both now report true directory counts.
+			if (entry.is_directory())
+				filter.stats().seen_dirs++;
 			std::string rel = entry.path().string();
 			if (rel.size() > dir.size() + 1)
 				rel = rel.substr(dir.size() + 1);
@@ -483,6 +495,25 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 						 file_size });
 			}
 		}
+		// P0-2: report the standalone discovery wall-clock. Same
+		// [module=engine, method=...] format as the other pipeline
+		// stages so it can be parsed by the same tooling.
+		auto discovery_ms = duration_cast<milliseconds>(
+			steady_clock::now() - t_discovery_start);
+		fprintf(stderr,
+			"engine: discovery=%lldms (seen_dirs=%llu seen_files=%llu "
+			"skipped_dirs=%llu skipped_files=%llu candidate_files=%zu) "
+			"[module=engine, method=engine_index_project]\n",
+			static_cast<long long>(discovery_ms.count()),
+			static_cast<unsigned long long>(
+				filter.stats().seen_dirs),
+			static_cast<unsigned long long>(
+				filter.stats().seen_files),
+			static_cast<unsigned long long>(
+				filter.stats().skipped_dirs),
+			static_cast<unsigned long long>(
+				filter.stats().skipped_files),
+			jobs.size());
 	} catch (const std::exception &e) {
 		std::ostringstream err;
 		err << "{\"ok\":false,\"error\":\"scan error: "

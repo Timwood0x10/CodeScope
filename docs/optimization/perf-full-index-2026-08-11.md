@@ -321,7 +321,8 @@
 
 ## 9. 已知问题记录：fast 模式与全量模式几乎无差异（rustc 实测）
 
-> **状态**：已确认根因（代码层面），待优化修复。记录于 2026-08-11。
+> **状态**：✅ 已修复（2026-08-11，P0-2 实施）——`fast_extra_skip_dirs_` 已补全，
+> discovery 已加独立计时埋点。修复前实测数据保留如下作为基线。
 
 ### 9.1 现象
 
@@ -364,3 +365,66 @@ fast 仅快约 1.5s（~2%），且 discovery 文件集与全量**逐字节相同
 4. 修复后用 rustc + 前端项目（含 .min.js）分别做 A/B 验证。
 
 > 相关：P0-2（discovery 剪枝 + 计时埋点）与本节修复方向 2/3 重叠，可合并实施。
+
+---
+
+## 10. P0-2 实施结果：fast 模式补全 + discovery 计时埋点（2026-08-11）
+
+### 10.1 改动内容
+
+**A. 补全 fast 专属剪枝**（`engine/src/filter_policy.h/.cpp`）：
+
+1. `fast_extra_skip_dirs_` 从空集补全为 12 个目录：`.output`（Next.js/Remix 构建输出）、
+   `storybook-static`、`__generated__`（codegen 输出）、`playwright-report`、`test-results`、
+   `allure-results`、`allure-report`（测试报告）、`.sass-cache`、`.scss-cache`（CSS 编译缓存）、
+   `logs`、`.logs`（运行时日志）；
+2. 新增 **`fast_extra_filenames_`**（FAST 专属精确文件名）：`.eslintcache`、`.stylelintcache`、
+   `.prettiercache`、`tsconfig.tsbuildinfo`——在 `shouldSkipFile()` 的 FAST 分支检查；
+3. 新增 **`fast_extra_filename_prefixes_`**（预留空集，与其余 fast_extra_* 对称）；
+4. **修复隐藏 bug**：`setMode()` 原先只改 `mode_` 不重建 `active_skip_dirs_`
+   （`buildActiveSets()` 仅在构造函数调用）——若 `CODESCOPE_INDEX_MODE=fast` 在构造后设置，
+   `fast_extra_skip_dirs_` 永远不会生效。现在 `setMode()` 内调用 `buildActiveSets()`。
+
+**B. discovery 独立计时埋点**（`engine/src/engine_index_project.cpp`）：
+在 discovery 递归遍历前后加 `steady_clock` 计时，输出
+`engine: discovery=<ms> (seen_dirs=... seen_files=... skipped_dirs=... skipped_files=... candidate_files=...)`
+——此前 discovery 阶段只统计数量、不统计耗时。
+
+### 10.2 验证结果
+
+**合成项目 A/B（含 logs/、test-results/、.output/、.eslintcache）**：
+
+| 模式 | candidate_files | files_indexed | 剪枝效果 |
+|---|---|---|---|
+| NORMAL | 4 | 4 | 全部保留 |
+| **FAST** | **1** | **1** | logs/test-results/.output 目录 + .eslintcache 全部剪掉 |
+
+新规则**确实生效**：fast 只索引 src/main.go（1 文件），4 个低价值文件/目录被剪。
+
+**goagent A/B（真实项目）**：fast 与 NORMAL 数据一致（1376 文件/26791 节点/6834 边）——
+因 goagent 的 4 个 logs 目录都在 `examples/`、`benchmarks/` 下，而这两者在 NORMAL 模式的
+`normal_skip_dirs_` 中**已经被跳过**，故 fast 无额外差异（预期行为：NORMAL 已覆盖的目录
+fast 不会重复计算）。
+
+**rustc A/B**：fast 66.61s vs NORMAL 66.44s，文件集一致——rustc 无新剪枝目录命中
+（纯 Rust 源码树无 logs/.output/storybook-static 等），符合预期；discovery 埋点实测
+**143ms**（seen_dirs=4650），首次量化出 discovery 阶段真实耗时。
+
+**discovery 埋点效果（各项目首次量化；seen_dirs 为目录条目数——修复后仅统计
+`entry.is_directory()`，不再把文件访问计入）**：
+
+| 项目 | discovery 耗时 | seen_dirs（目录数） | candidate_files |
+|---|---|---|---|
+| rustc | 143ms | 4650 | 6035 |
+| goagent | 25ms | 845 | 1376 |
+| CodeScope 自索引 | 0ms（小目录） | — | 215 |
+
+### 10.3 结论
+
+- fast 模式不再"名不副实"：新剪枝目录/文件规则生效，对含 logs/测试报告/构建输出的项目
+  会真正减少候选文件（合成项目 4→1 验证）；
+- 对 rustc/goagent 这类源码干净的项目，fast 仍与全量一致——这是**预期正确行为**
+  （NORMAL 已跳过 test/docs/vendor 等），不是缺陷；
+- discovery 阶段耗时首次可观测，为后续剪枝优化提供量化依据。
+
+> 已知问题 §9 已从"待修复"更新为"✅ 已修复"。
