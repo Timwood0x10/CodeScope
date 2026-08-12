@@ -69,6 +69,17 @@ class FuzzyResolver {
 	// for the case-insensitive exact strategy.
 	std::unordered_map<std::string, std::vector<uint64_t>> folded_index_;
 
+	// Sorted lookup indexes for O(log N) prefix/suffix matching:
+	//   prefix_sorted_ = (folded name, entity id) sorted by folded name
+	//   suffix_sorted_ = (reversed folded name, entity id) sorted by
+	//                    reversed folded name
+	// Built once in loadEntities() and only consulted when the query
+	// contains no LIKE wildcards ('%' / '_'); wildcard queries fall
+	// back to the linear scan over entities_ so results stay
+	// byte-identical to the original SQL LIKE semantics.
+	std::vector<std::pair<std::string, uint64_t>> prefix_sorted_;
+	std::vector<std::pair<std::string, uint64_t>> suffix_sorted_;
+
 	/// Load all (id, name) entity rows for the project. Returns true
 	/// on success; on failure resolve() degrades to empty results
 	/// (no crash) and the caller logs the error.

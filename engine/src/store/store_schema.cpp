@@ -619,6 +619,15 @@ bool GraphStore::createSchema()
 
         CREATE INDEX IF NOT EXISTS idx_reference_project ON reference(project_id, name);
         CREATE INDEX IF NOT EXISTS idx_scope_project ON scope(project_id, parent_id);
+        -- Lookup index for scope joins by (kind, name): buildGraph's
+        -- function-scope INSERT (JOIN scope s ON s.kind=1 AND
+        -- s.name=e.module_path) and the import.source_scope_id UPDATE
+        -- correlated subquery both filter on kind + name. Without it
+        -- those joins scan the whole scope table per entity/import row
+        -- (rustc: 129893 entities x 26975 scopes), dominating the
+        -- buildGraph "scope" phase.
+        CREATE INDEX IF NOT EXISTS idx_scope_kind_name
+            ON scope(project_id, kind, name);
         CREATE INDEX IF NOT EXISTS idx_import_project ON import(project_id, alias);
 
         -- workflow: high-level business flow (e.g. "Login").

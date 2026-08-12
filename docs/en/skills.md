@@ -10,7 +10,8 @@ CodeScope is a **Project Truth Engine**. It transforms source code into verifiab
 
 ```bash
 # One-liner: index a project and query stats
-codescope cli index_project '{"project_path":"/path/to/project"}'
+# (MCP tool `index_project` removed — use the `worker` CLI, or `index-parallel` for parallelism)
+codescope worker /tmp/codescope.db /path/to/project "" project 0
 codescope cli get_graph_stats '{}'
 ```
 
@@ -22,7 +23,7 @@ codescope cli get_graph_stats '{}'
 set -e
 PROJECT=$1
 echo "=== Indexing $PROJECT ==="
-codescope cli index_project "{\"project_path\":\"$PROJECT\"}"
+codescope worker /tmp/codescope.db "$PROJECT" "" project 0
 echo "=== Stats ==="
 codescope cli get_graph_stats '{}'
 echo "=== Entry Points ==="
@@ -106,19 +107,19 @@ graph TB
 flowchart LR
     PA["Phase A (ms-level)<br/>scan_project"] -->|"modules + symbols + entry_points"| Ready["✓ AI ready"]
     PB["Phase B (async)<br/>enhance_project"] -->|"call graph + complexity + FTS"| Enhanced
-    PC["Phase C (on-demand)<br/>index_project"] -->|"full parse → all tables"| Full
+    PC["Phase C (on-demand)<br/>worker / index-parallel"] -->|"full parse → all tables"| Full
     Ready -.->|triggers| PB
 ```
 
 ---
 
-## 3. MCP Tools (19 tools)
+## 3. MCP Tools (38 tools)
 
 ### Index (索引)
 
 | Tool | Purpose | Input | Output | Token |
 |------|---------|-------|--------|-------|
-| `index_project` | Full project index | `project_path`, `language` | JSON: files_indexed, timing | ~50 |
+| `worker` (CLI) | Full project index (serial) | `<db> <dir> <lang> <name> <pid>` | JSON: files_indexed, timing | ~50 |
 | `index_file` | Index a single file | `file_path` | JSON: file result | ~30 |
 | `search` | Unified search (FTS) | `query`, `limit?` | JSON: matched results | ~30 |
 
@@ -194,7 +195,10 @@ AI Q&A           → codescope_build_context (200-1000 tok)
 | `CODESCOPE_DB_PATH` | `.codescope/codescope.db` | SQLite database path |
 | `GRAMMARS_DIR` | `grammars/` | tree-sitter grammar .so directory |
 | `CODESCOPE_LSP` | (unset) | LSP server command for type enhancement |
-| `CODESCOPE_INDEX_MODE` | `normal` | Index mode: `fast` / `normal` / `deep` |
+| `CODESCOPE_INDEX_MODE` | `normal` | Index mode: `fast` / `normal` / `strict`（见下方 Index Modes） |
+| `CODESCOPE_WORKERS` | `min(hw,4)` | Parse worker thread count |
+| `CODESCOPE_SKIP_ASYNC` | (unset) | Set to 1 to skip async model/state/FTS stages (set by the parallel scheduler path) |
+| `CODESCOPE_PROFILE_RESOLVER` | (unset) | Enable resolver per-phase timing (`[module=resolver, method=run]` breakdown) |
 | `CODESCOPE_VERBOSE` | `1` | Set to `0` to suppress batch logging |
 | `CODESCOPE_MAX_FILE_SIZE` | `5242880` (5MB) | Max file size in bytes to index |
 | `CODESCOPE_MEMORY_BUDGET_MB` | `0` (unlimited) | Pause parsing when RSS exceeds budget |
@@ -205,13 +209,15 @@ AI Q&A           → codescope_build_context (200-1000 tok)
 
 ## 6. Index Modes
 
-Set via `CODESCOPE_INDEX_MODE`:
+Set via `CODESCOPE_INDEX_MODE`（filter_policy.h enum NORMAL/FAST/STRICT — there is NO `deep` mode）:
 
-| Mode | FTS | Vectors | TTFA | Use Case |
-|------|-----|---------|------|----------|
-| `fast` | ❌ | ❌ | **Fastest** | Quick answers, minimal indexing |
-| `normal` | ✅ | ❌ | Normal | Default — graph + search |
-| `deep` | ✅ | ✅ | Slower | Full analysis including semantic vectors |
+| Mode | Enum | Extra pruning | FTS | Use Case |
+|------|------|--------------|-----|----------|
+| `fast` | `FAST` | ✅ extra 12 dir kinds (logs/.output/storybook-static/playwright-report/test-results/allure-*/.sass-cache/.scss-cache/__generated__) + 4 cache files (`.eslintcache`/`.stylelintcache`/`.prettiercache`/`tsconfig.tsbuildinfo`) | ❌ skipped | Fastest; data ≈ normal (near-identical on clean-source projects) |
+| `normal` | `NORMAL` | base skip table only (build/dist/out/target/test/docs/vendor/node_modules/.venv ...) | ✅ | Default |
+| `strict` | `STRICT` | base skip + detectLanguage whitelist gate (only source files of recognized languages) | ✅ | Most restrictive, leanest data |
+
+> Known issue (fixed 2026-08-11): `fast` used to be ≈ `normal` — `fast_extra_skip_dirs_` was an empty reserved set and `setMode()` did not rebuild `active_skip_dirs_`. See `docs/optimization/perf-full-index-2026-08-11.md` §9/§10.
 
 ## 7. Performance Benchmarks
 

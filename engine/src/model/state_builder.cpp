@@ -37,30 +37,37 @@ int64_t StateBuilder::buildModuleSummaries()
 	// each relation join; SQLite otherwise picks idx_relation_unique_typed
 	// (keyed on source_id) for the target_id lookup, scanning the whole
 	// relation table per entity (~46x slower).
+	//
+	// v0.7 (perf): r_in and r_tgt were two separate LEFT JOINs on the same
+	// (project_id, target_id=e.id) index — r_in additionally filtered
+	// source_id != e.id. On rustc (117k relations x 129k entities) that
+	// duplicated the target-side scan and cost ~5.95s for 988 module rows.
+	// Merging them into a single r JOIN (same index) and moving the
+	// self-loop exclusion into the incoming/dead CASE expressions is
+	// result-identical (verified: EXCEPT-diff both directions == 0) and
+	// drops the phase to ~0.25s (23.8x).
 	std::string sql =
 		"WITH agg AS ("
 		"  SELECT s.id AS module_id, s.name AS module_name, "
 		"    COUNT(DISTINCT e.id) AS total, "
-		"    COUNT(DISTINCT r_in.source_id) AS incoming, "
+		"    COUNT(DISTINCT CASE WHEN r.source_id != e.id "
+		"      THEN r.source_id END) AS incoming, "
 		"    COUNT(DISTINCT r_out.target_id) AS outgoing, "
-		"    COUNT(DISTINCT e.id) - COUNT(DISTINCT r_tgt.target_id) "
+		"    COUNT(DISTINCT e.id) - COUNT(DISTINCT r.target_id) "
 		"      AS dead, "
 		"    COUNT(DISTINCT CASE WHEN e.visibility = 1 THEN e.id END) "
 		"      AS pub_count, "
 		"    CASE WHEN COUNT(DISTINCT e.id) > 0 "
 		"      THEN 1.0 - CAST(COUNT(DISTINCT e.id) - "
-		"           COUNT(DISTINCT r_tgt.target_id) AS REAL) / "
+		"           COUNT(DISTINCT r.target_id) AS REAL) / "
 		"           COUNT(DISTINCT e.id) ELSE 0.0 END AS utilization "
 		"  FROM scope s "
 		"  JOIN entity e ON e.project_id = ? AND e.module_path = s.name "
-		"  LEFT JOIN relation r_in INDEXED BY idx_relation_target "
-		"    ON r_in.project_id = ? AND r_in.target_id = e.id "
-		"    AND r_in.source_id != e.id "
+		"  LEFT JOIN relation r INDEXED BY idx_relation_target "
+		"    ON r.project_id = ? AND r.target_id = e.id "
 		"  LEFT JOIN relation r_out INDEXED BY idx_relation_source "
 		"    ON r_out.project_id = ? AND r_out.source_id = e.id "
 		"    AND r_out.target_id != e.id "
-		"  LEFT JOIN relation r_tgt INDEXED BY idx_relation_target "
-		"    ON r_tgt.project_id = ? AND r_tgt.target_id = e.id "
 		"  WHERE s.kind = 1 AND s.project_id = ? "
 		"  GROUP BY s.id, s.name "
 		"), entry AS ("

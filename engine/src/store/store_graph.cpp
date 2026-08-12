@@ -628,6 +628,21 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// a single flat join instead of running a subquery per import row.
 	// Results are identical: same s.id for the same (scope,entity,sr-file)
 	// combination, with the same COALESCE(...,0) fallback and LIMIT 1.
+	//
+	// v0.7 (perf): the correlated subquery ran once PER import row — for
+	// rustc's ~41k imports each execution joined scope+entity+semantic_
+	// records, making this the single largest cost in buildGraph's "scope"
+	// phase. Two changes make it fast WITHOUT changing results:
+	//   1. idx_scope_kind_name(project_id, kind, name) added in
+	//      store_schema.cpp turns the scope lookup from a full-table scan
+	//      (129893 entities x 26975 scopes) into an index seek;
+	//   2. the entity join uses idx_entity_file(project_id, file_path).
+	//   NOTE: an UPDATE ... FROM rewrite was attempted but SQLite rejects
+	//   referencing the target table (import) inside the FROM join clause
+	//   ("no such column: import.id"), so the correlated form is kept.
+	//   exec() result is now checked so a failed update can never be
+	//   silently swallowed again (previous code ignored the return value,
+	//   which left every import.source_scope_id at its 0 default).
 	{
 		std::string imp_scope_sql =
 			"UPDATE import SET source_scope_id = "
@@ -642,7 +657,12 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			" LIMIT 1) "
 			"WHERE project_id=" +
 			std::to_string(project_id);
-		exec(imp_scope_sql.c_str());
+		if (!exec(imp_scope_sql.c_str())) {
+			fprintf(stderr,
+				"[module=store, method=buildGraph] "
+				"UPDATE import.source_scope_id failed: %s\n",
+				error().c_str());
+		}
 	}
 	auto t_scope = Clock::now();
 

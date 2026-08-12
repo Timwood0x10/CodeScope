@@ -67,9 +67,10 @@ CodeScope parses source code into a unified AST IR, builds a call graph + refere
 | Tool | Status | Workaround |
 |------|--------|------------|
 | `get_hotspots` | ❌ no MCP tool | (hotspots.sh is stale) |
-| `graph_query` | ❌ not wired | `find_callers`/`find_callees` for call graph; `get_knowledge_graph` for knowledge tables |
 | `get_communities` | ⚠️ C++ has it, MCP doesn't | `connected_components` as lightweight alternative |
 | `locate_code` | ❌ not implemented | `explain_symbol` |
+
+> `graph_query` IS implemented (TOOL_HANDLERS in server/src/tools/mod.rs) — earlier docs listed it as "not wired"; that is stale. Use it for custom graph-pattern queries.
 
 ---
 
@@ -78,17 +79,22 @@ CodeScope parses source code into a unified AST IR, builds a call graph + refere
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CODESCOPE_DB_PATH` | `.codescope/codescope.db` | SQLite database path |
-| `CODESCOPE_INDEX_MODE` | `normal` | `fast` / `normal` / `deep` |
+| `CODESCOPE_INDEX_MODE` | `normal` | Index mode: `fast` / `normal` / `strict`（NORMAL 默认；见下方 Index modes） |
+| `CODESCOPE_WORKERS` | `min(hw,4)` | 解析 worker 线程数（并行索引路径为模块数×动态分配） |
+| `CODESCOPE_SKIP_ASYNC` | (unset) | 设为 1 跳过异步 model/state/FTS 阶段（仅并行调度路径设置） |
+| `CODESCOPE_PROFILE_RESOLVER` | (unset) | 启用 resolver 分阶段计时（输出 `[module=resolver, method=run]` 明细） |
 | `CODESCOPE_VERBOSE` | `1` | Set 0 to disable batch logs |
 | `CODESCOPE_MAX_FILE_SIZE` | 5MB | Max indexed file size |
 
 ## Index modes
 
-| Mode | FTS | Vectors | Speed | Use case |
-|------|-----|---------|-------|----------|
-| `fast` | ❌ | ❌ | Fastest | Quick answers |
-| `normal` | ✅ | ❌ | Normal | Default |
-| `deep` | ✅ | ✅ | Slower | Full semantic analysis |
+| Mode | 枚举值 | 额外剪枝 | FTS | 用途 |
+|------|--------|----------|-----|------|
+| `fast` | `FAST` | ✅ 额外跳过 logs/.output/测试报告等 12 类目录 + 4 类缓存文件（`fast_extra_skip_dirs_`/`fast_extra_filenames_`，见 filter_policy.cpp） | ❌ 跳过 | 最快，数据≈全量（对源码干净项目几乎无差异） |
+| `normal` | `NORMAL` | 仅基础 skip 表 | ✅ | 默认 |
+| `strict` | `STRICT` | 基础 skip + detectLanguage 白名单 gate（仅索引源码文件） | ✅ | 最严格，数据最精简 |
+
+> **已知问题（2026-08-11，已修复）**：fast 模式此前与 normal 几乎无差异——`fast_extra_skip_dirs_` 为空集（预留未实现），唯一差异是跳过 FTS。已补全剪枝集合并修复 `setMode()` 未重建 active_skip_dirs_ 的 bug。详见 `docs/optimization/perf-full-index-2026-08-11.md` §9/§10。
 
 ## Supported languages
 
