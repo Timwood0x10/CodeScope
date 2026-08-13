@@ -57,8 +57,8 @@ CodeScope parses source code into a unified AST IR, builds a call graph + refere
 | Call path A→B | `codescope_trace` | ~50-200 |
 | Knowledge graph browse | `get_knowledge_graph` | ~100-1000 |
 | Change impact | `detect_changes` | ~100-500 |
-| AI Q&A context | `codescope_build_context` | ~200-1000 |
-| "Why can't I find data" | `codescope_capabilities` | ~309 |
+| AI Q&A context | `build_project_state` | ~200-1000 |
+| "Why can't I find data" | `project_overview` | ~50-100 |
 
 ---
 
@@ -80,7 +80,7 @@ CodeScope parses source code into a unified AST IR, builds a call graph + refere
 |----------|---------|-------------|
 | `CODESCOPE_DB_PATH` | `.codescope/codescope.db` | SQLite database path |
 | `CODESCOPE_INDEX_MODE` | `normal` | Index mode: `fast` / `normal` / `strict`（NORMAL 默认；见下方 Index modes） |
-| `CODESCOPE_WORKERS` | `min(hw,4)` | 解析 worker 线程数（并行索引路径为模块数×动态分配） |
+| `CODESCOPE_WORKERS` | `min(hw,8)` | 解析 worker 线程数（`kDefaultParseWorkers=8`，并行索引路径为模块数×动态分配） |
 | `CODESCOPE_SKIP_ASYNC` | (unset) | 设为 1 跳过异步 model/state/FTS 阶段（仅并行调度路径设置） |
 | `CODESCOPE_PROFILE_RESOLVER` | (unset) | 启用 resolver 分阶段计时（输出 `[module=resolver, method=run]` 明细） |
 | `CODESCOPE_VERBOSE` | `1` | Set 0 to disable batch logs |
@@ -90,7 +90,7 @@ CodeScope parses source code into a unified AST IR, builds a call graph + refere
 
 | Mode | 枚举值 | 额外剪枝 | FTS | 用途 |
 |------|--------|----------|-----|------|
-| `fast` | `FAST` | ✅ 额外跳过 logs/.output/测试报告等 12 类目录 + 4 类缓存文件（`fast_extra_skip_dirs_`/`fast_extra_filenames_`，见 filter_policy.cpp） | ❌ 跳过 | 最快，数据≈全量（对源码干净项目几乎无差异） |
+| `fast` | `FAST` | ✅ 额外跳过 logs/.output/测试报告等 11 类目录 + 4 类缓存文件（`fast_extra_skip_dirs_`/`fast_extra_filenames_`，见 filter_policy.cpp） | ❌ 跳过 | 最快，数据≈全量（对源码干净项目几乎无差异） |
 | `normal` | `NORMAL` | 仅基础 skip 表 | ✅ | 默认 |
 | `strict` | `STRICT` | 基础 skip + detectLanguage 白名单 gate（仅索引源码文件） | ✅ | 最严格，数据最精简 |
 

@@ -4,8 +4,8 @@
 echo "=== Graph stats ==="
 codescope cli get_graph_stats '{}'
 echo ""
-echo "=== Project info ==="
-codescope cli get_project_info '{}'
+echo "=== Project overview ==="
+codescope cli project_overview '{}'
 echo ""
 echo "=== Entry points ==="
 codescope cli get_entry_points '{}'
