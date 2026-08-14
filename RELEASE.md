@@ -1,4 +1,4 @@
-## v0.2.6 (2026-08-12)
+## v0.2.6 (2026-08-14)
 
 Speeds up full (non-fast) indexing end-to-end and fixes a resolver JOIN defect that both slowed indexing and silently over-matched cross-file references. Fuzzy symbol search is now fully in-memory (no per-entity SQL), FAST-mode pruning rules are completed, and discovery timing is quantified for the first time — with zero precision loss across every benchmark (accuracy gate stays P/R/F1 = 1.0).
 
