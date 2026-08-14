@@ -443,10 +443,8 @@ All benchmarks measured on **Apple M3 Max (36 GB RAM, 14 cores), macOS, 2026-08-
 | Project | Language | Files | Nodes | Edges | Index Time | Peak RSS |
 |---------|----------|------:|------:|------:|-----------:|---------:|
 | **CodeScope** (self) | C++/Rust | 197 | 1,509 | 1,189 | **0.95 s** | ~179 MB |
-| **tinygo**¹ | Go | 812 | 21,557 | 4,485 | **1.77 s** | ~505 MB |
+| **tinygo** | Go | 812 | 21,557 | 4,485 | **1.77 s** | ~505 MB |
 | **rustc** (Rust compiler, monorepo) | Rust | 5,575 | 130,410 | 117,284 | **38.94 s** | ~4.13 GB |
-
-¹ goagent 不在本机，以 tinygo（Go 编译器，812 文件）作为 Go 语言样本；rustc 源码树为本机 `~/code/rustc`（去重后的源码子集）。
 
 ### Query Latency
 
@@ -490,7 +488,7 @@ Measured on the self-index DB via MCP server mode (engine initialized once).
 
 ### Fast Scan (Lightweight, ms-level)
 
-`codescope discover`（文件发现 + 模块统计，纯 Rust，无引擎初始化）。
+`codescope discover`（File discovery + module statistics, pure Rust, no engine initialization）。
 
 | Project | Time | Languages | Modules |
 |--------|:----:|:---------:|:-------:|
