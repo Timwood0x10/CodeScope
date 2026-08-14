@@ -127,7 +127,13 @@ int main()
 	// SQLite's dash form — clean both spellings.
 
 	store::GraphStore store;
-	assert(store.open(kDbPath));
+	// Must call open() unconditionally: a bare assert(store.open(...))
+	// evaluates to nothing under -DNDEBUG (Release builds), leaving db_
+	// null and turning every later prepare into "out of memory" + SEGV.
+	if (!store.open(kDbPath)) {
+		fprintf(stderr, "FAIL: store.open(%s)\n", kDbPath);
+		return 1;
+	}
 
 	uint64_t project_id = store.createProject("/typed-rel", "typed-rel");
 	assert(project_id > 0);

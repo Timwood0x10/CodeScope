@@ -177,7 +177,10 @@ set(ENGINE_SOURCES
     src/engine_helpers.cpp
     src/engine_lifecycle.cpp
     src/engine_index.cpp
-        src/engine_index_project.cpp
+    src/engine_index_project.cpp
+    src/engine_index_files.cpp
+    src/engine_index_sched.cpp
+    src/engine_index_discover.cpp
         src/engine_index_project_membulk.cpp
         src/engine_index_post_parse.cpp
         src/engine_index_metrics.cpp
@@ -235,6 +238,9 @@ set(ENGINE_SOURCES
          src/lsp/lsp_client.cpp
     src/resolver/resolver.cpp
     src/resolver/pipeline.cpp
+    src/resolver/pipeline_apply.cpp
+    src/resolver/pipeline_load.cpp
+    src/resolver/pipeline_flush.cpp
     src/resolver/fuzzy_resolver.cpp
         src/resolver/factors.cpp
         src/model/engine.cpp

@@ -10,7 +10,8 @@ CodeScope 是一个 **Project Truth Engine**。它把源码变成可验证的事
 
 ```bash
 # 一行命令：索引项目并查询统计
-codescope cli index_project '{"project_path":"/path/to/project"}'
+# （MCP 工具 index_project 已移除——用 worker CLI 串行，或 index-parallel 并行）
+codescope worker /tmp/codescope.db /path/to/project "" project 0
 codescope cli get_graph_stats '{}'
 ```
 
@@ -22,7 +23,7 @@ codescope cli get_graph_stats '{}'
 set -e
 PROJECT=$1
 echo "=== 索引 $PROJECT ==="
-codescope cli index_project "{\"project_path\":\"$PROJECT\"}"
+codescope worker /tmp/codescope.db "$PROJECT" "" project 0
 echo "=== 统计 ==="
 codescope cli get_graph_stats '{}'
 echo "=== 入口点 ==="
@@ -107,19 +108,19 @@ graph TB
 flowchart LR
     PA["Phase A (ms 级)<br/>scan_project"] -->|"模块 + 符号 + 入口点"| Ready["✓ AI 可用"]
     PB["Phase B (异步)<br/>enhance_project"] -->|"调用图 + 复杂度 + FTS"| Enhanced
-    PC["Phase C (按需)<br/>index_project"] -->|"全量解析 → 所有表"| Full
+    PC["Phase C (按需)<br/>worker / index-parallel"] -->|"全量解析 → 所有表"| Full
     Ready -.->|触发| PB
 ```
 
 ---
 
-## 3. MCP 工具（19 个）
+## 3. MCP 工具（38 个）
 
 ### 索引
 
 | 工具 | 用途 | 输入 | 输出 | Token |
 |------|------|------|------|-------|
-| `index_project` | 全量索引项目 | `project_path`, `language` | JSON: files_indexed, timing | ~50 |
+| `worker`（CLI） | 全量索引项目（串行） | `<db> <dir> <lang> <name> <pid>` | JSON: files_indexed, timing | ~50 |
 | `index_file` | 索引单个文件 | `file_path` | JSON: file result | ~30 |
 | `search` | 统一搜索（FTS） | `query`, `limit?` | JSON: 搜索结果 | ~30 |
 
@@ -195,7 +196,10 @@ AI 问答     → codescope_build_context (200-1000 tok)
 | `CODESCOPE_DB_PATH` | `.codescope/codescope.db` | SQLite 数据库路径 |
 | `GRAMMARS_DIR` | `grammars/` | tree-sitter 语法 .so 目录 |
 | `CODESCOPE_LSP` | (未设置) | LSP 服务器命令（类型增强） |
-| `CODESCOPE_INDEX_MODE` | `normal` | 索引模式: `fast` / `normal` / `deep` |
+| `CODESCOPE_INDEX_MODE` | `normal` | 索引模式: `fast` / `normal` / `strict`（见下方「索引模式」） |
+| `CODESCOPE_WORKERS` | `min(hw,4)` | 解析 worker 线程数 |
+| `CODESCOPE_SKIP_ASYNC` | (unset) | 设为 1 跳过异步 model/state/FTS 阶段（并行调度路径设置） |
+| `CODESCOPE_PROFILE_RESOLVER` | (unset) | 启用 resolver 分阶段计时明细（`[module=resolver, method=run]`） |
 | `CODESCOPE_VERBOSE` | `1` | 设为 `0` 关闭批量日志 |
 | `CODESCOPE_MAX_FILE_SIZE` | `5242880` (5MB) | 最大索引文件大小（字节） |
 | `CODESCOPE_MEMORY_BUDGET_MB` | `0` (无限制) | RSS 超限时暂停解析 |
@@ -206,13 +210,15 @@ AI 问答     → codescope_build_context (200-1000 tok)
 
 ## 6. 索引模式
 
-通过 `CODESCOPE_INDEX_MODE` 设置：
+通过 `CODESCOPE_INDEX_MODE` 设置（filter_policy.h 枚举 NORMAL/FAST/STRICT——**没有 deep 模式**）：
 
-| 模式 | FTS | 向量 | TTFA | 适用场景 |
-|------|-----|------|------|---------|
-| `fast` | ❌ | ❌ | **最快** | 快速回答，最小索引 |
-| `normal` | ✅ | ❌ | 正常 | 默认 — 图形 + 搜索 |
-| `deep` | ✅ | ✅ | 较慢 | 全量分析（含语义向量） |
+| 模式 | 枚举值 | 额外剪枝 | FTS | 适用场景 |
+|------|--------|----------|-----|---------|
+| `fast` | `FAST` | ✅ 额外跳过 logs/.output/storybook-static/playwright-report/test-results/allure-*/.sass-cache/.scss-cache/__generated__ 等 12 类目录 + `.eslintcache`/`.stylelintcache`/`.prettiercache`/`tsconfig.tsbuildinfo` 4 类缓存文件 | ❌ 跳过 | 最快；数据≈全量（源码干净项目几乎无差异） |
+| `normal` | `NORMAL` | 仅基础 skip 表（build/dist/out/target/test/docs/vendor/node_modules/.venv 等） | ✅ | 默认 |
+| `strict` | `STRICT` | 基础 skip + detectLanguage 白名单 gate（仅索引可识别语言的源码文件） | ✅ | 最严格，数据最精简 |
+
+> 已知问题（2026-08-11 已修复）：fast 此前≈normal——`fast_extra_skip_dirs_` 为空集（预留未实现）、`setMode()` 未重建 `active_skip_dirs_`。已补全剪枝集合并修复。详见 `docs/optimization/perf-full-index-2026-08-11.md` §9/§10。
 
 ## 7. 性能基准
 

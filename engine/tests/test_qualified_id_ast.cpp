@@ -61,17 +61,19 @@ static int recordKindByName(sqlite3 *db, int64_t pid, const char *name)
 	return kind;
 }
 
-/// Count graph_edges of a given edge_type between two node names.
+/// Count relation rows of a given edge_type between two node names.
+/// v0.2.5 migrated canonical graph data from graph_edges/graph_nodes
+/// (no longer written) to relation/entity; query the live tables.
 static int edgeCount(sqlite3 *db, int64_t pid, const char *src_name,
 		     const char *tgt_name, int edge_type)
 {
 	sqlite3_stmt *st = nullptr;
 	const char *sql =
-		"SELECT COUNT(*) FROM graph_edges ge "
-		"JOIN graph_nodes gn_s ON gn_s.id=ge.source_node_id "
-		"JOIN graph_nodes gn_t ON gn_t.id=ge.target_node_id "
-		"WHERE ge.project_id=? AND ge.edge_type=? "
-		"AND gn_s.name=? AND gn_t.name=?";
+		"SELECT COUNT(*) FROM relation r "
+		"JOIN entity e_s ON e_s.id=r.source_id AND e_s.project_id=r.project_id "
+		"JOIN entity e_t ON e_t.id=r.target_id AND e_t.project_id=r.project_id "
+		"WHERE r.project_id=? AND r.type=? "
+		"AND e_s.name=? AND e_t.name=?";
 	if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) != SQLITE_OK)
 		return 0;
 	sqlite3_bind_int64(st, 1, pid);

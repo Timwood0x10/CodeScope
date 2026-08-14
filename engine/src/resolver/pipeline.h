@@ -10,6 +10,12 @@
 #include "factors.h"
 #include "../store/store.h"
 
+// Forward-declare sqlite3_stmt in the GLOBAL namespace (not inside
+// `resolver`) so it matches the typedef sqlite3_stmt in sqlite3.h —
+// a forward decl inside `namespace resolver` would create an unrelated
+// resolver::sqlite3_stmt that breaks the sqlite3 API calls in pipeline.cpp.
+struct sqlite3_stmt;
+
 namespace resolver
 {
 
@@ -142,6 +148,34 @@ class ResolverPipeline {
 		std::vector<FactorResult> factors;
 	};
 
+	/// A single resolved call edge staged for batch insert. Moved to class
+	/// scope so the batch-flush step (flushResolvedEdges) can live in its
+	/// own translation unit (pipeline_flush.cpp) under the 1000-line rule.
+	struct ResolvedEdge {
+		uint64_t caller_id;
+		uint64_t target_id;
+		int edge_type;
+		std::string resolve_strategy;
+		// Step 6 (plan §6.1): provenance fields.
+		double confidence;
+		std::string resolver;
+		std::string resolution_kind;
+		std::string reason;
+		std::string call_site_file;
+		int call_site_row;
+		int call_site_col;
+	};
+
+	/// Flush the staged resolved edges into _resolved_edges (staging temp
+	/// table) in one transaction, then bulk-copy into relation and
+	/// graph_edges. Finalizes ins_st. Extracted from run() so this TU stays
+	/// under the 1000-line rule.
+	/// @param resolved_edges  Staged edges accumulated by the resolve loop.
+	/// @param ins_st          Prepared staging INSERT (finalized here).
+	/// @param sql_batch_ms    [out] milliseconds spent in the SQL flush.
+	void flushResolvedEdges(std::vector<ResolvedEdge> &resolved_edges,
+				sqlite3_stmt *ins_st, int64_t &sql_batch_ms);
+
 	/// Apply constraints to rank candidates.
 	/// @param candidates   Mutable list — sorted by score descending.
 	/// @param caller_file  The file where the call site resides.
@@ -159,6 +193,28 @@ class ResolverPipeline {
 			      const std::string &callee_name, int call_kind = 0,
 			      int caller_arity = 0,
 			      const std::string &receiver_type = "");
+
+	/// Pre-load all project entities into a name-indexed candidate map,
+	/// plus an id -> candidate pointer map and the per-file import index.
+	/// Extracted from run() (pipeline_load.cpp) so the resolver split
+	/// keeps each translation unit under the 1000-line rule.
+	/// @param entity_index  [out] name -> candidate vector, filled here.
+	/// @param entity_by_id  [out] entity_id -> candidate pointer (points
+	///                      into entity_index; lifetime == entity_index).
+	/// @param total_entities [out] number of loaded entity rows.
+	/// @return 0 on success, -1 if the SQL prepare fails (error logged).
+	int loadEntityIndex(
+		std::unordered_map<std::string, std::vector<Candidate>>
+			&entity_index,
+		std::unordered_map<uint64_t, const Candidate *> &entity_by_id,
+		int64_t &total_entities);
+
+	/// Pre-load the interface/trait implementation index and the global
+	/// struct-field / variable-type tables used by Step 8 dispatch and
+	/// field-chain resolution. Extracted from run() (pipeline_load.cpp).
+	/// Only reads members (interface_impl_index_, global_struct_fields_,
+	/// global_var_types_) and semantic_records; no caller state.
+	void loadDispatchIndex();
 
 	/// Check if `callee_name` is imported in the file at `caller_file`.
 	/// Returns the import target path if found, empty string otherwise.

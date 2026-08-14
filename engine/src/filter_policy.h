@@ -46,6 +46,12 @@ class FilterPolicy {
 	void setMode(Mode m)
 	{
 		mode_ = m;
+		// active_skip_dirs_ is mode-dependent (FAST/STRICT add
+		// fast_extra_skip_dirs_). Rebuild it so a mode switch made
+		// AFTER construction (e.g. from CODESCOPE_INDEX_MODE env) is
+		// reflected immediately; otherwise fast_extra_skip_dirs_ would
+		// silently never take effect.
+		buildActiveSets();
 	}
 	Mode mode() const
 	{
@@ -206,6 +212,12 @@ class FilterPolicy {
 	std::unordered_set<std::string> skip_suffixes_;
 	// FAST mode extra suffixes
 	std::unordered_set<std::string> fast_extra_suffixes_;
+	// FAST mode extra exact filenames (e.g. linter caches) — checked
+	// in shouldSkipFile() only when mode_ == FAST.
+	std::unordered_set<std::string> fast_extra_filenames_;
+	// FAST mode extra filename prefixes — checked in shouldSkipFile()
+	// only when mode_ == FAST.
+	std::unordered_set<std::string> fast_extra_filename_prefixes_;
 	// Skip dir suffixes — directory ENTRIES whose name ends with one of
 	// these (e.g. MyApp.app, GLFW.framework, proj.xcodeproj). These are
 	// bundle/package directories on macOS / IDE project dirs that must be
