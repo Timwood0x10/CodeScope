@@ -1,4 +1,5 @@
 #include "pipeline.h"
+#include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <sqlite3.h>
