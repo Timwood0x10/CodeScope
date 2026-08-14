@@ -13,6 +13,10 @@ if [ -z "$PROJECT" ]; then
     exit 1
 fi
 DB="${CODESCOPE_DB_PATH:-/tmp/codescope_index.db}"
+# Export so the worker (positional arg) and every `codescope cli` call
+# (reads CODESCOPE_DB_PATH, default .codescope/codescope.db) hit the SAME
+# database; otherwise cli would query an empty/stale DB after indexing.
+export CODESCOPE_DB_PATH="$DB"
 echo "╔═══════════════════════════════════════════╗"
 echo "║      CodeScope Full Analysis Pipeline      ║"
 echo "╚═══════════════════════════════════════════╝"

@@ -417,56 +417,65 @@ get_knowledge_graph {"table":"capability","limit":10}
 
 ## 7. 性能基准
 
-所有基准测试在 **Apple M3 Max（36 GB RAM）** 上测得。其他硬件会产生不同的结果 — 性能较低的机器上预期会慢一些。
+所有基准测试在 **Apple M3 Max（36 GB RAM，14 核），macOS，2026-08-14** 上测得，使用 `target/release/codescope`（v0.2.6）`worker`（串行全量索引）模式 + 纯 SQLite 图后端（无 LadybugDB/Kuzu 依赖），`CODESCOPE_INDEX_MODE=normal`。查询延迟通过 MCP server 模式测得（引擎只初始化一次，7 次中位数）。数据反映内存化 fuzzy 解析器 + 排序修复后的状态（边数相对修复前二进制 1,249 → 1,189；节点/文件数不变）。其他硬件会产生不同的结果 — 性能较低的机器上预期会慢一些。
 
 ### 索引时间
 
-基于纯 SQLite 图后端实测（无 LadybugDB/Kuzu 依赖）。最新一次运行：2026-08-08。
-
 | 项目 | 语言 | 文件数 | 节点数 | 边数 | 索引时间 | 峰值内存 |
 |------|------|------:|------:|------:|---------:|---------:|
-| **CodeScope**（自身） | C++/Rust | 221 | 1,481 | 1,204 | **1.2 秒** | ~150 MB |
-| **goagent** | Go | 1,344 | 26,425 | 6,352 | **16.0 秒** | ~500 MB |
-| **rustc**（Rust 编译器，monorepo） | Rust | 6,029 | 129,918 | 118,154 | **31.6 秒** | 5.9 GB |
+| **CodeScope**（自身） | C++/Rust | 197 | 1,509 | 1,189 | **0.95 秒** | ~179 MB |
+| **tinygo**¹ | Go | 812 | 21,557 | 4,485 | **1.77 秒** | ~505 MB |
+| **rustc**（Rust 编译器，monorepo） | Rust | 5,575 | 130,410 | 117,284 | **38.94 秒** | ~4.13 GB |
+
+¹ goagent 不在本机，以 tinygo（Go 编译器，812 文件）作为 Go 语言样本；rustc 源码树为本机 `~/code/rustc`（去重后的源码子集）。
 
 ### 查询延迟（SQLite 图查询后端）
 
-所有图查询均基于内置 SQLite 图查询后端（CSR 邻接表），典型调用图查询为亚毫秒级。
+所有图查询均基于内置 SQLite 图查询后端（CSR 邻接表），典型调用图查询为亚毫秒级。除注明外均基于 CodeScope 自身索引库测得。
 
-| 查询 | 延迟 | 说明 |
-|------|:----:|------|
-| `get_graph_stats` | ~0.1 ms | SQL 聚合 |
-| `find_callers("buildGraph")` | ~0.2 ms | 名称过滤（sub-ms） |
-| `find_callees("parse")` | ~0.2 ms | 名称过滤（sub-ms） |
-| `graph_query`（LIMIT 100） | ~37 ms | 118,154 条边，JOIN 优化全扫描 |
-| `shortest_path` | sub-ms | O(E) CSR BFS |
-| `get_neighbors` | sub-ms | O(degree) CSR 邻接 |
-| `get_subgraph` | sub-ms | O(E) CSR BFS |
+| 查询 | 实测延迟（中位数） |
+|------|:-----------------:|
+| `get_graph_stats` | 0.08 ms |
+| `find_callers("parse")` | 0.16 ms |
+| `find_callees("parse")` | 0.17 ms |
+| `graph_query`（LIMIT 100） | 88.8 ms |
+| `graph_query`（无 LIMIT 全量扫描，self 库） | 88.9 ms |
+| `graph_query`（无 LIMIT 全量扫描，rustc 库） | **>180 秒** — 大图务必使用 `LIMIT` |
+| `shortest_path` | 0.09 ms（rustc 库：0.38 ms） |
+| `get_neighbors` | 0.06 ms（rustc 库：2.36 ms） |
+| `get_subgraph` | 0.10 ms（rustc 库：5.68 ms） |
+| `get_module_tree` | 0.08 ms |
+| `get_entry_points` | 0.21 ms |
+| `get_knowledge_graph` | 0.10 ms |
 
 ### 微基准
 
+基于自身索引库通过 MCP server 模式测得（引擎只初始化一次）。
+
 | 指标 | 值 |
 |------|----|
-| 引擎初始化 | **14.6 ms** |
-| 索引吞吐量 | **1,533 KB/s** |
-| 符号定义查询 | **0.01–0.03 ms** |
-| 调用者/被调用者查询 | **0.01–0.02 ms** |
-| 9 次查询（总计） | **0.17 ms** |
-| 查询延迟（stdio MCP，含进程启动） | **~60 ms** |
+| 引擎初始化（`GraphStore::open`） | **3 ms** |
+| 索引吞吐量（CodeScope 自身） | **~207 文件/秒**（197 文件 / 0.95 秒） |
+| 符号查询（`find_callers`/`find_callees`，MCP 级） | **0.16–0.17 ms** |
+| `graph_query`（LIMIT 100） | **88.8 ms** |
+| 10 次查询（总计，MCP 级） | **~89.9 ms**（主要由 `graph_query` 贡献） |
+| 查询延迟（CLI，含进程启动） | **10–17 ms** |
 
 ### 跨文件解析
 
 | 项目 | 跨文件 CALLS | 占 CALLS 总数百分比 |
 |------|:-----------:|:------------------:|
-| CodeScope（C++） | 588 | 46.7% |
-| goagent（Go） | 2,930 | 53.0% |
-| rustc（Rust） | 70,833 | 59.9% |
+| CodeScope（C++） | 727 | 61.1% |
+| tinygo（Go） | 2,210 | 49.3% |
+| rustc（Rust） | 70,634 | 60.2% |
 
 ### 快速扫描（轻量，毫秒级）
 
-| 项目 | 时间 | 语言 | 符号数 |
+`codescope discover`（文件发现 + 模块统计，纯 Rust，无引擎初始化）。
+
+| 项目 | 时间 | 语言 | 模块数 |
 |------|:----:|:----:|:------:|
-| **CodeScope**（自身） | **32 ms** | cpp, rust, c | 2,902 |
+| **CodeScope**（自身） | **27 ms** | cpp, rust, c | engine 290 / server 20 |
 
 ### Token 节省
 

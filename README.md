@@ -436,15 +436,15 @@ Supported tables: `entity`, `relation`, `architecture_edge`, `module_edge`, `cap
 
 ## 7. Benchmark
 
-All benchmarks measured on **Apple M3 Max (36 GB RAM, 14 cores), macOS, 2026-08-13**, using `target/debug/codescope` (v0.2.6) in `worker` (serial full index) mode with the pure-SQLite graph backend (no LadybugDB/Kuzu dependency). Query latency measured via MCP server mode (engine initialized once, median of 7 runs). Other hardware will produce different results — expect slower performance on less capable machines.
+All benchmarks measured on **Apple M3 Max (36 GB RAM, 14 cores), macOS, 2026-08-14**, using `target/release/codescope` (v0.2.6) in `worker` (serial full index) mode with the pure-SQLite graph backend (no LadybugDB/Kuzu dependency), `CODESCOPE_INDEX_MODE=normal`. Query latency measured via MCP server mode (engine initialized once, median of 7 runs). Numbers reflect the in-memory fuzzy resolver + ordering fix (edge count 1,249 → 1,189 vs. the pre-fix binary; nodes/files unchanged). Other hardware will produce different results — expect slower performance on less capable machines.
 
 ### Index Time
 
 | Project | Language | Files | Nodes | Edges | Index Time | Peak RSS |
 |---------|----------|------:|------:|------:|-----------:|---------:|
-| **CodeScope** (self) | C++/Rust | 197 | 1,509 | 1,249 | **0.55 s** | ~190 MB |
-| **tinygo**¹ | Go | 812 | 21,557 | 4,483 | **1.75 s** | ~482 MB |
-| **rustc** (Rust compiler, monorepo) | Rust | 5,575 | 130,410 | 117,244 | **35.07 s** | ~4.15 GB |
+| **CodeScope** (self) | C++/Rust | 197 | 1,509 | 1,189 | **0.95 s** | ~179 MB |
+| **tinygo**¹ | Go | 812 | 21,557 | 4,485 | **1.77 s** | ~505 MB |
+| **rustc** (Rust compiler, monorepo) | Rust | 5,575 | 130,410 | 117,284 | **38.94 s** | ~4.13 GB |
 
 ¹ goagent 不在本机，以 tinygo（Go 编译器，812 文件）作为 Go 语言样本；rustc 源码树为本机 `~/code/rustc`（去重后的源码子集）。
 
@@ -454,18 +454,18 @@ All graph queries run on the built-in SQLite graph-query backend (CSR adjacency 
 
 | Query | Measured (median) |
 |-------|:-----------------:|
-| `get_graph_stats` | 0.12 ms |
-| `find_callers("parse")` | 0.24 ms |
-| `find_callees("parse")` | 0.24 ms |
-| `graph_query` (LIMIT 100) | 0.03 ms |
-| `graph_query` (full scan, no LIMIT, self DB) | ~110 ms |
+| `get_graph_stats` | 0.08 ms |
+| `find_callers("parse")` | 0.16 ms |
+| `find_callees("parse")` | 0.17 ms |
+| `graph_query` (LIMIT 100) | 88.8 ms |
+| `graph_query` (full scan, no LIMIT, self DB) | 88.9 ms |
 | `graph_query` (full scan, rustc DB) | **>180 s** — always use `LIMIT` on large graphs |
-| `shortest_path` | 0.24 ms (rustc DB: 0.38 ms) |
-| `get_neighbors` | 0.08 ms (rustc DB: 2.36 ms) |
-| `get_subgraph` | 0.14 ms (rustc DB: 5.68 ms) |
-| `get_module_tree` | 0.40 ms |
-| `get_entry_points` | 0.44 ms |
-| `get_knowledge_graph` | 0.23 ms |
+| `shortest_path` | 0.09 ms (rustc DB: 0.38 ms) |
+| `get_neighbors` | 0.06 ms (rustc DB: 2.36 ms) |
+| `get_subgraph` | 0.10 ms (rustc DB: 5.68 ms) |
+| `get_module_tree` | 0.08 ms |
+| `get_entry_points` | 0.21 ms |
+| `get_knowledge_graph` | 0.10 ms |
 
 ### Micro Benchmarks
 
@@ -474,19 +474,19 @@ Measured on the self-index DB via MCP server mode (engine initialized once).
 | Metric | Value |
 |--------|-------|
 | Engine init (`GraphStore::open`) | **3 ms** |
-| Index throughput (CodeScope self) | **~358 files/s** (197 files / 0.55 s) |
-| Symbol query (`find_callers`/`find_callees`, MCP-level) | **0.24 ms** |
-| `graph_query` (LIMIT 100) | **0.03 ms** |
-| 10 queries (total, MCP-level) | **~2.2 ms** |
-| Query latency (CLI, includes process start) | **9–22 ms** |
+| Index throughput (CodeScope self) | **~207 files/s** (197 files / 0.95 s) |
+| Symbol query (`find_callers`/`find_callees`, MCP-level) | **0.16–0.17 ms** |
+| `graph_query` (LIMIT 100) | **88.8 ms** |
+| 10 queries (total, MCP-level) | **~89.9 ms** (dominated by `graph_query`) |
+| Query latency (CLI, includes process start) | **10–17 ms** |
 
 ### Cross-File Resolution
 
 | Project | Cross-File CALLS | % of total CALLS |
 |---------|:---------------:|:----------------:|
-| CodeScope (C++) | 752 | 60.2% |
-| tinygo (Go) | 2,208 | 49.3% |
-| rustc (Rust) | 70,590 | 60.2% |
+| CodeScope (C++) | 727 | 61.1% |
+| tinygo (Go) | 2,210 | 49.3% |
+| rustc (Rust) | 70,634 | 60.2% |
 
 ### Fast Scan (Lightweight, ms-level)
 

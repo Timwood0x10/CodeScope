@@ -149,6 +149,11 @@ std::vector<uint64_t> FuzzyResolver::resolvePrefix(const std::string &prefix,
 	// finds the first entity whose folded name is >= the folded prefix;
 	// every following entry that still starts with the folded prefix is
 	// a LIKE 'prefix%' match (ASCII-folded comparison == SQLite LIKE).
+	// Collect ALL matches, then sort by id (rowid == load order) before
+	// truncating: the old SQL `name LIKE ? || '%' LIMIT ?` returned rows
+	// in rowid scan order, and the sorted index enumerates in name order,
+	// so truncating the raw scan would retain a different subset whenever
+	// matches exceed the limit.
 	std::string folded_prefix;
 	folded_prefix.reserve(prefix.size());
 	for (unsigned char ch : prefix)
@@ -163,9 +168,10 @@ std::vector<uint64_t> FuzzyResolver::resolvePrefix(const std::string &prefix,
 	       it->first.compare(0, folded_prefix.size(), folded_prefix) == 0;
 	     ++it) {
 		out.push_back(it->second);
-		if (out.size() >= limit)
-			break;
 	}
+	std::sort(out.begin(), out.end());
+	if (out.size() > limit)
+		out.resize(limit);
 	return out;
 }
 
@@ -193,7 +199,10 @@ std::vector<uint64_t> FuzzyResolver::resolveSuffix(const std::string &suffix,
 
 	// Wildcard-free: a suffix match on the original name is a prefix
 	// match on the REVERSED name, so binary search the reversed folded
-	// index with the reversed folded suffix.
+	// index with the reversed folded suffix. Same ordering rule as
+	// resolvePrefix: collect all matches, sort by id (rowid == load
+	// order) before truncating so the retained subset matches the old
+	// SQL `name LIKE '%' || ? LIMIT ?` rowid-scan order.
 	std::string folded_suffix;
 	folded_suffix.reserve(suffix.size());
 	for (unsigned char ch : suffix)
@@ -209,9 +218,10 @@ std::vector<uint64_t> FuzzyResolver::resolveSuffix(const std::string &suffix,
 	       it->first.compare(0, rev_suffix.size(), rev_suffix) == 0;
 	     ++it) {
 		out.push_back(it->second);
-		if (out.size() >= limit)
-			break;
 	}
+	std::sort(out.begin(), out.end());
+	if (out.size() > limit)
+		out.resize(limit);
 	return out;
 }
 

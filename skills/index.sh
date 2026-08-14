@@ -12,6 +12,10 @@ if [ -z "$PROJECT" ]; then
     exit 1
 fi
 DB="${CODESCOPE_DB_PATH:-/tmp/codescope_index.db}"
+# Export so the worker (positional arg) and the final `codescope cli`
+# call (reads CODESCOPE_DB_PATH, default .codescope/codescope.db) hit the
+# SAME database; otherwise cli would report stats from an empty DB.
+export CODESCOPE_DB_PATH="$DB"
 echo "=== Indexing $PROJECT ==="
 codescope worker "$DB" "$PROJECT" "$LANG" "index-sh" 0
 echo "=== Done ==="

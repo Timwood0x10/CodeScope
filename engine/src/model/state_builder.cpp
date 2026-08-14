@@ -147,8 +147,8 @@ int64_t StateBuilder::buildModuleSummaries()
 			sqlite3_errmsg(store_->handle()));
 		return -1;
 	}
-	// Bind order: agg (5) + entry (3) + SELECT (1) = 9 ? params.
-	for (int i = 1; i <= 9; i++)
+	// Bind order: agg (4) + entry (3) + SELECT (1) = 8 ? params.
+	for (int i = 1; i <= 8; i++)
 		sqlite3_bind_int64(stmt, i, static_cast<int64_t>(project_id_));
 
 	int rc = sqlite3_step(stmt);
