@@ -1111,6 +1111,10 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 				}
 			}
 			sqlite3_finalize(probe);
+			// Null out the handle so a later accidental reuse is a
+			// no-op (sqlite3_finalize(nullptr) is safe) instead of a
+			// use-after-free. See the type_info block below.
+			probe = nullptr;
 			if (!has_type_name) {
 				exec("ALTER TABLE semantic_records "
 				     "ADD COLUMN type_name TEXT DEFAULT ''");
@@ -1294,7 +1298,11 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 				exec("CREATE INDEX IF NOT EXISTS idx_ti_qn "
 				     "ON type_info(project_id, qualified_name)");
 			} else {
-				sqlite3_finalize(probe);
+				// Finalize probe2, NOT the outer `probe` from the
+				// semantic_records migration above: that statement
+				// was already finalized and would be a
+				// use-after-free here (and probe2 would leak).
+				sqlite3_finalize(probe2);
 			}
 		}
 	}

@@ -175,6 +175,12 @@ char *engine_enhance_project(uint64_t project_id)
 	if (!g_store || !g_parser)
 		return dupString("{\"error\":\"engine not initialized\"}");
 
+	// The background enrichment thread shares this connection and opens
+	// its own transactions (module_summary / module_edge / FTS / model
+	// tables). Wait for it before rebuilding the graph so the two never
+	// interleave BEGIN/COMMIT on one connection. No-op when finished.
+	joinAsyncKnowledgeBuilder();
+
 	using Clock = std::chrono::steady_clock;
 	auto t_start = Clock::now();
 

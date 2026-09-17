@@ -33,6 +33,7 @@
 #include "ir/semantic_unit.h"
 #include "ir/translators/js_visitor.h"
 #include "engine_index_metrics.h"
+#include "store/store_parse_failure.h"
 
 char *engine_index_project_membulk(
 	uint64_t project_id, const std::string &dir, uint64_t max_file_size,
@@ -130,23 +131,56 @@ char *engine_index_project_membulk(
 					(long long)done, (long long)total_files,
 					(int)(done * 100 / total_files));
 
-			// File size check
+			// File size check. stat() must be checked BEFORE the size
+			// comparison: the previous `stat(...) == 0 && ...` form
+			// fell through on stat failure and then read the
+			// uninitialized file_stat at result.mtime/result.fsize
+			// below, writing garbage into the incremental-index
+			// freshness baseline. Mirrors engine_index_project.
 			struct stat file_stat;
-			if (stat(job.path.c_str(), &file_stat) == 0 &&
-			    static_cast<uint64_t>(file_stat.st_size) >
-				    max_file_size)
+			if (stat(job.path.c_str(), &file_stat) != 0) {
+				store::bufferParseFailure(
+					project_id, job.path, job.lang,
+					store::failReasonToString(
+						store::FailReason::StatFailed));
 				continue;
+			}
+			if (static_cast<uint64_t>(file_stat.st_size) >
+			    max_file_size) {
+				// Policy skip, not a parse failure: a large
+				// generated file must not be permanently
+				// blacklisted by the fail-fast table.
+				fprintf(stderr,
+					"engine: skip oversize file (%s): %s "
+					"[module=engine, "
+					"method=engine_index_project_membulk]\n",
+					store::failReasonToString(
+						store::FailReason::FileTooLarge),
+					job.path.c_str());
+				continue;
+			}
 
 			std::string source = readFile(job.path.c_str());
-			if (source.empty())
+			if (source.empty()) {
+				store::bufferParseFailure(
+					project_id, job.path, job.lang,
+					store::failReasonToString(
+						store::FailReason::ReadEmpty));
 				continue;
+			}
 
 			// Per-thread parser
 			auto pit = tl_parsers.find(job.lang);
 			if (pit == tl_parsers.end()) {
 				auto lit = lang_ptrs.find(job.lang);
-				if (lit == lang_ptrs.end())
+				if (lit == lang_ptrs.end()) {
+					store::bufferParseFailure(
+						project_id, job.path, job.lang,
+						store::failReasonToString(
+							store::FailReason::
+								LanguageMissing));
 					continue;
+				}
 				std::unique_ptr<TSParser, TSParserDeleter> np(
 					ts_parser_new());
 				ts_parser_set_language(np.get(), lit->second);
@@ -158,8 +192,14 @@ char *engine_index_project_membulk(
 					pit->second.get(), nullptr,
 					source.c_str(),
 					static_cast<uint32_t>(source.size())));
-			if (!tree)
+			if (!tree) {
+				store::bufferParseFailure(
+					project_id, job.path, job.lang,
+					store::failReasonToString(
+						store::FailReason::
+							ParseNullTree));
 				continue;
+			}
 
 			store::FileResult result;
 			result.file_path = job.path;
@@ -182,9 +222,33 @@ char *engine_index_project_membulk(
 			}
 
 			if (visitor) {
-				ir::SemanticUnit *su = visitor->visit(
-					tree.get(), source.c_str(),
-					job.path.c_str());
+				ir::SemanticUnit *su = nullptr;
+				// A visitor exception must not escape this worker
+				// thread: it would reach std::terminate and abort
+				// the whole process mid-index. The streaming path
+				// already catches these; this path previously did
+				// not, so any malformed file could kill the
+				// default (<=2000 files) index run.
+				try {
+					su = visitor->visit(tree.get(),
+							    source.c_str(),
+							    job.path.c_str());
+				} catch (const std::exception &e) {
+					store::bufferParseFailure(
+						project_id, job.path, job.lang,
+						std::string(store::failReasonToString(
+							store::FailReason::
+								VisitorException)) +
+							": " + e.what());
+					continue;
+				} catch (...) {
+					store::bufferParseFailure(
+						project_id, job.path, job.lang,
+						store::failReasonToString(
+							store::FailReason::
+								VisitorUnknownThrow));
+					continue;
+				}
 				if (su) {
 					result.records = su->allRecords();
 					result.metrics = index_metrics::
@@ -198,12 +262,34 @@ char *engine_index_project_membulk(
 				auto translator =
 					ir::createTranslator(job.lang.c_str());
 				if (!translator) {
+					store::bufferParseFailure(
+						project_id, job.path, job.lang,
+						store::failReasonToString(
+							store::FailReason::
+								LanguageMissing));
 					continue;
 				}
-				ir::TranslationUnit *unit =
-					translator->translate(tree.get(),
-							      source.c_str(),
-							      job.path.c_str());
+				ir::TranslationUnit *unit = nullptr;
+				try {
+					unit = translator->translate(
+						tree.get(), source.c_str(),
+						job.path.c_str());
+				} catch (const std::exception &e) {
+					store::bufferParseFailure(
+						project_id, job.path, job.lang,
+						std::string(store::failReasonToString(
+							store::FailReason::
+								VisitorException)) +
+							": " + e.what());
+					continue;
+				} catch (...) {
+					store::bufferParseFailure(
+						project_id, job.path, job.lang,
+						store::failReasonToString(
+							store::FailReason::
+								VisitorUnknownThrow));
+					continue;
+				}
 				if (unit) {
 					// Convert TranslationUnit nodes to flat records.
 					uint64_t flat_id = 1;

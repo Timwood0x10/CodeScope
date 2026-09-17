@@ -24,14 +24,15 @@ int64_t StateBuilder::buildModuleSummaries()
 	//   - pub_count:      COUNT of entity.visibility=1 (pub/public/export)
 	//                     in the module — distinguishes "对外接口层" from
 	//                     "内部实现层", a signal the call graph cannot give.
-	//   - entry_reachable: MAX(graph_nodes.is_entry_point) — does this
-	//                     module contain a main/init/setup/run/handler?
+	//   - entry_reachable: does this module contain a main/init entity?
+	//                     Derived from the canonical entity.name/language
+	//                     columns (see the entry CTE below).
 	// Rules match by PRIORITY (first hit stops, see role_classifier_plan.md).
-	// Split the aggregate and the graph_nodes entry_reachable scan into
-	// two CTEs. A single 6-table LEFT JOIN that combined the three
-	// relation joins with graph_nodes made SQLite build four COUNT(DISTINCT)
+	// Split the aggregate and the entry_reachable scan into two CTEs. A
+	// single 6-table LEFT JOIN that combined the three relation joins
+	// with the entry scan made SQLite build four COUNT(DISTINCT)
 	// temp B-trees over a blown-up intermediate result (~29s on a 26k-node
-	// Go tree). Isolating the graph_nodes join into its own CTE — joined
+	// Go tree). Isolating the entry scan into its own CTE — joined
 	// only on module_id after both aggregates finish — drops the cost to
 	// <0.2s with identical results. INDEXED BY forces the right index for
 	// each relation join; SQLite otherwise picks idx_relation_unique_typed
@@ -71,12 +72,22 @@ int64_t StateBuilder::buildModuleSummaries()
 		"  WHERE s.kind = 1 AND s.project_id = ? "
 		"  GROUP BY s.id, s.name "
 		"), entry AS ("
+		// Entry-point reachability is derived from the canonical
+		// entity.name + entity.language columns. The previous version
+		// read graph_nodes.is_entry_point, but graph_nodes has not been
+		// written since the canonical-schema migration, so
+		// entry_reachable was always 0 and the 'entry' role in the CASE
+		// below could never fire. The name/language predicate mirrors
+		// graph::isEntryPointName (graph_builder.cpp) so the SQL path and
+		// the in-memory graph path agree on what an entry point is.
 		"  SELECT s.id AS module_id, "
-		"    MAX(COALESCE(gn.is_entry_point, 0)) AS entry_reachable "
+		"    MAX(CASE WHEN "
+		"      (e.name = 'main' AND e.language IN "
+		"        ('c', 'cpp', 'c++', 'go', 'rust')) "
+		"      OR (e.name = 'init' AND e.language = 'go') "
+		"      THEN 1 ELSE 0 END) AS entry_reachable "
 		"  FROM scope s "
 		"  JOIN entity e ON e.project_id = ? AND e.module_path = s.name "
-		"  LEFT JOIN graph_nodes gn ON gn.project_id = ? "
-		"    AND gn.name = e.name AND gn.file_path = e.file_path "
 		"  WHERE s.kind = 1 AND s.project_id = ? "
 		"  GROUP BY s.id "
 		") "
@@ -147,8 +158,11 @@ int64_t StateBuilder::buildModuleSummaries()
 			sqlite3_errmsg(store_->handle()));
 		return -1;
 	}
-	// Bind order: agg (4) + entry (3) + SELECT (1) = 8 ? params.
-	for (int i = 1; i <= 8; i++)
+	// Bind order: agg (4) + entry (2) + SELECT (1) = 7 ? params.
+	// entry previously contributed 3 (one per graph_nodes/scope/entity
+	// project filter); the deprecated graph_nodes join is gone, so the
+	// entry CTE now filters project_id twice.
+	for (int i = 1; i <= 7; i++)
 		sqlite3_bind_int64(stmt, i, static_cast<int64_t>(project_id_));
 
 	int rc = sqlite3_step(stmt);

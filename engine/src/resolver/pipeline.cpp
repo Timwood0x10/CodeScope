@@ -60,41 +60,10 @@ bool shouldSkipFuzzy(const std::string &name)
 
 // Confidence thresholds were removed when resolved_reference table was
 // deprecated. Score is now stored directly in relation.confidence.
-
-// Infer the source language from a file path's extension. Used by the
-// ScopeConstraint to prefer same-language candidates (a Rust symbol is
-// unlikely to be the target of a C++ call site, etc.). Returns "" when
-// the extension is unrecognized.
-std::string languageFromPath(const std::string &file_path)
-{
-	size_t dot = file_path.rfind('.');
-	if (dot == std::string::npos)
-		return "";
-	std::string ext = file_path.substr(dot);
-	// Normalize to lowercase for case-insensitive comparison.
-	std::string lower;
-	lower.reserve(ext.size());
-	for (char ch : ext)
-		lower.push_back(static_cast<char>(
-			std::tolower(static_cast<unsigned char>(ch))));
-	if (lower == ".cpp" || lower == ".cc" || lower == ".cxx" ||
-	    lower == ".c" || lower == ".h" || lower == ".hpp" ||
-	    lower == ".hh" || lower == ".hxx")
-		return "cpp";
-	if (lower == ".rs")
-		return "rust";
-	if (lower == ".py")
-		return "python";
-	if (lower == ".go")
-		return "go";
-	if (lower == ".ts" || lower == ".tsx")
-		return "typescript";
-	if (lower == ".js" || lower == ".jsx")
-		return "javascript";
-	if (lower == ".java")
-		return "java";
-	return "";
-}
+//
+// languageFromPath() and languagesCompatible() live in factors.h so every
+// pipeline translation unit shares one implementation (this file previously
+// carried a private copy that pipeline_load.cpp duplicated).
 } // namespace
 
 ResolverPipeline::ResolverPipeline(store::GraphStore *store,
@@ -491,6 +460,13 @@ int64_t ResolverPipeline::run()
 			continue;
 		}
 
+		// Language of the call site, derived once per reference. Both the
+		// single-candidate fast path immediately below and the main
+		// hard-filter loop further down consume it, so the two paths
+		// apply exactly the same language rule.
+		const std::string caller_lang =
+			languageFromPath(ref.caller_file);
+
 		// ── Single-candidate fast path (semantically safe) ───────
 		// When exactly one candidate exists AND it shares the caller's
 		// directory, factorImportMatch early-returns 1.0 (ImportMatch,
@@ -508,6 +484,19 @@ int64_t ResolverPipeline::run()
 		if (cands->size() == 1) {
 			const Candidate &c = cands->front();
 			if (c.entity_id != ref.caller_id) {
+				// Hard language rule, identical to the main loop
+				// below: a .cpp call site can never resolve to a .py
+				// entity. The fast path previously omitted this check,
+				// so a lone same-directory candidate in another
+				// language produced a cross-language CALLS edge with
+				// confidence 0.85 that the full path rejects. The check
+				// must use the same compatibility rule as the main loop
+				// (C/C++ share a family) or valid C calls are rejected.
+				if (!languagesCompatible(caller_lang,
+							 c.language)) {
+					skipped_lang_mismatch++;
+					continue;
+				}
 				size_t c_slash = ref.caller_file.rfind('/');
 				size_t t_slash = c.file_path.rfind('/');
 				bool same_dir =
@@ -781,7 +770,8 @@ int64_t ResolverPipeline::run()
 		double best_score = -1.0;
 		uint64_t second_id = 0;
 		double second_score = -1.0;
-		std::string caller_lang = languageFromPath(ref.caller_file);
+		// caller_lang is hoisted above the single-candidate fast path
+		// (see the top of this loop body) so both paths share one rule.
 		for (auto &c : candidates) {
 			if (c.entity_id == ref.caller_id)
 				continue;
@@ -793,9 +783,10 @@ int64_t ResolverPipeline::run()
 			// Step 5: hard filter — language match. A call site in
 			// a .go file cannot resolve to a .py entity; skip the
 			// candidate entirely. Empty language (unknown) is allowed
-			// through to avoid over-filtering edge cases.
-			if (!caller_lang.empty() && !c.language.empty() &&
-			    caller_lang != c.language) {
+			// through to avoid over-filtering edge cases. C and C++
+			// share a family because the path-based classifier reports
+			// ".c" as "cpp" while the C visitor labels the unit "c".
+			if (!languagesCompatible(caller_lang, c.language)) {
 				skipped_lang_mismatch++;
 				continue;
 			}
@@ -926,7 +917,17 @@ int64_t ResolverPipeline::run()
 	// Staging temp-table insert in one transaction, then bulk-copy into
 	// relation + graph_edges. Finalizes ins_st and reports elapsed ms.
 	int64_t sql_batch_ms = 0;
-	flushResolvedEdges(resolved_edges, ins_st, sql_batch_ms);
+	// A failed flush invalidates the build: return -1 so buildGraph
+	// rolls back to its savepoint instead of committing a graph that is
+	// missing the resolved CALLS edges.
+	if (!flushResolvedEdges(resolved_edges, ins_st, sql_batch_ms)) {
+		fprintf(stderr,
+			"[module=resolver, method=run] flush of resolved "
+			"edges failed — reporting failure to buildGraph\n");
+		store_->exec("DROP TABLE IF EXISTS _resolved_edges");
+		mark("sql_batch");
+		return -1;
+	}
 	mark("sql_batch");
 
 	// ── Cleanup staging table ──

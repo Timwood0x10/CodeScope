@@ -55,6 +55,10 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 		return dupString(
 			"{\"ok\":false,\"error\":\"engine not initialized\"}");
 
+	// See engine_index_project: the background enrichment thread shares
+	// this connection, so it must not run while we write.
+	joinAsyncKnowledgeBuilder();
+
 	if (!file_list_json || !file_list_json[0])
 		return dupString(
 			"{\"ok\":false,\"error\":\"file_list_json is empty\"}");

@@ -109,7 +109,7 @@ void GraphStore::insertSemanticRecords(uint64_t project_id,
 	sqlite3_finalize(stmt);
 }
 
-void GraphStore::insertSemanticRecordsBatch(
+bool GraphStore::insertSemanticRecordsBatch(
 	uint64_t project_id,
 	const std::vector<std::pair<std::string, std::vector<ir::Record>>>
 		&file_records)
@@ -119,7 +119,7 @@ void GraphStore::insertSemanticRecordsBatch(
 	for (auto &fr : file_records)
 		total += fr.second.size();
 	if (total == 0)
-		return;
+		return true;
 
 	constexpr size_t kBatchSize = 500;
 	// 23 columns in semantic_records: original_id, project_id, kind,
@@ -171,8 +171,15 @@ void GraphStore::insertSemanticRecordsBatch(
 		sqlite3_stmt *stmt = nullptr;
 		if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) !=
 		    SQLITE_OK) {
-			error_ = "insertSemanticRecordsBatch: prepare failed";
-			return;
+			error_ =
+				"insertSemanticRecordsBatch: prepare failed: " +
+				std::string(sqlite3_errmsg(db_));
+			fprintf(stderr,
+				"[module=store, method="
+				"insertSemanticRecordsBatch] prepare failed: "
+				"%s\n",
+				sqlite3_errmsg(db_));
+			return false;
 		}
 
 		// Build intra-file declaration maps for ref_original_id
@@ -251,16 +258,22 @@ void GraphStore::insertSemanticRecordsBatch(
 		}
 
 		int rc = sqlite3_step(stmt);
-		if (rc != SQLITE_DONE)
+		sqlite3_finalize(stmt);
+		if (rc != SQLITE_DONE) {
+			error_ = "insertSemanticRecordsBatch: step failed: " +
+				 std::string(sqlite3_errmsg(db_));
 			fprintf(stderr,
-				"insertSemanticRecordsBatch: step error %d: %s "
-				"(batch %zu-%zu)\n",
+				"[module=store, method="
+				"insertSemanticRecordsBatch] step failed "
+				"(rc=%d): %s (batch %zu-%zu)\n",
 				rc, sqlite3_errmsg(db_), offset,
 				offset + batch);
-		sqlite3_finalize(stmt);
+			return false;
+		}
 
 		offset += batch;
 	}
+	return true;
 }
 
 // ─── Streaming Pipeline ─────────────────────────────────────────
@@ -366,7 +379,22 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 					  SQLITE_TRANSIENT);
 			sqlite3_bind_text(file_st, 3, fr.language.c_str(), -1,
 					  SQLITE_TRANSIENT);
-			sqlite3_step(file_st);
+			// The files row is the per-file record: a silent step
+			// failure would leave the file untracked while its
+			// semantic_records are still inserted below.
+			if (sqlite3_step(file_st) != SQLITE_DONE) {
+				error_ =
+					"[module=store, method="
+					"insertFileResultBatch] INSERT INTO files "
+					"failed: " +
+					std::string(sqlite3_errmsg(db_));
+				sqlite3_reset(file_st);
+				sqlite3_finalize(file_st);
+				sqlite3_finalize(fss_st);
+				sqlite3_finalize(del_sr_st);
+				sqlite3_finalize(sr_st);
+				return false;
+			}
 			sqlite3_reset(file_st);
 		}
 
@@ -383,7 +411,20 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 			sqlite3_bind_text(fss_st, 5, ch.c_str(), -1,
 					  SQLITE_TRANSIENT);
 		}
-		sqlite3_step(fss_st);
+		// file_scan_state drives incremental re-index freshness; a
+		// silent failure would make the next run re-parse the file
+		// (or, worse, believe a changed file is unchanged).
+		if (sqlite3_step(fss_st) != SQLITE_DONE) {
+			error_ = "[module=store, method=insertFileResultBatch] "
+				 "INSERT INTO file_scan_state failed: " +
+				 std::string(sqlite3_errmsg(db_));
+			sqlite3_reset(fss_st);
+			sqlite3_finalize(fss_st);
+			sqlite3_finalize(file_st);
+			sqlite3_finalize(del_sr_st);
+			sqlite3_finalize(sr_st);
+			return false;
+		}
 		sqlite3_reset(fss_st);
 
 		// Delete old semantic_records for this file to prevent
@@ -395,7 +436,22 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 					   static_cast<int64_t>(project_id));
 			sqlite3_bind_text(del_sr_st, 2, fr.file_path.c_str(),
 					  -1, SQLITE_TRANSIENT);
-			sqlite3_step(del_sr_st);
+			// A failed DELETE leaves the previous run's rows in
+			// place; the plain INSERT below would then append
+			// duplicates that buildGraph turns into duplicate
+			// entities. Fail instead of accumulating.
+			if (sqlite3_step(del_sr_st) != SQLITE_DONE) {
+				error_ = "[module=store, method="
+					 "insertFileResultBatch] DELETE FROM "
+					 "semantic_records failed: " +
+					 std::string(sqlite3_errmsg(db_));
+				sqlite3_reset(del_sr_st);
+				sqlite3_finalize(del_sr_st);
+				sqlite3_finalize(fss_st);
+				sqlite3_finalize(file_st);
+				sqlite3_finalize(sr_st);
+				return false;
+			}
 			sqlite3_reset(del_sr_st);
 		}
 

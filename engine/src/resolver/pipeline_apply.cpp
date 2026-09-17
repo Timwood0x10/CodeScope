@@ -278,9 +278,17 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 		// rebuild it lazily for the resolved candidate only.
 	}
 
+	// Deterministic ordering: primary key is the score (descending); ties
+	// are broken by entity_id (ascending) so the winning candidate is
+	// reproducible regardless of the input row order. A comparator that
+	// only compared total_score would leave equal-scoring homonyms to
+	// std::sort's unspecified ordering, making the resolved edge depend
+	// on the index write order.
 	std::sort(candidates.begin(), candidates.end(),
 		  [](const Candidate &a, const Candidate &b) {
-			  return a.total_score > b.total_score;
+			  if (a.total_score != b.total_score)
+				  return a.total_score > b.total_score;
+			  return a.entity_id < b.entity_id;
 		  });
 }
 

@@ -665,60 +665,103 @@ void GraphStore::updateFileScanState(uint64_t project_id, const char *file_path,
 void GraphStore::cleanupStaleFiles(uint64_t project_id,
 				   const std::vector<std::string> &active_files)
 {
-	// Wrap in a transaction for atomicity + throughput (1 commit vs N).
-	exec("BEGIN IMMEDIATE");
-
-	// Create temp table if not exists (idempotent).
-	sqlite3_exec(
-		db_,
-		"CREATE TEMP TABLE IF NOT EXISTS _active_files (path TEXT PRIMARY KEY)",
-		nullptr, nullptr, nullptr);
-
-	// Clear previous active files in one shot.
-	sqlite3_exec(db_, "DELETE FROM _active_files", nullptr, nullptr,
-		     nullptr);
-
-	// Reuse a single prepared INSERT for all files (1 prepare vs N prepares).
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(
-		    db_,
-		    "INSERT OR IGNORE INTO _active_files (path) VALUES (?)", -1,
-		    &stmt, nullptr) != SQLITE_OK) {
+	// Nested SAVEPOINT instead of BEGIN IMMEDIATE/COMMIT: this runs inside
+	// the index transaction, where a plain BEGIN fails silently and the
+	// matching COMMIT would commit — and end — the caller's transaction.
+	if (!exec("SAVEPOINT cleanup_stale_files")) {
 		fprintf(stderr,
-			"store: cleanupStaleFiles prepare insert failed: %s "
+			"store: cleanupStaleFiles SAVEPOINT failed: %s "
 			"[module=store, method=cleanupStaleFiles]\n",
-			sqlite3_errmsg(db_));
-		exec("ROLLBACK");
+			error_.c_str());
 		return;
 	}
-	for (const auto &f : active_files) {
-		// SQLITE_STATIC: avoid SQLite internal memcpy (caller owns the
-		// string for the duration of the step call).
-		sqlite3_bind_text(stmt, 1, f.c_str(),
-				  static_cast<int>(f.size()), SQLITE_STATIC);
-		sqlite3_step(stmt);
-		sqlite3_reset(stmt);
+
+	bool ok = true;
+
+	// Create the temp table (idempotent) and clear it in one shot.
+	if (!exec("CREATE TEMP TABLE IF NOT EXISTS _active_files "
+		  "(path TEXT PRIMARY KEY)") ||
+	    !exec("DELETE FROM _active_files")) {
+		fprintf(stderr,
+			"store: cleanupStaleFiles temp table setup failed: %s "
+			"[module=store, method=cleanupStaleFiles]\n",
+			error_.c_str());
+		ok = false;
 	}
-	sqlite3_finalize(stmt);
+
+	if (ok) {
+		// Reuse a single prepared INSERT for all files (1 prepare vs N).
+		sqlite3_stmt *stmt = nullptr;
+		if (sqlite3_prepare_v2(
+			    db_,
+			    "INSERT OR IGNORE INTO _active_files (path) "
+			    "VALUES (?)",
+			    -1, &stmt, nullptr) != SQLITE_OK) {
+			fprintf(stderr,
+				"store: cleanupStaleFiles prepare insert "
+				"failed: %s "
+				"[module=store, method=cleanupStaleFiles]\n",
+				sqlite3_errmsg(db_));
+			ok = false;
+		} else {
+			for (const auto &f : active_files) {
+				// SQLITE_STATIC: avoid SQLite internal memcpy
+				// (caller owns the string for the duration of
+				// the step call).
+				sqlite3_bind_text(stmt, 1, f.c_str(),
+						  static_cast<int>(f.size()),
+						  SQLITE_STATIC);
+				if (sqlite3_step(stmt) != SQLITE_DONE) {
+					fprintf(stderr,
+						"store: cleanupStaleFiles "
+						"insert failed: %s "
+						"[module=store, method="
+						"cleanupStaleFiles]\n",
+						sqlite3_errmsg(db_));
+					ok = false;
+					sqlite3_reset(stmt);
+					break;
+				}
+				sqlite3_reset(stmt);
+			}
+			sqlite3_finalize(stmt);
+		}
+	}
 
 	// Delete stale file_scan_state entries in one shot.
-	{
+	if (ok) {
 		sqlite3_stmt *del = nullptr;
 		if (sqlite3_prepare_v2(db_,
 				       "DELETE FROM file_scan_state "
 				       "WHERE project_id=? AND file_path NOT IN "
 				       "(SELECT path FROM _active_files)",
-				       -1, &del, nullptr) == SQLITE_OK) {
-			sqlite3_bind_int64(del, 1,
-					   static_cast<int64_t>(project_id));
-			sqlite3_step(del);
-			sqlite3_finalize(del);
-		} else {
+				       -1, &del, nullptr) != SQLITE_OK) {
 			fprintf(stderr,
-				"store: cleanupStaleFiles prepare delete failed: %s "
+				"store: cleanupStaleFiles prepare delete "
+				"failed: %s "
 				"[module=store, method=cleanupStaleFiles]\n",
 				sqlite3_errmsg(db_));
+			ok = false;
+		} else {
+			sqlite3_bind_int64(del, 1,
+					   static_cast<int64_t>(project_id));
+			if (sqlite3_step(del) != SQLITE_DONE) {
+				fprintf(stderr,
+					"store: cleanupStaleFiles delete "
+					"failed: %s "
+					"[module=store, method="
+					"cleanupStaleFiles]\n",
+					sqlite3_errmsg(db_));
+				ok = false;
+			}
+			sqlite3_finalize(del);
 		}
+	}
+
+	if (!ok) {
+		exec("ROLLBACK TO SAVEPOINT cleanup_stale_files");
+		exec("RELEASE SAVEPOINT cleanup_stale_files");
+		return;
 	}
 
 	// Drop temp table (kept for now to match existing behavior; could
@@ -726,7 +769,13 @@ void GraphStore::cleanupStaleFiles(uint64_t project_id,
 	sqlite3_exec(db_, "DROP TABLE IF EXISTS _active_files", nullptr,
 		     nullptr, nullptr);
 
-	exec("COMMIT");
+	if (!exec("RELEASE SAVEPOINT cleanup_stale_files")) {
+		fprintf(stderr,
+			"store: cleanupStaleFiles RELEASE SAVEPOINT failed: %s "
+			"[module=store, method=cleanupStaleFiles]\n",
+			error_.c_str());
+		exec("ROLLBACK TO SAVEPOINT cleanup_stale_files");
+	}
 }
 
 // ─── Interactive Function Exploration ──────────────────────────

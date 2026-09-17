@@ -1228,14 +1228,25 @@ fn index_parallel_chunked(project_dir: &str, total_workers: u32, parallel: u32) 
 
     // ── Phase 2: plan chunks ────────────────────────────────
     let chunks = chunk_plan::plan_chunks(&files, chunk_plan::TARGET_BYTES, chunk_plan::MAX_BYTES);
+    // Refuse to run rather than silently truncate. The chunk queue is a
+    // fixed-size shared-memory array, so a plan with more chunks than the
+    // queue holds used to be cut down with only a stderr warning — the
+    // trailing files were never indexed while the result still reported
+    // ok=true, i.e. a silently incomplete index. Failing here makes the
+    // gap explicit and leaves the database untouched.
     if chunks.len() > chunk_queue::MAX_CHUNKS {
-        eprintln!(
-            "scheduler: warning: plan_chunks produced {} chunks, truncating to MAX_CHUNKS={}; some files will not be indexed [module=scheduler, method=index_parallel_chunked]",
-            chunks.len(),
-            chunk_queue::MAX_CHUNKS
+        return error_json(
+            &format!(
+                "plan_chunks produced {} chunks but the shared-memory queue holds at most {}; \
+                 refusing to index a partial project [module=scheduler, method=index_parallel_chunked]",
+                chunks.len(),
+                chunk_queue::MAX_CHUNKS
+            ),
+            "scheduler",
+            "index_parallel_chunked",
         );
     }
-    let chunk_count = (chunks.len() as u32).min(chunk_queue::MAX_CHUNKS as u32);
+    let chunk_count = chunks.len() as u32;
     if chunk_count == 0 {
         return error_json(
             "plan_chunks returned zero chunks [module=scheduler, method=index_parallel_chunked]",

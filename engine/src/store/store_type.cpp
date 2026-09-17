@@ -36,8 +36,18 @@ bool GraphStore::insertTypeInfoBatch(
 	if (rows.empty())
 		return true;
 
-	beginTransaction();
+	// Nested SAVEPOINT instead of BEGIN/COMMIT: this runs inside the index
+	// transaction, where a plain BEGIN fails and the matching COMMIT would
+	// commit the caller's transaction (and destroy any enclosing savepoint).
+	if (!exec("SAVEPOINT insert_type_info")) {
+		fprintf(stderr,
+			"[module=store, method=insertTypeInfoBatch] "
+			"SAVEPOINT failed: %s\n",
+			error_.c_str());
+		return false;
+	}
 
+	bool ok = true;
 	for (size_t off = 0; off < rows.size(); off += kTypeBatchSize) {
 		size_t batch = rows.size() - off;
 		if (batch > static_cast<size_t>(kTypeBatchSize))
@@ -65,8 +75,8 @@ bool GraphStore::insertTypeInfoBatch(
 				"[module=store, method=insertTypeInfoBatch] "
 				"prepare failed: %s\n",
 				sqlite3_errmsg(db_));
-			commitTransaction();
-			return false;
+			ok = false;
+			break;
 		}
 
 		int idx = 1;
@@ -87,17 +97,33 @@ bool GraphStore::insertTypeInfoBatch(
 			sqlite3_bind_int(stmt, idx++, std::get<8>(row));
 		}
 
+		// A failed batch must not be reported as success: the caller
+		// relies on the return value to decide whether to commit.
 		int rc = sqlite3_step(stmt);
+		sqlite3_finalize(stmt);
 		if (rc != SQLITE_DONE) {
 			fprintf(stderr,
 				"[module=store, method=insertTypeInfoBatch] "
 				"step failed (rc=%d): %s\n",
 				rc, sqlite3_errmsg(db_));
+			ok = false;
+			break;
 		}
-		sqlite3_finalize(stmt);
 	}
 
-	commitTransaction();
+	if (!ok) {
+		exec("ROLLBACK TO SAVEPOINT insert_type_info");
+		exec("RELEASE SAVEPOINT insert_type_info");
+		return false;
+	}
+	if (!exec("RELEASE SAVEPOINT insert_type_info")) {
+		fprintf(stderr,
+			"[module=store, method=insertTypeInfoBatch] "
+			"RELEASE SAVEPOINT failed: %s\n",
+			error_.c_str());
+		exec("ROLLBACK TO SAVEPOINT insert_type_info");
+		return false;
+	}
 	return true;
 }
 
@@ -111,8 +137,17 @@ bool GraphStore::insertTypeRefBatch(
 	if (rows.empty())
 		return true;
 
-	beginTransaction();
+	// Nested SAVEPOINT — see insertTypeInfoBatch above for why a plain
+	// BEGIN/COMMIT is wrong here.
+	if (!exec("SAVEPOINT insert_type_ref")) {
+		fprintf(stderr,
+			"[module=store, method=insertTypeRefBatch] "
+			"SAVEPOINT failed: %s\n",
+			error_.c_str());
+		return false;
+	}
 
+	bool ok = true;
 	for (size_t off = 0; off < rows.size(); off += kTypeBatchSize) {
 		size_t batch = rows.size() - off;
 		if (batch > static_cast<size_t>(kTypeBatchSize))
@@ -138,8 +173,8 @@ bool GraphStore::insertTypeRefBatch(
 				"[module=store, method=insertTypeRefBatch] "
 				"prepare failed: %s\n",
 				sqlite3_errmsg(db_));
-			commitTransaction();
-			return false;
+			ok = false;
+			break;
 		}
 
 		int idx = 1;
@@ -158,16 +193,30 @@ bool GraphStore::insertTypeRefBatch(
 		}
 
 		int rc = sqlite3_step(stmt);
+		sqlite3_finalize(stmt);
 		if (rc != SQLITE_DONE) {
 			fprintf(stderr,
 				"[module=store, method=insertTypeRefBatch] "
 				"step failed (rc=%d): %s\n",
 				rc, sqlite3_errmsg(db_));
+			ok = false;
+			break;
 		}
-		sqlite3_finalize(stmt);
 	}
 
-	commitTransaction();
+	if (!ok) {
+		exec("ROLLBACK TO SAVEPOINT insert_type_ref");
+		exec("RELEASE SAVEPOINT insert_type_ref");
+		return false;
+	}
+	if (!exec("RELEASE SAVEPOINT insert_type_ref")) {
+		fprintf(stderr,
+			"[module=store, method=insertTypeRefBatch] "
+			"RELEASE SAVEPOINT failed: %s\n",
+			error_.c_str());
+		exec("ROLLBACK TO SAVEPOINT insert_type_ref");
+		return false;
+	}
 	return true;
 }
 

@@ -197,8 +197,10 @@ class GraphStore {
 	 *
 	 * @param project_id     Project identifier.
 	 * @param file_records   Vector of (file_path, records) pairs.
+	 * @return true when every batch was written; false on a prepare or
+	 *         step failure (the reason is also left in error()).
 	 */
-	void insertSemanticRecordsBatch(
+	bool insertSemanticRecordsBatch(
 		uint64_t project_id,
 		const std::vector<std::pair<std::string, std::vector<ir::Record>>>
 			&file_records);

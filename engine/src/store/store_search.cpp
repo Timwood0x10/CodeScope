@@ -328,18 +328,24 @@ void GraphStore::buildVectorsFromGraph(uint64_t project_id)
 	// Clear stale vectors for this project, then write fresh ones.
 	const char *clear_sql = "DELETE FROM node_vectors WHERE project_id = ?";
 	sqlite3_stmt *del = nullptr;
-	if (sqlite3_prepare_v2(db_, clear_sql, -1, &del, nullptr) ==
+	if (sqlite3_prepare_v2(db_, clear_sql, -1, &del, nullptr) !=
 	    SQLITE_OK) {
-		sqlite3_bind_int64(del, 1, static_cast<int64_t>(project_id));
-		sqlite3_step(del);
-		sqlite3_finalize(del);
-	} else {
 		fprintf(stderr,
 			"buildVectorsFromGraph: prepare clear failed: %s "
 			"[module=store, method=buildVectorsFromGraph]\n",
 			sqlite3_errmsg(db_));
 		return;
 	}
+	sqlite3_bind_int64(del, 1, static_cast<int64_t>(project_id));
+	if (sqlite3_step(del) != SQLITE_DONE) {
+		fprintf(stderr,
+			"buildVectorsFromGraph: clear step failed: %s "
+			"[module=store, method=buildVectorsFromGraph]\n",
+			sqlite3_errmsg(db_));
+		sqlite3_finalize(del);
+		return;
+	}
+	sqlite3_finalize(del);
 
 	const char *ins_sql =
 		"INSERT OR REPLACE INTO node_vectors (node_id, project_id, vector) "
@@ -356,12 +362,41 @@ void GraphStore::buildVectorsFromGraph(uint64_t project_id)
 	// v0.2.5 (perf fix): wrap the whole batch of INSERTs in a single
 	// transaction. In autocommit mode every row INSERT issues its own
 	// fsync/commit, which made vector build take tens of seconds on large
-	// projects (thousands of function entities). One BEGIN/COMMIT collapses
-	// all writes into a single commit — order-of-magnitude faster, and the
-	// table is our own scratch (vector_ready is derived from the row count,
-	// so partial/rolled-back writes still yield correct readiness).
-	exec("BEGIN IMMEDIATE TRANSACTION");
+	// projects (thousands of function entities). Collapsing all writes into
+	// one commit is an order-of-magnitude faster, and the table is our own
+	// scratch (vector_ready is derived from the row count, so
+	// partial/rolled-back writes still yield correct readiness).
+	//
+	// SAVEPOINT rather than BEGIN: this may run inside the index
+	// transaction, where a plain BEGIN fails and the matching COMMIT would
+	// commit the caller's transaction.
+	if (!exec("SAVEPOINT build_vectors")) {
+		fprintf(stderr,
+			"buildVectorsFromGraph: SAVEPOINT failed: %s "
+			"[module=store, method=buildVectorsFromGraph]\n",
+			error_.c_str());
+		return;
+	}
 
+	// RAII: any early return below — or an allocation that throws inside
+	// the loop — rolls the savepoint back, so a failed vector build can
+	// never leave the connection sitting inside a transaction (which would
+	// make every later BEGIN fail with "cannot start a transaction within
+	// a transaction").
+	struct SavepointGuard {
+		GraphStore *store = nullptr;
+		bool released = false;
+		~SavepointGuard()
+		{
+			if (!released) {
+				store->exec(
+					"ROLLBACK TO SAVEPOINT build_vectors");
+				store->exec("RELEASE SAVEPOINT build_vectors");
+			}
+		}
+	} guard{ this, false };
+
+	bool ok = true;
 	std::vector<float> vec(kVecDim, 0.0f);
 	for (const auto &e : ents) {
 		std::fill(vec.begin(), vec.end(), 0.0f);
@@ -432,12 +467,30 @@ void GraphStore::buildVectorsFromGraph(uint64_t project_id)
 				"buildVectorsFromGraph: insert step failed: %s "
 				"[module=store, method=buildVectorsFromGraph]\n",
 				sqlite3_errmsg(db_));
+			ok = false;
 		}
 		sqlite3_reset(ins);
 	}
 	sqlite3_finalize(ins);
-	// Commit the batch (see the BEGIN above). exec() logs on failure.
-	exec("COMMIT");
+
+	// Abort (letting the guard roll back) rather than release a savepoint
+	// holding a half-built vector table: semantic search would otherwise
+	// mix new vectors with the stale ones the DELETE was meant to remove.
+	if (!ok) {
+		fprintf(stderr,
+			"buildVectorsFromGraph: batch failed, rolling back "
+			"savepoint "
+			"[module=store, method=buildVectorsFromGraph]\n");
+		return;
+	}
+	if (!exec("RELEASE SAVEPOINT build_vectors")) {
+		fprintf(stderr,
+			"buildVectorsFromGraph: RELEASE SAVEPOINT failed: %s "
+			"[module=store, method=buildVectorsFromGraph]\n",
+			error_.c_str());
+		return;
+	}
+	guard.released = true;
 }
 
 std::string GraphStore::searchSemanticJson(uint64_t project_id,

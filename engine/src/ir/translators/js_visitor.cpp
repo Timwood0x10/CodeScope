@@ -163,6 +163,7 @@ void JsVisitor::reset()
 	// Step 4: reset per-file tracking.
 	var_types_.clear();
 	class_scope_stack_.clear();
+	import_aliases_.clear();
 	unit_ = nullptr;
 	emitter_ = nullptr;
 	source_ = nullptr;
@@ -433,6 +434,8 @@ void JsVisitor::visitCallExpr(TSNode node, uint64_t parent_id)
 {
 	SourceRange loc = location(node);
 	std::string callee_name;
+	std::string
+		receiver_text; // "obj" in obj.method(), "this" in this.method()
 	bool has_member_expr = false; // obj.method() — member expression call
 
 	uint32_t count = ts_node_child_count(node);
@@ -466,6 +469,7 @@ void JsVisitor::visitCallExpr(TSNode node, uint64_t parent_id)
 			// otherwise mislabel every method call as Direct.
 			has_member_expr = true;
 			uint32_t mc = ts_node_child_count(child);
+			bool receiver_found = false;
 			for (uint32_t j = 0; j < mc; j++) {
 				TSNode mchild = ts_node_child(child, j);
 				if (!ts_node_is_named(mchild))
@@ -476,6 +480,13 @@ void JsVisitor::visitCallExpr(TSNode node, uint64_t parent_id)
 					   "shorthand_property_identifier") ==
 					    0) {
 					callee_name = nodeText(mchild);
+				} else if (!receiver_found) {
+					// The first named child of a member
+					// expression is the receiver: an identifier
+					// (`r`), `this`, or a nested member_expression
+					// for chained access (`a.b.c()` → "a.b").
+					receiver_text = nodeText(mchild);
+					receiver_found = true;
 				}
 			}
 			break;
@@ -544,6 +555,34 @@ void JsVisitor::visitCallExpr(TSNode node, uint64_t parent_id)
 	uint64_t call_id = emitter_->emitCall(callee_name, loc, call_parent,
 					      arity, false,
 					      static_cast<int>(call_kind));
+
+	// ── Step 3 (plan §3.1): structured call facts ──────────────
+	// Mirror the Go/Python/Java/Rust/C visitors: record the receiver,
+	// qualified target and import alias so the Resolver can
+	// disambiguate same-name methods instead of guessing. Without this,
+	// JS/TS reference rows carried empty evidence, which both disabled
+	// the fuzzy fallback (its `has_evidence` gate requires receiver_type
+	// / qualified_target / import_alias) and left
+	// factorReceiverTypeMatch neutral for every candidate.
+	if (!callee_name.empty() && !receiver_text.empty()) {
+		std::string receiver_type;
+		std::string import_alias;
+		if (receiver_text == "this" || receiver_text == "super") {
+			std::string cls = currentClassName();
+			if (!cls.empty())
+				receiver_type = cls;
+		} else if (import_aliases_.count(receiver_text) > 0) {
+			import_alias = receiver_text;
+		} else {
+			auto vt = var_types_.find(receiver_text);
+			if (vt != var_types_.end())
+				receiver_type = vt->second;
+		}
+		std::string qualified_target =
+			receiver_text + "." + callee_name;
+		emitter_->setCallFacts(call_id, qualified_target, receiver_text,
+				       receiver_type, import_alias);
+	}
 
 	// ── Intra-file callee resolution ───────────────────────────
 	// Store the resolved callee's record ID as ref_original_id on
@@ -634,8 +673,59 @@ void JsVisitor::visitImportStmt(TSNode node, uint64_t parent_id)
 	SourceRange loc = location(node);
 	std::string module_name = nodeText(node);
 	emitter_->emitImport(module_name, loc, parent_id);
+
+	// Record the locally-bound import names so visitCallExpr can emit
+	// import_alias evidence for `ns.fn()` / `Foo.bar()` calls. The
+	// module specifier (the quoted source string) is kept as the map
+	// value for future scope checks; today only membership matters.
+	std::string module_spec;
+	uint32_t count = ts_node_child_count(node);
+	for (uint32_t i = 0; i < count; i++) {
+		TSNode child = ts_node_child(node, i);
+		if (strcmp(ts_node_type(child), "string") == 0) {
+			module_spec = nodeText(child);
+			break;
+		}
+	}
+	collectImportBindings(node, module_spec);
 	// Import children (import_clause, from_clause) are structural —
 	// no need to emit records for them.
+}
+
+void JsVisitor::collectImportBindings(TSNode node,
+				      const std::string &module_spec)
+{
+	const char *t = ts_node_type(node);
+
+	// `name` or `name as alias`: the bound name is the LAST identifier
+	// child (the alias when present, otherwise the name itself).
+	if (strcmp(t, "import_specifier") == 0) {
+		std::string bound;
+		uint32_t cc = ts_node_child_count(node);
+		for (uint32_t i = 0; i < cc; i++) {
+			TSNode c = ts_node_child(node, i);
+			if (strcmp(ts_node_type(c), "identifier") == 0)
+				bound = nodeText(c);
+		}
+		if (!bound.empty())
+			import_aliases_[bound] = module_spec;
+		return;
+	}
+
+	// A bare identifier inside the import clause is either the default
+	// import (`import Foo from ...`) or the namespace binding
+	// (`import * as ns from ...`). Named-import identifiers are handled
+	// by the import_specifier branch above and never reach here.
+	if (strcmp(t, "identifier") == 0) {
+		std::string bound = nodeText(node);
+		if (!bound.empty())
+			import_aliases_[bound] = module_spec;
+		return;
+	}
+
+	uint32_t cc = ts_node_child_count(node);
+	for (uint32_t i = 0; i < cc; i++)
+		collectImportBindings(ts_node_child(node, i), module_spec);
 }
 
 void JsVisitor::visitExportStmt(TSNode node, uint64_t parent_id)
@@ -691,6 +781,7 @@ void JsVisitor::visitNewExpr(TSNode node, uint64_t parent_id)
 {
 	SourceRange loc = location(node);
 	std::string callee_name;
+	std::string receiver_text; // "ns" in new ns.Foo()
 	uint32_t count = ts_node_child_count(node);
 
 	// Extract the constructor name from the callee child. For `new Foo()`
@@ -704,6 +795,7 @@ void JsVisitor::visitNewExpr(TSNode node, uint64_t parent_id)
 		const char *t = ts_node_type(child);
 		if (strcmp(t, "member_expression") == 0) {
 			uint32_t mc = ts_node_child_count(child);
+			bool receiver_found = false;
 			for (uint32_t j = 0; j < mc; j++) {
 				TSNode mchild = ts_node_child(child, j);
 				if (!ts_node_is_named(mchild))
@@ -714,6 +806,11 @@ void JsVisitor::visitNewExpr(TSNode node, uint64_t parent_id)
 					   "shorthand_property_identifier") ==
 					    0) {
 					callee_name = nodeText(mchild);
+				} else if (!receiver_found) {
+					// Namespace receiver of a qualified
+					// constructor: `new ns.Foo()` → "ns".
+					receiver_text = nodeText(mchild);
+					receiver_found = true;
 				}
 			}
 			break;
@@ -770,6 +867,19 @@ void JsVisitor::visitNewExpr(TSNode node, uint64_t parent_id)
 	uint64_t call_id = emitter_->emitCall(callee_name, loc, call_parent,
 					      arity, false,
 					      static_cast<int>(call_kind));
+
+	// Step 3 (plan §3.1): a namespace-qualified constructor
+	// (`new ns.Foo()`) carries import-alias evidence; a bare
+	// `new Foo()` has no receiver and correctly records nothing.
+	if (!callee_name.empty() && !receiver_text.empty()) {
+		std::string import_alias;
+		if (import_aliases_.count(receiver_text) > 0)
+			import_alias = receiver_text;
+		std::string qualified_target =
+			receiver_text + "." + callee_name;
+		emitter_->setCallFacts(call_id, qualified_target, receiver_text,
+				       "", import_alias);
+	}
 
 	// ── Intra-file callee resolution ───────────────────────────
 	if (!callee_name.empty()) {

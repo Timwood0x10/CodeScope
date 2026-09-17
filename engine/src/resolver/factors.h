@@ -4,10 +4,69 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <cctype>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace resolver
 {
+
+/// Infer the source language from a file path's extension. Returns "" when
+/// the extension is unrecognized.
+///
+/// NOTE: every C/C++ extension — including `.c` — maps to "cpp". The
+/// visitors, by contrast, label a `.c` translation unit "c", so callers
+/// that compare this value against an entity's language MUST use
+/// languagesCompatible() rather than string equality.
+inline std::string languageFromPath(const std::string &file_path)
+{
+	size_t dot = file_path.rfind('.');
+	if (dot == std::string::npos)
+		return "";
+	std::string ext = file_path.substr(dot);
+	// Normalize to lowercase for case-insensitive comparison.
+	std::string lower;
+	lower.reserve(ext.size());
+	for (char ch : ext)
+		lower.push_back(static_cast<char>(
+			std::tolower(static_cast<unsigned char>(ch))));
+	if (lower == ".cpp" || lower == ".cc" || lower == ".cxx" ||
+	    lower == ".c" || lower == ".h" || lower == ".hpp" ||
+	    lower == ".hh" || lower == ".hxx")
+		return "cpp";
+	if (lower == ".rs")
+		return "rust";
+	if (lower == ".py")
+		return "python";
+	if (lower == ".go")
+		return "go";
+	if (lower == ".ts" || lower == ".tsx")
+		return "typescript";
+	if (lower == ".js" || lower == ".jsx")
+		return "javascript";
+	if (lower == ".java")
+		return "java";
+	return "";
+}
+
+/// True when two language labels may describe the same code.
+///
+/// The labels come from two different vocabularies: languageFromPath()
+/// reports every C/C++ extension (including `.c`) as "cpp", while the
+/// visitors label a `.c` translation unit "c" and a `.h` header may belong
+/// to either. Comparing the raw strings would therefore reject every
+/// legitimate C call site, so the whole C family is treated as one
+/// language. All other languages must match exactly; an empty label means
+/// "unknown" and is always allowed through (never over-filter).
+inline bool languagesCompatible(const std::string &a, const std::string &b)
+{
+	if (a.empty() || b.empty() || a == b)
+		return true;
+	static const std::unordered_set<std::string> kCFamily = {
+		"c", "cpp", "c++", "cxx", "objc", "objective-c",
+	};
+	return kCFamily.count(a) > 0 && kCFamily.count(b) > 0;
+}
 
 /// Fold an ASCII byte to lowercase. SQLite's default LIKE folds only
 /// ASCII upper-case letters; all other bytes (including non-ASCII) are

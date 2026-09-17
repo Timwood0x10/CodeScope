@@ -60,6 +60,14 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		return dupString(
 			"{\"ok\":false,\"error\":\"engine not initialized\"}");
 
+	// Serialize with the background enrichment thread. It writes to the
+	// same g_store connection (model / state / FTS / knowledge) and opens
+	// its own transactions, so indexing concurrently would interleave
+	// BEGIN/COMMIT on one connection ("cannot start a transaction within
+	// a transaction") and one side could commit the other's half-written
+	// state. Joining is a no-op when the builder has already finished.
+	joinAsyncKnowledgeBuilder();
+
 	// Fail-fast: pre-load known parse failures so the parse loop can
 	// skip them without per-file DB queries. CODESCOPE_FAIL_RETRY_MAX
 	// sets the threshold (default kDefaultFailRetryMax = 1) — files

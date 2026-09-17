@@ -48,11 +48,14 @@ struct PathRec {
 	std::string file;
 };
 
-static void flushImportBatch(sqlite3 *db, uint64_t project_id,
+/// Flush one batch of import rows. Returns false when the batch could
+/// not be written, so the caller can fail the surrounding buildGraph
+/// instead of silently dropping imports.
+static bool flushImportBatch(sqlite3 *db, uint64_t project_id,
 			     const std::vector<PathRec> &batch)
 {
 	if (batch.empty())
-		return;
+		return true;
 	std::string sql = "INSERT OR IGNORE INTO import "
 			  "(project_id, source_scope_id, target_path, alias, "
 			  " file_path, is_pub) VALUES ";
@@ -68,7 +71,7 @@ static void flushImportBatch(sqlite3 *db, uint64_t project_id,
 			"[module=store, method=flushImportBatch] "
 			"prepare failed: %s\n",
 			sqlite3_errmsg(db));
-		return;
+		return false;
 	}
 	for (size_t i = 0; i < batch.size(); i++) {
 		int base = static_cast<int>(i * 4);
@@ -82,12 +85,16 @@ static void flushImportBatch(sqlite3 *db, uint64_t project_id,
 				  SQLITE_STATIC);
 	}
 	int rc = sqlite3_step(stmt);
-	if (rc != SQLITE_DONE && rc != SQLITE_CONSTRAINT)
+	if (rc != SQLITE_DONE && rc != SQLITE_CONSTRAINT) {
 		fprintf(stderr,
 			"[module=store, method=flushImportBatch] "
 			"step failed (rc=%d): %s\n",
 			rc, sqlite3_errmsg(db));
+		sqlite3_finalize(stmt);
+		return false;
+	}
 	sqlite3_finalize(stmt);
+	return true;
 }
 
 bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
@@ -161,6 +168,21 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 
 	std::string pid = std::to_string(project_id);
 
+	// Critical graph writes are checked. A failed INSERT..SELECT (schema
+	// drift, SQLITE_BUSY, disk full) used to go unnoticed: buildGraph then
+	// RELEASEd the savepoint and returned true, so the caller committed a
+	// partially-populated graph and reported success. `graph_write_ok`
+	// accumulates failures and forces a ROLLBACK TO SAVEPOINT below.
+	bool graph_write_ok = true;
+	auto exec_write = [&](const std::string &sql, const char *step) {
+		if (exec(sql.c_str()))
+			return;
+		graph_write_ok = false;
+		fprintf(stderr,
+			"[module=store, method=buildGraph] %s failed: %s\n",
+			step, error().c_str());
+	};
+
 	// ── 2a: Create file filter temp table ──
 	exec("DROP TABLE IF EXISTS _rf");
 	exec("CREATE TEMP TABLE _rf (file_path TEXT PRIMARY KEY)");
@@ -180,9 +202,11 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	auto t_rf = Clock::now();
 
 	// ── 2b: Create _r2n mapping table (unsorted for speed) ──
-	// Note: ROW_NUMBER() OVER () avoids ORDER BY sort cost.
-	// Node IDs are sequential but not sorted by file_path — sorting is
-	// not required for correctness since JOINs use indexes, not sequential scans.
+	// Node ids are assigned by ROW_NUMBER() ordered on each record's
+	// semantic identity (see the _r2n CREATE below), so the same input
+	// always yields the same ids. JOINs use indexes, not sequential scans,
+	// so the ordering itself is irrelevant to query correctness — it only
+	// makes the assignment reproducible.
 	static constexpr int kR2nKinds[] = {
 		kKindFunction,	kKindMethod,  kKindClass,
 		kKindInterface, kKindEnum,    kKindTypeAlias,
@@ -228,10 +252,19 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	}
 
 	exec("DROP TABLE IF EXISTS _r2n");
+	// Deterministic id assignment. ROW_NUMBER() must be ordered by the
+	// record's semantic identity, NOT by semantic_records' scan order:
+	// that order is the insertion order, which varies with parse-worker
+	// scheduling, so a bare `OVER ()` produced different entity ids for
+	// identical input (the perf report measured entity.id drift on parallel
+	// indexes). Everything downstream (relation, type_ref, import, CSR,
+	// fixture comparisons) then shifted with it. The key is unique for real
+	// records — one declaration per (file, kind, position).
 	std::string r2n_sql =
 		"CREATE TEMP TABLE _r2n AS "
 		"SELECT sr.rowid as rid, sr.original_id, sr.file_path, sr.name,"
-		" CAST(ROW_NUMBER() OVER () AS INTEGER) + " +
+		" CAST(ROW_NUMBER() OVER (ORDER BY sr.file_path, sr.kind, "
+		"  sr.start_row, sr.start_col, sr.original_id) AS INTEGER) + " +
 		std::to_string(id_offset) +
 		" as node_id "
 		"FROM semantic_records sr "
@@ -272,28 +305,29 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// Includes sr.arity so the Resolver Pipeline can disambiguate
 	// same-name overloads via factorSignatureMatch. See
 	// CODE_REVIEW_FINDINGS_2026-07-19.md C2.
-	exec(std::string(
-		     "INSERT OR IGNORE INTO entity "
-		     "(id, project_id, kind, name, qualified_name, "
-		     " file_path, language, start_row, start_col, "
-		     " end_row, end_col, module_path, visibility, arity) "
-		     "SELECT r2n.node_id, sr.project_id, "
-		     " CASE sr.kind WHEN 0 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 "
-		     "  WHEN 3 THEN 4 WHEN 4 THEN 3 WHEN 5 THEN 3 ELSE 7 END, "
-		     " sr.name, COALESCE(NULLIF(sr.qualified_name, ''), sr.name), "
-		     " sr.file_path, sr.language, "
-		     " sr.start_row, sr.start_col, sr.end_row, sr.end_col, "
-		     " rtrim(sr.file_path, replace(sr.file_path, '/', 'x')), "
-		     " sr.visibility, "
-		     " sr.arity "
-		     "FROM semantic_records sr "
-		     "JOIN _r2n r2n ON sr.rowid = r2n.rid "
-		     "WHERE sr.file_path NOT LIKE '%\\_test.%' ESCAPE '\\'"
-		     " AND sr.file_path NOT LIKE '%/tests/%'"
-		     " AND sr.file_path NOT LIKE '%\\_spec.%' ESCAPE '\\'"
-		     " AND sr.file_path NOT LIKE '%/benches/%'"
-		     " AND sr.file_path NOT LIKE '%\\_\\_test\\_\\_%' ESCAPE '\\'")
-		     .c_str());
+	exec_write(
+		std::string(
+			"INSERT OR IGNORE INTO entity "
+			"(id, project_id, kind, name, qualified_name, "
+			" file_path, language, start_row, start_col, "
+			" end_row, end_col, module_path, visibility, arity) "
+			"SELECT r2n.node_id, sr.project_id, "
+			" CASE sr.kind WHEN 0 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 "
+			"  WHEN 3 THEN 4 WHEN 4 THEN 3 WHEN 5 THEN 3 ELSE 7 END, "
+			" sr.name, COALESCE(NULLIF(sr.qualified_name, ''), sr.name), "
+			" sr.file_path, sr.language, "
+			" sr.start_row, sr.start_col, sr.end_row, sr.end_col, "
+			" rtrim(sr.file_path, replace(sr.file_path, '/', 'x')), "
+			" sr.visibility, "
+			" sr.arity "
+			"FROM semantic_records sr "
+			"JOIN _r2n r2n ON sr.rowid = r2n.rid "
+			"WHERE sr.file_path NOT LIKE '%\\_test.%' ESCAPE '\\'"
+			" AND sr.file_path NOT LIKE '%/tests/%'"
+			" AND sr.file_path NOT LIKE '%\\_spec.%' ESCAPE '\\'"
+			" AND sr.file_path NOT LIKE '%/benches/%'"
+			" AND sr.file_path NOT LIKE '%\\_\\_test\\_\\_%' ESCAPE '\\'"),
+		"INSERT INTO entity");
 	auto t_nodes = Clock::now();
 
 	// ── 2d: Containment edges (edge_type=3) ──
@@ -314,22 +348,23 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// Phase 1.3: Type edges — create USES_TYPE edges from TypeRef records
 	{
 		// Populate route table from Route records (kind=19 in semantic_records)
-		exec(std::string(
-			     "INSERT OR IGNORE INTO route "
-			     "(project_id, method, path, handler_name, "
-			     " file_path, start_row, start_col) "
-			     "SELECT sr.project_id, "
-			     " SUBSTR(sr.name, 1, INSTR(sr.name, ' ') - 1), "
-			     " SUBSTR(sr.name, INSTR(sr.name, ' ') + 1), "
-			     " sr.qualified_name, "
-			     " sr.file_path, sr.start_row, sr.start_col "
-			     "FROM semantic_records sr "
-			     "WHERE sr.project_id=" +
-			     pid +
-			     " AND sr.kind = 19" // Route
-			     " AND sr.name != '' AND sr.name LIKE '% %'"
-			     " AND sr.file_path IN (SELECT file_path FROM _rf)")
-			     .c_str());
+		exec_write(
+			std::string(
+				"INSERT OR IGNORE INTO route "
+				"(project_id, method, path, handler_name, "
+				" file_path, start_row, start_col) "
+				"SELECT sr.project_id, "
+				" SUBSTR(sr.name, 1, INSTR(sr.name, ' ') - 1), "
+				" SUBSTR(sr.name, INSTR(sr.name, ' ') + 1), "
+				" sr.qualified_name, "
+				" sr.file_path, sr.start_row, sr.start_col "
+				"FROM semantic_records sr "
+				"WHERE sr.project_id=" +
+				pid +
+				" AND sr.kind = 19" // Route
+				" AND sr.name != '' AND sr.name LIKE '% %'"
+				" AND sr.file_path IN (SELECT file_path FROM _rf)"),
+			"INSERT INTO route");
 	}
 	auto t_route = Clock::now();
 
@@ -377,55 +412,59 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			std::to_string(kKindInterface) + "," +
 			std::to_string(kKindEnum) + "," +
 			std::to_string(kKindTypeAlias) + ")";
-		exec(std::string(
-			     "INSERT OR IGNORE INTO type_info "
-			     "(project_id, name, qualified_name, kind, "
-			     " file_path, language, start_row, start_col, "
-			     " end_row, end_col) "
-			     "SELECT sr.project_id, sr.name, "
-			     " COALESCE(NULLIF(sr.qualified_name, ''), sr.name), "
-			     " CASE sr.kind"
-			     "  WHEN " +
-			     std::to_string(kKindClass) +
-			     " THEN 0 "
-			     "  WHEN " +
-			     std::to_string(kKindEnum) +
-			     " THEN 1 "
-			     "  WHEN " +
-			     std::to_string(kKindInterface) +
-			     " THEN 3 "
-			     "  WHEN " +
-			     std::to_string(kKindTypeAlias) +
-			     " THEN 4 "
-			     "  ELSE 0 END, "
-			     " sr.file_path, sr.language, "
-			     " sr.start_row, sr.start_col, sr.end_row, sr.end_col "
-			     "FROM semantic_records sr "
-			     "WHERE sr.project_id=" +
-			     pid + " AND sr.kind IN " + type_kind_list +
-			     " AND sr.name != ''"
-			     " AND sr.file_path IN (SELECT file_path FROM _rf)")
-			     .c_str());
+		exec_write(
+			std::string(
+				"INSERT OR IGNORE INTO type_info "
+				"(project_id, name, qualified_name, kind, "
+				" file_path, language, start_row, start_col, "
+				" end_row, end_col) "
+				"SELECT sr.project_id, sr.name, "
+				" COALESCE(NULLIF(sr.qualified_name, ''), sr.name), "
+				" CASE sr.kind"
+				"  WHEN " +
+				std::to_string(kKindClass) +
+				" THEN 0 "
+				"  WHEN " +
+				std::to_string(kKindEnum) +
+				" THEN 1 "
+				"  WHEN " +
+				std::to_string(kKindInterface) +
+				" THEN 3 "
+				"  WHEN " +
+				std::to_string(kKindTypeAlias) +
+				" THEN 4 "
+				"  ELSE 0 END, "
+				" sr.file_path, sr.language, "
+				" sr.start_row, sr.start_col, "
+				" sr.end_row, sr.end_col "
+				"FROM semantic_records sr "
+				"WHERE sr.project_id=" +
+				pid + " AND sr.kind IN " + type_kind_list +
+				" AND sr.name != ''"
+				" AND sr.file_path IN "
+				"(SELECT file_path FROM _rf)"),
+			"INSERT INTO type_info");
 	}
 	auto t_type_info = Clock::now();
 
 	// Populate type_ref table from TypeRef records.
 	{
-		exec(std::string(
-			     "INSERT OR IGNORE INTO type_ref "
-			     "(project_id, entity_id, type_name, kind, "
-			     " file_path, start_row, start_col) "
-			     "SELECT sr.project_id, r2n.node_id, sr.type_name, "
-			     " CASE WHEN sr.name LIKE '%.return' THEN 2 ELSE 0 END, "
-			     " sr.file_path, sr.start_row, sr.start_col "
-			     "FROM semantic_records sr "
-			     "JOIN _r2n r2n ON sr.rowid = r2n.rid "
-			     "WHERE sr.project_id=" +
-			     pid +
-			     " AND sr.kind = " + std::to_string(kKindTypeRef) +
-			     " AND sr.name != '' AND sr.type_name != ''"
-			     " AND sr.file_path IN (SELECT file_path FROM _rf)")
-			     .c_str());
+		exec_write(
+			std::string(
+				"INSERT OR IGNORE INTO type_ref "
+				"(project_id, entity_id, type_name, kind, "
+				" file_path, start_row, start_col) "
+				"SELECT sr.project_id, r2n.node_id, sr.type_name, "
+				" CASE WHEN sr.name LIKE '%.return' THEN 2 ELSE 0 END, "
+				" sr.file_path, sr.start_row, sr.start_col "
+				"FROM semantic_records sr "
+				"JOIN _r2n r2n ON sr.rowid = r2n.rid "
+				"WHERE sr.project_id=" +
+				pid + " AND sr.kind = " +
+				std::to_string(kKindTypeRef) +
+				" AND sr.name != '' AND sr.type_name != ''"
+				" AND sr.file_path IN (SELECT file_path FROM _rf)"),
+			"INSERT INTO type_ref");
 	}
 	auto t_type_ref = Clock::now();
 
@@ -480,7 +519,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			std::to_string(project_id) +
 			" AND sr.kind = 9 AND sr.name != '' AND sr.file_path NOT LIKE '%\\_test.%' ESCAPE '\\' AND sr.file_path NOT LIKE '%/tests/%' AND sr.file_path NOT LIKE '%\\_spec.%' ESCAPE '\\' AND sr.file_path NOT LIKE '%/benches/%' AND sr.file_path NOT LIKE '%\\_\\_test\\_\\_%' ESCAPE '\\'"
 			" AND sr.file_path IN (SELECT file_path FROM _rf)";
-		exec(ref_sql.c_str());
+		exec_write(ref_sql, "INSERT INTO reference");
 	}
 	auto t_reference = Clock::now();
 
@@ -571,14 +610,16 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 					pr.file = fp_c ? fp_c : "";
 					batch.push_back(pr);
 					if (batch.size() >= kMaxBatch) {
-						flushImportBatch(
-							db_, project_id, batch);
+						if (!flushImportBatch(
+							    db_, project_id,
+							    batch))
+							graph_write_ok = false;
 						batch.clear();
 					}
 				}
-				if (!batch.empty())
-					flushImportBatch(db_, project_id,
-							 batch);
+				if (!batch.empty() &&
+				    !flushImportBatch(db_, project_id, batch))
+					graph_write_ok = false;
 			}
 			sqlite3_finalize(fetch_st);
 		}
@@ -600,7 +641,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			std::to_string(project_id) +
 			" AND module_path != ''"
 			" AND entity.file_path IN (SELECT file_path FROM _rf)";
-		exec(scope_sql.c_str());
+		exec_write(scope_sql, "INSERT INTO scope (module)");
 	}
 	// Function scopes: each entity within its module scope.
 	{
@@ -618,7 +659,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			"WHERE e.project_id=" +
 			std::to_string(project_id) +
 			" AND e.file_path IN (SELECT file_path FROM _rf)";
-		exec(func_sql.c_str());
+		exec_write(func_sql, "INSERT INTO scope (function)");
 	}
 	// Update import.source_scope_id to point to the file's module scope.
 	// v0.6 (perf): the old form nested a second correlated subquery to look
@@ -779,7 +820,28 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		(long long)ms(t_resolver, t_csr),
 		(long long)ms(t_csr, t_cleanup), (long long)ms(t0, t_cleanup));
 
-	exec("RELEASE SAVEPOINT buildGraph");
+	// Fail closed: any unchecked critical write failure above must not be
+	// committed. Rolling back to the savepoint restores the pre-buildGraph
+	// state (all or nothing) and the false return value tells the caller
+	// the index did not produce a complete graph.
+	if (!graph_write_ok) {
+		fprintf(stderr,
+			"buildGraph: graph writes failed for project %s — "
+			"rolling back savepoint "
+			"[module=store, method=buildGraph]\n",
+			pid.c_str());
+		exec("ROLLBACK TO SAVEPOINT buildGraph");
+		exec("RELEASE SAVEPOINT buildGraph");
+		return false;
+	}
+	if (!exec("RELEASE SAVEPOINT buildGraph")) {
+		fprintf(stderr,
+			"buildGraph: RELEASE SAVEPOINT failed: %s "
+			"[module=store, method=buildGraph]\n",
+			error().c_str());
+		exec("ROLLBACK TO SAVEPOINT buildGraph");
+		return false;
+	}
 	return true;
 }
 

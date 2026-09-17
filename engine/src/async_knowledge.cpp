@@ -124,6 +124,10 @@ int64_t buildKnowledgeGraphSync(store::GraphStore &store, uint64_t project_id)
 			"[module=async, method=buildKnowledgeGraphSync] "
 			"COMMIT failed: %s\n",
 			store.error().c_str());
+		// Roll back so the connection is not left inside a transaction
+		// (that would make every later BEGIN fail until the process
+		// restarts).
+		store.exec("ROLLBACK");
 		return -1;
 	}
 

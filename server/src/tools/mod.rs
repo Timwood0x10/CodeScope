@@ -271,6 +271,55 @@ const MAX_QUERY_LIMIT: i64 = 100;
 /// Default `limit` used when the client omits the argument.
 const DEFAULT_QUERY_LIMIT: i64 = 20;
 
+/// Upper bound for recursive-traversal `depth` arguments. The C++ engine
+/// expands `depth` levels of callers/callees recursively, so an unbounded
+/// value would exhaust the stack and abort the long-running MCP process.
+/// Matches the "max 10" documented in the tool schemas.
+const MAX_TRAVERSAL_DEPTH: i64 = 10;
+/// Default `depth` for `trace_flow` when the client omits it.
+const DEFAULT_TRACE_FLOW_DEPTH: i64 = 3;
+/// Default `depth` for `codescope_trace` when the client omits it.
+const DEFAULT_CODESCOPE_TRACE_DEPTH: i64 = 1;
+/// Upper bound for `radius` on neighbourhood / subgraph queries.
+const MAX_NEIGHBOR_RADIUS: i64 = 3;
+/// Upper bound for `get_knowledge_graph` limit (matches the C++ clamp).
+const MAX_KNOWLEDGE_GRAPH_LIMIT: i64 = 1000;
+/// Lowest / highest valid `relation.type` values, per
+/// plan/rules/relation_contract.md (0 = References … 7 = HasType).
+/// A value <= 0 means "no type filter"; values above the maximum are
+/// clamped so a truncated i64 can never select an out-of-contract type.
+const MIN_EDGE_TYPE_FILTER: i64 = -1;
+const MAX_EDGE_TYPE_FILTER: i64 = 7;
+
+/// Clamp a client-supplied recursion depth into `[1, MAX_TRAVERSAL_DEPTH]`.
+/// The engine recurses `depth` levels, so an unclamped value (or the
+/// truncation of a huge i64 by `as i32`) could exhaust the stack and abort
+/// the long-running MCP process.
+fn clamp_depth(value: Option<i64>, default: i64) -> i32 {
+    value.unwrap_or(default).clamp(1, MAX_TRAVERSAL_DEPTH) as i32
+}
+
+/// Clamp a client-supplied neighbourhood radius into
+/// `[1, MAX_NEIGHBOR_RADIUS]`.
+fn clamp_radius(value: Option<i64>) -> i32 {
+    value.unwrap_or(1).clamp(1, MAX_NEIGHBOR_RADIUS) as i32
+}
+
+/// Clamp a client-supplied `relation.type` filter into the contract range.
+fn clamp_edge_type(value: Option<i64>) -> i32 {
+    value
+        .unwrap_or(MIN_EDGE_TYPE_FILTER)
+        .clamp(MIN_EDGE_TYPE_FILTER, MAX_EDGE_TYPE_FILTER) as i32
+}
+
+/// Clamp a client-supplied `get_knowledge_graph` row limit into
+/// `[0, MAX_KNOWLEDGE_GRAPH_LIMIT]`.
+fn clamp_knowledge_limit(value: Option<i64>) -> i32 {
+    value
+        .unwrap_or(MAX_QUERY_LIMIT)
+        .clamp(0, MAX_KNOWLEDGE_GRAPH_LIMIT) as i32
+}
+
 /// Run a worker subprocess with timeout protection.
 /// Returns `Ok(output)` on success, `Err(msg)` on timeout or failure.
 /// On timeout the orphaned child is killed using a platform-appropriate
@@ -663,10 +712,10 @@ fn filter_acceptable_file(
     }
 
     // Extension check (case-insensitive)
-    let ext = match path.extension().and_then(|e| e.to_str()) {
-        Some(e) => format!(".{}", e.to_lowercase()),
-        None => return None,
-    };
+    let ext = format!(
+        ".{}",
+        path.extension().and_then(|e| e.to_str())?.to_lowercase()
+    );
     if !SOURCE_EXTENSIONS.iter().any(|&s| s == ext) {
         return None;
     }
@@ -933,7 +982,7 @@ fn h_get_project_state(project_id: u64, _args: &Value) -> String {
 
 fn h_trace_flow(project_id: u64, args: &Value) -> String {
     let name = args["function_name"].as_str().unwrap_or("");
-    let depth = args["depth"].as_i64().unwrap_or(3) as i32;
+    let depth = clamp_depth(args["depth"].as_i64(), DEFAULT_TRACE_FLOW_DEPTH);
     ffi::explore_function(project_id, name, depth, "callees")
 }
 
@@ -958,7 +1007,7 @@ fn h_get_knowledge_graph(project_id: u64, args: &Value) -> String {
         return json!({"error": "table field is required [module=mcp, tool=get_knowledge_graph]"})
             .to_string();
     }
-    let limit = args["limit"].as_i64().unwrap_or(100) as i32;
+    let limit = clamp_knowledge_limit(args["limit"].as_i64());
     ffi::get_knowledge_graph(project_id, table, limit)
 }
 
@@ -1100,7 +1149,7 @@ fn h_get_subgraph(project_id: u64, args: &Value) -> String {
                 .to_string();
         }
     };
-    let radius = args["radius"].as_i64().unwrap_or(1).clamp(1, 3) as i32;
+    let radius = clamp_radius(args["radius"].as_i64());
     let node_types = args["node_types"].as_str();
     let edge_types = args["edge_types"].as_str();
     ffi::get_subgraph(project_id, node_id, radius, node_types, edge_types)
@@ -1115,8 +1164,8 @@ fn h_get_neighbors(project_id: u64, args: &Value) -> String {
                 .to_string();
         }
     };
-    let edge_type = args["edge_type"].as_i64().unwrap_or(-1) as i32;
-    let radius = args["radius"].as_i64().unwrap_or(1) as i32;
+    let edge_type = clamp_edge_type(args["edge_type"].as_i64());
+    let radius = clamp_radius(args["radius"].as_i64());
     ffi::get_neighbors(project_id, node_id, edge_type, radius)
 }
 
@@ -1196,7 +1245,7 @@ fn h_codescope_trace(project_id: u64, args: &Value) -> String {
     if let Some(name) = args["function_name"].as_str()
         && !name.is_empty()
     {
-        let depth = args["depth"].as_i64().unwrap_or(1) as i32;
+        let depth = clamp_depth(args["depth"].as_i64(), DEFAULT_CODESCOPE_TRACE_DEPTH);
         let direction = args["direction"].as_str().unwrap_or("both");
         return ffi::explore_function(project_id, name, depth, direction);
     }
@@ -1951,5 +2000,81 @@ mod tests {
                 t.name
             );
         }
+    }
+
+    // ── Argument clamping ─────────────────────────────────────────
+    //
+    // These guards exist because the engine recurses `depth` levels and
+    // builds result sets of `limit` rows: an unclamped value used to reach
+    // the C++ side, where `as i32` silently truncated huge i64s into
+    // arbitrary (sometimes negative) numbers. The tests cover the absent
+    // argument, the boundaries, and the truncation cases.
+
+    #[test]
+    fn test_clamp_depth_bounds() {
+        // Missing argument → per-caller default.
+        assert_eq!(clamp_depth(None, DEFAULT_TRACE_FLOW_DEPTH), 3);
+        assert_eq!(clamp_depth(None, DEFAULT_CODESCOPE_TRACE_DEPTH), 1);
+        // Below the minimum collapses to 1 (a zero/negative depth is
+        // meaningless for a recursive walk).
+        assert_eq!(clamp_depth(Some(0), 3), 1);
+        assert_eq!(clamp_depth(Some(-5), 3), 1);
+        assert_eq!(clamp_depth(Some(1), 3), 1);
+        // Inside the range is preserved.
+        assert_eq!(clamp_depth(Some(5), 3), 5);
+        assert_eq!(clamp_depth(Some(MAX_TRAVERSAL_DEPTH), 3), 10);
+        // Above the maximum is clamped, not truncated.
+        assert_eq!(clamp_depth(Some(11), 3), 10);
+        assert_eq!(clamp_depth(Some(i64::MAX), 3), 10);
+        // 5_000_000_000 as i32 would be 705_032_704 — the old code would
+        // have recursed that many levels.
+        assert_eq!(clamp_depth(Some(5_000_000_000), 3), 10);
+    }
+
+    #[test]
+    fn test_clamp_radius_bounds() {
+        assert_eq!(clamp_radius(None), 1);
+        assert_eq!(clamp_radius(Some(0)), 1);
+        assert_eq!(clamp_radius(Some(-3)), 1);
+        assert_eq!(clamp_radius(Some(1)), 1);
+        assert_eq!(clamp_radius(Some(MAX_NEIGHBOR_RADIUS)), 3);
+        assert_eq!(clamp_radius(Some(4)), 3);
+        assert_eq!(clamp_radius(Some(i64::MAX)), 3);
+    }
+
+    #[test]
+    fn test_clamp_edge_type_bounds() {
+        // Absent / <= 0 means "no type filter" (the SQL only filters on
+        // edge_type > 0).
+        assert_eq!(clamp_edge_type(None), MIN_EDGE_TYPE_FILTER as i32);
+        assert_eq!(clamp_edge_type(Some(-1)), -1);
+        assert_eq!(clamp_edge_type(Some(-100)), -1);
+        assert_eq!(clamp_edge_type(Some(0)), 0);
+        // Contract range is preserved.
+        assert_eq!(clamp_edge_type(Some(1)), 1);
+        assert_eq!(clamp_edge_type(Some(MAX_EDGE_TYPE_FILTER)), 7);
+        // Above the contract maximum is clamped to HasType, never a
+        // truncated/out-of-contract type.
+        assert_eq!(clamp_edge_type(Some(8)), 7);
+        assert_eq!(clamp_edge_type(Some(i64::MAX)), 7);
+    }
+
+    #[test]
+    fn test_clamp_knowledge_limit_bounds() {
+        assert_eq!(clamp_knowledge_limit(None), MAX_QUERY_LIMIT as i32);
+        // 0 is allowed (callers treat it as "no rows").
+        assert_eq!(clamp_knowledge_limit(Some(0)), 0);
+        assert_eq!(clamp_knowledge_limit(Some(-10)), 0);
+        assert_eq!(clamp_knowledge_limit(Some(1)), 1);
+        assert_eq!(
+            clamp_knowledge_limit(Some(MAX_KNOWLEDGE_GRAPH_LIMIT)),
+            MAX_KNOWLEDGE_GRAPH_LIMIT as i32
+        );
+        // 5_000_000_000 as i32 is negative — the old code passed that
+        // straight through to the C++ row limit.
+        assert_eq!(
+            clamp_knowledge_limit(Some(5_000_000_000)),
+            MAX_KNOWLEDGE_GRAPH_LIMIT as i32
+        );
     }
 }

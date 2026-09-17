@@ -101,6 +101,27 @@ class JsVisitor {
 	std::unordered_map<std::string, std::string> var_types_;
 	std::vector<std::string> class_scope_stack_;
 
+	// import_aliases_ maps a locally-bound import name to its module
+	// specifier, e.g.:
+	//   import * as ns from './x'    → "ns"  → "./x"
+	//   import Foo from './x'        → "Foo" → "./x"
+	//   import { A as B } from './x' → "B"   → "./x"
+	// visitCallExpr uses it to emit import_alias evidence for
+	// `ns.fn()` / `Foo.bar()` calls, mirroring JavaVisitor::import_aliases_
+	// and RustVisitor::use_aliases_. Without it JS/TS member calls
+	// carried no structured evidence at all.
+	std::unordered_map<std::string, std::string> import_aliases_;
+
+	/**
+	 * Record the names introduced by one import clause into
+	 * import_aliases_. Handles default imports, namespace imports
+	 * (`* as ns`) and named specifiers (including `name as alias`).
+	 * \param node        An import_clause / namespace_import /
+	 *                    named_imports / import_specifier node.
+	 * \param module_spec The module specifier string of the import.
+	 */
+	void collectImportBindings(TSNode node, const std::string &module_spec);
+
 	void recordVarType(const std::string &name, const std::string &type)
 	{
 		if (!name.empty() && !type.empty())

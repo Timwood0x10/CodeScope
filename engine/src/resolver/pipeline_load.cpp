@@ -8,43 +8,6 @@
 namespace resolver
 {
 
-namespace
-{
-// Infer the source language from a file path's extension. Mirrors the
-// helper in pipeline.cpp (kept as a per-TU copy because it lives in an
-// anonymous namespace there; ODR-safe since anonymous namespaces isolate
-// each translation unit).
-std::string languageFromPath(const std::string &file_path)
-{
-	size_t dot = file_path.rfind('.');
-	if (dot == std::string::npos)
-		return "";
-	std::string ext = file_path.substr(dot);
-	std::string lower;
-	lower.reserve(ext.size());
-	for (char ch : ext)
-		lower.push_back(static_cast<char>(
-			std::tolower(static_cast<unsigned char>(ch))));
-	if (lower == ".cpp" || lower == ".cc" || lower == ".cxx" ||
-	    lower == ".c" || lower == ".h" || lower == ".hpp" ||
-	    lower == ".hh" || lower == ".hxx")
-		return "cpp";
-	if (lower == ".rs")
-		return "rust";
-	if (lower == ".py")
-		return "python";
-	if (lower == ".go")
-		return "go";
-	if (lower == ".ts" || lower == ".tsx")
-		return "typescript";
-	if (lower == ".js" || lower == ".jsx")
-		return "javascript";
-	if (lower == ".java")
-		return "java";
-	return "";
-}
-} // namespace
-
 int ResolverPipeline::loadEntityIndex(
 	std::unordered_map<std::string, std::vector<Candidate>> &entity_index,
 	std::unordered_map<uint64_t, const Candidate *> &entity_by_id,
@@ -68,9 +31,16 @@ int ResolverPipeline::loadEntityIndex(
 			// Step 5: include qualified_name (column 6) so
 			// factorReceiverTypeMatch can match "Box::draw" against
 			// receiver_type="Box" instead of using directory heuristics.
+			// ORDER BY id makes the per-name candidate order deterministic
+			// (rowid order). Without it SQLite may return rows in any order
+			// after a parallel index merge, so equal-scoring homonyms could
+			// be ranked differently between runs. entity_index[name] keeps
+			// that order, and applyConstraints() uses entity_id as the final
+			// tie-break, so the winner is reproducible.
 			"SELECT id, name, file_path, language, arity, kind, qualified_name "
 			"FROM entity "
-			"WHERE project_id=? AND name != ''";
+			"WHERE project_id=? AND name != '' "
+			"ORDER BY id";
 		sqlite3_stmt *idx_st = nullptr;
 		if (sqlite3_prepare_v2(store_->handle(), idx_sql.c_str(), -1,
 				       &idx_st, nullptr) != SQLITE_OK) {

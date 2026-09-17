@@ -167,13 +167,15 @@ class ResolverPipeline {
 	};
 
 	/// Flush the staged resolved edges into _resolved_edges (staging temp
-	/// table) in one transaction, then bulk-copy into relation and
+	/// table) inside a nested savepoint, then bulk-copy into relation and
 	/// graph_edges. Finalizes ins_st. Extracted from run() so this TU stays
 	/// under the 1000-line rule.
 	/// @param resolved_edges  Staged edges accumulated by the resolve loop.
 	/// @param ins_st          Prepared staging INSERT (finalized here).
 	/// @param sql_batch_ms    [out] milliseconds spent in the SQL flush.
-	void flushResolvedEdges(std::vector<ResolvedEdge> &resolved_edges,
+	/// @return true when every batch write succeeded; false lets run()
+	///         return -1 so buildGraph rolls the savepoint back.
+	bool flushResolvedEdges(std::vector<ResolvedEdge> &resolved_edges,
 				sqlite3_stmt *ins_st, int64_t &sql_batch_ms);
 
 	/// Apply constraints to rank candidates.

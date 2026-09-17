@@ -186,38 +186,35 @@ jobs:
 
           # Run every C++ test binary produced under the build dir.
           # nullglob: unmatched globs expand to nothing instead of a literal.
+          #
+          # The set of tests is defined by engine/tests/*.cpp, NOT by a
+          # hand-maintained list. The previous hard-coded skip list had
+          # drifted badly: it skipped 26 tests whose recorded reasons
+          # ("known failing", "requires removed LadybugDB graph feature")
+          # were no longer true, including the entire per-language
+          # false-positive precision suite (test_fp_*). Those tests all pass
+          # on this tree, so skipping them only hid regressions.
+          #
+          # Keep skip_tests EMPTY unless a test genuinely cannot run here.
+          # Never add an entry to silence a failure — fix the test or remove
+          # it from engine/tests/ with a tracked issue.
+          skip_tests=""
           shopt -s nullglob
           failed=0
           for test_bin in engine/build-tests/test_*; do
             # Only run regular executable files (skip dirs / non-binaries).
             [ -f "$test_bin" ] && [ -x "$test_bin" ] || continue
             test_name=$(basename "$test_bin")
-            # Skip known manual/debug tools that need external args,
-            # and known-failing tests tracked for future fix.
-            # This list must match the Makefile's TEST_EXES skip list.
-            case "$test_name" in
-              test_bench|test_bench_enhance|test_bench_project|test_pipeline_bench|test_fast_scan_debug|test_verify_aiscope)
-                echo "  SKIP $test_name (requires external args)"
-                continue
-                ;;
-              test_enhance_e2e|test_js_visitor|test_ts_visitor|test_tsx_visitor)
-                echo "  SKIP $test_name (known failure, tracked for future fix)"
-                continue
-                ;;
-              test_rust_e2e|test_qualified_id_ast|test_ts_e2e|test_type_extraction)
-                echo "  SKIP $test_name (requires removed LadybugDB graph feature)"
-                continue
-                ;;
-              test_c_e2e|test_cpp_e2e|test_e2e|test_go_e2e|test_java_e2e|test_js_e2e)
-                echo "  SKIP $test_name (find_def requires removed LadybugDB graph feature)"
-                continue
-                ;;
-              test_fp_c|test_fp_cpp|test_fp_go|test_fp_java|test_fp_js|test_fp_python|test_fp_rust|test_fp_ts)
-                echo "  SKIP $test_name (known failing test, tracked for future fix)"
-                continue
-                ;;
-              test_call_graph_method|test_call_graph_p1|test_membulk_parity|test_query_algorithms)
-                echo "  SKIP $test_name (requires graph_nodes table, migrated to entity/relation)"
+            # A restored build cache can contain binaries for tests that no
+            # longer exist in the tree; running those would fail for the
+            # wrong reason. The source tree is the source of truth.
+            if [ ! -f "engine/tests/${test_name}.cpp" ]; then
+              echo "  SKIP $test_name (no engine/tests/${test_name}.cpp)"
+              continue
+            fi
+            case " $skip_tests " in
+              *" $test_name "*)
+                echo "  SKIP $test_name (listed in skip_tests)"
                 continue
                 ;;
             esac
