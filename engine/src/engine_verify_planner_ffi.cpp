@@ -56,50 +56,65 @@
 //         an "error" or "verdict":"Unknown" field.
 char *engine_verify_statement(uint64_t project_id, const char *claim_text)
 {
-	if (!g_store)
-		return dupString("{\"error\":\"engine not initialized\"}");
-	if (!claim_text || !*claim_text)
-		return dupString("{\"verdict\":\"Unknown\",\"confidence\":0"
-				 ",\"error\":\"empty claim\"}");
+	try {
+		if (!g_store)
+			return dupString(
+				"{\"error\":\"engine not initialized\"}");
+		if (!claim_text || !*claim_text)
+			return dupString(
+				"{\"verdict\":\"Unknown\",\"confidence\":0"
+				",\"error\":\"empty claim\"}");
 
-	// Thin wrapper over the structured verify_claim path (VP4 → Step 9):
-	// parse the natural-language intent, map it to a structured Claim,
-	// and dispatch through verify_one_claim — the SAME core used by
-	// verify_claim. This replaces the old IntentParser → Planner →
-	// EvidenceBuilder → VerdictBuilder chain, which silently returned
-	// Unknown for any intent that did not map to a known evidence rule
-	// (no way to distinguish "unrecognized question" from "evidence
-	// insufficient"). Unrecognized intents now return a machine-readable
-	// error_code so MCP clients can tell the two apart.
-	verify::planner::IntentParser parser;
-	verify::planner::Intent intent = parser.parse(claim_text);
+		// Thin wrapper over the structured verify_claim path (VP4 → Step 9):
+		// parse the natural-language intent, map it to a structured Claim,
+		// and dispatch through verify_one_claim — the SAME core used by
+		// verify_claim. This replaces the old IntentParser → Planner →
+		// EvidenceBuilder → VerdictBuilder chain, which silently returned
+		// Unknown for any intent that did not map to a known evidence rule
+		// (no way to distinguish "unrecognized question" from "evidence
+		// insufficient"). Unrecognized intents now return a machine-readable
+		// error_code so MCP clients can tell the two apart.
+		verify::planner::IntentParser parser;
+		verify::planner::Intent intent = parser.parse(claim_text);
 
-	verify::Claim claim;
-	if (intent.type == "capability_question") {
-		claim.type = verify::ClaimType::CapabilityExists;
-	} else if (intent.type == "safety_question" ||
-		   intent.type == "pattern_question") {
-		claim.type = verify::ClaimType::ContractHolds;
-	} else {
-		return dupString("{\"verdict\":\"Unknown\",\"confidence\":0,"
-				 "\"error_code\":\"intent_unrecognized\","
-				 "\"error\":\"claim intent not recognized; use "
-				 "verify_claim with type capability_exists|"
-				 "contract_holds|architecture_follows|"
-				 "function_implements [module=ffi, "
-				 "method=engine_verify_statement]\"}");
+		verify::Claim claim;
+		if (intent.type == "capability_question") {
+			claim.type = verify::ClaimType::CapabilityExists;
+		} else if (intent.type == "safety_question" ||
+			   intent.type == "pattern_question") {
+			claim.type = verify::ClaimType::ContractHolds;
+		} else {
+			return dupString(
+				"{\"verdict\":\"Unknown\",\"confidence\":0,"
+				"\"error_code\":\"intent_unrecognized\","
+				"\"error\":\"claim intent not recognized; use "
+				"verify_claim with type capability_exists|"
+				"contract_holds|architecture_follows|"
+				"function_implements [module=ffi, "
+				"method=engine_verify_statement]\"}");
+		}
+		claim.subject = intent.subject.empty() ? claim_text :
+							 intent.subject;
+		claim.predicate = "implemented_by";
+		claim.scope = "repository";
+		claim.source_kind = "manual";
+
+		verify_ffi::VerifyResult result =
+			verify_ffi::verify_one_claim(project_id, claim);
+		char *json = result.json;
+		// result.json is heap-allocated and owned by us (MUST NOT free twice:
+		// dupString copies, so the caller's free on our return value is the
+		// only free). verify_one_claim's caller contract: caller frees the
+		// returned pointer. We return it directly.
+		return json;
+	} catch (const std::exception &e) {
+		return dupString(
+			std::string("{\"error\":\"[module=ffi, "
+				    "method=engine_verify_statement] ") +
+			e.what() + "\"}");
+	} catch (...) {
+		return dupString(
+			"{\"error\":\"[module=ffi, "
+			"method=engine_verify_statement] unknown exception\"}");
 	}
-	claim.subject = intent.subject.empty() ? claim_text : intent.subject;
-	claim.predicate = "implemented_by";
-	claim.scope = "repository";
-	claim.source_kind = "manual";
-
-	verify_ffi::VerifyResult result =
-		verify_ffi::verify_one_claim(project_id, claim);
-	char *json = result.json;
-	// result.json is heap-allocated and owned by us (MUST NOT free twice:
-	// dupString copies, so the caller's free on our return value is the
-	// only free). verify_one_claim's caller contract: caller frees the
-	// returned pointer. We return it directly.
-	return json;
 }

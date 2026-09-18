@@ -53,8 +53,12 @@ using namespace engine_index_sched;
 
 // ─── Index Project (Parallel) ──────────────────────────────────
 
-char *engine_index_project(uint64_t project_id, const char *dir_path,
-			   const char *language_filter)
+/// Body of engine_index_project. Kept as a separate function so the extern "C"
+/// entry point below can stay a thin try/catch wrapper: no C++ exception may
+/// cross the C ABI boundary (the MCP server is long-running, so an escaping
+/// exception would terminate it).
+static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
+			      const char *language_filter)
 {
 	if (!g_store)
 		return dupString(
@@ -546,6 +550,11 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 
 			if (visitor) {
 				ir::SemanticUnit *su = nullptr;
+				// The visitor transfers ownership of the returned
+				// unit to the caller (see js_visitor.h); without
+				// this guard every parsed file leaks one
+				// SemanticUnit.
+				std::unique_ptr<ir::SemanticUnit> su_guard;
 				try {
 					su = visitor->visit(tree.get(),
 							    source.c_str(),
@@ -566,6 +575,7 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 								VisitorUnknownThrow));
 					continue;
 				}
+				su_guard.reset(su);
 				if (su) {
 					result->records = su->allRecords();
 					result->metrics = index_metrics::
@@ -833,4 +843,20 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	return engine_index_post_parse(project_id, dir, job_paths, filter,
 				       is_reindex, mode_fast, mode_deep,
 				       time_parse_ms, 0, total_indexed);
+}
+
+char *engine_index_project(uint64_t project_id, const char *dir_path,
+			   const char *language_filter)
+{
+	try {
+		return indexProjectImpl(project_id, dir_path, language_filter);
+	} catch (const std::exception &e) {
+		return dupString(std::string("{\"error\":\"[module=ffi, "
+					     "method=engine_index_project] ") +
+				 jsonEscape(e.what()) + "\"}");
+	} catch (...) {
+		return dupString(
+			"{\"error\":\"[module=ffi, "
+			"method=engine_index_project] unknown exception\"}");
+	}
 }

@@ -223,6 +223,11 @@ char *engine_index_project_membulk(
 
 			if (visitor) {
 				ir::SemanticUnit *su = nullptr;
+				// The visitor transfers ownership of the returned
+				// unit to the caller (see js_visitor.h); without
+				// this guard every parsed file leaks one
+				// SemanticUnit.
+				std::unique_ptr<ir::SemanticUnit> su_guard;
 				// A visitor exception must not escape this worker
 				// thread: it would reach std::terminate and abort
 				// the whole process mid-index. The streaming path
@@ -249,6 +254,7 @@ char *engine_index_project_membulk(
 								VisitorUnknownThrow));
 					continue;
 				}
+				su_guard.reset(su);
 				if (su) {
 					result.records = su->allRecords();
 					result.metrics = index_metrics::

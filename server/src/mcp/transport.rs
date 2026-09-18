@@ -33,56 +33,30 @@ const MAX_DRAIN_BYTES: u64 = 16 << 20; // 16 MiB
 /// Returns the parsed Request, Eof on clean EOF, or ParseError on bad JSON.
 pub fn read_message() -> io::Result<ReadResult> {
     let stdin = io::stdin();
-    let mut line = String::new();
-    // Limit line length to avoid unbounded memory consumption (DoS).
-    // take() ensures at most MAX_LINE_LEN+1 bytes are read into the
-    // buffer: MAX_LINE_LEN bytes of payload + 1 byte to detect
-    // overflow. If the line is longer, read_line returns without a
-    // trailing '\n' and we drain the remainder below (M8).
-    let mut reader = stdin.lock().take((MAX_LINE_LEN + 1) as u64);
-    let n = reader.read_line(&mut line)?;
-    if n == 0 {
-        return Ok(ReadResult::Eof); // clean EOF
-    }
-    // M8: If we hit the take limit without a trailing '\n', the line
-    // was longer than MAX_LINE_LEN. The take() reader is exhausted but
-    // the underlying stdin cursor still sits in the MIDDLE of that
-    // line — without draining, the next read_message() would resume
-    // from there and produce a cascade of ParseErrors, putting the
-    // JSON-RPC protocol permanently out of sync. Drop the take
-    // wrapper (releasing the stdin lock), drain stdin until the next
-    // '\n' or EOF, then report a parse error so the caller continues
-    // at a clean protocol boundary.
-    if !line.ends_with('\n') && n > MAX_LINE_LEN {
-        drop(reader);
-        drain_stdin_until_newline()?;
-        let error_resp = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": null,
-            "error": {
-                "code": -32700,
-                "message": "Parse error",
-                "data": {
-                    "detail": format!("line exceeds {} byte limit", MAX_LINE_LEN),
-                }
-            }
-        });
-        let json = serde_json::to_string(&error_resp).unwrap_or_default();
-        let stdout = io::stdout();
-        let mut handle = stdout.lock();
-        let _ = writeln!(handle, "{}", json);
-        let _ = handle.flush();
-        return Ok(ReadResult::ParseError);
-    }
-    drop(reader);
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
-        return Ok(ReadResult::Eof);
-    }
-    match serde_json::from_str::<Request>(trimmed) {
-        Ok(req) => Ok(ReadResult::Msg(req)),
-        Err(e) => {
-            // JSON-RPC requires a Parse Error response (-32700)
+    loop {
+        let mut line = String::new();
+        // Limit line length to avoid unbounded memory consumption (DoS).
+        // take() ensures at most MAX_LINE_LEN+1 bytes are read into the
+        // buffer: MAX_LINE_LEN bytes of payload + 1 byte to detect
+        // overflow. If the line is longer, read_line returns without a
+        // trailing '\n' and we drain the remainder below (M8).
+        let mut reader = stdin.lock().take((MAX_LINE_LEN + 1) as u64);
+        let n = reader.read_line(&mut line)?;
+        if n == 0 {
+            return Ok(ReadResult::Eof); // clean EOF
+        }
+        // M8: If we hit the take limit without a trailing '\n', the line
+        // was longer than MAX_LINE_LEN. The take() reader is exhausted but
+        // the underlying stdin cursor still sits in the MIDDLE of that
+        // line — without draining, the next read_message() would resume
+        // from there and produce a cascade of ParseErrors, putting the
+        // JSON-RPC protocol permanently out of sync. Drop the take
+        // wrapper (releasing the stdin lock), drain stdin until the next
+        // '\n' or EOF, then report a parse error so the caller continues
+        // at a clean protocol boundary.
+        if !line.ends_with('\n') && n > MAX_LINE_LEN {
+            drop(reader);
+            drain_stdin_until_newline()?;
             let error_resp = serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": null,
@@ -90,8 +64,7 @@ pub fn read_message() -> io::Result<ReadResult> {
                     "code": -32700,
                     "message": "Parse error",
                     "data": {
-                        "detail": format!("{}", e),
-                        "raw": trimmed
+                        "detail": format!("line exceeds {} byte limit", MAX_LINE_LEN),
                     }
                 }
             });
@@ -100,8 +73,41 @@ pub fn read_message() -> io::Result<ReadResult> {
             let mut handle = stdout.lock();
             let _ = writeln!(handle, "{}", json);
             let _ = handle.flush();
-            Ok(ReadResult::ParseError)
+            return Ok(ReadResult::ParseError);
         }
+        drop(reader);
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            // A blank line is NOT EOF. Only `n == 0` above is a clean
+            // disconnect. Treating an empty line as EOF meant a single stray
+            // newline — a separator-style client, or a trailing blank line —
+            // terminated the long-running server. Skip it and keep reading.
+            continue;
+        }
+        return match serde_json::from_str::<Request>(trimmed) {
+            Ok(req) => Ok(ReadResult::Msg(req)),
+            Err(e) => {
+                // JSON-RPC requires a Parse Error response (-32700)
+                let error_resp = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": null,
+                    "error": {
+                        "code": -32700,
+                        "message": "Parse error",
+                        "data": {
+                            "detail": format!("{}", e),
+                            "raw": trimmed
+                        }
+                    }
+                });
+                let json = serde_json::to_string(&error_resp).unwrap_or_default();
+                let stdout = io::stdout();
+                let mut handle = stdout.lock();
+                let _ = writeln!(handle, "{}", json);
+                let _ = handle.flush();
+                Ok(ReadResult::ParseError)
+            }
+        };
     }
 }
 

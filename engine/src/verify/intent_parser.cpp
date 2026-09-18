@@ -72,9 +72,16 @@ constexpr double kWeightWorkflowCompleteness = 0.2;
 constexpr double kWeightThreadSafety = 1.0;
 
 // Build the 3-requirement Intent for the "safely handle CString"
-// safety question. MemoryOwnership (cstring_leak + malloc_no_free)
-// carries the highest weight; FFIBoundary (extern_call + cgo_callback)
-// and Lifetime (cstring_alloc_vs_free) are secondary signals.
+// safety question. MemoryOwnership (cstring_leak) carries the highest
+// weight; FFIBoundary (extern_call_collect) and Lifetime (cstring_leak)
+// are secondary signals.
+//
+// Every rule name below MUST exist in engine/src/evidence/rules/*.json — a
+// requirement can only be satisfied by evidence produced by one of its rules,
+// so an unknown name would make the requirement permanently unsatisfiable.
+// The previous table referenced `malloc_no_free`, `extern_call` and
+// `cstring_alloc_vs_free`, none of which has ever existed; the consistency
+// test test_intent_rule_names guards against a repeat.
 Intent buildCStringSafetyIntent(const std::string &raw_claim)
 {
 	Intent intent;
@@ -84,19 +91,19 @@ Intent buildCStringSafetyIntent(const std::string &raw_claim)
 
 	EvidenceRequirement mem;
 	mem.id = "MemoryOwnership";
-	mem.rule_names = { "cstring_leak", "malloc_no_free" };
+	mem.rule_names = { "cstring_leak" };
 	mem.weight = kWeightMemoryOwnership;
 	intent.requirements.push_back(std::move(mem));
 
 	EvidenceRequirement ffi;
 	ffi.id = "FFIBoundary";
-	ffi.rule_names = { "extern_call", "cgo_callback" };
+	ffi.rule_names = { "extern_call_collect" };
 	ffi.weight = kWeightFfiBoundary;
 	intent.requirements.push_back(std::move(ffi));
 
 	EvidenceRequirement life;
 	life.id = "Lifetime";
-	life.rule_names = { "cstring_alloc_vs_free" };
+	life.rule_names = { "cstring_leak" };
 	life.weight = kWeightLifetime;
 	intent.requirements.push_back(std::move(life));
 
@@ -126,6 +133,15 @@ Intent buildBareExceptIntent(const std::string &raw_claim)
 // CapabilityExistence checks for the declared capability,
 // Implementation checks for JWT entities in code, and
 // WorkflowCompleteness checks for the end-to-end login workflow.
+//
+// KNOWN GAP: this repository ships no rule family for capability declaration,
+// JWT entities or end-to-end workflows, so the three requirements carry no
+// rule names. They previously named `capability_declared`, `jwt_entities` and
+// `workflow_complete` — none of which exists — which made every requirement
+// unsatisfiable. Leaving them unnamed keeps the intent honest: it is
+// classified, but the evidence chain cannot confirm it (the production path
+// classifies the claim and verifies it through the structured claim path
+// instead — see engine_verify_statement).
 Intent buildJwtCapabilityIntent(const std::string &raw_claim)
 {
 	Intent intent;
@@ -135,19 +151,16 @@ Intent buildJwtCapabilityIntent(const std::string &raw_claim)
 
 	EvidenceRequirement cap;
 	cap.id = "CapabilityExistence";
-	cap.rule_names = { "capability_declared" };
 	cap.weight = kWeightCapabilityExistence;
 	intent.requirements.push_back(std::move(cap));
 
 	EvidenceRequirement impl;
 	impl.id = "Implementation";
-	impl.rule_names = { "jwt_entities" };
 	impl.weight = kWeightImplementation;
 	intent.requirements.push_back(std::move(impl));
 
 	EvidenceRequirement wf;
 	wf.id = "WorkflowCompleteness";
-	wf.rule_names = { "workflow_complete" };
 	wf.weight = kWeightWorkflowCompleteness;
 	intent.requirements.push_back(std::move(wf));
 

@@ -263,8 +263,14 @@ char *engine_search_semantic(uint64_t project_id, const char *query, int limit)
 		return dupString(
 			g_store->searchSemanticJson(project_id, query, limit));
 	} catch (const std::exception &e) {
-		return dupString(std::string("{\"error\":\"") + e.what() +
-				 "\"}");
+		return dupString(
+			std::string("{\"error\":\"[module=ffi, "
+				    "method=engine_search_semantic] ") +
+			e.what() + "\"}");
+	} catch (...) {
+		return dupString(
+			"{\"error\":\"[module=ffi, "
+			"method=engine_search_semantic] unknown exception\"}");
 	}
 }
 
@@ -819,6 +825,10 @@ extern "C" char *engine_rebuild_csr(const char *db_path, uint64_t project_id)
 		return dupString(std::string("{\"error\":\"[module=ffi, "
 					     "method=engine_rebuild_csr] ") +
 				 e.what() + "\"}");
+	} catch (...) {
+		return dupString(
+			"{\"error\":\"[module=ffi, "
+			"method=engine_rebuild_csr] unknown exception\"}");
 	}
 }
 

@@ -16,16 +16,9 @@
 namespace query
 {
 
-// Maximum BFS depth for findShortestPath. Limits traversal to prevent
-// unbounded walks over very large graphs; chosen to cover typical call
-// chains while keeping query latency bounded.
-static constexpr int kShortestPathMaxDepth = 10;
-
-// Standard note appended to findShortestPath results explaining the
-// heuristic nature of the call graph (name-matched, no virtual dispatch).
-static const char *const kShortestPathNote =
-	"Call graph edges are resolved by name matching; indirect calls "
-	"(virtual/pointer) may be missing.";
+// findShortestPath moved to query_engine_traverse.cpp together with
+// kShortestPathMaxDepth / kShortestPathNote; the copies that used to live here
+// were left behind by that split and only produced unused-variable warnings.
 
 // ─── JSON string escaping ──────────────────────────────────────
 
@@ -353,8 +346,12 @@ std::string QueryEngine::getCallers(uint64_t project_id,
 	auto resolveIds = [&](std::vector<int64_t> &ids) {
 		std::string sql = "SELECT id FROM entity WHERE project_id=? "
 				  "AND (name=? OR qualified_name=?)";
+		// M3 fix: bind the file_filter instead of splicing it into the
+		// LIKE literal — a filter containing a quote could inject SQL,
+		// while a bound `%filter%` value is safe. Mirrors the fix
+		// already applied to findDefinition / findReferences.
 		if (!has_filter.empty())
-			sql += " AND file_path LIKE '%" + has_filter + "%'";
+			sql += " AND file_path LIKE ?";
 		sqlite3_stmt *st = nullptr;
 		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &st, nullptr) !=
 		    SQLITE_OK)
@@ -362,6 +359,11 @@ std::string QueryEngine::getCallers(uint64_t project_id,
 		sqlite3_bind_int64(st, 1, static_cast<int64_t>(project_id));
 		sqlite3_bind_text(st, 2, function_name, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_text(st, 3, function_name, -1, SQLITE_TRANSIENT);
+		if (!has_filter.empty()) {
+			std::string like = "%" + has_filter + "%";
+			sqlite3_bind_text(st, 4, like.c_str(), -1,
+					  SQLITE_TRANSIENT);
+		}
 		while (sqlite3_step(st) == SQLITE_ROW)
 			ids.push_back(sqlite3_column_int64(st, 0));
 		sqlite3_finalize(st);
@@ -527,8 +529,12 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 	auto resolveIds = [&](std::vector<int64_t> &ids) {
 		std::string sql = "SELECT id FROM entity WHERE project_id=? "
 				  "AND (name=? OR qualified_name=?)";
+		// M3 fix: bind the file_filter instead of splicing it into the
+		// LIKE literal — a filter containing a quote could inject SQL,
+		// while a bound `%filter%` value is safe. Mirrors the fix
+		// already applied to findDefinition / findReferences.
 		if (!has_filter.empty())
-			sql += " AND file_path LIKE '%" + has_filter + "%'";
+			sql += " AND file_path LIKE ?";
 		sqlite3_stmt *st = nullptr;
 		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &st, nullptr) !=
 		    SQLITE_OK)
@@ -536,6 +542,11 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 		sqlite3_bind_int64(st, 1, static_cast<int64_t>(project_id));
 		sqlite3_bind_text(st, 2, function_name, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_text(st, 3, function_name, -1, SQLITE_TRANSIENT);
+		if (!has_filter.empty()) {
+			std::string like = "%" + has_filter + "%";
+			sqlite3_bind_text(st, 4, like.c_str(), -1,
+					  SQLITE_TRANSIENT);
+		}
 		while (sqlite3_step(st) == SQLITE_ROW)
 			ids.push_back(sqlite3_column_int64(st, 0));
 		sqlite3_finalize(st);

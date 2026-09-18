@@ -360,6 +360,43 @@ std::vector<DriftItem> detectDocumentationDrift(store::GraphStore &store,
 	if (claims.empty())
 		return drifts;
 
+	// Evidence gate: countEntitiesByLanguage() returns 0 when nothing has been
+	// indexed, which would mark every language named in the README as missing.
+	//
+	// Readiness here is "the entity table has rows", NOT the shared
+	// evidence_backend_ready() (which also demands a relation row): this check
+	// reads only `entity`, and a project whose languages are all single-file
+	// has no resolvable call edges, so requiring relations would suppress the
+	// check for exactly the projects it still applies to.
+	int64_t entity_rows = 0;
+	{
+		const char *count_sql =
+			"SELECT COUNT(*) FROM entity WHERE project_id=?";
+		sqlite3_stmt *count_stmt = nullptr;
+		if (sqlite3_prepare_v2(db, count_sql, -1, &count_stmt,
+				       nullptr) == SQLITE_OK) {
+			sqlite3_bind_int64(count_stmt, 1,
+					   static_cast<int64_t>(project_id));
+			if (sqlite3_step(count_stmt) == SQLITE_ROW)
+				entity_rows =
+					sqlite3_column_int64(count_stmt, 0);
+			sqlite3_finalize(count_stmt);
+		} else {
+			fprintf(stderr,
+				"[module=verify, method=detectDocumentationDrift] "
+				"entity count prepare failed: %s\n",
+				sqlite3_errmsg(db));
+		}
+	}
+	if (entity_rows <= 0) {
+		fprintf(stderr,
+			"[module=verify, method=detectDocumentationDrift] "
+			"evidence backend not ready (entity=%lld): no drift "
+			"conclusions reported\n",
+			(long long)entity_rows);
+		return drifts;
+	}
+
 	// Step 3: Cross-reference each claimed language with the entity table.
 	for (const auto &claim : claims) {
 		int64_t entity_count = countEntitiesByLanguage(

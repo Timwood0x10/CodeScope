@@ -12,6 +12,17 @@
 namespace query
 {
 
+// ─── Multi-hop query bounds ─────────────────────────────────────
+// The hop range comes from a client-supplied DSL string, so it must not be
+// able to walk the graph unboundedly. The multi-hop BFS keeps no visited set:
+// a node reachable through several paths is re-expanded once per path, so a
+// range such as `[Calls*1..1000000]` makes both time and memory grow
+// exponentially on a cyclic graph. Truncation is reported in the response
+// rather than hidden.
+static constexpr int kMultiHopMaxDepth = 8;
+static constexpr int kMultiHopMaxRows = 10000;
+static constexpr int64_t kMultiHopExpansionBudget = 200000;
+
 // ─── Node/Edge type name → integer mapping ─────────────────────
 
 static const std::unordered_map<std::string, int> &typeMap()
@@ -325,6 +336,10 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 				min_depth = 1;
 			if (max_depth < min_depth)
 				max_depth = min_depth;
+			// The DSL is client-supplied: clamp the hop count so a query
+			// cannot ask for an effectively unbounded walk.
+			if (max_depth > kMultiHopMaxDepth)
+				max_depth = kMultiHopMaxDepth;
 		}
 	} else {
 		edge_spec = edge_raw;
@@ -484,6 +499,8 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 	json << "{\"results\":[";
 	bool first_row = true;
 	int row_count = 0;
+	// Set when a multi-hop bound fires; reported in the response tail.
+	bool multi_hop_truncated = false;
 
 	if (!multi_hop) {
 		// ── Single hop: relation.src→target with filters ──
@@ -609,7 +626,9 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 		// BFS level by level. The queue carries the full node path so the
 		// "1->2->3" chain is correct per branch. To keep output bounded we
 		// stop expanding a node once it matches the target set (shortest
-		// representative paths).
+		// representative paths). `expansions` bounds the total work and
+		// `multi_hop_truncated` reports when that bound fired.
+		int64_t expansions = 0;
 		for (int64_t start : src_set) {
 			// {path, depth} — path includes `start`.
 			std::queue<std::pair<std::vector<int64_t>, int>> bfs;
@@ -619,6 +638,15 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 				bfs.pop();
 				if (depth > max_depth)
 					continue;
+				// Cap the total work before expanding. A node reachable
+				// through several paths is re-expanded once per path (no
+				// visited set), so without this the walk is exponential in
+				// the hop count on a cyclic graph.
+				if (++expansions > kMultiHopExpansionBudget ||
+				    row_count >= kMultiHopMaxRows) {
+					multi_hop_truncated = true;
+					break;
+				}
 				int64_t node = path.back();
 				auto callees = store->getCalleeIds(
 					static_cast<uint64_t>(node));
@@ -673,10 +701,17 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 							   depth + 1 });
 				}
 			}
+			if (multi_hop_truncated)
+				break;
 		}
 	}
 
-	json << "],\"total\":" << row_count << "}";
+	json << "],\"total\":" << row_count;
+	// Only present when a bound actually fired, so an untruncated response is
+	// byte-identical to before.
+	if (multi_hop_truncated)
+		json << ",\"truncated\":true";
+	json << "}";
 	return json.str();
 }
 

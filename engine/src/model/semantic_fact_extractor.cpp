@@ -192,10 +192,10 @@ int64_t SemanticFactExtractor::extractSyncFacts(uint64_t project_id)
 	const char *sql =
 		"SELECT sr.name, sr.qualified_name, sr.language, "
 		"  sr.start_row, sr.file_path, "
-		"  (SELECT gn.id FROM graph_nodes gn "
+		"  (SELECT gn.id FROM entity gn "
 		"    WHERE gn.project_id = sr.project_id "
 		"      AND gn.file_path = sr.file_path "
-		"      AND gn.node_type IN (?, ?) "
+		"      AND gn.kind IN (?, ?) "
 		"      AND gn.start_row <= sr.start_row "
 		"      AND (gn.end_row >= sr.start_row OR gn.end_row = 0) "
 		"    ORDER BY gn.start_row DESC LIMIT 1) AS fn_id "
@@ -301,10 +301,10 @@ int64_t SemanticFactExtractor::extractMemoryFacts(uint64_t project_id)
 	// C.CString / C.CBytes / C.free (Go cgo) + malloc/calloc/realloc/free.
 	const char *sql =
 		"SELECT sr.name, sr.start_row, sr.file_path, "
-		"  (SELECT gn.id FROM graph_nodes gn "
+		"  (SELECT gn.id FROM entity gn "
 		"    WHERE gn.project_id = sr.project_id "
 		"      AND gn.file_path = sr.file_path "
-		"      AND gn.node_type IN (?, ?) "
+		"      AND gn.kind IN (?, ?) "
 		"      AND gn.start_row <= sr.start_row "
 		"      AND (gn.end_row >= sr.start_row OR gn.end_row = 0) "
 		"    ORDER BY gn.start_row DESC LIMIT 1) AS fn_id "
@@ -392,10 +392,10 @@ int64_t SemanticFactExtractor::extractErrorFacts(uint64_t project_id)
 	// the Python/JS visitors.
 	const char *sql =
 		"SELECT sr.name, sr.language, sr.start_row, sr.file_path, "
-		"  (SELECT gn.id FROM graph_nodes gn "
+		"  (SELECT gn.id FROM entity gn "
 		"    WHERE gn.project_id = sr.project_id "
 		"      AND gn.file_path = sr.file_path "
-		"      AND gn.node_type IN (?, ?) "
+		"      AND gn.kind IN (?, ?) "
 		"      AND gn.start_row <= sr.start_row "
 		"      AND (gn.end_row >= sr.start_row OR gn.end_row = 0) "
 		"    ORDER BY gn.start_row DESC LIMIT 1) AS fn_id "
@@ -483,10 +483,10 @@ int64_t SemanticFactExtractor::extractPatternFacts(uint64_t project_id)
 	const char *sql =
 		"SELECT sr.name, sr.kind, sr.language, sr.start_row, "
 		"  sr.file_path, "
-		"  (SELECT gn.id FROM graph_nodes gn "
+		"  (SELECT gn.id FROM entity gn "
 		"    WHERE gn.project_id = sr.project_id "
 		"      AND gn.file_path = sr.file_path "
-		"      AND gn.node_type IN (?, ?) "
+		"      AND gn.kind IN (?, ?) "
 		"      AND gn.start_row <= sr.start_row "
 		"      AND (gn.end_row >= sr.start_row OR gn.end_row = 0) "
 		"    ORDER BY gn.start_row DESC LIMIT 1) AS fn_id "
@@ -601,10 +601,10 @@ int64_t SemanticFactExtractor::extractFrameworkFacts(uint64_t project_id)
 	// fact to. import.file_path is the source file (populated by the
 	// Python/JS/Go/Rust visitors when emitting Import records).
 	const char *sql = "SELECT i.target_path, i.file_path, "
-			  "  (SELECT gn.id FROM graph_nodes gn "
+			  "  (SELECT gn.id FROM entity gn "
 			  "    WHERE gn.project_id = i.project_id "
 			  "      AND gn.file_path = i.file_path "
-			  "      AND gn.node_type IN (?, ?) "
+			  "      AND gn.kind IN (?, ?) "
 			  "    ORDER BY gn.start_row LIMIT 1) AS fn_id "
 			  "FROM import i "
 			  "WHERE i.project_id = ? "
@@ -698,10 +698,10 @@ int64_t SemanticFactExtractor::extractFfiFacts(uint64_t project_id)
 	const char *sql =
 		"SELECT sr.name, sr.qualified_name, sr.language, "
 		"  sr.start_row, sr.file_path, sr.kind, "
-		"  (SELECT gn.id FROM graph_nodes gn "
+		"  (SELECT gn.id FROM entity gn "
 		"    WHERE gn.project_id = sr.project_id "
 		"      AND gn.file_path = sr.file_path "
-		"      AND gn.node_type IN (?, ?) "
+		"      AND gn.kind IN (?, ?) "
 		"      AND gn.start_row <= sr.start_row "
 		"      AND (gn.end_row >= sr.start_row OR gn.end_row = 0) "
 		"    ORDER BY gn.start_row DESC LIMIT 1) AS fn_id "
@@ -784,26 +784,31 @@ int64_t SemanticFactExtractor::extractFfiFacts(uint64_t project_id)
 	}
 	sqlite3_finalize(stmt);
 
-	// ── Query 2: Cross-language call edges (graph_edges) ──────────
+	// ── Query 2: Cross-language call edges (relation) ─────────────
 	// Detects Rust extern "C" functions and C functions declared in
 	// extern "C" blocks by finding functions whose callers come from a
 	// different language (e.g. Rust function called from C code).
+	// Reads the canonical `entity` / `relation` tables: `graph_nodes` /
+	// `graph_edges` are deprecated and are never populated by the
+	// production indexing path (engine_index_project → buildGraph), so a
+	// query against them silently yields zero facts. `relation.type = 1`
+	// is Calls (kRelationTypeCall).
 	const char *sql_xl =
-		"SELECT gn.name, gn.qualified_name, gn.language, "
-		"  gn.start_row, gn.file_path, gn.id AS fn_id "
-		"FROM graph_nodes gn "
-		"WHERE gn.project_id = ? "
-		"  AND gn.node_type IN (?, ?) "
-		"  AND gn.id IN ( "
-		"    SELECT ge.target_node_id "
-		"    FROM graph_edges ge "
-		"    JOIN graph_nodes gn_src ON ge.source_node_id = gn_src.id "
-		"    WHERE ge.project_id = ? "
-		"      AND gn_src.language != gn.language "
-		"      AND gn.language IN ('rust', 'c', 'cpp', 'zig')"
+		"SELECT e.name, e.qualified_name, e.language, "
+		"  e.start_row, e.file_path, e.id AS fn_id "
+		"FROM entity e "
+		"WHERE e.project_id = ? "
+		"  AND e.kind IN (?, ?) "
+		"  AND e.id IN ( "
+		"    SELECT r.target_id FROM relation r "
+		"    JOIN entity src ON r.source_id = src.id "
+		"    WHERE r.project_id = ? "
+		"      AND r.type = 1 "
+		"      AND src.language != e.language "
+		"      AND e.language IN ('rust', 'c', 'cpp', 'zig')"
 		"  ) "
 		"  -- Exclude functions already detected by Query 1 "
-		"  AND gn.id NOT IN (SELECT function_id FROM semantic_fact "
+		"  AND e.id NOT IN (SELECT function_id FROM semantic_fact "
 		"    WHERE project_id = ? AND category = 'ffi')";
 	sqlite3_stmt *stmt_xl = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), sql_xl, -1, &stmt_xl,

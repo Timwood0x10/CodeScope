@@ -471,6 +471,12 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 
 	// Step 2: Batch-insert semantic_records via multi-VALUES
 	// Simple flat iteration: collect (record_ptr, file_path) for all records
+	//
+	// The DELETE above already removed each file's previous rows, so a failed
+	// INSERT here would commit a file that has no records at all — buildGraph
+	// would then see the file but none of its symbols. Track the failure and
+	// report it instead of letting the caller commit a half-written batch.
+	bool records_write_ok = true;
 	if (!batch_records.empty()) {
 		struct RecRef {
 			const ir::Record *rec;
@@ -620,11 +626,17 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 						SQLITE_STATIC);
 				}
 				int rc = sqlite3_step(batch_st);
-				if (rc != SQLITE_DONE)
-					fprintf(stderr,
-						"insertFileResultBatch: records "
-						"multi-VALUES step %d: %s\n",
-						rc, sqlite3_errmsg(db_));
+				if (rc != SQLITE_DONE) {
+					error_ = "[module=store, method="
+						 "insertFileResultBatch] "
+						 "semantic_records batch step "
+						 "failed: " +
+						 std::string(
+							 sqlite3_errmsg(db_));
+					sqlite3_finalize(batch_st);
+					records_write_ok = false;
+					break;
+				}
 				sqlite3_finalize(batch_st);
 			}
 		}
@@ -711,7 +723,9 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 	// Graph data is stored in SQLite: semantic_records → buildGraph →
 	// graph_nodes/edges is the source of truth for all graph queries.
 
-	return true;
+	// Fail-closed: a failed records batch must not be committed by the caller
+	// (see records_write_ok above).
+	return records_write_ok;
 }
 
 // Resolve pre-computed metrics from the _staged_metrics staging table onto

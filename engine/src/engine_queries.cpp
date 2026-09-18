@@ -31,7 +31,7 @@ static constexpr int64_t kLargeProjectNodeThreshold = 100000;
 
 // ─── Phase A: engine_get_module_tree ──────────────────────────
 
-char *engine_get_module_tree(uint64_t project_id)
+static char *getModuleTreeImpl(uint64_t project_id)
 {
 	if (!g_store)
 		return dupString("{\"error\":\"engine not initialized\"}");
@@ -40,7 +40,7 @@ char *engine_get_module_tree(uint64_t project_id)
 
 // ─── Phase A: engine_find_symbol ──────────────────────────────
 
-char *engine_find_symbol(uint64_t project_id, const char *symbol_name)
+static char *findSymbolImpl(uint64_t project_id, const char *symbol_name)
 {
 	if (!g_store)
 		return dupString("{\"error\":\"engine not initialized\"}");
@@ -170,7 +170,7 @@ char *engine_find_symbol(uint64_t project_id, const char *symbol_name)
 //
 // No re-parse, no re-translate, no regex extraction.
 
-char *engine_enhance_project(uint64_t project_id)
+static char *enhanceProjectImpl(uint64_t project_id)
 {
 	if (!g_store || !g_parser)
 		return dupString("{\"error\":\"engine not initialized\"}");
@@ -427,7 +427,7 @@ static std::string queries_coverage_ratio(int ready, int eligible)
 	return std::string(buf);
 }
 
-char *engine_get_enhancement_status(uint64_t project_id)
+static char *getEnhancementStatusImpl(uint64_t project_id)
 {
 	if (!g_store)
 		return dupString("{\"error\":\"engine not initialized\"}");
@@ -517,7 +517,8 @@ char *engine_get_enhancement_status(uint64_t project_id)
 
 // ─── Phase C: Unified Search (adaptive FTS / semantic) ───────
 
-char *engine_unified_search(uint64_t project_id, const char *query, int limit)
+static char *unifiedSearchImpl(uint64_t project_id, const char *query,
+			       int limit)
 {
 	if (!g_store)
 		return dupString("{\"error\":\"engine not initialized\"}");
@@ -587,8 +588,9 @@ char *engine_unified_search(uint64_t project_id, const char *query, int limit)
 
 // ─── Phase C: Adaptive Find Callers ──────────────────────────
 
-char *engine_find_callers_adaptive(uint64_t project_id, const char *symbol_name,
-				   const char *file_filter)
+static char *findCallersAdaptiveImpl(uint64_t project_id,
+				     const char *symbol_name,
+				     const char *file_filter)
 {
 	// v0.2.5: getCallers has its own SQLite/SQLite backend, so the
 	// graph-not-ready guard only requires the SQLite handle (works on
@@ -606,8 +608,9 @@ char *engine_find_callers_adaptive(uint64_t project_id, const char *symbol_name,
 
 // ─── Phase C: Adaptive Find Callees ──────────────────────────
 
-char *engine_find_callees_adaptive(uint64_t project_id, const char *symbol_name,
-				   const char *file_filter)
+static char *findCalleesAdaptiveImpl(uint64_t project_id,
+				     const char *symbol_name,
+				     const char *file_filter)
 {
 	// v0.2.5: getCallees has its own SQLite/SQLite backend, so the
 	// graph-not-ready guard only requires the SQLite handle (works on
@@ -623,7 +626,7 @@ char *engine_find_callees_adaptive(uint64_t project_id, const char *symbol_name,
 
 // ─── Step 7 (plan §7.2): Entity-precise caller/callee queries ────
 
-char *engine_find_callers_by_entity(uint64_t project_id, uint64_t entity_id)
+static char *findCallersByEntityImpl(uint64_t project_id, uint64_t entity_id)
 {
 	// v0.2.5: getCallersByEntity has its own SQLite/SQLite backend, so
 	// the graph-not-ready guard is only required on the SQLite path and
@@ -636,7 +639,7 @@ char *engine_find_callers_by_entity(uint64_t project_id, uint64_t entity_id)
 	return dupString(g_query->getCallersByEntity(project_id, entity_id));
 }
 
-char *engine_find_callees_by_entity(uint64_t project_id, uint64_t entity_id)
+static char *findCalleesByEntityImpl(uint64_t project_id, uint64_t entity_id)
 {
 	// v0.2.5: getCalleesByEntity has its own SQLite/SQLite backend; the
 	// guard here only requires the SQLite handle (works on SQLite-only).
@@ -650,7 +653,7 @@ char *engine_find_callees_by_entity(uint64_t project_id, uint64_t entity_id)
 
 // ─── Phase C: Get Entry Points (new schema) ──────────────────
 
-char *engine_get_entry_points_new(uint64_t project_id)
+static char *getEntryPointsNewImpl(uint64_t project_id)
 {
 	// SQLite is the only data source. graph-not-ready is reported with
 	// the [module=engine_queries, method=get_entry_points_new] tag.
@@ -664,7 +667,7 @@ char *engine_get_entry_points_new(uint64_t project_id)
 
 // ─── Phase C: Project Overview ───────────────────────────────
 
-char *engine_project_overview(uint64_t project_id)
+static char *projectOverviewImpl(uint64_t project_id)
 {
 	if (!g_store)
 		return dupString("{\"error\":\"engine not initialized\"}");
@@ -771,4 +774,192 @@ char *engine_project_overview(uint64_t project_id)
 
 	json << "}";
 	return dupString(json.str());
+}
+
+// ─── FFI boundary wrappers ───────────────────────────────────────
+// The bodies above are static implementations (`*Impl`). Every extern "C"
+// entry point is a thin try/catch wrapper: no C++ exception may cross the C
+// ABI boundary, because the MCP server is long-running and an escaping
+// exception would terminate the whole session. Error envelopes carry a
+// [module=ffi, method=<export>] tag per code_rules.md.
+
+char *engine_get_module_tree(uint64_t project_id)
+{
+	try {
+		return getModuleTreeImpl(project_id);
+	} catch (const std::exception &e) {
+		return dupString(
+			std::string("{\"error\":\"[module=ffi, "
+				    "method=engine_get_module_tree] ") +
+			jsonEscape(e.what()) + "\"}");
+	} catch (...) {
+		return dupString(
+			"{\"error\":\"[module=ffi, "
+			"method=engine_get_module_tree] unknown exception\"}");
+	}
+}
+
+char *engine_find_symbol(uint64_t project_id, const char *symbol_name)
+{
+	try {
+		return findSymbolImpl(project_id, symbol_name);
+	} catch (const std::exception &e) {
+		return dupString(std::string("{\"error\":\"[module=ffi, "
+					     "method=engine_find_symbol] ") +
+				 jsonEscape(e.what()) + "\"}");
+	} catch (...) {
+		return dupString(
+			"{\"error\":\"[module=ffi, "
+			"method=engine_find_symbol] unknown exception\"}");
+	}
+}
+
+char *engine_enhance_project(uint64_t project_id)
+{
+	try {
+		return enhanceProjectImpl(project_id);
+	} catch (const std::exception &e) {
+		return dupString(
+			std::string("{\"error\":\"[module=ffi, "
+				    "method=engine_enhance_project] ") +
+			jsonEscape(e.what()) + "\"}");
+	} catch (...) {
+		return dupString(
+			"{\"error\":\"[module=ffi, "
+			"method=engine_enhance_project] unknown exception\"}");
+	}
+}
+
+char *engine_get_enhancement_status(uint64_t project_id)
+{
+	try {
+		return getEnhancementStatusImpl(project_id);
+	} catch (const std::exception &e) {
+		return dupString(
+			std::string("{\"error\":\"[module=ffi, "
+				    "method=engine_get_enhancement_status] ") +
+			jsonEscape(e.what()) + "\"}");
+	} catch (...) {
+		return dupString(
+			"{\"error\":\"[module=ffi, "
+			"method=engine_get_enhancement_status] unknown "
+			"exception\"}");
+	}
+}
+
+char *engine_unified_search(uint64_t project_id, const char *query, int limit)
+{
+	try {
+		return unifiedSearchImpl(project_id, query, limit);
+	} catch (const std::exception &e) {
+		return dupString(std::string("{\"error\":\"[module=ffi, "
+					     "method=engine_unified_search] ") +
+				 jsonEscape(e.what()) + "\"}");
+	} catch (...) {
+		return dupString(
+			"{\"error\":\"[module=ffi, "
+			"method=engine_unified_search] unknown exception\"}");
+	}
+}
+
+char *engine_find_callers_adaptive(uint64_t project_id, const char *symbol_name,
+				   const char *file_filter)
+{
+	try {
+		return findCallersAdaptiveImpl(project_id, symbol_name,
+					       file_filter);
+	} catch (const std::exception &e) {
+		return dupString(
+			std::string("{\"error\":\"[module=ffi, "
+				    "method=engine_find_callers_adaptive] ") +
+			jsonEscape(e.what()) + "\"}");
+	} catch (...) {
+		return dupString("{\"error\":\"[module=ffi, "
+				 "method=engine_find_callers_adaptive] unknown "
+				 "exception\"}");
+	}
+}
+
+char *engine_find_callees_adaptive(uint64_t project_id, const char *symbol_name,
+				   const char *file_filter)
+{
+	try {
+		return findCalleesAdaptiveImpl(project_id, symbol_name,
+					       file_filter);
+	} catch (const std::exception &e) {
+		return dupString(
+			std::string("{\"error\":\"[module=ffi, "
+				    "method=engine_find_callees_adaptive] ") +
+			jsonEscape(e.what()) + "\"}");
+	} catch (...) {
+		return dupString("{\"error\":\"[module=ffi, "
+				 "method=engine_find_callees_adaptive] unknown "
+				 "exception\"}");
+	}
+}
+
+char *engine_find_callers_by_entity(uint64_t project_id, uint64_t entity_id)
+{
+	try {
+		return findCallersByEntityImpl(project_id, entity_id);
+	} catch (const std::exception &e) {
+		return dupString(
+			std::string("{\"error\":\"[module=ffi, "
+				    "method=engine_find_callers_by_entity] ") +
+			jsonEscape(e.what()) + "\"}");
+	} catch (...) {
+		return dupString(
+			"{\"error\":\"[module=ffi, "
+			"method=engine_find_callers_by_entity] unknown "
+			"exception\"}");
+	}
+}
+
+char *engine_find_callees_by_entity(uint64_t project_id, uint64_t entity_id)
+{
+	try {
+		return findCalleesByEntityImpl(project_id, entity_id);
+	} catch (const std::exception &e) {
+		return dupString(
+			std::string("{\"error\":\"[module=ffi, "
+				    "method=engine_find_callees_by_entity] ") +
+			jsonEscape(e.what()) + "\"}");
+	} catch (...) {
+		return dupString(
+			"{\"error\":\"[module=ffi, "
+			"method=engine_find_callees_by_entity] unknown "
+			"exception\"}");
+	}
+}
+
+char *engine_get_entry_points_new(uint64_t project_id)
+{
+	try {
+		return getEntryPointsNewImpl(project_id);
+	} catch (const std::exception &e) {
+		return dupString(
+			std::string("{\"error\":\"[module=ffi, "
+				    "method=engine_get_entry_points_new] ") +
+			jsonEscape(e.what()) + "\"}");
+	} catch (...) {
+		return dupString("{\"error\":\"[module=ffi, "
+				 "method=engine_get_entry_points_new] unknown "
+				 "exception\"}");
+	}
+}
+
+char *engine_project_overview(uint64_t project_id)
+{
+	try {
+		return projectOverviewImpl(project_id);
+	} catch (const std::exception &e) {
+		return dupString(
+			std::string("{\"error\":\"[module=ffi, "
+				    "method=engine_project_overview] ") +
+			jsonEscape(e.what()) + "\"}");
+	} catch (...) {
+		return dupString(
+			"{\"error\":\"[module=ffi, "
+			"method=engine_project_overview] unknown exception\"}");
+	}
 }

@@ -19,6 +19,20 @@
 namespace query
 {
 
+namespace
+{
+/// Text of a result column, escaped for embedding inside a JSON string
+/// literal. Values emitted through this helper are DB-derived (symbol names,
+/// file paths) and may contain quotes, backslashes or control characters,
+/// which would otherwise produce JSON the MCP client cannot parse. A NULL
+/// column becomes the empty string.
+std::string columnTextEscaped(sqlite3_stmt *stmt, int col)
+{
+	const unsigned char *text = sqlite3_column_text(stmt, col);
+	return jsonEscape(text ? reinterpret_cast<const char *>(text) : "");
+}
+} // namespace
+
 std::string QueryEngine::searchCode(uint64_t project_id, const char *query,
 				    int limit)
 {
@@ -167,7 +181,8 @@ std::string QueryEngine::getModuleMap(uint64_t project_id)
 		if (!first_dir)
 			json << ",";
 		first_dir = false;
-		json << "{\"path\":\"" << dir << "\",\"files\":[";
+		json << "{\"path\":\"" << jsonEscape(dir.c_str())
+		     << "\",\"files\":[";
 
 		// Functions in this directory. entity is the canonical fact source
 		// (the legacy graph_nodes table was migrated to entity); metrics
@@ -190,19 +205,11 @@ std::string QueryEngine::getModuleMap(uint64_t project_id)
 				json << ",";
 			first_fn = false;
 			json << "{"
-			     << "\"name\":\""
-			     << (sqlite3_column_text(stmt, 0) ?
-					 reinterpret_cast<const char *>(
-						 sqlite3_column_text(stmt, 0)) :
-					 "")
+			     << "\"name\":\"" << columnTextEscaped(stmt, 0)
 			     << "\","
 			     << "\"type\":" << sqlite3_column_int(stmt, 1)
 			     << ","
-			     << "\"file\":\""
-			     << (sqlite3_column_text(stmt, 2) ?
-					 reinterpret_cast<const char *>(
-						 sqlite3_column_text(stmt, 2)) :
-					 "")
+			     << "\"file\":\"" << columnTextEscaped(stmt, 2)
 			     << "\","
 			     << "\"complexity\":" << sqlite3_column_int(stmt, 3)
 			     << ","
@@ -459,11 +466,7 @@ std::string QueryEngine::getProjectOverview(uint64_t project_id)
 			if (!first)
 				json << ",";
 			first = false;
-			json << "{\"lang\":\""
-			     << (sqlite3_column_text(stmt, 0) ?
-					 reinterpret_cast<const char *>(
-						 sqlite3_column_text(stmt, 0)) :
-					 "")
+			json << "{\"lang\":\"" << columnTextEscaped(stmt, 0)
 			     << "\","
 			     << "\"files\":" << sqlite3_column_int(stmt, 1)
 			     << "}";

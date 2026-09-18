@@ -31,8 +31,19 @@
 char *engine_scan_project(uint64_t project_id, const char *dir_path,
 			  const char *language_filter)
 {
-	if (!g_store)
-		return dupString("{\"error\":\"engine not initialized\"}");
-	(void)language_filter;
-	return engine_index_project(project_id, dir_path, nullptr);
+	try {
+		if (!g_store)
+			return dupString(
+				"{\"error\":\"engine not initialized\"}");
+		(void)language_filter;
+		return engine_index_project(project_id, dir_path, nullptr);
+	} catch (const std::exception &e) {
+		return dupString(std::string("{\"error\":\"[module=ffi, "
+					     "method=engine_scan_project] ") +
+				 jsonEscape(e.what()) + "\"}");
+	} catch (...) {
+		return dupString(
+			"{\"error\":\"[module=ffi, method=engine_scan_project] "
+			"unknown exception\"}");
+	}
 }

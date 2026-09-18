@@ -323,18 +323,23 @@ pub(super) fn make_relative_glob(abs_path: &str, module_dir: &str) -> String {
     let abs = Path::new(abs_path);
     let modp = Path::new(module_dir);
     let rel = abs.strip_prefix(modp).unwrap_or(abs);
-    let basename = rel
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
-    // Use just the basename so the glob matches the file anywhere
-    // under the module dir — this mirrors the script's behaviour
-    // (`find ... -path "*/$(basename pattern) -delete`).
-    if basename.is_empty() {
-        abs_path.to_string()
-    } else {
-        format!("*/{}", basename)
+    let rel_str = rel.to_string_lossy().replace('\\', "/");
+    if rel_str.is_empty() {
+        return abs_path.to_string();
     }
+    // Emit the path with its DIRECTORY, never the bare basename.
+    //
+    // The previous implementation returned `*/{basename}`, which matches any
+    // file with that name anywhere under the module root: quarantining a
+    // crashing `a/foo.cpp` also excluded the healthy `c/foo.cpp`, silently
+    // dropping it from the index while the run still reported success.
+    //
+    // Two spellings are emitted because the root the FilterPolicy matches
+    // against differs by call site: the retry worker is spawned with the module
+    // dir as its root (module-relative paths), while a project-rooted worker
+    // sees `module/<rel>`. Both forms below stay directory-precise, so neither
+    // can match an unrelated same-named file.
+    format!("{},*/{}", rel_str, rel_str)
 }
 
 /// Run one chunk worker subprocess.
@@ -577,9 +582,23 @@ mod tests {
     }
 
     #[test]
-    fn test_make_relative_glob_returns_basename_glob() {
+    fn test_make_relative_glob_keeps_the_directory() {
         let g = make_relative_glob("/abs/path/engine/src/parser.cpp", "/abs/path/engine");
-        assert_eq!(g, "*/parser.cpp");
+        // Module-relative form first (the retry worker is rooted at the module
+        // dir), plus the project-rooted spelling. Neither may be the bare
+        // basename — `*/parser.cpp` also matched every other parser.cpp.
+        assert_eq!(g, "src/parser.cpp,*/src/parser.cpp");
+    }
+
+    #[test]
+    fn test_make_relative_glob_distinguishes_same_named_files() {
+        // Regression: quarantining a crashing `a/foo.cpp` emitted `*/foo.cpp`,
+        // which also excluded the healthy `c/foo.cpp`.
+        let a = make_relative_glob("/m/a/foo.cpp", "/m");
+        let c = make_relative_glob("/m/c/foo.cpp", "/m");
+        assert_ne!(a, c);
+        assert_eq!(a, "a/foo.cpp,*/a/foo.cpp");
+        assert_eq!(c, "c/foo.cpp,*/c/foo.cpp");
     }
 
     #[test]

@@ -125,17 +125,18 @@ pub(super) fn quarantine_module(
 
         // Filter out already-found crashers before each iteration so
         // the binary search can find additional crashers.
+        //
+        // Compare the module-relative PATH, not the basename: `crashers` holds
+        // module-relative paths (see make_relative_glob), and matching on the
+        // basename alone made `c/foo.cpp` count as "already quarantined"
+        // because `a/foo.cpp` crashed — so a healthy file was dropped from the
+        // retry without ever being tested.
         let active_files: Vec<String> = files
             .iter()
             .filter_map(|f| {
                 let s = f.as_str()?;
-                let basename = Path::new(s).file_name()?.to_string_lossy().to_string();
-                if crashers.iter().any(|c| {
-                    Path::new(c)
-                        .file_name()
-                        .map(|n| n == basename.as_str())
-                        .unwrap_or(false)
-                }) {
+                let rel = make_relative_glob(s, module_dir.to_str().unwrap_or(""));
+                if crashers.iter().any(|c| c == &rel) {
                     None
                 } else {
                     Some(s.to_string())

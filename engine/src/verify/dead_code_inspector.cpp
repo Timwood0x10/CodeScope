@@ -1,5 +1,6 @@
 #include "dead_code_inspector.h"
 #include "claim.h"
+#include "registry.h"
 #include "../store/store.h"
 
 #include <cstdio>
@@ -22,32 +23,91 @@ DeadCodeInspector::DeadCodeInspector(store::GraphStore *store,
 std::vector<Finding> DeadCodeInspector::findOrphanModules()
 {
 	std::vector<Finding> out;
+
+	// Evidence gate. The orphan test below is `NOT EXISTS (SELECT 1 FROM
+	// import …)`, which is vacuously TRUE when the import table is empty: a
+	// project that was never indexed, or a language whose visitor records no
+	// imports, would have every module with >=10 entities reported as an
+	// orphan module — a hard conclusion drawn from missing evidence. Unlike
+	// the shared evidence_backend_ready() gate this also has to check
+	// `import`, because entity rows can exist while imports do not.
+	auto count_for_project = [&](const char *sql) -> int64_t {
+		sqlite3_stmt *st = nullptr;
+		if (sqlite3_prepare_v2(store_->handle(), sql, -1, &st,
+				       nullptr) != SQLITE_OK) {
+			fprintf(stderr,
+				"[module=verify, method=findOrphanModules] "
+				"prepare failed: %s\n",
+				sqlite3_errmsg(store_->handle()));
+			return -1;
+		}
+		sqlite3_bind_int64(st, 1, static_cast<int64_t>(project_id_));
+		int64_t n = (sqlite3_step(st) == SQLITE_ROW) ?
+				    sqlite3_column_int64(st, 0) :
+				    -1;
+		sqlite3_finalize(st);
+		return n;
+	};
+	const int64_t entity_rows = count_for_project(
+		"SELECT COUNT(*) FROM entity WHERE project_id=?");
+	const int64_t import_rows = count_for_project(
+		"SELECT COUNT(*) FROM import WHERE project_id=?");
+	if (entity_rows <= 0 || import_rows <= 0) {
+		fprintf(stderr,
+			"[module=verify, method=findOrphanModules] evidence "
+			"backend not ready (entity=%lld, import=%lld): "
+			"orphan-module conclusions suppressed\n",
+			(long long)entity_rows, (long long)import_rows);
+		return out;
+	}
+
 	// Find modules that are never imported from outside the module itself.
 	// Uses the import table, filtered by file_path to exclude self-imports.
 	// A module is orphaned if no external file imports it.
 	// This matches the manual audit methodology (grep for import paths,
 	// excluding self-references).
-	std::string sql = "SELECT s.name, COUNT(e.id) as entities, "
-			  " MIN(e.file_path) as sample_file "
-			  "FROM scope s "
-			  "JOIN entity e ON e.project_id = s.project_id "
-			  " AND e.file_path LIKE s.name || '%' "
-			  "WHERE s.kind = 1 AND s.project_id = ? "
-			  " AND NOT EXISTS ("
-			  "  SELECT 1 FROM import i "
-			  "  WHERE i.project_id = ? "
-			  "  AND i.target_path LIKE '%' || "
-			  "   substr(s.name, length(s.name) - "
-			  "    instr(reverse(s.name), '/') + 2) || '%'"
-			  "  AND i.file_path NOT LIKE s.name || '%'"
-			  " ) "
-			  "GROUP BY s.name "
-			  "HAVING entities >= 10 "
-			  "ORDER BY entities DESC LIMIT 500";
+	std::string sql =
+		"SELECT s.name, COUNT(e.id) as entities, "
+		" MIN(e.file_path) as sample_file "
+		"FROM scope s "
+		"JOIN entity e ON e.project_id = s.project_id "
+		" AND e.file_path LIKE s.name || '%' "
+		"WHERE s.kind = 1 AND s.project_id = ? "
+		" AND NOT EXISTS ("
+		"  SELECT 1 FROM import i "
+		"  WHERE i.project_id = ? "
+		// An import counts if its target path contains the
+		// module's last path component ("src/foo/bar" -> "bar").
+		//
+		// SQLite has no reverse(), which the previous expression
+		// called: the statement failed to prepare on EVERY call and
+		// the inspector silently reported "no orphan modules" for
+		// every project. The basename is extracted with rtrim
+		// instead — rtrim(X,'/') drops trailing slashes, and
+		// rtrim(X, replace(X,'/','')) strips trailing non-slash
+		// characters, so its length is the index of the last '/'.
+		"  AND i.target_path LIKE '%' || "
+		"   substr(rtrim(s.name, '/'), "
+		"          length(rtrim(rtrim(s.name, '/'), "
+		"                   replace(rtrim(s.name, '/'), "
+		"                           '/', ''))) + 1) || '%'"
+		"  AND i.file_path NOT LIKE s.name || '%'"
+		" ) "
+		"GROUP BY s.name "
+		"HAVING entities >= 10 "
+		"ORDER BY entities DESC LIMIT 500";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), sql.c_str(), -1, &stmt,
-			       nullptr) != SQLITE_OK)
+			       nullptr) != SQLITE_OK) {
+		// No silent error handling: a failed prepare must not look like
+		// "the inspection ran and found nothing". The SQL prefix
+		// identifies which of this class's queries failed.
+		fprintf(stderr,
+			"[module=verify, method=dead_code_inspector] prepare "
+			"failed: %s | sql=%.120s\n",
+			sqlite3_errmsg(store_->handle()), sql.c_str());
 		return out;
+	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id_));
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id_));
 
@@ -112,8 +172,16 @@ std::vector<Finding> DeadCodeInspector::findOrphanFunctions()
 		"LIMIT 500";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), sql.c_str(), -1, &stmt,
-			       nullptr) != SQLITE_OK)
+			       nullptr) != SQLITE_OK) {
+		// No silent error handling: a failed prepare must not look like
+		// "the inspection ran and found nothing". The SQL prefix
+		// identifies which of this class's queries failed.
+		fprintf(stderr,
+			"[module=verify, method=dead_code_inspector] prepare "
+			"failed: %s | sql=%.120s\n",
+			sqlite3_errmsg(store_->handle()), sql.c_str());
 		return out;
+	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id_));
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id_));
 
@@ -165,8 +233,16 @@ std::vector<Finding> DeadCodeInspector::findArchitectureDrift()
 		"ORDER BY edges DESC LIMIT 15";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), sql.c_str(), -1, &stmt,
-			       nullptr) != SQLITE_OK)
+			       nullptr) != SQLITE_OK) {
+		// No silent error handling: a failed prepare must not look like
+		// "the inspection ran and found nothing". The SQL prefix
+		// identifies which of this class's queries failed.
+		fprintf(stderr,
+			"[module=verify, method=dead_code_inspector] prepare "
+			"failed: %s | sql=%.120s\n",
+			sqlite3_errmsg(store_->handle()), sql.c_str());
 		return out;
+	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id_));
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id_));
 	sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(project_id_));
@@ -261,8 +337,16 @@ std::vector<Finding> DeadCodeInspector::findConnectedComponents()
 			  "WHERE project_id = ? AND type = 1";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), sql.c_str(), -1, &stmt,
-			       nullptr) != SQLITE_OK)
+			       nullptr) != SQLITE_OK) {
+		// No silent error handling: a failed prepare must not look like
+		// "the inspection ran and found nothing". The SQL prefix
+		// identifies which of this class's queries failed.
+		fprintf(stderr,
+			"[module=verify, method=dead_code_inspector] prepare "
+			"failed: %s | sql=%.120s\n",
+			sqlite3_errmsg(store_->handle()), sql.c_str());
 		return out;
+	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id_));
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
 		uint64_t src =

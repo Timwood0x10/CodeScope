@@ -10,11 +10,12 @@
 //   4. pattern/todo            — function with a TODO comment
 //   5. framework/gin           — import of gin-gonic/gin
 //   6. ffi/extern_call         — function with extern "C" qualified_name
+//   7. ffi/extern_call         — cross-language Calls edge (cpp → rust)
 //
 // Test flow:
 //   1. Open a temp GraphStore at /tmp/test_semantic_fact.db
 //   2. createSchema + createProject
-//   3. Insert graph_nodes (functions) for each test case
+//   3. Insert entity (functions) for each test case
 //   4. Insert semantic_records rows simulating each pattern
 //   5. Insert one import row for the framework test
 //   6. Run SemanticFactExtractor::extractAll() inside a transaction
@@ -35,22 +36,26 @@ using namespace store;
 
 static const char *kDbPath = "/tmp/test_semantic_fact.db";
 
-/// Insert a graph_node function row with the given id, name, file_path,
+/// Insert a Function entity (kind=0) with the given id, name, file_path and
 /// language. start_row/end_row are wide enough (1..1000) to enclose any
 /// semantic_records inserted below.
-static void insertFunction(GraphStore &store, uint64_t project_id,
-			   int64_t id, const char *name,
-			   const char *file_path, const char *language)
+///
+/// `entity` is the canonical table: the production indexing path
+/// (engine_index_project → buildGraph) writes `entity` and never touches the
+/// deprecated `graph_nodes`, so the extractor must resolve the enclosing
+/// function from here. Seeding `graph_nodes` instead is what let the extractor
+/// return zero facts in production while this test stayed green.
+static void insertFunction(GraphStore &store, uint64_t project_id, int64_t id,
+			   const char *name, const char *file_path,
+			   const char *language)
 {
 	sqlite3 *db = store.handle();
-	const char *sql =
-		"INSERT INTO graph_nodes (id, project_id, ir_node_id, "
-		"node_type, name, qualified_name, file_path, language, "
-		"start_row, start_col, end_row, end_col) "
-		"VALUES (?,?,0,0,?,'',?,?,1,0,1000,0)";
+	const char *sql = "INSERT INTO entity (id, project_id, kind, name, "
+			  "qualified_name, file_path, language, "
+			  "start_row, start_col, end_row, end_col) "
+			  "VALUES (?,?,0,?,'',?,?,1,0,1000,0)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
-	       SQLITE_OK);
+	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, id);
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 3, name, -1, SQLITE_TRANSIENT);
@@ -60,13 +65,32 @@ static void insertFunction(GraphStore &store, uint64_t project_id,
 	sqlite3_finalize(stmt);
 }
 
+/// Insert a Calls relation (type=1) between two entities. Used by the
+/// cross-language FFI case, which finds callees whose caller's language
+/// differs from their own.
+static void insertCallRelation(GraphStore &store, uint64_t project_id,
+			       int64_t source_id, int64_t target_id)
+{
+	sqlite3 *db = store.handle();
+	const char *sql = "INSERT OR IGNORE INTO relation "
+			  "(project_id, source_id, target_id, type) "
+			  "VALUES (?,?,?,1)";
+	sqlite3_stmt *stmt = nullptr;
+	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	sqlite3_bind_int64(stmt, 2, source_id);
+	sqlite3_bind_int64(stmt, 3, target_id);
+	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	sqlite3_finalize(stmt);
+}
+
 /// Insert a semantic_records row of kind=CallExpr (9) with the given
 /// name + qualified_name. The start_row falls within the function's
 /// 1..1000 range so the enclosing-function JOIN matches.
 static void insertCallRecord(GraphStore &store, uint64_t project_id,
 			     const char *name, const char *qualified_name,
-			     const char *file_path,
-			     const char *language, int start_row)
+			     const char *file_path, const char *language,
+			     int start_row)
 {
 	sqlite3 *db = store.handle();
 	const char *sql = "INSERT INTO semantic_records "
@@ -74,8 +98,7 @@ static void insertCallRecord(GraphStore &store, uint64_t project_id,
 			  " qualified_name, file_path, language, start_row) "
 			  "VALUES (?,?,9,?,?,?,?,?)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
-	       SQLITE_OK);
+	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, 1);
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 3, name, -1, SQLITE_TRANSIENT);
@@ -98,8 +121,7 @@ static void insertCommentRecord(GraphStore &store, uint64_t project_id,
 			  " qualified_name, file_path, language, start_row) "
 			  "VALUES (?,?,14,?,'',?,?,?)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
-	       SQLITE_OK);
+	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, 1);
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 3, text, -1, SQLITE_TRANSIENT);
@@ -122,8 +144,7 @@ static void insertExceptRecord(GraphStore &store, uint64_t project_id,
 			  " qualified_name, file_path, language, start_row) "
 			  "VALUES (?,?,9,'except','',?,'python',?)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
-	       SQLITE_OK);
+	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, 2);
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 3, file_path, -1, SQLITE_TRANSIENT);
@@ -134,16 +155,14 @@ static void insertExceptRecord(GraphStore &store, uint64_t project_id,
 
 /// Insert an import row mapping target_path → file_path.
 static void insertImportRow(GraphStore &store, uint64_t project_id,
-			    const char *target_path,
-			    const char *file_path)
+			    const char *target_path, const char *file_path)
 {
 	sqlite3 *db = store.handle();
 	const char *sql = "INSERT INTO import (project_id, "
 			  "source_scope_id, target_path, alias, file_path) "
 			  "VALUES (?,0,?,'',?)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
-	       SQLITE_OK);
+	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 2, target_path, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 3, file_path, -1, SQLITE_TRANSIENT);
@@ -162,8 +181,7 @@ static int countFacts(GraphStore &store, uint64_t project_id,
 			  "WHERE project_id=? AND category=? "
 			  "  AND primitive=? AND kind=?";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
-	       SQLITE_OK);
+	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 2, category, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 3, primitive, -1, SQLITE_TRANSIENT);
@@ -182,8 +200,7 @@ static int totalFacts(GraphStore &store, uint64_t project_id)
 	const char *sql =
 		"SELECT COUNT(*) FROM semantic_fact WHERE project_id=?";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
-	       SQLITE_OK);
+	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	int count = 0;
 	if (sqlite3_step(stmt) == SQLITE_ROW)
@@ -202,8 +219,7 @@ int main()
 			store.error().c_str());
 		return 1;
 	}
-	uint64_t pid =
-		store.createProject("/tmp", "test_semantic_fact");
+	uint64_t pid = store.createProject("/tmp", "test_semantic_fact");
 	assert(pid > 0);
 
 	// ── Test 1: sync/mutex/lock ────────────────────────────────
@@ -216,8 +232,7 @@ int main()
 	// ── Test 2: error/bare_except ──────────────────────────────
 	// Python function with `except:` (bare). The Python visitor
 	// emits a record with name='except', qualified_name=''.
-	insertFunction(store, pid, 20, "RiskY", "/src/risky.py",
-		       "python");
+	insertFunction(store, pid, 20, "RiskY", "/src/risky.py", "python");
 	insertExceptRecord(store, pid, "/src/risky.py", 7);
 
 	// ── Test 3: memory/cstring/alloc ───────────────────────────
@@ -225,30 +240,36 @@ int main()
 	// function — the extractor still emits the alloc fact; matching
 	// alloc/free pairs is a Phase 4 verifier concern.
 	insertFunction(store, pid, 30, "ToString", "/src/cgo.go", "go");
-	insertCallRecord(store, pid, "C.CString", "C.CString",
-			 "/src/cgo.go", "go", 9);
+	insertCallRecord(store, pid, "C.CString", "C.CString", "/src/cgo.go",
+			 "go", 9);
 
 	// ── Test 4: pattern/todo ───────────────────────────────────
 	// A Comment record (kind=14) with text containing TODO. The
 	// extractor should emit pattern/todo.
 	insertFunction(store, pid, 40, "Stub", "/src/stub.go", "go");
-	insertCommentRecord(store, pid, "TODO: implement this",
-			    "/src/stub.go", "go", 11);
+	insertCommentRecord(store, pid, "TODO: implement this", "/src/stub.go",
+			    "go", 11);
 
 	// ── Test 5: framework/gin ──────────────────────────────────
 	// An import of gin-gonic/gin. The extractor attaches the fact
 	// to one function in the same file as the import.
 	insertFunction(store, pid, 50, "Handler", "/src/main.go", "go");
-	insertImportRow(store, pid,
-			"github.com/gin-gonic/gin", "/src/main.go");
+	insertImportRow(store, pid, "github.com/gin-gonic/gin", "/src/main.go");
 
 	// ── Test 6: ffi/extern_call ────────────────────────────────
 	// A C++ function whose qualified_name contains 'extern "C"'.
-	insertFunction(store, pid, 60, "CBindings",
-		       "/src/bindings.cpp", "cpp");
+	insertFunction(store, pid, 60, "CBindings", "/src/bindings.cpp", "cpp");
 	insertCallRecord(store, pid, "register_callback",
-			 "extern \"C\" register_callback",
-			 "/src/bindings.cpp", "cpp", 15);
+			 "extern \"C\" register_callback", "/src/bindings.cpp",
+			 "cpp", 15);
+
+	// ── Test 7: ffi/extern_call via a cross-language Calls edge ──
+	// A Rust callee called from C++ code. No `extern "C"` text is
+	// involved: this exercises the second FFI query, which traverses
+	// Calls edges (relation type=1) between differing languages.
+	insertFunction(store, pid, 70, "rust_entry", "/src/lib.rs", "rust");
+	insertFunction(store, pid, 71, "call_rust", "/src/bridge.cpp", "cpp");
+	insertCallRelation(store, pid, 71, 70);
 
 	// ── Run the extractor inside a transaction ─────────────────
 	{
@@ -257,8 +278,7 @@ int main()
 		int64_t n = ex.extractAll(pid);
 		assert(store.commitTransaction());
 		assert(n >= 6); // at least one fact per test case above
-		printf("extractAll returned %lld facts\n",
-		       (long long)n);
+		printf("extractAll returned %lld facts\n", (long long)n);
 	}
 
 	// ── Assertions ─────────────────────────────────────────────
@@ -271,29 +291,28 @@ int main()
 	printf("Test 1 (sync/mutex/lock): PASS\n");
 
 	// Test 2: error/bare_except
-	assert(countFacts(store, pid, "error", "bare_except",
-			  "suppression") == 1);
+	assert(countFacts(store, pid, "error", "bare_except", "suppression") ==
+	       1);
 	printf("Test 2 (error/bare_except): PASS\n");
 
 	// Test 3: memory/cstring/alloc
-	assert(countFacts(store, pid, "memory", "cstring",
-			  "alloc") == 1);
+	assert(countFacts(store, pid, "memory", "cstring", "alloc") == 1);
 	printf("Test 3 (memory/cstring/alloc): PASS\n");
 
 	// Test 4: pattern/todo
-	assert(countFacts(store, pid, "pattern", "todo",
-			  "marker") == 1);
+	assert(countFacts(store, pid, "pattern", "todo", "marker") == 1);
 	printf("Test 4 (pattern/todo): PASS\n");
 
 	// Test 5: framework/gin
-	assert(countFacts(store, pid, "framework", "gin",
-			  "router") == 1);
+	assert(countFacts(store, pid, "framework", "gin", "router") == 1);
 	printf("Test 5 (framework/gin): PASS\n");
 
-	// Test 6: ffi/extern_call
-	assert(countFacts(store, pid, "ffi", "extern_call",
-			  "call") == 1);
-	printf("Test 6 (ffi/extern_call): PASS\n");
+	// Test 6: ffi/extern_call — one from the extern "C" qualified
+	// name (CBindings) and one from the cross-language Calls edge
+	// (rust_entry), so exactly two.
+	assert(countFacts(store, pid, "ffi", "extern_call", "call") == 2);
+	printf("Test 6+7 (ffi/extern_call, incl. cross-language): "
+	       "PASS\n");
 
 	// ── Idempotency: re-running extractAll clears then re-inserts ──
 	// The clear-before-extract contract means the total fact count
@@ -306,8 +325,7 @@ int main()
 		assert(store.commitTransaction());
 		int after = totalFacts(store, pid);
 		assert(after == before);
-		printf("Test 7 (idempotency: %d == %d): PASS\n", before,
-		       after);
+		printf("Test 7 (idempotency: %d == %d): PASS\n", before, after);
 	}
 
 	store.close();

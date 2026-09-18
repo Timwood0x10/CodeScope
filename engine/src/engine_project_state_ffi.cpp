@@ -36,14 +36,26 @@
 ///         object with an "error" field.
 char *engine_build_project_state(uint64_t project_id)
 {
-	if (!g_store)
-		return dupString("{\"error\":\"engine not initialized\"}");
-	model::ProjectStateBuilder builder(g_store.get());
-	if (!builder.build(project_id)) {
+	try {
+		if (!g_store)
+			return dupString(
+				"{\"error\":\"engine not initialized\"}");
+		model::ProjectStateBuilder builder(g_store.get());
+		if (!builder.build(project_id)) {
+			return dupString("{\"error\":\"failed to build project "
+					 "state\"}");
+		}
+		return dupString(builder.getSnapshotJson(project_id));
+	} catch (const std::exception &e) {
 		return dupString(
-			"{\"error\":\"failed to build project state\"}");
+			std::string("{\"error\":\"[module=ffi, "
+				    "method=engine_build_project_state] ") +
+			jsonEscape(e.what()) + "\"}");
+	} catch (...) {
+		return dupString("{\"error\":\"[module=ffi, "
+				 "method=engine_build_project_state] unknown "
+				 "exception\"}");
 	}
-	return dupString(builder.getSnapshotJson(project_id));
 }
 
 /// Get the persisted project state snapshot (without rebuilding).
@@ -57,14 +69,27 @@ char *engine_build_project_state(uint64_t project_id)
 ///         project_id.
 char *engine_get_project_state(uint64_t project_id)
 {
-	if (!g_store)
-		return dupString("{\"error\":\"engine not initialized\"}");
-	model::ProjectStateBuilder builder(g_store.get());
-	std::string snapshot = builder.getSnapshotJson(project_id);
-	if (snapshot.empty()) {
-		return dupString("{\"error\":\"project state not yet built\","
-				 "\"project_id\":" +
-				 std::to_string(project_id) + "}");
+	try {
+		if (!g_store)
+			return dupString(
+				"{\"error\":\"engine not initialized\"}");
+		model::ProjectStateBuilder builder(g_store.get());
+		std::string snapshot = builder.getSnapshotJson(project_id);
+		if (snapshot.empty()) {
+			return dupString(
+				"{\"error\":\"project state not yet built\","
+				"\"project_id\":" +
+				std::to_string(project_id) + "}");
+		}
+		return dupString(snapshot);
+	} catch (const std::exception &e) {
+		return dupString(
+			std::string("{\"error\":\"[module=ffi, "
+				    "method=engine_get_project_state] ") +
+			jsonEscape(e.what()) + "\"}");
+	} catch (...) {
+		return dupString("{\"error\":\"[module=ffi, "
+				 "method=engine_get_project_state] unknown "
+				 "exception\"}");
 	}
-	return dupString(snapshot);
 }

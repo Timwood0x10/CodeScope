@@ -15,7 +15,9 @@ static constexpr double kConfZeroCopySupported = 0.6;
 static constexpr double kConfZeroCopyNotFound = 0.3;
 static constexpr double kConfUnrecognisedContract = 0.3;
 static constexpr double kConfThreadSafeSupported = 0.7;
-static constexpr double kConfThreadSafeContradicted = 0.6;
+// Absence of a matching synchronisation name is NOT evidence that the code is
+// unsafe, so the negative outcome is Unknown (see verifyThreadSafe).
+static constexpr double kConfThreadSafeUnknown = 0.4;
 static constexpr double kConfMemorySafeSupported = 0.6;
 static constexpr double kConfMemorySafeNotFound = 0.4;
 static constexpr double kConfBackendNotReady = 0.2;
@@ -102,13 +104,19 @@ entitiesMatchingAny(store::GraphStore *store, uint64_t project_id,
 	if (patterns.empty())
 		return ids;
 
-	// Build "LOWER(name) LIKE LOWER(?) OR LOWER(name) LIKE LOWER(?) ..."
-	// dynamically. The number of ? placeholders equals patterns.size().
+	// Build "LOWER(name) LIKE LOWER(?) ESCAPE '\' OR ..." dynamically. The
+	// number of ? placeholders equals patterns.size().
+	//
+	// `%` stays a wildcard (callers intend it), but `_` is escaped to a
+	// literal underscore: a code identifier contains real underscores, while
+	// LIKE would otherwise treat `_` as "any single character" and silently
+	// over-match — `%_lock` matched `Block` ("B" + "lock"), which is how a
+	// class named `Block` was read as synchronisation evidence.
 	std::string sql = "SELECT id FROM entity WHERE project_id=? AND (";
 	for (size_t i = 0; i < patterns.size(); ++i) {
 		if (i > 0)
 			sql += " OR ";
-		sql += "LOWER(name) LIKE LOWER(?)";
+		sql += "LOWER(name) LIKE LOWER(?) ESCAPE '\\'";
 	}
 	sql += ")";
 
@@ -123,9 +131,19 @@ entitiesMatchingAny(store::GraphStore *store, uint64_t project_id,
 	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	for (size_t i = 0; i < patterns.size(); ++i) {
+		// Escape the escape character itself first, then `_`, so a pattern
+		// reads as "names containing this text" with `%` as the only
+		// wildcard. `%` is deliberately left alone.
+		std::string escaped;
+		escaped.reserve(patterns[i].size());
+		for (char c : patterns[i]) {
+			if (c == '\\' || c == '_')
+				escaped.push_back('\\');
+			escaped.push_back(c);
+		}
 		// +2 because parameter 1 is project_id; patterns start at 2.
 		sqlite3_bind_text(stmt, static_cast<int>(i + 2),
-				  patterns[i].c_str(), -1, SQLITE_STATIC);
+				  escaped.c_str(), -1, SQLITE_TRANSIENT);
 	}
 
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -200,9 +218,13 @@ EvidenceRecord ContractVerifier::verify(const Claim &claim)
 	}
 	if (subject == "zerocopy") {
 		// ZeroCopy: search for view/span/slice entities as evidence of
-		// non-owning reference types. Falls into verifyGeneric.
+		// non-owning reference types. The `view` patterns are anchored to
+		// the start of the name or to a separator: an unanchored `%view%`
+		// also matches Review / Preview / Overview, which reported a
+		// project as zero-copy on the strength of a class name.
 		std::vector<int64_t> ids = entitiesMatchingAny(
-			store_, project_id_, { "%view%", "%span%", "%slice%" });
+			store_, project_id_,
+			{ "%span%", "%slice%", "view%", "%.view", "%_view" });
 		if (!ids.empty()) {
 			return makeRecord(Verdict::Supported,
 					  kConfZeroCopySupported,
@@ -225,21 +247,42 @@ EvidenceRecord ContractVerifier::verify(const Claim &claim)
 // ── Contract-specific helpers ────────────────────────────────────────
 
 // ThreadSafe: the codebase should reference synchronisation primitives
-// (mutex, lock, atomic). Their presence is supporting evidence; their
-// absence strongly contradicts a thread-safety claim.
+// (mutex, atomic, lock guards). Their presence is supporting evidence.
+//
+// The patterns are deliberately narrow. An unanchored `%lock%` also matches
+// Block, BlockStore, Clock, Deadlock and Unlock, so a project that merely
+// contains a `Block` class used to be reported as thread-safe.
+//
+// Absence of a match is NOT evidence of absence: code can be thread-safe
+// through means these names do not cover (Rust `std::sync`, Java
+// `synchronized`, an OS lock created in C, a message-passing design). The
+// negative outcome is therefore Unknown, matching verifyMemorySafe — asserting
+// "thread safe: contradicted" from a failed name pattern would be a claim
+// about the code that the evidence does not support.
+static const std::vector<std::string> kSyncEvidencePatterns = {
+	"%mutex%",	 "%atomic%",	 "%spinlock%",
+	"%rwlock%",	 "%semaphore%",	 "%condition_variable%",
+	"%.lock",	 "%.unlock",	 "%.rlock",
+	"%.wlock",	 "%_lock",	 "%_unlock",
+	"%lock_guard%",	 "%lockguard%",	 "%unique_lock%",
+	"%shared_lock%", "%uniquelock%", "%sharedlock%",
+};
+
 EvidenceRecord ContractVerifier::verifyThreadSafe(const Claim &claim)
 {
-	std::vector<int64_t> ids = entitiesMatchingAny(
-		store_, project_id_, { "%mutex%", "%lock%", "%atomic%" });
+	std::vector<int64_t> ids =
+		entitiesMatchingAny(store_, project_id_, kSyncEvidencePatterns);
 	if (!ids.empty()) {
 		return makeRecord(
 			Verdict::Supported, kConfThreadSafeSupported,
-			"ThreadSafe: found mutex/lock/atomic entities", ids);
+			"ThreadSafe: found mutex/atomic/lock entities", ids);
 	}
-	return makeRecord(Verdict::Contradicted, kConfThreadSafeContradicted,
-			  "No mutex/lock/atomic found despite ThreadSafe "
-			  "claim",
-			  {});
+	return makeRecord(
+		Verdict::Unknown, kConfThreadSafeUnknown,
+		"ThreadSafe: no synchronisation primitive matched "
+		"(mutex/atomic/lock guard); a name pattern not matching is not "
+		"evidence that the code is unsafe",
+		{});
 }
 
 // MemorySafe: the codebase should use memory-management primitives

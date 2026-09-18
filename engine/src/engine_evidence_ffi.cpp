@@ -130,30 +130,42 @@ std::string serializeEvidence(const evidence::Evidence &ev)
 // CODESCOPE_RULES_DIR env var.
 char *engine_build_evidence(uint64_t project_id, const char *category_filter)
 {
-	if (!g_store)
-		return dupString("{\"error\":\"engine not initialized\"}");
+	try {
+		if (!g_store)
+			return dupString(
+				"{\"error\":\"engine not initialized\"}");
 
-	const char *env_dir = std::getenv("CODESCOPE_RULES_DIR");
-	std::string rules_dir =
-		(env_dir && *env_dir) ? env_dir : "engine/src/evidence/rules";
+		const char *env_dir = std::getenv("CODESCOPE_RULES_DIR");
+		std::string rules_dir = (env_dir && *env_dir) ?
+						env_dir :
+						"engine/src/evidence/rules";
 
-	evidence::EvidenceBuilder builder(g_store.get());
-	builder.loadRules(rules_dir);
+		evidence::EvidenceBuilder builder(g_store.get());
+		builder.loadRules(rules_dir);
 
-	std::vector<evidence::Evidence> evidences;
-	if (category_filter && *category_filter) {
-		evidences =
-			builder.buildByCategory(project_id, category_filter);
-	} else {
-		evidences = builder.buildAll(project_id);
+		std::vector<evidence::Evidence> evidences;
+		if (category_filter && *category_filter) {
+			evidences = builder.buildByCategory(project_id,
+							    category_filter);
+		} else {
+			evidences = builder.buildAll(project_id);
+		}
+
+		std::string json = "[";
+		for (size_t i = 0; i < evidences.size(); ++i) {
+			if (i)
+				json += ",";
+			json += serializeEvidence(evidences[i]);
+		}
+		json += "]";
+		return dupString(json);
+	} catch (const std::exception &e) {
+		return dupString(std::string("{\"error\":\"[module=ffi, "
+					     "method=engine_build_evidence] ") +
+				 jsonEscape(e.what()) + "\"}");
+	} catch (...) {
+		return dupString(
+			"{\"error\":\"[module=ffi, "
+			"method=engine_build_evidence] unknown exception\"}");
 	}
-
-	std::string json = "[";
-	for (size_t i = 0; i < evidences.size(); ++i) {
-		if (i)
-			json += ",";
-		json += serializeEvidence(evidences[i]);
-	}
-	json += "]";
-	return dupString(json);
 }

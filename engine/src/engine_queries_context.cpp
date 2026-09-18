@@ -22,8 +22,8 @@
 
 // ─── Path Tracing ──────────────────────────────────────────────
 
-char *engine_trace_path(uint64_t project_id, const char *from_name,
-			const char *to_name)
+static char *tracePathImpl(uint64_t project_id, const char *from_name,
+			   const char *to_name)
 {
 	// Trace a path from from_function to to_function using the SQLite
 	// shortest-path backend (QueryEngine::findShortestPath, CSR BFS) and
@@ -155,8 +155,8 @@ char *engine_trace_path(uint64_t project_id, const char *from_name,
 
 // ─── Interactive Function Exploration ─────────────────────────
 
-char *engine_explore_function(uint64_t project_id, const char *function_name,
-			      int depth, const char *direction)
+static char *exploreFunctionImpl(uint64_t project_id, const char *function_name,
+				 int depth, const char *direction)
 {
 	// SQLite-only recursive exploration. The legacy output schema is
 	// preserved:
@@ -355,7 +355,7 @@ static std::string detectIntent(const std::string &query)
 	return "general";
 }
 
-char *engine_build_context(uint64_t project_id, const char *query)
+static char *buildContextImpl(uint64_t project_id, const char *query)
 {
 	if (!g_store)
 		return dupString("{\"error\":\"engine not initialized\"}");
@@ -495,7 +495,7 @@ char *engine_build_context(uint64_t project_id, const char *query)
 
 // ─── Phase C: FFI Boundary Detection ──────────────────────────
 
-char *engine_detect_ffi_boundaries(uint64_t project_id)
+static char *detectFfiBoundariesImpl(uint64_t project_id)
 {
 	// SQLite-only FFI boundary detection. The legacy output schema is
 	// preserved:
@@ -706,4 +706,76 @@ char *engine_detect_ffi_boundaries(uint64_t project_id)
 	}
 	json << "]}";
 	return dupString(json.str());
+}
+
+// ─── FFI boundary wrappers ───────────────────────────────────────
+// The bodies above are static implementations (`*Impl`). Every extern "C"
+// entry point is a thin try/catch wrapper: no C++ exception may cross the C
+// ABI boundary, because the MCP server is long-running and an escaping
+// exception would terminate the whole session. Error envelopes carry a
+// [module=ffi, method=<export>] tag per code_rules.md.
+
+char *engine_trace_path(uint64_t project_id, const char *from_name,
+			const char *to_name)
+{
+	try {
+		return tracePathImpl(project_id, from_name, to_name);
+	} catch (const std::exception &e) {
+		return dupString(std::string("{\"error\":\"[module=ffi, "
+					     "method=engine_trace_path] ") +
+				 jsonEscape(e.what()) + "\"}");
+	} catch (...) {
+		return dupString(
+			"{\"error\":\"[module=ffi, "
+			"method=engine_trace_path] unknown exception\"}");
+	}
+}
+
+char *engine_explore_function(uint64_t project_id, const char *function_name,
+			      int depth, const char *direction)
+{
+	try {
+		return exploreFunctionImpl(project_id, function_name, depth,
+					   direction);
+	} catch (const std::exception &e) {
+		return dupString(
+			std::string("{\"error\":\"[module=ffi, "
+				    "method=engine_explore_function] ") +
+			jsonEscape(e.what()) + "\"}");
+	} catch (...) {
+		return dupString(
+			"{\"error\":\"[module=ffi, "
+			"method=engine_explore_function] unknown exception\"}");
+	}
+}
+
+char *engine_build_context(uint64_t project_id, const char *query)
+{
+	try {
+		return buildContextImpl(project_id, query);
+	} catch (const std::exception &e) {
+		return dupString(std::string("{\"error\":\"[module=ffi, "
+					     "method=engine_build_context] ") +
+				 jsonEscape(e.what()) + "\"}");
+	} catch (...) {
+		return dupString(
+			"{\"error\":\"[module=ffi, "
+			"method=engine_build_context] unknown exception\"}");
+	}
+}
+
+char *engine_detect_ffi_boundaries(uint64_t project_id)
+{
+	try {
+		return detectFfiBoundariesImpl(project_id);
+	} catch (const std::exception &e) {
+		return dupString(
+			std::string("{\"error\":\"[module=ffi, "
+				    "method=engine_detect_ffi_boundaries] ") +
+			jsonEscape(e.what()) + "\"}");
+	} catch (...) {
+		return dupString("{\"error\":\"[module=ffi, "
+				 "method=engine_detect_ffi_boundaries] unknown "
+				 "exception\"}");
+	}
 }

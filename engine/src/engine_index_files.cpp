@@ -49,7 +49,11 @@ constexpr uint64_t kMaxFileSize = 5 * 1024 * 1024; // 5 MB default
 // --file-list path). Split out of engine_index_project.cpp into its own
 // translation unit so each file stays under the 1000-line rule
 // (plan/rules/code_rules.md §1).
-char *engine_index_files(uint64_t project_id, const char *file_list_json)
+/// Body of engine_index_files. Kept as a separate function so the extern "C"
+/// entry point below can stay a thin try/catch wrapper: no C++ exception may
+/// cross the C ABI boundary (the MCP server is long-running, so an escaping
+/// exception would terminate it).
+static char *indexFilesImpl(uint64_t project_id, const char *file_list_json)
 {
 	if (!g_store)
 		return dupString(
@@ -379,6 +383,12 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 
 				if (visitor) {
 					ir::SemanticUnit *su = nullptr;
+					// The visitor transfers ownership of the
+					// returned unit to the caller (see
+					// js_visitor.h); without this guard every
+					// parsed file leaks one SemanticUnit.
+					std::unique_ptr<ir::SemanticUnit>
+						su_guard;
 					try {
 						su = visitor->visit(
 							tree.get(),
@@ -403,6 +413,7 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 									VisitorUnknownThrow));
 						continue;
 					}
+					su_guard.reset(su);
 					if (su) {
 						result->records =
 							su->allRecords();
@@ -668,4 +679,19 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 
 	launchAsyncKnowledgeBuilder(project_id, !mode_fast);
 	return dupString(result.str());
+}
+
+char *engine_index_files(uint64_t project_id, const char *file_list_json)
+{
+	try {
+		return indexFilesImpl(project_id, file_list_json);
+	} catch (const std::exception &e) {
+		return dupString(std::string("{\"error\":\"[module=ffi, "
+					     "method=engine_index_files] ") +
+				 jsonEscape(e.what()) + "\"}");
+	} catch (...) {
+		return dupString(
+			"{\"error\":\"[module=ffi, "
+			"method=engine_index_files] unknown exception\"}");
+	}
 }

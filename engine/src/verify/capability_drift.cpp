@@ -1,4 +1,5 @@
 #include "capability_drift.h"
+#include "registry.h"
 
 #include <cstdio>
 #include <sqlite3.h>
@@ -94,6 +95,24 @@ std::vector<DriftItem> detectCapabilityDrift(store::GraphStore &store,
 	if (!db) {
 		fprintf(stderr, "[module=verify, method=detectCapabilityDrift] "
 				"db handle is null\n");
+		return drifts;
+	}
+
+	// Evidence gate (same one the four registry verifiers use). With an
+	// empty entity/relation table countImplementingEntities() returns 0 for
+	// every capability, so each declared capability would be reported as a
+	// severity-2 drift — "declared in README but not implemented" — purely
+	// because nothing has been indexed yet. That is a hard conclusion drawn
+	// from missing evidence, which is exactly what this project must not do.
+	int64_t gate_entities = 0;
+	int64_t gate_relations = 0;
+	if (!evidence_backend_ready(&store, project_id, &gate_entities,
+				    &gate_relations)) {
+		fprintf(stderr,
+			"[module=verify, method=detectCapabilityDrift] evidence "
+			"backend not ready (entity=%lld, relation=%lld): no "
+			"drift conclusions reported\n",
+			(long long)gate_entities, (long long)gate_relations);
 		return drifts;
 	}
 

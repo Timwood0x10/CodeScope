@@ -116,13 +116,17 @@ fn group_by_prefix(files: &[FileEntry], depth: usize) -> Vec<(String, Vec<FileEn
 /// Panics if `files` is empty (caller should check first).
 ///
 /// # Invariant
-/// `files` MUST be sorted by `path` (ascending). The planner emits
-/// contiguous index ranges per directory cluster and relies on equal
-/// 2-level prefixes collapsing into adjacent indices. An unsorted input
-/// (e.g. a parallel walk or size-sorted list) would make chunks silently
-/// reference the wrong files. The discover path currently guarantees this
-/// via `files.sort()`; the assertion below fails loudly if a future caller
-/// violates it instead of corrupting chunks.
+/// `files` MUST be sorted by `path` (ascending): the planner groups files by
+/// directory prefix so that a chunk covers a coherent area, and an unsorted
+/// input (e.g. a parallel walk or a size-sorted list) would cluster a
+/// different set of files than intended. The discover path guarantees this via
+/// `files.sort()`; the assertion below fails loudly if a future caller
+/// violates it.
+///
+/// Correctness does NOT rely on a cluster's indices being adjacent. A cluster
+/// whose files are interleaved with another cluster's is split at each gap, so
+/// every emitted chunk stays a contiguous index range that covers exactly the
+/// files it names.
 pub fn plan_chunks(files: &[FileEntry], target_bytes: u64, max_bytes: u64) -> Vec<Chunk> {
     assert!(!files.is_empty(), "plan_chunks: empty file list");
     assert!(
@@ -151,8 +155,7 @@ pub fn plan_chunks(files: &[FileEntry], target_bytes: u64, max_bytes: u64) -> Ve
         .collect();
 
     for (prefix, cluster_entries) in &clusters {
-        // Sort cluster entries by their original index so the chunk's file range
-        // is contiguous in the original ordering.
+        // Cluster entries ordered by their position in `files`.
         let mut sorted_entries: Vec<&FileEntry> = cluster_entries.iter().collect();
         sorted_entries.sort_by_key(|e| {
             path_to_idx
@@ -161,81 +164,52 @@ pub fn plan_chunks(files: &[FileEntry], target_bytes: u64, max_bytes: u64) -> Ve
                 .unwrap_or(usize::MAX)
         });
 
-        // Split large clusters that exceed max_bytes into multiple chunks.
-        let mut chunk_start: usize = 0;
-        let mut chunk_bytes: u64 = 0;
+        // A Chunk is a contiguous `(file_start, file_count)` range, so that
+        // range must contain the cluster's indices and nothing else. Grouping
+        // by prefix does NOT guarantee it: a cluster whose files are
+        // interleaved with another cluster's has a non-contiguous index set
+        // (e.g. `a/aa.rs`=0, `a/mm/x.rs`=1, `a/zz.rs`=2 gives cluster "a" the
+        // indices {0,2} while "a/mm" holds 1). Emitting `[min_index, count)`
+        // then covers a foreign file AND leaves the cluster's own later
+        // member uncovered — one file indexed twice, another never indexed.
+        // So walk the cluster in index order and cut a chunk at every gap.
+        let mut i = 0usize;
+        while i < sorted_entries.len() {
+            let start_idx = path_to_idx[sorted_entries[i].path.as_str()];
+            let mut end = i; // exclusive
+            let mut bytes: u64 = 0;
 
-        for entry in &sorted_entries {
-            let idx = path_to_idx[entry.path.as_str()];
+            while end < sorted_entries.len() {
+                let entry = sorted_entries[end];
+                let idx = path_to_idx[entry.path.as_str()];
 
-            // If this single file exceeds max_bytes, it gets its own chunk.
-            // If adding this file would exceed max_bytes AND the current
-            // chunk already has content, finalise the current chunk first.
-            // The guard is `chunk_bytes > 0` (current chunk non-empty),
-            // NOT `!chunks.is_empty()`: the latter gates on whether ANY
-            // chunk has been emitted across the whole call, which has
-            // nothing to do with whether the current chunk should close.
-            if entry.size > max_bytes || (chunk_bytes > 0 && chunk_bytes + entry.size > max_bytes) {
-                // Finalise the current chunk.
-                let count = sorted_entries[chunk_start..]
-                    .iter()
-                    .position(|e| {
-                        let ei = path_to_idx[e.path.as_str()];
-                        ei >= idx
-                    })
-                    .unwrap_or(sorted_entries.len() - chunk_start);
-                if count > 0 {
-                    chunks.push(Chunk {
-                        file_start: path_to_idx[sorted_entries[chunk_start].path.as_str()],
-                        file_count: count,
-                        total_bytes: chunk_bytes,
-                        module_id: 0,
-                        dir_prefix: prefix.clone(),
-                    });
+                // Gap: the next index belongs to another cluster, so the
+                // chunk has to end here.
+                if end > i && idx != path_to_idx[sorted_entries[end - 1].path.as_str()] + 1 {
+                    break;
                 }
-                chunk_start += count;
-                chunk_bytes = 0;
-            }
-
-            chunk_bytes += entry.size;
-
-            // Greedy cut: if we've reached target, finalise the chunk and reset.
-            if chunk_bytes >= target_bytes {
-                let chunk_end = chunk_start
-                    + sorted_entries[chunk_start..]
-                        .iter()
-                        .position(|e| {
-                            let ei = path_to_idx[e.path.as_str()];
-                            ei > idx
-                        })
-                        .unwrap_or(sorted_entries.len() - chunk_start);
-                let count = chunk_end - chunk_start;
-                if count > 0 {
-                    chunks.push(Chunk {
-                        file_start: path_to_idx[sorted_entries[chunk_start].path.as_str()],
-                        file_count: count,
-                        total_bytes: chunk_bytes,
-                        module_id: 0,
-                        dir_prefix: prefix.clone(),
-                    });
+                // Hard ceiling. `end > i` keeps a single file larger than
+                // max_bytes in a chunk of its own rather than emitting an
+                // empty chunk (which would also stall the walk).
+                if end > i && bytes + entry.size > max_bytes {
+                    break;
                 }
-                chunk_start = chunk_end;
-                chunk_bytes = 0;
+                bytes += entry.size;
+                end += 1;
+                // Greedy cut once the target size is reached.
+                if bytes >= target_bytes {
+                    break;
+                }
             }
-        }
 
-        // Flush remaining entries in this cluster.
-        if chunk_bytes > 0 {
-            let remaining = sorted_entries.len() - chunk_start;
-            if remaining > 0 {
-                chunks.push(Chunk {
-                    file_start: path_to_idx[sorted_entries[chunk_start].path.as_str()],
-                    file_count: remaining,
-                    total_bytes: chunk_bytes,
-                    module_id: 0,
-                    dir_prefix: prefix.clone(),
-                });
-            }
+            chunks.push(Chunk {
+                file_start: start_idx,
+                file_count: end - i,
+                total_bytes: bytes,
+                module_id: 0,
+                dir_prefix: prefix.clone(),
+            });
+            i = end;
         }
     }
 
@@ -357,6 +331,69 @@ mod tests {
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].0, "src");
         assert_eq!(groups[1].0, "tests");
+    }
+
+    #[test]
+    fn test_plan_chunks_interleaved_clusters_cover_each_file_once() {
+        // Regression: a directory cluster whose files are interleaved with
+        // another cluster's used to be emitted as a single
+        // `[min_index, count)` range. Sorting these by path gives
+        //   a/aa.rs(0)  a/mm/x.rs(1)  a/zz.rs(2)
+        // so cluster "a" holds indices {0,2} while "a/mm" holds {1}. The old
+        // planner emitted {start:0, count:2} for "a" — covering index 0 AND 1
+        // — plus {start:1, count:1} for "a/mm", so index 1 was indexed twice
+        // and index 2 never. This test pins "every file exactly once".
+        let files = sorted(vec![
+            make_file("a/aa.rs", 10),
+            make_file("a/mm/x.rs", 10),
+            make_file("a/zz.rs", 10),
+        ]);
+        assert_eq!(files[0].path, "a/aa.rs");
+        assert_eq!(files[1].path, "a/mm/x.rs");
+        assert_eq!(files[2].path, "a/zz.rs");
+        // Sanity: the two "a" files are genuinely non-adjacent, which is what
+        // makes the arrangement a counterexample.
+        assert_eq!(dir_prefix(&files[0].path, CLUSTER_DEPTH), "a");
+        assert_eq!(dir_prefix(&files[1].path, CLUSTER_DEPTH), "a/mm");
+        assert_eq!(dir_prefix(&files[2].path, CLUSTER_DEPTH), "a");
+
+        let chunks = plan_chunks(&files, TARGET_BYTES, MAX_BYTES);
+
+        let mut covered = vec![0usize; files.len()];
+        for c in &chunks {
+            for slot in covered.iter_mut().skip(c.file_start).take(c.file_count) {
+                *slot += 1;
+            }
+        }
+        assert_eq!(
+            covered,
+            vec![1, 1, 1],
+            "every file must be covered exactly once (got {:?} from {} chunk(s))",
+            covered,
+            chunks.len()
+        );
+
+        // Each chunk must cover files from a single cluster only.
+        for c in &chunks {
+            for f in &files[c.file_start..c.file_start + c.file_count] {
+                assert_eq!(
+                    dir_prefix(&f.path, CLUSTER_DEPTH),
+                    c.dir_prefix,
+                    "chunk [{}..{}) claims prefix {} but covers {}",
+                    c.file_start,
+                    c.file_start + c.file_count,
+                    c.dir_prefix,
+                    f.path
+                );
+            }
+        }
+        // "a/zz.rs" is separated from "a/aa.rs" by "a/mm/x.rs", so cluster "a"
+        // must be split rather than emitted as one range.
+        assert!(
+            chunks.len() >= 2,
+            "an interleaved cluster must be split, got {} chunk(s)",
+            chunks.len()
+        );
     }
 
     #[test]
