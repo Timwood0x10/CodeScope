@@ -182,7 +182,7 @@ flowchart LR
 # 查热点 → ❌ get_hotspots 未实现
 搜代码      → search (300-1000 tok)
 查调用链    → find_callers / find_callees (10-50 tok)
-架构分析    → get_module_tree (4 tok) + 可选 get_communities ❌ (引擎有实现，未接 MCP) (1K-200K tok)
+架构分析    → get_module_tree (4 tok) + 可选 get_communities ✅（标签传播，默认只返回摘要）
 变更影响    → detect_changes (100-500 tok)
 AI 问答     → codescope_build_context (200-1000 tok)
 ```

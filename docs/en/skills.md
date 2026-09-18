@@ -181,7 +181,7 @@ Find entry points → get_entry_points (5 tok)
 # Find hotspots → ❌ get_hotspots not implemented
 Search code      → search (300-1000 tok)
 Trace calls      → find_callers / find_callees (10-50 tok)
-Architecture     → get_module_tree (4 tok) + optional get_communities ❌ (engine impl exists, no MCP tool) (1K-200K tok)
+Architecture     → get_module_tree (4 tok) + optional get_communities ✅ (label propagation, summary-first by default)
 Change impact    → detect_changes (100-500 tok)
 AI Q&A           → codescope_build_context (200-1000 tok)
 ```

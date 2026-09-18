@@ -2,12 +2,12 @@ cmake_minimum_required(VERSION 3.30)
 project(astgraph_engine VERSION 0.1.0 LANGUAGES C CXX)
 
 # ── Build Optimization ───────────────────────────────────────────
-if(NOT CMAKE_GENERATOR)
-    find_program(NINJA ninja)
-    if(NINJA)
-        set(CMAKE_GENERATOR "Ninja" CACHE STRING "Build generator")
-    endif()
-endif()
+# NOTE: the generator is chosen by the CALLER, not here. CMake sets
+# CMAKE_GENERATOR itself before this file is processed, so
+# `set(CMAKE_GENERATOR ... CACHE ...)` is a no-op and a project cannot switch
+# generators. Selection lives in the Makefile (engine/build) and
+# server/build.rs (engine/build-release*); both reuse the generator recorded
+# in an existing CMakeCache.txt and only pick Ninja for a fresh tree.
 find_program(CCACHE_PROGRAM ccache)
 if(CCACHE_PROGRAM)
     # Cache BOTH C and C++ — the heavy translation units (sqlite3.c,
@@ -246,6 +246,7 @@ set(ENGINE_SOURCES
     src/query/query_engine.cpp
     src/query/query_engine_traverse.cpp
     src/query/query_analysis.cpp
+    src/query/query_communities.cpp
     src/query/graph_query.cpp
     src/query/impact_analysis.cpp
          src/lsp/lsp_client.cpp

@@ -91,9 +91,25 @@ ifneq (,$(findstring Darwin,$(UNAME_S)))
 ENGINE_CMAKE_FLAGS += -DCMAKE_OSX_SYSROOT=$(shell xcrun --show-sdk-path)
 endif
 
-# Use Ninja if available for faster builds
-BUILD_GENERATOR := $(shell which ninja >/dev/null 2>&1 && echo "Ninja" || echo "Unix Makefiles")
-ENGINE_LIB      := $(BUILD_DIR)/libastgraph_engine.a
+# ─── Build Generator ─────────────────────────────────────────────
+# The generator belongs to the BUILD TREE, not to the current shell. CMake
+# refuses to reconfigure an existing tree with a different -G ("does not
+# match the generator used previously"), and the previous recipe hid that
+# failure by piping the configure output through `tail`, whose exit status
+# is always 0. The result: once ninja was installed alongside an existing
+# Unix-Makefiles tree, every CMakeLists.txt change re-ran a failing
+# configure that make believed had succeeded, the stale build system was
+# reused, and newly added source files were silently never compiled.
+#
+# Resolution order:
+#   1. BUILD_GENERATOR=... on the command line (explicit)
+#   2. the generator recorded in $(BUILD_DIR)/CMakeCache.txt
+#   3. Ninja when installed, else Unix Makefiles (fresh tree only)
+# `make clean` removes the tree, so the next build re-detects from scratch.
+ENGINE_LIB := $(BUILD_DIR)/libastgraph_engine.a
+CMAKE_CACHE := $(BUILD_DIR)/CMakeCache.txt
+CACHED_GENERATOR := $(shell sed -n 's/^CMAKE_GENERATOR:INTERNAL=//p' "$(CMAKE_CACHE)" 2>/dev/null)
+BUILD_GENERATOR ?= $(if $(strip $(CACHED_GENERATOR)),$(CACHED_GENERATOR),$(shell which ninja >/dev/null 2>&1 && echo "Ninja" || echo "Unix Makefiles"))
 
 $(BUILD_DIR):
 	@mkdir -p $(BUILD_DIR)
@@ -112,9 +128,19 @@ else
 CMAKE_GEN_FILE := $(BUILD_DIR)/Makefile
 endif
 
+# When the recorded generator and BUILD_GENERATOR disagree, the tree cannot be
+# reconfigured in place. Checked here (not with $(error) at parse time) so that
+# `make clean` — the documented remedy — still runs.
 $(CMAKE_GEN_FILE): $(ENGINE_DIR)/CMakeLists.txt $(wildcard $(ENGINE_DIR)/cmake/*.cmake) | $(BUILD_DIR)
+	@if [ -n "$(strip $(CACHED_GENERATOR))" ] && [ "$(BUILD_GENERATOR)" != "$(CACHED_GENERATOR)" ]; then \
+		printf "$(CROSS) generator mismatch: $(BUILD_DIR) was configured with '$(CACHED_GENERATOR)' but BUILD_GENERATOR is '$(BUILD_GENERATOR)'\n"; \
+		printf "          Run 'make clean' to reconfigure the tree from scratch.\n"; \
+		exit 1; \
+	fi
 	@printf "$(CYAN)[engine]$(RESET) Configuring CMake ($(BUILD_GENERATOR))...\n"
-	@cd $(BUILD_DIR) && cmake -G "$(BUILD_GENERATOR)" $(CURDIR)/$(ENGINE_DIR) $(ENGINE_CMAKE_FLAGS) 2>&1 | tail -3
+	@# pipefail (bash): a failing configure must abort the build instead of
+	@# being masked by `tail`'s exit status (see the note above).
+	@cd $(BUILD_DIR) && set -o pipefail && cmake -G "$(BUILD_GENERATOR)" $(CURDIR)/$(ENGINE_DIR) $(ENGINE_CMAKE_FLAGS) 2>&1 | tail -5
 
 $(ENGINE_LIB): $(CMAKE_GEN_FILE)
 	@printf "$(CYAN)[engine]$(RESET) Building C++ engine...\n"

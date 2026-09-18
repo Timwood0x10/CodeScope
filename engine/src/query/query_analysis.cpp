@@ -1,5 +1,6 @@
 #include "query_engine.h"
-// community_detection removed — Phase 0 cut
+// Community detection lives in query_communities.cpp (restored after the
+// Phase-0 cut that removed the original label-propagation implementation).
 #include "graph_query.h"
 #include "impact_analysis.h"
 
@@ -45,19 +46,6 @@ std::string QueryEngine::detectChanges(uint64_t project_id,
 				       const char *modified_files_json)
 {
 	return analyzeChangeImpact(project_id, store_, modified_files_json);
-}
-
-// ─── Community Detection ─────────────────────────────────────
-
-std::string QueryEngine::getCommunities(uint64_t project_id, int max_members,
-					int max_communities,
-					bool include_members)
-{
-	(void)project_id;
-	(void)max_members;
-	(void)max_communities;
-	(void)include_members;
-	return "{\"communities\":[],\"total\":0}";
 }
 
 // ─── Hotspot Analysis ───────────────────────────────────────

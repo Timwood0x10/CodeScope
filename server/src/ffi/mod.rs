@@ -44,6 +44,12 @@ unsafe extern "C" {
     fn engine_find_shortest_path(project_id: u64, source_id: u64, target_id: u64) -> *mut c_char;
     fn engine_locate_by_name(project_id: u64, name: *const c_char) -> *mut c_char;
     fn engine_find_connected_components(project_id: u64) -> *mut c_char;
+    fn engine_get_communities(
+        project_id: u64,
+        max_members: i32,
+        max_communities: i32,
+        include_members: i32,
+    ) -> *mut c_char;
 
     // ── Graph region + full export queries ────────────────────
     // See engine_ffi.cpp for the C++ implementations. Each returns a
@@ -334,6 +340,32 @@ pub fn locate_by_name(project_id: u64, name: &str) -> String {
 /// module/method per code_rules.md.
 pub fn find_connected_components(project_id: u64) -> String {
     take_string(unsafe { engine_find_connected_components(project_id) })
+}
+
+/// Run label-propagation community detection over the CALLS graph.
+///
+/// Returns JSON
+/// `{"communities":[{"id":N,"label":"...","member_count":N[,"members":[...]]}],
+///   "total_communities":N,"returned_communities":N,
+///   "inter_community_edges":N,"truncated":bool,"approximation":"heuristic",
+///   "note":"..."}` from `QueryEngine::getCommunities` (implemented in
+/// `engine/src/query/query_communities.cpp`). Members are only included when
+/// `include_members` is true; `max_members` / `max_communities` are clamped
+/// engine-side, and a non-positive value means "use the default".
+pub fn get_communities(
+    project_id: u64,
+    max_members: i32,
+    max_communities: i32,
+    include_members: bool,
+) -> String {
+    take_string(unsafe {
+        engine_get_communities(
+            project_id,
+            max_members,
+            max_communities,
+            if include_members { 1 } else { 0 },
+        )
+    })
 }
 
 /// Fetch a local region of the code graph centered on a node.

@@ -124,11 +124,22 @@ class QueryEngine {
 
 	// ── Community Detection ────────────────────────────────────
 
-	// Run label-propagation community detection on the code graph.
-	// Returns JSON with communities, their members, and inter-community edges.
-	// @param max_members Max members per community in output (0 = all).
-	// @param max_communities Max communities to return (0 = all).
-	// @param include_members Include member list in output (default false).
+	// Run deterministic label-propagation community detection over the
+	// CALLS graph (relation type=1, treated as undirected; self-loops and
+	// isolated nodes are excluded). Implemented in query_communities.cpp.
+	// Returns JSON:
+	//   {"communities":[{"id":<representative entity id>,"label":<name>,
+	//                    "member_count":N[,"members":[...]]}],
+	//    "total_communities":N,"returned_communities":N,
+	//    "inter_community_edges":N,"truncated":bool,
+	//    "approximation":"heuristic","note":"..."}
+	// Summary-first: "members" is only present when include_members is set.
+	// @param max_members Members per community when include_members is set.
+	//        Non-positive means "use the default" (10), NOT "unlimited";
+	//        clamped to 200.
+	// @param max_communities Communities to return. Non-positive means
+	//        "use the default" (20), NOT "unlimited"; clamped to 500.
+	// @param include_members Include the member list in the output.
 	std::string getCommunities(uint64_t project_id, int max_members = 10,
 				   int max_communities = 20,
 				   bool include_members = false);

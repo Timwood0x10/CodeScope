@@ -118,14 +118,16 @@ fn main() {
         // Disable tests (they use POSIX APIs not available on Windows)
         cmake_args.push("-DBUILD_TESTS=OFF".to_string());
     }
-    // Use Ninja generator if available (faster parallel builds)
-    if std::process::Command::new("ninja")
-        .arg("--version")
-        .output()
-        .is_ok()
-    {
+    // Use the generator the build tree already uses; only a fresh tree gets to
+    // pick one. Pushing `-G Ninja` merely because ninja is on PATH is a fatal
+    // CMake error when build_dir was previously configured with another
+    // generator ("does not match the generator used previously") — the same
+    // mismatch the Makefile had, triggered whenever ninja's presence changes
+    // (installed later, different PATH, restored CI cache).
+    if let Some(generator) = resolve_generator(&build_dir) {
+        eprintln!("build.rs [{}]: cmake generator = {}", target_os, generator);
         cmake_args.push("-G".to_string());
-        cmake_args.push("Ninja".to_string());
+        cmake_args.push(generator);
     }
     if !sdk_arg.is_empty() {
         cmake_args.push(sdk_arg);
@@ -175,6 +177,38 @@ fn main() {
         "macos" => println!("cargo:rustc-link-lib=dylib=c++"),
         "windows" => println!("cargo:rustc-link-lib=static=stdc++"),
         _ => println!("cargo:rustc-link-lib=dylib=stdc++"),
+    }
+}
+
+/// Resolve the CMake generator for `build_dir`.
+///
+/// A generator is a property of the build tree: reconfiguring an existing
+/// tree with a different `-G` fails outright. So the generator recorded in
+/// the tree's `CMakeCache.txt` wins. Only a tree without a cache may pick
+/// one — Ninja when it actually runs, otherwise `None` so CMake applies its
+/// own platform default (`Unix Makefiles` on macOS/Linux, MSBuild/VS on
+/// Windows).
+fn resolve_generator(build_dir: &str) -> Option<String> {
+    let cache = format!("{}/CMakeCache.txt", build_dir);
+    if let Ok(contents) = std::fs::read_to_string(&cache) {
+        for line in contents.lines() {
+            if let Some(value) = line.strip_prefix("CMAKE_GENERATOR:INTERNAL=") {
+                let value = value.trim();
+                if !value.is_empty() {
+                    return Some(value.to_string());
+                }
+            }
+        }
+    }
+    let ninja_works = Command::new("ninja")
+        .arg("--version")
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false);
+    if ninja_works {
+        Some("Ninja".to_string())
+    } else {
+        None
     }
 }
 

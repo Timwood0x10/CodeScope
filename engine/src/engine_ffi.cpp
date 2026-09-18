@@ -375,8 +375,9 @@ char *engine_detect_changes(uint64_t project_id,
 
 // ─── Community Detection ────────────────────────────────────
 
-// engine_get_communities — active. Runs label-propagation community
-// detection (see engine.h). Wrapping follows the FFI Safety Contract.
+// engine_get_communities — runs label-propagation community detection over
+// the CALLS graph (see engine.h and query_communities.cpp). Wrapping follows
+// the FFI Safety Contract.
 char *engine_get_communities(uint64_t project_id, int max_members,
 			     int max_communities, int include_members)
 {
@@ -384,8 +385,9 @@ char *engine_get_communities(uint64_t project_id, int max_members,
 		if (!g_query) {
 			return dupString(
 				"{\"error\":\"not initialized\","
-				"\"communities\":[],\"inter_community_edges\":[],\"total_"
-				"communities\":0}");
+				"\"communities\":[],\"total_communities\":0,"
+				"\"returned_communities\":0,"
+				"\"inter_community_edges\":0}");
 		}
 		return dupString(g_query->getCommunities(
 			project_id, max_members, max_communities,

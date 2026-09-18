@@ -279,7 +279,7 @@ sequenceDiagram
 | `search` (graph fallback) | **<10 ms** | LIKE fallback search |
 | `get_module_tree` | **<1 ms** | Lightweight query |
 | `get_entry_points` | **<1 ms** | Indexed lookup |
-| `get_communities` | ❌ Engine impl exists, no MCP tool — use `connected_components` instead | — |
+| `get_communities` | ✅ Available — deterministic label propagation over CALLS edges; summary-first (`max_communities` / `include_members` / `max_members`) | — |
 | `get_index_progress` | **<1 ms** | Atomic global read |
 
 ---

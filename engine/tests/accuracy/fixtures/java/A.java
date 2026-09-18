@@ -6,8 +6,9 @@ public class A {
         return B.bravo(x);
     }
 
-    // mainFunc calls alpha (intra-file), Math.max (stdlib), and
-    // new B() (constructor).
+    // mainFunc calls alpha (intra-file), Math.max (stdlib),
+    // new B() (cross-file constructor), and b.run() (cross-file
+    // instance method with receiver_type=B).
     public static void mainFunc() {
         int r = alpha(1);
         int m = Math.max(1, 2);

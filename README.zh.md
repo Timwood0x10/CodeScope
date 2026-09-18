@@ -322,6 +322,7 @@ codescope index-parallel /path/to/large/project
 | `trace_flow` | 递归执行流追踪（caller→callee 链）。 | `{"function_name": "string (必填)", "depth": "integer (默认 3, 最大 10)"}` |
 | `shortest_path` | 两个函数之间的最短调用路径（BFS）。 | `{"from": "string", "to": "string", "from_id": "integer", "to_id": "integer"}` |
 | `connected_components` | 调用图中的连通分量。 | `{}` |
+| `get_communities` | **新增** — 通过确定性的标签传播检测调用图中的社区（聚类）。返回 `{communities:[{id,label,member_count}], total_communities, returned_communities, inter_community_edges, truncated}`；除非 `include_members` 为 true，否则不返回成员列表。 | `{"max_communities": "integer（默认 20，上限 500）", "include_members": "boolean（默认 false）", "max_members": "integer（默认 10，上限 200）"}` |
 
 ### 图查询
 

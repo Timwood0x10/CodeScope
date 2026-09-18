@@ -408,6 +408,18 @@ pub fn all_tools() -> Vec<Tool> {
             input_schema: json!({ "type": "object", "properties": {} }),
         },
         Tool {
+            name: "get_communities".into(),
+            description: "Detect communities (clusters) in the call graph via deterministic label propagation over CALLS edges. Returns {communities:[{id,label,member_count[,members]}], total_communities, returned_communities, inter_community_edges, truncated, approximation:\"heuristic\", note}. Summary-first: each community is a {id,label,member_count} summary unless include_members=true. Heuristic/approximate: edges are resolved by name matching, so indirect calls (virtual/pointer) may be missing.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "max_communities": {"type": "integer", "description": "Max communities to return (default 20, max 500)"},
+                    "include_members": {"type": "boolean", "description": "Include each community's member list (default false; keeps the payload small)"},
+                    "max_members": {"type": "integer", "description": "Max members per community when include_members is true (default 10, max 200)"}
+                }
+            }),
+        },
+        Tool {
             name: "get_entry_points".into(),
             description: "Get likely entry points from the new schema (main/init/setup/run/handler). Returns symbol id, name, file path, and line.".into(),
             input_schema: json!({ "type": "object", "properties": {} }),

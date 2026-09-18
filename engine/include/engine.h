@@ -24,7 +24,7 @@ const char *engine_version(void);
 // for completeness and are kept (not removed) because some are used by
 // scripts or a future CLI, but they must NOT be treated as server-backed
 // APIs. Functions NOT bound by the server include:
-//   engine_get_communities, engine_get_hotspots, engine_get_module_map,
+//   engine_get_hotspots, engine_get_module_map,
 //   engine_get_entry_points, engine_trace_call_chain, engine_get_callers,
 //   engine_get_callees, engine_get_complexity, engine_get_capabilities,
 //   engine_get_index_progress, engine_scan_project, engine_search_semantic,
@@ -150,23 +150,32 @@ char *engine_detect_changes(uint64_t project_id,
 // ─── Community Detection ────────────────────────────────────────
 
 /**
- * Run label-propagation community detection on the code graph.
+ * Run deterministic label-propagation community detection over the CALLS
+ * graph (relation type=1, treated as undirected; self-loops and isolated
+ * nodes are excluded). Each participating node starts in its own community
+ * and iteratively adopts the most common label among its neighbors; ties
+ * prefer the current label, then the smallest label id, so the same database
+ * always yields the same communities.
  *
- * Each node starts in its own community and iteratively adopts the
- * most common community label among its neighbors. Returns module
- * clusters and their inter-relationships.
+ * Implemented in engine/src/query/query_communities.cpp.
  *
  * @param project_id  The project to analyze.
- * @param max_members Maximum members per community in output. 
- *                    Set to a small value (e.g. 5-10) to avoid large token output.
- *                    0 = include all members.
- * @param max_communities Maximum communities to return.
- *                        Set to e.g. 20 to limit output size and token cost.
- *                        0 = return all communities.
- * @param include_members If non-zero, include member list in each community.
- *                        If 0 (default), only return {id, label, member_count} summary.
- * @return JSON with "communities" array, "inter_community_edges",
- *         and "total_communities".
+ * @param max_members Maximum members emitted per community. Non-positive
+ *                    means "use the default" (10), NOT "unlimited";
+ *                    clamped to 200. Only used when include_members is set.
+ * @param max_communities Maximum communities returned. Non-positive means
+ *                        "use the default" (20), NOT "unlimited"; clamped
+ *                        to 500.
+ * @param include_members If non-zero, include the member list. If 0 (the
+ *                        default) only {id, label, member_count} summaries
+ *                        are returned, keeping the payload small.
+ * @return JSON:
+ *   {"communities":[{"id":<representative entity id>,"label":<name>,
+ *                    "member_count":N[,"members":[...]]}],
+ *    "total_communities":N,"returned_communities":N,
+ *    "inter_community_edges":N,"truncated":bool,
+ *    "approximation":"heuristic","note":"..."}
+ *   On error the JSON contains an "error" field and an empty community list.
  */
 char *engine_get_communities(uint64_t project_id, int max_members,
 			     int max_communities, int include_members);

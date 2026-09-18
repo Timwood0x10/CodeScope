@@ -67,7 +67,7 @@ CodeScope parses source code into a unified AST IR, builds a call graph + refere
 | Tool | Status | Workaround |
 |------|--------|------------|
 | `get_hotspots` | ❌ no MCP tool | (hotspots.sh is stale) |
-| `get_communities` | ⚠️ C++ has it, MCP doesn't | `connected_components` as lightweight alternative |
+| `get_communities` | ✅ Available (label propagation; summary-first) | `connected_components` for a coarser grouping |
 | `locate_code` | ❌ not implemented | `explain_symbol` |
 
 > `graph_query` IS implemented (TOOL_HANDLERS in server/src/tools/mod.rs) — earlier docs listed it as "not wired"; that is stale. Use it for custom graph-pattern queries.

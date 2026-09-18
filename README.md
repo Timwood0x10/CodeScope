@@ -299,7 +299,7 @@ codescope index-parallel /path/to/large/project
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
-| `index_project` | Index a project directory: parse all source files, build IR, and construct the code graph. | `{"project_path": "string (required)", "language_filter": "string (optional)"}` |
+| `index_project` | Index a project directory: parse all source files, build IR, and construct the code graph. Invoked via the session/CLI entry point (it spawns an isolated worker subprocess), so it is not advertised in `tools/list`; CLI and MCP clients call it by name. | `{"project_path": "string (required)", "language_filter": "string (optional)"}` |
 | `index_file` | Index a single source file. | `{"file_path": "string (required)"}` |
 | `force_index_files` | Force-index files/dirs bypassing default skip rules (test/, docs/, node_modules/, .gitignore, etc.). | `{"paths": ["string (required)"], "language_filter": "string (optional)"}` |
 
@@ -336,6 +336,7 @@ codescope index-parallel /path/to/large/project
 | `trace_flow` | Recursive execution flow tracing (caller→callee chain). | `{"function_name": "string (required)", "depth": "integer (default 3, max 10)"}` |
 | `shortest_path` | Shortest call path between two functions (BFS). | `{"from": "string", "to": "string", "from_id": "integer", "to_id": "integer"}` |
 | `connected_components` | Connected components in the call graph. | `{}` |
+| `get_communities` | **New** — detect communities (clusters) in the call graph via deterministic label propagation. Returns `{communities:[{id,label,member_count}], total_communities, returned_communities, inter_community_edges, truncated}`; members are omitted unless `include_members` is true. | `{"max_communities": "integer (default 20, max 500)", "include_members": "boolean (default false)", "max_members": "integer (default 10, max 200)"}` |
 
 ### Graph Query
 

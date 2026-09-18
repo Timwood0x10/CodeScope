@@ -87,6 +87,34 @@ fn clamp_knowledge_limit(value: Option<i64>) -> i32 {
         .clamp(0, MAX_KNOWLEDGE_GRAPH_LIMIT) as i32
 }
 
+/// Default / upper bound for `get_communities` `max_communities`. The engine
+/// emits one JSON object per community, so an unbounded value would produce a
+/// payload proportional to the graph size.
+const DEFAULT_MAX_COMMUNITIES: i64 = 20;
+const MAX_MAX_COMMUNITIES: i64 = 500;
+/// Default / upper bound for `get_communities` `max_members`. Only used when
+/// `include_members` is true.
+const DEFAULT_MAX_MEMBERS: i64 = 10;
+const MAX_MAX_MEMBERS: i64 = 200;
+
+/// Clamp a client-supplied `get_communities` community count into
+/// `[1, MAX_MAX_COMMUNITIES]`. (The engine also treats a non-positive value
+/// as "use the default", but clamping here keeps a huge i64 from being
+/// truncated by `as i32` into a negative value.)
+fn clamp_max_communities(value: Option<i64>) -> i32 {
+    value
+        .unwrap_or(DEFAULT_MAX_COMMUNITIES)
+        .clamp(1, MAX_MAX_COMMUNITIES) as i32
+}
+
+/// Clamp a client-supplied `get_communities` member count into
+/// `[1, MAX_MAX_MEMBERS]`.
+fn clamp_max_members(value: Option<i64>) -> i32 {
+    value
+        .unwrap_or(DEFAULT_MAX_MEMBERS)
+        .clamp(1, MAX_MAX_MEMBERS) as i32
+}
+
 // The indexing/worker machinery (subprocess orchestration, force-index
 // file walking, acceptability filtering) lives in tools/indexing.rs — see
 // plan/rules/code_rules.md (1000-line rule).
@@ -415,6 +443,18 @@ fn h_connected_components(project_id: u64, _args: &Value) -> String {
     ffi::find_connected_components(project_id)
 }
 
+/// Community detection over the CALLS graph (deterministic label
+/// propagation). Summary-first by design: unless `include_members` is true,
+/// each community is returned as {id, label, member_count}. The previous
+/// implementation returned every member of every community, which produced
+/// ~100K tokens for a single query.
+fn h_get_communities(project_id: u64, args: &Value) -> String {
+    let max_communities = clamp_max_communities(args["max_communities"].as_i64());
+    let max_members = clamp_max_members(args["max_members"].as_i64());
+    let include_members = args["include_members"].as_bool().unwrap_or(false);
+    ffi::get_communities(project_id, max_members, max_communities, include_members)
+}
+
 /// Fetch a local region of the code graph centered on a node.
 fn h_get_subgraph(project_id: u64, args: &Value) -> String {
     let node_id = match args["node_id"].as_i64() {
@@ -631,6 +671,7 @@ static TOOL_HANDLERS: Lazy<HashMap<&'static str, ToolHandler>> = Lazy::new(|| {
         "connected_components",
         h_connected_components as ToolHandler,
     );
+    m.insert("get_communities", h_get_communities as ToolHandler);
     m.insert("get_entry_points", h_get_entry_points as ToolHandler);
     m.insert("get_type_info", h_get_type_info as ToolHandler);
     m.insert("get_routes", h_get_routes as ToolHandler);
@@ -843,6 +884,40 @@ mod tests {
         assert_eq!(
             clamp_knowledge_limit(Some(5_000_000_000)),
             MAX_KNOWLEDGE_GRAPH_LIMIT as i32
+        );
+    }
+
+    #[test]
+    fn test_clamp_max_communities_bounds() {
+        assert_eq!(clamp_max_communities(None), DEFAULT_MAX_COMMUNITIES as i32);
+        assert_eq!(clamp_max_communities(Some(0)), 1);
+        assert_eq!(clamp_max_communities(Some(-5)), 1);
+        assert_eq!(clamp_max_communities(Some(100)), 100);
+        assert_eq!(
+            clamp_max_communities(Some(MAX_MAX_COMMUNITIES)),
+            MAX_MAX_COMMUNITIES as i32
+        );
+        assert_eq!(
+            clamp_max_communities(Some(9_999)),
+            MAX_MAX_COMMUNITIES as i32
+        );
+        // 5_000_000_000 as i32 is negative — must not reach the engine.
+        assert_eq!(
+            clamp_max_communities(Some(5_000_000_000)),
+            MAX_MAX_COMMUNITIES as i32
+        );
+    }
+
+    #[test]
+    fn test_clamp_max_members_bounds() {
+        assert_eq!(clamp_max_members(None), DEFAULT_MAX_MEMBERS as i32);
+        assert_eq!(clamp_max_members(Some(0)), 1);
+        assert_eq!(clamp_max_members(Some(-1)), 1);
+        assert_eq!(clamp_max_members(Some(50)), 50);
+        assert_eq!(clamp_max_members(Some(9_999)), MAX_MAX_MEMBERS as i32);
+        assert_eq!(
+            clamp_max_members(Some(5_000_000_000)),
+            MAX_MAX_MEMBERS as i32
         );
     }
 }
