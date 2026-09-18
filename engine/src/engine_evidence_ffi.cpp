@@ -33,6 +33,7 @@
 //   {"error":"engine not initialized"}.
 
 #include "engine_internal.h"
+#include "async_knowledge.h"
 #include "evidence/evidence_builder.h"
 #include "platform_win.h"
 
@@ -131,6 +132,7 @@ std::string serializeEvidence(const evidence::Evidence &ev)
 char *engine_build_evidence(uint64_t project_id, const char *category_filter)
 {
 	try {
+		waitForKnowledgeBuilder();
 		if (!g_store)
 			return dupString(
 				"{\"error\":\"engine not initialized\"}");

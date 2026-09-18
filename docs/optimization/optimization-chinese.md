@@ -449,6 +449,14 @@ ORDER BY COUNT(*) DESC LIMIT 10;
 | **层对** | 正确 | **正确** |
 | 精度 | 理论更精确 | 实际等价（architecture_edge 已验证） |
 
+> **已失效（2026-09-18）**：本表记录的是当时那次优化的取舍。后续核实发现
+> `architecture_edge` **并不**经过层校验 —— `ArchitecturePlugin` 对任意跨模块
+> 调用都写一行，`layer_lower` / `layer_upper` 存的是**模块名**而非层名。因此上表
+> 的 `violations` 计数与"合规性标志"两行已不再描述当前行为：正常跨模块依赖不再
+> 计为违规，计数改由 `cross_module_edges` 承载。详见 `CHANGELOG.md` 的
+> "Normal cross-module dependencies are no longer reported as architecture
+> violations"。
+
 ### 索引支持
 
 ```sql

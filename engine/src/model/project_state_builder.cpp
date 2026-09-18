@@ -321,22 +321,35 @@ int64_t countVerifiedCapabilities(store::GraphStore *store, uint64_t project_id)
 	return count;
 }
 
-// Sum architecture_state.violations for a project. Returns 0 on
-// error or empty table.
-int64_t sumArchitectureViolations(store::GraphStore *store, uint64_t project_id)
+// Sum one architecture_state column for a project. `column` is chosen by
+// the callers below (never client input) AND checked against an allowlist,
+// because it is interpolated into the SQL — together the two keep this a
+// constant query. Returns 0 on error or empty table.
+static int64_t sumArchitectureColumn(store::GraphStore *store,
+				     uint64_t project_id, const char *column)
 {
-	if (!store || !store->handle())
-		return 0;
-	const char *sql = "SELECT COALESCE(SUM(violations), 0) "
-			  "FROM architecture_state WHERE project_id = ?";
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(store->handle(), sql, -1, &stmt, nullptr) !=
-	    SQLITE_OK) {
+	if (std::strcmp(column, "violations") != 0 &&
+	    std::strcmp(column, "cross_module_edges") != 0) {
 		std::fprintf(
 			stderr,
-			"[module=project_state, method=sumArchitectureViolations] "
-			"prepare failed: %s\n",
-			sqlite3_errmsg(store->handle()));
+			"[module=project_state, method=sumArchitectureColumn] "
+			"refusing non-allowlisted column '%s'\n",
+			column);
+		return 0;
+	}
+	if (!store || !store->handle())
+		return 0;
+	const std::string sql = std::string("SELECT COALESCE(SUM(") + column +
+				"), 0) FROM architecture_state "
+				"WHERE project_id = ?";
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(store->handle(), sql.c_str(), -1, &stmt,
+			       nullptr) != SQLITE_OK) {
+		std::fprintf(
+			stderr,
+			"[module=project_state, method=sumArchitectureColumn] "
+			"prepare failed for column '%s': %s\n",
+			column, sqlite3_errmsg(store->handle()));
 		return 0;
 	}
 	StmtGuard guard(stmt);
@@ -346,6 +359,24 @@ int64_t sumArchitectureViolations(store::GraphStore *store, uint64_t project_id)
 		count = sqlite3_column_int64(stmt, 0);
 	}
 	return count;
+}
+
+// Sum architecture_state.violations for a project. Returns 0 on error or
+// empty table. Always 0 today: calling a cross-module dependency a violation
+// needs a layer model, which this graph does not carry — see
+// StateBuilder::buildArchitectureState.
+int64_t sumArchitectureViolations(store::GraphStore *store, uint64_t project_id)
+{
+	return sumArchitectureColumn(store, project_id, "violations");
+}
+
+// Sum architecture_state.cross_module_edges: how many call edges cross a
+// module boundary, summed over the tracked module pairs. This is a
+// dependency count, NOT a violation count.
+int64_t sumArchitectureCrossModuleEdges(store::GraphStore *store,
+					uint64_t project_id)
+{
+	return sumArchitectureColumn(store, project_id, "cross_module_edges");
 }
 
 // Sum workflow_state.steps_done and steps_total across all workflows
@@ -594,6 +625,8 @@ bool ProjectStateBuilder::build(uint64_t project_id)
 	int64_t capability_verified =
 		countVerifiedCapabilities(store_, project_id);
 	int64_t arch_violations = sumArchitectureViolations(store_, project_id);
+	int64_t arch_cross_module =
+		sumArchitectureCrossModuleEdges(store_, project_id);
 	int64_t workflow_total =
 		countRows(store_,
 			  "SELECT COUNT(*) FROM workflow_state "
@@ -607,7 +640,10 @@ bool ProjectStateBuilder::build(uint64_t project_id)
 	double confidence =
 		computeOverallConfidence(agg, arch_violations, dead_entities);
 
-	// Architecture score = 1 - violations * penalty (clamped).
+	// Architecture score = 1 - violations * penalty (clamped). `violations`
+	// counts only real layer violations, so a project is no longer penalised
+	// for having cross-module dependencies; those are reported as
+	// cross_module_edges alongside the score.
 	double arch_score = 1.0 - kPenaltyPerArchitectureViolation *
 					  static_cast<double>(arch_violations);
 	if (arch_score < 0.0)
@@ -689,7 +725,8 @@ bool ProjectStateBuilder::build(uint64_t project_id)
 
 	// architecture
 	ss << ",\"architecture\":{\"score\":" << fmtDouble(arch_score)
-	   << ",\"violations\":" << arch_violations << "}";
+	   << ",\"violations\":" << arch_violations
+	   << ",\"cross_module_edges\":" << arch_cross_module << "}";
 
 	// workflow
 	ss << ",\"workflow\":{\"score\":" << fmtDouble(workflow_score)

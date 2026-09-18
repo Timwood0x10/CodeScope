@@ -306,34 +306,48 @@ int64_t StateBuilder::buildWorkflowState()
 
 int64_t StateBuilder::buildArchitectureState()
 {
-	// Count architecture violations per layer pair directly from
-	// architecture_edge, without re-joining entity/relation tables.
+	// Record cross-module dependency counts. This is a COUNT of call edges
+	// that cross a module boundary — NOT a violation count, and NOT a layer
+	// check.
+	//
+	// ArchitecturePlugin (model/plugins/architecture.cpp) writes one
+	// architecture_edge row per (caller module, callee module) pair with no
+	// layer model and no direction test: layer_lower / layer_upper hold MODULE
+	// NAMES, not layer names. Counting those rows as `violations` with
+	// compliance = 0.0 therefore reported every normal cross-module dependency
+	// as an architecture violation, and pushed the architecture score down in
+	// proportion to how interconnected the project is.
+	//
+	// The count is real information, so it is kept — under its own column.
+	// `violations` stays 0 and compliance stays 1.0 because nothing here can
+	// tell a violation from a dependency. `layer` keeps the "a->b" module-pair
+	// key (the column predates this distinction).
 	//
 	// The original query did a 4-table JOIN (architecture_edge × entity ×
 	// relation × entity) with non-sargable `file_path LIKE '%layer%'`
-	// filters, costing ~25s for 110k architecture_edge rows. Even with
-	// sargable `module_path LIKE 'layer%'` and indexes on
-	// relation(project_id, target_id), the JOIN cardinality (110k edges ×
-	// N relations per target) made it prohibitively slow.
-	//
-	// This simplification is SAFE because architecture_edge rows are
-	// already validated cross-module calls: ArchitecturePlugin (see
-	// model/plugins/architecture.cpp) creates each row ONLY when a real
-	// call edge crosses from layer_lower to layer_upper, using the same
-	// pathStartsWithCI membership test that the LIKE filters re-checked.
-	// The relation JOIN was therefore redundant validation.
-	//
-	// Accuracy: the layer pairs, compliance flags (0.0 when violations >
-	// 0), ORDER BY, and LIMIT are IDENTICAL to the original. The
-	// violation COUNT differs in magnitude (counts architecture_edge rows
-	// instead of architecture_edge × relation rows) but preserves
-	// relative ordering — more cross-module calls per layer pair
-	// produces a proportionally higher count.
-	std::string sql = "INSERT OR IGNORE INTO architecture_state "
-			  "(project_id, layer, violations, compliance) "
+	// filters, costing ~25s for 110k architecture_edge rows. Reading the
+	// counts straight from architecture_edge avoids that JOIN: the rows are
+	// already cross-module call edges.
+	{
+		// Rebuild idempotently. INSERT OR IGNORE cannot dedupe here — the
+		// table has no UNIQUE(project_id, layer) — so re-running the builder
+		// would accumulate a second copy of every row and double every count.
+		const std::string del =
+			"DELETE FROM architecture_state WHERE project_id=" +
+			std::to_string(project_id_);
+		if (!store_->exec(del.c_str())) {
+			fprintf(stderr,
+				"[module=state_builder, method=buildArchitectureState] "
+				"delete failed: %s\n",
+				store_->error().c_str());
+			return -1;
+		}
+	}
+	std::string sql = "INSERT INTO architecture_state "
+			  "(project_id, layer, violations, cross_module_edges, "
+			  " compliance) "
 			  "SELECT ?, ae.layer_lower || '->' || ae.layer_upper, "
-			  "  COUNT(*), "
-			  "  CASE WHEN COUNT(*) > 0 THEN 0.0 ELSE 1.0 END "
+			  "  0, COUNT(*), 1.0 "
 			  "FROM architecture_edge ae "
 			  "WHERE ae.project_id = ? "
 			  "GROUP BY ae.layer_lower, ae.layer_upper "

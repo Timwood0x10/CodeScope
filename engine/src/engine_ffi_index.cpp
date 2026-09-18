@@ -11,6 +11,7 @@
 // the caller frees with engine_free_string().
 
 #include "engine_internal.h"
+#include "async_knowledge.h"
 #include "platform_win.h"
 
 #include <cstdio>
@@ -305,6 +306,7 @@ static const char *detectLicense(const std::string &content)
 char *engine_get_project_info(uint64_t project_id)
 {
 	try {
+		waitForKnowledgeBuilder();
 		if (!g_store)
 			return dupString("{\"error\":\"not initialized\"}");
 

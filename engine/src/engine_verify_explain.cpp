@@ -8,6 +8,7 @@
 // they share the same verifier-registry bootstrapping.
 
 #include "engine_internal.h"
+#include "async_knowledge.h"
 #include "platform_win.h"
 
 #include <algorithm>
@@ -67,6 +68,7 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 				       const char *module_name)
 {
 	try {
+		waitForKnowledgeBuilder();
 		if (!g_store)
 			return dupString(
 				"{\"error\":\"not initialized "

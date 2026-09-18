@@ -21,6 +21,7 @@
 //  13. Cleanup: close store, unlink temp DB
 
 #include "../src/model/project_state_builder.h"
+#include "../src/model/state_builder.h"
 #include "../src/store/store.h"
 
 #include <cassert>
@@ -231,6 +232,56 @@ static std::string readPersistedSnapshot(GraphStore &store,
 	return out;
 }
 
+/// Insert an architecture_edge row: an ordinary cross-module dependency
+/// (layer_lower / layer_upper hold module NAMES — see
+/// StateBuilder::buildArchitectureState).
+static void insertArchEdge(GraphStore &store, uint64_t project_id,
+			   const char *layer_lower, const char *layer_upper)
+{
+	sqlite3 *db = store.handle();
+	const char *sql = "INSERT INTO architecture_edge "
+			  "(project_id, layer_upper, layer_lower, entity_id) "
+			  "VALUES (?,?,?,1)";
+	sqlite3_stmt *stmt = nullptr;
+	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	sqlite3_bind_text(stmt, 2, layer_upper, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 3, layer_lower, -1, SQLITE_TRANSIENT);
+	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	sqlite3_finalize(stmt);
+}
+
+/// Aggregate architecture_state for a project: row count, summed
+/// violations, summed cross_module_edges, and the lowest compliance flag
+/// (every row must sit at 1.0 for a project with no layer model).
+struct ArchAgg {
+	int64_t rows = 0;
+	int64_t violations = 0;
+	int64_t cross_module_edges = 0;
+	double min_compliance = 1.0;
+};
+
+static ArchAgg readArchAgg(GraphStore &store, uint64_t project_id)
+{
+	sqlite3 *db = store.handle();
+	const char *sql = "SELECT COUNT(*), COALESCE(SUM(violations), 0), "
+			  "       COALESCE(SUM(cross_module_edges), 0), "
+			  "       COALESCE(MIN(compliance), 1.0) "
+			  "FROM architecture_state WHERE project_id=?";
+	sqlite3_stmt *stmt = nullptr;
+	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	ArchAgg agg;
+	if (sqlite3_step(stmt) == SQLITE_ROW) {
+		agg.rows = sqlite3_column_int64(stmt, 0);
+		agg.violations = sqlite3_column_int64(stmt, 1);
+		agg.cross_module_edges = sqlite3_column_int64(stmt, 2);
+		agg.min_compliance = sqlite3_column_double(stmt, 3);
+	}
+	sqlite3_finalize(stmt);
+	return agg;
+}
+
 int main()
 {
 	unlink(kDbPath);
@@ -387,6 +438,105 @@ int main()
 		assert(c == 0.0);
 		printf("Test 9 (getConfidence unknown project -> "
 		       "0.0): PASS\n");
+	}
+
+	// ── Test 10: buildArchitectureState writes honest numbers ───
+	// Regression for review #3: architecture_edge rows are ordinary
+	// cross-module dependencies (layer_lower / layer_upper hold module
+	// NAMES, and no layer model or direction test exists), so
+	// `violations` must stay 0, the count must land in
+	// cross_module_edges, and compliance must stay 1.0. The second run
+	// covers idempotency: the old INSERT OR IGNORE had no unique key to
+	// ignore on, so every rebuild appended a full copy of every row.
+	{
+		// Two module pairs: mod_a->mod_b (2 edges) + mod_b->mod_c.
+		insertArchEdge(store, pid, "mod_a", "mod_b");
+		insertArchEdge(store, pid, "mod_a", "mod_b");
+		insertArchEdge(store, pid, "mod_b", "mod_c");
+
+		StateBuilder sb(&store, pid);
+		int64_t n = sb.buildArchitectureState();
+		assert(n == 2); // one row per (lower, upper) pair
+		ArchAgg agg = readArchAgg(store, pid);
+		assert(agg.rows == 2);
+		assert(agg.violations == 0);
+		assert(agg.cross_module_edges == 3);
+		assert(agg.min_compliance == 1.0);
+
+		// Rebuild must replace, not append. (It also removes the
+		// hand-inserted violations=2 fixture row from step 5 —
+		// architecture_state is derived state.)
+		n = sb.buildArchitectureState();
+		assert(n == 2);
+		agg = readArchAgg(store, pid);
+		assert(agg.rows == 2);
+		assert(agg.violations == 0);
+		assert(agg.cross_module_edges == 3);
+		printf("Test 10 (buildArchitectureState honest + "
+		       "idempotent): PASS\n");
+	}
+
+	// ── Test 11: project_state.architecture reports both ────────
+	{
+		ProjectStateBuilder builder(&store);
+		bool ok = builder.build(pid);
+		assert(ok);
+		std::string s = readPersistedSnapshot(store, pid);
+		assert(s.find("\"violations\":0,\"cross_module_edges\":3") !=
+		       std::string::npos);
+		printf("Test 11 (project_state.architecture reports "
+		       "cross_module_edges): PASS\n");
+	}
+
+	// ── Test 12: migration repairs pre-fix rows on reopen ───────
+	// Simulate what the pre-fix builder wrote: `violations` holds the
+	// cross-module count, compliance is 0.0, and duplicate rows from
+	// the old non-idempotent rebuild are stacked on the same layer key.
+	// Reopening runs createSchema + runSchemaMigrations, which must
+	// dedup AND move the count — even though the column already exists
+	// (the original migration only corrected rows in the same startup
+	// that added the column, so a downgrade/upgrade cycle never fixed
+	// them).
+	{
+		const char *legacy_sql =
+			"INSERT INTO architecture_state "
+			"(project_id, layer, violations, compliance, evidence) "
+			"VALUES (?, 'legacy->pair', 5, 0.0, '[]')";
+		sqlite3_stmt *stmt = nullptr;
+		sqlite3 *db = store.handle();
+		assert(sqlite3_prepare_v2(db, legacy_sql, -1, &stmt, nullptr) ==
+		       SQLITE_OK);
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(pid));
+		assert(sqlite3_step(stmt) == SQLITE_DONE);
+		sqlite3_finalize(stmt);
+		assert(sqlite3_prepare_v2(db, legacy_sql, -1, &stmt, nullptr) ==
+		       SQLITE_OK);
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(pid));
+		assert(sqlite3_step(stmt) == SQLITE_DONE);
+		sqlite3_finalize(stmt);
+
+		store.close();
+		assert(store.open(kDbPath));
+
+		db = store.handle();
+		const char *q = "SELECT COUNT(*), "
+				"       COALESCE(MAX(violations), 0), "
+				"       COALESCE(MAX(cross_module_edges), 0), "
+				"       COALESCE(MIN(compliance), 1.0) "
+				"FROM architecture_state "
+				"WHERE project_id=? AND layer='legacy->pair'";
+		stmt = nullptr;
+		assert(sqlite3_prepare_v2(db, q, -1, &stmt, nullptr) ==
+		       SQLITE_OK);
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(pid));
+		assert(sqlite3_step(stmt) == SQLITE_ROW);
+		assert(sqlite3_column_int64(stmt, 0) == 1); // deduped
+		assert(sqlite3_column_int64(stmt, 1) == 0); // moved	out
+		assert(sqlite3_column_int64(stmt, 2) == 5); // preserved
+		assert(sqlite3_column_double(stmt, 3) == 1.0); // cleared
+		sqlite3_finalize(stmt);
+		printf("Test 12 (migration dedups + moves pre-fix rows "
+		       "on reopen): PASS\n");
 	}
 
 	store.close();

@@ -19,6 +19,7 @@
 //   {"error":"engine not initialized"}.
 
 #include "engine_internal.h"
+#include "async_knowledge.h"
 #include "model/project_state_builder.h"
 #include "platform_win.h"
 
@@ -37,6 +38,7 @@
 char *engine_build_project_state(uint64_t project_id)
 {
 	try {
+		waitForKnowledgeBuilder();
 		if (!g_store)
 			return dupString(
 				"{\"error\":\"engine not initialized\"}");
@@ -70,6 +72,7 @@ char *engine_build_project_state(uint64_t project_id)
 char *engine_get_project_state(uint64_t project_id)
 {
 	try {
+		waitForKnowledgeBuilder();
 		if (!g_store)
 			return dupString(
 				"{\"error\":\"engine not initialized\"}");

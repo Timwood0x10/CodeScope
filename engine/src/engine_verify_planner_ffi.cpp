@@ -28,6 +28,7 @@
 // The caller MUST release the returned pointer via engine_free_string().
 
 #include "engine_internal.h"
+#include "async_knowledge.h"
 #include "platform_win.h"
 #include "verify/intent_parser.h"
 #include "verify/planner.h"
@@ -57,6 +58,7 @@
 char *engine_verify_statement(uint64_t project_id, const char *claim_text)
 {
 	try {
+		waitForKnowledgeBuilder();
 		if (!g_store)
 			return dupString(
 				"{\"error\":\"engine not initialized\"}");

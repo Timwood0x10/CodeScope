@@ -477,8 +477,12 @@ fn index_parallel_dynamic(project_dir: &str, total_workers: u32, parallel: u32) 
         })
         .collect();
 
+    // "ok" means the run completed AND produced a consistent index — not just
+    // "at least one worker finished". See run_complete().
+    let complete = super::run_complete(fail, merge_result.merged);
     json!({
-        "ok": success > 0,
+        "ok": complete,
+        "complete": complete,
         "project_path": project_path,
         "db_prefix": db_prefix,
         "main_db": merge_result.main_db_path,

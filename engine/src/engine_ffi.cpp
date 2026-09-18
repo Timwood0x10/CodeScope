@@ -1,4 +1,5 @@
 #include "engine_internal.h"
+#include "async_knowledge.h"
 #include "platform_win.h"
 
 #include <cstdio>
@@ -147,6 +148,7 @@ static int ffi_count_vector_entities(uint64_t project_id)
 char *engine_get_capabilities(uint64_t project_id)
 {
 	try {
+		waitForKnowledgeBuilder();
 		if (!g_store)
 			return dupString(
 				"{\"error\":\"engine not initialized\"}");
@@ -229,6 +231,7 @@ char *engine_search_code(uint64_t project_id, const char *query, int limit)
 		if (!query || !*query)
 			return dupString(
 				"{\"error\":\"[module=ffi, method=engine_search_code] query is required\"}");
+		waitForKnowledgeBuilder();
 		if (!g_query)
 			return dupString(
 				"{\"total\":0,\"results\":[],\"error\":\"not initialized\"}");
@@ -257,6 +260,7 @@ char *engine_search_code(uint64_t project_id, const char *query, int limit)
 char *engine_search_semantic(uint64_t project_id, const char *query, int limit)
 {
 	try {
+		waitForKnowledgeBuilder();
 		if (!g_store || !g_store->handle() || !query)
 			return dupString("{\"total\":0,\"results\":[],"
 					 "\"error\":\"not initialized\"}");
@@ -279,6 +283,7 @@ char *engine_search_semantic(uint64_t project_id, const char *query, int limit)
 char *engine_get_complexity(uint64_t project_id, uint64_t graph_node_id)
 {
 	try {
+		waitForKnowledgeBuilder();
 		if (!g_query)
 			return dupString("{\"error\":\"not initialized\"}");
 		return dupString(
@@ -302,6 +307,7 @@ char *engine_graph_query(uint64_t project_id, const char *dsl_query)
 		if (!dsl_query || !*dsl_query)
 			return dupString(
 				"{\"error\":\"[module=ffi, method=engine_graph_query] dsl_query is required\"}");
+		waitForKnowledgeBuilder();
 		if (!g_query)
 			return dupString(
 				"{\"total\":0,\"results\":[],\"error\":\"not initialized\"}");
@@ -336,6 +342,7 @@ extern "C" char *engine_get_graph(uint64_t project_id, int64_t node_offset,
 				  const char *edge_type_filter)
 {
 	try {
+		waitForKnowledgeBuilder();
 		if (!g_query)
 			return dupString("{\"error\":\"not initialized\"}");
 		return dupString(g_query->getGraph(
@@ -358,6 +365,7 @@ char *engine_detect_changes(uint64_t project_id,
 			    const char *modified_files_json)
 {
 	try {
+		waitForKnowledgeBuilder();
 		if (!modified_files_json || !*modified_files_json)
 			return dupString(
 				"{\"error\":\"[module=ffi, method=engine_detect_changes] modified_files_json is required\"}");
@@ -388,6 +396,7 @@ char *engine_get_communities(uint64_t project_id, int max_members,
 			     int max_communities, int include_members)
 {
 	try {
+		waitForKnowledgeBuilder();
 		if (!g_query) {
 			return dupString(
 				"{\"error\":\"not initialized\","
@@ -414,6 +423,7 @@ char *engine_get_communities(uint64_t project_id, int max_members,
 char *engine_get_index_progress(uint64_t project_id)
 {
 	try {
+		waitForKnowledgeBuilder();
 		if (!g_store)
 			return dupString("{\"error\":\"not initialized\"}");
 		return dupString(
@@ -434,6 +444,7 @@ char *engine_get_index_progress(uint64_t project_id)
 char *engine_build_fts(uint64_t project_id)
 {
 	try {
+		waitForKnowledgeBuilder();
 		if (!g_store)
 			return dupString("{\"error\":\"not initialized\"}");
 		g_store->buildFTSFromGraph(project_id);
@@ -456,6 +467,7 @@ char *engine_build_fts(uint64_t project_id)
 char *engine_get_hotspots(uint64_t project_id, int top_n)
 {
 	try {
+		waitForKnowledgeBuilder();
 		if (!g_query)
 			return dupString("{\"error\":\"not initialized\"}");
 		if (top_n <= 0)
@@ -485,6 +497,7 @@ extern "C" char *engine_explain_symbol(uint64_t project_id,
 		if (!symbol_name || !*symbol_name)
 			return dupString(
 				"{\"error\":\"[module=ffi, method=engine_explain_symbol] symbol_name is required\"}");
+		waitForKnowledgeBuilder();
 		if (!g_query)
 			return dupString("{\"error\":\"not initialized\"}");
 		return dupString(
@@ -503,6 +516,7 @@ extern "C" char *engine_explain_symbol(uint64_t project_id,
 char *engine_get_module_map(uint64_t project_id)
 {
 	try {
+		waitForKnowledgeBuilder();
 		if (!g_query)
 			return dupString("{\"error\":\"not initialized\"}");
 		return dupString(g_query->getModuleMap(project_id));
@@ -520,6 +534,7 @@ char *engine_get_module_map(uint64_t project_id)
 char *engine_get_entry_points(uint64_t project_id)
 {
 	try {
+		waitForKnowledgeBuilder();
 		if (!g_query)
 			return dupString("{\"error\":\"not initialized\"}");
 		return dupString(g_query->getEntryPoints(project_id));
@@ -541,6 +556,7 @@ char *engine_trace_call_chain(uint64_t project_id, const char *from,
 		if (!from || !*from || !to || !*to)
 			return dupString(
 				"{\"error\":\"[module=ffi, method=engine_trace_call_chain] from and to are required\"}");
+		waitForKnowledgeBuilder();
 		if (!g_query)
 			return dupString("{\"error\":\"not initialized\"}");
 		return dupString(g_query->traceCallChain(project_id, from, to));
@@ -558,6 +574,7 @@ char *engine_trace_call_chain(uint64_t project_id, const char *from,
 char *engine_get_project_overview(uint64_t project_id)
 {
 	try {
+		waitForKnowledgeBuilder();
 		if (!g_query)
 			return dupString("{\"error\":\"not initialized\"}");
 		return dupString(g_query->getProjectOverview(project_id));
@@ -575,6 +592,7 @@ char *engine_get_project_overview(uint64_t project_id)
 char *engine_get_type_info(uint64_t project_id, const char *type_name_filter)
 {
 	try {
+		waitForKnowledgeBuilder();
 		if (!g_store)
 			return dupString("{\"error\":\"not initialized\"}");
 
@@ -675,6 +693,7 @@ char *engine_get_type_info(uint64_t project_id, const char *type_name_filter)
 char *engine_get_routes(uint64_t project_id)
 {
 	try {
+		waitForKnowledgeBuilder();
 		if (!g_store)
 			return dupString("{\"error\":\"not initialized\"}");
 
@@ -745,6 +764,7 @@ void engine_free_string(char *ptr)
 char *engine_export_artifact(uint64_t project_id, const char *output_path)
 {
 	try {
+		waitForKnowledgeBuilder();
 		if (!g_store || !output_path || !*output_path)
 			return dupString(
 				"{\"ok\":false,\"error\":\"invalid arguments\"}");
@@ -764,6 +784,7 @@ char *engine_export_artifact(uint64_t project_id, const char *output_path)
 char *engine_import_artifact(uint64_t project_id, const char *artifact_path)
 {
 	try {
+		waitForKnowledgeBuilder();
 		if (!g_store || !artifact_path || !*artifact_path)
 			return dupString(
 				"{\"ok\":false,\"error\":\"invalid arguments\"}");

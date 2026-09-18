@@ -33,6 +33,7 @@ static constexpr int64_t kLargeProjectNodeThreshold = 100000;
 
 static char *getModuleTreeImpl(uint64_t project_id)
 {
+	waitForKnowledgeBuilder();
 	if (!g_store)
 		return dupString("{\"error\":\"engine not initialized\"}");
 	return dupString(g_store->getModuleTreeJson(project_id));
@@ -42,6 +43,7 @@ static char *getModuleTreeImpl(uint64_t project_id)
 
 static char *findSymbolImpl(uint64_t project_id, const char *symbol_name)
 {
+	waitForKnowledgeBuilder();
 	if (!g_store)
 		return dupString("{\"error\":\"engine not initialized\"}");
 	if (!symbol_name || !*symbol_name)
@@ -429,6 +431,7 @@ static std::string queries_coverage_ratio(int ready, int eligible)
 
 static char *getEnhancementStatusImpl(uint64_t project_id)
 {
+	waitForKnowledgeBuilder();
 	if (!g_store)
 		return dupString("{\"error\":\"engine not initialized\"}");
 
@@ -520,6 +523,7 @@ static char *getEnhancementStatusImpl(uint64_t project_id)
 static char *unifiedSearchImpl(uint64_t project_id, const char *query,
 			       int limit)
 {
+	waitForKnowledgeBuilder();
 	if (!g_store)
 		return dupString("{\"error\":\"engine not initialized\"}");
 	if (!query || !*query)
@@ -597,6 +601,7 @@ static char *findCallersAdaptiveImpl(uint64_t project_id,
 	// SQLite-only/Windows builds). The [module=engine_queries,
 	// method=find_callers_adaptive] tag is kept so callers can still
 	// distinguish an indexing-pending state from a query error.
+	waitForKnowledgeBuilder();
 	if (!g_query || !g_store || !g_store->handle())
 		return dupString("{\"error\":\"graph not ready [module=engine_"
 				 "queries, method=find_callers_adaptive]\"}");
@@ -615,6 +620,7 @@ static char *findCalleesAdaptiveImpl(uint64_t project_id,
 	// v0.2.5: getCallees has its own SQLite/SQLite backend, so the
 	// graph-not-ready guard only requires the SQLite handle (works on
 	// SQLite-only/Windows builds).
+	waitForKnowledgeBuilder();
 	if (!g_query || !g_store || !g_store->handle())
 		return dupString("{\"error\":\"graph not ready [module=engine_"
 				 "queries, method=find_callees_adaptive]\"}");
@@ -631,6 +637,7 @@ static char *findCallersByEntityImpl(uint64_t project_id, uint64_t entity_id)
 	// v0.2.5: getCallersByEntity has its own SQLite/SQLite backend, so
 	// the graph-not-ready guard is only required on the SQLite path and
 	// is enforced inside that backend; here we only guard the store handle.
+	waitForKnowledgeBuilder();
 	if (!g_query || !g_store || !g_store->handle())
 		return dupString("{\"error\":\"graph not ready [module=engine_"
 				 "queries, method=find_callers_by_entity]\"}");
@@ -643,6 +650,7 @@ static char *findCalleesByEntityImpl(uint64_t project_id, uint64_t entity_id)
 {
 	// v0.2.5: getCalleesByEntity has its own SQLite/SQLite backend; the
 	// guard here only requires the SQLite handle (works on SQLite-only).
+	waitForKnowledgeBuilder();
 	if (!g_query || !g_store || !g_store->handle())
 		return dupString("{\"error\":\"graph not ready [module=engine_"
 				 "queries, method=find_callees_by_entity]\"}");
@@ -659,6 +667,7 @@ static char *getEntryPointsNewImpl(uint64_t project_id)
 	// the [module=engine_queries, method=get_entry_points_new] tag.
 	// v0.2.5: getEntryPoints has its own SQLite/SQLite backend; the guard
 	// here only requires the SQLite handle (works on SQLite-only).
+	waitForKnowledgeBuilder();
 	if (!g_query || !g_store || !g_store->handle())
 		return dupString("{\"error\":\"graph not ready [module=engine_"
 				 "queries, method=get_entry_points_new]\"}");
@@ -669,6 +678,7 @@ static char *getEntryPointsNewImpl(uint64_t project_id)
 
 static char *projectOverviewImpl(uint64_t project_id)
 {
+	waitForKnowledgeBuilder();
 	if (!g_store)
 		return dupString("{\"error\":\"engine not initialized\"}");
 

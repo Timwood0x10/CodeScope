@@ -1,4 +1,5 @@
 #include "engine_internal.h"
+#include "async_knowledge.h"
 #include "verify/ffi_internal.h"
 #include "verify/architecture_drift.h"
 #include "verify/capability_drift.h"
@@ -92,6 +93,7 @@ AggregateVerdict aggregateVerdict(int supported, int contradicted, int unknown)
 extern "C" char *engine_verify_review(uint64_t project_id, const char *text)
 {
 	try {
+		waitForKnowledgeBuilder();
 		if (!g_store)
 			return dupString("{\"error\":\"not initialized\"}");
 		if (!text || !*text)
@@ -150,6 +152,7 @@ extern "C" char *engine_verify_review(uint64_t project_id, const char *text)
 extern "C" char *engine_verify_reality(uint64_t project_id, const char *text)
 {
 	try {
+		waitForKnowledgeBuilder();
 		if (!g_store)
 			return dupString("{\"error\":\"not initialized\"}");
 		if (!text || !*text)
@@ -206,6 +209,7 @@ extern "C" char *engine_verify_reality(uint64_t project_id, const char *text)
 extern "C" char *engine_detect_drift(uint64_t project_id)
 {
 	try {
+		waitForKnowledgeBuilder();
 		if (!g_store)
 			return dupString("{\"error\":\"not initialized\"}");
 
@@ -461,6 +465,7 @@ extern "C" char *engine_detect_drift(uint64_t project_id)
 extern "C" char *engine_detect_documentation_drift(uint64_t project_id)
 {
 	try {
+		waitForKnowledgeBuilder();
 		if (!g_store)
 			return dupString("{\"error\":\"not initialized\"}");
 
@@ -601,6 +606,7 @@ extern "C" char *engine_detect_documentation_drift(uint64_t project_id)
 extern "C" char *engine_detect_capability_drift(uint64_t project_id)
 {
 	try {
+		waitForKnowledgeBuilder();
 		if (!g_store)
 			return dupString(
 				"{\"error\":\"not initialized "
@@ -704,6 +710,7 @@ extern "C" char *engine_detect_capability_drift(uint64_t project_id)
 extern "C" char *engine_detect_architecture_drift(uint64_t project_id)
 {
 	try {
+		waitForKnowledgeBuilder();
 		if (!g_store)
 			return dupString(
 				"{\"error\":\"not initialized "

@@ -268,10 +268,16 @@ std::vector<Finding> DeadCodeInspector::findArchitectureDrift()
 	}
 	sqlite3_finalize(stmt);
 
-	// Layer violation check: detect lower-layer modules calling upper-layer
-	// modules. Uses the architecture_edge table for known layer relationships.
-	std::string layer_sql =
-		"SELECT ae.layer_lower, ae.layer_upper, COUNT(*) as violations "
+	// Module coupling: the module pairs with the most cross-module calls.
+	//
+	// This used to be reported as a layer violation ("lower layer should not
+	// depend on upper layer"). There is no layer model: architecture_edge rows
+	// are written per (caller module, callee module) pair with no direction
+	// test, and layer_lower / layer_upper hold module NAMES. The old finding
+	// therefore asserted a violation on the strength of two module names. It
+	// is now reported for what it is — coupling, ordered by call count.
+	std::string coupling_sql =
+		"SELECT ae.layer_lower, ae.layer_upper, COUNT(*) as calls "
 		"FROM architecture_edge ae "
 		"JOIN entity e ON ae.entity_id = e.id "
 		"JOIN relation r ON r.project_id = ? AND r.target_id = e.id "
@@ -280,34 +286,34 @@ std::vector<Finding> DeadCodeInspector::findArchitectureDrift()
 		" AND caller.file_path LIKE '%' || ae.layer_lower || '%'"
 		" AND e.file_path LIKE '%' || ae.layer_upper || '%'"
 		" GROUP BY ae.layer_lower, ae.layer_upper"
-		" HAVING violations > 0"
-		" ORDER BY violations DESC LIMIT 10";
-	sqlite3_stmt *layer_st = nullptr;
-	if (sqlite3_prepare_v2(store_->handle(), layer_sql.c_str(), -1,
-			       &layer_st, nullptr) == SQLITE_OK) {
-		sqlite3_bind_int64(layer_st, 1,
+		" HAVING calls > 0"
+		" ORDER BY calls DESC LIMIT 10";
+	sqlite3_stmt *coupling_st = nullptr;
+	if (sqlite3_prepare_v2(store_->handle(), coupling_sql.c_str(), -1,
+			       &coupling_st, nullptr) == SQLITE_OK) {
+		sqlite3_bind_int64(coupling_st, 1,
 				   static_cast<int64_t>(project_id_));
-		sqlite3_bind_int64(layer_st, 2,
+		sqlite3_bind_int64(coupling_st, 2,
 				   static_cast<int64_t>(project_id_));
-		while (sqlite3_step(layer_st) == SQLITE_ROW) {
+		while (sqlite3_step(coupling_st) == SQLITE_ROW) {
 			const char *lower = reinterpret_cast<const char *>(
-				sqlite3_column_text(layer_st, 0));
+				sqlite3_column_text(coupling_st, 0));
 			const char *upper = reinterpret_cast<const char *>(
-				sqlite3_column_text(layer_st, 1));
-			int violations = sqlite3_column_int(layer_st, 2);
+				sqlite3_column_text(coupling_st, 1));
+			int calls = sqlite3_column_int(coupling_st, 2);
 
 			Finding f;
-			f.type = "LayerViolation";
-			f.description =
-				std::string("Layer violation: '") +
-				(lower ? lower : "") + "' calls '" +
-				(upper ? upper : "") + "' " +
-				std::to_string(violations) +
-				" times — lower layer should not depend on upper layer.";
+			f.type = "ModuleCoupling";
+			f.description = std::string("Module coupling: '") +
+					(lower ? lower : "") + "' calls '" +
+					(upper ? upper : "") + "' " +
+					std::to_string(calls) +
+					" times across a module boundary — a "
+					"dependency, not a layer violation.";
 			f.confidence = 0.90;
 			out.push_back(f);
 		}
-		sqlite3_finalize(layer_st);
+		sqlite3_finalize(coupling_st);
 	}
 
 	return out;

@@ -508,3 +508,10 @@ bool isAsyncKnowledgeBuilderRunning()
 {
 	return g_async_running.load();
 }
+
+void waitForKnowledgeBuilder()
+{
+	// Delegates to the same join the write entry points use, so there is one
+	// place that decides how a read waits (see async_knowledge.h).
+	joinAsyncKnowledgeBuilder();
+}

@@ -285,6 +285,99 @@ bool GraphStore::runSchemaMigrations()
 			}
 		}
 
+		// Migration: add cross_module_edges to architecture_state.
+		//
+		// architecture_state.violations used to hold the COUNT of cross-module
+		// call pairs per module pair, with compliance forced to 0.0 — so every
+		// normal dependency was reported as an architecture violation and
+		// dragged the architecture score down. The count is real information;
+		// the label was wrong. It now lives in its own column, `violations`
+		// stays 0 until a real layer violation can be detected, and
+		// compliance stays 1.0. Hard failures fail the schema build loudly
+		// (see the header) instead of leaving a half-migrated table that
+		// buildArchitectureState then fails to INSERT into.
+		{
+			sqlite3_stmt *arch_probe = nullptr;
+			bool has_cross_module_edges = false;
+			if (sqlite3_prepare_v2(
+				    db_,
+				    "PRAGMA table_info(architecture_state)", -1,
+				    &arch_probe, nullptr) == SQLITE_OK) {
+				while (sqlite3_step(arch_probe) == SQLITE_ROW) {
+					const char *col =
+						reinterpret_cast<const char *>(
+							sqlite3_column_text(
+								arch_probe, 1));
+					if (col && std::string(col) ==
+							   "cross_module_edges")
+						has_cross_module_edges = true;
+				}
+				sqlite3_finalize(arch_probe);
+				arch_probe = nullptr;
+			} else {
+				fprintf(stderr,
+					"[module=store, method=createSchema] "
+					"architecture_state column probe "
+					"failed: %s\n",
+					error_.c_str());
+				return false;
+			}
+			if (!has_cross_module_edges) {
+				if (!exec("ALTER TABLE architecture_state "
+					  "ADD COLUMN cross_module_edges "
+					  "INTEGER NOT NULL DEFAULT 0")) {
+					fprintf(stderr,
+						"[module=store, method=createSchema] "
+						"ALTER TABLE architecture_state ADD "
+						" cross_module_edges failed: %s\n",
+						error_.c_str());
+					return false;
+				}
+			}
+			// Data correction. Both statements run on every open and
+			// are idempotent, so a database that acquires bogus rows
+			// later (a pre-fix binary after a downgrade) is repaired
+			// on the next open instead of never.
+			//
+			// 1) Collapse duplicate (project_id, layer) rows. The old
+			//    buildArchitectureState used INSERT OR IGNORE with no
+			//    unique key to ignore on, so every rebuild appended a
+			//    second copy of every row — and a re-index after the
+			//    edge counts changed appended rows with different
+			//    counts too. The NEWEST row is what the last rebuild
+			//    wrote; summing the copies would inflate
+			//    cross_module_edges by the number of rebuilds.
+			if (!exec("DELETE FROM architecture_state "
+				  "WHERE rowid NOT IN "
+				  "(SELECT MAX(rowid) FROM architecture_state "
+				  " GROUP BY project_id, layer)")) {
+				fprintf(stderr,
+					"[module=store, method=createSchema] "
+					"architecture_state de-duplication "
+					"failed: %s\n",
+					error_.c_str());
+				return false;
+			}
+			// 2) Move the pre-fix `violations` value into the column
+			//    that names it honestly rather than discarding it,
+			//    and clear the bogus violation flag. Unconditional:
+			//    gating it on the ALTER above would miss a table that
+			//    already has the column but pre-fix rows. Afterwards
+			//    violations is 0 and the WHERE matches nothing.
+			if (!exec("UPDATE architecture_state "
+				  "SET cross_module_edges = violations, "
+				  "    violations = 0, "
+				  "    compliance = 1.0 "
+				  "WHERE violations > 0")) {
+				fprintf(stderr,
+					"[module=store, method=createSchema] "
+					"architecture_state violations move "
+					"failed: %s\n",
+					error_.c_str());
+				return false;
+			}
+		}
+
 		// Add type_name column to semantic_records if missing
 		sqlite3_stmt *probe = nullptr;
 		if (sqlite3_prepare_v2(db_,

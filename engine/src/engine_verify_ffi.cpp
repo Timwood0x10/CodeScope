@@ -11,6 +11,7 @@
 // error JSON object instead of crashing.
 
 #include "engine_internal.h"
+#include "async_knowledge.h"
 #include "platform_win.h"
 
 #include <algorithm>
@@ -44,16 +45,6 @@ namespace
 
 // Trust score penalty per non-supported finding in engine_verify_integrity.
 static constexpr double kTrustScorePenalty = 0.1;
-
-// Maximum number of entity sample rows returned by engine_explain_module.
-static constexpr int kEntitySampleLimit = 10;
-/// Maximum number of cross-module dependency edges to return per direction.
-static constexpr int kCrossModuleEdgeLimit = 20;
-
-// Integrity score parameters for engine_explain_module.
-static constexpr int kIntegrityMax = 100;
-static constexpr int kIntegritySev2Penalty = 10;
-static constexpr int kIntegritySev1Penalty = 5;
 
 // ─── JSON Helpers ───────────────────────────────────────────────
 
@@ -386,6 +377,7 @@ BatchResult verify_claim_batch(uint64_t project_id, const std::string &text,
 extern "C" char *engine_verify_integrity(uint64_t project_id)
 {
 	try {
+		waitForKnowledgeBuilder();
 		if (!g_store)
 			return dupString("{\"error\":\"not initialized\"}");
 
@@ -571,6 +563,7 @@ extern "C" char *engine_verify_claim(uint64_t project_id,
 				     const char *claim_json)
 {
 	try {
+		waitForKnowledgeBuilder();
 		if (!g_store)
 			return dupString("{\"error\":\"not initialized\"}");
 		if (!claim_json || !*claim_json)
@@ -656,6 +649,7 @@ extern "C" char *engine_verify_claim(uint64_t project_id,
 extern "C" char *engine_verify_summary(uint64_t project_id, const char *text)
 {
 	try {
+		waitForKnowledgeBuilder();
 		if (!g_store)
 			return dupString(
 				"{\"error\":\"not initialized "
@@ -764,6 +758,7 @@ extern "C" char *engine_verify_summary(uint64_t project_id, const char *text)
 extern "C" char *engine_get_verifier_registry_status(uint64_t project_id)
 {
 	try {
+		waitForKnowledgeBuilder();
 		// Idempotent: arms the registry if empty without relying on a
 		// static flag (Step 9.1 fix for lifecycle bug A15).
 		ensureVerifiersRegistered();

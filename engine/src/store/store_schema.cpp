@@ -708,6 +708,10 @@ CREATE TABLE IF NOT EXISTS architecture_state (
     project_id INTEGER NOT NULL,
     layer TEXT NOT NULL,
     violations INTEGER NOT NULL DEFAULT 0,
+    -- Real cross-module call count for this module pair. Normal dependencies
+    -- are NOT violations: there is no layer model, so `violations` stays 0 and
+    -- the dependency count lives here (see buildArchitectureState).
+    cross_module_edges INTEGER NOT NULL DEFAULT 0,
     compliance REAL NOT NULL DEFAULT 1.0,
     evidence TEXT NOT NULL DEFAULT '[]',
     FOREIGN KEY (project_id) REFERENCES projects(id)

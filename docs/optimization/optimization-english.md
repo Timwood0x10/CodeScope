@@ -436,6 +436,16 @@ ORDER BY COUNT(*) DESC LIMIT 10;
 | **Layer pairs** | Correct | **Correct** |
 | Precision | Theoretically more precise | Practically equivalent (architecture_edge is pre-validated) |
 
+> **Superseded (2026-09-18):** this table records the trade-offs of that
+> optimization as they stood at the time. `architecture_edge` was subsequently
+> found NOT to be layer-validated — `ArchitecturePlugin` writes a row for any
+> cross-module call, and `layer_lower` / `layer_upper` hold module NAMES, not
+> layer names. The "Violation count" and "Compliance flag" rows above therefore
+> no longer describe current behaviour: a normal cross-module dependency is not
+> counted as a violation, and the count now lives in `cross_module_edges`. See
+> `CHANGELOG.md`, "Normal cross-module dependencies are no longer reported as
+> architecture violations".
+
 ### Index support
 
 ```sql

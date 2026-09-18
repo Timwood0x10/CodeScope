@@ -353,8 +353,12 @@ pub(super) fn index_parallel_chunked(
         })
         .collect();
 
+    // "ok" means the run completed AND produced a consistent index — not just
+    // "at least one worker finished". See run_complete().
+    let complete = super::run_complete(fail, merge_result.merged);
     json!({
-        "ok": success > 0,
+        "ok": complete,
+        "complete": complete,
         "project_path": project_path,
         "db_prefix": db_prefix,
         "main_db": merge_result.main_db_path,

@@ -105,6 +105,18 @@ pub(super) struct ModuleResult {
     pub error: Option<String>,
 }
 
+/// Whether a scheduler run counts as complete.
+///
+/// `ok` used to mean "at least one worker produced nodes" (`success > 0`), so a
+/// run in which a module crashed — or in which the module DBs failed to merge
+/// into main.db — still reported `ok: true` while the caller's view of the
+/// project was partial or empty. A run is complete only when no worker failed
+/// AND the merge succeeded; `success` / `fail` / `merge` keep reporting the
+/// partial picture so a caller that wants it can still act on it.
+pub(super) fn run_complete(failed_workers: usize, merged: bool) -> bool {
+    failed_workers == 0 && merged
+}
+
 /// Entry point: discover modules, dispatch workers, quarantine failures,
 /// return aggregated JSON summary.
 ///
@@ -115,10 +127,15 @@ pub(super) struct ModuleResult {
 ///
 /// Output JSON schema:
 /// ```json
-/// {"ok":true,"project_path":"...","total_workers":N,"parallel":N,
-///  "duration_ms":N,"success":N,"fail":N,"total_nodes":N,"total_edges":N,
-///  "total_files_indexed":N,"modules":[{...per-module...}]}
+/// {"ok":true,"complete":true,"project_path":"...","total_workers":N,
+///  "parallel":N,"duration_ms":N,"success":N,"fail":N,"total_nodes":N,
+///  "total_edges":N,"total_files_indexed":N,"merge":{...},
+///  "modules":[{...per-module...}]}
 /// ```
+///
+/// `ok` and `complete` are the same value: the run finished with no failed
+/// worker and a successful merge. `success` / `fail` / `merge` report the
+/// partial picture for callers that want it.
 ///
 pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> String {
     let start = Instant::now();
@@ -476,8 +493,12 @@ pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> S
         })
         .collect();
 
+    // "ok" means the run completed AND produced a consistent index — not just
+    // "at least one worker finished". See run_complete().
+    let complete = run_complete(fail, merge_result.merged);
     json!({
-        "ok": success > 0,
+        "ok": complete,
+        "complete": complete,
         "project_path": project_path,
         "db_prefix": db_prefix,
         "main_db": merge_result.main_db_path,
@@ -619,6 +640,17 @@ mod tests {
         assert_eq!(v["module"], "scheduler");
         assert_eq!(v["method"], "test_method");
         assert!(v["error"].as_str().unwrap().contains("boom"));
+    }
+
+    #[test]
+    fn test_run_complete_requires_all_workers_and_merge() {
+        // Regression: `ok` was `success > 0`, so a crashed module — or a run
+        // whose module DBs never merged — still reported ok=true while the
+        // caller's view of the project was partial or empty.
+        assert!(run_complete(0, true));
+        assert!(!run_complete(1, true), "a failed worker = partial index");
+        assert!(!run_complete(0, false), "an unmerged run has no main.db");
+        assert!(!run_complete(2, false));
     }
 
     #[test]
