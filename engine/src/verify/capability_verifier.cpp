@@ -20,6 +20,9 @@ static constexpr double kConfNoStore = 0.0;
 // IN (1,3) mixed the legacy graph_edges numbering (1=call_graph,
 // 3=symbol_reference) and let non-call references pollute the caller set.
 static constexpr int kRelationTypeCalls = 1;
+/// Minimum length of the shorter side of a capability/entity PREFIX match
+/// (see entitiesWithCallers). Exact equality always matches.
+static constexpr int kMinCapabilityPrefixLen = 4;
 
 namespace verify
 {
@@ -111,11 +114,22 @@ static std::vector<int64_t> entitiesWithCallers(store::GraphStore *store,
 						const std::string &subject)
 {
 	std::vector<int64_t> ids;
+	// Prefix matches need a length floor on BOTH sides. Without it the rule
+	// degenerates: for subject "GetNeighbors" the reverse direction
+	// `LOWER(?) LIKE LOWER(e.name) || '%'` is satisfied by any 1-3
+	// character symbol (`get`, or a single-letter variable), so unrelated
+	// entities were reported as implementing the capability.
+	// kMinCapabilityPrefixLen (4) clears the extremely common code symbols
+	// of length <= 3 (get/set/add/map/run/put/len/i/x …). Exact equality
+	// still matches at any length, so a genuine short symbol such as `Run`
+	// is not lost — only the accidental prefix is.
 	const char *sql =
 		"SELECT e.id FROM entity e "
 		"WHERE e.project_id=? "
-		"AND (LOWER(e.name) LIKE LOWER(?) || '%' "
-		"     OR LOWER(?) LIKE LOWER(e.name) || '%') "
+		"AND (LOWER(e.name) = LOWER(?) "
+		"     OR (LENGTH(?) >= ? AND LENGTH(e.name) >= ? AND "
+		"          (LOWER(e.name) LIKE LOWER(?) || '%' "
+		"           OR LOWER(?) LIKE LOWER(e.name) || '%'))) "
 		"AND EXISTS (SELECT 1 FROM relation r "
 		"            WHERE r.project_id=? AND r.target_id=e.id "
 		"            AND r.type=?)";
@@ -131,8 +145,12 @@ static std::vector<int64_t> entitiesWithCallers(store::GraphStore *store,
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 2, subject.c_str(), -1, SQLITE_STATIC);
 	sqlite3_bind_text(stmt, 3, subject.c_str(), -1, SQLITE_STATIC);
-	sqlite3_bind_int64(stmt, 4, static_cast<int64_t>(project_id));
-	sqlite3_bind_int(stmt, 5, kRelationTypeCalls);
+	sqlite3_bind_int(stmt, 4, kMinCapabilityPrefixLen);
+	sqlite3_bind_int(stmt, 5, kMinCapabilityPrefixLen);
+	sqlite3_bind_text(stmt, 6, subject.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_text(stmt, 7, subject.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_int64(stmt, 8, static_cast<int64_t>(project_id));
+	sqlite3_bind_int(stmt, 9, kRelationTypeCalls);
 
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
 		ids.push_back(sqlite3_column_int64(stmt, 0));

@@ -172,13 +172,24 @@ Without filtering, CodeScope would waste 84% of its time indexing tests, vendore
 ```
 Layer 1: any-depth skip directories  (~120 patterns)
   .git, .svn, .hg, node_modules, .venv, target, build, dist,
-  vendor, __pycache__, .github, deploy, docker, k8s, ...
-  → Catches VCS, build artifacts, dependencies, CI/CD, infra at ANY depth
+  vendor, vendored, third_party, bin, bench, benchmarks,
+  test, tests, e2e, docs, examples, samples,
+  __pycache__, .github, deploy, docker, k8s, ...
+  → Catches VCS, build artifacts, dependencies, vendored code and the
+    test/docs/sample conventions at ANY depth
 
-Layer 2: top-only skip directories  (depth ≤ 3, Java-safe)
-  test, tests, docs, examples, samples, scripts, e2e, integration,
-  assets, static, public, media, i18n, bench, benchmarks, ...
-  → For Java: protects package namespaces (org/.../samples/petclinic)
+Layer 2: top-only skip directories  (depth ≤ 3, every language)
+  scripts, hack, migrations, seeds, integration,
+  locale, locales, i18n, l10n, assets, static, public, media, external
+  → These are ordinary business directories outside the web convention
+    (src/integration/, pkg/scripts/, db/migrations/, app/static/ all
+    hold first-party code), so skipping them at any depth silently
+    dropped real symbols — an undetectable false negative. They are
+    still skipped at the project root and the next two levels, where
+    the web-frontend convention they target actually lives. The
+    non-source formats filling those dirs are rejected by Layer 3.
+  → For Java: the Layer-1 names (test, docs, samples, ...) are also
+    top-only, protecting package namespaces (org/.../samples/petclinic)
 
 Layer 3: file suffix skip  (always applied)
   .md, .txt, .json, .yaml, .toml, .ini, .png, .jpg, .svg,

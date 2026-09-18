@@ -6,6 +6,12 @@
 namespace verify
 {
 
+/// Minimum length of the shorter side of a capability/entity PREFIX match.
+/// Exact equality matches at any length; only the accidental prefix is
+/// rejected, so 1-3 character code symbols (get/set/add/map/run/i/x) can no
+/// longer match a README-derived capability name by coincidence.
+static const int kMinCapabilityPrefixLen = 4;
+
 int64_t countImplementingEntities(store::GraphStore &store, uint64_t project_id,
 				  const std::string &cap_name)
 {
@@ -33,10 +39,19 @@ int64_t countImplementingEntities(store::GraphStore &store, uint64_t project_id,
 	// capability because README-derived names rarely equal code symbols.
 	// We accept a match when either name starts with the other, so both
 	// "IncrementalIndex" → "IncrementalIndexing" and the reverse work.
+	//
+	// The prefix match is gated on a length floor (see
+	// kMinCapabilityPrefixLen) applied to the SHORTER side. Without it the
+	// rule degenerates: for capability "GetNeighbors" the reverse
+	// direction is satisfied by any 1-3 character symbol (`get`, a
+	// single-letter variable), so unrelated entities were counted as
+	// implementing the capability. Exact equality matches at any length.
 	const char *sql = "SELECT COUNT(*) FROM entity e "
 			  "WHERE e.project_id=? "
-			  "AND (LOWER(e.name) LIKE LOWER(?) || '%' "
-			  "     OR LOWER(?) LIKE LOWER(e.name) || '%') "
+			  "AND (LOWER(e.name) = LOWER(?) "
+			  "     OR (LENGTH(?) >= ? AND LENGTH(e.name) >= ? AND "
+			  "          (LOWER(e.name) LIKE LOWER(?) || '%' "
+			  "           OR LOWER(?) LIKE LOWER(e.name) || '%'))) "
 			  "AND EXISTS (SELECT 1 FROM relation r "
 			  "            WHERE r.project_id=? AND r.type=1 "
 			  "            AND r.target_id=e.id)";
@@ -51,7 +66,11 @@ int64_t countImplementingEntities(store::GraphStore &store, uint64_t project_id,
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 2, cap_name.c_str(), -1, SQLITE_STATIC);
 	sqlite3_bind_text(stmt, 3, cap_name.c_str(), -1, SQLITE_STATIC);
-	sqlite3_bind_int64(stmt, 4, static_cast<int64_t>(project_id));
+	sqlite3_bind_int(stmt, 4, kMinCapabilityPrefixLen);
+	sqlite3_bind_int(stmt, 5, kMinCapabilityPrefixLen);
+	sqlite3_bind_text(stmt, 6, cap_name.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_text(stmt, 7, cap_name.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_int64(stmt, 8, static_cast<int64_t>(project_id));
 
 	int64_t count = 0;
 	int rc = sqlite3_step(stmt);

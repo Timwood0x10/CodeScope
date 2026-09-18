@@ -53,25 +53,6 @@ class BuiltinRegistry {
 	 */
 	static const std::unordered_set<std::string> &
 	externalSymbols(const std::string &language);
-
-    private:
-	// ── Language-specific symbol tables ────────────────────────
-	// Each table contains builtin functions and high-frequency
-	// third-party library symbols. These are symbols that are NOT
-	// defined in user project code but are called from it.
-
-	static const std::unordered_set<std::string> &pythonBuiltins();
-	static const std::unordered_set<std::string> &pythonStdlib();
-	static const std::unordered_set<std::string> &pythonThirdParty();
-	static const std::unordered_set<std::string> &cBuiltins();
-	static const std::unordered_set<std::string> &cppBuiltins();
-	static const std::unordered_set<std::string> &cppStdlib();
-	static const std::unordered_set<std::string> &rustBuiltins();
-	static const std::unordered_set<std::string> &rustStdlib();
-	static const std::unordered_set<std::string> &goBuiltins();
-	static const std::unordered_set<std::string> &javaBuiltins();
-	static const std::unordered_set<std::string> &jsBuiltins();
-	static const std::unordered_set<std::string> &swiftBuiltins();
 };
 
 } // namespace ir

@@ -840,6 +840,13 @@ class GraphStore {
 
     private:
 	bool createSchema();
+
+	/** Patch columns added in later versions onto a database that already
+	 *  exists. SQLite has no "ADD COLUMN IF NOT EXISTS", so createSchema()
+	 *  creates the main DDL and delegates every per-column migration here
+	 *  (own TU: the migrations outgrew the 1000-line rule).
+	 *  @return false on a hard failure; individual failures are logged. */
+	bool runSchemaMigrations();
 };
 
 // ── Index Progress (global, for client polling) ─────────────

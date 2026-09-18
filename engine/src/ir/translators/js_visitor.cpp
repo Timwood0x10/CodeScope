@@ -493,10 +493,14 @@ void JsVisitor::visitCallExpr(TSNode node, uint64_t parent_id)
 		}
 	}
 
-	// Skip JS/TS built-in global functions — they are NOT user-defined
-	// calls and the Resolver Pipeline would generate false-positive edges.
+	// Skip JS/TS built-in global functions — but ONLY for bare calls. For
+	// `obj.method()` the extracted callee_name is the property identifier, so
+	// filtering it here would drop any method named `Map`, `Set`, `String`,
+	// `Number`, `Symbol`, `Date` … with no call record. A member call cannot
+	// be a global builtin, so it keeps its record and receiver evidence.
 	// Reference: codebase-memory-mcp (MIT) ts_lsp.c :: builtins[]
-	if (!callee_name.empty() && isJsBuiltin(callee_name)) {
+	if (!has_member_expr && !callee_name.empty() &&
+	    isJsBuiltin(callee_name)) {
 		// Still visit children to pick up nested calls/expressions
 		for (uint32_t i = 0; i < count; i++) {
 			TSNode child = ts_node_child(node, i);
@@ -828,8 +832,10 @@ void JsVisitor::visitNewExpr(TSNode node, uint64_t parent_id)
 	}
 
 	// Skip JS/TS built-in constructors (Array, Map, ...) — they are NOT
-	// user-defined calls; the Resolver Pipeline would generate FPs.
-	if (isJsBuiltin(callee_name)) {
+	// user-defined calls; the Resolver Pipeline would generate FPs. Only
+	// apply this to the unqualified form: `new ns.Array()` names a user type
+	// in a namespace, not the builtin.
+	if (receiver_text.empty() && isJsBuiltin(callee_name)) {
 		for (uint32_t i = 0; i < count; i++) {
 			TSNode child = ts_node_child(node, i);
 			if (!ts_node_is_named(child))

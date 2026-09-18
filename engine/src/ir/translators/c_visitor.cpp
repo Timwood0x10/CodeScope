@@ -354,6 +354,15 @@ void CVisitor::handleCall(TSNode node, uint64_t parent_id)
 	// Skip C compiler builtins and common stdlib functions — they are NOT
 	// user-defined calls and the Resolver Pipeline would generate
 	// false-positive edges by matching them to entities with the same name.
+	//
+	// NOTE (deliberate, unlike the Go/Java/Python/JS visitors): this also
+	// filters QUALIFIED calls (`ops->free(x)`, `Util::clone()`), whose last
+	// segment is the bare `name`. The C list contains very common stdlib
+	// names (malloc/free/memcpy/printf/exit/assert) and C's idiomatic
+	// vtable-style structs name callback fields exactly that way, while the
+	// resolver has no receiver-type evidence for a field call. Emitting a
+	// record would therefore re-open the false-positive flood this filter
+	// exists to prevent; dropping the call is the conservative choice.
 	// Reference: codebase-memory-mcp (MIT) c_lsp.c :: is_c_builtin_func()
 	if (!name.empty() && isCBuiltin(name)) {
 		// Still visit children to pick up nested calls/expressions

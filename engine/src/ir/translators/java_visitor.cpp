@@ -243,8 +243,23 @@ void JavaVisitor::handleMethodInvocation(TSNode node, uint64_t parent_id)
 	// path and the post-emit recursion below.
 	uint32_t cnt = ts_node_child_count(node);
 
-	// Skip Java common JDK methods — they are NOT user-defined calls
-	if (!name.empty() && isJavaBuiltin(name)) {
+	// obj.method() / Class.method() — the method_invocation node carries an
+	// optional `object` field (the receiver). Fetched before the builtin
+	// check below, which needs it to tell a bare call from a method call.
+	TSNode obj_node = ts_node_child_by_field_name(node, "object", 6);
+	bool has_receiver = !ts_node_is_null(obj_node);
+
+	// Skip Java JDK builtins — but ONLY for unqualified calls.
+	// method_invocation covers both `println(...)` and `obj.method()`, and
+	// `name` is the bare method name either way, so the previous check
+	// dropped every call whose method name collided with the JDK list:
+	// `map`, `filter`, `forEach`, `collect`, `reduce`, `indexOf`, `replace`,
+	// `format`, `compareTo`, `startsWith`, `equals`, `toString`, `hashCode`,
+	// `clone` … are all extremely common user-defined method names, and none
+	// of them produced a call record — a systematic false negative. A call
+	// with a receiver can never be a JDK static, so it keeps its record and
+	// the receiver/interface evidence the Resolver needs.
+	if (!has_receiver && !name.empty() && isJavaBuiltin(name)) {
 		for (uint32_t i = 0; i < cnt; i++) {
 			TSNode c = ts_node_child(node, i);
 			if (!ts_node_is_named(c))
@@ -265,8 +280,6 @@ void JavaVisitor::handleMethodInvocation(TSNode node, uint64_t parent_id)
 	// old find('.') check never matched and every method call was
 	// mislabeled Direct, skipping the Resolver's CallKindMatch factor
 	// and receiver evidence. Detect the receiver to mark Method.
-	TSNode obj_node = ts_node_child_by_field_name(node, "object", 6);
-	bool has_receiver = !ts_node_is_null(obj_node);
 	CallKind call_kind = CallKind::Direct;
 	if (has_receiver) {
 		call_kind = CallKind::Method;

@@ -313,10 +313,15 @@ void PythonVisitor::handleCall(TSNode node, uint64_t parent_id)
 		}
 	}
 
-	// Skip Python built-in functions — they are NOT user-defined calls
-	// and the Resolver Pipeline would generate false-positive edges.
+	// Skip Python built-in functions — but ONLY for bare calls. For
+	// `obj.method()` the extracted `name` is the attribute (method) name, so
+	// matching it against the builtin list dropped every user-defined method
+	// named `format` / `next` / `set` / `map` / `filter` / `min` / `max` /
+	// `type` / `sum` with no call record at all. An attribute call can never
+	// be a pre-declared builtin, so it keeps its record (and its
+	// receiver/qualified_target evidence) for the Resolver.
 	// Reference: codebase-memory-mcp (MIT) helpers.c :: python_resolvable_builtins
-	if (!name.empty() && isPythonBuiltin(name)) {
+	if (!is_attribute_call && !name.empty() && isPythonBuiltin(name)) {
 		visitChildren(node, parent_id);
 		return;
 	}

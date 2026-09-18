@@ -186,8 +186,12 @@ set(ENGINE_SOURCES
         src/engine_index_metrics.cpp
     src/engine_scanner.cpp
     src/engine_queries.cpp
+    src/engine_queries_context.cpp
     src/engine_ffi.cpp
+    src/engine_ffi_index.cpp
+    src/engine_ffi_graph.cpp
     src/engine_verify_ffi.cpp
+    src/engine_verify_explain.cpp
     src/engine_verify_drift_ffi.cpp
     src/parser/parser.cpp
     src/ir/ir.cpp
@@ -196,6 +200,8 @@ set(ENGINE_SOURCES
     src/ir/semantic_unit.cpp
     src/ir/semantic_emitter.cpp
     src/ir/builtin_registry.cpp
+    src/ir/builtin_registry_systems.cpp
+    src/ir/builtin_registry_app.cpp
     src/ir/translators/python_translator.cpp
     src/ir/translators/go_translator.cpp
     src/ir/translators/c_translator.cpp
@@ -209,6 +215,7 @@ set(ENGINE_SOURCES
     src/ir/translators/c_visitor.cpp
     src/ir/translators/cpp_visitor.cpp
     src/ir/translators/go_visitor.cpp
+    src/ir/translators/go_visitor_calls.cpp
     src/ir/translators/python_visitor.cpp
     src/ir/translators/rust_visitor.cpp
     src/ir/translators/java_visitor.cpp
@@ -219,19 +226,25 @@ set(ENGINE_SOURCES
     src/graph/graph_builder.cpp
     src/store/store_core.cpp
     src/store/store_schema.cpp
+    src/store/store_schema_migrations.cpp
     src/store/store.cpp
     src/store/store_insert.cpp
     src/store/store_search.cpp
+    src/store/store_search_vector.cpp
     src/store/store_batch.cpp
     src/store/store_type.cpp
     src/store/store_graph.cpp
+    src/store/store_graph_csr.cpp
+    src/store/store_graph_imports.cpp
     src/store/store_query.cpp
+    src/store/store_query_explore.cpp
      src/store/store_project.cpp
      src/store/store_parse_failure.cpp
      src/store/store_knowledge.cpp
      src/store/store_membulk.cpp
      src/store/store_semantic_fact.cpp
     src/query/query_engine.cpp
+    src/query/query_engine_traverse.cpp
     src/query/query_analysis.cpp
     src/query/graph_query.cpp
     src/query/impact_analysis.cpp
@@ -271,6 +284,7 @@ set(ENGINE_SOURCES
     src/async_knowledge.cpp
     src/resolver/resolve_cache.cpp
     src/filter_policy.cpp
+    src/filter_policy_detect.cpp
     src/filter_policy_ignore.cpp
     src/platform_win.cpp
     src/evidence/rule.cpp
