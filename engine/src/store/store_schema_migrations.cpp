@@ -27,6 +27,26 @@ bool GraphStore::runSchemaMigrations()
 	// added in later versions must be patched in here. SQLite has no
 	// "ADD COLUMN IF NOT EXISTS", so we probe PRAGMA table_info first.
 
+	// ── Migration failure collection ───────────────────────────────
+	// Every ALTER TABLE below runs through migrationExec so a failure is
+	// recorded and reported at the end of the pass. Thirty of these call sites
+	// used to ignore the result while the function still returned true, leaving
+	// a half-migrated schema whose queries later failed with "no such column" —
+	// far from the cause (docs/CODE_REVIEW_2026-09-18.md #19). Wrapping the
+	// calls in one place covers every existing site and any future one, and
+	// catches any cause of a failed ALTER, not only a missing column.
+	bool migration_ok = true;
+	auto migrationExec = [&](const char *sql) -> bool {
+		if (exec(sql))
+			return true;
+		migration_ok = false;
+		fprintf(stderr,
+			"[module=store, method=runSchemaMigrations] migration "
+			"statement failed: %s | sql=%.100s\n",
+			error().c_str(), sql ? sql : "(null)");
+		return false;
+	};
+
 	// Migration: add knowledge_ready column to project_readiness (v0.5+)
 	{
 		sqlite3_stmt *probe = nullptr;
@@ -44,8 +64,9 @@ bool GraphStore::runSchemaMigrations()
 			}
 			sqlite3_finalize(probe);
 			if (!has_knowledge_ready) {
-				exec("ALTER TABLE project_readiness "
-				     "ADD COLUMN knowledge_ready INTEGER DEFAULT 0");
+				migrationExec(
+					"ALTER TABLE project_readiness "
+					"ADD COLUMN knowledge_ready INTEGER DEFAULT 0");
 			}
 		}
 	}
@@ -65,9 +86,9 @@ bool GraphStore::runSchemaMigrations()
 			}
 			sqlite3_finalize(probe);
 			if (!has_module_state) {
-				exec("ALTER TABLE entity "
-				     "ADD COLUMN module_state "
-				     "INTEGER NOT NULL DEFAULT 0");
+				migrationExec("ALTER TABLE entity "
+					      "ADD COLUMN module_state "
+					      "INTEGER NOT NULL DEFAULT 0");
 			}
 		}
 	}
@@ -104,9 +125,10 @@ bool GraphStore::runSchemaMigrations()
 						error_.c_str());
 					return false;
 				}
-				if (!exec("ALTER TABLE entity "
-					  "ADD COLUMN module_path "
-					  "TEXT NOT NULL DEFAULT ''")) {
+				if (!migrationExec(
+					    "ALTER TABLE entity "
+					    "ADD COLUMN module_path "
+					    "TEXT NOT NULL DEFAULT ''")) {
 					fprintf(stderr,
 						"[module=store, method=createSchema] "
 						"ALTER TABLE entity ADD module_path "
@@ -178,12 +200,14 @@ bool GraphStore::runSchemaMigrations()
 			}
 			sqlite3_finalize(probe);
 			if (!has_arity) {
-				exec("ALTER TABLE semantic_records "
-				     "ADD COLUMN arity INTEGER DEFAULT 0");
+				migrationExec(
+					"ALTER TABLE semantic_records "
+					"ADD COLUMN arity INTEGER DEFAULT 0");
 			}
 			if (!has_is_static) {
-				exec("ALTER TABLE semantic_records "
-				     "ADD COLUMN is_static INTEGER DEFAULT 0");
+				migrationExec(
+					"ALTER TABLE semantic_records "
+					"ADD COLUMN is_static INTEGER DEFAULT 0");
 			}
 		}
 	}
@@ -220,10 +244,11 @@ bool GraphStore::runSchemaMigrations()
 				if (std::find(existing.begin(), existing.end(),
 					      c.name) != existing.end())
 					continue;
-				exec(("ALTER TABLE entity ADD COLUMN " +
-				      std::string(c.name) +
-				      " INTEGER NOT NULL DEFAULT " + c.dflt)
-					     .c_str());
+				migrationExec(
+					("ALTER TABLE entity ADD COLUMN " +
+					 std::string(c.name) +
+					 " INTEGER NOT NULL DEFAULT " + c.dflt)
+						.c_str());
 			}
 		} else {
 			fprintf(stderr,
@@ -252,8 +277,9 @@ bool GraphStore::runSchemaMigrations()
 			sqlite3_finalize(rprobe);
 		}
 		if (!has_metrics_ready) {
-			exec("ALTER TABLE project_readiness "
-			     "ADD COLUMN metrics_ready INTEGER DEFAULT 0");
+			migrationExec(
+				"ALTER TABLE project_readiness "
+				"ADD COLUMN metrics_ready INTEGER DEFAULT 0");
 		}
 	}
 
@@ -323,9 +349,10 @@ bool GraphStore::runSchemaMigrations()
 				return false;
 			}
 			if (!has_cross_module_edges) {
-				if (!exec("ALTER TABLE architecture_state "
-					  "ADD COLUMN cross_module_edges "
-					  "INTEGER NOT NULL DEFAULT 0")) {
+				if (!migrationExec(
+					    "ALTER TABLE architecture_state "
+					    "ADD COLUMN cross_module_edges "
+					    "INTEGER NOT NULL DEFAULT 0")) {
 					fprintf(stderr,
 						"[module=store, method=createSchema] "
 						"ALTER TABLE architecture_state ADD "
@@ -418,38 +445,40 @@ bool GraphStore::runSchemaMigrations()
 			// use-after-free. See the type_info block below.
 			probe = nullptr;
 			if (!has_type_name) {
-				exec("ALTER TABLE semantic_records "
-				     "ADD COLUMN type_name TEXT DEFAULT ''");
+				migrationExec(
+					"ALTER TABLE semantic_records "
+					"ADD COLUMN type_name TEXT DEFAULT ''");
 			}
 			if (!has_call_kind) {
-				exec("ALTER TABLE semantic_records "
-				     "ADD COLUMN call_kind INTEGER DEFAULT 0");
+				migrationExec(
+					"ALTER TABLE semantic_records "
+					"ADD COLUMN call_kind INTEGER DEFAULT 0");
 			}
 			if (!has_resolve_strategy) {
-				exec("ALTER TABLE semantic_records "
-				     "ADD COLUMN resolve_strategy "
-				     "TEXT DEFAULT ''");
+				migrationExec("ALTER TABLE semantic_records "
+					      "ADD COLUMN resolve_strategy "
+					      "TEXT DEFAULT ''");
 			}
 			// Step 3 (plan §3.1): structured call-fact columns.
 			if (!has_qualified_target) {
-				exec("ALTER TABLE semantic_records "
-				     "ADD COLUMN qualified_target "
-				     "TEXT DEFAULT ''");
+				migrationExec("ALTER TABLE semantic_records "
+					      "ADD COLUMN qualified_target "
+					      "TEXT DEFAULT ''");
 			}
 			if (!has_receiver_text) {
-				exec("ALTER TABLE semantic_records "
-				     "ADD COLUMN receiver_text "
-				     "TEXT DEFAULT ''");
+				migrationExec("ALTER TABLE semantic_records "
+					      "ADD COLUMN receiver_text "
+					      "TEXT DEFAULT ''");
 			}
 			if (!has_receiver_type) {
-				exec("ALTER TABLE semantic_records "
-				     "ADD COLUMN receiver_type "
-				     "TEXT DEFAULT ''");
+				migrationExec("ALTER TABLE semantic_records "
+					      "ADD COLUMN receiver_type "
+					      "TEXT DEFAULT ''");
 			}
 			if (!has_import_alias) {
-				exec("ALTER TABLE semantic_records "
-				     "ADD COLUMN import_alias "
-				     "TEXT DEFAULT ''");
+				migrationExec("ALTER TABLE semantic_records "
+					      "ADD COLUMN import_alias "
+					      "TEXT DEFAULT ''");
 			}
 		}
 
@@ -491,20 +520,25 @@ bool GraphStore::runSchemaMigrations()
 				}
 				sqlite3_finalize(ref_probe);
 				if (!has_qualified_target)
-					exec("ALTER TABLE reference ADD COLUMN "
-					     "qualified_target TEXT DEFAULT ''");
+					migrationExec(
+						"ALTER TABLE reference ADD COLUMN "
+						"qualified_target TEXT DEFAULT ''");
 				if (!has_receiver_text)
-					exec("ALTER TABLE reference ADD COLUMN "
-					     "receiver_text TEXT DEFAULT ''");
+					migrationExec(
+						"ALTER TABLE reference ADD COLUMN "
+						"receiver_text TEXT DEFAULT ''");
 				if (!has_receiver_type)
-					exec("ALTER TABLE reference ADD COLUMN "
-					     "receiver_type TEXT DEFAULT ''");
+					migrationExec(
+						"ALTER TABLE reference ADD COLUMN "
+						"receiver_type TEXT DEFAULT ''");
 				if (!has_import_alias)
-					exec("ALTER TABLE reference ADD COLUMN "
-					     "import_alias TEXT DEFAULT ''");
+					migrationExec(
+						"ALTER TABLE reference ADD COLUMN "
+						"import_alias TEXT DEFAULT ''");
 				if (!has_call_site_file)
-					exec("ALTER TABLE reference ADD COLUMN "
-					     "call_site_file TEXT DEFAULT ''");
+					migrationExec(
+						"ALTER TABLE reference ADD COLUMN "
+						"call_site_file TEXT DEFAULT ''");
 			}
 		}
 
@@ -550,26 +584,33 @@ bool GraphStore::runSchemaMigrations()
 				}
 				sqlite3_finalize(probe);
 				if (!has_confidence)
-					exec("ALTER TABLE relation ADD COLUMN "
-					     "confidence REAL DEFAULT 0.0");
+					migrationExec(
+						"ALTER TABLE relation ADD COLUMN "
+						"confidence REAL DEFAULT 0.0");
 				if (!has_resolver)
-					exec("ALTER TABLE relation ADD COLUMN "
-					     "resolver TEXT DEFAULT ''");
+					migrationExec(
+						"ALTER TABLE relation ADD COLUMN "
+						"resolver TEXT DEFAULT ''");
 				if (!has_res_kind)
-					exec("ALTER TABLE relation ADD COLUMN "
-					     "resolution_kind TEXT DEFAULT ''");
+					migrationExec(
+						"ALTER TABLE relation ADD COLUMN "
+						"resolution_kind TEXT DEFAULT ''");
 				if (!has_reason)
-					exec("ALTER TABLE relation ADD COLUMN "
-					     "reason TEXT DEFAULT ''");
+					migrationExec(
+						"ALTER TABLE relation ADD COLUMN "
+						"reason TEXT DEFAULT ''");
 				if (!has_csf)
-					exec("ALTER TABLE relation ADD COLUMN "
-					     "call_site_file TEXT DEFAULT ''");
+					migrationExec(
+						"ALTER TABLE relation ADD COLUMN "
+						"call_site_file TEXT DEFAULT ''");
 				if (!has_csr)
-					exec("ALTER TABLE relation ADD COLUMN "
-					     "call_site_row INTEGER DEFAULT 0");
+					migrationExec(
+						"ALTER TABLE relation ADD COLUMN "
+						"call_site_row INTEGER DEFAULT 0");
 				if (!has_csc)
-					exec("ALTER TABLE relation ADD COLUMN "
-					     "call_site_col INTEGER DEFAULT 0");
+					migrationExec(
+						"ALTER TABLE relation ADD COLUMN "
+						"call_site_col INTEGER DEFAULT 0");
 			}
 		}
 
@@ -656,8 +697,9 @@ bool GraphStore::runSchemaMigrations()
 			}
 			sqlite3_finalize(probe);
 			if (!has_role) {
-				exec("ALTER TABLE module_summary "
-				     "ADD COLUMN role TEXT DEFAULT ''");
+				migrationExec(
+					"ALTER TABLE module_summary "
+					"ADD COLUMN role TEXT DEFAULT ''");
 			}
 		}
 	}
@@ -683,8 +725,9 @@ bool GraphStore::runSchemaMigrations()
 			}
 			sqlite3_finalize(probe);
 			if (!has_visibility) {
-				exec("ALTER TABLE entity "
-				     "ADD COLUMN visibility INTEGER NOT NULL DEFAULT 0");
+				migrationExec(
+					"ALTER TABLE entity "
+					"ADD COLUMN visibility INTEGER NOT NULL DEFAULT 0");
 			}
 		}
 	}
@@ -711,8 +754,9 @@ bool GraphStore::runSchemaMigrations()
 			}
 			sqlite3_finalize(probe);
 			if (!has_arity) {
-				if (!exec("ALTER TABLE entity "
-					  "ADD COLUMN arity INTEGER NOT NULL DEFAULT 0")) {
+				if (!migrationExec(
+					    "ALTER TABLE entity "
+					    "ADD COLUMN arity INTEGER NOT NULL DEFAULT 0")) {
 					fprintf(stderr,
 						"[module=store, method=createSchema] "
 						"ALTER TABLE entity ADD arity "
@@ -758,8 +802,9 @@ bool GraphStore::runSchemaMigrations()
 			}
 			sqlite3_finalize(probe);
 			if (!has_ck) {
-				exec("ALTER TABLE reference "
-				     "ADD COLUMN call_kind INTEGER DEFAULT 0");
+				migrationExec(
+					"ALTER TABLE reference "
+					"ADD COLUMN call_kind INTEGER DEFAULT 0");
 			}
 			// Check for resolve_strategy column (v0.9+)
 			bool has_ref_rs = false;
@@ -781,9 +826,9 @@ bool GraphStore::runSchemaMigrations()
 				probe = nullptr;
 			}
 			if (!has_ref_rs) {
-				exec("ALTER TABLE reference "
-				     "ADD COLUMN resolve_strategy "
-				     "TEXT DEFAULT ''");
+				migrationExec("ALTER TABLE reference "
+					      "ADD COLUMN resolve_strategy "
+					      "TEXT DEFAULT ''");
 			}
 		}
 	}
@@ -803,8 +848,9 @@ bool GraphStore::runSchemaMigrations()
 			}
 			sqlite3_finalize(probe);
 			if (!has_pid) {
-				exec("ALTER TABLE graph_nodes "
-				     "ADD COLUMN parent_id INTEGER DEFAULT 0");
+				migrationExec(
+					"ALTER TABLE graph_nodes "
+					"ADD COLUMN parent_id INTEGER DEFAULT 0");
 				exec("CREATE INDEX IF NOT EXISTS idx_gn_parent "
 				     "ON graph_nodes(project_id, parent_id)");
 			}
@@ -831,9 +877,9 @@ bool GraphStore::runSchemaMigrations()
 			}
 			sqlite3_finalize(probe);
 			if (!has_rs) {
-				exec("ALTER TABLE graph_edges "
-				     "ADD COLUMN resolve_strategy "
-				     "TEXT DEFAULT ''");
+				migrationExec("ALTER TABLE graph_edges "
+					      "ADD COLUMN resolve_strategy "
+					      "TEXT DEFAULT ''");
 			}
 		}
 	}
@@ -941,6 +987,14 @@ bool GraphStore::runSchemaMigrations()
 				sqlite3_finalize(probe);
 			}
 		}
+	}
+
+	if (!migration_ok) {
+		fprintf(stderr,
+			"[module=store, method=runSchemaMigrations] one or more "
+			"migrations failed; refusing to report a migrated schema "
+			"(later queries would fail with \"no such column\")\n");
+		return false;
 	}
 
 	return true;

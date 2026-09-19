@@ -41,7 +41,11 @@ static constexpr int kNodeTypeMethod = 1; // NodeType::Method
 static constexpr double kConfidenceDefault = 1.0;
 static constexpr double kConfidenceIgnoredReturn = 0.8;
 static constexpr double kConfidenceUncheckedError = 0.7;
-static constexpr double kConfidenceCgoCallback = 0.6;
+// The confidence the `cgo_callback` rule will use once that rule exists. It is
+// deliberately kept rather than deleted — it is the only remaining reference to
+// the intended rule — and marked maybe_unused so the build stays warning-free
+// (docs/CODE_REVIEW_2026-09-18.md #9b).
+[[maybe_unused]] static constexpr double kConfidenceCgoCallback = 0.6;
 
 // ─── Local helpers ────────────────────────────────────────────────
 
