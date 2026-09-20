@@ -158,7 +158,13 @@ std::string GraphStore::searchUnifiedJson(uint64_t project_id,
 		sqlite3_stmt *stmt = nullptr;
 		if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) ==
 		    SQLITE_OK) {
-			std::string fts_query = query;
+			// fts5Phrase() wraps the raw query in double quotes so FTS5
+			// treats it as a literal phrase instead of syntax: an unescaped
+			// `"` or `(` made the MATCH fail, and the failure was silent —
+			// callers saw "no results" for a query that was never run. The
+			// trailing `*` must sit OUTSIDE the quotes to stay a prefix
+			// search.
+			std::string fts_query = fts5Phrase(query);
 			if (!fts_query.empty() && fts_query.back() != '*')
 				fts_query += "*";
 			sqlite3_bind_text(stmt, 1, fts_query.c_str(), -1,
@@ -189,6 +195,17 @@ std::string GraphStore::searchUnifiedJson(uint64_t project_id,
 				       std::to_string(timeout_ms) +
 				       "ms [module=store, "
 				       "method=searchUnifiedJson]\"}";
+			}
+			if (rc != SQLITE_DONE) {
+				// Any other step error used to fall through to the
+				// fallbacks with no trace, so a failed FTS query looked
+				// like a query that simply matched nothing.
+				error_ = sqlite3_errmsg(db_);
+				fprintf(stderr,
+					"searchUnifiedJson: fts step failed (rc=%d): "
+					"%s [module=store, "
+					"method=searchUnifiedJson]\n",
+					rc, error_.c_str());
 			}
 		} else {
 			error_ = sqlite3_errmsg(db_);
@@ -253,6 +270,17 @@ std::string GraphStore::searchUnifiedJson(uint64_t project_id,
 				       std::to_string(timeout_ms) +
 				       "ms [module=store, "
 				       "method=searchUnifiedJson]\"}";
+			}
+			if (rc != SQLITE_DONE) {
+				// Any other step error used to fall through to the
+				// fallbacks with no trace, so a failed FTS query looked
+				// like a query that simply matched nothing.
+				error_ = sqlite3_errmsg(db_);
+				fprintf(stderr,
+					"searchUnifiedJson: fts step failed (rc=%d): "
+					"%s [module=store, "
+					"method=searchUnifiedJson]\n",
+					rc, error_.c_str());
 			}
 		} else {
 			error_ = sqlite3_errmsg(db_);

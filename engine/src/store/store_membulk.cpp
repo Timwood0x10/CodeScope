@@ -44,9 +44,11 @@ MemBulkAggregator::~MemBulkAggregator() = default;
 
 bool GraphStore::dropSemanticRecordIndexes()
 {
-	// Drop the 9 lookup indexes on semantic_records before a bulk INSERT.
-	// Each live index costs one B-tree update per inserted row; with 9
-	// indexes and ~16k rows that is ~144k random B-tree writes. Dropping
+	// Drop the 11 lookup indexes on semantic_records before a bulk INSERT.
+	// Each live index costs one B-tree update per inserted row; with 11
+	// indexes and ~16k rows that is ~176k random B-tree writes. The list
+	// below must stay in step with createSemanticRecordIndexes: an index that
+	// is dropped but never recreated is lost until the next schema pass. Dropping
 	// them and rebuilding in bulk after the insert (one sorted scan per
 	// index) is 5–10x faster for large modules.
 	//
@@ -65,6 +67,7 @@ bool GraphStore::dropSemanticRecordIndexes()
 		"DROP INDEX IF EXISTS idx_sr_kind_name",
 		"DROP INDEX IF EXISTS idx_sr_kind_fp",
 		"DROP INDEX IF EXISTS idx_sr_proj_file_oid",
+		"DROP INDEX IF EXISTS idx_sr_oid",
 	};
 	bool ok = true;
 	for (auto *sql : drop_sqls) {
@@ -100,6 +103,7 @@ bool GraphStore::createSemanticRecordIndexes()
 		"CREATE INDEX IF NOT EXISTS idx_sr_kind_name ON semantic_records(project_id, kind, name, language)",
 		"CREATE INDEX IF NOT EXISTS idx_sr_kind_fp ON semantic_records(project_id, kind, file_path)",
 		"CREATE INDEX IF NOT EXISTS idx_sr_proj_file_oid ON semantic_records(project_id, file_path, original_id)",
+		"CREATE INDEX IF NOT EXISTS idx_sr_oid ON semantic_records(project_id, original_id)",
 	};
 	bool ok = true;
 	for (auto *sql : create_sqls) {
@@ -139,8 +143,8 @@ bool MemBulkAggregator::flush(GraphStore &store, uint64_t project_id,
 			total);
 	}
 
-	// On a fresh DB (worker mode), drop the 9 semantic_records indexes
-	// before the bulk INSERT so SQLite doesn't maintain 9 B-trees per
+	// On a fresh DB (worker mode), drop the 11 semantic_records indexes
+	// before the bulk INSERT so SQLite doesn't maintain 11 B-trees per
 	// row. They are rebuilt in bulk after commit (one sorted scan per
 	// index) which is 5–10x faster for large modules.
 	if (!is_reindex && !store.dropSemanticRecordIndexes()) {
@@ -174,9 +178,20 @@ bool MemBulkAggregator::flush(GraphStore &store, uint64_t project_id,
 		}
 	}
 
-	store.commitTransaction();
+	// A failed COMMIT leaves the connection inside an open transaction, so every
+	// later BEGIN fails — and flush() reported success regardless, claiming a
+	// bulk load that never landed. Roll back so the connection is usable again
+	// and report the failure to the caller.
+	if (!store.commitTransaction()) {
+		fprintf(stderr,
+			"store_membulk: commitTransaction failed: %s "
+			"[module=store_membulk, method=flush]\n",
+			store.error().c_str());
+		store.rollbackTransaction();
+		return false;
+	}
 
-	// Rebuild the 9 semantic_records indexes in bulk now that all rows
+	// Rebuild the 11 semantic_records indexes in bulk now that all rows
 	// are inserted. Must happen BEFORE buildGraph (called by the caller
 	// after flush returns) — buildGraph JOINs semantic_records on
 	// (project_id, file_path) via idx_sr_file / idx_sr_kind_fp.

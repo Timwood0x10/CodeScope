@@ -186,6 +186,73 @@ int64_t SemanticFactExtractor::extractAll(uint64_t project_id)
 //   .Add + WaitGroup qn → sync/waitgroup/add
 //   (defer)             → sync/defer  (detected via name='defer' in Go)
 
+/// Classify a Go synchronisation call name into the `primitive` / `kind`
+/// columns of the sync facts.
+///
+/// The name is the call's qualified Go selector as recorded by the visitor,
+/// e.g. `m.Lock`, `rw.RLock`, `rw.RUnlock`, `wg.Add`, `counter.Load`, `defer`.
+///
+/// The RWMutex forms are matched before the plain ones because ".RLock" also
+/// ends in "Lock" and ".RUnlock" also ends in "Unlock". The previous inline
+/// guard required a '.' immediately before "Lock", so `.RLock` / `.WLock` never
+/// entered the lock branch at all — their facts were dropped entirely and the
+/// `rwmutex_usage` rule was permanently empty, with the inner R/W checks left
+/// unreachable.
+///
+/// @param name      Call name as recorded (may be unqualified).
+/// @param primitive [out] "defer" / "mutex" / "rwmutex" / "atomic" /
+///                  "waitgroup" on success.
+/// @param kind      [out] "defer" / "lock" / "defer_unlock" / "load" / "add".
+/// @return false when the name matches none of the modelled forms, so the
+///         caller skips it instead of writing a fact with no meaning.
+static bool classifySyncCall(const std::string &name, std::string &primitive,
+			     std::string &kind)
+{
+	auto ends_with = [&name](const char *suffix) {
+		const size_t n = std::strlen(suffix);
+		return name.size() >= n &&
+		       name.compare(name.size() - n, n, suffix) == 0;
+	};
+	if (name == "defer") {
+		primitive = "defer";
+		kind = "defer";
+		return true;
+	}
+	if (ends_with(".RLock") || ends_with(".WLock")) {
+		primitive = "rwmutex";
+		kind = "lock";
+		return true;
+	}
+	if (ends_with(".RUnlock") || ends_with(".WUnlock")) {
+		primitive = "rwmutex";
+		kind = "defer_unlock";
+		return true;
+	}
+	if (ends_with(".Lock")) {
+		primitive = "mutex";
+		kind = "lock";
+		return true;
+	}
+	if (ends_with(".Unlock")) {
+		// The Evidence Builder's mutex_without_defer_unlock rule treats
+		// this as the optional match (kind="defer_unlock").
+		primitive = "mutex";
+		kind = "defer_unlock";
+		return true;
+	}
+	if (ends_with(".Load")) {
+		primitive = "atomic";
+		kind = "load";
+		return true;
+	}
+	if (ends_with(".Add")) {
+		primitive = "waitgroup";
+		kind = "add";
+		return true;
+	}
+	return false;
+}
+
 int64_t SemanticFactExtractor::extractSyncFacts(uint64_t project_id)
 {
 	// One SELECT that scans CallExpr records and tags each match with
@@ -207,6 +274,7 @@ int64_t SemanticFactExtractor::extractSyncFacts(uint64_t project_id)
 		"WHERE sr.project_id = ? AND sr.kind = ? "
 		"  AND (sr.name LIKE '%.Lock' OR sr.name LIKE '%.Unlock' "
 		"   OR sr.name LIKE '%.RLock' OR sr.name LIKE '%.WLock' "
+		"   OR sr.name LIKE '%.RUnlock' OR sr.name LIKE '%.WUnlock' "
 		"   OR (sr.name LIKE '%.Load' AND sr.qualified_name LIKE '%atomic%') "
 		"   OR (sr.name LIKE '%.Add' AND sr.qualified_name LIKE '%WaitGroup%') "
 		"   OR (sr.language = 'go' AND sr.name = 'defer'))";
@@ -237,46 +305,8 @@ int64_t SemanticFactExtractor::extractSyncFacts(uint64_t project_id)
 
 		std::string primitive;
 		std::string kind;
-		if (name == "defer") {
-			primitive = "defer";
-			kind = "defer";
-		} else if (name.size() >= 5 &&
-			   name.compare(name.size() - 4, 4, "Lock") == 0 &&
-			   name.size() >= 6 && name[name.size() - 5] == '.') {
-			// .Lock or .RLock or .WLock — per v0.3 plan section 3.2,
-			// all lock acquisitions use kind="lock" regardless of
-			// mutex flavor (mutex/rwmutex). The primitive column
-			// disambiguates the lock type.
-			if (name.size() >= 6 && name[name.size() - 6] == 'R') {
-				primitive = "rwmutex";
-				kind = "lock";
-			} else if (name.size() >= 6 &&
-				   name[name.size() - 6] == 'W') {
-				primitive = "rwmutex";
-				kind = "lock";
-			} else {
-				primitive = "mutex";
-				kind = "lock";
-			}
-		} else if (name.size() >= 7 &&
-			   name.compare(name.size() - 6, 6, "Unlock") == 0) {
-			// Any .Unlock() call — the Evidence Builder's
-			// mutex_without_defer_unlock rule treats this as the
-			// optional match (defer_unlock kind). Per v0.3 plan
-			// section 3.2 this is kind="defer_unlock".
-			primitive = "mutex";
-			kind = "defer_unlock";
-		} else if (name.size() >= 6 &&
-			   name.compare(name.size() - 5, 5, ".Load") == 0) {
-			primitive = "atomic";
-			kind = "load";
-		} else if (name.size() >= 5 &&
-			   name.compare(name.size() - 4, 4, ".Add") == 0) {
-			primitive = "waitgroup";
-			kind = "add";
-		} else {
-			continue; // safety net — should not happen
-		}
+		if (!classifySyncCall(name, primitive, kind))
+			continue; // not a synchronisation call we model
 
 		std::string detail = buildDetailJson(
 			start_row, name + " (" + file_path + ")",

@@ -7,139 +7,6 @@
 namespace resolver
 {
 
-namespace
-{
-/// Return true if any target_path in `targets` matches the LIKE pattern
-/// `"%<module_name>%"` (semantically identical to the original SQL
-/// `SELECT COUNT(*) ... WHERE target_path LIKE '%module_name%' > 0`).
-bool anyImportMatches(const std::vector<std::string> &targets,
-		      const std::string &module_name)
-{
-	std::string pattern = "%" + module_name + "%";
-	for (const auto &target : targets) {
-		if (sqliteLikeMatch(pattern, target))
-			return true;
-	}
-	return false;
-}
-
-/// Extract the module-name token used for import matching. Mirrors the
-/// original factors.cpp logic: strip the file name (last '/'), then take
-/// the last directory component. For "a/b/c.go" this yields "b"; for a
-/// bare "c.go" it yields "c.go"; for "/c.go" it yields "" (which, like
-/// the original SQL `LIKE '%%'`, matches any imported target_path).
-std::string moduleTokenFromPath(const std::string &file_path)
-{
-	std::string module_path = file_path;
-	size_t slash = module_path.rfind('/');
-	if (slash != std::string::npos)
-		module_path = module_path.substr(0, slash);
-	size_t prev_slash = module_path.rfind('/');
-	if (prev_slash != std::string::npos)
-		return module_path.substr(prev_slash + 1);
-	return module_path;
-}
-} // namespace
-
-double factorImportMatch(
-	const std::unordered_map<std::string, std::vector<std::string>>
-		&import_index,
-	const std::string &caller_file, const std::string &candidate_file,
-	const std::string &candidate_name)
-{
-	(void)candidate_name; // unused — kept for caller compatibility
-
-	// Same-module calls don't need an import statement — score 1.0.
-	// (Identical to the original early return: pure string comparison,
-	// no index lookup, so it is also the fast path for same-directory
-	// candidates.)
-	{
-		size_t c_slash = caller_file.rfind('/');
-		size_t t_slash = candidate_file.rfind('/');
-		if (c_slash != std::string::npos &&
-		    t_slash != std::string::npos) {
-			std::string caller_dir = caller_file.substr(0, c_slash);
-			std::string cand_dir =
-				candidate_file.substr(0, t_slash);
-			if (caller_dir == cand_dir)
-				return 1.0;
-		}
-	}
-
-	// Forward check: does the caller's file import the candidate's
-	// module? Replaces `SELECT COUNT(*) FROM import WHERE file_path=?
-	// AND target_path LIKE '%candidate_module%'` with an in-memory
-	// lookup over the pre-loaded import_index.
-	std::string candidate_module = moduleTokenFromPath(candidate_file);
-	double result = 0.0;
-	auto fwd_it = import_index.find(caller_file);
-	if (fwd_it != import_index.end() &&
-	    anyImportMatches(fwd_it->second, candidate_module))
-		result = 1.0;
-
-	// Reverse check: does the candidate's file import the caller's
-	// module? Only runs when the forward check found nothing, matching
-	// the original `result == 0.0` guard.
-	if (result == 0.0) {
-		std::string caller_module = moduleTokenFromPath(caller_file);
-		auto rev_it = import_index.find(candidate_file);
-		if (rev_it != import_index.end() &&
-		    anyImportMatches(rev_it->second, caller_module))
-			result = 1.0;
-	}
-
-	return result;
-}
-
-double factorNamespaceMatch(const std::string &caller_file,
-			    const std::string &candidate_file)
-{
-	// Extract directory paths and compare.
-	size_t c_slash = caller_file.rfind('/');
-	size_t t_slash = candidate_file.rfind('/');
-	if (c_slash == std::string::npos || t_slash == std::string::npos)
-		return 0.0;
-
-	std::string caller_dir = caller_file.substr(0, c_slash);
-	std::string cand_dir = candidate_file.substr(0, t_slash);
-
-	if (caller_dir == cand_dir)
-		return kScoreExactMatch; // Same package
-
-	// Check if they share a common parent directory
-	// (sibling packages within the same module)
-	size_t c_parent = caller_dir.rfind('/');
-	size_t t_parent = cand_dir.rfind('/');
-	if (c_parent == std::string::npos || t_parent == std::string::npos)
-		return 0.0;
-
-	std::string caller_parent = caller_dir.substr(0, c_parent);
-	std::string cand_parent = cand_dir.substr(0, t_parent);
-	if (caller_parent == cand_parent && caller_parent.length() > 0)
-		return kScoreSiblingModule; // Sibling packages
-
-	return 0.0;
-}
-
-double factorDistanceMatch(const std::string &caller_file,
-			   const std::string &candidate_file)
-{
-	if (caller_file == candidate_file)
-		return kScoreExactMatch; // Same file
-
-	size_t c_slash = caller_file.rfind('/');
-	size_t t_slash = candidate_file.rfind('/');
-	if (c_slash == std::string::npos || t_slash == std::string::npos)
-		return 0.0;
-
-	std::string caller_dir = caller_file.substr(0, c_slash);
-	std::string cand_dir = candidate_file.substr(0, t_slash);
-	if (caller_dir == cand_dir)
-		return kScoreSameDirectory; // Same directory
-
-	return 0.0;
-}
-
 double factorSignatureMatch(int caller_arity, int candidate_arity)
 {
 	if (caller_arity == 0 && candidate_arity == 0)
@@ -164,104 +31,14 @@ double factorConstructorMatch(const std::string &ref_name,
 	return 0.0;
 }
 
-double factorReceiverMatch(const std::string &ref_name,
-			   const std::string &caller_file,
-			   const std::string &candidate_name,
-			   const std::string &candidate_file)
-{
-	// Receiver match: for method calls like a.method(),
-	// check if the candidate is a method of the caller's receiver type.
-	// This is a simplified check: if caller and candidate share
-	// the same package prefix, boost the score.
-	size_t c_slash = caller_file.rfind('/');
-	size_t t_slash = candidate_file.rfind('/');
-	if (c_slash == std::string::npos || t_slash == std::string::npos)
-		return 0.0;
-
-	std::string caller_pkg = caller_file.substr(0, c_slash);
-	std::string cand_pkg = candidate_file.substr(0, t_slash);
-
-	// Same package: likely receiver match
-	if (caller_pkg == cand_pkg)
-		return kScoreExactMatch;
-
-	// Different package: check if candidate is in a sub-package
-	if (cand_pkg.find(caller_pkg) == 0)
-		return kScorePartialMatch;
-
-	return 0.0;
-}
-
-// Step 5 (plan §5.3): receiver type evidence factor.
-//
-// Replaces the directory-heuristic factorReceiverMatch with actual
-// type-based matching. The key insight: when a reference carries a
-// known receiver_type (e.g. "Box" from `let b: Box = ...; b.draw()`),
-// the candidate's qualified_name should contain that type as a prefix
-// (e.g. "Box::draw", "Box.draw", "Box::draw"). This is strong
-// structural evidence — far more reliable than "same directory".
-//
-// When receiver_type is empty (dynamic/unknown receiver), we return
-// 0.5 (neutral) rather than 0.0. This is critical: returning 0.0 would
-// penalize ALL candidates equally (no differentiation), while 0.5
-// ensures the receiver factor does not distort the ranking when we
-// lack type evidence. The decision then falls to other factors
-// (Import, Namespace, Signature) as before.
-double factorReceiverTypeMatch(const std::string &receiver_type,
-			       const std::string &candidate_qname,
-			       const std::string &candidate_name,
-			       const std::string &candidate_file)
-{
-	// No receiver type evidence → neutral, do not fabricate evidence.
-	if (receiver_type.empty())
-		return 0.5;
-
-	// Strong match: qualified_name contains the receiver type as a
-	// prefix. Covers "Box::draw", "Box.draw", "MyClass::method", etc.
-	if (!candidate_qname.empty()) {
-		// Check "Type::method" and "Type.method" patterns.
-		std::string prefix1 = receiver_type + "::";
-		std::string prefix2 = receiver_type + ".";
-		if (candidate_qname.find(prefix1) == 0 ||
-		    candidate_qname.find(prefix2) == 0)
-			return kScoreExactMatch;
-		// Also check if receiver_type appears as a component anywhere
-		// in the qualified_name (e.g. "module::Box::draw").
-		if (candidate_qname.find(prefix1) != std::string::npos ||
-		    candidate_qname.find(prefix2) != std::string::npos)
-			return kScorePartialMatch;
-	}
-
-	// Weak fallback: if the candidate's file path contains the receiver
-	// type name (e.g. file "box.go" containing methods of Box), give a
-	// partial score. This is less reliable than qualified_name but
-	// better than nothing for languages that don't populate
-	// qualified_name (e.g. Go, where methods are defined as
-	// `func (b Box) draw()` and qualified_name may be empty).
-	size_t slash = candidate_file.rfind('/');
-	std::string fname = (slash != std::string::npos) ?
-				    candidate_file.substr(slash + 1) :
-				    candidate_file;
-	// Convert to lowercase for case-insensitive comparison (Go file
-	// names are typically lowercase: "box.go", "renderer.ts").
-	std::string fname_lower = fname;
-	std::string rtype_lower = receiver_type;
-	for (auto &ch : fname_lower)
-		ch = static_cast<char>(
-			std::tolower(static_cast<unsigned char>(ch)));
-	for (auto &ch : rtype_lower)
-		ch = static_cast<char>(
-			std::tolower(static_cast<unsigned char>(ch)));
-	if (!rtype_lower.empty() &&
-	    fname_lower.find(rtype_lower) != std::string::npos)
-		return kScorePartialMatch;
-
-	return 0.0;
-}
-
 // v0.2.5 (perf): pre-parsed receiver matching. Build the ref-level context
 // (prefix1/prefix2/rtype_lower) once per reference so the resolver hot loop
 // does not reallocate them for every candidate.
+//
+// This builder sits between two scorers that were deleted as dead code
+// (factorReceiverMatch, factorReceiverTypeMatch) — it is NOT dead itself:
+// pipeline_apply.cpp calls it once per reference. Kept here, adjacent to the
+// scorer that consumes the context.
 ReceiverMatchContext buildReceiverMatchContext(const std::string &receiver_type)
 {
 	ReceiverMatchContext ctx;
@@ -278,10 +55,6 @@ ReceiverMatchContext buildReceiverMatchContext(const std::string &receiver_type)
 	return ctx;
 }
 
-// Scoring is byte-identical to factorReceiverTypeMatch: same prefixes, same
-// strong/partial/file-fallback rules. Only the string construction differs
-// (precomputed ref-level strings; per-candidate file basename is still
-// derived here because it is candidate-specific).
 double factorReceiverTypeMatchPrecomp(const ReceiverMatchContext &ctx,
 				      const std::string &candidate_qname,
 				      const std::string &candidate_file)
@@ -309,9 +82,15 @@ double factorReceiverTypeMatchPrecomp(const ReceiverMatchContext &ctx,
 	for (auto &ch : fname_lower)
 		ch = static_cast<char>(
 			std::tolower(static_cast<unsigned char>(ch)));
+	// A filename coincidence is weaker evidence than a qualified_name that
+	// really contains the receiver type, so it gets its own value instead of
+	// kScorePartialMatch: returning 0.5 here made `Widgets.cpp` — a file whose
+	// name happens to mention the type — score exactly the same as a candidate
+	// whose qualified_name contains it, which is the difference between a
+	// coincidence and receiver evidence.
 	if (!ctx.rtype_lower.empty() &&
 	    fname_lower.find(ctx.rtype_lower) != std::string::npos)
-		return kScorePartialMatch;
+		return kScoreWeakFilenameMatch;
 
 	return 0.0;
 }

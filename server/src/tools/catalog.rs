@@ -459,7 +459,7 @@ pub fn all_tools() -> Vec<Tool> {
                 "type": "object",
                 "properties": {
                     "function_name": {"type": "string", "description": "Starting function for interactive exploration"},
-                    "depth": {"type": "integer", "description": "How many levels to explore (default: 1, max: 5)"},
+                    "depth": {"type": "integer", "description": "How many levels to explore (default: 1, max: 10 — the server clamps to MAX_TRAVERSAL_DEPTH)"},
                     "direction": {"type": "string", "description": "\"callers\", \"callees\", or \"both\" (default: \"both\")"},
                     "from": {"type": "string", "description": "Source function for shortest path (legacy)"},
                     "to": {"type": "string", "description": "Target function for shortest path (legacy)"}

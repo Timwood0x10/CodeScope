@@ -16,6 +16,15 @@
 // A call with a receiver / namespace cannot resolve to a pre-declared
 // identifier, so it keeps its record and its receiver evidence.
 //
+// Second rule, added with the same fixtures: a name THIS FILE defines is user
+// code whatever the builtin list says. `def format()`, `function Map()`,
+// `fn write()`, `void free()` and a Java method `format()` are declared in the
+// fixture itself, yet a BARE call to them was still dropped — the exemption
+// (JsVisitor::defined_names_, see js_visitor_defined_names.cpp) is what keeps
+// them. Each language below therefore has one locally-defined collision that
+// must be EMITTED and one builtin that is NOT defined in the file and must
+// stay FILTERED, so the exemption can never be mistaken for "the filter is off".
+//
 // Boundary cases covered:
 //   * Go     `b.copy(...)` emitted; bare `len(x)` still filtered
 //   * Java   `b.map(...)`, `s.indexOf(...)` emitted
@@ -166,6 +175,35 @@ int main()
 				     "    return o->free(0);\n"
 				     "}\n");
 
+	// Locally-defined collisions: each file declares a name that is on its
+	// language's builtin list and then calls it WITHOUT a receiver, which is
+	// exactly the case the unqualified-call rule does not cover. Each file
+	// also makes one bare call to a builtin it does NOT define, as the
+	// negative control.
+	writeFile(root + "/py/own.py", "def format(x):\n"
+				       "    return x\n\n\n"
+				       "def use():\n"
+				       "    return format(1)\n\n\n"
+				       "def count(xs):\n"
+				       "    return len(xs)\n");
+
+	writeFile(root + "/js/own.js",
+		  "function Map(x) { return x; }\n\n"
+		  "export function use() { return Map(1); }\n\n"
+		  "export function n(s) { return parseInt(s, 10); }\n");
+
+	writeFile(root + "/java/Own.java",
+		  "class Own {\n"
+		  "    int format(int x) { return x; }\n"
+		  "    int use() { return format(1); }\n"
+		  "}\n");
+
+	writeFile(root + "/c/own.c", "void free(void *p) { }\n\n"
+				     "int use_own(void) { return free(0); }\n");
+
+	writeFile(root + "/rs/own.rs", "fn write(x: i32) -> i32 { x }\n\n"
+				       "fn use_it() -> i32 { write(1) }\n");
+
 	const char *db_path = "/tmp/test_builtin_method_calls.db";
 	unlink(db_path);
 	check(engine_init(db_path) == 0, "engine_init");
@@ -229,6 +267,32 @@ int main()
 	expectFiltered(db, pid, "free", "ops.c",
 		       "C field call on a stdlib-named field stays filtered "
 		       "(deliberate)");
+
+	// ── Locally-defined collisions (bare calls) ──────────────────
+	expectEmitted(db, pid, "format", "own.py",
+		      "bare call to a builtin-named function the file defines "
+		      "must be kept");
+	expectFiltered(db, pid, "len", "own.py",
+		       "bare builtin the file does NOT define stays filtered");
+
+	expectEmitted(db, pid, "Map", "own.js",
+		      "bare call to `function Map()` in the same file must be "
+		      "kept");
+	expectFiltered(db, pid, "parseInt", "own.js",
+		       "bare builtin the file does NOT define stays filtered");
+
+	expectEmitted(
+		db, pid, "format", "Own.java",
+		"bare call to a format() method defined in the same class "
+		"must be kept");
+
+	expectEmitted(db, pid, "free", "own.c",
+		      "bare call to free() defined in the same file must be "
+		      "kept (distinct from the ops.c field case above)");
+
+	expectEmitted(db, pid, "write", "own.rs",
+		      "bare call to write() defined in the same file must be "
+		      "kept");
 
 	sqlite3_close(db);
 	engine_shutdown();

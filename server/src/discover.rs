@@ -141,7 +141,12 @@ fn is_source_file(name: &str) -> bool {
             | ".cjs"
             | ".mts"
             | ".cts"
-            | ".d.ts"
+            // ".d.ts" is deliberately NOT listed: the extension this matches
+            // on is everything after the LAST '.', so "foo.d.ts" already
+            // yields ".ts" and a ".d.ts" pattern could never match anything
+            // the ".ts" entry does not. Declaration files are picked up by
+            // that entry; if they should be EXCLUDED instead, that needs an
+            // exclusion, not an allow-list entry that never fires.
             | ".wasm"
             | ".zig"
             | ".mojo"
@@ -415,6 +420,11 @@ mod tests {
     fn test_is_source_file_recognises_extensions() {
         assert!(is_source_file("foo.rs"));
         assert!(is_source_file("bar.cpp"));
+        // "foo.d.ts" resolves through the ".ts" entry: the extension is
+        // everything after the LAST dot. The ".d.ts" allow-list entry that
+        // used to sit in the list could never fire and has been removed —
+        // this assertion is what keeps the behaviour identical.
+        assert!(is_source_file("types.d.ts"));
         assert!(is_source_file("baz.go"));
         assert!(is_source_file("a.py"));
         assert!(!is_source_file("readme.md"));

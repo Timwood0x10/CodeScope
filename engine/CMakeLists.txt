@@ -210,6 +210,7 @@ set(ENGINE_SOURCES
     src/ir/translators/javascript_translator.cpp
     src/ir/translators/typescript_translator.cpp
     src/ir/translators/js_visitor.cpp
+    src/ir/translators/js_visitor_defined_names.cpp
     src/ir/translators/ts_visitor.cpp
     src/ir/translators/tsx_visitor.cpp
     src/ir/translators/c_visitor.cpp
@@ -220,13 +221,13 @@ set(ENGINE_SOURCES
     src/ir/translators/rust_visitor.cpp
     src/ir/translators/java_visitor.cpp
     src/ir/translators/java_translator.cpp
-    src/ir/translators/scanner_visitor.cpp
     src/ir/translators/tsx_translator.cpp
     src/graph/graph_types.cpp
     src/graph/graph_builder.cpp
     src/store/store_core.cpp
     src/store/store_schema.cpp
     src/store/store_schema_migrations.cpp
+    src/store/store_schema_migrations_types.cpp
     src/store/store.cpp
     src/store/store_insert.cpp
     src/store/store_search.cpp
@@ -250,7 +251,6 @@ set(ENGINE_SOURCES
     src/query/graph_query.cpp
     src/query/impact_analysis.cpp
          src/lsp/lsp_client.cpp
-    src/resolver/resolver.cpp
     src/resolver/pipeline.cpp
     src/resolver/pipeline_apply.cpp
     src/resolver/pipeline_load.cpp
@@ -265,8 +265,6 @@ set(ENGINE_SOURCES
         src/model/state_builder.cpp
         src/model/project_state_builder.cpp
         src/model/semantic_fact_extractor.cpp
-    src/resolver/project_index.cpp
-        src/resolver/project_resolver.cpp
         src/verify/capability_verifier.cpp
         src/verify/contract_verifier.cpp
         src/verify/architecture_verifier.cpp
@@ -283,7 +281,6 @@ set(ENGINE_SOURCES
         src/verify/verdict_builder.cpp
     src/engine_verify_planner_ffi.cpp
     src/async_knowledge.cpp
-    src/resolver/resolve_cache.cpp
     src/filter_policy.cpp
     src/filter_policy_detect.cpp
     src/filter_policy_ignore.cpp

@@ -146,6 +146,11 @@ constexpr double kScorePartialMatch = 0.5;
 constexpr double kScorePenalty = -0.5;
 constexpr double kScoreSiblingModule = 0.5;
 constexpr double kScoreSameDirectory = 0.3;
+// A candidate whose FILE NAME happens to contain the receiver type. Weaker
+// than a qualified_name that really contains it (kScorePartialMatch), and it
+// must not be confused with that hit: the two used to be the same value, so a
+// filename coincidence was indistinguishable from receiver evidence.
+constexpr double kScoreWeakFilenameMatch = 0.2;
 
 // ── Threshold ───────────────────────────────────────────────────────
 constexpr double kResolutionThreshold = 0.40;
@@ -172,28 +177,35 @@ struct FactorResult {
 	std::string detail; // Human-readable explanation
 };
 
-/// A candidate entity with per-factor scores.
-struct ScoredCandidate {
-	uint64_t entity_id;
-	std::string name;
-	std::string file_path;
-	std::string module_path;
-	std::string qualified_name;
-	int arity;
-	double total_score; // Weighted average of all factor scores
-	std::vector<FactorResult> factors;
-};
-
-/// Compute the total score as weighted average of factors.
-inline double computeTotalScore(const std::vector<FactorResult> &factors)
+/// Map a scoring factor name — the ones applyConstraints accumulates, see
+/// pipeline_apply.cpp — to the `resolution_kind` recorded on the edge.
+///
+/// The kind answers "which evidence decided this match", and the label is what
+/// per-kind accuracy audits group by, so it must name the decisive evidence
+/// rather than whichever reference field happened to be non-empty. An empty
+/// result means the factor is unknown to this mapping, and the caller falls
+/// back to its own labelling.
+inline std::string resolutionKindFromFactor(const std::string &factor)
 {
-	double sum_weight = 0.0;
-	double sum_scored = 0.0;
-	for (auto &f : factors) {
-		sum_weight += f.weight;
-		sum_scored += f.weight * f.score;
-	}
-	return (sum_weight > 0.0) ? (sum_scored / sum_weight) : 0.0;
+	if (factor == "ReceiverMatch")
+		return "receiver_type";
+	if (factor == "ImportMatch")
+		return "imported";
+	if (factor == "SignatureMatch")
+		return "signature";
+	if (factor == "DefinitionMatch")
+		return "definition";
+	if (factor == "ConstructorMatch")
+		return "constructor";
+	if (factor == "CallKindMatch")
+		return "call_kind";
+	if (factor == "DistanceMatch")
+		return "distance";
+	if (factor == "NamespaceMatch")
+		return "namespace";
+	if (factor == "ModuleMatch")
+		return "module";
+	return "";
 }
 
 /// Check if the caller's file imports the candidate's module (forward)

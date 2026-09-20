@@ -67,9 +67,16 @@ ModelResult CapabilityPlugin::build(uint64_t project_id,
 	for (const auto &doc : ctx.documents) {
 		const std::string &text = doc.content;
 		size_t pos = 0;
-		while ((pos = text.find_first_of("-\n*", pos)) !=
-		       std::string::npos) {
-			size_t end = text.find('\n', pos + 1);
+		// Capabilities are LINES that mention a supported feature. The scan
+		// used to advance on '-' and '*' as well as '\n', so it restarted
+		// mid-line: "A thread-safe design - Supports fast lookup" yielded a
+		// capability named after the fragment that follows the hyphen
+		// ("FastLookup") — half a sentence, a name no code can match, which
+		// the capability-drift detector then reported as undocumented. The
+		// bullet markers themselves are still handled: normalizeCapabilityName
+		// strips leading " \t-*".
+		while (pos < text.size()) {
+			size_t end = text.find('\n', pos);
 			if (end == std::string::npos)
 				end = text.size();
 			std::string line = text.substr(pos, end - pos);
@@ -87,6 +94,8 @@ ModelResult CapabilityPlugin::build(uint64_t project_id,
 							 doc.file_path);
 				++caps;
 			}
+			if (end >= text.size())
+				break;
 			pos = end + 1;
 		}
 	}

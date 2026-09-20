@@ -228,6 +228,14 @@ int main()
 	insertFunction(store, pid, 10, "Acquire", "/src/sync.go", "go");
 	insertCallRecord(store, pid, "m.Lock", "sync.Mutex.Lock",
 			 "/src/sync.go", "go", 5);
+	// Regression: the RWMutex forms. The previous inline guard required a '.'
+	// immediately before "Lock", so `rw.RLock()` never entered the lock branch:
+	// it produced no fact at all and the rwmutex_usage rule stayed empty. The
+	// unlock half was not even selected by the query.
+	insertCallRecord(store, pid, "rw.RLock", "sync.RWMutex.RLock",
+			 "/src/sync.go", "go", 6);
+	insertCallRecord(store, pid, "rw.RUnlock", "sync.RWMutex.RUnlock",
+			 "/src/sync.go", "go", 7);
 
 	// ── Test 2: error/bare_except ──────────────────────────────
 	// Python function with `except:` (bare). The Python visitor
@@ -289,6 +297,13 @@ int main()
 	// Test 1: sync/mutex/lock
 	assert(countFacts(store, pid, "sync", "mutex", "lock") == 1);
 	printf("Test 1 (sync/mutex/lock): PASS\n");
+
+	// Test 1b: the RWMutex forms must be classified, not dropped. Before the
+	// fix these produced no fact at all (the lock) or were never selected (the
+	// unlock), which left the rwmutex_usage rule permanently empty.
+	assert(countFacts(store, pid, "sync", "rwmutex", "lock") == 1);
+	assert(countFacts(store, pid, "sync", "rwmutex", "defer_unlock") == 1);
+	printf("Test 1b (sync/rwmutex lock + unlock): PASS\n");
 
 	// Test 2: error/bare_except
 	assert(countFacts(store, pid, "error", "bare_except", "suppression") ==

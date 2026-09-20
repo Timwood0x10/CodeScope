@@ -324,10 +324,21 @@ CodeGraph GraphBuilder::buildSymbolGraph(const ir::SemanticUnit &unit)
 	for (auto &rec : unit.allRecords()) {
 		if (!isDeclarationKind(rec.kind))
 			continue;
+		// The anonymous root record — an empty-named Variable with no parent —
+		// is the container the visitors emit so every other record has a parent
+		// (e.g. JsVisitor::visit emits it as the TranslationUnit record). It is
+		// not a symbol: the bulk path never stores it (the entity table has no
+		// nameless row), so skipping it here is what makes a single-file graph
+		// match the same file in a bulk graph.
+		//
+		// The previous guard tested `recordKindToNodeType(kind) ==
+		// NodeType::File`, which is never true for a Variable record
+		// (recordKindToNodeType maps Variable to NodeType::Variable), so the
+		// container stayed in the graph as a nameless ghost node.
+		if (rec.kind == ir::RecordKind::Variable && rec.name.empty() &&
+		    rec.parent_id == 0)
+			continue;
 		NodeType nt = recordKindToNodeType(rec.kind);
-		if (nt == NodeType::File &&
-		    rec.kind == ir::RecordKind::Variable)
-			continue; // skip anonymous root Variable (used as container)
 		addGraphNode(rec, nt);
 	}
 

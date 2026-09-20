@@ -30,8 +30,16 @@ bool GraphStore::insertCapability(uint64_t project_id, const std::string &name,
 				  const std::string &source_kind,
 				  const std::string &source_ref)
 {
-	const char *sql = "INSERT INTO capability (project_id, name, summary, "
-			  "source_kind, source_ref) VALUES (?, ?, ?, ?, ?)";
+	// Idempotent: the capability pass runs on every index, and an unguarded
+	// INSERT appended another copy of every capability each run — inflating
+	// capability_state and the drift counts derived from it. The identity is
+	// (project_id, name, source_kind, source_ref); a migration removes what
+	// earlier runs left behind (store_schema_migrations.cpp).
+	const char *sql =
+		"INSERT INTO capability (project_id, name, summary, source_kind, "
+		"source_ref) SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS "
+		"(SELECT 1 FROM capability WHERE project_id = ? AND name = ? "
+		"AND source_kind = ? AND source_ref = ?)";
 	sqlite3_stmt *stmt = getCachedStmt(sql);
 	if (!stmt) {
 		return false;
@@ -41,6 +49,10 @@ bool GraphStore::insertCapability(uint64_t project_id, const std::string &name,
 	sqlite3_bind_text(stmt, 3, summary.c_str(), -1, SQLITE_STATIC);
 	sqlite3_bind_text(stmt, 4, source_kind.c_str(), -1, SQLITE_STATIC);
 	sqlite3_bind_text(stmt, 5, source_ref.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_int64(stmt, 6, static_cast<int64_t>(project_id));
+	sqlite3_bind_text(stmt, 7, name.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_text(stmt, 8, source_kind.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_text(stmt, 9, source_ref.c_str(), -1, SQLITE_STATIC);
 
 	int rc = sqlite3_step(stmt);
 	if (rc != SQLITE_DONE) {

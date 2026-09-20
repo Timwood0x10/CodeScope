@@ -74,7 +74,7 @@ ResolverPipeline::ResolverPipeline(store::GraphStore *store,
 {
 	// Import matching no longer uses prepared SQL statements: run()
 	// pre-loads all import rows into import_index_ (file_path ->
-	// target_path list) and factorImportMatch matches against it
+	// target_path list) and ImportMatch matches against it
 	// in-memory with SQLite-exact LIKE semantics. This removes the
 	// 313k per-candidate full table scans that dominated run().
 }
@@ -385,6 +385,11 @@ int64_t ResolverPipeline::run()
 		// expansion only read, so they use the shared reference —
 		// results are bit-identical.
 		const std::vector<Candidate> *cands = nullptr;
+		// Whether the candidate set came from the fuzzy fallback rather than the
+		// exact-name index. The single-candidate fast path below labels its edge
+		// `exact_local`; for a fuzzy candidate that label was simply untrue —
+		// the name did not match exactly, it was only similar.
+		bool used_fuzzy = false;
 		auto it = entity_index.find(ref.name);
 		if (it != entity_index.end()) {
 			cands = &it->second; // borrow — index stays intact
@@ -451,6 +456,7 @@ int64_t ResolverPipeline::run()
 			// point cands at it so subsequent reads (size/front/
 			// dispatch) see them.
 			cands = &candidates;
+			used_fuzzy = true;
 		}
 
 		total_candidates_seen += static_cast<int64_t>(cands->size());
@@ -469,7 +475,7 @@ int64_t ResolverPipeline::run()
 
 		// ── Single-candidate fast path (semantically safe) ───────
 		// When exactly one candidate exists AND it shares the caller's
-		// directory, factorImportMatch early-returns 1.0 (ImportMatch,
+		// directory, the ImportMatch factor returns 1.0 (ImportMatch,
 		// weight 0.80) and the other same-module factors are also high,
 		// so the weighted total_score is always >= ~0.65 — well above
 		// kResolutionThreshold (0.40) for every call_kind. Therefore the
@@ -512,15 +518,25 @@ int64_t ResolverPipeline::run()
 					resolved_count++;
 					// Step 6: provenance for single-candidate
 					// fast path. High confidence — only one
-					// candidate in the same directory.
+					// candidate in the same directory. The kind
+					// says how the NAME was matched, so a fuzzy
+					// candidate is not labelled "exact_local":
+					// the fast path also runs for the fuzzy
+					// fallback's single same-directory candidate
+					// (cands may point at that vector), and the
+					// audits group by this column.
 					resolved_edges.push_back(
 						{ ref.caller_id, c.entity_id,
 						  kRelationTypeCall,
 						  ref.resolve_strategy,
 						  0.85, // confidence
 						  "pipeline", // resolver
-						  "exact_local", // resolution_kind
-						  "single same-module candidate",
+						  used_fuzzy ?
+							  "fuzzy_local" :
+							  "exact_local", // resolution_kind
+						  used_fuzzy ?
+							  "single same-module fuzzy candidate" :
+							  "single same-module candidate",
 						  ref.call_site_file,
 						  ref.start_row,
 						  ref.start_col });
@@ -689,6 +705,21 @@ int64_t ResolverPipeline::run()
 							      impl_len + 1 &&
 						      qn[impl_len + 1] == ':'))
 							continue;
+						// Hard language filter, identical to the
+						// main loop and the fast path. This
+						// expansion selects targets by
+						// qualified_name prefix only, so without
+						// the filter a same-named entity in
+						// another language became a dispatch
+						// target: a .cpp call site could gain a
+						// CALLS edge to a Python implementation
+						// of the interface. Empty language
+						// (unknown) is allowed through, as in the
+						// main loop.
+						if (!languagesCompatible(
+							    caller_lang,
+							    c.language))
+							continue;
 						// Visibility check.
 						if (factorVisibilityCheck(
 							    c.language, c.name,
@@ -770,6 +801,9 @@ int64_t ResolverPipeline::run()
 		double best_score = -1.0;
 		uint64_t second_id = 0;
 		double second_score = -1.0;
+		// The winner itself, not just its id: Step 6 labels the edge with the
+		// evidence that decided this match (its deciding_factor).
+		const Candidate *best_cand = nullptr;
 		// caller_lang is hoisted above the single-candidate fast path
 		// (see the top of this loop body) so both paths share one rule.
 		for (auto &c : candidates) {
@@ -795,6 +829,7 @@ int64_t ResolverPipeline::run()
 				second_score = best_score;
 				best_id = c.entity_id;
 				best_score = c.total_score;
+				best_cand = &c;
 			} else if (c.total_score > second_score) {
 				second_id = c.entity_id;
 				second_score = c.total_score;
@@ -858,37 +893,80 @@ int64_t ResolverPipeline::run()
 		// Fuzzy name similarity is inherently weaker than exact-name
 		// matching, so require a higher confidence before writing a
 		// CALLS edge from a fuzzy candidate.
-		bool from_fuzzy = (exact_hits == 0); // approximated; see note
-		(void)from_fuzzy; // not used for now — threshold is uniform
+		// The old `(exact_hits == 0)` approximation is gone: exact_hits is a
+		// running total over ALL references, so it said nothing about this one.
+		// The per-ref `used_fuzzy` flag set above is exact, and the fast path
+		// labels its edges from it.
+		//
+		// kFuzzyResolutionThreshold is still not applied, and the reason is
+		// worth stating: the edge confidence is the weighted factor score, in
+		// which the fuzzy name similarity is NOT a factor — the name is only
+		// the lookup key. Gating a fuzzy hit on that score would therefore
+		// filter by evidence strength (namespace/import/distance), not by match
+		// kind. Applying the threshold needs a name-similarity factor first;
+		// that is registered in the review doc instead of guessed at here.
 		// Note: the fuzzy threshold kFuzzyResolutionThreshold is
 		// reserved for when we can precisely track which candidates
 		// came from fuzzy vs exact. For now, the evidence gate above
 		// (fuzzy only fires with structured evidence) plus the
 		// ambiguity gate provide sufficient FP protection.
 
-		// Step 6 (plan §6.2): determine resolution_kind from evidence.
-		// Priority: receiver_type > qualified_target > import_alias >
-		// name_arity. The kind records which evidence path produced
-		// the edge, enabling per-kind accuracy tracking and FP audits.
+		// Step 6 (plan §6.2): resolution_kind records the evidence that
+		// ACTUALLY decided the match.
+		//
+		// It used to be read off "which reference field is non-empty"
+		// (receiver_type > qualified_target > import_alias > name), which is a
+		// different question: a call carrying a receiver_type field but
+		// resolved in fact by name+arity — the receiver evidence contributing
+		// nothing to the winning score — was still labelled `receiver_type`,
+		// and every per-kind accuracy audit grouped by these labels inherited
+		// that skew.
+		//
+		// The label now comes from the winning candidate's largest positive
+		// factor contribution (Candidate::deciding_factor, recorded by
+		// applyConstraints), with one exception checked explicitly because it is
+		// not a scoring factor: an exact qualified-name hit, which is decisive
+		// on its own evidence.
 		std::string res_kind;
 		std::string reason;
-		if (!ref.receiver_type.empty()) {
-			res_kind = "receiver_type";
-			reason = "receiver_type=" + ref.receiver_type +
-				 " score=" + std::to_string(best_score);
-		} else if (!ref.qualified_target.empty()) {
+		if (!ref.qualified_target.empty() && best_cand != nullptr &&
+		    best_cand->qualified_name == ref.qualified_target) {
 			res_kind = "qualified";
 			reason = "qualified_target=" + ref.qualified_target +
-				 " score=" + std::to_string(best_score);
-		} else if (!ref.import_alias.empty()) {
-			res_kind = "imported";
-			reason = "import_alias=" + ref.import_alias +
-				 " score=" + std::to_string(best_score);
-		} else {
-			res_kind = "name_arity";
-			reason = "name=" + ref.name +
+				 " (exact) score=" + std::to_string(best_score);
+		} else if (best_cand != nullptr &&
+			   !best_cand->deciding_factor.empty()) {
+			res_kind = resolutionKindFromFactor(
+				best_cand->deciding_factor);
+			if (res_kind.empty())
+				res_kind = "name_arity";
+			reason = "decided_by=" + best_cand->deciding_factor +
+				 " name=" + ref.name +
 				 " arity=" + std::to_string(ref.arity) +
 				 " score=" + std::to_string(best_score);
+		} else {
+			// No factor was recorded for the winner (every factor scored
+			// zero, or the candidate came from a path that does not run
+			// applyConstraints). Fall back to the field-presence label and say
+			// so, rather than inventing a kind.
+			if (!ref.receiver_type.empty()) {
+				res_kind = "receiver_type";
+				reason =
+					"receiver_type=" + ref.receiver_type +
+					" score=" + std::to_string(best_score) +
+					" (field present; no factor recorded)";
+			} else if (!ref.import_alias.empty()) {
+				res_kind = "imported";
+				reason =
+					"import_alias=" + ref.import_alias +
+					" score=" + std::to_string(best_score) +
+					" (field present; no factor recorded)";
+			} else {
+				res_kind = "name_arity";
+				reason = "name=" + ref.name +
+					 " arity=" + std::to_string(ref.arity) +
+					 " score=" + std::to_string(best_score);
+			}
 		}
 
 		resolved_count++;

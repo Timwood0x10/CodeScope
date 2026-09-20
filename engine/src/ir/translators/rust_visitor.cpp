@@ -366,7 +366,14 @@ void RustVisitor::handleCall(TSNode node, uint64_t parent_id)
 	// Reference: codebase-memory-mcp (MIT) c_lsp.c :: is_c_builtin_func() (pattern)
 	// Match against the full qualified text so `Type::new` (whose bare name
 	// `new` is in the builtin list) is NOT wrongly filtered out.
-	if (!qualified.empty() && isRustBuiltin(qualified)) {
+	//
+	// A name THIS FILE defines is user code whatever the builtin list says —
+	// `fn drop()`, `macro_rules! println` — so it survives the filter. Same
+	// exemption as the other four translators (see collectDefinedNames); the
+	// bare name is what the file declares, so the check uses `name`, while the
+	// filter itself keeps matching the qualified text.
+	if (!qualified.empty() && isRustBuiltin(qualified) &&
+	    !isLocallyDefined(name)) {
 		visitChildren(node, parent_id);
 		return;
 	}

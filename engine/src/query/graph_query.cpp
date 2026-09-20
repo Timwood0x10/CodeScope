@@ -57,26 +57,6 @@ static void parseNodeSpec(const std::string &spec, std::string &out_type,
 
 // Escape a string for safe inclusion inside a Cypher single-quoted literal.
 // Prevents injection / query breakage from symbol names with quotes or
-// backslashes. Mirrors the cypherEscape in query_engine.cpp (both are
-// static, so TU-local — no ODR clash).
-static std::string cypherEscape(const char *s)
-{
-	if (!s)
-		return "";
-	std::string out;
-	out.reserve(std::strlen(s) + 8);
-	for (const char *p = s; *p; ++p) {
-		if (*p == '\\' || *p == '\'') {
-			out += '\\';
-		}
-		out += *p;
-	}
-	return out;
-}
-
-// Escape a string for safe inclusion inside a JSON double-quoted string.
-// Mirrors query::jsonEscape in query_engine.cpp; defined locally so
-// graph_query.cpp does not need to pull in the QueryEngine header.
 static std::string jsonEscape(const char *s)
 {
 	if (!s)
@@ -112,141 +92,6 @@ static std::string jsonEscape(const char *s)
 // SQLite stores CALLS (edge_type=1) and RELATES (other edge types)
 // as relationship labels; CALLS|RELATES matches both in a single
 // pattern. When edge_type is -1 (unspecified) we match both.
-static std::string edgeRelLabel(int edge_type)
-{
-	// CALLS|RELATES covers all relationship labels currently stored in
-	// SQLite. The caller may still apply a WHERE r.edge_type = N
-	// filter to narrow the result set when edge_type is specified.
-	(void)edge_type;
-	return "CALLS|RELATES";
-}
-
-// ─── Build a single-hop Cypher query ───────────────────────────
-//
-// Pattern: MATCH (src:GraphNode)-[r:CALLS|RELATES]->(tgt:GraphNode)
-//          WHERE src.project_id = N AND tgt.project_id = N
-//            [AND src.name = '...'] [AND tgt.name = '...']
-//            [AND src.node_type IN [..] / = N]
-//            [AND tgt.node_type IN [..] / = N]
-//            [AND r.edge_type = N]
-//          RETURN src.graph_node_id, src.name, src.node_type,
-//                 src.file_path, ID(r), r.edge_type,
-//                 tgt.graph_node_id, tgt.name, tgt.node_type,
-//                 tgt.file_path
-//          LIMIT 10000
-//
-// The Cypher is built with project_id spliced inline (a safe integer)
-// and name filters spliced via cypherEscape'd single-quoted literals.
-// node_type=0 (Function) is treated as IN (0,1) to mirror the legacy
-// SQL behaviour where "Function" matched both functions and methods.
-
-static std::string buildSingleHopCypher(uint64_t project_id, int edge_type,
-					int src_type_val, int tgt_type_val,
-					const std::string &src_name,
-					const std::string &tgt_name)
-{
-	std::ostringstream c;
-	c << "MATCH (src:GraphNode)-[r:" << edgeRelLabel(edge_type)
-	  << "]->(tgt:GraphNode) "
-	  << "WHERE src.project_id = " << project_id
-	  << " AND tgt.project_id = " << project_id;
-	if (edge_type >= 0)
-		c << " AND r.edge_type = " << edge_type;
-	if (src_type_val >= 0) {
-		if (src_type_val == 0)
-			c << " AND src.node_type IN [0,1]";
-		else
-			c << " AND src.node_type = " << src_type_val;
-	}
-	if (tgt_type_val >= 0) {
-		if (tgt_type_val == 0)
-			c << " AND tgt.node_type IN [0,1]";
-		else
-			c << " AND tgt.node_type = " << tgt_type_val;
-	}
-	if (!src_name.empty())
-		c << " AND src.name = '" << cypherEscape(src_name.c_str())
-		  << "'";
-	if (!tgt_name.empty())
-		c << " AND tgt.name = '" << cypherEscape(tgt_name.c_str())
-		  << "'";
-	c << " RETURN src.graph_node_id, src.name, src.node_type, "
-	  << "src.file_path, ID(r), r.edge_type, "
-	  << "tgt.graph_node_id, tgt.name, tgt.node_type, tgt.file_path "
-	  << "LIMIT 10000";
-	return c.str();
-}
-
-// ─── Build a multi-hop Cypher query ─────────────────────────────
-//
-// Pattern: MATCH p = (src:GraphNode)-[:CALLS|RELATES*min..max]->(tgt:GraphNode)
-//          WHERE src.project_id = N AND tgt.project_id = N
-//            [AND src.name = '...'] [AND tgt.name = '...']
-//            [AND src.node_type IN [..] / = N]
-//            [AND tgt.node_type IN [..] / = N]
-//          RETURN src.graph_node_id, src.name, src.node_type,
-//                 src.file_path,
-//                 tgt.graph_node_id, tgt.name, tgt.node_type,
-//                 tgt.file_path,
-//                 length(p),
-//                 [n IN nodes(p) | n.graph_node_id]
-//          LIMIT 10000
-//
-// `length(p)` gives the hop count (1 for a single-edge path).
-// `nodes(p)` returns the list of nodes along the path; the list
-// comprehension projects each node's graph_node_id, which we join
-// into the legacy "1->2->3" chain string in C++.
-
-static std::string buildMultiHopCypher(uint64_t project_id, int edge_type,
-				       int min_depth, int max_depth,
-				       int src_type_val, int tgt_type_val,
-				       const std::string &src_name,
-				       const std::string &tgt_name)
-{
-	// Variable-length relationship with optional edge_type filter.
-	// Cypher syntax: -[:CALLS|RELATES*min..max]-> when edge_type is
-	// unspecified, otherwise add a WHERE r.edge_type = N filter (the
-	// edge_type property is preserved on every relationship in the
-	// path).
-	std::ostringstream c;
-	c << "MATCH p = (src:GraphNode)-[:" << edgeRelLabel(edge_type) << "*"
-	  << min_depth << ".." << max_depth << "]->(tgt:GraphNode) "
-	  << "WHERE src.project_id = " << project_id
-	  << " AND tgt.project_id = " << project_id;
-	if (edge_type >= 0) {
-		// r in a variable-length pattern refers to the list of
-		// relationships; filter via ALL(r IN relationships(p) WHERE
-		// r.edge_type = N) so every hop matches the requested type.
-		c << " AND ALL(r IN relationships(p) WHERE r.edge_type = "
-		  << edge_type << ")";
-	}
-	if (src_type_val >= 0) {
-		if (src_type_val == 0)
-			c << " AND src.node_type IN [0,1]";
-		else
-			c << " AND src.node_type = " << src_type_val;
-	}
-	if (tgt_type_val >= 0) {
-		if (tgt_type_val == 0)
-			c << " AND tgt.node_type IN [0,1]";
-		else
-			c << " AND tgt.node_type = " << tgt_type_val;
-	}
-	if (!src_name.empty())
-		c << " AND src.name = '" << cypherEscape(src_name.c_str())
-		  << "'";
-	if (!tgt_name.empty())
-		c << " AND tgt.name = '" << cypherEscape(tgt_name.c_str())
-		  << "'";
-	c << " RETURN src.graph_node_id, src.name, src.node_type, "
-	  << "src.file_path, "
-	  << "tgt.graph_node_id, tgt.name, tgt.node_type, tgt.file_path, "
-	  << "length(p), [n IN nodes(p) | n.graph_node_id] LIMIT 10000";
-	return c.str();
-}
-
-// ─── Execute DSL query ─────────────────────────────────────────
-
 std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 			      store::GraphStore *store)
 {
@@ -404,21 +249,12 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 		tgt_type_val = it->second;
 	}
 
-	// Build Cypher
-	std::string cypher;
-	if (multi_hop) {
-		if (edge_type < 0) {
-			return "{\"total\":0,\"results\":[],\"error\":\"multi-hop queries "
-			       "require an edge type\"}";
-		}
-		cypher = buildMultiHopCypher(project_id, edge_type, min_depth,
-					     max_depth, src_type_val,
-					     tgt_type_val, src_name, tgt_name);
-	} else {
-		cypher = buildSingleHopCypher(project_id, edge_type,
-					      src_type_val, tgt_type_val,
-					      src_name, tgt_name);
-	}
+	// The DSL was parsed above and is executed against SQLite below.
+	// A Cypher string used to be assembled here for a backend that no longer
+	// exists: `cypher` was written and then never read by any code path, and
+	// the builders that produced it carried comments about injection
+	// protection for a string that was never executed. Multi-hop is handled by
+	// the SQL below (variable-length hop expansion), not by a query string.
 
 	// Execute via SQLite. Query errors are tagged with
 	// [module=graph_query, method=executeGraphQuery] so callers can

@@ -166,8 +166,6 @@ void GoVisitor::visitNode(TSNode node, uint64_t parent_id)
 		return handleRange(node, parent_id);
 	if (strcmp(type, "parameter_declaration") == 0)
 		return handleParameterDecl(node, parent_id);
-	if (strcmp(type, "method_spec") == 0)
-		return handleInterfaceMethod(node, parent_id);
 	JsVisitor::visitNode(node, parent_id);
 }
 void GoVisitor::handleFuncDecl(TSNode node, uint64_t parent_id)

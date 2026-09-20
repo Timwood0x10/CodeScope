@@ -120,12 +120,12 @@ static std::string detailJson(int line, const std::string &snippet,
 static std::string findRulesDir()
 {
 	const char *candidates[] = {
-	   "engine/src/evidence/rules",
-	   "../src/evidence/rules",
-	   "../../engine/src/evidence/rules",
-	   "../../../engine/src/evidence/rules",
-	  };
-	  for (const char *cand : candidates) {
+		"engine/src/evidence/rules",
+		"../src/evidence/rules",
+		"../../engine/src/evidence/rules",
+		"../../../engine/src/evidence/rules",
+	};
+	for (const char *cand : candidates) {
 		std::error_code ec;
 		if (!std::filesystem::is_directory(cand, ec))
 			continue;
@@ -362,11 +362,29 @@ int main()
 	//   concurrency/mutex_without_unlock (1, lock without
 	//     defer_unlock in function 100)
 	//   test_quality/unwrap_in_non_test (1, unwrap inserted)
-	//   test_quality/todo_accumulation (1, Count mode always emits
-	//     1 evidence)
+	//   test_quality/todo_accumulation (1; the Count rule matches the
+	//     inserted TODO — with no match it emits nothing, see Test 11)
 	// Total = 5 + 5 = 10.
 	assert(all.size() == 10);
 	printf("Test 10 (total evidence count == 10): PASS\n");
+
+	// ── Test 11: Count mode with no matches emits nothing ──────────
+	// Regression: combineCount() pushed an Evidence with count=0, so a rule that
+	// found nothing still looked like an inspector that produced a result —
+	// inflating overall.inspectors_ran and the confidence derived from it. Every
+	// other combine mode returns no Evidence when nothing matches.
+	{
+		uint64_t empty_pid = store.createProject("/tmp/empty",
+							 "test_evidence_empty");
+		assert(empty_pid > 0);
+		auto none = builder.buildAll(empty_pid);
+		for (const auto &ev : none) {
+			printf("  unexpected evidence on an empty project: %s\n",
+			       ev.title.c_str());
+		}
+		assert(none.empty());
+		printf("Test 11 (Count mode with 0 matches emits nothing): PASS\n");
+	}
 
 	store.close();
 	unlink(kDbPath);

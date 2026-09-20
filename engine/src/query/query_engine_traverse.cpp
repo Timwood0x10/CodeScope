@@ -245,7 +245,11 @@ std::string QueryEngine::getCalleesByEntity(uint64_t project_id,
 std::string QueryEngine::getNeighbors(uint64_t project_id, uint64_t node_id,
 				      int edge_type_filter, int radius)
 {
-	(void)radius; // reserved for future multi-hop
+	// Only direct neighbors are returned: multi-hop is not implemented (the
+	// tool schema says "reserved, currently 1"). The response says so too, so a
+	// caller that asked for a deeper walk is told what it got instead of
+	// silently receiving a shallower answer.
+	(void)radius;
 	// ── v0.2.5: SQLite graph-query backend (Windows / SQLite-only) ──
 	// Neighbors by node id: outgoing edges from relation (source_id =
 	// node_id, type = edge_type_filter) and incoming edges (target_id =
@@ -257,8 +261,16 @@ std::string QueryEngine::getNeighbors(uint64_t project_id, uint64_t node_id,
 		       "ready [module=query, method=getNeighbors]\"}";
 	}
 	sqlite3 *db = store_->handle();
+	// Report the depth actually walked, so a caller that asked for more than one
+	// hop can see it got direct neighbors only (see the note above).
 	std::ostringstream json;
-	json << "{\"neighbors\":[";
+	json << "{\"radius_applied\":1";
+	if (radius > 1) {
+		json << ",\"radius_requested\":" << radius
+		     << ",\"note\":\"multi-hop is not implemented; only direct "
+			"neighbors are returned\"";
+	}
+	json << ",\"neighbors\":[";
 	bool first = true;
 	int count = 0;
 
@@ -494,7 +506,9 @@ std::string QueryEngine::getSubgraph(uint64_t project_id,
 				     const char *node_type_filter,
 				     const char *edge_type_filter)
 {
-	(void)radius; // reserved for future multi-hop
+	// NOTE: no `(void)radius;` here — this function honors it (clamped just
+	// below into `hops`). The stale cast that used to sit here read as "radius
+	// is ignored", contradicting the code three lines down.
 	// ── v0.2.5: SQLite graph-query backend (Windows / SQLite-only) ──
 	// Subgraph via bidirectional BFS over the CSR adjacency tables
 	// (getCalleeIds + getCallerIds, O(E) per level). Emits nodes as

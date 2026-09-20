@@ -18,8 +18,15 @@ static constexpr double kConfFunctionIsolated = 0.55;
 // Function exists AND is wired into the call graph — but only presence
 // + edges are confirmed, not that the function semantically implements
 // the claimed behavior (the claim's object field is not validated).
-// Downgraded from Supported to PartiallyVerified with low confidence.
-static constexpr double kConfFunctionPartiallyVerified = 0.55;
+//
+// Reported as Supported with reduced confidence, and the detail string says the
+// check was structural only. The comment here used to say the verdict was
+// "downgraded to PartiallyVerified" — a value the claim Verdict enum
+// (claim.h: Supported / Contradicted / Unknown) does not have, so the code
+// never did what the comment described. The confidence split is what separates
+// "structurally plausible" (this value) from "object-linked"
+// (kConfFunctionObjectLinked below).
+static constexpr double kConfFunctionStructuralOnly = 0.55;
 static constexpr double kConfNoStore = 0.0;
 static constexpr double kConfBackendNotReady = 0.2;
 
@@ -313,7 +320,7 @@ EvidenceRecord FunctionImplementsVerifier::verify(const Claim &claim)
 	// object-linked call edges and thus stays at structural confidence,
 	// so callers can tell "structurally plausible" from "object-linked".
 	rec.verdict = Verdict::Supported;
-	rec.confidence = kConfFunctionPartiallyVerified;
+	rec.confidence = kConfFunctionStructuralOnly;
 	rec.detail = "Function '" + claim.subject +
 		     "' exists and participates in the call graph "
 		     "(structural check only); semantic implementation of '" +

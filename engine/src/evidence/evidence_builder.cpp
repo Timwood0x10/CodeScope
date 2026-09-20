@@ -473,6 +473,13 @@ std::vector<Evidence> combineCount(store::GraphStore *store,
 	if (rule.needs.empty())
 		return result;
 	auto primary = queryFactsForNeed(store, project_id, rule.needs[0]);
+	// No matches → no finding. Every other combine mode returns no Evidence in
+	// that case and the dispatcher's contract is "0 = no matches", but this one
+	// emitted a row with count=0 — making a rule that found nothing look like an
+	// inspector that produced a result, which inflated
+	// overall.inspectors_ran (and the confidence derived from it).
+	if (primary.empty())
+		return result;
 	Evidence ev;
 	ev.category = rule.category;
 	ev.confidence = 1.0;

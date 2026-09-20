@@ -78,6 +78,9 @@ bool GraphStore::buildCSR(uint64_t project_id)
 	std::vector<uint64_t> buf;
 	buf.reserve(1024);
 	int64_t count = 0;
+	// Groups the INSERT rejected. A partial CSR must not be published as a
+	// successful build: see the check before the final RELEASE.
+	int failed_groups = 0;
 
 	while (sqlite3_step(st) == SQLITE_ROW) {
 		int64_t src = sqlite3_column_int64(st, 0);
@@ -98,10 +101,11 @@ bool GraphStore::buildCSR(uint64_t project_id)
 				if (sqlite3_step(ins) == SQLITE_DONE)
 					count++;
 				else
-					fprintf(stderr,
-						"buildCSR: forward flush"
-						" failed: %s\n",
-						sqlite3_errmsg(db_));
+					++failed_groups;
+				fprintf(stderr,
+					"buildCSR: forward flush"
+					" failed: %s\n",
+					sqlite3_errmsg(db_));
 				sqlite3_reset(ins);
 			}
 			current_src = src;
@@ -120,9 +124,9 @@ bool GraphStore::buildCSR(uint64_t project_id)
 		if (sqlite3_step(ins) == SQLITE_DONE)
 			count++;
 		else
-			fprintf(stderr,
-				"buildCSR: final forward flush failed: %s\n",
-				sqlite3_errmsg(db_));
+			++failed_groups;
+		fprintf(stderr, "buildCSR: final forward flush failed: %s\n",
+			sqlite3_errmsg(db_));
 		sqlite3_reset(ins);
 	}
 
@@ -188,10 +192,11 @@ bool GraphStore::buildCSR(uint64_t project_id)
 				if (sqlite3_step(rev_ins) == SQLITE_DONE)
 					rev_count++;
 				else
-					fprintf(stderr,
-						"buildCSR: rev flush"
-						" failed: %s\n",
-						sqlite3_errmsg(db_));
+					++failed_groups;
+				fprintf(stderr,
+					"buildCSR: rev flush"
+					" failed: %s\n",
+					sqlite3_errmsg(db_));
 				sqlite3_reset(rev_ins);
 			}
 			current_tgt = tgt;
@@ -209,9 +214,9 @@ bool GraphStore::buildCSR(uint64_t project_id)
 		if (sqlite3_step(rev_ins) == SQLITE_DONE)
 			rev_count++;
 		else
-			fprintf(stderr,
-				"buildCSR: final rev flush failed: %s\n",
-				sqlite3_errmsg(db_));
+			++failed_groups;
+		fprintf(stderr, "buildCSR: final rev flush failed: %s\n",
+			sqlite3_errmsg(db_));
 		sqlite3_reset(rev_ins);
 	}
 
@@ -222,6 +227,22 @@ bool GraphStore::buildCSR(uint64_t project_id)
 	// Release the atomic rebuild savepoint; a failure here leaves the
 	// savepoint open, so roll back explicitly rather than leaking a
 	// pending savepoint into the caller's transaction.
+	// Every group that failed to write leaves the CSR incomplete. The previous
+	// version logged those failures, released the savepoint anyway and returned
+	// true, so a partial adjacency table was published as a successful build —
+	// and queries then silently saw a graph with edges missing. Rolling back
+	// leaves the PREVIOUS CSR in place, which is the honest outcome.
+	if (failed_groups > 0) {
+		fprintf(stderr,
+			"buildCSR: %d adjacency group(s) failed to write; the CSR for "
+			"project %llu would be incomplete — rolling back "
+			"[module=store, method=buildCSR]\n",
+			failed_groups, (unsigned long long)project_id);
+		exec("ROLLBACK TO SAVEPOINT buildCSR");
+		exec("RELEASE SAVEPOINT buildCSR");
+		return false;
+	}
+
 	if (!exec("RELEASE SAVEPOINT buildCSR")) {
 		fprintf(stderr,
 			"[module=store, method=buildCSR] RELEASE SAVEPOINT "

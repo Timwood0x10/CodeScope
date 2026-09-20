@@ -2,6 +2,7 @@
 #define STORE_H
 
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -847,6 +848,15 @@ class GraphStore {
 	 *  (own TU: the migrations outgrew the 1000-line rule).
 	 *  @return false on a hard failure; individual failures are logged. */
 	bool runSchemaMigrations();
+
+	/** Migration group for the route / type_info / type_ref tables (own TU:
+	 *  the migration pass outgrew the 1000-line rule — see
+	 *  store_schema_migrations_types.cpp).
+	 *  @param record Runs one statement and records its failure together with
+	 *         the failing SQL; see runSchemaMigrations.
+	 *  @return false when any statement failed (each failure has already been
+	 *          reported through `record`). */
+	bool migrateTypeTables(const std::function<bool(const char *)> &record);
 };
 
 // ── Index Progress (global, for client polling) ─────────────

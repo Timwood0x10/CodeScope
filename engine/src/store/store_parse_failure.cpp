@@ -238,8 +238,16 @@ int flushParseFailures()
 	}
 	StmtPtr stmt(raw);
 
-	// Single transaction for all buffered rows.
-	sqlite3_exec(db, "BEGIN", nullptr, nullptr, nullptr);
+	// Single transaction for all buffered rows. BEGIN, each step and COMMIT are
+	// all checked: the previous version ignored the BEGIN/COMMIT results and
+	// merely logged a failed row while still committing, so a partially written
+	// batch was indistinguishable from a complete one (and a failed COMMIT left
+	// the connection inside an open transaction, failing every later BEGIN).
+	if (sqlite3_exec(db, "BEGIN", nullptr, nullptr, nullptr) != SQLITE_OK) {
+		logErr(db, "BEGIN", "flushParseFailures");
+		return -1;
+	}
+	size_t failed_rows = 0;
 	for (auto &r : batch) {
 		sqlite3_bind_int64(stmt.get(), 1,
 				   static_cast<int64_t>(r.project_id));
@@ -249,11 +257,26 @@ int flushParseFailures()
 				  SQLITE_TRANSIENT);
 		sqlite3_bind_text(stmt.get(), 4, r.reason.c_str(), -1,
 				  SQLITE_TRANSIENT);
-		if (sqlite3_step(stmt.get()) != SQLITE_DONE)
+		if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
+			++failed_rows;
 			logErr(db, "step", "flushParseFailures");
+		}
 		sqlite3_reset(stmt.get());
 	}
-	sqlite3_exec(db, "COMMIT", nullptr, nullptr, nullptr);
+	if (failed_rows > 0) {
+		sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
+		fprintf(stderr,
+			"store: %zu of %zu parse-failure rows failed to write; "
+			"batch rolled back [module=store, method=flushParseFailures]\n",
+			failed_rows, batch.size());
+		return -1;
+	}
+	if (sqlite3_exec(db, "COMMIT", nullptr, nullptr, nullptr) !=
+	    SQLITE_OK) {
+		logErr(db, "COMMIT", "flushParseFailures");
+		sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
+		return -1;
+	}
 
 	return static_cast<int>(batch.size());
 }

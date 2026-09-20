@@ -368,8 +368,24 @@ fn h_find_callees_by_entity(project_id: u64, args: &Value) -> String {
 // the verifier subsystem is armed, which public claim types are
 // supported, and whether the canonical evidence backend has data.
 fn h_verifier_registry_status(project_id: u64, args: &Value) -> String {
-    let _ = args;
-    ffi::get_verifier_registry_status(project_id)
+    // The tool's schema documents a `project_id` argument ("0 skips the
+    // evidence backend probe"), but this handler discarded the argument bag
+    // and always used the server's own project, so the documented argument
+    // did nothing. It is honoured now — see verifier_registry_project_id.
+    ffi::get_verifier_registry_status(verifier_registry_project_id(project_id, args))
+}
+
+/// Which project the verifier-registry probe reports on: the client's explicit
+/// `project_id` argument when it sent one, otherwise the server's project.
+///
+/// The engine documents `project_id == 0` as "skip the evidence backend probe"
+/// (registry state is process-global, the entity/relation counts are not), so
+/// honouring the argument is the point of the parameter rather than a way to
+/// read another project's data.
+fn verifier_registry_project_id(server_project_id: u64, args: &Value) -> u64 {
+    args.get("project_id")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(server_project_id)
 }
 
 // ── Graph path + component tools ───────────────────────────────
@@ -918,6 +934,32 @@ mod tests {
         assert_eq!(
             clamp_max_members(Some(5_000_000_000)),
             MAX_MAX_MEMBERS as i32
+        );
+    }
+
+    #[test]
+    fn test_verifier_registry_project_id_honours_the_argument() {
+        // The schema documents `project_id` ("0 skips the evidence backend
+        // probe") and the handler used to throw the argument bag away, so the
+        // documented argument did nothing. Regression: the explicit argument
+        // wins, an absent one falls back to the server's project, and 0 is
+        // passed through as the documented "skip the probe" value rather than
+        // being treated as "absent".
+        let args = json!({"project_id": 7});
+        assert_eq!(verifier_registry_project_id(3, &args), 7);
+        assert_eq!(verifier_registry_project_id(3, &json!({})), 3);
+        assert_eq!(
+            verifier_registry_project_id(3, &json!({"project_id": 0})),
+            0
+        );
+        // A non-integer or negative value is not a usable id: fall back.
+        assert_eq!(
+            verifier_registry_project_id(3, &json!({"project_id": "7"})),
+            3
+        );
+        assert_eq!(
+            verifier_registry_project_id(3, &json!({"project_id": -1})),
+            3
         );
     }
 }

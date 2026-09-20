@@ -124,6 +124,14 @@ class ResolverPipeline {
 		int kind = 0;
 		int score = 0;
 		double total_score = 0.0;
+		// The factor that contributed most to `total_score` — i.e. the evidence
+		// that actually decided this candidate's ranking. Recorded by
+		// applyConstraints while the weighted sum is accumulated (the hot path
+		// deliberately does not materialise a FactorResult vector), so run() can
+		// label the edge with the evidence that decided it instead of with
+		// whichever reference field happens to be non-empty. Empty when nothing
+		// scored positively.
+		std::string deciding_factor;
 		// v0.6 (perf): precomputed path components derived once when the
 		// entity_index is loaded. applyConstraints recomputed dir/parent/
 		// module via rfind+substr for every candidate on every ref; since a

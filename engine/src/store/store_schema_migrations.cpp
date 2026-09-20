@@ -283,401 +283,11 @@ bool GraphStore::runSchemaMigrations()
 		}
 	}
 
-	// Migration: add type_info + type_ref tables (v0.6+)
-	{
-		// Add route table if missing
-		sqlite3_stmt *rprobe = nullptr;
-		if (sqlite3_prepare_v2(db_,
-				       "SELECT name FROM sqlite_master "
-				       "WHERE type='table' AND name='route'",
-				       -1, &rprobe, nullptr) == SQLITE_OK) {
-			if (sqlite3_step(rprobe) != SQLITE_ROW) {
-				sqlite3_finalize(rprobe);
-				exec("CREATE TABLE IF NOT EXISTS route ("
-				     " id INTEGER PRIMARY KEY AUTOINCREMENT,"
-				     " project_id INTEGER NOT NULL,"
-				     " method TEXT NOT NULL,"
-				     " path TEXT NOT NULL,"
-				     " handler_name TEXT DEFAULT '',"
-				     " file_path TEXT NOT NULL,"
-				     " start_row INTEGER DEFAULT 0,"
-				     " start_col INTEGER DEFAULT 0,"
-				     " FOREIGN KEY (project_id) REFERENCES projects(id)"
-				     ")");
-				exec("CREATE INDEX IF NOT EXISTS idx_route_path "
-				     "ON route(project_id, method, path)");
-			} else {
-				sqlite3_finalize(rprobe);
-			}
-		}
-
-		// Migration: add cross_module_edges to architecture_state.
-		//
-		// architecture_state.violations used to hold the COUNT of cross-module
-		// call pairs per module pair, with compliance forced to 0.0 — so every
-		// normal dependency was reported as an architecture violation and
-		// dragged the architecture score down. The count is real information;
-		// the label was wrong. It now lives in its own column, `violations`
-		// stays 0 until a real layer violation can be detected, and
-		// compliance stays 1.0. Hard failures fail the schema build loudly
-		// (see the header) instead of leaving a half-migrated table that
-		// buildArchitectureState then fails to INSERT into.
-		{
-			sqlite3_stmt *arch_probe = nullptr;
-			bool has_cross_module_edges = false;
-			if (sqlite3_prepare_v2(
-				    db_,
-				    "PRAGMA table_info(architecture_state)", -1,
-				    &arch_probe, nullptr) == SQLITE_OK) {
-				while (sqlite3_step(arch_probe) == SQLITE_ROW) {
-					const char *col =
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(
-								arch_probe, 1));
-					if (col && std::string(col) ==
-							   "cross_module_edges")
-						has_cross_module_edges = true;
-				}
-				sqlite3_finalize(arch_probe);
-				arch_probe = nullptr;
-			} else {
-				fprintf(stderr,
-					"[module=store, method=createSchema] "
-					"architecture_state column probe "
-					"failed: %s\n",
-					error_.c_str());
-				return false;
-			}
-			if (!has_cross_module_edges) {
-				if (!migrationExec(
-					    "ALTER TABLE architecture_state "
-					    "ADD COLUMN cross_module_edges "
-					    "INTEGER NOT NULL DEFAULT 0")) {
-					fprintf(stderr,
-						"[module=store, method=createSchema] "
-						"ALTER TABLE architecture_state ADD "
-						" cross_module_edges failed: %s\n",
-						error_.c_str());
-					return false;
-				}
-			}
-			// Data correction. Both statements run on every open and
-			// are idempotent, so a database that acquires bogus rows
-			// later (a pre-fix binary after a downgrade) is repaired
-			// on the next open instead of never.
-			//
-			// 1) Collapse duplicate (project_id, layer) rows. The old
-			//    buildArchitectureState used INSERT OR IGNORE with no
-			//    unique key to ignore on, so every rebuild appended a
-			//    second copy of every row — and a re-index after the
-			//    edge counts changed appended rows with different
-			//    counts too. The NEWEST row is what the last rebuild
-			//    wrote; summing the copies would inflate
-			//    cross_module_edges by the number of rebuilds.
-			if (!exec("DELETE FROM architecture_state "
-				  "WHERE rowid NOT IN "
-				  "(SELECT MAX(rowid) FROM architecture_state "
-				  " GROUP BY project_id, layer)")) {
-				fprintf(stderr,
-					"[module=store, method=createSchema] "
-					"architecture_state de-duplication "
-					"failed: %s\n",
-					error_.c_str());
-				return false;
-			}
-			// 2) Move the pre-fix `violations` value into the column
-			//    that names it honestly rather than discarding it,
-			//    and clear the bogus violation flag. Unconditional:
-			//    gating it on the ALTER above would miss a table that
-			//    already has the column but pre-fix rows. Afterwards
-			//    violations is 0 and the WHERE matches nothing.
-			if (!exec("UPDATE architecture_state "
-				  "SET cross_module_edges = violations, "
-				  "    violations = 0, "
-				  "    compliance = 1.0 "
-				  "WHERE violations > 0")) {
-				fprintf(stderr,
-					"[module=store, method=createSchema] "
-					"architecture_state violations move "
-					"failed: %s\n",
-					error_.c_str());
-				return false;
-			}
-		}
-
-		// Add type_name column to semantic_records if missing
-		sqlite3_stmt *probe = nullptr;
-		if (sqlite3_prepare_v2(db_,
-				       "PRAGMA table_info(semantic_records)",
-				       -1, &probe, nullptr) == SQLITE_OK) {
-			bool has_type_name = false;
-			bool has_call_kind = false;
-			bool has_resolve_strategy = false;
-			bool has_qualified_target = false;
-			bool has_receiver_text = false;
-			bool has_receiver_type = false;
-			bool has_import_alias = false;
-			while (sqlite3_step(probe) == SQLITE_ROW) {
-				const char *col =
-					reinterpret_cast<const char *>(
-						sqlite3_column_text(probe, 1));
-				if (col) {
-					const std::string c(col);
-					if (c == "type_name")
-						has_type_name = true;
-					if (c == "call_kind")
-						has_call_kind = true;
-					if (c == "resolve_strategy")
-						has_resolve_strategy = true;
-					if (c == "qualified_target")
-						has_qualified_target = true;
-					if (c == "receiver_text")
-						has_receiver_text = true;
-					if (c == "receiver_type")
-						has_receiver_type = true;
-					if (c == "import_alias")
-						has_import_alias = true;
-				}
-			}
-			sqlite3_finalize(probe);
-			// Null out the handle so a later accidental reuse is a
-			// no-op (sqlite3_finalize(nullptr) is safe) instead of a
-			// use-after-free. See the type_info block below.
-			probe = nullptr;
-			if (!has_type_name) {
-				migrationExec(
-					"ALTER TABLE semantic_records "
-					"ADD COLUMN type_name TEXT DEFAULT ''");
-			}
-			if (!has_call_kind) {
-				migrationExec(
-					"ALTER TABLE semantic_records "
-					"ADD COLUMN call_kind INTEGER DEFAULT 0");
-			}
-			if (!has_resolve_strategy) {
-				migrationExec("ALTER TABLE semantic_records "
-					      "ADD COLUMN resolve_strategy "
-					      "TEXT DEFAULT ''");
-			}
-			// Step 3 (plan §3.1): structured call-fact columns.
-			if (!has_qualified_target) {
-				migrationExec("ALTER TABLE semantic_records "
-					      "ADD COLUMN qualified_target "
-					      "TEXT DEFAULT ''");
-			}
-			if (!has_receiver_text) {
-				migrationExec("ALTER TABLE semantic_records "
-					      "ADD COLUMN receiver_text "
-					      "TEXT DEFAULT ''");
-			}
-			if (!has_receiver_type) {
-				migrationExec("ALTER TABLE semantic_records "
-					      "ADD COLUMN receiver_type "
-					      "TEXT DEFAULT ''");
-			}
-			if (!has_import_alias) {
-				migrationExec("ALTER TABLE semantic_records "
-					      "ADD COLUMN import_alias "
-					      "TEXT DEFAULT ''");
-			}
-		}
-
-		// Step 3 (plan §3.1): migrate the `reference` table with the
-		// same structured call-fact columns plus call_site_file. SQLite
-		// has no ADD COLUMN IF NOT EXISTS, so probe table_info first.
-		{
-			sqlite3_stmt *ref_probe = nullptr;
-			if (sqlite3_prepare_v2(
-				    db_, "PRAGMA table_info(reference)", -1,
-				    &ref_probe, nullptr) == SQLITE_OK) {
-				bool has_qualified_target = false;
-				bool has_receiver_text = false;
-				bool has_receiver_type = false;
-				bool has_import_alias = false;
-				bool has_call_site_file = false;
-				while (sqlite3_step(ref_probe) == SQLITE_ROW) {
-					const char *col =
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(
-								ref_probe, 1));
-					if (col) {
-						const std::string c(col);
-						if (c == "qualified_target")
-							has_qualified_target =
-								true;
-						if (c == "receiver_text")
-							has_receiver_text =
-								true;
-						if (c == "receiver_type")
-							has_receiver_type =
-								true;
-						if (c == "import_alias")
-							has_import_alias = true;
-						if (c == "call_site_file")
-							has_call_site_file =
-								true;
-					}
-				}
-				sqlite3_finalize(ref_probe);
-				if (!has_qualified_target)
-					migrationExec(
-						"ALTER TABLE reference ADD COLUMN "
-						"qualified_target TEXT DEFAULT ''");
-				if (!has_receiver_text)
-					migrationExec(
-						"ALTER TABLE reference ADD COLUMN "
-						"receiver_text TEXT DEFAULT ''");
-				if (!has_receiver_type)
-					migrationExec(
-						"ALTER TABLE reference ADD COLUMN "
-						"receiver_type TEXT DEFAULT ''");
-				if (!has_import_alias)
-					migrationExec(
-						"ALTER TABLE reference ADD COLUMN "
-						"import_alias TEXT DEFAULT ''");
-				if (!has_call_site_file)
-					migrationExec(
-						"ALTER TABLE reference ADD COLUMN "
-						"call_site_file TEXT DEFAULT ''");
-			}
-		}
-
-		// Step 6 (plan §6.1): migrate the `relation` table with
-		// provenance columns. SQLite has no ADD COLUMN IF NOT EXISTS,
-		// so probe table_info first. Each new column is nullable with
-		// a default so pre-existing rows and non-call relations are
-		// not affected.
-		{
-			sqlite3_stmt *probe = nullptr;
-			if (sqlite3_prepare_v2(
-				    db_, "PRAGMA table_info(relation)", -1,
-				    &probe, nullptr) == SQLITE_OK) {
-				bool has_confidence = false;
-				bool has_resolver = false;
-				bool has_res_kind = false;
-				bool has_reason = false;
-				bool has_csf = false;
-				bool has_csr = false;
-				bool has_csc = false;
-				while (sqlite3_step(probe) == SQLITE_ROW) {
-					const char *col =
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(
-								probe, 1));
-					if (!col)
-						continue;
-					std::string c = col;
-					if (c == "confidence")
-						has_confidence = true;
-					else if (c == "resolver")
-						has_resolver = true;
-					else if (c == "resolution_kind")
-						has_res_kind = true;
-					else if (c == "reason")
-						has_reason = true;
-					else if (c == "call_site_file")
-						has_csf = true;
-					else if (c == "call_site_row")
-						has_csr = true;
-					else if (c == "call_site_col")
-						has_csc = true;
-				}
-				sqlite3_finalize(probe);
-				if (!has_confidence)
-					migrationExec(
-						"ALTER TABLE relation ADD COLUMN "
-						"confidence REAL DEFAULT 0.0");
-				if (!has_resolver)
-					migrationExec(
-						"ALTER TABLE relation ADD COLUMN "
-						"resolver TEXT DEFAULT ''");
-				if (!has_res_kind)
-					migrationExec(
-						"ALTER TABLE relation ADD COLUMN "
-						"resolution_kind TEXT DEFAULT ''");
-				if (!has_reason)
-					migrationExec(
-						"ALTER TABLE relation ADD COLUMN "
-						"reason TEXT DEFAULT ''");
-				if (!has_csf)
-					migrationExec(
-						"ALTER TABLE relation ADD COLUMN "
-						"call_site_file TEXT DEFAULT ''");
-				if (!has_csr)
-					migrationExec(
-						"ALTER TABLE relation ADD COLUMN "
-						"call_site_row INTEGER DEFAULT 0");
-				if (!has_csc)
-					migrationExec(
-						"ALTER TABLE relation ADD COLUMN "
-						"call_site_col INTEGER DEFAULT 0");
-			}
-		}
-
-		// Create type_info table if missing
-		sqlite3_stmt *probe2 = nullptr;
-		if (sqlite3_prepare_v2(db_,
-				       "SELECT name FROM sqlite_master "
-				       "WHERE type='table' AND name='type_info'",
-				       -1, &probe2, nullptr) == SQLITE_OK) {
-			if (sqlite3_step(probe2) != SQLITE_ROW) {
-				sqlite3_finalize(probe2);
-				exec("CREATE TABLE IF NOT EXISTS type_info ("
-				     " id INTEGER PRIMARY KEY AUTOINCREMENT,"
-				     " project_id INTEGER NOT NULL,"
-				     " name TEXT NOT NULL,"
-				     " qualified_name TEXT DEFAULT '',"
-				     " kind INTEGER NOT NULL,"
-				     " file_path TEXT NOT NULL,"
-				     " language TEXT DEFAULT '',"
-				     " start_row INTEGER DEFAULT 0,"
-				     " start_col INTEGER DEFAULT 0,"
-				     " end_row INTEGER DEFAULT 0,"
-				     " end_col INTEGER DEFAULT 0,"
-				     " FOREIGN KEY (project_id) REFERENCES projects(id)"
-				     ")");
-				exec("CREATE INDEX IF NOT EXISTS idx_ti_name "
-				     "ON type_info(project_id, name)");
-				exec("CREATE INDEX IF NOT EXISTS idx_ti_qn "
-				     "ON type_info(project_id, qualified_name)");
-			} else {
-				// Finalize probe2, NOT the outer `probe` from the
-				// semantic_records migration above: that statement
-				// was already finalized and would be a
-				// use-after-free here (and probe2 would leak).
-				sqlite3_finalize(probe2);
-			}
-		}
-	}
-	{
-		sqlite3_stmt *probe = nullptr;
-		if (sqlite3_prepare_v2(db_,
-				       "SELECT name FROM sqlite_master "
-				       "WHERE type='table' AND name='type_ref'",
-				       -1, &probe, nullptr) == SQLITE_OK) {
-			if (sqlite3_step(probe) != SQLITE_ROW) {
-				sqlite3_finalize(probe);
-				exec("CREATE TABLE IF NOT EXISTS type_ref ("
-				     " id INTEGER PRIMARY KEY AUTOINCREMENT,"
-				     " project_id INTEGER NOT NULL,"
-				     " entity_id INTEGER NOT NULL,"
-				     " type_name TEXT NOT NULL,"
-				     " kind INTEGER NOT NULL,"
-				     " file_path TEXT NOT NULL,"
-				     " start_row INTEGER DEFAULT 0,"
-				     " start_col INTEGER DEFAULT 0,"
-				     " FOREIGN KEY (project_id) REFERENCES projects(id),"
-				     " FOREIGN KEY (entity_id) REFERENCES entity(id)"
-				     ")");
-				exec("CREATE INDEX IF NOT EXISTS idx_tr_type "
-				     "ON type_ref(project_id, type_name)");
-				exec("CREATE INDEX IF NOT EXISTS idx_tr_entity "
-				     "ON type_ref(project_id, entity_id)");
-			} else {
-				sqlite3_finalize(probe);
-			}
-		}
-	}
+	// Route / type_info / type_ref live in their own TU (1000-line rule): see
+	// store_schema_migrations_types.cpp. Failures inside it are recorded by
+	// migrationExec; the return value is surfaced here so no path is silent.
+	if (!migrateTypeTables(migrationExec))
+		migration_ok = false;
 
 	// Note: vec0 embeddings table is created in engine_init() after
 	// sqlite-vec extension is loaded via dlopen. Not needed here.
@@ -986,6 +596,107 @@ bool GraphStore::runSchemaMigrations()
 			} else {
 				sqlite3_finalize(probe);
 			}
+		}
+	}
+
+	// Migration: collapse duplicate capability rows. The capability pass runs on
+	// every index and the table has no uniqueness rule, so each run used to
+	// append another copy of every capability; the insert is guarded now
+	// (store_knowledge.cpp::insertCapability) and this removes the copies that
+	// earlier runs left behind, so capability_state and the drift counts derived
+	// from it stop double-counting.
+	migrationExec(
+		"DELETE FROM capability WHERE id NOT IN "
+		"(SELECT MIN(id) FROM capability GROUP BY project_id, name, "
+		" source_kind, source_ref)");
+
+	// Migration: add cross_module_edges to architecture_state.
+	//
+	// architecture_state.violations used to hold the COUNT of cross-module
+	// call pairs per module pair, with compliance forced to 0.0 — so every
+	// normal dependency was reported as an architecture violation and
+	// dragged the architecture score down. The count is real information;
+	// the label was wrong. It now lives in its own column, `violations`
+	// stays 0 until a real layer violation can be detected, and
+	// compliance stays 1.0. Hard failures fail the schema build loudly
+	// (see the header) instead of leaving a half-migrated table that
+	// buildArchitectureState then fails to INSERT into.
+	{
+		sqlite3_stmt *arch_probe = nullptr;
+		bool has_cross_module_edges = false;
+		if (sqlite3_prepare_v2(db_,
+				       "PRAGMA table_info(architecture_state)",
+				       -1, &arch_probe, nullptr) == SQLITE_OK) {
+			while (sqlite3_step(arch_probe) == SQLITE_ROW) {
+				const char *col = reinterpret_cast<const char *>(
+					sqlite3_column_text(arch_probe, 1));
+				if (col &&
+				    std::string(col) == "cross_module_edges")
+					has_cross_module_edges = true;
+			}
+			sqlite3_finalize(arch_probe);
+			arch_probe = nullptr;
+		} else {
+			fprintf(stderr,
+				"[module=store, method=createSchema] "
+				"architecture_state column probe "
+				"failed: %s\n",
+				error_.c_str());
+			return false;
+		}
+		if (!has_cross_module_edges) {
+			if (!migrationExec("ALTER TABLE architecture_state "
+					   "ADD COLUMN cross_module_edges "
+					   "INTEGER NOT NULL DEFAULT 0")) {
+				fprintf(stderr,
+					"[module=store, method=createSchema] "
+					"ALTER TABLE architecture_state ADD "
+					" cross_module_edges failed: %s\n",
+					error_.c_str());
+				return false;
+			}
+		}
+		// Data correction. Both statements run on every open and
+		// are idempotent, so a database that acquires bogus rows
+		// later (a pre-fix binary after a downgrade) is repaired
+		// on the next open instead of never.
+		//
+		// 1) Collapse duplicate (project_id, layer) rows. The old
+		//    buildArchitectureState used INSERT OR IGNORE with no
+		//    unique key to ignore on, so every rebuild appended a
+		//    second copy of every row — and a re-index after the
+		//    edge counts changed appended rows with different
+		//    counts too. The NEWEST row is what the last rebuild
+		//    wrote; summing the copies would inflate
+		//    cross_module_edges by the number of rebuilds.
+		if (!migrationExec("DELETE FROM architecture_state "
+				   "WHERE rowid NOT IN "
+				   "(SELECT MAX(rowid) FROM architecture_state "
+				   " GROUP BY project_id, layer)")) {
+			fprintf(stderr,
+				"[module=store, method=createSchema] "
+				"architecture_state de-duplication "
+				"failed: %s\n",
+				error_.c_str());
+			return false;
+		}
+		// 2) Move the pre-fix `violations` value into the column
+		//    that names it honestly rather than discarding it,
+		//    and clear the bogus violation flag. Unconditional:
+		//    gating it on the ALTER above would miss a table that
+		//    already has the column but pre-fix rows. Afterwards
+		//    violations is 0 and the WHERE matches nothing.
+		if (!migrationExec("UPDATE architecture_state "
+				   "SET cross_module_edges = violations, "
+				   "    violations = 0, "
+				   "    compliance = 1.0 "
+				   "WHERE violations > 0")) {
+			fprintf(stderr,
+				"[module=store, method=createSchema] "
+				"architecture_state violations move "
+				"failed: %s\n",
+				error_.c_str());
+			return false;
 		}
 	}
 
