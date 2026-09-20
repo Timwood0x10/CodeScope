@@ -71,6 +71,10 @@ SemanticUnit *PythonVisitor::visit(TSTree *tree, const char *source,
 	class_scope_stack_.clear();
 
 	TSNode root_node = ts_tree_root_node(tree);
+	// Names this file defines, so a call to `format`/`next`/`set` ... that the
+	// file itself declares is not mistaken for the Python builtin.
+	defined_names_.clear();
+	collectDefinedNames(root_node);
 	pushScope();
 	SourceRange root_loc = location(root_node);
 	uint64_t root_id = emitter_->emitVariable("", root_loc, 0);
@@ -321,7 +325,11 @@ void PythonVisitor::handleCall(TSNode node, uint64_t parent_id)
 	// be a pre-declared builtin, so it keeps its record (and its
 	// receiver/qualified_target evidence) for the Resolver.
 	// Reference: codebase-memory-mcp (MIT) helpers.c :: python_resolvable_builtins
-	if (!is_attribute_call && !name.empty() && isPythonBuiltin(name)) {
+	// A name this file defines, or one it imported, is user code even when it
+	// matches a builtin: `def format()` then `format(x)` is a real call edge
+	// that this filter used to delete.
+	if (!is_attribute_call && !name.empty() && isPythonBuiltin(name) &&
+	    !isLocallyDefined(name) && import_aliases_.count(name) == 0) {
 		visitChildren(node, parent_id);
 		return;
 	}

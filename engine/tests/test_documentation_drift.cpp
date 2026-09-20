@@ -79,40 +79,43 @@ int main()
 	uint64_t project_id = store.createProject("/test", "test_doc_drift");
 	assert(project_id > 0);
 
-	// ── Test 1: extractLanguageClaims — basic multi-language README ──
+	// ── Test 1: extractLanguageClaims — capability vs project claim ──
+	// "Supports X" says the tool can handle X. Only "Written in X" claims this
+	// project is written in X. Counting both made the detector report every
+	// language the tool parses as documented-but-absent from its own code.
 	{
-		std::string readme =
-			"# My Project\n"
-			"Supports C++, Python, Rust, and Go.\n"
-			"Written in C++ and Rust primarily.\n";
+		std::string readme = "# My Project\n"
+				     "Supports C++, Python, Rust, and Go.\n"
+				     "Written in C++ and Rust primarily.\n";
 		auto claims = extractLanguageClaims(readme);
-		assert(claims.size() >= 3);
+		assert(claims.size() == 2);
 
 		const auto *cpp = findClaim(claims, "cpp");
 		assert(cpp != nullptr);
 		assert(cpp->display == "C++");
-		assert(cpp->mention_count >= 2); // "C++" appears twice
-
-		const auto *py = findClaim(claims, "python");
-		assert(py != nullptr);
-		assert(py->display == "Python");
-
-		const auto *go = findClaim(claims, "go");
-		assert(go != nullptr);
-		assert(go->display == "Go");
+		// Only the "Written in" mention is a claim; the "Supports" one is a
+		// capability statement about the tool.
+		assert(cpp->mention_count == 1);
 
 		const auto *rust = findClaim(claims, "rust");
 		assert(rust != nullptr);
 		assert(rust->display == "Rust");
+		assert(rust->mention_count == 1);
 
-		printf("  [PASS] extractLanguageClaims: detected C++, Python, Go, Rust\n");
+		// Python and Go are mentioned only as things the tool supports.
+		assert(findClaim(claims, "python") == nullptr);
+		assert(findClaim(claims, "go") == nullptr);
+
+		printf("  [PASS] extractLanguageClaims: capability list vetoed, project "
+		       "claims (C++, Rust) kept\n");
 	}
 
 	// ── Test 2: extractLanguageClaims — "Go" word-boundary ──────────
 	// "Google" and "Going" should NOT trigger a Go claim, but standalone
 	// "Go" should.
 	{
-		std::string readme = "Powered by Google. Going forward, we use Go.";
+		std::string readme =
+			"Powered by Google. Going forward, we use Go.";
 		auto claims = extractLanguageClaims(readme);
 		const auto *go = findClaim(claims, "go");
 		assert(go != nullptr);
@@ -146,6 +149,65 @@ int main()
 		printf("  [PASS] extractLanguageClaims: no languages -> no claims\n");
 	}
 
+	// ── Test 5a: extractLanguageClaims — a capability matrix is not a claim ──
+	// The shape this repository's own README has. Every row of a "Supported
+	// Languages" table says the tool can parse that language; none of them says
+	// THIS project is written in it.
+	{
+		std::string readme = "# Tool\n"
+				     "### Supported Languages (3)\n"
+				     "\n"
+				     "| Language | Parser | Verified |\n"
+				     "|----------|--------|----------|\n"
+				     "| Python | yes | yes |\n"
+				     "| Go | yes | yes |\n"
+				     "| Rust | yes | yes |\n"
+				     "\n"
+				     "### Tech Stack\n"
+				     "\n"
+				     "| Layer | Technology |\n"
+				     "|-------|------------|\n"
+				     "| Core | C++ |\n";
+		auto claims = extractLanguageClaims(readme);
+		assert(findClaim(claims, "python") == nullptr);
+		assert(findClaim(claims, "go") == nullptr);
+		assert(findClaim(claims, "rust") == nullptr);
+		// The Tech Stack row is a statement about this project, so it stays.
+		assert(findClaim(claims, "cpp") != nullptr);
+		printf("  [PASS] extractLanguageClaims: capability matrix vetoed, "
+		       "tech-stack claim kept\n");
+	}
+
+	// ── Test 5b: extractLanguageClaims — a table about other projects ──
+	// A benchmark table's `Project` column lists third-party projects, so its
+	// Language column describes those projects, not this repository.
+	{
+		std::string readme = "# Benchmarks\n"
+				     "\n"
+				     "| Project | Language | Index Time |\n"
+				     "|---------|----------|-----------:|\n"
+				     "| tinygo | Go | 1.77 s |\n"
+				     "| rustc | Rust | 38.9 s |\n";
+		auto claims = extractLanguageClaims(readme);
+		assert(findClaim(claims, "go") == nullptr);
+		assert(findClaim(claims, "rust") == nullptr);
+		printf("  [PASS] extractLanguageClaims: third-party benchmark table "
+		       "vetoed\n");
+	}
+
+	// ── Test 5c: "parser" in prose is not a capability cue ──────────
+	// The capability cues are for COLUMN NAMES and capability phrases. A
+	// sentence about this project's own parser must still count, otherwise the
+	// veto would be broad enough to hide real drift.
+	{
+		std::string readme = "The cpp parser is fast.";
+		auto claims = extractLanguageClaims(readme);
+		const auto *cpp = findClaim(claims, "cpp");
+		assert(cpp != nullptr);
+		assert(cpp->mention_count == 1);
+		printf("  [PASS] extractLanguageClaims: prose 'parser' keeps the claim\n");
+	}
+
 	// ── Test 6: countEntitiesByLanguage ─────────────────────────────
 	{
 		// Insert 3 C++ entities and 2 Python entities.
@@ -156,7 +218,8 @@ int main()
 		insertEntity(store, project_id, 201, "helper", "python");
 
 		assert(countEntitiesByLanguage(store, project_id, "cpp") == 3);
-		assert(countEntitiesByLanguage(store, project_id, "python") == 2);
+		assert(countEntitiesByLanguage(store, project_id, "python") ==
+		       2);
 		assert(countEntitiesByLanguage(store, project_id, "go") == 0);
 		assert(countEntitiesByLanguage(store, project_id, "rust") == 0);
 		printf("  [PASS] countEntitiesByLanguage: cpp=3, python=2, go=0, rust=0\n");
@@ -171,8 +234,11 @@ int main()
 		sqlite3_exec(db, "DELETE FROM document WHERE project_id > 0",
 			     nullptr, nullptr, nullptr);
 
+		// A project claim, not a capability list: "Written in" binds the
+		// languages to this project. (A "Supports …" line would be vetoed and
+		// correctly produce zero claims and zero drifts.)
 		insertReadme(store, project_id,
-			     "Supports C++, Python, Go, and Rust.");
+			     "Written in C++, Python, Go, and Rust.");
 		auto drifts = detectDocumentationDrift(store, project_id);
 		assert(drifts.size() == 2); // Go + Rust missing
 

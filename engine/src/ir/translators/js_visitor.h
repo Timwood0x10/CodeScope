@@ -3,6 +3,7 @@
 
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "../semantic_emitter.h"
@@ -147,6 +148,32 @@ class JsVisitor {
 	// ── Helpers ─────────────────────────────────────────────
 	SourceRange location(TSNode node);
 	std::string nodeText(TSNode node);
+
+	/**
+	 * Names the file being visited defines itself (functions, methods, classes,
+	 * …), collected once per visit() by each language's visitor.
+	 *
+	 * The builtin-name filters below exist to keep pre-declared library
+	 * symbols out of the graph, but they match on NAME only, so a user
+	 * function that happens to share a builtin name — `def format()`,
+	 * `void free()`, `format` from `import static` — had its call dropped
+	 * entirely: a systematic false negative in the call graph. A name this file
+	 * defines is always user code, so it survives the filter.
+	 */
+	std::unordered_set<std::string> defined_names_;
+
+	/// Collect every name this file defines, starting at the tree root.
+	/// Node types that introduce a name are per-language (see
+	/// kDefNodeTypes in js_visitor.cpp).
+	void collectDefinedNames(TSNode node);
+
+	/// True when `name` is defined by the file being visited, i.e. a call to it
+	/// is a call to user code and must not be filtered as a builtin.
+	bool isLocallyDefined(const std::string &name) const
+	{
+		return defined_names_.count(name) != 0;
+	}
+
 	/**
 	 * Zero-copy node text view — borrows from source_, no heap alloc.
 	 * Use for temporary lookups (comparisons, name extraction).

@@ -148,6 +148,39 @@ fn is_source_file(name: &str) -> bool {
     )
 }
 
+/// Module name for the files that sit DIRECTLY in the target directory.
+///
+/// They belong to no top-level directory, so a walk that only looks at
+/// subdirectories drops them: a flat project (all sources in one directory)
+/// reported `"modules":[]` and indexed nothing at all, and a project mixing
+/// root files with subdirectories silently lost the root files. The scheduler
+/// roots this module's worker at the project directory and excludes the
+/// subdirectories, so the root files are indexed exactly once.
+pub const ROOT_MODULE_NAME: &str = ".";
+
+/// Absolute paths of the source files that sit directly in `dir_path`,
+/// sorted. Mirrors the shape of `discover_files` for one directory level and
+/// is the companion to ROOT_MODULE_NAME.
+pub fn root_source_files(dir_path: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let entries = match std::fs::read_dir(Path::new(dir_path)) {
+        Ok(e) => e,
+        Err(_) => return out,
+    };
+    for entry in entries.flatten() {
+        if entry.path().is_dir() {
+            continue;
+        }
+        let fname = entry.file_name().to_string_lossy().to_string();
+        if is_skip_prefix(&fname) || !is_source_file(&fname) {
+            continue;
+        }
+        out.push(entry.path().to_string_lossy().to_string());
+    }
+    out.sort();
+    out
+}
+
 /// Discover top-level modules and their source-file counts.
 ///
 /// Walks the project root, counts source files per top-level directory,
@@ -235,6 +268,26 @@ pub fn discover_modules(dir_path: &str) -> String {
             modules.push((name_str, count, bytes));
             total_files += count;
         }
+    }
+
+    // Files directly in the target directory. The loop above only ever
+    // descends into subdirectories, so these were counted nowhere: a flat
+    // project produced an empty module list and indexed nothing, and a project
+    // with both root files and subdirectories lost the root files. They become
+    // the root module, whose worker restricts itself to this level.
+    let root_files = root_source_files(dir_path);
+    if !root_files.is_empty() {
+        let root_bytes: u64 = root_files
+            .iter()
+            .filter_map(|p| std::fs::metadata(p).ok())
+            .map(|m| m.len())
+            .sum();
+        total_files += root_files.len() as u64;
+        modules.push((
+            ROOT_MODULE_NAME.to_string(),
+            root_files.len() as u64,
+            root_bytes,
+        ));
     }
 
     // Sort by file count descending so the scheduler dispatches the
@@ -367,6 +420,52 @@ mod tests {
         assert!(!is_source_file("readme.md"));
         assert!(!is_source_file("Makefile"));
         assert!(!is_source_file("noext"));
+    }
+
+    #[test]
+    fn test_discover_modules_counts_root_files() {
+        // Regression (#22): files directly in the target directory were counted
+        // nowhere. A flat project reported no modules at all and indexed
+        // nothing; a project mixing root files with subdirectories lost the
+        // root files.
+        let flat = make_tmpdir("discover_modules_flat");
+        fs::write(flat.join("a.go"), "package main").unwrap();
+        let v: Value = serde_json::from_str(&discover_modules(flat.to_str().unwrap())).unwrap();
+        assert_eq!(v["total_modules"], 1, "a flat project has one module");
+        assert_eq!(v["modules"][0]["name"], ROOT_MODULE_NAME);
+        assert_eq!(v["modules"][0]["files"], 1);
+        assert_eq!(v["total_files"], 1);
+
+        let mixed = make_tmpdir("discover_modules_mixed");
+        fs::write(mixed.join("top.go"), "package main").unwrap();
+        fs::create_dir_all(mixed.join("sub")).unwrap();
+        fs::write(mixed.join("sub/b.go"), "package sub").unwrap();
+        let v: Value = serde_json::from_str(&discover_modules(mixed.to_str().unwrap())).unwrap();
+        assert_eq!(v["total_modules"], 2, "root files + sub/ = two modules");
+        assert_eq!(
+            v["total_files"], 2,
+            "the root file must be counted as well as sub/b.go"
+        );
+        let names: Vec<&str> = v["modules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&ROOT_MODULE_NAME));
+        assert!(names.contains(&"sub"));
+    }
+
+    #[test]
+    fn test_root_source_files_are_direct_children_only() {
+        let dir = make_tmpdir("root_source_files");
+        fs::write(dir.join("a.go"), "package main").unwrap();
+        fs::write(dir.join("notes.md"), "not source").unwrap();
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("sub/b.go"), "package sub").unwrap();
+        let files = root_source_files(dir.to_str().unwrap());
+        assert_eq!(files.len(), 1);
+        assert!(files[0].ends_with("a.go"));
     }
 
     #[test]

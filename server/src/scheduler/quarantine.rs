@@ -12,8 +12,8 @@
 //! 3. When `left == right`, that file is the crasher.
 //! 4. Repeat up to `QUARANTINE_MAX_ITER` times to find multiple crashers.
 
-use serde_json::Value;
-use std::path::Path;
+use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -94,8 +94,22 @@ pub(super) fn quarantine_module(
     grammars_dir: &str,
     db_prefix: &str,
 ) -> Vec<String> {
-    let module_dir = Path::new(project_dir).join(module_name);
-    let discover_json = discover::discover_files(module_dir.to_str().unwrap_or(""));
+    // The root module (see discover::ROOT_MODULE_NAME) is rooted at the project
+    // directory and owns only the files directly in it. Walking the whole tree
+    // here would hand quarantine the files the per-module workers own, and
+    // would make the exclusion globs relative to the wrong root.
+    let is_root_module = module_name == discover::ROOT_MODULE_NAME;
+    let module_dir = if is_root_module {
+        PathBuf::from(project_dir)
+    } else {
+        Path::new(project_dir).join(module_name)
+    };
+    let discover_json = if is_root_module {
+        let files = discover::root_source_files(module_dir.to_str().unwrap_or(""));
+        json!({"ok": true, "total": files.len(), "files": files}).to_string()
+    } else {
+        discover::discover_files(module_dir.to_str().unwrap_or(""))
+    };
     let discover_val: Value = match serde_json::from_str(&discover_json) {
         Ok(v) => v,
         Err(_) => return Vec::new(),

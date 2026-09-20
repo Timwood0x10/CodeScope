@@ -273,8 +273,8 @@ cargo build --release
 ### Index and Query
 
 ```bash
-# Index a project
-codescope cli index_project '{"project_path":"/path/to/your/project"}'
+# Index a project (spawns an isolated worker subprocess per module)
+codescope index-parallel /path/to/your/project
 
 # Quick overview
 codescope cli project_overview '{}'
@@ -285,11 +285,14 @@ codescope
 
 ### Large Projects
 
-For projects with thousands of files, use the built-in parallel scheduler:
+For projects with thousands of files, tune the built-in parallel scheduler:
 
 ```bash
-codescope index-parallel /path/to/large/project
+codescope index-parallel /path/to/large/project --workers 8 --parallel 4
 ```
+
+`--workers` sets the total parse-worker cores (default 8) and `--parallel` the
+maximum concurrent module workers (default 4).
 
 ---
 
@@ -299,7 +302,7 @@ codescope index-parallel /path/to/large/project
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
-| `index_project` | Index a project directory: parse all source files, build IR, and construct the code graph. Invoked via the session/CLI entry point (it spawns an isolated worker subprocess), so it is not advertised in `tools/list`; CLI and MCP clients call it by name. | `{"project_path": "string (required)", "language_filter": "string (optional)"}` |
+| `index_project` | Index a project directory: parse all source files, build IR, and construct the code graph. An MCP-session tool: it spawns an isolated worker subprocess and is not advertised in `tools/list`, so MCP clients call it by name. The CLI equivalent is `codescope index-parallel <dir>` — `codescope cli index_project` is not a valid invocation. | `{"project_path": "string (required)", "language_filter": "string (optional)"}` |
 | `index_file` | Index a single source file. | `{"file_path": "string (required)"}` |
 | `force_index_files` | Force-index files/dirs bypassing default skip rules (test/, docs/, node_modules/, .gitignore, etc.). | `{"paths": ["string (required)"], "language_filter": "string (optional)"}` |
 

@@ -16,7 +16,7 @@ CodeScope 是一个 **项目真相引擎（Project Truth Engine）**，回答一
 
 不是"这段代码什么意思"，而是"代码到底有没有实现你声称的功能？"
 
-它把源码索引为结构化的代码图（调用图 + 引用图 + 模块知识），然后暴露 **37 个 MCP 工具**，让 AI 代理可以定位符号、追踪调用路径、验证断言、检测文档漂移、分析架构 — 相比读取原始源文件，平均节省 **~98.9% 的 token 消耗**。
+它把源码索引为结构化的代码图（调用图 + 引用图 + 模块知识），然后暴露 **47 个 MCP 工具**，让 AI 代理可以定位符号、追踪调用路径、验证断言、检测文档漂移、分析架构 — 相比读取原始源文件，平均节省 **~98.9% 的 token 消耗**。
 
 ### 支持的语言（8 种）
 
@@ -53,7 +53,7 @@ graph TB
     end
 
     subgraph "Rust MCP 服务端"
-        MCP["MCP 协议 (JSON-RPC 2.0)<br/>37 个工具 / stdio 传输"]
+        MCP["MCP 协议 (JSON-RPC 2.0)<br/>47 个工具 / stdio 传输"]
         DISPATCH["工具分发<br/>project_id 自动恢复"]
     end
 
@@ -262,8 +262,8 @@ cargo build --release
 ### 索引与查询
 
 ```bash
-# 索引一个项目
-codescope cli index_project '{"project_path":"/path/to/your/project"}'
+# 索引一个项目（按模块派生子进程，内存相互隔离）
+codescope index-parallel /path/to/your/project
 
 # 快速概览
 codescope cli project_overview '{}'
@@ -274,21 +274,23 @@ codescope
 
 ### 大型项目
 
-对于包含数千个文件的项目，使用内置的并行调度器：
+对于包含数千个文件的项目，可以调整内置并行调度器的规模：
 
 ```bash
-codescope index-parallel /path/to/large/project
+codescope index-parallel /path/to/large/project --workers 8 --parallel 4
 ```
+
+`--workers` 为解析 worker 核心总数（默认 8），`--parallel` 为并发模块 worker 上限（默认 4）。
 
 ---
 
-## 5. MCP 工具（37 个工具）
+## 5. MCP 工具（47 个工具）
 
 ### 索引
 
 | 工具 | 用途 | 参数 |
 |------|------|------|
-| `index_project` | 索引整个项目目录：解析所有源文件，构建 IR，构建代码图。 | `{"project_path": "string (必填)", "language_filter": "string (可选)"}` |
+| `index_project` | 索引整个项目目录：解析所有源文件，构建 IR，构建代码图。这是 **MCP 会话工具**：它会派生子进程隔离内存，不在 `tools/list` 中广播，因此由 MCP 客户端按名调用。命令行等价入口是 `codescope index-parallel <dir>` —— `codescope cli index_project` 不是有效调用。 | `{"project_path": "string (必填)", "language_filter": "string (可选)"}` |
 | `index_file` | 索引单个源文件。 | `{"file_path": "string (必填)"}` |
 | `force_index_files` | 强制索引文件/目录，跳过默认排除规则（test/, docs/, node_modules/, .gitignore 等）。 | `{"paths": ["string (必填)"], "language_filter": "string (可选)"}` |
 

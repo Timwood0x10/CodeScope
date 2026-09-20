@@ -25,6 +25,16 @@ class ACAutomaton {
     public:
 	ACAutomaton() = default;
 
+	// The automaton owns the nodes it allocates in addPattern(), so a copy
+	// would leave two objects pointing at the same nodes and free them twice.
+	// Deleting the copy constructor also removes the floor under a subtler
+	// trap: because a destructor is user-declared, the move constructor is not
+	// implicitly generated, so `return ac;` from a builder silently fell back
+	// to the COPY constructor. Callers that need a shared instance must hold it
+	// in a function-local static object instead (see getJsAC()).
+	ACAutomaton(const ACAutomaton &) = delete;
+	ACAutomaton &operator=(const ACAutomaton &) = delete;
+
 	~ACAutomaton()
 	{
 		// Free all dynamically allocated nodes

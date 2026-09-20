@@ -1,4 +1,5 @@
 #include "lsp_client.h"
+#include "lsp_framing.h"
 #include "platform_win.h"
 
 #include <fcntl.h>
@@ -21,6 +22,12 @@ static constexpr int kSpawnWaitUs =
 	100000; // 100 ms grace before checking child
 static constexpr size_t kMaxResponseBytes = 1
 					    << 20; // 1 MiB cap on LSP response
+// Deadline for one write to the server's stdin. The pipe buffer holds ~64KB, so
+// a live server drains this well before the deadline; only a server that
+// stopped reading its stdin can reach it.
+static constexpr int kWriteTimeoutMs = 5000;
+// Grace period for the server to exit after the `exit` notification.
+static constexpr int kExitGraceMs = 3000;
 
 // ─── JSON-RPC helpers (minimal, no external deps) ─────────────
 
@@ -54,6 +61,12 @@ static std::string wrapLspMessage(const std::string &body)
 	msg << "Content-Length: " << body.size() << "\r\n\r\n" << body;
 	return msg.str();
 }
+
+// Message framing (takeNextLspMessage) and response matching (isResponseFor)
+// live in lsp_framing.h: they are pure string handling, and the defects they
+// fix only show up when a server interleaves notifications with responses, so
+// they are tested directly (tests/test_lsp_framing.cpp) instead of through a
+// live server.
 
 // ─── LspClient implementation ─────────────────────────────────
 
@@ -285,10 +298,36 @@ void LspClient::stop()
 	stdin_fd_ = -1;
 	stdout_fd_ = -1;
 
-	// Wait for process to exit
+	// Reap the child. WNOHANG alone returned immediately even when the server
+	// was still running, and because pid_ was cleared straight afterwards
+	// nothing ever waited for it again: the process stayed a zombie for the
+	// lifetime of the indexer. Wait for it within a grace period, force-kill it
+	// if it declines, and report the exit status so a server that failed is not
+	// silently treated as a clean shutdown.
 	if (pid_ > 0) {
-		int status;
-		waitpid(pid_, &status, WNOHANG);
+		int status = 0;
+		bool reaped = false;
+		for (int waited = 0; waited < kExitGraceMs; waited += 50) {
+			const pid_t r = waitpid(pid_, &status, WNOHANG);
+			if (r == pid_) {
+				reaped = true;
+				break;
+			}
+			if (r < 0)
+				break; // ECHILD — already reaped elsewhere
+			usleep(50 * 1000);
+		}
+		if (!reaped) {
+			kill(pid_, SIGKILL);
+			waitpid(pid_, &status, 0); // reap the corpse
+			if (error_.empty())
+				error_ =
+					"LSP server ignored the exit notification; killed";
+		} else if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
+			if (error_.empty())
+				error_ = "LSP server exited with status " +
+					 std::to_string(WEXITSTATUS(status));
+		}
 	}
 	pid_ = 0;
 #else
@@ -477,6 +516,15 @@ bool LspClient::sendMessage(const std::string &body)
 
 	std::string msg = wrapLspMessage(body);
 #ifndef _WIN32
+	// A blocking write() to a server that stopped reading its stdin never
+	// returns, hanging the caller inside what should be a bounded query. Wait
+	// for writability with a deadline first.
+	if (!waitWritable(kWriteTimeoutMs)) {
+		error_ = "timeout writing to LSP server";
+		return false;
+	}
+#endif
+#ifndef _WIN32
 	ssize_t written = write(stdin_fd_, msg.c_str(), msg.size());
 #else
 	ssize_t written = _write(stdin_fd_, msg.c_str(), msg.size());
@@ -490,6 +538,14 @@ bool LspClient::sendMessage(const std::string &body)
 		size_t offset = (written > 0) ? static_cast<size_t>(written) :
 						0;
 		while (offset < msg.size()) {
+#ifndef _WIN32
+			// Same deadline inside the retry loop: a partial write means the
+			// pipe is full, i.e. the server is not draining it.
+			if (!waitWritable(kWriteTimeoutMs)) {
+				error_ = "timeout writing to LSP server";
+				return false;
+			}
+#endif
 #ifndef _WIN32
 			ssize_t n = write(stdin_fd_, msg.data() + offset,
 					  msg.size() - offset);
@@ -511,14 +567,25 @@ bool LspClient::sendMessage(const std::string &body)
 	return true;
 }
 
+#ifndef _WIN32
+bool LspClient::waitWritable(int timeout_ms)
+{
+	struct pollfd pfd;
+	pfd.fd = stdin_fd_;
+	pfd.events = POLLOUT;
+	return poll(&pfd, 1, timeout_ms) > 0;
+}
+#endif
+
 std::string LspClient::readResponse(int expected_id, int timeout_ms)
 {
 #ifndef _WIN32
 	if (stdout_fd_ < 0)
 		return "";
 
-	// Read until we find Content-Length header + body
-	std::string buffer;
+	// Reads accumulate in the persistent read_buffer_: one read can deliver
+	// several messages, and one message can span several reads.
+	std::string &buffer = read_buffer_;
 	auto start_time = time(nullptr);
 
 	while (true) {
@@ -558,39 +625,23 @@ std::string LspClient::readResponse(int expected_id, int timeout_ms)
 		buf[n] = '\0';
 		buffer += buf;
 
-		// Check if we have a complete message (Content-Length header + body)
-		auto header_end = buffer.find("\r\n\r\n");
-		if (header_end != std::string::npos) {
-			// Parse Content-Length
-			auto cl_pos = buffer.find("Content-Length:");
-			if (cl_pos == std::string::npos)
-				continue;
-
-			auto val_start = cl_pos + 15; // after "Content-Length:"
-			while (val_start < buffer.size() &&
-			       buffer[val_start] == ' ')
-				val_start++;
-			auto val_end = buffer.find_first_of("\r\n", val_start);
-			if (val_end == std::string::npos)
-				continue;
-
-			int content_length = std::atoi(
-				buffer.substr(val_start, val_end - val_start)
-					.c_str());
-			if (content_length <= 0)
-				continue;
-
-			size_t body_start = header_end + 4; // after \r\n\r\n
-			if (buffer.size() >=
-			    body_start + static_cast<size_t>(content_length)) {
-				std::string body = buffer.substr(
-					body_start, content_length);
-
-				// In a real implementation, we'd match the id.
-				// For our minimal case, just return the body.
-				(void)expected_id;
-				return body;
+		// Take every message already buffered. Only a response whose id
+		// matches this request answers the call: a notification (server
+		// logging, diagnostics) or an earlier request's response is skipped
+		// and the loop keeps looking, rather than being returned as the
+		// answer.
+		std::string body;
+		for (;;) {
+			const LspFraming framed =
+				takeNextLspMessage(buffer, body);
+			if (framed == LspFraming::Message) {
+				if (isResponseFor(body, expected_id))
+					return body;
+				continue; // notification or another request's response
 			}
+			if (framed == LspFraming::Skipped)
+				continue; // unusable frame dropped, try the next
+			break; // NeedMore — read more bytes
 		}
 
 		// Prevent infinite loop on malformed data
@@ -610,7 +661,8 @@ std::string LspClient::readResponse(int expected_id, int timeout_ms)
 	if (stdout_fd_ < 0)
 		return "";
 
-	std::string buffer;
+	// Same persistent buffer as the POSIX path (see read_buffer_).
+	std::string &buffer = read_buffer_;
 	auto start_time = GetTickCount64();
 
 	while (true) {
@@ -637,39 +689,20 @@ std::string LspClient::readResponse(int expected_id, int timeout_ms)
 			buf[bytes_read] = '\0';
 			buffer += buf;
 
-			// Check for complete message (Content-Length header + body)
-			auto header_end = buffer.find("\r\n\r\n");
-			if (header_end != std::string::npos) {
-				auto cl_pos = buffer.find("Content-Length:");
-				if (cl_pos != std::string::npos) {
-					auto val_start = cl_pos + 15;
-					while (val_start < buffer.size() &&
-					       buffer[val_start] == ' ')
-						val_start++;
-					auto val_end = buffer.find_first_of(
-						"\r\n", val_start);
-					if (val_end != std::string::npos) {
-						int content_length = std::atoi(
-							buffer.substr(val_start,
-								      val_end -
-									      val_start)
-								.c_str());
-						if (content_length > 0) {
-							size_t body_start =
-								header_end + 4;
-							if (buffer.size() >=
-							    body_start +
-								    static_cast<
-									    size_t>(
-									    content_length)) {
-								(void)expected_id;
-								return buffer.substr(
-									body_start,
-									content_length);
-							}
-						}
-					}
+			// Same message framing and id matching as the POSIX path: a
+			// notification is not the answer to this request.
+			std::string body;
+			for (;;) {
+				const LspFraming framed =
+					takeNextLspMessage(buffer, body);
+				if (framed == LspFraming::Message) {
+					if (isResponseFor(body, expected_id))
+						return body;
+					continue;
 				}
+				if (framed == LspFraming::Skipped)
+					continue;
+				break;
 			}
 		}
 

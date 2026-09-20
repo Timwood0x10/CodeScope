@@ -9,7 +9,7 @@ CodeScope is a **Project Truth Engine**: it transforms source code into verifiab
 facts, models, and inspectable evidence so AI can validate claims against reality
 instead of hallucinating. It is built from a C++ core engine (parsing via
 tree-sitter → unified IR → facts store → resolver → model/verification) and a Rust
-MCP server that exposes ~37 tools to AI clients. CodeScope runs locally and indexes
+MCP server that exposes 47 tools to AI clients. CodeScope runs locally and indexes
 source code on the user's machine.
 
 ## Development Setup
@@ -67,8 +67,8 @@ Follow [plan/rules/code_rules.md](plan/rules/code_rules.md). Key rules:
    `go_visitor.cpp` / `go_translator.cpp`.
 6. Add the new translator/visitor files to `ENGINE_SOURCES` in
    `engine/CMakeLists.txt`.
-7. Add tests (e.g. `engine/tests/test_fp_foo.cpp`) and list them in `TEST_EXES` in
-   the `Makefile`.
+7. Add tests as `engine/tests/test_fp_foo.cpp`. There is no list to update:
+   `make test-engine` derives its executables from `engine/tests/*.cpp`.
 
 ## Adding a New MCP Tool
 
@@ -81,7 +81,7 @@ Follow [plan/rules/code_rules.md](plan/rules/code_rules.md). Key rules:
    `server/src/tools/mod.rs`.
 4. Register it in the `TOOL_HANDLERS` map in the same file.
 5. Add a `Tool { name, description, input_schema }` entry to `all_tools()` in
-   `server/src/tools/mod.rs`.
+   `server/src/tools/catalog.rs`.
 
 A unit test (`test_all_tools_have_registered_handler`) enforces that every tool
 returned by `all_tools()` has a registered handler — do not skip step 4.
@@ -89,9 +89,11 @@ returned by `all_tools()` has a registered handler — do not skip step 4.
 ## Testing Requirements
 
 - `make check` must pass before opening a PR (build + lint + tests).
-- All automated tests listed in `TEST_EXES` (Makefile) are run by
-  `make test-engine`. If you add a new automated test under `engine/tests/`,
-  **add it to `TEST_EXES`** so it is not silently skipped.
+- Every `engine/tests/*.cpp` is built and run by `make test-engine` — the list of
+  executables is derived from those sources, so a new file is picked up
+  automatically and cannot silently go unrun. `TEST_EXCLUDES` in the `Makefile`
+  must stay empty unless a test genuinely cannot run there (it needs external
+  arguments or a network service); never add an entry to hide a failure.
 - Automated tests must run without command-line arguments. Tools that need external
   args (e.g. a source tree to scan) belong in `engine/manual/` (built only with
   `-DBUILD_MANUAL=ON`), not in `engine/tests/`.

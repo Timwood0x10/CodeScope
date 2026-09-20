@@ -104,8 +104,11 @@ fn index_parallel_dynamic(project_dir: &str, total_workers: u32, parallel: u32) 
     let modules = match discover_val["modules"].as_array() {
         Some(a) if !a.is_empty() => a,
         _ => {
+            // Same as the static scheduler: an empty module set is a run that
+            // indexed nothing, not a success (see run_complete()).
             return json!({
-                "ok": true,
+                "ok": false,
+                "complete": false,
                 "project_path": project_path,
                 "duration_ms": start.elapsed().as_millis() as u64,
                 "success": 0,

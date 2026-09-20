@@ -65,11 +65,29 @@ static bool isJsBuiltin(const std::string &name)
 
 // ── Aho-Corasick dispatch table for visitNode ──────────────────
 
-static const ACAutomaton &getJsAC()
-{
-	static ACAutomaton ac;
-	static bool built = false;
-	if (!built) {
+// Builds the dispatch automaton in its constructor so the shared instance can
+// be a function-local static object: C++11 guarantees such an object is
+// initialised exactly once, with other threads blocking until the first
+// finishes.
+//
+// The previous form,
+//
+//     static ACAutomaton ac;
+//     static bool built = false;
+//     if (!built) { ...addPattern()...; ac.build(); built = true; }
+//
+// was an unsynchronised lazy init. Parsing runs on std::thread workers
+// (engine_index_files.cpp), so two threads reaching their first JavaScript file
+// at the same moment both ran addPattern()/build() on the SAME automaton, each
+// writing next[]/fail/out_link while the other read them.
+//
+// The automaton is built in place rather than returned by value because it owns
+// raw nodes — copying it would double-free them (see ahocorasick.h).
+struct JsACHolder {
+	ACAutomaton ac;
+
+	JsACHolder()
+	{
 		// Handlers (produce semantic records)
 		ac.addPattern("function_declaration", 100);
 		ac.addPattern("generator_function_declaration", 100);
@@ -118,13 +136,124 @@ static const ACAutomaton &getJsAC()
 		ac.addPattern("await_expression", 300);
 		ac.addPattern("yield_expression", 300);
 		ac.build();
-		built = true;
 	}
-	return ac;
+};
+
+static const ACAutomaton &getJsAC()
+{
+	static const JsACHolder holder;
+	return holder.ac;
 }
 
 JsVisitor::JsVisitor()
 {
+}
+
+namespace
+{
+/// Node types that DECLARE a name, per language, for collectDefinedNames().
+/// A call to a name declared in the same file is a call to user code even when
+/// the name also appears in the language's builtin list (`def format()`,
+/// `class Map`, `free()`), so the builtin filters must not drop it.
+///
+/// Only types whose `name` field holds the declared name belong here; C/C++
+/// function definitions are handled by the declarator fallback in
+/// collectDefinedNames().
+struct DefNodeTypes {
+	const char *language;
+	const char *const *types;
+};
+
+const char *const kPythonDefNodes[] = { "function_definition",
+					"class_definition", nullptr };
+
+const char *const kJsDefNodes[] = {
+	"function_declaration", "generator_function_declaration",
+	"class_declaration",	"method_definition",
+	"variable_declarator",	nullptr
+};
+
+const char *const kJavaDefNodes[] = { "method_declaration",
+				      "constructor_declaration",
+				      "class_declaration",
+				      "interface_declaration",
+				      "enum_declaration",
+				      "record_declaration",
+				      nullptr };
+
+const char *const kRustDefNodes[] = {
+	"function_item", "struct_item", "enum_item", "trait_item", "type_item",
+	"const_item",	 "static_item", "mod_item",  nullptr
+};
+
+const char *const kCDefNodes[] = { "function_definition", "struct_specifier",
+				   "enum_specifier",	  "type_definition",
+				   "class_specifier",	  nullptr };
+
+const DefNodeTypes kDefNodeTypes[] = {
+	{ "python", kPythonDefNodes }, { "javascript", kJsDefNodes },
+	{ "typescript", kJsDefNodes }, { "tsx", kJsDefNodes },
+	{ "java", kJavaDefNodes },     { "rust", kRustDefNodes },
+	{ "c", kCDefNodes },	       { "cpp", kCDefNodes },
+	{ "objective-c", kCDefNodes },
+};
+} // namespace
+
+void JsVisitor::collectDefinedNames(TSNode node)
+{
+	const char *language = unit_ ? unit_->language().c_str() : "";
+	const char *const *types = nullptr;
+	for (const auto &entry : kDefNodeTypes) {
+		if (strcmp(entry.language, language) == 0) {
+			types = entry.types;
+			break;
+		}
+	}
+	if (!types)
+		return;
+
+	uint32_t count = ts_node_child_count(node);
+	for (uint32_t i = 0; i < count; i++) {
+		TSNode child = ts_node_child(node, i);
+		if (!ts_node_is_named(child))
+			continue;
+		const char *type = ts_node_type(child);
+		bool declares = false;
+		for (const char *const *t = types; *t; t++) {
+			if (strcmp(type, *t) == 0) {
+				declares = true;
+				break;
+			}
+		}
+		if (declares) {
+			TSNode name_node =
+				ts_node_child_by_field_name(child, "name", 4);
+			if (ts_node_is_null(name_node)) {
+				// C/C++ carry the declared name inside the
+				// declarator chain:
+				// function_definition → function_declarator →
+				// identifier (or pointer_declarator →
+				// function_declarator → identifier for
+				// `void *free()`).
+				name_node = ts_node_child_by_field_name(
+					child, "declarator", 10);
+				while (!ts_node_is_null(name_node) &&
+				       strcmp(ts_node_type(name_node),
+					      "identifier") != 0 &&
+				       ts_node_named_child_count(name_node) > 0)
+					name_node = ts_node_named_child(
+						name_node, 0);
+			}
+			if (!ts_node_is_null(name_node) &&
+			    strcmp(ts_node_type(name_node), "identifier") ==
+				    0) {
+				std::string name = nodeText(name_node);
+				if (!name.empty())
+					defined_names_.insert(name);
+			}
+		}
+		collectDefinedNames(child);
+	}
 }
 
 SemanticUnit *JsVisitor::visit(TSTree *tree, const char *source,
@@ -139,6 +268,8 @@ SemanticUnit *JsVisitor::visit(TSTree *tree, const char *source,
 	source_ = source;
 
 	TSNode root_node = ts_tree_root_node(tree);
+	defined_names_.clear();
+	collectDefinedNames(root_node);
 
 	pushScope();
 	// Emit TranslationUnit as root record (parent_id = 0)
@@ -499,8 +630,11 @@ void JsVisitor::visitCallExpr(TSNode node, uint64_t parent_id)
 	// `Number`, `Symbol`, `Date` … with no call record. A member call cannot
 	// be a global builtin, so it keeps its record and receiver evidence.
 	// Reference: codebase-memory-mcp (MIT) ts_lsp.c :: builtins[]
+	// A name this file defines or imports is user code even when it matches a
+	// global builtin (`function Map() {}`, `import {Map} from './m'`).
 	if (!has_member_expr && !callee_name.empty() &&
-	    isJsBuiltin(callee_name)) {
+	    isJsBuiltin(callee_name) && !isLocallyDefined(callee_name) &&
+	    import_aliases_.count(callee_name) == 0) {
 		// Still visit children to pick up nested calls/expressions
 		for (uint32_t i = 0; i < count; i++) {
 			TSNode child = ts_node_child(node, i);
@@ -835,7 +969,9 @@ void JsVisitor::visitNewExpr(TSNode node, uint64_t parent_id)
 	// user-defined calls; the Resolver Pipeline would generate FPs. Only
 	// apply this to the unqualified form: `new ns.Array()` names a user type
 	// in a namespace, not the builtin.
-	if (receiver_text.empty() && isJsBuiltin(callee_name)) {
+	if (receiver_text.empty() && isJsBuiltin(callee_name) &&
+	    !isLocallyDefined(callee_name) &&
+	    import_aliases_.count(callee_name) == 0) {
 		for (uint32_t i = 0; i < count; i++) {
 			TSNode child = ts_node_child(node, i);
 			if (!ts_node_is_named(child))

@@ -110,6 +110,10 @@ SemanticUnit *CVisitor::visit(TSTree *tree, const char *source,
 	class_scope_stack_.clear();
 
 	TSNode root_node = ts_tree_root_node(tree);
+	// Names this file defines, so a locally declared `free`/`assert` ... is not
+	// dropped as a stdlib call.
+	defined_names_.clear();
+	collectDefinedNames(root_node);
 	pushScope();
 	SourceRange root_loc = location(root_node);
 	uint64_t root_id = emitter_->emitVariable("", root_loc, 0);
@@ -364,7 +368,7 @@ void CVisitor::handleCall(TSNode node, uint64_t parent_id)
 	// record would therefore re-open the false-positive flood this filter
 	// exists to prevent; dropping the call is the conservative choice.
 	// Reference: codebase-memory-mcp (MIT) c_lsp.c :: is_c_builtin_func()
-	if (!name.empty() && isCBuiltin(name)) {
+	if (!name.empty() && isCBuiltin(name) && !isLocallyDefined(name)) {
 		// Still visit children to pick up nested calls/expressions
 		for (uint32_t i = 0; i < count; i++) {
 			TSNode child = ts_node_child(node, i);
@@ -495,7 +499,7 @@ void CVisitor::handleNewExpr(TSNode node, uint64_t parent_id)
 	}
 
 	// Skip C compiler builtins / common stdlib — NOT user-defined calls.
-	if (!name.empty() && isCBuiltin(name)) {
+	if (!name.empty() && isCBuiltin(name) && !isLocallyDefined(name)) {
 		for (uint32_t i = 0; i < count; i++) {
 			TSNode child = ts_node_child(node, i);
 			if (!ts_node_is_named(child))
@@ -595,6 +599,37 @@ void CVisitor::handlePreprocDef(TSNode node, uint64_t parent_id)
 
 std::string CVisitor::extractName(TSNode node)
 {
+	// Read the `declarator` FIELD first instead of scanning children in order.
+	//
+	// In a function_definition the first named child is the return type, and for
+	// a qualified return type (`std::string`, `nlohmann::json`, `Status::Code`)
+	// tree-sitter-cpp parses that type as a qualified_identifier. The scan below
+	// then matched the TYPE before the declarator, recursed into it, found only
+	// namespace_identifier / type_identifier — neither of which any branch
+	// accepts — and returned "" for the whole definition. handleFuncDef treats
+	// an empty name as "no name" and drops the record, so every function
+	// returning a qualified type was invisible to the index: the entire
+	// QueryEngine surface (all of whose methods return std::string JSON) plus
+	// the std::string-returning store/graph accessors. Variables declared with a
+	// qualified type (`std::string name;`) were dropped the same way.
+	//
+	// The declarator field is the same node the old branches reached for the
+	// cases that did work, so nothing regresses.
+	TSNode declarator = ts_node_child_by_field_name(node, "declarator", 10);
+	if (!ts_node_is_null(declarator)) {
+		// The declarator is often the name node itself (a free function, or the
+		// innermost level of a pointer/function declarator chain). The scan
+		// below inspects CHILDREN, so recursing into a bare identifier would
+		// find no children and return "" — which silently dropped every free
+		// function definition. Read the text directly when the declarator
+		// already is the name.
+		const char *dt = ts_node_type(declarator);
+		if (strcmp(dt, "identifier") == 0 ||
+		    strcmp(dt, "field_identifier") == 0)
+			return nodeText(declarator);
+		return extractName(declarator);
+	}
+
 	uint32_t count = ts_node_child_count(node);
 	for (uint32_t i = 0; i < count; i++) {
 		TSNode child = ts_node_child(node, i);
@@ -653,31 +688,52 @@ std::string CVisitor::extractQualifiedName(TSNode node)
 	//   identifier (scope), "::" (unnamed), field_identifier (name).
 	// Returns "" when no qualified scope is present; the caller then falls
 	// back to currentClassName() for in-class methods.
+	//
+	// Read the `declarator` field first, for the same reason as extractName():
+	// the first named child of a function_definition is the return type, and a
+	// qualified return type (`std::string`) is itself a qualified_identifier.
+	// Scanning children in order used to hit that type first and return "" — so
+	// `Scope::method` definitions were registered without their scope whenever
+	// the return type happened to be qualified. The declarator never contains
+	// the return type.
+	auto nameOf = [this](TSNode qualified) -> std::string {
+		std::string scope;
+		std::string method;
+		uint32_t qc = ts_node_child_count(qualified);
+		for (uint32_t j = 0; j < qc; j++) {
+			TSNode q = ts_node_child(qualified, j);
+			if (!ts_node_is_named(q))
+				continue;
+			const char *qt = ts_node_type(q);
+			if (strcmp(qt, "identifier") == 0 && scope.empty())
+				scope = nodeText(q);
+			else if (strcmp(qt, "field_identifier") == 0)
+				method = nodeText(q);
+		}
+		if (!scope.empty() && !method.empty())
+			return scope + "::" + method;
+		return std::string();
+	};
+
+	// The node reached through the declarator chain may itself BE the
+	// qualified_identifier. It has no declarator field, so recursing past it
+	// would return "" and silently drop the scope of every out-of-class
+	// definition — check for it before descending.
+	if (strcmp(ts_node_type(node), "qualified_identifier") == 0)
+		return nameOf(node);
+
+	TSNode declarator = ts_node_child_by_field_name(node, "declarator", 10);
+	if (!ts_node_is_null(declarator))
+		return extractQualifiedName(declarator);
+
 	uint32_t count = ts_node_child_count(node);
 	for (uint32_t i = 0; i < count; i++) {
 		TSNode child = ts_node_child(node, i);
 		if (!ts_node_is_named(child))
 			continue;
 		const char *t = ts_node_type(child);
-		if (strcmp(t, "qualified_identifier") == 0) {
-			std::string scope;
-			std::string method;
-			uint32_t qc = ts_node_child_count(child);
-			for (uint32_t j = 0; j < qc; j++) {
-				TSNode q = ts_node_child(child, j);
-				if (!ts_node_is_named(q))
-					continue;
-				const char *qt = ts_node_type(q);
-				if (strcmp(qt, "identifier") == 0 &&
-				    scope.empty())
-					scope = nodeText(q);
-				else if (strcmp(qt, "field_identifier") == 0)
-					method = nodeText(q);
-			}
-			if (!scope.empty() && !method.empty())
-				return scope + "::" + method;
-			return "";
-		}
+		if (strcmp(t, "qualified_identifier") == 0)
+			return nameOf(child);
 		// Recurse into declarator wrappers that may contain the
 		// qualified_identifier (function_declarator, pointer_declarator).
 		if (strcmp(t, "function_declarator") == 0 ||

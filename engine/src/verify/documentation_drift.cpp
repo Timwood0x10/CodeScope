@@ -77,24 +77,259 @@ bool isWordBoundaryAfter(const std::string &text, size_t end_pos)
 	return !std::isalnum(static_cast<unsigned char>(next));
 }
 
-// Count how many times "go" appears as a standalone word (case-insensitive).
-// This avoids matching "Google", "Going", etc.
-size_t countStandaloneWord(const std::string &text, const std::string &word)
+} // namespace
+
+// ─── Claim context ──────────────────────────────────────────────
+//
+// A language mention is a CLAIM ABOUT THIS PROJECT only when its context says
+// so. Counting every occurrence anywhere in the README made this detector drift
+// itself: a "Supported Languages" capability matrix — or a benchmark table
+// listing other projects — was read as "this project is written in Python, Go,
+// TypeScript, …", and each of those was then reported as documented but absent
+// from the code. A drift detector that invents drift is worse than none,
+// because it teaches the reader to ignore its output.
+//
+// Two contexts are rejected, each judged from the mention's own line, the
+// header of the markdown table it sits in, and the nearest heading above it:
+//
+//   1. CAPABILITY — the mention is about what the tool can handle
+//      ("Supports C++, Python…", "| Language | Parser |"). The prose cues are
+//      deliberately narrow: "The cpp parser is fast" is a statement about this
+//      project, so a bare "parser" in prose must not veto it — but the same
+//      word as a COLUMN HEADER names the capability axis and does.
+//   2. THIRD PARTY — the mention is a value in a table whose header has a
+//      `Project` column ("| Project | Language | Index Time |"), so the
+//      language there describes the listed projects, not this one.
+//
+// Everything else still counts, so a genuine claim ("Written in Rust") with no
+// Rust in the tree is still reported as drift.
+
+struct ReadmeLine {
+	size_t start = 0;
+	size_t end = 0;
+	bool table = false; // markdown table row (leading '|')
+	int heading = -1; // nearest heading at or above this line
+	int table_header = -1; // header row of the table this line belongs to
+};
+
+/// Split the README into lines and annotate each with the context a language
+/// mention on it has to be judged against.
+std::vector<ReadmeLine> annotateReadmeLines(const std::string &text)
+{
+	std::vector<ReadmeLine> lines;
+	size_t pos = 0;
+	while (true) {
+		size_t nl = text.find('\n', pos);
+		if (nl == std::string::npos)
+			nl = text.size();
+		ReadmeLine l;
+		l.start = pos;
+		l.end = nl;
+		size_t first = pos;
+		while (first < nl &&
+		       std::isspace(static_cast<unsigned char>(text[first])))
+			first++;
+		l.table = first < nl && text[first] == '|';
+		lines.push_back(l);
+		if (nl >= text.size())
+			break;
+		pos = nl + 1;
+	}
+
+	int last_heading = -1;
+	for (size_t i = 0; i < lines.size(); i++) {
+		size_t first = lines[i].start;
+		while (first < lines[i].end &&
+		       std::isspace(static_cast<unsigned char>(text[first])))
+			first++;
+		if (first < lines[i].end && text[first] == '#')
+			last_heading = static_cast<int>(i);
+		lines[i].heading = last_heading;
+		if (lines[i].table) {
+			// The header is the topmost row of the contiguous table block.
+			size_t top = i;
+			while (top > 0 && lines[top - 1].table)
+				--top;
+			lines[i].table_header = static_cast<int>(top);
+		}
+	}
+	return lines;
+}
+
+/// Line index containing `pos`, or -1. READMEs are small, so the linear scan
+/// costs nothing next to the string search that produced `pos`.
+int lineOfMention(const std::vector<ReadmeLine> &lines, size_t pos)
+{
+	for (size_t i = 0; i < lines.size(); i++)
+		if (pos >= lines[i].start && pos <= lines[i].end)
+			return static_cast<int>(i);
+	return -1;
+}
+
+/// True when `haystack` contains any of `cues` (case-insensitive).
+bool containsAnyCue(const std::string &haystack, const char *const *cues,
+		    size_t cue_count)
+{
+	for (size_t i = 0; i < cue_count; i++)
+		if (findCaseInsensitive(haystack, cues[i], 0) !=
+		    std::string::npos)
+			return true;
+	return false;
+}
+
+// Prose cues: the sentence is about what the tool does to code. "supports"
+// covers "supports X" / "supported languages"; the CJK entries cover the same
+// phrasing in Chinese READMEs.
+const char *const kCapabilityProseCues[] = {
+	"supports", "supported", "supporting", "support", "can parse", "parses",
+	"parsed",   "handles",	 "支持",       "解析",	  "兼容",
+};
+
+// Header cues: the capability axis as a column name or section title.
+const char *const kCapabilityHeaderCues[] = {
+	"support",  "parse", "parser", "handle", "recogni",
+	"verified", "支持",  "解析",   "兼容",
+};
+
+// A table with a `Project` column lists OTHER projects, so its language values
+// describe those, not this repository.
+const char *const kThirdPartyHeaderCues[] = { "project" };
+
+// Handling cues: the surrounding paragraph documents what the indexer DOES to
+// files of that language — skips, excludes, rejects, or special-cases them.
+// Scanned over the whole paragraph, not the single line, because such notes
+// wrap: this repository's own "→ For Java: the Layer-1 names (test, docs,
+// samples, …) are also top-only" bullet only says "skipped" on the line above.
+//
+// The verb forms are listed rather than the bare stem "parse" so that a
+// sentence about this project's own "cpp parser" is still a claim — "parse" is
+// a substring of "parser", "parses"/"parsing" are not.
+const char *const kHandlingCues[] = {
+	"skip",	     "exclude",	  "filter",	"reject", "top-only", "handled",
+	"handles",   "namespace", "convention", "parses", "parsed",   "parsing",
+	"can parse", "支持",	  "解析",	"兼容",
+};
+
+/// The contiguous non-blank block of lines containing `idx` — a markdown
+/// paragraph or bullet group, which is how per-language handling notes appear.
+std::string paragraphAround(const std::string &text,
+			    const std::vector<ReadmeLine> &lines, size_t idx)
+{
+	auto blank = [&](size_t i) {
+		for (size_t p = lines[i].start; p < lines[i].end; p++)
+			if (!std::isspace(static_cast<unsigned char>(text[p])))
+				return false;
+		return true;
+	};
+	size_t lo = idx;
+	size_t hi = idx;
+	while (lo > 0 && !blank(lo - 1))
+		lo--;
+	while (hi + 1 < lines.size() && !blank(hi + 1))
+		hi++;
+	std::string out;
+	for (size_t i = lo; i <= hi; i++) {
+		out += text.substr(lines[i].start,
+				   lines[i].end - lines[i].start);
+		out += '\n';
+	}
+	return out;
+}
+
+/// True when the mention at `pos` is a capability statement or a fact about
+/// another project — i.e. not a claim about this one.
+bool isNonProjectContext(const std::string &text,
+			 const std::vector<ReadmeLine> &lines, size_t pos)
+{
+	const int idx = lineOfMention(lines, pos);
+	if (idx < 0)
+		return false;
+	const ReadmeLine &l = lines[static_cast<size_t>(idx)];
+
+	const std::string line = text.substr(l.start, l.end - l.start);
+	if (containsAnyCue(line, kCapabilityProseCues,
+			   sizeof(kCapabilityProseCues) /
+				   sizeof(kCapabilityProseCues[0])))
+		return true;
+	if (containsAnyCue(paragraphAround(text, lines,
+					   static_cast<size_t>(idx)),
+			   kHandlingCues,
+			   sizeof(kHandlingCues) / sizeof(kHandlingCues[0])))
+		return true;
+
+	const size_t header_cues = sizeof(kCapabilityHeaderCues) /
+				   sizeof(kCapabilityHeaderCues[0]);
+	const size_t third_party_cues = sizeof(kThirdPartyHeaderCues) /
+					sizeof(kThirdPartyHeaderCues[0]);
+
+	if (l.heading >= 0) {
+		const ReadmeLine &h = lines[static_cast<size_t>(l.heading)];
+		if (containsAnyCue(text.substr(h.start, h.end - h.start),
+				   kCapabilityHeaderCues, header_cues))
+			return true;
+	}
+	if (l.table_header >= 0) {
+		const ReadmeLine &t =
+			lines[static_cast<size_t>(l.table_header)];
+		const std::string header =
+			text.substr(t.start, t.end - t.start);
+		if (containsAnyCue(header, kCapabilityHeaderCues,
+				   header_cues) ||
+		    containsAnyCue(header, kThirdPartyHeaderCues,
+				   third_party_cues))
+			return true;
+	}
+	return false;
+}
+
+/// How a mention is matched in the README text.
+enum class MatchMode {
+	Substring, // case-insensitive substring ("c++", "python", ...)
+	Word, // case-insensitive standalone word ("Go", "Java")
+	WordCaseSensitive, // standalone case-sensitive word (bare "C")
+};
+
+/// Count the mentions of `needle` that are claims about this project.
+size_t countClaimMentions(const std::string &text,
+			  const std::vector<ReadmeLine> &lines,
+			  const std::string &needle, MatchMode mode)
 {
 	size_t count = 0;
+	if (mode == MatchMode::Substring) {
+		size_t pos = 0;
+		while ((pos = findCaseInsensitive(text, needle, pos)) !=
+		       std::string::npos) {
+			if (!isNonProjectContext(text, lines, pos))
+				count++;
+			pos += needle.size();
+		}
+		return count;
+	}
+	const bool case_sensitive = mode == MatchMode::WordCaseSensitive;
 	size_t pos = 0;
-	while ((pos = findCaseInsensitive(text, word, pos)) !=
-	       std::string::npos) {
-		size_t abs_end = pos + word.size();
-		if (isWordBoundary(text, pos) &&
-		    isWordBoundaryAfter(text, abs_end))
+	while (pos < text.size()) {
+		size_t found = case_sensitive ?
+				       text.find(needle, pos) :
+				       findCaseInsensitive(text, needle, pos);
+		if (found == std::string::npos)
+			break;
+		pos = found;
+		const size_t abs_end = pos + needle.size();
+		// "C++" / "C#" are their own spellings, not a bare-"C" mention.
+		// isWordBoundaryAfter() only tests word characters and '+' is not one,
+		// so without this the same "C++" occurrence was counted twice — once
+		// by the "c++" pattern and once by the bare-"C" rule.
+		const bool spelling_suffix =
+			abs_end < text.size() &&
+			(text[abs_end] == '+' || text[abs_end] == '#');
+		if (!spelling_suffix && isWordBoundary(text, pos) &&
+		    isWordBoundaryAfter(text, abs_end) &&
+		    !isNonProjectContext(text, lines, pos))
 			count++;
 		pos = abs_end;
 	}
 	return count;
 }
-
-} // namespace
 
 std::vector<LanguageClaim> extractLanguageClaims(const std::string &readme_text)
 {
@@ -143,15 +378,12 @@ std::vector<LanguageClaim> extractLanguageClaims(const std::string &readme_text)
 		}
 	}
 
+	const std::vector<ReadmeLine> lines = annotateReadmeLines(masked);
+
 	for (const auto &pat : kLanguagePatterns) {
-		std::string pattern(pat.pattern);
-		size_t count = 0;
-		size_t pos = 0;
-		while ((pos = findCaseInsensitive(masked, pattern, pos)) !=
-		       std::string::npos) {
-			count++;
-			pos += pattern.size();
-		}
+		const std::string pattern(pat.pattern);
+		const size_t count = countClaimMentions(masked, lines, pattern,
+							MatchMode::Substring);
 		if (count == 0)
 			continue;
 
@@ -177,7 +409,8 @@ std::vector<LanguageClaim> extractLanguageClaims(const std::string &readme_text)
 	// Special handling for "Go" as a standalone word — not part of
 	// kLanguagePatterns because "go" is too common as a substring.
 	{
-		size_t go_count = countStandaloneWord(masked, "go");
+		const size_t go_count = countClaimMentions(masked, lines, "go",
+							   MatchMode::Word);
 		if (go_count > 0) {
 			// Check if "go" is already claimed via "golang"
 			bool already = false;
@@ -201,7 +434,8 @@ std::vector<LanguageClaim> extractLanguageClaims(const std::string &readme_text)
 	// Special handling for "Java" — use word-boundary matching to avoid
 	// false positives on "JavaScript" which contains "Java" as a substring.
 	{
-		size_t java_count = countStandaloneWord(masked, "java");
+		const size_t java_count = countClaimMentions(
+			masked, lines, "java", MatchMode::Word);
 		if (java_count > 0) {
 			bool already = false;
 			for (auto &c : result) {
@@ -229,16 +463,8 @@ std::vector<LanguageClaim> extractLanguageClaims(const std::string &readme_text)
 	// consistent with the existing "c language" → "cpp" rule and with
 	// countEntitiesByLanguage's c/cpp equivalence.
 	{
-		size_t c_count = 0;
-		size_t pos = 0;
-		const std::string needle = "C";
-		while ((pos = masked.find(needle, pos)) != std::string::npos) {
-			size_t abs_end = pos + needle.size();
-			if (isWordBoundary(masked, pos) &&
-			    isWordBoundaryAfter(masked, abs_end))
-				c_count++;
-			pos = abs_end;
-		}
+		const size_t c_count = countClaimMentions(
+			masked, lines, "C", MatchMode::WordCaseSensitive);
 		if (c_count > 0) {
 			bool already = false;
 			for (auto &c : result) {

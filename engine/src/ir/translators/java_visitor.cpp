@@ -86,6 +86,10 @@ SemanticUnit *JavaVisitor::visit(TSTree *tree, const char *source,
 	import_aliases_.clear();
 
 	TSNode root_node = ts_tree_root_node(tree);
+	// Names this file defines, so a call to a locally declared `valueOf` /
+	// `format` / `map` ... is not mistaken for the JDK static of that name.
+	defined_names_.clear();
+	collectDefinedNames(root_node);
 	pushScope();
 	SourceRange root_loc = location(root_node);
 	uint64_t root_id = emitter_->emitVariable("", root_loc, 0);
@@ -259,7 +263,12 @@ void JavaVisitor::handleMethodInvocation(TSNode node, uint64_t parent_id)
 	// of them produced a call record — a systematic false negative. A call
 	// with a receiver can never be a JDK static, so it keeps its record and
 	// the receiver/interface evidence the Resolver needs.
-	if (!has_receiver && !name.empty() && isJavaBuiltin(name)) {
+	// Same exemption as Python, and it covers static imports: `import static
+	// foo.Bar.valueOf;` inserts `valueOf` into import_aliases_ (the last
+	// segment), so a statically imported user method is no longer dropped as
+	// the JDK's Integer.valueOf.
+	if (!has_receiver && !name.empty() && isJavaBuiltin(name) &&
+	    !isLocallyDefined(name) && import_aliases_.count(name) == 0) {
 		for (uint32_t i = 0; i < cnt; i++) {
 			TSNode c = ts_node_child(node, i);
 			if (!ts_node_is_named(c))

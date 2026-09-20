@@ -1,4 +1,5 @@
 #include "engine_internal.h"
+#include "engine_index_paths.h"
 #include "filter_policy.h"
 #include "platform_win.h"
 
@@ -86,6 +87,10 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json)
 		// stat). Without it, result->mtime defaults to 0 and a later
 		// incremental run's isFileUnchanged can never skip (M-13).
 		int64_t mtime = 0;
+		// The path as the caller gave it, used to OPEN the file (it must work
+		// regardless of the current directory). `path` above is the spelling
+		// the index stores — see existingSpellingFor.
+		std::string abs_path;
 	};
 	std::vector<FileJob> jobs;
 	std::string json(file_list_json);
@@ -123,9 +128,13 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json)
 			filter.setLangContext("java");
 		}
 
-		jobs.push_back({ path, lang,
-				 static_cast<size_t>(file_stat.st_size),
-				 static_cast<int64_t>(file_stat.st_mtime) });
+		// Reuse the spelling this file is already stored under, so an
+		// already-indexed file is not given a second identity.
+		const std::string stored =
+			indexSpellingFor(g_store.get(), project_id, path);
+		jobs.push_back(
+			{ stored, lang, static_cast<size_t>(file_stat.st_size),
+			  static_cast<int64_t>(file_stat.st_mtime), path });
 	}
 
 	if (jobs.empty())
@@ -306,7 +315,8 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json)
 						(int)(done * 100 /
 						      total_files));
 
-				std::string source = readFile(job.path.c_str());
+				std::string source =
+					readFile(job.abs_path.c_str());
 				if (source.empty()) {
 					store::bufferParseFailure(
 						project_id, job.path, job.lang,

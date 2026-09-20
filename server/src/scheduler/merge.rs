@@ -33,7 +33,7 @@ mod merge_driver;
 mod merge_fetch;
 
 pub(super) use merge_driver::merge_module_dbs;
-use merge_fetch::fetch_all_columns_excluding_rowid;
+use merge_fetch::{check_module_schema_consistency, fetch_all_columns_excluding_rowid};
 
 use std::process::{Command, Stdio};
 use std::time::Instant;

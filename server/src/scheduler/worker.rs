@@ -14,7 +14,7 @@
 //! `CODESCOPE_EXCLUDE_PATHS`.
 
 use serde_json::Value;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -33,6 +33,28 @@ use super::{DEFAULT_WORKER_TIMEOUT_SECS, ModuleResult, POLL_INTERVAL};
 /// `quarantine_exclude` — when `Some(patterns)`, sets the
 /// `CODESCOPE_EXCLUDE_PATHS` env var so the worker's FilterPolicy
 /// skips the listed files. Patterns are comma-separated globs.
+/// `dir/**` for every subdirectory of `dir`, comma-separated: the globs that
+/// keep the root module's worker from descending into another module's files.
+///
+/// `dir/**` rather than a bare `dir` because only the `/**` form makes
+/// `FilterPolicy` skip a directory AND its contents (see
+/// `filter_policy_detect.cpp`). Sorted so the exclude string is stable.
+fn subdirectory_excludes(dir: &str) -> String {
+    let mut pats: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            if !entry.path().is_dir() {
+                continue;
+            }
+            if let Some(name) = entry.file_name().to_str() {
+                pats.push(format!("{}/**", name));
+            }
+        }
+    }
+    pats.sort();
+    pats.join(",")
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_module_worker(
     exe: &str,
@@ -46,8 +68,23 @@ pub(super) fn run_module_worker(
     quarantine_exclude: Option<&str>,
     keep_db: bool,
 ) -> ModuleResult {
-    let module_dir = Path::new(project_dir).join(module_name);
-    let module_db = format!("{}_{}.db", db_prefix, module_name);
+    // The root module (see discover::ROOT_MODULE_NAME) owns the files that sit
+    // directly in the target directory, so its worker is rooted AT the project
+    // directory and excludes every subdirectory: each one is either another
+    // module's root or a directory the discovery pass skipped. Excluding them
+    // is what keeps the split exact — the worker's own walk path is otherwise
+    // unchanged, so quarantine (which also works through
+    // CODESCOPE_EXCLUDE_PATHS) keeps working for this module too.
+    let is_root_module = module_name == crate::discover::ROOT_MODULE_NAME;
+    let module_dir = if is_root_module {
+        PathBuf::from(project_dir)
+    } else {
+        Path::new(project_dir).join(module_name)
+    };
+    // File name for the module DB. "." would give the unreadable name
+    // "<prefix>_..db".
+    let module_key = if is_root_module { "root" } else { module_name };
+    let module_db = format!("{}_{}.db", db_prefix, module_key);
 
     // Normally start from a clean DB file — a stale DB would have
     // outdated graph_nodes from a previous (possibly crashed) run.
@@ -60,7 +97,11 @@ pub(super) fn run_module_worker(
         let _ = std::fs::remove_file(format!("{}-shm", module_db));
     }
 
-    let project_name = format!("parallel-{}", module_name);
+    let project_name = if is_root_module {
+        "parallel-root".to_string()
+    } else {
+        format!("parallel-{}", module_name)
+    };
     let workers_str = workers.to_string();
     // Pass the scheduler-assigned project_id to the worker. The worker
     // (main.rs) treats a non-zero value as a forced project_id and skips
@@ -94,7 +135,19 @@ pub(super) fn run_module_worker(
     // the merged main.db where relation ids are already global, so CSR-based
     // graph queries don't return dangling neighbor ids.
     cmd.env("CODESCOPE_DEFER_CSR", "1");
-    if let Some(exclude) = quarantine_exclude {
+    // The root module always excludes the subdirectories; a quarantine retry
+    // adds the files it proved to be crashers on top of that.
+    let root_exclude = if is_root_module {
+        subdirectory_excludes(project_dir)
+    } else {
+        String::new()
+    };
+    let exclude = match (root_exclude.is_empty(), quarantine_exclude) {
+        (false, Some(q)) => Some(format!("{},{}", root_exclude, q)),
+        (false, None) => Some(root_exclude),
+        (true, q) => q.map(|s| s.to_string()),
+    };
+    if let Some(exclude) = exclude.as_deref() {
         cmd.env("CODESCOPE_EXCLUDE_PATHS", exclude);
     }
     cmd.stdout(Stdio::piped()).stderr(Stdio::inherit());
@@ -334,12 +387,13 @@ pub(super) fn make_relative_glob(abs_path: &str, module_dir: &str) -> String {
     // crashing `a/foo.cpp` also excluded the healthy `c/foo.cpp`, silently
     // dropping it from the index while the run still reported success.
     //
-    // Two spellings are emitted because the root the FilterPolicy matches
-    // against differs by call site: the retry worker is spawned with the module
-    // dir as its root (module-relative paths), while a project-rooted worker
-    // sees `module/<rel>`. Both forms below stay directory-precise, so neither
-    // can match an unrelated same-named file.
-    format!("{},*/{}", rel_str, rel_str)
+    // One `**/` pattern covers every root the FilterPolicy may match against:
+    // `**` spans '/', so it matches both the module-relative form (`a/foo.cpp`,
+    // the retry worker is rooted at the module dir) and a project-rooted form
+    // (`module/a/foo.cpp`), at any nesting depth. Neither a bare `rel` nor
+    // `*/rel` would: the pattern is matched against the whole relative path and
+    // `*` does not cross '/' (see FilterPolicy::loadExcludeEnv).
+    format!("**/{}", rel_str)
 }
 
 /// Run one chunk worker subprocess.
@@ -582,12 +636,26 @@ mod tests {
     }
 
     #[test]
+    fn test_subdirectory_excludes_use_recursive_globs() {
+        // A bare "sub" matches nothing in FilterPolicy, so only "sub/**" can
+        // stop the root module's worker from descending into another module.
+        assert_eq!(subdirectory_excludes("/nonexistent/dir/xyz"), "");
+        let dir = std::env::temp_dir().join("codescope_test_subdir_excludes");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        std::fs::create_dir_all(dir.join("b")).unwrap();
+        std::fs::write(dir.join("f.go"), "package main").unwrap();
+        assert_eq!(subdirectory_excludes(dir.to_str().unwrap()), "a/**,b/**");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn test_make_relative_glob_keeps_the_directory() {
         let g = make_relative_glob("/abs/path/engine/src/parser.cpp", "/abs/path/engine");
-        // Module-relative form first (the retry worker is rooted at the module
-        // dir), plus the project-rooted spelling. Neither may be the bare
-        // basename — `*/parser.cpp` also matched every other parser.cpp.
-        assert_eq!(g, "src/parser.cpp,*/src/parser.cpp");
+        // `**/` spans separators, so one pattern covers the file at any depth
+        // and under either root. It must never degrade to the bare basename:
+        // `*/parser.cpp` also matched every other parser.cpp.
+        assert_eq!(g, "**/src/parser.cpp");
     }
 
     #[test]
@@ -597,8 +665,8 @@ mod tests {
         let a = make_relative_glob("/m/a/foo.cpp", "/m");
         let c = make_relative_glob("/m/c/foo.cpp", "/m");
         assert_ne!(a, c);
-        assert_eq!(a, "a/foo.cpp,*/a/foo.cpp");
-        assert_eq!(c, "c/foo.cpp,*/c/foo.cpp");
+        assert_eq!(a, "**/a/foo.cpp");
+        assert_eq!(c, "**/c/foo.cpp");
     }
 
     #[test]

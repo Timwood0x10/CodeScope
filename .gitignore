@@ -10,6 +10,10 @@
 .codescope/
 .cursh/
 .mcp.json
+# Agent worktrees. These are full copies of the repository, so indexing them
+# doubles every symbol and makes by-name lookup ambiguous (find_callers returns
+# candidates instead of callers). They must never be part of the project.
+.kilo/
 
 
 # IDE and Editors

@@ -54,11 +54,11 @@ cargo build --release
 ## 三、索引项目
 
 ```bash
-# 索引整个项目
-./target/release/codescope cli index_project '{"project_path":"/path/to/your/project"}'
+# 索引整个项目（按模块派生子进程，内存相互隔离）
+./target/release/codescope index-parallel /path/to/your/project
 
-# 或者用内置调度器（更快，适合大项目）
-codescope index-parallel /path/to/your/project
+# 大项目可调参：--workers 解析核心总数（默认 8）、--parallel 并发模块 worker 上限（默认 4）
+./target/release/codescope index-parallel /path/to/your/project --workers 8 --parallel 4
 ```
 
 ## 四、启动 MCP 服务器

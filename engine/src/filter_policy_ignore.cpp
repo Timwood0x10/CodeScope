@@ -8,9 +8,10 @@
 
 // ─── Constants ─────────────────────────────────────────────────
 // Env var name for user-specified exclude paths. Comma-separated glob
-// patterns (e.g. "test/*,docs/*,vendor/*,third_party/*") that extend
+// patterns (e.g. "test/**,docs/**,vendor/**,third_party/**") that extend
 // the built-in skip list at index time to reduce graph_nodes count on
-// very large projects. See FilterPolicy::loadExcludeEnv().
+// very large projects. Note `*` does not cross '/', so a subtree needs `**`.
+// See FilterPolicy::loadExcludeEnv().
 static constexpr const char *kExcludePathsEnv = "CODESCOPE_EXCLUDE_PATHS";
 
 // ── Static gitignore matching helpers ────────────────────────
@@ -203,11 +204,15 @@ bool FilterPolicy::loadExcludeEnv()
 	// under the FTS threshold.
 	//
 	// Default suggestions (NOT applied automatically — set explicitly):
-	//   CODESCOPE_EXCLUDE_PATHS="test/*,docs/*,vendor/*,third_party/*"
+	//   CODESCOPE_EXCLUDE_PATHS="test/**,docs/**,vendor/**,third_party/**"
 	//
-	// Patterns are glob-matched against the relative path from the
-	// project root (e.g. "test/*" matches "test/foo.cpp" and
-	// "test/sub/bar.py" via the existing globMatch helper).
+	// Patterns are glob-matched against the FULL relative path from the project
+	// root, and `*` does not cross '/': "test/*" matches "test/foo.cpp" but NOT
+	// "test/sub/bar.py" — a subtree needs "test/**" ("**" spans separators).
+	// Directories are matched as well as files, but since the match is on the
+	// whole path only `dir/**` prunes a subtree; a bare "dir" or "dir/" matches
+	// nothing on its own. This comment used to claim "test/*" covered nested
+	// files, which made the suggested patterns exclude almost nothing.
 	const char *env = getenv(kExcludePathsEnv);
 	if (!env || !*env) {
 		// Env var not set or empty — nothing to load.

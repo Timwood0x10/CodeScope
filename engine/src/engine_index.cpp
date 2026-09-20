@@ -1,4 +1,5 @@
 #include "engine_internal.h"
+#include "engine_index_paths.h"
 #include "filter_policy.h"
 #include "platform_win.h"
 #include "async_knowledge.h"
@@ -63,8 +64,18 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 			fsize = static_cast<int64_t>(file_stat_buf.st_size);
 		}
 
+		// Store the spelling the index already uses for this file (see
+		// engine_index_paths.h): callers pass an absolute path, while the
+		// walk-based index may have stored `./src/a.go`, and writing the
+		// absolute form verbatim gave the same file a second identity.
+		// `file_path` stays the real path for the file-system work below (the
+		// LSP block opens it).
+		const std::string stored_path =
+			indexSpellingFor(g_store.get(), project_id, file_path);
+		const char *store_path = stored_path.c_str();
+
 		// Parse
-		TSTree *tree = g_parser->parse(file_path, source.c_str(),
+		TSTree *tree = g_parser->parse(store_path, source.c_str(),
 					       language, source.size());
 		if (!tree) {
 			return dupString("{\"ok\":false,\"error\":\"" +
@@ -95,7 +106,7 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 		std::unique_ptr<ir::TranslationUnit> unit_guard;
 		auto visitor = ir::createJsVisitor(language);
 		if (visitor) {
-			su = visitor->visit(tree, source.c_str(), file_path);
+			su = visitor->visit(tree, source.c_str(), store_path);
 			su_guard.reset(su);
 		}
 		if (!su) {
@@ -107,7 +118,7 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 						 "for language\"}");
 			}
 			unit_raw = translator->translate(tree, source.c_str(),
-							 file_path);
+							 store_path);
 			unit_guard.reset(unit_raw);
 		}
 		ts_tree_delete(tree);
@@ -119,7 +130,7 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 
 		// ── Convert IR → store::FileResult (flat records) ──────
 		store::FileResult fr;
-		fr.file_path = file_path;
+		fr.file_path = store_path;
 		fr.language = language;
 		fr.mtime = mtime;
 		fr.fsize = fsize;
@@ -240,7 +251,7 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 					rec.loc.start_col = n->loc.start_col;
 					rec.loc.end_row = n->loc.end_row;
 					rec.loc.end_col = n->loc.end_col;
-					rec.file_path = file_path;
+					rec.file_path = store_path;
 					fr.records.push_back(std::move(rec));
 					for (auto *c : n->children)
 						flatten(c, my_id);
@@ -258,7 +269,7 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 		// never accumulates duplicates.
 		g_store->beginTransaction();
 		std::string hash = simpleHash(source);
-		g_store->upsertFile(project_id, file_path, language,
+		g_store->upsertFile(project_id, store_path, language,
 				    hash.c_str());
 		if (!g_store->insertFileResultBatch(
 			    project_id, std::vector<store::FileResult>{ fr })) {
@@ -278,7 +289,7 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 		{
 			g_store->beginTransaction();
 			std::unordered_set<std::string> changed{ std::string(
-				file_path) };
+				store_path) };
 			if (!g_store->buildGraph(project_id, true, &changed)) {
 				g_store->rollbackTransaction();
 				return dupString(
@@ -354,7 +365,7 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 			}
 			sqlite3_bind_int64(st, 1,
 					   static_cast<int64_t>(project_id));
-			sqlite3_bind_text(st, 2, file_path, -1, SQLITE_STATIC);
+			sqlite3_bind_text(st, 2, store_path, -1, SQLITE_STATIC);
 			if (sqlite3_step(st) == SQLITE_ROW)
 				n = sqlite3_column_int64(st, 0);
 			sqlite3_finalize(st);

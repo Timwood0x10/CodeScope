@@ -86,6 +86,9 @@ SemanticUnit *RustVisitor::visit(TSTree *tree, const char *source,
 	use_aliases_.clear();
 
 	TSNode root_node = ts_tree_root_node(tree);
+	// Names this file defines (see collectDefinedNames).
+	defined_names_.clear();
+	collectDefinedNames(root_node);
 	pushScope();
 	SourceRange root_loc = location(root_node);
 	uint64_t root_id = emitter_->emitVariable("", root_loc, 0);

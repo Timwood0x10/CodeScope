@@ -121,11 +121,15 @@ pub(crate) fn merge_module_dbs(main_db: &str, module_db_paths: &[String]) -> Mer
     // costs ~59ms, so the old per-table loop (~13 spawns) dominated the merge
     // (~770ms of the observed ~1.4s). Column order from PRAGMA table_info
     // matches SELECT *, so inline SELECTs stay byte-identical.
+    // Every table present in the main DB is fetched, not only the
+    // skip_rowid/remap ones: the same fetch feeds the schema-consistency check
+    // below, which has to compare EVERY table the merge copies — a plain
+    // `SELECT *` table whose modules disagree aborts the script mid-way, after
+    // earlier modules were committed. Still one spawn: the query already
+    // batches all tables with UNION ALL.
     let mut cols_to_fetch: Vec<&'static str> = Vec::new();
     for spec in TABLE_SPECS {
-        if main_db_existing_tables.contains(spec.name)
-            && (spec.skip_rowid || !spec.remap_cols.is_empty())
-        {
+        if main_db_existing_tables.contains(spec.name) {
             cols_to_fetch.push(spec.name);
         }
     }
@@ -145,6 +149,23 @@ pub(crate) fn merge_module_dbs(main_db: &str, module_db_paths: &[String]) -> Mer
             };
         }
     };
+    // Fail BEFORE writing anything if the module DBs disagree about the schema.
+    // The merge generates its column lists from module 0 and applies them to
+    // every module, so a module left over from another build (or preserved by
+    // an incremental run) either loses its extra column silently or aborts the
+    // script with earlier modules already committed. See
+    // check_module_schema_consistency.
+    if let Err(e) = check_module_schema_consistency(module_db_paths, &all_cols) {
+        return MergeResult {
+            merged: false,
+            main_db_path: main_db.to_string(),
+            tables_merged: 0,
+            rows_merged: 0,
+            duration_ms: start.elapsed().as_millis() as u64,
+            error: Some(e),
+        };
+    }
+
     let mut skip_rowid_cols: std::collections::HashMap<&'static str, String> =
         std::collections::HashMap::new();
     let mut remap_table_cols: std::collections::HashMap<&'static str, Vec<String>> =

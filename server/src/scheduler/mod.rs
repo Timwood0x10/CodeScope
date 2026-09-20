@@ -211,8 +211,14 @@ pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> S
     let modules = match discover_val["modules"].as_array() {
         Some(a) if !a.is_empty() => a,
         _ => {
+            // Nothing was discovered to index. `ok: true` here made an empty
+            // index indistinguishable from a successful one and hid the
+            // discovery defect that produced it (#22: a flat project's own
+            // files were never counted as a module). A run that indexed no
+            // files did not complete, and now says so.
             return json!({
-                "ok": true,
+                "ok": false,
+                "complete": false,
                 "project_path": project_path,
                 "duration_ms": start.elapsed().as_millis() as u64,
                 "success": 0,
@@ -651,6 +657,22 @@ mod tests {
         assert!(!run_complete(1, true), "a failed worker = partial index");
         assert!(!run_complete(0, false), "an unmerged run has no main.db");
         assert!(!run_complete(2, false));
+    }
+
+    #[test]
+    fn test_empty_project_reports_incomplete() {
+        // Regression (#23): a run that discovered no modules returned ok=true
+        // with no `complete` field, so an empty index looked like a successful
+        // one — and hid the discovery defect that produced it (#22).
+        let dir = std::env::temp_dir().join("codescope_test_empty_project");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = index_parallel(dir.to_str().unwrap(), 1, 1);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["ok"], false, "an empty index is not a success");
+        assert_eq!(v["complete"], false);
+        assert_eq!(v["modules"].as_array().unwrap().len(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

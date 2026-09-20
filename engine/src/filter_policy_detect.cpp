@@ -313,10 +313,11 @@ bool FilterPolicy::shouldSkipEntry(const std::string &rel_path,
 	}
 
 	// 3. User-specified exclude patterns (CODESCOPE_EXCLUDE_PATHS env var).
-	//    Glob-matched against the full relative path so patterns like
-	//    "test/*" or "vendor/**" skip both the directory and its contents.
-	//    Applied LAST so it acts as a user override on top of all built-in
-	//    filters. See loadExcludeEnv() for the env var format.
+	//    Glob-matched against the FULL relative path, where `*` does not cross
+	//    '/' and `**` does. Only "vendor/**" skips a directory AND its
+	//    contents; "vendor/*" stops at the first level and a bare "vendor"
+	//    matches nothing. Applied LAST so it acts as a user override on top of
+	//    all built-in filters. See loadExcludeEnv() for the env var format.
 	for (const auto &pat : exclude_patterns_) {
 		if (globMatch(pat, normalized))
 			return true;
