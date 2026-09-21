@@ -169,8 +169,27 @@ impl Server {
             }
         }
 
+        // The client's requested revision, if it sent one. This server speaks
+        // exactly one version, so the answer is always
+        // SUPPORTED_PROTOCOL_VERSION — but a client that asked for something
+        // else deserves to see it acknowledged rather than silently ignored,
+        // and the log is where that decision is recorded.
+        if let Some(requested) = params
+            .as_ref()
+            .and_then(|p| p.get("protocolVersion"))
+            .and_then(|v| v.as_str())
+            && requested != SUPPORTED_PROTOCOL_VERSION
+        {
+            eprintln!(
+                "initialize: client requested MCP protocol {}; this server speaks {} — replying with \
+                 the version it supports, the client decides whether to continue (see the MCP \
+                 lifecycle's version negotiation)",
+                requested, SUPPORTED_PROTOCOL_VERSION
+            );
+        }
+
         let result = InitializeResult {
-            protocol_version: "2024-11-05".to_string(),
+            protocol_version: SUPPORTED_PROTOCOL_VERSION.to_string(),
             capabilities: ServerCapabilities {
                 tools: ToolCapability { list_changed: true },
             },
@@ -234,11 +253,11 @@ impl Server {
         // Note: background enhancement after `scan_project` is triggered inside
         // `tools::execute`, which is the natural owner for tool-specific logic.
 
-        // Determine if the result indicates an error (JSON with non-null "error" key)
-        let is_error = serde_json::from_str::<serde_json::Value>(&result)
-            .ok()
-            .and_then(|v| v.get("error").cloned())
-            .and_then(|e| if e.is_null() { None } else { Some(true) });
+        let is_error = if tool_result_is_error(&result) {
+            Some(true)
+        } else {
+            None
+        };
 
         let content = vec![TextContent {
             content_type: "text",
@@ -290,5 +309,73 @@ fn json_response(
                 "data": e.to_string()
             }
         }),
+    }
+}
+
+/// Whether a tool result must be reported to the client as a failure.
+///
+/// MCP has exactly one protocol-level failure signal (`isError`) while the
+/// payloads carry their own verdict in the data, so this decides how the two
+/// line up. The old rule was "the parsed result has a non-null `error` key",
+/// which missed half of the codebase's own convention: the schedulers report
+/// "this run did not produce a usable index" as a top-level `"ok": false` —
+/// an empty project, a failed worker, or a failed merge, with the cause nested
+/// under `merge.error` or in a `note` — so a client watching `isError` saw a
+/// failed run as a successful call. Two real payloads were being reported that
+/// way: `{"ok":false,...,"note":"no source modules found"}` (scheduler/mod.rs)
+/// and the run summary `{"ok":complete,...,"merge":{"error":...}}`.
+///
+/// Non-JSON is a failure too: every handler's contract is JSON out, so a
+/// result that does not parse is a broken tool response rather than a success.
+///
+/// Deliberately narrow: only a non-null TOP-LEVEL `error` and a top-level
+/// `ok == false` count. A payload that merely mentions the word error
+/// somewhere deeper is not a failure.
+fn tool_result_is_error(result: &str) -> bool {
+    match serde_json::from_str::<serde_json::Value>(result) {
+        Ok(v) => {
+            let error_set = v.get("error").map(|e| !e.is_null()).unwrap_or(false);
+            let not_ok = v
+                .get("ok")
+                .map(|o| o == &serde_json::Value::Bool(false))
+                .unwrap_or(false);
+            error_set || not_ok
+        }
+        Err(_) => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tool_result_is_error;
+
+    #[test]
+    fn test_tool_result_is_error_covers_both_failure_conventions() {
+        // Success shapes have to stay successes — `detect_changes` returns a
+        // literal null error on the happy path, and many tools return arrays.
+        assert!(!tool_result_is_error(r#"{"error":null,"modified":[]}"#));
+        assert!(!tool_result_is_error(
+            r#"{"claim_id":1,"verdict":"Unknown"}"#
+        ));
+        assert!(!tool_result_is_error(r#"[{"category":"drift"}]"#));
+        assert!(!tool_result_is_error(r#"{"ok":true,"files":[]}"#));
+        // `"error"` as ordinary data deeper down is not a failure signal.
+        assert!(!tool_result_is_error(r#"{"files":[{"error":"parse"}]}"#));
+
+        // The convention that was being missed: a run that says it did not
+        // produce a usable index, with no top-level error key.
+        assert!(tool_result_is_error(
+            r#"{"ok":false,"complete":false,"modules":[],"note":"no source modules found"}"#
+        ));
+        assert!(tool_result_is_error(
+            r#"{"ok":false,"complete":false,"merge":{"merged":false,"error":"boom"},"fail":2}"#
+        ));
+
+        // And the one the old rule did catch.
+        assert!(tool_result_is_error(
+            r#"{"error":"claim field is required"}"#
+        ));
+        // A result that is not JSON at all is a broken response, not a success.
+        assert!(tool_result_is_error("panic: index out of bounds"));
     }
 }

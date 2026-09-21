@@ -20,7 +20,129 @@ use super::*;
 /// See module docs for the strategy (schema-preserving copy + id remap
 /// for modules i > 0). project_ids are NOT remapped — the scheduler
 /// assigns unique project_ids to each worker.
-pub(crate) fn merge_module_dbs(main_db: &str, module_db_paths: &[String]) -> MergeResult {
+/// Make the merged DB describe exactly ONE project.
+///
+/// Every module/worker DB carries its own `projects` row and its own
+/// project_id (`worker_id + 1`), and the merge keeps those ids — its remap is
+/// for entity/relation ids. So the merged file used to contain N partial
+/// "projects" and no row for the directory that was actually indexed:
+/// CodeScope's 1788 entities landed as project 1 → 1346 and project 2 → 442,
+/// goagent's 24987 as 1 → 22517, 2 → 1298, 3 → 969, 4 → 160, 5 → …. A query
+/// with `project_id=1` therefore saw a *partial* project and reported it as
+/// the whole thing, and a consumer that resolves a project by path — the MCP
+/// server — found no row at all and silently re-indexed from scratch.
+///
+/// The rows are rewritten to one id (1, the first worker's) and the `projects`
+/// row for the indexed directory is written. Tables are discovered by asking
+/// which ones have a `project_id` column (39 of them here), not by a hardcoded
+/// list, so a new table cannot quietly keep stale ids.
+///
+/// @param main_db      The merged DB (already built from the module DBs).
+/// @param project_path The directory that was indexed — stored so
+///                     `get_project_id_by_path` can adopt this DB.
+/// @return Ok(()) when the DB now describes one project, Err(summary) else.
+fn unify_project(main_db: &str, project_path: &str) -> Result<(), String> {
+    let list_sql = "SELECT m.name FROM sqlite_master m WHERE m.type='table' \
+                    AND m.name NOT LIKE 'sqlite_%' AND EXISTS (SELECT 1 FROM \
+                    pragma_table_info(m.name) WHERE name='project_id') ORDER BY m.name;";
+    let output = Command::new("sqlite3")
+        .arg(main_db)
+        .arg(list_sql)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| {
+            format!(
+                "unify_project spawn failed: {} [module=scheduler, method=unify_project]",
+                e
+            )
+        })?;
+    if !output.status.success() {
+        return Err(format!(
+            "unify_project table discovery failed: {} [module=scheduler, method=unify_project]",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let tables: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    if tables.is_empty() {
+        return Err(
+            "unify_project found no project-scoped tables — the merged DB does not \
+             look like an index [module=scheduler, method=unify_project]"
+                .to_string(),
+        );
+    }
+
+    // Quote identifiers and string literals: table names come from sqlite_master
+    // and the path from the caller, so neither may be pasted in raw.
+    let quote_ident = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
+    let quote_str = |s: &str| format!("'{}'", s.replace('\'', "''"));
+    let name = project_path
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or(project_path);
+
+    let mut sql = String::from("BEGIN;\n");
+    // The merged DB is built from the module DBs' data tables, so it may not
+    // have `projects` at all (the engine creates it on open, which has not
+    // happened yet). DDL here is byte-identical to the engine's, so whichever
+    // comes first the schema is the same. Then any per-worker rows go: the
+    // merged DB gets exactly one.
+    sql.push_str(
+        "CREATE TABLE IF NOT EXISTS projects (\n\
+             id INTEGER PRIMARY KEY AUTOINCREMENT,\n\
+             root_path TEXT NOT NULL UNIQUE,\n\
+             name TEXT NOT NULL,\n\
+             created_at TEXT DEFAULT (datetime('now'))\n\
+         );\n",
+    );
+    sql.push_str("DELETE FROM projects;\n");
+    sql.push_str(&format!(
+        "INSERT INTO projects (id, root_path, name) VALUES (1, {}, {});\n",
+        quote_str(project_path),
+        quote_str(name)
+    ));
+    for t in &tables {
+        sql.push_str(&format!(
+            "UPDATE {} SET project_id=1 WHERE project_id<>1;\n",
+            quote_ident(t)
+        ));
+    }
+    sql.push_str("COMMIT;\n");
+
+    let output = Command::new("sqlite3")
+        .arg(main_db)
+        .arg(&sql)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| {
+            format!(
+                "unify_project exec failed: {} [module=scheduler, method=unify_project]",
+                e
+            )
+        })?;
+    if !output.status.success() {
+        return Err(format!(
+            "unify_project could not unify {} tables: {} [module=scheduler, method=unify_project]",
+            tables.len(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn merge_module_dbs(
+    main_db: &str,
+    module_db_paths: &[String],
+    project_path: &str,
+) -> MergeResult {
     let start = Instant::now();
     // v0.6 (perf): per-phase timers so the merge cost can be attributed to
     // WAL checkpointing, schema introspection, or the final sqlite3 exec.
@@ -408,6 +530,20 @@ pub(crate) fn merge_module_dbs(main_db: &str, module_db_paths: &[String]) -> Mer
         .and_then(|l| l.trim().parse::<u64>().ok())
         .unwrap_or(0);
 
+    // The merged file must describe ONE project before anyone reads it: the
+    // per-worker project_ids would otherwise leave it looking like N partial
+    // projects with no way to find the one that was indexed. See unify_project.
+    if let Err(e) = unify_project(main_db, project_path) {
+        return MergeResult {
+            merged: false,
+            main_db_path: main_db.to_string(),
+            tables_merged: actual_tables_merged,
+            rows_merged,
+            duration_ms: start.elapsed().as_millis() as u64,
+            error: Some(e),
+        };
+    }
+
     // v0.6 (perf): attribute merge time so a large-project merge (rust:
     // 3.3s / 4.86M rows) can be targeted: WAL checkpointing of the module
     // DBs, schema introspection, column introspection, or the final sqlite3
@@ -433,5 +569,76 @@ pub(crate) fn merge_module_dbs(main_db: &str, module_db_paths: &[String]) -> Mer
         rows_merged,
         duration_ms: start.elapsed().as_millis() as u64,
         error: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unify_project;
+    use std::process::{Command, Stdio};
+
+    fn sqlite(db: &str, sql: &str) -> String {
+        let out = Command::new("sqlite3")
+            .arg(db)
+            .arg(sql)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "sqlite3 failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn test_unify_project_makes_one_project_of_many_workers() {
+        // Regression (#26): the merge kept each worker's own project_id, so the
+        // merged DB looked like N partial projects with no row for the indexed
+        // directory — a query with project_id=1 saw only the first worker's
+        // rows, and a consumer resolving the project by path found nothing.
+        let path = format!("/tmp/codescope_unify_{}.db", std::process::id());
+        let _ = std::fs::remove_file(&path);
+        sqlite(
+            &path,
+            "CREATE TABLE projects (id INTEGER PRIMARY KEY, root_path TEXT UNIQUE, name TEXT);
+                       CREATE TABLE entity (id INTEGER PRIMARY KEY, project_id INTEGER, name TEXT);
+                       CREATE TABLE relation (id INTEGER PRIMARY KEY, project_id INTEGER);
+                       CREATE TABLE unrelated (id INTEGER PRIMARY KEY, note TEXT);",
+        );
+        // Three "workers", each with its own projects row and project_id.
+        sqlite(
+            &path,
+            "INSERT INTO projects VALUES (1,'/w/1','w1'),(2,'/w/2','w2'),(3,'/w/3','w3');
+             INSERT INTO entity VALUES (1,1,'a'),(2,2,'b'),(3,2,'c'),(4,3,'d');
+             INSERT INTO relation VALUES (1,2),(2,3);
+             INSERT INTO unrelated VALUES (1,'x');",
+        );
+
+        unify_project(&path, "/real/project").expect("unify");
+
+        assert_eq!(sqlite(&path, "SELECT COUNT(*) FROM projects;"), "1");
+        assert_eq!(sqlite(&path, "SELECT id FROM projects;"), "1");
+        assert_eq!(
+            sqlite(&path, "SELECT root_path FROM projects;"),
+            "/real/project"
+        );
+        assert_eq!(sqlite(&path, "SELECT name FROM projects;"), "project");
+        // Every project-scoped row now belongs to it, and nothing was lost.
+        assert_eq!(
+            sqlite(&path, "SELECT COUNT(DISTINCT project_id) FROM entity;"),
+            "1"
+        );
+        assert_eq!(sqlite(&path, "SELECT COUNT(*) FROM entity;"), "4");
+        assert_eq!(
+            sqlite(&path, "SELECT COUNT(DISTINCT project_id) FROM relation;"),
+            "1"
+        );
+        // A table without project_id is left alone.
+        assert_eq!(sqlite(&path, "SELECT COUNT(*) FROM unrelated;"), "1");
+        let _ = std::fs::remove_file(&path);
     }
 }

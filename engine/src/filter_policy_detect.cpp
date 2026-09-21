@@ -209,9 +209,21 @@ bool FilterPolicy::shouldSkipPath(const std::string &rel_path,
 		}
 	}
 
+	// Rules anchored at the PROJECT root (.gitignore and the exclude list) are
+	// matched against the path as that root sees it: for a per-module worker
+	// scanning `<project_root>/<module>`, the module component has to be put
+	// back, or `**/build-*/` can never match a path that starts inside the
+	// module. Empty prefix = whole-project scan, i.e. the path as given.
+	std::string rule_path_storage;
+	const std::string &rule_path =
+		scan_prefix_.empty() ?
+			rel_path :
+			(rule_path_storage = scan_prefix_ + rel_path,
+			 rule_path_storage);
+
 	// 2. Check against .gitignore rules (whole-path matching)
 	if (!gitignore_rules_.empty() &&
-	    gitignoreMatches(gitignore_rules_, rel_path, is_dir))
+	    gitignoreMatches(gitignore_rules_, rule_path, is_dir))
 		return true;
 
 	// 3. Check against .codescopeignore raw patterns
@@ -230,19 +242,20 @@ bool FilterPolicy::shouldSkipPath(const std::string &rel_path,
 		std::string normalized =
 			dir_only ? pat.substr(0, pat.size() - 1) : pat;
 
-		// Anchored: match from start
+		// Anchored: match from start. Anchored patterns are relative to the
+		// project root the file was loaded from, hence `rule_path`.
 		if (anchored) {
-			if (rel_path == normalized.substr(1) ||
-			    (rel_path.size() > normalized.size() - 1 &&
-			     rel_path.compare(0, normalized.size() - 1,
-					      normalized.substr(1)) == 0 &&
-			     rel_path[normalized.size() - 1] == '/'))
+			if (rule_path == normalized.substr(1) ||
+			    (rule_path.size() > normalized.size() - 1 &&
+			     rule_path.compare(0, normalized.size() - 1,
+					       normalized.substr(1)) == 0 &&
+			     rule_path[normalized.size() - 1] == '/'))
 				return true;
 			continue;
 		}
 
 		// Unanchored: check every path component
-		std::istringstream ss2(rel_path);
+		std::istringstream ss2(rule_path);
 		std::string comp;
 		while (std::getline(ss2, comp, '/')) {
 			if (comp == normalized)
@@ -326,7 +339,7 @@ bool FilterPolicy::shouldSkipEntry(const std::string &rel_path,
 	return false;
 }
 
-bool FilterPolicy::loadIgnoreFile(const std::string &project_root)
+bool FilterPolicy::loadIgnoreFile(const std::string &project_root, bool append)
 {
 	std::string path = project_root + "/.codescopeignore";
 	std::ifstream f(path);
@@ -334,7 +347,8 @@ bool FilterPolicy::loadIgnoreFile(const std::string &project_root)
 		return false;
 
 	std::string line;
-	ignore_patterns_.clear();
+	if (!append)
+		ignore_patterns_.clear();
 	while (std::getline(f, line)) {
 		// Trim
 		while (!line.empty() &&

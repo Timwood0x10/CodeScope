@@ -313,6 +313,13 @@ LINT_CPP_FILES := $(shell find $(ENGINE_DIR)/src $(ENGINE_DIR)/include -name '*.
 lint: lint-cpp lint-rust
 	@printf "$(CHECK) lint complete\n"
 
+# What CI runs. `lint-cpp` only formats-check the files modified in the last
+# hour (a deliberate 3s target for local iteration), so a file that was
+# mis-formatted yesterday and not touched today passed `make check`. The full
+# check costs well under a second here, so the gate uses it.
+lint-verify: lint-cpp-full lint-rust
+	@printf "$(CHECK) lint (full) complete\n"
+
 # Fast lint-cpp (3s target) - only check recently modified files
 lint-cpp: $(BUILD_DIR)/compile_commands.json
 	@printf "$(CYAN)[lint/cpp]$(RESET) Running clang-format check...\n"
@@ -359,7 +366,7 @@ fmt-rust:
 	@printf "  $(CHECK) done\n"
 
 # ─── Check (CI) ──────────────────────────────────────────────────
-check: build lint test-engine test-server
+check: build lint-verify test-engine test-server
 	@printf "$(CHECK) check complete\n"
 
 # ─── Clean ───────────────────────────────────────────────────────
@@ -369,6 +376,18 @@ check: build lint test-engine test-server
 clean:
 	@printf "$(CYAN)[clean]$(RESET) Cleaning build artifacts...\n"
 	@rm -rf $(BUILD_DIR) $(ENGINE_DIR)/build-release
+	@# A clean that did not happen is worse than no clean at all: the next
+	@# build silently reuses the stale tree. `rm -rf` can be blocked (a
+	@# sandbox or a checkout guard may refuse bulk deletes) and the recipe
+	@# would still print success, so verify it and fail loudly instead —
+	@# that failure was observed in practice and went unnoticed because a
+	@# piped caller takes the pipeline's exit status, not make's.
+	@for d in $(BUILD_DIR) $(ENGINE_DIR)/build-release; do \
+		if [ -e "$$d" ]; then \
+			printf "  $(CROSS) clean FAILED: $$d still exists — the delete was blocked (permissions or a sandbox guard). Remove it by hand before rebuilding.\n"; \
+			exit 1; \
+		fi; \
+	done
 	@cd $(SERVER_DIR) && cargo clean 2>&1 | tail -1
 	@rm -f $(TEST_DB)
 	@printf "  $(CHECK) cleaned\n"

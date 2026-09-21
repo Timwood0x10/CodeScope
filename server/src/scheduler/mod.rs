@@ -470,7 +470,7 @@ pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> S
             error: Some("no successful module DBs to merge".to_string()),
         }
     } else {
-        merge::merge_module_dbs(&main_db, &module_db_paths)
+        merge::merge_module_dbs(&main_db, &module_db_paths, &project_path)
     };
 
     // v0.2.5 (C2 fix): parallel workers deferred CSR construction because

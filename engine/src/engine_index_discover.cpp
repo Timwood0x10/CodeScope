@@ -62,7 +62,22 @@ int collectFileJobs(uint64_t project_id, const std::string &dir,
 		auto it = std::filesystem::recursive_directory_iterator(
 			dir, std::filesystem::directory_options::
 				     skip_permission_denied);
-		for (auto &entry : it) {
+		// An explicit iterator loop, NOT `for (auto &entry : it)`.
+		//
+		// A range-for over an iterator copies it: `begin()` returns the
+		// iterator by value, the loop advances that copy, and the pruning
+		// call below would then operate on the original object that nobody
+		// is iterating. The result was measured, not assumed: with
+		// `.gitignore` holding `build-x/`, the walk reported
+		// `skipped_dirs=4` and STILL descended into all four levels,
+		// because `disable_recursion_pending()` was applied to a copy.
+		// Directory pruning was therefore cosmetic for every entry point
+		// that relies on it — the hard-skip names and `.gitignore` rules
+		// both counted their matches and then walked in anyway.
+		const auto it_end =
+			std::filesystem::recursive_directory_iterator();
+		for (; it != it_end; ++it) {
+			const auto &entry = *it;
 			// seen_dirs counts ONLY directory entries — recursive_
 			// directory_iterator yields files too, so counting every
 			// entry here inflated the metric with file visits. JSON

@@ -21,53 +21,83 @@ bool FilterPolicy::gitignoreMatches(const std::vector<GitignoreRule> &rules,
 {
 	bool ignored = false;
 	for (const auto &r : rules) {
-		// Directory-only rule doesn't apply to files
-		if (r.dir_only && !is_dir)
-			continue;
+		// Does the rule match one candidate string?
+		auto matches_one = [&](const std::string &candidate) -> bool {
+			if (r.has_star) {
+				// Per gitignore spec: non-anchored pattern without '/'
+				// matches only the filename (last path component)
+				if (!r.anchored &&
+				    r.pattern.find('/') == std::string::npos) {
+					auto pos = candidate.rfind('/');
+					auto basename =
+						(pos == std::string::npos) ?
+							candidate :
+							candidate.substr(pos +
+									 1);
+					return globMatch(r.pattern, basename);
+				}
+				return globMatch(r.pattern, candidate);
+			}
+			// Simple literal match — fast path
+			if (r.anchored)
+				return candidate == r.pattern;
+			// Literal match at path-component boundaries only, so
+			// "foo" matches "foo", "a/foo", "a/foo/b" but not
+			// "afoo" or "foobar". Iterate ALL occurrences (not just
+			// the last via rfind) so a pattern like "foo" matches
+			// even when "xfoo" appears later.
+			size_t search_from = 0;
+			while (true) {
+				auto pos =
+					candidate.find(r.pattern, search_from);
+				if (pos == std::string::npos)
+					break;
+				auto after = pos + r.pattern.size();
+				bool left_boundary =
+					(pos == 0 || candidate[pos - 1] == '/');
+				bool right_boundary =
+					(after == candidate.size() ||
+					 candidate[after] == '/');
+				if (left_boundary && right_boundary)
+					return true;
+				search_from = pos + 1;
+			}
+			return false;
+		};
 
 		bool match = false;
-		if (r.has_star) {
-			// Per gitignore spec: non-anchored pattern without '/'
-			// matches only the filename (last path component)
-			if (!r.anchored &&
-			    r.pattern.find('/') == std::string::npos) {
-				auto pos = rel_path.rfind('/');
-				auto basename =
-					(pos == std::string::npos) ?
-						rel_path :
-						rel_path.substr(pos + 1);
-				match = globMatch(r.pattern, basename);
-			} else {
-				match = globMatch(r.pattern, rel_path);
+		if (r.dir_only && !is_dir) {
+			// A directory-only rule names a DIRECTORY, so a file can
+			// never match it directly — but per gitignore semantics
+			// ignoring a directory ignores everything under it, so
+			// each ancestor directory is a candidate. Skipping this
+			// rule for files outright (the previous behaviour) meant
+			// `.gitignore`'s `**/build-*/` pruned the directory and
+			// nothing else, so a build tree's own sources — CMake's
+			// compiler-probe .c/.cpp files — were handed to the
+			// indexer and became entities, modules and call-edge
+			// candidates. See test_gitignore_build_dirs.
+			for (auto slash = rel_path.find('/');
+			     slash != std::string::npos;
+			     slash = rel_path.find('/', slash + 1)) {
+				if (matches_one(rel_path.substr(0, slash))) {
+					match = true;
+					break;
+				}
 			}
 		} else {
-			// Simple literal match — fast path
-			if (r.anchored) {
-				match = (rel_path == r.pattern);
-			} else {
-				// Literal match at path-component boundaries only,
-				// so "foo" matches "foo", "a/foo", "a/foo/b" but
-				// not "afoo" or "foobar". Iterate ALL occurrences
-				// (not just the last via rfind) so a pattern like
-				// "foo" matches even when "xfoo" appears later.
-				size_t search_from = 0;
-				while (true) {
-					auto pos = rel_path.find(r.pattern,
-								 search_from);
-					if (pos == std::string::npos)
-						break;
-					auto after = pos + r.pattern.size();
-					bool left_boundary =
-						(pos == 0 ||
-						 rel_path[pos - 1] == '/');
-					bool right_boundary =
-						(after == rel_path.size() ||
-						 rel_path[after] == '/');
-					if (left_boundary && right_boundary) {
+			match = matches_one(rel_path);
+			// A directory under an ignored directory is ignored too,
+			// even when the rule's pattern ends at the parent.
+			if (!match && r.dir_only) {
+				for (auto slash = rel_path.find('/');
+				     slash != std::string::npos;
+				     slash = rel_path.find('/', slash + 1)) {
+					if (matches_one(rel_path.substr(
+						    0, slash))) {
 						match = true;
 						break;
 					}
-					search_from = pos + 1;
 				}
 			}
 		}
@@ -151,14 +181,15 @@ void FilterPolicy::printStats() const
 		  << " candidate_files=" << stats_.candidate_files << "\n";
 }
 
-bool FilterPolicy::loadGitignore(const std::string &project_root)
+bool FilterPolicy::loadGitignore(const std::string &project_root, bool append)
 {
 	std::string path = project_root + "/.gitignore";
 	std::ifstream f(path);
 	if (!f.is_open())
 		return false;
 
-	gitignore_rules_.clear();
+	if (!append)
+		gitignore_rules_.clear();
 	std::string line;
 	while (std::getline(f, line)) {
 		// Trim whitespace

@@ -124,6 +124,13 @@ pub(super) fn run_module_worker(
     ]);
     cmd.env("GRAMMARS_DIR", grammars_dir);
     cmd.env("CODESCOPE_DB_PATH", &module_db);
+    // The worker is rooted at the MODULE directory, so it would load the
+    // ignore files found there — usually none. The exclusions live at the
+    // project root (`.gitignore`, `.codescopeignore`), so pass it and let the
+    // engine load both: a module worker must apply the same rules as a
+    // whole-project index, or the parallel path indexes what the project
+    // declared out of scope.
+    cmd.env("CODESCOPE_PROJECT_ROOT", project_dir);
     cmd.env("CODESCOPE_INDEX_MODE", "fast");
     cmd.env("CODESCOPE_WORKERS", &workers_str);
     // Skip the ~280ms state-builder work in per-module workers; the

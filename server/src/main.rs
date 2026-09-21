@@ -124,6 +124,38 @@ fn main() {
             }
 
             let result = scheduler::index_parallel(&dir_path, total_workers, parallel);
+
+            // A scheduler-built DB is assembled by the merger from per-worker
+            // DBs, so it never receives the engine's post-index pass (knowledge
+            // layer, metrics, readiness flags, search index). Without this the
+            // CLI's own output looks complete while `search` silently degrades
+            // to its graph fallback — it cannot find functions at all — and
+            // `project_readiness` stays empty so `project_overview` reports no
+            // feature as ready. Measured: 0 rows in project_readiness and in
+            // code_fts/name_trgm before, 1 and 1793 after. The merge unifies
+            // the DB onto project id 1 (see merge_driver::unify_project), so
+            // the pass runs on that id here, while this process owns the DB.
+            let merged_db = serde_json::from_str::<serde_json::Value>(&result)
+                .ok()
+                .filter(|v| v["ok"] == serde_json::Value::Bool(true))
+                .and_then(|v| v["main_db"].as_str().map(|s| s.to_string()));
+            if let Some(main_db) = merged_db {
+                if ffi::init(&main_db) == 0 {
+                    let enhanced = ffi::enhance_project(1);
+                    eprintln!(
+                        "codescope: post-index pass on {}: {}",
+                        main_db,
+                        enhanced.chars().take(120).collect::<String>()
+                    );
+                    ffi::shutdown();
+                } else {
+                    eprintln!(
+                        "codescope: could not open {} for the post-index pass",
+                        main_db
+                    );
+                }
+            }
+
             println!("{}", result);
             return;
         }

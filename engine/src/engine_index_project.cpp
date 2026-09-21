@@ -140,6 +140,39 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 	// Load .codescopeignore + .gitignore patterns from project root
 	filter.loadIgnoreFile(dir);
 	filter.loadGitignore(dir);
+	// A per-module worker (the parallel scheduler spawns one per module)
+	// scans `<project_root>/<module>`, and that module directory usually has
+	// no ignore file of its own — the rules live at the project root, which
+	// the scheduler passes in CODESCOPE_PROJECT_ROOT. Without this, the
+	// parallel path applied none of the project's .gitignore rules: a
+	// `**/build-*/` rule pruned nothing and a build tree's own CMake probe
+	// sources (CMakeFiles/<ver>/CompilerIdC*/CMakeCCompilerId.c) became
+	// entities and modules in the merged graph, exactly as the whole-project
+	// path did before the same rules were honoured there.
+	//
+	// Loaded AFTER the scan directory's own rules so that the more specific
+	// file still wins: the matcher stops at the first positive match.
+	const char *env_project_root = getenv("CODESCOPE_PROJECT_ROOT");
+	if (env_project_root && *env_project_root &&
+	    std::string(env_project_root) != dir) {
+		filter.loadIgnoreFile(env_project_root, /*append=*/true);
+		filter.loadGitignore(env_project_root, /*append=*/true);
+		// Those rules are anchored at the project root while this worker's
+		// paths are relative to `dir`, so give the policy the missing prefix
+		// (`<module>/`). Without it a rule like `**/build-*/` cannot match a
+		// path that begins inside the module — the module-level twin of the
+		// file-level case this same change fixed.
+		std::string root(env_project_root);
+		std::string prefix;
+		if (dir.size() > root.size() + 1 &&
+		    dir.compare(0, root.size(), root) == 0 &&
+		    dir[root.size()] == '/') {
+			prefix = dir.substr(root.size() + 1);
+			if (!prefix.empty() && prefix.back() != '/')
+				prefix += '/';
+		}
+		filter.setScanPrefix(prefix);
+	}
 	// Load CODESCOPE_EXCLUDE_PATHS env var (comma-separated globs) so
 	// users can exclude non-core dirs (test/, docs/, vendor/) at index
 	// time to reduce node count on very large projects.

@@ -136,8 +136,14 @@ fn h_search_code(project_id: u64, args: &Value) -> String {
 }
 
 fn h_detect_changes(project_id: u64, args: &Value) -> String {
-    let files = args["modified_files"].as_str().unwrap_or("[]");
-    ffi::detect_changes(project_id, files)
+    // The engine's parameter is `modified_files_json` and it wants a JSON
+    // ARRAY of paths, but the schema advertises a plain string — so a caller
+    // passing what the schema describes (a bare path) sent invalid JSON and
+    // got `modified: []` back, i.e. "nothing changed", with no error. A real
+    // array is serialized now; a string is taken verbatim, so a caller that
+    // pre-encoded the array keeps working.
+    let files = json_or_string_arg(args, "modified_files", "[]");
+    ffi::detect_changes(project_id, &files)
 }
 
 fn h_verify_integrity(project_id: u64, _args: &Value) -> String {
@@ -163,19 +169,25 @@ fn h_verify_claim(project_id: u64, args: &Value) -> String {
     ffi::verify_claim(project_id, &claim_json)
 }
 
-/// The claim JSON carried by a tool call.
+/// A tool argument whose schema says "a JSON payload" but which the engine
+/// reads as a string.
 ///
-/// The schema documents `claim` as a JSON object, but only a pre-serialized
-/// string used to be accepted, so every caller had to double-encode it. A
-/// string is still taken verbatim (existing callers are unaffected) and an
-/// object is serialized; anything else yields "" so the handler reports the
-/// missing-argument error it always did.
-fn claim_json_from(args: &Value) -> String {
-    match &args["claim"] {
+/// Two tools had that shape mismatch — `verify_claim`'s `claim` (documented as
+/// a JSON object, only a pre-serialized string accepted) and `detect_changes`'
+/// `modified_files` (documented as a string, only a JSON array accepted, which
+/// made a bare path silently mean "no changes") — so both accept the structured
+/// form now and take a string verbatim, keeping existing callers working.
+fn json_or_string_arg(args: &Value, key: &str, fallback: &str) -> String {
+    match &args[key] {
         Value::String(s) => s.clone(),
-        Value::Object(_) => args["claim"].to_string(),
-        _ => String::new(),
+        Value::Array(_) | Value::Object(_) => args[key].to_string(),
+        _ => fallback.to_string(),
     }
+}
+
+/// The claim JSON carried by a tool call (see json_or_string_arg).
+fn claim_json_from(args: &Value) -> String {
+    json_or_string_arg(args, "claim", "")
 }
 
 /// Parse a natural-language summary into claims and verify each one.
@@ -938,7 +950,7 @@ mod tests {
     }
 
     #[test]
-    fn test_claim_json_from_accepts_objects_and_strings() {
+    fn test_json_or_string_arg_accepts_structured_and_pre_encoded() {
         // The schema documents `claim` as a JSON object, but a pre-serialized
         // string used to be the only shape accepted, so every caller had to
         // double-encode it. Both work now; the string form is taken verbatim
@@ -956,6 +968,26 @@ mod tests {
         assert!(claim_json_from(&json!({})).is_empty());
         assert!(claim_json_from(&json!({"claim": 7})).is_empty());
         assert!(claim_json_from(&json!({"claim": null})).is_empty());
+
+        // detect_changes takes a JSON ARRAY of paths; a bare path (what its
+        // schema used to describe) is not valid JSON and meant "no changes".
+        assert_eq!(
+            json_or_string_arg(
+                &json!({"modified_files": ["a/b.rs"]}),
+                "modified_files",
+                "[]"
+            ),
+            "[\"a/b.rs\"]"
+        );
+        assert_eq!(
+            json_or_string_arg(
+                &json!({"modified_files": "[\"a/b.rs\"]"}),
+                "modified_files",
+                "[]"
+            ),
+            "[\"a/b.rs\"]"
+        );
+        assert_eq!(json_or_string_arg(&json!({}), "modified_files", "[]"), "[]");
     }
 
     #[test]

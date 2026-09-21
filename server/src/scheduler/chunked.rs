@@ -427,7 +427,7 @@ pub(super) fn index_parallel_chunked(
             ),
         }
     } else {
-        merge::merge_module_dbs(&main_db, &worker_db_paths)
+        merge::merge_module_dbs(&main_db, &worker_db_paths, &project_path)
     };
 
     // v0.2.5 (C2 fix): parallel chunk workers deferred CSR construction;
