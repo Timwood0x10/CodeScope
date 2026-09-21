@@ -111,9 +111,30 @@ impl ChunkQueue {
         let slot = &state.chunks[idx as usize];
         let started = slot.started_at_ms.load(Ordering::Acquire);
         if started == 0 {
-            return false; // never claimed
+            // A PENDING slot carrying 0 has never been claimed and is not
+            // stale — nobody owns it.
+            //
+            // A CLAIMED slot carrying 0 is a different thing: claim_next()
+            // publishes CLAIMED with its CAS and stores the timestamp after,
+            // and status/started_at_ms are separate atomics, so an observer
+            // can legitimately see CLAIMED with the previous 0 (a worker that
+            // crashed in that window leaves it that way for good). Returning
+            // false here — as this used to — made such a chunk permanently
+            // unrecoverable: the watchdog skipped it as "never claimed" and
+            // its files were never indexed. Treat it as stale instead: another
+            // worker re-claims it and re-indexes its files, which the design
+            // tolerates (each worker writes its own DB and the merge is
+            // INSERT OR IGNORE), so the worst case is one chunk of redundant
+            // work instead of a permanently missing slice of the index.
+            if slot.status.load(Ordering::Acquire) != STATUS_CLAIMED {
+                return false;
+            }
         }
-        let elapsed = now_ms().saturating_sub(started);
+        let elapsed = if started == 0 {
+            u64::MAX // claimed but never stamped: as stale as it gets
+        } else {
+            now_ms().saturating_sub(started)
+        };
         if elapsed < timeout_ms {
             return false;
         }

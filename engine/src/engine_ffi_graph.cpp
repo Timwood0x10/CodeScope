@@ -66,7 +66,7 @@ char *engine_get_knowledge_graph(uint64_t project_id, const char *table_name,
 				      "FROM relation WHERE project_id=? "
 				      "ORDER BY id LIMIT ?" },
 			{ "architecture_edge",
-			  "SELECT id, layer_lower, layer_upper, "
+			  "SELECT id, callee_module, caller_module, "
 			  "entity_id FROM architecture_edge "
 			  "WHERE project_id=? ORDER BY id LIMIT ?" },
 			{ "module_edge",

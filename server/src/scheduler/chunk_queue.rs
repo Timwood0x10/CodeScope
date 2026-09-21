@@ -741,6 +741,42 @@ mod tests {
     }
 
     #[test]
+    fn test_reset_stale_recovers_claim_without_timestamp() {
+        // Regression: a chunk that is CLAIMED with started_at_ms == 0 used to
+        // be unrecoverable. claim_next() publishes CLAIMED with its CAS and
+        // only then stores the timestamp, and the two are separate atomics —
+        // so this state is reachable (a worker crashing in that window leaves
+        // it behind), and reset_stale's early return treated 0 as "never
+        // claimed", so the watchdog skipped the slot forever and its files
+        // were never indexed. It must now be reclaimed.
+        let path = unique_path();
+        let q = ChunkQueue::create(&path, 1).expect("create");
+        q.write_chunk(0, 1, 0, 10, 100_000).expect("write");
+        let _ = q.claim_next(0).expect("claim");
+        assert_eq!(q.chunk_state(0).unwrap().status, STATUS_CLAIMED);
+        unsafe {
+            let state = &*q.ptr;
+            state.chunks[0].started_at_ms.store(0, Ordering::Relaxed);
+        }
+
+        // Even a zero timeout must reclaim it: an unstamped claim is stale.
+        assert!(
+            q.reset_stale(0, 0),
+            "unstamped CLAIMED chunk must be reclaimable"
+        );
+        let s = q.chunk_state(0).expect("snap");
+        assert_eq!(s.status, STATUS_PENDING);
+        assert_eq!(s.started_at_ms, 0);
+
+        // A PENDING slot with no claimer is still NOT stale — the fix must not
+        // have turned every idle chunk into a watchdog target.
+        assert!(
+            !q.reset_stale(0, 0),
+            "an unclaimed PENDING chunk is not stale"
+        );
+    }
+
+    #[test]
     fn test_reset_stale_does_not_clobber_finished() {
         let path = unique_path();
         let q = ChunkQueue::create(&path, 1).expect("create");

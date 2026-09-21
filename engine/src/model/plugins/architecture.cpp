@@ -52,7 +52,10 @@ ModelResult ArchitecturePlugin::build(uint64_t project_id,
 	// For each call edge, emit an architecture_edge for each
 	// cross-module (src_mod != tgt_mod) scope pair. The entity_id
 	// stored is the target (callee), matching the original SQL's
-	// `r.target_id`.
+	// `r.target_id`. The module columns follow the call direction:
+	// caller_module = the source module, callee_module = the target module.
+	// (They were named layer_upper/layer_lower until v0.7, which is what made
+	// the model layer read a plain cross-module call as a layer violation.)
 	int64_t edges = 0;
 	for (const auto &edge : ctx.call_edges) {
 		auto src_it = ctx.entities_by_id.find(edge.source_id);

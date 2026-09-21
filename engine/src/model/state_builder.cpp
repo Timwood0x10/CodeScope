@@ -312,7 +312,7 @@ int64_t StateBuilder::buildArchitectureState()
 	//
 	// ArchitecturePlugin (model/plugins/architecture.cpp) writes one
 	// architecture_edge row per (caller module, callee module) pair with no
-	// layer model and no direction test: layer_lower / layer_upper hold MODULE
+	// layer model and no direction test: callee_module / caller_module hold MODULE
 	// NAMES, not layer names. Counting those rows as `violations` with
 	// compliance = 0.0 therefore reported every normal cross-module dependency
 	// as an architecture violation, and pushed the architecture score down in
@@ -343,16 +343,17 @@ int64_t StateBuilder::buildArchitectureState()
 			return -1;
 		}
 	}
-	std::string sql = "INSERT INTO architecture_state "
-			  "(project_id, layer, violations, cross_module_edges, "
-			  " compliance) "
-			  "SELECT ?, ae.layer_lower || '->' || ae.layer_upper, "
-			  "  0, COUNT(*), 1.0 "
-			  "FROM architecture_edge ae "
-			  "WHERE ae.project_id = ? "
-			  "GROUP BY ae.layer_lower, ae.layer_upper "
-			  "HAVING COUNT(*) > 0 "
-			  "ORDER BY COUNT(*) DESC LIMIT 10";
+	std::string sql =
+		"INSERT INTO architecture_state "
+		"(project_id, layer, violations, cross_module_edges, "
+		" compliance) "
+		"SELECT ?, ae.caller_module || '->' || ae.callee_module, "
+		"  0, COUNT(*), 1.0 "
+		"FROM architecture_edge ae "
+		"WHERE ae.project_id = ? "
+		"GROUP BY ae.callee_module, ae.caller_module "
+		"HAVING COUNT(*) > 0 "
+		"ORDER BY COUNT(*) DESC LIMIT 10";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), sql.c_str(), -1, &stmt,
 			       nullptr) != SQLITE_OK) {

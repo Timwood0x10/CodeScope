@@ -283,6 +283,18 @@ pub(super) fn index_parallel_chunked(
         let _ = h.join();
     }
 
+    // Both per-run temporaries are removed here, after every worker has exited
+    // and before the merge. Neither used to be removed at all, so a successful
+    // run leaked them too: the queue path embeds the PID
+    // (`/tmp/codescope_chunked_sched_<pid>.shm`), so the next run's
+    // remove-before-create can never clean up an earlier process's file and
+    // the chunk-file list accumulated in /tmp one JSON per run. Unlinking the
+    // shm while the mapping is alive is fine on POSIX (the name is what goes
+    // away, not the pages), and no code path reads either name after this
+    // point — the response reports `db_prefix`/`main_db`, not these.
+    let _ = std::fs::remove_file(&shm_path);
+    let _ = std::fs::remove_file(&files_json_path);
+
     // ── Phase 4: merge per-worker DBs into the unified main DB ──
     // Mirror index_parallel Phase 6: ATTACH each worker DB to a fresh
     // main DB and INSERT OR IGNORE. Per-worker project_ids are unique

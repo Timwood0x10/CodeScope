@@ -727,8 +727,8 @@ class GraphStore {
 	bool insertWorkflowStep(int64_t workflow_id, int step_order,
 				int64_t entity_id, const std::string &label);
 	bool insertArchitectureEdge(uint64_t project_id,
-				    const std::string &layer_upper,
-				    const std::string &layer_lower,
+				    const std::string &caller_module,
+				    const std::string &callee_module,
 				    int64_t entity_id);
 
 	bool insertCapability(uint64_t project_id, const std::string &name,

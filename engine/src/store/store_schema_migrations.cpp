@@ -71,6 +71,44 @@ bool GraphStore::runSchemaMigrations()
 		}
 	}
 
+	// Migration: rename architecture_edge's layer_upper/layer_lower to
+	// caller_module/callee_module (v0.7+).
+	//
+	// The columns never held layers — architecture.cpp writes module paths into
+	// them (caller's and callee's respectively) — and the old names plus the
+	// old `-- e.g. "Controller"` comments are why the model layer treated a
+	// normal cross-module dependency as a layer violation. The behaviour was
+	// corrected separately; this removes the cause.
+	//
+	// Probe for the OLD name: a database created by the current schema already
+	// has the new columns and must not be touched. RENAME COLUMN needs SQLite
+	// >= 3.25; a failure is reported through migrationExec rather than leaving
+	// a half-renamed schema (see #19).
+	{
+		sqlite3_stmt *probe = nullptr;
+		if (sqlite3_prepare_v2(db_,
+				       "PRAGMA table_info(architecture_edge)",
+				       -1, &probe, nullptr) == SQLITE_OK) {
+			bool has_old_name = false;
+			while (sqlite3_step(probe) == SQLITE_ROW) {
+				const char *col =
+					reinterpret_cast<const char *>(
+						sqlite3_column_text(probe, 1));
+				if (col && std::string(col) == "layer_upper")
+					has_old_name = true;
+			}
+			sqlite3_finalize(probe);
+			if (has_old_name) {
+				migrationExec(
+					"ALTER TABLE architecture_edge "
+					"RENAME COLUMN layer_upper TO caller_module");
+				migrationExec(
+					"ALTER TABLE architecture_edge "
+					"RENAME COLUMN layer_lower TO callee_module");
+			}
+		}
+	}
+
 	// Migration: add module_state column to entity table (v0.5+)
 	{
 		sqlite3_stmt *probe = nullptr;

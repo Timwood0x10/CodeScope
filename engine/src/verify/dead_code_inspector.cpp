@@ -273,19 +273,19 @@ std::vector<Finding> DeadCodeInspector::findArchitectureDrift()
 	// This used to be reported as a layer violation ("lower layer should not
 	// depend on upper layer"). There is no layer model: architecture_edge rows
 	// are written per (caller module, callee module) pair with no direction
-	// test, and layer_lower / layer_upper hold module NAMES. The old finding
+	// test, and callee_module / caller_module hold module NAMES. The old finding
 	// therefore asserted a violation on the strength of two module names. It
 	// is now reported for what it is — coupling, ordered by call count.
 	std::string coupling_sql =
-		"SELECT ae.layer_lower, ae.layer_upper, COUNT(*) as calls "
+		"SELECT ae.callee_module, ae.caller_module, COUNT(*) as calls "
 		"FROM architecture_edge ae "
 		"JOIN entity e ON ae.entity_id = e.id "
 		"JOIN relation r ON r.project_id = ? AND r.target_id = e.id "
 		"JOIN entity caller ON r.source_id = caller.id "
 		"WHERE ae.project_id = ? "
-		" AND caller.file_path LIKE '%' || ae.layer_lower || '%'"
-		" AND e.file_path LIKE '%' || ae.layer_upper || '%'"
-		" GROUP BY ae.layer_lower, ae.layer_upper"
+		" AND caller.file_path LIKE '%' || ae.callee_module || '%'"
+		" AND e.file_path LIKE '%' || ae.caller_module || '%'"
+		" GROUP BY ae.callee_module, ae.caller_module"
 		" HAVING calls > 0"
 		" ORDER BY calls DESC LIMIT 10";
 	sqlite3_stmt *coupling_st = nullptr;

@@ -440,6 +440,9 @@ ORDER BY COUNT(*) DESC LIMIT 10;
 > optimization as they stood at the time. `architecture_edge` was subsequently
 > found NOT to be layer-validated — `ArchitecturePlugin` writes a row for any
 > cross-module call, and `layer_lower` / `layer_upper` hold module NAMES, not
+> layer names. (The columns were renamed to `callee_module` / `caller_module`
+> in v0.7 — see the migration in `store_schema_migrations.cpp` — so the SQL
+> snippets above use the names that existed when the analysis was written.)
 > layer names. The "Violation count" and "Compliance flag" rows above therefore
 > no longer describe current behaviour: a normal cross-module dependency is not
 > counted as a violation, and the count now lives in `cross_module_edges`. See

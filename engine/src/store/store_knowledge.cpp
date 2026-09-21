@@ -404,19 +404,20 @@ bool GraphStore::insertWorkflowStep(int64_t workflow_id, int step_order,
 // ── architecture_edge ─────────────────────────────────────────────
 
 bool GraphStore::insertArchitectureEdge(uint64_t project_id,
-					const std::string &layer_upper,
-					const std::string &layer_lower,
+					const std::string &caller_module,
+					const std::string &callee_module,
 					int64_t entity_id)
 {
-	const char *sql = "INSERT INTO architecture_edge "
-			  "(project_id, layer_upper, layer_lower, entity_id) "
-			  "VALUES (?,?,?,?)";
+	const char *sql =
+		"INSERT INTO architecture_edge "
+		"(project_id, caller_module, callee_module, entity_id) "
+		"VALUES (?,?,?,?)";
 	sqlite3_stmt *stmt = getCachedStmt(sql);
 	if (!stmt)
 		return false;
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_text(stmt, 2, layer_upper.c_str(), -1, SQLITE_STATIC);
-	sqlite3_bind_text(stmt, 3, layer_lower.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_text(stmt, 2, caller_module.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_text(stmt, 3, callee_module.c_str(), -1, SQLITE_STATIC);
 	sqlite3_bind_int64(stmt, 4, entity_id);
 	int rc = sqlite3_step(stmt);
 	if (rc != SQLITE_DONE) {

@@ -720,8 +720,13 @@ CREATE TABLE IF NOT EXISTS architecture_state (
 CREATE TABLE IF NOT EXISTS architecture_edge (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id INTEGER NOT NULL,
-            layer_upper TEXT NOT NULL,        -- e.g. "Controller"
-            layer_lower TEXT NOT NULL,        -- e.g. "Service"
+            -- Module PATHS, not layers: the caller's module and the
+            -- callee's. They were called layer_upper/layer_lower with
+            -- "-- e.g. \"Controller\"" comments until v0.7, which made every
+            -- reader treat them as a layer model (the root cause of the false
+            -- layer-violation reporting, docs/CODE_REVIEW_2026-09-18.md #3).
+            caller_module TEXT NOT NULL,       -- module path of the caller
+            callee_module TEXT NOT NULL,       -- module path of the callee
             entity_id INTEGER NOT NULL,       -- FK to entity.id
             FOREIGN KEY (project_id) REFERENCES projects(id),
             FOREIGN KEY (entity_id) REFERENCES entity(id)
