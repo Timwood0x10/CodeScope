@@ -447,38 +447,6 @@ char *engine_import_artifact(uint64_t project_id, const char *artifact_path);
  */
 char *engine_build_evidence(uint64_t project_id, const char *category_filter);
 
-// ─── Verification Planner (v0.3 Phase 3) ───────────────────────
-
-/**
- * Verify a natural-language claim against the project's indexed
- * evidence. The claim is parsed into an Intent by IntentParser,
- * planned into evidence rule executions by Planner, executed via
- * EvidenceBuilder, and aggregated into a Verdict by VerdictBuilder.
- *
- * The returned JSON has the shape:
- *   {
- *     "verdict": "Supported|Contradicted|PartiallyVerified|Unknown",
- *     "confidence": 0.0..1.0,
- *     "requirements": [
- *       {"id":"...","weight":N,"satisfied":bool,"confidence":N}, ...
- *     ],
- *     "evidence": [
- *       {"category":"...","title":"...","confidence":N,
- *        "item_count":N}, ...
- *     ]
- *   }
- *
- * On error (engine not initialized, empty claim, etc.) returns a
- * JSON object with an "error" field. Caller MUST free via
- * engine_free_string().
- *
- * @param project_id  The project whose semantic_fact rows to query.
- * @param claim_text  The natural-language claim (e.g. "does this
- *                    project safely handle CString?").
- * @return Heap-allocated JSON string (caller frees). Never null.
- */
-char *engine_verify_statement(uint64_t project_id, const char *claim_text);
-
 // ─── Claim-driven Verification (v0.3) ──────────────────────────
 
 /**

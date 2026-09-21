@@ -491,6 +491,9 @@ buildGraph resolver       = 7192ms   ← 占 buildGraph ~75%
 |---|---|---|
 | ✅ 返回合法 JSON 且数据准确 | 44 | 查询类返回真实数据（get_graph_stats=129893 nodes、find_callers/callees 真实边、codescope_trace 真实调用链、get_module_tree 169KB 等） |
 | ✅ 参数格式需正确（已验证正确调用） | 2 | `verify_claim`/`verify_statement` 需要 `claim.type` 字段（capability_exists 等）；正确参数后返回 verdict |
+
+> 注（2026-09-21）：`verify_statement` 已下线，其自然语言短语匹配前端一并删除，统一由
+> `verify_claim` 承担；上表中的 `verify_statement` 仅为当时实测记录。
 | ❌ 空转 / Unknown tool | 0 | 无 |
 
 **关键数据核验**：`get_graph_stats` 返回 `total_nodes=129893 / total_edges=117154` 与 DB 实测一致；`find_callers(transmute)` 返回 ambiguous 候选（非空）；`get_entry_points` 44KB 真实入口；`verify_integrity` 122KB findings；`get_module_tree` 169KB 模块树——全部非空转。

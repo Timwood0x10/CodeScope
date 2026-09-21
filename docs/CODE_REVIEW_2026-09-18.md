@@ -44,6 +44,8 @@ Verification column in the findings table:
 | 7 | server/mcp | **A blank line terminates the server.** `transport.rs:79-81` maps an empty (whitespace-only) line to `ReadResult::Eof`; `server.rs:31` treats `Eof` as a clean shutdown → `main` calls `ffi::shutdown()` and exits. A client sending `"\n"` kills a long-running session. | ✅ E | ✅ |
 | 8 | ir / engine root | **One `SemanticUnit` leaked per parsed file.** The visitor headers document "ownership of the returned SemanticUnit passes to the caller", but 3 of 4 call sites only copy `allRecords()` and never free it (`engine_index_files.cpp:406`, `engine_index_project.cpp`, `engine_index_project_membulk.cpp`); only `engine_index.cpp:94` uses a `unique_ptr` guard. Also violates "no raw `new`/`delete` outside FFI". | ✅ E | ✅ |
 | 9 | verify | **`IntentParser` references 7 rule names that do not exist** (`malloc_no_free`, `extern_call`, `cgo_callback`, `cstring_alloc_vs_free`, `capability_declared`, `jwt_entities`, `workflow_complete`); the rule files only define `cstring_leak`, `extern_call_collect`, `bare_except_collect`, `mutex_without_defer_unlock`, … Since `EvidenceBuilder::buildByRule` matches names exactly, those requirements can never be satisfied — e.g. "safely handle CString" can never reach `Supported`. **CORRECTION after verification: the `IntentParser → Planner → VerdictBuilder` chain has no caller — `engine_verify_statement` is the only consumer of `IntentParser` and it uses just `intent.type` / `intent.subject` before dispatching through `verify_one_claim`.** So this is stale data in a superseded path, not a live correctness bug: the requirement tables were re-graded to P2 (see §3). The names were still fixed so the data is correct if the chain is ever revived, and `test_intent_rule_names` now reads the real rule files and fails if any referenced name does not exist. | ✅ E | ✅ |
+
+**#9 follow-up (batch 20).** The row's subject is gone: `IntentParser` and its requirement tables were deleted when `verify_statement` was retired (the row's own correction had already established that nothing read them). The rule-name fixes it describes therefore protect deleted data — which is the right outcome for data nothing consumed.
 | 9b | model | Related leftover: `semantic_fact_extractor.cpp:44` defines `kConfidenceCgoCallback`, which nothing references — the companion of the missing `cgo_callback` rule above. Kept (deleting it would erase the intent) and currently the only remaining compiler warning. Resolved by keeping the constant and marking it `[[maybe_unused]]`: the intent survives and the build is warning-free. | ✅ E | ✅ |
 | 10 | engine root | **The background async builder shares one SQLite connection with the main thread, unlocked.** It opens its own `BEGIN IMMEDIATE`/`COMMIT` (`async_knowledge.cpp:65/122`) and writes model/state/knowledge tables. Only *write* entry points call `joinAsyncKnowledgeBuilder()`; read entry points (`engine_find_symbol`, `engine_get_module_tree`, `engine_unified_search`, the query-layer exports) do not. No mutex exists anywhere in `engine_*.cpp`. Fixed at option A: `waitForKnowledgeBuilder()` is called by every read-entry-point guard, so a read waits for the builder before touching the shared connection. Safe by construction — the builder thread calls `runModelIndexSync()`/`buildKnowledgeGraphSync()` directly and never re-enters a read entry point, so this cannot self-join; `async_knowledge.cpp` (the builder body) and the index paths are deliberately excluded. **Review round 2**: the batch's "52 guard sites across 11 FFI files" was an under-count of *coverage*, not of guards — a mechanical diff of `engine.h` exports against `waitForKnowledgeBuilder` call sites found 11 unguarded read entry points (`engine_search_semantic`, `engine_detect_changes`, `engine_get_communities`, `engine_export_artifact`, `engine_import_artifact`, `engine_find_connected_components`, `engine_trace_path`, `engine_explore_function`, `engine_detect_ffi_boundaries`, `engine_get_project_info`, `engine_get_verifier_registry_status`); all are now guarded (63 sites, 12 FFI files). Residual kept open: the wait is one-directional — a builder launched by a later index call can still start during an in-flight read, and the join has no timeout; both need a lock around the shared connection. | ✅ E | ✅ |
 | 11 | ir | **Aho-Corasick lazy init races across parse-worker threads.** `static ACAutomaton ac; static bool built = false; if (!built) { addPattern...; build(); built = true; }` — the initialisation guard is not synchronised, and parsing runs on `std::thread` workers (`engine_index_files.cpp:541`), so two threads can mutate the same `ACAutomaton` (writing `next[]`/`fail`/`out_link`) on first use. **Fixed:** the automaton is built in a holder whose function-local static is initialised under the C++11 guard variable, so concurrent first use blocks instead of racing on `next[]`/`fail`/`out_link`. Copying is deleted: the class owns raw nodes, and because its destructor is user-declared the move constructor was never generated, so a builder returning it by value would have silently double-freed.| ✅ E | ✅ |
@@ -53,7 +55,7 @@ Verification column in the findings table:
 | 14 | ir | **Builtin-name filtering still drops user-defined bare calls.** The earlier fix exempted only calls *with* a receiver; an unqualified call to a user function whose name collides with a builtin (`def format()`, Java `valueOf(...)`, static imports) is still discarded entirely. C/C++ deliberately also filters qualified calls (`ops->free()`, `Util::clone()`). **Fixed:** before visiting, each visitor collects the names the file itself declares (function/class/method/variable nodes per language, walking the declarator chain for C/C++) and the builtin filters now keep a call to one of them, or to an imported name. **Measured after the change:** accuracy gate still TP 36 / FP 0 / FN 0, and a `def format()` + `format(1)` fixture produces a resolved call edge (`exact_local`, main.py:5) where it previously produced none; `len(...)` is still filtered.| ✅ E | ✅ |
 
 **#14 follow-up (review pass, 2026-09-20).** Re-reading the five filters against `JsVisitor::defined_names_` found the fix had covered only four of them: `rust_visitor.cpp:369` still tested `isRustBuiltin(qualified)` alone, so a Rust file defining `fn write()` and calling `write(1)` lost the record while the other four languages kept theirs — the same defect, one file further down. It now consults `isLocallyDefined(name)` too (the filter keeps matching the qualified text, the exemption uses the bare name). Two more things came out of the same pass: the language table in `js_visitor_defined_names.cpp` was checked against what each visitor actually sets (`python`/`javascript`/`typescript`/`tsx`/`java`/`rust`/`c`/`cpp` all match; `go`/`swift` have no builtin filter and need no entry), and the exemption had NO test at all — it was the only part of #14 that was unverified. `test_builtin_method_calls` now carries one locally-defined collision per language (`py` `format`, `js` `Map`, `java` `format`, `c` `free`, `rs` `write`) each paired with a negative control (a bare builtin the file does NOT define, which must stay filtered, so the exemption cannot be confused with "the filter is off"). Falsified both ways: making `isLocallyDefined` return false drops `own.py`'s `format` and fails the suite, and disabling only the Rust exemption drops `own.rs`'s `write` and fails it — restored, 16/16 assertions pass.
-| 15 | scheduler | **`ok` means "some worker succeeded", not "the merge succeeded".** `"ok": success > 0` (`mod.rs:479-501`) ignores `merge_result.merged`. The chunked path drops a crashed/timed-out worker's *entire* DB (`chunked.rs:299-303`) — including chunks it had already marked DONE — with no quarantine, so files vanish while `ok` can still be true. Merge commits per module (`merge_driver.rs:181-289`), so a mid-way failure leaves partial data. Fixed at option A for the reporting half: `ok` (and a new `complete`) now mean "no failed worker AND a successful merge" via `run_complete()`, applied to all three summary sites (`mod.rs`, `dynamic.rs`, `chunked.rs`); `success` / `fail` / `merge` still expose the partial picture. The chunked path still drops a crashed worker's DB without quarantine (option C) — recorded as open. | ✅ E | ✅ |
+| 15 | scheduler | **`ok` means "some worker succeeded", not "the merge succeeded".** `"ok": success > 0` (`mod.rs:479-501`) ignores `merge_result.merged`. The chunked path drops a crashed/timed-out worker's *entire* DB (`chunked.rs:299-303`) — including chunks it had already marked DONE — with no quarantine, so files vanish while `ok` can still be true. Merge commits per module (`merge_driver.rs:181-289`), so a mid-way failure leaves partial data. Fixed at option A for the reporting half: `ok` (and a new `complete`) now mean "no failed worker AND a successful merge" via `run_complete()`, applied to all three summary sites (`mod.rs`, `dynamic.rs`, `chunked.rs`); `success` / `fail` / `merge` still expose the partial picture. The chunked path still dropped a crashed worker's DB (option C) — now fixed: a dead worker's chunks are released back to the queue (its `claimer_id` is the only record of which chunks those were, since `mark_done` leaves it set) and a single replacement worker re-indexes them, with `recovered_chunks` / `retry_worker_failed` in the response. Because a worker can also die *before* claiming anything — leaving chunks PENDING that nobody will pick up — the trigger is `!queue.is_complete()`, not the release count, and completeness is judged from the queue plus the merge rather than from `fail` alone. | ✅ E | ✅ |
 | 16 | scheduler | **Quarantine excludes files by basename glob.** `make_relative_glob` returns `*/{basename}` (`worker.rs:322-338`), so excluding the crasher `a/foo.cpp` also silently excludes the healthy `c/foo.cpp`. Two further flaws in the same path: the retry worker is rooted at the module dir, so the pattern must be module-relative (the old `*/basename` relied on the wrong root form), and the quarantine de-duplication compared basenames, so a healthy same-named file was dropped from the retry without ever being tested. Both fixed; the glob now carries the directory and the de-dup compares module-relative paths. | ✅ E | ✅ |
 | 17 | lsp | **LSP client robustness**: the write side of the pipe is blocking with no timeout (classic LSP deadlock when the server stops reading); `readResponse` ignores `expected_id` and discards already-buffered bytes, so a `window/logMessage` notification followed by the real response is returned as the response; `stop()` reaps with `WNOHANG` (zombies) and never checks the child's exit code. **Fixed:** writes wait for writability with a deadline (a server that stopped reading its stdin no longer blocks the client forever); reads accumulate in a persistent buffer and only a response whose id matches answers the call, so a `window/logMessage` sent first is skipped instead of returned, and a message split across reads is reassembled; `stop()` waits for the child within a grace period, force-kills it, reaps it (no zombie) and reports a non-zero exit. Framing/matching moved to `lsp/lsp_framing.h` with `test_lsp_framing` (6 cases) — and one of those cases caught a flaw in the first version of this very fix, where a discarded junk frame was reported as "need more bytes" while a complete answer already sat in the buffer.| ✅ E | ✅ |
 | 18 | query | **Multi-hop `graph_query` BFS has no visited set, no `max_depth` clamp and no `LIMIT`**: a DSL like `[*1..1000000]` makes time/memory grow exponentially. | ✅ E | ✅ |
@@ -284,11 +286,21 @@ Self-review of the batch diff (batches 1–4), not a second full-codebase pass.
   (shared SQLite connection: lock vs. join-on-read), **#15** (meaning of `ok`).
 - **#19** (migration results — use the single post-migration self-check),
   **#21** (merge schema source).
-- **#15 half (option C)**: the chunked path still drops a crashed/timed-out
-  worker's DB without quarantine, so those files are neither indexed nor
-  retried. `ok`/`complete` now report that the run was incomplete, which makes
-  the loss visible, but recovering the files is a separate change to the
-  chunk-level scheduler.
+- **#15 half (option C) — DONE (batch 18).** A dead chunk worker's chunks are
+  released and re-indexed by one replacement worker; completeness is now judged
+  from the queue (every chunk terminal) plus the merge, so a fully recovered run
+  reports `complete: true` while `fail` / `recovered_chunks` stay visible. One
+  round only: a deterministic crasher (a file that kills every worker) fails the
+  replacement the same way and is reported rather than retried forever.
+  Verified end to end with a worker wrapper that kills the real worker
+  mid-flight (`CODESCOPE_BIN`): (A) first two invocations killed, recovery
+  succeeds → `complete:true fail:2 recovered_chunks:1 total_files_indexed:3000`
+  — the files that used to vanish with the dropped DB; (B) every invocation
+  killed → `complete:false retry_worker_failed:true`, one round, no loop;
+  (C) normal run → `fail:0 recovered_chunks:0`, i.e. the recovery never fires
+  spuriously. Still open: a deterministic crasher is not quarantined (the files
+  it kills a worker on are lost for that run) — that is the quarantine work, not
+  the recovery.
 - **#14** — RESOLVED after this list was written (fixed in batch 8, follow-up in batch 13).
   The note that stood here said the filter change was "deferred deliberately"
   pending its own measurement pass; the work was then done and the accuracy gate
@@ -300,8 +312,43 @@ Self-review of the batch diff (batches 1–4), not a second full-codebase pass.
   never matched, `WNOHANG` reaping) — deferred. The LSP client is optional and
   not on the indexing path, and the write-timeout fix is a concurrency change
   that deserves its own focused pass rather than a tail-end edit.
-- §3b: the superseded `Planner` / `VerdictBuilder` chain — decide delete vs.
-  keep-and-document.
+- **§3b — RESOLVED (batch 19): the superseded `Planner` / `VerdictBuilder` chain is
+  DELETED, not wired in.** The decision is evidence-based, not a preference:
+  (1) the chain was replaced deliberately and for a stated reason — the FFI file
+  records that it "silently returned Unknown for any intent that did not map to a
+  known evidence rule (no way to distinguish 'unrecognized question' from
+  'evidence insufficient')", which the live path fixed with a machine-readable
+  `error_code`; wiring it back would regress that;
+  (2) its two roles are already covered — Planner's "intent → which evidence rules
+  to run" is now "intent type → `ClaimType` → the verifier registry picks the
+  verifier", and VerdictBuilder's "evidence → Verdict" is each verifier's own
+  result (`verify::Verdict` in claim.h; the dead copy in verdict_builder.h, with
+  `PartiallyVerified`, is used by nothing);
+  (3) its inputs were already dead — the parser wrote `Intent::requirements` that
+  **nobody read** (its only reader was the Planner).
+  Deleted: `planner.{h,cpp}`, `verdict_builder.{h,cpp}` (581 lines), the 9
+  requirement-building blocks and 8 weight constants in `intent_parser.cpp`,
+  `EvidenceRequirement`, the planner `Verdict` enum, `verdictToString`, and
+  `test_intent_rule_names.cpp` (138 lines that existed only to assert on the dead
+  requirements — the same "a test keeps dead semantics alive" pattern as #25).
+  Kept: `IntentParser` (live — the FFI's phrase classifier) and `Intent`.
+  Verified unchanged: `verify_statement` returns byte-identical JSON before and
+  after for both a recognised phrase (`Contradicted / 0.9 / CapabilityVerifier`,
+  `Unknown / 0.5 / ContractVerifier`) and an unrecognised one
+  (`error_code: intent_unrecognized`); `make check` 106 server tests, engine 80
+  (one test file deleted), accuracy TP 36 / FP 0 / FN 0.
+  Two doc-drift fixes came with it: `engine.h` documented a response shape the
+  tool has not produced since the replacement (it listed `requirements` and
+  `PartiallyVerified` while the real response carries `claim_id` / `verifier` /
+  `detail` / `evidence_facts`), and the FFI's own header described the deleted
+  chain as the architecture. **New observation, for a product decision rather
+  than a fix:** `verify_statement`'s NL front-end is a hardcoded phrase table —
+  five literal phrases ("safely handle CString", "bare except", "supports jwt" /
+  "login module supports", "cstring"+"leak", "mutex without defer"/"thread
+  safe") and nothing else. Everything outside that vocabulary returns
+  `intent_unrecognized` and a pointer at `verify_claim`, which is honest but is
+  the whole capability; the tool is a thin convenience over `verify_claim` and
+  could be retired in its favour.
 - The §3 P2/P3 list and the §6 documentation drift.
 
 ## Verification Log
@@ -380,3 +427,13 @@ Self-review of the batch diff (batches 1–4), not a second full-codebase pass.
 | 2026-09-20 | 17 | `architecture_edge` column rename + migration | ✅ `layer_upper`/`layer_lower` -> `caller_module`/`callee_module` across 8 files; migration probes for the old name and renames in place; MCP table dump reports the new keys; coupling label now reads `caller -> callee` |
 | 2026-09-20 | 17 | migration verified on a pre-existing DB | ✅ `/tmp/cs_clean.db`: `id,project_id,layer_upper,layer_lower,entity_id` + 5232 rows → `id,project_id,caller_module,callee_module,entity_id` + **5232 rows** after one tool call opened it |
 | 2026-09-20 | 17 | `make check` after the rename | ✅ check complete — 81 engine tests, TP 36 FP 0 FN 0, 104 server tests |
+| 2026-09-21 | 18 | #15 option C — chunked crash recovery | ✅ `release_worker_chunks()` + one bounded replacement round; `complete` now derives from the queue + merge, not `fail` (a recovered run is complete, with the deaths still visible) |
+| 2026-09-21 | 18 | E2E with a worker-killing wrapper (`CODESCOPE_BIN`) | ✅ (A) 2 invocations killed, recovery succeeded → `complete:true fail:2 recovered_chunks:1 total_files_indexed:3000`, reproducible across runs; (B) all invocations killed → `complete:false retry_worker_failed:true` after one round; (C) normal run → `fail:0 recovered_chunks:0 total_files_indexed:3000` |
+| 2026-09-21 | 18 | the experiment found a gap in the first version | ⚠️ the first fix only released chunks the dead worker had CLAIMED, so a worker killed *before* claiming left PENDING chunks nobody would take and its files were still lost (`recovered_chunks:0`); the trigger is now `!queue.is_complete()`, and both timings recover (two consecutive (A) runs) |
+| 2026-09-21 | 18 | `make check` after the recovery change | ✅ 106 server tests (+1), engine suite, clippy clean |
+| 2026-09-21 | 19 | §3b decision: delete vs wire in | ✅ deleted — superseded deliberately (its replacement exists *because* it could not distinguish unrecognised from insufficient), both of its roles are covered by `ClaimType` + the verifier registry, and its inputs (`Intent::requirements`) were written but never read |
+| 2026-09-21 | 19 | before/after behaviour comparison for `verify_statement` | ✅ byte-identical JSON for `The parser safely handles CString` (`Unknown/0.5/ContractVerifier`), `supports JWT in the login module` (`Contradicted/0.9/CapabilityVerifier`) and an unrecognised claim (`intent_unrecognized`, pointing at `verify_claim`) |
+| 2026-09-21 | 19 | `make check` after the deletion | ✅ 106 server tests, engine 80 (the requirement-asserting test file went with the requirements), accuracy TP 36 / FP 0 / FN 0, no build warnings (`collectIntColumn` in test_accuracy_baseline.cpp was unused and is gone) |
+| 2026-09-21 | 20 | `verify_statement` retired in favour of `verify_claim` | ✅ tool + `engine_verify_statement` export + the 5-phrase `IntentParser` front-end deleted (4 engine files, catalog/handler/FFI-binding/README entries); `verify_claim` now also accepts the claim as a JSON object instead of only a pre-serialized string |
+| 2026-09-21 | 20 | AFTER checks | ✅ `cli verify_statement` → `{"error":"Unknown tool"}`; `verify_claim` verdict byte-identical to the pre-deletion baseline (`Contradicted / 0.9 / CapabilityVerifier / Capability 'JWT' not declared`), for both the string and the object shape |
+| 2026-09-21 | 20 | `make check` after the retirement | ✅ 107 server tests (+1: claim-shape unit test), engine 80, accuracy TP 36 / FP 0 / FN 0; `test_ffi_envelopes` now covers `engine_verify_claim`, which it did not cover at all before |

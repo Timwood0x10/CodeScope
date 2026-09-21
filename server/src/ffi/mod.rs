@@ -111,7 +111,6 @@ unsafe extern "C" {
     // returns a heap-allocated JSON string that the caller MUST release
     // via engine_free_string().
     fn engine_build_evidence(project_id: u64, category_filter: *const c_char) -> *mut c_char;
-    fn engine_verify_statement(project_id: u64, claim_text: *const c_char) -> *mut c_char;
     fn engine_build_project_state(project_id: u64) -> *mut c_char;
     fn engine_get_project_state(project_id: u64) -> *mut c_char;
     fn engine_enhance_project(project_id: u64) -> *mut c_char;
@@ -569,22 +568,6 @@ pub fn build_evidence(project_id: u64, category_filter: Option<&str>) -> String 
             cf.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
         )
     })
-}
-
-/// Verify a natural-language claim against the project's indexed
-/// evidence. This is a thin wrapper over the structured verify_claim
-/// path: the claim is parsed into an Intent by IntentParser, mapped to
-/// a structured Claim (capability_question → capability_exists,
-/// safety/pattern_question → contract_holds), and dispatched through
-/// the same verify_one_claim core used by verify_claim. Intents that
-/// match no known category return verdict Unknown with
-/// error_code="intent_unrecognized" instead of silently guessing.
-///
-/// Returns JSON with `verdict`, `confidence`, and verifier-specific
-/// detail fields. On error returns a JSON object with an "error" field
-/// tagged with module/method per code_rules.md.
-pub fn verify_statement(project_id: u64, claim_text: &str) -> String {
-    take_string(unsafe { engine_verify_statement(project_id, cstr(claim_text).as_ptr()) })
 }
 
 /// Build and persist the project state snapshot. Runs the full

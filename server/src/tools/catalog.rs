@@ -125,7 +125,7 @@ pub fn all_tools() -> Vec<Tool> {
                 "properties": {
                     "claim": {
                         "type": "string",
-                        "description": "JSON object describing the claim. Fields: type (capability_exists|contract_holds|architecture_follows|function_implements), subject, predicate, object, scope, source_kind, source_ref"
+                        "description": "The claim as a JSON object (also accepted as a JSON-encoded string). Fields: type (capability_exists|contract_holds|architecture_follows|function_implements), subject, predicate, object, scope, source_kind, source_ref"
                     }
                 },
                 "required": ["claim"]
@@ -239,20 +239,6 @@ pub fn all_tools() -> Vec<Tool> {
                         "description": "Optional: restrict the run to one rule category. Omit to run all categories."
                     }
                 }
-            }),
-        },
-        Tool {
-            name: "verify_statement".into(),
-            description: "Verify a natural-language claim against the project's indexed evidence. Thin wrapper over the structured verify_claim path: the claim is parsed into an Intent (IntentParser), mapped to a structured Claim (capability_question -> capability_exists, safety/pattern_question -> contract_holds), and dispatched through the same verify_one_claim core as verify_claim. Returns JSON with verdict (Supported|Contradicted|PartiallyVerified|Unknown), confidence, and verifier-specific detail. Unrecognized intents return error_code=intent_unrecognized. Use this for yes/no questions about code behavior (e.g. 'does this project safely handle CString?'); for function-implements or architecture checks use verify_claim with the explicit type.".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "claim": {
-                        "type": "string",
-                        "description": "Natural-language claim (e.g. 'does this project safely handle CString?')"
-                    }
-                },
-                "required": ["claim"]
             }),
         },
         Tool {

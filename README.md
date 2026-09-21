@@ -375,7 +375,6 @@ The v0.3 Evidence Pipeline transforms indexed code into verifiable evidence and 
 |------|-------------|------------|
 | `enhance_project` | Run background enhancement: full tree-sitter parse, call graph, FTS, and v0.3 semantic_fact extraction. Prerequisite for `build_evidence` to produce non-empty findings. Complexity metrics and n-gram semantic vectors are built during `index_project` (restored in v0.2.5). | `{}` |
 | `build_evidence` | Build evidence findings by applying the rule set (sync/memory/error/pattern/framework/ffi) to the project's semantic_fact rows. Each rule declares fact needs + a combine mode (Collect / MissingMatch / MissingMatchPerFunction / Count). Returns a JSON array of Evidence objects. Run after `enhance_project` so semantic facts are populated. | `{"category": "string (optional, one of: sync|memory|error|pattern|framework|ffi)"}` |
-| `verify_statement` | Verify a natural-language claim against the project's indexed evidence. Pipeline: IntentParser → Planner → EvidenceBuilder → VerdictBuilder. Returns JSON with `verdict` (Supported\|Contradicted\|PartiallyVerified\|Unknown), `confidence`, `requirements[]`, and `evidence[]`. Use this for yes/no questions about code behavior (e.g. "does this project safely handle CString?"). | `{"claim": "string (required)"}` |
 | `build_project_state` | Build (or rebuild) and persist the project state snapshot. Runs the full v0.3 Evidence Pipeline (evidence aggregation + state queries) and UPSERTs the result into the `project_state` table. Returns the snapshot JSON: overall confidence, capability/architecture/workflow/dead_code scores, per-category issue counts, and `last_updated` timestamp. | `{}` |
 | `get_project_state` | Get the previously persisted project state snapshot (without rebuilding). Returns the `snapshot_json` string for the project, or a JSON error object if no snapshot exists yet (run `build_project_state` first). Use this for fast reads of the latest health snapshot. | `{}` |
 
@@ -415,7 +414,6 @@ HTTP routes       → get_routes
 Type info         → get_type_info
 Verify claim      → verify_claim
 Enhance project   → enhance_project
-Verify statement  → verify_statement
 Build evidence    → build_evidence
 Project health    → build_project_state
 Detect drift      → detect_documentation_drift

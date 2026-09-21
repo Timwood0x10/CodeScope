@@ -777,6 +777,40 @@ mod tests {
     }
 
     #[test]
+    fn test_release_worker_chunks_returns_only_that_workers_chunks() {
+        // Regression (#15, option C): when a chunk worker dies, the merge drops
+        // its DB — including the chunks it had already marked DONE, because one
+        // worker owns one DB. `claimer_id` is the only record of which chunks
+        // those were, so release must hand back exactly that worker's chunks
+        // (whatever their status) and leave every other worker's alone.
+        let path = unique_path();
+        let q = ChunkQueue::create(&path, 3).expect("create");
+        for i in 0..3 {
+            q.write_chunk(i, 1, 0, 10, 100_000).expect("write");
+        }
+        assert_eq!(q.claim_next(0), Some(0));
+        assert_eq!(q.claim_next(1), Some(1));
+        q.mark_done(0); // worker 0 finished chunk 0
+        assert_eq!(q.claim_next(0), Some(2)); // ...and is mid-way through chunk 2
+        q.mark_failed(1); // worker 1 failed chunk 1
+
+        // Worker 0 owns chunk 0 (DONE) and chunk 2 (CLAIMED) — both must come
+        // back, because both live in the DB that is about to be dropped.
+        assert_eq!(q.release_worker_chunks(0), 2);
+        for i in [0u32, 2] {
+            let s = q.chunk_state(i).expect("snap");
+            assert_eq!(s.status, STATUS_PENDING, "chunk {i} must be re-claimable");
+            assert_eq!(s.started_at_ms, 0, "chunk {i} must look never-claimed");
+        }
+        // Worker 1's chunk is left exactly as it was.
+        assert_ne!(q.chunk_state(1).expect("snap").status, STATUS_PENDING);
+        // An id that owns nothing releases nothing.
+        assert_eq!(q.release_worker_chunks(9), 0);
+        // Releasing is only useful if the chunks can be picked up again.
+        assert_eq!(q.claim_next(5), Some(0));
+    }
+
+    #[test]
     fn test_reset_stale_does_not_clobber_finished() {
         let path = unique_path();
         let q = ChunkQueue::create(&path, 1).expect("create");

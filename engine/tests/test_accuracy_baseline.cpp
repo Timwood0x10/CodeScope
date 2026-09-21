@@ -38,24 +38,6 @@ static void check(bool cond, const char *msg)
 	}
 }
 
-// Run a single SELECT that returns one integer column, accumulating the
-// rows into `out`. Returns true on success.
-static bool collectIntColumn(sqlite3 *db, const std::string &sql,
-			     std::vector<int64_t> &out)
-{
-	sqlite3_stmt *st = nullptr;
-	if (sqlite3_prepare_v2(db, sql.c_str(), -1, &st, nullptr) !=
-	    SQLITE_OK) {
-		sqlite3_finalize(st);
-		return false;
-	}
-	while (sqlite3_step(st) == SQLITE_ROW) {
-		out.push_back(sqlite3_column_int64(st, 0));
-	}
-	sqlite3_finalize(st);
-	return true;
-}
-
 // Run a SELECT that returns a single integer row. Returns -1 on miss.
 static int64_t scalarInt(sqlite3 *db, const std::string &sql)
 {
@@ -112,8 +94,7 @@ int main()
 
 	check(engine_init(db_path) == 0, "engine_init");
 
-	uint64_t pid =
-		engine_create_project(proj_dir, "accuracy-baseline");
+	uint64_t pid = engine_create_project(proj_dir, "accuracy-baseline");
 	check(pid > 0, "create_project");
 
 	char *idx = engine_index_project(pid, proj_dir, nullptr);
@@ -128,51 +109,44 @@ int main()
 	sqlite3 *db = nullptr;
 	check(sqlite3_open(db_path, &db) == SQLITE_OK, "sqlite3_open");
 
-	int64_t entity_count = scalarInt(
-		db, "SELECT COUNT(*) FROM entity WHERE project_id=" +
-			    std::to_string(pid));
+	int64_t entity_count =
+		scalarInt(db, "SELECT COUNT(*) FROM entity WHERE project_id=" +
+				      std::to_string(pid));
 	int64_t relation_total = scalarInt(
 		db, "SELECT COUNT(*) FROM relation WHERE project_id=" +
 			    std::to_string(pid));
 	int64_t relation_calls = scalarInt(
-		db,
-		"SELECT COUNT(*) FROM relation WHERE project_id=" +
-			std::to_string(pid) + " AND type=1");
+		db, "SELECT COUNT(*) FROM relation WHERE project_id=" +
+			    std::to_string(pid) + " AND type=1");
 	int64_t relation_refs = scalarInt(
-		db,
-		"SELECT COUNT(*) FROM relation WHERE project_id=" +
-			std::to_string(pid) + " AND type=0");
+		db, "SELECT COUNT(*) FROM relation WHERE project_id=" +
+			    std::to_string(pid) + " AND type=0");
 	int64_t relation_defines = scalarInt(
-		db,
-		"SELECT COUNT(*) FROM relation WHERE project_id=" +
-			std::to_string(pid) + " AND type=2");
+		db, "SELECT COUNT(*) FROM relation WHERE project_id=" +
+			    std::to_string(pid) + " AND type=2");
 	int64_t relation_contains = scalarInt(
-		db,
-		"SELECT COUNT(*) FROM relation WHERE project_id=" +
-			std::to_string(pid) + " AND type=3");
+		db, "SELECT COUNT(*) FROM relation WHERE project_id=" +
+			    std::to_string(pid) + " AND type=3");
 	int64_t relation_imports = scalarInt(
-		db,
-		"SELECT COUNT(*) FROM relation WHERE project_id=" +
-			std::to_string(pid) + " AND type>=4");
+		db, "SELECT COUNT(*) FROM relation WHERE project_id=" +
+			    std::to_string(pid) + " AND type>=4");
 
 	// Duplicate typed relation count — the contract requires this to be
 	// 0 once Step 1 lands the unique index.
-	int64_t duplicate_typed = scalarInt(
-		db,
-		"SELECT COUNT(*) FROM relation r1 WHERE EXISTS ("
-		"  SELECT 1 FROM relation r2 WHERE "
-		"  r2.project_id=r1.project_id AND "
-		"  r2.source_id=r1.source_id AND "
-		"  r2.target_id=r1.target_id AND "
-		"  r2.type=r1.type AND r2.id<r1.id)");
+	int64_t duplicate_typed =
+		scalarInt(db, "SELECT COUNT(*) FROM relation r1 WHERE EXISTS ("
+			      "  SELECT 1 FROM relation r2 WHERE "
+			      "  r2.project_id=r1.project_id AND "
+			      "  r2.source_id=r1.source_id AND "
+			      "  r2.target_id=r1.target_id AND "
+			      "  r2.type=r1.type AND r2.id<r1.id)");
 
 	sqlite3_close(db);
 
 	// Probe the query API for a known call edge: compute → multiply.
 	// Step 0 only records whether the probe returned the expected name;
 	// it does NOT fail on miss (the baseline is observational).
-	char *callees_of_compute =
-		engine_get_callees(pid, "compute", nullptr);
+	char *callees_of_compute = engine_get_callees(pid, "compute", nullptr);
 	bool compute_calls_multiply = false;
 	if (callees_of_compute) {
 		compute_calls_multiply =
@@ -205,12 +179,12 @@ int main()
 		",\n";
 	json += "    \"type_2_defines\": " + std::to_string(relation_defines) +
 		",\n";
-	json += "    \"type_3_contains\": " + std::to_string(relation_contains) +
-		",\n";
+	json += "    \"type_3_contains\": " +
+		std::to_string(relation_contains) + ",\n";
 	json += "    \"type_4_plus\": " + std::to_string(relation_imports) +
 		",\n";
-	json += "    \"duplicate_typed\": " +
-		std::to_string(duplicate_typed) + "\n";
+	json += "    \"duplicate_typed\": " + std::to_string(duplicate_typed) +
+		"\n";
 	json += "  },\n";
 	json += "  \"probes\": {\n";
 	json += "    \"compute_calls_multiply\": " +

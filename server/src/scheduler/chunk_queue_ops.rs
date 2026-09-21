@@ -158,6 +158,45 @@ impl ChunkQueue {
         }
     }
 
+    /// Return every chunk claimed by `worker_id` to PENDING so a replacement
+    /// worker can re-index them; returns how many were released.
+    ///
+    /// Used when a chunk worker dies or times out (see chunked.rs). Such a
+    /// worker owns ONE per-worker DB covering every chunk it processed — they
+    /// steal work — so dropping that DB (what the merge does for a failed
+    /// worker) throws away chunks it had already marked DONE. Nobody would
+    /// redo them and their files would be missing from the index with only
+    /// `complete: false` to show for it.
+    ///
+    /// `mark_done`/`mark_failed` leave `claimer_id` set, which is what makes
+    /// the queue a record of "which chunks did worker N finish" — the
+    /// information this release needs. Every status is released, not only
+    /// CLAIMED: a DONE chunk's rows live in the vanished DB, and a FAILED one
+    /// was judged by a worker that did not survive to report it.
+    ///
+    /// Called after every worker thread has been joined, so the stores below
+    /// have no concurrent reader.
+    pub fn release_worker_chunks(&self, worker_id: u32) -> u32 {
+        // SAFETY: self.ptr is valid for the lifetime of self.
+        let state = unsafe { &*self.ptr };
+        let mut released = 0u32;
+        for i in 0..state.header.chunk_count {
+            let slot = &state.chunks[i as usize];
+            // init() sets claimer_id = u32::MAX for a chunk that has never
+            // been claimed, so a real worker id can only match a real claim.
+            if slot.claimer_id.load(Ordering::Acquire) != worker_id {
+                continue;
+            }
+            slot.claimer_id.store(u32::MAX, Ordering::Relaxed);
+            slot.started_at_ms.store(0, Ordering::Relaxed);
+            slot.finished_at_ms.store(0, Ordering::Relaxed);
+            // Release publishes the cleared fields to whoever claims next.
+            slot.status.store(STATUS_PENDING, Ordering::Release);
+            released += 1;
+        }
+        released
+    }
+
     /// Returns true if every chunk is in DONE or FAILED state.
     /// Used by the scheduler's main loop to detect completion.
     /// Scan every chunk and reclaim any `CLAIMED` chunk whose worker has

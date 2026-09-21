@@ -155,12 +155,27 @@ fn h_explain_symbol(project_id: u64, args: &Value) -> String {
 /// The claim JSON carries type/subject/predicate/object/scope fields
 /// consumed by the C++ VerifierRegistry.
 fn h_verify_claim(project_id: u64, args: &Value) -> String {
-    let claim_json = args["claim"].as_str().unwrap_or("");
+    let claim_json = claim_json_from(args);
     if claim_json.is_empty() {
         return json!({"error": "claim field is required [module=mcp, tool=verify_claim]"})
             .to_string();
     }
-    ffi::verify_claim(project_id, claim_json)
+    ffi::verify_claim(project_id, &claim_json)
+}
+
+/// The claim JSON carried by a tool call.
+///
+/// The schema documents `claim` as a JSON object, but only a pre-serialized
+/// string used to be accepted, so every caller had to double-encode it. A
+/// string is still taken verbatim (existing callers are unaffected) and an
+/// object is serialized; anything else yields "" so the handler reports the
+/// missing-argument error it always did.
+fn claim_json_from(args: &Value) -> String {
+    match &args["claim"] {
+        Value::String(s) => s.clone(),
+        Value::Object(_) => args["claim"].to_string(),
+        _ => String::new(),
+    }
 }
 
 /// Parse a natural-language summary into claims and verify each one.
@@ -253,20 +268,6 @@ fn h_enhance_project(project_id: u64, _args: &Value) -> String {
 fn h_build_evidence(project_id: u64, args: &Value) -> String {
     let category = args["category"].as_str();
     ffi::build_evidence(project_id, category)
-}
-
-/// Verify a natural-language claim against the project's indexed
-/// evidence. Thin wrapper over the structured verify_claim path:
-/// IntentParser → Claim mapping (capability/contract) →
-/// verify_one_claim. Unrecognized intents return
-/// error_code="intent_unrecognized".
-fn h_verify_statement(project_id: u64, args: &Value) -> String {
-    let claim = args["claim"].as_str().unwrap_or("");
-    if claim.is_empty() {
-        return json!({"error": "claim field is required [module=mcp, tool=verify_statement]"})
-            .to_string();
-    }
-    ffi::verify_statement(project_id, claim)
 }
 
 /// Build (or rebuild) and persist the project state snapshot.
@@ -639,7 +640,6 @@ static TOOL_HANDLERS: Lazy<HashMap<&'static str, ToolHandler>> = Lazy::new(|| {
     // v0.3 Evidence Pipeline
     m.insert("enhance_project", h_enhance_project as ToolHandler);
     m.insert("build_evidence", h_build_evidence as ToolHandler);
-    m.insert("verify_statement", h_verify_statement as ToolHandler);
     m.insert("build_project_state", h_build_project_state as ToolHandler);
     m.insert("get_project_state", h_get_project_state as ToolHandler);
     // Verify + Drift Layer (v0.4)
@@ -935,6 +935,27 @@ mod tests {
             clamp_max_members(Some(5_000_000_000)),
             MAX_MAX_MEMBERS as i32
         );
+    }
+
+    #[test]
+    fn test_claim_json_from_accepts_objects_and_strings() {
+        // The schema documents `claim` as a JSON object, but a pre-serialized
+        // string used to be the only shape accepted, so every caller had to
+        // double-encode it. Both work now; the string form is taken verbatim
+        // so existing callers keep working.
+        assert_eq!(
+            claim_json_from(&json!({"claim": {"type": "capability_exists"}})),
+            "{\"type\":\"capability_exists\"}"
+        );
+        assert_eq!(
+            claim_json_from(&json!({"claim": "{\"type\":\"capability_exists\"}"})),
+            "{\"type\":\"capability_exists\"}"
+        );
+        // A missing or wrongly-typed claim stays empty, so the handler reports
+        // the missing-argument error instead of sending garbage to the engine.
+        assert!(claim_json_from(&json!({})).is_empty());
+        assert!(claim_json_from(&json!({"claim": 7})).is_empty());
+        assert!(claim_json_from(&json!({"claim": null})).is_empty());
     }
 
     #[test]

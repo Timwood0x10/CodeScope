@@ -23,6 +23,33 @@ use super::*;
 /// Stability: each worker writes its OWN DB (no concurrent WAL writers),
 /// uses a unique 1-based project_id, and the final merge reuses the proven
 /// per-unit-DB + merge_module_dbs machinery from the static path.
+/// Whether a chunked run counts as complete.
+///
+/// The chunked path can recover, so the module path's rule (`run_complete()`:
+/// no failed worker AND a successful merge) would understate it: a worker that
+/// dies loses every chunk it owned (one DB per worker), and Phase 3b re-indexes
+/// them with a replacement worker. A non-zero `fail` is therefore not proof of
+/// missing data — the queue is the authority (`queue_complete` = every chunk
+/// DONE or FAILED, where FAILED is the normal file-level outcome).
+///
+/// A complete index is: the merge succeeded, every chunk reached a terminal
+/// state, and a recovery round that ran did not itself fail. `fail` and
+/// `recovered_chunks` stay in the response either way, so the deaths are
+/// visible without being reported as missing data.
+fn chunked_run_complete(
+    merged: bool,
+    retry_worker_attempted: bool,
+    retry_worker_failed: bool,
+    queue_complete: bool,
+) -> bool {
+    // A complete index is the merge plus a fully terminal queue; the only thing
+    // that can invalidate it is a recovery round that itself failed. `fail` is
+    // deliberately not part of the test: a dead worker whose chunks another
+    // worker (or the recovery round) finished leaves no missing data, and the
+    // count stays visible in the response.
+    merged && queue_complete && !(retry_worker_attempted && retry_worker_failed)
+}
+
 pub(super) fn index_parallel_chunked(
     project_dir: &str,
     total_workers: u32,
@@ -215,8 +242,13 @@ pub(super) fn index_parallel_chunked(
     // merge_module_dbs machinery as the static path.
     let mut handles = Vec::new();
     let mut results: Vec<ModuleResult> = Vec::new();
+    // Worker ids whose process failed, kept so their chunks can be released
+    // and re-attempted below (Phase 3b).
+    let mut failed_worker_ids: Vec<u32> = Vec::new();
     let active = Arc::new(AtomicU32::new(0));
-    let (tx, rx) = mpsc::channel::<ModuleResult>();
+    // Carries the worker id alongside the result so a failed worker's chunks
+    // can be released and re-attempted (Phase 3b).
+    let (tx, rx) = mpsc::channel::<(u32, ModuleResult)>();
 
     for worker_id in 0..total_workers {
         // Wait for a free slot if at concurrency cap.
@@ -265,7 +297,7 @@ pub(super) fn index_parallel_chunked(
                 project_id,
                 &grammars_dir,
             );
-            let _ = tx.send(result);
+            let _ = tx.send((worker_id, result));
             active_clone.fetch_sub(1, Ordering::SeqCst);
         });
         handles.push(handle);
@@ -273,14 +305,82 @@ pub(super) fn index_parallel_chunked(
 
     drop(tx);
 
-    // Collect results.
-    while let Ok(r) = rx.recv() {
+    // Collect results, remembering which worker each came from: the retry
+    // round below releases exactly the chunks the failed workers own.
+    while let Ok((worker_id, r)) = rx.recv() {
+        if r.exit_code != 0 {
+            failed_worker_ids.push(worker_id);
+        }
         results.push(r);
     }
 
     // Wait for all threads to finish.
     for h in handles {
         let _ = h.join();
+    }
+
+    // ── Phase 3b: recover the chunks of workers that died ─────────
+    // A chunk worker owns ONE DB covering every chunk it processed (they steal
+    // work), and the merge below drops the DB of a failed worker — so a crash
+    // or timeout discarded the chunks that worker had already marked DONE, and
+    // their files were missing from the index with nothing but `complete:
+    // false` to show for it (docs/CODE_REVIEW_2026-09-18.md #15, option C).
+    //
+    // The queue still records which chunks belong to which worker (`mark_done`
+    // leaves `claimer_id` set), so they are released back to PENDING and ONE
+    // replacement worker re-indexes them. One round only: a deterministic
+    // crasher — a file that kills every worker that reads it — would kill the
+    // replacement the same way, and looping on it would turn a crash into a
+    // hang. Whatever the round does not recover is reported as before (`ok` and
+    // `complete` stay false, `fail` counts the workers).
+    let mut recovered_chunks = 0u32;
+    let mut retry_worker_failed = false;
+    let mut retry_worker_attempted = false;
+    if !failed_worker_ids.is_empty() {
+        for id in &failed_worker_ids {
+            recovered_chunks += queue.release_worker_chunks(*id);
+        }
+        // The release above only finds chunks the dead worker had CLAIMED. A
+        // worker can also die before claiming anything, which leaves chunks
+        // that are still PENDING and now have nobody to pick them up — so the
+        // queue, not the release count, decides whether work is missing.
+        if !queue.is_complete() {
+            retry_worker_attempted = true;
+            let retry_id = total_workers;
+            let retry_db = format!("{}_chunk_retry.db", db_prefix);
+            // Project ids are 1..=total_workers for the first round; the
+            // replacement takes the next one so the merge's id remap sees it as
+            // its own worker, exactly like the others.
+            let retry_project_id = (total_workers as u64) + 1;
+            eprintln!(
+                "scheduler: [chunked] {} chunk(s) released from {} failed worker(s); re-indexing as worker {}",
+                recovered_chunks,
+                failed_worker_ids.len(),
+                retry_id
+            );
+            let retry_result = worker::run_chunk_worker(
+                &exe_str,
+                &shm_path,
+                retry_id,
+                "", // no CPU binding for the single recovery worker
+                &retry_db,
+                &files_json_path,
+                retry_project_id,
+                &grammars_dir,
+            );
+            retry_worker_failed = retry_result.exit_code != 0;
+            eprintln!(
+                "scheduler: [chunked] recovery worker {}: exit={} files={} nodes={}",
+                retry_id,
+                retry_result.exit_code,
+                retry_result.files_indexed,
+                retry_result.total_nodes
+            );
+            // Counted like any other worker: `success`/`fail` are derived from
+            // `results`, so a replacement that also dies makes the run
+            // incomplete rather than silently recovering on paper.
+            results.push(retry_result);
+        }
     }
 
     // Both per-run temporaries are removed here, after every worker has exited
@@ -367,7 +467,12 @@ pub(super) fn index_parallel_chunked(
 
     // "ok" means the run completed AND produced a consistent index — not just
     // "at least one worker finished". See run_complete().
-    let complete = super::run_complete(fail, merge_result.merged);
+    let complete = chunked_run_complete(
+        merge_result.merged,
+        retry_worker_attempted,
+        retry_worker_failed,
+        queue.is_complete(),
+    );
     json!({
         "ok": complete,
         "complete": complete,
@@ -387,10 +492,46 @@ pub(super) fn index_parallel_chunked(
         "duration_ms": start.elapsed().as_millis() as u64,
         "success": success,
         "fail": fail,
+        // Chunks whose worker died and that a replacement re-indexed; a
+        // non-zero count with a failed retry_worker means files are still
+        // missing (the run says complete: false either way).
+        "recovered_chunks": recovered_chunks,
+        "retry_worker_failed": retry_worker_failed,
         "total_nodes": total_nodes,
         "total_edges": total_edges,
         "total_files_indexed": total_files_indexed,
         "modules": modules_json
     })
     .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::chunked_run_complete;
+
+    #[test]
+    fn test_chunked_run_complete_accounts_for_recovery() {
+        // A healthy run: merge ok, every chunk terminal, no recovery needed.
+        assert!(chunked_run_complete(true, false, false, true));
+        // A failed merge is never complete, whatever the queue says.
+        assert!(!chunked_run_complete(false, false, false, true));
+
+        // Failures whose chunks a replacement re-indexed: complete, with the
+        // deaths still visible in `fail` / `recovered_chunks`.
+        assert!(chunked_run_complete(true, true, false, true));
+
+        // Every way the recovery can fall short stays incomplete:
+        assert!(
+            !chunked_run_complete(true, true, true, true),
+            "the replacement died too"
+        );
+        assert!(
+            !chunked_run_complete(true, true, false, false),
+            "the queue still holds chunks nobody finished"
+        );
+        assert!(
+            !chunked_run_complete(true, false, false, false),
+            "a worker died before claiming anything and nothing recovered the work"
+        );
+    }
 }

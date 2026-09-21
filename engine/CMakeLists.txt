@@ -276,10 +276,6 @@ set(ENGINE_SOURCES
         src/verify/documentation_drift.cpp
         src/verify/capability_drift.cpp
         src/verify/architecture_drift.cpp
-        src/verify/intent_parser.cpp
-        src/verify/planner.cpp
-        src/verify/verdict_builder.cpp
-    src/engine_verify_planner_ffi.cpp
     src/async_knowledge.cpp
     src/filter_policy.cpp
     src/filter_policy_detect.cpp

@@ -107,8 +107,10 @@ int main()
 	expectEnvelope("engine_get_project_state",
 		       engine_get_project_state(pid));
 	expectEnvelope("engine_build_evidence", engine_build_evidence(pid, ""));
-	expectEnvelope("engine_verify_statement",
-		       engine_verify_statement(pid, ""));
+	// engine_verify_statement used to sit here; it was retired in favour of
+	// verify_claim, so the envelope check now covers engine_verify_claim —
+	// which this test did not cover at all before.
+	expectEnvelope("engine_verify_claim", engine_verify_claim(pid, ""));
 
 	// ── The two that gained `catch (...)` ──────────────────────
 	expectEnvelope("engine_search_semantic",
