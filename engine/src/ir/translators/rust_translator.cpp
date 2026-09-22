@@ -418,7 +418,7 @@ Node *RustTranslator::handleImpl(TSNode ts_node, Node *parent)
 	// the first type_identifier IS the implementing type. We scan all
 	// children: if a `for` keyword appears, the type_identifier AFTER
 	// it is the implementing type; otherwise we use the first
-	// type_identifier. See CODE_REVIEW_FINDINGS_2026-07-19.md H7.
+	// type_identifier.
 	std::string impl_type;
 	std::string first_type;
 	bool seen_for_keyword = false;

@@ -292,8 +292,7 @@ Node *GoTranslator::handleMethodDecl(TSNode ts_node, Node *parent)
 		// — otherwise the second parameter_list's parameter types (e.g.
 		// `int` in `func (r *MyType) Method(a int)`) overwrite receiver_type
 		// → receiver edge points to `int` instead of `MyType`, breaking
-		// every Go method-to-type association. See
-		// CODE_REVIEW_FINDINGS_2026-07-19.md C4.
+		// every Go method-to-type association.
 		if (strcmp(t, "parameter_list") == 0) {
 			// First parameter_list is receiver
 			uint32_t pc = ts_node_child_count(child);

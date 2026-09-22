@@ -62,8 +62,7 @@ uint64_t GraphStore::insertGraphNode(uint64_t project_id,
 	// The previous code bound slot 17 to a hardcoded 0 and slot 18 to
 	// the real value — slot 18 is past the 17-placeholder SQL and
 	// sqlite3_bind_int returned SQLITE_RANGE, silently dropping the
-	// value so is_entry_point was ALWAYS 0. See
-	// CODE_REVIEW_FINDINGS_2026-07-19.md C1.
+	// value so is_entry_point was ALWAYS 0.
 	sqlite3_bind_int(stmt, 17, node.is_entry_point ? 1 : 0);
 
 	int rc = sqlite3_step(stmt);

@@ -43,7 +43,7 @@ fn main() {
     // ── discover-modules: codescope discover-modules <dir_path> ───
     // Built-in scheduler entry: list top-level modules + their source-file
     // counts. Output schema is focused on scheduler use (no skipped_dirs/
-    // skipped_files fields). See builtin-scheduler-design.md §4.2.
+    // skipped_files fields).
     // Exit code: 0 on success, 1 on missing dir.
     if args.len() >= 2 && args[1] == "discover-modules" {
         let dir_path = args.get(2).map(|s| s.as_str()).unwrap_or(".");
@@ -67,7 +67,7 @@ fn main() {
 
     // ── index-parallel: codescope index-parallel <dir> [--workers N] [--parallel M] ──
     // Built-in CPU-dynamic parallel indexer. Replaces codescope-parallel.sh.
-    // See builtin-scheduler-design.md §4. Dispatches one worker subprocess
+    // Dispatches one worker subprocess
     // per top-level module with proportional parse-worker allocation; failed
     // modules are quarantined via binary search.
     // Exit code: 0 on success (>=1 module indexed with nodes), 1 on failure.

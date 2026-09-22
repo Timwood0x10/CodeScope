@@ -27,7 +27,7 @@ int64_t StateBuilder::buildModuleSummaries()
 	//   - entry_reachable: does this module contain a main/init entity?
 	//                     Derived from the canonical entity.name/language
 	//                     columns (see the entry CTE below).
-	// Rules match by PRIORITY (first hit stops, see role_classifier_plan.md).
+	// Rules match by PRIORITY (first hit stops).
 	// Split the aggregate and the entry_reachable scan into two CTEs. A
 	// single 6-table LEFT JOIN that combined the three relation joins
 	// with the entry scan made SQLite build four COUNT(DISTINCT)

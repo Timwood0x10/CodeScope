@@ -558,7 +558,6 @@ void JsVisitor::visitCallExpr(TSNode node, uint64_t parent_id)
 	// `Foo()`, `Url()`, `Db()` → all were misclassified as Direct calls,
 	// so the Resolver Pipeline never applied the constructor boost factor
 	// and cross-module constructor resolution silently failed.
-	// See CODE_REVIEW_FINDINGS_2026-07-19.md H6.
 	else if (callee_name.size() >= 1 && callee_name[0] >= 'A' &&
 		 callee_name[0] <= 'Z')
 		call_kind = CallKind::Constructor;

@@ -124,7 +124,7 @@ bool GraphStore::createSchema()
             module_path TEXT NOT NULL DEFAULT '',
             -- v0.5+: mirrors semantic_records.arity so the Resolver Pipeline
             -- can disambiguate same-name overloads (init()/init(int)) without
-            -- a JOIN per candidate. See CODE_REVIEW_FINDINGS_2026-07-19.md C2.
+            -- a JOIN per candidate.
             arity INTEGER NOT NULL DEFAULT 0,
             -- v0.2.5: per-function code metrics. Computed once in the parse
             -- worker (computeMetricsFromCST/computeMetricsFromUnit), staged in

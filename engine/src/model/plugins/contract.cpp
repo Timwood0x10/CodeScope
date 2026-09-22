@@ -92,8 +92,7 @@ ModelResult ContractPlugin::build(uint64_t project_id, const ModelContext &ctx)
 				// lowercase to "thread-safe" / "memory safe" (still
 				// with separators) and NEVER match the router, so
 				// "thread-safe" claims silently returned Unknown and
-				// trust_score was penalised. See
-				// CODE_REVIEW_FINDINGS_2026-07-19.md H1.
+				// trust_score was penalised.
 				// Canonical form: lowercase + strip '-' and spaces.
 				std::string canonical =
 					normalizeContractName(kw);

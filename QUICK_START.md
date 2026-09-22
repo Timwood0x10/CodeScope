@@ -125,4 +125,4 @@ CodeScope 实现 MCP 协议，可以直接集成到 Claude Desktop、Cursor 等 
 
 - [架构文档](docs/zh/architecture.md) — 了解 CodeScope 的工作原理
 - [优化文档](docs/optimization/optimization-chinese.md) — 性能优化记录
-- [性能报告](docs/zh/e2e_benchmark_report.md) — 大规模项目索引测试
+- [性能报告](docs/optimization/perf-full-index-2026-08-11.md) — 全量索引性能统计

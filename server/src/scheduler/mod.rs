@@ -1,6 +1,6 @@
 //! Built-in parallel scheduler — replaces `codescope-parallel.sh`.
 //!
-//! Design principle (see `builtin-scheduler-design.md` §4.1):
+//! Design principle:
 //! > The scheduler only manages CPU core allocation; it does NOT
 //! > participate in file discovery, parsing, or graph building.
 //!

@@ -237,7 +237,7 @@ void JavaVisitor::handleMethodInvocation(TSNode node, uint64_t parent_id)
 	// callee names were always the receiver → resolveSymbol never
 	// matched → ref_original_id=0 → all Java call-edges were lost.
 	// ts_node_child_by_field_name fetches the `name` field directly
-	// regardless of child order. See CODE_REVIEW_FINDINGS_2026-07-19.md C3.
+	// regardless of child order.
 	std::string name;
 	TSNode name_node = ts_node_child_by_field_name(node, "name", 4);
 	if (!ts_node_is_null(name_node))
@@ -391,7 +391,7 @@ void JavaVisitor::handleObjectCreation(TSNode node, uint64_t parent_id)
 	// via child_by_field_name("type"), which may be a type_identifier
 	// (`Foo`) or a generic_type (`Foo<Bar>`). Mirrors handleMethodInvocation's
 	// use of child_by_field_name for robust name extraction regardless of
-	// child order. See CODE_REVIEW_FINDINGS_2026-07-19.md C3 (same pattern).
+	// child order.
 	std::string name;
 	TSNode type_node = ts_node_child_by_field_name(node, "type", 4);
 	if (!ts_node_is_null(type_node)) {

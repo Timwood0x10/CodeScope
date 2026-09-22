@@ -23,7 +23,6 @@ int ResolverPipeline::loadEntityIndex(
 			// Without this column in the SELECT, c.arity defaulted to 0
 			// and every candidate scored kScorePartialMatch (0.5),
 			// letting std::sort pick the winner by unstable order.
-			// See CODE_REVIEW_FINDINGS_2026-07-19.md C2.
 			// Include kind (appended as column 5) so
 			// factorConstructorMatch can prefer Class/Struct targets;
 			// previously kind was hardcoded 0 in the call, so the

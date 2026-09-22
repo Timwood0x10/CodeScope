@@ -256,8 +256,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// before scope creation. The late insert after dropQueryIndexes is
 	// now redundant but kept as a safety net (INSERT OR IGNORE).
 	// Includes sr.arity so the Resolver Pipeline can disambiguate
-	// same-name overloads via factorSignatureMatch. See
-	// CODE_REVIEW_FINDINGS_2026-07-19.md C2.
+	// same-name overloads via factorSignatureMatch.
 	exec_write(
 		std::string(
 			"INSERT OR IGNORE INTO entity "

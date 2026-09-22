@@ -1,7 +1,6 @@
 // store_parse_failure.cpp — Persistent parse-failure tracking.
 //
-// Implements the fail-fast design from DYNAMIC_SCHED_REDESIGN.md §7.3
-// and CODE_REVIEW_DYNAMIC_SCHED_2026-07-19.md (Part B, Phase 0).
+// Implements the fail-fast design from DYNAMIC_SCHED_REDESIGN.md §7.3.
 // Files that fail to parse N times (CODESCOPE_FAIL_RETRY_MAX, default
 // 1) are skipped on subsequent index runs. Reset via CLI reset-failures.
 //

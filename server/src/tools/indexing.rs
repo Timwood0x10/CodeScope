@@ -506,7 +506,7 @@ fn walk_force_index(
         // the recursion would never terminate → stack overflow panic
         // crashing the MCP server (local DoS). symlink_metadata gives us
         // the link's own metadata without dereferencing, so we only recurse
-        // into real directories. See CODE_REVIEW_FINDINGS_2026-07-19.md C5.
+        // into real directories.
         let is_real_dir = std::fs::symlink_metadata(&path)
             .map(|m| m.is_dir())
             .unwrap_or(false);

@@ -362,8 +362,7 @@ char *postParsePhase(uint64_t project_id, const std::string &dir,
 	// (server/src/scheduler/) skip the ~280ms state-builder work in
 	// per-module workers and run it ONCE on the merged DB at the end.
 	// This keeps the per-module worker fast so the overall wall-clock
-	// index time stays under 1s on small projects (see
-	// builtin-scheduler-design.md §4.5).
+	// index time stays under 1s on small projects.
 	const char *skip_async = getenv("CODESCOPE_SKIP_ASYNC");
 	if (!skip_async || skip_async[0] == '0') {
 		launchAsyncKnowledgeBuilder(project_id, !mode_fast);

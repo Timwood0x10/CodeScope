@@ -456,7 +456,6 @@ void GoVisitor::handleCall(TSNode node, uint64_t parent_id)
 		// `name.size() > 3` threshold excluded exactly "New" (3 chars),
 		// so a bare `New()` call was misclassified as Direct and never
 		// got the constructor boost in the Resolver Pipeline.
-		// See CODE_REVIEW_FINDINGS_2026-07-19.md H6.
 		if (call_kind == CallKind::Method && name.size() >= 3 &&
 		    name[0] == 'N' && name[1] == 'e' && name[2] == 'w')
 			call_kind = CallKind::Constructor;

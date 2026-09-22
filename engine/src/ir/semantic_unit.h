@@ -138,7 +138,7 @@ struct Record {
 	/// Populated by Visitors per language; flows Record → SemanticUnit →
 	/// entity.visibility column via the staging pipeline. The role classifier
 	/// in state_builder.cpp fuses pub_count (visibility=1) with call-graph
-	/// counts — see docs/dev_plans/role_classifier_plan.md.
+	/// counts.
 	int visibility = 0;
 
 	// ── Call fact fields (Step 3, plan §3.1) ────────────────────────

@@ -570,8 +570,7 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 //
 // Metrics are real measurements (cyclomatic/cognitive/nesting) produced in the
 // parse worker — see engine_index_metrics.cpp. This restores the metrics
-// capability that Step 10 of ACCURACY_IMPROVEMENT_DEVELOPMENT_PLAN.md had
-// sunset; the plan's completion criterion (no placeholder 0, real data) is met
+// capability that had been sunset; the criterion (no placeholder 0, real data) is met
 // because we write the actual computed values and mark the project's
 // metrics_ready flag from the canonical entity coverage.
 bool GraphStore::resolveStagedMetrics(uint64_t project_id)

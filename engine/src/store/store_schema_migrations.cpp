@@ -358,7 +358,7 @@ bool GraphStore::runSchemaMigrations()
 	// Python __leading→0 else→1, C/C++ header-declared→1 static-anon→0,
 	// Java public→1 private→0 protected→2, JS/TS export→1 else→0, Swift public/open→1.
 	// role classifier (state_builder.cpp buildModuleSummaries) fuses pub_count
-	// from this column with call-graph counts — see docs/dev_plans/role_classifier_plan.md.
+	// from this column with call-graph counts.
 	{
 		sqlite3_stmt *probe = nullptr;
 		if (sqlite3_prepare_v2(db_, "PRAGMA table_info(entity)", -1,

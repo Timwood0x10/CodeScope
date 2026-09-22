@@ -6,7 +6,7 @@
 //! tool (which is designed for project-overview UI display, not for
 //! dispatching workers).
 //!
-//! See `builtin-scheduler-design.md` §4.2 for the rationale. The skip
+//! The skip
 //! rules mirror the C++ `FilterPolicy::shouldSkipEntry` so the file list
 //! we emit matches what the worker will actually index.
 
@@ -95,7 +95,7 @@ pub fn root_source_files(dir_path: &str) -> Vec<String> {
 ///
 /// Skip rules mirror `FilterPolicy` so the count matches what the worker
 /// will actually parse (modulo nested `test/`/`docs/` dirs which the
-/// worker additionally skips — see `builtin-scheduler-design.md` §1.2).
+/// worker additionally skips).
 /// The count is therefore an upper bound; the worker reports the true
 /// `discovery.candidate_files` in its stdout JSON, which the scheduler
 /// uses for the final summary (so reported numbers are always accurate).
