@@ -182,12 +182,13 @@ set(ENGINE_SOURCES
     src/engine_index_sched.cpp
     src/engine_index_discover.cpp
         src/engine_index_project_membulk.cpp
-        src/engine_index_post_parse.cpp
+        src/post_parse_phase.cpp
         src/engine_index_metrics.cpp
     src/engine_scanner.cpp
     src/engine_queries.cpp
     src/engine_queries_context.cpp
     src/engine_ffi.cpp
+    src/engine_filter_ffi.cpp
     src/engine_ffi_index.cpp
     src/engine_ffi_graph.cpp
     src/engine_verify_ffi.cpp
@@ -233,12 +234,10 @@ set(ENGINE_SOURCES
     src/store/store_search.cpp
     src/store/store_search_vector.cpp
     src/store/store_batch.cpp
-    src/store/store_type.cpp
     src/store/store_graph.cpp
     src/store/store_graph_csr.cpp
     src/store/store_graph_imports.cpp
     src/store/store_query.cpp
-    src/store/store_query_explore.cpp
      src/store/store_project.cpp
      src/store/store_parse_failure.cpp
      src/store/store_knowledge.cpp

@@ -430,33 +430,6 @@ int GraphStore::getProjectReadiness(uint64_t project_id, const char *field)
 	sqlite3_finalize(stmt);
 	return val;
 }
-
-std::string GraphStore::getProjectReadinessJson(uint64_t project_id)
-{
-	sqlite3_stmt *stmt = nullptr;
-	const char *sql = "SELECT fast_ready, normal_ready, deep_ready, "
-			  "fts_ready, vector_ready "
-			  "FROM project_readiness WHERE project_id=?";
-	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
-		return "";
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	std::string json;
-	if (sqlite3_step(stmt) == SQLITE_ROW) {
-		json = "\"fast_ready\":" +
-		       std::to_string(sqlite3_column_int(stmt, 0)) +
-		       ",\"normal_ready\":" +
-		       std::to_string(sqlite3_column_int(stmt, 1)) +
-		       ",\"deep_ready\":" +
-		       std::to_string(sqlite3_column_int(stmt, 2)) +
-		       ",\"fts_ready\":" +
-		       std::to_string(sqlite3_column_int(stmt, 3)) +
-		       ",\"vector_ready\":" +
-		       std::to_string(sqlite3_column_int(stmt, 4));
-	}
-	sqlite3_finalize(stmt);
-	return json;
-}
-
 // ─── Shared Artifact ─────────────────────────────────────────────
 // Uses fork() + execvp() for zstd to avoid command injection via system().
 // Validates paths reject single-quote chars to prevent SQL injection in VACUUM/ATTACH.

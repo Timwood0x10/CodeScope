@@ -65,6 +65,26 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 		}
 		return false;
 	};
+	// ── Ref-level import-module lookup ──
+	// When the caller imports this callee from a RELATIVE module
+	// (`import { helper } from "./helper"`), that specifier is the one piece of
+	// evidence that can separate cross-directory candidates — the language has
+	// no receiver to match on and `import_alias` only says "imported", not
+	// "imported from here". Resolved once per reference, outside the candidate
+	// loop; bare package names are ignored because they name no file inside
+	// the project. Empty for every language that does not record imports this
+	// way, which keeps the factor below inert for them.
+	std::string import_spec;
+	{
+		auto fit = import_alias_index_.find(caller_file);
+		if (fit != import_alias_index_.end()) {
+			auto sit = fit->second.find(callee_name);
+			if (sit != fit->second.end() && !sit->second.empty() &&
+			    sit->second[0] == '.')
+				import_spec = sit->second;
+		}
+	}
+
 	// ── Ref-level factor precompute (perf fix #3) ──
 	// factorCommonNamePenalty depends ONLY on the ref's callee_name, which
 	// is fixed across all candidates of this ref, yet it was called once per
@@ -184,6 +204,19 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 			}
 			acc(kWeightImportMatch, import_score, "ImportMatch");
 		}
+
+		// Factor 2b: ImportModuleMatch — the caller imports this callee from a
+		// RELATIVE module and this candidate IS that module. Accumulated only
+		// when such a specifier exists, so every other reference keeps its
+		// previous weighted average exactly (the guarded-acc pattern the
+		// ImportMatch block above already uses).
+		if (!import_spec.empty())
+			acc(kWeightImportModuleMatch,
+			    relativeImportMatchesFile(caller_dir, import_spec,
+						      c.file_path) ?
+				    1.0 :
+				    0.0,
+			    "ImportModuleMatch");
 
 		// Factor 3: NamespaceMatch
 		acc(kWeightNamespaceMatch, ns_score, "NamespaceMatch");

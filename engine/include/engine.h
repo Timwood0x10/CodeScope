@@ -576,6 +576,37 @@ char *engine_explain_module(uint64_t project_id, const char *module_name);
  */
 char *engine_get_verifier_registry_status(uint64_t project_id);
 
+/**
+ * Ask the engine's FilterPolicy whether a path would be skipped.
+ *
+ * Exported so the server's module discovery asks the same implementation the
+ * indexer uses instead of keeping a copy of the skip rules: the copy is what
+ * let a `.gitignore`d top-level directory be reported as a module (it read no
+ * ignore file at all). `project_root` selects which .gitignore /
+ * .codescopeignore rules apply and caches one FilterPolicy per root;
+ * `rel_path` is relative to that root, exactly as the worker passes it.
+ *
+ * @param project_root  Project root whose ignore files apply (may be NULL).
+ * @param rel_path      Path relative to project_root; NULL or "" → not skipped.
+ * @param is_dir        Non-zero when the path names a directory.
+ * @return 1 if the path would be skipped, 0 otherwise (also 0 on any error).
+ */
+int engine_path_is_skipped(const char *project_root, const char *rel_path,
+			   int is_dir);
+
+/**
+ * Ask whether the engine can parse a file (by extension, or shebang for
+ * extensionless scripts).
+ *
+ * Exported so the server's file counts cannot advertise a language the engine
+ * has no support for — `.zig` was counted while the engine has no Zig
+ * mapping or translator.
+ *
+ * @param file_path  Path or file name; NULL or "" → 0.
+ * @return 1 if the engine recognizes a language for it, 0 otherwise.
+ */
+int engine_is_indexable_source(const char *file_path);
+
 #ifdef __cplusplus
 }
 #endif

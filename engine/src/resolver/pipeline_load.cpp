@@ -172,6 +172,52 @@ int ResolverPipeline::loadEntityIndex(
 		}
 		sqlite3_finalize(imp_st);
 	}
+
+	// ── Step 0c: imported binding -> module specifier, from the IR records ──
+	// This is the index that lets a bare `widgetHelper()` call be traced to the
+	// module it came from, which is the only evidence that can separate
+	// cross-directory candidates in JS/TS (no receiver to match on, and
+	// `import_alias` records that a name IS imported, not where from). The
+	// `import` table cannot answer it: its alias column is the module path's
+	// last segment (`../lib/Widget` → `Widget`), not the bound name. Only the
+	// visitors that know the binding emit these records today (JS/TS, via
+	// SemanticEmitter::emitImportBinding), so for every other language this map
+	// stays empty and the factor reading it never fires.
+	import_alias_index_.clear();
+	{
+		// RecordKind::ImportBinding as stored in semantic_records.kind. The
+		// store layer writes raw ordinals — store_graph.cpp persists this one
+		// as kKindImportBinding with the same value.
+		static constexpr int kKindImportBinding = 21;
+		const std::string binding_sql =
+			"SELECT file_path, name, type_name FROM semantic_records "
+			"WHERE project_id=? AND kind=? AND name != '' AND "
+			"type_name != ''";
+		sqlite3_stmt *bind_st = nullptr;
+		if (sqlite3_prepare_v2(store_->handle(), binding_sql.c_str(),
+				       -1, &bind_st, nullptr) != SQLITE_OK) {
+			fprintf(stderr,
+				"[module=resolver, method=run] "
+				"prepare import-binding index failed: %s\n",
+				sqlite3_errmsg(store_->handle()));
+			return -1;
+		}
+		sqlite3_bind_int64(bind_st, 1,
+				   static_cast<int64_t>(project_id_));
+		sqlite3_bind_int(bind_st, 2, kKindImportBinding);
+		while (sqlite3_step(bind_st) == SQLITE_ROW) {
+			const char *fp = reinterpret_cast<const char *>(
+				sqlite3_column_text(bind_st, 0));
+			const char *nm = reinterpret_cast<const char *>(
+				sqlite3_column_text(bind_st, 1));
+			const char *tn = reinterpret_cast<const char *>(
+				sqlite3_column_text(bind_st, 2));
+			if (!fp || !nm || !tn || !*fp || !*nm || !*tn)
+				continue;
+			import_alias_index_[fp][nm] = tn;
+		}
+		sqlite3_finalize(bind_st);
+	}
 	return 0;
 }
 

@@ -25,53 +25,6 @@
 
 namespace store
 {
-
-// ─── FTS5 Full-Text Search ─────────────────────────────────────
-
-void GraphStore::insertIntoFTS(uint64_t node_id, uint64_t project_id,
-			       const char *name, const char *qualified_name,
-			       const char *file_path, const char *content,
-			       int node_kind)
-{
-	// Skip empty entries
-	if ((!name || !*name) && (!qualified_name || !*qualified_name) &&
-	    (!file_path || !*file_path) && (!content || !*content)) {
-		return;
-	}
-	if (node_kind < 0)
-		node_kind = 0;
-
-	// Update mapping table (reuses cached prepared statement)
-	if (stmt_fts_map_) {
-		sqlite3_reset(stmt_fts_map_);
-		sqlite3_bind_int64(stmt_fts_map_, 1,
-				   static_cast<int64_t>(node_id));
-		sqlite3_bind_int64(stmt_fts_map_, 2,
-				   static_cast<int64_t>(project_id));
-		sqlite3_step(stmt_fts_map_);
-	}
-
-	// Insert into FTS5 (reuses cached prepared statement)
-	if (stmt_fts_) {
-		sqlite3_reset(stmt_fts_);
-		sqlite3_bind_int64(stmt_fts_, 1, static_cast<int64_t>(node_id));
-		sqlite3_bind_text(stmt_fts_, 2, name ? name : "", -1,
-				  SQLITE_TRANSIENT);
-		sqlite3_bind_text(stmt_fts_, 3,
-				  qualified_name ? qualified_name : "", -1,
-				  SQLITE_TRANSIENT);
-		sqlite3_bind_text(stmt_fts_, 4, file_path ? file_path : "", -1,
-				  SQLITE_TRANSIENT);
-		sqlite3_bind_text(stmt_fts_, 5, content ? content : "", -1,
-				  SQLITE_TRANSIENT);
-		sqlite3_bind_int64(stmt_fts_, 6,
-				   static_cast<int64_t>(project_id));
-		sqlite3_bind_int64(stmt_fts_, 7, static_cast<int64_t>(node_id));
-		sqlite3_bind_int(stmt_fts_, 8, node_kind);
-		sqlite3_step(stmt_fts_);
-	}
-}
-
 // deleteFTSByFile removed — FTS is indexed inline during buildGraph.
 // Single-file index paths no longer write FTS entries per-node.
 
@@ -519,34 +472,6 @@ std::string GraphStore::searchGraphFallback(uint64_t project_id,
 	json << "}";
 	return json.str();
 }
-
-// ─── Complexity ───────────────────────────────────────────────
-//
-// v0.2.5: metrics are restored. The canonical write path is the parse worker
-// (engine_index_metrics.cpp) → `_staged_metrics` (insertFileResultBatch) →
-// `resolveStagedMetrics()`, which resolves the staged values onto the
-// canonical `entity` columns. The read API (getComplexityJson) returns the
-// real measurements from `entity`. `setComplexity` below is a retained
-// compatibility seam with no callers; it is intentionally inert so a stray
-// caller cannot bypass the canonical staged-metrics pipeline and write
-// metrics that were never computed.
-
-bool GraphStore::setComplexity(uint64_t project_id, uint64_t graph_node_id,
-			       uint64_t cyclomatic, uint64_t cognitive,
-			       uint64_t nesting_depth, uint64_t decision_points)
-{
-	// Inert compatibility seam: canonical metrics flow through
-	// _staged_metrics → resolveStagedMetrics. Returns false so a future
-	// caller can detect the write did not go through the canonical path.
-	(void)project_id;
-	(void)graph_node_id;
-	(void)cyclomatic;
-	(void)cognitive;
-	(void)nesting_depth;
-	(void)decision_points;
-	return false;
-}
-
 // Return the per-function code metrics for a single graph node, sourced from
 // the canonical entity row (the Knowledge Graph single source of truth).
 // Metrics are populated during indexing (staged in _staged_metrics, resolved
@@ -628,40 +553,6 @@ std::string GraphStore::getComplexityJson(uint64_t project_id,
 }
 
 // ─── Vector Search (removed) ──────────────────────────────────
-
-bool // storeVector removed — Phase 0 cut
-GraphStore::storeVector(uint64_t node_id, uint64_t project_id,
-			const void *vec_data, size_t vec_bytes)
-{
-	if (!stmt_vector_) {
-		error_ = "storeVector: statement not prepared";
-		return false;
-	}
-	sqlite3_reset(stmt_vector_);
-	sqlite3_bind_int64(stmt_vector_, 1, static_cast<int64_t>(node_id));
-	sqlite3_bind_int64(stmt_vector_, 2, static_cast<int64_t>(project_id));
-	// sqlite3_bind_blob takes an int length; reject vectors that would
-	// overflow it rather than silently truncating the size_t value.
-	if (vec_bytes > static_cast<size_t>(INT_MAX)) {
-		error_ = "storeVector: vector too large for blob binding";
-		return false;
-	}
-	sqlite3_bind_blob(stmt_vector_, 3, vec_data,
-			  static_cast<int>(vec_bytes), SQLITE_TRANSIENT);
-	int rc = sqlite3_step(stmt_vector_);
-	return rc == SQLITE_DONE;
-}
-
-std::string // searchSemantic removed — Phase 0 cut
-GraphStore::searchSemantic(uint64_t project_id, const void *query_vec,
-			   size_t vec_bytes, int limit)
-{
-	(void)project_id;
-	(void)query_vec;
-	(void)vec_bytes;
-	(void)limit;
-	return "{\"total\":0,\"results\":[]}";
-}
 
 // ── New Schema (Phase A): Modules ─────────────────────────────
 

@@ -586,7 +586,7 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json)
 		t_parse_start = steady_clock::now();
 		// buildGraph(...true) is a FULL rebuild: it drops the lookup
 		// + unique-edge indexes. Unlike engine_index_project (which
-		// reaches this via engine_index_post_parse), this path must
+		// reaches this via postParsePhase), this path must
 		// recreate those indexes itself or they stay missing (M-12).
 		// P2 fix: a resolver-pipeline failure makes buildGraph roll back
 		// its graph savepoint and return false; flag it as a writer error
@@ -603,7 +603,7 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json)
 
 		// Mark every node callgraph_ready: the call graph is now
 		// committed, so trace_path / enhancement-status report
-		// readiness correctly (mirrors engine_index_post_parse, M-15).
+		// readiness correctly (mirrors postParsePhase, M-15).
 		{
 			std::string up =
 				"UPDATE graph_nodes SET callgraph_ready=1 "

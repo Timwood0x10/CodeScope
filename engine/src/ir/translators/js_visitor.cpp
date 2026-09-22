@@ -719,16 +719,25 @@ void JsVisitor::visitImportStmt(TSNode node, uint64_t parent_id)
 		TSNode child = ts_node_child(node, i);
 		if (strcmp(ts_node_type(child), "string") == 0) {
 			module_spec = nodeText(child);
+			// The `string` node text keeps its quotes, and a specifier is
+			// only useful to a path comparison without them ("../lib/Widget").
+			if (module_spec.size() >= 2 &&
+			    (module_spec.front() == '\'' ||
+			     module_spec.front() == '"') &&
+			    module_spec.back() == module_spec.front())
+				module_spec = module_spec.substr(
+					1, module_spec.size() - 2);
 			break;
 		}
 	}
-	collectImportBindings(node, module_spec);
+	collectImportBindings(node, module_spec, parent_id);
 	// Import children (import_clause, from_clause) are structural —
 	// no need to emit records for them.
 }
 
 void JsVisitor::collectImportBindings(TSNode node,
-				      const std::string &module_spec)
+				      const std::string &module_spec,
+				      uint64_t parent_id)
 {
 	const char *t = ts_node_type(node);
 
@@ -742,8 +751,15 @@ void JsVisitor::collectImportBindings(TSNode node,
 			if (strcmp(ts_node_type(c), "identifier") == 0)
 				bound = nodeText(c);
 		}
-		if (!bound.empty())
+		if (!bound.empty()) {
 			import_aliases_[bound] = module_spec;
+			// Also record the binding -> module pair for the Resolver: the
+			// `import` table cannot supply it, because its alias column is the
+			// module path's last segment rather than the name the module was
+			// bound to, so a bare call has no key to look its module up by.
+			emitter_->emitImportBinding(bound, module_spec,
+						    location(node), parent_id);
+		}
 		return;
 	}
 
@@ -753,14 +769,22 @@ void JsVisitor::collectImportBindings(TSNode node,
 	// by the import_specifier branch above and never reach here.
 	if (strcmp(t, "identifier") == 0) {
 		std::string bound = nodeText(node);
-		if (!bound.empty())
+		if (!bound.empty()) {
 			import_aliases_[bound] = module_spec;
+			// Also record the binding -> module pair for the Resolver: the
+			// `import` table cannot supply it, because its alias column is the
+			// module path's last segment rather than the name the module was
+			// bound to, so a bare call has no key to look its module up by.
+			emitter_->emitImportBinding(bound, module_spec,
+						    location(node), parent_id);
+		}
 		return;
 	}
 
 	uint32_t cc = ts_node_child_count(node);
 	for (uint32_t i = 0; i < cc; i++)
-		collectImportBindings(ts_node_child(node, i), module_spec);
+		collectImportBindings(ts_node_child(node, i), module_spec,
+				      parent_id);
 }
 
 void JsVisitor::visitExportStmt(TSNode node, uint64_t parent_id)

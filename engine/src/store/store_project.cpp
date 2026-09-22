@@ -69,102 +69,6 @@ uint64_t GraphStore::insertModule(uint64_t project_id, uint64_t parent_id,
 	sqlite3_finalize(stmt);
 	return id;
 }
-
-// ── New Schema (Phase A): Symbols ─────────────────────────────
-
-uint64_t GraphStore::insertSymbol(uint64_t project_id, uint64_t module_id,
-				  const char *kind, const char *name,
-				  const char *signature, const char *visibility,
-				  const char *language, const char *file_path,
-				  int line, int column, int span_start,
-				  int span_end)
-{
-	const char *sql =
-		"INSERT OR IGNORE INTO graph_nodes "
-		"(project_id, node_type, name, signature, file_path, language, "
-		" start_row, start_col) "
-		"VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-		error_ = "insertSymbol: prepare failed";
-		return 0;
-	}
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	// NOTE: module_id is intentionally NOT bound here — graph_nodes has no
-	// module_id column (see the INSERT column list above:
-	// project_id, node_type, name, signature, file_path, language,
-	// start_row, start_col). The removed code bound ?2 to module_id and then
-	// OVERWROTE it with node_type, so ?2 always ended up as node_type (the
-	// correct value) but module_id was silently dropped. ?2 belongs to
-	// node_type only. (void)module_id; below documents the unused parameter.
-	// Map string kind to node_type integer
-	int node_type = 7;
-	if (kind) {
-		std::string ks = kind;
-		if (ks == "function")
-			node_type = 0;
-		else if (ks == "method")
-			node_type = 1;
-		else if (ks == "class")
-			node_type = 2;
-		else if (ks == "struct")
-			node_type = 3;
-		else if (ks == "interface")
-			node_type = 4;
-		else if (ks == "enum")
-			node_type = 5;
-		else if (ks == "type_alias")
-			node_type = 6;
-	}
-	(void)module_id;
-	(void)visibility;
-	(void)span_start;
-	(void)span_end;
-	sqlite3_bind_int(stmt, 2, node_type);
-	sqlite3_bind_text(stmt, 3, name, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 4, signature, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 5, file_path, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 6, language, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int(stmt, 7, line);
-	sqlite3_bind_int(stmt, 8, column);
-
-	if (sqlite3_step(stmt) != SQLITE_DONE) {
-		error_ = "insertSymbol: step failed";
-		sqlite3_finalize(stmt);
-		return 0;
-	}
-	uint64_t id = static_cast<uint64_t>(sqlite3_last_insert_rowid(db_));
-	sqlite3_finalize(stmt);
-
-	return id;
-}
-
-// ── New Schema (Phase A): Entry Points ────────────────────────
-
-bool GraphStore::insertEntryPoint(uint64_t symbol_id, uint64_t project_id,
-				  const char *kind)
-{
-	const char *sql =
-		"INSERT OR REPLACE INTO entry_points (symbol_id, project_id, kind) "
-		"VALUES (?, ?, ?)";
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-		error_ = "insertEntryPoint: prepare failed";
-		return false;
-	}
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(symbol_id));
-	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
-	sqlite3_bind_text(stmt, 3, kind, -1, SQLITE_TRANSIENT);
-
-	if (sqlite3_step(stmt) != SQLITE_DONE) {
-		error_ = "insertEntryPoint: step failed";
-		sqlite3_finalize(stmt);
-		return false;
-	}
-	sqlite3_finalize(stmt);
-	return true;
-}
-
 // ── New Schema (Phase A): Queries ─────────────────────────────
 
 std::string GraphStore::getModuleTreeJson(uint64_t project_id)
@@ -325,7 +229,9 @@ std::string GraphStore::findSymbolJson(uint64_t project_id, const char *name)
 	}
 	json << "]}";
 
-	// If symbols table was empty, fall back to graph_nodes (new pipeline)
+	// If the entity table returned nothing, fall back to graph_nodes (new
+	// pipeline). The primary query reads `entity` above; there is no `symbols`
+	// table in the schema.
 	if (first) {
 		std::ostringstream gn_json;
 		gn_json << "{\"results\":[";
@@ -388,167 +294,6 @@ std::string GraphStore::findSymbolJson(uint64_t project_id, const char *name)
 
 	return json.str();
 }
-
-// ── Phase B: Enhancement — Embeddings ─────────────────────────
-
-bool GraphStore::insertEmbedding(uint64_t symbol_id, const float *vector_data,
-				 int dim)
-{
-	// Guard against negative dim (would wrap to a huge size_t in the
-	// memcpy below and cause a heap buffer overflow) and null input.
-	if (dim <= 0 || !vector_data)
-		return false;
-
-	// The vec0 table expects a blob of float32 values
-	// Pad/truncate to 384 (schema definition)
-	constexpr int TARGET_DIM = 384;
-	std::vector<float> vec(TARGET_DIM, 0.0f);
-	int copy_dim = dim < TARGET_DIM ? dim : TARGET_DIM;
-	memcpy(vec.data(), vector_data,
-	       static_cast<size_t>(copy_dim) * sizeof(float));
-
-	// Write to node_vectors FIRST — this is the table that searchSemantic
-	// actually reads from. This always works because node_vectors is a
-	// regular SQLite table, not a vec0 virtual table.
-	// On platforms where vec0.dll isn't available (e.g. Windows without
-	// the extension), the embeddings INSERT below will fail, but the
-	// node_vectors path still succeeds, providing graceful degradation.
-	// v0.2.5: resolve the project id from the canonical `entity` table
-	// (entity.id) — the deprecated `graph_nodes` table is empty in the
-	// canonical schema, so the old query could never resolve a project.
-	{
-		uint64_t proj_id = 0;
-		sqlite3_stmt *pid_st = nullptr;
-		if (sqlite3_prepare_v2(
-			    db_, "SELECT project_id FROM entity WHERE id=?", -1,
-			    &pid_st, nullptr) == SQLITE_OK) {
-			sqlite3_bind_int64(pid_st, 1,
-					   static_cast<int64_t>(symbol_id));
-			if (sqlite3_step(pid_st) == SQLITE_ROW)
-				proj_id = static_cast<uint64_t>(
-					sqlite3_column_int64(pid_st, 0));
-			sqlite3_finalize(pid_st);
-		}
-		if (proj_id > 0 && stmt_vector_) {
-			sqlite3_reset(stmt_vector_);
-			sqlite3_bind_int64(stmt_vector_, 1,
-					   static_cast<int64_t>(symbol_id));
-			sqlite3_bind_int64(stmt_vector_, 2,
-					   static_cast<int64_t>(proj_id));
-			sqlite3_bind_blob(
-				stmt_vector_, 3, vec.data(),
-				TARGET_DIM * static_cast<int>(sizeof(float)),
-				SQLITE_TRANSIENT);
-			sqlite3_step(stmt_vector_);
-		}
-	}
-
-	// node_vectors was already written above (the only vector storage).
-	// The vec0 embeddings table was removed — searchSemantic reads
-	// node_vectors directly.
-	return true;
-}
-
-// ── Phase B: Enhancement — Ready Flags ────────────────────────
-//
-// v0.2.5: the metrics and embedding producers are RESTORED (see
-// resolveStagedMetrics / buildVectorsFromGraph). These two setters remain as
-// defensive seams that operate on the DEPRECATED `graph_nodes` table (empty
-// in the canonical schema — `entity`/`relation`/`node_vectors` are the source
-// of truth). They deliberately do NOT flip canonical readiness: true
-// metrics_ready / vector_ready are derived from the canonical entity
-// cyclomatic count and node_vectors row count in
-// engine_get_enhancement_status / engine_get_capabilities /
-// engine_index_post_parse, so readiness always matches real data and the
-// A18/A19 "fake ready" bugs cannot recur regardless of these seams.
-
-bool GraphStore::markCallgraphAndMetricsReady(uint64_t symbol_id)
-{
-	// Compatibility seam: only touches the deprecated graph_nodes row.
-	// Canonical callgraph readiness is computed from relation.type=1
-	// coverage; canonical metrics_ready from entity cyclomatic — never
-	// set here.
-	const char *sql =
-		"UPDATE graph_nodes SET callgraph_ready=1 WHERE id = ?";
-	sqlite3_stmt *stmt = getCachedStmt(sql);
-	if (!stmt) {
-		return false;
-	}
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(symbol_id));
-	if (sqlite3_step(stmt) != SQLITE_DONE) {
-		error_ = "markCallgraphAndMetricsReady: step failed";
-		return false;
-	}
-	return true;
-}
-
-bool GraphStore::markEmbeddingReady(uint64_t symbol_id)
-{
-	// v0.2.5: embedding producer (buildVectorsFromGraph) is restored and
-	// populates node_vectors. This seam deliberately does NOT flip a flag:
-	// canonical embedding readiness is derived from the node_vectors row
-	// count, so it tracks real data and the A19 "fake ready" bug cannot
-	// recur. Retained so a caller cannot silently over-claim readiness.
-	(void)symbol_id;
-	return true;
-}
-
-bool GraphStore::setSymbolStub(uint64_t symbol_id, bool is_stub)
-{
-	const char *sql = "UPDATE graph_nodes SET is_stub = ? WHERE id = ?";
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-		error_ = "setSymbolStub: prepare failed";
-		return false;
-	}
-	sqlite3_bind_int(stmt, 1, is_stub ? 1 : 0);
-	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(symbol_id));
-	if (sqlite3_step(stmt) != SQLITE_DONE) {
-		error_ = "setSymbolStub: step failed";
-		sqlite3_finalize(stmt);
-		return false;
-	}
-	sqlite3_finalize(stmt);
-	return true;
-}
-
-std::vector<std::string> GraphStore::getUnreadyFiles(uint64_t project_id,
-						     const char *ready_field)
-{
-	// Whitelist allowed field names to prevent SQL injection
-	static const std::unordered_set<std::string> allowed_fields = {
-		"fast_ready",	 "normal_ready",   "deep_ready",
-		"fts_ready",	 "vector_ready",   "callgraph_ready",
-		"metrics_ready", "embedding_ready"
-	};
-	if (!ready_field ||
-	    allowed_fields.find(ready_field) == allowed_fields.end()) {
-		return {};
-	}
-
-	std::string sql = "SELECT DISTINCT gn.file_path FROM graph_nodes gn "
-			  "WHERE gn.project_id = ? AND gn." +
-			  std::string(ready_field) +
-			  " = 0 "
-			  "ORDER BY gn.file_path";
-	sqlite3_stmt *stmt = nullptr;
-	std::vector<std::string> files;
-	if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) !=
-	    SQLITE_OK) {
-		error_ = "getUnreadyFiles: prepare failed";
-		return files;
-	}
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	while (sqlite3_step(stmt) == SQLITE_ROW) {
-		const char *fp = reinterpret_cast<const char *>(
-			sqlite3_column_text(stmt, 0));
-		if (fp)
-			files.emplace_back(fp);
-	}
-	sqlite3_finalize(stmt);
-	return files;
-}
-
 // ── Phase C: Unified Queries ──────────────────────────────────
 
 double GraphStore::getReadyRatio(uint64_t project_id, const char *ready_field)
@@ -582,26 +327,6 @@ double GraphStore::getReadyRatio(uint64_t project_id, const char *ready_field)
 	}
 	return ratio;
 }
-
-// ── Index Tasks (Tokio background task tracking) ────────────
-
-bool GraphStore::isFileUnchanged(uint64_t project_id, const char *file_path,
-				 int64_t mtime, int64_t size)
-{
-	const char *sql =
-		"SELECT 1 FROM file_scan_state WHERE project_id=? AND file_path=? AND file_mtime=? AND file_size=?";
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
-		return false;
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_text(stmt, 2, file_path, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int64(stmt, 3, mtime);
-	sqlite3_bind_int64(stmt, 4, size);
-	bool unchanged = (sqlite3_step(stmt) == SQLITE_ROW);
-	sqlite3_finalize(stmt);
-	return unchanged;
-}
-
 std::unordered_set<std::string>
 GraphStore::loadFileScanStateBatch(uint64_t project_id)
 {
@@ -645,23 +370,6 @@ GraphStore::loadFileScanStateBatch(uint64_t project_id)
 	sqlite3_finalize(stmt);
 	return result;
 }
-
-void GraphStore::updateFileScanState(uint64_t project_id, const char *file_path,
-				     int64_t mtime, int64_t size)
-{
-	const char *sql =
-		"INSERT OR REPLACE INTO file_scan_state (project_id, file_path, file_mtime, file_size) VALUES (?,?,?,?)";
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
-		return;
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_text(stmt, 2, file_path, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int64(stmt, 3, mtime);
-	sqlite3_bind_int64(stmt, 4, size);
-	sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-}
-
 void GraphStore::cleanupStaleFiles(uint64_t project_id,
 				   const std::vector<std::string> &active_files)
 {

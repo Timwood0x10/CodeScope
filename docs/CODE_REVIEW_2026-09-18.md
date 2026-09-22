@@ -188,15 +188,53 @@ Fixed 2026-09-19 (front door only — no release):
 - `docs/bugs/bug_incremental_dedup.zh.md` keeps its original reproduction and
   gains a dated note that the invocation has since changed.
 
-Still open:
+**Closed (batch 29).** The standing item was: `store.h` documents
+`insertSymbol` writing `symbols`/`symbol_status` tables that do not exist, and
+describes `findCallersJson` / `findCalleesJson` as reading a `call_edges`
+table. Those comments turned out to be the visible edge of a much larger
+block: **31 public methods of `GraphStore` were declared, defined and called
+from nowhere** — the superseded Phase A/B/C store API (Symbols, Entry Points,
+Call Edges, Embeddings, Symbol Status, Incremental Indexing, Path Tracing,
+Index Tasks, unified queries). Two more (`insertCallEdge`,
+`populateSymbolsFromGraph`) were declared and never defined at all, and the
+comments told readers to call `populateSymbolsFromGraph` as a step of the
+pipeline. Removing the block removes the drift at its source, which is what
+the finding asked for: there is nothing left to document wrongly.
 
-- `store.h` documents `insertSymbol` writing `symbols`/`symbol_status` tables
-  that do not exist in the schema, and describes `findCallersJson` /
-  `findCalleesJson` as reading a `call_edges` table.
-- Fixing the *command* exposed a defect in what it does: the same
-  `index-parallel` silently indexes nothing for a flat project — see #22 and
-  #23.
+What was done, and how it was checked:
 
+- Reachability was re-checked across `engine/**/*.cpp`, `engine/**/*.h` and
+  `server/src/**/*.rs`, including `engine/manual/` and address-taking
+  (`&GraphStore::x`), before anything was deleted.
+- 31 declarations removed from `store.h` (plus 5 section headers left empty),
+  27 definitions removed from 8 translation units, and the two files whose
+  every method was dead deleted outright (`store_query_explore.cpp` 393 lines,
+  `store_type.cpp` 222 lines) along with their CMake entries — ~1,300 lines.
+- The compiler/linker is the safety net: all 100+ targets, including every
+  test binary that links the engine, build clean.
+- Independent of the build, per-file live-method counts were compared against
+  (definitions before − dead) recorded by the survey, and all 13 files matched
+  exactly — so no live definition was taken by mistake.
+- Comments that named the phantom tables were rewritten against the real SQL:
+  `resolveStagedMetrics` updates **`entity`** by joining `_staged_metrics` on
+  `(project_id, file_path, start_row, start_col)` for kinds 0/1, and
+  `MetricRow`'s doc now states that `name` travels with the row but is not part
+  of that match; `findSymbolJson`'s fallback comment names `entity`.
+- `make check` green (110 server tests, engine 81 files, no failures) and the
+  accuracy gate unchanged at TP 36 / FP 0 / FN 0.
+- A database-level A/B against the pre-prune self-index accounts for the
+  observable change exactly: **−31 entities and −38 relations**, all of them
+  the deleted methods' own entity rows (store_project 16→7, store_knowledge
+  16→13, store_* likewise) and the edges that existed only because of that
+  dead code. Nothing else moved; the entity counts were identical across two
+  runs, so this is not the ±3 run-to-run spread.
+
+**§3 P3 (engine root) closed in the same batch.** `engine_index_post_parse`
+took C++ references, was declared in `engine_internal.h` and returned a
+`dupString()`'d payload — an internal helper carrying an `engine_`/C-ABI name
+that kept pulling it into FFI audits. Renamed to `postParsePhase`, and the
+file to `post_parse_phase.cpp` (9 call sites and the CMake entry updated),
+because the mechanical sweep matches on names.
 ---
 
 ## Fix Batches
@@ -307,8 +345,13 @@ Self-review of the batch diff (batches 1–4), not a second full-codebase pass.
 
 ### Still open (not applied)
 
-- Design decisions: **#3** (what counts as an architecture violation), **#10**
-  (shared SQLite connection: lock vs. join-on-read), **#15** (meaning of `ok`).
+- **Corrected (batch 29): this list was stale.** It named #19 (migration
+  results), #21 (merge schema source) and #17 (LSP robustness) as open; all
+  three rows carry their fix and its evidence (#17: deadline-bounded writes,
+  id-matched reads, reaping with exit-code reporting, `test_lsp_framing` with
+  6 cases; #19: `migrationExec` netting 34 `ALTER TABLE` sites; #21: a
+  schema-consistency check before any merge write, with a test). What is
+  genuinely left is the design-decision group below and #15's quarantine half.
 - **#19** (migration results — use the single post-migration self-check),
   **#21** (merge schema source).
 - **#15 half (option C) — DONE (batch 18).** A dead chunk worker's chunks are
@@ -473,6 +516,11 @@ Self-review of the batch diff (batches 1–4), not a second full-codebase pass.
 | 2026-09-21 | 22 | FIXED — `build-*` directories leak into the index | ⚠️ a fresh self-index holds 14 entities from `build-cold`/`build-verify`/`build-release`(×2)/`build-tests`(×2)/`build-release-linux`, all CMake compiler-probe files (`CMakeFiles/<v>/CompilerIdC*/CMakeCCompilerId.c`); `engine/build/` contributes zero, so `**/build/` is honoured and `**/build-*/` is not. Symptom verified, mechanism not yet read |
 
 **Build-directory leak — RESOLVED (batch 23).** Two independent defects, both verified by reproducing them on a five-directory fixture and then re-measuring.
+
+**Cross-project test pass (batch 24) — one defect found, one limitation confirmed.** Six unrelated real projects were indexed with the same entry the MCP server uses (Zig 431 source files, Python 971, C++/CMake 1174, JS/TS 2 × 5000+, Go 3317): no build, vendor, cache or bytecode path reached any graph (junk = 0 in all six), and five of them resolved normally. The JS/TS pair did not:
+**AIScope** (220 tsx + 3 typescript entities) and **PolyScope** (27 tsx + 14 typescript) produced **ZERO call edges** while holding 1164 and 80 references respectively, of which 37 and 9 name symbols the index itself defines. Root cause: `languagesCompatible()` carved out only the C family, and `languageFromPath()` reports a `.tsx` path as `typescript` while the tsx visitor labels the entities it defines `tsx` — the strings never matched, so every TSX call site was filtered out before scoring. The JS/TS family is now treated as one language, the same way the C family already was. Measured: AIScope **0 → 47** edges (26 decided by ImportMatch), PolyScope still abstains (see below), and the other four projects are byte-for-byte unchanged. Falsified: with the family disabled, the new `test_resolver_language_filter` TSX scenario fails with "JS/TS family edge lost"; restored, 4/4 scenarios pass. The accuracy gate is unchanged (TP 36 / FP 0 / FN 0) because this repository is C++.
+**PolyScope's continued zero is correct, not a second defect.** Its references use the project's `@/…` path alias (`cn` is defined in `src/lib/utils.ts` and called from `src/components/`), carry no receiver and no import alias in the index, and no candidate shares their directory — so no scoring factor separates any candidate from the others and the resolver abstains, which is the documented behaviour ("abstains rather than guesses").
+**New open item — the two language mirrors disagree about Zig.** `discover.rs` lists `.zig` among the countable source extensions (60 entries) but the engine has no Zig support at all: no extension mapping in `filter_policy_detect.cpp`/`languageFromPath()`, no translator in `ir/translators/`. Measured on OmniScope (373 `.zig` files): **zero** zig entities, and the graph is built only from the project's bundled C/Rust corpus. The consequence is bounded — those files are counted as candidates and then dropped by the language check, so the graph is merely silent about them rather than wrong — but a Zig project's own code is invisible to every tool while the Rust side advertises it as supported. Same class as the module-list residue above: two hand-mirrored rule sets that have drifted; the fix is one authority, not a third list.
 (1) **Directory pruning never actually pruned anything.** `collectFileJobs` walked with `for (auto &entry : it)` over a `recursive_directory_iterator`; a range-for over an iterator copies it, so the loop advanced the copy while `it.disable_recursion_pending()` operated on the original — the call was inert. Measured, not inferred: with `.gitignore` holding `build-x/`, the walk reported `skipped_dirs=4` and still descended all four levels. Fixed by iterating explicitly (`for (; it != it_end; ++it)`).
 (2) **A directory-only `.gitignore` rule did not apply to files.** `gitignoreMatches` began with `if (r.dir_only && !is_dir) continue;`, so `**/build-*/` rejected the directory and every file inside it was offered to the indexer anyway. Per gitignore semantics an ignored directory ignores its contents, so a dir-only rule is now also tested against each ancestor directory of the file (and of a directory).
 (3) **The parallel scheduler loaded the wrong ignore files.** A per-module worker is spawned with the MODULE directory as its scan root, so it loaded `<module>/.gitignore` — usually absent — while the project's rules live at the root, and the paths it hands the policy are module-relative, so a rule ending at the module name could never match: `index-parallel` listed `build-x` as a module and indexed its file. Fixed by passing `CODESCOPE_PROJECT_ROOT` from the scheduler, loading the root's rules in addition to the scan root's (`loadGitignore(root, append=true)`/`loadIgnoreFile`), and giving the policy a scan prefix so project-anchored rules are matched against `<module>/<rel>`. The exclude-pattern channel keeps its existing scan-root-relative meaning, which the quarantine path depends on.
@@ -486,3 +534,27 @@ Self-review of the batch diff (batches 1–4), not a second full-codebase pass.
 | 2026-09-21 | 23 | `make check` after all of it | ✅ 81 engine tests, 110 server tests, accuracy TP 36 / FP 0 / FN 0 with both injections failing as required, full clang-format + clippy clean |
 | 2026-09-21 | 23 | residue, stated rather than hidden | ⚠️ the Rust module discovery (`discover.rs`) still lists a `.gitignore`d top-level directory as a module because it hand-mirrors the skip lists and reads no ignore file; the worker for it now indexes **zero** files and contributes **no** rows (fixture: `files_indexed=0`, merged DB has one module instead of two), so the cost is one empty worker spawn and a log line, not incorrect data. Fixing it properly means one authority for filtering (the engine's `FilterPolicy`) rather than a second mirror — recorded, not yet done |
 | 2026-09-21 | 23 | `force_index_files` semantics preserved | ✅ it documents itself as the user-override path that ignores `.gitignore`; it calls `engine_index_files`, which this batch did not touch, so the override still indexes exactly what the caller names |
+| 2026-09-21 | 24 | cross-project index pass (6 real projects, 4 languages) | ✅ Zig 190 entities/45 edges, Python 48/3, C++/CMake 307/163, Go+Python 49516/10364, JS/TS see below — **junk paths = 0 in all six** (build/vendor/cache/bytecode) |
+| 2026-09-21 | 24 | FINDING + FIX — TS/TSX produced no call edges at all | ✅ `languagesCompatible` only carved out the C family while `languageFromPath` calls a `.tsx` path `typescript` and the tsx visitor labels entities `tsx`, so every TSX call site was filtered out before scoring. AIScope 0 → **47** edges; the other four projects unchanged; falsified by disabling the family (the new TSX scenario then fails) |
+| 2026-09-21 | 24 | PolyScope 0 edges is correct abstention, not a defect | ✅ its references use the `@/…` path alias, carry no receiver/import evidence, and no candidate shares their directory — no factor separates the candidates, so the resolver abstains by design |
+| 2026-09-21 | 26 | FIXED — the language mirrors no longer disagree about Zig | ✅ Zig is explicitly out of scope (owner's decision: unsupported, no plans), so the defect was the server COUNTING `.zig` as a source file while the engine has no mapping or translator. `discover.rs` no longer keeps its own extension list or skip lists at all: `engine_is_indexable_source()` / `engine_path_is_skipped()` delegate to the engine's FilterPolicy, so "counted" now means "the indexer will parse it". Measured on OmniScope: 362 `.zig` files counted before, 23 source files now. Ruby, which the same list contained, IS recognized by the engine and stays countable — the fix follows the engine rather than shortening a list |
+
+**Both mirror drifts closed (batch 26).** `discover.rs` used to mirror the C++ rules in Rust — a 60-entry extension list and three hand-copied skip sets (`is_skip_dir`, `is_top_only_skip_dir`, `is_skip_prefix`) — and both copies had drifted: a `.gitignore`d top-level directory was reported as a module (the copy read no ignore file), and `.zig` was counted although Zig is intentionally unsupported. The copies are gone; the server now asks the engine through two new stateless FFI calls (`engine_path_is_skipped`, `engine_is_indexable_source` in `engine_filter_ffi.cpp`, one cached FilterPolicy per project root), so a skip rule or a supported extension is added in exactly one place. This also removes a behavioural approximation: the Rust side used to apply the depth-gated `top_only_skip_dirs_` at depth 1, while the engine applies it to the first three path components — the discovery now gets the engine's answer. Verified: the Zig count drops 362 → 0 files on OmniScope (23 real source files remain), the new `test_gitignored_top_level_dir_is_not_a_module` fails against the old module list and passes now, and the engine suite is unchanged (accuracy TP 36 / FP 0 / FN 0).
+| 2026-09-21 | 26 | `make check` + accuracy after the mirror removal | ✅ 81 engine tests, 110 server tests, accuracy TP 36 / FP 0 / FN 0 |
+| 2026-09-21 | 28 | TS/JS evidence channel — LINKED (batch 27 said "not yet effective"; that is now outdated) | ✅ the link exists end to end: the JS/TS visitor emits one `RecordKind::ImportBinding` record per binding (name = local binding, type_name = module specifier, quotes stripped), the Resolver reads it from `semantic_records` into a per-file binding→module index, and a guarded `ImportModuleMatch` factor resolves a RELATIVE specifier against the candidate's path. Demonstrated by the new end-to-end scenario in `test_resolver_language_filter`: a decoy that (a) sorts first and (b) contains the module's last segment in its path loses to the imported file, and **disabling the emission makes that scenario fail** — so the factor is necessary there, not decorative |
+| 2026-09-21 | 28 | measured impact on five real projects: none | ⚠️ `import_module` edges = 0 on AIScope, PolyScope, memscope-rs, goagent and CodeScope, and the counts are unchanged (PolyScope still abstains: its imports are `@/…` aliases, which name no file). Their TS/JS imports are either alias-based or already resolved by the pre-existing segment heuristic, so this is a **precision** addition — exact path resolution with its own audit label — whose practical gain on these projects is not demonstrated. Recorded as such rather than claimed |
+| 2026-09-21 | 28 | three falsification attempts to make the scenario mean something | ✅ (1) one candidate → it resolved on any positive score; (2) decoy sorting last → the tie-break chose the right file anyway; (3) decoy moved into a path that also contains the module's last segment AND sorts first → only the path-resolution factor can win, and with it disabled the scenario finally fails. Each failure was a test that proved nothing, and each was found by the falsification step, not by reading the test |
+| 2026-09-21 | 28 | store lesson: a new record kind is an ENTITY or a FACT, decide explicitly | ⚠️ the new kind was first added to `store_graph.cpp`'s `kR2nKinds`, which promotes records to entities — every imported name became a node (AIScope 223 → **839** entities). Caught by re-measuring the real projects, not by the unit tests. `semantic_records` stores every kind unfiltered, so the Resolver never needed the promotion; the entry is removed and the list now says so |
+| 2026-09-21 | 28 | note: the C++ self-index is not deterministic run to run | ⚠️ the same command three times gave relations 1777 / 1774 / 1777 and `imported` 531 / 528 / 531 — a ±3 spread, so small deltas between runs of the self-index are noise rather than signal. Worth knowing before reading a ±2 difference as a regression |
+| 2026-09-21 | 29 | §6 doc drift closed at its source | ✅ `store.h` described `symbols`/`symbol_status`/`call_edges` tables that do not exist — the visible edge of **31 dead public `GraphStore` methods** (the superseded Phase A/B/C API) plus 2 declared-but-never-defined ones. All removed (~1,300 lines, 2 files deleted); comments rewritten against the real SQL (`entity`, `_staged_metrics` join keys). §6's "Still open" is now empty |
+| 2026-09-21 | 29 | §3 P3 closed: ff-prefixed internal helper renamed | ✅ `engine_index_post_parse` → `postParsePhase`, file → `post_parse_phase.cpp` (9 call sites + CMake), so the mechanical FFI sweep has nothing to dismiss |
+| 2026-09-21 | 29 | verification of the dead-API removal | ✅ reachability re-checked tree-wide incl. `engine/manual/` and address-taking; all targets build and link; per-file live-method counts match (definitions before − dead) exactly in all 13 files; dead-method scan now 0; `make check` green (110 server / engine 81 files) and accuracy TP 36 / FP 0 / FN 0 |
+| 2026-09-21 | 29 | observable change accounted for, not waved away | ✅ DB-level A/B vs the pre-prune self-index: **−31 entities / −38 relations**, entirely the deleted methods' own entity rows and the edges that existed only because of that code; identical across two runs, so it is not the ±3 run-to-run spread |
+| 2026-09-21 | 29 | review-doc hygiene | ⚠️ the doc's "Still open" list was stale — it named #19, #21 and #17 while their own rows carried fixes and evidence. Corrected, and the remaining open items are now only the design-decision group and #15's quarantine half |
+| 2026-09-21 | 27 | what closing it needs | the JS/TS visitor already builds the binding→specifier map internally (`js_visitor.cpp:710ff`), so the link has to be emitted (one Import record per binding, or the binding name carried on the existing one) and the four existing `import`-table consumers re-checked: `dead_code_inspector.cpp`, `semantic_fact_extractor.cpp`, the resolver's `import_index_` and the store's import population. That is a visitor + data-model change with cross-consumer impact, i.e. its own pass — not attempted here |
+| 2026-09-21 | 27 | two bugs the new unit test caught in my own work | ✅ (1) the path collapse dropped the leading `/` of absolute paths, so **no** absolute candidate could ever match — the fixture-based test could not see it because it passed for another reason; (2) I asserted that an unknown caller directory should still match, which would be a guess. Both fixed; the matcher test is the part that can actually fail |
+| 2026-09-21 | 27 | method note: a fixture test that passed for the wrong reason | ⚠️ the first cross-directory TSX scenario had only ONE candidate, so it resolved on any positive score — it stayed green with the factor disabled, i.e. it proved nothing. Replaced by the direct matcher test. The falsification step is what exposed it, and is why that step stays |
+| 2026-09-21 | 27 | `make check` + accuracy after the groundwork | ✅ 81 engine tests, 110 server tests, TP 36 / FP 0 / FN 0 with both injections failing as required |
+| 2026-09-21 | 24 | `make check` + accuracy after the resolver change | ✅ 81 engine tests, 110 server tests, TP 36 / FP 0 / FN 0 with both injections failing as required |
+| 2026-09-21 | 25 | Rust project coverage (memscope-rs) | ✅ 6759 entities / 3230 edges / 44 modules, junk 0, `initialize` 1.33 s, 46/46 tools called (41 OK, 5 IS-ERROR — all harness argument errors that name the required values), peak server RSS 147.8 MB; no product defect found |
+| 2026-09-21 | 25 | OPEN — TS/JS cross-module resolution has no evidence to work with | ⚠️ `js_visitor.cpp:726` treats import children as structural, so `import { x } from './y'` records nothing on the reference: measured `import_alias` 0% on both TS projects (Rust 11%, Python 6%, Go 0% but 85% qualified_target / 28% receiver and 21.9% resolved). Same-directory TSX calls resolve, cross-directory ones abstain by design. Fixing it means a new evidence channel (module per imported binding → reference → a factor), feature-sized, not attempted |

@@ -46,8 +46,9 @@ namespace store
  *    cognitive, lines, param_count, call_count, branch_count, loop_count)
  * project_id is filled by the writer, not stored in the row.
  *
- * name/line/col are used to JOIN with the symbols table at resolve time
- * (symbol IDs are not known until after buildGraph + populateSymbolsFromGraph).
+ * A staged row is matched back to its entity row by (project_id, file_path,
+ * start_row, start_col) in resolveStagedMetrics; `name` travels with it for
+ * diagnostics and is not part of that match.
  */
 struct MetricRow {
 	std::string name; // symbol name, for symbol JOIN at resolve time
@@ -128,21 +129,10 @@ class GraphStore {
 	uint64_t insertGraphNode(uint64_t project_id,
 				 const graph::GraphNode &node);
 
-	/** Batch insert graph nodes — prepare once, bind/step/reset in a loop.
-	 *  Up to ~10x faster than calling insertGraphNode per node. */
-	void insertGraphNodes(uint64_t project_id,
-			      const std::vector<graph::GraphNode> &nodes);
-
-	bool deleteGraphNodesByFile(uint64_t project_id, const char *file_path);
-
 	// ── Graph Edges ────────────────────────────────────────────
 
 	uint64_t insertGraphEdge(uint64_t project_id,
 				 const graph::GraphEdge &edge);
-
-	/** Batch insert graph edges — prepare once, bind/step/reset in a loop. */
-	void insertGraphEdges(uint64_t project_id,
-			      const std::vector<graph::GraphEdge> &edges);
 
 	bool deleteGraphEdgesByFile(uint64_t project_id, const char *file_path);
 
@@ -156,17 +146,6 @@ class GraphStore {
 	 * @return true on success.
 	 */
 	bool deleteGraphDataByFile(uint64_t project_id, const char *file_path);
-
-	/**
-	 * Delete ALL data for a file across every table: semantic_records,
-	 * relation, graph_edges, graph_nodes, and entity. Used by index_file
-	 * to ensure a clean slate before re-inserting parsed data.
-	 *
-	 * @param project_id  Project identifier.
-	 * @param file_path   Source file path.
-	 * @return true on success.
-	 */
-	bool deleteFileData(uint64_t project_id, const char *file_path);
 
 	// ── Entity/Relation (Phase 1.1) ─────────────────────────
 
@@ -191,22 +170,6 @@ class GraphStore {
 				   const std::vector<ir::Record> &records);
 
 	/**
-	 * Batch insert semantic records for MULTIPLE files in one call.
-	 * Prepares the SQL statement ONCE and reuses it for all records
-	 * across all files — significantly reducing per-file prepare/finalize
-	 * overhead compared to calling insertSemanticRecords per file.
-	 *
-	 * @param project_id     Project identifier.
-	 * @param file_records   Vector of (file_path, records) pairs.
-	 * @return true when every batch was written; false on a prepare or
-	 *         step failure (the reason is also left in error()).
-	 */
-	bool insertSemanticRecordsBatch(
-		uint64_t project_id,
-		const std::vector<std::pair<std::string, std::vector<ir::Record>>>
-			&file_records);
-
-	/**
 	 * Streaming pipeline: batch-insert a complete FileResult bundle.
 	 *
 	 * Writes semantic_records, metrics, symbol_status (stub), and local
@@ -226,11 +189,13 @@ class GraphStore {
 				   bool is_reindex = true);
 
 	/**
-	 * Resolve pre-computed metrics from the staging temp table into
-	 * the metrics and symbol_status tables.
+	 * Resolve pre-computed metrics from the staging temp table onto the
+	 * matching entity rows.
 	 *
-	 * Must be called AFTER buildGraph + populateSymbolsFromGraph, because
-	 * metrics reference symbol IDs which are created during populate.
+	 * Must be called after the entities exist: each staged row is matched to
+	 * its entity by (project_id, file_path, start_row, start_col), so a row
+	 * staged before its entity exists is not applied. Only function/method
+	 * entities (kind 0/1) carry code metrics.
 	 *
 	 * Does a single SQL JOIN to resolve all staged metrics in O(n) time.
 	 *
@@ -238,16 +203,6 @@ class GraphStore {
 	 * @return true on success.
 	 */
 	bool resolveStagedMetrics(uint64_t project_id);
-
-	/**
-	 * Populate the symbols table from graph_nodes for a project.
-	 * Called after buildGraph to create symbol entries with node_id
-	 * back-references for cross-file edge copy.
-	 *
-	 * @param project_id  Project identifier.
-	 * @return Number of symbols inserted.
-	 */
-	int64_t populateSymbolsFromGraph(uint64_t project_id);
 
 	/**
 	 * Build the knowledge graph from previously stored semantic records.
@@ -292,11 +247,6 @@ class GraphStore {
 
 	// ── FTS index helpers ───────────────────────────────────────
 
-	void insertIntoFTS(uint64_t node_id, uint64_t project_id,
-			   const char *name, const char *qualified_name,
-			   const char *file_path, const char *content,
-			   int node_kind = -1);
-
 	/**
 	 * Bulk-build FTS index from graph_nodes for a project.
 	 * Scans all graph_nodes with a non-empty name and inserts into
@@ -307,10 +257,6 @@ class GraphStore {
 
 	// ── Vector search (semantic) ─────────────────────────────────
 
-	bool storeVector(uint64_t node_id, uint64_t project_id,
-			 const void *vec_data, size_t vec_bytes);
-	std::string searchSemantic(uint64_t project_id, const void *query_vec,
-				   size_t vec_bytes, int limit);
 	// deleteFTSByFile removed — FTS is built inline during buildGraph
 
 	/**
@@ -322,9 +268,6 @@ class GraphStore {
 
 	// ── Complexity ───────────────────────────────────────────────
 
-	bool setComplexity(uint64_t project_id, uint64_t graph_node_id,
-			   uint64_t cyclomatic, uint64_t cognitive,
-			   uint64_t nesting_depth, uint64_t decision_points);
 	std::string getComplexityJson(uint64_t project_id,
 				      uint64_t graph_node_id);
 
@@ -338,25 +281,6 @@ class GraphStore {
 			      const char *name, const char *path,
 			      const char *language);
 
-	// ── New Schema (Phase A): Symbols ─────────────────────────
-
-	/**
-     * Insert a symbol (fast scan result).
-     * Automatically creates a corresponding row in symbol_status.
-     * Returns the symbol id.
-     */
-	uint64_t insertSymbol(uint64_t project_id, uint64_t module_id,
-			      const char *kind, const char *name,
-			      const char *signature, const char *visibility,
-			      const char *language, const char *file_path,
-			      int line, int column, int span_start,
-			      int span_end);
-
-	// ── New Schema (Phase A): Entry Points ────────────────────
-
-	bool insertEntryPoint(uint64_t symbol_id, uint64_t project_id,
-			      const char *kind);
-
 	// ── New Schema (Phase A): Queries ─────────────────────────
 
 	/** Get module tree as JSON. */
@@ -365,30 +289,7 @@ class GraphStore {
 	/** Find symbols by name as JSON. */
 	std::string findSymbolJson(uint64_t project_id, const char *name);
 
-	// ── Phase B: Enhancement — Call Edges ─────────────────────
-
-	uint64_t insertCallEdge(uint64_t project_id, uint64_t caller_symbol_id,
-				uint64_t callee_symbol_id,
-				const char *provenance, int line, int col);
-
-	// ── Phase B: Enhancement — Embeddings ─────────────────────
-
-	bool insertEmbedding(uint64_t symbol_id, const float *vector_data,
-			     int dim);
-
 	// ── Symbol Status (separate from symbols, keeps main table lean) ──
-
-	/** Mark a symbol's callgraph and metrics as ready (embedding is separate
-	 *  because it may fail when vec0 is unavailable). */
-	bool markCallgraphAndMetricsReady(uint64_t symbol_id);
-	/** Mark a symbol's embedding as ready. Only call after insertEmbedding
-	 *  succeeded, so that failed embeddings can self-heal on rerun. */
-	bool markEmbeddingReady(uint64_t symbol_id);
-	bool setSymbolStub(uint64_t symbol_id, bool is_stub);
-
-	/** Get files where symbols have a status flag = 0 (not ready). */
-	std::vector<std::string> getUnreadyFiles(uint64_t project_id,
-						 const char *ready_field);
 
 	/** Get ratio of symbols with a status flag = 1 (0.0 - 1.0). */
 	double getReadyRatio(uint64_t project_id);
@@ -396,8 +297,6 @@ class GraphStore {
 
 	// ── Incremental Indexing ──────────────────────────────────
 
-	bool isFileUnchanged(uint64_t project_id, const char *file_path,
-			     int64_t mtime, int64_t size);
 	/** Load all (file_path, mtime, size) tuples for a project into an
 	 *  in-memory set for O(1) membership checks during file discovery.
 	 *  Replaces N per-file isFileUnchanged queries with a single SELECT.
@@ -406,44 +305,8 @@ class GraphStore {
 	 *  @return unordered_set of "path|mtime|size" strings. */
 	std::unordered_set<std::string>
 	loadFileScanStateBatch(uint64_t project_id);
-	void updateFileScanState(uint64_t project_id, const char *file_path,
-				 int64_t mtime, int64_t size);
 	void cleanupStaleFiles(uint64_t project_id,
 			       const std::vector<std::string> &existing_files);
-
-	// ── Path Tracing (BFS on call_edges) ──────────────────────
-
-	/**
-     * Trace the shortest call path between two functions using BFS on call_edges.
-     * Returns JSON: {"path": [{"name":"...","file":"...","line":N}, ...]}
-     * Requires callgraph_ready (enhancement must be run first).
-     */
-	std::string tracePathJson(uint64_t project_id, const char *from_name,
-				  const char *to_name);
-
-	/**
-	 * Explore a function's callers/callees recursively as a JSON tree.
-	 * Returns hierarchical JSON: {"name":"...","file":"...","line":N,"callers":[...],"callees":[...]}
-	 * Each level nests up to `depth` levels (0 = just the function metadata).
-	 * @param function_name Starting function.
-	 * @param depth How many levels to recurse (max 5).
-	 * @param direction "callers", "callees", or "both".
-	 */
-	std::string exploreFunctionJson(uint64_t project_id,
-					const char *function_name, int depth,
-					const char *direction);
-
-	// ── Index Tasks (Tokio background task tracking) ──────────
-
-	/** Create a new task record. Returns task id. */
-	uint64_t createTask(uint64_t project_id, const char *task_type);
-
-	/** Update task status and progress. */
-	bool updateTask(uint64_t task_id, const char *status, int progress,
-			const char *error);
-
-	/** Get latest task for a project as JSON. */
-	std::string getTaskStatusJson(uint64_t project_id);
 
 	// ── Phase C: Unified Queries (adaptive) ───────────────────
 
@@ -534,32 +397,6 @@ class GraphStore {
 		int saved_cache_ = -2000; // ~2 MB default
 	};
 
-	/**
-     * Find callers from the new call_edges table (requires callgraph_ready).
-     * Returns JSON array of caller symbols.
-     *
-     * @param file_filter Optional absolute file path. When non-empty,
-     *        restricts callee node matching to the given file,
-     *        disambiguating homonyms (same name across files/classes,
-     *        e.g. __init__, run, main). Empty = aggregate all files
-     *        (legacy behavior, may produce noise on common names).
-     */
-	std::string findCallersJson(uint64_t project_id,
-				    const char *symbol_name,
-				    const char *file_filter = nullptr);
-
-	/**
-     * Find callees from the new call_edges table (requires callgraph_ready).
-     * Returns JSON array of callee symbols.
-     *
-     * @param file_filter Optional absolute file path. When non-empty,
-     *        restricts caller node matching to the given file,
-     *        disambiguating homonyms. See findCallersJson doc above.
-     */
-	std::string findCalleesJson(uint64_t project_id,
-				    const char *symbol_name,
-				    const char *file_filter = nullptr);
-
 	/** Get entry points from the new entry_points table. */
 	std::string getEntryPointsJson(uint64_t project_id);
 
@@ -629,37 +466,6 @@ class GraphStore {
 
 	// ── Type Registry ─────────────────────────────────────────────
 
-	/**
-	 * Batch-insert type_info rows (type definitions).
-	 * Each entry contains: name, qualified_name, kind, file_path, language, location.
-	 * Uses a single multi-VALUES INSERT for efficiency.
-	 *
-	 * @param project_id  Project identifier.
-	 * @param rows        Vector of (name, qualified_name, kind, file_path, language,
-	 *                    start_row, start_col, end_row, end_col) tuples.
-	 * @return true on success.
-	 */
-	bool insertTypeInfoBatch(
-		uint64_t project_id,
-		const std::vector<
-			std::tuple<std::string, std::string, int, std::string,
-				   std::string, int, int, int, int>> &rows);
-
-	/**
-	 * Batch-insert type_ref rows (type references).
-	 * Each entry contains: entity_id, type_name, kind, file_path, location.
-	 * Uses a single multi-VALUES INSERT for efficiency.
-	 *
-	 * @param project_id  Project identifier.
-	 * @param rows        Vector of (entity_id, type_name, kind, file_path,
-	 *                    start_row, start_col) tuples.
-	 * @return true on success.
-	 */
-	bool insertTypeRefBatch(
-		uint64_t project_id,
-		const std::vector<std::tuple<uint64_t, std::string, int,
-					     std::string, int, int>> &rows);
-
 	sqlite3 *handle() const
 	{
 		return db_;
@@ -681,9 +487,6 @@ class GraphStore {
 
 	/** Get a readiness flag for a project, or 0 if not set. */
 	int getProjectReadiness(uint64_t project_id, const char *field);
-
-	/** Get all readiness flags as JSON: "fast_ready":1,"fts_ready":0,... */
-	std::string getProjectReadinessJson(uint64_t project_id);
 
 	// ── Shared Artifact ─────────────────────────────────────────
 
@@ -711,12 +514,6 @@ class GraphStore {
 				const std::string &name, int64_t scope_id,
 				int arity, int start_row, int start_col,
 				int call_kind = 0);
-	int64_t insertScope(uint64_t project_id, int64_t parent_id, int kind,
-			    const std::string &name, int start_row,
-			    int end_row);
-	int64_t insertImport(uint64_t project_id, int64_t source_scope_id,
-			     const std::string &target_path,
-			     const std::string &alias, int is_pub);
 
 	bool insertDocument(uint64_t project_id, int type,
 			    const std::string &file_path,
@@ -768,11 +565,6 @@ class GraphStore {
 			      int severity, int64_t claim_id,
 			      const std::string &description,
 			      double confidence);
-
-	/** Delete all knowledge/evidence rows for a project.
-	 *  Deletes in FK order: evidence_fact -> evidence -> finding ->
-	 *  claim -> contract -> capability. Returns true on success. */
-	bool clearProjectKnowledge(uint64_t project_id);
 
 	/** List (id, name) pairs of capabilities for a project. */
 	std::vector<std::pair<int64_t, std::string>>

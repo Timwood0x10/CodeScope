@@ -873,9 +873,9 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 	for (auto &job : jobs)
 		job_paths.push_back(job.path);
 
-	return engine_index_post_parse(project_id, dir, job_paths, filter,
-				       is_reindex, mode_fast, mode_deep,
-				       time_parse_ms, 0, total_indexed);
+	return postParsePhase(project_id, dir, job_paths, filter, is_reindex,
+			      mode_fast, mode_deep, time_parse_ms, 0,
+			      total_indexed);
 }
 
 char *engine_index_project(uint64_t project_id, const char *dir_path,

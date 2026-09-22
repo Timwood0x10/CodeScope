@@ -239,60 +239,6 @@ int64_t GraphStore::insertFinding(uint64_t project_id, const std::string &rule,
 	}
 	return static_cast<int64_t>(sqlite3_last_insert_rowid(db_));
 }
-
-// ── clearProjectKnowledge ───────────────────────────────────────────
-//
-// Deletes in reverse FK dependency order so no FK violation can occur:
-//   evidence_fact -> evidence -> finding -> claim -> contract -> capability
-// evidence_fact and evidence have no project_id column, so they are scoped
-// via a subquery on claim.project_id. finding/contract/capability carry
-// project_id directly and use a bound parameter.
-
-bool GraphStore::clearProjectKnowledge(uint64_t project_id)
-{
-	// Each DELETE uses a cached, parameterized statement so repeated calls
-	// (e.g. KnowledgeBuilder::build() on re-index) reuse the same plan.
-	static const char *const kDeleteSql[] = {
-		// 1. evidence_fact (via evidence -> claim.project_id)
-		"DELETE FROM evidence_fact WHERE evidence_id IN "
-		"(SELECT id FROM evidence WHERE claim_id IN "
-		" (SELECT id FROM claim WHERE project_id=?))",
-		// 2. evidence (via claim.project_id)
-		("DELETE FROM evidence WHERE claim_id IN "
-		 " (SELECT id FROM claim WHERE project_id=?)"),
-		// 3. finding (has project_id)
-		"DELETE FROM finding WHERE project_id=?",
-		// 4. claim
-		"DELETE FROM claim WHERE project_id=?",
-		// 5. contract
-		"DELETE FROM contract WHERE project_id=?",
-		// 6. capability
-		"DELETE FROM capability WHERE project_id=?",
-	};
-
-	bool ok = true;
-	for (const char *sql : kDeleteSql) {
-		sqlite3_stmt *stmt = getCachedStmt(sql);
-		if (!stmt) {
-			ok = false;
-			continue;
-		}
-		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-		int rc = sqlite3_step(stmt);
-		if (rc != SQLITE_DONE) {
-			error_ = std::string("clearProjectKnowledge: ") +
-				 sqlite3_errmsg(db_);
-			fprintf(stderr,
-				"clearProjectKnowledge: delete failed (rc=%d): "
-				"%s [module=store, "
-				"method=clearProjectKnowledge]\n",
-				rc, sqlite3_errmsg(db_));
-			ok = false;
-		}
-	}
-	return ok;
-}
-
 // ── listCapabilities / listContracts ───────────────────────────────
 
 std::vector<std::pair<int64_t, std::string>>
@@ -455,61 +401,8 @@ int64_t GraphStore::insertReference(uint64_t project_id, uint64_t caller_id,
 	}
 	return sqlite3_last_insert_rowid(db_);
 }
-
-// ── scope ────────────────────────────────────────────────────────
-
-int64_t GraphStore::insertScope(uint64_t project_id, int64_t parent_id,
-				int kind, const std::string &name,
-				int start_row, int end_row)
-{
-	const char *sql =
-		"INSERT INTO scope "
-		"(project_id, parent_id, kind, name, start_row, end_row) "
-		"VALUES (?,?,?,?,?,?)";
-	sqlite3_stmt *stmt = getCachedStmt(sql);
-	if (!stmt)
-		return -1;
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_int64(stmt, 2, parent_id);
-	sqlite3_bind_int(stmt, 3, kind);
-	sqlite3_bind_text(stmt, 4, name.c_str(), -1, SQLITE_STATIC);
-	sqlite3_bind_int(stmt, 5, start_row);
-	sqlite3_bind_int(stmt, 6, end_row);
-	if (sqlite3_step(stmt) != SQLITE_DONE) {
-		error_ = "insertScope: step failed";
-		return -1;
-	}
-	return sqlite3_last_insert_rowid(db_);
-}
-
-// ── import ───────────────────────────────────────────────────────
-
-int64_t GraphStore::insertImport(uint64_t project_id, int64_t source_scope_id,
-				 const std::string &target_path,
-				 const std::string &alias, int is_pub)
-{
-	const char *sql =
-		"INSERT INTO import "
-		"(project_id, source_scope_id, target_path, alias, is_pub) "
-		"VALUES (?,?,?,?,?)";
-	sqlite3_stmt *stmt = getCachedStmt(sql);
-	if (!stmt)
-		return -1;
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_int64(stmt, 2, source_scope_id);
-	sqlite3_bind_text(stmt, 3, target_path.c_str(), -1, SQLITE_STATIC);
-	sqlite3_bind_text(stmt, 4, alias.c_str(), -1, SQLITE_STATIC);
-	sqlite3_bind_int(stmt, 5, is_pub);
-	if (sqlite3_step(stmt) != SQLITE_DONE) {
-		error_ = "insertImport: step failed";
-		return -1;
-	}
-	return sqlite3_last_insert_rowid(db_);
-}
-
-// ── resolved_reference ──────────────────────────────────────────
-
-// insertResolvedReference has been removed.
-// The resolved_reference table was replaced by relation.confidence + reason.
+// `insertResolvedReference` and the `resolved_reference` table are gone: the
+// resolver writes relation.confidence + relation.reason instead. Kept as a note
+// so it does not get reintroduced.
 
 } // namespace store

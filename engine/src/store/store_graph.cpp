@@ -158,6 +158,12 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		kKindFunction,	kKindMethod,  kKindClass,
 		kKindInterface, kKindEnum,    kKindTypeAlias,
 		kKindTypeDecl,	kKindTypeRef, kKindTypeAssign,
+		// RecordKind::ImportBinding is deliberately NOT here: this list
+		// decides which kinds are promoted to ENTITIES (the _r2n mapping and
+		// the entity INSERT below). An import binding is a fact, not a symbol
+		// — listing it here turned every imported name into a node (measured:
+		// AIScope 223 → 839 entities). The Resolver reads it from
+		// semantic_records, which stores every record kind unfiltered.
 	};
 	static constexpr int kNumR2nKinds =
 		sizeof(kR2nKinds) / sizeof(kR2nKinds[0]);

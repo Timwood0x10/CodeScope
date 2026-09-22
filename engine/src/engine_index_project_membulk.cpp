@@ -9,7 +9,7 @@
 // unique_ptr<FileResult> into a BoundedQueue, each worker appends to a
 // thread-local vector and merges into the aggregator when the buffer is
 // full or the worker exits. The post-parse graph-building sequence is shared
-// with the streaming path via engine_index_post_parse().
+// with the streaming path via postParsePhase().
 
 #include "engine_internal.h"
 #include "store/store_membulk.h"
@@ -413,7 +413,7 @@ char *engine_index_project_membulk(
 	post_paths.reserve(job_lang.size());
 	for (const auto &pl : job_lang)
 		post_paths.push_back(pl.first);
-	return engine_index_post_parse(project_id, dir, post_paths, filter,
-				       is_reindex, mode_fast, mode_deep,
-				       time_parse_ms, 0, total_indexed);
+	return postParsePhase(project_id, dir, post_paths, filter, is_reindex,
+			      mode_fast, mode_deep, time_parse_ms, 0,
+			      total_indexed);
 }

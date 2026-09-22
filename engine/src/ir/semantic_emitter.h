@@ -58,6 +58,28 @@ class SemanticEmitter {
 
 	uint64_t emitImport(const std::string &module_name, SourceRange loc,
 			    uint64_t parent_id = 0);
+
+	/// Emit one imported local binding together with the module it was
+	/// imported FROM.
+	///
+	/// `emitImport` records the raw import statement, and the `import` table
+	/// built from it derives its `alias` column from the module path's last
+	/// segment — so for `import { widgetHelper } from "../lib/Widget"` the
+	/// table says `alias="Widget"`, not `"widgetHelper"`. A bare call
+	/// (`widgetHelper()`) therefore has no key to look its module up by, which
+	/// is exactly the evidence a JS/TS cross-directory call needs: the
+	/// language has no receiver to match on and `import_alias` only records
+	/// names that ARE imported, not where from. This emits the pair
+	/// explicitly, as `name = binding, type_name = module_spec`.
+	///
+	/// \param binding     Local name the module was bound to.
+	/// \param module_spec Module specifier as written ("./helper").
+	/// \param loc         Source location of the import statement.
+	/// \param parent_id   Parent record ID; 0 for a file-level import.
+	/// \return The new record's ID.
+	uint64_t emitImportBinding(const std::string &binding,
+				   const std::string &module_spec,
+				   SourceRange loc, uint64_t parent_id = 0);
 	uint64_t emitExport(const std::string &name, SourceRange loc,
 			    uint64_t parent_id = 0);
 

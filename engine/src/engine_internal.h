@@ -79,7 +79,7 @@ char *dupString(const std::string &s);
 // For small modules (<= kMemBulkFileThreshold files) the parse workers
 // aggregate FileResult in memory instead of pushing through BoundedQueue,
 // then flush once via insertFileResultBatch. The post-parse graph-building
-// sequence is shared with the streaming path via engine_index_post_parse.
+// sequence is shared with the streaming path via postParsePhase.
 
 /// In-memory bulk index path for small modules.
 char *engine_index_project_membulk(
@@ -90,15 +90,14 @@ char *engine_index_project_membulk(
 	bool is_reindex, bool mode_fast, bool mode_deep);
 
 /// Shared post-parse sequence: buildGraph -> callgraph_ready UPDATE ->
-/// populateSymbols/resolveStagedMetrics -> (deep) vectors ->
+/// resolveStagedMetrics -> (deep) vectors ->
 /// createIndexesAfterBulkLoad -> readiness -> result JSON.
 /// Returns a dupString()'d JSON result. Caller owns the pointer.
-char *engine_index_post_parse(uint64_t project_id, const std::string &dir,
-			      const std::vector<std::string> &job_paths,
-			      const FilterPolicy &filter, bool is_reindex,
-			      bool mode_fast, bool mode_deep,
-			      int64_t time_parse_ms, int64_t time_buildgraph_ms,
-			      int total_indexed);
+char *postParsePhase(uint64_t project_id, const std::string &dir,
+		     const std::vector<std::string> &job_paths,
+		     const FilterPolicy &filter, bool is_reindex,
+		     bool mode_fast, bool mode_deep, int64_t time_parse_ms,
+		     int64_t time_buildgraph_ms, int total_indexed);
 
 // ─── Evidence Builder FFI (v0.3 Phase 2) ─────────────────────────
 //

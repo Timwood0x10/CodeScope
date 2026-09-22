@@ -120,8 +120,12 @@ class JsVisitor {
 	 * \param node        An import_clause / namespace_import /
 	 *                    named_imports / import_specifier node.
 	 * \param module_spec The module specifier string of the import.
+	 * \param parent_id   Record to attach the binding records to (the import
+	 *                    statement's parent), so emitImportBinding lands in
+	 *                    the same scope as the statement itself.
 	 */
-	void collectImportBindings(TSNode node, const std::string &module_spec);
+	void collectImportBindings(TSNode node, const std::string &module_spec,
+				   uint64_t parent_id);
 
 	void recordVarType(const std::string &name, const std::string &type)
 	{

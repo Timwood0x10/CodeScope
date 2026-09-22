@@ -91,6 +91,20 @@ uint64_t SemanticEmitter::emitImport(const std::string &module_name,
 				loc);
 }
 
+uint64_t SemanticEmitter::emitImportBinding(const std::string &binding,
+					    const std::string &module_spec,
+					    SourceRange loc, uint64_t parent_id)
+{
+	// A distinct kind from emitImport, deliberately: `Import` records the whole
+	// statement and is what the `import` table and the visitor tests count, so
+	// reusing it inflated those counts (the JS/TS visitor tests failed exactly
+	// that way, 1 import → 2). The binding sits in `name` and the specifier in
+	// `type_name`, which is what lets the Resolver map a bare call name back to
+	// its module.
+	return unit_->addTypedRecord(RecordKind::ImportBinding, binding,
+				     module_spec, parent_id, loc);
+}
+
 uint64_t SemanticEmitter::emitExport(const std::string &name, SourceRange loc,
 				     uint64_t parent_id)
 {

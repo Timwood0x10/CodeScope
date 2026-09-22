@@ -72,6 +72,16 @@ enum class RecordKind : uint8_t {
 	/// The `name` field stores the implementing type name.
 	/// The `type_name` field stores the interface/trait name.
 	InterfaceImpl,
+	/// Import binding: the local name a module was bound to, and the module.
+	/// The `name` field stores the local binding, `type_name` the module
+	/// specifier as written ("./helper"). Distinct from `Import`, which records
+	/// the whole import STATEMENT — that is what the `import` table is built
+	/// from and what the visitor tests count, and a statement with three
+	/// bindings produces one `Import` plus three `ImportBinding` records. The
+	/// store derives the `import` table's `alias` from the module path's last
+	/// segment, so it cannot express this pair; the Resolver reads it from here
+	/// to tie a bare call to the module it came from.
+	ImportBinding,
 };
 
 /// Kind of a call expression — used to distinguish direct calls from

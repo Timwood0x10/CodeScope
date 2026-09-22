@@ -76,6 +76,15 @@ class ResolverPipeline {
 	// performed in-memory with SQLite-exact LIKE semantics, so the
 	// resolved edges are IDENTICAL to the previous SQL implementation.
 	std::unordered_map<std::string, std::vector<std::string>> import_index_;
+	// file_path -> (imported local name -> module specifier), from the `import`
+	// table. `./helper` written in app.tsx lands here as
+	// {"app.tsx": {"helper": "./helper"}} — the lookup that lets the resolver
+	// tell which module a bare `helper()` call came from. The specifier is used
+	// only when it is RELATIVE (see relativeImportMatchesFile); bare package
+	// names are recorded but never matched against a file.
+	std::unordered_map<std::string,
+			   std::unordered_map<std::string, std::string>>
+		import_alias_index_;
 
 	// Step 8 (plan §8.1): interface/trait implementation index.
 	// Maps interface/trait name → list of implementing type names.

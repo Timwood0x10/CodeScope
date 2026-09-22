@@ -56,8 +56,24 @@ inline std::string languageFromPath(const std::string &file_path)
 /// visitors label a `.c` translation unit "c" and a `.h` header may belong
 /// to either. Comparing the raw strings would therefore reject every
 /// legitimate C call site, so the whole C family is treated as one
-/// language. All other languages must match exactly; an empty label means
-/// "unknown" and is always allowed through (never over-filter).
+/// language.
+///
+/// The JS/TS family needs the same treatment for the same reason, and this
+/// was a measured false-negative class rather than a hypothetical one:
+/// languageFromPath() reports a `.tsx` path as "typescript" while the tsx
+/// visitor labels the entities it defines "tsx", so the two labels never
+/// matched. On two real TypeScript projects the resolver produced ZERO call
+/// edges — AIScope (220 tsx + 3 typescript entities, 1164 references of
+/// which 37 name locally-defined symbols) and PolyScope (27 tsx + 14
+/// typescript, 80 references, 9 naming local symbols). A `.ts` module
+/// calling a `.tsx` component, or a `.js` file calling into either, is the
+/// ordinary shape of a React/TS codebase; the language label is one gate
+/// among several (name, arity, directory, import evidence all still apply),
+/// so treating the family as one language cannot manufacture edges on its
+/// own.
+///
+/// Everything else must match exactly; an empty label means "unknown" and is
+/// always allowed through (never over-filter).
 inline bool languagesCompatible(const std::string &a, const std::string &b)
 {
 	if (a.empty() || b.empty() || a == b)
@@ -65,7 +81,85 @@ inline bool languagesCompatible(const std::string &a, const std::string &b)
 	static const std::unordered_set<std::string> kCFamily = {
 		"c", "cpp", "c++", "cxx", "objc", "objective-c",
 	};
-	return kCFamily.count(a) > 0 && kCFamily.count(b) > 0;
+	static const std::unordered_set<std::string> kJsFamily = {
+		"javascript",
+		"typescript",
+		"tsx",
+	};
+	if (kCFamily.count(a) > 0 && kCFamily.count(b) > 0)
+		return true;
+	return kJsFamily.count(a) > 0 && kJsFamily.count(b) > 0;
+}
+
+/// True when `candidate_file` is the module named by a RELATIVE import
+/// specifier written in `caller_dir`.
+///
+/// This is the evidence TypeScript/JavaScript projects never had. Their calls
+/// are bare names (`helper()`), the language has no receiver to match on, and
+/// the only import signal the visitors produced was a *plain set of imported
+/// names* — which says "imported" but not "imported from here". So every
+/// cross-directory call had no factor that could separate the candidates and
+/// the resolver abstained (measured: PolyScope 0 edges from 80 references).
+/// The `import` table does store the module specifier
+/// (`./helper` → alias `helper`), so the missing piece was this comparison.
+///
+/// `./helper` names helper.ts / helper.tsx / helper.js, so the match is
+/// extension-agnostic, and it accepts a directory match (`./utils` →
+/// `utils/index.ts`). A bare package specifier ("react", "@/lib/utils") names
+/// no file inside the project and returns false: the caller must not invent
+/// path evidence from an alias it cannot resolve.
+inline bool relativeImportMatchesFile(const std::string &caller_dir,
+				      const std::string &spec,
+				      const std::string &candidate_file)
+{
+	if (spec.empty() || spec[0] != '.')
+		return false;
+	// Join the specifier onto the caller's directory and collapse the "." and
+	// ".." segments, so "../lib/x" and "./y" compare against real paths.
+	const std::string joined = caller_dir.empty() ? spec :
+							caller_dir + "/" + spec;
+	std::vector<std::string> parts;
+	size_t i = 0;
+	while (i <= joined.size()) {
+		const size_t slash = joined.find('/', i);
+		const std::string seg = joined.substr(
+			i, slash == std::string::npos ? std::string::npos :
+							slash - i);
+		if (seg == "..") {
+			if (!parts.empty())
+				parts.pop_back();
+		} else if (!seg.empty() && seg != ".") {
+			parts.push_back(seg);
+		}
+		if (slash == std::string::npos)
+			break;
+		i = slash + 1;
+	}
+	std::string base;
+	for (const auto &p : parts) {
+		if (!base.empty())
+			base += '/';
+		base += p;
+	}
+	if (base.empty())
+		return false;
+	// The collapse above drops the empty first segment of an absolute path;
+	// put the root back or no absolute candidate can ever match.
+	if (joined[0] == '/')
+		base.insert(base.begin(), '/');
+	auto strip_ext = [](const std::string &p) -> std::string {
+		const size_t dot = p.rfind('.');
+		const size_t slash = p.rfind('/');
+		if (dot != std::string::npos &&
+		    (slash == std::string::npos || dot > slash))
+			return p.substr(0, dot);
+		return p;
+	};
+	if (candidate_file == base || strip_ext(candidate_file) == base)
+		return true;
+	// `./utils` may name a directory: any file inside it can be that module's
+	// entry point (index.ts and friends).
+	return candidate_file.rfind(base + "/", 0) == 0;
 }
 
 /// Fold an ASCII byte to lowercase. SQLite's default LIKE folds only
@@ -122,6 +216,11 @@ inline bool sqliteLikeMatch(const std::string &pattern, const std::string &text)
 // ── Named constants for factor weights ──────────────────────────────
 constexpr double kWeightModuleMatch = 0.15;
 constexpr double kWeightImportMatch = 0.80; // Dominant for cross-module
+// The caller imports this callee from a RELATIVE module and the candidate is
+// that module: exact path evidence, so it outweighs the general import signal.
+// Only applied when such a specifier was actually recorded — see
+// relativeImportMatchesFile.
+constexpr double kWeightImportModuleMatch = 0.90;
 constexpr double kWeightNamespaceMatch = 0.10;
 constexpr double kWeightSignatureMatch = 0.10;
 constexpr double kWeightDistanceMatch = 0.05;
@@ -191,6 +290,11 @@ inline std::string resolutionKindFromFactor(const std::string &factor)
 		return "receiver_type";
 	if (factor == "ImportMatch")
 		return "imported";
+	// A distinct label from the general import signal: this one means the
+	// candidate IS the module the caller imported the name from, which is a
+	// stronger and auditable statement than "the caller has imports".
+	if (factor == "ImportModuleMatch")
+		return "import_module";
 	if (factor == "SignatureMatch")
 		return "signature";
 	if (factor == "DefinitionMatch")

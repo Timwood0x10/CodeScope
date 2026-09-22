@@ -21,6 +21,16 @@ unsafe extern "C" {
     ) -> *mut c_char;
     fn engine_index_files(project_id: u64, file_list_json: *const c_char) -> *mut c_char;
 
+    // Filter decisions, answered by the indexer's own FilterPolicy so the
+    // server never keeps a second copy of the rules (see
+    // engine/src/engine_filter_ffi.cpp for why both were exported).
+    fn engine_path_is_skipped(
+        project_root: *const c_char,
+        rel_path: *const c_char,
+        is_dir: i32,
+    ) -> i32;
+    fn engine_is_indexable_source(file_path: *const c_char) -> i32;
+
     // v0.2.5 (C2 fix): rebuild a project's CSR adjacency on the given DB
     // (used after parallel merge, where local-id BLOBs would be dangling).
     fn engine_rebuild_csr(db_path: *const c_char, project_id: u64) -> *mut c_char;
@@ -285,6 +295,29 @@ pub fn index_project(project_id: u64, dir_path: &str, language_filter: *const c_
 
 pub fn index_files(project_id: u64, file_list_json: &str) -> String {
     take_string(unsafe { engine_index_files(project_id, cstr(file_list_json).as_ptr()) })
+}
+
+/// Whether the engine's `FilterPolicy` would skip `rel_path`.
+///
+/// `rel_path` must be relative to `project_root` — the same shape the indexer
+/// passes — so a rule anchored there (`.gitignore`'s `**/build-*/`) can match.
+/// This is the single authority the module discovery consults instead of
+/// keeping its own copy of the skip lists.
+pub fn path_is_skipped(project_root: &str, rel_path: &str, is_dir: bool) -> bool {
+    let root = cstr(project_root);
+    let rel = cstr(rel_path);
+    unsafe { engine_path_is_skipped(root.as_ptr(), rel.as_ptr(), if is_dir { 1 } else { 0 }) != 0 }
+}
+
+/// Whether the engine recognizes a language for this path (by extension, or by
+/// shebang for extensionless scripts).
+///
+/// Replaces the server's own extension allow-list, which counted languages the
+/// engine cannot parse — `.zig` among them, which is how a Zig project came to
+/// report source files the index could never contain.
+pub fn is_indexable_source(name_or_path: &str) -> bool {
+    let p = cstr(name_or_path);
+    unsafe { engine_is_indexable_source(p.as_ptr()) != 0 }
 }
 
 pub fn find_definition(project_id: u64, symbol_name: &str, file_filter: Option<&str>) -> String {

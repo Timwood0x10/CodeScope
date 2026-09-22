@@ -338,3 +338,135 @@ the leaked rows and nothing else.
 
 Raw artefacts for this section: `/tmp/verify25/e2e_after.json`, `parallel_after.out`,
 `parallel_real_after.out`, `check_after_fix.*`.
+
+## 10. Cross-project index pass (six unrelated real projects)
+
+Same entry point the MCP server uses (`codescope worker <db> <path>`), fresh database each time, on projects that
+were chosen for differing language and build layout rather than convenience. `junk` counts entities whose path is
+inside a build tree, package cache, virtualenv, VCS directory or bytecode directory — the classes of leak the
+CodeScope self-index had exposed.
+
+| project | language | source files | wall | entities | relations | modules | junk | resolution_kind |
+|---|---|---|---|---|---|---|---|---|
+| OmniScope | Zig (+bundled C/Rust corpus) | 431 | 0.06 s | 190 | 45 | 8 | **0** | exact_local 40, imported 4, fuzzy_local 1 |
+| ZK-bulletproofs | Python | 971 (962 in an embedded venv) | 0.04 s | 48 | 3 | 0 | **0** | exact_local 3 |
+| seamscope | C++/CMake | 1174 | 0.11 s | 307 | 163 | 9 | **0** | exact_local 109, imported 51, fuzzy_local 3 |
+| AIScope | TS/TSX | 6678 (mostly `node_modules`) | 0.23 s | 223 | **47** | 8 | **0** | imported 26, exact_local 19, fuzzy_local 2 |
+| PolyScope | TS/TSX | 6909 (mostly `node_modules`) | 0.08 s | 41 | 0 | 12 | **0** | — (abstains) |
+| goagent | Go + Python | 4836 (3317 `.go`) | 10.07 s | 49516 | 10364 | 284 | **0** | imported 7940, dispatch 2334, exact_local 88, fuzzy_local 2 |
+
+**What this pass found:** AIScope and PolyScope produced **zero** call edges while holding 1164 and 80 references,
+37 and 9 of which name symbols the index defines. `languagesCompatible()` treated only the C family as one language,
+and the two vocabularies disagree for TypeScript (`languageFromPath` says `typescript` for a `.tsx` path; the tsx
+visitor labels the entities it defines `tsx`), so every TSX call site was dropped before scoring. With the JS/TS
+family added: AIScope **0 → 47** edges, the other four projects unchanged, and the accuracy gate unchanged
+(TP 36 / FP 0 / FN 0 — this repository is C++).
+
+PolyScope's zero is **correct**, not a second defect: its references use the project's `@/…` path alias, carry no
+receiver and no import alias in the index, and no candidate shares their directory, so no factor separates the
+candidates and the resolver abstains — the behaviour the tool documents.
+
+**Not a result, and worth saying:** the Python project's 971 `.py` files are 962 files of an embedded
+`path/to/venv/lib/python3.12/site-packages/` fixture; the 48 entities are the project's real chapters. The counters
+are right because the venv is skipped, not because the project is small.
+
+**Resolved (batch 26):** `discover.rs` counted `.zig` as a source extension while Zig is deliberately unsupported
+(no extension mapping, no translator, none planned), so OmniScope's `.zig` files were counted as candidates the index
+could never contain. The Rust copies of the extension list and of the skip rules are gone — the server now asks the
+engine's `FilterPolicy` (`engine_path_is_skipped`, `engine_is_indexable_source`) — so "counted" means "the indexer
+will parse it". Measured on OmniScope: **362 `.zig` files counted before, 23 source files now**, and the module list no
+longer contains a `.gitignore`d top-level directory (`test_gitignored_top_level_dir_is_not_a_module`).
+
+## 11. Rust project coverage (`~/code/rustcode/memscope-rs`)
+
+Indexed with the same entry point (`codescope worker`), then the full tool sweep in one long-lived MCP session
+(`initialize` auto-index → `tools/list` → one `tools/call` per advertised tool).
+
+| measure | value |
+|---|---|
+| Rust files indexed | 242 (`target/` present on disk, skipped) |
+| `initialize` (incl. auto-index) | 1.33 s |
+| entities / relations / modules | 6759 / **3230** / 44 |
+| junk paths (`target/`, `build/`) | **0** |
+| `resolution_kind` | exact_local 1940, imported 1279, fuzzy_local 11 |
+| references / with a locally-defined name | 17163 / 10097 |
+| tools advertised / called | 46 / 46 |
+| statuses | **41 OK, 5 IS-ERROR** |
+| peak server RSS | 147.8 MB |
+
+All five non-OK calls are the harness passing the wrong or missing argument, and each error names what is required
+or supported — `verify_claim` (needs the structured claim object), `explain_module` (module name), `shortest_path`
+(neither `from` nor `from_id` was sent), `get_knowledge_graph` (my guessed table name) and `graph_query` (my DSL
+used a wrong edge-type spelling). No product defect surfaced on a Rust project.
+
+## 12. Why the TS/JS projects resolve so little — and what was actually broken
+
+Two different things, and only one of them was a bug.
+
+**(a) The bug (fixed, see §10).** The language-family mismatch rejected every `.tsx` call site before scoring, so
+AIScope and PolyScope produced **zero** edges. Fixed: AIScope 0 → 47.
+
+**(b) What remains is partial evidence, not none.** (An earlier draft of this section said the resolver had *no* way
+to know a call's module. That was too strong: the `import` table records the specifier per file with the module's last
+segment as `alias`, and a segment-matching heuristic resolves some cross-directory cases — which is why the fixture
+below had to be built carefully to isolate the new path.) The same reference-evidence counters, measured
+across every project indexed today:
+
+| project | references | qualified_target | import_alias | receiver_type | edges | resolve rate |
+|---|---|---|---|---|---|---|
+| Rust memscope-rs | 17163 | **95%** | 11% | 6% | 3230 | **18.8%** |
+| Go goagent | 47232 | **85%** | 0% | **28%** | 10364 | **21.9%** |
+| TSX AIScope | 1164 | 50% | **0%** | 1% | 47 | 4.0% |
+| TSX PolyScope | 80 | 30% | **0%** | 0% | 0 | 0.0% |
+| Python ZK-bulletproofs | 147 | 12% | 6% | 0% | 3 | 2.0% |
+
+Go shows that a 0% `import_alias` rate is survivable — qualified calls (`pkg.Func`) give 85% of its references a
+`qualified_target` and 28% a receiver, and it resolves 21.9%. TypeScript has neither: `js_visitor.cpp` treats
+import children as *structural* ("Import children (import_clause, from_clause) are structural", js_visitor.cpp:726),
+so `import { helper } from './helper'` records **nothing** on the reference. Measured on a four-file TSX fixture,
+the references for both an import-and-call and a same-module call came out with empty `qualified_target`,
+`import_alias` and `receiver_type`; the two edges that did resolve did so through the single-candidate fast path
+("single same-module candidate"). `import_alias` is documented as "import alias used in the call, if any" — it is
+the *call-site* alias for a qualified call (`fmt.Printf`, `io::Result`), which is why a plain named ES import does
+not produce one.
+
+Consequence, stated plainly: **same-directory TSX calls resolve; cross-directory ones cannot**, because no scoring
+factor distinguishes the candidates and the resolver abstains — which is the documented behaviour ("abstains rather
+than guesses"), so PolyScope's 0 is correct rather than wrong. Making TS/JS projects as useful as Go/Rust needs a new
+evidence channel (record the imported module per binding, carry it to the reference, and let a factor use it), i.e. a
+feature-sized change. Registered in the review doc as an open item with these numbers; not attempted here.
+
+## 13. TS/JS evidence channel — status: groundwork in place, not yet effective
+
+The mechanism exists and is tested where it can be tested; it does not do anything yet, and saying otherwise
+would be wrong.
+
+**In place.** A guarded `ImportModuleMatch` factor (weight 0.90, `acc()` only when evidence exists, so every other
+reference keeps its previous weighted average exactly), reading a per-file `alias → module specifier` index built
+from the existing `import` table; plus `relativeImportMatchesFile()`, unit-tested with 5 positive cases (same
+directory, `../lib/Widget` → `.tsx`, extension-agnostic, explicit file, directory entry point) and 4 negative ones
+(bare package name, `@/…` path alias, a different module, unknown caller directory).
+
+**Superseded.** The link is now emitted and read: the JS/TS visitor records one `ImportBinding` per binding
+(`name` = local binding, `type_name` = specifier), the Resolver indexes it, and `ImportModuleMatch` resolves a relative
+specifier against the candidate's path. The `import` table still cannot express the pair — its `alias` is the module
+path's last segment — which is why the link goes through a separate record kind instead of that table.
+
+**Measured, five projects, after the link:** `import_module` edges **0** and the counts unchanged (AIScope 223/47,
+PolyScope 41/0, memscope-rs 6759/3230, goagent 49516/10364, CodeScope 1794/1775 ±3, which run-to-run variance accounts
+for — three identical self-index runs gave 1777/1774/1777 relations). No regression; and **no demonstrated gain on
+these projects either**. Their TS/JS imports are alias-based (`@/…`, which names no file) or already resolved by the
+pre-existing segment heuristic, so the new path is a precision addition — exact path resolution with its own
+`import_module` audit label — and the fixture is the evidence that it works, not these repositories. The accuracy gate
+is unchanged at TP 36 / FP 0 / FN 0.
+
+The end-to-end evidence is `test_resolver_language_filter`'s decoy scenario: the decoy sorts first *and* contains the
+module's last segment in its path, so the pre-existing segment heuristic is tied and the order tie-break would give it
+the edge — resolving the specifier to a path picks the imported file instead, and disabling the emission makes the
+scenario fail.
+
+**Two things worth keeping from this attempt.** The unit test immediately failed on a real bug of mine — the path
+collapse dropped the leading `/`, so no absolute candidate could ever have matched — which the fixture-based
+scenario could not have detected because it was passing for another reason: with a single candidate any positive
+score resolves it, so that scenario stayed green even with the factor disabled. The scenario was replaced by the
+direct matcher test, and the falsification step is what caught it.

@@ -1,5 +1,10 @@
 // Shared post-parse sequence for engine_index_project.
 //
+// Internal helper, not an FFI boundary: it takes C++ references and returns
+// a dupString()'d JSON payload the caller frees. It deliberately does NOT
+// carry an `engine_`/`extern "C"` name, which an FFI audit would otherwise
+// have to dismiss one call site at a time.
+//
 // Both the streaming path (BoundedQueue + single writer) and the in-memory
 // bulk path (store::MemBulkAggregator) produce semantic_records identically.
 // After the FileResult data is persisted, this single function runs the
@@ -21,12 +26,11 @@
 
 using namespace std::chrono;
 
-char *engine_index_post_parse(uint64_t project_id, const std::string &dir,
-			      const std::vector<std::string> &job_paths,
-			      const FilterPolicy &filter, bool is_reindex,
-			      bool mode_fast, bool mode_deep,
-			      int64_t time_parse_ms, int64_t time_buildgraph_ms,
-			      int total_indexed)
+char *postParsePhase(uint64_t project_id, const std::string &dir,
+		     const std::vector<std::string> &job_paths,
+		     const FilterPolicy &filter, bool is_reindex,
+		     bool mode_fast, bool mode_deep, int64_t time_parse_ms,
+		     int64_t time_buildgraph_ms, int total_indexed)
 {
 	// Total wall-clock for the entire post-parse phase (graph build +
 	// metrics + indexes). Captured here so the breakdown in
@@ -102,7 +106,7 @@ char *engine_index_post_parse(uint64_t project_id, const std::string &dir,
 				"for project " +
 				std::to_string(project_id) +
 				" (resolver stage)\",\"module\":\"engine\","
-				"\"method\":\"engine_index_post_parse\"}");
+				"\"method\":\"postParsePhase\"}");
 		}
 		g_store->commitTransaction();
 		// Indexing now builds the full call graph (buildGraph above),
@@ -172,9 +176,9 @@ char *engine_index_post_parse(uint64_t project_id, const std::string &dir,
 				sqlite3_finalize(mstmt);
 			} else {
 				fprintf(stderr,
-					"engine_index_post_parse: metrics count "
+					"postParsePhase: metrics count "
 					"probe failed: %s [module=engine, "
-					"method=engine_index_post_parse]\n",
+					"method=postParsePhase]\n",
 					sqlite3_errmsg(g_store->handle()));
 			}
 		}
@@ -222,9 +226,9 @@ char *engine_index_post_parse(uint64_t project_id, const std::string &dir,
 			} else {
 				// node_vectors table missing — log and keep flag 0.
 				fprintf(stderr,
-					"engine_index_post_parse: node_vectors "
+					"postParsePhase: node_vectors "
 					"count probe failed: %s "
-					"[module=engine, method=engine_index_post_parse]\n",
+					"[module=engine, method=postParsePhase]\n",
 					sqlite3_errmsg(g_store->handle()));
 			}
 		}
@@ -365,7 +369,7 @@ char *engine_index_post_parse(uint64_t project_id, const std::string &dir,
 		launchAsyncKnowledgeBuilder(project_id, !mode_fast);
 	} else {
 		fprintf(stderr,
-			"[module=engine, method=engine_index_post_parse] "
+			"[module=engine, method=postParsePhase] "
 			"skipping async model/state/fts build "
 			"(CODESCOPE_SKIP_ASYNC=1) for project %llu\n",
 			(unsigned long long)project_id);
@@ -377,7 +381,7 @@ char *engine_index_post_parse(uint64_t project_id, const std::string &dir,
 	auto t_post_parse_end = steady_clock::now();
 	fprintf(stderr,
 		"engine: post_parse_total=%lldms "
-		"[module=engine, method=engine_index_post_parse]\n",
+		"[module=engine, method=postParsePhase]\n",
 		(long long)duration_cast<milliseconds>(t_post_parse_end -
 						       t_post_parse_start)
 			.count());
