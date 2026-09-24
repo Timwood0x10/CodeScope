@@ -682,6 +682,45 @@ void FilterPolicy::buildActiveSets()
 	}
 }
 
+namespace
+{
+// Fold language-label aliases onto one canonical member so a filter of
+// "c" accepts files the path-based classifier labels "cpp" (and the
+// reverse). The two classifiers disagree for `.c` (see
+// query_analysis.cpp languagesCompatible), so exact-string matching
+// silently indexes nothing when they do. Also trims and lowercases.
+std::string canonicalLang(std::string s)
+{
+	// std::isspace also strips \r\n — a CRLF-tainted token ("c\r") must
+	// fold like "c" or the filter silently matches nothing.
+	while (!s.empty() &&
+	       std::isspace(static_cast<unsigned char>(s.front())))
+		s.erase(s.begin());
+	while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back())))
+		s.pop_back();
+	for (auto &c : s)
+		c = static_cast<char>(
+			std::tolower(static_cast<unsigned char>(c)));
+	if (s == "c" || s == "c++" || s == "cpp")
+		return "cpp";
+	if (s == "js" || s == "node" || s == "javascript")
+		return "javascript";
+	if (s == "ts" || s == "typescript")
+		return "typescript";
+	if (s == "py" || s == "python")
+		return "python";
+	if (s == "golang" || s == "go")
+		return "go";
+	if (s == "kt" || s == "kts" || s == "kotlin")
+		return "kotlin";
+	if (s == "rb" || s == "ruby")
+		return "ruby";
+	if (s == "rs" || s == "rust")
+		return "rust";
+	return s;
+}
+} // namespace
+
 void FilterPolicy::setLanguageFilter(const std::string &filter)
 {
 	if (filter.empty()) {
@@ -693,11 +732,9 @@ void FilterPolicy::setLanguageFilter(const std::string &filter)
 	size_t start = 0, end;
 	do {
 		end = filter.find(',', start);
-		auto lang = filter.substr(start, end - start);
-		// Normalize to lowercase
-		for (auto &c : lang)
-			c = static_cast<char>(std::tolower(c));
-		lang_filter_set_.insert(lang);
+		auto lang = canonicalLang(filter.substr(start, end - start));
+		if (!lang.empty())
+			lang_filter_set_.insert(lang);
 		start = end + 1;
 	} while (end != std::string::npos);
 }
@@ -706,7 +743,8 @@ bool FilterPolicy::isLanguageAccepted(const std::string &lang) const
 {
 	if (!has_lang_filter_)
 		return true;
-	return lang_filter_set_.find(lang) != lang_filter_set_.end();
+	return lang_filter_set_.find(canonicalLang(lang)) !=
+	       lang_filter_set_.end();
 }
 
 bool FilterPolicy::shouldSkipDir(const std::string &dir_name) const

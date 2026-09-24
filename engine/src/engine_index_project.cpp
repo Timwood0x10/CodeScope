@@ -112,18 +112,10 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 
 	std::string lang_filter = language_filter ? language_filter : "";
 
-	// Pre-parse language filter and max file size ONCE before file discovery
-	// (not per-file in the worker or file-collection loop)
-	std::unordered_set<std::string> lang_filter_set;
-	if (!lang_filter.empty()) {
-		size_t start = 0, end;
-		do {
-			end = lang_filter.find(',', start);
-			lang_filter_set.insert(
-				lang_filter.substr(start, end - start));
-			start = end + 1;
-		} while (end != std::string::npos);
-	}
+	// Parse max file size ONCE before file discovery (not per-file in the
+	// worker or file-collection loop). The language filter is applied only
+	// through FilterPolicy::setLanguageFilter below — the single
+	// implementation with alias folding — so no local label set is kept.
 	uint64_t max_file_size = kMaxFileSize;
 	const char *env_max = getenv("CODESCOPE_MAX_FILE_SIZE");
 	if (env_max)

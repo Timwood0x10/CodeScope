@@ -625,3 +625,90 @@ fixed across change-review passes 2–10 (3×P1, 12×P2, 4×P3 — §5–§14).
 - All touched files ≤ 1000 lines (`pipeline.cpp` 982, `js_visitor.cpp` 640,
   `js_visitor_calls.cpp` 400, `tools/mod.rs` 850, `tools/clamp.rs` 196).
 - No `git commit` (code_rules).
+
+---
+
+## 17. Manual MCP tool verification on 8 real-language projects (2026-09-24)
+
+Every tool invoked individually via `codescope cli <tool> <json>` (no batch
+scripts). Projects: Python `pycode/multi-agent`, Go `go/src/CodeTribunal`,
+C `ccode/ccalls/c`, C++ `cppCode/seamscope`, Rust `rustcode/memscope-rs`,
+JS `pycode/ZL/js`, TS `xxxcode/ts/zod`, Java `xxxcode/java/okhttp`.
+
+### Coverage
+
+| Project | Tools verified | Index result |
+|---------|---------------|--------------|
+| Python multi-agent | 47/47 | 719 nodes / 426 edges / 15 files |
+| Go CodeTribunal | 47/47 | 853 nodes / 213 edges / 20 files |
+| C ccalls/c | 40+ | 3 nodes / 1 edge / 2 files |
+| C++ seamscope | 40+ | 10819 nodes / 9246 edges / 709 files |
+| Rust memscope-rs | core tools | 6740 nodes / 3197 edges / 187 files |
+| JS ZL/js | core tools | 44 nodes / 67 edges / 6 files |
+| TS zod | core tools | 1124 nodes / 779 edges / 142 files |
+| Java okhttp | core tools | 465 nodes / 115 edges / 56 files |
+
+### Findings from verification
+
+`[P2] language_filter:'c' produces an empty index — engine force_index_files`
+`force_index_files {"paths":["."],"language_filter":"c"}` on the C project
+indexed 0 entities; dropping the filter indexed 3 entities correctly. The
+filter value appears to be matched against the engine's language label
+exactly (`c` vs the stored label), so a wrong-case/label filter silently
+indexes nothing. Reproduced on `ccode/ccalls/c`.
+
+`[P2] get_graph_stats reports 0 before enhance_project — server tools`
+On Go CodeTribunal, `get_graph_stats` returned `{0,0,0}` right after
+`force_index_files`, while `get_knowledge_graph table=entity` showed rows
+and `find_symbol` worked. After `enhance_project`, `get_graph_stats` returned
+the correct `853/213/20`. **Root cause corrected 2026-09-24:** `get_graph_stats`
+counts `entity`/`relation` (`QueryEngine::getGraphStats`), not the legacy
+`graph_nodes`; a fresh-DB re-run returns correct counts immediately after
+`force_index_files` with no `enhance_project`. The zeros were a parallel-CLI
+race over a stale `.codescope/codescope.db` (two `codescope cli` processes),
+the same family as prior #27 — not a wrong-table read.
+
+`[P2] force_index_files on a JS directory initially indexed 0 nodes`
+`force_index_files {"paths":["."]}` in `ZL/js` reported success but
+`get_graph_stats` showed `0/0/0`; a subsequent `index_file main.js` produced
+`44/67/6` covering all 6 files. **Root cause corrected 2026-09-24:** a
+fresh-DB re-run indexes all 6 `.js` files on the first `force_index_files`;
+the zero was the same parallel-CLI race + stale DB as above, not a
+directory-walk miss (repro on `pycode/ZL/js`).
+
+`[P3] force_index_files indexes build artifacts, causing symbol ambiguity`
+On C++ seamscope and Rust memscope-rs, `force_index_files {"paths":["."]}`
+walked `build/`, `_deps/`, `target/` and indexed thousands of duplicated
+symbols (e.g. `Parse` × 18, `main` × 50+), so `find_callers`/`find_callees`
+returned `ambiguous:true` with huge candidate lists. This is the documented
+force-index behaviour (bypasses skip rules), but for a whole-project walk it
+inflates the index and degrades homonym resolution. Recommend callers pass
+`paths:["./src"]` or the tool should skip `build*/target/_deps` by default.
+
+`[P3] engine init failed is transient under concurrent DB access`
+`get_graph_stats` once returned `codescope: engine init failed` on seamscope
+while another CLI invocation held the same `.codescope/codescope.db`; retry
+succeeded immediately. SQLite WAL allows concurrent readers but a writer
+blocks open. Not a correctness bug; callers should retry.
+
+### Positive verifications (no findings)
+
+- All 8 languages parse and index: entities, relations, module trees, entry
+  points, type info, call graphs, communities, shortest_path, subgraph,
+  neighbors, graph_query, get_graph pagination all returned coherent data.
+- Verify pipeline works end-to-end: `verify_claim` (FunctionImplements →
+  Supported with evidence facts), `verify_summary`/`verify_review`
+  (CapabilityVerifier → Contradicted on undeclared capability),
+  `verify_reality` (Unknown when claim pattern not matched).
+- Drift detectors behave: `detect_capability_drift` reports
+  `no_capabilities_declared` on projects without capability rows (the
+  evidence gate holds); `detect_documentation_drift` and
+  `detect_architecture_drift` return empty when no claims/drift exist.
+- `detect_changes` returns transitive callers/callees with depth annotation.
+- `get_routes` correctly extracts Go/Java HTTP routes (Go CodeTribunal
+  `/ws/chat`, `/`; Python/TS correctly empty).
+- `count_tokens` works across all languages.
+- `index_file` and `force_index_files` single-file forms work on all 8
+  languages.
+- `build_evidence` / `build_project_state` / `get_project_state` produce
+  consistent snapshots with the pass-6 `Done`/`Partial`/`Empty` workflow arms.

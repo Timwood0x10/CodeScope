@@ -134,19 +134,21 @@ ModelResult ContractPlugin::build(uint64_t project_id, const ModelContext &ctx)
 						if (before.size() < n)
 							return false;
 						return before.compare(
-							       before.size() - n,
+							       before.size() -
+								       n,
 							       n, sfx) == 0;
 					};
 					auto ends_word = [&](const char *sfx) {
 						size_t n = std::strlen(sfx);
 						if (!ends_suffix(sfx))
 							return false;
-						size_t start = before.size() - n;
+						size_t start =
+							before.size() - n;
 						if (start == 0)
 							return true;
-						unsigned char prev =
-							static_cast<unsigned char>(
-								before[start - 1]);
+						unsigned char prev = static_cast<
+							unsigned char>(
+							before[start - 1]);
 						return !std::isalnum(prev);
 					};
 					// "not thread-safe", "never thread-safe",

@@ -13,6 +13,7 @@
 #include <mutex>
 #include <sqlite3.h>
 #include <sstream>
+#include <thread>
 #include <sys/stat.h>
 #ifndef _WIN32
 #include <unistd.h>
@@ -27,6 +28,11 @@ namespace store
 
 // Performance PRAGMA values
 static constexpr int kCacheSizePages = -64000;
+// Retried sqlite3_open failures (SQLITE_BUSY / SQLITE_LOCKED under a
+// concurrent writer). 5 x 50ms covers the transient window without
+// stalling a genuinely unavailable file.
+static constexpr int kOpenRetryAttempts = 5;
+static constexpr int kOpenRetryDelayMs = 50;
 
 // 64 MB cache
 static constexpr int kPageSize =
@@ -157,11 +163,31 @@ bool GraphStore::open(const char *db_path)
 			config_rc);
 	}
 
-	int rc = sqlite3_open(db_path, &db_);
-	if (rc != SQLITE_OK) {
+	// Bounded retry: sqlite3_open fails transiently with SQLITE_BUSY /
+	// SQLITE_LOCKED when another connection holds the write lock (e.g. two
+	// CLI invocations over the same DB). busy_timeout cannot help — it only
+	// applies to statements after the handle is open.
+	int rc = SQLITE_BUSY;
+	for (int attempt = 0; attempt < kOpenRetryAttempts; ++attempt) {
+		rc = sqlite3_open(db_path, &db_);
+		if (rc == SQLITE_OK)
+			break;
 		error_ = sqlite3_errmsg(db_);
-		return false;
+		// sqlite3_open returns a handle even on failure; close it before
+		// the next attempt or the retries leak handles.
+		sqlite3_close(db_);
+		db_ = nullptr;
+		if (rc != SQLITE_BUSY && rc != SQLITE_LOCKED)
+			return false;
+		std::this_thread::sleep_for(
+			std::chrono::milliseconds(kOpenRetryDelayMs));
 	}
+	if (rc != SQLITE_OK)
+		return false;
+	// A retried attempt leaves its failure text in error_; open() has now
+	// succeeded, so error() must reflect THIS call (pass-8 contract —
+	// same rationale as buildFTSFromGraph's entry clear).
+	error_.clear();
 	db_path_ = db_path;
 
 	// page_size MUST be set before any tables are created. Larger pages

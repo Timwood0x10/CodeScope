@@ -195,10 +195,16 @@ char *engine_index_batch(uint64_t project_id, const char *file_paths_json)
 
 		uint64_t start_id = 1;
 		{
+			// Allocate past BOTH tables: insertEntity is INSERT OR
+			// IGNORE (drops on collision) while insertGraphNode does a
+			// bare INSERT on graph_nodes.id (PRIMARY KEY). Sourcing only
+			// one table lets the other collide and silently lose rows.
 			sqlite3_stmt *stmt = nullptr;
 			if (sqlite3_prepare_v2(
 				    g_store->handle(),
-				    "SELECT COALESCE(MAX(id),0)+1 FROM graph_nodes",
+				    "SELECT COALESCE(MAX(t.id),0)+1 FROM (SELECT id "
+				    "FROM entity UNION ALL SELECT id FROM "
+				    "graph_nodes) t",
 				    -1, &stmt, nullptr) == SQLITE_OK) {
 				if (sqlite3_step(stmt) == SQLITE_ROW)
 					start_id = static_cast<uint64_t>(

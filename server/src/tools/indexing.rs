@@ -271,7 +271,11 @@ pub(super) fn h_index_file(project_id: u64, args: &Value) -> String {
 /// Use case: user says "go index xxx/yyy for me" — the AI calls this
 /// tool with paths=[...]. Files under the given paths are indexed
 /// regardless of the default skip list, so the user can pull in
-/// test fixtures, vendored deps, or generated code on demand.
+/// test fixtures, vendored deps, or generated code on demand. Nested
+/// compiler/package output trees are still skipped at any depth
+/// (node_modules/, target/, _deps/, __pycache__/, venvs, .git/, and
+/// build*/ dirs carrying CMake artifacts) — name such a directory
+/// itself in paths to index its contents anyway.
 ///
 /// Args:
 ///   paths: array of absolute file/dir paths to force-index.
@@ -366,8 +370,10 @@ pub(super) fn h_force_index_files(project_id: u64, args: &Value) -> String {
     }
 
     if all_files.is_empty() {
+        // Not a silent success: the caller asked to index and nothing was
+        // accepted — say so instead of reporting ok with zero files.
         return format!(
-            "{{\"ok\":true,\"files_indexed\":0,\"nodes\":0,\"edges\":0,\"errors\":0,\"skipped_files\":{},\"skipped_dirs\":{}}}",
+            "{{\"ok\":false,\"error\":\"no indexable source files accepted under the requested paths [module=mcp, method=h_force_index_files]\",\"files_indexed\":0,\"nodes\":0,\"edges\":0,\"errors\":0,\"skipped_files\":{},\"skipped_dirs\":{}}}",
             skipped_files, skipped_dirs
         );
     }
@@ -419,6 +425,26 @@ fn is_source_extension(name: &str) -> bool {
 ///   - must pass the optional language whitelist
 ///
 /// Returns the absolute path string if acceptable, None otherwise.
+/// Alias-folded language whitelist match. `c`/`cpp`/`c++` and the other
+/// label pairs below form one family because the engine's path classifier
+/// and the visitor layer disagree for `.c` (see query_analysis.cpp
+/// languagesCompatible) — exact-string matching dropped whole languages
+/// whenever the two labels differed.
+fn lang_whitelisted(wl: &std::collections::HashSet<String>, lang: &str) -> bool {
+    let alias_hit = |fam: &[&str]| fam.iter().any(|a| wl.contains(*a));
+    match lang {
+        "c" | "cpp" | "c++" => alias_hit(&["c", "cpp", "c++"]),
+        "js" | "javascript" | "node" => alias_hit(&["js", "javascript", "node"]),
+        "ts" | "typescript" => alias_hit(&["ts", "typescript"]),
+        "py" | "python" => alias_hit(&["py", "python"]),
+        "go" | "golang" => alias_hit(&["go", "golang"]),
+        "kt" | "kotlin" => alias_hit(&["kt", "kts", "kotlin"]),
+        "rb" | "ruby" => alias_hit(&["rb", "ruby"]),
+        "rs" | "rust" => alias_hit(&["rs", "rust"]),
+        other => wl.contains(other),
+    }
+}
+
 fn filter_acceptable_file(
     path: &std::path::Path,
     max_size: u64,
@@ -464,7 +490,10 @@ fn filter_acceptable_file(
             ".scala" => "scala",
             _ => "",
         };
-        if !lang.is_empty() && !wl.contains(lang) {
+        // Alias-fold before matching: the engine's path-based classifier
+        // can report `.c` as "cpp" while the map above says "c", so exact
+        // matching drops every file when the two labels disagree.
+        if !lang.is_empty() && !lang_whitelisted(wl, lang) {
             return None;
         }
     }
@@ -485,6 +514,43 @@ fn filter_acceptable_file(
 /// Recursion stops once `depth >= MAX_WALK_DEPTH` to guarantee the walk
 /// always terminates and cannot exhaust the stack (H-B). When the limit
 /// is hit, a warning is logged and descent into that subtree is skipped.
+/// Build/package output classifier for the force-index walk.
+///
+/// Unambiguous output/cache names are skipped outright. `build`/`build-*`
+/// names are ambiguous — `build-tools/`, `build-scripts/`, `build-support/`
+/// hold real source — so they are skipped only when the directory carries
+/// CMake artifacts (i.e. is a configure/build output tree).
+fn is_build_output_dir(path: &std::path::Path) -> bool {
+    let lower = match path.file_name().and_then(|n| n.to_str()) {
+        Some(n) => n.to_lowercase(),
+        None => return false,
+    };
+    if matches!(
+        lower.as_str(),
+        "target"
+            | "_deps"
+            | "node_modules"
+            | ".git"
+            | "cmakefiles"
+            | "__pycache__"
+            | "_cpack_packages"
+            | ".gradle"
+            | ".venv"
+            | "venv"
+            | ".tox"
+            | ".mypy_cache"
+            | ".pytest_cache"
+    ) {
+        return true;
+    }
+    if lower == "build" || lower.starts_with("build-") {
+        return path.join("CMakeCache.txt").exists()
+            || path.join("CMakeFiles").is_dir()
+            || path.join("compile_commands.json").exists();
+    }
+    false
+}
+
 fn walk_force_index(
     root: &std::path::Path,
     max_size: u64,
@@ -514,6 +580,15 @@ fn walk_force_index(
             .map(|m| m.is_dir())
             .unwrap_or(false);
         if is_real_dir {
+            // Hard-skip compiler/package output trees even in force-index
+            // mode: they are generated artifacts, not user source, and
+            // indexing them explodes homonym counts (CMake probe `main`s,
+            // vendored tree-sitter scanners). The source-level carve-outs
+            // (test/, docs/, vendored/) stay bypassed.
+            if is_build_output_dir(&path) {
+                *skipped_dirs += 1;
+                continue;
+            }
             // Guard against unbounded recursion: a pathologically deep
             // directory tree would otherwise overflow the stack (H-B).
             if depth >= MAX_WALK_DEPTH {
@@ -542,5 +617,55 @@ fn walk_force_index(
                 None => *skipped_files += 1,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wl(vals: &[&str]) -> std::collections::HashSet<String> {
+        vals.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn lang_whitelist_alias_folds_both_ways() {
+        // "c" must accept the c-family labels and the reverse — the engine
+        // path classifier and the visitor layer disagree for `.c`.
+        assert!(lang_whitelisted(&wl(&["c"]), "c"));
+        assert!(lang_whitelisted(&wl(&["c"]), "cpp"));
+        assert!(lang_whitelisted(&wl(&["cpp"]), "c"));
+        assert!(lang_whitelisted(&wl(&["c++"]), "cpp"));
+        // Non-alias languages must still require an exact family hit.
+        assert!(lang_whitelisted(&wl(&["python"]), "python"));
+        assert!(!lang_whitelisted(&wl(&["python"]), "rust"));
+        assert!(!lang_whitelisted(&wl(&["c"]), "rust"));
+        // Empty language label (shebang-script path) is rejected only when
+        // non-empty check upstream decides; here empty label falls to
+        // `other` and must not match an unrelated filter.
+        assert!(!lang_whitelisted(&wl(&["c"]), ""));
+    }
+
+    #[test]
+    fn build_output_dir_skips_artifacts_but_not_source_siblings() {
+        let tmp = std::env::temp_dir().join(format!("codescope_skip_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("build-tools")).unwrap();
+        std::fs::create_dir_all(tmp.join("build")).unwrap();
+        std::fs::write(tmp.join("build").join("CMakeCache.txt"), "x").unwrap();
+        std::fs::create_dir_all(tmp.join("build-scripts")).unwrap();
+        std::fs::create_dir_all(tmp.join("target")).unwrap();
+        std::fs::create_dir_all(tmp.join("node_modules")).unwrap();
+
+        // build/ with CMake artifacts is a build tree → skip.
+        assert!(is_build_output_dir(&tmp.join("build")));
+        // Unambiguous output/cache names → skip regardless of content.
+        assert!(is_build_output_dir(&tmp.join("target")));
+        assert!(is_build_output_dir(&tmp.join("node_modules")));
+        // Source trees that merely start with "build-" stay indexable.
+        assert!(!is_build_output_dir(&tmp.join("build-tools")));
+        assert!(!is_build_output_dir(&tmp.join("build-scripts")));
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

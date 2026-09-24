@@ -20,8 +20,9 @@ int64_t countImplementingEntities(store::GraphStore &store, uint64_t project_id,
 		return 0;
 	sqlite3 *db = store.handle();
 	if (!db) {
-		fprintf(stderr, "[module=verify, method=countImplementingEntities] "
-				"db handle is null\n");
+		fprintf(stderr,
+			"[module=verify, method=countImplementingEntities] "
+			"db handle is null\n");
 		return -1;
 	}
 
@@ -45,17 +46,18 @@ int64_t countImplementingEntities(store::GraphStore &store, uint64_t project_id,
 	// direction is satisfied by any 1-3 character symbol (`get`, a
 	// single-letter variable), so unrelated entities were counted as
 	// implementing the capability. Exact equality matches at any length.
-	const char *sql = "SELECT COUNT(*) FROM entity e "
-			  "WHERE e.project_id=? "
-			  "AND (LOWER(e.name) = LOWER(?) "
-			  "     OR (LENGTH(?) >= ? AND LENGTH(e.name) >= ? AND "
-			  "          (LOWER(e.name) LIKE LOWER(?) ESCAPE '\\' "
-			  "           OR LOWER(?) LIKE LOWER(REPLACE(REPLACE(REPLACE("
-			  "                e.name, '\\', '\\\\'), '%', '\\%'), '_', '\\_'))"
-			  "              || '%' ESCAPE '\\'))) "
-			  "AND EXISTS (SELECT 1 FROM relation r "
-			  "            WHERE r.project_id=? AND r.type=1 "
-			  "            AND r.target_id=e.id)";
+	const char *sql =
+		"SELECT COUNT(*) FROM entity e "
+		"WHERE e.project_id=? "
+		"AND (LOWER(e.name) = LOWER(?) "
+		"     OR (LENGTH(?) >= ? AND LENGTH(e.name) >= ? AND "
+		"          (LOWER(e.name) LIKE LOWER(?) ESCAPE '\\' "
+		"           OR LOWER(?) LIKE LOWER(REPLACE(REPLACE(REPLACE("
+		"                e.name, '\\', '\\\\'), '%', '\\%'), '_', '\\_'))"
+		"              || '%' ESCAPE '\\'))) "
+		"AND EXISTS (SELECT 1 FROM relation r "
+		"            WHERE r.project_id=? AND r.type=1 "
+		"            AND r.target_id=e.id)";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
 		fprintf(stderr,
