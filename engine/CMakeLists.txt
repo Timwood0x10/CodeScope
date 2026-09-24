@@ -211,6 +211,7 @@ set(ENGINE_SOURCES
     src/ir/translators/javascript_translator.cpp
     src/ir/translators/typescript_translator.cpp
     src/ir/translators/js_visitor.cpp
+    src/ir/translators/js_visitor_calls.cpp
     src/ir/translators/js_visitor_defined_names.cpp
     src/ir/translators/ts_visitor.cpp
     src/ir/translators/tsx_visitor.cpp

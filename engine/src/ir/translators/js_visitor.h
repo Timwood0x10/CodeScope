@@ -210,6 +210,10 @@ class JsVisitor {
 	/// (e.g. `new Foo(x)`), mirroring visitCallExpr. Captures the
 	/// constructor name so constructor call-edges are not dropped (M-9).
 	void visitNewExpr(TSNode node, uint64_t parent_id);
+	/// Emit an empty-catch evidence record (name='catch', empty
+	/// qualified_name) when the catch body has no statements, then
+	/// recurse. Non-empty bodies are visited without emitting.
+	void visitCatchClause(TSNode node, uint64_t parent_id);
 	/// Detect JS/TS visibility: returns 1 if node is exported (wrapped in
 	/// export_statement or marked export), else 0. v0.2.2 role classifier.
 	int detectVisibility(TSNode node);

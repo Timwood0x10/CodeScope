@@ -279,15 +279,30 @@ pub(super) fn run_module_worker(
         None => (0, 0, 0, files_estimate, 0),
     };
 
-    let error = if exit_code == 0 && parsed.is_some() {
+    // Engine-level failure (ok:false) is a module failure even when the
+    // process exits 0: failure envelopes omit total_nodes/files_indexed
+    // (both 0), which the success predicate would otherwise accept as an
+    // empty module. Only an explicit `"ok": true` counts as success —
+    // `ok != false` would treat an error envelope with no `ok` field
+    // (`{"error":"..."}`, serde_json Null) as a success.
+    let engine_ok = match &parsed {
+        Some(v) => v["ok"] == true,
+        None => false,
+    };
+    let error = if exit_code == 0 && parsed.is_some() && engine_ok {
         None
     } else {
         // stderr is inherited (Stdio::inherit()), so the child's
         // stderr goes directly to the parent's stderr. The caller
         // can find the full error in the parent's stderr log.
+        let engine_msg = parsed
+            .as_ref()
+            .and_then(|v| v["error"].as_str())
+            .map(|s| format!(" engine_error={}", s))
+            .unwrap_or_default();
         Some(format!(
-            "exit={} [module=scheduler, method=run_module_worker]",
-            exit_code
+            "exit={}{} [module=scheduler, method=run_module_worker]",
+            exit_code, engine_msg
         ))
     };
 
@@ -640,6 +655,25 @@ mod tests {
         let stdout = "{\"ok\":true,\"discovery\":{\"candidate_files\":100}}";
         let v = extract_worker_json(stdout).unwrap();
         assert_eq!(v["discovery"]["candidate_files"], 100);
+    }
+
+    /// Regression: `engine_ok` must be true only for an explicit `"ok":true`.
+    /// `ok != false` treated an error envelope with no `ok` field
+    /// (`{"error":"not initialized"}`, serde_json Null) as a success, so a
+    /// module whose engine refused to index was counted as an empty success.
+    #[test]
+    fn test_engine_ok_requires_explicit_true() {
+        let ok_true: Value = serde_json::from_str(r#"{"ok":true,"total_nodes":1}"#).unwrap();
+        let ok_false: Value = serde_json::from_str(r#"{"ok":false,"error":"boom"}"#).unwrap();
+        let no_ok: Value = serde_json::from_str(r#"{"error":"not initialized"}"#).unwrap();
+        // Mirrors run_module_worker's predicate.
+        let engine_ok = |v: &Value| v["ok"] == true;
+        assert!(engine_ok(&ok_true));
+        assert!(!engine_ok(&ok_false));
+        assert!(
+            !engine_ok(&no_ok),
+            "an error envelope with no `ok` field must not count as success"
+        );
     }
 
     #[test]

@@ -55,6 +55,7 @@ bool GraphStore::insertCapability(uint64_t project_id, const std::string &name,
 	sqlite3_bind_text(stmt, 9, source_ref.c_str(), -1, SQLITE_STATIC);
 
 	int rc = sqlite3_step(stmt);
+	sqlite3_reset(stmt);
 	if (rc != SQLITE_DONE) {
 		error_ = std::string("insertCapability: step failed: ") +
 			 sqlite3_errmsg(db_);
@@ -74,11 +75,22 @@ bool GraphStore::insertContract(uint64_t project_id, const std::string &name,
 				const std::string &claim_text,
 				const std::string &source_file, int source_line)
 {
+	// Idempotent: ContractPlugin re-runs on every runModelIndexSync.
+	// A bare INSERT appended a duplicate row per rebuild (the same defect
+	// insertCapability had). WHERE NOT EXISTS keeps one row per
+	// (project_id, name, origin, source_file, source_line) identity.
 	const char *sql =
 		"INSERT INTO contract (project_id, name, origin, claim_text, "
-		"source_file, source_line) VALUES (?, ?, ?, ?, ?, ?)";
+		"source_file, source_line) "
+		"SELECT ?, ?, ?, ?, ?, ? "
+		"WHERE NOT EXISTS ("
+		"  SELECT 1 FROM contract "
+		"  WHERE project_id=? AND name=? AND origin=? "
+		"    AND source_file=? AND source_line=?)";
 	sqlite3_stmt *stmt = getCachedStmt(sql);
 	if (!stmt) {
+		error_ = "[module=store, method=insertContract] "
+			 "prepare failed";
 		return false;
 	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
@@ -87,10 +99,17 @@ bool GraphStore::insertContract(uint64_t project_id, const std::string &name,
 	sqlite3_bind_text(stmt, 4, claim_text.c_str(), -1, SQLITE_STATIC);
 	sqlite3_bind_text(stmt, 5, source_file.c_str(), -1, SQLITE_STATIC);
 	sqlite3_bind_int(stmt, 6, source_line);
+	sqlite3_bind_int64(stmt, 7, static_cast<int64_t>(project_id));
+	sqlite3_bind_text(stmt, 8, name.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_text(stmt, 9, origin.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_text(stmt, 10, source_file.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_int(stmt, 11, source_line);
 
 	int rc = sqlite3_step(stmt);
+	sqlite3_reset(stmt);
 	if (rc != SQLITE_DONE) {
-		error_ = std::string("insertContract: step failed: ") +
+		error_ = std::string("[module=store, method=insertContract] "
+				     "step failed: ") +
 			 sqlite3_errmsg(db_);
 		fprintf(stderr,
 			"insertContract: step failed (rc=%d): %s "
@@ -125,6 +144,10 @@ int64_t GraphStore::insertClaim(uint64_t project_id, const verify::Claim &claim)
 	sqlite3_bind_text(stmt, 8, claim.source_ref.c_str(), -1, SQLITE_STATIC);
 
 	int rc = sqlite3_step(stmt);
+	// Reset before returning so SQLITE_STATIC bindings (which point into
+	// the caller's std::string) are released here, not at the next cache
+	// reuse — the strings die with this frame.
+	sqlite3_reset(stmt);
 	if (rc != SQLITE_DONE) {
 		error_ = std::string("insertClaim: step failed: ") +
 			 sqlite3_errmsg(db_);
@@ -159,6 +182,7 @@ int64_t GraphStore::insertEvidence(int64_t claim_id, verify::Verdict verdict,
 	sqlite3_bind_text(stmt, 5, detail.c_str(), -1, SQLITE_STATIC);
 
 	int rc = sqlite3_step(stmt);
+	sqlite3_reset(stmt);
 	if (rc != SQLITE_DONE) {
 		error_ = std::string("insertEvidence: step failed: ") +
 			 sqlite3_errmsg(db_);
@@ -189,6 +213,7 @@ bool GraphStore::insertEvidenceFact(int64_t evidence_id, int fact_kind,
 	sqlite3_bind_text(stmt, 4, detail.c_str(), -1, SQLITE_STATIC);
 
 	int rc = sqlite3_step(stmt);
+	sqlite3_reset(stmt);
 	if (rc != SQLITE_DONE) {
 		error_ = std::string("insertEvidenceFact: step failed: ") +
 			 sqlite3_errmsg(db_);
@@ -228,6 +253,7 @@ int64_t GraphStore::insertFinding(uint64_t project_id, const std::string &rule,
 	sqlite3_bind_double(stmt, 6, confidence);
 
 	int rc = sqlite3_step(stmt);
+	sqlite3_reset(stmt);
 	if (rc != SQLITE_DONE) {
 		error_ = std::string("insertFinding: step failed: ") +
 			 sqlite3_errmsg(db_);
@@ -257,6 +283,7 @@ GraphStore::listCapabilities(uint64_t project_id)
 			sqlite3_column_text(stmt, 1));
 		out.emplace_back(id, name ? name : "");
 	}
+	sqlite3_reset(stmt);
 	return out;
 }
 
@@ -276,6 +303,7 @@ GraphStore::listContracts(uint64_t project_id)
 			sqlite3_column_text(stmt, 1));
 		out.emplace_back(id, name ? name : "");
 	}
+	sqlite3_reset(stmt);
 	return out;
 }
 
@@ -300,6 +328,7 @@ bool GraphStore::insertDocument(uint64_t project_id, int type,
 	sqlite3_bind_int(stmt, 5, start_line);
 	sqlite3_bind_int(stmt, 6, end_line);
 	int rc = sqlite3_step(stmt);
+	sqlite3_reset(stmt);
 	if (rc != SQLITE_DONE) {
 		error_ = std::string("insertDocument: step failed: ") +
 			 sqlite3_errmsg(db_);
@@ -312,18 +341,45 @@ bool GraphStore::insertDocument(uint64_t project_id, int type,
 
 int64_t GraphStore::insertWorkflow(uint64_t project_id, const std::string &name)
 {
+	// Idempotent across model rebuilds (same identity as insertContract /
+	// insertCapability): return the existing row instead of appending a
+	// duplicate on every runModelIndexSync.
 	const char *sql =
-		"INSERT INTO workflow (project_id, name) VALUES (?,?)";
+		"INSERT INTO workflow (project_id, name) "
+		"SELECT ?,? WHERE NOT EXISTS ("
+		"  SELECT 1 FROM workflow WHERE project_id=? AND name=?)";
 	sqlite3_stmt *stmt = getCachedStmt(sql);
-	if (!stmt)
-		return -1;
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_text(stmt, 2, name.c_str(), -1, SQLITE_STATIC);
-	if (sqlite3_step(stmt) != SQLITE_DONE) {
-		error_ = "insertWorkflow: step failed";
+	if (!stmt) {
+		error_ = "[module=store, method=insertWorkflow] "
+			 "prepare failed";
 		return -1;
 	}
-	return sqlite3_last_insert_rowid(db_);
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	sqlite3_bind_text(stmt, 2, name.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(project_id));
+	sqlite3_bind_text(stmt, 4, name.c_str(), -1, SQLITE_STATIC);
+	if (sqlite3_step(stmt) != SQLITE_DONE) {
+		sqlite3_reset(stmt);
+		error_ = "[module=store, method=insertWorkflow] step failed";
+		return -1;
+	}
+	sqlite3_reset(stmt);
+	// Return the (possibly pre-existing) row id so workflow_step rows
+	// attach to a single workflow instead of a fresh duplicate.
+	sqlite3_stmt *sel = getCachedStmt(
+		"SELECT id FROM workflow WHERE project_id=? AND name=?");
+	if (!sel) {
+		error_ = "[module=store, method=insertWorkflow] "
+			 "select failed";
+		return -1;
+	}
+	sqlite3_bind_int64(sel, 1, static_cast<int64_t>(project_id));
+	sqlite3_bind_text(sel, 2, name.c_str(), -1, SQLITE_STATIC);
+	int64_t id = -1;
+	if (sqlite3_step(sel) == SQLITE_ROW)
+		id = sqlite3_column_int64(sel, 0);
+	sqlite3_reset(sel);
+	return id;
 }
 
 bool GraphStore::insertWorkflowStep(int64_t workflow_id, int step_order,
@@ -340,8 +396,10 @@ bool GraphStore::insertWorkflowStep(int64_t workflow_id, int step_order,
 	sqlite3_bind_int64(stmt, 3, entity_id);
 	sqlite3_bind_text(stmt, 4, label.c_str(), -1, SQLITE_STATIC);
 	int rc = sqlite3_step(stmt);
+	sqlite3_reset(stmt);
 	if (rc != SQLITE_DONE) {
-		error_ = "insertWorkflowStep: step failed";
+		error_ = "[module=store, method=insertWorkflowStep] "
+			 "step failed";
 		return false;
 	}
 	return true;
@@ -366,8 +424,10 @@ bool GraphStore::insertArchitectureEdge(uint64_t project_id,
 	sqlite3_bind_text(stmt, 3, callee_module.c_str(), -1, SQLITE_STATIC);
 	sqlite3_bind_int64(stmt, 4, entity_id);
 	int rc = sqlite3_step(stmt);
+	sqlite3_reset(stmt);
 	if (rc != SQLITE_DONE) {
-		error_ = "insertArchitectureEdge: step failed";
+		error_ = "[module=store, method=insertArchitectureEdge] "
+			 "step failed";
 		return false;
 	}
 	return true;
@@ -396,9 +456,12 @@ int64_t GraphStore::insertReference(uint64_t project_id, uint64_t caller_id,
 	sqlite3_bind_int(stmt, 7, start_col);
 	sqlite3_bind_int(stmt, 8, call_kind);
 	if (sqlite3_step(stmt) != SQLITE_DONE) {
-		error_ = "insertReference: step failed";
+		error_ = "[module=store, method=insertReference] "
+			 "step failed";
+		sqlite3_reset(stmt);
 		return -1;
 	}
+	sqlite3_reset(stmt);
 	return sqlite3_last_insert_rowid(db_);
 }
 // `insertResolvedReference` and the `resolved_reference` table are gone: the

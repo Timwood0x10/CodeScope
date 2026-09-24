@@ -4,7 +4,8 @@
 // Walks the directory tree and counts candidate source files per top-level
 // directory, using the same filtering rules as the C++ engine's
 // FilterPolicy. No parsing, no SQLite — just a fast filesystem walk, which
-// is why it carries no dependency on the handler table or the FFI layer.
+// is why it carries no dependency on the handler table. Source-file
+// detection delegates to the engine (see is_source_file below).
 
 use serde_json::json;
 
@@ -96,60 +97,11 @@ pub fn discover(dir_path: &str) -> String {
         name.starts_with('.') // hidden dirs/files
     }
 
-    // Countable source extensions (matching FilterPolicy::isSourceFile)
+    // Countable source extensions, decided by the engine (FilterPolicy /
+    // engine_is_indexable_source). A hand-written list drifted from engine
+    // support before (.zig/.wasm/.mojo were counted but never parsed).
     fn is_source_file(name: &str) -> bool {
-        let dot = name.rfind('.');
-        if dot.is_none() {
-            return false;
-        }
-        let ext = &name[dot.unwrap()..].to_lowercase();
-        matches!(
-            ext.as_str(),
-            ".c" | ".h"
-                | ".cpp"
-                | ".hpp"
-                | ".cc"
-                | ".cxx"
-                | ".hh"
-                | ".hxx"
-                | ".rs"
-                | ".go"
-                | ".py"
-                | ".java"
-                | ".kt"
-                | ".kts"
-                | ".js"
-                | ".jsx"
-                | ".ts"
-                | ".tsx"
-                | ".swift"
-                | ".rb"
-                | ".php"
-                | ".cs"
-                | ".fs"
-                | ".scala"
-                | ".clj"
-                | ".cljs"
-                | ".ex"
-                | ".exs"
-                | ".erl"
-                | ".hrl"
-                | ".vue"
-                | ".svelte"
-                | ".mjs"
-                | ".cjs"
-                | ".mts"
-                | ".cts"
-            // ".d.ts" is deliberately NOT listed: the extension this matches
-            // on is everything after the LAST '.', so "foo.d.ts" already
-            // yields ".ts" and a ".d.ts" pattern could never match anything
-            // the ".ts" entry does not. Declaration files are picked up by
-            // that entry; if they should be EXCLUDED instead, that needs an
-            // exclusion, not an allow-list entry that never fires.
-                | ".wasm"
-                | ".zig"
-                | ".mojo"
-        )
+        crate::ffi::is_indexable_source(name)
     }
 
     let root = Path::new(dir_path);

@@ -41,13 +41,19 @@ fn chunked_run_complete(
     retry_worker_attempted: bool,
     retry_worker_failed: bool,
     queue_complete: bool,
+    failed_chunks: u32,
 ) -> bool {
-    // A complete index is the merge plus a fully terminal queue; the only thing
-    // that can invalidate it is a recovery round that itself failed. `fail` is
-    // deliberately not part of the test: a dead worker whose chunks another
-    // worker (or the recovery round) finished leaves no missing data, and the
-    // count stays visible in the response.
-    merged && queue_complete && !(retry_worker_attempted && retry_worker_failed)
+    // A complete index is the merge plus a fully terminal queue with no
+    // FAILED chunks; the only thing that can invalidate a recovery that
+    // already ran is that recovery itself failing. `fail` (dead workers
+    // whose chunks a replacement re-indexed) is deliberately not part of
+    // the test: those chunks are DONE again under a live worker. FAILED
+    // chunks, by contrast, mean index_files never succeeded for their
+    // files — they are missing data, not a recovered death.
+    merged
+        && queue_complete
+        && failed_chunks == 0
+        && !(retry_worker_attempted && retry_worker_failed)
 }
 
 pub(super) fn index_parallel_chunked(
@@ -124,8 +130,11 @@ pub(super) fn index_parallel_chunked(
         })
         .unwrap_or_default();
     if all_paths.is_empty() {
+        // Same honesty as the static path (#23): a run that indexed
+        // nothing is not a success, and `complete` must be present.
         return json!({
-            "ok": true,
+            "ok": false,
+            "complete": false,
             "project_path": project_path,
             "duration_ms": start.elapsed().as_millis() as u64,
             "success": 0,
@@ -410,7 +419,9 @@ pub(super) fn index_parallel_chunked(
 
     let worker_db_paths: Vec<String> = results
         .iter()
-        .filter(|r| r.exit_code == 0 && (r.total_nodes > 0 || r.files_indexed == 0))
+        .filter(|r| {
+            r.exit_code == 0 && r.error.is_none() && (r.total_nodes > 0 || r.files_indexed == 0)
+        })
         .map(|r| r.db_path.clone())
         .collect();
 
@@ -439,9 +450,12 @@ pub(super) fn index_parallel_chunked(
     // ── Phase 5: aggregate summary ────────────────────────────
     let success = results
         .iter()
-        .filter(|r| r.exit_code == 0 && (r.total_nodes > 0 || r.files_indexed == 0))
+        .filter(|r| {
+            r.exit_code == 0 && r.error.is_none() && (r.total_nodes > 0 || r.files_indexed == 0)
+        })
         .count();
     let fail = results.len() - success;
+    let failed_chunks = queue.failed_count();
     let total_nodes: u64 = results.iter().map(|r| r.total_nodes).sum();
     let total_edges: u64 = results.iter().map(|r| r.total_edges).sum();
     let total_files_indexed: u64 = results.iter().map(|r| r.files_indexed).sum();
@@ -472,6 +486,7 @@ pub(super) fn index_parallel_chunked(
         retry_worker_attempted,
         retry_worker_failed,
         queue.is_complete(),
+        failed_chunks,
     );
     json!({
         "ok": complete,
@@ -492,6 +507,9 @@ pub(super) fn index_parallel_chunked(
         "duration_ms": start.elapsed().as_millis() as u64,
         "success": success,
         "fail": fail,
+        // Chunks whose index_files failed (engine ok:false / bad JSON).
+        // Non-zero ⇒ files missing from the merged DB ⇒ complete: false.
+        "failed_chunks": failed_chunks,
         // Chunks whose worker died and that a replacement re-indexed; a
         // non-zero count with a failed retry_worker means files are still
         // missing (the run says complete: false either way).
@@ -508,30 +526,55 @@ pub(super) fn index_parallel_chunked(
 #[cfg(test)]
 mod tests {
     use super::chunked_run_complete;
+    use serde_json::Value;
 
     #[test]
     fn test_chunked_run_complete_accounts_for_recovery() {
         // A healthy run: merge ok, every chunk terminal, no recovery needed.
-        assert!(chunked_run_complete(true, false, false, true));
+        assert!(chunked_run_complete(true, false, false, true, 0));
         // A failed merge is never complete, whatever the queue says.
-        assert!(!chunked_run_complete(false, false, false, true));
+        assert!(!chunked_run_complete(false, false, false, true, 0));
 
         // Failures whose chunks a replacement re-indexed: complete, with the
         // deaths still visible in `fail` / `recovered_chunks`.
-        assert!(chunked_run_complete(true, true, false, true));
+        assert!(chunked_run_complete(true, true, false, true, 0));
 
         // Every way the recovery can fall short stays incomplete:
         assert!(
-            !chunked_run_complete(true, true, true, true),
+            !chunked_run_complete(true, true, true, true, 0),
             "the replacement died too"
         );
         assert!(
-            !chunked_run_complete(true, true, false, false),
+            !chunked_run_complete(true, true, false, false, 0),
             "the queue still holds chunks nobody finished"
         );
         assert!(
-            !chunked_run_complete(true, false, false, false),
+            !chunked_run_complete(true, false, false, false, 0),
             "a worker died before claiming anything and nothing recovered the work"
         );
+        // FAILED chunks mean index_files never succeeded for their files:
+        // those files are missing even though the queue is "terminal".
+        assert!(
+            !chunked_run_complete(true, false, false, true, 1),
+            "a FAILED chunk leaves its files out of the merged DB"
+        );
+    }
+
+    #[test]
+    fn test_chunked_empty_project_reports_incomplete() {
+        // Regression: the static path got #23 (ok:false + complete:false on
+        // empty discovery); the chunked path still returned ok:true with no
+        // complete field, so an empty index looked successful.
+        let dir = std::env::temp_dir().join("codescope_test_chunked_empty");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // No CODESCOPE_CPU_DYNAMIC needed — call the inner function directly.
+        let out = super::index_parallel_chunked(dir.to_str().unwrap(), 1, 1);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        if v["note"] == "no source files found" {
+            assert_eq!(v["ok"], false, "an empty index is not a success");
+            assert_eq!(v["complete"], false, "complete must be present and false");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

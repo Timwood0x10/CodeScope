@@ -33,40 +33,60 @@ void GraphStore::buildFTSFromGraph(uint64_t project_id)
 	// Bulk-build FTS from entity: single SQL INSERT-SELECT
 	// No per-node prepare/finalize overhead.
 	// graph_nodes is deprecated; entity is the canonical source.
-	exec(std::string(
-		     "INSERT OR IGNORE INTO code_fts (rowid, name, qualified_name, "
-		     " file_path, content, project_id, node_id, node_kind) "
-		     "SELECT e.id, e.name, e.qualified_name, e.file_path, '', " +
-		     std::to_string(project_id) +
-		     ", e.id, e.kind "
-		     "FROM entity e "
-		     "WHERE e.project_id=" +
-		     std::to_string(project_id) + " AND e.name != ''")
-		     .c_str());
+	// exec() sets error_ on failure but never clears it on success, so a
+	// stale error_ from an earlier operation would make the callers'
+	// `error().empty()` check report an FTS failure even when every INSERT
+	// below succeeded. Clear it up front so error() reflects THIS call.
+	error_.clear();
+	// exec() sets error_ on failure; callers must not set fts_ready
+	// or report ok when error_ is non-empty after this call.
+	if (!exec(std::string(
+			  "INSERT OR IGNORE INTO code_fts (rowid, name, qualified_name, "
+			  " file_path, content, project_id, node_id, node_kind) "
+			  "SELECT e.id, e.name, e.qualified_name, e.file_path, '', " +
+			  std::to_string(project_id) +
+			  ", e.id, e.kind "
+			  "FROM entity e "
+			  "WHERE e.project_id=" +
+			  std::to_string(project_id) + " AND e.name != ''")
+			  .c_str())) {
+		error_ = "[module=store, method=buildFTSFromGraph] code_fts: " +
+			 error_;
+		return;
+	}
 	// Build fts_node_map mapping
-	exec(std::string(
-		     "INSERT OR IGNORE INTO fts_node_map (node_id, project_id, file_id) "
-		     "SELECT e.id, e.project_id, COALESCE(f.id, 0) "
-		     "FROM entity e "
-		     "LEFT JOIN files f ON f.path = e.file_path AND f.project_id=e.project_id "
-		     "WHERE e.project_id=" +
-		     std::to_string(project_id))
-		     .c_str());
+	if (!exec(std::string(
+			  "INSERT OR IGNORE INTO fts_node_map (node_id, project_id, file_id) "
+			  "SELECT e.id, e.project_id, COALESCE(f.id, 0) "
+			  "FROM entity e "
+			  "LEFT JOIN files f ON f.path = e.file_path AND f.project_id=e.project_id "
+			  "WHERE e.project_id=" +
+			  std::to_string(project_id))
+			  .c_str())) {
+		error_ =
+			"[module=store, method=buildFTSFromGraph] fts_node_map: " +
+			error_;
+		return;
+	}
 	// Bulk-build the trigram FTS5 index (name_trgm) in parallel with
 	// code_fts. Same source (entity), same WHERE filter. Uses
 	// INSERT OR IGNORE so re-runs after partial indexing are idempotent.
 	// The trigram index powers O(log n) substring search via MATCH,
 	// replacing the O(n) LIKE '%query%' scan in searchGraphFallback.
-	exec(std::string(
-		     "INSERT OR IGNORE INTO name_trgm "
-		     "(rowid, name, qualified_name, project_id, node_id, node_type) "
-		     "SELECT e.id, e.name, e.qualified_name, " +
-		     std::to_string(project_id) +
-		     ", e.id, e.kind "
-		     "FROM entity e "
-		     "WHERE e.project_id=" +
-		     std::to_string(project_id) + " AND e.name != ''")
-		     .c_str());
+	if (!exec(std::string(
+			  "INSERT OR IGNORE INTO name_trgm "
+			  "(rowid, name, qualified_name, project_id, node_id, node_type) "
+			  "SELECT e.id, e.name, e.qualified_name, " +
+			  std::to_string(project_id) +
+			  ", e.id, e.kind "
+			  "FROM entity e "
+			  "WHERE e.project_id=" +
+			  std::to_string(project_id) + " AND e.name != ''")
+			  .c_str())) {
+		error_ =
+			"[module=store, method=buildFTSFromGraph] name_trgm: " +
+			error_;
+	}
 }
 
 bool GraphStore::isTrigramAvailable()

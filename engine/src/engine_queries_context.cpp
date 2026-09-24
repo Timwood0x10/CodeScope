@@ -26,7 +26,7 @@
 static char *tracePathImpl(uint64_t project_id, const char *from_name,
 			   const char *to_name)
 {
-	waitForKnowledgeBuilder();
+	auto _store_guard = waitForKnowledgeBuilder();
 	// Trace a path from from_function to to_function using the SQLite
 	// shortest-path backend (QueryEngine::findShortestPath, CSR BFS) and
 	// hydrate the node ids from the canonical entity table. The legacy
@@ -160,7 +160,7 @@ static char *tracePathImpl(uint64_t project_id, const char *from_name,
 static char *exploreFunctionImpl(uint64_t project_id, const char *function_name,
 				 int depth, const char *direction)
 {
-	waitForKnowledgeBuilder();
+	auto _store_guard = waitForKnowledgeBuilder();
 	// SQLite-only recursive exploration. The legacy output schema is
 	// preserved:
 	//   {"name":"...","file":"...","line":N,
@@ -360,7 +360,7 @@ static std::string detectIntent(const std::string &query)
 
 static char *buildContextImpl(uint64_t project_id, const char *query)
 {
-	waitForKnowledgeBuilder();
+	auto _store_guard = waitForKnowledgeBuilder();
 	if (!g_store)
 		return dupString("{\"error\":\"engine not initialized\"}");
 
@@ -501,7 +501,7 @@ static char *buildContextImpl(uint64_t project_id, const char *query)
 
 static char *detectFfiBoundariesImpl(uint64_t project_id)
 {
-	waitForKnowledgeBuilder();
+	auto _store_guard = waitForKnowledgeBuilder();
 	// SQLite-only FFI boundary detection. The legacy output schema is
 	// preserved:
 	//   {"languages":[{language,node_count}],

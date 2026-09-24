@@ -1,4 +1,5 @@
 #include "contract.h"
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 
@@ -82,6 +83,16 @@ ModelResult ContractPlugin::build(uint64_t project_id, const ModelContext &ctx)
 			"lock free",   "not safe",    "unsafe"
 		};
 		for (auto *kw : keywords) {
+			// Negative forms must not become positive contracts:
+			// "not safe" / "unsafe" in a README are denials.
+			std::string kw_lower = kw;
+			for (auto &c : kw_lower)
+				c = static_cast<char>(std::tolower(
+					static_cast<unsigned char>(c)));
+			if (kw_lower.find("not") != std::string::npos ||
+			    kw_lower.find("unsafe") != std::string::npos) {
+				continue;
+			}
 			if (containsCI(text, kw)) {
 				// Canonicalise the contract name before insert so
 				// ContractVerifier's lowercase-exact router matches.
@@ -94,6 +105,59 @@ ModelResult ContractPlugin::build(uint64_t project_id, const ModelContext &ctx)
 				// "thread-safe" claims silently returned Unknown and
 				// trust_score was penalised.
 				// Canonical form: lowercase + strip '-' and spaces.
+				//
+				// Negation guard (same polarity rule as
+				// ClaimParser): skip when the occurrence is
+				// preceded by a denial ("not thread-safe").
+				// Suffix-only checks: a denial earlier in the
+				// sentence ("don't touch X … thread-safe") must
+				// not suppress an unrelated positive claim.
+				std::string text_lower = text;
+				for (auto &c : text_lower)
+					c = static_cast<char>(std::tolower(
+						static_cast<unsigned char>(c)));
+				size_t pos = text_lower.find(kw_lower);
+				if (pos != std::string::npos) {
+					std::string before =
+						text_lower.substr(0, pos);
+					// Suffix checks with a word-boundary guard
+					// only on the standalone negators ("not ",
+					// "never "): "cannot thread-safe" ends in
+					// "not " but is NOT a denial (same rule as
+					// ClaimParser's `\bnot`). Contractions
+					// ("isn't", "don't", "won't") always carry
+					// a letter before "n't", so a boundary check
+					// on that suffix would reject every real
+					// contraction — do not apply one there.
+					auto ends_suffix = [&](const char *sfx) {
+						size_t n = std::strlen(sfx);
+						if (before.size() < n)
+							return false;
+						return before.compare(
+							       before.size() - n,
+							       n, sfx) == 0;
+					};
+					auto ends_word = [&](const char *sfx) {
+						size_t n = std::strlen(sfx);
+						if (!ends_suffix(sfx))
+							return false;
+						size_t start = before.size() - n;
+						if (start == 0)
+							return true;
+						unsigned char prev =
+							static_cast<unsigned char>(
+								before[start - 1]);
+						return !std::isalnum(prev);
+					};
+					// "not thread-safe", "never thread-safe",
+					// "isn't thread-safe", "is not thread-safe".
+					if (ends_word("not ") ||
+					    ends_word("never ") ||
+					    ends_suffix("n't ") ||
+					    ends_suffix("n't")) {
+						continue;
+					}
+				}
 				std::string canonical =
 					normalizeContractName(kw);
 				store_->insertContract(project_id, canonical,

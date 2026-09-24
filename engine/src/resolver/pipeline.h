@@ -183,6 +183,30 @@ class ResolverPipeline {
 		int call_site_col;
 	};
 
+	/// One unresolved reference row, read fully into memory before the
+	/// hot loop (no SQLite round-trips inside the loop). Moved to class
+	/// scope so loadReferences can live in pipeline_load.cpp under the
+	/// 1000-line rule.
+	struct RefRow {
+		uint64_t ref_id;
+		std::string name;
+		uint64_t caller_id;
+		std::string caller_file;
+		int call_kind;
+		int arity; // caller arity from reference row (column r.arity)
+		int start_row; // Step 6: call site row for provenance
+		int start_col; // Step 6: call site col for provenance
+		std::string resolve_strategy;
+		// Step 3 (plan §3.1): structured call facts. Populated by
+		// per-language Visitors; used by the exact-first candidate
+		// generation in Step 5. Empty = unknown.
+		std::string qualified_target; // full call text, e.g. "b.Get"
+		std::string receiver_text; // syntactic receiver, e.g. "b"
+		std::string receiver_type; // inferred receiver type, e.g. "Box"
+		std::string import_alias; // import alias used, e.g. "fmt"
+		std::string call_site_file; // file path of the call site
+	};
+
 	/// Flush the staged resolved edges into _resolved_edges (staging temp
 	/// table) inside a nested savepoint, then bulk-copy into relation and
 	/// graph_edges. Finalizes ins_st. Extracted from run() so this TU stays
@@ -234,6 +258,17 @@ class ResolverPipeline {
 	/// Only reads members (interface_impl_index_, global_struct_fields_,
 	/// global_var_types_) and semantic_records; no caller state.
 	void loadDispatchIndex();
+
+	/// Read every project reference into `refs` in one pass (no SQLite
+	/// round-trips in the hot loop). Extracted from run()
+	/// (pipeline_load.cpp) so this TU stays under the 1000-line rule.
+	/// @param ref_st       Prepared SELECT over the reference table
+	///                     (finalized here on success; left to the caller
+	///                     when the statement is exhausted normally).
+	/// @param refs         [out] filled with one RefRow per valid row.
+	/// @param total_refs   [out] number of rows kept.
+	void loadReferences(sqlite3_stmt *ref_st, std::vector<RefRow> &refs,
+			    int64_t &total_refs);
 
 	/// Check if `callee_name` is imported in the file at `caller_file`.
 	/// Returns the import target path if found, empty string otherwise.

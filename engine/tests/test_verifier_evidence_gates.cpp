@@ -108,6 +108,18 @@ static size_t countDeadModules(const std::vector<verify::Finding> &all)
 	return n;
 }
 
+/// Count the dead-function findings ("DeadFunction") in an inspect() bundle.
+/// Mirrors countDeadModules: inspect() emits several finding types and only
+/// this one is the orphan-function check's output.
+static size_t countDeadFunctions(const std::vector<verify::Finding> &all)
+{
+	size_t n = 0;
+	for (const auto &f : all)
+		if (f.type == "DeadFunction")
+			++n;
+	return n;
+}
+
 static std::string verdictOf(const verify::EvidenceRecord &rec)
 {
 	switch (rec.verdict) {
@@ -228,6 +240,8 @@ int main()
 	// ── Case 6: orphan detection still works with real import data ──
 	// Guards against "fixed" by disabling the query: a module with entities
 	// and no importing file is still reported once imports exist.
+	// Must run BEFORE Case 5b: 5b's clearGraph drops the 10 entities this
+	// case needs to clear the >=10-entity threshold.
 	execOrDie(
 		db,
 		"INSERT INTO import (project_id, file_path, target_path, alias, "
@@ -242,6 +256,26 @@ int main()
 		assert(orphans > 0 &&
 		       "with import rows present the orphan query must still "
 		       "report src/");
+	}
+
+	// ── Case 5b: dead functions with an empty relation table ──
+	// findOrphanFunctions's `NOT EXISTS (relation …)` test is vacuously
+	// true for every non-public, non-entry-point function when relation
+	// is empty, so a pre-index project would emit mass DeadFunction
+	// findings at 0.90 confidence. The relation gate must suppress them.
+	clearGraph(db);
+	for (int64_t i = 1; i <= 5; ++i)
+		insertEntity(db, pid, i, 0, "fn" + std::to_string(i),
+			     "src/fn" + std::to_string(i) + ".go", i);
+	{
+		verify::DeadCodeInspector inspector(&store, pid);
+		const auto all = inspector.inspect();
+		const size_t dead = countDeadFunctions(all);
+		printf("  [debug] dead functions      -> %zu (no relation rows)\n",
+		       dead);
+		assert(dead == 0 &&
+		       "empty relation table must not produce DeadFunction "
+		       "findings (vacuous NOT EXISTS)");
 	}
 
 	store.close();

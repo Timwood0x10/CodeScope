@@ -49,6 +49,12 @@ fn main() {
         let dir_path = args.get(2).map(|s| s.as_str()).unwrap_or(".");
         let result = discover::discover_modules(dir_path);
         println!("{}", result);
+        let ok = serde_json::from_str::<Value>(&result)
+            .map(|v| v["ok"] == true)
+            .unwrap_or(false);
+        if !ok {
+            std::process::exit(1);
+        }
         return;
     }
 
@@ -62,6 +68,12 @@ fn main() {
         let dir_path = args.get(2).map(|s| s.as_str()).unwrap_or(".");
         let result = discover::discover_files(dir_path);
         println!("{}", result);
+        let ok = serde_json::from_str::<Value>(&result)
+            .map(|v| v["ok"] == true)
+            .unwrap_or(false);
+        if !ok {
+            std::process::exit(1);
+        }
         return;
     }
 
@@ -262,21 +274,35 @@ fn main() {
         let project_id_arg = args.get(6).map(|s| s.as_str()).unwrap_or("0");
 
         // Check for --file-list argument (path to JSON file containing file list)
-        let file_list = if args.len() >= 8 && args[7] == "--file-list" {
-            args.get(8).map(|s| {
-                // Read file list from the specified file
-                let path = s.as_str();
-                match std::fs::read_to_string(path) {
-                    Ok(content) => content,
-                    Err(e) => {
-                        eprintln!(
-                            "codescope worker: failed to read file-list from {}: {}",
-                            path, e
-                        );
-                        String::new()
+        let file_list: Option<String> = if args.len() >= 8 && args[7] == "--file-list" {
+            match args.get(8) {
+                Some(s) => {
+                    // Read file list from the specified file. A read failure
+                    // must fail the worker: substituting "" makes the engine
+                    // return ok:false while we exit 0, which the scheduler
+                    // counts as an empty success — and quarantine bisection
+                    // treats exit 0 as healthy, so it can skip past a crasher.
+                    let path = s.as_str();
+                    match std::fs::read_to_string(path) {
+                        Ok(content) => Some(content),
+                        Err(e) => {
+                            eprintln!(
+                                "codescope worker: failed to read file-list from {}: {} [module=scheduler, method=worker]",
+                                path, e
+                            );
+                            ffi::shutdown();
+                            std::process::exit(1);
+                        }
                     }
                 }
-            })
+                None => {
+                    eprintln!(
+                        "codescope worker: --file-list requires a path [module=scheduler, method=worker]"
+                    );
+                    ffi::shutdown();
+                    std::process::exit(1);
+                }
+            }
         } else {
             None
         };
@@ -403,6 +429,7 @@ fn main() {
         let mut total_edges: u64 = 0;
         let mut files_indexed: u64 = 0;
         let mut chunks_done: u32 = 0;
+        let mut chunks_failed: u32 = 0;
 
         loop {
             match queue.claim_next(worker_id) {
@@ -412,6 +439,7 @@ fn main() {
                         None => {
                             queue.mark_failed(idx);
                             chunks_done += 1;
+                            chunks_failed += 1;
                             continue;
                         }
                     };
@@ -430,6 +458,7 @@ fn main() {
                             eprintln!("chunk-worker: serialize chunk {} failed: {}", idx, e);
                             queue.mark_failed(idx);
                             chunks_done += 1;
+                            chunks_failed += 1;
                             continue;
                         }
                     };
@@ -447,6 +476,7 @@ fn main() {
                                 idx, err
                             );
                             queue.mark_failed(idx);
+                            chunks_failed += 1;
                         }
                     } else {
                         eprintln!(
@@ -454,6 +484,7 @@ fn main() {
                             idx
                         );
                         queue.mark_failed(idx);
+                        chunks_failed += 1;
                     }
                     chunks_done += 1;
                 }
@@ -472,19 +503,20 @@ fn main() {
         }
 
         let result_json = json!({
-            "ok": true,
+            "ok": chunks_failed == 0,
             "worker_id": worker_id,
             "total_nodes": total_nodes,
             "total_edges": total_edges,
             "files_indexed": files_indexed,
             "chunks_done": chunks_done,
+            "chunks_failed": chunks_failed,
         });
         println!("{}", result_json);
 
         ffi::shutdown();
         eprintln!(
-            "chunk-worker {}: done (nodes={} edges={} files={} chunks={})",
-            worker_id, total_nodes, total_edges, files_indexed, chunks_done
+            "chunk-worker {}: done (nodes={} edges={} files={} chunks={} failed={})",
+            worker_id, total_nodes, total_edges, files_indexed, chunks_done, chunks_failed
         );
         return;
     }

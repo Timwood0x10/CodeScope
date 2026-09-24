@@ -275,11 +275,13 @@ char *engine_index_project_membulk(
 								LanguageMissing));
 					continue;
 				}
-				ir::TranslationUnit *unit = nullptr;
+				// RAII ownership: the translator contract says
+				// the caller frees the unit (ir_translator.h).
+				std::unique_ptr<ir::TranslationUnit> unit;
 				try {
-					unit = translator->translate(
+					unit.reset(translator->translate(
 						tree.get(), source.c_str(),
-						job.path.c_str());
+						job.path.c_str()));
 				} catch (const std::exception &e) {
 					store::bufferParseFailure(
 						project_id, job.path, job.lang,
@@ -334,7 +336,8 @@ char *engine_index_project_membulk(
 					if (unit->root)
 						flatten(unit->root, 0);
 					result.metrics = index_metrics::
-						computeMetricsFromUnit(unit);
+						computeMetricsFromUnit(
+							unit.get());
 				}
 			}
 

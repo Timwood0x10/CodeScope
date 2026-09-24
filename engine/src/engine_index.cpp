@@ -42,6 +42,14 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 			return dupString(
 				"{\"ok\":false,\"error\":\"engine not initialized\"}");
 
+		// Serialize with the background enrichment thread: this path
+		// writes semantic_records + graph and then launches the builder,
+		// so it must join any running builder first (the builder holds
+		// g_store_mutex) and then hold the store guard for the writes.
+		// Order matters — guarding first would deadlock the join.
+		joinAsyncKnowledgeBuilder();
+		auto _store_guard = waitForKnowledgeBuilder();
+
 		const char *language = detectLanguage(file_path);
 		if (!language)
 			return dupString(

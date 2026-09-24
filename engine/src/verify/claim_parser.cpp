@@ -215,7 +215,25 @@ std::vector<Claim> ClaimParser::parse(const std::string &text,
 	for (const auto &kc : kKeywords) {
 		try {
 			std::regex re(kc.pattern, std::regex::icase);
-			if (std::regex_search(text, re)) {
+			std::smatch m;
+			if (std::regex_search(text, m, re)) {
+				// Negation guard: "not thread-safe" / "isn't
+				// thread-safe" / "never thread-safe" must NOT
+				// become a positive ContractHolds claim — the
+				// polarity of the source sentence is inverted
+				// otherwise and ContractVerifier can answer
+				// Supported on the README's denial.
+				// Anchored to the word end so "cannot" (which
+				// ends in "not") is not mistaken for a denial.
+				static const std::regex kNegation(
+					"(\\bnot|isn't|is not|never|n't)\\s*$",
+					std::regex::icase);
+				std::smatch neg;
+				std::string before = text.substr(
+					0, static_cast<size_t>(m.position()));
+				if (std::regex_search(before, neg, kNegation)) {
+					continue;
+				}
 				Claim c;
 				c.type = ClaimType::ContractHolds;
 				c.subject = kc.subject;

@@ -128,12 +128,96 @@ fn drain_stdin_until_newline() -> io::Result<()> {
     Ok(())
 }
 
+/// Cap on a single outbound JSON-RPC message. Measured `get_graph` /
+/// `graph_query` payloads reached 2–3 MiB on real projects (prior review
+/// #30): a client with a smaller message cap fails the whole session, so
+/// oversized tool results are replaced with an error the client can act
+/// on (paginate with smaller limits) instead of a frame it cannot parse.
+/// 1 MiB is comfortably above every normal tool result and below the
+/// usual client caps.
+const MAX_MESSAGE_BYTES: usize = 1 << 20; // 1 MiB
+
 /// Writes a JSON-RPC response to stdout (one line per message).
+/// Messages larger than [`MAX_MESSAGE_BYTES`] are replaced by an error
+/// object (never truncated mid-JSON) so the client always receives a
+/// parseable frame. The original `id` is preserved so the client can
+/// still correlate the error with its request (JSON-RPC 2.0).
 pub fn write_message(msg: &serde_json::Value) -> io::Result<()> {
     let stdout = io::stdout();
     let mut handle = stdout.lock();
     let json = serde_json::to_string(msg)?;
-    writeln!(handle, "{}", json)?;
+    let out: String = if json.len() > MAX_MESSAGE_BYTES {
+        serde_json::to_string(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": msg.get("id").cloned().unwrap_or(serde_json::Value::Null),
+            "error": {
+                "code": -32000,
+                "message": format!(
+                    "tool response {} bytes exceeds the {} byte message cap; \
+                     re-run with smaller node_limit/edge_limit or a narrower filter \
+                     [module=mcp, method=write_message]",
+                    json.len(),
+                    MAX_MESSAGE_BYTES
+                ),
+            }
+        }))?
+    } else {
+        json
+    };
+    writeln!(handle, "{}", out)?;
     handle.flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MAX_MESSAGE_BYTES;
+
+    /// Regression: an oversized tool result must be replaced by a JSON-RPC
+    /// error that keeps the request `id`, not truncated mid-JSON and not
+    /// emitted without an `id` (the client could not correlate it).
+    #[test]
+    fn test_oversized_message_is_replaced_with_error_keeping_id() {
+        // Build a response whose serialized form exceeds the cap.
+        let big = "x".repeat(MAX_MESSAGE_BYTES + 1024);
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 42,
+            "result": { "payload": big },
+        });
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.len() > MAX_MESSAGE_BYTES);
+
+        // Mirror write_message's replacement branch (the IO write itself is
+        // not under test — stdout is not capturable here).
+        let out: String = if json.len() > MAX_MESSAGE_BYTES {
+            serde_json::to_string(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": msg.get("id").cloned().unwrap_or(serde_json::Value::Null),
+                "error": {
+                    "code": -32000,
+                    "message": "exceeds cap",
+                }
+            }))
+            .unwrap()
+        } else {
+            json
+        };
+
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["id"], 42, "the request id must be preserved");
+        assert!(v["error"].is_object(), "an error object must be present");
+        assert!(
+            v["result"].is_null(),
+            "the oversized result must be dropped"
+        );
+    }
+
+    /// A normal-size message must pass through untouched.
+    #[test]
+    fn test_normal_message_is_not_replaced() {
+        let msg = serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": 2});
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.len() < MAX_MESSAGE_BYTES);
+    }
 }

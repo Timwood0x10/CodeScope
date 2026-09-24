@@ -83,6 +83,31 @@ int main()
 		printf("Test 3 (memory-safe/zero-copy/lock-free): PASS\n");
 	}
 
+	// ── Test 3b: negation must NOT become a positive claim ───────
+	// Regression: "not thread-safe" / "isn't thread-safe" previously
+	// produced ContractHolds(ThreadSafe) — polarity inversion that let
+	// ContractVerifier answer Supported on the README's denial.
+	// "cannot" is NOT a denial (it merely ends in the letters "not"):
+	// the keyword claim must still be emitted, or the `\bnot` anchor
+	// would over-suppress.
+	{
+		std::string neg1 = "This library is not thread-safe.";
+		std::string neg2 = "The buffer isn't thread-safe under load.";
+		std::string pos1 = "This design cannot thread-safe anything.";
+		std::string pos2 = "This library is thread-safe.";
+
+		auto c1 = parser.parse(neg1, "readme", "README.md");
+		auto c2 = parser.parse(neg2, "readme", "README.md");
+		auto c3 = parser.parse(pos1, "readme", "README.md");
+		auto c4 = parser.parse(pos2, "readme", "README.md");
+
+		assert(!hasClaim(c1, ClaimType::ContractHolds, "ThreadSafe"));
+		assert(!hasClaim(c2, ClaimType::ContractHolds, "ThreadSafe"));
+		assert(hasClaim(c3, ClaimType::ContractHolds, "ThreadSafe"));
+		assert(hasClaim(c4, ClaimType::ContractHolds, "ThreadSafe"));
+		printf("Test 3b (negation / cannot): PASS\n");
+	}
+
 	// ── Test 4: architecture arrow chain (whitelisted) ───────────
 	{
 		std::string text =

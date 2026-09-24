@@ -125,6 +125,10 @@ bool GraphStore::clearSemanticFacts(uint64_t project_id)
 	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	int rc = sqlite3_step(stmt);
+	// Reset before returning so the cached statement is reusable and its
+	// bindings (SQLITE_STATIC, pointing at caller-owned storage) are
+	// released here rather than at the next cache hit.
+	sqlite3_reset(stmt);
 	if (rc != SQLITE_DONE) {
 		error_ = std::string("clearSemanticFacts: step failed: ") +
 			 sqlite3_errmsg(db_);

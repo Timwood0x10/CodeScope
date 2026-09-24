@@ -100,12 +100,13 @@ bool GraphStore::buildCSR(uint64_t project_id)
 					SQLITE_STATIC);
 				if (sqlite3_step(ins) == SQLITE_DONE)
 					count++;
-				else
+				else {
 					++failed_groups;
-				fprintf(stderr,
-					"buildCSR: forward flush"
-					" failed: %s\n",
-					sqlite3_errmsg(db_));
+					fprintf(stderr,
+						"buildCSR: forward flush"
+						" failed: %s\n",
+						sqlite3_errmsg(db_));
+				}
 				sqlite3_reset(ins);
 			}
 			current_src = src;
@@ -123,10 +124,12 @@ bool GraphStore::buildCSR(uint64_t project_id)
 			SQLITE_STATIC);
 		if (sqlite3_step(ins) == SQLITE_DONE)
 			count++;
-		else
+		else {
 			++failed_groups;
-		fprintf(stderr, "buildCSR: final forward flush failed: %s\n",
-			sqlite3_errmsg(db_));
+			fprintf(stderr,
+				"buildCSR: final forward flush failed: %s\n",
+				sqlite3_errmsg(db_));
+		}
 		sqlite3_reset(ins);
 	}
 
@@ -191,12 +194,13 @@ bool GraphStore::buildCSR(uint64_t project_id)
 					SQLITE_STATIC);
 				if (sqlite3_step(rev_ins) == SQLITE_DONE)
 					rev_count++;
-				else
+				else {
 					++failed_groups;
-				fprintf(stderr,
-					"buildCSR: rev flush"
-					" failed: %s\n",
-					sqlite3_errmsg(db_));
+					fprintf(stderr,
+						"buildCSR: rev flush"
+						" failed: %s\n",
+						sqlite3_errmsg(db_));
+				}
 				sqlite3_reset(rev_ins);
 			}
 			current_tgt = tgt;
@@ -213,10 +217,12 @@ bool GraphStore::buildCSR(uint64_t project_id)
 			SQLITE_STATIC);
 		if (sqlite3_step(rev_ins) == SQLITE_DONE)
 			rev_count++;
-		else
+		else {
 			++failed_groups;
-		fprintf(stderr, "buildCSR: final rev flush failed: %s\n",
-			sqlite3_errmsg(db_));
+			fprintf(stderr,
+				"buildCSR: final rev flush failed: %s\n",
+				sqlite3_errmsg(db_));
+		}
 		sqlite3_reset(rev_ins);
 	}
 

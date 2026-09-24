@@ -52,8 +52,9 @@ bool CapabilityVerifier::accepts(const Claim &claim) const
 
 // Step 1: check whether the capability is declared in the knowledge layer.
 // Uses LOWER() on both sides so the LIKE match is case-insensitive. The
-// subject is bound as the LIKE pattern, so callers can include % wildcards
-// for fuzzy matching; a plain subject matches exactly (case-insensitive).
+// subject is bound as the LIKE prefix pattern (escaped wildcards + trailing
+// '%'), so `_` in a subject is literal and not a single-character wildcard
+// (same treatment as ContractVerifier).
 //
 // Match direction: LOWER(name) LIKE LOWER(subject) || '%'
 // — capability name must start with (or equal) the subject. The subject
@@ -66,12 +67,16 @@ bool CapabilityVerifier::accepts(const Claim &claim) const
 // (subject LIKE name||'%'), which required the README-derived subject to
 // *start with* the short stored name — almost never true, so every
 // capability_exists claim was Contradicted even on perfect matches.
-static bool capabilityDeclared(store::GraphStore *store, uint64_t project_id,
-			       const std::string &subject)
+//
+// @param subject  Claim subject; LIKE wildcards are escaped before bind.
+// @return 1 = declared, 0 = not declared, -1 = query failed. Callers must
+//         NOT treat -1 as "not declared" (that maps an error to Contradicted).
+static int capabilityDeclared(store::GraphStore *store, uint64_t project_id,
+			      const std::string &subject)
 {
 	const char *sql =
 		"SELECT 1 FROM capability "
-		"WHERE project_id=? AND LOWER(name) LIKE LOWER(?) || '%' "
+		"WHERE project_id=? AND LOWER(name) LIKE LOWER(?) ESCAPE '\\' "
 		"LIMIT 1";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store->handle(), sql, -1, &stmt, nullptr) !=
@@ -80,12 +85,22 @@ static bool capabilityDeclared(store::GraphStore *store, uint64_t project_id,
 			"CapabilityVerifier: prepare failed: %s "
 			"[module=verify, method=capabilityDeclared]\n",
 			sqlite3_errmsg(store->handle()));
-		return false;
+		return -1;
 	}
+	// Escaped LIKE prefix pattern: wildcards in subject are literal,
+	// trailing '%' is the intentional prefix-match wildcard.
+	std::string pattern;
+	pattern.reserve(subject.size() + 1);
+	for (char c : subject) {
+		if (c == '\\' || c == '%' || c == '_')
+			pattern.push_back('\\');
+		pattern.push_back(c);
+	}
+	pattern.push_back('%');
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_text(stmt, 2, subject.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_text(stmt, 2, pattern.c_str(), -1, SQLITE_TRANSIENT);
 
-	bool found = (sqlite3_step(stmt) == SQLITE_ROW);
+	int found = (sqlite3_step(stmt) == SQLITE_ROW) ? 1 : 0;
 	sqlite3_finalize(stmt);
 	return found;
 }
@@ -109,11 +124,19 @@ static bool capabilityDeclared(store::GraphStore *store, uint64_t project_id,
 // (BUG 2026-07-17) flipped the direction but kept a single-sided test,
 // so it still failed whenever the subject was longer than the entity name.
 // We now accept a match when either side starts with the other.
+//
+// @param subject  Claim subject; LIKE wildcards are escaped before bind.
+// @param out_ok   Set to false on prepare failure (caller must map that to
+//                 Unknown, not Contradicted). True on success even when the
+//                 result is empty ("no implementing entity").
+// @return Entity ids in SQLite row order; empty when no match.
 static std::vector<int64_t> entitiesWithCallers(store::GraphStore *store,
 						uint64_t project_id,
-						const std::string &subject)
+						const std::string &subject,
+						bool &out_ok)
 {
 	std::vector<int64_t> ids;
+	out_ok = true;
 	// Prefix matches need a length floor on BOTH sides. Without it the rule
 	// degenerates: for subject "GetNeighbors" the reverse direction
 	// `LOWER(?) LIKE LOWER(e.name) || '%'` is satisfied by any 1-3
@@ -128,11 +151,22 @@ static std::vector<int64_t> entitiesWithCallers(store::GraphStore *store,
 		"WHERE e.project_id=? "
 		"AND (LOWER(e.name) = LOWER(?) "
 		"     OR (LENGTH(?) >= ? AND LENGTH(e.name) >= ? AND "
-		"          (LOWER(e.name) LIKE LOWER(?) || '%' "
-		"           OR LOWER(?) LIKE LOWER(e.name) || '%'))) "
+		"          (LOWER(e.name) LIKE LOWER(?) ESCAPE '\\' "
+		"           OR LOWER(?) LIKE LOWER(REPLACE(REPLACE(REPLACE("
+		"                e.name, '\\', '\\\\'), '%', '\\%'), '_', '\\_'))"
+		"              || '%' ESCAPE '\\'))) "
 		"AND EXISTS (SELECT 1 FROM relation r "
 		"            WHERE r.project_id=? AND r.target_id=e.id "
 		"            AND r.type=?)";
+	// Escaped LIKE prefix pattern (wildcards in subject are literal).
+	std::string pattern;
+	pattern.reserve(subject.size() + 1);
+	for (char c : subject) {
+		if (c == '\\' || c == '%' || c == '_')
+			pattern.push_back('\\');
+		pattern.push_back(c);
+	}
+	pattern.push_back('%');
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store->handle(), sql, -1, &stmt, nullptr) !=
 	    SQLITE_OK) {
@@ -140,6 +174,7 @@ static std::vector<int64_t> entitiesWithCallers(store::GraphStore *store,
 			"CapabilityVerifier: prepare entities failed: %s "
 			"[module=verify, method=entitiesWithCallers]\n",
 			sqlite3_errmsg(store->handle()));
+		out_ok = false;
 		return ids;
 	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
@@ -147,7 +182,10 @@ static std::vector<int64_t> entitiesWithCallers(store::GraphStore *store,
 	sqlite3_bind_text(stmt, 3, subject.c_str(), -1, SQLITE_STATIC);
 	sqlite3_bind_int(stmt, 4, kMinCapabilityPrefixLen);
 	sqlite3_bind_int(stmt, 5, kMinCapabilityPrefixLen);
-	sqlite3_bind_text(stmt, 6, subject.c_str(), -1, SQLITE_STATIC);
+	// Forward direction: name LIKE subject||'%' → pattern already ends
+	// with '%'. Reverse direction: subject LIKE name||'%' → bind the raw
+	// subject (SQL appends the wildcard on the name side).
+	sqlite3_bind_text(stmt, 6, pattern.c_str(), -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 7, subject.c_str(), -1, SQLITE_STATIC);
 	sqlite3_bind_int64(stmt, 8, static_cast<int64_t>(project_id));
 	sqlite3_bind_int(stmt, 9, kRelationTypeCalls);
@@ -191,7 +229,18 @@ EvidenceRecord CapabilityVerifier::verify(const Claim &claim)
 	}
 
 	// Step 1: the capability must be declared in the knowledge layer.
-	if (!capabilityDeclared(store_, project_id_, claim.subject)) {
+	// A query failure is Unknown, not Contradicted (code_rules: no hard
+	// conclusion from a failed query).
+	int declared = capabilityDeclared(store_, project_id_, claim.subject);
+	if (declared < 0) {
+		rec.verdict = Verdict::Unknown;
+		rec.confidence = kConfBackendNotReady;
+		rec.detail =
+			"CapabilityVerifier: capability lookup failed "
+			"[module=verify, method=CapabilityVerifier::verify]";
+		return rec;
+	}
+	if (declared == 0) {
 		rec.verdict = Verdict::Contradicted;
 		rec.confidence = kConfCapabilityNotDeclared;
 		rec.detail = "Capability '" + claim.subject +
@@ -200,8 +249,17 @@ EvidenceRecord CapabilityVerifier::verify(const Claim &claim)
 	}
 
 	// Step 2: at least one implementing entity must have callers.
-	std::vector<int64_t> ids =
-		entitiesWithCallers(store_, project_id_, claim.subject);
+	bool query_ok = true;
+	std::vector<int64_t> ids = entitiesWithCallers(store_, project_id_,
+						       claim.subject, query_ok);
+	if (!query_ok) {
+		rec.verdict = Verdict::Unknown;
+		rec.confidence = kConfBackendNotReady;
+		rec.detail =
+			"CapabilityVerifier: entity lookup failed "
+			"[module=verify, method=CapabilityVerifier::verify]";
+		return rec;
+	}
 	if (ids.empty()) {
 		rec.verdict = Verdict::Contradicted;
 		rec.confidence = kConfCapabilityNoCallers;

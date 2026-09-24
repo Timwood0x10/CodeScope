@@ -403,13 +403,14 @@ pub(super) fn h_force_index_files(project_id: u64, args: &Value) -> String {
 /// warning so the walk always terminates.
 const MAX_WALK_DEPTH: u32 = 256;
 
-/// Source extensions recognised by the C++ FilterPolicy::detectLanguage.
-/// Mirrored here so the force-index walk can decide which files to
-/// accept without crossing the FFI boundary for every entry.
-const SOURCE_EXTENSIONS: &[&str] = &[
-    ".py", ".cpp", ".cc", ".cxx", ".c", ".h", ".hpp", ".hxx", ".hh", ".rs", ".swift", ".js",
-    ".mjs", ".cjs", ".ts", ".tsx", ".go", ".java", ".kt", ".kts", ".rb", ".scala",
-];
+/// Whether force-index should accept this file name/extension.
+///
+/// Delegates to the engine (`engine_is_indexable_source`) so the walk cannot
+/// accept a language the indexer cannot parse, and so extensionless shebang
+/// scripts the engine accepts are not dropped by a stale local extension list.
+fn is_source_extension(name: &str) -> bool {
+    crate::ffi::is_indexable_source(name)
+}
 
 /// Check a single file path against force-index rules:
 ///   - must exist and be a regular file
@@ -434,18 +435,20 @@ fn filter_acceptable_file(
         return None;
     }
 
-    // Extension check (case-insensitive)
-    let ext = format!(
-        ".{}",
-        path.extension().and_then(|e| e.to_str())?.to_lowercase()
-    );
-    if !SOURCE_EXTENSIONS.iter().any(|&s| s == ext) {
+    // Extension / name check via the engine (authoritative source list).
+    let file_name = path.file_name().and_then(|n| n.to_str())?;
+    if !is_source_extension(file_name) {
         return None;
     }
 
     // Language whitelist (maps extension -> language label)
     if let Some(wl) = lang_whitelist {
-        let lang = match ext.as_str() {
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+            .unwrap_or_default();
+        let lang = match format!(".{}", ext).as_str() {
             ".py" => "python",
             ".cpp" | ".cc" | ".cxx" | ".h" | ".hpp" | ".hxx" | ".hh" => "cpp",
             ".c" => "c",

@@ -22,6 +22,9 @@ class PythonVisitor : public JsVisitor {
 	void handleCall(TSNode node, uint64_t parent_id);
 	void handleImport(TSNode node, uint64_t parent_id);
 	void handleAssignment(TSNode node, uint64_t parent_id);
+	/// Emit a bare-except evidence record (name='except', empty
+	/// qualified_name) when the clause catches nothing, then recurse.
+	void handleExceptClause(TSNode node, uint64_t parent_id);
 	std::string extractName(TSNode node);
 
 	/// Extract the method name from an attribute callee.

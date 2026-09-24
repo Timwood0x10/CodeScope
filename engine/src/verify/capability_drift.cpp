@@ -18,13 +18,11 @@ int64_t countImplementingEntities(store::GraphStore &store, uint64_t project_id,
 {
 	if (cap_name.empty())
 		return 0;
-
 	sqlite3 *db = store.handle();
 	if (!db) {
-		fprintf(stderr,
-			"[module=verify, method=countImplementingEntities] "
-			"db handle is null\n");
-		return 0;
+		fprintf(stderr, "[module=verify, method=countImplementingEntities] "
+				"db handle is null\n");
+		return -1;
 	}
 
 	// An implementing entity is one whose name matches the capability
@@ -51,8 +49,10 @@ int64_t countImplementingEntities(store::GraphStore &store, uint64_t project_id,
 			  "WHERE e.project_id=? "
 			  "AND (LOWER(e.name) = LOWER(?) "
 			  "     OR (LENGTH(?) >= ? AND LENGTH(e.name) >= ? AND "
-			  "          (LOWER(e.name) LIKE LOWER(?) || '%' "
-			  "           OR LOWER(?) LIKE LOWER(e.name) || '%'))) "
+			  "          (LOWER(e.name) LIKE LOWER(?) ESCAPE '\\' "
+			  "           OR LOWER(?) LIKE LOWER(REPLACE(REPLACE(REPLACE("
+			  "                e.name, '\\', '\\\\'), '%', '\\%'), '_', '\\_'))"
+			  "              || '%' ESCAPE '\\'))) "
 			  "AND EXISTS (SELECT 1 FROM relation r "
 			  "            WHERE r.project_id=? AND r.type=1 "
 			  "            AND r.target_id=e.id)";
@@ -62,14 +62,32 @@ int64_t countImplementingEntities(store::GraphStore &store, uint64_t project_id,
 			"[module=verify, method=countImplementingEntities] "
 			"prepare failed: %s\n",
 			sqlite3_errmsg(db));
-		return 0;
+		return -1;
 	}
+	// Escape LIKE wildcards in the capability name so `_` is literal.
+	// Trailing '%' is the intentional prefix-match wildcard.
+	std::string pattern;
+	pattern.reserve(cap_name.size() + 1);
+	for (char c : cap_name) {
+		if (c == '\\' || c == '%' || c == '_')
+			pattern.push_back('\\');
+		pattern.push_back(c);
+	}
+	pattern.push_back('%');
+	// Bind order follows the SQL placeholders exactly:
+	//   1 project_id
+	//   2 LOWER(e.name) = LOWER(?)        → exact name (raw, no '%')
+	//   3 LENGTH(?)                       → raw name (length floor)
+	//   4/5 LENGTH(e.name) >= ?           → kMinCapabilityPrefixLen
+	//   6 LOWER(e.name) LIKE LOWER(?)     → escaped prefix pattern
+	//   7 LOWER(?) LIKE LOWER(e.name)||'%'→ raw name (reverse prefix)
+	//   8 project_id (EXISTS subquery)
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 2, cap_name.c_str(), -1, SQLITE_STATIC);
 	sqlite3_bind_text(stmt, 3, cap_name.c_str(), -1, SQLITE_STATIC);
 	sqlite3_bind_int(stmt, 4, kMinCapabilityPrefixLen);
 	sqlite3_bind_int(stmt, 5, kMinCapabilityPrefixLen);
-	sqlite3_bind_text(stmt, 6, cap_name.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_text(stmt, 6, pattern.c_str(), -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 7, cap_name.c_str(), -1, SQLITE_STATIC);
 	sqlite3_bind_int64(stmt, 8, static_cast<int64_t>(project_id));
 
@@ -82,6 +100,8 @@ int64_t countImplementingEntities(store::GraphStore &store, uint64_t project_id,
 			"[module=verify, method=countImplementingEntities] "
 			"step failed with rc=%d: %s\n",
 			rc, sqlite3_errmsg(db));
+		sqlite3_finalize(stmt);
+		return -1;
 	}
 	sqlite3_finalize(stmt);
 	return count;
@@ -139,6 +159,17 @@ std::vector<DriftItem> detectCapabilityDrift(store::GraphStore &store,
 
 		int64_t impl_count =
 			countImplementingEntities(store, project_id, name);
+		if (impl_count < 0) {
+			// Query failure, not "no implementors": reporting drift
+			// here would draw a hard conclusion from a failed query
+			// (same rule as the verifiers' Unknown-on-error).
+			fprintf(stderr,
+				"[module=verify, method=detectCapabilityDrift] "
+				"countImplementingEntities failed for '%s' — "
+				"skipping drift conclusion\n",
+				name.c_str());
+			continue;
+		}
 		if (impl_count == 0) {
 			DriftItem item;
 			item.type = "CapabilityDrift";

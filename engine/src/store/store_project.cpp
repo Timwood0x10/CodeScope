@@ -227,6 +227,7 @@ std::string GraphStore::findSymbolJson(uint64_t project_id, const char *name)
 		     << "\"line\":" << line << ","
 		     << "\"column\":" << col << "}";
 	}
+	sqlite3_reset(stmt);
 	json << "]}";
 
 	// If the entity table returned nothing, fall back to graph_nodes (new

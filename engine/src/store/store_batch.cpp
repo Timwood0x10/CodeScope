@@ -365,7 +365,17 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 
 			sqlite3_stmt *batch_st = nullptr;
 			if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &batch_st,
-					       nullptr) == SQLITE_OK) {
+					       nullptr) != SQLITE_OK) {
+				// Prepare failure after DELETE: without this
+				// branch the function returned true with old
+				// rows already gone and new rows never written.
+				error_ = "[module=store, method="
+					 "insertFileResultBatch] "
+					 "semantic_records batch prepare "
+					 "failed: " +
+					 std::string(sqlite3_errmsg(db_));
+				records_write_ok = false;
+			} else {
 				for (size_t i = 0; i < batch_sz; i++) {
 					auto &r = *all_recs[off + i].rec;
 					int base = static_cast<int>(i * 23);

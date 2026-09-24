@@ -135,6 +135,40 @@ std::vector<Finding> DeadCodeInspector::findOrphanModules()
 std::vector<Finding> DeadCodeInspector::findOrphanFunctions()
 {
 	std::vector<Finding> out;
+
+	// Evidence gate (same class as findOrphanModules): when the relation
+	// table is empty the orphan test `NOT EXISTS (SELECT 1 FROM relation …)`
+	// is vacuously TRUE for every non-public, non-entry-point function, so
+	// a pre-index or call-edge-less project would emit mass DeadFunction
+	// findings at 0.90 confidence — hard conclusions drawn from missing
+	// evidence. Suppress the check when relation is empty.
+	{
+		sqlite3_stmt *st = nullptr;
+		if (sqlite3_prepare_v2(store_->handle(),
+				       "SELECT COUNT(*) FROM relation WHERE "
+				       "project_id=?",
+				       -1, &st, nullptr) != SQLITE_OK) {
+			fprintf(stderr,
+				"[module=verify, method=findOrphanFunctions] "
+				"prepare relation count failed: %s\n",
+				sqlite3_errmsg(store_->handle()));
+			return out;
+		}
+		sqlite3_bind_int64(st, 1, static_cast<int64_t>(project_id_));
+		int64_t relation_rows = (sqlite3_step(st) == SQLITE_ROW) ?
+						sqlite3_column_int64(st, 0) :
+						-1;
+		sqlite3_finalize(st);
+		if (relation_rows <= 0) {
+			fprintf(stderr,
+				"[module=verify, method=findOrphanFunctions] "
+				"evidence backend not ready (relation=%lld): "
+				"dead-function conclusions suppressed\n",
+				(long long)relation_rows);
+			return out;
+		}
+	}
+
 	// Find functions/types with 0 incoming edges and 0 outgoing edges.
 	// Exclusions (otherwise main(), FFI exports, and callback entry
 	// points get misclassified as dead — they have no in/out relation
@@ -314,6 +348,11 @@ std::vector<Finding> DeadCodeInspector::findArchitectureDrift()
 			out.push_back(f);
 		}
 		sqlite3_finalize(coupling_st);
+	} else {
+		fprintf(stderr,
+			"[module=verify, method=dead_code_inspector] "
+			"coupling prepare failed: %s\n",
+			sqlite3_errmsg(store_->handle()));
 	}
 
 	return out;

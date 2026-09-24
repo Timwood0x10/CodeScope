@@ -264,12 +264,52 @@ int64_t StateBuilder::buildCapabilityState()
 
 int64_t StateBuilder::buildWorkflowState()
 {
-	// Single INSERT...SELECT replaces the per-row prepare/step/finalize
-	// loop.
+	// Clear previous rows so a rebuild is idempotent (rename-safe).
+	// INSERT OR IGNORE without a DELETE left stale workflow names behind
+	// after a rename and double-counted on every enhance.
+	if (!store_->exec((std::string(
+				  "DELETE FROM workflow_state WHERE project_id=") +
+			  std::to_string(project_id_))
+				  .c_str())) {
+		fprintf(stderr,
+			"[module=state_builder, method=buildWorkflowState] "
+			"delete failed: %s\n",
+			store_->error().c_str());
+		return -1;
+	}
+	// Derive step counts from the call graph instead of hardcoding
+	// (5, 2), which fabricated a 0.4 progress score for every workflow.
+	//   steps_total = outgoing Calls from the workflow entry
+	//   steps_done  = those callees that themselves have a caller
+	//                 (wired into the graph, not just declared)
 	std::string sql =
-		"INSERT OR IGNORE INTO workflow_state "
+		"INSERT INTO workflow_state "
 		"(project_id, name, state, steps_total, steps_done) "
-		"SELECT DISTINCT ?, e.name, 'Partial', 5, 2 "
+		"SELECT DISTINCT ?, e.name, "
+		" CASE WHEN (SELECT COUNT(*) FROM relation rt "
+		"  WHERE rt.project_id = e.project_id AND rt.source_id = e.id "
+		"  AND rt.type = 1) = 0 THEN 'Empty' "
+		"  WHEN (SELECT COUNT(DISTINCT rt.target_id) FROM relation rt "
+		"   WHERE rt.project_id = e.project_id AND rt.source_id = e.id "
+		"   AND rt.type = 1 AND EXISTS ("
+		"    SELECT 1 FROM relation rin "
+		"    WHERE rin.project_id = e.project_id "
+		"    AND rin.target_id = rt.target_id AND rin.type = 1"
+		"    AND rin.source_id != e.id)) "
+		"   >= (SELECT COUNT(*) FROM relation rt "
+		"       WHERE rt.project_id = e.project_id AND rt.source_id = e.id "
+		"       AND rt.type = 1) THEN 'Done' "
+		"  ELSE 'Partial' END, "
+		" (SELECT COUNT(*) FROM relation rt "
+		"  WHERE rt.project_id = e.project_id AND rt.source_id = e.id "
+		"  AND rt.type = 1), "
+		" (SELECT COUNT(DISTINCT rt.target_id) FROM relation rt "
+		"  WHERE rt.project_id = e.project_id AND rt.source_id = e.id "
+		"  AND rt.type = 1 AND EXISTS ("
+		"   SELECT 1 FROM relation rin "
+		"   WHERE rin.project_id = e.project_id "
+		"   AND rin.target_id = rt.target_id AND rin.type = 1"
+		"   AND rin.source_id != e.id)) "
 		"FROM entity e "
 		"JOIN relation r ON r.project_id = ? AND r.target_id = e.id "
 		"JOIN entity caller ON r.source_id = caller.id "

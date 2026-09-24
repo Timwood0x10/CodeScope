@@ -93,7 +93,7 @@ AggregateVerdict aggregateVerdict(int supported, int contradicted, int unknown)
 extern "C" char *engine_verify_review(uint64_t project_id, const char *text)
 {
 	try {
-		waitForKnowledgeBuilder();
+		auto _store_guard = waitForKnowledgeBuilder();
 		if (!g_store)
 			return dupString("{\"error\":\"not initialized\"}");
 		if (!text || !*text)
@@ -152,7 +152,7 @@ extern "C" char *engine_verify_review(uint64_t project_id, const char *text)
 extern "C" char *engine_verify_reality(uint64_t project_id, const char *text)
 {
 	try {
-		waitForKnowledgeBuilder();
+		auto _store_guard = waitForKnowledgeBuilder();
 		if (!g_store)
 			return dupString("{\"error\":\"not initialized\"}");
 		if (!text || !*text)
@@ -209,7 +209,7 @@ extern "C" char *engine_verify_reality(uint64_t project_id, const char *text)
 extern "C" char *engine_detect_drift(uint64_t project_id)
 {
 	try {
-		waitForKnowledgeBuilder();
+		auto _store_guard = waitForKnowledgeBuilder();
 		if (!g_store)
 			return dupString("{\"error\":\"not initialized\"}");
 
@@ -465,7 +465,7 @@ extern "C" char *engine_detect_drift(uint64_t project_id)
 extern "C" char *engine_detect_documentation_drift(uint64_t project_id)
 {
 	try {
-		waitForKnowledgeBuilder();
+		auto _store_guard = waitForKnowledgeBuilder();
 		if (!g_store)
 			return dupString("{\"error\":\"not initialized\"}");
 
@@ -606,7 +606,7 @@ extern "C" char *engine_detect_documentation_drift(uint64_t project_id)
 extern "C" char *engine_detect_capability_drift(uint64_t project_id)
 {
 	try {
-		waitForKnowledgeBuilder();
+		auto _store_guard = waitForKnowledgeBuilder();
 		if (!g_store)
 			return dupString(
 				"{\"error\":\"not initialized "
@@ -710,7 +710,7 @@ extern "C" char *engine_detect_capability_drift(uint64_t project_id)
 extern "C" char *engine_detect_architecture_drift(uint64_t project_id)
 {
 	try {
-		waitForKnowledgeBuilder();
+		auto _store_guard = waitForKnowledgeBuilder();
 		if (!g_store)
 			return dupString(
 				"{\"error\":\"not initialized "

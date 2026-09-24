@@ -61,8 +61,10 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json)
 			"{\"ok\":false,\"error\":\"engine not initialized\"}");
 
 	// See engine_index_project: the background enrichment thread shares
-	// this connection, so it must not run while we write.
+	// this connection, so it must not run while we write. Join first (the
+	// builder holds g_store_mutex), then hold the store guard for the write.
 	joinAsyncKnowledgeBuilder();
+	auto _store_guard = waitForKnowledgeBuilder();
 
 	if (!file_list_json || !file_list_json[0])
 		return dupString(
@@ -446,12 +448,17 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json)
 									LanguageMissing));
 						continue;
 					}
-					ir::TranslationUnit *unit = nullptr;
+					// RAII ownership of the TranslationUnit: the
+					// translator contract says the caller frees it
+					// (ir_translator.h); unique_ptr keeps that true
+					// on the exception/fallback paths too.
+					std::unique_ptr<ir::TranslationUnit>
+						unit;
 					try {
-						unit = translator->translate(
+						unit.reset(translator->translate(
 							tree.get(),
 							source.c_str(),
-							job.path.c_str());
+							job.path.c_str()));
 					} catch (const std::exception &e) {
 						store::bufferParseFailure(
 							project_id, job.path,

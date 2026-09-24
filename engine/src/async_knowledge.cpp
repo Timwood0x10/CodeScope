@@ -10,6 +10,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <exception>
 #include <mutex>
@@ -39,6 +40,30 @@ std::atomic<bool> g_async_running{ false };
 // data races between launch (writer) and join (reader in shutdown).
 std::mutex g_thread_mutex;
 std::thread g_builder_thread;
+
+// Serializes the builder body against every FFI entry that touches the
+// shared g_store connection. The builder holds it for its whole body;
+// waitForKnowledgeBuilder() hands it to the caller for the duration of
+// one read/write. Without this, a builder launched by a later index call
+// could BEGIN/COMMIT while a read is still stepping statements on the
+// same connection (prior review residual #16).
+//
+// recursive_mutex: FFI entry points nest (e.g. enhance calls through
+// paths that also call waitForKnowledgeBuilder). A plain mutex deadlocks
+// the same thread on the second acquisition.
+std::recursive_mutex g_store_mutex;
+
+// Signalled when the builder thread body finishes, so join can wait with
+// a timeout instead of blocking forever on a wedged builder.
+std::mutex g_done_mutex;
+std::condition_variable g_done_cv;
+bool g_builder_done = true;
+
+// Upper bound on how long joinAsyncKnowledgeBuilder waits for a running
+// builder. Named (no magic number): 60 s is far longer than every measured
+// build (the slowest observed was ~10 s on a 1.5k-file project) and short
+// enough that a wedged builder cannot hang the MCP server forever.
+inline constexpr int kBuilderJoinTimeoutMs = 60000;
 
 // Maximum number of module_edge rows to insert. Prevents unbounded
 // growth on projects with many small modules (one per file).
@@ -409,7 +434,17 @@ void runModelIndexSync(store::GraphStore &store, uint64_t project_id,
 		auto t_fts_start = Clock::now();
 		try {
 			store.buildFTSFromGraph(project_id);
-			store.setProjectReadiness(project_id, "fts_ready", 1);
+			// exec() does not throw; only mark fts_ready when the
+			// store reports no error (code_rules: no silent success).
+			if (store.error().empty()) {
+				store.setProjectReadiness(project_id,
+							  "fts_ready", 1);
+			} else {
+				fprintf(stderr,
+					"[module=async, method=runModelIndexSync] "
+					"FTS build failed: %s\n",
+					store.error().c_str());
+			}
 		} catch (const std::exception &e) {
 			fprintf(stderr,
 				"[module=async, method=runModelIndexSync] "
@@ -463,11 +498,21 @@ void launchAsyncKnowledgeBuilder(uint64_t project_id, bool run_fts)
 		return;
 	}
 
+	{
+		std::lock_guard<std::mutex> done_lock(g_done_mutex);
+		g_builder_done = false;
+	}
 	g_builder_thread = std::thread([project_id, run_fts]() {
+		// Hold the connection mutex for the whole body so no FFI read
+		// or write can interleave BEGIN/COMMIT on g_store.
+		std::lock_guard<std::recursive_mutex> store_lock(g_store_mutex);
 		if (!g_store) {
 			fprintf(stderr,
 				"[module=async] g_store is null, aborting\n");
 			g_async_running.store(false);
+			std::lock_guard<std::mutex> done_lock(g_done_mutex);
+			g_builder_done = true;
+			g_done_cv.notify_all();
 			return;
 		}
 		fprintf(stderr,
@@ -490,6 +535,11 @@ void launchAsyncKnowledgeBuilder(uint64_t project_id, bool run_fts)
 				"[module=async] build failed with unknown exception\n");
 		}
 		g_async_running.store(false);
+		{
+			std::lock_guard<std::mutex> done_lock(g_done_mutex);
+			g_builder_done = true;
+		}
+		g_done_cv.notify_all();
 		fprintf(stderr,
 			"[module=async] knowledge graph build complete "
 			"for project %llu\n",
@@ -499,9 +549,35 @@ void launchAsyncKnowledgeBuilder(uint64_t project_id, bool run_fts)
 
 void joinAsyncKnowledgeBuilder()
 {
+	// Hold g_thread_mutex for the whole wait+join so launch cannot spawn a
+	// second builder while this join is still reaping the first (moving the
+	// thread out and joining outside the lock re-opened that race).
 	std::lock_guard<std::mutex> lock(g_thread_mutex);
-	if (g_builder_thread.joinable())
-		g_builder_thread.join();
+	if (!g_builder_thread.joinable())
+		return;
+	// Bounded wait before the blocking join. On timeout the thread is
+	// DETACHED, not joined: the caller may already hold g_store_mutex (the
+	// write entry points join then lock), and a still-running builder is
+	// blocked on that same mutex — joining it here would deadlock. The
+	// detached thread finishes on its own once the caller releases the
+	// mutex; the log makes the stall traceable.
+	{
+		std::unique_lock<std::mutex> done_lock(g_done_mutex);
+		if (!g_done_cv.wait_for(
+			    done_lock,
+			    std::chrono::milliseconds(kBuilderJoinTimeoutMs),
+			    [] { return g_builder_done; })) {
+			fprintf(stderr,
+				"[module=async, method=joinAsyncKnowledgeBuilder] "
+				"builder still running after %d ms — detaching "
+				"(shared connection stays locked until it "
+				"finishes)\n",
+				kBuilderJoinTimeoutMs);
+			g_builder_thread.detach();
+			return;
+		}
+	}
+	g_builder_thread.join();
 }
 
 bool isAsyncKnowledgeBuilderRunning()
@@ -509,9 +585,15 @@ bool isAsyncKnowledgeBuilderRunning()
 	return g_async_running.load();
 }
 
-void waitForKnowledgeBuilder()
+std::unique_lock<std::recursive_mutex> waitForKnowledgeBuilder()
 {
-	// Delegates to the same join the write entry points use, so there is one
-	// place that decides how a read waits (see async_knowledge.h).
-	joinAsyncKnowledgeBuilder();
+	// Acquire the connection mutex the builder holds for its whole body.
+	// This both waits for an in-flight builder AND keeps a later builder
+	// (launched while this guard is alive) from touching g_store until the
+	// caller's read/write finishes — the race a plain join left open.
+	// recursive_mutex: FFI entry points nest (enhance reaches paths that
+	// also call this), so the same thread must be able to re-acquire.
+	// Safe to call from any read entry point: the builder never re-enters
+	// the read entry points, so this cannot self-deadlock.
+	return std::unique_lock<std::recursive_mutex>(g_store_mutex);
 }

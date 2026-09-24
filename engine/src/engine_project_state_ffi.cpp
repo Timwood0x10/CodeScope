@@ -38,7 +38,7 @@
 char *engine_build_project_state(uint64_t project_id)
 {
 	try {
-		waitForKnowledgeBuilder();
+		auto _store_guard = waitForKnowledgeBuilder();
 		if (!g_store)
 			return dupString(
 				"{\"error\":\"engine not initialized\"}");
@@ -72,7 +72,7 @@ char *engine_build_project_state(uint64_t project_id)
 char *engine_get_project_state(uint64_t project_id)
 {
 	try {
-		waitForKnowledgeBuilder();
+		auto _store_guard = waitForKnowledgeBuilder();
 		if (!g_store)
 			return dupString(
 				"{\"error\":\"engine not initialized\"}");

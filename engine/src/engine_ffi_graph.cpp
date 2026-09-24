@@ -40,7 +40,7 @@ char *engine_get_knowledge_graph(uint64_t project_id, const char *table_name,
 				 int32_t limit)
 {
 	try {
-		waitForKnowledgeBuilder();
+		auto _store_guard = waitForKnowledgeBuilder();
 		if (!g_store)
 			return dupString(
 				"{\"error\":\"[module=ffi, method=engine_get_knowledge_graph] engine not initialized\"}");
@@ -195,7 +195,7 @@ char *engine_find_definition(uint64_t project_id, const char *symbol_name,
 		if (!symbol_name || !*symbol_name)
 			return dupString(
 				"{\"error\":\"[module=ffi, method=engine_find_definition] symbol_name is required\"}");
-		waitForKnowledgeBuilder();
+		auto _store_guard = waitForKnowledgeBuilder();
 		if (!g_query)
 			return dupString(
 				"{\"total\":0,\"results\":[],\"error\":\"not initialized\"}");
@@ -219,7 +219,7 @@ char *engine_find_references(uint64_t project_id, const char *symbol_name,
 		if (!symbol_name || !*symbol_name)
 			return dupString(
 				"{\"error\":\"[module=ffi, method=engine_find_references] symbol_name is required\"}");
-		waitForKnowledgeBuilder();
+		auto _store_guard = waitForKnowledgeBuilder();
 		if (!g_query)
 			return dupString(
 				"{\"total\":0,\"results\":[],\"error\":\"not initialized\"}");
@@ -243,7 +243,7 @@ char *engine_get_callers(uint64_t project_id, const char *function_name,
 		if (!function_name || !*function_name)
 			return dupString(
 				"{\"error\":\"[module=ffi, method=engine_get_callers] function_name is required\"}");
-		waitForKnowledgeBuilder();
+		auto _store_guard = waitForKnowledgeBuilder();
 		if (!g_query)
 			return dupString(
 				"{\"total\":0,\"callers\":[],\"error\":\"not initialized\"}");
@@ -267,7 +267,7 @@ char *engine_get_callees(uint64_t project_id, const char *function_name,
 		if (!function_name || !*function_name)
 			return dupString(
 				"{\"error\":\"[module=ffi, method=engine_get_callees] function_name is required\"}");
-		waitForKnowledgeBuilder();
+		auto _store_guard = waitForKnowledgeBuilder();
 		if (!g_query)
 			return dupString(
 				"{\"total\":0,\"callees\":[],\"error\":\"not initialized\"}");
@@ -288,7 +288,7 @@ char *engine_get_neighbors(uint64_t project_id, uint64_t node_id,
 			   int edge_type_filter, int radius)
 {
 	try {
-		waitForKnowledgeBuilder();
+		auto _store_guard = waitForKnowledgeBuilder();
 		if (!g_query)
 			return dupString(
 				"{\"total\":0,\"neighbors\":[],\"error\":\"not initialized\"}");
@@ -309,7 +309,7 @@ char *engine_find_shortest_path(uint64_t project_id, uint64_t source_id,
 				uint64_t target_id)
 {
 	try {
-		waitForKnowledgeBuilder();
+		auto _store_guard = waitForKnowledgeBuilder();
 		if (!g_query)
 			return dupString(
 				"{\"path\":[],\"error\":\"not initialized\"}");
@@ -354,7 +354,7 @@ static void appendFindingJson(std::ostringstream &json,
 char *engine_find_connected_components(uint64_t project_id)
 {
 	try {
-		waitForKnowledgeBuilder();
+		auto _store_guard = waitForKnowledgeBuilder();
 		// Module/method tag for error messages per code_rules.md.
 		static const char *kModule = "ffi";
 		static const char *kMethod = "engine_find_connected_components";
@@ -404,7 +404,7 @@ char *engine_get_subgraph(uint64_t project_id, uint64_t center_node_id,
 			  const char *edge_type_filter)
 {
 	try {
-		waitForKnowledgeBuilder();
+		auto _store_guard = waitForKnowledgeBuilder();
 		if (!g_query)
 			return dupString(
 				"{\"total\":0,\"nodes\":[],\"error\":\"not initialized\"}");
@@ -426,7 +426,7 @@ char *engine_locate_node(uint64_t project_id, uint64_t node_id,
 			 int context_lines)
 {
 	try {
-		waitForKnowledgeBuilder();
+		auto _store_guard = waitForKnowledgeBuilder();
 		if (!g_query)
 			return dupString(
 				"{\"total\":0,\"locations\":[],\"error\":\"not initialized\"}");
@@ -449,7 +449,7 @@ char *engine_locate_by_name(uint64_t project_id, const char *name)
 		if (!name || !*name)
 			return dupString(
 				"{\"error\":\"[module=ffi, method=engine_locate_by_name] name is required\"}");
-		waitForKnowledgeBuilder();
+		auto _store_guard = waitForKnowledgeBuilder();
 		if (!g_query)
 			return dupString(
 				"{\"total\":0,\"locations\":[],\"error\":\"not initialized\"}");
@@ -468,7 +468,7 @@ char *engine_locate_by_name(uint64_t project_id, const char *name)
 char *engine_get_graph_stats(uint64_t project_id)
 {
 	try {
-		waitForKnowledgeBuilder();
+		auto _store_guard = waitForKnowledgeBuilder();
 		if (!g_query)
 			return dupString("{\"error\":\"not initialized\"}");
 		return dupString(g_query->getGraphStats(project_id));

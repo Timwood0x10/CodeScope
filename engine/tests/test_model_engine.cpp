@@ -176,6 +176,67 @@ int main()
 		     "- This module is thread-safe\n"
 		     "- Feature: JWT authentication\n");
 
+	// ── Negation / polarity regression (pass 3/5) ─────────────────
+	// "isn't thread-safe" must NOT become a positive ThreadSafe contract,
+	// and "cannot thread-safe" must STILL become one ("cannot" is not a
+	// denial — it merely ends in the letters "not"). Both guards live in
+	// ContractPlugin's ends_word / ends_suffix split.
+	// Counts are filtered by source_file: the positive README.md inserted
+	// above also yields a threadsafe contract, and that row is expected.
+	{
+		insertReadme(store, pid, "/tmp/NEG.md",
+			     "The buffer isn't thread-safe under load.\n");
+		ModelEngine me_neg(&store);
+		me_neg.addPlugin(std::make_unique<ContractPlugin>(&store));
+		me_neg.runAll(pid);
+		int neg_count = 0;
+		{
+			sqlite3_stmt *stmt = nullptr;
+			if (sqlite3_prepare_v2(
+				    store.handle(),
+				    "SELECT COUNT(*) FROM contract WHERE "
+				    "project_id=? AND name='threadsafe' "
+				    "AND source_file='/tmp/NEG.md'",
+				    -1, &stmt, nullptr) == SQLITE_OK) {
+				sqlite3_bind_int64(stmt, 1,
+						   static_cast<int64_t>(pid));
+				if (sqlite3_step(stmt) == SQLITE_ROW)
+					neg_count = sqlite3_column_int(stmt, 0);
+				sqlite3_finalize(stmt);
+			}
+		}
+		assert(neg_count == 0 &&
+		       "an occurrence of \"isn't thread-safe\" in NEG.md must "
+		       "not add a positive threadsafe contract");
+		printf("  [PASS] ContractPlugin negation (isn't thread-safe)\n");
+
+		insertReadme(store, pid, "/tmp/CANNOT.md",
+			     "This design cannot thread-safe anything.\n");
+		ModelEngine me_can(&store);
+		me_can.addPlugin(std::make_unique<ContractPlugin>(&store));
+		me_can.runAll(pid);
+		int can_count = 0;
+		{
+			sqlite3_stmt *stmt = nullptr;
+			if (sqlite3_prepare_v2(
+				    store.handle(),
+				    "SELECT COUNT(*) FROM contract WHERE "
+				    "project_id=? AND name='threadsafe' "
+				    "AND source_file='/tmp/CANNOT.md'",
+				    -1, &stmt, nullptr) == SQLITE_OK) {
+				sqlite3_bind_int64(stmt, 1,
+						   static_cast<int64_t>(pid));
+				if (sqlite3_step(stmt) == SQLITE_ROW)
+					can_count = sqlite3_column_int(stmt, 0);
+				sqlite3_finalize(stmt);
+			}
+		}
+		assert(can_count >= 1 &&
+		       "\"cannot thread-safe\" must still produce a threadsafe "
+		       "contract (cannot is not a denial)");
+		printf("  [PASS] ContractPlugin non-negation (cannot)\n");
+	}
+
 	// Insert entities: main() is the entry point, Mutex is the
 	// contract-enforcing entity, Helper is called by main.
 	insertGraphNode(store, pid, 1, 0, "main", "/tmp/main.cpp", "cpp", 1);

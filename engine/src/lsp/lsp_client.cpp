@@ -116,6 +116,54 @@ bool LspClient::start(const char *command, const char *root_uri)
 	return true;
 }
 
+/// Escape a string for embedding inside a JSON string literal.
+/// Handles `"`, `\`, control characters and newlines so a hostile source
+/// buffer cannot break the JSON-RPC frame for textDocument/didOpen.
+/// @param raw  NUL-terminated C string (may be nullptr → empty).
+/// @return Escaped text safe to concatenate into a JSON string value.
+static std::string jsonEscapeLsp(const char *raw)
+{
+	std::string out;
+	if (!raw)
+		return out;
+	out.reserve(std::strlen(raw) + 8);
+	for (const char *p = raw; *p; ++p) {
+		unsigned char c = static_cast<unsigned char>(*p);
+		switch (c) {
+		case '"':
+			out += "\\\"";
+			break;
+		case '\\':
+			out += "\\\\";
+			break;
+		case '\b':
+			out += "\\b";
+			break;
+		case '\f':
+			out += "\\f";
+			break;
+		case '\n':
+			out += "\\n";
+			break;
+		case '\r':
+			out += "\\r";
+			break;
+		case '\t':
+			out += "\\t";
+			break;
+		default:
+			if (c < 0x20) {
+				char buf[8];
+				std::snprintf(buf, sizeof(buf), "\\u%04x", c);
+				out += buf;
+			} else {
+				out.push_back(static_cast<char>(c));
+			}
+		}
+	}
+	return out;
+}
+
 bool LspClient::openDocument(const char *file_uri, const char *source_text)
 {
 	if (!isRunning()) {
@@ -126,10 +174,10 @@ bool LspClient::openDocument(const char *file_uri, const char *source_text)
 	std::ostringstream params;
 	params << "{"
 	       << "\"textDocument\":{"
-	       << "\"uri\":\"" << file_uri << "\","
+	       << "\"uri\":\"" << jsonEscapeLsp(file_uri) << "\","
 	       << "\"languageId\":\"python\","
 	       << "\"version\":1,"
-	       << "\"text\":\"" << source_text << "\""
+	       << "\"text\":\"" << jsonEscapeLsp(source_text) << "\""
 	       << "}}";
 
 	std::string notif =
@@ -145,7 +193,8 @@ std::string LspClient::queryDefinition(const char *file_uri, int line,
 
 	std::ostringstream params;
 	params << "{"
-	       << "\"textDocument\":{\"uri\":\"" << file_uri << "\"},"
+	       << "\"textDocument\":{\"uri\":\"" << jsonEscapeLsp(file_uri)
+	       << "\"},"
 	       << "\"position\":{\"line\":" << line
 	       << ",\"character\":" << column << "}"
 	       << "}";
@@ -167,7 +216,8 @@ std::string LspClient::queryHover(const char *file_uri, int line, int column)
 
 	std::ostringstream params;
 	params << "{"
-	       << "\"textDocument\":{\"uri\":\"" << file_uri << "\"},"
+	       << "\"textDocument\":{\"uri\":\"" << jsonEscapeLsp(file_uri)
+	       << "\"},"
 	       << "\"position\":{\"line\":" << line
 	       << ",\"character\":" << column << "}"
 	       << "}";
@@ -189,7 +239,8 @@ std::string LspClient::queryDocumentSymbols(const char *file_uri)
 
 	std::ostringstream params;
 	params << "{"
-	       << "\"textDocument\":{\"uri\":\"" << file_uri << "\"}"
+	       << "\"textDocument\":{\"uri\":\"" << jsonEscapeLsp(file_uri)
+	       << "\"}"
 	       << "}";
 
 	std::string req = buildJsonRpc("textDocument/documentSymbol",

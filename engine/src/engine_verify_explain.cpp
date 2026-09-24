@@ -68,7 +68,7 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 				       const char *module_name)
 {
 	try {
-		waitForKnowledgeBuilder();
+		auto _store_guard = waitForKnowledgeBuilder();
 		if (!g_store)
 			return dupString(
 				"{\"error\":\"not initialized "

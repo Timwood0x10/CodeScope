@@ -46,28 +46,55 @@ bool GraphStore::runSchemaMigrations()
 			error().c_str(), sql ? sql : "(null)");
 		return false;
 	};
+	// Probe helper: a PRAGMA prepare failure must fail the pass, not
+	// silently skip the migration (a skipped column later dies with
+	// "no such column", far from the cause).
+	auto migrationProbe = [&](sqlite3_stmt **probe, const char *sql,
+				  const char *what) -> bool {
+		if (sqlite3_prepare_v2(db_, sql, -1, probe, nullptr) ==
+		    SQLITE_OK)
+			return true;
+		migration_ok = false;
+		fprintf(stderr,
+			"[module=store, method=runSchemaMigrations] probe "
+			"%s failed: %s | sql=%.100s\n",
+			what ? what : "(unknown)", sqlite3_errmsg(db_),
+			sql ? sql : "(null)");
+		return false;
+	};
 
 	// Migration: add knowledge_ready column to project_readiness (v0.5+)
 	{
 		sqlite3_stmt *probe = nullptr;
 		if (sqlite3_prepare_v2(db_,
 				       "PRAGMA table_info(project_readiness)",
-				       -1, &probe, nullptr) == SQLITE_OK) {
-			bool has_knowledge_ready = false;
-			while (sqlite3_step(probe) == SQLITE_ROW) {
-				const char *col =
-					reinterpret_cast<const char *>(
-						sqlite3_column_text(probe, 1));
-				if (col &&
-				    std::string(col) == "knowledge_ready")
-					has_knowledge_ready = true;
-			}
-			sqlite3_finalize(probe);
-			if (!has_knowledge_ready) {
-				migrationExec(
-					"ALTER TABLE project_readiness "
-					"ADD COLUMN knowledge_ready INTEGER DEFAULT 0");
-			}
+				       -1, &probe, nullptr) != SQLITE_OK) {
+			// A failed probe must fail the schema pass: skipping
+			// the migration leaves a half-migrated schema and
+			// later queries die with "no such column" (code_rules:
+			// no silent error handling).
+			fprintf(stderr,
+				"runSchemaMigrations: probe project_readiness "
+				"failed: %s "
+				"[module=store, method=runSchemaMigrations]\n",
+				sqlite3_errmsg(db_));
+			if (probe)
+				sqlite3_finalize(probe);
+			return false;
+		}
+		bool has_knowledge_ready = false;
+		while (sqlite3_step(probe) == SQLITE_ROW) {
+			const char *col = reinterpret_cast<const char *>(
+				sqlite3_column_text(probe, 1));
+			if (col && std::string(col) == "knowledge_ready")
+				has_knowledge_ready = true;
+		}
+		sqlite3_finalize(probe);
+		if (!has_knowledge_ready) {
+			if (!migrationExec(
+				    "ALTER TABLE project_readiness "
+				    "ADD COLUMN knowledge_ready INTEGER DEFAULT 0"))
+				return false;
 		}
 	}
 
@@ -86,9 +113,11 @@ bool GraphStore::runSchemaMigrations()
 	// a half-renamed schema (see #19).
 	{
 		sqlite3_stmt *probe = nullptr;
-		if (sqlite3_prepare_v2(db_,
-				       "PRAGMA table_info(architecture_edge)",
-				       -1, &probe, nullptr) == SQLITE_OK) {
+		if (!migrationProbe(&probe,
+				    "PRAGMA table_info(architecture_edge)",
+				    "architecture_edge"))
+			return false;
+		if (probe) {
 			bool has_old_name = false;
 			while (sqlite3_step(probe) == SQLITE_ROW) {
 				const char *col =
@@ -112,8 +141,10 @@ bool GraphStore::runSchemaMigrations()
 	// Migration: add module_state column to entity table (v0.5+)
 	{
 		sqlite3_stmt *probe = nullptr;
-		if (sqlite3_prepare_v2(db_, "PRAGMA table_info(entity)", -1,
-				       &probe, nullptr) == SQLITE_OK) {
+		if (!migrationProbe(&probe, "PRAGMA table_info(entity)",
+				    "schema-probe"))
+			return false;
+		if (probe) {
 			bool has_module_state = false;
 			while (sqlite3_step(probe) == SQLITE_ROW) {
 				const char *col =
@@ -137,8 +168,10 @@ bool GraphStore::runSchemaMigrations()
 	// instead of the non-sargable rtrim(file_path, replace(...)) expression.
 	{
 		sqlite3_stmt *probe = nullptr;
-		if (sqlite3_prepare_v2(db_, "PRAGMA table_info(entity)", -1,
-				       &probe, nullptr) == SQLITE_OK) {
+		if (!migrationProbe(&probe, "PRAGMA table_info(entity)",
+				    "schema-probe"))
+			return false;
+		if (probe) {
 			bool has_module_path = false;
 			while (sqlite3_step(probe) == SQLITE_ROW) {
 				const char *col =
@@ -220,9 +253,11 @@ bool GraphStore::runSchemaMigrations()
 	// Migration: add arity + is_static columns to semantic_records (v0.5+)
 	{
 		sqlite3_stmt *probe = nullptr;
-		if (sqlite3_prepare_v2(db_,
-				       "PRAGMA table_info(semantic_records)",
-				       -1, &probe, nullptr) == SQLITE_OK) {
+		if (!migrationProbe(&probe,
+				    "PRAGMA table_info(semantic_records)",
+				    "schema-probe"))
+			return false;
+		if (probe) {
 			bool has_arity = false;
 			bool has_is_static = false;
 			while (sqlite3_step(probe) == SQLITE_ROW) {
@@ -267,8 +302,10 @@ bool GraphStore::runSchemaMigrations()
 			{ "is_stub", "0" },
 		};
 		sqlite3_stmt *probe = nullptr;
-		if (sqlite3_prepare_v2(db_, "PRAGMA table_info(entity)", -1,
-				       &probe, nullptr) == SQLITE_OK) {
+		if (!migrationProbe(&probe, "PRAGMA table_info(entity)",
+				    "schema-probe"))
+			return false;
+		if (probe) {
 			std::vector<std::string> existing;
 			while (sqlite3_step(probe) == SQLITE_ROW) {
 				const char *col =
@@ -302,9 +339,11 @@ bool GraphStore::runSchemaMigrations()
 	{
 		sqlite3_stmt *rprobe = nullptr;
 		bool has_metrics_ready = false;
-		if (sqlite3_prepare_v2(db_,
-				       "PRAGMA table_info(project_readiness)",
-				       -1, &rprobe, nullptr) == SQLITE_OK) {
+		if (!migrationProbe(&rprobe,
+				    "PRAGMA table_info(project_readiness)",
+				    "schema-probe"))
+			return false;
+		if (rprobe) {
 			while (sqlite3_step(rprobe) == SQLITE_ROW) {
 				const char *col =
 					reinterpret_cast<const char *>(
@@ -333,8 +372,10 @@ bool GraphStore::runSchemaMigrations()
 	// Migration: add role column to module_summary table (v0.7+)
 	{
 		sqlite3_stmt *probe = nullptr;
-		if (sqlite3_prepare_v2(db_, "PRAGMA table_info(module_summary)",
-				       -1, &probe, nullptr) == SQLITE_OK) {
+		if (!migrationProbe(&probe, "PRAGMA table_info(module_summary)",
+				    "schema-probe"))
+			return false;
+		if (probe) {
 			bool has_role = false;
 			while (sqlite3_step(probe) == SQLITE_ROW) {
 				const char *col =
@@ -361,8 +402,10 @@ bool GraphStore::runSchemaMigrations()
 	// from this column with call-graph counts.
 	{
 		sqlite3_stmt *probe = nullptr;
-		if (sqlite3_prepare_v2(db_, "PRAGMA table_info(entity)", -1,
-				       &probe, nullptr) == SQLITE_OK) {
+		if (!migrationProbe(&probe, "PRAGMA table_info(entity)",
+				    "schema-probe"))
+			return false;
+		if (probe) {
 			bool has_visibility = false;
 			while (sqlite3_step(probe) == SQLITE_ROW) {
 				const char *col =
@@ -390,8 +433,10 @@ bool GraphStore::runSchemaMigrations()
 	// name, start_row) — the same identity used by buildGraph's _r2n JOIN.
 	{
 		sqlite3_stmt *probe = nullptr;
-		if (sqlite3_prepare_v2(db_, "PRAGMA table_info(entity)", -1,
-				       &probe, nullptr) == SQLITE_OK) {
+		if (!migrationProbe(&probe, "PRAGMA table_info(entity)",
+				    "schema-probe"))
+			return false;
+		if (probe) {
 			bool has_arity = false;
 			while (sqlite3_step(probe) == SQLITE_ROW) {
 				const char *col =
@@ -438,8 +483,10 @@ bool GraphStore::runSchemaMigrations()
 	// Migration: add call_kind column to reference table (v0.7+)
 	{
 		sqlite3_stmt *probe = nullptr;
-		if (sqlite3_prepare_v2(db_, "PRAGMA table_info(reference)", -1,
-				       &probe, nullptr) == SQLITE_OK) {
+		if (!migrationProbe(&probe, "PRAGMA table_info(reference)",
+				    "schema-probe"))
+			return false;
+		if (probe) {
 			bool has_ck = false;
 			while (sqlite3_step(probe) == SQLITE_ROW) {
 				const char *col =
@@ -458,9 +505,11 @@ bool GraphStore::runSchemaMigrations()
 			bool has_ref_rs = false;
 			// Reuse the same probe - re-prepare
 			probe = nullptr;
-			if (sqlite3_prepare_v2(
-				    db_, "PRAGMA table_info(reference)", -1,
-				    &probe, nullptr) == SQLITE_OK) {
+			if (!migrationProbe(&probe,
+					    "PRAGMA table_info(reference)",
+					    "schema-probe"))
+				return false;
+			if (probe) {
 				while (sqlite3_step(probe) == SQLITE_ROW) {
 					const char *col =
 						reinterpret_cast<const char *>(
@@ -484,8 +533,10 @@ bool GraphStore::runSchemaMigrations()
 	// Migration: add parent_id column to graph_nodes (v0.8+)
 	{
 		sqlite3_stmt *probe = nullptr;
-		if (sqlite3_prepare_v2(db_, "PRAGMA table_info(graph_nodes)",
-				       -1, &probe, nullptr) == SQLITE_OK) {
+		if (!migrationProbe(&probe, "PRAGMA table_info(graph_nodes)",
+				    "schema-probe"))
+			return false;
+		if (probe) {
 			bool has_pid = false;
 			while (sqlite3_step(probe) == SQLITE_ROW) {
 				const char *col =
@@ -512,8 +563,10 @@ bool GraphStore::runSchemaMigrations()
 	// "external" (known builtin/third-party), "unresolved" (unknown).
 	{
 		sqlite3_stmt *probe = nullptr;
-		if (sqlite3_prepare_v2(db_, "PRAGMA table_info(graph_edges)",
-				       -1, &probe, nullptr) == SQLITE_OK) {
+		if (!migrationProbe(&probe, "PRAGMA table_info(graph_edges)",
+				    "schema-probe"))
+			return false;
+		if (probe) {
 			bool has_rs = false;
 			while (sqlite3_step(probe) == SQLITE_ROW) {
 				const char *col =
@@ -539,11 +592,13 @@ bool GraphStore::runSchemaMigrations()
 	// exist at all on legacy databases.
 	{
 		sqlite3_stmt *probe = nullptr;
-		if (sqlite3_prepare_v2(
-			    db_,
+		if (!migrationProbe(
+			    &probe,
 			    "SELECT name FROM sqlite_master "
 			    "WHERE type='table' AND name='semantic_fact'",
-			    -1, &probe, nullptr) == SQLITE_OK) {
+			    "schema-probe"))
+			return false;
+		if (probe) {
 			if (sqlite3_step(probe) != SQLITE_ROW) {
 				sqlite3_finalize(probe);
 				if (!exec("CREATE TABLE IF NOT EXISTS semantic_fact ("
@@ -609,11 +664,13 @@ bool GraphStore::runSchemaMigrations()
 	// unused until Phase 4. Same sqlite_master probe pattern as above.
 	{
 		sqlite3_stmt *probe = nullptr;
-		if (sqlite3_prepare_v2(
-			    db_,
+		if (!migrationProbe(
+			    &probe,
 			    "SELECT name FROM sqlite_master "
 			    "WHERE type='table' AND name='project_state'",
-			    -1, &probe, nullptr) == SQLITE_OK) {
+			    "schema-probe"))
+			return false;
+		if (probe) {
 			if (sqlite3_step(probe) != SQLITE_ROW) {
 				sqlite3_finalize(probe);
 				if (!exec("CREATE TABLE IF NOT EXISTS project_state ("
@@ -662,9 +719,11 @@ bool GraphStore::runSchemaMigrations()
 	{
 		sqlite3_stmt *arch_probe = nullptr;
 		bool has_cross_module_edges = false;
-		if (sqlite3_prepare_v2(db_,
-				       "PRAGMA table_info(architecture_state)",
-				       -1, &arch_probe, nullptr) == SQLITE_OK) {
+		if (!migrationProbe(&arch_probe,
+				    "PRAGMA table_info(architecture_state)",
+				    "schema-probe"))
+			return false;
+		if (arch_probe) {
 			while (sqlite3_step(arch_probe) == SQLITE_ROW) {
 				const char *col = reinterpret_cast<const char *>(
 					sqlite3_column_text(arch_probe, 1));

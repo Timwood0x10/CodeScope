@@ -132,7 +132,7 @@ std::string serializeEvidence(const evidence::Evidence &ev)
 char *engine_build_evidence(uint64_t project_id, const char *category_filter)
 {
 	try {
-		waitForKnowledgeBuilder();
+		auto _store_guard = waitForKnowledgeBuilder();
 		if (!g_store)
 			return dupString(
 				"{\"error\":\"engine not initialized\"}");

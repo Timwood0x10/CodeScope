@@ -70,7 +70,11 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 	// BEGIN/COMMIT on one connection ("cannot start a transaction within
 	// a transaction") and one side could commit the other's half-written
 	// state. Joining is a no-op when the builder has already finished.
+	// Order matters: join FIRST (the builder holds g_store_mutex and
+	// would deadlock against a guard we already held), then take the
+	// store guard so a later builder launched mid-write cannot interleave.
 	joinAsyncKnowledgeBuilder();
+	auto _store_guard = waitForKnowledgeBuilder();
 
 	// Fail-fast: pre-load known parse failures so the parse loop can
 	// skip them without per-file DB queries. CODESCOPE_FAIL_RETRY_MAX
@@ -629,11 +633,13 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 								LanguageMissing));
 					continue;
 				}
-				ir::TranslationUnit *unit = nullptr;
+				// RAII ownership: the translator contract says
+				// the caller frees the unit (ir_translator.h).
+				std::unique_ptr<ir::TranslationUnit> unit;
 				try {
-					unit = translator->translate(
+					unit.reset(translator->translate(
 						tree.get(), source.c_str(),
-						job.path.c_str());
+						job.path.c_str()));
 				} catch (const std::exception &e) {
 					store::bufferParseFailure(
 						project_id, job.path, job.lang,
@@ -695,7 +701,8 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 					if (unit->root)
 						flatten(unit->root, 0);
 					result->metrics = index_metrics::
-						computeMetricsFromUnit(unit);
+						computeMetricsFromUnit(
+							unit.get());
 				}
 			}
 

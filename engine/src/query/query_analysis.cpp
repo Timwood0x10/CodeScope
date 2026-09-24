@@ -194,7 +194,20 @@ std::string QueryEngine::getModuleMap(uint64_t project_id)
 			"FROM entity e "
 			"WHERE e.project_id = ? AND e.file_path LIKE ? "
 			"AND e.kind IN (0,1) ORDER BY e.file_path";
-		sqlite3_prepare_v2(db, func_sql.c_str(), -1, &stmt, nullptr);
+		// Check prepare: bind/step on a NULL stmt is UB and would
+		// crash the long-running MCP server through FFI (code_rules
+		// §3 Error Handling; no silent error handling).
+		if (sqlite3_prepare_v2(db, func_sql.c_str(), -1, &stmt,
+				       nullptr) != SQLITE_OK) {
+			fprintf(stderr,
+				"getModuleMap: prepare functions failed: %s "
+				"[module=query, method=getModuleMap]\n",
+				sqlite3_errmsg(db));
+			if (stmt)
+				sqlite3_finalize(stmt);
+			json << "]}";
+			continue;
+		}
 		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 		sqlite3_bind_text(stmt, 2, (dir + "/%").c_str(), -1,
 				  SQLITE_TRANSIENT);
@@ -423,53 +436,92 @@ std::string QueryEngine::getProjectOverview(uint64_t project_id)
 		sqlite3_stmt *stmt = nullptr;
 		// v0.2.6: count from the canonical entity/relation tables.
 		// graph_nodes/graph_edges are deprecated and no longer written.
-		sqlite3_prepare_v2(
-			db, "SELECT COUNT(*) FROM entity WHERE project_id=?",
-			-1, &stmt, nullptr);
-		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-		if (sqlite3_step(stmt) == SQLITE_ROW) {
-			json << "\"total_nodes\":"
-			     << sqlite3_column_int(stmt, 0) << ",";
+		// Every prepare is checked: bind/step on a NULL stmt is UB and
+		// would crash the long-running MCP server through FFI.
+		if (sqlite3_prepare_v2(
+			    db,
+			    "SELECT COUNT(*) FROM entity WHERE project_id=?",
+			    -1, &stmt, nullptr) == SQLITE_OK) {
+			sqlite3_bind_int64(stmt, 1,
+					   static_cast<int64_t>(project_id));
+			if (sqlite3_step(stmt) == SQLITE_ROW) {
+				json << "\"total_nodes\":"
+				     << sqlite3_column_int(stmt, 0) << ",";
+			}
+		} else {
+			fprintf(stderr,
+				"getProjectOverview: prepare entity count "
+				"failed: %s "
+				"[module=query, method=getProjectOverview]\n",
+				sqlite3_errmsg(db));
 		}
 		sqlite3_finalize(stmt);
+		stmt = nullptr;
 
-		sqlite3_prepare_v2(
-			db, "SELECT COUNT(*) FROM relation WHERE project_id=?",
-			-1, &stmt, nullptr);
-		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-		if (sqlite3_step(stmt) == SQLITE_ROW) {
-			json << "\"total_edges\":"
-			     << sqlite3_column_int(stmt, 0) << ",";
+		if (sqlite3_prepare_v2(
+			    db,
+			    "SELECT COUNT(*) FROM relation WHERE project_id=?",
+			    -1, &stmt, nullptr) == SQLITE_OK) {
+			sqlite3_bind_int64(stmt, 1,
+					   static_cast<int64_t>(project_id));
+			if (sqlite3_step(stmt) == SQLITE_ROW) {
+				json << "\"total_edges\":"
+				     << sqlite3_column_int(stmt, 0) << ",";
+			}
+		} else {
+			fprintf(stderr,
+				"getProjectOverview: prepare relation count "
+				"failed: %s "
+				"[module=query, method=getProjectOverview]\n",
+				sqlite3_errmsg(db));
 		}
 		sqlite3_finalize(stmt);
+		stmt = nullptr;
 
-		sqlite3_prepare_v2(
-			db, "SELECT COUNT(*) FROM files WHERE project_id=?", -1,
-			&stmt, nullptr);
-		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-		if (sqlite3_step(stmt) == SQLITE_ROW) {
-			json << "\"total_files\":"
-			     << sqlite3_column_int(stmt, 0) << ",";
+		if (sqlite3_prepare_v2(
+			    db, "SELECT COUNT(*) FROM files WHERE project_id=?",
+			    -1, &stmt, nullptr) == SQLITE_OK) {
+			sqlite3_bind_int64(stmt, 1,
+					   static_cast<int64_t>(project_id));
+			if (sqlite3_step(stmt) == SQLITE_ROW) {
+				json << "\"total_files\":"
+				     << sqlite3_column_int(stmt, 0) << ",";
+			}
+		} else {
+			fprintf(stderr,
+				"getProjectOverview: prepare files count "
+				"failed: %s "
+				"[module=query, method=getProjectOverview]\n",
+				sqlite3_errmsg(db));
 		}
 		sqlite3_finalize(stmt);
+		stmt = nullptr;
 
 		// Language distribution
 		json << "\"languages\":[";
-		sqlite3_prepare_v2(
-			db,
-			"SELECT language,COUNT(*) FROM files WHERE project_id=? "
-			"GROUP BY language",
-			-1, &stmt, nullptr);
-		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-		bool first = true;
-		while (sqlite3_step(stmt) == SQLITE_ROW) {
-			if (!first)
-				json << ",";
-			first = false;
-			json << "{\"lang\":\"" << columnTextEscaped(stmt, 0)
-			     << "\","
-			     << "\"files\":" << sqlite3_column_int(stmt, 1)
-			     << "}";
+		if (sqlite3_prepare_v2(
+			    db,
+			    "SELECT language,COUNT(*) FROM files WHERE project_id=? "
+			    "GROUP BY language",
+			    -1, &stmt, nullptr) == SQLITE_OK) {
+			sqlite3_bind_int64(stmt, 1,
+					   static_cast<int64_t>(project_id));
+			bool first = true;
+			while (sqlite3_step(stmt) == SQLITE_ROW) {
+				if (!first)
+					json << ",";
+				first = false;
+				json << "{\"lang\":\""
+				     << columnTextEscaped(stmt, 0) << "\","
+				     << "\"files\":"
+				     << sqlite3_column_int(stmt, 1) << "}";
+			}
+		} else {
+			fprintf(stderr,
+				"getProjectOverview: prepare languages "
+				"failed: %s "
+				"[module=query, method=getProjectOverview]\n",
+				sqlite3_errmsg(db));
 		}
 		json << "]";
 		sqlite3_finalize(stmt);

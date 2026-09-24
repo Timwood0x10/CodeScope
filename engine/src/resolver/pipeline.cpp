@@ -273,77 +273,13 @@ int64_t ResolverPipeline::run()
 	bool fuzzy_budget_exhausted = false;
 
 	// ── Batch: read all references into memory first ────────────────
-	// Instead of sqlite3_step per row in the hot loop, read all 108k refs
-	// into a vector at once. This avoids 108k individual sqlite3_step
-	// calls and lets the hot loop run entirely in memory (~10MB for 108k refs).
-	struct RefRow {
-		uint64_t ref_id;
-		std::string name;
-		uint64_t caller_id;
-		std::string caller_file;
-		int call_kind;
-		int arity; // caller arity from reference row (column r.arity)
-		int start_row; // Step 6: call site row for provenance
-		int start_col; // Step 6: call site col for provenance
-		std::string resolve_strategy;
-		// Step 3 (plan §3.1): structured call facts. Populated by
-		// per-language Visitors; used by the exact-first candidate
-		// generation in Step 5. Empty = unknown.
-		std::string qualified_target; // full call text, e.g. "b.Get"
-		std::string receiver_text; // syntactic receiver, e.g. "b"
-		std::string receiver_type; // inferred receiver type, e.g. "Box"
-		std::string import_alias; // import alias used, e.g. "fmt"
-		std::string call_site_file; // file path of the call site
-	};
+	// loadReferences (pipeline_load.cpp) reads every project reference
+	// into `refs` in one pass so the hot loop runs with no SQLite
+	// round-trips. RefRow itself lives in pipeline.h alongside
+	// ResolvedEdge (same 1000-line-rule split).
 	std::vector<RefRow> refs;
-	refs.reserve(65536); // pre-allocate for 108k typical
-
-	while (sqlite3_step(ref_st) == SQLITE_ROW) {
-		RefRow r;
-		r.ref_id =
-			static_cast<uint64_t>(sqlite3_column_int64(ref_st, 0));
-		const char *name_c = reinterpret_cast<const char *>(
-			sqlite3_column_text(ref_st, 1));
-		r.caller_id =
-			static_cast<uint64_t>(sqlite3_column_int64(ref_st, 2));
-		// Column 3 is r.arity — the call site's arity. Previously this
-		// column was selected but never read, so the caller arity was
-		// always 0 in applyConstraints, breaking overload resolution.
-		r.arity = sqlite3_column_int(ref_st, 3);
-		// Step 6: read call site position for provenance (columns 4-5).
-		r.start_row = sqlite3_column_int(ref_st, 4);
-		r.start_col = sqlite3_column_int(ref_st, 5);
-		const char *fp_c = reinterpret_cast<const char *>(
-			sqlite3_column_text(ref_st, 8));
-		r.call_kind = sqlite3_column_int(ref_st, 6);
-		const char *rs_c = reinterpret_cast<const char *>(
-			sqlite3_column_text(ref_st, 7));
-		// Step 3: read structured call facts (columns 9-13).
-		const char *qt_c = reinterpret_cast<const char *>(
-			sqlite3_column_text(ref_st, 9));
-		const char *rtx_c = reinterpret_cast<const char *>(
-			sqlite3_column_text(ref_st, 10));
-		const char *rty_c = reinterpret_cast<const char *>(
-			sqlite3_column_text(ref_st, 11));
-		const char *ia_c = reinterpret_cast<const char *>(
-			sqlite3_column_text(ref_st, 12));
-		const char *csf_c = reinterpret_cast<const char *>(
-			sqlite3_column_text(ref_st, 13));
-		if (!name_c || !*name_c || !fp_c)
-			continue;
-		r.name = name_c;
-		r.caller_file = fp_c;
-		r.resolve_strategy = rs_c ? rs_c : "";
-		r.qualified_target = qt_c ? qt_c : "";
-		r.receiver_text = rtx_c ? rtx_c : "";
-		r.receiver_type = rty_c ? rty_c : "";
-		r.import_alias = ia_c ? ia_c : "";
-		r.call_site_file = csf_c ? csf_c : fp_c;
-		refs.push_back(std::move(r));
-	}
-	sqlite3_finalize(ref_st);
+	loadReferences(ref_st, refs, total_refs);
 	ref_st = nullptr;
-	total_refs = static_cast<int64_t>(refs.size());
 
 	// Free the entity_index right after the hot loop — it's no longer needed.
 	// Store results in a vector for batch insert.

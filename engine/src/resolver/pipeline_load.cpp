@@ -220,6 +220,68 @@ int ResolverPipeline::loadEntityIndex(
 	return 0;
 }
 
+void ResolverPipeline::loadReferences(sqlite3_stmt *ref_st,
+				      std::vector<RefRow> &refs,
+				      int64_t &total_refs)
+{
+	// Read all project references into memory first. Instead of
+	// sqlite3_step per row in the hot loop, read every ref into a vector
+	// at once. This avoids per-row sqlite3_step calls and lets the hot
+	// loop run entirely in memory (~10MB for 108k refs). Extracted from
+	// run() so pipeline.cpp stays under the 1000-line rule.
+	refs.clear();
+	refs.reserve(65536); // pre-allocate for 108k typical
+
+	while (sqlite3_step(ref_st) == SQLITE_ROW) {
+		RefRow r;
+		r.ref_id =
+			static_cast<uint64_t>(sqlite3_column_int64(ref_st, 0));
+		const char *name_c = reinterpret_cast<const char *>(
+			sqlite3_column_text(ref_st, 1));
+		r.caller_id =
+			static_cast<uint64_t>(sqlite3_column_int64(ref_st, 2));
+		// Column 3 is r.arity — the call site's arity. Previously this
+		// column was selected but never read, so the caller arity was
+		// always 0 in applyConstraints, breaking overload resolution.
+		r.arity = sqlite3_column_int(ref_st, 3);
+		// Step 6: read call site position for provenance (columns 4-5).
+		r.start_row = sqlite3_column_int(ref_st, 4);
+		r.start_col = sqlite3_column_int(ref_st, 5);
+		const char *fp_c = reinterpret_cast<const char *>(
+			sqlite3_column_text(ref_st, 8));
+		r.call_kind = sqlite3_column_int(ref_st, 6);
+		const char *rs_c = reinterpret_cast<const char *>(
+			sqlite3_column_text(ref_st, 7));
+		// Step 3: read structured call facts (columns 9-13).
+		const char *qt_c = reinterpret_cast<const char *>(
+			sqlite3_column_text(ref_st, 9));
+		const char *rtx_c = reinterpret_cast<const char *>(
+			sqlite3_column_text(ref_st, 10));
+		const char *rty_c = reinterpret_cast<const char *>(
+			sqlite3_column_text(ref_st, 11));
+		const char *ia_c = reinterpret_cast<const char *>(
+			sqlite3_column_text(ref_st, 12));
+		const char *csf_c = reinterpret_cast<const char *>(
+			sqlite3_column_text(ref_st, 13));
+		if (!name_c || !*name_c || !fp_c)
+			continue;
+		r.name = name_c;
+		r.caller_file = fp_c;
+		r.resolve_strategy = rs_c ? rs_c : "";
+		r.qualified_target = qt_c ? qt_c : "";
+		r.receiver_text = rtx_c ? rtx_c : "";
+		r.receiver_type = rty_c ? rty_c : "";
+		r.import_alias = ia_c ? ia_c : "";
+		r.call_site_file = csf_c ? csf_c : fp_c;
+		refs.push_back(std::move(r));
+	}
+	// Ownership: ref_st is passed by value, so this finalize is the
+	// transfer point — the caller's pointer is stale afterwards and is
+	// nulled there (pipeline.cpp). Do not dereference ref_st after this.
+	sqlite3_finalize(ref_st);
+	total_refs = static_cast<int64_t>(refs.size());
+}
+
 void ResolverPipeline::loadDispatchIndex()
 {
 	// ── Step 8 (plan §8.1): Pre-load interface/trait implementations ──

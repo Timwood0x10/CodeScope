@@ -396,15 +396,31 @@ void GraphStore::setProjectReadiness(uint64_t project_id, const char *field,
 	if (!field || allowed_fields.find(field) == allowed_fields.end())
 		return;
 
+	// exec() sets error_ on failure but never clears it on success; clear
+	// here so error() reflects only THIS call (callers chain several
+	// readiness writes and check error() between them).
+	error_.clear();
+
 	// Ensure the readiness row exists
-	exec(std::string(
-		     "INSERT OR IGNORE INTO project_readiness (project_id) VALUES (" +
-		     std::to_string(project_id) + ")")
-		     .c_str());
-	exec(std::string("UPDATE project_readiness SET " + std::string(field) +
-			 "=" + std::to_string(value) +
-			 " WHERE project_id=" + std::to_string(project_id))
-		     .c_str());
+	if (!exec(std::string(
+			  "INSERT OR IGNORE INTO project_readiness (project_id) VALUES (" +
+			  std::to_string(project_id) + ")")
+			  .c_str())) {
+		error_ = "[module=store, method=setProjectReadiness] insert: " +
+			 error_;
+		return;
+	}
+	if (!exec(std::string("UPDATE project_readiness SET " +
+			      std::string(field) + "=" + std::to_string(value) +
+			      " WHERE project_id=" + std::to_string(project_id))
+			  .c_str())) {
+		error_ = "[module=store, method=setProjectReadiness] update: " +
+			 error_;
+		fprintf(stderr,
+			"setProjectReadiness: update %s failed: %s "
+			"[module=store, method=setProjectReadiness]\n",
+			field, error_.c_str());
+	}
 }
 
 int GraphStore::getProjectReadiness(uint64_t project_id, const char *field)

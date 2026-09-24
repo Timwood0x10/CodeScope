@@ -99,7 +99,43 @@ void PythonVisitor::visitNode(TSNode node, uint64_t parent_id)
 		return handleImport(node, parent_id);
 	if (strcmp(type, "assignment") == 0)
 		return handleAssignment(node, parent_id);
+	if (strcmp(type, "except_clause") == 0)
+		return handleExceptClause(node, parent_id);
 	JsVisitor::visitNode(node, parent_id);
+}
+
+// ── Except clause (bare-except evidence) ─────────────────────────
+//
+// Emits one Comment-kind record named "except" with empty qualified_name
+// when the clause catches nothing (`except:`). extractErrorFacts selects
+// exactly that shape — name='except', qualified_name='' — to produce
+// bare_except facts. A typed handler (`except ValueError:`) is evidence
+// the error was classified, so no record is emitted.
+void PythonVisitor::handleExceptClause(TSNode node, uint64_t parent_id)
+{
+	// tree-sitter-python except_clause children: "except" keyword,
+	// an optional type expression, an optional "as" pattern, then the
+	// block. A bare `except:` has no named child before the block.
+	bool bare = true;
+	uint32_t count = ts_node_child_count(node);
+	for (uint32_t i = 0; i < count; i++) {
+		TSNode child = ts_node_child(node, i);
+		const char *t = ts_node_type(child);
+		if (strcmp(t, "block") == 0)
+			break;
+		// "except" keyword is anonymous; any named node before the
+		// block is the caught type or the `as` pattern.
+		if (ts_node_is_named(child)) {
+			bare = false;
+			break;
+		}
+	}
+	if (bare) {
+		// Comment kind is persisted by insertFileResultBatch and
+		// extractErrorFacts matches on name + qualified_name only.
+		emitter_->emitComment("except", location(node), parent_id);
+	}
+	visitChildren(node, parent_id);
 }
 void PythonVisitor::handleFuncDef(TSNode node, uint64_t parent_id)
 {

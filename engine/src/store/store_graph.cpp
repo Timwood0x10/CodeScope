@@ -71,8 +71,13 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			"buildGraph: prepare file_list failed: %s "
 			"[module=store, method=buildGraph]\n",
 			sqlite3_errmsg(db_));
-		// Fall through: empty rebuild_files is a no-op, not a fatal error.
-		// The transaction is still committed below.
+		// Fail closed: an empty rebuild_files used to RELEASE the
+		// savepoint and return true, so the caller committed an index
+		// with no graph and reported ok:true (code_rules: no silent
+		// error handling).
+		if (fl_stmt)
+			sqlite3_finalize(fl_stmt);
+		return false;
 	}
 
 	std::vector<std::string> rebuild_files;
@@ -135,13 +140,34 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	exec("CREATE TEMP TABLE _rf (file_path TEXT PRIMARY KEY)");
 	{
 		sqlite3_stmt *ins = nullptr;
-		sqlite3_prepare_v2(
-			db_, "INSERT OR IGNORE INTO _rf (file_path) VALUES (?)",
-			-1, &ins, nullptr);
+		// Check prepare: bind/step on a NULL stmt is UB (and a failed
+		// _rf fill makes every `file_path IN (SELECT ... FROM _rf)`
+		// insert a silent no-op while graph_write_ok stays true).
+		if (sqlite3_prepare_v2(
+			    db_,
+			    "INSERT OR IGNORE INTO _rf (file_path) VALUES (?)",
+			    -1, &ins, nullptr) != SQLITE_OK) {
+			fprintf(stderr,
+				"buildGraph: prepare _rf insert failed: %s "
+				"[module=store, method=buildGraph]\n",
+				sqlite3_errmsg(db_));
+			exec("ROLLBACK TO SAVEPOINT buildGraph");
+			exec("RELEASE SAVEPOINT buildGraph");
+			return false;
+		}
 		for (auto &fp : rebuild_files) {
 			sqlite3_bind_text(ins, 1, fp.c_str(), -1,
 					  SQLITE_TRANSIENT);
-			sqlite3_step(ins);
+			if (sqlite3_step(ins) != SQLITE_DONE) {
+				fprintf(stderr,
+					"buildGraph: _rf insert step failed: "
+					"%s [module=store, method=buildGraph]\n",
+					sqlite3_errmsg(db_));
+				sqlite3_finalize(ins);
+				exec("ROLLBACK TO SAVEPOINT buildGraph");
+				exec("RELEASE SAVEPOINT buildGraph");
+				return false;
+			}
 			sqlite3_reset(ins);
 		}
 		sqlite3_finalize(ins);

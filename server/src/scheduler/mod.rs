@@ -386,7 +386,9 @@ pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> S
     // data for that slot).
     let mut final_results: Vec<ModuleResult> = Vec::new();
     for r in results {
-        if r.exit_code == 0 && (r.total_nodes > 0 || r.files_indexed == 0) {
+        // r.error is set for non-zero exit, missing JSON, AND engine
+        // ok:false — an engine failure must not pass as an empty module.
+        if r.exit_code == 0 && r.error.is_none() && (r.total_nodes > 0 || r.files_indexed == 0) {
             final_results.push(r);
             continue;
         }
@@ -432,7 +434,9 @@ pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> S
     // ── Phase 5: aggregate summary ────────────────────────────
     let success = final_results
         .iter()
-        .filter(|r| r.exit_code == 0 && (r.total_nodes > 0 || r.files_indexed == 0))
+        .filter(|r| {
+            r.exit_code == 0 && r.error.is_none() && (r.total_nodes > 0 || r.files_indexed == 0)
+        })
         .count();
     let fail = final_results.len() - success;
     let total_nodes: u64 = final_results.iter().map(|r| r.total_nodes).sum();
@@ -456,7 +460,9 @@ pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> S
 
     let module_db_paths: Vec<String> = final_results
         .iter()
-        .filter(|r| r.exit_code == 0 && (r.total_nodes > 0 || r.files_indexed == 0))
+        .filter(|r| {
+            r.exit_code == 0 && r.error.is_none() && (r.total_nodes > 0 || r.files_indexed == 0)
+        })
         .map(|r| r.db_path.clone())
         .collect();
 

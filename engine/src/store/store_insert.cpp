@@ -66,6 +66,10 @@ uint64_t GraphStore::insertGraphNode(uint64_t project_id,
 	sqlite3_bind_int(stmt, 17, node.is_entry_point ? 1 : 0);
 
 	int rc = sqlite3_step(stmt);
+	// Reset before returning so the cached stmt releases its SQLITE_STATIC
+	// bindings (which point into `node`) in this frame, not at the next
+	// cache reuse — same discipline as store_knowledge.cpp.
+	sqlite3_reset(stmt);
 	if (rc != SQLITE_DONE)
 		fprintf(stderr,
 			"insertGraphNode: step failed (rc=%d): %s "
@@ -113,6 +117,7 @@ uint64_t GraphStore::insertEntity(uint64_t project_id,
 	constexpr int kEntityArityUnknown = 0;
 	sqlite3_bind_int(stmt, 12, kEntityArityUnknown);
 	int rc = sqlite3_step(stmt);
+	sqlite3_reset(stmt);
 	if (rc != SQLITE_DONE && rc != SQLITE_CONSTRAINT)
 		fprintf(stderr,
 			"insertEntity step failed (rc=%d): %s "
@@ -135,6 +140,7 @@ void GraphStore::insertRelation(uint64_t project_id, uint64_t source_id,
 	sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(target_id));
 	sqlite3_bind_int(stmt, 4, type);
 	int rc = sqlite3_step(stmt);
+	sqlite3_reset(stmt);
 	if (rc != SQLITE_DONE && rc != SQLITE_CONSTRAINT)
 		fprintf(stderr,
 			"insertRelation step failed (rc=%d): %s "
@@ -166,6 +172,9 @@ uint64_t GraphStore::insertGraphEdge(uint64_t project_id,
 	sqlite3_bind_text(stmt, 8, edge.label.c_str(), -1, SQLITE_STATIC);
 
 	int rc = sqlite3_step(stmt);
+	// Reset before the SQLITE_CONSTRAINT branch so the cached stmt releases
+	// its SQLITE_STATIC bindings (pointing into `edge`) in this frame.
+	sqlite3_reset(stmt);
 	if (rc == SQLITE_CONSTRAINT) {
 		// INSERT OR IGNORE dropped the row (unique violation on
 		// (project_id, source_node_id, target_node_id, edge_type,
