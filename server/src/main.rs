@@ -254,8 +254,24 @@ fn main() {
         });
         let result = tools::execute(pid, "force_index_files", &tool_args);
         println!("{}", result);
+        // Both an explicit ok:false AND an "ok:true, files_indexed:0"
+        // empty run must fail the process: exit 0 here makes shell/CI
+        // callers treat it as an empty success — the same hazard the
+        // worker --file-list path guards against below. The engine
+        // reports ok:true for an empty run (engine_index_files.cpp:144
+        // jobs.empty() early return, and the writer path when every file
+        // is skipped as empty/known-parse-failure), so the ok flag alone
+        // is not a sufficient success predicate. Re-runs of a healthy
+        // index always report files_indexed > 0 (unchanged files are
+        // re-parsed and counted), so requiring it is safe.
+        let ok = serde_json::from_str::<Value>(&result)
+            .map(|v| v["ok"] == true && v["files_indexed"].as_u64().unwrap_or(0) > 0)
+            .unwrap_or(false);
 
         ffi::shutdown();
+        if !ok {
+            std::process::exit(1);
+        }
         return;
     }
 

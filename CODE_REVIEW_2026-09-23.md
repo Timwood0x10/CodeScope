@@ -639,8 +639,8 @@ JS `pycode/ZL/js`, TS `xxxcode/ts/zod`, Java `xxxcode/java/okhttp`.
 
 | Project | Tools verified | Index result |
 |---------|---------------|--------------|
-| Python multi-agent | 47/47 | 719 nodes / 426 edges / 15 files |
-| Go CodeTribunal | 47/47 | 853 nodes / 213 edges / 20 files |
+| Python multi-agent | 46/46 | 719 nodes / 426 edges / 15 files |
+| Go CodeTribunal | 46/46 | 853 nodes / 213 edges / 20 files |
 | C ccalls/c | 40+ | 3 nodes / 1 edge / 2 files |
 | C++ seamscope | 40+ | 10819 nodes / 9246 edges / 709 files |
 | Rust memscope-rs | core tools | 6740 nodes / 3197 edges / 187 files |
@@ -712,3 +712,89 @@ blocks open. Not a correctness bug; callers should retry.
   languages.
 - `build_evidence` / `build_project_state` / `get_project_state` produce
   consistent snapshots with the pass-6 `Done`/`Partial`/`Empty` workflow arms.
+
+## 18. Fix-phase re-verification — 5 T5 bugs + review batch (2026-09-25)
+
+Fixes landed in `7c2de89` (5 bugs + first review batch) and an uncommitted
+review batch on top (D1–D3, F1–F2, G1–G2, H1–H3). Release binary rebuilt;
+4 gates green (`make test-engine` exit 0, `make test-server` 116/116,
+`cargo clippy -D warnings` clean, `cargo fmt --check` clean). Every check
+below is one tool per invocation on a fresh `CODESCOPE_DB_PATH=/tmp/rv2_*.db`
+so the T5 artifacts stay untouched. No batch scripts.
+
+### P2-A `language_filter:"c"` empty index — FIXED
+
+| Repro | Before | After |
+|-------|--------|-------|
+| `force_index_files` + `language_filter:"c"` on `ccalls/c` | 0 nodes | **2 files / 3 nodes / 1 edge** |
+| same via `worker` (`ffi::index_project`) | 0 nodes | **2 files / 3 nodes / 1 edge** |
+| `language_filter:"cpp"` on the same `.c` project | 0 | 2 files (c↔cpp family) |
+| `language_filter:"C"` (uppercase) | 0 | 2 files |
+| `language_filter:"c\r\n"` (CRLF-tainted) | 0 | 2 files |
+| `language_filter:"rust"` on the C project | silent empty | `ok:false` + error |
+| `language_filter:"python"` on the C project | silent empty | `ok:false` + error |
+
+Acceptance met: `find_symbol "c_print"` (id 1, `language:"c"`),
+`find_symbol "run_c_side"` (id 2), `find_callees "main"` → `run_c_side`.
+Alias fold is correctly scoped: `language_filter:"js"` on a mixed fixture
+takes exactly 3 JS files (`.js/.cjs/.mjs`) and does **not** bleed into
+TypeScript; `language_filter:"cpp"` takes exactly the 6 C/C++-family files.
+
+### P2-B stats undercount (and P2-C JS force-index 0) — FIXED
+
+| Repro | Before | After |
+|-------|--------|-------|
+| Go `CodeTribunal` `force_index_files` → `get_graph_stats` (no enhance) | 0/0/0 | **853/213/20** |
+| JS `ZL/js` `force_index_files` → `get_graph_stats` (no enhance) | 0/0/0 | **44/67/6** |
+| `get_verifier_registry_status.entity_count` pre-enhance | 0 / undercount | **853** (matches `entity`) |
+
+P2-B and P2-C share one root (write-path / stale-DB race); both repros pass
+on the first call after indexing. `enhance_project` is still a real pass but
+is no longer required for correct stats.
+
+### P3-D build-artifact skip — FIXED
+
+| Repro | Before | After |
+|-------|--------|-------|
+| seamscope `force_index_files {"paths":["."]}` | 10819 nodes, `main` × 52 | **307 nodes, `main` × 1** (`engine/src/main.cpp`) |
+| polluted entity rows (`/build/`,`/_deps/`,`/_CPack`) | thousands | **0** |
+| Gradle `build/generated/BuildConfig.java` (D1) | indexed (leak) | **skipped** (`skipped_dirs:1`) |
+| `build-tools/libs`, `build-scripts/tmp`, `build-gradle/generated` (F1) | over-skipped | **all 3 kept** |
+| `build-release/` + `CMakeCache.txt` (G1) | leak route | **skipped** |
+
+Marker rule now layered: unambiguous output names (`target`, `_deps`,
+`node_modules`, `.git`, `cmakefiles`, `__pycache__`, `_cpack_packages`,
+`.gradle`, `.venv`, `venv`, `.tox`, `.mypy_cache`, `.pytest_cache`) skip
+outright; `build`/`build-*` skip only on build-system artifacts (CMake
+markers for any `build*`; Gradle leaves `classes/libs/generated/tmp` only
+for the exact name `build`). Explicit root paths still index their children.
+
+### P3-E transient `engine init failed` — FIXED
+
+4 concurrent `get_graph_stats` on one DB → all 4 returned 853/213/20.
+Concurrent write+read mix (`enhance_project` + 2× `get_graph_stats` +
+`find_symbol`) → all succeeded, no init failure. `busy_timeout` is set
+immediately after `sqlite3_open` with a bounded `SQLITE_BUSY`/`SQLITE_LOCKED`
+retry; open errors now carry their cause.
+
+### Review-batch fixes verified
+
+- D3: `codescope force-index --lang rust .` on a C project exits **1** on
+  `ok:false`; `--lang c` exits **0** on success. (`codescope cli` mode keeps
+  exit 0 by design — it is the JSON-output interface.)
+- H1/H2/H3 doc semantics: Gradle leaves documented as exact-`build`-only;
+  `walk_force_index` doc restored above its fn; exit-comment names shell/CI
+  callers (scheduler/quarantine use `worker`/`discover`, not `force-index`).
+
+### 46-tool sweep on the fresh Go DB (post-fix)
+
+All 46 catalog tools exercised individually (arg-name notes: `find_symbol`
+takes `symbol_name`; `get_neighbors`/`get_subgraph` take `node_id`;
+`index_file` takes `file_path`; `trace_flow`/`codescope_trace` take
+`function_name`; `graph_query` takes `dsl`; `detect_changes` needs absolute
+paths; `verify_claim` needs a nested `claim` object). All returned coherent
+data. Residual observations (pre-existing, out of scope for this fix batch):
+`build_evidence` still `[]` (T5 #5); `verify_review` "has/should" still
+`claims_parsed:0` (T5 #8); `build_project_state.dead_code.entities` still
+> `total` (T5 #4); `project_overview.total_symbols` (180) is a different
+metric than `entity` count (853) and does not change across `enhance_project`.

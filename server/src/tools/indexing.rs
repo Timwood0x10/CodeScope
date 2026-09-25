@@ -274,8 +274,9 @@ pub(super) fn h_index_file(project_id: u64, args: &Value) -> String {
 /// test fixtures, vendored deps, or generated code on demand. Nested
 /// compiler/package output trees are still skipped at any depth
 /// (node_modules/, target/, _deps/, __pycache__/, venvs, .git/, and
-/// build*/ dirs carrying CMake artifacts) — name such a directory
-/// itself in paths to index its contents anyway.
+/// build*/ dirs carrying build-system artifacts — CMake markers for any
+/// build*, Gradle leaves only for a dir named `build`) — name such a
+/// directory itself in paths to index its contents anyway.
 ///
 /// Args:
 ///   paths: array of absolute file/dir paths to force-index.
@@ -418,18 +419,11 @@ fn is_source_extension(name: &str) -> bool {
     crate::ffi::is_indexable_source(name)
 }
 
-/// Check a single file path against force-index rules:
-///   - must exist and be a regular file
-///   - must be within max_size
-///   - extension must be a recognised source extension
-///   - must pass the optional language whitelist
-///
-/// Returns the absolute path string if acceptable, None otherwise.
 /// Alias-folded language whitelist match. `c`/`cpp`/`c++` and the other
-/// label pairs below form one family because the engine's path classifier
-/// and the visitor layer disagree for `.c` (see query_analysis.cpp
-/// languagesCompatible) — exact-string matching dropped whole languages
-/// whenever the two labels differed.
+/// label pairs below form one family because the two layers have
+/// historically used different labels for the same language (short forms
+/// like `js`/`py` vs the engine's `javascript`/`python`) — exact-string
+/// matching dropped whole languages whenever the labels differed.
 fn lang_whitelisted(wl: &std::collections::HashSet<String>, lang: &str) -> bool {
     let alias_hit = |fam: &[&str]| fam.iter().any(|a| wl.contains(*a));
     match lang {
@@ -445,6 +439,13 @@ fn lang_whitelisted(wl: &std::collections::HashSet<String>, lang: &str) -> bool 
     }
 }
 
+/// Check a single file path against force-index rules:
+///   - must exist and be a regular file
+///   - must be within max_size
+///   - extension must be a recognised source extension
+///   - must pass the optional language whitelist
+///
+/// Returns the absolute path string if acceptable, None otherwise.
 fn filter_acceptable_file(
     path: &std::path::Path,
     max_size: u64,
@@ -490,9 +491,8 @@ fn filter_acceptable_file(
             ".scala" => "scala",
             _ => "",
         };
-        // Alias-fold before matching: the engine's path-based classifier
-        // can report `.c` as "cpp" while the map above says "c", so exact
-        // matching drops every file when the two labels disagree.
+        // Alias-fold before matching so short filter forms (`c`, `js`,
+        // `py`, …) accept the canonical label the map above emits.
         if !lang.is_empty() && !lang_whitelisted(wl, lang) {
             return None;
         }
@@ -503,23 +503,14 @@ fn filter_acceptable_file(
     Some(canon.to_string_lossy().to_string())
 }
 
-/// Recursively walk `root` for force-index. Bypasses all skip-dir
-/// rules (test/, docs/, vendored/, node_modules/, etc.) — this is
-/// the whole point of the force-index tool. Still respects:
-///   - file size limit
-///   - extension detectability
-///   - optional language whitelist
-///
-/// `depth` is the current recursion depth (call with 0 at the top).
-/// Recursion stops once `depth >= MAX_WALK_DEPTH` to guarantee the walk
-/// always terminates and cannot exhaust the stack (H-B). When the limit
-/// is hit, a warning is logged and descent into that subtree is skipped.
 /// Build/package output classifier for the force-index walk.
 ///
 /// Unambiguous output/cache names are skipped outright. `build`/`build-*`
 /// names are ambiguous — `build-tools/`, `build-scripts/`, `build-support/`
 /// hold real source — so they are skipped only when the directory carries
-/// CMake artifacts (i.e. is a configure/build output tree).
+/// build-system artifacts: CMake markers count for any `build*`, while the
+/// Gradle leaves (classes/libs/generated/tmp) count only for the exact
+/// name `build`.
 fn is_build_output_dir(path: &std::path::Path) -> bool {
     let lower = match path.file_name().and_then(|n| n.to_str()) {
         Some(n) => n.to_lowercase(),
@@ -544,13 +535,40 @@ fn is_build_output_dir(path: &std::path::Path) -> bool {
         return true;
     }
     if lower == "build" || lower.starts_with("build-") {
-        return path.join("CMakeCache.txt").exists()
+        // CMake leaves CMakeCache.txt / CMakeFiles / compile_commands.json
+        // behind; Gradle leaves classes / libs / generated / tmp — but the
+        // Gradle build dir is always exactly `build`, while `build-*` is the
+        // CMake build-release style. Restrict the common Gradle leaf names to
+        // the exact name so source trees like build-tools/libs/ (real
+        // source) are not swallowed by a directory name heuristic.
+        if path.join("CMakeCache.txt").exists()
             || path.join("CMakeFiles").is_dir()
-            || path.join("compile_commands.json").exists();
+            || path.join("compile_commands.json").exists()
+        {
+            return true;
+        }
+        if lower == "build" {
+            return path.join("classes").is_dir()
+                || path.join("libs").is_dir()
+                || path.join("generated").is_dir()
+                || path.join("tmp").is_dir();
+        }
+        return false;
     }
     false
 }
 
+/// Recursively walk `root` for force-index. Bypasses all skip-dir
+/// rules (test/, docs/, vendored/, node_modules/, etc.) — this is
+/// the whole point of the force-index tool. Still respects:
+///   - file size limit
+///   - extension detectability
+///   - optional language whitelist
+///
+/// `depth` is the current recursion depth (call with 0 at the top).
+/// Recursion stops once `depth >= MAX_WALK_DEPTH` to guarantee the walk
+/// always terminates and cannot exhaust the stack (H-B). When the limit
+/// is hit, a warning is logged and descent into that subtree is skipped.
 fn walk_force_index(
     root: &std::path::Path,
     max_size: u64,
@@ -630,8 +648,9 @@ mod tests {
 
     #[test]
     fn lang_whitelist_alias_folds_both_ways() {
-        // "c" must accept the c-family labels and the reverse — the engine
-        // path classifier and the visitor layer disagree for `.c`.
+        // Short filter forms must accept the canonical label and the
+        // reverse — callers write "c"/"js"/"py" while the map emits
+        // "c"/"javascript"/"python".
         assert!(lang_whitelisted(&wl(&["c"]), "c"));
         assert!(lang_whitelisted(&wl(&["c"]), "cpp"));
         assert!(lang_whitelisted(&wl(&["cpp"]), "c"));
@@ -656,15 +675,59 @@ mod tests {
         std::fs::create_dir_all(tmp.join("build-scripts")).unwrap();
         std::fs::create_dir_all(tmp.join("target")).unwrap();
         std::fs::create_dir_all(tmp.join("node_modules")).unwrap();
+        // Gradle-style output tree: no CMake markers, but generated/. The
+        // Gradle build dir is always exactly `build`, so this must skip.
+        std::fs::create_dir_all(tmp.join("gradle").join("build").join("generated")).unwrap();
+        // build-tools/ with a Gradle-looking leaf name is still source:
+        // the leaf markers apply only to the exact name `build`.
+        std::fs::create_dir_all(tmp.join("build-tools").join("libs")).unwrap();
+        std::fs::create_dir_all(tmp.join("build-gradle").join("generated")).unwrap();
+        // build-release/ with CMake artifacts (the CMake build-release style)
+        // must still skip — this is the only skip route left for build-*.
+        std::fs::create_dir_all(tmp.join("build-release")).unwrap();
+        std::fs::write(tmp.join("build-release").join("CMakeCache.txt"), "x").unwrap();
+        // build-* with no artifacts at all must stay indexable.
+        std::fs::create_dir_all(tmp.join("build-plain")).unwrap();
+        std::fs::create_dir_all(tmp.join("gradle-classes").join("build").join("classes")).unwrap();
+        std::fs::create_dir_all(tmp.join("gradle-libs").join("build").join("libs")).unwrap();
+        std::fs::create_dir_all(tmp.join("gradle-tmp").join("build").join("tmp")).unwrap();
+        // A dir named exactly `build` holding source with none of the
+        // markers must not be swallowed by the name heuristic.
+        std::fs::create_dir_all(tmp.join("src-build").join("build")).unwrap();
+        std::fs::write(
+            tmp.join("src-build").join("build").join("tool.c"),
+            "int t(){return 0;}\n",
+        )
+        .unwrap();
 
         // build/ with CMake artifacts is a build tree → skip.
         assert!(is_build_output_dir(&tmp.join("build")));
+        // Gradle build/ (exact name) with generated/ (no CMake artifacts)
+        // → skip too.
+        assert!(is_build_output_dir(&tmp.join("gradle").join("build")));
+        // Each Gradle leaf name alone is enough for the exact name `build`.
+        assert!(is_build_output_dir(
+            &tmp.join("gradle-classes").join("build")
+        ));
+        assert!(is_build_output_dir(&tmp.join("gradle-libs").join("build")));
+        assert!(is_build_output_dir(&tmp.join("gradle-tmp").join("build")));
+        // build-* with CMake artifacts (build-release style) → skip; this is
+        // the only skip route for build-* after the leaf-marker narrowing.
+        assert!(is_build_output_dir(&tmp.join("build-release")));
         // Unambiguous output/cache names → skip regardless of content.
         assert!(is_build_output_dir(&tmp.join("target")));
         assert!(is_build_output_dir(&tmp.join("node_modules")));
-        // Source trees that merely start with "build-" stay indexable.
+        // Source trees that merely start with "build-" stay indexable —
+        // even when they contain Gradle-looking leaf names (build-tools/libs,
+        // build-gradle/generated): leaf markers never apply to build-*.
         assert!(!is_build_output_dir(&tmp.join("build-tools")));
         assert!(!is_build_output_dir(&tmp.join("build-scripts")));
+        assert!(!is_build_output_dir(&tmp.join("build-gradle")));
+        // build-* with no artifacts at all (CMake or otherwise) stays
+        // indexable — name alone is never enough for `build*`.
+        assert!(!is_build_output_dir(&tmp.join("build-plain")));
+        // A dir named exactly `build` with no markers stays indexable too.
+        assert!(!is_build_output_dir(&tmp.join("src-build").join("build")));
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
