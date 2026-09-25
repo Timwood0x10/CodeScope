@@ -91,6 +91,23 @@ CombineMode combineModeFromString(const std::string &s);
 /// string for a CombineMode. Used by RuleLoader diagnostics and tests.
 const char *combineModeToString(CombineMode mode);
 
+/// Resolve the rule-file directory independently of the process CWD.
+/// Callers must not hard-code "engine/src/evidence/rules": that path
+/// only exists when running from the repository root, so the MCP/CLI
+/// vehicles (which run inside the target project) silently load zero
+/// rules and `build_evidence` returns [].
+///
+/// Resolution order:
+///   1. $CODESCOPE_RULES_DIR — explicit operator override.
+///   2. CODESCOPE_RULES_DIR_DEFAULT — absolute path baked in at build
+///      time by CMake (CMAKE_CURRENT_SOURCE_DIR/src/evidence/rules).
+///   3. "engine/src/evidence/rules" relative to CWD — back-compat for
+///      in-tree runs and tests that set the working directory.
+/// Each candidate must be a directory containing at least one *.json
+/// file; otherwise it is skipped. Returns "" when no candidate works
+/// (the caller logs and treats it as "no rules", not as a crash).
+std::string resolveRulesDir();
+
 /// RuleLoader reads all *.json rule files from a directory and
 /// returns a vector of RuleSet. The JSON schema is intentionally
 /// flat (see plan section 4.3) so a small string-based parser is

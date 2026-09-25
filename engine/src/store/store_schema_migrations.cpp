@@ -393,6 +393,23 @@ bool GraphStore::runSchemaMigrations()
 		}
 	}
 
+	// Migration: one module_summary row per (project_id, module_id).
+	// The model builder writes with INSERT OR REPLACE, but before the
+	// UNIQUE index existed the only conflict target was the
+	// AUTOINCREMENT id — so every enhance pass appended another full
+	// set of rows and SUM(dead_entities) grew by one module's worth per
+	// pass (T5 finding #4: dead_code.entities > dead_code.total).
+	// Existing DBs must be deduplicated before the index can be
+	// created; keep the newest row (highest id) per module.
+	{
+		migrationExec("DELETE FROM module_summary WHERE id NOT IN ("
+			      "  SELECT MAX(id) FROM module_summary"
+			      "  GROUP BY project_id, module_id)");
+		migrationExec("CREATE UNIQUE INDEX IF NOT EXISTS "
+			      "idx_module_summary_unique "
+			      "ON module_summary(project_id, module_id)");
+	}
+
 	// Migration: add visibility column to entity table (v0.2.2)
 	// 0 = private (default), 1 = pub/public/export, 2 = protected (Java/C# reserved)
 	// Populated by Visitors per language: Rust pub→1, Go exported-uppercase→1,

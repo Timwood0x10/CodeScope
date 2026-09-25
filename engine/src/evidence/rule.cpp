@@ -663,4 +663,51 @@ RuleLoader::loadFromDirectory(const std::string &dir_path) const
 	return result;
 }
 
+// ─── resolveRulesDir ─────────────────────────────────────────────
+//
+// Single authority for locating the rule-file directory. The three
+// candidates are tried in order; the first one that is a directory
+// containing at least one *.json file wins. See rule.h for the
+// rationale (CWD-relative lookup silently produced zero rules).
+
+std::string resolveRulesDir()
+{
+	const char *env_dir = std::getenv("CODESCOPE_RULES_DIR");
+	const char *build_default =
+#ifdef CODESCOPE_RULES_DIR_DEFAULT
+		CODESCOPE_RULES_DIR_DEFAULT;
+#else
+		nullptr;
+#endif
+	const char *candidates[] = {
+		env_dir,
+		build_default,
+		"engine/src/evidence/rules",
+	};
+	for (const char *cand : candidates) {
+		if (!cand || !*cand)
+			continue;
+		std::error_code ec;
+		if (!std::filesystem::is_directory(cand, ec))
+			continue;
+		bool has_json = false;
+		for (const auto &entry :
+		     std::filesystem::directory_iterator(cand, ec)) {
+			if (ec)
+				break;
+			if (entry.is_regular_file() &&
+			    entry.path().extension() == ".json") {
+				has_json = true;
+				break;
+			}
+		}
+		if (has_json)
+			return std::string(cand);
+	}
+	fprintf(stderr, "[module=evidence, method=resolveRulesDir] no rule "
+			"directory found (checked $CODESCOPE_RULES_DIR, build "
+			"default, and ./engine/src/evidence/rules)\n");
+	return std::string();
+}
+
 } // namespace evidence

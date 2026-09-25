@@ -360,6 +360,13 @@ target_compile_definitions(astgraph_engine PUBLIC
     SQLITE_ENABLE_FTS5
     SQLITE_THREADSAFE=1)
 
+# Absolute rules-dir default baked in at build time so
+# evidence::resolveRulesDir() can find engine/src/evidence/rules
+# regardless of the process working directory (the MCP/CLI vehicles
+# run inside the target project, where the relative path is absent).
+target_compile_definitions(astgraph_engine PRIVATE
+    CODESCOPE_RULES_DIR_DEFAULT="${CMAKE_CURRENT_SOURCE_DIR}/src/evidence/rules")
+
 target_include_directories(astgraph_engine PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src

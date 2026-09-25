@@ -166,6 +166,65 @@ int main()
 		printf("Test 7 (source stamping): PASS\n");
 	}
 
+	// ── Test 8: "has <subject>" existence claim ──────────────────
+	// "The project has a LeaderAgent class" must produce a
+	// CapabilityExists claim whose subject is the identity token
+	// "LeaderAgent" — the article and the trailing generic noun
+	// ("class") are not part of the name.
+	{
+		std::string text = "The project has a LeaderAgent class.";
+		auto claims = parser.parse(text, "ai_summary", "sum-8");
+		assert(hasClaim(claims, ClaimType::CapabilityExists,
+				"LeaderAgent"));
+		assert(!hasClaim(claims, ClaimType::CapabilityExists,
+				 "LeaderAgentClass"));
+		printf("Test 8 (has + trailing noun strip): PASS\n");
+	}
+
+	// ── Test 9: "should" behavioral claim ────────────────────────
+	// "c_print should handle null input" must produce a
+	// FunctionImplements claim whose subject is the VERBATIM function
+	// name (PascalCase-mangling would break the entity lookup) and
+	// whose object is the behavior phrase.
+	{
+		std::string text = "c_print should handle null input.";
+		auto claims = parser.parse(text, "ai_summary", "sum-9");
+		assert(hasClaim(claims, ClaimType::FunctionImplements,
+				"c_print"));
+		assert(!hasClaim(claims, ClaimType::FunctionImplements,
+				 "CPrint"));
+		bool object_ok = false;
+		for (const auto &c : claims) {
+			if (c.type == ClaimType::FunctionImplements &&
+			    c.subject == "c_print" &&
+			    c.object.rfind("handle", 0) == 0)
+				object_ok = true;
+		}
+		assert(object_ok);
+		printf("Test 9 (should -> FunctionImplements): PASS\n");
+	}
+
+	// ── Test 10: negated has/should must NOT become positive ────
+	// "has no X" / "doesn't have X" / "should never X" / "should not
+	// X" are denials; emitting a positive claim would invert the
+	// source polarity (the same failure mode Test 3b pins for the
+	// keyword contracts).
+	{
+		std::string t1 = "The project has no LeaderAgent class.";
+		std::string t2 = "The project doesn't have a LeaderAgent.";
+		std::string t3 = "c_print should never dereference null.";
+		std::string t4 = "c_print should not crash on empty input.";
+		auto c1 = parser.parse(t1, "ai_summary", "sum-10a");
+		auto c2 = parser.parse(t2, "ai_summary", "sum-10b");
+		auto c3 = parser.parse(t3, "ai_summary", "sum-10c");
+		auto c4 = parser.parse(t4, "ai_summary", "sum-10d");
+		assert(!hasClaim(c1, ClaimType::CapabilityExists, "LeaderAgent"));
+		assert(!hasClaim(c2, ClaimType::CapabilityExists, "LeaderAgent"));
+		assert(!hasClaim(c3, ClaimType::FunctionImplements, "c_print"));
+		assert(!hasClaim(c4, ClaimType::FunctionImplements, "c_print"));
+		printf("Test 10 (negated has/should suppressed): PASS\n");
+	}
+
 	printf("\n=== test_claim_parser PASSED ===\n");
 	return 0;
 }

@@ -6,12 +6,12 @@
 //   char *engine_build_evidence(uint64_t project_id,
 //                                const char *category_filter);
 //
-// The function loads rule files from the directory pointed to by
-// CODESCOPE_RULES_DIR (falling back to "engine/src/evidence/rules"
-// relative to CWD), runs all rules (or one category's rules when
-// `category_filter` is non-empty), and returns a JSON array of
-// Evidence objects. The caller MUST release the returned pointer via
-// engine_free_string().
+// The function loads rule files from the directory returned by
+// evidence::resolveRulesDir() ($CODESCOPE_RULES_DIR, then the build-
+// time default, then the in-tree relative path), runs all rules (or
+// one category's rules when `category_filter` is non-empty), and
+// returns a JSON array of Evidence objects. The caller MUST release
+// the returned pointer via engine_free_string().
 //
 // Output shape (JSON array of objects):
 //   [
@@ -126,9 +126,9 @@ std::string serializeEvidence(const evidence::Evidence &ev)
 
 // Returns JSON array of evidence for a project. Optionally filter by
 // category. Caller must free the returned string via
-// engine_free_string. Path: rules_dir defaults to
-// "engine/src/evidence/rules" relative to CWD, or override via
-// CODESCOPE_RULES_DIR env var.
+// engine_free_string. Rule files are located by
+// evidence::resolveRulesDir() so the result does not depend on the
+// process working directory.
 char *engine_build_evidence(uint64_t project_id, const char *category_filter)
 {
 	try {
@@ -137,10 +137,9 @@ char *engine_build_evidence(uint64_t project_id, const char *category_filter)
 			return dupString(
 				"{\"error\":\"engine not initialized\"}");
 
-		const char *env_dir = std::getenv("CODESCOPE_RULES_DIR");
-		std::string rules_dir = (env_dir && *env_dir) ?
-						env_dir :
-						"engine/src/evidence/rules";
+		std::string rules_dir = evidence::resolveRulesDir();
+		if (rules_dir.empty())
+			return dupString("[]");
 
 		evidence::EvidenceBuilder builder(g_store.get());
 		builder.loadRules(rules_dir);

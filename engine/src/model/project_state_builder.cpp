@@ -38,6 +38,7 @@
 #include <vector>
 
 #include "../evidence/evidence_builder.h"
+#include "../evidence/rule.h"
 #include "../store/store.h"
 
 namespace model
@@ -552,17 +553,6 @@ bool upsertProjectState(store::GraphStore *store, uint64_t project_id,
 	return true;
 }
 
-// Resolve the rules directory from CODESCOPE_RULES_DIR env var, or
-// fall back to the default relative path "engine/src/evidence/rules".
-// Mirrors the fallback used in engine_evidence_ffi.cpp.
-std::string resolveRulesDir()
-{
-	const char *env_dir = std::getenv("CODESCOPE_RULES_DIR");
-	if (env_dir && *env_dir)
-		return std::string(env_dir);
-	return "engine/src/evidence/rules";
-}
-
 } // namespace
 
 // ─── ProjectStateBuilder public API ──────────────────────────────
@@ -577,7 +567,7 @@ bool ProjectStateBuilder::build(uint64_t project_id)
 
 	// 1. Run evidence::EvidenceBuilder::buildAll to get all evidence.
 	evidence::EvidenceBuilder ev_builder(store_);
-	ev_builder.loadRules(resolveRulesDir());
+	ev_builder.loadRules(evidence::resolveRulesDir());
 	auto evidences = ev_builder.buildAll(project_id);
 
 	// 2. Aggregate evidence by category (count + titles).

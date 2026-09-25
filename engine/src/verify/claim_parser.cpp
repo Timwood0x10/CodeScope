@@ -43,6 +43,50 @@ std::string truncateAtBoundary(const std::string &raw)
 	return s;
 }
 
+// Strip a single trailing generic noun ("class", "function", …) from a
+// captured noun phrase. "has a LeaderAgent class" captures "LeaderAgent
+// class"; the noun carries no identity and must not become part of the
+// subject. Only a whole trailing word is removed — "error class mapping"
+// keeps its tail because "mapping" is not in the list. Returns the input
+// unchanged when the last word is not one of the generic nouns.
+std::string stripTrailingNoun(const std::string &raw)
+{
+	static const char *kGenericNouns[] = {
+		"class",     "function", "method",     "module",   "struct",
+		"interface", "type",	 "component",  "service",  "endpoint",
+		"route",     "handler",	 "capability", "feature",  "table",
+		"column",    "field",	 "variable",   "constant", "file",
+		"package",   "library",	 "dependency", "test",	   "tests",
+		"support",   "handler",	 "controller", "manager",
+	};
+	// Split off the last word.
+	size_t end = raw.size();
+	while (end > 0 && (raw[end - 1] == ' ' || raw[end - 1] == '\t'))
+		--end;
+	if (end == 0)
+		return raw;
+	size_t start = end;
+	while (start > 0 && raw[start - 1] != ' ' && raw[start - 1] != '\t')
+		--start;
+	std::string last = raw.substr(start, end - start);
+	// Inline lowercase compare (toLower is defined further down).
+	std::string last_lower;
+	last_lower.reserve(last.size());
+	for (char c : last)
+		last_lower.push_back(static_cast<char>(
+			std::tolower(static_cast<unsigned char>(c))));
+	for (const char *noun : kGenericNouns) {
+		if (last_lower == noun) {
+			std::string head = raw.substr(0, start);
+			while (!head.empty() &&
+			       (head.back() == ' ' || head.back() == '\t'))
+				head.pop_back();
+			return head;
+		}
+	}
+	return raw;
+}
+
 // Convert an ASCII string to lowercase (locale-independent) for
 // whitelist comparison.
 std::string toLower(const std::string &s)
@@ -121,6 +165,8 @@ bool isLayerName(const std::string &token)
 // boundary-truncation helper is applied before stamping the subject):
 //   1. supports?  <subject>  -> CapabilityExists(supported_by)
 //   2. implements? <subject> -> CapabilityExists(implemented_by)
+//   2b. has/contains <subject> -> CapabilityExists(has)
+//   2c. <subject> should <behavior> -> FunctionImplements(should)
 //   3. thread-safe            -> ContractHolds(ThreadSafe)
 //   4. memory-safe            -> ContractHolds(MemorySafe)
 //   5. zero-copy              -> ContractHolds(ZeroCopy)
@@ -193,6 +239,113 @@ std::vector<Claim> ClaimParser::parse(const std::string &text,
 	} catch (const std::regex_error &e) {
 		fprintf(stderr,
 			"ClaimParser: implements regex error: %s "
+			"[module=verify, method=parse]\n",
+			e.what());
+	}
+
+	// ── Pattern 2b: "has / contains <subject>" ───────────────────
+	// Existence claims ("The project has a LeaderAgent class"). The
+	// article is optional and the trailing generic noun is stripped so
+	// the subject is the identity token, not the prose. Negation
+	// ("has no X", "doesn't have X") must NOT become a positive claim.
+	try {
+		static const std::regex kHas(
+			"\\b(?:has|contains?)[[:space:]]+(?:an?[[:space:]]+|the[[:space:]]+)?"
+			"([A-Za-z][A-Za-z0-9_\\- ]{1,50})",
+			std::regex::icase);
+		std::sregex_iterator it(text.begin(), text.end(), kHas);
+		std::sregex_iterator end;
+		for (; it != end; ++it) {
+			std::string before = text.substr(
+				0, static_cast<size_t>((*it).position()));
+			std::string raw = (*it)[1].str();
+			// "has no X" / "has not X" / "has n't" / "never has X"
+			// are denials — skip them rather than flip polarity.
+			static const std::regex kNegation(
+				"(\\bnot|isn't|is not|never|n't)\\s*$",
+				std::regex::icase);
+			std::smatch neg;
+			if (std::regex_search(before, neg, kNegation))
+				continue;
+			std::string lower_raw = raw;
+			for (char &c : lower_raw)
+				c = static_cast<char>(std::tolower(
+					static_cast<unsigned char>(c)));
+			if (lower_raw.rfind("no ", 0) == 0 ||
+			    lower_raw.rfind("not ", 0) == 0 ||
+			    lower_raw.rfind("never ", 0) == 0)
+				continue;
+			std::string subject = toPascalCase(
+				stripTrailingNoun(truncateAtBoundary(raw)));
+			if (subject.empty())
+				continue;
+			Claim c;
+			c.type = ClaimType::CapabilityExists;
+			c.subject = subject;
+			c.predicate = "has";
+			c.object = "";
+			c.scope = "repository";
+			c.source_kind = source_kind;
+			c.source_ref = source_ref;
+			claims.push_back(std::move(c));
+		}
+	} catch (const std::regex_error &e) {
+		fprintf(stderr,
+			"ClaimParser: has regex error: %s "
+			"[module=verify, method=parse]\n",
+			e.what());
+	}
+
+	// ── Pattern 2c: "<subject> should <behavior>" ────────────────
+	// Behavioral claims ("c_print should handle null input"). The
+	// subject is a function/method name and is kept VERBATIM —
+	// PascalCase-mangling would break the entity lookup in
+	// FunctionImplementsVerifier. The verb phrase goes to `object`.
+	try {
+		static const std::regex kShould(
+			"\\b([A-Za-z_][A-Za-z0-9_]{0,60})[[:space:]]+should[[:space:]]+"
+			"([A-Za-z][A-Za-z0-9_\\- ,]{0,80})",
+			std::regex::icase);
+		std::sregex_iterator it(text.begin(), text.end(), kShould);
+		std::sregex_iterator end;
+		for (; it != end; ++it) {
+			std::string before = text.substr(
+				0, static_cast<size_t>((*it).position()));
+			std::string subject = (*it)[1].str();
+			std::string behavior =
+				truncateAtBoundary((*it)[2].str());
+			// "should never X" / "should not X" are obligations
+			// about absence — not positive FunctionImplements
+			// claims. Reject the match instead of flipping it.
+			static const std::regex kNegation(
+				"(\\bnot|isn't|is not|never|n't)\\s*$",
+				std::regex::icase);
+			std::smatch neg;
+			if (std::regex_search(before, neg, kNegation))
+				continue;
+			std::string lower_beh = behavior;
+			for (char &c : lower_beh)
+				c = static_cast<char>(std::tolower(
+					static_cast<unsigned char>(c)));
+			if (lower_beh.rfind("not ", 0) == 0 ||
+			    lower_beh.rfind("never ", 0) == 0 ||
+			    lower_beh.rfind("n't", 0) == 0)
+				continue;
+			if (subject.empty() || behavior.empty())
+				continue;
+			Claim c;
+			c.type = ClaimType::FunctionImplements;
+			c.subject = subject;
+			c.predicate = "should";
+			c.object = behavior;
+			c.scope = "repository";
+			c.source_kind = source_kind;
+			c.source_ref = source_ref;
+			claims.push_back(std::move(c));
+		}
+	} catch (const std::regex_error &e) {
+		fprintf(stderr,
+			"ClaimParser: should regex error: %s "
 			"[module=verify, method=parse]\n",
 			e.what());
 	}

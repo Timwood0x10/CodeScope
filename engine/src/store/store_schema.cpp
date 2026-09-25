@@ -682,6 +682,14 @@ bool GraphStore::createSchema()
     FOREIGN KEY (module_id) REFERENCES scope(id)
 );
 
+        -- One summary row per module. Without this key, the model
+        -- builder's INSERT OR REPLACE never conflicted (the primary
+        -- key is an AUTOINCREMENT id), so every enhance pass appended
+        -- a fresh set of rows and SUM(dead_entities) multiplied by the
+        -- number of passes — the T5 "dead_code.entities > total" bug.
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_module_summary_unique
+            ON module_summary(project_id, module_id);
+
 CREATE TABLE IF NOT EXISTS capability_state (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id INTEGER NOT NULL,

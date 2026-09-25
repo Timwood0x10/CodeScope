@@ -281,6 +281,39 @@ int main()
 		          count);
 		  }
 
+		  // ── Test 6: a second buildAll must REPLACE, not append ──
+		  // Regression: module_summary has no UNIQUE(project_id,
+		  // module_id), so INSERT OR REPLACE never conflicted and
+		  // every model-build pass appended another full set of rows.
+		  // SUM(dead_entities) then grew past the real entity count
+		  // (T5 finding #4: dead_code.entities > dead_code.total).
+		  {
+		   StateBuilder sb(&store, pid);
+		   int64_t total = sb.buildAll();
+		   assert(total > 0);
+		   int count = countModuleSummaries(store, pid);
+		   assert(count == 2);
+		   int64_t sum_dead = 0;
+		   {
+		    sqlite3 *db = store.handle();
+		    sqlite3_stmt *stmt = nullptr;
+		    const char *sql =
+		     "SELECT COALESCE(SUM(dead_entities),0) "
+		     "FROM module_summary WHERE project_id=?";
+		    assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
+		           SQLITE_OK);
+		    sqlite3_bind_int64(stmt, 1, (sqlite3_int64)pid);
+		    if (sqlite3_step(stmt) == SQLITE_ROW)
+		     sum_dead = sqlite3_column_int64(stmt, 0);
+		    sqlite3_finalize(stmt);
+		   }
+		   // api(4) + lib(2) = 6 — unchanged by the rebuild.
+		   assert(sum_dead == 6);
+		   printf("Test 6 (second buildAll replaces rows: "
+		          "count=%d sum_dead=%lld): PASS\n",
+		          count, (long long)sum_dead);
+		  }
+
 		  unlink(kDbPath.c_str());
 	printf("\nAll state builder batch tests passed.\n");
 	return 0;
