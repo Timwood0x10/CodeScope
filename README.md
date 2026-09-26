@@ -361,7 +361,7 @@ maximum concurrent module workers (default 4).
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
-| `verify_integrity` | Check README-promised features actually exist in code. | `{}` |
+| `verify_integrity` | Check README-promised features actually exist in code. | `{"max_findings": "integer (optional, default 200, max 2000)"}` |
 | `verify_claim` | Verify a single claim (capability_exists / contract_holds / architecture_follows). | `{"claim": "string (required)"}` |
 | `verify_summary` | Parse natural-language summary and verify each claim. | `{"text": "string (required)"}` |
 | `verify_review` | Verify code review comment claims. | `{"text": "string (required)"}` |

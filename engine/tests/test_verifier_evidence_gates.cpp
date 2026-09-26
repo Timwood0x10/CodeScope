@@ -120,6 +120,17 @@ static size_t countDeadFunctions(const std::vector<verify::Finding> &all)
 	return n;
 }
 
+/// Count the architecture-drift findings ("ArchitectureDrift") in an
+/// inspect() bundle. Mirrors countDeadModules / countDeadFunctions.
+static size_t countArchitectureDrift(const std::vector<verify::Finding> &all)
+{
+	size_t n = 0;
+	for (const auto &f : all)
+		if (f.type == "ArchitectureDrift")
+			++n;
+	return n;
+}
+
 static std::string verdictOf(const verify::EvidenceRecord &rec)
 {
 	switch (rec.verdict) {
@@ -276,6 +287,45 @@ int main()
 		assert(dead == 0 &&
 		       "empty relation table must not produce DeadFunction "
 		       "findings (vacuous NOT EXISTS)");
+	}
+
+	// ── Case 7: nested scope prefixes are not a boundary crossing ──
+	// A file under `src/ir/` prefix-matches BOTH the child scope and its
+	// ancestor `src/`, so an intra-module call is emitted as the pair
+	// ('src/','src/ir/') and read back as architecture drift. Parent and
+	// child modules must be excluded; a true sibling pair must survive.
+	clearGraph(db);
+	execOrDie(db, "DELETE FROM scope");
+	execOrDie(db,
+		  "INSERT INTO scope (project_id, parent_id, kind, name) VALUES (" +
+			  std::to_string(pid) + ",0,1,'src/')");
+	execOrDie(db,
+		  "INSERT INTO scope (project_id, parent_id, kind, name) VALUES (" +
+			  std::to_string(pid) + ",0,1,'src/ir/')");
+	execOrDie(db,
+		  "INSERT INTO scope (project_id, parent_id, kind, name) VALUES (" +
+			  std::to_string(pid) + ",0,1,'src/verify/')");
+	// 1 -> 2 lives entirely inside src/ir/ (both files prefix-match src/
+	// and src/ir/): must NOT be drift.
+	insertEntity(db, pid, 1, 0, "a", "src/ir/a.go", 1);
+	insertEntity(db, pid, 2, 0, "b", "src/ir/b.go", 1);
+	// 3 (src/ir/) -> 4 (src/verify/) is a genuine sibling crossing.
+	insertEntity(db, pid, 3, 0, "c", "src/ir/c.go", 1);
+	insertEntity(db, pid, 4, 0, "d", "src/verify/d.go", 1);
+	insertCallRelation(db, pid, 1, 2);
+	insertCallRelation(db, pid, 3, 4);
+	{
+		verify::DeadCodeInspector inspector(&store, pid);
+		const auto all = inspector.inspect();
+		const size_t drift = countArchitectureDrift(all);
+		printf("  [debug] architecture drift -> %zu "
+		       "(1 nested pair + 1 sibling pair)\n",
+		       drift);
+		// Only the src/ir/ -> src/verify/ sibling crossing may survive;
+		// the src/ir/-internal call must not surface as 'src/' <-> 'src/ir/'.
+		assert(drift == 1 &&
+		       "parent/child scope pairs must not be reported as "
+		       "architecture drift, but a sibling crossing must be");
 	}
 
 	store.close();

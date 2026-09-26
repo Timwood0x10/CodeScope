@@ -74,6 +74,11 @@ std::string simpleHash(const std::string &s);
 const char *detectLanguage(const char *file_path);
 char *dupString(const std::string &s);
 
+// engine_get_enhancement_status body. Lives in engine_queries_status.cpp
+// (split out of engine_queries.cpp for the 1000-line rule); the FFI wrapper
+// in engine_queries.cpp catches exceptions and formats the error envelope.
+char *getEnhancementStatusImpl(uint64_t project_id);
+
 // ─── Index Project: in-memory bulk path + shared post-parse ───────────
 //
 // For small modules (<= kMemBulkFileThreshold files) the parse workers

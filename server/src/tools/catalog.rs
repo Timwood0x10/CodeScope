@@ -114,8 +114,18 @@ pub fn all_tools() -> Vec<Tool> {
         },
         Tool {
             name: "verify_integrity".into(),
-            description: "Verify codebase integrity: checks that README-promised features actually exist in the code. Returns findings with evidence chains and confidence scores.".into(),
-            input_schema: json!({ "type": "object", "properties": {} }),
+            description: "Verify codebase integrity: checks that README-promised features actually exist in the code. Returns findings with evidence chains and confidence scores. The findings array is capped at max_findings (default 200); `truncated` is the completeness signal. `total` counts every verdict (including Supported ones, which are not listed as findings), so it is normally larger than the findings array.".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "max_findings": {
+                        "type": "integer",
+                        "description": "Maximum number of findings to include in the response (default 200, max 2000). `truncated` is true when the array was cut short; `total` counts all verdicts, not just findings.",
+                        "minimum": 1,
+                        "maximum": 2000
+                    }
+                }
+            }),
         },
         Tool {
             name: "verify_claim".into(),

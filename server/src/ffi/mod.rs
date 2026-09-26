@@ -93,7 +93,7 @@ unsafe extern "C" {
 
     fn engine_detect_changes(project_id: u64, modified_files_json: *const c_char) -> *mut c_char;
 
-    fn engine_verify_integrity(project_id: u64) -> *mut c_char;
+    fn engine_verify_integrity(project_id: u64, max_findings: i32) -> *mut c_char;
     fn engine_explain_symbol(project_id: u64, symbol_name: *const c_char) -> *mut c_char;
 
     // ── Knowledge + Evidence Layer (v0.3) ───────────────────────────
@@ -492,8 +492,8 @@ pub fn build_fts(project_id: u64) -> String {
     take_string(unsafe { engine_build_fts(project_id) })
 }
 
-pub fn verify_integrity(project_id: u64) -> String {
-    take_string(unsafe { engine_verify_integrity(project_id) })
+pub fn verify_integrity(project_id: u64, max_findings: i32) -> String {
+    take_string(unsafe { engine_verify_integrity(project_id, max_findings) })
 }
 
 pub fn explain_symbol(project_id: u64, symbol_name: &str) -> String {

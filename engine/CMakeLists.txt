@@ -186,6 +186,7 @@ set(ENGINE_SOURCES
         src/engine_index_metrics.cpp
     src/engine_scanner.cpp
     src/engine_queries.cpp
+    src/engine_queries_status.cpp
     src/engine_queries_context.cpp
     src/engine_ffi.cpp
     src/engine_filter_ffi.cpp

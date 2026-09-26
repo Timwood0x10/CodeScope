@@ -46,6 +46,15 @@ namespace
 // Trust score penalty per non-supported finding in engine_verify_integrity.
 static constexpr double kTrustScorePenalty = 0.1;
 
+// Default cap on the number of findings serialized into the
+// engine_verify_integrity response, and the absolute upper bound the
+// caller may request. The findings array is unbounded otherwise: a
+// 10k-entity index produces one DeadCode/Architecture/ModuleCoupling
+// finding per module/function and the JSON overflows the MCP write cap
+// (T5 finding #15). The real totals are always reported alongside.
+static constexpr int kDefaultMaxFindings = 200;
+static constexpr int kMaxFindingsCap = 2000;
+
 // ─── JSON Helpers ───────────────────────────────────────────────
 
 // Extract a string field value from a flat JSON object.
@@ -374,7 +383,14 @@ BatchResult verify_claim_batch(uint64_t project_id, const std::string &text,
 //
 // MEMORY: caller MUST free the returned char* via engine_free_string().
 // THREAD SAFETY: single-threaded (GraphStore writer invariant).
-extern "C" char *engine_verify_integrity(uint64_t project_id)
+//
+// `max_findings` caps how many entries are serialized into the
+// `findings` array (0 or negative selects the default; the absolute
+// upper bound is kMaxFindingsCap). `truncated` is true when the array
+// was cut short. `total` counts every verdict (Supported included,
+// which are not listed as findings), so it is normally larger than
+// the array length.
+extern "C" char *engine_verify_integrity(uint64_t project_id, int max_findings)
 {
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
@@ -387,7 +403,13 @@ extern "C" char *engine_verify_integrity(uint64_t project_id)
 							    10000);
 		(void)guard;
 
+		int limit = (max_findings <= 0) ? kDefaultMaxFindings :
+						  max_findings;
+		if (limit > kMaxFindingsCap)
+			limit = kMaxFindingsCap;
+
 		int supported = 0, contradicted = 0, unknown = 0, orphans = 0;
+		int emitted = 0;
 
 		std::ostringstream json;
 		json << "{\"findings\":[";
@@ -430,13 +452,17 @@ extern "C" char *engine_verify_integrity(uint64_t project_id)
 			g_store->insertFinding(project_id, "CapabilityVerifier",
 					       severity, 0, desc,
 					       rec.confidence);
-			if (!first)
-				json << ",";
-			first = false;
-			json << "{\"type\":\"CapabilityVerifier\","
-			     << "\"description\":\"" << jsonEscape(desc)
-			     << "\","
-			     << "\"confidence\":" << rec.confidence << "}";
+			if (emitted < limit) {
+				if (!first)
+					json << ",";
+				first = false;
+				++emitted;
+				json << "{\"type\":\"CapabilityVerifier\","
+				     << "\"description\":\"" << jsonEscape(desc)
+				     << "\","
+				     << "\"confidence\":" << rec.confidence
+				     << "}";
+			}
 		}
 
 		// Iterate contracts -> ContractHolds claims. ContractVerifier is
@@ -477,13 +503,17 @@ extern "C" char *engine_verify_integrity(uint64_t project_id)
 			g_store->insertFinding(project_id, "ContractVerifier",
 					       severity, 0, desc,
 					       rec.confidence);
-			if (!first)
-				json << ",";
-			first = false;
-			json << "{\"type\":\"ContractVerifier\","
-			     << "\"description\":\"" << jsonEscape(desc)
-			     << "\","
-			     << "\"confidence\":" << rec.confidence << "}";
+			if (emitted < limit) {
+				if (!first)
+					json << ",";
+				first = false;
+				++emitted;
+				json << "{\"type\":\"ContractVerifier\","
+				     << "\"description\":\"" << jsonEscape(desc)
+				     << "\","
+				     << "\"confidence\":" << rec.confidence
+				     << "}";
+			}
 		}
 
 		// DeadCodeInspector: find orphan modules and functions.
@@ -503,21 +533,33 @@ extern "C" char *engine_verify_integrity(uint64_t project_id)
 				// actual claim verdicts instead of collapsing to 0
 				// whenever any orphan exists.
 				orphans++;
-				if (!first)
-					json << ",";
-				first = false;
-				json << "{\"type\":\"DeadCodeInspector\","
-				     << "\"rule\":\"" << jsonEscape(f.type)
-				     << "\","
-				     << "\"description\":\""
-				     << jsonEscape(f.description) << "\","
-				     << "\"confidence\":" << f.confidence
-				     << "}";
+				if (emitted < limit) {
+					if (!first)
+						json << ",";
+					first = false;
+					++emitted;
+					json << "{\"type\":\"DeadCodeInspector\","
+					     << "\"rule\":\""
+					     << jsonEscape(f.type) << "\","
+					     << "\"description\":\""
+					     << jsonEscape(f.description)
+					     << "\","
+					     << "\"confidence\":"
+					     << f.confidence << "}";
+				}
 			}
 		}
 
-		json << "],\"total\":"
-		     << (supported + contradicted + unknown + orphans);
+		int total = supported + contradicted + unknown + orphans;
+		// Only non-Supported verdicts become findings; Supported ones
+		// `continue` above and never enter the array. Truncation must
+		// therefore compare `emitted` against the emit-eligible count,
+		// not `total` — otherwise any Supported claim makes the flag
+		// report a cut that never happened.
+		int findings_total = contradicted + unknown + orphans;
+		json << "],\"total\":" << total << ",\"truncated\":"
+		     << ((emitted < findings_total) ? "true" : "false")
+		     << ",\"limit\":" << limit;
 
 		// Trust score: 1.0 - kTrustScorePenalty per non-supported finding, clamped to [0, 1].
 		// Orphans are excluded: they are informational findings, not

@@ -263,6 +263,16 @@ std::vector<Finding> DeadCodeInspector::findArchitectureDrift()
 		" AND tgt_mod.kind = 1 "
 		"WHERE r.project_id = ? AND r.type = 1 "
 		" AND src_mod.id != tgt_mod.id "
+		// A file under a nested scope prefix-matches BOTH the child and
+		// its ancestor, so an intra-module call is emitted twice and
+		// surfaces as "Module 'src/' calls 'src/ir/'" — a parent/child
+		// pair is not a boundary crossing (T5 finding #6). substr/=
+		// rather than LIKE so '_' in a path is a literal, not a
+		// single-char wildcard.
+		" AND NOT (substr(src_mod.name, 1, length(tgt_mod.name)) = "
+		"tgt_mod.name "
+		"       OR substr(tgt_mod.name, 1, length(src_mod.name)) = "
+		"src_mod.name) "
 		"GROUP BY src_mod.name, tgt_mod.name "
 		"ORDER BY edges DESC LIMIT 15";
 	sqlite3_stmt *stmt = nullptr;
@@ -311,15 +321,33 @@ std::vector<Finding> DeadCodeInspector::findArchitectureDrift()
 	// therefore asserted a violation on the strength of two module names. It
 	// is now reported for what it is — coupling, ordered by call count.
 	std::string coupling_sql =
-		"SELECT ae.callee_module, ae.caller_module, COUNT(*) as calls "
+		"SELECT ae.caller_module, ae.callee_module, COUNT(*) as calls "
 		"FROM architecture_edge ae "
 		"JOIN entity e ON ae.entity_id = e.id "
 		"JOIN relation r ON r.project_id = ? AND r.target_id = e.id "
 		"JOIN entity caller ON r.source_id = caller.id "
 		"WHERE ae.project_id = ? "
-		" AND caller.file_path LIKE '%' || ae.callee_module || '%'"
-		" AND e.file_path LIKE '%' || ae.caller_module || '%'"
-		" GROUP BY ae.callee_module, ae.caller_module"
+		// A module calling itself is not a boundary crossing. The
+		// architecture_edge writer already skips same-scope pairs, but
+		// the read side must not trust that: without this predicate a
+		// self-pair row would be reported as "Module 'X' calls 'X' …
+		// across a module boundary" (T5 finding #6).
+		" AND ae.callee_module != ae.caller_module"
+		// Same for parent/child nesting: a file under `src/ir/` also
+		// prefix-matches `src/`, so intra-module calls surface as
+		// 'src/' ↔ 'src/ir/' pairs. substr/= keeps '_' literal.
+		" AND NOT (substr(ae.callee_module, 1, length(ae.caller_module)) "
+		"= ae.caller_module "
+		"       OR substr(ae.caller_module, 1, length(ae.callee_module)) "
+		"= ae.callee_module)"
+		// The call edge runs caller -> callee (relation.target_id is the
+		// callee, so `caller` is the source side). Matching the caller
+		// against callee_module here read every pair backwards and made
+		// the rule report only reversed edges — once the parent/child
+		// filter above removed those, this rule went silent on real data.
+		" AND caller.file_path LIKE '%' || ae.caller_module || '%'"
+		" AND e.file_path LIKE '%' || ae.callee_module || '%'"
+		" GROUP BY ae.caller_module, ae.callee_module"
 		" HAVING calls > 0"
 		" ORDER BY calls DESC LIMIT 10";
 	sqlite3_stmt *coupling_st = nullptr;
@@ -330,17 +358,18 @@ std::vector<Finding> DeadCodeInspector::findArchitectureDrift()
 		sqlite3_bind_int64(coupling_st, 2,
 				   static_cast<int64_t>(project_id_));
 		while (sqlite3_step(coupling_st) == SQLITE_ROW) {
-			const char *lower = reinterpret_cast<const char *>(
+			const char *caller_mod = reinterpret_cast<const char *>(
 				sqlite3_column_text(coupling_st, 0));
-			const char *upper = reinterpret_cast<const char *>(
+			const char *callee_mod = reinterpret_cast<const char *>(
 				sqlite3_column_text(coupling_st, 1));
 			int calls = sqlite3_column_int(coupling_st, 2);
 
 			Finding f;
 			f.type = "ModuleCoupling";
 			f.description = std::string("Module coupling: '") +
-					(lower ? lower : "") + "' calls '" +
-					(upper ? upper : "") + "' " +
+					(caller_mod ? caller_mod : "") +
+					"' calls '" +
+					(callee_mod ? callee_mod : "") + "' " +
 					std::to_string(calls) +
 					" times across a module boundary — a "
 					"dependency, not a layer violation.";

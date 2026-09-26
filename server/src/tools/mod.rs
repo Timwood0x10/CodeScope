@@ -37,8 +37,8 @@ fn h_find_references(project_id: u64, args: &Value) -> String {
 mod clamp;
 use clamp::{
     DEFAULT_CODESCOPE_TRACE_DEPTH, DEFAULT_QUERY_LIMIT, DEFAULT_TRACE_FLOW_DEPTH, MAX_QUERY_LIMIT,
-    clamp_depth, clamp_edge_type, clamp_knowledge_limit, clamp_max_communities, clamp_max_members,
-    clamp_radius,
+    clamp_depth, clamp_edge_type, clamp_findings_limit, clamp_knowledge_limit,
+    clamp_max_communities, clamp_max_members, clamp_radius,
 };
 
 // The indexing/worker machinery (subprocess orchestration, force-index
@@ -72,8 +72,9 @@ fn h_detect_changes(project_id: u64, args: &Value) -> String {
     ffi::detect_changes(project_id, &files)
 }
 
-fn h_verify_integrity(project_id: u64, _args: &Value) -> String {
-    ffi::verify_integrity(project_id)
+fn h_verify_integrity(project_id: u64, args: &Value) -> String {
+    let max_findings = clamp_findings_limit(args["max_findings"].as_i64());
+    ffi::verify_integrity(project_id, max_findings)
 }
 
 fn h_explain_symbol(project_id: u64, args: &Value) -> String {

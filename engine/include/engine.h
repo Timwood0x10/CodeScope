@@ -518,7 +518,10 @@ char *engine_get_project_state(uint64_t project_id);
 // that the caller MUST free via engine_free_string().
 
 /// Run integrity verification (dispatch via VerifierRegistry). Returns JSON.
-char *engine_verify_integrity(uint64_t project_id);
+/// `max_findings` caps the serialized `findings` array (0 = default cap).
+/// `truncated` is true when the array was cut short; `total` counts every
+/// verdict (including Supported, which are not listed as findings).
+char *engine_verify_integrity(uint64_t project_id, int max_findings);
 
 /// Parse a natural-language summary into claims and verify them.
 char *engine_verify_summary(uint64_t project_id, const char *text);

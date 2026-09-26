@@ -41,6 +41,14 @@ pub const MAX_MAX_COMMUNITIES: i64 = 500;
 pub const DEFAULT_MAX_MEMBERS: i64 = 10;
 pub const MAX_MAX_MEMBERS: i64 = 200;
 
+/// Default / upper bound for `verify_integrity` `max_findings`. The
+/// findings array scales with project size (one entry per orphan module,
+/// function, and drift rule hit), so an unbounded value overflows the MCP
+/// write cap on a large index (T5 finding #15). Matches the engine clamp
+/// in engine_verify_ffi.cpp.
+pub const DEFAULT_MAX_FINDINGS: i64 = 200;
+pub const MAX_FINDINGS_LIMIT: i64 = 2000;
+
 /// Clamp a client-supplied recursion depth into `[1, MAX_TRAVERSAL_DEPTH]`.
 /// The engine recurses `depth` levels, so an unclamped value (or the
 /// truncation of a huge i64 by `as i32`) could exhaust the stack and abort
@@ -86,6 +94,15 @@ pub fn clamp_max_members(value: Option<i64>) -> i32 {
     value
         .unwrap_or(DEFAULT_MAX_MEMBERS)
         .clamp(1, MAX_MAX_MEMBERS) as i32
+}
+
+/// Clamp a client-supplied `verify_integrity` `max_findings` into
+/// `[1, MAX_FINDINGS_LIMIT]`. The engine caps the serialized findings
+/// array at this value and reports `truncated` + the real `total`.
+pub fn clamp_findings_limit(value: Option<i64>) -> i32 {
+    value
+        .unwrap_or(DEFAULT_MAX_FINDINGS)
+        .clamp(1, MAX_FINDINGS_LIMIT) as i32
 }
 
 #[cfg(test)]
@@ -191,6 +208,19 @@ mod tests {
         assert_eq!(
             clamp_max_members(Some(5_000_000_000)),
             MAX_MAX_MEMBERS as i32
+        );
+    }
+
+    #[test]
+    fn test_clamp_findings_limit_bounds() {
+        assert_eq!(clamp_findings_limit(None), DEFAULT_MAX_FINDINGS as i32);
+        assert_eq!(clamp_findings_limit(Some(0)), 1);
+        assert_eq!(clamp_findings_limit(Some(-1)), 1);
+        assert_eq!(clamp_findings_limit(Some(50)), 50);
+        assert_eq!(clamp_findings_limit(Some(9_999)), MAX_FINDINGS_LIMIT as i32);
+        assert_eq!(
+            clamp_findings_limit(Some(5_000_000_000)),
+            MAX_FINDINGS_LIMIT as i32
         );
     }
 }

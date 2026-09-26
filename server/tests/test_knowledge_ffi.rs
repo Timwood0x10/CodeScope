@@ -28,7 +28,7 @@ unsafe extern "C" {
     fn engine_init(db_path: *const c_char) -> i32;
     fn engine_shutdown();
     fn engine_create_project(root_path: *const c_char, name: *const c_char) -> u64;
-    fn engine_verify_integrity(project_id: u64) -> *mut c_char;
+    fn engine_verify_integrity(project_id: u64, max_findings: i32) -> *mut c_char;
     fn engine_verify_claim(project_id: u64, claim_json: *const c_char) -> *mut c_char;
     fn engine_verify_summary(project_id: u64, text: *const c_char) -> *mut c_char;
     fn engine_explain_module(project_id: u64, module_name: *const c_char) -> *mut c_char;
@@ -370,7 +370,7 @@ fn test_explain_module_empty_name() {
 fn test_verify_integrity_returns_findings() {
     let _engine_guard = lock_engine();
     let pid = setup_engine();
-    let result = take_string(unsafe { engine_verify_integrity(pid) });
+    let result = take_string(unsafe { engine_verify_integrity(pid, 200) });
 
     teardown_engine();
 
@@ -398,5 +398,84 @@ fn test_verify_integrity_returns_findings() {
         json.get("total").map(|v| v.is_number()).unwrap_or(false),
         "verify_integrity output should contain a numeric 'total', got: {}",
         result
+    );
+
+    // New in the max_findings contract: `truncated` is the completeness
+    // signal and `limit` echoes the applied cap. `truncated` must be false
+    // here — the default cap (200) is above the fixture's finding count.
+    assert!(
+        json.get("truncated")
+            .map(|v| v.is_boolean())
+            .unwrap_or(false),
+        "verify_integrity output should contain a boolean 'truncated', got: {}",
+        result
+    );
+    assert!(
+        json.get("limit").map(|v| v.is_number()).unwrap_or(false),
+        "verify_integrity output should contain a numeric 'limit', got: {}",
+        result
+    );
+    assert_eq!(
+        json["limit"].as_i64(),
+        Some(200),
+        "limit should echo the requested cap"
+    );
+    assert_eq!(
+        json["truncated"].as_bool(),
+        Some(false),
+        "a complete findings array must not report truncated, got: {}",
+        result
+    );
+    let findings_len = json["findings"].as_array().map(|a| a.len()).unwrap_or(0);
+    assert!(
+        findings_len <= 200,
+        "findings array must respect the cap ({} > 200)",
+        findings_len
+    );
+}
+
+#[test]
+fn test_verify_integrity_truncates_at_max_findings() {
+    let _engine_guard = lock_engine();
+    let pid = setup_engine();
+    let result = take_string(unsafe { engine_verify_integrity(pid, 1) });
+
+    teardown_engine();
+
+    let json: serde_json::Value =
+        serde_json::from_str(&result).expect("verify_integrity should return valid JSON");
+
+    // With max_findings=1 the array must be capped at one element and the
+    // truncation flag must fire. `total` still reports the full verdict
+    // count (including Supported, which are never listed as findings).
+    assert_eq!(
+        json["limit"].as_i64(),
+        Some(1),
+        "limit should echo the requested cap, got: {}",
+        result
+    );
+    let findings_len = json["findings"].as_array().map(|a| a.len()).unwrap_or(0);
+    assert!(
+        findings_len <= 1,
+        "max_findings=1 must cap the findings array, got {} entries",
+        findings_len
+    );
+    let total = json["total"].as_i64().unwrap_or(0);
+    if total > 1 {
+        assert_eq!(
+            json["truncated"].as_bool(),
+            Some(true),
+            "a capped array must report truncated when total={} > 1 finding was emitted, got: {}",
+            total,
+            result
+        );
+    }
+    // total counts verdicts (Supported included), so it must be at least
+    // the number of listed findings.
+    assert!(
+        total as usize >= findings_len,
+        "total ({}) must be >= findings length ({})",
+        total,
+        findings_len
     );
 }
