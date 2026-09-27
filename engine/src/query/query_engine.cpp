@@ -854,4 +854,72 @@ std::string QueryEngine::explainSymbol(uint64_t project_id,
 	return json;
 }
 
+// ─── Bare-name ambiguity probe ─────────────────────────────────
+//
+// Shared by the name-based trace/lookup paths (traceCallChain,
+// trace_path). Returns "" when the name is unambiguous; otherwise a
+// `{"ambiguous":true,"candidates":[…]}` fragment the caller merges into
+// its response. Mirrors the getCallers ambiguity contract so a client
+// sees one shape for "which entity do you mean?" no matter which tool
+// asked (T5 finding #9).
+
+std::string bareNameCandidates(sqlite3 *db, uint64_t project_id,
+			       const char *name)
+{
+	if (!db || !name || !*name)
+		return std::string();
+	// Collect every matching entity id first — LIMIT 1 here is exactly
+	// the silent-first-match behaviour this probe exists to prevent.
+	std::vector<int64_t> ids;
+	{
+		const char *sql = "SELECT id FROM entity WHERE project_id=? "
+				  "AND (name=? OR qualified_name=?) "
+				  "ORDER BY id";
+		sqlite3_stmt *st = nullptr;
+		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) != SQLITE_OK)
+			return std::string();
+		sqlite3_bind_int64(st, 1, static_cast<int64_t>(project_id));
+		sqlite3_bind_text(st, 2, name, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(st, 3, name, -1, SQLITE_TRANSIENT);
+		while (sqlite3_step(st) == SQLITE_ROW)
+			ids.push_back(sqlite3_column_int64(st, 0));
+		sqlite3_finalize(st);
+	}
+	if (ids.size() < 2)
+		return std::string();
+
+	std::string cands;
+	bool first = true;
+	for (int64_t id : ids) {
+		std::string nm, fp;
+		int sr = 0, sc = 0;
+		const char *q = "SELECT name, file_path, start_row, start_col "
+				"FROM entity WHERE id=?";
+		sqlite3_stmt *st = nullptr;
+		if (sqlite3_prepare_v2(db, q, -1, &st, nullptr) == SQLITE_OK) {
+			sqlite3_bind_int64(st, 1, id);
+			if (sqlite3_step(st) == SQLITE_ROW) {
+				const unsigned char *n =
+					sqlite3_column_text(st, 0);
+				const unsigned char *f =
+					sqlite3_column_text(st, 1);
+				nm = n ? reinterpret_cast<const char *>(n) : "";
+				fp = f ? reinterpret_cast<const char *>(f) : "";
+				sr = sqlite3_column_int(st, 2);
+				sc = sqlite3_column_int(st, 3);
+			}
+			sqlite3_finalize(st);
+		}
+		if (!first)
+			cands += ",";
+		first = false;
+		cands += "{\"graph_node_id\":" + std::to_string(id) +
+			 ",\"name\":\"" + jsonEscape(nm.c_str()) +
+			 "\",\"file_path\":\"" + jsonEscape(fp.c_str()) +
+			 "\",\"start_row\":" + std::to_string(sr) +
+			 ",\"start_col\":" + std::to_string(sc) + "}";
+	}
+	return "{\"ambiguous\":true,\"candidates\":[" + cands + "]}";
+}
+
 } // namespace query

@@ -18,6 +18,18 @@ std::string jsonEscape(const char *s);
 std::string queryToJson(sqlite3 *db, const char *sql,
 			const char *result_key = "results");
 
+// Bare-name ambiguity probe shared by the name-based trace/lookup paths.
+// Returns "" when `name` matches exactly one entity (or none) — the caller
+// proceeds normally. When more than one entity shares the name it returns a
+// complete JSON fragment in the shape
+//   {"ambiguous":true,"candidates":[{"graph_node_id":N,"name":"…",
+//     "file_path":"…","start_row":N,"start_col":N}, …]}
+// so the caller can merge it into the response instead of silently tracing
+// the first match (T5 finding #9). Query failure returns "" (fail-open,
+// matching the getCallers ambiguity helper).
+std::string bareNameCandidates(sqlite3 *db, uint64_t project_id,
+			       const char *name);
+
 class QueryEngine {
     public:
 	explicit QueryEngine(store::GraphStore *store);

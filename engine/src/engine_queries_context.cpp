@@ -43,6 +43,19 @@ static char *tracePathImpl(uint64_t project_id, const char *from_name,
 				 "\"path\":[]}");
 	}
 	sqlite3 *db = g_store->handle();
+	// Homonym guard: resolveName below takes ORDER BY id LIMIT 1, which
+	// silently traces the first of several same-named entities (T5
+	// finding #9). Surface the candidates instead — same contract as
+	// getCallers / find_callers.
+	{
+		std::string amb =
+			query::bareNameCandidates(db, project_id, from_name);
+		if (!amb.empty())
+			return dupString("{\"path\":[]," + amb.substr(1));
+		amb = query::bareNameCandidates(db, project_id, to_name);
+		if (!amb.empty())
+			return dupString("{\"path\":[]," + amb.substr(1));
+	}
 	auto resolveName = [&](const char *name, uint64_t &out_id) -> bool {
 		const char *sql = "SELECT id FROM entity WHERE project_id=? "
 				  "AND name=? ORDER BY id LIMIT 1";
@@ -189,6 +202,20 @@ static char *exploreFunctionImpl(uint64_t project_id, const char *function_name,
 				 "\"callers\":[],\"callees\":[]}");
 	}
 	sqlite3 *db = g_store->handle();
+	// Homonym guard: this function resolves the bare name to a single
+	// entity below, so several same-named functions collapse to whichever
+	// one the lookup picks and the trace silently explores the wrong
+	// target (T5 finding #9). Surface the candidates instead — same
+	// contract as getCallers / find_callers.
+	{
+		std::string amb = query::bareNameCandidates(db, project_id,
+							    function_name);
+		if (!amb.empty())
+			return dupString("{\"name\":\"" +
+					 query::jsonEscape(function_name) +
+					 "\",\"callers\":[],\"callees\":[]," +
+					 amb.substr(1));
+	}
 	auto fetchNode = [&](uint64_t id, std::string &name, std::string &file,
 			     int &line) {
 		const char *sql =
@@ -643,6 +670,63 @@ static char *detectFfiBoundariesImpl(uint64_t project_id)
 							sqlite3_column_text(
 								st, 2)) :
 						"";
+				int64_t row = sqlite3_column_int64(st, 3);
+				json << "{\"name\":\"" << esc(name)
+				     << "\",\"file_path\":\"" << esc(fp)
+				     << "\",\"language\":\"" << esc(lang)
+				     << "\",\"line\":" << row << "}";
+			}
+			sqlite3_finalize(st);
+		}
+	}
+	json << "],";
+
+	// 3b. One-sided FFI: symbols that are CALLED but have no definition
+	// entity in the indexed project. This is the C↔Rust shape where one
+	// side is indexed alone — `int rust_add(int,int);` in a C header is
+	// a prototype whose body lives in a Rust crate that was never
+	// indexed. The name-prefix list above cannot see these (no
+	// extern_/wasm_/jni_ prefix), so without this the tool reports
+	// ffi_symbols:[] for a genuine boundary (T5 finding #7).
+	json << "\"external_symbols\":[";
+	{
+		const char *sql =
+			"SELECT DISTINCT sr.name, sr.file_path, sr.language, "
+			"       sr.start_row "
+			"FROM semantic_records sr "
+			"WHERE sr.project_id=? AND sr.kind=9 "
+			"AND sr.name <> '' "
+			"AND NOT EXISTS (SELECT 1 FROM entity e "
+			"                WHERE e.project_id=sr.project_id "
+			"                AND (e.name=sr.name OR "
+			"                     e.qualified_name=sr.name) "
+			"                AND e.kind IN (0,1)) "
+			"ORDER BY sr.name LIMIT 30";
+		sqlite3_stmt *st = nullptr;
+		bool first = true;
+		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) ==
+		    SQLITE_OK) {
+			sqlite3_bind_int64(st, 1,
+					   static_cast<int64_t>(project_id));
+			while (sqlite3_step(st) == SQLITE_ROW) {
+				if (!first)
+					json << ",";
+				first = false;
+				const unsigned char *n =
+					sqlite3_column_text(st, 0);
+				const unsigned char *f =
+					sqlite3_column_text(st, 1);
+				const unsigned char *l =
+					sqlite3_column_text(st, 2);
+				std::string name =
+					n ? reinterpret_cast<const char *>(n) :
+					    "";
+				std::string fp =
+					f ? reinterpret_cast<const char *>(f) :
+					    "";
+				std::string lang =
+					l ? reinterpret_cast<const char *>(l) :
+					    "";
 				int64_t row = sqlite3_column_int64(st, 3);
 				json << "{\"name\":\"" << esc(name)
 				     << "\",\"file_path\":\"" << esc(fp)

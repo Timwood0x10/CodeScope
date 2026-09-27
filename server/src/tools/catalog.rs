@@ -445,7 +445,7 @@ pub fn all_tools() -> Vec<Tool> {
         },
         Tool {
             name: "detect_ffi_boundaries".into(),
-            description: "Detect FFI (Foreign Function Interface) boundaries in the project. Returns language distribution, cross-language files, FFI-related symbols (extern, wasm, jni, cabi), and orphan symbols that may serve as FFI entry points.".into(),
+            description: "Detect FFI (Foreign Function Interface) boundaries in the project. Returns language distribution, cross-language files, FFI-related symbols (extern, wasm, jni, cabi), one-sided external_symbols (called here but defined outside the index — e.g. a C prototype for a Rust export), and orphan symbols that may serve as FFI entry points.".into(),
             input_schema: json!({ "type": "object", "properties": {} }),
         },
         Tool {

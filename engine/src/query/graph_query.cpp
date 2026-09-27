@@ -331,6 +331,74 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 	resolveEntities(src_name, src_type_val, src_ids);
 	resolveEntities(tgt_name, tgt_type_val, tgt_ids);
 
+	// A node spec that resolved to no entity matches nothing. Omitting
+	// the `IN (…)` filter for an empty id list (the previous behaviour)
+	// silently dropped that side of the pattern, so
+	// MATCH (A:x)-[Calls]->(A:y) with an unknown `y` returned every edge
+	// out of `x` instead of none.
+	if (src_ids.empty() || tgt_ids.empty()) {
+		std::string empty = "{\"results\":[],\"total\":0";
+		// Still worth explaining when a typed name matched no entity:
+		// the probe below reports same-name kinds the filter missed.
+		std::string hints;
+		auto probeOtherKinds = [&](const std::string &name,
+					   int wanted_type,
+					   const char *type_label) {
+			if (name.empty() || wanted_type < 0)
+				return;
+			std::string sql = "SELECT DISTINCT kind FROM entity "
+					  "WHERE project_id=? AND (name=? OR "
+					  "qualified_name=?)";
+			sqlite3_stmt *st = nullptr;
+			if (sqlite3_prepare_v2(db, sql.c_str(), -1, &st,
+					       nullptr) != SQLITE_OK)
+				return;
+			sqlite3_bind_int64(st, 1,
+					   static_cast<int64_t>(project_id));
+			sqlite3_bind_text(st, 2, name.c_str(), -1,
+					  SQLITE_TRANSIENT);
+			sqlite3_bind_text(st, 3, name.c_str(), -1,
+					  SQLITE_TRANSIENT);
+			std::string other;
+			while (sqlite3_step(st) == SQLITE_ROW) {
+				int k = sqlite3_column_int(st, 0);
+				if (wanted_type == 0 && (k == 0 || k == 1))
+					continue;
+				if (k == wanted_type)
+					continue;
+				if (!other.empty())
+					other += ",";
+				other += std::to_string(k);
+			}
+			sqlite3_finalize(st);
+			if (other.empty())
+				return;
+			if (!hints.empty())
+				hints += "; ";
+			hints += std::string("no ") + type_label + " named '" +
+				 jsonEscape(name.c_str()) +
+				 "' matched; the name exists under entity "
+				 "kind " +
+				 other +
+				 " (kind assignment is translator-specific, "
+				 "e.g. a constructor shares its class's "
+				 "name) — retry without the type label to "
+				 "see them";
+		};
+		// Only probe the side that actually resolved empty.
+		if (src_ids.empty())
+			probeOtherKinds(src_name, src_type_val,
+					src_type.c_str());
+		if (tgt_ids.empty())
+			probeOtherKinds(tgt_name, tgt_type_val,
+					tgt_type.c_str());
+		if (!hints.empty())
+			empty += ",\"hint\":\"" + jsonEscape(hints.c_str()) +
+				 "\"";
+		empty += "}";
+		return empty;
+	}
+
 	std::ostringstream json;
 	json << "{\"results\":[";
 	bool first_row = true;

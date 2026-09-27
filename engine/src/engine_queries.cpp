@@ -202,6 +202,12 @@ static char *enhanceProjectImpl(uint64_t project_id)
 
 	using Clock = std::chrono::steady_clock;
 	auto t_start = Clock::now();
+	// Per-step timings + output counts for the response body. The catalog
+	// documents files_processed / symbols_enhanced / call_edges / timing
+	// breakdowns; the old body returned only {status,time_ms} (T5 #4).
+	int64_t t_semantic = 0, t_buildgraph = 0, t_fts = 0, t_metrics = 0,
+		t_model = 0;
+	int64_t semantic_facts = 0;
 
 	// Step 0.5: Extract semantic facts
 	//
@@ -216,12 +222,14 @@ static char *enhanceProjectImpl(uint64_t project_id)
 		auto t = Clock::now();
 		g_store->beginTransaction();
 		model::SemanticFactExtractor extractor(g_store.get());
-		extractor.extractAll(project_id);
+		semantic_facts = extractor.extractAll(project_id);
 		g_store->commitTransaction();
+		t_semantic =
+			std::chrono::duration_cast<std::chrono::milliseconds>(
+				Clock::now() - t)
+				.count();
 		fprintf(stderr, "enhance: semantic_facts %lldms\n",
-			(long long)std::chrono::duration_cast<
-				std::chrono::milliseconds>(Clock::now() - t)
-				.count());
+			(long long)t_semantic);
 	}
 
 	// Step 1: buildGraph (skip if already finalized)
@@ -260,10 +268,12 @@ static char *enhanceProjectImpl(uint64_t project_id)
 			goto run_model_build;
 		}
 		g_store->commitTransaction();
+		t_buildgraph =
+			std::chrono::duration_cast<std::chrono::milliseconds>(
+				Clock::now() - t)
+				.count();
 		fprintf(stderr, "enhance: buildGraph %lldms\n",
-			(long long)std::chrono::duration_cast<
-				std::chrono::milliseconds>(Clock::now() - t)
-				.count());
+			(long long)t_buildgraph);
 	}
 
 	// Step 2: Build FTS (symbols no longer synced — graph_nodes is canonical)
@@ -279,20 +289,22 @@ static char *enhanceProjectImpl(uint64_t project_id)
 			// FTS path against an incomplete index.
 			goto run_model_build;
 		}
-		fprintf(stderr, "enhance: buildFTS %lldms\n",
-			(long long)std::chrono::duration_cast<
-				std::chrono::milliseconds>(Clock::now() - t)
-				.count());
+		t_fts = std::chrono::duration_cast<std::chrono::milliseconds>(
+				Clock::now() - t)
+				.count();
+		fprintf(stderr, "enhance: buildFTS %lldms\n", (long long)t_fts);
 	}
 
 	// Step 5: Resolve pre-computed metrics
 	{
 		auto t = Clock::now();
 		g_store->resolveStagedMetrics(project_id);
+		t_metrics =
+			std::chrono::duration_cast<std::chrono::milliseconds>(
+				Clock::now() - t)
+				.count();
 		fprintf(stderr, "enhance: resolveMetrics %lldms\n",
-			(long long)std::chrono::duration_cast<
-				std::chrono::milliseconds>(Clock::now() - t)
-				.count());
+			(long long)t_metrics);
 	}
 
 	// Finalize
@@ -308,18 +320,12 @@ run_model_build:
 	{
 		auto t = Clock::now();
 		runModelIndexSync(*g_store, project_id, true);
-		fprintf(stderr, "enhance: runModelIndexSync %lldms\n",
-			(long long)std::chrono::duration_cast<
-				std::chrono::milliseconds>(Clock::now() - t)
-				.count());
-	}
-	{
-		auto t = Clock::now();
 		buildKnowledgeGraphSync(*g_store, project_id);
-		fprintf(stderr, "enhance: buildKnowledgeGraphSync %lldms\n",
-			(long long)std::chrono::duration_cast<
-				std::chrono::milliseconds>(Clock::now() - t)
-				.count());
+		t_model = std::chrono::duration_cast<std::chrono::milliseconds>(
+				  Clock::now() - t)
+				  .count();
+		fprintf(stderr, "enhance: model/knowledge %lldms\n",
+			(long long)t_model);
 	}
 
 	int64_t total_ms =
@@ -328,10 +334,42 @@ run_model_build:
 			.count();
 	fprintf(stderr, "enhance: done %lldms total\n", (long long)total_ms);
 
+	// Post-pass counts from canonical tables: what the run actually
+	// produced, not a per-step tally (the index pipeline's per-file
+	// counts are not visible from here).
+	auto countRows = [&](const char *sql) -> int64_t {
+		sqlite3_stmt *st = nullptr;
+		int64_t n = 0;
+		if (sqlite3_prepare_v2(g_store->handle(), sql, -1, &st,
+				       nullptr) == SQLITE_OK) {
+			sqlite3_bind_int64(st, 1,
+					   static_cast<int64_t>(project_id));
+			if (sqlite3_step(st) == SQLITE_ROW)
+				n = sqlite3_column_int64(st, 0);
+			sqlite3_finalize(st);
+		}
+		return n;
+	};
+	const int64_t symbols =
+		countRows("SELECT COUNT(*) FROM entity WHERE project_id=?");
+	const int64_t call_edges = countRows(
+		"SELECT COUNT(*) FROM relation WHERE project_id=? AND type=1");
+	const int64_t files =
+		countRows("SELECT COUNT(DISTINCT file_path) FROM entity "
+			  "WHERE project_id=?");
+
 	std::ostringstream json;
 	json << "{"
 	     << "\"status\":\"ok\""
-	     << ",\"time_ms\":" << total_ms << "}";
+	     << ",\"time_ms\":" << total_ms << ",\"files_processed\":" << files
+	     << ",\"symbols_enhanced\":" << symbols
+	     << ",\"call_edges\":" << call_edges
+	     << ",\"semantic_facts\":" << semantic_facts << ",\"timing\":{"
+	     << "\"semantic_facts_ms\":" << t_semantic << ","
+	     << "\"buildgraph_ms\":" << t_buildgraph << ","
+	     << "\"fts_ms\":" << t_fts << ","
+	     << "\"metrics_ms\":" << t_metrics << ","
+	     << "\"model_ms\":" << t_model << "}}";
 	return dupString(json.str());
 }
 
@@ -529,10 +567,12 @@ static char *projectOverviewImpl(uint64_t project_id)
 		json << "],";
 	}
 
-	// Module count
+	// Module count. `scope` kind=1 is the canonical module registry the
+	// module tree is built from; the `modules` table is a coarser summary
+	// that under-counts on large indexes (T5 finding #13).
 	{
 		const char *sql =
-			"SELECT COUNT(*) FROM modules WHERE project_id = ?";
+			"SELECT COUNT(*) FROM scope WHERE project_id = ? AND kind = 1";
 		sqlite3_stmt *stmt = nullptr;
 		if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
 		    SQLITE_OK) {
@@ -545,34 +585,78 @@ static char *projectOverviewImpl(uint64_t project_id)
 		}
 	}
 
-	// Symbol count + analysis state breakdown (via entity)
+	// Symbol count + analysis state breakdown. The previous SQL selected
+	// COUNT(*) four times, so scanned/callgraph/metrics/embedding were
+	// always identical placeholders. Each column is now a real
+	// readiness probe (same definitions as get_enhancement_status).
 	{
-		const char *sql = "SELECT COUNT(*), "
-				  "COUNT(*), "
-				  "COUNT(*), "
-				  "COUNT(*) "
-				  "FROM entity e "
-				  "WHERE e.project_id = ? AND e.kind IN (0,1)";
-		sqlite3_stmt *stmt = nullptr;
-		if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
-		    SQLITE_OK) {
-			sqlite3_bind_int64(stmt, 1,
-					   static_cast<int64_t>(project_id));
-			if (sqlite3_step(stmt) == SQLITE_ROW) {
-				json << "\"total_symbols\":"
-				     << sqlite3_column_int(stmt, 0) << ",";
-				json << "\"analysis_progress\":{"
-				     << "\"scanned\":"
-				     << sqlite3_column_int(stmt, 0) << ","
-				     << "\"callgraph\":"
-				     << sqlite3_column_int(stmt, 2) << ","
-				     << "\"metrics\":"
-				     << sqlite3_column_int(stmt, 3) << ","
-				     << "\"embedding\":"
-				     << sqlite3_column_int(stmt, 4) << "},";
+		auto countWith = [&](const char *where) -> int64_t {
+			std::string sql = "SELECT COUNT(*) FROM entity "
+					  "WHERE project_id = ? AND " +
+					  std::string(where);
+			sqlite3_stmt *s = nullptr;
+			int64_t n = 0;
+			if (sqlite3_prepare_v2(db, sql.c_str(), -1, &s,
+					       nullptr) == SQLITE_OK) {
+				sqlite3_bind_int64(
+					s, 1, static_cast<int64_t>(project_id));
+				if (sqlite3_step(s) == SQLITE_ROW)
+					n = sqlite3_column_int64(s, 0);
+				sqlite3_finalize(s);
 			}
-			sqlite3_finalize(stmt);
+			return n;
+		};
+		const int64_t eligible = countWith("kind IN (0,1)");
+		// Callgraph-ready: entities on at least one Calls edge. Needs
+		// three project_id binds (outer + both UNION arms), so it is
+		// not expressed through countWith's single-bind helper.
+		int64_t cg_ready = 0;
+		{
+			sqlite3_stmt *s = nullptr;
+			const char *cg_sql =
+				"SELECT COUNT(*) FROM entity WHERE "
+				"project_id = ? AND kind IN (0,1) AND id IN ("
+				"  SELECT source_id FROM relation WHERE "
+				"project_id = ? AND type=1 "
+				"  UNION SELECT target_id FROM relation WHERE "
+				"project_id = ? AND type=1)";
+			if (sqlite3_prepare_v2(db, cg_sql, -1, &s, nullptr) ==
+			    SQLITE_OK) {
+				sqlite3_bind_int64(
+					s, 1, static_cast<int64_t>(project_id));
+				sqlite3_bind_int64(
+					s, 2, static_cast<int64_t>(project_id));
+				sqlite3_bind_int64(
+					s, 3, static_cast<int64_t>(project_id));
+				if (sqlite3_step(s) == SQLITE_ROW)
+					cg_ready = sqlite3_column_int64(s, 0);
+				sqlite3_finalize(s);
+			}
 		}
+		const int64_t metrics_ready =
+			countWith("kind IN (0,1) AND cyclomatic > 0");
+		int64_t embedding_ready = 0;
+		{
+			sqlite3_stmt *s = nullptr;
+			const char *vsql =
+				"SELECT COUNT(*) FROM node_vectors WHERE "
+				"project_id = ?";
+			if (sqlite3_prepare_v2(db, vsql, -1, &s, nullptr) ==
+			    SQLITE_OK) {
+				sqlite3_bind_int64(
+					s, 1, static_cast<int64_t>(project_id));
+				if (sqlite3_step(s) == SQLITE_ROW)
+					embedding_ready =
+						sqlite3_column_int64(s, 0);
+				sqlite3_finalize(s);
+			}
+		}
+		json << "\"total_symbols\":" << eligible << ",";
+		json << "\"analysis_progress\":{"
+		     << "\"scanned\":" << eligible << ","
+		     << "\"callgraph\":" << cg_ready << ","
+		     << "\"metrics\":" << metrics_ready << ","
+		     << "\"embedding\":" << embedding_ready << "},";
 	}
 
 	// Entry points

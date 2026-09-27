@@ -315,6 +315,24 @@ std::string QueryEngine::traceCallChain(uint64_t project_id,
 	    !*to_function) {
 		return "{\"error\":\"empty function name\"}";
 	}
+	sqlite3 *db_probe = (store_ && store_->handle()) ? store_->handle() :
+							   nullptr;
+	// Homonym guard: the BFS below is name-keyed, so two entities with
+	// the same name collapse into one node and the trace silently follows
+	// whichever edge appeared first. Surface the candidates instead
+	// (T5 finding #9) — same contract as getCallers.
+	if (db_probe) {
+		std::string amb = query::bareNameCandidates(
+			db_probe, project_id, from_function);
+		if (!amb.empty())
+			return "{\"found\":false,\"chain\":\"\",\"depth\":0," +
+			       amb.substr(1); // merge: keep "ambiguous":…
+		amb = query::bareNameCandidates(db_probe, project_id,
+						to_function);
+		if (!amb.empty())
+			return "{\"found\":false,\"chain\":\"\",\"depth\":0," +
+			       amb.substr(1);
+	}
 
 	// ── v0.2.5: SQLite graph-query backend (Windows / SQLite-only) ──
 	// Load the project's CALLS edges as (src_name → tgt_name) from the
