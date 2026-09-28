@@ -30,10 +30,13 @@ class PythonVisitor : public JsVisitor {
 	/// Extract the method name from an attribute callee.
 	/// For "obj.method(...)" the attribute's named children are:
 	///   identifier (obj), identifier (method).
+	/// For a chained callee (`self.helper.compute()`) the receiver is a nested
+	/// attribute, so the name taken is the LAST identifier of the OUTERMOST
+	/// attribute ("compute"); the receiver's name is only used when the
+	/// current level has no identifier (e.g. a subscript-style callee).
 	/// Returns the LAST identifier text ("method") so resolveSymbol()
-	/// can match the method definition. Returns "" if no identifier
-	/// child is found. Falls back to the full attribute text for
-	/// non-identifier attribute children (e.g. subscript expressions).
+	/// can match the method definition. Falls back to the full attribute text
+	/// for non-identifier attribute children (e.g. subscript expressions).
 	/// \param attr  The attribute node (callee of a call).
 	std::string extractAttributeName(TSNode attr);
 

@@ -209,6 +209,13 @@ static char *enhanceProjectImpl(uint64_t project_id)
 		t_model = 0;
 	int64_t semantic_facts = 0;
 
+	// Honest failure reporting (CODE_REVIEW_2026-09-27.md D1-5): every step
+	// that can fail sets failed_step + failure_detail so the response below
+	// reports ok:false instead of claiming success over a rolled-back or
+	// truncated graph. Stays null when the whole pipeline succeeds.
+	const char *failed_step = nullptr;
+	std::string failure_detail;
+
 	// Step 0.5: Extract semantic facts
 	//
 	// Runs unconditionally (even when the project is already finalized)
@@ -260,6 +267,10 @@ static char *enhanceProjectImpl(uint64_t project_id)
 		// model build below, which is independent of buildGraph).
 		if (!g_store->buildGraph(project_id, true)) {
 			g_store->rollbackTransaction();
+			failed_step = "buildGraph";
+			failure_detail =
+				"buildGraph failed; graph transaction rolled back, "
+				"the persisted graph may be truncated";
 			fprintf(stderr,
 				"enhance: buildGraph failed for project %llu — "
 				"skipping graph rebuild [module=engine, "
@@ -281,6 +292,8 @@ static char *enhanceProjectImpl(uint64_t project_id)
 		auto t = Clock::now();
 		g_store->buildFTSFromGraph(project_id);
 		if (!g_store->error().empty()) {
+			failed_step = "buildFTSFromGraph";
+			failure_detail = g_store->error();
 			fprintf(stderr,
 				"enhance: buildFTS failed: %s "
 				"[module=engine, method=engine_enhance_project]\n",
@@ -359,9 +372,15 @@ run_model_build:
 			  "WHERE project_id=?");
 
 	std::ostringstream json;
-	json << "{"
-	     << "\"status\":\"ok\""
-	     << ",\"time_ms\":" << total_ms << ",\"files_processed\":" << files
+	json << "{";
+	if (failed_step) {
+		json << "\"ok\":false,\"status\":\"failed\""
+		     << ",\"failed_step\":\"" << failed_step << "\""
+		     << ",\"error\":\"" << jsonEscape(failure_detail) << "\"";
+	} else {
+		json << "\"ok\":true,\"status\":\"ok\"";
+	}
+	json << ",\"time_ms\":" << total_ms << ",\"files_processed\":" << files
 	     << ",\"symbols_enhanced\":" << symbols
 	     << ",\"call_edges\":" << call_edges
 	     << ",\"semantic_facts\":" << semantic_facts << ",\"timing\":{"

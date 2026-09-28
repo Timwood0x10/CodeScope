@@ -56,6 +56,29 @@ class JsVisitor {
 	SemanticEmitter *emitter_;
 	const char *source_;
 
+	// ── Recursion depth guard ───────────────────────────────
+	// tree-sitter accepts pathologically deep ASTs (tens of thousands of
+	// nested nodes, e.g. 20k nested calls). The visitor walk is recursive
+	// (visitChildren → visitNode → handleX → visitChildren …), so such input
+	// overflows the native stack and crashes (SIGBUS/SIGSEGV) — a fault the
+	// FFI try/catch boundary cannot recover from. visitChildren and
+	// collectDefinedNames are the two choke points every descent passes
+	// through, so bounding their nesting bounds the whole walk.
+	//
+	// The cap MUST fit the smallest stack the walk can run on. The parallel
+	// indexer parses on spawned std::threads, whose default stack is 512 KB
+	// on macOS (vs. 8 MB for the main thread); one visit level costs up to
+	// ~1.5 KB (visitChildren + visitNode + a language handleX frame with its
+	// std::string locals). 250 levels ≈ 375 KB leaves a safe margin under
+	// 512 KB while still being far deeper than any hand-written source.
+	// Shared by all language visitors via inheritance.
+	static constexpr int kMaxVisitDepth = 250;
+	int visit_depth_ = 0;
+	// Set once per visit() when the depth cap first truncates a subtree, so
+	// the truncation is reported exactly once instead of silently or per
+	// node. Reset in reset() and at the top of visit().
+	bool depth_truncated_ = false;
+
 	// ── Scope tracking ──────────────────────────────────────
 	struct Scope {
 		std::unordered_map<std::string, uint64_t> symbols;
@@ -168,8 +191,11 @@ class JsVisitor {
 
 	/// Collect every name this file defines, starting at the tree root.
 	/// Node types that introduce a name are per-language (see
-	/// kDefNodeTypes in js_visitor.cpp).
-	void collectDefinedNames(TSNode node);
+	/// kDefNodeTypes in js_visitor.cpp). `depth` bounds the recursive walk
+	/// with the same kMaxVisitDepth cap as visitChildren so a pathologically
+	/// deep AST cannot overflow the stack here (this walk runs before the
+	/// main visit).
+	void collectDefinedNames(TSNode node, int depth = 0);
 
 	/// True when `name` is defined by the file being visited, i.e. a call to it
 	/// is a call to user code and must not be filtered as a builtin.

@@ -6,13 +6,15 @@
 // .gitignore. Patterns are comma-separated globs matched against the
 // project-relative path via globMatch().
 //
-// Covers five scenarios:
+// Covers six scenarios:
 //   1. Basic exclusion: "test/*,docs/*" skips test/foo.cpp, allows src/main.cpp.
 //   2. Whitespace trimming: " test/* , docs/* " is equivalent to the trimmed form.
 //   3. Unset env var: no user exclusions (only built-in defaults apply).
 //   4. Directory skipping: "vendor/*" skips the vendor/ directory entry.
 //   5. Non-default path: a custom dir not in the built-in skip list is excluded
 //      only when the env var is set — isolates the env-var effect from defaults.
+//   6. Escaped comma: "a\,b/**" is ONE pattern (a directory named "a,b"), while
+//      an unescaped comma still separates patterns (D2-7).
 #include "../src/filter_policy.h"
 
 #include <cassert>
@@ -115,6 +117,23 @@ int main()
 		FilterPolicy fp2 = makePolicyWithEnv(nullptr);
 		assert(!fp2.shouldSkipEntry("custom_skip/foo.cpp", false));
 		printf("  [PASS] non-default path: custom_skip/* skipped only with env\n");
+	}
+
+	// ── 6. Escaped comma inside a pattern ────────────────────────
+	//
+	// A directory whose name contains a literal comma ("a,b") yields the
+	// pattern "a,b/**", which the producer escapes as "a\,b/**" so the comma
+	// splitter does not tear it into "a\" + "b/**" (neither of which matches,
+	// so the file would silently NOT be excluded).
+	{
+		FilterPolicy fp = makePolicyWithEnv("a\\,b/**,src/*");
+		// The escaped comma belongs to ONE pattern, so the path matches.
+		assert(fp.shouldSkipEntry("a,b/foo.cpp", false));
+		// A neighbouring path is still not excluded.
+		assert(!fp.shouldSkipEntry("a/other.cpp", false));
+		// The unescaped comma still separates the second pattern.
+		assert(fp.shouldSkipEntry("src/main.cpp", false));
+		printf("  [PASS] escaped comma stays inside one pattern\n");
 	}
 
 	// Clean up: unset the env var so it doesn't leak to other tests.

@@ -244,6 +244,12 @@ bool FilterPolicy::loadExcludeEnv()
 	// whole path only `dir/**` prunes a subtree; a bare "dir" or "dir/" matches
 	// nothing on its own. This comment used to claim "test/*" covered nested
 	// files, which made the suggested patterns exclude almost nothing.
+	//
+	// The list separator is a comma, and a pattern may contain one — a project
+	// with a directory named "a,b" produces `a,b/**`. Such a comma is escaped
+	// as `\,` by the producer (see join_exclude_patterns in
+	// server/src/scheduler/worker.rs); `\\` is a literal backslash. Any other
+	// backslash is kept verbatim so pre-existing patterns keep their meaning.
 	const char *env = getenv(kExcludePathsEnv);
 	if (!env || !*env) {
 		// Env var not set or empty — nothing to load.
@@ -251,10 +257,9 @@ bool FilterPolicy::loadExcludeEnv()
 		return false;
 	}
 	std::string raw(env);
-	size_t start = 0, end;
-	do {
-		end = raw.find(',', start);
-		std::string pat = raw.substr(start, end - start);
+	std::string pat;
+	pat.reserve(raw.size());
+	auto flush = [this, &pat]() {
 		// Trim leading/trailing whitespace around each pattern.
 		auto b = pat.find_first_not_of(" \t");
 		if (b != std::string::npos) {
@@ -263,7 +268,22 @@ bool FilterPolicy::loadExcludeEnv()
 		}
 		if (!pat.empty())
 			exclude_patterns_.push_back(std::move(pat));
-		start = end + 1;
-	} while (end != std::string::npos);
+		pat.clear();
+	};
+	for (size_t i = 0; i < raw.size(); ++i) {
+		char ch = raw[i];
+		if (ch == '\\' && i + 1 < raw.size() &&
+		    (raw[i + 1] == ',' || raw[i + 1] == '\\')) {
+			pat.push_back(raw[i + 1]);
+			++i;
+			continue;
+		}
+		if (ch == ',') {
+			flush();
+			continue;
+		}
+		pat.push_back(ch);
+	}
+	flush();
 	return !exclude_patterns_.empty();
 }

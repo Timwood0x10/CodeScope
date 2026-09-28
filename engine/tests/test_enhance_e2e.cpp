@@ -103,6 +103,13 @@ static int internal_impl(int x) {
 	check(enh != nullptr, "enhance_project result");
 	check(strstr(enh, "\"status\"") != nullptr,
 	      "enhance: has status field");
+	// Honest reporting (CODE_REVIEW_2026-09-27.md D1-5): the success path
+	// must state ok:true + status:"ok" explicitly. A failed step now returns
+	// ok:false with failed_step instead of claiming success over a
+	// rolled-back graph.
+	check_json_has(enh, "\"ok\":true", "enhance: ok true on success");
+	check_json_has(enh, "\"status\":\"ok\"",
+		       "enhance: status ok on success");
 	printf("PASS: enhance run1 — %s\n", enh);
 	engine_free_string(enh);
 
@@ -156,8 +163,8 @@ static int internal_impl(int x) {
 	       &cg_st2);
 	// Idempotency: callgraph_ready must not decrease
 	check(cg_st2 == cg_st, "rerun: callgraph_ready unchanged");
-	printf("PASS: rerun idempotent — cg_ready %d→%d\n%s\n%s\n",
-	       cg_st, cg_st2, enh2, st2);
+	printf("PASS: rerun idempotent — cg_ready %d→%d\n%s\n%s\n", cg_st,
+	       cg_st2, enh2, st2);
 	engine_free_string(enh2);
 	engine_free_string(st2);
 

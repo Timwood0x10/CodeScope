@@ -323,7 +323,12 @@ void GoVisitor::handleCall(TSNode node, uint64_t parent_id)
 	// that happens to share a builtin's name, and dropping its record would
 	// hide a real project-internal call edge. `len(x)` has no receiver and
 	// is still filtered.
-	if (selector_name.empty() && !name.empty() && isGoBuiltin(name)) {
+	//
+	// A name THIS FILE declares is user code whatever the builtin list says
+	// (`func len(x []int) int`), so it survives the filter — the same
+	// exemption the JS/Rust/Java/Python/C visitors apply.
+	if (selector_name.empty() && !name.empty() && isGoBuiltin(name) &&
+	    !isLocallyDefined(name)) {
 		visitChildren(node, parent_id);
 		return;
 	}

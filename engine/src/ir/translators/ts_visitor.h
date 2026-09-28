@@ -71,6 +71,19 @@ class TsVisitor : public JsVisitor {
 	 */
 	void visitEnumDecl(TSNode node, uint64_t parent_id);
 
+	/**
+	 * Emit one InterfaceImpl record per type named in a TS
+	 * `implements_clause` subtree (`class Foo implements Bar, Baz<T>`).
+	 * The clause lists the type nodes directly, so this walks them and
+	 * records each base type name; without it every `implements` edge was
+	 * silently dropped for TypeScript (and therefore TSX).
+	 * \param node       The implements_clause node.
+	 * \param impl_type  Name of the implementing class.
+	 * \param parent_id  Record to attach the impl records to (the class).
+	 */
+	void emitImplementClause(TSNode node, const std::string &impl_type,
+				 uint64_t parent_id);
+
     private:
 	/// Extract the bare type name from a TS type annotation node,
 	/// stripping generics (`Array<T>` → "Array"), union/intersection

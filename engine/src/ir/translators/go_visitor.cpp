@@ -6,6 +6,33 @@
 namespace ir
 {
 
+namespace
+{
+/// Collect the identifier nodes of one side of a Go `:=` / `=`.
+///
+/// tree-sitter-go wraps BOTH sides of `a, b := x, y` in expression_list nodes
+/// (the rule reduces with three children: left, ":=", right), so the names sit
+/// one level below the declaration. Scanning the declaration's own children
+/// for `identifier` therefore matched nothing and silently dropped every short
+/// variable declaration.
+/// \param list  An expression_list node (or the declaration itself).
+/// \param out   Appended identifier nodes, in source order.
+void collectGoListIdentifiers(TSNode list, std::vector<TSNode> &out)
+{
+	uint32_t cnt = ts_node_child_count(list);
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(list, i);
+		if (!ts_node_is_named(c))
+			continue;
+		const char *t = ts_node_type(c);
+		if (strcmp(t, "identifier") == 0)
+			out.push_back(c);
+		else if (strcmp(t, "expression_list") == 0)
+			collectGoListIdentifiers(c, out);
+	}
+}
+} // namespace
+
 GoVisitor::GoVisitor()
 {
 }
@@ -36,6 +63,11 @@ SemanticUnit *GoVisitor::visit(TSTree *tree, const char *source, const char *fp)
 	interface_embeds_.clear();
 
 	TSNode root_node = ts_tree_root_node(tree);
+	// Names this file defines, so a bare call to a user function whose name
+	// collides with a Go builtin (`func len(...)`, `func cap(...)`) is not
+	// dropped by the builtin filter in handleCall (see collectDefinedNames).
+	defined_names_.clear();
+	collectDefinedNames(root_node);
 	pushScope();
 	SourceRange root_loc = location(root_node);
 	uint64_t root_id = emitter_->emitVariable("", root_loc, 0);
@@ -473,52 +505,56 @@ void GoVisitor::handleVarDecl(TSNode node, uint64_t parent_id)
 void GoVisitor::handleShortVar(TSNode node, uint64_t parent_id)
 {
 	// Step 4 (plan §4A): short_var_declaration has the form
-	// `name := expr` or `name, name2 := expr1, expr2`. tree-sitter
-	// exposes the left-hand identifiers and the right-hand expressions
-	// as siblings. We pair them positionally to infer variable types
-	// from composite literals (e.g. `b := Box{...}` → type "Box").
-	uint32_t cnt = ts_node_child_count(node);
-	// First pass: collect LHS identifier names in order.
+	// `name := expr` or `name, name2 := expr1, expr2`.
+	//
+	// tree-sitter-go reduces this rule with three children —
+	//   short_var_declaration(left: expression_list, ":=", right: expression_list)
+	// — so the LHS names live one level BELOW the declaration. The previous
+	// implementation scanned the declaration's direct children for
+	// `identifier`, matched none, and therefore never emitted or defined a
+	// single short variable: receiver-type inference lost every `:=` binding
+	// and the RHS was visited as one opaque expression_list. Read the `left`
+	// and `right` fields and walk one level into each list.
+	std::vector<TSNode> lhs_nodes;
+	TSNode left = ts_node_child_by_field_name(node, "left", 4);
+	if (!ts_node_is_null(left))
+		collectGoListIdentifiers(left, lhs_nodes);
+
+	// Emit one Variable per LHS name, preserving declaration order so the
+	// Nth name pairs with the Nth RHS expression below (Go requires the
+	// counts to match for `:=`). The blank identifier binds no symbol.
 	std::vector<std::string> lhs_names;
-	for (uint32_t i = 0; i < cnt; i++) {
-		TSNode c = ts_node_child(node, i);
-		if (!ts_node_is_named(c))
+	lhs_names.reserve(lhs_nodes.size());
+	for (TSNode n : lhs_nodes) {
+		std::string name = nodeText(n);
+		if (name.empty() || name == "_")
 			continue;
-		if (strcmp(ts_node_type(c), "identifier") == 0)
-			lhs_names.push_back(nodeText(c));
+		uint64_t id = emitter_->emitVariable(
+			name, location(n), parent_id,
+			isupper(static_cast<unsigned char>(name[0])) ? 1 : 0);
+		defineSymbol(name, id);
+		lhs_names.push_back(std::move(name));
 	}
-	// Second pass: emit variables, recurse into RHS, and infer types.
-	// rhs_idx tracks the Nth RHS expression so it pairs with
-	// lhs_names[N] (Go requires LHS and RHS counts to match for `:=`).
+
+	// RHS: visit each expression so `r := foo()` still produces its call
+	// edge, and infer the variable type from a composite-literal RHS
+	// (e.g. `b := Box{val: 5}` → recordVarType("b", "Box")).
+	TSNode right = ts_node_child_by_field_name(node, "right", 5);
+	if (ts_node_is_null(right))
+		return;
+	uint32_t rc = ts_node_child_count(right);
 	size_t rhs_idx = 0;
-	for (uint32_t i = 0; i < cnt; i++) {
-		TSNode c = ts_node_child(node, i);
+	for (uint32_t i = 0; i < rc; i++) {
+		TSNode c = ts_node_child(right, i);
 		if (!ts_node_is_named(c))
 			continue;
-		if (strcmp(ts_node_type(c), "identifier") == 0) {
-			std::string name = nodeText(c);
-			uint64_t id = emitter_->emitVariable(
-				name, location(c), parent_id,
-				isupper(static_cast<unsigned char>(name[0])) ?
-					1 :
-					0);
-			defineSymbol(name, id);
-		} else {
-			// Recurse into the RHS expression so call expressions such
-			// as `r := foo()` are visited and emitted as call edges.
-			// Without this, intra-file calls inside `:=` assignments
-			// were silently dropped (only `=` assignments recursed).
-			visitNode(c, parent_id);
-			// Step 4: infer type from composite literal RHS
-			// (e.g. `b := Box{val: 5}` → recordVarType("b","Box")).
-			if (rhs_idx < lhs_names.size()) {
-				std::string inferred = inferCompositeType(c);
-				if (!inferred.empty())
-					recordVarType(lhs_names[rhs_idx],
-						      inferred);
-			}
-			++rhs_idx;
+		visitNode(c, parent_id);
+		if (rhs_idx < lhs_names.size()) {
+			std::string inferred = inferCompositeType(c);
+			if (!inferred.empty())
+				recordVarType(lhs_names[rhs_idx], inferred);
 		}
+		++rhs_idx;
 	}
 }
 

@@ -46,10 +46,9 @@ static inline void check(bool cond, const char *msg)
 static int recordKindByName(sqlite3 *db, int64_t pid, const char *name)
 {
 	sqlite3_stmt *st = nullptr;
-	const char *sql =
-		"SELECT kind FROM semantic_records "
-		"WHERE project_id=? AND name=? "
-		"ORDER BY kind LIMIT 1";
+	const char *sql = "SELECT kind FROM semantic_records "
+			  "WHERE project_id=? AND name=? "
+			  "ORDER BY kind LIMIT 1";
 	if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) != SQLITE_OK)
 		return -1;
 	sqlite3_bind_int64(st, 1, pid);
@@ -123,12 +122,10 @@ int main() {
 	unlink(cpp_db);
 	check(engine_init(cpp_db) == 0, "engine_init cpp");
 
-	uint64_t cpp_pid =
-		engine_create_project(cpp_proj_dir, "cpp-qualified");
+	uint64_t cpp_pid = engine_create_project(cpp_proj_dir, "cpp-qualified");
 	check(cpp_pid > 0, "create_project cpp");
 
-	char *cpp_idx =
-		engine_index_project(cpp_pid, cpp_proj_dir, nullptr);
+	char *cpp_idx = engine_index_project(cpp_pid, cpp_proj_dir, nullptr);
 	check(cpp_idx != nullptr, "index_project cpp returns non-null");
 	check(strstr(cpp_idx, "\"ok\":true") != nullptr,
 	      "index_project cpp ok");
@@ -140,35 +137,29 @@ int main() {
 	// ── Assertion 1: buildCallEdgesSQL is a Function (kind=0) ──
 	// Before the fix it was emitted as Variable (kind=6) because
 	// extractName had no qualified_identifier branch.
-	int bces_kind =
-		recordKindByName(db, cpp_pid, "buildCallEdgesSQL");
-	fprintf(stderr, "buildCallEdgesSQL kind = %d (expect 0)\n",
-		bces_kind);
-	check(bces_kind == 0,
-	      "buildCallEdgesSQL must be Function (kind=0), "
-	      "got kind=6 (Variable) before fix");
+	int bces_kind = recordKindByName(db, cpp_pid, "buildCallEdgesSQL");
+	fprintf(stderr, "buildCallEdgesSQL kind = %d (expect 0)\n", bces_kind);
+	check(bces_kind == 0, "buildCallEdgesSQL must be Function (kind=0), "
+			      "got kind=6 (Variable) before fix");
 
 	// ── Assertion 2: buildGraph is a Function (kind=0) ─────────
 	int bg_kind = recordKindByName(db, cpp_pid, "buildGraph");
-	check(bg_kind == 0,
-	      "buildGraph must be Function (kind=0)");
+	check(bg_kind == 0, "buildGraph must be Function (kind=0)");
 
 	// ── Assertion 3: call edge buildGraph → buildCallEdgesSQL ──
 	// This is the "this->buildCallEdgesSQL(pid)" call inside
 	// buildGraph. Before the fix, resolveSymbol("buildCallEdgesSQL")
 	// failed (never defineSymbol'd) → ref_original_id=0 → P1
 	// skipped → 0 edges.
-	int edge_bg_bces = edgeCount(db, cpp_pid, "buildGraph",
-				     "buildCallEdgesSQL", 1);
+	int edge_bg_bces =
+		edgeCount(db, cpp_pid, "buildGraph", "buildCallEdgesSQL", 1);
 	fprintf(stderr, "buildGraph -> buildCallEdgesSQL edges = %d\n",
 		edge_bg_bces);
-	check(edge_bg_bces >= 1,
-	      "buildGraph must call buildCallEdgesSQL "
-	      "(this->method() intra-file edge)");
+	check(edge_bg_bces >= 1, "buildGraph must call buildCallEdgesSQL "
+				 "(this->method() intra-file edge)");
 
 	// ── Assertion 4: call edge main → buildGraph ────────────────
-	int edge_main_bg = edgeCount(db, cpp_pid, "main",
-				     "buildGraph", 1);
+	int edge_main_bg = edgeCount(db, cpp_pid, "main", "buildGraph", 1);
 	check(edge_main_bg >= 1,
 	      "main must call buildGraph (gs.method() edge)");
 
@@ -206,16 +197,22 @@ int main() {
 	// For a positive intra-file edge test, use a chained
 	// attribute call to a locally-defined method:
 	//   self.helper.compute()  where compute is defined in class.
+	//
+	// This fixture USED to be the non-chained `self.compute(10)`, which
+	// passed even though extractAttributeName returned the INNER receiver
+	// segment ("helper") for a chained callee — so the test that existed to
+	// catch that bug could not catch it. Keep the real chained form:
+	// `self.helper.compute()` must resolve to "compute", and the edge
+	// run → compute below is the assertion that proves it.
 	const char *py_code = R"(
 class Worker:
     def compute(self, x):
         return x * 2
 
     def run(self):
-        # Chained attribute: self.helper is the attribute,
-        # but here we use a direct self.compute() to verify
-        # the simple attribute path still resolves.
-        return self.compute(10)
+        # Chained attribute callee: the resolved name must be the
+        # LAST segment ("compute"), not the receiver ("helper").
+        return self.helper.compute(10)
 )";
 	f = fopen(py_path, "w");
 	check(f != nullptr, "fopen py");
@@ -227,24 +224,19 @@ class Worker:
 	unlink(py_db);
 	check(engine_init(py_db) == 0, "engine_init py");
 
-	uint64_t py_pid =
-		engine_create_project(py_proj_dir, "py-chained");
+	uint64_t py_pid = engine_create_project(py_proj_dir, "py-chained");
 	check(py_pid > 0, "create_project py");
 
-	char *py_idx =
-		engine_index_project(py_pid, py_proj_dir, nullptr);
+	char *py_idx = engine_index_project(py_pid, py_proj_dir, nullptr);
 	check(py_idx != nullptr, "index_project py returns non-null");
-	check(strstr(py_idx, "\"ok\":true") != nullptr,
-	      "index_project py ok");
+	check(strstr(py_idx, "\"ok\":true") != nullptr, "index_project py ok");
 	engine_free_string(py_idx);
 
 	check(sqlite3_open(py_db, &db) == SQLITE_OK, "sqlite3_open py");
 
 	// ── Assertion 7: run → compute call edge exists ─────────────
-	int edge_run_compute = edgeCount(db, py_pid, "run",
-					 "compute", 1);
-	fprintf(stderr, "run -> compute edges = %d\n",
-		edge_run_compute);
+	int edge_run_compute = edgeCount(db, py_pid, "run", "compute", 1);
+	fprintf(stderr, "run -> compute edges = %d\n", edge_run_compute);
 	check(edge_run_compute >= 1,
 	      "run must call compute (self.method() intra-file edge)");
 

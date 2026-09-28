@@ -11,6 +11,7 @@
 
 #include "js_visitor.h"
 
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <unordered_set>
@@ -59,17 +60,49 @@ const char *const kCDefNodes[] = { "function_definition", "struct_specifier",
 				   "enum_specifier",	  "type_definition",
 				   "class_specifier",	  nullptr };
 
+const char *const kGoDefNodes[] = { "function_declaration",
+				    "method_declaration", "type_declaration",
+				    nullptr };
+
+/// True for node types that can hold a declared NAME on the declarator
+/// fallback path below. C/C++ method definitions carry a field_identifier,
+/// operator overloads an operator_name, destructors a destructor_name —
+/// none of which is a plain `identifier`.
+bool isDeclaredNameNode(const char *type)
+{
+	return strcmp(type, "identifier") == 0 ||
+	       strcmp(type, "field_identifier") == 0 ||
+	       strcmp(type, "operator_name") == 0 ||
+	       strcmp(type, "destructor_name") == 0;
+}
+
 const DefNodeTypes kDefNodeTypes[] = {
 	{ "python", kPythonDefNodes }, { "javascript", kJsDefNodes },
 	{ "typescript", kJsDefNodes }, { "tsx", kJsDefNodes },
 	{ "java", kJavaDefNodes },     { "rust", kRustDefNodes },
 	{ "c", kCDefNodes },	       { "cpp", kCDefNodes },
-	{ "objective-c", kCDefNodes },
+	{ "objective-c", kCDefNodes }, { "go", kGoDefNodes },
 };
 } // namespace
 
-void JsVisitor::collectDefinedNames(TSNode node)
+void JsVisitor::collectDefinedNames(TSNode node, int depth)
 {
+	// Bound the recursion with the same cap as visitChildren. This walk runs
+	// before the main visit, so an unbounded deep AST would SIGSEGV here
+	// first. Report the truncation once per file. [module=ir,
+	// method=collectDefinedNames]
+	if (depth >= kMaxVisitDepth) {
+		if (!depth_truncated_) {
+			depth_truncated_ = true;
+			const char *fp = unit_ ? unit_->filePath().c_str() : "";
+			fprintf(stderr,
+				"[module=ir, method=collectDefinedNames] AST "
+				"nesting exceeded kMaxVisitDepth=%d in '%s'; "
+				"deeper nodes skipped to avoid stack overflow\n",
+				kMaxVisitDepth, fp);
+		}
+		return;
+	}
 	const char *language = unit_ ? unit_->language().c_str() : "";
 	const char *const *types = nullptr;
 	for (const auto &entry : kDefNodeTypes) {
@@ -107,21 +140,20 @@ void JsVisitor::collectDefinedNames(TSNode node)
 				name_node = ts_node_child_by_field_name(
 					child, "declarator", 10);
 				while (!ts_node_is_null(name_node) &&
-				       strcmp(ts_node_type(name_node),
-					      "identifier") != 0 &&
+				       !isDeclaredNameNode(
+					       ts_node_type(name_node)) &&
 				       ts_node_named_child_count(name_node) > 0)
 					name_node = ts_node_named_child(
 						name_node, 0);
 			}
 			if (!ts_node_is_null(name_node) &&
-			    strcmp(ts_node_type(name_node), "identifier") ==
-				    0) {
+			    isDeclaredNameNode(ts_node_type(name_node))) {
 				std::string name = nodeText(name_node);
 				if (!name.empty())
 					defined_names_.insert(name);
 			}
 		}
-		collectDefinedNames(child);
+		collectDefinedNames(child, depth + 1);
 	}
 }
 

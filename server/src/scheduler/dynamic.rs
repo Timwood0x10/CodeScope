@@ -395,7 +395,7 @@ fn index_parallel_dynamic(project_dir: &str, total_workers: u32, parallel: u32) 
             final_results.push(r);
             continue;
         }
-        let excluded_env = quarantined.join(",");
+        let excluded_env = super::worker::join_exclude_patterns(&quarantined);
         // Try to claim up to 4 cores, or fall back to 1.
         let retry_workers = shm.claim_cores(4);
         let retry_workers = if retry_workers == 0 { 1 } else { retry_workers };

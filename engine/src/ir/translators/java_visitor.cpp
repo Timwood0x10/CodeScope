@@ -168,23 +168,8 @@ void JavaVisitor::handleClassDecl(TSNode node, uint64_t parent_id)
 		TSNode c = ts_node_child(node, i);
 		if (!ts_node_is_named(c))
 			continue;
-		if (strcmp(ts_node_type(c), "super_interfaces") == 0) {
-			uint32_t sc = ts_node_child_count(c);
-			for (uint32_t j = 0; j < sc; j++) {
-				TSNode iface = ts_node_child(c, j);
-				if (!ts_node_is_named(iface))
-					continue;
-				if (strcmp(ts_node_type(iface),
-					   "type_identifier") == 0) {
-					std::string iface_name =
-						nodeText(iface);
-					if (!iface_name.empty())
-						emitter_->emitInterfaceImpl(
-							name, iface_name,
-							location(iface), id);
-				}
-			}
-		}
+		if (strcmp(ts_node_type(c), "super_interfaces") == 0)
+			emitInterfaceImpls(c, name, id);
 	}
 	for (uint32_t i = 0; i < cnt; i++) {
 		TSNode c = ts_node_child(node, i);
@@ -200,6 +185,47 @@ void JavaVisitor::handleClassDecl(TSNode node, uint64_t parent_id)
 	popClassScope();
 	popScope();
 }
+void JavaVisitor::emitInterfaceImpls(TSNode node, const std::string &impl_type,
+				     uint64_t parent_id)
+{
+	uint32_t cnt = ts_node_child_count(node);
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (!ts_node_is_named(c))
+			continue;
+		const char *t = ts_node_type(c);
+		if (strcmp(t, "type_identifier") == 0) {
+			std::string iface_name = nodeText(c);
+			if (!iface_name.empty())
+				emitter_->emitInterfaceImpl(impl_type,
+							    iface_name,
+							    location(c),
+							    parent_id);
+			continue;
+		}
+		// `implements Comparable<Foo>` — record the base type only; the
+		// type arguments are not implemented interfaces.
+		if (strcmp(t, "generic_type") == 0) {
+			uint32_t gc = ts_node_child_count(c);
+			for (uint32_t j = 0; j < gc; j++) {
+				TSNode g = ts_node_child(c, j);
+				if (ts_node_is_named(g) &&
+				    strcmp(ts_node_type(g),
+					   "type_identifier") == 0) {
+					std::string iface_name = nodeText(g);
+					if (!iface_name.empty())
+						emitter_->emitInterfaceImpl(
+							impl_type, iface_name,
+							location(g), parent_id);
+					break;
+				}
+			}
+			continue;
+		}
+		emitInterfaceImpls(c, impl_type, parent_id);
+	}
+}
+
 void JavaVisitor::handleInterfaceDecl(TSNode node, uint64_t parent_id)
 {
 	SourceRange loc = location(node);

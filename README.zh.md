@@ -16,7 +16,7 @@ CodeScope 是一个 **项目真相引擎（Project Truth Engine）**，回答一
 
 不是"这段代码什么意思"，而是"代码到底有没有实现你声称的功能？"
 
-它把源码索引为结构化的代码图（调用图 + 引用图 + 模块知识），然后暴露 **47 个 MCP 工具**，让 AI 代理可以定位符号、追踪调用路径、验证断言、检测文档漂移、分析架构 — 相比读取原始源文件，平均节省 **~98.9% 的 token 消耗**。
+它把源码索引为结构化的代码图（调用图 + 引用图 + 模块知识），然后暴露 **46 个 MCP 工具**，让 AI 代理可以定位符号、追踪调用路径、验证断言、检测文档漂移、分析架构 — 相比读取原始源文件，平均节省 **~98.9% 的 token 消耗**。
 
 ### 支持的语言（8 种）
 
@@ -31,6 +31,14 @@ CodeScope 是一个 **项目真相引擎（Project Truth Engine）**，回答一
 | TypeScript | ✅ | ✅ | ✅ |
 | Java | ✅ | ✅ | ✅ |
 
+**「已验证」的含义**：该语言有一份自动化测试**断言真实产生了语义记录**（具名调用、方法声明或接口实现），而不只是断言响应 JSON 里出现了预期字段。这些用例位于 `engine/tests/test_ir_edge_coverage.cpp`。此前各语言的 E2E 只检查 JSON 里是否存在 `"callers"` / `"callees"` / `"total_nodes"` 字符串，因此一个**一条边都不发**的转换器也能通过整个测试套件。
+
+**已知限制**（如实记录而非静默丢弃）：
+
+- **Rust**：宏调用（`println!`、`vec!`、用户 `foo!()`）会按宏名记录为调用。tree-sitter 不做宏展开，因此**宏体生成**的代码不在图中，宏也只按名字匹配。
+- **JavaScript**：`class A extends B` 不会记录为 `InterfaceImpl`（JS 没有 `implements` 子句）；extends 的表达式仍会被访问。TypeScript/TSX 的 `implements` 子句**会**记录。
+- **推断是尽力而为**：接收者类型来自局部声明、复合字面量与 `this`/`self`；动态类型的接收者保持未知。
+
 ### 技术栈
 
 | 层 | 技术 |
@@ -39,7 +47,7 @@ CodeScope 是一个 **项目真相引擎（Project Truth Engine）**，回答一
 | 索引引擎 | C++23（Clang 17+），SQLite（WAL 模式，FTS5） |
 | 服务端 | Rust 2024 Edition，MCP 协议（JSON-RPC 2.0，stdio 传输） |
 | 图存储 | SQLite（唯一图存储，CSR 邻接表实现亚毫秒级调用图查询） |
-| 调度器 | 内置多进程并行索引器（chunk 级 work-stealing） |
+| 调度器 | 内置多进程并行索引器（默认静态比例分配；`CODESCOPE_CPU_DYNAMIC=1` 可启用共享 chunk 队列） |
 | 构建 | CMake 3.30+（C++），Cargo（Rust） |
 
 ---
@@ -53,7 +61,7 @@ graph TB
     end
 
     subgraph "Rust MCP 服务端"
-        MCP["MCP 协议 (JSON-RPC 2.0)<br/>47 个工具 / stdio 传输"]
+        MCP["MCP 协议 (JSON-RPC 2.0)<br/>46 个工具 / stdio 传输"]
         DISPATCH["工具分发<br/>project_id 自动恢复"]
     end
 
@@ -113,7 +121,7 @@ Inspector --------- evidence / finding
 flowchart LR
     Q["MCP 客户端<br/>工具调用"] --> Q1["服务端接收<br/>project_id 自动恢复"]
     Q1 --> Q2{"工具类型?"}
-    Q2 -->|"index_project"| Q3["启动 worker 子进程<br/>→ 内存隔离<br/>→ 完成后退出"]
+    Q2 -->|"会话自动索引"| Q3["initialize 时：启动 worker 子进程<br/>→ 内存隔离<br/>→ 完成后退出<br/>（不是可按名调用的工具）"]
     Q2 -->|"查询工具"| Q4["C++ FFI → SQLite 查询<br/>graph_nodes, graph_edges<br/>search_index, ..."]
     Q2 -->|"get_communities"| Q5["加载完整图<br/>标签传播<br/>→ JSON (max_communities 限制)"]
     Q2 -->|"get_hotspots"| Q6["SQL: COUNT(ge.id) JOIN<br/>graph_edges edge_type=1<br/>ORDER BY caller_count"]
@@ -126,23 +134,29 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    subgraph A["阶段 A: 快速扫描 (毫秒级)"]
+    subgraph A["阶段 A: 索引（扫描 + 完整 tree-sitter 解析）"]
         S1["scan_project"]
         S2["total_symbols"]
         S3["module_tree"]
         S4["entry_points"]
+        S5["完整 tree-sitter 解析 → IR 记录"]
     end
 
-    subgraph B["阶段 B: 后台增强 (异步, 秒级)"]
+    subgraph B["阶段 B: 图最终化 (异步, 秒级)"]
         E1["enhance_project"]
-        E2["完整 tree-sitter"]
-        E3["调用图"]
+        E2["buildGraph —— 不重新解析"]
+        E3["调用图 / CSR"]
         E4["FTS 索引"]
         E5["semantic_fact (v0.3)"]
     end
 
-    A -->|"触发"| B
+    A -->|"触发（仅 CLI index-parallel 路径）"| B
 ```
+
+**解析发生在哪里**：完整的 tree-sitter 解析在**阶段 A**完成，不在阶段 B。阶段 B（`enhance_project`）是一个轻量的 *GraphFinalize* 步骤 —— `buildGraph` → `buildFTSFromGraph` → `resolveStagedMetrics` → semantic_fact 抽取 → 模型构建，**从不重新解析或重新转换**（`engine_queries.cpp`）。
+
+**阶段 B 何时自动运行**：只有 CLI 路径（`codescope index-parallel`）在合并后触发它（`server/src/main.rs`）。MCP 会话自动索引（§5 的 `index_project`）只触发 FTS 构建；如果你需要在 MCP 会话内完成整图最终化，请显式调用 `enhance_project`。
+
 
 ---
 
@@ -170,7 +184,7 @@ CodeScope **不会**索引项目中的每一个文件。它通过 **8 层级联�
 ### 8 层过滤级联
 
 ```
-第 1 层：任意深度跳过目录（约 120 个模式）
+第 1 层：任意深度跳过目录（约 150 个模式）
   .git, .svn, .hg, node_modules, .venv, target, build, dist,
   vendor, __pycache__, .github, deploy, docker, k8s, ...
   → 在任何深度捕获 VCS、构建产物、依赖、CI/CD、基础设施
@@ -190,8 +204,8 @@ CodeScope **不会**索引项目中的每一个文件。它通过 **8 层级联�
   .env, .env.local, .gitkeep, .gitignore, ...
 
 第 5 层：文件名/目录前缀跳过
-  文件前缀：._*, ~$*, #*#
-  目录前缀：build_*, test_*, tmp_*
+  文件前缀：.env.*, docker-compose.*（以及以 `~` 结尾的编辑器备份文件）
+  目录前缀：build_*, cmake-build-*, _build, tools-*, tools_*
 
 第 6 层：.gitignore 模式匹配
   尊重项目 .gitignore 中的每一条规则
@@ -200,9 +214,11 @@ CodeScope **不会**索引项目中的每一个文件。它通过 **8 层级联�
   每个项目可额外添加自定义忽略模式
 
 第 8 层：文件大小限制 + 语言检测
-  • 最大文件大小（默认 10 MB，可通过 CODESCOPE_MAX_FILE_SIZE 配置）
+  • 最大文件大小（默认 5 MB = 5242880 字节，可通过 CODESCOPE_MAX_FILE_SIZE 配置）
   • 无法检测语言的文件静默跳过
 ```
+
+> **层号是分类，不是执行顺序。** 跳过判定是布尔或，因此只有**结果**可观测，但检查的实际执行顺序是（`FilterPolicy::shouldSkipEntry`）：路径分量（第 1/2 层）**加上第 6 层 `.gitignore` 与第 7 层 `.codescopeignore`** → bundle 后缀 → 第 4 层精确文件名 + 第 5 层前缀 → 第 3 层后缀 → STRICT 门 → 用户 `CODESCOPE_EXCLUDE_PATHS` 最后作为覆盖。
 
 ### 实际效果
 
@@ -284,13 +300,21 @@ codescope index-parallel /path/to/large/project --workers 8 --parallel 4
 
 ---
 
-## 5. MCP 工具（47 个工具）
+## 5. MCP 工具（46 个工具）
+
+这里列出的 46 个工具正是 `tools/list` 广播的（`server/src/tools/catalog.rs`）与按名分发的（`server/src/tools/mod.rs` 的 `TOOL_HANDLERS`）—— 两个集合完全一致，不存在「广播了但没有处理器」或「有处理器但没广播」的工具。
 
 ### 索引
 
+> **`index_project` 仅限会话内自动运行，不可按名调用。** 它既不在 `tools/list` 中，也不在工具分发表里，因此
+> `tools/call {"name":"index_project"}` 会返回
+> `{"error":"Unknown tool: index_project …"}`。每个 MCP 会话在 `initialize` 时自动运行一次 worker 子进程索引
+> （`server/src/mcp/server.rs`）。命令行/Agent 等价入口是 `codescope index-parallel <dir>`；
+> `codescope cli index_project` **不是**有效调用。若需要在会话内完成整图最终化，请显式调用
+> `enhance_project`（见 §2）。
+
 | 工具 | 用途 | 参数 |
 |------|------|------|
-| `index_project` | 索引整个项目目录：解析所有源文件，构建 IR，构建代码图。这是 **MCP 会话工具**：它会派生子进程隔离内存，不在 `tools/list` 中广播，因此由 MCP 客户端按名调用。命令行等价入口是 `codescope index-parallel <dir>` —— `codescope cli index_project` 不是有效调用。 | `{"project_path": "string (必填)", "language_filter": "string (可选)"}` |
 | `index_file` | 索引单个源文件。 | `{"file_path": "string (必填)"}` |
 | `force_index_files` | 强制索引文件/目录，跳过默认排除规则（test/, docs/, node_modules/, .gitignore 等）。 | `{"paths": ["string (必填)"], "language_filter": "string (可选)"}` |
 
@@ -334,12 +358,13 @@ codescope index-parallel /path/to/large/project --workers 8 --parallel 4
 | `get_graph` | 分页获取完整代码图。 | `{"node_offset": "integer", "node_limit": "integer (最大 50000)", "edge_offset": "integer", "edge_limit": "integer (最大 200000)", "node_types": "string", "edge_types": "string"}` |
 | `get_subgraph` | 获取以某节点为中心的局部区域（1 跳）。 | `{"node_id": "integer (必填)", "radius": "integer", "node_types": "string", "edge_types": "string"}` |
 | `get_neighbors` | 获取图节点的直接邻居（调用者 + 被调用者）。 | `{"node_id": "integer (必填)", "edge_type": "integer (默认 -1)", "radius": "integer"}` |
+| `get_knowledge_graph` | 直查知识层表。支持表：`entity`、`relation`、`architecture_edge`、`module_edge`、`capability`、`document`、`module_summary`（见 §6）。 | `{"table": "string (必填)", "limit": "integer (默认 100, 最大 1000)"}` |
 
 ### 搜索
 
 | 工具 | 用途 | 参数 |
 |------|------|------|
-| `search` | **推荐** — 统一搜索（基于 FTS5；本 sprint 已下线语义/向量搜索，FTS5 是唯一路径）。 | `{"query": "string (必填)", "limit": "integer (默认 20, 最大 100)"}` |
+| `search` | **推荐** — 统一搜索：FTS5 精确/前缀匹配，并在结果不足时由 **n-gram 语义向量检索**补充（v0.2.5 恢复；词法相似度，无需外部模型）。 | `{"query": "string (必填)", "limit": "integer (默认 20, 最大 100)"}` |
 | `search_code` | [已废弃 — 使用 search] | `{"query": "string (必填)", "limit": "integer"}` |
 
 ### 验证
@@ -421,6 +446,8 @@ get_knowledge_graph {"table":"capability","limit":10}
 ## 7. 性能基准
 
 所有基准测试在 **Apple M3 Max（36 GB RAM，14 核），macOS，2026-08-14** 上测得，使用 `target/release/codescope`（v0.2.6）`worker`（串行全量索引）模式 + 纯 SQLite 图后端（无 LadybugDB/Kuzu 依赖），`CODESCOPE_INDEX_MODE=normal`。查询延迟通过 MCP server 模式测得（引擎只初始化一次，7 次中位数）。数据反映内存化 fuzzy 解析器 + 排序修复后的状态（边数相对修复前二进制 1,249 → 1,189；节点/文件数不变）。其他硬件会产生不同的结果 — 性能较低的机器上预期会慢一些。
+
+> **仅供参考的单次测量。** 这些表格是单机一次性测量，不是回归门禁：`benchmarks/run_benchmark.sh` 只能复现**索引时间**部分，下面的查询延迟与 token 节省表为手工记录，没有任何脚本可一键复现。请把它们当作量级参考。
 
 ### 索引时间
 
@@ -532,16 +559,21 @@ cd CodeScope
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `CODESCOPE_DB_PATH` | `.codescope/codescope.db` | SQLite 数据库路径 |
-| `CODESCOPE_INDEX_MODE` | `standard` | 索引模式：`fast` / `standard` / `strict` |
-| `CODESCOPE_EXCLUDE_PATHS` | （未设置） | 逗号分隔的 glob 排除模式 |
-| `CODESCOPE_WORKERS` | `4` | `index-parallel` 的解析 worker 核心数 |
+| `CODESCOPE_INDEX_MODE` | `normal` | 解析管线模式：`fast` / `normal` / `deep`。`strict` 是另一类仅影响文件发现的模式 —— 见下方说明。 |
+| `CODESCOPE_EXCLUDE_PATHS` | （未设置） | 逗号分隔的 glob 排除模式，按项目相对路径匹配，**最后**应用（覆盖内置过滤）。模式中的字面逗号需转义为 `\,`（如 `a\,b/**`）；`\\` 表示字面反斜杠。 |
+| `CODESCOPE_WORKERS` | `min(hw,8)` | 解析 worker 核心总数（`kDefaultParseWorkers=8`）。≤2000 文件走的 in-memory 路径默认 **4**。 |
 | `CODESCOPE_WORKER_TIMEOUT` | `300` | Worker 子进程超时时间（秒） |
-| `CODESCOPE_MAX_FILE_SIZE` | （未设置） | 允许索引的最大源文件大小（字节） |
+| `CODESCOPE_MAX_FILE_SIZE` | `5242880`（5 MB） | 允许索引的最大源文件大小（字节）。超限文件被静默跳过。 |
 | `CODESCOPE_MMAP_SIZE` | 256 MB | SQLite `mmap_size` 参数值 |
 | `CODESCOPE_MEM_LIMIT_MB` | `4096` | 动态调度器内存上限（MB） |
-| `CODESCOPE_DYNAMIC_SCHED` | `auto` | 动态 CPU 调度：`1` 开启，`0` 关闭，未设置 = 自动 |
-| `CODESCOPE_VERBOSE` | `0` | 设为 `1` 开启详细日志 |
+| `CODESCOPE_DYNAMIC_SCHED` | （未设置 = 静态） | 可选开启的动态 CPU 调度。规范名是 `CODESCOPE_CPU_DYNAMIC`，本变量是历史别名，两者均可。`1`/`true`/`on` 启用共享 chunk 队列调度器，`0`/`false`/`off` 关闭，未设置则保持**静态**比例分配。 |
 | `CODESCOPE_LSP` | （未设置） | 类型增强的 LSP 服务端命令 |
+
+> **`strict` 与 `deep`**：`CODESCOPE_INDEX_MODE=strict` 只收紧文件**发现**（对可识别语言的白名单门），不改变解析管线；`deep` 则会额外构建 `normal` 跳过的 n-gram 语义向量。
+>
+> **`index-parallel` 始终以 `fast` 模式解析。** 它的每个 module/chunk worker 都硬编码了 `CODESCOPE_INDEX_MODE=fast`（`server/src/scheduler/worker.rs`、`quarantine.rs`），因为合并后的库会再走一遍图构建。因此在 `codescope index-parallel` 下设置 `normal`/`strict`/`deep` **无效**；需要非 `fast` 管线时请使用单进程 `codescope index`。
+>
+> **动态调度是 opt-in，永不自动开启。** 生产分发器只检查显式开关，不会因为项目大就自动启用 chunk 调度器（这是有意设计，见 `plan/next/DYNAMIC_SCHED_REDESIGN.md`）。
 
 ---
 

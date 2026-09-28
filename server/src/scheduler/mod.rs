@@ -62,7 +62,7 @@ use std::time::{Duration, Instant};
 
 use crate::discover;
 use merge::MergeResult;
-use worker::run_module_worker;
+use worker::{join_exclude_patterns, run_module_worker};
 
 /// Default total worker cores when `--workers` is not specified.
 const DEFAULT_TOTAL_WORKERS: u32 = 8;
@@ -415,7 +415,7 @@ pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> S
         // it from the completion-order `idx` would collide with another
         // module's id (Phase 3 collects results in completion order, not
         // allocation order).
-        let excluded_env = quarantined.join(",");
+        let excluded_env = join_exclude_patterns(&quarantined);
         let retry = run_module_worker(
             &exe_str,
             &project_path,

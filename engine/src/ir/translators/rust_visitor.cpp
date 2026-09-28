@@ -114,6 +114,8 @@ void RustVisitor::visitNode(TSNode node, uint64_t parent_id)
 		return handleImpl(node, parent_id);
 	if (strcmp(type, "call_expression") == 0)
 		return handleCall(node, parent_id);
+	if (strcmp(type, "macro_invocation") == 0)
+		return handleMacro(node, parent_id);
 	if (strcmp(type, "let_declaration") == 0)
 		return handleLet(node, parent_id);
 	if (strcmp(type, "use_declaration") == 0)
@@ -475,6 +477,91 @@ void RustVisitor::handleCall(TSNode node, uint64_t parent_id)
 		const char *t = ts_node_type(c);
 		if (strcmp(t, "identifier") == 0 ||
 		    strcmp(t, "field_expression") == 0 ||
+		    strcmp(t, "scoped_identifier") == 0)
+			continue;
+		visitNode(c, id);
+	}
+}
+void RustVisitor::handleMacro(TSNode node, uint64_t parent_id)
+{
+	// tree-sitter-rust macro_invocation children:
+	//   identifier (or scoped_identifier) — the macro name
+	//   token_tree                        — the delimiter group + arguments
+	SourceRange loc = location(node);
+	std::string qualified;
+	std::string name;
+	uint32_t cnt = ts_node_child_count(node);
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (!ts_node_is_named(c))
+			continue;
+		const char *t = ts_node_type(c);
+		if (strcmp(t, "identifier") == 0 ||
+		    strcmp(t, "scoped_identifier") == 0) {
+			qualified = nodeText(c);
+			name = bareCalleeName(qualified);
+			break;
+		}
+	}
+	if (name.empty()) {
+		visitChildren(node, parent_id);
+		return;
+	}
+
+	// Same builtin filter as handleCall: the standard-library macros
+	// (println!, vec!, assert_eq!, ...) must not fabricate edges, but a macro
+	// this file declares itself is user code and survives.
+	if (isRustBuiltin(qualified) && !isLocallyDefined(name)) {
+		visitChildren(node, parent_id);
+		return;
+	}
+
+	CallKind call_kind = CallKind::Direct;
+	if (qualified.find("::") != std::string::npos)
+		call_kind = CallKind::Method;
+
+	uint64_t func_id = currentFunctionId();
+	uint64_t call_parent = (func_id != 0) ? func_id : parent_id;
+
+	uint64_t id = emitter_->emitCall(name, loc, call_parent, 0, false,
+					 static_cast<int>(call_kind));
+
+	// Structured call facts for a path-qualified macro (`crate::log!(...)`).
+	if (!qualified.empty() && qualified != name) {
+		std::string receiver_text =
+			extractReceiverText(node, qualified);
+		std::string receiver_type;
+		std::string import_alias;
+		if (!receiver_text.empty()) {
+			if (use_aliases_.count(receiver_text) > 0)
+				import_alias = receiver_text;
+			else {
+				auto vt = var_types_.find(receiver_text);
+				if (vt != var_types_.end())
+					receiver_type = vt->second;
+			}
+		}
+		emitter_->setCallFacts(id, qualified, receiver_text,
+				       receiver_type, import_alias);
+	}
+
+	uint64_t target = resolveSymbol(name);
+	if (target) {
+		unit_->setCallReference(id, target);
+		unit_->setCallStrategy(id, "p1_intra");
+	} else {
+		unit_->setCallStrategy(
+			id, BuiltinRegistry::resolve(unit_->language(), name));
+	}
+
+	// Recurse into the token tree so nested invocations and calls in the
+	// macro arguments are still visited.
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (!ts_node_is_named(c))
+			continue;
+		const char *t = ts_node_type(c);
+		if (strcmp(t, "identifier") == 0 ||
 		    strcmp(t, "scoped_identifier") == 0)
 			continue;
 		visitNode(c, id);

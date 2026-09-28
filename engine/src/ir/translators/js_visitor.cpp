@@ -1,5 +1,6 @@
 #include "js_visitor.h"
 
+#include <cstdio>
 #include <cstring>
 #include <tree_sitter/api.h>
 #include "ahocorasick.h"
@@ -118,6 +119,8 @@ SemanticUnit *JsVisitor::visit(TSTree *tree, const char *source,
 	defined_names_.clear();
 	collectDefinedNames(root_node);
 
+	visit_depth_ = 0;
+	depth_truncated_ = false;
 	pushScope();
 	// Emit TranslationUnit as root record (parent_id = 0)
 	SourceRange root_loc = location(root_node);
@@ -142,6 +145,8 @@ void JsVisitor::reset()
 	var_types_.clear();
 	class_scope_stack_.clear();
 	import_aliases_.clear();
+	visit_depth_ = 0;
+	depth_truncated_ = false;
 	unit_ = nullptr;
 	emitter_ = nullptr;
 	source_ = nullptr;
@@ -224,6 +229,23 @@ std::string_view JsVisitor::nodeTextView(TSNode node)
 
 void JsVisitor::visitChildren(TSNode node, uint64_t parent_id)
 {
+	// Bound native-stack recursion so a pathologically deep AST cannot
+	// SIGSEGV the indexer (the FFI try/catch cannot recover a stack
+	// overflow). Report the truncation once per file rather than dropping
+	// nodes silently. [module=ir, method=visitChildren]
+	if (visit_depth_ >= kMaxVisitDepth) {
+		if (!depth_truncated_) {
+			depth_truncated_ = true;
+			const char *fp = unit_ ? unit_->filePath().c_str() : "";
+			fprintf(stderr,
+				"[module=ir, method=visitChildren] AST nesting "
+				"exceeded kMaxVisitDepth=%d in '%s'; deeper nodes "
+				"skipped to avoid stack overflow\n",
+				kMaxVisitDepth, fp);
+		}
+		return;
+	}
+	++visit_depth_;
 	uint32_t count = ts_node_child_count(node);
 	for (uint32_t i = 0; i < count; i++) {
 		TSNode child = ts_node_child(node, i);
@@ -231,6 +253,7 @@ void JsVisitor::visitChildren(TSNode node, uint64_t parent_id)
 			continue;
 		visitNode(child, parent_id);
 	}
+	--visit_depth_;
 }
 
 // ── Node dispatcher ───────────────────────────────────────────

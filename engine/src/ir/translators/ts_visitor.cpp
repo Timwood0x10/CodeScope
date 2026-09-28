@@ -24,8 +24,14 @@ SemanticUnit *TsVisitor::visit(TSTree *tree, const char *source,
 	// file do not leak into the current file's receiver inference.
 	var_types_.clear();
 	class_scope_stack_.clear();
+	import_aliases_.clear();
 
 	TSNode root_node = ts_tree_root_node(tree);
+	// Names this file defines, so a user function whose name collides with a
+	// JS/TS builtin (`function map() {}`, `function format() {}`) is not
+	// dropped by visitCallExpr's builtin filter.
+	defined_names_.clear();
+	collectDefinedNames(root_node);
 	pushScope();
 	SourceRange root_loc = location(root_node);
 	uint64_t root_id = emitter_->emitVariable("", root_loc, 0);
@@ -48,6 +54,11 @@ void TsVisitor::visitNode(TSNode node, uint64_t parent_id)
 		return visitTypeAliasDecl(node, parent_id);
 	if (strcmp(type, "enum_declaration") == 0)
 		return visitEnumDecl(node, parent_id);
+	// `abstract class Foo ...` is a distinct node type in the TS grammar but
+	// introduces a class exactly like class_declaration (including its
+	// optional `implements` clause) — route it through the same handler.
+	if (strcmp(type, "abstract_class_declaration") == 0)
+		return visitClassDecl(node, parent_id);
 
 	// ── Fall back to JavaScript handling for all shared types ────
 	JsVisitor::visitNode(node, parent_id);
@@ -73,6 +84,25 @@ void TsVisitor::visitClassDecl(TSNode node, uint64_t parent_id)
 	uint64_t cls_id = emitter_->emitClass(name, loc, parent_id);
 	defineSymbol(name, cls_id);
 
+	// `class Foo implements Bar, Baz` — the TS grammar wraps the clause in
+	// class_heritage. Without this scan, no InterfaceImpl record was ever
+	// emitted for a TypeScript (or TSX) class.
+	for (uint32_t i = 0; i < count; i++) {
+		TSNode child = ts_node_child(node, i);
+		if (!ts_node_is_named(child))
+			continue;
+		if (strcmp(ts_node_type(child), "class_heritage") != 0)
+			continue;
+		uint32_t hc = ts_node_child_count(child);
+		for (uint32_t j = 0; j < hc; j++) {
+			TSNode clause = ts_node_child(child, j);
+			if (ts_node_is_named(clause) &&
+			    strcmp(ts_node_type(clause), "implements_clause") ==
+				    0)
+				emitImplementClause(clause, name, cls_id);
+		}
+	}
+
 	pushScope();
 	// Step 4: push class scope so this.method() resolves receiver_type
 	// to this enclosing class name.
@@ -80,6 +110,38 @@ void TsVisitor::visitClassDecl(TSNode node, uint64_t parent_id)
 	visitChildren(node, cls_id);
 	popClassScope();
 	popScope();
+}
+
+void TsVisitor::emitImplementClause(TSNode node, const std::string &impl_type,
+				    uint64_t parent_id)
+{
+	uint32_t cnt = ts_node_child_count(node);
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (!ts_node_is_named(c))
+			continue;
+		const char *t = ts_node_type(c);
+		std::string iface;
+		if (strcmp(t, "type_identifier") == 0) {
+			iface = nodeText(c);
+		} else {
+			// generic_type (`Bar<T>`) and nested_type_identifier
+			// (`ns.Bar`): record the base/last type_identifier and
+			// ignore the type arguments, which are not interfaces.
+			uint32_t cc = ts_node_child_count(c);
+			for (uint32_t j = 0; j < cc; j++) {
+				TSNode g = ts_node_child(c, j);
+				if (!ts_node_is_named(g))
+					continue;
+				if (strcmp(ts_node_type(g),
+					   "type_identifier") == 0)
+					iface = nodeText(g);
+			}
+		}
+		if (!iface.empty())
+			emitter_->emitInterfaceImpl(impl_type, iface,
+						    location(c), parent_id);
+	}
 }
 
 // ── Interface Declaration ────────────────────────────────────

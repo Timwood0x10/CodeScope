@@ -547,36 +547,35 @@ std::string PythonVisitor::extractAttributeName(TSNode attr)
 {
 	// tree-sitter-python attribute children for "obj.method":
 	//   identifier (obj), identifier (method)
-	// For chained access "self.fig.add_trace()" the object is
-	// itself a nested attribute, so the attribute's first child
-	// is another attribute. We recurse into any attribute child
-	// first, and fall back to the LAST named identifier on the
-	// current level. This ensures the resolved name is the
-	// method being invoked ("add_trace"), not the receiver
-	// ("self.fig" or "fig"). Without recursion, "self.fig.add_trace"
-	// yielded name "fig" (or worse, "self"), so resolveSymbol()
-	// never matched the method definition → ref_original_id = 0
-	// → P1 call-edge construction skipped.
+	// For a chained access the receiver is itself an attribute:
+	//   attribute(attribute(self, helper), compute)
+	//
+	// The name being accessed is always the LAST identifier of the OUTERMOST
+	// attribute, so read the current level first and use the receiver's name
+	// only when this level has no identifier (e.g. a subscript-style callee).
+	//
+	// The previous version recursed into the nested attribute FIRST and
+	// returned that result, so `self.helper.compute()` resolved to "helper" —
+	// the receiver of the call — instead of "compute". resolveSymbol() then
+	// never matched the method definition, leaving ref_original_id = 0 and
+	// skipping P1 call-edge construction for every chained call.
 	std::string last;
+	std::string inner;
 	uint32_t cnt = ts_node_child_count(attr);
 	for (uint32_t i = 0; i < cnt; i++) {
 		TSNode c = ts_node_child(attr, i);
 		if (!ts_node_is_named(c))
 			continue;
 		const char *t = ts_node_type(c);
-		if (strcmp(t, "attribute") == 0) {
-			// Recurse into nested attribute first — its
-			// result is more specific than any identifier
-			// at the current level.
-			std::string inner = extractAttributeName(c);
-			if (!inner.empty())
-				return inner;
-		}
 		if (strcmp(t, "identifier") == 0)
 			last = nodeText(c);
+		else if (inner.empty() && strcmp(t, "attribute") == 0)
+			inner = extractAttributeName(c);
 	}
 	if (!last.empty())
 		return last;
+	if (!inner.empty())
+		return inner;
 	// Fallback: no identifier child (e.g. subscript-style callee).
 	// Return the full attribute text so downstream resolution can
 	// still attempt a name-only match.

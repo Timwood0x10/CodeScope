@@ -52,7 +52,41 @@ fn subdirectory_excludes(dir: &str) -> String {
         }
     }
     pats.sort();
-    pats.join(",")
+    join_exclude_patterns(&pats)
+}
+
+/// Escape one `CODESCOPE_EXCLUDE_PATHS` pattern for the comma-separated list.
+///
+/// `FilterPolicy::loadExcludeEnv` (engine/src/filter_policy_ignore.cpp) splits
+/// the value on UNESCAPED commas, so a pattern containing a literal `,` — a
+/// directory named `a,b` — would otherwise be torn into two invalid patterns
+/// and the intended path would NOT be excluded. That matters most for the
+/// quarantine list: the crashing file would be re-indexed by the retry worker
+/// it was supposed to be skipped in. A literal backslash is escaped too, so
+/// the C++ unescape is lossless.
+///
+/// \param pattern  A raw glob pattern (no list separators).
+/// \return The pattern with `\` and `,` backslash-escaped.
+fn escape_exclude_pattern(pattern: &str) -> String {
+    let mut out = String::with_capacity(pattern.len());
+    for ch in pattern.chars() {
+        if ch == '\\' || ch == ',' {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// Join patterns into a single `CODESCOPE_EXCLUDE_PATHS` value, escaping each
+/// element first (see `escape_exclude_pattern`). The separating commas are
+/// emitted unescaped, which is what the C++ side splits on.
+pub(super) fn join_exclude_patterns(patterns: &[String]) -> String {
+    patterns
+        .iter()
+        .map(|p| escape_exclude_pattern(p))
+        .collect::<Vec<String>>()
+        .join(",")
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -688,6 +722,29 @@ mod tests {
         std::fs::write(dir.join("f.go"), "package main").unwrap();
         assert_eq!(subdirectory_excludes(dir.to_str().unwrap()), "a/**,b/**");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Regression (CODE_REVIEW_2026-09-27.md D2-7): `CODESCOPE_EXCLUDE_PATHS`
+    /// is comma-separated and `FilterPolicy::loadExcludeEnv` splits on every
+    /// unescaped comma, so a pattern for a directory named "a,b" was torn into
+    /// `a\` + `b/**` and the path was never excluded. Escaping keeps it one
+    /// pattern; a literal backslash is escaped too so the C++ unescape is
+    /// lossless.
+    #[test]
+    fn test_join_exclude_patterns_escapes_separators() {
+        let pats = vec![
+            "a,b/**".to_string(),
+            "plain/**".to_string(),
+            "back\\slash/**".to_string(),
+        ];
+        assert_eq!(
+            join_exclude_patterns(&pats),
+            r"a\,b/**,plain/**,back\\slash/**"
+        );
+        // Patterns without a comma or backslash are passed through unchanged.
+        assert_eq!(join_exclude_patterns(&["x/**".to_string()]), "x/**");
+        // No patterns → empty value (the caller then leaves the env var unset).
+        assert_eq!(join_exclude_patterns(&[]), "");
     }
 
     #[test]

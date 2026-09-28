@@ -23,6 +23,13 @@ class RustVisitor : public JsVisitor {
 	void handleTrait(TSNode node, uint64_t parent_id);
 	void handleImpl(TSNode node, uint64_t parent_id);
 	void handleCall(TSNode node, uint64_t parent_id);
+	/// Emit a Call record for a `macro_invocation` (`println!(...)`,
+	/// `vec![...]`, `foo!()`). Rust macros are a first-class call construct:
+	/// without this branch every macro invocation produced no record at all,
+	/// so calls made *inside* a macro body were invisible to the call graph.
+	/// Built-in macros are still filtered by isRustBuiltin(); a macro the file
+	/// declares itself survives via isLocallyDefined().
+	void handleMacro(TSNode node, uint64_t parent_id);
 	void handleLet(TSNode node, uint64_t parent_id);
 	void handleUse(TSNode node, uint64_t parent_id);
 	std::string extractName(TSNode node);

@@ -114,6 +114,11 @@ SemanticUnit *CVisitor::visit(TSTree *tree, const char *source,
 	// dropped as a stdlib call.
 	defined_names_.clear();
 	collectDefinedNames(root_node);
+	// Out-of-class definitions present in this file (see
+	// out_of_class_defs_): a class-body declaration for one of them must not
+	// be emitted a second time.
+	out_of_class_defs_.clear();
+	collectOutOfClassDefs(root_node);
 	pushScope();
 	SourceRange root_loc = location(root_node);
 	uint64_t root_id = emitter_->emitVariable("", root_loc, 0);
@@ -623,9 +628,15 @@ std::string CVisitor::extractName(TSNode node)
 		// find no children and return "" — which silently dropped every free
 		// function definition. Read the text directly when the declarator
 		// already is the name.
+		//
+		// operator_name / destructor_name are name nodes too (`operator==`,
+		// `~Point`): they have no children, so recursing into them returned ""
+		// and the whole definition was dropped.
 		const char *dt = ts_node_type(declarator);
 		if (strcmp(dt, "identifier") == 0 ||
-		    strcmp(dt, "field_identifier") == 0)
+		    strcmp(dt, "field_identifier") == 0 ||
+		    strcmp(dt, "operator_name") == 0 ||
+		    strcmp(dt, "destructor_name") == 0)
 			return nodeText(declarator);
 		return extractName(declarator);
 	}
@@ -646,6 +657,15 @@ std::string CVisitor::extractName(TSNode node)
 		// handleFuncDef fell into the visitChildren path, never
 		// emitting a Function record or calling defineSymbol).
 		if (strcmp(t, "field_identifier") == 0)
+			return nodeText(child);
+		// operator_name / destructor_name: `bool operator==(...)`,
+		// `~Point()`. tree-sitter-cpp parses the overloaded operator as an
+		// operator_name node ("operator==") and a destructor as a
+		// destructor_name node ("~Point"); neither is an identifier or
+		// field_identifier, so both were previously skipped and the
+		// definition emitted with an empty name (dropped as a Variable).
+		if (strcmp(t, "operator_name") == 0 ||
+		    strcmp(t, "destructor_name") == 0)
 			return nodeText(child);
 		// qualified_identifier: out-of-class member function
 		// definitions like "int64_t GraphStore::buildCallEdgesSQL(
@@ -680,6 +700,22 @@ std::string CVisitor::extractName(TSNode node)
 	return "";
 }
 
+void CVisitor::collectOutOfClassDefs(TSNode node)
+{
+	uint32_t cnt = ts_node_child_count(node);
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (!ts_node_is_named(c))
+			continue;
+		if (strcmp(ts_node_type(c), "function_definition") == 0) {
+			std::string q = extractQualifiedName(c);
+			if (!q.empty())
+				out_of_class_defs_.insert(std::move(q));
+		}
+		collectOutOfClassDefs(c);
+	}
+}
+
 std::string CVisitor::extractQualifiedName(TSNode node)
 {
 	// Walk the function_definition's declarator chain for a
@@ -696,23 +732,43 @@ std::string CVisitor::extractQualifiedName(TSNode node)
 	// `Scope::method` definitions were registered without their scope whenever
 	// the return type happened to be qualified. The declarator never contains
 	// the return type.
+	// Collect every name segment of the qualified_identifier in source
+	// order; the last one is the method, the rest is its scope.
+	//
+	// tree-sitter-cpp mixes node types inside one qualified_identifier:
+	// `GraphStore::buildCallEdgesSQL` is namespace_identifier + identifier,
+	// `Point::operator==` is type_identifier + operator_name, and a nested
+	// `a::b::c` adds a namespace_identifier per level. The scope is NOT
+	// always an `identifier` — matching only `identifier` (the original
+	// code) returned an empty qualified name for every out-of-class
+	// definition. Taking the trailing segment handles all of those shapes.
 	auto nameOf = [this](TSNode qualified) -> std::string {
-		std::string scope;
-		std::string method;
+		std::vector<std::string> parts;
 		uint32_t qc = ts_node_child_count(qualified);
 		for (uint32_t j = 0; j < qc; j++) {
 			TSNode q = ts_node_child(qualified, j);
 			if (!ts_node_is_named(q))
 				continue;
 			const char *qt = ts_node_type(q);
-			if (strcmp(qt, "identifier") == 0 && scope.empty())
-				scope = nodeText(q);
-			else if (strcmp(qt, "field_identifier") == 0)
-				method = nodeText(q);
+			if (strcmp(qt, "identifier") == 0 ||
+			    strcmp(qt, "type_identifier") == 0 ||
+			    strcmp(qt, "namespace_identifier") == 0 ||
+			    strcmp(qt, "field_identifier") == 0 ||
+			    strcmp(qt, "operator_name") == 0 ||
+			    strcmp(qt, "destructor_name") == 0)
+				parts.push_back(nodeText(q));
 		}
-		if (!scope.empty() && !method.empty())
-			return scope + "::" + method;
-		return std::string();
+		if (parts.size() < 2)
+			return std::string();
+		std::string out;
+		for (size_t i = 0; i + 1 < parts.size(); i++) {
+			if (!out.empty())
+				out += "::";
+			out += parts[i];
+		}
+		out += "::";
+		out += parts.back();
+		return out;
 	};
 
 	// The node reached through the declarator chain may itself BE the
