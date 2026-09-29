@@ -16,6 +16,17 @@ class JavaVisitor : public JsVisitor {
     protected:
 	void visitNode(TSNode node, uint64_t parent_id) override;
 
+	/// Emit one method/constructor parameter and record its type.
+	///
+	/// The type binding is what lets `handleMethodInvocation` fill in
+	/// `receiver_type` for a call through a parameter
+	/// (`void use(Drawable d) { d.draw(); }`); without it the receiver
+	/// evidence is empty and the resolver's ambiguity gate abstains.
+	///
+	/// \param node       A `formal_parameter` / `spread_parameter` node.
+	/// \param parent_id  Record id of the declaring method/class.
+	void handleFormalParameter(TSNode node, uint64_t parent_id);
+
     private:
 	void handleMethodDecl(TSNode node, uint64_t parent_id);
 	void handleClassDecl(TSNode node, uint64_t parent_id);

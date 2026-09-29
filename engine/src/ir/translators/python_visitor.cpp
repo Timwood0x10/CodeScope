@@ -525,7 +525,7 @@ void PythonVisitor::handleAssignment(TSNode node, uint64_t parent_id)
 			// "self.data = self._load_data()" are detected.
 			// Previously, handleAssignment only looked for identifier
 			// children, so calls in the RHS were silently skipped.
-			visitNode(c, parent_id);
+			visitChild(c, parent_id);
 		}
 	}
 }

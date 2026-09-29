@@ -90,7 +90,12 @@ class CVisitor : public JsVisitor {
 	/// definition is already in this file; the definition represents it.
 	std::unordered_set<std::string> out_of_class_defs_;
 	/// Collect out_of_class_defs_ from a subtree (see the member comment).
-	void collectOutOfClassDefs(TSNode node);
+	/// Recursion is bounded by kMaxVisitDepth: this scan runs over the whole
+	/// tree before the traversal, so a pathologically deep AST would otherwise
+	/// overflow the stack here.
+	/// \param node   Subtree to scan.
+	/// \param depth  Current recursion depth (0 at the root).
+	void collectOutOfClassDefs(TSNode node, int depth = 0);
 
     private:
 	void handleFuncDef(TSNode node, uint64_t parent_id);

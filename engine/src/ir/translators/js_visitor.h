@@ -68,15 +68,19 @@ class JsVisitor {
 	// The cap MUST fit the smallest stack the walk can run on. The parallel
 	// indexer parses on spawned std::threads, whose default stack is 512 KB
 	// on macOS (vs. 8 MB for the main thread); one visit level costs up to
-	// ~1.5 KB (visitChildren + visitNode + a language handleX frame with its
+	// ~1.5 KB (visitChild + visitNode + a language handleX frame with its
 	// std::string locals). 250 levels ≈ 375 KB leaves a safe margin under
 	// 512 KB while still being far deeper than any hand-written source.
 	// Shared by all language visitors via inheritance.
 	static constexpr int kMaxVisitDepth = 250;
 	int visit_depth_ = 0;
-	// Set once per visit() when the depth cap first truncates a subtree, so
-	// the truncation is reported exactly once instead of silently or per
-	// node. Reset in reset() and at the top of visit().
+	// Set once per file when a capped walk first truncates a subtree, so the
+	// truncation is reported exactly once instead of silently or per node.
+	//
+	// Shared by every capped walk (visitChild, collectDefinedNames,
+	// collectOutOfClassDefs): the first one to reach the limit reports the
+	// file and the others stay quiet, which keeps a deep file to a single
+	// diagnostic. Reset in reset() and at the top of visit().
 	bool depth_truncated_ = false;
 
 	// ── Scope tracking ──────────────────────────────────────
@@ -217,6 +221,20 @@ class JsVisitor {
 	// without emitting. Handler nodes emit via emitter_ and recurse.
 
 	virtual void visitChildren(TSNode node, uint64_t parent_id);
+
+	/// Guarded descent into one node: applies the `kMaxVisitDepth` cap and
+	/// then dispatches to `visitNode`.
+	///
+	/// Every recursive step must come through here instead of calling
+	/// `visitNode` directly — including the language handlers that recurse on
+	/// their own (class bodies, declaration lists, ...). Those direct calls sat
+	/// outside `visitChildren`'s accounting, so a deep chain of them could
+	/// still overflow the stack. Counting per descent makes the maximum
+	/// concurrent depth the AST depth.
+	///
+	/// \param node       Node to visit.
+	/// \param parent_id  Record id to use as the node's parent.
+	void visitChild(TSNode node, uint64_t parent_id);
 
 	virtual void visitNode(TSNode node, uint64_t parent_id);
 

@@ -48,6 +48,12 @@ per-language E2E harness only checked for the strings `"callers"` / `"callees"` 
   TypeScript/TSX `implements` clauses **are** recorded.
 - **Inference is best-effort**: receiver types come from local declarations,
   composite literals, and `this`/`self`; dynamically typed receivers stay unknown.
+- **Pathologically deep ASTs are truncated, not walked in full**: when a file's
+  AST nests deeper than `kMaxVisitDepth` (250), the deeper subtrees are skipped
+  and the file is reported once on stderr
+  (`[module=ir, method=…] AST nesting exceeded kMaxVisitDepth=250`). The cap
+  exists because the recursive walk runs on the indexer's 512 KB worker stacks;
+  hand-written code never reaches it, generated code occasionally does.
 
 ### Tech Stack
 

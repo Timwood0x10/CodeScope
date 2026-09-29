@@ -479,7 +479,7 @@ void RustVisitor::handleCall(TSNode node, uint64_t parent_id)
 		    strcmp(t, "field_expression") == 0 ||
 		    strcmp(t, "scoped_identifier") == 0)
 			continue;
-		visitNode(c, id);
+		visitChild(c, id);
 	}
 }
 void RustVisitor::handleMacro(TSNode node, uint64_t parent_id)
@@ -564,7 +564,7 @@ void RustVisitor::handleMacro(TSNode node, uint64_t parent_id)
 		if (strcmp(t, "identifier") == 0 ||
 		    strcmp(t, "scoped_identifier") == 0)
 			continue;
-		visitNode(c, id);
+		visitChild(c, id);
 	}
 }
 void RustVisitor::handleLet(TSNode node, uint64_t parent_id)
@@ -626,7 +626,7 @@ void RustVisitor::handleLet(TSNode node, uint64_t parent_id)
 		    strcmp(t, "array_type") == 0 ||
 		    strcmp(t, "tuple_type") == 0)
 			continue;
-		visitNode(c, parent_id);
+		visitChild(c, parent_id);
 	}
 }
 void RustVisitor::handleUse(TSNode node, uint64_t parent_id)

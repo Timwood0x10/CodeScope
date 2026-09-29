@@ -314,7 +314,7 @@ void TsVisitor::visitVariableDecl(TSNode node, uint64_t parent_id)
 			if (strcmp(dt, "type_annotation") == 0)
 				continue;
 			if (ts_node_is_named(decl))
-				visitNode(decl, parent_id);
+				visitChild(decl, parent_id);
 		}
 	}
 }

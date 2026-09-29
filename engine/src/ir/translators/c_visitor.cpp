@@ -384,7 +384,7 @@ void CVisitor::handleCall(TSNode node, uint64_t parent_id)
 			if (strcmp(ts_node_type(child), "argument_list") == 0)
 				visitChildren(child, parent_id);
 			else
-				visitNode(child, parent_id);
+				visitChild(child, parent_id);
 		}
 		return;
 	}
@@ -474,7 +474,7 @@ void CVisitor::handleCall(TSNode node, uint64_t parent_id)
 		if (strcmp(ts_node_type(child), "argument_list") == 0)
 			visitChildren(child, id);
 		else
-			visitNode(child, id);
+			visitChild(child, id);
 	}
 }
 
@@ -512,7 +512,7 @@ void CVisitor::handleNewExpr(TSNode node, uint64_t parent_id)
 			if (strcmp(ts_node_type(child), "argument_list") == 0)
 				visitChildren(child, parent_id);
 			else
-				visitNode(child, parent_id);
+				visitChild(child, parent_id);
 		}
 		return;
 	}
@@ -556,7 +556,7 @@ void CVisitor::handleNewExpr(TSNode node, uint64_t parent_id)
 		if (strcmp(t, "argument_list") == 0)
 			visitChildren(child, id);
 		else
-			visitNode(child, id);
+			visitChild(child, id);
 	}
 }
 
@@ -700,8 +700,16 @@ std::string CVisitor::extractName(TSNode node)
 	return "";
 }
 
-void CVisitor::collectOutOfClassDefs(TSNode node)
+void CVisitor::collectOutOfClassDefs(TSNode node, int depth)
 {
+	// Bound the recursion with the same cap as the other walks: this scan runs
+	// over the whole tree before the traversal, so an unbounded deep AST would
+	// overflow the stack here too. It does not report the truncation itself —
+	// collectDefinedNames walks the same tree with the same cap and runs first,
+	// so the file is already covered by the once-per-file report ([module=ir,
+	// method=collectDefinedNames]).
+	if (depth >= kMaxVisitDepth)
+		return;
 	uint32_t cnt = ts_node_child_count(node);
 	for (uint32_t i = 0; i < cnt; i++) {
 		TSNode c = ts_node_child(node, i);
@@ -712,7 +720,7 @@ void CVisitor::collectOutOfClassDefs(TSNode node)
 			if (!q.empty())
 				out_of_class_defs_.insert(std::move(q));
 		}
-		collectOutOfClassDefs(c);
+		collectOutOfClassDefs(c, depth + 1);
 	}
 }
 

@@ -607,6 +607,19 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// Phase 1.2: populate scope table from entity module_path.
 	// Module scopes: one per unique directory (module_path is the
 	// denormalized directory portion of file_path, populated at INSERT).
+	//
+	// Idempotency: `scope` has no UNIQUE key on (project_id, kind, name)
+	// (kind=2 function scopes legitimately repeat a name across modules),
+	// so `INSERT OR IGNORE` has no conflict target and would re-append every
+	// kind=1 module row on each buildGraph. buildGraph runs more than once
+	// per project (the parallel indexer merges per-module worker DBs, then
+	// the post-index enhance runs buildGraph again on the merged DB), so
+	// without a guard each module scope is duplicated — inflating
+	// project_overview.total_modules and doubling module_summary rows (and
+	// thus dead_code counts, since buildModuleSummaries GROUP BYs s.id).
+	// The NOT EXISTS clause makes the insert a true upsert-by-name for
+	// module scopes and is correct for both full and incremental passes
+	// (an incremental pass only adds modules that do not yet have a scope).
 	{
 		std::string scope_sql =
 			"INSERT OR IGNORE INTO scope "
@@ -618,7 +631,11 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			"FROM entity WHERE project_id=" +
 			std::to_string(project_id) +
 			" AND module_path != ''"
-			" AND entity.file_path IN (SELECT file_path FROM _rf)";
+			" AND entity.file_path IN (SELECT file_path FROM _rf)"
+			" AND NOT EXISTS (SELECT 1 FROM scope s2 WHERE"
+			" s2.project_id=" +
+			std::to_string(project_id) +
+			" AND s2.kind=1 AND s2.name=entity.module_path)";
 		exec_write(scope_sql, "INSERT INTO scope (module)");
 	}
 	// Function scopes: each entity within its module scope.
@@ -638,6 +655,45 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			std::to_string(project_id) +
 			" AND e.file_path IN (SELECT file_path FROM _rf)";
 		exec_write(func_sql, "INSERT INTO scope (function)");
+	}
+	// Phase 1.3: drop module scopes whose module no longer exists.
+	//
+	// Nothing else removes kind=1 rows: a module scope is shared by every file
+	// in its directory, so the per-file cleanup in deleteGraphDataByFile only
+	// deletes function scopes. When the last file of a module disappears — the
+	// directory was deleted, or a later index excluded it — its module scope
+	// stayed behind. project_overview counts kind=1 rows as total_modules and
+	// buildModuleSummaries GROUPs BY them, so a stale row inflated both (and
+	// the dead_code counts derived from those groups).
+	//
+	// `entity` is the right reference set: the INSERT above creates a kind=1
+	// row exclusively from `entity.module_path`, so every legitimate module
+	// name is an entity.module_path of this project. The entity rows of files
+	// that vanished are already gone by now (deleteGraphDataByFile above, or
+	// GraphStore::cleanupStaleFiles before this call) and the surviving files'
+	// rows were inserted earlier in this function, so no live module can look
+	// orphaned here. NOT IN (…) keeps it to a single index scan of
+	// idx_entity_module instead of a correlated probe per scope row.
+	{
+		std::string orphan_modules =
+			"DELETE FROM scope WHERE project_id=" +
+			std::to_string(project_id) +
+			" AND kind=1 AND name NOT IN ("
+			"SELECT DISTINCT module_path FROM entity"
+			" WHERE project_id=" +
+			std::to_string(project_id) + " AND module_path != '')";
+		exec_write(orphan_modules, "DELETE FROM scope (orphan module)");
+		// Their function scopes go with them: a kind=2 row whose parent is gone
+		// can never be joined to a module again, and it would keep inflating
+		// the table on every later pass.
+		std::string orphan_functions =
+			"DELETE FROM scope WHERE project_id=" +
+			std::to_string(project_id) +
+			" AND kind=2 AND parent_id NOT IN ("
+			"SELECT id FROM scope WHERE project_id=" +
+			std::to_string(project_id) + " AND kind=1)";
+		exec_write(orphan_functions,
+			   "DELETE FROM scope (orphan function)");
 	}
 	// Update import.source_scope_id to point to the file's module scope.
 	// v0.6 (perf): the old form nested a second correlated subquery to look

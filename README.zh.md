@@ -38,6 +38,8 @@ CodeScope 是一个 **项目真相引擎（Project Truth Engine）**，回答一
 - **Rust**：宏调用（`println!`、`vec!`、用户 `foo!()`）会按宏名记录为调用。tree-sitter 不做宏展开，因此**宏体生成**的代码不在图中，宏也只按名字匹配。
 - **JavaScript**：`class A extends B` 不会记录为 `InterfaceImpl`（JS 没有 `implements` 子句）；extends 的表达式仍会被访问。TypeScript/TSX 的 `implements` 子句**会**记录。
 - **推断是尽力而为**：接收者类型来自局部声明、复合字面量与 `this`/`self`；动态类型的接收者保持未知。
+- **病态深嵌套 AST 会被截断，而不是完整遍历**：当文件的 AST 嵌套超过 `kMaxVisitDepth`（250）时，更深的子树会被跳过，并在 stderr 上按文件报告一次
+  （`[module=ir, method=…] AST nesting exceeded kMaxVisitDepth=250`）。该上限存在的原因是递归遍历运行在索引器 512 KB 的 worker 栈上；手写代码不会触及，生成代码偶尔会。
 
 ### 技术栈
 

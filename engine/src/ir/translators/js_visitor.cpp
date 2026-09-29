@@ -229,16 +229,27 @@ std::string_view JsVisitor::nodeTextView(TSNode node)
 
 void JsVisitor::visitChildren(TSNode node, uint64_t parent_id)
 {
+	uint32_t count = ts_node_child_count(node);
+	for (uint32_t i = 0; i < count; i++) {
+		TSNode child = ts_node_child(node, i);
+		if (!ts_node_is_named(child))
+			continue;
+		visitChild(child, parent_id);
+	}
+}
+
+void JsVisitor::visitChild(TSNode node, uint64_t parent_id)
+{
 	// Bound native-stack recursion so a pathologically deep AST cannot
 	// SIGSEGV the indexer (the FFI try/catch cannot recover a stack
 	// overflow). Report the truncation once per file rather than dropping
-	// nodes silently. [module=ir, method=visitChildren]
+	// nodes silently. [module=ir, method=visitChild]
 	if (visit_depth_ >= kMaxVisitDepth) {
 		if (!depth_truncated_) {
 			depth_truncated_ = true;
 			const char *fp = unit_ ? unit_->filePath().c_str() : "";
 			fprintf(stderr,
-				"[module=ir, method=visitChildren] AST nesting "
+				"[module=ir, method=visitChild] AST nesting "
 				"exceeded kMaxVisitDepth=%d in '%s'; deeper nodes "
 				"skipped to avoid stack overflow\n",
 				kMaxVisitDepth, fp);
@@ -246,13 +257,7 @@ void JsVisitor::visitChildren(TSNode node, uint64_t parent_id)
 		return;
 	}
 	++visit_depth_;
-	uint32_t count = ts_node_child_count(node);
-	for (uint32_t i = 0; i < count; i++) {
-		TSNode child = ts_node_child(node, i);
-		if (!ts_node_is_named(child))
-			continue;
-		visitNode(child, parent_id);
-	}
+	visitNode(node, parent_id);
 	--visit_depth_;
 }
 
@@ -516,13 +521,13 @@ void JsVisitor::visitVariableDecl(TSNode node, uint64_t parent_id)
 						   "identifier") == 0)
 						continue;
 					if (ts_node_is_named(decl))
-						visitNode(decl, parent_id);
+						visitChild(decl, parent_id);
 				}
 			} else {
 				visitChildren(child, parent_id);
 			}
 		} else if (ts_node_is_named(child)) {
-			visitNode(child, parent_id);
+			visitChild(child, parent_id);
 		}
 	}
 }
@@ -628,7 +633,7 @@ void JsVisitor::visitExportStmt(TSNode node, uint64_t parent_id)
 		    strcmp(t, "class_declaration") == 0 ||
 		    strcmp(t, "variable_declaration") == 0 ||
 		    strcmp(t, "lexical_declaration") == 0) {
-			visitNode(child, export_id);
+			visitChild(child, export_id);
 		}
 	}
 }

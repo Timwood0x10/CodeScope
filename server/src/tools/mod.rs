@@ -651,6 +651,11 @@ static TOOL_HANDLERS: Lazy<HashMap<&'static str, ToolHandler>> = Lazy::new(|| {
 mod catalog;
 pub use catalog::all_tools;
 
+// Documentation-liveness guards for README §9 (own file: 1000-line rule, see
+// tools/clamp.rs for the same pattern).
+#[cfg(test)]
+mod docs_lint;
+
 // ─── Execute ────────────────────────────────────────────────────
 
 pub fn execute(project_id: u64, tool_name: &str, args: &Value) -> String {
@@ -795,84 +800,6 @@ mod tests {
             result.contains("Unknown tool"),
             "tools/call index_project must report Unknown tool, got: {result}"
         );
-    }
-
-    /// Append the contents of every source file under `dir` to `out`.
-    fn collect_sources(dir: &str, out: &mut String) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                collect_sources(path.to_str().unwrap_or_default(), out);
-                continue;
-            }
-            let is_source = matches!(
-                path.extension().and_then(|e| e.to_str()),
-                Some("rs" | "cpp" | "h" | "hpp")
-            );
-            if !is_source {
-                continue;
-            }
-            if let Ok(text) = std::fs::read_to_string(&path) {
-                out.push_str(&text);
-                out.push('\n');
-            }
-        }
-    }
-
-    /// Regression (CODE_REVIEW_2026-09-27.md D3-3): `CODESCOPE_VERBOSE` was
-    /// documented in README §9 but never read by any production code — setting
-    /// it did nothing. Every variable the §9 table promises must have a real
-    /// READER in `server/src` or `engine/src`, so a dead entry cannot creep
-    /// back in. A set-only or comment-only mention deliberately does not count.
-    #[test]
-    fn test_documented_env_vars_are_read_by_production_code() {
-        let readme = std::fs::read_to_string("../README.md")
-            .expect("README.md must be readable from the crate directory");
-        let section = readme
-            .split("## 9. Environment Variables")
-            .nth(1)
-            .expect("README must have a §9 Environment Variables section");
-        let section = section.split("\n## ").next().unwrap_or(section);
-
-        let mut vars: Vec<String> = Vec::new();
-        for line in section.lines() {
-            let Some(rest) = line.strip_prefix("| `") else {
-                continue;
-            };
-            let Some(name) = rest.split('`').next() else {
-                continue;
-            };
-            if name.starts_with("CODESCOPE_") {
-                vars.push(name.to_string());
-            }
-        }
-        assert!(
-            vars.len() >= 9,
-            "expected the §9 table rows, parsed only {vars:?}"
-        );
-
-        let mut sources = String::new();
-        collect_sources("src", &mut sources);
-        collect_sources("../engine/src", &mut sources);
-
-        for var in &vars {
-            // A reader is a getenv()/env::var() call, or the constant that
-            // holds the variable name for one (`kExcludePathsEnv = "..."`).
-            let is_read = sources.lines().any(|line| {
-                line.contains(var.as_str())
-                    && (line.contains("getenv")
-                        || line.contains("env::var")
-                        || line.contains("Env ="))
-            });
-            assert!(
-                is_read,
-                "README §9 documents `{var}` but no production code READS it \
-                 (a set-only or comment-only reference does not count)"
-            );
-        }
     }
 
     // ── Argument clamping ─────────────────────────────────────────

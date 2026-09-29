@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <sqlite3.h>
 #include <string>
 
 namespace fs = std::filesystem;
@@ -45,6 +46,26 @@ static void write_file(const std::string &path, const char *content)
 	fclose(f);
 }
 
+// Count rows of a single table in the project DB. Opens a fresh read
+// connection so it does not disturb the engine's handle. Returns -1 on error.
+static int count_rows(const char *sql)
+{
+	sqlite3 *db = nullptr;
+	if (sqlite3_open(kDbPath, &db) != SQLITE_OK) {
+		sqlite3_close(db);
+		return -1;
+	}
+	sqlite3_stmt *st = nullptr;
+	int n = -1;
+	if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) == SQLITE_OK) {
+		if (sqlite3_step(st) == SQLITE_ROW)
+			n = sqlite3_column_int(st, 0);
+		sqlite3_finalize(st);
+	}
+	sqlite3_close(db);
+	return n;
+}
+
 int main()
 {
 	std::error_code ec;
@@ -82,6 +103,12 @@ int helper(int x) {
 static int internal_impl(int x) {
     return x * 2;
 }
+
+// Capability-named function so buildCapabilityState emits a row
+// (name LIKE 'Auth%'), used by the idempotency check below.
+int AuthGuard(int x) {
+    return x + 1;
+}
 )");
 
 	// ─── Step 1: init + create project ───
@@ -112,6 +139,18 @@ static int internal_impl(int x) {
 		       "enhance: status ok on success");
 	printf("PASS: enhance run1 — %s\n", enh);
 	engine_free_string(enh);
+
+	// Idempotency baseline (CODE_REVIEW_2026-09-27.md, second pass):
+	// capability_state and workflow_step are derived tables that a pre-fix
+	// build re-appended on every enhance (no UNIQUE / no delete-first),
+	// doubling capability/workflow counts per run. Capture the counts after
+	// the first enhance; Step 6 asserts a second enhance does not grow them.
+	int cap1 = count_rows("SELECT COUNT(*) FROM capability_state");
+	int ws1 = count_rows("SELECT COUNT(*) FROM workflow_step");
+	check(cap1 >= 1, "capability_state must have >=1 row (AuthGuard)");
+	check(ws1 >= 1, "workflow_step must have >=1 row (main workflow)");
+	printf("PASS: idempotency baseline — capability_state=%d workflow_step=%d\n",
+	       cap1, ws1);
 
 	// ─── Step 4: check enhancement status ───
 	char *st = engine_get_enhancement_status(pid);
@@ -163,8 +202,16 @@ static int internal_impl(int x) {
 	       &cg_st2);
 	// Idempotency: callgraph_ready must not decrease
 	check(cg_st2 == cg_st, "rerun: callgraph_ready unchanged");
-	printf("PASS: rerun idempotent — cg_ready %d→%d\n%s\n%s\n", cg_st,
-	       cg_st2, enh2, st2);
+	// Idempotency: derived state tables must not grow on a second enhance.
+	int cap2 = count_rows("SELECT COUNT(*) FROM capability_state");
+	int ws2 = count_rows("SELECT COUNT(*) FROM workflow_step");
+	check(cap2 == cap1,
+	      "rerun: capability_state must not grow (delete-first rebuild)");
+	check(ws2 == ws1,
+	      "rerun: workflow_step must not grow (delete-first rebuild)");
+	printf("PASS: rerun idempotent — cg_ready %d→%d, capability_state %d→%d, "
+	       "workflow_step %d→%d\n%s\n%s\n",
+	       cg_st, cg_st2, cap1, cap2, ws1, ws2, enh2, st2);
 	engine_free_string(enh2);
 	engine_free_string(st2);
 

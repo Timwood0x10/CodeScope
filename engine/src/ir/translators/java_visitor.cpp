@@ -117,9 +117,56 @@ void JavaVisitor::visitNode(TSNode node, uint64_t parent_id)
 		return handleObjectCreation(node, parent_id);
 	if (strcmp(type, "variable_declarator") == 0)
 		return handleVariableDecl(node, parent_id);
+	if (strcmp(type, "formal_parameter") == 0 ||
+	    strcmp(type, "spread_parameter") == 0)
+		return handleFormalParameter(node, parent_id);
 	if (strcmp(type, "import_declaration") == 0)
 		return handleImport(node, parent_id);
 	JsVisitor::visitNode(node, parent_id);
+}
+
+void JavaVisitor::handleFormalParameter(TSNode node, uint64_t parent_id)
+{
+	// `void use(Drawable d)`: the parameter's TYPE has to be recorded, not just
+	// its name. handleMethodInvocation resolves `d.draw()`'s receiver_type from
+	// var_types_, so a parameter that was never recorded left the receiver
+	// factor empty — the interface method and every implementation then tied on
+	// every factor, the Step-5 ambiguity gate abstained, and the call produced
+	// no edge at all.
+	std::string name;
+	std::string type_name;
+	uint32_t cnt = ts_node_child_count(node);
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (!ts_node_is_named(c))
+			continue;
+		const char *t = ts_node_type(c);
+		if (strcmp(t, "identifier") == 0) {
+			name = nodeText(c);
+			continue;
+		}
+		if (strcmp(t, "type_identifier") == 0) {
+			type_name = nodeText(c);
+			continue;
+		}
+		// `List<Foo> items` — the base type is the receiver's type, the type
+		// arguments are not (mirrors handleVariableDecl).
+		if (strcmp(t, "generic_type") == 0) {
+			TSNode base = ts_node_child(c, 0);
+			if (!ts_node_is_null(base))
+				type_name = nodeText(base);
+			continue;
+		}
+	}
+	if (name.empty()) {
+		visitChildren(node, parent_id);
+		return;
+	}
+	uint64_t id =
+		emitter_->emitVariable(name, location(node), parent_id, 0);
+	defineSymbol(name, id);
+	if (!type_name.empty())
+		recordVarType(name, type_name);
 }
 void JavaVisitor::handleMethodDecl(TSNode node, uint64_t parent_id)
 {
@@ -132,6 +179,16 @@ void JavaVisitor::handleMethodDecl(TSNode node, uint64_t parent_id)
 	uint64_t id = emitter_->emitMethod(name, loc, parent_id, 0, false,
 					   detectVisibility(node));
 	defineSymbol(name, id);
+	// Tag the method with its declaring type (`Circle::draw`). The Resolver's
+	// factorReceiverTypeMatch and the interface dispatch index both match on
+	// this prefix: without it, an interface method and each of its
+	// implementations are candidates with identical names and arity, tie on
+	// every factor, and the Step-5 ambiguity gate abstains — so a call through
+	// the interface produced no edge at all (the same reasoning as
+	// CVisitor::handleFuncDef).
+	std::string cls = currentClassName();
+	if (!cls.empty())
+		unit_->setQualifiedName(id, cls + "::" + name);
 	pushScope();
 	pushFunctionScope(id);
 	uint32_t cnt = ts_node_child_count(node);
@@ -180,7 +237,7 @@ void JavaVisitor::handleClassDecl(TSNode node, uint64_t parent_id)
 		if (strcmp(ts_node_type(c), "class_body") == 0)
 			visitChildren(c, id);
 		else
-			visitNode(c, id);
+			visitChild(c, id);
 	}
 	popClassScope();
 	popScope();
@@ -237,7 +294,15 @@ void JavaVisitor::handleInterfaceDecl(TSNode node, uint64_t parent_id)
 	uint64_t id = emitter_->emitInterface(name, loc, parent_id,
 					      detectVisibility(node));
 	defineSymbol(name, id);
+	// Push an interface scope so its methods are qualified
+	// (`Drawable::draw`) exactly like class methods: the resolver's dispatch
+	// index reconstructs method sets from those qualified names to find the
+	// implementations of an interface.
+	pushScope();
+	pushClassScope(name);
 	visitChildren(node, id);
+	popClassScope();
+	popScope();
 }
 void JavaVisitor::handleEnumDecl(TSNode node, uint64_t parent_id)
 {
@@ -304,7 +369,7 @@ void JavaVisitor::handleMethodInvocation(TSNode node, uint64_t parent_id)
 			    strcmp(t, "scoped_identifier") == 0 ||
 			    strcmp(t, "field_access") == 0)
 				continue;
-			visitNode(c, parent_id);
+			visitChild(c, parent_id);
 		}
 		return;
 	}
@@ -406,7 +471,7 @@ void JavaVisitor::handleMethodInvocation(TSNode node, uint64_t parent_id)
 		    strcmp(t, "scoped_identifier") == 0 ||
 		    strcmp(t, "field_access") == 0)
 			continue;
-		visitNode(c, id);
+		visitChild(c, id);
 	}
 }
 void JavaVisitor::handleObjectCreation(TSNode node, uint64_t parent_id)
@@ -482,7 +547,7 @@ void JavaVisitor::handleObjectCreation(TSNode node, uint64_t parent_id)
 		    strcmp(t, "scoped_type_identifier") == 0 ||
 		    strcmp(t, "array_type") == 0)
 			continue;
-		visitNode(c, id);
+		visitChild(c, id);
 	}
 }
 void JavaVisitor::handleVariableDecl(TSNode node, uint64_t parent_id)
@@ -591,7 +656,7 @@ void JavaVisitor::handleVariableDecl(TSNode node, uint64_t parent_id)
 			continue;
 		if (strcmp(ts_node_type(c), "identifier") == 0)
 			continue;
-		visitNode(c, parent_id);
+		visitChild(c, parent_id);
 	}
 }
 void JavaVisitor::handleImport(TSNode node, uint64_t parent_id)

@@ -814,6 +814,59 @@ bool GraphStore::runSchemaMigrations()
 		}
 	}
 
+	// Migration: collapse duplicate scopes (kind=1 module + kind=2 function).
+	// A pre-fix buildGraph used `INSERT OR IGNORE INTO scope` with no UNIQUE
+	// key to ignore on, so each buildGraph re-appended every module row — the
+	// parallel indexer merges per-module worker DBs and then the post-index
+	// enhance runs buildGraph again, so every module ended up with ≥2 kind=1
+	// rows. buildModuleSummaries GROUP BYs scope.id, so the duplicates
+	// doubled module_summary rows (and dead_code counts) and inflated
+	// project_overview.total_modules. The insert is guarded now
+	// (store_graph.cpp NOT EXISTS clause); this repairs databases the
+	// pre-fix binary left behind. Idempotent: after the first pass no
+	// duplicate remains and all three statements match nothing.
+	//
+	// 1) Repoint kind=2 function scopes whose parent points at a duplicate
+	//    module scope to the surviving (lowest-id) module scope with the
+	//    same (project_id, name), so no child is left dangling.
+	migrationExec("UPDATE scope AS child SET parent_id = ("
+		      "  SELECT MIN(keep.id) FROM scope keep, scope dup"
+		      "  WHERE dup.id = child.parent_id AND keep.kind = 1"
+		      "    AND keep.project_id = dup.project_id"
+		      "    AND keep.name = dup.name)"
+		      " WHERE child.kind = 2 AND child.parent_id IN ("
+		      "  SELECT id FROM scope WHERE kind = 1 AND id NOT IN ("
+		      "    SELECT MIN(id) FROM scope WHERE kind = 1"
+		      "    GROUP BY project_id, name))");
+	// 2) Delete the duplicate module scopes, keeping the lowest id per
+	//    (project_id, name).
+	migrationExec("DELETE FROM scope WHERE kind = 1 AND id NOT IN ("
+		      "  SELECT MIN(id) FROM scope WHERE kind = 1"
+		      "  GROUP BY project_id, name)");
+	// 3) Delete duplicate FUNCTION scopes (kind=2), keeping the lowest id per
+	//    fully-identical row.
+	//
+	//    The identity of a kind=2 row is the tuple buildGraph inserts —
+	//    (project_id, parent_id, name, start_row, end_row) — NOT
+	//    (project_id, parent_id, name) alone: several entities in one module
+	//    legitimately share a name (one `init` per file) and are distinguished
+	//    only by their source range. Grouping without the range would delete
+	//    those distinct rows.
+	//
+	//    Measured on the 1.1 GB self-index: 117,718 kind=2 rows collapse to
+	//    29,799 on this identity — 29,674 tuples carried duplicates and 87,919
+	//    rows were surplus, the residue of pre-fix accumulate-and-append runs.
+	//    Runs AFTER step 1 on purpose: reparenting is what brings rows that
+	//    share a logical (module, name, range) onto one parent_id, making them
+	//    recognisable as duplicates. Nothing references a kind=2 scope id —
+	//    import.source_scope_id targets the kind=1 module scope only (see
+	//    buildGraph's UPDATE) and reference.scope_id is never written — so
+	//    deleting these rows leaves no dangling reference. Idempotent.
+	migrationExec(
+		"DELETE FROM scope WHERE kind = 2 AND id NOT IN ("
+		"  SELECT MIN(id) FROM scope WHERE kind = 2"
+		"  GROUP BY project_id, parent_id, name, start_row, end_row)");
+
 	if (!migration_ok) {
 		fprintf(stderr,
 			"[module=store, method=runSchemaMigrations] one or more "

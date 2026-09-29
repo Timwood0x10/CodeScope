@@ -198,6 +198,14 @@ void GoVisitor::visitNode(TSNode node, uint64_t parent_id)
 		return handleRange(node, parent_id);
 	if (strcmp(type, "parameter_declaration") == 0)
 		return handleParameterDecl(node, parent_id);
+	// The blank identifier binds nothing: `_` is a discard, not a symbol. The
+	// short-variable path already skips it (handleShortVar) but every other
+	// context reaches visitIdentifier, which emits a Variable for any
+	// identifier — so `_, x = f()` used to produce a `_` entity while
+	// `_, x := f()` did not. Dropping it here keeps the two assignment forms
+	// consistent and keeps `_` out of the graph.
+	if (strcmp(type, "identifier") == 0 && nodeText(node) == "_")
+		return;
 	JsVisitor::visitNode(node, parent_id);
 }
 void GoVisitor::handleFuncDecl(TSNode node, uint64_t parent_id)
@@ -458,7 +466,9 @@ void GoVisitor::handleVarDecl(TSNode node, uint64_t parent_id)
 		if (strcmp(ts_node_type(c), "var_spec") == 0 ||
 		    strcmp(ts_node_type(c), "const_spec") == 0) {
 			std::string name = extractName(c);
-			if (!name.empty()) {
+			// The blank identifier (`var _ = f()`) discards the value and
+			// binds no symbol — its initializer is still visited below.
+			if (!name.empty() && name != "_") {
 				uint64_t id = emitter_->emitVariable(
 					name, location(c), parent_id,
 					isupper(static_cast<unsigned char>(
@@ -499,6 +509,16 @@ void GoVisitor::handleVarDecl(TSNode node, uint64_t parent_id)
 					}
 				}
 			}
+			// Walk the value expression: a call in `var x = f()` (or
+			// `var _ = f()`) belongs to the enclosing function. This handler
+			// used to drop the value entirely, losing those call edges. Only
+			// the value field is followed — the name and type nodes are
+			// consumed above, and re-visiting the type would emit stray
+			// identifier records.
+			TSNode value =
+				ts_node_child_by_field_name(c, "value", 5);
+			if (!ts_node_is_null(value))
+				visitChild(value, parent_id);
 		}
 	}
 }
@@ -548,7 +568,7 @@ void GoVisitor::handleShortVar(TSNode node, uint64_t parent_id)
 		TSNode c = ts_node_child(right, i);
 		if (!ts_node_is_named(c))
 			continue;
-		visitNode(c, parent_id);
+		visitChild(c, parent_id);
 		if (rhs_idx < lhs_names.size()) {
 			std::string inferred = inferCompositeType(c);
 			if (!inferred.empty())

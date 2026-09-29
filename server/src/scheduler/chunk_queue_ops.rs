@@ -19,31 +19,54 @@ impl ChunkQueue {
     /// pending. Multiple workers calling concurrently are serialised
     /// by the CAS — losers simply retry the scan (§6.1).
     ///
-    /// Records `started_at_ms` so [`ChunkQueue::reset_stale`] can
-    /// detect crashed workers.
+    /// The claim is published *together* with `started_at_ms`: the stamp
+    /// is stored before the status CAS, and the CAS carries `Release`, so
+    /// any observer that Acquire-loads `CLAIMED` necessarily sees a
+    /// non-zero start time. Storing the stamp *after* the CAS (as this used
+    /// to) left a window in which a live chunk was observable as
+    /// `CLAIMED` + `started_at_ms == 0`; [`ChunkQueue::reset_stale`] treats
+    /// that combination as infinitely stale and hands the chunk to a second
+    /// worker, which re-parses the same files and — because the merge copies
+    /// each worker DB row-for-row without content de-duplication — duplicates
+    /// those rows in the final index. That state can no longer be produced
+    /// here.
+    ///
+    /// The price is that a thread which loses the CAS may already have
+    /// stamped the slot it could not claim, pushing the owner's timestamp
+    /// later by the skew between stamp and CAS. The only effect is that the
+    /// watchdog may consider such a chunk slightly fresher than it is, which
+    /// delays — never doubles — its recovery.
     pub fn claim_next(&self, worker_id: u32) -> Option<u32> {
         // SAFETY: self.ptr is valid for the lifetime of self; reads via
         // shared reference are safe because all mutable fields are atomic.
         let state = unsafe { &*self.ptr };
         let count = state.header.chunk_count;
+        let started = now_ms();
         for i in 0..count {
             let slot = &state.chunks[i as usize];
-            // Acquire on success pairs with the Release store in
-            // mark_done/mark_failed/reset_stale so a claimer observes
-            // the full prior state of the slot (weak memory: Apple
-            // Silicon reorders). Relaxed on failure — a lost CAS just
-            // retries the scan and carries no cross-thread dependency.
+            // Cheap non-atomic-skew pre-check: skip slots a CAS cannot win.
+            // It also keeps the stamp below off slots that are already
+            // claimed, which shrinks the "loser stamps the winner" window.
+            if slot.status.load(Ordering::Relaxed) != STATUS_PENDING {
+                continue;
+            }
+            // Stamp BEFORE publishing CLAIMED — see the doc comment.
+            slot.started_at_ms.store(started, Ordering::Relaxed);
+            slot.claimer_id.store(worker_id, Ordering::Relaxed);
+            // AcqRel on success: Release publishes the two stamps above to
+            // whoever Acquires this slot afterwards (the watchdog in
+            // reset_stale), and Acquire pairs with the Release store in
+            // mark_done/mark_failed/reset_stale so the claimer observes the
+            // slot's full prior state (weak memory: Apple Silicon reorders).
+            // Relaxed on failure — a lost CAS just retries the scan and
+            // carries no cross-thread dependency.
             match slot.status.compare_exchange(
                 STATUS_PENDING,
                 STATUS_CLAIMED,
-                Ordering::Acquire,
+                Ordering::AcqRel,
                 Ordering::Relaxed,
             ) {
-                Ok(_) => {
-                    slot.claimer_id.store(worker_id, Ordering::Relaxed);
-                    slot.started_at_ms.store(now_ms(), Ordering::Relaxed);
-                    return Some(i);
-                }
+                Ok(_) => return Some(i),
                 Err(_) => continue,
             }
         }
@@ -114,18 +137,16 @@ impl ChunkQueue {
             // A PENDING slot carrying 0 has never been claimed and is not
             // stale — nobody owns it.
             //
-            // A CLAIMED slot carrying 0 is a different thing: claim_next()
-            // publishes CLAIMED with its CAS and stores the timestamp after,
-            // and status/started_at_ms are separate atomics, so an observer
-            // can legitimately see CLAIMED with the previous 0 (a worker that
-            // crashed in that window leaves it that way for good). Returning
-            // false here — as this used to — made such a chunk permanently
-            // unrecoverable: the watchdog skipped it as "never claimed" and
-            // its files were never indexed. Treat it as stale instead: another
-            // worker re-claims it and re-indexes its files, which the design
-            // tolerates (each worker writes its own DB and the merge is
-            // INSERT OR IGNORE), so the worst case is one chunk of redundant
-            // work instead of a permanently missing slice of the index.
+            // A CLAIMED slot carrying 0 predates the claim/stamp pairing in
+            // claim_next(): this build stores started_at_ms before it
+            // publishes CLAIMED, so a claim made by it is never observable
+            // without a start time. Such a slot is therefore residue from an
+            // shm segment created by an older binary (whose worker could crash
+            // between the CAS and the stamp). It still has to be reclaimed —
+            // returning false made the chunk unrecoverable and its files were
+            // never indexed — but the reclaim is not free: the merge copies
+            // every worker DB row-for-row, so a re-parsed chunk duplicates its
+            // rows rather than being absorbed by id collisions.
             if slot.status.load(Ordering::Acquire) != STATUS_CLAIMED {
                 return false;
             }
@@ -197,17 +218,21 @@ impl ChunkQueue {
         released
     }
 
-    /// Returns true if every chunk is in DONE or FAILED state.
-    /// Used by the scheduler's main loop to detect completion.
     /// Scan every chunk and reclaim any `CLAIMED` chunk whose worker has
     /// been silent longer than `timeout_ms` (orphaned by a crashed
     /// worker). Returns the number of chunks reset to `PENDING`.
     ///
     /// Called by idle workers (when `claim_next` finds no `PENDING` chunk)
     /// so a crash mid-chunk cannot permanently strand files: another
-    /// worker re-claims the orphaned chunk and re-indexes its files
-    /// (idempotent — the worker writes to its OWN per-worker DB, so no
-    /// duplicate rows appear in the final merge). See DYNAMIC_SCHED_REDESIGN.md §8.
+    /// worker re-claims the orphaned chunk and re-indexes its files.
+    ///
+    /// Reclaiming is NOT free: the merge copies each worker DB row-for-row
+    /// with id offsets above the target's MAX(id), so `INSERT OR IGNORE`
+    /// never fires for a logically-identical row coming from another DB — a
+    /// chunk parsed twice yields duplicate entities. `timeout_ms` must
+    /// therefore be long enough that it can only elapse for a worker that is
+    /// really gone (main.rs defaults it to the per-worker timeout, 600 s).
+    /// See DYNAMIC_SCHED_REDESIGN.md §8.
     pub fn reset_all_stale(&self, timeout_ms: u64) -> u32 {
         let count = self.chunk_count();
         let mut reclaimed = 0u32;

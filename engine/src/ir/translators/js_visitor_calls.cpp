@@ -151,7 +151,7 @@ void JsVisitor::visitCallExpr(TSNode node, uint64_t parent_id)
 			const char *t = ts_node_type(child);
 			if (strcmp(t, "identifier") == 0)
 				continue;
-			visitNode(child, parent_id);
+			visitChild(child, parent_id);
 		}
 		return;
 	}
@@ -257,7 +257,7 @@ void JsVisitor::visitCallExpr(TSNode node, uint64_t parent_id)
 			// creating an extra identifier record.
 			continue;
 		}
-		visitNode(child, call_id);
+		visitChild(child, call_id);
 	}
 }
 
@@ -326,7 +326,7 @@ void JsVisitor::visitNewExpr(TSNode node, uint64_t parent_id)
 			if (strcmp(t, "identifier") == 0 ||
 			    strcmp(t, "member_expression") == 0)
 				continue;
-			visitNode(child, parent_id);
+			visitChild(child, parent_id);
 		}
 		return;
 	}
@@ -393,7 +393,7 @@ void JsVisitor::visitNewExpr(TSNode node, uint64_t parent_id)
 		if (strcmp(t, "identifier") == 0 ||
 		    strcmp(t, "member_expression") == 0)
 			continue;
-		visitNode(child, call_id);
+		visitChild(child, call_id);
 	}
 }
 

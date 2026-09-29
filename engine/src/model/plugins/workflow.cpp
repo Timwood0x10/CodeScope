@@ -1,5 +1,6 @@
 #include "workflow.h"
 #include <cstdio>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -30,6 +31,26 @@ ModelResult WorkflowPlugin::build(uint64_t project_id, const ModelContext &ctx)
 {
 	ModelResult r;
 	r.plugin_name = "Workflow";
+
+	// Rebuild idempotently. insertWorkflow is guarded (it returns the
+	// existing row id), but insertWorkflowStep is a plain INSERT with no
+	// dedup and workflow_step has no UNIQUE, so each rebuild (every enhance
+	// / model build) appended a second copy of every step — inflating
+	// workflow_state.steps_done / steps_total. Clear this project's steps
+	// first so a rebuild replaces them instead of accumulating.
+	{
+		const std::string del =
+			"DELETE FROM workflow_step WHERE workflow_id IN "
+			"(SELECT id FROM workflow WHERE project_id=" +
+			std::to_string(project_id) + ")";
+		if (!store_->exec(del.c_str())) {
+			r.error = std::string("[module=workflow, method=build] "
+					      "delete workflow_step failed: ") +
+				  store_->error();
+			fprintf(stderr, "%s\n", r.error.c_str());
+			return r;
+		}
+	}
 
 	// Build the set of entity ids that are the source of at least one
 	// relation. This replicates the original `EXISTS (SELECT 1 FROM

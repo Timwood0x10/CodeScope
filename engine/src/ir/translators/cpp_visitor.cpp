@@ -54,16 +54,35 @@ void CppVisitor::visitNode(TSNode node, uint64_t parent_id)
 		return handleTemplate(node, parent_id);
 	if (strcmp(type, "field_declaration") == 0)
 		return handleMemberFunctionDecl(node, parent_id);
-	// A class-body destructor/constructor DECLARATION (`~Point();`,
-	// `Point();`) parses as a `declaration`, not a field_declaration — its
-	// declarator is a bare destructor_name/identifier next to a
-	// parameter_list. Inside a class scope only such a form is a member
-	// function declaration; everything else (locals, data members) keeps
-	// the CVisitor behaviour.
-	if (strcmp(type, "declaration") == 0 && !currentClassName().empty() &&
-	    declaresFunction(node))
-		return handleMemberFunctionDecl(node, parent_id);
+	// NOTE: a class-body destructor/constructor DECLARATION (`~Point();`)
+	// parses as a `declaration`, not a field_declaration, and is routed to
+	// handleMemberFunctionDecl by visitClassBody() — which is the only place
+	// that can tell a class member from a declaration inside a member
+	// function's body. Handling it here on `currentClassName()` alone (as an
+	// earlier revision did) also matched local function declarations inside
+	// methods and emitted phantom `Class::local` entities.
 	CVisitor::visitNode(node, parent_id);
+}
+
+void CppVisitor::visitClassBody(TSNode list, uint64_t parent_id)
+{
+	// Walks a class body's field_declaration_list. This is the ONLY place
+	// where a bare `declaration` node belongs to the class rather than to a
+	// function body nested inside it: `~Point();` and `Point();` parse that
+	// way (declarator + parameter_list, no body), while a local
+	// `int helper(int);` inside a method is a declaration nested deeper.
+	uint32_t cnt = ts_node_child_count(list);
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode child = ts_node_child(list, i);
+		if (!ts_node_is_named(child))
+			continue;
+		if (strcmp(ts_node_type(child), "declaration") == 0 &&
+		    declaresFunction(child)) {
+			handleMemberFunctionDecl(child, parent_id);
+			continue;
+		}
+		visitNode(child, parent_id);
+	}
 }
 
 bool CppVisitor::declaresFunction(TSNode node)
@@ -164,9 +183,9 @@ void CppVisitor::handleClassSpec(TSNode node, uint64_t parent_id)
 		// the Java grammar). The previous `class_body` check never
 		// matched, so all C++ class fields were silently dropped.
 		if (strcmp(t, "field_declaration_list") == 0)
-			visitChildren(c, id);
+			visitClassBody(c, id);
 		else
-			visitNode(c, id);
+			visitChild(c, id);
 	}
 	popClassScope();
 	popScope();
@@ -182,7 +201,7 @@ void CppVisitor::handleNamespace(TSNode node, uint64_t parent_id)
 		    strcmp(ts_node_type(c), "identifier") == 0)
 			visitChildren(c, parent_id);
 		else
-			visitNode(c, parent_id);
+			visitChild(c, parent_id);
 	}
 }
 void CppVisitor::handleTemplate(TSNode node, uint64_t parent_id)
@@ -194,7 +213,7 @@ void CppVisitor::handleTemplate(TSNode node, uint64_t parent_id)
 			continue;
 		if (strcmp(ts_node_type(c), "template_parameter_list") == 0)
 			continue;
-		visitNode(c, parent_id);
+		visitChild(c, parent_id);
 	}
 }
 } // namespace ir

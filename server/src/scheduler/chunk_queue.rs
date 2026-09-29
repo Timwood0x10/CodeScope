@@ -653,6 +653,105 @@ mod tests {
     }
 
     #[test]
+    fn test_claim_publishes_start_time_with_the_claim() {
+        // Regression (#23): claim_next() used to publish CLAIMED with its CAS
+        // and store started_at_ms afterwards — two separate atomics, with no
+        // Release anywhere on the claim path. An observer (reset_stale, called
+        // by every idle chunk worker) could therefore read CLAIMED +
+        // started_at_ms == 0, judge the chunk abandoned ("as stale as it
+        // gets") and hand it to a second worker while the first was still
+        // parsing it. The merge copies each worker DB row-for-row, so the
+        // re-parsed files then appeared twice in the final index.
+        //
+        // Two invariants close it, both checked here while claimers and
+        // independent samplers race on a fresh queue per round:
+        //   1. a CLAIMED slot always carries a non-zero start time (the stamp
+        //      is stored before the Release CAS — structural, this is the
+        //      behavioural guard against a future reordering);
+        //   2. reset_stale must never recycle a chunk with a timeout no
+        //      wall-clock reading can exceed.
+        use std::sync::atomic::AtomicBool;
+
+        // create() clamps to MAX_CHUNKS, so this is the largest queue there is.
+        const CHUNKS: u32 = MAX_CHUNKS as u32;
+        const ROUNDS: usize = 8;
+        const CLAIMERS: usize = 4;
+
+        let mut unstamped = 0u64;
+        let mut recycled = 0u64;
+        for _ in 0..ROUNDS {
+            let path = unique_path();
+            let q = Arc::new(ChunkQueue::create(&path, CHUNKS).expect("create"));
+            for i in 0..CHUNKS {
+                q.write_chunk(i, 1, i, 10, 100_000).expect("write");
+            }
+
+            let bad_unstamped = Arc::new(AtomicU64::new(0));
+            let bad_recycled = Arc::new(AtomicU64::new(0));
+            let stop = Arc::new(AtomicBool::new(false));
+
+            let mut samplers = Vec::new();
+            for _ in 0..2 {
+                let q = Arc::clone(&q);
+                let bad_unstamped = Arc::clone(&bad_unstamped);
+                let bad_recycled = Arc::clone(&bad_recycled);
+                let stop = Arc::clone(&stop);
+                samplers.push(std::thread::spawn(move || {
+                    // SAFETY: q.ptr is valid for the queue's lifetime and
+                    // every field read here is an atomic.
+                    let state = unsafe { &*q.ptr };
+                    while !stop.load(Ordering::Relaxed) {
+                        for i in 0..CHUNKS {
+                            let slot = &state.chunks[i as usize];
+                            // Acquire pairs with the claim's Release CAS.
+                            if slot.status.load(Ordering::Acquire) != STATUS_CLAIMED {
+                                continue;
+                            }
+                            if slot.started_at_ms.load(Ordering::Acquire) == 0 {
+                                bad_unstamped.fetch_add(1, Ordering::Relaxed);
+                            }
+                            if q.reset_stale(i, u64::MAX) {
+                                bad_recycled.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                }));
+            }
+
+            let mut claimers = Vec::new();
+            for t in 0..CLAIMERS {
+                let q = Arc::clone(&q);
+                claimers.push(std::thread::spawn(move || {
+                    // Leave the chunks CLAIMED: the publication of the claim
+                    // is exactly what is under test.
+                    while q.claim_next(t as u32).is_some() {}
+                }));
+            }
+            for h in claimers {
+                h.join().unwrap();
+            }
+            stop.store(true, Ordering::Relaxed);
+            for h in samplers {
+                h.join().unwrap();
+            }
+
+            unstamped += bad_unstamped.load(Ordering::Relaxed);
+            recycled += bad_recycled.load(Ordering::Relaxed);
+            let _ = std::fs::remove_file(&path);
+        }
+
+        assert_eq!(
+            unstamped, 0,
+            "a CLAIMED chunk was observable with started_at_ms == 0 — \
+             reset_stale treats that as abandoned and duplicates the chunk"
+        );
+        assert_eq!(
+            recycled, 0,
+            "reset_stale recycled a chunk under an unreachable timeout"
+        );
+    }
+
+    #[test]
     fn test_mark_done_failed_and_completion() {
         let path = unique_path();
         let q = ChunkQueue::create(&path, 3).expect("create");
@@ -742,13 +841,14 @@ mod tests {
 
     #[test]
     fn test_reset_stale_recovers_claim_without_timestamp() {
-        // Regression: a chunk that is CLAIMED with started_at_ms == 0 used to
-        // be unrecoverable. claim_next() publishes CLAIMED with its CAS and
-        // only then stores the timestamp, and the two are separate atomics —
-        // so this state is reachable (a worker crashing in that window leaves
-        // it behind), and reset_stale's early return treated 0 as "never
-        // claimed", so the watchdog skipped the slot forever and its files
-        // were never indexed. It must now be reclaimed.
+        // Legacy state: a chunk that is CLAIMED with started_at_ms == 0. The
+        // current claim_next() stamps the start time BEFORE it publishes
+        // CLAIMED, so this build never leaves a claim unstamped; the state can
+        // only survive in an shm segment written by an older binary (whose
+        // worker could crash between the CAS and the stamp). It must still be
+        // reclaimed: reset_stale's old early return treated 0 as "never
+        // claimed", so the watchdog skipped such a slot forever and its files
+        // were never indexed.
         let path = unique_path();
         let q = ChunkQueue::create(&path, 1).expect("create");
         q.write_chunk(0, 1, 0, 10, 100_000).expect("write");

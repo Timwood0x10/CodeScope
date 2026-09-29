@@ -51,6 +51,155 @@ LIVE 访问器管线（`JsVisitor` 及各语言子类）此前对 AST 递归**�
 - 验证：`test_ir_deep_nesting`、`test_ir_edge_coverage`、`test_qualified_id_ast`、各语言 e2e 与 fp、
   `test_builtin_method_calls`、`test_call_graph_*` 等共 **32 项相关测试全绿**，无回归。
 
+### 追加修复 (2026-09-28 · 第二轮 review)
+
+**新发现并修复（D1 级，单机重现确认）：`scope` 模块行（kind=1）非幂等 → `total_modules` /
+`module_summary` / `dead_code` 计数翻倍。**
+
+- **根因**：`store_graph.cpp` 的模块 scope 用 `INSERT OR IGNORE INTO scope … 1, module_path`，
+  而 `scope` 表在 (project_id, kind, name) 上无 UNIQUE（kind=2 函数 scope 允许重名），故 `OR IGNORE`
+  没有冲突目标，每次 `buildGraph` 都整套追加 kind=1 行。`buildGraph` 一个项目会跑多次（并行索引 merge
+  各 module worker DB 后，post-index enhance 再跑一次 buildGraph），所以每个模块最终有 ≥2 行 kind=1。
+- **实测重现**（`index-parallel` 一个 2 目录项目）：修前 `scope kind=1 = 4`（每模块 2 行）、
+  `project_overview.total_modules = 4`；`buildModuleSummaries` 按 `scope.id` GROUP BY → `module_summary`
+  与 `dead_code` 同步翻倍（即历史 T5 #3「dead_code.entities > total」的真正根因）。
+- **修复**：
+  - `engine/src/store/store_graph.cpp`：模块 scope 插入加 `NOT EXISTS(… kind=1 同名 …)` 守卫 —— 对全量
+    与增量两条路径都正确（增量只新增尚无 scope 的模块）。
+  - `engine/src/store/store_schema_migrations.cpp`：新增去重迁移，修复 pre-fix 二进制留下的脏库 ——
+    先把指向重复模块 scope 的 kind=2 子 scope 的 `parent_id` 重指到存活的最小 id（不留悬垂），再删除重复
+    kind=1 行；幂等（第二次运行无匹配）。
+  - `engine/tests/test_scope_idempotency.cpp`（新增回归测试）：两目录、连跑 3 次 `buildGraph`，断言
+    kind=1 恒为 2。
+- **验证**：修后 `scope kind=1 = 2`、`total_modules = 2`；脏库经迁移由 4→2 且无悬垂 kind=2；
+  `test_scope_idempotency`、`test_index_determinism`、`test_state_builder_batch`、`test_self_inspect`、
+  `test_project_state`、`test_module_edge`、`test_enhance_e2e`、`test_schema_reopen`、`test_membulk*` 等
+  **13 项相关测试全绿**。
+
+> 注：本条属「同一项目重建不干净」的幂等缺陷，与多租户/多项目隔离**无关**（单机单项目下同样成立）。
+
+**同类幂等缺陷（第二轮 review 追加，均单机重现确认并修复）：**
+
+- **`capability_state` 每次 enhance 累积（D1）**：`state_builder.cpp:buildCapabilityState` 用
+  `INSERT OR IGNORE INTO capability_state`，但表在 (project_id, name) 上无 UNIQUE 且无 delete-first
+  → OR IGNORE 无冲突目标 → 每次 enhance 追加整套行。**实测**：一个 Auth*/Login* 项目 enhance 三次，
+  `capability_state` 3→6→9→12，`project_state.capability.total` 随运行次数线性膨胀。
+  **修复**：`buildCapabilityState` 开头 `DELETE FROM capability_state WHERE project_id=?`（与
+  `buildArchitectureState` 同款），并把 `INSERT OR IGNORE` 改为诚实的 `INSERT`。修后恒为 3。
+- **`workflow_step` 每次 model build 累积（D1）**：`insertWorkflow` 幂等（`WHERE NOT EXISTS` 返回既有
+  id），但 `insertWorkflowStep` 是裸 `INSERT`，`WorkflowPlugin::build` 每次都为同一 workflow 重新插入
+  steps，且无 delete、无 UNIQUE → `workflow_state.steps_done/steps_total` 随运行次数膨胀。
+  **修复**：`WorkflowPlugin::build` 开头
+  `DELETE FROM workflow_step WHERE workflow_id IN (SELECT id FROM workflow WHERE project_id=?)`；
+  delete 失败按 `no-silent-error` 置 `ModelResult.error` 并返回。**实测**：main 入口项目 enhance 三次，
+  `workflow_step` 恒为 2（修前会 2→4→6）。
+- **回归测试**：扩展 `engine/tests/test_enhance_e2e.cpp` —— fixture 增 `AuthGuard`（capability 命中）+
+  `main`（workflow 入口），两次 enhance 之间断言 `capability_state` / `workflow_step` 计数不变且 ≥1
+  （非空断言）。`test_model_engine` / `test_state_builder_batch` / `test_project_state` /
+  `test_capability_*` 等 **12 项相关测试全绿**。
+
+#### 续修 (2026-09-28 · 第三轮 review)：同一迁移补齐 kind=2 历史重复
+
+- **新发现**：上面第 1/2 步只清理 kind=1；功能症状已消失（消费者都带 `kind=1` 过滤），但脏库里
+  **kind=2 函数 scope 的重复行会永久保留**。实测 1.1 GB 自索引库（副本，WAL 已 checkpoint）：
+  `kind=2` 共 **117,718** 行，按插入身份 `(project_id, parent_id, name, start_row, end_row)` 去重后仅
+  **29,799** 行 —— 29,674 个元组带重复、**87,919** 行为纯冗余。
+- **关键修正**：去重键必须含 `start_row/end_row`。同一模块内多个实体可以同名（每个文件一个 `init`），
+  只按 `(project_id, parent_id, name)` 分组会**误删合法行**（该库 `distinct(parent_id,name)=18,712` <
+  `distinct(五元组)=29,799`，差集即合法多样性）。
+- **修复**：
+  - `store_schema_migrations.cpp`：迁移追加第 3 步，`DELETE FROM scope WHERE kind=2 AND id NOT IN
+    (SELECT MIN(id) … GROUP BY project_id, parent_id, name, start_row, end_row)`；必须排在重指（第 1 步）
+    之后，否则跨父的同一逻辑 scope 还合不到一起。删前已确认无表存 kind=2 的 scope id
+    （`import.source_scope_id` 只指向 kind=1；`reference.scope_id` 无写入点；`insertKnowledgeEdge` 无调用者）。
+  - `engine/tests/test_scope_dup_migration.cpp`（新增回归测试）：构造 pre-fix 脏库（3 行 kind=1、7 行
+    kind=2，含「同名不同源码区间」的合法行），重开触发迁移 → 断言 kind=1 → 2、kind=2 → 4、五元组无重复、
+    **合法同名行存活**、无悬垂、二次开启幂等。
+  - `engine/tests/test_scope_idempotency.cpp`：补 kind=2 断言 + `DISTINCT == COUNT` 不变式
+    （此前只断言 kind=1，对本类回归完全无感）。
+- **验证**：副本库迁移后 `kind=2 117,718 → 29,799`、五元组 `COUNT(DISTINCT)=COUNT(*)`、合法
+  `distinct(parent_id,name)` 保持 **18,712 不变**、无悬垂、总行数 −74.5%；`engine_init` 连带迁移
+  0.59 s（117k 行，一次性）。引擎测试 **89/89 全绿**。
+
+#### 第四轮 (2026-09-28)：chunk 双认领竞态 + 深度守卫补齐 + 测试盲区清理
+
+**A. `chunk_queue` 双认领竞态（09-26 #23，唯一会产出错误图的引擎缺陷）**
+
+- **根因**：`claim_next` 先 CAS 到 `CLAIMED`、**之后**才用 Relaxed 存 `started_at_ms`，且 CAS 用 `Acquire`（不是
+  Release）——该时间戳对观察者从未被正确发布。于是 idle worker 的 watchdog（`reset_all_stale`）可能读到
+  `CLAIMED + started_at_ms == 0`，按既有逻辑判定为「无限陈旧」（`elapsed = u64::MAX`）并立刻回收，
+  **把仍在其上工作的 chunk 交给第二个 worker**。merge 是按 id 偏移逐行拷贝（`INSERT OR IGNORE` 只在 id
+  冲突时生效），所以同一文件被解析两次 = **实体/边翻倍**——这也修正了 `reset_all_stale` 文档里「重解析
+  是幂等的」这一错误说法。
+- **修复**（`chunk_queue_ops.rs`）：改为**先盖章、后发布**——`started_at_ms`/`claimer_id` 在 CAS 之前写入，
+  CAS 成功用 `AcqRel`（Release 把盖章发布给任何 Acquire 观察者）；并加 Relaxed 预检查以缩小「输家覆盖
+  赢家时间戳」的窗口（其后果仅为恢复延迟，不产生双认领）。`reset_stale` 的「无时间戳 CLAIMED」分支保留，
+  但注释改为：该状态只能来自旧二进制的 shm 残留，本版本不可能产生。
+- **回归测试**：`chunk_queue.rs::test_claim_publishes_start_time_with_the_claim`——8 轮 × 256 chunk，4 个
+  claimer + 2 个独立采样线程，断言「CLAIMED 必带非零时间戳」且「`u64::MAX` 超时下 reset_stale 永不回收」。
+  **已验证该测试在恢复旧顺序后立即 FAIL**（Apple Silicon 弱内存序下一次运行即可命中），修复后稳定通过。
+
+**B. kind=1 孤儿 module scope（R3）**
+
+- buildGraph 从不删除 kind=1 行（同目录文件共享），于是删掉整个模块目录后其 scope 永久残留，持续虚增
+  `project_overview.total_modules` 与 `module_summaries`/`dead_code`。修复：Phase 1.3 增加
+  `DELETE FROM scope ... kind=1 AND name NOT IN (SELECT DISTINCT module_path FROM entity ...)`（一次索引扫描，
+  走 `idx_entity_module`），并随后清除其悬垂 kind=2 子行。`entity` 是正确参照集：kind=1 行本就只由
+  `entity.module_path` 生成。
+- 测试：`test_scope_idempotency` 新增「删掉一个模块的记录后重建 → kind=1 2→1、kind=2 2→1、存活模块保留、
+  无悬垂」；模块名不硬编码（避免绑定 `module_path` 拼写）。
+
+**C. 深度守卫补齐（R5/R6）**
+
+- **R6**：新增 `JsVisitor::visitChild` 作为**唯一带守卫的下进入口**，`visitChildren` 只负责循环；26 处语言
+  handler 里直连 `visitNode` 的递归全部改走 `visitChild`（此前这些调用不计深度，深链可绕过上限）。同时给
+  **本次新增的 `CVisitor::collectOutOfClassDefs` 补上同样的深度上限**（它也是全树扫描，原先无界）。
+- **R5**：README（中英）§1 Known limitations 补「超过 `kMaxVisitDepth=250` 的子树被截断并按文件报告一次」；
+  顺手修正 `test_ir_deep_nesting` 中陈旧的「512」注释（常量早已是 250）。
+- 测试重写为三档：`< cap` 必须**零**截断报告；Python 深调用（原崩溃形态，深层在 defined-names 预扫描）与
+  Python/C++ 深括号（遍历路径）各**恰好一次**报告且带 `[module=ir, method=…]` 标签，进程不崩溃。
+  报告由 `depth_truncated_` 按文件共享，故一次文件一条诊断（已在注释中写明语义）。
+
+**D. 测试盲区与一致性（S1/S2/S3/S5）**
+
+- **S1**：`README §9 环境变量活性` 检查改为显式匹配 getenv/env::var（含 `getenv(<常量>)` 间接形式），路径改由
+  `CARGO_MANIFEST_DIR` 解析（不再依赖 CWD）；新增 `test_env_var_liveness_rejects_set_only_variables` 复现
+  `CODESCOPE_VERBOSE` 那种「只设不读」形态。测试移至 `server/src/tools/docs_lint.rs`（`mod.rs` 因新增测试
+  越过 1000 行，按 `tools/clamp.rs` 先例拆出）。
+- **S2**：Go 的 `_` 统一跳过（`_, x = f()` 此前会产出 `_` 实体，而 `_, x := f()` 不会）。顺带修出**新的漏边**：
+  `handleVarDecl` 从不遍历 `var_spec` 的 value，`var x = f()` 的调用边整条丢失——现已只遍历 value 字段
+  （避免重复访问类型节点产生多余 identifier 记录）。
+- **S3**：类成员声明识别改为「仅类体直接子节点」（新增 `CppVisitor::visitClassBody`），不再用
+  `currentClassName()` 全局拦截——后者把方法体内的局部函数声明 `int helper(int);` 误记成 `Point::helper`。
+- **S5**：新增 `engine/tests/test_ir_edges_in_graph.cpp`，**断言边真的落在 `relation` 表**（记录级断言差一层）。
+  过程中发现 Java 侧的更深缺陷并修复：
+  - Java 方法**从未设置限定名**（`Circle::draw` / `Drawable::draw` 都只是 `draw`）→ 解析器
+    `factorReceiverTypeMatch` 与接口 method-set 匹配全无依据；
+  - Java **参数类型从未记录**（`void use(Drawable d)` 的 `d` 不在 `var_types_` 里）→ `d.draw()` 的
+    `receiver_type` 为空。
+  两者叠加使「接口方法 + 各实现」同名同元数、所有因子打平 → Step-5 歧义门弃权 → **implements 一条边都不出**。
+  修复（`java_visitor.cpp`：`handleMethodDecl` 设限定名、`handleInterfaceDecl` push 接口作用域、
+  新增 `handleFormalParameter` 记录参数类型）后，端到端观测到 `use -> draw` 的真实 CALLS 边；Rust
+  `do_work!()` → `caller -> do_work` 边同样落地。
+
+**E. 本轮验证**
+
+- `make check` rc=0：clang-format（all files）ok、clippy ok、**90/90 引擎测试**、nextest **123/123**。
+- `make test` rc=0（同上引擎 + nextest 全绿）。
+- `make accuracy-check` rc=0：baseline `tp=36 fp=0 fn=0 P=R=F1=1.0`，**FP/FN 注入均按预期失败**（门禁有效）。
+- 真实语料冒烟（worker 模式，debug）：自索引 220 文件/2,273 节点/1,895 边；AIScope(Python) 63 文件/223 节点/
+  47 边；cppCode 338 文件/2,733 节点/2,129 边——均无崩溃、量级合理（自索引较 README §7 记录的 197/1,509/1,189
+  更高，属代码量增长 + 本轮新增边，非严格 A/B）。
+
+**F. 本轮遗留（未做，有意）**
+
+- **慢而未崩的 worker 仍会被超时回收**：`reset_all_stale` 的超时（默认 600 s）无法区分「死了」与「活着但很慢」，
+  真正的解法是 worker 心跳；因此 merge 层面的**内容级去重**仍是「重复解析不翻倍」的最后防线（当前只有 id 去重）。
+- **legacy translator 回退路径**（`ir::createTranslator`）不在 LIVE 管线内，其递归未加深度守卫；仅在 visitor
+  为 null 时才会走到。
+- **提交卫生（R4，仅记录不改历史）**：`0901a54` 与 `d5d637c` 两条提交消息完全相同但内容不同；且 `d5d637c`
+  的消息（enhance/overview/trace/FFI）并未描述其实际包含的 README/IR 修复批次。历史改写需由仓库所有者决定。
+
 ---
 
 ## 0. 执行摘要

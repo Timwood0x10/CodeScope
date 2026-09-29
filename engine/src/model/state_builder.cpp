@@ -194,8 +194,27 @@ int64_t StateBuilder::buildCapabilityState()
 	// finds 'V' at pos=4 (followed by 'a'), and returns "JWT".
 	// For "AuthValidator" the rule still finds 'V' at pos=5 and
 	// returns "Auth".
+	//
+	// Rebuild idempotently. capability_state has no UNIQUE(project_id,
+	// name), so `INSERT OR IGNORE` had no conflict target and every rebuild
+	// (each enhance / build_project_state) appended a second copy of every
+	// row — inflating project_state.capability.total by the number of runs.
+	// Delete this project's rows first, then insert, exactly like
+	// buildArchitectureState below.
+	{
+		const std::string del =
+			"DELETE FROM capability_state WHERE project_id=" +
+			std::to_string(project_id_);
+		if (!store_->exec(del.c_str())) {
+			fprintf(stderr,
+				"[module=state_builder, method=buildCapabilityState] "
+				"delete failed: %s\n",
+				store_->error().c_str());
+			return -1;
+		}
+	}
 	std::string sql =
-		"INSERT OR IGNORE INTO capability_state "
+		"INSERT INTO capability_state "
 		"(project_id, name, state) "
 		"WITH RECURSIVE "
 		"matched(name) AS ("

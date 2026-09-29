@@ -24,6 +24,18 @@ class CppVisitor : public CVisitor {
 	/// into, as before.
 	void handleMemberFunctionDecl(TSNode node, uint64_t parent_id);
 
+	/// Walk one class body (`field_declaration_list`).
+	///
+	/// Exists so a bare `declaration` node is only treated as a member
+	/// declaration when it really is a DIRECT member of the class: a local
+	/// function declaration inside a method body is a declaration too, and
+	/// dispatching on the enclosing class name alone turned it into a
+	/// phantom `Class::local` entity.
+	///
+	/// \param list       The class body node.
+	/// \param parent_id  Record id of the class.
+	void visitClassBody(TSNode list, uint64_t parent_id);
+
 	/// True when `node` declares a function: a direct named child is a
 	/// `function_declarator` (most forms) or a `parameter_list` (the
 	/// special member forms). False for a plain data member.

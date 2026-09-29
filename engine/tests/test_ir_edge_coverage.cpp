@@ -108,6 +108,18 @@ static bool hasNamed(const ir::SemanticUnit &unit, ir::RecordKind kind,
 	return false;
 }
 
+/// Number of records of `kind` named `name`.
+static int countNamed(const ir::SemanticUnit &unit, ir::RecordKind kind,
+		      const std::string &name)
+{
+	int n = 0;
+	for (size_t idx : unit.findRecordsByKind(kind)) {
+		if (unit.allRecords()[idx].name == name)
+			n++;
+	}
+	return n;
+}
+
 /// True when any record carries `qualified_name`.
 static bool hasQualifiedName(const ir::SemanticUnit &unit,
 			     const std::string &qname)
@@ -197,6 +209,37 @@ static void test_go_short_var_defines_variables()
 	printf("  ✓ test_go_short_var_defines_variables\n");
 }
 
+static void test_go_blank_identifier_binds_nothing()
+{
+	// `_` is a discard, not a symbol, in every form — and discarding the name
+	// must not discard the initializer: its calls still belong to the
+	// enclosing function. Both halves regressed differently before:
+	// `_, x := f()` skipped the name but a plain `_, x = f()` emitted a `_`
+	// entity, and `var x = f()` dropped the call entirely.
+	const char *code = "package main\n"
+			   "func compute() int { return 1 }\n"
+			   "func caller() int {\n"
+			   "    _, c := compute(), compute()\n"
+			   "    var _ = compute()\n"
+			   "    var x = compute()\n"
+			   "    _, c = compute(), compute()\n"
+			   "    return c + x\n"
+			   "}\n";
+
+	ir::GoVisitor visitor;
+	ir::SemanticUnit *unit = runVisitor(visitor, "go", "tree_sitter_go",
+					    code, "/test/blank.go");
+
+	CHECK(!hasNamed(*unit, ir::RecordKind::Variable, "_"),
+	      "the blank identifier must not become a symbol");
+	CHECK(countNamed(*unit, ir::RecordKind::CallExpr, "compute") == 6,
+	      "every compute() call must be recorded — including the ones in a "
+	      "blank-identifier or var-declaration initializer");
+
+	delete unit;
+	printf("  ✓ test_go_blank_identifier_binds_nothing\n");
+}
+
 // ── 3. C++ in-class declarations, operators, destructors ──────
 
 static void test_cpp_class_member_declarations()
@@ -243,6 +286,44 @@ static void test_cpp_class_member_declarations()
 
 	delete unit;
 	printf("  ✓ test_cpp_class_member_declarations\n");
+}
+
+static void test_cpp_local_function_decl_is_not_a_member()
+{
+	// A LOCAL function declaration inside a method body is not a class member.
+	// Dispatching `declaration` nodes on the enclosing class name (an earlier
+	// revision) also matched these and emitted a phantom `Point::helper`.
+	const char *code = "class Point {\n"
+			   "public:\n"
+			   "    void run();\n"
+			   "    ~Point();\n"
+			   "};\n"
+			   "void Point::run() {\n"
+			   "    int helper(int);\n"
+			   "    (void)helper(1);\n"
+			   "}\n"
+			   "Point::~Point() {}\n";
+
+	ir::CppVisitor visitor;
+	ir::SemanticUnit *unit = runVisitor(visitor, "cpp", "tree_sitter_cpp",
+					    code, "/test/local.cpp");
+
+	CHECK(hasQualifiedName(*unit, "Point::run"),
+	      "the out-of-class definition must carry its scope");
+	CHECK(!hasNamed(*unit, ir::RecordKind::Method, "run"),
+	      "a declaration whose definition is in the same file stays "
+	      "deduplicated");
+	CHECK(!hasNamed(*unit, ir::RecordKind::Method, "helper") &&
+		      !hasQualifiedName(*unit, "Point::helper"),
+	      "a local function declaration must not become a class member");
+	CHECK(!hasNamed(*unit, ir::RecordKind::Method, "~Point"),
+	      "a declaration whose definition is in the same file stays "
+	      "deduplicated");
+	CHECK(hasQualifiedName(*unit, "Point::~Point"),
+	      "the destructor definition must still be recorded");
+
+	delete unit;
+	printf("  ✓ test_cpp_local_function_decl_is_not_a_member\n");
 }
 
 // ── 4. Python chained attribute calls ─────────────────────────
@@ -387,7 +468,9 @@ int main()
 	test_rust_macro_invocation_emits_call();
 	test_rust_builtin_macro_filtered();
 	test_go_short_var_defines_variables();
+	test_go_blank_identifier_binds_nothing();
 	test_cpp_class_member_declarations();
+	test_cpp_local_function_decl_is_not_a_member();
 	test_python_chained_call_name();
 	test_java_implements_emits_interface_impl();
 	test_ts_implements_emits_interface_impl();
