@@ -40,7 +40,8 @@ char *engine_index_project_membulk(
 	const FilterPolicy &filter,
 	const std::vector<std::pair<std::string, std::string>> &job_lang,
 	const std::unordered_map<std::string, const TSLanguage *> &lang_ptrs,
-	bool is_reindex, bool mode_fast, bool mode_deep)
+	const std::unordered_set<std::string> &known_failures, bool is_reindex,
+	bool mode_fast, bool mode_deep)
 {
 	if (!g_store)
 		return dupString(
@@ -121,6 +122,17 @@ char *engine_index_project_membulk(
 				break;
 			auto &job = jobs[idx];
 
+			// Fail-fast: skip files that have failed >=
+			// CODESCOPE_FAIL_RETRY_MAX times. Mirrors the streaming path
+			// (engine_index_project.cpp) — this path used to ignore the
+			// skip set entirely, so on a project of <=2000 files (the
+			// common case) every run re-parsed and re-recorded the same
+			// unparseable files, and the documented "skipped entirely on
+			// the next run" behaviour never happened.
+			if (known_failures.find(job.path) !=
+			    known_failures.end())
+				continue;
+
 			// Progress log every 10%
 			int done = next_job.load();
 			if (done % progress_interval == 0 && done > 0)
@@ -160,6 +172,23 @@ char *engine_index_project_membulk(
 				continue;
 			}
 
+			// Grammar availability, checked BEFORE reading the file: see
+			// the streaming path (engine_index_project.cpp) for the full
+			// reasoning — no wasted I/O, and the LanguageMissing reason is
+			// recorded instead of a misleading parse_null_tree.
+			{
+				auto lit = lang_ptrs.find(job.lang);
+				if (lit == lang_ptrs.end() ||
+				    lit->second == nullptr) {
+					store::bufferParseFailure(
+						project_id, job.path, job.lang,
+						store::failReasonToString(
+							store::FailReason::
+								LanguageMissing));
+					continue;
+				}
+			}
+
 			std::string source = readFile(job.path.c_str());
 			if (source.empty()) {
 				store::bufferParseFailure(
@@ -172,6 +201,9 @@ char *engine_index_project_membulk(
 			// Per-thread parser
 			auto pit = tl_parsers.find(job.lang);
 			if (pit == tl_parsers.end()) {
+				// Grammar availability was validated above (a null
+				// grammar never reaches this point), so the lookup only
+				// needs the presence check.
 				auto lit = lang_ptrs.find(job.lang);
 				if (lit == lang_ptrs.end()) {
 					store::bufferParseFailure(
@@ -402,6 +434,14 @@ char *engine_index_project_membulk(
 		return dupString(
 			"{\"ok\":false,\"error\":\"membulk flush failed\"}");
 	}
+	// Flush the parse failures this path buffered. The streaming path does
+	// this at its own end (engine_index_project.cpp), but memBulk RETURNS
+	// EARLY from the dispatcher and never reached that call — so for every
+	// project of <=2000 files (the common case) `parse_failures` stayed
+	// empty, and an unparseable file was dropped with no record anywhere.
+	// Runs after the bulk transaction (agg.flush) has closed, so the
+	// auxiliary connection does not contend with it.
+	store::flushParseFailures();
 	auto t_flush_end = steady_clock::now();
 	fprintf(stderr,
 		"engine: membulk_flush=%lldms (files=%d, is_reindex=%d) "

@@ -74,10 +74,16 @@ bool isKnownParseFailure(uint64_t project_id, const std::string &file_path,
 				"[module=store, method=isKnownParseFailure]\n");
 		return false;
 	}
+	// `language_missing` is deliberately excluded: the file is not broken,
+	// the engine just has no grammar for it (a disabled grammar, or one that
+	// failed to load). Counting it as a known failure would SKIP the file
+	// forever — including after the grammar is enabled — because the skip set
+	// is keyed by path only and never expires.
 	sqlite3_stmt *raw = nullptr;
 	if (sqlite3_prepare_v2(db,
 			       "SELECT fail_count FROM parse_failures "
-			       "WHERE project_id=? AND file_path=?",
+			       "WHERE project_id=? AND file_path=? "
+			       "AND fail_reason != 'language_missing'",
 			       -1, &raw, nullptr) != SQLITE_OK) {
 		logErr(db, "prepare", "isKnownParseFailure");
 		return false;
@@ -365,10 +371,15 @@ bool loadKnownParseFailures(uint64_t project_id, int retry_max,
 			"[module=store, method=loadKnownParseFailures]\n");
 		return false;
 	}
+	// Same `language_missing` exclusion as isKnownParseFailure: a file whose
+	// only failure was an unavailable grammar must be re-attempted on every
+	// run, so enabling the grammar (or fixing GRAMMARS_DIR) is enough to pick
+	// it up — no manual `codescope reset-failures` needed.
 	sqlite3_stmt *raw = nullptr;
 	if (sqlite3_prepare_v2(db,
 			       "SELECT file_path FROM parse_failures "
-			       "WHERE project_id=? AND fail_count >= ?",
+			       "WHERE project_id=? AND fail_count >= ? "
+			       "AND fail_reason != 'language_missing'",
 			       -1, &raw, nullptr) != SQLITE_OK) {
 		logErr(db, "prepare", "loadKnownParseFailures");
 		return false;

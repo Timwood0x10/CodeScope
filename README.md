@@ -630,6 +630,7 @@ Each script calls `codescope cli <tool_name> '<json_args>'` internally. See `ski
 | `CODESCOPE_WORKERS` | `min(hw,8)` | Total parse-worker cores (`kDefaultParseWorkers=8`). The in-memory path used for projects of ≤2000 files defaults to **4** instead. |
 | `CODESCOPE_WORKER_TIMEOUT` | `300` | Worker subprocess timeout in seconds |
 | `CODESCOPE_MAX_FILE_SIZE` | `5242880` (5 MB) | Max source file size to index in bytes. Files above it are skipped silently. |
+| `CODESCOPE_FAIL_RETRY_MAX` | `1` | Parse failures before a file is skipped entirely (min 1); see `parse_failures` / `codescope reset-failures`. Files whose only failure is a missing grammar (`language_missing`, e.g. `.swift` while its grammar is disabled) never count and are retried on every run. The single-file / `force_index_files` path uses `3`. |
 | `CODESCOPE_MMAP_SIZE` | 256 MB | SQLite `mmap_size` pragma value |
 | `CODESCOPE_MEM_LIMIT_MB` | `4096` | Dynamic-scheduler memory ceiling |
 | `CODESCOPE_DYNAMIC_SCHED` | (unset = static) | Opt-in dynamic CPU scheduling. `CODESCOPE_CPU_DYNAMIC` is the canonical name and this is the legacy alias; either one works. `1`/`true`/`on` enables the shared chunk-queue scheduler, `0`/`false`/`off` disables it, unset stays on the **static** proportional allocator. |

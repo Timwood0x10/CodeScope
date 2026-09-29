@@ -30,6 +30,11 @@ const char *failReasonToString(FailReason r);
 /// fail_count >= retry_max). Returns false otherwise (including when
 /// the file is not in the table, or fail_count < retry_max).
 ///
+/// Rows whose reason is `language_missing` never count: the file is intact and
+/// the engine simply has no grammar for it, so it must be re-attempted every
+/// run (a disabled grammar or a failed .so load is fixable without touching
+/// the file).
+///
 /// `retry_max` is read from `CODESCOPE_FAIL_RETRY_MAX` env var
 /// (default 3) by the caller and passed in to avoid repeated env reads.
 bool isKnownParseFailure(uint64_t project_id, const std::string &file_path,

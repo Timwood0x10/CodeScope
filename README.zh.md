@@ -566,6 +566,7 @@ cd CodeScope
 | `CODESCOPE_WORKERS` | `min(hw,8)` | 解析 worker 核心总数（`kDefaultParseWorkers=8`）。≤2000 文件走的 in-memory 路径默认 **4**。 |
 | `CODESCOPE_WORKER_TIMEOUT` | `300` | Worker 子进程超时时间（秒） |
 | `CODESCOPE_MAX_FILE_SIZE` | `5242880`（5 MB） | 允许索引的最大源文件大小（字节）。超限文件被静默跳过。 |
+| `CODESCOPE_FAIL_RETRY_MAX` | `1` | 文件被彻底跳过前允许的解析失败次数（最小 1），见 `parse_failures` / `codescope reset-failures`。仅因**缺少语法**而失败的文件（`language_missing`，例如语法被禁用时的 `.swift`）不计入，每次运行都会重试。单文件 / `force_index_files` 路径使用 `3`。 |
 | `CODESCOPE_MMAP_SIZE` | 256 MB | SQLite `mmap_size` 参数值 |
 | `CODESCOPE_MEM_LIMIT_MB` | `4096` | 动态调度器内存上限（MB） |
 | `CODESCOPE_DYNAMIC_SCHED` | （未设置 = 静态） | 可选开启的动态 CPU 调度。规范名是 `CODESCOPE_CPU_DYNAMIC`，本变量是历史别名，两者均可。`1`/`true`/`on` 启用共享 chunk 队列调度器，`0`/`false`/`off` 关闭，未设置则保持**静态**比例分配。 |

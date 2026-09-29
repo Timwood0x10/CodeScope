@@ -87,12 +87,17 @@ char *getEnhancementStatusImpl(uint64_t project_id);
 // sequence is shared with the streaming path via postParsePhase.
 
 /// In-memory bulk index path for small modules.
+/// `known_failures` is the pre-loaded fail-fast skip set (files whose
+/// fail_count reached CODESCOPE_FAIL_RETRY_MAX); the streaming path and this
+/// one must both honour it or the documented "skipped entirely on the next
+/// run" behaviour only applies to projects above the memBulk threshold.
 char *engine_index_project_membulk(
 	uint64_t project_id, const std::string &dir, uint64_t max_file_size,
 	const FilterPolicy &filter,
 	const std::vector<std::pair<std::string, std::string>> &job_lang,
 	const std::unordered_map<std::string, const TSLanguage *> &lang_ptrs,
-	bool is_reindex, bool mode_fast, bool mode_deep);
+	const std::unordered_set<std::string> &known_failures, bool is_reindex,
+	bool mode_fast, bool mode_deep);
 
 /// Shared post-parse sequence: buildGraph -> callgraph_ready UPDATE ->
 /// resolveStagedMetrics -> (deep) vectors ->

@@ -292,9 +292,11 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 		job_lang.reserve(jobs.size());
 		for (auto &job : jobs)
 			job_lang.push_back({ job.path, job.lang });
-		return engine_index_project_membulk(
-			project_id, dir, max_file_size, filter, job_lang,
-			lang_ptrs, is_reindex, mode_fast, mode_deep);
+		return engine_index_project_membulk(project_id, dir,
+						    max_file_size, filter,
+						    job_lang, lang_ptrs,
+						    known_failures, is_reindex,
+						    mode_fast, mode_deep);
 	}
 
 	// ── Dynamic-scheduler init ────────────────────────────────
@@ -511,6 +513,29 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 				continue;
 			}
 
+			// Grammar availability, checked BEFORE reading the file:
+			// reading a file the engine has no grammar for is wasted I/O,
+			// and this check must run on EVERY attempt (a language_missing
+			// row never becomes a permanent skip), so its cost matters.
+			// A registered-but-NULL grammar (the language is mapped but its
+			// grammar is unavailable: "swift" while the grammar is disabled,
+			// or a .so that failed to load) is reported as LanguageMissing —
+			// handing nullptr to ts_parser_set_language would yield a null
+			// tree recorded as "parse_null_tree", a wrong reason that also
+			// disguised an unsupported language as a broken file.
+			{
+				auto lit = lang_ptrs.find(job.lang);
+				if (lit == lang_ptrs.end() ||
+				    lit->second == nullptr) {
+					store::bufferParseFailure(
+						project_id, job.path, job.lang,
+						store::failReasonToString(
+							store::FailReason::
+								LanguageMissing));
+					continue;
+				}
+			}
+
 			// v0.6 (perf): st_size was just obtained above, so reuse it to
 			// skip readFile's ate-seek + tellg round-trip per file.
 			std::string source = readFilePrealloc(
@@ -527,6 +552,9 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 			// Per-thread parser
 			auto pit = tl_parsers.find(job.lang);
 			if (pit == tl_parsers.end()) {
+				// Grammar availability was validated above (a null
+				// grammar never reaches this point), so the lookup only
+				// needs the presence check.
 				auto lit = lang_ptrs.find(job.lang);
 				if (lit == lang_ptrs.end()) {
 					store::bufferParseFailure(

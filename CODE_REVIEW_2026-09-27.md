@@ -193,12 +193,54 @@ LIVE 访问器管线（`JsVisitor` 及各语言子类）此前对 AST 递归**�
 
 **F. 本轮遗留（未做，有意）**
 
-- **慢而未崩的 worker 仍会被超时回收**：`reset_all_stale` 的超时（默认 600 s）无法区分「死了」与「活着但很慢」，
-  真正的解法是 worker 心跳；因此 merge 层面的**内容级去重**仍是「重复解析不翻倍」的最后防线（当前只有 id 去重）。
 - **legacy translator 回退路径**（`ir::createTranslator`）不在 LIVE 管线内，其递归未加深度守卫；仅在 visitor
   为 null 时才会走到。
 - **提交卫生（R4，仅记录不改历史）**：`0901a54` 与 `d5d637c` 两条提交消息完全相同但内容不同；且 `d5d637c`
   的消息（enhance/overview/trace/FFI）并未描述其实际包含的 README/IR 修复批次。历史改写需由仓库所有者决定。
+
+#### 第五轮 (2026-09-29)：parse_failures 记账修复 + 上轮两处结论更正
+
+**A. 上轮「慢 worker 会被超时回收」的正确结论：不存在该路径（撤回该残留）**
+
+- `run_chunk_worker` 在 `DEFAULT_WORKER_TIMEOUT_SECS`（300 s）后 **kill 子进程**并返回 `exit_code=-4`；chunk 队列的
+  stale 窗口是 600 s（`CODESCOPE_STALE_TIMEOUT_MS`，注释即写明「只在 owner 被杀后才回收」），且
+  `index_parallel_chunked` Phase 4 的 `worker_db_paths` 过滤 `exit_code == 0 && error.is_none()` —— **被杀 worker 的
+  DB 根本不进 merge**，其已标 DONE 的 chunk 由 Phase 3b 释放并交给一个替补 worker 重做。
+  因此「重复解析 → 行翻倍」需要 owner 在 600 s 后仍活着（不可能：300 s 已被杀）或它的 DB 被 merge（不会）。
+  acq_rel 修复之后，chunk 双认领在协议层已被关闭。
+
+**B. 新发现并修复：`parse_failures` 在默认路径完全失效（4 个缺陷）**
+
+排查「`.swift` 文件到底怎么了」时发现（全部单机复现）：
+
+1. **memBulk 路径静默丢弃解析失败**：dispatcher 在 `use_membulk` 分支 **提前 return**，永远到不了 streaming 路径末尾的
+   `store::flushParseFailures()`。于是 **≤2000 文件的项目（最常见）** `parse_failures` 恒为空——不可解析的文件被丢掉且
+   任何地方都没有记录。修复：memBulk 在 `agg.flush()` 之后、bulk 事务之外调用 flush。
+2. **原因错标**：语言已注册但语法指针为 NULL（`.swift` 语法被禁用、或 `.so` 加载失败）时，代码把 nullptr 交给
+   `ts_parser_set_language`，得到 null tree 记为 **`parse_null_tree`** —— 把一个「引擎不支持的语言」伪装成「文件坏了」。
+   修复：语法可用性检查提前到 **读文件之前**（单一权威点，避免无谓 I/O），并记为 `language_missing`。
+3. **`language_missing` 造成永久跳过**：跳过集只按 path 且不过期，`retry_max=1` 时一次 `language_missing` 就让文件
+   **永远不再尝试**——即使之后升级 tree-sitter 重新启用语法也要手动 `reset-failures`。修复：
+   `isKnownParseFailure` / `loadKnownParseFailures` 排除该原因（注释写明理由），每次运行重新尝试，语法恢复即可自动收录。
+4. **memBulk 不执行 fail-fast**：`known_failures` 只在 streaming 与单文件路径被检查，memBulk 从不使用 → 文档承诺的
+   「失败达阈值的文件下次直接跳过」在默认路径不成立（每次都重解析、重记账）。修复：把跳过集传入 memBulk 并在 parse 循环
+   起始处检查（与 streaming 逐字对齐）。
+
+- 回归测试 `engine/tests/test_parse_failures.cpp`：fixture = 合法 `.c` + 0 字节 `.py`（真实永久失败）+ `.swift`（语法不可用）。
+  断言（**已确认修复前 FAIL、修复后 PASS**）：memBulk 必须记录 `language_missing`；streaming 路径必须记 `language_missing`
+  而非 `parse_null_tree`；第二次运行 `.swift` 的 `fail_count` **增长到 2**（永不跳过），`.py` 保持 **1**（真实失败按 fail-fast 跳过）。
+  合法文件在两条路径均仍被索引。
+- **端到端复核**（CLI，memBulk 路径，同一 DB 连跑两次）：run1 `a.swift|language_missing|1`、`empty.py|read_empty|1`；
+  run2 `a.swift|language_missing|2`、`empty.py|read_empty|1`。
+- 文档：README（中英）§9 补 `CODESCOPE_FAIL_RETRY_MAX`（含 `language_missing` 豁免说明，并注明单文件/force 路径用 `3`）。
+
+**C. 遗留（本轮记录，未改）**
+
+- `engine_index_files.cpp` 的 fail-fast 默认写死 **3**，与头文件 `kDefaultFailRetryMax = 1` 及注释「mirrors
+  engine_index_project」不符；且该路径的跳过**不区分是否为强制索引**（`force_index_files` 也会被静默跳过）。改哪种都
+  有行为代价（显式强制索引进程被跳过 / 统一后单文件索引重试次数下降），需仓库所有者决定，故仅记录。
+- `swift_visitor.cpp` 是真正的死代码（`createJsVisitor` 中 swift 分支被注释掉，而 `parser.cpp` 连 swift 语法都没注册），
+  所以 `.swift` 走不到 visitor 也走不到 legacy translator → 第五轮 B/2 的修复正是它的正确落点。
 
 ---
 
