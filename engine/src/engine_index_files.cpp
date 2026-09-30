@@ -638,7 +638,16 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json,
 	// fail_count and get_parse_failures could never show it. Runs after
 	// every writer has stopped, so the auxiliary connection does not
 	// contend with the bulk writer's transaction.
-	store::flushParseFailures();
+	const int flushed = store::flushParseFailures();
+	if (flushed < 0) {
+		// Reported, not swallowed: the run itself may still succeed, but its
+		// parse failures are missing from the table (code_rules.md, no silent
+		// error handling).
+		fprintf(stderr,
+			"engine: flushParseFailures failed; this run's parse "
+			"failures are not recorded "
+			"[module=engine, method=engine_index_files]\n");
+	}
 	time_parse_ms =
 		duration_cast<milliseconds>(steady_clock::now() - t_parse_start)
 			.count();

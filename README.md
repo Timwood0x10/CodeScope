@@ -57,23 +57,31 @@ per-language E2E harness only checked for the strings `"callers"` / `"callees"` 
 - **Some extensions are detected but not parsed**: `.kt`/`.kts`, `.rb`, `.scala`
   and `.swift` are recognized (they count as candidate files) but no grammar is
   vendored for them, so they are skipped and recorded in `parse_failures` as
-  `language_missing` — visible in `get_parse_failures`, never silently dropped,
-  re-attempted on every run, and exempt from the `CODESCOPE_FAIL_RETRY_MAX`
-  fail-fast skip. Swift's `parser.c` is ABI-incompatible with the vendored
-  tree-sitter core, which is why its grammar, visitor and builtin table are
-  absent (see `engine/src/parser/parser.cpp`).
-- **Index a project through its real path.** The walk-based entry points store
-  the path exactly as passed, while the single-file ones (`force_index_files`,
-  the scheduler's `--file-list` retry) receive `std::fs::canonicalize`d paths.
-  Indexing through a symlinked path (macOS `/tmp/x` is really `/private/tmp/x`,
-  and the same applies to any symlinked workspace) and then force-indexing
-  something inside it can therefore store one file under two spellings, which
-  duplicates its symbols — `find_symbol` then answers with the same symbol
-  twice. The stored spelling is reused when it differs only by being relative
-  to the (canonicalised) project root; a symlinked ancestor cannot be recovered
-  from the canonical spelling, so indexing through the real path is the way to
-  avoid it. `codescope reset-failures` clears the `parse_failures` half; graph
-  rows need a rebuild. Tracked in `CODE_REVIEW_2026-09-27.md`.
+  `language_missing` — listed by `codescope parse-failures`, never silently
+  dropped, re-attempted on every run, and exempt from the
+  `CODESCOPE_FAIL_RETRY_MAX` fail-fast skip. Swift's `parser.c` is
+  ABI-incompatible with the vendored tree-sitter core, which is why its grammar,
+  visitor and builtin table are absent (see `engine/src/parser/parser.cpp`).
+- **A file keeps one identity across the entry points.** The walk-based entry
+  points store the path exactly as passed, while the single-file ones
+  (`force_index_files`, the scheduler's `--file-list` retry) receive
+  `std::fs::canonicalize`d paths. Indexing through a symlinked path (macOS
+  `/tmp/x` is really `/private/tmp/x`, and the same applies to any symlinked
+  workspace) and then force-indexing something inside it used to store one file
+  under two spellings, duplicating its symbols — `find_symbol` answered with
+  the same symbol twice. The stored spelling is now reused both for
+  root-relative forms and, as a second pass, for any absolute row whose
+  **  canonical form equals** the incoming path's (equality, not a guess, so two
+  files can never be merged), and a relative spelling is recognised when its
+  prefix resolves to the project root from the working directory the indexer
+  ran in. Still uncovered, and deliberately left at the old behaviour rather
+  than guessed: Windows paths (the narrowing pattern uses `/`) and a relative
+  spelling whose index-time working directory is no longer the current one.
+  Rows written by an older build keep their extra spelling — re-indexing deletes
+  entity rows only for the spelling being written, so clear the affected
+  `parse_failures` rows with `codescope reset-failures` and rebuild the database
+  (delete `.codescope/codescope.db` and re-index) for duplicated symbols.
+  Tracked in `CODE_REVIEW_2026-09-27.md`.
 
 ### Tech Stack
 
@@ -358,6 +366,20 @@ codescope index-parallel /path/to/large/project --workers 8 --parallel 4
 
 `--workers` sets the total parse-worker cores (default 8) and `--parallel` the
 maximum concurrent module workers (default 4).
+
+### Maintenance
+
+```bash
+# Files the indexer could not parse, with the reason and the retry count
+codescope parse-failures --limit 50
+
+# Clear them, so those files are attempted again on the next run
+codescope reset-failures
+```
+
+Both accept `--db <path>` (or `CODESCOPE_DB_PATH`) and operate on the most
+recent project in that database. A file whose only failure is a missing grammar
+(e.g. `.swift`) is retried on every run anyway and needs no reset.
 
 ---
 

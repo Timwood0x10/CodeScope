@@ -83,6 +83,38 @@ static int entityCount(sqlite3 *db, uint64_t pid)
 	return n;
 }
 
+/// Canonical (symlink-resolved) form of `path`, used by the identity tests to
+/// spell a path the way the single-file entry points receive it.
+/// \param path  Existing file or directory to resolve.
+/// \return The canonical spelling, or the test fails.
+/// Uses std::filesystem rather than realpath()+free() so the test allocates
+/// nothing by hand (plan/rules/code_rules.md §2).
+static std::string canonicalPath(const std::string &path)
+{
+	std::error_code ec;
+	const fs::path canon = fs::canonical(path, ec);
+	check(!ec, "canonical path must resolve");
+	return canon.string();
+}
+
+static int entityRowsForName(sqlite3 *db, uint64_t pid, const char *name)
+{
+	sqlite3_stmt *st = nullptr;
+	check(sqlite3_prepare_v2(
+		      db,
+		      "SELECT COUNT(*) FROM entity WHERE project_id=? "
+		      "AND name=?",
+		      -1, &st, nullptr) == SQLITE_OK,
+	      "prepare entityRowsForName");
+	sqlite3_bind_int64(st, 1, static_cast<int64_t>(pid));
+	sqlite3_bind_text(st, 2, name, -1, SQLITE_TRANSIENT);
+	int n = 0;
+	if (sqlite3_step(st) == SQLITE_ROW)
+		n = sqlite3_column_int(st, 0);
+	sqlite3_finalize(st);
+	return n;
+}
+
 static int parseFailureRowCount(sqlite3 *db, uint64_t pid)
 {
 	sqlite3_stmt *st = nullptr;
@@ -335,10 +367,7 @@ int main()
 	fs::current_path(restore_cwd);
 
 	// The absolute, canonical spelling the single-file callers receive.
-	char *canon_raw = realpath(sp_dir.c_str(), nullptr);
-	check(canon_raw != nullptr, "realpath(sp_dir)");
-	const std::string canon = canon_raw;
-	free(canon_raw);
+	const std::string canon = canonicalPath(sp_dir);
 
 	// Reuse pid_sp as-is: engine_index_files needs only the project id, and
 	// re-creating the project here would resolve the relative root against the
@@ -366,6 +395,201 @@ int main()
 
 	removeDb(sp_db);
 	fs::remove_all(sp_dir);
+
+	// ── 6. A SYMLINKED ANCESTOR must not split a file's identity ──
+	//
+	// The enumerable spellings cannot bridge this one: no spelling of the
+	// canonical "/private/tmp/…" yields the aliased "/tmp/…" the walk stored,
+	// because realpath only goes one way. The second pass narrows on the path
+	// tail and accepts a stored row only when its canonical form EQUALS the
+	// incoming path's, so this test covers both tables — a duplicated
+	// parse_failures row AND duplicated entity rows for a file that parses.
+	const std::string al_dir = "/tmp/test_pf_alias";
+	const std::string al_alias = "/tmp/test_pf_alias_link";
+	const std::string al_db = "/tmp/test_pf_alias.db";
+	fs::remove_all(al_dir);
+	fs::remove(al_alias);
+	fs::remove_all(al_db);
+	fs::create_directories(al_dir);
+	writeFile(al_dir + "/empty.py", nullptr);
+	writeFile(al_dir + "/good.c", "int k(void) { return 0; }\n");
+	// The alias the project will be indexed through.
+	std::error_code link_ec;
+	fs::create_symlink(al_dir, al_alias, link_ec);
+	check(!link_ec, "create the aliased project root");
+
+	check(engine_init(al_db.c_str()) == 0, "engine_init (alias)");
+	uint64_t pid_al = engine_create_project(al_alias.c_str(), "alias");
+	check(pid_al > 0, "create_project (alias)");
+	// Indexed THROUGH the alias: the walk stores "/tmp/test_pf_alias_link/…",
+	// while projects.root_path records the canonical target.
+	char *ral = engine_index_project(pid_al, al_alias.c_str(), nullptr);
+	check(ral != nullptr && strstr(ral, "\"ok\":true") != nullptr,
+	      "alias run: project index ok");
+	engine_free_string(ral);
+	engine_shutdown();
+
+	check(sqlite3_open_v2(al_db.c_str(), &db, SQLITE_OPEN_READONLY,
+			      nullptr) == SQLITE_OK,
+	      "open alias db");
+	check(failureOf(db, pid_al, al_alias + "/empty.py", reason, count),
+	      "the failure must be recorded under the alias spelling");
+	check(entityRowsForName(db, pid_al, "k") == 1,
+	      "the symbol must start under the alias spelling");
+	sqlite3_close(db);
+
+	// Re-create the project record the way force_index_files sees it (the
+	// canonical root) and force-index the canonical paths.
+	const std::string canon_al = canonicalPath(al_dir);
+
+	check(engine_init(al_db.c_str()) == 0, "engine_init (alias force)");
+	const std::string al_list =
+		"[\"" + canon_al + "/empty.py\", \"" + canon_al + "/good.c\"]";
+	char *ralf = engine_index_files(pid_al, al_list.c_str(), 1);
+	check(ralf != nullptr && strstr(ralf, "\"ok\":true") != nullptr,
+	      "alias force run reports ok:true");
+	engine_free_string(ralf);
+	engine_shutdown();
+
+	check(sqlite3_open_v2(al_db.c_str(), &db, SQLITE_OPEN_READONLY,
+			      nullptr) == SQLITE_OK,
+	      "reopen alias db");
+	check(failureOf(db, pid_al, al_alias + "/empty.py", reason, count),
+	      "the unparseable file must stay under the alias spelling");
+	check(reason == "read_empty" && count == 2,
+	      "the force re-attempt must land on the alias row (1 → 2)");
+	check(parseFailureRowCount(db, pid_al) == 1,
+	      "a symlinked ancestor must not add a second parse_failures row");
+	check(entityRowsForName(db, pid_al, "k") == 1,
+	      "a symlinked ancestor must not duplicate the SYMBOL: the canonical "
+	      "spelling has to resolve to the alias identity (find_symbol used to "
+	      "answer with two rows for this one file)");
+	sqlite3_close(db);
+
+	removeDb(al_db);
+	fs::remove_all(al_dir);
+	fs::remove(al_alias);
+
+	// ── 7. A relative spelling OUTSIDE the enumerated forms ──────
+	//
+	// The walk stores "<root argument>/<entry>". For a root of "." the stored
+	// spelling is "./f.c" and for a plain name it is "proj/f.c" — both are
+	// enumerated as candidates. A root of "./proj" gives "./proj/f.c", which
+	// no candidate matches, so the second pass has to recognise it: the row's
+	// prefix must be a spelling of the project root that resolves to the
+	// (canonical) root from the current working directory.
+	const std::string rl_dir = "/tmp/test_pf_relfile";
+	const std::string rl_db = "/tmp/test_pf_relfile.db";
+	fs::remove_all(rl_dir);
+	fs::remove_all(rl_db);
+	fs::create_directories(rl_dir);
+	writeFile(rl_dir + "/empty.py", nullptr);
+	writeFile(rl_dir + "/good.c", "int k(void) { return 0; }\n");
+
+	const fs::path restore_cwd2 = fs::current_path();
+	fs::current_path("/tmp");
+	check(engine_init(rl_db.c_str()) == 0, "engine_init (relative root)");
+	uint64_t pid_rl = engine_create_project("./test_pf_relfile", "relfile");
+	check(pid_rl > 0, "create_project (relative root)");
+	char *rrl = engine_index_project(pid_rl, "./test_pf_relfile", nullptr);
+	check(rrl != nullptr && strstr(rrl, "\"ok\":true") != nullptr,
+	      "relative-root run: project index ok");
+	engine_free_string(rrl);
+	engine_shutdown();
+
+	check(sqlite3_open_v2(rl_db.c_str(), &db, SQLITE_OPEN_READONLY,
+			      nullptr) == SQLITE_OK,
+	      "open relative-root db");
+	check(failureOf(db, pid_rl, "./test_pf_relfile/empty.py", reason,
+			count),
+	      "the failure must be recorded under the './proj/…' spelling");
+	check(entityRowsForName(db, pid_rl, "k") == 1,
+	      "the symbol must start under the relative spelling");
+	sqlite3_close(db);
+
+	const std::string canon_rl = canonicalPath(rl_dir);
+
+	// Force-index with absolute paths WHILE the working directory is still the
+	// one the project was indexed from — the condition that makes the relative
+	// row's prefix verifiable.
+	check(engine_init(rl_db.c_str()) == 0, "engine_init (relative force)");
+	const std::string rl_list =
+		"[\"" + canon_rl + "/empty.py\", \"" + canon_rl + "/good.c\"]";
+	char *rrlf = engine_index_files(pid_rl, rl_list.c_str(), 1);
+	check(rrlf != nullptr && strstr(rrlf, "\"ok\":true") != nullptr,
+	      "relative-root force run reports ok:true");
+	engine_free_string(rrlf);
+	engine_shutdown();
+	fs::current_path(restore_cwd2);
+
+	check(sqlite3_open_v2(rl_db.c_str(), &db, SQLITE_OPEN_READONLY,
+			      nullptr) == SQLITE_OK,
+	      "reopen relative-root db");
+	check(failureOf(db, pid_rl, "./test_pf_relfile/empty.py", reason,
+			count),
+	      "the file must stay under the './proj/…' spelling");
+	check(reason == "read_empty" && count == 2,
+	      "a './proj/…' spelling must be recognised: the re-attempt has to "
+	      "land on the existing row (1 → 2)");
+	check(parseFailureRowCount(db, pid_rl) == 1,
+	      "a './proj/…' spelling must not add a second parse_failures row");
+	check(entityRowsForName(db, pid_rl, "k") == 1,
+	      "…and must not duplicate the symbol either");
+	sqlite3_close(db);
+
+	removeDb(rl_db);
+	fs::remove_all(rl_dir);
+
+	// ── 8. parse_failures must be READABLE and CLEARABLE ─────────
+	//
+	// The table is written by every index path and drives the fail-fast skip,
+	// yet nothing exported it: store::getParseFailuresJson and
+	// store::resetParseFailures had no caller at all, and the
+	// `codescope parse-failures` / `reset-failures` commands the comments and
+	// the README referred to did not exist. engine_get_parse_failures and
+	// engine_reset_parse_failures are that entry point.
+	const std::string pf_dir = "/tmp/test_pf_readable";
+	const std::string pf_db = "/tmp/test_pf_readable.db";
+	fs::remove_all(pf_dir);
+	removeDb(pf_db);
+	fs::create_directories(pf_dir);
+	writeFile(pf_dir + "/empty.py", nullptr);
+
+	check(engine_init(pf_db.c_str()) == 0,
+	      "engine_init (parse-failures ffi)");
+	uint64_t pid_pf = engine_create_project(pf_dir.c_str(), "readable");
+	check(pid_pf > 0, "create_project (parse-failures ffi)");
+	char *rpf = engine_index_project(pid_pf, pf_dir.c_str(), nullptr);
+	check(rpf != nullptr && strstr(rpf, "\"ok\":true") != nullptr,
+	      "readable run: project index ok");
+	engine_free_string(rpf);
+
+	char *listed = engine_get_parse_failures(pid_pf, 10);
+	check(listed != nullptr, "engine_get_parse_failures must return JSON");
+	check(strstr(listed, "\"ok\":true") != nullptr,
+	      "reading parse_failures must report ok:true");
+	check(strstr(listed, "empty.py") != nullptr,
+	      "the unparseable file must be listed");
+	check(strstr(listed, "read_empty") != nullptr,
+	      "…together with its failure reason");
+	engine_free_string(listed);
+
+	char *cleared = engine_reset_parse_failures(pid_pf);
+	check(cleared != nullptr && strstr(cleared, "\"ok\":true") != nullptr,
+	      "engine_reset_parse_failures must report ok:true");
+	check(strstr(cleared, "\"removed\":1") != nullptr,
+	      "the reset must report how many rows it removed");
+	engine_free_string(cleared);
+
+	char *after = engine_get_parse_failures(pid_pf, 10);
+	check(after != nullptr &&
+		      strstr(after, "\"parse_failures\":[]") != nullptr,
+	      "the table must be empty after the reset");
+	engine_free_string(after);
+	engine_shutdown();
+	removeDb(pf_db);
+	fs::remove_all(pf_dir);
+
 	printf("\n=== parse failures test passed ===\n");
 	return 0;
 }

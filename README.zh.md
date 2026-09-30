@@ -40,8 +40,8 @@ CodeScope 是一个 **项目真相引擎（Project Truth Engine）**，回答一
 - **推断是尽力而为**：接收者类型来自局部声明、复合字面量与 `this`/`self`；动态类型的接收者保持未知。
 - **病态深嵌套 AST 会被截断，而不是完整遍历**：当文件的 AST 嵌套超过 `kMaxVisitDepth`（250）时，更深的子树会被跳过，并在 stderr 上按文件报告一次
   （`[module=ir, method=…] AST nesting exceeded kMaxVisitDepth=250`）。该上限存在的原因是递归遍历运行在索引器 512 KB 的 worker 栈上；手写代码不会触及，生成代码偶尔会。
-- **部分扩展名可识别但不解析**：`.kt`/`.kts`、`.rb`、`.scala`、`.swift` 会被识别（计入候选文件），但没有内置语法，因此被跳过并在 `parse_failures` 中记录为 `language_missing` —— 可通过 `get_parse_failures` 查看，绝不静默丢弃，每次运行都会重试，且不计入 `CODESCOPE_FAIL_RETRY_MAX` 的 fail-fast 跳过。Swift 的 `parser.c` 与内置 tree-sitter core 的 ABI 不兼容，因此其语法、visitor 与 builtin 表均不存在（见 `engine/src/parser/parser.cpp`）。
-- **请通过真实路径索引项目。** 目录遍历类入口按传入的写法记录路径，而单文件入口（`force_index_files`、调度器的 `--file-list` 重试）拿到的是 `std::fs::canonicalize` 之后的路径。因此通过符号链接路径索引（macOS 上 `/tmp/x` 实为 `/private/tmp/x`，任何被软链的工作区同理）之后再对其中的文件做 force-index，同一个文件可能被存成两种写法，从而**复制其符号** —— `find_symbol` 会把同一个符号返回两次。只有当两种写法仅相差「相对于（已规范化的）项目根」时才会复用已存写法；被软链的祖先无法从规范化路径反推，所以避免方式是始终用真实路径索引。`codescope reset-failures` 清 `parse_failures` 那一半；图上的行需要重建。详见 `CODE_REVIEW_2026-09-27.md`。
+- **部分扩展名可识别但不解析**：`.kt`/`.kts`、`.rb`、`.scala`、`.swift` 会被识别（计入候选文件），但没有内置语法，因此被跳过并在 `parse_failures` 中记录为 `language_missing` —— 可用 `codescope parse-failures` 查看，绝不静默丢弃，每次运行都会重试，且不计入 `CODESCOPE_FAIL_RETRY_MAX` 的 fail-fast 跳过。Swift 的 `parser.c` 与内置 tree-sitter core 的 ABI 不兼容，因此其语法、visitor 与 builtin 表均不存在（见 `engine/src/parser/parser.cpp`）。
+- **同一文件在各入口之间保持同一身份。** 目录遍历类入口按传入的写法记录路径，而单文件入口（`force_index_files`、调度器的 `--file-list` 重试）拿到的是 `std::fs::canonicalize` 之后的路径。通过符号链接路径索引（macOS 上 `/tmp/x` 实为 `/private/tmp/x`，任何被软链的工作区同理）之后再对其中的文件做 force-index，过去会把同一个文件存成两种写法并**复制其符号** —— `find_symbol` 会把同一个符号返回两次。现在已存写法会被复用：既覆盖「相对于项目根」的各种写法，也在第二遍里接受任何**规范化形式与被查路径相等**的绝对路径行（相等判定，不是猜测，因此绝不会把两个文件合成一个身份）；相对写法只要其前缀能从索引时的当前目录解析到项目根，也会被识别。仍未覆盖、且按既定取向保留旧行为（宁可保持旧行为也不猜）的情形：Windows 路径（缩小范围的模式用 `/`），以及索引时的工作目录已不再是当前目录的相对写法。旧版本写入的行仍会保留多出来的写法 —— 重新索引只按「正在写入的那个写法」删除 entity 行，因此重复的失败行用 `codescope reset-failures` 清掉，重复的符号需要重建数据库（删除 `.codescope/codescope.db` 后重新索引）。详见 `CODE_REVIEW_2026-09-27.md`。
 
 ### 技术栈
 
@@ -301,6 +301,18 @@ codescope index-parallel /path/to/large/project --workers 8 --parallel 4
 ```
 
 `--workers` 为解析 worker 核心总数（默认 8），`--parallel` 为并发模块 worker 上限（默认 4）。
+
+### 维护
+
+```bash
+# 列出解析器无法解析的文件（含原因与重试次数）
+codescope parse-failures --limit 50
+
+# 清空它们，使这些文件在下次运行中被重新尝试
+codescope reset-failures
+```
+
+两者都接受 `--db <path>`（或环境变量 `CODESCOPE_DB_PATH`），作用于该数据库中最近的项目。仅因缺少语法而失败的文件（如 `.swift`）本来每次运行都会重试，无需 reset。
 
 ---
 

@@ -13,6 +13,7 @@
 #include "engine_internal.h"
 #include "async_knowledge.h"
 #include "platform_win.h"
+#include "store/store_parse_failure.h"
 
 #include <cstdio>
 #include <sqlite3.h>
@@ -425,5 +426,69 @@ char *engine_get_project_info(uint64_t project_id)
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_get_project_info] unknown exception\"}");
+	}
+}
+
+// ─── Parse-failure Maintenance ───────────────────────────────
+// parse_failures is written by the indexing paths and drives the fail-fast
+// skip. Nothing else exported it, so the table could be written and never read
+// or cleared from the CLI — the `codescope parse-failures` and
+// `codescope reset-failures` subcommands were documented but had no entry
+// point, and store::getParseFailuresJson / store::resetParseFailures were
+// unreachable. These two exports are that entry point.
+
+/// Read the project's parse_failures rows as JSON.
+/// \param project_id  Project whose rows are read.
+/// \param limit       Maximum rows (<= 0 means the store default of 100).
+/// \return JSON `{"ok":true,"parse_failures":[...]}`; on failure an
+///         `{"ok":false,"error":"...","module":...,"method":...}` envelope.
+///         The caller frees it with engine_free_string().
+char *engine_get_parse_failures(uint64_t project_id, int limit)
+{
+	try {
+		if (!g_store)
+			return dupString(
+				"{\"ok\":false,\"error\":\"[module=ffi, method=engine_get_parse_failures] engine not initialized\"}");
+		const std::string rows = store::getParseFailuresJson(
+			project_id, limit > 0 ? limit : 100);
+		return dupString("{\"ok\":true,\"parse_failures\":" + rows +
+				 "}");
+	} catch (const std::exception &e) {
+		return dupString(
+			std::string(
+				"{\"ok\":false,\"error\":\"[module=ffi, method=engine_get_parse_failures] ") +
+			jsonEscape(e.what()) + "\"}");
+	} catch (...) {
+		return dupString(
+			"{\"ok\":false,\"error\":\"[module=ffi, method=engine_get_parse_failures] unknown exception\"}");
+	}
+}
+
+/// Delete every parse_failures row of the project.
+/// \param project_id  Project whose rows are cleared.
+/// \return JSON `{"ok":true,"removed":N}` (N may be 0); on failure an
+///         `{"ok":false,"error":"..."}` envelope. The caller frees it with
+///         engine_free_string().
+char *engine_reset_parse_failures(uint64_t project_id)
+{
+	try {
+		if (!g_store)
+			return dupString(
+				"{\"ok\":false,\"error\":\"[module=ffi, method=engine_reset_parse_failures] engine not initialized\"}");
+		const int removed = store::resetParseFailures(project_id);
+		if (removed < 0)
+			return dupString(
+				"{\"ok\":false,\"error\":\"[module=ffi, method=engine_reset_parse_failures] delete failed\"}");
+		std::ostringstream j;
+		j << "{\"ok\":true,\"removed\":" << removed << "}";
+		return dupString(j.str());
+	} catch (const std::exception &e) {
+		return dupString(
+			std::string(
+				"{\"ok\":false,\"error\":\"[module=ffi, method=engine_reset_parse_failures] ") +
+			jsonEscape(e.what()) + "\"}");
+	} catch (...) {
+		return dupString(
+			"{\"ok\":false,\"error\":\"[module=ffi, method=engine_reset_parse_failures] unknown exception\"}");
 	}
 }

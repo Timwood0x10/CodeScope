@@ -98,6 +98,32 @@ LIVE 访问器管线（`JsVisitor` 及各语言子类）此前对 AST 递归**�
   （非空断言）。`test_model_engine` / `test_state_builder_batch` / `test_project_state` /
   `test_capability_*` 等 **12 项相关测试全绿**。
 
+### 追加修复 (2026-09-30 · 第三轮 review)
+
+**新发现并修复（D1 级，单机重现确认）：FTS 索引重建非幂等 → 编辑文件后 `search` 返回已删符号、
+搜不到新符号。**
+
+- **根因**：`store_search.cpp:buildFTSFromGraph` 用 `INSERT OR IGNORE INTO code_fts (rowid, …)
+  SELECT e.id, …`（`name_trgm` 同理），且**全树无任何 `DELETE FROM code_fts`**
+  （`deleteGraphDataByFile` 只清 entity/reference/scope/import/route，不碰 FTS）。每行以
+  `rowid = entity.id` 为键，重索引复用 entity id → `INSERT OR IGNORE` 撞上从未删除的旧行：
+  旧符号留在 `code_fts` 成为幽灵（`searchUnifiedJson` 的 FTS 分支不 JOIN `entity`，直接返回），
+  新符号因 rowid 被占而被**静默丢弃**。
+- **实测重现**（`index-parallel` 索引 `alphaFunc`，改名为 `betaFunc` 后 `index_file` 重索引，路径一致）：
+  `entity` 正确变为仅 `betaFunc`，但 `code_fts` 仍为 `alphaFunc`；`search alphaFunc` → 返回已删符号，
+  `search betaFunc` → **空**。即任何文件编辑后全文搜索即失真（返回旧名、漏新名）。
+- **修复**：`buildFTSFromGraph` 开头对本项目 delete-first ——
+  `DELETE FROM code_fts / name_trgm / fts_node_map WHERE project_id=?`，delete 失败按
+  `no-silent-error` 置 `error_` 并返回；随后的 INSERT-SELECT 从当前 `entity` 全量重建，幂等且无 rowid 冲突。
+- **回归测试**：新增 `engine/tests/test_fts_rebuild.cpp`（store 级、无异步、确定性）—— 索引 `alphaFunc`
+  → 改名 `betaFunc` 走 re-index 流程（删 semantic_records + `deleteGraphDataByFile` + 重插 + buildGraph
+  + buildFTSFromGraph）→ 断言 `code_fts` 仅含 `betaFunc`、不含 `alphaFunc`。
+- **验证**：修后 `search alphaFunc` 空、`search betaFunc` 命中；`test_fts_rebuild` /
+  `test_trigram_search` / `test_enhance_e2e` / `test_index_determinism` / `test_membulk*` /
+  `test_schema_reopen` 等 **12 项相关测试全绿**。
+
+> 注：本条属搜索索引重建非幂等（编辑后失真），与多租户/多项目隔离**无关**，单机单项目下必然触发。
+
 #### 续修 (2026-09-28 · 第三轮 review)：同一迁移补齐 kind=2 历史重复
 
 - **新发现**：上面第 1/2 步只清理 kind=1；功能症状已消失（消费者都带 `kind=1` 过滤），但脏库里
@@ -282,7 +308,7 @@ LIVE 访问器管线（`JsVisitor` 及各语言子类）此前对 AST 递归**�
 **A. 冒烟本身**
 
 按第六轮的契约跑 CLI 端到端（`worker` 建项目 → `force-index`），确认 bypass 生效。顺带发现一个**既有**缺陷，
-它被第六轮的改动变得更容易触发（force 现在会真的重试，才会写出新的行）。
+它被第六轮的改动变得更容易触发（force 现在会真的重试，才会写出新的行）。该缺陷已在本轮（C/D 两段）完整修复。
 
 **B. 发现（实测证据）**
 
@@ -317,19 +343,34 @@ LIVE 访问器管线（`JsVisitor` 及各语言子类）此前对 AST 递归**�
 - CLI 复验：相对根索引 + 绝对路径 force-index → `cs_fi3_90723/empty.py | 2`，**行数 1** ✓。
 - 安全性：候选写法是显式枚举（不猜后缀），且接受与否只看「同一组候选」，不会把不同文件合成一个身份。
 
-**D. 仍未修的部分（需要所有者决定，故只记录）**
+**D. 第二部分也已修：读时按规范化相等匹配（选方案 2）**
 
-「被符号链接的祖先」这一形状仍会重复：规范化路径 `/private/tmp/p/f.c` **推不出**别名 `/tmp/p/f.c`（`realpath`
-只朝一个方向走），候选写法里没有它，于是 `entity`/`parse_failures` 都会多出一行 —— 实测
-`find_symbol` 对同一文件返回 2 个结果。两种改法都触及身份策略，不宜在本轮夹带：
+枚举候选写法解决不了「被符号链接的祖先」：规范化路径 `/private/tmp/p/f.c` **推不出**别名 `/tmp/p/f.c`
+（`realpath` 只朝一个方向走）。新增第二遍匹配 `lookupStoredSpellingByCanonical`：
 
-1. **写入即规范化**：让遍历入口也用 `projects.root_path`（规范化根）+ 相对路径写入。新库从此只有一种写法，
-   但**既有库**里旧写法的行不会自动消失，仍需重建/迁移。
-2. **读时按规范化等价匹配**：候选精确匹配失败后，再按「basename 尾部相同」缩小范围，并对命中行与被查路径做
-   `weakly_canonical` 相等判定后才接受（相等判定使其不会误合并不同文件，代价是一次 LIKE + 少量 realpath）。
-   不改变写入策略，但增加了一条非显式枚举的匹配路径 —— 与该头文件「宁可保持旧行为也不猜」的既定取向相悖，需确认。
+- 用 `projects.root_path` 求出 `path` 相对根的尾部 `rel`，以 `file_path LIKE '%/<rel>'` 缩小范围（每表 `LIMIT 16`，
+  常量 `kAliasCandidateLimit`）；
+- 只对**绝对**路径的命中行做 `weakly_canonical`（`canonicalForComparison`，用 `error_code` 版本、不抛异常；
+  文件已删除也能比较，因为它不强求存在）相等判定后才接受；
+- **接受条件是「规范化后相等」这一等价判定，不是猜测** —— 两个不同文件永远不会被合成一个身份；命中不了的
+  （Windows 分隔符、枚举形式之外的相对写法、超过 LIMIT）一律退回旧行为。
 
-README（中英）§1 已加一条用户可见的注意事项（用真实路径索引可避免；`reset-failures` 只清失败行，图上的行需重建）。
+实测（CLI，之前会重复的那种形状）：
+```
+1) worker 以 /tmp 为根索引 → parse_failures: /tmp/cs_fi6_…/empty.py | 1 ; entity k: 1
+2) force-index 同一目录      → parse_failures: /tmp/cs_fi6_…/empty.py | 2 ; entity k: 1
+3) find_symbol("k")          → 1 个结果        （修复前：2 行 / 2 个结果）
+```
+
+成本：仅在「两张表都没命中」时才走，每表一次后缀 LIKE 扫描。本仓库实体 39,686 行时实测单次扫描 ≈ 5 ms
+（`sqlite3 .timer on`），且该路径只服务用户发起的 `force_index_files` / 单文件 `index_file`，自动索引不受影响。
+
+- 回归测试：`test_parse_failures.cpp` 第 6 节（建真目录 + 软链别名，用别名索引、用规范化路径 force →
+  `parse_failures` 只有 1 行且 `fail_count` 递增、`entity(name='k')` 仍为 1 行）。
+- 证伪：把接受条件改成恒假 → 第 6 节立刻失败，恢复后通过。
+- README（中英）§1 的注意事项已按新事实重写（列出仍不覆盖的三种情形，并说明旧库需重建）。
+
+未采纳方案 1（写入即规范化）：它会让既有库的旧写法行成为孤儿，需要迁移，代价大于收益；方案 2 不改写入策略。
 
 ---
 
@@ -553,3 +594,91 @@ README §7 的「~98.9% token savings」「index time」「query latency」均�
 - 无测试断言「`CODESCOPE_MAX_FILE_SIZE` 未设时 5MB 边界生效」。
 - 无测试断言「`index-parallel` 下用户 `CODESCOPE_INDEX_MODE` 被尊重 / 或明确记录被覆盖」。
 - 无测试断言「§9 每个环境变量都被生产代码读取」（可加一条 grep 断言防止死文档回归）。
+
+#### 第八轮 (2026-09-30)：相对写法补齐 + `parse_failures` 终于可读可清 + 规范自查
+
+**A. 相对写法（原第七轮 D 的遗留）已补齐**
+
+`lookupStoredSpellingByCanonical` 现在同时处理两类行：
+
+- **绝对行**：规范化形式与被查路径**相等**才接受（第七轮已做）；
+- **相对行**：行必须是 `<prefix>/<rel>`，且把 `prefix` 从**当前工作目录**解析后必须等于项目根
+  （`canonicalRelativeTo(cwd, prefix) == canonical_root`）。这正是相对根参数（`./proj`、`../proj`）时遍历写入的写法；
+  若索引时的工作目录已不是当前目录，该判定失败 → 保持旧行为，不猜。
+
+- 回归测试：`test_parse_failures.cpp` 第 7 节（CWD=/tmp、根参数 `./test_pf_relfile` → 存 `./test_pf_relfile/empty.py`；
+  再用绝对规范化路径 force → 仍是同一行、`entity k` 不重复）。
+- 证伪：把相对行接受条件改成恒假 → 第 7 节立刻失败，恢复后通过。
+- 仍不覆盖（明确记录）：Windows 分隔符（LIKE 模式用 `/`）、索引时 CWD 已变的相对行。
+
+**B. `parse_failures` 从「只写」变成可读可清（顺带清掉一对死代码）**
+
+用户追问「旧库重复行怎么清」时发现：`store::resetParseFailures()` 与 `store::getParseFailuresJson()`
+**没有任何调用点**（只有注释引用），而 store 头文件、schema 注释与 README §9 都在说
+「Reset via CLI `codescope reset-failures`」——**该命令并不存在**；我在第七轮 README 里写的 `get_parse_failures`
+同样不存在。整张表因此只写不读、不清。
+
+- 新增 FFI：`engine_get_parse_failures(project_id, limit)`、`engine_reset_parse_failures(project_id)`
+  （`engine_ffi_index.cpp`，遵循该文件既有的 try/catch + 空值检查 + `dupString` 契约，两者都在 `engine.h` 里
+  写清所有权与线程安全）；
+- 新增 CLI：`codescope parse-failures [--db] [--limit]` 与 `codescope reset-failures [--db]`
+  （`server/src/main.rs`，`ok:false` 时退出码非 0，避免脚本把失败读成空结果）；
+- 回归测试：`test_parse_failures.cpp` 第 8 节（记一次失败 → 读到 `read_empty` → reset 报 `removed:1` → 再读为 `[]`）；
+- CLI 实测：`parse-failures` 列出 `{"file_path":"/tmp/…/empty.py","fail_reason":"read_empty","fail_count":1,…}`，
+  `reset-failures` 返回 `{"ok":true,"removed":1}`，随后 `parse-failures` 返回 `[]`；
+- 文档对齐：README（中英）§1 的「visible in `get_parse_failures`」改为 `codescope parse-failures`，
+  §4 新增 Maintenance 小节记录两个子命令。
+
+**C. 「旧库重复行」的正确说法（第七轮 README 写错了）**
+
+重新索引时 `entity` 只按**正在写入的那个 file_path** 删除（`store/src/store_insert.cpp:383`：
+`DELETE FROM entity WHERE project_id = ? AND file_path = ?`），所以**另一种写法的旧行不会被清掉**。
+正确做法：`parse_failures` 的重复行用 `codescope reset-failures`（按 project 全清）；
+重复的**符号**需要重建数据库（删 `.codescope/codescope.db` 后重新索引）。README（中英）已按此改写。
+
+**D. 规范自查（plan/rules/code_rules.md）**
+
+| 条款 | 状态 |
+|---|---|
+| §1 文件 ≤1000 行 | ✅ 本轮触及文件最大 `engine_index_project.cpp` 923 行；`engine_index_paths.h` 390、`test_parse_failures.cpp` 590 |
+| §1 注释英文 + 参数/返回/不变量 | ✅ 新增函数（`escapeLikePattern` / `canonicalRelativeTo` / `lookupStoredSpellingByCanonical` / `knownSpellingFor` / 两个 FFI）均含 `\param` / `\return` / 线程安全说明 |
+| §1 格式（clang-format / rustfmt+clippy -D warnings） | ✅ `make check` 内建校验通过 |
+| §2 禁止裸 `new`/`delete`、RAII | ✅ 本轮无裸分配；**并修掉自己引入的一处**：测试里 3 处 `realpath()+free()` 改为 `std::filesystem::canonical`（helper `canonicalPath`） |
+| §3 FFI：`extern "C"`、所有权、每个函数的安全注释 | ✅ 第九轮补齐：**61/61** Rust 声明各带 `/// # Safety`（所有权／生命周期／线程安全三行），**75/75** C++ 导出各带 `// Ownership:`／`// Lifetime:`／`// Thread safety:` |
+| §3 FFI 错误码（0=成功） | ⚠️ **有意保留的偏离**（不是遗漏）：本引擎 FFI 返回 JSON 信封而非 int，理由与代价见第九轮；已在 `server/src/ffi/decls.rs` 的模块文档中显式记录为 accepted deviation |
+| §4 每个公开函数/模块有测试 + 边界/错误/并发 | ✅ 本轮 4 项行为各配回归测试并**逐项证伪**（第 4a/4b、5、6、7、8 节）；空值/极限值/错误条件均已覆盖；本轮未引入共享可变状态，故无并发用例 |
+| §5 无魔法数字 | ✅ `kAliasCandidateLimit`、`kDefaultFailRetryMax` |
+| §5 依赖最小化 | ✅ 仅新增标准头 `<filesystem>` / `<system_error>` / `<cstdio>` |
+| 「禁止静默处理错误 + 完整错误追踪链」 | ✅ 本轮补齐：`flushParseFailures` 返回值开始检查、两处 sqlite 探测的 prepare/step 失败按 `[module=engine, method=…]` 打印；**并修正第七轮我引入的一处静默**（`store::flushParseFailures();` 返回值被丢弃） |
+
+#### 第九轮 (2026-09-30)：FFI 逐函数安全契约补齐（Rust 61 + C++ 75）
+
+**A. 补齐 per-function 安全注释（code_rules.md §3「Every FFI function must have a comment block explaining
+memory ownership, lifetime, and thread safety」）**
+
+- Rust：`server/src/ffi/decls.rs`（新文件）里 **61/61** 声明都带三行 `/// # Safety` —— 所有权（引擎返回串归 Rust，
+  经 `take_string` 释放；`engine_version` 是静态串不得释放）、生命周期（入参仅在调用期间借用，绝不被留存）、
+  线程安全（引擎在单条 store 连接上串行化；改库操作不得与索引并发）。
+- C++：`engine/include/engine.h` 里 **75/75** 导出都带 `// Ownership:` / `// Lifetime:` / `// Thread safety:` 三行；
+  `engine_free_string`（把所有权交回引擎、之后不得再用/再释放）与 `engine_init`/`engine_shutdown`（生命周期、
+  非线程安全）手写特例。
+- 生成方式：按签名形状（返回类型 + 是否含字符串入参）生成，再由人工修特例；未断言「只读」的措辞，避免在可能写库的
+  函数上给出不实陈述。抽查了 `engine_index_file` / `engine_version` / `engine_path_is_skipped` /
+  `engine_get_project_node_count` / `engine_free_string`。
+- **连带合规修正**：逐函数注释让 `ffi/mod.rs` 涨到 1101 行，**违反 §1 1000 行** → 按规范把声明拆到 `ffi/decls.rs`
+  （576 行），`mod.rs` 659 行，`engine.h` 880 行，全部合规。
+
+**B. 「FFI 返回 int 错误码」：有意保留的偏离，已写进代码**
+
+`code_rules.md` §3 写的是 "should return `int` error codes (0 = success)"，而本引擎的 FFI 统一返回 JSON 信封
+`{"ok":true,…}` / `{"ok":false,"error":"…","module":…,"method":…}`。判断：
+
+- 信封满足同一节更硬的那条要求 ——「错误必须显式、且带可定位到模块/方法的追踪链」；单一个 int 反而**丢失**这条链
+  （除非再造一个 `#[repr(C)]` 错误结构体，等于把信封换个壳）。
+- 真正「严格照字面」的改法是 79 个 C++ 导出 + 61 个声明全部改成 `int f(..., out)`：跨全部 `engine_*.cpp` 的
+  破坏性重写，回归面覆盖所有测试与调用点，功能收益为零 → 不宜作为顺手改动。
+- 因此本轮的做法是：**不改行为，把偏离显式记录在代码里**（`ffi/decls.rs` 模块文档 "Error convention (an accepted
+  deviation from plan/rules/code_rules.md §3 …)"），并在台账标注。真正转移载荷的状态函数（`engine_init` 等 3 个）
+  本来就是 int 返回，符合该条。
+- 待所有者决定：要么做完整重构，要么把该约定写进 `plan/rules/code_rules.md`（仓库规范与代码对齐）。**建议后者**。
+

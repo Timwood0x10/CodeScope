@@ -180,6 +180,94 @@ fn main() {
         }
     }
 
+    // ── Parse-failure maintenance ────────────────────────────────
+    //   codescope parse-failures [--db <path>] [--limit <n>]
+    //   codescope reset-failures [--db <path>]
+    // parse_failures lists the files the indexer could not parse, with the
+    // reason and the retry count that drives the fail-fast skip. These two
+    // subcommands are the only supported way to read and clear it — they are
+    // what the store comments and the README refer to.
+    if args.len() >= 2 && (args[1] == "parse-failures" || args[1] == "reset-failures") {
+        let reset = args[1] == "reset-failures";
+        let mut db_path = std::env::var("CODESCOPE_DB_PATH")
+            .unwrap_or_else(|_| ".codescope/codescope.db".to_string());
+        let mut limit: i32 = 100;
+        let mut i = 2;
+        while i < args.len() {
+            match args[i].as_str() {
+                "--db" => match args.get(i + 1) {
+                    Some(v) => {
+                        db_path = v.clone();
+                        i += 2;
+                        continue;
+                    }
+                    None => {
+                        eprintln!("error: --db requires a value");
+                        std::process::exit(2);
+                    }
+                },
+                "--limit" => match args.get(i + 1).map(|v| v.parse::<i32>()) {
+                    Some(Ok(v)) => {
+                        limit = v;
+                        i += 2;
+                        continue;
+                    }
+                    Some(Err(_)) => {
+                        eprintln!("error: --limit requires an integer");
+                        std::process::exit(2);
+                    }
+                    None => {
+                        eprintln!("error: --limit requires a value");
+                        std::process::exit(2);
+                    }
+                },
+                "--help" | "-h" => {
+                    println!("Usage: codescope parse-failures [--db <path>] [--limit <n>]");
+                    println!("       codescope reset-failures [--db <path>]");
+                    println!(
+                        "  Read or clear parse_failures: the files the indexer could not parse,"
+                    );
+                    println!("  with their reason and retry count. Clearing them re-arms the");
+                    println!("  fail-fast skip for those files.");
+                    return;
+                }
+                other => {
+                    eprintln!("error: unexpected argument '{}' (try --help)", other);
+                    std::process::exit(2);
+                }
+            }
+        }
+        if ffi::init(&db_path) != 0 {
+            eprintln!("parse-failures: engine init failed (db={})", db_path);
+            std::process::exit(1);
+        }
+        let pid = ffi::get_latest_project_id();
+        if pid == 0 {
+            eprintln!(
+                "parse-failures: no project in {} — index something first",
+                db_path
+            );
+            ffi::shutdown();
+            std::process::exit(1);
+        }
+        let result = if reset {
+            ffi::reset_parse_failures(pid)
+        } else {
+            ffi::get_parse_failures(pid, limit)
+        };
+        ffi::shutdown();
+        println!("{}", result);
+        // An ok:false envelope must fail the process, or a scripted caller
+        // treats a broken read as an empty result.
+        let ok = serde_json::from_str::<Value>(&result)
+            .map(|v| v["ok"] == true)
+            .unwrap_or(false);
+        if !ok {
+            std::process::exit(1);
+        }
+        return;
+    }
+
     // ── Force-index mode: codescope force-index <path> [<path>...] ─
     // Index specific files/dirs, BYPASSING the default skip rules
     // (test/, docs/, vendored/, node_modules/, .gitignore, ...).
