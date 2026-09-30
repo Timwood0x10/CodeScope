@@ -81,14 +81,13 @@ static void insertCallExpr(sqlite3 *db, uint64_t pid, int64_t id,
 			   const std::string &name, const std::string &file,
 			   int start_row)
 {
-	execOrDie(db,
-		  "INSERT INTO semantic_records (original_id, project_id, "
-		  "kind, name, file_path, language, start_row, end_row) "
-		  "VALUES (" +
-			  std::to_string(id) + "," + std::to_string(pid) +
-			  ",9,'" + name + "','" + file + "','c'," +
-			  std::to_string(start_row) + "," +
-			  std::to_string(start_row) + ")");
+	execOrDie(db, "INSERT INTO semantic_records (original_id, project_id, "
+		      "kind, name, file_path, language, start_row, end_row) "
+		      "VALUES (" +
+			      std::to_string(id) + "," + std::to_string(pid) +
+			      ",9,'" + name + "','" + file + "','c'," +
+			      std::to_string(start_row) + "," +
+			      std::to_string(start_row) + ")");
 }
 
 /// Count occurrences of `"key":` in a JSON document — used to assert a key
@@ -171,11 +170,11 @@ int main()
 	// nothing — the type filter is why the result is empty and the hint
 	// must fire once and name the kind it did find.
 	{
-		std::string q =
-			query::executeGraphQuery(
-				pid, "MATCH (Class:gadget)-[Calls]->(Function:other) "
-				     "RETURN Class.name",
-				&store);
+		std::string q = query::executeGraphQuery(
+			pid,
+			"MATCH (Class:gadget)-[Calls]->(Function:other) "
+			"RETURN Class.name",
+			&store);
 		assert(q.find("\"total\":0") != std::string::npos);
 		assert(countKey(q, "hint") == 1 &&
 		       "a kind mismatch must emit exactly one hint key");
@@ -222,6 +221,68 @@ int main()
 		assert(countKey(q, "hint") == 0 &&
 		       "a matching query must not carry a hint");
 		printf("Test 6 (matching query -> no hint): PASS\n");
+	}
+
+	// ── Test 8: LIMIT is honoured, unknown trailing text is rejected ──
+	// Regression: the DSL documented `LIMIT n` (the README's graph-query
+	// benchmarks instruct it on large graphs) and the parser ignored it — plus
+	// every other trailing token — silently, so `LIMIT 10` returned the whole
+	// result set and the MCP transport then replaced the oversized response
+	// with an error the caller could not act on.
+	{
+		insertEntity(db, pid, 9101, 0, "lq_caller", "/t/lq.c", 10);
+		for (int i = 0; i < 5; ++i)
+			insertEntity(db, pid, 9110 + i, 0,
+				     "lq_callee" + std::to_string(i), "/t/lq.c",
+				     20 + i);
+		for (int i = 0; i < 5; ++i)
+			insertCallRelation(db, pid, 9101, 9110 + i);
+
+		const std::string base =
+			"MATCH (Function:lq_caller)-[Calls]->(Function)";
+
+		const std::string all =
+			query::executeGraphQuery(pid, base.c_str(), &store);
+		assert(countKey(all, "source") == 5);
+		assert(!contains(all, "\"truncated\""));
+
+		const std::string two = query::executeGraphQuery(
+			pid, (base + " LIMIT 2").c_str(), &store);
+		assert(countKey(two, "source") == 2);
+		assert(contains(two, "\"total\":2"));
+		assert(contains(two, "\"truncated\":true"));
+
+		// Keywords are case-insensitive, like MATCH.
+		const std::string three = query::executeGraphQuery(
+			pid, (base + " limit 3").c_str(), &store);
+		assert(countKey(three, "source") == 3);
+		assert(contains(three, "\"truncated\":true"));
+
+		// A limit above the match count is not a truncation.
+		const std::string big = query::executeGraphQuery(
+			pid, (base + " LIMIT 99").c_str(), &store);
+		assert(countKey(big, "source") == 5);
+		assert(!contains(big, "\"truncated\""));
+
+		// `RETURN` stays accepted (the DSL's documented surface, used by the
+		// tests above) and may follow LIMIT.
+		const std::string ret = query::executeGraphQuery(
+			pid, (base + " LIMIT 2 RETURN Function.name").c_str(),
+			&store);
+		assert(countKey(ret, "source") == 2);
+		assert(contains(ret, "\"truncated\":true"));
+
+		// A malformed clause — and any other trailing text — is an error,
+		// never a silent no-op.
+		for (const char *bad : { " LIMIT 0", " LIMIT abc", " LIMIT",
+					 " GARBAGE", " LIMIT 1 LIMIT 2" }) {
+			const std::string r = query::executeGraphQuery(
+				pid, (base + bad).c_str(), &store);
+			assert(contains(r, "\"error\""));
+			assert(countKey(r, "source") == 0);
+		}
+		printf("Test 8 (LIMIT honoured, unknown trailing text rejected): "
+		       "PASS\n");
 	}
 
 	// ── Case 7: one-sided FFI appears as external_symbols ───────
@@ -279,6 +340,6 @@ int main()
 
 	printf("\n=== test_graph_query_hints PASSED ===\n");
 	printf("Homonym probe, single-hint contract, untyped-node quiet, "
-	       "external_symbols\n");
+	       "external_symbols, LIMIT\n");
 	return 0;
 }

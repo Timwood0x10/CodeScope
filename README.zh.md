@@ -4,7 +4,7 @@
 
 它将源代码转化为可验证的事实、可理解的模型和可检查的证据 — 让 AI 能够根据现实验证断言，而非凭空编造。
 
-**版本**: v0.2.6 | **许可证**: Apache 2.0
+**版本**: v0.2.7 | **许可证**: Apache 2.0
 
 ---
 
@@ -320,6 +320,8 @@ codescope reset-failures
 
 这里列出的 46 个工具正是 `tools/list` 广播的（`server/src/tools/catalog.rs`）与按名分发的（`server/src/tools/mod.rs` 的 `TOOL_HANDLERS`）—— 两个集合完全一致，不存在「广播了但没有处理器」或「有处理器但没广播」的工具。
 
+> **stdio 传输对单条响应有 1 MiB 上限。** 超过上限的工具结果会被替换为一条 JSON-RPC 错误（`-32000`），其中给出实际字节数并建议缩小查询范围或调小 limit —— **绝不静默截断**。大结果请用各工具自带的参数收窄（`graph_query` 的 DSL 里写 `LIMIT`，以及 `limit`/`node_limit`/`edge_limit`/`max_findings` 等）。
+
 ### 索引
 
 > **`index_project` 仅限会话内自动运行，不可按名调用。** 它既不在 `tools/list` 中，也不在工具分发表里，因此
@@ -370,7 +372,7 @@ codescope reset-failures
 
 | 工具 | 用途 | 参数 |
 |------|------|------|
-| `graph_query` | Cypher 风格 DSL 查询：`MATCH (Function:main)-[Calls]->(Method)`。 | `{"dsl": "string (必填)"}` |
+| `graph_query` | Cypher 风格 DSL 查询：`MATCH (Function:main)-[Calls]->(Method)`，尾部可跟可选子句：`LIMIT <n>`（**生效**，响应会附带 `truncated: true`）与 `RETURN <fields>`（接受但当前无效果）。其它尾部文本一律报错。大图上务必用 `LIMIT` —— 宽泛模式可能超过 1 MiB 传输上限（见表格上方的说明）。 | `{"dsl": "string (必填)"}` |
 | `get_graph` | 分页获取完整代码图。 | `{"node_offset": "integer", "node_limit": "integer (最大 50000)", "edge_offset": "integer", "edge_limit": "integer (最大 200000)", "node_types": "string", "edge_types": "string"}` |
 | `get_subgraph` | 获取以某节点为中心的局部区域（1 跳）。 | `{"node_id": "integer (必填)", "radius": "integer", "node_types": "string", "edge_types": "string"}` |
 | `get_neighbors` | 获取图节点的直接邻居（调用者 + 被调用者）。 | `{"node_id": "integer (必填)", "edge_type": "integer (默认 -1)", "radius": "integer"}` |
@@ -388,7 +390,7 @@ codescope reset-failures
 | 工具 | 用途 | 参数 |
 |------|------|------|
 | `verify_integrity` | 检查 README 中承诺的功能是否确实存在于代码中。 | `{}` |
-| `verify_claim` | 验证单个断言（capability_exists / contract_holds / architecture_follows）。 | `{"claim": "string (必填)"}` |
+| `verify_claim` | 验证单个断言。`claim` 是 **JSON 对象字符串**，不是自然语言：`{"type": "capability_exists \| contract_holds \| architecture_follows \| function_implements", "subject": "符号/模块/契约", "predicate": "可选补充"}`。缺省或无法识别的 `type` 会返回 `error_code: claim_type_unsupported`，不会被猜测性兜底。 | `{"claim": "string (必填，JSON 对象)"}` |
 | `verify_summary` | 解析自然语言摘要并验证每个断言。 | `{"text": "string (必填)"}` |
 | `verify_review` | 验证代码审查评论中的断言。 | `{"text": "string (必填)"}` |
 | `verify_reality` | 验证 AI 对项目状态的单个陈述。 | `{"text": "string (必填)"}` |
@@ -598,4 +600,4 @@ cd CodeScope
 
 Apache 2.0 — 详见 [LICENSE](LICENSE)。
 
-**CodeScope v0.2.6** — 使用 Rust 2024 + C++23 + tree-sitter + SQLite 构建。
+**CodeScope v0.2.7** — 使用 Rust 2024 + C++23 + tree-sitter + SQLite 构建。

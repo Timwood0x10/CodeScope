@@ -117,6 +117,31 @@ pub(super) fn run_complete(failed_workers: usize, merged: bool) -> bool {
     failed_workers == 0 && merged
 }
 
+/// Whether one module worker did its job.
+///
+/// A worker that exited 0 without an error succeeded even when its files
+/// yielded no symbols: a `benches/main.rs` that only declares a macro, or a
+/// `lib.rs` that only re-exports, is indexed perfectly with zero nodes.
+/// Counting that as a FAILURE made a complete run report `ok:false` — observed
+/// on a real Rust project whose three modules all exited 0 with 221 files and
+/// 6740 nodes merged, where `ok` was false because the one-file `benches`
+/// module produced no nodes. Whether a module produced symbols is a property
+/// of its files, not of the worker.
+pub(super) fn worker_succeeded(r: &ModuleResult) -> bool {
+    r.exit_code == 0 && r.error.is_none()
+}
+
+/// Whether the run indexed anything at all.
+///
+/// This is the "an empty index is not a success" guard
+/// (`test_empty_project_reports_incomplete`), and it belongs at the RUN level:
+/// a project whose files all yield no symbols, or that had no files to index,
+/// must not report success. An empty run keeps its own verdict from
+/// [`run_complete`], which decides whether the merge produced a main.db.
+pub(super) fn run_produced_index(total_nodes: u64, total_files_indexed: u64) -> bool {
+    total_nodes > 0 || total_files_indexed == 0
+}
+
 /// Entry point: discover modules, dispatch workers, quarantine failures,
 /// return aggregated JSON summary.
 ///
@@ -432,12 +457,7 @@ pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> S
     }
 
     // ── Phase 5: aggregate summary ────────────────────────────
-    let success = final_results
-        .iter()
-        .filter(|r| {
-            r.exit_code == 0 && r.error.is_none() && (r.total_nodes > 0 || r.files_indexed == 0)
-        })
-        .count();
+    let success = final_results.iter().filter(|r| worker_succeeded(r)).count();
     let fail = final_results.len() - success;
     let total_nodes: u64 = final_results.iter().map(|r| r.total_nodes).sum();
     let total_edges: u64 = final_results.iter().map(|r| r.total_edges).sum();
@@ -506,8 +526,12 @@ pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> S
         .collect();
 
     // "ok" means the run completed AND produced a consistent index — not just
-    // "at least one worker finished". See run_complete().
-    let complete = run_complete(fail, merge_result.merged);
+    // "at least one worker finished". See run_complete() and
+    // run_produced_index(): the latter is the run-level "nothing indexed at
+    // all" guard, deliberately not a per-module condition (see
+    // worker_succeeded for why).
+    let complete = run_complete(fail, merge_result.merged)
+        && run_produced_index(total_nodes, total_files_indexed);
     json!({
         "ok": complete,
         "complete": complete,
@@ -679,6 +703,50 @@ mod tests {
         assert_eq!(v["complete"], false);
         assert_eq!(v["modules"].as_array().unwrap().len(), 0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_module_without_symbols_is_a_success_not_a_failure() {
+        // Regression (found by indexing a real Rust project): a module that
+        // indexed its files but produced no symbols was counted as a FAILURE,
+        // so a complete run — all modules exit 0, merge ok — reported
+        // ok:false. Only a real failure (error or non-zero exit) may.
+        let mk = |exit: i32, nodes: u64, files: u64, err: Option<&str>| ModuleResult {
+            name: "m".into(),
+            exit_code: exit,
+            total_nodes: nodes,
+            total_edges: 0,
+            files_indexed: files,
+            candidate_files: files,
+            time_parse_ms: 0,
+            duration_secs: 0,
+            workers: 1,
+            db_path: String::new(),
+            project_id: 1,
+            error: err.map(|e| e.to_string()),
+        };
+        assert!(
+            worker_succeeded(&mk(0, 0, 1, None)),
+            "exit 0 with no symbols is still a success"
+        );
+        assert!(
+            !worker_succeeded(&mk(0, 500, 10, Some("boom"))),
+            "an error is a failure even at exit 0"
+        );
+        assert!(
+            !worker_succeeded(&mk(101, 500, 10, None)),
+            "a non-zero exit is a failure"
+        );
+        // The "empty index is not a success" guard stays, but at run level.
+        assert!(
+            !run_produced_index(0, 221),
+            "files indexed but no symbols = nothing to show for the run"
+        );
+        assert!(run_produced_index(6740, 221), "a real index");
+        assert!(
+            run_produced_index(0, 0),
+            "an empty run is judged by run_complete, not here"
+        );
     }
 
     #[test]

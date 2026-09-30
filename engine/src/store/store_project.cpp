@@ -230,9 +230,11 @@ std::string GraphStore::findSymbolJson(uint64_t project_id, const char *name)
 	sqlite3_reset(stmt);
 	json << "]}";
 
-	// If the entity table returned nothing, fall back to graph_nodes (new
-	// pipeline). The primary query reads `entity` above; there is no `symbols`
-	// table in the schema.
+	// If the entity table returned nothing, fall back to graph_nodes. That
+	// table is written only by the LEGACY engine_index_batch path, so this
+	// fallback serves DBs built by it; the canonical pipeline (and the
+	// primary query above) reads `entity`. Kept deliberately: a batch-built
+	// DB must still resolve symbols.
 	if (first) {
 		std::ostringstream gn_json;
 		gn_json << "{\"results\":[";
@@ -297,6 +299,68 @@ std::string GraphStore::findSymbolJson(uint64_t project_id, const char *name)
 }
 // ── Phase C: Unified Queries ──────────────────────────────────
 
+namespace
+{
+// ── Canonical readiness probes ──────────────────────────────────
+// The coverage ratios below are the same questions engine_queries_status.cpp
+// answers for engine_get_enhancement_status, and they deliberately use the
+// same SQL so both APIs report identical numbers. They read the canonical
+// tables the pipeline actually writes (`entity`, `relation`, `node_vectors`).
+//
+// Step 10.1: they used to read `graph_nodes.<field>_ready`, a table the
+// canonical pipeline never populates (only the legacy engine_index_batch path
+// does), so every ratio was 0.0 — and consumers drew the wrong conclusion from
+// it: `project_overview` reported a working call graph as
+// `"callgraph_available": false`, `ready_features.call_graph: false` and an
+// empty `sample_call_edges`, while find_callers/find_callees answered with
+// hundreds of callers. verifier.h states the rule this violated: the canonical
+// fact layer is the production source of truth, never graph_nodes.
+
+/// Population the per-entity ratios are computed over: function and method
+/// entities.
+constexpr const char *kReadyEligibleSql =
+	"SELECT COUNT(*) FROM entity WHERE project_id=? AND kind IN (0,1)";
+
+/// Function/method entities participating in the call graph (either end of a
+/// Calls relation).
+constexpr const char *kReadyCallgraphSql =
+	"SELECT COUNT(*) FROM (SELECT DISTINCT node FROM ("
+	"SELECT source_id AS node FROM relation WHERE project_id=? AND type=1 "
+	"UNION "
+	"SELECT target_id AS node FROM relation WHERE project_id=? AND type=1))";
+
+/// Function/method entities whose metrics were resolved (cyclomatic > 0).
+constexpr const char *kReadyMetricsSql =
+	"SELECT COUNT(*) FROM entity WHERE project_id=? AND kind IN (0,1) "
+	"AND cyclomatic > 0";
+
+/// Entities carrying a semantic vector: the canonical embedding coverage.
+constexpr const char *kReadyEmbeddingSql =
+	"SELECT COUNT(*) FROM node_vectors WHERE project_id=?";
+
+/// Run a count probe. Returns -1 when the statement cannot be run, so the
+/// caller can report the failure instead of silently returning 0.0.
+/// \param db      Open store handle.
+/// \param sql     Probe with one placeholder per entry of `binds`.
+/// \param binds   Values bound to the placeholders, in order.
+int64_t readyCount(sqlite3 *db, const char *sql,
+		   const std::vector<int64_t> &binds)
+{
+	if (!db || !sql)
+		return -1;
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+		return -1;
+	for (size_t i = 0; i < binds.size(); ++i)
+		sqlite3_bind_int64(stmt, static_cast<int>(i + 1), binds[i]);
+	int64_t n = -1;
+	if (sqlite3_step(stmt) == SQLITE_ROW)
+		n = sqlite3_column_int64(stmt, 0);
+	sqlite3_finalize(stmt);
+	return n;
+}
+} // namespace
+
 double GraphStore::getReadyRatio(uint64_t project_id, const char *ready_field)
 {
 	// Whitelist allowed field names to prevent SQL injection
@@ -309,24 +373,49 @@ double GraphStore::getReadyRatio(uint64_t project_id, const char *ready_field)
 	    allowed_fields.find(ready_field) == allowed_fields.end()) {
 		return 0.0;
 	}
+	if (!db_)
+		return 0.0;
 
-	std::string sql = "SELECT CASE WHEN COUNT(*) > 0 THEN "
-			  "CAST(SUM(gn." +
-			  std::string(ready_field) +
-			  ") AS REAL) / COUNT(*) "
-			  "ELSE 0.0 END FROM graph_nodes gn "
-			  "WHERE gn.project_id = ? AND gn.node_type IN (0,1)";
-	sqlite3_stmt *stmt = nullptr;
-	double ratio = 0.0;
-	if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) ==
-	    SQLITE_OK) {
-		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-		if (sqlite3_step(stmt) == SQLITE_ROW) {
-			ratio = sqlite3_column_double(stmt, 0);
-		}
-		sqlite3_finalize(stmt);
+	const int64_t pid = static_cast<int64_t>(project_id);
+	const std::string field(ready_field);
+
+	// Per-entity coverage: ratio of the eligible population that carries the
+	// producer's output.
+	const char *probe = nullptr;
+	std::vector<int64_t> binds;
+	if (field == "callgraph_ready") {
+		probe = kReadyCallgraphSql;
+		binds = { pid, pid };
+	} else if (field == "metrics_ready") {
+		probe = kReadyMetricsSql;
+		binds = { pid };
+	} else if (field == "embedding_ready" || field == "vector_ready") {
+		probe = kReadyEmbeddingSql;
+		binds = { pid };
 	}
-	return ratio;
+	if (probe) {
+		const int64_t eligible =
+			readyCount(db_, kReadyEligibleSql, { pid });
+		const int64_t ready = readyCount(db_, probe, binds);
+		if (eligible < 0 || ready < 0) {
+			fprintf(stderr,
+				"store: readiness probe failed for %s "
+				"[module=store, method=getReadyRatio]\n",
+				ready_field);
+			return 0.0;
+		}
+		if (eligible == 0)
+			return 0.0;
+		return static_cast<double>(ready) /
+		       static_cast<double>(eligible);
+	}
+
+	// The remaining fields are pipeline-stage FLAGS, not per-entity coverage:
+	// project_readiness records whether the producer ran, which is what its
+	// schema comment says it is for (see engine_get_enhancement_status for the
+	// canonical count). No per-entity probe exists for them, so the ratio is
+	// 1.0 or 0.0.
+	return getProjectReadiness(project_id, ready_field) > 0 ? 1.0 : 0.0;
 }
 std::unordered_set<std::string>
 GraphStore::loadFileScanStateBatch(uint64_t project_id)

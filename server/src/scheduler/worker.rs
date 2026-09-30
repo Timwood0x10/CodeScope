@@ -19,6 +19,26 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+/// Parse mode every scheduler-spawned worker runs in, whatever the caller set.
+///
+/// `index-parallel` parses in **fast** mode on purpose: the per-module workers
+/// are followed by a merge and one graph/state pass over the unified DB, so a
+/// worker that honoured `CODESCOPE_INDEX_MODE` would do per-module work whose
+/// results the merge then discards. README §9 states this ("index-parallel
+/// always parses in fast mode"); pinning it in one place keeps the four spawn
+/// sites from drifting apart.
+pub(super) const WORKER_INDEX_MODE: &str = "fast";
+
+/// Force [`WORKER_INDEX_MODE`] on a worker command.
+///
+/// A separate function so the contract is assertable: a test can inspect the
+/// command's environment (`Command::get_envs`) instead of trusting four
+/// scattered `cmd.env(...)` calls. `Command::env` writes last, so this also
+/// overrides any `CODESCOPE_INDEX_MODE` the parent exported.
+pub(super) fn apply_worker_index_mode(cmd: &mut Command) {
+    cmd.env("CODESCOPE_INDEX_MODE", WORKER_INDEX_MODE);
+}
+
 use super::{DEFAULT_WORKER_TIMEOUT_SECS, ModuleResult, POLL_INTERVAL};
 
 /// Run one module worker subprocess. Returns a `ModuleResult` regardless
@@ -165,7 +185,7 @@ pub(super) fn run_module_worker(
     // whole-project index, or the parallel path indexes what the project
     // declared out of scope.
     cmd.env("CODESCOPE_PROJECT_ROOT", project_dir);
-    cmd.env("CODESCOPE_INDEX_MODE", "fast");
+    apply_worker_index_mode(&mut cmd);
     cmd.env("CODESCOPE_WORKERS", &workers_str);
     // Skip the ~280ms state-builder work in per-module workers; the
     // unified DB gets its async pass once after merge (see merge::merge_module_dbs).
@@ -498,7 +518,7 @@ pub(super) fn run_chunk_worker(
     cmd.env("CODESCOPE_DB_PATH", worker_db);
     cmd.env("CODESCOPE_FILES_JSON", files_json_path);
     cmd.env("CODESCOPE_PROJECT_ID", &project_id_str);
-    cmd.env("CODESCOPE_INDEX_MODE", "fast");
+    apply_worker_index_mode(&mut cmd);
     cmd.env("CODESCOPE_SKIP_ASYNC", "1");
     // P3a (C2): chunk workers are parallel modules too — defer CSR so it is
     // rebuilt once on the merged DB from globally-remapped relation ids.
@@ -529,7 +549,7 @@ pub(super) fn run_chunk_worker(
         taskset_cmd.env("CODESCOPE_DB_PATH", worker_db);
         taskset_cmd.env("CODESCOPE_FILES_JSON", files_json_path);
         taskset_cmd.env("CODESCOPE_PROJECT_ID", &project_id_str);
-        taskset_cmd.env("CODESCOPE_INDEX_MODE", "fast");
+        apply_worker_index_mode(&mut taskset_cmd);
         taskset_cmd.env("CODESCOPE_SKIP_ASYNC", "1");
         // P3a (C2): defer CSR on chunk workers too (see plain branch above).
         taskset_cmd.env("CODESCOPE_DEFER_CSR", "1");
@@ -773,5 +793,32 @@ mod tests {
         // When module_dir is "", strip_prefix fails and we fall back
         // to the absolute path. Both branches must produce a non-empty glob.
         assert!(!g.is_empty());
+    }
+
+    /// Regression (CODE_REVIEW_2026-09-27.md, "配套测试缺口" #4): the README
+    /// documents that `index-parallel` parses in fast mode whatever the user
+    /// asked for, and nothing asserted it — the spawn sites could drift apart.
+    #[test]
+    fn test_spawned_workers_are_pinned_to_fast_mode() {
+        let mut cmd = Command::new("codescope");
+        // Stand in for a user who exported the opposite mode.
+        cmd.env("CODESCOPE_INDEX_MODE", "normal");
+        apply_worker_index_mode(&mut cmd);
+
+        let mode: Vec<_> = cmd
+            .get_envs()
+            .filter(|(k, _)| *k == "CODESCOPE_INDEX_MODE")
+            .collect();
+        assert_eq!(
+            mode.len(),
+            1,
+            "the worker's parse mode must be stated exactly once"
+        );
+        assert_eq!(
+            mode[0].1,
+            Some(std::ffi::OsStr::new(WORKER_INDEX_MODE)),
+            "index-parallel workers must run in fast mode; Command::env writes last, \
+             so this also proves it overrides the caller's value"
+        );
     }
 }

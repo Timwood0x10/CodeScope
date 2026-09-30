@@ -1,5 +1,7 @@
 #include "ir_translator.h"
 
+#include <cstdio>
+
 #include "translators/js_visitor.h"
 #include "translators/ts_visitor.h"
 #include "translators/tsx_visitor.h"
@@ -67,6 +69,25 @@ std::unique_ptr<Translator> createTranslator(const char *language)
 		return createTsxTranslator();
 
 	return nullptr;
+}
+
+bool TranslateDepth::exceeded(const char *file_path, const char *method)
+{
+	if (depth_ < kMaxTranslateDepth)
+		return false;
+	if (!reported_) {
+		// Reported once per file: a truncated translation must be visible
+		// (plan/rules/code_rules.md, no silent handling), and the message
+		// names the module and method so it can be traced back here.
+		reported_ = true;
+		fprintf(stderr,
+			"[module=ir, method=%s] AST nesting exceeded "
+			"kMaxTranslateDepth=%d in '%s'; deeper nodes skipped to "
+			"avoid stack overflow (legacy translator)\n",
+			method ? method : "translateChildren",
+			kMaxTranslateDepth, file_path ? file_path : "");
+	}
+	return true;
 }
 
 std::unique_ptr<JsVisitor> createJsVisitor(const char *language)

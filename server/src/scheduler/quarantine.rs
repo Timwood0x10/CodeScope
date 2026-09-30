@@ -321,7 +321,7 @@ fn run_subset_once(
     ]);
     cmd.env("GRAMMARS_DIR", grammars_dir);
     cmd.env("CODESCOPE_DB_PATH", db_path);
-    cmd.env("CODESCOPE_INDEX_MODE", "fast");
+    super::worker::apply_worker_index_mode(&mut cmd);
     cmd.env("CODESCOPE_WORKERS", "1");
     cmd.stdout(Stdio::null()).stderr(Stdio::null());
 

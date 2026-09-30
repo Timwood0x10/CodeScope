@@ -292,7 +292,6 @@ class GraphStore {
 	// ── Symbol Status (separate from symbols, keeps main table lean) ──
 
 	/** Get ratio of symbols with a status flag = 1 (0.0 - 1.0). */
-	double getReadyRatio(uint64_t project_id);
 	double getReadyRatio(uint64_t project_id, const char *ready_field);
 
 	// ── Incremental Indexing ──────────────────────────────────

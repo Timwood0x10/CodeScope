@@ -807,10 +807,14 @@ std::string QueryEngine::getGraphStats(uint64_t project_id)
 		}
 	}
 	{
-		// Distinct file paths across all entities (matches the
-		// SQLite branch's "count DISTINCT n.file_path").
-		const char *sql =
-			"SELECT COUNT(DISTINCT file_path) FROM entity";
+		// Files the indexer actually wrote, from the `files` table — what the
+		// field name promises. It used to count `COUNT(DISTINCT file_path)
+		// FROM entity`, i.e. only the files that produced at least one symbol,
+		// so a project of 1,579 indexed files reported 672 (goagent) and the
+		// number looked like "files indexed" while silently excluding
+		// header-only, re-export-only and comment-only files. The old value is
+		// still reported, as `files_with_symbols`.
+		const char *sql = "SELECT COUNT(*) FROM files";
 		sqlite3_stmt *st = nullptr;
 		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) ==
 		    SQLITE_OK) {
@@ -819,10 +823,29 @@ std::string QueryEngine::getGraphStats(uint64_t project_id)
 			sqlite3_finalize(st);
 		}
 	}
+	// Files that produced at least one entity: the value the old
+	// implementation reported as total_files, kept because it answers a
+	// different (also useful) question — how much of the corpus the graph
+	// actually covers.
+	int64_t files_with_symbols = 0;
+	{
+		const char *sql =
+			"SELECT COUNT(DISTINCT file_path) FROM entity";
+		sqlite3_stmt *st = nullptr;
+		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) ==
+		    SQLITE_OK) {
+			if (sqlite3_step(st) == SQLITE_ROW)
+				files_with_symbols =
+					sqlite3_column_int64(st, 0);
+			sqlite3_finalize(st);
+		}
+	}
+
 	std::ostringstream json;
 	json << "{\"total_nodes\":" << total_nodes
 	     << ",\"total_edges\":" << total_edges
-	     << ",\"total_files\":" << total_files << "}";
+	     << ",\"total_files\":" << total_files
+	     << ",\"files_with_symbols\":" << files_with_symbols << "}";
 	return json.str();
 }
 

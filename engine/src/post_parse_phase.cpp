@@ -53,8 +53,10 @@ char *postParsePhase(uint64_t project_id, const std::string &dir,
 		store::setIndexProgress(p);
 	}
 
-	// ── Step 1: buildGraph (SQL-only, graph_nodes + graph_edges + CSR) ──
-	// Reads semantic_records, creates graph_nodes/graph_edges via SQL JOINs.
+	// ── Step 1: buildGraph (SQL-only, entity + relation + CSR) ──
+	// Reads semantic_records, creates the canonical entity/relation rows via
+	// SQL JOINs (graph_nodes/graph_edges are the LEGACY batch tables and stay
+	// empty here — see verifier.h on which layer is the source of truth).
 	// NOTE: calls=true builds call edges via all priorities in
 	// buildCallEdgesSQL (store_intern.cpp): P1 (intra-file ref_original_id),
 	// P2 (translator-resolved), P3 (name-based cross-file, language-filtered
@@ -275,7 +277,7 @@ char *postParsePhase(uint64_t project_id, const std::string &dir,
 	// or check the "knowledge_ready" readiness flag.
 	// NOTE: This is launched AFTER all g_store reads below, to avoid
 	// concurrent GraphStore access. The builder writes to module_edge
-	// while the main thread reads graph_nodes/graph_edges counts.
+	// while the main thread reads the canonical counts below.
 
 	// ── Result JSON ──────────────────────────────────────────────
 	std::ostringstream result;
@@ -313,8 +315,11 @@ char *postParsePhase(uint64_t project_id, const std::string &dir,
 				       << sqlite3_column_int64(stmt, 0);
 			sqlite3_finalize(stmt);
 		}
-		// Also report symbols and call_edges counts
-		sql = "SELECT COUNT(*) FROM graph_nodes WHERE project_id = " +
+		// Also report the symbol count. It used to count `graph_nodes`,
+		// which the canonical pipeline leaves empty (only the legacy
+		// engine_index_batch path writes it), so the field was always 0
+		// next to a correct total_edges from `relation`.
+		sql = "SELECT COUNT(*) FROM entity WHERE project_id = " +
 		      std::to_string(project_id);
 		if (sqlite3_prepare_v2(g_store->handle(), sql.c_str(), -1,
 				       &stmt, nullptr) == SQLITE_OK) {

@@ -456,12 +456,15 @@ static char *buildContextImpl(uint64_t project_id, const char *query)
 	bool cg_ready = (cg_ratio > 0.1);
 	if (cg_ready && (intent == "callgraph" || intent == "general")) {
 		json << "\"callgraph_available\":true,";
-		// Add a sample of call edges (from graph_edges)
+		// Sample call edges from the canonical tables (relation + entity).
+		// It used to join graph_edges/graph_nodes, which the canonical
+		// pipeline leaves empty, so the sample was always [] even when
+		// callgraph_available had just been reported true.
 		const char *csql =
-			"SELECT gn1.name, gn2.name FROM graph_edges ge "
-			"JOIN graph_nodes gn1 ON gn1.id = ge.source_node_id "
-			"JOIN graph_nodes gn2 ON gn2.id = ge.target_node_id "
-			"WHERE ge.project_id = ? AND ge.edge_type IN (1,3) LIMIT 10";
+			"SELECT s.name, t.name FROM relation r "
+			"JOIN entity s ON s.id = r.source_id "
+			"JOIN entity t ON t.id = r.target_id "
+			"WHERE r.project_id = ? AND r.type IN (1,3) LIMIT 10";
 		sqlite3_stmt *cstmt = nullptr;
 		if (sqlite3_prepare_v2(db, csql, -1, &cstmt, nullptr) ==
 		    SQLITE_OK) {

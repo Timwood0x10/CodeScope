@@ -129,7 +129,7 @@ pub fn all_tools() -> Vec<Tool> {
         },
         Tool {
             name: "verify_claim".into(),
-            description: "Verify a single claim against the codebase. Dispatches the claim to the appropriate verifier (CapabilityVerifier, ContractVerifier, or ArchitectureVerifier) via the VerifierRegistry, persists the claim + evidence, and returns the verdict with confidence and evidence facts.".into(),
+            description: "Verify a single claim against the codebase. Dispatches the claim to the appropriate verifier (CapabilityVerifier, ContractVerifier, or ArchitectureVerifier) via the VerifierRegistry, persists the claim + evidence, and returns the verdict with confidence and evidence facts. The claim argument is a JSON OBJECT string, not free text: {\"type\":\"capability_exists|contract_holds|architecture_follows|function_implements\",\"subject\":\"<symbol, module or contract>\",\"predicate\":\"<optional detail>\"}. A missing or unrecognized type is rejected with error_code claim_type_unsupported rather than being guessed.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -502,7 +502,7 @@ pub fn all_tools() -> Vec<Tool> {
         },
         Tool {
             name: "graph_query".into(),
-            description: "Query the code graph with a Cypher-like DSL. Syntax: MATCH (srcType[:srcName])-[edgeType]->(tgtType[:tgtName]). Node types: Function(0), Method(1), Class(2), Struct(3), Interface(4), Variable(5), Module(6), File(7). Edge types: References(0), Calls(1), Defines(2), Contains(3), Imports(4), Inherits(5). Empty type matches any. Multi-hop: edgeType*min..max, e.g. MATCH (Function)-[Calls*1..3]->(Function). Returns {results:[{source, edge, target}], total:N}.".into(),
+            description: "Query the code graph with a Cypher-like DSL. Syntax: MATCH (srcType[:srcName])-[edgeType]->(tgtType[:tgtName]). Node types: Function(0), Method(1), Class(2), Struct(3), Interface(4), Variable(5), Module(6), File(7). Edge types: References(0), Calls(1), Defines(2), Contains(3), Imports(4), Inherits(5). Empty type matches any. Multi-hop: edgeType*min..max, e.g. MATCH (Function)-[Calls*1..3]->(Function). An optional trailing clause bounds or projects the result: LIMIT <n> is honoured (the response then also carries truncated:true), RETURN <fields> is accepted and currently has no effect, and any other trailing text is an error. Use LIMIT on large graphs: a broad pattern can exceed the MCP transport's 1 MiB message cap, which replaces the oversized response with an error. Returns {results:[{source, edge, target}], total:N}.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {

@@ -4,7 +4,7 @@
 
 It transforms source code into verifiable facts, understandable models, and inspectable evidence — enabling AI to validate claims against reality instead of hallucinating.
 
-**Version**: v0.2.6 | **License**: Apache 2.0
+**Version**: v0.2.7 | **License**: Apache 2.0
 
 ---
 
@@ -390,6 +390,13 @@ The 46 tools listed here are exactly the ones advertised by `tools/list`
 `server/src/tools/mod.rs`); the two sets are identical — there are no
 advertised-but-unhandled or handled-but-unadvertised tools.
 
+> **Responses are capped at 1 MiB by the stdio transport.** A tool result
+> larger than that is replaced by a JSON-RPC error (`-32000`) naming the size
+> and suggesting a narrower query or smaller limits — it is never truncated
+> silently. Bound large result sets with the tools' own arguments
+> (`LIMIT` in a `graph_query` DSL string, `limit`/`node_limit`/`edge_limit`,
+> `max_findings`, …).
+
 ### Indexing
 
 > **`index_project` is session-only and NOT callable by name.** It is absent
@@ -446,7 +453,7 @@ advertised-but-unhandled or handled-but-unadvertised tools.
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
-| `graph_query` | Cypher-like DSL query: `MATCH (Function:main)-[Calls]->(Method)`. | `{"dsl": "string (required)"}` |
+| `graph_query` | Cypher-like DSL query: `MATCH (Function:main)-[Calls]->(Method)`, plus optional trailing clauses: `LIMIT <n>` (**honoured**; the response then also carries `truncated: true`) and `RETURN <fields>` (accepted, no effect today). Any other trailing text is an error. Use `LIMIT` on large graphs — a broad pattern can exceed the 1 MiB transport cap (see the note above the table). | `{"dsl": "string (required)"}` |
 | `get_graph` | Retrieve the complete code graph in paginated pages. | `{"node_offset": "integer", "node_limit": "integer (max 50000)", "edge_offset": "integer", "edge_limit": "integer (max 200000)", "node_types": "string", "edge_types": "string"}` |
 | `get_subgraph` | Fetch a local region centered on a node (1-hop). | `{"node_id": "integer (required)", "radius": "integer", "node_types": "string", "edge_types": "string"}` |
 | `get_neighbors` | Fetch direct neighbors (callers + callees) of a graph node. | `{"node_id": "integer (required)", "edge_type": "integer (default -1)", "radius": "integer"}` |
@@ -464,7 +471,7 @@ advertised-but-unhandled or handled-but-unadvertised tools.
 | Tool | Description | Parameters |
 |------|-------------|------------|
 | `verify_integrity` | Check README-promised features actually exist in code. | `{"max_findings": "integer (optional, default 200, max 2000)"}` |
-| `verify_claim` | Verify a single claim (capability_exists / contract_holds / architecture_follows). | `{"claim": "string (required)"}` |
+| `verify_claim` | Verify a single claim. `claim` is a **JSON object string**, not free text: `{"type": "capability_exists \| contract_holds \| architecture_follows \| function_implements", "subject": "symbol/module/contract", "predicate": "optional detail"}`. An unknown or missing `type` is rejected with `error_code: claim_type_unsupported` instead of being guessed. | `{"claim": "string (required, JSON object)"}` |
 | `verify_summary` | Parse natural-language summary and verify each claim. | `{"text": "string (required)"}` |
 | `verify_review` | Verify code review comment claims. | `{"text": "string (required)"}` |
 | `verify_reality` | Verify a single AI statement against code evidence. | `{"text": "string (required)"}` |
@@ -700,4 +707,4 @@ Each script calls `codescope cli <tool_name> '<json_args>'` internally. See `ski
 
 Apache 2.0 — see [LICENSE](LICENSE).
 
-**CodeScope v0.2.6** — Built with Rust 2024 + C++23 + tree-sitter + SQLite.
+**CodeScope v0.2.7** — Built with Rust 2024 + C++23 + tree-sitter + SQLite.

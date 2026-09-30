@@ -343,17 +343,19 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 		// tools return complete results after a single-file re-index.
 		launchAsyncKnowledgeBuilder(project_id, true);
 
-		// Report the actual persisted graph node/edge counts for the file.
+		// Report the actual persisted counts for the file, from the canonical
+		// tables the pipeline writes. Counting `graph_nodes`/`graph_edges`
+		// (which only the legacy engine_index_batch path populates) reported
+		// `nodes:0, edges:0` for a file that had just been indexed.
 		auto countRows = [&](const char *table) -> int64_t {
-			// graph_edges has no file_path column; count its rows by
-			// joining through graph_nodes (which does).
+			// `relation` has no file_path column; count its rows through the
+			// source entity, which does.
 			std::string sql;
-			if (std::string(table) == "graph_edges") {
-				sql = "SELECT COUNT(*) FROM graph_edges ge "
-				      "JOIN graph_nodes gn ON ge.source_node_id "
-				      "= gn.id "
-				      "WHERE gn.project_id = ? AND "
-				      "gn.file_path = ?";
+			if (std::string(table) == "relation") {
+				sql = "SELECT COUNT(*) FROM relation r "
+				      "JOIN entity e ON e.id = r.source_id "
+				      "WHERE r.project_id = ? AND "
+				      "e.file_path = ?";
 			} else {
 				sql = std::string("SELECT COUNT(*) FROM ") +
 				      table +
@@ -379,8 +381,8 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 			sqlite3_finalize(st);
 			return n;
 		};
-		int64_t node_count = countRows("graph_nodes");
-		int64_t edge_count = countRows("graph_edges");
+		int64_t node_count = countRows("entity");
+		int64_t edge_count = countRows("relation");
 
 		std::ostringstream result_os;
 		result_os << "{\"ok\":true,\"nodes\":" << node_count

@@ -1,3 +1,46 @@
+## v0.2.7 (2026-09-30)
+
+Release focused on the answers CodeScope gives about itself: the readiness and
+graph-statistics tools described the deprecated `graph_nodes` table instead of
+the canonical one, a second project indexed into the same database lost every
+entity it had, and `index-parallel` reported a complete run as failed whenever
+one module's files contained no symbols. Also closes the `parse_failures`
+lifecycle (the table could be written but never read or cleared) and makes
+`graph_query`'s documented `LIMIT` clause actually work.
+
+### 🚀 New Features
+
+- **`codescope parse-failures` / `codescope reset-failures`** (`engine/src/engine_ffi_index.cpp`, `engine/include/engine.h`, `server/src/ffi/decls.rs`, `server/src/main.rs`): `parse_failures` was write-only — `store::resetParseFailures` / `store::getParseFailuresJson` had no caller and the CLI the comments and the README named did not exist. Two FFI entry points and two subcommands close the loop (`--db`, `--limit`; `ok:false` exits non-zero), covered by `test_parse_failures.cpp` section 8.
+- **`graph_query` honours `LIMIT`** (`engine/src/query/graph_query.cpp`, `.h`): the documented `LIMIT <n>` clause is applied (result set capped, `"truncated": true` appended, untruncated responses byte-identical), `RETURN <fields>` stays accepted without effect, and any other trailing text is an error carrying `[module=engine, method=executeGraphQuery]` instead of being dropped. Measured on goagent: the broad `MATCH (Function)-[Calls]->(Function)` returns 6,947 rows / 2.16 MB (over the MCP transport's 1 MiB message cap), `LIMIT 200` returns 56 KB.
+
+### 🐛 Bug Fixes
+
+- **Readiness and overview answers now come from the canonical tables** (`engine/src/store/store_project.cpp`, `engine/src/engine_queries_context.cpp`): `getReadyRatio` folded `graph_nodes.<field>_ready`, populated only by the legacy `engine_index_batch` path, so every ratio was 0.0 — `project_overview` reported `ready_features.call_graph:false`, `build_context` reported `callgraph_available:false` and sampled the empty `graph_edges`, on databases where `find_callers` answered with hundreds of callers (findings #4/#6 of `docs/REAL_PROJECT_TOOL_REPORT_2026-09-21.md`). Both now read entity/relation/node_vectors with the same SQL as `engine_get_enhancement_status`, so the two APIs agree.
+- **A second project in the same database keeps its entities** (`engine/src/store/store_graph.cpp`): `entity.id` is a global primary key, but the ROW_NUMBER offset was project-scoped and applied only to incremental rebuilds, so a new project restarted at id 1, collided, and `INSERT OR IGNORE` silently dropped every row — `semantic_records` present, zero entities, every tool answering "not found". The offset is unconditional and table-wide now.
+- **A module that produced no symbols no longer fails the run** (`server/src/scheduler/mod.rs`): `ok` required `total_nodes > 0` per module, so memscope-rs (221 files, 6,740 nodes, all modules exit 0) reported `ok:false, success:2, fail:1`; it reports `ok:true, success:3, fail:0` now, while the "nothing indexed at all" guard stays at run level.
+- **`get_graph_stats.total_files` means files indexed** (`engine/src/query/query_engine.cpp`): it counted distinct `entity.file_path` (goagent: 672 of 1,579 files); it counts the `files` table and reports the old number as `files_with_symbols`.
+- **`index_file` and the index result JSON report canonical counts** (`engine/src/engine_index.cpp`, `engine/src/post_parse_phase.cpp`): `nodes:0, edges:0` and `total_symbols:0` are gone (both counted `graph_nodes`/`graph_edges`).
+- **`language_missing` files are re-attempted, and force-indexed files are never dropped silently** (`engine/src/engine_index_project*.cpp`, `engine/src/engine_index_files.cpp`): a missing-grammar failure no longer counts towards the permanent fail-fast skip; the forced path takes an explicit `bypass_fail_fast` argument instead of a hard-coded threshold of 3, and flushes the failures it records.
+- **One file, one identity, for the cases spellings alone cannot cover** (`engine/src/engine_index_paths.h`): the stored spelling is also looked up in `parse_failures`, and a second pass accepts a stored row only on canonical equality — closing the symlinked-ancestor case (`/tmp/x` vs `/private/tmp/x`) and the relative-root spelling, without ever merging two different files.
+- **The legacy translators bound their recursion** (`engine/src/ir/ir_translator.h`, eight `engine/src/ir/translators/*_translator.cpp`): they share `kMaxTranslateDepth` with the visitors and report the first truncation per file, so a pathologically deep AST cannot overflow the 512 KB worker stack.
+
+### 🔧 Improvements
+
+- **The 1 MiB MCP message cap is documented** (`README.md` / `README.zh.md` §5, tool descriptions): an oversized tool response is replaced by a `-32000` error naming the size, and the docs point at the `LIMIT` / `limit` / `node_limit` arguments that keep responses under it.
+- **`verify_claim`'s input contract is documented** (`server/src/tools/catalog.rs`, README §5): `claim` is a JSON object with `type`/`subject`/`predicate` and four supported types (the README listed three and described no shape).
+- **Every FFI declaration carries its safety contract** (`server/src/ffi/decls.rs` (new), `engine/include/engine.h`): 61/61 Rust declarations with ownership/lifetime/thread-safety `# Safety` blocks, 75/75 C++ exports with labelled lines. Split into its own module to stay under the 1000-line limit.
+- **Swift removed rather than left unreachable** (638 lines of dead sources, the unused `swiftBuiltins()` table, the dangling `tree_sitter_swift()` prototype); `parser.cpp` is the single authoritative note, and §10 of the skills docs now separates vendored grammars from detected-but-not-parsed languages.
+- **Stale `graph_nodes` comments corrected** in `post_parse_phase.cpp` and `store_project.cpp`; the unused single-argument `GraphStore::getReadyRatio` declaration removed.
+
+### ✅ Verification
+
+- `make check` rc=0: clang-format (all files), clippy `-D warnings`, **94/94 engine test binaries** (2 new: `test_readiness_canonical`, `test_translator_depth_guard`), Rust **125/125**.
+- `make test` rc=0.
+- `make accuracy-check` rc=0: TP 36 / FP 0 / FN 0, P = R = F1 = 1.0, with FP and FN injection both correctly rejected.
+- Real projects, MCP protocol level (`initialize` → `tools/list` → 46 × `tools/call`): **CodeScope 46/46, memscope-rs 46/46, goagent 46/46**, no abnormal result. `get_routes` legitimately returns `{"routes":[]}` for the C++/Rust projects.
+- Grounded checks: `find_definition('visitNode')` 18 hits = 18 files containing it; `find_callers` matches the stored in-edges (`dupString` 90, `vec` 491, `Wrap` 205).
+- The §7 benchmark tables remain the 2026-08-14 / v0.2.6 run and say so; they were not re-measured for this release.
+
 ## v0.2.6 (2026-08-14)
 
 Speeds up full (non-fast) indexing end-to-end and fixes a resolver JOIN defect that both slowed indexing and silently over-matched cross-file references. Fuzzy symbol search is now fully in-memory (no per-entity SQL), FAST-mode pruning rules are completed, and discovery timing is quantified for the first time — with zero precision loss across every benchmark (accuracy gate stays P/R/F1 = 1.0).

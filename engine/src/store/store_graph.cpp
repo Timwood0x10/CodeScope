@@ -203,27 +203,33 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	}
 	kind_list += ")";
 
-	// C1 (data-loss fix): in incremental rebuilds (changed_files != null),
-	// `deleteGraphDataByFile` above only removed entity rows for the files
-	// being rebuilt, so unchanged files still hold entity.id values starting
-	// at 1. ROW_NUMBER() OVER () restarts at 1 every call, which collides
-	// with those retained ids and makes the downstream INSERT OR IGNORE INTO
-	// entity silently skip the rebuilt file's entities — losing data on every
-	// incremental run (confirmed: 1477 -> 1476 entities after editing one
-	// file). Shift new node_ids above the current max entity.id in the
-	// incremental case; a full rebuild deletes ALL entity rows first, so
-	// MAX(entity.id) is NULL and the offset is 0. All downstream edges
-	// (relation, type_ref, import) reference r2n.node_id, so they stay
-	// consistent with the shifted id automatically.
+	// C1 (data-loss fix): entity ids are a GLOBAL primary key
+	// (`entity.id INTEGER PRIMARY KEY`, not per project), while
+	// deleteGraphDataByFile above removes only the rows of the files being
+	// rebuilt, so rows with ids starting at 1 are always still there. A bare
+	// ROW_NUMBER() OVER () restarts at 1 every call, collides with those
+	// retained ids, and the downstream INSERT OR IGNORE INTO entity then
+	// silently skips the new rows — losing data on every incremental run
+	// (confirmed: 1477 -> 1476 entities after editing one file).
+	//
+	// The offset must therefore clear the WHOLE table and must be computed on
+	// every call, not only for incremental rebuilds. The old code applied it
+	// only when `changed_files != nullptr` and scoped MAX(id) to the project,
+	// on the assumption that "a full rebuild deletes ALL entity rows first" —
+	// true for the project being indexed, false for the table. Indexing a
+	// SECOND project into a database that already holds one therefore started
+	// at id 1, collided with the first project's ids, and lost every entity
+	// row of the new project: the project had semantic_records but zero
+	// entities, so every tool answered "not found" for a project that had just
+	// indexed successfully (silently — INSERT OR IGNORE reports nothing).
+	// All downstream edges (relation, type_ref, import) reference
+	// r2n.node_id, so they stay consistent with the shifted id automatically.
 	long long id_offset = 0;
-	if (changed_files != nullptr) {
+	{
 		sqlite3_stmt *mx = nullptr;
 		if (sqlite3_prepare_v2(db_,
-				       "SELECT COALESCE(MAX(id),0) FROM entity "
-				       "WHERE project_id=?",
+				       "SELECT COALESCE(MAX(id),0) FROM entity",
 				       -1, &mx, nullptr) == SQLITE_OK) {
-			sqlite3_bind_int64(mx, 1,
-					   static_cast<int64_t>(project_id));
 			if (sqlite3_step(mx) == SQLITE_ROW)
 				id_offset = sqlite3_column_int64(mx, 0);
 			sqlite3_finalize(mx);

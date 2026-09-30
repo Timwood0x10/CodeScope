@@ -23,6 +23,8 @@ class CTranslator : public Translator {
 	TranslationUnit *unit_ = nullptr;
 	const char *source_ = nullptr;
 	std::string file_path_;
+	// Recursion counter for this file (see kMaxTranslateDepth).
+	TranslateDepth depth_;
 
 	struct Scope {
 		std::unordered_map<std::string, Node *> symbols;
@@ -83,6 +85,7 @@ class CTranslator : public Translator {
 TranslationUnit *CTranslator::translate(TSTree *tree, const char *source,
 					const char *file_path)
 {
+	depth_.reset();
 	unit_ = new TranslationUnit();
 	unit_->source_content = source;
 	source_ = source;
@@ -359,6 +362,13 @@ Node *CTranslator::translateNode(TSNode ts_node, Node *parent)
 
 void CTranslator::translateChildren(TSNode ts_node, Node *parent)
 {
+	// Bound native-stack recursion (see kMaxTranslateDepth): a pathologically
+	// deep AST would overflow the indexer's 512 KB worker stack, which the FFI
+	// try/catch cannot recover. The visitors apply the same bound.
+	if (depth_.exceeded(file_path_.c_str(), "translateChildren"))
+		return;
+	DepthGuard depth_guard(depth_);
+
 	uint32_t count = ts_node_child_count(ts_node);
 	for (uint32_t i = 0; i < count; i++) {
 		TSNode child = ts_node_child(ts_node, i);

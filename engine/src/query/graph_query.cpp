@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <queue>
 #include <sstream>
@@ -219,6 +220,77 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 	parseNodeSpec(src_spec, src_type, src_name);
 	parseNodeSpec(tgt_spec, tgt_type, tgt_name);
 
+	// ── Trailing clauses: LIMIT <n> and RETURN <fields> ─────────
+	// Two clauses are accepted after the target node, in either order:
+	//
+	//   * `LIMIT <n>` — caps the result set. It is the documented way to bound
+	//     a large query (the README's graph-query benchmarks instruct it) and
+	//     the only one available here, since the MCP transport replaces a tool
+	//     response over its message cap with an error. It used to be ignored
+	//     silently: `LIMIT 10` returned every match.
+	//   * `RETURN <fields>` — accepted for compatibility with the DSL's
+	//     documented surface and currently has no effect, because every match
+	//     is returned as source/edge/target regardless (the response shape the
+	//     corpus and the tests rely on). Its operand runs to the end of the
+	//     query, so write LIMIT before RETURN.
+	//
+	// Anything else is an error rather than silently dropped input — the rule
+	// engine_verify_claim applies to an unknown claim type.
+	q = q.substr(close_paren + 1);
+	trim(q);
+	int user_limit = 0;
+	while (!q.empty()) {
+		const size_t sp = q.find_first_of(" \t");
+		const std::string tok =
+			(sp == std::string::npos) ? q : q.substr(0, sp);
+		std::string upper = tok;
+		for (auto &c : upper)
+			c = static_cast<char>(
+				std::toupper(static_cast<unsigned char>(c)));
+		if (upper == "LIMIT") {
+			std::string rest = (sp == std::string::npos) ?
+						   std::string() :
+						   q.substr(sp + 1);
+			trim(rest);
+			const size_t sp2 = rest.find_first_of(" \t");
+			const std::string num = (sp2 == std::string::npos) ?
+							rest :
+							rest.substr(0, sp2);
+			if (num.empty() ||
+			    num.find_first_not_of("0123456789") !=
+				    std::string::npos)
+				return "{\"total\":0,\"results\":[],\"error\":\"LIMIT "
+				       "requires a positive integer, got '" +
+				       jsonEscape(num.c_str()) +
+				       "' [module=engine, "
+				       "method=executeGraphQuery]\"}";
+			const int want = std::atoi(num.c_str());
+			if (want < 1)
+				return "{\"total\":0,\"results\":[],\"error\":\"LIMIT "
+				       "must be >= 1 [module=engine, "
+				       "method=executeGraphQuery]\"}";
+			if (user_limit != 0)
+				return "{\"total\":0,\"results\":[],\"error\":\"LIMIT "
+				       "given more than once [module=engine, "
+				       "method=executeGraphQuery]\"}";
+			user_limit = want;
+			q = (sp2 == std::string::npos) ? std::string() :
+							 rest.substr(sp2 + 1);
+			trim(q);
+			continue;
+		}
+		if (upper == "RETURN") {
+			// Operand runs to the end of the query (see above).
+			q.clear();
+			continue;
+		}
+		return "{\"total\":0,\"results\":[],\"error\":\"unexpected trailing "
+		       "text after the target node: '" +
+		       jsonEscape(q.c_str()) +
+		       "' — only 'LIMIT <n>' and 'RETURN <fields>' are accepted "
+		       "[module=engine, method=executeGraphQuery]\"}";
+	}
+
 	// Resolve edge type to integer
 	int edge_type = -1;
 	if (!edge_spec.empty()) {
@@ -405,6 +477,9 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 	int row_count = 0;
 	// Set when a multi-hop bound fires; reported in the response tail.
 	bool multi_hop_truncated = false;
+	// Set when the caller's LIMIT cut the result set short. Reported the same
+	// way, so an unlimited response stays byte-identical to before.
+	bool user_limit_truncated = false;
 
 	if (!multi_hop) {
 		// ── Single hop: relation.src→target with filters ──
@@ -446,6 +521,12 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 			sqlite3_bind_int64(st, 1,
 					   static_cast<int64_t>(project_id));
 			while (sqlite3_step(st) == SQLITE_ROW) {
+				// The caller's LIMIT, checked before the row is
+				// materialised so a large graph stops being scanned.
+				if (user_limit > 0 && row_count >= user_limit) {
+					user_limit_truncated = true;
+					break;
+				}
 				int64_t eid = sqlite3_column_int64(st, 0);
 				int64_t sid = sqlite3_column_int64(st, 1);
 				std::string sn =
@@ -547,7 +628,9 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 				// visited set), so without this the walk is exponential in
 				// the hop count on a cyclic graph.
 				if (++expansions > kMultiHopExpansionBudget ||
-				    row_count >= kMultiHopMaxRows) {
+				    row_count >= kMultiHopMaxRows ||
+				    (user_limit > 0 &&
+				     row_count >= user_limit)) {
 					multi_hop_truncated = true;
 					break;
 				}
@@ -613,7 +696,7 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 	json << "],\"total\":" << row_count;
 	// Only present when a bound actually fired, so an untruncated response is
 	// byte-identical to before.
-	if (multi_hop_truncated)
+	if (multi_hop_truncated || user_limit_truncated)
 		json << ",\"truncated\":true";
 	json << "}";
 	return json.str();

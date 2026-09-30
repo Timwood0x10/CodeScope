@@ -682,3 +682,165 @@ memory ownership, lifetime, and thread safety」）**
   本来就是 int 返回，符合该条。
 - 待所有者决定：要么做完整重构，要么把该约定写进 `plan/rules/code_rules.md`（仓库规范与代码对齐）。**建议后者**。
 
+#### 第十轮 (2026-09-30)：真实项目上跑通全部 46 个 MCP 工具（并修掉一个真缺陷 + 一处文档缺口）
+
+**A. 测试方式**
+
+三个真实项目各自索引到独立 DB（不影响它们的 `.codescope`），再用 `codescope cli <tool> <json>`——
+与 MCP server 同一条 `tools::execute` 分发路径——对 **46 个工具 × 3 个项目**逐个调用，参数从索引自身
+派生（最热符号、真实文件、真实 entity/node id、真实模块名）：
+
+| 项目 | 规模 | 索引耗时 | 结果 |
+|---|---|---|---|
+| `/Users/scc/code/cppCode/CodeScope` | 219 候选文件 / 2232 节点 / 1913 边 | 1.5 s | **46 个工具全部返回数据** |
+| `~/code/rustcode/memscope-rs` | 221 / 6740 / 3736 | ~1 s | 46 全部返回数据 |
+| `~/go/src/goagent` | 1579 / 24545 / 6994 | 10 s | 46 全部返回数据 |
+
+唯一「空」的是 `get_routes` 在 C++/Rust 项目上返回 `{"routes":[]}`（这两个项目没有 HTTP 路由），
+goagent 返回 6 KB 路由表 —— 属正确行为。
+
+**B. 有依据的正确性抽查（不只是「没崩」）**
+
+- `find_definition('visitNode')` 返回 18 条，与 `grep -rl visitNode` 命中 18 个文件**完全一致**；
+- `find_callers` 与库内入边数一致：`dupString` 90 = 90、`vec` 491 = 491（含宏调用）、`Wrap` 205 = 205；
+- `detect_changes` 用「符号最多的文件」：CodeScope 88 个被改函数 / 100 个调用者；
+- `explain_symbol` / `trace_flow` / `codescope_trace` / `get_subgraph` / `get_neighbors` / `search` /
+  `get_knowledge_graph` / `project_overview` / `detect_ffi_boundaries` 等均返回结构化、非空数据；
+- 同时确认三条**没有**静默丢文件：`discover-files`（219）、`discover-modules`（engine 191 + server 28）、
+  单进程 `worker`（219）、`index-parallel`（219）四处一致。旧库 `.codescope/codescope.db` 里 project 1 的
+  39,686 条 entity 大多来自 `goagent` 文件（同一 DB 被多个路径写入所致，属设计内行为）。
+
+**C. 真实项目暴露的缺陷（已修）：`index-parallel` 把「没产出符号的模块」算作失败**
+
+memscope-rs 三个模块全部 `exit_code=0`、无 error、merge 成功、221 文件 6740 节点，外层却是
+`ok:false, success:2, fail:1` —— 因为 `success` 的判定带了 `total_nodes > 0`：
+
+```rust
+// 旧：一个只 re-export 的 lib.rs、一个只有宏的 benches 文件 → 0 节点 → 被当成失败
+.filter(|r| r.exit_code == 0 && r.error.is_none() && (r.total_nodes > 0 || r.files_indexed == 0))
+```
+
+「模块产出多少符号」是**文件内容**的性质，不是 worker 是否成功。修法：`worker_succeeded()` 只看
+`exit_code == 0 && error.is_none()`；「什么都没索引出来就不算成功」这条守卫按原本意图**上移到 run 级**
+（`run_produced_index(total_nodes, total_files_indexed)`），空项目那条既有测试仍然通过。
+
+- 新增单测 `test_module_without_symbols_is_a_success_not_a_failure`（含 error / 非零退出仍算失败的负例）；
+- 修复前后实测：`ok:false success:2 fail:1` → **`ok:true success:3 fail:0`**；
+- `make check`：124 个 Rust 测试 + 92 个引擎测试全绿。
+
+**D. 文档缺口（已修）：`verify_claim` 的入参格式没写**
+
+矩阵里它以 `unknown claim type ''` 失败——因为该工具的 `claim` 必须是 **JSON 对象字符串**
+（`{"type":...,"subject":...,"predicate":...}`），而 catalog 描述与 README §5 只说 "a single claim"，
+且 README 只列了 3 种 type（实现支持 4 种：`capability_exists` / `contract_holds` / `architecture_follows` /
+`function_implements`）。已按实现补齐工具描述与 README（中英）；四种 type 实测均可用
+（分别返回 Contradicted / Unknown / Unknown / 带 evidence_facts 的裁决）。
+
+**E. 排查后判为「正常、非缺陷」的项**
+
+- `build_evidence` 返回 **JSON 数组**（非对象）—— README §5 已写明「Returns a JSON array of Evidence objects」；
+- `find_references('')`、`find_callers(某个无入边的符号)` 返回 0 —— 传空/无引用符号的必然结果；
+  `find_references('dupString')` 返回 90（= 其调用点）；
+- `detect_changes(无符号的头文件)` 返回 0 —— 该文件没有函数，换「符号最多的文件」后正常。
+
+#### 第十一轮 (2026-09-30)：MCP 协议级全量验证（握手 / tools-list / 46×tools-call）
+
+**A. 用最新二进制走真实 MCP 协议（stdio、换行分隔 JSON-RPC）**
+
+`initialize`（带 rootPath → 命中 reuse 路径，不重新索引）→ `notifications/initialized` → `tools/list` →
+46 × `tools/call`，对三个项目各跑一遍：
+
+| 项目 | tools/list | tools/call | 结论 |
+|---|---|---|---|
+| CodeScope | 46 个，与 catalog 完全一致 | **46/46** 正常返回 MCP `content`（JSON） | 0 异常 |
+| memscope-rs | 同上 | **46/46** | 0 异常 |
+| goagent | 同上 | **46/46** | 0 异常 |
+
+同时确认 `tools/list` 里已带本轮更新的 `verify_claim` 描述（证明跑的是最新二进制）。
+
+**B. 协议级发现的两个真问题（都已修）**
+
+1. **1 MiB 传输上限完全没有文档。** `server/src/mcp/transport.rs` 的 `MAX_MESSAGE_BYTES = 1 << 20` 会把超大
+   响应替换成 `-32000` 错误（错误信息本身写得很好，含字节数与建议）。实测 goagent 上
+   `graph_query MATCH (Function)-[Calls]->(Function)` = 2,239,545 字节 → 被拒。
+   已在 README（中英）§5 表格上方写明该上限与应对方式，并写进 `graph_query` 的工具描述。
+2. **`graph_query` 的 `LIMIT` 被静默忽略。** README 的图查询基准表写着 `graph_query (LIMIT 100)` 并叮嘱
+   「**always use `LIMIT` on large graphs**」，但 DSL 解析器从不看 `LIMIT`，而且**任何尾部文本都被静默丢弃**——
+   实测 `LIMIT 10` 与 `LIMIT 100` 返回完全相同（goagent 6947 行 / 2.16 MB）。于是上面那条错误信息给出的
+   建议（「用更小的 limit 或更窄的 filters」）在使用者看来根本无法执行。
+   修法（`engine/src/query/graph_query.cpp` / `.h`）：
+   - 尾部子句按 token 解析，`LIMIT <n>` **生效**（大小写不敏感；结果截断并附 `truncated:true`，
+     未截断时响应与修复前逐字节相同）；
+   - `RETURN <fields>` 继续接受（DSL 既有表面，且 4 个既有测试与语料在用），并在头文件里**明确写出它当前无效果**
+     （响应始终带 source/edge/target），其操作数直到字符串结尾，所以 `LIMIT` 要写在 `RETURN` 之前；
+   - 其它任何尾部文本 → **显式报错**（带 `[module=engine, method=executeGraphQuery]`），不再静默丢弃。
+   - 回归测试：`test_graph_query_hints.cpp` 新增第 8 节（LIMIT 生效 / 小写 / 超量不算截断 / LIMIT+RETURN /
+     `LIMIT 0`、`LIMIT abc`、`LIMIT`、`GARBAGE`、重复 LIMIT 全部报错）。
+   - 实测：goagent 宽泛查询 2,239,545 → 加 `LIMIT 200` 后 56,136 字节、`truncated:true`，协议级通过。
+
+**C. 复跑结果**
+
+- CLI 矩阵（新二进制）：CodeScope 45 OK + `get_routes` 空（无 HTTP 路由，正常）；memscope-rs 同；goagent 46/46。
+- **MCP 协议矩阵：三个项目全部 46/46，0 异常。**
+- `make check` rc=0（clang-format、clippy、引擎测试含新第 8 节、124 个 Rust 测试）；`make test` rc=0。
+
+**D. 测试夹具坑（记录，避免下次踩）**
+
+`test_graph_query_hints.cpp` 的第 7 节会 `store.close()` 并删库、改用引擎全局 store。新增用例若放在它之后，
+用的是已关闭的连接，`sqlite3_exec` 会以「(no message)」失败——第 8 节因此放在第 6 节之后、第 7 节之前。
+
+#### 第十二轮 (2026-09-30)：收尾四件事（B 测试缺口 / C 遗留 / D 三条未决发现 / A 发布产物）
+
+**A. 发布产物（v0.2.7）**
+
+- `CHANGELOG.md` 的 `## Unreleased` 补齐 17 条（106 → 123 条），覆盖第五~十二轮：`parse-failures`/`reset-failures` 两个子命令、
+  `graph_query` 的 LIMIT、模块无符号不再算 worker 失败、第二项目 id 撞号、readiness 改读 canonical 表、
+  `get_graph_stats.total_files` 语义、`index_file`/索引结果的 canonical 计数、`language_missing` 重试、`force_index_files` 的
+  `bypass_fail_fast`、文件身份补齐、legacy translator 深度守卫、FFI 安全契约、Swift 死代码移除等；每条带文件与实测证据。
+- `RELEASE.md` 新增 `## v0.2.7 (2026-09-30)` 段落（新功能 / Bug 修复 / 改进 / 验证四节，含实测数字）。
+- 版本号 6 处同步到 **0.2.7**：`server/Cargo.toml`、`engine/src/engine_ffi.cpp`（`kVersion`）、README 中英的版本行与页脚；
+  §7 基准表的 `(v0.2.6)` **保留**（那是一次带日期的历史测量，发布说明里已注明未重测）。
+
+**B. 测试缺口 #4（`index-parallel` 强制 fast）已补**
+
+`worker.rs` 的 4 处（含 taskset 分支）+ `quarantine.rs` 1 处散落的 `cmd.env("CODESCOPE_INDEX_MODE", "fast")` 收敛为
+`apply_worker_index_mode()` + 常量 `WORKER_INDEX_MODE`，并新增单测 `test_spawned_workers_are_pinned_to_fast_mode`：
+先用 `normal` 占位，再断言命令环境里该键**恰好一个**且值为 `fast`（也证明它覆盖调用方的设置）。
+
+**C. 遗留 F1（legacy translator 无递归深度守卫）已补**
+
+`ir_translator.h` 新增共享的 `kMaxTranslateDepth = 250`、`TranslateDepth`（计数 + 每文件只报一次）与 RAII 的 `DepthGuard`；
+8 个 `*_translator.cpp`（tsx 委托给 TS，自动覆盖）在 `translateChildren` 入口接入，`translate()` 开头 `reset()`。
+新测试 `test_translator_depth_guard.cpp`：普通文件不报（守卫不得误报）、夹具**自检 CST 深度 > 250**（避免测试假通过）、
+深层文件仍能翻译且只报一次、Python translator 同样生效。证伪：去掉 C 的守卫 → 断言 17 立刻失败，恢复后通过。
+
+> **C.2（提交信息卫生）未做，按项目规范（`code_rules.md`：「禁止用 git commit」）**：改写历史必须新建提交，与规则冲突；
+> 且这是仓库所有者对历史的决定。台账继续记录该事实。
+
+**D. 09-21 报告三条未决发现**
+
+1. **#4 readiness 恒 0（已修）**：`GraphStore::getReadyRatio` 改为 canonical 探针（entity/relation/node_vectors，与
+   `engine_get_enhancement_status` 同一 SQL，两个 API 数字一致）；`build_context` 的 `sample_call_edges` 从空的
+   `graph_edges`+`graph_nodes` 改为 `relation`+`entity`。`engine/src/query/query_engine.cpp` 的 `getGraphStats` 顺带修正。
+   新测试 `test_readiness_canonical.cpp`（正向 + API 一致 + **负向对照**：无调用边的项目必须仍然报 false，证明是测量值）。
+   真实数据：goagent 上 `project_overview` 的 `ready_features.call_graph` 由 **false → true**。
+   证伪：把 callgraph 探针换回 `graph_nodes` → 测试立刻失败，恢复后通过。
+2. **#5 `get_graph_stats.total_files` 语义（已修）**：改为统计 `files` 表（真正索引的文件），旧数字保留为
+   `files_with_symbols`。真实数据（goagent）：`total_files 672 → 1579`，`files_with_symbols: 672`。
+3. **#3 首次知识类调用 ~10 s（已消除，实测）**：该停顿是知识图构建，现在由 `index-parallel` 的 post-index pass 在索引期完成，
+   采用已有库时首次调用实测 **0.13 s**（`explain_module`）/ **0.04 s**（`get_knowledge_graph`），不再是 10 s 级。
+
+**D+ 顺带发现并修复的真缺陷：第二个项目 id 撞号 → entity 全丢（静默）**
+
+写 D1 的夹具时发现：`buildGraph` 的 `ROW_NUMBER() + id_offset` 中，`id_offset` 只在**增量**重建时计算、且 `MAX(id)`
+按 project 过滤，而 `entity.id` 是**全局主键**、`INSERT OR IGNORE` 又不报错 —— 于是往已有项目的库里索引第二个项目时，
+新项目 id 从 1 开始撞号，**所有 entity 行被静默丢弃**（该项目的 `semantic_records` 有行、`entity` 为空，工具全部答「找不到」）。
+修复：offset 无条件、全表计算。测试：`test_readiness_canonical.cpp` 往同一个库索引两个项目并断言第二个仍可被
+`find_symbol` 找到；证伪：改回按 project + 仅增量 → 该断言立刻失败。
+
+**E. 本轮验证**
+
+- `make check` rc=0：clang-format（all files）、clippy、**引擎 94/94**、Rust **125/125**（新增 2 个引擎测试 + 1 个 Rust 测试）。
+- `make test` rc=0；`make accuracy-check` rc=0（TP 36 / FP 0 / FN 0，F1 = 1.0，FP/FN 注入均按预期失败）。
+- 真实项目协议级（`initialize` → `tools/list` → 46 × `tools/call`，二进制 v0.2.7）：**CodeScope / memscope-rs / goagent 全部 46/46，0 异常**。
+
