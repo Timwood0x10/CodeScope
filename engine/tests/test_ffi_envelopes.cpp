@@ -75,7 +75,7 @@ int main()
 	// ── Batch 2: the exports that gained a try/catch ────────────
 	expectEnvelope("engine_index_project",
 		       engine_index_project(pid, kMissingDir, ""));
-	expectEnvelope("engine_index_files", engine_index_files(pid, "[]"));
+	expectEnvelope("engine_index_files", engine_index_files(pid, "[]", 0));
 	expectEnvelope("engine_scan_project",
 		       engine_scan_project(pid, kMissingDir, ""));
 	expectEnvelope("engine_get_module_tree", engine_get_module_tree(pid));

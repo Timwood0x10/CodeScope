@@ -40,6 +40,8 @@ CodeScope 是一个 **项目真相引擎（Project Truth Engine）**，回答一
 - **推断是尽力而为**：接收者类型来自局部声明、复合字面量与 `this`/`self`；动态类型的接收者保持未知。
 - **病态深嵌套 AST 会被截断，而不是完整遍历**：当文件的 AST 嵌套超过 `kMaxVisitDepth`（250）时，更深的子树会被跳过，并在 stderr 上按文件报告一次
   （`[module=ir, method=…] AST nesting exceeded kMaxVisitDepth=250`）。该上限存在的原因是递归遍历运行在索引器 512 KB 的 worker 栈上；手写代码不会触及，生成代码偶尔会。
+- **部分扩展名可识别但不解析**：`.kt`/`.kts`、`.rb`、`.scala`、`.swift` 会被识别（计入候选文件），但没有内置语法，因此被跳过并在 `parse_failures` 中记录为 `language_missing` —— 可通过 `get_parse_failures` 查看，绝不静默丢弃，每次运行都会重试，且不计入 `CODESCOPE_FAIL_RETRY_MAX` 的 fail-fast 跳过。Swift 的 `parser.c` 与内置 tree-sitter core 的 ABI 不兼容，因此其语法、visitor 与 builtin 表均不存在（见 `engine/src/parser/parser.cpp`）。
+- **请通过真实路径索引项目。** 目录遍历类入口按传入的写法记录路径，而单文件入口（`force_index_files`、调度器的 `--file-list` 重试）拿到的是 `std::fs::canonicalize` 之后的路径。因此通过符号链接路径索引（macOS 上 `/tmp/x` 实为 `/private/tmp/x`，任何被软链的工作区同理）之后再对其中的文件做 force-index，同一个文件可能被存成两种写法，从而**复制其符号** —— `find_symbol` 会把同一个符号返回两次。只有当两种写法仅相差「相对于（已规范化的）项目根」时才会复用已存写法；被软链的祖先无法从规范化路径反推，所以避免方式是始终用真实路径索引。`codescope reset-failures` 清 `parse_failures` 那一半；图上的行需要重建。详见 `CODE_REVIEW_2026-09-27.md`。
 
 ### 技术栈
 
@@ -566,7 +568,7 @@ cd CodeScope
 | `CODESCOPE_WORKERS` | `min(hw,8)` | 解析 worker 核心总数（`kDefaultParseWorkers=8`）。≤2000 文件走的 in-memory 路径默认 **4**。 |
 | `CODESCOPE_WORKER_TIMEOUT` | `300` | Worker 子进程超时时间（秒） |
 | `CODESCOPE_MAX_FILE_SIZE` | `5242880`（5 MB） | 允许索引的最大源文件大小（字节）。超限文件被静默跳过。 |
-| `CODESCOPE_FAIL_RETRY_MAX` | `1` | 文件被彻底跳过前允许的解析失败次数（最小 1），见 `parse_failures` / `codescope reset-failures`。仅因**缺少语法**而失败的文件（`language_missing`，例如语法被禁用时的 `.swift`）不计入，每次运行都会重试。单文件 / `force_index_files` 路径使用 `3`。 |
+| `CODESCOPE_FAIL_RETRY_MAX` | `1` | 自动索引路径中文件被彻底跳过前允许的解析失败次数（最小 1），见 `parse_failures` / `codescope reset-failures`。仅因**缺少语法**而失败的文件（`language_missing`，例如 `.swift`）不计入，每次运行都会重试。`force_index_files` **不**套用该跳过：被强制索引的文件总会被重新尝试。 |
 | `CODESCOPE_MMAP_SIZE` | 256 MB | SQLite `mmap_size` 参数值 |
 | `CODESCOPE_MEM_LIMIT_MB` | `4096` | 动态调度器内存上限（MB） |
 | `CODESCOPE_DYNAMIC_SCHED` | （未设置 = 静态） | 可选开启的动态 CPU 调度。规范名是 `CODESCOPE_CPU_DYNAMIC`，本变量是历史别名，两者均可。`1`/`true`/`on` 启用共享 chunk 队列调度器，`0`/`false`/`off` 关闭，未设置则保持**静态**比例分配。 |

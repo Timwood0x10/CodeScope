@@ -388,7 +388,11 @@ pub(super) fn h_force_index_files(project_id: u64, args: &Value) -> String {
     )
     .to_string();
 
-    let result = ffi::index_files(project_id, &json_list);
+    // bypass_fail_fast = true: this tool promises to index the requested paths
+    // "regardless of the default skip rules", so a file that failed before is
+    // re-attempted instead of being dropped silently (the scheduler-driven
+    // worker callers pass false and keep the fail-fast skip).
+    let result = ffi::index_files(project_id, &json_list, true);
 
     // Annotate result with skip stats for transparency.
     if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&result) {

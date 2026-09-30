@@ -38,6 +38,34 @@ void GraphStore::buildFTSFromGraph(uint64_t project_id)
 	// `error().empty()` check report an FTS failure even when every INSERT
 	// below succeeded. Clear it up front so error() reflects THIS call.
 	error_.clear();
+	// Rebuild is delete-first: buildFTSFromGraph repopulates the WHOLE
+	// project's FTS from the current entity table, but the FTS tables are
+	// never otherwise cleaned (deleteGraphDataByFile does not touch them).
+	// The inserts below key each row on rowid = entity.id, so without a
+	// delete they collide with stale rows via INSERT OR IGNORE: after any
+	// edit that re-uses an entity id, the old symbol stays in code_fts (a
+	// ghost that searchUnifiedJson returns because its FTS branch does not
+	// JOIN entity) AND the new symbol is silently dropped (its rowid is
+	// already taken) — so `search` returns deleted names and misses renamed
+	// ones. Clearing this project's FTS rows first makes the rebuild
+	// idempotent and collision-free. [module=store, method=buildFTSFromGraph]
+	{
+		const std::string pid = std::to_string(project_id);
+		const std::string dels[] = {
+			"DELETE FROM code_fts WHERE project_id=" + pid,
+			"DELETE FROM name_trgm WHERE project_id=" + pid,
+			"DELETE FROM fts_node_map WHERE project_id=" + pid,
+		};
+		for (const auto &del : dels) {
+			if (!exec(del.c_str())) {
+				error_ =
+					"[module=store, method=buildFTSFromGraph] "
+					"FTS delete-first failed: " +
+					error_;
+				return;
+			}
+		}
+	}
 	// exec() sets error_ on failure; callers must not set fts_ready
 	// or report ok when error_ is non-empty after this call.
 	if (!exec(std::string(

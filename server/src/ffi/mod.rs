@@ -19,7 +19,11 @@ unsafe extern "C" {
         dir_path: *const c_char,
         language_filter: *const c_char,
     ) -> *mut c_char;
-    fn engine_index_files(project_id: u64, file_list_json: *const c_char) -> *mut c_char;
+    fn engine_index_files(
+        project_id: u64,
+        file_list_json: *const c_char,
+        bypass_fail_fast: std::os::raw::c_int,
+    ) -> *mut c_char;
 
     // Filter decisions, answered by the indexer's own FilterPolicy so the
     // server never keeps a second copy of the rules (see
@@ -293,8 +297,26 @@ pub fn index_project(project_id: u64, dir_path: &str, language_filter: *const c_
     })
 }
 
-pub fn index_files(project_id: u64, file_list_json: &str) -> String {
-    take_string(unsafe { engine_index_files(project_id, cstr(file_list_json).as_ptr()) })
+/// Index an explicit list of files (JSON array of paths).
+///
+/// `bypass_fail_fast` picks the fail-fast policy for the listed files:
+/// `false` honours it like the automatic project path (a file whose parse has
+/// failed `CODESCOPE_FAIL_RETRY_MAX` times is skipped — the scheduler-driven
+/// worker paths want this), `true` always re-attempts every file
+/// (`force_index_files`, whose contract is "index these paths regardless").
+/// See `engine_index_files` in `engine/include/engine.h`.
+///
+/// # Safety
+/// `file_list_json` is copied into a `CString` that lives for the duration of
+/// the call; the returned pointer is owned by Rust and freed by [`take_string`].
+pub fn index_files(project_id: u64, file_list_json: &str, bypass_fail_fast: bool) -> String {
+    take_string(unsafe {
+        engine_index_files(
+            project_id,
+            cstr(file_list_json).as_ptr(),
+            if bypass_fail_fast { 1 } else { 0 },
+        )
+    })
 }
 
 /// Whether the engine's `FilterPolicy` would skip `rel_path`.

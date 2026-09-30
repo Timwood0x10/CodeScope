@@ -1,8 +1,7 @@
-// test_parse_failures.cpp — the parse_failures bookkeeping of both index paths.
+// test_parse_failures.cpp — the parse_failures bookkeeping of every index path.
 //
-// Three defects are covered here, all found while checking what happens to a
-// `.swift` file (detected by extension, but its grammar is disabled pending an
-// ABI-compatible tree-sitter release):
+// Four defects are covered here, all found while checking what happens to a
+// `.swift` file (detected by extension, but no Swift grammar is vendored):
 //
 //   1. memBulk — the path every project of <=2000 files takes — buffered parse
 //      failures and then RETURNED EARLY from the dispatcher, never reaching the
@@ -14,9 +13,17 @@
 //   3. "language_missing" rows counted towards the permanent skip set
 //      (retry_max=1), so a file that only failed because its grammar was
 //      unavailable was skipped forever — even after the grammar was enabled.
+//   4. engine_index_files — shared by the force_index_files tool and by the
+//      scheduler-driven worker/chunk paths — always applied the fail-fast
+//      skip, with a hard-coded threshold of 3 (three times the documented
+//      default), so a file the user explicitly asked to index was dropped
+//      silently: the opposite of that tool's "indexed regardless of the
+//      default skip rules" contract. The policy is now an explicit
+//      `bypass_fail_fast` argument (engine.h) that each caller states.
 //
 // Fixture: one valid C file, one 0-byte Python file (a genuine, permanent parse
-// failure: "read_empty") and one .swift file (unavailable grammar).
+// failure: "read_empty"), one .swift file and one .rb file (both detected but
+// ungrammared).
 
 #include "../include/engine.h"
 
@@ -76,6 +83,22 @@ static int entityCount(sqlite3 *db, uint64_t pid)
 	return n;
 }
 
+static int parseFailureRowCount(sqlite3 *db, uint64_t pid)
+{
+	sqlite3_stmt *st = nullptr;
+	check(sqlite3_prepare_v2(
+		      db,
+		      "SELECT COUNT(*) FROM parse_failures WHERE project_id=?",
+		      -1, &st, nullptr) == SQLITE_OK,
+	      "prepare parseFailureRowCount");
+	sqlite3_bind_int64(st, 1, static_cast<int64_t>(pid));
+	int n = 0;
+	if (sqlite3_step(st) == SQLITE_ROW)
+		n = sqlite3_column_int(st, 0);
+	sqlite3_finalize(st);
+	return n;
+}
+
 static void writeFile(const std::string &path, const char *content)
 {
 	FILE *f = fopen(path.c_str(), "w");
@@ -92,9 +115,13 @@ static void prepareProject(const std::string &dir)
 	writeFile(dir + "/good.c", "int kept(void) { return 0; }\n");
 	// 0 bytes: read returns empty → a real, permanent parse failure.
 	writeFile(dir + "/empty.py", nullptr);
-	// Detected as "swift", but parser.cpp has the Swift grammar disabled.
+	// Detected as "swift", but no Swift grammar is vendored.
 	writeFile(dir + "/a.swift",
 		  "class Foo { func bar() -> Int { return 1 } }\n");
+	// A second detected-but-ungrammared extension (Kotlin/Ruby/Scala/Swift all
+	// behave identically): pins that the contract is per-language-availability,
+	// not a Swift special case.
+	writeFile(dir + "/b.rb", "def bar\n  1\nend\n");
 }
 
 static void removeDb(const std::string &db)
@@ -109,6 +136,7 @@ int main()
 	const std::string dir = "/tmp/test_parse_failures_proj";
 	const std::string db_path = "/tmp/test_parse_failures.db";
 	const std::string swift_path = dir + "/a.swift";
+	const std::string ruby_path = dir + "/b.rb";
 	const std::string empty_path = dir + "/empty.py";
 	const std::string good_path = dir + "/good.c";
 	prepareProject(dir);
@@ -137,6 +165,11 @@ int main()
 	check(reason == "language_missing",
 	      "an unavailable grammar must be reported as language_missing");
 	check(count == 1, "first failure has fail_count 1");
+	check(failureOf(db, pid, ruby_path, reason, count),
+	      "every detected-but-ungrammared extension must be recorded, not "
+	      "just .swift");
+	check(reason == "language_missing",
+	      "ruby (no vendored grammar) is a language_missing failure too");
 	check(failureOf(db, pid, empty_path, reason, count),
 	      "the empty file must be recorded too");
 	check(reason == "read_empty", "an empty file is a read_empty failure");
@@ -197,9 +230,142 @@ int main()
 	      "the streaming path must still index the valid file");
 	sqlite3_close(db);
 
+	// ── 4. engine_index_files: the two fail-fast policies ────────
+	//
+	// The entry point is shared by the force_index_files tool (which must
+	// index what the user named, "regardless of the default skip rules") and
+	// by the scheduler-driven worker/chunk paths (which must mirror the
+	// automatic project index). The caller states the policy through
+	// bypass_fail_fast; it used to be guessed from the environment with a
+	// hard-coded threshold of 3, so the tool's explicit request was dropped
+	// silently and the workers used a different threshold from the project
+	// path.
+	check(engine_init(db_path.c_str()) == 0, "engine_init (index_files)");
+	check(engine_create_project(dir.c_str(), "parse-failures") == pid,
+	      "index_files run reuses the same project");
+	const std::string file_list =
+		"[\"" + empty_path + "\", \"" + swift_path + "\"]";
+
+	// 4a. bypass_fail_fast = 1 → every listed file is re-attempted.
+	char *rf = engine_index_files(pid, file_list.c_str(), 1);
+	check(rf != nullptr && strstr(rf, "\"ok\":true") != nullptr,
+	      "bypass run reports ok:true");
+	engine_free_string(rf);
+	engine_shutdown();
+
+	check(sqlite3_open_v2(db_path.c_str(), &db, SQLITE_OPEN_READONLY,
+			      nullptr) == SQLITE_OK,
+	      "reopen result db (bypass)");
+	check(failureOf(db, pid, empty_path, reason, count),
+	      "the empty row must still exist after the bypass run");
+	check(reason == "read_empty" && count == 2,
+	      "bypass_fail_fast must RE-ATTEMPT a known parse failure "
+	      "(fail_count 1 → 2); applying the fail-fast skip there silently "
+	      "discarded the user's explicit request");
+	check(failureOf(db, pid, swift_path, reason, count),
+	      "the unavailable-grammar row must still exist after the bypass run");
+	check(reason == "language_missing" && count == 3,
+	      "the bypass path must re-attempt the language_missing file too");
+	sqlite3_close(db);
+
+	// 4b. bypass_fail_fast = 0 → the scheduler policy applies: the genuine
+	// parse failure is skipped, while the language_missing row stays exempt.
+	check(engine_init(db_path.c_str()) == 0,
+	      "engine_init (scheduler policy)");
+	check(engine_create_project(dir.c_str(), "parse-failures") == pid,
+	      "worker run reuses the same project");
+	char *rw = engine_index_files(pid, file_list.c_str(), 0);
+	check(rw != nullptr && strstr(rw, "\"ok\":true") != nullptr,
+	      "worker-policy run reports ok:true");
+	engine_free_string(rw);
+	engine_shutdown();
+
+	check(sqlite3_open_v2(db_path.c_str(), &db, SQLITE_OPEN_READONLY,
+			      nullptr) == SQLITE_OK,
+	      "reopen result db (worker policy)");
+	check(failureOf(db, pid, empty_path, reason, count),
+	      "the empty row must still exist after the worker-policy run");
+	check(count == 2,
+	      "the scheduler-driven callers must KEEP the fail-fast skip "
+	      "(read_empty stays at 2), so index-parallel behaves like the "
+	      "automatic project path");
+	check(failureOf(db, pid, swift_path, reason, count),
+	      "the unavailable-grammar row must still exist");
+	check(reason == "language_missing" && count == 4,
+	      "a missing grammar is exempt from the skip in BOTH policies "
+	      "(2 → 3 → 4)");
+	sqlite3_close(db);
+
 	removeDb(db_path);
 	removeDb(stream_db);
 	fs::remove_all(dir);
+
+	// ── 5. One file, ONE identity across the entry points ────────
+	//
+	// The walk-based project index stores the spelling its caller passed (a
+	// relative root yields "proj/empty.py", "." yields "./empty.py"); the
+	// single-file entry points are handed ABSOLUTE canonicalised paths (the
+	// force_index_files walk calls std::fs::canonicalize). engine_index_paths.h
+	// exists to bridge that by reusing the stored spelling — but it looked in
+	// `entity` only, and a file that NEVER parses has no entity row, while
+	// those are exactly the files that accumulate parse_failures rows. The
+	// re-attempt then created a SECOND row, with its own fail_count, for the
+	// same file under the other spelling.
+	const std::string sp_dir = "/tmp/test_parse_failures_spelling";
+	const std::string sp_db = "/tmp/test_parse_failures_spelling.db";
+	// The spelling a relative-root walk stores.
+	const std::string sp_rel_file = "test_parse_failures_spelling/empty.py";
+	fs::remove_all(sp_dir);
+	fs::create_directories(sp_dir);
+	writeFile(sp_dir + "/empty.py", nullptr);
+	removeDb(sp_db);
+
+	const fs::path restore_cwd = fs::current_path();
+	fs::current_path("/tmp");
+	check(engine_init(sp_db.c_str()) == 0, "engine_init (spelling)");
+	uint64_t pid_sp = engine_create_project("test_parse_failures_spelling",
+						"spelling");
+	check(pid_sp > 0, "create_project (spelling)");
+	char *rsp = engine_index_project(pid_sp, "test_parse_failures_spelling",
+					 nullptr);
+	check(rsp != nullptr && strstr(rsp, "\"ok\":true") != nullptr,
+	      "spelling run: project index ok");
+	engine_free_string(rsp);
+	engine_shutdown();
+	fs::current_path(restore_cwd);
+
+	// The absolute, canonical spelling the single-file callers receive.
+	char *canon_raw = realpath(sp_dir.c_str(), nullptr);
+	check(canon_raw != nullptr, "realpath(sp_dir)");
+	const std::string canon = canon_raw;
+	free(canon_raw);
+
+	// Reuse pid_sp as-is: engine_index_files needs only the project id, and
+	// re-creating the project here would resolve the relative root against the
+	// restored working directory, yielding a different project.
+	check(engine_init(sp_db.c_str()) == 0, "engine_init (spelling force)");
+	const std::string sp_list = "[\"" + canon + "/empty.py\"]";
+	char *rspf = engine_index_files(pid_sp, sp_list.c_str(), 1);
+	check(rspf != nullptr && strstr(rspf, "\"ok\":true") != nullptr,
+	      "spelling force run reports ok:true");
+	engine_free_string(rspf);
+	engine_shutdown();
+
+	check(sqlite3_open_v2(sp_db.c_str(), &db, SQLITE_OPEN_READONLY,
+			      nullptr) == SQLITE_OK,
+	      "open spelling db");
+	check(failureOf(db, pid_sp, sp_rel_file, reason, count),
+	      "the file must stay under the spelling the project index used");
+	check(reason == "read_empty" && count == 2,
+	      "the re-attempt must land on the SAME row (fail_count 1 → 2), not "
+	      "create a second identity for the absolute spelling");
+	check(parseFailureRowCount(db, pid_sp) == 1,
+	      "one file must have exactly one parse_failures row no matter which "
+	      "entry point recorded it");
+	sqlite3_close(db);
+
+	removeDb(sp_db);
+	fs::remove_all(sp_dir);
 	printf("\n=== parse failures test passed ===\n");
 	return 0;
 }

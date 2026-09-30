@@ -273,6 +273,9 @@ make bench-full     # 完整基准测试
 
 ## 10. 支持的语言
 
+**已内置语法 —— 端到端解析。** 即 README 表格中的 8 种语言；每种都有 visitor（LIVE IR 管线），并由
+`engine/tests/test_ir_edge_coverage.cpp` 覆盖。
+
 | 语言 | 扩展名 | 解析器 |
 |------|--------|--------|
 | Python | `.py` | tree-sitter-python |
@@ -284,7 +287,14 @@ make bench-full     # 完整基准测试
 | C | `.c`, `.h` | tree-sitter-c |
 | C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx` | tree-sitter-cpp |
 | Java | `.java` | tree-sitter-java |
+
+**按扩展名可识别，但**不解析** —— 未内置语法。** 这些文件会被发现（因此计入候选文件数），随后在
+`parse_failures` 中记录为 `language_missing` 解析失败；它们不会被索引，每次运行都会重试，且不计入
+`CODESCOPE_FAIL_RETRY_MAX`。
+
+| 语言 | 扩展名 | 语法（未内置） |
+|------|--------|----------------|
 | Kotlin | `.kt`, `.kts` | tree-sitter-kotlin |
 | Ruby | `.rb` | tree-sitter-ruby |
 | Scala | `.scala` | tree-sitter-scala |
-| Swift | `.swift` | tree-sitter-swift |
+| Swift | `.swift` | tree-sitter-swift —— 其 `parser.c` 与内置的 tree-sitter core ABI 不兼容，因此不在 `GRAMMAR_SOURCES` 中，Swift 的 visitor/translator 也已随之删除（见 `engine/src/parser/parser.cpp`） |

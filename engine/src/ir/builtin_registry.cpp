@@ -562,7 +562,6 @@ static const RegistryMap &registry()
 		{ "typescript", { &jsBuiltins() } },
 		{ "js", { &jsBuiltins() } },
 		{ "ts", { &jsBuiltins() } },
-		{ "swift", { &swiftBuiltins() } },
 	};
 	return *m;
 }

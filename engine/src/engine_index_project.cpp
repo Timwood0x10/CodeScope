@@ -517,12 +517,13 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 			// reading a file the engine has no grammar for is wasted I/O,
 			// and this check must run on EVERY attempt (a language_missing
 			// row never becomes a permanent skip), so its cost matters.
-			// A registered-but-NULL grammar (the language is mapped but its
-			// grammar is unavailable: "swift" while the grammar is disabled,
-			// or a .so that failed to load) is reported as LanguageMissing —
-			// handing nullptr to ts_parser_set_language would yield a null
-			// tree recorded as "parse_null_tree", a wrong reason that also
-			// disguised an unsupported language as a broken file.
+			// A registered-but-NULL grammar (the language is mapped but no
+			// grammar is vendored for it: "swift", "kotlin", "ruby",
+			// "scala", or a .so that failed to load) is reported as
+			// LanguageMissing — handing nullptr to ts_parser_set_language
+			// would yield a null tree recorded as "parse_null_tree", a wrong
+			// reason that also disguised an unsupported language as a broken
+			// file.
 			{
 				auto lit = lang_ptrs.find(job.lang);
 				if (lit == lang_ptrs.end() ||

@@ -21,6 +21,11 @@
 // reused. The common spellings are enumerated explicitly (no suffix guessing,
 // which could match a different file), and the ones that are not covered leave
 // the file with the old behaviour rather than a wrong one.
+//
+// "Existing" covers both tables that store a file path: `entity` for files that
+// were indexed, and `parse_failures` for files that never were. The second is
+// what keeps a persistently unparseable file from collecting one identity per
+// spelling — see knownSpellingFor.
 
 #include "store/store.h"
 
@@ -52,17 +57,16 @@ inline std::string projectRootPath(store::GraphStore *store,
 	return root;
 }
 
-/// The spelling under which `path` is ALREADY stored for this project, or ""
-/// when the project has not indexed it yet.
-inline std::string existingSpellingFor(store::GraphStore *store,
-				       uint64_t project_id,
-				       const std::string &root,
-				       const std::string &path)
+/// The candidate spellings to test for `path`, most specific first.
+/// \param root  Project root as recorded by create_project ("" if unknown).
+/// \param path  Path as the caller spells it.
+/// \return `path` itself plus, when it lies under `root`, its path relative to
+///         the root, its "./"-prefixed form and its "<rootbasename>/" form.
+inline std::vector<std::string> spellingCandidates(const std::string &root,
+						   const std::string &path)
 {
-	if (!store || !store->handle() || path.empty())
-		return "";
 	std::vector<std::string> candidates{ path };
-	if (!root.empty() && root != "/" && path[0] == '/') {
+	if (!root.empty() && root != "/" && !path.empty() && path[0] == '/') {
 		std::string prefix = root;
 		if (prefix.back() != '/')
 			prefix.push_back('/');
@@ -81,8 +85,21 @@ inline std::string existingSpellingFor(store::GraphStore *store,
 			}
 		}
 	}
-	std::string sql =
-		"SELECT file_path FROM entity WHERE project_id=? AND file_path IN (";
+	return candidates;
+}
+
+/// Look `candidates` up in one stored-path column, or return "".
+/// \param table  Internal table name — a literal from this header, never
+///               caller input, so the concatenation cannot be injected into.
+inline std::string
+lookupStoredSpelling(store::GraphStore *store, uint64_t project_id,
+		     const char *table,
+		     const std::vector<std::string> &candidates)
+{
+	if (!store || !store->handle() || candidates.empty())
+		return "";
+	std::string sql = std::string("SELECT file_path FROM ") + table +
+			  " WHERE project_id=? AND file_path IN (";
 	for (size_t i = 0; i < candidates.size(); i++)
 		sql += (i > 0 ? ",?" : "?");
 	sql += ") LIMIT 1";
@@ -105,15 +122,58 @@ inline std::string existingSpellingFor(store::GraphStore *store,
 	return found;
 }
 
-/// The spelling to store `path` under: the existing one when the file is
-/// already indexed, otherwise `path` as given.
+/// The spelling under which `path` is ALREADY stored for this project, or ""
+/// when the project has not indexed it yet.
+inline std::string existingSpellingFor(store::GraphStore *store,
+				       uint64_t project_id,
+				       const std::string &root,
+				       const std::string &path)
+{
+	if (path.empty())
+		return "";
+	return lookupStoredSpelling(store, project_id, "entity",
+				    spellingCandidates(root, path));
+}
+
+/// The spelling under which `path` is already KNOWN to the project — indexed,
+/// or recorded as a parse failure — or "" when it is a new file.
+///
+/// The parse_failures half is not redundant: a file that never parses has no
+/// entity row, and those are exactly the files that accumulate parse_failures
+/// rows. Looking only at `entity` therefore left them free to acquire a second
+/// identity, because the walk-based entry points spell a path as the caller
+/// passed it while the single-file entry points are handed canonicalised paths
+/// (on macOS `/tmp` is a symlink, so the same file arrived as both
+/// "/tmp/p/a.py" and "/private/tmp/p/a.py"). One file then held two
+/// parse_failures rows with independent fail_count values, so no retry policy
+/// could reason about it, and `get_parse_failures` listed the file twice.
+inline std::string knownSpellingFor(store::GraphStore *store,
+				    uint64_t project_id,
+				    const std::string &root,
+				    const std::string &path)
+{
+	if (path.empty())
+		return "";
+	const std::vector<std::string> candidates =
+		spellingCandidates(root, path);
+	const std::string indexed =
+		lookupStoredSpelling(store, project_id, "entity", candidates);
+	if (!indexed.empty())
+		return indexed;
+	return lookupStoredSpelling(store, project_id, "parse_failures",
+				    candidates);
+}
+
+/// The spelling to store `path` under: the project's existing one when it
+/// already knows the file (indexed, or a recorded parse failure), otherwise
+/// `path` as given.
 inline std::string indexSpellingFor(store::GraphStore *store,
 				    uint64_t project_id,
 				    const std::string &path)
 {
 	if (path.empty())
 		return path;
-	const std::string stored = existingSpellingFor(
+	const std::string stored = knownSpellingFor(
 		store, project_id, projectRootPath(store, project_id), path);
 	return stored.empty() ? path : stored;
 }

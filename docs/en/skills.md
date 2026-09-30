@@ -272,6 +272,10 @@ make bench-full     # Full benchmark
 
 ## 10. Supported Languages
 
+**Vendored grammars — parsed end-to-end.** These are the 8 languages in the
+README table; each has a visitor (the live IR pipeline) covered by
+`engine/tests/test_ir_edge_coverage.cpp`.
+
 | Language | Extension | Parser |
 |----------|-----------|--------|
 | Python | `.py` | tree-sitter-python |
@@ -283,7 +287,16 @@ make bench-full     # Full benchmark
 | C | `.c`, `.h` | tree-sitter-c |
 | C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx` | tree-sitter-cpp |
 | Java | `.java` | tree-sitter-java |
+
+**Detected by extension, NOT parsed — no grammar is vendored.** These files are
+discovered (so they appear in the candidate count) and then reported as
+`language_missing` parse failures in `parse_failures`; they are never indexed,
+are re-attempted on every run and never count towards
+`CODESCOPE_FAIL_RETRY_MAX`.
+
+| Language | Extension | Grammar (not vendored) |
+|----------|-----------|------------------------|
 | Kotlin | `.kt`, `.kts` | tree-sitter-kotlin |
 | Ruby | `.rb` | tree-sitter-ruby |
 | Scala | `.scala` | tree-sitter-scala |
-| Swift | `.swift` | tree-sitter-swift |
+| Swift | `.swift` | tree-sitter-swift — its `parser.c` is ABI-incompatible with the vendored tree-sitter core, so it is absent from `GRAMMAR_SOURCES` and the Swift visitor/translator were removed with it (see `engine/src/parser/parser.cpp`) |

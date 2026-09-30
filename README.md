@@ -54,6 +54,26 @@ per-language E2E harness only checked for the strings `"callers"` / `"callees"` 
   (`[module=ir, method=…] AST nesting exceeded kMaxVisitDepth=250`). The cap
   exists because the recursive walk runs on the indexer's 512 KB worker stacks;
   hand-written code never reaches it, generated code occasionally does.
+- **Some extensions are detected but not parsed**: `.kt`/`.kts`, `.rb`, `.scala`
+  and `.swift` are recognized (they count as candidate files) but no grammar is
+  vendored for them, so they are skipped and recorded in `parse_failures` as
+  `language_missing` — visible in `get_parse_failures`, never silently dropped,
+  re-attempted on every run, and exempt from the `CODESCOPE_FAIL_RETRY_MAX`
+  fail-fast skip. Swift's `parser.c` is ABI-incompatible with the vendored
+  tree-sitter core, which is why its grammar, visitor and builtin table are
+  absent (see `engine/src/parser/parser.cpp`).
+- **Index a project through its real path.** The walk-based entry points store
+  the path exactly as passed, while the single-file ones (`force_index_files`,
+  the scheduler's `--file-list` retry) receive `std::fs::canonicalize`d paths.
+  Indexing through a symlinked path (macOS `/tmp/x` is really `/private/tmp/x`,
+  and the same applies to any symlinked workspace) and then force-indexing
+  something inside it can therefore store one file under two spellings, which
+  duplicates its symbols — `find_symbol` then answers with the same symbol
+  twice. The stored spelling is reused when it differs only by being relative
+  to the (canonicalised) project root; a symlinked ancestor cannot be recovered
+  from the canonical spelling, so indexing through the real path is the way to
+  avoid it. `codescope reset-failures` clears the `parse_failures` half; graph
+  rows need a rebuild. Tracked in `CODE_REVIEW_2026-09-27.md`.
 
 ### Tech Stack
 
@@ -630,7 +650,7 @@ Each script calls `codescope cli <tool_name> '<json_args>'` internally. See `ski
 | `CODESCOPE_WORKERS` | `min(hw,8)` | Total parse-worker cores (`kDefaultParseWorkers=8`). The in-memory path used for projects of ≤2000 files defaults to **4** instead. |
 | `CODESCOPE_WORKER_TIMEOUT` | `300` | Worker subprocess timeout in seconds |
 | `CODESCOPE_MAX_FILE_SIZE` | `5242880` (5 MB) | Max source file size to index in bytes. Files above it are skipped silently. |
-| `CODESCOPE_FAIL_RETRY_MAX` | `1` | Parse failures before a file is skipped entirely (min 1); see `parse_failures` / `codescope reset-failures`. Files whose only failure is a missing grammar (`language_missing`, e.g. `.swift` while its grammar is disabled) never count and are retried on every run. The single-file / `force_index_files` path uses `3`. |
+| `CODESCOPE_FAIL_RETRY_MAX` | `1` | Parse failures before a file is skipped entirely on the automatic index paths (min 1); see `parse_failures` / `codescope reset-failures`. Files whose only failure is a missing grammar (`language_missing`, e.g. `.swift`) never count and are retried on every run. `force_index_files` applies **no** such skip: a forced file is always re-attempted. |
 | `CODESCOPE_MMAP_SIZE` | 256 MB | SQLite `mmap_size` pragma value |
 | `CODESCOPE_MEM_LIMIT_MB` | `4096` | Dynamic-scheduler memory ceiling |
 | `CODESCOPE_DYNAMIC_SCHED` | (unset = static) | Opt-in dynamic CPU scheduling. `CODESCOPE_CPU_DYNAMIC` is the canonical name and this is the legacy alias; either one works. `1`/`true`/`on` enables the shared chunk-queue scheduler, `0`/`false`/`off` disables it, unset stays on the **static** proportional allocator. |

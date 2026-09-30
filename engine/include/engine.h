@@ -48,7 +48,19 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 // Index a list of files (JSON array of file paths); returns JSON progress summary.
 // Skips directory scanning — uses the same parallel worker infrastructure.
 // file_list_json: ["/path/to/file1.c", "/path/to/file2.c", ...]
-char *engine_index_files(uint64_t project_id, const char *file_list_json);
+//
+// bypass_fail_fast selects the fail-fast policy for the requested files:
+//   0 — honour it, like the automatic project path: a file whose parse has
+//       failed CODESCOPE_FAIL_RETRY_MAX times (default
+//       engine_index_sched::kDefaultFailRetryMax) is skipped. Used by the
+//       scheduler-driven callers (worker --file-list, chunk worker).
+//   1 — always re-attempt every listed file. Used by force_index_files, whose
+//       contract is "index these paths regardless of the default skip rules".
+// Either way, parse failures of this run are recorded (and flushed) into
+// parse_failures; files failing only because no grammar is vendored for their
+// language are exempt from the skip in both modes.
+char *engine_index_files(uint64_t project_id, const char *file_list_json,
+			 int bypass_fail_fast);
 
 // ─── Queries ──────────────────────────────────────────────────
 

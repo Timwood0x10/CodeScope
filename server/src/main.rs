@@ -260,10 +260,13 @@ fn main() {
         // worker --file-list path guards against below. The engine
         // reports ok:true for an empty run (engine_index_files.cpp:144
         // jobs.empty() early return, and the writer path when every file
-        // is skipped as empty/known-parse-failure), so the ok flag alone
-        // is not a sufficient success predicate. Re-runs of a healthy
+        // fails to parse — empty read, unavailable grammar), so the ok flag
+        // alone is not a sufficient success predicate. Re-runs of a healthy
         // index always report files_indexed > 0 (unchanged files are
-        // re-parsed and counted), so requiring it is safe.
+        // re-parsed and counted), so requiring it is safe. Note that this
+        // path applies NO fail-fast skip: a forced file is always
+        // re-attempted, so a previously failed file still counts as a parse
+        // attempt rather than being dropped silently.
         let ok = serde_json::from_str::<Value>(&result)
             .map(|v| v["ok"] == true && v["files_indexed"].as_u64().unwrap_or(0) > 0)
             .unwrap_or(false);
@@ -345,7 +348,9 @@ fn main() {
         );
 
         let result = if let Some(files_json) = file_list {
-            ffi::index_files(pid, &files_json)
+            // Scheduler-driven worker: honour the fail-fast skip, exactly like
+            // ffi::index_project does for the whole-directory path.
+            ffi::index_files(pid, &files_json, false)
         } else if lang_filter.is_empty() {
             ffi::index_project(pid, dir_path, std::ptr::null())
         } else {
@@ -478,7 +483,10 @@ fn main() {
                             continue;
                         }
                     };
-                    let result = ffi::index_files(pid, &files_json);
+                    // Chunk worker: same policy as the other scheduler paths —
+                    // a chunk whose files keep failing must not be retried
+                    // forever by every claimant.
+                    let result = ffi::index_files(pid, &files_json, false);
                     if let Ok(v) = serde_json::from_str::<Value>(&result) {
                         if v["ok"] == true {
                             total_nodes += v["total_nodes"].as_u64().unwrap_or(0);

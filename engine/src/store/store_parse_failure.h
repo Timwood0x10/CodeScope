@@ -35,8 +35,11 @@ const char *failReasonToString(FailReason r);
 /// run (a disabled grammar or a failed .so load is fixable without touching
 /// the file).
 ///
-/// `retry_max` is read from `CODESCOPE_FAIL_RETRY_MAX` env var
-/// (default 3) by the caller and passed in to avoid repeated env reads.
+/// `retry_max` is passed in by the caller to avoid repeated env reads. The
+/// index paths read `CODESCOPE_FAIL_RETRY_MAX`, defaulting to
+/// `engine_index_sched.h`'s `kDefaultFailRetryMax` (currently 1). The forced
+/// path (`engine_index_files.cpp` with bypass_fail_fast) loads no set at all —
+/// a file handed to `force_index_files` is always re-attempted.
 bool isKnownParseFailure(uint64_t project_id, const std::string &file_path,
 			 int retry_max);
 

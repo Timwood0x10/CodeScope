@@ -237,10 +237,99 @@ LIVE 访问器管线（`JsVisitor` 及各语言子类）此前对 AST 递归**�
 **C. 遗留（本轮记录，未改）**
 
 - `engine_index_files.cpp` 的 fail-fast 默认写死 **3**，与头文件 `kDefaultFailRetryMax = 1` 及注释「mirrors
-  engine_index_project」不符；且该路径的跳过**不区分是否为强制索引**（`force_index_files` 也会被静默跳过）。改哪种都
-  有行为代价（显式强制索引进程被跳过 / 统一后单文件索引重试次数下降），需仓库所有者决定，故仅记录。
+  engine_index_project」不符；且该路径的跳过**不区分是否为强制索引**（`force_index_files` 也会被静默跳过）。
 - `swift_visitor.cpp` 是真正的死代码（`createJsVisitor` 中 swift 分支被注释掉，而 `parser.cpp` 连 swift 语法都没注册），
-  所以 `.swift` 走不到 visitor 也走不到 legacy translator → 第五轮 B/2 的修复正是它的正确落点。
+  所以 `.swift` 走不到 visitor 也走不到 legacy translator。
+
+#### 第六轮 (2026-09-29)：上述两条遗留已解决
+
+**A. `engine_index_files` 的 fail-fast：改为**显式**策略参数**
+
+- 先纠正了第五轮的判断：该入口**不止服务 `force_index_files`** —— `worker --file-list`（静态并行 worker）与
+  `chunk-worker`（动态 chunk worker）也走 `ffi::index_files`。所以「整段删掉跳过」会让 `index-parallel` 与单进程
+  `index` 行为不一致。
+- 因此改为由**调用方显式声明**：FFI 新增 `int bypass_fail_fast`
+  （`engine/include/engine.h` 有完整文档：0 = 与自动路径一致地遵守 fail-fast，1 = 总是重试）。
+  - `h_force_index_files` → `true`（其公开契约就是「regardless of the default skip rules」，静默丢弃用户点名的文件
+    既违背契约也违背 code_rules.md 的「禁止静默处理」）。
+  - `worker --file-list` 与 `chunk-worker` → `false`（与 `engine_index_project` 保持一致）。
+- 同时把写死的 `3` 换成共享常量 `engine_index_sched::kDefaultFailRetryMax`（code_rules.md §5「No magic numbers」），
+  并修正 `store_parse_failure.h` 里同样写着「default 3」的注释。
+- **顺带修出同类的第 5 个缺陷**：该入口**从不调用 `store::flushParseFailures()`**，所以它记录的解析失败一直停留在内存
+  缓冲里、永远写不进 `parse_failures`（`get_parse_failures` 看不到、fail_count 不增长）——与第五轮 memBulk 的缺 flush
+  完全同类。已在所有 writer join 之后补上 flush。
+- 回归测试（`test_parse_failures.cpp` 第 4 节，双向覆盖）：`bypass=1` 时 `read_empty` 计数 1→2（重试）、
+  `language_missing` 2→3；`bypass=0` 时 `read_empty` **保持 2**（仍被跳过）、`language_missing` 3→4（豁免在两种策略下
+  都成立）。另加 `.rb` 用例，证明「检测到但无语法」的契约不是 Swift 特例。
+
+**B. Swift 死代码：删除，并把状态收敛到唯一权威说明**
+
+- 删除 `engine/src/ir/translators/swift_visitor.cpp`（216 行）、`swift_visitor.h`（30 行）、`swift_translator.cpp`
+  （392 行）——三者**根本不在 `ENGINE_SOURCES` 里**（未被编译），也没有任何引用；同时清掉：
+  `ir_translator.cpp` 的注释 include / 两个注释分支 / 悬空的 `createSwiftTranslator()` 前向声明；
+  `codescope_grammars.h` 中无定义的 `tree_sitter_swift()` 原型；`builtin_registry.cpp` 的 `"swift"` 注册项与
+  `builtin_registry_app.cpp` 的 `swiftBuiltins()` 表（129 行，唯一消费者是那个注册项，永远查不到）。
+- `parser.cpp` 现在是该状态的**唯一权威说明**：语法未 vendored（parser.c 与 core v0.24.7 ABI 不兼容）→ visitor/
+  translator/builtin 一并移除；`.swift` 仍按扩展名被识别，记为 `language_missing`、每次运行重试、不计入 fail-fast；
+  Kotlin/Ruby/Scala 行为完全相同；重新启用时需一并恢复。
+- 文档对齐：`docs/en|zh/skills.md` §10 把一份表格拆成「已内置语法的 9 个标签」与「可识别但无语法（Kotlin/Ruby/Scala/
+  Swift）」两张，不再暗示后者可解析；README（中英）§1 已知限制补一条「部分扩展名可识别但不解析」。
+- 未改：`.swift` 的 detect/whitelist 映射保留 —— 与既有 `.kt/.rb/.scala` 的处理方式一致（同一个「可识别但无语法」契约，
+  由 `test_parse_failures` 覆盖）。
+
+#### 第七轮 (2026-09-29)：`force-index` 端到端冒烟，发现「同一文件两种写法 → 符号重复」
+
+**A. 冒烟本身**
+
+按第六轮的契约跑 CLI 端到端（`worker` 建项目 → `force-index`），确认 bypass 生效。顺带发现一个**既有**缺陷，
+它被第六轮的改动变得更容易触发（force 现在会真的重试，才会写出新的行）。
+
+**B. 发现（实测证据）**
+
+```
+# 以 /tmp 为根索引（/tmp 是符号链接），再对同一目录 force-index
+1) project index  → parse_failures: /tmp/cs_fi4_90755/empty.py | 1
+2) force-index    → parse_failures: /tmp/cs_fi4_90755/empty.py | 1
+                                     /private/tmp/cs_fi4_90755/empty.py | 1   ← 同一文件第二行
+   行数 = 2（应为 1）
+
+# 同样的形状对「已成功索引」的文件也一样糟：
+1) entity(name='k'): 1 行  /tmp/cs_fi5_90787/good.c
+2) force-index 后:   2 行  /private/tmp/cs_fi5_90787/good.c , /tmp/cs_fi5_90787/good.c
+   find_symbol("k") → 2 个结果（一个文件被算两遍）
+```
+
+机制（`engine/src/engine_index_paths.h` 顶部注释已描述）：目录遍历入口按**调用方写法**存路径
+（`projectRootPath` 只是规范化后的 root，写不出遍历时的写法），而单文件入口拿到的是
+`std::fs::canonicalize` 后的路径（`indexing.rs:506`）。复用已存写法是既定的桥接手段。
+
+**C. 本轮已修的部分（可证明是安全的）**
+
+`existingSpellingFor` 只查 `entity`；**从不成功解析的文件恰恰没有 entity 行**，而它们正是不断累积
+`parse_failures` 行的文件。新增 `knownSpellingFor`：先查 `entity`，未命中再查 `parse_failures`（同一组候选写法），
+`indexSpellingFor` 改用它。这覆盖「写法只差『相对于（规范化）根』」的情形 —— 也就是该文件原本为之设计的情形，
+只是过去漏掉了单文件入口写失败记录这一半。
+
+- 回归测试：`test_parse_failures.cpp` 第 5 节（以**相对根**建项目 → 绝对规范化路径 force → 必须落到**同一行**、
+  总行数 = 1）。
+- 证伪：把 `parse_failures` 那次查询换成不存在的表 → 断言立刻失败（`FAIL: the re-attempt must land on the SAME row`），
+  恢复后通过。
+- CLI 复验：相对根索引 + 绝对路径 force-index → `cs_fi3_90723/empty.py | 2`，**行数 1** ✓。
+- 安全性：候选写法是显式枚举（不猜后缀），且接受与否只看「同一组候选」，不会把不同文件合成一个身份。
+
+**D. 仍未修的部分（需要所有者决定，故只记录）**
+
+「被符号链接的祖先」这一形状仍会重复：规范化路径 `/private/tmp/p/f.c` **推不出**别名 `/tmp/p/f.c`（`realpath`
+只朝一个方向走），候选写法里没有它，于是 `entity`/`parse_failures` 都会多出一行 —— 实测
+`find_symbol` 对同一文件返回 2 个结果。两种改法都触及身份策略，不宜在本轮夹带：
+
+1. **写入即规范化**：让遍历入口也用 `projects.root_path`（规范化根）+ 相对路径写入。新库从此只有一种写法，
+   但**既有库**里旧写法的行不会自动消失，仍需重建/迁移。
+2. **读时按规范化等价匹配**：候选精确匹配失败后，再按「basename 尾部相同」缩小范围，并对命中行与被查路径做
+   `weakly_canonical` 相等判定后才接受（相等判定使其不会误合并不同文件，代价是一次 LIKE + 少量 realpath）。
+   不改变写入策略，但增加了一条非显式枚举的匹配路径 —— 与该头文件「宁可保持旧行为也不猜」的既定取向相悖，需确认。
+
+README（中英）§1 已加一条用户可见的注意事项（用真实路径索引可避免；`reset-failures` 只清失败行，图上的行需重建）。
 
 ---
 

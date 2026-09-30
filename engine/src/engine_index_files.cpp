@@ -35,6 +35,7 @@
 
 #include "ir/translators/js_visitor.h"
 #include "engine_index_metrics.h"
+#include "engine_index_sched.h"
 #include "async_knowledge.h"
 #include "store/store_parse_failure.h"
 
@@ -50,11 +51,20 @@ constexpr uint64_t kMaxFileSize = 5 * 1024 * 1024; // 5 MB default
 // --file-list path). Split out of engine_index_project.cpp into its own
 // translation unit so each file stays under the 1000-line rule
 // (plan/rules/code_rules.md §1).
+//
+// Two kinds of callers share this entry point:
+//   * the scheduler-driven worker paths (worker --file-list, chunk worker),
+//     which mirror the automatic project index and honour the fail-fast skip;
+//   * the `force_index_files` tool, whose documented contract is "index these
+//     paths regardless of the default skip rules" and therefore bypasses it.
+// The caller states which policy applies through `bypass_fail_fast` (see
+// engine.h) rather than this file guessing from an environment variable.
 /// Body of engine_index_files. Kept as a separate function so the extern "C"
 /// entry point below can stay a thin try/catch wrapper: no C++ exception may
 /// cross the C ABI boundary (the MCP server is long-running, so an escaping
 /// exception would terminate it).
-static char *indexFilesImpl(uint64_t project_id, const char *file_list_json)
+static char *indexFilesImpl(uint64_t project_id, const char *file_list_json,
+			    int bypass_fail_fast)
 {
 	if (!g_store)
 		return dupString(
@@ -143,18 +153,28 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json)
 		return dupString(
 			"{\"ok\":true,\"files_indexed\":0,\"nodes\":0,\"edges\":0,\"errors\":0}");
 
-	// Fail-fast: pre-load known parse failures so the parse loop can
-	// skip them without per-file DB queries. Mirrors the logic in
-	// engine_index_project.
-	const int kFailRetryMax = [] {
-		const char *e = getenv("CODESCOPE_FAIL_RETRY_MAX");
-		return e ? std::max(1, std::atoi(e)) : 3;
-	}();
+	// Fail-fast skip, applied exactly like the automatic project path
+	// (engine_index_project loads the same set): a file whose parse has
+	// failed >= CODESCOPE_FAIL_RETRY_MAX times is dropped without a re-parse.
+	// The threshold comes from the shared constant — this file used to
+	// hard-code 3, three times the documented default.
+	//
+	// force_index_files passes bypass_fail_fast = 1 and gets an EMPTY set:
+	// its documented contract is "index these paths regardless of the default
+	// skip rules", so silently dropping a file the user explicitly named
+	// contradicts both that contract and plan/rules/code_rules.md (no silent
+	// handling). A forced file is always re-attempted; a genuinely broken one
+	// costs one parse per call and re-records its failure.
 	std::unordered_set<std::string> known_failures;
-	{
+	if (!bypass_fail_fast) {
+		const int kFailRetryMax = [] {
+			const char *e = getenv("CODESCOPE_FAIL_RETRY_MAX");
+			return e ? std::max(1, std::atoi(e)) :
+				   engine_index_sched::kDefaultFailRetryMax;
+		}();
 		std::vector<std::string> fail_vec;
 		if (!store::loadKnownParseFailures(project_id, kFailRetryMax,
-						   /*out*/ fail_vec)) {
+						   fail_vec)) {
 			fprintf(stderr,
 				"engine: loadKnownParseFailures failed "
 				"(continuing) "
@@ -299,12 +319,12 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json)
 				current_path = job.path;
 				current_lang = job.lang;
 
-				// Fail-fast: skip files that have failed >=
-				// CODESCOPE_FAIL_RETRY_MAX times.
+				// Fail-fast. The set is empty when the caller requested
+				// bypass_fail_fast (force_index_files), which makes this a
+				// no-op there — see the note where it is loaded.
 				if (known_failures.find(job.path) !=
-				    known_failures.end()) {
+				    known_failures.end())
 					continue;
-				}
 
 				int done = next_job.load();
 				if (done % progress_interval == 0 && done > 0)
@@ -317,6 +337,30 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json)
 						(int)(done * 100 /
 						      total_files));
 
+				// Grammar availability, checked BEFORE reading the
+				// file: reading a file the engine has no grammar for is
+				// wasted I/O. A registered-but-NULL grammar (the
+				// language is mapped but its grammar is unavailable:
+				// "swift"/"kotlin"/"ruby"/"scala" while no grammar is
+				// vendored, or a .so that failed to load) is reported as
+				// LanguageMissing — handing nullptr to
+				// ts_parser_set_language would yield a null tree recorded
+				// as "parse_null_tree", a wrong reason that also disguised
+				// an unsupported language as a broken file.
+				{
+					auto lit = lang_ptrs.find(job.lang);
+					if (lit == lang_ptrs.end() ||
+					    lit->second == nullptr) {
+						store::bufferParseFailure(
+							project_id, job.path,
+							job.lang,
+							store::failReasonToString(
+								store::FailReason::
+									LanguageMissing));
+						continue;
+					}
+				}
+
 				std::string source =
 					readFile(job.abs_path.c_str());
 				if (source.empty()) {
@@ -328,7 +372,10 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json)
 					continue;
 				}
 
-				// Per-thread parser
+				// Per-thread parser. A language with no registered
+				// grammar was already rejected above, so the lookup below
+				// only needs the presence check (kept as a guard against
+				// reordering).
 				auto pit = tl_parsers.find(job.lang);
 				if (pit == tl_parsers.end()) {
 					auto lit = lang_ptrs.find(job.lang);
@@ -584,6 +631,14 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json)
 	result_queue.markDone();
 	if (writer_thread.joinable())
 		writer_thread.join();
+	// Write the parse failures this run buffered. Like the memBulk branch,
+	// this path never reached the streaming path's flush, so an unparseable
+	// file handed to force_index_files was re-attempted (see the note at the
+	// top) and then recorded nowhere — parse_failures kept the stale
+	// fail_count and get_parse_failures could never show it. Runs after
+	// every writer has stopped, so the auxiliary connection does not
+	// contend with the bulk writer's transaction.
+	store::flushParseFailures();
 	time_parse_ms =
 		duration_cast<milliseconds>(steady_clock::now() - t_parse_start)
 			.count();
@@ -698,10 +753,12 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json)
 	return dupString(result.str());
 }
 
-char *engine_index_files(uint64_t project_id, const char *file_list_json)
+char *engine_index_files(uint64_t project_id, const char *file_list_json,
+			 int bypass_fail_fast)
 {
 	try {
-		return indexFilesImpl(project_id, file_list_json);
+		return indexFilesImpl(project_id, file_list_json,
+				      bypass_fail_fast);
 	} catch (const std::exception &e) {
 		return dupString(std::string("{\"error\":\"[module=ffi, "
 					     "method=engine_index_files] ") +

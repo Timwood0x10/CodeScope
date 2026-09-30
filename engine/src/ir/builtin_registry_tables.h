@@ -37,8 +37,6 @@ const std::unordered_set<std::string> &goBuiltins();
 const std::unordered_set<std::string> &javaBuiltins();
 /** @return The jsBuiltins symbol table (lazily built, never mutated). */
 const std::unordered_set<std::string> &jsBuiltins();
-/** @return The swiftBuiltins symbol table (lazily built, never mutated). */
-const std::unordered_set<std::string> &swiftBuiltins();
 
 } // namespace ir
 
