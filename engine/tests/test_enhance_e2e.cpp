@@ -130,7 +130,7 @@ int AuthGuard(int x) {
 	check(enh != nullptr, "enhance_project result");
 	check(strstr(enh, "\"status\"") != nullptr,
 	      "enhance: has status field");
-	// Honest reporting (CODE_REVIEW_2026-09-27.md D1-5): the success path
+	// Honest reporting (2026-09-27 review D1-5): the success path
 	// must state ok:true + status:"ok" explicitly. A failed step now returns
 	// ok:false with failed_step instead of claiming success over a
 	// rolled-back graph.
@@ -140,7 +140,7 @@ int AuthGuard(int x) {
 	printf("PASS: enhance run1 — %s\n", enh);
 	engine_free_string(enh);
 
-	// Idempotency baseline (CODE_REVIEW_2026-09-27.md, second pass):
+	// Idempotency baseline (2026-09-27 review, second pass):
 	// capability_state and workflow_step are derived tables that a pre-fix
 	// build re-appended on every enhance (no UNIQUE / no delete-first),
 	// doubling capability/workflow counts per run. Capture the counts after

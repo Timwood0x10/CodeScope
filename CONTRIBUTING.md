@@ -98,6 +98,13 @@ returned by `all_tools()` has a registered handler — do not skip step 4.
   args (e.g. a source tree to scan) belong in `engine/manual/` (built only with
   `-DBUILD_MANUAL=ON`), not in `engine/tests/`.
 - Rust tests: `cd server && cargo nextest run` (or `cargo test`).
+- Regression tests name the finding they pin (`2026-09-27 review D1-1`,
+  `2026-09-18 review #15`) instead of quoting it. Those point-in-time review
+  ledgers are removed from the tree once their findings are closed or recorded
+  as deliberate deviations — a stale finding list gets quoted as current. Resolve
+  an ID through git history:
+  `git log --diff-filter=D --oneline -- CODE_REVIEW_2026-09-27.md`, then
+  `git show <commit>^:CODE_REVIEW_2026-09-27.md`.
 
 ## Pull Request Process
 

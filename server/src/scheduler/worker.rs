@@ -744,7 +744,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Regression (CODE_REVIEW_2026-09-27.md D2-7): `CODESCOPE_EXCLUDE_PATHS`
+    /// Regression (2026-09-27 review, D2-7): `CODESCOPE_EXCLUDE_PATHS`
     /// is comma-separated and `FilterPolicy::loadExcludeEnv` splits on every
     /// unescaped comma, so a pattern for a directory named "a,b" was torn into
     /// `a\` + `b/**` and the path was never excluded. Escaping keeps it one
@@ -795,7 +795,7 @@ mod tests {
         assert!(!g.is_empty());
     }
 
-    /// Regression (CODE_REVIEW_2026-09-27.md, "配套测试缺口" #4): the README
+    /// Regression (2026-09-27 review, "配套测试缺口" #4): the README
     /// documents that `index-parallel` parses in fast mode whatever the user
     /// asked for, and nothing asserted it — the spawn sites could drift apart.
     #[test]

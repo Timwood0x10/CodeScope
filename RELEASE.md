@@ -8,6 +8,17 @@ one module's files contained no symbols. Also closes the `parse_failures`
 lifecycle (the table could be written but never read or cleared) and makes
 `graph_query`'s documented `LIMIT` clause actually work.
 
+This release also carries the work accumulated since v0.2.6: a resolver fast
+path that emitted cross-language edges, the C call edges a language comparison
+was silently dropping, a nested transaction that destroyed `buildGraph`'s
+savepoint, a use-after-free in `createSchema`, a precise import-evidence path
+for cross-directory TS/JS calls, community detection restored as the
+`get_communities` tool, and the test gate itself — a drifted CI skip list had
+left 26 passing tests (including the whole per-language false-positive suite)
+never run. `index-parallel` now produces a database that is one real project,
+that an MCP session can adopt instead of re-indexing, and that is searchable
+(it receives the engine's post-index pass). `CHANGELOG.md` carries every entry.
+
 ### 🚀 New Features
 
 - **`codescope parse-failures` / `codescope reset-failures`** (`engine/src/engine_ffi_index.cpp`, `engine/include/engine.h`, `server/src/ffi/decls.rs`, `server/src/main.rs`): `parse_failures` was write-only — `store::resetParseFailures` / `store::getParseFailuresJson` had no caller and the CLI the comments and the README named did not exist. Two FFI entry points and two subcommands close the loop (`--db`, `--limit`; `ok:false` exits non-zero), covered by `test_parse_failures.cpp` section 8.

@@ -1,4 +1,4 @@
-//! Built-in parallel scheduler — replaces `codescope-parallel.sh`.
+//! Built-in parallel scheduler — replaces the legacy `scripts/legacy/codescope-parallel.sh`.
 //!
 //! Design principle:
 //! > The scheduler only manages CPU core allocation; it does NOT

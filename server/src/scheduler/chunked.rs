@@ -333,7 +333,7 @@ pub(super) fn index_parallel_chunked(
     // work), and the merge below drops the DB of a failed worker — so a crash
     // or timeout discarded the chunks that worker had already marked DONE, and
     // their files were missing from the index with nothing but `complete:
-    // false` to show for it (docs/CODE_REVIEW_2026-09-18.md #15, option C).
+    // false` to show for it (2026-09-18 review #15, option C).
     //
     // The queue still records which chunks belong to which worker (`mark_done`
     // leaves `claimer_id` set), so they are released back to PENDING and ONE

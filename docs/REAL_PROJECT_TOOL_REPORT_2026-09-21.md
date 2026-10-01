@@ -155,17 +155,30 @@ unfindable) now reports `method: "legacy_fts"` with real hits. Cost: CodeScope's
 
 ## Refined diagnoses after the fixes
 
-- **#3 (the ~10 s first call)** is that same post-index build, not a fixed timeout: on a session that *adopts* an existing
-  DB the same call takes **0.1 s** because there is nothing to build. Why the build itself takes ~10 s for both a 250-file
-  and a 1594-file project is still unexplained and is left open.
-- **#4 (`ready_features` false) — cause pinned.** `getReadyRatio` (`store_project.cpp:554`) computes
-  `SUM(gn.<field>_ready)/COUNT(*)` **FROM `graph_nodes`**, and `graph_nodes` is **empty** in every DB the scheduler
-  produces, so the ratio is 0.0 by construction — the readiness row the new post-index pass writes cannot change that.
-  This is the same hole as the original review's P0 #1 (`graph_nodes` is written only by `engine_index_batch`, which the
-  server does not bind). `analysis_progress`, meanwhile, reports raw entity counts, which is why it claimed completion.
-  **Still open**, and it needs the graph-node population rather than another flag.
-- **#5 (`get_graph_stats.total_files`)** is unchanged and still open.
-- **#6 (response sizes)** is unchanged and still open.
+Updated 2026-09-30: **all four findings below are closed.** Each entry keeps the
+diagnosis and records what fixed it.
+
+- **#3 (the ~10 s first call)** — that call was the post-index knowledge build,
+  not a fixed timeout. Resolved by moving the build into indexing: the CLI's
+  index branch now opens the merged DB and runs the engine's post-index pass
+  while it owns it, so a session that adopts the database has nothing left to
+  build. Measured on goagent in a fresh session: `explain_module` 0.13 s,
+  `get_knowledge_graph` 0.04 s.
+- **#4 (`ready_features` false) — cause pinned, then fixed.** `getReadyRatio`
+  computed `SUM(gn.<field>_ready)/COUNT(*)` **FROM `graph_nodes`**, empty in
+  every DB the scheduler produces, so the ratio was 0.0 by construction. It now
+  reads the canonical tables (`entity`/`relation`/`node_vectors`) with the same
+  SQL as `engine_get_enhancement_status`, and `build_context`'s
+  `sample_call_edges` reads `relation`/`entity` instead of the empty
+  `graph_edges`. Measured on goagent: `ready_features.call_graph` false → true.
+  Regression test: `engine/tests/test_readiness_canonical.cpp`.
+- **#5 (`get_graph_stats.total_files`)** — it now counts the `files` table, i.e.
+  files indexed (goagent: 672 → 1,579), and reports the previous number as
+  `files_with_symbols`.
+- **#6 (response sizes)** — the 1 MiB transport cap is documented (`README.md` /
+  `README.zh.md` §5 and the tool descriptions) and `graph_query` honours its
+  documented `LIMIT`: the broad call-graph pattern that produced 2.16 MB now
+  returns 56 KB with `LIMIT 200`.
 
 ## Verification after the fixes
 

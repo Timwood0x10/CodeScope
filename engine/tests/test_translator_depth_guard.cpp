@@ -1,6 +1,6 @@
 /**
  * Unit test for the LEGACY-translator recursion bound
- * (CODE_REVIEW_2026-09-27.md, fourth round item F1).
+ * (2026-09-27 review, fourth round item F1).
  *
  * The LIVE IR pipeline is the visitors, which bound their recursion with
  * kMaxVisitDepth and report the truncation. The translators (`*_translator.cpp`)

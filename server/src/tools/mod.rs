@@ -779,7 +779,7 @@ mod tests {
         }
     }
 
-    /// Regression (CODE_REVIEW_2026-09-27.md D1-1): README §5 used to claim
+    /// Regression (2026-09-27 review, D1-1): README §5 used to claim
     /// MCP clients "call `index_project` by name" while the tool was in
     /// neither the catalog nor TOOL_HANDLERS, so such a call is an
     /// Unknown-tool error. The documented contract is now "session-only

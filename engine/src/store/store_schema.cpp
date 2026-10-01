@@ -732,7 +732,7 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
             -- callee's. They were called layer_upper/layer_lower with
             -- "-- e.g. \"Controller\"" comments until v0.7, which made every
             -- reader treat them as a layer model (the root cause of the false
-            -- layer-violation reporting, docs/CODE_REVIEW_2026-09-18.md #3).
+            -- layer-violation reporting, 2026-09-18 review #3).
             caller_module TEXT NOT NULL,       -- module path of the caller
             callee_module TEXT NOT NULL,       -- module path of the callee
             entity_id INTEGER NOT NULL,       -- FK to entity.id

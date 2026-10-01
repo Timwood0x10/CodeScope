@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.2.7 (2026-09-30)
+
 Correctness and stability pass focused on the call graph and the storage layer: fixes a resolver fast path that emitted cross-language edges, a language comparison that silently dropped every C call edge, a nested transaction that destroyed buildGraph's savepoint (losing its all-or-nothing guarantee), and a use-after-free in `createSchema`. Also restores the test gate — the CI skip list had drifted to the point where 26 passing tests (including the whole per-language false-positive suite) were never run. It also restores community detection as a real, exposed MCP tool and tightens the call-graph accuracy gate so it stops under-reporting its own coverage.
 
 ### 🚀 New Features

@@ -81,7 +81,6 @@ per-language E2E harness only checked for the strings `"callers"` / `"callees"` 
   entity rows only for the spelling being written, so clear the affected
   `parse_failures` rows with `codescope reset-failures` and rebuild the database
   (delete `.codescope/codescope.db` and re-index) for duplicated symbols.
-  Tracked in `CODE_REVIEW_2026-09-27.md`.
 
 ### Tech Stack
 
@@ -316,6 +315,9 @@ codescope cli force_index_files '{"paths":["/path/to/test/file.rs"]}'
 | **Windows** ⚠️ **Beta** | MinGW-w64 14.0.0+, Rust `x86_64-pc-windows-gnu` target, cmake. Every graph-query tool (shortest_path, get_neighbors, get_callers/callees, graph_query, subgraph, entry_points, trace_path, hotspots, impact_analysis, ...) works via the built-in SQLite graph-query backend (CSR adjacency, sub-millisecond call-graph lookups). |
 
 ### Install Pre-built Binary
+
+> New here? [`docs/QUICK_START.md`](docs/QUICK_START.md) is the 5-minute path — install, index a
+> project, connect an MCP client, run the first queries.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Timwood0x10/CodeScope/main/install.sh | bash

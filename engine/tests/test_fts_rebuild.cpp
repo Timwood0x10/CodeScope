@@ -1,5 +1,5 @@
 // test_fts_rebuild.cpp — regression test for stale/ghost FTS rows after a
-// file is re-indexed (CODE_REVIEW_2026-09-27.md, FTS non-idempotency).
+// file is re-indexed (2026-09-27 review, FTS non-idempotency).
 //
 // Before the fix:
 //   buildFTSFromGraph rebuilt code_fts / name_trgm with
@@ -105,7 +105,8 @@ int main()
 		      "prepare delete semantic_records");
 		sqlite3_bind_int64(del, 1, static_cast<int64_t>(pid));
 		sqlite3_bind_text(del, 2, file, -1, SQLITE_TRANSIENT);
-		check(sqlite3_step(del) == SQLITE_DONE, "delete semantic_records");
+		check(sqlite3_step(del) == SQLITE_DONE,
+		      "delete semantic_records");
 		sqlite3_finalize(del);
 	}
 	check(store.deleteGraphDataByFile(pid, file), "delete old file data");

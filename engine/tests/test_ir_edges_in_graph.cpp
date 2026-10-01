@@ -4,7 +4,7 @@
 // test_ir_edge_coverage.cpp asserts that the visitors emit the right records
 // (a Rust macro becomes a CallExpr, a Java `implements` becomes an
 // InterfaceImpl, ...). The review that motivated those fixes
-// (CODE_REVIEW_2026-09-27.md D1-2) was about CALL EDGES being lost, so a
+// (2026-09-27 review D1-2) was about CALL EDGES being lost, so a
 // record-level assertion is one layer short: this test indexes real files
 // end-to-end and queries `relation` for the edges those records are supposed to
 // produce.
@@ -162,7 +162,7 @@ static void test_java_implements_reaches_the_graph()
 
 int main()
 {
-	printf("IR edges in graph tests (CODE_REVIEW_2026-09-27.md D1-2):\n");
+	printf("IR edges in graph tests (2026-09-27 review D1-2):\n");
 
 	test_rust_macro_call_becomes_an_edge();
 	test_java_implements_reaches_the_graph();

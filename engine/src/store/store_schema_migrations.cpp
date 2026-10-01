@@ -32,7 +32,7 @@ bool GraphStore::runSchemaMigrations()
 	// recorded and reported at the end of the pass. Thirty of these call sites
 	// used to ignore the result while the function still returned true, leaving
 	// a half-migrated schema whose queries later failed with "no such column" —
-	// far from the cause (docs/CODE_REVIEW_2026-09-18.md #19). Wrapping the
+	// far from the cause (2026-09-18 review #19). Wrapping the
 	// calls in one place covers every existing site and any future one, and
 	// catches any cause of a failed ALTER, not only a missing column.
 	bool migration_ok = true;

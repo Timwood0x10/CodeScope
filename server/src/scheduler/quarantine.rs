@@ -5,7 +5,7 @@
 //! Once a crasher is found, the module is retried with that file
 //! excluded via `CODESCOPE_EXCLUDE_PATHS`.
 //!
-//! Algorithm (mirrors `codescope-parallel.sh:find_crashing_file`):
+//! Algorithm (mirrors the legacy `scripts/legacy/codescope-parallel.sh:find_crashing_file`):
 //! 1. Get candidate file list via `discover::discover_files()`.
 //! 2. Binary search: split list in half, run worker with `--file-list`
 //!    on the left half. If it crashes, recurse left; else advance right.

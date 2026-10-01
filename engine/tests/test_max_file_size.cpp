@@ -5,7 +5,7 @@
  * are skipped silently. The cap is a hard-coded constant
  * (kMaxFileSize in engine_index_sched.h), so nothing but a test keeps the
  * documentation and the code from drifting apart again
- * (CODE_REVIEW_2026-09-27.md D2-1: the README claimed 10 MB in §3 and
+ * (2026-09-27 review D2-1: the README claimed 10 MB in §3 and
  * "(unset)" in §9 while the code used 5 MB).
  *
  * Cases:

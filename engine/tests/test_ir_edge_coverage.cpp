@@ -1,6 +1,6 @@
 /**
  * Unit tests for the IR coverage gaps fixed for
- * CODE_REVIEW_2026-09-27.md D1-2 (README "Verified" column).
+ * 2026-09-27 review D1-2 (README "Verified" column).
  *
  * Why this file exists: the per-language E2E harness (test_e2e.h) only asserts
  * that the JSON contains the KEYS "callers"/"callees"/"total_nodes" — never
@@ -463,7 +463,7 @@ static void test_ts_user_function_shadowing_builtin()
 
 int main()
 {
-	printf("IR edge coverage tests (CODE_REVIEW_2026-09-27.md D1-2):\n");
+	printf("IR edge coverage tests (2026-09-27 review D1-2):\n");
 
 	test_rust_macro_invocation_emits_call();
 	test_rust_builtin_macro_filtered();

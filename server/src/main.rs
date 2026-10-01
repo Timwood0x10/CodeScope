@@ -78,7 +78,8 @@ fn main() {
     }
 
     // ── index-parallel: codescope index-parallel <dir> [--workers N] [--parallel M] ──
-    // Built-in CPU-dynamic parallel indexer. Replaces codescope-parallel.sh.
+    // Built-in CPU-dynamic parallel indexer. Replaces the legacy
+    // scripts/legacy/codescope-parallel.sh.
     // Dispatches one worker subprocess
     // per top-level module with proportional parse-worker allocation; failed
     // modules are quarantined via binary search.

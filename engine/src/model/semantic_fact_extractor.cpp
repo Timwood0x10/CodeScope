@@ -44,7 +44,7 @@ static constexpr double kConfidenceUncheckedError = 0.7;
 // The confidence the `cgo_callback` rule will use once that rule exists. It is
 // deliberately kept rather than deleted — it is the only remaining reference to
 // the intended rule — and marked maybe_unused so the build stays warning-free
-// (docs/CODE_REVIEW_2026-09-18.md #9b).
+// (2026-09-18 review #9b).
 [[maybe_unused]] static constexpr double kConfidenceCgoCallback = 0.6;
 
 // ─── Local helpers ────────────────────────────────────────────────

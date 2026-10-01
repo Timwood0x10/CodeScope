@@ -7,7 +7,7 @@
 // The guards exist because CodeScope's own README once promised things the code
 // did not do. `CODESCOPE_VERBOSE` was documented in README §9 but never read by
 // any production code, so setting it did nothing
-// (CODE_REVIEW_2026-09-27.md D3-3). These tests make that drift fail the build.
+// (2026-09-27 review, D3-3). These tests make that drift fail the build.
 
 #[cfg(test)]
 mod tests {
@@ -73,7 +73,7 @@ mod tests {
         false
     }
 
-    /// Regression (CODE_REVIEW_2026-09-27.md D3-3): `CODESCOPE_VERBOSE` was
+    /// Regression (2026-09-27 review, D3-3): `CODESCOPE_VERBOSE` was
     /// documented in README §9 but never read by any production code — setting
     /// it did nothing. Every variable the §9 table promises must have a real
     /// READER in `server/src` or `engine/src`, so a dead entry cannot creep

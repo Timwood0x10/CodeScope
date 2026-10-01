@@ -209,7 +209,7 @@ static char *enhanceProjectImpl(uint64_t project_id)
 		t_model = 0;
 	int64_t semantic_facts = 0;
 
-	// Honest failure reporting (CODE_REVIEW_2026-09-27.md D1-5): every step
+	// Honest failure reporting (2026-09-27 review D1-5): every step
 	// that can fail sets failed_step + failure_detail so the response below
 	// reports ok:false instead of claiming success over a rolled-back or
 	// truncated graph. Stays null when the whole pipeline succeeds.
