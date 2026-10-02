@@ -1,7 +1,7 @@
 # CodeScope 架构文档
 
-**版本**：0.2.1  
-**更新日期**：2026-07-06
+**版本**：v0.2.7  
+**更新日期**：2026-10-01
 
 ---
 
@@ -195,7 +195,7 @@ sequenceDiagram
 
     Client->>Server: tools/call index_project
     Server->>Worker: spawn subprocess
-    Worker->>DB: 写入 semantic_records + graph_nodes
+    Worker->>DB: 写入 semantic_records + entity + relation
     Worker-->>Server: stdout JSON result
     Server->>Server: RUNTIME.spawn(build_fts)
     Server-->>Client: {"ok":true, "files_indexed":N}

@@ -79,22 +79,22 @@ CodeScope parses source code into a unified AST IR, builds a call graph + refere
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CODESCOPE_DB_PATH` | `.codescope/codescope.db` | SQLite database path |
-| `CODESCOPE_INDEX_MODE` | `normal` | Index mode: `fast` / `normal` / `strict`（NORMAL 默认；见下方 Index modes） |
-| `CODESCOPE_WORKERS` | `min(hw,8)` | 解析 worker 线程数（`kDefaultParseWorkers=8`，并行索引路径为模块数×动态分配） |
-| `CODESCOPE_SKIP_ASYNC` | (unset) | 设为 1 跳过异步 model/state/FTS 阶段（仅并行调度路径设置） |
-| `CODESCOPE_PROFILE_RESOLVER` | (unset) | 启用 resolver 分阶段计时（输出 `[module=resolver, method=run]` 明细） |
+| `CODESCOPE_INDEX_MODE` | `normal` | Index mode: `fast` / `normal` / `deep` (`normal` is the default) plus the discovery-only `strict`; see Index modes below |
+| `CODESCOPE_WORKERS` | `min(hw,8)` | parse-worker threads (`kDefaultParseWorkers=8`; the parallel index path scales with module count) |
+| `CODESCOPE_SKIP_ASYNC` | (unset) | set to 1 to skip the async model/state/FTS phases (set only on the parallel scheduling path) |
+| `CODESCOPE_PROFILE_RESOLVER` | (unset) | enable per-phase resolver timing (prints `[module=resolver, method=run]` detail) |
 | `CODESCOPE_VERBOSE` | `1` | Set 0 to disable batch logs |
 | `CODESCOPE_MAX_FILE_SIZE` | 5MB | Max indexed file size |
 
 ## Index modes
 
-| Mode | 枚举值 | 额外剪枝 | FTS | 用途 |
+| Mode | Enum value | Extra pruning | FTS | Purpose |
 |------|--------|----------|-----|------|
-| `fast` | `FAST` | ✅ 额外跳过 logs/.output/测试报告等 11 类目录 + 4 类缓存文件（`fast_extra_skip_dirs_`/`fast_extra_filenames_`，见 filter_policy.cpp） | ❌ 跳过 | 最快，数据≈全量（对源码干净项目几乎无差异） |
-| `normal` | `NORMAL` | 仅基础 skip 表 | ✅ | 默认 |
-| `strict` | `STRICT` | 基础 skip + detectLanguage 白名单 gate（仅索引源码文件） | ✅ | 最严格，数据最精简 |
+| `fast` | `FAST` | ✅ also skips 11 directory classes (logs/.output/test reports) + 4 cache-file classes (`fast_extra_skip_dirs_`/`fast_extra_filenames_`, see filter_policy.cpp) | ❌ skipped | fastest; data ≈ full (almost no difference on a clean source tree) |
+| `normal` | `NORMAL` | the base skip table only | ✅ | default |
+| `strict` | `STRICT` | base skips + the detectLanguage whitelist gate (source files only) | ✅ | smallest dataset; affects discovery only |
 
-> **已知问题（2026-08-11，已修复）**：fast 模式此前与 normal 几乎无差异——`fast_extra_skip_dirs_` 为空集（预留未实现），唯一差异是跳过 FTS。已补全剪枝集合并修复 `setMode()` 未重建 active_skip_dirs_ 的 bug。详见 `docs/optimization/perf-full-index-2026-08-11.md` §9/§10。
+> **Known issue (2026-08-11, fixed)**: fast mode used to differ from normal only by skipping FTS — `fast_extra_skip_dirs_` was an empty set (reserved, never implemented). The pruning sets are complete now and the `setMode()` bug (it did not rebuild `active_skip_dirs_`) is fixed. See `docs/optimization/perf-full-index-2026-08-11.zh.md` §9/§10 (Chinese).
 
 ## Supported languages
 

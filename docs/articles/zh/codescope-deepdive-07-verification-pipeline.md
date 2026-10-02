@@ -1,7 +1,11 @@
 # CodeScope 拆解 (七)：验证管线 — Claim → Evidence → Verdict
 
-> *"The most dangerous assumption in software engineering is that the code matches the docs."*
 > 软件工程中最危险的假设，就是认为代码和文档是一致的。
+
+> **历史注记（2026-10-01）**：本文写作之后存储层已经演进。权威表是 `entity`（符号）与
+> `relation`（边），`graph_nodes` 不再写入，全文检索由 `code_fts` + `name_trgm` 承担。
+> 当前 schema 见 `docs/zh/technical_breakdown.md` §4.1。LadybugDB 也已从产品中移除，
+> 下文提到它的地方是历史，而非可用路径。
 
 ## 问题：代码和文档怎么对得上？
 

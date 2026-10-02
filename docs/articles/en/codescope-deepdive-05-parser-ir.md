@@ -1,7 +1,6 @@
 # CodeScope Deep Dive (5): tree-sitter Parser & Unified IR — 8 Languages, One Model
 
 > *"A programming language is a tool. Code analysis should not care which tool you used."*
-> 编程语言是工具。代码分析不应该关心你用了哪个工具。
 
 ## The Problem: 8 Languages, One Format
 

@@ -1,6 +1,5 @@
 # CodeScope 拆解 (一)：双语言架构 — 为什么我们用 Rust 写了一个 C++ 项目
 
-> *"Sometimes the best tool for the job isn't the one you'd like to use."*
 > 有时最好的工具并不是你喜欢的那个。
 
 ## 为什么是两种语言？

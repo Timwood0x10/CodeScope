@@ -7,7 +7,7 @@
 ### 方式 1：一键构建（推荐）
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Timwood0x10/CodeScope/master/bootstrap.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/Timwood0x10/CodeScope/main/bootstrap.sh)
 ```
 
 脚本会自动检测你的操作系统，安装缺失的依赖（Xcode、Homebrew、LLVM、cmake、Rust），然后编译 CodeScope。
@@ -16,10 +16,10 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Timwood0x10/CodeScope/master
 
 ```bash
 # macOS ARM64
-curl -fsSL https://raw.githubusercontent.com/Timwood0x10/CodeScope/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Timwood0x10/CodeScope/main/install.sh | bash
 
 # Windows PowerShell
-irm https://raw.githubusercontent.com/Timwood0x10/CodeScope/master/install.ps1 | iex
+irm https://raw.githubusercontent.com/Timwood0x10/CodeScope/main/install.ps1 | iex
 ```
 
 ### 方式 3：手动构建
@@ -73,22 +73,30 @@ CODESCOPE_DB_PATH=/path/to/codescope.db ./target/release/codescope
 
 ## 五、支持的索引模式
 
-| 模式 | 速度 | 用途 | 命令 |
-|:----|:----:|:-----|:----|
-| 快速 | 最快 | 日常开发，快速查询 | `CODESCOPE_INDEX_MODE=fast` |
-| 标准 | 中等 | 默认，平衡速度和精度 | 默认 |
-| 严格 | 最慢 | 生产环境，完整验证 | `CODESCOPE_INDEX_MODE=strict` |
+| 模式 | `CODESCOPE_INDEX_MODE` | 作用 |
+|:----|:----|:-----|
+| fast | `fast` | 发现阶段额外剪枝（11 类目录 + 4 类缓存文件），且不构建 FTS |
+| normal | `normal`（默认） | 平衡的发现策略 + 完整管线 |
+| deep | `deep` | 同 `normal`，但重建 n-gram 语义向量 |
+| strict | `strict` | **仅**影响发现：对识别出的语言加白名单 gate，不改动解析管线 |
 
 ## 六、支持的语言
 
-| 语言 | 状态 | 说明 |
-|:----|:----:|:-----|
-| Rust | ✅ 稳定 | 所有项目测试通过 |
-| Go | ✅ 稳定 | 标准库 54/54 模块通过 |
-| Java | ✅ 可用 | JDK 56/69 模块通过 |
-| C/C++ | ✅ 稳定 | tree-sitter C grammar SIGILL 已通过 -O0 编译修复 |
-| Python | ✅ 稳定 | 基础支持 |
-| JavaScript/TypeScript | ✅ 稳定 | 基础支持 |
+| 语言 | 扩展名 | 状态 |
+|:----|:------|:-----|
+| Python | `.py` | 已内置语法，端到端解析 |
+| Go | `.go` | 已内置语法 |
+| Rust | `.rs` | 已内置语法 |
+| JavaScript | `.js`, `.mjs` | 已内置语法 |
+| TypeScript | `.ts` | 已内置语法 |
+| TSX | `.tsx` | 已内置语法 |
+| C | `.c`, `.h` | 已内置语法（以 `-O0` 编译，见下方 SIGILL 说明） |
+| C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx` | 已内置语法 |
+| Java | `.java` | 已内置语法 |
+
+`.kt`/`.kts`、`.rb`、`.scala`、`.swift` 会按扩展名被识别，但没有内置语法：它们会在
+`parse_failures` 中记录为 `language_missing`（用 `codescope parse-failures` 查看），
+且不计入 fail-fast 跳过次数。
 
 ## 七、常见问题
 
@@ -123,6 +131,6 @@ CodeScope 实现 MCP 协议，可以直接集成到 Claude Desktop、Cursor 等 
 
 ## 八、下一步
 
-- [架构文档](zh/architecture.md) — 了解 CodeScope 的工作原理
-- [优化文档](optimization/optimization-chinese.md) — 性能优化记录
-- [性能报告](optimization/perf-full-index-2026-08-11.md) — 全量索引性能统计
+- [架构文档](architecture.md) — 了解 CodeScope 的工作原理
+- [优化文档](../optimization/optimization.zh.md) — 性能优化记录
+- [性能报告](../optimization/perf-full-index-2026-08-11.zh.md) — 全量索引性能统计

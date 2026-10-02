@@ -165,9 +165,9 @@ flowchart LR
     Q["MCP Client<br/>tool call"] --> Q1["Server receives<br/>project_id auto-restore"]
     Q1 -->     Q2{"Tool type?"}
     Q2 -->|"session auto-index"| Q3["At initialize: spawn worker subprocess<br/>→ memory isolated<br/>→ exits after done<br/>(not a callable tool)"]
-    Q2 -->|"query tools"| Q4["C++ FFI → SQLite query<br/>graph_nodes, graph_edges<br/>search_index, ..."]
+    Q2 -->|"query tools"| Q4["C++ FFI → SQLite query<br/>entity, relation<br/>code_fts, ..."]
     Q2 -->|"get_communities"| Q5["Load full graph<br/>Label Propagation<br/>→ JSON with max_communities limit"]
-    Q2 -->|"get_hotspots"| Q6["SQL: COUNT(ge.id) JOIN<br/>graph_edges edge_type=1<br/>ORDER BY caller_count"]
+    Q2 -->|"get_hotspots"| Q6["SQL: COUNT(r.id) JOIN<br/>relation edge_type=1<br/>ORDER BY caller_count"]
     Q4 --> R["Result JSON<br/>back to MCP Client"]
     Q5 --> R
     Q6 --> R
@@ -316,7 +316,7 @@ codescope cli force_index_files '{"paths":["/path/to/test/file.rs"]}'
 
 ### Install Pre-built Binary
 
-> New here? [`docs/QUICK_START.md`](docs/QUICK_START.md) is the 5-minute path — install, index a
+> New here? [`docs/en/QUICK_START.md`](docs/en/QUICK_START.md) is the 5-minute path — install, index a
 > project, connect an MCP client, run the first queries.
 
 ```bash

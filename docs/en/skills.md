@@ -73,7 +73,7 @@ graph TB
         Client["Claude Desktop / Cursor<br/>Custom MCP Client"]
     end
     subgraph "Rust MCP Server (codescope)"
-        TD["Tool Dispatch<br/>(35+ tools)"]
+        TD["Tool Dispatch<br/>(46 tools)"]
         TQ["Task Queue<br/>(Tokio async)"]
         FFI["FFI (extern \"C\")"]
     end
@@ -85,9 +85,10 @@ graph TB
         LS["LSP Client"]
     end
     subgraph "SQLite (WAL)"
-        N["graph_nodes<br/>(nodes)"]
-        E["graph_edges<br/>(edges)"]
-        SR["semantic_records<br/>(IR + FTS)"]
+        N["entity<br/>(symbols)"]
+        E["relation<br/>(edges)"]
+        SR["semantic_records<br/>(IR)"]
+        FTSN["code_fts + name_trgm<br/>(FTS5)"]
     end
     Client -->|JSON-RPC 2.0| TD
     TD --> TQ
@@ -115,7 +116,7 @@ flowchart LR
 
 ## 3. MCP Tools (38 tools)
 
-### Index (索引)
+### Index
 
 | Tool | Purpose | Input | Output | Token |
 |------|---------|-------|--------|-------|
@@ -123,7 +124,7 @@ flowchart LR
 | `index_file` | Index a single file | `file_path` | JSON: file result | ~30 |
 | `search` | Unified search (FTS) | `query`, `limit?` | JSON: matched results | ~30 |
 
-### Locate (查位置)
+### Locate
 
 | Tool | Purpose | Input | Output | Token |
 |------|---------|-------|--------|-------|
@@ -134,7 +135,7 @@ flowchart LR
 | `trace_flow` | Trace call path (BFS) | `function_name`, `depth` | call chain | ~50-200 |
 | `search_code` | Full-text search | `query`, `limit?` | matched lines | ~30 |
 
-### Understand (理解项目)
+### Understand
 
 | Tool | Purpose | Input | Output | Token |
 |------|---------|-------|--------|-------|
@@ -145,7 +146,7 @@ flowchart LR
 | `get_entry_points` | Entry points (main/init/run) | (none) | entry functions | ~5 |
 | `get_graph_stats` | Graph statistics | (none) | nodes, edges, files | ~10 |
 
-### Verify (验证)
+### Verify
 
 | Tool | Purpose | Input | Output | Token |
 |------|---------|-------|--------|-------|
@@ -195,7 +196,7 @@ AI Q&A           → codescope_build_context (200-1000 tok)
 | `CODESCOPE_DB_PATH` | `.codescope/codescope.db` | SQLite database path |
 | `GRAMMARS_DIR` | `grammars/` | tree-sitter grammar .so directory |
 | `CODESCOPE_LSP` | (unset) | LSP server command for type enhancement |
-| `CODESCOPE_INDEX_MODE` | `normal` | Index mode: `fast` / `normal` / `strict`（见下方 Index Modes） |
+| `CODESCOPE_INDEX_MODE` | `normal` | Index mode: `fast` / `normal` / `deep`, plus the discovery-only `strict` (see Index Modes below) |
 | `CODESCOPE_WORKERS` | `min(hw,4)` | Parse worker thread count |
 | `CODESCOPE_SKIP_ASYNC` | (unset) | Set to 1 to skip async model/state/FTS stages (set by the parallel scheduler path) |
 | `CODESCOPE_PROFILE_RESOLVER` | (unset) | Enable resolver per-phase timing (`[module=resolver, method=run]` breakdown) |
@@ -217,7 +218,7 @@ Set via `CODESCOPE_INDEX_MODE`（filter_policy.h enum NORMAL/FAST/STRICT — the
 | `normal` | `NORMAL` | base skip table only (build/dist/out/target/test/docs/vendor/node_modules/.venv ...) | ✅ | Default |
 | `strict` | `STRICT` | base skip + detectLanguage whitelist gate (only source files of recognized languages) | ✅ | Most restrictive, leanest data |
 
-> Known issue (fixed 2026-08-11): `fast` used to be ≈ `normal` — `fast_extra_skip_dirs_` was an empty reserved set and `setMode()` did not rebuild `active_skip_dirs_`. See `docs/optimization/perf-full-index-2026-08-11.md` §9/§10.
+> Known issue (fixed 2026-08-11): `fast` used to be ≈ `normal` — `fast_extra_skip_dirs_` was an empty reserved set and `setMode()` did not rebuild `active_skip_dirs_`. See `docs/optimization/perf-full-index-2026-08-11.zh.md` §9/§10.
 
 ## 7. Performance Benchmarks
 

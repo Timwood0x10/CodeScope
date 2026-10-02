@@ -1,7 +1,14 @@
 # CodeScope Deep Dive (6): SQLite Graph Storage — Schema Design & FTS
 
 > *"A graph database is a great idea. A graph database that requires a server process is a deployment nightmare."*
-> 图数据库是个好主意。但需要启动一个服务进程的图数据库，就是部署噩梦了。
+
+> **Historical note (2026-10-01)**: the storage layer moved on after this
+> article. The canonical tables are `entity` (symbols) and `relation` (edges),
+> `graph_nodes` is no longer populated, and full-text search lives in `code_fts`
+> + `name_trgm`. See `docs/en/technical_breakdown.md` §4.1 for the current
+> schema. LadybugDB, described further down as an optional acceleration
+> layer, was removed from the product as well — that section is history, not
+> a supported path. The design reasoning still holds.
 
 ## The Problem: Where to Store the Code Graph?
 

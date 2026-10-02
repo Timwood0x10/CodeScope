@@ -73,7 +73,7 @@ graph TB
         Client["Claude Desktop / Cursor<br/>自定义 MCP 客户端"]
     end
     subgraph "Rust MCP Server (codescope)"
-        TD["工具调度<br/>(35+ 工具)"]
+        TD["工具调度<br/>(46 个工具)"]
         TQ["任务队列<br/>(Tokio async)"]
         FFI["FFI (extern \"C\")"]
     end
@@ -86,9 +86,10 @@ graph TB
         CD["社区检测"]
     end
     subgraph "SQLite (WAL)"
-        N["graph_nodes<br/>(节点)"]
-        E["graph_edges<br/>(边)"]
-        SR["semantic_records<br/>(IR + FTS)"]
+        N["entity<br/>(符号)"]
+        E["relation<br/>(边)"]
+        SR["semantic_records<br/>(IR)"]
+        FTSN["code_fts + name_trgm<br/>(FTS5)"]
     end
     Client -->|JSON-RPC 2.0| TD
     TD --> TQ
@@ -218,7 +219,7 @@ AI 问答     → codescope_build_context (200-1000 tok)
 | `normal` | `NORMAL` | 仅基础 skip 表（build/dist/out/target/test/docs/vendor/node_modules/.venv 等） | ✅ | 默认 |
 | `strict` | `STRICT` | 基础 skip + detectLanguage 白名单 gate（仅索引可识别语言的源码文件） | ✅ | 最严格，数据最精简 |
 
-> 已知问题（2026-08-11 已修复）：fast 此前≈normal——`fast_extra_skip_dirs_` 为空集（预留未实现）、`setMode()` 未重建 `active_skip_dirs_`。已补全剪枝集合并修复。详见 `docs/optimization/perf-full-index-2026-08-11.md` §9/§10。
+> 已知问题（2026-08-11 已修复）：fast 此前≈normal——`fast_extra_skip_dirs_` 为空集（预留未实现）、`setMode()` 未重建 `active_skip_dirs_`。已补全剪枝集合并修复。详见 `docs/optimization/perf-full-index-2026-08-11.zh.md` §9/§10。
 
 ## 7. 性能基准
 

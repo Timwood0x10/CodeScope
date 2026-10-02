@@ -375,8 +375,13 @@ bool GraphStore::deleteGraphDataByFile(uint64_t project_id,
 		     ")",
 		     "scope(function)");
 
-	// 4+5. graph_nodes/graph_edges are deprecated — no longer written.
-	//      The old deleteGraphNodesByFile call is removed.
+	// 4+5. graph_nodes/graph_edges are legacy: the index paths no longer
+	//      populate graph_nodes (the only writer left is the
+	//      engine_index_batch path), while the resolver still mirrors every
+	//      resolved edge into graph_edges alongside the canonical `relation`
+	//      (resolver/pipeline_flush.cpp). No query reads either — see
+	//      engine_queries_context.cpp — so the mirror is a compatibility
+	//      artefact, and the old deleteGraphNodesByFile call is removed.
 
 	// 6. Delete entity rows for this file.
 	deleteByFile(

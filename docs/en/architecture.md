@@ -1,7 +1,7 @@
 # CodeScope Architecture
 
-**Version**: 0.4.0  
-**Date**: 2026-07-12
+**Version**: v0.2.7  
+**Date**: 2026-10-01
 
 ---
 
@@ -256,7 +256,7 @@ sequenceDiagram
 
     Client->>Server: tools/call index_project
     Server->>Worker: spawn subprocess
-    Worker->>DB: Write semantic_records + graph_nodes
+    Worker->>DB: Write semantic_records + entity + relation
     Worker-->>Server: stdout JSON result
     Server->>Server: RUNTIME.spawn(build_fts)
     Server-->>Client: {"ok":true, "files_indexed":N}

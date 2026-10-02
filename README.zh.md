@@ -126,9 +126,9 @@ flowchart LR
     Q["MCP 客户端<br/>工具调用"] --> Q1["服务端接收<br/>project_id 自动恢复"]
     Q1 --> Q2{"工具类型?"}
     Q2 -->|"会话自动索引"| Q3["initialize 时：启动 worker 子进程<br/>→ 内存隔离<br/>→ 完成后退出<br/>（不是可按名调用的工具）"]
-    Q2 -->|"查询工具"| Q4["C++ FFI → SQLite 查询<br/>graph_nodes, graph_edges<br/>search_index, ..."]
+    Q2 -->|"查询工具"| Q4["C++ FFI → SQLite 查询<br/>entity, relation<br/>code_fts, ..."]
     Q2 -->|"get_communities"| Q5["加载完整图<br/>标签传播<br/>→ JSON (max_communities 限制)"]
-    Q2 -->|"get_hotspots"| Q6["SQL: COUNT(ge.id) JOIN<br/>graph_edges edge_type=1<br/>ORDER BY caller_count"]
+    Q2 -->|"get_hotspots"| Q6["SQL: COUNT(r.id) JOIN<br/>relation edge_type=1<br/>ORDER BY caller_count"]
     Q4 --> R["结果 JSON<br/>返回 MCP 客户端"]
     Q5 --> R
     Q6 --> R
@@ -253,7 +253,7 @@ codescope cli force_index_files '{"paths":["/path/to/test/file.rs"]}'
 
 ### 安装预编译二进制
 
-> 初次使用？[`docs/QUICK_START.md`](docs/QUICK_START.md) 是 5 分钟上手路径 —— 安装、索引一个项目、
+> 初次使用？[`docs/zh/QUICK_START.md`](docs/zh/QUICK_START.md) 是 5 分钟上手路径 —— 安装、索引一个项目、
 > 连接 MCP 客户端、跑通第一批查询。
 
 ```bash

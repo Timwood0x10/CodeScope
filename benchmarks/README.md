@@ -1,58 +1,58 @@
-# CodeScope 性能基准
+# CodeScope Performance Benchmarks
 
-## 目录结构
+## Directory Structure
 
 ```
 benchmarks/
-├── README.md         # 本文件
-├── run_benchmark.sh  # 基准测试运行脚本
-├── baselines/        # 各项目的基准基线（JSON）
+├── README.md         # This file
+├── run_benchmark.sh  # Benchmark execution script
+├── baselines/        # Baseline results for each project (JSON)
 │   ├── rustc.json
 │   ├── jdk.json
 │   ├── bun.json
 │   ├── cpython.json
 │   ├── memscope.json
 │   └── ares.json
-└── results/          # 最新运行结果
-    └── latest.json   # 当前最新结果（symlink）
+└── results/          # Latest benchmark results
+    └── latest.json   # Current latest result (symlink)
 ```
 
-## 测量指标
+## Measurement Metrics
 
-| 指标 | 说明 | 重要性 |
+| Metric | Description | Importance |
 |------|------|:------:|
-| `index_time` | 完整索引耗时 | 核心 |
-| `index_speed` | 文件/秒 | 核心 |
-| `query_latency.p50` | 各查询中位数延迟 | 核心 |
-| `query_latency.p99` | 各查询 P99 延迟 | 核心 |
-| `memory.rss_peak` | 峰值 RSS 内存 | 重要 |
-| `memory.rss_post_gc` | 索引后 GC 归还的 RSS | 重要 |
-| `node_count` | 总节点数 | 参考 |
-| `edge_count` | 总边数 | 参考 |
+| `index_time` | Total index time | Core |
+| `index_speed` | Files per second | Core |
+| `query_latency.p50` | Median latency per query | Core |
+| `query_latency.p99` | P99 latency per query | Core |
+| `memory.rss_peak` | Peak RSS memory | Important |
+| `memory.rss_post_gc` | RSS after GC cleanup | Important |
+| `node_count` | Total node count | Reference |
+| `edge_count` | Total edge count | Reference |
 
-## 运行基准测试
+## Running Benchmarks
 
 ```bash
-# 对所有基线项目运行基准测试
+# Run benchmarks for all baseline projects
 ./run_benchmark.sh --all
 
-# 对特定项目运行
+# Run for a specific project
 ./run_benchmark.sh --project /path/to/repo --name my_project
 
-# 比较结果
+# Compare results
 ./run_benchmark.sh --compare
 ```
 
-## 基线
+## Baselines
 
-当前基线在 `baselines/` 目录下。`run_benchmark.sh --all` 会将结果写入 `results/` 并按日期命名。
-`--compare` 模式输出表格对比最新结果与基线。
+Current baselines are in the `baselines/` directory. `run_benchmark.sh --all` will write results to `results/` named by date.
+`--compare` mode outputs a table comparing latest results with baselines.
 
-## 回归检测
+## Regression Detection
 
-`--check` 模式会检测：
-- 索引时间退化 >20%
-- 查询延迟退化 >30%
-- 内存增长 >15%
+`--check` mode detects:
+- Index time regression >20%
+- Query latency regression >30%
+- Memory growth >15%
 
-超出阈值会返回非零退出码和退化报告。
+Exceeding thresholds will return a non-zero exit code with a regression report.

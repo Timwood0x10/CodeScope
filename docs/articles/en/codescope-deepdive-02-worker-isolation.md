@@ -1,7 +1,6 @@
 # CodeScope Deep Dive (2): Worker Subprocess Isolation — Why Indexing Must Run in Subprocesses
 
 > *"The only way to make a C++ program crash-proof is to run it in a separate process."*
-> 让 C++ 程序不崩溃的唯一方法，是把它跑在单独的进程里。
 
 ## Starting with an OOM Crash
 

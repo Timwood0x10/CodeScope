@@ -1,6 +1,5 @@
 # CodeScope 拆解 (五)：tree-sitter 解析器与统一 IR — 8 种语言一个模型
 
-> *"A programming language is a tool. Code analysis should not care which tool you used."*
 > 编程语言是工具。代码分析不应该关心你用了哪个工具。
 
 ## 问题：8 种语言，一个格式

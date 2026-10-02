@@ -543,7 +543,7 @@ index_project → get_index_progress 轮询
 
 ```
 索引返回(1s) → FTS 异步构建(后台)
-FTS 就绪前 → 自动降级到 graph_nodes.name LIKE 搜索
+FTS 就绪前 → 自动降级到 entity.name LIKE 搜索
 FTS 就绪后 → 自动切换到 FTS5 全文搜索
 ```
 
