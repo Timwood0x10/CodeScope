@@ -24,6 +24,7 @@
 // omits the corresponding key (or sets its score to a default).
 
 #include "project_state_builder.h"
+#include "util/json_writer.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -94,37 +95,7 @@ std::string colText(sqlite3_stmt *stmt, int col)
 // Mirrors the jsonEscape helper used across the engine.
 std::string escapeJson(const std::string &s)
 {
-	std::string out;
-	out.reserve(s.size() + 8);
-	for (char c : s) {
-		switch (c) {
-		case '"':
-			out += "\\\"";
-			break;
-		case '\\':
-			out += "\\\\";
-			break;
-		case '\n':
-			out += "\\n";
-			break;
-		case '\r':
-			out += "\\r";
-			break;
-		case '\t':
-			out += "\\t";
-			break;
-		default:
-			if (static_cast<unsigned char>(c) < 0x20) {
-				char buf[8];
-				std::snprintf(buf, sizeof(buf), "\\u%04x",
-					      static_cast<unsigned char>(c));
-				out += buf;
-			} else {
-				out += c;
-			}
-		}
-	}
-	return out;
+	return util::jsonEscapeString(s);
 }
 
 // Format a double as a JSON number with up to 4 decimal places.

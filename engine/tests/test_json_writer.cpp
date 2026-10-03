@@ -22,22 +22,22 @@ static int g_failures = 0;
 #define CHECK(cond, label)                                                     \
 	do {                                                                   \
 		if (!(cond)) {                                                 \
-			fprintf(stderr, "FAIL: %s (%s:%d)\n", label, __FILE__,  \
+			fprintf(stderr, "FAIL: %s (%s:%d)\n", label, __FILE__, \
 				__LINE__);                                     \
 			g_failures++;                                          \
 		}                                                              \
 	} while (0)
 
-#define CHECK_EQ(actual, expected, label)                                      \
-	do {                                                                   \
-		const std::string a_ = (actual);                               \
-		const std::string e_ = (expected);                             \
-		if (a_ != e_) {                                                \
-			fprintf(stderr,                                        \
-				"FAIL: %s\n  expected: %s\n  actual:   %s\n",   \
-				label, e_.c_str(), a_.c_str());                 \
-			g_failures++;                                          \
-		}                                                              \
+#define CHECK_EQ(actual, expected, label)                                     \
+	do {                                                                  \
+		const std::string a_ = (actual);                              \
+		const std::string e_ = (expected);                            \
+		if (a_ != e_) {                                               \
+			fprintf(stderr,                                       \
+				"FAIL: %s\n  expected: %s\n  actual:   %s\n", \
+				label, e_.c_str(), a_.c_str());               \
+			g_failures++;                                         \
+		}                                                             \
 	} while (0)
 
 static void test_scalars()
@@ -117,15 +117,18 @@ static void test_top_level_array_of_objects()
 static void test_double_matches_ostringstream()
 {
 	// Byte-compatibility with the string-concatenation code this replaces.
-	const double values[] = { 0.1, 1.0, -0.5, 3.14159265358979,
-				  1000000.0, 0.000123456789, 1e20 };
+	const double values[] = { 0.1,	     1.0,
+				  -0.5,	     3.14159265358979,
+				  1000000.0, 0.000123456789,
+				  1e20 };
 	for (double v : values) {
 		std::ostringstream ref;
 		ref.imbue(std::locale::classic());
 		ref << v;
 		util::JsonWriter w;
 		w.value(v);
-		CHECK_EQ(w.str(), ref.str(), "double format matches ostringstream");
+		CHECK_EQ(w.str(), ref.str(),
+			 "double format matches ostringstream");
 	}
 }
 
@@ -145,7 +148,8 @@ static void test_raw()
 	w.beginObject();
 	w.key("nested").raw("{\"already\":\"json\"}");
 	w.endObject();
-	CHECK_EQ(w.str(), "{\"nested\":{\"already\":\"json\"}}", "raw fragment");
+	CHECK_EQ(w.str(), "{\"nested\":{\"already\":\"json\"}}",
+		 "raw fragment");
 }
 
 static void test_structural_errors()
@@ -189,24 +193,72 @@ static void test_structural_errors()
 	}
 }
 
-static void test_legacy_escape_matches()
+static void test_frozen_escaper_contract()
 {
-	// jsonEscapeString must equal the engine's historical escaping for the
-	// characters real inputs contain.
-	const std::string samples[] = {
-		"plain",
-		"with \"quotes\" and \\slashes\\",
-		"line1\nline2\ttab\rcr",
-		std::string("ctrl\x01\x1f"),
-		"unicode: \xE4\xBD\xA0\xE5\xA5\xBD",
+	// Frozen bytes, not a round-trip through the function under test: this is
+	// the migration contract (the 35 hand-rolled escapers it replaced emitted
+	// exactly these sequences), so it must fail if jsonEscapeString changes.
+	struct Case {
+		const char *in;
+		const char *out;
 	};
-	for (const std::string &s : samples) {
-		util::JsonWriter w;
-		w.value(s);
-		// Reconstruct via the same primitive and compare the interior.
-		CHECK_EQ(w.str(), "\"" + util::jsonEscapeString(s) + "\"",
-			 "value uses jsonEscapeString");
+	const Case cases[] = {
+		{ "plain", "plain" },
+		{ "a\"b", "a\\\"b" },
+		{ "a\\b", "a\\\\b" },
+		{ "l1\nl2", "l1\\nl2" },
+		{ "t\tr", "t\\tr" },
+		{ "\b\f", "\\u0008\\u000c" },
+		{ "\x01\x1f", "\\u0001\\u001f" },
+		{ "\x7f", "\x7f" },
+		{ "\xE4\xBD\xA0", "\xE4\xBD\xA0" },
+		{ "\xFF\x80", "\xFF\x80" },
+	};
+	for (const Case &c : cases) {
+		CHECK_EQ("\"" + util::jsonEscapeString(std::string(c.in)) +
+				 "\"",
+			 "\"" + std::string(c.out) + "\"",
+			 "jsonEscapeString frozen bytes");
 	}
+}
+
+static void test_key_escaping()
+{
+	util::JsonWriter w;
+	w.beginObject();
+	w.key("a\"b\\c").value(1);
+	w.endObject();
+	CHECK_EQ(w.str(), "{\"a\\\"b\\\\c\":1}", "keys are escaped too");
+}
+
+static void test_fail_closed_stops_emitting()
+{
+	util::JsonWriter w;
+	w.beginObject();
+	w.key("a");
+	w.endObject(); // pending key: error
+	CHECK(!w.ok(), "pending key is an error");
+	const std::string at_error = w.str();
+	w.key("b").value(1); // further use must not emit anything
+	CHECK_EQ(w.str(), at_error, "writer stops emitting after an error");
+	CHECK(!w.error().empty(), "error() reports the first message");
+}
+
+static void test_error_envelopes()
+{
+	// The envelopes are the one JSON the Rust server parses on every failure,
+	// and the message comes from e.what(), i.e. it can contain anything.
+	CHECK_EQ(util::errorEnvelope("ffi", "engine_x", "plain"),
+		 "{\"error\":\"[module=ffi, method=engine_x] plain\"}",
+		 "error envelope shape");
+	CHECK_EQ(
+		util::errorEnvelope("ffi", "engine_x", "a\"b\\c\nd"),
+		"{\"error\":\"[module=ffi, method=engine_x] a\\\"b\\\\c\\nd\"}",
+		"error envelope escapes the message");
+	CHECK_EQ(util::okFalseEnvelope("ffi", "engine_y", "not initialized"),
+		 "{\"ok\":false,\"error\":\"[module=ffi, method=engine_y] "
+		 "not initialized\"}",
+		 "ok:false envelope shape");
 }
 
 int main()
@@ -219,7 +271,10 @@ int main()
 	test_non_finite_double_is_null();
 	test_raw();
 	test_structural_errors();
-	test_legacy_escape_matches();
+	test_frozen_escaper_contract();
+	test_key_escaping();
+	test_fail_closed_stops_emitting();
+	test_error_envelopes();
 
 	if (g_failures != 0) {
 		fprintf(stderr, "\n=== test_json_writer: %d FAILURE(S) ===\n",

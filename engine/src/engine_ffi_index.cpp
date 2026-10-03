@@ -278,14 +278,12 @@ char *engine_index_batch(uint64_t project_id, const char *file_paths_json)
 		return dupString(w.str());
 	} catch (const std::exception &e) {
 		g_store->rollbackTransaction();
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_index_batch] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_index_batch", e.what()));
 	} catch (...) {
 		g_store->rollbackTransaction();
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_index_batch] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_index_batch", "unknown exception"));
 	}
 }
 
@@ -422,13 +420,11 @@ char *engine_get_project_info(uint64_t project_id)
 		w.endObject();
 		return dupString(w.str());
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_get_project_info] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_project_info", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_get_project_info] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_project_info", "unknown exception"));
 	}
 }
 
@@ -457,13 +453,12 @@ char *engine_get_parse_failures(uint64_t project_id, int limit)
 		return dupString("{\"ok\":true,\"parse_failures\":" + rows +
 				 "}");
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"ok\":false,\"error\":\"[module=ffi, method=engine_get_parse_failures] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::okFalseEnvelope(
+			"ffi", "engine_get_parse_failures", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"ok\":false,\"error\":\"[module=ffi, method=engine_get_parse_failures] unknown exception\"}");
+		return dupString(util::okFalseEnvelope(
+			"ffi", "engine_get_parse_failures",
+			"unknown exception"));
 	}
 }
 
@@ -489,12 +484,11 @@ char *engine_reset_parse_failures(uint64_t project_id)
 		w.endObject();
 		return dupString(w.str());
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"ok\":false,\"error\":\"[module=ffi, method=engine_reset_parse_failures] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::okFalseEnvelope(
+			"ffi", "engine_reset_parse_failures", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"ok\":false,\"error\":\"[module=ffi, method=engine_reset_parse_failures] unknown exception\"}");
+		return dupString(util::okFalseEnvelope(
+			"ffi", "engine_reset_parse_failures",
+			"unknown exception"));
 	}
 }

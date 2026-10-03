@@ -264,13 +264,11 @@ char *engine_get_capabilities(uint64_t project_id)
 		w.endObject();
 		return dupString(w.str());
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_get_capabilities] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_capabilities", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_get_capabilities] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_capabilities", "unknown exception"));
 	}
 }
 
@@ -290,13 +288,11 @@ char *engine_search_code(uint64_t project_id, const char *query, int limit)
 			limit = 20;
 		return dupString(g_query->searchCode(project_id, query, limit));
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_search_code] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_search_code", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_search_code] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_search_code", "unknown exception"));
 	}
 }
 
@@ -318,14 +314,11 @@ char *engine_search_semantic(uint64_t project_id, const char *query, int limit)
 		return dupString(
 			g_store->searchSemanticJson(project_id, query, limit));
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string("{\"error\":\"[module=ffi, "
-				    "method=engine_search_semantic] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_search_semantic", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, "
-			"method=engine_search_semantic] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_search_semantic", "unknown exception"));
 	}
 }
 
@@ -340,13 +333,11 @@ char *engine_get_complexity(uint64_t project_id, uint64_t graph_node_id)
 		return dupString(
 			g_query->getComplexity(project_id, graph_node_id));
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_get_complexity] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_complexity", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_get_complexity] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_complexity", "unknown exception"));
 	}
 }
 
@@ -364,13 +355,11 @@ char *engine_graph_query(uint64_t project_id, const char *dsl_query)
 				"{\"total\":0,\"results\":[],\"error\":\"not initialized\"}");
 		return dupString(g_query->graphQuery(project_id, dsl_query));
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_graph_query] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_graph_query", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_graph_query] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_graph_query", "unknown exception"));
 	}
 }
 
@@ -400,13 +389,11 @@ extern "C" char *engine_get_graph(uint64_t project_id, int64_t node_offset,
 			project_id, node_offset, node_limit, edge_offset,
 			edge_limit, node_type_filter, edge_type_filter));
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_get_graph] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope("ffi", "engine_get_graph",
+						     e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_get_graph] unknown exception\"}");
+		return dupString(util::errorEnvelope("ffi", "engine_get_graph",
+						     "unknown exception"));
 	}
 }
 
@@ -428,13 +415,11 @@ char *engine_detect_changes(uint64_t project_id,
 		return dupString(g_query->detectChanges(project_id,
 							modified_files_json));
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_detect_changes] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_detect_changes", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_detect_changes] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_detect_changes", "unknown exception"));
 	}
 }
 
@@ -459,13 +444,11 @@ char *engine_get_communities(uint64_t project_id, int max_members,
 			project_id, max_members, max_communities,
 			include_members != 0));
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_get_communities] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_communities", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_get_communities] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_communities", "unknown exception"));
 	}
 }
 
@@ -480,13 +463,12 @@ char *engine_get_index_progress(uint64_t project_id)
 		return dupString(
 			store::getIndexProgressJson(project_id).c_str());
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_get_index_progress] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_index_progress", e.what()));
 	} catch (...) {
 		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_get_index_progress] unknown exception\"}");
+			util::errorEnvelope("ffi", "engine_get_index_progress",
+					    "unknown exception"));
 	}
 }
 
@@ -509,13 +491,11 @@ char *engine_build_fts(uint64_t project_id)
 		g_store->setProjectReadiness(project_id, "normal_ready", 1);
 		return dupString("{\"ok\":true}");
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_build_fts] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope("ffi", "engine_build_fts",
+						     e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_build_fts] unknown exception\"}");
+		return dupString(util::errorEnvelope("ffi", "engine_build_fts",
+						     "unknown exception"));
 	}
 }
 
@@ -531,13 +511,11 @@ char *engine_get_hotspots(uint64_t project_id, int top_n)
 			top_n = 10;
 		return dupString(g_query->getHotspots(project_id, top_n));
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_get_hotspots] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_hotspots", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_get_hotspots] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_hotspots", "unknown exception"));
 	}
 }
 
@@ -560,13 +538,11 @@ extern "C" char *engine_explain_symbol(uint64_t project_id,
 		return dupString(
 			g_query->explainSymbol(project_id, symbol_name));
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_explain_symbol] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_explain_symbol", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_explain_symbol] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_explain_symbol", "unknown exception"));
 	}
 }
 
@@ -578,13 +554,11 @@ char *engine_get_module_map(uint64_t project_id)
 			return dupString("{\"error\":\"not initialized\"}");
 		return dupString(g_query->getModuleMap(project_id));
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_get_module_map] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_module_map", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_get_module_map] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_module_map", "unknown exception"));
 	}
 }
 
@@ -596,13 +570,11 @@ char *engine_get_entry_points(uint64_t project_id)
 			return dupString("{\"error\":\"not initialized\"}");
 		return dupString(g_query->getEntryPoints(project_id));
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_get_entry_points] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_entry_points", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_get_entry_points] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_entry_points", "unknown exception"));
 	}
 }
 
@@ -618,13 +590,11 @@ char *engine_trace_call_chain(uint64_t project_id, const char *from,
 			return dupString("{\"error\":\"not initialized\"}");
 		return dupString(g_query->traceCallChain(project_id, from, to));
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_trace_call_chain] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_trace_call_chain", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_trace_call_chain] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_trace_call_chain", "unknown exception"));
 	}
 }
 
@@ -636,13 +606,12 @@ char *engine_get_project_overview(uint64_t project_id)
 			return dupString("{\"error\":\"not initialized\"}");
 		return dupString(g_query->getProjectOverview(project_id));
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_get_project_overview] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_project_overview", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_get_project_overview] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_project_overview",
+			"unknown exception"));
 	}
 }
 
@@ -724,13 +693,11 @@ char *engine_get_type_info(uint64_t project_id, const char *type_name_filter)
 		w.endObject();
 		return dupString(w.str());
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_get_type_info] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_type_info", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_get_type_info] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_type_info", "unknown exception"));
 	}
 }
 
@@ -780,13 +747,11 @@ char *engine_get_routes(uint64_t project_id)
 		w.endObject();
 		return dupString(w.str());
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_get_routes] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope("ffi", "engine_get_routes",
+						     e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_get_routes] unknown exception\"}");
+		return dupString(util::errorEnvelope("ffi", "engine_get_routes",
+						     "unknown exception"));
 	}
 }
 
@@ -812,13 +777,11 @@ char *engine_export_artifact(uint64_t project_id, const char *output_path)
 		auto result = g_store->exportArtifact(project_id, output_path);
 		return dupString(result);
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_export_artifact] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_export_artifact", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_export_artifact] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_export_artifact", "unknown exception"));
 	}
 }
 
@@ -833,13 +796,11 @@ char *engine_import_artifact(uint64_t project_id, const char *artifact_path)
 			g_store->importArtifact(project_id, artifact_path);
 		return dupString(result);
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_import_artifact] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_import_artifact", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_import_artifact] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_import_artifact", "unknown exception"));
 	}
 }
 
@@ -884,13 +845,11 @@ extern "C" char *engine_rebuild_csr(const char *db_path, uint64_t project_id)
 		return dupString("{\"ok\":true,\"project_id\":" +
 				 std::to_string(project_id) + "}");
 	} catch (const std::exception &e) {
-		return dupString(std::string("{\"error\":\"[module=ffi, "
-					     "method=engine_rebuild_csr] ") +
-				 jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_rebuild_csr", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, "
-			"method=engine_rebuild_csr] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_rebuild_csr", "unknown exception"));
 	}
 }
 

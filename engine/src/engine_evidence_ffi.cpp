@@ -118,12 +118,10 @@ char *engine_build_evidence(uint64_t project_id, const char *category_filter)
 		w.endArray();
 		return dupString(w.str());
 	} catch (const std::exception &e) {
-		return dupString(std::string("{\"error\":\"[module=ffi, "
-					     "method=engine_build_evidence] ") +
-				 jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_build_evidence", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, "
-			"method=engine_build_evidence] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_build_evidence", "unknown exception"));
 	}
 }

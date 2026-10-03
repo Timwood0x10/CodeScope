@@ -1,3 +1,4 @@
+#include "util/json_writer.h"
 #include "engine_internal.h"
 #include "model/semantic_fact_extractor.h"
 #include "async_knowledge.h"
@@ -718,14 +719,11 @@ char *engine_get_module_tree(uint64_t project_id)
 	try {
 		return getModuleTreeImpl(project_id);
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string("{\"error\":\"[module=ffi, "
-				    "method=engine_get_module_tree] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_module_tree", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, "
-			"method=engine_get_module_tree] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_module_tree", "unknown exception"));
 	}
 }
 
@@ -734,13 +732,11 @@ char *engine_find_symbol(uint64_t project_id, const char *symbol_name)
 	try {
 		return findSymbolImpl(project_id, symbol_name);
 	} catch (const std::exception &e) {
-		return dupString(std::string("{\"error\":\"[module=ffi, "
-					     "method=engine_find_symbol] ") +
-				 jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_find_symbol", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, "
-			"method=engine_find_symbol] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_find_symbol", "unknown exception"));
 	}
 }
 
@@ -749,14 +745,11 @@ char *engine_enhance_project(uint64_t project_id)
 	try {
 		return enhanceProjectImpl(project_id);
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string("{\"error\":\"[module=ffi, "
-				    "method=engine_enhance_project] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_enhance_project", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, "
-			"method=engine_enhance_project] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_enhance_project", "unknown exception"));
 	}
 }
 
@@ -765,10 +758,8 @@ char *engine_get_enhancement_status(uint64_t project_id)
 	try {
 		return getEnhancementStatusImpl(project_id);
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string("{\"error\":\"[module=ffi, "
-				    "method=engine_get_enhancement_status] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_enhancement_status", e.what()));
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, "
@@ -782,13 +773,11 @@ char *engine_unified_search(uint64_t project_id, const char *query, int limit)
 	try {
 		return unifiedSearchImpl(project_id, query, limit);
 	} catch (const std::exception &e) {
-		return dupString(std::string("{\"error\":\"[module=ffi, "
-					     "method=engine_unified_search] ") +
-				 jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_unified_search", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, "
-			"method=engine_unified_search] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_unified_search", "unknown exception"));
 	}
 }
 
@@ -799,10 +788,8 @@ char *engine_find_callers_adaptive(uint64_t project_id, const char *symbol_name,
 		return findCallersAdaptiveImpl(project_id, symbol_name,
 					       file_filter);
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string("{\"error\":\"[module=ffi, "
-				    "method=engine_find_callers_adaptive] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_find_callers_adaptive", e.what()));
 	} catch (...) {
 		return dupString("{\"error\":\"[module=ffi, "
 				 "method=engine_find_callers_adaptive] unknown "
@@ -817,10 +804,8 @@ char *engine_find_callees_adaptive(uint64_t project_id, const char *symbol_name,
 		return findCalleesAdaptiveImpl(project_id, symbol_name,
 					       file_filter);
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string("{\"error\":\"[module=ffi, "
-				    "method=engine_find_callees_adaptive] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_find_callees_adaptive", e.what()));
 	} catch (...) {
 		return dupString("{\"error\":\"[module=ffi, "
 				 "method=engine_find_callees_adaptive] unknown "
@@ -833,10 +818,8 @@ char *engine_find_callers_by_entity(uint64_t project_id, uint64_t entity_id)
 	try {
 		return findCallersByEntityImpl(project_id, entity_id);
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string("{\"error\":\"[module=ffi, "
-				    "method=engine_find_callers_by_entity] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_find_callers_by_entity", e.what()));
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, "
@@ -850,10 +833,8 @@ char *engine_find_callees_by_entity(uint64_t project_id, uint64_t entity_id)
 	try {
 		return findCalleesByEntityImpl(project_id, entity_id);
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string("{\"error\":\"[module=ffi, "
-				    "method=engine_find_callees_by_entity] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_find_callees_by_entity", e.what()));
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, "
@@ -867,10 +848,8 @@ char *engine_get_entry_points_new(uint64_t project_id)
 	try {
 		return getEntryPointsNewImpl(project_id);
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string("{\"error\":\"[module=ffi, "
-				    "method=engine_get_entry_points_new] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_entry_points_new", e.what()));
 	} catch (...) {
 		return dupString("{\"error\":\"[module=ffi, "
 				 "method=engine_get_entry_points_new] unknown "
@@ -883,13 +862,10 @@ char *engine_project_overview(uint64_t project_id)
 	try {
 		return projectOverviewImpl(project_id);
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string("{\"error\":\"[module=ffi, "
-				    "method=engine_project_overview] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_project_overview", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, "
-			"method=engine_project_overview] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_project_overview", "unknown exception"));
 	}
 }

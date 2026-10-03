@@ -1,4 +1,5 @@
 #include "lsp_client.h"
+#include "util/json_writer.h"
 #include "lsp_framing.h"
 #include "platform_win.h"
 
@@ -121,47 +122,14 @@ bool LspClient::start(const char *command, const char *root_uri)
 /// buffer cannot break the JSON-RPC frame for textDocument/didOpen.
 /// @param raw  NUL-terminated C string (may be nullptr → empty).
 /// @return Escaped text safe to concatenate into a JSON string value.
+///
+/// Delegates to util::jsonEscapeString, so the engine has one escaper.
+/// That changes two bytes for backspace/form-feed: this function used to
+/// emit \b and \f, the shared one emits \u0008 / \u000c. Both are valid
+/// JSON and decode to the same character.
 static std::string jsonEscapeLsp(const char *raw)
 {
-	std::string out;
-	if (!raw)
-		return out;
-	out.reserve(std::strlen(raw) + 8);
-	for (const char *p = raw; *p; ++p) {
-		unsigned char c = static_cast<unsigned char>(*p);
-		switch (c) {
-		case '"':
-			out += "\\\"";
-			break;
-		case '\\':
-			out += "\\\\";
-			break;
-		case '\b':
-			out += "\\b";
-			break;
-		case '\f':
-			out += "\\f";
-			break;
-		case '\n':
-			out += "\\n";
-			break;
-		case '\r':
-			out += "\\r";
-			break;
-		case '\t':
-			out += "\\t";
-			break;
-		default:
-			if (c < 0x20) {
-				char buf[8];
-				std::snprintf(buf, sizeof(buf), "\\u%04x", c);
-				out += buf;
-			} else {
-				out.push_back(static_cast<char>(c));
-			}
-		}
-	}
-	return out;
+	return raw ? util::jsonEscapeString(raw) : std::string();
 }
 
 bool LspClient::openDocument(const char *file_uri, const char *source_text)

@@ -1,3 +1,4 @@
+#include "util/json_writer.h"
 #include "engine_index_discover.h"
 
 #include <cctype>
@@ -281,9 +282,12 @@ int collectFileJobs(uint64_t project_id, const std::string &dir,
 			jobs.size());
 	} catch (const std::exception &e) {
 		std::ostringstream err;
-		err << "{\"ok\":false,\"error\":\"scan error: "
-		    << jsonEscape(e.what()) << "\"}";
-		err_json = err.str();
+		// The helper adds the [module=…, method=…] trace chain the hand-built
+		// envelope was missing (plan/rules/code_rules.md: every error must be
+		// traceable to a module and a method).
+		err_json = util::okFalseEnvelope("ffi", "engine_index_discover",
+						 std::string("scan error: ") +
+							 e.what());
 		return -1;
 	}
 	return 0;

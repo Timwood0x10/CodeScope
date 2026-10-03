@@ -1,3 +1,4 @@
+#include "util/json_writer.h"
 #include "engine_internal.h"
 #include "filter_policy.h"
 #include "platform_win.h"
@@ -912,12 +913,10 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	try {
 		return indexProjectImpl(project_id, dir_path, language_filter);
 	} catch (const std::exception &e) {
-		return dupString(std::string("{\"error\":\"[module=ffi, "
-					     "method=engine_index_project] ") +
-				 jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_index_project", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, "
-			"method=engine_index_project] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_index_project", "unknown exception"));
 	}
 }

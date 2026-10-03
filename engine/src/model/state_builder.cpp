@@ -286,10 +286,11 @@ int64_t StateBuilder::buildWorkflowState()
 	// Clear previous rows so a rebuild is idempotent (rename-safe).
 	// INSERT OR IGNORE without a DELETE left stale workflow names behind
 	// after a rename and double-counted on every enhance.
-	if (!store_->exec((std::string(
-				  "DELETE FROM workflow_state WHERE project_id=") +
-			  std::to_string(project_id_))
-				  .c_str())) {
+	if (!store_->exec(
+		    (std::string(
+			     "DELETE FROM workflow_state WHERE project_id=") +
+		     std::to_string(project_id_))
+			    .c_str())) {
 		fprintf(stderr,
 			"[module=state_builder, method=buildWorkflowState] "
 			"delete failed: %s\n",

@@ -14,6 +14,7 @@
 // by extractFrameworkFacts.
 
 #include "semantic_fact_extractor.h"
+#include "util/json_writer.h"
 
 #include <cstdio>
 #include <sqlite3.h>
@@ -61,64 +62,11 @@ static std::string buildDetailJson(int line, const std::string &snippet,
 	out += "{\"line\":";
 	out += std::to_string(line);
 	out += ",\"snippet\":\"";
-	for (char c : snippet) {
-		switch (c) {
-		case '"':
-			out += "\\\"";
-			break;
-		case '\\':
-			out += "\\\\";
-			break;
-		case '\n':
-			out += "\\n";
-			break;
-		case '\r':
-			out += "\\r";
-			break;
-		case '\t':
-			out += "\\t";
-			break;
-		default:
-			if (static_cast<unsigned char>(c) < 0x20) {
-				// Control char: emit \u00XX for safety.
-				char buf[8];
-				snprintf(buf, sizeof(buf), "\\u%04x",
-					 static_cast<unsigned char>(c));
-				out += buf;
-			} else {
-				out += c;
-			}
-		}
-	}
+	out += util::jsonEscapeString(snippet);
+
 	out += "\",\"related_symbol\":\"";
-	for (char c : related_symbol) {
-		switch (c) {
-		case '"':
-			out += "\\\"";
-			break;
-		case '\\':
-			out += "\\\\";
-			break;
-		case '\n':
-			out += "\\n";
-			break;
-		case '\r':
-			out += "\\r";
-			break;
-		case '\t':
-			out += "\\t";
-			break;
-		default:
-			if (static_cast<unsigned char>(c) < 0x20) {
-				char buf[8];
-				snprintf(buf, sizeof(buf), "\\u%04x",
-					 static_cast<unsigned char>(c));
-				out += buf;
-			} else {
-				out += c;
-			}
-		}
-	}
+	out += util::jsonEscapeString(related_symbol);
+
 	out += "\"}";
 	return out;
 }

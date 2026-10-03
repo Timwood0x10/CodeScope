@@ -10,6 +10,7 @@
 // release with engine_free_string(). Null store/query inputs return an
 // error JSON object instead of crashing.
 
+#include "util/json_writer.h"
 #include "engine_internal.h"
 #include "async_knowledge.h"
 #include "platform_win.h"
@@ -576,13 +577,11 @@ extern "C" char *engine_verify_integrity(uint64_t project_id, int max_findings)
 		     << "}";
 		return dupString(json.str());
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_verify_integrity] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_verify_integrity", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_verify_integrity] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_verify_integrity", "unknown exception"));
 	}
 }
 
@@ -659,13 +658,11 @@ extern "C" char *engine_verify_claim(uint64_t project_id,
 			verify_ffi::verify_one_claim(project_id, claim);
 		return result.json;
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_verify_claim] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_verify_claim", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_verify_claim] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_verify_claim", "unknown exception"));
 	}
 }
 
@@ -764,13 +761,11 @@ extern "C" char *engine_verify_summary(uint64_t project_id, const char *text)
 		json << "}}";
 		return dupString(json.str());
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_verify_summary] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_verify_summary", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_verify_summary] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_verify_summary", "unknown exception"));
 	}
 }
 
@@ -861,13 +856,12 @@ extern "C" char *engine_get_verifier_registry_status(uint64_t project_id)
 		  << ",\"relation_count\":" << relation_count << "}";
 		return dupString(j.str());
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string("{\"error\":\"[module=ffi, method="
-				    "engine_get_verifier_registry_status] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_verifier_registry_status",
+			e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method="
-			"engine_get_verifier_registry_status] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_verifier_registry_status",
+			"unknown exception"));
 	}
 }

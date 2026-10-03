@@ -1,4 +1,5 @@
 #include "store.h"
+#include "util/json_writer.h"
 #include "store_internal.h"
 #include "platform_win.h"
 
@@ -114,38 +115,7 @@ void GraphStore::clearStmtCache()
 // Declared in store_internal.h; used by all store_*.cpp split files.
 std::string jsonEscape(const std::string &s)
 {
-	std::string out;
-	out.reserve(s.size() + 4);
-	for (char c : s) {
-		switch (c) {
-		case '"':
-			out += "\\\"";
-			break;
-		case '\\':
-			out += "\\\\";
-			break;
-		case '\n':
-			out += "\\n";
-			break;
-		case '\r':
-			out += "\\r";
-			break;
-		case '\t':
-			out += "\\t";
-			break;
-		default:
-			if (static_cast<unsigned char>(c) < 0x20) {
-				char buf[8];
-				snprintf(buf, sizeof(buf), "\\u%04x",
-					 static_cast<unsigned char>(c));
-				out += buf;
-			} else {
-				out += c;
-			}
-			break;
-		}
-	}
-	return out;
+	return util::jsonEscapeString(s);
 }
 
 } // namespace store

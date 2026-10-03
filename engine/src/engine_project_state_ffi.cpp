@@ -18,6 +18,7 @@
 // object contains an "error" field. Null `g_store` returns
 //   {"error":"engine not initialized"}.
 
+#include "util/json_writer.h"
 #include "engine_internal.h"
 #include "async_knowledge.h"
 #include "model/project_state_builder.h"
@@ -49,10 +50,8 @@ char *engine_build_project_state(uint64_t project_id)
 		}
 		return dupString(builder.getSnapshotJson(project_id));
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string("{\"error\":\"[module=ffi, "
-				    "method=engine_build_project_state] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_build_project_state", e.what()));
 	} catch (...) {
 		return dupString("{\"error\":\"[module=ffi, "
 				 "method=engine_build_project_state] unknown "
@@ -86,10 +85,8 @@ char *engine_get_project_state(uint64_t project_id)
 		}
 		return dupString(snapshot);
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string("{\"error\":\"[module=ffi, "
-				    "method=engine_get_project_state] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_project_state", e.what()));
 	} catch (...) {
 		return dupString("{\"error\":\"[module=ffi, "
 				 "method=engine_get_project_state] unknown "

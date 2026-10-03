@@ -8,6 +8,7 @@
 // ABI export points declared on the Rust side via `extern "C"` — no
 // header declaration is needed for the definition itself.
 
+#include "util/json_writer.h"
 #include "engine_internal.h"
 #include "async_knowledge.h"
 
@@ -813,13 +814,11 @@ char *engine_trace_path(uint64_t project_id, const char *from_name,
 	try {
 		return tracePathImpl(project_id, from_name, to_name);
 	} catch (const std::exception &e) {
-		return dupString(std::string("{\"error\":\"[module=ffi, "
-					     "method=engine_trace_path] ") +
-				 jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope("ffi", "engine_trace_path",
+						     e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, "
-			"method=engine_trace_path] unknown exception\"}");
+		return dupString(util::errorEnvelope("ffi", "engine_trace_path",
+						     "unknown exception"));
 	}
 }
 
@@ -830,14 +829,11 @@ char *engine_explore_function(uint64_t project_id, const char *function_name,
 		return exploreFunctionImpl(project_id, function_name, depth,
 					   direction);
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string("{\"error\":\"[module=ffi, "
-				    "method=engine_explore_function] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_explore_function", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, "
-			"method=engine_explore_function] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_explore_function", "unknown exception"));
 	}
 }
 
@@ -846,13 +842,11 @@ char *engine_build_context(uint64_t project_id, const char *query)
 	try {
 		return buildContextImpl(project_id, query);
 	} catch (const std::exception &e) {
-		return dupString(std::string("{\"error\":\"[module=ffi, "
-					     "method=engine_build_context] ") +
-				 jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_build_context", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, "
-			"method=engine_build_context] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_build_context", "unknown exception"));
 	}
 }
 
@@ -861,10 +855,8 @@ char *engine_detect_ffi_boundaries(uint64_t project_id)
 	try {
 		return detectFfiBoundariesImpl(project_id);
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string("{\"error\":\"[module=ffi, "
-				    "method=engine_detect_ffi_boundaries] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_detect_ffi_boundaries", e.what()));
 	} catch (...) {
 		return dupString("{\"error\":\"[module=ffi, "
 				 "method=engine_detect_ffi_boundaries] unknown "

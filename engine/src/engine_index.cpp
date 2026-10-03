@@ -1,3 +1,4 @@
+#include "util/json_writer.h"
 #include "engine_internal.h"
 #include "engine_index_paths.h"
 #include "filter_policy.h"
@@ -396,7 +397,7 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 			e.what() + "\"}");
 	} catch (...) {
 		g_store->rollbackTransaction();
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_index_file] unknown exception\"}");
+		return dupString(util::errorEnvelope("ffi", "engine_index_file",
+						     "unknown exception"));
 	}
 }

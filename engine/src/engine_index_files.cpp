@@ -1,3 +1,4 @@
+#include "util/json_writer.h"
 #include "engine_internal.h"
 #include "engine_index_paths.h"
 #include "filter_policy.h"
@@ -769,12 +770,10 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json,
 		return indexFilesImpl(project_id, file_list_json,
 				      bypass_fail_fast);
 	} catch (const std::exception &e) {
-		return dupString(std::string("{\"error\":\"[module=ffi, "
-					     "method=engine_index_files] ") +
-				 jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_index_files", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, "
-			"method=engine_index_files] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_index_files", "unknown exception"));
 	}
 }

@@ -7,6 +7,7 @@
 // together because every section is a step of the same card build and
 // they share the same verifier-registry bootstrapping.
 
+#include "util/json_writer.h"
 #include "engine_internal.h"
 #include "async_knowledge.h"
 #include "platform_win.h"
@@ -439,12 +440,10 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 		json << "}}";
 		return dupString(json.str());
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_explain_module] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_explain_module", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_explain_module] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_explain_module", "unknown exception"));
 	}
 }

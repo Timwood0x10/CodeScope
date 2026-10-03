@@ -1,3 +1,4 @@
+#include "util/json_writer.h"
 #include "engine_internal.h"
 #include "async_knowledge.h"
 #include "verify/ffi_internal.h"
@@ -121,13 +122,11 @@ extern "C" char *engine_verify_review(uint64_t project_id, const char *text)
 		json << "}}";
 		return dupString(json.str());
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_verify_review] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_verify_review", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_verify_review] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_verify_review", "unknown exception"));
 	}
 }
 
@@ -177,13 +176,11 @@ extern "C" char *engine_verify_reality(uint64_t project_id, const char *text)
 		     << ",\"results\":" << batch.results_json << "}";
 		return dupString(json.str());
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_verify_reality] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_verify_reality", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_verify_reality] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_verify_reality", "unknown exception"));
 	}
 }
 
@@ -432,13 +429,11 @@ extern "C" char *engine_detect_drift(uint64_t project_id)
 		json << "],\"drifts_found\":" << drifts_found << "}";
 		return dupString(json.str());
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_detect_drift] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_detect_drift", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_detect_drift] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_detect_drift", "unknown exception"));
 	}
 }
 
@@ -575,13 +570,12 @@ extern "C" char *engine_detect_documentation_drift(uint64_t project_id)
 		json << "],\"drifts_found\":" << drifts_found << "}";
 		return dupString(json.str());
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_detect_documentation_drift] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_detect_documentation_drift", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_detect_documentation_drift] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_detect_documentation_drift",
+			"unknown exception"));
 	}
 }
 
@@ -677,13 +671,12 @@ extern "C" char *engine_detect_capability_drift(uint64_t project_id)
 		json << "}";
 		return dupString(json.str());
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_detect_capability_drift] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_detect_capability_drift", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_detect_capability_drift] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_detect_capability_drift",
+			"unknown exception"));
 	}
 }
 
@@ -742,12 +735,11 @@ extern "C" char *engine_detect_architecture_drift(uint64_t project_id)
 		json << "],\"drifts_found\":" << drifts.size() << "}";
 		return dupString(json.str());
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_detect_architecture_drift] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_detect_architecture_drift", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_detect_architecture_drift] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_detect_architecture_drift",
+			"unknown exception"));
 	}
 }

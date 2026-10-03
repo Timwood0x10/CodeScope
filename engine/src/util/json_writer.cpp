@@ -47,6 +47,50 @@ std::string jsonEscapeString(const std::string &s)
 	return out;
 }
 
+namespace
+{
+
+/// Shared body of the two envelope helpers: build
+/// `{"<flag key>":<flag>,"error":"[module=…, method=…] <message>"}`, or without
+/// the flag for the plain error envelope.
+/// @param with_ok_flag  Emit `"ok":false` before the error member.
+/// @param module        Module name for the trace chain.
+/// @param method        Function name for the trace chain.
+/// @param message       Raw message, escaped by the writer.
+/// @return              The complete JSON object.
+std::string envelope(bool with_ok_flag, const char *module, const char *method,
+		     const std::string &message)
+{
+	std::string prefix = "[module=";
+	prefix += module ? module : "unknown";
+	prefix += ", method=";
+	prefix += method ? method : "unknown";
+	prefix += "] ";
+	prefix += message;
+
+	JsonWriter w;
+	w.beginObject();
+	if (with_ok_flag)
+		w.key("ok").value(false);
+	w.key("error").value(prefix);
+	w.endObject();
+	return w.str();
+}
+
+} // namespace
+
+std::string errorEnvelope(const char *module, const char *method,
+			  const std::string &message)
+{
+	return envelope(false, module, method, message);
+}
+
+std::string okFalseEnvelope(const char *module, const char *method,
+			    const std::string &message)
+{
+	return envelope(true, module, method, message);
+}
+
 JsonWriter::JsonWriter()
 {
 	out_.reserve(256);

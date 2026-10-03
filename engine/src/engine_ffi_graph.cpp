@@ -175,13 +175,12 @@ char *engine_get_knowledge_graph(uint64_t project_id, const char *table_name,
 		w.endObject();
 		return dupString(w.str());
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_get_knowledge_graph] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_knowledge_graph", e.what()));
 	} catch (...) {
 		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_get_knowledge_graph] unknown exception\"}");
+			util::errorEnvelope("ffi", "engine_get_knowledge_graph",
+					    "unknown exception"));
 	}
 }
 
@@ -199,13 +198,11 @@ char *engine_find_definition(uint64_t project_id, const char *symbol_name,
 		return dupString(g_query->findDefinition(
 			project_id, symbol_name, file_filter));
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_find_definition] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_find_definition", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_find_definition] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_find_definition", "unknown exception"));
 	}
 }
 
@@ -223,13 +220,11 @@ char *engine_find_references(uint64_t project_id, const char *symbol_name,
 		return dupString(g_query->findReferences(
 			project_id, symbol_name, file_filter));
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_find_references] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_find_references", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_find_references] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_find_references", "unknown exception"));
 	}
 }
 
@@ -247,13 +242,11 @@ char *engine_get_callers(uint64_t project_id, const char *function_name,
 		return dupString(g_query->getCallers(project_id, function_name,
 						     file_filter));
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_get_callers] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_callers", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_get_callers] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_callers", "unknown exception"));
 	}
 }
 
@@ -271,13 +264,11 @@ char *engine_get_callees(uint64_t project_id, const char *function_name,
 		return dupString(g_query->getCallees(project_id, function_name,
 						     file_filter));
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_get_callees] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_callees", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_get_callees] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_callees", "unknown exception"));
 	}
 }
 
@@ -292,13 +283,11 @@ char *engine_get_neighbors(uint64_t project_id, uint64_t node_id,
 		return dupString(g_query->getNeighbors(
 			project_id, node_id, edge_type_filter, radius));
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_get_neighbors] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_neighbors", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_get_neighbors] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_neighbors", "unknown exception"));
 	}
 }
 
@@ -313,13 +302,12 @@ char *engine_find_shortest_path(uint64_t project_id, uint64_t source_id,
 		return dupString(g_query->findShortestPath(
 			project_id, source_id, target_id));
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_find_shortest_path] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_find_shortest_path", e.what()));
 	} catch (...) {
 		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_find_shortest_path] unknown exception\"}");
+			util::errorEnvelope("ffi", "engine_find_shortest_path",
+					    "unknown exception"));
 	}
 }
 
@@ -390,13 +378,12 @@ char *engine_find_connected_components(uint64_t project_id)
 		w.endObject();
 		return dupString(w.str());
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_find_connected_components] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_find_connected_components", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_find_connected_components] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_find_connected_components",
+			"unknown exception"));
 	}
 }
 
@@ -413,13 +400,11 @@ char *engine_get_subgraph(uint64_t project_id, uint64_t center_node_id,
 			project_id, center_node_id, radius, node_type_filter,
 			edge_type_filter));
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_get_subgraph] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_subgraph", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_get_subgraph] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_subgraph", "unknown exception"));
 	}
 }
 
@@ -434,13 +419,11 @@ char *engine_locate_node(uint64_t project_id, uint64_t node_id,
 		return dupString(g_query->locateNode(project_id, node_id,
 						     context_lines));
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_locate_node] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_locate_node", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_locate_node] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_locate_node", "unknown exception"));
 	}
 }
 
@@ -456,13 +439,11 @@ char *engine_locate_by_name(uint64_t project_id, const char *name)
 				"{\"total\":0,\"locations\":[],\"error\":\"not initialized\"}");
 		return dupString(g_query->locateByName(project_id, name));
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_locate_by_name] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_locate_by_name", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_locate_by_name] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_locate_by_name", "unknown exception"));
 	}
 }
 
@@ -474,12 +455,10 @@ char *engine_get_graph_stats(uint64_t project_id)
 			return dupString("{\"error\":\"not initialized\"}");
 		return dupString(g_query->getGraphStats(project_id));
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_get_graph_stats] ") +
-			jsonEscape(e.what()) + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_graph_stats", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_get_graph_stats] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_graph_stats", "unknown exception"));
 	}
 }

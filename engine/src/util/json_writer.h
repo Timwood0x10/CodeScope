@@ -20,6 +20,37 @@ namespace util
 /// @return   The escaped contents, WITHOUT the surrounding quotes.
 std::string jsonEscapeString(const std::string &s);
 
+/// Build the error envelope every FFI export returns on failure:
+/// `{"error":"[module=<module>, method=<method>] <message>"}`.
+///
+/// Centralised because the shape was hand-concatenated in ~150 places, and each
+/// one had to remember `jsonEscape` around the message: an exception message
+/// containing a quote, a backslash or a control byte produced invalid JSON that
+/// the Rust server then fed straight into serde_json. The message is escaped
+/// here, unconditionally, and the `[module=…, method=…]` prefix is what makes
+/// the error traceable to a module and a method (plan/rules/code_rules.md:
+/// errors must never be silent and must carry a trace chain).
+///
+/// @param module   Module name for the trace chain, e.g. "ffi".
+/// @param method   Function name for the trace chain, e.g. "engine_get_routes".
+/// @param message  Raw message; escaped, so `e.what()` can be passed directly.
+/// @return         A complete JSON object, ready for `dupString()`.
+std::string errorEnvelope(const char *module, const char *method,
+			  const std::string &message);
+
+/// Build the error envelope for the entry points that report an explicit `ok`
+/// flag: `{"ok":false,"error":"[module=<module>, method=<method>] <message>"}`.
+/// Same escaping and trace-chain guarantees as errorEnvelope(); the two shapes
+/// coexist because callers distinguish them (see engine.h), so this helper
+/// keeps each one byte-identical to what it replaces.
+///
+/// @param module   Module name for the trace chain, e.g. "ffi".
+/// @param method   Function name for the trace chain.
+/// @param message  Raw message; escaped before it is embedded.
+/// @return         A complete JSON object, ready for `dupString()`.
+std::string okFalseEnvelope(const char *module, const char *method,
+			    const std::string &message);
+
 /// Incremental, always-escaping JSON serializer.
 ///
 /// Replaces the hand-rolled
