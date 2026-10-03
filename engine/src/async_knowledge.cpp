@@ -15,6 +15,7 @@
 #include <exception>
 #include <mutex>
 #include <sqlite3.h>
+#include <stdexcept>
 #include <thread>
 
 // ─── module_edge population ─────────────────────────────────────
@@ -48,10 +49,12 @@ std::thread g_builder_thread;
 // could BEGIN/COMMIT while a read is still stepping statements on the
 // same connection (prior review residual #16).
 //
-// recursive_mutex: FFI entry points nest (e.g. enhance calls through
-// paths that also call waitForKnowledgeBuilder). A plain mutex deadlocks
-// the same thread on the second acquisition.
-std::recursive_mutex g_store_mutex;
+// recursive_timed_mutex: FFI entry points nest (e.g. enhance calls through
+// paths that also call waitForKnowledgeBuilder), so a plain mutex deadlocks
+// the same thread on the second acquisition. The timed variant lets the
+// caller bound the wait (see kStoreLockTimeoutMs) instead of hanging
+// forever if the builder thread wedges.
+std::recursive_timed_mutex g_store_mutex;
 
 // Signalled when the builder thread body finishes, so join can wait with
 // a timeout instead of blocking forever on a wedged builder.
@@ -64,6 +67,38 @@ bool g_builder_done = true;
 // build (the slowest observed was ~10 s on a 1.5k-file project) and short
 // enough that a wedged builder cannot hang the MCP server forever.
 inline constexpr int kBuilderJoinTimeoutMs = 60000;
+
+// Upper bound on how long a read/write entry point waits to acquire the
+// shared store connection (waitForKnowledgeBuilder). Shorter than the join
+// timeout so a read that arrives while a wedged builder holds the lock
+// returns a queryable error envelope well within the MCP call timeout,
+// instead of blocking the server forever. Named (no magic number).
+inline constexpr int kStoreLockTimeoutMs = 30000;
+
+// How long the shared store lock may be held CONTINUOUSLY (measured from the
+// first failed acquisition) before a read declares the builder permanently
+// wedged and issues a single sqlite3_interrupt() to unblock a stuck SQLite
+// call. Deliberately generous: normal builds finish in ~10 s, and a
+// legitimately slow build must not be aborted, so this only fires for a
+// genuine permanent stall. After the interrupt the builder's current
+// statement returns SQLITE_INTERRUPT, it unwinds, and its lock_guard releases
+// the mutex — self-healing without killing a thread.
+inline constexpr int kBuilderStallInterruptMs = 300000;
+
+// Start of a continuous stall on the shared store lock (0 = not stalled).
+// Set on the first failed acquisition and cleared whenever one succeeds, so
+// it measures true continuous occupancy, not cumulative wait time.
+std::atomic<int64_t> g_store_stall_start_ms{ 0 };
+std::atomic<bool> g_store_interrupt_issued{ false };
+
+// Monotonic milliseconds for stall measurement (unaffected by wall-clock
+// changes).
+int64_t steadyNowMs()
+{
+	return std::chrono::duration_cast<std::chrono::milliseconds>(
+		       std::chrono::steady_clock::now().time_since_epoch())
+		.count();
+}
 
 // Maximum number of module_edge rows to insert. Prevents unbounded
 // growth on projects with many small modules (one per file).
@@ -505,7 +540,8 @@ void launchAsyncKnowledgeBuilder(uint64_t project_id, bool run_fts)
 	g_builder_thread = std::thread([project_id, run_fts]() {
 		// Hold the connection mutex for the whole body so no FFI read
 		// or write can interleave BEGIN/COMMIT on g_store.
-		std::lock_guard<std::recursive_mutex> store_lock(g_store_mutex);
+		std::lock_guard<std::recursive_timed_mutex> store_lock(
+			g_store_mutex);
 		if (!g_store) {
 			fprintf(stderr,
 				"[module=async] g_store is null, aborting\n");
@@ -585,15 +621,72 @@ bool isAsyncKnowledgeBuilderRunning()
 	return g_async_running.load();
 }
 
-std::unique_lock<std::recursive_mutex> waitForKnowledgeBuilder()
+std::unique_lock<std::recursive_timed_mutex> waitForKnowledgeBuilder()
 {
 	// Acquire the connection mutex the builder holds for its whole body.
 	// This both waits for an in-flight builder AND keeps a later builder
 	// (launched while this guard is alive) from touching g_store until the
 	// caller's read/write finishes — the race a plain join left open.
-	// recursive_mutex: FFI entry points nest (enhance reaches paths that
-	// also call this), so the same thread must be able to re-acquire.
+	// recursive_timed_mutex: FFI entry points nest (enhance reaches paths
+	// that also call this), so the same thread must be able to re-acquire.
 	// Safe to call from any read entry point: the builder never re-enters
 	// the read entry points, so this cannot self-deadlock.
-	return std::unique_lock<std::recursive_mutex>(g_store_mutex);
+	std::unique_lock<std::recursive_timed_mutex> lock(g_store_mutex,
+							  std::defer_lock);
+	if (lock.try_lock_for(std::chrono::milliseconds(kStoreLockTimeoutMs))) {
+		// Healthy: clear any stall bookkeeping.
+		g_store_stall_start_ms.store(0, std::memory_order_relaxed);
+		g_store_interrupt_issued.store(false,
+					       std::memory_order_relaxed);
+		return lock;
+	}
+
+	// The lock has been held past every measured build. Record when the
+	// stall began; once it is long enough to be permanent, interrupt the
+	// builder's in-flight SQLite statement so it errors out, unwinds, and
+	// releases the lock (self-healing). sqlite3_interrupt is documented as
+	// safe to call from another thread, and only one read runs at a time on
+	// the single-threaded dispatch loop.
+	const int64_t now = steadyNowMs();
+	int64_t stall_start =
+		g_store_stall_start_ms.load(std::memory_order_relaxed);
+	if (stall_start == 0) {
+		stall_start = now;
+		g_store_stall_start_ms.store(stall_start,
+					     std::memory_order_relaxed);
+	}
+	if (!g_store_interrupt_issued.load(std::memory_order_relaxed) &&
+	    now - stall_start >= kBuilderStallInterruptMs) {
+		g_store_interrupt_issued.store(true, std::memory_order_relaxed);
+		fprintf(stderr,
+			"[module=async, method=waitForKnowledgeBuilder] "
+			"shared store lock held > %d ms — issuing "
+			"sqlite3_interrupt() to unwedge the builder\n",
+			kBuilderStallInterruptMs);
+		if (g_store)
+			sqlite3_interrupt(g_store->handle());
+		// Give the unwinding builder a bounded grace period to release the
+		// lock; if it does, this read proceeds normally.
+		if (lock.try_lock_for(
+			    std::chrono::milliseconds(kStoreLockTimeoutMs))) {
+			g_store_stall_start_ms.store(0,
+						     std::memory_order_relaxed);
+			g_store_interrupt_issued.store(
+				false, std::memory_order_relaxed);
+			return lock;
+		}
+	}
+
+	// Still stuck. Proceed-anyway would corrupt the shared connection
+	// (frames interleaving BEGIN/COMMIT), and blocking forever would hang
+	// the whole MCP server. Throw instead — every call site sits behind an
+	// extern "C" try/catch wrapper that turns this into an error envelope.
+	fprintf(stderr,
+		"[module=async, method=waitForKnowledgeBuilder] "
+		"shared store lock still held after %d ms "
+		"(knowledge builder wedged?)\n",
+		kStoreLockTimeoutMs);
+	throw std::runtime_error(
+		"knowledge builder holds the shared store lock; "
+		"store temporarily unavailable");
 }

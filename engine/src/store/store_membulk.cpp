@@ -84,7 +84,7 @@ bool GraphStore::dropSemanticRecordIndexes()
 
 bool GraphStore::createSemanticRecordIndexes()
 {
-	// Recreate the 9 semantic_records indexes after a bulk INSERT.
+	// Recreate the 11 semantic_records indexes after a bulk INSERT.
 	// SQLite builds each index in a single sorted scan of the table
 	// (O(n log n) per index, sequential I/O), which is far cheaper than
 	// maintaining the index row-by-row during INSERT (O(n log n) per

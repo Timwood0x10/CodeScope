@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+Pre-tag hardening pass: closes the remaining silent-failure paths (code_rules §1) on the default release path, adds self-healing to the shared-store lock, and removes dead code.
+
+### 🐛 Bug Fixes
+
+- **`import.source_scope_id` was never populated** (`engine/src/store/store_graph.cpp`): the `UPDATE` set the column from a scalar subquery whose `COALESCE` sat *inside* the subquery, so an import with no matching kind=1 module scope produced `NULL` against an `INTEGER NOT NULL` column and the **whole statement aborted**; the failure only logged, so `buildGraph` still committed with every row at the default. `COALESCE` now wraps the subquery (no-match → 0) and the result routes through `exec_write`, which flips `graph_write_ok` and rolls the savepoint back (all-or-nothing). Regression test: `test_bench_enhance` failed loudly the moment the update stopped being swallowed.
+- **`engine_get_type_info` built SQL by string concatenation** (`engine/src/engine_ffi.cpp`): `project_id` and the `LIKE` filter are now bound with `sqlite3_bind_int64`/`sqlite3_bind_text`; the LIKE metacharacters are still escaped so the filter matches literally. `store_graph.cpp`'s `project_id` concat is parameterized too.
+- **The shared-store lock could hang the MCP server forever** (`engine/src/async_knowledge.{h,cpp}`): `waitForKnowledgeBuilder()` now waits on a `recursive_timed_mutex` for 30 s and throws an error envelope instead of blocking. If the lock stays held past 5 minutes it issues one `sqlite3_interrupt()` on the shared connection so a stuck SQLite call in the background builder unwinds and releases the lock (self-healing), then proceeds or fails closed.
+- **A failed schema-migration probe silently skipped the whole block** (`engine/src/store/store_schema_migrations_types.cpp`): the six `sqlite3_prepare_v2(...) == SQLITE_OK` probes now route through a helper that sets the group's `ok=false` and logs with a `[module=…, method=…]` tag, matching `store_schema_migrations.cpp`'s `migrationProbe`.
+- **`insertSemanticRecords` swallowed per-row `sqlite3_step` errors** (`engine/src/store/store_batch.cpp`): the failure is now recorded in `error_` and the loop stops (test-only entry point, same contract as production).
+- **The static and chunked schedulers could hang on a panicking worker** (`server/src/scheduler/{mod,chunked}.rs`): both spawn closures now wrap `run_module_worker`/`run_chunk_worker` in `catch_unwind` and construct a failure `ModuleResult`, so a panic cannot leak the `active` slot (the `while active >= parallel` dispatch loop would spin forever) or drop the result and undercount `fail`.
+- **The chunked scheduler treated an `error=Some` worker as success** (`server/src/scheduler/chunked.rs`): recovery/retry and the merge gate now key off `worker_succeeded()` (exit 0 **and** no error) instead of `exit_code != 0`, so a worker whose stdout is unparseable, or whose engine envelope is `ok:false`, is repaired instead of reporting `complete:true` with its files missing.
+- **The chunk worker did not verify the engine envelope, or drain stdout** (`server/src/scheduler/worker.rs`): it now requires an explicit `"ok":true` (like `run_module_worker`) and reads the child's stdout on a dedicated thread, so a worker that logs more than the ~64 KB pipe buffer can no longer deadlock into a false timeout.
+- **A CAS loser could overwrite the chunk owner's id** (`server/src/scheduler/chunk_queue_ops.rs`): `claimer_id` is stored only after the `CLAIMED` CAS is won, so `release_worker_chunks` can no longer miss a dead worker's chunks (dropped files) or release a live worker's chunks (duplicate parse).
+- **`merge_module_dbs` ignored `stdin.write_all` failures** (`server/src/scheduler/merge_driver.rs`): a failed write now returns `merged:false`; previously sqlite3 could execute a prefix of the script and exit 0, committing a partial merge reported as `merged:true`.
+- **`chunk-worker` minted a ghost project when `project_id == 0`** (`server/src/main.rs`): the fallback is gone — a zero id is a hard error, since the scheduler always assigns `worker_id + 1`.
+- **`unsafe { env::set_var }` at startup** (`server/src/main.rs`, `server/src/tools/{mod,indexing}.rs`): the resolved DB path is published once into a `OnceLock` before any thread starts; tool handlers read it instead of mutating the process environment. The non-dispatched `server/src/scheduler/dynamic.rs` reference module (its only other `set_var` user) is deleted, along with its now-unused `SchedShm`/`VecDeque` imports.
+
+### 🧹 Cleanup
+
+- **Dead pre-cached statements** (`engine/src/store/store_core.cpp`, `store.h`): three `sqlite3_stmt*` members prepared in `open()` with the return value ignored and never used are removed; the live per-thread statement cache (`getCachedStmt`) is unaffected.
+- **`source_scope_id` cleanup `sqlite3_step` is logged** (`engine/src/store/store_batch.cpp`) and a stale “`_staged_metrics` removed” comment (the table is created and used) is dropped.
+
+### ✅ Testing
+
+- **C++ tests can no longer run vacuously in Release** (`engine/CMakeLists.txt`): every test target is compiled with `-UNDEBUG` (`/UNDEBUG` on MSVC), so `assert()` is not stripped by `-DNDEBUG`.
+- **Real FFI end-to-end test** (`server/tests/test_graph_ffi.rs`): indexes a Python file through the C ABI and asserts the symbol is discoverable, instead of only checking the JSON envelope on an empty DB.
+
 ## v0.2.7 (2026-09-30)
 
 Correctness and stability pass focused on the call graph and the storage layer: fixes a resolver fast path that emitted cross-language edges, a language comparison that silently dropped every C call edge, a nested transaction that destroyed buildGraph's savepoint (losing its all-or-nothing guarantee), and a use-after-free in `createSchema`. Also restores the test gate — the CI skip list had drifted to the point where 26 passing tests (including the whole per-language false-positive suite) were never run. It also restores community detection as a real, exposed MCP tool and tightens the call-graph accuracy gate so it stops under-reporting its own coverage.

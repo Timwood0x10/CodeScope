@@ -604,11 +604,6 @@ class GraphStore {
 	std::string error_;
 	std::string db_path_;
 
-	// Cached prepared statements (initialized in open(), finalized in close())
-	sqlite3_stmt *stmt_fts_map_ = nullptr; // INSERT INTO fts_node_map
-	sqlite3_stmt *stmt_fts_ = nullptr; // INSERT INTO code_fts
-	sqlite3_stmt *stmt_vector_ = nullptr; // INSERT INTO node_vectors
-
 	// Dynamic statement cache: one prepared statement PER THREAD (see
 	// getCachedStmt in store.cpp). A single sqlite3_stmt* is never shared
 	// across threads, so there is no cross-thread race on a shared cached

@@ -33,15 +33,33 @@ bool GraphStore::migrateTypeTables(
 		ok = done && ok;
 		return done;
 	};
+	// Probe helper: a failed prepare must fail this migration group, not
+	// silently skip the block. A skipped ALTER leaves a half-migrated schema
+	// whose queries later die with "no such column", far from the cause
+	// (code_rules §5: no silent error handling). Mirrors migrationProbe in
+	// store_schema_migrations.cpp.
+	auto probeStmt = [&](sqlite3_stmt **stmt, const char *sql,
+			     const char *what) -> bool {
+		if (sqlite3_prepare_v2(db_, sql, -1, stmt, nullptr) ==
+		    SQLITE_OK)
+			return true;
+		ok = false;
+		fprintf(stderr,
+			"[module=store, method=migrateTypeTables] probe %s "
+			"failed: %s | sql=%.100s\n",
+			what ? what : "(unknown)", sqlite3_errmsg(db_),
+			sql ? sql : "(null)");
+		return false;
+	};
 
 	// Migration: add type_info + type_ref tables (v0.6+)
 	{
 		// Add route table if missing
 		sqlite3_stmt *rprobe = nullptr;
-		if (sqlite3_prepare_v2(db_,
-				       "SELECT name FROM sqlite_master "
-				       "WHERE type='table' AND name='route'",
-				       -1, &rprobe, nullptr) == SQLITE_OK) {
+		if (probeStmt(&rprobe,
+			      "SELECT name FROM sqlite_master "
+			      "WHERE type='table' AND name='route'",
+			      "route")) {
 			if (sqlite3_step(rprobe) != SQLITE_ROW) {
 				sqlite3_finalize(rprobe);
 				run("CREATE TABLE IF NOT EXISTS route ("
@@ -64,9 +82,8 @@ bool GraphStore::migrateTypeTables(
 
 		// Add type_name column to semantic_records if missing
 		sqlite3_stmt *probe = nullptr;
-		if (sqlite3_prepare_v2(db_,
-				       "PRAGMA table_info(semantic_records)",
-				       -1, &probe, nullptr) == SQLITE_OK) {
+		if (probeStmt(&probe, "PRAGMA table_info(semantic_records)",
+			      "semantic_records")) {
 			bool has_type_name = false;
 			bool has_call_kind = false;
 			bool has_resolve_strategy = false;
@@ -142,9 +159,9 @@ bool GraphStore::migrateTypeTables(
 		// has no ADD COLUMN IF NOT EXISTS, so probe table_info first.
 		{
 			sqlite3_stmt *ref_probe = nullptr;
-			if (sqlite3_prepare_v2(
-				    db_, "PRAGMA table_info(reference)", -1,
-				    &ref_probe, nullptr) == SQLITE_OK) {
+			if (probeStmt(&ref_probe,
+				      "PRAGMA table_info(reference)",
+				      "reference")) {
 				bool has_qualified_target = false;
 				bool has_receiver_text = false;
 				bool has_receiver_type = false;
@@ -199,9 +216,8 @@ bool GraphStore::migrateTypeTables(
 		// not affected.
 		{
 			sqlite3_stmt *probe = nullptr;
-			if (sqlite3_prepare_v2(
-				    db_, "PRAGMA table_info(relation)", -1,
-				    &probe, nullptr) == SQLITE_OK) {
+			if (probeStmt(&probe, "PRAGMA table_info(relation)",
+				      "relation")) {
 				bool has_confidence = false;
 				bool has_resolver = false;
 				bool has_res_kind = false;
@@ -259,10 +275,10 @@ bool GraphStore::migrateTypeTables(
 
 		// Create type_info table if missing
 		sqlite3_stmt *probe2 = nullptr;
-		if (sqlite3_prepare_v2(db_,
-				       "SELECT name FROM sqlite_master "
-				       "WHERE type='table' AND name='type_info'",
-				       -1, &probe2, nullptr) == SQLITE_OK) {
+		if (probeStmt(&probe2,
+			      "SELECT name FROM sqlite_master "
+			      "WHERE type='table' AND name='type_info'",
+			      "type_info")) {
 			if (sqlite3_step(probe2) != SQLITE_ROW) {
 				sqlite3_finalize(probe2);
 				run("CREATE TABLE IF NOT EXISTS type_info ("
@@ -294,10 +310,10 @@ bool GraphStore::migrateTypeTables(
 	}
 	{
 		sqlite3_stmt *probe = nullptr;
-		if (sqlite3_prepare_v2(db_,
-				       "SELECT name FROM sqlite_master "
-				       "WHERE type='table' AND name='type_ref'",
-				       -1, &probe, nullptr) == SQLITE_OK) {
+		if (probeStmt(&probe,
+			      "SELECT name FROM sqlite_master "
+			      "WHERE type='table' AND name='type_ref'",
+			      "type_ref")) {
 			if (sqlite3_step(probe) != SQLITE_ROW) {
 				sqlite3_finalize(probe);
 				run("CREATE TABLE IF NOT EXISTS type_ref ("

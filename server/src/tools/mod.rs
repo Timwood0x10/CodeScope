@@ -3,6 +3,30 @@ use serde_json::{Value, json};
 use crate::ffi;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
+use std::sync::OnceLock;
+
+// ─── Resolved runtime configuration ─────────────────────────────
+//
+// The database path is resolved once from `--rootPath` (or the process
+// environment) before the MCP server spawns any thread, then stored here.
+// This replaces the previous `unsafe { env::set_var(...) }`: mutating
+// `environ` is unsafe in Rust 2024 because it races with concurrent
+// `getenv`, and the server later spawns worker threads. Tool handlers that
+// need the path (e.g. the worker-subprocess indexer) read this immutable
+// value instead.
+static DB_PATH: OnceLock<String> = OnceLock::new();
+
+/// Record the resolved database path. First call wins; later calls are
+/// ignored so handlers and worker subprocesses cannot desync. Intended to
+/// run once at startup, before any thread is spawned.
+pub fn set_db_path(path: String) {
+    let _ = DB_PATH.set(path);
+}
+
+/// The resolved database path, or `None` before `set_db_path` runs.
+pub fn db_path() -> Option<&'static str> {
+    DB_PATH.get().map(String::as_str)
+}
 
 // The quick project scan lives in tools/discover.rs — a filesystem
 // walk with no parsing and no SQLite, so it has no reason to share

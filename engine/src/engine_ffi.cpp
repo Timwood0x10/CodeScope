@@ -602,44 +602,30 @@ char *engine_get_type_info(uint64_t project_id, const char *type_name_filter)
 		if (!g_store)
 			return dupString("{\"error\":\"not initialized\"}");
 
-		// Query type_info table for type definitions
+		// Query type_info table for type definitions. project_id and the
+		// name filter are bound with sqlite3_bind_* — never concatenated
+		// into the SQL text (code_rules §5: no injection surface).
 		std::string sql =
 			"SELECT ti.name, ti.qualified_name, ti.kind, ti.file_path, "
 			" ti.language, ti.start_row, "
 			" (SELECT COUNT(*) FROM type_ref tr WHERE tr.type_name = ti.name "
 			"  AND tr.project_id = ti.project_id) AS ref_count "
-			"FROM type_info ti WHERE ti.project_id=" +
-			std::to_string(project_id);
+			"FROM type_info ti WHERE ti.project_id = ?";
 
-		if (type_name_filter && *type_name_filter) {
-			// Escape special characters for SQL LIKE: % _ and '
-			std::string filter(type_name_filter);
-			size_t pos = 0;
-			while ((pos = filter.find('\\', pos)) !=
-			       std::string::npos) {
-				filter.replace(pos, 1, "\\\\");
-				pos += 2;
+		const bool has_filter = type_name_filter && *type_name_filter;
+		std::string like_pattern;
+		if (has_filter) {
+			// Escape LIKE metacharacters (\ first, then % and _) so the
+			// caller's filter matches literally. The value is passed via
+			// sqlite3_bind_text, so quote escaping is unnecessary.
+			like_pattern = "%";
+			for (const char c : std::string(type_name_filter)) {
+				if (c == '\\' || c == '%' || c == '_')
+					like_pattern.push_back('\\');
+				like_pattern.push_back(c);
 			}
-			pos = 0;
-			while ((pos = filter.find('%', pos)) !=
-			       std::string::npos) {
-				filter.replace(pos, 1, "\\%");
-				pos += 2;
-			}
-			pos = 0;
-			while ((pos = filter.find('_', pos)) !=
-			       std::string::npos) {
-				filter.replace(pos, 1, "\\_");
-				pos += 2;
-			}
-			pos = 0;
-			while ((pos = filter.find('\'', pos)) !=
-			       std::string::npos) {
-				filter.replace(pos, 1, "''");
-				pos += 2;
-			}
-			sql += " AND ti.name LIKE '%" + filter +
-			       "%' ESCAPE '\\'";
+			like_pattern.push_back('%');
+			sql += " AND ti.name LIKE ? ESCAPE '\\'";
 		}
 
 		sql += " ORDER BY ref_count DESC LIMIT 100";
@@ -649,6 +635,11 @@ char *engine_get_type_info(uint64_t project_id, const char *type_name_filter)
 				       &stmt, nullptr) != SQLITE_OK) {
 			return dupString(
 				"{\"error\":\"query failed\",\"types\":[]}");
+		}
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		if (has_filter) {
+			sqlite3_bind_text(stmt, 2, like_pattern.c_str(), -1,
+					  SQLITE_TRANSIENT);
 		}
 
 		std::string result = "{\"types\":[";

@@ -68,13 +68,33 @@ bool isAsyncKnowledgeBuilderRunning();
 /// `auto _store_guard = waitForKnowledgeBuilder();`. Dropping it immediately
 /// (calling the function as a statement) re-opens the race.
 ///
+/// BOUNDED WAIT: the acquisition is bounded by kStoreLockTimeoutMs (30 s). If
+/// the builder thread wedges while holding the lock (e.g. a SQLite backoff
+/// loop), the caller must NOT proceed to touch `g_store` concurrently, so a
+/// `std::runtime_error` is thrown instead. The FFI wrappers already catch
+/// `std::exception` and return an `[module=..., method=...]` error envelope,
+/// so a wedged builder degrades to "store unavailable" rather than hanging
+/// the MCP server forever.
+///
+/// SELF-HEALING: if the lock stays continuously held past
+/// kBuilderStallInterruptMs (5 min), the waiter issues a single
+/// `sqlite3_interrupt()` on the shared connection. That unblocks a stuck
+/// SQLite call in the builder, the builder unwinds, and its destructor
+/// releases the lock, so the store recovers without killing a thread. The
+/// threshold is far above any measured build, so it cannot abort a
+/// legitimately slow one. A stall in non-SQLite code cannot be interrupted;
+/// recovery is best-effort and logged.
+///
 /// Safe to call from any read entry point: the builder thread calls
 /// runModelIndexSync()/buildKnowledgeGraphSync() directly and never re-enters
 /// the read entry points, so this can never self-deadlock. The mutex is
 /// recursive so nested FFI entry points on one thread can re-acquire it.
 /// Never call joinAsyncKnowledgeBuilder while holding the guard across a
 /// running builder (the builder thread needs the same mutex to finish).
-std::unique_lock<std::recursive_mutex> waitForKnowledgeBuilder();
+///
+/// @throws std::runtime_error if the shared store lock cannot be acquired
+///         within kStoreLockTimeoutMs.
+std::unique_lock<std::recursive_timed_mutex> waitForKnowledgeBuilder();
 
 /// Synchronous entry point: build the module_edge table and set the
 /// knowledge_ready flag. Called by the background thread, but can also

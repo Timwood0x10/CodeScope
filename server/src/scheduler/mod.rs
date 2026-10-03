@@ -39,22 +39,17 @@
 //! `FilterPolicy` for the authoritative skip rules.
 
 // dyn_config is wired into the dispatch path via DynSchedConfig.
-// See index_parallel() -> DynSchedConfig::should_enable() and
-// index_parallel_dynamic() -> DynSchedConfig::from_env() usage.
+// See index_parallel() -> DynSchedConfig::should_enable().
 mod chunk_plan;
 pub mod chunk_queue;
 mod chunked;
 mod dyn_config;
-mod dynamic;
 mod merge;
 mod quarantine;
 mod shm;
 mod worker;
 
-use dyn_config::{DynSchedConfig, sample_total_rss_mb};
 use serde_json::{Value, json};
-use shm::SchedShm;
-use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, mpsc};
@@ -371,18 +366,44 @@ pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> S
         let alloc = *alloc;
 
         let handle = std::thread::spawn(move || {
-            let result = run_module_worker(
-                &exe_str,
-                &project_path,
-                &name,
-                files,
-                alloc,
-                &grammars_dir,
-                &db_prefix,
-                project_id,
-                None, // no quarantine initially
-                keep_db,
-            );
+            // catch_unwind so a panicking worker cannot leak its slot in
+            // `active` (the dispatch loop's `while active >= parallel` would
+            // then wait forever) and cannot vanish from `results` (which would
+            // undercount `fail` and could report complete:true). Mirrors the
+            // dynamic path.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run_module_worker(
+                    &exe_str,
+                    &project_path,
+                    &name,
+                    files,
+                    alloc,
+                    &grammars_dir,
+                    &db_prefix,
+                    project_id,
+                    None, // no quarantine initially
+                    keep_db,
+                )
+            }));
+            let result = match result {
+                Ok(r) => r,
+                Err(_) => ModuleResult {
+                    name: name.clone(),
+                    exit_code: -5,
+                    total_nodes: 0,
+                    total_edges: 0,
+                    files_indexed: 0,
+                    candidate_files: files,
+                    time_parse_ms: 0,
+                    duration_secs: 0,
+                    workers: alloc,
+                    db_path: String::new(),
+                    project_id,
+                    error: Some(
+                        "worker panicked [module=scheduler, method=index_parallel]".to_string(),
+                    ),
+                },
+            };
             let _ = tx.send(result);
             active_clone.fetch_sub(1, Ordering::SeqCst);
         });

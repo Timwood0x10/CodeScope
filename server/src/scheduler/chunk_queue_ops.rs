@@ -35,7 +35,10 @@ impl ChunkQueue {
     /// stamped the slot it could not claim, pushing the owner's timestamp
     /// later by the skew between stamp and CAS. The only effect is that the
     /// watchdog may consider such a chunk slightly fresher than it is, which
-    /// delays — never doubles — its recovery.
+    /// delays — never doubles — its recovery. `claimer_id` is written only
+    /// after the CAS is won, so a loser can never overwrite the winner's
+    /// identity (that used to make `release_worker_chunks` miss the dead
+    /// worker's chunks, or release a live worker's chunks).
     pub fn claim_next(&self, worker_id: u32) -> Option<u32> {
         // SAFETY: self.ptr is valid for the lifetime of self; reads via
         // shared reference are safe because all mutable fields are atomic.
@@ -52,8 +55,7 @@ impl ChunkQueue {
             }
             // Stamp BEFORE publishing CLAIMED — see the doc comment.
             slot.started_at_ms.store(started, Ordering::Relaxed);
-            slot.claimer_id.store(worker_id, Ordering::Relaxed);
-            // AcqRel on success: Release publishes the two stamps above to
+            // AcqRel on success: Release publishes the stamp above to
             // whoever Acquires this slot afterwards (the watchdog in
             // reset_stale), and Acquire pairs with the Release store in
             // mark_done/mark_failed/reset_stale so the claimer observes the
@@ -66,7 +68,19 @@ impl ChunkQueue {
                 Ordering::AcqRel,
                 Ordering::Relaxed,
             ) {
-                Ok(_) => return Some(i),
+                Ok(_) => {
+                    // Publish the owner only after winning the CAS. Writing
+                    // it before let a loser clobber the winner's id, leaving
+                    // a CLAIMED slot attributed to the wrong worker — so
+                    // release_worker_chunks(winner) would miss its chunks
+                    // (files dropped from the merge) or release the loser's
+                    // own chunks while it is still alive (duplicate parse).
+                    // No reader needs claimer_id concurrently: mark_done and
+                    // reset_stale key off status, and release_worker_chunks
+                    // runs after every worker thread has been joined.
+                    slot.claimer_id.store(worker_id, Ordering::Relaxed);
+                    return Some(i);
+                }
                 Err(_) => continue,
             }
         }

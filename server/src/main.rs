@@ -509,22 +509,19 @@ fn main() {
             }
         };
 
-        // Forced project_id (mirrors the static path); falls back to a
-        // fresh project if 0. Each worker's DB is independent, so a single
-        // project per worker keeps ids consistent within the DB.
-        let pid = if project_id > 0 {
-            project_id
-        } else {
-            let new_pid = ffi::create_project(".", &format!("chunk-worker-{}", worker_id));
-            if new_pid == 0 {
-                eprintln!(
-                    "chunk-worker: failed to create project [module=scheduler, method=chunk_worker]"
-                );
-                ffi::shutdown();
-                std::process::exit(1);
-            }
-            new_pid
-        };
+        // The scheduler always assigns a unique non-zero project_id per
+        // worker ((worker_id + 1)) and passes it on argv. A zero here means
+        // the invocation is broken; silently minting a fresh project would
+        // create a ghost project whose id the merge phase cannot map, so
+        // fail loudly instead of indexing into an orphan.
+        if project_id == 0 {
+            eprintln!(
+                "chunk-worker: project_id is 0 (must be assigned by the scheduler) [module=scheduler, method=chunk_worker]"
+            );
+            ffi::shutdown();
+            std::process::exit(1);
+        }
+        let pid = project_id;
 
         // Watchdog window for reclaiming orphaned chunks (crashed peer).
         // Set to match the scheduler's per-worker timeout so a chunk is
@@ -699,15 +696,7 @@ fn main() {
                 eprintln!("codescope: failed to create {}: {}", codescope_dir, e);
             });
         }
-        let db = format!("{}/codescope.db", codescope_dir);
-        // Set env var so worker subprocesses (spawned by tools::execute)
-        // inherit the correct DB path.
-        // Safety: this runs before any threads are spawned (server.run()
-        // starts later), so there is no data race on the environment.
-        unsafe {
-            env::set_var("CODESCOPE_DB_PATH", &db);
-        }
-        db
+        format!("{}/codescope.db", codescope_dir)
     } else {
         let default_dir = ".codescope";
         let default_db = format!("{}/codescope.db", default_dir);
@@ -716,6 +705,12 @@ fn main() {
         }
         env::var("CODESCOPE_DB_PATH").unwrap_or(default_db)
     };
+
+    // Publish the resolved path once, before any thread is spawned. Worker
+    // subprocesses receive it explicitly via `Command::env`, so there is no
+    // need to mutate the process environment (which is `unsafe` in Rust
+    // 2024). Tool handlers read it via `tools::db_path()`.
+    tools::set_db_path(db_path.clone());
 
     eprintln!("codescope: initializing with db={}", db_path);
 

@@ -296,16 +296,42 @@ pub(super) fn index_parallel_chunked(
         let files_json_path = files_json_path.clone();
 
         let handle = std::thread::spawn(move || {
-            let result = worker::run_chunk_worker(
-                &exe_str,
-                &shm_path,
-                worker_id,
-                &cpu_set,
-                &worker_db,
-                &files_json_path,
-                project_id,
-                &grammars_dir,
-            );
+            // catch_unwind so a panicking worker cannot leak its slot in
+            // `active` (the dispatch loop's `while active >= parallel` would
+            // then wait forever) and cannot vanish from `results` (fail
+            // undercount). Same guard as the static and dynamic paths.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                worker::run_chunk_worker(
+                    &exe_str,
+                    &shm_path,
+                    worker_id,
+                    &cpu_set,
+                    &worker_db,
+                    &files_json_path,
+                    project_id,
+                    &grammars_dir,
+                )
+            }));
+            let result = match result {
+                Ok(r) => r,
+                Err(_) => ModuleResult {
+                    name: format!("chunk-worker-{}", worker_id),
+                    exit_code: -5,
+                    total_nodes: 0,
+                    total_edges: 0,
+                    files_indexed: 0,
+                    candidate_files: 0,
+                    time_parse_ms: 0,
+                    duration_secs: 0,
+                    workers: 1,
+                    db_path: worker_db.clone(),
+                    project_id,
+                    error: Some(
+                        "worker panicked [module=scheduler, method=index_parallel_chunked]"
+                            .to_string(),
+                    ),
+                },
+            };
             let _ = tx.send((worker_id, result));
             active_clone.fetch_sub(1, Ordering::SeqCst);
         });
@@ -317,7 +343,13 @@ pub(super) fn index_parallel_chunked(
     // Collect results, remembering which worker each came from: the retry
     // round below releases exactly the chunks the failed workers own.
     while let Ok((worker_id, r)) = rx.recv() {
-        if r.exit_code != 0 {
+        // A worker that exited 0 but produced no parseable JSON, or an
+        // ok:false engine envelope, has error=Some. It owns chunks the queue
+        // already marked DONE, and its DB is dropped from the merge — so it
+        // must count as failed, or the run reports complete:true while its
+        // files are missing. `worker_succeeded` is the single predicate used
+        // by the static path too.
+        if !worker_succeeded(&r) {
             failed_worker_ids.push(worker_id);
         }
         results.push(r);
@@ -377,7 +409,7 @@ pub(super) fn index_parallel_chunked(
                 retry_project_id,
                 &grammars_dir,
             );
-            retry_worker_failed = retry_result.exit_code != 0;
+            retry_worker_failed = !worker_succeeded(&retry_result);
             eprintln!(
                 "scheduler: [chunked] recovery worker {}: exit={} files={} nodes={}",
                 retry_id,

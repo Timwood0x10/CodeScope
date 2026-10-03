@@ -480,14 +480,30 @@ pub(crate) fn merge_module_dbs(
     };
 
     // Write SQL to stdin and close it so sqlite3 processes the script.
+    // A failed write MUST fail the merge: sqlite3 can consume only a prefix
+    // of the script and still exit 0, which would commit a partial merge and
+    // report merged:true (code_rules §5: no silent error handling).
     use std::io::Write;
     let mut child = child;
     if let Some(mut stdin) = child.stdin.take()
-        && stdin.write_all(sql.as_bytes()).is_err()
+        && let Err(e) = stdin.write_all(sql.as_bytes())
     {
-        // Continue — the error will surface as a non-zero exit code.
+        drop(stdin); // close the pipe
+        let _ = child.wait();
+        return MergeResult {
+            merged: false,
+            main_db_path: main_db.to_string(),
+            tables_merged: 0,
+            rows_merged: 0,
+            duration_ms: start.elapsed().as_millis() as u64,
+            error: Some(format!(
+                "sqlite3 stdin write failed: {} [module=scheduler, method=merge_module_dbs]",
+                e
+            )),
+        };
     }
-    drop(child.stdin.take()); // close stdin to signal EOF
+    // stdin is dropped at the end of the `if let` above, closing the pipe so
+    // sqlite3 sees EOF.
 
     let output = match child.wait_with_output() {
         Ok(o) => o,

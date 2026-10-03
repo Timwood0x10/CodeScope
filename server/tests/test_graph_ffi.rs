@@ -29,6 +29,7 @@ unsafe extern "C" {
     fn engine_init(db_path: *const c_char) -> i32;
     fn engine_shutdown();
     fn engine_create_project(root_path: *const c_char, name: *const c_char) -> u64;
+    fn engine_index_file(project_id: u64, file_path: *const c_char) -> *mut c_char;
     fn engine_find_shortest_path(project_id: u64, source_id: u64, target_id: u64) -> *mut c_char;
     fn engine_locate_by_name(project_id: u64, name: *const c_char) -> *mut c_char;
     fn engine_find_connected_components(project_id: u64) -> *mut c_char;
@@ -207,5 +208,54 @@ fn test_locate_by_name_empty_db_returns_locations_array() {
         Some(0),
         "empty DB locate_by_name should report total=0, got: {}",
         result
+    );
+}
+
+// ── Test: real index -> query (end-to-end) ──────────────────────
+//
+// The envelope-only tests above cannot catch a query path that returns a
+// well-formed but wrong result. This one indexes a real Python file through
+// the FFI boundary, then asserts the symbol is actually discoverable — the
+// "index small project → query → verify" scenario code_rules §4 requires of
+// integration tests.
+#[test]
+fn test_index_python_file_then_locate_symbol_end_to_end() {
+    let _engine_guard = lock_engine();
+    let pid = setup_engine();
+
+    let src_path = std::env::temp_dir().join(format!(
+        "codescope_e2e_{}_{}.py",
+        std::process::id(),
+        COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    ));
+    std::fs::write(&src_path, "def codescope_e2e_probe(x):\n    return x + 1\n")
+        .expect("write temp source file");
+
+    let path_c = cstr(src_path.to_str().unwrap());
+    let index_result = take_string(unsafe { engine_index_file(pid, path_c.as_ptr()) });
+    let index_json: serde_json::Value =
+        serde_json::from_str(&index_result).expect("index_file should return valid JSON");
+    assert_eq!(
+        index_json["ok"], true,
+        "index_file should report ok:true, got: {}",
+        index_result
+    );
+
+    let name_c = cstr("codescope_e2e_probe");
+    let locate_result = take_string(unsafe { engine_locate_by_name(pid, name_c.as_ptr()) });
+    teardown_engine();
+    let _ = std::fs::remove_file(&src_path);
+
+    let json: serde_json::Value =
+        serde_json::from_str(&locate_result).expect("locate_by_name should return valid JSON");
+    assert!(
+        json["total"].as_i64().unwrap_or(0) >= 1,
+        "indexed symbol must be discoverable, got: {}",
+        locate_result
+    );
+    assert!(
+        locate_result.contains("codescope_e2e_probe"),
+        "location must name the indexed symbol, got: {}",
+        locate_result
     );
 }

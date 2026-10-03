@@ -128,8 +128,9 @@ pub fn index_project_via_worker(project_id: u64, args: &Value) -> String {
     // Use worker subprocess for memory isolation
     let self_exe = std::env::current_exe().ok();
     if let Some(exe) = self_exe {
-        let db_path = std::env::var("CODESCOPE_DB_PATH")
-            .unwrap_or_else(|_| ".codescope/codescope.db".to_string());
+        let db_path = crate::tools::db_path()
+            .map(str::to_string)
+            .unwrap_or_else(|| ".codescope/codescope.db".to_string());
         let grammars_dir = std::env::var("GRAMMARS_DIR").unwrap_or_else(|_| "grammars".to_string());
         let lang = args["language_filter"].as_str().unwrap_or("");
 

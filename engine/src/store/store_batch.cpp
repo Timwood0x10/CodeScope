@@ -100,10 +100,22 @@ void GraphStore::insertSemanticRecords(uint64_t project_id,
 				  SQLITE_STATIC);
 
 		int rc = sqlite3_step(stmt);
-		if (rc != SQLITE_DONE)
+		if (rc != SQLITE_DONE) {
+			// Surface the failure on the store instead of only logging
+			// it: a silent step error left a partially-written file with
+			// error() empty (code_rules §5). This entry point is
+			// test-only now (production uses insertFileResultBatch), but
+			// the same contract applies.
+			error_ =
+				std::string(
+					"insertSemanticRecords: step failed: ") +
+				sqlite3_errmsg(db_);
 			fprintf(stderr,
-				"insertSemanticRecords: step error %d: %s\n",
+				"insertSemanticRecords: step error %d: %s "
+				"[module=store, method=insertSemanticRecords]\n",
 				rc, sqlite3_errmsg(db_));
+			break;
+		}
 		sqlite3_reset(stmt);
 	}
 	sqlite3_finalize(stmt);
@@ -116,8 +128,6 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 {
 	if (batch.empty())
 		return true;
-
-	// _staged_metrics temp table removed — metrics no longer stored.
 
 	// ── Prepare statements ─────────────────────────────────────
 	const char *sr_sql =
@@ -645,7 +655,12 @@ bool GraphStore::resolveStagedMetrics(uint64_t project_id)
 		"DELETE FROM _staged_metrics WHERE project_id = ?";
 	if (sqlite3_prepare_v2(db_, del_sql, -1, &del, nullptr) == SQLITE_OK) {
 		sqlite3_bind_int64(del, 1, static_cast<int64_t>(project_id));
-		sqlite3_step(del);
+		if (sqlite3_step(del) != SQLITE_DONE) {
+			fprintf(stderr,
+				"resolveStagedMetrics: cleanup step failed: %s "
+				"[module=store, method=resolveStagedMetrics]\n",
+				sqlite3_errmsg(db_));
+		}
 		sqlite3_finalize(del);
 	} else {
 		fprintf(stderr,

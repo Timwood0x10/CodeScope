@@ -413,6 +413,12 @@ if(BUILD_TESTS)
     foreach(test_src ${TEST_SOURCES})
         get_filename_component(test_name ${test_src} NAME_WE)
         add_executable(${test_name} ${test_src})
+        # Many tests use assert(), which NDEBUG compiles out. Undefine it on
+        # every test target so a Release/RelWithDebInfo configure cannot run
+        # the suite vacuously (code_rules §4: boundary cases are mandatory).
+        target_compile_options(${test_name} PRIVATE
+            $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>
+            $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>)
         target_link_libraries(${test_name} astgraph_engine)
         add_test(NAME ${test_name} COMMAND ${test_name})
     endforeach()

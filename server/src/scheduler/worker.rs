@@ -582,28 +582,30 @@ pub(super) fn run_chunk_worker(
         }
     };
 
+    // Drain stdout in a dedicated thread. A chunk worker can emit more than
+    // the OS pipe buffer (~64 KB); reading only after the child exits would
+    // block the child on write, so it never exits and the run looks like a
+    // timeout (false -4) with the data discarded.
+    let child_stdout = child.stdout.take();
+    let reader = std::thread::spawn(move || -> Vec<u8> {
+        let mut buf = Vec::new();
+        if let Some(mut s) = child_stdout {
+            use std::io::Read;
+            let _ = s.read_to_end(&mut buf);
+        }
+        buf
+    });
+
     // Wait for the child with a timeout.
     let timeout = Duration::from_secs(DEFAULT_WORKER_TIMEOUT_SECS);
-    let (status, stdout_bytes) = loop {
+    let status = loop {
         match child.try_wait() {
-            Ok(Some(status)) => {
-                // Read stdout.
-                let stdout = child
-                    .stdout
-                    .take()
-                    .map(|mut s| {
-                        let mut buf = Vec::new();
-                        use std::io::Read;
-                        let _ = s.read_to_end(&mut buf);
-                        buf
-                    })
-                    .unwrap_or_default();
-                break (status, stdout);
-            }
+            Ok(Some(status)) => break status,
             Ok(None) => {
                 if t0.elapsed() > timeout {
                     let _ = child.kill();
                     let _ = child.wait();
+                    let _ = reader.join();
                     return ModuleResult {
                         name: format!("chunk-worker-{}", worker_id),
                         exit_code: -4,
@@ -625,6 +627,9 @@ pub(super) fn run_chunk_worker(
                 std::thread::sleep(Duration::from_millis(50));
             }
             Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader.join();
                 return ModuleResult {
                     name: format!("chunk-worker-{}", worker_id),
                     exit_code: -3,
@@ -646,6 +651,8 @@ pub(super) fn run_chunk_worker(
         }
     };
 
+    let stdout_bytes = reader.join().unwrap_or_default();
+
     let duration = t0.elapsed().as_secs();
     let exit_code = status.code().unwrap_or(-4);
     let stdout = String::from_utf8_lossy(&stdout_bytes).to_string();
@@ -662,12 +669,25 @@ pub(super) fn run_chunk_worker(
         None => (0, 0, 0, 0, 0),
     };
 
-    let error = if exit_code == 0 && parsed.is_some() {
+    // Engine-level failure (ok:false) is a chunk-worker failure even at exit
+    // 0, exactly like run_module_worker. Without this check an ok:false
+    // envelope looks like an empty chunk: error stays None, the worker's DB is
+    // merged, and the run can report complete while its files were dropped.
+    let engine_ok = match &parsed {
+        Some(v) => v["ok"] == true,
+        None => false,
+    };
+    let error = if exit_code == 0 && parsed.is_some() && engine_ok {
         None
     } else {
+        let engine_msg = parsed
+            .as_ref()
+            .and_then(|v| v["error"].as_str())
+            .map(|s| format!(" engine_error={}", s))
+            .unwrap_or_default();
         Some(format!(
-            "exit={} [module=scheduler, method=run_chunk_worker]",
-            exit_code
+            "exit={}{} [module=scheduler, method=run_chunk_worker]",
+            exit_code, engine_msg
         ))
     };
 

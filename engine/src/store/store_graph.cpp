@@ -59,11 +59,11 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// a subset of files are re-indexed — lookup indexes stay valid.
 	const bool full_rebuild = (changed_files == nullptr);
 
-	// Step 1: determine which files to rebuild
+	// Step 1: determine which files to rebuild. project_id is bound, not
+	// concatenated (code_rules §5: one parameterized form for all queries).
 	auto t0 = Clock::now();
 	std::string file_list_sql =
-		"SELECT DISTINCT file_path FROM semantic_records WHERE project_id=" +
-		std::to_string(project_id);
+		"SELECT DISTINCT file_path FROM semantic_records WHERE project_id=?";
 	sqlite3_stmt *fl_stmt = nullptr;
 	if (sqlite3_prepare_v2(db_, file_list_sql.c_str(), -1, &fl_stmt,
 			       nullptr) != SQLITE_OK) {
@@ -79,6 +79,7 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			sqlite3_finalize(fl_stmt);
 		return false;
 	}
+	sqlite3_bind_int64(fl_stmt, 1, static_cast<int64_t>(project_id));
 
 	std::vector<std::string> rebuild_files;
 	if (fl_stmt) {
@@ -721,13 +722,22 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	//   NOTE: an UPDATE ... FROM rewrite was attempted but SQLite rejects
 	//   referencing the target table (import) inside the FROM join clause
 	//   ("no such column: import.id"), so the correlated form is kept.
-	//   exec() result is now checked so a failed update can never be
-	//   silently swallowed again (previous code ignored the return value,
-	//   which left every import.source_scope_id at its 0 default).
+	//   The result is routed through exec_write so a failed update flips
+	//   graph_write_ok and rolls the savepoint back (all-or-nothing):
+	//   previously it only logged, so a failure left every
+	//   import.source_scope_id at its 0 default while buildGraph still
+	//   returned true.
+	//
+	//   import.source_scope_id is NOT NULL. The scalar subquery yields NULL
+	//   when an import has no matching kind=1 module scope, so COALESCE must
+	//   wrap the SUBQUERY (not sit inside it): the old inner COALESCE only
+	//   guarded a matched row's s.id and was never evaluated when the
+	//   subquery returned zero rows, so the whole UPDATE aborted with
+	//   "NOT NULL constraint failed" the moment any import had no scope.
 	{
 		std::string imp_scope_sql =
 			"UPDATE import SET source_scope_id = "
-			"(SELECT COALESCE(s.id, 0) FROM scope s "
+			"COALESCE((SELECT s.id FROM scope s "
 			" JOIN entity e ON e.project_id = s.project_id"
 			" AND s.kind = 1"
 			" AND s.name = e.module_path "
@@ -735,15 +745,10 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			" AND sr.project_id = import.project_id"
 			" AND sr.file_path = e.file_path"
 			" WHERE e.project_id = import.project_id"
-			" LIMIT 1) "
+			" LIMIT 1), 0) "
 			"WHERE project_id=" +
 			std::to_string(project_id);
-		if (!exec(imp_scope_sql.c_str())) {
-			fprintf(stderr,
-				"[module=store, method=buildGraph] "
-				"UPDATE import.source_scope_id failed: %s\n",
-				error().c_str());
-		}
+		exec_write(imp_scope_sql, "UPDATE import.source_scope_id");
 	}
 	auto t_scope = Clock::now();
 
