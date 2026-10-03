@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <sstream>
 #include <sqlite3.h>
 #include <string>
 

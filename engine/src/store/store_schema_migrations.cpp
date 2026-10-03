@@ -13,6 +13,7 @@
 
 #include "store.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <sqlite3.h>
 #include <string>

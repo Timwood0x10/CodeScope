@@ -442,7 +442,7 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_explain_module] ") +
-			e.what() + "\"}");
+			jsonEscape(e.what()) + "\"}");
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_explain_module] unknown exception\"}");

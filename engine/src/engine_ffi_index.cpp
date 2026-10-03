@@ -13,11 +13,11 @@
 #include "engine_internal.h"
 #include "async_knowledge.h"
 #include "platform_win.h"
+#include "util/json_writer.h"
 #include "store/store_parse_failure.h"
 
 #include <cstdio>
 #include <sqlite3.h>
-#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -263,25 +263,25 @@ char *engine_index_batch(uint64_t project_id, const char *file_paths_json)
 
 		g_store->commitTransaction();
 
-		std::ostringstream r;
-		r << "{\"ok\":true,\"files\":"
-		  << (batches.size() + errors.size())
-		  << ",\"indexed\":" << batches.size()
-		  << ",\"nodes\":" << total_nodes
-		  << ",\"edges\":" << total_edges << ",\"errors\":[";
-		for (size_t i = 0; i < errors.size(); i++) {
-			if (i > 0)
-				r << ",";
-			r << "\"" << jsonEscape(errors[i]) << "\"";
-		}
-		r << "]}";
-		return dupString(r.str());
+		util::JsonWriter w;
+		w.beginObject();
+		w.key("ok").value(true);
+		w.key("files").value(batches.size() + errors.size());
+		w.key("indexed").value(batches.size());
+		w.key("nodes").value(total_nodes);
+		w.key("edges").value(total_edges);
+		w.key("errors").beginArray();
+		for (const auto &err : errors)
+			w.value(err);
+		w.endArray();
+		w.endObject();
+		return dupString(w.str());
 	} catch (const std::exception &e) {
 		g_store->rollbackTransaction();
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_index_batch] ") +
-			e.what() + "\"}");
+			jsonEscape(e.what()) + "\"}");
 	} catch (...) {
 		g_store->rollbackTransaction();
 		return dupString(
@@ -412,17 +412,20 @@ char *engine_get_project_info(uint64_t project_id)
 			}
 		}
 
-		std::ostringstream j;
-		j << "{\"name\":\"" << jsonEscape(name) << "\",\"license\":\""
-		  << jsonEscape(license) << "\",\"language\":\""
-		  << jsonEscape(lang) << "\",\"file_count\":" << file_count
-		  << ",\"dependency_count\":" << dep_count << "}";
-		return dupString(j.str());
+		util::JsonWriter w;
+		w.beginObject();
+		w.key("name").value(name);
+		w.key("license").value(license);
+		w.key("language").value(lang);
+		w.key("file_count").value(file_count);
+		w.key("dependency_count").value(dep_count);
+		w.endObject();
+		return dupString(w.str());
 	} catch (const std::exception &e) {
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_get_project_info] ") +
-			e.what() + "\"}");
+			jsonEscape(e.what()) + "\"}");
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_get_project_info] unknown exception\"}");
@@ -479,9 +482,12 @@ char *engine_reset_parse_failures(uint64_t project_id)
 		if (removed < 0)
 			return dupString(
 				"{\"ok\":false,\"error\":\"[module=ffi, method=engine_reset_parse_failures] delete failed\"}");
-		std::ostringstream j;
-		j << "{\"ok\":true,\"removed\":" << removed << "}";
-		return dupString(j.str());
+		util::JsonWriter w;
+		w.beginObject();
+		w.key("ok").value(true);
+		w.key("removed").value(removed);
+		w.endObject();
+		return dupString(w.str());
 	} catch (const std::exception &e) {
 		return dupString(
 			std::string(

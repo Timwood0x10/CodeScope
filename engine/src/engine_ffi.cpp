@@ -1,10 +1,10 @@
 #include "engine_internal.h"
 #include "async_knowledge.h"
 #include "platform_win.h"
+#include "util/json_writer.h"
 
 #include <cstdio>
 #include <sqlite3.h>
-#include <sstream>
 #include <tree_sitter/api.h>
 #include <vector>
 
@@ -164,59 +164,110 @@ char *engine_get_capabilities(uint64_t project_id)
 		const int cg_ready_count =
 			ffi_count_callgraph_ready_entities(project_id);
 		const bool cg_ready = cg_ready_count > 0;
+		const bool metrics_ready =
+			ffi_count_metrics_ready_entities(project_id) > 0;
+		const bool semantic_ready =
+			ffi_count_vector_entities(project_id) > 0;
+		const bool fts_ready =
+			g_store->getProjectReadiness(project_id, "fts_ready");
 
-		std::ostringstream json;
-		json << "{"
-		     << "\"project_id\":" << project_id << ","
-		     << "\"total_symbols\":" << total << ","
-		     << "\"capabilities\":{"
-		     << "\"fast_scan\":{\"available\":true,\"ready\":true,\"description\":\"ms-level declaration extraction\"},"
-		     << "\"module_tree\":{\"available\":true,\"ready\":true,\"description\":\"hierarchical module view\"},"
-		     << "\"symbol_search\":{\"available\":true,\"ready\":true,\"description\":\"exact name match\"},"
-		     << "\"entry_points\":{\"available\":true,\"ready\":"
-		     << (total > 0 ? "true" : "false")
-		     << ",\"description\":\"main/initcall/probe detection\"},"
-		     << "\"call_graph\":{\"available\":true,\"ready\":"
-		     << (cg_ready ? "true" : "false")
-		     << ",\"coverage\":{\"eligible\":" << total
-		     << ",\"ready\":" << cg_ready_count << "}"
-		     << ",\"description\":\"function call edges (built during index)\"},"
-		     << "\"path_tracing\":{\"available\":true,\"ready\":"
-		     << (cg_ready ? "true" : "false")
-		     << ",\"description\":\"BFS shortest path between functions\"},"
-		     // v0.2.5: metrics + semantic search restored. Metrics are
-		     // produced by computeMetricsFromCST in the parse worker and
-		     // resolved onto entity by resolveStagedMetrics; semantic
-		     // search is an n-gram hash vector (buildVectorsFromGraph).
-		     // `ready` reflects canonical data (entity cyclomatic > 0 /
-		     // node_vectors rows), never a hardcoded flag.
-		     << "\"metrics\":{\"available\":true,\"ready\":"
-		     << (ffi_count_metrics_ready_entities(project_id) > 0 ?
-				 "true" :
-				 "false")
-		     << ",\"description\":\"cyclomatic/cognitive/nesting complexity (computed during index, resolved onto entity)\"},"
-		     << "\"semantic_search\":{\"available\":true,\"ready\":"
-		     << (ffi_count_vector_entities(project_id) > 0 ? "true" :
-								     "false")
-		     << ",\"mode\":\"ngram_hash\","
-		     << "\"description\":\"n-gram hash vector lexical similarity (restored in v0.2.5); complements FTS exact search\"},"
-		     // FTS remains the exact-match workhorse; semantic search
-		     // is additive (never replaces it).
-		     << "\"fts\":{\"available\":true,\"ready\":"
-		     << (g_store->getProjectReadiness(project_id, "fts_ready") ?
-				 "true" :
-				 "false")
-		     << ",\"description\":\"FTS5 full-text search for exact/prefix matching\"},"
-		     << "\"context_builder\":{\"available\":true,\"ready\":true,\"description\":\"intelligent context assembly\"}"
-		     << "},"
-		     << "\"enhancement_needed\":\"Call graph, complexity metrics, and n-gram semantic vectors are built during index; FTS powers exact search.\""
-		     << "}";
-		return dupString(json.str());
+		// Built with util::JsonWriter: every string is escaped and every
+		// separator is inserted structurally, so a stray description
+		// character can never produce invalid JSON (code_rules §5).
+		util::JsonWriter w;
+		w.beginObject();
+		w.key("project_id").value(project_id);
+		w.key("total_symbols").value(total);
+		w.key("capabilities").beginObject();
+		w.key("fast_scan").beginObject();
+		w.key("available").value(true);
+		w.key("ready").value(true);
+		w.key("description")
+			.value(std::string("ms-level declaration extraction"));
+		w.endObject();
+		w.key("module_tree").beginObject();
+		w.key("available").value(true);
+		w.key("ready").value(true);
+		w.key("description")
+			.value(std::string("hierarchical module view"));
+		w.endObject();
+		w.key("symbol_search").beginObject();
+		w.key("available").value(true);
+		w.key("ready").value(true);
+		w.key("description").value(std::string("exact name match"));
+		w.endObject();
+		w.key("entry_points").beginObject();
+		w.key("available").value(true);
+		w.key("ready").value(total > 0);
+		w.key("description")
+			.value(std::string("main/initcall/probe detection"));
+		w.endObject();
+		w.key("call_graph").beginObject();
+		w.key("available").value(true);
+		w.key("ready").value(cg_ready);
+		w.key("coverage").beginObject();
+		w.key("eligible").value(total);
+		w.key("ready").value(cg_ready_count);
+		w.endObject();
+		w.key("description")
+			.value(std::string(
+				"function call edges (built during index)"));
+		w.endObject();
+		w.key("path_tracing").beginObject();
+		w.key("available").value(true);
+		w.key("ready").value(cg_ready);
+		w.key("description")
+			.value(std::string(
+				"BFS shortest path between functions"));
+		w.endObject();
+		// v0.2.5: metrics + semantic search restored. `ready` reflects
+		// canonical data (entity cyclomatic > 0 / node_vectors rows),
+		// never a hardcoded flag.
+		w.key("metrics").beginObject();
+		w.key("available").value(true);
+		w.key("ready").value(metrics_ready);
+		w.key("description")
+			.value(std::string(
+				"cyclomatic/cognitive/nesting complexity (computed during "
+				"index, resolved onto entity)"));
+		w.endObject();
+		w.key("semantic_search").beginObject();
+		w.key("available").value(true);
+		w.key("ready").value(semantic_ready);
+		w.key("mode").value(std::string("ngram_hash"));
+		w.key("description")
+			.value(std::string(
+				"n-gram hash vector lexical similarity (restored in "
+				"v0.2.5); complements FTS exact search"));
+		w.endObject();
+		// FTS remains the exact-match workhorse; semantic search is
+		// additive (never replaces it).
+		w.key("fts").beginObject();
+		w.key("available").value(true);
+		w.key("ready").value(fts_ready);
+		w.key("description")
+			.value(std::string(
+				"FTS5 full-text search for exact/prefix matching"));
+		w.endObject();
+		w.key("context_builder").beginObject();
+		w.key("available").value(true);
+		w.key("ready").value(true);
+		w.key("description")
+			.value(std::string("intelligent context assembly"));
+		w.endObject();
+		w.endObject(); // capabilities
+		w.key("enhancement_needed")
+			.value(std::string(
+				"Call graph, complexity metrics, and n-gram semantic "
+				"vectors are built during index; FTS powers exact "
+				"search."));
+		w.endObject();
+		return dupString(w.str());
 	} catch (const std::exception &e) {
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_get_capabilities] ") +
-			e.what() + "\"}");
+			jsonEscape(e.what()) + "\"}");
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_get_capabilities] unknown exception\"}");
@@ -242,7 +293,7 @@ char *engine_search_code(uint64_t project_id, const char *query, int limit)
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_search_code] ") +
-			e.what() + "\"}");
+			jsonEscape(e.what()) + "\"}");
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_search_code] unknown exception\"}");
@@ -270,7 +321,7 @@ char *engine_search_semantic(uint64_t project_id, const char *query, int limit)
 		return dupString(
 			std::string("{\"error\":\"[module=ffi, "
 				    "method=engine_search_semantic] ") +
-			e.what() + "\"}");
+			jsonEscape(e.what()) + "\"}");
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, "
@@ -292,7 +343,7 @@ char *engine_get_complexity(uint64_t project_id, uint64_t graph_node_id)
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_get_complexity] ") +
-			e.what() + "\"}");
+			jsonEscape(e.what()) + "\"}");
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_get_complexity] unknown exception\"}");
@@ -316,7 +367,7 @@ char *engine_graph_query(uint64_t project_id, const char *dsl_query)
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_graph_query] ") +
-			e.what() + "\"}");
+			jsonEscape(e.what()) + "\"}");
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_graph_query] unknown exception\"}");
@@ -352,7 +403,7 @@ extern "C" char *engine_get_graph(uint64_t project_id, int64_t node_offset,
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_get_graph] ") +
-			e.what() + "\"}");
+			jsonEscape(e.what()) + "\"}");
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_get_graph] unknown exception\"}");
@@ -380,7 +431,7 @@ char *engine_detect_changes(uint64_t project_id,
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_detect_changes] ") +
-			e.what() + "\"}");
+			jsonEscape(e.what()) + "\"}");
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_detect_changes] unknown exception\"}");
@@ -411,7 +462,7 @@ char *engine_get_communities(uint64_t project_id, int max_members,
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_get_communities] ") +
-			e.what() + "\"}");
+			jsonEscape(e.what()) + "\"}");
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_get_communities] unknown exception\"}");
@@ -432,7 +483,7 @@ char *engine_get_index_progress(uint64_t project_id)
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_get_index_progress] ") +
-			e.what() + "\"}");
+			jsonEscape(e.what()) + "\"}");
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_get_index_progress] unknown exception\"}");
@@ -452,7 +503,7 @@ char *engine_build_fts(uint64_t project_id)
 			return dupString(
 				std::string(
 					"{\"error\":\"[module=ffi, method=engine_build_fts] ") +
-				g_store->error() + "\"}");
+				jsonEscape(g_store->error()) + "\"}");
 		}
 		g_store->setProjectReadiness(project_id, "fts_ready", 1);
 		g_store->setProjectReadiness(project_id, "normal_ready", 1);
@@ -461,7 +512,7 @@ char *engine_build_fts(uint64_t project_id)
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_build_fts] ") +
-			e.what() + "\"}");
+			jsonEscape(e.what()) + "\"}");
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_build_fts] unknown exception\"}");
@@ -483,7 +534,7 @@ char *engine_get_hotspots(uint64_t project_id, int top_n)
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_get_hotspots] ") +
-			e.what() + "\"}");
+			jsonEscape(e.what()) + "\"}");
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_get_hotspots] unknown exception\"}");
@@ -512,7 +563,7 @@ extern "C" char *engine_explain_symbol(uint64_t project_id,
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_explain_symbol] ") +
-			e.what() + "\"}");
+			jsonEscape(e.what()) + "\"}");
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_explain_symbol] unknown exception\"}");
@@ -530,7 +581,7 @@ char *engine_get_module_map(uint64_t project_id)
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_get_module_map] ") +
-			e.what() + "\"}");
+			jsonEscape(e.what()) + "\"}");
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_get_module_map] unknown exception\"}");
@@ -548,7 +599,7 @@ char *engine_get_entry_points(uint64_t project_id)
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_get_entry_points] ") +
-			e.what() + "\"}");
+			jsonEscape(e.what()) + "\"}");
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_get_entry_points] unknown exception\"}");
@@ -570,7 +621,7 @@ char *engine_trace_call_chain(uint64_t project_id, const char *from,
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_trace_call_chain] ") +
-			e.what() + "\"}");
+			jsonEscape(e.what()) + "\"}");
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_trace_call_chain] unknown exception\"}");
@@ -588,7 +639,7 @@ char *engine_get_project_overview(uint64_t project_id)
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_get_project_overview] ") +
-			e.what() + "\"}");
+			jsonEscape(e.what()) + "\"}");
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_get_project_overview] unknown exception\"}");
@@ -642,12 +693,10 @@ char *engine_get_type_info(uint64_t project_id, const char *type_name_filter)
 					  SQLITE_TRANSIENT);
 		}
 
-		std::string result = "{\"types\":[";
-		bool first = true;
+		util::JsonWriter w;
+		w.beginObject();
+		w.key("types").beginArray();
 		while (sqlite3_step(stmt) == SQLITE_ROW) {
-			if (!first)
-				result += ",";
-			first = false;
 			const char *n = reinterpret_cast<const char *>(
 				sqlite3_column_text(stmt, 0));
 			const char *qn = reinterpret_cast<const char *>(
@@ -660,27 +709,25 @@ char *engine_get_type_info(uint64_t project_id, const char *type_name_filter)
 			int row = sqlite3_column_int(stmt, 5);
 			int64_t ref_count = sqlite3_column_int64(stmt, 6);
 
-			result +=
-				"{\"name\":\"" + jsonEscape(n ? n : "") + "\"";
-			result += ",\"qualified_name\":\"" +
-				  jsonEscape(qn ? qn : "") + "\"";
-			result += ",\"kind\":" + std::to_string(kind);
-			result += ",\"file_path\":\"" +
-				  jsonEscape(fp ? fp : "") + "\"";
-			result += ",\"language\":\"" +
-				  jsonEscape(lang ? lang : "") + "\"";
-			result += ",\"line\":" + std::to_string(row);
-			result += ",\"ref_count\":" +
-				  std::to_string(ref_count) + "}";
+			w.beginObject();
+			w.key("name").value(n ? n : "");
+			w.key("qualified_name").value(qn ? qn : "");
+			w.key("kind").value(kind);
+			w.key("file_path").value(fp ? fp : "");
+			w.key("language").value(lang ? lang : "");
+			w.key("line").value(row);
+			w.key("ref_count").value(ref_count);
+			w.endObject();
 		}
 		sqlite3_finalize(stmt);
-		result += "]}";
-		return dupString(result.c_str());
+		w.endArray();
+		w.endObject();
+		return dupString(w.str());
 	} catch (const std::exception &e) {
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_get_type_info] ") +
-			e.what() + "\"}");
+			jsonEscape(e.what()) + "\"}");
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_get_type_info] unknown exception\"}");
@@ -706,12 +753,10 @@ char *engine_get_routes(uint64_t project_id)
 		}
 		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 
-		std::string result = "{\"routes\":[";
-		bool first = true;
+		util::JsonWriter w;
+		w.beginObject();
+		w.key("routes").beginArray();
 		while (sqlite3_step(stmt) == SQLITE_ROW) {
-			if (!first)
-				result += ",";
-			first = false;
 			const char *m = reinterpret_cast<const char *>(
 				sqlite3_column_text(stmt, 0));
 			const char *p = reinterpret_cast<const char *>(
@@ -722,24 +767,23 @@ char *engine_get_routes(uint64_t project_id)
 				sqlite3_column_text(stmt, 3));
 			int line = sqlite3_column_int(stmt, 4);
 
-			result += "{\"method\":\"" + jsonEscape(m ? m : "") +
-				  "\"";
-			result +=
-				",\"path\":\"" + jsonEscape(p ? p : "") + "\"";
-			result += ",\"handler\":\"" + jsonEscape(h ? h : "") +
-				  "\"";
-			result +=
-				",\"file\":\"" + jsonEscape(f ? f : "") + "\"";
-			result += ",\"line\":" + std::to_string(line) + "}";
+			w.beginObject();
+			w.key("method").value(m ? m : "");
+			w.key("path").value(p ? p : "");
+			w.key("handler").value(h ? h : "");
+			w.key("file").value(f ? f : "");
+			w.key("line").value(line);
+			w.endObject();
 		}
 		sqlite3_finalize(stmt);
-		result += "]}";
-		return dupString(result.c_str());
+		w.endArray();
+		w.endObject();
+		return dupString(w.str());
 	} catch (const std::exception &e) {
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_get_routes] ") +
-			e.what() + "\"}");
+			jsonEscape(e.what()) + "\"}");
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_get_routes] unknown exception\"}");
@@ -771,7 +815,7 @@ char *engine_export_artifact(uint64_t project_id, const char *output_path)
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_export_artifact] ") +
-			e.what() + "\"}");
+			jsonEscape(e.what()) + "\"}");
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_export_artifact] unknown exception\"}");
@@ -792,7 +836,7 @@ char *engine_import_artifact(uint64_t project_id, const char *artifact_path)
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_import_artifact] ") +
-			e.what() + "\"}");
+			jsonEscape(e.what()) + "\"}");
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_import_artifact] unknown exception\"}");
@@ -828,7 +872,7 @@ extern "C" char *engine_rebuild_csr(const char *db_path, uint64_t project_id)
 			return dupString(
 				"{\"error\":\"[module=ffi, "
 				"method=engine_rebuild_csr] cannot open db: " +
-				std::string(db_path) + "\"}");
+				jsonEscape(db_path) + "\"}");
 		}
 		if (!local_store.buildCSR(project_id)) {
 			return dupString(
@@ -842,7 +886,7 @@ extern "C" char *engine_rebuild_csr(const char *db_path, uint64_t project_id)
 	} catch (const std::exception &e) {
 		return dupString(std::string("{\"error\":\"[module=ffi, "
 					     "method=engine_rebuild_csr] ") +
-				 e.what() + "\"}");
+				 jsonEscape(e.what()) + "\"}");
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, "

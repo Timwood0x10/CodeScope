@@ -175,6 +175,7 @@ set(ENGINE_SOURCES
     ${GRAMMAR_SOURCES}
     src/engine.cpp
     src/engine_helpers.cpp
+    src/util/json_writer.cpp
     src/engine_lifecycle.cpp
     src/engine_index.cpp
     src/engine_index_project.cpp

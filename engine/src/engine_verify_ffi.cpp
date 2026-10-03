@@ -579,7 +579,7 @@ extern "C" char *engine_verify_integrity(uint64_t project_id, int max_findings)
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_verify_integrity] ") +
-			e.what() + "\"}");
+			jsonEscape(e.what()) + "\"}");
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_verify_integrity] unknown exception\"}");
@@ -662,7 +662,7 @@ extern "C" char *engine_verify_claim(uint64_t project_id,
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_verify_claim] ") +
-			e.what() + "\"}");
+			jsonEscape(e.what()) + "\"}");
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_verify_claim] unknown exception\"}");
@@ -767,7 +767,7 @@ extern "C" char *engine_verify_summary(uint64_t project_id, const char *text)
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_verify_summary] ") +
-			e.what() + "\"}");
+			jsonEscape(e.what()) + "\"}");
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_verify_summary] unknown exception\"}");
@@ -864,7 +864,7 @@ extern "C" char *engine_get_verifier_registry_status(uint64_t project_id)
 		return dupString(
 			std::string("{\"error\":\"[module=ffi, method="
 				    "engine_get_verifier_registry_status] ") +
-			e.what() + "\"}");
+			jsonEscape(e.what()) + "\"}");
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, method="

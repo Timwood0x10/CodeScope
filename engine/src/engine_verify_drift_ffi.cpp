@@ -124,7 +124,7 @@ extern "C" char *engine_verify_review(uint64_t project_id, const char *text)
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_verify_review] ") +
-			e.what() + "\"}");
+			jsonEscape(e.what()) + "\"}");
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_verify_review] unknown exception\"}");
@@ -180,7 +180,7 @@ extern "C" char *engine_verify_reality(uint64_t project_id, const char *text)
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_verify_reality] ") +
-			e.what() + "\"}");
+			jsonEscape(e.what()) + "\"}");
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_verify_reality] unknown exception\"}");
@@ -435,7 +435,7 @@ extern "C" char *engine_detect_drift(uint64_t project_id)
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_detect_drift] ") +
-			e.what() + "\"}");
+			jsonEscape(e.what()) + "\"}");
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_detect_drift] unknown exception\"}");
@@ -578,7 +578,7 @@ extern "C" char *engine_detect_documentation_drift(uint64_t project_id)
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_detect_documentation_drift] ") +
-			e.what() + "\"}");
+			jsonEscape(e.what()) + "\"}");
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_detect_documentation_drift] unknown exception\"}");
@@ -680,7 +680,7 @@ extern "C" char *engine_detect_capability_drift(uint64_t project_id)
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_detect_capability_drift] ") +
-			e.what() + "\"}");
+			jsonEscape(e.what()) + "\"}");
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_detect_capability_drift] unknown exception\"}");
@@ -745,7 +745,7 @@ extern "C" char *engine_detect_architecture_drift(uint64_t project_id)
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_detect_architecture_drift] ") +
-			e.what() + "\"}");
+			jsonEscape(e.what()) + "\"}");
 	} catch (...) {
 		return dupString(
 			"{\"error\":\"[module=ffi, method=engine_detect_architecture_drift] unknown exception\"}");

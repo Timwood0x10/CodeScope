@@ -36,11 +36,11 @@
 #include "async_knowledge.h"
 #include "evidence/evidence_builder.h"
 #include "platform_win.h"
+#include "util/json_writer.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <sstream>
 #include <string>
 #include <vector>
 
@@ -49,75 +49,34 @@
 namespace
 {
 
-// JSON-escape a string for inclusion in a JSON string literal.
-// Mirrors the jsonEscape helper in engine_internal.h but kept
-// local to avoid pulling that header's full set of includes.
-std::string escapeJson(const std::string &s)
+// Serialize one EvidenceItem into the object currently open on `w`.
+void writeItem(util::JsonWriter &w, const evidence::EvidenceItem &item)
 {
-	std::string out;
-	out.reserve(s.size() + 8);
-	for (char c : s) {
-		switch (c) {
-		case '"':
-			out += "\\\"";
-			break;
-		case '\\':
-			out += "\\\\";
-			break;
-		case '\n':
-			out += "\\n";
-			break;
-		case '\r':
-			out += "\\r";
-			break;
-		case '\t':
-			out += "\\t";
-			break;
-		default:
-			if (static_cast<unsigned char>(c) < 0x20) {
-				char buf[8];
-				std::snprintf(buf, sizeof(buf), "\\u%04x",
-					      static_cast<unsigned char>(c));
-				out += buf;
-			} else {
-				out += c;
-			}
-		}
-	}
-	return out;
+	w.beginObject();
+	w.key("fact_id").value(item.fact_id);
+	w.key("category").value(item.category);
+	w.key("primitive").value(item.primitive);
+	w.key("kind").value(item.kind);
+	w.key("symbol").value(item.symbol);
+	w.key("file").value(item.file);
+	w.key("line").value(item.line);
+	w.key("snippet").value(item.snippet);
+	w.endObject();
 }
 
-// Serialize one EvidenceItem to a JSON object string.
-std::string serializeItem(const evidence::EvidenceItem &item)
+// Serialize one Evidence as an object; `items` is always emitted as an
+// array (empty for the Count combine mode).
+void writeEvidence(util::JsonWriter &w, const evidence::Evidence &ev)
 {
-	std::ostringstream ss;
-	ss << "{\"fact_id\":" << item.fact_id << ",\"category\":\""
-	   << escapeJson(item.category) << "\""
-	   << ",\"primitive\":\"" << escapeJson(item.primitive) << "\""
-	   << ",\"kind\":\"" << escapeJson(item.kind) << "\""
-	   << ",\"symbol\":\"" << escapeJson(item.symbol) << "\""
-	   << ",\"file\":\"" << escapeJson(item.file) << "\""
-	   << ",\"line\":" << item.line << ",\"snippet\":\""
-	   << escapeJson(item.snippet) << "\""
-	   << "}";
-	return ss.str();
-}
-
-// Serialize one Evidence to a JSON object string. `items` is always
-// emitted as an array (empty for Count combine).
-std::string serializeEvidence(const evidence::Evidence &ev)
-{
-	std::ostringstream ss;
-	ss << "{\"category\":\"" << escapeJson(ev.category) << "\""
-	   << ",\"title\":\"" << escapeJson(ev.title) << "\""
-	   << ",\"confidence\":" << ev.confidence << ",\"items\":[";
-	for (size_t i = 0; i < ev.items.size(); ++i) {
-		if (i)
-			ss << ",";
-		ss << serializeItem(ev.items[i]);
-	}
-	ss << "]}";
-	return ss.str();
+	w.beginObject();
+	w.key("category").value(ev.category);
+	w.key("title").value(ev.title);
+	w.key("confidence").value(ev.confidence);
+	w.key("items").beginArray();
+	for (const auto &item : ev.items)
+		writeItem(w, item);
+	w.endArray();
+	w.endObject();
 }
 
 } // namespace
@@ -152,14 +111,12 @@ char *engine_build_evidence(uint64_t project_id, const char *category_filter)
 			evidences = builder.buildAll(project_id);
 		}
 
-		std::string json = "[";
-		for (size_t i = 0; i < evidences.size(); ++i) {
-			if (i)
-				json += ",";
-			json += serializeEvidence(evidences[i]);
-		}
-		json += "]";
-		return dupString(json);
+		util::JsonWriter w;
+		w.beginArray();
+		for (const auto &ev : evidences)
+			writeEvidence(w, ev);
+		w.endArray();
+		return dupString(w.str());
 	} catch (const std::exception &e) {
 		return dupString(std::string("{\"error\":\"[module=ffi, "
 					     "method=engine_build_evidence] ") +
