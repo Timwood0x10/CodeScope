@@ -149,9 +149,11 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 				sqlite3_finalize(stmt);
 			}
 			if (count == 0) {
-				std::ostringstream j;
-				j << "{\"error\":\"module not found\",\"module\":\""
-				  << jsonEscape(name) << "\"}";
+				util::JsonWriter j;
+				j.beginObject();
+				j.key("error").value("module not found");
+				j.key("module").value(name);
+				j.endObject();
 				return dupString(j.str());
 			}
 			found = true;
@@ -160,9 +162,10 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 				  name + "/";
 		}
 
-		std::ostringstream json;
-		json << "{\"module\":\"" << jsonEscape(name) << "\","
-		     << "\"summary\":\"" << jsonEscape(summary) << "\",";
+		util::JsonWriter json;
+		json.beginObject();
+		json.key("module").value(name);
+		json.key("summary").value(summary);
 
 		// Entities: count + sample (up to 10) for this module's files.
 		// Use the same "%/<name>/%" pattern as the fallback check above so
@@ -191,17 +194,14 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 					total = sqlite3_column_int(stmt, 0);
 				sqlite3_finalize(stmt);
 			}
-			json << "\"entities\":{\"count\":" << total
-			     << ",\"sample\":[";
+			json.key("entities").beginObject();
+			json.key("count").value(total);
+			json.key("sample").beginArray();
 			if (sqlite3_prepare_v2(db, sql_str.c_str(), -1, &stmt,
 					       nullptr) == SQLITE_OK) {
 				sqlite3_bind_text(stmt, 1, like.c_str(), -1,
 						  SQLITE_STATIC);
-				bool first = true;
 				while (sqlite3_step(stmt) == SQLITE_ROW) {
-					if (!first)
-						json << ",";
-					first = false;
 					const char *n =
 						reinterpret_cast<const char *>(
 							sqlite3_column_text(
@@ -211,32 +211,29 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 						reinterpret_cast<const char *>(
 							sqlite3_column_text(
 								stmt, 2));
-					json << "{\"name\":\""
-					     << jsonEscape(n ? n : "") << "\","
-					     << "\"kind\":" << kind << ","
-					     << "\"file_path\":\""
-					     << jsonEscape(fp ? fp : "")
-					     << "\"}";
+					json.beginObject();
+					json.key("name").value(n ? n : "");
+					json.key("kind").value(kind);
+					json.key("file_path")
+						.value(fp ? fp : "");
+					json.endObject();
 				}
 				sqlite3_finalize(stmt);
 			}
-			json << "]},";
+			json.endArray();
+			json.endObject();
 		}
 
 		// Capabilities
 		{
-			json << "\"capabilities\":[";
+			json.key("capabilities").beginArray();
 			const char *sql =
 				"SELECT id, name, summary FROM capability "
 				"ORDER BY id";
 			sqlite3_stmt *stmt = nullptr;
 			if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
 			    SQLITE_OK) {
-				bool first = true;
 				while (sqlite3_step(stmt) == SQLITE_ROW) {
-					if (!first)
-						json << ",";
-					first = false;
 					int64_t id =
 						sqlite3_column_int64(stmt, 0);
 					const char *n =
@@ -247,31 +244,27 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 						reinterpret_cast<const char *>(
 							sqlite3_column_text(
 								stmt, 2));
-					json << "{\"id\":" << id << ","
-					     << "\"name\":\""
-					     << jsonEscape(n ? n : "") << "\","
-					     << "\"summary\":\""
-					     << jsonEscape(s ? s : "") << "\"}";
+					json.beginObject();
+					json.key("id").value(id);
+					json.key("name").value(n ? n : "");
+					json.key("summary").value(s ? s : "");
+					json.endObject();
 				}
 				sqlite3_finalize(stmt);
 			}
-			json << "],";
+			json.endArray();
 		}
 
 		// Contracts
 		{
-			json << "\"contracts\":[";
+			json.key("contracts").beginArray();
 			const char *sql =
 				"SELECT id, name, origin, claim_text FROM contract "
 				"ORDER BY id";
 			sqlite3_stmt *stmt = nullptr;
 			if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
 			    SQLITE_OK) {
-				bool first = true;
 				while (sqlite3_step(stmt) == SQLITE_ROW) {
-					if (!first)
-						json << ",";
-					first = false;
 					int64_t id =
 						sqlite3_column_int64(stmt, 0);
 					const char *n =
@@ -286,22 +279,21 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 						reinterpret_cast<const char *>(
 							sqlite3_column_text(
 								stmt, 3));
-					json << "{\"id\":" << id << ","
-					     << "\"name\":\""
-					     << jsonEscape(n ? n : "") << "\","
-					     << "\"origin\":\""
-					     << jsonEscape(o ? o : "") << "\","
-					     << "\"claim_text\":\""
-					     << jsonEscape(c ? c : "") << "\"}";
+					json.beginObject();
+					json.key("id").value(id);
+					json.key("name").value(n ? n : "");
+					json.key("origin").value(o ? o : "");
+					json.key("claim_text").value(c ? c : "");
+					json.endObject();
 				}
 				sqlite3_finalize(stmt);
 			}
-			json << "],";
+			json.endArray();
 		}
 
 		// Findings + integrity score
 		{
-			json << "\"findings\":[";
+			json.key("findings").beginArray();
 			const char *sql =
 				"SELECT id, rule, severity, description, confidence "
 				"FROM finding ORDER BY id";
@@ -309,11 +301,7 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 			int sev2 = 0, sev1 = 0;
 			if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
 			    SQLITE_OK) {
-				bool first = true;
 				while (sqlite3_step(stmt) == SQLITE_ROW) {
-					if (!first)
-						json << ",";
-					first = false;
 					int64_t id =
 						sqlite3_column_int64(stmt, 0);
 					const char *r =
@@ -327,14 +315,14 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 								stmt, 3));
 					double conf =
 						sqlite3_column_double(stmt, 4);
-					json << "{\"id\":" << id << ","
-					     << "\"rule\":\""
-					     << jsonEscape(r ? r : "") << "\","
-					     << "\"severity\":" << sev << ","
-					     << "\"description\":\""
-					     << jsonEscape(d ? d : "") << "\","
-					     << "\"confidence\":" << conf
-					     << "}";
+					json.beginObject();
+					json.key("id").value(id);
+					json.key("rule").value(r ? r : "");
+					json.key("severity").value(sev);
+					json.key("description")
+						.value(d ? d : "");
+					json.key("confidence").value(conf);
+					json.endObject();
 					if (sev == 2)
 						sev2++;
 					else if (sev == 1)
@@ -342,7 +330,7 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 				}
 				sqlite3_finalize(stmt);
 			}
-			json << "],";
+			json.endArray();
 			int integrity = kIntegrityMax -
 					kIntegritySev2Penalty * sev2 -
 					kIntegritySev1Penalty * sev1;
@@ -350,18 +338,18 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 				integrity = 0;
 			if (integrity > kIntegrityMax)
 				integrity = kIntegrityMax;
-			json << "\"integrity\":" << integrity << ",";
+			json.key("integrity").value(integrity);
 		}
 
 		// Cross-module dependencies from the pre-computed module_edge table.
 		// Populated by the async knowledge builder after indexing. When the
 		// table is empty (e.g. async build not yet complete), both arrays are
 		// empty — the card still returns successfully.
-		json << "\"cross_module\":{";
+		json.key("cross_module").beginObject();
 
 		// depends_on: modules that this module calls (outgoing edges).
 		{
-			json << "\"depends_on\":[";
+			json.key("depends_on").beginArray();
 			const char *sql =
 				"SELECT tgt_module, edge_count "
 				"FROM module_edge "
@@ -378,29 +366,26 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 						  SQLITE_STATIC);
 				sqlite3_bind_int(stmt, 3,
 						 kCrossModuleEdgeLimit);
-				bool first = true;
 				while (sqlite3_step(stmt) == SQLITE_ROW) {
-					if (!first)
-						json << ",";
-					first = false;
 					const char *m =
 						reinterpret_cast<const char *>(
 							sqlite3_column_text(
 								stmt, 0));
 					int64_t ec =
 						sqlite3_column_int64(stmt, 1);
-					json << "{\"module\":\""
-					     << jsonEscape(m ? m : "") << "\""
-					     << ",\"edge_count\":" << ec << "}";
+					json.beginObject();
+					json.key("module").value(m ? m : "");
+					json.key("edge_count").value(ec);
+					json.endObject();
 				}
 				sqlite3_finalize(stmt);
 			}
-			json << "],";
+			json.endArray();
 		}
 
 		// depended_by: modules that call this module (incoming edges).
 		{
-			json << "\"depended_by\":[";
+			json.key("depended_by").beginArray();
 			const char *sql =
 				"SELECT src_module, edge_count "
 				"FROM module_edge "
@@ -417,27 +402,25 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 						  SQLITE_STATIC);
 				sqlite3_bind_int(stmt, 3,
 						 kCrossModuleEdgeLimit);
-				bool first = true;
 				while (sqlite3_step(stmt) == SQLITE_ROW) {
-					if (!first)
-						json << ",";
-					first = false;
 					const char *m =
 						reinterpret_cast<const char *>(
 							sqlite3_column_text(
 								stmt, 0));
 					int64_t ec =
 						sqlite3_column_int64(stmt, 1);
-					json << "{\"module\":\""
-					     << jsonEscape(m ? m : "") << "\""
-					     << ",\"edge_count\":" << ec << "}";
+					json.beginObject();
+					json.key("module").value(m ? m : "");
+					json.key("edge_count").value(ec);
+					json.endObject();
 				}
 				sqlite3_finalize(stmt);
 			}
-			json << "]";
+			json.endArray();
 		}
 
-		json << "}}";
+		json.endObject();
+		json.endObject();
 		return dupString(json.str());
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(

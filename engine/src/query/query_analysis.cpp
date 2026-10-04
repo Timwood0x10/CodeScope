@@ -1,3 +1,4 @@
+#include "util/json_writer.h"
 #include "query_engine.h"
 // Community detection lives in query_communities.cpp (restored after the
 // Phase-0 cut that removed the original label-propagation implementation).
@@ -29,7 +30,8 @@ namespace
 std::string columnTextEscaped(sqlite3_stmt *stmt, int col)
 {
 	const unsigned char *text = sqlite3_column_text(stmt, col);
-	return jsonEscape(text ? reinterpret_cast<const char *>(text) : "");
+	return util::jsonEscapeString(
+		text ? reinterpret_cast<const char *>(text) : "");
 }
 } // namespace
 
@@ -418,10 +420,12 @@ std::string QueryEngine::traceCallChain(uint64_t project_id,
 		std::string chain = path[0];
 		for (size_t i = 1; i < path.size(); i++)
 			chain += "→" + path[i];
-		std::ostringstream json;
-		json << "{\"found\":true,\"chain\":\""
-		     << jsonEscape(chain.c_str())
-		     << "\",\"depth\":" << (path.size() - 1) << "}";
+		util::JsonWriter json;
+		json.beginObject();
+		json.key("found").value(true);
+		json.key("chain").value(chain);
+		json.key("depth").value(path.size() - 1);
+		json.endObject();
 		return json.str();
 	}
 	return "{\"found\":false,\"chain\":\"\",\"depth\":0}";

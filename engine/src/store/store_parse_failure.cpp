@@ -9,6 +9,7 @@
 // StmtPtr (unique_ptr with custom deleter) so sqlite3_finalize always
 // runs, even on early return or exception.
 
+#include "util/json_writer.h"
 #include "store_parse_failure.h"
 #include "store.h"
 #include "store_internal.h"
@@ -350,12 +351,16 @@ std::string getParseFailuresJson(uint64_t project_id, int limit)
 		int fc = sqlite3_column_int(stmt.get(), 3);
 		int64_t first_seen = sqlite3_column_int64(stmt.get(), 4);
 		int64_t last_seen = sqlite3_column_int64(stmt.get(), 5);
-		json += "{\"file_path\":\"" + jsonEscape(fp ? fp : "");
-		json += "\",\"language\":\"" + jsonEscape(lg ? lg : "");
-		json += "\",\"fail_reason\":\"" + jsonEscape(rs ? rs : "");
-		json += "\",\"fail_count\":" + std::to_string(fc);
-		json += ",\"first_seen\":" + std::to_string(first_seen);
-		json += ",\"last_seen\":" + std::to_string(last_seen) + "}";
+		util::JsonWriter el;
+		el.beginObject();
+		el.key("file_path").value(fp ? fp : "");
+		el.key("language").value(lg ? lg : "");
+		el.key("fail_reason").value(rs ? rs : "");
+		el.key("fail_count").value(fc);
+		el.key("first_seen").value(first_seen);
+		el.key("last_seen").value(last_seen);
+		el.endObject();
+		json += el.str();
 	}
 	json += "]";
 	return json;

@@ -1,3 +1,4 @@
+#include "util/json_writer.h"
 #include "store.h"
 #include "store_internal.h"
 #include "platform_win.h"
@@ -351,19 +352,20 @@ std::string GraphStore::searchCode(uint64_t project_id, const char *query,
 	for (size_t i = 0; i < results.size(); i++) {
 		if (i > 0)
 			json << ",";
-		json << "{"
-		     << "\"node_id\":" << results[i].node_id << ","
-		     << "\"name\":\"" << jsonEscape(results[i].name) << "\","
-		     << "\"node_type\":" << results[i].node_type << ","
-		     << "\"file_path\":\"" << jsonEscape(results[i].file_path)
-		     << "\","
-		     << "\"start_row\":" << results[i].start_row << ","
-		     << "\"start_col\":" << results[i].start_col << ","
-		     << "\"end_row\":" << results[i].end_row << ","
-		     << "\"end_col\":" << results[i].end_col << ","
-		     << "\"language\":\"" << jsonEscape(results[i].language)
-		     << "\","
-		     << "\"score\":" << results[i].score << "}";
+		util::JsonWriter el;
+		el.beginObject();
+		el.key("node_id").value(results[i].node_id);
+		el.key("name").value(results[i].name);
+		el.key("node_type").value(results[i].node_type);
+		el.key("file_path").value(results[i].file_path);
+		el.key("start_row").value(results[i].start_row);
+		el.key("start_col").value(results[i].start_col);
+		el.key("end_row").value(results[i].end_row);
+		el.key("end_col").value(results[i].end_col);
+		el.key("language").value(results[i].language);
+		el.key("score").value(results[i].score);
+		el.endObject();
+		json << el.str();
 	}
 	json << "],\"total\":" << results.size() << "}";
 	return json.str();
@@ -431,17 +433,16 @@ std::string GraphStore::searchGraphFallback(uint64_t project_id,
 				const char *fp_raw =
 					reinterpret_cast<const char *>(
 						sqlite3_column_text(stmt, 2));
-				json << "{"
-				     << "\"node_id\":"
-				     << sqlite3_column_int64(stmt, 0) << ","
-				     << "\"name\":\""
-				     << jsonEscape(name_raw ? name_raw : "")
-				     << "\","
-				     << "\"file_path\":\""
-				     << jsonEscape(fp_raw ? fp_raw : "")
-				     << "\","
-				     << "\"type\":"
-				     << sqlite3_column_int(stmt, 3) << "}";
+				util::JsonWriter el;
+				el.beginObject();
+				el.key("node_id").value(
+					sqlite3_column_int64(stmt, 0));
+				el.key("name").value(name_raw ? name_raw : "");
+				el.key("file_path").value(fp_raw ? fp_raw : "");
+				el.key("type").value(
+					sqlite3_column_int(stmt, 3));
+				el.endObject();
+				json << el.str();
 			}
 			sqlite3_finalize(stmt);
 			if (rc == SQLITE_INTERRUPT) {
@@ -491,15 +492,14 @@ std::string GraphStore::searchGraphFallback(uint64_t project_id,
 				sqlite3_column_text(stmt, 1));
 			const char *fp_raw = reinterpret_cast<const char *>(
 				sqlite3_column_text(stmt, 2));
-			json << "{"
-			     << "\"node_id\":" << sqlite3_column_int64(stmt, 0)
-			     << ","
-			     << "\"name\":\""
-			     << jsonEscape(name_raw ? name_raw : "") << "\","
-			     << "\"file_path\":\""
-			     << jsonEscape(fp_raw ? fp_raw : "") << "\","
-			     << "\"type\":" << sqlite3_column_int(stmt, 3)
-			     << "}";
+			util::JsonWriter el;
+			el.beginObject();
+			el.key("node_id").value(sqlite3_column_int64(stmt, 0));
+			el.key("name").value(name_raw ? name_raw : "");
+			el.key("file_path").value(fp_raw ? fp_raw : "");
+			el.key("type").value(sqlite3_column_int(stmt, 3));
+			el.endObject();
+			json << el.str();
 		}
 		sqlite3_finalize(stmt);
 	} else {
@@ -571,18 +571,22 @@ std::string GraphStore::getComplexityJson(uint64_t project_id,
 		int calls = sqlite3_column_int(stmt, 8);
 		int lines = sqlite3_column_int(stmt, 9);
 		int is_stub = sqlite3_column_int(stmt, 10);
-		std::ostringstream j;
-		j << "{\"name\":\"" << jsonEscape(name ? name : "")
-		  << "\",\"file_path\":\"" << jsonEscape(file ? file : "")
-		  << "\",\"cyclomatic\":" << cyclomatic
-		  << ",\"cognitive\":" << cognitive
-		  << ",\"nesting_depth\":" << nesting
-		  << ",\"branch_count\":" << branches
-		  << ",\"loop_count\":" << loops
-		  << ",\"param_count\":" << params
-		  << ",\"call_count\":" << calls << ",\"lines\":" << lines
-		  << ",\"is_stub\":" << (is_stub ? "true" : "false")
-		  << ",\"complexity\":" << cyclomatic << ",\"available\":true}";
+		util::JsonWriter j;
+		j.beginObject();
+		j.key("name").value(name ? name : "");
+		j.key("file_path").value(file ? file : "");
+		j.key("cyclomatic").value(cyclomatic);
+		j.key("cognitive").value(cognitive);
+		j.key("nesting_depth").value(nesting);
+		j.key("branch_count").value(branches);
+		j.key("loop_count").value(loops);
+		j.key("param_count").value(params);
+		j.key("call_count").value(calls);
+		j.key("lines").value(lines);
+		j.key("is_stub").value(is_stub != 0);
+		j.key("complexity").value(cyclomatic);
+		j.key("available").value(true);
+		j.endObject();
 		sqlite3_finalize(stmt);
 		return j.str();
 	}

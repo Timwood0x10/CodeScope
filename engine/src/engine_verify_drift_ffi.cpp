@@ -167,13 +167,14 @@ extern "C" char *engine_verify_reality(uint64_t project_id, const char *text)
 		AggregateVerdict agg = aggregateVerdict(
 			batch.supported, batch.contradicted, batch.unknown);
 
-		std::ostringstream json;
-		json << "{\"statement\":\""
-		     << jsonEscape(src.substr(0, kSourceRefMaxLen))
-		     << "\",\"claims_parsed\":" << batch.claims_count
-		     << ",\"verdict\":\"" << agg.verdict
-		     << "\",\"confidence\":" << agg.confidence
-		     << ",\"results\":" << batch.results_json << "}";
+		util::JsonWriter json;
+		json.beginObject();
+		json.key("statement").value(src.substr(0, kSourceRefMaxLen));
+		json.key("claims_parsed").value(batch.claims_count);
+		json.key("verdict").value(agg.verdict);
+		json.key("confidence").value(agg.confidence);
+		json.key("results").raw(batch.results_json);
+		json.endObject();
 		return dupString(json.str());
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
@@ -261,14 +262,17 @@ extern "C" char *engine_detect_drift(uint64_t project_id)
 					if (!first)
 						json << ",";
 					first = false;
-					json << "{\"type\":\"MissingCapability\","
-					     << "\"severity\":"
-					     << kDriftSeverityHard
-					     << ",\"capability_id\":" << cid
-					     << ",\"subject\":\""
-					     << jsonEscape(name) << "\""
-					     << ",\"detail\":\""
-					     << jsonEscape(detail) << "\"}";
+					util::JsonWriter el;
+					el.beginObject();
+					el.key("type").value(
+						"MissingCapability");
+					el.key("severity")
+						.value(kDriftSeverityHard);
+					el.key("capability_id").value(cid);
+					el.key("subject").value(name);
+					el.key("detail").value(detail);
+					el.endObject();
+					json << el.str();
 					drifts_found++;
 				}
 				sqlite3_finalize(stmt);
@@ -410,15 +414,17 @@ extern "C" char *engine_detect_drift(uint64_t project_id)
 						if (!first)
 							json << ",";
 						first = false;
-						json << "{\"type\":\"BrokenContract\","
-						     << "\"severity\":"
-						     << kDriftSeverityHard
-						     << ",\"contract_id\":"
-						     << cid << ",\"subject\":\""
-						     << jsonEscape(name) << "\""
-						     << ",\"detail\":\""
-						     << jsonEscape(detail)
-						     << "\"}";
+						util::JsonWriter el;
+						el.beginObject();
+						el.key("type").value(
+							"BrokenContract");
+						el.key("severity")
+							.value(kDriftSeverityHard);
+						el.key("contract_id").value(cid);
+						el.key("subject").value(name);
+						el.key("detail").value(detail);
+						el.endObject();
+						json << el.str();
 						drifts_found++;
 					}
 				}
@@ -537,37 +543,32 @@ extern "C" char *engine_detect_documentation_drift(uint64_t project_id)
 		// Serialize to JSON:
 		// {"claimed_languages":[...],"found_languages":[...],
 		//  "missing_languages":[...],"drifts":[...],"drifts_found":N}
-		std::ostringstream json;
-		json << "{\"claimed_languages\":[";
-		for (size_t i = 0; i < claimed.size(); ++i) {
-			if (i > 0)
-				json << ",";
-			json << "\"" << jsonEscape(claimed[i]) << "\"";
-		}
-		json << "],\"found_languages\":[";
-		for (size_t i = 0; i < found.size(); ++i) {
-			if (i > 0)
-				json << ",";
-			json << "\"" << jsonEscape(found[i]) << "\"";
-		}
-		json << "],\"missing_languages\":[";
+		util::JsonWriter json;
+		json.beginObject();
+		json.key("claimed_languages").beginArray();
+		for (const auto &lang : claimed)
+			json.value(lang);
+		json.endArray();
+		json.key("found_languages").beginArray();
+		for (const auto &lang : found)
+			json.value(lang);
+		json.endArray();
+		json.key("missing_languages").beginArray();
+		for (const auto &lang : missing)
+			json.value(lang);
+		json.endArray();
+		json.key("drifts").beginArray();
 		for (size_t i = 0; i < missing.size(); ++i) {
-			if (i > 0)
-				json << ",";
-			json << "\"" << jsonEscape(missing[i]) << "\"";
+			json.beginObject();
+			json.key("type").value("DocumentationDrift");
+			json.key("severity").value(verify::kDriftSeverityDoc);
+			json.key("subject").value(missing[i]);
+			json.key("detail").value(missing_details[i]);
+			json.endObject();
 		}
-		json << "],\"drifts\":[";
-		for (size_t i = 0; i < missing.size(); ++i) {
-			if (i > 0)
-				json << ",";
-			json << "{\"type\":\"DocumentationDrift\""
-			     << ",\"severity\":" << verify::kDriftSeverityDoc
-			     << ",\"subject\":\"" << jsonEscape(missing[i])
-			     << "\""
-			     << ",\"detail\":\""
-			     << jsonEscape(missing_details[i]) << "\"}";
-		}
-		json << "],\"drifts_found\":" << drifts_found << "}";
+		json.endArray();
+		json.key("drifts_found").value(drifts_found);
+		json.endObject();
 		return dupString(json.str());
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
@@ -652,13 +653,15 @@ extern "C" char *engine_detect_capability_drift(uint64_t project_id)
 		for (size_t i = 0; i < drifts.size(); ++i) {
 			if (i > 0)
 				json << ",";
-			json << "{\"type\":\"CapabilityDrift\""
-			     << ",\"severity\":"
-			     << verify::kDriftSeverityCapability
-			     << ",\"subject\":\""
-			     << jsonEscape(drifts[i].subject) << "\""
-			     << ",\"detail\":\"" << jsonEscape(drifts[i].detail)
-			     << "\"}";
+			util::JsonWriter el;
+			el.beginObject();
+			el.key("type").value("CapabilityDrift");
+			el.key("severity")
+				.value(verify::kDriftSeverityCapability);
+			el.key("subject").value(drifts[i].subject);
+			el.key("detail").value(drifts[i].detail);
+			el.endObject();
+			json << el.str();
 		}
 		json << "],\"drifts_found\":" << drifts.size();
 		// Honest reporting: when the capability table is empty there is
@@ -725,12 +728,14 @@ extern "C" char *engine_detect_architecture_drift(uint64_t project_id)
 		for (size_t i = 0; i < drifts.size(); ++i) {
 			if (i > 0)
 				json << ",";
-			json << "{\"type\":\"ArchitectureDrift\""
-			     << ",\"severity\":" << verify::kDriftSeverityArch
-			     << ",\"subject\":\""
-			     << jsonEscape(drifts[i].subject) << "\""
-			     << ",\"detail\":\"" << jsonEscape(drifts[i].detail)
-			     << "\"}";
+			util::JsonWriter el;
+			el.beginObject();
+			el.key("type").value("ArchitectureDrift");
+			el.key("severity").value(verify::kDriftSeverityArch);
+			el.key("subject").value(drifts[i].subject);
+			el.key("detail").value(drifts[i].detail);
+			el.endObject();
+			json << el.str();
 		}
 		json << "],\"drifts_found\":" << drifts.size() << "}";
 		return dupString(json.str());

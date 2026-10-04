@@ -1,3 +1,4 @@
+#include "util/json_writer.h"
 #include "query_engine.h"
 // community_detection removed — Phase 0 cut
 #include "graph_query.h"
@@ -63,57 +64,61 @@ std::string queryToJson(sqlite3 *db, const char *sql, const char *result_key)
 {
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-		return "{\"total\":0,\"results\":[],\"error\":\"" +
-		       std::string(sqlite3_errmsg(db)) + "\"}";
+		util::JsonWriter err;
+		err.beginObject();
+		err.key("total").value(0);
+		err.key("results").beginArray().endArray();
+		// The writer escapes the message: sqlite3_errmsg() can carry a
+		// quote, which previously produced invalid JSON here.
+		err.key("error").value(sqlite3_errmsg(db));
+		err.endObject();
+		return err.str();
 	}
 
-	std::ostringstream json;
-	json << "{\"" << result_key << "\":[";
+	util::JsonWriter json;
+	json.beginObject();
+	json.key(result_key).beginArray();
 
 	int col_count = sqlite3_column_count(stmt);
-	bool first_row = true;
 	int row_count = 0;
 
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
-		if (!first_row)
-			json << ",";
-		first_row = false;
 		row_count++;
 
-		json << "{";
+		json.beginObject();
 		for (int i = 0; i < col_count; i++) {
-			if (i > 0)
-				json << ",";
 			const char *col_name = sqlite3_column_name(stmt, i);
-			// L2 fix: escape the column name so a name containing a quote
-			// or control char cannot produce invalid JSON.
-			json << "\"" << jsonEscape(col_name ? col_name : "")
-			     << "\":";
+			// The writer escapes keys and values, so a column name
+			// containing a quote or control char cannot produce
+			// invalid JSON.
+			json.key(col_name ? col_name : "");
 
 			int col_type = sqlite3_column_type(stmt, i);
 			if (col_type == SQLITE_NULL) {
-				json << "null";
+				json.nullValue();
 			} else if (col_type == SQLITE_INTEGER) {
-				json << sqlite3_column_int64(stmt, i);
+				json.value(sqlite3_column_int64(stmt, i));
 			} else if (col_type == SQLITE_FLOAT) {
 				double val = sqlite3_column_double(stmt, i);
-				// Use integer output for whole numbers to avoid "1.000000"
+				// Use integer output for whole numbers to avoid
+				// "1.000000"
 				if (val == static_cast<int64_t>(val))
-					json << static_cast<int64_t>(val);
+					json.value(static_cast<int64_t>(val));
 				else
-					json << val;
+					json.value(val);
 			} else {
 				const char *text =
 					reinterpret_cast<const char *>(
 						sqlite3_column_text(stmt, i));
-				json << "\"" << jsonEscape(text ? text : "")
-				     << "\"";
+				json.value(text ? text : "");
 			}
 		}
-		json << "}";
+		json.endObject();
 	}
 
-	json << "],\"total\":" << row_count << "}";
+	json.endArray();
+	json.key("total").value(row_count);
+	json.endObject();
 	sqlite3_finalize(stmt);
 	return json.str();
 }
@@ -194,16 +199,20 @@ std::string QueryEngine::findDefinition(uint64_t project_id,
 					reinterpret_cast<const char *>(
 						sqlite3_column_text(st, 9)) :
 					"";
-			json << "{\"node_id\":" << node_id << ",\"name\":\""
-			     << jsonEscape(name.c_str())
-			     << "\",\"qualified_name\":\""
-			     << jsonEscape(qn.c_str())
-			     << "\",\"node_type\":" << ntype
-			     << ",\"file_path\":\"" << jsonEscape(fp.c_str())
-			     << "\",\"start_row\":" << sr
-			     << ",\"start_col\":" << sc << ",\"end_row\":" << er
-			     << ",\"end_col\":" << ec << ",\"language\":\""
-			     << jsonEscape(lang.c_str()) << "\"}";
+			util::JsonWriter el;
+			el.beginObject();
+			el.key("node_id").value(node_id);
+			el.key("name").value(name);
+			el.key("qualified_name").value(qn);
+			el.key("node_type").value(ntype);
+			el.key("file_path").value(fp);
+			el.key("start_row").value(sr);
+			el.key("start_col").value(sc);
+			el.key("end_row").value(er);
+			el.key("end_col").value(ec);
+			el.key("language").value(lang);
+			el.endObject();
+			json << el.str();
 		}
 		sqlite3_finalize(st);
 	}
@@ -293,16 +302,20 @@ std::string QueryEngine::findReferences(uint64_t project_id,
 					reinterpret_cast<const char *>(
 						sqlite3_column_text(st, 9)) :
 					"";
-			json << "{\"node_id\":" << node_id << ",\"name\":\""
-			     << jsonEscape(name.c_str())
-			     << "\",\"qualified_name\":\""
-			     << jsonEscape(qn.c_str())
-			     << "\",\"node_type\":" << ntype
-			     << ",\"file_path\":\"" << jsonEscape(fp.c_str())
-			     << "\",\"start_row\":" << sr
-			     << ",\"start_col\":" << sc << ",\"end_row\":" << er
-			     << ",\"end_col\":" << ec << ",\"language\":\""
-			     << jsonEscape(lang.c_str()) << "\"}";
+			util::JsonWriter el;
+			el.beginObject();
+			el.key("node_id").value(node_id);
+			el.key("name").value(name);
+			el.key("qualified_name").value(qn);
+			el.key("node_type").value(ntype);
+			el.key("file_path").value(fp);
+			el.key("start_row").value(sr);
+			el.key("start_col").value(sc);
+			el.key("end_row").value(er);
+			el.key("end_col").value(ec);
+			el.key("language").value(lang);
+			el.endObject();
+			json << el.str();
 		}
 		sqlite3_finalize(st);
 	}
@@ -414,12 +427,15 @@ std::string QueryEngine::getCallers(uint64_t project_id,
 			if (!first_c)
 				cands += ",";
 			first_c = false;
-			cands += "{\"graph_node_id\":" + std::to_string(id) +
-				 ",\"name\":\"" + jsonEscape(nm.c_str()) +
-				 "\",\"file_path\":\"" +
-				 jsonEscape(fp.c_str()) +
-				 "\",\"start_row\":" + std::to_string(sr) +
-				 ",\"start_col\":" + std::to_string(sc) + "}";
+			util::JsonWriter el;
+			el.beginObject();
+			el.key("graph_node_id").value(id);
+			el.key("name").value(nm);
+			el.key("file_path").value(fp);
+			el.key("start_row").value(sr);
+			el.key("start_col").value(sc);
+			el.endObject();
+			cands += el.str();
 		}
 		return "{\"callers\":[],\"total\":0,\"ambiguous\":true,"
 		       "\"candidates\":[" +
@@ -484,21 +500,21 @@ std::string QueryEngine::getCallers(uint64_t project_id,
 				result += ",";
 			first = false;
 			++count;
-			result +=
-				"{\"node_id\":" + std::to_string(node_id) +
-				",\"name\":\"" + jsonEscape(name.c_str()) +
-				"\",\"file_path\":\"" +
-				jsonEscape(file.c_str()) + "\",\"start_row\":" +
-				std::to_string(start_row) +
-				",\"start_col\":" + std::to_string(start_col) +
-				",\"confidence\":" +
-				std::to_string(confidence) +
-				",\"resolver\":\"" +
-				jsonEscape(resolver.c_str()) +
-				"\",\"resolution_kind\":\"" +
-				jsonEscape(rkind.c_str()) +
-				"\",\"resolve_strategy\":\"" +
-				jsonEscape(rkind.c_str()) + "\"}";
+			util::JsonWriter el;
+			el.beginObject();
+			el.key("node_id").value(node_id);
+			el.key("name").value(name);
+			el.key("file_path").value(file);
+			el.key("start_row").value(start_row);
+			el.key("start_col").value(start_col);
+			// raw(): std::to_string keeps the historic "%f" formatting
+			// for this field.
+			el.key("confidence").raw(std::to_string(confidence));
+			el.key("resolver").value(resolver);
+			el.key("resolution_kind").value(rkind);
+			el.key("resolve_strategy").value(rkind);
+			el.endObject();
+			result += el.str();
 		}
 		sqlite3_finalize(st);
 	}
@@ -596,12 +612,15 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 			if (!first_c)
 				cands += ",";
 			first_c = false;
-			cands += "{\"graph_node_id\":" + std::to_string(id) +
-				 ",\"name\":\"" + jsonEscape(nm.c_str()) +
-				 "\",\"file_path\":\"" +
-				 jsonEscape(fp.c_str()) +
-				 "\",\"start_row\":" + std::to_string(sr) +
-				 ",\"start_col\":" + std::to_string(sc) + "}";
+			util::JsonWriter el;
+			el.beginObject();
+			el.key("graph_node_id").value(id);
+			el.key("name").value(nm);
+			el.key("file_path").value(fp);
+			el.key("start_row").value(sr);
+			el.key("start_col").value(sc);
+			el.endObject();
+			cands += el.str();
 		}
 		return "{\"callees\":[],\"total\":0,\"ambiguous\":true,"
 		       "\"candidates\":[" +
@@ -665,21 +684,21 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 				result += ",";
 			first = false;
 			++count;
-			result +=
-				"{\"node_id\":" + std::to_string(node_id) +
-				",\"name\":\"" + jsonEscape(name.c_str()) +
-				"\",\"file_path\":\"" +
-				jsonEscape(file.c_str()) + "\",\"start_row\":" +
-				std::to_string(start_row) +
-				",\"start_col\":" + std::to_string(start_col) +
-				",\"confidence\":" +
-				std::to_string(confidence) +
-				",\"resolver\":\"" +
-				jsonEscape(resolver.c_str()) +
-				"\",\"resolution_kind\":\"" +
-				jsonEscape(rkind.c_str()) +
-				"\",\"resolve_strategy\":\"" +
-				jsonEscape(rkind.c_str()) + "\"}";
+			util::JsonWriter el;
+			el.beginObject();
+			el.key("node_id").value(node_id);
+			el.key("name").value(name);
+			el.key("file_path").value(file);
+			el.key("start_row").value(start_row);
+			el.key("start_col").value(start_col);
+			// raw(): std::to_string keeps the historic "%f" formatting
+			// for this field.
+			el.key("confidence").raw(std::to_string(confidence));
+			el.key("resolver").value(resolver);
+			el.key("resolution_kind").value(rkind);
+			el.key("resolve_strategy").value(rkind);
+			el.endObject();
+			result += el.str();
 		}
 		sqlite3_finalize(st);
 	}
@@ -727,45 +746,43 @@ std::string QueryEngine::locateByName(uint64_t project_id, const char *name)
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 2, name, -1, SQLITE_TRANSIENT);
 
-	std::ostringstream json;
-	json << "{\"locations\":[";
+	util::JsonWriter json;
+	json.beginObject();
+	json.key("locations").beginArray();
 	int col_count = sqlite3_column_count(stmt);
-	bool first_row = true;
 	int row_count = 0;
 
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
-		if (!first_row)
-			json << ",";
-		first_row = false;
 		row_count++;
 
-		json << "{";
+		json.beginObject();
 		for (int i = 0; i < col_count; i++) {
-			if (i > 0)
-				json << ",";
 			const char *col_name = sqlite3_column_name(stmt, i);
-			// L2 fix: escape the column name so a name containing a quote
-			// or control char cannot produce invalid JSON.
-			json << "\"" << jsonEscape(col_name ? col_name : "")
-			     << "\":";
+			// The writer escapes keys and values, so a column name
+			// containing a quote or control char cannot produce
+			// invalid JSON.
+			json.key(col_name ? col_name : "");
 
 			int col_type = sqlite3_column_type(stmt, i);
 			if (col_type == SQLITE_NULL) {
-				json << "null";
+				json.nullValue();
 			} else if (col_type == SQLITE_INTEGER) {
-				json << sqlite3_column_int64(stmt, i);
+				json.value(sqlite3_column_int64(stmt, i));
 			} else {
+				// Non-integer, non-null columns are emitted as
+				// text, as before.
 				const char *text =
 					reinterpret_cast<const char *>(
 						sqlite3_column_text(stmt, i));
-				json << "\"" << jsonEscape(text ? text : "")
-				     << "\"";
+				json.value(text ? text : "");
 			}
 		}
-		json << "}";
+		json.endObject();
 	}
 
-	json << "],\"total\":" << row_count << "}";
+	json.endArray();
+	json.key("total").value(row_count);
+	json.endObject();
 	sqlite3_finalize(stmt);
 	return json.str();
 }
@@ -869,12 +886,16 @@ std::string QueryEngine::explainSymbol(uint64_t project_id,
 	std::string callees_json = getCallees(project_id, name.c_str());
 
 	// 4. Combine into a single response
-	std::string json = "{";
-	json += "\"symbol\":\"" + jsonEscape(name.c_str()) + "\",";
-	json += "\"definition\":" + def_json + ",";
-	json += "\"callers\":" + callers_json + ",";
-	json += "\"callees\":" + callees_json + "}";
-	return json;
+	util::JsonWriter json;
+	json.beginObject();
+	json.key("symbol").value(name);
+	// The three sub-documents are already serialized by the query
+	// methods above; raw() embeds them without re-escaping.
+	json.key("definition").raw(def_json);
+	json.key("callers").raw(callers_json);
+	json.key("callees").raw(callees_json);
+	json.endObject();
+	return json.str();
 }
 
 // ─── Bare-name ambiguity probe ─────────────────────────────────
@@ -936,11 +957,15 @@ std::string bareNameCandidates(sqlite3 *db, uint64_t project_id,
 		if (!first)
 			cands += ",";
 		first = false;
-		cands += "{\"graph_node_id\":" + std::to_string(id) +
-			 ",\"name\":\"" + jsonEscape(nm.c_str()) +
-			 "\",\"file_path\":\"" + jsonEscape(fp.c_str()) +
-			 "\",\"start_row\":" + std::to_string(sr) +
-			 ",\"start_col\":" + std::to_string(sc) + "}";
+		util::JsonWriter el;
+		el.beginObject();
+		el.key("graph_node_id").value(id);
+		el.key("name").value(nm);
+		el.key("file_path").value(fp);
+		el.key("start_row").value(sr);
+		el.key("start_col").value(sc);
+		el.endObject();
+		cands += el.str();
 	}
 	return "{\"ambiguous\":true,\"candidates\":[" + cands + "]}";
 }

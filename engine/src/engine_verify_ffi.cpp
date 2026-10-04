@@ -217,13 +217,16 @@ VerifyResult verify_one_claim(uint64_t project_id, const verify::Claim &claim)
 					 "no verifier accepts claim type '") +
 				 verify::claimTypeWireName(claim.type) +
 				 "' [module=ffi, method=verify_one_claim]");
-		std::ostringstream j;
-		j << "{\"claim_id\":" << claim_id
-		  << ",\"verdict\":\"Unknown\",\"confidence\":0"
-		  << ",\"verifier\":null"
-		  << ",\"error_code\":\"" << code << "\""
-		  << ",\"detail\":\"" << jsonEscape(detail) << "\""
-		  << ",\"evidence_facts\":[]}";
+		util::JsonWriter j;
+		j.beginObject();
+		j.key("claim_id").value(claim_id);
+		j.key("verdict").value("Unknown");
+		j.key("confidence").value(0);
+		j.key("verifier").nullValue();
+		j.key("error_code").value(code);
+		j.key("detail").value(detail);
+		j.key("evidence_facts").beginArray().endArray();
+		j.endObject();
 		result.json = dupString(j.str());
 		result.verdict = verify::Verdict::Unknown;
 		return result;
@@ -234,15 +237,18 @@ VerifyResult verify_one_claim(uint64_t project_id, const verify::Claim &claim)
 	// only used to confirm that SOME verifier accepts this claim type.
 	auto v = makeVerifierForClaim(claim, g_store.get(), project_id);
 	if (!v) {
-		std::ostringstream j;
-		j << "{\"claim_id\":" << claim_id
-		  << ",\"verdict\":\"Unknown\",\"confidence\":0"
-		  << ",\"verifier\":null"
-		  << ",\"error_code\":\"verifier_execution_failed\""
-		  << ",\"detail\":\"verifier "
-		     "implementation unavailable for this claim type "
-		     "[module=ffi, method=verify_one_claim]\""
-		  << ",\"evidence_facts\":[]}";
+		util::JsonWriter j;
+		j.beginObject();
+		j.key("claim_id").value(claim_id);
+		j.key("verdict").value("Unknown");
+		j.key("confidence").value(0);
+		j.key("verifier").nullValue();
+		j.key("error_code").value("verifier_execution_failed");
+		j.key("detail").value(
+			"verifier implementation unavailable for this claim type "
+			"[module=ffi, method=verify_one_claim]");
+		j.key("evidence_facts").beginArray().endArray();
+		j.endObject();
 		result.json = dupString(j.str());
 		result.verdict = verify::Verdict::Unknown;
 		return result;
@@ -255,26 +261,33 @@ VerifyResult verify_one_claim(uint64_t project_id, const verify::Claim &claim)
 	try {
 		rec = v->verify(claim);
 	} catch (const std::exception &e) {
-		std::ostringstream j;
-		j << "{\"claim_id\":" << claim_id
-		  << ",\"verdict\":\"Unknown\",\"confidence\":0"
-		  << ",\"verifier\":\"" << jsonEscape(v->name()) << "\""
-		  << ",\"error_code\":\"verifier_execution_failed\""
-		  << ",\"detail\":\"verifier threw: " << jsonEscape(e.what())
-		  << " [module=ffi, method=verify_one_claim]\""
-		  << ",\"evidence_facts\":[]}";
+		util::JsonWriter j;
+		j.beginObject();
+		j.key("claim_id").value(claim_id);
+		j.key("verdict").value("Unknown");
+		j.key("confidence").value(0);
+		j.key("verifier").value(v->name());
+		j.key("error_code").value("verifier_execution_failed");
+		j.key("detail").value(std::string("verifier threw: ") +
+				      e.what() +
+				      " [module=ffi, method=verify_one_claim]");
+		j.key("evidence_facts").beginArray().endArray();
+		j.endObject();
 		result.json = dupString(j.str());
 		result.verdict = verify::Verdict::Unknown;
 		return result;
 	} catch (...) {
-		std::ostringstream j;
-		j << "{\"claim_id\":" << claim_id
-		  << ",\"verdict\":\"Unknown\",\"confidence\":0"
-		  << ",\"verifier\":\"" << jsonEscape(v->name()) << "\""
-		  << ",\"error_code\":\"verifier_execution_failed\""
-		  << ",\"detail\":\"verifier threw unknown exception "
-		     "[module=ffi, method=verify_one_claim]\""
-		  << ",\"evidence_facts\":[]}";
+		util::JsonWriter j;
+		j.beginObject();
+		j.key("claim_id").value(claim_id);
+		j.key("verdict").value("Unknown");
+		j.key("confidence").value(0);
+		j.key("verifier").value(v->name());
+		j.key("error_code").value("verifier_execution_failed");
+		j.key("detail").value("verifier threw unknown exception "
+				      "[module=ffi, method=verify_one_claim]");
+		j.key("evidence_facts").beginArray().endArray();
+		j.endObject();
 		result.json = dupString(j.str());
 		result.verdict = verify::Verdict::Unknown;
 		return result;
@@ -301,11 +314,12 @@ VerifyResult verify_one_claim(uint64_t project_id, const verify::Claim &claim)
 	// callers can distinguish "no evidence yet" from a normal Unknown
 	// verdict. The verifier signals this via a low confidence + the
 	// "evidence backend not ready" prefix in the detail string.
-	std::ostringstream j;
-	j << "{\"claim_id\":" << claim_id << ",\"verdict\":\""
-	  << verify::verdictName(rec.verdict) << "\""
-	  << ",\"confidence\":" << rec.confidence << ",\"verifier\":\""
-	  << jsonEscape(rec.verifier_name) << "\"";
+	util::JsonWriter j;
+	j.beginObject();
+	j.key("claim_id").value(claim_id);
+	j.key("verdict").value(verify::verdictName(rec.verdict));
+	j.key("confidence").value(rec.confidence);
+	j.key("verifier").value(rec.verifier_name);
 	// Tag evidence_backend_not_ready when the verifier reported it. The
 	// detail string is the canonical signal (set by evidence_backend_ready
 	// helpers in each verifier) so we don't need a separate enum field on
@@ -313,18 +327,18 @@ VerifyResult verify_one_claim(uint64_t project_id, const verify::Claim &claim)
 	if (rec.verdict == verify::Verdict::Unknown &&
 	    rec.detail.find("evidence backend not ready") !=
 		    std::string::npos) {
-		j << ",\"error_code\":\"evidence_backend_not_ready\"";
+		j.key("error_code").value("evidence_backend_not_ready");
 	}
-	j << ",\"detail\":\"" << jsonEscape(rec.detail) << "\""
-	  << ",\"evidence_facts\":[";
-	bool first = true;
+	j.key("detail").value(rec.detail);
+	j.key("evidence_facts").beginArray();
 	for (const auto &f : rec.facts) {
-		if (!first)
-			j << ",";
-		first = false;
-		j << "{\"kind\":" << f.first << ",\"ref\":" << f.second << "}";
+		j.beginObject();
+		j.key("kind").value(f.first);
+		j.key("ref").value(f.second);
+		j.endObject();
 	}
-	j << "]}";
+	j.endArray();
+	j.endObject();
 	result.json = dupString(j.str());
 	result.verdict = rec.verdict;
 	return result;
@@ -412,9 +426,9 @@ extern "C" char *engine_verify_integrity(uint64_t project_id, int max_findings)
 		int supported = 0, contradicted = 0, unknown = 0, orphans = 0;
 		int emitted = 0;
 
-		std::ostringstream json;
-		json << "{\"findings\":[";
-		bool first = true;
+		util::JsonWriter json;
+		json.beginObject();
+		json.key("findings").beginArray();
 
 		// Iterate capabilities -> CapabilityExists claims
 		auto caps = g_store->listCapabilities(project_id);
@@ -454,15 +468,12 @@ extern "C" char *engine_verify_integrity(uint64_t project_id, int max_findings)
 					       severity, 0, desc,
 					       rec.confidence);
 			if (emitted < limit) {
-				if (!first)
-					json << ",";
-				first = false;
 				++emitted;
-				json << "{\"type\":\"CapabilityVerifier\","
-				     << "\"description\":\"" << jsonEscape(desc)
-				     << "\","
-				     << "\"confidence\":" << rec.confidence
-				     << "}";
+				json.beginObject();
+				json.key("type").value("CapabilityVerifier");
+				json.key("description").value(desc);
+				json.key("confidence").value(rec.confidence);
+				json.endObject();
 			}
 		}
 
@@ -505,15 +516,12 @@ extern "C" char *engine_verify_integrity(uint64_t project_id, int max_findings)
 					       severity, 0, desc,
 					       rec.confidence);
 			if (emitted < limit) {
-				if (!first)
-					json << ",";
-				first = false;
 				++emitted;
-				json << "{\"type\":\"ContractVerifier\","
-				     << "\"description\":\"" << jsonEscape(desc)
-				     << "\","
-				     << "\"confidence\":" << rec.confidence
-				     << "}";
+				json.beginObject();
+				json.key("type").value("ContractVerifier");
+				json.key("description").value(desc);
+				json.key("confidence").value(rec.confidence);
+				json.endObject();
 			}
 		}
 
@@ -535,18 +543,16 @@ extern "C" char *engine_verify_integrity(uint64_t project_id, int max_findings)
 				// whenever any orphan exists.
 				orphans++;
 				if (emitted < limit) {
-					if (!first)
-						json << ",";
-					first = false;
 					++emitted;
-					json << "{\"type\":\"DeadCodeInspector\","
-					     << "\"rule\":\""
-					     << jsonEscape(f.type) << "\","
-					     << "\"description\":\""
-					     << jsonEscape(f.description)
-					     << "\","
-					     << "\"confidence\":"
-					     << f.confidence << "}";
+					json.beginObject();
+					json.key("type").value(
+						"DeadCodeInspector");
+					json.key("rule").value(f.type);
+					json.key("description")
+						.value(f.description);
+					json.key("confidence")
+						.value(f.confidence);
+					json.endObject();
 				}
 			}
 		}
@@ -558,9 +564,10 @@ extern "C" char *engine_verify_integrity(uint64_t project_id, int max_findings)
 		// not `total` — otherwise any Supported claim makes the flag
 		// report a cut that never happened.
 		int findings_total = contradicted + unknown + orphans;
-		json << "],\"total\":" << total << ",\"truncated\":"
-		     << ((emitted < findings_total) ? "true" : "false")
-		     << ",\"limit\":" << limit;
+		json.endArray();
+		json.key("total").value(total);
+		json.key("truncated").value(emitted < findings_total);
+		json.key("limit").value(limit);
 
 		// Trust score: 1.0 - kTrustScorePenalty per non-supported finding, clamped to [0, 1].
 		// Orphans are excluded: they are informational findings, not
@@ -570,11 +577,12 @@ extern "C" char *engine_verify_integrity(uint64_t project_id, int max_findings)
 			       static_cast<double>(contradicted + unknown);
 		if (trust_score < 0.0)
 			trust_score = 0.0;
-		json << ",\"trust_score\":" << trust_score
-		     << ",\"supported\":" << supported
-		     << ",\"contradicted\":" << contradicted
-		     << ",\"unknown\":" << unknown << ",\"orphans\":" << orphans
-		     << "}";
+		json.key("trust_score").value(trust_score);
+		json.key("supported").value(supported);
+		json.key("contradicted").value(contradicted);
+		json.key("unknown").value(unknown);
+		json.key("orphans").value(orphans);
+		json.endObject();
 		return dupString(json.str());
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
@@ -624,14 +632,16 @@ extern "C" char *engine_verify_claim(uint64_t project_id,
 		std::string type_str = jsonField(input, "type");
 		auto parsed_type = parseClaimType(type_str);
 		if (!parsed_type) {
-			std::ostringstream err;
-			err << "{\"error\":\"unknown claim type '"
-			    << jsonEscape(type_str)
-			    << "'. Supported types: capability_exists, "
-			       "contract_holds, architecture_follows, "
-			       "function_implements "
-			       "[module=ffi, method=engine_verify_claim]\""
-			    << ",\"error_code\":\"claim_type_unsupported\"}";
+			util::JsonWriter err;
+			err.beginObject();
+			err.key("error").value(
+				"unknown claim type '" + type_str +
+				"'. Supported types: capability_exists, "
+				"contract_holds, architecture_follows, "
+				"function_implements "
+				"[module=ffi, method=engine_verify_claim]");
+			err.key("error_code").value("claim_type_unsupported");
+			err.endObject();
 			return dupString(err.str());
 		}
 		claim.type = *parsed_type;
@@ -716,21 +726,18 @@ extern "C" char *engine_verify_summary(uint64_t project_id, const char *text)
 		size_t total_drifts = doc_drifts.size() + cap_drifts.size() +
 				      arch_drifts.size();
 
-		// Build drifts JSON array.
-		std::ostringstream drifts_json;
-		drifts_json << "[";
-		bool drift_first = true;
+		util::JsonWriter json;
+		json.beginObject();
+		json.key("claims_parsed").value(batch.claims_count);
+		json.key("results").raw(batch.results_json);
+		json.key("drifts").beginArray();
 		auto emit_drift = [&](const verify::DriftItem &d) {
-			if (!drift_first)
-				drifts_json << ",";
-			drift_first = false;
-			drifts_json
-				<< "{\"type\":\"" << jsonEscape(d.type) << "\""
-				<< ",\"severity\":" << d.severity
-				<< ",\"subject\":\"" << jsonEscape(d.subject)
-				<< "\""
-				<< ",\"detail\":\"" << jsonEscape(d.detail)
-				<< "\"}";
+			json.beginObject();
+			json.key("type").value(d.type);
+			json.key("severity").value(d.severity);
+			json.key("subject").value(d.subject);
+			json.key("detail").value(d.detail);
+			json.endObject();
 		};
 		for (const auto &d : doc_drifts)
 			emit_drift(d);
@@ -738,27 +745,28 @@ extern "C" char *engine_verify_summary(uint64_t project_id, const char *text)
 			emit_drift(d);
 		for (const auto &d : arch_drifts)
 			emit_drift(d);
-		drifts_json << "]";
+		json.endArray();
 
-		std::ostringstream json;
-		json << "{\"claims_parsed\":" << batch.claims_count
-		     << ",\"results\":" << batch.results_json
-		     << ",\"drifts\":" << drifts_json.str()
-		     << ",\"summary\":{\"supported\":" << batch.supported
-		     << ",\"contradicted\":" << batch.contradicted
-		     << ",\"unknown\":" << batch.unknown
-		     << ",\"drifts_found\":" << total_drifts
-		     << ",\"trust_score\":";
+		json.key("summary").beginObject();
+		json.key("supported").value(batch.supported);
+		json.key("contradicted").value(batch.contradicted);
+		json.key("unknown").value(batch.unknown);
+		json.key("drifts_found").value(total_drifts);
+		json.key("trust_score");
 		size_t denom =
 			batch.supported + batch.contradicted + total_drifts;
-		if (denom > 0)
-			json << (static_cast<double>(batch.supported) /
-				 static_cast<double>(denom));
-		else if (batch.claims_count > 0)
-			json << "0.0"; // all claims unknown — not trustworthy
-		else
-			json << "1.0"; // no claims and no drifts — nothing to dispute
-		json << "}}";
+		if (denom > 0) {
+			json.value(static_cast<double>(batch.supported) /
+				   static_cast<double>(denom));
+		} else if (batch.claims_count > 0) {
+			// Literal "0.0": all claims unknown, not trustworthy.
+			json.raw("0.0");
+		} else {
+			// Literal "1.0": no claims and no drifts, nothing to dispute.
+			json.raw("1.0");
+		}
+		json.endObject();
+		json.endObject();
 		return dupString(json.str());
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
@@ -828,32 +836,26 @@ extern "C" char *engine_get_verifier_registry_status(uint64_t project_id)
 				&relation_count);
 		}
 
-		std::ostringstream j;
-		j << "{\"registry_empty\":" << (count == 0 ? "true" : "false")
-		  << ",\"verifier_count\":" << count << ",\"verifier_names\":[";
-		for (size_t i = 0; i < names.size(); ++i) {
-			if (i > 0)
-				j << ",";
-			j << "\"" << jsonEscape(names[i]) << "\"";
-		}
-		j << "],\"supported_claim_types\":[";
-		for (size_t i = 0; i < supported.size(); ++i) {
-			if (i > 0)
-				j << ",";
-			j << "\"" << verify::claimTypeWireName(supported[i])
-			  << "\"";
-		}
-		j << "],\"unsupported_claim_types\":[";
-		for (size_t i = 0; i < unsupported.size(); ++i) {
-			if (i > 0)
-				j << ",";
-			j << "\"" << verify::claimTypeWireName(unsupported[i])
-			  << "\"";
-		}
-		j << "],\"evidence_backend_ready\":"
-		  << (backend_ready ? "true" : "false")
-		  << ",\"entity_count\":" << entity_count
-		  << ",\"relation_count\":" << relation_count << "}";
+		util::JsonWriter j;
+		j.beginObject();
+		j.key("registry_empty").value(count == 0);
+		j.key("verifier_count").value(count);
+		j.key("verifier_names").beginArray();
+		for (const auto &name : names)
+			j.value(name);
+		j.endArray();
+		j.key("supported_claim_types").beginArray();
+		for (auto t : supported)
+			j.value(verify::claimTypeWireName(t));
+		j.endArray();
+		j.key("unsupported_claim_types").beginArray();
+		for (auto t : unsupported)
+			j.value(verify::claimTypeWireName(t));
+		j.endArray();
+		j.key("evidence_backend_ready").value(backend_ready);
+		j.key("entity_count").value(entity_count);
+		j.key("relation_count").value(relation_count);
+		j.endObject();
 		return dupString(j.str());
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(

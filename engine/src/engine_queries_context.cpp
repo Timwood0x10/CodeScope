@@ -157,12 +157,22 @@ static char *tracePathImpl(uint64_t project_id, const char *from_name,
 		first = false;
 		auto it = lookup.find(id);
 		if (it == lookup.end()) {
-			json << "{\"name\":\"?\",\"file\":\"\",\"line\":0}";
+			util::JsonWriter el;
+			el.beginObject();
+			el.key("name").value("?");
+			el.key("file").value("");
+			el.key("line").value(0);
+			el.endObject();
+			json << el.str();
 		} else {
 			const auto &tup = it->second;
-			json << "{\"name\":\"" << jsonEscape(std::get<0>(tup))
-			     << "\",\"file\":\"" << jsonEscape(std::get<1>(tup))
-			     << "\",\"line\":" << std::get<2>(tup) << "}";
+			util::JsonWriter el;
+			el.beginObject();
+			el.key("name").value(std::get<0>(tup));
+			el.key("file").value(std::get<1>(tup));
+			el.key("line").value(std::get<2>(tup));
+			el.endObject();
+			json << el.str();
 		}
 	}
 	json << "]}";
@@ -212,8 +222,11 @@ static char *exploreFunctionImpl(uint64_t project_id, const char *function_name,
 		std::string amb = query::bareNameCandidates(db, project_id,
 							    function_name);
 		if (!amb.empty())
+			// amb is a pre-serialized `{"ambiguous":…}` fragment; drop
+			// its leading '{' and let it close the object. The name is
+			// escaped through the shared helper.
 			return dupString("{\"name\":\"" +
-					 query::jsonEscape(function_name) +
+					 util::jsonEscapeString(function_name) +
 					 "\",\"callers\":[],\"callees\":[]," +
 					 amb.substr(1));
 	}
@@ -254,9 +267,13 @@ static char *exploreFunctionImpl(uint64_t project_id, const char *function_name,
 			std::string file_path;
 			int line = 0;
 			fetchNode(id, name, file_path, line);
-			json << "{\"name\":\"" << jsonEscape(name.c_str())
+			// The object stays open across the optional callers/callees
+			// members and is closed at two different points, and the
+			// lambda recurses over the stream, so its shape is kept;
+			// escaping goes through the shared helper.
+			json << "{\"name\":\"" << util::jsonEscapeString(name)
 			     << "\",\"file\":\""
-			     << jsonEscape(file_path.c_str())
+			     << util::jsonEscapeString(file_path)
 			     << "\",\"line\":" << line;
 			if (remaining <= 0) {
 				json << "}";
@@ -318,12 +335,14 @@ static char *exploreFunctionImpl(uint64_t project_id, const char *function_name,
 		}
 	}
 	if (!func_id) {
-		std::ostringstream err;
-		err << "{\"error\":\"function '"
-		    << jsonEscape(std::string(function_name))
-		    << "' not found\",\"name\":\""
-		    << jsonEscape(std::string(function_name))
-		    << "\",\"callers\":[],\"callees\":[]}";
+		util::JsonWriter err;
+		err.beginObject();
+		err.key("error").value(std::string("function '") +
+				       function_name + "' not found");
+		err.key("name").value(function_name);
+		err.key("callers").beginArray().endArray();
+		err.key("callees").beginArray().endArray();
+		err.endObject();
 		return dupString(err.str());
 	}
 	std::ostringstream result;
@@ -441,11 +460,14 @@ static char *buildContextImpl(uint64_t project_id, const char *query)
 				const char *f = reinterpret_cast<const char *>(
 					sqlite3_column_text(mstmt, 2));
 				int ln = sqlite3_column_int(mstmt, 3);
-				json << "{\"name\":\"" << jsonEscape(n ? n : "")
-				     << "\",\"kind\":\""
-				     << jsonEscape(k ? k : "") << "\","
-				     << "\"file\":\"" << jsonEscape(f ? f : "")
-				     << "\",\"line\":" << ln << "}";
+				util::JsonWriter el;
+				el.beginObject();
+				el.key("name").value(n ? n : "");
+				el.key("kind").value(k ? k : "");
+				el.key("file").value(f ? f : "");
+				el.key("line").value(ln);
+				el.endObject();
+				json << el.str();
 			}
 			sqlite3_finalize(mstmt);
 			json << "],";
@@ -483,12 +505,12 @@ static char *buildContextImpl(uint64_t project_id, const char *query)
 				const char *callee =
 					reinterpret_cast<const char *>(
 						sqlite3_column_text(cstmt, 1));
-				json << "{\"caller\":\""
-				     << jsonEscape(caller ? caller : "")
-				     << "\","
-				     << "\"callee\":\""
-				     << jsonEscape(callee ? callee : "")
-				     << "\"}";
+				util::JsonWriter el;
+				el.beginObject();
+				el.key("caller").value(caller ? caller : "");
+				el.key("callee").value(callee ? callee : "");
+				el.endObject();
+				json << el.str();
 			}
 			sqlite3_finalize(cstmt);
 			json << "],";
@@ -555,7 +577,11 @@ static char *detectFfiBoundariesImpl(uint64_t project_id)
 	sqlite3 *db = g_store->handle();
 	std::ostringstream json;
 	json << "{";
-	auto esc = [](const std::string &s) { return jsonEscape(s.c_str()); };
+	// Single source of truth for escaping; the surrounding document is still
+	// assembled by hand and is tracked as remaining TD-3 work.
+	auto esc = [](const std::string &s) {
+		return util::jsonEscapeString(s);
+	};
 
 	// 1. Language distribution.
 	json << "\"languages\":[";

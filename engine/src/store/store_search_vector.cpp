@@ -9,6 +9,7 @@
 // Vectors are built from the entity's qualified_name + name n-grams, so
 // "user_dao" is findable given "user_repository" with no model loaded.
 
+#include "util/json_writer.h"
 #include "store.h"
 #include "store_internal.h"
 #include "store_search_words.h"
@@ -511,11 +512,15 @@ std::string GraphStore::searchSemanticJson(uint64_t project_id,
 	for (size_t i = 0; i < hits.size(); ++i) {
 		if (i > 0)
 			json << ",";
-		json << "{\"node_id\":" << hits[i].node_id << ",\"name\":\""
-		     << jsonEscape(hits[i].name) << "\",\"qualified_name\":\""
-		     << jsonEscape(hits[i].qualified_name)
-		     << "\",\"file_path\":\"" << jsonEscape(hits[i].file_path)
-		     << "\",\"score\":" << hits[i].score << "}";
+		util::JsonWriter el;
+		el.beginObject();
+		el.key("node_id").value(hits[i].node_id);
+		el.key("name").value(hits[i].name);
+		el.key("qualified_name").value(hits[i].qualified_name);
+		el.key("file_path").value(hits[i].file_path);
+		el.key("score").value(hits[i].score);
+		el.endObject();
+		json << el.str();
 	}
 	json << "]}";
 	return json.str();

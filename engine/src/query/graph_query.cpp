@@ -1,3 +1,4 @@
+#include "util/json_writer.h"
 #include "graph_query.h"
 
 #include <algorithm>
@@ -56,37 +57,21 @@ static void parseNodeSpec(const std::string &spec, std::string &out_type,
 
 // ─── SQLite helpers (Cypher escaping + tuple accessors) ──────
 
-// Escape a string for safe inclusion inside a Cypher single-quoted literal.
-// Prevents injection / query breakage from symbol names with quotes or
-static std::string jsonEscape(const char *s)
+/// Build the failure body every graph_query error path returns:
+/// `{"total":0,"results":[],"error":"<message>"}`. Centralised because the
+/// message carries user input (the LIMIT operand, the trailing text after the
+/// target node), which the writer escapes instead of it being concatenated
+/// into a JSON literal. The `[module=…, method=…]` suffix keeps the trace
+/// chain required by plan/rules/code_rules.md.
+static std::string graphQueryError(const std::string &message)
 {
-	if (!s)
-		return "";
-	std::string out;
-	out.reserve(std::strlen(s) + 8);
-	for (const char *p = s; *p; ++p) {
-		switch (*p) {
-		case '"':
-			out += "\\\"";
-			break;
-		case '\\':
-			out += "\\\\";
-			break;
-		case '\n':
-			out += "\\n";
-			break;
-		case '\r':
-			out += "\\r";
-			break;
-		case '\t':
-			out += "\\t";
-			break;
-		default:
-			out += *p;
-			break;
-		}
-	}
-	return out;
+	util::JsonWriter w;
+	w.beginObject();
+	w.key("total").value(0);
+	w.key("results").beginArray().endArray();
+	w.key("error").value(message);
+	w.endObject();
+	return w.str();
 }
 
 // Map an integer edge_type from the DSL to a Cypher rel-type label.
@@ -259,11 +244,12 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 			if (num.empty() ||
 			    num.find_first_not_of("0123456789") !=
 				    std::string::npos)
-				return "{\"total\":0,\"results\":[],\"error\":\"LIMIT "
-				       "requires a positive integer, got '" +
-				       jsonEscape(num.c_str()) +
-				       "' [module=engine, "
-				       "method=executeGraphQuery]\"}";
+				return graphQueryError(
+					std::string("LIMIT requires a positive "
+						    "integer, got '") +
+					num +
+					"' [module=engine, "
+					"method=executeGraphQuery]");
 			const int want = std::atoi(num.c_str());
 			if (want < 1)
 				return "{\"total\":0,\"results\":[],\"error\":\"LIMIT "
@@ -284,11 +270,12 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 			q.clear();
 			continue;
 		}
-		return "{\"total\":0,\"results\":[],\"error\":\"unexpected trailing "
-		       "text after the target node: '" +
-		       jsonEscape(q.c_str()) +
-		       "' — only 'LIMIT <n>' and 'RETURN <fields>' are accepted "
-		       "[module=engine, method=executeGraphQuery]\"}";
+		return graphQueryError(
+			std::string("unexpected trailing text after the target "
+				    "node: '") +
+			q +
+			"' — only 'LIMIT <n>' and 'RETURN <fields>' are "
+			"accepted [module=engine, method=executeGraphQuery]");
 	}
 
 	// Resolve edge type to integer
@@ -409,7 +396,10 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 	// MATCH (A:x)-[Calls]->(A:y) with an unknown `y` returned every edge
 	// out of `x` instead of none.
 	if (src_ids.empty() || tgt_ids.empty()) {
-		std::string empty = "{\"results\":[],\"total\":0";
+		util::JsonWriter empty;
+		empty.beginObject();
+		empty.key("results").beginArray().endArray();
+		empty.key("total").value(0);
 		// Still worth explaining when a typed name matched no entity:
 		// the probe below reports same-name kinds the filter missed.
 		std::string hints;
@@ -447,8 +437,11 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 				return;
 			if (!hints.empty())
 				hints += "; ";
+			// The hint is plain text; it is escaped once, when the
+			// writer embeds it in the response below. Escaping the
+			// name here too would double-escape it.
 			hints += std::string("no ") + type_label + " named '" +
-				 jsonEscape(name.c_str()) +
+				 name +
 				 "' matched; the name exists under entity "
 				 "kind " +
 				 other +
@@ -465,10 +458,9 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 			probeOtherKinds(tgt_name, tgt_type_val,
 					tgt_type.c_str());
 		if (!hints.empty())
-			empty += ",\"hint\":\"" + jsonEscape(hints.c_str()) +
-				 "\"";
-		empty += "}";
-		return empty;
+			empty.key("hint").value(hints);
+		empty.endObject();
+		return empty.str();
 	}
 
 	std::ostringstream json;
@@ -564,16 +556,26 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 					json << ",";
 				first_row = false;
 				++row_count;
-				json << "{\"source\":{\"id\":" << sid
-				     << ",\"name\":\"" << jsonEscape(sn.c_str())
-				     << "\",\"type\":" << sk << ",\"file\":\""
-				     << jsonEscape(sf.c_str()) << "\"},"
-				     << "\"edge\":{\"id\":" << eid
-				     << ",\"type\":" << edge_type << "},"
-				     << "\"target\":{\"id\":" << tid
-				     << ",\"name\":\"" << jsonEscape(tn.c_str())
-				     << "\",\"type\":" << tk << ",\"file\":\""
-				     << jsonEscape(tf.c_str()) << "\"}}";
+				util::JsonWriter el;
+				el.beginObject();
+				el.key("source").beginObject();
+				el.key("id").value(sid);
+				el.key("name").value(sn);
+				el.key("type").value(sk);
+				el.key("file").value(sf);
+				el.endObject();
+				el.key("edge").beginObject();
+				el.key("id").value(eid);
+				el.key("type").value(edge_type);
+				el.endObject();
+				el.key("target").beginObject();
+				el.key("id").value(tid);
+				el.key("name").value(tn);
+				el.key("type").value(tk);
+				el.key("file").value(tf);
+				el.endObject();
+				el.endObject();
+				json << el.str();
 			}
 			sqlite3_finalize(st);
 		}
@@ -663,25 +665,25 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 								std::to_string(
 									npath[i]);
 						}
-						json << "{\"source\":{\"id\":"
-						     << start << ",\"name\":\""
-						     << jsonEscape(sn.c_str())
-						     << "\",\"type\":" << sk
-						     << ",\"file\":\""
-						     << jsonEscape(sf.c_str())
-						     << "\"},"
-						     << "\"target\":{\"id\":"
-						     << n << ",\"name\":\""
-						     << jsonEscape(tn.c_str())
-						     << "\",\"type\":" << tk
-						     << ",\"file\":\""
-						     << jsonEscape(tf.c_str())
-						     << "\"},"
-						     << "\"depth\":" << depth
-						     << ",\"chain\":\""
-						     << jsonEscape(
-								chain_str.c_str())
-						     << "\"}";
+						util::JsonWriter el;
+						el.beginObject();
+						el.key("source").beginObject();
+						el.key("id").value(start);
+						el.key("name").value(sn);
+						el.key("type").value(sk);
+						el.key("file").value(sf);
+						el.endObject();
+						el.key("target").beginObject();
+						el.key("id").value(n);
+						el.key("name").value(tn);
+						el.key("type").value(tk);
+						el.key("file").value(tf);
+						el.endObject();
+						el.key("depth").value(depth);
+						el.key("chain").value(
+							chain_str);
+						el.endObject();
+						json << el.str();
 					}
 					if (depth < max_depth && !is_tgt)
 						bfs.push({ std::move(npath),

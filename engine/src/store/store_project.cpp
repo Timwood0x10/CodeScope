@@ -1,3 +1,4 @@
+#include "util/json_writer.h"
 #include "store.h"
 #include "store_internal.h"
 #include "platform_win.h"
@@ -215,17 +216,21 @@ std::string GraphStore::findSymbolJson(uint64_t project_id, const char *name)
 		int line = sqlite3_column_int(stmt, 6);
 		int col = sqlite3_column_int(stmt, 7);
 
-		json << "{"
-		     << "\"id\":" << id << ","
-		     << "\"kind\":\"" << (kind ? kind : "") << "\","
-		     << "\"name\":\"" << jsonEscape(sym_name ? sym_name : "")
-		     << "\","
-		     << "\"signature\":\"" << jsonEscape(sig ? sig : "")
-		     << "\","
-		     << "\"language\":\"" << (lang ? lang : "") << "\","
-		     << "\"file_path\":\"" << jsonEscape(fp ? fp : "") << "\","
-		     << "\"line\":" << line << ","
-		     << "\"column\":" << col << "}";
+		util::JsonWriter el;
+		el.beginObject();
+		el.key("id").value(id);
+		// kind and language went through the writer now too: they are
+		// free text read from the database and were previously emitted
+		// unescaped.
+		el.key("kind").value(kind ? kind : "");
+		el.key("name").value(sym_name ? sym_name : "");
+		el.key("signature").value(sig ? sig : "");
+		el.key("language").value(lang ? lang : "");
+		el.key("file_path").value(fp ? fp : "");
+		el.key("line").value(line);
+		el.key("column").value(col);
+		el.endObject();
+		json << el.str();
 	}
 	sqlite3_reset(stmt);
 	json << "]}";

@@ -1,3 +1,4 @@
+#include "util/json_writer.h"
 #include "store.h"
 #include "store_internal.h"
 #include "platform_win.h"
@@ -256,14 +257,14 @@ std::string GraphStore::searchUnifiedJson(uint64_t project_id,
 	for (size_t i = 0; i < results.size(); i++) {
 		if (i > 0)
 			json << ",";
-		json << "{"
-		     << "\"node_id\":" << results[i].node_id << ","
-		     << "\"name\":\"" << jsonEscape(results[i].name) << "\","
-		     << "\"qualified_name\":\""
-		     << jsonEscape(results[i].qualified_name) << "\","
-		     << "\"file_path\":\"" << jsonEscape(results[i].file_path)
-		     << "\""
-		     << "}";
+		util::JsonWriter el;
+		el.beginObject();
+		el.key("node_id").value(results[i].node_id);
+		el.key("name").value(results[i].name);
+		el.key("qualified_name").value(results[i].qualified_name);
+		el.key("file_path").value(results[i].file_path);
+		el.endObject();
+		json << el.str();
 	}
 	json << "]}";
 	return json.str();
@@ -340,12 +341,15 @@ std::string GraphStore::getEntryPointsJson(uint64_t project_id)
 		} else {
 			json << ",";
 		}
-		json << "{\"id\":" << entries[i].id << ",\"name\":\""
-		     << jsonEscape(entries[i].name) << "\""
-		     << ",\"kind\":\"" << entries[i].kind << "\""
-		     << ",\"file\":\"" << jsonEscape(entries[i].file_path)
-		     << "\""
-		     << ",\"line\":" << entries[i].line << "}";
+		util::JsonWriter el;
+		el.beginObject();
+		el.key("id").value(entries[i].id);
+		el.key("name").value(entries[i].name);
+		el.key("kind").value(entries[i].kind);
+		el.key("file").value(entries[i].file_path);
+		el.key("line").value(entries[i].line);
+		el.endObject();
+		json << el.str();
 	}
 	json << "]}}";
 	return json.str();

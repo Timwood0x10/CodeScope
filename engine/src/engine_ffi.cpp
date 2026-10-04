@@ -482,10 +482,8 @@ char *engine_build_fts(uint64_t project_id)
 			return dupString("{\"error\":\"not initialized\"}");
 		g_store->buildFTSFromGraph(project_id);
 		if (!g_store->error().empty()) {
-			return dupString(
-				std::string(
-					"{\"error\":\"[module=ffi, method=engine_build_fts] ") +
-				jsonEscape(g_store->error()) + "\"}");
+			return dupString(util::errorEnvelope(
+				"ffi", "engine_build_fts", g_store->error()));
 		}
 		g_store->setProjectReadiness(project_id, "fts_ready", 1);
 		g_store->setProjectReadiness(project_id, "normal_ready", 1);
@@ -830,10 +828,9 @@ extern "C" char *engine_rebuild_csr(const char *db_path, uint64_t project_id)
 		}
 		store::GraphStore local_store;
 		if (!local_store.open(db_path)) {
-			return dupString(
-				"{\"error\":\"[module=ffi, "
-				"method=engine_rebuild_csr] cannot open db: " +
-				jsonEscape(db_path) + "\"}");
+			return dupString(util::errorEnvelope(
+				"ffi", "engine_rebuild_csr",
+				std::string("cannot open db: ") + db_path));
 		}
 		if (!local_store.buildCSR(project_id)) {
 			return dupString(

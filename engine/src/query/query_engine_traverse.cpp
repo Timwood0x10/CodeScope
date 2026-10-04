@@ -8,6 +8,7 @@
 // set — which is the whole reason they live together rather than next to
 // the bare-name APIs.
 
+#include "util/json_writer.h"
 #include "query_engine.h"
 
 #include <algorithm>
@@ -118,24 +119,22 @@ std::string QueryEngine::getCallersByEntity(uint64_t project_id,
 					result += ",";
 				first = false;
 				++count;
-				result += "{\"node_id\":" +
-					  std::to_string(node_id) +
-					  ",\"name\":\"" +
-					  jsonEscape(name.c_str()) +
-					  "\",\"file_path\":\"" +
-					  jsonEscape(file.c_str()) +
-					  "\",\"start_row\":" +
-					  std::to_string(start_row) +
-					  ",\"start_col\":" +
-					  std::to_string(start_col) +
-					  ",\"confidence\":" +
-					  std::to_string(confidence) +
-					  ",\"resolver\":\"" +
-					  jsonEscape(resolver.c_str()) +
-					  "\",\"resolution_kind\":\"" +
-					  jsonEscape(rkind.c_str()) +
-					  "\",\"resolve_strategy\":\"" +
-					  jsonEscape(rkind.c_str()) + "\"}";
+				util::JsonWriter el;
+				el.beginObject();
+				el.key("node_id").value(node_id);
+				el.key("name").value(name);
+				el.key("file_path").value(file);
+				el.key("start_row").value(start_row);
+				el.key("start_col").value(start_col);
+				// raw(): std::to_string keeps the historic "%f"
+				// formatting for this field.
+				el.key("confidence")
+					.raw(std::to_string(confidence));
+				el.key("resolver").value(resolver);
+				el.key("resolution_kind").value(rkind);
+				el.key("resolve_strategy").value(rkind);
+				el.endObject();
+				result += el.str();
 			}
 			sqlite3_finalize(st);
 		}
@@ -215,24 +214,22 @@ std::string QueryEngine::getCalleesByEntity(uint64_t project_id,
 					result += ",";
 				first = false;
 				++count;
-				result += "{\"node_id\":" +
-					  std::to_string(node_id) +
-					  ",\"name\":\"" +
-					  jsonEscape(name.c_str()) +
-					  "\",\"file_path\":\"" +
-					  jsonEscape(file.c_str()) +
-					  "\",\"start_row\":" +
-					  std::to_string(start_row) +
-					  ",\"start_col\":" +
-					  std::to_string(start_col) +
-					  ",\"confidence\":" +
-					  std::to_string(confidence) +
-					  ",\"resolver\":\"" +
-					  jsonEscape(resolver.c_str()) +
-					  "\",\"resolution_kind\":\"" +
-					  jsonEscape(rkind.c_str()) +
-					  "\",\"resolve_strategy\":\"" +
-					  jsonEscape(rkind.c_str()) + "\"}";
+				util::JsonWriter el;
+				el.beginObject();
+				el.key("node_id").value(node_id);
+				el.key("name").value(name);
+				el.key("file_path").value(file);
+				el.key("start_row").value(start_row);
+				el.key("start_col").value(start_col);
+				// raw(): std::to_string keeps the historic "%f"
+				// formatting for this field.
+				el.key("confidence")
+					.raw(std::to_string(confidence));
+				el.key("resolver").value(resolver);
+				el.key("resolution_kind").value(rkind);
+				el.key("resolve_strategy").value(rkind);
+				el.endObject();
+				result += el.str();
 			}
 			sqlite3_finalize(st);
 		}
@@ -315,15 +312,16 @@ std::string QueryEngine::getNeighbors(uint64_t project_id, uint64_t node_id,
 					json << ",";
 				first = false;
 				++count;
-				json << "{\"neighbor_id\":" << nid
-				     << ",\"name\":\""
-				     << jsonEscape(name.c_str())
-				     << "\",\"node_type\":" << ntype
-				     << ",\"file_path\":\""
-				     << jsonEscape(file.c_str())
-				     << "\",\"edge_type\":" << etype
-				     << ",\"direction\":\""
-				     << jsonEscape(direction) << "\"}";
+				util::JsonWriter el;
+				el.beginObject();
+				el.key("neighbor_id").value(nid);
+				el.key("name").value(name);
+				el.key("node_type").value(ntype);
+				el.key("file_path").value(file);
+				el.key("edge_type").value(etype);
+				el.key("direction").value(direction);
+				el.endObject();
+				json << el.str();
 			}
 			sqlite3_finalize(st);
 		}
@@ -370,14 +368,16 @@ std::string QueryEngine::getNeighbors(uint64_t project_id, uint64_t node_id,
 					json << ",";
 				first = false;
 				++count;
-				json << "{\"neighbor_id\":" << nid
-				     << ",\"name\":\""
-				     << jsonEscape(name.c_str())
-				     << "\",\"node_type\":" << ntype
-				     << ",\"file_path\":\""
-				     << jsonEscape(file.c_str())
-				     << "\",\"edge_type\":" << etype
-				     << ",\"direction\":\"in\"}";
+				util::JsonWriter el;
+				el.beginObject();
+				el.key("neighbor_id").value(nid);
+				el.key("name").value(name);
+				el.key("node_type").value(ntype);
+				el.key("file_path").value(file);
+				el.key("edge_type").value(etype);
+				el.key("direction").value("in");
+				el.endObject();
+				json << el.str();
 			}
 			sqlite3_finalize(st);
 		}
@@ -581,11 +581,15 @@ std::string QueryEngine::getSubgraph(uint64_t project_id,
 			json << ",";
 		first = false;
 		++count;
-		json << "{\"id\":" << id << ",\"name\":\""
-		     << jsonEscape(name.c_str()) << "\",\"node_type\":" << kind
-		     << ",\"file_path\":\"" << jsonEscape(file.c_str())
-		     << "\",\"language\":\"" << jsonEscape(lang.c_str())
-		     << "\"}";
+		util::JsonWriter el;
+		el.beginObject();
+		el.key("id").value(id);
+		el.key("name").value(name);
+		el.key("node_type").value(kind);
+		el.key("file_path").value(file);
+		el.key("language").value(lang);
+		el.endObject();
+		json << el.str();
 	};
 	// Deterministic order: center, then BFS discovery order (depth_map is
 	// insertion-ordered by BFS, which yields breadth-first order).
