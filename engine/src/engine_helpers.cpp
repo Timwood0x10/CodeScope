@@ -93,14 +93,6 @@ std::string fileContentHash(const char *path)
 }
 
 // Escape a string for safe embedding in JSON (RFC 8259)
-std::string jsonEscape(const std::string &s)
-{
-	// Single source of truth: util::jsonEscapeString also backs
-	// util::JsonWriter, so the legacy helper and the builder can never
-	// drift (plan/rules/code_rules.md: one escaping implementation).
-	return util::jsonEscapeString(s);
-}
-
 std::string simpleHash(const std::string &s)
 {
 	// Simple djb2 hash for content fingerprint

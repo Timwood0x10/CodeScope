@@ -21,38 +21,6 @@ namespace query
 // kShortestPathMaxDepth / kShortestPathNote; the copies that used to live here
 // were left behind by that split and only produced unused-variable warnings.
 
-// ─── JSON string escaping ──────────────────────────────────────
-
-std::string jsonEscape(const char *s)
-{
-	if (!s)
-		return "";
-	std::string out;
-	for (const char *p = s; *p; p++) {
-		switch (*p) {
-		case '"':
-			out += "\\\"";
-			break;
-		case '\\':
-			out += "\\\\";
-			break;
-		case '\n':
-			out += "\\n";
-			break;
-		case '\r':
-			out += "\\r";
-			break;
-		case '\t':
-			out += "\\t";
-			break;
-		default:
-			out += *p;
-			break;
-		}
-	}
-	return out;
-}
-
 QueryEngine::QueryEngine(store::GraphStore *store)
 	: store_(store)
 {

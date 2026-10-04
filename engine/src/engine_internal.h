@@ -69,7 +69,6 @@ std::string readFilePrealloc(const char *path, size_t known_size);
 // unchanged before the incremental skip. Computed on the file path so the
 // caller does not need to hold file bytes in memory.
 std::string fileContentHash(const char *path);
-std::string jsonEscape(const std::string &s);
 std::string simpleHash(const std::string &s);
 const char *detectLanguage(const char *file_path);
 char *dupString(const std::string &s);

@@ -144,13 +144,18 @@ std::string GraphStore::getModuleTreeJson(uint64_t project_id)
 			if (!first)
 				json << ",";
 			first = false;
+			// The element stays open across the optional children array
+			// below (and the recursion writes nested elements into the
+			// same stream), so its shape is kept; the string values go
+			// through the shared escaper.
 			json << "{\"id\":" << it->id
 			     << ",\"parent_id\":" << it->parent_id
 			     << ",\"depth\":" << depth << ",\"name\":\""
-			     << jsonEscape(it->name) << "\""
-			     << ",\"path\":\"" << jsonEscape(it->path) << "\""
-			     << ",\"language\":\"" << jsonEscape(it->language)
-			     << "\""
+			     << util::jsonEscapeString(it->name) << "\""
+			     << ",\"path\":\""
+			     << util::jsonEscapeString(it->path) << "\""
+			     << ",\"language\":\""
+			     << util::jsonEscapeString(it->language) << "\""
 			     << ",\"file_count\":" << it->file_count;
 			auto ci = children_of.find(id);
 			if (ci != children_of.end() && !ci->second.empty()) {
@@ -281,18 +286,20 @@ std::string GraphStore::findSymbolJson(uint64_t project_id, const char *name)
 				const char *type_name = (nt >= 0 && nt < 7) ?
 								type_names[nt] :
 								"symbol";
-				gn_json << "{"
-					<< "\"id\":" << id << ","
-					<< "\"kind\":\"" << type_name << "\","
-					<< "\"name\":\""
-					<< jsonEscape(n ? n : "") << "\","
-					<< "\"file_path\":\""
-					<< jsonEscape(fp ? fp : "") << "\","
-					<< "\"line\":" << sr << ","
-					<< "\"column\":" << sc << ","
-					<< "\"language\":\""
-					<< (lang ? lang : "") << "\""
-					<< "}";
+				util::JsonWriter el;
+				el.beginObject();
+				el.key("id").value(id);
+				// kind and language are free text and were emitted
+				// unescaped before; the writer escapes them now.
+				el.key("kind").value(type_name ? type_name :
+								 "");
+				el.key("name").value(n ? n : "");
+				el.key("file_path").value(fp ? fp : "");
+				el.key("line").value(sr);
+				el.key("column").value(sc);
+				el.key("language").value(lang ? lang : "");
+				el.endObject();
+				gn_json << el.str();
 			}
 			sqlite3_finalize(gn_stmt);
 		}

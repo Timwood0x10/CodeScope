@@ -113,9 +113,4 @@ void GraphStore::clearStmtCache()
 
 // ── Shared JSON helper ─────────────────────────────────────────
 // Declared in store_internal.h; used by all store_*.cpp split files.
-std::string jsonEscape(const std::string &s)
-{
-	return util::jsonEscapeString(s);
-}
-
 } // namespace store

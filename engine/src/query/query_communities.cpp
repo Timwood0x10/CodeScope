@@ -32,6 +32,7 @@
 //     community — ~342 KB / ~100 K tokens for one query, the opposite of what
 //     this project exists to do.
 
+#include "util/json_writer.h"
 #include "query_engine.h"
 
 #include <algorithm>
@@ -103,7 +104,8 @@ std::string QueryEngine::getCommunities(uint64_t project_id, int max_members,
 		       "\"note\":\""
 		    << kCommunityNote << "\"";
 		if (error != nullptr)
-			out << ",\"error\":\"" << jsonEscape(error) << "\"";
+			out << ",\"error\":\"" << util::jsonEscapeString(error)
+			    << "\"";
 		out << "}";
 		return out.str();
 	};
@@ -336,9 +338,11 @@ std::string QueryEngine::getCommunities(uint64_t project_id, int max_members,
 		const CommunityRow &row = communities[ci];
 		if (ci > 0)
 			json << ",";
+		// Element stays open across the optional members array below, so
+		// its shape is kept; the label goes through the shared escaper.
 		json << "{\"id\":" << node_ids[row.representative]
 		     << ",\"label\":\""
-		     << jsonEscape(metaOf(row.representative).name.c_str())
+		     << util::jsonEscapeString(metaOf(row.representative).name)
 		     << "\",\"member_count\":" << row.members.size();
 		if (include_members) {
 			size_t emit_members = std::min<size_t>(
@@ -361,13 +365,13 @@ std::string QueryEngine::getCommunities(uint64_t project_id, int max_members,
 				uint32_t idx = row.members[mi];
 				if (mi > 0)
 					json << ",";
-				json << "{\"id\":" << node_ids[idx]
-				     << ",\"name\":\""
-				     << jsonEscape(metaOf(idx).name.c_str())
-				     << "\",\"file_path\":\""
-				     << jsonEscape(
-						metaOf(idx).file_path.c_str())
-				     << "\"}";
+				util::JsonWriter el;
+				el.beginObject();
+				el.key("id").value(node_ids[idx]);
+				el.key("name").value(metaOf(idx).name);
+				el.key("file_path").value(metaOf(idx).file_path);
+				el.endObject();
+				json << el.str();
 			}
 			json << "]";
 			total_members_emitted += emit_members;

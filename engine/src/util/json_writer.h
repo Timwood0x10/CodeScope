@@ -13,8 +13,9 @@ namespace util
 /// Handles the two mandatory escapes (`"` and `\`), the shorthand escapes
 /// (`\n`, `\r`, `\t`), and `\uXXXX` for every other C0 control byte
 /// (0x00-0x1f). Bytes >= 0x20 pass through unchanged, so valid UTF-8 stays
-/// valid. This is the single source of truth for JSON escaping; the legacy
-/// global `jsonEscape()` delegates to it.
+/// valid. This is the single source of truth for JSON escaping: the legacy
+/// `jsonEscape()` wrappers are gone, so callers use either this function or
+/// JsonWriter (which escapes through it).
 ///
 /// @param s  Raw bytes to escape.
 /// @return   The escaped contents, WITHOUT the surrounding quotes.

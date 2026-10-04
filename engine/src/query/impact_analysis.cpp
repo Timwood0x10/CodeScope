@@ -1,3 +1,4 @@
+#include "util/json_writer.h"
 #include "impact_analysis.h"
 #include "query_engine.h"
 
@@ -84,12 +85,17 @@ std::string analyzeChangeImpact(uint64_t project_id, store::GraphStore *store,
 	// JSON contract identical regardless of compile configuration.
 	// regardless of compile configuration.
 	auto makeErrorJson = [](const std::string &msg) -> std::string {
-		std::ostringstream j;
-		j << "{\"error\":\"" << jsonEscape(msg.c_str())
-		  << "\",\"modified\":[],\"callers\":[],\"callees\":[],"
-		  << "\"total_impacted\":0,\"max_depth\":" << kImpactMaxDepth
-		  << ",\"approximation\":\"heuristic\","
-		  << "\"note\":\"" << kImpactNote << "\"}";
+		util::JsonWriter j;
+		j.beginObject();
+		j.key("error").value(msg);
+		j.key("modified").beginArray().endArray();
+		j.key("callers").beginArray().endArray();
+		j.key("callees").beginArray().endArray();
+		j.key("total_impacted").value(0);
+		j.key("max_depth").value(kImpactMaxDepth);
+		j.key("approximation").value("heuristic");
+		j.key("note").value(kImpactNote);
+		j.endObject();
 		return j.str();
 	};
 
@@ -249,53 +255,49 @@ std::string analyzeChangeImpact(uint64_t project_id, store::GraphStore *store,
 	lookupMeta(need_metadata, name_map, file_map);
 
 	// ── Build JSON output (mirrors the SQLite branch) ──────────
-	std::ostringstream json;
-	json << "{\"error\":null,\"modified\":[";
-	bool first = true;
+	util::JsonWriter json;
+	json.beginObject();
+	json.key("error").nullValue();
+	json.key("modified").beginArray();
 	for (const auto &kv : modified_nodes) {
-		if (!first)
-			json << ",";
-		first = false;
-		json << "{\"id\":" << kv.first << ",\"name\":\""
-		     << jsonEscape(kv.second.c_str()) << "\"}";
+		json.beginObject();
+		json.key("id").value(kv.first);
+		json.key("name").value(kv.second);
+		json.endObject();
 	}
-	json << "],\"callers\":[";
-	first = true;
+	json.endArray();
+	json.key("callers").beginArray();
 	for (const auto &e : caller_entries) {
-		if (!first)
-			json << ",";
-		first = false;
-		json << "{\"id\":" << e.node_id << ",\"name\":\""
-		     << jsonEscape(name_map[e.node_id].c_str())
-		     << "\",\"file\":\""
-		     << jsonEscape(file_map[e.node_id].c_str())
-		     << "\",\"depth\":" << e.depth << ",\"caller_of\":\""
-		     << jsonEscape(name_map[e.via_seed].c_str()) << "\"}";
+		json.beginObject();
+		json.key("id").value(e.node_id);
+		json.key("name").value(name_map[e.node_id]);
+		json.key("file").value(file_map[e.node_id]);
+		json.key("depth").value(e.depth);
+		json.key("caller_of").value(name_map[e.via_seed]);
+		json.endObject();
 	}
-	json << "],\"callees\":[";
-	first = true;
+	json.endArray();
+	json.key("callees").beginArray();
 	for (const auto &e : callee_entries) {
-		if (!first)
-			json << ",";
-		first = false;
-		json << "{\"id\":" << e.node_id << ",\"name\":\""
-		     << jsonEscape(name_map[e.node_id].c_str())
-		     << "\",\"file\":\""
-		     << jsonEscape(file_map[e.node_id].c_str())
-		     << "\",\"depth\":" << e.depth << ",\"callee_of\":\""
-		     << jsonEscape(name_map[e.via_seed].c_str()) << "\"}";
+		json.beginObject();
+		json.key("id").value(e.node_id);
+		json.key("name").value(name_map[e.node_id]);
+		json.key("file").value(file_map[e.node_id]);
+		json.key("depth").value(e.depth);
+		json.key("callee_of").value(name_map[e.via_seed]);
+		json.endObject();
 	}
-	json << "],";
+	json.endArray();
 	std::unordered_set<uint64_t> all_impacted = modified_ids;
 	for (const auto &e : caller_entries)
 		all_impacted.insert(e.node_id);
 	for (const auto &e : callee_entries)
 		all_impacted.insert(e.node_id);
-	json << "\"total_impacted\":" << all_impacted.size();
-	json << ",\"max_depth\":" << kImpactMaxDepth;
-	json << ",\"approximation\":\"heuristic\"";
-	json << ",\"note\":\"" << kImpactNote << "\"";
-	json << "}";
+	json.key("total_impacted").value(all_impacted.size());
+	json.key("max_depth").value(kImpactMaxDepth);
+	json.key("approximation").value("heuristic");
+	json.key("note").value(kImpactNote);
+	json.endObject();
 	return json.str();
 }
 

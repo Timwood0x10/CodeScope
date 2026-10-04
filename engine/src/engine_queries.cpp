@@ -100,8 +100,10 @@ static char *findSymbolImpl(uint64_t project_id, const char *symbol_name)
 		// Build smart message
 		std::string hint = "{\"results\":[],\"hint\":{";
 		hint += "\"message\":\"No symbol named '" +
-			jsonEscape(std::string(symbol_name)) + "' found\",";
-		hint += "\"project_language\":\"" + jsonEscape(langs) + "\",";
+			util::jsonEscapeString(std::string(symbol_name)) +
+			"' found\",";
+		hint += "\"project_language\":\"" +
+			util::jsonEscapeString(langs) + "\",";
 		hint += "\"total_symbols\":" + std::to_string(total) + ",";
 		hint += "\"callgraph_ready\":" + std::to_string(cg_ready) + ",";
 		hint += "\"embedding_ready\":" + std::to_string(emb_ready) +
@@ -149,13 +151,13 @@ static char *findSymbolImpl(uint64_t project_id, const char *symbol_name)
 					ep_hints.erase(ep_hints.size() - 2);
 			}
 			hint += "\"suggestion\":\"This is a " +
-				jsonEscape(langs) + " project. ";
+				util::jsonEscapeString(langs) + " project. ";
 			if (!ep_hints.empty()) {
 				// entry_points.kind is free TEXT — escape it like
 				// every other interpolated value so a quote or
 				// backslash cannot break the JSON frame.
 				hint += "Entry point kinds present: " +
-					jsonEscape(ep_hints) + ". ";
+					util::jsonEscapeString(ep_hints) + ". ";
 				hint += "Try one of those names, or use search.";
 			} else if (is_c_family) {
 				hint += "Try 'main' or an exported function name.";
@@ -377,7 +379,8 @@ run_model_build:
 	if (failed_step) {
 		json << "\"ok\":false,\"status\":\"failed\""
 		     << ",\"failed_step\":\"" << failed_step << "\""
-		     << ",\"error\":\"" << jsonEscape(failure_detail) << "\"";
+		     << ",\"error\":\""
+		     << util::jsonEscapeString(failure_detail) << "\"";
 	} else {
 		json << "\"ok\":true,\"status\":\"ok\"";
 	}
@@ -580,7 +583,9 @@ static char *projectOverviewImpl(uint64_t project_id)
 				first = false;
 				const char *l = reinterpret_cast<const char *>(
 					sqlite3_column_text(stmt, 0));
-				json << "\"" << jsonEscape(l ? l : "") << "\"";
+				json << "\""
+				     << util::jsonEscapeString(l ? l : "")
+				     << "\"";
 			}
 			sqlite3_finalize(stmt);
 		}

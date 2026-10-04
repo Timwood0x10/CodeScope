@@ -125,13 +125,18 @@ std::string QueryEngine::getHotspots(uint64_t project_id, int top_n)
 				j << ",";
 			first = false;
 			++count;
-			j << "{\"id\":" << id << ",\"name\":\""
-			  << jsonEscape(name.c_str()) << "\",\"file\":\""
-			  << jsonEscape(file.c_str()) << "\",\"type\":" << kind
-			  << ",\"caller_count\":" << caller_count
-			  << ",\"complexity\":" << cyclomatic
-			  << ",\"cognitive\":" << cognitive
-			  << ",\"nesting_depth\":" << nesting << "}";
+			util::JsonWriter el;
+			el.beginObject();
+			el.key("id").value(id);
+			el.key("name").value(name);
+			el.key("file").value(file);
+			el.key("type").value(kind);
+			el.key("caller_count").value(caller_count);
+			el.key("complexity").value(cyclomatic);
+			el.key("cognitive").value(cognitive);
+			el.key("nesting_depth").value(nesting);
+			el.endObject();
+			j << el.str();
 		}
 		sqlite3_finalize(st);
 	}
@@ -183,7 +188,10 @@ std::string QueryEngine::getModuleMap(uint64_t project_id)
 		if (!first_dir)
 			json << ",";
 		first_dir = false;
-		json << "{\"path\":\"" << jsonEscape(dir.c_str())
+		// This object stays open across the files array below and is
+		// closed on two different paths, so it keeps its shape; the
+		// path value goes through the shared escaper.
+		json << "{\"path\":\"" << util::jsonEscapeString(dir)
 		     << "\",\"files\":[";
 
 		// Functions in this directory. entity is the canonical fact source
@@ -293,12 +301,17 @@ std::string QueryEngine::getEntryPoints(uint64_t project_id)
 				j << ",";
 			first = false;
 			++count;
-			j << "{\"id\":" << id << ",\"name\":\""
-			  << jsonEscape(name.c_str()) << "\",\"type\":" << kind
-			  << ",\"file\":\"" << jsonEscape(file.c_str())
-			  << "\",\"complexity\":" << cyc
-			  << ",\"cognitive\":" << cog << ",\"nesting\":" << nest
-			  << "}";
+			util::JsonWriter el;
+			el.beginObject();
+			el.key("id").value(id);
+			el.key("name").value(name);
+			el.key("type").value(kind);
+			el.key("file").value(file);
+			el.key("complexity").value(cyc);
+			el.key("cognitive").value(cog);
+			el.key("nesting").value(nest);
+			el.endObject();
+			j << el.str();
 		}
 		sqlite3_finalize(st);
 	}
@@ -572,27 +585,28 @@ static void appendRowsAsJson(sqlite3_stmt *stmt, std::ostringstream &json,
 		if (!first)
 			json << ",";
 		first = false;
-		json << "{";
+		util::JsonWriter el;
+		el.beginObject();
 		for (int i = 0; i < col_count; i++) {
-			if (i > 0)
-				json << ",";
 			const char *col_name = sqlite3_column_name(stmt, i);
-			json << "\"" << (col_name ? col_name : "?") << "\":";
+			// The writer escapes keys as well as values; the column
+			// name was concatenated unescaped before.
+			el.key(col_name ? col_name : "?");
 
 			int col_type = sqlite3_column_type(stmt, i);
 			if (col_type == SQLITE_NULL) {
-				json << "null";
+				el.nullValue();
 			} else if (col_type == SQLITE_INTEGER) {
-				json << sqlite3_column_int64(stmt, i);
+				el.value(sqlite3_column_int64(stmt, i));
 			} else {
 				const char *text =
 					reinterpret_cast<const char *>(
 						sqlite3_column_text(stmt, i));
-				json << "\"" << jsonEscape(text ? text : "")
-				     << "\"";
+				el.value(text ? text : "");
 			}
 		}
-		json << "}";
+		el.endObject();
+		json << el.str();
 	}
 }
 
