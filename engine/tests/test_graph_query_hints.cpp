@@ -23,7 +23,7 @@
 #include "../src/query/query_engine.h"
 #include "../src/store/store.h"
 
-#include <cassert>
+#include "test_check.h"
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -123,9 +123,9 @@ int main()
 		return 1;
 	}
 	const uint64_t pid = store.createProject("/tmp", "graph-query-hints");
-	assert(pid > 0);
+	CHECK(pid > 0);
 	sqlite3 *db = store.handle();
-	assert(db != nullptr);
+	CHECK(db != nullptr);
 
 	// Fixture:
 	//   1   Widget  kind=2 (class)          src/widget.h
@@ -147,10 +147,10 @@ int main()
 		std::string none =
 			query::bareNameCandidates(db, pid, "nonexistent");
 		std::string one = query::bareNameCandidates(db, pid, "gadget");
-		assert(none.empty() &&
+		CHECK(none.empty() &&
 		       "0 matches must probe as unambiguous (caller reports "
 		       "not-found)");
-		assert(one.empty() &&
+		CHECK(one.empty() &&
 		       "1 match must probe as unambiguous (caller traces "
 		       "it)");
 		printf("Test 1 (0/1 match -> empty probe): PASS\n");
@@ -159,9 +159,9 @@ int main()
 	// ── Case 2: 2 matches -> ambiguous + candidates ─────────────
 	{
 		std::string amb = query::bareNameCandidates(db, pid, "Widget");
-		assert(contains(amb, "\"ambiguous\":true"));
-		assert(countKey(amb, "graph_node_id") == 2);
-		assert(contains(amb, "widget.h") && contains(amb, "widget.c"));
+		CHECK(contains(amb, "\"ambiguous\":true"));
+		CHECK(countKey(amb, "graph_node_id") == 2);
+		CHECK(contains(amb, "widget.h") && contains(amb, "widget.c"));
 		printf("Test 2 (2 matches -> ambiguous, 2 candidates): PASS\n");
 	}
 
@@ -175,10 +175,10 @@ int main()
 			"MATCH (Class:gadget)-[Calls]->(Function:other) "
 			"RETURN Class.name",
 			&store);
-		assert(q.find("\"total\":0") != std::string::npos);
-		assert(countKey(q, "hint") == 1 &&
+		CHECK(q.find("\"total\":0") != std::string::npos);
+		CHECK(countKey(q, "hint") == 1 &&
 		       "a kind mismatch must emit exactly one hint key");
-		assert(contains(q, "kind 0"));
+		CHECK(contains(q, "kind 0"));
 		printf("Test 3 (typed mismatch -> single hint): PASS\n");
 	}
 
@@ -189,8 +189,8 @@ int main()
 			"MATCH (Class:gadget)-[Calls]->(Class:other) "
 			"RETURN Class.name",
 			&store);
-		assert(q.find("\"total\":0") != std::string::npos);
-		assert(countKey(q, "hint") == 1 &&
+		CHECK(q.find("\"total\":0") != std::string::npos);
+		CHECK(countKey(q, "hint") == 1 &&
 		       "two probes must merge into one hint key, never two");
 		printf("Test 4 (both-sides mismatch -> one hint key): PASS\n");
 	}
@@ -203,8 +203,8 @@ int main()
 			pid,
 			"MATCH (:gadget)-[Calls]->(:nosuch) RETURN gadget.name",
 			&store);
-		assert(q.find("\"total\":0") != std::string::npos);
-		assert(countKey(q, "hint") == 0 &&
+		CHECK(q.find("\"total\":0") != std::string::npos);
+		CHECK(countKey(q, "hint") == 0 &&
 		       "an untyped node must not produce a kind-mismatch "
 		       "hint");
 		printf("Test 5 (untyped node -> no hint): PASS\n");
@@ -217,8 +217,8 @@ int main()
 			"MATCH (Function:gadget)-[Calls]->(Function:other) "
 			"RETURN Function.name",
 			&store);
-		assert(q.find("\"total\":1") != std::string::npos);
-		assert(countKey(q, "hint") == 0 &&
+		CHECK(q.find("\"total\":1") != std::string::npos);
+		CHECK(countKey(q, "hint") == 0 &&
 		       "a matching query must not carry a hint");
 		printf("Test 6 (matching query -> no hint): PASS\n");
 	}
@@ -243,34 +243,34 @@ int main()
 
 		const std::string all =
 			query::executeGraphQuery(pid, base.c_str(), &store);
-		assert(countKey(all, "source") == 5);
-		assert(!contains(all, "\"truncated\""));
+		CHECK(countKey(all, "source") == 5);
+		CHECK(!contains(all, "\"truncated\""));
 
 		const std::string two = query::executeGraphQuery(
 			pid, (base + " LIMIT 2").c_str(), &store);
-		assert(countKey(two, "source") == 2);
-		assert(contains(two, "\"total\":2"));
-		assert(contains(two, "\"truncated\":true"));
+		CHECK(countKey(two, "source") == 2);
+		CHECK(contains(two, "\"total\":2"));
+		CHECK(contains(two, "\"truncated\":true"));
 
 		// Keywords are case-insensitive, like MATCH.
 		const std::string three = query::executeGraphQuery(
 			pid, (base + " limit 3").c_str(), &store);
-		assert(countKey(three, "source") == 3);
-		assert(contains(three, "\"truncated\":true"));
+		CHECK(countKey(three, "source") == 3);
+		CHECK(contains(three, "\"truncated\":true"));
 
 		// A limit above the match count is not a truncation.
 		const std::string big = query::executeGraphQuery(
 			pid, (base + " LIMIT 99").c_str(), &store);
-		assert(countKey(big, "source") == 5);
-		assert(!contains(big, "\"truncated\""));
+		CHECK(countKey(big, "source") == 5);
+		CHECK(!contains(big, "\"truncated\""));
 
 		// `RETURN` stays accepted (the DSL's documented surface, used by the
 		// tests above) and may follow LIMIT.
 		const std::string ret = query::executeGraphQuery(
 			pid, (base + " LIMIT 2 RETURN Function.name").c_str(),
 			&store);
-		assert(countKey(ret, "source") == 2);
-		assert(contains(ret, "\"truncated\":true"));
+		CHECK(countKey(ret, "source") == 2);
+		CHECK(contains(ret, "\"truncated\":true"));
 
 		// A malformed clause — and any other trailing text — is an error,
 		// never a silent no-op.
@@ -278,8 +278,8 @@ int main()
 					 " GARBAGE", " LIMIT 1 LIMIT 2" }) {
 			const std::string r = query::executeGraphQuery(
 				pid, (base + bad).c_str(), &store);
-			assert(contains(r, "\"error\""));
-			assert(countKey(r, "source") == 0);
+			CHECK(contains(r, "\"error\""));
+			CHECK(countKey(r, "source") == 0);
 		}
 		printf("Test 8 (LIMIT honoured, unknown trailing text rejected): "
 		       "PASS\n");
@@ -300,7 +300,7 @@ int main()
 		}
 		const uint64_t fpid =
 			engine_create_project("/tmp", "ffi-one-sided");
-		assert(fpid > 0);
+		CHECK(fpid > 0);
 
 		sqlite3 *fdb = nullptr;
 		if (sqlite3_open(kDbPath, &fdb) != SQLITE_OK) {
@@ -315,22 +315,22 @@ int main()
 		sqlite3_close(fdb);
 
 		char *raw = engine_detect_ffi_boundaries(fpid);
-		assert(raw != nullptr);
+		CHECK(raw != nullptr);
 		std::string s(raw);
 		engine_free_string(raw);
 		engine_shutdown();
 
-		assert(contains(s, "\"external_symbols\":["));
-		assert(contains(s, "extern_add"));
+		CHECK(contains(s, "\"external_symbols\":["));
+		CHECK(contains(s, "extern_add"));
 		size_t ext = s.find("\"external_symbols\":");
 		size_t orphan = s.find("\"orphan_symbols\":");
-		assert(ext != std::string::npos &&
+		CHECK(ext != std::string::npos &&
 		       orphan != std::string::npos && ext < orphan);
 		std::string ext_block = s.substr(ext, orphan - ext);
 		// `run_c_side` is defined here (entity kind=0), so the CallExpr
 		// to it must NOT be reported as external.
-		assert(contains(ext_block, "extern_add"));
-		assert(!contains(ext_block, "run_c_side"));
+		CHECK(contains(ext_block, "extern_add"));
+		CHECK(!contains(ext_block, "run_c_side"));
 		printf("Test 7 (one-sided FFI -> external_symbols): PASS\n");
 	}
 
@@ -341,5 +341,5 @@ int main()
 	printf("\n=== test_graph_query_hints PASSED ===\n");
 	printf("Homonym probe, single-hint contract, untyped-node quiet, "
 	       "external_symbols, LIMIT\n");
-	return 0;
+	return checkFailures() ? 1 : 0;
 }

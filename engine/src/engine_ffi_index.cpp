@@ -30,7 +30,7 @@ char *engine_index_batch(uint64_t project_id, const char *file_paths_json)
 		if (!file_paths_json || !*file_paths_json)
 			return dupString(
 				"{\"error\":\"[module=ffi, method=engine_index_batch] file_paths_json is required\"}");
-		if (!g_store || !g_parser)
+		if (!engineContext().store || !engineContext().parser)
 			return dupString(
 				"{\"ok\":false,\"error\":\"not initialized\"}");
 
@@ -162,9 +162,9 @@ char *engine_index_batch(uint64_t project_id, const char *file_paths_json)
 				continue;
 			}
 
-			TSTree *tree = g_parser->parse(fp.c_str(),
-						       source.c_str(), lang,
-						       source.size());
+			TSTree *tree = engineContext().parser->parse(
+				fp.c_str(), source.c_str(), lang,
+				source.size());
 			if (!tree) {
 				errors.push_back(fp + ": parse failed");
 				continue;
@@ -192,7 +192,7 @@ char *engine_index_batch(uint64_t project_id, const char *file_paths_json)
 		}
 
 		// Phase 2: Persist in single transaction
-		g_store->beginTransaction();
+		engineContext().store->beginTransaction();
 
 		uint64_t start_id = 1;
 		{
@@ -202,7 +202,7 @@ char *engine_index_batch(uint64_t project_id, const char *file_paths_json)
 			// one table lets the other collide and silently lose rows.
 			sqlite3_stmt *stmt = nullptr;
 			if (sqlite3_prepare_v2(
-				    g_store->handle(),
+				    engineContext().store->handle(),
 				    "SELECT COALESCE(MAX(t.id),0)+1 FROM (SELECT id "
 				    "FROM entity UNION ALL SELECT id FROM "
 				    "graph_nodes) t",
@@ -219,8 +219,10 @@ char *engine_index_batch(uint64_t project_id, const char *file_paths_json)
 
 		for (auto &b : batches) {
 			std::string hash = simpleHash(b.source);
-			g_store->upsertFile(project_id, b.file_path.c_str(),
-					    b.language.c_str(), hash.c_str());
+			engineContext().store->upsertFile(project_id,
+							  b.file_path.c_str(),
+							  b.language.c_str(),
+							  hash.c_str());
 			// Delete graph-layer data only (relation, graph_edges,
 			// graph_nodes, entity, type_ref, type_info, import, route).
 			// NOT semantic_records — this batch path re-inserts graph
@@ -229,8 +231,8 @@ char *engine_index_batch(uint64_t project_id, const char *file_paths_json)
 			// decide the file rebuild set; wiping it here would make
 			// subsequent engine_index_project skip rebuilding this file,
 			// leaving stale graph_nodes forever.
-			g_store->deleteGraphDataByFile(project_id,
-						       b.file_path.c_str());
+			engineContext().store->deleteGraphDataByFile(
+				project_id, b.file_path.c_str());
 
 			// No ir_nodes/ir_semantic_edges write — graph_nodes is canonical.
 			// FTS/vector writes skipped for single-file index path.
@@ -238,16 +240,20 @@ char *engine_index_batch(uint64_t project_id, const char *file_paths_json)
 			auto sg = builder.buildSymbolGraph(b.unit.get());
 			auto cg = builder.buildCallGraph(b.unit.get());
 			for (auto &gn : sg.nodes) {
-				g_store->insertGraphNode(project_id, gn);
-				g_store->insertEntity(project_id, gn);
+				engineContext().store->insertGraphNode(
+					project_id, gn);
+				engineContext().store->insertEntity(project_id,
+								    gn);
 				total_nodes++;
 			}
 			for (auto &e : sg.edges) {
-				g_store->insertGraphEdge(project_id, e);
+				engineContext().store->insertGraphEdge(
+					project_id, e);
 				total_edges++;
 			}
 			for (auto &e : cg.edges) {
-				g_store->insertGraphEdge(project_id, e);
+				engineContext().store->insertGraphEdge(
+					project_id, e);
 				total_edges++;
 			}
 
@@ -261,7 +267,7 @@ char *engine_index_batch(uint64_t project_id, const char *file_paths_json)
 						}
 		}
 
-		g_store->commitTransaction();
+		engineContext().store->commitTransaction();
 
 		util::JsonWriter w;
 		w.beginObject();
@@ -277,11 +283,11 @@ char *engine_index_batch(uint64_t project_id, const char *file_paths_json)
 		w.endObject();
 		return dupString(w.str());
 	} catch (const std::exception &e) {
-		g_store->rollbackTransaction();
+		engineContext().store->rollbackTransaction();
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_index_batch", e.what()));
 	} catch (...) {
-		g_store->rollbackTransaction();
+		engineContext().store->rollbackTransaction();
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_index_batch", "unknown exception"));
 	}
@@ -312,10 +318,10 @@ char *engine_get_project_info(uint64_t project_id)
 {
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!g_store)
+		if (!engineContext().store)
 			return dupString("{\"error\":\"not initialized\"}");
 
-		sqlite3 *db = g_store->handle();
+		sqlite3 *db = engineContext().store->handle();
 		std::string name, root;
 
 		{
@@ -445,7 +451,7 @@ char *engine_get_project_info(uint64_t project_id)
 char *engine_get_parse_failures(uint64_t project_id, int limit)
 {
 	try {
-		if (!g_store)
+		if (!engineContext().store)
 			return dupString(
 				"{\"ok\":false,\"error\":\"[module=ffi, method=engine_get_parse_failures] engine not initialized\"}");
 		const std::string rows = store::getParseFailuresJson(
@@ -470,7 +476,7 @@ char *engine_get_parse_failures(uint64_t project_id, int limit)
 char *engine_reset_parse_failures(uint64_t project_id)
 {
 	try {
-		if (!g_store)
+		if (!engineContext().store)
 			return dupString(
 				"{\"ok\":false,\"error\":\"[module=ffi, method=engine_reset_parse_failures] engine not initialized\"}");
 		const int removed = store::resetParseFailures(project_id);

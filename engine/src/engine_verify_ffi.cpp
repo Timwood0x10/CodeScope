@@ -185,7 +185,8 @@ VerifyResult verify_one_claim(uint64_t project_id, const verify::Claim &claim)
 {
 	VerifyResult result;
 
-	int64_t claim_id = g_store->insertClaim(project_id, claim);
+	int64_t claim_id =
+		engineContext().store->insertClaim(project_id, claim);
 	if (claim_id < 0) {
 		result.json =
 			dupString("{\"error\":\"failed to persist claim "
@@ -235,7 +236,8 @@ VerifyResult verify_one_claim(uint64_t project_id, const verify::Claim &claim)
 	// Build a fresh verifier bound to the caller's project_id so verify()
 	// queries the right project's data. The registry's matched pointer is
 	// only used to confirm that SOME verifier accepts this claim type.
-	auto v = makeVerifierForClaim(claim, g_store.get(), project_id);
+	auto v = makeVerifierForClaim(claim, engineContext().store.get(),
+				      project_id);
 	if (!v) {
 		util::JsonWriter j;
 		j.beginObject();
@@ -294,9 +296,9 @@ VerifyResult verify_one_claim(uint64_t project_id, const verify::Claim &claim)
 	}
 	rec.claim_id = claim_id;
 
-	int64_t evidence_id =
-		g_store->insertEvidence(claim_id, rec.verdict, rec.confidence,
-					rec.verifier_name, rec.detail);
+	int64_t evidence_id = engineContext().store->insertEvidence(
+		claim_id, rec.verdict, rec.confidence, rec.verifier_name,
+		rec.detail);
 	if (evidence_id < 0) {
 		result.json =
 			dupString("{\"error\":\"failed to persist evidence "
@@ -306,7 +308,8 @@ VerifyResult verify_one_claim(uint64_t project_id, const verify::Claim &claim)
 	}
 
 	for (const auto &f : rec.facts) {
-		g_store->insertEvidenceFact(evidence_id, f.first, f.second, "");
+		engineContext().store->insertEvidenceFact(evidence_id, f.first,
+							  f.second, "");
 	}
 
 	// Step 9.6: when the verifier returned Unknown because the evidence
@@ -409,13 +412,13 @@ extern "C" char *engine_verify_integrity(uint64_t project_id, int max_findings)
 {
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!g_store)
+		if (!engineContext().store)
 			return dupString("{\"error\":\"not initialized\"}");
 
 		// Arm the query timeout (10s) so a hung query never blocks
 		// the caller indefinitely. The guard disarms on scope exit.
-		store::GraphStore::QueryDeadlineGuard guard(g_store.get(),
-							    10000);
+		store::GraphStore::QueryDeadlineGuard guard(
+			engineContext().store.get(), 10000);
 		(void)guard;
 
 		int limit = (max_findings <= 0) ? kDefaultMaxFindings :
@@ -431,7 +434,7 @@ extern "C" char *engine_verify_integrity(uint64_t project_id, int max_findings)
 		json.key("findings").beginArray();
 
 		// Iterate capabilities -> CapabilityExists claims
-		auto caps = g_store->listCapabilities(project_id);
+		auto caps = engineContext().store->listCapabilities(project_id);
 		for (const auto &cap : caps) {
 			verify::Claim claim;
 			claim.type = verify::ClaimType::CapabilityExists;
@@ -441,8 +444,8 @@ extern "C" char *engine_verify_integrity(uint64_t project_id, int max_findings)
 			claim.source_kind = "capability";
 			claim.source_ref = std::to_string(cap.first);
 
-			auto v = makeVerifierForClaim(claim, g_store.get(),
-						      project_id);
+			auto v = makeVerifierForClaim(
+				claim, engineContext().store.get(), project_id);
 			if (!v)
 				continue;
 			auto rec = v->verify(claim);
@@ -464,9 +467,9 @@ extern "C" char *engine_verify_integrity(uint64_t project_id, int max_findings)
 			std::string desc = "Capability '" + cap.second + "' " +
 					   verify::verdictName(rec.verdict) +
 					   ": " + rec.detail;
-			g_store->insertFinding(project_id, "CapabilityVerifier",
-					       severity, 0, desc,
-					       rec.confidence);
+			engineContext().store->insertFinding(
+				project_id, "CapabilityVerifier", severity, 0,
+				desc, rec.confidence);
 			if (emitted < limit) {
 				++emitted;
 				json.beginObject();
@@ -479,7 +482,8 @@ extern "C" char *engine_verify_integrity(uint64_t project_id, int max_findings)
 
 		// Iterate contracts -> ContractHolds claims. ContractVerifier is
 		// registered, so makeVerifierForClaim returns a valid verifier instance.
-		auto contracts = g_store->listContracts(project_id);
+		auto contracts =
+			engineContext().store->listContracts(project_id);
 		for (const auto &ct : contracts) {
 			verify::Claim claim;
 			claim.type = verify::ClaimType::ContractHolds;
@@ -489,8 +493,8 @@ extern "C" char *engine_verify_integrity(uint64_t project_id, int max_findings)
 			claim.source_kind = "contract";
 			claim.source_ref = std::to_string(ct.first);
 
-			auto v = makeVerifierForClaim(claim, g_store.get(),
-						      project_id);
+			auto v = makeVerifierForClaim(
+				claim, engineContext().store.get(), project_id);
 			if (!v)
 				continue;
 			auto rec = v->verify(claim);
@@ -512,9 +516,10 @@ extern "C" char *engine_verify_integrity(uint64_t project_id, int max_findings)
 			std::string desc = "Contract '" + ct.second + "' " +
 					   verify::verdictName(rec.verdict) +
 					   ": " + rec.detail;
-			g_store->insertFinding(project_id, "ContractVerifier",
-					       severity, 0, desc,
-					       rec.confidence);
+			engineContext().store->insertFinding(project_id,
+							     "ContractVerifier",
+							     severity, 0, desc,
+							     rec.confidence);
 			if (emitted < limit) {
 				++emitted;
 				json.beginObject();
@@ -530,8 +535,8 @@ extern "C" char *engine_verify_integrity(uint64_t project_id, int max_findings)
 		// land inside the JSON array (previously they were appended
 		// after `],"total":N`, producing invalid JSON).
 		{
-			verify::DeadCodeInspector dci(g_store.get(),
-						      project_id);
+			verify::DeadCodeInspector dci(
+				engineContext().store.get(), project_id);
 			auto findings = dci.inspect();
 			for (auto &f : findings) {
 				// Orphan findings are informational, not a
@@ -613,7 +618,7 @@ extern "C" char *engine_verify_claim(uint64_t project_id,
 {
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!g_store)
+		if (!engineContext().store)
 			return dupString("{\"error\":\"not initialized\"}");
 		if (!claim_json || !*claim_json)
 			return dupString(
@@ -699,7 +704,7 @@ extern "C" char *engine_verify_summary(uint64_t project_id, const char *text)
 {
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!g_store)
+		if (!engineContext().store)
 			return dupString(
 				"{\"error\":\"not initialized "
 				"[module=ffi, method=engine_verify_summary]\"}");
@@ -717,12 +722,12 @@ extern "C" char *engine_verify_summary(uint64_t project_id, const char *text)
 		// Cross-reference AI claims against the actual codebase state.
 		// Each drift finding represents a mismatch between documentation
 		// (or AI summary) and the code.
-		auto doc_drifts =
-			verify::detectDocumentationDrift(*g_store, project_id);
-		auto cap_drifts =
-			verify::detectCapabilityDrift(*g_store, project_id);
-		auto arch_drifts =
-			verify::detectArchitectureDrift(*g_store, project_id);
+		auto doc_drifts = verify::detectDocumentationDrift(
+			*engineContext().store, project_id);
+		auto cap_drifts = verify::detectCapabilityDrift(
+			*engineContext().store, project_id);
+		auto arch_drifts = verify::detectArchitectureDrift(
+			*engineContext().store, project_id);
 		size_t total_drifts = doc_drifts.size() + cap_drifts.size() +
 				      arch_drifts.size();
 
@@ -830,10 +835,10 @@ extern "C" char *engine_get_verifier_registry_status(uint64_t project_id)
 		int64_t entity_count = 0;
 		int64_t relation_count = 0;
 		bool backend_ready = false;
-		if (g_store && project_id != 0) {
+		if (engineContext().store && project_id != 0) {
 			backend_ready = verify::evidence_backend_ready(
-				g_store.get(), project_id, &entity_count,
-				&relation_count);
+				engineContext().store.get(), project_id,
+				&entity_count, &relation_count);
 		}
 
 		util::JsonWriter j;

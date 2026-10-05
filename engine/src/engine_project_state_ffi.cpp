@@ -15,7 +15,7 @@
 //
 // Both functions return a heap-allocated JSON string that the caller
 // MUST release via engine_free_string(). On error, the returned JSON
-// object contains an "error" field. Null `g_store` returns
+// object contains an "error" field. Null `engineContext().store` returns
 //   {"error":"engine not initialized"}.
 
 #include "util/json_writer.h"
@@ -40,10 +40,10 @@ char *engine_build_project_state(uint64_t project_id)
 {
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!g_store)
+		if (!engineContext().store)
 			return dupString(
 				"{\"error\":\"engine not initialized\"}");
-		model::ProjectStateBuilder builder(g_store.get());
+		model::ProjectStateBuilder builder(engineContext().store.get());
 		if (!builder.build(project_id)) {
 			return dupString("{\"error\":\"failed to build project "
 					 "state\"}");
@@ -72,10 +72,10 @@ char *engine_get_project_state(uint64_t project_id)
 {
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!g_store)
+		if (!engineContext().store)
 			return dupString(
 				"{\"error\":\"engine not initialized\"}");
-		model::ProjectStateBuilder builder(g_store.get());
+		model::ProjectStateBuilder builder(engineContext().store.get());
 		std::string snapshot = builder.getSnapshotJson(project_id);
 		if (snapshot.empty()) {
 			return dupString(

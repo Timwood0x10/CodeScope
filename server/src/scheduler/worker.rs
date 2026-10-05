@@ -842,3 +842,82 @@ mod tests {
         );
     }
 }
+
+/// Property-based coverage of the `CODESCOPE_EXCLUDE_PATHS` escaping contract
+/// (REVIEW_0.2.7.md TEST-3 / code_rules §4).
+///
+/// `join_exclude_patterns` is the producer; `FilterPolicy::loadExcludeEnv`
+/// (engine/src/filter_policy_ignore.cpp) is the consumer and splits on every
+/// unescaped comma. The two are written in different languages, so the only
+/// thing that keeps them in sync is this round-trip property: a drift in
+/// either escaping silently stops a quarantined path from being excluded.
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Trim exactly what the C++ consumer trims around each pattern
+    /// (`find_first_not_of(" \t")`), dropping an all-whitespace entry.
+    fn push_trimmed(out: &mut Vec<String>, pat: &mut String) {
+        let trimmed = pat.trim_matches(|c| c == ' ' || c == '\t');
+        if !trimmed.is_empty() {
+            out.push(trimmed.to_string());
+        }
+        pat.clear();
+    }
+
+    /// Reference re-implementation of the C++ splitter: split on unescaped
+    /// commas, `\,` and `\\` unescape to the bare character, any other
+    /// backslash is literal.
+    fn split_like_cpp(raw: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut pat = String::new();
+        let chars: Vec<char> = raw.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            let ch = chars[i];
+            if ch == '\\' && i + 1 < chars.len() && (chars[i + 1] == ',' || chars[i + 1] == '\\') {
+                pat.push(chars[i + 1]);
+                i += 2;
+                continue;
+            }
+            if ch == ',' {
+                push_trimmed(&mut out, &mut pat);
+                i += 1;
+                continue;
+            }
+            pat.push(ch);
+            i += 1;
+        }
+        push_trimmed(&mut out, &mut pat);
+        out
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        #[test]
+        fn join_exclude_patterns_round_trips(
+            patterns in prop::collection::vec(any::<String>(), 0..8)
+        ) {
+            // The producer never trims and never emits an empty element, so
+            // normalise the generated input the same way before comparing.
+            let pats: Vec<String> = patterns
+                .iter()
+                .map(|p| p.trim_matches(|c| c == ' ' || c == '\t').to_string())
+                .filter(|p| !p.is_empty())
+                .collect();
+            prop_assert_eq!(split_like_cpp(&join_exclude_patterns(&pats)), pats);
+        }
+
+        /// A comma or backslash inside a pattern must survive the escape →
+        /// unescape round trip as itself.
+        #[test]
+        fn escape_exclude_pattern_is_lossless(pattern in any::<String>()) {
+            let p = pattern.trim_matches(|c| c == ' ' || c == '\t');
+            prop_assume!(!p.is_empty());
+            let escaped = escape_exclude_pattern(p);
+            prop_assert_eq!(split_like_cpp(&escaped), vec![p.to_string()]);
+        }
+    }
+}

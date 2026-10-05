@@ -534,7 +534,10 @@ mod tests {
     /// don't need data).
     fn make_test_db(suffix: &str, table_sql: &str) -> String {
         let pid = std::process::id();
-        let path = format!("/tmp/codescope_merge_test_{}_{}.db", pid, suffix);
+        let path = std::env::temp_dir()
+            .join(format!("codescope_merge_test_{pid}_{suffix}.db"))
+            .to_string_lossy()
+            .into_owned();
         let _ = std::fs::remove_file(&path);
         let sql = format!("CREATE TABLE t ({});", table_sql);
         let status = Command::new("sqlite3")
@@ -745,8 +748,14 @@ mod tests {
         // to the old CREATE TEMP TABLE + UPDATE approach. Guards against
         // silent precision loss when module i>0 ids collide with module 0.
         let pid = std::process::id();
-        let main = format!("/tmp/codescope_remap_test_{main}.db", main = pid);
-        let m1 = format!("/tmp/codescope_remap_test_{m1}_m1.db", m1 = pid);
+        let main = std::env::temp_dir()
+            .join(format!("codescope_remap_test_{pid}.db"))
+            .to_string_lossy()
+            .into_owned();
+        let m1 = std::env::temp_dir()
+            .join(format!("codescope_remap_test_{pid}_m1.db"))
+            .to_string_lossy()
+            .into_owned();
         let _ = std::fs::remove_file(&main);
         let _ = std::fs::remove_file(&m1);
 

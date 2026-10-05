@@ -14,7 +14,7 @@
 //      SQLITE_INTERRUPT; clearing the deadline restores normal operation.
 #include "../src/store/store.h"
 
-#include <cassert>
+#include "test_check.h"
 #include <cstdio>
 #include <cstring>
 #include <sqlite3.h>
@@ -35,11 +35,11 @@ static void insertGraphNode(GraphStore &store, uint64_t project_id, int64_t id,
 		"language, start_row, start_col, end_row, end_col) "
 		"VALUES (?,?,0,0,?,'','/test.cpp','cpp',0,0,0,0)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, id);
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 3, name, -1, SQLITE_TRANSIENT);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 	// Also insert into entity (graph_nodes is deprecated, buildFTSFromGraph
 	// now reads from entity).
@@ -82,10 +82,10 @@ int main()
 	unlink(kDbPath);
 
 	GraphStore store;
-	assert(store.open(kDbPath));
+	CHECK(store.open(kDbPath));
 
 	uint64_t project_id = store.createProject("/test", "test_trigram");
-	assert(project_id > 0);
+	CHECK(project_id > 0);
 
 	// ── 1. isTrigramAvailable before build ─────────────────────────
 	//
@@ -94,7 +94,7 @@ int main()
 	// isTrigramAvailable() must return false.
 	{
 		bool avail = store.isTrigramAvailable();
-		assert(!avail);
+		CHECK(!avail);
 		printf("  [PASS] isTrigramAvailable: false before buildFTSFromGraph\n");
 	}
 
@@ -112,7 +112,7 @@ int main()
 	{
 		store.buildFTSFromGraph(project_id);
 		bool avail = store.isTrigramAvailable();
-		assert(avail);
+		CHECK(avail);
 		printf("  [PASS] isTrigramAvailable: true after buildFTSFromGraph\n");
 	}
 
@@ -125,8 +125,8 @@ int main()
 	{
 		std::string json =
 			store.searchGraphFallback(project_id, "gerFa", 20);
-		assert(jsonContains(json, "LoggerFactory"));
-		assert(!jsonContains(json, "UserFactory"));
+		CHECK(jsonContains(json, "LoggerFactory"));
+		CHECK(!jsonContains(json, "UserFactory"));
 		printf("  [PASS] searchGraphFallback: 'gerFa' -> LoggerFactory\n");
 	}
 
@@ -135,8 +135,8 @@ int main()
 	{
 		std::string json =
 			store.searchGraphFallback(project_id, "ory", 20);
-		assert(jsonContains(json, "LoggerFactory"));
-		assert(jsonContains(json, "UserFactory"));
+		CHECK(jsonContains(json, "LoggerFactory"));
+		CHECK(jsonContains(json, "UserFactory"));
 		printf("  [PASS] searchGraphFallback: 'ory' -> LoggerFactory + UserFactory\n");
 	}
 
@@ -150,8 +150,8 @@ int main()
 	{
 		std::string json =
 			store.searchGraphFallback(project_id, "ab", 20);
-		assert(jsonContains(json, "\"note\""));
-		assert(jsonContains(json, "AbstractHandler"));
+		CHECK(jsonContains(json, "\"note\""));
+		CHECK(jsonContains(json, "AbstractHandler"));
 		printf("  [PASS] searchGraphFallback: 'ab' (short) -> LIKE fallback + note\n");
 	}
 
@@ -164,7 +164,7 @@ int main()
 	{
 		std::string json =
 			store.searchUnifiedJson(project_id, "Factory", 20);
-		assert(jsonContains(json, "LoggerFactory") ||
+		CHECK(jsonContains(json, "LoggerFactory") ||
 		       jsonContains(json, "UserFactory"));
 		printf("  [PASS] searchUnifiedJson: 'Factory' -> results\n");
 	}
@@ -184,7 +184,7 @@ int main()
 	{
 		// Bulk-insert 50000 nodes in a single transaction for speed.
 		constexpr int kBulkNodeCount = 50000;
-		assert(store.exec("BEGIN"));
+		CHECK(store.exec("BEGIN"));
 		sqlite3 *db = store.handle();
 		const char *sql =
 			"INSERT INTO graph_nodes (id, project_id, ir_node_id, "
@@ -192,7 +192,7 @@ int main()
 			"language, start_row, start_col, end_row, end_col) "
 			"VALUES (?,?,0,0,?,'','/bulk.cpp','cpp',0,0,0,0)";
 		sqlite3_stmt *stmt = nullptr;
-		assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
+		CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
 		       SQLITE_OK);
 		// Start IDs at 1000 to avoid collision with the 4 nodes above.
 		const int64_t kIdOffset = 1000;
@@ -206,11 +206,11 @@ int main()
 			sqlite3_bind_text(stmt, 3, name_buf, -1,
 					  SQLITE_TRANSIENT);
 			int rc = sqlite3_step(stmt);
-			assert(rc == SQLITE_DONE);
+			CHECK(rc == SQLITE_DONE);
 			sqlite3_reset(stmt);
 		}
 		sqlite3_finalize(stmt);
-		assert(store.exec("COMMIT"));
+		CHECK(store.exec("COMMIT"));
 
 		// Arm a 1ms deadline, then sleep 2ms so the deadline is
 		// definitely in the past when the query starts. The progress
@@ -226,14 +226,14 @@ int main()
 			"SELECT COUNT(*) FROM graph_nodes WHERE project_id=" +
 			std::to_string(project_id) + " AND name LIKE '%zzzzz%'";
 		bool ok = store.exec(slow_sql.c_str());
-		assert(!ok); // must fail (interrupted)
-		assert(containsCI(store.error(), "interrupt"));
+		CHECK(!ok); // must fail (interrupted)
+		CHECK(containsCI(store.error(), "interrupt"));
 		printf("  [PASS] setQueryDeadline(1ms): query interrupted\n");
 
 		// Clear the deadline and verify the same query succeeds.
 		store.clearQueryDeadline();
 		bool ok2 = store.exec(slow_sql.c_str());
-		assert(ok2); // must succeed now
+		CHECK(ok2); // must succeed now
 		printf("  [PASS] clearQueryDeadline: query succeeds again\n");
 
 		// Verify searchGraphFallback works normally after clearing
@@ -244,7 +244,7 @@ int main()
 		// into graph_nodes for the LIKE-scan timeout test above).
 		std::string json =
 			store.searchGraphFallback(project_id, "Factory", 10);
-		assert(jsonContains(json, "LoggerFactory") ||
+		CHECK(jsonContains(json, "LoggerFactory") ||
 		       jsonContains(json, "UserFactory"));
 		printf("  [PASS] searchGraphFallback normal after deadline cleared\n");
 	}
@@ -253,5 +253,5 @@ int main()
 	unlink(kDbPath);
 
 	printf("=== Trigram search test passed ===\n");
-	return 0;
+	return checkFailures() ? 1 : 0;
 }

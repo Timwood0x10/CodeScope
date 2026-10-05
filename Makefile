@@ -182,14 +182,11 @@ TEST_EXES := $(filter-out $(TEST_EXCLUDES), \
 
 test-engine: $(ENGINE_LIB)
 	@printf "$(CYAN)[test/engine]$(RESET) Building and running C++ tests...\n"
-	@# Many tests use assert(), which -DNDEBUG compiles out. A build dir
-	@# configured as Release/RelWithDebInfo therefore runs them vacuously.
-	@# CI configures engine/build-tests with CMAKE_BUILD_TYPE=Debug, so warn
-	@# here instead of silently reporting false confidence.
-	@if grep -qE "^CMAKE_BUILD_TYPE:STRING=(Release|RelWithDebInfo|MinSizeRel)$$" $(BUILD_DIR)/CMakeCache.txt 2>/dev/null; then \
-		printf "  $(YELLOW)WARNING$(RESET) $(BUILD_DIR) is not a Debug build; assert() is compiled out and assert-based tests are vacuous.\n"; \
-		printf "          Reconfigure with: rm -rf $(BUILD_DIR) && make build-engine\n"; \
-	fi
+	@# code_rules §4 / REVIEW_0.2.7 TEST-3: engine tests use CHECK() from
+	@# engine/tests/test_check.h, never assert(). CHECK() is always evaluated
+	@# (NDEBUG cannot compile it out) and a recorded failure makes the test
+	@# binary exit non-zero, so the build type no longer decides whether a
+	@# test actually checks anything.
 	@rm -f $(TEST_DB) $(TEST_DB)-wal $(TEST_DB)-shm
 	@rm -f /tmp/test_*.db /tmp/test_*.db-wal /tmp/test_*.db-shm 2>/dev/null || true
 	@rm -f /tmp/codescope_test_*.db /tmp/codescope_test_*.db-wal /tmp/codescope_test_*.db-shm 2>/dev/null || true

@@ -35,7 +35,7 @@ char *engine_scan_project(uint64_t project_id, const char *dir_path,
 {
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!g_store)
+		if (!engineContext().store)
 			return dupString(
 				"{\"error\":\"engine not initialized\"}");
 		(void)language_filter;

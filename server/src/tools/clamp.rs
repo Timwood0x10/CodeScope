@@ -224,3 +224,71 @@ mod tests {
         );
     }
 }
+
+/// Property-based coverage of the clamping contract (REVIEW_0.2.7.md TEST-3 /
+/// code_rules §4: "Property-based testing where appropriate").
+///
+/// The literals above pin a few interesting values; these properties hold for
+/// EVERY `i64`. The class of bug they guard is the one the module exists for:
+/// a client value large enough that `value as i32` truncates to a negative or
+/// out-of-contract number, which then reaches the engine unclamped.
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// (name, clamp fn, minimum, maximum, default-for-absent-argument)
+    type ClampCase = (&'static str, fn(Option<i64>) -> i32, i64, i64, i64);
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        /// `depth` takes a per-caller default, so it is exercised separately.
+        #[test]
+        fn clamp_depth_is_exactly_i64_clamp(value in any::<i64>(), default in any::<i64>()) {
+            let got = clamp_depth(Some(value), default);
+            prop_assert_eq!(got, value.clamp(1, MAX_TRAVERSAL_DEPTH) as i32);
+            prop_assert!((1..=MAX_TRAVERSAL_DEPTH as i32).contains(&got));
+            // An absent argument is clamped too, not passed through raw.
+            prop_assert_eq!(clamp_depth(None, default), default.clamp(1, MAX_TRAVERSAL_DEPTH) as i32);
+        }
+
+        /// Inside the contract range the value must be preserved exactly.
+        #[test]
+        fn clamp_depth_is_identity_inside_the_range(value in 1i64..=MAX_TRAVERSAL_DEPTH) {
+            prop_assert_eq!(clamp_depth(Some(value), 1), value as i32);
+        }
+
+        /// Every fixed-range clamp: the result equals `i64::clamp` (i.e. no
+        /// `as i32` truncation), stays inside the documented bounds, and the
+        /// absent-argument path clamps its default rather than trusting it.
+        #[test]
+        fn fixed_range_clamps_never_truncate(value in any::<i64>()) {
+            let cases: [ClampCase; 6] = [
+                ("radius", clamp_radius, 1, MAX_NEIGHBOR_RADIUS, 1),
+                ("edge_type", clamp_edge_type, MIN_EDGE_TYPE_FILTER, MAX_EDGE_TYPE_FILTER, MIN_EDGE_TYPE_FILTER),
+                ("knowledge_limit", clamp_knowledge_limit, 0, MAX_KNOWLEDGE_GRAPH_LIMIT, MAX_QUERY_LIMIT),
+                ("max_communities", clamp_max_communities, 1, MAX_MAX_COMMUNITIES, DEFAULT_MAX_COMMUNITIES),
+                ("max_members", clamp_max_members, 1, MAX_MAX_MEMBERS, DEFAULT_MAX_MEMBERS),
+                ("findings_limit", clamp_findings_limit, 1, MAX_FINDINGS_LIMIT, DEFAULT_MAX_FINDINGS),
+            ];
+            for (name, clamp_fn, lo, hi, default) in cases {
+                let got = clamp_fn(Some(value));
+                prop_assert_eq!(
+                    got,
+                    value.clamp(lo, hi) as i32,
+                    "{}: input {} did not clamp to i64::clamp", name, value
+                );
+                prop_assert!(
+                    (lo as i32..=hi as i32).contains(&got),
+                    "{}: {} is outside [{}, {}]", name, got, lo, hi
+                );
+                prop_assert_eq!(
+                    clamp_fn(None),
+                    default.clamp(lo, hi) as i32,
+                    "{}: absent-argument default was not clamped", name
+                );
+            }
+        }
+    }
+}

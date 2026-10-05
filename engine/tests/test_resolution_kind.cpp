@@ -20,7 +20,7 @@
 
 #include <sqlite3.h>
 
-#include <cassert>
+#include "test_check.h"
 #include <cstdio>
 #include <string>
 #include <unistd.h>
@@ -42,14 +42,14 @@ static void insertEntity(store::GraphStore &store, uint64_t project_id,
 			  "start_col, end_row, end_col) "
 			  "VALUES (?,?,0,?,?,?,?,0,0,0,0)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, id);
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 3, name, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 4, qualified_name, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 5, file_path, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 6, language, -1, SQLITE_TRANSIENT);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -67,11 +67,11 @@ static void insertInterfaceImpl(store::GraphStore &store, uint64_t project_id,
 		"name, type_name, file_path) "
 		"VALUES (?,1,20,?,?,'/fixture/iface_impl')";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 2, impl, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 3, iface, -1, SQLITE_TRANSIENT);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -87,14 +87,14 @@ static void insertReference(store::GraphStore &store, uint64_t project_id,
 			  "receiver_type, call_site_file, qualified_target) "
 			  "VALUES (?,?,?,0,0,0,0,?,?,?)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_int64(stmt, 2, caller_id);
 	sqlite3_bind_text(stmt, 3, name, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 4, receiver_type, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 5, "/src/app/main.cpp", -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 6, qualified_target, -1, SQLITE_TRANSIENT);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -107,7 +107,7 @@ static bool callEdgeTo(store::GraphStore &store, uint64_t project_id,
 	const char *sql = "SELECT resolution_kind, reason FROM relation "
 			  "WHERE project_id=? AND type=1 AND target_id=?";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_int64(stmt, 2, target_id);
 	bool found = false;
@@ -135,7 +135,7 @@ int main()
 		return 1;
 	}
 	uint64_t pid = store.createProject("/test", "test_resolution_kind");
-	assert(pid > 0);
+	CHECK(pid > 0);
 
 	// ── Case A: receiver evidence is present but does NOT decide ──
 	// Caller and candidate 2 share a directory (namespace/module evidence),
@@ -182,7 +182,7 @@ int main()
 	// ReceiverMatch is the one factor the audits care most about, and whether
 	// it can ever be the largest contributor in a real fixture depends on the
 	// weights, so its mapping is asserted directly.
-	assert(resolutionKindFromFactor("ReceiverMatch") == "receiver_type");
+	CHECK(resolutionKindFromFactor("ReceiverMatch") == "receiver_type");
 
 	ResolverPipeline pipe(&store, pid);
 	int64_t resolved = pipe.run();
@@ -191,7 +191,7 @@ int main()
 	// case abstained instead of only that something did.
 	{
 		sqlite3_stmt *st = nullptr;
-		assert(sqlite3_prepare_v2(
+		CHECK(sqlite3_prepare_v2(
 			       store.handle(),
 			       "SELECT target_id, confidence, "
 			       "resolution_kind, reason FROM relation "
@@ -209,7 +209,7 @@ int main()
 		}
 		sqlite3_finalize(st);
 	}
-	assert(resolved >= 2);
+	CHECK(resolved >= 2);
 
 	// ── Case A assertions ─────────────────────────────────────────
 	std::string kind_a;
@@ -224,9 +224,9 @@ int main()
 	       reason_a.c_str());
 	// The regression: this edge used to be labelled `receiver_type` purely
 	// because the reference's receiver_type field was non-empty.
-	assert(kind_a != "receiver_type");
+	CHECK(kind_a != "receiver_type");
 	// The label must name the evidence that decided it.
-	assert(reason_a.find("decided_by=") != std::string::npos);
+	CHECK(reason_a.find("decided_by=") != std::string::npos);
 
 	// ── Case B assertions ─────────────────────────────────────────
 	std::string kind_b;
@@ -239,8 +239,8 @@ int main()
 	}
 	printf("Case B: target=4 kind=%s reason=%s\n", kind_b.c_str(),
 	       reason_b.c_str());
-	assert(kind_b != "qualified");
-	assert(reason_b.find("decided_by=") != std::string::npos);
+	CHECK(kind_b != "qualified");
+	CHECK(reason_b.find("decided_by=") != std::string::npos);
 
 	// ── Case D assertions ─────────────────────────────────────────
 	std::string kind_d;
@@ -254,7 +254,7 @@ int main()
 	       reason_d.c_str());
 	// The name matched by prefix, so "exact_local" would be a claim the match
 	// never earned.
-	assert(kind_d == "fuzzy_local");
+	CHECK(kind_d == "fuzzy_local");
 
 	// ── Case E assertions ─────────────────────────────────────────
 	std::string kind_e;
@@ -266,14 +266,14 @@ int main()
 	}
 	printf("Case E: target=7 kind=%s reason=%s\n", kind_e.c_str(),
 	       reason_e.c_str());
-	assert(kind_e == "dispatch");
+	CHECK(kind_e == "dispatch");
 	// The Python implementation must not be a target of a C++ call site.
 	std::string kind_py;
 	std::string reason_py;
-	assert(!callEdgeTo(store, pid, 8, kind_py, reason_py));
+	CHECK(!callEdgeTo(store, pid, 8, kind_py, reason_py));
 
 	store.close();
 	unlink(kDbPath);
 	printf("=== test_resolution_kind PASSED ===\n");
-	return 0;
+	return checkFailures() ? 1 : 0;
 }

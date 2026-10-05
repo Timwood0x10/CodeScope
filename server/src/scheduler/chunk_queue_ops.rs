@@ -352,6 +352,6 @@ impl ChunkQueue {
 
     /// Filesystem path backing this shm segment.
     pub fn path(&self) -> &str {
-        &self.path
+        self.map.path()
     }
 }

@@ -1,37 +1,33 @@
-//! Shared-memory infrastructure for dynamic CPU scheduling.
+//! Shared state for dynamic CPU scheduling.
 //!
-//! `SchedState` is a `#[repr(C)]` struct stored in a POSIX shared-memory
-//! file (`/tmp/codescope_sched_<pid>.shm`) mapped `MAP_SHARED` so the
-//! scheduler process and worker subprocesses observe the same atomic
-//! counters. Workers claim cores from a shared pool at startup and
-//! release them on completion; the scheduler polls `generation` to
-//! dispatch queued workers when cores become available.
+//! `SchedState` is a `#[repr(C)]` struct stored in a shared file
+//! (`<temp>/codescope_sched_<pid>.shm`) mapped writable and shared by
+//! [`super::mapped_file::MappedFile`], so the scheduler process and worker
+//! subprocesses observe the same atomic counters. Workers claim cores from a
+//! shared pool at startup and release them on completion; the scheduler polls
+//! `generation` to dispatch queued workers when cores become available.
 //!
 //! All mutable fields are `AtomicU32` and use `Ordering::Relaxed` —
 //! we only need cross-core visibility, not strict acquire/release
 //! ordering (the scheduler re-reads state in a poll loop anyway).
 //!
-//! Owner (scheduler) creates the file via [`SchedShm::create`] and is
-//! responsible for unlinking it on shutdown (handled in `Drop`). Workers
-//! attach via [`SchedShm::open`] and only munmap on drop.
+//! Owner (scheduler) creates the file via [`SchedShm::create`]; unmapping,
+//! closing and removing it are `MappedFile`'s `Drop`. Workers attach via
+//! [`SchedShm::open`] and only unmap. The mapping layer is platform-neutral,
+//! so this module builds and works on Windows as well as POSIX.
 
 // Worker-side helpers (open/register_worker/mark_done/set_worker_cores/
 // can_grab/poll_interval_ms/path) and the status constants they reference
 // are kept for the engine's monitor-thread implementation (see
-// engine/src/engine_index_project.cpp) — the engine reads the shm directly
-// via mmap, so these Rust helpers remain unused by the scheduler itself.
+// engine/src/engine_index_project.cpp) — on POSIX the engine reads the same
+// file directly via mmap, so these Rust helpers remain unused by the
+// scheduler itself. (`engine_index_sched.cpp` compiles that reader out on
+// Windows, where the engine instead runs its own in-process scheduler.)
 #![allow(dead_code)]
 
-use std::ffi::CString;
-use std::os::unix::io::RawFd;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use libc::{
-    MAP_SHARED, O_CREAT, O_RDWR, PROT_READ, PROT_WRITE, S_IRUSR, S_IWUSR, c_void, close, ftruncate,
-    mmap, munmap, open, unlink,
-};
-#[cfg(windows)]
-const MAP_FAILED: *mut libc::c_void = !0 as *mut libc::c_void;
+use super::mapped_file::MappedFile;
 
 /// Magic number stored in [`SchedState::magic`] — ASCII "SCHD" in
 /// little-endian. Workers check this on attach to verify the scheduler
@@ -98,114 +94,54 @@ pub struct SchedState {
     pub worker_cores: [AtomicU32; 64],
 }
 
-/// RAII wrapper around a `mmap`'d [`SchedState`].
+/// RAII wrapper around a mapped [`SchedState`].
 ///
 /// The owner (scheduler) creates the file via [`SchedShm::create`] and
-/// unlinks it on `Drop`. Workers attach via [`SchedShm::open`] and
-/// only `munmap` on drop — they do not unlink.
+/// [`MappedFile`]'s `Drop` removes it. Workers attach via [`SchedShm::open`]
+/// and only unmap — they do not remove the file.
 pub struct SchedShm {
-    path: String,
-    fd: RawFd,
+    map: MappedFile,
     ptr: *mut SchedState,
-    is_owner: bool,
 }
 
 // Manual Debug impl — needed because `*mut SchedState` is a raw pointer
 // and does not auto-derive Debug. Tests use `Result<SchedShm, _>::unwrap_err()`
-// which requires `SchedShm: Debug`. We only emit the path + fd so we don't
-// leak the mmap address in logs.
+// which requires `SchedShm: Debug`. We only emit the path and ownership so we
+// don't leak the mapping address in logs.
 impl std::fmt::Debug for SchedShm {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SchedShm")
-            .field("path", &self.path)
-            .field("fd", &self.fd)
-            .field("is_owner", &self.is_owner)
+            .field("path", &self.map.path())
+            .field("is_owner", &self.map.is_owner())
             .finish_non_exhaustive()
     }
 }
 
 impl SchedShm {
-    /// Scheduler creates a new shared-memory file and initialises [`SchedState`].
+    /// Scheduler creates a new shared file and initialises [`SchedState`].
     ///
-    /// `path` — file path, typically `/tmp/codescope_sched_<pid>.shm`.
+    /// `path` — file path inside the temp directory, typically
+    /// `<temp>/codescope_sched_<pid>.shm` (see
+    /// [`super::dyn_config::DynamicConfig::default_shm_path`]).
     /// `total_cores` — total CPU budget workers can claim from.
     /// `mem_limit_mb` — RSS ceiling; [`SchedShm::can_grab`] returns false
     /// when `current_mem_mb` exceeds this.
     ///
-    /// Returns `Err` with a tagged message if `open`, `ftruncate`, or
-    /// `mmap` fails. On success the file is sized to `size_of::<SchedState>()`
-    /// and all fields are initialised before returning.
+    /// Returns `Err` with a tagged message if the file cannot be opened, sized
+    /// or mapped. On success the file is exactly `size_of::<SchedState>()`
+    /// bytes, all zero, and every field is initialised before returning.
     pub fn create(path: &str, total_cores: u32, mem_limit_mb: u32) -> Result<Self, String> {
-        let c_path = CString::new(path).map_err(|e| {
-            format!(
-                "path contains NUL byte: {} [module=scheduler, method=SchedShm::create]",
-                e
-            )
-        })?;
-
-        // SAFETY: c_path is a valid NUL-terminated CString; O_CREAT|O_RDWR
-        // creates the file if absent, mode 0600 restricts read/write to owner.
-        // Cast mode bits to c_int — on macOS S_IRUSR|S_IWUSR are u16, but
-        // libc::open's variadic mode arg is c_int (see open(2)).
-        let fd = unsafe {
-            open(
-                c_path.as_ptr(),
-                O_CREAT | O_RDWR,
-                (S_IRUSR | S_IWUSR) as libc::c_int,
-            )
-        };
-        if fd < 0 {
-            return Err(format!(
-                "open failed: {} [module=scheduler, method=SchedShm::create, path={}]",
-                std::io::Error::last_os_error(),
-                path,
-            ));
-        }
-
         let size = std::mem::size_of::<SchedState>();
-        // SAFETY: fd is a valid open descriptor. ftruncate sizes the file
-        // to exactly `size` bytes; cast to i64 is safe because the struct
-        // is ~584 bytes, well within off_t range.
-        if unsafe { ftruncate(fd, size as i64) } != 0 {
-            let err = std::io::Error::last_os_error();
-            // SAFETY: fd is a valid open descriptor; close it to leak no fd.
-            unsafe { close(fd) };
-            return Err(format!(
-                "ftruncate failed: {} [module=scheduler, method=SchedShm::create]",
-                err
-            ));
-        }
+        // The mapping layer sizes the file to `size` and zero-fills it, so every
+        // field starts as 0 and only the non-zero defaults need writing.
+        let map = MappedFile::create(path, size, "SchedShm::create")?;
 
-        // SAFETY: fd is valid and points to a file we just sized to `size`.
-        // MAP_SHARED makes writes visible to other processes that map the
-        // same file. PROT_READ|PROT_WRITE allows atomic counter updates.
-        let ptr = unsafe {
-            mmap(
-                std::ptr::null_mut(),
-                size,
-                PROT_READ | PROT_WRITE,
-                MAP_SHARED,
-                fd,
-                0,
-            )
-        };
-        if ptr == libc::MAP_FAILED {
-            let err = std::io::Error::last_os_error();
-            // SAFETY: fd is a valid open descriptor; close it to leak no fd.
-            unsafe { close(fd) };
-            return Err(format!(
-                "mmap failed: {} [module=scheduler, method=SchedShm::create]",
-                err
-            ));
-        }
-
-        // SAFETY: ptr is a valid, properly-aligned pointer to memory
-        // returned by mmap and sized to size_of::<SchedState>(). The
-        // file was just created/truncated, so the bytes are zero. No
-        // other process has opened this file yet (caller's responsibility
-        // to call create() before spawning workers), so exclusive mutable
-        // access here is safe.
-        let state = unsafe { &mut *(ptr as *mut SchedState) };
+        // SAFETY: `map` is a valid, properly-aligned, all-zero view of
+        // `size_of::<SchedState>()` bytes, and no worker can have opened the
+        // file yet (callers create the segment before spawning workers), so
+        // this exclusive mutable borrow is sound.
+        let ptr = map.ptr() as *mut SchedState;
+        let state = unsafe { &mut *ptr };
         state.magic = MAGIC;
         state.version = VERSION;
         state.total_cores.store(total_cores, Ordering::Relaxed);
@@ -224,12 +160,7 @@ impl SchedShm {
             slot.store(0, Ordering::Relaxed);
         }
 
-        Ok(Self {
-            path: path.to_string(),
-            fd,
-            ptr: ptr as *mut SchedState,
-            is_owner: true,
-        })
+        Ok(Self { map, ptr })
     }
 
     /// Set the aggressive polling flag (1=aggressive 50ms, 0=normal 100ms).
@@ -253,60 +184,21 @@ impl SchedShm {
     /// segment before the worker attached. Returns `Err` with a tagged
     /// message if `open`, `mmap`, or the magic check fails.
     pub fn open(path: &str) -> Result<Self, String> {
-        let c_path = CString::new(path).map_err(|e| {
-            format!(
-                "path contains NUL byte: {} [module=scheduler, method=SchedShm::open]",
-                e
-            )
-        })?;
-
-        // SAFETY: c_path is valid NUL-terminated; O_RDWR (no O_CREAT) —
-        // workers don't create the file, the scheduler must have done so.
-        let fd = unsafe { open(c_path.as_ptr(), O_RDWR) };
-        if fd < 0 {
-            return Err(format!(
-                "open failed: {} [module=scheduler, method=SchedShm::open, path={}]",
-                std::io::Error::last_os_error(),
-                path,
-            ));
-        }
-
         let size = std::mem::size_of::<SchedState>();
-        // SAFETY: fd is valid; the file was created and sized by
-        // SchedShm::create, so the mapping fits the file exactly.
-        let ptr = unsafe {
-            mmap(
-                std::ptr::null_mut(),
-                size,
-                PROT_READ | PROT_WRITE,
-                MAP_SHARED,
-                fd,
-                0,
-            )
-        };
-        if ptr == libc::MAP_FAILED {
-            let err = std::io::Error::last_os_error();
-            // SAFETY: fd is a valid open descriptor; close it to leak no fd.
-            unsafe { close(fd) };
-            return Err(format!(
-                "mmap failed: {} [module=scheduler, method=SchedShm::open]",
-                err
-            ));
-        }
+        // The owner created this file with the same size, so the mapping fits
+        // the segment exactly.
+        let map = MappedFile::open(path, size, "SchedShm::open")?;
 
-        // SAFETY: ptr is valid SchedState-aligned memory returned by mmap.
-        // We only read `magic` here (a non-atomic u32); the scheduler
-        // writes it once in create() before any worker opens the file,
-        // so the read is race-free.
-        let state = unsafe { &*(ptr as *const SchedState) };
-        // Cache the magic into a local BEFORE any munmap — reading through
-        // `state` after `munmap(ptr, size)` would be use-after-unmap.
+        // SAFETY: `map` is a valid, properly-aligned view of `size_of::<
+        // SchedState>()` bytes. We only read `magic` here; the scheduler wrote
+        // it once in create() before any worker attached, so the read is
+        // race-free.
+        let ptr = map.ptr() as *mut SchedState;
+        let state = unsafe { &*ptr };
         let observed_magic = state.magic;
         if observed_magic != MAGIC {
-            // SAFETY: ptr was returned by mmap with `size` bytes; unmap it.
-            unsafe { munmap(ptr, size) };
-            // SAFETY: fd is a valid open descriptor; close it to leak no fd.
-            unsafe { close(fd) };
+            // Dropping `map` unmaps and closes the segment; removing the file
+            // is the owner's job, so this error path leaks nothing.
             return Err(format!(
                 "magic mismatch: 0x{:08x} (expected 0x{:08x}) \
                  [module=scheduler, method=SchedShm::open]",
@@ -314,12 +206,7 @@ impl SchedShm {
             ));
         }
 
-        Ok(Self {
-            path: path.to_string(),
-            fd,
-            ptr: ptr as *mut SchedState,
-            is_owner: false,
-        })
+        Ok(Self { map, ptr })
     }
 
     /// Atomically claim up to `max_want` cores from the shared pool.
@@ -491,52 +378,10 @@ impl SchedShm {
     /// The scheduler uses this to pass `CODESCOPE_SCHED_SHM=<path>` to
     /// worker subprocesses so they can attach via [`SchedShm::open`].
     pub fn path(&self) -> &str {
-        &self.path
+        self.map.path()
     }
 }
 
-impl Drop for SchedShm {
-    fn drop(&mut self) {
-        let size = std::mem::size_of::<SchedState>();
-        if !self.ptr.is_null() {
-            // SAFETY: self.ptr was returned by mmap with `size` bytes and
-            // has not been unmapped yet (Drop runs once per instance).
-            unsafe {
-                munmap(self.ptr as *mut c_void, size);
-            }
-        }
-        if self.fd >= 0 {
-            // SAFETY: self.fd is a valid open descriptor (or already closed,
-            // in which case close returns EBADF — harmless and ignored).
-            unsafe {
-                close(self.fd);
-            }
-        }
-        // Only the scheduler (owner) unlinks the file. Workers just
-        // munmap+close — the inode persists until the scheduler unlinks,
-        // and any in-flight mmap references stay valid (POSIX semantics).
-        if self.is_owner
-            && let Ok(c_path) = CString::new(self.path.clone())
-        {
-            // SAFETY: c_path is a valid NUL-terminated CString. unlink
-            // removes the directory entry; existing mmap references
-            // remain valid until munmap (POSIX shared memory semantics).
-            unsafe {
-                unlink(c_path.as_ptr());
-            }
-        }
-    }
-}
-
-// SAFETY: SchedShm is Send because:
-// - `ptr` points to mmap'd memory (MAP_SHARED) that is process-global;
-//   moving the Rust handle across threads does not affect the underlying
-//   memory or its visibility to other processes.
-// - `fd` (RawFd = i32), `path` (String), and `is_owner` (bool) are all
-//   Send by default.
-// Moving SchedShm to another thread grants no exclusive access to the
-// shared state — the thread still observes the same atomic-updated
-// SchedState that all processes/threads see.
 unsafe impl Send for SchedShm {}
 
 // SAFETY: SchedShm is Sync because:
@@ -552,7 +397,7 @@ unsafe impl Send for SchedShm {}
 //   read-only afterwards. `create()` completes before the
 //   `SchedShm` is shared with worker threads (caller's responsibility),
 //   so there are no concurrent reads during the writes.
-// - `fd` and `is_owner` are only accessed in `Drop`, which takes
+// - `map` (the `MappedFile`) is only touched by `Drop`, which takes
 //   `&mut self` (exclusive access) — no concurrent access is possible.
 unsafe impl Sync for SchedShm {}
 
@@ -562,10 +407,12 @@ mod tests {
     use std::sync::atomic::AtomicU64;
 
     /// Monotonic counter appended to test paths so parallel test
-    /// processes never collide on the same /tmp file.
+    /// processes never collide on the same temp file.
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-    /// Build a unique /tmp path for one test invocation.
+    /// Build a unique path in the platform temp directory for one test
+    /// invocation. `temp_dir()` rather than a hardcoded `/tmp` because this
+    /// suite also runs on Windows hosts, where `/tmp` does not exist.
     fn unique_path() -> String {
         let pid = std::process::id();
         let nanos = std::time::SystemTime::now()
@@ -573,10 +420,10 @@ mod tests {
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(0);
         let counter = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
-        format!(
-            "/tmp/codescope_sched_test_{}_{}_{}.shm",
-            pid, nanos, counter
-        )
+        std::env::temp_dir()
+            .join(format!("codescope_sched_test_{pid}_{nanos}_{counter}.shm"))
+            .to_string_lossy()
+            .into_owned()
     }
 
     /// Read `available_cores` directly from the shared state. Used by

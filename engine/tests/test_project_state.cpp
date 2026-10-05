@@ -24,7 +24,7 @@
 #include "../src/model/state_builder.h"
 #include "../src/store/store.h"
 
-#include <cassert>
+#include "test_check.h"
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -49,12 +49,12 @@ static void insertFunction(GraphStore &store, uint64_t project_id, int64_t id,
 		"start_row, start_col, end_row, end_col) "
 		"VALUES (?,?,0,0,?,'',?,'go',1,0,1000,0)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, id);
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 3, name, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 4, file_path, -1, SQLITE_TRANSIENT);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -73,7 +73,7 @@ static void insertFact(GraphStore &store, uint64_t project_id,
 		" symbol, confidence, detail_json) "
 		"VALUES (?,?,?,?,?,?,?,?)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(function_id));
 	sqlite3_bind_text(stmt, 3, category, -1, SQLITE_TRANSIENT);
@@ -85,7 +85,7 @@ static void insertFact(GraphStore &store, uint64_t project_id,
 		sqlite3_bind_text(stmt, 8, detail_json, -1, SQLITE_TRANSIENT);
 	else
 		sqlite3_bind_null(stmt, 8);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -98,11 +98,11 @@ static void insertCapabilityState(GraphStore &store, uint64_t project_id,
 			  "(project_id, name, state, entities, evidence) "
 			  "VALUES (?,?,?,'[]','[]')";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 2, name, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 3, state, -1, SQLITE_TRANSIENT);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -116,13 +116,13 @@ static void insertArchitectureState(GraphStore &store, uint64_t project_id,
 		"(project_id, layer, violations, compliance, evidence) "
 		"VALUES (?,?,?,?, '[]')";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 2, layer, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int(stmt, 3, violations);
 	double compliance = (violations > 0) ? 0.0 : 1.0;
 	sqlite3_bind_double(stmt, 4, compliance);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -170,7 +170,7 @@ static int countProjectStateRows(GraphStore &store, uint64_t project_id)
 	const char *sql =
 		"SELECT COUNT(*) FROM project_state WHERE project_id=?";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	int count = 0;
 	if (sqlite3_step(stmt) == SQLITE_ROW)
@@ -187,7 +187,7 @@ static double readPersistedConfidence(GraphStore &store, uint64_t project_id)
 	const char *sql =
 		"SELECT confidence FROM project_state WHERE project_id=?";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	double out = -1.0;
 	if (sqlite3_step(stmt) == SQLITE_ROW)
@@ -203,7 +203,7 @@ static std::string readPersistedSnapshot(GraphStore &store, uint64_t project_id)
 	const char *sql =
 		"SELECT snapshot_json FROM project_state WHERE project_id=?";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	std::string out;
 	if (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -227,11 +227,11 @@ static void insertArchEdge(GraphStore &store, uint64_t project_id,
 		"(project_id, caller_module, callee_module, entity_id) "
 		"VALUES (?,?,?,1)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 2, caller_module, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 3, callee_module, -1, SQLITE_TRANSIENT);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -253,7 +253,7 @@ static ArchAgg readArchAgg(GraphStore &store, uint64_t project_id)
 			  "       COALESCE(MIN(compliance), 1.0) "
 			  "FROM architecture_state WHERE project_id=?";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	ArchAgg agg;
 	if (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -287,7 +287,7 @@ int main()
 		return 1;
 	}
 	uint64_t pid = store.createProject("/tmp", "test_project_state");
-	assert(pid > 0);
+	CHECK(pid > 0);
 
 	// ── Insert graph_node functions (semantic_fact.function_id FK)
 	insertFunction(store, pid, 100, "AcquireLeak", "/src/sync.go");
@@ -322,14 +322,14 @@ int main()
 	{
 		ProjectStateBuilder builder(&store);
 		bool ok = builder.build(pid);
-		assert(ok);
+		CHECK(ok);
 		printf("Test 1 (build returned true): PASS\n");
 	}
 
 	// ── Test 2: project_state has exactly 1 row ─────────────────
 	{
 		int count = countProjectStateRows(store, pid);
-		assert(count == 1);
+		CHECK(count == 1);
 		printf("Test 2 (project_state rows == 1): PASS\n");
 	}
 
@@ -337,7 +337,7 @@ int main()
 	double confidence = -1.0;
 	{
 		confidence = readPersistedConfidence(store, pid);
-		assert(confidence >= 0.0 && confidence <= 1.0);
+		CHECK(confidence >= 0.0 && confidence <= 1.0);
 		printf("Test 3 (confidence in [0,1]: %.4f): PASS\n",
 		       confidence);
 	}
@@ -346,19 +346,19 @@ int main()
 	std::string snapshot;
 	{
 		snapshot = readPersistedSnapshot(store, pid);
-		assert(!snapshot.empty());
+		CHECK(!snapshot.empty());
 		// Required top-level keys per plan §6.2.
-		assert(snapshot.find("\"overall\"") != std::string::npos);
-		assert(snapshot.find("\"sync\"") != std::string::npos);
-		assert(snapshot.find("\"memory\"") != std::string::npos);
-		assert(snapshot.find("\"pattern\"") != std::string::npos);
+		CHECK(snapshot.find("\"overall\"") != std::string::npos);
+		CHECK(snapshot.find("\"sync\"") != std::string::npos);
+		CHECK(snapshot.find("\"memory\"") != std::string::npos);
+		CHECK(snapshot.find("\"pattern\"") != std::string::npos);
 		// Confidence field should be present in "overall".
-		assert(snapshot.find("\"confidence\"") != std::string::npos);
+		CHECK(snapshot.find("\"confidence\"") != std::string::npos);
 		// Architecture and capability should be present.
-		assert(snapshot.find("\"architecture\"") != std::string::npos);
-		assert(snapshot.find("\"capability\"") != std::string::npos);
+		CHECK(snapshot.find("\"architecture\"") != std::string::npos);
+		CHECK(snapshot.find("\"capability\"") != std::string::npos);
 		// last_updated timestamp.
-		assert(snapshot.find("\"last_updated\"") != std::string::npos);
+		CHECK(snapshot.find("\"last_updated\"") != std::string::npos);
 		printf("Test 4 (snapshot contains required keys): "
 		       "PASS\n");
 	}
@@ -367,8 +367,8 @@ int main()
 	{
 		ProjectStateBuilder builder(&store);
 		std::string s = builder.getSnapshotJson(pid);
-		assert(!s.empty());
-		assert(s == snapshot);
+		CHECK(!s.empty());
+		CHECK(s == snapshot);
 		printf("Test 5 (getSnapshotJson non-empty): PASS\n");
 	}
 
@@ -376,8 +376,8 @@ int main()
 	{
 		ProjectStateBuilder builder(&store);
 		double c = builder.getConfidence(pid);
-		assert(c >= 0.0 && c <= 1.0);
-		assert(c == confidence);
+		CHECK(c >= 0.0 && c <= 1.0);
+		CHECK(c == confidence);
 		printf("Test 6 (getConfidence in [0,1]: %.4f): PASS\n", c);
 	}
 
@@ -385,12 +385,12 @@ int main()
 	{
 		ProjectStateBuilder builder(&store);
 		bool ok = builder.build(pid);
-		assert(ok);
+		CHECK(ok);
 		int count = countProjectStateRows(store, pid);
-		assert(count == 1);
+		CHECK(count == 1);
 		// Confidence should be unchanged (deterministic).
 		double c = readPersistedConfidence(store, pid);
-		assert(c == confidence);
+		CHECK(c == confidence);
 		printf("Test 7 (idempotency: still 1 row, same "
 		       "confidence): PASS\n");
 	}
@@ -399,7 +399,7 @@ int main()
 	{
 		ProjectStateBuilder builder(&store);
 		std::string s = builder.getSnapshotJson(pid + 999);
-		assert(s.empty());
+		CHECK(s.empty());
 		printf("Test 8 (getSnapshotJson unknown project -> "
 		       "empty): PASS\n");
 	}
@@ -408,7 +408,7 @@ int main()
 	{
 		ProjectStateBuilder builder(&store);
 		double c = builder.getConfidence(pid + 999);
-		assert(c == 0.0);
+		CHECK(c == 0.0);
 		printf("Test 9 (getConfidence unknown project -> "
 		       "0.0): PASS\n");
 	}
@@ -429,22 +429,22 @@ int main()
 
 		StateBuilder sb(&store, pid);
 		int64_t n = sb.buildArchitectureState();
-		assert(n == 2); // one row per (lower, upper) pair
+		CHECK(n == 2); // one row per (lower, upper) pair
 		ArchAgg agg = readArchAgg(store, pid);
-		assert(agg.rows == 2);
-		assert(agg.violations == 0);
-		assert(agg.cross_module_edges == 3);
-		assert(agg.min_compliance == 1.0);
+		CHECK(agg.rows == 2);
+		CHECK(agg.violations == 0);
+		CHECK(agg.cross_module_edges == 3);
+		CHECK(agg.min_compliance == 1.0);
 
 		// Rebuild must replace, not append. (It also removes the
 		// hand-inserted violations=2 fixture row from step 5 —
 		// architecture_state is derived state.)
 		n = sb.buildArchitectureState();
-		assert(n == 2);
+		CHECK(n == 2);
 		agg = readArchAgg(store, pid);
-		assert(agg.rows == 2);
-		assert(agg.violations == 0);
-		assert(agg.cross_module_edges == 3);
+		CHECK(agg.rows == 2);
+		CHECK(agg.violations == 0);
+		CHECK(agg.cross_module_edges == 3);
 		printf("Test 10 (buildArchitectureState honest + "
 		       "idempotent): PASS\n");
 	}
@@ -453,9 +453,9 @@ int main()
 	{
 		ProjectStateBuilder builder(&store);
 		bool ok = builder.build(pid);
-		assert(ok);
+		CHECK(ok);
 		std::string s = readPersistedSnapshot(store, pid);
-		assert(s.find("\"violations\":0,\"cross_module_edges\":3") !=
+		CHECK(s.find("\"violations\":0,\"cross_module_edges\":3") !=
 		       std::string::npos);
 		printf("Test 11 (project_state.architecture reports "
 		       "cross_module_edges): PASS\n");
@@ -477,19 +477,19 @@ int main()
 			"VALUES (?, 'legacy->pair', 5, 0.0, '[]')";
 		sqlite3_stmt *stmt = nullptr;
 		sqlite3 *db = store.handle();
-		assert(sqlite3_prepare_v2(db, legacy_sql, -1, &stmt, nullptr) ==
+		CHECK(sqlite3_prepare_v2(db, legacy_sql, -1, &stmt, nullptr) ==
 		       SQLITE_OK);
 		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(pid));
-		assert(sqlite3_step(stmt) == SQLITE_DONE);
+		CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 		sqlite3_finalize(stmt);
-		assert(sqlite3_prepare_v2(db, legacy_sql, -1, &stmt, nullptr) ==
+		CHECK(sqlite3_prepare_v2(db, legacy_sql, -1, &stmt, nullptr) ==
 		       SQLITE_OK);
 		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(pid));
-		assert(sqlite3_step(stmt) == SQLITE_DONE);
+		CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 		sqlite3_finalize(stmt);
 
 		store.close();
-		assert(store.open(kDbPath));
+		CHECK(store.open(kDbPath));
 
 		db = store.handle();
 		const char *q = "SELECT COUNT(*), "
@@ -499,14 +499,14 @@ int main()
 				"FROM architecture_state "
 				"WHERE project_id=? AND layer='legacy->pair'";
 		stmt = nullptr;
-		assert(sqlite3_prepare_v2(db, q, -1, &stmt, nullptr) ==
+		CHECK(sqlite3_prepare_v2(db, q, -1, &stmt, nullptr) ==
 		       SQLITE_OK);
 		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(pid));
-		assert(sqlite3_step(stmt) == SQLITE_ROW);
-		assert(sqlite3_column_int64(stmt, 0) == 1); // deduped
-		assert(sqlite3_column_int64(stmt, 1) == 0); // moved	out
-		assert(sqlite3_column_int64(stmt, 2) == 5); // preserved
-		assert(sqlite3_column_double(stmt, 3) == 1.0); // cleared
+		CHECK(sqlite3_step(stmt) == SQLITE_ROW);
+		CHECK(sqlite3_column_int64(stmt, 0) == 1); // deduped
+		CHECK(sqlite3_column_int64(stmt, 1) == 0); // moved	out
+		CHECK(sqlite3_column_int64(stmt, 2) == 5); // preserved
+		CHECK(sqlite3_column_double(stmt, 3) == 1.0); // cleared
 		sqlite3_finalize(stmt);
 		printf("Test 12 (migration dedups + moves pre-fix rows "
 		       "on reopen): PASS\n");
@@ -515,5 +515,5 @@ int main()
 	store.close();
 	unlink(kDbPath);
 	printf("\nAll project_state tests passed.\n");
-	return 0;
+	return checkFailures() ? 1 : 0;
 }

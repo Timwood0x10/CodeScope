@@ -3,7 +3,7 @@
 // in engine/tests.
 #include "verify/claim_parser.h"
 
-#include <cassert>
+#include "test_check.h"
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -52,8 +52,8 @@ int main()
 		bool has_contract = hasClaim(claims, ClaimType::ContractHolds,
 					     "ThreadSafe");
 
-		assert(has_cap);
-		assert(has_contract);
+		CHECK(has_cap);
+		CHECK(has_contract);
 		printf("Test 1 (supports + thread-safe): PASS\n");
 	}
 
@@ -65,7 +65,7 @@ int main()
 
 		bool has_cap = hasClaim(claims, ClaimType::CapabilityExists,
 					"CallGraphAnalysis");
-		assert(has_cap);
+		CHECK(has_cap);
 		printf("Test 2 (implements): PASS\n");
 	}
 
@@ -76,10 +76,10 @@ int main()
 			"lock-free.";
 		auto claims = parser.parse(text, "readme", "README.md");
 
-		assert(hasClaim(claims, ClaimType::ContractHolds,
+		CHECK(hasClaim(claims, ClaimType::ContractHolds,
 				"MemorySafe"));
-		assert(hasClaim(claims, ClaimType::ContractHolds, "ZeroCopy"));
-		assert(hasClaim(claims, ClaimType::ContractHolds, "LockFree"));
+		CHECK(hasClaim(claims, ClaimType::ContractHolds, "ZeroCopy"));
+		CHECK(hasClaim(claims, ClaimType::ContractHolds, "LockFree"));
 		printf("Test 3 (memory-safe/zero-copy/lock-free): PASS\n");
 	}
 
@@ -101,10 +101,10 @@ int main()
 		auto c3 = parser.parse(pos1, "readme", "README.md");
 		auto c4 = parser.parse(pos2, "readme", "README.md");
 
-		assert(!hasClaim(c1, ClaimType::ContractHolds, "ThreadSafe"));
-		assert(!hasClaim(c2, ClaimType::ContractHolds, "ThreadSafe"));
-		assert(hasClaim(c3, ClaimType::ContractHolds, "ThreadSafe"));
-		assert(hasClaim(c4, ClaimType::ContractHolds, "ThreadSafe"));
+		CHECK(!hasClaim(c1, ClaimType::ContractHolds, "ThreadSafe"));
+		CHECK(!hasClaim(c2, ClaimType::ContractHolds, "ThreadSafe"));
+		CHECK(hasClaim(c3, ClaimType::ContractHolds, "ThreadSafe"));
+		CHECK(hasClaim(c4, ClaimType::ContractHolds, "ThreadSafe"));
 		printf("Test 3b (negation / cannot): PASS\n");
 	}
 
@@ -116,7 +116,7 @@ int main()
 
 		int arch_count =
 			countByType(claims, ClaimType::ArchitectureFollows);
-		assert(arch_count >= 1);
+		CHECK(arch_count >= 1);
 
 		// Verify the claim fields: subject=Controller,
 		// predicate=flows_to, object=Service, scope=Repository.
@@ -130,7 +130,7 @@ int main()
 				break;
 			}
 		}
-		assert(found);
+		CHECK(found);
 		printf("Test 4 (arrow chain): PASS\n");
 	}
 
@@ -141,14 +141,14 @@ int main()
 
 		int arch_count =
 			countByType(claims, ClaimType::ArchitectureFollows);
-		assert(arch_count == 0);
+		CHECK(arch_count == 0);
 		printf("Test 5 (non-layer arrow rejected): PASS\n");
 	}
 
 	// ── Test 6: empty text produces no claims ────────────────────
 	{
 		auto claims = parser.parse("", "readme", "README.md");
-		assert(claims.empty());
+		CHECK(claims.empty());
 		printf("Test 6 (empty text): PASS\n");
 	}
 
@@ -158,10 +158,10 @@ int main()
 	{
 		std::string text = "supports XYZ";
 		auto claims = parser.parse(text, "ai_summary", "sum-42");
-		assert(!claims.empty());
+		CHECK(!claims.empty());
 		for (const auto &c : claims) {
-			assert(c.source_kind == "ai_summary");
-			assert(c.source_ref == "sum-42");
+			CHECK(c.source_kind == "ai_summary");
+			CHECK(c.source_ref == "sum-42");
 		}
 		printf("Test 7 (source stamping): PASS\n");
 	}
@@ -174,9 +174,9 @@ int main()
 	{
 		std::string text = "The project has a LeaderAgent class.";
 		auto claims = parser.parse(text, "ai_summary", "sum-8");
-		assert(hasClaim(claims, ClaimType::CapabilityExists,
+		CHECK(hasClaim(claims, ClaimType::CapabilityExists,
 				"LeaderAgent"));
-		assert(!hasClaim(claims, ClaimType::CapabilityExists,
+		CHECK(!hasClaim(claims, ClaimType::CapabilityExists,
 				 "LeaderAgentClass"));
 		printf("Test 8 (has + trailing noun strip): PASS\n");
 	}
@@ -189,9 +189,9 @@ int main()
 	{
 		std::string text = "c_print should handle null input.";
 		auto claims = parser.parse(text, "ai_summary", "sum-9");
-		assert(hasClaim(claims, ClaimType::FunctionImplements,
+		CHECK(hasClaim(claims, ClaimType::FunctionImplements,
 				"c_print"));
-		assert(!hasClaim(claims, ClaimType::FunctionImplements,
+		CHECK(!hasClaim(claims, ClaimType::FunctionImplements,
 				 "CPrint"));
 		bool object_ok = false;
 		for (const auto &c : claims) {
@@ -200,7 +200,7 @@ int main()
 			    c.object.rfind("handle", 0) == 0)
 				object_ok = true;
 		}
-		assert(object_ok);
+		CHECK(object_ok);
 		printf("Test 9 (should -> FunctionImplements): PASS\n");
 	}
 
@@ -218,13 +218,13 @@ int main()
 		auto c2 = parser.parse(t2, "ai_summary", "sum-10b");
 		auto c3 = parser.parse(t3, "ai_summary", "sum-10c");
 		auto c4 = parser.parse(t4, "ai_summary", "sum-10d");
-		assert(!hasClaim(c1, ClaimType::CapabilityExists, "LeaderAgent"));
-		assert(!hasClaim(c2, ClaimType::CapabilityExists, "LeaderAgent"));
-		assert(!hasClaim(c3, ClaimType::FunctionImplements, "c_print"));
-		assert(!hasClaim(c4, ClaimType::FunctionImplements, "c_print"));
+		CHECK(!hasClaim(c1, ClaimType::CapabilityExists, "LeaderAgent"));
+		CHECK(!hasClaim(c2, ClaimType::CapabilityExists, "LeaderAgent"));
+		CHECK(!hasClaim(c3, ClaimType::FunctionImplements, "c_print"));
+		CHECK(!hasClaim(c4, ClaimType::FunctionImplements, "c_print"));
 		printf("Test 10 (negated has/should suppressed): PASS\n");
 	}
 
 	printf("\n=== test_claim_parser PASSED ===\n");
-	return 0;
+	return checkFailures() ? 1 : 0;
 }

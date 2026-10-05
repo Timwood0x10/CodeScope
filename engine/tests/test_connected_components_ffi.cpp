@@ -13,7 +13,7 @@
 // the FFI contract: valid JSON in, no crashes out.
 #include "../include/engine.h"
 
-#include <cassert>
+#include "test_check.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -37,20 +37,20 @@ int main()
 	// Do NOT call engine_init first — g_store is null. The FFI must
 	// return error JSON instead of dereferencing the null pointer.
 	char *result = engine_find_connected_components(1);
-	assert(result != nullptr &&
+	CHECK(result != nullptr &&
 	       "null store must still return a non-null string");
-	assert(looks_like_json(result) && "null store result must be JSON");
-	assert(contains(result, "\"error\"") &&
+	CHECK(looks_like_json(result) && "null store result must be JSON");
+	CHECK(contains(result, "\"error\"") &&
 	       "null store result must contain an error field");
-	assert(contains(result, "module=ffi") &&
+	CHECK(contains(result, "module=ffi") &&
 	       "null store error must carry the module tag");
-	assert(contains(result, "method=engine_find_connected_components") &&
+	CHECK(contains(result, "method=engine_find_connected_components") &&
 	       "null store error must carry the method tag");
-	assert(contains(result, "\"components\":[]") &&
+	CHECK(contains(result, "\"components\":[]") &&
 	       "null store result must contain an empty components array");
-	assert(contains(result, "\"total\":0") &&
+	CHECK(contains(result, "\"total\":0") &&
 	       "null store result must report total=0");
-	assert(contains(result, "\"approximation\":\"heuristic\"") &&
+	CHECK(contains(result, "\"approximation\":\"heuristic\"") &&
 	       "null store result must carry the approximation marker");
 	engine_free_string(result);
 	printf("[OK] null store returns tagged error JSON\n");
@@ -62,22 +62,22 @@ int main()
 	unlink("/tmp/codescope_test_cc_ffi.db-shm");
 
 	int rc = engine_init(db_path);
-	assert(rc == 0 && "engine_init should succeed");
+	CHECK(rc == 0 && "engine_init should succeed");
 
 	uint64_t pid = engine_create_project("/tmp/test-cc", "test-cc");
-	assert(pid > 0 && "engine_create_project should return a positive id");
+	CHECK(pid > 0 && "engine_create_project should return a positive id");
 
 	result = engine_find_connected_components(pid);
-	assert(result != nullptr && "initialized engine must return non-null");
-	assert(looks_like_json(result) && "result must be JSON");
+	CHECK(result != nullptr && "initialized engine must return non-null");
+	CHECK(looks_like_json(result) && "result must be JSON");
 	// No relation edges → empty components, but the envelope must be present.
-	assert(contains(result, "\"components\"") &&
+	CHECK(contains(result, "\"components\"") &&
 	       "result must contain a components field");
-	assert(contains(result, "\"total\"") &&
+	CHECK(contains(result, "\"total\"") &&
 	       "result must contain a total field");
-	assert(contains(result, "\"approximation\":\"heuristic\"") &&
+	CHECK(contains(result, "\"approximation\":\"heuristic\"") &&
 	       "result must carry the approximation marker");
-	assert(contains(result, "name-matched call edges") &&
+	CHECK(contains(result, "name-matched call edges") &&
 	       "result must carry the explanatory note");
 	engine_free_string(result);
 	printf("[OK] empty DB returns valid envelope JSON\n");
@@ -86,12 +86,12 @@ int main()
 	// project_id 0 does not exist; the inspector must not crash and
 	// must still return the documented envelope.
 	result = engine_find_connected_components(0);
-	assert(result != nullptr && "zero project_id must return non-null");
-	assert(looks_like_json(result) &&
+	CHECK(result != nullptr && "zero project_id must return non-null");
+	CHECK(looks_like_json(result) &&
 	       "zero project_id result must be JSON");
-	assert(contains(result, "\"components\"") &&
+	CHECK(contains(result, "\"components\"") &&
 	       "zero project_id result must contain a components field");
-	assert(contains(result, "\"total\"") &&
+	CHECK(contains(result, "\"total\"") &&
 	       "zero project_id result must contain a total field");
 	engine_free_string(result);
 	printf("[OK] zero project_id returns valid envelope JSON\n");
@@ -102,5 +102,5 @@ int main()
 	unlink("/tmp/codescope_test_cc_ffi.db-shm");
 
 	printf("\nAll connected_components FFI tests passed.\n");
-	return 0;
+	return checkFailures() ? 1 : 0;
 }

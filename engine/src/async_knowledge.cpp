@@ -37,13 +37,13 @@ namespace
 std::atomic<bool> g_async_running{ false };
 
 // Joinable thread handle — NOT detached, so engine_shutdown can join it
-// before destroying g_store. Protected by g_thread_mutex to prevent
+// before destroying the engine store. Protected by g_thread_mutex to prevent
 // data races between launch (writer) and join (reader in shutdown).
 std::mutex g_thread_mutex;
 std::thread g_builder_thread;
 
 // Serializes the builder body against every FFI entry that touches the
-// shared g_store connection. The builder holds it for its whole body;
+// shared engine store connection. The builder holds it for its whole body;
 // waitForKnowledgeBuilder() hands it to the caller for the duration of
 // one read/write. Without this, a builder launched by a later index call
 // could BEGIN/COMMIT while a read is still stepping statements on the
@@ -539,12 +539,12 @@ void launchAsyncKnowledgeBuilder(uint64_t project_id, bool run_fts)
 	}
 	g_builder_thread = std::thread([project_id, run_fts]() {
 		// Hold the connection mutex for the whole body so no FFI read
-		// or write can interleave BEGIN/COMMIT on g_store.
+		// or write can interleave BEGIN/COMMIT on the engine store.
 		std::lock_guard<std::recursive_timed_mutex> store_lock(
 			g_store_mutex);
-		if (!g_store) {
+		if (!engineContext().store) {
 			fprintf(stderr,
-				"[module=async] g_store is null, aborting\n");
+				"[module=async] engine store is null, aborting\n");
 			g_async_running.store(false);
 			std::lock_guard<std::mutex> done_lock(g_done_mutex);
 			g_builder_done = true;
@@ -560,8 +560,10 @@ void launchAsyncKnowledgeBuilder(uint64_t project_id, bool run_fts)
 			// background thread BEFORE the knowledge builder, so the
 			// synchronous index path returns as soon as the core graph
 			// + indexes are ready.
-			runModelIndexSync(*g_store, project_id, run_fts);
-			buildKnowledgeGraphSync(*g_store, project_id);
+			runModelIndexSync(*engineContext().store, project_id,
+					  run_fts);
+			buildKnowledgeGraphSync(*engineContext().store,
+						project_id);
 		} catch (const std::exception &e) {
 			fprintf(stderr,
 				"[module=async] build failed with exception: %s\n",
@@ -625,7 +627,7 @@ std::unique_lock<std::recursive_timed_mutex> waitForKnowledgeBuilder()
 {
 	// Acquire the connection mutex the builder holds for its whole body.
 	// This both waits for an in-flight builder AND keeps a later builder
-	// (launched while this guard is alive) from touching g_store until the
+	// (launched while this guard is alive) from touching the engine store until the
 	// caller's read/write finishes — the race a plain join left open.
 	// recursive_timed_mutex: FFI entry points nest (enhance reaches paths
 	// that also call this), so the same thread must be able to re-acquire.
@@ -663,8 +665,8 @@ std::unique_lock<std::recursive_timed_mutex> waitForKnowledgeBuilder()
 			"shared store lock held > %d ms — issuing "
 			"sqlite3_interrupt() to unwedge the builder\n",
 			kBuilderStallInterruptMs);
-		if (g_store)
-			sqlite3_interrupt(g_store->handle());
+		if (engineContext().store)
+			sqlite3_interrupt(engineContext().store->handle());
 		// Give the unwinding builder a bounded grace period to release the
 		// lock; if it does, this read proceeds normally.
 		if (lock.try_lock_for(

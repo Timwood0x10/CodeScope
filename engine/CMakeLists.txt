@@ -174,6 +174,7 @@ message(STATUS "sqlite-vec: source at ${SQLITE_VEC_SRC}")
 set(ENGINE_SOURCES
     ${GRAMMAR_SOURCES}
     src/engine.cpp
+    src/engine_context.cpp
     src/engine_helpers.cpp
     src/util/json_writer.cpp
     src/engine_lifecycle.cpp
@@ -414,9 +415,10 @@ if(BUILD_TESTS)
     foreach(test_src ${TEST_SOURCES})
         get_filename_component(test_name ${test_src} NAME_WE)
         add_executable(${test_name} ${test_src})
-        # Many tests use assert(), which NDEBUG compiles out. Undefine it on
-        # every test target so a Release/RelWithDebInfo configure cannot run
-        # the suite vacuously (code_rules §4: boundary cases are mandatory).
+        # Tests use CHECK() from tests/test_check.h, which NDEBUG cannot
+        # compile out (REVIEW_0.2.7 TEST-3). -UNDEBUG is kept as a second line
+        # of defence for anything that still routes through the C library, so
+        # a Release/RelWithDebInfo configure cannot run the suite vacuously.
         target_compile_options(${test_name} PRIVATE
             $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>
             $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>)

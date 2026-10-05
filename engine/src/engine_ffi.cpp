@@ -47,8 +47,8 @@ static int ffi_count_eligible_entities(uint64_t project_id)
 	int total = 0;
 	const char *sql =
 		"SELECT COUNT(*) FROM entity WHERE project_id = ? AND kind IN (0,1)";
-	if (sqlite3_prepare_v2(g_store->handle(), sql, -1, &stmt, nullptr) ==
-	    SQLITE_OK) {
+	if (sqlite3_prepare_v2(engineContext().store->handle(), sql, -1, &stmt,
+			       nullptr) == SQLITE_OK) {
 		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 		if (sqlite3_step(stmt) == SQLITE_ROW)
 			total = sqlite3_column_int(stmt, 0);
@@ -57,7 +57,7 @@ static int ffi_count_eligible_entities(uint64_t project_id)
 		fprintf(stderr,
 			"engine_get_capabilities: entity count probe failed: %s "
 			"[module=ffi, method=engine_get_capabilities]\n",
-			sqlite3_errmsg(g_store->handle()));
+			sqlite3_errmsg(engineContext().store->handle()));
 	}
 	return total;
 }
@@ -80,8 +80,8 @@ static int ffi_count_callgraph_ready_entities(uint64_t project_id)
 		"  SELECT target_id AS src FROM relation WHERE project_id=? AND type=1"
 		" )"
 		")";
-	if (sqlite3_prepare_v2(g_store->handle(), sql, -1, &stmt, nullptr) ==
-	    SQLITE_OK) {
+	if (sqlite3_prepare_v2(engineContext().store->handle(), sql, -1, &stmt,
+			       nullptr) == SQLITE_OK) {
 		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 		sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
 		if (sqlite3_step(stmt) == SQLITE_ROW)
@@ -91,7 +91,7 @@ static int ffi_count_callgraph_ready_entities(uint64_t project_id)
 		fprintf(stderr,
 			"engine_get_capabilities: callgraph count probe failed: %s "
 			"[module=ffi, method=engine_get_capabilities]\n",
-			sqlite3_errmsg(g_store->handle()));
+			sqlite3_errmsg(engineContext().store->handle()));
 	}
 	return ready;
 }
@@ -106,8 +106,8 @@ static int ffi_count_metrics_ready_entities(uint64_t project_id)
 	const char *sql =
 		"SELECT COUNT(*) FROM entity "
 		"WHERE project_id = ? AND kind IN (0,1) AND cyclomatic > 0";
-	if (sqlite3_prepare_v2(g_store->handle(), sql, -1, &stmt, nullptr) ==
-	    SQLITE_OK) {
+	if (sqlite3_prepare_v2(engineContext().store->handle(), sql, -1, &stmt,
+			       nullptr) == SQLITE_OK) {
 		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 		if (sqlite3_step(stmt) == SQLITE_ROW)
 			ready = sqlite3_column_int(stmt, 0);
@@ -116,7 +116,7 @@ static int ffi_count_metrics_ready_entities(uint64_t project_id)
 		fprintf(stderr,
 			"engine_get_capabilities: metrics count probe failed: %s "
 			"[module=ffi, method=engine_get_capabilities]\n",
-			sqlite3_errmsg(g_store->handle()));
+			sqlite3_errmsg(engineContext().store->handle()));
 	}
 	return ready;
 }
@@ -130,8 +130,8 @@ static int ffi_count_vector_entities(uint64_t project_id)
 	int ready = 0;
 	const char *sql =
 		"SELECT COUNT(*) FROM node_vectors WHERE project_id = ?";
-	if (sqlite3_prepare_v2(g_store->handle(), sql, -1, &stmt, nullptr) ==
-	    SQLITE_OK) {
+	if (sqlite3_prepare_v2(engineContext().store->handle(), sql, -1, &stmt,
+			       nullptr) == SQLITE_OK) {
 		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 		if (sqlite3_step(stmt) == SQLITE_ROW)
 			ready = sqlite3_column_int(stmt, 0);
@@ -140,7 +140,7 @@ static int ffi_count_vector_entities(uint64_t project_id)
 		fprintf(stderr,
 			"engine_get_capabilities: vector count probe failed: %s "
 			"[module=ffi, method=engine_get_capabilities]\n",
-			sqlite3_errmsg(g_store->handle()));
+			sqlite3_errmsg(engineContext().store->handle()));
 	}
 	return ready;
 }
@@ -149,7 +149,7 @@ char *engine_get_capabilities(uint64_t project_id)
 {
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!g_store)
+		if (!engineContext().store)
 			return dupString(
 				"{\"error\":\"engine not initialized\"}");
 
@@ -169,7 +169,8 @@ char *engine_get_capabilities(uint64_t project_id)
 		const bool semantic_ready =
 			ffi_count_vector_entities(project_id) > 0;
 		const bool fts_ready =
-			g_store->getProjectReadiness(project_id, "fts_ready");
+			engineContext().store->getProjectReadiness(project_id,
+								   "fts_ready");
 
 		// Built with util::JsonWriter: every string is escaped and every
 		// separator is inserted structurally, so a stray description
@@ -281,12 +282,13 @@ char *engine_search_code(uint64_t project_id, const char *query, int limit)
 			return dupString(
 				"{\"error\":\"[module=ffi, method=engine_search_code] query is required\"}");
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!g_query)
+		if (!engineContext().query)
 			return dupString(
 				"{\"total\":0,\"results\":[],\"error\":\"not initialized\"}");
 		if (limit <= 0 || limit > 100)
 			limit = 20;
-		return dupString(g_query->searchCode(project_id, query, limit));
+		return dupString(engineContext().query->searchCode(
+			project_id, query, limit));
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_search_code", e.what()));
@@ -308,11 +310,12 @@ char *engine_search_semantic(uint64_t project_id, const char *query, int limit)
 {
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!g_store || !g_store->handle() || !query)
+		if (!engineContext().store ||
+		    !engineContext().store->handle() || !query)
 			return dupString("{\"total\":0,\"results\":[],"
 					 "\"error\":\"not initialized\"}");
-		return dupString(
-			g_store->searchSemanticJson(project_id, query, limit));
+		return dupString(engineContext().store->searchSemanticJson(
+			project_id, query, limit));
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_search_semantic", e.what()));
@@ -328,10 +331,10 @@ char *engine_get_complexity(uint64_t project_id, uint64_t graph_node_id)
 {
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!g_query)
+		if (!engineContext().query)
 			return dupString("{\"error\":\"not initialized\"}");
-		return dupString(
-			g_query->getComplexity(project_id, graph_node_id));
+		return dupString(engineContext().query->getComplexity(
+			project_id, graph_node_id));
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_get_complexity", e.what()));
@@ -350,10 +353,11 @@ char *engine_graph_query(uint64_t project_id, const char *dsl_query)
 			return dupString(
 				"{\"error\":\"[module=ffi, method=engine_graph_query] dsl_query is required\"}");
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!g_query)
+		if (!engineContext().query)
 			return dupString(
 				"{\"total\":0,\"results\":[],\"error\":\"not initialized\"}");
-		return dupString(g_query->graphQuery(project_id, dsl_query));
+		return dupString(engineContext().query->graphQuery(project_id,
+								   dsl_query));
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_graph_query", e.what()));
@@ -375,7 +379,7 @@ char *engine_graph_query(uint64_t project_id, const char *dsl_query)
 //
 // # Thread safety
 // Delegates to QueryEngine over read-only SQLite queries under the global
-// g_store guard. Safe to call from the MCP server thread.
+// store guard. Safe to call from the MCP server thread.
 extern "C" char *engine_get_graph(uint64_t project_id, int64_t node_offset,
 				  int node_limit, int64_t edge_offset,
 				  int edge_limit, const char *node_type_filter,
@@ -383,9 +387,9 @@ extern "C" char *engine_get_graph(uint64_t project_id, int64_t node_offset,
 {
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!g_query)
+		if (!engineContext().query)
 			return dupString("{\"error\":\"not initialized\"}");
-		return dupString(g_query->getGraph(
+		return dupString(engineContext().query->getGraph(
 			project_id, node_offset, node_limit, edge_offset,
 			edge_limit, node_type_filter, edge_type_filter));
 	} catch (const std::exception &e) {
@@ -407,13 +411,13 @@ char *engine_detect_changes(uint64_t project_id,
 		if (!modified_files_json || !*modified_files_json)
 			return dupString(
 				"{\"error\":\"[module=ffi, method=engine_detect_changes] modified_files_json is required\"}");
-		if (!g_query) {
+		if (!engineContext().query) {
 			return dupString(
 				"{\"error\":\"not initialized\","
 				"\"modified\":[],\"callers\":[],\"callees\":[],\"total_impacted\":0}");
 		}
-		return dupString(g_query->detectChanges(project_id,
-							modified_files_json));
+		return dupString(engineContext().query->detectChanges(
+			project_id, modified_files_json));
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_detect_changes", e.what()));
@@ -433,14 +437,14 @@ char *engine_get_communities(uint64_t project_id, int max_members,
 {
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!g_query) {
+		if (!engineContext().query) {
 			return dupString(
 				"{\"error\":\"not initialized\","
 				"\"communities\":[],\"total_communities\":0,"
 				"\"returned_communities\":0,"
 				"\"inter_community_edges\":0}");
 		}
-		return dupString(g_query->getCommunities(
+		return dupString(engineContext().query->getCommunities(
 			project_id, max_members, max_communities,
 			include_members != 0));
 	} catch (const std::exception &e) {
@@ -458,7 +462,7 @@ char *engine_get_index_progress(uint64_t project_id)
 {
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!g_store)
+		if (!engineContext().store)
 			return dupString("{\"error\":\"not initialized\"}");
 		return dupString(
 			store::getIndexProgressJson(project_id).c_str());
@@ -478,15 +482,18 @@ char *engine_build_fts(uint64_t project_id)
 {
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!g_store)
+		if (!engineContext().store)
 			return dupString("{\"error\":\"not initialized\"}");
-		g_store->buildFTSFromGraph(project_id);
-		if (!g_store->error().empty()) {
+		engineContext().store->buildFTSFromGraph(project_id);
+		if (!engineContext().store->error().empty()) {
 			return dupString(util::errorEnvelope(
-				"ffi", "engine_build_fts", g_store->error()));
+				"ffi", "engine_build_fts",
+				engineContext().store->error()));
 		}
-		g_store->setProjectReadiness(project_id, "fts_ready", 1);
-		g_store->setProjectReadiness(project_id, "normal_ready", 1);
+		engineContext().store->setProjectReadiness(project_id,
+							   "fts_ready", 1);
+		engineContext().store->setProjectReadiness(project_id,
+							   "normal_ready", 1);
 		return dupString("{\"ok\":true}");
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope("ffi", "engine_build_fts",
@@ -503,11 +510,12 @@ char *engine_get_hotspots(uint64_t project_id, int top_n)
 {
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!g_query)
+		if (!engineContext().query)
 			return dupString("{\"error\":\"not initialized\"}");
 		if (top_n <= 0)
 			top_n = 10;
-		return dupString(g_query->getHotspots(project_id, top_n));
+		return dupString(
+			engineContext().query->getHotspots(project_id, top_n));
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_get_hotspots", e.what()));
@@ -531,10 +539,10 @@ extern "C" char *engine_explain_symbol(uint64_t project_id,
 			return dupString(
 				"{\"error\":\"[module=ffi, method=engine_explain_symbol] symbol_name is required\"}");
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!g_query)
+		if (!engineContext().query)
 			return dupString("{\"error\":\"not initialized\"}");
-		return dupString(
-			g_query->explainSymbol(project_id, symbol_name));
+		return dupString(engineContext().query->explainSymbol(
+			project_id, symbol_name));
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_explain_symbol", e.what()));
@@ -548,9 +556,10 @@ char *engine_get_module_map(uint64_t project_id)
 {
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!g_query)
+		if (!engineContext().query)
 			return dupString("{\"error\":\"not initialized\"}");
-		return dupString(g_query->getModuleMap(project_id));
+		return dupString(
+			engineContext().query->getModuleMap(project_id));
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_get_module_map", e.what()));
@@ -564,9 +573,10 @@ char *engine_get_entry_points(uint64_t project_id)
 {
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!g_query)
+		if (!engineContext().query)
 			return dupString("{\"error\":\"not initialized\"}");
-		return dupString(g_query->getEntryPoints(project_id));
+		return dupString(
+			engineContext().query->getEntryPoints(project_id));
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_get_entry_points", e.what()));
@@ -584,9 +594,10 @@ char *engine_trace_call_chain(uint64_t project_id, const char *from,
 			return dupString(
 				"{\"error\":\"[module=ffi, method=engine_trace_call_chain] from and to are required\"}");
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!g_query)
+		if (!engineContext().query)
 			return dupString("{\"error\":\"not initialized\"}");
-		return dupString(g_query->traceCallChain(project_id, from, to));
+		return dupString(engineContext().query->traceCallChain(
+			project_id, from, to));
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_trace_call_chain", e.what()));
@@ -600,9 +611,10 @@ char *engine_get_project_overview(uint64_t project_id)
 {
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!g_query)
+		if (!engineContext().query)
 			return dupString("{\"error\":\"not initialized\"}");
-		return dupString(g_query->getProjectOverview(project_id));
+		return dupString(
+			engineContext().query->getProjectOverview(project_id));
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_get_project_overview", e.what()));
@@ -617,7 +629,7 @@ char *engine_get_type_info(uint64_t project_id, const char *type_name_filter)
 {
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!g_store)
+		if (!engineContext().store)
 			return dupString("{\"error\":\"not initialized\"}");
 
 		// Query type_info table for type definitions. project_id and the
@@ -649,8 +661,9 @@ char *engine_get_type_info(uint64_t project_id, const char *type_name_filter)
 		sql += " ORDER BY ref_count DESC LIMIT 100";
 
 		sqlite3_stmt *stmt = nullptr;
-		if (sqlite3_prepare_v2(g_store->handle(), sql.c_str(), -1,
-				       &stmt, nullptr) != SQLITE_OK) {
+		if (sqlite3_prepare_v2(engineContext().store->handle(),
+				       sql.c_str(), -1, &stmt,
+				       nullptr) != SQLITE_OK) {
 			return dupString(
 				"{\"error\":\"query failed\",\"types\":[]}");
 		}
@@ -703,7 +716,7 @@ char *engine_get_routes(uint64_t project_id)
 {
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!g_store)
+		if (!engineContext().store)
 			return dupString("{\"error\":\"not initialized\"}");
 
 		const char *sql =
@@ -711,8 +724,8 @@ char *engine_get_routes(uint64_t project_id)
 			"FROM route WHERE project_id=? ORDER BY method, path LIMIT 500";
 
 		sqlite3_stmt *stmt = nullptr;
-		if (sqlite3_prepare_v2(g_store->handle(), sql, -1, &stmt,
-				       nullptr) != SQLITE_OK) {
+		if (sqlite3_prepare_v2(engineContext().store->handle(), sql, -1,
+				       &stmt, nullptr) != SQLITE_OK) {
 			return dupString(
 				"{\"error\":\"query failed\",\"routes\":[]}");
 		}
@@ -769,10 +782,11 @@ char *engine_export_artifact(uint64_t project_id, const char *output_path)
 {
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!g_store || !output_path || !*output_path)
+		if (!engineContext().store || !output_path || !*output_path)
 			return dupString(
 				"{\"ok\":false,\"error\":\"invalid arguments\"}");
-		auto result = g_store->exportArtifact(project_id, output_path);
+		auto result = engineContext().store->exportArtifact(
+			project_id, output_path);
 		return dupString(result);
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
@@ -787,11 +801,11 @@ char *engine_import_artifact(uint64_t project_id, const char *artifact_path)
 {
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!g_store || !artifact_path || !*artifact_path)
+		if (!engineContext().store || !artifact_path || !*artifact_path)
 			return dupString(
 				"{\"ok\":false,\"error\":\"invalid arguments\"}");
-		auto result =
-			g_store->importArtifact(project_id, artifact_path);
+		auto result = engineContext().store->importArtifact(
+			project_id, artifact_path);
 		return dupString(result);
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
@@ -812,7 +826,7 @@ char *engine_import_artifact(uint64_t project_id, const char *artifact_path)
 // merge, the scheduler calls this to rebuild CSR from the globally-remapped
 // relation table (buildCSR reads relation type=1 edges), so all neighbor
 // ids are global again. It opens a LOCAL GraphStore on db_path so it does
-// not disturb the process-wide g_store.
+// not disturb the process-wide engine store.
 //
 // @param db_path    Path to the (merged) SQLite DB.
 // @param project_id Project whose CSR to rebuild.

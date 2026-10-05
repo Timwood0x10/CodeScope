@@ -67,7 +67,7 @@ constexpr uint64_t kMaxFileSize = 5 * 1024 * 1024; // 5 MB default
 static char *indexFilesImpl(uint64_t project_id, const char *file_list_json,
 			    int bypass_fail_fast)
 {
-	if (!g_store)
+	if (!engineContext().store)
 		return dupString(
 			"{\"ok\":false,\"error\":\"engine not initialized\"}");
 
@@ -143,8 +143,8 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json,
 
 		// Reuse the spelling this file is already stored under, so an
 		// already-indexed file is not given a second identity.
-		const std::string stored =
-			indexSpellingFor(g_store.get(), project_id, path);
+		const std::string stored = indexSpellingFor(
+			engineContext().store.get(), project_id, path);
 		jobs.push_back(
 			{ stored, lang, static_cast<size_t>(file_stat.st_size),
 			  static_cast<int64_t>(file_stat.st_mtime), path });
@@ -211,7 +211,8 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json,
 		for (auto &j : jobs)
 			langs.insert(j.lang);
 		for (auto &l : langs)
-			lang_ptrs[l] = g_parser->getLanguage(l.c_str());
+			lang_ptrs[l] =
+				engineContext().parser->getLanguage(l.c_str());
 	}
 
 	// ── Streaming Pipeline ─────────────────────────────────────
@@ -235,7 +236,7 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json,
 
 	// ── Writer thread ──────────────────────────────────────────
 	std::thread writer_thread([&]() {
-		g_store->beginTransaction();
+		engineContext().store->beginTransaction();
 		std::vector<store::FileResult> batch;
 		batch.reserve(kWriterBatchSize);
 		while (true) {
@@ -243,8 +244,11 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json,
 			bool ok = result_queue.pop(fr);
 			if (!ok) {
 				if (!batch.empty()) {
-					if (!g_store->insertFileResultBatch(
-						    project_id, batch)) {
+					if (!engineContext()
+						     .store
+						     ->insertFileResultBatch(
+							     project_id,
+							     batch)) {
 						writer_error = 1;
 					}
 					files_written +=
@@ -263,8 +267,9 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json,
 			}
 			if (batch.size() >= kWriterBatchSize ||
 			    result_queue.isDone()) {
-				if (!g_store->insertFileResultBatch(project_id,
-								    batch)) {
+				if (!engineContext()
+					     .store->insertFileResultBatch(
+						     project_id, batch)) {
 					writer_error = 1;
 				}
 				files_written += static_cast<int>(batch.size());
@@ -272,9 +277,9 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json,
 			}
 		}
 		if (writer_error)
-			g_store->rollbackTransaction();
+			engineContext().store->rollbackTransaction();
 		else
-			g_store->commitTransaction();
+			engineContext().store->commitTransaction();
 	});
 
 	// ── Parse workers ──────────────────────────────────────────
@@ -665,7 +670,7 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json,
 		// so the result JSON reports failure instead of a false success
 		// (the outer transaction is rolled back by the caller when it
 		// sees ok:false).
-		if (!g_store->buildGraph(project_id, true)) {
+		if (!engineContext().store->buildGraph(project_id, true)) {
 			writer_error = 1;
 		}
 		time_buildgraph_ms =
@@ -681,12 +686,12 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json,
 				"UPDATE graph_nodes SET callgraph_ready=1 "
 				"WHERE project_id=" +
 				std::to_string(project_id);
-			if (!g_store->exec(up.c_str())) {
+			if (!engineContext().store->exec(up.c_str())) {
 				fprintf(stderr,
 					"engine_index_files: callgraph_ready "
 					"UPDATE failed: %s "
 					"[module=engine, method=engine_index_files]\n",
-					g_store->error().c_str());
+					engineContext().store->error().c_str());
 			}
 		}
 
@@ -696,9 +701,11 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json,
 		// createIndexesAfterBulkLoad(project_id, !is_reindex) with
 		// is_reindex=false (M-12).
 		{
-			store::GraphStore::BulkPragmaGuard guard(g_store.get());
+			store::GraphStore::BulkPragmaGuard guard(
+				engineContext().store.get());
 			auto t_idx = steady_clock::now();
-			g_store->createIndexesAfterBulkLoad(project_id, true);
+			engineContext().store->createIndexesAfterBulkLoad(
+				project_id, true);
 			fprintf(stderr,
 				"engine: createIndexesAfterBulkLoad=%lldms "
 				"[module=engine, method=engine_index_files]\n",
@@ -709,7 +716,8 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json,
 
 		// Set the core-graph readiness flag so the project is
 		// queryable immediately after a file-list index (M-15).
-		g_store->setProjectReadiness(project_id, "normal_ready", 1);
+		engineContext().store->setProjectReadiness(project_id,
+							   "normal_ready", 1);
 	}
 
 	// ── Build result JSON ──────────────────────────────────────
@@ -722,7 +730,7 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json,
 
 	// Query node/edge counts
 	{
-		sqlite3 *db = g_store->handle();
+		sqlite3 *db = engineContext().store->handle();
 		sqlite3_stmt *stmt = nullptr;
 		std::string sql =
 			"SELECT COUNT(*) FROM entity WHERE project_id = " +

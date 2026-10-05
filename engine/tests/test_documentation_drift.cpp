@@ -15,7 +15,7 @@
 #include "../src/store/store.h"
 #include "../src/verify/documentation_drift.h"
 
-#include <cassert>
+#include "test_check.h"
 #include <cstdio>
 #include <sqlite3.h>
 #include <unistd.h>
@@ -33,10 +33,10 @@ static void insertReadme(store::GraphStore &store, uint64_t project_id,
 			  "content, start_line, end_line) "
 			  "VALUES (?,0,'/README.md',?,0,0)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 2, content, -1, SQLITE_TRANSIENT);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -50,12 +50,12 @@ static void insertEntity(store::GraphStore &store, uint64_t project_id,
 			  "start_col, end_row, end_col) "
 			  "VALUES (?,?,0,?,'','/test.cpp',?,0,0,0,0)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, id);
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 3, name, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 4, language, -1, SQLITE_TRANSIENT);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -74,10 +74,10 @@ int main()
 	unlink(kDbPath);
 
 	store::GraphStore store;
-	assert(store.open(kDbPath));
+	CHECK(store.open(kDbPath));
 
 	uint64_t project_id = store.createProject("/test", "test_doc_drift");
-	assert(project_id > 0);
+	CHECK(project_id > 0);
 
 	// ── Test 1: extractLanguageClaims — capability vs project claim ──
 	// "Supports X" says the tool can handle X. Only "Written in X" claims this
@@ -88,23 +88,23 @@ int main()
 				     "Supports C++, Python, Rust, and Go.\n"
 				     "Written in C++ and Rust primarily.\n";
 		auto claims = extractLanguageClaims(readme);
-		assert(claims.size() == 2);
+		CHECK(claims.size() == 2);
 
 		const auto *cpp = findClaim(claims, "cpp");
-		assert(cpp != nullptr);
-		assert(cpp->display == "C++");
+		CHECK(cpp != nullptr);
+		CHECK(cpp->display == "C++");
 		// Only the "Written in" mention is a claim; the "Supports" one is a
 		// capability statement about the tool.
-		assert(cpp->mention_count == 1);
+		CHECK(cpp->mention_count == 1);
 
 		const auto *rust = findClaim(claims, "rust");
-		assert(rust != nullptr);
-		assert(rust->display == "Rust");
-		assert(rust->mention_count == 1);
+		CHECK(rust != nullptr);
+		CHECK(rust->display == "Rust");
+		CHECK(rust->mention_count == 1);
 
 		// Python and Go are mentioned only as things the tool supports.
-		assert(findClaim(claims, "python") == nullptr);
-		assert(findClaim(claims, "go") == nullptr);
+		CHECK(findClaim(claims, "python") == nullptr);
+		CHECK(findClaim(claims, "go") == nullptr);
 
 		printf("  [PASS] extractLanguageClaims: capability list vetoed, project "
 		       "claims (C++, Rust) kept\n");
@@ -118,8 +118,8 @@ int main()
 			"Powered by Google. Going forward, we use Go.";
 		auto claims = extractLanguageClaims(readme);
 		const auto *go = findClaim(claims, "go");
-		assert(go != nullptr);
-		assert(go->mention_count >= 1); // "Go" at end of sentence
+		CHECK(go != nullptr);
+		CHECK(go->mention_count >= 1); // "Go" at end of sentence
 		printf("  [PASS] extractLanguageClaims: Go word-boundary (Google/Going excluded)\n");
 	}
 
@@ -129,15 +129,15 @@ int main()
 		std::string readme = "The cpp parser is fast.";
 		auto claims = extractLanguageClaims(readme);
 		const auto *cpp = findClaim(claims, "cpp");
-		assert(cpp != nullptr);
-		assert(cpp->display == "C++");
+		CHECK(cpp != nullptr);
+		CHECK(cpp->display == "C++");
 		printf("  [PASS] extractLanguageClaims: cpp alias -> C++\n");
 	}
 
 	// ── Test 4: extractLanguageClaims — empty text ──────────────────
 	{
 		auto claims = extractLanguageClaims("");
-		assert(claims.empty());
+		CHECK(claims.empty());
 		printf("  [PASS] extractLanguageClaims: empty text -> no claims\n");
 	}
 
@@ -145,7 +145,7 @@ int main()
 	{
 		std::string readme = "This is a project about databases.";
 		auto claims = extractLanguageClaims(readme);
-		assert(claims.empty());
+		CHECK(claims.empty());
 		printf("  [PASS] extractLanguageClaims: no languages -> no claims\n");
 	}
 
@@ -169,11 +169,11 @@ int main()
 				     "|-------|------------|\n"
 				     "| Core | C++ |\n";
 		auto claims = extractLanguageClaims(readme);
-		assert(findClaim(claims, "python") == nullptr);
-		assert(findClaim(claims, "go") == nullptr);
-		assert(findClaim(claims, "rust") == nullptr);
+		CHECK(findClaim(claims, "python") == nullptr);
+		CHECK(findClaim(claims, "go") == nullptr);
+		CHECK(findClaim(claims, "rust") == nullptr);
 		// The Tech Stack row is a statement about this project, so it stays.
-		assert(findClaim(claims, "cpp") != nullptr);
+		CHECK(findClaim(claims, "cpp") != nullptr);
 		printf("  [PASS] extractLanguageClaims: capability matrix vetoed, "
 		       "tech-stack claim kept\n");
 	}
@@ -189,8 +189,8 @@ int main()
 				     "| tinygo | Go | 1.77 s |\n"
 				     "| rustc | Rust | 38.9 s |\n";
 		auto claims = extractLanguageClaims(readme);
-		assert(findClaim(claims, "go") == nullptr);
-		assert(findClaim(claims, "rust") == nullptr);
+		CHECK(findClaim(claims, "go") == nullptr);
+		CHECK(findClaim(claims, "rust") == nullptr);
 		printf("  [PASS] extractLanguageClaims: third-party benchmark table "
 		       "vetoed\n");
 	}
@@ -203,8 +203,8 @@ int main()
 		std::string readme = "The cpp parser is fast.";
 		auto claims = extractLanguageClaims(readme);
 		const auto *cpp = findClaim(claims, "cpp");
-		assert(cpp != nullptr);
-		assert(cpp->mention_count == 1);
+		CHECK(cpp != nullptr);
+		CHECK(cpp->mention_count == 1);
 		printf("  [PASS] extractLanguageClaims: prose 'parser' keeps the claim\n");
 	}
 
@@ -217,11 +217,11 @@ int main()
 		insertEntity(store, project_id, 200, "main", "python");
 		insertEntity(store, project_id, 201, "helper", "python");
 
-		assert(countEntitiesByLanguage(store, project_id, "cpp") == 3);
-		assert(countEntitiesByLanguage(store, project_id, "python") ==
+		CHECK(countEntitiesByLanguage(store, project_id, "cpp") == 3);
+		CHECK(countEntitiesByLanguage(store, project_id, "python") ==
 		       2);
-		assert(countEntitiesByLanguage(store, project_id, "go") == 0);
-		assert(countEntitiesByLanguage(store, project_id, "rust") == 0);
+		CHECK(countEntitiesByLanguage(store, project_id, "go") == 0);
+		CHECK(countEntitiesByLanguage(store, project_id, "rust") == 0);
 		printf("  [PASS] countEntitiesByLanguage: cpp=3, python=2, go=0, rust=0\n");
 	}
 
@@ -240,19 +240,19 @@ int main()
 		insertReadme(store, project_id,
 			     "Written in C++, Python, Go, and Rust.");
 		auto drifts = detectDocumentationDrift(store, project_id);
-		assert(drifts.size() == 2); // Go + Rust missing
+		CHECK(drifts.size() == 2); // Go + Rust missing
 
 		bool has_go = false, has_rust = false;
 		for (const auto &d : drifts) {
-			assert(d.type == "DocumentationDrift");
-			assert(d.severity == kDriftSeverityDoc);
+			CHECK(d.type == "DocumentationDrift");
+			CHECK(d.severity == kDriftSeverityDoc);
 			if (d.subject == "Go")
 				has_go = true;
 			if (d.subject == "Rust")
 				has_rust = true;
 		}
-		assert(has_go);
-		assert(has_rust);
+		CHECK(has_go);
+		CHECK(has_rust);
 		printf("  [PASS] detectDocumentationDrift: Go + Rust missing (2 drifts)\n");
 	}
 
@@ -264,8 +264,8 @@ int main()
 		// Go still has zero entities.
 		// Re-run detection — now only Go should be missing.
 		auto drifts = detectDocumentationDrift(store, project_id);
-		assert(drifts.size() == 1);
-		assert(drifts[0].subject == "Go");
+		CHECK(drifts.size() == 1);
+		CHECK(drifts[0].subject == "Go");
 		printf("  [PASS] detectDocumentationDrift: Rust added, only Go missing (1 drift)\n");
 	}
 
@@ -276,7 +276,7 @@ int main()
 			     nullptr, nullptr, nullptr);
 		// No README inserted → no claims → no drifts.
 		auto drifts = detectDocumentationDrift(store, project_id);
-		assert(drifts.empty());
+		CHECK(drifts.empty());
 		printf("  [PASS] detectDocumentationDrift: empty README -> no drifts\n");
 	}
 
@@ -284,5 +284,5 @@ int main()
 	unlink(kDbPath);
 
 	printf("=== test_documentation_drift PASSED ===\n");
-	return 0;
+	return checkFailures() ? 1 : 0;
 }

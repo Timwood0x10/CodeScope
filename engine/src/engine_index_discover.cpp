@@ -147,16 +147,21 @@ int collectFileJobs(uint64_t project_id, const std::string &dir,
 						for (char c : content)
 							if (c == '\n')
 								++line_count;
-						if (!g_store->insertDocument(
-							    project_id,
-							    doc_type, fp,
-							    content, 1,
-							    line_count)) {
+						if (!engineContext()
+							     .store
+							     ->insertDocument(
+								     project_id,
+								     doc_type,
+								     fp,
+								     content, 1,
+								     line_count)) {
 							fprintf(stderr,
 								"engine: insertDocument failed for %s: %s "
 								"[module=engine, method=collectFileJobs]\n",
 								fp.c_str(),
-								g_store->error()
+								engineContext()
+									.store
+									->error()
 									.c_str());
 						}
 					}

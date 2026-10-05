@@ -18,7 +18,7 @@
 #include "../src/model/state_builder.h"
 #include "../src/store/store.h"
 
-#include <cassert>
+#include "test_check.h"
 #include <cstdio>
 #include <sqlite3.h>
 #include <unistd.h>
@@ -49,14 +49,14 @@ static void insertEntity(store::GraphStore &store, uint64_t project_id,
       "start_col, end_row, end_col, module_path, visibility) "
       "VALUES (?,?,0,?,'',?,'cpp',0,0,0,0,?,?)";
   sqlite3_stmt *stmt = nullptr;
-  assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+  CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
   sqlite3_bind_int64(stmt, 1, id);
   sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
   sqlite3_bind_text(stmt, 3, name, -1, SQLITE_TRANSIENT);
   sqlite3_bind_text(stmt, 4, file_path, -1, SQLITE_TRANSIENT);
   sqlite3_bind_text(stmt, 5, module_path, -1, SQLITE_TRANSIENT);
   sqlite3_bind_int(stmt, 6, visibility);
-  assert(sqlite3_step(stmt) == SQLITE_DONE);
+  CHECK(sqlite3_step(stmt) == SQLITE_DONE);
   sqlite3_finalize(stmt);
  }
 
@@ -68,10 +68,10 @@ static void insertModuleScope(store::GraphStore &store, uint64_t project_id,
 	const char *sql = "INSERT INTO scope (project_id, parent_id, kind, "
 			  "name, start_row, end_row) VALUES (?,0,1,?,0,0)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 2, name, -1, SQLITE_TRANSIENT);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -83,11 +83,11 @@ static void insertCallRelation(store::GraphStore &store, uint64_t project_id,
 	const char *sql = "INSERT INTO relation (project_id, source_id, "
 			  "target_id, type) VALUES (?,?,?,1)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_int64(stmt, 2, source_id);
 	sqlite3_bind_int64(stmt, 3, target_id);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -98,7 +98,7 @@ static int countModuleSummaries(store::GraphStore &store, uint64_t project_id)
 	const char *sql =
 		"SELECT COUNT(*) FROM module_summary WHERE project_id=?";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	int count = 0;
 	if (sqlite3_step(stmt) == SQLITE_ROW)
@@ -115,7 +115,7 @@ static int64_t getModuleScopeId(store::GraphStore &store,
 	const char *sql =
 		"SELECT id FROM scope WHERE project_id=? AND kind=1 AND name=?";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 2, name, -1, SQLITE_TRANSIENT);
 	int64_t id = 0;
@@ -142,7 +142,7 @@ getModuleSummary(store::GraphStore &store, uint64_t project_id,
 		"SELECT incoming_count, outgoing_count, dead_entities, role "
 		"FROM module_summary WHERE project_id=? AND module_id=?";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_int64(stmt, 2, module_id);
 	ModuleSummaryRow row;
@@ -171,7 +171,7 @@ int main()
    return 1;
   }
   uint64_t pid = store.createProject(tmpDir(), "test_state_builder");
-	assert(pid > 0);
+	CHECK(pid > 0);
 
 	// Module /src/api/ with 6 entities (meets HAVING total >= 3).
 	  // All entities set visibility=1 so pub_count > 0 for the
@@ -217,7 +217,7 @@ int main()
 	{
 		StateBuilder sb(&store, pid);
 		int64_t total = sb.buildAll();
-		assert(total > 0);
+		CHECK(total > 0);
 		printf("Test 1 (buildAll returned %lld items): PASS\n",
 		       (long long)total);
 	}
@@ -225,24 +225,24 @@ int main()
 	// ── Test 2: module_summary has one row per qualifying module ─
 	{
 		int count = countModuleSummaries(store, pid);
-		assert(count == 2);
+		CHECK(count == 2);
 		printf("Test 2 (module_summary rows = %d): PASS\n", count);
 	}
 
 	// ── Test 3: api module content is correct ───────────────────
 	  {
 	   int64_t api_scope_id = getModuleScopeId(store, pid, "/src/api/");
-	   assert(api_scope_id > 0);
+	   CHECK(api_scope_id > 0);
 	   auto row = getModuleSummary(store, pid, api_scope_id);
-	   assert(row.found);
+	   CHECK(row.found);
 	   // 4 sources (1→2, 3→2, 4→5, 6→5), 2 targets (2,5)
-	   assert(row.incoming == 4);
-	   assert(row.outgoing == 2);
+	   CHECK(row.incoming == 4);
+	   CHECK(row.outgoing == 2);
 	   // 6 entities, only entities 2 and 5 are targets -> dead = 4.
-	   assert(row.dead == 4);
+	   CHECK(row.dead == 4);
 	   // Multi-signal classifier: pub_count=6, incoming=4 >= 2*outgoing=4,
 	   // incoming>=3, utilization=0.33>=0.3 -> role = 'api'.
-	   assert(row.role == "api");
+	   CHECK(row.role == "api");
 	   printf("Test 3 (api module incoming=%d outgoing=%d dead=%d "
 	          "role=%s): PASS\n",
 	          row.incoming, row.outgoing, row.dead, row.role.c_str());
@@ -254,16 +254,16 @@ int main()
 	//   Was 'infra' under v0.2.2 because utility required utilization>=0.5.
 	  {
 	   int64_t lib_scope_id = getModuleScopeId(store, pid, "/src/lib/");
-	   assert(lib_scope_id > 0);
+	   CHECK(lib_scope_id > 0);
 	   auto row = getModuleSummary(store, pid, lib_scope_id);
-	   assert(row.found);
+	   CHECK(row.found);
 	   // Trim(7) -> Split(8): 1 source, 1 target
-	   assert(row.incoming == 1);
-	   assert(row.outgoing == 1);
+	   CHECK(row.incoming == 1);
+	   CHECK(row.outgoing == 1);
 	   // 3 entities, only entity 8 is a target -> dead = 2.
-	   assert(row.dead == 2);
+	   CHECK(row.dead == 2);
 	   // v0.2.1: utility rule fires (outgoing<=5, pub>0, util>=0.05).
-	   assert(row.role == "utility");
+	   CHECK(row.role == "utility");
 	   printf("Test 4 (lib module incoming=%d outgoing=%d dead=%d "
 	          "role=%s): PASS\n",
 	          row.incoming, row.outgoing, row.dead, row.role.c_str());
@@ -274,9 +274,9 @@ int main()
 	// transaction. If it had rolled back, module_summary would be empty.
 	{
 		store.close();
-		   assert(store.open(kDbPath.c_str()));
+		   CHECK(store.open(kDbPath.c_str()));
 		   int count = countModuleSummaries(store, pid);
-		   assert(count == 2);
+		   CHECK(count == 2);
 		   printf("Test 5 (rows persist after close/reopen: %d): PASS\n",
 		          count);
 		  }
@@ -290,9 +290,9 @@ int main()
 		  {
 		   StateBuilder sb(&store, pid);
 		   int64_t total = sb.buildAll();
-		   assert(total > 0);
+		   CHECK(total > 0);
 		   int count = countModuleSummaries(store, pid);
-		   assert(count == 2);
+		   CHECK(count == 2);
 		   int64_t sum_dead = 0;
 		   {
 		    sqlite3 *db = store.handle();
@@ -300,7 +300,7 @@ int main()
 		    const char *sql =
 		     "SELECT COALESCE(SUM(dead_entities),0) "
 		     "FROM module_summary WHERE project_id=?";
-		    assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
+		    CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
 		           SQLITE_OK);
 		    sqlite3_bind_int64(stmt, 1, (sqlite3_int64)pid);
 		    if (sqlite3_step(stmt) == SQLITE_ROW)
@@ -308,7 +308,7 @@ int main()
 		    sqlite3_finalize(stmt);
 		   }
 		   // api(4) + lib(2) = 6 — unchanged by the rebuild.
-		   assert(sum_dead == 6);
+		   CHECK(sum_dead == 6);
 		   printf("Test 6 (second buildAll replaces rows: "
 		          "count=%d sum_dead=%lld): PASS\n",
 		          count, (long long)sum_dead);
@@ -316,5 +316,5 @@ int main()
 
 		  unlink(kDbPath.c_str());
 	printf("\nAll state builder batch tests passed.\n");
-	return 0;
+	return checkFailures() ? 1 : 0;
 }

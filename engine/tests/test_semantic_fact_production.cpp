@@ -25,7 +25,7 @@
 #include "../src/model/semantic_fact_extractor.h"
 #include "../src/store/store.h"
 
-#include <cassert>
+#include "test_check.h"
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
@@ -87,7 +87,7 @@ int main()
 		       "void helper() { compute(1); }\n"
 		       "int main() { helper(); return 0; }\n";
 	}
-	assert(fs::exists(source_path));
+	CHECK(fs::exists(source_path));
 
 	// ── Index through the real production entry point ───────────
 	if (engine_init(kDbPath) != 0) {
@@ -119,9 +119,9 @@ int main()
 		pid);
 	printf("  [debug] entity=%lld graph_nodes=%lld\n", (long long)entities,
 	       (long long)graph_nodes);
-	assert(entities > 0 &&
+	CHECK(entities > 0 &&
 	       "the fixture must produce entity rows (indexing broken?)");
-	assert(graph_nodes == 0 &&
+	CHECK(graph_nodes == 0 &&
 	       "the canonical indexing path must not populate graph_nodes; if "
 	       "that changed, this test's premise needs revisiting");
 
@@ -133,12 +133,12 @@ int main()
 				store.error().c_str());
 			return 1;
 		}
-		assert(store.beginTransaction());
+		CHECK(store.beginTransaction());
 		model::SemanticFactExtractor extractor(&store);
 		const int64_t extracted = extractor.extractAll(pid);
-		assert(store.commitTransaction());
+		CHECK(store.commitTransaction());
 		printf("  [debug] extractAll = %lld\n", (long long)extracted);
-		assert(extracted > 0 &&
+		CHECK(extracted > 0 &&
 		       "extracting zero facts from a real index is the "
 		       "regression this test guards (#1)");
 		store.close();
@@ -152,7 +152,7 @@ int main()
 		"AND kind='marker'",
 		pid);
 	printf("  [debug] pattern/todo/marker = %lld\n", (long long)todo_facts);
-	assert(todo_facts >= 1 &&
+	CHECK(todo_facts >= 1 &&
 	       "the TODO inside compute() must yield a pattern/todo fact "
 	       "without any graph_nodes rows");
 
@@ -166,5 +166,5 @@ int main()
 	printf("Evidence pipeline verified on the production path:\n");
 	printf("  - facts are extracted with graph_nodes empty\n");
 	printf("  - the planted TODO yields pattern/todo/marker\n");
-	return 0;
+	return checkFailures() ? 1 : 0;
 }

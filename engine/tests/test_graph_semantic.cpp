@@ -2,7 +2,7 @@
 #include "../src/ir/semantic_unit.h"
 #include "../src/ir/semantic_emitter.h"
 #include "../src/graph/graph_builder.h"
-#include <cassert>
+#include "test_check.h"
 #include <cstdio>
 #include <functional>
 
@@ -41,25 +41,25 @@ static void test_symbol_graph_from_semantic_unit()
 	for (auto &n : sym_g.nodes) {
 		if (n.name == "compute") {
 			has_compute = true;
-			assert(n.type == NodeType::Function);
+			CHECK(n.type == NodeType::Function);
 		}
 		if (n.name == "main") {
 			has_main = true;
-			assert(n.type == NodeType::Function);
+			CHECK(n.type == NodeType::Function);
 		}
 		if (n.name == "x") {
 			has_x = true;
-			assert(n.type == NodeType::Variable);
+			CHECK(n.type == NodeType::Variable);
 		}
 		if (n.name == "y") {
 			has_y = true;
-			assert(n.type == NodeType::Variable);
+			CHECK(n.type == NodeType::Variable);
 		}
 	}
-	assert(has_compute);
-	assert(has_main);
-	assert(has_x);
-	assert(has_y);
+	CHECK(has_compute);
+	CHECK(has_main);
+	CHECK(has_x);
+	CHECK(has_y);
 
 	// Verify Contains edges: main → x, main → y
 	uint64_t main_gid = 0, x_gid = 0;
@@ -75,7 +75,7 @@ static void test_symbol_graph_from_semantic_unit()
 		    e.target_id == x_gid)
 			contains_x = true;
 	}
-	assert(contains_x);
+	CHECK(contains_x);
 
 	printf("  ✓ test_symbol_graph_from_semantic_unit: %zu nodes, %zu edges\n",
 	       sym_g.nodes.size(), sym_g.edges.size());
@@ -108,9 +108,9 @@ static void test_anonymous_root_is_not_a_node()
 		if (n.name == "solo")
 			has_solo = true;
 	}
-	assert(nameless == 0);
-	assert(has_solo);
-	assert(g.nodes.size() == 1);
+	CHECK(nameless == 0);
+	CHECK(has_solo);
+	CHECK(g.nodes.size() == 1);
 	printf("  ✓ test_anonymous_root_is_not_a_node: %zu nodes\n",
 	       g.nodes.size());
 }
@@ -148,8 +148,8 @@ static void test_call_graph_from_semantic_unit()
 		if (n.name == "compute")
 			compute_gid = n.id;
 	}
-	assert(main_gid > 0);
-	assert(compute_gid > 0);
+	CHECK(main_gid > 0);
+	CHECK(compute_gid > 0);
 
 	bool call_found = false;
 	for (auto &e : call_g.edges) {
@@ -157,7 +157,7 @@ static void test_call_graph_from_semantic_unit()
 		    e.target_id == compute_gid)
 			call_found = true;
 	}
-	assert(call_found);
+	CHECK(call_found);
 
 	printf("  ✓ test_call_graph_from_semantic_unit: %zu nodes, %zu edges\n",
 	       call_g.nodes.size(), call_g.edges.size());
@@ -188,20 +188,20 @@ static void test_class_method_hierarchy()
 	for (auto &n : sym_g.nodes) {
 		if (n.name == "Calculator") {
 			has_calc = true;
-			assert(n.type == NodeType::Class);
+			CHECK(n.type == NodeType::Class);
 		}
 		if (n.name == "add") {
 			has_add = true;
-			assert(n.type == NodeType::Method);
+			CHECK(n.type == NodeType::Method);
 		}
 		if (n.name == "sub") {
 			has_sub = true;
-			assert(n.type == NodeType::Method);
+			CHECK(n.type == NodeType::Method);
 		}
 	}
-	assert(has_calc);
-	assert(has_add);
-	assert(has_sub);
+	CHECK(has_calc);
+	CHECK(has_add);
+	CHECK(has_sub);
 
 	// Verify Contains: Calculator → add, Calculator → sub
 	uint64_t calc_gid = 0, add_gid = 0;
@@ -217,7 +217,7 @@ static void test_class_method_hierarchy()
 		    e.target_id == add_gid)
 			contains_add = true;
 	}
-	assert(contains_add);
+	CHECK(contains_add);
 
 	printf("  ✓ test_class_method_hierarchy: %zu nodes, %zu edges\n",
 	       sym_g.nodes.size(), sym_g.edges.size());
@@ -238,10 +238,10 @@ static void test_empty_semantic_unit()
 	auto sym_g = builder.buildSymbolGraph(unit);
 	auto call_g = builder.buildCallGraph(unit);
 
-	assert(sym_g.nodes.empty());
-	assert(sym_g.edges.empty());
-	assert(call_g.nodes.empty()); // no nodes from call graph alone
-	assert(call_g.edges.empty());
+	CHECK(sym_g.nodes.empty());
+	CHECK(sym_g.edges.empty());
+	CHECK(call_g.nodes.empty()); // no nodes from call graph alone
+	CHECK(call_g.edges.empty());
 
 	printf("  ✓ test_empty_semantic_unit\n");
 }
@@ -259,5 +259,5 @@ int main()
 	test_empty_semantic_unit();
 
 	printf("\n=== GraphBuilder SemanticUnit tests passed ===\n");
-	return 0;
+	return checkFailures() ? 1 : 0;
 }

@@ -39,7 +39,7 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 		if (!file_path || !*file_path)
 			return dupString(
 				"{\"error\":\"[module=ffi, method=engine_index_file] file_path is required\"}");
-		if (!g_store || !g_parser)
+		if (!engineContext().store || !engineContext().parser)
 			return dupString(
 				"{\"ok\":false,\"error\":\"engine not initialized\"}");
 
@@ -79,16 +79,17 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 		// absolute form verbatim gave the same file a second identity.
 		// `file_path` stays the real path for the file-system work below (the
 		// LSP block opens it).
-		const std::string stored_path =
-			indexSpellingFor(g_store.get(), project_id, file_path);
+		const std::string stored_path = indexSpellingFor(
+			engineContext().store.get(), project_id, file_path);
 		const char *store_path = stored_path.c_str();
 
 		// Parse
-		TSTree *tree = g_parser->parse(store_path, source.c_str(),
-					       language, source.size());
+		TSTree *tree = engineContext().parser->parse(
+			store_path, source.c_str(), language, source.size());
 		if (!tree) {
 			return dupString("{\"ok\":false,\"error\":\"" +
-					 g_parser->error() + "\"}");
+					 engineContext().parser->error() +
+					 "\"}");
 		}
 
 		// ── Build IR: visitor (rust/java) or translator (others) ──
@@ -276,19 +277,19 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 		// deletes the file's old graph/entity data before rebuilding from
 		// those records. The pair is idempotent, so re-indexing a file
 		// never accumulates duplicates.
-		g_store->beginTransaction();
+		engineContext().store->beginTransaction();
 		std::string hash = simpleHash(source);
-		g_store->upsertFile(project_id, store_path, language,
-				    hash.c_str());
-		if (!g_store->insertFileResultBatch(
+		engineContext().store->upsertFile(project_id, store_path,
+						  language, hash.c_str());
+		if (!engineContext().store->insertFileResultBatch(
 			    project_id, std::vector<store::FileResult>{ fr })) {
-			g_store->rollbackTransaction();
+			engineContext().store->rollbackTransaction();
 			return dupString(
 				"{\"ok\":false,\"error\":\"insertFileResultBatch "
 				"failed: " +
-				g_store->error() + "\"}");
+				engineContext().store->error() + "\"}");
 		}
-		g_store->commitTransaction();
+		engineContext().store->commitTransaction();
 
 		// Rebuild graph for THIS file only — wrap in its own transaction
 		// exactly like engine_index_project. buildGraph uses a SAVEPOINT
@@ -296,15 +297,16 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 		// without it the SAVEPOINT leaks an implicit transaction that
 		// breaks the async knowledge builder.
 		{
-			g_store->beginTransaction();
+			engineContext().store->beginTransaction();
 			std::unordered_set<std::string> changed{ std::string(
 				store_path) };
-			if (!g_store->buildGraph(project_id, true, &changed)) {
-				g_store->rollbackTransaction();
+			if (!engineContext().store->buildGraph(project_id, true,
+							       &changed)) {
+				engineContext().store->rollbackTransaction();
 				return dupString(
 					"{\"ok\":false,\"error\":\"buildGraph "
 					"failed: " +
-					g_store->error() + "\"}");
+					engineContext().store->error() + "\"}");
 			}
 			// Indexing now builds the full call graph (buildGraph above),
 			// so mark every node callgraph_ready. This makes trace_path and
@@ -323,9 +325,10 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 				"UPDATE graph_nodes SET callgraph_ready=1 "
 				"WHERE project_id=" +
 				std::to_string(project_id);
-			if (!g_store->exec(up.c_str())) {
-				std::string err = g_store->error();
-				g_store->rollbackTransaction();
+			if (!engineContext().store->exec(up.c_str())) {
+				std::string err =
+					engineContext().store->error();
+				engineContext().store->rollbackTransaction();
 				fprintf(stderr,
 					"engine_index_file: callgraph_ready UPDATE "
 					"failed: %s "
@@ -336,7 +339,7 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 					"UPDATE failed: " +
 					err + "\"}");
 			}
-			g_store->commitTransaction();
+			engineContext().store->commitTransaction();
 		}
 
 		// Async knowledge builder (modules/role/summary) — keeps the
@@ -364,14 +367,17 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 			}
 			sqlite3_stmt *st = nullptr;
 			int64_t n = 0;
-			if (sqlite3_prepare_v2(g_store->handle(), sql.c_str(),
-					       -1, &st, nullptr) != SQLITE_OK) {
+			if (sqlite3_prepare_v2(engineContext().store->handle(),
+					       sql.c_str(), -1, &st,
+					       nullptr) != SQLITE_OK) {
 				fprintf(stderr,
 					"engine_index_file: countRows prepare "
 					"failed for %s: %s "
 					"[module=ffi, method=engine_index_file]\n",
 					table,
-					sqlite3_errmsg(g_store->handle()));
+					sqlite3_errmsg(
+						engineContext()
+							.store->handle()));
 				return 0;
 			}
 			sqlite3_bind_int64(st, 1,
@@ -390,13 +396,13 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 			  << ",\"edges\":" << edge_count << "}";
 		return dupString(result_os.str());
 	} catch (const std::exception &e) {
-		g_store->rollbackTransaction();
+		engineContext().store->rollbackTransaction();
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_index_file] ") +
 			e.what() + "\"}");
 	} catch (...) {
-		g_store->rollbackTransaction();
+		engineContext().store->rollbackTransaction();
 		return dupString(util::errorEnvelope("ffi", "engine_index_file",
 						     "unknown exception"));
 	}

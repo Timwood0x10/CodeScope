@@ -95,7 +95,7 @@ extern "C" char *engine_verify_review(uint64_t project_id, const char *text)
 {
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!g_store)
+		if (!engineContext().store)
 			return dupString("{\"error\":\"not initialized\"}");
 		if (!text || !*text)
 			return dupString(
@@ -152,7 +152,7 @@ extern "C" char *engine_verify_reality(uint64_t project_id, const char *text)
 {
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!g_store)
+		if (!engineContext().store)
 			return dupString("{\"error\":\"not initialized\"}");
 		if (!text || !*text)
 			return dupString(
@@ -208,10 +208,10 @@ extern "C" char *engine_detect_drift(uint64_t project_id)
 {
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!g_store)
+		if (!engineContext().store)
 			return dupString("{\"error\":\"not initialized\"}");
 
-		sqlite3 *db = g_store->handle();
+		sqlite3 *db = engineContext().store->handle();
 		if (!db)
 			return dupString(
 				"{\"error\":\"db handle null "
@@ -255,7 +255,7 @@ extern "C" char *engine_detect_drift(uint64_t project_id)
 						"Capability '" + name +
 						"' declared in README but no "
 						"implementing entity with callers";
-					g_store->insertFinding(
+					engineContext().store->insertFinding(
 						project_id, "MissingCapability",
 						kDriftSeverityHard, 0, detail,
 						0.9);
@@ -406,11 +406,12 @@ extern "C" char *engine_detect_drift(uint64_t project_id)
 							"' declared in " +
 							file_path +
 							" but no enforcing code detected";
-						g_store->insertFinding(
-							project_id,
-							"BrokenContract",
-							kDriftSeverityHard, 0,
-							detail, 0.8);
+						engineContext()
+							.store->insertFinding(
+								project_id,
+								"BrokenContract",
+								kDriftSeverityHard,
+								0, detail, 0.8);
 						if (!first)
 							json << ",";
 						first = false;
@@ -467,11 +468,11 @@ extern "C" char *engine_detect_documentation_drift(uint64_t project_id)
 {
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!g_store)
+		if (!engineContext().store)
 			return dupString("{\"error\":\"not initialized\"}");
 
 		// Read README content from the document table.
-		sqlite3 *db = g_store->handle();
+		sqlite3 *db = engineContext().store->handle();
 		if (!db)
 			return dupString(
 				"{\"error\":\"db handle null "
@@ -515,7 +516,8 @@ extern "C" char *engine_detect_documentation_drift(uint64_t project_id)
 		for (const auto &claim : claims) {
 			claimed.push_back(claim.display);
 			int64_t count = verify::countEntitiesByLanguage(
-				*g_store, project_id, claim.canonical);
+				*engineContext().store, project_id,
+				claim.canonical);
 			if (count > 0)
 				found.push_back(claim.display);
 			else
@@ -533,10 +535,11 @@ extern "C" char *engine_detect_documentation_drift(uint64_t project_id)
 
 		// Persist a finding row for each missing language.
 		for (size_t i = 0; i < missing.size(); ++i) {
-			g_store->insertFinding(project_id, "DocumentationDrift",
-					       verify::kDriftSeverityDoc, 0,
-					       missing_details[i],
-					       verify::kDriftConfidenceDoc);
+			engineContext().store->insertFinding(
+				project_id, "DocumentationDrift",
+				verify::kDriftSeverityDoc, 0,
+				missing_details[i],
+				verify::kDriftConfidenceDoc);
 		}
 		int drifts_found = static_cast<int>(missing.size());
 
@@ -602,23 +605,23 @@ extern "C" char *engine_detect_capability_drift(uint64_t project_id)
 {
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!g_store)
+		if (!engineContext().store)
 			return dupString(
 				"{\"error\":\"not initialized "
 				"[module=ffi, method=engine_detect_capability_drift]\"}");
 
-		sqlite3 *db = g_store->handle();
+		sqlite3 *db = engineContext().store->handle();
 		if (!db)
 			return dupString(
 				"{\"error\":\"db not open "
 				"[module=ffi, method=engine_detect_capability_drift]\"}");
 
-		auto drifts =
-			verify::detectCapabilityDrift(*g_store, project_id);
+		auto drifts = verify::detectCapabilityDrift(
+			*engineContext().store, project_id);
 
 		// Persist each drift as a finding row.
 		for (const auto &d : drifts) {
-			g_store->insertFinding(
+			engineContext().store->insertFinding(
 				project_id, "CapabilityDrift",
 				verify::kDriftSeverityCapability, 0, d.detail,
 				verify::kDriftConfidenceCapability);
@@ -707,20 +710,20 @@ extern "C" char *engine_detect_architecture_drift(uint64_t project_id)
 {
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!g_store)
+		if (!engineContext().store)
 			return dupString(
 				"{\"error\":\"not initialized "
 				"[module=ffi, method=engine_detect_architecture_drift]\"}");
 
-		auto drifts =
-			verify::detectArchitectureDrift(*g_store, project_id);
+		auto drifts = verify::detectArchitectureDrift(
+			*engineContext().store, project_id);
 
 		// Persist each drift as a finding row.
 		for (const auto &d : drifts) {
-			g_store->insertFinding(project_id, "ArchitectureDrift",
-					       verify::kDriftSeverityArch, 0,
-					       d.detail,
-					       verify::kDriftConfidenceArch);
+			engineContext().store->insertFinding(
+				project_id, "ArchitectureDrift",
+				verify::kDriftSeverityArch, 0, d.detail,
+				verify::kDriftConfidenceArch);
 		}
 
 		std::ostringstream json;

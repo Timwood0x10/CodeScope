@@ -30,7 +30,7 @@
 #include "../src/verify/contract_verifier.h"
 #include "../src/verify/dead_code_inspector.h"
 
-#include <cassert>
+#include "test_check.h"
 #include <cstdint>
 #include <cstdio>
 #include <sqlite3.h>
@@ -157,9 +157,9 @@ int main()
 		return 1;
 	}
 	const uint64_t pid = store.createProject("/tmp", "verifier-gates");
-	assert(pid > 0);
+	CHECK(pid > 0);
 	sqlite3 *db = store.handle();
-	assert(db != nullptr);
+	CHECK(db != nullptr);
 	// ThreadSafe must be a *declared* contract, otherwise verify() returns
 	// Unknown at the "no contract declared" step and every assertion below
 	// would pass for the wrong reason.
@@ -184,7 +184,7 @@ int main()
 	{
 		const std::string v = verdictOf(verifier.verify(claim));
 		printf("  [debug] Block-only          -> %s\n", v.c_str());
-		assert(v == "Unknown" &&
+		CHECK(v == "Unknown" &&
 		       "a class named Block must not be read as a lock");
 	}
 
@@ -193,7 +193,7 @@ int main()
 	{
 		const std::string v = verdictOf(verifier.verify(claim));
 		printf("  [debug] with mutex          -> %s\n", v.c_str());
-		assert(v == "Supported" &&
+		CHECK(v == "Supported" &&
 		       "an actual mutex entity must still support ThreadSafe");
 	}
 
@@ -204,7 +204,7 @@ int main()
 	{
 		const std::string v = verdictOf(verifier.verify(claim));
 		printf("  [debug] no sync primitive   -> %s\n", v.c_str());
-		assert(v == "Unknown" &&
+		CHECK(v == "Unknown" &&
 		       "absence of a matching name is not evidence of being "
 		       "unsafe; Contradicted would over-claim");
 	}
@@ -223,7 +223,7 @@ int main()
 			verify::detectCapabilityDrift(store, pid);
 		printf("  [debug] capability drifts   -> %zu (empty backend)\n",
 		       drifts.size());
-		assert(drifts.empty() &&
+		CHECK(drifts.empty() &&
 		       "an empty backend must not produce capability drift");
 	}
 
@@ -243,7 +243,7 @@ int main()
 		const size_t orphans = countDeadModules(inspector.inspect());
 		printf("  [debug] orphan modules      -> %zu (no import rows)\n",
 		       orphans);
-		assert(orphans == 0 &&
+		CHECK(orphans == 0 &&
 		       "modules must not be called orphaned when the import "
 		       "table is empty");
 	}
@@ -264,7 +264,7 @@ int main()
 		const size_t orphans = countDeadModules(inspector.inspect());
 		printf("  [debug] orphan modules      -> %zu (imports present)\n",
 		       orphans);
-		assert(orphans > 0 &&
+		CHECK(orphans > 0 &&
 		       "with import rows present the orphan query must still "
 		       "report src/");
 	}
@@ -284,7 +284,7 @@ int main()
 		const size_t dead = countDeadFunctions(all);
 		printf("  [debug] dead functions      -> %zu (no relation rows)\n",
 		       dead);
-		assert(dead == 0 &&
+		CHECK(dead == 0 &&
 		       "empty relation table must not produce DeadFunction "
 		       "findings (vacuous NOT EXISTS)");
 	}
@@ -323,7 +323,7 @@ int main()
 		       drift);
 		// Only the src/ir/ -> src/verify/ sibling crossing may survive;
 		// the src/ir/-internal call must not surface as 'src/' <-> 'src/ir/'.
-		assert(drift == 1 &&
+		CHECK(drift == 1 &&
 		       "parent/child scope pairs must not be reported as "
 		       "architecture drift, but a sibling crossing must be");
 	}
@@ -336,5 +336,5 @@ int main()
 	printf("\n=== test_verifier_evidence_gates PASSED ===\n");
 	printf("Drift detectors gated; ThreadSafe no longer reads Block as a "
 	       "lock and no longer contradicts on absence\n");
-	return 0;
+	return checkFailures() ? 1 : 0;
 }

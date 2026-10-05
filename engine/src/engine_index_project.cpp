@@ -61,12 +61,15 @@ using namespace engine_index_sched;
 static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 			      const char *language_filter)
 {
-	if (!g_store)
+	// Cached once: this function drives the whole index run and touches the
+	// state at every phase boundary (TD-1 knife 2).
+	EngineContext &ctx = engineContext();
+	if (!ctx.store)
 		return dupString(
 			"{\"ok\":false,\"error\":\"engine not initialized\"}");
 
 	// Serialize with the background enrichment thread. It writes to the
-	// same g_store connection (model / state / FTS / knowledge) and opens
+	// same engine store connection (model / state / FTS / knowledge) and opens
 	// its own transactions, so indexing concurrently would interleave
 	// BEGIN/COMMIT on one connection ("cannot start a transaction within
 	// a transaction") and one side could commit the other's half-written
@@ -177,7 +180,7 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 
 	// Batch-load file scan state ONCE to avoid N per-file DB queries
 	// during discovery (1254 files × ~2ms prepare/finalize = ~2.5s saved).
-	auto scan_state = g_store->loadFileScanStateBatch(project_id);
+	auto scan_state = ctx.store->loadFileScanStateBatch(project_id);
 
 	// Phase 1: collect file paths (single-threaded). The directory walk,
 	// README ingestion and incremental scan-state gate now live in
@@ -208,11 +211,11 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 		// rebuilt row count — preserving the A19 "readiness matches
 		// canonical data" invariant.
 		if (is_reindex && env_mode && strcmp(env_mode, "deep") == 0) {
-			g_store->buildVectorsFromGraph(project_id);
+			ctx.store->buildVectorsFromGraph(project_id);
 			sqlite3_stmt *vstmt = nullptr;
 			const char *vsql =
 				"SELECT COUNT(*) FROM node_vectors WHERE project_id = ?";
-			if (sqlite3_prepare_v2(g_store->handle(), vsql, -1,
+			if (sqlite3_prepare_v2(ctx.store->handle(), vsql, -1,
 					       &vstmt, nullptr) == SQLITE_OK) {
 				sqlite3_bind_int64(
 					vstmt, 1,
@@ -222,7 +225,7 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 					vec_rows =
 						sqlite3_column_int64(vstmt, 0);
 				sqlite3_finalize(vstmt);
-				g_store->setProjectReadiness(
+				ctx.store->setProjectReadiness(
 					project_id, "vector_ready",
 					vec_rows > 0 ? 1 : 0);
 			} else {
@@ -230,7 +233,7 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 					"engine_index_project: node_vectors count "
 					"probe failed (no-op re-index): %s "
 					"[module=engine, method=engine_index_project]\n",
-					sqlite3_errmsg(g_store->handle()));
+					sqlite3_errmsg(ctx.store->handle()));
 			}
 		}
 		return dupString(
@@ -252,7 +255,7 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 		active_files.reserve(jobs.size());
 		for (auto &job : jobs)
 			active_files.push_back(job.path);
-		g_store->cleanupStaleFiles(project_id, active_files);
+		ctx.store->cleanupStaleFiles(project_id, active_files);
 	}
 
 	// Sort jobs by file size descending — large files first
@@ -270,7 +273,7 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 		for (auto &j : jobs)
 			langs.insert(j.lang);
 		for (auto &l : langs)
-			lang_ptrs[l] = g_parser->getLanguage(l.c_str());
+			lang_ptrs[l] = ctx.parser->getLanguage(l.c_str());
 	}
 
 	// Index mode (from env): "fast" | "normal" (default) | "deep"
@@ -357,7 +360,8 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 	const size_t kWriterBatchSize = 50;
 
 	std::thread writer_thread([&]() {
-		g_store->beginTransaction();
+		EngineContext &ctx = engineContext();
+		ctx.store->beginTransaction();
 
 		std::vector<store::FileResult> batch;
 		batch.reserve(kWriterBatchSize);
@@ -368,7 +372,7 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 			if (!ok) {
 				// Queue is done and empty — flush any remaining batch
 				if (!batch.empty()) {
-					if (!g_store->insertFileResultBatch(
+					if (!ctx.store->insertFileResultBatch(
 						    project_id, batch)) {
 						writer_error = 1;
 					}
@@ -392,8 +396,8 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 			// Flush batch to DB (within the single transaction)
 			if (batch.size() >= kWriterBatchSize ||
 			    result_queue.isDone()) {
-				if (!g_store->insertFileResultBatch(project_id,
-								    batch)) {
+				if (!ctx.store->insertFileResultBatch(
+					    project_id, batch)) {
 					writer_error = 1;
 					fprintf(stderr,
 						"writer: insertFileResultBatch"
@@ -406,9 +410,9 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 		}
 
 		if (writer_error)
-			g_store->rollbackTransaction();
+			ctx.store->rollbackTransaction();
 		else
-			g_store->commitTransaction();
+			ctx.store->commitTransaction();
 	});
 
 	// ── Parse workers ──────────────────────────────────────────

@@ -23,6 +23,8 @@ extern "C" int sqlite3_vec_init(sqlite3 *db, char **pzErrMsg,
 
 int engine_init(const char *db_path)
 {
+	// Cache the state accessor: this function fills all three members.
+	EngineContext &ctx = engineContext();
 	try {
 		if (!db_path || !*db_path) {
 			fprintf(stderr,
@@ -39,18 +41,19 @@ int engine_init(const char *db_path)
 
 		// Use unique_ptr for exception-safe initialization
 		// If any constructor throws, previous allocations are auto-freed.
-		g_store = std::make_unique<store::GraphStore>();
+		ctx.store = std::make_unique<store::GraphStore>();
 
 		// Time GraphStore::open() (PRAGMAs + createSchema) so the
 		// per-worker startup cost is visible in logs. createSchema runs
 		// ~100+ CREATE TABLE/INDEX IF NOT EXISTS statements on a fresh
 		// DB — significant in short-lived worker subprocesses.
 		auto t_open_start = std::chrono::steady_clock::now();
-		if (!g_store->open(db_path)) {
+		if (!ctx.store->open(db_path)) {
 			fprintf(stderr,
 				"engine_init: open failed: %s [module=engine, method=engine_init]\n",
-				g_store ? g_store->error().c_str() : "(null)");
-			g_store.reset(); // Auto-cleanup via unique_ptr
+				ctx.store ? ctx.store->error().c_str() :
+					    "(null)");
+			ctx.store.reset(); // Auto-cleanup via unique_ptr
 			return -1;
 		}
 		auto t_open_end = std::chrono::steady_clock::now();
@@ -62,17 +65,18 @@ int engine_init(const char *db_path)
 							   t_open_start)
 				.count());
 
-		g_query = std::make_unique<query::QueryEngine>(g_store.get());
+		ctx.query =
+			std::make_unique<query::QueryEngine>(ctx.store.get());
 
 		// Initialize parser and register available grammars
-		g_parser = std::make_unique<Parser>();
+		ctx.parser = std::make_unique<Parser>();
 		// Register all statically-linked tree-sitter grammars.
 		// Grammars are compiled into the binary — no .so loading needed.
 		const char *langs[] = { "python", "cpp",	"c",
 					"rust",	  "javascript", "typescript",
 					"tsx",	  "go",		"java" };
 		for (auto lang : langs) {
-			g_parser->registerLanguage(lang);
+			ctx.parser->registerLanguage(lang);
 		}
 
 		// sqlite-vec is statically compiled into the binary — no runtime
@@ -95,28 +99,31 @@ int engine_init(const char *db_path)
 
 void engine_shutdown()
 {
+	// Cache the state accessor: this function tears down all three members.
+	EngineContext &ctx = engineContext();
 	try {
 		// Destruct in reverse construction order:
-		//   constructed: g_store → g_query (depends on store) → g_parser (independent)
-		//   destruct:    g_parser → g_query → g_store
-		// This guarantees that g_query's destructor (which may issue SQLite calls)
-		// runs while g_store is still alive, and g_store is closed last.
+		//   constructed: store → query (depends on store) → parser (independent)
+		//   destruct:    parser → query → store
+		// This guarantees that the query engine's destructor (which may issue
+		// SQLite calls) runs while the store is still alive, and the store is
+		// closed last.
 
-		// Clear the verifier registry BEFORE g_store is torn down: every
-		// registered Verifier holds a raw pointer to g_store, so dropping
+		// Clear the verifier registry BEFORE the store is torn down: every
+		// registered Verifier holds a raw pointer to the store, so dropping
 		// them first avoids any dangling-pointer access during store close.
 		verify::VerifierRegistry::instance().clear();
 
 		// Wait for the async knowledge builder to finish before destroying
-		// g_store. The builder thread dereferences g_store, so failing to
-		// join here would cause a use-after-free.
+		// the store. The builder thread dereferences it, so failing to join
+		// here would cause a use-after-free.
 		joinAsyncKnowledgeBuilder();
 
-		g_parser.reset(); // independent, safe to drop first
-		g_query.reset(); // may do SQLite work via g_store, destruct BEFORE store closes
-		if (g_store) {
-			g_store->close();
-			g_store.reset();
+		ctx.parser.reset(); // independent, safe to drop first
+		ctx.query.reset(); // may issue SQLite work; drop before the store closes
+		if (ctx.store) {
+			ctx.store->close();
+			ctx.store.reset();
 		}
 	} catch (const std::exception &e) {
 		fprintf(stderr, "[module=ffi, method=engine_shutdown] %s\n",
@@ -137,9 +144,10 @@ uint64_t engine_create_project(const char *root_path, const char *name)
 				"[module=ffi, method=engine_create_project] root_path and name are required\n");
 			return 0;
 		}
-		if (!g_store)
+		if (!engineContext().store)
 			return 0;
-		uint64_t pid = g_store->createProject(root_path, name);
+		uint64_t pid =
+			engineContext().store->createProject(root_path, name);
 		if (pid == 0)
 			return 0;
 
@@ -152,7 +160,7 @@ uint64_t engine_create_project(const char *root_path, const char *name)
 		// future revision should key the registry by project_id.
 		verify::VerifierRegistry::instance().clear();
 		verify::VerifierRegistry::instance().register_default_verifiers(
-			g_store.get(), pid);
+			engineContext().store.get(), pid);
 
 		return pid;
 	} catch (const std::exception &e) {
@@ -170,9 +178,9 @@ uint64_t engine_create_project(const char *root_path, const char *name)
 uint64_t engine_get_latest_project_id()
 {
 	try {
-		if (!g_store)
+		if (!engineContext().store)
 			return 0;
-		return g_store->getLatestProjectId();
+		return engineContext().store->getLatestProjectId();
 	} catch (const std::exception &e) {
 		fprintf(stderr,
 			"[module=ffi, method=engine_get_latest_project_id] %s\n",
@@ -193,9 +201,9 @@ uint64_t engine_get_project_id_by_path(const char *root_path)
 				"[module=ffi, method=engine_get_project_id_by_path] root_path is required\n");
 			return 0;
 		}
-		if (!g_store)
+		if (!engineContext().store)
 			return 0;
-		return g_store->getProjectId(root_path);
+		return engineContext().store->getProjectId(root_path);
 	} catch (const std::exception &e) {
 		fprintf(stderr,
 			"[module=ffi, method=engine_get_project_id_by_path] %s\n",
@@ -211,9 +219,9 @@ uint64_t engine_get_project_id_by_path(const char *root_path)
 uint64_t engine_get_project_node_count(uint64_t project_id)
 {
 	try {
-		if (!g_store)
+		if (!engineContext().store)
 			return 0;
-		return g_store->getProjectNodeCount(project_id);
+		return engineContext().store->getProjectNodeCount(project_id);
 	} catch (const std::exception &e) {
 		fprintf(stderr,
 			"[module=ffi, method=engine_get_project_node_count] %s\n",

@@ -43,7 +43,7 @@ char *engine_index_project_membulk(
 	const std::unordered_set<std::string> &known_failures, bool is_reindex,
 	bool mode_fast, bool mode_deep)
 {
-	if (!g_store)
+	if (!engineContext().store)
 		return dupString(
 			"{\"ok\":false,\"error\":\"engine not initialized\"}");
 
@@ -430,7 +430,7 @@ char *engine_index_project_membulk(
 	// indexes and skip the per-file DELETE on a fresh DB.
 	int total_indexed = static_cast<int>(agg.size());
 	auto t_flush_start = steady_clock::now();
-	if (!agg.flush(*g_store, project_id, is_reindex)) {
+	if (!agg.flush(*engineContext().store, project_id, is_reindex)) {
 		return dupString(
 			"{\"ok\":false,\"error\":\"membulk flush failed\"}");
 	}

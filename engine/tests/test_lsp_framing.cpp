@@ -7,7 +7,7 @@
 
 #include "../src/lsp/lsp_framing.h"
 
-#include <cassert>
+#include "test_check.h"
 #include <cstdio>
 #include <string>
 
@@ -19,12 +19,12 @@ int main()
 			"{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{}}";
 		std::string buffer = wrapLspFramed(response);
 		std::string body;
-		assert(takeNextLspMessage(buffer, body) == LspFraming::Message);
-		assert(body == response);
-		assert(buffer.empty());
-		assert(isResponseFor(body, 7));
+		CHECK(takeNextLspMessage(buffer, body) == LspFraming::Message);
+		CHECK(body == response);
+		CHECK(buffer.empty());
+		CHECK(isResponseFor(body, 7));
 		// A response to a different request is not this call's answer.
-		assert(!isResponseFor(body, 8));
+		CHECK(!isResponseFor(body, 8));
 		printf("  [PASS] framing: complete message extracted and matched\n");
 	}
 
@@ -36,15 +36,15 @@ int main()
 		// Header only, then part of the body, then the rest.
 		std::string buffer = framed.substr(0, 20);
 		std::string body;
-		assert(takeNextLspMessage(buffer, body) ==
+		CHECK(takeNextLspMessage(buffer, body) ==
 		       LspFraming::NeedMore);
 		buffer += framed.substr(20, 10);
-		assert(takeNextLspMessage(buffer, body) ==
+		CHECK(takeNextLspMessage(buffer, body) ==
 		       LspFraming::NeedMore);
 		buffer += framed.substr(30);
-		assert(takeNextLspMessage(buffer, body) == LspFraming::Message);
-		assert(body == response);
-		assert(buffer.empty());
+		CHECK(takeNextLspMessage(buffer, body) == LspFraming::Message);
+		CHECK(body == response);
+		CHECK(buffer.empty());
 		printf("  [PASS] framing: message reassembled across reads\n");
 	}
 
@@ -63,15 +63,15 @@ int main()
 		std::string body;
 
 		// The notification is framed correctly but is not an answer.
-		assert(takeNextLspMessage(buffer, body) == LspFraming::Message);
-		assert(body == notification);
-		assert(!isResponseFor(body, 11));
+		CHECK(takeNextLspMessage(buffer, body) == LspFraming::Message);
+		CHECK(body == notification);
+		CHECK(!isResponseFor(body, 11));
 
 		// The response that arrived in the same read is still there.
-		assert(takeNextLspMessage(buffer, body) == LspFraming::Message);
-		assert(body == response);
-		assert(isResponseFor(body, 11));
-		assert(buffer.empty());
+		CHECK(takeNextLspMessage(buffer, body) == LspFraming::Message);
+		CHECK(body == response);
+		CHECK(isResponseFor(body, 11));
+		CHECK(buffer.empty());
 		printf("  [PASS] framing: notification skipped, response kept\n");
 	}
 
@@ -81,8 +81,8 @@ int main()
 			"{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/"
 			"publishDiagnostics\",\"params\":{\"uri\":\"f\"}}");
 		std::string body;
-		assert(takeNextLspMessage(buffer, body) == LspFraming::Message);
-		assert(!isResponseFor(body, 1));
+		CHECK(takeNextLspMessage(buffer, body) == LspFraming::Message);
+		CHECK(!isResponseFor(body, 1));
 		printf("  [PASS] framing: notification is never a response\n");
 	}
 
@@ -97,30 +97,30 @@ int main()
 		buffer += tail;
 		std::string body;
 		// The zero-length header is reported as consumed, not as "need more"...
-		assert(takeNextLspMessage(buffer, body) == LspFraming::Skipped);
-		assert(buffer == tail);
+		CHECK(takeNextLspMessage(buffer, body) == LspFraming::Skipped);
+		CHECK(buffer == tail);
 		// ...so the message behind it is readable immediately.
-		assert(takeNextLspMessage(buffer, body) == LspFraming::Message);
-		assert(isResponseFor(body, 2));
-		assert(buffer.empty());
+		CHECK(takeNextLspMessage(buffer, body) == LspFraming::Message);
+		CHECK(isResponseFor(body, 2));
+		CHECK(buffer.empty());
 
 		std::string only_bad = "Content-Length: 0\r\n\r\n";
-		assert(takeNextLspMessage(only_bad, body) ==
+		CHECK(takeNextLspMessage(only_bad, body) ==
 		       LspFraming::Skipped);
-		assert(only_bad.empty());
+		CHECK(only_bad.empty());
 		printf("  [PASS] framing: unusable header dropped, next message read\n");
 	}
 
 	// ── Test 6: a non-numeric id is not a response id ───────────────
 	{
-		assert(!isResponseFor("{\"jsonrpc\":\"2.0\",\"id\":\"abc\"}",
+		CHECK(!isResponseFor("{\"jsonrpc\":\"2.0\",\"id\":\"abc\"}",
 				      1));
-		assert(!isResponseFor("{\"jsonrpc\":\"2.0\",\"params\":{}}",
+		CHECK(!isResponseFor("{\"jsonrpc\":\"2.0\",\"params\":{}}",
 				      1));
-		assert(isResponseFor("{\"jsonrpc\":\"2.0\",\"id\": 42 }", 42));
+		CHECK(isResponseFor("{\"jsonrpc\":\"2.0\",\"id\": 42 }", 42));
 		printf("  [PASS] framing: non-numeric / missing ids rejected\n");
 	}
 
 	printf("=== test_lsp_framing PASSED ===\n");
-	return 0;
+	return checkFailures() ? 1 : 0;
 }

@@ -65,7 +65,7 @@ char *postParsePhase(uint64_t project_id, const std::string &dir,
 	int64_t time_fts_ms = 0, time_vector_ms = 0;
 	{
 		auto t_bg = steady_clock::now();
-		g_store->beginTransaction();
+		engineContext().store->beginTransaction();
 		// Incremental re-index: pass changed files so buildGraph uses the
 		// optimized path (only cycles the unique edge index, not the 5
 		// lookup indexes). First index (is_reindex=false) passes nullptr
@@ -99,10 +99,10 @@ char *postParsePhase(uint64_t project_id, const std::string &dir,
 		// propagate a JSON error so the caller (and the user) knows the
 		// index did not fully succeed. (CSR failures are non-fatal inside
 		// buildGraph and still return true.)
-		if (!g_store->buildGraph(project_id, !defer_csr,
-					 is_reindex ? &changed_files :
-						      nullptr)) {
-			g_store->rollbackTransaction();
+		if (!engineContext().store->buildGraph(
+			    project_id, !defer_csr,
+			    is_reindex ? &changed_files : nullptr)) {
+			engineContext().store->rollbackTransaction();
 			return dupString(
 				"{\"ok\":false,\"error\":\"buildGraph failed "
 				"for project " +
@@ -110,7 +110,7 @@ char *postParsePhase(uint64_t project_id, const std::string &dir,
 				" (resolver stage)\",\"module\":\"engine\","
 				"\"method\":\"postParsePhase\"}");
 		}
-		g_store->commitTransaction();
+		engineContext().store->commitTransaction();
 		// Indexing now builds the full call graph (buildGraph above),
 		// so mark every node callgraph_ready. This makes trace_path and
 		// the enhancement-status report reflect that the call graph is
@@ -129,12 +129,12 @@ char *postParsePhase(uint64_t project_id, const std::string &dir,
 			// silently misreport readiness. Log on failure so the silent
 			// misreport is at least observable, mirroring the
 			// [module=..., method=...] fprintf pattern used elsewhere.
-			if (!g_store->exec(up.c_str())) {
+			if (!engineContext().store->exec(up.c_str())) {
 				fprintf(stderr,
 					"engine_index_project: callgraph_ready UPDATE "
 					"failed: %s "
 					"[module=engine, method=engine_index_project]\n",
-					g_store->error().c_str());
+					engineContext().store->error().c_str());
 			}
 		}
 		// P0.1: entity/relation dual-write now happens INSIDE buildGraph
@@ -159,7 +159,7 @@ char *postParsePhase(uint64_t project_id, const std::string &dir,
 	// count (cyclomatic > 0), so readiness never over-claims.
 	{
 		auto t_metrics = steady_clock::now();
-		g_store->resolveStagedMetrics(project_id);
+		engineContext().store->resolveStagedMetrics(project_id);
 		int metrics_rows = 0;
 		{
 			sqlite3_stmt *mstmt = nullptr;
@@ -167,8 +167,9 @@ char *postParsePhase(uint64_t project_id, const std::string &dir,
 				"SELECT COUNT(*) FROM entity "
 				"WHERE project_id = ? AND kind IN (0,1) "
 				"AND cyclomatic > 0";
-			if (sqlite3_prepare_v2(g_store->handle(), msql, -1,
-					       &mstmt, nullptr) == SQLITE_OK) {
+			if (sqlite3_prepare_v2(engineContext().store->handle(),
+					       msql, -1, &mstmt,
+					       nullptr) == SQLITE_OK) {
 				sqlite3_bind_int64(
 					mstmt, 1,
 					static_cast<int64_t>(project_id));
@@ -181,11 +182,13 @@ char *postParsePhase(uint64_t project_id, const std::string &dir,
 					"postParsePhase: metrics count "
 					"probe failed: %s [module=engine, "
 					"method=postParsePhase]\n",
-					sqlite3_errmsg(g_store->handle()));
+					sqlite3_errmsg(
+						engineContext()
+							.store->handle()));
 			}
 		}
-		g_store->setProjectReadiness(project_id, "metrics_ready",
-					     metrics_rows > 0 ? 1 : 0);
+		engineContext().store->setProjectReadiness(
+			project_id, "metrics_ready", metrics_rows > 0 ? 1 : 0);
 		fprintf(stderr,
 			"engine: resolveStagedMetrics=%lldms "
 			"(metrics_ready=%d) "
@@ -205,7 +208,7 @@ char *postParsePhase(uint64_t project_id, const std::string &dir,
 	// rows for this project, so readiness matches canonical data.
 	if (mode_deep) {
 		auto t_v = steady_clock::now();
-		g_store->buildVectorsFromGraph(project_id);
+		engineContext().store->buildVectorsFromGraph(project_id);
 		// Probe canonical data: count node_vectors rows for this project.
 		// If the builder wrote nothing (e.g. no function/method entities),
 		// the count stays 0 and the flag stays 0 — exactly what we want,
@@ -216,8 +219,9 @@ char *postParsePhase(uint64_t project_id, const std::string &dir,
 			sqlite3_stmt *vstmt = nullptr;
 			const char *vsql =
 				"SELECT COUNT(*) FROM node_vectors WHERE project_id = ?";
-			if (sqlite3_prepare_v2(g_store->handle(), vsql, -1,
-					       &vstmt, nullptr) == SQLITE_OK) {
+			if (sqlite3_prepare_v2(engineContext().store->handle(),
+					       vsql, -1, &vstmt,
+					       nullptr) == SQLITE_OK) {
 				sqlite3_bind_int64(
 					vstmt, 1,
 					static_cast<int64_t>(project_id));
@@ -231,11 +235,13 @@ char *postParsePhase(uint64_t project_id, const std::string &dir,
 					"postParsePhase: node_vectors "
 					"count probe failed: %s "
 					"[module=engine, method=postParsePhase]\n",
-					sqlite3_errmsg(g_store->handle()));
+					sqlite3_errmsg(
+						engineContext()
+							.store->handle()));
 			}
 		}
-		g_store->setProjectReadiness(project_id, "vector_ready",
-					     vec_rows > 0 ? 1 : 0);
+		engineContext().store->setProjectReadiness(
+			project_id, "vector_ready", vec_rows > 0 ? 1 : 0);
 		time_vector_ms =
 			duration_cast<milliseconds>(steady_clock::now() - t_v)
 				.count();
@@ -248,9 +254,11 @@ char *postParsePhase(uint64_t project_id, const std::string &dir,
 	// index recreation on incremental runs (they were never dropped); always
 	// run dedup DELETE + unique edge index creation.
 	{
-		store::GraphStore::BulkPragmaGuard guard(g_store.get());
+		store::GraphStore::BulkPragmaGuard guard(
+			engineContext().store.get());
 		auto t_idx = steady_clock::now();
-		g_store->createIndexesAfterBulkLoad(project_id, !is_reindex);
+		engineContext().store->createIndexesAfterBulkLoad(project_id,
+								  !is_reindex);
 		fprintf(stderr,
 			"engine: createIndexesAfterBulkLoad=%lldms "
 			"[module=engine, method=engine_index_project]\n",
@@ -262,7 +270,8 @@ char *postParsePhase(uint64_t project_id, const std::string &dir,
 	// Set readiness flag — core graph is queryable now.
 	// fts_ready / knowledge_ready are set by the async path
 	// (runModelIndexSync + buildKnowledgeGraphSync).
-	g_store->setProjectReadiness(project_id, "normal_ready", 1);
+	engineContext().store->setProjectReadiness(project_id, "normal_ready",
+						   1);
 
 	// P0.2 / P3: Model Engine + State Builder + FTS moved to async path.
 	// Previously ran synchronously here AND inside buildGraph (double
@@ -275,7 +284,7 @@ char *postParsePhase(uint64_t project_id, const std::string &dir,
 	// is returned immediately while the knowledge graph materialises
 	// concurrently. Callers can poll isAsyncKnowledgeBuilderRunning()
 	// or check the "knowledge_ready" readiness flag.
-	// NOTE: This is launched AFTER all g_store reads below, to avoid
+	// NOTE: This is launched AFTER all engine store reads below, to avoid
 	// concurrent GraphStore access. The builder writes to module_edge
 	// while the main thread reads the canonical counts below.
 
@@ -299,8 +308,9 @@ char *postParsePhase(uint64_t project_id, const std::string &dir,
 		std::string sql;
 		sql = "SELECT COUNT(*) FROM entity WHERE project_id = " +
 		      std::to_string(project_id);
-		if (sqlite3_prepare_v2(g_store->handle(), sql.c_str(), -1,
-				       &stmt, nullptr) == SQLITE_OK) {
+		if (sqlite3_prepare_v2(engineContext().store->handle(),
+				       sql.c_str(), -1, &stmt,
+				       nullptr) == SQLITE_OK) {
 			if (sqlite3_step(stmt) == SQLITE_ROW)
 				result << ",\"total_nodes\":"
 				       << sqlite3_column_int64(stmt, 0);
@@ -308,8 +318,9 @@ char *postParsePhase(uint64_t project_id, const std::string &dir,
 		}
 		sql = "SELECT COUNT(*) FROM relation WHERE project_id = " +
 		      std::to_string(project_id);
-		if (sqlite3_prepare_v2(g_store->handle(), sql.c_str(), -1,
-				       &stmt, nullptr) == SQLITE_OK) {
+		if (sqlite3_prepare_v2(engineContext().store->handle(),
+				       sql.c_str(), -1, &stmt,
+				       nullptr) == SQLITE_OK) {
 			if (sqlite3_step(stmt) == SQLITE_ROW)
 				result << ",\"total_edges\":"
 				       << sqlite3_column_int64(stmt, 0);
@@ -321,8 +332,9 @@ char *postParsePhase(uint64_t project_id, const std::string &dir,
 		// next to a correct total_edges from `relation`.
 		sql = "SELECT COUNT(*) FROM entity WHERE project_id = " +
 		      std::to_string(project_id);
-		if (sqlite3_prepare_v2(g_store->handle(), sql.c_str(), -1,
-				       &stmt, nullptr) == SQLITE_OK) {
+		if (sqlite3_prepare_v2(engineContext().store->handle(),
+				       sql.c_str(), -1, &stmt,
+				       nullptr) == SQLITE_OK) {
 			if (sqlite3_step(stmt) == SQLITE_ROW)
 				result << ",\"total_symbols\":"
 				       << sqlite3_column_int64(stmt, 0);
@@ -330,8 +342,9 @@ char *postParsePhase(uint64_t project_id, const std::string &dir,
 		}
 		sql = "SELECT COUNT(*) FROM graph_edges WHERE project_id = " +
 		      std::to_string(project_id) + " AND edge_type = 1";
-		if (sqlite3_prepare_v2(g_store->handle(), sql.c_str(), -1,
-				       &stmt, nullptr) == SQLITE_OK) {
+		if (sqlite3_prepare_v2(engineContext().store->handle(),
+				       sql.c_str(), -1, &stmt,
+				       nullptr) == SQLITE_OK) {
 			if (sqlite3_step(stmt) == SQLITE_ROW)
 				result << ",\"total_call_edges\":"
 				       << sqlite3_column_int64(stmt, 0);
@@ -358,7 +371,7 @@ char *postParsePhase(uint64_t project_id, const std::string &dir,
 		store::setIndexProgress(p);
 	}
 
-	// Launch the async knowledge builder AFTER all g_store reads/writes
+	// Launch the async knowledge builder AFTER all engine store reads/writes
 	// above are complete, to avoid concurrent GraphStore access.
 	// run_fts=!mode_fast: fast mode skips FTS entirely; normal/deep
 	// modes build FTS in the background thread.

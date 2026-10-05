@@ -17,7 +17,7 @@
 
 #include <sqlite3.h>
 
-#include <cassert>
+#include "test_check.h"
 #include <cstdio>
 #include <string>
 #include <unistd.h>
@@ -32,7 +32,7 @@ static std::vector<std::string> capabilityNames(store::GraphStore &store,
 	sqlite3_stmt *stmt = nullptr;
 	const char *sql =
 		"SELECT name FROM capability WHERE project_id=? ORDER BY id";
-	assert(sqlite3_prepare_v2(store.handle(), sql, -1, &stmt, nullptr) ==
+	CHECK(sqlite3_prepare_v2(store.handle(), sql, -1, &stmt, nullptr) ==
 	       SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -55,7 +55,7 @@ int main()
 		return 1;
 	}
 	uint64_t pid = store.createProject("/tmp", "test_capability_lines");
-	assert(pid > 0);
+	CHECK(pid > 0);
 
 	model::ModelContext ctx;
 	model::DocumentInfo doc;
@@ -69,31 +69,31 @@ int main()
 
 	model::CapabilityPlugin plugin(&store);
 	model::ModelResult r = plugin.build(pid, ctx);
-	assert(r.ok());
-	assert(r.items_created == 2);
+	CHECK(r.ok());
+	CHECK(r.items_created == 2);
 
 	std::vector<std::string> names = capabilityNames(store, pid);
-	assert(names.size() == 2);
+	CHECK(names.size() == 2);
 	for (const auto &n : names)
 		printf("  capability: %s\n", n.c_str());
 
 	// The first name comes from the whole line, not from the fragment after the
 	// hyphen. ("FastLookup" was the old, fragment-derived name.)
-	assert(names[0].find("ThreadSafe") != std::string::npos);
-	assert(names[0] != "FastLookup");
+	CHECK(names[0].find("ThreadSafe") != std::string::npos);
+	CHECK(names[0] != "FastLookup");
 	// The bullet's leading "- " is still stripped.
-	assert(names[1] == "IncrementalIndexing");
+	CHECK(names[1] == "IncrementalIndexing");
 
 	// Idempotent: a second pass over the same documents adds nothing.
 	model::ModelResult again = plugin.build(pid, ctx);
-	assert(again.ok());
+	CHECK(again.ok());
 	names = capabilityNames(store, pid);
-	assert(names.size() == 2);
+	CHECK(names.size() == 2);
 	printf("  second pass kept %zu capabilities (no duplicates)\n",
 	       names.size());
 
 	store.close();
 	unlink(kDbPath);
 	printf("=== test_capability_plugin_lines PASSED ===\n");
-	return 0;
+	return checkFailures() ? 1 : 0;
 }

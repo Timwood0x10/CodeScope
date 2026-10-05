@@ -136,10 +136,10 @@ static std::string queries_coverage_ratio(int ready, int eligible)
 char *getEnhancementStatusImpl(uint64_t project_id)
 {
 	auto _store_guard = waitForKnowledgeBuilder();
-	if (!g_store)
+	if (!engineContext().store)
 		return dupString("{\"error\":\"engine not initialized\"}");
 
-	auto db = g_store->handle();
+	auto db = engineContext().store->handle();
 
 	// v0.2.5: report real counts from canonical data (entity / relation /
 	// node_vectors). The legacy int fields (total_symbols/callgraph_ready/
@@ -158,8 +158,8 @@ char *getEnhancementStatusImpl(uint64_t project_id)
 	const int embedding_ready = static_cast<int>(vec_rows);
 
 	// fts_ready is read from project_readiness (set by the async path).
-	const int fts_ready =
-		g_store->getProjectReadiness(project_id, "fts_ready");
+	const int fts_ready = engineContext().store->getProjectReadiness(
+		project_id, "fts_ready");
 
 	// coverage ratios — real numbers in [0.0, 1.0], never a placeholder 0.
 	const std::string cg_coverage = queries_coverage_ratio(cg_ready, total);

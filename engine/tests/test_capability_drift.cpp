@@ -17,7 +17,7 @@
 #include "../src/store/store.h"
 #include "../src/verify/capability_drift.h"
 
-#include <cassert>
+#include "test_check.h"
 #include <cstdio>
 #include <sqlite3.h>
 #include <unistd.h>
@@ -36,12 +36,12 @@ static void insertEntity(store::GraphStore &store, uint64_t project_id,
 			  "start_col, end_row, end_col) "
 			  "VALUES (?,?,0,?,'',?,'cpp',0,0,0,0)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, id);
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 3, name, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 4, file_path, -1, SQLITE_TRANSIENT);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -53,11 +53,11 @@ static void insertCall(store::GraphStore &store, uint64_t project_id,
 	const char *sql = "INSERT INTO relation (project_id, source_id, "
 			  "target_id, type) VALUES (?,?,?,1)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_int64(stmt, 2, source_id);
 	sqlite3_bind_int64(stmt, 3, target_id);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -69,11 +69,11 @@ static void insertCapability(store::GraphStore &store, uint64_t project_id,
 	const char *sql = "INSERT INTO capability (project_id, name, summary, "
 			  "source_kind) VALUES (?,?,?,'readme')";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 2, name, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 3, summary, -1, SQLITE_TRANSIENT);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -85,7 +85,7 @@ static int countRows(store::GraphStore &store, uint64_t project_id,
 	std::string sql = std::string("SELECT COUNT(*) FROM ") + table +
 			  " WHERE project_id=?";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) ==
+	CHECK(sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) ==
 	       SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	int count = 0;
@@ -100,10 +100,10 @@ int main()
 	unlink(kDbPath);
 
 	store::GraphStore store;
-	assert(store.open(kDbPath));
+	CHECK(store.open(kDbPath));
 
 	uint64_t project_id = store.createProject("/test", "test_cap_drift");
-	assert(project_id > 0);
+	CHECK(project_id > 0);
 
 	// ── Test 1: countImplementingEntities — entity with caller ──────
 	{
@@ -111,7 +111,7 @@ int main()
 		insertEntity(store, project_id, 101, "caller", "/src/main.cpp");
 		insertCall(store, project_id, 101, 100); // caller → parseCode
 
-		assert(countImplementingEntities(store, project_id, "parseCode") ==
+		CHECK(countImplementingEntities(store, project_id, "parseCode") ==
 		       1);
 		printf("  [PASS] countImplementingEntities: entity with caller = 1\n");
 	}
@@ -122,20 +122,20 @@ int main()
 			     "/src/unused.cpp");
 		// No call edge targeting entity 200.
 
-		assert(countImplementingEntities(store, project_id,
+		CHECK(countImplementingEntities(store, project_id,
 						 "unusedFunc") == 0);
 		printf("  [PASS] countImplementingEntities: entity without caller = 0\n");
 	}
 
 	// ── Test 3: countImplementingEntities — empty name ──────────────
 	{
-		assert(countImplementingEntities(store, project_id, "") == 0);
+		CHECK(countImplementingEntities(store, project_id, "") == 0);
 		printf("  [PASS] countImplementingEntities: empty name = 0\n");
 	}
 
 	// ── Test 4: countImplementingEntities — nonexistent name ────────
 	{
-		assert(countImplementingEntities(store, project_id,
+		CHECK(countImplementingEntities(store, project_id,
 						 "doesNotExist") == 0);
 		printf("  [PASS] countImplementingEntities: nonexistent name = 0\n");
 	}
@@ -149,7 +149,7 @@ int main()
 		insertCapability(store, project_id, "parseCode",
 				 "Parses source code");
 		auto drifts = detectCapabilityDrift(store, project_id);
-		assert(drifts.empty());
+		CHECK(drifts.empty());
 		printf("  [PASS] detectCapabilityDrift: capability with impl → no drift\n");
 	}
 
@@ -162,10 +162,10 @@ int main()
 		insertCapability(store, project_id, "nonexistentFeature",
 				 "Feature declared but not implemented");
 		auto drifts = detectCapabilityDrift(store, project_id);
-		assert(drifts.size() == 1);
-		assert(drifts[0].type == "CapabilityDrift");
-		assert(drifts[0].severity == kDriftSeverityCapability);
-		assert(drifts[0].subject == "nonexistentFeature");
+		CHECK(drifts.size() == 1);
+		CHECK(drifts[0].type == "CapabilityDrift");
+		CHECK(drifts[0].severity == kDriftSeverityCapability);
+		CHECK(drifts[0].subject == "nonexistentFeature");
 		printf("  [PASS] detectCapabilityDrift: missing capability → 1 drift\n");
 	}
 
@@ -176,7 +176,7 @@ int main()
 			     nullptr, nullptr, nullptr);
 
 		auto drifts = detectCapabilityDrift(store, project_id);
-		assert(drifts.empty());
+		CHECK(drifts.empty());
 		printf("  [PASS] detectCapabilityDrift: empty capability table → no drifts\n");
 	}
 
@@ -194,28 +194,28 @@ int main()
 		insertCapability(store, project_id, "unusedFunc", "no caller");
 
 		auto drifts = detectCapabilityDrift(store, project_id);
-		assert(drifts.size() == 2);
+		CHECK(drifts.size() == 2);
 
 		bool has_ghost = false, has_unused = false;
 		for (const auto &d : drifts) {
-			assert(d.type == "CapabilityDrift");
-			assert(d.severity == kDriftSeverityCapability);
+			CHECK(d.type == "CapabilityDrift");
+			CHECK(d.severity == kDriftSeverityCapability);
 			if (d.subject == "ghostFeature")
 				has_ghost = true;
 			if (d.subject == "unusedFunc")
 				has_unused = true;
 		}
-		assert(has_ghost);
-		assert(has_unused);
+		CHECK(has_ghost);
+		CHECK(has_unused);
 		printf("  [PASS] detectCapabilityDrift: mixed → 2 drifts (ghostFeature + unusedFunc)\n");
 	}
 
 	// ── Test 9: detectCapabilityDrift — row count sanity check ──────
 	// Verify that the row counts are as expected for sanity.
 	{
-		assert(countRows(store, project_id, "entity") == 3);
-		assert(countRows(store, project_id, "relation") == 1);
-		assert(countRows(store, project_id, "capability") == 3);
+		CHECK(countRows(store, project_id, "entity") == 3);
+		CHECK(countRows(store, project_id, "relation") == 1);
+		CHECK(countRows(store, project_id, "capability") == 3);
 		printf("  [PASS] detectCapabilityDrift: row counts verified\n");
 	}
 
@@ -223,5 +223,5 @@ int main()
 	unlink(kDbPath);
 
 	printf("=== test_capability_drift PASSED ===\n");
-	return 0;
+	return checkFailures() ? 1 : 0;
 }

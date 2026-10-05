@@ -616,7 +616,10 @@ mod tests {
         // merged DB looked like N partial projects with no row for the indexed
         // directory — a query with project_id=1 saw only the first worker's
         // rows, and a consumer resolving the project by path found nothing.
-        let path = format!("/tmp/codescope_unify_{}.db", std::process::id());
+        let path = std::env::temp_dir()
+            .join(format!("codescope_unify_{}.db", std::process::id()))
+            .to_string_lossy()
+            .into_owned();
         let _ = std::fs::remove_file(&path);
         sqlite(
             &path,

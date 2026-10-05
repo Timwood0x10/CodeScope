@@ -4,25 +4,28 @@
 // Files that fail to parse N times (CODESCOPE_FAIL_RETRY_MAX, default
 // 1) are skipped on subsequent index runs. Reset via CLI reset-failures.
 //
-// Uses g_store (defined in engine.cpp, declared in engine_internal.h)
-// via the public handle() accessor. Prepared statements are wrapped in
-// StmtPtr (unique_ptr with custom deleter) so sqlite3_finalize always
-// runs, even on early return or exception.
+// Reaches the engine store through engineContext() (engine_context.h) and its
+// public handle() accessor. Prepared statements are wrapped in StmtPtr
+// (unique_ptr with custom deleter) so sqlite3_finalize always runs, even on
+// early return or exception.
 
 #include "util/json_writer.h"
 #include "store_parse_failure.h"
 #include "store.h"
 #include "store_internal.h"
 
+// engine_context.h forward-declares its member types and defines both special
+// members out-of-line, so including it for engineContext() does NOT pull
+// engine_internal.h's heavy transitive includes (parser.h, ir.h, ...) into this
+// store TU. Previously this file re-declared the `g_store` global by hand to
+// avoid that; TD-1 routes the access through engineContext() instead.
+#include "engine_context.h"
+
 #include <cstdio>
 #include <memory>
 #include <mutex>
 #include <sqlite3.h>
 #include <string>
-
-// Re-declared here to avoid pulling engine_internal.h's heavy
-// transitive includes (parser.h, ir.h, etc.) into this store TU.
-extern std::unique_ptr<store::GraphStore> g_store;
 
 namespace store
 {
@@ -69,9 +72,10 @@ const char *failReasonToString(FailReason r)
 bool isKnownParseFailure(uint64_t project_id, const std::string &file_path,
 			 int retry_max)
 {
-	sqlite3 *db = g_store ? g_store->handle() : nullptr;
+	sqlite3 *db = engineContext().store ? engineContext().store->handle() :
+					      nullptr;
 	if (!db) {
-		fprintf(stderr, "store: g_store not initialised "
+		fprintf(stderr, "store: engine store not initialised "
 				"[module=store, method=isKnownParseFailure]\n");
 		return false;
 	}
@@ -122,9 +126,9 @@ static sqlite3 *auxFailureDb()
 
 	static std::string cached_path;
 	static sqlite3 *db = nullptr;
-	if (!g_store)
+	if (!engineContext().store)
 		return nullptr;
-	const std::string path = g_store->dbPath();
+	const std::string path = engineContext().store->dbPath();
 	if (db && cached_path != path) {
 		sqlite3_close(db);
 		db = nullptr;
@@ -289,9 +293,10 @@ int flushParseFailures()
 
 int resetParseFailures(uint64_t project_id)
 {
-	sqlite3 *db = g_store ? g_store->handle() : nullptr;
+	sqlite3 *db = engineContext().store ? engineContext().store->handle() :
+					      nullptr;
 	if (!db) {
-		fprintf(stderr, "store: g_store not initialised "
+		fprintf(stderr, "store: engine store not initialised "
 				"[module=store, method=resetParseFailures]\n");
 		return -1;
 	}
@@ -313,10 +318,11 @@ int resetParseFailures(uint64_t project_id)
 
 std::string getParseFailuresJson(uint64_t project_id, int limit)
 {
-	sqlite3 *db = g_store ? g_store->handle() : nullptr;
+	sqlite3 *db = engineContext().store ? engineContext().store->handle() :
+					      nullptr;
 	if (!db) {
 		fprintf(stderr,
-			"store: g_store not initialised "
+			"store: engine store not initialised "
 			"[module=store, method=getParseFailuresJson]\n");
 		return "[]";
 	}
@@ -369,10 +375,11 @@ std::string getParseFailuresJson(uint64_t project_id, int limit)
 bool loadKnownParseFailures(uint64_t project_id, int retry_max,
 			    std::vector<std::string> &out_paths)
 {
-	sqlite3 *db = g_store ? g_store->handle() : nullptr;
+	sqlite3 *db = engineContext().store ? engineContext().store->handle() :
+					      nullptr;
 	if (!db) {
 		fprintf(stderr,
-			"store: g_store not initialised "
+			"store: engine store not initialised "
 			"[module=store, method=loadKnownParseFailures]\n");
 		return false;
 	}

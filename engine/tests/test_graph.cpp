@@ -1,6 +1,6 @@
 #include "../src/ir/ir.h"
 #include "../src/graph/graph_builder.h"
-#include <cassert>
+#include "test_check.h"
 #include <cstdio>
 #include <functional>
 
@@ -65,15 +65,15 @@ int main() {
     // ── Verify Symbol Graph ────────────────────────────────────
 
     // Should have nodes: file, func, main_func
-    assert(symbol_graph.nodes.size() >= 2);
+    CHECK(symbol_graph.nodes.size() >= 2);
 
     bool has_func = false, has_main = false;
     for (auto& n : symbol_graph.nodes) {
         if (n.name == "compute") has_func = true;
         if (n.name == "main") has_main = true;
     }
-    assert(has_func);
-    assert(has_main);
+    CHECK(has_func);
+    CHECK(has_main);
     printf("Symbol graph: %zu nodes, %zu edges\n",
            symbol_graph.nodes.size(), symbol_graph.edges.size());
 
@@ -95,5 +95,5 @@ int main() {
     printf("=== Graph builder test passed ===\n");
 
     delete unit;
-    return 0;
+    return checkFailures() ? 1 : 0;
 }

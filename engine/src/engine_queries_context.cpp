@@ -38,12 +38,12 @@ static char *tracePathImpl(uint64_t project_id, const char *from_name,
 	if (!from_name || !*from_name || !to_name || !*to_name)
 		return dupString(
 			"{\"error\":\"empty symbol name\",\"path\":[]}");
-	if (!g_store || !g_store->handle()) {
+	if (!engineContext().store || !engineContext().store->handle()) {
 		return dupString("{\"error\":\"graph not ready [module="
 				 "engine_queries, method=trace_path]\","
 				 "\"path\":[]}");
 	}
-	sqlite3 *db = g_store->handle();
+	sqlite3 *db = engineContext().store->handle();
 	// Homonym guard: resolveName below takes ORDER BY id LIMIT 1, which
 	// silently traces the first of several same-named entities (T5
 	// finding #9). Surface the candidates instead — same contract as
@@ -78,8 +78,8 @@ static char *tracePathImpl(uint64_t project_id, const char *from_name,
 	if (!resolveName(from_name, from_id) || !resolveName(to_name, to_id))
 		return dupString(
 			"{\"path\":[],\"error\":\"symbol not found\"}");
-	std::string bfs_json =
-		g_query->findShortestPath(project_id, from_id, to_id);
+	std::string bfs_json = engineContext().query->findShortestPath(
+		project_id, from_id, to_id);
 	bool found = bfs_json.find("\"found\":true") != std::string::npos;
 	if (!found)
 		return dupString("{\"path\":[],\"error\":\"no path found\"}");
@@ -193,7 +193,7 @@ static char *exploreFunctionImpl(uint64_t project_id, const char *function_name,
 	//    "callers":[],"callees":[]}
 	//
 	// v0.2.5: the graph-not-ready guard is SQLite-specific and lives
-	// inside the #ifdef; the SQLite backend has its own !g_store->handle()
+	// inside the #ifdef; the SQLite backend has its own !engineContext().store->handle()
 	// guard in the #else branch.
 	if (!function_name || !*function_name)
 		return dupString(
@@ -207,12 +207,12 @@ static char *exploreFunctionImpl(uint64_t project_id, const char *function_name,
 	// JSON shape matches the SQLite branch: nested {name,file,line,
 	// callers,callees}.
 	int max_depth = depth > 5 ? 5 : (depth < 0 ? 0 : depth);
-	if (!g_store || !g_store->handle()) {
+	if (!engineContext().store || !engineContext().store->handle()) {
 		return dupString("{\"error\":\"graph not ready [module=engine_"
 				 "queries, method=explore_function]\","
 				 "\"callers\":[],\"callees\":[]}");
 	}
-	sqlite3 *db = g_store->handle();
+	sqlite3 *db = engineContext().store->handle();
 	// Homonym guard: this function resolves the bare name to a single
 	// entity below, so several same-named functions collapse to whichever
 	// one the lookup picks and the trace silently explores the wrong
@@ -256,8 +256,8 @@ static char *exploreFunctionImpl(uint64_t project_id, const char *function_name,
 	};
 	auto fetchNeighbors = [&](uint64_t id, bool callers,
 				  std::vector<uint64_t> &out) {
-		auto ids = callers ? g_store->getCallerIds(id) :
-				     g_store->getCalleeIds(id);
+		auto ids = callers ? engineContext().store->getCallerIds(id) :
+				     engineContext().store->getCalleeIds(id);
 		for (uint64_t nid : ids)
 			out.push_back(nid);
 	};
@@ -408,18 +408,19 @@ static std::string detectIntent(const std::string &query)
 static char *buildContextImpl(uint64_t project_id, const char *query)
 {
 	auto _store_guard = waitForKnowledgeBuilder();
-	if (!g_store)
+	if (!engineContext().store)
 		return dupString("{\"error\":\"engine not initialized\"}");
 
 	std::string q = query ? query : "";
 	std::string intent = detectIntent(q);
-	auto db = g_store->handle();
+	auto db = engineContext().store->handle();
 	std::ostringstream json;
 	json << "{";
 
 	// 1. Project overview (always)
 	json << "\"project_overview\":"
-	     << g_store->getModuleTreeJson(project_id).c_str() << ",";
+	     << engineContext().store->getModuleTreeJson(project_id).c_str()
+	     << ",";
 
 	// 2. Intent metadata
 	json << "\"intent\":\"" << intent << "\",";
@@ -429,7 +430,10 @@ static char *buildContextImpl(uint64_t project_id, const char *query)
 	    intent == "entry_points" || intent == "general" ||
 	    intent == "drivers") {
 		json << "\"entry_points\":"
-		     << g_store->getEntryPointsJson(project_id).c_str() << ",";
+		     << engineContext()
+				.store->getEntryPointsJson(project_id)
+				.c_str()
+		     << ",";
 	}
 
 	// 4. Focus on specific module if detected
@@ -475,7 +479,8 @@ static char *buildContextImpl(uint64_t project_id, const char *query)
 	}
 
 	// 5. Call graph data (only if ready AND relevant)
-	double cg_ratio = g_store->getReadyRatio(project_id, "callgraph_ready");
+	double cg_ratio = engineContext().store->getReadyRatio(
+		project_id, "callgraph_ready");
 	bool cg_ready = (cg_ratio > 0.1);
 	if (cg_ready && (intent == "callgraph" || intent == "general")) {
 		json << "\"callgraph_available\":true,";
@@ -523,12 +528,14 @@ static char *buildContextImpl(uint64_t project_id, const char *query)
 	json << "\"enhancement_progress\":{"
 	     << "\"callgraph_ready\":" << (cg_ready ? "true" : "false") << ","
 	     << "\"metrics_ready\":"
-	     << (g_store->getReadyRatio(project_id, "metrics_ready") > 0.1 ?
+	     << (engineContext().store->getReadyRatio(project_id,
+						      "metrics_ready") > 0.1 ?
 			 "true" :
 			 "false")
 	     << ","
 	     << "\"embedding_ready\":"
-	     << (g_store->getReadyRatio(project_id, "embedding_ready") > 0.1 ?
+	     << (engineContext().store->getReadyRatio(project_id,
+						      "embedding_ready") > 0.1 ?
 			 "true" :
 			 "false")
 	     << "}";
@@ -541,7 +548,8 @@ static char *buildContextImpl(uint64_t project_id, const char *query)
 	     << "\"call_graph\":" << (cg_ready ? "true" : "false") << ","
 	     << "\"path_tracing\":" << (cg_ready ? "true" : "false") << ","
 	     << "\"semantic_search\":"
-	     << (g_store->getReadyRatio(project_id, "embedding_ready") > 0.1 ?
+	     << (engineContext().store->getReadyRatio(project_id,
+						      "embedding_ready") > 0.1 ?
 			 "true" :
 			 "false")
 	     << "}";
@@ -563,18 +571,18 @@ static char *detectFfiBoundariesImpl(uint64_t project_id)
 	//    "orphan_symbols":[{name,file_path,language,line}]}
 	//
 	// v0.2.5: the graph-not-ready guard is SQLite-specific and lives
-	// inside the #ifdef; the SQLite backend has its own !g_store->handle()
+	// inside the #ifdef; the SQLite backend has its own !engineContext().store->handle()
 	// guard in the #else branch.
 
 	// ── v0.2.5: SQLite graph-query backend (Windows / SQLite-only) ──
 	// FFI-boundary diagnosis over the canonical entity table. The four
 	// sections (languages, cross_language_files, ffi_symbols,
 	// orphan_symbols) mirror the SQLite branch's output schema.
-	if (!g_store || !g_store->handle()) {
+	if (!engineContext().store || !engineContext().store->handle()) {
 		return dupString("{\"error\":\"graph not ready [module=engine_"
 				 "queries, method=detect_ffi_boundaries]\"}");
 	}
-	sqlite3 *db = g_store->handle();
+	sqlite3 *db = engineContext().store->handle();
 	std::ostringstream json;
 	json << "{";
 	// Single source of truth for escaping; the surrounding document is still

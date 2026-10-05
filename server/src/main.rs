@@ -1,17 +1,10 @@
 mod discover;
 mod ffi;
 mod mcp;
-#[cfg(not(windows))]
 mod scheduler;
 mod tools;
 
-#[cfg(not(windows))]
 use crate::scheduler::chunk_queue;
-// `Value`/`json` are used on non-Windows cfg branches but are otherwise
-// referenced via fully-qualified `serde_json::` paths on Windows, so the
-// import can appear unused when cross-compiling. Allow it to keep the
-// Windows build warning-free.
-#[allow(unused_imports)]
 use serde_json::{Value, json};
 
 use std::env;
@@ -84,101 +77,90 @@ fn main() {
     // per top-level module with proportional parse-worker allocation; failed
     // modules are quarantined via binary search.
     // Exit code: 0 on success (>=1 module indexed with nodes), 1 on failure.
-    // NOTE: This command uses Unix-specific shared memory (mmap) and is not
-    // available on Windows. Use `codescope index` instead on Windows.
+    // NOTE: the queue segment and the per-module DBs live in the platform
+    // temp directory and are shared through src/scheduler/mapped_file.rs,
+    // so this path runs on Windows as well as POSIX.
     if args.len() >= 2 && args[1] == "index-parallel" {
-        #[cfg(not(windows))]
-        {
-            let mut dir_path = ".".to_string();
-            let mut total_workers: u32 = 0;
-            let mut parallel: u32 = 0;
+        let mut dir_path = ".".to_string();
+        let mut total_workers: u32 = 0;
+        let mut parallel: u32 = 0;
 
-            let mut i = 2;
-            while i < args.len() {
-                match args[i].as_str() {
-                    "--workers" | "-w" => match args.get(i + 1) {
-                        Some(v) => {
-                            total_workers = v.parse().unwrap_or(0);
-                            i += 2;
-                            continue;
-                        }
-                        None => {
-                            eprintln!("error: --workers requires a value");
-                            std::process::exit(2);
-                        }
-                    },
-                    "--parallel" | "-p" => match args.get(i + 1) {
-                        Some(v) => {
-                            parallel = v.parse().unwrap_or(0);
-                            i += 2;
-                            continue;
-                        }
-                        None => {
-                            eprintln!("error: --parallel requires a value");
-                            std::process::exit(2);
-                        }
-                    },
-                    "--help" | "-h" => {
-                        println!(
-                            "Usage: codescope index-parallel <dir> [--workers N] [--parallel M]"
-                        );
-                        println!("  Built-in CPU-dynamic parallel indexer.");
-                        println!("  --workers N   total parse-worker cores (default 8)");
-                        println!("  --parallel M  max concurrent module workers (default 4)");
-                        return;
+        let mut i = 2;
+        while i < args.len() {
+            match args[i].as_str() {
+                "--workers" | "-w" => match args.get(i + 1) {
+                    Some(v) => {
+                        total_workers = v.parse().unwrap_or(0);
+                        i += 2;
+                        continue;
                     }
-                    p => {
-                        if !p.starts_with("--") {
-                            dir_path = p.to_string();
-                        }
-                        i += 1;
+                    None => {
+                        eprintln!("error: --workers requires a value");
+                        std::process::exit(2);
                     }
+                },
+                "--parallel" | "-p" => match args.get(i + 1) {
+                    Some(v) => {
+                        parallel = v.parse().unwrap_or(0);
+                        i += 2;
+                        continue;
+                    }
+                    None => {
+                        eprintln!("error: --parallel requires a value");
+                        std::process::exit(2);
+                    }
+                },
+                "--help" | "-h" => {
+                    println!("Usage: codescope index-parallel <dir> [--workers N] [--parallel M]");
+                    println!("  Built-in CPU-dynamic parallel indexer.");
+                    println!("  --workers N   total parse-worker cores (default 8)");
+                    println!("  --parallel M  max concurrent module workers (default 4)");
+                    return;
+                }
+                p => {
+                    if !p.starts_with("--") {
+                        dir_path = p.to_string();
+                    }
+                    i += 1;
                 }
             }
+        }
 
-            let result = scheduler::index_parallel(&dir_path, total_workers, parallel);
+        let result = scheduler::index_parallel(&dir_path, total_workers, parallel);
 
-            // A scheduler-built DB is assembled by the merger from per-worker
-            // DBs, so it never receives the engine's post-index pass (knowledge
-            // layer, metrics, readiness flags, search index). Without this the
-            // CLI's own output looks complete while `search` silently degrades
-            // to its graph fallback — it cannot find functions at all — and
-            // `project_readiness` stays empty so `project_overview` reports no
-            // feature as ready. Measured: 0 rows in project_readiness and in
-            // code_fts/name_trgm before, 1 and 1793 after. The merge unifies
-            // the DB onto project id 1 (see merge_driver::unify_project), so
-            // the pass runs on that id here, while this process owns the DB.
-            let merged_db = serde_json::from_str::<serde_json::Value>(&result)
-                .ok()
-                .filter(|v| v["ok"] == serde_json::Value::Bool(true))
-                .and_then(|v| v["main_db"].as_str().map(|s| s.to_string()));
-            if let Some(main_db) = merged_db {
-                if ffi::init(&main_db) == 0 {
-                    let enhanced = ffi::enhance_project(1);
-                    eprintln!(
-                        "codescope: post-index pass on {}: {}",
-                        main_db,
-                        enhanced.chars().take(120).collect::<String>()
-                    );
-                    ffi::shutdown();
-                } else {
-                    eprintln!(
-                        "codescope: could not open {} for the post-index pass",
-                        main_db
-                    );
-                }
+        // A scheduler-built DB is assembled by the merger from per-worker
+        // DBs, so it never receives the engine's post-index pass (knowledge
+        // layer, metrics, readiness flags, search index). Without this the
+        // CLI's own output looks complete while `search` silently degrades
+        // to its graph fallback — it cannot find functions at all — and
+        // `project_readiness` stays empty so `project_overview` reports no
+        // feature as ready. Measured: 0 rows in project_readiness and in
+        // code_fts/name_trgm before, 1 and 1793 after. The merge unifies
+        // the DB onto project id 1 (see merge_driver::unify_project), so
+        // the pass runs on that id here, while this process owns the DB.
+        let merged_db = serde_json::from_str::<serde_json::Value>(&result)
+            .ok()
+            .filter(|v| v["ok"] == serde_json::Value::Bool(true))
+            .and_then(|v| v["main_db"].as_str().map(|s| s.to_string()));
+        if let Some(main_db) = merged_db {
+            if ffi::init(&main_db) == 0 {
+                let enhanced = ffi::enhance_project(1);
+                eprintln!(
+                    "codescope: post-index pass on {}: {}",
+                    main_db,
+                    enhanced.chars().take(120).collect::<String>()
+                );
+                ffi::shutdown();
+            } else {
+                eprintln!(
+                    "codescope: could not open {} for the post-index pass",
+                    main_db
+                );
             }
+        }
 
-            println!("{}", result);
-            return;
-        }
-        #[cfg(windows)]
-        {
-            eprintln!(
-                "error: index-parallel is not available on Windows. Use `codescope index` instead."
-            );
-            std::process::exit(1);
-        }
+        println!("{}", result);
+        return;
     }
 
     // ── Parse-failure maintenance ────────────────────────────────
@@ -462,7 +444,6 @@ fn main() {
     //   peer) via reset_all_stale, and exits when every chunk is
     //   DONE/FAILED. Each worker owns its OWN DB — no shared-DB corruption.
     // Requires the `chunk_queue` module (see scheduler/chunk_queue.rs).
-    #[cfg(not(windows))]
     if args.len() >= 7 && args[1] == "chunk-worker" {
         let shm_path = args[2].as_str();
         let worker_id: u32 = args[3].parse().unwrap_or(0);

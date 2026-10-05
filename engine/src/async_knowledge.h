@@ -30,7 +30,7 @@ class GraphStore;
 // THREAD SAFETY: the builder uses a global atomic flag to ensure only
 // one instance runs at a time. The background thread is joinable (not
 // detached) so that engine_shutdown can wait for it to finish before
-// destroying g_store, preventing use-after-free. Callers must call
+// destroying the engine store, preventing use-after-free. Callers must call
 // joinAsyncKnowledgeBuilder() before destroying the GraphStore singleton.
 
 /// Launch the async post-index builder for a project.
@@ -41,7 +41,7 @@ class GraphStore;
 void launchAsyncKnowledgeBuilder(uint64_t project_id, bool run_fts = true);
 
 /// Wait for the async knowledge builder to finish (if running).
-/// Must be called before destroying g_store to prevent use-after-free.
+/// Must be called before destroying the engine store to prevent use-after-free.
 /// The wait is bounded by kBuilderJoinTimeoutMs; on timeout the builder
 /// thread is detached (not joined) and the function returns, so a wedged
 /// builder cannot deadlock a caller that already holds the connection
@@ -59,7 +59,7 @@ bool isAsyncKnowledgeBuilderRunning();
 /// The builder runs on the same sqlite3 connection as the caller and opens its
 /// own transactions (module_summary / module_edge / FTS / model tables). A
 /// plain join only waits for the *current* builder: a later index call can
-/// launch a new writer while a read is still using `g_store`, and the two
+/// launch a new writer while a read is still using `engineContext().store`, and the two
 /// interleave BEGIN/COMMIT on the one shared connection. The returned guard
 /// is a `std::unique_lock` on the connection mutex the builder also holds for
 /// its whole body, so no builder SQL can run while the guard is alive.
@@ -70,7 +70,7 @@ bool isAsyncKnowledgeBuilderRunning();
 ///
 /// BOUNDED WAIT: the acquisition is bounded by kStoreLockTimeoutMs (30 s). If
 /// the builder thread wedges while holding the lock (e.g. a SQLite backoff
-/// loop), the caller must NOT proceed to touch `g_store` concurrently, so a
+/// loop), the caller must NOT proceed to touch `engineContext().store` concurrently, so a
 /// `std::runtime_error` is thrown instead. The FFI wrappers already catch
 /// `std::exception` and return an `[module=..., method=...]` error envelope,
 /// so a wedged builder degrades to "store unavailable" rather than hanging

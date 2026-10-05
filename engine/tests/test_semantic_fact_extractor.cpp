@@ -25,7 +25,7 @@
 #include "../src/model/semantic_fact_extractor.h"
 #include "../src/store/store.h"
 
-#include <cassert>
+#include "test_check.h"
 #include <cstdio>
 #include <cstring>
 #include <sqlite3.h>
@@ -55,13 +55,13 @@ static void insertFunction(GraphStore &store, uint64_t project_id, int64_t id,
 			  "start_row, start_col, end_row, end_col) "
 			  "VALUES (?,?,0,?,'',?,?,1,0,1000,0)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, id);
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 3, name, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 4, file_path, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 5, language, -1, SQLITE_TRANSIENT);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -76,11 +76,11 @@ static void insertCallRelation(GraphStore &store, uint64_t project_id,
 			  "(project_id, source_id, target_id, type) "
 			  "VALUES (?,?,?,1)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_int64(stmt, 2, source_id);
 	sqlite3_bind_int64(stmt, 3, target_id);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -98,7 +98,7 @@ static void insertCallRecord(GraphStore &store, uint64_t project_id,
 			  " qualified_name, file_path, language, start_row) "
 			  "VALUES (?,?,9,?,?,?,?,?)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, 1);
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 3, name, -1, SQLITE_TRANSIENT);
@@ -106,7 +106,7 @@ static void insertCallRecord(GraphStore &store, uint64_t project_id,
 	sqlite3_bind_text(stmt, 5, file_path, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 6, language, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int(stmt, 7, start_row);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -121,14 +121,14 @@ static void insertCommentRecord(GraphStore &store, uint64_t project_id,
 			  " qualified_name, file_path, language, start_row) "
 			  "VALUES (?,?,14,?,'',?,?,?)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, 1);
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 3, text, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 4, file_path, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 5, language, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int(stmt, 6, start_row);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -144,12 +144,12 @@ static void insertExceptRecord(GraphStore &store, uint64_t project_id,
 			  " qualified_name, file_path, language, start_row) "
 			  "VALUES (?,?,9,'except','',?,'python',?)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, 2);
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 3, file_path, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int(stmt, 4, start_row);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -162,11 +162,11 @@ static void insertImportRow(GraphStore &store, uint64_t project_id,
 			  "source_scope_id, target_path, alias, file_path) "
 			  "VALUES (?,0,?,'',?)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 2, target_path, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 3, file_path, -1, SQLITE_TRANSIENT);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -181,7 +181,7 @@ static int countFacts(GraphStore &store, uint64_t project_id,
 			  "WHERE project_id=? AND category=? "
 			  "  AND primitive=? AND kind=?";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 2, category, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 3, primitive, -1, SQLITE_TRANSIENT);
@@ -200,7 +200,7 @@ static int totalFacts(GraphStore &store, uint64_t project_id)
 	const char *sql =
 		"SELECT COUNT(*) FROM semantic_fact WHERE project_id=?";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	int count = 0;
 	if (sqlite3_step(stmt) == SQLITE_ROW)
@@ -220,7 +220,7 @@ int main()
 		return 1;
 	}
 	uint64_t pid = store.createProject("/tmp", "test_semantic_fact");
-	assert(pid > 0);
+	CHECK(pid > 0);
 
 	// ── Test 1: sync/mutex/lock ────────────────────────────────
 	// Go function containing a m.Lock() call. The extractor should
@@ -281,51 +281,51 @@ int main()
 
 	// ── Run the extractor inside a transaction ─────────────────
 	{
-		assert(store.beginTransaction());
+		CHECK(store.beginTransaction());
 		SemanticFactExtractor ex(&store);
 		int64_t n = ex.extractAll(pid);
-		assert(store.commitTransaction());
-		assert(n >= 6); // at least one fact per test case above
+		CHECK(store.commitTransaction());
+		CHECK(n >= 6); // at least one fact per test case above
 		printf("extractAll returned %lld facts\n", (long long)n);
 	}
 
 	// ── Assertions ─────────────────────────────────────────────
 	int total = totalFacts(store, pid);
-	assert(total >= 6);
+	CHECK(total >= 6);
 	printf("total semantic_fact rows: %d\n", total);
 
 	// Test 1: sync/mutex/lock
-	assert(countFacts(store, pid, "sync", "mutex", "lock") == 1);
+	CHECK(countFacts(store, pid, "sync", "mutex", "lock") == 1);
 	printf("Test 1 (sync/mutex/lock): PASS\n");
 
 	// Test 1b: the RWMutex forms must be classified, not dropped. Before the
 	// fix these produced no fact at all (the lock) or were never selected (the
 	// unlock), which left the rwmutex_usage rule permanently empty.
-	assert(countFacts(store, pid, "sync", "rwmutex", "lock") == 1);
-	assert(countFacts(store, pid, "sync", "rwmutex", "defer_unlock") == 1);
+	CHECK(countFacts(store, pid, "sync", "rwmutex", "lock") == 1);
+	CHECK(countFacts(store, pid, "sync", "rwmutex", "defer_unlock") == 1);
 	printf("Test 1b (sync/rwmutex lock + unlock): PASS\n");
 
 	// Test 2: error/bare_except
-	assert(countFacts(store, pid, "error", "bare_except", "suppression") ==
+	CHECK(countFacts(store, pid, "error", "bare_except", "suppression") ==
 	       1);
 	printf("Test 2 (error/bare_except): PASS\n");
 
 	// Test 3: memory/cstring/alloc
-	assert(countFacts(store, pid, "memory", "cstring", "alloc") == 1);
+	CHECK(countFacts(store, pid, "memory", "cstring", "alloc") == 1);
 	printf("Test 3 (memory/cstring/alloc): PASS\n");
 
 	// Test 4: pattern/todo
-	assert(countFacts(store, pid, "pattern", "todo", "marker") == 1);
+	CHECK(countFacts(store, pid, "pattern", "todo", "marker") == 1);
 	printf("Test 4 (pattern/todo): PASS\n");
 
 	// Test 5: framework/gin
-	assert(countFacts(store, pid, "framework", "gin", "router") == 1);
+	CHECK(countFacts(store, pid, "framework", "gin", "router") == 1);
 	printf("Test 5 (framework/gin): PASS\n");
 
 	// Test 6: ffi/extern_call — one from the extern "C" qualified
 	// name (CBindings) and one from the cross-language Calls edge
 	// (rust_entry), so exactly two.
-	assert(countFacts(store, pid, "ffi", "extern_call", "call") == 2);
+	CHECK(countFacts(store, pid, "ffi", "extern_call", "call") == 2);
 	printf("Test 6+7 (ffi/extern_call, incl. cross-language): "
 	       "PASS\n");
 
@@ -334,17 +334,17 @@ int main()
 	// stays the same after a second run (no duplicates accumulate).
 	{
 		int before = totalFacts(store, pid);
-		assert(store.beginTransaction());
+		CHECK(store.beginTransaction());
 		SemanticFactExtractor ex(&store);
 		ex.extractAll(pid);
-		assert(store.commitTransaction());
+		CHECK(store.commitTransaction());
 		int after = totalFacts(store, pid);
-		assert(after == before);
+		CHECK(after == before);
 		printf("Test 7 (idempotency: %d == %d): PASS\n", before, after);
 	}
 
 	store.close();
 	unlink(kDbPath);
 	printf("\nAll semantic_fact_extractor tests passed.\n");
-	return 0;
+	return checkFailures() ? 1 : 0;
 }

@@ -29,7 +29,7 @@
 #include "../src/evidence/evidence_builder.h"
 #include "../src/store/store.h"
 
-#include <cassert>
+#include "test_check.h"
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -57,13 +57,13 @@ static void insertFunction(GraphStore &store, uint64_t project_id, int64_t id,
 		"start_row, start_col, end_row, end_col) "
 		"VALUES (?,?,0,0,?,'',?,?,1,0,1000,0)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, id);
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 3, name, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 4, file_path, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 5, language, -1, SQLITE_TRANSIENT);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -83,7 +83,7 @@ static void insertFact(GraphStore &store, uint64_t project_id,
 		" symbol, confidence, detail_json) "
 		"VALUES (?,?,?,?,?,?,?,?)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(function_id));
 	sqlite3_bind_text(stmt, 3, category, -1, SQLITE_TRANSIENT);
@@ -95,7 +95,7 @@ static void insertFact(GraphStore &store, uint64_t project_id,
 		sqlite3_bind_text(stmt, 8, detail_json, -1, SQLITE_TRANSIENT);
 	else
 		sqlite3_bind_null(stmt, 8);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -156,7 +156,7 @@ int main()
 		return 1;
 	}
 	uint64_t pid = store.createProject("/tmp", "test_evidence_builder");
-	assert(pid > 0);
+	CHECK(pid > 0);
 
 	// ── Test 1: sync/mutex_without_defer_unlock (missing_match) ──
 	// Function 1: lock WITHOUT defer_unlock → should appear in
@@ -239,7 +239,7 @@ int main()
 	// ── Run buildAll ─────────────────────────────────────────────
 	auto all = builder.buildAll(pid);
 	printf("buildAll returned %zu evidence(s)\n", all.size());
-	assert(!all.empty());
+	CHECK(!all.empty());
 
 	// Helper: find an evidence by substring in its title. Each
 	// rule's title template is unique enough that a substring match
@@ -260,11 +260,11 @@ int main()
 	{
 		const Evidence *ev =
 			findByTitleContains("lock mutex without defer Unlock");
-		assert(ev != nullptr);
-		assert(ev->items.size() == 1);
-		assert(ev->items[0].symbol == "m.Lock");
-		assert(ev->items[0].line == 5);
-		assert(ev->items[0].file == "/src/sync_leak.go");
+		CHECK(ev != nullptr);
+		CHECK(ev->items.size() == 1);
+		CHECK(ev->items[0].symbol == "m.Lock");
+		CHECK(ev->items[0].line == 5);
+		CHECK(ev->items[0].file == "/src/sync_leak.go");
 		printf("Test 1 (mutex_without_defer_unlock, 1 item): "
 		       "PASS\n");
 	}
@@ -274,10 +274,10 @@ int main()
 	// should be emitted (one per surviving function).
 	{
 		auto cstring_evs = builder.buildByRule(pid, "cstring_leak");
-		assert(cstring_evs.size() == 1);
-		assert(cstring_evs[0].items.size() == 1);
-		assert(cstring_evs[0].items[0].symbol == "C.CString");
-		assert(cstring_evs[0].items[0].file == "/src/cgo_leak.go");
+		CHECK(cstring_evs.size() == 1);
+		CHECK(cstring_evs[0].items.size() == 1);
+		CHECK(cstring_evs[0].items[0].symbol == "C.CString");
+		CHECK(cstring_evs[0].items[0].file == "/src/cgo_leak.go");
 		printf("Test 2 (cstring_leak, 1 evidence 1 item): "
 		       "PASS\n");
 	}
@@ -286,40 +286,40 @@ int main()
 	{
 		const Evidence *ev =
 			findByTitleContains("bare except clause(s)");
-		assert(ev != nullptr);
-		assert(ev->items.size() == 1);
-		assert(ev->items[0].symbol == "except");
+		CHECK(ev != nullptr);
+		CHECK(ev->items.size() == 1);
+		CHECK(ev->items[0].symbol == "except");
 		printf("Test 3 (bare_except_collect, 1 item): PASS\n");
 	}
 
 	// ── Verify: todo_collect has 1 item ──────────────────────────
 	{
 		const Evidence *ev = findByTitleContains("TODO marker(s)");
-		assert(ev != nullptr);
-		assert(ev->items.size() == 1);
-		assert(ev->items[0].symbol == "TODO: implement");
+		CHECK(ev != nullptr);
+		CHECK(ev->items.size() == 1);
+		CHECK(ev->items[0].symbol == "TODO: implement");
 		printf("Test 4 (todo_collect, 1 item): PASS\n");
 	}
 
 	// ── Verify: unwrap_risk has 1 item (bonus) ───────────────────
 	{
 		const Evidence *ev = findByTitleContains(".unwrap() call(s)");
-		assert(ev != nullptr);
-		assert(ev->items.size() == 1);
-		assert(ev->items[0].symbol == "result.unwrap");
+		CHECK(ev != nullptr);
+		CHECK(ev->items.size() == 1);
+		CHECK(ev->items[0].symbol == "result.unwrap");
 		printf("Test 5 (unwrap_risk, 1 item): PASS\n");
 	}
 
 	// ── Test 6: buildByCategory("sync") returns only sync evidence ─
 	{
 		auto sync_evs = builder.buildByCategory(pid, "sync");
-		assert(!sync_evs.empty());
+		CHECK(!sync_evs.empty());
 		for (const auto &ev : sync_evs) {
-			assert(ev.category == "sync");
+			CHECK(ev.category == "sync");
 		}
 		// The sync category has only the mutex_without_defer_unlock
 		// rule, which produced 1 evidence.
-		assert(sync_evs.size() == 1);
+		CHECK(sync_evs.size() == 1);
 		printf("Test 6 (buildByCategory sync, %zu evidence): "
 		       "PASS\n",
 		       sync_evs.size());
@@ -330,7 +330,7 @@ int main()
 	// count assertion.)
 	{
 		auto evs = builder.buildByRule(pid, "cstring_leak");
-		assert(evs.size() == 1);
+		CHECK(evs.size() == 1);
 		printf("Test 7 (buildByRule cstring_leak, 1 evidence): "
 		       "PASS\n");
 	}
@@ -338,7 +338,7 @@ int main()
 	// ── Test 8: buildByRule with unknown name returns 0 ──────────
 	{
 		auto evs = builder.buildByRule(pid, "nonexistent_rule");
-		assert(evs.empty());
+		CHECK(evs.empty());
 		printf("Test 8 (buildByRule unknown, 0 evidence): "
 		       "PASS\n");
 	}
@@ -346,7 +346,7 @@ int main()
 	// ── Test 9: buildByCategory with no matching category ────────
 	{
 		auto evs = builder.buildByCategory(pid, "nonexistent");
-		assert(evs.empty());
+		CHECK(evs.empty());
 		printf("Test 9 (buildByCategory unknown, 0 evidence): "
 		       "PASS\n");
 	}
@@ -365,7 +365,7 @@ int main()
 	//   test_quality/todo_accumulation (1; the Count rule matches the
 	//     inserted TODO — with no match it emits nothing, see Test 11)
 	// Total = 5 + 5 = 10.
-	assert(all.size() == 10);
+	CHECK(all.size() == 10);
 	printf("Test 10 (total evidence count == 10): PASS\n");
 
 	// ── Test 11: Count mode with no matches emits nothing ──────────
@@ -376,18 +376,18 @@ int main()
 	{
 		uint64_t empty_pid = store.createProject("/tmp/empty",
 							 "test_evidence_empty");
-		assert(empty_pid > 0);
+		CHECK(empty_pid > 0);
 		auto none = builder.buildAll(empty_pid);
 		for (const auto &ev : none) {
 			printf("  unexpected evidence on an empty project: %s\n",
 			       ev.title.c_str());
 		}
-		assert(none.empty());
+		CHECK(none.empty());
 		printf("Test 11 (Count mode with 0 matches emits nothing): PASS\n");
 	}
 
 	store.close();
 	unlink(kDbPath);
 	printf("\nAll evidence_builder tests passed.\n");
-	return 0;
+	return checkFailures() ? 1 : 0;
 }

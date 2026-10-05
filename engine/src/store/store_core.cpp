@@ -148,7 +148,7 @@ bool GraphStore::open(const char *db_path)
 {
 	// Enable SQLite serialized threading mode so the same handle can be
 	// used from multiple threads safely (worker pool in engine_index.cpp
-	// + MCP server main loop both access g_store concurrently).
+	// + MCP server main loop both access the engine store concurrently).
 	// This MUST be called before any sqlite3_open() call.
 	// If already initialized (SQLITE_MISUSE), the default is likely
 	// serialized already (most builds have SQLITE_THREADSAFE=1).

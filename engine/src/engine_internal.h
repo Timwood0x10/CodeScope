@@ -24,20 +24,20 @@
 #include "query/impact_analysis.h"
 // community_detection removed — Phase 0 cut
 #include "lsp/lsp_client.h"
-// ─── Global Singletons ───────────────────────────────────────────
+// ─── Engine State (TD-1) ─────────────────────────────────────────
 //
-// Shared across all engine_*.cpp translation units.
+// The three state members (store, query, parser) live in the single
+// EngineContext declared in engine_context.h and are reached from every
+// engine_*.cpp translation unit through engineContext(). Shared process-wide.
 // Initialized by engine_init() and cleaned up by engine_shutdown().
 // Using unique_ptr for exception-safe memory management.
 
-extern std::unique_ptr<store::GraphStore> g_store;
-extern std::unique_ptr<query::QueryEngine> g_query;
-extern std::unique_ptr<Parser> g_parser;
+#include "engine_context.h"
 
 // ═══════════════════════════════════════════════════════════════════
-// Global Singleton Thread-Safety Contract
+// Engine State Thread-Safety Contract
 // ═══════════════════════════════════════════════════════════════════
-// g_store, g_query, g_parser are process-global unique_ptr singletons.
+// The single EngineContext returned by engineContext() is process-global state.
 //
 // Thread-safety model:
 // - The Rust MCP server calls FFI functions SEQUENTIALLY from a single

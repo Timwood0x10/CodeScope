@@ -96,7 +96,7 @@ pub(super) fn index_parallel_chunked(
         .unwrap_or(0);
     let prefix_env = std::env::var("CODESCOPE_DB_PREFIX");
     let keep_db = prefix_env.is_ok();
-    let db_prefix = prefix_env.unwrap_or_else(|_| format!("/tmp/codescope_chunked_{}", run_id));
+    let db_prefix = prefix_env.unwrap_or_else(|_| super::default_db_prefix("chunked", run_id));
     let _ = keep_db; // keep_db consumed in run_module_worker calls below
 
     // ── Phase 1: discover the GLOBAL file list ───────────────
@@ -207,7 +207,7 @@ pub(super) fn index_parallel_chunked(
     }
 
     // ── Phase 3: create + fill the chunk queue ──────────────
-    let shm_path = format!("/tmp/codescope_chunked_sched_{}.shm", std::process::id());
+    let shm_path = super::default_shm_path("chunked_sched");
     let _ = std::fs::remove_file(&shm_path);
     let queue = match chunk_queue::ChunkQueue::create(&shm_path, chunk_count) {
         Ok(q) => q,

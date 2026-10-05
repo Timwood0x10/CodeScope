@@ -30,7 +30,7 @@
 #include "../src/query/query_engine.h"
 #include "../src/store/store.h"
 
-#include <cassert>
+#include "test_check.h"
 #include <cstdio>
 #include <sqlite3.h>
 #include <string>
@@ -48,14 +48,14 @@ static void insertEntity(store::GraphStore &store, uint64_t project_id,
 			  "start_col, end_row, end_col) "
 			  "VALUES (?, ?, 0, ?, ?, ?, 'cpp', 1, 0, 10, 0)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	std::string path = std::string("/t/") + name + ".cpp";
 	sqlite3_bind_int64(stmt, 1, id);
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 3, name, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 4, name, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 5, path.c_str(), -1, SQLITE_TRANSIENT);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -68,12 +68,12 @@ static void insertRelation(store::GraphStore &store, uint64_t project_id,
 		"INSERT OR IGNORE INTO relation (project_id, source_id, "
 		"target_id, type) VALUES (?, ?, ?, ?)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_int64(stmt, 2, source_id);
 	sqlite3_bind_int64(stmt, 3, target_id);
 	sqlite3_bind_int(stmt, 4, type);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -95,7 +95,7 @@ int main()
 	}
 	uint64_t project_id =
 		store.createProject("/communities", "communities");
-	assert(project_id > 0);
+	CHECK(project_id > 0);
 
 	// ── Fixture ─────────────────────────────────────────────────
 	insertEntity(store, project_id, 1, "alpha");
@@ -125,65 +125,65 @@ int main()
 	// ── 1. Two communities, not one ─────────────────────────────
 	std::string out = engine.getCommunities(project_id, 10, 20, false);
 	printf("  [debug] summary = %s\n", out.c_str());
-	assert(contains(out, "\"total_communities\":2") &&
+	CHECK(contains(out, "\"total_communities\":2") &&
 	       "bridge must not collapse the two triangles into one community");
-	assert(contains(out, "\"returned_communities\":2"));
-	assert(contains(out, "\"inter_community_edges\":1") &&
+	CHECK(contains(out, "\"returned_communities\":2"));
+	CHECK(contains(out, "\"inter_community_edges\":1") &&
 	       "exactly the bridge crosses communities");
-	assert(contains(out, "\"truncated\":false"));
-	assert(contains(out, "\"approximation\":\"heuristic\""));
+	CHECK(contains(out, "\"truncated\":false"));
+	CHECK(contains(out, "\"approximation\":\"heuristic\""));
 	// Both communities have three members.
-	assert(contains(out, "\"member_count\":3"));
+	CHECK(contains(out, "\"member_count\":3"));
 	// Highest-degree member of each triangle is the bridge endpoint.
-	assert(contains(out,
+	CHECK(contains(out,
 			"\"id\":3,\"label\":\"gamma\",\"member_count\":3") &&
 	       "triangle A representative must be gamma (degree 3)");
-	assert(contains(out,
+	CHECK(contains(out,
 			"\"id\":4,\"label\":\"delta\",\"member_count\":3") &&
 	       "triangle B representative must be delta (degree 3)");
 	// Decoys must not leak in.
-	assert(!contains(out, "isolated") &&
+	CHECK(!contains(out, "isolated") &&
 	       "an isolated entity has no CALLS edge and must not appear");
-	assert(!contains(out, "\"members\":[") &&
+	CHECK(!contains(out, "\"members\":[") &&
 	       "members must be omitted when include_members is false");
-	assert(!contains(out, "refsource") && !contains(out, "reftarget") &&
+	CHECK(!contains(out, "refsource") && !contains(out, "reftarget") &&
 	       "a References(0) edge must not create a community");
 
 	// ── 2. Determinism ──────────────────────────────────────────
 	std::string out_again =
 		engine.getCommunities(project_id, 10, 20, false);
-	assert(out == out_again &&
+	CHECK(out == out_again &&
 	       "getCommunities must be deterministic for identical input");
 
 	// ── 3. include_members ──────────────────────────────────────
 	std::string full = engine.getCommunities(project_id, 10, 20, true);
 	printf("  [debug] members  = %s\n", full.c_str());
-	assert(contains(full, "\"members\":["));
-	assert(contains(full, "\"name\":\"alpha\""));
-	assert(contains(full, "\"name\":\"foxtrot\""));
-	assert(contains(full, "\"name\":\"isolated\"") == false);
+	CHECK(contains(full, "\"members\":["));
+	CHECK(contains(full, "\"name\":\"alpha\""));
+	CHECK(contains(full, "\"name\":\"foxtrot\""));
+	CHECK(contains(full, "\"name\":\"isolated\"") == false);
 
 	// ── 4. Member clamp ─────────────────────────────────────────
 	std::string clamped = engine.getCommunities(project_id, 2, 20, true);
 	printf("  [debug] clamped  = %s\n", clamped.c_str());
 	// Three members exist but only two may be emitted per community, so the
 	// response must say so instead of silently dropping them.
-	assert(contains(clamped, "\"truncated\":true") &&
+	CHECK(contains(clamped, "\"truncated\":true") &&
 	       "member clamping must be reported via truncated");
-	assert(!contains(clamped, "\"name\":\"gamma\"") &&
+	CHECK(!contains(clamped, "\"name\":\"gamma\"") &&
 	       "the third member of triangle A must be clipped");
 
 	// ── 5. Community clamp ──────────────────────────────────────
 	std::string one = engine.getCommunities(project_id, 10, 1, false);
 	printf("  [debug] one      = %s\n", one.c_str());
-	assert(contains(one, "\"total_communities\":2") &&
+	CHECK(contains(one, "\"total_communities\":2") &&
 	       "total_communities reports the real total");
-	assert(contains(one, "\"returned_communities\":1"));
-	assert(contains(one, "\"truncated\":true"));
+	CHECK(contains(one, "\"returned_communities\":1"));
+	CHECK(contains(one, "\"truncated\":true"));
 
 	// ── 6. Non-positive values mean "default", not "unlimited" ──
 	std::string defaults = engine.getCommunities(project_id, 0, 0, false);
-	assert(defaults == out &&
+	CHECK(defaults == out &&
 	       "a non-positive limit must fall back to the default, not to an "
 	       "unbounded response");
 
@@ -191,9 +191,9 @@ int main()
 	uint64_t empty_project = store.createProject("/empty", "empty");
 	std::string empty = engine.getCommunities(empty_project, 10, 20, false);
 	printf("  [debug] empty    = %s\n", empty.c_str());
-	assert(contains(empty, "\"total_communities\":0"));
-	assert(contains(empty, "\"communities\":[]"));
-	assert(!contains(empty, "\"error\"") &&
+	CHECK(contains(empty, "\"total_communities\":0"));
+	CHECK(contains(empty, "\"communities\":[]"));
+	CHECK(!contains(empty, "\"error\"") &&
 	       "an empty graph is a valid answer, not an error");
 
 	store.close();
@@ -206,5 +206,5 @@ int main()
 	printf("  - self-loops / isolated nodes / non-CALLS edges are ignored\n");
 	printf("  - output is deterministic and summary-first\n");
 	printf("  - max_communities / max_members clamp and report truncation\n");
-	return 0;
+	return checkFailures() ? 1 : 0;
 }

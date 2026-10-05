@@ -53,7 +53,7 @@ struct VerifyResult {
 //
 // THREAD SAFETY: single-threaded only (relies on the GraphStore
 // single-writer invariant documented in store.h). The caller must hold
-// the global g_store singleton.
+// the engine store singleton.
 VerifyResult verify_one_claim(uint64_t project_id, const verify::Claim &claim);
 
 // BatchResult bundles the output of verify_claim_batch so callers can

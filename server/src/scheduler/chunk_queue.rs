@@ -23,6 +23,10 @@
 //! This module is infrastructure for the chunk-level scheduler (P2-P4
 //! of the redesign). The current module-level scheduler still uses
 //! `shm.rs`; both can coexist during the migration.
+//!
+//! The queue lives in a shared file mapped by
+//! [`super::mapped_file::MappedFile`], so it works on POSIX and Windows
+//! alike; nothing here calls `mmap`, `ftruncate` or `unlink` directly.
 
 #![allow(dead_code)]
 
@@ -32,17 +36,10 @@
 #[path = "chunk_queue_ops.rs"]
 mod chunk_queue_ops;
 
-use std::ffi::CString;
-use std::os::unix::io::RawFd;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use libc::{
-    MAP_SHARED, O_CREAT, O_RDWR, PROT_READ, PROT_WRITE, S_IRUSR, S_IWUSR, c_void, close, ftruncate,
-    mmap, munmap, open, unlink,
-};
-#[cfg(windows)]
-const MAP_FAILED: *mut libc::c_void = !0 as *mut libc::c_void;
+use super::mapped_file::MappedFile;
 
 /// Magic number stored in [`ChunkQueueHeader::magic`] — ASCII "CUNK"
 /// (Chunk Queue) in little-endian. Workers verify this on attach.
@@ -168,23 +165,20 @@ pub struct ChunkQueueState {
 
 /// RAII wrapper around a `mmap`'d [`ChunkQueueState`].
 ///
-/// Owner (scheduler) creates via [`ChunkQueue::create`] and unlinks on
-/// `Drop`. Workers attach via [`ChunkQueue::open`] and only `munmap` on
-/// drop — they do not unlink.
+/// Owner (scheduler) creates via [`ChunkQueue::create`]; unmapping, closing
+/// and removing the file are [`super::mapped_file::MappedFile`]'s `Drop`.
+/// Workers attach via [`ChunkQueue::open`] and only unmap.
 pub struct ChunkQueue {
-    path: String,
-    fd: RawFd,
+    map: MappedFile,
     ptr: *mut ChunkQueueState,
-    is_owner: bool,
 }
 
 // Manual Debug impl — `*mut ChunkQueueState` doesn't auto-derive Debug.
 impl std::fmt::Debug for ChunkQueue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ChunkQueue")
-            .field("path", &self.path)
-            .field("fd", &self.fd)
-            .field("is_owner", &self.is_owner)
+            .field("path", &self.map.path())
+            .field("is_owner", &self.map.is_owner())
             .finish_non_exhaustive()
     }
 }
@@ -215,83 +209,27 @@ impl ChunkQueue {
     /// not consume the queue before all writes are done — caller's
     /// responsibility).
     pub fn create(path: &str, chunk_count: u32) -> Result<Self, String> {
-        let c_path = CString::new(path).map_err(|e| {
-            format!(
-                "path contains NUL byte: {} [module=scheduler, method=ChunkQueue::create]",
-                e
-            )
-        })?;
-
-        // SAFETY: c_path is a valid NUL-terminated CString; O_CREAT|O_RDWR
-        // creates the file if absent; mode 0600 restricts to owner.
-        let fd = unsafe {
-            open(
-                c_path.as_ptr(),
-                O_CREAT | O_RDWR,
-                (S_IRUSR | S_IWUSR) as libc::c_int,
-            )
-        };
-        if fd < 0 {
-            return Err(format!(
-                "open failed: {} [module=scheduler, method=ChunkQueue::create, path={}]",
-                std::io::Error::last_os_error(),
-                path,
-            ));
-        }
-
         let size = std::mem::size_of::<ChunkQueueState>();
-        // SAFETY: fd is valid; ftruncate sizes the file to exactly
-        // `size` bytes. Cast to i64 is safe because the struct is
-        // roughly 256 * 64 = ~16KB.
-        if unsafe { ftruncate(fd, size as i64) } != 0 {
-            let err = std::io::Error::last_os_error();
-            // SAFETY: fd is valid; close it to leak no fd.
-            unsafe { close(fd) };
-            return Err(format!(
-                "ftruncate failed: {} [module=scheduler, method=ChunkQueue::create]",
-                err
-            ));
-        }
-
-        // SAFETY: fd is valid and points to a file we just sized.
-        // MAP_SHARED makes writes visible to other processes that map
-        // the same file.
-        let ptr = unsafe {
-            mmap(
-                std::ptr::null_mut(),
-                size,
-                PROT_READ | PROT_WRITE,
-                MAP_SHARED,
-                fd,
-                0,
-            )
-        };
-        if ptr == libc::MAP_FAILED {
-            let err = std::io::Error::last_os_error();
-            // SAFETY: fd is valid; close it to leak no fd.
-            unsafe { close(fd) };
-            return Err(format!(
-                "mmap failed: {} [module=scheduler, method=ChunkQueue::create]",
-                err
-            ));
-        }
+        // The mapping layer sizes the file to `size` and zero-fills it, so the
+        // chunk array starts as all-zero — status PENDING with no claimer, once
+        // `claimer_id` is set below.
+        let map = MappedFile::create(path, size, "ChunkQueue::create")?;
 
         let clamped = std::cmp::min(chunk_count, MAX_CHUNKS as u32);
 
-        // SAFETY: ptr is a valid, properly-aligned pointer to memory
-        // returned by mmap and sized to size_of::<ChunkQueueState>().
-        // The file was just created/truncated so the bytes are zero.
-        // No worker has opened the file yet (caller's responsibility),
-        // so exclusive mutable access here is safe.
-        let state = unsafe { &mut *(ptr as *mut ChunkQueueState) };
+        // SAFETY: `map` is a valid, properly-aligned, all-zero view of
+        // `size_of::<ChunkQueueState>()` bytes and no worker has opened the
+        // file yet (callers create the queue before spawning workers), so this
+        // exclusive mutable borrow is sound.
+        let ptr = map.ptr() as *mut ChunkQueueState;
+        let state = unsafe { &mut *ptr };
         state.header.magic = MAGIC;
         state.header.version = VERSION;
         state.header.chunk_count = clamped;
         state.header.reserved = [0u32; 13];
-        // ChunkState fields are already zero from ftruncate — but
-        // `status` must be explicitly initialised because zero IS
-        // STATUS_PENDING (so it's fine) and `claimer_id` zero would
-        // look like worker 0 claimed it, so we set it to u32::MAX.
+        // `status` is already 0 == STATUS_PENDING and every timing field is 0,
+        // but `claimer_id` must be u32::MAX: a zero there would look like
+        // worker 0 owns the chunk.
         for slot in state.chunks.iter_mut() {
             slot.status.store(STATUS_PENDING, Ordering::Relaxed);
             slot.claimer_id.store(u32::MAX, Ordering::Relaxed);
@@ -302,12 +240,7 @@ impl ChunkQueue {
             // until write_chunk populates them.
         }
 
-        Ok(Self {
-            path: path.to_string(),
-            fd,
-            ptr: ptr as *mut ChunkQueueState,
-            is_owner: true,
-        })
+        Ok(Self { map, ptr })
     }
 
     /// Worker opens an existing shm created by the scheduler.
@@ -315,60 +248,22 @@ impl ChunkQueue {
     /// Verifies magic + version. Returns `Err` with a tagged message
     /// if `open`, `mmap`, or the magic/version check fails.
     pub fn open(path: &str) -> Result<Self, String> {
-        let c_path = CString::new(path).map_err(|e| {
-            format!(
-                "path contains NUL byte: {} [module=scheduler, method=ChunkQueue::open]",
-                e
-            )
-        })?;
-
-        // SAFETY: c_path is valid NUL-terminated; O_RDWR (no O_CREAT).
-        let fd = unsafe { open(c_path.as_ptr(), O_RDWR) };
-        if fd < 0 {
-            return Err(format!(
-                "open failed: {} [module=scheduler, method=ChunkQueue::open, path={}]",
-                std::io::Error::last_os_error(),
-                path,
-            ));
-        }
-
         let size = std::mem::size_of::<ChunkQueueState>();
-        // SAFETY: fd is valid; the file was created and sized by
-        // ChunkQueue::create, so the mapping fits the file exactly.
-        let ptr = unsafe {
-            mmap(
-                std::ptr::null_mut(),
-                size,
-                PROT_READ | PROT_WRITE,
-                MAP_SHARED,
-                fd,
-                0,
-            )
-        };
-        if ptr == libc::MAP_FAILED {
-            let err = std::io::Error::last_os_error();
-            // SAFETY: fd is valid; close it to leak no fd.
-            unsafe { close(fd) };
-            return Err(format!(
-                "mmap failed: {} [module=scheduler, method=ChunkQueue::open]",
-                err
-            ));
-        }
+        // The owner created this file with the same size, so the mapping fits
+        // the queue exactly.
+        let map = MappedFile::open(path, size, "ChunkQueue::open")?;
 
-        // SAFETY: ptr is valid ChunkQueueState-aligned memory returned
-        // by mmap. We only read header.magic and header.version here
-        // (non-atomic u32); the scheduler writes them once in create()
-        // before any worker opens the file, so the read is race-free.
-        let state = unsafe { &*(ptr as *const ChunkQueueState) };
-        // Cache the values BEFORE any munmap — reading through `state`
-        // after `munmap(ptr, size)` would be use-after-unmap.
+        // SAFETY: `map` is a valid, properly-aligned view of `size_of::<
+        // ChunkQueueState>()` bytes. We only read the non-atomic header fields
+        // here; the scheduler wrote them once in create() before any worker
+        // attached, so the read is race-free.
+        let ptr = map.ptr() as *mut ChunkQueueState;
+        let state = unsafe { &*ptr };
         let observed_magic = state.header.magic;
         let observed_version = state.header.version;
         if observed_magic != MAGIC {
-            // SAFETY: ptr was returned by mmap with `size` bytes.
-            unsafe { munmap(ptr, size) };
-            // SAFETY: fd is valid; close it to leak no fd.
-            unsafe { close(fd) };
+            // Dropping `map` unmaps and closes the segment; removing the file
+            // is the owner's job, so these error paths leak nothing.
             return Err(format!(
                 "magic mismatch: 0x{:08x} (expected 0x{:08x}) \
                  [module=scheduler, method=ChunkQueue::open]",
@@ -376,10 +271,6 @@ impl ChunkQueue {
             ));
         }
         if observed_version != VERSION {
-            // SAFETY: ptr was returned by mmap with `size` bytes.
-            unsafe { munmap(ptr, size) };
-            // SAFETY: fd is valid; close it to leak no fd.
-            unsafe { close(fd) };
             return Err(format!(
                 "version mismatch: {} (expected {}) \
                  [module=scheduler, method=ChunkQueue::open]",
@@ -387,12 +278,7 @@ impl ChunkQueue {
             ));
         }
 
-        Ok(Self {
-            path: path.to_string(),
-            fd,
-            ptr: ptr as *mut ChunkQueueState,
-            is_owner: false,
-        })
+        Ok(Self { map, ptr })
     }
 
     /// Scheduler writes a chunk's immutable metadata into slot `idx`.
@@ -427,45 +313,6 @@ impl ChunkQueue {
     }
 }
 
-impl Drop for ChunkQueue {
-    fn drop(&mut self) {
-        let size = std::mem::size_of::<ChunkQueueState>();
-        if !self.ptr.is_null() {
-            // SAFETY: self.ptr was returned by mmap with `size` bytes and
-            // has not been unmapped yet (Drop runs once per instance).
-            unsafe {
-                munmap(self.ptr as *mut c_void, size);
-            }
-        }
-        if self.fd >= 0 {
-            // SAFETY: self.fd is a valid open descriptor (or already
-            // closed, in which case close returns EBADF — harmless).
-            unsafe {
-                close(self.fd);
-            }
-        }
-        // Only the scheduler (owner) unlinks the file. Workers just
-        // munmap+close — the inode persists until the scheduler unlinks,
-        // and any in-flight mmap references stay valid (POSIX semantics).
-        if self.is_owner
-            && let Ok(c_path) = CString::new(self.path.clone())
-        {
-            // SAFETY: c_path is a valid NUL-terminated CString. unlink
-            // removes the directory entry; existing mmap references
-            // remain valid until munmap (POSIX shared memory semantics).
-            unsafe {
-                unlink(c_path.as_ptr());
-            }
-        }
-    }
-}
-
-// SAFETY: ChunkQueue is Send for the same reasons as SchedShm:
-// - `ptr` points to mmap'd memory (MAP_SHARED) that is process-global;
-//   moving the Rust handle across threads does not affect the underlying
-//   memory or its visibility to other processes.
-// - `fd` (RawFd = i32), `path` (String), and `is_owner` (bool) are all
-//   Send by default.
 unsafe impl Send for ChunkQueue {}
 
 // SAFETY: ChunkQueue is Sync for the same reasons as SchedShm:
@@ -481,7 +328,7 @@ unsafe impl Send for ChunkQueue {}
 //   read-only afterwards. `write_chunk` completes before workers are
 //   spawned (caller's responsibility), so there are no concurrent
 //   reads during the writes.
-// - `fd` and `is_owner` are only accessed in `Drop`, which takes
+// - `map` (the `MappedFile`) is only touched by `Drop`, which takes
 //   `&mut self` (exclusive access) — no concurrent access is possible.
 unsafe impl Sync for ChunkQueue {}
 
@@ -501,9 +348,12 @@ mod tests {
     use std::sync::atomic::AtomicU64;
 
     /// Monotonic counter appended to test paths so parallel test
-    /// processes never collide on the same /tmp file.
+    /// processes never collide on the same temp file.
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+    /// Build a unique path in the platform temp directory for one test
+    /// invocation. `temp_dir()` rather than a hardcoded `/tmp` because this
+    /// suite also runs on Windows hosts, where `/tmp` does not exist.
     fn unique_path() -> String {
         let pid = std::process::id();
         let nanos = std::time::SystemTime::now()
@@ -511,10 +361,10 @@ mod tests {
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(0);
         let counter = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
-        format!(
-            "/tmp/codescope_chunkq_test_{}_{}_{}.shm",
-            pid, nanos, counter
-        )
+        std::env::temp_dir()
+            .join(format!("codescope_chunkq_test_{pid}_{nanos}_{counter}.shm"))
+            .to_string_lossy()
+            .into_owned()
     }
 
     #[test]

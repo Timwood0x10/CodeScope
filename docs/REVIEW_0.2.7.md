@@ -5,6 +5,9 @@
 **对照规范**: `plan/rules/code_rules.md` v1.0  
 **审查人**: AI Agent
 
+> **后续处理状态（2026-10-04 更新）**：本报告的阻塞项与 P1 已在 v0.2.7 发布前及 0.2.8 开发中处理完毕，
+> 详见 §6.2 / §6.3 / §6.4 的复选框与提交号。仍开放的是 TD-1（刀 2/3）与 TD-5（Windows 并行索引）。
+
 ---
 
 ## 目录
@@ -423,22 +426,23 @@ runFPVerificationTest("cpp", code, "/tmp/test_fp_cpp.cpp",
 
 ### 6.2 必须修复 (发布阻塞)
 
-- [ ] **BUG-1**: 为 `waitForKnowledgeBuilder()` 添加超时机制，防止 MCP server 永久挂死
+- [x] **BUG-1**: 为 `waitForKnowledgeBuilder()` 添加超时机制，防止 MCP server 永久挂死 —— 已修：`recursive_timed_mutex` 30 s 超时 + 5 分钟后一次 `sqlite3_interrupt()` 自愈（`97253c6`）
 
 ### 6.3 强烈建议修复 (发布后立即跟进)
 
-- [ ] **BUG-2**: `engine_get_type_info` 改用参数化查询
-- [ ] **BUG-3**: 消除运行时 `env::set_var`，改为传递参数
-- [ ] **BUG-5**: 修正 `run_produced_index` 的逻辑反转
-- [ ] **TEST-3**: 用自定义 `check()` 宏替换所有测试中的 `assert()`
-- [ ] **TEST-1**: Rust 集成测试增加真实索引场景的端到端验证
+- [x] **BUG-2**: `engine_get_type_info` 改用参数化查询 —— 已修：`sqlite3_bind_*` 绑定 `project_id` 与 LIKE 过滤（`97253c6`）
+- [x] **BUG-3**: 消除运行时 `env::set_var`，改为传递参数 —— 已修：DB 路径改为参数传递，`env::set_var` 调用点已删除（`97253c6`）
+- [x] **BUG-4**: chunk-worker 的 `project_id == 0` 兜底创建幽灵项目 —— 已修：`project_id == 0` 直接报错退出，必须由调度器分配（`97253c6`）
+- [x] **BUG-5**: `run_produced_index` 逻辑反转 —— 已确认并澄清：函数语义改为"运行级空缺守卫"，空项目交由 `run_complete`/`merge` 判定，`test_empty_project_reports_incomplete` 锁定行为（`97253c6`）
+- [x] **TEST-3**: 用自定义 `check()` 宏替换所有测试中的 `assert()` —— 已修：新增 `engine/tests/test_check.h`（`CHECK()` 记录失败并继续、`checkFailures()` 计数），**929 处 `assert()` / 35 个文件**全部迁移，`main` 改为 `return checkFailures() ? 1 : 0;`
+- [x] **TEST-1**: Rust 集成测试增加真实索引场景的端到端验证 —— 已修：`test_graph_ffi.rs` 单文件索引 e2e（`97253c6`）+ 新增 `server/tests/test_index_e2e.rs`（索引夹具目录 → `get_graph_stats` / `find_definition` / `search_code` 语义断言）
 
 ### 6.4 中期技术债务
 
-- [ ] **TD-1**: 引擎状态从全局单例迁移为句柄传递
-- [ ] **TD-3**: C++ 侧引入 JSON 库替代手写序列化
-- [ ] **TD-5**: Windows 平台并行索引支持
-- [ ] 增加 `proptest` 覆盖参数 clamping 和边界条件
+- [ ] **TD-1**: 引擎状态从全局单例迁移为句柄传递 —— **进行中**：刀 1（接缝）新增 `engine/src/engine_context.{h,cpp}`，三个全局收进 `EngineContext` 并以引用别名保持调用点不变；刀 2 已把 **340 处**调用点全部迁到 `engineContext().store/.query/.parser`、删除别名、把单例改为**函数内静态对象**（不再有全局对象）。每批以 43 工具差分矩阵验证字节一致；重索引差异只有 85 条新增的 `→ engineContext` 边。刀 3（FFI 传句柄、支持多实例）待做
+- [x] **TD-3**: C++ 侧引入 JSON 库替代手写序列化 —— 已完成：`util::JsonWriter` 全量迁移，转义收敛到 `util::jsonEscapeString`，重复定义/声明删除（`d44f0fd`、`ed045ff`、`9d48238`、`4bb5e6a`）
+- [x] **TD-5**: Windows 平台并行索引支持 —— 代码已完成：新增跨平台映射层 `server/src/scheduler/mapped_file.rs`（POSIX `mmap` / Windows section object，同一契约），`shm.rs` 与 `chunk_queue.rs` 复用并删除重复映射代码；硬编码 `/tmp` 改为 `std::env::temp_dir()`；`main.rs` 解除 `index-parallel` / `chunk-worker` 的 Windows 门禁。交叉编译（`x86_64-pc-windows-gnu`）0 error 且产出 PE32+ `codescope.exe`，宿主端到端两条调度路径均跑通（1766 节点），`dev.yml` 增加 `windows-smoke`。**剩余**：`windows-smoke` 需在真实 Windows runner 上首次跑绿（尚未执行过），且 Windows 上 merge 步骤仍依赖 `sqlite3` CLI
+- [x] 增加 `proptest` 覆盖参数 clamping 和边界条件 —— 已完成：`tools/clamp.rs`（depth/radius/edge_type/limit/max_communities/max_members/findings 的"永不截断"性质）、`scheduler/worker.rs`（`CODESCOPE_EXCLUDE_PATHS` 转义往返）、`mcp/protocol.rs`（JSON 可解析 + 转义往返）
 
 ### 6.5 最终结论
 

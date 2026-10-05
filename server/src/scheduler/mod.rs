@@ -44,6 +44,7 @@ mod chunk_plan;
 pub mod chunk_queue;
 mod chunked;
 mod dyn_config;
+mod mapped_file;
 mod merge;
 mod quarantine;
 mod shm;
@@ -51,6 +52,32 @@ mod worker;
 
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
+
+/// Join `name` onto the platform temp directory as a `String`.
+///
+/// The scheduler hands these paths to subprocesses (as CLI arguments and env
+/// vars) and to SQLite, both of which want a plain `str`. Using `temp_dir()`
+/// rather than a literal `/tmp` matters on Windows, where `/tmp` does not
+/// exist: the whole parallel path would fail at the first write.
+fn temp_path(name: &str) -> String {
+    std::env::temp_dir()
+        .join(name)
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Default DB-path prefix for an auto-named run. Per-module DBs are named
+/// `<prefix>_<module>.db`, so the prefix is a path, not a bare name.
+pub(crate) fn default_db_prefix(tag: &str, run_id: u128) -> String {
+    temp_path(&format!("codescope_{tag}_{run_id}"))
+}
+
+/// Default shared-file path for a scheduler-created segment: temp directory
+/// plus the PID, so concurrent runs never collide and a crashed run leaves at
+/// most one stale file behind.
+pub(crate) fn default_shm_path(tag: &str) -> String {
+    temp_path(&format!("codescope_{tag}_{}.shm", std::process::id()))
+}
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
@@ -190,8 +217,8 @@ pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> S
     let grammars_dir =
         std::env::var("GRAMMARS_DIR").unwrap_or_else(|_| "engine/grammars".to_string());
 
-    // Generate a per-run DB prefix in /tmp so each invocation starts
-    // fresh and parallel runs never collide on DB files.
+    // Generate a per-run DB prefix in the temp directory so each invocation
+    // starts fresh and parallel runs never collide on DB files.
     let run_id = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
@@ -202,7 +229,7 @@ pub fn index_parallel(project_dir: &str, total_workers: u32, parallel: u32) -> S
     // Otherwise (auto run_id prefix) always start clean.
     let prefix_env = std::env::var("CODESCOPE_DB_PREFIX");
     let keep_db = prefix_env.is_ok();
-    let db_prefix = prefix_env.unwrap_or_else(|_| format!("/tmp/codescope_parallel_{}", run_id));
+    let db_prefix = prefix_env.unwrap_or_else(|_| default_db_prefix("parallel", run_id));
 
     eprintln!(
         "scheduler: project={} workers={} parallel={} db_prefix={} keep_db={}",

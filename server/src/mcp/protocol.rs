@@ -208,3 +208,48 @@ mod tests {
         assert_eq!(json["content"][0]["text"], "hello");
     }
 }
+
+/// Property-based coverage of the wire contract (code_rules §4).
+///
+/// The CHANGELOG records a long tail of malformed JSON produced by
+/// concatenating payloads by hand; serde_json is now the single producer. These
+/// properties pin the two invariants that hand-building repeatedly broke: the
+/// emitted message is always parseable JSON, and arbitrary text (quotes,
+/// backslashes, control characters, non-BMP code points) survives the round
+/// trip byte-for-byte.
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn call_tool_result_serializes_to_parseable_json(text in any::<String>()) {
+            let result = CallToolResult {
+                content: vec![TextContent {
+                    content_type: "text",
+                    text: text.clone(),
+                }],
+                is_error: Some(true),
+            };
+            let wire = serde_json::to_string(&result).expect("serialize");
+            let parsed: serde_json::Value =
+                serde_json::from_str(&wire).expect("tool result must be parseable JSON");
+            prop_assert_eq!(parsed["content"][0]["text"].as_str(), Some(text.as_str()));
+            prop_assert_eq!(parsed["isError"].as_bool(), Some(true));
+        }
+
+        #[test]
+        fn json_rpc_error_round_trips_arbitrary_messages(message in any::<String>()) {
+            let err = JsonRpcError {
+                code: -32603,
+                message: message.clone(),
+                data: None,
+            };
+            let wire = serde_json::to_string(&err).expect("serialize");
+            let parsed: serde_json::Value =
+                serde_json::from_str(&wire).expect("error must be parseable JSON");
+            prop_assert_eq!(parsed["message"].as_str(), Some(message.as_str()));
+        }
+    }
+}

@@ -29,7 +29,7 @@
 //   ]
 //
 // All errors return a JSON object with an "error" field instead of
-// crashing. Null `g_store` returns
+// crashing. Null `engineContext().store` returns
 //   {"error":"engine not initialized"}.
 
 #include "engine_internal.h"
@@ -92,7 +92,7 @@ char *engine_build_evidence(uint64_t project_id, const char *category_filter)
 {
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!g_store)
+		if (!engineContext().store)
 			return dupString(
 				"{\"error\":\"engine not initialized\"}");
 
@@ -100,7 +100,7 @@ char *engine_build_evidence(uint64_t project_id, const char *category_filter)
 		if (rules_dir.empty())
 			return dupString("[]");
 
-		evidence::EvidenceBuilder builder(g_store.get());
+		evidence::EvidenceBuilder builder(engineContext().store.get());
 		builder.loadRules(rules_dir);
 
 		std::vector<evidence::Evidence> evidences;

@@ -33,7 +33,7 @@
 #include "../src/evidence/evidence_builder.h"
 #include "../src/store/store.h"
 
-#include <cassert>
+#include "test_check.h"
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -61,13 +61,13 @@ static void insertFunction(GraphStore &store, uint64_t project_id, int64_t id,
 		"start_row, start_col, end_row, end_col) "
 		"VALUES (?,?,0,0,?,'',?,?,1,0,1000,0)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, id);
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 3, name, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 4, file_path, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 5, language, -1, SQLITE_TRANSIENT);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -86,7 +86,7 @@ static void insertFact(GraphStore &store, uint64_t project_id,
 		" symbol, confidence, detail_json) "
 		"VALUES (?,?,?,?,?,?,?,?)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(function_id));
 	sqlite3_bind_text(stmt, 3, category, -1, SQLITE_TRANSIENT);
@@ -98,7 +98,7 @@ static void insertFact(GraphStore &store, uint64_t project_id,
 		sqlite3_bind_text(stmt, 8, detail_json, -1, SQLITE_TRANSIENT);
 	else
 		sqlite3_bind_null(stmt, 8);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -166,7 +166,7 @@ int main()
 		return 1;
 	}
 	uint64_t pid = store.createProject("/tmp", "test_domain_rules");
-	assert(pid > 0);
+	CHECK(pid > 0);
 
 	// ── Insert one function per test fact (different function_ids
 	// so missing_match's per-function exclusion logic is exercised
@@ -240,7 +240,7 @@ int main()
 	printf("Loaded %zu rule sets\n", builder.ruleSets().size());
 
 	// ── Test 1: at least 10 rule sets (6 existing + 4 new) ───────
-	assert(builder.ruleSets().size() >= 10);
+	CHECK(builder.ruleSets().size() >= 10);
 	printf("Test 1 (rule sets >= 10, got %zu): PASS\n",
 	       builder.ruleSets().size());
 
@@ -251,17 +251,17 @@ int main()
 				return true;
 		return false;
 	};
-	assert(hasCategory("drift"));
-	assert(hasCategory("security"));
-	assert(hasCategory("concurrency"));
-	assert(hasCategory("test_quality"));
+	CHECK(hasCategory("drift"));
+	CHECK(hasCategory("security"));
+	CHECK(hasCategory("concurrency"));
+	CHECK(hasCategory("test_quality"));
 	printf("Test 2 (drift/security/concurrency/test_quality "
 	       "categories present): PASS\n");
 
 	// ── Test 3: buildAll returns evidence from each new category ─
 	auto all = builder.buildAll(pid);
 	printf("buildAll returned %zu evidence(s)\n", all.size());
-	assert(!all.empty());
+	CHECK(!all.empty());
 
 	size_t drift_n = countByCategory(all, "drift");
 	size_t security_n = countByCategory(all, "security");
@@ -271,10 +271,10 @@ int main()
 	       "test_quality=%zu\n",
 	       drift_n, security_n, concurrency_n, test_quality_n);
 
-	assert(drift_n >= 1);
-	assert(security_n >= 1);
-	assert(concurrency_n >= 1);
-	assert(test_quality_n >= 1);
+	CHECK(drift_n >= 1);
+	CHECK(security_n >= 1);
+	CHECK(concurrency_n >= 1);
+	CHECK(test_quality_n >= 1);
 	printf("Test 3 (each new category produced >= 1 evidence): "
 	       "PASS\n");
 
@@ -282,9 +282,9 @@ int main()
 	// concurrency evidence, and at least 1 item.
 	// ──────────────────────────────────────────────────────────
 	auto conc_evs = builder.buildByCategory(pid, "concurrency");
-	assert(!conc_evs.empty());
+	CHECK(!conc_evs.empty());
 	for (const auto &ev : conc_evs)
-		assert(ev.category == "concurrency");
+		CHECK(ev.category == "concurrency");
 	printf("Test 4 (buildByCategory concurrency, %zu evidence, "
 	       "all category=concurrency): PASS\n",
 	       conc_evs.size());
@@ -297,12 +297,12 @@ int main()
 		for (const auto &item : ev.items) {
 			if (item.symbol == "m.Lock") {
 				found_mutex = true;
-				assert(item.file == "/src/lock_leak.go");
-				assert(item.line == 5);
+				CHECK(item.file == "/src/lock_leak.go");
+				CHECK(item.line == 5);
 			}
 		}
 	}
-	assert(found_mutex);
+	CHECK(found_mutex);
 	printf("Test 5 (concurrency evidence contains m.Lock at "
 	       "/src/lock_leak.go:5): PASS\n");
 
@@ -314,8 +314,8 @@ int main()
 	       std::string("concurrency"), std::string("test_quality") }) {
 		auto evs = builder.buildByCategory(pid, cat);
 		for (const auto &ev : evs)
-			assert(ev.category == cat);
-		assert(!evs.empty());
+			CHECK(ev.category == cat);
+		CHECK(!evs.empty());
 	}
 	printf("Test 6 (buildByCategory isolates each new category): "
 	       "PASS\n");
@@ -326,7 +326,7 @@ int main()
 	       "mutex_without_unlock", "unwrap_in_non_test",
 	       "todo_accumulation" }) {
 		auto evs = builder.buildByRule(pid, rule_name);
-		assert(!evs.empty());
+		CHECK(!evs.empty());
 	}
 	printf("Test 7 (buildByRule for each new rule returns "
 	       "evidence): PASS\n");
@@ -334,12 +334,12 @@ int main()
 	// ── Test 8: buildByRule for unknown rule returns 0 ──────────
 	{
 		auto evs = builder.buildByRule(pid, "nonexistent_rule_xyz");
-		assert(evs.empty());
+		CHECK(evs.empty());
 	}
 	printf("Test 8 (buildByRule unknown, 0 evidence): PASS\n");
 
 	store.close();
 	unlink(kDbPath);
 	printf("\nAll domain_rules tests passed.\n");
-	return 0;
+	return checkFailures() ? 1 : 0;
 }

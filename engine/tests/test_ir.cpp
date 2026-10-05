@@ -1,5 +1,5 @@
 #include "../src/ir/ir.h"
-#include <cassert>
+#include "test_check.h"
 #include <cstdio>
 #include <functional>
 
@@ -46,19 +46,19 @@ int main() {
     unit->assignIds();
 
     // Verify
-    assert(unit->root == root);
-    assert(unit->all_nodes.size() == 3);
-    assert(root->id == 0);
+    CHECK(unit->root == root);
+    CHECK(unit->all_nodes.size() == 3);
+    CHECK(root->id == 0);
     // After assignIds: root=0, func=1 (first child), call=2 (child of func)
 
-    assert(func->name == "hello");
-    assert(func->loc.start_row == 1);
-    assert(call->semantic_edges.size() == 1);
-    assert(call->semantic_edges[0].target == func);
-    assert(call->semantic_edges[0].relation == Relation::CallTarget);
+    CHECK(func->name == "hello");
+    CHECK(func->loc.start_row == 1);
+    CHECK(call->semantic_edges.size() == 1);
+    CHECK(call->semantic_edges[0].target == func);
+    CHECK(call->semantic_edges[0].relation == Relation::CallTarget);
 
     printf("=== IR test passed ===\n");
 
     delete unit;
-    return 0;
+    return checkFailures() ? 1 : 0;
 }

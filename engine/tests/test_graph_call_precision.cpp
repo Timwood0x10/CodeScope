@@ -2,7 +2,7 @@
 #include "../src/ir/semantic_unit.h"
 #include "../src/ir/semantic_emitter.h"
 #include "../src/graph/graph_builder.h"
-#include <cassert>
+#include "test_check.h"
 #include <cstdio>
 
 // ── Tests for GraphBuilder layered callee resolution ─────────────────────
@@ -53,9 +53,9 @@ static void test_qualified_name_prevents_false_edges()
 		if (n.qualified_name == "ClassB::process")
 			b_gid = n.id;
 	}
-	assert(main_gid > 0);
-	assert(a_gid > 0);
-	assert(b_gid > 0);
+	CHECK(main_gid > 0);
+	CHECK(a_gid > 0);
+	CHECK(b_gid > 0);
 
 	// Expect: edge main -> ClassA::process (YES)
 	//         edge main -> ClassB::process (NO — qualified_name prevents it)
@@ -68,8 +68,8 @@ static void test_qualified_name_prevents_false_edges()
 				edge_to_b = true;
 		}
 	}
-	assert(edge_to_a);
-	assert(!edge_to_b);
+	CHECK(edge_to_a);
+	CHECK(!edge_to_b);
 
 	printf("  \u2713 test_qualified_name_prevents_false_edges: %zu call edges\n",
 	       call_g.edges.size());
@@ -111,9 +111,9 @@ static void test_arity_prevents_false_edges()
 		if (n.name == "init" && n.ir_node_id == fn2)
 			init2_gid = n.id;
 	}
-	assert(main_gid > 0);
-	assert(init1_gid > 0);
-	assert(init2_gid > 0);
+	CHECK(main_gid > 0);
+	CHECK(init1_gid > 0);
+	CHECK(init2_gid > 0);
 
 	// Expect: edge main -> init(arity=1) (YES — exact arity match)
 	//         edge main -> init(arity=2) (NO — arity mismatch)
@@ -126,8 +126,8 @@ static void test_arity_prevents_false_edges()
 				edge_to_init2 = true;
 		}
 	}
-	assert(edge_to_init1);
-	assert(!edge_to_init2);
+	CHECK(edge_to_init1);
+	CHECK(!edge_to_init2);
 
 	printf("  \u2713 test_arity_prevents_false_edges: %zu call edges\n",
 	       call_g.edges.size());
@@ -155,7 +155,7 @@ static void test_ref_original_id_resolves_exactly()
 		emitter.emitCall("handle", { 10, 4, 10, 15 }, main_fn);
 	// Resolve the call precisely to fn_a via ref_original_id
 	bool ok = unit.setCallReference(call_id, fn_a);
-	assert(ok);
+	CHECK(ok);
 
 	GraphBuilder builder(1);
 	auto sym_g = builder.buildSymbolGraph(unit);
@@ -171,9 +171,9 @@ static void test_ref_original_id_resolves_exactly()
 		if (n.name == "handle" && n.ir_node_id == fn_b)
 			b_gid = n.id;
 	}
-	assert(main_gid > 0);
-	assert(a_gid > 0);
-	assert(b_gid > 0);
+	CHECK(main_gid > 0);
+	CHECK(a_gid > 0);
+	CHECK(b_gid > 0);
 
 	// Expect: edge main -> fn_a (YES — exact ref_original_id match)
 	//         edge main -> fn_b (NO — ref_original_id is authoritative)
@@ -186,8 +186,8 @@ static void test_ref_original_id_resolves_exactly()
 				edge_to_b = true;
 		}
 	}
-	assert(edge_to_a);
-	assert(!edge_to_b);
+	CHECK(edge_to_a);
+	CHECK(!edge_to_b);
 
 	printf("  \u2713 test_ref_original_id_resolves_exactly: %zu call edges\n",
 	       call_g.edges.size());
@@ -224,8 +224,8 @@ static void test_bare_name_fallback_unique_candidate()
 		if (n.name == "compute")
 			compute_gid = n.id;
 	}
-	assert(main_gid > 0);
-	assert(compute_gid > 0);
+	CHECK(main_gid > 0);
+	CHECK(compute_gid > 0);
 
 	// Expect: edge main -> compute (name-only fallback works for unique name)
 	bool edge_found = false;
@@ -234,7 +234,7 @@ static void test_bare_name_fallback_unique_candidate()
 		    e.target_id == compute_gid)
 			edge_found = true;
 	}
-	assert(edge_found);
+	CHECK(edge_found);
 
 	printf("  \u2713 test_bare_name_fallback_unique_candidate: %zu call edges\n",
 	       call_g.edges.size());
@@ -265,7 +265,7 @@ static void test_external_index_cross_file_call()
 		if (n.name == "main")
 			main_gid = n.id;
 	}
-	assert(main_gid > 0);
+	CHECK(main_gid > 0);
 
 	// Build an external CalleeIndex manually (simulating a cross-file index:
 	// "helper" is defined in another file with a known graph node ID).
@@ -283,7 +283,7 @@ static void test_external_index_cross_file_call()
 		    e.target_id == external_helper_gid)
 			found = true;
 	}
-	assert(found);
+	CHECK(found);
 
 	printf("  \u2713 test_external_index_cross_file_call: %zu call edges\n",
 	       call_g.edges.size());
@@ -302,5 +302,5 @@ int main()
 	test_external_index_cross_file_call();
 
 	printf("\n=== GraphBuilder call-edge precision tests passed ===\n");
-	return 0;
+	return checkFailures() ? 1 : 0;
 }

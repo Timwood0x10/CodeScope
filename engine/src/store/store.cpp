@@ -45,7 +45,7 @@ bool GraphStore::rollbackTransaction()
 //
 // Each thread owns its own prepared statements. A single sqlite3_stmt* is
 // therefore never shared across threads, fixing the M-2 cross-thread race on
-// a shared cached statement under concurrent g_store access. The connection is
+// a shared cached statement under concurrent engine store access. The connection is
 // already serialized via SQLITE_CONFIG_SERIALIZED (see open()), so concurrent
 // use of DIFFERENT per-thread statements on the same connection is safe.
 // Bounded to kStmtCacheMax entries per thread; finalized by clearStmtCache()

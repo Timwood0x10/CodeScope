@@ -70,7 +70,7 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 {
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!g_store)
+		if (!engineContext().store)
 			return dupString(
 				"{\"error\":\"not initialized "
 				"[module=ffi, method=engine_explain_module]\"}");
@@ -86,7 +86,7 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 			name_lower += static_cast<char>(
 				std::tolower(static_cast<unsigned char>(c)));
 
-		sqlite3 *db = g_store->handle();
+		sqlite3 *db = engineContext().store->handle();
 		if (!db)
 			return dupString(
 				"{\"error\":\"db not open "
