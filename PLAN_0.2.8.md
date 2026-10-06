@@ -111,6 +111,17 @@ CODESCOPE_CPU_DYNAMIC=1 bin/codescope index-parallel engine/src --workers 2 --pa
 
 ---
 
+## 5.9 修复记录（2026-10-06，9 语言真实项目实测，全新编译验证）
+
+| 问题 | 根因 | 修复 | 验证 |
+|---|---|---|---|
+| **复杂度指标恒为 0**（`analysis_progress.metrics`、`metrics_ready`、所有 `complexity/cognitive/nesting/lines` 字段） | `buildGraph` 重建 entity 行的列清单不含指标列；并行路径的 worker 已正确解析，但合并库被后处理重建清零；文件清单路径只暂存从不解析（goagent 库留下 15160 条暂存行） | 新增 `engine/src/store/store_metrics.{cpp}`：重建前快照指标列、重建后回填（暂存值优先）并消费暂存行、重新探测 `metrics_ready`；`buildGraph` 在删除前后各调用一次 | 9 语言全部恢复：Go 6156 / C 43586 / Rust 5064 / Java 5423 / Python 339 / TS 271 / C++ 324 / TSX 158 / JS 44 行（修复前均为 0）；`handleMCP` 4/5/1/15；`metrics_ready=1`；新测试 `test_metrics_persist.cpp` 覆盖三类重建，关闭修复即失败 |
+| **项目根 README 在并行/文件清单路径不被摄取**，导致 `detect_documentation_drift` 恒空（10 个真实项目里 6 个如此） | README 摄取只存在于发现遍历中，且只覆盖"被扫描目录的根"；并行调度器按模块目录分发、文件清单路径根本不遍历 | 抽出 `ingestReadmeDocument`（+ `deleteDocument` 幂等替换，避免 drift 权重翻倍），在 `engine_enhance_project` 里补摄取项目根 README | goagent `document` 0 → 1；drift 工具首次给出真实结果：claimed `[Python, Rust, Go]` / found `[Python, Go]` / `drifts_found: 1`；`test_readme_ingestion.cpp` 扩展后可失败 |
+| **`index-parallel` 忽略 `CODESCOPE_DB_PATH`**，结果只留在 `$TMPDIR`，下一条命令读到空库 | 调度器只在汇总里报告 `main_db`，没有安装步骤 | 抽出 `resolve_cli_db_path()` 统一路径解析；索引结束后把库安装到该路径（先清理旧 `-wal`/`-shm`）并打印 | 目标库直接查询得到 381 节点 / 163 边（修复前 0） |
+| **`find_references` 对"作为值使用"的符号返回光秃秃的 `0`**（`t.handleMCP` 被路由注册，但注册不是调用） | `reference` 表按调用点记录（Calls / symbol_reference），方法值、回调、函数指针没有边 | 空结果附带 `note` 说明该边界并指向 `get_routes` / `find_symbol` / `get_type_info`；工具描述同步 | goagent 的 `handleMCP` 空结果现在自带解释；记录"值使用"属索引器扩展，留作独立项 |
+
+---
+
 ## 6. 验证配方（无脚本、不落文件）
 
 ```bash

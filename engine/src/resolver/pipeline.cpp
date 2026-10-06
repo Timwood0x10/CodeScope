@@ -420,6 +420,14 @@ int64_t ResolverPipeline::run()
 		// edge directly produces an IDENTICAL result while skipping the
 		// full applyConstraints factor allocation/sort.
 		//
+		// Notably this is a deliberate recall-over-precision trade-off for
+		// the FUZZY fallback too: a lone same-directory candidate whose name
+		// only matches by prefix is accepted here (Case D of
+		// test_resolution_kind: "DeltaThi" -> "DeltaThing"), which is why the
+		// edge's resolution_kind says fuzzy_local instead of claiming
+		// exactness. The name gate in that factor (pipeline_apply.cpp) lives
+		// on the scored path only and deliberately does not apply here.
+		//
 		// Cross-module single candidates are NOT short-circuited: their
 		// threshold outcome depends on the import match, so the exact
 		// score must be computed to preserve identical edges.

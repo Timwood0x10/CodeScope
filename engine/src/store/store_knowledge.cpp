@@ -337,6 +337,30 @@ bool GraphStore::insertDocument(uint64_t project_id, int type,
 	return true;
 }
 
+bool GraphStore::deleteDocument(uint64_t project_id, int type,
+				const std::string &file_path)
+{
+	// Same cached-statement pattern as insertDocument above: prepared once per
+	// connection, reset after use. Deleting zero rows is success — the point
+	// is that a re-ingest cannot leave the previous copy behind.
+	const char *sql = "DELETE FROM document "
+			  "WHERE project_id = ? AND type = ? AND file_path = ?";
+	sqlite3_stmt *stmt = getCachedStmt(sql);
+	if (!stmt)
+		return false;
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	sqlite3_bind_int(stmt, 2, type);
+	sqlite3_bind_text(stmt, 3, file_path.c_str(), -1, SQLITE_STATIC);
+	const int rc = sqlite3_step(stmt);
+	sqlite3_reset(stmt);
+	if (rc != SQLITE_DONE) {
+		error_ = std::string("deleteDocument: step failed: ") +
+			 sqlite3_errmsg(db_);
+		return false;
+	}
+	return true;
+}
+
 // ── workflow ──────────────────────────────────────────────────────
 
 int64_t GraphStore::insertWorkflow(uint64_t project_id, const std::string &name)

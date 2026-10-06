@@ -694,6 +694,29 @@ uint64_t GraphStore::createProject(const char *root_path, const char *name)
 	return getProjectId(effective_path);
 }
 
+std::string GraphStore::getProjectRootPath(uint64_t project_id)
+{
+	sqlite3_stmt *stmt = nullptr;
+	const char *sql = "SELECT root_path FROM projects WHERE id = ?";
+	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		fprintf(stderr,
+			"getProjectRootPath prepare failed: %s "
+			"[module=store, method=getProjectRootPath]\n",
+			sqlite3_errmsg(db_));
+		return std::string();
+	}
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	std::string root;
+	if (sqlite3_step(stmt) == SQLITE_ROW) {
+		const char *value = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 0));
+		if (value)
+			root = value;
+	}
+	sqlite3_finalize(stmt);
+	return root;
+}
+
 uint64_t GraphStore::getProjectId(const char *root_path)
 {
 	std::string norm = normalizeRootPath(root_path);

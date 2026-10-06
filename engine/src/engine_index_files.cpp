@@ -665,7 +665,14 @@ static char *indexFilesImpl(EngineContext *ctx, uint64_t project_id,
 		// so the result JSON reports failure instead of a false success
 		// (the outer transaction is rolled back by the caller when it
 		// sees ok:false).
-		if (!ctx || !ctx->store->buildGraph(project_id, true)) {
+		// `bypass_fail_fast` is 1 only for force_index_files, whose contract
+		// is "index these paths regardless of the default skip rules" — so
+		// the graph must accept the test/bench/spec declarations this call
+		// just parsed, or the tool reports files_indexed while the graph
+		// stays empty (see buildGraph's include_test_files and the
+		// test_file_filter it guards).
+		if (!ctx || !ctx->store->buildGraph(project_id, true, nullptr,
+						    bypass_fail_fast != 0)) {
 			writer_error = 1;
 		}
 		time_buildgraph_ms =

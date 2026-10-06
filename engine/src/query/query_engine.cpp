@@ -301,7 +301,24 @@ std::string QueryEngine::findReferences(uint64_t project_id,
 		}
 		sqlite3_finalize(st);
 	}
-	json << "],\"total\":" << count << "}";
+	json << "],\"total\":" << count;
+	if (count == 0) {
+		// An empty answer must not read as "this symbol is unused". The
+		// reference table records call sites (type 1 Calls, type 3
+		// symbol_reference), and both are emitted for call expressions — a
+		// symbol that is only USED AS A VALUE has no row at all. Measured
+		// 2026-10-06 on goagent: get_routes reported the handler `t.handleMCP`
+		// (transport_server.go:277) while find_references answered 0, because
+		// registering a handler is not a call. The note names the tools that
+		// can still locate such a use.
+		json << ",\"note\":\"No call or symbol-reference edge targets this name. "
+			"References are recorded per call site, so a symbol that is only "
+			"used as a value (a route handler, a callback passed by name, a "
+			"function pointer) has no edge here — an empty result is not proof "
+			"that it is unused. get_routes, find_symbol and get_type_info can "
+			"still locate it.\"";
+	}
+	json << "}";
 	return json.str();
 }
 

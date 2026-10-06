@@ -156,6 +156,110 @@ This project demonstrates README ingestion into the knowledge layer.
 	check(cap_count > 0,
 	      "capability table must be non-empty after README ingestion + model build");
 
+	// ── Project-root README ingested by the enhance pass ────────────────
+	//
+	// The field case (2026-10-06): the walk ingests the README of a directory
+	// it scans, so a project whose index unit is a SUBDIRECTORY — every
+	// `index-parallel` module, and the whole file-list path — never had its
+	// root README ingested. `detect_documentation_drift` then answered
+	// "nothing claimed" for six of ten real projects that do have a README.
+	// Enhancing is the step every index path runs last, so it must ingest
+	// <project root>/README.md itself — and it must be idempotent, because the
+	// drift tools concatenate every README row of a project.
+	//
+	// Emulated by indexing only `sub/` of a second project: the walk cannot
+	// reach the root README, so any row that exists afterwards came from the
+	// enhance pass.
+	const std::string proj_dir2 = "/tmp/readme_ingest_enhance";
+	std::filesystem::remove_all(proj_dir2);
+	std::filesystem::create_directories(proj_dir2 + "/sub");
+
+	FILE *readme2 = fopen((proj_dir2 + "/README.md").c_str(), "w");
+	check(readme2 != nullptr, "fopen README of the second project");
+	fputs("# Widget\n\nSupports Widgets for testing.\n", readme2);
+	fclose(readme2);
+
+	FILE *src2 = fopen((proj_dir2 + "/sub/lib.c").c_str(), "w");
+	check(src2 != nullptr, "fopen source of the second project");
+	fputs("int widget(void) { return 1; }\n", src2);
+	fclose(src2);
+
+	const uint64_t pid2 = engine_create_project(g_engine, proj_dir2.c_str(),
+						    "readme-enhance");
+	check(pid2 > 0, "create the second project");
+
+	// Index the subdirectory only: the walk never sees proj_dir2/README.md.
+	char *sub_result = engine_index_project(
+		g_engine, pid2, (proj_dir2 + "/sub").c_str(), nullptr);
+	check(sub_result != nullptr, "index_project on the subdirectory");
+	engine_free_string(sub_result);
+
+	sqlite3_stmt *count_stmt = nullptr;
+	const char *count_sql =
+		"SELECT COUNT(*) FROM document WHERE project_id = ?";
+	check(sqlite3_prepare_v2(db, count_sql, -1, &count_stmt, nullptr) ==
+		      SQLITE_OK,
+	      "prepare document count for the second project");
+	sqlite3_bind_int64(count_stmt, 1, static_cast<int64_t>(pid2));
+	int docs_before_enhance = -1;
+	if (sqlite3_step(count_stmt) == SQLITE_ROW)
+		docs_before_enhance = sqlite3_column_int(count_stmt, 0);
+	sqlite3_finalize(count_stmt);
+	check(docs_before_enhance == 0,
+	      "scanning a subdirectory must not ingest the root README by itself");
+
+	// The enhance pass is what closes the gap.
+	char *enh2 = engine_enhance_project(g_engine, pid2);
+	check(enh2 != nullptr, "enhance the second project");
+	engine_free_string(enh2);
+
+	int docs_after_enhance = -1;
+	std::string docs_content;
+	{
+		sqlite3_stmt *content_stmt = nullptr;
+		const char *content_sql2 = "SELECT content FROM document "
+					   "WHERE project_id = ?";
+		check(sqlite3_prepare_v2(db, content_sql2, -1, &content_stmt,
+					 nullptr) == SQLITE_OK,
+		      "prepare content select for the second project");
+		sqlite3_bind_int64(content_stmt, 1, static_cast<int64_t>(pid2));
+		int rows = 0;
+		while (sqlite3_step(content_stmt) == SQLITE_ROW) {
+			++rows;
+			const char *content = reinterpret_cast<const char *>(
+				sqlite3_column_text(content_stmt, 0));
+			if (content)
+				docs_content += content;
+		}
+		sqlite3_finalize(content_stmt);
+		docs_after_enhance = rows;
+	}
+	printf("--- second project documents after enhance: %d ---\n",
+	       docs_after_enhance);
+	check(docs_after_enhance == 1,
+	      "the enhance pass must ingest the project root README exactly once");
+	check(docs_content.find("Supports Widgets") != std::string::npos,
+	      "the ingested document must carry the root README content");
+
+	// Idempotent: a second enhance run must replace, not append.
+	char *enh3 = engine_enhance_project(g_engine, pid2);
+	check(enh3 != nullptr, "enhance the second project again");
+	engine_free_string(enh3);
+
+	sqlite3_stmt *again_stmt = nullptr;
+	check(sqlite3_prepare_v2(db, count_sql, -1, &again_stmt, nullptr) ==
+		      SQLITE_OK,
+	      "prepare document count after the second enhance");
+	sqlite3_bind_int64(again_stmt, 1, static_cast<int64_t>(pid2));
+	int docs_after_second = -1;
+	if (sqlite3_step(again_stmt) == SQLITE_ROW)
+		docs_after_second = sqlite3_column_int(again_stmt, 0);
+	sqlite3_finalize(again_stmt);
+	check(docs_after_second == 1,
+	      "re-running the enhance pass must not duplicate the README row");
+
+	std::filesystem::remove_all(proj_dir2);
+
 	sqlite3_close(db);
 	engine_destroy(g_engine);
 	g_engine = nullptr;

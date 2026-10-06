@@ -28,7 +28,7 @@ pub fn all_tools() -> Vec<Tool> {
         },
         Tool {
             name: "find_references".into(),
-            description: "Find all locations that reference a given symbol.".into(),
+            description: "Find all locations that reference a given symbol. References are recorded per call site (Calls and symbol_reference edges), so a symbol that is only USED AS A VALUE — a handler registered with a router (app.get(\"/x\", handler)), a callback passed by name, a function pointer — has no reference row; an empty result is therefore not proof that the symbol is unused, and get_routes / find_symbol / get_type_info can still locate it.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {

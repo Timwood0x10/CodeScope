@@ -239,6 +239,7 @@ set(ENGINE_SOURCES
     src/store/store_search_vector.cpp
     src/store/store_batch.cpp
     src/store/store_graph.cpp
+    src/store/store_metrics.cpp
     src/store/store_graph_csr.cpp
     src/store/store_graph_imports.cpp
     src/store/store_query.cpp

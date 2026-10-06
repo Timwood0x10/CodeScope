@@ -107,6 +107,21 @@ class GraphStore {
 
 	uint64_t createProject(const char *root_path, const char *name);
 	uint64_t getProjectId(const char *root_path);
+
+	/**
+	 * Read a project's registered root path.
+	 *
+	 * Used where a caller must know the tree it is dealing with without
+	 * receiving it as a parameter — the enhance pass ingests the project's
+	 * root README, and that pass is reached from several index paths that do
+	 * not all carry the directory.
+	 *
+	 * @param project_id Project identifier.
+	 * @return The stored `projects.root_path`, or an empty string when the
+	 *         project does not exist. A failed query is logged through
+	 *         error().
+	 */
+	std::string getProjectRootPath(uint64_t project_id);
 	uint64_t getLatestProjectId();
 
 	/**
@@ -205,6 +220,47 @@ class GraphStore {
 	bool resolveStagedMetrics(uint64_t project_id);
 
 	/**
+	 * Snapshot the project's current metric columns before a rebuild.
+	 *
+	 * buildGraph deletes the entity rows of every file it rebuilds and
+	 * re-inserts them from semantic_records, whose column list carries a
+	 * declaration's identity but not its derived metrics. Without this
+	 * snapshot those values (cyclomatic, cognitive, nesting_depth, lines, ...)
+	 * are lost on every rebuild — including the post-index pass the parallel
+	 * scheduler runs on the merged database, which is why every project
+	 * indexed with `index-parallel` reported 0 metrics while its per-module
+	 * worker databases held the real numbers.
+	 *
+	 * Values go into the temp table `_prev_metrics`, keyed exactly the way
+	 * resolveStagedMetrics keys staged rows: (project_id, file_path,
+	 * start_row, start_col). Must be called after the rebuild set is known and
+	 * BEFORE those rows are deleted.
+	 *
+	 * @param project_id Project identifier.
+	 * @return true on success. false is logged; the caller can still rebuild,
+	 *         it just cannot restore the previous metric values.
+	 */
+	bool snapshotMetricsForRebuild(uint64_t project_id);
+
+	/**
+	 * Re-apply metric columns after a rebuild re-inserted the entity rows.
+	 *
+	 * Two steps in order: restore the pre-rebuild values from `_prev_metrics`,
+	 * then overlay freshly staged values from `_staged_metrics` (a fresh
+	 * producer result is newer than a snapshot). The staged rows are consumed
+	 * afterwards, so a path that never calls resolveStagedMetrics — the
+	 * file-list path (engine_index_files) — cannot leave them behind.
+	 *
+	 * Must be called after snapshotMetricsForRebuild() and after the entity
+	 * rows exist again.
+	 *
+	 * @param project_id Project identifier.
+	 * @return true on success; false is logged and means the caller should
+	 *         report that metrics may be incomplete.
+	 */
+	bool applyMetricsAfterRebuild(uint64_t project_id);
+
+	/**
 	 * Build the knowledge graph from previously stored semantic records.
 	 * Reads records from semantic_records table, runs GraphBuilder,
 	 * writes graph_nodes and graph_edges. Idempotent — deletes and
@@ -216,11 +272,21 @@ class GraphStore {
 	 *                    only symbol/containment graph (~2x faster).
 	 * @param changed_files If non-null, only rebuild graph for these files
 	 *                      (incremental mode). When null, rebuilds all.
+	 * @param include_test_files Promote declarations from test/bench/spec
+	 *                      files too (default false). The automatic index
+	 *                      path drops them on purpose — "AI only needs
+	 *                      production code" — but a caller that explicitly
+	 *                      bypassed the discovery skip rules
+	 *                      (`force_index_files`) asked for exactly those
+	 *                      files, and leaving the filter on made the tool
+	 *                      report `ok:true, files_indexed:115` while the
+	 *                      graph gained nothing.
 	 * @return true on success.
 	 */
 	bool buildGraph(
 		uint64_t project_id, bool build_calls = true,
-		const std::unordered_set<std::string> *changed_files = nullptr);
+		const std::unordered_set<std::string> *changed_files = nullptr,
+		bool include_test_files = false);
 
 	// ── CSR Adjacency (BLOB-packed call edges) ──────────────────
 
@@ -512,6 +578,24 @@ class GraphStore {
 				const std::string &name, int64_t scope_id,
 				int arity, int start_row, int start_col,
 				int call_kind = 0);
+
+	/**
+	 * Delete one document row so a re-ingest replaces it instead of
+	 * accumulating duplicates.
+	 *
+	 * The drift tools concatenate every README row of a project before
+	 * extracting language claims, so a duplicate would silently double a
+	 * claim's weight. Ingesting the root README on every index run (see
+	 * engine_index_discover::ingestProjectRootReadme) therefore deletes the
+	 * previous row first.
+	 *
+	 * @param project_id Project the document belongs to.
+	 * @param type       Document type (0 == README / knowledge document).
+	 * @param file_path  Exact path the document was stored under.
+	 * @return true on success, including when no row matched.
+	 */
+	bool deleteDocument(uint64_t project_id, int type,
+			    const std::string &file_path);
 
 	bool insertDocument(uint64_t project_id, int type,
 			    const std::string &file_path,

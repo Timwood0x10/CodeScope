@@ -1,4 +1,5 @@
 #include "util/json_writer.h"
+#include "engine_index_discover.h"
 #include "engine_internal.h"
 #include "model/semantic_fact_extractor.h"
 #include "async_knowledge.h"
@@ -242,6 +243,31 @@ static char *enhanceProjectImpl(EngineContext *ctx, uint64_t project_id)
 				.count();
 		fprintf(stderr, "enhance: semantic_facts %lldms\n",
 			(long long)t_semantic);
+	}
+
+	// Step 0.6: knowledge documents
+	//
+	// Every index path must end with the same documentation state, but README
+	// ingestion used to happen only in the discovery walk and only for the
+	// directories it scanned. The parallel scheduler indexes module
+	// directories, so a project whose root holds no source files never had its
+	// root README ingested (six of the ten real projects checked answered
+	// detect_documentation_drift with nothing at all while a README was
+	// present), and the file-list path (force-index) ingested none whatsoever.
+	// Enhancing is the step every path runs last, so the root README is
+	// ingested here, before the knowledge layer reads capabilities out of it.
+	{
+		const int readme =
+			engine_index_discover::ingestProjectRootReadme(
+				ctx, project_id);
+		if (readme > 0)
+			fprintf(stderr,
+				"enhance: project README ingested as a knowledge document\n");
+		else if (readme < 0)
+			fprintf(stderr,
+				"enhance: project README NOT ingested (unreadable project row, "
+				"unlistable root or store failure) "
+				"[module=engine_queries, method=engine_enhance_project]\n");
 	}
 
 	// Step 1: buildGraph (skip if already finalized)

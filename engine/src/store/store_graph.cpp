@@ -45,7 +45,8 @@ namespace store
 {
 
 bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
-			    const std::unordered_set<std::string> *changed_files)
+			    const std::unordered_set<std::string> *changed_files,
+			    bool include_test_files)
 {
 	using Clock = std::chrono::steady_clock;
 
@@ -58,6 +59,27 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// Incremental vs full rebuild: when changed_files is non-null, only
 	// a subset of files are re-indexed — lookup indexes stay valid.
 	const bool full_rebuild = (changed_files == nullptr);
+
+	// Test/bench/spec filter, applied to every graph row derived below
+	// (entity, reference, import). The automatic index path keeps it: those
+	// declarations are deliberately kept out of the graph ("AI only needs
+	// production code"), and the discovery walk already skips the test/
+	// directories it recognises. `include_test_files` is the decision of a
+	// caller that explicitly bypassed that walk — `force_index_files`
+	// promises "index these paths regardless of the default skip rules", and
+	// without this switch that promise held for the parse stage only:
+	// measured on this repository, forcing `engine/tests` added 13174
+	// semantic_records rows and **zero** entities, while the tool answered
+	// {"ok":true,"files_indexed":115}.
+	const std::string test_file_filter =
+		include_test_files ?
+			std::string() :
+			std::string(
+				" AND sr.file_path NOT LIKE '%\\_test.%' ESCAPE '\\'"
+				" AND sr.file_path NOT LIKE '%/tests/%'"
+				" AND sr.file_path NOT LIKE '%\\_spec.%' ESCAPE '\\'"
+				" AND sr.file_path NOT LIKE '%/benches/%'"
+				" AND sr.file_path NOT LIKE '%\\_\\_test\\_\\_%' ESCAPE '\\'");
 
 	// Step 1: determine which files to rebuild. project_id is bound, not
 	// concatenated (code_rules §5: one parameterized form for all queries).
@@ -109,6 +131,15 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		exec("RELEASE SAVEPOINT buildGraph");
 		return true;
 	}
+
+	// Metric columns are derived data that this rebuild would otherwise drop:
+	// the entity INSERT below re-creates rows from semantic_records, whose
+	// column list carries no metrics. Carry the current values across the
+	// rebuild (store_metrics.cpp documents the two field failures this fixes:
+	// the parallel path's post-index rebuild and the file-list path).
+	// The return value is advisory — a failure is logged and only means the
+	// values cannot be restored; the graph itself still rebuilds correctly.
+	snapshotMetricsForRebuild(project_id);
 
 	// Delete existing graph data for files being rebuilt.
 	// deleteGraphDataByFile cleans entity, relation (graph_nodes/graph_edges are deprecated)
@@ -307,12 +338,15 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			" sr.arity "
 			"FROM semantic_records sr "
 			"JOIN _r2n r2n ON sr.rowid = r2n.rid "
-			"WHERE sr.file_path NOT LIKE '%\\_test.%' ESCAPE '\\'"
-			" AND sr.file_path NOT LIKE '%/tests/%'"
-			" AND sr.file_path NOT LIKE '%\\_spec.%' ESCAPE '\\'"
-			" AND sr.file_path NOT LIKE '%/benches/%'"
-			" AND sr.file_path NOT LIKE '%\\_\\_test\\_\\_%' ESCAPE '\\'"),
+			"WHERE sr.project_id=" +
+			pid + test_file_filter),
 		"INSERT INTO entity");
+
+	// The rows above were just re-created without metric columns: re-apply the
+	// snapshot taken before the rebuild and any freshly staged values. Order
+	// matters — staging is the newer producer result. Failure is logged, not
+	// fatal: metrics are derived data and must not fail an index run.
+	applyMetricsAfterRebuild(project_id);
 	auto t_nodes = Clock::now();
 
 	// ── 2d: Containment edges (edge_type=3) ──
@@ -502,8 +536,9 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			" AND sr.file_path = r2n.file_path "
 			"WHERE sr.project_id=" +
 			std::to_string(project_id) +
-			" AND sr.kind = 9 AND sr.name != '' AND sr.file_path NOT LIKE '%\\_test.%' ESCAPE '\\' AND sr.file_path NOT LIKE '%/tests/%' AND sr.file_path NOT LIKE '%\\_spec.%' ESCAPE '\\' AND sr.file_path NOT LIKE '%/benches/%' AND sr.file_path NOT LIKE '%\\_\\_test\\_\\_%' ESCAPE '\\'"
-			" AND sr.file_path IN (SELECT file_path FROM _rf)";
+			" AND sr.kind = 9 AND sr.name != ''"
+			" AND sr.file_path IN (SELECT file_path FROM _rf)" +
+			test_file_filter;
 		exec_write(ref_sql, "INSERT INTO reference");
 	}
 	auto t_reference = Clock::now();
@@ -511,12 +546,14 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// Phase 1.2: populate import table from semantic_records Import
 	// Parse raw import text to extract individual import paths.
 	{
-		const char *fetch_sql =
-			"SELECT sr.name, sr.project_id, sr.file_path FROM semantic_records sr "
-			"WHERE sr.project_id=? AND sr.kind=11 AND sr.name != '' AND sr.file_path NOT LIKE '%\\_test.%' ESCAPE '\\' AND sr.file_path NOT LIKE '%/tests/%' AND sr.file_path NOT LIKE '%\\_spec.%' ESCAPE '\\' AND sr.file_path NOT LIKE '%/benches/%'"
-			" AND sr.file_path IN (SELECT file_path FROM _rf)";
+		const std::string fetch_sql =
+			std::string(
+				"SELECT sr.name, sr.project_id, sr.file_path FROM semantic_records sr "
+				"WHERE sr.project_id=? AND sr.kind=11 AND sr.name != ''"
+				" AND sr.file_path IN (SELECT file_path FROM _rf)") +
+			test_file_filter;
 		sqlite3_stmt *fetch_st = nullptr;
-		if (sqlite3_prepare_v2(db_, fetch_sql, -1, &fetch_st,
+		if (sqlite3_prepare_v2(db_, fetch_sql.c_str(), -1, &fetch_st,
 				       nullptr) == SQLITE_OK) {
 			sqlite3_bind_int64(fetch_st, 1,
 					   static_cast<int64_t>(project_id));

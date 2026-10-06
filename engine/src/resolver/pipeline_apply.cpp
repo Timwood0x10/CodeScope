@@ -180,26 +180,54 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 		//   2. forward: caller imports candidate_module → 1.0
 		//   3. reverse: candidate imports caller_module → 1.0
 		//   4. else 0.0
+		//
+		// Name gate: every clause above is path/module evidence, and none of
+		// them looks at the CALLEE NAME — so with this factor's 0.80 weight
+		// the fuzzy fallback cleared kFuzzyResolutionThreshold (0.55) on
+		// location alone. Measured in this repository: `count()` on a
+		// std::chrono::duration inside a timing helper is recorded as a
+		// reference named `count` (the parser had already marked it
+		// `external`), yet it resolved to the unrelated function `countLines`
+		// just because both files sit in engine/src — reason
+		// "decided_by=ImportMatch name=count arity=0 score=0.723684". That
+		// target collected 10 such callers (async_knowledge.cpp,
+		// engine_lifecycle.cpp, engine_queries.cpp, engine_verify_ffi.cpp,
+		// post_parse_phase.cpp, engine_index_metrics.cpp) while its only real
+		// caller is ingestReadmeDocument. The factor claims "the caller
+		// imported THIS callee", which a differently named candidate cannot
+		// be, so it only fires when the candidate carries the reference's
+		// name. Exact-name candidates keep it bit-for-bit, so every
+		// non-fuzzy path is unchanged; alias imports are unaffected too,
+		// because they are keyed by name in import_alias_index_ and scored by
+		// ImportModuleMatch (0.90).
 		{
+			const bool name_agrees = (c.name == callee_name);
 			double import_score = 0.0;
-			if (!caller_dir.empty() && caller_dir == cand_dir) {
-				import_score = 1.0;
-			} else {
-				// Forward: caller imports candidate module.
-				// Uses the ref-level fused string (perf fix #5):
-				// one find() over the contiguous buffer replaces
-				// the per-path scan of anyImportMatches.
-				if (!caller_fwd_joined.empty() &&
-				    caller_fwd_joined.find(cand_module) !=
-					    std::string::npos)
+			if (name_agrees) {
+				if (!caller_dir.empty() &&
+				    caller_dir == cand_dir) {
 					import_score = 1.0;
-				else {
-					auto rev_it =
-						import_index_.find(c.file_path);
-					if (rev_it != import_index_.end() &&
-					    anyImportMatches(rev_it->second,
-							     caller_module))
+				} else {
+					// Forward: caller imports candidate module.
+					// Uses the ref-level fused string (perf fix #5):
+					// one find() over the contiguous buffer replaces
+					// the per-path scan of anyImportMatches.
+					if (!caller_fwd_joined.empty() &&
+					    caller_fwd_joined.find(
+						    cand_module) !=
+						    std::string::npos)
 						import_score = 1.0;
+					else {
+						auto rev_it =
+							import_index_.find(
+								c.file_path);
+						if (rev_it != import_index_
+								      .end() &&
+						    anyImportMatches(
+							    rev_it->second,
+							    caller_module))
+							import_score = 1.0;
+					}
 				}
 			}
 			acc(kWeightImportMatch, import_score, "ImportMatch");

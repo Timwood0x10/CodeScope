@@ -11,6 +11,24 @@ use std::env;
 use std::fs;
 use std::path::Path;
 
+/// Resolve the database path used by the CLI-style entry points (`cli` and
+/// `index-parallel`).
+///
+/// `CODESCOPE_DB_PATH` wins; otherwise the cwd-relative `.codescope/` directory
+/// is created and used — the same rule server mode applies when it is not given
+/// a `--rootPath`. Extracted so `index-parallel` installs its finished database
+/// at exactly the path the next command opens: the scheduler assembles its
+/// output in a temp directory and only reported it as `main_db`, so the next
+/// `get_graph_stats` answered 0 nodes for a project that had just been indexed
+/// (measured twice on 2026-10-06).
+fn resolve_cli_db_path() -> String {
+    let default_dir = ".codescope";
+    if !Path::new(default_dir).exists() {
+        let _ = fs::create_dir_all(default_dir);
+    }
+    env::var("CODESCOPE_DB_PATH").unwrap_or_else(|_| format!("{}/codescope.db", default_dir))
+}
+
 fn main() {
     // ── --version / -V: print version and exit ─────────────────────
     // Handled before any other argument processing so it works regardless
@@ -164,6 +182,39 @@ fn main() {
                     "codescope: could not open {} for the post-index pass",
                     main_db
                 );
+            }
+        }
+
+        // Install the finished database at the CLI path.
+        //
+        // The scheduler assembles its output in a temp directory and reports it
+        // as `main_db`; nothing copied it back, so `index-parallel` followed by
+        // any other command silently read an EMPTY database. The copy happens
+        // after the post-index pass released the database, so it is a plain
+        // file copy of a closed SQLite file. A stale WAL sidecar of the previous
+        // database must be removed first — SQLite would replay it against the
+        // new file and corrupt it.
+        if let Some(main_db) = merged_db.as_deref() {
+            let target = resolve_cli_db_path();
+            if main_db != target {
+                for suffix in ["-wal", "-shm"] {
+                    let sidecar = format!("{}{}", target, suffix);
+                    if Path::new(&sidecar).exists()
+                        && let Err(e) = fs::remove_file(&sidecar)
+                    {
+                        eprintln!("codescope: could not remove {}: {}", sidecar, e);
+                    }
+                }
+                match fs::copy(main_db, &target) {
+                    Ok(bytes) => eprintln!(
+                        "codescope: index-parallel installed its database at {} ({} bytes)",
+                        target, bytes
+                    ),
+                    Err(e) => eprintln!(
+                        "codescope: FAILED to install the index at {}: {} — the result is only in {}",
+                        target, e, main_db
+                    ),
+                }
             }
         }
 
@@ -647,13 +698,8 @@ fn main() {
             serde_json::Value::Null
         };
 
-        // Use same persistent DB path as server mode
-        let default_dir = ".codescope";
-        if !Path::new(default_dir).exists() {
-            let _ = fs::create_dir_all(default_dir);
-        }
-        let default_db = format!("{}/codescope.db", default_dir);
-        let db_path = env::var("CODESCOPE_DB_PATH").unwrap_or(default_db);
+        // Same persistent DB path as server mode.
+        let db_path = resolve_cli_db_path();
 
         if ffi::init(&db_path) != 0 {
             eprintln!("codescope: engine init failed");
