@@ -157,5 +157,41 @@ CODESCOPE_DB_PATH=<库> ./bin/codescope cli <tool> '<json-args>'
 6. **TD-1 三刀**（0.2.8 主线）
 7. 第 7 节收尾
 
+---
+
+## 10. MCP 真实项目实测（2026-10-05）—— 13 个问题已修 12 个
+
+**方式**：MCP 协议级（`printf '<jsonrpc 行>' | CODESCOPE_DB_PATH=<临时库> bin/codescope`），全程手工、无脚本；测试库全在 `/tmp` 且事后清理。`tools/list` = 46 工具，全部有 `inputSchema` 与非空 description。
+
+| 项目 | 语言 | 文件/节点/边 | 备注 |
+|---|---|---|---|
+| `rustcode/memscope-rs` | Rust | 246 / 6850 / 3847 | callers/callees 带 `confidence`+`resolution_kind`；`trace_flow depth=2` |
+| `go/src/goagent` | Go | 1579 / 24545 / 7374（并行调度器 5 模块 4.4s） | 最强：`exact_local` 方法解析、`get_routes` 认出 `/embed /health /mcp` |
+| `pycode/AIScope`（名字像 Python，实为 TSX） | TSX | 68 / 227（仅 src） | 修复前 246/927，其中 700 个来自 `dist/` 压缩包 |
+| `xxxcode/java/okhttp` | Java | 71 / 465 / 116 | 主体是 Kotlin（不支持）→ 只索引 Java samples |
+| `pycode/vision` | Python | 83 / 847 / 1146 | callee 多为同文件 |
+| 本项目 `engine/src`+`server/src` | C++(+Rust) | 212 / 2265 / 2227 | `detect_ffi_boundaries` 认出 `ffi_*`；`detect_changes` 按改动文件→受影响符号 |
+| `unixos_api`（Swift）/ `xxxcode/ruby` | 不支持 | 0 | 优雅跳过 + hint |
+
+**负向/边界**：`verify_claim` 四种 claim 类型全部走通（含字符串形式的 claim JSON）；`index_file` 索引单个 Python 文件 ✓；`force_index_files` 的 `language_filter:"rust"` → 只索引 27 rust 文件、`"cobol"` → `ok:false`+isError ✓；`get_graph` 分页/类型过滤 ✓；`shortest_path` 名称形式 ✓；错误帧齐全（`-32701 Method not found`、`-32700 Parse error` 带 `detail`+原始行、未知工具/缺参数 → `isError`）；两个服务进程并发读写同一库 6×2 次调用 0 错误 ✓。
+
+| # | 问题 | 状态 |
+|---|---|---|
+| F1 | MCP 索引路径无项目上下文（`project_id=0`、`projects` 表为空）→ 证据层报空 | ✅ 由 `Server::ensure_project_for_indexing` 在索引调用前建项目 |
+| F2 | `force_index_files` 索引 `dist/` 构建产物（700 个混淆名节点） | ✅ 硬跳过表对齐 `FilterPolicy`（含 `dist/out/.next/coverage/…`）+ 回归测试 |
+| F3 | 名称歧义时 0 结果且不给可用 id 提示 | ✅ 三处响应统一带 `hint`（指向 `*_by_entity`） |
+| F4 | `DeadModule` 把"根目录"当孤儿，且文案谎称 "zero callers" | 🟡 文案改为"无外部 import"并对占比过半的目录加说明；**不删发现**（`test_verifier_evidence_gates` Case 6 钉住该契约） |
+| F5 | `verify_summary`/`verify_review` 对同一空输入给出 1.0 / 0.0 | ✅ `BatchResult::status`（`no_claims`/`no_verdicts`/`verified`）+ `verdicts_decided` |
+| F6 | `verify_claim` 报错不区分"没给 type"与"type 拼错" | ✅ `claim_type_missing`（带期望形状与示例）vs `claim_type_unsupported` |
+| F7 | Go 跨行调用链的 callee 名带 `\n\t`（实体名就是 `"\n\t\t\t\tAddRow"`） | ✅ 选择器名/接收者/路由方法统一去空白；顺带修好 `var_types_`/`import_aliases_` 查找 |
+| F8 | `build_evidence` 的 TODO 事实 `symbol` 是注释原文 | ✅ `symbol` 取所属函数，注释文本保留在 `snippet` |
+| F9 | `index-parallel` 汇总的边数与它产出的库不一致（1427 vs 1850） | ✅ 后处理 pass 后重读库内计数再打印 |
+| F10 | `project_overview.entry_points` 恒空（读了遗留 `graph_nodes`） | ✅ 改用 query engine（与 `get_entry_points` 同源），删除遗留访问器 |
+| F12 | 0 文件索引仍 `ok:true` | ✅ MCP 侧返回 `ok:false`+原因 |
+| F13 | `get_graph`/`get_subgraph` 的数组型类型过滤被静默忽略 | ✅ 数组自动拼接，其他形状报错 |
+| F11 | `get_routes` 只认调用式路由（Go `HandleFunc` ✓；Rust `#[get("/x")]`、React 均空） | ⬜ **backlog**：属性/宏式路由需要各语言 visitor 的注解解析，属新功能 |
+
+**验证**：`make test-engine` 142 / `make test-server` 134 / `make accuracy-check` gate PASSED（TP36 FP0 FN0）/ clippy `-D warnings` / `cargo fmt --check` / clang-format 全绿；每个修复都用暴露它的原始场景复测（文中注明期望值）。修复过程中被测试挡下两次自身错误：`LEFT JOIN entity` 后未限定 `id` 导致 `prepare failed`（证据整体变空），以及 `jsonEscapeString` 只转义内容、需自行补引号（歧义响应一度输出非法 JSON，被服务端"非 JSON 即 isError"的兜底暴露）。
+
 **新对话第一句示例**：
 > 按 `docs/PLAN_0.2.8.md` 做 TEST-1：给 `server/tests` 加一条真实索引端到端测试，语义断言而非信封断言。

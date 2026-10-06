@@ -429,10 +429,11 @@ static char *buildContextImpl(uint64_t project_id, const char *query)
 	if (intent.find("module:") != std::string::npos ||
 	    intent == "entry_points" || intent == "general" ||
 	    intent == "drivers") {
+		// Same live source as project_overview / get_entry_points (the legacy
+		// store accessor joined `graph_nodes`, which the canonical pipeline
+		// never fills, so this always emitted an empty list).
 		json << "\"entry_points\":"
-		     << engineContext()
-				.store->getEntryPointsJson(project_id)
-				.c_str()
+		     << engineContext().query->getEntryPoints(project_id).c_str()
 		     << ",";
 	}
 

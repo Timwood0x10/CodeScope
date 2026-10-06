@@ -227,8 +227,45 @@ impl Server {
 
     // ── Call Tool ───────────────────────────────────────────────
 
+    /// Give an indexing call a project to write into when the session has none.
+    ///
+    /// Every row the engine writes carries a `project_id`, and the knowledge /
+    /// evidence layer is scoped by it: with `project_id == 0` the registry's
+    /// evidence probe is skipped (`entity_count: 0` next to a non-empty graph)
+    /// and `get_project_state` answers "project state not yet built". A client
+    /// that goes straight to `force_index_files` / `index_file` without
+    /// declaring a workspace root in `initialize` (`rootUri` / `roots`) used to
+    /// leave the whole index under project 0 — no `projects` row, invisible to
+    /// every project-scoped tool for the rest of the session.
+    ///
+    /// The CLI's `force-index` already bootstraps a project row before it
+    /// indexes; this is the same step for the MCP path, using the directory
+    /// being indexed as the project root so `get_project_id_by_path` can reuse
+    /// it on the next session.
+    fn ensure_project_for_indexing(&mut self, tool_name: &str, args: &serde_json::Value) {
+        if self.project_id != 0 {
+            return;
+        }
+        let Some(root) = indexing_root(tool_name, args) else {
+            return;
+        };
+        let name = std::path::Path::new(&root)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .filter(|n| !n.is_empty())
+            .unwrap_or("default");
+        let pid = ffi::create_project(&root, name);
+        if pid > 0 {
+            self.project_id = pid;
+            eprintln!(
+                "codescope: created project {} (id={}) for {} [module=mcp, method=handle_call_tool]",
+                name, pid, tool_name
+            );
+        }
+    }
+
     fn handle_call_tool(
-        &self,
+        &mut self,
         params: Option<serde_json::Value>,
     ) -> Result<serde_json::Value, JsonRpcError> {
         let params = params.ok_or_else(|| JsonRpcError {
@@ -247,6 +284,8 @@ impl Server {
             .get("arguments")
             .cloned()
             .unwrap_or(serde_json::Value::Null);
+
+        self.ensure_project_for_indexing(tool_name, &tool_args);
 
         let result = tools::execute(self.project_id, tool_name, &tool_args);
 
@@ -309,6 +348,32 @@ fn json_response(
                 "data": e.to_string()
             }
         }),
+    }
+}
+
+/// Root directory an indexing tool is about to write, or `None` when the tool
+/// does not index by path. Used only to bootstrap a project (see
+/// [`Server::ensure_project_for_indexing`]).
+///
+/// `force_index_files` carries `paths` (first entry wins) with a single-`path`
+/// convenience form; `index_file` carries a file, whose directory becomes the
+/// project root so repeated calls for files in one tree share a project.
+fn indexing_root(tool_name: &str, args: &serde_json::Value) -> Option<String> {
+    match tool_name {
+        "force_index_files" => args["paths"]
+            .as_array()
+            .and_then(|a| a.first())
+            .and_then(|v| v.as_str())
+            .or_else(|| args["path"].as_str())
+            .map(str::to_string),
+        "index_file" => args["file_path"].as_str().map(|p| {
+            std::path::Path::new(p)
+                .parent()
+                .filter(|d| !d.as_os_str().is_empty())
+                .map(|d| d.to_string_lossy().into_owned())
+                .unwrap_or_else(|| p.to_string())
+        }),
+        _ => None,
     }
 }
 

@@ -397,7 +397,6 @@ class GraphStore {
 	};
 
 	/** Get entry points from the new entry_points table. */
-	std::string getEntryPointsJson(uint64_t project_id);
 
 	// ── On-demand call graph queries (from semantic_records, not pre-built) ──
 

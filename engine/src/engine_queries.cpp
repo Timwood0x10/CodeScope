@@ -700,9 +700,18 @@ static char *projectOverviewImpl(uint64_t project_id)
 
 	// Entry points
 	{
-		std::string ep =
-			engineContext().store->getEntryPointsJson(project_id);
-		// ep already has {"entry_points": [...]}
+		// Source of truth is the query engine (name whitelist over the
+		// canonical `entity` table), the same call the get_entry_points tool
+		// makes. This used to go through GraphStore::getEntryPointsJson,
+		// which joins the LEGACY `graph_nodes` table — empty in the canonical
+		// pipeline — so `entry_points` was `{"entry_points":[],"total":0}` in
+		// every overview ever returned, while get_entry_points listed real
+		// entries for the same project.
+		std::string ep = engineContext().query ?
+					 engineContext().query->getEntryPoints(
+						 project_id) :
+					 std::string();
+		// ep already has {"entry_points": [...], "total": N}
 		if (!ep.empty() && ep[0] == '{') {
 			json << "\"entry_points\":" << ep.c_str() << ",";
 		}

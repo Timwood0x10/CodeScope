@@ -19,6 +19,37 @@
 namespace ir
 {
 
+namespace
+{
+/// Remove every ASCII whitespace byte from `s`.
+///
+/// `nodeText()` returns the source slice verbatim, and a method call on a
+/// continuation line ends its receiver at the previous line:
+///
+///     rows := stubRows("x").
+///         AddRow("y")     // selector text: stubRows("x").\n\t\tAddRow
+///
+/// so the slice taken after the last '.' starts with the newline and the
+/// indentation. Those bytes used to become part of the callee NAME — entities
+/// were literally named "\n\t\t\t\tAddRow" (visible in the
+/// detect_ffi_boundaries external_symbols list) — while every receiver lookup
+/// (`var_types_`, `import_aliases_`) and the route-method comparison silently
+/// failed, because "\n\tHandleFunc" never equals "HandleFunc" and a receiver
+/// spelled "scheduler\n\t.Run" is in no map. A Go selector chain carries no
+/// significant whitespace, so the bytes are removed rather than merely trimmed
+/// at the ends (a multi-line chain can carry them in the middle too).
+std::string stripWhitespace(const std::string &s)
+{
+	std::string out;
+	out.reserve(s.size());
+	for (char c : s) {
+		if (!std::isspace(static_cast<unsigned char>(c)))
+			out.push_back(c);
+	}
+	return out;
+}
+} // namespace
+
 // ─── HTTP method constants for route detection ──────────────────
 // Used to identify route registrations like r.GET("/path", handler).
 // Reference: codebase-memory-mcp (MIT) service_patterns.c
@@ -310,8 +341,9 @@ void GoVisitor::handleCall(TSNode node, uint64_t parent_id)
 			// Extract just the method name after the last dot
 			size_t dot = selector_name.rfind('.');
 			name = (dot != std::string::npos) ?
-				       selector_name.substr(dot + 1) :
-				       selector_name;
+				       stripWhitespace(
+					       selector_name.substr(dot + 1)) :
+				       stripWhitespace(selector_name);
 		} else if (strcmp(ts_node_type(c), "identifier") == 0) {
 			name = nodeText(c);
 		}
@@ -348,8 +380,8 @@ void GoVisitor::handleCall(TSNode node, uint64_t parent_id)
 				size_t dot_pos = sel_text.rfind('.');
 				if (dot_pos == std::string::npos)
 					break;
-				std::string method =
-					sel_text.substr(dot_pos + 1);
+				std::string method = stripWhitespace(
+					sel_text.substr(dot_pos + 1));
 				bool is_http_method = false;
 				for (int hi = 0; kHttpMethods[hi] != nullptr;
 				     hi++) {
@@ -447,9 +479,10 @@ void GoVisitor::handleCall(TSNode node, uint64_t parent_id)
 		// var_types_) carries the interface name — required by
 		// pipeline.cpp's `!ref.receiver_type.empty()` gate.
 		size_t dot = selector_name.rfind('.');
-		std::string recv_text = (dot != std::string::npos) ?
-						selector_name.substr(0, dot) :
-						std::string();
+		std::string recv_text =
+			(dot != std::string::npos) ?
+				stripWhitespace(selector_name.substr(0, dot)) :
+				std::string();
 		if (!recv_text.empty() &&
 		    import_aliases_.count(recv_text) == 0) {
 			auto vt = var_types_.find(recv_text);
@@ -514,7 +547,8 @@ void GoVisitor::handleCall(TSNode node, uint64_t parent_id)
 		std::string import_alias;
 		size_t dot = selector_name.rfind('.');
 		if (dot != std::string::npos)
-			receiver_text = selector_name.substr(0, dot);
+			receiver_text =
+				stripWhitespace(selector_name.substr(0, dot));
 		// If the receiver is a known import alias, this is a
 		// package-qualified call (e.g. fmt.Println). Otherwise, if the
 		// receiver is a local variable with a known type, record the

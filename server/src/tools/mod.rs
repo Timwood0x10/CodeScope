@@ -141,6 +141,41 @@ fn claim_json_from(args: &Value) -> String {
     json_or_string_arg(args, "claim", "")
 }
 
+/// Normalise a type-id filter argument (`node_types` / `edge_types`).
+///
+/// The schemas advertise these as a "comma-separated" string, but the natural
+/// client spelling — and how the neighbouring `get_subgraph` / `get_neighbors`
+/// arguments read — is an array of ids. `.as_str()` returned `None` for an
+/// array, which silently DROPPED the filter and answered with the whole graph:
+/// a caller asking for node type 1 got type 0 back, with nothing in the
+/// response saying the filter had been ignored. Arrays are joined now, and any
+/// other shape is rejected loudly rather than ignored.
+fn type_filter_arg(args: &Value, key: &str, tool: &str) -> Result<Option<String>, String> {
+    match &args[key] {
+        Value::Null => Ok(None),
+        Value::String(s) => Ok(Some(s.clone())),
+        Value::Array(items) => {
+            let mut ids = Vec::with_capacity(items.len());
+            for item in items {
+                match item.as_i64() {
+                    Some(n) if n >= 0 => ids.push(n.to_string()),
+                    _ => {
+                        return Err(format!(
+                            "{key}: expected non-negative integer ids, got {item} \
+                             [module=mcp, tool={tool}]"
+                        ));
+                    }
+                }
+            }
+            Ok(Some(ids.join(",")))
+        }
+        other => Err(format!(
+            "{key}: expected a comma-separated string or an array of ids, got {other} \
+             [module=mcp, tool={tool}]"
+        )),
+    }
+}
+
 /// Parse a natural-language summary into claims and verify each one.
 /// `text` is free-form prose (README excerpt, AI summary, PR description).
 fn h_verify_summary(project_id: u64, args: &Value) -> String {
@@ -445,9 +480,21 @@ fn h_get_subgraph(project_id: u64, args: &Value) -> String {
         }
     };
     let radius = clamp_radius(args["radius"].as_i64());
-    let node_types = args["node_types"].as_str();
-    let edge_types = args["edge_types"].as_str();
-    ffi::get_subgraph(project_id, node_id, radius, node_types, edge_types)
+    let node_types = match type_filter_arg(args, "node_types", "get_subgraph") {
+        Ok(v) => v,
+        Err(e) => return json!({ "error": e }).to_string(),
+    };
+    let edge_types = match type_filter_arg(args, "edge_types", "get_subgraph") {
+        Ok(v) => v,
+        Err(e) => return json!({ "error": e }).to_string(),
+    };
+    ffi::get_subgraph(
+        project_id,
+        node_id,
+        radius,
+        node_types.as_deref(),
+        edge_types.as_deref(),
+    )
 }
 
 /// Fetch the direct neighbors (callers + callees) of a graph node.
@@ -483,20 +530,26 @@ fn h_get_graph(project_id: u64, args: &Value) -> String {
         .as_i64()
         .unwrap_or(20000)
         .clamp(1, 200000) as i32;
-    let node_types = args["node_types"].as_str();
-    let edge_types = args["edge_types"].as_str();
+    let node_types = match type_filter_arg(args, "node_types", "get_graph") {
+        Ok(v) => v,
+        Err(e) => return json!({ "error": e }).to_string(),
+    };
+    let edge_types = match type_filter_arg(args, "edge_types", "get_graph") {
+        Ok(v) => v,
+        Err(e) => return json!({ "error": e }).to_string(),
+    };
     // Validate type filters: only digits, commas, and spaces allowed
     let valid_filter = |s: &str| {
         s.chars()
             .all(|c| c.is_ascii_digit() || c == ',' || c == ' ')
     };
-    if let Some(nt) = node_types
+    if let Some(nt) = node_types.as_deref()
         && !valid_filter(nt)
     {
         return json!({"error": "node_types: digits and commas only [module=mcp, tool=get_graph]"})
             .to_string();
     }
-    if let Some(et) = edge_types
+    if let Some(et) = edge_types.as_deref()
         && !valid_filter(et)
     {
         return json!({"error": "edge_types: digits and commas only [module=mcp, tool=get_graph]"})
@@ -508,8 +561,8 @@ fn h_get_graph(project_id: u64, args: &Value) -> String {
         node_limit,
         edge_offset,
         edge_limit,
-        node_types,
-        edge_types,
+        node_types.as_deref(),
+        edge_types.as_deref(),
     )
 }
 

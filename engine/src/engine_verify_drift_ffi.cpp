@@ -112,12 +112,18 @@ extern "C" char *engine_verify_review(uint64_t project_id, const char *text)
 		     << ",\"results\":" << batch.results_json
 		     << ",\"summary\":{\"supported\":" << batch.supported
 		     << ",\"contradicted\":" << batch.contradicted
-		     << ",\"unknown\":" << batch.unknown << ",\"trust_score\":";
+		     << ",\"unknown\":" << batch.unknown << ",\"status\":\""
+		     << batch.status << "\""
+		     << ",\"verdicts_decided\":"
+		     << (batch.supported + batch.contradicted)
+		     << ",\"trust_score\":";
 		int denom = batch.supported + batch.contradicted;
 		if (denom > 0)
 			json << (static_cast<double>(batch.supported) /
 				 static_cast<double>(denom));
 		else
+			// No decided verdicts — `status` says whether the text had no
+			// claims at all or only undecidable ones.
 			json << "0.0";
 		json << "}}";
 		return dupString(json.str());
@@ -171,6 +177,7 @@ extern "C" char *engine_verify_reality(uint64_t project_id, const char *text)
 		json.beginObject();
 		json.key("statement").value(src.substr(0, kSourceRefMaxLen));
 		json.key("claims_parsed").value(batch.claims_count);
+		json.key("status").value(batch.status);
 		json.key("verdict").value(agg.verdict);
 		json.key("confidence").value(agg.confidence);
 		json.key("results").raw(batch.results_json);

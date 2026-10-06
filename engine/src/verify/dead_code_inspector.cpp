@@ -120,11 +120,29 @@ std::vector<Finding> DeadCodeInspector::findOrphanModules()
 
 		Finding f;
 		f.type = "DeadModule";
+		// The old wording said "entities with zero callers", which this query
+		// never measures — it counts the module's entities and tests whether
+		// anything outside imports the module. Say what was checked.
 		f.description = std::string("Module '") + (mod ? mod : "") +
 				"' has " + std::to_string(entities) +
-				" entities with zero callers — orphan module. "
-				"Sample: " +
+				" entities and is imported by no other module "
+				"(checked via the import table). Sample: " +
 				(sample ? sample : "");
+		// A scope holding most of the project is a top-level directory, not a
+		// dependency: nothing outside it imports it *because* it contains
+		// everything. Measured on real projects — a Rust crate's `src/`
+		// (6747 of 6850 entities), a Python project root (847 of 847), and
+		// this repo's `engine/src/` (1766 of 2265) — the finding is still
+		// emitted (the query contract is pinned by
+		// test_verifier_evidence_gates Case 6), but the reader is told why
+		// the absence of an importer is expected there. Deleting the finding
+		// instead was tried and breaks that contract.
+		if (static_cast<int64_t>(entities) * 2 > entity_rows) {
+			f.description +=
+				" (this scope holds most of the project's "
+				"entities — it is a top-level directory, so no "
+				"external importer is expected)";
+		}
 		f.confidence = 0.95;
 		out.push_back(f);
 	}

@@ -385,6 +385,14 @@ BatchResult verify_claim_batch(uint64_t project_id, const std::string &text,
 	}
 	json << "]";
 	out.results_json = json.str();
+	// Status is decided once here (see BatchResult::status) so the wrapping
+	// tools cannot drift apart on what "nothing to report" means.
+	if (out.claims_count == 0)
+		out.status = "no_claims";
+	else if (out.supported + out.contradicted == 0)
+		out.status = "no_verdicts";
+	else
+		out.status = "verified";
 	return out;
 }
 
@@ -639,13 +647,36 @@ extern "C" char *engine_verify_claim(uint64_t project_id,
 		if (!parsed_type) {
 			util::JsonWriter err;
 			err.beginObject();
-			err.key("error").value(
-				"unknown claim type '" + type_str +
-				"'. Supported types: capability_exists, "
-				"contract_holds, architecture_follows, "
-				"function_implements "
-				"[module=ffi, method=engine_verify_claim]");
-			err.key("error_code").value("claim_type_unsupported");
+			// Two different mistakes land here and the message used to
+			// describe neither: an EMPTY type means the `claim` argument was
+			// not a JSON object carrying a `type` field at all — the common
+			// case is free text ("the engine supports X"), which the sibling
+			// verify_summary/verify review/reality tools DO accept, so sending
+			// prose here is an easy slip. A non-empty type is simply not in the
+			// contract. The two are separate error codes so a client can tell
+			// "you sent the wrong shape" from "you named a type that does not
+			// exist" — which is what this check was introduced to do.
+			if (type_str.empty()) {
+				err.key("error").value(
+					"missing claim type: `claim` must be a JSON object "
+					"with a \"type\" field (one of: capability_exists, "
+					"contract_holds, architecture_follows, "
+					"function_implements), e.g. "
+					"{\"type\":\"capability_exists\",\"subject\":\"Indexing\"}. "
+					"For free-form prose use verify_summary instead "
+					"[module=ffi, method=engine_verify_claim]");
+				err.key("error_code")
+					.value("claim_type_missing");
+			} else {
+				err.key("error").value(
+					"unknown claim type '" + type_str +
+					"'. Supported types: capability_exists, "
+					"contract_holds, architecture_follows, "
+					"function_implements "
+					"[module=ffi, method=engine_verify_claim]");
+				err.key("error_code")
+					.value("claim_type_unsupported");
+			}
 			err.endObject();
 			return dupString(err.str());
 		}
@@ -757,6 +788,12 @@ extern "C" char *engine_verify_summary(uint64_t project_id, const char *text)
 		json.key("contradicted").value(batch.contradicted);
 		json.key("unknown").value(batch.unknown);
 		json.key("drifts_found").value(total_drifts);
+		// How much was judgeable, and how many claims reached a decision —
+		// without these, `trust_score` alone is unreadable: 1.0 means
+		// "nothing was checkable" here (see BatchResult::status).
+		json.key("status").value(batch.status);
+		json.key("verdicts_decided")
+			.value(batch.supported + batch.contradicted);
 		json.key("trust_score");
 		size_t denom =
 			batch.supported + batch.contradicted + total_drifts;
@@ -767,7 +804,10 @@ extern "C" char *engine_verify_summary(uint64_t project_id, const char *text)
 			// Literal "0.0": all claims unknown, not trustworthy.
 			json.raw("0.0");
 		} else {
-			// Literal "1.0": no claims and no drifts, nothing to dispute.
+			// No claims and no drifts: nothing was checked, so the score
+			// carries no information. Reported as 1.0 for shape stability —
+			// `status: "no_claims"` above is what says so, and a reader must
+			// take the two together.
 			json.raw("1.0");
 		}
 		json.endObject();

@@ -142,14 +142,22 @@ fn main() {
             .ok()
             .filter(|v| v["ok"] == serde_json::Value::Bool(true))
             .and_then(|v| v["main_db"].as_str().map(|s| s.to_string()));
-        if let Some(main_db) = merged_db {
-            if ffi::init(&main_db) == 0 {
+        // Counts as they stand AFTER the pass below; the summary was built
+        // before it and would otherwise report a graph the caller cannot see.
+        let mut final_totals: Option<(u64, u64)> = None;
+        if let Some(main_db) = merged_db.as_deref() {
+            if ffi::init(main_db) == 0 {
                 let enhanced = ffi::enhance_project(1);
                 eprintln!(
                     "codescope: post-index pass on {}: {}",
                     main_db,
                     enhanced.chars().take(120).collect::<String>()
                 );
+                // Read the finished numbers while the engine still has the DB
+                // open (no second sqlite3 round trip).
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&ffi::get_graph_stats(1)) {
+                    final_totals = v["total_nodes"].as_u64().zip(v["total_edges"].as_u64());
+                }
                 ffi::shutdown();
             } else {
                 eprintln!(
@@ -158,6 +166,24 @@ fn main() {
                 );
             }
         }
+
+        // Report the graph the run actually produced. The scheduler's summary
+        // counts what the workers wrote; the post-index pass above then adds
+        // the knowledge layer's edges — a 185-file run summed 1427 edges while
+        // the DB it handed back answered 1850, so `index-parallel` disagreed
+        // with the next `get_graph_stats` call on its own output. Per-module
+        // numbers in `modules[]` still describe the workers.
+        let result = match (
+            serde_json::from_str::<serde_json::Value>(&result),
+            final_totals,
+        ) {
+            (Ok(mut v), Some((nodes, edges))) => {
+                v["total_nodes"] = nodes.into();
+                v["total_edges"] = edges.into();
+                v.to_string()
+            }
+            _ => result,
+        };
 
         println!("{}", result);
         return;

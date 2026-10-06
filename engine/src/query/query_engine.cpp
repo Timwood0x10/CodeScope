@@ -17,6 +17,20 @@
 namespace query
 {
 
+// What to do when a bare name matches several entities.
+//
+// The candidates array alone was not enough: every name-based tool answered
+// `{"…":[],"total":0,"ambiguous":true,"candidates":[…]}` for names as ordinary
+// as `main` (100+ definitions in one Rust project's examples/), `Agent` or
+// `new`, and a caller reading only the empty list concluded "no edges" — the
+// next step (`*_by_entity`, which does resolve them) was discoverable only by
+// reading the tool catalogue. One sentence, shared by getCallers, getCallees
+// and the trace probe so the wording cannot drift.
+static const char *const kAmbiguousNameHint =
+	"Name matches several entities, so no edges were resolved. Pass one of "
+	"the candidates' graph_node_id to find_callers_by_entity / "
+	"find_callees_by_entity, or narrow the name with file_filter.";
+
 // findShortestPath moved to query_engine_traverse.cpp together with
 // kShortestPathMaxDepth / kShortestPathNote; the copies that used to live here
 // were left behind by that split and only produced unused-variable warnings.
@@ -407,7 +421,8 @@ std::string QueryEngine::getCallers(uint64_t project_id,
 		}
 		return "{\"callers\":[],\"total\":0,\"ambiguous\":true,"
 		       "\"candidates\":[" +
-		       cands + "]}";
+		       cands + "],\"hint\":\"" +
+		       util::jsonEscapeString(kAmbiguousNameHint) + "\"}";
 	}
 
 	// Query callers: relation rows where target_id is one of the matched
@@ -592,7 +607,8 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 		}
 		return "{\"callees\":[],\"total\":0,\"ambiguous\":true,"
 		       "\"candidates\":[" +
-		       cands + "]}";
+		       cands + "],\"hint\":\"" +
+		       util::jsonEscapeString(kAmbiguousNameHint) + "\"}";
 	}
 
 	// Read outgoing Calls edges: relation rows where source_id is the
@@ -935,7 +951,9 @@ std::string bareNameCandidates(sqlite3 *db, uint64_t project_id,
 		el.endObject();
 		cands += el.str();
 	}
-	return "{\"ambiguous\":true,\"candidates\":[" + cands + "]}";
+	return "{\"ambiguous\":true,\"candidates\":[" + cands +
+	       "],\"hint\":\"" + util::jsonEscapeString(kAmbiguousNameHint) +
+	       "\"}";
 }
 
 } // namespace query
