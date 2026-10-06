@@ -65,12 +65,14 @@ static constexpr int kIntegritySev1Penalty = 5;
 //
 // MEMORY: caller MUST free the returned char* via engine_free_string().
 // THREAD SAFETY: single-threaded (GraphStore writer invariant).
-extern "C" char *engine_explain_module(uint64_t project_id,
+extern "C" char *engine_explain_module(engine_t handle, uint64_t project_id,
 				       const char *module_name)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().store)
+		if (!ctx || !ctx->store)
 			return dupString(
 				"{\"error\":\"not initialized "
 				"[module=ffi, method=engine_explain_module]\"}");
@@ -86,7 +88,7 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 			name_lower += static_cast<char>(
 				std::tolower(static_cast<unsigned char>(c)));
 
-		sqlite3 *db = engineContext().store->handle();
+		sqlite3 *db = ctx->store->handle();
 		if (!db)
 			return dupString(
 				"{\"error\":\"db not open "

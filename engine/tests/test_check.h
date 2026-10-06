@@ -32,7 +32,8 @@
 
 #include <cstdio>
 
-namespace codescope_test {
+namespace codescope_test
+{
 
 /// Failure counter for the current test binary.
 ///
@@ -61,19 +62,19 @@ inline void reportFailure(const char *expr, const char *file, int line,
 } // namespace codescope_test
 
 /// Evaluate `cond`; on failure record it and continue.
-#define CHECK(cond)                                                          \
-	do {                                                                 \
-		if (!(cond))                                                 \
-			::codescope_test::reportFailure(#cond, __FILE__,         \
-							__LINE__, nullptr);  \
+#define CHECK(cond)                                                         \
+	do {                                                                \
+		if (!(cond))                                                \
+			::codescope_test::reportFailure(#cond, __FILE__,    \
+							__LINE__, nullptr); \
 	} while (0)
 
 /// CHECK() with a caller-supplied explanation.
-#define CHECK_MSG(cond, message)                                             \
-	do {                                                                 \
-		if (!(cond))                                                 \
-			::codescope_test::reportFailure(#cond, __FILE__,         \
-							__LINE__, (message));\
+#define CHECK_MSG(cond, message)                                              \
+	do {                                                                  \
+		if (!(cond))                                                  \
+			::codescope_test::reportFailure(#cond, __FILE__,      \
+							__LINE__, (message)); \
 	} while (0)
 
 /// Number of failed checks recorded so far (0 == success).

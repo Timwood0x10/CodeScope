@@ -49,7 +49,8 @@ static void insertGraphNode(GraphStore &store, uint64_t project_id, int64_t id,
 		"language, start_row, start_col, end_row, end_col, module_path) "
 		"VALUES (?,?,0,?,'','/test.cpp','cpp',0,0,0,0,'')";
 	sqlite3_stmt *estmt = nullptr;
-	if (sqlite3_prepare_v2(db, entity_sql, -1, &estmt, nullptr) == SQLITE_OK) {
+	if (sqlite3_prepare_v2(db, entity_sql, -1, &estmt, nullptr) ==
+	    SQLITE_OK) {
 		sqlite3_bind_int64(estmt, 1, id);
 		sqlite3_bind_int64(estmt, 2, static_cast<int64_t>(project_id));
 		sqlite3_bind_text(estmt, 3, name, -1, SQLITE_TRANSIENT);
@@ -165,7 +166,7 @@ int main()
 		std::string json =
 			store.searchUnifiedJson(project_id, "Factory", 20);
 		CHECK(jsonContains(json, "LoggerFactory") ||
-		       jsonContains(json, "UserFactory"));
+		      jsonContains(json, "UserFactory"));
 		printf("  [PASS] searchUnifiedJson: 'Factory' -> results\n");
 	}
 
@@ -193,7 +194,7 @@ int main()
 			"VALUES (?,?,0,0,?,'','/bulk.cpp','cpp',0,0,0,0)";
 		sqlite3_stmt *stmt = nullptr;
 		CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
-		       SQLITE_OK);
+		      SQLITE_OK);
 		// Start IDs at 1000 to avoid collision with the 4 nodes above.
 		const int64_t kIdOffset = 1000;
 		char name_buf[64];
@@ -245,7 +246,7 @@ int main()
 		std::string json =
 			store.searchGraphFallback(project_id, "Factory", 10);
 		CHECK(jsonContains(json, "LoggerFactory") ||
-		       jsonContains(json, "UserFactory"));
+		      jsonContains(json, "UserFactory"));
 		printf("  [PASS] searchGraphFallback normal after deadline cleared\n");
 	}
 

@@ -1,11 +1,13 @@
 #include "test_e2e.h"
+#include "test_engine_handle.h"
 
 // E2E test for type extraction: verify that the Go visitor correctly
 // emits TypeRef records for variables, parameters, and return types.
 // These records are stored in semantic_records and then processed by
 // the buildGraph pipeline into type_info and type_ref tables.
-int main() {
-    const char* code = R"(package main
+int main()
+{
+	const char *code = R"(package main
 
 type User struct {
     Name string
@@ -27,52 +29,54 @@ func processUsers() {
 }
 )";
 
-    char db_path[64];
-    snprintf(db_path, sizeof(db_path), "/tmp/test_type_go.db");
-    unlink(db_path);
+	char db_path[64];
+	snprintf(db_path, sizeof(db_path), "/tmp/test_type_go.db");
+	unlink(db_path);
 
-    int rc = engine_init(db_path);
-    check(rc == 0, "engine_init");
+	g_engine = engine_create(db_path);
+	const int rc = g_engine != nullptr ? 0 : -1;
+	check(rc == 0, "engine_init");
 
-    // Write test file
-    FILE* f = fopen("/tmp/test_type_go.go", "w");
-    check(f != nullptr, "fopen");
-    fwrite(code, 1, strlen(code), f);
-    fclose(f);
+	// Write test file
+	FILE *f = fopen("/tmp/test_type_go.go", "w");
+	check(f != nullptr, "fopen");
+	fwrite(code, 1, strlen(code), f);
+	fclose(f);
 
-    // Create project
-    uint64_t pid = engine_create_project("/tmp", "type-go-test");
-    check(pid > 0, "create_project");
+	// Create project
+	uint64_t pid = engine_create_project(g_engine, "/tmp", "type-go-test");
+	check(pid > 0, "create_project");
 
-    // Index
-    char* result = engine_index_file(pid, "/tmp/test_type_go.go");
-    print_json("Index", result);
-    check(strstr(result, "\"ok\":true") != nullptr, "index_file ok");
-    engine_free_string(result);
+	// Index
+	char *result = engine_index_file(g_engine, pid, "/tmp/test_type_go.go");
+	print_json("Index", result);
+	check(strstr(result, "\"ok\":true") != nullptr, "index_file ok");
+	engine_free_string(result);
 
-    // Verify definitions exist
-    char* def = engine_find_definition(pid, "User", nullptr);
-    print_json("Definition: User", def);
-    check(strstr(def, "User") != nullptr, "find_def User");
-    engine_free_string(def);
+	// Verify definitions exist
+	char *def = engine_find_definition(g_engine, pid, "User", nullptr);
+	print_json("Definition: User", def);
+	check(strstr(def, "User") != nullptr, "find_def User");
+	engine_free_string(def);
 
-    def = engine_find_definition(pid, "NewUser", nullptr);
-    print_json("Definition: NewUser", def);
-    check(strstr(def, "NewUser") != nullptr, "find_def NewUser");
-    engine_free_string(def);
+	def = engine_find_definition(g_engine, pid, "NewUser", nullptr);
+	print_json("Definition: NewUser", def);
+	check(strstr(def, "NewUser") != nullptr, "find_def NewUser");
+	engine_free_string(def);
 
-    // Check graph stats
-    char* stats = engine_get_graph_stats(pid);
-    print_json("Graph Stats", stats);
-    check(strstr(stats, "total_nodes") != nullptr, "get_graph_stats");
-    engine_free_string(stats);
+	// Check graph stats
+	char *stats = engine_get_graph_stats(g_engine, pid);
+	print_json("Graph Stats", stats);
+	check(strstr(stats, "total_nodes") != nullptr, "get_graph_stats");
+	engine_free_string(stats);
 
-    // NOTE: The type_info and type_ref tables are populated by the project
-    // pipeline (buildGraph in store_graph.cpp), not by the single-file
-    // index path. This test verifies the single-file index path works.
-    // Full pipeline verification requires indexing a multi-file project.
+	// NOTE: The type_info and type_ref tables are populated by the project
+	// pipeline (buildGraph in store_graph.cpp), not by the single-file
+	// index path. This test verifies the single-file index path works.
+	// Full pipeline verification requires indexing a multi-file project.
 
-    engine_shutdown();
-    printf("\n=== type extraction test passed ===\n");
-    return 0;
+	engine_destroy(g_engine);
+	g_engine = nullptr;
+	printf("\n=== type extraction test passed ===\n");
+	return 0;
 }

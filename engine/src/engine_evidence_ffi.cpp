@@ -29,7 +29,7 @@
 //   ]
 //
 // All errors return a JSON object with an "error" field instead of
-// crashing. Null `engineContext().store` returns
+// crashing. A null handle (or a store-less instance) returns
 //   {"error":"engine not initialized"}.
 
 #include "engine_internal.h"
@@ -88,11 +88,14 @@ void writeEvidence(util::JsonWriter &w, const evidence::Evidence &ev)
 // engine_free_string. Rule files are located by
 // evidence::resolveRulesDir() so the result does not depend on the
 // process working directory.
-char *engine_build_evidence(uint64_t project_id, const char *category_filter)
+char *engine_build_evidence(engine_t handle, uint64_t project_id,
+			    const char *category_filter)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().store)
+		if (!ctx || !ctx->store)
 			return dupString(
 				"{\"error\":\"engine not initialized\"}");
 
@@ -100,7 +103,7 @@ char *engine_build_evidence(uint64_t project_id, const char *category_filter)
 		if (rules_dir.empty())
 			return dupString("[]");
 
-		evidence::EvidenceBuilder builder(engineContext().store.get());
+		evidence::EvidenceBuilder builder(ctx->store.get());
 		builder.loadRules(rules_dir);
 
 		std::vector<evidence::Evidence> evidences;

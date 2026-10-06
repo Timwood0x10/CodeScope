@@ -93,7 +93,8 @@ int main()
 
 	store::GraphStore store;
 	CHECK(store.open(kDbPath));
-	uint64_t pid = store.createProject("/test", "test_resolver_fuzzy_cache");
+	uint64_t pid =
+		store.createProject("/test", "test_resolver_fuzzy_cache");
 	CHECK(pid > 0);
 
 	// Caller "main" and callee "RealFunc" live in the same directory

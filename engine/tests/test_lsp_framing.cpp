@@ -36,11 +36,9 @@ int main()
 		// Header only, then part of the body, then the rest.
 		std::string buffer = framed.substr(0, 20);
 		std::string body;
-		CHECK(takeNextLspMessage(buffer, body) ==
-		       LspFraming::NeedMore);
+		CHECK(takeNextLspMessage(buffer, body) == LspFraming::NeedMore);
 		buffer += framed.substr(20, 10);
-		CHECK(takeNextLspMessage(buffer, body) ==
-		       LspFraming::NeedMore);
+		CHECK(takeNextLspMessage(buffer, body) == LspFraming::NeedMore);
 		buffer += framed.substr(30);
 		CHECK(takeNextLspMessage(buffer, body) == LspFraming::Message);
 		CHECK(body == response);
@@ -106,7 +104,7 @@ int main()
 
 		std::string only_bad = "Content-Length: 0\r\n\r\n";
 		CHECK(takeNextLspMessage(only_bad, body) ==
-		       LspFraming::Skipped);
+		      LspFraming::Skipped);
 		CHECK(only_bad.empty());
 		printf("  [PASS] framing: unusable header dropped, next message read\n");
 	}
@@ -114,9 +112,8 @@ int main()
 	// ── Test 6: a non-numeric id is not a response id ───────────────
 	{
 		CHECK(!isResponseFor("{\"jsonrpc\":\"2.0\",\"id\":\"abc\"}",
-				      1));
-		CHECK(!isResponseFor("{\"jsonrpc\":\"2.0\",\"params\":{}}",
-				      1));
+				     1));
+		CHECK(!isResponseFor("{\"jsonrpc\":\"2.0\",\"params\":{}}", 1));
 		CHECK(isResponseFor("{\"jsonrpc\":\"2.0\",\"id\": 42 }", 42));
 		printf("  [PASS] framing: non-numeric / missing ids rejected\n");
 	}

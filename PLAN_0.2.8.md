@@ -22,7 +22,7 @@
 | 第 2 项 **TEST-3** | ✅ 完成：新增 `engine/tests/test_check.h`（`CHECK()` 记录失败并继续 + `checkFailures()` 计数）；**929 处 `assert()` / 35 个文件**迁移完毕，`main` 改为 `return checkFailures() ? 1 : 0;`；`make test-engine` 142 全绿；已用"故意破坏断言 → 退出码 1"验证 |
 | 第 3 项 **proptest** | ✅ 完成：`proptest` 1.11 可离线获取（本机缓存齐全）；`tools/clamp.rs`（clamping 永不截断）、`scheduler/worker.rs`（排除路径转义往返）、`mcp/protocol.rs`（JSON 可解析 + 转义往返）；`cargo clippy --all-targets -D warnings` 通过 |
 | 第 4 项 **TD-5** | 🟢 **代码完成，待 Windows 运行时验收**：新增跨平台映射层 `scheduler/mapped_file.rs`（POSIX/Windows 双后端），`shm.rs`/`chunk_queue.rs` 改用它并删除重复 mmap 代码；4 处生产 + 4 处测试硬编码 `/tmp` → `std::env::temp_dir()`；`main.rs` 全面解除 Windows 门禁；`dev.yml` 新增 `windows-smoke`（模块 + chunked 两条路径各跑一次并断言节点数）。交叉编译 0 error 且产出 PE32+ `codescope.exe`；宿主端到端两条路径均跑通（1766 节点）。**待**：`windows-smoke` 在真实 runner 跑绿。注意本机需 rustup 1.95.0 工具链（Homebrew rustc 1.98 会遮蔽且无该 target） |
-| 第 5 项 **TD-1** | 🟡 **刀 1 + 刀 2 完成**：刀 1 新增 `engine/src/engine_context.{h,cpp}`（接缝，别名保持调用点不变）；刀 2 把 **340 处**调用点全部迁到 `engineContext().store/.query/.parser`，删除别名，并把单例改成**函数内静态对象**（不再有全局对象，漏改即编译失败）。分 5 批验证：每批 43 工具差分矩阵**字节一致**；`make test` 142+134 全绿、accuracy gate PASSED、clang-format 0 违规。刀 3（FFI 传句柄、支持多实例）待做 |
+| 第 5 项 **TD-1** | ✅ **三刀全部完成，TD-1 关闭**：刀 1 新增 `engine/src/engine_context.{h,cpp}`（接缝，别名保持调用点不变）；刀 2 把 **340 处**调用点迁到 `engineContext().store/.query/.parser`、删除别名、单例改为**函数内静态对象**；刀 3 把 ABI 改成句柄制——`engine_create()` 返回 opaque `engine_t`、**73 个有状态入口全部接收该句柄**、`engine_destroy()` 释放，`engineContext()` 访问器删除，45 个 FFI 入口解析句柄一次（`engineInstance(handle)`）后下传给 35 个内部辅助，Rust 侧 54 个声明 + 包装层持有并透传句柄。证据：43 工具差分矩阵 **旧 vs 新字节一致**（且自复现）、同一源码树新旧二进制索引出**相同 1850 条调用边**、`make test` 143+134 全绿、accuracy TP36/FP0/FN0、clang-format/clippy 干净、无文件超 1000 行。残留进程级子系统（VerifierRegistry／异步构建器／IndexProgress／parse-failure 缓冲）已在 `engine_context.h` 与 `engine.h` 显式记录 |
 | 第 7 节 **收尾** | ✅ 完成：`docs/REVIEW_0.2.7.md` 复选框回填提交号、CHANGELOG 尾句更新并补充本轮条目、REVIEW 迁入 `docs/` |
 | `.github/workflows/dev.yml` | ✅ 触发分支补成 `[dev, master]`（原改动只加了注释，分支值未改） |
 
@@ -99,8 +99,11 @@ CODESCOPE_CPU_DYNAMIC=1 bin/codescope index-parallel engine/src --workers 2 --pa
 |---|---|---|
 | **刀 1（接缝，行为不变）** | 新增 `engine/src/engine_context.{h,cpp}`：`struct EngineContext { store, query, parser, project_id }`；把三个全局收进 `EngineContext` 单实例，旧名字保留为**引用别名**（如 `auto &g_store = ctx.store;`）→ 所有既有调用点不变 | `make check` **126/126**，输出零差异 |
 | **刀 2（逐文件迁移）** ✅ | 21 个文件 **340 处**：`g_store->X` → `engineContext().store->X`；反复访问同一状态的函数（`engine_init`/`engine_shutdown`/`indexProjectImpl`/写线程 lambda）取 `EngineContext &ctx = engineContext();` 缓存；别名已删除 | ✅ 分 5 批，每批 43 工具差分矩阵**字节一致**（仅排除 `time_ms`/`timing`/`last_updated`）；`make test` 142+134 全绿 |
-| **刀 3（去全局）** | FFI 入口接收句柄（`void*`/`uint64_t` 句柄 + Rust 侧持有并透传 46 个工具）；生命周期与 `engine_init` / `engine_shutdown` 绑定 | 全绿 + MCP 46 工具矩阵冒烟 |
+| **刀 3（去全局）** ✅ | `engine.h`：`typedef struct CodescopeEngine *engine_t;` + `engine_create()`/`engine_destroy()`；**73 个有状态入口**加 `engine_t handle` 首参；`engineContext()` 访问器删除，45 个 FFI 入口 `EngineContext *ctx = engineInstance(handle);` 后下传给 35 个内部辅助（可空句柄落到各函数原有的 "engine not initialized" 守卫，行为不变）；Rust 侧 `decls.rs` 54 个声明 + `mod.rs` 持有并透传句柄（`ffi::init`/`shutdown` 签名不变，re-init 会先释放旧实例）；C++ 测试 33 文件 / 464 调用点、Rust 4 个集成测试（自带 extern 块）同步迁移 | ✅ 43 工具差分矩阵**旧 vs 新字节一致**且可复现；同一 185 文件树新旧二进制索引出**相同 1850 条调用边**（`diff` 为空）；`make test` 143+134 全绿、accuracy TP36/FP0/FN0、clang-format + clippy 干净、无文件超 §1 的 1000 行 |
 
+> **刀 3 的差分证据（2026-10-06）**：`git archive HEAD` 导出改动前的源码树并在 `/tmp` 独立构建出**旧二进制**；固定库 `/tmp/td3/db/src.db`（`force-index engine/src`，185 文件 / 1764 节点 / 1850 边）分别由新旧二进制跑同一 43 工具矩阵 → 归一化（仅剔除 `time_ms`/`timing`/`last_updated`）后**逐字节相同**；同一二进制连跑两次亦相同（矩阵自复现，排除"假绿"）。另做**索引路径等价性**：同一棵 185 文件源码树分别由新旧二进制 `force-index`，`total_nodes`/`total_edges` 相同，且调用边集合 `diff` **0 行**。
+> **未随句柄化的进程级子系统（诚实记录，也是"两个完全独立引擎"的剩余限制）**：`verify::VerifierRegistry`、异步知识构建器的线程/标志、store 层的 `IndexProgress` 与 parse-failure 缓冲——已写入 `engine_context.h` 与 `engine.h` 的句柄契约。
+>
 > **刀 2 的差分证据（2026-10-04）**：固定库 `/tmp/td1/src.db`（`force-index engine/src`，185 文件 / 1764 节点），43 个工具矩阵（含 `enhance_project`、`build_project_state`、`verify_integrity`、`detect_*` 等会写库的工具——每轮从源库复制新副本）。三轮基线自比对**字节一致**（证明矩阵本身可复现），5 个迁移批次逐批比对亦字节一致。
 > **索引路径**：迁移后重新索引同一棵源码树，图差异**只有** 85 条新增的 `→ engineContext` 调用边（新访问器自身被 85 个函数调用），**没有任何既有边被改动或丢失**（`comm -23` 为空）。
 

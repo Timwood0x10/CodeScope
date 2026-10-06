@@ -191,12 +191,11 @@ int main()
 	// case abstained instead of only that something did.
 	{
 		sqlite3_stmt *st = nullptr;
-		CHECK(sqlite3_prepare_v2(
-			       store.handle(),
-			       "SELECT target_id, confidence, "
-			       "resolution_kind, reason FROM relation "
-			       "WHERE project_id=? AND type=1",
-			       -1, &st, nullptr) == SQLITE_OK);
+		CHECK(sqlite3_prepare_v2(store.handle(),
+					 "SELECT target_id, confidence, "
+					 "resolution_kind, reason FROM relation "
+					 "WHERE project_id=? AND type=1",
+					 -1, &st, nullptr) == SQLITE_OK);
 		sqlite3_bind_int64(st, 1, static_cast<int64_t>(pid));
 		while (sqlite3_step(st) == SQLITE_ROW) {
 			printf("  edge -> target=%lld conf=%.3f kind=%s reason=%s\n",

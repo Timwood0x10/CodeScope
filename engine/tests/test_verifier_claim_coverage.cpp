@@ -30,6 +30,7 @@
 #include <string>
 #include <unistd.h>
 #include <vector>
+#include "test_engine_handle.h"
 
 // ─── Fixture: a tiny Go project with known call graph ────────────────
 // main -> compute -> multiply -> add
@@ -79,13 +80,14 @@ static void writeFixture(const std::string &dir)
 static uint64_t indexFixture(const char *db_path, const char *proj_dir,
 			     const char *proj_name)
 {
-	if (engine_init(db_path) != 0) {
+	g_engine = engine_create(db_path);
+	if (!g_engine) {
 		fprintf(stderr, "FAIL: engine_init failed\n");
 		exit(1);
 	}
-	uint64_t pid = engine_create_project(proj_dir, proj_name);
+	uint64_t pid = engine_create_project(g_engine, proj_dir, proj_name);
 	CHECK(pid > 0);
-	char *idx = engine_index_project(pid, proj_dir, nullptr);
+	char *idx = engine_index_project(g_engine, pid, proj_dir, nullptr);
 	CHECK(idx != nullptr);
 	CHECK(strstr(idx, "\"ok\":true") != nullptr);
 	engine_free_string(idx);
@@ -97,7 +99,7 @@ static uint64_t indexFixture(const char *db_path, const char *proj_dir,
 // succeeded (no lifecycle error codes).
 static char *verifyClaimOk(uint64_t pid, const std::string &claim_json)
 {
-	char *out = engine_verify_claim(pid, claim_json.c_str());
+	char *out = engine_verify_claim(g_engine, pid, claim_json.c_str());
 	CHECK(out != nullptr);
 	CHECK(strstr(out, "registry_empty") == nullptr);
 	CHECK(strstr(out, "claim_type_unsupported") == nullptr);
@@ -226,8 +228,8 @@ int main()
 			CHECK(!verdict.empty());
 			CHECK(!verifier.empty());
 			CHECK(verdict == "Supported" ||
-			       verdict == "Contradicted" ||
-			       verdict == "Unknown");
+			      verdict == "Contradicted" ||
+			      verdict == "Unknown");
 			printf("  %s -> %s via %s\n", c.wire_name,
 			       verdict.c_str(), verifier.c_str());
 			engine_free_string(r);
@@ -251,10 +253,10 @@ int main()
 		std::string v_supported = extractVerdict(r_supported);
 		CHECK(v_supported == "Supported");
 		CHECK(strstr(r_supported, "FunctionImplementsVerifier") !=
-		       nullptr);
+		      nullptr);
 		// Downgraded confidence: structural check only.
 		CHECK(strstr(r_supported, "\"confidence\":0.55") != nullptr ||
-		       strstr(r_supported, "\"confidence\": 0.55") != nullptr);
+		      strstr(r_supported, "\"confidence\": 0.55") != nullptr);
 		engine_free_string(r_supported);
 
 		// Contradicted: `nonexistent_function` does not exist.
@@ -338,13 +340,14 @@ int main()
 		const char *empty_dir = "/tmp/test_verifier_coverage_empty";
 		std::filesystem::remove_all(empty_dir);
 		std::filesystem::create_directories(empty_dir);
-		uint64_t empty_pid =
-			engine_create_project(empty_dir, "empty-no-index");
+		uint64_t empty_pid = engine_create_project(g_engine, empty_dir,
+							   "empty-no-index");
 		CHECK(empty_pid > 0);
 		CHECK(empty_pid != pid); // must be a new project
-		char *r = engine_verify_claim(
-			empty_pid, "{\"type\":\"function_implements\","
-				   "\"subject\":\"compute\"}");
+		char *r =
+			engine_verify_claim(g_engine, empty_pid,
+					    "{\"type\":\"function_implements\","
+					    "\"subject\":\"compute\"}");
 		CHECK(r != nullptr);
 		std::string v = extractVerdict(r);
 		CHECK(v == "Unknown");
@@ -368,8 +371,9 @@ int main()
 	{
 		// claim_type_unsupported: unknown type string.
 		char *r_unknown =
-			engine_verify_claim(pid, "{\"type\":\"bogus_type\","
-						 "\"subject\":\"foo\"}");
+			engine_verify_claim(g_engine, pid,
+					    "{\"type\":\"bogus_type\","
+					    "\"subject\":\"foo\"}");
 		CHECK(r_unknown != nullptr);
 		CHECK(strstr(r_unknown, "claim_type_unsupported") != nullptr);
 		engine_free_string(r_unknown);
@@ -388,17 +392,18 @@ int main()
 			verify::VerifierRegistry::instance().match(probe);
 		CHECK(matched == nullptr);
 		CHECK(verify::VerifierRegistry::instance().verifier_count() ==
-		       0);
+		      0);
 		// Restore the registry for any subsequent tests.
 		verify::VerifierRegistry::instance().ensureDefaultVerifiers(
 			nullptr, 0);
 		CHECK(verify::VerifierRegistry::instance().verifier_count() >=
-		       4);
+		      4);
 
 		printf("Test 8 (distinct error codes): PASS\n");
 	}
 
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 	printf("\n=== test_verifier_claim_coverage PASSED ===\n");
 	return checkFailures() ? 1 : 0;
 }

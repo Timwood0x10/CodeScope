@@ -126,34 +126,34 @@ int main()
 	std::string out = engine.getCommunities(project_id, 10, 20, false);
 	printf("  [debug] summary = %s\n", out.c_str());
 	CHECK(contains(out, "\"total_communities\":2") &&
-	       "bridge must not collapse the two triangles into one community");
+	      "bridge must not collapse the two triangles into one community");
 	CHECK(contains(out, "\"returned_communities\":2"));
 	CHECK(contains(out, "\"inter_community_edges\":1") &&
-	       "exactly the bridge crosses communities");
+	      "exactly the bridge crosses communities");
 	CHECK(contains(out, "\"truncated\":false"));
 	CHECK(contains(out, "\"approximation\":\"heuristic\""));
 	// Both communities have three members.
 	CHECK(contains(out, "\"member_count\":3"));
 	// Highest-degree member of each triangle is the bridge endpoint.
 	CHECK(contains(out,
-			"\"id\":3,\"label\":\"gamma\",\"member_count\":3") &&
-	       "triangle A representative must be gamma (degree 3)");
+		       "\"id\":3,\"label\":\"gamma\",\"member_count\":3") &&
+	      "triangle A representative must be gamma (degree 3)");
 	CHECK(contains(out,
-			"\"id\":4,\"label\":\"delta\",\"member_count\":3") &&
-	       "triangle B representative must be delta (degree 3)");
+		       "\"id\":4,\"label\":\"delta\",\"member_count\":3") &&
+	      "triangle B representative must be delta (degree 3)");
 	// Decoys must not leak in.
 	CHECK(!contains(out, "isolated") &&
-	       "an isolated entity has no CALLS edge and must not appear");
+	      "an isolated entity has no CALLS edge and must not appear");
 	CHECK(!contains(out, "\"members\":[") &&
-	       "members must be omitted when include_members is false");
+	      "members must be omitted when include_members is false");
 	CHECK(!contains(out, "refsource") && !contains(out, "reftarget") &&
-	       "a References(0) edge must not create a community");
+	      "a References(0) edge must not create a community");
 
 	// ── 2. Determinism ──────────────────────────────────────────
 	std::string out_again =
 		engine.getCommunities(project_id, 10, 20, false);
 	CHECK(out == out_again &&
-	       "getCommunities must be deterministic for identical input");
+	      "getCommunities must be deterministic for identical input");
 
 	// ── 3. include_members ──────────────────────────────────────
 	std::string full = engine.getCommunities(project_id, 10, 20, true);
@@ -169,23 +169,23 @@ int main()
 	// Three members exist but only two may be emitted per community, so the
 	// response must say so instead of silently dropping them.
 	CHECK(contains(clamped, "\"truncated\":true") &&
-	       "member clamping must be reported via truncated");
+	      "member clamping must be reported via truncated");
 	CHECK(!contains(clamped, "\"name\":\"gamma\"") &&
-	       "the third member of triangle A must be clipped");
+	      "the third member of triangle A must be clipped");
 
 	// ── 5. Community clamp ──────────────────────────────────────
 	std::string one = engine.getCommunities(project_id, 10, 1, false);
 	printf("  [debug] one      = %s\n", one.c_str());
 	CHECK(contains(one, "\"total_communities\":2") &&
-	       "total_communities reports the real total");
+	      "total_communities reports the real total");
 	CHECK(contains(one, "\"returned_communities\":1"));
 	CHECK(contains(one, "\"truncated\":true"));
 
 	// ── 6. Non-positive values mean "default", not "unlimited" ──
 	std::string defaults = engine.getCommunities(project_id, 0, 0, false);
 	CHECK(defaults == out &&
-	       "a non-positive limit must fall back to the default, not to an "
-	       "unbounded response");
+	      "a non-positive limit must fall back to the default, not to an "
+	      "unbounded response");
 
 	// ── 7. Empty graph yields an empty result, not an error ─────
 	uint64_t empty_project = store.createProject("/empty", "empty");
@@ -194,7 +194,7 @@ int main()
 	CHECK(contains(empty, "\"total_communities\":0"));
 	CHECK(contains(empty, "\"communities\":[]"));
 	CHECK(!contains(empty, "\"error\"") &&
-	       "an empty graph is a valid answer, not an error");
+	      "an empty graph is a valid answer, not an error");
 
 	store.close();
 	unlink(kDbPath);

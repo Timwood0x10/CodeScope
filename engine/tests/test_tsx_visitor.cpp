@@ -35,10 +35,8 @@ static const TSLanguage *load_tsx_language()
 	for (auto d : dirs) {
 		if (!d)
 			continue;
-		std::string path = std::string(d) +
-				   "/tree-sitter-tsx.so";
-		void *handle = dlopen(path.c_str(),
-				      RTLD_LAZY | RTLD_LOCAL);
+		std::string path = std::string(d) + "/tree-sitter-tsx.so";
+		void *handle = dlopen(path.c_str(), RTLD_LAZY | RTLD_LOCAL);
 		if (handle) {
 			auto *fn = reinterpret_cast<const TSLanguage *(*)()>(
 				dlsym(handle, "tree_sitter_tsx"));
@@ -53,42 +51,44 @@ static const TSLanguage *load_tsx_language()
 static int tests_run = 0;
 static int tests_passed = 0;
 
-#define CHECK(cond, msg)                                                      \
-	do {                                                                   \
-		tests_run++;                                                   \
-		if (!(cond)) {                                                 \
-			fprintf(stderr, "FAIL [%d]: %s\n", tests_run, msg);    \
-			exit(1);                                               \
-		}                                                              \
-		tests_passed++;                                                \
+#define CHECK(cond, msg)                                                    \
+	do {                                                                \
+		tests_run++;                                                \
+		if (!(cond)) {                                              \
+			fprintf(stderr, "FAIL [%d]: %s\n", tests_run, msg); \
+			exit(1);                                            \
+		}                                                           \
+		tests_passed++;                                             \
 	} while (0)
 
-#define CHECK_EQ(a, b, msg)                                                    \
-	do {                                                                   \
-		tests_run++;                                                   \
-		if ((a) != (b)) {                                              \
-			fprintf(stderr, "FAIL [%d]: %s — expected %llu, "      \
-					"got %llu\n",                          \
-				tests_run, msg,                                 \
-				static_cast<unsigned long long>(b),            \
-				static_cast<unsigned long long>(a));           \
-			exit(1);                                               \
-		}                                                              \
-		tests_passed++;                                                \
+#define CHECK_EQ(a, b, msg)                                          \
+	do {                                                         \
+		tests_run++;                                         \
+		if ((a) != (b)) {                                    \
+			fprintf(stderr,                              \
+				"FAIL [%d]: %s — expected %llu, "    \
+				"got %llu\n",                        \
+				tests_run, msg,                      \
+				static_cast<unsigned long long>(b),  \
+				static_cast<unsigned long long>(a)); \
+			exit(1);                                     \
+		}                                                    \
+		tests_passed++;                                      \
 	} while (0)
 
-#define CHECK_GE(a, b, msg)                                                    \
-	do {                                                                   \
-		tests_run++;                                                   \
-		if ((a) < (b)) {                                               \
-			fprintf(stderr, "FAIL [%d]: %s — expected >= %llu, "   \
-					"got %llu\n",                          \
-				tests_run, msg,                                 \
-				static_cast<unsigned long long>(b),            \
-				static_cast<unsigned long long>(a));           \
-			exit(1);                                               \
-		}                                                              \
-		tests_passed++;                                                \
+#define CHECK_GE(a, b, msg)                                          \
+	do {                                                         \
+		tests_run++;                                         \
+		if ((a) < (b)) {                                     \
+			fprintf(stderr,                              \
+				"FAIL [%d]: %s — expected >= %llu, " \
+				"got %llu\n",                        \
+				tests_run, msg,                      \
+				static_cast<unsigned long long>(b),  \
+				static_cast<unsigned long long>(a)); \
+			exit(1);                                     \
+		}                                                    \
+		tests_passed++;                                      \
 	} while (0)
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -98,8 +98,7 @@ static TSTree *parse(const char *source, const TSLanguage *lang)
 	TSParser *parser = ts_parser_new();
 	ts_parser_set_language(parser, lang);
 	TSTree *tree = ts_parser_parse_string(
-		parser, nullptr, source,
-		static_cast<uint32_t>(strlen(source)));
+		parser, nullptr, source, static_cast<uint32_t>(strlen(source)));
 	ts_parser_delete(parser);
 	return tree;
 }
@@ -110,7 +109,7 @@ static size_t countKind(const ir::SemanticUnit &unit, ir::RecordKind kind)
 }
 
 static const ir::Record *findByName(const ir::SemanticUnit &unit,
-					     const std::string &name)
+				    const std::string &name)
 {
 	size_t idx = unit.findRecordByName(name);
 	if (idx == SIZE_MAX)
@@ -131,17 +130,14 @@ static void test_jsx_self_closing_skipped()
 	CHECK(tree != nullptr, "parse succeeded");
 
 	ir::TsxVisitor visitor;
-	ir::SemanticUnit *unit = visitor.visit(tree, code,
-					       "/test/elem.tsx");
+	ir::SemanticUnit *unit = visitor.visit(tree, code, "/test/elem.tsx");
 
 	// Should only have the variable record (el), no JSX noise
 	const ir::Record *el = findByName(*unit, "el");
 	CHECK(el != nullptr, "variable 'el' found");
-	CHECK(el->kind == ir::RecordKind::Variable,
-	      "el is a Variable record");
+	CHECK(el->kind == ir::RecordKind::Variable, "el is a Variable record");
 
-	CHECK(unit->language() == "tsx",
-	      "language is tsx");
+	CHECK(unit->language() == "tsx", "language is tsx");
 
 	ts_tree_delete(tree);
 	delete unit;
@@ -163,14 +159,12 @@ static void test_jsx_element_skipped()
 	CHECK(tree != nullptr, "parse succeeded");
 
 	ir::TsxVisitor visitor;
-	ir::SemanticUnit *unit = visitor.visit(tree, code,
-					       "/test/jsx.tsx");
+	ir::SemanticUnit *unit = visitor.visit(tree, code, "/test/jsx.tsx");
 
 	// Only the variable 'el' should be emitted
 	const ir::Record *el = findByName(*unit, "el");
 	CHECK(el != nullptr, "variable 'el' found");
-	CHECK(el->kind == ir::RecordKind::Variable,
-	      "el is a Variable record");
+	CHECK(el->kind == ir::RecordKind::Variable, "el is a Variable record");
 
 	// No extra records from JSX
 	ts_tree_delete(tree);
@@ -193,8 +187,7 @@ static void test_jsx_expression_recurses()
 	CHECK(tree != nullptr, "parse succeeded");
 
 	ir::TsxVisitor visitor;
-	ir::SemanticUnit *unit = visitor.visit(tree, code,
-					       "/test/app.tsx");
+	ir::SemanticUnit *unit = visitor.visit(tree, code, "/test/app.tsx");
 
 	// Should have a Function (App)
 	size_t funcs = countKind(*unit, ir::RecordKind::Function);
@@ -227,8 +220,7 @@ static void test_tsx_with_interface()
 	CHECK(tree != nullptr, "parse succeeded");
 
 	ir::TsxVisitor visitor;
-	ir::SemanticUnit *unit = visitor.visit(tree, code,
-					       "/test/greet.tsx");
+	ir::SemanticUnit *unit = visitor.visit(tree, code, "/test/greet.tsx");
 
 	// Interface should be detected
 	size_t ifaces = countKind(*unit, ir::RecordKind::Interface);
@@ -239,8 +231,7 @@ static void test_tsx_with_interface()
 	CHECK_EQ(funcs, 1ULL, "1 function found");
 
 	// Language should be tsx
-	CHECK(unit->language() == "tsx",
-	      "language is tsx");
+	CHECK(unit->language() == "tsx", "language is tsx");
 
 	ts_tree_delete(tree);
 	delete unit;
@@ -263,8 +254,7 @@ static void test_tsx_member_call()
 	CHECK(tree != nullptr, "parse succeeded");
 
 	ir::TsxVisitor visitor;
-	ir::SemanticUnit *unit = visitor.visit(tree, code,
-					       "/test/app.tsx");
+	ir::SemanticUnit *unit = visitor.visit(tree, code, "/test/app.tsx");
 
 	// Import should be detected
 	size_t imports = countKind(*unit, ir::RecordKind::Import);
@@ -296,8 +286,7 @@ static void test_tsx_empty_file()
 	CHECK(tree != nullptr, "parse succeeded");
 
 	ir::TsxVisitor visitor;
-	ir::SemanticUnit *unit = visitor.visit(tree, code,
-					       "/test/empty.tsx");
+	ir::SemanticUnit *unit = visitor.visit(tree, code, "/test/empty.tsx");
 	CHECK(unit != nullptr, "visit returned unit");
 	CHECK(!unit->empty(), "unit is not empty");
 
@@ -319,7 +308,7 @@ int main()
 	test_tsx_member_call();
 	test_tsx_empty_file();
 
-	printf("\n=== tsx_visitor test passed (%d/%d) ===\n",
-	       tests_passed, tests_run);
+	printf("\n=== tsx_visitor test passed (%d/%d) ===\n", tests_passed,
+	       tests_run);
 	return 0;
 }

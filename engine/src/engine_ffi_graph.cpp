@@ -36,12 +36,14 @@
 // FFI call returns the entire result set (bounded by `limit`), never one
 // row per call. Error paths emit a stderr line tagged with module=ffi,
 // method=engine_get_knowledge_graph per §"Additional Rules".
-char *engine_get_knowledge_graph(uint64_t project_id, const char *table_name,
-				 int32_t limit)
+char *engine_get_knowledge_graph(engine_t handle, uint64_t project_id,
+				 const char *table_name, int32_t limit)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().store)
+		if (!ctx || !ctx->store)
 			return dupString(
 				"{\"error\":\"[module=ffi, method=engine_get_knowledge_graph] engine not initialized\"}");
 		if (!table_name || !*table_name)
@@ -114,7 +116,7 @@ char *engine_get_knowledge_graph(uint64_t project_id, const char *table_name,
 		// block-level rule and prevents unbounded allocation.
 		int32_t clamped = limit < 0 ? 0 : (limit > 1000 ? 1000 : limit);
 
-		sqlite3 *db = engineContext().store->handle();
+		sqlite3 *db = ctx->store->handle();
 		sqlite3_stmt *stmt = nullptr;
 		if (sqlite3_prepare_v2(db, spec->select, -1, &stmt, nullptr) !=
 		    SQLITE_OK) {
@@ -184,18 +186,20 @@ char *engine_get_knowledge_graph(uint64_t project_id, const char *table_name,
 	}
 }
 
-char *engine_find_definition(uint64_t project_id, const char *symbol_name,
-			     const char *file_filter)
+char *engine_find_definition(engine_t handle, uint64_t project_id,
+			     const char *symbol_name, const char *file_filter)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		if (!symbol_name || !*symbol_name)
 			return dupString(
 				"{\"error\":\"[module=ffi, method=engine_find_definition] symbol_name is required\"}");
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().query)
+		if (!ctx || !ctx->query)
 			return dupString(
 				"{\"total\":0,\"results\":[],\"error\":\"not initialized\"}");
-		return dupString(engineContext().query->findDefinition(
+		return dupString(ctx->query->findDefinition(
 			project_id, symbol_name, file_filter));
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
@@ -206,18 +210,20 @@ char *engine_find_definition(uint64_t project_id, const char *symbol_name,
 	}
 }
 
-char *engine_find_references(uint64_t project_id, const char *symbol_name,
-			     const char *file_filter)
+char *engine_find_references(engine_t handle, uint64_t project_id,
+			     const char *symbol_name, const char *file_filter)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		if (!symbol_name || !*symbol_name)
 			return dupString(
 				"{\"error\":\"[module=ffi, method=engine_find_references] symbol_name is required\"}");
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().query)
+		if (!ctx || !ctx->query)
 			return dupString(
 				"{\"total\":0,\"results\":[],\"error\":\"not initialized\"}");
-		return dupString(engineContext().query->findReferences(
+		return dupString(ctx->query->findReferences(
 			project_id, symbol_name, file_filter));
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
@@ -228,18 +234,20 @@ char *engine_find_references(uint64_t project_id, const char *symbol_name,
 	}
 }
 
-char *engine_get_callers(uint64_t project_id, const char *function_name,
-			 const char *file_filter)
+char *engine_get_callers(engine_t handle, uint64_t project_id,
+			 const char *function_name, const char *file_filter)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		if (!function_name || !*function_name)
 			return dupString(
 				"{\"error\":\"[module=ffi, method=engine_get_callers] function_name is required\"}");
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().query)
+		if (!ctx || !ctx->query)
 			return dupString(
 				"{\"total\":0,\"callers\":[],\"error\":\"not initialized\"}");
-		return dupString(engineContext().query->getCallers(
+		return dupString(ctx->query->getCallers(
 			project_id, function_name, file_filter));
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
@@ -250,18 +258,20 @@ char *engine_get_callers(uint64_t project_id, const char *function_name,
 	}
 }
 
-char *engine_get_callees(uint64_t project_id, const char *function_name,
-			 const char *file_filter)
+char *engine_get_callees(engine_t handle, uint64_t project_id,
+			 const char *function_name, const char *file_filter)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		if (!function_name || !*function_name)
 			return dupString(
 				"{\"error\":\"[module=ffi, method=engine_get_callees] function_name is required\"}");
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().query)
+		if (!ctx || !ctx->query)
 			return dupString(
 				"{\"total\":0,\"callees\":[],\"error\":\"not initialized\"}");
-		return dupString(engineContext().query->getCallees(
+		return dupString(ctx->query->getCallees(
 			project_id, function_name, file_filter));
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
@@ -272,15 +282,17 @@ char *engine_get_callees(uint64_t project_id, const char *function_name,
 	}
 }
 
-char *engine_get_neighbors(uint64_t project_id, uint64_t node_id,
-			   int edge_type_filter, int radius)
+char *engine_get_neighbors(engine_t handle, uint64_t project_id,
+			   uint64_t node_id, int edge_type_filter, int radius)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().query)
+		if (!ctx || !ctx->query)
 			return dupString(
 				"{\"total\":0,\"neighbors\":[],\"error\":\"not initialized\"}");
-		return dupString(engineContext().query->getNeighbors(
+		return dupString(ctx->query->getNeighbors(
 			project_id, node_id, edge_type_filter, radius));
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
@@ -291,15 +303,17 @@ char *engine_get_neighbors(uint64_t project_id, uint64_t node_id,
 	}
 }
 
-char *engine_find_shortest_path(uint64_t project_id, uint64_t source_id,
-				uint64_t target_id)
+char *engine_find_shortest_path(engine_t handle, uint64_t project_id,
+				uint64_t source_id, uint64_t target_id)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().query)
+		if (!ctx || !ctx->query)
 			return dupString(
 				"{\"path\":[],\"error\":\"not initialized\"}");
-		return dupString(engineContext().query->findShortestPath(
+		return dupString(ctx->query->findShortestPath(
 			project_id, source_id, target_id));
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
@@ -334,8 +348,10 @@ static void appendFindingJson(util::JsonWriter &w, const verify::Finding &f)
 	w.endArray();
 }
 
-char *engine_find_connected_components(uint64_t project_id)
+char *engine_find_connected_components(engine_t handle, uint64_t project_id)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
 		// Module/method tag for error messages per code_rules.md.
@@ -345,7 +361,7 @@ char *engine_find_connected_components(uint64_t project_id)
 			"Connected components computed on name-matched call "
 			"edges.";
 
-		if (!engineContext().store) {
+		if (!ctx || !ctx->store) {
 			util::JsonWriter w;
 			w.beginObject();
 			w.key("error").value(
@@ -359,8 +375,7 @@ char *engine_find_connected_components(uint64_t project_id)
 			return dupString(w.str());
 		}
 
-		verify::DeadCodeInspector dci(engineContext().store.get(),
-					      project_id);
+		verify::DeadCodeInspector dci(ctx->store.get(), project_id);
 		std::vector<verify::Finding> findings =
 			dci.findConnectedComponents();
 
@@ -388,16 +403,19 @@ char *engine_find_connected_components(uint64_t project_id)
 	}
 }
 
-char *engine_get_subgraph(uint64_t project_id, uint64_t center_node_id,
-			  int radius, const char *node_type_filter,
+char *engine_get_subgraph(engine_t handle, uint64_t project_id,
+			  uint64_t center_node_id, int radius,
+			  const char *node_type_filter,
 			  const char *edge_type_filter)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().query)
+		if (!ctx || !ctx->query)
 			return dupString(
 				"{\"total\":0,\"nodes\":[],\"error\":\"not initialized\"}");
-		return dupString(engineContext().query->getSubgraph(
+		return dupString(ctx->query->getSubgraph(
 			project_id, center_node_id, radius, node_type_filter,
 			edge_type_filter));
 	} catch (const std::exception &e) {
@@ -409,16 +427,18 @@ char *engine_get_subgraph(uint64_t project_id, uint64_t center_node_id,
 	}
 }
 
-char *engine_locate_node(uint64_t project_id, uint64_t node_id,
+char *engine_locate_node(engine_t handle, uint64_t project_id, uint64_t node_id,
 			 int context_lines)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().query)
+		if (!ctx || !ctx->query)
 			return dupString(
 				"{\"total\":0,\"locations\":[],\"error\":\"not initialized\"}");
-		return dupString(engineContext().query->locateNode(
-			project_id, node_id, context_lines));
+		return dupString(ctx->query->locateNode(project_id, node_id,
+							context_lines));
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_locate_node", e.what()));
@@ -428,18 +448,20 @@ char *engine_locate_node(uint64_t project_id, uint64_t node_id,
 	}
 }
 
-char *engine_locate_by_name(uint64_t project_id, const char *name)
+char *engine_locate_by_name(engine_t handle, uint64_t project_id,
+			    const char *name)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		if (!name || !*name)
 			return dupString(
 				"{\"error\":\"[module=ffi, method=engine_locate_by_name] name is required\"}");
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().query)
+		if (!ctx || !ctx->query)
 			return dupString(
 				"{\"total\":0,\"locations\":[],\"error\":\"not initialized\"}");
-		return dupString(
-			engineContext().query->locateByName(project_id, name));
+		return dupString(ctx->query->locateByName(project_id, name));
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_locate_by_name", e.what()));
@@ -449,14 +471,15 @@ char *engine_locate_by_name(uint64_t project_id, const char *name)
 	}
 }
 
-char *engine_get_graph_stats(uint64_t project_id)
+char *engine_get_graph_stats(engine_t handle, uint64_t project_id)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().query)
+		if (!ctx || !ctx->query)
 			return dupString("{\"error\":\"not initialized\"}");
-		return dupString(
-			engineContext().query->getGraphStats(project_id));
+		return dupString(ctx->query->getGraphStats(project_id));
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_get_graph_stats", e.what()));

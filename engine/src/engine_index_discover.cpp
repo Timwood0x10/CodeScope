@@ -19,8 +19,8 @@ namespace engine_index_discover
 // .codescopeignore, bundle suffixes, filename/suffix skips, language
 // filter). Also ingests the project-root README as a knowledge
 // document and runs the incremental scan-state gate.
-int collectFileJobs(uint64_t project_id, const std::string &dir,
-		    FilterPolicy &filter,
+int collectFileJobs(EngineContext *ctx, uint64_t project_id,
+		    const std::string &dir, FilterPolicy &filter,
 		    const std::unordered_set<std::string> &scan_state,
 		    std::vector<FileJob> &jobs, bool &is_reindex,
 		    std::string &err_json)
@@ -147,20 +147,16 @@ int collectFileJobs(uint64_t project_id, const std::string &dir,
 						for (char c : content)
 							if (c == '\n')
 								++line_count;
-						if (!engineContext()
-							     .store
-							     ->insertDocument(
-								     project_id,
-								     doc_type,
-								     fp,
-								     content, 1,
-								     line_count)) {
+						if (!ctx->store->insertDocument(
+							    project_id,
+							    doc_type, fp,
+							    content, 1,
+							    line_count)) {
 							fprintf(stderr,
 								"engine: insertDocument failed for %s: %s "
 								"[module=engine, method=collectFileJobs]\n",
 								fp.c_str(),
-								engineContext()
-									.store
+								ctx->store
 									->error()
 									.c_str());
 						}

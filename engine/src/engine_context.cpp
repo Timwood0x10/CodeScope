@@ -1,20 +1,20 @@
 #include "engine_context.h"
-
-// The concrete member types are only needed here: engine_context.h
-// forward-declares them so that TUs which merely touch the store do not pay for
-// these includes (see the header's comment).
 #include "parser/parser.h"
 #include "query/query_engine.h"
 #include "store/store.h"
 
-// Completes the two out-of-line special members declared in the header.
+// Completes the two out-of-line special members declared in engine_context.h.
 // Instantiating the unique_ptr constructors/deleters here is exactly why the
 // header can keep its member types forward-declared.
 //
-// This TU holds no state: knife 2 moved the single instance into the
-// function-local static in engineContext(), so there is no namespace-scope
-// object to construct before main(). The file is kept for these definitions
-// (and, from knife 3, the handle helpers) — they need a translation unit that
-// sees the complete member types.
-EngineContext::EngineContext() = default;
-EngineContext::~EngineContext() = default;
+// This TU holds no state: after TD-1 knife 3 the instance is heap-allocated by
+// engine_create() and released by engine_destroy() (engine_lifecycle.cpp), so
+// there is neither a namespace-scope object nor a function-local static left.
+
+CodescopeEngine::CodescopeEngine() = default;
+
+/// Destructor. Members are destroyed in reverse declaration order
+/// (parser → query → store), which is the order engine_destroy() establishes
+/// explicitly: the query engine may issue SQLite work, so it must go before the
+/// store closes.
+CodescopeEngine::~CodescopeEngine() = default;

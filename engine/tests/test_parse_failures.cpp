@@ -34,6 +34,7 @@
 #include <string>
 #include <sqlite3.h>
 #include <unistd.h>
+#include "test_engine_handle.h"
 
 namespace fs = std::filesystem;
 
@@ -175,15 +176,18 @@ int main()
 	removeDb(db_path);
 
 	// ── 1. memBulk (the default path): failures must be RECORDED ──
-	check(engine_init(db_path.c_str()) == 0, "engine_init");
-	uint64_t pid = engine_create_project(dir.c_str(), "parse-failures");
+	g_engine = engine_create(db_path.c_str());
+	check(g_engine != nullptr, "engine_init");
+	uint64_t pid =
+		engine_create_project(g_engine, dir.c_str(), "parse-failures");
 	check(pid > 0, "create_project");
 
-	char *r1 = engine_index_project(pid, dir.c_str(), nullptr);
+	char *r1 = engine_index_project(g_engine, pid, dir.c_str(), nullptr);
 	check(r1 != nullptr && strstr(r1, "\"ok\":true") != nullptr,
 	      "run 1 (membulk) reports ok:true");
 	engine_free_string(r1);
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 
 	sqlite3 *db = nullptr;
 	check(sqlite3_open_v2(db_path.c_str(), &db, SQLITE_OPEN_READONLY,
@@ -210,14 +214,16 @@ int main()
 	sqlite3_close(db);
 
 	// ── 2. A second run: language_missing is retried, read_empty is not ──
-	check(engine_init(db_path.c_str()) == 0, "engine_init (run 2)");
-	pid = engine_create_project(dir.c_str(), "parse-failures");
+	g_engine = engine_create(db_path.c_str());
+	check(g_engine != nullptr, "engine_init (run 2)");
+	pid = engine_create_project(g_engine, dir.c_str(), "parse-failures");
 	check(pid > 0, "create_project (run 2)");
-	char *r2 = engine_index_project(pid, dir.c_str(), nullptr);
+	char *r2 = engine_index_project(g_engine, pid, dir.c_str(), nullptr);
 	check(r2 != nullptr && strstr(r2, "\"ok\":true") != nullptr,
 	      "run 2 reports ok:true");
 	engine_free_string(r2);
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 
 	check(sqlite3_open_v2(db_path.c_str(), &db, SQLITE_OPEN_READONLY,
 			      nullptr) == SQLITE_OK,
@@ -239,14 +245,17 @@ int main()
 	const std::string stream_db = "/tmp/test_parse_failures_stream.db";
 	removeDb(stream_db);
 	setenv("CODESCOPE_FORCE_STREAMING", "1", 1);
-	check(engine_init(stream_db.c_str()) == 0, "engine_init (streaming)");
-	uint64_t pid_s = engine_create_project(dir.c_str(), "parse-failures-s");
+	g_engine = engine_create(stream_db.c_str());
+	check(g_engine != nullptr, "engine_init (streaming)");
+	uint64_t pid_s = engine_create_project(g_engine, dir.c_str(),
+					       "parse-failures-s");
 	check(pid_s > 0, "create_project (streaming)");
-	char *r3 = engine_index_project(pid_s, dir.c_str(), nullptr);
+	char *r3 = engine_index_project(g_engine, pid_s, dir.c_str(), nullptr);
 	check(r3 != nullptr && strstr(r3, "\"ok\":true") != nullptr,
 	      "streaming run reports ok:true");
 	engine_free_string(r3);
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 	unsetenv("CODESCOPE_FORCE_STREAMING");
 
 	check(sqlite3_open_v2(stream_db.c_str(), &db, SQLITE_OPEN_READONLY,
@@ -272,18 +281,21 @@ int main()
 	// hard-coded threshold of 3, so the tool's explicit request was dropped
 	// silently and the workers used a different threshold from the project
 	// path.
-	check(engine_init(db_path.c_str()) == 0, "engine_init (index_files)");
-	check(engine_create_project(dir.c_str(), "parse-failures") == pid,
+	g_engine = engine_create(db_path.c_str());
+	check(g_engine != nullptr, "engine_init (index_files)");
+	check(engine_create_project(g_engine, dir.c_str(), "parse-failures") ==
+		      pid,
 	      "index_files run reuses the same project");
 	const std::string file_list =
 		"[\"" + empty_path + "\", \"" + swift_path + "\"]";
 
 	// 4a. bypass_fail_fast = 1 → every listed file is re-attempted.
-	char *rf = engine_index_files(pid, file_list.c_str(), 1);
+	char *rf = engine_index_files(g_engine, pid, file_list.c_str(), 1);
 	check(rf != nullptr && strstr(rf, "\"ok\":true") != nullptr,
 	      "bypass run reports ok:true");
 	engine_free_string(rf);
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 
 	check(sqlite3_open_v2(db_path.c_str(), &db, SQLITE_OPEN_READONLY,
 			      nullptr) == SQLITE_OK,
@@ -302,15 +314,17 @@ int main()
 
 	// 4b. bypass_fail_fast = 0 → the scheduler policy applies: the genuine
 	// parse failure is skipped, while the language_missing row stays exempt.
-	check(engine_init(db_path.c_str()) == 0,
-	      "engine_init (scheduler policy)");
-	check(engine_create_project(dir.c_str(), "parse-failures") == pid,
+	g_engine = engine_create(db_path.c_str());
+	check(g_engine != nullptr, "engine_init (scheduler policy)");
+	check(engine_create_project(g_engine, dir.c_str(), "parse-failures") ==
+		      pid,
 	      "worker run reuses the same project");
-	char *rw = engine_index_files(pid, file_list.c_str(), 0);
+	char *rw = engine_index_files(g_engine, pid, file_list.c_str(), 0);
 	check(rw != nullptr && strstr(rw, "\"ok\":true") != nullptr,
 	      "worker-policy run reports ok:true");
 	engine_free_string(rw);
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 
 	check(sqlite3_open_v2(db_path.c_str(), &db, SQLITE_OPEN_READONLY,
 			      nullptr) == SQLITE_OK,
@@ -354,16 +368,18 @@ int main()
 
 	const fs::path restore_cwd = fs::current_path();
 	fs::current_path("/tmp");
-	check(engine_init(sp_db.c_str()) == 0, "engine_init (spelling)");
-	uint64_t pid_sp = engine_create_project("test_parse_failures_spelling",
-						"spelling");
+	g_engine = engine_create(sp_db.c_str());
+	check(g_engine != nullptr, "engine_init (spelling)");
+	uint64_t pid_sp = engine_create_project(
+		g_engine, "test_parse_failures_spelling", "spelling");
 	check(pid_sp > 0, "create_project (spelling)");
-	char *rsp = engine_index_project(pid_sp, "test_parse_failures_spelling",
-					 nullptr);
+	char *rsp = engine_index_project(
+		g_engine, pid_sp, "test_parse_failures_spelling", nullptr);
 	check(rsp != nullptr && strstr(rsp, "\"ok\":true") != nullptr,
 	      "spelling run: project index ok");
 	engine_free_string(rsp);
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 	fs::current_path(restore_cwd);
 
 	// The absolute, canonical spelling the single-file callers receive.
@@ -372,13 +388,15 @@ int main()
 	// Reuse pid_sp as-is: engine_index_files needs only the project id, and
 	// re-creating the project here would resolve the relative root against the
 	// restored working directory, yielding a different project.
-	check(engine_init(sp_db.c_str()) == 0, "engine_init (spelling force)");
+	g_engine = engine_create(sp_db.c_str());
+	check(g_engine != nullptr, "engine_init (spelling force)");
 	const std::string sp_list = "[\"" + canon + "/empty.py\"]";
-	char *rspf = engine_index_files(pid_sp, sp_list.c_str(), 1);
+	char *rspf = engine_index_files(g_engine, pid_sp, sp_list.c_str(), 1);
 	check(rspf != nullptr && strstr(rspf, "\"ok\":true") != nullptr,
 	      "spelling force run reports ok:true");
 	engine_free_string(rspf);
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 
 	check(sqlite3_open_v2(sp_db.c_str(), &db, SQLITE_OPEN_READONLY,
 			      nullptr) == SQLITE_OK,
@@ -418,16 +436,20 @@ int main()
 	fs::create_symlink(al_dir, al_alias, link_ec);
 	check(!link_ec, "create the aliased project root");
 
-	check(engine_init(al_db.c_str()) == 0, "engine_init (alias)");
-	uint64_t pid_al = engine_create_project(al_alias.c_str(), "alias");
+	g_engine = engine_create(al_db.c_str());
+	check(g_engine != nullptr, "engine_init (alias)");
+	uint64_t pid_al =
+		engine_create_project(g_engine, al_alias.c_str(), "alias");
 	check(pid_al > 0, "create_project (alias)");
 	// Indexed THROUGH the alias: the walk stores "/tmp/test_pf_alias_link/…",
 	// while projects.root_path records the canonical target.
-	char *ral = engine_index_project(pid_al, al_alias.c_str(), nullptr);
+	char *ral = engine_index_project(g_engine, pid_al, al_alias.c_str(),
+					 nullptr);
 	check(ral != nullptr && strstr(ral, "\"ok\":true") != nullptr,
 	      "alias run: project index ok");
 	engine_free_string(ral);
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 
 	check(sqlite3_open_v2(al_db.c_str(), &db, SQLITE_OPEN_READONLY,
 			      nullptr) == SQLITE_OK,
@@ -442,14 +464,16 @@ int main()
 	// canonical root) and force-index the canonical paths.
 	const std::string canon_al = canonicalPath(al_dir);
 
-	check(engine_init(al_db.c_str()) == 0, "engine_init (alias force)");
+	g_engine = engine_create(al_db.c_str());
+	check(g_engine != nullptr, "engine_init (alias force)");
 	const std::string al_list =
 		"[\"" + canon_al + "/empty.py\", \"" + canon_al + "/good.c\"]";
-	char *ralf = engine_index_files(pid_al, al_list.c_str(), 1);
+	char *ralf = engine_index_files(g_engine, pid_al, al_list.c_str(), 1);
 	check(ralf != nullptr && strstr(ralf, "\"ok\":true") != nullptr,
 	      "alias force run reports ok:true");
 	engine_free_string(ralf);
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 
 	check(sqlite3_open_v2(al_db.c_str(), &db, SQLITE_OPEN_READONLY,
 			      nullptr) == SQLITE_OK,
@@ -488,14 +512,18 @@ int main()
 
 	const fs::path restore_cwd2 = fs::current_path();
 	fs::current_path("/tmp");
-	check(engine_init(rl_db.c_str()) == 0, "engine_init (relative root)");
-	uint64_t pid_rl = engine_create_project("./test_pf_relfile", "relfile");
+	g_engine = engine_create(rl_db.c_str());
+	check(g_engine != nullptr, "engine_init (relative root)");
+	uint64_t pid_rl =
+		engine_create_project(g_engine, "./test_pf_relfile", "relfile");
 	check(pid_rl > 0, "create_project (relative root)");
-	char *rrl = engine_index_project(pid_rl, "./test_pf_relfile", nullptr);
+	char *rrl = engine_index_project(g_engine, pid_rl, "./test_pf_relfile",
+					 nullptr);
 	check(rrl != nullptr && strstr(rrl, "\"ok\":true") != nullptr,
 	      "relative-root run: project index ok");
 	engine_free_string(rrl);
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 
 	check(sqlite3_open_v2(rl_db.c_str(), &db, SQLITE_OPEN_READONLY,
 			      nullptr) == SQLITE_OK,
@@ -512,14 +540,16 @@ int main()
 	// Force-index with absolute paths WHILE the working directory is still the
 	// one the project was indexed from — the condition that makes the relative
 	// row's prefix verifiable.
-	check(engine_init(rl_db.c_str()) == 0, "engine_init (relative force)");
+	g_engine = engine_create(rl_db.c_str());
+	check(g_engine != nullptr, "engine_init (relative force)");
 	const std::string rl_list =
 		"[\"" + canon_rl + "/empty.py\", \"" + canon_rl + "/good.c\"]";
-	char *rrlf = engine_index_files(pid_rl, rl_list.c_str(), 1);
+	char *rrlf = engine_index_files(g_engine, pid_rl, rl_list.c_str(), 1);
 	check(rrlf != nullptr && strstr(rrlf, "\"ok\":true") != nullptr,
 	      "relative-root force run reports ok:true");
 	engine_free_string(rrlf);
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 	fs::current_path(restore_cwd2);
 
 	check(sqlite3_open_v2(rl_db.c_str(), &db, SQLITE_OPEN_READONLY,
@@ -555,16 +585,18 @@ int main()
 	fs::create_directories(pf_dir);
 	writeFile(pf_dir + "/empty.py", nullptr);
 
-	check(engine_init(pf_db.c_str()) == 0,
-	      "engine_init (parse-failures ffi)");
-	uint64_t pid_pf = engine_create_project(pf_dir.c_str(), "readable");
+	g_engine = engine_create(pf_db.c_str());
+	check(g_engine != nullptr, "engine_init (parse-failures ffi)");
+	uint64_t pid_pf =
+		engine_create_project(g_engine, pf_dir.c_str(), "readable");
 	check(pid_pf > 0, "create_project (parse-failures ffi)");
-	char *rpf = engine_index_project(pid_pf, pf_dir.c_str(), nullptr);
+	char *rpf =
+		engine_index_project(g_engine, pid_pf, pf_dir.c_str(), nullptr);
 	check(rpf != nullptr && strstr(rpf, "\"ok\":true") != nullptr,
 	      "readable run: project index ok");
 	engine_free_string(rpf);
 
-	char *listed = engine_get_parse_failures(pid_pf, 10);
+	char *listed = engine_get_parse_failures(g_engine, pid_pf, 10);
 	check(listed != nullptr, "engine_get_parse_failures must return JSON");
 	check(strstr(listed, "\"ok\":true") != nullptr,
 	      "reading parse_failures must report ok:true");
@@ -574,19 +606,20 @@ int main()
 	      "…together with its failure reason");
 	engine_free_string(listed);
 
-	char *cleared = engine_reset_parse_failures(pid_pf);
+	char *cleared = engine_reset_parse_failures(g_engine, pid_pf);
 	check(cleared != nullptr && strstr(cleared, "\"ok\":true") != nullptr,
 	      "engine_reset_parse_failures must report ok:true");
 	check(strstr(cleared, "\"removed\":1") != nullptr,
 	      "the reset must report how many rows it removed");
 	engine_free_string(cleared);
 
-	char *after = engine_get_parse_failures(pid_pf, 10);
+	char *after = engine_get_parse_failures(g_engine, pid_pf, 10);
 	check(after != nullptr &&
 		      strstr(after, "\"parse_failures\":[]") != nullptr,
 	      "the table must be empty after the reset");
 	engine_free_string(after);
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 	removeDb(pf_db);
 	fs::remove_all(pf_dir);
 

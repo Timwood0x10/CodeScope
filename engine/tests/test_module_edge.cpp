@@ -71,8 +71,9 @@ static int getEdgeCount(store::GraphStore &store, uint64_t project_id,
 			const char *src_module, const char *tgt_module)
 {
 	sqlite3 *db = store.handle();
-	const char *sql = "SELECT edge_count FROM module_edge "
-			  "WHERE project_id=? AND src_module=? AND tgt_module=?";
+	const char *sql =
+		"SELECT edge_count FROM module_edge "
+		"WHERE project_id=? AND src_module=? AND tgt_module=?";
 	sqlite3_stmt *stmt = nullptr;
 	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
@@ -114,19 +115,24 @@ int main()
 	{
 		// Two modules: /src/engine/ and /src/store/
 		// Two call edges from engine to store.
-		insertEntity(store, project_id, 1, "parse", "/src/engine/parser.cpp");
-		insertEntity(store, project_id, 2, "emit", "/src/engine/emitter.cpp");
-		insertEntity(store, project_id, 3, "save", "/src/store/store.cpp");
+		insertEntity(store, project_id, 1, "parse",
+			     "/src/engine/parser.cpp");
+		insertEntity(store, project_id, 2, "emit",
+			     "/src/engine/emitter.cpp");
+		insertEntity(store, project_id, 3, "save",
+			     "/src/store/store.cpp");
 
-		insertRelation(store, project_id, 1, 3, 1); // parse → save (CALLS)
-		insertRelation(store, project_id, 2, 3, 1); // emit → save (CALLS)
+		insertRelation(store, project_id, 1, 3,
+			       1); // parse → save (CALLS)
+		insertRelation(store, project_id, 2, 3,
+			       1); // emit → save (CALLS)
 
 		int64_t rows = buildKnowledgeGraphSync(store, project_id);
 		CHECK(rows == 1); // one module pair: engine → store
 		CHECK(totalEdges(store, project_id) == 1);
 
-		int count = getEdgeCount(store, project_id,
-					 "/src/engine/", "/src/store/");
+		int count = getEdgeCount(store, project_id, "/src/engine/",
+					 "/src/store/");
 		CHECK(count == 2); // two call edges aggregated
 		printf("  [PASS] cross-module edges populated (engine→store count=2)\n");
 	}
@@ -157,8 +163,8 @@ int main()
 		int64_t rows = buildKnowledgeGraphSync(store, project_id);
 		// One module pair: /src/engine/ → /src/engine/ (self-loop).
 		CHECK(rows == 1);
-		int self_count = getEdgeCount(store, project_id,
-					      "/src/engine/", "/src/engine/");
+		int self_count = getEdgeCount(store, project_id, "/src/engine/",
+					      "/src/engine/");
 		CHECK(self_count == 1);
 		printf("  [PASS] same-file edges excluded; module self-loop allowed\n");
 	}
@@ -245,9 +251,12 @@ int main()
 
 		int64_t rows = buildKnowledgeGraphSync(store, project_id);
 		CHECK(rows == 3); // three distinct module pairs
-		CHECK(getEdgeCount(store, project_id, "/mod_a/", "/mod_b/") == 1);
-		CHECK(getEdgeCount(store, project_id, "/mod_b/", "/mod_c/") == 1);
-		CHECK(getEdgeCount(store, project_id, "/mod_a/", "/mod_c/") == 1);
+		CHECK(getEdgeCount(store, project_id, "/mod_a/", "/mod_b/") ==
+		      1);
+		CHECK(getEdgeCount(store, project_id, "/mod_b/", "/mod_c/") ==
+		      1);
+		CHECK(getEdgeCount(store, project_id, "/mod_a/", "/mod_c/") ==
+		      1);
 		printf("  [PASS] multiple module pairs (A→B, B→C, A→C)\n");
 	}
 

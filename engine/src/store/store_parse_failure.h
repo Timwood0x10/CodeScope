@@ -6,6 +6,10 @@
 #include <vector>
 #include <mutex>
 
+// The auxiliary parse-failure connection is opened from the engine instance's
+// store (TD-1 knife 3: the instance is passed in, not looked up globally).
+#include "engine_context.h"
+
 namespace store
 {
 
@@ -40,8 +44,8 @@ const char *failReasonToString(FailReason r);
 /// `engine_index_sched.h`'s `kDefaultFailRetryMax` (currently 1). The forced
 /// path (`engine_index_files.cpp` with bypass_fail_fast) loads no set at all —
 /// a file handed to `force_index_files` is always re-attempted.
-bool isKnownParseFailure(uint64_t project_id, const std::string &file_path,
-			 int retry_max);
+bool isKnownParseFailure(EngineContext *ctx, uint64_t project_id,
+			 const std::string &file_path, int retry_max);
 
 /// Record a parse failure for a file. If the row already exists,
 /// increments fail_count and updates last_seen. Otherwise inserts a
@@ -54,8 +58,11 @@ bool isKnownParseFailure(uint64_t project_id, const std::string &file_path,
 /// `lang` may be empty if the language was never identified.
 /// `reason` is one of FailReason above (exception variants should
 /// append the what() text after a colon, e.g. "exception: bad_alloc").
-void recordParseFailure(uint64_t project_id, const std::string &file_path,
-			const std::string &lang, const std::string &reason);
+/// @param ctx Engine instance whose store supplies the database path for
+///            the auxiliary connection. May be null (no-op).
+void recordParseFailure(EngineContext *ctx, uint64_t project_id,
+			const std::string &file_path, const std::string &lang,
+			const std::string &reason);
 
 /// Thread-safe in-memory buffer for parse failures.
 /// Parse workers call this instead of recordParseFailure to avoid
@@ -70,26 +77,29 @@ void bufferParseFailure(uint64_t project_id, const std::string &file_path,
 /// or -1 on error. The buffer is cleared after successful flush.
 /// Idempotent: consecutive calls with no new bufferParseFailure calls
 /// write zero rows.
-int flushParseFailures();
+/// @param ctx Engine instance whose store supplies the database path for
+///            the auxiliary connection.
+int flushParseFailures(EngineContext *ctx);
 
 /// Reset (delete) all parse_failures rows for the given project_id.
 /// Called by the `codescope reset-failures` CLI. Returns the number
 /// of rows deleted, or -1 on error.
-int resetParseFailures(uint64_t project_id);
+int resetParseFailures(EngineContext *ctx, uint64_t project_id);
 
 /// Return a JSON array of all parse_failures rows for a project,
 /// limited to `limit` rows (default 100). Each row is an object:
 ///   {"file_path":"...","language":"...","fail_reason":"...",
 ///    "fail_count":N,"first_seen":N,"last_seen":N}
 /// Returns "[]" on error or empty table.
-std::string getParseFailuresJson(uint64_t project_id, int limit);
+std::string getParseFailuresJson(EngineContext *ctx, uint64_t project_id,
+				 int limit);
 
 /// Load all file_path values for the given project_id where
 /// fail_count >= retry_max into the provided vector. Used at index
 /// startup to pre-populate a skip set without per-file DB queries.
 /// Returns true on success, false on DB error (caller logs).
-bool loadKnownParseFailures(uint64_t project_id, int retry_max,
-			    std::vector<std::string> &out_paths);
+bool loadKnownParseFailures(EngineContext *ctx, uint64_t project_id,
+			    int retry_max, std::vector<std::string> &out_paths);
 
 } // namespace store
 

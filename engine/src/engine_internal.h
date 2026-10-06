@@ -26,18 +26,21 @@
 #include "lsp/lsp_client.h"
 // ─── Engine State (TD-1) ─────────────────────────────────────────
 //
-// The three state members (store, query, parser) live in the single
-// EngineContext declared in engine_context.h and are reached from every
-// engine_*.cpp translation unit through engineContext(). Shared process-wide.
-// Initialized by engine_init() and cleaned up by engine_shutdown().
-// Using unique_ptr for exception-safe memory management.
+// The three state members (store, query, parser) live in the CodescopeEngine
+// instance declared in engine_context.h. Since TD-1 knife 3 there is no
+// process-global accessor: the instance arrives as the `engine_t` handle the
+// FFI entry points take and is passed on to internal helpers as
+// `EngineContext *ctx`. It is created by engine_create() and torn down by
+// engine_destroy(). Using unique_ptr for exception-safe memory management.
 
 #include "engine_context.h"
 
 // ═══════════════════════════════════════════════════════════════════
 // Engine State Thread-Safety Contract
 // ═══════════════════════════════════════════════════════════════════
-// The single EngineContext returned by engineContext() is process-global state.
+// One EngineContext instance is one engine: its store, query engine and
+// parser. It is not shared between instances, but a few auxiliary subsystems
+// still are process-wide (see engine_context.h for the list).
 //
 // Thread-safety model:
 // - The Rust MCP server calls FFI functions SEQUENTIALLY from a single
@@ -76,7 +79,7 @@ char *dupString(const std::string &s);
 // engine_get_enhancement_status body. Lives in engine_queries_status.cpp
 // (split out of engine_queries.cpp for the 1000-line rule); the FFI wrapper
 // in engine_queries.cpp catches exceptions and formats the error envelope.
-char *getEnhancementStatusImpl(uint64_t project_id);
+char *getEnhancementStatusImpl(EngineContext *ctx, uint64_t project_id);
 
 // ─── Index Project: in-memory bulk path + shared post-parse ───────────
 //
@@ -91,8 +94,8 @@ char *getEnhancementStatusImpl(uint64_t project_id);
 /// one must both honour it or the documented "skipped entirely on the next
 /// run" behaviour only applies to projects above the memBulk threshold.
 char *engine_index_project_membulk(
-	uint64_t project_id, const std::string &dir, uint64_t max_file_size,
-	const FilterPolicy &filter,
+	EngineContext *ctx, uint64_t project_id, const std::string &dir,
+	uint64_t max_file_size, const FilterPolicy &filter,
 	const std::vector<std::pair<std::string, std::string>> &job_lang,
 	const std::unordered_map<std::string, const TSLanguage *> &lang_ptrs,
 	const std::unordered_set<std::string> &known_failures, bool is_reindex,
@@ -102,7 +105,8 @@ char *engine_index_project_membulk(
 /// resolveStagedMetrics -> (deep) vectors ->
 /// createIndexesAfterBulkLoad -> readiness -> result JSON.
 /// Returns a dupString()'d JSON result. Caller owns the pointer.
-char *postParsePhase(uint64_t project_id, const std::string &dir,
+char *postParsePhase(EngineContext *ctx, uint64_t project_id,
+		     const std::string &dir,
 		     const std::vector<std::string> &job_paths,
 		     const FilterPolicy &filter, bool is_reindex,
 		     bool mode_fast, bool mode_deep, int64_t time_parse_ms,
@@ -122,7 +126,8 @@ char *postParsePhase(uint64_t project_id, const std::string &dir,
 //                         "pattern"/"framework"/"ffi"); NULL or ""
 //                         means run all categories.
 // @return Heap-allocated JSON array string (caller frees).
-char *engine_build_evidence(uint64_t project_id, const char *category_filter);
+char *engine_build_evidence(engine_t handle, uint64_t project_id,
+			    const char *category_filter);
 
 // ─── Path Helpers ─────────────────────────────────────────────────
 // Cross-platform path separator check: '/' on Unix, '/' and '\\' on

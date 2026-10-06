@@ -1,7 +1,8 @@
 #include "test_e2e.h"
 
-int main() {
-    const char* code = R"(fn add(a: i32, b: i32) -> i32 {
+int main()
+{
+	const char *code = R"(fn add(a: i32, b: i32) -> i32 {
     a + b
 }
 
@@ -25,12 +26,8 @@ fn main() {
 }
 )";
 
-    const char* defs[] = {"add", "multiply", "compute"};
-    runE2eTest("rust", code, "/tmp/test_math.rs",
-               defs, 3,
-               "add", "multiply",
-               "add",
-               "compute",
-               "main", nullptr);
-    return 0;
+	const char *defs[] = { "add", "multiply", "compute" };
+	runE2eTest("rust", code, "/tmp/test_math.rs", defs, 3, "add",
+		   "multiply", "add", "compute", "main", nullptr);
+	return 0;
 }

@@ -33,6 +33,7 @@
 #include <filesystem>
 #include <sqlite3.h>
 #include <string>
+#include "test_engine_handle.h"
 
 namespace fs = std::filesystem;
 
@@ -227,20 +228,22 @@ int helper(int x) {
 	check(setenv("CODESCOPE_SKIP_ASYNC", "1", 1) == 0,
 	      "setenv CODESCOPE_SKIP_ASYNC=1");
 
-	check(engine_init(kDbPath) == 0, "engine_init");
-	uint64_t pid = engine_create_project(kProjDir, "metrics_readiness");
+	g_engine = engine_create(kDbPath);
+	check(g_engine != nullptr, "engine_init");
+	uint64_t pid =
+		engine_create_project(g_engine, kProjDir, "metrics_readiness");
 	check(pid > 0, "create_project");
 	printf("PASS: project_id=%llu\n", (unsigned long long)pid);
 
 	// ─── Step 2: index ───────────────────────────────────────────
-	char *idx = engine_index_project(pid, kProjDir, NULL);
+	char *idx = engine_index_project(g_engine, pid, kProjDir, NULL);
 	check(idx != nullptr, "index_project result");
 	check(strstr(idx, "\"ok\":true") != nullptr, "index_project ok");
 	printf("PASS: index ok\n");
 	engine_free_string(idx);
 
 	// ─── Step 3: run enhance so fts_ready is set ─────────────────
-	char *enh = engine_enhance_project(pid);
+	char *enh = engine_enhance_project(g_engine, pid);
 	check(enh != nullptr, "enhance_project result");
 	check(strstr(enh, "\"status\"") != nullptr,
 	      "enhance: has status field");
@@ -251,7 +254,7 @@ int helper(int x) {
 	// The original A20 guard: no hardcoded 0. v0.2.5 additionally expects
 	// metrics_ready > 0 (real cyclomatic resolved onto entity) and
 	// embedding_ready > 0 (DEEP mode wrote n-gram vectors).
-	char *st = engine_get_enhancement_status(pid);
+	char *st = engine_get_enhancement_status(g_engine, pid);
 	check(st != nullptr, "enhancement_status result");
 	printf("PASS: enhancement_status — %s\n", st);
 
@@ -289,7 +292,7 @@ int helper(int x) {
 	// ─── Step 5: engine_get_complexity returns a REAL measurement ──
 	// v0.2.5: complexity is restored — the entity has cyclomatic > 0, so
 	// getComplexityJson returns a real integer, NOT the sunset null marker.
-	char *cplx = engine_get_complexity(pid, 1);
+	char *cplx = engine_get_complexity(g_engine, pid, 1);
 	check(cplx != nullptr, "get_complexity result");
 	printf("PASS: get_complexity — %s\n", cplx);
 	check_contains(cplx, "\"available\":true",
@@ -301,7 +304,7 @@ int helper(int x) {
 	engine_free_string(cplx);
 
 	// ─── Step 6: engine_get_capabilities marks restored capabilities ──
-	char *caps = engine_get_capabilities(pid);
+	char *caps = engine_get_capabilities(g_engine, pid);
 	check(caps != nullptr, "get_capabilities result");
 	printf("PASS: get_capabilities — %s\n", caps);
 	check_contains(caps,
@@ -310,8 +313,9 @@ int helper(int x) {
 	check_contains(caps, "\"metrics\":{\"available\":true",
 		       "capabilities: metrics available=true (restored)");
 	// semantic_search: available=true + mode=ngram_hash (restored).
-	check_contains(caps, "\"semantic_search\":{\"available\":true",
-		       "capabilities: semantic_search available=true (restored)");
+	check_contains(
+		caps, "\"semantic_search\":{\"available\":true",
+		"capabilities: semantic_search available=true (restored)");
 	check_contains(caps, "\"mode\":\"ngram_hash\"",
 		       "capabilities: semantic_search mode=ngram_hash");
 	// FTS stays available (exact/prefix search alongside semantic).
@@ -329,7 +333,8 @@ int helper(int x) {
 		sqlite3 *db = open_db_direct();
 		check(db != nullptr, "open_db_direct for readiness check");
 		int64_t nv = count_node_vectors_direct(db, pid);
-		check(nv > 0, "DEEP index wrote node_vectors (restored producer)");
+		check(nv > 0,
+		      "DEEP index wrote node_vectors (restored producer)");
 		int vflag = read_vector_ready_flag(db, pid);
 		check(vflag == 1,
 		      "vector_ready == 1 when node_vectors has rows (real readiness)");
@@ -343,10 +348,10 @@ int helper(int x) {
 
 	// ─── Step 8: metrics_ready survives a re-run ─────────────────
 	{
-		char *enh2 = engine_enhance_project(pid);
+		char *enh2 = engine_enhance_project(g_engine, pid);
 		check(enh2 != nullptr, "enhance rerun");
 		engine_free_string(enh2);
-		char *st2 = engine_get_enhancement_status(pid);
+		char *st2 = engine_get_enhancement_status(g_engine, pid);
 		check(st2 != nullptr, "status after rerun");
 		int met2 = -1;
 		sscanf(st2,
@@ -362,7 +367,7 @@ int helper(int x) {
 	// ─── Step 9: FTS search still works ──────────────────────────
 	// FTS remains the exact/prefix search path; semantic search is now
 	// additive. Verify FTS still returns results for an exact name.
-	char *search = engine_unified_search(pid, "helper", 10);
+	char *search = engine_unified_search(g_engine, pid, "helper", 10);
 	check(search != nullptr, "unified_search result");
 	printf("PASS: unified_search — %s\n", search);
 	check(strstr(search, "\"results\"") != nullptr ||
@@ -387,7 +392,7 @@ int helper(int x) {
 		check(nv_after_drop == 0,
 		      "staleness: node_vectors == 0 after drop");
 
-		char *st3 = engine_get_enhancement_status(pid);
+		char *st3 = engine_get_enhancement_status(g_engine, pid);
 		check(st3 != nullptr, "staleness: status after drop");
 		int emb3 = -1;
 		sscanf(st3,
@@ -407,7 +412,7 @@ int helper(int x) {
 	// repopulate node_vectors, proving the producer is idempotent and the
 	// full cycle works: build → ready → drop → 0 → rebuild → ready.
 	{
-		idx = engine_index_project(pid, kProjDir, NULL);
+		idx = engine_index_project(g_engine, pid, kProjDir, NULL);
 		check(idx != nullptr, "re-index result");
 		check(strstr(idx, "\"ok\":true") != nullptr, "re-index ok");
 		engine_free_string(idx);
@@ -426,7 +431,8 @@ int helper(int x) {
 	}
 
 	// ─── Cleanup ─────────────────────────────────────────────────
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 	std::error_code ec2;
 	fs::remove_all(kProjDir, ec2);
 	fs::remove(kDbPath, ec2);

@@ -76,8 +76,7 @@ int main()
 			"lock-free.";
 		auto claims = parser.parse(text, "readme", "README.md");
 
-		CHECK(hasClaim(claims, ClaimType::ContractHolds,
-				"MemorySafe"));
+		CHECK(hasClaim(claims, ClaimType::ContractHolds, "MemorySafe"));
 		CHECK(hasClaim(claims, ClaimType::ContractHolds, "ZeroCopy"));
 		CHECK(hasClaim(claims, ClaimType::ContractHolds, "LockFree"));
 		printf("Test 3 (memory-safe/zero-copy/lock-free): PASS\n");
@@ -175,9 +174,9 @@ int main()
 		std::string text = "The project has a LeaderAgent class.";
 		auto claims = parser.parse(text, "ai_summary", "sum-8");
 		CHECK(hasClaim(claims, ClaimType::CapabilityExists,
-				"LeaderAgent"));
+			       "LeaderAgent"));
 		CHECK(!hasClaim(claims, ClaimType::CapabilityExists,
-				 "LeaderAgentClass"));
+				"LeaderAgentClass"));
 		printf("Test 8 (has + trailing noun strip): PASS\n");
 	}
 
@@ -190,9 +189,9 @@ int main()
 		std::string text = "c_print should handle null input.";
 		auto claims = parser.parse(text, "ai_summary", "sum-9");
 		CHECK(hasClaim(claims, ClaimType::FunctionImplements,
-				"c_print"));
+			       "c_print"));
 		CHECK(!hasClaim(claims, ClaimType::FunctionImplements,
-				 "CPrint"));
+				"CPrint"));
 		bool object_ok = false;
 		for (const auto &c : claims) {
 			if (c.type == ClaimType::FunctionImplements &&
@@ -218,8 +217,10 @@ int main()
 		auto c2 = parser.parse(t2, "ai_summary", "sum-10b");
 		auto c3 = parser.parse(t3, "ai_summary", "sum-10c");
 		auto c4 = parser.parse(t4, "ai_summary", "sum-10d");
-		CHECK(!hasClaim(c1, ClaimType::CapabilityExists, "LeaderAgent"));
-		CHECK(!hasClaim(c2, ClaimType::CapabilityExists, "LeaderAgent"));
+		CHECK(!hasClaim(c1, ClaimType::CapabilityExists,
+				"LeaderAgent"));
+		CHECK(!hasClaim(c2, ClaimType::CapabilityExists,
+				"LeaderAgent"));
 		CHECK(!hasClaim(c3, ClaimType::FunctionImplements, "c_print"));
 		CHECK(!hasClaim(c4, ClaimType::FunctionImplements, "c_print"));
 		printf("Test 10 (negated has/should suppressed): PASS\n");

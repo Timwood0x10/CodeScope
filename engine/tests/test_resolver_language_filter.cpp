@@ -45,6 +45,7 @@
 #include <sqlite3.h>
 #include <string>
 #include <unistd.h>
+#include "test_engine_handle.h"
 
 using namespace resolver;
 
@@ -119,10 +120,12 @@ static void indexDir(const char *db_path, const std::string &dir,
 		     uint64_t *out_pid)
 {
 	unlink(db_path);
-	check(engine_init(db_path) == 0, "engine_init");
-	uint64_t pid = engine_create_project(dir.c_str(), "lang-filter");
+	g_engine = engine_create(db_path);
+	check(g_engine != nullptr, "engine_init");
+	uint64_t pid =
+		engine_create_project(g_engine, dir.c_str(), "lang-filter");
 	check(pid > 0, "create_project");
-	char *idx = engine_index_project(pid, dir.c_str(), nullptr);
+	char *idx = engine_index_project(g_engine, pid, dir.c_str(), nullptr);
 	check(idx != nullptr, "index_project null");
 	check(strstr(idx, "\"ok\":true") != nullptr, "index_project ok");
 	engine_free_string(idx);
@@ -157,7 +160,8 @@ static void testCrossLanguageCandidateRejected()
 	      "caller() must have no CALLS edges (its only candidate is "
 	      "Python)");
 
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 	std::filesystem::remove_all(root);
 	printf("  [PASS] cross-language single candidate rejected\n");
 }
@@ -188,7 +192,8 @@ static void testCFamilyCandidateAccepted()
 	      "C call edge lost: main -> helper must resolve across files "
 	      "inside the C family");
 
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 	std::filesystem::remove_all(root);
 	printf("  [PASS] C-family candidate accepted (main -> helper)\n");
 }
@@ -224,7 +229,8 @@ static void testJsTsFamilyCandidateAccepted()
 	      "entity (path label 'typescript' vs visitor label 'tsx')");
 	check(to_tsx >= 1, "no CALLS edge into the .tsx file at all");
 
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 	std::filesystem::remove_all(root);
 	printf("  [PASS] JS/TS family candidate accepted (App -> widgetHelper)\n");
 }
@@ -329,7 +335,8 @@ static void testRelativeImportBeatsDecoy()
 	check(to_decoy == 0, "the decoy definition must not be chosen");
 	check(app_calls_helper == 1, "exactly one widgetHelper call edge");
 
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 	std::filesystem::remove_all(root);
 	printf("  [PASS] relative import beats a same-named decoy\n");
 }

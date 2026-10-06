@@ -32,6 +32,7 @@
 #include <sqlite3.h>
 #include <thread>
 #include <unistd.h>
+#include "test_engine_handle.h"
 
 static inline void check(bool cond, const char *msg)
 {
@@ -78,14 +79,16 @@ This project demonstrates README ingestion into the knowledge layer.
 	// Init engine
 	char db_path[] = "/tmp/test_readme_ingest.db";
 	unlink(db_path);
-	int rc = engine_init(db_path);
+	g_engine = engine_create(db_path);
+	const int rc = g_engine != nullptr ? 0 : -1;
 	check(rc == 0, "engine_init");
 
-	uint64_t pid = engine_create_project("/tmp", "readme-test");
+	uint64_t pid = engine_create_project(g_engine, "/tmp", "readme-test");
 	check(pid > 0, "create_project");
 
 	// Index the project — this should ingest README.md
-	char *result = engine_index_project(pid, proj_dir.c_str(), nullptr);
+	char *result =
+		engine_index_project(g_engine, pid, proj_dir.c_str(), nullptr);
 	check(result != nullptr, "index_project returns non-null");
 	printf("--- index_project result ---\n%s\n", result);
 	check(strstr(result, "\"ok\":true") != nullptr,
@@ -97,15 +100,15 @@ This project demonstrates README ingestion into the knowledge layer.
 	// The async builder runs model plugins (CapabilityPlugin) which
 	// read from document table and insert into capability table.
 	// We use a short sleep + direct DB query.
-	std::this_thread::sleep_for(
-		std::chrono::milliseconds(500));
+	std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
 	// Query document table directly via SQLite
 	sqlite3 *db = nullptr;
 	check(sqlite3_open(db_path, &db) == SQLITE_OK, "sqlite3_open");
 
 	sqlite3_stmt *stmt = nullptr;
-	const char *doc_sql = "SELECT COUNT(*) FROM document WHERE project_id = ?";
+	const char *doc_sql =
+		"SELECT COUNT(*) FROM document WHERE project_id = ?";
 	check(sqlite3_prepare_v2(db, doc_sql, -1, &stmt, nullptr) == SQLITE_OK,
 	      "prepare document count");
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(pid));
@@ -121,20 +124,21 @@ This project demonstrates README ingestion into the knowledge layer.
 	// Verify the content matches what we wrote
 	const char *content_sql =
 		"SELECT content FROM document WHERE project_id = ? LIMIT 1";
-	check(sqlite3_prepare_v2(db, content_sql, -1, &stmt, nullptr) == SQLITE_OK,
+	check(sqlite3_prepare_v2(db, content_sql, -1, &stmt, nullptr) ==
+		      SQLITE_OK,
 	      "prepare content select");
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(pid));
 	bool content_matches = false;
 	if (sqlite3_step(stmt) == SQLITE_ROW) {
-		const char *content =
-			reinterpret_cast<const char *>(
-				sqlite3_column_text(stmt, 0));
+		const char *content = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 0));
 		if (content)
-			content_matches = (strstr(content, "incremental indexing") != nullptr);
+			content_matches =
+				(strstr(content, "incremental indexing") !=
+				 nullptr);
 	}
 	sqlite3_finalize(stmt);
-	check(content_matches,
-	      "document content must contain the README text");
+	check(content_matches, "document content must contain the README text");
 
 	// Query capability table — CapabilityPlugin should have extracted
 	// capabilities from the README lines matching "Supports ...".
@@ -153,7 +157,8 @@ This project demonstrates README ingestion into the knowledge layer.
 	      "capability table must be non-empty after README ingestion + model build");
 
 	sqlite3_close(db);
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 
 	// Cleanup
 	std::filesystem::remove_all(proj_dir);

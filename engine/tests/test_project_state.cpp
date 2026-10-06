@@ -456,7 +456,7 @@ int main()
 		CHECK(ok);
 		std::string s = readPersistedSnapshot(store, pid);
 		CHECK(s.find("\"violations\":0,\"cross_module_edges\":3") !=
-		       std::string::npos);
+		      std::string::npos);
 		printf("Test 11 (project_state.architecture reports "
 		       "cross_module_edges): PASS\n");
 	}
@@ -478,12 +478,12 @@ int main()
 		sqlite3_stmt *stmt = nullptr;
 		sqlite3 *db = store.handle();
 		CHECK(sqlite3_prepare_v2(db, legacy_sql, -1, &stmt, nullptr) ==
-		       SQLITE_OK);
+		      SQLITE_OK);
 		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(pid));
 		CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 		sqlite3_finalize(stmt);
 		CHECK(sqlite3_prepare_v2(db, legacy_sql, -1, &stmt, nullptr) ==
-		       SQLITE_OK);
+		      SQLITE_OK);
 		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(pid));
 		CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 		sqlite3_finalize(stmt);
@@ -500,7 +500,7 @@ int main()
 				"WHERE project_id=? AND layer='legacy->pair'";
 		stmt = nullptr;
 		CHECK(sqlite3_prepare_v2(db, q, -1, &stmt, nullptr) ==
-		       SQLITE_OK);
+		      SQLITE_OK);
 		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(pid));
 		CHECK(sqlite3_step(stmt) == SQLITE_ROW);
 		CHECK(sqlite3_column_int64(stmt, 0) == 1); // deduped

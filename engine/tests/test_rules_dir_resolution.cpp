@@ -36,7 +36,8 @@ bool dirHasJson(const std::string &dir)
 	for (const auto &entry : std::filesystem::directory_iterator(dir, ec)) {
 		if (ec)
 			break;
-		if (entry.is_regular_file() && entry.path().extension() == ".json")
+		if (entry.is_regular_file() &&
+		    entry.path().extension() == ".json")
 			return true;
 	}
 	return false;
@@ -55,9 +56,8 @@ int main()
 
 	// 1. A fresh empty directory: no engine/src/evidence/rules under it,
 	//    so the CWD-relative fallback cannot succeed.
-	std::filesystem::path foreign =
-		std::filesystem::temp_directory_path() /
-		"codescope_rules_dir_test";
+	std::filesystem::path foreign = std::filesystem::temp_directory_path() /
+					"codescope_rules_dir_test";
 	std::error_code ec;
 	std::filesystem::remove_all(foreign, ec);
 	std::filesystem::create_directories(foreign, ec);

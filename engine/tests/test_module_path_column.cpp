@@ -28,9 +28,9 @@ using namespace ir;
 static const char *kDbPath = "/tmp/codescope_test_module_path.db";
 
 /// Insert a single Function semantic record for the given file.
-static void insertFunctionRecord(store::GraphStore &store,
-				 uint64_t project_id, const char *file_path,
-				 const char *name, uint64_t id)
+static void insertFunctionRecord(store::GraphStore &store, uint64_t project_id,
+				 const char *file_path, const char *name,
+				 uint64_t id)
 {
 	std::vector<Record> records;
 	Record r;
@@ -41,7 +41,7 @@ static void insertFunctionRecord(store::GraphStore &store,
 	r.qualified_name = name;
 	r.file_path = file_path;
 	r.language = "cpp";
-	r.loc = SourceRange{1, 0, 2, 0};
+	r.loc = SourceRange{ 1, 0, 2, 0 };
 	records.push_back(r);
 	store.insertSemanticRecords(project_id, file_path, records);
 }
@@ -73,8 +73,8 @@ struct EntityRow {
 	std::string module_path;
 	bool found = false;
 };
-static EntityRow getEntityByName(store::GraphStore &store,
-				 uint64_t project_id, const char *name)
+static EntityRow getEntityByName(store::GraphStore &store, uint64_t project_id,
+				 const char *name)
 {
 	sqlite3 *db = store.handle();
 	const char *sql = "SELECT file_path, module_path FROM entity "
@@ -98,8 +98,8 @@ static EntityRow getEntityByName(store::GraphStore &store,
 }
 
 /// Fetch all module-level scope names (kind=1) for a project.
-static std::vector<std::string>
-getModuleScopeNames(store::GraphStore &store, uint64_t project_id)
+static std::vector<std::string> getModuleScopeNames(store::GraphStore &store,
+						    uint64_t project_id)
 {
 	sqlite3 *db = store.handle();
 	const char *sql =
@@ -150,9 +150,9 @@ int main()
 			const char *expected_module_path;
 		};
 		const Case cases[] = {
-			{"GetUser", "/src/api/handler.cpp", "/src/api/"},
-			{"PostUser", "/src/api/handler.cpp", "/src/api/"},
-			{"TrimSpace", "/src/lib/util.cpp", "/src/lib/"},
+			{ "GetUser", "/src/api/handler.cpp", "/src/api/" },
+			{ "PostUser", "/src/api/handler.cpp", "/src/api/" },
+			{ "TrimSpace", "/src/lib/util.cpp", "/src/lib/" },
 		};
 		for (const auto &c : cases) {
 			EntityRow row = getEntityByName(store, pid, c.name);

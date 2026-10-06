@@ -1,8 +1,9 @@
 #include "test_e2e.h"
 
-int main() {
-    // Python FP verification: builtins + dunder methods
-    const char* code = R"PY(
+int main()
+{
+	// Python FP verification: builtins + dunder methods
+	const char *code = R"PY(
 # User-defined function — should appear in callees
 def user_function(x):
     return x * 2
@@ -37,14 +38,11 @@ def mainFunc():
     _ = _private_helper(r1)
 )PY";
 
-    const char* builtins[] = {
-        "len", "str", "int", "list", "dict", "range",
-        "print", "type", "bool", "float", "max", "min",
-        "sum", "sorted",
-        nullptr
-    };
+	const char *builtins[] = { "len",   "str",   "int",  "list",   "dict",
+				   "range", "print", "type", "bool",   "float",
+				   "max",   "min",   "sum",  "sorted", nullptr };
 
-    runFPVerificationTest("python", code, "/tmp/test_fp_python.py",
-                          "mainFunc", "user_function", builtins);
-    return 0;
+	runFPVerificationTest("python", code, "/tmp/test_fp_python.py",
+			      "mainFunc", "user_function", builtins);
+	return 0;
 }

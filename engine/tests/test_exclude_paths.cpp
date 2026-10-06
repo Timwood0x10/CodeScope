@@ -75,7 +75,7 @@ int main()
 		FilterPolicy fp = makePolicyWithEnv(nullptr);
 		CHECK(!fp.shouldSkipEntry("src/main.cpp", false));
 		CHECK(fp.shouldSkipEntry("test/foo.cpp",
-					  false)); // default skip
+					 false)); // default skip
 		printf("  [PASS] unset env var: only defaults apply\n");
 	}
 

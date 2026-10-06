@@ -21,6 +21,7 @@
 #include <filesystem>
 #include <string>
 #include <unistd.h>
+#include "test_engine_handle.h"
 
 namespace fs = std::filesystem;
 
@@ -60,7 +61,7 @@ static std::string oversized_source(size_t bytes)
 /// Number of indexed source files reported by project_overview.
 static int indexed_file_count(uint64_t pid)
 {
-	char *overview = engine_get_project_overview(pid);
+	char *overview = engine_get_project_overview(g_engine, pid);
 	check(overview != nullptr, "project_overview result");
 	const char *key = strstr(overview, "\"total_files\":");
 	int files = -1;
@@ -74,17 +75,20 @@ static int indexed_file_count(uint64_t pid)
 static int index_and_count(const char *db_path)
 {
 	unlink(db_path);
-	check(engine_init(db_path) == 0, "engine_init");
-	uint64_t pid = engine_create_project(kProjDir, "max-file-size");
+	g_engine = engine_create(db_path);
+	check(g_engine != nullptr, "engine_init");
+	uint64_t pid =
+		engine_create_project(g_engine, kProjDir, "max-file-size");
 	check(pid > 0, "create_project");
 
-	char *idx = engine_index_project(pid, kProjDir, NULL);
+	char *idx = engine_index_project(g_engine, pid, kProjDir, NULL);
 	check(idx != nullptr, "index_project result");
 	check(strstr(idx, "\"ok\":true") != nullptr, "index_project ok");
 	engine_free_string(idx);
 
 	int files = indexed_file_count(pid);
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 	return files;
 }
 

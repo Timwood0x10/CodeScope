@@ -30,13 +30,13 @@
 
 // ─── Engine state ──────────────────────────────────────────────
 // The store / query / parser state lives in the EngineContext declared in
-// engine_context.h and reached through engineContext(), so no state is defined
+// engine_context.h and created by engine_create(), so no state is defined
 // in this file any more. See engine_context.h for the knife-1/2/3 migration
 // notes (TD-1).
 
 // Core engine functions are split into separate translation units:
 //   engine_helpers.cpp   — readFile, jsonEscape, detectLanguage, dupString, etc.
-//   engine_lifecycle.cpp — engine_init, engine_shutdown, engine_create_project
+//   engine_lifecycle.cpp — engine_create, engine_destroy, engine_create_project
 //   engine_index.cpp     — engine_index_file, engine_index_project, engine_index_batch
 //   engine_scanner.cpp   — fast scanner + engine_scan_project
 //   engine_queries.cpp   — enhancement, search, callers/callees, trace, context

@@ -185,7 +185,7 @@ int main()
 		const std::string v = verdictOf(verifier.verify(claim));
 		printf("  [debug] Block-only          -> %s\n", v.c_str());
 		CHECK(v == "Unknown" &&
-		       "a class named Block must not be read as a lock");
+		      "a class named Block must not be read as a lock");
 	}
 
 	// ── Case 2: real synchronisation evidence still supports it ──
@@ -194,7 +194,7 @@ int main()
 		const std::string v = verdictOf(verifier.verify(claim));
 		printf("  [debug] with mutex          -> %s\n", v.c_str());
 		CHECK(v == "Supported" &&
-		       "an actual mutex entity must still support ThreadSafe");
+		      "an actual mutex entity must still support ThreadSafe");
 	}
 
 	// ── Case 3: no synchronisation name at all -> Unknown ──
@@ -205,8 +205,8 @@ int main()
 		const std::string v = verdictOf(verifier.verify(claim));
 		printf("  [debug] no sync primitive   -> %s\n", v.c_str());
 		CHECK(v == "Unknown" &&
-		       "absence of a matching name is not evidence of being "
-		       "unsafe; Contradicted would over-claim");
+		      "absence of a matching name is not evidence of being "
+		      "unsafe; Contradicted would over-claim");
 	}
 
 	// ── Case 4: capability drift with an empty backend ──
@@ -224,7 +224,7 @@ int main()
 		printf("  [debug] capability drifts   -> %zu (empty backend)\n",
 		       drifts.size());
 		CHECK(drifts.empty() &&
-		       "an empty backend must not produce capability drift");
+		      "an empty backend must not produce capability drift");
 	}
 
 	// ── Case 5: orphan modules with entity rows but no imports ──
@@ -244,8 +244,8 @@ int main()
 		printf("  [debug] orphan modules      -> %zu (no import rows)\n",
 		       orphans);
 		CHECK(orphans == 0 &&
-		       "modules must not be called orphaned when the import "
-		       "table is empty");
+		      "modules must not be called orphaned when the import "
+		      "table is empty");
 	}
 
 	// ── Case 6: orphan detection still works with real import data ──
@@ -265,8 +265,8 @@ int main()
 		printf("  [debug] orphan modules      -> %zu (imports present)\n",
 		       orphans);
 		CHECK(orphans > 0 &&
-		       "with import rows present the orphan query must still "
-		       "report src/");
+		      "with import rows present the orphan query must still "
+		      "report src/");
 	}
 
 	// ── Case 5b: dead functions with an empty relation table ──
@@ -285,8 +285,8 @@ int main()
 		printf("  [debug] dead functions      -> %zu (no relation rows)\n",
 		       dead);
 		CHECK(dead == 0 &&
-		       "empty relation table must not produce DeadFunction "
-		       "findings (vacuous NOT EXISTS)");
+		      "empty relation table must not produce DeadFunction "
+		      "findings (vacuous NOT EXISTS)");
 	}
 
 	// ── Case 7: nested scope prefixes are not a boundary crossing ──
@@ -296,15 +296,18 @@ int main()
 	// child modules must be excluded; a true sibling pair must survive.
 	clearGraph(db);
 	execOrDie(db, "DELETE FROM scope");
-	execOrDie(db,
-		  "INSERT INTO scope (project_id, parent_id, kind, name) VALUES (" +
-			  std::to_string(pid) + ",0,1,'src/')");
-	execOrDie(db,
-		  "INSERT INTO scope (project_id, parent_id, kind, name) VALUES (" +
-			  std::to_string(pid) + ",0,1,'src/ir/')");
-	execOrDie(db,
-		  "INSERT INTO scope (project_id, parent_id, kind, name) VALUES (" +
-			  std::to_string(pid) + ",0,1,'src/verify/')");
+	execOrDie(
+		db,
+		"INSERT INTO scope (project_id, parent_id, kind, name) VALUES (" +
+			std::to_string(pid) + ",0,1,'src/')");
+	execOrDie(
+		db,
+		"INSERT INTO scope (project_id, parent_id, kind, name) VALUES (" +
+			std::to_string(pid) + ",0,1,'src/ir/')");
+	execOrDie(
+		db,
+		"INSERT INTO scope (project_id, parent_id, kind, name) VALUES (" +
+			std::to_string(pid) + ",0,1,'src/verify/')");
 	// 1 -> 2 lives entirely inside src/ir/ (both files prefix-match src/
 	// and src/ir/): must NOT be drift.
 	insertEntity(db, pid, 1, 0, "a", "src/ir/a.go", 1);
@@ -324,8 +327,8 @@ int main()
 		// Only the src/ir/ -> src/verify/ sibling crossing may survive;
 		// the src/ir/-internal call must not surface as 'src/' <-> 'src/ir/'.
 		CHECK(drift == 1 &&
-		       "parent/child scope pairs must not be reported as "
-		       "architecture drift, but a sibling crossing must be");
+		      "parent/child scope pairs must not be reported as "
+		      "architecture drift, but a sibling crossing must be");
 	}
 
 	store.close();

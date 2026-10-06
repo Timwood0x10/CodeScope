@@ -165,17 +165,17 @@ int main()
 
 	// ── Test 8: claimTypeWireName round-trips all public types ───
 	{
+		CHECK(std::string(
+			      claimTypeWireName(ClaimType::CapabilityExists)) ==
+		      "capability_exists");
 		CHECK(std::string(claimTypeWireName(
-			       ClaimType::CapabilityExists)) ==
-		       "capability_exists");
+			      ClaimType::ContractHolds)) == "contract_holds");
 		CHECK(std::string(claimTypeWireName(
-			       ClaimType::ContractHolds)) == "contract_holds");
+			      ClaimType::ArchitectureFollows)) ==
+		      "architecture_follows");
 		CHECK(std::string(claimTypeWireName(
-			       ClaimType::ArchitectureFollows)) ==
-		       "architecture_follows");
-		CHECK(std::string(claimTypeWireName(
-			       ClaimType::FunctionImplements)) ==
-		       "function_implements");
+			      ClaimType::FunctionImplements)) ==
+		      "function_implements");
 		printf("Test 8 (claimTypeWireName): PASS\n");
 	}
 

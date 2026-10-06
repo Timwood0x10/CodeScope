@@ -307,7 +307,7 @@ int main()
 
 	// Test 2: error/bare_except
 	CHECK(countFacts(store, pid, "error", "bare_except", "suppression") ==
-	       1);
+	      1);
 	printf("Test 2 (error/bare_except): PASS\n");
 
 	// Test 3: memory/cstring/alloc

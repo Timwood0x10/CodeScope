@@ -29,6 +29,7 @@
 #include <cstring>
 #include <filesystem>
 #include <unistd.h>
+#include "test_engine_handle.h"
 
 /// Count occurrences of a substring in a JSON string.
 static int countOccurrences(const char *json, const char *needle)
@@ -102,24 +103,28 @@ int main()
 	const char *db_path = "/tmp/test_homonym_filter.db";
 	unlink(db_path);
 
-	if (engine_init(db_path) != 0) {
+	g_engine = engine_create(db_path);
+	if (!g_engine) {
 		fprintf(stderr, "FAIL: engine_init\n");
 		return 1;
 	}
 
-	uint64_t pid = engine_create_project(proj_dir, "homonym-test");
+	uint64_t pid =
+		engine_create_project(g_engine, proj_dir, "homonym-test");
 	if (pid == 0) {
 		fprintf(stderr, "FAIL: engine_create_project\n");
-		engine_shutdown();
+		engine_destroy(g_engine);
+		g_engine = nullptr;
 		return 1;
 	}
 
-	char *idx = engine_index_project(pid, proj_dir, nullptr);
+	char *idx = engine_index_project(g_engine, pid, proj_dir, nullptr);
 	if (!idx || !strstr(idx, "\"ok\":true")) {
 		fprintf(stderr, "FAIL: engine_index_project: %s\n",
 			idx ? idx : "(null)");
 		engine_free_string(idx);
-		engine_shutdown();
+		engine_destroy(g_engine);
+		g_engine = nullptr;
 		return 1;
 	}
 	engine_free_string(idx);
@@ -134,11 +139,14 @@ int main()
 	// Step 7 semantics: two entities named "handler" exist, so the bare
 	// name is ambiguous. The API must return ambiguous=true with a
 	// candidate list instead of silently merging both callees.
-	char *callees_no_filter = engine_get_callees(pid, "handler", nullptr);
+	char *callees_no_filter =
+		engine_get_callees(g_engine, pid, "handler", nullptr);
 	bool no_filter_ambiguous =
-		callees_no_filter && strstr(callees_no_filter, "\"ambiguous\":true");
-	int candidates_count = countOccurrences(
-		callees_no_filter ? callees_no_filter : "", "\"graph_node_id\"");
+		callees_no_filter &&
+		strstr(callees_no_filter, "\"ambiguous\":true");
+	int candidates_count =
+		countOccurrences(callees_no_filter ? callees_no_filter : "",
+				 "\"graph_node_id\"");
 	int helperOne_no_filter =
 		countOccurrences(callees_no_filter, "helperOne");
 	int helperTwo_no_filter =
@@ -150,8 +158,8 @@ int main()
 	// ── Test 2: callees("handler") WITH file_filter=first.go ─────
 	// With filter, only first.go's handler is queried. Only helperOne
 	// should appear; helperTwo must NOT appear.
-	char *callees_first =
-		engine_get_callees(pid, "handler", first_file.c_str());
+	char *callees_first = engine_get_callees(g_engine, pid, "handler",
+						 first_file.c_str());
 	int total_first = countTotal(callees_first);
 	int helperOne_first = countOccurrences(callees_first, "helperOne");
 	int helperTwo_first = countOccurrences(callees_first, "helperTwo");
@@ -160,8 +168,8 @@ int main()
 	engine_free_string(callees_first);
 
 	// ── Test 3: callees("handler") WITH file_filter=second.go ────
-	char *callees_second =
-		engine_get_callees(pid, "handler", second_file.c_str());
+	char *callees_second = engine_get_callees(g_engine, pid, "handler",
+						  second_file.c_str());
 	int total_second = countTotal(callees_second);
 	int helperOne_second = countOccurrences(callees_second, "helperOne");
 	int helperTwo_second = countOccurrences(callees_second, "helperTwo");
@@ -234,12 +242,14 @@ int main()
 	if (pass) {
 		printf("\nPASS: homonym disambiguation works "
 		       "(ambiguous=%s candidates=%d first=%d second=%d)\n",
-		       no_filter_ambiguous ? "true" : "false",
-		       candidates_count, total_first, total_second);
-		engine_shutdown();
+		       no_filter_ambiguous ? "true" : "false", candidates_count,
+		       total_first, total_second);
+		engine_destroy(g_engine);
+		g_engine = nullptr;
 		return 0;
 	}
 
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 	return 1;
 }

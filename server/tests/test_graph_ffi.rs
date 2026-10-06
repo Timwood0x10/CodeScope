@@ -9,7 +9,7 @@
 // Test strategy mirrors test_knowledge_ffi.rs: initialize the engine +
 // create a project, then verify the JSON envelope shape on an empty DB.
 // The null/uninitialized-store case is covered by test_graph_ffi_null.rs
-// (a separate binary so it cannot race with the engine_init/shutdown
+// (a separate binary so it cannot race with the create/destroy
 // calls here — cargo runs #[test] functions in parallel threads sharing
 // the same global g_store).
 //
@@ -25,14 +25,68 @@ use std::path::PathBuf;
 // Mirrors the declarations in server/src/ffi/mod.rs but kept local so this
 // integration test compiles as a standalone binary.
 
+/// Opaque engine handle — the C ABI's `engine_t` (engine/include/engine.h).
+#[repr(C)]
+struct CodescopeEngine {
+    _private: [u8; 0],
+}
+type EngineHandle = *mut CodescopeEngine;
+
+/// The engine instance this test binary drives. TD-1 knife 3 made the ABI
+/// handle-based, so the suite holds the handle here instead of relying on
+/// process-global engine state (which the server owns in ffi/mod.rs).
+static ENGINE: std::sync::atomic::AtomicPtr<CodescopeEngine> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+/// The handle every stateful call below passes.
+fn engine_handle() -> EngineHandle {
+    ENGINE.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Create the engine instance on `db_path`; returns 0 on success (the old
+/// `engine_init` contract) and releases any instance a previous test left.
+fn engine_open(db_path: *const c_char) -> i32 {
+    let handle = unsafe { engine_create(db_path) };
+    let previous = ENGINE.swap(handle, std::sync::atomic::Ordering::AcqRel);
+    if !previous.is_null() {
+        unsafe { engine_destroy(previous) };
+    }
+    if handle.is_null() { -1 } else { 0 }
+}
+
+/// Release the engine instance. Safe when no instance is live.
+fn engine_close() {
+    let handle = ENGINE.swap(std::ptr::null_mut(), std::sync::atomic::Ordering::AcqRel);
+    if !handle.is_null() {
+        unsafe { engine_destroy(handle) };
+    }
+}
+
 unsafe extern "C" {
-    fn engine_init(db_path: *const c_char) -> i32;
-    fn engine_shutdown();
-    fn engine_create_project(root_path: *const c_char, name: *const c_char) -> u64;
-    fn engine_index_file(project_id: u64, file_path: *const c_char) -> *mut c_char;
-    fn engine_find_shortest_path(project_id: u64, source_id: u64, target_id: u64) -> *mut c_char;
-    fn engine_locate_by_name(project_id: u64, name: *const c_char) -> *mut c_char;
-    fn engine_find_connected_components(project_id: u64) -> *mut c_char;
+    fn engine_create(db_path: *const c_char) -> EngineHandle;
+    fn engine_destroy(handle: EngineHandle);
+    fn engine_create_project(
+        handle: EngineHandle,
+        root_path: *const c_char,
+        name: *const c_char,
+    ) -> u64;
+    fn engine_index_file(
+        handle: EngineHandle,
+        project_id: u64,
+        file_path: *const c_char,
+    ) -> *mut c_char;
+    fn engine_find_shortest_path(
+        handle: EngineHandle,
+        project_id: u64,
+        source_id: u64,
+        target_id: u64,
+    ) -> *mut c_char;
+    fn engine_locate_by_name(
+        handle: EngineHandle,
+        project_id: u64,
+        name: *const c_char,
+    ) -> *mut c_char;
+    fn engine_find_connected_components(handle: EngineHandle, project_id: u64) -> *mut c_char;
     fn engine_free_string(ptr: *mut c_char);
 }
 
@@ -58,7 +112,7 @@ fn take_string(ptr: *mut c_char) -> String {
 static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// The engine is a process-wide singleton (g_store). Rust runs tests in
-/// parallel threads by default, so concurrent engine_init/engine_shutdown
+/// parallel threads by default, so concurrent create/destroy
 /// from different tests races the singleton and aborts (SIGABRT). Serialize
 /// engine access with a global mutex: each test takes the guard as its
 /// first statement and drops it (RAII) when the test ends — equivalent to
@@ -79,7 +133,7 @@ fn temp_db_path() -> PathBuf {
 }
 
 /// Test fixture: initialize the engine + create a project, returning the
-/// project_id. The caller MUST call engine_shutdown() at the end.
+/// project_id. The caller MUST call teardown_engine() at the end.
 fn setup_engine() -> u64 {
     let db_path = temp_db_path();
     let _ = std::fs::remove_file(&db_path);
@@ -87,12 +141,12 @@ fn setup_engine() -> u64 {
     let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
 
     let db_c = cstr(db_path.to_str().unwrap_or("/tmp/codescope_test.db"));
-    let rc = unsafe { engine_init(db_c.as_ptr()) };
-    assert_eq!(rc, 0, "engine_init should return 0 on success");
+    let rc = engine_open(db_c.as_ptr());
+    assert_eq!(rc, 0, "engine_create should succeed");
 
     let root_c = cstr("/tmp/test-project");
     let name_c = cstr("test-graph-ffi");
-    let pid = unsafe { engine_create_project(root_c.as_ptr(), name_c.as_ptr()) };
+    let pid = unsafe { engine_create_project(engine_handle(), root_c.as_ptr(), name_c.as_ptr()) };
     assert!(
         pid > 0,
         "engine_create_project should return a positive project_id"
@@ -101,7 +155,7 @@ fn setup_engine() -> u64 {
 }
 
 fn teardown_engine() {
-    unsafe { engine_shutdown() };
+    engine_close();
 }
 
 // ── Tests: initialized engine, empty DB ─────────────────────────
@@ -110,7 +164,7 @@ fn teardown_engine() {
 fn test_find_connected_components_empty_db_returns_envelope() {
     let _engine_guard = lock_engine();
     let pid = setup_engine();
-    let result = take_string(unsafe { engine_find_connected_components(pid) });
+    let result = take_string(unsafe { engine_find_connected_components(engine_handle(), pid) });
     teardown_engine();
 
     let json: serde_json::Value =
@@ -150,7 +204,7 @@ fn test_find_connected_components_zero_project_id_does_not_crash() {
     let _pid = setup_engine();
     // project_id 0 does not exist; the inspector must not crash and must
     // still return the documented envelope.
-    let result = take_string(unsafe { engine_find_connected_components(0) });
+    let result = take_string(unsafe { engine_find_connected_components(engine_handle(), 0) });
     teardown_engine();
 
     let json: serde_json::Value =
@@ -175,7 +229,7 @@ fn test_find_shortest_path_zero_ids_returns_json() {
     let pid = setup_engine();
     // source_id=target_id=0 cannot exist; the query engine must still
     // return valid JSON (empty path or error), not crash.
-    let result = take_string(unsafe { engine_find_shortest_path(pid, 0, 0) });
+    let result = take_string(unsafe { engine_find_shortest_path(engine_handle(), pid, 0, 0) });
     teardown_engine();
 
     let json: serde_json::Value =
@@ -192,7 +246,8 @@ fn test_locate_by_name_empty_db_returns_locations_array() {
     let _engine_guard = lock_engine();
     let pid = setup_engine();
     let name_c = cstr("nonexistent_symbol");
-    let result = take_string(unsafe { engine_locate_by_name(pid, name_c.as_ptr()) });
+    let result =
+        take_string(unsafe { engine_locate_by_name(engine_handle(), pid, name_c.as_ptr()) });
     teardown_engine();
 
     let json: serde_json::Value =
@@ -232,7 +287,8 @@ fn test_index_python_file_then_locate_symbol_end_to_end() {
         .expect("write temp source file");
 
     let path_c = cstr(src_path.to_str().unwrap());
-    let index_result = take_string(unsafe { engine_index_file(pid, path_c.as_ptr()) });
+    let index_result =
+        take_string(unsafe { engine_index_file(engine_handle(), pid, path_c.as_ptr()) });
     let index_json: serde_json::Value =
         serde_json::from_str(&index_result).expect("index_file should return valid JSON");
     assert_eq!(
@@ -242,7 +298,8 @@ fn test_index_python_file_then_locate_symbol_end_to_end() {
     );
 
     let name_c = cstr("codescope_e2e_probe");
-    let locate_result = take_string(unsafe { engine_locate_by_name(pid, name_c.as_ptr()) });
+    let locate_result =
+        take_string(unsafe { engine_locate_by_name(engine_handle(), pid, name_c.as_ptr()) });
     teardown_engine();
     let _ = std::fs::remove_file(&src_path);
 

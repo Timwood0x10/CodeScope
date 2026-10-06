@@ -33,6 +33,7 @@
 #include <sqlite3.h>
 #include <string>
 #include <unistd.h>
+#include "test_engine_handle.h"
 
 namespace fs = std::filesystem;
 
@@ -90,26 +91,32 @@ int main()
 	CHECK(fs::exists(source_path));
 
 	// ── Index through the real production entry point ───────────
-	if (engine_init(kDbPath) != 0) {
+	g_engine = engine_create(kDbPath);
+	if (!g_engine) {
 		fprintf(stderr, "FAIL: engine_init(%s)\n", kDbPath);
 		return 1;
 	}
-	const uint64_t pid = engine_create_project(kSrcDir, "fact-production");
+	const uint64_t pid =
+		engine_create_project(g_engine, kSrcDir, "fact-production");
 	if (pid == 0) {
 		fprintf(stderr, "FAIL: engine_create_project\n");
-		engine_shutdown();
+		engine_destroy(g_engine);
+		g_engine = nullptr;
 		return 1;
 	}
-	char *index_result = engine_index_project(pid, kSrcDir, nullptr);
+	char *index_result =
+		engine_index_project(g_engine, pid, kSrcDir, nullptr);
 	if (index_result == nullptr) {
 		fprintf(stderr, "FAIL: engine_index_project returned null\n");
-		engine_shutdown();
+		engine_destroy(g_engine);
+		g_engine = nullptr;
 		return 1;
 	}
 	printf("  [debug] index = %s\n", index_result);
 	engine_free_string(index_result);
 	// Also joins the background knowledge builder, leaving the DB quiescent.
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 
 	// ── Assert the production condition this test exists to cover ──
 	const int64_t entities = scalarCount(
@@ -120,10 +127,10 @@ int main()
 	printf("  [debug] entity=%lld graph_nodes=%lld\n", (long long)entities,
 	       (long long)graph_nodes);
 	CHECK(entities > 0 &&
-	       "the fixture must produce entity rows (indexing broken?)");
+	      "the fixture must produce entity rows (indexing broken?)");
 	CHECK(graph_nodes == 0 &&
-	       "the canonical indexing path must not populate graph_nodes; if "
-	       "that changed, this test's premise needs revisiting");
+	      "the canonical indexing path must not populate graph_nodes; if "
+	      "that changed, this test's premise needs revisiting");
 
 	// ── Run the extractor against the indexed database ──────────
 	{
@@ -139,8 +146,8 @@ int main()
 		CHECK(store.commitTransaction());
 		printf("  [debug] extractAll = %lld\n", (long long)extracted);
 		CHECK(extracted > 0 &&
-		       "extracting zero facts from a real index is the "
-		       "regression this test guards (#1)");
+		      "extracting zero facts from a real index is the "
+		      "regression this test guards (#1)");
 		store.close();
 	}
 
@@ -153,8 +160,8 @@ int main()
 		pid);
 	printf("  [debug] pattern/todo/marker = %lld\n", (long long)todo_facts);
 	CHECK(todo_facts >= 1 &&
-	       "the TODO inside compute() must yield a pattern/todo fact "
-	       "without any graph_nodes rows");
+	      "the TODO inside compute() must yield a pattern/todo fact "
+	      "without any graph_nodes rows");
 
 	// ── Cleanup ────────────────────────────────────────────────
 	unlink(kDbPath);

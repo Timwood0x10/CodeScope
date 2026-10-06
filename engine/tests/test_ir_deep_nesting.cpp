@@ -32,6 +32,7 @@
 #include <filesystem>
 #include <string>
 #include <unistd.h>
+#include "test_engine_handle.h"
 
 static inline void check(bool cond, const char *msg)
 {
@@ -155,14 +156,17 @@ static std::string indexCase(const std::string &source,
 	check(freopen(capture.c_str(), "w", stderr) != nullptr,
 	      "freopen stderr to capture file");
 
-	check(engine_init(db_path.c_str()) == 0, "engine_init");
-	uint64_t pid = engine_create_project(proj_dir.c_str(), "deep-nesting");
+	g_engine = engine_create(db_path.c_str());
+	check(g_engine != nullptr, "engine_init");
+	uint64_t pid = engine_create_project(g_engine, proj_dir.c_str(),
+					     "deep-nesting");
 	check(pid > 0, "create_project");
 
 	// The assertion that matters most is implicit: this call must RETURN.
 	// Without the guards the process SIGSEGVs here and the test binary exits
 	// with a signal — a failure under `make test-engine`.
-	char *idx = engine_index_project(pid, proj_dir.c_str(), nullptr);
+	char *idx =
+		engine_index_project(g_engine, pid, proj_dir.c_str(), nullptr);
 	check(idx != nullptr, "index_project returns non-null (no crash)");
 	check(strstr(idx, "\"ok\":true") != nullptr,
 	      "index_project reports ok:true on deeply nested input");
@@ -170,7 +174,7 @@ static std::string indexCase(const std::string &source,
 
 	// Indexing still finished: the top-level function survived the walk (it is
 	// emitted before the deep subtree is truncated).
-	char *sym = engine_find_symbol(pid, "top");
+	char *sym = engine_find_symbol(g_engine, pid, "top");
 	check(sym != nullptr, "find_symbol(top) non-null");
 	check(strstr(sym, "top") != nullptr,
 	      "top-level function must still be indexed after truncation");
@@ -178,7 +182,8 @@ static std::string indexCase(const std::string &source,
 
 	// Join the async knowledge-builder thread before returning — a
 	// std::thread destroyed while joinable calls std::terminate.
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 
 	fflush(stderr);
 	dup2(saved_fd, fileno(stderr));

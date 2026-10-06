@@ -30,23 +30,71 @@ use std::path::{Path, PathBuf};
 // Mirrors the declarations in server/src/ffi/decls.rs but kept local so this
 // integration test compiles as a standalone binary.
 
+/// Opaque engine handle — the C ABI's `engine_t` (engine/include/engine.h).
+#[repr(C)]
+struct CodescopeEngine {
+    _private: [u8; 0],
+}
+type EngineHandle = *mut CodescopeEngine;
+
+/// The engine instance this test binary drives. TD-1 knife 3 made the ABI
+/// handle-based, so the suite holds the handle here instead of relying on
+/// process-global engine state (which the server owns in ffi/mod.rs).
+static ENGINE: std::sync::atomic::AtomicPtr<CodescopeEngine> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+/// The handle every stateful call below passes.
+fn engine_handle() -> EngineHandle {
+    ENGINE.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Create the engine instance on `db_path`; returns 0 on success (the old
+/// `engine_init` contract) and releases any instance a previous test left.
+fn engine_open(db_path: *const c_char) -> i32 {
+    let handle = unsafe { engine_create(db_path) };
+    let previous = ENGINE.swap(handle, std::sync::atomic::Ordering::AcqRel);
+    if !previous.is_null() {
+        unsafe { engine_destroy(previous) };
+    }
+    if handle.is_null() { -1 } else { 0 }
+}
+
+/// Release the engine instance. Safe when no instance is live.
+fn engine_close() {
+    let handle = ENGINE.swap(std::ptr::null_mut(), std::sync::atomic::Ordering::AcqRel);
+    if !handle.is_null() {
+        unsafe { engine_destroy(handle) };
+    }
+}
+
 unsafe extern "C" {
-    fn engine_init(db_path: *const c_char) -> i32;
-    fn engine_shutdown();
-    fn engine_create_project(root_path: *const c_char, name: *const c_char) -> u64;
+    fn engine_create(db_path: *const c_char) -> EngineHandle;
+    fn engine_destroy(handle: EngineHandle);
+    fn engine_create_project(
+        handle: EngineHandle,
+        root_path: *const c_char,
+        name: *const c_char,
+    ) -> u64;
     fn engine_index_project(
+        handle: EngineHandle,
         project_id: u64,
         dir_path: *const c_char,
         language_filter: *const c_char,
     ) -> *mut c_char;
-    fn engine_get_graph_stats(project_id: u64) -> *mut c_char;
+    fn engine_get_graph_stats(handle: EngineHandle, project_id: u64) -> *mut c_char;
     fn engine_find_definition(
+        handle: EngineHandle,
         project_id: u64,
         symbol_name: *const c_char,
         file_filter: *const c_char,
     ) -> *mut c_char;
-    fn engine_build_fts(project_id: u64) -> *mut c_char;
-    fn engine_search_code(project_id: u64, query: *const c_char, limit: i32) -> *mut c_char;
+    fn engine_build_fts(handle: EngineHandle, project_id: u64) -> *mut c_char;
+    fn engine_search_code(
+        handle: EngineHandle,
+        project_id: u64,
+        query: *const c_char,
+        limit: i32,
+    ) -> *mut c_char;
     fn engine_free_string(ptr: *mut c_char);
 }
 
@@ -122,7 +170,7 @@ fn stage_python_fixture() -> PathBuf {
 }
 
 /// Test fixture: initialise the engine + create a project rooted at the
-/// fixture dir. The caller MUST call engine_shutdown() at the end.
+/// fixture dir. The caller MUST call engine_close() at the end.
 fn setup_engine(root: &Path) -> u64 {
     let db_path = temp_db_path();
     let _ = std::fs::remove_file(&db_path);
@@ -134,12 +182,12 @@ fn setup_engine(root: &Path) -> u64 {
             .to_str()
             .unwrap_or("/tmp/codescope_test_index_e2e.db"),
     );
-    let rc = unsafe { engine_init(db_c.as_ptr()) };
-    assert_eq!(rc, 0, "engine_init should return 0 on success");
+    let rc = engine_open(db_c.as_ptr());
+    assert_eq!(rc, 0, "engine_create should succeed");
 
     let root_c = cstr(root.to_str().expect("fixture path is valid UTF-8"));
     let name_c = cstr("test-index-e2e");
-    let pid = unsafe { engine_create_project(root_c.as_ptr(), name_c.as_ptr()) };
+    let pid = unsafe { engine_create_project(engine_handle(), root_c.as_ptr(), name_c.as_ptr()) };
     assert!(pid > 0, "engine_create_project should return a positive id");
     pid
 }
@@ -154,8 +202,9 @@ fn test_index_fixture_project_queries_are_semantic() {
 
     // Step 1: index the fixture directory.
     let dir_c = cstr(fixture.to_str().unwrap());
-    let indexed =
-        take_string(unsafe { engine_index_project(pid, dir_c.as_ptr(), std::ptr::null()) });
+    let indexed = take_string(unsafe {
+        engine_index_project(engine_handle(), pid, dir_c.as_ptr(), std::ptr::null())
+    });
     let index_json = parse("engine_index_project", &indexed);
     assert_eq!(
         index_json["ok"], true,
@@ -169,7 +218,7 @@ fn test_index_fixture_project_queries_are_semantic() {
     // Step 2: the graph must hold real symbols. This is the assertion the
     // envelope-only tests were missing: a broken writer reports ok:true with
     // zero nodes.
-    let stats = take_string(unsafe { engine_get_graph_stats(pid) });
+    let stats = take_string(unsafe { engine_get_graph_stats(engine_handle(), pid) });
     let stats_json = parse("engine_get_graph_stats", &stats);
     assert!(
         stats_json["total_nodes"].as_u64().unwrap_or(0) > 0,
@@ -183,8 +232,9 @@ fn test_index_fixture_project_queries_are_semantic() {
     // Step 3: find_definition must resolve a symbol that only exists in the
     // fixture source (defined in b.py, called from a.py).
     let name_c = cstr("bravo");
-    let found =
-        take_string(unsafe { engine_find_definition(pid, name_c.as_ptr(), std::ptr::null()) });
+    let found = take_string(unsafe {
+        engine_find_definition(engine_handle(), pid, name_c.as_ptr(), std::ptr::null())
+    });
     let found_json = parse("engine_find_definition", &found);
     assert!(
         found_json["total"].as_u64().unwrap_or(0) >= 1,
@@ -198,12 +248,13 @@ fn test_index_fixture_project_queries_are_semantic() {
     // Step 4: search_code must return the fixture file holding the query term.
     // FTS is built during indexing, but rebuild it explicitly so the test does
     // not depend on index-time ordering.
-    let fts = take_string(unsafe { engine_build_fts(pid) });
+    let fts = take_string(unsafe { engine_build_fts(engine_handle(), pid) });
     let fts_json = parse("engine_build_fts", &fts);
     assert_eq!(fts_json["ok"], true, "build_fts must succeed, got: {fts}");
 
     let query_c = cstr("alpha");
-    let hits = take_string(unsafe { engine_search_code(pid, query_c.as_ptr(), 10) });
+    let hits =
+        take_string(unsafe { engine_search_code(engine_handle(), pid, query_c.as_ptr(), 10) });
     let hits_json = parse("engine_search_code", &hits);
     assert!(
         hits_json["total"].as_u64().unwrap_or(0) >= 1,
@@ -214,6 +265,6 @@ fn test_index_fixture_project_queries_are_semantic() {
         "the search hit must point at the fixture file, got: {hits}"
     );
 
-    unsafe { engine_shutdown() };
+    engine_close();
     let _ = std::fs::remove_dir_all(&fixture);
 }

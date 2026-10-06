@@ -42,6 +42,7 @@
 #include <string>
 #include <unistd.h>
 #include <vector>
+#include "test_engine_handle.h"
 
 static void check(bool cond, const char *msg)
 {
@@ -111,14 +112,17 @@ static uint64_t indexInto(const std::string &dir, const char *db_path,
 	setenv("CODESCOPE_WORKERS", w.c_str(), 1);
 
 	unlink(db_path);
-	check(engine_init(db_path) == 0, "engine_init");
-	uint64_t pid = engine_create_project(dir.c_str(), "determinism");
+	g_engine = engine_create(db_path);
+	check(g_engine != nullptr, "engine_init");
+	uint64_t pid =
+		engine_create_project(g_engine, dir.c_str(), "determinism");
 	check(pid > 0, "create_project");
-	char *idx = engine_index_project(pid, dir.c_str(), nullptr);
+	char *idx = engine_index_project(g_engine, pid, dir.c_str(), nullptr);
 	check(idx != nullptr, "index_project null");
 	check(strstr(idx, "\"ok\":true") != nullptr, "index_project ok");
 	engine_free_string(idx);
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 
 	unsetenv("CODESCOPE_WORKERS");
 	return pid;

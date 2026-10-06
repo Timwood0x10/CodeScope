@@ -86,7 +86,7 @@ static int countRows(store::GraphStore &store, uint64_t project_id,
 			  " WHERE project_id=?";
 	sqlite3_stmt *stmt = nullptr;
 	CHECK(sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) ==
-	       SQLITE_OK);
+	      SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	int count = 0;
 	if (sqlite3_step(stmt) == SQLITE_ROW)
@@ -107,12 +107,13 @@ int main()
 
 	// ── Test 1: countImplementingEntities — entity with caller ──────
 	{
-		insertEntity(store, project_id, 100, "parseCode", "/src/parser.cpp");
+		insertEntity(store, project_id, 100, "parseCode",
+			     "/src/parser.cpp");
 		insertEntity(store, project_id, 101, "caller", "/src/main.cpp");
 		insertCall(store, project_id, 101, 100); // caller → parseCode
 
-		CHECK(countImplementingEntities(store, project_id, "parseCode") ==
-		       1);
+		CHECK(countImplementingEntities(store, project_id,
+						"parseCode") == 1);
 		printf("  [PASS] countImplementingEntities: entity with caller = 1\n");
 	}
 
@@ -123,7 +124,7 @@ int main()
 		// No call edge targeting entity 200.
 
 		CHECK(countImplementingEntities(store, project_id,
-						 "unusedFunc") == 0);
+						"unusedFunc") == 0);
 		printf("  [PASS] countImplementingEntities: entity without caller = 0\n");
 	}
 
@@ -136,7 +137,7 @@ int main()
 	// ── Test 4: countImplementingEntities — nonexistent name ────────
 	{
 		CHECK(countImplementingEntities(store, project_id,
-						 "doesNotExist") == 0);
+						"doesNotExist") == 0);
 		printf("  [PASS] countImplementingEntities: nonexistent name = 0\n");
 	}
 

@@ -30,16 +30,19 @@
 // Redirected to engine_index_project with fast mode.
 // Regex scan eliminated — tree-sitter is fast enough (727ms for 150K lines).
 
-char *engine_scan_project(uint64_t project_id, const char *dir_path,
-			  const char *language_filter)
+char *engine_scan_project(engine_t handle, uint64_t project_id,
+			  const char *dir_path, const char *language_filter)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().store)
+		if (!ctx || !ctx->store)
 			return dupString(
 				"{\"error\":\"engine not initialized\"}");
 		(void)language_filter;
-		return engine_index_project(project_id, dir_path, nullptr);
+		return engine_index_project(handle, project_id, dir_path,
+					    nullptr);
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_scan_project", e.what()));

@@ -32,6 +32,7 @@
 #include <filesystem>
 #include <sqlite3.h>
 #include <unistd.h>
+#include "test_engine_handle.h"
 
 static inline void check(bool cond, const char *msg)
 {
@@ -120,12 +121,15 @@ int main() {
 	// ── Index C++ fixture ───────────────────────────────────────
 	char cpp_db[] = "/tmp/test_qualified_id_cpp.db";
 	unlink(cpp_db);
-	check(engine_init(cpp_db) == 0, "engine_init cpp");
+	g_engine = engine_create(cpp_db);
+	check(g_engine != nullptr, "engine_init cpp");
 
-	uint64_t cpp_pid = engine_create_project(cpp_proj_dir, "cpp-qualified");
+	uint64_t cpp_pid =
+		engine_create_project(g_engine, cpp_proj_dir, "cpp-qualified");
 	check(cpp_pid > 0, "create_project cpp");
 
-	char *cpp_idx = engine_index_project(cpp_pid, cpp_proj_dir, nullptr);
+	char *cpp_idx =
+		engine_index_project(g_engine, cpp_pid, cpp_proj_dir, nullptr);
 	check(cpp_idx != nullptr, "index_project cpp returns non-null");
 	check(strstr(cpp_idx, "\"ok\":true") != nullptr,
 	      "index_project cpp ok");
@@ -164,15 +168,16 @@ int main() {
 	      "main must call buildGraph (gs.method() edge)");
 
 	// ── Assertion 5: engine_get_callees(buildGraph) ─────────────
-	char *callees_bg = engine_get_callees(cpp_pid, "buildGraph", nullptr);
+	char *callees_bg =
+		engine_get_callees(g_engine, cpp_pid, "buildGraph", nullptr);
 	check(callees_bg != nullptr, "get_callees(buildGraph) non-null");
 	check(strstr(callees_bg, "buildCallEdgesSQL") != nullptr,
 	      "get_callees(buildGraph) must contain buildCallEdgesSQL");
 	engine_free_string(callees_bg);
 
 	// ── Assertion 6: engine_get_callers(buildCallEdgesSQL) ──────
-	char *callers_bces =
-		engine_get_callers(cpp_pid, "buildCallEdgesSQL", nullptr);
+	char *callers_bces = engine_get_callers(g_engine, cpp_pid,
+						"buildCallEdgesSQL", nullptr);
 	check(callers_bces != nullptr,
 	      "get_callers(buildCallEdgesSQL) non-null");
 	check(strstr(callers_bces, "buildGraph") != nullptr,
@@ -180,7 +185,8 @@ int main() {
 	engine_free_string(callers_bces);
 
 	sqlite3_close(db);
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 
 	// ── Setup: Python fixture ───────────────────────────────────
 	// Exercises Bug 3-D for Python: self.fig.add_trace() should
@@ -222,12 +228,15 @@ class Worker:
 	// ── Index Python fixture ────────────────────────────────────
 	char py_db[] = "/tmp/test_qualified_id_py.db";
 	unlink(py_db);
-	check(engine_init(py_db) == 0, "engine_init py");
+	g_engine = engine_create(py_db);
+	check(g_engine != nullptr, "engine_init py");
 
-	uint64_t py_pid = engine_create_project(py_proj_dir, "py-chained");
+	uint64_t py_pid =
+		engine_create_project(g_engine, py_proj_dir, "py-chained");
 	check(py_pid > 0, "create_project py");
 
-	char *py_idx = engine_index_project(py_pid, py_proj_dir, nullptr);
+	char *py_idx =
+		engine_index_project(g_engine, py_pid, py_proj_dir, nullptr);
 	check(py_idx != nullptr, "index_project py returns non-null");
 	check(strstr(py_idx, "\"ok\":true") != nullptr, "index_project py ok");
 	engine_free_string(py_idx);
@@ -241,14 +250,16 @@ class Worker:
 	      "run must call compute (self.method() intra-file edge)");
 
 	// ── Assertion 8: engine_get_callees(run) ────────────────────
-	char *callees_run = engine_get_callees(py_pid, "run", nullptr);
+	char *callees_run =
+		engine_get_callees(g_engine, py_pid, "run", nullptr);
 	check(callees_run != nullptr, "get_callees(run) non-null");
 	check(strstr(callees_run, "compute") != nullptr,
 	      "get_callees(run) must contain compute");
 	engine_free_string(callees_run);
 
 	sqlite3_close(db);
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 
 	// ── Cleanup ─────────────────────────────────────────────────
 	std::filesystem::remove_all(cpp_proj_dir);

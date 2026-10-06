@@ -58,13 +58,13 @@ using namespace engine_index_sched;
 /// entry point below can stay a thin try/catch wrapper: no C++ exception may
 /// cross the C ABI boundary (the MCP server is long-running, so an escaping
 /// exception would terminate it).
-static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
-			      const char *language_filter)
+static char *indexProjectImpl(EngineContext *ctx, uint64_t project_id,
+			      const char *dir_path, const char *language_filter)
 {
-	// Cached once: this function drives the whole index run and touches the
-	// state at every phase boundary (TD-1 knife 2).
-	EngineContext &ctx = engineContext();
-	if (!ctx.store)
+	// The instance arrives as a parameter (TD-1 knife 3): indexProjectImpl
+	// drives the whole index run and touches the state at every phase
+	// boundary, so it validates the handle once, here.
+	if (!ctx || !ctx->store)
 		return dupString(
 			"{\"ok\":false,\"error\":\"engine not initialized\"}");
 
@@ -91,7 +91,8 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 	std::unordered_set<std::string> known_failures;
 	{
 		std::vector<std::string> fail_vec;
-		if (!store::loadKnownParseFailures(project_id, kFailRetryMax,
+		if (!store::loadKnownParseFailures(ctx, project_id,
+						   kFailRetryMax,
 						   /*out*/ fail_vec)) {
 			// Non-fatal: continue indexing, just no skip set.
 			fprintf(stderr,
@@ -180,7 +181,7 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 
 	// Batch-load file scan state ONCE to avoid N per-file DB queries
 	// during discovery (1254 files × ~2ms prepare/finalize = ~2.5s saved).
-	auto scan_state = ctx.store->loadFileScanStateBatch(project_id);
+	auto scan_state = ctx->store->loadFileScanStateBatch(project_id);
 
 	// Phase 1: collect file paths (single-threaded). The directory walk,
 	// README ingestion and incremental scan-state gate now live in
@@ -189,7 +190,7 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 	std::vector<engine_index_discover::FileJob> jobs;
 	bool is_reindex = false;
 	std::string discover_err;
-	if (engine_index_discover::collectFileJobs(project_id, dir, filter,
+	if (engine_index_discover::collectFileJobs(ctx, project_id, dir, filter,
 						   scan_state, jobs, is_reindex,
 						   discover_err) != 0) {
 		return dupString(discover_err.c_str());
@@ -211,11 +212,11 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 		// rebuilt row count — preserving the A19 "readiness matches
 		// canonical data" invariant.
 		if (is_reindex && env_mode && strcmp(env_mode, "deep") == 0) {
-			ctx.store->buildVectorsFromGraph(project_id);
+			ctx->store->buildVectorsFromGraph(project_id);
 			sqlite3_stmt *vstmt = nullptr;
 			const char *vsql =
 				"SELECT COUNT(*) FROM node_vectors WHERE project_id = ?";
-			if (sqlite3_prepare_v2(ctx.store->handle(), vsql, -1,
+			if (sqlite3_prepare_v2(ctx->store->handle(), vsql, -1,
 					       &vstmt, nullptr) == SQLITE_OK) {
 				sqlite3_bind_int64(
 					vstmt, 1,
@@ -225,7 +226,7 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 					vec_rows =
 						sqlite3_column_int64(vstmt, 0);
 				sqlite3_finalize(vstmt);
-				ctx.store->setProjectReadiness(
+				ctx->store->setProjectReadiness(
 					project_id, "vector_ready",
 					vec_rows > 0 ? 1 : 0);
 			} else {
@@ -233,7 +234,7 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 					"engine_index_project: node_vectors count "
 					"probe failed (no-op re-index): %s "
 					"[module=engine, method=engine_index_project]\n",
-					sqlite3_errmsg(ctx.store->handle()));
+					sqlite3_errmsg(ctx->store->handle()));
 			}
 		}
 		return dupString(
@@ -255,7 +256,7 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 		active_files.reserve(jobs.size());
 		for (auto &job : jobs)
 			active_files.push_back(job.path);
-		ctx.store->cleanupStaleFiles(project_id, active_files);
+		ctx->store->cleanupStaleFiles(project_id, active_files);
 	}
 
 	// Sort jobs by file size descending — large files first
@@ -273,7 +274,7 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 		for (auto &j : jobs)
 			langs.insert(j.lang);
 		for (auto &l : langs)
-			lang_ptrs[l] = ctx.parser->getLanguage(l.c_str());
+			lang_ptrs[l] = ctx->parser->getLanguage(l.c_str());
 	}
 
 	// Index mode (from env): "fast" | "normal" (default) | "deep"
@@ -296,7 +297,7 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 		job_lang.reserve(jobs.size());
 		for (auto &job : jobs)
 			job_lang.push_back({ job.path, job.lang });
-		return engine_index_project_membulk(project_id, dir,
+		return engine_index_project_membulk(ctx, project_id, dir,
 						    max_file_size, filter,
 						    job_lang, lang_ptrs,
 						    known_failures, is_reindex,
@@ -360,8 +361,9 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 	const size_t kWriterBatchSize = 50;
 
 	std::thread writer_thread([&]() {
-		EngineContext &ctx = engineContext();
-		ctx.store->beginTransaction();
+		// `ctx` is the caller's handle-validated instance, captured by
+		// reference; the writer owns the only SQLite write path.
+		ctx->store->beginTransaction();
 
 		std::vector<store::FileResult> batch;
 		batch.reserve(kWriterBatchSize);
@@ -372,7 +374,8 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 			if (!ok) {
 				// Queue is done and empty — flush any remaining batch
 				if (!batch.empty()) {
-					if (!ctx.store->insertFileResultBatch(
+					if (!ctx ||
+					    !ctx->store->insertFileResultBatch(
 						    project_id, batch)) {
 						writer_error = 1;
 					}
@@ -396,8 +399,8 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 			// Flush batch to DB (within the single transaction)
 			if (batch.size() >= kWriterBatchSize ||
 			    result_queue.isDone()) {
-				if (!ctx.store->insertFileResultBatch(
-					    project_id, batch)) {
+				if (!ctx || !ctx->store->insertFileResultBatch(
+						    project_id, batch)) {
 					writer_error = 1;
 					fprintf(stderr,
 						"writer: insertFileResultBatch"
@@ -410,9 +413,9 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 		}
 
 		if (writer_error)
-			ctx.store->rollbackTransaction();
+			ctx->store->rollbackTransaction();
 		else
-			ctx.store->commitTransaction();
+			ctx->store->commitTransaction();
 	});
 
 	// ── Parse workers ──────────────────────────────────────────
@@ -884,7 +887,7 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 	// Flush any buffered parse failures to SQLite.
 	// This is done AFTER the writer thread joins so there's no
 	// concurrent write contention on the parse_failures table.
-	store::flushParseFailures();
+	store::flushParseFailures(ctx);
 
 	int total_indexed = files_written.load();
 
@@ -906,16 +909,19 @@ static char *indexProjectImpl(uint64_t project_id, const char *dir_path,
 	for (auto &job : jobs)
 		job_paths.push_back(job.path);
 
-	return postParsePhase(project_id, dir, job_paths, filter, is_reindex,
-			      mode_fast, mode_deep, time_parse_ms, 0,
-			      total_indexed);
+	return postParsePhase(ctx, project_id, dir, job_paths, filter,
+			      is_reindex, mode_fast, mode_deep, time_parse_ms,
+			      0, total_indexed);
 }
 
-char *engine_index_project(uint64_t project_id, const char *dir_path,
-			   const char *language_filter)
+char *engine_index_project(engine_t handle, uint64_t project_id,
+			   const char *dir_path, const char *language_filter)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
-		return indexProjectImpl(project_id, dir_path, language_filter);
+		return indexProjectImpl(ctx, project_id, dir_path,
+					language_filter);
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_index_project", e.what()));

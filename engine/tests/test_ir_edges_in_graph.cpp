@@ -25,6 +25,7 @@
 #include <sqlite3.h>
 #include <string>
 #include <unistd.h>
+#include "test_engine_handle.h"
 
 namespace fs = std::filesystem;
 
@@ -50,14 +51,18 @@ static uint64_t indexProject(const std::string &proj_dir, const char *db_path)
 	unlink(db_path);
 	unlink((std::string(db_path) + "-wal").c_str());
 	unlink((std::string(db_path) + "-shm").c_str());
-	check(engine_init(db_path) == 0, "engine_init");
-	uint64_t pid = engine_create_project(proj_dir.c_str(), "ir-edges");
+	g_engine = engine_create(db_path);
+	check(g_engine != nullptr, "engine_init");
+	uint64_t pid =
+		engine_create_project(g_engine, proj_dir.c_str(), "ir-edges");
 	check(pid > 0, "create_project");
-	char *idx = engine_index_project(pid, proj_dir.c_str(), nullptr);
+	char *idx =
+		engine_index_project(g_engine, pid, proj_dir.c_str(), nullptr);
 	check(idx != nullptr, "index_project result");
 	check(strstr(idx, "\"ok\":true") != nullptr, "index_project ok");
 	engine_free_string(idx);
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 	return pid;
 }
 

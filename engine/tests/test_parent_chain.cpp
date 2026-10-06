@@ -19,6 +19,7 @@
 #include <cstring>
 #include <filesystem>
 #include <unistd.h>
+#include "test_engine_handle.h"
 
 static inline void check(bool cond, const char *msg)
 {
@@ -33,8 +34,7 @@ int main()
 	const char *proj_dir = "/tmp/parent_chain_repro";
 	std::filesystem::remove_all(proj_dir);
 	std::filesystem::create_directories(proj_dir);
-	const std::string py_path =
-		std::string(proj_dir) + "/repro.py";
+	const std::string py_path = std::string(proj_dir) + "/repro.py";
 	FILE *f = fopen(py_path.c_str(), "w");
 	check(f != nullptr, "fopen");
 	// Minimal shape of the reported bug:
@@ -55,12 +55,14 @@ def create_evolution_timeline():
 
 	char db[] = "/tmp/test_parent_chain.db";
 	unlink(db);
-	check(engine_init(db) == 0, "engine_init");
+	g_engine = engine_create(db);
+	check(g_engine != nullptr, "engine_init");
 
-	uint64_t pid = engine_create_project(proj_dir, "parent-chain");
+	uint64_t pid =
+		engine_create_project(g_engine, proj_dir, "parent-chain");
 	check(pid > 0, "create_project");
 
-	char *idx = engine_index_project(pid, proj_dir, nullptr);
+	char *idx = engine_index_project(g_engine, pid, proj_dir, nullptr);
 	check(idx != nullptr, "index_project null");
 	check(strstr(idx, "\"ok\":true") != nullptr, "index ok");
 	engine_free_string(idx);
@@ -68,7 +70,7 @@ def create_evolution_timeline():
 	// Wait for async pipeline to finish.
 	for (int i = 0; i < 50; i++) {
 		usleep(100000);
-		char *stats = engine_get_graph_stats(pid);
+		char *stats = engine_get_graph_stats(g_engine, pid);
 		if (stats && strstr(stats, "\"total_nodes\"")) {
 			engine_free_string(stats);
 			break;
@@ -81,23 +83,20 @@ def create_evolution_timeline():
 	// ── Observation 1: callees of create_evolution_timeline ──
 	// Expected: add_trace (intra-file edge via P1).
 	// Before fix: only 0 or 1 edge, missing add_trace.
-	char *callees = engine_get_callees(pid,
-					   "create_evolution_timeline",
-					   nullptr);
+	char *callees = engine_get_callees(
+		g_engine, pid, "create_evolution_timeline", nullptr);
 	check(callees != nullptr, "get_callees null");
-	printf("--- callees(create_evolution_timeline) ---\n%s\n",
-	       callees);
+	printf("--- callees(create_evolution_timeline) ---\n%s\n", callees);
 
-	bool has_add_trace =
-		strstr(callees, "add_trace") != nullptr;
+	bool has_add_trace = strstr(callees, "add_trace") != nullptr;
 	int total_callees = 0;
 	const char *p = strstr(callees, "\"total\":");
 	if (p)
 		total_callees = atoi(p + 8);
 	engine_free_string(callees);
 
-	printf("\nhas_add_trace = %d, total_callees = %d\n",
-	       (int)has_add_trace, total_callees);
+	printf("\nhas_add_trace = %d, total_callees = %d\n", (int)has_add_trace,
+	       total_callees);
 
 	if (has_add_trace && total_callees >= 1) {
 		printf("\nPASS: add_trace is a callee of "
@@ -107,7 +106,8 @@ def create_evolution_timeline():
 		       "is missing add_trace callee edge\n");
 	}
 
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 	std::filesystem::remove_all(proj_dir);
 	return 0;
 }

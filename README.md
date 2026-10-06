@@ -312,7 +312,7 @@ codescope cli force_index_files '{"paths":["/path/to/test/file.rs"]}'
 |----------|-------------|
 | **macOS** | Xcode CLT, cmake, Rust (1.85+) |
 | **Linux** | build-essential, cmake, Rust (1.85+) |
-| **Windows** ⚠️ **Beta** | MinGW-w64 14.0.0+, Rust `x86_64-pc-windows-gnu` target, cmake. Every graph-query tool (shortest_path, get_neighbors, get_callers/callees, graph_query, subgraph, entry_points, trace_path, hotspots, impact_analysis, ...) works via the built-in SQLite graph-query backend (CSR adjacency, sub-millisecond call-graph lookups). **Limitation:** parallel indexing (`index-parallel`, including the chunk-level scheduler) is not available on Windows — use `codescope index` (single-process) instead. |
+| **Windows** ⚠️ **Beta** | MinGW-w64 14.0.0+, Rust `x86_64-pc-windows-gnu` target, cmake, and the **`sqlite3` CLI on `PATH`** (the parallel and chunked schedulers merge their worker databases by piping SQL into it). Every graph-query tool (shortest_path, get_neighbors, get_callers/callees, graph_query, subgraph, entry_points, trace_path, hotspots, impact_analysis, ...) works via the built-in SQLite graph-query backend (CSR adjacency, sub-millisecond call-graph lookups). Parallel indexing (`index-parallel`, including the chunk-level scheduler) now works on Windows as well — the shared state both schedulers map has a Windows backend (`CreateFileMappingW`/`MapViewOfFile`) — but stays **Beta**: the `windows-smoke` CI job is its acceptance gate and it is dispatch-only. If the `sqlite3` CLI is missing, use `codescope index` (single-process), which does not merge. |
 
 ### Install Pre-built Binary
 

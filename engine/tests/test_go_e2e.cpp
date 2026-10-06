@@ -1,7 +1,8 @@
 #include "test_e2e.h"
 
-int main() {
-    const char* code = R"(package main
+int main()
+{
+	const char *code = R"(package main
 
 import "fmt"
 
@@ -29,12 +30,8 @@ func main() {
 }
 )";
 
-    const char* defs[] = {"Calculator", "Add"};
-    runE2eTest("go", code, "/tmp/calculator.go",
-               defs, 2,
-               "Add", "main",
-               "Add",
-               "main",
-               "main", nullptr);
-    return 0;
+	const char *defs[] = { "Calculator", "Add" };
+	runE2eTest("go", code, "/tmp/calculator.go", defs, 2, "Add", "main",
+		   "Add", "main", "main", nullptr);
+	return 0;
 }

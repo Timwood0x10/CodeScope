@@ -31,6 +31,7 @@
 #include <string>
 #include <unistd.h>
 #include <vector>
+#include "test_engine_handle.h"
 
 using namespace store;
 
@@ -148,11 +149,11 @@ int main()
 			query::bareNameCandidates(db, pid, "nonexistent");
 		std::string one = query::bareNameCandidates(db, pid, "gadget");
 		CHECK(none.empty() &&
-		       "0 matches must probe as unambiguous (caller reports "
-		       "not-found)");
+		      "0 matches must probe as unambiguous (caller reports "
+		      "not-found)");
 		CHECK(one.empty() &&
-		       "1 match must probe as unambiguous (caller traces "
-		       "it)");
+		      "1 match must probe as unambiguous (caller traces "
+		      "it)");
 		printf("Test 1 (0/1 match -> empty probe): PASS\n");
 	}
 
@@ -177,7 +178,7 @@ int main()
 			&store);
 		CHECK(q.find("\"total\":0") != std::string::npos);
 		CHECK(countKey(q, "hint") == 1 &&
-		       "a kind mismatch must emit exactly one hint key");
+		      "a kind mismatch must emit exactly one hint key");
 		CHECK(contains(q, "kind 0"));
 		printf("Test 3 (typed mismatch -> single hint): PASS\n");
 	}
@@ -191,7 +192,7 @@ int main()
 			&store);
 		CHECK(q.find("\"total\":0") != std::string::npos);
 		CHECK(countKey(q, "hint") == 1 &&
-		       "two probes must merge into one hint key, never two");
+		      "two probes must merge into one hint key, never two");
 		printf("Test 4 (both-sides mismatch -> one hint key): PASS\n");
 	}
 
@@ -205,8 +206,8 @@ int main()
 			&store);
 		CHECK(q.find("\"total\":0") != std::string::npos);
 		CHECK(countKey(q, "hint") == 0 &&
-		       "an untyped node must not produce a kind-mismatch "
-		       "hint");
+		      "an untyped node must not produce a kind-mismatch "
+		      "hint");
 		printf("Test 5 (untyped node -> no hint): PASS\n");
 	}
 
@@ -219,7 +220,7 @@ int main()
 			&store);
 		CHECK(q.find("\"total\":1") != std::string::npos);
 		CHECK(countKey(q, "hint") == 0 &&
-		       "a matching query must not carry a hint");
+		      "a matching query must not carry a hint");
 		printf("Test 6 (matching query -> no hint): PASS\n");
 	}
 
@@ -294,19 +295,21 @@ int main()
 		store.close();
 		unlink(kDbPath);
 
-		if (engine_init(kDbPath) != 0) {
+		g_engine = engine_create(kDbPath);
+		if (!g_engine) {
 			fprintf(stderr, "FAIL: engine_init\n");
 			return 1;
 		}
-		const uint64_t fpid =
-			engine_create_project("/tmp", "ffi-one-sided");
+		const uint64_t fpid = engine_create_project(g_engine, "/tmp",
+							    "ffi-one-sided");
 		CHECK(fpid > 0);
 
 		sqlite3 *fdb = nullptr;
 		if (sqlite3_open(kDbPath, &fdb) != SQLITE_OK) {
 			fprintf(stderr, "FAIL: sqlite3_open for fixture: %s\n",
 				sqlite3_errmsg(fdb));
-			engine_shutdown();
+			engine_destroy(g_engine);
+			g_engine = nullptr;
 			return 1;
 		}
 		insertEntity(fdb, fpid, 1, 0, "run_c_side", "src/main.c", 1);
@@ -314,18 +317,19 @@ int main()
 		insertCallExpr(fdb, fpid, 101, "run_c_side", "src/main.c", 10);
 		sqlite3_close(fdb);
 
-		char *raw = engine_detect_ffi_boundaries(fpid);
+		char *raw = engine_detect_ffi_boundaries(g_engine, fpid);
 		CHECK(raw != nullptr);
 		std::string s(raw);
 		engine_free_string(raw);
-		engine_shutdown();
+		engine_destroy(g_engine);
+		g_engine = nullptr;
 
 		CHECK(contains(s, "\"external_symbols\":["));
 		CHECK(contains(s, "extern_add"));
 		size_t ext = s.find("\"external_symbols\":");
 		size_t orphan = s.find("\"orphan_symbols\":");
-		CHECK(ext != std::string::npos &&
-		       orphan != std::string::npos && ext < orphan);
+		CHECK(ext != std::string::npos && orphan != std::string::npos &&
+		      ext < orphan);
 		std::string ext_block = s.substr(ext, orphan - ext);
 		// `run_c_side` is defined here (entity kind=0), so the CallExpr
 		// to it must NOT be reported as external.

@@ -144,7 +144,7 @@ static int countRows(store::GraphStore &store, uint64_t project_id,
 			  " WHERE project_id=?";
 	sqlite3_stmt *stmt = nullptr;
 	CHECK(sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) ==
-	       SQLITE_OK);
+	      SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	int count = 0;
 	if (sqlite3_step(stmt) == SQLITE_ROW)
@@ -206,8 +206,8 @@ int main()
 			}
 		}
 		CHECK(neg_count == 0 &&
-		       "an occurrence of \"isn't thread-safe\" in NEG.md must "
-		       "not add a positive threadsafe contract");
+		      "an occurrence of \"isn't thread-safe\" in NEG.md must "
+		      "not add a positive threadsafe contract");
 		printf("  [PASS] ContractPlugin negation (isn't thread-safe)\n");
 
 		insertReadme(store, pid, "/tmp/CANNOT.md",
@@ -232,8 +232,8 @@ int main()
 			}
 		}
 		CHECK(can_count >= 1 &&
-		       "\"cannot thread-safe\" must still produce a threadsafe "
-		       "contract (cannot is not a denial)");
+		      "\"cannot thread-safe\" must still produce a threadsafe "
+		      "contract (cannot is not a denial)");
 		printf("  [PASS] ContractPlugin non-negation (cannot)\n");
 	}
 
@@ -279,8 +279,9 @@ int main()
 		sqlite3 *db = store.handle();
 		sqlite3_stmt *stmt = nullptr;
 		int cap_count = 0;
-		if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM capability "
-					   "WHERE project_id=?",
+		if (sqlite3_prepare_v2(db,
+				       "SELECT COUNT(*) FROM capability "
+				       "WHERE project_id=?",
 				       -1, &stmt, nullptr) == SQLITE_OK) {
 			sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(pid));
 			if (sqlite3_step(stmt) == SQLITE_ROW)
@@ -293,8 +294,9 @@ int main()
 
 		// Verify contract table is populated.
 		int contract_count = 0;
-		if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM contract "
-					   "WHERE project_id=?",
+		if (sqlite3_prepare_v2(db,
+				       "SELECT COUNT(*) FROM contract "
+				       "WHERE project_id=?",
 				       -1, &stmt, nullptr) == SQLITE_OK) {
 			sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(pid));
 			if (sqlite3_step(stmt) == SQLITE_ROW)
@@ -308,8 +310,9 @@ int main()
 		// Verify workflow table is populated (main is an entry point
 		// with a callee, so WorkflowPlugin should detect it).
 		int workflow_count = 0;
-		if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM workflow "
-					   "WHERE project_id=?",
+		if (sqlite3_prepare_v2(db,
+				       "SELECT COUNT(*) FROM workflow "
+				       "WHERE project_id=?",
 				       -1, &stmt, nullptr) == SQLITE_OK) {
 			sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(pid));
 			if (sqlite3_step(stmt) == SQLITE_ROW)
@@ -352,23 +355,22 @@ int main()
 		// Clear model tables from Test 2's runAll so counts reflect
 		// only this test's output.
 		sqlite3_exec(db, "DELETE FROM capability", nullptr, nullptr,
-			    nullptr);
+			     nullptr);
 		sqlite3_exec(db, "DELETE FROM contract", nullptr, nullptr,
-			    nullptr);
+			     nullptr);
 		sqlite3_exec(db, "DELETE FROM workflow", nullptr, nullptr,
-			    nullptr);
+			     nullptr);
 		sqlite3_exec(db, "DELETE FROM workflow_step", nullptr, nullptr,
-			    nullptr);
+			     nullptr);
 		sqlite3_exec(db, "DELETE FROM architecture_edge", nullptr,
-			    nullptr, nullptr);
+			     nullptr, nullptr);
 
 		// Cross-module callee: Logger lives in /tmp/lib/, while main
 		// lives in /tmp/main.cpp. The module scopes below let
 		// ArchitecturePlugin detect this as a cross-module call.
 		insertGraphNode(store, pid, 4, 0, "Logger",
 				"/tmp/lib/logger.cpp", "cpp", 1);
-		insertEntity(store, pid, 4, 0, "Logger",
-			     "/tmp/lib/logger.cpp");
+		insertEntity(store, pid, 4, 0, "Logger", "/tmp/lib/logger.cpp");
 
 		// Module scopes: "/tmp/" matches /tmp/main.cpp, "/tmp/lib/"
 		// matches /tmp/lib/logger.cpp. Both are prefixes, so Logger

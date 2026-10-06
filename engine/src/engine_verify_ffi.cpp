@@ -128,7 +128,7 @@ std::optional<verify::ClaimType> parseClaimType(const std::string &s)
 // global registry. Delegates to VerifierRegistry::ensureDefaultVerifiers,
 // which checks the actual registry state (not a process-level static flag)
 // and only re-registers when empty. This fixes the lifecycle bug A15:
-//   engine_shutdown() cleared the registry but the old `static bool
+//   engine_destroy() cleared the registry but the old `static bool
 //   initialized` flag stayed true, so the next ensureVerifiersRegistered()
 //   was a no-op and the registry stayed empty → every claim returned
 //   "no verifier registered".
@@ -181,12 +181,12 @@ makeVerifierForClaim(const verify::Claim &claim, store::GraphStore *store,
 
 namespace verify_ffi
 {
-VerifyResult verify_one_claim(uint64_t project_id, const verify::Claim &claim)
+VerifyResult verify_one_claim(EngineContext *ctx, uint64_t project_id,
+			      const verify::Claim &claim)
 {
 	VerifyResult result;
 
-	int64_t claim_id =
-		engineContext().store->insertClaim(project_id, claim);
+	int64_t claim_id = ctx->store->insertClaim(project_id, claim);
 	if (claim_id < 0) {
 		result.json =
 			dupString("{\"error\":\"failed to persist claim "
@@ -210,8 +210,8 @@ VerifyResult verify_one_claim(uint64_t project_id, const verify::Claim &claim)
 		const std::string detail =
 			(reg.verifier_count() == 0) ?
 				std::string("verifier registry is empty "
-					    "(engine_init not called or "
-					    "engine_shutdown cleared it) "
+					    "(engine_create not called or "
+					    "the instance was destroyed) "
 					    "[module=ffi, method="
 					    "verify_one_claim]") :
 				(std::string(
@@ -236,8 +236,7 @@ VerifyResult verify_one_claim(uint64_t project_id, const verify::Claim &claim)
 	// Build a fresh verifier bound to the caller's project_id so verify()
 	// queries the right project's data. The registry's matched pointer is
 	// only used to confirm that SOME verifier accepts this claim type.
-	auto v = makeVerifierForClaim(claim, engineContext().store.get(),
-				      project_id);
+	auto v = makeVerifierForClaim(claim, ctx->store.get(), project_id);
 	if (!v) {
 		util::JsonWriter j;
 		j.beginObject();
@@ -296,9 +295,10 @@ VerifyResult verify_one_claim(uint64_t project_id, const verify::Claim &claim)
 	}
 	rec.claim_id = claim_id;
 
-	int64_t evidence_id = engineContext().store->insertEvidence(
-		claim_id, rec.verdict, rec.confidence, rec.verifier_name,
-		rec.detail);
+	int64_t evidence_id = ctx->store->insertEvidence(claim_id, rec.verdict,
+							 rec.confidence,
+							 rec.verifier_name,
+							 rec.detail);
 	if (evidence_id < 0) {
 		result.json =
 			dupString("{\"error\":\"failed to persist evidence "
@@ -308,8 +308,8 @@ VerifyResult verify_one_claim(uint64_t project_id, const verify::Claim &claim)
 	}
 
 	for (const auto &f : rec.facts) {
-		engineContext().store->insertEvidenceFact(evidence_id, f.first,
-							  f.second, "");
+		ctx->store->insertEvidenceFact(evidence_id, f.first, f.second,
+					       "");
 	}
 
 	// Step 9.6: when the verifier returned Unknown because the evidence
@@ -347,8 +347,8 @@ VerifyResult verify_one_claim(uint64_t project_id, const verify::Claim &claim)
 	return result;
 }
 
-BatchResult verify_claim_batch(uint64_t project_id, const std::string &text,
-			       const char *source_kind,
+BatchResult verify_claim_batch(EngineContext *ctx, uint64_t project_id,
+			       const std::string &text, const char *source_kind,
 			       const std::string &source_ref)
 {
 	BatchResult out;
@@ -363,7 +363,7 @@ BatchResult verify_claim_batch(uint64_t project_id, const std::string &text,
 		if (!first)
 			json << ",";
 		first = false;
-		VerifyResult result = verify_one_claim(project_id, c);
+		VerifyResult result = verify_one_claim(ctx, project_id, c);
 		if (result.json) {
 			json << result.json;
 			switch (result.verdict) {
@@ -416,17 +416,20 @@ BatchResult verify_claim_batch(uint64_t project_id, const std::string &text,
 // was cut short. `total` counts every verdict (Supported included,
 // which are not listed as findings), so it is normally larger than
 // the array length.
-extern "C" char *engine_verify_integrity(uint64_t project_id, int max_findings)
+extern "C" char *engine_verify_integrity(engine_t handle, uint64_t project_id,
+					 int max_findings)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().store)
+		if (!ctx || !ctx->store)
 			return dupString("{\"error\":\"not initialized\"}");
 
 		// Arm the query timeout (10s) so a hung query never blocks
 		// the caller indefinitely. The guard disarms on scope exit.
-		store::GraphStore::QueryDeadlineGuard guard(
-			engineContext().store.get(), 10000);
+		store::GraphStore::QueryDeadlineGuard guard(ctx->store.get(),
+							    10000);
 		(void)guard;
 
 		int limit = (max_findings <= 0) ? kDefaultMaxFindings :
@@ -442,7 +445,7 @@ extern "C" char *engine_verify_integrity(uint64_t project_id, int max_findings)
 		json.key("findings").beginArray();
 
 		// Iterate capabilities -> CapabilityExists claims
-		auto caps = engineContext().store->listCapabilities(project_id);
+		auto caps = ctx->store->listCapabilities(project_id);
 		for (const auto &cap : caps) {
 			verify::Claim claim;
 			claim.type = verify::ClaimType::CapabilityExists;
@@ -452,8 +455,8 @@ extern "C" char *engine_verify_integrity(uint64_t project_id, int max_findings)
 			claim.source_kind = "capability";
 			claim.source_ref = std::to_string(cap.first);
 
-			auto v = makeVerifierForClaim(
-				claim, engineContext().store.get(), project_id);
+			auto v = makeVerifierForClaim(claim, ctx->store.get(),
+						      project_id);
 			if (!v)
 				continue;
 			auto rec = v->verify(claim);
@@ -475,9 +478,10 @@ extern "C" char *engine_verify_integrity(uint64_t project_id, int max_findings)
 			std::string desc = "Capability '" + cap.second + "' " +
 					   verify::verdictName(rec.verdict) +
 					   ": " + rec.detail;
-			engineContext().store->insertFinding(
-				project_id, "CapabilityVerifier", severity, 0,
-				desc, rec.confidence);
+			ctx->store->insertFinding(project_id,
+						  "CapabilityVerifier",
+						  severity, 0, desc,
+						  rec.confidence);
 			if (emitted < limit) {
 				++emitted;
 				json.beginObject();
@@ -490,8 +494,7 @@ extern "C" char *engine_verify_integrity(uint64_t project_id, int max_findings)
 
 		// Iterate contracts -> ContractHolds claims. ContractVerifier is
 		// registered, so makeVerifierForClaim returns a valid verifier instance.
-		auto contracts =
-			engineContext().store->listContracts(project_id);
+		auto contracts = ctx->store->listContracts(project_id);
 		for (const auto &ct : contracts) {
 			verify::Claim claim;
 			claim.type = verify::ClaimType::ContractHolds;
@@ -501,8 +504,8 @@ extern "C" char *engine_verify_integrity(uint64_t project_id, int max_findings)
 			claim.source_kind = "contract";
 			claim.source_ref = std::to_string(ct.first);
 
-			auto v = makeVerifierForClaim(
-				claim, engineContext().store.get(), project_id);
+			auto v = makeVerifierForClaim(claim, ctx->store.get(),
+						      project_id);
 			if (!v)
 				continue;
 			auto rec = v->verify(claim);
@@ -524,10 +527,9 @@ extern "C" char *engine_verify_integrity(uint64_t project_id, int max_findings)
 			std::string desc = "Contract '" + ct.second + "' " +
 					   verify::verdictName(rec.verdict) +
 					   ": " + rec.detail;
-			engineContext().store->insertFinding(project_id,
-							     "ContractVerifier",
-							     severity, 0, desc,
-							     rec.confidence);
+			ctx->store->insertFinding(project_id,
+						  "ContractVerifier", severity,
+						  0, desc, rec.confidence);
 			if (emitted < limit) {
 				++emitted;
 				json.beginObject();
@@ -543,8 +545,8 @@ extern "C" char *engine_verify_integrity(uint64_t project_id, int max_findings)
 		// land inside the JSON array (previously they were appended
 		// after `],"total":N`, producing invalid JSON).
 		{
-			verify::DeadCodeInspector dci(
-				engineContext().store.get(), project_id);
+			verify::DeadCodeInspector dci(ctx->store.get(),
+						      project_id);
 			auto findings = dci.inspect();
 			for (auto &f : findings) {
 				// Orphan findings are informational, not a
@@ -621,12 +623,14 @@ extern "C" char *engine_verify_integrity(uint64_t project_id, int max_findings)
 //
 // MEMORY: caller MUST free the returned char* via engine_free_string().
 // THREAD SAFETY: single-threaded (GraphStore writer invariant).
-extern "C" char *engine_verify_claim(uint64_t project_id,
+extern "C" char *engine_verify_claim(engine_t handle, uint64_t project_id,
 				     const char *claim_json)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().store)
+		if (!ctx || !ctx->store)
 			return dupString("{\"error\":\"not initialized\"}");
 		if (!claim_json || !*claim_json)
 			return dupString(
@@ -701,7 +705,7 @@ extern "C" char *engine_verify_claim(uint64_t project_id,
 		}
 
 		verify_ffi::VerifyResult result =
-			verify_ffi::verify_one_claim(project_id, claim);
+			verify_ffi::verify_one_claim(ctx, project_id, claim);
 		return result.json;
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
@@ -731,11 +735,14 @@ extern "C" char *engine_verify_claim(uint64_t project_id,
 //
 // MEMORY: caller MUST free the returned char* via engine_free_string().
 // THREAD SAFETY: single-threaded (GraphStore writer invariant).
-extern "C" char *engine_verify_summary(uint64_t project_id, const char *text)
+extern "C" char *engine_verify_summary(engine_t handle, uint64_t project_id,
+				       const char *text)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().store)
+		if (!ctx || !ctx->store)
 			return dupString(
 				"{\"error\":\"not initialized "
 				"[module=ffi, method=engine_verify_summary]\"}");
@@ -746,19 +753,19 @@ extern "C" char *engine_verify_summary(uint64_t project_id, const char *text)
 
 		std::string src(text);
 		auto batch = verify_ffi::verify_claim_batch(
-			project_id, src, verify_ffi::kSourceKindAiSummary,
+			ctx, project_id, src, verify_ffi::kSourceKindAiSummary,
 			src.substr(0, verify_ffi::kSourceRefMaxLen));
 
 		// ── End-to-end drift detection ──
 		// Cross-reference AI claims against the actual codebase state.
 		// Each drift finding represents a mismatch between documentation
 		// (or AI summary) and the code.
-		auto doc_drifts = verify::detectDocumentationDrift(
-			*engineContext().store, project_id);
-		auto cap_drifts = verify::detectCapabilityDrift(
-			*engineContext().store, project_id);
-		auto arch_drifts = verify::detectArchitectureDrift(
-			*engineContext().store, project_id);
+		auto doc_drifts = verify::detectDocumentationDrift(*ctx->store,
+								   project_id);
+		auto cap_drifts =
+			verify::detectCapabilityDrift(*ctx->store, project_id);
+		auto arch_drifts = verify::detectArchitectureDrift(*ctx->store,
+								   project_id);
 		size_t total_drifts = doc_drifts.size() + cap_drifts.size() +
 				      arch_drifts.size();
 
@@ -845,8 +852,11 @@ extern "C" char *engine_verify_summary(uint64_t project_id, const char *text)
 //
 // MEMORY: caller MUST free the returned char* via engine_free_string().
 // THREAD SAFETY: single-threaded (GraphStore writer invariant).
-extern "C" char *engine_get_verifier_registry_status(uint64_t project_id)
+extern "C" char *engine_get_verifier_registry_status(engine_t handle,
+						     uint64_t project_id)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
 		// Idempotent: arms the registry if empty without relying on a
@@ -875,10 +885,10 @@ extern "C" char *engine_get_verifier_registry_status(uint64_t project_id)
 		int64_t entity_count = 0;
 		int64_t relation_count = 0;
 		bool backend_ready = false;
-		if (engineContext().store && project_id != 0) {
+		if (ctx->store && project_id != 0) {
 			backend_ready = verify::evidence_backend_ready(
-				engineContext().store.get(), project_id,
-				&entity_count, &relation_count);
+				ctx->store.get(), project_id, &entity_count,
+				&relation_count);
 		}
 
 		util::JsonWriter j;

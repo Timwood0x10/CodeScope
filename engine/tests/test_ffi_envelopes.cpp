@@ -28,6 +28,7 @@
 #include <cstdio>
 #include <string>
 #include <unistd.h>
+#include "test_engine_handle.h"
 
 static const char *kDbPath = "/tmp/codescope_test_ffi_envelopes.db";
 /// A path that does not exist, so indexing has nothing to walk.
@@ -62,7 +63,8 @@ int main()
 	unlink((std::string(kDbPath) + "-wal").c_str());
 	unlink((std::string(kDbPath) + "-shm").c_str());
 
-	if (engine_init(kDbPath) != 0) {
+	g_engine = engine_create(kDbPath);
+	if (!g_engine) {
 		fprintf(stderr, "FAIL: engine_init(%s)\n", kDbPath);
 		return 1;
 	}
@@ -74,50 +76,60 @@ int main()
 
 	// ── Batch 2: the exports that gained a try/catch ────────────
 	expectEnvelope("engine_index_project",
-		       engine_index_project(pid, kMissingDir, ""));
-	expectEnvelope("engine_index_files", engine_index_files(pid, "[]", 0));
+		       engine_index_project(g_engine, pid, kMissingDir, ""));
+	expectEnvelope("engine_index_files",
+		       engine_index_files(g_engine, pid, "[]", 0));
 	expectEnvelope("engine_scan_project",
-		       engine_scan_project(pid, kMissingDir, ""));
-	expectEnvelope("engine_get_module_tree", engine_get_module_tree(pid));
-	expectEnvelope("engine_find_symbol", engine_find_symbol(pid, ""));
-	expectEnvelope("engine_enhance_project", engine_enhance_project(pid));
+		       engine_scan_project(g_engine, pid, kMissingDir, ""));
+	expectEnvelope("engine_get_module_tree",
+		       engine_get_module_tree(g_engine, pid));
+	expectEnvelope("engine_find_symbol",
+		       engine_find_symbol(g_engine, pid, ""));
+	expectEnvelope("engine_enhance_project",
+		       engine_enhance_project(g_engine, pid));
 	expectEnvelope("engine_get_enhancement_status",
-		       engine_get_enhancement_status(pid));
+		       engine_get_enhancement_status(g_engine, pid));
 	expectEnvelope("engine_unified_search",
-		       engine_unified_search(pid, "", 10));
+		       engine_unified_search(g_engine, pid, "", 10));
 	expectEnvelope("engine_find_callers_adaptive",
-		       engine_find_callers_adaptive(pid, "", ""));
+		       engine_find_callers_adaptive(g_engine, pid, "", ""));
 	expectEnvelope("engine_find_callees_adaptive",
-		       engine_find_callees_adaptive(pid, "", ""));
+		       engine_find_callees_adaptive(g_engine, pid, "", ""));
 	expectEnvelope("engine_find_callers_by_entity",
-		       engine_find_callers_by_entity(pid, 0));
+		       engine_find_callers_by_entity(g_engine, pid, 0));
 	expectEnvelope("engine_find_callees_by_entity",
-		       engine_find_callees_by_entity(pid, 0));
+		       engine_find_callees_by_entity(g_engine, pid, 0));
 	expectEnvelope("engine_get_entry_points_new",
-		       engine_get_entry_points_new(pid));
-	expectEnvelope("engine_project_overview", engine_project_overview(pid));
-	expectEnvelope("engine_trace_path", engine_trace_path(pid, "", ""));
+		       engine_get_entry_points_new(g_engine, pid));
+	expectEnvelope("engine_project_overview",
+		       engine_project_overview(g_engine, pid));
+	expectEnvelope("engine_trace_path",
+		       engine_trace_path(g_engine, pid, "", ""));
 	expectEnvelope("engine_explore_function",
-		       engine_explore_function(pid, "", 1, "both"));
-	expectEnvelope("engine_build_context", engine_build_context(pid, ""));
+		       engine_explore_function(g_engine, pid, "", 1, "both"));
+	expectEnvelope("engine_build_context",
+		       engine_build_context(g_engine, pid, ""));
 	expectEnvelope("engine_detect_ffi_boundaries",
-		       engine_detect_ffi_boundaries(pid));
+		       engine_detect_ffi_boundaries(g_engine, pid));
 	expectEnvelope("engine_build_project_state",
-		       engine_build_project_state(pid));
+		       engine_build_project_state(g_engine, pid));
 	expectEnvelope("engine_get_project_state",
-		       engine_get_project_state(pid));
-	expectEnvelope("engine_build_evidence", engine_build_evidence(pid, ""));
+		       engine_get_project_state(g_engine, pid));
+	expectEnvelope("engine_build_evidence",
+		       engine_build_evidence(g_engine, pid, ""));
 	// engine_verify_statement used to sit here; it was retired in favour of
 	// verify_claim, so the envelope check now covers engine_verify_claim —
 	// which this test did not cover at all before.
-	expectEnvelope("engine_verify_claim", engine_verify_claim(pid, ""));
+	expectEnvelope("engine_verify_claim",
+		       engine_verify_claim(g_engine, pid, ""));
 
 	// ── The two that gained `catch (...)` ──────────────────────
 	expectEnvelope("engine_search_semantic",
-		       engine_search_semantic(pid, "", 10));
+		       engine_search_semantic(g_engine, pid, "", 10));
 	expectEnvelope("engine_rebuild_csr", engine_rebuild_csr("", pid));
 
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 	unlink(kDbPath);
 	unlink((std::string(kDbPath) + "-wal").c_str());
 	unlink((std::string(kDbPath) + "-shm").c_str());

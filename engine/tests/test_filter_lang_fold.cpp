@@ -8,7 +8,8 @@
 
 #include <cstdio>
 
-namespace {
+namespace
+{
 
 int fail(const char *msg)
 {

@@ -77,44 +77,45 @@ int main()
 	// ── Test 1: classifyEntityLayer — Controller by name ────────────
 	{
 		CHECK(classifyEntityLayer("UserController", "/src/main.cpp") ==
-		       kLayerController);
+		      kLayerController);
 		CHECK(classifyEntityLayer("usercontroller", "/src/main.cpp") ==
-		       kLayerController); // case-insensitive
+		      kLayerController); // case-insensitive
 		printf("  [PASS] classifyEntityLayer: Controller by name suffix\n");
 	}
 
 	// ── Test 2: classifyEntityLayer — Controller by path ────────────
 	{
-		CHECK(classifyEntityLayer("handler", "/src/controllers/user.go") ==
-		       kLayerController);
+		CHECK(classifyEntityLayer("handler",
+					  "/src/controllers/user.go") ==
+		      kLayerController);
 		CHECK(classifyEntityLayer("handler", "/api/v1/routes.ts") ==
-		       kLayerController);
+		      kLayerController);
 		printf("  [PASS] classifyEntityLayer: Controller by file path\n");
 	}
 
 	// ── Test 3: classifyEntityLayer — Service ───────────────────────
 	{
 		CHECK(classifyEntityLayer("UserService", "/src/main.cpp") ==
-		       kLayerService);
+		      kLayerService);
 		CHECK(classifyEntityLayer("auth", "/services/auth.py") ==
-		       kLayerService);
+		      kLayerService);
 		printf("  [PASS] classifyEntityLayer: Service by name/path\n");
 	}
 
 	// ── Test 4: classifyEntityLayer — Repository variants ───────────
 	{
 		CHECK(classifyEntityLayer("UserRepository", "/src/main.cpp") ==
-		       kLayerRepository);
+		      kLayerRepository);
 		CHECK(classifyEntityLayer("UserRepo", "/src/main.cpp") ==
-		       kLayerRepository);
+		      kLayerRepository);
 		CHECK(classifyEntityLayer("UserStore", "/src/main.cpp") ==
-		       kLayerRepository);
+		      kLayerRepository);
 		CHECK(classifyEntityLayer("UserDAO", "/src/main.cpp") ==
-		       kLayerRepository);
+		      kLayerRepository);
 		CHECK(classifyEntityLayer("user", "/repository/user.go") ==
-		       kLayerRepository);
+		      kLayerRepository);
 		CHECK(classifyEntityLayer("user", "/data/user.go") ==
-		       kLayerRepository);
+		      kLayerRepository);
 		printf("  [PASS] classifyEntityLayer: Repository variants\n");
 	}
 
@@ -157,7 +158,8 @@ int main()
 			     "/repository/user.go");
 		insertEntity(store, project_id, 21, "AdminController",
 			     "/controllers/admin.go");
-		insertCall(store, project_id, 20, 21); // Repository → Controller
+		insertCall(store, project_id, 20,
+			   21); // Repository → Controller
 
 		auto drifts = detectArchitectureDrift(store, project_id);
 		CHECK(drifts.size() == 1);
@@ -180,7 +182,8 @@ int main()
 			     "/controllers/user.go");
 		insertEntity(store, project_id, 31, "OrderController",
 			     "/controllers/order.go");
-		insertCall(store, project_id, 30, 31); // Controller → Controller
+		insertCall(store, project_id, 30,
+			   31); // Controller → Controller
 
 		auto drifts = detectArchitectureDrift(store, project_id);
 		CHECK(drifts.size() == 1);

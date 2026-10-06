@@ -1,7 +1,8 @@
 #include "test_e2e.h"
 
-int main() {
-    const char* code = R"(class Calculator {
+int main()
+{
+	const char *code = R"(class Calculator {
     int add(int a, int b) {
         return a + b;
     }
@@ -29,12 +30,8 @@ class Main {
 }
 )";
 
-    const char* defs[] = {"add", "Calculator", "multiply"};
-    runE2eTest("java", code, "/tmp/TestApp.java",
-               defs, 3,
-               "add", "multiply",
-               "add",
-               "compute",
-               "main", nullptr);
-    return 0;
+	const char *defs[] = { "add", "Calculator", "multiply" };
+	runE2eTest("java", code, "/tmp/TestApp.java", defs, 3, "add",
+		   "multiply", "add", "compute", "main", nullptr);
+	return 0;
 }

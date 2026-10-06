@@ -114,7 +114,7 @@ static void testShortestPathDirectEdge(store::GraphStore &store,
 	CHECK(jsonContains(result, "\"hops\":1"));
 	// Path should be [1, 2] — check both node IDs appear in order.
 	CHECK(jsonContains(result,
-			    "\"path\":[{\"node_id\":1},{\"node_id\":2}]"));
+			   "\"path\":[{\"node_id\":1},{\"node_id\":2}]"));
 	printf("  [PASS] findShortestPath: direct edge (1 hop)\n");
 }
 
@@ -135,8 +135,8 @@ static void testShortestPath2Hop(store::GraphStore &store, uint64_t project_id)
 	CHECK(jsonContains(result, "\"found\":true"));
 	CHECK(jsonContains(result, "\"hops\":2"));
 	CHECK(jsonContains(result,
-			    "\"path\":[{\"node_id\":10},{\"node_id\":11},"
-			    "{\"node_id\":12}]"));
+			   "\"path\":[{\"node_id\":10},{\"node_id\":11},"
+			   "{\"node_id\":12}]"));
 	printf("  [PASS] findShortestPath: 2-hop path\n");
 }
 
@@ -159,8 +159,8 @@ static void testShortestPath3Hop(store::GraphStore &store, uint64_t project_id)
 	CHECK(jsonContains(result, "\"found\":true"));
 	CHECK(jsonContains(result, "\"hops\":3"));
 	CHECK(jsonContains(result,
-			    "\"path\":[{\"node_id\":20},{\"node_id\":21},"
-			    "{\"node_id\":22},{\"node_id\":23}]"));
+			   "\"path\":[{\"node_id\":20},{\"node_id\":21},"
+			   "{\"node_id\":22},{\"node_id\":23}]"));
 	printf("  [PASS] findShortestPath: 3-hop path\n");
 }
 

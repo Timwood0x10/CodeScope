@@ -26,6 +26,7 @@
 #include <filesystem>
 #include <string>
 #include <unistd.h>
+#include "test_engine_handle.h"
 
 namespace fs = std::filesystem;
 
@@ -63,9 +64,9 @@ static void removeDb(const std::string &db)
 /// Index one directory and return the project id.
 static uint64_t indexDir(const char *dir, const char *name)
 {
-	uint64_t pid = engine_create_project(dir, name);
+	uint64_t pid = engine_create_project(g_engine, dir, name);
 	check(pid > 0, "create_project");
-	char *r = engine_index_project(pid, dir, nullptr);
+	char *r = engine_index_project(g_engine, pid, dir, nullptr);
 	check(r != nullptr, "index_project returns JSON");
 	const std::string out(r);
 	engine_free_string(r);
@@ -97,13 +98,14 @@ int main()
 	// files_with_symbols below.
 	writeFile(with_dir + "/comment_only.c", "/* no symbols here */\n");
 
-	check(engine_init(db_path.c_str()) == 0, "engine_init");
+	g_engine = engine_create(db_path.c_str());
+	check(g_engine != nullptr, "engine_init");
 	const uint64_t pid_calls = indexDir(with_dir.c_str(), "with-calls");
 	const uint64_t pid_none =
 		indexDir(without_dir.c_str(), "without-calls");
 
 	// ── 1. project_overview: ready_features reflects the real call graph ──
-	char *ov = engine_project_overview(pid_calls);
+	char *ov = engine_project_overview(g_engine, pid_calls);
 	check(ov != nullptr, "engine_project_overview returns JSON");
 	const std::string overview(ov);
 	engine_free_string(ov);
@@ -117,7 +119,7 @@ int main()
 	// ── 2. build_context: the call graph is available and sampled ────────
 	// An empty query maps to the \"general\" intent, the branch that reports
 	// callgraph_available and samples the edges.
-	char *bc = engine_build_context(pid_calls, "");
+	char *bc = engine_build_context(g_engine, pid_calls, "");
 	check(bc != nullptr, "engine_build_context returns JSON");
 	const std::string context(bc);
 	engine_free_string(bc);
@@ -130,7 +132,7 @@ int main()
 	      "the sample must name the caller and the callee");
 
 	// ── 3. the same question through the enhancement API agrees ─────────
-	char *st = engine_get_enhancement_status(pid_calls);
+	char *st = engine_get_enhancement_status(g_engine, pid_calls);
 	check(st != nullptr, "engine_get_enhancement_status returns JSON");
 	const std::string status(st);
 	engine_free_string(st);
@@ -150,7 +152,7 @@ int main()
 	// project's ids, and INSERT OR IGNORE dropped every entity row of the new
 	// project — a project with semantic_records and zero entities, i.e. every
 	// tool answering "not found" right after a successful index.
-	char *fs = engine_find_symbol(pid_none, "lonely");
+	char *fs = engine_find_symbol(g_engine, pid_none, "lonely");
 	check(fs != nullptr, "engine_find_symbol returns JSON");
 	const std::string found(fs);
 	engine_free_string(fs);
@@ -160,7 +162,7 @@ int main()
 	      "disappear silently)");
 
 	// ── 4. negative control: no call edge -> not available ──────────────
-	char *ov2 = engine_project_overview(pid_none);
+	char *ov2 = engine_project_overview(g_engine, pid_none);
 	check(ov2 != nullptr, "overview for the call-free project");
 	const std::string none(ov2);
 	engine_free_string(ov2);
@@ -168,7 +170,7 @@ int main()
 	      "ready_features.call_graph must stay false without call edges — the "
 	      "ratio is a measurement, not a constant");
 
-	char *bc2 = engine_build_context(pid_none, "");
+	char *bc2 = engine_build_context(g_engine, pid_none, "");
 	check(bc2 != nullptr, "build_context for the call-free project");
 	const std::string none_ctx(bc2);
 	engine_free_string(bc2);
@@ -184,7 +186,7 @@ int main()
 	// files that produced a symbol, so a 1,579-file project reported 672. The
 	// fixture gives the two numbers different values on purpose: three indexed
 	// files, two of which carry symbols.
-	char *gs = engine_get_graph_stats(0);
+	char *gs = engine_get_graph_stats(g_engine, 0);
 	check(gs != nullptr, "engine_get_graph_stats returns JSON");
 	const std::string stats(gs);
 	engine_free_string(gs);
@@ -206,7 +208,8 @@ int main()
 	check(files_with_symbols == 2,
 	      "files_with_symbols must count only the files that produced entities");
 
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 	removeDb(db_path);
 	fs::remove_all(with_dir);
 	fs::remove_all(without_dir);

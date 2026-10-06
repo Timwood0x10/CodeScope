@@ -1,8 +1,9 @@
 #include "test_e2e.h"
 
-int main() {
-    // C FP verification: builtins + stdlib + compiler intrinsics
-    const char* code = R"(
+int main()
+{
+	// C FP verification: builtins + stdlib + compiler intrinsics
+	const char *code = R"(
 // User-defined function — should appear in callees
 int user_function(int x) {
     return x * 2;
@@ -34,13 +35,10 @@ int wrapper(int x) {
 }
 )";
 
-    const char* builtins[] = {
-        "printf", "fprintf", "snprintf",
-        "__builtin_expect",
-        nullptr
-    };
+	const char *builtins[] = { "printf", "fprintf", "snprintf",
+				   "__builtin_expect", nullptr };
 
-    runFPVerificationTest("c", code, "/tmp/test_fp_c.c",
-                          "mainFunc", "user_function", builtins);
-    return 0;
+	runFPVerificationTest("c", code, "/tmp/test_fp_c.c", "mainFunc",
+			      "user_function", builtins);
+	return 0;
 }

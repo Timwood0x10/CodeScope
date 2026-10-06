@@ -54,7 +54,8 @@ struct VerifyResult {
 // THREAD SAFETY: single-threaded only (relies on the GraphStore
 // single-writer invariant documented in store.h). The caller must hold
 // the engine store singleton.
-VerifyResult verify_one_claim(uint64_t project_id, const verify::Claim &claim);
+VerifyResult verify_one_claim(EngineContext *ctx, uint64_t project_id,
+			      const verify::Claim &claim);
 
 // BatchResult bundles the output of verify_claim_batch so callers can
 // wrap it in their own JSON envelope (summary, reality, review, etc.)
@@ -96,8 +97,8 @@ struct BatchResult {
 // @param source_ref  Short reference string for the evidence table.
 //
 // THREAD SAFETY: single-threaded only (same invariant as verify_one_claim).
-BatchResult verify_claim_batch(uint64_t project_id, const std::string &text,
-			       const char *source_kind,
+BatchResult verify_claim_batch(EngineContext *ctx, uint64_t project_id,
+			       const std::string &text, const char *source_kind,
 			       const std::string &source_ref);
 
 } // namespace verify_ffi

@@ -36,14 +36,14 @@
 #include "store/store_parse_failure.h"
 
 char *engine_index_project_membulk(
-	uint64_t project_id, const std::string &dir, uint64_t max_file_size,
-	const FilterPolicy &filter,
+	EngineContext *ctx, uint64_t project_id, const std::string &dir,
+	uint64_t max_file_size, const FilterPolicy &filter,
 	const std::vector<std::pair<std::string, std::string>> &job_lang,
 	const std::unordered_map<std::string, const TSLanguage *> &lang_ptrs,
 	const std::unordered_set<std::string> &known_failures, bool is_reindex,
 	bool mode_fast, bool mode_deep)
 {
-	if (!engineContext().store)
+	if (!ctx || !ctx->store)
 		return dupString(
 			"{\"ok\":false,\"error\":\"engine not initialized\"}");
 
@@ -430,7 +430,7 @@ char *engine_index_project_membulk(
 	// indexes and skip the per-file DELETE on a fresh DB.
 	int total_indexed = static_cast<int>(agg.size());
 	auto t_flush_start = steady_clock::now();
-	if (!agg.flush(*engineContext().store, project_id, is_reindex)) {
+	if (!agg.flush(*ctx->store, project_id, is_reindex)) {
 		return dupString(
 			"{\"ok\":false,\"error\":\"membulk flush failed\"}");
 	}
@@ -441,7 +441,7 @@ char *engine_index_project_membulk(
 	// empty, and an unparseable file was dropped with no record anywhere.
 	// Runs after the bulk transaction (agg.flush) has closed, so the
 	// auxiliary connection does not contend with it.
-	store::flushParseFailures();
+	store::flushParseFailures(ctx);
 	auto t_flush_end = steady_clock::now();
 	fprintf(stderr,
 		"engine: membulk_flush=%lldms (files=%d, is_reindex=%d) "
@@ -456,7 +456,7 @@ char *engine_index_project_membulk(
 	post_paths.reserve(job_lang.size());
 	for (const auto &pl : job_lang)
 		post_paths.push_back(pl.first);
-	return postParsePhase(project_id, dir, post_paths, filter, is_reindex,
-			      mode_fast, mode_deep, time_parse_ms, 0,
-			      total_indexed);
+	return postParsePhase(ctx, project_id, dir, post_paths, filter,
+			      is_reindex, mode_fast, mode_deep, time_parse_ms,
+			      0, total_indexed);
 }

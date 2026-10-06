@@ -150,7 +150,7 @@ int main()
 		store, project_id, 1, 2,
 		graph::relationTypeToInt(graph::EdgeType::References)));
 	CHECK(insertRelation(store, project_id, 1, 2,
-			      graph::relationTypeToInt(graph::EdgeType::Calls)));
+			     graph::relationTypeToInt(graph::EdgeType::Calls)));
 	CHECK(insertRelation(
 		store, project_id, 1, 2,
 		graph::relationTypeToInt(graph::EdgeType::Defines)));
@@ -163,10 +163,10 @@ int main()
 		store, project_id, 1, 2,
 		graph::relationTypeToInt(graph::EdgeType::Calls));
 	CHECK(!dup_inserted &&
-	       "duplicate Calls(1) relation must be rejected by the unique "
-	       "index (INSERT OR IGNORE should report 0 changes)");
+	      "duplicate Calls(1) relation must be rejected by the unique "
+	      "index (INSERT OR IGNORE should report 0 changes)");
 	CHECK(countRelations(store, project_id, 1, 2, 1) == 1 &&
-	       "exactly one Calls(1) relation must exist for the pair");
+	      "exactly one Calls(1) relation must exist for the pair");
 
 	// ── Query boundary: callees of "caller" must be ONLY "callee" ──
 	// Before Step 1 the query matched `CALLS|RELATES` and returned all
@@ -176,40 +176,40 @@ int main()
 	std::string callees = engine.getCallees(project_id, "caller", nullptr);
 	printf("  [debug] getCallees(caller) = %s\n", callees.c_str());
 	CHECK(callees.find("callee") != std::string::npos &&
-	       "getCallees(caller) must contain the callee (Calls edge)");
+	      "getCallees(caller) must contain the callee (Calls edge)");
 	// "callee" must appear exactly once — no duplicate CALLS edges and
 	// no References/Defines/Contains leakage.
 	int callee_hits = countOccurrences(callees, "\"name\":\"callee\"");
 	CHECK(callee_hits == 1 &&
-	       "getCallees(caller) must return callee exactly once (no "
-	       "duplicate typed edges, no non-Calls contamination)");
+	      "getCallees(caller) must return callee exactly once (no "
+	      "duplicate typed edges, no non-Calls contamination)");
 
 	std::string callers = engine.getCallers(project_id, "callee", nullptr);
 	printf("  [debug] getCallers(callee) = %s\n", callers.c_str());
 	CHECK(callers.find("caller") != std::string::npos &&
-	       "getCallers(callee) must contain the caller (Calls edge)");
+	      "getCallers(callee) must contain the caller (Calls edge)");
 	int caller_hits = countOccurrences(callers, "\"name\":\"caller\"");
 	CHECK(caller_hits == 1 &&
-	       "getCallers(callee) must return caller exactly once");
+	      "getCallers(callee) must return caller exactly once");
 
 	// ── Verify total counts in the JSON match the deduped edge set ──
 	// total should be 1 for both directions (only the Calls edge).
 	CHECK(callees.find("\"total\":1") != std::string::npos &&
-	       "getCallees total must be 1 (single Calls edge)");
+	      "getCallees total must be 1 (single Calls edge)");
 	CHECK(callers.find("\"total\":1") != std::string::npos &&
-	       "getCallers total must be 1 (single Calls edge)");
+	      "getCallers total must be 1 (single Calls edge)");
 
 	// ── Verify SQLite relation layer is unaffected by the query ──
 	// All four typed relations still exist in SQLite; only the query
 	// boundary filters to Calls(1).
 	CHECK(countRelations(store, project_id, 1, 2, 0) == 1 &&
-	       "References(0) relation preserved in SQLite");
+	      "References(0) relation preserved in SQLite");
 	CHECK(countRelations(store, project_id, 1, 2, 1) == 1 &&
-	       "Calls(1) relation preserved in SQLite (deduped)");
+	      "Calls(1) relation preserved in SQLite (deduped)");
 	CHECK(countRelations(store, project_id, 1, 2, 2) == 1 &&
-	       "Defines(2) relation preserved in SQLite");
+	      "Defines(2) relation preserved in SQLite");
 	CHECK(countRelations(store, project_id, 1, 2, 3) == 1 &&
-	       "Contains(3) relation preserved in SQLite");
+	      "Contains(3) relation preserved in SQLite");
 
 	store.close();
 	unlink(kDbPath);

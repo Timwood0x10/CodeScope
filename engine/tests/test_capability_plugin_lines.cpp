@@ -33,7 +33,7 @@ static std::vector<std::string> capabilityNames(store::GraphStore &store,
 	const char *sql =
 		"SELECT name FROM capability WHERE project_id=? ORDER BY id";
 	CHECK(sqlite3_prepare_v2(store.handle(), sql, -1, &stmt, nullptr) ==
-	       SQLITE_OK);
+	      SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
 		const char *n = reinterpret_cast<const char *>(

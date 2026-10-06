@@ -21,16 +21,19 @@
 
 using namespace store;
 
-static const char *tmpDir() {
+static const char *tmpDir()
+{
 	const char *d = getenv("TMPDIR");
 	return d ? d : "/tmp";
 }
 
-static std::string dbPath() {
+static std::string dbPath()
+{
 	return std::string(tmpDir()) + "/codescope_test_membulk.db";
 }
 
-static int countSemanticRecords(GraphStore &store, uint64_t project_id) {
+static int countSemanticRecords(GraphStore &store, uint64_t project_id)
+{
 	sqlite3_stmt *stmt = nullptr;
 	std::string sql =
 		"SELECT COUNT(*) FROM semantic_records WHERE project_id = " +
@@ -45,7 +48,8 @@ static int countSemanticRecords(GraphStore &store, uint64_t project_id) {
 	return count;
 }
 
-static FileResult makeFakeResult(const std::string &path, int records) {
+static FileResult makeFakeResult(const std::string &path, int records)
+{
 	FileResult fr;
 	fr.file_path = path;
 	fr.language = "cpp";
@@ -64,19 +68,20 @@ static FileResult makeFakeResult(const std::string &path, int records) {
 
 static int g_failures = 0;
 
-#define CHECK(cond, msg)                                                      \
-	do {                                                                   \
-		if (!(cond)) {                                                 \
-			fprintf(stderr, "FAIL: %s (%s:%d)\n", msg, __FILE__,   \
-				__LINE__);                                        \
-			++g_failures;                                         \
-		} else {                                                       \
-			fprintf(stderr, "ok: %s\n", msg);                      \
-		}                                                              \
+#define CHECK(cond, msg)                                                     \
+	do {                                                                 \
+		if (!(cond)) {                                               \
+			fprintf(stderr, "FAIL: %s (%s:%d)\n", msg, __FILE__, \
+				__LINE__);                                   \
+			++g_failures;                                        \
+		} else {                                                     \
+			fprintf(stderr, "ok: %s\n", msg);                    \
+		}                                                            \
 	} while (0)
 
 // Test 1: Empty aggregator flushes successfully and reports size 0.
-static void testEmptyFlushReturnsTrue() {
+static void testEmptyFlushReturnsTrue()
+{
 	GraphStore store;
 	unlink(dbPath().c_str());
 	CHECK(store.open(dbPath().c_str()), "open store");
@@ -91,7 +96,8 @@ static void testEmptyFlushReturnsTrue() {
 
 // Test 2: Single worker merges 4 FileResult objects, flush persists 4 rows
 // (1 record each).
-static void testSingleWorkerMerge() {
+static void testSingleWorkerMerge()
+{
 	GraphStore store;
 	unlink(dbPath().c_str());
 	CHECK(store.open(dbPath().c_str()), "open store");
@@ -107,12 +113,12 @@ static void testSingleWorkerMerge() {
 	agg.mergeFrom(std::move(local));
 	CHECK(agg.size() == 4, "single worker size == 4");
 	CHECK(agg.flush(store, pid, false), "single worker flush returns true");
-	CHECK(countSemanticRecords(store, pid) == 4,
-	      "single worker -> 4 rows");
+	CHECK(countSemanticRecords(store, pid) == 4, "single worker -> 4 rows");
 }
 
 // Test 3: 8 threads each merge 16 FileResult objects (128 total).
-static void testMultiWorkerConcurrentMerge() {
+static void testMultiWorkerConcurrentMerge()
+{
 	GraphStore store;
 	unlink(dbPath().c_str());
 	CHECK(store.open(dbPath().c_str()), "open store");
@@ -150,7 +156,8 @@ static void testMultiWorkerConcurrentMerge() {
 // the error string is exposed. We simulate by flushing to a store that has
 // been closed (handle() becomes invalid) and capture stderr for
 // "module=store_membulk".
-static void testFlushFailureRollsBackAndLogs() {
+static void testFlushFailureRollsBackAndLogs()
+{
 	GraphStore store;
 	unlink(dbPath().c_str());
 	CHECK(store.open(dbPath().c_str()), "open store");
@@ -182,7 +189,8 @@ static void testFlushFailureRollsBackAndLogs() {
 	}
 }
 
-int main() {
+int main()
+{
 	testEmptyFlushReturnsTrue();
 	testSingleWorkerMerge();
 	testMultiWorkerConcurrentMerge();

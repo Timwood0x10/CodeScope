@@ -6,7 +6,7 @@
 **审查人**: AI Agent
 
 > **后续处理状态（2026-10-04 更新）**：本报告的阻塞项与 P1 已在 v0.2.7 发布前及 0.2.8 开发中处理完毕，
-> 详见 §6.2 / §6.3 / §6.4 的复选框与提交号。仍开放的是 TD-1（刀 2/3）与 TD-5（Windows 并行索引）。
+> 详见 §6.2 / §6.3 / §6.4 的复选框与提交号。TD-1 已按三刀方案完成（刀 3 见下方复选框；TD-1 关闭）；仍开放的只有 TD-5 的 Windows **运行时**验收（代码已完成，`windows-smoke` 待首次跑绿）。
 
 ---
 
@@ -403,7 +403,7 @@ runFPVerificationTest("cpp", code, "/tmp/test_fp_cpp.cpp",
 | 规范条目 | 状态 | 违规详情 |
 |---------|------|---------|
 | §2 Rust `unsafe` 安全注释 | ⚠️ 部分合规 | `ffi/mod.rs` 中 62 处 `unsafe` 调用，多数有 `# Safety` 文档但部分内联 unsafe 块缺少详细不变量说明 |
-| §2 "Avoid global/static mutable state" | ❌ 不合规 | `g_store`, `g_query`, `g_parser` 全局可变单例 (TD-1) |
+| §2 "Avoid global/static mutable state" | ✅ 已合规（TD-1 关闭） | 三个全局单例已删除：实例由 `engine_create()` 创建、以 `engine_t` 句柄显式传入 73 个有状态入口（刀 1→2→3 完成）。残留的进程级子系统（VerifierRegistry、异步构建器、IndexProgress、parse-failure 缓冲）已在 `engine_context.h`/`engine.h` 中显式记录为限制 |
 | §4 "Every public function must have tests" | ⚠️ 部分合规 | C++ 侧测试覆盖较好 (96 个测试文件)，Rust 侧仅 3 个集成测试文件 |
 | §4 "Property-based testing where appropriate" | ❌ 不合规 | 未使用 `proptest` |
 | §4 "Integration tests must use real dependencies" | ⚠️ 部分合规 | Rust 测试使用空 DB 而非真实索引数据 (TEST-1) |
@@ -439,7 +439,7 @@ runFPVerificationTest("cpp", code, "/tmp/test_fp_cpp.cpp",
 
 ### 6.4 中期技术债务
 
-- [ ] **TD-1**: 引擎状态从全局单例迁移为句柄传递 —— **进行中**：刀 1（接缝）新增 `engine/src/engine_context.{h,cpp}`，三个全局收进 `EngineContext` 并以引用别名保持调用点不变；刀 2 已把 **340 处**调用点全部迁到 `engineContext().store/.query/.parser`、删除别名、把单例改为**函数内静态对象**（不再有全局对象）。每批以 43 工具差分矩阵验证字节一致；重索引差异只有 85 条新增的 `→ engineContext` 边。刀 3（FFI 传句柄、支持多实例）待做
+- [x] **TD-1**: 引擎状态从全局单例迁移为句柄传递 —— **已完成（三刀）**：刀 1（接缝）新增 `engine/src/engine_context.{h,cpp}`，三个全局收进 `EngineContext` 并以引用别名保持调用点不变；刀 2 已把 **340 处**调用点全部迁到 `engineContext().store/.query/.parser`、删除别名、把单例改为**函数内静态对象**（不再有全局对象）。每批以 43 工具差分矩阵验证字节一致。**刀 3 已完成**：`engine_create()`/`engine_destroy()` + **73 个有状态入口接收 `engine_t` 句柄**，`engineContext()` 访问器删除；Rust 侧句柄由 `ffi` 层持有并透传，C++ 测试 464 处、Rust 4 个集成测试同步迁移；新增 `test_engine_handles.cpp`（可空句柄契约 + 同进程双实例隔离）。验证：43 工具矩阵旧 vs 新**逐字节相同**、同一源码树索引出**相同 1850 条调用边**、`make test` 143+134 全绿、accuracy gate PASSED。仍未随句柄化的进程级子系统（VerifierRegistry／异步构建器／IndexProgress／parse-failure 缓冲）已在 `engine_context.h` 记录
 - [x] **TD-3**: C++ 侧引入 JSON 库替代手写序列化 —— 已完成：`util::JsonWriter` 全量迁移，转义收敛到 `util::jsonEscapeString`，重复定义/声明删除（`d44f0fd`、`ed045ff`、`9d48238`、`4bb5e6a`）
 - [x] **TD-5**: Windows 平台并行索引支持 —— 代码已完成：新增跨平台映射层 `server/src/scheduler/mapped_file.rs`（POSIX `mmap` / Windows section object，同一契约），`shm.rs` 与 `chunk_queue.rs` 复用并删除重复映射代码；硬编码 `/tmp` 改为 `std::env::temp_dir()`；`main.rs` 解除 `index-parallel` / `chunk-worker` 的 Windows 门禁。交叉编译（`x86_64-pc-windows-gnu`）0 error 且产出 PE32+ `codescope.exe`，宿主端到端两条调度路径均跑通（1766 节点），`dev.yml` 增加 `windows-smoke`。**剩余**：`windows-smoke` 需在真实 Windows runner 上首次跑绿（尚未执行过），且 Windows 上 merge 步骤仍依赖 `sqlite3` CLI
 - [x] 增加 `proptest` 覆盖参数 clamping 和边界条件 —— 已完成：`tools/clamp.rs`（depth/radius/edge_type/limit/max_communities/max_members/findings 的"永不截断"性质）、`scheduler/worker.rs`（`CODESCOPE_EXCLUDE_PATHS` 转义往返）、`mcp/protocol.rs`（JSON 可解析 + 转义往返）

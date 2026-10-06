@@ -1,7 +1,8 @@
 #include "test_e2e.h"
 
-int main() {
-    const char* code = R"(int add(int a, int b) {
+int main()
+{
+	const char *code = R"(int add(int a, int b) {
     return a + b;
 }
 
@@ -25,12 +26,8 @@ int main() {
 }
 )";
 
-    const char* defs[] = {"add", "multiply", "compute"};
-    runE2eTest("c", code, "/tmp/test_math.c",
-               defs, 3,
-               "add", "multiply",
-               "add",
-               "compute",
-               "main", nullptr);
-    return 0;
+	const char *defs[] = { "add", "multiply", "compute" };
+	runE2eTest("c", code, "/tmp/test_math.c", defs, 3, "add", "multiply",
+		   "add", "compute", "main", nullptr);
+	return 0;
 }

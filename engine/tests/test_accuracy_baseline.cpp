@@ -29,6 +29,7 @@
 #include <string>
 #include <unistd.h>
 #include <vector>
+#include "test_engine_handle.h"
 
 static void check(bool cond, const char *msg)
 {
@@ -92,12 +93,14 @@ int main()
 	char db_path[] = "/tmp/test_accuracy_baseline.db";
 	unlink(db_path);
 
-	check(engine_init(db_path) == 0, "engine_init");
+	g_engine = engine_create(db_path);
+	check(g_engine != nullptr, "engine_init");
 
-	uint64_t pid = engine_create_project(proj_dir, "accuracy-baseline");
+	uint64_t pid =
+		engine_create_project(g_engine, proj_dir, "accuracy-baseline");
 	check(pid > 0, "create_project");
 
-	char *idx = engine_index_project(pid, proj_dir, nullptr);
+	char *idx = engine_index_project(g_engine, pid, proj_dir, nullptr);
 	check(idx != nullptr, "index_project");
 	check(strstr(idx, "\"ok\":true") != nullptr, "index_project ok");
 	engine_free_string(idx);
@@ -146,7 +149,8 @@ int main()
 	// Probe the query API for a known call edge: compute → multiply.
 	// Step 0 only records whether the probe returned the expected name;
 	// it does NOT fail on miss (the baseline is observational).
-	char *callees_of_compute = engine_get_callees(pid, "compute", nullptr);
+	char *callees_of_compute =
+		engine_get_callees(g_engine, pid, "compute", nullptr);
 	bool compute_calls_multiply = false;
 	if (callees_of_compute) {
 		compute_calls_multiply =
@@ -155,7 +159,7 @@ int main()
 	}
 
 	char *callers_of_multiply =
-		engine_get_callers(pid, "multiply", nullptr);
+		engine_get_callers(g_engine, pid, "multiply", nullptr);
 	bool multiply_called_by_compute = false;
 	if (callers_of_multiply) {
 		multiply_called_by_compute =
@@ -203,6 +207,7 @@ int main()
 		fclose(out);
 	}
 
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 	return 0;
 }

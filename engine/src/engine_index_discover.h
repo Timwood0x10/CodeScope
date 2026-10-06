@@ -6,6 +6,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "engine_context.h"
 #include "filter_policy.h"
 
 namespace engine_index_discover
@@ -36,8 +37,8 @@ struct FileJob {
 // @param err_json    [out] JSON error payload when returning -1.
 // @return 0 on success (jobs populated), -1 on scan error (err_json set).
 // @throws nothing — filesystem exceptions are caught internally.
-int collectFileJobs(uint64_t project_id, const std::string &dir,
-		    FilterPolicy &filter,
+int collectFileJobs(EngineContext *ctx, uint64_t project_id,
+		    const std::string &dir, FilterPolicy &filter,
 		    const std::unordered_set<std::string> &scan_state,
 		    std::vector<FileJob> &jobs, bool &is_reindex,
 		    std::string &err_json);

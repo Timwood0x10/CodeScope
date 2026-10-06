@@ -69,11 +69,10 @@ const char *failReasonToString(FailReason r)
 	return "unknown";
 }
 
-bool isKnownParseFailure(uint64_t project_id, const std::string &file_path,
-			 int retry_max)
+bool isKnownParseFailure(EngineContext *ctx, uint64_t project_id,
+			 const std::string &file_path, int retry_max)
 {
-	sqlite3 *db = engineContext().store ? engineContext().store->handle() :
-					      nullptr;
+	sqlite3 *db = ctx->store ? ctx->store->handle() : nullptr;
 	if (!db) {
 		fprintf(stderr, "store: engine store not initialised "
 				"[module=store, method=isKnownParseFailure]\n");
@@ -112,7 +111,7 @@ bool isKnownParseFailure(uint64_t project_id, const std::string &file_path,
 // writer transaction rolls back (M1 in CODE_REVIEW_SCHED_CHANGES). The
 // connection is cached and re-opened if the underlying DB path changes
 // (e.g. several index runs within one process).
-static sqlite3 *auxFailureDb()
+static sqlite3 *auxFailureDb(EngineContext *ctx)
 {
 	// GUARD: parse-worker threads call recordParseFailure concurrently
 	// (engine_index_project.cpp spawns N workers). The static `db` /
@@ -126,9 +125,9 @@ static sqlite3 *auxFailureDb()
 
 	static std::string cached_path;
 	static sqlite3 *db = nullptr;
-	if (!engineContext().store)
+	if (!ctx || !ctx->store)
 		return nullptr;
-	const std::string path = engineContext().store->dbPath();
+	const std::string path = ctx->store->dbPath();
 	if (db && cached_path != path) {
 		sqlite3_close(db);
 		db = nullptr;
@@ -159,10 +158,11 @@ static sqlite3 *auxFailureDb()
 	return db;
 }
 
-void recordParseFailure(uint64_t project_id, const std::string &file_path,
-			const std::string &lang, const std::string &reason)
+void recordParseFailure(EngineContext *ctx, uint64_t project_id,
+			const std::string &file_path, const std::string &lang,
+			const std::string &reason)
 {
-	sqlite3 *db = auxFailureDb();
+	sqlite3 *db = auxFailureDb(ctx);
 	if (!db) {
 		fprintf(stderr, "store: aux failure db unavailable "
 				"[module=store, method=recordParseFailure]\n");
@@ -213,7 +213,7 @@ void bufferParseFailure(uint64_t project_id, const std::string &file_path,
 	g_failure_buf.push_back({ project_id, file_path, lang, reason });
 }
 
-int flushParseFailures()
+int flushParseFailures(EngineContext *ctx)
 {
 	// Swap out the buffer under the lock so we can flush without
 	// holding the lock during SQLite writes.
@@ -225,7 +225,7 @@ int flushParseFailures()
 	if (batch.empty())
 		return 0;
 
-	sqlite3 *db = auxFailureDb();
+	sqlite3 *db = auxFailureDb(ctx);
 	if (!db) {
 		fprintf(stderr, "store: aux failure db unavailable "
 				"[module=store, method=flushParseFailures]\n");
@@ -291,10 +291,9 @@ int flushParseFailures()
 	return static_cast<int>(batch.size());
 }
 
-int resetParseFailures(uint64_t project_id)
+int resetParseFailures(EngineContext *ctx, uint64_t project_id)
 {
-	sqlite3 *db = engineContext().store ? engineContext().store->handle() :
-					      nullptr;
+	sqlite3 *db = ctx->store ? ctx->store->handle() : nullptr;
 	if (!db) {
 		fprintf(stderr, "store: engine store not initialised "
 				"[module=store, method=resetParseFailures]\n");
@@ -316,10 +315,10 @@ int resetParseFailures(uint64_t project_id)
 	return sqlite3_changes(db);
 }
 
-std::string getParseFailuresJson(uint64_t project_id, int limit)
+std::string getParseFailuresJson(EngineContext *ctx, uint64_t project_id,
+				 int limit)
 {
-	sqlite3 *db = engineContext().store ? engineContext().store->handle() :
-					      nullptr;
+	sqlite3 *db = ctx->store ? ctx->store->handle() : nullptr;
 	if (!db) {
 		fprintf(stderr,
 			"store: engine store not initialised "
@@ -372,11 +371,10 @@ std::string getParseFailuresJson(uint64_t project_id, int limit)
 	return json;
 }
 
-bool loadKnownParseFailures(uint64_t project_id, int retry_max,
-			    std::vector<std::string> &out_paths)
+bool loadKnownParseFailures(EngineContext *ctx, uint64_t project_id,
+			    int retry_max, std::vector<std::string> &out_paths)
 {
-	sqlite3 *db = engineContext().store ? engineContext().store->handle() :
-					      nullptr;
+	sqlite3 *db = ctx->store ? ctx->store->handle() : nullptr;
 	if (!db) {
 		fprintf(stderr,
 			"store: engine store not initialised "

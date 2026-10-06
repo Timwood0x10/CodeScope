@@ -41,14 +41,14 @@
 // every capability coverage ratio. Reads the canonical `entity` table — never
 // the deprecated `graph_nodes`/`symbols` tables — so the count reflects real
 // indexed data.
-static int ffi_count_eligible_entities(uint64_t project_id)
+static int ffi_count_eligible_entities(EngineContext *ctx, uint64_t project_id)
 {
 	sqlite3_stmt *stmt = nullptr;
 	int total = 0;
 	const char *sql =
 		"SELECT COUNT(*) FROM entity WHERE project_id = ? AND kind IN (0,1)";
-	if (sqlite3_prepare_v2(engineContext().store->handle(), sql, -1, &stmt,
-			       nullptr) == SQLITE_OK) {
+	if (sqlite3_prepare_v2(ctx->store->handle(), sql, -1, &stmt, nullptr) ==
+	    SQLITE_OK) {
 		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 		if (sqlite3_step(stmt) == SQLITE_ROW)
 			total = sqlite3_column_int(stmt, 0);
@@ -57,7 +57,7 @@ static int ffi_count_eligible_entities(uint64_t project_id)
 		fprintf(stderr,
 			"engine_get_capabilities: entity count probe failed: %s "
 			"[module=ffi, method=engine_get_capabilities]\n",
-			sqlite3_errmsg(engineContext().store->handle()));
+			sqlite3_errmsg(ctx->store->handle()));
 	}
 	return total;
 }
@@ -66,7 +66,8 @@ static int ffi_count_eligible_entities(uint64_t project_id)
 // one Calls relation (relation.type=1) as source or target. This is the
 // canonical signal that the call graph has been built for them. Returns 0 on
 // any error. Used to compute the call_graph coverage ratio.
-static int ffi_count_callgraph_ready_entities(uint64_t project_id)
+static int ffi_count_callgraph_ready_entities(EngineContext *ctx,
+					      uint64_t project_id)
 {
 	sqlite3_stmt *stmt = nullptr;
 	int ready = 0;
@@ -80,8 +81,8 @@ static int ffi_count_callgraph_ready_entities(uint64_t project_id)
 		"  SELECT target_id AS src FROM relation WHERE project_id=? AND type=1"
 		" )"
 		")";
-	if (sqlite3_prepare_v2(engineContext().store->handle(), sql, -1, &stmt,
-			       nullptr) == SQLITE_OK) {
+	if (sqlite3_prepare_v2(ctx->store->handle(), sql, -1, &stmt, nullptr) ==
+	    SQLITE_OK) {
 		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 		sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
 		if (sqlite3_step(stmt) == SQLITE_ROW)
@@ -91,7 +92,7 @@ static int ffi_count_callgraph_ready_entities(uint64_t project_id)
 		fprintf(stderr,
 			"engine_get_capabilities: callgraph count probe failed: %s "
 			"[module=ffi, method=engine_get_capabilities]\n",
-			sqlite3_errmsg(engineContext().store->handle()));
+			sqlite3_errmsg(ctx->store->handle()));
 	}
 	return ready;
 }
@@ -99,15 +100,16 @@ static int ffi_count_callgraph_ready_entities(uint64_t project_id)
 // Count function/method entities whose code metrics were resolved onto the
 // canonical entity rows (cyclomatic > 0). This is the metrics_ready signal —
 // it reflects real producer output from resolveStagedMetrics, never a flag.
-static int ffi_count_metrics_ready_entities(uint64_t project_id)
+static int ffi_count_metrics_ready_entities(EngineContext *ctx,
+					    uint64_t project_id)
 {
 	sqlite3_stmt *stmt = nullptr;
 	int ready = 0;
 	const char *sql =
 		"SELECT COUNT(*) FROM entity "
 		"WHERE project_id = ? AND kind IN (0,1) AND cyclomatic > 0";
-	if (sqlite3_prepare_v2(engineContext().store->handle(), sql, -1, &stmt,
-			       nullptr) == SQLITE_OK) {
+	if (sqlite3_prepare_v2(ctx->store->handle(), sql, -1, &stmt, nullptr) ==
+	    SQLITE_OK) {
 		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 		if (sqlite3_step(stmt) == SQLITE_ROW)
 			ready = sqlite3_column_int(stmt, 0);
@@ -116,7 +118,7 @@ static int ffi_count_metrics_ready_entities(uint64_t project_id)
 		fprintf(stderr,
 			"engine_get_capabilities: metrics count probe failed: %s "
 			"[module=ffi, method=engine_get_capabilities]\n",
-			sqlite3_errmsg(engineContext().store->handle()));
+			sqlite3_errmsg(ctx->store->handle()));
 	}
 	return ready;
 }
@@ -124,14 +126,14 @@ static int ffi_count_metrics_ready_entities(uint64_t project_id)
 // Count node_vectors rows for the project — the canonical embedding_ready
 // signal for semantic search. 0 when the builder has not run or wrote nothing
 // (avoids the A19 "fake ready" regression).
-static int ffi_count_vector_entities(uint64_t project_id)
+static int ffi_count_vector_entities(EngineContext *ctx, uint64_t project_id)
 {
 	sqlite3_stmt *stmt = nullptr;
 	int ready = 0;
 	const char *sql =
 		"SELECT COUNT(*) FROM node_vectors WHERE project_id = ?";
-	if (sqlite3_prepare_v2(engineContext().store->handle(), sql, -1, &stmt,
-			       nullptr) == SQLITE_OK) {
+	if (sqlite3_prepare_v2(ctx->store->handle(), sql, -1, &stmt, nullptr) ==
+	    SQLITE_OK) {
 		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 		if (sqlite3_step(stmt) == SQLITE_ROW)
 			ready = sqlite3_column_int(stmt, 0);
@@ -140,16 +142,18 @@ static int ffi_count_vector_entities(uint64_t project_id)
 		fprintf(stderr,
 			"engine_get_capabilities: vector count probe failed: %s "
 			"[module=ffi, method=engine_get_capabilities]\n",
-			sqlite3_errmsg(engineContext().store->handle()));
+			sqlite3_errmsg(ctx->store->handle()));
 	}
 	return ready;
 }
 
-char *engine_get_capabilities(uint64_t project_id)
+char *engine_get_capabilities(engine_t handle, uint64_t project_id)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().store)
+		if (!ctx || !ctx->store)
 			return dupString(
 				"{\"error\":\"engine not initialized\"}");
 
@@ -160,17 +164,16 @@ char *engine_get_capabilities(uint64_t project_id)
 		// whether the producer has actually populated data for this
 		// project, so clients can distinguish "built" from "not yet
 		// indexed in DEEP mode". FTS stays available (already wired).
-		const int total = ffi_count_eligible_entities(project_id);
+		const int total = ffi_count_eligible_entities(ctx, project_id);
 		const int cg_ready_count =
-			ffi_count_callgraph_ready_entities(project_id);
+			ffi_count_callgraph_ready_entities(ctx, project_id);
 		const bool cg_ready = cg_ready_count > 0;
 		const bool metrics_ready =
-			ffi_count_metrics_ready_entities(project_id) > 0;
+			ffi_count_metrics_ready_entities(ctx, project_id) > 0;
 		const bool semantic_ready =
-			ffi_count_vector_entities(project_id) > 0;
-		const bool fts_ready =
-			engineContext().store->getProjectReadiness(project_id,
-								   "fts_ready");
+			ffi_count_vector_entities(ctx, project_id) > 0;
+		const bool fts_ready = ctx->store->getProjectReadiness(
+			project_id, "fts_ready");
 
 		// Built with util::JsonWriter: every string is escaped and every
 		// separator is inserted structurally, so a stray description
@@ -275,20 +278,23 @@ char *engine_get_capabilities(uint64_t project_id)
 
 // ─── Full-text search ─────────────────────────────────────────
 
-char *engine_search_code(uint64_t project_id, const char *query, int limit)
+char *engine_search_code(engine_t handle, uint64_t project_id,
+			 const char *query, int limit)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		if (!query || !*query)
 			return dupString(
 				"{\"error\":\"[module=ffi, method=engine_search_code] query is required\"}");
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().query)
+		if (!ctx || !ctx->query)
 			return dupString(
 				"{\"total\":0,\"results\":[],\"error\":\"not initialized\"}");
 		if (limit <= 0 || limit > 100)
 			limit = 20;
-		return dupString(engineContext().query->searchCode(
-			project_id, query, limit));
+		return dupString(
+			ctx->query->searchCode(project_id, query, limit));
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_search_code", e.what()));
@@ -306,16 +312,18 @@ char *engine_search_code(uint64_t project_id, const char *query, int limit)
 // entities by cosine similarity. When no vectors exist for the project it
 // returns an empty result with reason="embedding_not_built" so callers can
 // fall back to FTS — never a misleading "not implemented".
-char *engine_search_semantic(uint64_t project_id, const char *query, int limit)
+char *engine_search_semantic(engine_t handle, uint64_t project_id,
+			     const char *query, int limit)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().store ||
-		    !engineContext().store->handle() || !query)
+		if (!ctx || !ctx->store || !ctx->store->handle() || !query)
 			return dupString("{\"total\":0,\"results\":[],"
 					 "\"error\":\"not initialized\"}");
-		return dupString(engineContext().store->searchSemanticJson(
-			project_id, query, limit));
+		return dupString(ctx->store->searchSemanticJson(project_id,
+								query, limit));
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_search_semantic", e.what()));
@@ -327,14 +335,17 @@ char *engine_search_semantic(uint64_t project_id, const char *query, int limit)
 
 // ─── Complexity Analysis ──────────────────────────────────────
 
-char *engine_get_complexity(uint64_t project_id, uint64_t graph_node_id)
+char *engine_get_complexity(engine_t handle, uint64_t project_id,
+			    uint64_t graph_node_id)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().query)
+		if (!ctx || !ctx->query)
 			return dupString("{\"error\":\"not initialized\"}");
-		return dupString(engineContext().query->getComplexity(
-			project_id, graph_node_id));
+		return dupString(
+			ctx->query->getComplexity(project_id, graph_node_id));
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_get_complexity", e.what()));
@@ -346,18 +357,20 @@ char *engine_get_complexity(uint64_t project_id, uint64_t graph_node_id)
 
 // ─── Graph Query DSL ─────────────────────────────────────────
 
-char *engine_graph_query(uint64_t project_id, const char *dsl_query)
+char *engine_graph_query(engine_t handle, uint64_t project_id,
+			 const char *dsl_query)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		if (!dsl_query || !*dsl_query)
 			return dupString(
 				"{\"error\":\"[module=ffi, method=engine_graph_query] dsl_query is required\"}");
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().query)
+		if (!ctx || !ctx->query)
 			return dupString(
 				"{\"total\":0,\"results\":[],\"error\":\"not initialized\"}");
-		return dupString(engineContext().query->graphQuery(project_id,
-								   dsl_query));
+		return dupString(ctx->query->graphQuery(project_id, dsl_query));
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_graph_query", e.what()));
@@ -380,16 +393,18 @@ char *engine_graph_query(uint64_t project_id, const char *dsl_query)
 // # Thread safety
 // Delegates to QueryEngine over read-only SQLite queries under the global
 // store guard. Safe to call from the MCP server thread.
-extern "C" char *engine_get_graph(uint64_t project_id, int64_t node_offset,
-				  int node_limit, int64_t edge_offset,
-				  int edge_limit, const char *node_type_filter,
+extern "C" char *engine_get_graph(engine_t handle, uint64_t project_id,
+				  int64_t node_offset, int node_limit,
+				  int64_t edge_offset, int edge_limit,
+				  const char *node_type_filter,
 				  const char *edge_type_filter)
 {
+	EngineContext *ctx = engineInstance(handle);
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().query)
+		if (!ctx || !ctx->query)
 			return dupString("{\"error\":\"not initialized\"}");
-		return dupString(engineContext().query->getGraph(
+		return dupString(ctx->query->getGraph(
 			project_id, node_offset, node_limit, edge_offset,
 			edge_limit, node_type_filter, edge_type_filter));
 	} catch (const std::exception &e) {
@@ -403,20 +418,22 @@ extern "C" char *engine_get_graph(uint64_t project_id, int64_t node_offset,
 
 // ─── Change Impact Analysis ─────────────────────────────────
 
-char *engine_detect_changes(uint64_t project_id,
+char *engine_detect_changes(engine_t handle, uint64_t project_id,
 			    const char *modified_files_json)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
 		if (!modified_files_json || !*modified_files_json)
 			return dupString(
 				"{\"error\":\"[module=ffi, method=engine_detect_changes] modified_files_json is required\"}");
-		if (!engineContext().query) {
+		if (!ctx || !ctx->query) {
 			return dupString(
 				"{\"error\":\"not initialized\","
 				"\"modified\":[],\"callers\":[],\"callees\":[],\"total_impacted\":0}");
 		}
-		return dupString(engineContext().query->detectChanges(
+		return dupString(ctx->query->detectChanges(
 			project_id, modified_files_json));
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
@@ -432,19 +449,22 @@ char *engine_detect_changes(uint64_t project_id,
 // engine_get_communities — runs label-propagation community detection over
 // the CALLS graph (see engine.h and query_communities.cpp). Wrapping follows
 // the FFI Safety Contract.
-char *engine_get_communities(uint64_t project_id, int max_members,
-			     int max_communities, int include_members)
+char *engine_get_communities(engine_t handle, uint64_t project_id,
+			     int max_members, int max_communities,
+			     int include_members)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().query) {
+		if (!ctx || !ctx->query) {
 			return dupString(
 				"{\"error\":\"not initialized\","
 				"\"communities\":[],\"total_communities\":0,"
 				"\"returned_communities\":0,"
 				"\"inter_community_edges\":0}");
 		}
-		return dupString(engineContext().query->getCommunities(
+		return dupString(ctx->query->getCommunities(
 			project_id, max_members, max_communities,
 			include_members != 0));
 	} catch (const std::exception &e) {
@@ -458,11 +478,13 @@ char *engine_get_communities(uint64_t project_id, int max_members,
 
 // ─── Index Progress ──────────────────────────────────────────────
 
-char *engine_get_index_progress(uint64_t project_id)
+char *engine_get_index_progress(engine_t handle, uint64_t project_id)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().store)
+		if (!ctx || !ctx->store)
 			return dupString("{\"error\":\"not initialized\"}");
 		return dupString(
 			store::getIndexProgressJson(project_id).c_str());
@@ -478,22 +500,22 @@ char *engine_get_index_progress(uint64_t project_id)
 
 // ─── Async FTS Build ────────────────────────────────────────
 
-char *engine_build_fts(uint64_t project_id)
+char *engine_build_fts(engine_t handle, uint64_t project_id)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().store)
+		if (!ctx || !ctx->store)
 			return dupString("{\"error\":\"not initialized\"}");
-		engineContext().store->buildFTSFromGraph(project_id);
-		if (!engineContext().store->error().empty()) {
-			return dupString(util::errorEnvelope(
-				"ffi", "engine_build_fts",
-				engineContext().store->error()));
+		ctx->store->buildFTSFromGraph(project_id);
+		if (!ctx || !ctx->store->error().empty()) {
+			return dupString(
+				util::errorEnvelope("ffi", "engine_build_fts",
+						    ctx->store->error()));
 		}
-		engineContext().store->setProjectReadiness(project_id,
-							   "fts_ready", 1);
-		engineContext().store->setProjectReadiness(project_id,
-							   "normal_ready", 1);
+		ctx->store->setProjectReadiness(project_id, "fts_ready", 1);
+		ctx->store->setProjectReadiness(project_id, "normal_ready", 1);
 		return dupString("{\"ok\":true}");
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope("ffi", "engine_build_fts",
@@ -506,16 +528,17 @@ char *engine_build_fts(uint64_t project_id)
 
 // ─── Hotspot Analysis ──────────────────────────────────────
 
-char *engine_get_hotspots(uint64_t project_id, int top_n)
+char *engine_get_hotspots(engine_t handle, uint64_t project_id, int top_n)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().query)
+		if (!ctx || !ctx->query)
 			return dupString("{\"error\":\"not initialized\"}");
 		if (top_n <= 0)
 			top_n = 10;
-		return dupString(
-			engineContext().query->getHotspots(project_id, top_n));
+		return dupString(ctx->query->getHotspots(project_id, top_n));
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_get_hotspots", e.what()));
@@ -531,18 +554,20 @@ char *engine_get_hotspots(uint64_t project_id, int top_n)
 // engine_explain_module live in engine_verify_ffi.cpp (split out to keep
 // this file under the 1000-line limit; see code_rules.md §1).
 
-extern "C" char *engine_explain_symbol(uint64_t project_id,
+extern "C" char *engine_explain_symbol(engine_t handle, uint64_t project_id,
 				       const char *symbol_name)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		if (!symbol_name || !*symbol_name)
 			return dupString(
 				"{\"error\":\"[module=ffi, method=engine_explain_symbol] symbol_name is required\"}");
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().query)
+		if (!ctx || !ctx->query)
 			return dupString("{\"error\":\"not initialized\"}");
-		return dupString(engineContext().query->explainSymbol(
-			project_id, symbol_name));
+		return dupString(
+			ctx->query->explainSymbol(project_id, symbol_name));
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_explain_symbol", e.what()));
@@ -552,14 +577,15 @@ extern "C" char *engine_explain_symbol(uint64_t project_id,
 	}
 }
 
-char *engine_get_module_map(uint64_t project_id)
+char *engine_get_module_map(engine_t handle, uint64_t project_id)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().query)
+		if (!ctx || !ctx->query)
 			return dupString("{\"error\":\"not initialized\"}");
-		return dupString(
-			engineContext().query->getModuleMap(project_id));
+		return dupString(ctx->query->getModuleMap(project_id));
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_get_module_map", e.what()));
@@ -569,14 +595,15 @@ char *engine_get_module_map(uint64_t project_id)
 	}
 }
 
-char *engine_get_entry_points(uint64_t project_id)
+char *engine_get_entry_points(engine_t handle, uint64_t project_id)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().query)
+		if (!ctx || !ctx->query)
 			return dupString("{\"error\":\"not initialized\"}");
-		return dupString(
-			engineContext().query->getEntryPoints(project_id));
+		return dupString(ctx->query->getEntryPoints(project_id));
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_get_entry_points", e.what()));
@@ -586,18 +613,20 @@ char *engine_get_entry_points(uint64_t project_id)
 	}
 }
 
-char *engine_trace_call_chain(uint64_t project_id, const char *from,
-			      const char *to)
+char *engine_trace_call_chain(engine_t handle, uint64_t project_id,
+			      const char *from, const char *to)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		if (!from || !*from || !to || !*to)
 			return dupString(
 				"{\"error\":\"[module=ffi, method=engine_trace_call_chain] from and to are required\"}");
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().query)
+		if (!ctx || !ctx->query)
 			return dupString("{\"error\":\"not initialized\"}");
-		return dupString(engineContext().query->traceCallChain(
-			project_id, from, to));
+		return dupString(
+			ctx->query->traceCallChain(project_id, from, to));
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_trace_call_chain", e.what()));
@@ -607,14 +636,15 @@ char *engine_trace_call_chain(uint64_t project_id, const char *from,
 	}
 }
 
-char *engine_get_project_overview(uint64_t project_id)
+char *engine_get_project_overview(engine_t handle, uint64_t project_id)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().query)
+		if (!ctx || !ctx->query)
 			return dupString("{\"error\":\"not initialized\"}");
-		return dupString(
-			engineContext().query->getProjectOverview(project_id));
+		return dupString(ctx->query->getProjectOverview(project_id));
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_get_project_overview", e.what()));
@@ -625,11 +655,14 @@ char *engine_get_project_overview(uint64_t project_id)
 	}
 }
 
-char *engine_get_type_info(uint64_t project_id, const char *type_name_filter)
+char *engine_get_type_info(engine_t handle, uint64_t project_id,
+			   const char *type_name_filter)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().store)
+		if (!ctx || !ctx->store)
 			return dupString("{\"error\":\"not initialized\"}");
 
 		// Query type_info table for type definitions. project_id and the
@@ -661,9 +694,8 @@ char *engine_get_type_info(uint64_t project_id, const char *type_name_filter)
 		sql += " ORDER BY ref_count DESC LIMIT 100";
 
 		sqlite3_stmt *stmt = nullptr;
-		if (sqlite3_prepare_v2(engineContext().store->handle(),
-				       sql.c_str(), -1, &stmt,
-				       nullptr) != SQLITE_OK) {
+		if (sqlite3_prepare_v2(ctx->store->handle(), sql.c_str(), -1,
+				       &stmt, nullptr) != SQLITE_OK) {
 			return dupString(
 				"{\"error\":\"query failed\",\"types\":[]}");
 		}
@@ -712,11 +744,13 @@ char *engine_get_type_info(uint64_t project_id, const char *type_name_filter)
 	}
 }
 
-char *engine_get_routes(uint64_t project_id)
+char *engine_get_routes(engine_t handle, uint64_t project_id)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().store)
+		if (!ctx || !ctx->store)
 			return dupString("{\"error\":\"not initialized\"}");
 
 		const char *sql =
@@ -724,8 +758,8 @@ char *engine_get_routes(uint64_t project_id)
 			"FROM route WHERE project_id=? ORDER BY method, path LIMIT 500";
 
 		sqlite3_stmt *stmt = nullptr;
-		if (sqlite3_prepare_v2(engineContext().store->handle(), sql, -1,
-				       &stmt, nullptr) != SQLITE_OK) {
+		if (sqlite3_prepare_v2(ctx->store->handle(), sql, -1, &stmt,
+				       nullptr) != SQLITE_OK) {
 			return dupString(
 				"{\"error\":\"query failed\",\"routes\":[]}");
 		}
@@ -778,15 +812,18 @@ void engine_free_string(char *ptr)
 
 // ─── Shared Artifact ─────────────────────────────────────────────
 
-char *engine_export_artifact(uint64_t project_id, const char *output_path)
+char *engine_export_artifact(engine_t handle, uint64_t project_id,
+			     const char *output_path)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().store || !output_path || !*output_path)
+		if (!ctx || !ctx->store || !output_path || !*output_path)
 			return dupString(
 				"{\"ok\":false,\"error\":\"invalid arguments\"}");
-		auto result = engineContext().store->exportArtifact(
-			project_id, output_path);
+		auto result =
+			ctx->store->exportArtifact(project_id, output_path);
 		return dupString(result);
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
@@ -797,15 +834,18 @@ char *engine_export_artifact(uint64_t project_id, const char *output_path)
 	}
 }
 
-char *engine_import_artifact(uint64_t project_id, const char *artifact_path)
+char *engine_import_artifact(engine_t handle, uint64_t project_id,
+			     const char *artifact_path)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().store || !artifact_path || !*artifact_path)
+		if (!ctx || !ctx->store || !artifact_path || !*artifact_path)
 			return dupString(
 				"{\"ok\":false,\"error\":\"invalid arguments\"}");
-		auto result = engineContext().store->importArtifact(
-			project_id, artifact_path);
+		auto result =
+			ctx->store->importArtifact(project_id, artifact_path);
 		return dupString(result);
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(

@@ -1,10 +1,11 @@
 #include "test_e2e.h"
 
-int main() {
-    // C++ FP verification: builtins + stdlib + compiler intrinsics
-    // NOTE: use standalone functions, not class methods, for reliable
-    // call-edge detection in the old API translator.
-    const char* code = R"(
+int main()
+{
+	// C++ FP verification: builtins + stdlib + compiler intrinsics
+	// NOTE: use standalone functions, not class methods, for reliable
+	// call-edge detection in the old API translator.
+	const char *code = R"(
 #include <cstdio>
 
 // User-defined function — should appear in callees
@@ -28,12 +29,9 @@ int mainFunc() {
 }
 )";
 
-    const char* builtins[] = {
-        "printf", "__builtin_expect",
-        nullptr
-    };
+	const char *builtins[] = { "printf", "__builtin_expect", nullptr };
 
-    runFPVerificationTest("cpp", code, "/tmp/test_fp_cpp.cpp",
-                          "mainFunc", "user_function", builtins);
-    return 0;
+	runFPVerificationTest("cpp", code, "/tmp/test_fp_cpp.cpp", "mainFunc",
+			      "user_function", builtins);
+	return 0;
 }

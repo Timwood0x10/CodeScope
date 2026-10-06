@@ -18,27 +18,28 @@ static constexpr int64_t kLargeProjectNodeThreshold = 100000;
 
 // ─── Phase A: engine_get_module_tree ──────────────────────────
 
-static char *getModuleTreeImpl(uint64_t project_id)
+static char *getModuleTreeImpl(EngineContext *ctx, uint64_t project_id)
 {
 	auto _store_guard = waitForKnowledgeBuilder();
-	if (!engineContext().store)
+	if (!ctx || !ctx->store)
 		return dupString("{\"error\":\"engine not initialized\"}");
-	return dupString(engineContext().store->getModuleTreeJson(project_id));
+	return dupString(ctx->store->getModuleTreeJson(project_id));
 }
 
 // ─── Phase A: engine_find_symbol ──────────────────────────────
 
-static char *findSymbolImpl(uint64_t project_id, const char *symbol_name)
+static char *findSymbolImpl(EngineContext *ctx, uint64_t project_id,
+			    const char *symbol_name)
 {
 	auto _store_guard = waitForKnowledgeBuilder();
-	if (!engineContext().store)
+	if (!ctx || !ctx->store)
 		return dupString("{\"error\":\"engine not initialized\"}");
 	if (!symbol_name || !*symbol_name)
 		return dupString(
 			"{\"error\":\"symbol_name is empty\",\"results\":[]}");
 
 	std::string result =
-		engineContext().store->findSymbolJson(project_id, symbol_name);
+		ctx->store->findSymbolJson(project_id, symbol_name);
 
 	// Check if empty and add smart hints
 	if (result.find("\"results\":") != std::string::npos &&
@@ -49,8 +50,8 @@ static char *findSymbolImpl(uint64_t project_id, const char *symbol_name)
 		const char *lsql =
 			"SELECT DISTINCT language || ',' FROM entity WHERE project_id = ? AND kind IN (0,1) LIMIT 5";
 		sqlite3_stmt *lstmt = nullptr;
-		if (sqlite3_prepare_v2(engineContext().store->handle(), lsql,
-				       -1, &lstmt, nullptr) == SQLITE_OK) {
+		if (sqlite3_prepare_v2(ctx->store->handle(), lsql, -1, &lstmt,
+				       nullptr) == SQLITE_OK) {
 			sqlite3_bind_int64(lstmt, 1,
 					   static_cast<int64_t>(project_id));
 			while (sqlite3_step(lstmt) == SQLITE_ROW) {
@@ -71,8 +72,8 @@ static char *findSymbolImpl(uint64_t project_id, const char *symbol_name)
 		const char *csql =
 			"SELECT COUNT(*) FROM entity WHERE project_id = ? AND kind IN (0,1)";
 		sqlite3_stmt *cstmt = nullptr;
-		if (sqlite3_prepare_v2(engineContext().store->handle(), csql,
-				       -1, &cstmt, nullptr) == SQLITE_OK) {
+		if (sqlite3_prepare_v2(ctx->store->handle(), csql, -1, &cstmt,
+				       nullptr) == SQLITE_OK) {
 			sqlite3_bind_int64(cstmt, 1,
 					   static_cast<int64_t>(project_id));
 			if (sqlite3_step(cstmt) == SQLITE_ROW)
@@ -94,10 +95,10 @@ static char *findSymbolImpl(uint64_t project_id, const char *symbol_name)
 					 hasLangToken(langs, "cpp") ||
 					 hasLangToken(langs, "c++");
 		// Check callgraph/enhancement readiness
-		double cg_ready = engineContext().store->getReadyRatio(
-			project_id, "callgraph_ready");
-		double emb_ready = engineContext().store->getReadyRatio(
-			project_id, "embedding_ready");
+		double cg_ready = ctx->store->getReadyRatio(project_id,
+							    "callgraph_ready");
+		double emb_ready = ctx->store->getReadyRatio(project_id,
+							     "embedding_ready");
 		// Build smart message
 		std::string hint = "{\"results\":[],\"hint\":{";
 		hint += "\"message\":\"No symbol named '" +
@@ -128,9 +129,8 @@ static char *findSymbolImpl(uint64_t project_id, const char *symbol_name)
 			const char *epsql =
 				"SELECT DISTINCT kind FROM entry_points WHERE project_id = ? LIMIT 5";
 			sqlite3_stmt *estmt = nullptr;
-			if (sqlite3_prepare_v2(engineContext().store->handle(),
-					       epsql, -1, &estmt,
-					       nullptr) == SQLITE_OK) {
+			if (sqlite3_prepare_v2(ctx->store->handle(), epsql, -1,
+					       &estmt, nullptr) == SQLITE_OK) {
 				sqlite3_bind_int64(
 					estmt, 1,
 					static_cast<int64_t>(project_id));
@@ -191,9 +191,9 @@ static char *findSymbolImpl(uint64_t project_id, const char *symbol_name)
 //
 // No re-parse, no re-translate, no regex extraction.
 
-static char *enhanceProjectImpl(uint64_t project_id)
+static char *enhanceProjectImpl(EngineContext *ctx, uint64_t project_id)
 {
-	if (!engineContext().store || !engineContext().parser)
+	if (!ctx || !ctx->store || !ctx->parser)
 		return dupString("{\"error\":\"engine not initialized\"}");
 
 	// The background enrichment thread shares this connection and opens
@@ -232,11 +232,10 @@ static char *enhanceProjectImpl(uint64_t project_id)
 	// rule (Count combine mode that does not depend on semantic_facts).
 	{
 		auto t = Clock::now();
-		engineContext().store->beginTransaction();
-		model::SemanticFactExtractor extractor(
-			engineContext().store.get());
+		ctx->store->beginTransaction();
+		model::SemanticFactExtractor extractor(ctx->store.get());
 		semantic_facts = extractor.extractAll(project_id);
-		engineContext().store->commitTransaction();
+		ctx->store->commitTransaction();
 		t_semantic =
 			std::chrono::duration_cast<std::chrono::milliseconds>(
 				Clock::now() - t)
@@ -247,8 +246,8 @@ static char *enhanceProjectImpl(uint64_t project_id)
 
 	// Step 1: buildGraph (skip if already finalized)
 	{
-		int ready = engineContext().store->getProjectReadiness(
-			project_id, "normal_ready");
+		int ready = ctx->store->getProjectReadiness(project_id,
+							    "normal_ready");
 		if (ready) {
 			fprintf(stderr,
 				"enhance: project %llu already finalized (semantic_facts re-extracted), "
@@ -265,14 +264,14 @@ static char *enhanceProjectImpl(uint64_t project_id)
 	}
 	{
 		auto t = Clock::now();
-		engineContext().store->beginTransaction();
+		ctx->store->beginTransaction();
 		// P2 fix: a resolver-pipeline failure makes buildGraph roll back its
 		// graph savepoint and return false. Committing here would persist a
 		// truncated graph and report success, so propagate the failure and
 		// skip the graph-commit step (the outer enhance continues to the
 		// model build below, which is independent of buildGraph).
-		if (!engineContext().store->buildGraph(project_id, true)) {
-			engineContext().store->rollbackTransaction();
+		if (!ctx || !ctx->store->buildGraph(project_id, true)) {
+			ctx->store->rollbackTransaction();
 			failed_step = "buildGraph";
 			failure_detail =
 				"buildGraph failed; graph transaction rolled back, "
@@ -284,7 +283,7 @@ static char *enhanceProjectImpl(uint64_t project_id)
 				(unsigned long long)project_id);
 			goto run_model_build;
 		}
-		engineContext().store->commitTransaction();
+		ctx->store->commitTransaction();
 		t_buildgraph =
 			std::chrono::duration_cast<std::chrono::milliseconds>(
 				Clock::now() - t)
@@ -296,14 +295,14 @@ static char *enhanceProjectImpl(uint64_t project_id)
 	// Step 2: Build FTS (symbols no longer synced — graph_nodes is canonical)
 	{
 		auto t = Clock::now();
-		engineContext().store->buildFTSFromGraph(project_id);
-		if (!engineContext().store->error().empty()) {
+		ctx->store->buildFTSFromGraph(project_id);
+		if (!ctx || !ctx->store->error().empty()) {
 			failed_step = "buildFTSFromGraph";
-			failure_detail = engineContext().store->error();
+			failure_detail = ctx->store->error();
 			fprintf(stderr,
 				"enhance: buildFTS failed: %s "
 				"[module=engine, method=engine_enhance_project]\n",
-				engineContext().store->error().c_str());
+				ctx->store->error().c_str());
 			// Leave fts_ready unset so search does not take the
 			// FTS path against an incomplete index.
 			goto run_model_build;
@@ -317,7 +316,7 @@ static char *enhanceProjectImpl(uint64_t project_id)
 	// Step 5: Resolve pre-computed metrics
 	{
 		auto t = Clock::now();
-		engineContext().store->resolveStagedMetrics(project_id);
+		ctx->store->resolveStagedMetrics(project_id);
 		t_metrics =
 			std::chrono::duration_cast<std::chrono::milliseconds>(
 				Clock::now() - t)
@@ -327,10 +326,9 @@ static char *enhanceProjectImpl(uint64_t project_id)
 	}
 
 	// Finalize
-	engineContext().store->createIndexesAfterBulkLoad(project_id);
-	engineContext().store->setProjectReadiness(project_id, "normal_ready",
-						   1);
-	engineContext().store->setProjectReadiness(project_id, "fts_ready", 1);
+	ctx->store->createIndexesAfterBulkLoad(project_id);
+	ctx->store->setProjectReadiness(project_id, "normal_ready", 1);
+	ctx->store->setProjectReadiness(project_id, "fts_ready", 1);
 
 run_model_build:
 	// ── Model building (module_summary, architecture_edge, etc.) ──
@@ -339,8 +337,8 @@ run_model_build:
 	// was done with SKIP_ASYNC=1.
 	{
 		auto t = Clock::now();
-		runModelIndexSync(*engineContext().store, project_id, true);
-		buildKnowledgeGraphSync(*engineContext().store, project_id);
+		runModelIndexSync(*ctx->store, project_id, true);
+		buildKnowledgeGraphSync(*ctx->store, project_id);
 		t_model = std::chrono::duration_cast<std::chrono::milliseconds>(
 				  Clock::now() - t)
 				  .count();
@@ -360,8 +358,8 @@ run_model_build:
 	auto countRows = [&](const char *sql) -> int64_t {
 		sqlite3_stmt *st = nullptr;
 		int64_t n = 0;
-		if (sqlite3_prepare_v2(engineContext().store->handle(), sql, -1,
-				       &st, nullptr) == SQLITE_OK) {
+		if (sqlite3_prepare_v2(ctx->store->handle(), sql, -1, &st,
+				       nullptr) == SQLITE_OK) {
 			sqlite3_bind_int64(st, 1,
 					   static_cast<int64_t>(project_id));
 			if (sqlite3_step(st) == SQLITE_ROW)
@@ -402,11 +400,11 @@ run_model_build:
 
 // ─── Phase C: Unified Search (adaptive FTS / semantic) ───────
 
-static char *unifiedSearchImpl(uint64_t project_id, const char *query,
-			       int limit)
+static char *unifiedSearchImpl(EngineContext *ctx, uint64_t project_id,
+			       const char *query, int limit)
 {
 	auto _store_guard = waitForKnowledgeBuilder();
-	if (!engineContext().store)
+	if (!ctx || !ctx->store)
 		return dupString("{\"error\":\"engine not initialized\"}");
 	if (!query || !*query)
 		return dupString(
@@ -415,12 +413,12 @@ static char *unifiedSearchImpl(uint64_t project_id, const char *query,
 		limit = 20;
 
 	// Check if FTS index is ready; if not, fall back to graph-based search
-	int fts_ready = engineContext().store->getProjectReadiness(project_id,
-								   "fts_ready");
+	int fts_ready =
+		ctx->store->getProjectReadiness(project_id, "fts_ready");
 	if (fts_ready) {
 		// FTS is ready — use full-text search
-		return dupString(engineContext().store->searchUnifiedJson(
-			project_id, query, limit));
+		return dupString(ctx->store->searchUnifiedJson(project_id,
+							       query, limit));
 	}
 
 	// FTS not ready — check project size before falling back to the
@@ -433,8 +431,8 @@ static char *unifiedSearchImpl(uint64_t project_id, const char *query,
 		sqlite3_stmt *stmt = nullptr;
 		const char *sql =
 			"SELECT COUNT(*) FROM entity WHERE project_id = ?";
-		if (sqlite3_prepare_v2(engineContext().store->handle(), sql, -1,
-				       &stmt, nullptr) != SQLITE_OK) {
+		if (sqlite3_prepare_v2(ctx->store->handle(), sql, -1, &stmt,
+				       nullptr) != SQLITE_OK) {
 			// Prepare failed — cannot determine node count. Log and
 			// fall through to the fallback (let it run; the user gets
 			// the existing behaviour rather than a hard block).
@@ -442,13 +440,11 @@ static char *unifiedSearchImpl(uint64_t project_id, const char *query,
 			fprintf(stderr,
 				"unified_search: COUNT prepare failed: %s "
 				"[module=engine, method=unified_search]\n",
-				sqlite3_errmsg(
-					engineContext().store->handle()));
+				sqlite3_errmsg(ctx->store->handle()));
 			if (stmt)
 				sqlite3_finalize(stmt);
-			return dupString(
-				engineContext().store->searchGraphFallback(
-					project_id, query, limit));
+			return dupString(ctx->store->searchGraphFallback(
+				project_id, query, limit));
 		}
 		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 		if (sqlite3_step(stmt) == SQLITE_ROW)
@@ -471,13 +467,13 @@ static char *unifiedSearchImpl(uint64_t project_id, const char *query,
 	}
 
 	// Small project — the fallback scan is fast enough.
-	return dupString(engineContext().store->searchGraphFallback(
-		project_id, query, limit));
+	return dupString(
+		ctx->store->searchGraphFallback(project_id, query, limit));
 }
 
 // ─── Phase C: Adaptive Find Callers ──────────────────────────
 
-static char *findCallersAdaptiveImpl(uint64_t project_id,
+static char *findCallersAdaptiveImpl(EngineContext *ctx, uint64_t project_id,
 				     const char *symbol_name,
 				     const char *file_filter)
 {
@@ -487,19 +483,18 @@ static char *findCallersAdaptiveImpl(uint64_t project_id,
 	// method=find_callers_adaptive] tag is kept so callers can still
 	// distinguish an indexing-pending state from a query error.
 	auto _store_guard = waitForKnowledgeBuilder();
-	if (!engineContext().query || !engineContext().store ||
-	    !engineContext().store->handle())
+	if (!ctx || !ctx->query || !ctx->store || !ctx->store->handle())
 		return dupString("{\"error\":\"graph not ready [module=engine_"
 				 "queries, method=find_callers_adaptive]\"}");
 	if (!symbol_name || !*symbol_name)
 		return dupString("{\"error\":\"symbol_name is empty\"}");
-	return dupString(engineContext().query->getCallers(
-		project_id, symbol_name, file_filter));
+	return dupString(
+		ctx->query->getCallers(project_id, symbol_name, file_filter));
 }
 
 // ─── Phase C: Adaptive Find Callees ──────────────────────────
 
-static char *findCalleesAdaptiveImpl(uint64_t project_id,
+static char *findCalleesAdaptiveImpl(EngineContext *ctx, uint64_t project_id,
 				     const char *symbol_name,
 				     const char *file_filter)
 {
@@ -507,74 +502,70 @@ static char *findCalleesAdaptiveImpl(uint64_t project_id,
 	// graph-not-ready guard only requires the SQLite handle (works on
 	// SQLite-only/Windows builds).
 	auto _store_guard = waitForKnowledgeBuilder();
-	if (!engineContext().query || !engineContext().store ||
-	    !engineContext().store->handle())
+	if (!ctx || !ctx->query || !ctx->store || !ctx->store->handle())
 		return dupString("{\"error\":\"graph not ready [module=engine_"
 				 "queries, method=find_callees_adaptive]\"}");
 	if (!symbol_name || !*symbol_name)
 		return dupString("{\"error\":\"symbol_name is empty\"}");
-	return dupString(engineContext().query->getCallees(
-		project_id, symbol_name, file_filter));
+	return dupString(
+		ctx->query->getCallees(project_id, symbol_name, file_filter));
 }
 
 // ─── Step 7 (plan §7.2): Entity-precise caller/callee queries ────
 
-static char *findCallersByEntityImpl(uint64_t project_id, uint64_t entity_id)
+static char *findCallersByEntityImpl(EngineContext *ctx, uint64_t project_id,
+				     uint64_t entity_id)
 {
 	// v0.2.5: getCallersByEntity has its own SQLite/SQLite backend, so
 	// the graph-not-ready guard is only required on the SQLite path and
 	// is enforced inside that backend; here we only guard the store handle.
 	auto _store_guard = waitForKnowledgeBuilder();
-	if (!engineContext().query || !engineContext().store ||
-	    !engineContext().store->handle())
+	if (!ctx || !ctx->query || !ctx->store || !ctx->store->handle())
 		return dupString("{\"error\":\"graph not ready [module=engine_"
 				 "queries, method=find_callers_by_entity]\"}");
 	if (entity_id == 0)
 		return dupString("{\"error\":\"entity_id is 0\"}");
-	return dupString(engineContext().query->getCallersByEntity(project_id,
-								   entity_id));
+	return dupString(ctx->query->getCallersByEntity(project_id, entity_id));
 }
 
-static char *findCalleesByEntityImpl(uint64_t project_id, uint64_t entity_id)
+static char *findCalleesByEntityImpl(EngineContext *ctx, uint64_t project_id,
+				     uint64_t entity_id)
 {
 	// v0.2.5: getCalleesByEntity has its own SQLite/SQLite backend; the
 	// guard here only requires the SQLite handle (works on SQLite-only).
 	auto _store_guard = waitForKnowledgeBuilder();
-	if (!engineContext().query || !engineContext().store ||
-	    !engineContext().store->handle())
+	if (!ctx || !ctx->query || !ctx->store || !ctx->store->handle())
 		return dupString("{\"error\":\"graph not ready [module=engine_"
 				 "queries, method=find_callees_by_entity]\"}");
 	if (entity_id == 0)
 		return dupString("{\"error\":\"entity_id is 0\"}");
-	return dupString(engineContext().query->getCalleesByEntity(project_id,
-								   entity_id));
+	return dupString(ctx->query->getCalleesByEntity(project_id, entity_id));
 }
 
 // ─── Phase C: Get Entry Points (new schema) ──────────────────
 
-static char *getEntryPointsNewImpl(uint64_t project_id)
+static char *getEntryPointsNewImpl(EngineContext *ctx, uint64_t project_id)
 {
 	// SQLite is the only data source. graph-not-ready is reported with
 	// the [module=engine_queries, method=get_entry_points_new] tag.
 	// v0.2.5: getEntryPoints has its own SQLite/SQLite backend; the guard
 	// here only requires the SQLite handle (works on SQLite-only).
 	auto _store_guard = waitForKnowledgeBuilder();
-	if (!engineContext().query || !engineContext().store ||
-	    !engineContext().store->handle())
+	if (!ctx || !ctx->query || !ctx->store || !ctx->store->handle())
 		return dupString("{\"error\":\"graph not ready [module=engine_"
 				 "queries, method=get_entry_points_new]\"}");
-	return dupString(engineContext().query->getEntryPoints(project_id));
+	return dupString(ctx->query->getEntryPoints(project_id));
 }
 
 // ─── Phase C: Project Overview ───────────────────────────────
 
-static char *projectOverviewImpl(uint64_t project_id)
+static char *projectOverviewImpl(EngineContext *ctx, uint64_t project_id)
 {
 	auto _store_guard = waitForKnowledgeBuilder();
-	if (!engineContext().store)
+	if (!ctx || !ctx->store)
 		return dupString("{\"error\":\"engine not initialized\"}");
 
-	auto db = engineContext().store->handle();
+	auto db = ctx->store->handle();
 	std::ostringstream json;
 
 	// ── Project info ──
@@ -707,10 +698,9 @@ static char *projectOverviewImpl(uint64_t project_id)
 		// pipeline — so `entry_points` was `{"entry_points":[],"total":0}` in
 		// every overview ever returned, while get_entry_points listed real
 		// entries for the same project.
-		std::string ep = engineContext().query ?
-					 engineContext().query->getEntryPoints(
-						 project_id) :
-					 std::string();
+		std::string ep =
+			ctx->query ? ctx->query->getEntryPoints(project_id) :
+				     std::string();
 		// ep already has {"entry_points": [...], "total": N}
 		if (!ep.empty() && ep[0] == '{') {
 			json << "\"entry_points\":" << ep.c_str() << ",";
@@ -720,12 +710,12 @@ static char *projectOverviewImpl(uint64_t project_id)
 	// Ready features (which analysis features are complete for >50% of symbols)
 	{
 		json << "\"ready_features\":{";
-		double cg = engineContext().store->getReadyRatio(
-			project_id, "callgraph_ready");
-		double me = engineContext().store->getReadyRatio(
-			project_id, "metrics_ready");
-		double em = engineContext().store->getReadyRatio(
-			project_id, "embedding_ready");
+		double cg = ctx->store->getReadyRatio(project_id,
+						      "callgraph_ready");
+		double me =
+			ctx->store->getReadyRatio(project_id, "metrics_ready");
+		double em = ctx->store->getReadyRatio(project_id,
+						      "embedding_ready");
 		json << "\"call_graph\":" << (cg > 0.5 ? "true" : "false")
 		     << ","
 		     << "\"metrics\":" << (me > 0.5 ? "true" : "false") << ","
@@ -744,10 +734,12 @@ static char *projectOverviewImpl(uint64_t project_id)
 // exception would terminate the whole session. Error envelopes carry a
 // [module=ffi, method=<export>] tag per code_rules.md.
 
-char *engine_get_module_tree(uint64_t project_id)
+char *engine_get_module_tree(engine_t handle, uint64_t project_id)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
-		return getModuleTreeImpl(project_id);
+		return getModuleTreeImpl(ctx, project_id);
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_get_module_tree", e.what()));
@@ -757,10 +749,13 @@ char *engine_get_module_tree(uint64_t project_id)
 	}
 }
 
-char *engine_find_symbol(uint64_t project_id, const char *symbol_name)
+char *engine_find_symbol(engine_t handle, uint64_t project_id,
+			 const char *symbol_name)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
-		return findSymbolImpl(project_id, symbol_name);
+		return findSymbolImpl(ctx, project_id, symbol_name);
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_find_symbol", e.what()));
@@ -770,10 +765,12 @@ char *engine_find_symbol(uint64_t project_id, const char *symbol_name)
 	}
 }
 
-char *engine_enhance_project(uint64_t project_id)
+char *engine_enhance_project(engine_t handle, uint64_t project_id)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
-		return enhanceProjectImpl(project_id);
+		return enhanceProjectImpl(ctx, project_id);
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_enhance_project", e.what()));
@@ -783,10 +780,12 @@ char *engine_enhance_project(uint64_t project_id)
 	}
 }
 
-char *engine_get_enhancement_status(uint64_t project_id)
+char *engine_get_enhancement_status(engine_t handle, uint64_t project_id)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
-		return getEnhancementStatusImpl(project_id);
+		return getEnhancementStatusImpl(ctx, project_id);
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_get_enhancement_status", e.what()));
@@ -798,10 +797,13 @@ char *engine_get_enhancement_status(uint64_t project_id)
 	}
 }
 
-char *engine_unified_search(uint64_t project_id, const char *query, int limit)
+char *engine_unified_search(engine_t handle, uint64_t project_id,
+			    const char *query, int limit)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
-		return unifiedSearchImpl(project_id, query, limit);
+		return unifiedSearchImpl(ctx, project_id, query, limit);
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_unified_search", e.what()));
@@ -811,11 +813,14 @@ char *engine_unified_search(uint64_t project_id, const char *query, int limit)
 	}
 }
 
-char *engine_find_callers_adaptive(uint64_t project_id, const char *symbol_name,
+char *engine_find_callers_adaptive(engine_t handle, uint64_t project_id,
+				   const char *symbol_name,
 				   const char *file_filter)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
-		return findCallersAdaptiveImpl(project_id, symbol_name,
+		return findCallersAdaptiveImpl(ctx, project_id, symbol_name,
 					       file_filter);
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
@@ -827,11 +832,14 @@ char *engine_find_callers_adaptive(uint64_t project_id, const char *symbol_name,
 	}
 }
 
-char *engine_find_callees_adaptive(uint64_t project_id, const char *symbol_name,
+char *engine_find_callees_adaptive(engine_t handle, uint64_t project_id,
+				   const char *symbol_name,
 				   const char *file_filter)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
-		return findCalleesAdaptiveImpl(project_id, symbol_name,
+		return findCalleesAdaptiveImpl(ctx, project_id, symbol_name,
 					       file_filter);
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
@@ -843,10 +851,13 @@ char *engine_find_callees_adaptive(uint64_t project_id, const char *symbol_name,
 	}
 }
 
-char *engine_find_callers_by_entity(uint64_t project_id, uint64_t entity_id)
+char *engine_find_callers_by_entity(engine_t handle, uint64_t project_id,
+				    uint64_t entity_id)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
-		return findCallersByEntityImpl(project_id, entity_id);
+		return findCallersByEntityImpl(ctx, project_id, entity_id);
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_find_callers_by_entity", e.what()));
@@ -858,10 +869,13 @@ char *engine_find_callers_by_entity(uint64_t project_id, uint64_t entity_id)
 	}
 }
 
-char *engine_find_callees_by_entity(uint64_t project_id, uint64_t entity_id)
+char *engine_find_callees_by_entity(engine_t handle, uint64_t project_id,
+				    uint64_t entity_id)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
-		return findCalleesByEntityImpl(project_id, entity_id);
+		return findCalleesByEntityImpl(ctx, project_id, entity_id);
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_find_callees_by_entity", e.what()));
@@ -873,10 +887,12 @@ char *engine_find_callees_by_entity(uint64_t project_id, uint64_t entity_id)
 	}
 }
 
-char *engine_get_entry_points_new(uint64_t project_id)
+char *engine_get_entry_points_new(engine_t handle, uint64_t project_id)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
-		return getEntryPointsNewImpl(project_id);
+		return getEntryPointsNewImpl(ctx, project_id);
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_get_entry_points_new", e.what()));
@@ -887,10 +903,12 @@ char *engine_get_entry_points_new(uint64_t project_id)
 	}
 }
 
-char *engine_project_overview(uint64_t project_id)
+char *engine_project_overview(engine_t handle, uint64_t project_id)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
-		return projectOverviewImpl(project_id);
+		return projectOverviewImpl(ctx, project_id);
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_project_overview", e.what()));

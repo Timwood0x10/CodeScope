@@ -64,10 +64,10 @@ constexpr uint64_t kMaxFileSize = 5 * 1024 * 1024; // 5 MB default
 /// entry point below can stay a thin try/catch wrapper: no C++ exception may
 /// cross the C ABI boundary (the MCP server is long-running, so an escaping
 /// exception would terminate it).
-static char *indexFilesImpl(uint64_t project_id, const char *file_list_json,
-			    int bypass_fail_fast)
+static char *indexFilesImpl(EngineContext *ctx, uint64_t project_id,
+			    const char *file_list_json, int bypass_fail_fast)
 {
-	if (!engineContext().store)
+	if (!ctx || !ctx->store)
 		return dupString(
 			"{\"ok\":false,\"error\":\"engine not initialized\"}");
 
@@ -143,8 +143,8 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json,
 
 		// Reuse the spelling this file is already stored under, so an
 		// already-indexed file is not given a second identity.
-		const std::string stored = indexSpellingFor(
-			engineContext().store.get(), project_id, path);
+		const std::string stored =
+			indexSpellingFor(ctx->store.get(), project_id, path);
 		jobs.push_back(
 			{ stored, lang, static_cast<size_t>(file_stat.st_size),
 			  static_cast<int64_t>(file_stat.st_mtime), path });
@@ -174,8 +174,8 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json,
 				   engine_index_sched::kDefaultFailRetryMax;
 		}();
 		std::vector<std::string> fail_vec;
-		if (!store::loadKnownParseFailures(project_id, kFailRetryMax,
-						   fail_vec)) {
+		if (!store::loadKnownParseFailures(ctx, project_id,
+						   kFailRetryMax, fail_vec)) {
 			fprintf(stderr,
 				"engine: loadKnownParseFailures failed "
 				"(continuing) "
@@ -211,8 +211,7 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json,
 		for (auto &j : jobs)
 			langs.insert(j.lang);
 		for (auto &l : langs)
-			lang_ptrs[l] =
-				engineContext().parser->getLanguage(l.c_str());
+			lang_ptrs[l] = ctx->parser->getLanguage(l.c_str());
 	}
 
 	// ── Streaming Pipeline ─────────────────────────────────────
@@ -236,7 +235,7 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json,
 
 	// ── Writer thread ──────────────────────────────────────────
 	std::thread writer_thread([&]() {
-		engineContext().store->beginTransaction();
+		ctx->store->beginTransaction();
 		std::vector<store::FileResult> batch;
 		batch.reserve(kWriterBatchSize);
 		while (true) {
@@ -244,11 +243,8 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json,
 			bool ok = result_queue.pop(fr);
 			if (!ok) {
 				if (!batch.empty()) {
-					if (!engineContext()
-						     .store
-						     ->insertFileResultBatch(
-							     project_id,
-							     batch)) {
+					if (!ctx->store->insertFileResultBatch(
+						    project_id, batch)) {
 						writer_error = 1;
 					}
 					files_written +=
@@ -267,9 +263,8 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json,
 			}
 			if (batch.size() >= kWriterBatchSize ||
 			    result_queue.isDone()) {
-				if (!engineContext()
-					     .store->insertFileResultBatch(
-						     project_id, batch)) {
+				if (!ctx->store->insertFileResultBatch(
+					    project_id, batch)) {
 					writer_error = 1;
 				}
 				files_written += static_cast<int>(batch.size());
@@ -277,9 +272,9 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json,
 			}
 		}
 		if (writer_error)
-			engineContext().store->rollbackTransaction();
+			ctx->store->rollbackTransaction();
 		else
-			engineContext().store->commitTransaction();
+			ctx->store->commitTransaction();
 	});
 
 	// ── Parse workers ──────────────────────────────────────────
@@ -644,7 +639,7 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json,
 	// fail_count and get_parse_failures could never show it. Runs after
 	// every writer has stopped, so the auxiliary connection does not
 	// contend with the bulk writer's transaction.
-	const int flushed = store::flushParseFailures();
+	const int flushed = store::flushParseFailures(ctx);
 	if (flushed < 0) {
 		// Reported, not swallowed: the run itself may still succeed, but its
 		// parse failures are missing from the table (code_rules.md, no silent
@@ -670,7 +665,7 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json,
 		// so the result JSON reports failure instead of a false success
 		// (the outer transaction is rolled back by the caller when it
 		// sees ok:false).
-		if (!engineContext().store->buildGraph(project_id, true)) {
+		if (!ctx || !ctx->store->buildGraph(project_id, true)) {
 			writer_error = 1;
 		}
 		time_buildgraph_ms =
@@ -686,12 +681,12 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json,
 				"UPDATE graph_nodes SET callgraph_ready=1 "
 				"WHERE project_id=" +
 				std::to_string(project_id);
-			if (!engineContext().store->exec(up.c_str())) {
+			if (!ctx || !ctx->store->exec(up.c_str())) {
 				fprintf(stderr,
 					"engine_index_files: callgraph_ready "
 					"UPDATE failed: %s "
 					"[module=engine, method=engine_index_files]\n",
-					engineContext().store->error().c_str());
+					ctx->store->error().c_str());
 			}
 		}
 
@@ -702,10 +697,10 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json,
 		// is_reindex=false (M-12).
 		{
 			store::GraphStore::BulkPragmaGuard guard(
-				engineContext().store.get());
+				ctx->store.get());
 			auto t_idx = steady_clock::now();
-			engineContext().store->createIndexesAfterBulkLoad(
-				project_id, true);
+			ctx->store->createIndexesAfterBulkLoad(project_id,
+							       true);
 			fprintf(stderr,
 				"engine: createIndexesAfterBulkLoad=%lldms "
 				"[module=engine, method=engine_index_files]\n",
@@ -716,8 +711,7 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json,
 
 		// Set the core-graph readiness flag so the project is
 		// queryable immediately after a file-list index (M-15).
-		engineContext().store->setProjectReadiness(project_id,
-							   "normal_ready", 1);
+		ctx->store->setProjectReadiness(project_id, "normal_ready", 1);
 	}
 
 	// ── Build result JSON ──────────────────────────────────────
@@ -730,7 +724,7 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json,
 
 	// Query node/edge counts
 	{
-		sqlite3 *db = engineContext().store->handle();
+		sqlite3 *db = ctx->store->handle();
 		sqlite3_stmt *stmt = nullptr;
 		std::string sql =
 			"SELECT COUNT(*) FROM entity WHERE project_id = " +
@@ -767,15 +761,17 @@ static char *indexFilesImpl(uint64_t project_id, const char *file_list_json,
 		store::setIndexProgress(p);
 	}
 
-	launchAsyncKnowledgeBuilder(project_id, !mode_fast);
+	launchAsyncKnowledgeBuilder(ctx, project_id, !mode_fast);
 	return dupString(result.str());
 }
 
-char *engine_index_files(uint64_t project_id, const char *file_list_json,
-			 int bypass_fail_fast)
+char *engine_index_files(engine_t handle, uint64_t project_id,
+			 const char *file_list_json, int bypass_fail_fast)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
-		return indexFilesImpl(project_id, file_list_json,
+		return indexFilesImpl(ctx, project_id, file_list_json,
 				      bypass_fail_fast);
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(

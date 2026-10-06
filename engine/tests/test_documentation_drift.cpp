@@ -219,7 +219,7 @@ int main()
 
 		CHECK(countEntitiesByLanguage(store, project_id, "cpp") == 3);
 		CHECK(countEntitiesByLanguage(store, project_id, "python") ==
-		       2);
+		      2);
 		CHECK(countEntitiesByLanguage(store, project_id, "go") == 0);
 		CHECK(countEntitiesByLanguage(store, project_id, "rust") == 0);
 		printf("  [PASS] countEntitiesByLanguage: cpp=3, python=2, go=0, rust=0\n");

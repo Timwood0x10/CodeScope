@@ -24,8 +24,8 @@
 
 // ─── Path Tracing ──────────────────────────────────────────────
 
-static char *tracePathImpl(uint64_t project_id, const char *from_name,
-			   const char *to_name)
+static char *tracePathImpl(EngineContext *ctx, uint64_t project_id,
+			   const char *from_name, const char *to_name)
 {
 	auto _store_guard = waitForKnowledgeBuilder();
 	// Trace a path from from_function to to_function using the SQLite
@@ -38,12 +38,12 @@ static char *tracePathImpl(uint64_t project_id, const char *from_name,
 	if (!from_name || !*from_name || !to_name || !*to_name)
 		return dupString(
 			"{\"error\":\"empty symbol name\",\"path\":[]}");
-	if (!engineContext().store || !engineContext().store->handle()) {
+	if (!ctx || !ctx->store || !ctx->store->handle()) {
 		return dupString("{\"error\":\"graph not ready [module="
 				 "engine_queries, method=trace_path]\","
 				 "\"path\":[]}");
 	}
-	sqlite3 *db = engineContext().store->handle();
+	sqlite3 *db = ctx->store->handle();
 	// Homonym guard: resolveName below takes ORDER BY id LIMIT 1, which
 	// silently traces the first of several same-named entities (T5
 	// finding #9). Surface the candidates instead — same contract as
@@ -78,8 +78,8 @@ static char *tracePathImpl(uint64_t project_id, const char *from_name,
 	if (!resolveName(from_name, from_id) || !resolveName(to_name, to_id))
 		return dupString(
 			"{\"path\":[],\"error\":\"symbol not found\"}");
-	std::string bfs_json = engineContext().query->findShortestPath(
-		project_id, from_id, to_id);
+	std::string bfs_json =
+		ctx->query->findShortestPath(project_id, from_id, to_id);
 	bool found = bfs_json.find("\"found\":true") != std::string::npos;
 	if (!found)
 		return dupString("{\"path\":[],\"error\":\"no path found\"}");
@@ -181,8 +181,9 @@ static char *tracePathImpl(uint64_t project_id, const char *from_name,
 
 // ─── Interactive Function Exploration ─────────────────────────
 
-static char *exploreFunctionImpl(uint64_t project_id, const char *function_name,
-				 int depth, const char *direction)
+static char *exploreFunctionImpl(EngineContext *ctx, uint64_t project_id,
+				 const char *function_name, int depth,
+				 const char *direction)
 {
 	auto _store_guard = waitForKnowledgeBuilder();
 	// SQLite-only recursive exploration. The legacy output schema is
@@ -193,7 +194,7 @@ static char *exploreFunctionImpl(uint64_t project_id, const char *function_name,
 	//    "callers":[],"callees":[]}
 	//
 	// v0.2.5: the graph-not-ready guard is SQLite-specific and lives
-	// inside the #ifdef; the SQLite backend has its own !engineContext().store->handle()
+	// inside the #ifdef; the SQLite backend has its own !ctx->store->handle()
 	// guard in the #else branch.
 	if (!function_name || !*function_name)
 		return dupString(
@@ -207,12 +208,12 @@ static char *exploreFunctionImpl(uint64_t project_id, const char *function_name,
 	// JSON shape matches the SQLite branch: nested {name,file,line,
 	// callers,callees}.
 	int max_depth = depth > 5 ? 5 : (depth < 0 ? 0 : depth);
-	if (!engineContext().store || !engineContext().store->handle()) {
+	if (!ctx || !ctx->store || !ctx->store->handle()) {
 		return dupString("{\"error\":\"graph not ready [module=engine_"
 				 "queries, method=explore_function]\","
 				 "\"callers\":[],\"callees\":[]}");
 	}
-	sqlite3 *db = engineContext().store->handle();
+	sqlite3 *db = ctx->store->handle();
 	// Homonym guard: this function resolves the bare name to a single
 	// entity below, so several same-named functions collapse to whichever
 	// one the lookup picks and the trace silently explores the wrong
@@ -256,8 +257,8 @@ static char *exploreFunctionImpl(uint64_t project_id, const char *function_name,
 	};
 	auto fetchNeighbors = [&](uint64_t id, bool callers,
 				  std::vector<uint64_t> &out) {
-		auto ids = callers ? engineContext().store->getCallerIds(id) :
-				     engineContext().store->getCalleeIds(id);
+		auto ids = callers ? ctx->store->getCallerIds(id) :
+				     ctx->store->getCalleeIds(id);
 		for (uint64_t nid : ids)
 			out.push_back(nid);
 	};
@@ -405,22 +406,22 @@ static std::string detectIntent(const std::string &query)
 	return "general";
 }
 
-static char *buildContextImpl(uint64_t project_id, const char *query)
+static char *buildContextImpl(EngineContext *ctx, uint64_t project_id,
+			      const char *query)
 {
 	auto _store_guard = waitForKnowledgeBuilder();
-	if (!engineContext().store)
+	if (!ctx || !ctx->store)
 		return dupString("{\"error\":\"engine not initialized\"}");
 
 	std::string q = query ? query : "";
 	std::string intent = detectIntent(q);
-	auto db = engineContext().store->handle();
+	auto db = ctx->store->handle();
 	std::ostringstream json;
 	json << "{";
 
 	// 1. Project overview (always)
 	json << "\"project_overview\":"
-	     << engineContext().store->getModuleTreeJson(project_id).c_str()
-	     << ",";
+	     << ctx->store->getModuleTreeJson(project_id).c_str() << ",";
 
 	// 2. Intent metadata
 	json << "\"intent\":\"" << intent << "\",";
@@ -433,8 +434,7 @@ static char *buildContextImpl(uint64_t project_id, const char *query)
 		// store accessor joined `graph_nodes`, which the canonical pipeline
 		// never fills, so this always emitted an empty list).
 		json << "\"entry_points\":"
-		     << engineContext().query->getEntryPoints(project_id).c_str()
-		     << ",";
+		     << ctx->query->getEntryPoints(project_id).c_str() << ",";
 	}
 
 	// 4. Focus on specific module if detected
@@ -480,8 +480,8 @@ static char *buildContextImpl(uint64_t project_id, const char *query)
 	}
 
 	// 5. Call graph data (only if ready AND relevant)
-	double cg_ratio = engineContext().store->getReadyRatio(
-		project_id, "callgraph_ready");
+	double cg_ratio =
+		ctx->store->getReadyRatio(project_id, "callgraph_ready");
 	bool cg_ready = (cg_ratio > 0.1);
 	if (cg_ready && (intent == "callgraph" || intent == "general")) {
 		json << "\"callgraph_available\":true,";
@@ -529,14 +529,13 @@ static char *buildContextImpl(uint64_t project_id, const char *query)
 	json << "\"enhancement_progress\":{"
 	     << "\"callgraph_ready\":" << (cg_ready ? "true" : "false") << ","
 	     << "\"metrics_ready\":"
-	     << (engineContext().store->getReadyRatio(project_id,
-						      "metrics_ready") > 0.1 ?
+	     << (ctx->store->getReadyRatio(project_id, "metrics_ready") > 0.1 ?
 			 "true" :
 			 "false")
 	     << ","
 	     << "\"embedding_ready\":"
-	     << (engineContext().store->getReadyRatio(project_id,
-						      "embedding_ready") > 0.1 ?
+	     << (ctx->store->getReadyRatio(project_id, "embedding_ready") >
+				 0.1 ?
 			 "true" :
 			 "false")
 	     << "}";
@@ -549,8 +548,8 @@ static char *buildContextImpl(uint64_t project_id, const char *query)
 	     << "\"call_graph\":" << (cg_ready ? "true" : "false") << ","
 	     << "\"path_tracing\":" << (cg_ready ? "true" : "false") << ","
 	     << "\"semantic_search\":"
-	     << (engineContext().store->getReadyRatio(project_id,
-						      "embedding_ready") > 0.1 ?
+	     << (ctx->store->getReadyRatio(project_id, "embedding_ready") >
+				 0.1 ?
 			 "true" :
 			 "false")
 	     << "}";
@@ -561,7 +560,7 @@ static char *buildContextImpl(uint64_t project_id, const char *query)
 
 // ─── Phase C: FFI Boundary Detection ──────────────────────────
 
-static char *detectFfiBoundariesImpl(uint64_t project_id)
+static char *detectFfiBoundariesImpl(EngineContext *ctx, uint64_t project_id)
 {
 	auto _store_guard = waitForKnowledgeBuilder();
 	// SQLite-only FFI boundary detection. The legacy output schema is
@@ -572,18 +571,18 @@ static char *detectFfiBoundariesImpl(uint64_t project_id)
 	//    "orphan_symbols":[{name,file_path,language,line}]}
 	//
 	// v0.2.5: the graph-not-ready guard is SQLite-specific and lives
-	// inside the #ifdef; the SQLite backend has its own !engineContext().store->handle()
+	// inside the #ifdef; the SQLite backend has its own !ctx->store->handle()
 	// guard in the #else branch.
 
 	// ── v0.2.5: SQLite graph-query backend (Windows / SQLite-only) ──
 	// FFI-boundary diagnosis over the canonical entity table. The four
 	// sections (languages, cross_language_files, ffi_symbols,
 	// orphan_symbols) mirror the SQLite branch's output schema.
-	if (!engineContext().store || !engineContext().store->handle()) {
+	if (!ctx || !ctx->store || !ctx->store->handle()) {
 		return dupString("{\"error\":\"graph not ready [module=engine_"
 				 "queries, method=detect_ffi_boundaries]\"}");
 	}
-	sqlite3 *db = engineContext().store->handle();
+	sqlite3 *db = ctx->store->handle();
 	std::ostringstream json;
 	json << "{";
 	// Single source of truth for escaping; the surrounding document is still
@@ -843,11 +842,13 @@ static char *detectFfiBoundariesImpl(uint64_t project_id)
 // exception would terminate the whole session. Error envelopes carry a
 // [module=ffi, method=<export>] tag per code_rules.md.
 
-char *engine_trace_path(uint64_t project_id, const char *from_name,
-			const char *to_name)
+char *engine_trace_path(engine_t handle, uint64_t project_id,
+			const char *from_name, const char *to_name)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
-		return tracePathImpl(project_id, from_name, to_name);
+		return tracePathImpl(ctx, project_id, from_name, to_name);
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope("ffi", "engine_trace_path",
 						     e.what()));
@@ -857,12 +858,15 @@ char *engine_trace_path(uint64_t project_id, const char *from_name,
 	}
 }
 
-char *engine_explore_function(uint64_t project_id, const char *function_name,
-			      int depth, const char *direction)
+char *engine_explore_function(engine_t handle, uint64_t project_id,
+			      const char *function_name, int depth,
+			      const char *direction)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
-		return exploreFunctionImpl(project_id, function_name, depth,
-					   direction);
+		return exploreFunctionImpl(ctx, project_id, function_name,
+					   depth, direction);
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_explore_function", e.what()));
@@ -872,10 +876,13 @@ char *engine_explore_function(uint64_t project_id, const char *function_name,
 	}
 }
 
-char *engine_build_context(uint64_t project_id, const char *query)
+char *engine_build_context(engine_t handle, uint64_t project_id,
+			   const char *query)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
-		return buildContextImpl(project_id, query);
+		return buildContextImpl(ctx, project_id, query);
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_build_context", e.what()));
@@ -885,10 +892,12 @@ char *engine_build_context(uint64_t project_id, const char *query)
 	}
 }
 
-char *engine_detect_ffi_boundaries(uint64_t project_id)
+char *engine_detect_ffi_boundaries(engine_t handle, uint64_t project_id)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
-		return detectFfiBoundariesImpl(project_id);
+		return detectFfiBoundariesImpl(ctx, project_id);
 	} catch (const std::exception &e) {
 		return dupString(util::errorEnvelope(
 			"ffi", "engine_detect_ffi_boundaries", e.what()));

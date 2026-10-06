@@ -50,7 +50,8 @@ struct AggregateVerdict {
 	double confidence = 0.0;
 };
 
-AggregateVerdict aggregateVerdict(int supported, int contradicted, int unknown)
+AggregateVerdict aggregateVerdict(EngineContext *ctx, int supported,
+				  int contradicted, int unknown)
 {
 	AggregateVerdict out;
 	int total = supported + contradicted + unknown;
@@ -91,11 +92,14 @@ AggregateVerdict aggregateVerdict(int supported, int contradicted, int unknown)
 //
 // MEMORY: caller MUST free the returned char* via engine_free_string().
 // THREAD SAFETY: single-threaded (GraphStore writer invariant).
-extern "C" char *engine_verify_review(uint64_t project_id, const char *text)
+extern "C" char *engine_verify_review(engine_t handle, uint64_t project_id,
+				      const char *text)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().store)
+		if (!ctx || !ctx->store)
 			return dupString("{\"error\":\"not initialized\"}");
 		if (!text || !*text)
 			return dupString(
@@ -104,7 +108,7 @@ extern "C" char *engine_verify_review(uint64_t project_id, const char *text)
 
 		std::string src(text);
 		auto batch = verify_ffi::verify_claim_batch(
-			project_id, src, kSourceKindCodeReview,
+			ctx, project_id, src, kSourceKindCodeReview,
 			src.substr(0, kSourceRefMaxLen));
 
 		std::ostringstream json;
@@ -154,11 +158,14 @@ extern "C" char *engine_verify_review(uint64_t project_id, const char *text)
 //
 // MEMORY: caller MUST free the returned char* via engine_free_string().
 // THREAD SAFETY: single-threaded (GraphStore writer invariant).
-extern "C" char *engine_verify_reality(uint64_t project_id, const char *text)
+extern "C" char *engine_verify_reality(engine_t handle, uint64_t project_id,
+				       const char *text)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().store)
+		if (!ctx || !ctx->store)
 			return dupString("{\"error\":\"not initialized\"}");
 		if (!text || !*text)
 			return dupString(
@@ -167,11 +174,12 @@ extern "C" char *engine_verify_reality(uint64_t project_id, const char *text)
 
 		std::string src(text);
 		auto batch = verify_ffi::verify_claim_batch(
-			project_id, src, kSourceKindAiStatement,
+			ctx, project_id, src, kSourceKindAiStatement,
 			src.substr(0, kSourceRefMaxLen));
 
-		AggregateVerdict agg = aggregateVerdict(
-			batch.supported, batch.contradicted, batch.unknown);
+		AggregateVerdict agg = aggregateVerdict(ctx, batch.supported,
+							batch.contradicted,
+							batch.unknown);
 
 		util::JsonWriter json;
 		json.beginObject();
@@ -211,14 +219,16 @@ extern "C" char *engine_verify_reality(uint64_t project_id, const char *text)
 //
 // MEMORY: caller MUST free the returned char* via engine_free_string().
 // THREAD SAFETY: single-threaded (GraphStore writer invariant).
-extern "C" char *engine_detect_drift(uint64_t project_id)
+extern "C" char *engine_detect_drift(engine_t handle, uint64_t project_id)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().store)
+		if (!ctx || !ctx->store)
 			return dupString("{\"error\":\"not initialized\"}");
 
-		sqlite3 *db = engineContext().store->handle();
+		sqlite3 *db = ctx->store->handle();
 		if (!db)
 			return dupString(
 				"{\"error\":\"db handle null "
@@ -262,7 +272,7 @@ extern "C" char *engine_detect_drift(uint64_t project_id)
 						"Capability '" + name +
 						"' declared in README but no "
 						"implementing entity with callers";
-					engineContext().store->insertFinding(
+					ctx->store->insertFinding(
 						project_id, "MissingCapability",
 						kDriftSeverityHard, 0, detail,
 						0.9);
@@ -413,12 +423,11 @@ extern "C" char *engine_detect_drift(uint64_t project_id)
 							"' declared in " +
 							file_path +
 							" but no enforcing code detected";
-						engineContext()
-							.store->insertFinding(
-								project_id,
-								"BrokenContract",
-								kDriftSeverityHard,
-								0, detail, 0.8);
+						ctx->store->insertFinding(
+							project_id,
+							"BrokenContract",
+							kDriftSeverityHard, 0,
+							detail, 0.8);
 						if (!first)
 							json << ",";
 						first = false;
@@ -471,15 +480,18 @@ extern "C" char *engine_detect_drift(uint64_t project_id)
 //
 // MEMORY: caller MUST free the returned char* via engine_free_string().
 // THREAD SAFETY: single-threaded (GraphStore writer invariant).
-extern "C" char *engine_detect_documentation_drift(uint64_t project_id)
+extern "C" char *engine_detect_documentation_drift(engine_t handle,
+						   uint64_t project_id)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().store)
+		if (!ctx || !ctx->store)
 			return dupString("{\"error\":\"not initialized\"}");
 
 		// Read README content from the document table.
-		sqlite3 *db = engineContext().store->handle();
+		sqlite3 *db = ctx->store->handle();
 		if (!db)
 			return dupString(
 				"{\"error\":\"db handle null "
@@ -523,8 +535,7 @@ extern "C" char *engine_detect_documentation_drift(uint64_t project_id)
 		for (const auto &claim : claims) {
 			claimed.push_back(claim.display);
 			int64_t count = verify::countEntitiesByLanguage(
-				*engineContext().store, project_id,
-				claim.canonical);
+				*ctx->store, project_id, claim.canonical);
 			if (count > 0)
 				found.push_back(claim.display);
 			else
@@ -542,11 +553,11 @@ extern "C" char *engine_detect_documentation_drift(uint64_t project_id)
 
 		// Persist a finding row for each missing language.
 		for (size_t i = 0; i < missing.size(); ++i) {
-			engineContext().store->insertFinding(
-				project_id, "DocumentationDrift",
-				verify::kDriftSeverityDoc, 0,
-				missing_details[i],
-				verify::kDriftConfidenceDoc);
+			ctx->store->insertFinding(project_id,
+						  "DocumentationDrift",
+						  verify::kDriftSeverityDoc, 0,
+						  missing_details[i],
+						  verify::kDriftConfidenceDoc);
 		}
 		int drifts_found = static_cast<int>(missing.size());
 
@@ -608,27 +619,30 @@ extern "C" char *engine_detect_documentation_drift(uint64_t project_id)
 //
 // MEMORY: caller MUST free the returned char* via engine_free_string().
 // THREAD SAFETY: single-threaded (GraphStore writer invariant).
-extern "C" char *engine_detect_capability_drift(uint64_t project_id)
+extern "C" char *engine_detect_capability_drift(engine_t handle,
+						uint64_t project_id)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().store)
+		if (!ctx || !ctx->store)
 			return dupString(
 				"{\"error\":\"not initialized "
 				"[module=ffi, method=engine_detect_capability_drift]\"}");
 
-		sqlite3 *db = engineContext().store->handle();
+		sqlite3 *db = ctx->store->handle();
 		if (!db)
 			return dupString(
 				"{\"error\":\"db not open "
 				"[module=ffi, method=engine_detect_capability_drift]\"}");
 
-		auto drifts = verify::detectCapabilityDrift(
-			*engineContext().store, project_id);
+		auto drifts =
+			verify::detectCapabilityDrift(*ctx->store, project_id);
 
 		// Persist each drift as a finding row.
 		for (const auto &d : drifts) {
-			engineContext().store->insertFinding(
+			ctx->store->insertFinding(
 				project_id, "CapabilityDrift",
 				verify::kDriftSeverityCapability, 0, d.detail,
 				verify::kDriftConfidenceCapability);
@@ -713,24 +727,28 @@ extern "C" char *engine_detect_capability_drift(uint64_t project_id)
 //
 // MEMORY: caller MUST free the returned char* via engine_free_string().
 // THREAD SAFETY: single-threaded (GraphStore writer invariant).
-extern "C" char *engine_detect_architecture_drift(uint64_t project_id)
+extern "C" char *engine_detect_architecture_drift(engine_t handle,
+						  uint64_t project_id)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		auto _store_guard = waitForKnowledgeBuilder();
-		if (!engineContext().store)
+		if (!ctx || !ctx->store)
 			return dupString(
 				"{\"error\":\"not initialized "
 				"[module=ffi, method=engine_detect_architecture_drift]\"}");
 
-		auto drifts = verify::detectArchitectureDrift(
-			*engineContext().store, project_id);
+		auto drifts = verify::detectArchitectureDrift(*ctx->store,
+							      project_id);
 
 		// Persist each drift as a finding row.
 		for (const auto &d : drifts) {
-			engineContext().store->insertFinding(
-				project_id, "ArchitectureDrift",
-				verify::kDriftSeverityArch, 0, d.detail,
-				verify::kDriftConfidenceArch);
+			ctx->store->insertFinding(project_id,
+						  "ArchitectureDrift",
+						  verify::kDriftSeverityArch, 0,
+						  d.detail,
+						  verify::kDriftConfidenceArch);
 		}
 
 		std::ostringstream json;
