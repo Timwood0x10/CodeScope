@@ -37,6 +37,18 @@ class CVisitor : public JsVisitor {
 			var_types_[name] = type;
 	}
 
+	/// Record every named parameter of a function definition into var_types_.
+	///
+	/// A parameter is a declaration too, and handleCall fills receiver_type for
+	/// `o->method()` from var_types_. Only `declaration` nodes fed it, so a
+	/// parameter's type was never known: the call fact went in with
+	/// receiver_text but an EMPTY receiver_type, and when two types declare the
+	/// same method name (the common `ToString`/`begin`/`clone` case) the
+	/// resolver had nothing to choose with and abstained — a false negative that
+	/// Go, Java and Python do not produce for the same call shape (measured in
+	/// test_resolver_language_consistency).
+	void recordParameterTypes(TSNode func_def);
+
 	/// Push/pop the enclosing class name for this->method() inference.
 	void pushClassScope(const std::string &class_name)
 	{

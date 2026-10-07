@@ -455,7 +455,16 @@ int64_t ResolverPipeline::run()
 					 ref.caller_file.substr(0, c_slash) ==
 						 c.file_path.substr(0,
 								    t_slash));
-				if (same_dir &&
+				// A fuzzy candidate is only acceptable for a BARE call: the
+				// fallback exists for visitors that record a call by its
+				// bare name (factors.h, ImportMatch); a receiver-carrying
+				// reference is a member access, and a same-directory FREE
+				// function is not that member (measured: every such edge was
+				// false — `Instant::now()` → `now_ms`, `math.Pow` →
+				// `powFunc`; all 50 here, 13 in goagent).
+				const bool fuzzy_ok = !used_fuzzy ||
+						      ref.call_kind == 0;
+				if (same_dir && fuzzy_ok &&
 				    factorVisibilityCheck(c.language, c.name,
 							  ref.caller_file,
 							  c.file_path) >= 0.5) {
@@ -535,8 +544,15 @@ int64_t ResolverPipeline::run()
 				if (fv != global_var_types_.end()) {
 					for (const auto &cand_type :
 					     fv->second) {
+						// Canonical spelling: a variable
+						// is recorded as `*HolderA` or
+						// `pkg.Holder`, while the field
+						// table is keyed by the declared
+						// bare name (see
+						// canonicalTypeName).
 						std::string cur_type =
-							cand_type;
+							canonicalTypeName(
+								cand_type);
 						bool chain_ok = true;
 						size_t pos = first_dot;
 						while (chain_ok &&
@@ -571,35 +587,18 @@ int64_t ResolverPipeline::run()
 									false;
 								break;
 							}
-							cur_type = fld->second;
+							cur_type = canonicalTypeName(
+								fld->second);
 							pos = next;
 						}
 						if (chain_ok &&
 						    !cur_type.empty()) {
-							// Normalize the resolved type so it
-							// can hit interface_impl_index_:
-							// strip a leading pointer marker
-							// (`*PluginBus` → `PluginBus`) and
-							// drop a package qualifier
-							// (`ares_runtime.PluginBus` →
-							// `PluginBus`), matching how the
-							// visitor records interface names.
-							std::string norm =
+							// Every segment was
+							// canonicalised above, so the
+							// result can hit
+							// interface_impl_index_.
+							resolved_receiver =
 								cur_type;
-							if (!norm.empty() &&
-							    norm[0] == '*')
-								norm.erase(0,
-									   1);
-							size_t last_dot =
-								norm.rfind('.');
-							if (last_dot !=
-							    std::string::npos)
-								norm = norm.substr(
-									last_dot +
-									1);
-							if (!norm.empty())
-								resolved_receiver =
-									norm;
 							break;
 						}
 					}

@@ -457,6 +457,19 @@ void JsVisitor::visitMethodDef(TSNode node, uint64_t parent_id)
 	uint64_t method_id = emitter_->emitMethod(
 		name, loc, parent_id, 0, false, detectVisibility(node));
 	defineSymbol(name, method_id);
+	// The resolver matches a call's receiver_type against the candidate's
+	// DECLARING type, which it reads from qualified_name (the C++ and Rust
+	// visitors set it for exactly this reason). With the bare method name
+	// there, `TsOwner::method` and `TsDecoy::method` look identical, so a call
+	// whose receiver type IS known still had no candidate to prefer and the
+	// ambiguity gate abstained — measured for TypeScript in
+	// test_resolver_language_consistency. JavaScript class methods get the same
+	// treatment, which is why this lives in the shared visitor.
+	{
+		const std::string owner = currentClassName();
+		if (!owner.empty())
+			unit_->setQualifiedName(method_id, owner + "::" + name);
+	}
 
 	pushScope();
 	pushFunctionScope(method_id);

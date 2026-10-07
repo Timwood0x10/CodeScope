@@ -143,12 +143,61 @@ void RustVisitor::handleFunction(TSNode node, uint64_t parent_id)
 		const char *t = ts_node_type(c);
 		if (strcmp(t, "identifier") == 0)
 			continue;
-		if (strcmp(t, "parameters") == 0 || strcmp(t, "block") == 0)
+		if (strcmp(t, "parameters") == 0) {
+			recordParameterTypes(c, id);
 			visitChildren(c, id);
+		} else if (strcmp(t, "block") == 0) {
+			visitChildren(c, id);
+		}
 	}
 	popFunctionScope();
 	popScope();
 }
+std::string RustVisitor::firstIdentifier(TSNode node, int depth)
+{
+	if (ts_node_is_null(node) || depth > 4)
+		return "";
+	if (strcmp(ts_node_type(node), "identifier") == 0)
+		return nodeText(node);
+	const uint32_t count = ts_node_child_count(node);
+	for (uint32_t i = 0; i < count; ++i) {
+		TSNode child = ts_node_child(node, i);
+		if (!ts_node_is_named(child))
+			continue;
+		const std::string got = firstIdentifier(child, depth + 1);
+		if (!got.empty())
+			return got;
+	}
+	return "";
+}
+
+void RustVisitor::recordParameterTypes(TSNode params, uint64_t fn_id)
+{
+	const uint32_t count = ts_node_child_count(params);
+	for (uint32_t i = 0; i < count; ++i) {
+		TSNode param = ts_node_child(params, i);
+		if (!ts_node_is_named(param) ||
+		    strcmp(ts_node_type(param), "parameter") != 0)
+			continue;
+		TSNode type_node =
+			ts_node_child_by_field_name(param, "type", 4);
+		TSNode pattern =
+			ts_node_child_by_field_name(param, "pattern", 7);
+		if (ts_node_is_null(type_node) || ts_node_is_null(pattern))
+			continue;
+		const std::string pin_name = firstIdentifier(pattern, 0);
+		if (pin_name.empty())
+			continue;
+		const std::string type_text = nodeText(type_node);
+		// Same pair as the local-declaration path: the TypeRef puts the binding
+		// in the resolver's variable-type table, and var_types_ feeds the
+		// receiver_type of a call on this parameter.
+		emitter_->emitTypeRef(pin_name, type_text, location(pattern),
+				      fn_id);
+		recordVarType(pin_name, normalizeTypeName(type_text));
+	}
+}
+
 void RustVisitor::handleStruct(TSNode node, uint64_t parent_id)
 {
 	SourceRange loc = location(node);
@@ -265,6 +314,16 @@ void RustVisitor::handleImpl(TSNode node, uint64_t parent_id)
 						   false,
 						   detectVisibility(fn_node));
 		defineSymbol(name, id);
+		// Same purpose as the C++ visitor's qualified_name: the resolver matches
+		// a call's receiver_type against the candidate's DECLARING type
+		// (factorReceiverTypeMatch). With the bare method name as the whole
+		// qualified_name, `RsOwner::method` and `RsDecoy::method` look
+		// identical, so a call whose receiver type is `RsOwner` had no candidate
+		// to prefer and the ambiguity gate abstained — even though the call site
+		// did record receiver_type (measured in
+		// test_resolver_language_consistency).
+		if (!self_type.empty())
+			unit_->setQualifiedName(id, self_type + "::" + name);
 		pushScope();
 		pushFunctionScope(id);
 		uint32_t cc = ts_node_child_count(fn_node);
@@ -275,9 +334,12 @@ void RustVisitor::handleImpl(TSNode node, uint64_t parent_id)
 			const char *t = ts_node_type(gc);
 			if (strcmp(t, "identifier") == 0)
 				continue;
-			if (strcmp(t, "parameters") == 0 ||
-			    strcmp(t, "block") == 0)
+			if (strcmp(t, "parameters") == 0) {
+				recordParameterTypes(gc, id);
 				visitChildren(gc, id);
+			} else if (strcmp(t, "block") == 0) {
+				visitChildren(gc, id);
+			}
 		}
 		popFunctionScope();
 		popScope();

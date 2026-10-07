@@ -67,6 +67,9 @@ static int count_rows(const char *sql)
 	return n;
 }
 
+// count_rows lives above: the tests only ever read the project DB, because the
+// engine holds its write lock for the whole run.
+
 int main()
 {
 	std::error_code ec;
@@ -126,6 +129,16 @@ int AuthGuard(int x) {
 	printf("PASS: index ok — %s\n", idx);
 	engine_free_string(idx);
 
+	// capability_state now mirrors the DECLARED capabilities (the
+	// `capability` table, filled from the project README by the knowledge
+	// builder) instead of entity names that merely look like one: the
+	// hard-coded prefix list (Auth%/Login%/JWT%/Config%/…) is gone, so
+	// AuthGuard on its own no longer produces a row, and build_project_state
+	// no longer reports a capability score that answers a different question
+	// than the drift tools. The assertion below is the invariant itself, so
+	// it holds for a fixture that declares capabilities and for one like
+	// this that declares none.
+
 	// ─── Step 3: enhance (first run) ───
 	// Note: index already builds the graph, so enhance may be a no-op.
 	char *enh = engine_enhance_project(g_engine, pid);
@@ -149,7 +162,8 @@ int AuthGuard(int x) {
 	// the first enhance; Step 6 asserts a second enhance does not grow them.
 	int cap1 = count_rows("SELECT COUNT(*) FROM capability_state");
 	int ws1 = count_rows("SELECT COUNT(*) FROM workflow_step");
-	check(cap1 >= 1, "capability_state must have >=1 row (AuthGuard)");
+	check(cap1 == count_rows("SELECT COUNT(*) FROM capability"),
+	      "capability_state mirrors the declared capabilities");
 	check(ws1 >= 1, "workflow_step must have >=1 row (main workflow)");
 	printf("PASS: idempotency baseline — capability_state=%d workflow_step=%d\n",
 	       cap1, ws1);

@@ -60,8 +60,69 @@ void TsVisitor::visitNode(TSNode node, uint64_t parent_id)
 	if (strcmp(type, "abstract_class_declaration") == 0)
 		return visitClassDecl(node, parent_id);
 
+	// Function-like nodes carry their parameter types in the annotation, which
+	// the shared JavaScript handlers never read: they walk `formal_parameters`
+	// only for the parameter bodies (default values), so `o.method()` went in
+	// with receiver_text but an EMPTY receiver_type and the resolver abstained
+	// whenever two types declare the same method name. Same defect and same fix
+	// as the C/C++ and Rust visitors (see
+	// test_resolver_language_consistency); JavaScript has no annotations, which
+	// is why only this override does it.
+	if (strcmp(type, "function_declaration") == 0 ||
+	    strcmp(type, "function_expression") == 0 ||
+	    strcmp(type, "generator_function_declaration") == 0 ||
+	    strcmp(type, "method_definition") == 0 ||
+	    strcmp(type, "arrow_function") == 0)
+		recordParameterTypes(node);
+
 	// ── Fall back to JavaScript handling for all shared types ────
 	JsVisitor::visitNode(node, parent_id);
+}
+
+void TsVisitor::recordParameterTypes(TSNode fn_node)
+{
+	// `o: Owner` is a required_parameter whose `type` field wraps the annotation
+	// in a type_annotation node, which extractTsTypeAnnotation unwraps (and
+	// which already handles type_identifier, predefined_type and generic_type).
+	// An untyped parameter (`o`) has no annotation and binds nothing, and an
+	// arrow function's bare `x => ...` has no formal_parameters at all.
+	TSNode params = ts_node_child_by_field_name(fn_node, "parameters", 10);
+	if (ts_node_is_null(params))
+		return;
+	const uint32_t count = ts_node_child_count(params);
+	for (uint32_t i = 0; i < count; ++i) {
+		TSNode param = ts_node_child(params, i);
+		if (!ts_node_is_named(param))
+			continue;
+		const char *pt = ts_node_type(param);
+		if (strcmp(pt, "required_parameter") != 0 &&
+		    strcmp(pt, "optional_parameter") != 0)
+			continue;
+		TSNode type_node =
+			ts_node_child_by_field_name(param, "type", 4);
+		TSNode pattern =
+			ts_node_child_by_field_name(param, "pattern", 7);
+		if (ts_node_is_null(pattern)) {
+			// Older grammar shapes hang the name directly off the parameter.
+			for (uint32_t k = 0; k < ts_node_child_count(param);
+			     ++k) {
+				TSNode child = ts_node_child(param, k);
+				if (ts_node_is_named(child) &&
+				    strcmp(ts_node_type(child), "identifier") ==
+					    0) {
+					pattern = child;
+					break;
+				}
+			}
+		}
+		if (ts_node_is_null(type_node) || ts_node_is_null(pattern))
+			continue;
+		const std::string param_name = nodeText(pattern);
+		const std::string param_type =
+			extractTsTypeAnnotation(type_node);
+		if (!param_name.empty() && !param_type.empty())
+			recordVarType(param_name, param_type);
+	}
 }
 
 // ── Class Declaration (TS override: check type_identifier, push scope) ────

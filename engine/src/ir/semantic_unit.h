@@ -94,6 +94,10 @@ enum class CallKind : uint8_t {
 	Constructor = 3, // constructor/factory call: NewService()
 	StaticMethod =
 		4, // static method call: ClassName.staticMethod() (Java/C++)
+	// Not emitted by any visitor yet: Java records `Class.m()` as
+	// Method through its receiver check (java_visitor.cpp), and that is
+	// the conservative direction — the resolver's fuzzy fallback only
+	// accepts CallKind::Direct, so a static call is never guessed.
 	Virtual = 5, // virtual dispatch / trait method (C++/Rust)
 };
 

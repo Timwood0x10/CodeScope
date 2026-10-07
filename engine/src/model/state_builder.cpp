@@ -1,6 +1,9 @@
 #include "state_builder.h"
+#include "../verify/capability_verifier.h"
 #include <cstdio>
 #include <sstream>
+#include <string>
+#include <vector>
 #include <sqlite3.h>
 
 namespace model
@@ -90,11 +93,34 @@ int64_t StateBuilder::buildModuleSummaries()
 		"  JOIN entity e ON e.project_id = ? AND e.module_path = s.name "
 		"  WHERE s.kind = 1 AND s.project_id = ? "
 		"  GROUP BY s.id "
+		"), intra AS ("
+		// Internal coupling: call edges whose source AND target entity both
+		// live in this module. Keyed by module_path — the same column the agg
+		// CTE joins scope.name on — so it is one grouped scan instead of a
+		// correlated subquery per module. Self-loops are excluded for the
+		// same reason the incoming/outgoing counts above exclude them: an
+		// entity calling itself is not a dependency between two entities.
+		// The column has always existed (NOT NULL DEFAULT 0) but this INSERT
+		// passed a literal 0, so every module reported zero internal coupling
+		// whatever the call graph said — measured on goagent (131 modules,
+		// 24206 call edges) and on this repository.
+		"  SELECT se.module_path AS module_path, "
+		"    COUNT(*) AS internal "
+		"  FROM relation r2 "
+		"  JOIN entity se ON se.id = r2.source_id "
+		"  JOIN entity te ON te.id = r2.target_id "
+		"  WHERE r2.project_id = ? AND se.project_id = ? "
+		"    AND te.project_id = ? "
+		"    AND se.module_path = te.module_path "
+		"    AND se.module_path != '' "
+		"    AND r2.source_id != r2.target_id "
+		"  GROUP BY se.module_path "
 		") "
 		"INSERT OR REPLACE INTO module_summary "
 		"(project_id, module_id, state, incoming_count, outgoing_count, "
 		" internal_edges, dead_entities, utilization, confidence, role) "
-		"SELECT ?, agg.module_id, 0, incoming, outgoing, 0, dead, "
+		"SELECT ?, agg.module_id, 0, incoming, outgoing, "
+		"  COALESCE(intra.internal, 0), dead, "
 		"  CASE WHEN total > 0 "
 		"    THEN 1.0 - CAST(dead AS REAL) / total ELSE 0.0 END, "
 		"  0.85, "
@@ -148,6 +174,7 @@ int64_t StateBuilder::buildModuleSummaries()
 		// Priority 8: infra — true fallback
 		"    ELSE 'infra' END "
 		"FROM agg LEFT JOIN entry ON entry.module_id = agg.module_id "
+		"LEFT JOIN intra ON intra.module_path = agg.module_name "
 		"WHERE agg.total >= 3";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), sql.c_str(), -1, &stmt,
@@ -158,11 +185,12 @@ int64_t StateBuilder::buildModuleSummaries()
 			sqlite3_errmsg(store_->handle()));
 		return -1;
 	}
-	// Bind order: agg (4) + entry (2) + SELECT (1) = 7 ? params.
+	// Bind order: agg (4) + entry (2) + intra (3) + SELECT (1) = 10 params.
 	// entry previously contributed 3 (one per graph_nodes/scope/entity
 	// project filter); the deprecated graph_nodes join is gone, so the
-	// entry CTE now filters project_id twice.
-	for (int i = 1; i <= 7; i++)
+	// entry CTE now filters project_id twice. intra filters the relation
+	// plus its source and target entities.
+	for (int i = 1; i <= 10; i++)
 		sqlite3_bind_int64(stmt, i, static_cast<int64_t>(project_id_));
 
 	int rc = sqlite3_step(stmt);
@@ -179,28 +207,34 @@ int64_t StateBuilder::buildModuleSummaries()
 
 int64_t StateBuilder::buildCapabilityState()
 {
-	// Single INSERT...SELECT with a recursive CTE to derive the
-	// capability name. The CTE scans each matched entity name and finds
-	// the first position >= 2 where an uppercase letter is followed by
-	// a lowercase letter — i.e. the start of a new CamelCase word. The
-	// capability name is the prefix before that position.
+	// capability_state is the snapshot build_project_state reports as
+	// project_state.capability (total / verified). It answers the same question
+	// detect_capability_drift and verify_claim answer, so it asks the same
+	// implementation: verify::implementingEntitiesFor, the one place the rule
+	// lives. This builder used to restate the rule in SQL ("model/ cannot
+	// include verify/") and the two copies drifted — the restated arm floored
+	// the raw entity name where the verifier floors the normalised one, so one
+	// capability read 'Implemented' here and 'Contradicted' there — and before
+	// that the rows came from a naming heuristic (Auth%/Login%/JWT%/…, every
+	// hit 'Implemented' without consulting the call graph), which is why goagent
+	// reported 19 capabilities against the 7 its README declares.
 	//
-	// Acronym handling: a run of uppercase letters like "JWT" in
-	// "JWTValidator" must be treated as ONE word, not three. The
-	// previous CTE matched ANY uppercase letter at pos >= 2, so for
-	// "JWTValidator" it found pos=2 ('W') and returned substr(name,1,1)
-	// = "J" — truncating the acronym to its first letter. Requiring
-	// next_ch GLOB '[a-z]' skips the W and T (followed by uppercase),
-	// finds 'V' at pos=4 (followed by 'a'), and returns "JWT".
-	// For "AuthValidator" the rule still finds 'V' at pos=5 and
-	// returns "Auth".
+	// Including verify/ from here is not a layering violation:
+	// engine/CMakeLists.txt builds ONE static library (astgraph_engine) from all
+	// of engine/src, and verify/ includes only store/, so there is no cycle. The
+	// old note that treated this include as impossible is what forced the second
+	// copy, and a six-arm SQL predicate maintained twice is how the drift got in.
+	// capability_drift.cpp delegates to the same function for the same reason.
 	//
-	// Rebuild idempotently. capability_state has no UNIQUE(project_id,
-	// name), so `INSERT OR IGNORE` had no conflict target and every rebuild
-	// (each enhance / build_project_state) appended a second copy of every
-	// row — inflating project_state.capability.total by the number of runs.
-	// Delete this project's rows first, then insert, exactly like
-	// buildArchitectureState below.
+	// Rows come from the DECLARED capabilities (the `capability` table, filled
+	// from the project README by the knowledge builder). 'Declared' means the
+	// evidence chain is incomplete, which is exactly what the verifier reports
+	// as Contradicted.
+	//
+	// Rebuild idempotently: capability_state has no UNIQUE(project_id, name), so
+	// an INSERT without this DELETE appended a second copy of every row on each
+	// rebuild (each enhance / build_project_state) and inflated
+	// project_state.capability.total by the number of runs.
 	{
 		const std::string del =
 			"DELETE FROM capability_state WHERE project_id=" +
@@ -213,72 +247,85 @@ int64_t StateBuilder::buildCapabilityState()
 			return -1;
 		}
 	}
-	std::string sql =
-		"INSERT INTO capability_state "
-		"(project_id, name, state) "
-		"WITH RECURSIVE "
-		"matched(name) AS ("
-		"  SELECT name FROM entity "
-		"  WHERE project_id = ? AND kind = 0"
-		"    AND (name LIKE 'Auth%' OR name LIKE 'Login%'"
-		"     OR name LIKE 'JWT%' OR name LIKE 'Token%'"
-		"     OR name LIKE 'Rate%' OR name LIKE 'Cache%'"
-		"     OR name LIKE 'Log%' OR name LIKE 'Metric%'"
-		"     OR name LIKE 'Health%' OR name LIKE 'Config%')"
-		"  LIMIT 50"
-		"), "
-		// scan carries the current char (ch) and the next char
-		// (next_ch) so the word-boundary filter can require an
-		// uppercase letter followed by a lowercase letter. substr
-		// returns '' past end-of-string, and '' GLOB '[a-z]' is 0,
-		// so a trailing uppercase letter is correctly rejected.
-		"scan(name, pos, ch, next_ch) AS ("
-		"  SELECT name, 2, substr(name, 2, 1), substr(name, 3, 1) "
-		"  FROM matched "
-		"  WHERE length(name) >= 2 "
-		"  UNION ALL "
-		"  SELECT name, pos + 1, "
-		"    substr(name, pos + 1, 1), substr(name, pos + 2, 1) "
-		"  FROM scan "
-		"  WHERE pos < length(name)"
-		") "
-		"SELECT ?, "
-		"  CASE "
-		"    WHEN fu.pos IS NOT NULL "
-		"      THEN substr(m.name, 1, fu.pos - 1) "
-		"    ELSE m.name END, "
-		"  'Implemented' "
-		"FROM matched m "
-		"LEFT JOIN ("
-		"  SELECT name, MIN(pos) AS pos FROM scan "
-		// Word boundary: uppercase followed by lowercase. This skips
-		// intra-acronym uppercase letters (e.g. 'W','T' in "JWT")
-		// because they are followed by another uppercase letter.
-		"  WHERE ch GLOB '[A-Z]' AND next_ch GLOB '[a-z]' "
-		"  GROUP BY name"
-		") fu ON fu.name = m.name";
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(store_->handle(), sql.c_str(), -1, &stmt,
+
+	// The declared capability names.
+	std::vector<std::string> declared;
+	{
+		const char *names_sql = "SELECT name FROM capability "
+					"WHERE project_id = ? ORDER BY name";
+		sqlite3_stmt *names_st = nullptr;
+		if (sqlite3_prepare_v2(store_->handle(), names_sql, -1,
+				       &names_st, nullptr) != SQLITE_OK) {
+			fprintf(stderr,
+				"[module=state_builder, method=buildCapabilityState] "
+				"prepare capability names failed: %s\n",
+				sqlite3_errmsg(store_->handle()));
+			return -1;
+		}
+		sqlite3_bind_int64(names_st, 1,
+				   static_cast<int64_t>(project_id_));
+		while (sqlite3_step(names_st) == SQLITE_ROW) {
+			const char *name = reinterpret_cast<const char *>(
+				sqlite3_column_text(names_st, 0));
+			if (name)
+				declared.emplace_back(name);
+		}
+		sqlite3_finalize(names_st);
+	}
+
+	const char *insert_sql =
+		"INSERT INTO capability_state (project_id, name, state) "
+		"VALUES (?,?,?)";
+	sqlite3_stmt *insert_st = nullptr;
+	if (sqlite3_prepare_v2(store_->handle(), insert_sql, -1, &insert_st,
 			       nullptr) != SQLITE_OK) {
 		fprintf(stderr,
 			"[module=state_builder, method=buildCapabilityState] "
-			"prepare failed: %s\n",
+			"prepare insert failed: %s\n",
 			sqlite3_errmsg(store_->handle()));
 		return -1;
 	}
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id_));
-	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id_));
 
-	int rc = sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-	if (rc != SQLITE_DONE) {
-		fprintf(stderr,
-			"[module=state_builder, method=buildCapabilityState] "
-			"step failed (rc=%d): %s\n",
-			rc, sqlite3_errmsg(store_->handle()));
-		return -1;
+	int64_t written = 0;
+	for (const std::string &name : declared) {
+		bool ok = false;
+		const std::vector<int64_t> implementing =
+			verify::implementingEntitiesFor(store_, project_id_,
+							name, ok);
+		if (!ok) {
+			// The shared rule's query failed. Writing 'Declared' here would turn
+			// an infrastructure failure into a product verdict, which is the
+			// silent error its contract forbids (code_rules §1).
+			fprintf(stderr,
+				"[module=state_builder, method=buildCapabilityState] "
+				"implementingEntitiesFor failed for \"%s\"\n",
+				name.c_str());
+			sqlite3_finalize(insert_st);
+			return -1;
+		}
+		sqlite3_bind_int64(insert_st, 1,
+				   static_cast<int64_t>(project_id_));
+		sqlite3_bind_text(insert_st, 2, name.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_text(insert_st, 3,
+				  implementing.empty() ? "Declared" :
+							 "Implemented",
+				  -1, SQLITE_STATIC);
+		const int rc = sqlite3_step(insert_st);
+		if (rc != SQLITE_DONE) {
+			fprintf(stderr,
+				"[module=state_builder, method=buildCapabilityState] "
+				"insert failed for \"%s\" (rc=%d): %s\n",
+				name.c_str(), rc,
+				sqlite3_errmsg(store_->handle()));
+			sqlite3_finalize(insert_st);
+			return -1;
+		}
+		sqlite3_reset(insert_st);
+		++written;
 	}
-	return sqlite3_changes(store_->handle());
+	sqlite3_finalize(insert_st);
+	return written;
 }
 
 int64_t StateBuilder::buildWorkflowState()

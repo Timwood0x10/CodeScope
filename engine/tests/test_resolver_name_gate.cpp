@@ -68,6 +68,11 @@ int main()
 		      "int countLines(const std::string &content)\n"
 		      "{\n"
 		      "\treturn static_cast<int>(content.size());\n"
+		      "}\n"
+		      "\n"
+		      "long long time_since_epoch_ms()\n"
+		      "{\n"
+		      "\treturn 0;\n"
 		      "}\n",
 		      f);
 		fclose(f);
@@ -151,6 +156,16 @@ int main()
 			"SELECT COUNT(*) FROM relation r JOIN entity te "
 			"ON te.id=r.target_id WHERE te.name='countWords'") ==
 	      0);
+
+	// A receiver-carrying reference must not be fuzzy-resolved either: the
+	// parser records `t.time_since_epoch()` as a method call (call_kind=1),
+	// and a same-directory FREE function is not that member. Measured on two
+	// real projects every such edge was false (Instant::now -> now_ms,
+	// os.Stat -> modTime, math.Pow -> powFunc, Command::new -> the variable
+	// `expected`), while the genuine calls at those sites still resolve.
+	CHECK(scalarSql(db_h, "SELECT COUNT(*) FROM relation r JOIN entity te "
+			      "ON te.id=r.target_id "
+			      "WHERE te.name='time_since_epoch_ms'") == 0);
 
 	// ...while the genuine call is still resolved: the fix must narrow the
 	// resolver, not silence it.

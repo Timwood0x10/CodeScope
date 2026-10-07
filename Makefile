@@ -2,6 +2,7 @@ SHELL := /bin/bash
 .PHONY: all build build-engine build-server \
         test test-engine test-server test-bench test-savings \
         accuracy-check \
+        bench-check bench-full bench-graph bench-graph-update \
         lint lint-cpp lint-rust fmt fmt-cpp fmt-rust check \
         clean distclean help
 
@@ -301,11 +302,34 @@ else
 endif
 	@printf "$(CHECK) bench-full complete\n"
 
+# Graph-SHAPE regression: not speed, but the RESULT — how many call edges the
+# resolver produces on fixed multi-language checkouts and how they distribute
+# across resolution kinds, parse-time strategies and deciding factors. A visitor
+# or factor change that moves real edges is invisible to the unit tests, which
+# pin hand-built fixtures; this compares against benchmarks/baselines/ and exits
+# non-zero on any difference. Relocate the checkouts with
+# CODESCOPE_BENCH_PROJECTS; missing ones are skipped.
+bench-graph:
+	@printf "$(CYAN)[bench/graph]$(RESET) Comparing graph shape against baselines...\n"
+	@bash $(BENCH_DIR)/graph_baseline.sh
+
+bench-graph-update:
+	@printf "$(CYAN)[bench/graph]$(RESET) Rewriting graph baselines (intended changes only)...\n"
+	@bash $(BENCH_DIR)/graph_baseline.sh --update
+
 $(BENCH_BIN): $(ENGINE_LIB)
 	@cmake --build $(BUILD_DIR) -j$(NPROC) 2>&1 | tail -1
 
 # ─── Lint ────────────────────────────────────────────────────────
-LINT_CPP_FILES := $(shell find $(ENGINE_DIR)/src $(ENGINE_DIR)/include -name '*.cpp' -o -name '*.h' | grep -v build)
+# Build trees are pruned by PATH. The previous `| grep -v build` dropped any
+# path containing "build" anywhere, which silently excluded eight real source
+# files — state_builder.{cpp,h}, project_state_builder.{cpp,h},
+# graph_builder.{cpp,h} and evidence_builder.{cpp,h} — from clang-format and
+# from `make check`'s lint-verify step. state_builder.cpp had drifted 50 lines
+# without a single gate noticing, and the code written there during this work
+# passed the check while failing clang-format on its own.
+CPP_LINT_PRUNE := \( -path '*/build/*' -o -path '*/build-*/*' \) -prune -o
+LINT_CPP_FILES := $(shell find $(ENGINE_DIR)/src $(ENGINE_DIR)/include $(CPP_LINT_PRUNE) \( -name '*.cpp' -o -name '*.h' \) -print)
 
 lint: lint-cpp lint-rust
 	@printf "$(CHECK) lint complete\n"
@@ -321,7 +345,7 @@ lint-verify: lint-cpp-full lint-rust
 lint-cpp: $(BUILD_DIR)/compile_commands.json
 	@printf "$(CYAN)[lint/cpp]$(RESET) Running clang-format check...\n"
 	@# Get recently modified files (last 1 hour) for fast lint
-	@RECENT_FILES=$$(find $(ENGINE_DIR)/src -name '*.cpp' -o -name '*.h' -mmin -60 | grep -v build); \
+	@RECENT_FILES=$$(find $(ENGINE_DIR)/src $(CPP_LINT_PRUNE) \( -name '*.cpp' -o -name '*.h' \) -mmin -60 -print); \
 	if [ -z "$$RECENT_FILES" ]; then \
 		RECENT_FILES="$(ENGINE_DIR)/src/query/query_engine.cpp $(ENGINE_DIR)/src/engine_lifecycle.cpp"; \
 	fi; \

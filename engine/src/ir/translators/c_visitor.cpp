@@ -169,6 +169,7 @@ void CVisitor::handleFuncDef(TSNode node, uint64_t parent_id)
 	}
 	uint64_t id = emitter_->emitFunction(name, loc, parent_id, 0, false,
 					     detectVisibility(node));
+	recordParameterTypes(node);
 	defineSymbol(name, id);
 	// Step 4/5 (plan §4C/§5): tag methods with a qualified name so the
 	// Resolver's factorReceiverTypeMatch can match a call's receiver_type
@@ -204,6 +205,45 @@ void CVisitor::handleFuncDef(TSNode node, uint64_t parent_id)
 	}
 	popFunctionScope();
 	popScope();
+}
+
+void CVisitor::recordParameterTypes(TSNode func_def)
+{
+	// The parameter list hangs off the declarator, one level below the
+	// definition — the same reason extractName() reads the `declarator` field:
+	// the first named child of a function_definition is the return type, so
+	// scanning the definition's children reaches the return type instead.
+	//
+	// Only named parameters are recorded (`void f(int)` binds nothing), and
+	// extractName() unwraps the declarator for the parameter, so `*o` and `&o`
+	// both yield `o`.
+	const uint32_t count = ts_node_child_count(func_def);
+	for (uint32_t i = 0; i < count; i++) {
+		TSNode child = ts_node_child(func_def, i);
+		if (!ts_node_is_named(child) ||
+		    strcmp(ts_node_type(child), "function_declarator") != 0)
+			continue;
+		TSNode params =
+			ts_node_child_by_field_name(child, "parameters", 10);
+		if (ts_node_is_null(params))
+			continue;
+		const uint32_t param_count = ts_node_child_count(params);
+		for (uint32_t p = 0; p < param_count; p++) {
+			TSNode param = ts_node_child(params, p);
+			if (!ts_node_is_named(param) ||
+			    strcmp(ts_node_type(param),
+				   "parameter_declaration") != 0)
+				continue;
+			TSNode type_node =
+				ts_node_child_by_field_name(param, "type", 4);
+			if (ts_node_is_null(type_node))
+				continue;
+			const std::string param_name = extractName(param);
+			if (param_name.empty())
+				continue;
+			recordVarType(param_name, nodeText(type_node));
+		}
+	}
 }
 
 void CVisitor::handleDeclaration(TSNode node, uint64_t parent_id)

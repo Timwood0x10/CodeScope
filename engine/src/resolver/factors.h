@@ -389,14 +389,90 @@ double factorReceiverTypeMatch(const std::string &receiver_type,
 			       const std::string &candidate_name,
 			       const std::string &candidate_file);
 
+// ── Type-name spelling ─────────────────────────────────────────────
+//
+// A type name reaches the resolver in whatever form its use site was written
+// in, while every table it is looked up in — interface_impl_index_,
+// global_struct_fields_, global_var_types_ — is keyed by the bare name the
+// declaration recorded. `*Manager`, `&ares_runtime.Manager` and `Manager` are
+// one type, so comparisons and lookups go through canonicalTypeName().
+
+/// Sigils a use site can put in front of a type name.
+constexpr char kPointerSigil = '*';
+constexpr char kReferenceSigil = '&';
+
+/// The bare type name: last `.`/`::`-separated segment, with pointer/reference
+/// sigils, whitespace and a trailing generic argument list removed.
+///
+/// `*PluginBus`, `&pkg.PluginBus`, `PluginBus*`, `PluginBus` → `PluginBus`;
+/// `std::vector<int>` → `vector`; `Holder[T]` → `Holder`.
+///
+/// Anything that is NOT a plain (optionally qualified) name yields "": Go's
+/// channel, slice, map and function types are recorded verbatim
+/// (`<-chan os.Signal`, `[]<-chan *Event`, `map[string]int`,
+/// `func(ctx context.Context, …) (…)`), and mining those for a "last segment"
+/// produces a plausible-looking but unrelated symbol (`os.Signal` → `Signal`),
+/// which is exactly the kind of coincidence the field-chain walk would then
+/// resolve a receiver through. Measured on goagent: 1802 of the recorded type
+/// spellings are plain names and ~730 are composite, none of which can be a
+/// table key (no declaration name contains a bracket, sigil or separator).
+///
+/// Why this exists: the field-chain walk (pipeline.cpp, Step 8.1c) looked the
+/// RAW spelling of each segment up in global_struct_fields_, so a parameter
+/// recorded as `*HolderA` never reached the entry keyed `HolderA` — the chain
+/// was reported unresolvable and the walk moved on to the next same-named
+/// variable's type, which is how a `h.registry.Get(...)` call site ended up
+/// resolving through an unrelated type (measured on goagent: six `dispatch`
+/// call sites, and a fixture where the pointer spelling produced no edge at
+/// all while the value spelling produced two). The receiver-match factor had
+/// the same hole from the other side: `prefix1 = receiver_type + "::"` built
+/// from `*Manager` can never occur in a candidate's `Manager::Get`.
+///
+/// @param type_name Type spelling as recorded; may be empty.
+/// @return The bare name, or "" when the input is empty, all sigils, or not a
+///         plain type name (in which case callers must treat it as unknown).
+inline std::string canonicalTypeName(const std::string &type_name)
+{
+	const auto is_sigil_or_space = [](char ch) {
+		return ch == kPointerSigil || ch == kReferenceSigil ||
+		       std::isspace(static_cast<unsigned char>(ch)) != 0;
+	};
+	std::string text = type_name;
+	size_t begin = 0;
+	while (begin < text.size() && is_sigil_or_space(text[begin]))
+		++begin;
+	text.erase(0, begin);
+	// A trailing generic argument list is not part of the name. A LEADING one
+	// is not a generic list — `[]byte` is a slice — so the opening bracket must
+	// follow something, and `map[string]int` is rejected below by its brackets.
+	if (!text.empty() && (text.back() == '>' || text.back() == ']')) {
+		const size_t open = text.find_first_of("<[");
+		if (open != std::string::npos && open > 0)
+			text.erase(open);
+	}
+	while (!text.empty() && is_sigil_or_space(text.back()))
+		text.pop_back();
+	// Everything left must be a plain name: letters, digits, '_' and the two
+	// qualifier separators. Composite spellings are rejected as unknown rather
+	// than mined for a coincidental symbol.
+	for (char ch : text)
+		if (ch != '.' && ch != ':' &&
+		    !std::isalnum(static_cast<unsigned char>(ch)) && ch != '_')
+			return {};
+	const size_t sep = text.find_last_of(".:");
+	if (sep != std::string::npos)
+		text.erase(0, sep + 1);
+	return text;
+}
+
 // ── v0.2.5 (perf): receiver-type match with pre-parsed ref-level strings ──
 //
-// factorReceiverTypeMatch re-derives `receiver_type + "::"`,
+// factorReceiverTypeMatchPrecomp re-derives `receiver_type + "::"`,
 // `receiver_type + "."` and the lowercased receiver_type on EVERY candidate.
 // All three depend only on the REF's receiver_type (fixed across candidates),
 // so in the resolver hot loop we build them once per ref and hand them to a
-// pre-parsed variant that skips those allocations. Scoring is IDENTICAL to
-// factorReceiverTypeMatch — do not change it independently.
+// pre-parsed variant that skips those allocations. The receiver type is
+// canonicalised here, once per ref, so both spellings of one type score alike.
 struct ReceiverMatchContext {
 	std::string prefix1; // receiver_type + "::"
 	std::string prefix2; // receiver_type + "."

@@ -50,6 +50,20 @@ class TsVisitor : public JsVisitor {
 	// for `r.render()`.
 	void visitVariableDecl(TSNode node, uint64_t parent_id) override;
 
+	/// Record every annotated parameter of a function-like node into var_types_,
+	/// so visitCallExpr can fill receiver_type for `o.method()` when `o` is a
+	/// parameter.
+	///
+	/// The shared JavaScript handlers walk `formal_parameters` for the parameter
+	/// bodies only, so a parameter's declared type was never recorded: the call
+	/// fact carried receiver_text with an EMPTY receiver_type, and when two
+	/// types declare the same method name the resolver had nothing to choose
+	/// with and abstained — a false negative Go, Java, Python, C++ and Rust do
+	/// not produce for the same call shape (measured in
+	/// test_resolver_language_consistency). JavaScript has no annotations, so
+	/// this lives in the TypeScript visitor.
+	void recordParameterTypes(TSNode fn_node);
+
 	// ── TypeScript-specific handlers ───────────────────────────
 	/**
 	 * Handle interface_declaration.

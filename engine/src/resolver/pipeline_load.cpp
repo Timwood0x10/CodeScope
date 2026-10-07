@@ -468,6 +468,14 @@ void ResolverPipeline::loadDispatchIndex()
 	// another file) can be resolved before dispatch expansion.
 	global_struct_fields_.clear();
 	{
+		// ORDER BY key, not insertion order: the assignment below is
+		// last-write-wins, so when one (struct, field) is recorded twice with
+		// different types the winner was whatever row the scan reached last —
+		// i.e. the rowid order, which is the MERGE order of the module
+		// databases and therefore changes with the worker partitioning
+		// (semantic_records.rowid is re-assigned at merge time). Ordering by
+		// content makes the table a function of the records, not of how they
+		// were packed into modules.
 		std::string field_sql =
 			"SELECT p.name, t.name, t.type_name "
 			"FROM semantic_records t "
@@ -475,7 +483,8 @@ void ResolverPipeline::loadDispatchIndex()
 			"AND p.project_id = t.project_id "
 			"AND p.file_path = t.file_path "
 			"WHERE t.project_id=? AND t.kind=17 AND p.kind=2 "
-			"AND t.name != '' AND t.type_name != ''";
+			"AND t.name != '' AND t.type_name != '' "
+			"ORDER BY p.name, t.name, t.type_name";
 		sqlite3_stmt *fst = nullptr;
 		if (sqlite3_prepare_v2(store_->handle(), field_sql.c_str(), -1,
 				       &fst, nullptr) == SQLITE_OK) {
@@ -507,6 +516,18 @@ void ResolverPipeline::loadDispatchIndex()
 	// type ("r" -> "Runner") when resolving "r.pluginBus.AfterStep".
 	global_var_types_.clear();
 	{
+		// ORDER BY key, not insertion order: the walk in run() takes the FIRST
+		// candidate type whose field chain resolves ("the first type that
+		// resolves the whole chain wins"), so the vector's order decided the
+		// answer. Without this the order was the rowid order — the MERGE order
+		// of the module databases, which changes with the worker partitioning
+		// (semantic_records.rowid is re-assigned at merge time) — and the same
+		// project resolved a field-chain receiver to an interface or to
+		// nothing depending on how its directories were spread over workers:
+		// measured on goagent, `-w 4` produced 684 dispatch edges and `-w 6`
+		// produced 696, from byte-identical entities, references and
+		// semantic_records. Ordering by content makes the resolution a
+		// function of the records.
 		std::string vtype_sql =
 			"SELECT t.name, t.type_name FROM semantic_records t "
 			"JOIN semantic_records p ON t.parent_id = p.original_id "
@@ -514,7 +535,8 @@ void ResolverPipeline::loadDispatchIndex()
 			"AND p.file_path = t.file_path "
 			"WHERE t.project_id=? AND t.kind=17 "
 			"AND p.kind IN (0,1) "
-			"AND t.name != '' AND t.type_name != ''";
+			"AND t.name != '' AND t.type_name != '' "
+			"ORDER BY t.name, t.type_name";
 		sqlite3_stmt *vst = nullptr;
 		if (sqlite3_prepare_v2(store_->handle(), vtype_sql.c_str(), -1,
 				       &vst, nullptr) == SQLITE_OK) {

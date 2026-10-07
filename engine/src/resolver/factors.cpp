@@ -41,14 +41,21 @@ double factorConstructorMatch(const std::string &ref_name,
 // scorer that consumes the context.
 ReceiverMatchContext buildReceiverMatchContext(const std::string &receiver_type)
 {
+	// Canonical spelling (see canonicalTypeName): a reference recorded as
+	// `*Manager` must produce the same prefixes as one recorded as `Manager`,
+	// because the candidate side compares against `Manager::Get` /
+	// `Manager.Get`. Without this the strong match was unreachable for every
+	// pointer-typed receiver and the factor silently fell through to its weak
+	// file-name fallback.
+	const std::string canonical = canonicalTypeName(receiver_type);
 	ReceiverMatchContext ctx;
-	if (receiver_type.empty()) {
+	if (canonical.empty()) {
 		ctx.empty = true;
 		return ctx;
 	}
-	ctx.prefix1 = receiver_type + "::";
-	ctx.prefix2 = receiver_type + ".";
-	ctx.rtype_lower = receiver_type;
+	ctx.prefix1 = canonical + "::";
+	ctx.prefix2 = canonical + ".";
+	ctx.rtype_lower = canonical;
 	for (auto &ch : ctx.rtype_lower)
 		ch = static_cast<char>(
 			std::tolower(static_cast<unsigned char>(ch)));
@@ -73,7 +80,7 @@ double factorReceiverTypeMatchPrecomp(const ReceiverMatchContext &ctx,
 	}
 
 	// Weak fallback: candidate file basename contains the lowercased
-	// receiver type (mirrors factorReceiverTypeMatch lines 292-308).
+	// receiver type.
 	size_t slash = candidate_file.rfind('/');
 	std::string fname = (slash != std::string::npos) ?
 				    candidate_file.substr(slash + 1) :

@@ -41,9 +41,12 @@ CapabilityVerifier::CapabilityVerifier(store::GraphStore *store,
 //   (relation type=1 incoming). A claim is Supported only when all three
 //   links are present. If the capability is not declared, the claim is
 //   Contradicted with high confidence (the knowledge layer explicitly
-//   denies it). If declared but no implementing entity has callers, the
-//   claim is Contradicted with lower confidence (the code may exist under
-//   a different name).
+//   denies it). If declared but nothing implements it, the claim is
+//   Contradicted with lower confidence (the code may exist under a
+//   different name). An entity implements it when its name matches (see
+//   implementingEntitiesFor for the spellings tried) AND it is either called
+//   or exported — requiring callers alone marked every C-ABI export
+//   unimplemented, because its callers live in the other language.
 
 bool CapabilityVerifier::accepts(const Claim &claim) const
 {
@@ -108,7 +111,7 @@ static int capabilityDeclared(store::GraphStore *store, uint64_t project_id,
 // Step 2: collect entity ids that (a) match the subject name and (b) have
 // at least one incoming Calls relation (relation.type=1). Returns the ids
 // in the order produced by SQLite. Empty result means "no implementing
-// entity with callers" -> the claim cannot be Supported.
+// implementing (called or exported) entity" -> the claim cannot be Supported.
 //
 // Step 9.5: migrated from graph_nodes/graph_edges to canonical
 // entity/relation. Per plan/rules/relation_contract.md only relation.type=1
@@ -130,10 +133,10 @@ static int capabilityDeclared(store::GraphStore *store, uint64_t project_id,
 //                 Unknown, not Contradicted). True on success even when the
 //                 result is empty ("no implementing entity").
 // @return Entity ids in SQLite row order; empty when no match.
-static std::vector<int64_t> entitiesWithCallers(store::GraphStore *store,
-						uint64_t project_id,
-						const std::string &subject,
-						bool &out_ok)
+std::vector<int64_t> implementingEntitiesFor(store::GraphStore *store,
+					     uint64_t project_id,
+					     const std::string &subject,
+					     bool &out_ok)
 {
 	std::vector<int64_t> ids;
 	out_ok = true;
@@ -150,29 +153,44 @@ static std::vector<int64_t> entitiesWithCallers(store::GraphStore *store,
 		"SELECT e.id FROM entity e "
 		"WHERE e.project_id=? "
 		"AND (LOWER(e.name) = LOWER(?) "
-		"     OR (LENGTH(?) >= ? AND LENGTH(e.name) >= ? AND "
-		"          (LOWER(e.name) LIKE LOWER(?) ESCAPE '\\' "
-		"           OR LOWER(?) LIKE LOWER(REPLACE(REPLACE(REPLACE("
-		"                e.name, '\\', '\\\\'), '%', '\\%'), '_', '\\_'))"
-		"              || '%' ESCAPE '\\'))) "
-		"AND EXISTS (SELECT 1 FROM relation r "
+		"     OR (LENGTH(?) >= ? AND LENGTH(e.name) >= ? "
+		"         AND (LOWER(e.name) LIKE LOWER(?) || '%' "
+		// Spelled differently, same symbol: the README names the capability
+		// ("VerifyClaim…") while the exported symbol carries a language
+		// prefix ("engine_verify_claim"). Compare the de-underscored names
+		// and the entity name without its first '_'-delimited segment, each
+		// behind its own length floor. The reverse direction escapes '\\',
+		// '%' and '_' in the entity name so they stay literal.
+		"              OR LOWER(?) LIKE LOWER(REPLACE(REPLACE(REPLACE("
+		"                   e.name, '\\', '\\\\'), '%', '\\%'), '_', '\\_'))"
+		"                 || '%' ESCAPE '\\' "
+		"              OR (LENGTH(REPLACE(e.name, '_', '')) >= ? "
+		"                  AND (LOWER(REPLACE(e.name, '_', '')) LIKE "
+		"                       LOWER(REPLACE(?, '_', '')) || '%' "
+		"                       OR LOWER(REPLACE(?, '_', '')) LIKE "
+		"                       LOWER(REPLACE(e.name, '_', '')) || '%'))"
+		"              OR (INSTR(e.name, '_') > 0 AND LENGTH(REPLACE(SUBSTR("
+		"                    e.name, INSTR(e.name, '_') + 1), '_', '')) >= ? "
+		"                  AND (LOWER(REPLACE(SUBSTR(e.name, "
+		"                       INSTR(e.name, '_') + 1), '_', '')) LIKE "
+		"                       LOWER(REPLACE(?, '_', '')) || '%' "
+		"                       OR LOWER(REPLACE(?, '_', '')) LIKE LOWER("
+		"                       REPLACE(SUBSTR(e.name, INSTR(e.name, '_') "
+		"                       + 1), '_', '')) || '%'))))) "
+		// Evidence: something calls it, or it is an exported/public entry
+		// point. Callers alone reported every C-ABI capability of this
+		// repository as unimplemented — an extern "C" export is called from
+		// the other language, which records no edge in this graph.
+		"AND (EXISTS (SELECT 1 FROM relation r "
 		"            WHERE r.project_id=? AND r.target_id=e.id "
-		"            AND r.type=?)";
-	// Escaped LIKE prefix pattern (wildcards in subject are literal).
-	std::string pattern;
-	pattern.reserve(subject.size() + 1);
-	for (char c : subject) {
-		if (c == '\\' || c == '%' || c == '_')
-			pattern.push_back('\\');
-		pattern.push_back(c);
-	}
-	pattern.push_back('%');
+		"            AND r.type=?) "
+		"     OR e.visibility=1)";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store->handle(), sql, -1, &stmt, nullptr) !=
 	    SQLITE_OK) {
 		fprintf(stderr,
 			"CapabilityVerifier: prepare entities failed: %s "
-			"[module=verify, method=entitiesWithCallers]\n",
+			"[module=verify, method=implementingEntitiesFor]\n",
 			sqlite3_errmsg(store->handle()));
 		out_ok = false;
 		return ids;
@@ -182,13 +200,22 @@ static std::vector<int64_t> entitiesWithCallers(store::GraphStore *store,
 	sqlite3_bind_text(stmt, 3, subject.c_str(), -1, SQLITE_STATIC);
 	sqlite3_bind_int(stmt, 4, kMinCapabilityPrefixLen);
 	sqlite3_bind_int(stmt, 5, kMinCapabilityPrefixLen);
-	// Forward direction: name LIKE subject||'%' → pattern already ends
-	// with '%'. Reverse direction: subject LIKE name||'%' → bind the raw
-	// subject (SQL appends the wildcard on the name side).
-	sqlite3_bind_text(stmt, 6, pattern.c_str(), -1, SQLITE_TRANSIENT);
+	// Forward direction: name LIKE subject||'%' — the raw subject; the
+	// literal '%' lives in the SQL. Reverse direction: subject LIKE
+	// name||'%' — the SQL appends the wildcard on the entity-name side.
+	sqlite3_bind_text(stmt, 6, subject.c_str(), -1, SQLITE_STATIC);
 	sqlite3_bind_text(stmt, 7, subject.c_str(), -1, SQLITE_STATIC);
-	sqlite3_bind_int64(stmt, 8, static_cast<int64_t>(project_id));
-	sqlite3_bind_int(stmt, 9, kRelationTypeCalls);
+	// De-underscored arm: floor, then both directions.
+	sqlite3_bind_int(stmt, 8, kMinCapabilityPrefixLen);
+	sqlite3_bind_text(stmt, 9, subject.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_text(stmt, 10, subject.c_str(), -1, SQLITE_STATIC);
+	// Language-prefix-stripped arm: floor, then both directions.
+	sqlite3_bind_int(stmt, 11, kMinCapabilityPrefixLen);
+	sqlite3_bind_text(stmt, 12, subject.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_text(stmt, 13, subject.c_str(), -1, SQLITE_STATIC);
+	// Evidence subquery.
+	sqlite3_bind_int64(stmt, 14, static_cast<int64_t>(project_id));
+	sqlite3_bind_int(stmt, 15, kRelationTypeCalls);
 
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
 		ids.push_back(sqlite3_column_int64(stmt, 0));
@@ -250,8 +277,8 @@ EvidenceRecord CapabilityVerifier::verify(const Claim &claim)
 
 	// Step 2: at least one implementing entity must have callers.
 	bool query_ok = true;
-	std::vector<int64_t> ids = entitiesWithCallers(store_, project_id_,
-						       claim.subject, query_ok);
+	std::vector<int64_t> ids = implementingEntitiesFor(
+		store_, project_id_, claim.subject, query_ok);
 	if (!query_ok) {
 		rec.verdict = Verdict::Unknown;
 		rec.confidence = kConfBackendNotReady;
@@ -265,7 +292,7 @@ EvidenceRecord CapabilityVerifier::verify(const Claim &claim)
 		rec.confidence = kConfCapabilityNoCallers;
 		rec.detail =
 			"Capability '" + claim.subject +
-			"' declared but no implementing entity with callers";
+			"' declared but no implementing entity (nothing calls it and it is not exported)";
 		return rec;
 	}
 
