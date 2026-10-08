@@ -53,6 +53,12 @@ FilterPolicy &policyFor(const std::string &project_root)
 			policy->loadGitignore(project_root);
 		}
 		policy->loadExcludeEnv();
+		// Same language context the indexer's own discovery establishes: the
+		// test/docs/samples skip names are only relaxed for Java, and without
+		// knowing the project is Java this policy skipped them at ANY depth, so
+		// a Maven tree (`src/main/java/org/.../samples/petclinic/`) reported no
+		// modules at all while `codescope discover` counted every file.
+		applyProjectLanguageContext(*policy, project_root);
 		it = g_policies.emplace(project_root, std::move(policy)).first;
 	}
 	return *it->second;

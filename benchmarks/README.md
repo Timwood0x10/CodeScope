@@ -81,14 +81,19 @@ same tree produce identical edge sets (0 added, 0 removed). A baseline that
 drifts after a code change is the signal; a baseline that drifts between two
 runs of one binary would be a determinism bug in the indexer.
 
-Current baselines: `self` (C++), `c-redis` (C), `go-tinygo` (Go), `rust-pyo3`
-(Rust), `ts-codebase-memory-mcp` (TypeScript, C). Java is absent for a reason
-worth knowing: `index-parallel` discovers modules through
-`discover::discover_modules`, whose engine-supplied skip rules drop the
-directory names `sample`, `samples`, `example`, `examples`, `test`, `tests` and
-`docs` at depth 3 and deeper. spring-petclinic keeps its entire source tree
-under `src/main/java/org/springframework/samples/petclinic/`, so the scheduler
-finds **zero** modules, reports `note: "no source modules found"` and indexes
-nothing — while `codescope discover <same path>` counts all 49 files. Reproduce
-with any tree shaped `src/main/java/<anyname>/X.java`; `org` is counted, the
-seven names above are not.
+Current baselines: `self` (C++), `c-redis` (C), `go-tinygo` (Go),
+`java-spring-petclinic` (Java), `rust-pyo3` (Rust) and
+`ts-codebase-memory-mcp` (TypeScript, C).
+
+Java was missing until the discovery defect behind it was fixed:
+`discover::discover_modules` asks the engine (`engine_path_is_skipped`) which
+directories hold source, and the policy behind that query was built with no
+language context, so the test/docs/samples skip names took their any-depth
+branch. spring-petclinic keeps its entire source tree under
+`src/main/java/org/springframework/samples/petclinic/`, so the scheduler found
+**zero** modules, printed `note: "no source modules found"` and indexed nothing
+— 0 files, 0 nodes — while `codescope discover <same path>` counted all 49
+files. The Java relaxation (top-only, depth ≤ 3) existed, but only the indexer's
+own walk knew to set it. Both entry points now share one
+`applyProjectLanguageContext()`; petclinic indexes 30 files / 137 nodes / 33
+edges with `src/test` still excluded, and the baseline above is its graph.

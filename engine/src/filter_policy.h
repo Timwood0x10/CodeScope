@@ -287,4 +287,23 @@ class FilterPolicy {
 			     std::string::const_iterator si, int depth = 0);
 };
 
+/// Flip `filter` into Java mode when the tree under `dir` contains any .java
+/// file. No-op when `dir` is empty or the policy already knows the language.
+///
+/// The test/docs/samples skip names collide with Java package components, so
+/// for Java projects they are relaxed to a top-only (depth ≤ 3) check — but the
+/// policy has to KNOW the project is Java, and the file that would tell it
+/// (`.../samples/petclinic/Owner.java`) lives under a directory that is skipped
+/// while the language is still unset: the chicken-and-egg that made Java
+/// projects index 0 files.
+///
+/// The indexer's own discovery used to open-code this scan. The server's module
+/// discovery queries the same policy through `engine_path_is_skipped`, whose
+/// policy was built with NO language context, so it applied the any-depth rule:
+/// spring-petclinic reported `"modules":[]` — and `index-parallel` indexed
+/// nothing while claiming "no source modules found" — whereas `codescope
+/// discover` counted all 49 files. Both entry points now call this one
+/// implementation.
+void applyProjectLanguageContext(FilterPolicy &filter, const std::string &dir);
+
 #endif // FILTER_POLICY_H

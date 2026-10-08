@@ -172,33 +172,16 @@ int collectFileJobs(EngineContext *ctx, uint64_t project_id,
 		    std::vector<FileJob> &jobs, bool &is_reindex,
 		    std::string &err_json)
 {
-	// Pre-detect Java projects BEFORE the directory walk. The FilterPolicy
-	// Java carve-out defers test/docs/example/samples/... dirs to a
-	// top-only check ONLY when lang_context_ == "java", but lang_context_
-	// previously flipped only upon seeing the FIRST .java file during the
-	// walk — and that file may itself live under an example/samples/...
-	// dir which is skipped at any depth while lang_context_ is still
-	// empty. That chicken-and-egg made Java projects with such package
-	// dirs index 0 files (e.g. spring-petclinic's
-	// org/springframework/samples/petclinic). Fix: cheap recursive scan
-	// for any *.java before the main walk and flip lang_context_ early.
-	{
-		std::error_code ec;
-		auto pit = std::filesystem::recursive_directory_iterator(
-			dir,
-			std::filesystem::directory_options::skip_permission_denied,
-			ec);
-		std::filesystem::recursive_directory_iterator pend;
-		while (!ec && pit != pend) {
-			const auto &pent = *pit;
-			if (pent.is_regular_file() &&
-			    pent.path().extension() == ".java") {
-				filter.setLangContext("java");
-				break;
-			}
-			pit.increment(ec);
-		}
-	}
+	// Pre-detect Java projects BEFORE the directory walk: the Java carve-out
+	// defers test/docs/example/samples/... dirs to a top-only check, but the
+	// file that reveals the project is Java may itself live under such a
+	// directory and is skipped while the language is still unset — the
+	// chicken-and-egg that made Java projects with package dirs of those names
+	// index 0 files (spring-petclinic's org/springframework/samples/petclinic).
+	// The scan is shared with the server's module discovery, which queries the
+	// same policy through engine_path_is_skipped and used to lack the context
+	// entirely (see filter_policy.h).
+	applyProjectLanguageContext(filter, dir);
 
 	try {
 		// P0-2: standalone discovery timing. Previously this phase only

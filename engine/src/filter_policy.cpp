@@ -2,7 +2,9 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <sstream>
+#include <system_error>
 
 FilterPolicy::FilterPolicy()
 {
@@ -793,6 +795,30 @@ bool FilterPolicy::isJavaProtectedDir(const std::string &dir_name) const
 		c = static_cast<char>(std::tolower(c));
 	return java_protected_skip_dirs_.find(lower) !=
 	       java_protected_skip_dirs_.end();
+}
+
+void applyProjectLanguageContext(FilterPolicy &filter, const std::string &dir)
+{
+	if (dir.empty() || filter.langContext() == "java")
+		return;
+	// Bounded by the first .java found, which is the common case for the Java
+	// projects this exists for; a project without one pays a full walk, once
+	// per root (engine_path_is_skipped caches its policy per project root, and
+	// each worker process sees only its own module).
+	std::error_code ec;
+	std::filesystem::recursive_directory_iterator it(
+		dir, std::filesystem::directory_options::skip_permission_denied,
+		ec);
+	const std::filesystem::recursive_directory_iterator end;
+	while (!ec && it != end) {
+		const std::filesystem::directory_entry &entry = *it;
+		if (entry.is_regular_file(ec) &&
+		    entry.path().extension() == ".java") {
+			filter.setLangContext("java");
+			return;
+		}
+		it.increment(ec);
+	}
 }
 
 bool FilterPolicy::shouldSkipFile(const std::string &filename) const

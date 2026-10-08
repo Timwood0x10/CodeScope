@@ -58,15 +58,17 @@ done
 #
 # One project per language, so a change that helps Go and hurts Rust is visible
 # instead of averaged away. A Java checkout is deliberately NOT listed:
-# index-parallel cannot index a Maven layout at all — discover_modules drops the
-# `samples` component of `src/main/java/org/.../samples/petclinic/` and reports
-# "no source modules found" for the whole tree (see benchmarks/README.md). Add
-# one back when that is fixed, or the run would fail on a project the tool
-# cannot read rather than on a real regression.
+# index-parallel could not index a Maven layout at all — discover_modules
+# applied the any-depth branch of the test/docs/samples skip rules to
+# `src/main/java/org/.../samples/petclinic/` and reported "no source modules
+# found" for the whole tree. Fixed in this release (the policy behind
+# engine_path_is_skipped now learns its language the way the indexer does), so
+# the Java baseline is back.
 PROJECTS=(
 	"self|$ROOT"
 	"c-redis|$PROJECTS_ROOT/redis"
 	"go-tinygo|$PROJECTS_ROOT/tinygo"
+	"java-spring-petclinic|$PROJECTS_ROOT/spring-petclinic"
 	"rust-pyo3|$PROJECTS_ROOT/pyo3"
 	"ts-codebase-memory-mcp|$PROJECTS_ROOT/codebase-memory-mcp"
 )
@@ -182,7 +184,10 @@ for entry in "${PROJECTS[@]}"; do
 			"$(sqlite3 "$db" 'SELECT COUNT(*) FROM relation WHERE type=1;')"
 	else
 		printf '  %-26s ✗ SHAPE CHANGED\n' "$name"
-		diff -u "$baseline" "$current" | sed -n '1,60p'
+		# `diff` exits 1 when it finds differences, which under `set -e` +
+		# `pipefail` aborted the whole run right here — the first project to
+		# drift ended the sweep, so the projects after it were never compared.
+		diff -u "$baseline" "$current" | sed -n '1,60p' || true
 		failures=$((failures + 1))
 	fi
 done

@@ -1,11 +1,48 @@
 #include "factors.h"
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <unordered_set>
 
 namespace resolver
 {
+
+const std::string &disabledFactor()
+{
+	static const std::string value = []() -> std::string {
+		const char *raw = getenv("CODESCOPE_RESOLVER_DISABLE_FACTOR");
+		if (raw == nullptr || *raw == '\0')
+			return std::string();
+		const std::string name(raw);
+		// Validated here, once, rather than in the scoring loop: a typo must
+		// not look like "this factor changes nothing".
+		static const char *const kFactors[] = {
+			"ModuleMatch",	     "ImportMatch",
+			"ImportModuleMatch", "NamespaceMatch",
+			"SignatureMatch",    "DistanceMatch",
+			"ConstructorMatch",  "ReceiverMatch",
+			"CommonNamePenalty", "CallKindMatch",
+			"DefinitionMatch",
+		};
+		for (const char *factor : kFactors) {
+			if (name == factor)
+				return name;
+		}
+		fprintf(stderr,
+			"[module=resolver, method=disabledFactor] "
+			"CODESCOPE_RESOLVER_DISABLE_FACTOR=\"%s\" is not a factor "
+			"name, so no factor is disabled. Valid names: ModuleMatch, "
+			"ImportMatch, ImportModuleMatch, NamespaceMatch, "
+			"SignatureMatch, DistanceMatch, ConstructorMatch, "
+			"ReceiverMatch, CommonNamePenalty, CallKindMatch, "
+			"DefinitionMatch\n",
+			raw);
+		return std::string();
+	}();
+	return value;
+}
 
 double factorSignatureMatch(int caller_arity, int candidate_arity)
 {

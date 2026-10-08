@@ -214,6 +214,24 @@ inline bool sqliteLikeMatch(const std::string &pattern, const std::string &text)
 }
 
 // ── Named constants for factor weights ──────────────────────────────
+/// The one factor whose contribution this process drops, from
+/// CODESCOPE_RESOLVER_DISABLE_FACTOR; empty when unset.
+///
+/// This is the instrument for tuning the weights below, not a product switch.
+/// `relation.reason` already records the factor with the largest contribution
+/// (`decided_by=`), but that field answers "which weight is biggest" rather than
+/// "which factor discriminated": ImportMatch carries 0.80 against 0.15 or less
+/// for everything else, so on this repository it is the deciding factor for all
+/// 1201 scored edges and the field carries no information about the rest. The
+/// question that does have an answer is counterfactual — how many edges move
+/// when this factor is taken away — and that is what this switch measures: index
+/// the same tree twice, once with the factor disabled, and diff the edge sets.
+///
+/// A misspelt name would silently disable nothing and look like "this factor
+/// does not matter", so an unknown value is reported on stderr, once, with the
+/// list of valid names.
+const std::string &disabledFactor();
+
 constexpr double kWeightModuleMatch = 0.15;
 constexpr double kWeightImportMatch = 0.80; // Dominant for cross-module
 // The caller imports this callee from a RELATIVE module and the candidate is

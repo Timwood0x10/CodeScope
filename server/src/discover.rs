@@ -312,6 +312,40 @@ mod tests {
     }
 
     #[test]
+    fn test_discover_modules_reads_a_maven_layout() {
+        // spring-petclinic's shape: the whole source tree lives under
+        // src/main/java/org/.../samples/petclinic/. `samples` is a Java package
+        // component, not a docs folder, but the skip names are only relaxed to
+        // a top-only check for JAVA — and the policy behind
+        // engine_path_is_skipped was built with no language context, so it took
+        // the any-depth branch, reported `"modules":[]` and made
+        // `index-parallel` index nothing while claiming "no source modules
+        // found", whereas `codescope discover` counted every file. The policy
+        // now learns its language the same way the indexer's own walk does.
+        let root = make_tmpdir("maven_layout");
+        let src = root.join("src/main/java/org/acme/samples/petclinic");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("Owner.java"), "class Owner {}\n").unwrap();
+
+        let json = discover_modules(root.to_str().unwrap());
+        let v: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["ok"], true, "{json}");
+        assert_eq!(v["total_files"], 1, "{json}");
+        let modules = v["modules"].as_array().unwrap();
+        assert_eq!(modules.len(), 1, "{json}");
+        assert_eq!(modules[0]["name"], "src", "{json}");
+
+        // ... while a real Java test source stays excluded: the carve-out
+        // relaxes the names only beyond the first three path components.
+        let test_src = root.join("src/test/java");
+        fs::create_dir_all(&test_src).unwrap();
+        fs::write(test_src.join("OwnerTest.java"), "class OwnerTest {}\n").unwrap();
+        let json = discover_modules(root.to_str().unwrap());
+        let v: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["total_files"], 1, "src/test must stay skipped: {json}");
+    }
+
+    #[test]
     fn test_is_source_file_recognises_extensions() {
         assert!(is_source_file("foo.rs"));
         assert!(is_source_file("bar.cpp"));

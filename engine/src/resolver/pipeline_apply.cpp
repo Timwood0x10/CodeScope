@@ -126,6 +126,9 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 			caller_fwd_joined += '\x00';
 		}
 	}
+	// Read once per call rather than per candidate; the value is a cached
+	// static, and it is empty unless the tuning switch was set.
+	const std::string &disabled = disabledFactor();
 	for (auto &c : candidates) {
 		double sum_weight = 0.0;
 		double sum_scored = 0.0;
@@ -138,8 +141,14 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 		// is never chosen — a penalty cannot "decide" a match.
 		double best_contribution = 0.0;
 		const char *deciding = "";
+		// CODESCOPE_RESOLVER_DISABLE_FACTOR: the counterfactual for weight
+		// tuning. Dropping a factor here also drops its weight from
+		// sum_weight, so the average is what it would have been had the factor
+		// never existed — and `deciding` can never be the disabled one.
 		auto acc = [&](double weight, double score,
 			       const char *factor) {
+			if (disabled == factor)
+				return;
 			sum_weight += weight;
 			sum_scored += weight * score;
 			const double contribution = weight * score;

@@ -1,19 +1,19 @@
 {
   "files": 212,
-  "entities": 2820,
-  "call_edges": 2209,
-  "call_sites": 16681,
+  "entities": 2825,
+  "call_edges": 2216,
+  "call_sites": 16703,
   "resolution_kind": {
-    "exact_local": 1007,
+    "exact_local": 1014,
     "imported": 1202
   },
   "resolve_strategy": {
-    "external": 2372,
-    "p1_intra": 1493,
-    "unresolved": 12816
+    "external": 2376,
+    "p1_intra": 1496,
+    "unresolved": 12831
   },
   "deciding_factor": {
     "ImportMatch": 1202
   },
-  "unresolved_call_sites": 14472
+  "unresolved_call_sites": 14487
 }

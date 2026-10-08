@@ -27,6 +27,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <string>
 
 static void check(bool cond, const char *msg)
@@ -112,6 +113,65 @@ int main()
 		   "Java: src/test/ (depth 2) still skipped");
 	expectPath(java, "org/acme/store/deep/public/App.java", false,
 		   "Java: deep public/ is a package component too");
+
+	// ── The carve-out only helps if the policy LEARNS it is Java ───
+	// The case above sets the context by hand; the defect was in the
+	// bootstrap. The server's module discovery queries the policy through
+	// engine_path_is_skipped, whose policy was built with no language context,
+	// so a Maven tree got the any-depth rule: spring-petclinic's whole source
+	// tree lives under src/main/java/org/springframework/samples/petclinic, the
+	// scheduler found 0 modules, index-parallel indexed nothing with "no source
+	// modules found", and `codescope discover` counted all 49 files for the same
+	// path. applyProjectLanguageContext is the one implementation both entry
+	// points now use.
+	{
+		const std::string root = "/tmp/filter_policy_java_bootstrap";
+		std::filesystem::remove_all(root);
+		std::filesystem::create_directories(
+			root + "/src/main/java/org/acme/samples");
+		std::filesystem::create_directories(root + "/src/test/java");
+		for (const char *rel : { "src/main/java/org/acme/samples/Owner.java",
+					 "src/test/java/OwnerTest.java" }) {
+			FILE *f = fopen((root + "/" + rel).c_str(), "w");
+			check(f != nullptr, "fixture file must be creatable");
+			fputs("class X {}\n", f);
+			fclose(f);
+		}
+
+		// Before: no language context, so `samples` is skipped at any depth
+		// and the file that would reveal the language is unreachable.
+		FilterPolicy before;
+		expectPath(before, "src/main/java/org/acme/samples/Owner.java", true,
+			   "without a language context, samples is skipped (the bug)");
+
+		FilterPolicy after;
+		applyProjectLanguageContext(after, root);
+		check(after.langContext() == "java",
+		      "a tree containing a .java file must set the Java context");
+		expectPath(after, "src/main/java/org/acme/samples/Owner.java", false,
+			   "Java: the same path is package code, not a samples folder");
+		expectPath(after, "src/test/java/OwnerTest.java", true,
+			   "Java: src/test/ is still skipped at depth 2");
+
+		// A tree with no .java file must NOT be flipped: the carve-out only
+		// relaxes the names for Java, and other languages nest real test dirs.
+		const std::string go_root = root + "_go";
+		std::filesystem::remove_all(go_root);
+		std::filesystem::create_directories(go_root + "/pkg/a/test");
+		FILE *g = fopen((go_root + "/pkg/a/test/x.go").c_str(), "w");
+		check(g != nullptr, "go fixture file must be creatable");
+		fputs("package a\n", g);
+		fclose(g);
+		FilterPolicy go;
+		applyProjectLanguageContext(go, go_root);
+		check(go.langContext().empty(),
+		      "a tree without .java must keep the default context");
+		expectPath(go, "pkg/a/test/x.go", true,
+			   "non-Java: test/ stays any-depth");
+
+		std::filesystem::remove_all(root);
+		std::filesystem::remove_all(go_root);
+	}
 
 	printf("\nAll filter policy depth tests passed.\n");
 	return 0;
