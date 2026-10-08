@@ -197,8 +197,8 @@ void JsVisitor::visitCallExpr(TSNode node, uint64_t parent_id)
 		break;
 	}
 
-	uint64_t call_id = emitter_->emitCall(callee_name, loc, call_parent,
-					      arity, false,
+	uint64_t call_id = emitter_->emitCall(emittedCallName(callee_name), loc,
+					      call_parent, arity, false,
 					      static_cast<int>(call_kind));
 
 	// ── Step 3 (plan §3.1): structured call facts ──────────────
@@ -352,8 +352,8 @@ void JsVisitor::visitNewExpr(TSNode node, uint64_t parent_id)
 		break;
 	}
 
-	uint64_t call_id = emitter_->emitCall(callee_name, loc, call_parent,
-					      arity, false,
+	uint64_t call_id = emitter_->emitCall(emittedCallName(callee_name), loc,
+					      call_parent, arity, false,
 					      static_cast<int>(call_kind));
 
 	// Step 3 (plan §3.1): a namespace-qualified constructor

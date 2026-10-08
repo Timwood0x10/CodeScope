@@ -131,6 +131,11 @@ int main()
 		  "int callback_param(int (*cb)(int a, int b), int x)\n"
 		  "{\n"
 		  "\treturn cb(x, 1);\n"
+		  "}\n"
+		  "\n"
+		  "int with_default(int a, int b = 0)\n"
+		  "{\n"
+		  "\treturn a + b;\n"
 		  "}\n");
 	writeFile(proj_dir + "/b.go",
 		  "package main\n"
@@ -215,6 +220,15 @@ int main()
 		{ "two_params", 2, 2 },
 		{ "no_params", 0, 0 },
 		{ "callback_param", 2, 2 },
+		// A C++ default value leaves the argument count open: the metric stays
+		// the declared 2, but a call that supplies one argument is valid, so
+		// the resolver input is unknown. Without this the declaration was
+		// recorded as arity 2 and `with_default(1)` was PENALISED — on this
+		// repository that cost `policyFor -> loadIgnoreFile`,
+		// `indexProjectImpl -> loadGitignore` and every other call that omits a
+		// defaulted argument, which is how the omission was found: a rebuilt
+		// previous commit diffed against this one.
+		{ "with_default", 2, 0 },
 		{ "methodWithTwo", 2, 2 },
 		{ "plainNoParams", 0, 0 },
 		{ "py_two", 2, 2 },

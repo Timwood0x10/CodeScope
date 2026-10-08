@@ -127,6 +127,28 @@ bool textHasEllipsis(TSNode param, const char *source)
 	return text.find("...") != std::string::npos;
 }
 
+/// True when the parameter's source text assigns it a value (`bool append =
+/// false`, `std::string name = "x"`).
+///
+/// C++ spells a default INSIDE the ordinary `parameter_declaration`; the
+/// `optional_parameter_declaration` node the type list above expects is not what
+/// tree-sitter-cpp produces for it. So `bool loadIgnoreFile(const std::string
+/// &root, bool append = false)` was recorded with arity 2 while a legitimate
+/// one-argument call - which the default makes valid - was then PENALISED by
+/// factorSignatureMatch (arity 1 against 2 scores kScorePenalty), and the edge
+/// disappeared. Measured on this repository by rebuilding the previous commit
+/// and diffing call edges: `policyFor -> loadIgnoreFile`, `indexProjectImpl ->
+/// loadIgnoreFile` / `loadGitignore` / `insertFileResultBatch` and every other
+/// lost edge were calls that omit a defaulted argument. `=` cannot otherwise
+/// appear in a parameter declaration: the function's own name is outside the
+/// list (`bool operator==(const X &o)` has no `=` among the parameters).
+bool textHasDefaultValue(TSNode param, const char *source)
+{
+	const uint32_t start = ts_node_start_byte(param);
+	const std::string text(source + start, ts_node_end_byte(param) - start);
+	return text.find('=') != std::string::npos;
+}
+
 /// Parameter counts of a parameter-list node: the number of NAMED children,
 /// minus the two traps. `comment` is a named node in every grammar and is not a
 /// parameter, and C's `(void)` is a single parameter_declaration that declares
@@ -148,7 +170,8 @@ ParameterCount countParameters(TSNode params, TSNode decl, const char *source)
 		if (strcmp(type, "comment") == 0)
 			continue;
 		if (hasOpenParameterCount(type) ||
-		    textHasEllipsis(child, source))
+		    textHasEllipsis(child, source) ||
+		    textHasDefaultValue(child, source))
 			open_count = true;
 		declared.push_back(child);
 	}

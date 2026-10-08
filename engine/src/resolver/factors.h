@@ -49,6 +49,29 @@ inline std::string languageFromPath(const std::string &file_path)
 	return "";
 }
 
+/// True for the languages where a call may supply FEWER arguments than the
+/// declaration lists, because the declaration has a default value or the call
+/// is variadic in a way the producer cannot see.
+///
+/// This matters for the arity factor: it penalises a call whose argument count
+/// differs from the candidate's parameter count, but in C++ the default lives in
+/// the HEADER and is omitted in the DEFINITION, and it is the definition the
+/// entity and its `arity` come from. Measured on this repository: every lost
+/// call edge between the previous commit and the arity work was of this shape —
+/// `policyFor -> loadIgnoreFile` (definition declares `(root, append)`, the
+/// header defaults `append`, the call passes one argument),
+/// `indexProjectImpl -> loadGitignore`, `insertFileResultBatch` — and each was
+/// penalised by factorSignatureMatch for being "different" when it was valid.
+/// Go, Rust and C have no default arguments, so there a mismatch really is
+/// evidence against the candidate (`New(a)` against a three-parameter `New`),
+/// which is the precision the factor was added for and which this keeps.
+inline bool allowsDefaultArguments(const std::string &file_path)
+{
+	const std::string lang = languageFromPath(file_path);
+	return lang == "cpp" || lang == "python" || lang == "javascript" ||
+	       lang == "typescript" || lang == "java";
+}
+
 /// True when two language labels may describe the same code.
 ///
 /// The labels come from two different vocabularies: languageFromPath()
@@ -422,8 +445,22 @@ constexpr char kReferenceSigil = '&';
 /// The bare type name: last `.`/`::`-separated segment, with pointer/reference
 /// sigils, whitespace and a trailing generic argument list removed.
 ///
-/// `*PluginBus`, `&pkg.PluginBus`, `PluginBus*`, `PluginBus` → `PluginBus`;
-/// `std::vector<int>` → `vector`; `Holder[T]` → `Holder`.
+/// `*PluginBus`, `&pkg.PluginBus`, `PluginBus*`, `PluginBus` → `PluginBus`.
+///
+/// A template INSTANTIATION yields "" too, brackets and all, even though the
+/// name inside them looks like a type: which name owns the method depends on the
+/// template. `std::vector<int>` holds its own methods, `std::unique_ptr<Store>`
+/// forwards to `Store`, and `Handle<Foo>` is whatever the library says — a rule
+/// that keeps the last segment cannot tell them apart, and stripping the
+/// argument list (an earlier version of this function did exactly that) actively
+/// hurts: `std::unique_ptr<FilterPolicy>` became `unique_ptr`, which matches no
+/// declaration, so a call the old code resolved by unique name through
+/// `policy->loadIgnoreFile(…)` now lost its edge while other receiver-carrying
+/// calls gained false ones. Measured on this repository by rebuilding the commit
+/// before the change and diffing call edges: -85 / +62 with that rule, against
+/// -0 / +0 for the same tree when instantiations are simply unknown. Composite
+/// spellings never matched a table key anyway (no declaration name contains a
+/// bracket), so nothing legitimate is lost by abstaining.
 ///
 /// Anything that is NOT a plain (optionally qualified) name yields "": Go's
 /// channel, slice, map and function types are recorded verbatim
@@ -460,14 +497,6 @@ inline std::string canonicalTypeName(const std::string &type_name)
 	while (begin < text.size() && is_sigil_or_space(text[begin]))
 		++begin;
 	text.erase(0, begin);
-	// A trailing generic argument list is not part of the name. A LEADING one
-	// is not a generic list — `[]byte` is a slice — so the opening bracket must
-	// follow something, and `map[string]int` is rejected below by its brackets.
-	if (!text.empty() && (text.back() == '>' || text.back() == ']')) {
-		const size_t open = text.find_first_of("<[");
-		if (open != std::string::npos && open > 0)
-			text.erase(open);
-	}
 	while (!text.empty() && is_sigil_or_space(text.back()))
 		text.pop_back();
 	// Everything left must be a plain name: letters, digits, '_' and the two

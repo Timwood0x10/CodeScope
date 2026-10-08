@@ -140,6 +140,25 @@ class JsVisitor {
 	// carried no structured evidence at all.
 	std::unordered_map<std::string, std::string> import_aliases_;
 
+	// import_symbol_aliases_ maps a LOCAL alias to the symbol it stands for:
+	// `import { pick as pickLib }` binds `pickLib` to `pick`. Only the local
+	// name exists at the call site, so a bare `pickLib()` named no declaration
+	// and resolved to nothing — the module binding was recorded
+	// (emitImportBinding) but which symbol to look for was lost. The call is
+	// emitted under the imported name instead, so it resolves like any other
+	// call to that symbol. Namespace/default bindings are untouched: `ns.fn()`
+	// is a receiver call, and `import Foo from ...` has no second name.
+	std::unordered_map<std::string, std::string> import_symbol_aliases_;
+
+	/// The name a call is emitted under: the imported symbol when the call
+	/// uses a local alias, the call's own name otherwise.
+	std::string emittedCallName(const std::string &callee_name) const
+	{
+		auto it = import_symbol_aliases_.find(callee_name);
+		return it == import_symbol_aliases_.end() ? callee_name :
+							    it->second;
+	}
+
 	/**
 	 * Record the names introduced by one import clause into
 	 * import_aliases_. Handles default imports, namespace imports

@@ -145,6 +145,7 @@ void JsVisitor::reset()
 	var_types_.clear();
 	class_scope_stack_.clear();
 	import_aliases_.clear();
+	import_symbol_aliases_.clear();
 	visit_depth_ = 0;
 	depth_truncated_ = false;
 	unit_ = nullptr;
@@ -586,15 +587,24 @@ void JsVisitor::collectImportBindings(TSNode node,
 	// `name` or `name as alias`: the bound name is the LAST identifier
 	// child (the alias when present, otherwise the name itself).
 	if (strcmp(t, "import_specifier") == 0) {
+		std::string imported;
 		std::string bound;
 		uint32_t cc = ts_node_child_count(node);
 		for (uint32_t i = 0; i < cc; i++) {
 			TSNode c = ts_node_child(node, i);
-			if (strcmp(ts_node_type(c), "identifier") == 0)
-				bound = nodeText(c);
+			if (strcmp(ts_node_type(c), "identifier") != 0)
+				continue;
+			// `name` or `name as alias`: the FIRST identifier is the
+			// symbol the module exports, the LAST is the local name the call
+			// site uses. They differ only in the aliased form.
+			if (imported.empty())
+				imported = nodeText(c);
+			bound = nodeText(c);
 		}
 		if (!bound.empty()) {
 			import_aliases_[bound] = module_spec;
+			if (!imported.empty() && imported != bound)
+				import_symbol_aliases_[bound] = imported;
 			// Also record the binding -> module pair for the Resolver: the
 			// `import` table cannot supply it, because its alias column is the
 			// module path's last segment rather than the name the module was

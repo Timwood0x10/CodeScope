@@ -1,19 +1,19 @@
 {
   "files": 212,
-  "entities": 2825,
-  "call_edges": 2216,
-  "call_sites": 16703,
+  "entities": 2828,
+  "call_edges": 2261,
+  "call_sites": 16712,
   "resolution_kind": {
-    "exact_local": 1014,
-    "imported": 1202
+    "exact_local": 1019,
+    "imported": 1242
   },
   "resolve_strategy": {
-    "external": 2376,
-    "p1_intra": 1496,
-    "unresolved": 12831
+    "external": 2378,
+    "p1_intra": 1499,
+    "unresolved": 12835
   },
   "deciding_factor": {
-    "ImportMatch": 1202
+    "ImportMatch": 1242
   },
-  "unresolved_call_sites": 14487
+  "unresolved_call_sites": 14451
 }

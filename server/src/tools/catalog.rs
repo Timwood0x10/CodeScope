@@ -395,7 +395,18 @@ pub fn all_tools() -> Vec<Tool> {
                     "to": {"type": "string", "description": "Target symbol name (resolved to a node ID via locate_by_name)"},
                     "from_id": {"type": "integer", "description": "Explicit source graph node ID (bypasses name resolution)"},
                     "to_id": {"type": "integer", "description": "Explicit target graph node ID (bypasses name resolution)"}
-                }
+                },
+                // The handler resolves BOTH endpoints and rejects a missing one
+                // (`resolve_endpoint` in h_shortest_path returns
+                // "either 'from' (symbol name) or 'from_id' (node id) is
+                // required"), so a client that reads only `properties` called
+                // with {} and got an error the schema could have prevented.
+                // `required` cannot say "the name OR the id", so each endpoint
+                // is stated as an anyOf and the two are combined with allOf.
+                "allOf": [
+                    {"anyOf": [{"required": ["from"]}, {"required": ["from_id"]}]},
+                    {"anyOf": [{"required": ["to"]}, {"required": ["to_id"]}]}
+                ]
             }),
         },
         Tool {
@@ -459,7 +470,16 @@ pub fn all_tools() -> Vec<Tool> {
                     "direction": {"type": "string", "description": "\"callers\", \"callees\", or \"both\" (default: \"both\")"},
                     "from": {"type": "string", "description": "Source function for shortest path (legacy)"},
                     "to": {"type": "string", "description": "Target function for shortest path (legacy)"}
-                }
+                },
+                // Two modes, and the choice between them is what the schema has
+                // to state: interactive exploration needs a starting function
+                // (the handler answers `{"error":"empty symbol name"}` when it
+                // is missing), while the legacy shortest-path mode needs both
+                // ends.
+                "anyOf": [
+                    {"required": ["function_name"]},
+                    {"required": ["from", "to"]}
+                ]
             }),
         },
         Tool {

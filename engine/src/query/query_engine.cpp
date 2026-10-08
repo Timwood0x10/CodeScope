@@ -1,4 +1,5 @@
 #include "util/json_writer.h"
+#include "util/path_util.h"
 #include "query_engine.h"
 // community_detection removed — Phase 0 cut
 #include "graph_query.h"
@@ -128,8 +129,10 @@ std::string QueryEngine::findDefinition(uint64_t project_id,
 	// into the LIKE literal. Splicing let a filter containing a quote or
 	// % break the query or inject SQL; a bound `%filter%` value is safe.
 	bool has_filter = file_filter && strlen(file_filter) > 0;
+	// Two patterns per filter — the value as given and its resolved form — so a
+	// database whose rows hold either spelling still matches (util::lookupPath).
 	if (has_filter)
-		sql += " AND file_path LIKE ?";
+		sql += " AND (file_path LIKE ? OR file_path LIKE ?)";
 	sql += " LIMIT 20";
 	std::ostringstream json;
 	json << "{\"results\":[";
@@ -142,8 +145,10 @@ std::string QueryEngine::findDefinition(uint64_t project_id,
 		sqlite3_bind_text(st, 2, symbol_name, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_text(st, 3, symbol_name, -1, SQLITE_TRANSIENT);
 		if (has_filter) {
-			std::string like = "%" + std::string(file_filter) + "%";
-			sqlite3_bind_text(st, 4, like.c_str(), -1,
+			const auto patterns = util::lookupPatterns(file_filter);
+			sqlite3_bind_text(st, 4, patterns[0].c_str(), -1,
+					  SQLITE_TRANSIENT);
+			sqlite3_bind_text(st, 5, patterns[1].c_str(), -1,
 					  SQLITE_TRANSIENT);
 		}
 		while (sqlite3_step(st) == SQLITE_ROW) {
@@ -245,8 +250,10 @@ std::string QueryEngine::findReferences(uint64_t project_id,
 		sqlite3_bind_text(st, 3, symbol_name, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_text(st, 4, symbol_name, -1, SQLITE_TRANSIENT);
 		if (has_filter) {
-			std::string like = "%" + std::string(file_filter) + "%";
-			sqlite3_bind_text(st, 5, like.c_str(), -1,
+			const auto patterns = util::lookupPatterns(file_filter);
+			sqlite3_bind_text(st, 5, patterns[0].c_str(), -1,
+					  SQLITE_TRANSIENT);
+			sqlite3_bind_text(st, 6, patterns[1].c_str(), -1,
 					  SQLITE_TRANSIENT);
 		}
 		while (sqlite3_step(st) == SQLITE_ROW) {
@@ -372,8 +379,10 @@ std::string QueryEngine::getCallers(uint64_t project_id,
 		sqlite3_bind_text(st, 2, function_name, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_text(st, 3, function_name, -1, SQLITE_TRANSIENT);
 		if (!has_filter.empty()) {
-			std::string like = "%" + has_filter + "%";
-			sqlite3_bind_text(st, 4, like.c_str(), -1,
+			const auto patterns = util::lookupPatterns(has_filter);
+			sqlite3_bind_text(st, 4, patterns[0].c_str(), -1,
+					  SQLITE_TRANSIENT);
+			sqlite3_bind_text(st, 5, patterns[1].c_str(), -1,
 					  SQLITE_TRANSIENT);
 		}
 		while (sqlite3_step(st) == SQLITE_ROW)
@@ -559,8 +568,10 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 		sqlite3_bind_text(st, 2, function_name, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_text(st, 3, function_name, -1, SQLITE_TRANSIENT);
 		if (!has_filter.empty()) {
-			std::string like = "%" + has_filter + "%";
-			sqlite3_bind_text(st, 4, like.c_str(), -1,
+			const auto patterns = util::lookupPatterns(has_filter);
+			sqlite3_bind_text(st, 4, patterns[0].c_str(), -1,
+					  SQLITE_TRANSIENT);
+			sqlite3_bind_text(st, 5, patterns[1].c_str(), -1,
 					  SQLITE_TRANSIENT);
 		}
 		while (sqlite3_step(st) == SQLITE_ROW)

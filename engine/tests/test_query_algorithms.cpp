@@ -24,6 +24,7 @@
 #include "test_check.h"
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <sqlite3.h>
 #include <string>
 #include <unistd.h>
@@ -498,6 +499,88 @@ static void testImpactMultipleModifiedFiles(store::GraphStore &store,
 	printf("  [PASS] analyzeChangeImpact: multiple modified files\n");
 }
 
+/// The modified-file list reaches analyzeChangeImpact as the CALLER spells it,
+/// while entity.file_path holds the resolved absolute form. The lookup is an
+/// exact `file_path IN (...)`, so a relative path or one that goes through a
+/// symlink matched nothing and the tool answered `modified: []` — "nothing
+/// changed" — for a file that had. The paths are now normalised the way the
+/// store normalises a project root: anchored at the registered root when
+/// relative, then weakly_canonical.
+static void testImpactPathForms(store::GraphStore &store, uint64_t project_id)
+{
+	namespace fs = std::filesystem;
+	std::error_code ec;
+
+	// ── Relative to the registered project root ──────────────────
+	// The fixture registers "/test", so this node is reachable by the
+	// relative path "src/rel.cpp" as well as its stored form. The ids are in a
+	// range no other case uses (the 3-hop case owns 300-306), because
+	// insertGraphNode() would otherwise fail its CHECK on the primary key and
+	// the lookups below would then report "nothing changed" for the wrong
+	// reason.
+	insertGraphNode(store, project_id, 700, "rel_fn", "/test/src/rel.cpp");
+	syncSQLite(store, project_id);
+	CHECK(jsonContains(query::analyzeChangeImpact(project_id, &store,
+						       "[\"/test/src/rel.cpp\"]"),
+			   "\"id\":700"));
+	CHECK(jsonContains(query::analyzeChangeImpact(project_id, &store,
+						       "[\"src/rel.cpp\"]"),
+			   "\"id\":700"));
+
+	// ── Through a symlink ────────────────────────────────────────
+	// The node is stored under the RESOLVED directory, and the query names it
+	// through a link, which is what a caller sees when the project sits behind
+	// one (macOS /tmp is /private/tmp in exactly this way).
+	const fs::path base = fs::temp_directory_path(ec);
+	if (ec) {
+		printf("  [skip] symlink form: no temp directory\n");
+		return;
+	}
+	const fs::path real_dir = base / "codescope_impact_real";
+	const fs::path link = base / "codescope_impact_link";
+	fs::remove_all(real_dir, ec);
+	fs::create_directories(real_dir, ec);
+	CHECK(!ec);
+	fs::remove(link, ec);
+	ec.clear();
+	fs::create_directory_symlink(real_dir, link, ec);
+	if (ec) {
+		printf("  [skip] symlink form: cannot create a link\n");
+		fs::remove_all(real_dir, ec);
+		return;
+	}
+	const std::string stored_dir =
+		fs::weakly_canonical(real_dir, ec).string();
+	insertGraphNode(store, project_id, 701, "link_fn",
+			(stored_dir + "/b.cpp").c_str());
+	syncSQLite(store, project_id);
+	const std::string via_link = (link / "b.cpp").string();
+	CHECK(jsonContains(query::analyzeChangeImpact(project_id, &store,
+						       ("[\"" + via_link + "\"]")
+							       .c_str()),
+			   "\"id\":701"));
+
+	// The same spelling as a FILE FILTER, which findDefinition wraps in
+	// `file_path LIKE '%'||?||'%'`: an absolute path that reaches the project
+	// through a symlink matched nothing, so the query answered
+	// `{"results":[]}` for a symbol that exists (reproduced on a real index
+	// before the fix). Relative and partial filters must stay untouched —
+	// they are substrings by design, and resolving "b.cpp" against the CWD
+	// would break them — which is why only the absolute form is resolved.
+	query::QueryEngine engine(&store);
+	CHECK(engine.findDefinition(project_id, "link_fn", via_link.c_str())
+		      .find("\"name\":\"link_fn\"") != std::string::npos);
+	CHECK(engine.findDefinition(project_id, "link_fn",
+				    (stored_dir + "/b.cpp").c_str())
+		      .find("\"name\":\"link_fn\"") != std::string::npos);
+	CHECK(engine.findDefinition(project_id, "link_fn", "b.cpp")
+		      .find("\"name\":\"link_fn\"") != std::string::npos);
+
+	fs::remove(link, ec);
+	fs::remove_all(real_dir, ec);
+	printf("  [PASS] analyzeChangeImpact: relative and symlinked paths\n");
+}
+
 int main()
 {
 	unlink(kDbPath);
@@ -521,6 +604,7 @@ int main()
 	testImpact1Hop(store, project_id);
 	testImpact2Hop(store, project_id);
 	testImpact3Hop(store, project_id);
+	testImpactPathForms(store, project_id);
 	testImpactDepthCap(store, project_id);
 	testImpactDisconnectedNode(store, project_id);
 	testImpactEmptyFileList(store, project_id);
@@ -529,6 +613,14 @@ int main()
 	store.close();
 	unlink(kDbPath);
 
+	// The banner must follow the verdict: it used to be printed
+	// unconditionally, so a run with a failed CHECK announced PASSED and only
+	// the exit code disagreed — a caller reading the output (as this session
+	// did, on the way to a red gate) was told the opposite of the truth.
+	if (checkFailures()) {
+		printf("\n=== test_query_algorithms FAILED ===\n");
+		return 1;
+	}
 	printf("\n=== test_query_algorithms PASSED ===\n");
-	return checkFailures() ? 1 : 0;
+	return 0;
 }

@@ -1,12 +1,12 @@
 {
   "files": 266,
   "entities": 8586,
-  "call_edges": 2857,
+  "call_edges": 2859,
   "call_sites": 14341,
   "resolution_kind": {
     "dispatch": 61,
     "exact_local": 1243,
-    "imported": 1116,
+    "imported": 1118,
     "qualified": 437
   },
   "resolve_strategy": {
@@ -15,7 +15,7 @@
     "unresolved": 11301
   },
   "deciding_factor": {
-    "ImportMatch": 1116
+    "ImportMatch": 1118
   },
-  "unresolved_call_sites": 11484
+  "unresolved_call_sites": 11482
 }

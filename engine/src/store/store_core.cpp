@@ -1,5 +1,6 @@
 #include "store.h"
 #include "util/json_writer.h"
+#include "util/path_util.h"
 #include "platform_win.h"
 
 #include "posix_compat.h"
@@ -637,21 +638,15 @@ static std::string normalizeRootPath(const char *root_path)
 {
 	if (!root_path || !*root_path)
 		return {};
-	namespace fs = std::filesystem;
-	std::error_code ec;
-	// weakly_canonical resolves symlinks AND makes the path absolute,
-	// even if the path doesn't fully exist (it canonicalizes the
-	// existing prefix). This handles ".", "./foo", "foo/../bar",
-	// and absolute paths uniformly.
-	fs::path can = fs::weakly_canonical(fs::path(root_path), ec);
-	if (ec)
-		return root_path;
-	// Use native string form so macOS / Linux DB rows match exactly.
-#ifdef _WIN32
-	return can.string();
-#else
-	return can.native();
-#endif
+	// util::resolvePath is the single implementation of "absolute,
+	// symlink-resolved" (util/path_util.h): weakly_canonical resolves the
+	// prefix that exists and normalises the rest, so ".", "./foo",
+	// "foo/../bar" and absolute paths are handled uniformly, and it falls back
+	// to the raw input when resolution fails (non-existent path, permission
+	// denied) so create-by-name flows still work. Every stored file_path is
+	// built from this form, which is why readers of those rows must resolve
+	// their own paths the same way (util::lookupPath).
+	return util::resolvePath(root_path);
 }
 
 uint64_t GraphStore::createProject(const char *root_path, const char *name)

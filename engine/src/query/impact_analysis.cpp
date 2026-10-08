@@ -1,10 +1,12 @@
 #include "util/json_writer.h"
+#include "util/path_util.h"
 #include "impact_analysis.h"
 #include "query_engine.h"
 
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <sstream>
 #include <sqlite3.h>
 #include <unordered_map>
@@ -112,6 +114,45 @@ std::string analyzeChangeImpact(uint64_t project_id, store::GraphStore *store,
 				  kMethod + "] graph not ready";
 		fprintf(stderr, "%s\n", err.c_str());
 		return makeErrorJson(err);
+	}
+	// The caller names the files as THEY know them — relative to the project
+	// root, or absolute through a symlink (`/tmp` is `/private/tmp` on macOS) —
+	// while `entity.file_path` holds the resolved absolute form, because
+	// createProject() canonicalises the root it registers. The lookup below is
+	// an exact `file_path IN (...)`, so any other spelling matched nothing and
+	// the tool answered `modified: []` — "nothing changed" — for a file that
+	// had changed. Normalise with the SAME rule the store applies to a project
+	// root (store_core.cpp normalizeRootPath): anchor a relative path at the
+	// project root, then weakly_canonical, which is idempotent for a path that
+	// is already in the stored form.
+	{
+		const std::string root_path =
+			store->getProjectRootPath(project_id);
+		std::vector<std::string> resolved;
+		const auto add = [&resolved](const std::string &candidate) {
+			if (candidate.empty())
+				return;
+			if (std::find(resolved.begin(), resolved.end(),
+				      candidate) == resolved.end())
+				resolved.push_back(candidate);
+		};
+		for (const std::string &given : files) {
+			// The value as given, first: a database driven through the engine
+			// API keeps the caller's own spelling (measured — a fixture indexed
+			// as /tmp/... holds /tmp/... rows while the CLI-indexed ones hold
+			// /private/tmp/...), so the verbatim form has to keep matching.
+			add(given);
+			std::filesystem::path p(given);
+			if (p.is_relative() && !root_path.empty())
+				p = std::filesystem::path(root_path) / p;
+			// Plus the resolved, root-anchored form — the shared rule from
+			// util/path_util.h, which is what the store builds a project root
+			// with and therefore what the CLI-indexed rows hold. Accepting
+			// both is additive: whichever spelling the database holds matches.
+			if (p.is_absolute())
+				add(util::resolvePath(p.string()));
+		}
+		files.swap(resolved);
 	}
 	sqlite3 *db = store->handle();
 

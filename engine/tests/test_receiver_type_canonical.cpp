@@ -115,10 +115,20 @@ int main()
 	expectCanonical(".Leading", "Leading");
 	expectCanonical(" *\tPluginBus ", "PluginBus");
 	expectCanonical("ares_runtime::PluginBus", "PluginBus");
-	expectCanonical("std::vector<int>", "vector");
-	expectCanonical("Holder[T]", "Holder");
-	expectCanonical("pkg.Holder[T]", "Holder");
-	expectCanonical("std::map<K, V>", "map");
+	// Template instantiations are UNKNOWN, not their base name: which type owns
+	// the method depends on the template (`std::vector<int>` holds its own,
+	// `std::unique_ptr<Store>` forwards to `Store`). Stripping the argument list
+	// made `std::unique_ptr<FilterPolicy>` into `unique_ptr`, which matches no
+	// declaration — on this repository that turned `policy->loadIgnoreFile(…)`
+	// from a resolved unique-name call into a lost edge and added false ones
+	// elsewhere (rebuilt-commit A/B: -85/+62, versus 0/0 once instantiations are
+	// unknown).
+	expectCanonical("std::vector<int>", "");
+	expectCanonical("Holder[T]", "");
+	expectCanonical("pkg.Holder[T]", "");
+	expectCanonical("std::map<K, V>", "");
+	expectCanonical("std::unique_ptr<FilterPolicy>", "");
+	expectCanonical("*std::unique_ptr<FilterPolicy>", "");
 	// Composite spellings carry punctuation a type name cannot contain, and they
 	// are what Go records for channels, slices, maps and function types. Mining
 	// them for a last segment is how `<-chan os.Signal` becomes `Signal` — a

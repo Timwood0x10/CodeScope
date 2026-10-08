@@ -788,6 +788,41 @@ mod tests {
         }
     }
 
+    /// The endpoint-taking tools resolve their arguments at runtime and reject
+    /// a call without them, but the catalog advertised no requirement at all,
+    /// so a client that read `tools/list` and called with `{}` got
+    /// "either 'from' (symbol name) or 'from_id' (node id) is required" — an
+    /// error the schema could have prevented. The rule is "the NAME or the ID",
+    /// which `required` cannot express, so it is stated as allOf/anyOf and
+    /// pinned here: dropping it would silently send clients back to guessing.
+    #[test]
+    fn test_endpoint_tools_advertise_their_endpoints() {
+        for name in ["shortest_path", "codescope_trace"] {
+            let tool = all_tools()
+                .into_iter()
+                .find(|t| t.name == name)
+                .unwrap_or_else(|| panic!("{name} missing from the catalog"));
+            let schema = &tool.input_schema;
+            assert!(
+                schema.get("anyOf").is_some() || schema.get("allOf").is_some(),
+                "{name} must declare that it needs an endpoint: {schema}"
+            );
+        }
+        // shortest_path needs BOTH ends; codescope_trace needs either the
+        // exploration name or the two shortest-path ends.
+        let sp = all_tools()
+            .into_iter()
+            .find(|t| t.name == "shortest_path")
+            .unwrap();
+        let any_of = sp.input_schema["allOf"].as_array().unwrap();
+        assert_eq!(
+            any_of.len(),
+            2,
+            "one anyOf per endpoint: {}",
+            sp.input_schema
+        );
+    }
+
     #[test]
     fn test_unknown_tool_returns_error() {
         let result = execute(0, "nonexistent_tool_xyz", &json!({}));

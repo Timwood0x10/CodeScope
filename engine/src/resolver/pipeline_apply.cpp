@@ -266,9 +266,20 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 		// arity (returning +0.5) — the exact opposite of correct
 		// overload resolution. Thread the real reference arity through
 		// so exact-arity overloads score highest.
-		acc(kWeightSignatureMatch,
-		    factorSignatureMatch(caller_arity, c.arity),
-		    "SignatureMatch");
+		{
+			double signature =
+				factorSignatureMatch(caller_arity, c.arity);
+			// Only supplying MORE arguments than the candidate declares is
+			// impossible. Fewer can be legitimate wherever defaults exist, and
+			// the default is usually declared somewhere this candidate's own
+			// arity cannot see (C++ declares it in the header, omits it in the
+			// definition) — see allowsDefaultArguments.
+			if (signature == kScorePenalty &&
+			    caller_arity < c.arity &&
+			    allowsDefaultArguments(c.file_path))
+				signature = kScorePartialMatch;
+			acc(kWeightSignatureMatch, signature, "SignatureMatch");
+		}
 
 		// Factor 5: DistanceMatch:
 		//   same file → 1.0; same directory → 0.3; else 0.0.
