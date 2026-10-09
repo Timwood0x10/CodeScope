@@ -1,7 +1,7 @@
 // End-to-end integration test: index a real fixture project through the FFI
 // boundary, then assert SEMANTIC query results — not just the JSON envelope.
 //
-// Why this exists (REVIEW_0.2.7.md TEST-1 / PLAN_0.2.8.md §1): the other
+// Why this exists (REVIEW_0.2.7.md TEST-1): the other
 // integration files (test_graph_ffi.rs, test_knowledge_ffi.rs) are mostly
 // envelope checks on an empty database — they would still pass if the indexer
 // wrote nothing and every query returned an empty array. code_rules.md §4
@@ -16,11 +16,13 @@
 //   5. asserts engine_search_code finds a fixture file.
 //
 // The fixture is shared with the C++ accuracy gate, so the test does not add
-// new fixture files (PLAN_0.2.8.md §1.2).
+// new fixture files.
 //
-// Like the sibling integration tests, the engine is a process-wide singleton
-// (g_store) and Rust runs #[test] functions in parallel threads, so every test
-// serialises engine access through ENGINE_LOCK.
+// Like the sibling integration tests, Rust runs #[test] functions in parallel
+// threads while the engine still keeps some state process-wide — the verifier
+// registry, the async knowledge builder and the store's index-progress and
+// parse-failure buffers, TD-1's documented residuals — so every test serialises
+// engine access through ENGINE_LOCK.
 
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;

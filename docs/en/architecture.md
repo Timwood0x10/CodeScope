@@ -1,6 +1,6 @@
 # CodeScope Architecture
 
-**Version**: v0.2.8  
+**Version**: v0.2.7  
 **Date**: 2026-10-01
 
 ---

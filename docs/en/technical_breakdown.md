@@ -1,6 +1,6 @@
 # CodeScope Technical Breakdown
 
-> **Version**: v0.2.8 | **Last Updated**: 2026-10-08
+> **Version**: v0.2.7 | **Last Updated**: 2026-10-09
 
 This document provides a deep dive into CodeScope's internal architecture, design decisions, and implementation details. It's intended for developers who want to understand how the system works, contribute to it, or integrate with it.
 
