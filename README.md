@@ -445,9 +445,9 @@ advertised-but-unhandled or handled-but-unadvertised tools.
 | `find_callers_by_entity` | Find callers of a symbol by its graph entity id. | `{"entity_id": "integer (required)"}` |
 | `find_callees_by_entity` | Find callees of a symbol by its graph entity id. | `{"entity_id": "integer (required)"}` |
 | `get_verifier_registry_status` | Inspect the registered verifiers and their health (supported claim types, unsupported list, backend readiness). | `{}` |
-| `codescope_trace` | Interactive recursive call exploration (depth + direction) or shortest path. | `{"function_name": "string", "depth": "integer (default 1, max 5)", "direction": "callers|callees|both", "from": "string", "to": "string"}` |
+| `codescope_trace` | Interactive recursive call exploration (depth + direction) or shortest path. | `{"function_name": "string (required for exploration mode)", "depth": "integer (default 1, max 5)", "direction": "callers\|callees\|both", "from": "string (shortest-path mode: required with to)", "to": "string (shortest-path mode: required with from)"}` |
 | `trace_flow` | Recursive execution flow tracing (caller→callee chain). | `{"function_name": "string (required)", "depth": "integer (default 3, max 10)"}` |
-| `shortest_path` | Shortest call path between two functions (BFS). | `{"from": "string", "to": "string", "from_id": "integer", "to_id": "integer"}` |
+| `shortest_path` | Shortest call path between two functions (BFS). | `{"from": "string (required unless from_id)", "to": "string (required unless to_id)", "from_id": "integer (required unless from)", "to_id": "integer (required unless to)"}` |
 | `connected_components` | Connected components in the call graph. | `{}` |
 | `get_communities` | **New** — detect communities (clusters) in the call graph via deterministic label propagation. Returns `{communities:[{id,label,member_count}], total_communities, returned_communities, inter_community_edges, truncated}`; members are omitted unless `include_members` is true. | `{"max_communities": "integer (default 20, max 500)", "include_members": "boolean (default false)", "max_members": "integer (default 10, max 200)"}` |
 

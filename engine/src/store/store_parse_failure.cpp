@@ -4,7 +4,9 @@
 // Files that fail to parse N times (CODESCOPE_FAIL_RETRY_MAX, default
 // 1) are skipped on subsequent index runs. Reset via CLI reset-failures.
 //
-// Reaches the engine store through engineContext() (engine_context.h) and its
+// Reaches the engine store through the EngineContext it is HANDED — TD-1
+// knife 3 made the ABI handle-based and deleted the process-global accessor, so
+// every entry here takes `EngineContext *ctx` and goes through that context's
 // public handle() accessor. Prepared statements are wrapped in StmtPtr
 // (unique_ptr with custom deleter) so sqlite3_finalize always runs, even on
 // early return or exception.
@@ -15,10 +17,10 @@
 #include "store_internal.h"
 
 // engine_context.h forward-declares its member types and defines both special
-// members out-of-line, so including it for engineContext() does NOT pull
-// engine_internal.h's heavy transitive includes (parser.h, ir.h, ...) into this
-// store TU. Previously this file re-declared the `g_store` global by hand to
-// avoid that; TD-1 routes the access through engineContext() instead.
+// members out-of-line, so including it to take an `EngineContext *` does NOT
+// pull engine_internal.h's heavy transitive includes (parser.h, ir.h, ...) into
+// this store TU. Previously this file re-declared the `g_store` global by hand
+// to avoid that; TD-1 passes the context in as a parameter instead.
 #include "engine_context.h"
 
 #include <cstdio>

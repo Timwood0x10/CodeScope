@@ -85,6 +85,15 @@ Current baselines: `self` (C++), `c-redis` (C), `go-tinygo` (Go),
 `java-spring-petclinic` (Java), `rust-pyo3` (Rust) and
 `ts-codebase-memory-mcp` (TypeScript, C).
 
+`self` is the one baseline that tracks the WORKING TREE rather than an external
+checkout: it indexes this repository, so adding or removing any indexed source
+file under `engine/src` changes its shape by construction and the run reports a
+diff (`files`, `entities`, `call_edges` all move) until `--update` rewrites the
+file. A diff on `self` alone therefore means "this tree changed", not
+"resolution changed" — the other five index fixed checkouts under
+`$CODESCOPE_BENCH_PROJECTS` and only move when the resolver moves, which makes
+them the ones to read when deciding whether a code change altered resolution.
+
 Java was missing until the discovery defect behind it was fixed:
 `discover::discover_modules` asks the engine (`engine_path_is_skipped`) which
 directories hold source, and the policy behind that query was built with no

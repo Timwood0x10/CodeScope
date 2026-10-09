@@ -249,7 +249,7 @@ codescope cli force_index_files '{"paths":["/path/to/test/file.rs"]}'
 |------|------|
 | **macOS** | Xcode CLT, cmake, Rust (1.85+) |
 | **Linux** | build-essential, cmake, Rust (1.85+) |
-| **Windows** ⚠️ **Beta** | MinGW-w64 14.0.0+，Rust `x86_64-pc-windows-gnu` 目标，cmake。所有图查询工具均通过内置 SQLite 图查询后端（CSR 邻接表）工作。|
+| **Windows** ⚠️ **Beta** | MinGW-w64 14.0.0+，Rust `x86_64-pc-windows-gnu` 目标，cmake，以及 **`PATH` 上的 `sqlite3` CLI**（并行与分块调度器通过把 SQL 管道给它来合并各 worker 的数据库）。所有图查询工具（shortest_path、get_neighbors、get_callers/callees、graph_query、subgraph、entry_points、trace_path、hotspots、impact_analysis 等）均通过内置 SQLite 图查询后端（CSR 邻接表，亚毫秒级调用图查询）工作。并行索引（`index-parallel`，含分块级调度器）现在也能在 Windows 上工作 —— 两个调度器映射的那块共享状态已有 Windows 后端（`CreateFileMappingW`/`MapViewOfFile`）—— 但仍**为 Beta**：`windows-smoke` CI 作业是其验收门禁，且仅支持手动触发。若缺少 `sqlite3` CLI，请改用 `codescope index`（单进程），它不做合并。 |
 
 ### 安装预编译二进制
 
@@ -365,9 +365,9 @@ codescope reset-failures
 |------|------|------|
 | `find_callers` | 查找谁调用了某个函数。 | `{"symbol_name": "string (必填)", "file_filter": "string (可选)"}` |
 | `find_callees` | 查找某个函数调用了什么。 | `{"symbol_name": "string (必填)", "file_filter": "string (可选)"}` |
-| `codescope_trace` | 交互式递归调用探索（深度 + 方向）或最短路径。 | `{"function_name": "string", "depth": "integer (默认 1, 最大 5)", "direction": "callers|callees|both", "from": "string", "to": "string"}` |
+| `codescope_trace` | 交互式递归调用探索（深度 + 方向）或最短路径。 | `{"function_name": "string（探索模式必填）", "depth": "integer (默认 1, 最大 5)", "direction": "callers\|callees\|both", "from": "string（最短路径模式：需与 to 同时给出）", "to": "string（最短路径模式：需与 from 同时给出）"}` |
 | `trace_flow` | 递归执行流追踪（caller→callee 链）。 | `{"function_name": "string (必填)", "depth": "integer (默认 3, 最大 10)"}` |
-| `shortest_path` | 两个函数之间的最短调用路径（BFS）。 | `{"from": "string", "to": "string", "from_id": "integer", "to_id": "integer"}` |
+| `shortest_path` | 两个函数之间的最短调用路径（BFS）。 | `{"from": "string（未给 from_id 时必填）", "to": "string（未给 to_id 时必填）", "from_id": "integer（未给 from 时必填）", "to_id": "integer（未给 to 时必填）"}` |
 | `connected_components` | 调用图中的连通分量。 | `{}` |
 | `get_communities` | **新增** — 通过确定性的标签传播检测调用图中的社区（聚类）。返回 `{communities:[{id,label,member_count}], total_communities, returned_communities, inter_community_edges, truncated}`；除非 `include_members` 为 true，否则不返回成员列表。 | `{"max_communities": "integer（默认 20，上限 500）", "include_members": "boolean（默认 false）", "max_members": "integer（默认 10，上限 200）"}` |
 
