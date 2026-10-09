@@ -28,21 +28,19 @@
 
 // ─── Sqlite-vec extension loading (dlopen-based, portable) ──
 
-// ─── Global singletons ─────────────────────────────────────────
-// NOT static — declared extern in engine_internal.h so that
-// other engine_*.cpp translation units can access them.
-// Using unique_ptr for exception-safe memory management.
-
-std::unique_ptr<store::GraphStore> g_store;
-std::unique_ptr<query::QueryEngine> g_query;
-std::unique_ptr<Parser> g_parser;
+// ─── Engine state ──────────────────────────────────────────────
+// The store / query / parser state lives in the EngineContext declared in
+// engine_context.h and created by engine_create(), so no state is defined
+// in this file any more. See engine_context.h for the knife-1/2/3 migration
+// notes (TD-1).
 
 // Core engine functions are split into separate translation units:
 //   engine_helpers.cpp   — readFile, jsonEscape, detectLanguage, dupString, etc.
-//   engine_lifecycle.cpp — engine_init, engine_shutdown, engine_create_project
+//   engine_lifecycle.cpp — engine_create, engine_destroy, engine_create_project
 //   engine_index.cpp     — engine_index_file, engine_index_project, engine_index_batch
 //   engine_scanner.cpp   — fast scanner + engine_scan_project
 //   engine_queries.cpp   — enhancement, search, callers/callees, trace, context
 //   engine_ffi.cpp       — find_definition, get_callers, search_code, complexity, DSL
 //
-// engine.cpp retains only the preamble, global singletons, and sqlite-vec init.
+// engine.cpp retains only the includes and these layout notes; the engine
+// state lives in engine_context.cpp (see engine_context.h).

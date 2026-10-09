@@ -8,10 +8,10 @@
 //
 // Test strategy:
 //   1. Create a fresh SQLite DB in a temp directory.
-//   2. Initialize the engine (engine_init).
+//   2. Create the engine instance (engine_create).
 //   3. Create a project (engine_create_project).
 //   4. Call each FFI function and assert on the JSON output shape.
-//   5. Shut down the engine (engine_shutdown) to release the DB lock.
+//   5. Destroy the instance (engine_destroy) to release the DB lock.
 //
 // The tests are robust to empty databases: they verify JSON structure and
 // field presence, not specific verdicts that would depend on indexed code.
@@ -24,14 +24,71 @@ use std::path::PathBuf;
 // These mirror the declarations in server/src/ffi/mod.rs but are kept
 // local so this integration test compiles as a standalone binary.
 
+/// Opaque engine handle — the C ABI's `engine_t` (engine/include/engine.h).
+#[repr(C)]
+struct CodescopeEngine {
+    _private: [u8; 0],
+}
+type EngineHandle = *mut CodescopeEngine;
+
+/// The engine instance this test binary drives. TD-1 knife 3 made the ABI
+/// handle-based, so the suite holds the handle here instead of relying on
+/// process-global engine state (which the server owns in ffi/mod.rs).
+static ENGINE: std::sync::atomic::AtomicPtr<CodescopeEngine> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+/// The handle every stateful call below passes.
+fn engine_handle() -> EngineHandle {
+    ENGINE.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Create the engine instance on `db_path`; returns 0 on success (the old
+/// `engine_init` contract) and releases any instance a previous test left.
+fn engine_open(db_path: *const c_char) -> i32 {
+    let handle = unsafe { engine_create(db_path) };
+    let previous = ENGINE.swap(handle, std::sync::atomic::Ordering::AcqRel);
+    if !previous.is_null() {
+        unsafe { engine_destroy(previous) };
+    }
+    if handle.is_null() { -1 } else { 0 }
+}
+
+/// Release the engine instance. Safe when no instance is live.
+fn engine_close() {
+    let handle = ENGINE.swap(std::ptr::null_mut(), std::sync::atomic::Ordering::AcqRel);
+    if !handle.is_null() {
+        unsafe { engine_destroy(handle) };
+    }
+}
+
 unsafe extern "C" {
-    fn engine_init(db_path: *const c_char) -> i32;
-    fn engine_shutdown();
-    fn engine_create_project(root_path: *const c_char, name: *const c_char) -> u64;
-    fn engine_verify_integrity(project_id: u64) -> *mut c_char;
-    fn engine_verify_claim(project_id: u64, claim_json: *const c_char) -> *mut c_char;
-    fn engine_verify_summary(project_id: u64, text: *const c_char) -> *mut c_char;
-    fn engine_explain_module(project_id: u64, module_name: *const c_char) -> *mut c_char;
+    fn engine_create(db_path: *const c_char) -> EngineHandle;
+    fn engine_destroy(handle: EngineHandle);
+    fn engine_create_project(
+        handle: EngineHandle,
+        root_path: *const c_char,
+        name: *const c_char,
+    ) -> u64;
+    fn engine_verify_integrity(
+        handle: EngineHandle,
+        project_id: u64,
+        max_findings: i32,
+    ) -> *mut c_char;
+    fn engine_verify_claim(
+        handle: EngineHandle,
+        project_id: u64,
+        claim_json: *const c_char,
+    ) -> *mut c_char;
+    fn engine_verify_summary(
+        handle: EngineHandle,
+        project_id: u64,
+        text: *const c_char,
+    ) -> *mut c_char;
+    fn engine_explain_module(
+        handle: EngineHandle,
+        project_id: u64,
+        module_name: *const c_char,
+    ) -> *mut c_char;
     fn engine_free_string(ptr: *mut c_char);
 }
 
@@ -59,7 +116,7 @@ fn take_string(ptr: *mut c_char) -> String {
 static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// The engine is a process-wide singleton (g_store). Rust runs tests in
-/// parallel threads by default, so concurrent engine_init/engine_shutdown
+/// parallel threads by default, so concurrent create/destroy
 /// from different tests races the singleton and aborts (SIGABRT). Serialize
 /// engine access with a global mutex held from setup_engine until
 /// teardown_engine — this matches `--test-threads=1` semantics without
@@ -80,7 +137,7 @@ fn temp_db_path() -> PathBuf {
 }
 
 /// Test fixture: initialize the engine + create a project, returning the
-/// project_id. The caller is responsible for calling engine_shutdown()
+/// project_id. The caller is responsible for calling engine_close()
 /// at the end of the test.
 fn setup_engine() -> u64 {
     let db_path = temp_db_path();
@@ -90,12 +147,12 @@ fn setup_engine() -> u64 {
     let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
 
     let db_c = cstr(db_path.to_str().unwrap_or("/tmp/codescope_test.db"));
-    let rc = unsafe { engine_init(db_c.as_ptr()) };
-    assert_eq!(rc, 0, "engine_init should return 0 on success");
+    let rc = engine_open(db_c.as_ptr());
+    assert_eq!(rc, 0, "engine_create should succeed");
 
     let root_c = cstr("/tmp/test-project");
     let name_c = cstr("test-knowledge");
-    let pid = unsafe { engine_create_project(root_c.as_ptr(), name_c.as_ptr()) };
+    let pid = unsafe { engine_create_project(engine_handle(), root_c.as_ptr(), name_c.as_ptr()) };
     assert!(
         pid > 0,
         "engine_create_project should return a positive project_id"
@@ -106,7 +163,7 @@ fn setup_engine() -> u64 {
 /// Teardown: shut down the engine to release the SQLite EXCLUSIVE lock
 /// so the next test can create its own DB.
 fn teardown_engine() {
-    unsafe { engine_shutdown() };
+    engine_close();
 }
 
 // ── Tests ────────────────────────────────────────────────────────
@@ -121,7 +178,8 @@ fn test_verify_summary_parses_claims() {
     // extract these claims and the verifiers should return a verdict.
     let text = "CodeScope supports incremental indexing and is thread-safe";
     let text_c = cstr(text);
-    let result = take_string(unsafe { engine_verify_summary(pid, text_c.as_ptr()) });
+    let result =
+        take_string(unsafe { engine_verify_summary(engine_handle(), pid, text_c.as_ptr()) });
 
     teardown_engine();
 
@@ -162,7 +220,8 @@ fn test_verify_summary_aggregates_trust_score() {
     let pid = setup_engine();
     let text = "This library is memory-safe, zero-copy, and lock-free.";
     let text_c = cstr(text);
-    let result = take_string(unsafe { engine_verify_summary(pid, text_c.as_ptr()) });
+    let result =
+        take_string(unsafe { engine_verify_summary(engine_handle(), pid, text_c.as_ptr()) });
 
     teardown_engine();
 
@@ -198,7 +257,8 @@ fn test_verify_summary_empty_text() {
     let _engine_guard = lock_engine();
     let pid = setup_engine();
     let text_c = cstr("");
-    let result = take_string(unsafe { engine_verify_summary(pid, text_c.as_ptr()) });
+    let result =
+        take_string(unsafe { engine_verify_summary(engine_handle(), pid, text_c.as_ptr()) });
 
     teardown_engine();
 
@@ -218,7 +278,8 @@ fn test_verify_claim_single_capability() {
     let pid = setup_engine();
     let claim_json = r#"{"type":"capability_exists","subject":"incremental indexing","predicate":"implemented_by","object":"engine","scope":"repository","source_kind":"manual","source_ref":"test-1"}"#;
     let claim_c = cstr(claim_json);
-    let result = take_string(unsafe { engine_verify_claim(pid, claim_c.as_ptr()) });
+    let result =
+        take_string(unsafe { engine_verify_claim(engine_handle(), pid, claim_c.as_ptr()) });
 
     teardown_engine();
 
@@ -262,7 +323,8 @@ fn test_verify_claim_empty_json() {
     let _engine_guard = lock_engine();
     let pid = setup_engine();
     let claim_c = cstr("");
-    let result = take_string(unsafe { engine_verify_claim(pid, claim_c.as_ptr()) });
+    let result =
+        take_string(unsafe { engine_verify_claim(engine_handle(), pid, claim_c.as_ptr()) });
 
     teardown_engine();
 
@@ -283,7 +345,8 @@ fn test_verify_claim_missing_subject() {
     // Valid JSON but missing the required "subject" field.
     let claim_json = r#"{"type":"capability_exists"}"#;
     let claim_c = cstr(claim_json);
-    let result = take_string(unsafe { engine_verify_claim(pid, claim_c.as_ptr()) });
+    let result =
+        take_string(unsafe { engine_verify_claim(engine_handle(), pid, claim_c.as_ptr()) });
 
     teardown_engine();
 
@@ -301,7 +364,8 @@ fn test_explain_module_returns_knowledge_card() {
     let _engine_guard = lock_engine();
     let pid = setup_engine();
     let module_c = cstr("engine");
-    let result = take_string(unsafe { engine_explain_module(pid, module_c.as_ptr()) });
+    let result =
+        take_string(unsafe { engine_explain_module(engine_handle(), pid, module_c.as_ptr()) });
 
     teardown_engine();
 
@@ -349,7 +413,8 @@ fn test_explain_module_empty_name() {
     let _engine_guard = lock_engine();
     let pid = setup_engine();
     let module_c = cstr("");
-    let result = take_string(unsafe { engine_explain_module(pid, module_c.as_ptr()) });
+    let result =
+        take_string(unsafe { engine_explain_module(engine_handle(), pid, module_c.as_ptr()) });
 
     teardown_engine();
 
@@ -370,7 +435,7 @@ fn test_explain_module_empty_name() {
 fn test_verify_integrity_returns_findings() {
     let _engine_guard = lock_engine();
     let pid = setup_engine();
-    let result = take_string(unsafe { engine_verify_integrity(pid) });
+    let result = take_string(unsafe { engine_verify_integrity(engine_handle(), pid, 200) });
 
     teardown_engine();
 
@@ -398,5 +463,84 @@ fn test_verify_integrity_returns_findings() {
         json.get("total").map(|v| v.is_number()).unwrap_or(false),
         "verify_integrity output should contain a numeric 'total', got: {}",
         result
+    );
+
+    // New in the max_findings contract: `truncated` is the completeness
+    // signal and `limit` echoes the applied cap. `truncated` must be false
+    // here — the default cap (200) is above the fixture's finding count.
+    assert!(
+        json.get("truncated")
+            .map(|v| v.is_boolean())
+            .unwrap_or(false),
+        "verify_integrity output should contain a boolean 'truncated', got: {}",
+        result
+    );
+    assert!(
+        json.get("limit").map(|v| v.is_number()).unwrap_or(false),
+        "verify_integrity output should contain a numeric 'limit', got: {}",
+        result
+    );
+    assert_eq!(
+        json["limit"].as_i64(),
+        Some(200),
+        "limit should echo the requested cap"
+    );
+    assert_eq!(
+        json["truncated"].as_bool(),
+        Some(false),
+        "a complete findings array must not report truncated, got: {}",
+        result
+    );
+    let findings_len = json["findings"].as_array().map(|a| a.len()).unwrap_or(0);
+    assert!(
+        findings_len <= 200,
+        "findings array must respect the cap ({} > 200)",
+        findings_len
+    );
+}
+
+#[test]
+fn test_verify_integrity_truncates_at_max_findings() {
+    let _engine_guard = lock_engine();
+    let pid = setup_engine();
+    let result = take_string(unsafe { engine_verify_integrity(engine_handle(), pid, 1) });
+
+    teardown_engine();
+
+    let json: serde_json::Value =
+        serde_json::from_str(&result).expect("verify_integrity should return valid JSON");
+
+    // With max_findings=1 the array must be capped at one element and the
+    // truncation flag must fire. `total` still reports the full verdict
+    // count (including Supported, which are never listed as findings).
+    assert_eq!(
+        json["limit"].as_i64(),
+        Some(1),
+        "limit should echo the requested cap, got: {}",
+        result
+    );
+    let findings_len = json["findings"].as_array().map(|a| a.len()).unwrap_or(0);
+    assert!(
+        findings_len <= 1,
+        "max_findings=1 must cap the findings array, got {} entries",
+        findings_len
+    );
+    let total = json["total"].as_i64().unwrap_or(0);
+    if total > 1 {
+        assert_eq!(
+            json["truncated"].as_bool(),
+            Some(true),
+            "a capped array must report truncated when total={} > 1 finding was emitted, got: {}",
+            total,
+            result
+        );
+    }
+    // total counts verdicts (Supported included), so it must be at least
+    // the number of listed findings.
+    assert!(
+        total as usize >= findings_len,
+        "total ({}) must be >= findings length ({})",
+        total,
+        findings_len
     );
 }

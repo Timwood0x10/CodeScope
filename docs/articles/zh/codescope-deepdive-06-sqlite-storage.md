@@ -1,7 +1,11 @@
 # CodeScope 拆解 (六)：SQLite 图谱存储 — Schema 设计与 FTS
 
-> *"A graph database is a great idea. A graph database that requires a server process is a deployment nightmare."*
 > 图数据库是个好主意。但需要启动一个服务进程的图数据库，就是部署噩梦了。
+
+> **历史注记（2026-10-01）**：本文写作之后存储层已经演进。权威表是 `entity`（符号）与
+> `relation`（边），`graph_nodes` 不再写入，全文检索由 `code_fts` + `name_trgm` 承担。
+> 当前 schema 见 `docs/zh/technical_breakdown.md` §4.1。文中作为「可选加速层」介绍的
+> LadybugDB 也已从产品中移除 —— 那一节是历史，而非可用路径。下文的其余设计思路仍然成立。
 
 ## 问题：代码图存哪里？
 

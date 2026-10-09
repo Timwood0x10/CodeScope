@@ -3,6 +3,7 @@
 
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "../semantic_emitter.h"
@@ -55,6 +56,33 @@ class JsVisitor {
 	SemanticEmitter *emitter_;
 	const char *source_;
 
+	// ── Recursion depth guard ───────────────────────────────
+	// tree-sitter accepts pathologically deep ASTs (tens of thousands of
+	// nested nodes, e.g. 20k nested calls). The visitor walk is recursive
+	// (visitChildren → visitNode → handleX → visitChildren …), so such input
+	// overflows the native stack and crashes (SIGBUS/SIGSEGV) — a fault the
+	// FFI try/catch boundary cannot recover from. visitChildren and
+	// collectDefinedNames are the two choke points every descent passes
+	// through, so bounding their nesting bounds the whole walk.
+	//
+	// The cap MUST fit the smallest stack the walk can run on. The parallel
+	// indexer parses on spawned std::threads, whose default stack is 512 KB
+	// on macOS (vs. 8 MB for the main thread); one visit level costs up to
+	// ~1.5 KB (visitChild + visitNode + a language handleX frame with its
+	// std::string locals). 250 levels ≈ 375 KB leaves a safe margin under
+	// 512 KB while still being far deeper than any hand-written source.
+	// Shared by all language visitors via inheritance.
+	static constexpr int kMaxVisitDepth = 250;
+	int visit_depth_ = 0;
+	// Set once per file when a capped walk first truncates a subtree, so the
+	// truncation is reported exactly once instead of silently or per node.
+	//
+	// Shared by every capped walk (visitChild, collectDefinedNames,
+	// collectOutOfClassDefs): the first one to reach the limit reports the
+	// file and the others stay quiet, which keeps a deep file to a single
+	// diagnostic. Reset in reset() and at the top of visit().
+	bool depth_truncated_ = false;
+
 	// ── Scope tracking ──────────────────────────────────────
 	struct Scope {
 		std::unordered_map<std::string, uint64_t> symbols;
@@ -101,6 +129,50 @@ class JsVisitor {
 	std::unordered_map<std::string, std::string> var_types_;
 	std::vector<std::string> class_scope_stack_;
 
+	// import_aliases_ maps a locally-bound import name to its module
+	// specifier, e.g.:
+	//   import * as ns from './x'    → "ns"  → "./x"
+	//   import Foo from './x'        → "Foo" → "./x"
+	//   import { A as B } from './x' → "B"   → "./x"
+	// visitCallExpr uses it to emit import_alias evidence for
+	// `ns.fn()` / `Foo.bar()` calls, mirroring JavaVisitor::import_aliases_
+	// and RustVisitor::use_aliases_. Without it JS/TS member calls
+	// carried no structured evidence at all.
+	std::unordered_map<std::string, std::string> import_aliases_;
+
+	// import_symbol_aliases_ maps a LOCAL alias to the symbol it stands for:
+	// `import { pick as pickLib }` binds `pickLib` to `pick`. Only the local
+	// name exists at the call site, so a bare `pickLib()` named no declaration
+	// and resolved to nothing — the module binding was recorded
+	// (emitImportBinding) but which symbol to look for was lost. The call is
+	// emitted under the imported name instead, so it resolves like any other
+	// call to that symbol. Namespace/default bindings are untouched: `ns.fn()`
+	// is a receiver call, and `import Foo from ...` has no second name.
+	std::unordered_map<std::string, std::string> import_symbol_aliases_;
+
+	/// The name a call is emitted under: the imported symbol when the call
+	/// uses a local alias, the call's own name otherwise.
+	std::string emittedCallName(const std::string &callee_name) const
+	{
+		auto it = import_symbol_aliases_.find(callee_name);
+		return it == import_symbol_aliases_.end() ? callee_name :
+							    it->second;
+	}
+
+	/**
+	 * Record the names introduced by one import clause into
+	 * import_aliases_. Handles default imports, namespace imports
+	 * (`* as ns`) and named specifiers (including `name as alias`).
+	 * \param node        An import_clause / namespace_import /
+	 *                    named_imports / import_specifier node.
+	 * \param module_spec The module specifier string of the import.
+	 * \param parent_id   Record to attach the binding records to (the import
+	 *                    statement's parent), so emitImportBinding lands in
+	 *                    the same scope as the statement itself.
+	 */
+	void collectImportBindings(TSNode node, const std::string &module_spec,
+				   uint64_t parent_id);
+
 	void recordVarType(const std::string &name, const std::string &type)
 	{
 		if (!name.empty() && !type.empty())
@@ -126,6 +198,35 @@ class JsVisitor {
 	// ── Helpers ─────────────────────────────────────────────
 	SourceRange location(TSNode node);
 	std::string nodeText(TSNode node);
+
+	/**
+	 * Names the file being visited defines itself (functions, methods, classes,
+	 * …), collected once per visit() by each language's visitor.
+	 *
+	 * The builtin-name filters below exist to keep pre-declared library
+	 * symbols out of the graph, but they match on NAME only, so a user
+	 * function that happens to share a builtin name — `def format()`,
+	 * `void free()`, `format` from `import static` — had its call dropped
+	 * entirely: a systematic false negative in the call graph. A name this file
+	 * defines is always user code, so it survives the filter.
+	 */
+	std::unordered_set<std::string> defined_names_;
+
+	/// Collect every name this file defines, starting at the tree root.
+	/// Node types that introduce a name are per-language (see
+	/// kDefNodeTypes in js_visitor.cpp). `depth` bounds the recursive walk
+	/// with the same kMaxVisitDepth cap as visitChildren so a pathologically
+	/// deep AST cannot overflow the stack here (this walk runs before the
+	/// main visit).
+	void collectDefinedNames(TSNode node, int depth = 0);
+
+	/// True when `name` is defined by the file being visited, i.e. a call to it
+	/// is a call to user code and must not be filtered as a builtin.
+	bool isLocallyDefined(const std::string &name) const
+	{
+		return defined_names_.count(name) != 0;
+	}
+
 	/**
 	 * Zero-copy node text view — borrows from source_, no heap alloc.
 	 * Use for temporary lookups (comparisons, name extraction).
@@ -139,6 +240,20 @@ class JsVisitor {
 	// without emitting. Handler nodes emit via emitter_ and recurse.
 
 	virtual void visitChildren(TSNode node, uint64_t parent_id);
+
+	/// Guarded descent into one node: applies the `kMaxVisitDepth` cap and
+	/// then dispatches to `visitNode`.
+	///
+	/// Every recursive step must come through here instead of calling
+	/// `visitNode` directly — including the language handlers that recurse on
+	/// their own (class bodies, declaration lists, ...). Those direct calls sat
+	/// outside `visitChildren`'s accounting, so a deep chain of them could
+	/// still overflow the stack. Counting per descent makes the maximum
+	/// concurrent depth the AST depth.
+	///
+	/// \param node       Node to visit.
+	/// \param parent_id  Record id to use as the node's parent.
+	void visitChild(TSNode node, uint64_t parent_id);
 
 	virtual void visitNode(TSNode node, uint64_t parent_id);
 
@@ -158,6 +273,10 @@ class JsVisitor {
 	/// (e.g. `new Foo(x)`), mirroring visitCallExpr. Captures the
 	/// constructor name so constructor call-edges are not dropped (M-9).
 	void visitNewExpr(TSNode node, uint64_t parent_id);
+	/// Emit an empty-catch evidence record (name='catch', empty
+	/// qualified_name) when the catch body has no statements, then
+	/// recurse. Non-empty bodies are visited without emitting.
+	void visitCatchClause(TSNode node, uint64_t parent_id);
 	/// Detect JS/TS visibility: returns 1 if node is exported (wrapped in
 	/// export_statement or marked export), else 0. v0.2.2 role classifier.
 	int detectVisibility(TSNode node);

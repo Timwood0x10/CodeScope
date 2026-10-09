@@ -7,14 +7,56 @@
 extern "C" {
 #endif
 
-// ─── Lifecycle ────────────────────────────────────────────────
+// ─── Engine instance (opaque handle) ──────────────────────────
+//
+// TD-1 (docs/REVIEW_0.2.7.md): the instance used to be process-global state
+// that every entry point reached for implicitly. It is now created explicitly
+// and passed in: every stateful function below takes an `engine_t` as its
+// first parameter.
+//
+// Ownership: engine_create() transfers one instance to the caller, which MUST
+//   release it with engine_destroy() exactly once. Destroying a handle twice,
+//   or using it after engine_destroy(), is undefined behaviour.
+// Lifetime: a handle returned by engine_create() is valid until
+//   engine_destroy(handle). Nothing else frees it.
+// Thread safety: one instance serialises its own calls over a single store
+//   connection, so calls that mutate the store must not overlap an indexing
+//   call on the SAME handle. Distinct handles have distinct stores, but the
+//   verifier registry and the async knowledge builder are still process-wide
+//   (documented limitation, engine_context.h), so run one instance per process
+//   unless those subsystems have been audited for your use.
+typedef struct CodescopeEngine *engine_t;
 
-int engine_init(const char *db_path);
-void engine_shutdown();
+// Create an engine instance bound to `db_path`, opening (and if necessary
+// creating) its SQLite database and registering the statically linked
+// tree-sitter grammars.
+// @param db_path Path of the SQLite file. NULL or "" is rejected.
+// @return A new instance, or NULL when the input is rejected or the store
+//         cannot be opened. The reason is logged to stderr with module/method
+//         tags (module=ffi, method=engine_create).
+// Ownership: the caller owns the returned handle and releases it with
+//   engine_destroy().
+// Lifetime: input string is borrowed for the call only.
+// Thread safety: must not run concurrently with engine_destroy() on the same
+//   handle, nor with any other call on it.
+engine_t engine_create(const char *db_path);
+
+// Destroy an engine instance: waits for the background knowledge builder,
+// clears the verifier registry, closes the store, and releases the handle.
+// Accepts NULL as a no-op, so calling it on a failed engine_create() is safe.
+// @param handle Instance returned by engine_create(); may be NULL.
+// Ownership: consumes `handle` — it is invalid after this call, and passing it
+//   to any other entry point is undefined behaviour.
+// Lifetime: no pointers are retained.
+// Thread safety: must not run while any call on `handle` is in flight.
+void engine_destroy(engine_t handle);
 
 /// Returns the engine version string. The returned pointer is static
 /// and does NOT need to be freed.
 /// @return Static C string like "0.2.1"
+// Ownership: nothing is allocated; no free is needed.
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
 const char *engine_version(void);
 
 // ─── FFI binding status (L3 fix) ───────────────────────────────
@@ -24,7 +66,7 @@ const char *engine_version(void);
 // for completeness and are kept (not removed) because some are used by
 // scripts or a future CLI, but they must NOT be treated as server-backed
 // APIs. Functions NOT bound by the server include:
-//   engine_get_communities, engine_get_hotspots, engine_get_module_map,
+//   engine_get_hotspots, engine_get_module_map,
 //   engine_get_entry_points, engine_trace_call_chain, engine_get_callers,
 //   engine_get_callees, engine_get_complexity, engine_get_capabilities,
 //   engine_get_index_progress, engine_scan_project, engine_search_semantic,
@@ -34,43 +76,121 @@ const char *engine_version(void);
 
 // ─── Project ──────────────────────────────────────────────────
 
-uint64_t engine_create_project(const char *root_path, const char *name);
+// Ownership: nothing is allocated; no free is needed.
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: writes the store; not concurrent with another engine call.
+uint64_t engine_create_project(engine_t handle, const char *root_path,
+			       const char *name);
 
 // ─── Parsing & Indexing ───────────────────────────────────────
 
 // Parse one file and build IR + graph; returns JSON status {"ok": true/false, "error": "..."}
-char *engine_index_file(uint64_t project_id, const char *file_path);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: writes the store; not concurrent with another engine call.
+char *engine_index_file(engine_t handle, uint64_t project_id,
+			const char *file_path);
 
 // Index an entire directory recursively; returns JSON progress summary
-char *engine_index_project(uint64_t project_id, const char *dir_path,
-			   const char *language_filter);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: writes the store; not concurrent with another engine call.
+char *engine_index_project(engine_t handle, uint64_t project_id,
+			   const char *dir_path, const char *language_filter);
 
 // Index a list of files (JSON array of file paths); returns JSON progress summary.
 // Skips directory scanning — uses the same parallel worker infrastructure.
 // file_list_json: ["/path/to/file1.c", "/path/to/file2.c", ...]
-char *engine_index_files(uint64_t project_id, const char *file_list_json);
+//
+// bypass_fail_fast selects the fail-fast policy for the requested files:
+//   0 — honour it, like the automatic project path: a file whose parse has
+//       failed CODESCOPE_FAIL_RETRY_MAX times (default
+//       engine_index_sched::kDefaultFailRetryMax) is skipped. Used by the
+//       scheduler-driven callers (worker --file-list, chunk worker).
+//   1 — always re-attempt every listed file. Used by force_index_files, whose
+//       contract is "index these paths regardless of the default skip rules".
+// Either way, parse failures of this run are recorded (and flushed) into
+// parse_failures; files failing only because no grammar is vendored for their
+// language are exempt from the skip in both modes.
+//
+// Ownership: the engine allocates the returned JSON string; the caller frees it
+// with engine_free_string(). Nothing else is retained — the file list is parsed
+// and copied during the call.
+// Thread safety: NOT safe to call while another indexing call is running. The
+// engine holds one store connection, and this call joins the background
+// knowledge builder and takes the store write guard for the duration.
+char *engine_index_files(engine_t handle, uint64_t project_id,
+			 const char *file_list_json, int bypass_fail_fast);
+
+// ─── Parse-failure Maintenance ────────────────────────────────
+
+// Read the project's parse_failures rows (the files the indexer could not
+// parse, with their reason and retry count).
+// limit: maximum rows to return; <= 0 means the store default (100).
+// Returns {"ok":true,"parse_failures":[...]} or an {"ok":false,...} envelope.
+// Ownership: caller frees with engine_free_string(); no other state is touched.
+// Thread safety: read-only, but it shares the engine's single store
+// connection, so it must not run concurrently with an indexing call.
+char *engine_get_parse_failures(engine_t handle, uint64_t project_id,
+				int limit);
+
+// Delete every parse_failures row of the project, so the files become eligible
+// for the fail-fast skip again (they are re-attempted on the next index run).
+// Returns {"ok":true,"removed":N} or an {"ok":false,...} envelope.
+// Ownership: caller frees with engine_free_string().
+// Thread safety: same connection as above — not concurrent with indexing.
+char *engine_reset_parse_failures(engine_t handle, uint64_t project_id);
 
 // ─── Queries ──────────────────────────────────────────────────
 
-char *engine_find_definition(uint64_t project_id, const char *symbol_name,
-			     const char *file_filter);
-char *engine_find_references(uint64_t project_id, const char *symbol_name,
-			     const char *file_filter);
-char *engine_get_callers(uint64_t project_id, const char *function_name,
-			 const char *file_filter);
-char *engine_get_callees(uint64_t project_id, const char *function_name,
-			 const char *file_filter);
-char *engine_get_neighbors(uint64_t project_id, uint64_t node_id,
-			   int edge_type_filter, int radius);
-char *engine_find_shortest_path(uint64_t project_id, uint64_t source_id,
-				uint64_t target_id);
-char *engine_get_subgraph(uint64_t project_id, uint64_t center_node_id,
-			  int radius, const char *node_type_filter,
+char *engine_find_definition(engine_t handle, uint64_t project_id,
+			     const char *symbol_name, const char *file_filter);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_find_references(engine_t handle, uint64_t project_id,
+			     const char *symbol_name, const char *file_filter);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_get_callers(engine_t handle, uint64_t project_id,
+			 const char *function_name, const char *file_filter);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_get_callees(engine_t handle, uint64_t project_id,
+			 const char *function_name, const char *file_filter);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_get_neighbors(engine_t handle, uint64_t project_id,
+			   uint64_t node_id, int edge_type_filter, int radius);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_find_shortest_path(engine_t handle, uint64_t project_id,
+				uint64_t source_id, uint64_t target_id);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_get_subgraph(engine_t handle, uint64_t project_id,
+			  uint64_t center_node_id, int radius,
+			  const char *node_type_filter,
 			  const char *edge_type_filter);
-char *engine_locate_node(uint64_t project_id, uint64_t node_id,
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_locate_node(engine_t handle, uint64_t project_id, uint64_t node_id,
 			 int context_lines);
-char *engine_locate_by_name(uint64_t project_id, const char *name);
-char *engine_get_graph_stats(uint64_t project_id);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_locate_by_name(engine_t handle, uint64_t project_id,
+			    const char *name);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_get_graph_stats(engine_t handle, uint64_t project_id);
 
 // Find connected components in the call graph via BFS over name-matched
 // relation edges. Returns JSON:
@@ -80,7 +200,10 @@ char *engine_get_graph_stats(uint64_t project_id);
 //    "total":N,"approximation":"heuristic",
 //    "note":"Connected components computed on name-matched call edges."}
 // On error returns JSON with an "error" field.
-char *engine_find_connected_components(uint64_t project_id);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_find_connected_components(engine_t handle, uint64_t project_id);
 
 // ─── Interactive exploration ──────────────────────────────────
 // Explore a function's callers/callees recursively as a JSON tree.
@@ -88,51 +211,100 @@ char *engine_find_connected_components(uint64_t project_id);
 // @param function_name Starting function.
 // @param depth How many levels to recurse (max 5).
 // @param direction "callers", "callees", or "both".
-char *engine_explore_function(uint64_t project_id, const char *function_name,
-			      int depth, const char *direction);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_explore_function(engine_t handle, uint64_t project_id,
+			      const char *function_name, int depth,
+			      const char *direction);
 
 // Get the latest project ID from the database.
 // Returns the project with the most indexed data (graph_nodes),
 // not just the highest id. This prevents project_id misalignment
 // when an empty "shell" project has a higher id than the data-bearing
 // project. Returns 0 if no projects exist.
-uint64_t engine_get_latest_project_id();
+// Ownership: nothing is allocated; no free is needed.
+// Lifetime: no pointers are passed in.
+// Thread safety: shares one store connection; not concurrent with indexing.
+uint64_t engine_get_latest_project_id(engine_t handle);
 
 // Get a project ID by its root_path.
 // Returns the project_id, or 0 if no project matches the root_path.
 // Unlike engine_create_project, this is a pure lookup — it does NOT
 // create a new project if the root_path is not found.
-uint64_t engine_get_project_id_by_path(const char *root_path);
+// Ownership: nothing is allocated; no free is needed.
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+uint64_t engine_get_project_id_by_path(engine_t handle, const char *root_path);
 
 // Count graph_nodes for a project.
 // Returns the node count, or 0 if the project has no indexed data.
 // Used by MCP to decide whether to reuse existing data or re-index.
-uint64_t engine_get_project_node_count(uint64_t project_id);
+// Ownership: nothing is allocated; no free is needed.
+// Lifetime: no pointers are passed in.
+// Thread safety: shares one store connection; not concurrent with indexing.
+uint64_t engine_get_project_node_count(engine_t handle, uint64_t project_id);
 
 // ─── Full-text search ──────────────────────────────────────────
 
 // Search code by name or content using FTS5; returns JSON with matching nodes
-char *engine_search_code(uint64_t project_id, const char *query, int limit);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_search_code(engine_t handle, uint64_t project_id,
+			 const char *query, int limit);
 
 // Semantic search using n-gram vector similarity (matches similar names)
-char *engine_search_semantic(uint64_t project_id, const char *query, int limit);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_search_semantic(engine_t handle, uint64_t project_id,
+			     const char *query, int limit);
 
 // Build FTS index from graph data (async, non-blocking for graph queries)
-char *engine_build_fts(uint64_t project_id);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: writes the store; not concurrent with another engine call.
+char *engine_build_fts(engine_t handle, uint64_t project_id);
 
 // Get current index progress as JSON (for client polling)
-char *engine_get_index_progress(uint64_t project_id);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: writes the store; not concurrent with another engine call.
+char *engine_get_index_progress(engine_t handle, uint64_t project_id);
 
 // ─── Complexity analysis ───────────────────────────────────────
 
 // Get cyclomatic complexity, cognitive complexity, and nesting depth for a graph node
-char *engine_get_complexity(uint64_t project_id, uint64_t graph_node_id);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_get_complexity(engine_t handle, uint64_t project_id,
+			    uint64_t graph_node_id);
 
 // ─── Graph Query DSL ──────────────────────────────────────────
 
 // Execute a minimal graph pattern query: MATCH (srcType[:name])-[edgeType]->(tgtType[:name])
 // Returns JSON array of {source, edge, target} triples.
-char *engine_graph_query(uint64_t project_id, const char *dsl_query);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_graph_query(engine_t handle, uint64_t project_id,
+			 const char *dsl_query);
+
+// Direct graph slice: up to node_limit nodes starting at node_offset and
+// edge_limit edges starting at edge_offset, each optionally filtered by type
+// (NULL or "" = no filter). This is the paged viewer path behind the MCP
+// `get_graph` tool; the full graph of a large project is never materialised in
+// one call.
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: reads the shared store connection; not concurrent with
+// indexing on the same handle.
+char *engine_get_graph(engine_t handle, uint64_t project_id,
+		       int64_t node_offset, int node_limit, int64_t edge_offset,
+		       int edge_limit, const char *node_type_filter,
+		       const char *edge_type_filter);
 
 // ─── Change Impact Analysis ─────────────────────────────────────
 
@@ -144,32 +316,48 @@ char *engine_graph_query(uint64_t project_id, const char *dsl_query);
  *                             e.g. '["/path/to/file1.py","/path/to/file2.rs"]'.
  * @return JSON with "modified", "callers", "callees", and "total_impacted".
  */
-char *engine_detect_changes(uint64_t project_id,
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_detect_changes(engine_t handle, uint64_t project_id,
 			    const char *modified_files_json);
 
 // ─── Community Detection ────────────────────────────────────────
 
 /**
- * Run label-propagation community detection on the code graph.
+ * Run deterministic label-propagation community detection over the CALLS
+ * graph (relation type=1, treated as undirected; self-loops and isolated
+ * nodes are excluded). Each participating node starts in its own community
+ * and iteratively adopts the most common label among its neighbors; ties
+ * prefer the current label, then the smallest label id, so the same database
+ * always yields the same communities.
  *
- * Each node starts in its own community and iteratively adopts the
- * most common community label among its neighbors. Returns module
- * clusters and their inter-relationships.
+ * Implemented in engine/src/query/query_communities.cpp.
  *
  * @param project_id  The project to analyze.
- * @param max_members Maximum members per community in output. 
- *                    Set to a small value (e.g. 5-10) to avoid large token output.
- *                    0 = include all members.
- * @param max_communities Maximum communities to return.
- *                        Set to e.g. 20 to limit output size and token cost.
- *                        0 = return all communities.
- * @param include_members If non-zero, include member list in each community.
- *                        If 0 (default), only return {id, label, member_count} summary.
- * @return JSON with "communities" array, "inter_community_edges",
- *         and "total_communities".
+ * @param max_members Maximum members emitted per community. Non-positive
+ *                    means "use the default" (10), NOT "unlimited";
+ *                    clamped to 200. Only used when include_members is set.
+ * @param max_communities Maximum communities returned. Non-positive means
+ *                        "use the default" (20), NOT "unlimited"; clamped
+ *                        to 500.
+ * @param include_members If non-zero, include the member list. If 0 (the
+ *                        default) only {id, label, member_count} summaries
+ *                        are returned, keeping the payload small.
+ * @return JSON:
+ *   {"communities":[{"id":<representative entity id>,"label":<name>,
+ *                    "member_count":N[,"members":[...]]}],
+ *    "total_communities":N,"returned_communities":N,
+ *    "inter_community_edges":N,"truncated":bool,
+ *    "approximation":"heuristic","note":"..."}
+ *   On error the JSON contains an "error" field and an empty community list.
  */
-char *engine_get_communities(uint64_t project_id, int max_members,
-			     int max_communities, int include_members);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_get_communities(engine_t handle, uint64_t project_id,
+			     int max_members, int max_communities,
+			     int include_members);
 
 // ─── Hotspot Analysis ───────────────────────────────────────────
 
@@ -180,22 +368,37 @@ char *engine_get_communities(uint64_t project_id, int max_members,
  * @param top_n       Number of top hotspots to return (default 10).
  * @return JSON: { "hotspots": [ { "name","caller_count","complexity",... } ] }
  */
-char *engine_get_hotspots(uint64_t project_id, int top_n);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_get_hotspots(engine_t handle, uint64_t project_id, int top_n);
 
 // ─── Code Understanding ─────────────────────────────────────────
 
 // Get a module map: all directories with their functions and methods
-char *engine_get_module_map(uint64_t project_id);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_get_module_map(engine_t handle, uint64_t project_id);
 
 // Find likely entry points (main, run, start, init, setup)
-char *engine_get_entry_points(uint64_t project_id);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_get_entry_points(engine_t handle, uint64_t project_id);
 
 // Trace call chain between two named functions
-char *engine_trace_call_chain(uint64_t project_id, const char *from,
-			      const char *to);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_trace_call_chain(engine_t handle, uint64_t project_id,
+			      const char *from, const char *to);
 
 // Complete project overview: modules + entry points + hotspots + stats
-char *engine_get_project_overview(uint64_t project_id);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_get_project_overview(engine_t handle, uint64_t project_id);
 
 // ─── Phase A: Fast Scan & Query ───────────────────────────────
 
@@ -205,20 +408,30 @@ char *engine_get_project_overview(uint64_t project_id);
  * Returns JSON with modules, entry_points, and total_symbols count.
  * Designed for ms-level response time.
  */
-char *engine_scan_project(uint64_t project_id, const char *dir_path,
-			  const char *language_filter);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: writes the store; not concurrent with another engine call.
+char *engine_scan_project(engine_t handle, uint64_t project_id,
+			  const char *dir_path, const char *language_filter);
 
 /**
  * Get hierarchical module tree for a project.
  * Returns JSON with modules array containing id, parent_id, name, path, file_count.
  */
-char *engine_get_module_tree(uint64_t project_id);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_get_module_tree(engine_t handle, uint64_t project_id);
 
 /**
  * Find symbol(s) by exact name match.
  * Returns JSON with results array.
  */
-char *engine_find_symbol(uint64_t project_id, const char *symbol_name);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_find_symbol(engine_t handle, uint64_t project_id,
+			 const char *symbol_name);
 
 // ─── Phase B: Background Enhancement ──────────────────────────
 
@@ -228,13 +441,19 @@ char *engine_find_symbol(uint64_t project_id, const char *symbol_name);
  * Returns JSON summary: { "files_processed": N, "symbols_enhanced": N, "call_edges": N }
  * Call this asynchronously after engine_scan_project returns.
  */
-char *engine_enhance_project(uint64_t project_id);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: writes the store; not concurrent with another engine call.
+char *engine_enhance_project(engine_t handle, uint64_t project_id);
 
 /**
  * Get enhancement status — how many symbols have ready flags set.
  * Returns JSON: { "total_symbols": N, "callgraph_ready": N, "metrics_ready": N, "embedding_ready": N }
  */
-char *engine_get_enhancement_status(uint64_t project_id);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_get_enhancement_status(engine_t handle, uint64_t project_id);
 
 // ─── Phase C: Unified MCP Tools (adaptive backend) ────────────
 
@@ -242,7 +461,11 @@ char *engine_get_enhancement_status(uint64_t project_id);
  * Unified search: auto-selects between FTS5 and semantic search.
  * Returns JSON with results and method field indicating which engine was used.
  */
-char *engine_unified_search(uint64_t project_id, const char *query, int limit);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_unified_search(engine_t handle, uint64_t project_id,
+			    const char *query, int limit);
 
 /**
  * Find callers (adaptive): uses new call_edges table if callgraph_ready,
@@ -253,7 +476,11 @@ char *engine_unified_search(uint64_t project_id, const char *query, int limit);
  *        homonyms (same name across files/classes). NULL = aggregate
  *        all files (legacy behavior).
  */
-char *engine_find_callers_adaptive(uint64_t project_id, const char *symbol_name,
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_find_callers_adaptive(engine_t handle, uint64_t project_id,
+				   const char *symbol_name,
 				   const char *file_filter);
 
 /**
@@ -264,7 +491,11 @@ char *engine_find_callers_adaptive(uint64_t project_id, const char *symbol_name,
  *        restricts the caller to the given file, disambiguating
  *        homonyms. NULL = aggregate all files (legacy behavior).
  */
-char *engine_find_callees_adaptive(uint64_t project_id, const char *symbol_name,
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_find_callees_adaptive(engine_t handle, uint64_t project_id,
+				   const char *symbol_name,
 				   const char *file_filter);
 
 /**
@@ -278,7 +509,11 @@ char *engine_find_callees_adaptive(uint64_t project_id, const char *symbol_name,
  * @param entity_id The entity.id from the entity table.
  * @return JSON: {"callers":[...],"total":N,"entity_id":ID}
  */
-char *engine_find_callers_by_entity(uint64_t project_id, uint64_t entity_id);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_find_callers_by_entity(engine_t handle, uint64_t project_id,
+				    uint64_t entity_id);
 
 /**
  * Step 7 (plan §7.2): Find callees by entity ID.
@@ -288,28 +523,44 @@ char *engine_find_callers_by_entity(uint64_t project_id, uint64_t entity_id);
  * @param entity_id The entity.id from the entity table.
  * @return JSON: {"callees":[...],"total":N,"entity_id":ID}
  */
-char *engine_find_callees_by_entity(uint64_t project_id, uint64_t entity_id);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_find_callees_by_entity(engine_t handle, uint64_t project_id,
+				    uint64_t entity_id);
 
 /**
  * Get entry points from the new schema.
  */
-char *engine_get_entry_points_new(uint64_t project_id);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_get_entry_points_new(engine_t handle, uint64_t project_id);
 
 /**
  * Get a comprehensive project overview: languages, modules, symbols, 
  * entry points, analysis progress, and ready features.
  * This is the first tool AI should call after initialization.
  */
-char *engine_project_overview(uint64_t project_id);
-char *engine_detect_ffi_boundaries(uint64_t project_id);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_project_overview(engine_t handle, uint64_t project_id);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_detect_ffi_boundaries(engine_t handle, uint64_t project_id);
 
 /**
  * Trace the shortest call path between two functions using BFS on call_edges.
  * Returns JSON: {"path": [{"name":"...","file":"...","line":N}, ...]}
  * Requires callgraph_ready (run enhance_project first).
  */
-char *engine_trace_path(uint64_t project_id, const char *from_name,
-			const char *to_name);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_trace_path(engine_t handle, uint64_t project_id,
+			const char *from_name, const char *to_name);
 
 /**
  * Build an intelligent context bundle for a natural language query.
@@ -317,14 +568,21 @@ char *engine_trace_path(uint64_t project_id, const char *from_name,
  * entry points, call graph) based on the query and ready flags.
  * This is the primary tool LLM should call — replaces manual multi-tool chains.
  */
-char *engine_build_context(uint64_t project_id, const char *query);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: writes the store; not concurrent with another engine call.
+char *engine_build_context(engine_t handle, uint64_t project_id,
+			   const char *query);
 
 /**
  * Get a standardized capabilities report — what features are available
  * and their readiness status. Returns JSON with each capability's name,
  * available flag, and ready flag.
  */
-char *engine_get_capabilities(uint64_t project_id);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_get_capabilities(engine_t handle, uint64_t project_id);
 
 /**
  * Direct-query the knowledge graph layer (v0.2.1).
@@ -343,18 +601,32 @@ char *engine_get_capabilities(uint64_t project_id);
  *          On error: `{"error":"[module=ffi, method=engine_get_knowledge_graph] ..."}`.
  *          Caller must call `engine_free_string` on the result.
  */
-char *engine_get_knowledge_graph(uint64_t project_id, const char *table_name,
-				 int32_t limit);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_get_knowledge_graph(engine_t handle, uint64_t project_id,
+				 const char *table_name, int32_t limit);
 
 // Get type info for a project: returns type definitions and their references.
 // Returns JSON: { "types": [ { "name","qualified_name","kind","file_path","ref_count" } ] }
-char *engine_get_type_info(uint64_t project_id, const char *type_name_filter);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_get_type_info(engine_t handle, uint64_t project_id,
+			   const char *type_name_filter);
 
 // Get HTTP routes for a project. Returns JSON: { "routes": [ { "method","path","handler_name","file_path","line" } ] }
-char *engine_get_routes(uint64_t project_id);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_get_routes(engine_t handle, uint64_t project_id);
 
 // ─── Memory ───────────────────────────────────────────────────
 
+// Ownership: takes back a pointer the engine allocated (e.g. a JSON
+//   envelope) and releases it; the caller must not free it again.
+// Lifetime: `ptr` is invalid after this call — do not use or free it again.
+// Thread safety: safe to call at any time; it only releases memory.
 void engine_free_string(char *ptr);
 
 /// Rebuild a project's CSR adjacency/adjacency_rev tables on the given DB.
@@ -369,6 +641,9 @@ void engine_free_string(char *ptr);
 /// @param project_id Project whose CSR to rebuild.
 /// @return JSON `{"ok":true,"project_id":N}` on success, or a JSON error
 ///         object. Caller MUST free via engine_free_string().
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: writes the store; not concurrent with another engine call.
 char *engine_rebuild_csr(const char *db_path, uint64_t project_id);
 
 // ─── Batch Indexing ────────────────────────────────────────────
@@ -380,7 +655,11 @@ char *engine_rebuild_csr(const char *db_path, uint64_t project_id);
  * @param file_paths_json  JSON array of file paths, e.g. ["/a.go","/b.rs"].
  * @return JSON summary: {"ok":true, "files":N, "nodes":N, "edges":N, "errors":[...]}
  */
-char *engine_index_batch(uint64_t project_id, const char *file_paths_json);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: writes the store; not concurrent with another engine call.
+char *engine_index_batch(engine_t handle, uint64_t project_id,
+			 const char *file_paths_json);
 
 // ─── Project Metadata ─────────────────────────────────────────
 
@@ -393,7 +672,10 @@ char *engine_index_batch(uint64_t project_id, const char *file_paths_json);
  * @return JSON: {"name":"...", "license":"Apache-2.0", "language":"go",
  *         "file_count":N, "dependency_count":N, "detected_files":["..."]}
  */
-char *engine_get_project_info(uint64_t project_id);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_get_project_info(engine_t handle, uint64_t project_id);
 
 // ─── Shared Artifact ────────────────────────────────────────────
 
@@ -407,7 +689,11 @@ char *engine_get_project_info(uint64_t project_id);
  * @return JSON: {"ok":true, "size_bytes":N, "compressed_bytes":N}
  *         or {"ok":false, "error":"..."} on failure.
  */
-char *engine_export_artifact(uint64_t project_id, const char *output_path);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: writes the store; not concurrent with another engine call.
+char *engine_export_artifact(engine_t handle, uint64_t project_id,
+			     const char *output_path);
 
 /**
  * Import a previously exported artifact.
@@ -418,7 +704,11 @@ char *engine_export_artifact(uint64_t project_id, const char *output_path);
  * @return JSON: {"ok":true, "project_id":N}
  *         or {"ok":false, "error":"..."} on failure.
  */
-char *engine_import_artifact(uint64_t project_id, const char *artifact_path);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: writes the store; not concurrent with another engine call.
+char *engine_import_artifact(engine_t handle, uint64_t project_id,
+			     const char *artifact_path);
 
 // ─── Evidence Builder (v0.3 Phase 2) ────────────────────────────
 
@@ -436,39 +726,11 @@ char *engine_import_artifact(uint64_t project_id, const char *artifact_path);
  *         combine). On error returns a JSON object with an "error"
  *         field. Caller MUST free via engine_free_string().
  */
-char *engine_build_evidence(uint64_t project_id, const char *category_filter);
-
-// ─── Verification Planner (v0.3 Phase 3) ───────────────────────
-
-/**
- * Verify a natural-language claim against the project's indexed
- * evidence. The claim is parsed into an Intent by IntentParser,
- * planned into evidence rule executions by Planner, executed via
- * EvidenceBuilder, and aggregated into a Verdict by VerdictBuilder.
- *
- * The returned JSON has the shape:
- *   {
- *     "verdict": "Supported|Contradicted|PartiallyVerified|Unknown",
- *     "confidence": 0.0..1.0,
- *     "requirements": [
- *       {"id":"...","weight":N,"satisfied":bool,"confidence":N}, ...
- *     ],
- *     "evidence": [
- *       {"category":"...","title":"...","confidence":N,
- *        "item_count":N}, ...
- *     ]
- *   }
- *
- * On error (engine not initialized, empty claim, etc.) returns a
- * JSON object with an "error" field. Caller MUST free via
- * engine_free_string().
- *
- * @param project_id  The project whose semantic_fact rows to query.
- * @param claim_text  The natural-language claim (e.g. "does this
- *                    project safely handle CString?").
- * @return Heap-allocated JSON string (caller frees). Never null.
- */
-char *engine_verify_statement(uint64_t project_id, const char *claim_text);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: writes the store; not concurrent with another engine call.
+char *engine_build_evidence(engine_t handle, uint64_t project_id,
+			    const char *category_filter);
 
 // ─── Claim-driven Verification (v0.3) ──────────────────────────
 
@@ -503,7 +765,11 @@ char *engine_verify_statement(uint64_t project_id, const char *claim_text);
  * @return Heap-allocated JSON string (caller frees via
  *         engine_free_string). Never null.
  */
-char *engine_verify_claim(uint64_t project_id, const char *claim_json);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_verify_claim(engine_t handle, uint64_t project_id,
+			  const char *claim_json);
 
 // ─── Project State (v0.3 Phase 4) ──────────────────────────────
 
@@ -519,7 +785,10 @@ char *engine_verify_claim(uint64_t project_id, const char *claim_json);
  *         returns a JSON object with an "error" field. Caller MUST
  *         free via engine_free_string().
  */
-char *engine_build_project_state(uint64_t project_id);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: writes the store; not concurrent with another engine call.
+char *engine_build_project_state(engine_t handle, uint64_t project_id);
 
 /**
  * Get the persisted project state snapshot (without rebuilding).
@@ -531,7 +800,10 @@ char *engine_build_project_state(uint64_t project_id);
  *         returns a JSON object with an "error" field and the
  *         project_id. Caller MUST free via engine_free_string().
  */
-char *engine_get_project_state(uint64_t project_id);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_get_project_state(engine_t handle, uint64_t project_id);
 
 // ─── Missing FFI declarations (v0.2.5 completeness fix) ───────
 // These entry points are implemented in the engine and bound by the Rust
@@ -541,34 +813,73 @@ char *engine_get_project_state(uint64_t project_id);
 // that the caller MUST free via engine_free_string().
 
 /// Run integrity verification (dispatch via VerifierRegistry). Returns JSON.
-char *engine_verify_integrity(uint64_t project_id);
+/// `max_findings` caps the serialized `findings` array (0 = default cap).
+/// `truncated` is true when the array was cut short; `total` counts every
+/// verdict (including Supported, which are not listed as findings).
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_verify_integrity(engine_t handle, uint64_t project_id,
+			      int max_findings);
 
 /// Parse a natural-language summary into claims and verify them.
-char *engine_verify_summary(uint64_t project_id, const char *text);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_verify_summary(engine_t handle, uint64_t project_id,
+			    const char *text);
 
 /// Verify the project against a review checklist (natural language text).
-char *engine_verify_review(uint64_t project_id, const char *text);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_verify_review(engine_t handle, uint64_t project_id,
+			   const char *text);
 
 /// Verify whether the project's reality matches a described expectation.
-char *engine_verify_reality(uint64_t project_id, const char *text);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_verify_reality(engine_t handle, uint64_t project_id,
+			    const char *text);
 
 /// Scan declared capabilities/contracts for documentation-vs-code drift.
-char *engine_detect_drift(uint64_t project_id);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_detect_drift(engine_t handle, uint64_t project_id);
 
 /// Detect documentation drift specifically (comments vs actual code).
-char *engine_detect_documentation_drift(uint64_t project_id);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_detect_documentation_drift(engine_t handle, uint64_t project_id);
 
 /// Detect capability drift specifically (declared vs implemented).
-char *engine_detect_capability_drift(uint64_t project_id);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_detect_capability_drift(engine_t handle, uint64_t project_id);
 
 /// Detect architecture drift specifically (modules/layers vs actual deps).
-char *engine_detect_architecture_drift(uint64_t project_id);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_detect_architecture_drift(engine_t handle, uint64_t project_id);
 
 /// Explain a symbol in natural language. Returns JSON.
-char *engine_explain_symbol(uint64_t project_id, const char *symbol_name);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_explain_symbol(engine_t handle, uint64_t project_id,
+			    const char *symbol_name);
 
 /// Explain a module in natural language. Returns JSON.
-char *engine_explain_module(uint64_t project_id, const char *module_name);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_explain_module(engine_t handle, uint64_t project_id,
+			    const char *module_name);
 
 /**
  * Inspect the VerifierRegistry health and claim-type coverage.
@@ -597,7 +908,47 @@ char *engine_explain_module(uint64_t project_id, const char *module_name);
  *                    Pass 0 to skip the backend probe.
  * @return Heap-allocated JSON string (caller frees). Never null.
  */
-char *engine_get_verifier_registry_status(uint64_t project_id);
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+char *engine_get_verifier_registry_status(engine_t handle, uint64_t project_id);
+
+/**
+ * Ask the engine's FilterPolicy whether a path would be skipped.
+ *
+ * Exported so the server's module discovery asks the same implementation the
+ * indexer uses instead of keeping a copy of the skip rules: the copy is what
+ * let a `.gitignore`d top-level directory be reported as a module (it read no
+ * ignore file at all). `project_root` selects which .gitignore /
+ * .codescopeignore rules apply and caches one FilterPolicy per root;
+ * `rel_path` is relative to that root, exactly as the worker passes it.
+ *
+ * @param project_root  Project root whose ignore files apply (may be NULL).
+ * @param rel_path      Path relative to project_root; NULL or "" → not skipped.
+ * @param is_dir        Non-zero when the path names a directory.
+ * @return 1 if the path would be skipped, 0 otherwise (also 0 on any error).
+ */
+// Ownership: nothing is allocated; no free is needed.
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+int engine_path_is_skipped(const char *project_root, const char *rel_path,
+			   int is_dir);
+
+/**
+ * Ask whether the engine can parse a file (by extension, or shebang for
+ * extensionless scripts).
+ *
+ * Exported so the server's file counts cannot advertise a language the engine
+ * has no support for — `.zig` was counted while the engine has no Zig
+ * mapping or translator.
+ *
+ * @param file_path  Path or file name; NULL or "" → 0.
+ * @return 1 if the engine recognizes a language for it, 0 otherwise.
+ */
+// Ownership: nothing is allocated; no free is needed.
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: shares one store connection; not concurrent with indexing.
+int engine_is_indexable_source(const char *file_path);
 
 #ifdef __cplusplus
 }

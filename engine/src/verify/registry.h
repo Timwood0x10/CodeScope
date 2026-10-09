@@ -35,9 +35,9 @@ namespace verify
  * Lifecycle contract (Step 9.1):
  *   - `ensureDefaultVerifiers(store, pid)` is IDEMPOTENT: it checks the
  *     actual registry state and only re-registers when empty. It does NOT
- *     rely on any process-level static flag, so `engine_shutdown()` ->
- *     `engine_init()` -> `ensureDefaultVerifiers()` always restores a
- *     healthy registry. `engine_shutdown()` calls `clear()` so the next
+ *     rely on any process-level static flag, so `engine_destroy()` ->
+ *     `engine_create()` -> `ensureDefaultVerifiers()` always restores a
+ *     healthy registry. `engine_destroy()` calls `clear()` so the next
  *     `ensureDefaultVerifiers()` re-populates from scratch.
  *   - The sentinel verifiers registered here use nullptr/0 for store/pid
  *     because their `accepts()` only inspects `claim.type`. The actual
@@ -67,7 +67,7 @@ class VerifierRegistry {
 	/// Idempotent registration of the default sentinel verifiers.
 	/// If the registry already has verifiers registered, this is a no-op.
 	/// This replaces the old `static bool initialized` flag and fixes the
-	/// lifecycle bug where `engine_shutdown()` cleared the registry but
+	/// lifecycle bug where `engine_destroy()` cleared the registry but
 	/// the flag stayed true, leaving the registry empty after re-init.
 	/// The sentinels use nullptr/0 because accepts() only reads claim.type.
 	/// @param store       GraphStore handle (unused by sentinels; kept for

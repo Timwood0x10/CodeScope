@@ -1,7 +1,9 @@
+#include "util/json_writer.h"
 #include "graph_query.h"
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <queue>
 #include <sstream>
@@ -11,6 +13,17 @@
 
 namespace query
 {
+
+// ─── Multi-hop query bounds ─────────────────────────────────────
+// The hop range comes from a client-supplied DSL string, so it must not be
+// able to walk the graph unboundedly. The multi-hop BFS keeps no visited set:
+// a node reachable through several paths is re-expanded once per path, so a
+// range such as `[Calls*1..1000000]` makes both time and memory grow
+// exponentially on a cyclic graph. Truncation is reported in the response
+// rather than hidden.
+static constexpr int kMultiHopMaxDepth = 8;
+static constexpr int kMultiHopMaxRows = 10000;
+static constexpr int64_t kMultiHopExpansionBudget = 200000;
 
 // ─── Node/Edge type name → integer mapping ─────────────────────
 
@@ -44,198 +57,27 @@ static void parseNodeSpec(const std::string &spec, std::string &out_type,
 
 // ─── SQLite helpers (Cypher escaping + tuple accessors) ──────
 
-// Escape a string for safe inclusion inside a Cypher single-quoted literal.
-// Prevents injection / query breakage from symbol names with quotes or
-// backslashes. Mirrors the cypherEscape in query_engine.cpp (both are
-// static, so TU-local — no ODR clash).
-static std::string cypherEscape(const char *s)
+/// Build the failure body every graph_query error path returns:
+/// `{"total":0,"results":[],"error":"<message>"}`. Centralised because the
+/// message carries user input (the LIMIT operand, the trailing text after the
+/// target node), which the writer escapes instead of it being concatenated
+/// into a JSON literal. The `[module=…, method=…]` suffix keeps the trace
+/// chain required by plan/rules/code_rules.md.
+static std::string graphQueryError(const std::string &message)
 {
-	if (!s)
-		return "";
-	std::string out;
-	out.reserve(std::strlen(s) + 8);
-	for (const char *p = s; *p; ++p) {
-		if (*p == '\\' || *p == '\'') {
-			out += '\\';
-		}
-		out += *p;
-	}
-	return out;
-}
-
-// Escape a string for safe inclusion inside a JSON double-quoted string.
-// Mirrors query::jsonEscape in query_engine.cpp; defined locally so
-// graph_query.cpp does not need to pull in the QueryEngine header.
-static std::string jsonEscape(const char *s)
-{
-	if (!s)
-		return "";
-	std::string out;
-	out.reserve(std::strlen(s) + 8);
-	for (const char *p = s; *p; ++p) {
-		switch (*p) {
-		case '"':
-			out += "\\\"";
-			break;
-		case '\\':
-			out += "\\\\";
-			break;
-		case '\n':
-			out += "\\n";
-			break;
-		case '\r':
-			out += "\\r";
-			break;
-		case '\t':
-			out += "\\t";
-			break;
-		default:
-			out += *p;
-			break;
-		}
-	}
-	return out;
+	util::JsonWriter w;
+	w.beginObject();
+	w.key("total").value(0);
+	w.key("results").beginArray().endArray();
+	w.key("error").value(message);
+	w.endObject();
+	return w.str();
 }
 
 // Map an integer edge_type from the DSL to a Cypher rel-type label.
 // SQLite stores CALLS (edge_type=1) and RELATES (other edge types)
 // as relationship labels; CALLS|RELATES matches both in a single
 // pattern. When edge_type is -1 (unspecified) we match both.
-static std::string edgeRelLabel(int edge_type)
-{
-	// CALLS|RELATES covers all relationship labels currently stored in
-	// SQLite. The caller may still apply a WHERE r.edge_type = N
-	// filter to narrow the result set when edge_type is specified.
-	(void)edge_type;
-	return "CALLS|RELATES";
-}
-
-// ─── Build a single-hop Cypher query ───────────────────────────
-//
-// Pattern: MATCH (src:GraphNode)-[r:CALLS|RELATES]->(tgt:GraphNode)
-//          WHERE src.project_id = N AND tgt.project_id = N
-//            [AND src.name = '...'] [AND tgt.name = '...']
-//            [AND src.node_type IN [..] / = N]
-//            [AND tgt.node_type IN [..] / = N]
-//            [AND r.edge_type = N]
-//          RETURN src.graph_node_id, src.name, src.node_type,
-//                 src.file_path, ID(r), r.edge_type,
-//                 tgt.graph_node_id, tgt.name, tgt.node_type,
-//                 tgt.file_path
-//          LIMIT 10000
-//
-// The Cypher is built with project_id spliced inline (a safe integer)
-// and name filters spliced via cypherEscape'd single-quoted literals.
-// node_type=0 (Function) is treated as IN (0,1) to mirror the legacy
-// SQL behaviour where "Function" matched both functions and methods.
-
-static std::string buildSingleHopCypher(uint64_t project_id, int edge_type,
-					int src_type_val, int tgt_type_val,
-					const std::string &src_name,
-					const std::string &tgt_name)
-{
-	std::ostringstream c;
-	c << "MATCH (src:GraphNode)-[r:" << edgeRelLabel(edge_type)
-	  << "]->(tgt:GraphNode) "
-	  << "WHERE src.project_id = " << project_id
-	  << " AND tgt.project_id = " << project_id;
-	if (edge_type >= 0)
-		c << " AND r.edge_type = " << edge_type;
-	if (src_type_val >= 0) {
-		if (src_type_val == 0)
-			c << " AND src.node_type IN [0,1]";
-		else
-			c << " AND src.node_type = " << src_type_val;
-	}
-	if (tgt_type_val >= 0) {
-		if (tgt_type_val == 0)
-			c << " AND tgt.node_type IN [0,1]";
-		else
-			c << " AND tgt.node_type = " << tgt_type_val;
-	}
-	if (!src_name.empty())
-		c << " AND src.name = '" << cypherEscape(src_name.c_str())
-		  << "'";
-	if (!tgt_name.empty())
-		c << " AND tgt.name = '" << cypherEscape(tgt_name.c_str())
-		  << "'";
-	c << " RETURN src.graph_node_id, src.name, src.node_type, "
-	  << "src.file_path, ID(r), r.edge_type, "
-	  << "tgt.graph_node_id, tgt.name, tgt.node_type, tgt.file_path "
-	  << "LIMIT 10000";
-	return c.str();
-}
-
-// ─── Build a multi-hop Cypher query ─────────────────────────────
-//
-// Pattern: MATCH p = (src:GraphNode)-[:CALLS|RELATES*min..max]->(tgt:GraphNode)
-//          WHERE src.project_id = N AND tgt.project_id = N
-//            [AND src.name = '...'] [AND tgt.name = '...']
-//            [AND src.node_type IN [..] / = N]
-//            [AND tgt.node_type IN [..] / = N]
-//          RETURN src.graph_node_id, src.name, src.node_type,
-//                 src.file_path,
-//                 tgt.graph_node_id, tgt.name, tgt.node_type,
-//                 tgt.file_path,
-//                 length(p),
-//                 [n IN nodes(p) | n.graph_node_id]
-//          LIMIT 10000
-//
-// `length(p)` gives the hop count (1 for a single-edge path).
-// `nodes(p)` returns the list of nodes along the path; the list
-// comprehension projects each node's graph_node_id, which we join
-// into the legacy "1->2->3" chain string in C++.
-
-static std::string buildMultiHopCypher(uint64_t project_id, int edge_type,
-				       int min_depth, int max_depth,
-				       int src_type_val, int tgt_type_val,
-				       const std::string &src_name,
-				       const std::string &tgt_name)
-{
-	// Variable-length relationship with optional edge_type filter.
-	// Cypher syntax: -[:CALLS|RELATES*min..max]-> when edge_type is
-	// unspecified, otherwise add a WHERE r.edge_type = N filter (the
-	// edge_type property is preserved on every relationship in the
-	// path).
-	std::ostringstream c;
-	c << "MATCH p = (src:GraphNode)-[:" << edgeRelLabel(edge_type) << "*"
-	  << min_depth << ".." << max_depth << "]->(tgt:GraphNode) "
-	  << "WHERE src.project_id = " << project_id
-	  << " AND tgt.project_id = " << project_id;
-	if (edge_type >= 0) {
-		// r in a variable-length pattern refers to the list of
-		// relationships; filter via ALL(r IN relationships(p) WHERE
-		// r.edge_type = N) so every hop matches the requested type.
-		c << " AND ALL(r IN relationships(p) WHERE r.edge_type = "
-		  << edge_type << ")";
-	}
-	if (src_type_val >= 0) {
-		if (src_type_val == 0)
-			c << " AND src.node_type IN [0,1]";
-		else
-			c << " AND src.node_type = " << src_type_val;
-	}
-	if (tgt_type_val >= 0) {
-		if (tgt_type_val == 0)
-			c << " AND tgt.node_type IN [0,1]";
-		else
-			c << " AND tgt.node_type = " << tgt_type_val;
-	}
-	if (!src_name.empty())
-		c << " AND src.name = '" << cypherEscape(src_name.c_str())
-		  << "'";
-	if (!tgt_name.empty())
-		c << " AND tgt.name = '" << cypherEscape(tgt_name.c_str())
-		  << "'";
-	c << " RETURN src.graph_node_id, src.name, src.node_type, "
-	  << "src.file_path, "
-	  << "tgt.graph_node_id, tgt.name, tgt.node_type, tgt.file_path, "
-	  << "length(p), [n IN nodes(p) | n.graph_node_id] LIMIT 10000";
-	return c.str();
-}
-
-// ─── Execute DSL query ─────────────────────────────────────────
-
 std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 			      store::GraphStore *store)
 {
@@ -325,6 +167,10 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 				min_depth = 1;
 			if (max_depth < min_depth)
 				max_depth = min_depth;
+			// The DSL is client-supplied: clamp the hop count so a query
+			// cannot ask for an effectively unbounded walk.
+			if (max_depth > kMultiHopMaxDepth)
+				max_depth = kMultiHopMaxDepth;
 		}
 	} else {
 		edge_spec = edge_raw;
@@ -359,6 +205,79 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 	parseNodeSpec(src_spec, src_type, src_name);
 	parseNodeSpec(tgt_spec, tgt_type, tgt_name);
 
+	// ── Trailing clauses: LIMIT <n> and RETURN <fields> ─────────
+	// Two clauses are accepted after the target node, in either order:
+	//
+	//   * `LIMIT <n>` — caps the result set. It is the documented way to bound
+	//     a large query (the README's graph-query benchmarks instruct it) and
+	//     the only one available here, since the MCP transport replaces a tool
+	//     response over its message cap with an error. It used to be ignored
+	//     silently: `LIMIT 10` returned every match.
+	//   * `RETURN <fields>` — accepted for compatibility with the DSL's
+	//     documented surface and currently has no effect, because every match
+	//     is returned as source/edge/target regardless (the response shape the
+	//     corpus and the tests rely on). Its operand runs to the end of the
+	//     query, so write LIMIT before RETURN.
+	//
+	// Anything else is an error rather than silently dropped input — the rule
+	// engine_verify_claim applies to an unknown claim type.
+	q = q.substr(close_paren + 1);
+	trim(q);
+	int user_limit = 0;
+	while (!q.empty()) {
+		const size_t sp = q.find_first_of(" \t");
+		const std::string tok =
+			(sp == std::string::npos) ? q : q.substr(0, sp);
+		std::string upper = tok;
+		for (auto &c : upper)
+			c = static_cast<char>(
+				std::toupper(static_cast<unsigned char>(c)));
+		if (upper == "LIMIT") {
+			std::string rest = (sp == std::string::npos) ?
+						   std::string() :
+						   q.substr(sp + 1);
+			trim(rest);
+			const size_t sp2 = rest.find_first_of(" \t");
+			const std::string num = (sp2 == std::string::npos) ?
+							rest :
+							rest.substr(0, sp2);
+			if (num.empty() ||
+			    num.find_first_not_of("0123456789") !=
+				    std::string::npos)
+				return graphQueryError(
+					std::string("LIMIT requires a positive "
+						    "integer, got '") +
+					num +
+					"' [module=engine, "
+					"method=executeGraphQuery]");
+			const int want = std::atoi(num.c_str());
+			if (want < 1)
+				return "{\"total\":0,\"results\":[],\"error\":\"LIMIT "
+				       "must be >= 1 [module=engine, "
+				       "method=executeGraphQuery]\"}";
+			if (user_limit != 0)
+				return "{\"total\":0,\"results\":[],\"error\":\"LIMIT "
+				       "given more than once [module=engine, "
+				       "method=executeGraphQuery]\"}";
+			user_limit = want;
+			q = (sp2 == std::string::npos) ? std::string() :
+							 rest.substr(sp2 + 1);
+			trim(q);
+			continue;
+		}
+		if (upper == "RETURN") {
+			// Operand runs to the end of the query (see above).
+			q.clear();
+			continue;
+		}
+		return graphQueryError(
+			std::string("unexpected trailing text after the target "
+				    "node: '") +
+			q +
+			"' — only 'LIMIT <n>' and 'RETURN <fields>' are "
+			"accepted [module=engine, method=executeGraphQuery]");
+	}
+
 	// Resolve edge type to integer
 	int edge_type = -1;
 	if (!edge_spec.empty()) {
@@ -389,21 +308,12 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 		tgt_type_val = it->second;
 	}
 
-	// Build Cypher
-	std::string cypher;
-	if (multi_hop) {
-		if (edge_type < 0) {
-			return "{\"total\":0,\"results\":[],\"error\":\"multi-hop queries "
-			       "require an edge type\"}";
-		}
-		cypher = buildMultiHopCypher(project_id, edge_type, min_depth,
-					     max_depth, src_type_val,
-					     tgt_type_val, src_name, tgt_name);
-	} else {
-		cypher = buildSingleHopCypher(project_id, edge_type,
-					      src_type_val, tgt_type_val,
-					      src_name, tgt_name);
-	}
+	// The DSL was parsed above and is executed against SQLite below.
+	// A Cypher string used to be assembled here for a backend that no longer
+	// exists: `cypher` was written and then never read by any code path, and
+	// the builders that produced it carried comments about injection
+	// protection for a string that was never executed. Multi-hop is handled by
+	// the SQL below (variable-length hop expansion), not by a query string.
 
 	// Execute via SQLite. Query errors are tagged with
 	// [module=graph_query, method=executeGraphQuery] so callers can
@@ -480,10 +390,88 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 	resolveEntities(src_name, src_type_val, src_ids);
 	resolveEntities(tgt_name, tgt_type_val, tgt_ids);
 
+	// A node spec that resolved to no entity matches nothing. Omitting
+	// the `IN (…)` filter for an empty id list (the previous behaviour)
+	// silently dropped that side of the pattern, so
+	// MATCH (A:x)-[Calls]->(A:y) with an unknown `y` returned every edge
+	// out of `x` instead of none.
+	if (src_ids.empty() || tgt_ids.empty()) {
+		util::JsonWriter empty;
+		empty.beginObject();
+		empty.key("results").beginArray().endArray();
+		empty.key("total").value(0);
+		// Still worth explaining when a typed name matched no entity:
+		// the probe below reports same-name kinds the filter missed.
+		std::string hints;
+		auto probeOtherKinds = [&](const std::string &name,
+					   int wanted_type,
+					   const char *type_label) {
+			if (name.empty() || wanted_type < 0)
+				return;
+			std::string sql = "SELECT DISTINCT kind FROM entity "
+					  "WHERE project_id=? AND (name=? OR "
+					  "qualified_name=?)";
+			sqlite3_stmt *st = nullptr;
+			if (sqlite3_prepare_v2(db, sql.c_str(), -1, &st,
+					       nullptr) != SQLITE_OK)
+				return;
+			sqlite3_bind_int64(st, 1,
+					   static_cast<int64_t>(project_id));
+			sqlite3_bind_text(st, 2, name.c_str(), -1,
+					  SQLITE_TRANSIENT);
+			sqlite3_bind_text(st, 3, name.c_str(), -1,
+					  SQLITE_TRANSIENT);
+			std::string other;
+			while (sqlite3_step(st) == SQLITE_ROW) {
+				int k = sqlite3_column_int(st, 0);
+				if (wanted_type == 0 && (k == 0 || k == 1))
+					continue;
+				if (k == wanted_type)
+					continue;
+				if (!other.empty())
+					other += ",";
+				other += std::to_string(k);
+			}
+			sqlite3_finalize(st);
+			if (other.empty())
+				return;
+			if (!hints.empty())
+				hints += "; ";
+			// The hint is plain text; it is escaped once, when the
+			// writer embeds it in the response below. Escaping the
+			// name here too would double-escape it.
+			hints += std::string("no ") + type_label + " named '" +
+				 name +
+				 "' matched; the name exists under entity "
+				 "kind " +
+				 other +
+				 " (kind assignment is translator-specific, "
+				 "e.g. a constructor shares its class's "
+				 "name) — retry without the type label to "
+				 "see them";
+		};
+		// Only probe the side that actually resolved empty.
+		if (src_ids.empty())
+			probeOtherKinds(src_name, src_type_val,
+					src_type.c_str());
+		if (tgt_ids.empty())
+			probeOtherKinds(tgt_name, tgt_type_val,
+					tgt_type.c_str());
+		if (!hints.empty())
+			empty.key("hint").value(hints);
+		empty.endObject();
+		return empty.str();
+	}
+
 	std::ostringstream json;
 	json << "{\"results\":[";
 	bool first_row = true;
 	int row_count = 0;
+	// Set when a multi-hop bound fires; reported in the response tail.
+	bool multi_hop_truncated = false;
+	// Set when the caller's LIMIT cut the result set short. Reported the same
+	// way, so an unlimited response stays byte-identical to before.
+	bool user_limit_truncated = false;
 
 	if (!multi_hop) {
 		// ── Single hop: relation.src→target with filters ──
@@ -525,6 +513,12 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 			sqlite3_bind_int64(st, 1,
 					   static_cast<int64_t>(project_id));
 			while (sqlite3_step(st) == SQLITE_ROW) {
+				// The caller's LIMIT, checked before the row is
+				// materialised so a large graph stops being scanned.
+				if (user_limit > 0 && row_count >= user_limit) {
+					user_limit_truncated = true;
+					break;
+				}
 				int64_t eid = sqlite3_column_int64(st, 0);
 				int64_t sid = sqlite3_column_int64(st, 1);
 				std::string sn =
@@ -562,16 +556,26 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 					json << ",";
 				first_row = false;
 				++row_count;
-				json << "{\"source\":{\"id\":" << sid
-				     << ",\"name\":\"" << jsonEscape(sn.c_str())
-				     << "\",\"type\":" << sk << ",\"file\":\""
-				     << jsonEscape(sf.c_str()) << "\"},"
-				     << "\"edge\":{\"id\":" << eid
-				     << ",\"type\":" << edge_type << "},"
-				     << "\"target\":{\"id\":" << tid
-				     << ",\"name\":\"" << jsonEscape(tn.c_str())
-				     << "\",\"type\":" << tk << ",\"file\":\""
-				     << jsonEscape(tf.c_str()) << "\"}}";
+				util::JsonWriter el;
+				el.beginObject();
+				el.key("source").beginObject();
+				el.key("id").value(sid);
+				el.key("name").value(sn);
+				el.key("type").value(sk);
+				el.key("file").value(sf);
+				el.endObject();
+				el.key("edge").beginObject();
+				el.key("id").value(eid);
+				el.key("type").value(edge_type);
+				el.endObject();
+				el.key("target").beginObject();
+				el.key("id").value(tid);
+				el.key("name").value(tn);
+				el.key("type").value(tk);
+				el.key("file").value(tf);
+				el.endObject();
+				el.endObject();
+				json << el.str();
 			}
 			sqlite3_finalize(st);
 		}
@@ -609,7 +613,9 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 		// BFS level by level. The queue carries the full node path so the
 		// "1->2->3" chain is correct per branch. To keep output bounded we
 		// stop expanding a node once it matches the target set (shortest
-		// representative paths).
+		// representative paths). `expansions` bounds the total work and
+		// `multi_hop_truncated` reports when that bound fired.
+		int64_t expansions = 0;
 		for (int64_t start : src_set) {
 			// {path, depth} — path includes `start`.
 			std::queue<std::pair<std::vector<int64_t>, int>> bfs;
@@ -619,6 +625,17 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 				bfs.pop();
 				if (depth > max_depth)
 					continue;
+				// Cap the total work before expanding. A node reachable
+				// through several paths is re-expanded once per path (no
+				// visited set), so without this the walk is exponential in
+				// the hop count on a cyclic graph.
+				if (++expansions > kMultiHopExpansionBudget ||
+				    row_count >= kMultiHopMaxRows ||
+				    (user_limit > 0 &&
+				     row_count >= user_limit)) {
+					multi_hop_truncated = true;
+					break;
+				}
 				int64_t node = path.back();
 				auto callees = store->getCalleeIds(
 					static_cast<uint64_t>(node));
@@ -648,35 +665,42 @@ std::string executeGraphQuery(uint64_t project_id, const char *dsl_query,
 								std::to_string(
 									npath[i]);
 						}
-						json << "{\"source\":{\"id\":"
-						     << start << ",\"name\":\""
-						     << jsonEscape(sn.c_str())
-						     << "\",\"type\":" << sk
-						     << ",\"file\":\""
-						     << jsonEscape(sf.c_str())
-						     << "\"},"
-						     << "\"target\":{\"id\":"
-						     << n << ",\"name\":\""
-						     << jsonEscape(tn.c_str())
-						     << "\",\"type\":" << tk
-						     << ",\"file\":\""
-						     << jsonEscape(tf.c_str())
-						     << "\"},"
-						     << "\"depth\":" << depth
-						     << ",\"chain\":\""
-						     << jsonEscape(
-								chain_str.c_str())
-						     << "\"}";
+						util::JsonWriter el;
+						el.beginObject();
+						el.key("source").beginObject();
+						el.key("id").value(start);
+						el.key("name").value(sn);
+						el.key("type").value(sk);
+						el.key("file").value(sf);
+						el.endObject();
+						el.key("target").beginObject();
+						el.key("id").value(n);
+						el.key("name").value(tn);
+						el.key("type").value(tk);
+						el.key("file").value(tf);
+						el.endObject();
+						el.key("depth").value(depth);
+						el.key("chain").value(
+							chain_str);
+						el.endObject();
+						json << el.str();
 					}
 					if (depth < max_depth && !is_tgt)
 						bfs.push({ std::move(npath),
 							   depth + 1 });
 				}
 			}
+			if (multi_hop_truncated)
+				break;
 		}
 	}
 
-	json << "],\"total\":" << row_count << "}";
+	json << "],\"total\":" << row_count;
+	// Only present when a bound actually fired, so an untruncated response is
+	// byte-identical to before.
+	if (multi_hop_truncated || user_limit_truncated)
+		json << ",\"truncated\":true";
+	json << "}";
 	return json.str();
 }
 

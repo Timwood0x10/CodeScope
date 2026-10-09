@@ -15,10 +15,12 @@
 //
 // Both functions return a heap-allocated JSON string that the caller
 // MUST release via engine_free_string(). On error, the returned JSON
-// object contains an "error" field. Null `g_store` returns
+// object contains an "error" field. A null handle returns
 //   {"error":"engine not initialized"}.
 
+#include "util/json_writer.h"
 #include "engine_internal.h"
+#include "async_knowledge.h"
 #include "model/project_state_builder.h"
 #include "platform_win.h"
 
@@ -34,16 +36,29 @@
 /// @param project_id  Project to analyze.
 /// @return Heap-allocated JSON string. On error returns a JSON
 ///         object with an "error" field.
-char *engine_build_project_state(uint64_t project_id)
+char *engine_build_project_state(engine_t handle, uint64_t project_id)
 {
-	if (!g_store)
-		return dupString("{\"error\":\"engine not initialized\"}");
-	model::ProjectStateBuilder builder(g_store.get());
-	if (!builder.build(project_id)) {
-		return dupString(
-			"{\"error\":\"failed to build project state\"}");
+	EngineContext *ctx = engineInstance(handle);
+
+	try {
+		auto _store_guard = waitForKnowledgeBuilder();
+		if (!ctx || !ctx->store)
+			return dupString(
+				"{\"error\":\"engine not initialized\"}");
+		model::ProjectStateBuilder builder(ctx->store.get());
+		if (!builder.build(project_id)) {
+			return dupString("{\"error\":\"failed to build project "
+					 "state\"}");
+		}
+		return dupString(builder.getSnapshotJson(project_id));
+	} catch (const std::exception &e) {
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_build_project_state", e.what()));
+	} catch (...) {
+		return dupString("{\"error\":\"[module=ffi, "
+				 "method=engine_build_project_state] unknown "
+				 "exception\"}");
 	}
-	return dupString(builder.getSnapshotJson(project_id));
 }
 
 /// Get the persisted project state snapshot (without rebuilding).
@@ -55,16 +70,30 @@ char *engine_build_project_state(uint64_t project_id)
 /// @return Heap-allocated JSON string. If no snapshot exists
 ///         returns a JSON object with an "error" field and the
 ///         project_id.
-char *engine_get_project_state(uint64_t project_id)
+char *engine_get_project_state(engine_t handle, uint64_t project_id)
 {
-	if (!g_store)
-		return dupString("{\"error\":\"engine not initialized\"}");
-	model::ProjectStateBuilder builder(g_store.get());
-	std::string snapshot = builder.getSnapshotJson(project_id);
-	if (snapshot.empty()) {
-		return dupString("{\"error\":\"project state not yet built\","
-				 "\"project_id\":" +
-				 std::to_string(project_id) + "}");
+	EngineContext *ctx = engineInstance(handle);
+
+	try {
+		auto _store_guard = waitForKnowledgeBuilder();
+		if (!ctx || !ctx->store)
+			return dupString(
+				"{\"error\":\"engine not initialized\"}");
+		model::ProjectStateBuilder builder(ctx->store.get());
+		std::string snapshot = builder.getSnapshotJson(project_id);
+		if (snapshot.empty()) {
+			return dupString(
+				"{\"error\":\"project state not yet built\","
+				"\"project_id\":" +
+				std::to_string(project_id) + "}");
+		}
+		return dupString(snapshot);
+	} catch (const std::exception &e) {
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_project_state", e.what()));
+	} catch (...) {
+		return dupString("{\"error\":\"[module=ffi, "
+				 "method=engine_get_project_state] unknown "
+				 "exception\"}");
 	}
-	return dupString(snapshot);
 }

@@ -1,8 +1,9 @@
 #include "test_e2e.h"
 
-int main() {
-    // Go FP verification: builtins + unexported + FFI
-    const char* code = R"(package main
+int main()
+{
+	// Go FP verification: builtins + unexported + FFI
+	const char *code = R"(package main
 
 import "fmt"
 
@@ -53,13 +54,13 @@ func mainFunc() {
 }
 )";
 
-    const char* builtins[] = {
-        "Len", "Append", "Copy", "Cap", "Make", "New", "Delete",
-        "Println", // fmt.Println is selector expression, not bare call
-        nullptr
-    };
+	const char *builtins[] = {
+		"Len",	   "Append", "Copy", "Cap", "Make", "New", "Delete",
+		"Println", // fmt.Println is selector expression, not bare call
+		nullptr
+	};
 
-    runFPVerificationTest("go", code, "/tmp/test_fp_go.go",
-                          "mainFunc", "userFunction", builtins);
-    return 0;
+	runFPVerificationTest("go", code, "/tmp/test_fp_go.go", "mainFunc",
+			      "userFunction", builtins);
+	return 0;
 }

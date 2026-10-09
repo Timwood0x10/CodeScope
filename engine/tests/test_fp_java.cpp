@@ -1,10 +1,11 @@
 #include "test_e2e.h"
 
-int main() {
-    // Java FP verification: common JDK methods
-    // NOTE: use a standalone public class with a main method, not nested classes,
-    // for reliable call-edge detection in the old API translator.
-    const char* code = R"JAVA(
+int main()
+{
+	// Java FP verification: common JDK methods
+	// NOTE: use a standalone public class with a main method, not nested classes,
+	// for reliable call-edge detection in the old API translator.
+	const char *code = R"JAVA(
 class Calculator {
     public int userFunction(int x) {
         return x * 2;
@@ -23,12 +24,9 @@ class Calculator {
 }
 )JAVA";
 
-    const char* builtins[] = {
-        "toString", "length", "charAt",
-        nullptr
-    };
+	const char *builtins[] = { "toString", "length", "charAt", nullptr };
 
-    runFPVerificationTest("java", code, "/tmp/Calculator.java",
-                          "mainFunc", "userFunction", builtins);
-    return 0;
+	runFPVerificationTest("java", code, "/tmp/Calculator.java", "mainFunc",
+			      "userFunction", builtins);
+	return 0;
 }

@@ -14,7 +14,7 @@
 #include "../src/async_knowledge.h"
 #include "../src/store/store.h"
 
-#include <cassert>
+#include "test_check.h"
 #include <cstdio>
 #include <sqlite3.h>
 #include <unistd.h>
@@ -38,14 +38,14 @@ static void insertEntity(store::GraphStore &store, uint64_t project_id,
 			  "VALUES (?,?,0,?,'',?,'cpp',0,0,0,0,"
 			  "rtrim(?, replace(?, '/', 'x')))";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, id);
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 3, name, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 4, file_path, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 5, file_path, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 6, file_path, -1, SQLITE_TRANSIENT);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -57,12 +57,12 @@ static void insertRelation(store::GraphStore &store, uint64_t project_id,
 	const char *sql = "INSERT INTO relation (project_id, source_id, "
 			  "target_id, type) VALUES (?,?,?,?)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_int64(stmt, 2, source_id);
 	sqlite3_bind_int64(stmt, 3, target_id);
 	sqlite3_bind_int(stmt, 4, type);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -71,10 +71,11 @@ static int getEdgeCount(store::GraphStore &store, uint64_t project_id,
 			const char *src_module, const char *tgt_module)
 {
 	sqlite3 *db = store.handle();
-	const char *sql = "SELECT edge_count FROM module_edge "
-			  "WHERE project_id=? AND src_module=? AND tgt_module=?";
+	const char *sql =
+		"SELECT edge_count FROM module_edge "
+		"WHERE project_id=? AND src_module=? AND tgt_module=?";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 2, src_module, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 3, tgt_module, -1, SQLITE_TRANSIENT);
@@ -91,7 +92,7 @@ static int totalEdges(store::GraphStore &store, uint64_t project_id)
 	sqlite3 *db = store.handle();
 	const char *sql = "SELECT COUNT(*) FROM module_edge WHERE project_id=?";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	int count = 0;
 	if (sqlite3_step(stmt) == SQLITE_ROW)
@@ -105,29 +106,34 @@ int main()
 	unlink(kDbPath);
 
 	store::GraphStore store;
-	assert(store.open(kDbPath));
+	CHECK(store.open(kDbPath));
 
 	uint64_t project_id = store.createProject("/test", "test_module_edge");
-	assert(project_id > 0);
+	CHECK(project_id > 0);
 
 	// ── Test 1: cross-module edges populated ────────────────────────
 	{
 		// Two modules: /src/engine/ and /src/store/
 		// Two call edges from engine to store.
-		insertEntity(store, project_id, 1, "parse", "/src/engine/parser.cpp");
-		insertEntity(store, project_id, 2, "emit", "/src/engine/emitter.cpp");
-		insertEntity(store, project_id, 3, "save", "/src/store/store.cpp");
+		insertEntity(store, project_id, 1, "parse",
+			     "/src/engine/parser.cpp");
+		insertEntity(store, project_id, 2, "emit",
+			     "/src/engine/emitter.cpp");
+		insertEntity(store, project_id, 3, "save",
+			     "/src/store/store.cpp");
 
-		insertRelation(store, project_id, 1, 3, 1); // parse → save (CALLS)
-		insertRelation(store, project_id, 2, 3, 1); // emit → save (CALLS)
+		insertRelation(store, project_id, 1, 3,
+			       1); // parse → save (CALLS)
+		insertRelation(store, project_id, 2, 3,
+			       1); // emit → save (CALLS)
 
 		int64_t rows = buildKnowledgeGraphSync(store, project_id);
-		assert(rows == 1); // one module pair: engine → store
-		assert(totalEdges(store, project_id) == 1);
+		CHECK(rows == 1); // one module pair: engine → store
+		CHECK(totalEdges(store, project_id) == 1);
 
-		int count = getEdgeCount(store, project_id,
-					 "/src/engine/", "/src/store/");
-		assert(count == 2); // two call edges aggregated
+		int count = getEdgeCount(store, project_id, "/src/engine/",
+					 "/src/store/");
+		CHECK(count == 2); // two call edges aggregated
 		printf("  [PASS] cross-module edges populated (engine→store count=2)\n");
 	}
 
@@ -156,10 +162,10 @@ int main()
 
 		int64_t rows = buildKnowledgeGraphSync(store, project_id);
 		// One module pair: /src/engine/ → /src/engine/ (self-loop).
-		assert(rows == 1);
-		int self_count = getEdgeCount(store, project_id,
-					      "/src/engine/", "/src/engine/");
-		assert(self_count == 1);
+		CHECK(rows == 1);
+		int self_count = getEdgeCount(store, project_id, "/src/engine/",
+					      "/src/engine/");
+		CHECK(self_count == 1);
 		printf("  [PASS] same-file edges excluded; module self-loop allowed\n");
 	}
 
@@ -174,8 +180,8 @@ int main()
 			     nullptr, nullptr, nullptr);
 
 		int64_t rows = buildKnowledgeGraphSync(store, project_id);
-		assert(rows == 0);
-		assert(totalEdges(store, project_id) == 0);
+		CHECK(rows == 0);
+		CHECK(totalEdges(store, project_id) == 0);
 		printf("  [PASS] empty relation table → 0 module_edge rows\n");
 	}
 
@@ -192,11 +198,11 @@ int main()
 		insertRelation(store, project_id, 20, 21, 1);
 
 		buildKnowledgeGraphSync(store, project_id);
-		assert(totalEdges(store, project_id) == 1);
+		CHECK(totalEdges(store, project_id) == 1);
 
 		// Re-run — should still have 1 row, not 2.
 		buildKnowledgeGraphSync(store, project_id);
-		assert(totalEdges(store, project_id) == 1);
+		CHECK(totalEdges(store, project_id) == 1);
 		printf("  [PASS] re-run replaces old rows (idempotent)\n");
 	}
 
@@ -218,8 +224,8 @@ int main()
 		insertRelation(store, project_id, 30, 31, 2);
 
 		int64_t rows = buildKnowledgeGraphSync(store, project_id);
-		assert(rows == 0);
-		assert(totalEdges(store, project_id) == 0);
+		CHECK(rows == 0);
+		CHECK(totalEdges(store, project_id) == 0);
 		printf("  [PASS] non-call relations (type=2) excluded\n");
 	}
 
@@ -244,10 +250,13 @@ int main()
 		insertRelation(store, project_id, 40, 42, 1);
 
 		int64_t rows = buildKnowledgeGraphSync(store, project_id);
-		assert(rows == 3); // three distinct module pairs
-		assert(getEdgeCount(store, project_id, "/mod_a/", "/mod_b/") == 1);
-		assert(getEdgeCount(store, project_id, "/mod_b/", "/mod_c/") == 1);
-		assert(getEdgeCount(store, project_id, "/mod_a/", "/mod_c/") == 1);
+		CHECK(rows == 3); // three distinct module pairs
+		CHECK(getEdgeCount(store, project_id, "/mod_a/", "/mod_b/") ==
+		      1);
+		CHECK(getEdgeCount(store, project_id, "/mod_b/", "/mod_c/") ==
+		      1);
+		CHECK(getEdgeCount(store, project_id, "/mod_a/", "/mod_c/") ==
+		      1);
 		printf("  [PASS] multiple module pairs (A→B, B→C, A→C)\n");
 	}
 
@@ -255,5 +264,5 @@ int main()
 	unlink(kDbPath);
 
 	printf("=== test_module_edge PASSED ===\n");
-	return 0;
+	return checkFailures() ? 1 : 0;
 }

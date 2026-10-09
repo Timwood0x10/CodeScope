@@ -1,4 +1,6 @@
 #include "store.h"
+#include "util/json_writer.h"
+#include "util/path_util.h"
 #include "platform_win.h"
 
 #include "posix_compat.h"
@@ -13,6 +15,7 @@
 #include <mutex>
 #include <sqlite3.h>
 #include <sstream>
+#include <thread>
 #include <sys/stat.h>
 #ifndef _WIN32
 #include <unistd.h>
@@ -27,6 +30,11 @@ namespace store
 
 // Performance PRAGMA values
 static constexpr int kCacheSizePages = -64000;
+// Retried sqlite3_open failures (SQLITE_BUSY / SQLITE_LOCKED under a
+// concurrent writer). 5 x 50ms covers the transient window without
+// stalling a genuinely unavailable file.
+static constexpr int kOpenRetryAttempts = 5;
+static constexpr int kOpenRetryDelayMs = 50;
 
 // 64 MB cache
 static constexpr int kPageSize =
@@ -141,7 +149,7 @@ bool GraphStore::open(const char *db_path)
 {
 	// Enable SQLite serialized threading mode so the same handle can be
 	// used from multiple threads safely (worker pool in engine_index.cpp
-	// + MCP server main loop both access g_store concurrently).
+	// + MCP server main loop both access the engine store concurrently).
 	// This MUST be called before any sqlite3_open() call.
 	// If already initialized (SQLITE_MISUSE), the default is likely
 	// serialized already (most builds have SQLITE_THREADSAFE=1).
@@ -157,11 +165,31 @@ bool GraphStore::open(const char *db_path)
 			config_rc);
 	}
 
-	int rc = sqlite3_open(db_path, &db_);
-	if (rc != SQLITE_OK) {
+	// Bounded retry: sqlite3_open fails transiently with SQLITE_BUSY /
+	// SQLITE_LOCKED when another connection holds the write lock (e.g. two
+	// CLI invocations over the same DB). busy_timeout cannot help — it only
+	// applies to statements after the handle is open.
+	int rc = SQLITE_BUSY;
+	for (int attempt = 0; attempt < kOpenRetryAttempts; ++attempt) {
+		rc = sqlite3_open(db_path, &db_);
+		if (rc == SQLITE_OK)
+			break;
 		error_ = sqlite3_errmsg(db_);
-		return false;
+		// sqlite3_open returns a handle even on failure; close it before
+		// the next attempt or the retries leak handles.
+		sqlite3_close(db_);
+		db_ = nullptr;
+		if (rc != SQLITE_BUSY && rc != SQLITE_LOCKED)
+			return false;
+		std::this_thread::sleep_for(
+			std::chrono::milliseconds(kOpenRetryDelayMs));
 	}
+	if (rc != SQLITE_OK)
+		return false;
+	// A retried attempt leaves its failure text in error_; open() has now
+	// succeeded, so error() must reflect THIS call (pass-8 contract —
+	// same rationale as buildFTSFromGraph's entry clear).
+	error_.clear();
 	db_path_ = db_path;
 
 	// page_size MUST be set before any tables are created. Larger pages
@@ -241,39 +269,12 @@ bool GraphStore::open(const char *db_path)
 	if (!createSchema())
 		return false;
 
-	// Pre-cache prepared statements for hot insert paths
-	sqlite3_prepare_v2(
-		db_,
-		"INSERT OR REPLACE INTO fts_node_map (node_id, project_id, file_id) "
-		"VALUES (?, ?, 0)",
-		-1, &stmt_fts_map_, nullptr);
-	sqlite3_prepare_v2(
-		db_,
-		"INSERT OR REPLACE INTO code_fts (rowid, name, qualified_name, "
-		"file_path, content, project_id, node_id, node_kind) "
-		"VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-		-1, &stmt_fts_, nullptr);
-	sqlite3_prepare_v2(
-		db_,
-		"INSERT OR REPLACE INTO node_vectors (node_id, project_id, vector) "
-		"VALUES (?, ?, ?)",
-		-1, &stmt_vector_, nullptr);
-
 	return true;
 }
 
 void GraphStore::close()
 {
 	if (db_) {
-		// Finalize cached prepared statements
-		if (stmt_fts_map_)
-			sqlite3_finalize(stmt_fts_map_);
-		if (stmt_fts_)
-			sqlite3_finalize(stmt_fts_);
-		if (stmt_vector_)
-			sqlite3_finalize(stmt_vector_);
-		stmt_fts_map_ = stmt_fts_ = stmt_vector_ = nullptr;
-
 		// Finalize all dynamically cached statements
 		clearStmtCache();
 
@@ -338,37 +339,7 @@ IndexProgress getIndexProgress()
 // Handles ", \, and control characters per RFC 8259.
 static std::string jsonEscapeForProgress(const std::string &s)
 {
-	std::string out;
-	out.reserve(s.size() + 8);
-	for (char c : s) {
-		switch (c) {
-		case '"':
-			out += "\\\"";
-			break;
-		case '\\':
-			out += "\\\\";
-			break;
-		case '\n':
-			out += "\\n";
-			break;
-		case '\r':
-			out += "\\r";
-			break;
-		case '\t':
-			out += "\\t";
-			break;
-		default:
-			if (static_cast<unsigned char>(c) < 0x20) {
-				char buf[8];
-				snprintf(buf, sizeof(buf), "\\u%04x",
-					 static_cast<unsigned char>(c));
-				out += buf;
-			} else {
-				out += c;
-			}
-		}
-	}
-	return out;
+	return util::jsonEscapeString(s);
 }
 
 std::string getIndexProgressJson(uint64_t project_id)
@@ -396,15 +367,31 @@ void GraphStore::setProjectReadiness(uint64_t project_id, const char *field,
 	if (!field || allowed_fields.find(field) == allowed_fields.end())
 		return;
 
+	// exec() sets error_ on failure but never clears it on success; clear
+	// here so error() reflects only THIS call (callers chain several
+	// readiness writes and check error() between them).
+	error_.clear();
+
 	// Ensure the readiness row exists
-	exec(std::string(
-		     "INSERT OR IGNORE INTO project_readiness (project_id) VALUES (" +
-		     std::to_string(project_id) + ")")
-		     .c_str());
-	exec(std::string("UPDATE project_readiness SET " + std::string(field) +
-			 "=" + std::to_string(value) +
-			 " WHERE project_id=" + std::to_string(project_id))
-		     .c_str());
+	if (!exec(std::string(
+			  "INSERT OR IGNORE INTO project_readiness (project_id) VALUES (" +
+			  std::to_string(project_id) + ")")
+			  .c_str())) {
+		error_ = "[module=store, method=setProjectReadiness] insert: " +
+			 error_;
+		return;
+	}
+	if (!exec(std::string("UPDATE project_readiness SET " +
+			      std::string(field) + "=" + std::to_string(value) +
+			      " WHERE project_id=" + std::to_string(project_id))
+			  .c_str())) {
+		error_ = "[module=store, method=setProjectReadiness] update: " +
+			 error_;
+		fprintf(stderr,
+			"setProjectReadiness: update %s failed: %s "
+			"[module=store, method=setProjectReadiness]\n",
+			field, error_.c_str());
+	}
 }
 
 int GraphStore::getProjectReadiness(uint64_t project_id, const char *field)
@@ -430,33 +417,6 @@ int GraphStore::getProjectReadiness(uint64_t project_id, const char *field)
 	sqlite3_finalize(stmt);
 	return val;
 }
-
-std::string GraphStore::getProjectReadinessJson(uint64_t project_id)
-{
-	sqlite3_stmt *stmt = nullptr;
-	const char *sql = "SELECT fast_ready, normal_ready, deep_ready, "
-			  "fts_ready, vector_ready "
-			  "FROM project_readiness WHERE project_id=?";
-	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
-		return "";
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	std::string json;
-	if (sqlite3_step(stmt) == SQLITE_ROW) {
-		json = "\"fast_ready\":" +
-		       std::to_string(sqlite3_column_int(stmt, 0)) +
-		       ",\"normal_ready\":" +
-		       std::to_string(sqlite3_column_int(stmt, 1)) +
-		       ",\"deep_ready\":" +
-		       std::to_string(sqlite3_column_int(stmt, 2)) +
-		       ",\"fts_ready\":" +
-		       std::to_string(sqlite3_column_int(stmt, 3)) +
-		       ",\"vector_ready\":" +
-		       std::to_string(sqlite3_column_int(stmt, 4));
-	}
-	sqlite3_finalize(stmt);
-	return json;
-}
-
 // ─── Shared Artifact ─────────────────────────────────────────────
 // Uses fork() + execvp() for zstd to avoid command injection via system().
 // Validates paths reject single-quote chars to prevent SQL injection in VACUUM/ATTACH.
@@ -678,21 +638,15 @@ static std::string normalizeRootPath(const char *root_path)
 {
 	if (!root_path || !*root_path)
 		return {};
-	namespace fs = std::filesystem;
-	std::error_code ec;
-	// weakly_canonical resolves symlinks AND makes the path absolute,
-	// even if the path doesn't fully exist (it canonicalizes the
-	// existing prefix). This handles ".", "./foo", "foo/../bar",
-	// and absolute paths uniformly.
-	fs::path can = fs::weakly_canonical(fs::path(root_path), ec);
-	if (ec)
-		return root_path;
-	// Use native string form so macOS / Linux DB rows match exactly.
-#ifdef _WIN32
-	return can.string();
-#else
-	return can.native();
-#endif
+	// util::resolvePath is the single implementation of "absolute,
+	// symlink-resolved" (util/path_util.h): weakly_canonical resolves the
+	// prefix that exists and normalises the rest, so ".", "./foo",
+	// "foo/../bar" and absolute paths are handled uniformly, and it falls back
+	// to the raw input when resolution fails (non-existent path, permission
+	// denied) so create-by-name flows still work. Every stored file_path is
+	// built from this form, which is why readers of those rows must resolve
+	// their own paths the same way (util::lookupPath).
+	return util::resolvePath(root_path);
 }
 
 uint64_t GraphStore::createProject(const char *root_path, const char *name)
@@ -733,6 +687,29 @@ uint64_t GraphStore::createProject(const char *root_path, const char *name)
 		return static_cast<uint64_t>(sqlite3_last_insert_rowid(db_));
 	}
 	return getProjectId(effective_path);
+}
+
+std::string GraphStore::getProjectRootPath(uint64_t project_id)
+{
+	sqlite3_stmt *stmt = nullptr;
+	const char *sql = "SELECT root_path FROM projects WHERE id = ?";
+	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		fprintf(stderr,
+			"getProjectRootPath prepare failed: %s "
+			"[module=store, method=getProjectRootPath]\n",
+			sqlite3_errmsg(db_));
+		return std::string();
+	}
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	std::string root;
+	if (sqlite3_step(stmt) == SQLITE_ROW) {
+		const char *value = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 0));
+		if (value)
+			root = value;
+	}
+	sqlite3_finalize(stmt);
+	return root;
 }
 
 uint64_t GraphStore::getProjectId(const char *root_path)

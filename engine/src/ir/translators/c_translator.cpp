@@ -23,6 +23,8 @@ class CTranslator : public Translator {
 	TranslationUnit *unit_ = nullptr;
 	const char *source_ = nullptr;
 	std::string file_path_;
+	// Recursion counter for this file (see kMaxTranslateDepth).
+	TranslateDepth depth_;
 
 	struct Scope {
 		std::unordered_map<std::string, Node *> symbols;
@@ -62,7 +64,6 @@ class CTranslator : public Translator {
 
 	Node *handleFuncDef(TSNode ts_node, Node *parent);
 	Node *handleDeclaration(TSNode ts_node, Node *parent);
-	Node *handleAttributedDeclarator(TSNode ts_node, Node *parent);
 	Node *handleStruct(TSNode ts_node, Node *parent, bool is_union);
 	Node *handleCallExpr(TSNode ts_node, Node *parent);
 	Node *handleIdentifier(TSNode ts_node, Node *parent);
@@ -84,6 +85,7 @@ class CTranslator : public Translator {
 TranslationUnit *CTranslator::translate(TSTree *tree, const char *source,
 					const char *file_path)
 {
+	depth_.reset();
 	unit_ = new TranslationUnit();
 	unit_->source_content = source;
 	source_ = source;
@@ -360,6 +362,13 @@ Node *CTranslator::translateNode(TSNode ts_node, Node *parent)
 
 void CTranslator::translateChildren(TSNode ts_node, Node *parent)
 {
+	// Bound native-stack recursion (see kMaxTranslateDepth): a pathologically
+	// deep AST would overflow the indexer's 512 KB worker stack, which the FFI
+	// try/catch cannot recover. The visitors apply the same bound.
+	if (depth_.exceeded(file_path_.c_str(), "translateChildren"))
+		return;
+	DepthGuard depth_guard(depth_);
+
 	uint32_t count = ts_node_child_count(ts_node);
 	for (uint32_t i = 0; i < count; i++) {
 		TSNode child = ts_node_child(ts_node, i);
@@ -566,43 +575,6 @@ Node *CTranslator::handleParamDecl(TSNode ts_node, Node *parent)
 		defineSymbol(param->name, param);
 	parent->children.push_back(param);
 	return param;
-}
-
-Node *CTranslator::handleAttributedDeclarator(TSNode ts_node, Node *parent)
-{
-	// Attributed declarators wrap a function_declarator with GNU C
-	// __attribute__((...)). Walk children to find the actual declarator
-	// and, if present with a compound_statement sibling, treat as a
-	// function definition.
-	uint32_t count = ts_node_child_count(ts_node);
-	for (uint32_t i = 0; i < count; i++) {
-		TSNode child = ts_node_child(ts_node, i);
-		if (!ts_node_is_named(child))
-			continue;
-		if (strcmp(ts_node_type(child), "function_declarator") == 0) {
-			// Check parent (the enclosing declaration) for a body
-			TSNode p = ts_node_parent(ts_node);
-			if (!ts_node_is_null(p)) {
-				uint32_t pc = ts_node_child_count(p);
-				for (uint32_t j = 0; j < pc; j++) {
-					TSNode sib = ts_node_child(p, j);
-					if (!ts_node_is_named(sib))
-						continue;
-					if (strcmp(ts_node_type(sib),
-						   "compound_statement") == 0)
-						return handleFuncDef(p, parent);
-				}
-			}
-			// No body found — treat as a declaration
-			auto *func = makeNode(NodeKind::FunctionDecl, child);
-			func->name = nodeText(child);
-			parent->children.push_back(func);
-			return func;
-		}
-	}
-	// Fallback: recurse into children
-	translateChildren(ts_node, parent);
-	return nullptr;
 }
 
 Node *CTranslator::handlePreprocDef(TSNode ts_node, Node *parent)

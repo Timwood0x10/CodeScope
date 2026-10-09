@@ -1,8 +1,9 @@
 #include "test_e2e.h"
 
-int main() {
-    // TypeScript FP verification: builtins + type constructors
-    const char* code = R"TS(
+int main()
+{
+	// TypeScript FP verification: builtins + type constructors
+	const char *code = R"TS(
 // User-defined function — should appear in callees
 function userFunction(x: number): number {
     return x * 2;
@@ -25,13 +26,10 @@ function mainFunc(): number {
 }
 )TS";
 
-    const char* builtins[] = {
-        "String", "Number", "Boolean", "Array",
-        "parseInt", "parseFloat",
-        nullptr
-    };
+	const char *builtins[] = { "String",   "Number",     "Boolean", "Array",
+				   "parseInt", "parseFloat", nullptr };
 
-    runFPVerificationTest("ts", code, "/tmp/test_fp_ts.ts",
-                          "mainFunc", "userFunction", builtins);
-    return 0;
+	runFPVerificationTest("ts", code, "/tmp/test_fp_ts.ts", "mainFunc",
+			      "userFunction", builtins);
+	return 0;
 }

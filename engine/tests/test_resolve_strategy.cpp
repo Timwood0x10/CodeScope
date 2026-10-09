@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <sqlite3.h>
 #include <unistd.h>
+#include "test_engine_handle.h"
 
 static inline void check(bool cond, const char *msg)
 {
@@ -28,8 +29,7 @@ int main()
 	const char *proj_dir = "/tmp/resolve_strategy_repro";
 	std::filesystem::remove_all(proj_dir);
 	std::filesystem::create_directories(proj_dir);
-	const std::string py_path =
-		std::string(proj_dir) + "/repro.py";
+	const std::string py_path = std::string(proj_dir) + "/repro.py";
 	FILE *f = fopen(py_path.c_str(), "w");
 	check(f != nullptr, "fopen");
 	// Test two scenarios:
@@ -53,12 +53,14 @@ class Worker:
 
 	char db[] = "/tmp/test_resolve_strategy.db";
 	unlink(db);
-	check(engine_init(db) == 0, "engine_init");
+	g_engine = engine_create(db);
+	check(g_engine != nullptr, "engine_init");
 
-	uint64_t pid = engine_create_project(proj_dir, "resolve-test");
+	uint64_t pid =
+		engine_create_project(g_engine, proj_dir, "resolve-test");
 	check(pid > 0, "create_project");
 
-	char *idx = engine_index_project(pid, proj_dir, nullptr);
+	char *idx = engine_index_project(g_engine, pid, proj_dir, nullptr);
 	check(idx != nullptr, "index_project null");
 	check(strstr(idx, "\"ok\":true") != nullptr, "index ok");
 	engine_free_string(idx);
@@ -94,9 +96,8 @@ class Worker:
 		int row = sqlite3_column_int(st, 5);
 		printf("id=%lld name=%s parent_id=%lld ref_oid=%lld "
 		       "strategy=%s row=%d\n",
-		       (long long)id, name ? name : "(null)",
-		       (long long)par, (long long)ref,
-		       rs ? rs : "", row);
+		       (long long)id, name ? name : "(null)", (long long)par,
+		       (long long)ref, rs ? rs : "", row);
 	}
 	sqlite3_finalize(st);
 
@@ -114,10 +115,13 @@ class Worker:
 			      SQLITE_OK,
 		      "prepare verify");
 		sqlite3_bind_int64(s2, 1, pid);
-		bool found_load = false, found_add = false, found_unknown = false;
+		bool found_load = false, found_add = false,
+		     found_unknown = false;
 		while (sqlite3_step(s2) == SQLITE_ROW) {
-			const char *n = (const char *)sqlite3_column_text(s2, 0);
-			const char *rs = (const char *)sqlite3_column_text(s2, 1);
+			const char *n =
+				(const char *)sqlite3_column_text(s2, 0);
+			const char *rs =
+				(const char *)sqlite3_column_text(s2, 1);
 			if (!n || !rs)
 				continue;
 			if (strcmp(n, "_load_data") == 0) {
@@ -144,7 +148,8 @@ class Worker:
 	}
 
 	sqlite3_close(db_h);
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 	std::filesystem::remove_all(proj_dir);
 	printf("\n=== PASS: resolve_strategy correctly set ===\n");
 	return 0;

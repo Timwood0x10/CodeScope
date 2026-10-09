@@ -1,5 +1,17 @@
 use serde::{Deserialize, Serialize};
 
+// ── Protocol version ───────────────────────────────────────────
+
+/// The MCP revision this server speaks, declared once.
+///
+/// The lifecycle requires the server to answer with the client's requested
+/// version when it supports it, and with a version it does support otherwise.
+/// This server supports exactly one revision, so "always answer this one" IS
+/// that rule — the constant exists so the version is stated in one place, and
+/// `handle_initialize` reads what the client asked for and logs a mismatch so
+/// the compatibility decision is visible rather than implicit.
+pub const SUPPORTED_PROTOCOL_VERSION: &str = "2024-11-05";
+
 // ── JSON-RPC 2.0 message types ─────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -88,6 +100,14 @@ pub struct ListToolsResult {
 }
 
 #[derive(Debug, Serialize)]
+// The tool-call result is the one response type that carried the protocol's
+// naming rule by hand and got it wrong: `is_error` went out as snake_case,
+// while MCP requires `isError` — so a spec-compliant client, which reads
+// `isError`, saw NO failure flag at all, not even for results that were
+// already being flagged. Every other multi-word field in this file is renamed
+// explicitly (`inputSchema`, `listChanged`, `type`); this struct now states the
+// rule where the field lives.
+#[serde(rename_all = "camelCase")]
 pub struct CallToolResult {
     pub content: Vec<TextContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -107,9 +127,41 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn test_call_tool_result_uses_the_wire_name_is_error() {
+        // MCP's CallToolResult field is `isError`. It was serialized as
+        // `is_error`, so a spec-compliant client reading `isError` saw no
+        // failure flag at all — including for results that were already
+        // flagged as failures. Pinned here because the payload is what clients
+        // actually parse, not the Rust field name.
+        let err = CallToolResult {
+            content: vec![TextContent {
+                content_type: "text",
+                text: "{\"error\":\"boom\"}".into(),
+            }],
+            is_error: Some(true),
+        };
+        let v = serde_json::to_value(&err).expect("serialize");
+        assert_eq!(v["isError"], serde_json::json!(true));
+        assert!(v.get("is_error").is_none(), "snake_case must not appear");
+
+        // A successful result omits the field entirely (the client's default
+        // is "not an error"), so the wire shape is unchanged for successes.
+        let ok = CallToolResult {
+            content: vec![TextContent {
+                content_type: "text",
+                text: "{}".into(),
+            }],
+            is_error: None,
+        };
+        let v = serde_json::to_value(&ok).expect("serialize");
+        assert!(v.get("isError").is_none());
+        assert!(v.get("is_error").is_none());
+    }
+
+    #[test]
     fn test_initialize_result_serde() {
         let r = InitializeResult {
-            protocol_version: "2024-11-05".into(),
+            protocol_version: SUPPORTED_PROTOCOL_VERSION.into(),
             capabilities: ServerCapabilities {
                 tools: ToolCapability { list_changed: true },
             },
@@ -154,5 +206,50 @@ mod tests {
         let json = serde_json::to_value(&r).unwrap();
         assert_eq!(json["content"][0]["type"], "text");
         assert_eq!(json["content"][0]["text"], "hello");
+    }
+}
+
+/// Property-based coverage of the wire contract (code_rules §4).
+///
+/// The CHANGELOG records a long tail of malformed JSON produced by
+/// concatenating payloads by hand; serde_json is now the single producer. These
+/// properties pin the two invariants that hand-building repeatedly broke: the
+/// emitted message is always parseable JSON, and arbitrary text (quotes,
+/// backslashes, control characters, non-BMP code points) survives the round
+/// trip byte-for-byte.
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn call_tool_result_serializes_to_parseable_json(text in any::<String>()) {
+            let result = CallToolResult {
+                content: vec![TextContent {
+                    content_type: "text",
+                    text: text.clone(),
+                }],
+                is_error: Some(true),
+            };
+            let wire = serde_json::to_string(&result).expect("serialize");
+            let parsed: serde_json::Value =
+                serde_json::from_str(&wire).expect("tool result must be parseable JSON");
+            prop_assert_eq!(parsed["content"][0]["text"].as_str(), Some(text.as_str()));
+            prop_assert_eq!(parsed["isError"].as_bool(), Some(true));
+        }
+
+        #[test]
+        fn json_rpc_error_round_trips_arbitrary_messages(message in any::<String>()) {
+            let err = JsonRpcError {
+                code: -32603,
+                message: message.clone(),
+                data: None,
+            };
+            let wire = serde_json::to_string(&err).expect("serialize");
+            let parsed: serde_json::Value =
+                serde_json::from_str(&wire).expect("error must be parseable JSON");
+            prop_assert_eq!(parsed["message"].as_str(), Some(message.as_str()));
+        }
     }
 }

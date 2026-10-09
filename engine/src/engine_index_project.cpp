@@ -1,3 +1,4 @@
+#include "util/json_writer.h"
 #include "engine_internal.h"
 #include "filter_policy.h"
 #include "platform_win.h"
@@ -53,12 +54,31 @@ using namespace engine_index_sched;
 
 // ─── Index Project (Parallel) ──────────────────────────────────
 
-char *engine_index_project(uint64_t project_id, const char *dir_path,
-			   const char *language_filter)
+/// Body of engine_index_project. Kept as a separate function so the extern "C"
+/// entry point below can stay a thin try/catch wrapper: no C++ exception may
+/// cross the C ABI boundary (the MCP server is long-running, so an escaping
+/// exception would terminate it).
+static char *indexProjectImpl(EngineContext *ctx, uint64_t project_id,
+			      const char *dir_path, const char *language_filter)
 {
-	if (!g_store)
+	// The instance arrives as a parameter (TD-1 knife 3): indexProjectImpl
+	// drives the whole index run and touches the state at every phase
+	// boundary, so it validates the handle once, here.
+	if (!ctx || !ctx->store)
 		return dupString(
 			"{\"ok\":false,\"error\":\"engine not initialized\"}");
+
+	// Serialize with the background enrichment thread. It writes to the
+	// same engine store connection (model / state / FTS / knowledge) and opens
+	// its own transactions, so indexing concurrently would interleave
+	// BEGIN/COMMIT on one connection ("cannot start a transaction within
+	// a transaction") and one side could commit the other's half-written
+	// state. Joining is a no-op when the builder has already finished.
+	// Order matters: join FIRST (the builder holds g_store_mutex and
+	// would deadlock against a guard we already held), then take the
+	// store guard so a later builder launched mid-write cannot interleave.
+	joinAsyncKnowledgeBuilder();
+	auto _store_guard = waitForKnowledgeBuilder();
 
 	// Fail-fast: pre-load known parse failures so the parse loop can
 	// skip them without per-file DB queries. CODESCOPE_FAIL_RETRY_MAX
@@ -71,7 +91,8 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	std::unordered_set<std::string> known_failures;
 	{
 		std::vector<std::string> fail_vec;
-		if (!store::loadKnownParseFailures(project_id, kFailRetryMax,
+		if (!store::loadKnownParseFailures(ctx, project_id,
+						   kFailRetryMax,
 						   /*out*/ fail_vec)) {
 			// Non-fatal: continue indexing, just no skip set.
 			fprintf(stderr,
@@ -96,18 +117,10 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 
 	std::string lang_filter = language_filter ? language_filter : "";
 
-	// Pre-parse language filter and max file size ONCE before file discovery
-	// (not per-file in the worker or file-collection loop)
-	std::unordered_set<std::string> lang_filter_set;
-	if (!lang_filter.empty()) {
-		size_t start = 0, end;
-		do {
-			end = lang_filter.find(',', start);
-			lang_filter_set.insert(
-				lang_filter.substr(start, end - start));
-			start = end + 1;
-		} while (end != std::string::npos);
-	}
+	// Parse max file size ONCE before file discovery (not per-file in the
+	// worker or file-collection loop). The language filter is applied only
+	// through FilterPolicy::setLanguageFilter below — the single
+	// implementation with alias folding — so no local label set is kept.
 	uint64_t max_file_size = kMaxFileSize;
 	const char *env_max = getenv("CODESCOPE_MAX_FILE_SIZE");
 	if (env_max)
@@ -128,6 +141,39 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	// Load .codescopeignore + .gitignore patterns from project root
 	filter.loadIgnoreFile(dir);
 	filter.loadGitignore(dir);
+	// A per-module worker (the parallel scheduler spawns one per module)
+	// scans `<project_root>/<module>`, and that module directory usually has
+	// no ignore file of its own — the rules live at the project root, which
+	// the scheduler passes in CODESCOPE_PROJECT_ROOT. Without this, the
+	// parallel path applied none of the project's .gitignore rules: a
+	// `**/build-*/` rule pruned nothing and a build tree's own CMake probe
+	// sources (CMakeFiles/<ver>/CompilerIdC*/CMakeCCompilerId.c) became
+	// entities and modules in the merged graph, exactly as the whole-project
+	// path did before the same rules were honoured there.
+	//
+	// Loaded AFTER the scan directory's own rules so that the more specific
+	// file still wins: the matcher stops at the first positive match.
+	const char *env_project_root = getenv("CODESCOPE_PROJECT_ROOT");
+	if (env_project_root && *env_project_root &&
+	    std::string(env_project_root) != dir) {
+		filter.loadIgnoreFile(env_project_root, /*append=*/true);
+		filter.loadGitignore(env_project_root, /*append=*/true);
+		// Those rules are anchored at the project root while this worker's
+		// paths are relative to `dir`, so give the policy the missing prefix
+		// (`<module>/`). Without it a rule like `**/build-*/` cannot match a
+		// path that begins inside the module — the module-level twin of the
+		// file-level case this same change fixed.
+		std::string root(env_project_root);
+		std::string prefix;
+		if (dir.size() > root.size() + 1 &&
+		    dir.compare(0, root.size(), root) == 0 &&
+		    dir[root.size()] == '/') {
+			prefix = dir.substr(root.size() + 1);
+			if (!prefix.empty() && prefix.back() != '/')
+				prefix += '/';
+		}
+		filter.setScanPrefix(prefix);
+	}
 	// Load CODESCOPE_EXCLUDE_PATHS env var (comma-separated globs) so
 	// users can exclude non-core dirs (test/, docs/, vendor/) at index
 	// time to reduce node count on very large projects.
@@ -135,7 +181,7 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 
 	// Batch-load file scan state ONCE to avoid N per-file DB queries
 	// during discovery (1254 files × ~2ms prepare/finalize = ~2.5s saved).
-	auto scan_state = g_store->loadFileScanStateBatch(project_id);
+	auto scan_state = ctx->store->loadFileScanStateBatch(project_id);
 
 	// Phase 1: collect file paths (single-threaded). The directory walk,
 	// README ingestion and incremental scan-state gate now live in
@@ -144,7 +190,7 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	std::vector<engine_index_discover::FileJob> jobs;
 	bool is_reindex = false;
 	std::string discover_err;
-	if (engine_index_discover::collectFileJobs(project_id, dir, filter,
+	if (engine_index_discover::collectFileJobs(ctx, project_id, dir, filter,
 						   scan_state, jobs, is_reindex,
 						   discover_err) != 0) {
 		return dupString(discover_err.c_str());
@@ -166,11 +212,11 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		// rebuilt row count — preserving the A19 "readiness matches
 		// canonical data" invariant.
 		if (is_reindex && env_mode && strcmp(env_mode, "deep") == 0) {
-			g_store->buildVectorsFromGraph(project_id);
+			ctx->store->buildVectorsFromGraph(project_id);
 			sqlite3_stmt *vstmt = nullptr;
 			const char *vsql =
 				"SELECT COUNT(*) FROM node_vectors WHERE project_id = ?";
-			if (sqlite3_prepare_v2(g_store->handle(), vsql, -1,
+			if (sqlite3_prepare_v2(ctx->store->handle(), vsql, -1,
 					       &vstmt, nullptr) == SQLITE_OK) {
 				sqlite3_bind_int64(
 					vstmt, 1,
@@ -180,7 +226,7 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 					vec_rows =
 						sqlite3_column_int64(vstmt, 0);
 				sqlite3_finalize(vstmt);
-				g_store->setProjectReadiness(
+				ctx->store->setProjectReadiness(
 					project_id, "vector_ready",
 					vec_rows > 0 ? 1 : 0);
 			} else {
@@ -188,7 +234,7 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 					"engine_index_project: node_vectors count "
 					"probe failed (no-op re-index): %s "
 					"[module=engine, method=engine_index_project]\n",
-					sqlite3_errmsg(g_store->handle()));
+					sqlite3_errmsg(ctx->store->handle()));
 			}
 		}
 		return dupString(
@@ -210,7 +256,7 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		active_files.reserve(jobs.size());
 		for (auto &job : jobs)
 			active_files.push_back(job.path);
-		g_store->cleanupStaleFiles(project_id, active_files);
+		ctx->store->cleanupStaleFiles(project_id, active_files);
 	}
 
 	// Sort jobs by file size descending — large files first
@@ -228,7 +274,7 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		for (auto &j : jobs)
 			langs.insert(j.lang);
 		for (auto &l : langs)
-			lang_ptrs[l] = g_parser->getLanguage(l.c_str());
+			lang_ptrs[l] = ctx->parser->getLanguage(l.c_str());
 	}
 
 	// Index mode (from env): "fast" | "normal" (default) | "deep"
@@ -251,9 +297,11 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		job_lang.reserve(jobs.size());
 		for (auto &job : jobs)
 			job_lang.push_back({ job.path, job.lang });
-		return engine_index_project_membulk(
-			project_id, dir, max_file_size, filter, job_lang,
-			lang_ptrs, is_reindex, mode_fast, mode_deep);
+		return engine_index_project_membulk(ctx, project_id, dir,
+						    max_file_size, filter,
+						    job_lang, lang_ptrs,
+						    known_failures, is_reindex,
+						    mode_fast, mode_deep);
 	}
 
 	// ── Dynamic-scheduler init ────────────────────────────────
@@ -313,7 +361,9 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	const size_t kWriterBatchSize = 50;
 
 	std::thread writer_thread([&]() {
-		g_store->beginTransaction();
+		// `ctx` is the caller's handle-validated instance, captured by
+		// reference; the writer owns the only SQLite write path.
+		ctx->store->beginTransaction();
 
 		std::vector<store::FileResult> batch;
 		batch.reserve(kWriterBatchSize);
@@ -324,7 +374,8 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 			if (!ok) {
 				// Queue is done and empty — flush any remaining batch
 				if (!batch.empty()) {
-					if (!g_store->insertFileResultBatch(
+					if (!ctx ||
+					    !ctx->store->insertFileResultBatch(
 						    project_id, batch)) {
 						writer_error = 1;
 					}
@@ -348,8 +399,8 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 			// Flush batch to DB (within the single transaction)
 			if (batch.size() >= kWriterBatchSize ||
 			    result_queue.isDone()) {
-				if (!g_store->insertFileResultBatch(project_id,
-								    batch)) {
+				if (!ctx || !ctx->store->insertFileResultBatch(
+						    project_id, batch)) {
 					writer_error = 1;
 					fprintf(stderr,
 						"writer: insertFileResultBatch"
@@ -362,9 +413,9 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 		}
 
 		if (writer_error)
-			g_store->rollbackTransaction();
+			ctx->store->rollbackTransaction();
 		else
-			g_store->commitTransaction();
+			ctx->store->commitTransaction();
 	});
 
 	// ── Parse workers ──────────────────────────────────────────
@@ -470,6 +521,30 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 				continue;
 			}
 
+			// Grammar availability, checked BEFORE reading the file:
+			// reading a file the engine has no grammar for is wasted I/O,
+			// and this check must run on EVERY attempt (a language_missing
+			// row never becomes a permanent skip), so its cost matters.
+			// A registered-but-NULL grammar (the language is mapped but no
+			// grammar is vendored for it: "swift", "kotlin", "ruby",
+			// "scala", or a .so that failed to load) is reported as
+			// LanguageMissing — handing nullptr to ts_parser_set_language
+			// would yield a null tree recorded as "parse_null_tree", a wrong
+			// reason that also disguised an unsupported language as a broken
+			// file.
+			{
+				auto lit = lang_ptrs.find(job.lang);
+				if (lit == lang_ptrs.end() ||
+				    lit->second == nullptr) {
+					store::bufferParseFailure(
+						project_id, job.path, job.lang,
+						store::failReasonToString(
+							store::FailReason::
+								LanguageMissing));
+					continue;
+				}
+			}
+
 			// v0.6 (perf): st_size was just obtained above, so reuse it to
 			// skip readFile's ate-seek + tellg round-trip per file.
 			std::string source = readFilePrealloc(
@@ -486,6 +561,9 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 			// Per-thread parser
 			auto pit = tl_parsers.find(job.lang);
 			if (pit == tl_parsers.end()) {
+				// Grammar availability was validated above (a null
+				// grammar never reaches this point), so the lookup only
+				// needs the presence check.
 				auto lit = lang_ptrs.find(job.lang);
 				if (lit == lang_ptrs.end()) {
 					store::bufferParseFailure(
@@ -538,6 +616,11 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 
 			if (visitor) {
 				ir::SemanticUnit *su = nullptr;
+				// The visitor transfers ownership of the returned
+				// unit to the caller (see js_visitor.h); without
+				// this guard every parsed file leaks one
+				// SemanticUnit.
+				std::unique_ptr<ir::SemanticUnit> su_guard;
 				try {
 					su = visitor->visit(tree.get(),
 							    source.c_str(),
@@ -558,6 +641,7 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 								VisitorUnknownThrow));
 					continue;
 				}
+				su_guard.reset(su);
 				if (su) {
 					result->records = su->allRecords();
 					result->metrics = index_metrics::
@@ -578,11 +662,13 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 								LanguageMissing));
 					continue;
 				}
-				ir::TranslationUnit *unit = nullptr;
+				// RAII ownership: the translator contract says
+				// the caller frees the unit (ir_translator.h).
+				std::unique_ptr<ir::TranslationUnit> unit;
 				try {
-					unit = translator->translate(
+					unit.reset(translator->translate(
 						tree.get(), source.c_str(),
-						job.path.c_str());
+						job.path.c_str()));
 				} catch (const std::exception &e) {
 					store::bufferParseFailure(
 						project_id, job.path, job.lang,
@@ -644,7 +730,8 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 					if (unit->root)
 						flatten(unit->root, 0);
 					result->metrics = index_metrics::
-						computeMetricsFromUnit(unit);
+						computeMetricsFromUnit(
+							unit.get());
 				}
 			}
 
@@ -800,7 +887,7 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	// Flush any buffered parse failures to SQLite.
 	// This is done AFTER the writer thread joins so there's no
 	// concurrent write contention on the parse_failures table.
-	store::flushParseFailures();
+	store::flushParseFailures(ctx);
 
 	int total_indexed = files_written.load();
 
@@ -822,7 +909,24 @@ char *engine_index_project(uint64_t project_id, const char *dir_path,
 	for (auto &job : jobs)
 		job_paths.push_back(job.path);
 
-	return engine_index_post_parse(project_id, dir, job_paths, filter,
-				       is_reindex, mode_fast, mode_deep,
-				       time_parse_ms, 0, total_indexed);
+	return postParsePhase(ctx, project_id, dir, job_paths, filter,
+			      is_reindex, mode_fast, mode_deep, time_parse_ms,
+			      0, total_indexed);
+}
+
+char *engine_index_project(engine_t handle, uint64_t project_id,
+			   const char *dir_path, const char *language_filter)
+{
+	EngineContext *ctx = engineInstance(handle);
+
+	try {
+		return indexProjectImpl(ctx, project_id, dir_path,
+					language_filter);
+	} catch (const std::exception &e) {
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_index_project", e.what()));
+	} catch (...) {
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_index_project", "unknown exception"));
+	}
 }

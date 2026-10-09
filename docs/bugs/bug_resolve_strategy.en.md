@@ -188,7 +188,7 @@ Measured `engine_get_callees` output (Transformer_Explorer):
 | `generate_attention_patterns` | p1_intra | in-project ✅ |
 | `__init__` → `MultiHeadAttention` | p1_intra | in-project ✅ |
 
-The frontend can now filter `external` / `unresolved` via the `resolve_strategy` field,彻底解决 third-party false positives彻底 eliminated.
+The frontend can now filter `external` / `unresolved` via the `resolve_strategy` field, which eliminates third-party false positives.
 
 ### 4.5 test_bun parameterization acceptance
 

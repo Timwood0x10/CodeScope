@@ -130,9 +130,36 @@ class FilterPolicy {
 
 	// ── Ignore Files ─────────────────────────────────────────────
 	// Load .codescopeignore patterns from project root.
-	bool loadIgnoreFile(const std::string &project_root);
-	// Load .gitignore patterns from project root.
-	bool loadGitignore(const std::string &project_root);
+	// `append` keeps the rules already loaded instead of replacing them,
+	// which is what a per-module worker needs: it scans
+	// `<project_root>/<module>`, whose own directory usually has no ignore
+	// file, while the rules live at the project root. Rules loaded first
+	// take precedence (the matcher stops at the first positive match), so
+	// the caller loads the more specific directory first and the project
+	// root second.
+	bool loadIgnoreFile(const std::string &project_root,
+			    bool append = false);
+	// Load .gitignore patterns from project root. Same `append` contract.
+	bool loadGitignore(const std::string &project_root,
+			   bool append = false);
+
+	/// Tell the policy that paths handed to it are relative to a SUBDIRECTORY
+	/// of the project whose rules were loaded.
+	///
+	/// `.gitignore` and CODESCOPE_EXCLUDE_PATHS are anchored at the project
+	/// root, but a per-module worker scans `<project_root>/<module>` and sees
+	/// module-relative paths, so an anchored rule could never match — a
+	/// `**/build-*/` rule pruned nothing in the parallel path and a build
+	/// tree's own sources were indexed. With the prefix set, the anchored
+	/// rules are matched against `<prefix><rel_path>` (the path as the project
+	/// root sees it) while the component-level checks stay on the relative
+	/// path, so naming a module `docs` does not silently drop it.
+	///
+	/// Empty (the default) means "paths are already project-root relative".
+	void setScanPrefix(const std::string &prefix)
+	{
+		scan_prefix_ = prefix;
+	}
 	// Load CODESCOPE_EXCLUDE_PATHS env var — comma-separated glob
 	// patterns (e.g. "test/*,docs/*,vendor/*,third_party/*") that
 	// extend the built-in skip list at index time. Useful for trimming
@@ -234,6 +261,11 @@ class FilterPolicy {
 
 	// .codescopeignore patterns (raw lines)
 	std::vector<std::string> ignore_patterns_;
+
+	/// Prefix that turns this policy's scan-root-relative paths into
+	/// project-root-relative ones, for the rules that are anchored at the
+	/// project root. Empty for a whole-project scan. See setScanPrefix().
+	std::string scan_prefix_;
 	// .gitignore patterns (parsed rules)
 	std::vector<GitignoreRule> gitignore_rules_;
 	// CODESCOPE_EXCLUDE_PATHS patterns (comma-separated globs from env).
@@ -254,5 +286,24 @@ class FilterPolicy {
 			     std::string::const_iterator pi,
 			     std::string::const_iterator si, int depth = 0);
 };
+
+/// Flip `filter` into Java mode when the tree under `dir` contains any .java
+/// file. No-op when `dir` is empty or the policy already knows the language.
+///
+/// The test/docs/samples skip names collide with Java package components, so
+/// for Java projects they are relaxed to a top-only (depth ≤ 3) check — but the
+/// policy has to KNOW the project is Java, and the file that would tell it
+/// (`.../samples/petclinic/Owner.java`) lives under a directory that is skipped
+/// while the language is still unset: the chicken-and-egg that made Java
+/// projects index 0 files.
+///
+/// The indexer's own discovery used to open-code this scan. The server's module
+/// discovery queries the same policy through `engine_path_is_skipped`, whose
+/// policy was built with NO language context, so it applied the any-depth rule:
+/// spring-petclinic reported `"modules":[]` — and `index-parallel` indexed
+/// nothing while claiming "no source modules found" — whereas `codescope
+/// discover` counted all 49 files. Both entry points now call this one
+/// implementation.
+void applyProjectLanguageContext(FilterPolicy &filter, const std::string &dir);
 
 #endif // FILTER_POLICY_H

@@ -78,9 +78,11 @@ impl DynSchedConfig {
         }
     }
 
-    /// Generate a shm path for this scheduler process.
+    /// Generate a shm path for this scheduler process (temp directory +
+    /// PID, so concurrent runs never collide; see
+    /// [`super::default_shm_path`]).
     pub fn default_shm_path() -> String {
-        format!("/tmp/codescope_sched_{}.shm", std::process::id())
+        super::default_shm_path("sched")
     }
 }
 

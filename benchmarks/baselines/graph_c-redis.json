@@ -1,0 +1,19 @@
+{
+  "files": 452,
+  "entities": 12046,
+  "call_edges": 27474,
+  "call_sites": 61289,
+  "resolution_kind": {
+    "exact_local": 24673,
+    "imported": 2801
+  },
+  "resolve_strategy": {
+    "external": 2312,
+    "p1_intra": 19047,
+    "unresolved": 39930
+  },
+  "deciding_factor": {
+    "ImportMatch": 2801
+  },
+  "unresolved_call_sites": 33815
+}

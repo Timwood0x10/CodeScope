@@ -1,0 +1,846 @@
+// indexing.rs — indexing orchestration.
+//
+// Split out of tools/mod.rs (see plan/rules/code_rules.md 1000-line rule).
+// Contains the worker subprocess runner (with timeout + orphan cleanup),
+// the incremental file index entry point, the force-index file walker and
+// its acceptability filter. These are kept together because they are one
+// pipeline: `h_force_index_files` decides WHICH files to index and
+// delegates the actual indexing to the same worker process that
+// `h_index_file` uses for a single file.
+
+use crate::ffi;
+use once_cell::sync::Lazy;
+use serde_json::Value;
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::time::Duration;
+
+// ─── Worker Supervisor (timeout + retry) ───────────────────────
+/// Default worker timeout in seconds when `CODESCOPE_WORKER_TIMEOUT` is unset.
+const DEFAULT_WORKER_TIMEOUT_SECS: u64 = 300;
+/// Interval between polls when waiting for a worker subprocess to finish.
+const WORKER_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+static WORKER_TIMEOUT: Lazy<Duration> = Lazy::new(|| {
+    Duration::from_secs(
+        std::env::var("CODESCOPE_WORKER_TIMEOUT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_WORKER_TIMEOUT_SECS),
+    )
+});
+const MAX_RETRIES: usize = 3;
+
+/// Number of attempts to re-initialise the C++ engine after a worker
+/// run if the first `ffi::init` fails. The worker subprocess may hold
+/// the SQLite WAL lock briefly or leave the DB in a busy state; a
+/// short retry window recovers the engine instead of leaving the
+/// server in an unusable "g_store == null" state where every
+/// subsequent tool call returns "not initialised". See H4.
+const ENGINE_INIT_MAX_ATTEMPTS: usize = 3;
+/// Delay between engine re-init attempts. Chosen to be long enough
+/// for the worker's WAL lock to release on a busy system but short
+/// enough not to materially delay the index response.
+const ENGINE_INIT_RETRY_DELAY: Duration = Duration::from_millis(500);
+
+/// Run a worker subprocess with timeout protection.
+/// Returns `Ok(output)` on success, `Err(msg)` on timeout or failure.
+/// On timeout the orphaned child is killed using a platform-appropriate
+/// method: `kill -9` on Unix, `taskkill /F` on Windows. On any other
+/// platform the process is logged as orphaned (the `Child` handle was moved
+/// into the wait thread and is no longer accessible here).
+fn run_worker(
+    exe: &str,
+    args: &[&str],
+    envs: &[(&str, &str)],
+) -> Result<std::process::Output, String> {
+    let mut cmd = Command::new(exe);
+    cmd.args(args);
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    // Pipe stdout/stderr so the worker's output is captured instead of
+    // leaking into the MCP server's stdout transport stream.
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let child = cmd.spawn().map_err(|e| format!("spawn failed: {}", e))?;
+    let pid = child.id();
+
+    let (tx, rx) = mpsc::channel();
+
+    // Thread: wait for child completion
+    let tx_out = tx.clone();
+    std::thread::spawn(move || {
+        let output = child.wait_with_output();
+        let _ = tx_out.send(output);
+    });
+
+    // Poll for result with timeout
+    let start = std::time::Instant::now();
+    loop {
+        if start.elapsed() > *WORKER_TIMEOUT {
+            // Kill orphaned child via a platform-appropriate method. The child
+            // handle was moved into the wait thread above, so we cannot call
+            // `child.kill()` here; instead we signal by PID.
+            #[cfg(unix)]
+            {
+                let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
+            }
+            #[cfg(windows)]
+            {
+                let _ = Command::new("taskkill")
+                    .args(["/F", "/PID", &pid.to_string()])
+                    .output();
+            }
+            #[cfg(not(any(unix, windows)))]
+            {
+                eprintln!(
+                    "warning: worker timeout on unsupported platform — process {} may be orphaned",
+                    pid
+                );
+            }
+            return Err(format!(
+                "worker timed out after {}s",
+                WORKER_TIMEOUT.as_secs()
+            ));
+        }
+
+        match rx.try_recv() {
+            Ok(Ok(output)) => return Ok(output),
+            Ok(Err(e)) => return Err(format!("worker error: {}", e)),
+            Err(mpsc::TryRecvError::Empty) => {
+                std::thread::sleep(WORKER_POLL_INTERVAL);
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                return Err("worker channel disconnected".to_string());
+            }
+        }
+    }
+}
+
+/// Internal worker-subprocess indexer used by the MCP session auto-index
+/// path. NOT registered as a public tool: index-parallel (with keep_db
+/// incremental) fully replaces the serial index_project tool, so the
+/// MCP tool list no longer exposes it (47→46 tools). The engine and the
+/// worker subprocess entry point are shared with index-parallel and stay.
+pub fn index_project_via_worker(project_id: u64, args: &Value) -> String {
+    let path = args["project_path"].as_str().unwrap_or("");
+
+    // Use worker subprocess for memory isolation
+    let self_exe = std::env::current_exe().ok();
+    if let Some(exe) = self_exe {
+        let db_path = crate::tools::db_path()
+            .map(str::to_string)
+            .unwrap_or_else(|| ".codescope/codescope.db".to_string());
+        let grammars_dir = std::env::var("GRAMMARS_DIR").unwrap_or_else(|_| "grammars".to_string());
+        let lang = args["language_filter"].as_str().unwrap_or("");
+
+        // Derive a meaningful project name from the path's final component so the
+        // worker records a human-readable name instead of the placeholder
+        // "worker-project".
+        let project_name = std::path::Path::new(path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unnamed")
+            .to_string();
+
+        for attempt in 1..=MAX_RETRIES {
+            // Shutdown engine before spawning worker to release SQLite lock
+            crate::ffi::shutdown();
+
+            let args_list = [
+                "worker",
+                &db_path,
+                path,
+                lang,
+                &project_name,
+                &project_id.to_string(),
+            ];
+            let envs = [
+                ("GRAMMARS_DIR", &grammars_dir as &str),
+                ("CODESCOPE_DB_PATH", &db_path as &str),
+                ("CODESCOPE_VERBOSE", "0"),
+            ];
+
+            let result = run_worker(exe.to_str().unwrap_or("codescope"), &args_list, &envs);
+
+            // Re-init engine after worker completes (regardless of success/failure).
+            // The worker subprocess may have left the SQLite WAL lock held briefly
+            // or the DB may be corrupted; checking the return value prevents the
+            // server from silently running with a null g_store for the rest of its
+            // lifetime (every subsequent tool call would return "not initialized").
+            //
+            // H4: A single failed init must NOT leave the server in an unusable
+            // state. We retry with the original (pre-shutdown) db_path a few
+            // times with a short delay — this recovers the engine when the
+            // failure was transient (e.g. WAL lock not yet released). Only if
+            // every attempt fails do we propagate the error; the caller (and
+            // the operator) must restart the server in that case.
+            let mut last_init_code: i32 = 0;
+            let mut engine_recovered = false;
+            for init_attempt in 1..=ENGINE_INIT_MAX_ATTEMPTS {
+                let code = crate::ffi::init(&db_path);
+                if code == 0 {
+                    engine_recovered = true;
+                    break;
+                }
+                last_init_code = code;
+                if init_attempt < ENGINE_INIT_MAX_ATTEMPTS {
+                    eprintln!(
+                        "engine re-init attempt {}/{} failed (code={}); retrying in {:?} [module=mcp, tool=index_project, method=ffi::init]",
+                        init_attempt, ENGINE_INIT_MAX_ATTEMPTS, code, ENGINE_INIT_RETRY_DELAY
+                    );
+                    std::thread::sleep(ENGINE_INIT_RETRY_DELAY);
+                }
+            }
+            if !engine_recovered {
+                return format!(
+                    "{{\"ok\":false,\"error\":\"engine re-initialization failed after index (code={}, attempts={}). The database may be locked or corrupted; the engine is now uninitialized — restart the server before issuing further tool calls. [module=mcp, tool=index_project, method=ffi::init]\"}}",
+                    last_init_code, ENGINE_INIT_MAX_ATTEMPTS
+                );
+            }
+
+            match result {
+                Ok(out) => {
+                    if out.status.success() {
+                        let stdout = String::from_utf8_lossy(&out.stdout);
+                        // Trigger background FTS build after a successful index.
+                        // Uses spawn_fts_build to deduplicate concurrent builds
+                        // and avoid a data race on the global C++ g_store.
+                        if let Some(json_start) = stdout.find('{')
+                            && let Some(json_end) = stdout[json_start..].rfind('}')
+                        {
+                            let candidate = &stdout[json_start..=json_start + json_end];
+                            // Validate the slice is well-formed JSON before returning
+                            // it, so malformed worker output does not produce invalid
+                            // JSON that would confuse the MCP client.
+                            if serde_json::from_str::<serde_json::Value>(candidate).is_ok() {
+                                crate::ffi::spawn_fts_build(project_id);
+                                return candidate.to_string();
+                            }
+                        }
+                        crate::ffi::spawn_fts_build(project_id);
+                        return stdout.to_string();
+                    }
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    let err_msg = stderr.lines().last().unwrap_or("unknown");
+                    if attempt < MAX_RETRIES {
+                        eprintln!(
+                            "worker attempt {} failed ({}), retrying...",
+                            attempt, err_msg
+                        );
+                        std::thread::sleep(Duration::from_secs(1));
+                        continue;
+                    }
+                    return format!(
+                        "{{\"ok\":false,\"error\":\"worker failed after {} attempts: {}\"}}",
+                        MAX_RETRIES, err_msg
+                    );
+                }
+                Err(msg) => {
+                    if attempt < MAX_RETRIES {
+                        eprintln!("worker attempt {}: {} — retrying...", attempt, msg);
+                        std::thread::sleep(Duration::from_secs(1));
+                        continue;
+                    }
+                    return format!(
+                        "{{\"ok\":false,\"error\":\"worker {} after {} attempts\"}}",
+                        msg, MAX_RETRIES
+                    );
+                }
+            }
+        }
+    }
+
+    // Fallback: in-process indexing with correct null handling for missing lang filter
+    // Fix: Use CString to ensure null-termination for FFI compatibility
+    let lang = args["language_filter"].as_str();
+    let lang_cstring = lang.map(|s| std::ffi::CString::new(s).unwrap_or_default());
+    let lang_ptr = lang_cstring
+        .as_ref()
+        .map_or(std::ptr::null(), |cs| cs.as_ptr() as *const _);
+    ffi::index_project(project_id, path, lang_ptr)
+}
+
+pub(super) fn h_index_file(project_id: u64, args: &Value) -> String {
+    let path = args["file_path"].as_str().unwrap_or("");
+    ffi::index_file(project_id, path)
+}
+
+/// Force-index specific files or directories, bypassing FilterPolicy's
+/// default skip rules (test/, docs/, vendored/, node_modules/, etc.).
+///
+/// Use case: user says "go index xxx/yyy for me" — the AI calls this
+/// tool with paths=[...]. Files under the given paths are indexed
+/// regardless of the default skip list, so the user can pull in
+/// test fixtures, vendored deps, or generated code on demand. Nested
+/// compiler/package output trees are still skipped at any depth
+/// (node_modules/, target/, _deps/, __pycache__/, venvs, .git/, and
+/// build*/ dirs carrying build-system artifacts — CMake markers for any
+/// build*, Gradle leaves only for a dir named `build`) — name such a
+/// directory itself in paths to index its contents anyway.
+///
+/// Args:
+///   paths: array of absolute file/dir paths to force-index.
+///   language_filter: optional comma-separated language whitelist
+///     (e.g. "java,python"). When empty, all detectable languages
+///     are indexed.
+///
+/// Returns the engine_index_files JSON result
+/// (files_indexed/nodes/edges/errors).
+pub(super) fn h_force_index_files(project_id: u64, args: &Value) -> String {
+    // Collect paths: accept either `paths: [...]` or legacy
+    // `path: "..."` for single-path convenience.
+    let mut paths: Vec<String> = Vec::new();
+    if let Some(arr) = args["paths"].as_array() {
+        for v in arr {
+            if let Some(s) = v.as_str()
+                && !s.is_empty()
+            {
+                paths.push(s.to_string());
+            }
+        }
+    }
+    if let Some(s) = args["path"].as_str()
+        && !s.is_empty()
+    {
+        paths.push(s.to_string());
+    }
+    if paths.is_empty() {
+        return "{\"ok\":false,\"error\":\"paths is required (array of file/dir paths)\"}"
+            .to_string();
+    }
+
+    let lang_filter = args["language_filter"].as_str().unwrap_or("");
+
+    // Expand directories into individual file paths, bypassing
+    // FilterPolicy's shouldSkipEntry. We DO still respect:
+    //   - file size limit (CODESCOPE_MAX_FILE_SIZE, default 5MB)
+    //   - language detectability (detectLanguage must return non-null)
+    //   - optional language_filter whitelist
+    // We DO NOT respect:
+    //   - normal_skip_dirs_ / top_only_skip_dirs_ (test/, docs/, ...)
+    //   - skip_suffixes_ for source extensions
+    //   - .gitignore / .codescopeignore
+    // This is the "user override" path.
+    let max_size: u64 = std::env::var("CODESCOPE_MAX_FILE_SIZE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5 * 1024 * 1024);
+
+    let mut lang_whitelist: Option<std::collections::HashSet<String>> = None;
+    if !lang_filter.is_empty() {
+        let mut set = std::collections::HashSet::new();
+        for part in lang_filter.split(',') {
+            let p = part.trim().to_lowercase();
+            if !p.is_empty() {
+                set.insert(p);
+            }
+        }
+        lang_whitelist = Some(set);
+    }
+
+    let mut all_files: Vec<String> = Vec::new();
+    let mut skipped_files = 0u64;
+    let mut skipped_dirs = 0u64;
+
+    for p in &paths {
+        let path = std::path::Path::new(p);
+        if !path.exists() {
+            skipped_files += 1;
+            continue;
+        }
+        if path.is_file() {
+            // Single file — index directly if detectable.
+            if let Some(fp) = filter_acceptable_file(path, max_size, lang_whitelist.as_ref()) {
+                all_files.push(fp);
+            } else {
+                skipped_files += 1;
+            }
+            continue;
+        }
+        // Directory — walk it, bypassing skip-dir rules but still
+        // respecting file-level detectability + size. Start at depth 0.
+        walk_force_index(
+            path,
+            max_size,
+            lang_whitelist.as_ref(),
+            &mut all_files,
+            &mut skipped_files,
+            &mut skipped_dirs,
+            0,
+        );
+    }
+
+    if all_files.is_empty() {
+        // Not a silent success: the caller asked to index and nothing was
+        // accepted — say so instead of reporting ok with zero files.
+        return format!(
+            "{{\"ok\":false,\"error\":\"no indexable source files accepted under the requested paths [module=mcp, method=h_force_index_files]\",\"files_indexed\":0,\"nodes\":0,\"edges\":0,\"errors\":0,\"skipped_files\":{},\"skipped_dirs\":{}}}",
+            skipped_files, skipped_dirs
+        );
+    }
+
+    // Build JSON file list and call engine_index_files.
+    let json_list = serde_json::Value::Array(
+        all_files
+            .iter()
+            .map(|s| serde_json::Value::String(s.clone()))
+            .collect(),
+    )
+    .to_string();
+
+    // bypass_fail_fast = true: this tool promises to index the requested paths
+    // "regardless of the default skip rules", so a file that failed before is
+    // re-attempted instead of being dropped silently (the scheduler-driven
+    // worker callers pass false and keep the fail-fast skip).
+    let result = ffi::index_files(project_id, &json_list, true);
+
+    // Annotate result with skip stats for transparency.
+    if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&result) {
+        if let Some(obj) = v.as_object_mut() {
+            obj.insert("skipped_files".into(), skipped_files.into());
+            obj.insert("skipped_dirs".into(), skipped_dirs.into());
+            obj.insert("paths_requested".into(), paths.len().into());
+            // The engine reports `ok: true` for a run that accepted files but
+            // indexed none — every parse failed (grammar unavailable for that
+            // language, unreadable file) — because "the call itself worked".
+            // The CLI's force-index already treats that as a failed run (it
+            // exits non-zero on `files_indexed == 0`); over MCP the envelope
+            // was the only signal, so a client saw `isError` absent and
+            // concluded the index was built. Report it here instead: the run
+            // produced no graph, so the tool call did not do what was asked.
+            if obj.get("ok") == Some(&serde_json::Value::Bool(true))
+                && obj.get("files_indexed").and_then(|n| n.as_u64()) == Some(0)
+            {
+                obj.insert("ok".into(), serde_json::Value::Bool(false));
+                obj.insert(
+                    "error".into(),
+                    serde_json::Value::String(format!(
+                        "no files were indexed: {} candidate file(s) were accepted but none \
+                         produced symbols (unsupported language, parse failure, or empty files) \
+                         [module=mcp, method=h_force_index_files]",
+                        obj.get("discovery")
+                            .and_then(|d| d.get("candidate_files"))
+                            .and_then(|n| n.as_u64())
+                            .unwrap_or(0),
+                    )),
+                );
+            }
+        }
+        return v.to_string();
+    }
+    result
+}
+
+/// Maximum recursion depth for `walk_force_index`. A deeply nested directory
+/// tree (e.g. a chain of node_modules) or a crafted path would otherwise
+/// consume the call stack until it overflows, panicking and crashing the
+/// MCP server (local DoS, see H-B). 256 levels is far deeper than any
+/// legitimate project tree; once reached we stop descending and log a
+/// warning so the walk always terminates.
+const MAX_WALK_DEPTH: u32 = 256;
+
+/// Whether force-index should accept this file name/extension.
+///
+/// Delegates to the engine (`engine_is_indexable_source`) so the walk cannot
+/// accept a language the indexer cannot parse, and so extensionless shebang
+/// scripts the engine accepts are not dropped by a stale local extension list.
+fn is_source_extension(name: &str) -> bool {
+    crate::ffi::is_indexable_source(name)
+}
+
+/// Alias-folded language whitelist match. `c`/`cpp`/`c++` and the other
+/// label pairs below form one family because the two layers have
+/// historically used different labels for the same language (short forms
+/// like `js`/`py` vs the engine's `javascript`/`python`) — exact-string
+/// matching dropped whole languages whenever the labels differed.
+fn lang_whitelisted(wl: &std::collections::HashSet<String>, lang: &str) -> bool {
+    let alias_hit = |fam: &[&str]| fam.iter().any(|a| wl.contains(*a));
+    match lang {
+        "c" | "cpp" | "c++" => alias_hit(&["c", "cpp", "c++"]),
+        "js" | "javascript" | "node" => alias_hit(&["js", "javascript", "node"]),
+        "ts" | "typescript" => alias_hit(&["ts", "typescript"]),
+        "py" | "python" => alias_hit(&["py", "python"]),
+        "go" | "golang" => alias_hit(&["go", "golang"]),
+        "kt" | "kotlin" => alias_hit(&["kt", "kts", "kotlin"]),
+        "rb" | "ruby" => alias_hit(&["rb", "ruby"]),
+        "rs" | "rust" => alias_hit(&["rs", "rust"]),
+        other => wl.contains(other),
+    }
+}
+
+/// Check a single file path against force-index rules:
+///   - must exist and be a regular file
+///   - must be within max_size
+///   - extension must be a recognised source extension
+///   - must pass the optional language whitelist
+///
+/// Returns the absolute path string if acceptable, None otherwise.
+fn filter_acceptable_file(
+    path: &std::path::Path,
+    max_size: u64,
+    lang_whitelist: Option<&std::collections::HashSet<String>>,
+) -> Option<String> {
+    let meta = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(_) => return None,
+    };
+    if !meta.is_file() {
+        return None;
+    }
+    if meta.len() > max_size {
+        return None;
+    }
+
+    // Extension / name check via the engine (authoritative source list).
+    let file_name = path.file_name().and_then(|n| n.to_str())?;
+    if !is_source_extension(file_name) {
+        return None;
+    }
+
+    // Language whitelist (maps extension -> language label)
+    if let Some(wl) = lang_whitelist {
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+            .unwrap_or_default();
+        let lang = match format!(".{}", ext).as_str() {
+            ".py" => "python",
+            ".cpp" | ".cc" | ".cxx" | ".h" | ".hpp" | ".hxx" | ".hh" => "cpp",
+            ".c" => "c",
+            ".rs" => "rust",
+            ".swift" => "swift",
+            ".js" | ".mjs" | ".cjs" => "javascript",
+            ".ts" => "typescript",
+            ".tsx" => "tsx",
+            ".go" => "go",
+            ".java" => "java",
+            ".kt" | ".kts" => "kotlin",
+            ".rb" => "ruby",
+            ".scala" => "scala",
+            _ => "",
+        };
+        // Alias-fold before matching so short filter forms (`c`, `js`,
+        // `py`, …) accept the canonical label the map above emits.
+        if !lang.is_empty() && !lang_whitelisted(wl, lang) {
+            return None;
+        }
+    }
+
+    // Return absolute path
+    let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    Some(canon.to_string_lossy().to_string())
+}
+
+/// Build/package output classifier for the force-index walk.
+///
+/// Unambiguous output/cache names are skipped outright. `build`/`build-*`
+/// names are ambiguous — `build-tools/`, `build-scripts/`, `build-support/`
+/// hold real source — so they are skipped only when the directory carries
+/// build-system artifacts: CMake markers count for any `build*`, while the
+/// Gradle leaves (classes/libs/generated/tmp) count only for the exact
+/// name `build`.
+///
+/// The list is the force-index subset of the engine's `FilterPolicy`
+/// skip-dirs (`engine/src/filter_policy.cpp`, the source of truth for the
+/// default path). It used to be a much shorter hand-written list, which is
+/// how `dist/` slipped through: forcing an index of a Vite project walked the
+/// minified bundle and produced a graph of ~700 hashed names (`JF`, `k`, `n0`)
+/// next to 224 real TSX symbols, with community labels to match. Only the
+/// genuinely ambiguous names are left to `FilterPolicy`: `obj`, `Debug`,
+/// `Release`, `env`, `temp`/`tmp` and the source-level carve-outs
+/// (`test/`, `docs/`, `plan/`, CI configs) that force-index exists to bypass.
+fn is_build_output_dir(path: &std::path::Path) -> bool {
+    let lower = match path.file_name().and_then(|n| n.to_str()) {
+        Some(n) => n.to_lowercase(),
+        None => return false,
+    };
+    if matches!(
+        lower.as_str(),
+        // JS/TS bundler output — generated by name, never hand-written.
+        "dist"
+            | ".dist"
+            | "out"
+            | ".out"
+            | ".next"
+            | ".nuxt"
+            | ".svelte-kit"
+            | ".angular"
+            | ".turbo"
+            | ".parcel-cache"
+            | ".docusaurus"
+            | ".expo"
+            | ".nx"
+            // Package caches
+            | "node_modules"
+            | "bower_components"
+            | "jspm_packages"
+            | ".npm"
+            | ".yarn"
+            | ".pnpm-store"
+            | ".pnp"
+            | ".deno"
+            | ".bun"
+            | ".nyc_output"
+            // Compiler / build trees
+            | "target"
+            | "_deps"
+            | ".build"
+            | "_build"
+            | "cmakefiles"
+            | "cmake-build-debug"
+            | "cmake-build-release"
+            | "bazel-bin"
+            | "bazel-out"
+            | "bazel-testlogs"
+            | ".buck-out"
+            | ".gradle"
+            | ".mvn"
+            | "_cpack_packages"
+            | "pods"
+            | "carthage"
+            | "deriveddata"
+            // Python environments
+            | "__pycache__"
+            | ".venv"
+            | "venv"
+            | "site-packages"
+            | ".virtualenv"
+            | ".virtualenvs"
+            | ".tox"
+            | ".mypy_cache"
+            | ".pytest_cache"
+            // Coverage, IaC state, VCS and this tool's own data dir
+            | "coverage"
+            | "htmlcov"
+            | ".terraform"
+            | ".terragrunt-cache"
+            | ".serverless"
+            | ".vercel"
+            | ".netlify"
+            | ".git"
+            | ".codescope"
+    ) {
+        return true;
+    }
+    if lower == "build" || lower.starts_with("build-") {
+        // CMake leaves CMakeCache.txt / CMakeFiles / compile_commands.json
+        // behind; Gradle leaves classes / libs / generated / tmp — but the
+        // Gradle build dir is always exactly `build`, while `build-*` is the
+        // CMake build-release style. Restrict the common Gradle leaf names to
+        // the exact name so source trees like build-tools/libs/ (real
+        // source) are not swallowed by a directory name heuristic.
+        if path.join("CMakeCache.txt").exists()
+            || path.join("CMakeFiles").is_dir()
+            || path.join("compile_commands.json").exists()
+        {
+            return true;
+        }
+        if lower == "build" {
+            return path.join("classes").is_dir()
+                || path.join("libs").is_dir()
+                || path.join("generated").is_dir()
+                || path.join("tmp").is_dir();
+        }
+        return false;
+    }
+    false
+}
+
+/// Recursively walk `root` for force-index. Bypasses all skip-dir
+/// rules (test/, docs/, vendored/, node_modules/, etc.) — this is
+/// the whole point of the force-index tool. Still respects:
+///   - file size limit
+///   - extension detectability
+///   - optional language whitelist
+///
+/// `depth` is the current recursion depth (call with 0 at the top).
+/// Recursion stops once `depth >= MAX_WALK_DEPTH` to guarantee the walk
+/// always terminates and cannot exhaust the stack (H-B). When the limit
+/// is hit, a warning is logged and descent into that subtree is skipped.
+fn walk_force_index(
+    root: &std::path::Path,
+    max_size: u64,
+    lang_whitelist: Option<&std::collections::HashSet<String>>,
+    out_files: &mut Vec<String>,
+    skipped_files: &mut u64,
+    skipped_dirs: &mut u64,
+    depth: u32,
+) {
+    let entries = match std::fs::read_dir(root) {
+        Ok(e) => e,
+        Err(_) => {
+            *skipped_dirs += 1;
+            return;
+        }
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        // Use symlink_metadata (NOT following symlinks) to detect the
+        // entry's own type. Path::is_dir() follows symlinks, so a symlink
+        // loop (a -> b -> a) would make is_dir() always return true and
+        // the recursion would never terminate → stack overflow panic
+        // crashing the MCP server (local DoS). symlink_metadata gives us
+        // the link's own metadata without dereferencing, so we only recurse
+        // into real directories.
+        let is_real_dir = std::fs::symlink_metadata(&path)
+            .map(|m| m.is_dir())
+            .unwrap_or(false);
+        if is_real_dir {
+            // Hard-skip compiler/package output trees even in force-index
+            // mode: they are generated artifacts, not user source, and
+            // indexing them explodes homonym counts (CMake probe `main`s,
+            // vendored tree-sitter scanners). The source-level carve-outs
+            // (test/, docs/, vendored/) stay bypassed.
+            if is_build_output_dir(&path) {
+                *skipped_dirs += 1;
+                continue;
+            }
+            // Guard against unbounded recursion: a pathologically deep
+            // directory tree would otherwise overflow the stack (H-B).
+            if depth >= MAX_WALK_DEPTH {
+                eprintln!(
+                    "warning: walk_force_index reached max depth {} at {:?}; skipping subtree to avoid stack overflow [module=mcp, tool=force_index_files, method=walk_force_index]",
+                    MAX_WALK_DEPTH, path
+                );
+                *skipped_dirs += 1;
+                continue;
+            }
+            // Recurse unconditionally — bypass skip-dir rules.
+            walk_force_index(
+                &path,
+                max_size,
+                lang_whitelist,
+                out_files,
+                skipped_files,
+                skipped_dirs,
+                depth + 1,
+            );
+            continue;
+        }
+        if path.is_file() {
+            match filter_acceptable_file(&path, max_size, lang_whitelist) {
+                Some(fp) => out_files.push(fp),
+                None => *skipped_files += 1,
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wl(vals: &[&str]) -> std::collections::HashSet<String> {
+        vals.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn lang_whitelist_alias_folds_both_ways() {
+        // Short filter forms must accept the canonical label and the
+        // reverse — callers write "c"/"js"/"py" while the map emits
+        // "c"/"javascript"/"python".
+        assert!(lang_whitelisted(&wl(&["c"]), "c"));
+        assert!(lang_whitelisted(&wl(&["c"]), "cpp"));
+        assert!(lang_whitelisted(&wl(&["cpp"]), "c"));
+        assert!(lang_whitelisted(&wl(&["c++"]), "cpp"));
+        // Non-alias languages must still require an exact family hit.
+        assert!(lang_whitelisted(&wl(&["python"]), "python"));
+        assert!(!lang_whitelisted(&wl(&["python"]), "rust"));
+        assert!(!lang_whitelisted(&wl(&["c"]), "rust"));
+        // Empty language label (shebang-script path) is rejected only when
+        // non-empty check upstream decides; here empty label falls to
+        // `other` and must not match an unrelated filter.
+        assert!(!lang_whitelisted(&wl(&["c"]), ""));
+    }
+
+    #[test]
+    fn build_output_dir_skips_artifacts_but_not_source_siblings() {
+        let tmp = std::env::temp_dir().join(format!("codescope_skip_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("build-tools")).unwrap();
+        std::fs::create_dir_all(tmp.join("build")).unwrap();
+        std::fs::write(tmp.join("build").join("CMakeCache.txt"), "x").unwrap();
+        std::fs::create_dir_all(tmp.join("build-scripts")).unwrap();
+        std::fs::create_dir_all(tmp.join("target")).unwrap();
+        std::fs::create_dir_all(tmp.join("node_modules")).unwrap();
+        // Gradle-style output tree: no CMake markers, but generated/. The
+        // Gradle build dir is always exactly `build`, so this must skip.
+        std::fs::create_dir_all(tmp.join("gradle").join("build").join("generated")).unwrap();
+        // build-tools/ with a Gradle-looking leaf name is still source:
+        // the leaf markers apply only to the exact name `build`.
+        std::fs::create_dir_all(tmp.join("build-tools").join("libs")).unwrap();
+        std::fs::create_dir_all(tmp.join("build-gradle").join("generated")).unwrap();
+        // build-release/ with CMake artifacts (the CMake build-release style)
+        // must still skip — this is the only skip route left for build-*.
+        std::fs::create_dir_all(tmp.join("build-release")).unwrap();
+        std::fs::write(tmp.join("build-release").join("CMakeCache.txt"), "x").unwrap();
+        // build-* with no artifacts at all must stay indexable.
+        std::fs::create_dir_all(tmp.join("build-plain")).unwrap();
+        std::fs::create_dir_all(tmp.join("gradle-classes").join("build").join("classes")).unwrap();
+        std::fs::create_dir_all(tmp.join("gradle-libs").join("build").join("libs")).unwrap();
+        std::fs::create_dir_all(tmp.join("gradle-tmp").join("build").join("tmp")).unwrap();
+        // A dir named exactly `build` holding source with none of the
+        // markers must not be swallowed by the name heuristic.
+        std::fs::create_dir_all(tmp.join("src-build").join("build")).unwrap();
+        std::fs::write(
+            tmp.join("src-build").join("build").join("tool.c"),
+            "int t(){return 0;}\n",
+        )
+        .unwrap();
+
+        // build/ with CMake artifacts is a build tree → skip.
+        assert!(is_build_output_dir(&tmp.join("build")));
+        // Gradle build/ (exact name) with generated/ (no CMake artifacts)
+        // → skip too.
+        assert!(is_build_output_dir(&tmp.join("gradle").join("build")));
+        // Each Gradle leaf name alone is enough for the exact name `build`.
+        assert!(is_build_output_dir(
+            &tmp.join("gradle-classes").join("build")
+        ));
+        assert!(is_build_output_dir(&tmp.join("gradle-libs").join("build")));
+        assert!(is_build_output_dir(&tmp.join("gradle-tmp").join("build")));
+        // build-* with CMake artifacts (build-release style) → skip; this is
+        // the only skip route for build-* after the leaf-marker narrowing.
+        assert!(is_build_output_dir(&tmp.join("build-release")));
+        // Unambiguous output/cache names → skip regardless of content.
+        assert!(is_build_output_dir(&tmp.join("target")));
+        assert!(is_build_output_dir(&tmp.join("node_modules")));
+        // Front-end bundler output. `dist/` used to be indexed by force-index
+        // (the name was missing from this list while the engine's FilterPolicy
+        // had it), which filled the graph with the minified bundle's hashed
+        // names instead of the project's own sources.
+        for name in [
+            "dist",
+            "out",
+            ".next",
+            ".nuxt",
+            ".svelte-kit",
+            ".turbo",
+            ".parcel-cache",
+            "coverage",
+            ".venv",
+            "site-packages",
+            ".terraform",
+        ] {
+            assert!(
+                is_build_output_dir(&tmp.join(name)),
+                "{name} must be skipped as build output"
+            );
+        }
+        // Source trees that merely start with "build-" stay indexable —
+        // even when they contain Gradle-looking leaf names (build-tools/libs,
+        // build-gradle/generated): leaf markers never apply to build-*.
+        assert!(!is_build_output_dir(&tmp.join("build-tools")));
+        assert!(!is_build_output_dir(&tmp.join("build-scripts")));
+        assert!(!is_build_output_dir(&tmp.join("build-gradle")));
+        // build-* with no artifacts at all (CMake or otherwise) stays
+        // indexable — name alone is never enough for `build*`.
+        assert!(!is_build_output_dir(&tmp.join("build-plain")));
+        // A dir named exactly `build` with no markers stays indexable too.
+        assert!(!is_build_output_dir(&tmp.join("src-build").join("build")));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}

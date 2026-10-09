@@ -1,5 +1,7 @@
 #include "ir_translator.h"
 
+#include <cstdio>
+
 #include "translators/js_visitor.h"
 #include "translators/ts_visitor.h"
 #include "translators/tsx_visitor.h"
@@ -9,8 +11,10 @@
 #include "translators/python_visitor.h"
 #include "translators/rust_visitor.h"
 #include "translators/java_visitor.h"
-// Swift translator excluded: Swift grammar not in FetchContent build
-// #include "translators/swift_visitor.h"
+// Swift has no visitor here: its grammar is not vendored (see
+// parser/parser.cpp for the ABI reason), so a .swift file never reaches this
+// layer. The Swift visitor/translator sources were removed rather than left
+// unreachable — restore them together with the grammar.
 
 // Forward-declare concrete translators (implemented in translators/ dir)
 // Each returns a new Translator* or nullptr if the grammar can't be loaded.
@@ -26,7 +30,6 @@ std::unique_ptr<Translator> createJavascriptTranslator();
 std::unique_ptr<Translator> createTypescriptTranslator();
 std::unique_ptr<Translator> createGoTranslator();
 std::unique_ptr<Translator> createJavaTranslator();
-std::unique_ptr<Translator> createSwiftTranslator();
 std::unique_ptr<Translator> createTsxTranslator();
 } // namespace ir
 
@@ -59,16 +62,32 @@ std::unique_ptr<Translator> createTranslator(const char *language)
 		return createGoTranslator();
 	if (lang == "java")
 		return createJavaTranslator();
-	// Swift translator temporarily disabled: Swift grammar was removed
-	// from FetchContent due to ABI incompatibility with core v0.24.7.
-	// The Swift translator source files are excluded from the build
-	// (not in ENGINE_SOURCES in CMakeLists.txt).
-	// if (lang == "swift")
-	//     return createSwiftTranslator();
+	// No Swift branch: the grammar is not vendored (parser/parser.cpp) and
+	// the translator was removed with it. Swift files are detected by
+	// extension and reported as `language_missing` parse failures instead.
 	if (lang == "tsx")
 		return createTsxTranslator();
 
 	return nullptr;
+}
+
+bool TranslateDepth::exceeded(const char *file_path, const char *method)
+{
+	if (depth_ < kMaxTranslateDepth)
+		return false;
+	if (!reported_) {
+		// Reported once per file: a truncated translation must be visible
+		// (plan/rules/code_rules.md, no silent handling), and the message
+		// names the module and method so it can be traced back here.
+		reported_ = true;
+		fprintf(stderr,
+			"[module=ir, method=%s] AST nesting exceeded "
+			"kMaxTranslateDepth=%d in '%s'; deeper nodes skipped to "
+			"avoid stack overflow (legacy translator)\n",
+			method ? method : "translateChildren",
+			kMaxTranslateDepth, file_path ? file_path : "");
+	}
+	return true;
 }
 
 std::unique_ptr<JsVisitor> createJsVisitor(const char *language)
@@ -99,9 +118,7 @@ std::unique_ptr<JsVisitor> createJsVisitor(const char *language)
 		return std::make_unique<RustVisitor>();
 	if (lang == "java")
 		return std::make_unique<JavaVisitor>();
-	// Swift visitor temporarily disabled
-	// if (lang == "swift")
-	//     return std::make_unique<SwiftVisitor>();
+	// No Swift branch: see the note at the top of this file.
 
 	return nullptr;
 }

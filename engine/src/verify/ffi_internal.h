@@ -53,8 +53,9 @@ struct VerifyResult {
 //
 // THREAD SAFETY: single-threaded only (relies on the GraphStore
 // single-writer invariant documented in store.h). The caller must hold
-// the global g_store singleton.
-VerifyResult verify_one_claim(uint64_t project_id, const verify::Claim &claim);
+// the engine store singleton.
+VerifyResult verify_one_claim(EngineContext *ctx, uint64_t project_id,
+			      const verify::Claim &claim);
 
 // BatchResult bundles the output of verify_claim_batch so callers can
 // wrap it in their own JSON envelope (summary, reality, review, etc.)
@@ -68,6 +69,21 @@ struct BatchResult {
 	int contradicted = 0;
 	int unknown = 0;
 	std::string results_json; // "[<verify_one_claim output>,...]"
+
+	/// How much of the input was actually judgeable, so a caller can tell
+	/// "nothing contradicted us" apart from "nothing was checkable":
+	///   * `"no_claims"`   — the text carried no recognisable claim pattern
+	///     (ClaimParser is deliberately conservative), so there is nothing to
+	///     score;
+	///   * `"no_verdicts"` — claims were parsed but every verdict was Unknown;
+	///   * `"verified"`    — at least one claim was decided.
+	///
+	/// The wrapped tools used to disagree on this case: engine_verify_summary
+	/// answered `trust_score: 1.0` for text with no claims ("nothing to
+	/// dispute") while engine_verify_review answered `0.0` for the same
+	/// vacuous input — one number reads as "fully trusted", the other as
+	/// "worthless", and neither means anything. Both now carry this status.
+	const char *status = "no_claims";
 };
 
 // Parse claims from `text`, verify each via verify_one_claim, and return
@@ -81,8 +97,8 @@ struct BatchResult {
 // @param source_ref  Short reference string for the evidence table.
 //
 // THREAD SAFETY: single-threaded only (same invariant as verify_one_claim).
-BatchResult verify_claim_batch(uint64_t project_id, const std::string &text,
-			       const char *source_kind,
+BatchResult verify_claim_batch(EngineContext *ctx, uint64_t project_id,
+			       const std::string &text, const char *source_kind,
 			       const std::string &source_ref);
 
 } // namespace verify_ffi

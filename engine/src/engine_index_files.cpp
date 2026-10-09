@@ -1,4 +1,6 @@
+#include "util/json_writer.h"
 #include "engine_internal.h"
+#include "engine_index_paths.h"
 #include "filter_policy.h"
 #include "platform_win.h"
 
@@ -34,6 +36,7 @@
 
 #include "ir/translators/js_visitor.h"
 #include "engine_index_metrics.h"
+#include "engine_index_sched.h"
 #include "async_knowledge.h"
 #include "store/store_parse_failure.h"
 
@@ -49,11 +52,30 @@ constexpr uint64_t kMaxFileSize = 5 * 1024 * 1024; // 5 MB default
 // --file-list path). Split out of engine_index_project.cpp into its own
 // translation unit so each file stays under the 1000-line rule
 // (plan/rules/code_rules.md §1).
-char *engine_index_files(uint64_t project_id, const char *file_list_json)
+//
+// Two kinds of callers share this entry point:
+//   * the scheduler-driven worker paths (worker --file-list, chunk worker),
+//     which mirror the automatic project index and honour the fail-fast skip;
+//   * the `force_index_files` tool, whose documented contract is "index these
+//     paths regardless of the default skip rules" and therefore bypasses it.
+// The caller states which policy applies through `bypass_fail_fast` (see
+// engine.h) rather than this file guessing from an environment variable.
+/// Body of engine_index_files. Kept as a separate function so the extern "C"
+/// entry point below can stay a thin try/catch wrapper: no C++ exception may
+/// cross the C ABI boundary (the MCP server is long-running, so an escaping
+/// exception would terminate it).
+static char *indexFilesImpl(EngineContext *ctx, uint64_t project_id,
+			    const char *file_list_json, int bypass_fail_fast)
 {
-	if (!g_store)
+	if (!ctx || !ctx->store)
 		return dupString(
 			"{\"ok\":false,\"error\":\"engine not initialized\"}");
+
+	// See engine_index_project: the background enrichment thread shares
+	// this connection, so it must not run while we write. Join first (the
+	// builder holds g_store_mutex), then hold the store guard for the write.
+	joinAsyncKnowledgeBuilder();
+	auto _store_guard = waitForKnowledgeBuilder();
 
 	if (!file_list_json || !file_list_json[0])
 		return dupString(
@@ -78,6 +100,10 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 		// stat). Without it, result->mtime defaults to 0 and a later
 		// incremental run's isFileUnchanged can never skip (M-13).
 		int64_t mtime = 0;
+		// The path as the caller gave it, used to OPEN the file (it must work
+		// regardless of the current directory). `path` above is the spelling
+		// the index stores — see existingSpellingFor.
+		std::string abs_path;
 	};
 	std::vector<FileJob> jobs;
 	std::string json(file_list_json);
@@ -115,27 +141,41 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 			filter.setLangContext("java");
 		}
 
-		jobs.push_back({ path, lang,
-				 static_cast<size_t>(file_stat.st_size),
-				 static_cast<int64_t>(file_stat.st_mtime) });
+		// Reuse the spelling this file is already stored under, so an
+		// already-indexed file is not given a second identity.
+		const std::string stored =
+			indexSpellingFor(ctx->store.get(), project_id, path);
+		jobs.push_back(
+			{ stored, lang, static_cast<size_t>(file_stat.st_size),
+			  static_cast<int64_t>(file_stat.st_mtime), path });
 	}
 
 	if (jobs.empty())
 		return dupString(
 			"{\"ok\":true,\"files_indexed\":0,\"nodes\":0,\"edges\":0,\"errors\":0}");
 
-	// Fail-fast: pre-load known parse failures so the parse loop can
-	// skip them without per-file DB queries. Mirrors the logic in
-	// engine_index_project.
-	const int kFailRetryMax = [] {
-		const char *e = getenv("CODESCOPE_FAIL_RETRY_MAX");
-		return e ? std::max(1, std::atoi(e)) : 3;
-	}();
+	// Fail-fast skip, applied exactly like the automatic project path
+	// (engine_index_project loads the same set): a file whose parse has
+	// failed >= CODESCOPE_FAIL_RETRY_MAX times is dropped without a re-parse.
+	// The threshold comes from the shared constant — this file used to
+	// hard-code 3, three times the documented default.
+	//
+	// force_index_files passes bypass_fail_fast = 1 and gets an EMPTY set:
+	// its documented contract is "index these paths regardless of the default
+	// skip rules", so silently dropping a file the user explicitly named
+	// contradicts both that contract and plan/rules/code_rules.md (no silent
+	// handling). A forced file is always re-attempted; a genuinely broken one
+	// costs one parse per call and re-records its failure.
 	std::unordered_set<std::string> known_failures;
-	{
+	if (!bypass_fail_fast) {
+		const int kFailRetryMax = [] {
+			const char *e = getenv("CODESCOPE_FAIL_RETRY_MAX");
+			return e ? std::max(1, std::atoi(e)) :
+				   engine_index_sched::kDefaultFailRetryMax;
+		}();
 		std::vector<std::string> fail_vec;
-		if (!store::loadKnownParseFailures(project_id, kFailRetryMax,
-						   /*out*/ fail_vec)) {
+		if (!store::loadKnownParseFailures(ctx, project_id,
+						   kFailRetryMax, fail_vec)) {
 			fprintf(stderr,
 				"engine: loadKnownParseFailures failed "
 				"(continuing) "
@@ -171,7 +211,7 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 		for (auto &j : jobs)
 			langs.insert(j.lang);
 		for (auto &l : langs)
-			lang_ptrs[l] = g_parser->getLanguage(l.c_str());
+			lang_ptrs[l] = ctx->parser->getLanguage(l.c_str());
 	}
 
 	// ── Streaming Pipeline ─────────────────────────────────────
@@ -195,7 +235,7 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 
 	// ── Writer thread ──────────────────────────────────────────
 	std::thread writer_thread([&]() {
-		g_store->beginTransaction();
+		ctx->store->beginTransaction();
 		std::vector<store::FileResult> batch;
 		batch.reserve(kWriterBatchSize);
 		while (true) {
@@ -203,7 +243,7 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 			bool ok = result_queue.pop(fr);
 			if (!ok) {
 				if (!batch.empty()) {
-					if (!g_store->insertFileResultBatch(
+					if (!ctx->store->insertFileResultBatch(
 						    project_id, batch)) {
 						writer_error = 1;
 					}
@@ -223,8 +263,8 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 			}
 			if (batch.size() >= kWriterBatchSize ||
 			    result_queue.isDone()) {
-				if (!g_store->insertFileResultBatch(project_id,
-								    batch)) {
+				if (!ctx->store->insertFileResultBatch(
+					    project_id, batch)) {
 					writer_error = 1;
 				}
 				files_written += static_cast<int>(batch.size());
@@ -232,9 +272,9 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 			}
 		}
 		if (writer_error)
-			g_store->rollbackTransaction();
+			ctx->store->rollbackTransaction();
 		else
-			g_store->commitTransaction();
+			ctx->store->commitTransaction();
 	});
 
 	// ── Parse workers ──────────────────────────────────────────
@@ -280,12 +320,12 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 				current_path = job.path;
 				current_lang = job.lang;
 
-				// Fail-fast: skip files that have failed >=
-				// CODESCOPE_FAIL_RETRY_MAX times.
+				// Fail-fast. The set is empty when the caller requested
+				// bypass_fail_fast (force_index_files), which makes this a
+				// no-op there — see the note where it is loaded.
 				if (known_failures.find(job.path) !=
-				    known_failures.end()) {
+				    known_failures.end())
 					continue;
-				}
 
 				int done = next_job.load();
 				if (done % progress_interval == 0 && done > 0)
@@ -298,7 +338,32 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 						(int)(done * 100 /
 						      total_files));
 
-				std::string source = readFile(job.path.c_str());
+				// Grammar availability, checked BEFORE reading the
+				// file: reading a file the engine has no grammar for is
+				// wasted I/O. A registered-but-NULL grammar (the
+				// language is mapped but its grammar is unavailable:
+				// "swift"/"kotlin"/"ruby"/"scala" while no grammar is
+				// vendored, or a .so that failed to load) is reported as
+				// LanguageMissing — handing nullptr to
+				// ts_parser_set_language would yield a null tree recorded
+				// as "parse_null_tree", a wrong reason that also disguised
+				// an unsupported language as a broken file.
+				{
+					auto lit = lang_ptrs.find(job.lang);
+					if (lit == lang_ptrs.end() ||
+					    lit->second == nullptr) {
+						store::bufferParseFailure(
+							project_id, job.path,
+							job.lang,
+							store::failReasonToString(
+								store::FailReason::
+									LanguageMissing));
+						continue;
+					}
+				}
+
+				std::string source =
+					readFile(job.abs_path.c_str());
 				if (source.empty()) {
 					store::bufferParseFailure(
 						project_id, job.path, job.lang,
@@ -308,7 +373,10 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 					continue;
 				}
 
-				// Per-thread parser
+				// Per-thread parser. A language with no registered
+				// grammar was already rejected above, so the lookup below
+				// only needs the presence check (kept as a guard against
+				// reordering).
 				auto pit = tl_parsers.find(job.lang);
 				if (pit == tl_parsers.end()) {
 					auto lit = lang_ptrs.find(job.lang);
@@ -375,6 +443,12 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 
 				if (visitor) {
 					ir::SemanticUnit *su = nullptr;
+					// The visitor transfers ownership of the
+					// returned unit to the caller (see
+					// js_visitor.h); without this guard every
+					// parsed file leaks one SemanticUnit.
+					std::unique_ptr<ir::SemanticUnit>
+						su_guard;
 					try {
 						su = visitor->visit(
 							tree.get(),
@@ -399,6 +473,7 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 									VisitorUnknownThrow));
 						continue;
 					}
+					su_guard.reset(su);
 					if (su) {
 						result->records =
 							su->allRecords();
@@ -421,12 +496,17 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 									LanguageMissing));
 						continue;
 					}
-					ir::TranslationUnit *unit = nullptr;
+					// RAII ownership of the TranslationUnit: the
+					// translator contract says the caller frees it
+					// (ir_translator.h); unique_ptr keeps that true
+					// on the exception/fallback paths too.
+					std::unique_ptr<ir::TranslationUnit>
+						unit;
 					try {
-						unit = translator->translate(
+						unit.reset(translator->translate(
 							tree.get(),
 							source.c_str(),
-							job.path.c_str());
+							job.path.c_str()));
 					} catch (const std::exception &e) {
 						store::bufferParseFailure(
 							project_id, job.path,
@@ -552,6 +632,23 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 	result_queue.markDone();
 	if (writer_thread.joinable())
 		writer_thread.join();
+	// Write the parse failures this run buffered. Like the memBulk branch,
+	// this path never reached the streaming path's flush, so an unparseable
+	// file handed to force_index_files was re-attempted (see the note at the
+	// top) and then recorded nowhere — parse_failures kept the stale
+	// fail_count and get_parse_failures could never show it. Runs after
+	// every writer has stopped, so the auxiliary connection does not
+	// contend with the bulk writer's transaction.
+	const int flushed = store::flushParseFailures(ctx);
+	if (flushed < 0) {
+		// Reported, not swallowed: the run itself may still succeed, but its
+		// parse failures are missing from the table (code_rules.md, no silent
+		// error handling).
+		fprintf(stderr,
+			"engine: flushParseFailures failed; this run's parse "
+			"failures are not recorded "
+			"[module=engine, method=engine_index_files]\n");
+	}
 	time_parse_ms =
 		duration_cast<milliseconds>(steady_clock::now() - t_parse_start)
 			.count();
@@ -561,14 +658,21 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 		t_parse_start = steady_clock::now();
 		// buildGraph(...true) is a FULL rebuild: it drops the lookup
 		// + unique-edge indexes. Unlike engine_index_project (which
-		// reaches this via engine_index_post_parse), this path must
+		// reaches this via postParsePhase), this path must
 		// recreate those indexes itself or they stay missing (M-12).
 		// P2 fix: a resolver-pipeline failure makes buildGraph roll back
 		// its graph savepoint and return false; flag it as a writer error
 		// so the result JSON reports failure instead of a false success
 		// (the outer transaction is rolled back by the caller when it
 		// sees ok:false).
-		if (!g_store->buildGraph(project_id, true)) {
+		// `bypass_fail_fast` is 1 only for force_index_files, whose contract
+		// is "index these paths regardless of the default skip rules" — so
+		// the graph must accept the test/bench/spec declarations this call
+		// just parsed, or the tool reports files_indexed while the graph
+		// stays empty (see buildGraph's include_test_files and the
+		// test_file_filter it guards).
+		if (!ctx || !ctx->store->buildGraph(project_id, true, nullptr,
+						    bypass_fail_fast != 0)) {
 			writer_error = 1;
 		}
 		time_buildgraph_ms =
@@ -578,18 +682,18 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 
 		// Mark every node callgraph_ready: the call graph is now
 		// committed, so trace_path / enhancement-status report
-		// readiness correctly (mirrors engine_index_post_parse, M-15).
+		// readiness correctly (mirrors postParsePhase, M-15).
 		{
 			std::string up =
 				"UPDATE graph_nodes SET callgraph_ready=1 "
 				"WHERE project_id=" +
 				std::to_string(project_id);
-			if (!g_store->exec(up.c_str())) {
+			if (!ctx || !ctx->store->exec(up.c_str())) {
 				fprintf(stderr,
 					"engine_index_files: callgraph_ready "
 					"UPDATE failed: %s "
 					"[module=engine, method=engine_index_files]\n",
-					g_store->error().c_str());
+					ctx->store->error().c_str());
 			}
 		}
 
@@ -599,9 +703,11 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 		// createIndexesAfterBulkLoad(project_id, !is_reindex) with
 		// is_reindex=false (M-12).
 		{
-			store::GraphStore::BulkPragmaGuard guard(g_store.get());
+			store::GraphStore::BulkPragmaGuard guard(
+				ctx->store.get());
 			auto t_idx = steady_clock::now();
-			g_store->createIndexesAfterBulkLoad(project_id, true);
+			ctx->store->createIndexesAfterBulkLoad(project_id,
+							       true);
 			fprintf(stderr,
 				"engine: createIndexesAfterBulkLoad=%lldms "
 				"[module=engine, method=engine_index_files]\n",
@@ -612,7 +718,7 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 
 		// Set the core-graph readiness flag so the project is
 		// queryable immediately after a file-list index (M-15).
-		g_store->setProjectReadiness(project_id, "normal_ready", 1);
+		ctx->store->setProjectReadiness(project_id, "normal_ready", 1);
 	}
 
 	// ── Build result JSON ──────────────────────────────────────
@@ -625,7 +731,7 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 
 	// Query node/edge counts
 	{
-		sqlite3 *db = g_store->handle();
+		sqlite3 *db = ctx->store->handle();
 		sqlite3_stmt *stmt = nullptr;
 		std::string sql =
 			"SELECT COUNT(*) FROM entity WHERE project_id = " +
@@ -662,6 +768,23 @@ char *engine_index_files(uint64_t project_id, const char *file_list_json)
 		store::setIndexProgress(p);
 	}
 
-	launchAsyncKnowledgeBuilder(project_id, !mode_fast);
+	launchAsyncKnowledgeBuilder(ctx, project_id, !mode_fast);
 	return dupString(result.str());
+}
+
+char *engine_index_files(engine_t handle, uint64_t project_id,
+			 const char *file_list_json, int bypass_fail_fast)
+{
+	EngineContext *ctx = engineInstance(handle);
+
+	try {
+		return indexFilesImpl(ctx, project_id, file_list_json,
+				      bypass_fail_fast);
+	} catch (const std::exception &e) {
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_index_files", e.what()));
+	} catch (...) {
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_index_files", "unknown exception"));
+	}
 }

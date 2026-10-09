@@ -92,8 +92,7 @@ const char *edgeTypeName(EdgeType t);
 // mapping. Production code MUST NOT branch on raw integer thresholds
 // such as `rtype >= 4`; it MUST call one of the helpers below.
 //
-// See `plan/rules/relation_contract.md` and Step 0 of
-// `ACCURACY_IMPROVEMENT_DEVELOPMENT_PLAN.md` for the full rationale.
+// See `plan/rules/relation_contract.md` for the full rationale.
 
 /// Convert an integer `relation.type` value to a strongly-typed EdgeType.
 /// Out-of-range values map to `EdgeType::References` (a safe non-call

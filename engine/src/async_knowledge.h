@@ -1,8 +1,12 @@
+// The async builder takes the engine instance explicitly (TD-1 knife 3).
+#include "engine_context.h"
+
 #ifndef CODESCOPE_ASYNC_KNOWLEDGE_H
 #define CODESCOPE_ASYNC_KNOWLEDGE_H
 
 #include <cstdint>
 #include <atomic>
+#include <mutex>
 #include <thread>
 
 namespace store
@@ -28,8 +32,8 @@ class GraphStore;
 //
 // THREAD SAFETY: the builder uses a global atomic flag to ensure only
 // one instance runs at a time. The background thread is joinable (not
-// detached) so that engine_shutdown can wait for it to finish before
-// destroying g_store, preventing use-after-free. Callers must call
+// detached) so that engine_destroy can wait for it to finish before
+// destroying the engine store, preventing use-after-free. Callers must call
 // joinAsyncKnowledgeBuilder() before destroying the GraphStore singleton.
 
 /// Launch the async post-index builder for a project.
@@ -37,15 +41,64 @@ class GraphStore;
 /// joinable background thread. Returns immediately.
 /// @param project_id  The project to enrich.
 /// @param run_fts     Whether to build the FTS index (skipped in fast mode).
-void launchAsyncKnowledgeBuilder(uint64_t project_id, bool run_fts = true);
+void launchAsyncKnowledgeBuilder(EngineContext *ctx, uint64_t project_id,
+				 bool run_fts = true);
 
 /// Wait for the async knowledge builder to finish (if running).
-/// Must be called before destroying g_store to prevent use-after-free.
+/// Must be called before destroying the engine store to prevent use-after-free.
+/// The wait is bounded by kBuilderJoinTimeoutMs; on timeout the builder
+/// thread is detached (not joined) and the function returns, so a wedged
+/// builder cannot deadlock a caller that already holds the connection
+/// lock. The log makes the cause traceable.
 void joinAsyncKnowledgeBuilder();
 
 /// Check whether the async knowledge builder is currently running.
 /// @return true if the builder thread is active.
 bool isAsyncKnowledgeBuilderRunning();
+
+/// Wait for the background knowledge builder before a READ touches the shared
+/// store, and hold the shared-connection lock until the returned guard is
+/// destroyed.
+///
+/// The builder runs on the same sqlite3 connection as the caller and opens its
+/// own transactions (module_summary / module_edge / FTS / model tables). A
+/// plain join only waits for the *current* builder: a later index call can
+/// launch a new writer while a read is still using the instance's store, and the two
+/// interleave BEGIN/COMMIT on the one shared connection. The returned guard
+/// is a `std::unique_lock` on the connection mutex the builder also holds for
+/// its whole body, so no builder SQL can run while the guard is alive.
+///
+/// Call sites MUST bind the guard for the duration of the store access:
+/// `auto _store_guard = waitForKnowledgeBuilder();`. Dropping it immediately
+/// (calling the function as a statement) re-opens the race.
+///
+/// BOUNDED WAIT: the acquisition is bounded by kStoreLockTimeoutMs (30 s). If
+/// the builder thread wedges while holding the lock (e.g. a SQLite backoff
+/// loop), the caller must NOT proceed to touch the instance's store concurrently, so a
+/// `std::runtime_error` is thrown instead. The FFI wrappers already catch
+/// `std::exception` and return an `[module=..., method=...]` error envelope,
+/// so a wedged builder degrades to "store unavailable" rather than hanging
+/// the MCP server forever.
+///
+/// SELF-HEALING: if the lock stays continuously held past
+/// kBuilderStallInterruptMs (5 min), the waiter issues a single
+/// `sqlite3_interrupt()` on the shared connection. That unblocks a stuck
+/// SQLite call in the builder, the builder unwinds, and its destructor
+/// releases the lock, so the store recovers without killing a thread. The
+/// threshold is far above any measured build, so it cannot abort a
+/// legitimately slow one. A stall in non-SQLite code cannot be interrupted;
+/// recovery is best-effort and logged.
+///
+/// Safe to call from any read entry point: the builder thread calls
+/// runModelIndexSync()/buildKnowledgeGraphSync() directly and never re-enters
+/// the read entry points, so this can never self-deadlock. The mutex is
+/// recursive so nested FFI entry points on one thread can re-acquire it.
+/// Never call joinAsyncKnowledgeBuilder while holding the guard across a
+/// running builder (the builder thread needs the same mutex to finish).
+///
+/// @throws std::runtime_error if the shared store lock cannot be acquired
+///         within kStoreLockTimeoutMs.
+std::unique_lock<std::recursive_timed_mutex> waitForKnowledgeBuilder();
 
 /// Synchronous entry point: build the module_edge table and set the
 /// knowledge_ready flag. Called by the background thread, but can also

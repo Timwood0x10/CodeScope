@@ -14,6 +14,7 @@
 // by extractFrameworkFacts.
 
 #include "semantic_fact_extractor.h"
+#include "util/json_writer.h"
 
 #include <cstdio>
 #include <sqlite3.h>
@@ -41,7 +42,11 @@ static constexpr int kNodeTypeMethod = 1; // NodeType::Method
 static constexpr double kConfidenceDefault = 1.0;
 static constexpr double kConfidenceIgnoredReturn = 0.8;
 static constexpr double kConfidenceUncheckedError = 0.7;
-static constexpr double kConfidenceCgoCallback = 0.6;
+// The confidence the `cgo_callback` rule will use once that rule exists. It is
+// deliberately kept rather than deleted — it is the only remaining reference to
+// the intended rule — and marked maybe_unused so the build stays warning-free
+// (2026-09-18 review #9b).
+[[maybe_unused]] static constexpr double kConfidenceCgoCallback = 0.6;
 
 // ─── Local helpers ────────────────────────────────────────────────
 
@@ -57,64 +62,11 @@ static std::string buildDetailJson(int line, const std::string &snippet,
 	out += "{\"line\":";
 	out += std::to_string(line);
 	out += ",\"snippet\":\"";
-	for (char c : snippet) {
-		switch (c) {
-		case '"':
-			out += "\\\"";
-			break;
-		case '\\':
-			out += "\\\\";
-			break;
-		case '\n':
-			out += "\\n";
-			break;
-		case '\r':
-			out += "\\r";
-			break;
-		case '\t':
-			out += "\\t";
-			break;
-		default:
-			if (static_cast<unsigned char>(c) < 0x20) {
-				// Control char: emit \u00XX for safety.
-				char buf[8];
-				snprintf(buf, sizeof(buf), "\\u%04x",
-					 static_cast<unsigned char>(c));
-				out += buf;
-			} else {
-				out += c;
-			}
-		}
-	}
+	out += util::jsonEscapeString(snippet);
+
 	out += "\",\"related_symbol\":\"";
-	for (char c : related_symbol) {
-		switch (c) {
-		case '"':
-			out += "\\\"";
-			break;
-		case '\\':
-			out += "\\\\";
-			break;
-		case '\n':
-			out += "\\n";
-			break;
-		case '\r':
-			out += "\\r";
-			break;
-		case '\t':
-			out += "\\t";
-			break;
-		default:
-			if (static_cast<unsigned char>(c) < 0x20) {
-				char buf[8];
-				snprintf(buf, sizeof(buf), "\\u%04x",
-					 static_cast<unsigned char>(c));
-				out += buf;
-			} else {
-				out += c;
-			}
-		}
-	}
+	out += util::jsonEscapeString(related_symbol);
+
 	out += "\"}";
 	return out;
 }
@@ -182,6 +134,73 @@ int64_t SemanticFactExtractor::extractAll(uint64_t project_id)
 //   .Add + WaitGroup qn → sync/waitgroup/add
 //   (defer)             → sync/defer  (detected via name='defer' in Go)
 
+/// Classify a Go synchronisation call name into the `primitive` / `kind`
+/// columns of the sync facts.
+///
+/// The name is the call's qualified Go selector as recorded by the visitor,
+/// e.g. `m.Lock`, `rw.RLock`, `rw.RUnlock`, `wg.Add`, `counter.Load`, `defer`.
+///
+/// The RWMutex forms are matched before the plain ones because ".RLock" also
+/// ends in "Lock" and ".RUnlock" also ends in "Unlock". The previous inline
+/// guard required a '.' immediately before "Lock", so `.RLock` / `.WLock` never
+/// entered the lock branch at all — their facts were dropped entirely and the
+/// `rwmutex_usage` rule was permanently empty, with the inner R/W checks left
+/// unreachable.
+///
+/// @param name      Call name as recorded (may be unqualified).
+/// @param primitive [out] "defer" / "mutex" / "rwmutex" / "atomic" /
+///                  "waitgroup" on success.
+/// @param kind      [out] "defer" / "lock" / "defer_unlock" / "load" / "add".
+/// @return false when the name matches none of the modelled forms, so the
+///         caller skips it instead of writing a fact with no meaning.
+static bool classifySyncCall(const std::string &name, std::string &primitive,
+			     std::string &kind)
+{
+	auto ends_with = [&name](const char *suffix) {
+		const size_t n = std::strlen(suffix);
+		return name.size() >= n &&
+		       name.compare(name.size() - n, n, suffix) == 0;
+	};
+	if (name == "defer") {
+		primitive = "defer";
+		kind = "defer";
+		return true;
+	}
+	if (ends_with(".RLock") || ends_with(".WLock")) {
+		primitive = "rwmutex";
+		kind = "lock";
+		return true;
+	}
+	if (ends_with(".RUnlock") || ends_with(".WUnlock")) {
+		primitive = "rwmutex";
+		kind = "defer_unlock";
+		return true;
+	}
+	if (ends_with(".Lock")) {
+		primitive = "mutex";
+		kind = "lock";
+		return true;
+	}
+	if (ends_with(".Unlock")) {
+		// The Evidence Builder's mutex_without_defer_unlock rule treats
+		// this as the optional match (kind="defer_unlock").
+		primitive = "mutex";
+		kind = "defer_unlock";
+		return true;
+	}
+	if (ends_with(".Load")) {
+		primitive = "atomic";
+		kind = "load";
+		return true;
+	}
+	if (ends_with(".Add")) {
+		primitive = "waitgroup";
+		kind = "add";
+		return true;
+	}
+	return false;
+}
+
 int64_t SemanticFactExtractor::extractSyncFacts(uint64_t project_id)
 {
 	// One SELECT that scans CallExpr records and tags each match with
@@ -192,10 +211,10 @@ int64_t SemanticFactExtractor::extractSyncFacts(uint64_t project_id)
 	const char *sql =
 		"SELECT sr.name, sr.qualified_name, sr.language, "
 		"  sr.start_row, sr.file_path, "
-		"  (SELECT gn.id FROM graph_nodes gn "
+		"  (SELECT gn.id FROM entity gn "
 		"    WHERE gn.project_id = sr.project_id "
 		"      AND gn.file_path = sr.file_path "
-		"      AND gn.node_type IN (?, ?) "
+		"      AND gn.kind IN (?, ?) "
 		"      AND gn.start_row <= sr.start_row "
 		"      AND (gn.end_row >= sr.start_row OR gn.end_row = 0) "
 		"    ORDER BY gn.start_row DESC LIMIT 1) AS fn_id "
@@ -203,6 +222,7 @@ int64_t SemanticFactExtractor::extractSyncFacts(uint64_t project_id)
 		"WHERE sr.project_id = ? AND sr.kind = ? "
 		"  AND (sr.name LIKE '%.Lock' OR sr.name LIKE '%.Unlock' "
 		"   OR sr.name LIKE '%.RLock' OR sr.name LIKE '%.WLock' "
+		"   OR sr.name LIKE '%.RUnlock' OR sr.name LIKE '%.WUnlock' "
 		"   OR (sr.name LIKE '%.Load' AND sr.qualified_name LIKE '%atomic%') "
 		"   OR (sr.name LIKE '%.Add' AND sr.qualified_name LIKE '%WaitGroup%') "
 		"   OR (sr.language = 'go' AND sr.name = 'defer'))";
@@ -233,46 +253,8 @@ int64_t SemanticFactExtractor::extractSyncFacts(uint64_t project_id)
 
 		std::string primitive;
 		std::string kind;
-		if (name == "defer") {
-			primitive = "defer";
-			kind = "defer";
-		} else if (name.size() >= 5 &&
-			   name.compare(name.size() - 4, 4, "Lock") == 0 &&
-			   name.size() >= 6 && name[name.size() - 5] == '.') {
-			// .Lock or .RLock or .WLock — per v0.3 plan section 3.2,
-			// all lock acquisitions use kind="lock" regardless of
-			// mutex flavor (mutex/rwmutex). The primitive column
-			// disambiguates the lock type.
-			if (name.size() >= 6 && name[name.size() - 6] == 'R') {
-				primitive = "rwmutex";
-				kind = "lock";
-			} else if (name.size() >= 6 &&
-				   name[name.size() - 6] == 'W') {
-				primitive = "rwmutex";
-				kind = "lock";
-			} else {
-				primitive = "mutex";
-				kind = "lock";
-			}
-		} else if (name.size() >= 7 &&
-			   name.compare(name.size() - 6, 6, "Unlock") == 0) {
-			// Any .Unlock() call — the Evidence Builder's
-			// mutex_without_defer_unlock rule treats this as the
-			// optional match (defer_unlock kind). Per v0.3 plan
-			// section 3.2 this is kind="defer_unlock".
-			primitive = "mutex";
-			kind = "defer_unlock";
-		} else if (name.size() >= 6 &&
-			   name.compare(name.size() - 5, 5, ".Load") == 0) {
-			primitive = "atomic";
-			kind = "load";
-		} else if (name.size() >= 5 &&
-			   name.compare(name.size() - 4, 4, ".Add") == 0) {
-			primitive = "waitgroup";
-			kind = "add";
-		} else {
-			continue; // safety net — should not happen
-		}
+		if (!classifySyncCall(name, primitive, kind))
+			continue; // not a synchronisation call we model
 
 		std::string detail = buildDetailJson(
 			start_row, name + " (" + file_path + ")",
@@ -301,10 +283,10 @@ int64_t SemanticFactExtractor::extractMemoryFacts(uint64_t project_id)
 	// C.CString / C.CBytes / C.free (Go cgo) + malloc/calloc/realloc/free.
 	const char *sql =
 		"SELECT sr.name, sr.start_row, sr.file_path, "
-		"  (SELECT gn.id FROM graph_nodes gn "
+		"  (SELECT gn.id FROM entity gn "
 		"    WHERE gn.project_id = sr.project_id "
 		"      AND gn.file_path = sr.file_path "
-		"      AND gn.node_type IN (?, ?) "
+		"      AND gn.kind IN (?, ?) "
 		"      AND gn.start_row <= sr.start_row "
 		"      AND (gn.end_row >= sr.start_row OR gn.end_row = 0) "
 		"    ORDER BY gn.start_row DESC LIMIT 1) AS fn_id "
@@ -392,10 +374,10 @@ int64_t SemanticFactExtractor::extractErrorFacts(uint64_t project_id)
 	// the Python/JS visitors.
 	const char *sql =
 		"SELECT sr.name, sr.language, sr.start_row, sr.file_path, "
-		"  (SELECT gn.id FROM graph_nodes gn "
+		"  (SELECT gn.id FROM entity gn "
 		"    WHERE gn.project_id = sr.project_id "
 		"      AND gn.file_path = sr.file_path "
-		"      AND gn.node_type IN (?, ?) "
+		"      AND gn.kind IN (?, ?) "
 		"      AND gn.start_row <= sr.start_row "
 		"      AND (gn.end_row >= sr.start_row OR gn.end_row = 0) "
 		"    ORDER BY gn.start_row DESC LIMIT 1) AS fn_id "
@@ -483,10 +465,10 @@ int64_t SemanticFactExtractor::extractPatternFacts(uint64_t project_id)
 	const char *sql =
 		"SELECT sr.name, sr.kind, sr.language, sr.start_row, "
 		"  sr.file_path, "
-		"  (SELECT gn.id FROM graph_nodes gn "
+		"  (SELECT gn.id FROM entity gn "
 		"    WHERE gn.project_id = sr.project_id "
 		"      AND gn.file_path = sr.file_path "
-		"      AND gn.node_type IN (?, ?) "
+		"      AND gn.kind IN (?, ?) "
 		"      AND gn.start_row <= sr.start_row "
 		"      AND (gn.end_row >= sr.start_row OR gn.end_row = 0) "
 		"    ORDER BY gn.start_row DESC LIMIT 1) AS fn_id "
@@ -601,10 +583,10 @@ int64_t SemanticFactExtractor::extractFrameworkFacts(uint64_t project_id)
 	// fact to. import.file_path is the source file (populated by the
 	// Python/JS/Go/Rust visitors when emitting Import records).
 	const char *sql = "SELECT i.target_path, i.file_path, "
-			  "  (SELECT gn.id FROM graph_nodes gn "
+			  "  (SELECT gn.id FROM entity gn "
 			  "    WHERE gn.project_id = i.project_id "
 			  "      AND gn.file_path = i.file_path "
-			  "      AND gn.node_type IN (?, ?) "
+			  "      AND gn.kind IN (?, ?) "
 			  "    ORDER BY gn.start_row LIMIT 1) AS fn_id "
 			  "FROM import i "
 			  "WHERE i.project_id = ? "
@@ -698,10 +680,10 @@ int64_t SemanticFactExtractor::extractFfiFacts(uint64_t project_id)
 	const char *sql =
 		"SELECT sr.name, sr.qualified_name, sr.language, "
 		"  sr.start_row, sr.file_path, sr.kind, "
-		"  (SELECT gn.id FROM graph_nodes gn "
+		"  (SELECT gn.id FROM entity gn "
 		"    WHERE gn.project_id = sr.project_id "
 		"      AND gn.file_path = sr.file_path "
-		"      AND gn.node_type IN (?, ?) "
+		"      AND gn.kind IN (?, ?) "
 		"      AND gn.start_row <= sr.start_row "
 		"      AND (gn.end_row >= sr.start_row OR gn.end_row = 0) "
 		"    ORDER BY gn.start_row DESC LIMIT 1) AS fn_id "
@@ -784,26 +766,31 @@ int64_t SemanticFactExtractor::extractFfiFacts(uint64_t project_id)
 	}
 	sqlite3_finalize(stmt);
 
-	// ── Query 2: Cross-language call edges (graph_edges) ──────────
+	// ── Query 2: Cross-language call edges (relation) ─────────────
 	// Detects Rust extern "C" functions and C functions declared in
 	// extern "C" blocks by finding functions whose callers come from a
 	// different language (e.g. Rust function called from C code).
+	// Reads the canonical `entity` / `relation` tables: `graph_nodes` /
+	// `graph_edges` are deprecated and are never populated by the
+	// production indexing path (engine_index_project → buildGraph), so a
+	// query against them silently yields zero facts. `relation.type = 1`
+	// is Calls (kRelationTypeCall).
 	const char *sql_xl =
-		"SELECT gn.name, gn.qualified_name, gn.language, "
-		"  gn.start_row, gn.file_path, gn.id AS fn_id "
-		"FROM graph_nodes gn "
-		"WHERE gn.project_id = ? "
-		"  AND gn.node_type IN (?, ?) "
-		"  AND gn.id IN ( "
-		"    SELECT ge.target_node_id "
-		"    FROM graph_edges ge "
-		"    JOIN graph_nodes gn_src ON ge.source_node_id = gn_src.id "
-		"    WHERE ge.project_id = ? "
-		"      AND gn_src.language != gn.language "
-		"      AND gn.language IN ('rust', 'c', 'cpp', 'zig')"
+		"SELECT e.name, e.qualified_name, e.language, "
+		"  e.start_row, e.file_path, e.id AS fn_id "
+		"FROM entity e "
+		"WHERE e.project_id = ? "
+		"  AND e.kind IN (?, ?) "
+		"  AND e.id IN ( "
+		"    SELECT r.target_id FROM relation r "
+		"    JOIN entity src ON r.source_id = src.id "
+		"    WHERE r.project_id = ? "
+		"      AND r.type = 1 "
+		"      AND src.language != e.language "
+		"      AND e.language IN ('rust', 'c', 'cpp', 'zig')"
 		"  ) "
 		"  -- Exclude functions already detected by Query 1 "
-		"  AND gn.id NOT IN (SELECT function_id FROM semantic_fact "
+		"  AND e.id NOT IN (SELECT function_id FROM semantic_fact "
 		"    WHERE project_id = ? AND category = 'ffi')";
 	sqlite3_stmt *stmt_xl = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), sql_xl, -1, &stmt_xl,

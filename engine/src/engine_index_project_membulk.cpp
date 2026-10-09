@@ -9,7 +9,7 @@
 // unique_ptr<FileResult> into a BoundedQueue, each worker appends to a
 // thread-local vector and merges into the aggregator when the buffer is
 // full or the worker exits. The post-parse graph-building sequence is shared
-// with the streaming path via engine_index_post_parse().
+// with the streaming path via postParsePhase().
 
 #include "engine_internal.h"
 #include "store/store_membulk.h"
@@ -33,15 +33,17 @@
 #include "ir/semantic_unit.h"
 #include "ir/translators/js_visitor.h"
 #include "engine_index_metrics.h"
+#include "store/store_parse_failure.h"
 
 char *engine_index_project_membulk(
-	uint64_t project_id, const std::string &dir, uint64_t max_file_size,
-	const FilterPolicy &filter,
+	EngineContext *ctx, uint64_t project_id, const std::string &dir,
+	uint64_t max_file_size, const FilterPolicy &filter,
 	const std::vector<std::pair<std::string, std::string>> &job_lang,
 	const std::unordered_map<std::string, const TSLanguage *> &lang_ptrs,
-	bool is_reindex, bool mode_fast, bool mode_deep)
+	const std::unordered_set<std::string> &known_failures, bool is_reindex,
+	bool mode_fast, bool mode_deep)
 {
-	if (!g_store)
+	if (!ctx || !ctx->store)
 		return dupString(
 			"{\"ok\":false,\"error\":\"engine not initialized\"}");
 
@@ -120,6 +122,17 @@ char *engine_index_project_membulk(
 				break;
 			auto &job = jobs[idx];
 
+			// Fail-fast: skip files that have failed >=
+			// CODESCOPE_FAIL_RETRY_MAX times. Mirrors the streaming path
+			// (engine_index_project.cpp) — this path used to ignore the
+			// skip set entirely, so on a project of <=2000 files (the
+			// common case) every run re-parsed and re-recorded the same
+			// unparseable files, and the documented "skipped entirely on
+			// the next run" behaviour never happened.
+			if (known_failures.find(job.path) !=
+			    known_failures.end())
+				continue;
+
 			// Progress log every 10%
 			int done = next_job.load();
 			if (done % progress_interval == 0 && done > 0)
@@ -130,23 +143,76 @@ char *engine_index_project_membulk(
 					(long long)done, (long long)total_files,
 					(int)(done * 100 / total_files));
 
-			// File size check
+			// File size check. stat() must be checked BEFORE the size
+			// comparison: the previous `stat(...) == 0 && ...` form
+			// fell through on stat failure and then read the
+			// uninitialized file_stat at result.mtime/result.fsize
+			// below, writing garbage into the incremental-index
+			// freshness baseline. Mirrors engine_index_project.
 			struct stat file_stat;
-			if (stat(job.path.c_str(), &file_stat) == 0 &&
-			    static_cast<uint64_t>(file_stat.st_size) >
-				    max_file_size)
+			if (stat(job.path.c_str(), &file_stat) != 0) {
+				store::bufferParseFailure(
+					project_id, job.path, job.lang,
+					store::failReasonToString(
+						store::FailReason::StatFailed));
 				continue;
+			}
+			if (static_cast<uint64_t>(file_stat.st_size) >
+			    max_file_size) {
+				// Policy skip, not a parse failure: a large
+				// generated file must not be permanently
+				// blacklisted by the fail-fast table.
+				fprintf(stderr,
+					"engine: skip oversize file (%s): %s "
+					"[module=engine, "
+					"method=engine_index_project_membulk]\n",
+					store::failReasonToString(
+						store::FailReason::FileTooLarge),
+					job.path.c_str());
+				continue;
+			}
+
+			// Grammar availability, checked BEFORE reading the file: see
+			// the streaming path (engine_index_project.cpp) for the full
+			// reasoning — no wasted I/O, and the LanguageMissing reason is
+			// recorded instead of a misleading parse_null_tree.
+			{
+				auto lit = lang_ptrs.find(job.lang);
+				if (lit == lang_ptrs.end() ||
+				    lit->second == nullptr) {
+					store::bufferParseFailure(
+						project_id, job.path, job.lang,
+						store::failReasonToString(
+							store::FailReason::
+								LanguageMissing));
+					continue;
+				}
+			}
 
 			std::string source = readFile(job.path.c_str());
-			if (source.empty())
+			if (source.empty()) {
+				store::bufferParseFailure(
+					project_id, job.path, job.lang,
+					store::failReasonToString(
+						store::FailReason::ReadEmpty));
 				continue;
+			}
 
 			// Per-thread parser
 			auto pit = tl_parsers.find(job.lang);
 			if (pit == tl_parsers.end()) {
+				// Grammar availability was validated above (a null
+				// grammar never reaches this point), so the lookup only
+				// needs the presence check.
 				auto lit = lang_ptrs.find(job.lang);
-				if (lit == lang_ptrs.end())
+				if (lit == lang_ptrs.end()) {
+					store::bufferParseFailure(
+						project_id, job.path, job.lang,
+						store::failReasonToString(
+							store::FailReason::
+								LanguageMissing));
 					continue;
+				}
 				std::unique_ptr<TSParser, TSParserDeleter> np(
 					ts_parser_new());
 				ts_parser_set_language(np.get(), lit->second);
@@ -158,8 +224,14 @@ char *engine_index_project_membulk(
 					pit->second.get(), nullptr,
 					source.c_str(),
 					static_cast<uint32_t>(source.size())));
-			if (!tree)
+			if (!tree) {
+				store::bufferParseFailure(
+					project_id, job.path, job.lang,
+					store::failReasonToString(
+						store::FailReason::
+							ParseNullTree));
 				continue;
+			}
 
 			store::FileResult result;
 			result.file_path = job.path;
@@ -182,9 +254,39 @@ char *engine_index_project_membulk(
 			}
 
 			if (visitor) {
-				ir::SemanticUnit *su = visitor->visit(
-					tree.get(), source.c_str(),
-					job.path.c_str());
+				ir::SemanticUnit *su = nullptr;
+				// The visitor transfers ownership of the returned
+				// unit to the caller (see js_visitor.h); without
+				// this guard every parsed file leaks one
+				// SemanticUnit.
+				std::unique_ptr<ir::SemanticUnit> su_guard;
+				// A visitor exception must not escape this worker
+				// thread: it would reach std::terminate and abort
+				// the whole process mid-index. The streaming path
+				// already catches these; this path previously did
+				// not, so any malformed file could kill the
+				// default (<=2000 files) index run.
+				try {
+					su = visitor->visit(tree.get(),
+							    source.c_str(),
+							    job.path.c_str());
+				} catch (const std::exception &e) {
+					store::bufferParseFailure(
+						project_id, job.path, job.lang,
+						std::string(store::failReasonToString(
+							store::FailReason::
+								VisitorException)) +
+							": " + e.what());
+					continue;
+				} catch (...) {
+					store::bufferParseFailure(
+						project_id, job.path, job.lang,
+						store::failReasonToString(
+							store::FailReason::
+								VisitorUnknownThrow));
+					continue;
+				}
+				su_guard.reset(su);
 				if (su) {
 					result.records = su->allRecords();
 					result.metrics = index_metrics::
@@ -198,12 +300,36 @@ char *engine_index_project_membulk(
 				auto translator =
 					ir::createTranslator(job.lang.c_str());
 				if (!translator) {
+					store::bufferParseFailure(
+						project_id, job.path, job.lang,
+						store::failReasonToString(
+							store::FailReason::
+								LanguageMissing));
 					continue;
 				}
-				ir::TranslationUnit *unit =
-					translator->translate(tree.get(),
-							      source.c_str(),
-							      job.path.c_str());
+				// RAII ownership: the translator contract says
+				// the caller frees the unit (ir_translator.h).
+				std::unique_ptr<ir::TranslationUnit> unit;
+				try {
+					unit.reset(translator->translate(
+						tree.get(), source.c_str(),
+						job.path.c_str()));
+				} catch (const std::exception &e) {
+					store::bufferParseFailure(
+						project_id, job.path, job.lang,
+						std::string(store::failReasonToString(
+							store::FailReason::
+								VisitorException)) +
+							": " + e.what());
+					continue;
+				} catch (...) {
+					store::bufferParseFailure(
+						project_id, job.path, job.lang,
+						store::failReasonToString(
+							store::FailReason::
+								VisitorUnknownThrow));
+					continue;
+				}
 				if (unit) {
 					// Convert TranslationUnit nodes to flat records.
 					uint64_t flat_id = 1;
@@ -242,7 +368,8 @@ char *engine_index_project_membulk(
 					if (unit->root)
 						flatten(unit->root, 0);
 					result.metrics = index_metrics::
-						computeMetricsFromUnit(unit);
+						computeMetricsFromUnit(
+							unit.get());
 				}
 			}
 
@@ -303,10 +430,18 @@ char *engine_index_project_membulk(
 	// indexes and skip the per-file DELETE on a fresh DB.
 	int total_indexed = static_cast<int>(agg.size());
 	auto t_flush_start = steady_clock::now();
-	if (!agg.flush(*g_store, project_id, is_reindex)) {
+	if (!agg.flush(*ctx->store, project_id, is_reindex)) {
 		return dupString(
 			"{\"ok\":false,\"error\":\"membulk flush failed\"}");
 	}
+	// Flush the parse failures this path buffered. The streaming path does
+	// this at its own end (engine_index_project.cpp), but memBulk RETURNS
+	// EARLY from the dispatcher and never reached that call — so for every
+	// project of <=2000 files (the common case) `parse_failures` stayed
+	// empty, and an unparseable file was dropped with no record anywhere.
+	// Runs after the bulk transaction (agg.flush) has closed, so the
+	// auxiliary connection does not contend with it.
+	store::flushParseFailures(ctx);
 	auto t_flush_end = steady_clock::now();
 	fprintf(stderr,
 		"engine: membulk_flush=%lldms (files=%d, is_reindex=%d) "
@@ -321,7 +456,7 @@ char *engine_index_project_membulk(
 	post_paths.reserve(job_lang.size());
 	for (const auto &pl : job_lang)
 		post_paths.push_back(pl.first);
-	return engine_index_post_parse(project_id, dir, post_paths, filter,
-				       is_reindex, mode_fast, mode_deep,
-				       time_parse_ms, 0, total_indexed);
+	return postParsePhase(ctx, project_id, dir, post_paths, filter,
+			      is_reindex, mode_fast, mode_deep, time_parse_ms,
+			      0, total_indexed);
 }

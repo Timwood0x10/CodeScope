@@ -1,7 +1,7 @@
 # CodeScope Architecture
 
-**Version**: 0.4.0  
-**Date**: 2026-07-12
+**Version**: v0.2.7  
+**Date**: 2026-10-01
 
 ---
 
@@ -256,7 +256,7 @@ sequenceDiagram
 
     Client->>Server: tools/call index_project
     Server->>Worker: spawn subprocess
-    Worker->>DB: Write semantic_records + graph_nodes
+    Worker->>DB: Write semantic_records + entity + relation
     Worker-->>Server: stdout JSON result
     Server->>Server: RUNTIME.spawn(build_fts)
     Server-->>Client: {"ok":true, "files_indexed":N}
@@ -279,7 +279,7 @@ sequenceDiagram
 | `search` (graph fallback) | **<10 ms** | LIKE fallback search |
 | `get_module_tree` | **<1 ms** | Lightweight query |
 | `get_entry_points` | **<1 ms** | Indexed lookup |
-| `get_communities` | ❌ Engine impl exists, no MCP tool — use `connected_components` instead | — |
+| `get_communities` | ✅ Available — deterministic label propagation over CALLS edges; summary-first (`max_communities` / `include_members` / `max_members`) | — |
 | `get_index_progress` | **<1 ms** | Atomic global read |
 
 ---

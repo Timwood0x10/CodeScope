@@ -23,6 +23,8 @@ class JavaTranslator : public Translator {
 	TranslationUnit *unit_ = nullptr;
 	const char *source_ = nullptr;
 	std::string file_path_;
+	// Recursion counter for this file (see kMaxTranslateDepth).
+	TranslateDepth depth_;
 
 	struct Scope {
 		std::unordered_map<std::string, Node *> symbols;
@@ -33,6 +35,12 @@ class JavaTranslator : public Translator {
 	Node *makeNode(NodeKind kind, TSNode ts_node);
 	void setLocation(Node *node, TSNode ts_node);
 	std::string nodeText(TSNode ts_node);
+	/// The declared name of a Java declaration node.
+	///
+	/// Prefers the grammar's own `name` field and falls back to the LAST
+	/// top-level identifier. See the definition for why a first-match scan is
+	/// wrong here.
+	std::string declaredName(TSNode ts_node);
 
 	void pushScope()
 	{
@@ -77,6 +85,7 @@ class JavaTranslator : public Translator {
 TranslationUnit *JavaTranslator::translate(TSTree *tree, const char *source,
 					   const char *file_path)
 {
+	depth_.reset();
 	unit_ = new TranslationUnit();
 	unit_->source_content = source;
 	source_ = source;
@@ -120,6 +129,36 @@ void JavaTranslator::setLocation(Node *node, TSNode ts_node)
 	node->loc.start_col = start.column;
 	node->loc.end_row = end.row;
 	node->loc.end_col = end.column;
+}
+
+std::string JavaTranslator::declaredName(TSNode ts_node)
+{
+	// The grammar's `name` field is authoritative: class_declaration,
+	// interface_declaration, method_declaration, constructor_declaration and
+	// enum_declaration all define one.
+	TSNode named = ts_node_child_by_field_name(ts_node, "name", 4);
+	if (!ts_node_is_null(named))
+		return nodeText(named);
+
+	// Fallback for node shapes that do not expose the field: take the LAST
+	// top-level identifier, because a Java declaration writes the type before
+	// the name. The previous first-match scan is what named every non-void
+	// method after its RETURN TYPE — this grammar spells a class type as
+	// `identifier` as well, so `public String processUpdateForm(...)` became an
+	// entity called `String` (measured on spring-petclinic: 27 entities named
+	// `String`, 4 `Pet`, 3 `LocalDate`, 2 `PetType`, 2 `Owner`, while every
+	// `void` method kept its real name — its type node is `void_type`, not
+	// `identifier`). Those type-named entities then received edges under the
+	// single-same-module-candidate heuristic, so the damage was not only
+	// cosmetic.
+	std::string last;
+	const uint32_t count = ts_node_child_count(ts_node);
+	for (uint32_t i = 0; i < count; i++) {
+		TSNode child = ts_node_child(ts_node, i);
+		if (strcmp(ts_node_type(child), "identifier") == 0)
+			last = nodeText(child);
+	}
+	return last;
 }
 
 std::string JavaTranslator::nodeText(TSNode ts_node)
@@ -325,6 +364,13 @@ Node *JavaTranslator::translateNode(TSNode ts_node, Node *parent)
 
 void JavaTranslator::translateChildren(TSNode ts_node, Node *parent)
 {
+	// Bound native-stack recursion (see kMaxTranslateDepth): a pathologically
+	// deep AST would overflow the indexer's 512 KB worker stack, which the FFI
+	// try/catch cannot recover. The visitors apply the same bound.
+	if (depth_.exceeded(file_path_.c_str(), "translateChildren"))
+		return;
+	DepthGuard depth_guard(depth_);
+
 	uint32_t count = ts_node_child_count(ts_node);
 	for (uint32_t i = 0; i < count; i++) {
 		TSNode child = ts_node_child(ts_node, i);
@@ -337,15 +383,7 @@ void JavaTranslator::translateChildren(TSNode ts_node, Node *parent)
 Node *JavaTranslator::handleClass(TSNode ts_node, Node *parent)
 {
 	auto *cls = makeNode(NodeKind::ClassDecl, ts_node);
-
-	uint32_t count = ts_node_child_count(ts_node);
-	for (uint32_t i = 0; i < count; i++) {
-		TSNode child = ts_node_child(ts_node, i);
-		if (strcmp(ts_node_type(child), "identifier") == 0) {
-			cls->name = nodeText(child);
-			break;
-		}
-	}
+	cls->name = declaredName(ts_node);
 
 	defineSymbol(cls->name, cls);
 	parent->children.push_back(cls);
@@ -361,15 +399,7 @@ Node *JavaTranslator::handleClass(TSNode ts_node, Node *parent)
 Node *JavaTranslator::handleInterface(TSNode ts_node, Node *parent)
 {
 	auto *iface = makeNode(NodeKind::ClassDecl, ts_node);
-
-	uint32_t count = ts_node_child_count(ts_node);
-	for (uint32_t i = 0; i < count; i++) {
-		TSNode child = ts_node_child(ts_node, i);
-		if (strcmp(ts_node_type(child), "identifier") == 0) {
-			iface->name = nodeText(child);
-			break;
-		}
-	}
+	iface->name = declaredName(ts_node);
 
 	defineSymbol(iface->name, iface);
 	parent->children.push_back(iface);
@@ -384,14 +414,11 @@ Node *JavaTranslator::handleMethod(TSNode ts_node, Node *parent)
 {
 	auto *method = makeNode(NodeKind::MethodDecl, ts_node);
 
+	// See declaredName(): in this grammar a class return type is spelled
+	// `identifier`, so the previous first-match scan named a method after its
+	// type whenever the type was not a primitive or `void`.
+	method->name = declaredName(ts_node);
 	uint32_t count = ts_node_child_count(ts_node);
-	for (uint32_t i = 0; i < count; i++) {
-		TSNode child = ts_node_child(ts_node, i);
-		if (strcmp(ts_node_type(child), "identifier") == 0) {
-			method->name = nodeText(child);
-			break;
-		}
-	}
 
 	defineSymbol(method->name, method);
 	parent->children.push_back(method);
@@ -424,14 +451,11 @@ Node *JavaTranslator::handleConstructor(TSNode ts_node, Node *parent)
 {
 	auto *method = makeNode(NodeKind::MethodDecl, ts_node);
 
+	// See declaredName(): in this grammar a class return type is spelled
+	// `identifier`, so the previous first-match scan named a method after its
+	// type whenever the type was not a primitive or `void`.
+	method->name = declaredName(ts_node);
 	uint32_t count = ts_node_child_count(ts_node);
-	for (uint32_t i = 0; i < count; i++) {
-		TSNode child = ts_node_child(ts_node, i);
-		if (strcmp(ts_node_type(child), "identifier") == 0) {
-			method->name = nodeText(child);
-			break;
-		}
-	}
 
 	defineSymbol(method->name, method);
 	parent->children.push_back(method);
@@ -603,15 +627,7 @@ Node *JavaTranslator::handleNew(TSNode ts_node, Node *parent)
 Node *JavaTranslator::handleEnum(TSNode ts_node, Node *parent)
 {
 	auto *en = makeNode(NodeKind::EnumDecl, ts_node);
-
-	uint32_t count = ts_node_child_count(ts_node);
-	for (uint32_t i = 0; i < count; i++) {
-		TSNode child = ts_node_child(ts_node, i);
-		if (strcmp(ts_node_type(child), "identifier") == 0) {
-			en->name = nodeText(child);
-			break;
-		}
-	}
+	en->name = declaredName(ts_node);
 
 	defineSymbol(en->name, en);
 	parent->children.push_back(en);

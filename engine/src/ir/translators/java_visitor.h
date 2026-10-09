@@ -16,11 +16,32 @@ class JavaVisitor : public JsVisitor {
     protected:
 	void visitNode(TSNode node, uint64_t parent_id) override;
 
+	/// Emit one method/constructor parameter and record its type.
+	///
+	/// The type binding is what lets `handleMethodInvocation` fill in
+	/// `receiver_type` for a call through a parameter
+	/// (`void use(Drawable d) { d.draw(); }`); without it the receiver
+	/// evidence is empty and the resolver's ambiguity gate abstains.
+	///
+	/// \param node       A `formal_parameter` / `spread_parameter` node.
+	/// \param parent_id  Record id of the declaring method/class.
+	void handleFormalParameter(TSNode node, uint64_t parent_id);
+
     private:
 	void handleMethodDecl(TSNode node, uint64_t parent_id);
 	void handleClassDecl(TSNode node, uint64_t parent_id);
 	void handleInterfaceDecl(TSNode node, uint64_t parent_id);
 	void handleEnumDecl(TSNode node, uint64_t parent_id);
+	/// Emit one InterfaceImpl record per type named in an `implements`
+	/// clause subtree. tree-sitter-java nests the interface names in a
+	/// `type_list` (and generic arguments in `generic_type`), so the previous
+	/// direct-children scan of `super_interfaces` never matched and every
+	/// `implements` edge was silently dropped.
+	/// \param node       A `super_interfaces` / `type_list` subtree.
+	/// \param impl_type  Name of the implementing class.
+	/// \param parent_id  Record to attach the impl records to (the class).
+	void emitInterfaceImpls(TSNode node, const std::string &impl_type,
+				uint64_t parent_id);
 	void handleMethodInvocation(TSNode node, uint64_t parent_id);
 	/// Emit a Call record for a `new` constructor expression
 	/// (object_creation_expression), mirroring handleMethodInvocation

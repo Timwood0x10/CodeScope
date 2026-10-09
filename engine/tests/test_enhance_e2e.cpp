@@ -4,7 +4,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <sqlite3.h>
 #include <string>
+#include "test_engine_handle.h"
 
 namespace fs = std::filesystem;
 
@@ -45,6 +47,29 @@ static void write_file(const std::string &path, const char *content)
 	fclose(f);
 }
 
+// Count rows of a single table in the project DB. Opens a fresh read
+// connection so it does not disturb the engine's handle. Returns -1 on error.
+static int count_rows(const char *sql)
+{
+	sqlite3 *db = nullptr;
+	if (sqlite3_open(kDbPath, &db) != SQLITE_OK) {
+		sqlite3_close(db);
+		return -1;
+	}
+	sqlite3_stmt *st = nullptr;
+	int n = -1;
+	if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) == SQLITE_OK) {
+		if (sqlite3_step(st) == SQLITE_ROW)
+			n = sqlite3_column_int(st, 0);
+		sqlite3_finalize(st);
+	}
+	sqlite3_close(db);
+	return n;
+}
+
+// count_rows lives above: the tests only ever read the project DB, because the
+// engine holds its write lock for the whole run.
+
 int main()
 {
 	std::error_code ec;
@@ -82,32 +107,69 @@ int helper(int x) {
 static int internal_impl(int x) {
     return x * 2;
 }
+
+// Capability-named function so buildCapabilityState emits a row
+// (name LIKE 'Auth%'), used by the idempotency check below.
+int AuthGuard(int x) {
+    return x + 1;
+}
 )");
 
 	// ─── Step 1: init + create project ───
-	check(engine_init(kDbPath) == 0, "engine_init");
-	uint64_t pid = engine_create_project(kProjDir, "enhance_e2e");
+	g_engine = engine_create(kDbPath);
+	check(g_engine != nullptr, "engine_init");
+	uint64_t pid = engine_create_project(g_engine, kProjDir, "enhance_e2e");
 	check(pid > 0, "create_project");
 	printf("PASS: project_id=%llu\n", (unsigned long long)pid);
 
 	// ─── Step 2: index (3 files) ───
-	char *idx = engine_index_project(pid, kProjDir, NULL);
+	char *idx = engine_index_project(g_engine, pid, kProjDir, NULL);
 	check(idx != nullptr, "index_project result");
 	check_json_has(idx, "\"ok\":true", "index_project ok");
 	printf("PASS: index ok — %s\n", idx);
 	engine_free_string(idx);
 
+	// capability_state now mirrors the DECLARED capabilities (the
+	// `capability` table, filled from the project README by the knowledge
+	// builder) instead of entity names that merely look like one: the
+	// hard-coded prefix list (Auth%/Login%/JWT%/Config%/…) is gone, so
+	// AuthGuard on its own no longer produces a row, and build_project_state
+	// no longer reports a capability score that answers a different question
+	// than the drift tools. The assertion below is the invariant itself, so
+	// it holds for a fixture that declares capabilities and for one like
+	// this that declares none.
+
 	// ─── Step 3: enhance (first run) ───
 	// Note: index already builds the graph, so enhance may be a no-op.
-	char *enh = engine_enhance_project(pid);
+	char *enh = engine_enhance_project(g_engine, pid);
 	check(enh != nullptr, "enhance_project result");
 	check(strstr(enh, "\"status\"") != nullptr,
 	      "enhance: has status field");
+	// Honest reporting (2026-09-27 review D1-5): the success path
+	// must state ok:true + status:"ok" explicitly. A failed step now returns
+	// ok:false with failed_step instead of claiming success over a
+	// rolled-back graph.
+	check_json_has(enh, "\"ok\":true", "enhance: ok true on success");
+	check_json_has(enh, "\"status\":\"ok\"",
+		       "enhance: status ok on success");
 	printf("PASS: enhance run1 — %s\n", enh);
 	engine_free_string(enh);
 
+	// Idempotency baseline (2026-09-27 review, second pass):
+	// capability_state and workflow_step are derived tables that a pre-fix
+	// build re-appended on every enhance (no UNIQUE / no delete-first),
+	// doubling capability/workflow counts per run. Capture the counts after
+	// the first enhance; Step 6 asserts a second enhance does not grow them.
+	int cap1 = count_rows("SELECT COUNT(*) FROM capability_state");
+	int ws1 = count_rows("SELECT COUNT(*) FROM workflow_step");
+	check(cap1 == count_rows("SELECT COUNT(*) FROM capability"),
+	      "capability_state mirrors the declared capabilities");
+	check(ws1 >= 1, "workflow_step must have >=1 row (main workflow)");
+	printf("PASS: idempotency baseline — capability_state=%d workflow_step=%d\n",
+	       cap1, ws1);
+
 	// ─── Step 4: check enhancement status ───
-	char *st = engine_get_enhancement_status(pid);
+	char *st = engine_get_enhancement_status(g_engine, pid);
 	check(st != nullptr, "enhancement_status result");
 	int total_st = 0, cg_st = 0, met_st = 0, emb_st = 0;
 	sscanf(st,
@@ -123,14 +185,15 @@ static int internal_impl(int x) {
 
 	// ─── Step 5: cross-file caller/callee checks ───
 	// main() calls helper(int) via `helper(42)` — cross-file edge from buildGraph
-	char *callees_main = engine_get_callees(pid, "main", nullptr);
+	char *callees_main = engine_get_callees(g_engine, pid, "main", nullptr);
 	check(callees_main != nullptr, "callees of main");
 	check_json_has(callees_main, "helper", "callees of main: has helper");
 	printf("PASS: callees of main (cross-file) ok\n%s\n", callees_main);
 	engine_free_string(callees_main);
 
 	// helper(int) calls internal_impl — same-file regex edge
-	char *callees_helper = engine_get_callees(pid, "helper", nullptr);
+	char *callees_helper =
+		engine_get_callees(g_engine, pid, "helper", nullptr);
 	check(callees_helper != nullptr, "callees of helper(int)");
 	check_json_has(callees_helper, "internal_impl",
 		       "callees of helper: has internal_impl");
@@ -138,7 +201,8 @@ static int internal_impl(int x) {
 	engine_free_string(callees_helper);
 
 	// internal_impl is called by helper(int)
-	char *callers_impl = engine_get_callers(pid, "internal_impl", nullptr);
+	char *callers_impl =
+		engine_get_callers(g_engine, pid, "internal_impl", nullptr);
 	check(callers_impl != nullptr, "callers of internal_impl");
 	check_json_has(callers_impl, "helper",
 		       "callers of internal_impl: has helper");
@@ -146,23 +210,31 @@ static int internal_impl(int x) {
 	engine_free_string(callers_impl);
 
 	// ─── Step 6: rerun idempotency ───
-	char *enh2 = engine_enhance_project(pid);
+	char *enh2 = engine_enhance_project(g_engine, pid);
 	check(enh2 != nullptr, "enhance_project rerun");
 	check_json_has(enh2, "\"status\"", "enhance rerun has status");
-	char *st2 = engine_get_enhancement_status(pid);
+	char *st2 = engine_get_enhancement_status(g_engine, pid);
 	check(st2 != nullptr, "status after rerun");
 	int cg_st2 = 0;
 	sscanf(st2, "{\"total_symbols\":%d,\"callgraph_ready\":%d", &total_st,
 	       &cg_st2);
 	// Idempotency: callgraph_ready must not decrease
 	check(cg_st2 == cg_st, "rerun: callgraph_ready unchanged");
-	printf("PASS: rerun idempotent — cg_ready %d→%d\n%s\n%s\n",
-	       cg_st, cg_st2, enh2, st2);
+	// Idempotency: derived state tables must not grow on a second enhance.
+	int cap2 = count_rows("SELECT COUNT(*) FROM capability_state");
+	int ws2 = count_rows("SELECT COUNT(*) FROM workflow_step");
+	check(cap2 == cap1,
+	      "rerun: capability_state must not grow (delete-first rebuild)");
+	check(ws2 == ws1,
+	      "rerun: workflow_step must not grow (delete-first rebuild)");
+	printf("PASS: rerun idempotent — cg_ready %d→%d, capability_state %d→%d, "
+	       "workflow_step %d→%d\n%s\n%s\n",
+	       cg_st, cg_st2, cap1, cap2, ws1, ws2, enh2, st2);
 	engine_free_string(enh2);
 	engine_free_string(st2);
 
 	// ─── Step 7: trace path (BFS on call_edges) ───
-	char *trace = engine_trace_path(pid, "main", "internal_impl");
+	char *trace = engine_trace_path(g_engine, pid, "main", "internal_impl");
 	check(trace != nullptr, "trace_path result");
 	check_json_has(trace, "\"path\"", "trace: has path");
 	check_json_has(trace, "main", "trace: contains main");
@@ -172,7 +244,7 @@ static int internal_impl(int x) {
 	engine_free_string(trace);
 
 	// ─── Step 8: overview (smoke check) ───
-	char *overview = engine_get_project_overview(pid);
+	char *overview = engine_get_project_overview(g_engine, pid);
 	check(overview != nullptr, "overview");
 	check_json_has(overview, "\"total_nodes\"",
 		       "overview: has total_nodes");
@@ -180,7 +252,8 @@ static int internal_impl(int x) {
 	engine_free_string(overview);
 
 	// ─── Cleanup ───
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 	fs::remove_all(kProjDir, ec);
 	fs::remove(kDbPath, ec);
 

@@ -237,6 +237,9 @@ struct MatchedFact {
 	std::string symbol;
 	double confidence = 1.0;
 	std::string detail_json;
+	/// Name of the entity the fact is attached to (semantic_fact.function_id).
+	/// Empty when the join finds nothing.
+	std::string enclosing_symbol;
 };
 
 // SELECT semantic_fact rows matching a single FactNeed for one
@@ -253,10 +256,18 @@ std::vector<MatchedFact> queryFactsForNeed(store::GraphStore *store,
 	sqlite3 *db = store->handle();
 	if (!db)
 		return out;
-	const char *sql = "SELECT id, function_id, category, primitive, kind, "
-			  "symbol, confidence, IFNULL(detail_json, '') "
-			  "FROM semantic_fact WHERE project_id = ? "
-			  "AND category = ? AND primitive = ? AND kind = ?";
+	// Every column is qualified: `entity` has an `id` (and a `name`) of its
+	// own, so an unqualified `id` in the select list makes the whole statement
+	// fail to prepare — and this function then answers with ZERO facts, i.e.
+	// every rule silently stops producing evidence.
+	const char *sql =
+		"SELECT f.id, f.function_id, f.category, f.primitive, f.kind, "
+		"f.symbol, f.confidence, IFNULL(f.detail_json, ''), "
+		"IFNULL(e.name, '') "
+		"FROM semantic_fact f "
+		"LEFT JOIN entity e ON e.id = f.function_id "
+		"WHERE f.project_id = ? "
+		"AND f.category = ? AND f.primitive = ? AND f.kind = ?";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
 		fprintf(stderr,
@@ -283,6 +294,7 @@ std::vector<MatchedFact> queryFactsForNeed(store::GraphStore *store,
 		mf.symbol = colText(stmt, 5);
 		mf.confidence = sqlite3_column_double(stmt, 6);
 		mf.detail_json = colText(stmt, 7);
+		mf.enclosing_symbol = colText(stmt, 8);
 		out.push_back(std::move(mf));
 	}
 	return out;
@@ -297,7 +309,17 @@ EvidenceItem toEvidenceItem(const MatchedFact &mf)
 	item.category = mf.category;
 	item.primitive = mf.primitive;
 	item.kind = mf.kind;
-	item.symbol = mf.symbol;
+	// A fact's own `symbol` is not always a symbol name: a TODO/FIXME marker is
+	// a *comment* record, whose "name" is the comment text, and the rule
+	// templates print {symbol} as the subject of the message — which produced
+	// "5 TODO marker(s) may indicate plan-code drift" listing items whose
+	// symbol was "// Comment records (kind=14) whose name contains TODO/FIXME"
+	// (the extractor's own source comment). The enclosing function the fact is
+	// attached to is the actionable subject, and the comment text still travels
+	// in the item's `snippet` (parsed from detail_json). Facts about a real
+	// symbol keep that symbol.
+	item.symbol = mf.enclosing_symbol.empty() ? mf.symbol :
+						    mf.enclosing_symbol;
 	applyDetailJson(mf.detail_json, item);
 	return item;
 }
@@ -473,6 +495,13 @@ std::vector<Evidence> combineCount(store::GraphStore *store,
 	if (rule.needs.empty())
 		return result;
 	auto primary = queryFactsForNeed(store, project_id, rule.needs[0]);
+	// No matches → no finding. Every other combine mode returns no Evidence in
+	// that case and the dispatcher's contract is "0 = no matches", but this one
+	// emitted a row with count=0 — making a rule that found nothing look like an
+	// inspector that produced a result, which inflated
+	// overall.inspectors_ran (and the confidence derived from it).
+	if (primary.empty())
+		return result;
 	Evidence ev;
 	ev.category = rule.category;
 	ev.confidence = 1.0;

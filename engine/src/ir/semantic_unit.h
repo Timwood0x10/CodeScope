@@ -72,6 +72,16 @@ enum class RecordKind : uint8_t {
 	/// The `name` field stores the implementing type name.
 	/// The `type_name` field stores the interface/trait name.
 	InterfaceImpl,
+	/// Import binding: the local name a module was bound to, and the module.
+	/// The `name` field stores the local binding, `type_name` the module
+	/// specifier as written ("./helper"). Distinct from `Import`, which records
+	/// the whole import STATEMENT — that is what the `import` table is built
+	/// from and what the visitor tests count, and a statement with three
+	/// bindings produces one `Import` plus three `ImportBinding` records. The
+	/// store derives the `import` table's `alias` from the module path's last
+	/// segment, so it cannot express this pair; the Resolver reads it from here
+	/// to tie a bare call to the module it came from.
+	ImportBinding,
 };
 
 /// Kind of a call expression — used to distinguish direct calls from
@@ -84,6 +94,10 @@ enum class CallKind : uint8_t {
 	Constructor = 3, // constructor/factory call: NewService()
 	StaticMethod =
 		4, // static method call: ClassName.staticMethod() (Java/C++)
+	// Not emitted by any visitor yet: Java records `Class.m()` as
+	// Method through its receiver check (java_visitor.cpp), and that is
+	// the conservative direction — the resolver's fuzzy fallback only
+	// accepts CallKind::Direct, so a static call is never guessed.
 	Virtual = 5, // virtual dispatch / trait method (C++/Rust)
 };
 
@@ -128,7 +142,7 @@ struct Record {
 	/// Populated by Visitors per language; flows Record → SemanticUnit →
 	/// entity.visibility column via the staging pipeline. The role classifier
 	/// in state_builder.cpp fuses pub_count (visibility=1) with call-graph
-	/// counts — see docs/dev_plans/role_classifier_plan.md.
+	/// counts.
 	int visibility = 0;
 
 	// ── Call fact fields (Step 3, plan §3.1) ────────────────────────

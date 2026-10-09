@@ -1,5 +1,6 @@
 #include "ts_visitor.h"
 
+#include <cctype>
 #include <cstring>
 #include <tree_sitter/api.h>
 
@@ -24,8 +25,14 @@ SemanticUnit *TsVisitor::visit(TSTree *tree, const char *source,
 	// file do not leak into the current file's receiver inference.
 	var_types_.clear();
 	class_scope_stack_.clear();
+	import_aliases_.clear();
 
 	TSNode root_node = ts_tree_root_node(tree);
+	// Names this file defines, so a user function whose name collides with a
+	// JS/TS builtin (`function map() {}`, `function format() {}`) is not
+	// dropped by visitCallExpr's builtin filter.
+	defined_names_.clear();
+	collectDefinedNames(root_node);
 	pushScope();
 	SourceRange root_loc = location(root_node);
 	uint64_t root_id = emitter_->emitVariable("", root_loc, 0);
@@ -48,9 +55,75 @@ void TsVisitor::visitNode(TSNode node, uint64_t parent_id)
 		return visitTypeAliasDecl(node, parent_id);
 	if (strcmp(type, "enum_declaration") == 0)
 		return visitEnumDecl(node, parent_id);
+	// `abstract class Foo ...` is a distinct node type in the TS grammar but
+	// introduces a class exactly like class_declaration (including its
+	// optional `implements` clause) — route it through the same handler.
+	if (strcmp(type, "abstract_class_declaration") == 0)
+		return visitClassDecl(node, parent_id);
+
+	// Function-like nodes carry their parameter types in the annotation, which
+	// the shared JavaScript handlers never read: they walk `formal_parameters`
+	// only for the parameter bodies (default values), so `o.method()` went in
+	// with receiver_text but an EMPTY receiver_type and the resolver abstained
+	// whenever two types declare the same method name. Same defect and same fix
+	// as the C/C++ and Rust visitors (see
+	// test_resolver_language_consistency); JavaScript has no annotations, which
+	// is why only this override does it.
+	if (strcmp(type, "function_declaration") == 0 ||
+	    strcmp(type, "function_expression") == 0 ||
+	    strcmp(type, "generator_function_declaration") == 0 ||
+	    strcmp(type, "method_definition") == 0 ||
+	    strcmp(type, "arrow_function") == 0)
+		recordParameterTypes(node);
 
 	// ── Fall back to JavaScript handling for all shared types ────
 	JsVisitor::visitNode(node, parent_id);
+}
+
+void TsVisitor::recordParameterTypes(TSNode fn_node)
+{
+	// `o: Owner` is a required_parameter whose `type` field wraps the annotation
+	// in a type_annotation node, which extractTsTypeAnnotation unwraps (and
+	// which already handles type_identifier, predefined_type and generic_type).
+	// An untyped parameter (`o`) has no annotation and binds nothing, and an
+	// arrow function's bare `x => ...` has no formal_parameters at all.
+	TSNode params = ts_node_child_by_field_name(fn_node, "parameters", 10);
+	if (ts_node_is_null(params))
+		return;
+	const uint32_t count = ts_node_child_count(params);
+	for (uint32_t i = 0; i < count; ++i) {
+		TSNode param = ts_node_child(params, i);
+		if (!ts_node_is_named(param))
+			continue;
+		const char *pt = ts_node_type(param);
+		if (strcmp(pt, "required_parameter") != 0 &&
+		    strcmp(pt, "optional_parameter") != 0)
+			continue;
+		TSNode type_node =
+			ts_node_child_by_field_name(param, "type", 4);
+		TSNode pattern =
+			ts_node_child_by_field_name(param, "pattern", 7);
+		if (ts_node_is_null(pattern)) {
+			// Older grammar shapes hang the name directly off the parameter.
+			for (uint32_t k = 0; k < ts_node_child_count(param);
+			     ++k) {
+				TSNode child = ts_node_child(param, k);
+				if (ts_node_is_named(child) &&
+				    strcmp(ts_node_type(child), "identifier") ==
+					    0) {
+					pattern = child;
+					break;
+				}
+			}
+		}
+		if (ts_node_is_null(type_node) || ts_node_is_null(pattern))
+			continue;
+		const std::string param_name = nodeText(pattern);
+		const std::string param_type =
+			extractTsTypeAnnotation(type_node);
+		if (!param_name.empty() && !param_type.empty())
+			recordVarType(param_name, param_type);
+	}
 }
 
 // ── Class Declaration (TS override: check type_identifier, push scope) ────
@@ -73,6 +146,25 @@ void TsVisitor::visitClassDecl(TSNode node, uint64_t parent_id)
 	uint64_t cls_id = emitter_->emitClass(name, loc, parent_id);
 	defineSymbol(name, cls_id);
 
+	// `class Foo implements Bar, Baz` — the TS grammar wraps the clause in
+	// class_heritage. Without this scan, no InterfaceImpl record was ever
+	// emitted for a TypeScript (or TSX) class.
+	for (uint32_t i = 0; i < count; i++) {
+		TSNode child = ts_node_child(node, i);
+		if (!ts_node_is_named(child))
+			continue;
+		if (strcmp(ts_node_type(child), "class_heritage") != 0)
+			continue;
+		uint32_t hc = ts_node_child_count(child);
+		for (uint32_t j = 0; j < hc; j++) {
+			TSNode clause = ts_node_child(child, j);
+			if (ts_node_is_named(clause) &&
+			    strcmp(ts_node_type(clause), "implements_clause") ==
+				    0)
+				emitImplementClause(clause, name, cls_id);
+		}
+	}
+
 	pushScope();
 	// Step 4: push class scope so this.method() resolves receiver_type
 	// to this enclosing class name.
@@ -80,6 +172,38 @@ void TsVisitor::visitClassDecl(TSNode node, uint64_t parent_id)
 	visitChildren(node, cls_id);
 	popClassScope();
 	popScope();
+}
+
+void TsVisitor::emitImplementClause(TSNode node, const std::string &impl_type,
+				    uint64_t parent_id)
+{
+	uint32_t cnt = ts_node_child_count(node);
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (!ts_node_is_named(c))
+			continue;
+		const char *t = ts_node_type(c);
+		std::string iface;
+		if (strcmp(t, "type_identifier") == 0) {
+			iface = nodeText(c);
+		} else {
+			// generic_type (`Bar<T>`) and nested_type_identifier
+			// (`ns.Bar`): record the base/last type_identifier and
+			// ignore the type arguments, which are not interfaces.
+			uint32_t cc = ts_node_child_count(c);
+			for (uint32_t j = 0; j < cc; j++) {
+				TSNode g = ts_node_child(c, j);
+				if (!ts_node_is_named(g))
+					continue;
+				if (strcmp(ts_node_type(g),
+					   "type_identifier") == 0)
+					iface = nodeText(g);
+			}
+		}
+		if (!iface.empty())
+			emitter_->emitInterfaceImpl(impl_type, iface,
+						    location(c), parent_id);
+	}
 }
 
 // ── Interface Declaration ────────────────────────────────────
@@ -252,7 +376,7 @@ void TsVisitor::visitVariableDecl(TSNode node, uint64_t parent_id)
 			if (strcmp(dt, "type_annotation") == 0)
 				continue;
 			if (ts_node_is_named(decl))
-				visitNode(decl, parent_id);
+				visitChild(decl, parent_id);
 		}
 	}
 }
@@ -275,20 +399,28 @@ std::string TsVisitor::extractTsTypeAnnotation(TSNode type_node)
 	if (ts_node_is_null(type_node))
 		return "";
 
-	// type_annotation wraps the actual type as its first named child.
-	uint32_t tc = ts_node_child_count(type_node);
-	TSNode inner = {};
-	bool found_inner = false;
-	for (uint32_t i = 0; i < tc; i++) {
-		TSNode child = ts_node_child(type_node, i);
-		if (ts_node_is_named(child)) {
-			inner = child;
-			found_inner = true;
-			break;
+	// `type_annotation` is the wrapper (`: Foo`) and holds the type as its
+	// first named child. Every other node this is called with IS the type —
+	// the array/union/parenthesized branches below recurse with an element or
+	// member type, and unwrapping those as if they were annotations discarded
+	// the type entirely: `Foo[]` reached `type_identifier Foo`, looked for its
+	// (non-existent) first named child and returned "" — the element type of
+	// every array annotation was lost.
+	TSNode inner = type_node;
+	if (strcmp(ts_node_type(type_node), "type_annotation") == 0) {
+		const uint32_t tc = ts_node_child_count(type_node);
+		bool found_inner = false;
+		for (uint32_t i = 0; i < tc; i++) {
+			TSNode child = ts_node_child(type_node, i);
+			if (ts_node_is_named(child)) {
+				inner = child;
+				found_inner = true;
+				break;
+			}
 		}
+		if (!found_inner)
+			return "";
 	}
-	if (!found_inner)
-		return "";
 
 	const char *it = ts_node_type(inner);
 
@@ -373,15 +505,29 @@ std::string TsVisitor::extractTsTypeAnnotation(TSNode type_node)
 		return "";
 	}
 
-	// Fallback: use the text of the inner node, stripping generics.
+	// Fallback: use the text of the inner node, stripping generics and array
+	// brackets — but only when what is left is a plain type name.
+	//
+	// The fallback used to return that text unconditionally, and for a shape
+	// this extractor does not model it therefore returned a fragment of the
+	// annotation instead of a type: `const tabs: { id: TabId; label: string }[]`
+	// recorded the receiver type of `tabs.map(...)` as `id: TabId` (measured on
+	// codebase-memory-mcp). No declaration is keyed by a name containing a
+	// space, so such a value can never match a candidate — it is wrong data in
+	// the database and in every tool that prints it, and "" (unknown) is the
+	// honest answer for an object, tuple or function type.
 	std::string txt = nodeText(inner);
 	size_t lt = txt.find('<');
 	if (lt != std::string::npos)
-		return txt.substr(0, lt);
-	// Strip array brackets.
+		txt = txt.substr(0, lt);
 	size_t lb = txt.find('[');
 	if (lb != std::string::npos)
-		return txt.substr(0, lb);
+		txt = txt.substr(0, lb);
+	for (char ch : txt) {
+		if (!std::isalnum(static_cast<unsigned char>(ch)) &&
+		    ch != '_' && ch != '.' && ch != '$')
+			return "";
+	}
 	return txt;
 }
 

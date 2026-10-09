@@ -18,7 +18,7 @@
 #include "../src/ir/semantic_unit.h"
 #include "../src/store/store.h"
 
-#include <cassert>
+#include "test_check.h"
 #include <cstdio>
 #include <sqlite3.h>
 #include <unistd.h>
@@ -28,9 +28,9 @@ using namespace ir;
 static const char *kDbPath = "/tmp/codescope_test_module_path.db";
 
 /// Insert a single Function semantic record for the given file.
-static void insertFunctionRecord(store::GraphStore &store,
-				 uint64_t project_id, const char *file_path,
-				 const char *name, uint64_t id)
+static void insertFunctionRecord(store::GraphStore &store, uint64_t project_id,
+				 const char *file_path, const char *name,
+				 uint64_t id)
 {
 	std::vector<Record> records;
 	Record r;
@@ -41,7 +41,7 @@ static void insertFunctionRecord(store::GraphStore &store,
 	r.qualified_name = name;
 	r.file_path = file_path;
 	r.language = "cpp";
-	r.loc = SourceRange{1, 0, 2, 0};
+	r.loc = SourceRange{ 1, 0, 2, 0 };
 	records.push_back(r);
 	store.insertSemanticRecords(project_id, file_path, records);
 }
@@ -54,7 +54,7 @@ static std::string expectedModulePath(store::GraphStore &store,
 	sqlite3 *db = store.handle();
 	const char *sql = "SELECT rtrim(?, replace(?, '/', 'x'))";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_text(stmt, 1, file_path.c_str(), -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 2, file_path.c_str(), -1, SQLITE_TRANSIENT);
 	std::string result;
@@ -73,14 +73,14 @@ struct EntityRow {
 	std::string module_path;
 	bool found = false;
 };
-static EntityRow getEntityByName(store::GraphStore &store,
-				 uint64_t project_id, const char *name)
+static EntityRow getEntityByName(store::GraphStore &store, uint64_t project_id,
+				 const char *name)
 {
 	sqlite3 *db = store.handle();
 	const char *sql = "SELECT file_path, module_path FROM entity "
 			  "WHERE project_id=? AND name=?";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 2, name, -1, SQLITE_TRANSIENT);
 	EntityRow row;
@@ -98,14 +98,14 @@ static EntityRow getEntityByName(store::GraphStore &store,
 }
 
 /// Fetch all module-level scope names (kind=1) for a project.
-static std::vector<std::string>
-getModuleScopeNames(store::GraphStore &store, uint64_t project_id)
+static std::vector<std::string> getModuleScopeNames(store::GraphStore &store,
+						    uint64_t project_id)
 {
 	sqlite3 *db = store.handle();
 	const char *sql =
 		"SELECT name FROM scope WHERE project_id=? AND kind=1";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	std::vector<std::string> names;
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -122,9 +122,9 @@ int main()
 	unlink(kDbPath);
 
 	store::GraphStore store;
-	assert(store.open(kDbPath));
+	CHECK(store.open(kDbPath));
 	uint64_t pid = store.createProject("/test", "test_module_path");
-	assert(pid > 0);
+	CHECK(pid > 0);
 
 	// Insert semantic records for functions in three different files
 	// spanning two directories. The file paths must NOT match the
@@ -137,7 +137,7 @@ int main()
 	// Run buildGraph — this populates entity.module_path via the
 	// rtrim(file_path, replace(file_path, '/', 'x')) expression and
 	// creates module scopes (kind=1) from module_path values.
-	assert(store.buildGraph(pid, true));
+	CHECK(store.buildGraph(pid, true));
 
 	// ── Test 1: entity.module_path matches rtrim expression ──────
 	// Each entity's stored module_path must equal both the hardcoded
@@ -150,18 +150,18 @@ int main()
 			const char *expected_module_path;
 		};
 		const Case cases[] = {
-			{"GetUser", "/src/api/handler.cpp", "/src/api/"},
-			{"PostUser", "/src/api/handler.cpp", "/src/api/"},
-			{"TrimSpace", "/src/lib/util.cpp", "/src/lib/"},
+			{ "GetUser", "/src/api/handler.cpp", "/src/api/" },
+			{ "PostUser", "/src/api/handler.cpp", "/src/api/" },
+			{ "TrimSpace", "/src/lib/util.cpp", "/src/lib/" },
 		};
 		for (const auto &c : cases) {
 			EntityRow row = getEntityByName(store, pid, c.name);
-			assert(row.found);
-			assert(row.file_path == c.file_path);
+			CHECK(row.found);
+			CHECK(row.file_path == c.file_path);
 			std::string expected_sql =
 				expectedModulePath(store, c.file_path);
-			assert(row.module_path == c.expected_module_path);
-			assert(row.module_path == expected_sql);
+			CHECK(row.module_path == c.expected_module_path);
+			CHECK(row.module_path == expected_sql);
 			printf("  [PASS] %s: file=%s module_path=%s\n", c.name,
 			       c.file_path, c.expected_module_path);
 		}
@@ -174,7 +174,7 @@ int main()
 	// the module_path values.
 	{
 		auto scope_names = getModuleScopeNames(store, pid);
-		assert(scope_names.size() == 2);
+		CHECK(scope_names.size() == 2);
 		std::string expected_api =
 			expectedModulePath(store, "/src/api/handler.cpp");
 		std::string expected_lib =
@@ -186,8 +186,8 @@ int main()
 			if (n == expected_lib)
 				has_lib = true;
 		}
-		assert(has_api);
-		assert(has_lib);
+		CHECK(has_api);
+		CHECK(has_lib);
 		printf("Test 2 (scope names match module_path: %s, %s): PASS\n",
 		       expected_api.c_str(), expected_lib.c_str());
 	}
@@ -195,5 +195,5 @@ int main()
 	store.close();
 	unlink(kDbPath);
 	printf("\nAll module_path column tests passed.\n");
-	return 0;
+	return checkFailures() ? 1 : 0;
 }

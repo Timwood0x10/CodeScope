@@ -86,6 +86,9 @@ SemanticUnit *RustVisitor::visit(TSTree *tree, const char *source,
 	use_aliases_.clear();
 
 	TSNode root_node = ts_tree_root_node(tree);
+	// Names this file defines (see collectDefinedNames).
+	defined_names_.clear();
+	collectDefinedNames(root_node);
 	pushScope();
 	SourceRange root_loc = location(root_node);
 	uint64_t root_id = emitter_->emitVariable("", root_loc, 0);
@@ -111,6 +114,8 @@ void RustVisitor::visitNode(TSNode node, uint64_t parent_id)
 		return handleImpl(node, parent_id);
 	if (strcmp(type, "call_expression") == 0)
 		return handleCall(node, parent_id);
+	if (strcmp(type, "macro_invocation") == 0)
+		return handleMacro(node, parent_id);
 	if (strcmp(type, "let_declaration") == 0)
 		return handleLet(node, parent_id);
 	if (strcmp(type, "use_declaration") == 0)
@@ -138,12 +143,61 @@ void RustVisitor::handleFunction(TSNode node, uint64_t parent_id)
 		const char *t = ts_node_type(c);
 		if (strcmp(t, "identifier") == 0)
 			continue;
-		if (strcmp(t, "parameters") == 0 || strcmp(t, "block") == 0)
+		if (strcmp(t, "parameters") == 0) {
+			recordParameterTypes(c, id);
 			visitChildren(c, id);
+		} else if (strcmp(t, "block") == 0) {
+			visitChildren(c, id);
+		}
 	}
 	popFunctionScope();
 	popScope();
 }
+std::string RustVisitor::firstIdentifier(TSNode node, int depth)
+{
+	if (ts_node_is_null(node) || depth > 4)
+		return "";
+	if (strcmp(ts_node_type(node), "identifier") == 0)
+		return nodeText(node);
+	const uint32_t count = ts_node_child_count(node);
+	for (uint32_t i = 0; i < count; ++i) {
+		TSNode child = ts_node_child(node, i);
+		if (!ts_node_is_named(child))
+			continue;
+		const std::string got = firstIdentifier(child, depth + 1);
+		if (!got.empty())
+			return got;
+	}
+	return "";
+}
+
+void RustVisitor::recordParameterTypes(TSNode params, uint64_t fn_id)
+{
+	const uint32_t count = ts_node_child_count(params);
+	for (uint32_t i = 0; i < count; ++i) {
+		TSNode param = ts_node_child(params, i);
+		if (!ts_node_is_named(param) ||
+		    strcmp(ts_node_type(param), "parameter") != 0)
+			continue;
+		TSNode type_node =
+			ts_node_child_by_field_name(param, "type", 4);
+		TSNode pattern =
+			ts_node_child_by_field_name(param, "pattern", 7);
+		if (ts_node_is_null(type_node) || ts_node_is_null(pattern))
+			continue;
+		const std::string pin_name = firstIdentifier(pattern, 0);
+		if (pin_name.empty())
+			continue;
+		const std::string type_text = nodeText(type_node);
+		// Same pair as the local-declaration path: the TypeRef puts the binding
+		// in the resolver's variable-type table, and var_types_ feeds the
+		// receiver_type of a call on this parameter.
+		emitter_->emitTypeRef(pin_name, type_text, location(pattern),
+				      fn_id);
+		recordVarType(pin_name, normalizeTypeName(type_text));
+	}
+}
+
 void RustVisitor::handleStruct(TSNode node, uint64_t parent_id)
 {
 	SourceRange loc = location(node);
@@ -260,6 +314,16 @@ void RustVisitor::handleImpl(TSNode node, uint64_t parent_id)
 						   false,
 						   detectVisibility(fn_node));
 		defineSymbol(name, id);
+		// Same purpose as the C++ visitor's qualified_name: the resolver matches
+		// a call's receiver_type against the candidate's DECLARING type
+		// (factorReceiverTypeMatch). With the bare method name as the whole
+		// qualified_name, `RsOwner::method` and `RsDecoy::method` look
+		// identical, so a call whose receiver type is `RsOwner` had no candidate
+		// to prefer and the ambiguity gate abstained — even though the call site
+		// did record receiver_type (measured in
+		// test_resolver_language_consistency).
+		if (!self_type.empty())
+			unit_->setQualifiedName(id, self_type + "::" + name);
 		pushScope();
 		pushFunctionScope(id);
 		uint32_t cc = ts_node_child_count(fn_node);
@@ -270,9 +334,12 @@ void RustVisitor::handleImpl(TSNode node, uint64_t parent_id)
 			const char *t = ts_node_type(gc);
 			if (strcmp(t, "identifier") == 0)
 				continue;
-			if (strcmp(t, "parameters") == 0 ||
-			    strcmp(t, "block") == 0)
+			if (strcmp(t, "parameters") == 0) {
+				recordParameterTypes(gc, id);
 				visitChildren(gc, id);
+			} else if (strcmp(t, "block") == 0) {
+				visitChildren(gc, id);
+			}
 		}
 		popFunctionScope();
 		popScope();
@@ -363,7 +430,14 @@ void RustVisitor::handleCall(TSNode node, uint64_t parent_id)
 	// Reference: codebase-memory-mcp (MIT) c_lsp.c :: is_c_builtin_func() (pattern)
 	// Match against the full qualified text so `Type::new` (whose bare name
 	// `new` is in the builtin list) is NOT wrongly filtered out.
-	if (!qualified.empty() && isRustBuiltin(qualified)) {
+	//
+	// A name THIS FILE defines is user code whatever the builtin list says —
+	// `fn drop()`, `macro_rules! println` — so it survives the filter. Same
+	// exemption as the other four translators (see collectDefinedNames); the
+	// bare name is what the file declares, so the check uses `name`, while the
+	// filter itself keeps matching the qualified text.
+	if (!qualified.empty() && isRustBuiltin(qualified) &&
+	    !isLocallyDefined(name)) {
 		visitChildren(node, parent_id);
 		return;
 	}
@@ -467,7 +541,92 @@ void RustVisitor::handleCall(TSNode node, uint64_t parent_id)
 		    strcmp(t, "field_expression") == 0 ||
 		    strcmp(t, "scoped_identifier") == 0)
 			continue;
-		visitNode(c, id);
+		visitChild(c, id);
+	}
+}
+void RustVisitor::handleMacro(TSNode node, uint64_t parent_id)
+{
+	// tree-sitter-rust macro_invocation children:
+	//   identifier (or scoped_identifier) — the macro name
+	//   token_tree                        — the delimiter group + arguments
+	SourceRange loc = location(node);
+	std::string qualified;
+	std::string name;
+	uint32_t cnt = ts_node_child_count(node);
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (!ts_node_is_named(c))
+			continue;
+		const char *t = ts_node_type(c);
+		if (strcmp(t, "identifier") == 0 ||
+		    strcmp(t, "scoped_identifier") == 0) {
+			qualified = nodeText(c);
+			name = bareCalleeName(qualified);
+			break;
+		}
+	}
+	if (name.empty()) {
+		visitChildren(node, parent_id);
+		return;
+	}
+
+	// Same builtin filter as handleCall: the standard-library macros
+	// (println!, vec!, assert_eq!, ...) must not fabricate edges, but a macro
+	// this file declares itself is user code and survives.
+	if (isRustBuiltin(qualified) && !isLocallyDefined(name)) {
+		visitChildren(node, parent_id);
+		return;
+	}
+
+	CallKind call_kind = CallKind::Direct;
+	if (qualified.find("::") != std::string::npos)
+		call_kind = CallKind::Method;
+
+	uint64_t func_id = currentFunctionId();
+	uint64_t call_parent = (func_id != 0) ? func_id : parent_id;
+
+	uint64_t id = emitter_->emitCall(name, loc, call_parent, 0, false,
+					 static_cast<int>(call_kind));
+
+	// Structured call facts for a path-qualified macro (`crate::log!(...)`).
+	if (!qualified.empty() && qualified != name) {
+		std::string receiver_text =
+			extractReceiverText(node, qualified);
+		std::string receiver_type;
+		std::string import_alias;
+		if (!receiver_text.empty()) {
+			if (use_aliases_.count(receiver_text) > 0)
+				import_alias = receiver_text;
+			else {
+				auto vt = var_types_.find(receiver_text);
+				if (vt != var_types_.end())
+					receiver_type = vt->second;
+			}
+		}
+		emitter_->setCallFacts(id, qualified, receiver_text,
+				       receiver_type, import_alias);
+	}
+
+	uint64_t target = resolveSymbol(name);
+	if (target) {
+		unit_->setCallReference(id, target);
+		unit_->setCallStrategy(id, "p1_intra");
+	} else {
+		unit_->setCallStrategy(
+			id, BuiltinRegistry::resolve(unit_->language(), name));
+	}
+
+	// Recurse into the token tree so nested invocations and calls in the
+	// macro arguments are still visited.
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (!ts_node_is_named(c))
+			continue;
+		const char *t = ts_node_type(c);
+		if (strcmp(t, "identifier") == 0 ||
+		    strcmp(t, "scoped_identifier") == 0)
+			continue;
+		visitChild(c, id);
 	}
 }
 void RustVisitor::handleLet(TSNode node, uint64_t parent_id)
@@ -529,7 +688,7 @@ void RustVisitor::handleLet(TSNode node, uint64_t parent_id)
 		    strcmp(t, "array_type") == 0 ||
 		    strcmp(t, "tuple_type") == 0)
 			continue;
-		visitNode(c, parent_id);
+		visitChild(c, parent_id);
 	}
 }
 void RustVisitor::handleUse(TSNode node, uint64_t parent_id)

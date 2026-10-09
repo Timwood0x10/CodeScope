@@ -169,8 +169,27 @@ impl Server {
             }
         }
 
+        // The client's requested revision, if it sent one. This server speaks
+        // exactly one version, so the answer is always
+        // SUPPORTED_PROTOCOL_VERSION — but a client that asked for something
+        // else deserves to see it acknowledged rather than silently ignored,
+        // and the log is where that decision is recorded.
+        if let Some(requested) = params
+            .as_ref()
+            .and_then(|p| p.get("protocolVersion"))
+            .and_then(|v| v.as_str())
+            && requested != SUPPORTED_PROTOCOL_VERSION
+        {
+            eprintln!(
+                "initialize: client requested MCP protocol {}; this server speaks {} — replying with \
+                 the version it supports, the client decides whether to continue (see the MCP \
+                 lifecycle's version negotiation)",
+                requested, SUPPORTED_PROTOCOL_VERSION
+            );
+        }
+
         let result = InitializeResult {
-            protocol_version: "2024-11-05".to_string(),
+            protocol_version: SUPPORTED_PROTOCOL_VERSION.to_string(),
             capabilities: ServerCapabilities {
                 tools: ToolCapability { list_changed: true },
             },
@@ -208,8 +227,45 @@ impl Server {
 
     // ── Call Tool ───────────────────────────────────────────────
 
+    /// Give an indexing call a project to write into when the session has none.
+    ///
+    /// Every row the engine writes carries a `project_id`, and the knowledge /
+    /// evidence layer is scoped by it: with `project_id == 0` the registry's
+    /// evidence probe is skipped (`entity_count: 0` next to a non-empty graph)
+    /// and `get_project_state` answers "project state not yet built". A client
+    /// that goes straight to `force_index_files` / `index_file` without
+    /// declaring a workspace root in `initialize` (`rootUri` / `roots`) used to
+    /// leave the whole index under project 0 — no `projects` row, invisible to
+    /// every project-scoped tool for the rest of the session.
+    ///
+    /// The CLI's `force-index` already bootstraps a project row before it
+    /// indexes; this is the same step for the MCP path, using the directory
+    /// being indexed as the project root so `get_project_id_by_path` can reuse
+    /// it on the next session.
+    fn ensure_project_for_indexing(&mut self, tool_name: &str, args: &serde_json::Value) {
+        if self.project_id != 0 {
+            return;
+        }
+        let Some(root) = indexing_root(tool_name, args) else {
+            return;
+        };
+        let name = std::path::Path::new(&root)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .filter(|n| !n.is_empty())
+            .unwrap_or("default");
+        let pid = ffi::create_project(&root, name);
+        if pid > 0 {
+            self.project_id = pid;
+            eprintln!(
+                "codescope: created project {} (id={}) for {} [module=mcp, method=handle_call_tool]",
+                name, pid, tool_name
+            );
+        }
+    }
+
     fn handle_call_tool(
-        &self,
+        &mut self,
         params: Option<serde_json::Value>,
     ) -> Result<serde_json::Value, JsonRpcError> {
         let params = params.ok_or_else(|| JsonRpcError {
@@ -229,16 +285,18 @@ impl Server {
             .cloned()
             .unwrap_or(serde_json::Value::Null);
 
+        self.ensure_project_for_indexing(tool_name, &tool_args);
+
         let result = tools::execute(self.project_id, tool_name, &tool_args);
 
         // Note: background enhancement after `scan_project` is triggered inside
         // `tools::execute`, which is the natural owner for tool-specific logic.
 
-        // Determine if the result indicates an error (JSON with non-null "error" key)
-        let is_error = serde_json::from_str::<serde_json::Value>(&result)
-            .ok()
-            .and_then(|v| v.get("error").cloned())
-            .and_then(|e| if e.is_null() { None } else { Some(true) });
+        let is_error = if tool_result_is_error(&result) {
+            Some(true)
+        } else {
+            None
+        };
 
         let content = vec![TextContent {
             content_type: "text",
@@ -290,5 +348,99 @@ fn json_response(
                 "data": e.to_string()
             }
         }),
+    }
+}
+
+/// Root directory an indexing tool is about to write, or `None` when the tool
+/// does not index by path. Used only to bootstrap a project (see
+/// [`Server::ensure_project_for_indexing`]).
+///
+/// `force_index_files` carries `paths` (first entry wins) with a single-`path`
+/// convenience form; `index_file` carries a file, whose directory becomes the
+/// project root so repeated calls for files in one tree share a project.
+fn indexing_root(tool_name: &str, args: &serde_json::Value) -> Option<String> {
+    match tool_name {
+        "force_index_files" => args["paths"]
+            .as_array()
+            .and_then(|a| a.first())
+            .and_then(|v| v.as_str())
+            .or_else(|| args["path"].as_str())
+            .map(str::to_string),
+        "index_file" => args["file_path"].as_str().map(|p| {
+            std::path::Path::new(p)
+                .parent()
+                .filter(|d| !d.as_os_str().is_empty())
+                .map(|d| d.to_string_lossy().into_owned())
+                .unwrap_or_else(|| p.to_string())
+        }),
+        _ => None,
+    }
+}
+
+/// Whether a tool result must be reported to the client as a failure.
+///
+/// MCP has exactly one protocol-level failure signal (`isError`) while the
+/// payloads carry their own verdict in the data, so this decides how the two
+/// line up. The old rule was "the parsed result has a non-null `error` key",
+/// which missed half of the codebase's own convention: the schedulers report
+/// "this run did not produce a usable index" as a top-level `"ok": false` —
+/// an empty project, a failed worker, or a failed merge, with the cause nested
+/// under `merge.error` or in a `note` — so a client watching `isError` saw a
+/// failed run as a successful call. Two real payloads were being reported that
+/// way: `{"ok":false,...,"note":"no source modules found"}` (scheduler/mod.rs)
+/// and the run summary `{"ok":complete,...,"merge":{"error":...}}`.
+///
+/// Non-JSON is a failure too: every handler's contract is JSON out, so a
+/// result that does not parse is a broken tool response rather than a success.
+///
+/// Deliberately narrow: only a non-null TOP-LEVEL `error` and a top-level
+/// `ok == false` count. A payload that merely mentions the word error
+/// somewhere deeper is not a failure.
+fn tool_result_is_error(result: &str) -> bool {
+    match serde_json::from_str::<serde_json::Value>(result) {
+        Ok(v) => {
+            let error_set = v.get("error").map(|e| !e.is_null()).unwrap_or(false);
+            let not_ok = v
+                .get("ok")
+                .map(|o| o == &serde_json::Value::Bool(false))
+                .unwrap_or(false);
+            error_set || not_ok
+        }
+        Err(_) => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tool_result_is_error;
+
+    #[test]
+    fn test_tool_result_is_error_covers_both_failure_conventions() {
+        // Success shapes have to stay successes — `detect_changes` returns a
+        // literal null error on the happy path, and many tools return arrays.
+        assert!(!tool_result_is_error(r#"{"error":null,"modified":[]}"#));
+        assert!(!tool_result_is_error(
+            r#"{"claim_id":1,"verdict":"Unknown"}"#
+        ));
+        assert!(!tool_result_is_error(r#"[{"category":"drift"}]"#));
+        assert!(!tool_result_is_error(r#"{"ok":true,"files":[]}"#));
+        // `"error"` as ordinary data deeper down is not a failure signal.
+        assert!(!tool_result_is_error(r#"{"files":[{"error":"parse"}]}"#));
+
+        // The convention that was being missed: a run that says it did not
+        // produce a usable index, with no top-level error key.
+        assert!(tool_result_is_error(
+            r#"{"ok":false,"complete":false,"modules":[],"note":"no source modules found"}"#
+        ));
+        assert!(tool_result_is_error(
+            r#"{"ok":false,"complete":false,"merge":{"merged":false,"error":"boom"},"fail":2}"#
+        ));
+
+        // And the one the old rule did catch.
+        assert!(tool_result_is_error(
+            r#"{"error":"claim field is required"}"#
+        ));
+        // A result that is not JSON at all is a broken response, not a success.
+        assert!(tool_result_is_error("panic: index out of bounds"));
     }
 }

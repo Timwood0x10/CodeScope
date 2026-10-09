@@ -1,5 +1,49 @@
 # Changelog
 
+## v0.2.7 (2026-10-09)
+
+First release since v0.2.6 (`main`, 2026-08-14): **41 commits, 394 files**. Two themes: the architectural work for 0.3 (handle-based ABI, Windows parallel indexing), and silent failure — the cases where a tool answered confidently and wrongly, on the default path, for real projects.
+
+### 🚀 New Features
+
+- **Handle-based engine ABI (TD-1, three knives)** (`engine/include/engine.h`, `engine/src/engine_context.*`): `engine_create()` returns an opaque `engine_t`, all 73 stateful entry points take it, and the three process-global singletons are gone — no global object is constructed before `main()`, and a stale call site is a compile error. The still process-wide subsystems (verifier registry, async knowledge builder, index-progress and parse-failure buffers) are recorded in `engine_context.h` rather than implied. Evidence: a 43-tool differential matrix is byte-identical old vs new, and both binaries index one tree to the same call-edge set.
+- **`index-parallel` on Windows (TD-5)** (`server/src/scheduler/mapped_file.rs`): the POSIX `open`/`ftruncate`/`mmap` sequence both schedulers open-coded now lives in one mapping layer with a Windows backend (`CreateFileMappingW`/`MapViewOfFile`), and per-run paths come from `std::env::temp_dir()` instead of `/tmp`. A `windows-smoke` job indexes a real project through both schedulers — **it has not run yet**, so Windows stays Beta (README).
+- **Graph-shape regression baselines** (`benchmarks/graph_baseline.sh`, `make bench-graph`): six real checkouts, one per language, compared on files, entities, call edges, `resolution_kind`, `resolve_strategy`, `deciding_factor` and unresolved sites; exact rather than tolerance-based because the shape is reproducible. `self` 2274 · `c-redis` 27474 · `go-tinygo` 4313 · `java-spring-petclinic` 47 · `rust-pyo3` 2859 · `ts-codebase-memory-mcp` 8440 call edges.
+- **Counterfactual resolver-factor switch** (`CODESCOPE_RESOLVER_DISABLE_FACTOR=<Name>`): drops one factor's weight and score at the single accumulation point, so a factor's real effect is measured by A/B instead of argued from the weight table — `relation.reason`'s `decided_by=` names ImportMatch for every scored edge on this repository, while disabling factors shows which ones actually move the graph. No weight is changed until that table says otherwise.
+- **`codescope parse-failures` / `reset-failures`** (the `parse_failures` table was write-only), **`get_communities` restored** (synchronous label propagation; deterministic; summary-first — the earlier revision returned ~100K tokens for one query), **`graph_query` honours `LIMIT`** and rejects trailing text instead of dropping it silently.
+
+### 🐛 Bug Fixes
+
+**Indexing and symbol names**
+
+- **A Maven tree indexed nothing**: the engine's test/docs/samples skip collided with Java package components, so `src/main/java/…/samples/petclinic/` was skipped at any depth and `discover_modules` reported no modules. Both entry points now share `applyProjectLanguageContext()`; spring-petclinic goes 0 → 30 files.
+- **Java methods were named after their return type** (`JavaVisitor::extractName` accepted `type_identifier` and returned the first match): `public String processUpdateForm(…)` was recorded as an entity called `String` — 27 such entities in petclinic, 4 `Pet`, 3 `LocalDate` — while `void` methods were correct, and those type-named entities then collected edges. Names are read from the grammar's `name` field; petclinic 33 → 47 edges and `find_definition("processUpdateForm")` resolves.
+- **The same call shape resolved for Go, Java and Python and was dropped for C++, Rust and TypeScript**: a parameter is a declaration, but only variable declarations fed the visitors' type table, so a call through a parameter carried a receiver with no type and the ambiguity gate abstained. All three now record parameter types; 6 of 6 languages resolve to the owner's method in `test_resolver_language_consistency`.
+- **`arity` and `param_count` had no producer**: `param_count` was structurally 0 (no visitor emits a `Parameter` record) and `arity` — the input the resolver's overload step reads — was 0 for all 24604 goagent rows, so every candidate scored as "unknown arity". Both come from the CST declaration now, with a variadic tail or a default reported as unknown rather than a count that would penalise a valid call.
+- **TypeScript annotations lost array element types and leaked object-type fragments**: `extractTsTypeAnnotation` unwrapped element and member types as if they were annotations, so `Foo[]` yielded nothing, and it returned raw text for shapes it does not model, so `const tabs: { id: TabId; … }[]` recorded the receiver type of `tabs.map(…)` as `id: TabId`. Element types resolve and anything that is not a plain type name is reported as unknown.
+- **Builtin-name filters deleted calls to the file's own functions** (a user `format()`, `valueOf()`, `write()` or `free()` collided with the filter's list and produced no call record at all): each visitor now keeps the names the file declares, and the filter applies only to unqualified calls.
+- **C/C++ functions with a qualified return type were invisible** (`std::string`, `char *`, namespace-nested): the name scan matched the return type and dropped the whole definition — on this repository `engine/src/query/**` contributed 3 definitions out of 1972 statements. Names are read from the `declarator` field.
+- **Aliased imports resolved to nothing** (`import { pick as pickLib }` bound a local name with no record of the imported symbol) and **a call omitting a default argument lost its edge** (C++ declares the default in the header while the entity's `arity` comes from the definition).
+
+**Determinism** — one tree, one binary, one graph: the two resolver loader tables are ordered by content (a worker-dependent rowid order decided which interface six call sites on goagent resolved to), and entity ids derive from the record's semantic identity instead of SQLite's scan order.
+
+**Silent success and silent drops** — a run that indexed nothing no longer reports `ok:true` (0-file and no-symbol runs report `ok:false`/`complete:false`); failed CSR builds, bulk COMMITs, nested transactions, migrations and batch inserts roll back and report instead of committing whatever landed; `index-parallel` installs its database at the resolved path (it only reported a temp path, so the next command queried an empty DB) and runs the post-index pass, so the DB it hands back is searchable; `force_index_files` is no longer filtered at the graph stage (forcing `engine/tests` added 13174 records and zero entities); `createSchema` no longer has a use-after-free; the CMake generator is resolved from the build tree, because a mismatched generator silently kept new translation units out of the archive.
+
+**MCP surface** — `isError` was serialized as `is_error`, so a spec-compliant client saw no failure flag for any tool result; an MCP-indexed project had no `projects` row (every entity landed under `project_id = 0`, next to a full graph); front-end build output was indexed (`dist/`: 700 minified nodes beside 224 real symbols); array-shaped `node_types`/`edge_types` filters were silently ignored; `project_overview.entry_points` read the legacy table and was always empty; `verify_summary` and `verify_review` scored the same empty input 1.0 and 0.0; ambiguous names returned an empty list with no next step.
+
+**Paths and tool contracts** — `detect_changes` reported "nothing changed" for the input shape its own schema advertises and for any path spelling other than the stored one; `find_definition` / `find_references` / `find_callers` / `find_callees` missed a file named through a symlink; `shortest_path` and `codescope_trace` advertised no required arguments; a failing engine test could pass the gate (the `CHECK` counter was consulted only by `return checkFailures() ? 1 : 0`, which 8 test files never wrote).
+
+### 🧹 Cleanup
+
+- **One JSON implementation** (TD-3): every hand-built envelope migrated to `util::JsonWriter`, escaping converged on `util::jsonEscapeString`, and the duplicate escapers and declarations deleted.
+- **~1.5k lines of dead code removed** (`scanner_visitor`, the superseded resolver stack, the zero-call-site scorers, five duplicate copies of one scoring rule), the superseded `Planner`/`VerdictBuilder` chain deleted, and `verify_statement` retired now that `verify_claim` is the single entry point.
+
+### ✅ Testing
+
+- Every engine test uses `CHECK()` (929 assertion sites migrated, no live `assert()` remains) and a recorded failure makes the binary exit non-zero — enforced by an exit hook, because 8 files printed a banner and returned 0.
+- New suites: `test_resolver_language_consistency` (six languages, one call shape), `test_import_alias_resolution`, `test_function_arity`, `test_receiver_type_canonical`, `test_dispatch_order_determinism`, `test_metrics_persist`, `test_force_index_files`, `test_engine_handles` (instance and ABI boundaries), `test_resolver_language_filter`, `test_gitignore_build_dirs`, plus property-based tests over clamping, exclude-path escaping and MCP payload round-trips.
+- `make check` green: 106 engine test binaries, 136 server tests; call-graph accuracy gate TP 36 / FP 0 / FN 0; `make bench-graph` matches all six baselines.
+
 ## v0.2.6 (2026-08-12)
 
 Improves full-index (non-fast) performance on large projects, fixes a resolver JOIN defect that both slowed indexing and silently over-matched cross-file references, and moves fuzzy symbol search fully in-memory — resolver 10.2x faster on CodeScope's own index with zero precision loss, plus completed FAST-mode pruning rules and quantified discovery timing.
@@ -601,3 +645,9 @@ Open-source release. Closes the gap between the Resolver Pipeline and the query/
 - `docs/en/final_benchmark_report.md` + `docs/zh/final_benchmark_report.md`: Comprehensive 5-project comparison table.
 - `skills/`: Tool usage guides with token consumption tables.
 - All ASCII art diagrams replaced with mermaid format.
+
+### 🛠 Build / Tooling
+
+- **`make clean` verifies that it actually cleaned** (`Makefile`): a clean that silently does not happen is worse than no clean, because the next build reuses the stale tree — and a delete can be blocked by permissions or a sandbox guard while the recipe still prints success. The target now checks that the build directories are gone and fails loudly if they are not.
+- **CI now runs the full format check** (`Makefile`): `lint-cpp` checks only files modified in the last hour (a 3-second target for local iteration), so a file mis-formatted yesterday and untouched today passed `make check`. The gate depends on a new `lint-verify` target (`lint-cpp-full` + clippy).
+

@@ -1,28 +1,33 @@
 // store_parse_failure.cpp — Persistent parse-failure tracking.
 //
-// Implements the fail-fast design from DYNAMIC_SCHED_REDESIGN.md §7.3
-// and CODE_REVIEW_DYNAMIC_SCHED_2026-07-19.md (Part B, Phase 0).
+// Implements the fail-fast design from DYNAMIC_SCHED_REDESIGN.md §7.3.
 // Files that fail to parse N times (CODESCOPE_FAIL_RETRY_MAX, default
 // 1) are skipped on subsequent index runs. Reset via CLI reset-failures.
 //
-// Uses g_store (defined in engine.cpp, declared in engine_internal.h)
-// via the public handle() accessor. Prepared statements are wrapped in
-// StmtPtr (unique_ptr with custom deleter) so sqlite3_finalize always
-// runs, even on early return or exception.
+// Reaches the engine store through the EngineContext it is HANDED — TD-1
+// knife 3 made the ABI handle-based and deleted the process-global accessor, so
+// every entry here takes `EngineContext *ctx` and goes through that context's
+// public handle() accessor. Prepared statements are wrapped in StmtPtr
+// (unique_ptr with custom deleter) so sqlite3_finalize always runs, even on
+// early return or exception.
 
+#include "util/json_writer.h"
 #include "store_parse_failure.h"
 #include "store.h"
 #include "store_internal.h"
+
+// engine_context.h forward-declares its member types and defines both special
+// members out-of-line, so including it to take an `EngineContext *` does NOT
+// pull engine_internal.h's heavy transitive includes (parser.h, ir.h, ...) into
+// this store TU. Previously this file re-declared the `g_store` global by hand
+// to avoid that; TD-1 passes the context in as a parameter instead.
+#include "engine_context.h"
 
 #include <cstdio>
 #include <memory>
 #include <mutex>
 #include <sqlite3.h>
 #include <string>
-
-// Re-declared here to avoid pulling engine_internal.h's heavy
-// transitive includes (parser.h, ir.h, etc.) into this store TU.
-extern std::unique_ptr<store::GraphStore> g_store;
 
 namespace store
 {
@@ -66,19 +71,25 @@ const char *failReasonToString(FailReason r)
 	return "unknown";
 }
 
-bool isKnownParseFailure(uint64_t project_id, const std::string &file_path,
-			 int retry_max)
+bool isKnownParseFailure(EngineContext *ctx, uint64_t project_id,
+			 const std::string &file_path, int retry_max)
 {
-	sqlite3 *db = g_store ? g_store->handle() : nullptr;
+	sqlite3 *db = ctx->store ? ctx->store->handle() : nullptr;
 	if (!db) {
-		fprintf(stderr, "store: g_store not initialised "
+		fprintf(stderr, "store: engine store not initialised "
 				"[module=store, method=isKnownParseFailure]\n");
 		return false;
 	}
+	// `language_missing` is deliberately excluded: the file is not broken,
+	// the engine just has no grammar for it (a disabled grammar, or one that
+	// failed to load). Counting it as a known failure would SKIP the file
+	// forever — including after the grammar is enabled — because the skip set
+	// is keyed by path only and never expires.
 	sqlite3_stmt *raw = nullptr;
 	if (sqlite3_prepare_v2(db,
 			       "SELECT fail_count FROM parse_failures "
-			       "WHERE project_id=? AND file_path=?",
+			       "WHERE project_id=? AND file_path=? "
+			       "AND fail_reason != 'language_missing'",
 			       -1, &raw, nullptr) != SQLITE_OK) {
 		logErr(db, "prepare", "isKnownParseFailure");
 		return false;
@@ -102,7 +113,7 @@ bool isKnownParseFailure(uint64_t project_id, const std::string &file_path,
 // writer transaction rolls back (M1 in CODE_REVIEW_SCHED_CHANGES). The
 // connection is cached and re-opened if the underlying DB path changes
 // (e.g. several index runs within one process).
-static sqlite3 *auxFailureDb()
+static sqlite3 *auxFailureDb(EngineContext *ctx)
 {
 	// GUARD: parse-worker threads call recordParseFailure concurrently
 	// (engine_index_project.cpp spawns N workers). The static `db` /
@@ -116,9 +127,9 @@ static sqlite3 *auxFailureDb()
 
 	static std::string cached_path;
 	static sqlite3 *db = nullptr;
-	if (!g_store)
+	if (!ctx || !ctx->store)
 		return nullptr;
-	const std::string path = g_store->dbPath();
+	const std::string path = ctx->store->dbPath();
 	if (db && cached_path != path) {
 		sqlite3_close(db);
 		db = nullptr;
@@ -149,10 +160,11 @@ static sqlite3 *auxFailureDb()
 	return db;
 }
 
-void recordParseFailure(uint64_t project_id, const std::string &file_path,
-			const std::string &lang, const std::string &reason)
+void recordParseFailure(EngineContext *ctx, uint64_t project_id,
+			const std::string &file_path, const std::string &lang,
+			const std::string &reason)
 {
-	sqlite3 *db = auxFailureDb();
+	sqlite3 *db = auxFailureDb(ctx);
 	if (!db) {
 		fprintf(stderr, "store: aux failure db unavailable "
 				"[module=store, method=recordParseFailure]\n");
@@ -203,7 +215,7 @@ void bufferParseFailure(uint64_t project_id, const std::string &file_path,
 	g_failure_buf.push_back({ project_id, file_path, lang, reason });
 }
 
-int flushParseFailures()
+int flushParseFailures(EngineContext *ctx)
 {
 	// Swap out the buffer under the lock so we can flush without
 	// holding the lock during SQLite writes.
@@ -215,7 +227,7 @@ int flushParseFailures()
 	if (batch.empty())
 		return 0;
 
-	sqlite3 *db = auxFailureDb();
+	sqlite3 *db = auxFailureDb(ctx);
 	if (!db) {
 		fprintf(stderr, "store: aux failure db unavailable "
 				"[module=store, method=flushParseFailures]\n");
@@ -238,8 +250,16 @@ int flushParseFailures()
 	}
 	StmtPtr stmt(raw);
 
-	// Single transaction for all buffered rows.
-	sqlite3_exec(db, "BEGIN", nullptr, nullptr, nullptr);
+	// Single transaction for all buffered rows. BEGIN, each step and COMMIT are
+	// all checked: the previous version ignored the BEGIN/COMMIT results and
+	// merely logged a failed row while still committing, so a partially written
+	// batch was indistinguishable from a complete one (and a failed COMMIT left
+	// the connection inside an open transaction, failing every later BEGIN).
+	if (sqlite3_exec(db, "BEGIN", nullptr, nullptr, nullptr) != SQLITE_OK) {
+		logErr(db, "BEGIN", "flushParseFailures");
+		return -1;
+	}
+	size_t failed_rows = 0;
 	for (auto &r : batch) {
 		sqlite3_bind_int64(stmt.get(), 1,
 				   static_cast<int64_t>(r.project_id));
@@ -249,20 +269,35 @@ int flushParseFailures()
 				  SQLITE_TRANSIENT);
 		sqlite3_bind_text(stmt.get(), 4, r.reason.c_str(), -1,
 				  SQLITE_TRANSIENT);
-		if (sqlite3_step(stmt.get()) != SQLITE_DONE)
+		if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
+			++failed_rows;
 			logErr(db, "step", "flushParseFailures");
+		}
 		sqlite3_reset(stmt.get());
 	}
-	sqlite3_exec(db, "COMMIT", nullptr, nullptr, nullptr);
+	if (failed_rows > 0) {
+		sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
+		fprintf(stderr,
+			"store: %zu of %zu parse-failure rows failed to write; "
+			"batch rolled back [module=store, method=flushParseFailures]\n",
+			failed_rows, batch.size());
+		return -1;
+	}
+	if (sqlite3_exec(db, "COMMIT", nullptr, nullptr, nullptr) !=
+	    SQLITE_OK) {
+		logErr(db, "COMMIT", "flushParseFailures");
+		sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
+		return -1;
+	}
 
 	return static_cast<int>(batch.size());
 }
 
-int resetParseFailures(uint64_t project_id)
+int resetParseFailures(EngineContext *ctx, uint64_t project_id)
 {
-	sqlite3 *db = g_store ? g_store->handle() : nullptr;
+	sqlite3 *db = ctx->store ? ctx->store->handle() : nullptr;
 	if (!db) {
-		fprintf(stderr, "store: g_store not initialised "
+		fprintf(stderr, "store: engine store not initialised "
 				"[module=store, method=resetParseFailures]\n");
 		return -1;
 	}
@@ -282,12 +317,13 @@ int resetParseFailures(uint64_t project_id)
 	return sqlite3_changes(db);
 }
 
-std::string getParseFailuresJson(uint64_t project_id, int limit)
+std::string getParseFailuresJson(EngineContext *ctx, uint64_t project_id,
+				 int limit)
 {
-	sqlite3 *db = g_store ? g_store->handle() : nullptr;
+	sqlite3 *db = ctx->store ? ctx->store->handle() : nullptr;
 	if (!db) {
 		fprintf(stderr,
-			"store: g_store not initialised "
+			"store: engine store not initialised "
 			"[module=store, method=getParseFailuresJson]\n");
 		return "[]";
 	}
@@ -322,31 +358,40 @@ std::string getParseFailuresJson(uint64_t project_id, int limit)
 		int fc = sqlite3_column_int(stmt.get(), 3);
 		int64_t first_seen = sqlite3_column_int64(stmt.get(), 4);
 		int64_t last_seen = sqlite3_column_int64(stmt.get(), 5);
-		json += "{\"file_path\":\"" + jsonEscape(fp ? fp : "");
-		json += "\",\"language\":\"" + jsonEscape(lg ? lg : "");
-		json += "\",\"fail_reason\":\"" + jsonEscape(rs ? rs : "");
-		json += "\",\"fail_count\":" + std::to_string(fc);
-		json += ",\"first_seen\":" + std::to_string(first_seen);
-		json += ",\"last_seen\":" + std::to_string(last_seen) + "}";
+		util::JsonWriter el;
+		el.beginObject();
+		el.key("file_path").value(fp ? fp : "");
+		el.key("language").value(lg ? lg : "");
+		el.key("fail_reason").value(rs ? rs : "");
+		el.key("fail_count").value(fc);
+		el.key("first_seen").value(first_seen);
+		el.key("last_seen").value(last_seen);
+		el.endObject();
+		json += el.str();
 	}
 	json += "]";
 	return json;
 }
 
-bool loadKnownParseFailures(uint64_t project_id, int retry_max,
-			    std::vector<std::string> &out_paths)
+bool loadKnownParseFailures(EngineContext *ctx, uint64_t project_id,
+			    int retry_max, std::vector<std::string> &out_paths)
 {
-	sqlite3 *db = g_store ? g_store->handle() : nullptr;
+	sqlite3 *db = ctx->store ? ctx->store->handle() : nullptr;
 	if (!db) {
 		fprintf(stderr,
-			"store: g_store not initialised "
+			"store: engine store not initialised "
 			"[module=store, method=loadKnownParseFailures]\n");
 		return false;
 	}
+	// Same `language_missing` exclusion as isKnownParseFailure: a file whose
+	// only failure was an unavailable grammar must be re-attempted on every
+	// run, so enabling the grammar (or fixing GRAMMARS_DIR) is enough to pick
+	// it up — no manual `codescope reset-failures` needed.
 	sqlite3_stmt *raw = nullptr;
 	if (sqlite3_prepare_v2(db,
 			       "SELECT file_path FROM parse_failures "
-			       "WHERE project_id=? AND fail_count >= ?",
+			       "WHERE project_id=? AND fail_count >= ? "
+			       "AND fail_reason != 'language_missing'",
 			       -1, &raw, nullptr) != SQLITE_OK) {
 		logErr(db, "prepare", "loadKnownParseFailures");
 		return false;

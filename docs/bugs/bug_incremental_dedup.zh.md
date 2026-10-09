@@ -21,6 +21,11 @@
 
 ## 1. 如何复现
 
+> **注（2026-09-19）**：下面的 `codescope cli index_project ...` 是当时的调用方式，
+> 现已被 `codescope index-parallel <dir>` 取代 —— `index_project` 现在是 MCP
+> 会话工具（派生子进程隔离内存），不进 `cli` 的分发表。复现步骤保持原样，以免
+> 改写当时的记录。
+
 ```bash
 # 1) 干净索引项目
 codescope cli index_project '{"project_path":"/Users/scc/code/researcher/spring-petclinic"}'

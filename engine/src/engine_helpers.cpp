@@ -1,6 +1,7 @@
 #include "engine_internal.h"
 #include "filter_policy.h"
 #include "platform_win.h"
+#include "util/json_writer.h"
 
 #include <cstdio>
 #include <cstring>
@@ -92,43 +93,6 @@ std::string fileContentHash(const char *path)
 }
 
 // Escape a string for safe embedding in JSON (RFC 8259)
-std::string jsonEscape(const std::string &s)
-{
-	std::string out;
-	out.reserve(s.size() + 4);
-	for (char c : s) {
-		switch (c) {
-		case '"':
-			out += "\\\"";
-			break;
-		case '\\':
-			out += "\\\\";
-			break;
-		case '\n':
-			out += "\\n";
-			break;
-		case '\r':
-			out += "\\r";
-			break;
-		case '\t':
-			out += "\\t";
-			break;
-		default:
-			// Escape control characters (0x00-0x1f) as \uXXXX
-			if (static_cast<unsigned char>(c) < 0x20) {
-				char buf[8];
-				snprintf(buf, sizeof(buf), "\\u%04x",
-					 static_cast<unsigned char>(c));
-				out += buf;
-			} else {
-				out += c;
-			}
-			break;
-		}
-	}
-	return out;
-}
-
 std::string simpleHash(const std::string &s)
 {
 	// Simple djb2 hash for content fingerprint

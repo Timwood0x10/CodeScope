@@ -12,11 +12,22 @@ namespace query
 {
 
 // JSON string escaping (shared by query_engine.cpp and query_analysis.cpp)
-std::string jsonEscape(const char *s);
 
 // Execute a SQL query and return results as JSON array
 std::string queryToJson(sqlite3 *db, const char *sql,
 			const char *result_key = "results");
+
+// Bare-name ambiguity probe shared by the name-based trace/lookup paths.
+// Returns "" when `name` matches exactly one entity (or none) — the caller
+// proceeds normally. When more than one entity shares the name it returns a
+// complete JSON fragment in the shape
+//   {"ambiguous":true,"candidates":[{"graph_node_id":N,"name":"…",
+//     "file_path":"…","start_row":N,"start_col":N}, …]}
+// so the caller can merge it into the response instead of silently tracing
+// the first match (T5 finding #9). Query failure returns "" (fail-open,
+// matching the getCallers ambiguity helper).
+std::string bareNameCandidates(sqlite3 *db, uint64_t project_id,
+			       const char *name);
 
 class QueryEngine {
     public:
@@ -124,11 +135,22 @@ class QueryEngine {
 
 	// ── Community Detection ────────────────────────────────────
 
-	// Run label-propagation community detection on the code graph.
-	// Returns JSON with communities, their members, and inter-community edges.
-	// @param max_members Max members per community in output (0 = all).
-	// @param max_communities Max communities to return (0 = all).
-	// @param include_members Include member list in output (default false).
+	// Run deterministic label-propagation community detection over the
+	// CALLS graph (relation type=1, treated as undirected; self-loops and
+	// isolated nodes are excluded). Implemented in query_communities.cpp.
+	// Returns JSON:
+	//   {"communities":[{"id":<representative entity id>,"label":<name>,
+	//                    "member_count":N[,"members":[...]]}],
+	//    "total_communities":N,"returned_communities":N,
+	//    "inter_community_edges":N,"truncated":bool,
+	//    "approximation":"heuristic","note":"..."}
+	// Summary-first: "members" is only present when include_members is set.
+	// @param max_members Members per community when include_members is set.
+	//        Non-positive means "use the default" (10), NOT "unlimited";
+	//        clamped to 200.
+	// @param max_communities Communities to return. Non-positive means
+	//        "use the default" (20), NOT "unlimited"; clamped to 500.
+	// @param include_members Include the member list in the output.
 	std::string getCommunities(uint64_t project_id, int max_members = 10,
 				   int max_communities = 20,
 				   bool include_members = false);

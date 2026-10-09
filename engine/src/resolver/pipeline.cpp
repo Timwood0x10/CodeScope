@@ -60,41 +60,10 @@ bool shouldSkipFuzzy(const std::string &name)
 
 // Confidence thresholds were removed when resolved_reference table was
 // deprecated. Score is now stored directly in relation.confidence.
-
-// Infer the source language from a file path's extension. Used by the
-// ScopeConstraint to prefer same-language candidates (a Rust symbol is
-// unlikely to be the target of a C++ call site, etc.). Returns "" when
-// the extension is unrecognized.
-std::string languageFromPath(const std::string &file_path)
-{
-	size_t dot = file_path.rfind('.');
-	if (dot == std::string::npos)
-		return "";
-	std::string ext = file_path.substr(dot);
-	// Normalize to lowercase for case-insensitive comparison.
-	std::string lower;
-	lower.reserve(ext.size());
-	for (char ch : ext)
-		lower.push_back(static_cast<char>(
-			std::tolower(static_cast<unsigned char>(ch))));
-	if (lower == ".cpp" || lower == ".cc" || lower == ".cxx" ||
-	    lower == ".c" || lower == ".h" || lower == ".hpp" ||
-	    lower == ".hh" || lower == ".hxx")
-		return "cpp";
-	if (lower == ".rs")
-		return "rust";
-	if (lower == ".py")
-		return "python";
-	if (lower == ".go")
-		return "go";
-	if (lower == ".ts" || lower == ".tsx")
-		return "typescript";
-	if (lower == ".js" || lower == ".jsx")
-		return "javascript";
-	if (lower == ".java")
-		return "java";
-	return "";
-}
+//
+// languageFromPath() and languagesCompatible() live in factors.h so every
+// pipeline translation unit shares one implementation (this file previously
+// carried a private copy that pipeline_load.cpp duplicated).
 } // namespace
 
 ResolverPipeline::ResolverPipeline(store::GraphStore *store,
@@ -105,7 +74,7 @@ ResolverPipeline::ResolverPipeline(store::GraphStore *store,
 {
 	// Import matching no longer uses prepared SQL statements: run()
 	// pre-loads all import rows into import_index_ (file_path ->
-	// target_path list) and factorImportMatch matches against it
+	// target_path list) and ImportMatch matches against it
 	// in-memory with SQLite-exact LIKE semantics. This removes the
 	// 313k per-candidate full table scans that dominated run().
 }
@@ -304,77 +273,13 @@ int64_t ResolverPipeline::run()
 	bool fuzzy_budget_exhausted = false;
 
 	// ── Batch: read all references into memory first ────────────────
-	// Instead of sqlite3_step per row in the hot loop, read all 108k refs
-	// into a vector at once. This avoids 108k individual sqlite3_step
-	// calls and lets the hot loop run entirely in memory (~10MB for 108k refs).
-	struct RefRow {
-		uint64_t ref_id;
-		std::string name;
-		uint64_t caller_id;
-		std::string caller_file;
-		int call_kind;
-		int arity; // caller arity from reference row (column r.arity)
-		int start_row; // Step 6: call site row for provenance
-		int start_col; // Step 6: call site col for provenance
-		std::string resolve_strategy;
-		// Step 3 (plan §3.1): structured call facts. Populated by
-		// per-language Visitors; used by the exact-first candidate
-		// generation in Step 5. Empty = unknown.
-		std::string qualified_target; // full call text, e.g. "b.Get"
-		std::string receiver_text; // syntactic receiver, e.g. "b"
-		std::string receiver_type; // inferred receiver type, e.g. "Box"
-		std::string import_alias; // import alias used, e.g. "fmt"
-		std::string call_site_file; // file path of the call site
-	};
+	// loadReferences (pipeline_load.cpp) reads every project reference
+	// into `refs` in one pass so the hot loop runs with no SQLite
+	// round-trips. RefRow itself lives in pipeline.h alongside
+	// ResolvedEdge (same 1000-line-rule split).
 	std::vector<RefRow> refs;
-	refs.reserve(65536); // pre-allocate for 108k typical
-
-	while (sqlite3_step(ref_st) == SQLITE_ROW) {
-		RefRow r;
-		r.ref_id =
-			static_cast<uint64_t>(sqlite3_column_int64(ref_st, 0));
-		const char *name_c = reinterpret_cast<const char *>(
-			sqlite3_column_text(ref_st, 1));
-		r.caller_id =
-			static_cast<uint64_t>(sqlite3_column_int64(ref_st, 2));
-		// Column 3 is r.arity — the call site's arity. Previously this
-		// column was selected but never read, so the caller arity was
-		// always 0 in applyConstraints, breaking overload resolution.
-		r.arity = sqlite3_column_int(ref_st, 3);
-		// Step 6: read call site position for provenance (columns 4-5).
-		r.start_row = sqlite3_column_int(ref_st, 4);
-		r.start_col = sqlite3_column_int(ref_st, 5);
-		const char *fp_c = reinterpret_cast<const char *>(
-			sqlite3_column_text(ref_st, 8));
-		r.call_kind = sqlite3_column_int(ref_st, 6);
-		const char *rs_c = reinterpret_cast<const char *>(
-			sqlite3_column_text(ref_st, 7));
-		// Step 3: read structured call facts (columns 9-13).
-		const char *qt_c = reinterpret_cast<const char *>(
-			sqlite3_column_text(ref_st, 9));
-		const char *rtx_c = reinterpret_cast<const char *>(
-			sqlite3_column_text(ref_st, 10));
-		const char *rty_c = reinterpret_cast<const char *>(
-			sqlite3_column_text(ref_st, 11));
-		const char *ia_c = reinterpret_cast<const char *>(
-			sqlite3_column_text(ref_st, 12));
-		const char *csf_c = reinterpret_cast<const char *>(
-			sqlite3_column_text(ref_st, 13));
-		if (!name_c || !*name_c || !fp_c)
-			continue;
-		r.name = name_c;
-		r.caller_file = fp_c;
-		r.resolve_strategy = rs_c ? rs_c : "";
-		r.qualified_target = qt_c ? qt_c : "";
-		r.receiver_text = rtx_c ? rtx_c : "";
-		r.receiver_type = rty_c ? rty_c : "";
-		r.import_alias = ia_c ? ia_c : "";
-		r.call_site_file = csf_c ? csf_c : fp_c;
-		refs.push_back(std::move(r));
-	}
-	sqlite3_finalize(ref_st);
+	loadReferences(ref_st, refs, total_refs);
 	ref_st = nullptr;
-	total_refs = static_cast<int64_t>(refs.size());
 
 	// Free the entity_index right after the hot loop — it's no longer needed.
 	// Store results in a vector for batch insert.
@@ -416,6 +321,11 @@ int64_t ResolverPipeline::run()
 		// expansion only read, so they use the shared reference —
 		// results are bit-identical.
 		const std::vector<Candidate> *cands = nullptr;
+		// Whether the candidate set came from the fuzzy fallback rather than the
+		// exact-name index. The single-candidate fast path below labels its edge
+		// `exact_local`; for a fuzzy candidate that label was simply untrue —
+		// the name did not match exactly, it was only similar.
+		bool used_fuzzy = false;
 		auto it = entity_index.find(ref.name);
 		if (it != entity_index.end()) {
 			cands = &it->second; // borrow — index stays intact
@@ -482,6 +392,7 @@ int64_t ResolverPipeline::run()
 			// point cands at it so subsequent reads (size/front/
 			// dispatch) see them.
 			cands = &candidates;
+			used_fuzzy = true;
 		}
 
 		total_candidates_seen += static_cast<int64_t>(cands->size());
@@ -491,9 +402,16 @@ int64_t ResolverPipeline::run()
 			continue;
 		}
 
+		// Language of the call site, derived once per reference. Both the
+		// single-candidate fast path immediately below and the main
+		// hard-filter loop further down consume it, so the two paths
+		// apply exactly the same language rule.
+		const std::string caller_lang =
+			languageFromPath(ref.caller_file);
+
 		// ── Single-candidate fast path (semantically safe) ───────
 		// When exactly one candidate exists AND it shares the caller's
-		// directory, factorImportMatch early-returns 1.0 (ImportMatch,
+		// directory, the ImportMatch factor returns 1.0 (ImportMatch,
 		// weight 0.80) and the other same-module factors are also high,
 		// so the weighted total_score is always >= ~0.65 — well above
 		// kResolutionThreshold (0.40) for every call_kind. Therefore the
@@ -502,12 +420,33 @@ int64_t ResolverPipeline::run()
 		// edge directly produces an IDENTICAL result while skipping the
 		// full applyConstraints factor allocation/sort.
 		//
+		// Notably this is a deliberate recall-over-precision trade-off for
+		// the FUZZY fallback too: a lone same-directory candidate whose name
+		// only matches by prefix is accepted here (Case D of
+		// test_resolution_kind: "DeltaThi" -> "DeltaThing"), which is why the
+		// edge's resolution_kind says fuzzy_local instead of claiming
+		// exactness. The name gate in that factor (pipeline_apply.cpp) lives
+		// on the scored path only and deliberately does not apply here.
+		//
 		// Cross-module single candidates are NOT short-circuited: their
 		// threshold outcome depends on the import match, so the exact
 		// score must be computed to preserve identical edges.
 		if (cands->size() == 1) {
 			const Candidate &c = cands->front();
 			if (c.entity_id != ref.caller_id) {
+				// Hard language rule, identical to the main loop
+				// below: a .cpp call site can never resolve to a .py
+				// entity. The fast path previously omitted this check,
+				// so a lone same-directory candidate in another
+				// language produced a cross-language CALLS edge with
+				// confidence 0.85 that the full path rejects. The check
+				// must use the same compatibility rule as the main loop
+				// (C/C++ share a family) or valid C calls are rejected.
+				if (!languagesCompatible(caller_lang,
+							 c.language)) {
+					skipped_lang_mismatch++;
+					continue;
+				}
 				size_t c_slash = ref.caller_file.rfind('/');
 				size_t t_slash = c.file_path.rfind('/');
 				bool same_dir =
@@ -516,22 +455,41 @@ int64_t ResolverPipeline::run()
 					 ref.caller_file.substr(0, c_slash) ==
 						 c.file_path.substr(0,
 								    t_slash));
-				if (same_dir &&
+				// A fuzzy candidate is only acceptable for a BARE call: the
+				// fallback exists for visitors that record a call by its
+				// bare name (factors.h, ImportMatch); a receiver-carrying
+				// reference is a member access, and a same-directory FREE
+				// function is not that member (measured: every such edge was
+				// false — `Instant::now()` → `now_ms`, `math.Pow` →
+				// `powFunc`; all 50 here, 13 in goagent).
+				const bool fuzzy_ok = !used_fuzzy ||
+						      ref.call_kind == 0;
+				if (same_dir && fuzzy_ok &&
 				    factorVisibilityCheck(c.language, c.name,
 							  ref.caller_file,
 							  c.file_path) >= 0.5) {
 					resolved_count++;
 					// Step 6: provenance for single-candidate
 					// fast path. High confidence — only one
-					// candidate in the same directory.
+					// candidate in the same directory. The kind
+					// says how the NAME was matched, so a fuzzy
+					// candidate is not labelled "exact_local":
+					// the fast path also runs for the fuzzy
+					// fallback's single same-directory candidate
+					// (cands may point at that vector), and the
+					// audits group by this column.
 					resolved_edges.push_back(
 						{ ref.caller_id, c.entity_id,
 						  kRelationTypeCall,
 						  ref.resolve_strategy,
 						  0.85, // confidence
 						  "pipeline", // resolver
-						  "exact_local", // resolution_kind
-						  "single same-module candidate",
+						  used_fuzzy ?
+							  "fuzzy_local" :
+							  "exact_local", // resolution_kind
+						  used_fuzzy ?
+							  "single same-module fuzzy candidate" :
+							  "single same-module candidate",
 						  ref.call_site_file,
 						  ref.start_row,
 						  ref.start_col });
@@ -586,8 +544,15 @@ int64_t ResolverPipeline::run()
 				if (fv != global_var_types_.end()) {
 					for (const auto &cand_type :
 					     fv->second) {
+						// Canonical spelling: a variable
+						// is recorded as `*HolderA` or
+						// `pkg.Holder`, while the field
+						// table is keyed by the declared
+						// bare name (see
+						// canonicalTypeName).
 						std::string cur_type =
-							cand_type;
+							canonicalTypeName(
+								cand_type);
 						bool chain_ok = true;
 						size_t pos = first_dot;
 						while (chain_ok &&
@@ -622,35 +587,18 @@ int64_t ResolverPipeline::run()
 									false;
 								break;
 							}
-							cur_type = fld->second;
+							cur_type = canonicalTypeName(
+								fld->second);
 							pos = next;
 						}
 						if (chain_ok &&
 						    !cur_type.empty()) {
-							// Normalize the resolved type so it
-							// can hit interface_impl_index_:
-							// strip a leading pointer marker
-							// (`*PluginBus` → `PluginBus`) and
-							// drop a package qualifier
-							// (`ares_runtime.PluginBus` →
-							// `PluginBus`), matching how the
-							// visitor records interface names.
-							std::string norm =
+							// Every segment was
+							// canonicalised above, so the
+							// result can hit
+							// interface_impl_index_.
+							resolved_receiver =
 								cur_type;
-							if (!norm.empty() &&
-							    norm[0] == '*')
-								norm.erase(0,
-									   1);
-							size_t last_dot =
-								norm.rfind('.');
-							if (last_dot !=
-							    std::string::npos)
-								norm = norm.substr(
-									last_dot +
-									1);
-							if (!norm.empty())
-								resolved_receiver =
-									norm;
 							break;
 						}
 					}
@@ -699,6 +647,21 @@ int64_t ResolverPipeline::run()
 						      qn.size() >
 							      impl_len + 1 &&
 						      qn[impl_len + 1] == ':'))
+							continue;
+						// Hard language filter, identical to the
+						// main loop and the fast path. This
+						// expansion selects targets by
+						// qualified_name prefix only, so without
+						// the filter a same-named entity in
+						// another language became a dispatch
+						// target: a .cpp call site could gain a
+						// CALLS edge to a Python implementation
+						// of the interface. Empty language
+						// (unknown) is allowed through, as in the
+						// main loop.
+						if (!languagesCompatible(
+							    caller_lang,
+							    c.language))
 							continue;
 						// Visibility check.
 						if (factorVisibilityCheck(
@@ -781,7 +744,11 @@ int64_t ResolverPipeline::run()
 		double best_score = -1.0;
 		uint64_t second_id = 0;
 		double second_score = -1.0;
-		std::string caller_lang = languageFromPath(ref.caller_file);
+		// The winner itself, not just its id: Step 6 labels the edge with the
+		// evidence that decided this match (its deciding_factor).
+		const Candidate *best_cand = nullptr;
+		// caller_lang is hoisted above the single-candidate fast path
+		// (see the top of this loop body) so both paths share one rule.
 		for (auto &c : candidates) {
 			if (c.entity_id == ref.caller_id)
 				continue;
@@ -793,9 +760,10 @@ int64_t ResolverPipeline::run()
 			// Step 5: hard filter — language match. A call site in
 			// a .go file cannot resolve to a .py entity; skip the
 			// candidate entirely. Empty language (unknown) is allowed
-			// through to avoid over-filtering edge cases.
-			if (!caller_lang.empty() && !c.language.empty() &&
-			    caller_lang != c.language) {
+			// through to avoid over-filtering edge cases. C and C++
+			// share a family because the path-based classifier reports
+			// ".c" as "cpp" while the C visitor labels the unit "c".
+			if (!languagesCompatible(caller_lang, c.language)) {
 				skipped_lang_mismatch++;
 				continue;
 			}
@@ -804,6 +772,7 @@ int64_t ResolverPipeline::run()
 				second_score = best_score;
 				best_id = c.entity_id;
 				best_score = c.total_score;
+				best_cand = &c;
 			} else if (c.total_score > second_score) {
 				second_id = c.entity_id;
 				second_score = c.total_score;
@@ -867,37 +836,80 @@ int64_t ResolverPipeline::run()
 		// Fuzzy name similarity is inherently weaker than exact-name
 		// matching, so require a higher confidence before writing a
 		// CALLS edge from a fuzzy candidate.
-		bool from_fuzzy = (exact_hits == 0); // approximated; see note
-		(void)from_fuzzy; // not used for now — threshold is uniform
+		// The old `(exact_hits == 0)` approximation is gone: exact_hits is a
+		// running total over ALL references, so it said nothing about this one.
+		// The per-ref `used_fuzzy` flag set above is exact, and the fast path
+		// labels its edges from it.
+		//
+		// kFuzzyResolutionThreshold is still not applied, and the reason is
+		// worth stating: the edge confidence is the weighted factor score, in
+		// which the fuzzy name similarity is NOT a factor — the name is only
+		// the lookup key. Gating a fuzzy hit on that score would therefore
+		// filter by evidence strength (namespace/import/distance), not by match
+		// kind. Applying the threshold needs a name-similarity factor first;
+		// that is registered in the review doc instead of guessed at here.
 		// Note: the fuzzy threshold kFuzzyResolutionThreshold is
 		// reserved for when we can precisely track which candidates
 		// came from fuzzy vs exact. For now, the evidence gate above
 		// (fuzzy only fires with structured evidence) plus the
 		// ambiguity gate provide sufficient FP protection.
 
-		// Step 6 (plan §6.2): determine resolution_kind from evidence.
-		// Priority: receiver_type > qualified_target > import_alias >
-		// name_arity. The kind records which evidence path produced
-		// the edge, enabling per-kind accuracy tracking and FP audits.
+		// Step 6 (plan §6.2): resolution_kind records the evidence that
+		// ACTUALLY decided the match.
+		//
+		// It used to be read off "which reference field is non-empty"
+		// (receiver_type > qualified_target > import_alias > name), which is a
+		// different question: a call carrying a receiver_type field but
+		// resolved in fact by name+arity — the receiver evidence contributing
+		// nothing to the winning score — was still labelled `receiver_type`,
+		// and every per-kind accuracy audit grouped by these labels inherited
+		// that skew.
+		//
+		// The label now comes from the winning candidate's largest positive
+		// factor contribution (Candidate::deciding_factor, recorded by
+		// applyConstraints), with one exception checked explicitly because it is
+		// not a scoring factor: an exact qualified-name hit, which is decisive
+		// on its own evidence.
 		std::string res_kind;
 		std::string reason;
-		if (!ref.receiver_type.empty()) {
-			res_kind = "receiver_type";
-			reason = "receiver_type=" + ref.receiver_type +
-				 " score=" + std::to_string(best_score);
-		} else if (!ref.qualified_target.empty()) {
+		if (!ref.qualified_target.empty() && best_cand != nullptr &&
+		    best_cand->qualified_name == ref.qualified_target) {
 			res_kind = "qualified";
 			reason = "qualified_target=" + ref.qualified_target +
-				 " score=" + std::to_string(best_score);
-		} else if (!ref.import_alias.empty()) {
-			res_kind = "imported";
-			reason = "import_alias=" + ref.import_alias +
-				 " score=" + std::to_string(best_score);
-		} else {
-			res_kind = "name_arity";
-			reason = "name=" + ref.name +
+				 " (exact) score=" + std::to_string(best_score);
+		} else if (best_cand != nullptr &&
+			   !best_cand->deciding_factor.empty()) {
+			res_kind = resolutionKindFromFactor(
+				best_cand->deciding_factor);
+			if (res_kind.empty())
+				res_kind = "name_arity";
+			reason = "decided_by=" + best_cand->deciding_factor +
+				 " name=" + ref.name +
 				 " arity=" + std::to_string(ref.arity) +
 				 " score=" + std::to_string(best_score);
+		} else {
+			// No factor was recorded for the winner (every factor scored
+			// zero, or the candidate came from a path that does not run
+			// applyConstraints). Fall back to the field-presence label and say
+			// so, rather than inventing a kind.
+			if (!ref.receiver_type.empty()) {
+				res_kind = "receiver_type";
+				reason =
+					"receiver_type=" + ref.receiver_type +
+					" score=" + std::to_string(best_score) +
+					" (field present; no factor recorded)";
+			} else if (!ref.import_alias.empty()) {
+				res_kind = "imported";
+				reason =
+					"import_alias=" + ref.import_alias +
+					" score=" + std::to_string(best_score) +
+					" (field present; no factor recorded)";
+			} else {
+				res_kind = "name_arity";
+				reason = "name=" + ref.name +
+					 " arity=" + std::to_string(ref.arity) +
+					 " score=" + std::to_string(best_score);
+			}
 		}
 
 		resolved_count++;
@@ -926,7 +938,17 @@ int64_t ResolverPipeline::run()
 	// Staging temp-table insert in one transaction, then bulk-copy into
 	// relation + graph_edges. Finalizes ins_st and reports elapsed ms.
 	int64_t sql_batch_ms = 0;
-	flushResolvedEdges(resolved_edges, ins_st, sql_batch_ms);
+	// A failed flush invalidates the build: return -1 so buildGraph
+	// rolls back to its savepoint instead of committing a graph that is
+	// missing the resolved CALLS edges.
+	if (!flushResolvedEdges(resolved_edges, ins_st, sql_batch_ms)) {
+		fprintf(stderr,
+			"[module=resolver, method=run] flush of resolved "
+			"edges failed — reporting failure to buildGraph\n");
+		store_->exec("DROP TABLE IF EXISTS _resolved_edges");
+		mark("sql_batch");
+		return -1;
+	}
 	mark("sql_batch");
 
 	// ── Cleanup staging table ──

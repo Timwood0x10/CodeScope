@@ -1,7 +1,6 @@
 # CodeScope Deep Dive (1): Dual-Language Architecture — Why We Wrote a C++ Project in Rust
 
 > *"Sometimes the best tool for the job isn't the one you'd like to use."*
-> 有时最好的工具并不是你喜欢的那个。
 
 ## Why Two Languages?
 

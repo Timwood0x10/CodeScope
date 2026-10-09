@@ -542,7 +542,7 @@ index_project → poll get_index_progress
 
 ```
 Index returns (1s) → FTS builds asynchronously (background)
-Before FTS ready → auto-fallback to graph_nodes.name LIKE search
+Before FTS ready → auto-fallback to entity.name LIKE search
 After FTS ready → auto-switch to FTS5 full-text search
 ```
 

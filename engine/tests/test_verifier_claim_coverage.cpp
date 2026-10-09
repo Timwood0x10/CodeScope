@@ -21,7 +21,7 @@
 #include "verify/claim.h"
 #include "verify/registry.h"
 
-#include <cassert>
+#include "test_check.h"
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
@@ -30,6 +30,7 @@
 #include <string>
 #include <unistd.h>
 #include <vector>
+#include "test_engine_handle.h"
 
 // ─── Fixture: a tiny Go project with known call graph ────────────────
 // main -> compute -> multiply -> add
@@ -42,7 +43,7 @@ static void writeFixture(const std::string &dir)
 	std::filesystem::create_directories(dir);
 
 	FILE *f = fopen((dir + "/main.go").c_str(), "w");
-	assert(f != nullptr);
+	CHECK(f != nullptr);
 	fputs("package main\n\n"
 	      "func add(a, b int) int { return a + b }\n"
 	      "func multiply(a, b int) int {\n"
@@ -62,7 +63,7 @@ static void writeFixture(const std::string &dir)
 	fclose(f);
 
 	FILE *g = fopen((dir + "/controller.go").c_str(), "w");
-	assert(g != nullptr);
+	CHECK(g != nullptr);
 	// A Controller-named function so ArchitectureVerifier detects a
 	// "Controller" layer member via the name suffix rule.
 	fputs("package main\n\n"
@@ -79,15 +80,16 @@ static void writeFixture(const std::string &dir)
 static uint64_t indexFixture(const char *db_path, const char *proj_dir,
 			     const char *proj_name)
 {
-	if (engine_init(db_path) != 0) {
+	g_engine = engine_create(db_path);
+	if (!g_engine) {
 		fprintf(stderr, "FAIL: engine_init failed\n");
 		exit(1);
 	}
-	uint64_t pid = engine_create_project(proj_dir, proj_name);
-	assert(pid > 0);
-	char *idx = engine_index_project(pid, proj_dir, nullptr);
-	assert(idx != nullptr);
-	assert(strstr(idx, "\"ok\":true") != nullptr);
+	uint64_t pid = engine_create_project(g_engine, proj_dir, proj_name);
+	CHECK(pid > 0);
+	char *idx = engine_index_project(g_engine, pid, proj_dir, nullptr);
+	CHECK(idx != nullptr);
+	CHECK(strstr(idx, "\"ok\":true") != nullptr);
 	engine_free_string(idx);
 	usleep(200000);
 	return pid;
@@ -97,11 +99,11 @@ static uint64_t indexFixture(const char *db_path, const char *proj_dir,
 // succeeded (no lifecycle error codes).
 static char *verifyClaimOk(uint64_t pid, const std::string &claim_json)
 {
-	char *out = engine_verify_claim(pid, claim_json.c_str());
-	assert(out != nullptr);
-	assert(strstr(out, "registry_empty") == nullptr);
-	assert(strstr(out, "claim_type_unsupported") == nullptr);
-	assert(strstr(out, "verifier_execution_failed") == nullptr);
+	char *out = engine_verify_claim(g_engine, pid, claim_json.c_str());
+	CHECK(out != nullptr);
+	CHECK(strstr(out, "registry_empty") == nullptr);
+	CHECK(strstr(out, "claim_type_unsupported") == nullptr);
+	CHECK(strstr(out, "verifier_execution_failed") == nullptr);
 	return out;
 }
 
@@ -167,17 +169,17 @@ int main()
 		}
 
 		// 4 public types total.
-		assert(public_types.size() == 4);
+		CHECK(public_types.size() == 4);
 		// All 4 must be supported (Step 9.3 added FunctionImplements).
-		assert(supported.size() == 4);
-		assert(unsupported.empty());
+		CHECK(supported.size() == 4);
+		CHECK(unsupported.empty());
 
 		// Sanity: each public type has a stable wire name.
 		for (auto t : public_types) {
 			const char *name = verify::claimTypeWireName(t);
-			assert(name != nullptr);
-			assert(*name != '\0');
-			assert(strcmp(name, "unknown") != 0);
+			CHECK(name != nullptr);
+			CHECK(*name != '\0');
+			CHECK(strcmp(name, "unknown") != 0);
 		}
 
 		printf("Test 1 (100%% claim type coverage): PASS\n");
@@ -223,11 +225,11 @@ int main()
 			char *r = verifyClaimOk(pid, c.claim_json);
 			std::string verdict = extractVerdict(r);
 			std::string verifier = extractVerifier(r);
-			assert(!verdict.empty());
-			assert(!verifier.empty());
-			assert(verdict == "Supported" ||
-			       verdict == "Contradicted" ||
-			       verdict == "Unknown");
+			CHECK(!verdict.empty());
+			CHECK(!verifier.empty());
+			CHECK(verdict == "Supported" ||
+			      verdict == "Contradicted" ||
+			      verdict == "Unknown");
 			printf("  %s -> %s via %s\n", c.wire_name,
 			       verdict.c_str(), verifier.c_str());
 			engine_free_string(r);
@@ -249,12 +251,12 @@ int main()
 			verifyClaimOk(pid, "{\"type\":\"function_implements\","
 					   "\"subject\":\"compute\"}");
 		std::string v_supported = extractVerdict(r_supported);
-		assert(v_supported == "Supported");
-		assert(strstr(r_supported, "FunctionImplementsVerifier") !=
-		       nullptr);
+		CHECK(v_supported == "Supported");
+		CHECK(strstr(r_supported, "FunctionImplementsVerifier") !=
+		      nullptr);
 		// Downgraded confidence: structural check only.
-		assert(strstr(r_supported, "\"confidence\":0.55") != nullptr ||
-		       strstr(r_supported, "\"confidence\": 0.55") != nullptr);
+		CHECK(strstr(r_supported, "\"confidence\":0.55") != nullptr ||
+		      strstr(r_supported, "\"confidence\": 0.55") != nullptr);
 		engine_free_string(r_supported);
 
 		// Contradicted: `nonexistent_function` does not exist.
@@ -262,7 +264,7 @@ int main()
 			pid, "{\"type\":\"function_implements\","
 			     "\"subject\":\"nonexistent_function_xyz\"}");
 		std::string v_contradicted = extractVerdict(r_contradicted);
-		assert(v_contradicted == "Contradicted");
+		CHECK(v_contradicted == "Contradicted");
 		engine_free_string(r_contradicted);
 
 		printf("Test 3 (FunctionImplementsVerifier ground truth): "
@@ -280,8 +282,8 @@ int main()
 			pid, "{\"type\":\"capability_exists\","
 			     "\"subject\":\"NonExistentCapability\"}");
 		std::string v = extractVerdict(r);
-		assert(v == "Contradicted");
-		assert(strstr(r, "CapabilityVerifier") != nullptr);
+		CHECK(v == "Contradicted");
+		CHECK(strstr(r, "CapabilityVerifier") != nullptr);
 		engine_free_string(r);
 		printf("Test 4 (CapabilityVerifier ground truth): PASS\n");
 	}
@@ -299,8 +301,8 @@ int main()
 		std::string v = extractVerdict(r);
 		// No contract declared in the fixture → Unknown is the safe
 		// verdict (we cannot contradict an undeclared claim).
-		assert(v == "Unknown");
-		assert(strstr(r, "ContractVerifier") != nullptr);
+		CHECK(v == "Unknown");
+		CHECK(strstr(r, "ContractVerifier") != nullptr);
 		engine_free_string(r);
 		printf("Test 5 (ContractVerifier ground truth): PASS\n");
 	}
@@ -317,8 +319,8 @@ int main()
 					"\"object\":\"Service\","
 					"\"scope\":\"Repository\"}");
 		std::string v = extractVerdict(r);
-		assert(v == "Unknown");
-		assert(strstr(r, "ArchitectureVerifier") != nullptr);
+		CHECK(v == "Unknown");
+		CHECK(strstr(r, "ArchitectureVerifier") != nullptr);
 		engine_free_string(r);
 		printf("Test 6 (ArchitectureVerifier ground truth): PASS\n");
 	}
@@ -338,21 +340,22 @@ int main()
 		const char *empty_dir = "/tmp/test_verifier_coverage_empty";
 		std::filesystem::remove_all(empty_dir);
 		std::filesystem::create_directories(empty_dir);
-		uint64_t empty_pid =
-			engine_create_project(empty_dir, "empty-no-index");
-		assert(empty_pid > 0);
-		assert(empty_pid != pid); // must be a new project
-		char *r = engine_verify_claim(
-			empty_pid, "{\"type\":\"function_implements\","
-				   "\"subject\":\"compute\"}");
-		assert(r != nullptr);
+		uint64_t empty_pid = engine_create_project(g_engine, empty_dir,
+							   "empty-no-index");
+		CHECK(empty_pid > 0);
+		CHECK(empty_pid != pid); // must be a new project
+		char *r =
+			engine_verify_claim(g_engine, empty_pid,
+					    "{\"type\":\"function_implements\","
+					    "\"subject\":\"compute\"}");
+		CHECK(r != nullptr);
 		std::string v = extractVerdict(r);
-		assert(v == "Unknown");
+		CHECK(v == "Unknown");
 		// The error_code field must be present and tagged
 		// evidence_backend_not_ready so callers can distinguish
 		// "no evidence yet" from a normal Unknown verdict.
-		assert(strstr(r, "evidence_backend_not_ready") != nullptr);
-		assert(strstr(r, "evidence backend not ready") != nullptr);
+		CHECK(strstr(r, "evidence_backend_not_ready") != nullptr);
+		CHECK(strstr(r, "evidence backend not ready") != nullptr);
 		engine_free_string(r);
 		printf("Test 7 (evidence backend not ready -> Unknown): "
 		       "PASS\n");
@@ -368,10 +371,11 @@ int main()
 	{
 		// claim_type_unsupported: unknown type string.
 		char *r_unknown =
-			engine_verify_claim(pid, "{\"type\":\"bogus_type\","
-						 "\"subject\":\"foo\"}");
-		assert(r_unknown != nullptr);
-		assert(strstr(r_unknown, "claim_type_unsupported") != nullptr);
+			engine_verify_claim(g_engine, pid,
+					    "{\"type\":\"bogus_type\","
+					    "\"subject\":\"foo\"}");
+		CHECK(r_unknown != nullptr);
+		CHECK(strstr(r_unknown, "claim_type_unsupported") != nullptr);
 		engine_free_string(r_unknown);
 
 		// registry_empty: after engine_shutdown(), the registry is
@@ -386,19 +390,20 @@ int main()
 		probe.subject = "test";
 		verify::Verifier *matched =
 			verify::VerifierRegistry::instance().match(probe);
-		assert(matched == nullptr);
-		assert(verify::VerifierRegistry::instance().verifier_count() ==
-		       0);
+		CHECK(matched == nullptr);
+		CHECK(verify::VerifierRegistry::instance().verifier_count() ==
+		      0);
 		// Restore the registry for any subsequent tests.
 		verify::VerifierRegistry::instance().ensureDefaultVerifiers(
 			nullptr, 0);
-		assert(verify::VerifierRegistry::instance().verifier_count() >=
-		       4);
+		CHECK(verify::VerifierRegistry::instance().verifier_count() >=
+		      4);
 
 		printf("Test 8 (distinct error codes): PASS\n");
 	}
 
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 	printf("\n=== test_verifier_claim_coverage PASSED ===\n");
-	return 0;
+	return checkFailures() ? 1 : 0;
 }

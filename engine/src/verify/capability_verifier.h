@@ -12,12 +12,36 @@ namespace verify
 {
 
 /**
+ * Entities that can be the implementation of `subject`, a documented
+ * capability name. The one place this rule lives: CapabilityVerifier uses it,
+ * and capability_drift.cpp delegates to it so a capability cannot be
+ * "implemented" for one caller and "missing" for the other.
+ *
+ * Name match: exact, or a bidirectional prefix with the kMinCapabilityPrefixLen
+ * floor, over the raw names and over two normalised spellings (de-underscored,
+ * and without the entity's first '_'-delimited segment) that bridge the
+ * README spelling and a language-prefixed export such as `engine_verify_claim`.
+ *
+ * Evidence: the entity has a caller (relation type=1 incoming) or is exported
+ * (entity.visibility=1).
+ *
+ * @param out_ok  False only when the query itself failed; callers must map that
+ *                to Unknown, never to Contradicted (no silent error handling).
+ * @return Entity ids in SQLite row order; empty when nothing matches.
+ */
+std::vector<int64_t> implementingEntitiesFor(store::GraphStore *store,
+					     uint64_t project_id,
+					     const std::string &subject,
+					     bool &out_ok);
+
+/**
  * CapabilityVerifier checks that claimed capabilities actually exist in the
  * codebase. In the Claim-driven flow it accepts CapabilityExists claims and
  * returns an EvidenceRecord with supporting or contradicting evidence.
  *
  * Evidence chain (Step 9.5 migrated to canonical facts):
- *   Capability row -> entity row -> Callers (relation type=1 incoming)
+ *   Capability row -> entity row -> implementingEntitiesFor (callers or
+ *   exported/public — see above)
  *
  * Legacy path:
  *   The no-argument verify() returning std::vector<Finding> is preserved so

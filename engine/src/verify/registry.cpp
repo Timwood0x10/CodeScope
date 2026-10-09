@@ -50,10 +50,10 @@ void VerifierRegistry::register_default_verifiers(store::GraphStore *store,
 //
 // This replaces the old `static bool initialized` flag in
 // engine_verify_ffi.cpp. The flag was the root cause of the lifecycle bug
-// (A15): engine_shutdown() cleared the registry but the flag stayed true,
+// (A15): engine_destroy() cleared the registry but the flag stayed true,
 // so the next ensureVerifiersRegistered() was a no-op and the registry
 // stayed empty. Checking the actual registry state makes the function
-// symmetric with engine_shutdown()'s clear() — repeatable any number of
+// symmetric with engine_destroy()'s clear() — repeatable any number of
 // times.
 void VerifierRegistry::ensureDefaultVerifiers(store::GraphStore *store,
 					      uint64_t project_id)

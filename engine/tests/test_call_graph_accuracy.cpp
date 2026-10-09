@@ -43,6 +43,7 @@
 #include <string>
 #include <unistd.h>
 #include <vector>
+#include "test_engine_handle.h"
 
 // ─── Minimal JSON parser for ground_truth.json ───────────────────────
 // The ground_truth format is fixed and simple: objects with string keys
@@ -454,27 +455,31 @@ static FixtureResult runFixture(const std::string &fixture_dir, bool inject_fp,
 		 r.language.c_str());
 	unlink(db_path);
 
-	if (engine_init(db_path) != 0) {
+	g_engine = engine_create(db_path);
+	if (!g_engine) {
 		fprintf(stderr, "FAIL: engine_init for %s\n",
 			r.language.c_str());
 		r.fn = -1;
 		return r;
 	}
-	uint64_t pid = engine_create_project(tmp_dir.c_str(),
+	uint64_t pid = engine_create_project(g_engine, tmp_dir.c_str(),
 					     ("acc-" + r.language).c_str());
 	if (pid == 0) {
 		fprintf(stderr, "FAIL: create_project for %s\n",
 			r.language.c_str());
-		engine_shutdown();
+		engine_destroy(g_engine);
+		g_engine = nullptr;
 		r.fn = -1;
 		return r;
 	}
-	char *idx = engine_index_project(pid, tmp_dir.c_str(), nullptr);
+	char *idx =
+		engine_index_project(g_engine, pid, tmp_dir.c_str(), nullptr);
 	if (!idx || !strstr(idx, "\"ok\":true")) {
 		fprintf(stderr, "FAIL: index_project for %s: %s\n",
 			r.language.c_str(), idx ? idx : "(null)");
 		engine_free_string(idx);
-		engine_shutdown();
+		engine_destroy(g_engine);
+		g_engine = nullptr;
 		r.fn = -1;
 		return r;
 	}
@@ -488,13 +493,15 @@ static FixtureResult runFixture(const std::string &fixture_dir, bool inject_fp,
 	if (sqlite3_open(db_path, &db) != SQLITE_OK) {
 		fprintf(stderr, "FAIL: sqlite3_open for %s\n",
 			r.language.c_str());
-		engine_shutdown();
+		engine_destroy(g_engine);
+		g_engine = nullptr;
 		r.fn = -1;
 		return r;
 	}
 	std::set<std::string> actual = enumerateActualCalls(db, pid);
 	sqlite3_close(db);
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 
 	// Build ground-truth sets.
 	std::set<std::string> expected = buildEdgeSet(gt, "expected_calls");

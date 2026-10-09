@@ -13,70 +13,51 @@
 
 #include "../src/ir/translators/js_visitor.h"
 #include "../src/ir/semantic_unit.h"
+#include "grammar_loader.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <dlfcn.h>
 #include <string>
 #include <vector>
 
 // tree-sitter
 #include <tree_sitter/api.h>
 
-// Load the JavaScript grammar dynamically
+// The grammar is compiled into astgraph_engine, which this test links, so the
+// language comes from the library rather than from a .so on disk
+// (engine/tests/grammar_loader.h explains what the old lookup cost).
 static const TSLanguage *load_js_language()
 {
-	// Try GRAMMARS_DIR env, then default paths
-	const char *dirs[] = {
-		getenv("GRAMMARS_DIR"),
-		"../grammars",
-		"grammars",
-		"～/code/cppCode/CodeScope/grammars",
-	};
-	for (auto d : dirs) {
-		if (!d)
-			continue;
-		std::string path = std::string(d) +
-				   "/tree-sitter-javascript.so";
-		void *handle = dlopen(path.c_str(),
-				      RTLD_LAZY | RTLD_LOCAL);
-		if (handle) {
-			auto *fn = reinterpret_cast<const TSLanguage *(*)()>(
-				dlsym(handle, "tree_sitter_javascript"));
-			if (fn)
-				return fn();
-			dlclose(handle);
-		}
-	}
-	return nullptr;
+	return testGrammar("javascript");
 }
 
 static int tests_run = 0;
 static int tests_passed = 0;
 
-#define CHECK(cond, msg)                                                      \
-	do {                                                                   \
-		tests_run++;                                                   \
-		if (!(cond)) {                                                 \
-			fprintf(stderr, "FAIL [%d]: %s\n", tests_run, msg);    \
-			exit(1);                                               \
-		}                                                              \
-		tests_passed++;                                                \
+#define CHECK(cond, msg)                                                    \
+	do {                                                                \
+		tests_run++;                                                \
+		if (!(cond)) {                                              \
+			fprintf(stderr, "FAIL [%d]: %s\n", tests_run, msg); \
+			exit(1);                                            \
+		}                                                           \
+		tests_passed++;                                             \
 	} while (0)
 
-#define CHECK_EQ(a, b, msg)                                                    \
-	do {                                                                   \
-		tests_run++;                                                   \
-		if ((a) != (b)) {                                              \
-			fprintf(stderr, "FAIL [%d]: %s — expected %llu, "      \
-					"got %llu\n",                          \
-				tests_run, msg,                                 \
-				static_cast<unsigned long long>(b),            \
-				static_cast<unsigned long long>(a));           \
-			exit(1);                                               \
-		}                                                              \
-		tests_passed++;                                                \
+#define CHECK_EQ(a, b, msg)                                          \
+	do {                                                         \
+		tests_run++;                                         \
+		if ((a) != (b)) {                                    \
+			fprintf(stderr,                              \
+				"FAIL [%d]: %s — expected %llu, "    \
+				"got %llu\n",                        \
+				tests_run, msg,                      \
+				static_cast<unsigned long long>(b),  \
+				static_cast<unsigned long long>(a)); \
+			exit(1);                                     \
+		}                                                    \
+		tests_passed++;                                      \
 	} while (0)
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -86,8 +67,7 @@ static TSTree *parse(const char *source, const TSLanguage *lang)
 	TSParser *parser = ts_parser_new();
 	ts_parser_set_language(parser, lang);
 	TSTree *tree = ts_parser_parse_string(
-		parser, nullptr, source,
-		static_cast<uint32_t>(strlen(source)));
+		parser, nullptr, source, static_cast<uint32_t>(strlen(source)));
 	ts_parser_delete(parser);
 	return tree;
 }
@@ -100,7 +80,7 @@ static size_t countKind(const ir::SemanticUnit &unit, ir::RecordKind kind)
 
 // Find first record by name
 static const ir::Record *findByName(const ir::SemanticUnit &unit,
-				     const std::string &name)
+				    const std::string &name)
 {
 	size_t idx = unit.findRecordByName(name);
 	if (idx == SIZE_MAX)
@@ -136,11 +116,9 @@ static void test_simple_function()
 
 	const ir::Record *add = findByName(*unit, "add");
 	CHECK(add != nullptr, "function 'add' found");
-	CHECK(add->kind == ir::RecordKind::Function,
-	      "record kind is Function");
+	CHECK(add->kind == ir::RecordKind::Function, "record kind is Function");
 	CHECK(add->loc.start_row == 0, "add starts at row 0");
-	CHECK(add->file_path == "/test/add.js",
-	      "file path preserved");
+	CHECK(add->file_path == "/test/add.js", "file path preserved");
 
 	ts_tree_delete(tree);
 	delete unit;
@@ -183,8 +161,7 @@ static void test_call_expression()
 	// Verify containment: call should be a child of main
 	const ir::Record *main_fn = findByName(*unit, "main");
 	CHECK(main_fn != nullptr, "main function found");
-	CHECK_EQ(call->parent_id, main_fn->id,
-		 "call is child of main");
+	CHECK_EQ(call->parent_id, main_fn->id, "call is child of main");
 
 	ts_tree_delete(tree);
 	delete unit;
@@ -218,10 +195,8 @@ static void test_variable_declaration()
 	// Both should be children of main
 	const ir::Record *main_fn = findByName(*unit, "main");
 	CHECK(main_fn != nullptr, "main function found");
-	CHECK_EQ(x->parent_id, main_fn->id,
-		 "x is child of main");
-	CHECK_EQ(y->parent_id, main_fn->id,
-		 "y is child of main");
+	CHECK_EQ(x->parent_id, main_fn->id, "x is child of main");
+	CHECK_EQ(y->parent_id, main_fn->id, "y is child of main");
 
 	ts_tree_delete(tree);
 	delete unit;
@@ -268,8 +243,7 @@ static void test_multi_function()
 	// r is a variable child of main
 	const ir::Record *r = findByName(*unit, "r");
 	CHECK(r != nullptr, "variable 'r' found");
-	CHECK_EQ(r->parent_id, main_fn->id,
-		 "r is child of main");
+	CHECK_EQ(r->parent_id, main_fn->id, "r is child of main");
 
 	ts_tree_delete(tree);
 	delete unit;
@@ -300,10 +274,8 @@ static void test_class_method()
 
 	const ir::Record *add = findByName(*unit, "add");
 	CHECK(add != nullptr, "method 'add' found");
-	CHECK(add->kind == ir::RecordKind::Method,
-	      "add is a Method record");
-	CHECK_EQ(add->parent_id, calc->id,
-		 "add is child of Calculator");
+	CHECK(add->kind == ir::RecordKind::Method, "add is a Method record");
+	CHECK_EQ(add->parent_id, calc->id, "add is child of Calculator");
 
 	ts_tree_delete(tree);
 	delete unit;
@@ -347,8 +319,7 @@ static void test_import_export()
 		}
 	}
 	CHECK(exp != nullptr, "export record found");
-	CHECK_EQ(bar->parent_id, exp->id,
-		 "bar is child of export record");
+	CHECK_EQ(bar->parent_id, exp->id, "bar is child of export record");
 
 	ts_tree_delete(tree);
 	delete unit;
@@ -457,7 +428,7 @@ int main()
 	test_member_expression();
 	test_empty_file();
 
-	printf("\n=== js_visitor test passed (%d/%d) ===\n",
-	       tests_passed, tests_run);
+	printf("\n=== js_visitor test passed (%d/%d) ===\n", tests_passed,
+	       tests_run);
 	return 0;
 }

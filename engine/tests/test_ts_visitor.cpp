@@ -14,69 +14,51 @@
 
 #include "../src/ir/translators/ts_visitor.h"
 #include "../src/ir/semantic_unit.h"
+#include "grammar_loader.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <dlfcn.h>
 #include <string>
 #include <vector>
 
 // tree-sitter
 #include <tree_sitter/api.h>
 
-// Load the TypeScript grammar dynamically
+// The grammar is compiled into astgraph_engine, which this test links, so the
+// language comes from the library rather than from a .so on disk
+// (engine/tests/grammar_loader.h explains what the old lookup cost).
 static const TSLanguage *load_ts_language()
 {
-	const char *dirs[] = {
-		getenv("GRAMMARS_DIR"),
-		"../grammars",
-		"grammars",
-		"～/code/cppCode/CodeScope/grammars",
-	};
-	for (auto d : dirs) {
-		if (!d)
-			continue;
-		std::string path = std::string(d) +
-				   "/tree-sitter-typescript.so";
-		void *handle = dlopen(path.c_str(),
-				      RTLD_LAZY | RTLD_LOCAL);
-		if (handle) {
-			auto *fn = reinterpret_cast<const TSLanguage *(*)()>(
-				dlsym(handle, "tree_sitter_typescript"));
-			if (fn)
-				return fn();
-			dlclose(handle);
-		}
-	}
-	return nullptr;
+	return testGrammar("typescript");
 }
 
 static int tests_run = 0;
 static int tests_passed = 0;
 
-#define CHECK(cond, msg)                                                      \
-	do {                                                                   \
-		tests_run++;                                                   \
-		if (!(cond)) {                                                 \
-			fprintf(stderr, "FAIL [%d]: %s\n", tests_run, msg);    \
-			exit(1);                                               \
-		}                                                              \
-		tests_passed++;                                                \
+#define CHECK(cond, msg)                                                    \
+	do {                                                                \
+		tests_run++;                                                \
+		if (!(cond)) {                                              \
+			fprintf(stderr, "FAIL [%d]: %s\n", tests_run, msg); \
+			exit(1);                                            \
+		}                                                           \
+		tests_passed++;                                             \
 	} while (0)
 
-#define CHECK_EQ(a, b, msg)                                                    \
-	do {                                                                   \
-		tests_run++;                                                   \
-		if ((a) != (b)) {                                              \
-			fprintf(stderr, "FAIL [%d]: %s — expected %llu, "      \
-					"got %llu\n",                          \
-				tests_run, msg,                                 \
-				static_cast<unsigned long long>(b),            \
-				static_cast<unsigned long long>(a));           \
-			exit(1);                                               \
-		}                                                              \
-		tests_passed++;                                                \
+#define CHECK_EQ(a, b, msg)                                          \
+	do {                                                         \
+		tests_run++;                                         \
+		if ((a) != (b)) {                                    \
+			fprintf(stderr,                              \
+				"FAIL [%d]: %s — expected %llu, "    \
+				"got %llu\n",                        \
+				tests_run, msg,                      \
+				static_cast<unsigned long long>(b),  \
+				static_cast<unsigned long long>(a)); \
+			exit(1);                                     \
+		}                                                    \
+		tests_passed++;                                      \
 	} while (0)
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -86,8 +68,7 @@ static TSTree *parse(const char *source, const TSLanguage *lang)
 	TSParser *parser = ts_parser_new();
 	ts_parser_set_language(parser, lang);
 	TSTree *tree = ts_parser_parse_string(
-		parser, nullptr, source,
-		static_cast<uint32_t>(strlen(source)));
+		parser, nullptr, source, static_cast<uint32_t>(strlen(source)));
 	ts_parser_delete(parser);
 	return tree;
 }
@@ -98,7 +79,7 @@ static size_t countKind(const ir::SemanticUnit &unit, ir::RecordKind kind)
 }
 
 static const ir::Record *findByName(const ir::SemanticUnit &unit,
-					     const std::string &name)
+				    const std::string &name)
 {
 	size_t idx = unit.findRecordByName(name);
 	if (idx == SIZE_MAX)
@@ -122,8 +103,8 @@ static void test_interface_declaration()
 	CHECK(tree != nullptr, "parse succeeded");
 
 	ir::TsVisitor visitor;
-	ir::SemanticUnit *unit = visitor.visit(tree, code,
-					       "/test/interface.ts");
+	ir::SemanticUnit *unit =
+		visitor.visit(tree, code, "/test/interface.ts");
 
 	size_t ifaces = countKind(*unit, ir::RecordKind::Interface);
 	CHECK_EQ(ifaces, 1ULL, "1 interface found");
@@ -133,10 +114,8 @@ static void test_interface_declaration()
 	CHECK(user->kind == ir::RecordKind::Interface,
 	      "record kind is Interface");
 	CHECK_EQ(user->parent_id, 0ULL, "User is top-level");
-	CHECK(user->file_path == "/test/interface.ts",
-	      "file path preserved");
-	CHECK(unit->language() == "typescript",
-	      "language is typescript");
+	CHECK(user->file_path == "/test/interface.ts", "file path preserved");
+	CHECK(unit->language() == "typescript", "language is typescript");
 
 	ts_tree_delete(tree);
 	delete unit;
@@ -156,8 +135,7 @@ static void test_type_alias_declaration()
 	CHECK(tree != nullptr, "parse succeeded");
 
 	ir::TsVisitor visitor;
-	ir::SemanticUnit *unit = visitor.visit(tree, code,
-					       "/test/alias.ts");
+	ir::SemanticUnit *unit = visitor.visit(tree, code, "/test/alias.ts");
 
 	size_t aliases = countKind(*unit, ir::RecordKind::TypeAlias);
 	CHECK_EQ(aliases, 1ULL, "1 type alias found");
@@ -189,16 +167,14 @@ static void test_enum_declaration()
 	CHECK(tree != nullptr, "parse succeeded");
 
 	ir::TsVisitor visitor;
-	ir::SemanticUnit *unit = visitor.visit(tree, code,
-					       "/test/enum.ts");
+	ir::SemanticUnit *unit = visitor.visit(tree, code, "/test/enum.ts");
 
 	size_t enums = countKind(*unit, ir::RecordKind::Enum);
 	CHECK_EQ(enums, 1ULL, "1 enum found");
 
 	const ir::Record *color = findByName(*unit, "Color");
 	CHECK(color != nullptr, "enum 'Color' found");
-	CHECK(color->kind == ir::RecordKind::Enum,
-	      "record kind is Enum");
+	CHECK(color->kind == ir::RecordKind::Enum, "record kind is Enum");
 
 	ts_tree_delete(tree);
 	delete unit;
@@ -220,8 +196,7 @@ static void test_ts_function()
 	CHECK(tree != nullptr, "parse succeeded");
 
 	ir::TsVisitor visitor;
-	ir::SemanticUnit *unit = visitor.visit(tree, code,
-					       "/test/function.ts");
+	ir::SemanticUnit *unit = visitor.visit(tree, code, "/test/function.ts");
 
 	size_t funcs = countKind(*unit, ir::RecordKind::Function);
 	CHECK_EQ(funcs, 1ULL, "1 function found");
@@ -251,18 +226,15 @@ static void test_ts_class_method()
 	CHECK(tree != nullptr, "parse succeeded");
 
 	ir::TsVisitor visitor;
-	ir::SemanticUnit *unit = visitor.visit(tree, code,
-					       "/test/class.ts");
+	ir::SemanticUnit *unit = visitor.visit(tree, code, "/test/class.ts");
 
 	const ir::Record *calc = findByName(*unit, "Calculator");
 	CHECK(calc != nullptr, "class 'Calculator' found");
 
 	const ir::Record *add = findByName(*unit, "add");
 	CHECK(add != nullptr, "method 'add' found");
-	CHECK(add->kind == ir::RecordKind::Method,
-	      "add is a Method record");
-	CHECK_EQ(add->parent_id, calc->id,
-		 "add is child of Calculator");
+	CHECK(add->kind == ir::RecordKind::Method, "add is a Method record");
+	CHECK_EQ(add->parent_id, calc->id, "add is child of Calculator");
 
 	ts_tree_delete(tree);
 	delete unit;
@@ -284,8 +256,7 @@ static void test_ts_call_expression()
 	CHECK(tree != nullptr, "parse succeeded");
 
 	ir::TsVisitor visitor;
-	ir::SemanticUnit *unit = visitor.visit(tree, code,
-					       "/test/call.ts");
+	ir::SemanticUnit *unit = visitor.visit(tree, code, "/test/call.ts");
 
 	size_t calls = countKind(*unit, ir::RecordKind::CallExpr);
 	CHECK_EQ(calls, 1ULL, "1 call expression found");
@@ -298,8 +269,7 @@ static void test_ts_call_expression()
 		}
 	}
 	CHECK(call != nullptr, "call record exists");
-	CHECK(call->name == "compute",
-	      "call name is 'compute'");
+	CHECK(call->name == "compute", "call name is 'compute'");
 
 	ts_tree_delete(tree);
 	delete unit;
@@ -320,8 +290,7 @@ static void test_ts_import_export()
 	CHECK(tree != nullptr, "parse succeeded");
 
 	ir::TsVisitor visitor;
-	ir::SemanticUnit *unit = visitor.visit(tree, code,
-					       "/test/import.ts");
+	ir::SemanticUnit *unit = visitor.visit(tree, code, "/test/import.ts");
 
 	size_t imports = countKind(*unit, ir::RecordKind::Import);
 	CHECK_EQ(imports, 1ULL, "1 import found");
@@ -358,15 +327,13 @@ static void test_mixed_ts_constructs()
 	CHECK(tree != nullptr, "parse succeeded");
 
 	ir::TsVisitor visitor;
-	ir::SemanticUnit *unit = visitor.visit(tree, code,
-					       "/test/mixed.ts");
+	ir::SemanticUnit *unit = visitor.visit(tree, code, "/test/mixed.ts");
 
 	CHECK_EQ(countKind(*unit, ir::RecordKind::Interface), 1ULL,
 		 "1 interface");
 	CHECK_EQ(countKind(*unit, ir::RecordKind::TypeAlias), 1ULL,
 		 "1 type alias");
-	CHECK_EQ(countKind(*unit, ir::RecordKind::Enum), 1ULL,
-		 "1 enum");
+	CHECK_EQ(countKind(*unit, ir::RecordKind::Enum), 1ULL, "1 enum");
 	CHECK_EQ(countKind(*unit, ir::RecordKind::Function), 1ULL,
 		 "1 function");
 
@@ -382,14 +349,14 @@ static void test_ts_arrow_function()
 	const TSLanguage *lang = load_ts_language();
 	CHECK(lang != nullptr, "TypeScript grammar loaded");
 
-	const char *code = "const add = (a: number, b: number): number => a + b;\n";
+	const char *code =
+		"const add = (a: number, b: number): number => a + b;\n";
 
 	TSTree *tree = parse(code, lang);
 	CHECK(tree != nullptr, "parse succeeded");
 
 	ir::TsVisitor visitor;
-	ir::SemanticUnit *unit = visitor.visit(tree, code,
-					       "/test/arrow.ts");
+	ir::SemanticUnit *unit = visitor.visit(tree, code, "/test/arrow.ts");
 
 	size_t funcs = countKind(*unit, ir::RecordKind::Function);
 	CHECK_EQ(funcs, 1ULL, "1 arrow function found");
@@ -417,8 +384,7 @@ static void test_ts_empty_file()
 	CHECK(tree != nullptr, "parse succeeded");
 
 	ir::TsVisitor visitor;
-	ir::SemanticUnit *unit = visitor.visit(tree, code,
-					       "/test/empty.ts");
+	ir::SemanticUnit *unit = visitor.visit(tree, code, "/test/empty.ts");
 	CHECK(unit != nullptr, "visit returned unit");
 	CHECK(!unit->empty(), "unit is not empty");
 
@@ -428,6 +394,82 @@ static void test_ts_empty_file()
 }
 
 // ── Main ──────────────────────────────────────────────────────
+
+// ── Test: type-annotation extraction ─────────────────────────
+
+/// First node of `type` in the tree, reported through `out`.
+static bool findFirstOfType(TSNode node, const char *type, TSNode &out)
+{
+	if (strcmp(ts_node_type(node), type) == 0) {
+		out = node;
+		return true;
+	}
+	const uint32_t count = ts_node_child_count(node);
+	for (uint32_t i = 0; i < count; i++) {
+		if (findFirstOfType(ts_node_child(node, i), type, out))
+			return true;
+	}
+	return false;
+}
+
+/// Type extracted from the first annotation in `snippet`.
+static std::string annotationType(const TSLanguage *lang, const char *snippet)
+{
+	TSTree *tree = parse(snippet, lang);
+	if (!tree)
+		return "<parse failed>";
+	TSNode ann;
+	std::string got = "<no annotation found>";
+	if (findFirstOfType(ts_tree_root_node(tree), "type_annotation", ann)) {
+		// The extractor is protected; this probe exposes it without widening
+		// the production contract.
+		struct Probe : ir::TsVisitor {
+			using ir::TsVisitor::extractTsTypeAnnotation;
+		};
+		Probe probe;
+		// nodeText() reads the visitor's source, which visit() sets: without
+		// it the extractor sees an empty source and every case returns "".
+		ir::SemanticUnit *unit =
+			probe.visit(tree, snippet, "/test/annotation.ts");
+		got = probe.extractTsTypeAnnotation(ann);
+		delete unit;
+	}
+	printf("  [debug] %-48s -> '%s'\n", snippet, got.c_str());
+	ts_tree_delete(tree);
+	return got;
+}
+
+static void test_type_annotation_extraction()
+{
+	const TSLanguage *lang = load_ts_language();
+	CHECK(lang != nullptr, "TypeScript grammar loaded");
+
+	// Plain, generic, array and union annotations keep their base type name.
+	CHECK(annotationType(lang, "const a: Foo = x;\n") == "Foo",
+	      "plain class type");
+	CHECK(annotationType(lang, "const b: Array<Foo> = x;\n") == "Array",
+	      "generic type keeps its base");
+	CHECK(annotationType(lang, "const c: Foo[] = x;\n") == "Foo",
+	      "array element type");
+	CHECK(annotationType(lang, "const d: Foo | null = x;\n") == "Foo",
+	      "union takes the first member");
+	CHECK(annotationType(lang, "const e: Map<string, Foo> = x;\n") == "Map",
+	      "map generic keeps its base");
+	CHECK(annotationType(lang, "const f: Foo.Bar = x;\n") == "Foo.Bar",
+	      "qualified type name");
+
+	// Shapes the extractor does not model report UNKNOWN instead of a fragment
+	// of the annotation. An object type literal used to yield its first member
+	// ("id: Foo"), which no declaration can be keyed by: the receiver type could
+	// never match a candidate, and every tool printed it as if it were a name.
+	CHECK(annotationType(lang, "const g: { id: Foo; n: number }[] = x;\n") ==
+		      "",
+	      "object type literal reports unknown");
+	CHECK(annotationType(lang, "const h: (a: number) => void = f;\n") == "",
+	      "function type reports unknown");
+
+	printf("  ✓ test_type_annotation_extraction\n");
+}
 
 int main()
 {
@@ -443,8 +485,9 @@ int main()
 	test_mixed_ts_constructs();
 	test_ts_arrow_function();
 	test_ts_empty_file();
+	test_type_annotation_extraction();
 
-	printf("\n=== ts_visitor test passed (%d/%d) ===\n",
-	       tests_passed, tests_run);
+	printf("\n=== ts_visitor test passed (%d/%d) ===\n", tests_passed,
+	       tests_run);
 	return 0;
 }

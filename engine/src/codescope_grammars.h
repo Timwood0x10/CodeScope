@@ -16,7 +16,6 @@ const TSLanguage *tree_sitter_java();
 const TSLanguage *tree_sitter_javascript();
 const TSLanguage *tree_sitter_python();
 const TSLanguage *tree_sitter_rust();
-const TSLanguage *tree_sitter_swift();
 const TSLanguage *tree_sitter_typescript();
 const TSLanguage *tree_sitter_tsx();
 

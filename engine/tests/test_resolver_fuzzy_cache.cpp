@@ -19,7 +19,7 @@
 #include "../src/resolver/pipeline.h"
 #include "../src/store/store.h"
 
-#include <cassert>
+#include "test_check.h"
 #include <cstdio>
 #include <sqlite3.h>
 #include <unistd.h>
@@ -38,12 +38,12 @@ static void insertEntity(store::GraphStore &store, uint64_t project_id,
 			  "start_col, end_row, end_col) "
 			  "VALUES (?,?,0,?,'',?,'cpp',0,0,0,0)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, id);
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 3, name, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 4, file_path, -1, SQLITE_TRANSIENT);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -62,12 +62,12 @@ static void insertReference(store::GraphStore &store, uint64_t project_id,
 			  "receiver_type) "
 			  "VALUES (?,?,?,0,0,0,0,?)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_int64(stmt, 2, caller_id);
 	sqlite3_bind_text(stmt, 3, name, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 4, receiver_type, -1, SQLITE_TRANSIENT);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -78,7 +78,7 @@ static int countCallRelations(store::GraphStore &store, uint64_t project_id)
 	const char *sql =
 		"SELECT COUNT(*) FROM relation WHERE project_id=? AND type=1";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	int count = 0;
 	if (sqlite3_step(stmt) == SQLITE_ROW)
@@ -92,9 +92,10 @@ int main()
 	unlink(kDbPath);
 
 	store::GraphStore store;
-	assert(store.open(kDbPath));
-	uint64_t pid = store.createProject("/test", "test_resolver_fuzzy_cache");
-	assert(pid > 0);
+	CHECK(store.open(kDbPath));
+	uint64_t pid =
+		store.createProject("/test", "test_resolver_fuzzy_cache");
+	CHECK(pid > 0);
 
 	// Caller "main" and callee "RealFunc" live in the same directory
 	// (/src/app/) so factorImportMatch returns 1.0 (same-directory
@@ -119,7 +120,7 @@ int main()
 	// ── Test 1: miss cache is empty before run() ─────────────────
 	{
 		ResolverPipeline pipe(&store, pid);
-		assert(pipe.fuzzyMissCacheSize() == 0);
+		CHECK(pipe.fuzzyMissCacheSize() == 0);
 		printf("Test 1 (miss cache empty before run): PASS\n");
 	}
 
@@ -128,11 +129,11 @@ int main()
 		ResolverPipeline pipe(&store, pid);
 		int64_t resolved = pipe.run();
 		// GhostFunc was a fuzzy miss -> cached exactly once (set dedup).
-		assert(pipe.fuzzyMissCacheSize() == 1);
+		CHECK(pipe.fuzzyMissCacheSize() == 1);
 		// RealFunc resolved via exact entity_index hit; the budget
 		// mechanism only gates the fuzzy fallback, so exact matches
 		// are unaffected.
-		assert(resolved >= 1);
+		CHECK(resolved >= 1);
 		printf("Test 2 (miss cache size=%zu, resolved=%lld): PASS\n",
 		       pipe.fuzzyMissCacheSize(), (long long)resolved);
 	}
@@ -140,7 +141,7 @@ int main()
 	// ── Test 3: resolved relation persisted to the relation table ──
 	{
 		int rel_count = countCallRelations(store, pid);
-		assert(rel_count >= 1);
+		CHECK(rel_count >= 1);
 		printf("Test 3 (resolved relation persisted: %d): PASS\n",
 		       rel_count);
 	}
@@ -153,13 +154,13 @@ int main()
 	{
 		ResolverPipeline pipe(&store, pid);
 		int64_t resolved = pipe.run();
-		assert(resolved >= 1);
-		assert(pipe.fuzzyMissCacheSize() == 1);
+		CHECK(resolved >= 1);
+		CHECK(pipe.fuzzyMissCacheSize() == 1);
 		printf("Test 4 (exact match survives fuzzy budget): PASS\n");
 	}
 
 	store.close();
 	unlink(kDbPath);
 	printf("\nAll resolver fuzzy cache tests passed.\n");
-	return 0;
+	return checkFailures() ? 1 : 0;
 }

@@ -8,9 +8,10 @@
 
 // ─── Constants ─────────────────────────────────────────────────
 // Env var name for user-specified exclude paths. Comma-separated glob
-// patterns (e.g. "test/*,docs/*,vendor/*,third_party/*") that extend
+// patterns (e.g. "test/**,docs/**,vendor/**,third_party/**") that extend
 // the built-in skip list at index time to reduce graph_nodes count on
-// very large projects. See FilterPolicy::loadExcludeEnv().
+// very large projects. Note `*` does not cross '/', so a subtree needs `**`.
+// See FilterPolicy::loadExcludeEnv().
 static constexpr const char *kExcludePathsEnv = "CODESCOPE_EXCLUDE_PATHS";
 
 // ── Static gitignore matching helpers ────────────────────────
@@ -20,53 +21,83 @@ bool FilterPolicy::gitignoreMatches(const std::vector<GitignoreRule> &rules,
 {
 	bool ignored = false;
 	for (const auto &r : rules) {
-		// Directory-only rule doesn't apply to files
-		if (r.dir_only && !is_dir)
-			continue;
+		// Does the rule match one candidate string?
+		auto matches_one = [&](const std::string &candidate) -> bool {
+			if (r.has_star) {
+				// Per gitignore spec: non-anchored pattern without '/'
+				// matches only the filename (last path component)
+				if (!r.anchored &&
+				    r.pattern.find('/') == std::string::npos) {
+					auto pos = candidate.rfind('/');
+					auto basename =
+						(pos == std::string::npos) ?
+							candidate :
+							candidate.substr(pos +
+									 1);
+					return globMatch(r.pattern, basename);
+				}
+				return globMatch(r.pattern, candidate);
+			}
+			// Simple literal match — fast path
+			if (r.anchored)
+				return candidate == r.pattern;
+			// Literal match at path-component boundaries only, so
+			// "foo" matches "foo", "a/foo", "a/foo/b" but not
+			// "afoo" or "foobar". Iterate ALL occurrences (not just
+			// the last via rfind) so a pattern like "foo" matches
+			// even when "xfoo" appears later.
+			size_t search_from = 0;
+			while (true) {
+				auto pos =
+					candidate.find(r.pattern, search_from);
+				if (pos == std::string::npos)
+					break;
+				auto after = pos + r.pattern.size();
+				bool left_boundary =
+					(pos == 0 || candidate[pos - 1] == '/');
+				bool right_boundary =
+					(after == candidate.size() ||
+					 candidate[after] == '/');
+				if (left_boundary && right_boundary)
+					return true;
+				search_from = pos + 1;
+			}
+			return false;
+		};
 
 		bool match = false;
-		if (r.has_star) {
-			// Per gitignore spec: non-anchored pattern without '/'
-			// matches only the filename (last path component)
-			if (!r.anchored &&
-			    r.pattern.find('/') == std::string::npos) {
-				auto pos = rel_path.rfind('/');
-				auto basename =
-					(pos == std::string::npos) ?
-						rel_path :
-						rel_path.substr(pos + 1);
-				match = globMatch(r.pattern, basename);
-			} else {
-				match = globMatch(r.pattern, rel_path);
+		if (r.dir_only && !is_dir) {
+			// A directory-only rule names a DIRECTORY, so a file can
+			// never match it directly — but per gitignore semantics
+			// ignoring a directory ignores everything under it, so
+			// each ancestor directory is a candidate. Skipping this
+			// rule for files outright (the previous behaviour) meant
+			// `.gitignore`'s `**/build-*/` pruned the directory and
+			// nothing else, so a build tree's own sources — CMake's
+			// compiler-probe .c/.cpp files — were handed to the
+			// indexer and became entities, modules and call-edge
+			// candidates. See test_gitignore_build_dirs.
+			for (auto slash = rel_path.find('/');
+			     slash != std::string::npos;
+			     slash = rel_path.find('/', slash + 1)) {
+				if (matches_one(rel_path.substr(0, slash))) {
+					match = true;
+					break;
+				}
 			}
 		} else {
-			// Simple literal match — fast path
-			if (r.anchored) {
-				match = (rel_path == r.pattern);
-			} else {
-				// Literal match at path-component boundaries only,
-				// so "foo" matches "foo", "a/foo", "a/foo/b" but
-				// not "afoo" or "foobar". Iterate ALL occurrences
-				// (not just the last via rfind) so a pattern like
-				// "foo" matches even when "xfoo" appears later.
-				size_t search_from = 0;
-				while (true) {
-					auto pos = rel_path.find(r.pattern,
-								 search_from);
-					if (pos == std::string::npos)
-						break;
-					auto after = pos + r.pattern.size();
-					bool left_boundary =
-						(pos == 0 ||
-						 rel_path[pos - 1] == '/');
-					bool right_boundary =
-						(after == rel_path.size() ||
-						 rel_path[after] == '/');
-					if (left_boundary && right_boundary) {
+			match = matches_one(rel_path);
+			// A directory under an ignored directory is ignored too,
+			// even when the rule's pattern ends at the parent.
+			if (!match && r.dir_only) {
+				for (auto slash = rel_path.find('/');
+				     slash != std::string::npos;
+				     slash = rel_path.find('/', slash + 1)) {
+					if (matches_one(rel_path.substr(
+						    0, slash))) {
 						match = true;
 						break;
 					}
-					search_from = pos + 1;
 				}
 			}
 		}
@@ -150,14 +181,15 @@ void FilterPolicy::printStats() const
 		  << " candidate_files=" << stats_.candidate_files << "\n";
 }
 
-bool FilterPolicy::loadGitignore(const std::string &project_root)
+bool FilterPolicy::loadGitignore(const std::string &project_root, bool append)
 {
 	std::string path = project_root + "/.gitignore";
 	std::ifstream f(path);
 	if (!f.is_open())
 		return false;
 
-	gitignore_rules_.clear();
+	if (!append)
+		gitignore_rules_.clear();
 	std::string line;
 	while (std::getline(f, line)) {
 		// Trim whitespace
@@ -203,11 +235,21 @@ bool FilterPolicy::loadExcludeEnv()
 	// under the FTS threshold.
 	//
 	// Default suggestions (NOT applied automatically — set explicitly):
-	//   CODESCOPE_EXCLUDE_PATHS="test/*,docs/*,vendor/*,third_party/*"
+	//   CODESCOPE_EXCLUDE_PATHS="test/**,docs/**,vendor/**,third_party/**"
 	//
-	// Patterns are glob-matched against the relative path from the
-	// project root (e.g. "test/*" matches "test/foo.cpp" and
-	// "test/sub/bar.py" via the existing globMatch helper).
+	// Patterns are glob-matched against the FULL relative path from the project
+	// root, and `*` does not cross '/': "test/*" matches "test/foo.cpp" but NOT
+	// "test/sub/bar.py" — a subtree needs "test/**" ("**" spans separators).
+	// Directories are matched as well as files, but since the match is on the
+	// whole path only `dir/**` prunes a subtree; a bare "dir" or "dir/" matches
+	// nothing on its own. This comment used to claim "test/*" covered nested
+	// files, which made the suggested patterns exclude almost nothing.
+	//
+	// The list separator is a comma, and a pattern may contain one — a project
+	// with a directory named "a,b" produces `a,b/**`. Such a comma is escaped
+	// as `\,` by the producer (see join_exclude_patterns in
+	// server/src/scheduler/worker.rs); `\\` is a literal backslash. Any other
+	// backslash is kept verbatim so pre-existing patterns keep their meaning.
 	const char *env = getenv(kExcludePathsEnv);
 	if (!env || !*env) {
 		// Env var not set or empty — nothing to load.
@@ -215,10 +257,9 @@ bool FilterPolicy::loadExcludeEnv()
 		return false;
 	}
 	std::string raw(env);
-	size_t start = 0, end;
-	do {
-		end = raw.find(',', start);
-		std::string pat = raw.substr(start, end - start);
+	std::string pat;
+	pat.reserve(raw.size());
+	auto flush = [this, &pat]() {
 		// Trim leading/trailing whitespace around each pattern.
 		auto b = pat.find_first_not_of(" \t");
 		if (b != std::string::npos) {
@@ -227,7 +268,22 @@ bool FilterPolicy::loadExcludeEnv()
 		}
 		if (!pat.empty())
 			exclude_patterns_.push_back(std::move(pat));
-		start = end + 1;
-	} while (end != std::string::npos);
+		pat.clear();
+	};
+	for (size_t i = 0; i < raw.size(); ++i) {
+		char ch = raw[i];
+		if (ch == '\\' && i + 1 < raw.size() &&
+		    (raw[i + 1] == ',' || raw[i + 1] == '\\')) {
+			pat.push_back(raw[i + 1]);
+			++i;
+			continue;
+		}
+		if (ch == ',') {
+			flush();
+			continue;
+		}
+		pat.push_back(ch);
+	}
+	flush();
 	return !exclude_patterns_.empty();
 }

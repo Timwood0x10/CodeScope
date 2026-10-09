@@ -15,15 +15,16 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 	//
 	// v0.2.5 (perf fix): the original code built a full
 	// std::vector<FactorResult> (name/detail heap strings) per candidate and
-	// fed it to computeTotalScore(). On large projects that is ~166k
+	// fed it to the weighted-average total. On large projects that is ~166k
 	// candidate evaluations × ~20 string allocations each ≈ 3.3M heap
 	// allocations — measured as the 90µs-per-candidate cost that made the
 	// resolver 93.8% of index time (goagent: 14.9s of 15.9s). Here we
 	// accumulate the weighted sum directly (pure double math, no strings)
 	// and capture only the ReceiverMatch score that the ambiguity gate needs
 	// (see receiver_bypass in run()). Every factor's weight/score pair and
-	// the final weighted-average formula are identical to the previous
-	// computeTotalScore path, so resolved edges are byte-for-byte unchanged.
+	// the final weighted-average formula are identical to the array-based
+	// scorer that was used before this optimisation, so resolved edges are
+	// byte-for-byte unchanged.
 	//
 	// v0.2.5 (perf fix #2): the path-based factors (ImportMatch,
 	// NamespaceMatch, DistanceMatch) each re-derived caller_file's directory
@@ -32,9 +33,11 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 	// caller_parent / caller_module) and parse each candidate's path ONCE
 	// inside the loop, then compute the three path factors from those
 	// pre-parsed values. This removes ~N×3 redundant substring allocations
-	// per candidate. The scoring rules are kept IDENTICAL to
-	// factorImportMatch/factorNamespaceMatch/factorDistanceMatch in
-	// factors.cpp — do not change them independently.
+	// per candidate. THE RULES BELOW ARE the ImportMatch / NamespaceMatch /
+	// DistanceMatch definitions — the factor* functions in factors.cpp that an
+	// earlier comment told readers to keep in sync were dead code and have
+	// been deleted (batch 14). There is no second copy left to diverge from,
+	// so any change here changes resolution and must be re-measured.
 	size_t caller_slash = caller_file.rfind('/');
 	std::string caller_dir = (caller_slash != std::string::npos) ?
 					 caller_file.substr(0, caller_slash) :
@@ -45,8 +48,9 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 			caller_dir.substr(0, caller_parent_slash) :
 			"";
 	// moduleTokenFromPath: the last path token (file's directory name).
-	// Mirrors the anonymous helper in factors.cpp used by
-	// factorImportMatch. When there is no slash, the whole dir is returned.
+	// Same rule as moduleTokenFromPath() in factors.cpp (that helper served
+	// the deleted factorImportMatch; this inline copy is the live one).
+	// When there is no slash, the whole dir is returned.
 	std::string caller_module = caller_dir;
 	{
 		size_t ms = caller_dir.rfind('/');
@@ -61,6 +65,26 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 		}
 		return false;
 	};
+	// ── Ref-level import-module lookup ──
+	// When the caller imports this callee from a RELATIVE module
+	// (`import { helper } from "./helper"`), that specifier is the one piece of
+	// evidence that can separate cross-directory candidates — the language has
+	// no receiver to match on and `import_alias` only says "imported", not
+	// "imported from here". Resolved once per reference, outside the candidate
+	// loop; bare package names are ignored because they name no file inside
+	// the project. Empty for every language that does not record imports this
+	// way, which keeps the factor below inert for them.
+	std::string import_spec;
+	{
+		auto fit = import_alias_index_.find(caller_file);
+		if (fit != import_alias_index_.end()) {
+			auto sit = fit->second.find(callee_name);
+			if (sit != fit->second.end() && !sit->second.empty() &&
+			    sit->second[0] == '.')
+				import_spec = sit->second;
+		}
+	}
+
 	// ── Ref-level factor precompute (perf fix #3) ──
 	// factorCommonNamePenalty depends ONLY on the ref's callee_name, which
 	// is fixed across all candidates of this ref, yet it was called once per
@@ -102,15 +126,36 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 			caller_fwd_joined += '\x00';
 		}
 	}
+	// Read once per call rather than per candidate; the value is a cached
+	// static, and it is empty unless the tuning switch was set.
+	const std::string &disabled = disabledFactor();
 	for (auto &c : candidates) {
 		double sum_weight = 0.0;
 		double sum_scored = 0.0;
 		// Accumulate one (weight, score) pair into the weighted sums.
-		// This mirrors computeTotalScore's loop without materializing a
+		// This is the weighted-average loop, kept free of the per-candidate
 		// vector<FactorResult> per candidate.
-		auto acc = [&](double weight, double score) {
+		// The factor with the largest positive contribution (weight * score)
+		// to this candidate's weighted average: the evidence that actually
+		// decided its ranking. A penalty has a non-positive contribution, so it
+		// is never chosen — a penalty cannot "decide" a match.
+		double best_contribution = 0.0;
+		const char *deciding = "";
+		// CODESCOPE_RESOLVER_DISABLE_FACTOR: the counterfactual for weight
+		// tuning. Dropping a factor here also drops its weight from
+		// sum_weight, so the average is what it would have been had the factor
+		// never existed — and `deciding` can never be the disabled one.
+		auto acc = [&](double weight, double score,
+			       const char *factor) {
+			if (disabled == factor)
+				return;
 			sum_weight += weight;
 			sum_scored += weight * score;
+			const double contribution = weight * score;
+			if (contribution > best_contribution) {
+				best_contribution = contribution;
+				deciding = factor;
+			}
 		};
 
 		// ── Candidate path components (v0.6) ──
@@ -123,7 +168,7 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 
 		// ── NamespaceMatch score (reused by ModuleMatch and the
 		//    CommonNamePenalty same-module gate) ──
-		// Mirrors factorNamespaceMatch(caller_file, c.file_path):
+		// NamespaceMatch (same dir → 1.0; same parent dir → 0.5; else 0.0):
 		//   same dir → 1.0; same parent dir → 0.5; else 0.0.
 		double ns_score = 0.0;
 		if (!cand_dir.empty() && !caller_dir.empty()) {
@@ -135,7 +180,7 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 		}
 
 		// Factor 1: ModuleMatch
-		acc(kWeightModuleMatch, ns_score);
+		acc(kWeightModuleMatch, ns_score, "ModuleMatch");
 
 		// Factor 2: ImportMatch — dominant weight for cross-module calls.
 		// Mirrors factorImportMatch(import_index_, caller_file,
@@ -144,33 +189,74 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 		//   2. forward: caller imports candidate_module → 1.0
 		//   3. reverse: candidate imports caller_module → 1.0
 		//   4. else 0.0
+		//
+		// Name gate: every clause above is path/module evidence, and none of
+		// them looks at the CALLEE NAME — so with this factor's 0.80 weight
+		// the fuzzy fallback cleared kFuzzyResolutionThreshold (0.55) on
+		// location alone. Measured in this repository: `count()` on a
+		// std::chrono::duration inside a timing helper is recorded as a
+		// reference named `count` (the parser had already marked it
+		// `external`), yet it resolved to the unrelated function `countLines`
+		// just because both files sit in engine/src — reason
+		// "decided_by=ImportMatch name=count arity=0 score=0.723684". That
+		// target collected 10 such callers (async_knowledge.cpp,
+		// engine_lifecycle.cpp, engine_queries.cpp, engine_verify_ffi.cpp,
+		// post_parse_phase.cpp, engine_index_metrics.cpp) while its only real
+		// caller is ingestReadmeDocument. The factor claims "the caller
+		// imported THIS callee", which a differently named candidate cannot
+		// be, so it only fires when the candidate carries the reference's
+		// name. Exact-name candidates keep it bit-for-bit, so every
+		// non-fuzzy path is unchanged; alias imports are unaffected too,
+		// because they are keyed by name in import_alias_index_ and scored by
+		// ImportModuleMatch (0.90).
 		{
+			const bool name_agrees = (c.name == callee_name);
 			double import_score = 0.0;
-			if (!caller_dir.empty() && caller_dir == cand_dir) {
-				import_score = 1.0;
-			} else {
-				// Forward: caller imports candidate module.
-				// Uses the ref-level fused string (perf fix #5):
-				// one find() over the contiguous buffer replaces
-				// the per-path scan of anyImportMatches.
-				if (!caller_fwd_joined.empty() &&
-				    caller_fwd_joined.find(cand_module) !=
-					    std::string::npos)
+			if (name_agrees) {
+				if (!caller_dir.empty() &&
+				    caller_dir == cand_dir) {
 					import_score = 1.0;
-				else {
-					auto rev_it =
-						import_index_.find(c.file_path);
-					if (rev_it != import_index_.end() &&
-					    anyImportMatches(rev_it->second,
-							     caller_module))
+				} else {
+					// Forward: caller imports candidate module.
+					// Uses the ref-level fused string (perf fix #5):
+					// one find() over the contiguous buffer replaces
+					// the per-path scan of anyImportMatches.
+					if (!caller_fwd_joined.empty() &&
+					    caller_fwd_joined.find(
+						    cand_module) !=
+						    std::string::npos)
 						import_score = 1.0;
+					else {
+						auto rev_it =
+							import_index_.find(
+								c.file_path);
+						if (rev_it != import_index_
+								      .end() &&
+						    anyImportMatches(
+							    rev_it->second,
+							    caller_module))
+							import_score = 1.0;
+					}
 				}
 			}
-			acc(kWeightImportMatch, import_score);
+			acc(kWeightImportMatch, import_score, "ImportMatch");
 		}
 
+		// Factor 2b: ImportModuleMatch — the caller imports this callee from a
+		// RELATIVE module and this candidate IS that module. Accumulated only
+		// when such a specifier exists, so every other reference keeps its
+		// previous weighted average exactly (the guarded-acc pattern the
+		// ImportMatch block above already uses).
+		if (!import_spec.empty())
+			acc(kWeightImportModuleMatch,
+			    relativeImportMatchesFile(caller_dir, import_spec,
+						      c.file_path) ?
+				    1.0 :
+				    0.0,
+			    "ImportModuleMatch");
+
 		// Factor 3: NamespaceMatch
-		acc(kWeightNamespaceMatch, ns_score);
+		acc(kWeightNamespaceMatch, ns_score, "NamespaceMatch");
 
 		// Factor 4: SignatureMatch — compares the call site's arity
 		// (from the reference row) against each candidate's arity.
@@ -180,10 +266,22 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 		// arity (returning +0.5) — the exact opposite of correct
 		// overload resolution. Thread the real reference arity through
 		// so exact-arity overloads score highest.
-		acc(kWeightSignatureMatch,
-		    factorSignatureMatch(caller_arity, c.arity));
+		{
+			double signature =
+				factorSignatureMatch(caller_arity, c.arity);
+			// Only supplying MORE arguments than the candidate declares is
+			// impossible. Fewer can be legitimate wherever defaults exist, and
+			// the default is usually declared somewhere this candidate's own
+			// arity cannot see (C++ declares it in the header, omits it in the
+			// definition) — see allowsDefaultArguments.
+			if (signature == kScorePenalty &&
+			    caller_arity < c.arity &&
+			    allowsDefaultArguments(c.file_path))
+				signature = kScorePartialMatch;
+			acc(kWeightSignatureMatch, signature, "SignatureMatch");
+		}
 
-		// Factor 5: DistanceMatch — mirrors factorDistanceMatch:
+		// Factor 5: DistanceMatch:
 		//   same file → 1.0; same directory → 0.3; else 0.0.
 		{
 			double dist_score = 0.0;
@@ -191,15 +289,16 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 				dist_score = kScoreExactMatch;
 			else if (!caller_dir.empty() && caller_dir == cand_dir)
 				dist_score = kScoreSameDirectory;
-			acc(kWeightDistanceMatch, dist_score);
+			acc(kWeightDistanceMatch, dist_score, "DistanceMatch");
 		}
 
 		// Factor 6: ConstructorMatch
 		acc(kWeightConstructorMatch,
-		    factorConstructorMatch(callee_name, c.name, c.kind));
+		    factorConstructorMatch(callee_name, c.name, c.kind),
+		    "ConstructorMatch");
 
 		// Factor 7: ReceiverMatch (Step 5: now type-based, not directory)
-		// Replaced factorReceiverMatch (directory heuristic) with
+		// This replaced the old directory-heuristic receiver factor with
 		// factorReceiverTypeMatch (actual receiver_type evidence).
 		// When receiver_type is known (e.g. "Box"), candidates whose
 		// qualified_name contains "Box::" or "Box." score 1.0. When
@@ -222,7 +321,7 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 					c.file_path);
 			}
 			c.receiver_score = recv;
-			acc(kWeightReceiverMatch, recv);
+			acc(kWeightReceiverMatch, recv, "ReceiverMatch");
 		}
 
 		// Factor 8: CommonNamePenalty — reduce score for very common names
@@ -234,7 +333,8 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 			bool same_module = (ns_score > 0.0);
 			double penalty = same_module ? 0.0 :
 						       common_name_penalty;
-			acc(kWeightCommonNamePenalty, -penalty);
+			acc(kWeightCommonNamePenalty, -penalty,
+			    "CommonNamePenalty");
 		}
 
 		// Factor 9: CallKindMatch — adjust scoring based on call kind.
@@ -252,7 +352,7 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 			else if (call_kind == kCallKindMethod)
 				kscore =
 					-0.1; // slight penalty: methods usually same-module
-			acc(kWeightCallKindMatch, kscore);
+			acc(kWeightCallKindMatch, kscore, "CallKindMatch");
 		}
 
 		// Factor 10: DefinitionMatch — for C/C++, prefer symbols defined
@@ -262,7 +362,8 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 		// identically (Finding #8). Non-C/C++ languages return 1.0
 		// (neutral), so their ranking is unaffected.
 		acc(kWeightDefinitionMatch,
-		    factorDefinitionMatch(c.language, c.file_path));
+		    factorDefinitionMatch(c.language, c.file_path),
+		    "DefinitionMatch");
 
 		// VisibilityCheck was moved to a hard filter in run() to
 		// ensure language visibility rules (e.g. Go unexported names)
@@ -270,7 +371,8 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 		// weighted factor can be overcome by other factors, but a
 		// hard language rule must be absolute.
 
-		// Weighted average, identical to computeTotalScore's formula.
+		// Weighted average (the scorer's only formula).
+		c.deciding_factor = deciding;
 		c.total_score = (sum_weight > 0.0) ? (sum_scored / sum_weight) :
 						     0.0;
 		// c.factors is intentionally NOT populated here (perf); the hot
@@ -278,9 +380,17 @@ void ResolverPipeline::applyConstraints(std::vector<Candidate> &candidates,
 		// rebuild it lazily for the resolved candidate only.
 	}
 
+	// Deterministic ordering: primary key is the score (descending); ties
+	// are broken by entity_id (ascending) so the winning candidate is
+	// reproducible regardless of the input row order. A comparator that
+	// only compared total_score would leave equal-scoring homonyms to
+	// std::sort's unspecified ordering, making the resolved edge depend
+	// on the index write order.
 	std::sort(candidates.begin(), candidates.end(),
 		  [](const Candidate &a, const Candidate &b) {
-			  return a.total_score > b.total_score;
+			  if (a.total_score != b.total_score)
+				  return a.total_score > b.total_score;
+			  return a.entity_id < b.entity_id;
 		  });
 }
 

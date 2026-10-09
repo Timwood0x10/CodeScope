@@ -14,10 +14,30 @@
 //! `CODESCOPE_EXCLUDE_PATHS`.
 
 use serde_json::Value;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
+
+/// Parse mode every scheduler-spawned worker runs in, whatever the caller set.
+///
+/// `index-parallel` parses in **fast** mode on purpose: the per-module workers
+/// are followed by a merge and one graph/state pass over the unified DB, so a
+/// worker that honoured `CODESCOPE_INDEX_MODE` would do per-module work whose
+/// results the merge then discards. README §9 states this ("index-parallel
+/// always parses in fast mode"); pinning it in one place keeps the four spawn
+/// sites from drifting apart.
+pub(super) const WORKER_INDEX_MODE: &str = "fast";
+
+/// Force [`WORKER_INDEX_MODE`] on a worker command.
+///
+/// A separate function so the contract is assertable: a test can inspect the
+/// command's environment (`Command::get_envs`) instead of trusting four
+/// scattered `cmd.env(...)` calls. `Command::env` writes last, so this also
+/// overrides any `CODESCOPE_INDEX_MODE` the parent exported.
+pub(super) fn apply_worker_index_mode(cmd: &mut Command) {
+    cmd.env("CODESCOPE_INDEX_MODE", WORKER_INDEX_MODE);
+}
 
 use super::{DEFAULT_WORKER_TIMEOUT_SECS, ModuleResult, POLL_INTERVAL};
 
@@ -33,6 +53,62 @@ use super::{DEFAULT_WORKER_TIMEOUT_SECS, ModuleResult, POLL_INTERVAL};
 /// `quarantine_exclude` — when `Some(patterns)`, sets the
 /// `CODESCOPE_EXCLUDE_PATHS` env var so the worker's FilterPolicy
 /// skips the listed files. Patterns are comma-separated globs.
+/// `dir/**` for every subdirectory of `dir`, comma-separated: the globs that
+/// keep the root module's worker from descending into another module's files.
+///
+/// `dir/**` rather than a bare `dir` because only the `/**` form makes
+/// `FilterPolicy` skip a directory AND its contents (see
+/// `filter_policy_detect.cpp`). Sorted so the exclude string is stable.
+fn subdirectory_excludes(dir: &str) -> String {
+    let mut pats: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            if !entry.path().is_dir() {
+                continue;
+            }
+            if let Some(name) = entry.file_name().to_str() {
+                pats.push(format!("{}/**", name));
+            }
+        }
+    }
+    pats.sort();
+    join_exclude_patterns(&pats)
+}
+
+/// Escape one `CODESCOPE_EXCLUDE_PATHS` pattern for the comma-separated list.
+///
+/// `FilterPolicy::loadExcludeEnv` (engine/src/filter_policy_ignore.cpp) splits
+/// the value on UNESCAPED commas, so a pattern containing a literal `,` — a
+/// directory named `a,b` — would otherwise be torn into two invalid patterns
+/// and the intended path would NOT be excluded. That matters most for the
+/// quarantine list: the crashing file would be re-indexed by the retry worker
+/// it was supposed to be skipped in. A literal backslash is escaped too, so
+/// the C++ unescape is lossless.
+///
+/// \param pattern  A raw glob pattern (no list separators).
+/// \return The pattern with `\` and `,` backslash-escaped.
+fn escape_exclude_pattern(pattern: &str) -> String {
+    let mut out = String::with_capacity(pattern.len());
+    for ch in pattern.chars() {
+        if ch == '\\' || ch == ',' {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// Join patterns into a single `CODESCOPE_EXCLUDE_PATHS` value, escaping each
+/// element first (see `escape_exclude_pattern`). The separating commas are
+/// emitted unescaped, which is what the C++ side splits on.
+pub(super) fn join_exclude_patterns(patterns: &[String]) -> String {
+    patterns
+        .iter()
+        .map(|p| escape_exclude_pattern(p))
+        .collect::<Vec<String>>()
+        .join(",")
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_module_worker(
     exe: &str,
@@ -46,8 +122,23 @@ pub(super) fn run_module_worker(
     quarantine_exclude: Option<&str>,
     keep_db: bool,
 ) -> ModuleResult {
-    let module_dir = Path::new(project_dir).join(module_name);
-    let module_db = format!("{}_{}.db", db_prefix, module_name);
+    // The root module (see discover::ROOT_MODULE_NAME) owns the files that sit
+    // directly in the target directory, so its worker is rooted AT the project
+    // directory and excludes every subdirectory: each one is either another
+    // module's root or a directory the discovery pass skipped. Excluding them
+    // is what keeps the split exact — the worker's own walk path is otherwise
+    // unchanged, so quarantine (which also works through
+    // CODESCOPE_EXCLUDE_PATHS) keeps working for this module too.
+    let is_root_module = module_name == crate::discover::ROOT_MODULE_NAME;
+    let module_dir = if is_root_module {
+        PathBuf::from(project_dir)
+    } else {
+        Path::new(project_dir).join(module_name)
+    };
+    // File name for the module DB. "." would give the unreadable name
+    // "<prefix>_..db".
+    let module_key = if is_root_module { "root" } else { module_name };
+    let module_db = format!("{}_{}.db", db_prefix, module_key);
 
     // Normally start from a clean DB file — a stale DB would have
     // outdated graph_nodes from a previous (possibly crashed) run.
@@ -60,7 +151,11 @@ pub(super) fn run_module_worker(
         let _ = std::fs::remove_file(format!("{}-shm", module_db));
     }
 
-    let project_name = format!("parallel-{}", module_name);
+    let project_name = if is_root_module {
+        "parallel-root".to_string()
+    } else {
+        format!("parallel-{}", module_name)
+    };
     let workers_str = workers.to_string();
     // Pass the scheduler-assigned project_id to the worker. The worker
     // (main.rs) treats a non-zero value as a forced project_id and skips
@@ -83,7 +178,14 @@ pub(super) fn run_module_worker(
     ]);
     cmd.env("GRAMMARS_DIR", grammars_dir);
     cmd.env("CODESCOPE_DB_PATH", &module_db);
-    cmd.env("CODESCOPE_INDEX_MODE", "fast");
+    // The worker is rooted at the MODULE directory, so it would load the
+    // ignore files found there — usually none. The exclusions live at the
+    // project root (`.gitignore`, `.codescopeignore`), so pass it and let the
+    // engine load both: a module worker must apply the same rules as a
+    // whole-project index, or the parallel path indexes what the project
+    // declared out of scope.
+    cmd.env("CODESCOPE_PROJECT_ROOT", project_dir);
+    apply_worker_index_mode(&mut cmd);
     cmd.env("CODESCOPE_WORKERS", &workers_str);
     // Skip the ~280ms state-builder work in per-module workers; the
     // unified DB gets its async pass once after merge (see merge::merge_module_dbs).
@@ -94,7 +196,19 @@ pub(super) fn run_module_worker(
     // the merged main.db where relation ids are already global, so CSR-based
     // graph queries don't return dangling neighbor ids.
     cmd.env("CODESCOPE_DEFER_CSR", "1");
-    if let Some(exclude) = quarantine_exclude {
+    // The root module always excludes the subdirectories; a quarantine retry
+    // adds the files it proved to be crashers on top of that.
+    let root_exclude = if is_root_module {
+        subdirectory_excludes(project_dir)
+    } else {
+        String::new()
+    };
+    let exclude = match (root_exclude.is_empty(), quarantine_exclude) {
+        (false, Some(q)) => Some(format!("{},{}", root_exclude, q)),
+        (false, None) => Some(root_exclude),
+        (true, q) => q.map(|s| s.to_string()),
+    };
+    if let Some(exclude) = exclude.as_deref() {
         cmd.env("CODESCOPE_EXCLUDE_PATHS", exclude);
     }
     cmd.stdout(Stdio::piped()).stderr(Stdio::inherit());
@@ -219,15 +333,30 @@ pub(super) fn run_module_worker(
         None => (0, 0, 0, files_estimate, 0),
     };
 
-    let error = if exit_code == 0 && parsed.is_some() {
+    // Engine-level failure (ok:false) is a module failure even when the
+    // process exits 0: failure envelopes omit total_nodes/files_indexed
+    // (both 0), which the success predicate would otherwise accept as an
+    // empty module. Only an explicit `"ok": true` counts as success —
+    // `ok != false` would treat an error envelope with no `ok` field
+    // (`{"error":"..."}`, serde_json Null) as a success.
+    let engine_ok = match &parsed {
+        Some(v) => v["ok"] == true,
+        None => false,
+    };
+    let error = if exit_code == 0 && parsed.is_some() && engine_ok {
         None
     } else {
         // stderr is inherited (Stdio::inherit()), so the child's
         // stderr goes directly to the parent's stderr. The caller
         // can find the full error in the parent's stderr log.
+        let engine_msg = parsed
+            .as_ref()
+            .and_then(|v| v["error"].as_str())
+            .map(|s| format!(" engine_error={}", s))
+            .unwrap_or_default();
         Some(format!(
-            "exit={} [module=scheduler, method=run_module_worker]",
-            exit_code
+            "exit={}{} [module=scheduler, method=run_module_worker]",
+            exit_code, engine_msg
         ))
     };
 
@@ -323,18 +452,24 @@ pub(super) fn make_relative_glob(abs_path: &str, module_dir: &str) -> String {
     let abs = Path::new(abs_path);
     let modp = Path::new(module_dir);
     let rel = abs.strip_prefix(modp).unwrap_or(abs);
-    let basename = rel
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
-    // Use just the basename so the glob matches the file anywhere
-    // under the module dir — this mirrors the script's behaviour
-    // (`find ... -path "*/$(basename pattern) -delete`).
-    if basename.is_empty() {
-        abs_path.to_string()
-    } else {
-        format!("*/{}", basename)
+    let rel_str = rel.to_string_lossy().replace('\\', "/");
+    if rel_str.is_empty() {
+        return abs_path.to_string();
     }
+    // Emit the path with its DIRECTORY, never the bare basename.
+    //
+    // The previous implementation returned `*/{basename}`, which matches any
+    // file with that name anywhere under the module root: quarantining a
+    // crashing `a/foo.cpp` also excluded the healthy `c/foo.cpp`, silently
+    // dropping it from the index while the run still reported success.
+    //
+    // One `**/` pattern covers every root the FilterPolicy may match against:
+    // `**` spans '/', so it matches both the module-relative form (`a/foo.cpp`,
+    // the retry worker is rooted at the module dir) and a project-rooted form
+    // (`module/a/foo.cpp`), at any nesting depth. Neither a bare `rel` nor
+    // `*/rel` would: the pattern is matched against the whole relative path and
+    // `*` does not cross '/' (see FilterPolicy::loadExcludeEnv).
+    format!("**/{}", rel_str)
 }
 
 /// Run one chunk worker subprocess.
@@ -383,7 +518,7 @@ pub(super) fn run_chunk_worker(
     cmd.env("CODESCOPE_DB_PATH", worker_db);
     cmd.env("CODESCOPE_FILES_JSON", files_json_path);
     cmd.env("CODESCOPE_PROJECT_ID", &project_id_str);
-    cmd.env("CODESCOPE_INDEX_MODE", "fast");
+    apply_worker_index_mode(&mut cmd);
     cmd.env("CODESCOPE_SKIP_ASYNC", "1");
     // P3a (C2): chunk workers are parallel modules too — defer CSR so it is
     // rebuilt once on the merged DB from globally-remapped relation ids.
@@ -414,7 +549,7 @@ pub(super) fn run_chunk_worker(
         taskset_cmd.env("CODESCOPE_DB_PATH", worker_db);
         taskset_cmd.env("CODESCOPE_FILES_JSON", files_json_path);
         taskset_cmd.env("CODESCOPE_PROJECT_ID", &project_id_str);
-        taskset_cmd.env("CODESCOPE_INDEX_MODE", "fast");
+        apply_worker_index_mode(&mut taskset_cmd);
         taskset_cmd.env("CODESCOPE_SKIP_ASYNC", "1");
         // P3a (C2): defer CSR on chunk workers too (see plain branch above).
         taskset_cmd.env("CODESCOPE_DEFER_CSR", "1");
@@ -447,28 +582,30 @@ pub(super) fn run_chunk_worker(
         }
     };
 
+    // Drain stdout in a dedicated thread. A chunk worker can emit more than
+    // the OS pipe buffer (~64 KB); reading only after the child exits would
+    // block the child on write, so it never exits and the run looks like a
+    // timeout (false -4) with the data discarded.
+    let child_stdout = child.stdout.take();
+    let reader = std::thread::spawn(move || -> Vec<u8> {
+        let mut buf = Vec::new();
+        if let Some(mut s) = child_stdout {
+            use std::io::Read;
+            let _ = s.read_to_end(&mut buf);
+        }
+        buf
+    });
+
     // Wait for the child with a timeout.
     let timeout = Duration::from_secs(DEFAULT_WORKER_TIMEOUT_SECS);
-    let (status, stdout_bytes) = loop {
+    let status = loop {
         match child.try_wait() {
-            Ok(Some(status)) => {
-                // Read stdout.
-                let stdout = child
-                    .stdout
-                    .take()
-                    .map(|mut s| {
-                        let mut buf = Vec::new();
-                        use std::io::Read;
-                        let _ = s.read_to_end(&mut buf);
-                        buf
-                    })
-                    .unwrap_or_default();
-                break (status, stdout);
-            }
+            Ok(Some(status)) => break status,
             Ok(None) => {
                 if t0.elapsed() > timeout {
                     let _ = child.kill();
                     let _ = child.wait();
+                    let _ = reader.join();
                     return ModuleResult {
                         name: format!("chunk-worker-{}", worker_id),
                         exit_code: -4,
@@ -490,6 +627,9 @@ pub(super) fn run_chunk_worker(
                 std::thread::sleep(Duration::from_millis(50));
             }
             Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader.join();
                 return ModuleResult {
                     name: format!("chunk-worker-{}", worker_id),
                     exit_code: -3,
@@ -511,6 +651,8 @@ pub(super) fn run_chunk_worker(
         }
     };
 
+    let stdout_bytes = reader.join().unwrap_or_default();
+
     let duration = t0.elapsed().as_secs();
     let exit_code = status.code().unwrap_or(-4);
     let stdout = String::from_utf8_lossy(&stdout_bytes).to_string();
@@ -527,12 +669,25 @@ pub(super) fn run_chunk_worker(
         None => (0, 0, 0, 0, 0),
     };
 
-    let error = if exit_code == 0 && parsed.is_some() {
+    // Engine-level failure (ok:false) is a chunk-worker failure even at exit
+    // 0, exactly like run_module_worker. Without this check an ok:false
+    // envelope looks like an empty chunk: error stays None, the worker's DB is
+    // merged, and the run can report complete while its files were dropped.
+    let engine_ok = match &parsed {
+        Some(v) => v["ok"] == true,
+        None => false,
+    };
+    let error = if exit_code == 0 && parsed.is_some() && engine_ok {
         None
     } else {
+        let engine_msg = parsed
+            .as_ref()
+            .and_then(|v| v["error"].as_str())
+            .map(|s| format!(" engine_error={}", s))
+            .unwrap_or_default();
         Some(format!(
-            "exit={} [module=scheduler, method=run_chunk_worker]",
-            exit_code
+            "exit={}{} [module=scheduler, method=run_chunk_worker]",
+            exit_code, engine_msg
         ))
     };
 
@@ -576,10 +731,80 @@ mod tests {
         assert_eq!(v["discovery"]["candidate_files"], 100);
     }
 
+    /// Regression: `engine_ok` must be true only for an explicit `"ok":true`.
+    /// `ok != false` treated an error envelope with no `ok` field
+    /// (`{"error":"not initialized"}`, serde_json Null) as a success, so a
+    /// module whose engine refused to index was counted as an empty success.
     #[test]
-    fn test_make_relative_glob_returns_basename_glob() {
+    fn test_engine_ok_requires_explicit_true() {
+        let ok_true: Value = serde_json::from_str(r#"{"ok":true,"total_nodes":1}"#).unwrap();
+        let ok_false: Value = serde_json::from_str(r#"{"ok":false,"error":"boom"}"#).unwrap();
+        let no_ok: Value = serde_json::from_str(r#"{"error":"not initialized"}"#).unwrap();
+        // Mirrors run_module_worker's predicate.
+        let engine_ok = |v: &Value| v["ok"] == true;
+        assert!(engine_ok(&ok_true));
+        assert!(!engine_ok(&ok_false));
+        assert!(
+            !engine_ok(&no_ok),
+            "an error envelope with no `ok` field must not count as success"
+        );
+    }
+
+    #[test]
+    fn test_subdirectory_excludes_use_recursive_globs() {
+        // A bare "sub" matches nothing in FilterPolicy, so only "sub/**" can
+        // stop the root module's worker from descending into another module.
+        assert_eq!(subdirectory_excludes("/nonexistent/dir/xyz"), "");
+        let dir = std::env::temp_dir().join("codescope_test_subdir_excludes");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        std::fs::create_dir_all(dir.join("b")).unwrap();
+        std::fs::write(dir.join("f.go"), "package main").unwrap();
+        assert_eq!(subdirectory_excludes(dir.to_str().unwrap()), "a/**,b/**");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Regression (2026-09-27 review, D2-7): `CODESCOPE_EXCLUDE_PATHS`
+    /// is comma-separated and `FilterPolicy::loadExcludeEnv` splits on every
+    /// unescaped comma, so a pattern for a directory named "a,b" was torn into
+    /// `a\` + `b/**` and the path was never excluded. Escaping keeps it one
+    /// pattern; a literal backslash is escaped too so the C++ unescape is
+    /// lossless.
+    #[test]
+    fn test_join_exclude_patterns_escapes_separators() {
+        let pats = vec![
+            "a,b/**".to_string(),
+            "plain/**".to_string(),
+            "back\\slash/**".to_string(),
+        ];
+        assert_eq!(
+            join_exclude_patterns(&pats),
+            r"a\,b/**,plain/**,back\\slash/**"
+        );
+        // Patterns without a comma or backslash are passed through unchanged.
+        assert_eq!(join_exclude_patterns(&["x/**".to_string()]), "x/**");
+        // No patterns → empty value (the caller then leaves the env var unset).
+        assert_eq!(join_exclude_patterns(&[]), "");
+    }
+
+    #[test]
+    fn test_make_relative_glob_keeps_the_directory() {
         let g = make_relative_glob("/abs/path/engine/src/parser.cpp", "/abs/path/engine");
-        assert_eq!(g, "*/parser.cpp");
+        // `**/` spans separators, so one pattern covers the file at any depth
+        // and under either root. It must never degrade to the bare basename:
+        // `*/parser.cpp` also matched every other parser.cpp.
+        assert_eq!(g, "**/src/parser.cpp");
+    }
+
+    #[test]
+    fn test_make_relative_glob_distinguishes_same_named_files() {
+        // Regression: quarantining a crashing `a/foo.cpp` emitted `*/foo.cpp`,
+        // which also excluded the healthy `c/foo.cpp`.
+        let a = make_relative_glob("/m/a/foo.cpp", "/m");
+        let c = make_relative_glob("/m/c/foo.cpp", "/m");
+        assert_ne!(a, c);
+        assert_eq!(a, "**/a/foo.cpp");
+        assert_eq!(c, "**/c/foo.cpp");
     }
 
     #[test]
@@ -588,5 +813,111 @@ mod tests {
         // When module_dir is "", strip_prefix fails and we fall back
         // to the absolute path. Both branches must produce a non-empty glob.
         assert!(!g.is_empty());
+    }
+
+    /// Regression (2026-09-27 review, "配套测试缺口" #4): the README
+    /// documents that `index-parallel` parses in fast mode whatever the user
+    /// asked for, and nothing asserted it — the spawn sites could drift apart.
+    #[test]
+    fn test_spawned_workers_are_pinned_to_fast_mode() {
+        let mut cmd = Command::new("codescope");
+        // Stand in for a user who exported the opposite mode.
+        cmd.env("CODESCOPE_INDEX_MODE", "normal");
+        apply_worker_index_mode(&mut cmd);
+
+        let mode: Vec<_> = cmd
+            .get_envs()
+            .filter(|(k, _)| *k == "CODESCOPE_INDEX_MODE")
+            .collect();
+        assert_eq!(
+            mode.len(),
+            1,
+            "the worker's parse mode must be stated exactly once"
+        );
+        assert_eq!(
+            mode[0].1,
+            Some(std::ffi::OsStr::new(WORKER_INDEX_MODE)),
+            "index-parallel workers must run in fast mode; Command::env writes last, \
+             so this also proves it overrides the caller's value"
+        );
+    }
+}
+
+/// Property-based coverage of the `CODESCOPE_EXCLUDE_PATHS` escaping contract
+/// (REVIEW_0.2.7.md TEST-3 / code_rules §4).
+///
+/// `join_exclude_patterns` is the producer; `FilterPolicy::loadExcludeEnv`
+/// (engine/src/filter_policy_ignore.cpp) is the consumer and splits on every
+/// unescaped comma. The two are written in different languages, so the only
+/// thing that keeps them in sync is this round-trip property: a drift in
+/// either escaping silently stops a quarantined path from being excluded.
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Trim exactly what the C++ consumer trims around each pattern
+    /// (`find_first_not_of(" \t")`), dropping an all-whitespace entry.
+    fn push_trimmed(out: &mut Vec<String>, pat: &mut String) {
+        let trimmed = pat.trim_matches(|c| c == ' ' || c == '\t');
+        if !trimmed.is_empty() {
+            out.push(trimmed.to_string());
+        }
+        pat.clear();
+    }
+
+    /// Reference re-implementation of the C++ splitter: split on unescaped
+    /// commas, `\,` and `\\` unescape to the bare character, any other
+    /// backslash is literal.
+    fn split_like_cpp(raw: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut pat = String::new();
+        let chars: Vec<char> = raw.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            let ch = chars[i];
+            if ch == '\\' && i + 1 < chars.len() && (chars[i + 1] == ',' || chars[i + 1] == '\\') {
+                pat.push(chars[i + 1]);
+                i += 2;
+                continue;
+            }
+            if ch == ',' {
+                push_trimmed(&mut out, &mut pat);
+                i += 1;
+                continue;
+            }
+            pat.push(ch);
+            i += 1;
+        }
+        push_trimmed(&mut out, &mut pat);
+        out
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        #[test]
+        fn join_exclude_patterns_round_trips(
+            patterns in prop::collection::vec(any::<String>(), 0..8)
+        ) {
+            // The producer never trims and never emits an empty element, so
+            // normalise the generated input the same way before comparing.
+            let pats: Vec<String> = patterns
+                .iter()
+                .map(|p| p.trim_matches(|c| c == ' ' || c == '\t').to_string())
+                .filter(|p| !p.is_empty())
+                .collect();
+            prop_assert_eq!(split_like_cpp(&join_exclude_patterns(&pats)), pats);
+        }
+
+        /// A comma or backslash inside a pattern must survive the escape →
+        /// unescape round trip as itself.
+        #[test]
+        fn escape_exclude_pattern_is_lossless(pattern in any::<String>()) {
+            let p = pattern.trim_matches(|c| c == ' ' || c == '\t');
+            prop_assume!(!p.is_empty());
+            let escaped = escape_exclude_pattern(p);
+            prop_assert_eq!(split_like_cpp(&escaped), vec![p.to_string()]);
+        }
     }
 }

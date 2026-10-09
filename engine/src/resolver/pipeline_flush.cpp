@@ -6,17 +6,33 @@
 namespace resolver
 {
 
-void ResolverPipeline::flushResolvedEdges(
+bool ResolverPipeline::flushResolvedEdges(
 	std::vector<ResolvedEdge> &resolved_edges, sqlite3_stmt *ins_st,
 	int64_t &sql_batch_ms)
 {
 	using Clock = std::chrono::steady_clock;
+	bool ok = true;
 
 	// ── Batch insert all resolved edges ────────────────────────────
 	// Single INSERT with multiple rows is faster than per-row INSERTs.
-	// Use a single transaction wrapping the batch for minimal WAL overhead.
+	// A nested SAVEPOINT wraps the batch — NOT BEGIN/COMMIT. This code
+	// runs inside buildGraph's SAVEPOINT and, usually, the caller's
+	// BEGIN: a plain BEGIN fails there ("cannot start a transaction
+	// within a transaction") and the matching COMMIT then commits the
+	// caller's transaction and destroys buildGraph's savepoint, so a
+	// later failure could no longer roll the build back — the
+	// all-or-nothing guarantee was silently lost, and the final
+	// RELEASE SAVEPOINT errored with "no such savepoint".
 	if (!resolved_edges.empty()) {
-		store_->exec("BEGIN");
+		bool savepoint_ok =
+			store_->exec("SAVEPOINT flush_resolved_edges");
+		if (!savepoint_ok) {
+			fprintf(stderr,
+				"[module=resolver, method=flushResolvedEdges] "
+				"SAVEPOINT failed: %s\n",
+				store_->error().c_str());
+			ok = false;
+		}
 		for (auto &e : resolved_edges) {
 			sqlite3_bind_int64(ins_st, 1,
 					   static_cast<int64_t>(e.caller_id));
@@ -40,15 +56,28 @@ void ResolverPipeline::flushResolvedEdges(
 			sqlite3_bind_int(ins_st, 11, e.call_site_row);
 			sqlite3_bind_int(ins_st, 12, e.call_site_col);
 			int st_rc = sqlite3_step(ins_st);
-			if (st_rc != SQLITE_DONE && st_rc != SQLITE_CONSTRAINT)
+			if (st_rc != SQLITE_DONE &&
+			    st_rc != SQLITE_CONSTRAINT) {
 				fprintf(stderr,
 					"[module=resolver, method=run] "
 					"staging insert failed (rc=%d): %s\n",
 					st_rc,
 					sqlite3_errmsg(store_->handle()));
+				ok = false;
+			}
 			sqlite3_reset(ins_st);
 		}
-		store_->exec("COMMIT");
+		// Release the savepoint only if it was actually created;
+		// releasing a missing savepoint would report a second,
+		// misleading error.
+		if (savepoint_ok &&
+		    !store_->exec("RELEASE SAVEPOINT flush_resolved_edges")) {
+			fprintf(stderr,
+				"[module=resolver, method=flushResolvedEdges] "
+				"RELEASE SAVEPOINT failed: %s\n",
+				store_->error().c_str());
+			ok = false;
+		}
 	}
 	resolved_edges.clear();
 	resolved_edges.shrink_to_fit();
@@ -73,6 +102,7 @@ void ResolverPipeline::flushResolvedEdges(
 			"[module=resolver, method=run] "
 			"batch relation insert failed: %s\n",
 			store_->error().c_str());
+		ok = false;
 	}
 
 	if (!store_->exec("INSERT OR IGNORE INTO graph_edges "
@@ -85,11 +115,13 @@ void ResolverPipeline::flushResolvedEdges(
 			"[module=resolver, method=run] "
 			"batch graph_edges insert failed: %s\n",
 			store_->error().c_str());
+		ok = false;
 	}
 
 	sql_batch_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
 			       Clock::now() - t_sql)
 			       .count();
+	return ok;
 }
 
 } // namespace resolver

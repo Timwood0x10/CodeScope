@@ -1,6 +1,6 @@
 # CodeScope 技术拆解
 
-> **版本**: v0.2.1 | **最后更新**: 2026-07-15
+> **版本**: v0.2.7 | **最后更新**: 2026-10-09
 
 本文档深入剖析 CodeScope 的内部架构、设计决策和实现细节，适合希望理解系统原理、参与贡献或进行集成的开发者阅读。
 
@@ -15,7 +15,7 @@
 5. [解析器管线](#5-解析器管线)
 6. [验证系统](#6-验证系统)
 7. [性能指标](#7-性能指标)
-8. [LadybugDB 集成](#8-ladybugdb-集成)
+8. [LadybugDB 集成（已移除）](#8-ladybugdb-集成已移除)
 9. [如何扩展](#9-如何扩展)
 
 ---
@@ -36,7 +36,7 @@ flowchart TB
         MCPServer["MCP 服务器 (JSON-RPC 2.0)"]
         FFIBridge["FFI 桥接层 (Rust ↔ C++)"]
         TokioRT["Tokio 运行时 (后台任务)"]
-        Tools["35+ 个 MCP 工具<br/>定位 / 理解 / 验证 / 索引"]
+        Tools["46 个 MCP 工具<br/>定位 / 理解 / 验证 / 索引"]
     end
 
     subgraph "C++ Worker 子进程"
@@ -44,12 +44,11 @@ flowchart TB
         Parser["tree-sitter 解析器 (8种语言)"]
         Resolver["解析器管线"]
         GraphBuilder["图构建器"]
-        Store["SQLite + LadybugDB 写入器"]
+        Store["SQLite 写入器"]
     end
 
     subgraph "存储层"
         SQLite["SQLite 数据库 (WAL 模式)"]
-        Ladybug["LadybugDB (.lbug)"]
     end
 
     Client -->|"MCP stdio"| MCPServer
@@ -57,7 +56,6 @@ flowchart TB
     MCPServer -->|"FFI (只读)"| FFIBridge
     FFIBridge -->|"轮询进度"| SQLite
     Worker -->|"写入"| SQLite
-    Worker -->|"同步"| Ladybug
     TokioRT -->|"异步 FTS 构建"| SQLite
 ```
 
@@ -79,13 +77,13 @@ flowchart LR
         B --> C["IR (SemanticUnit)"]
         C --> D["SQLite 写入"]
         D --> E["图构建"]
-        E --> F["LadybugDB 同步"]
+        E --> F["写入 SQLite：entity + relation"]
     end
 
     subgraph "查询流程"
         G["MCP 工具调用"] --> H["FFI 桥接"]
         H --> I["C++ 查询引擎"]
-        I --> J["SQLite / LadybugDB"]
+        I --> J["SQLite（entity / relation）"]
         J --> K["JSON 响应"]
     end
 ```
@@ -108,7 +106,6 @@ flowchart LR
 | `filter_policy.cpp` | — | 目录/文件/后缀过滤 + .gitignore 匹配 |
 | `store/store.cpp` | ~3,060 | SQLite 存储 + FTS + 进度 + 增量索引 |
 | `store/store_core.cpp` | — | 核心 CRUD 操作 |
-| `store/store_ladybug.cpp` | 365 | LadybugDB 同步（CSV → COPY FROM） |
 | `ir/` | — | IR 类型（SemanticUnit、Record、Reference） |
 | `parser/` | — | 各语言的 tree-sitter 封装 |
 | `graph/` | — | 图构建 + 调用链解析 |
@@ -212,7 +209,7 @@ flowchart TB
 
     subgraph "MCP 协议层"
         Transport["transport.rs<br/>stdio 传输层<br/>1MB 行读取限制"]
-        Server["server.rs<br/>请求分发 + 工具路由<br/>35+ 工具注册"]
+        Server["server.rs<br/>请求分发 + 工具路由<br/>46 个工具注册"]
     end
 
     Main --> MCP
@@ -226,7 +223,7 @@ flowchart TB
 
 MCP 服务器通过 stdio 实现 [Model Context Protocol](https://modelcontextprotocol.io/)：
 
-- **`tools/list`**：返回可用工具列表（35+ 个工具）
+- **`tools/list`**：返回可用工具列表（46 个工具）
 - **`tools/call`**：通过参数调用指定工具
 - **传输层**：通过 stdin/stdout 的 JSON-RPC 2.0
 - **错误处理**：解析错误返回 `ReadResult::ParseError` 而非崩溃（1MB 行读取限制）
@@ -270,17 +267,20 @@ extern "C" {
 
 ```mermaid
 flowchart TB
-    subgraph "SQLite 核心表"
-        GN["graph_nodes<br/>所有符号（函数、类型、变量等）<br/>~17k-200k 行"]
-        GE["graph_edges<br/>关系（调用、包含、引用）<br/>~3k-50k 行"]
-        ENT["entity<br/>实体（仅生产代码）<br/>~10k-150k 行"]
-        REL["relation<br/>关系（仅生产代码）<br/>~2k-40k 行"]
+    subgraph "SQLite 核心表（权威）"
+        ENT["entity<br/>符号<br/>~10k-200k 行"]
+        REL["relation<br/>关系（边）<br/>~2k-50k 行"]
+    end
+
+    subgraph "遗留表（已废弃，无查询读取）"
+        GN["graph_nodes<br/>调度路径不再写入"]
+        GE["graph_edges<br/>解析器仍会镜像写入"]
     end
 
     subgraph "辅助表"
         REF["reference<br/>符号引用（未解析）"]
         SCOPE["scope<br/>作用域链"]
-        FTS["search_index<br/>FTS5 全文搜索"]
+        FTS["code_fts + name_trgm<br/>FTS5 全文搜索"]
         VEC["node_vectors<br/>向量嵌入 (vec0)"]
     end
 
@@ -289,28 +289,26 @@ flowchart TB
         PROJ["project<br/>项目元数据 + readiness 标志"]
     end
 
-    GN --> GE
-    GN --> FTS
-    GN --> VEC
-    ENT --> REL
+    ENT --> FTS
+    ENT --> VEC
 ```
 
 **索引设计**：所有查询使用索引覆盖扫描，无全表扫描
-- `idx_sr_kind_name` on `(kind, name)` — 符号查找
-- `idx_sr_fp_parent` on `(file_path, parent_id)` — 树遍历
-- `idx_ge_source` on `(source_node_id)` — 调用边查找
-- `idx_ge_target` on `(target_node_id)` — 被调用者查找
+- `idx_entity_name` on `entity(project_id, name)` — 符号查找
+- `idx_entity_file` on `entity(project_id, file_path)` — 单文件重建与删除
+- `idx_relation_source` on `relation(project_id, source_id)` — 被调用者查找
+- `idx_relation_target` on `relation(project_id, target_id)` — 调用者查找
 
 ### 4.2 双写策略
 
-在 v0.1.3 迁移期间，生产代码符号同时写入：
-- 旧版 `graph_nodes`/`graph_edges` 表
-- 新版 `entity`/`relation` 表
+v0.1.3 迁移引入的双写对**符号**已经退役：符号只存在于 `entity`。对**边**仍然保留 ——
+解析器在写入权威表 `relation` 的同时，仍会把每条已解析的边镜像进遗留表 `graph_edges`
+（`engine/src/resolver/pipeline_flush.cpp`）。
 
-这实现了：
-- 向后兼容现有查询
-- 无需停机即可逐步迁移
-- 正确性验证的 A/B 对比
+实测（goagent，1,579 文件，2026-10-01，全新索引）：`entity` 24,545 行、`relation` 7,374 行、
+`graph_edges` 7,377 行、`graph_nodes` 0 行。没有任何查询读取这两张遗留表
+（`engine/src/engine_queries_context.cpp` 记录了这一切换），因此这份边镜像只占磁盘、不影响正确性 ——
+但它正是「两张边表可能相差几行」的原因。
 
 ### 4.3 字符串驻留（String Interning）
 
@@ -549,114 +547,15 @@ flowchart LR
 1. **tree-sitter 解析时间**：大文件（>1 万行）的主要耗时因素，解析为单线程
 2. **SQLite 写入吞吐量**：消费级 SSD 上 WAL 模式约 8 万行/秒
 3. **FTS 构建时间**：与符号数线性相关，15 万符号约需 30 秒
-4. **LadybugDB COPY FROM**：CSV 导入快速但需要全量同步——增量同步尚未实现
 
 ---
 
-## 8. LadybugDB 集成
+## 8. LadybugDB 集成（已移除）
 
-### 8.1 概述
-
-[LadybugDB](https://ladybugdb.com/) 是一个嵌入式图数据库，CodeScope 将其作为可选的辅助存储后端，提供：
-
-```mermaid
-flowchart LR
-    subgraph "SQLite"
-        SQL["关系型查询<br/>精确、可靠、零配置"]
-    end
-
-    subgraph "LadybugDB"
-        LBUG["图原生查询 (Cypher)<br/>多跳遍历更高效<br/>可视化支持"]
-    end
-
-    SQL -->|"CSV 导出 → COPY FROM 同步"| LBUG
-    LBUG -->|"LadybugDB Explorer<br/>交互式图探索"| Viz["可视化"]
-```
-
-### 8.2 Schema
-
-```cypher
-// 节点表（对应 graph_nodes）
-CREATE NODE TABLE IF NOT EXISTS GraphNode (
-    id INT64 PRIMARY KEY,
-    project_id INT64,
-    ir_node_id INT64,
-    node_type INT32,
-    name STRING,
-    qualified_name STRING,
-    signature STRING,
-    module_path STRING,
-    file_path STRING,
-    language STRING,
-    start_row INT32,
-    start_col INT32,
-    end_row INT32,
-    end_col INT32,
-    parent_id INT64,
-    is_entry_point BOOL,
-    embedding_ready BOOL,
-    metrics_ready BOOL
-);
-
-// 调用边（从调用者到被调用者）
-CREATE REL TABLE IF NOT EXISTS CALLS (
-    FROM GraphNode TO GraphNode,
-    project_id INT64,
-    edge_type INT32,
-    call_site_line INT32,
-    label STRING
-);
-
-// 通用关系
-CREATE REL TABLE IF NOT EXISTS RELATES (
-    FROM GraphNode TO GraphNode,
-    project_id INT64,
-    type INT32
-);
-```
-
-### 8.3 同步机制
-
-数据通过 CSV 导出 + COPY FROM 从 SQLite 同步到 LadybugDB：
-
-```mermaid
-sequenceDiagram
-    participant SQL as SQLite
-    participant CSV as CSV 文件
-    participant LBUG as LadybugDB
-
-    SQL->>CSV: 导出 graph_nodes → nodes.csv
-    SQL->>CSV: 导出 graph_edges → edges.csv
-    CSV->>LBUG: COPY GraphNode FROM 'nodes.csv'
-    CSV->>LBUG: COPY CALLS FROM 'edges.csv'
-    Note over LBUG: 17,127 节点 + 3,341 边<br/>同步完成
-```
-
-### 8.4 查询示例
-
-```bash
-# 打开 LadybugDB shell
-lbug .codescope/codescope.lbug
-
-# 统计所有节点
-MATCH (n:GraphNode) RETURN count(n);
-
-# 查找所有 Go 函数
-MATCH (n:GraphNode)
-WHERE n.language = 'go'
-RETURN n.name, n.file_path, n.start_row;
-
-# 查找目标函数的调用者
-MATCH (n:GraphNode)-[c:CALLS]->(m:GraphNode)
-WHERE m.name = 'targetFunction'
-RETURN n.name, c.call_site_line;
-
-# 查找两个函数之间的最短调用路径
-MATCH p = shortestPath(
-    (a:GraphNode {name: 'funcA'})-[*..10]->(b:GraphNode {name: 'funcB'})
-)
-RETURN p;
-```
+CodeScope 曾把图镜像进 [LadybugDB](https://ladybugdb.com/)（嵌入式图数据库）作为可选的加速层。
+**该集成已被移除**：代码里不再有 `store_ladybug*.cpp`，`server/build.rs` 也不再链接 `liblbug`，
+产品不再生成 `.codescope/codescope.lbug` —— 后端现在是纯 SQLite（`README.zh.md` §7 有同样的说明）。
+设计与集成步骤保留在 git 历史里；所有图查询与搜索工具现在读取 §4 描述的 SQLite 表。
 
 ---
 
@@ -748,10 +647,10 @@ class MyInspector : public Inspector {
 - **异步运行时**：Tokio 为 FTS 构建和进度轮询提供轻量级异步任务
 - **生态系统**：MCP 客户端库、serde JSON 序列化、cargo 依赖管理
 
-### 为什么 SQLite + LadybugDB 双存储？
+### 为什么用 SQLite，而不是嵌入式图数据库？
 - **SQLite**：通用、零配置、久经考验，每个系统都有 SQLite 支持
-- **LadybugDB**：图原生查询，多跳遍历更高效，Cypher 比递归 SQL 更表达力
-- **双策略**：SQLite 保证可靠性和可移植性，LadybugDB 提供性能和可视化
+- **嵌入式图数据库试用后被移除**（LadybugDB，见 §8）：它引入了一个链接依赖和一份需要保持同步的第二存储；而 CodeScope 实际的图负载 —— 调用者/被调用者查询、调用图 BFS、热点分析 —— 由带索引的 `relation` 查询加 CSR 邻接表即可承担
+- **单一存储**：所有工具读取同一批表，图与索引不可能互相矛盾
 
 ### 为什么双进程？
 - **崩溃隔离**：解析器段错误不会杀死 MCP 服务器

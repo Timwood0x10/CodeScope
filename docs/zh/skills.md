@@ -73,7 +73,7 @@ graph TB
         Client["Claude Desktop / Cursor<br/>自定义 MCP 客户端"]
     end
     subgraph "Rust MCP Server (codescope)"
-        TD["工具调度<br/>(35+ 工具)"]
+        TD["工具调度<br/>(46 个工具)"]
         TQ["任务队列<br/>(Tokio async)"]
         FFI["FFI (extern \"C\")"]
     end
@@ -86,9 +86,10 @@ graph TB
         CD["社区检测"]
     end
     subgraph "SQLite (WAL)"
-        N["graph_nodes<br/>(节点)"]
-        E["graph_edges<br/>(边)"]
-        SR["semantic_records<br/>(IR + FTS)"]
+        N["entity<br/>(符号)"]
+        E["relation<br/>(边)"]
+        SR["semantic_records<br/>(IR)"]
+        FTSN["code_fts + name_trgm<br/>(FTS5)"]
     end
     Client -->|JSON-RPC 2.0| TD
     TD --> TQ
@@ -182,7 +183,7 @@ flowchart LR
 # 查热点 → ❌ get_hotspots 未实现
 搜代码      → search (300-1000 tok)
 查调用链    → find_callers / find_callees (10-50 tok)
-架构分析    → get_module_tree (4 tok) + 可选 get_communities ❌ (引擎有实现，未接 MCP) (1K-200K tok)
+架构分析    → get_module_tree (4 tok) + 可选 get_communities ✅（标签传播，默认只返回摘要）
 变更影响    → detect_changes (100-500 tok)
 AI 问答     → codescope_build_context (200-1000 tok)
 ```
@@ -218,7 +219,7 @@ AI 问答     → codescope_build_context (200-1000 tok)
 | `normal` | `NORMAL` | 仅基础 skip 表（build/dist/out/target/test/docs/vendor/node_modules/.venv 等） | ✅ | 默认 |
 | `strict` | `STRICT` | 基础 skip + detectLanguage 白名单 gate（仅索引可识别语言的源码文件） | ✅ | 最严格，数据最精简 |
 
-> 已知问题（2026-08-11 已修复）：fast 此前≈normal——`fast_extra_skip_dirs_` 为空集（预留未实现）、`setMode()` 未重建 `active_skip_dirs_`。已补全剪枝集合并修复。详见 `docs/optimization/perf-full-index-2026-08-11.md` §9/§10。
+> 已知问题（2026-08-11 已修复）：fast 此前≈normal——`fast_extra_skip_dirs_` 为空集（预留未实现）、`setMode()` 未重建 `active_skip_dirs_`。已补全剪枝集合并修复。详见 `docs/optimization/perf-full-index-2026-08-11.zh.md` §9/§10。
 
 ## 7. 性能基准
 
@@ -273,6 +274,9 @@ make bench-full     # 完整基准测试
 
 ## 10. 支持的语言
 
+**已内置语法 —— 端到端解析。** 即 README 表格中的 8 种语言；每种都有 visitor（LIVE IR 管线），并由
+`engine/tests/test_ir_edge_coverage.cpp` 覆盖。
+
 | 语言 | 扩展名 | 解析器 |
 |------|--------|--------|
 | Python | `.py` | tree-sitter-python |
@@ -284,7 +288,14 @@ make bench-full     # 完整基准测试
 | C | `.c`, `.h` | tree-sitter-c |
 | C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx` | tree-sitter-cpp |
 | Java | `.java` | tree-sitter-java |
+
+**按扩展名可识别，但**不解析** —— 未内置语法。** 这些文件会被发现（因此计入候选文件数），随后在
+`parse_failures` 中记录为 `language_missing` 解析失败；它们不会被索引，每次运行都会重试，且不计入
+`CODESCOPE_FAIL_RETRY_MAX`。
+
+| 语言 | 扩展名 | 语法（未内置） |
+|------|--------|----------------|
 | Kotlin | `.kt`, `.kts` | tree-sitter-kotlin |
 | Ruby | `.rb` | tree-sitter-ruby |
 | Scala | `.scala` | tree-sitter-scala |
-| Swift | `.swift` | tree-sitter-swift |
+| Swift | `.swift` | tree-sitter-swift —— 其 `parser.c` 与内置的 tree-sitter core ABI 不兼容，因此不在 `GRAMMAR_SOURCES` 中，Swift 的 visitor/translator 也已随之删除（见 `engine/src/parser/parser.cpp`） |

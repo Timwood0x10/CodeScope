@@ -11,7 +11,7 @@
 #include "../src/engine_index_metrics.h"
 #include "../src/ir/ir.h"
 
-#include <cassert>
+#include "test_check.h"
 #include <cstdio>
 #include <functional>
 
@@ -217,7 +217,7 @@ int main()
 	// ── Test 1: null unit returns empty ────────────────────────────
 	{
 		auto metrics = index_metrics::computeMetricsFromUnit(nullptr);
-		assert(metrics.empty());
+		CHECK(metrics.empty());
 		printf("  [PASS] null unit -> empty metrics\n");
 	}
 
@@ -226,24 +226,24 @@ int main()
 		auto *unit = buildComplexFunctionUnit();
 		auto metrics = index_metrics::computeMetricsFromUnit(unit);
 
-		assert(metrics.size() == 1);
+		CHECK(metrics.size() == 1);
 		const auto &m = metrics[0];
 
-		assert(m.name == "complex_func");
-		assert(m.line == 10);
-		assert(m.col == 0);
-		assert(m.lines == 21); // end_row(30) - start_row(10) + 1
-		assert(m.param_count == 2);
-		assert(m.call_count == 1);
-		assert(m.branch_count == 1);
-		assert(m.loop_count == 1);
-		assert(m.cyclomatic == 3); // 1 + 1 branch + 1 loop
+		CHECK(m.name == "complex_func");
+		CHECK(m.line == 10);
+		CHECK(m.col == 0);
+		CHECK(m.lines == 21); // end_row(30) - start_row(10) + 1
+		CHECK(m.param_count == 2);
+		CHECK(m.call_count == 1);
+		CHECK(m.branch_count == 1);
+		CHECK(m.loop_count == 1);
+		CHECK(m.cyclomatic == 3); // 1 + 1 branch + 1 loop
 		// nesting_depth is not computed by the IR path (computeMetricsFromUnit);
 		// it is only computed by the CST path (computeMetricsFromCST). This is
 		// a known limitation — cognitive complexity equals cyclomatic here.
-		assert(m.nesting_depth == 0);
-		assert(m.cognitive == 3); // cyclomatic + nesting_depth(0)
-		assert(m.is_stub == false); // has CallExpr + IfStmt + ForStmt
+		CHECK(m.nesting_depth == 0);
+		CHECK(m.cognitive == 3); // cyclomatic + nesting_depth(0)
+		CHECK(m.is_stub == false); // has CallExpr + IfStmt + ForStmt
 
 		printf("  [PASS] complex_func: params=%d calls=%d branches=%d loops=%d cyclomatic=%d\n",
 		       m.param_count, m.call_count, m.branch_count,
@@ -257,16 +257,16 @@ int main()
 		auto *unit = buildStubFunctionUnit();
 		auto metrics = index_metrics::computeMetricsFromUnit(unit);
 
-		assert(metrics.size() == 1);
+		CHECK(metrics.size() == 1);
 		const auto &m = metrics[0];
 
-		assert(m.name == "stub_func");
-		assert(m.param_count == 0);
-		assert(m.call_count == 0);
-		assert(m.branch_count == 0);
-		assert(m.loop_count == 0);
-		assert(m.cyclomatic == 1); // 1 + 0 + 0
-		assert(m.is_stub == true); // no real statements
+		CHECK(m.name == "stub_func");
+		CHECK(m.param_count == 0);
+		CHECK(m.call_count == 0);
+		CHECK(m.branch_count == 0);
+		CHECK(m.loop_count == 0);
+		CHECK(m.cyclomatic == 1); // 1 + 0 + 0
+		CHECK(m.is_stub == true); // no real statements
 
 		printf("  [PASS] stub_func: is_stub=%d cyclomatic=%d\n",
 		       m.is_stub, m.cyclomatic);
@@ -279,19 +279,19 @@ int main()
 		auto *unit = buildMultiFunctionUnit();
 		auto metrics = index_metrics::computeMetricsFromUnit(unit);
 
-		assert(metrics.size() == 2);
+		CHECK(metrics.size() == 2);
 
 		// Function 1: one if-statement
-		assert(metrics[0].name == "func_with_branch");
-		assert(metrics[0].branch_count == 1);
-		assert(metrics[0].loop_count == 0);
-		assert(metrics[0].cyclomatic == 2); // 1 + 1 + 0
+		CHECK(metrics[0].name == "func_with_branch");
+		CHECK(metrics[0].branch_count == 1);
+		CHECK(metrics[0].loop_count == 0);
+		CHECK(metrics[0].cyclomatic == 2); // 1 + 1 + 0
 
 		// Function 2: one while-statement (MethodDecl, not FunctionDecl)
-		assert(metrics[1].name == "method_with_loop");
-		assert(metrics[1].branch_count == 0);
-		assert(metrics[1].loop_count == 1);
-		assert(metrics[1].cyclomatic == 2); // 1 + 0 + 1
+		CHECK(metrics[1].name == "method_with_loop");
+		CHECK(metrics[1].branch_count == 0);
+		CHECK(metrics[1].loop_count == 1);
+		CHECK(metrics[1].cyclomatic == 2); // 1 + 0 + 1
 
 		printf("  [PASS] multi-func: func_with_branch(cyclomatic=%d) + method_with_loop(cyclomatic=%d)\n",
 		       metrics[0].cyclomatic, metrics[1].cyclomatic);
@@ -300,5 +300,5 @@ int main()
 	}
 
 	printf("=== index_metrics test passed ===\n");
-	return 0;
+	return checkFailures() ? 1 : 0;
 }

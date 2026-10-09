@@ -21,9 +21,10 @@
 #include "../src/query/impact_analysis.h"
 #include "../src/store/store.h"
 
-#include <cassert>
+#include "test_check.h"
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <sqlite3.h>
 #include <string>
 #include <unistd.h>
@@ -45,13 +46,13 @@ static void insertGraphNode(store::GraphStore &store, uint64_t project_id,
 		"end_row, end_col) "
 		"VALUES (?, ?, 0, ?, ?, ?, 'cpp', 0, 0, 0, 0)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, id);
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 3, name, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 4, name, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 5, file_path, -1, SQLITE_TRANSIENT);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -66,11 +67,11 @@ static void insertCallEdge(store::GraphStore &store, uint64_t project_id,
 		"INSERT INTO relation (project_id, source_id, target_id, type) "
 		"VALUES (?, ?, ?, 1)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_int64(stmt, 2, source_id);
 	sqlite3_bind_int64(stmt, 3, target_id);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -91,7 +92,7 @@ static void syncSQLite(store::GraphStore &store, uint64_t project_id)
 	// adjacency) is the sole graph backend. Rebuild the CSR so the
 	// freshly-inserted edges are visible to the CSR-based queries.
 	bool ok = store.buildCSR(project_id);
-	assert(ok);
+	CHECK(ok);
 	(void)project_id;
 }
 
@@ -110,11 +111,11 @@ static void testShortestPathDirectEdge(store::GraphStore &store,
 	std::string result = engine.findShortestPath(project_id, 1, 2);
 	printf("  [debug] direct edge: %s\n", result.c_str());
 
-	assert(jsonContains(result, "\"found\":true"));
-	assert(jsonContains(result, "\"hops\":1"));
+	CHECK(jsonContains(result, "\"found\":true"));
+	CHECK(jsonContains(result, "\"hops\":1"));
 	// Path should be [1, 2] — check both node IDs appear in order.
-	assert(jsonContains(result,
-			    "\"path\":[{\"node_id\":1},{\"node_id\":2}]"));
+	CHECK(jsonContains(result,
+			   "\"path\":[{\"node_id\":1},{\"node_id\":2}]"));
 	printf("  [PASS] findShortestPath: direct edge (1 hop)\n");
 }
 
@@ -132,11 +133,11 @@ static void testShortestPath2Hop(store::GraphStore &store, uint64_t project_id)
 	std::string result = engine.findShortestPath(project_id, 10, 12);
 	printf("  [debug] 2-hop: %s\n", result.c_str());
 
-	assert(jsonContains(result, "\"found\":true"));
-	assert(jsonContains(result, "\"hops\":2"));
-	assert(jsonContains(result,
-			    "\"path\":[{\"node_id\":10},{\"node_id\":11},"
-			    "{\"node_id\":12}]"));
+	CHECK(jsonContains(result, "\"found\":true"));
+	CHECK(jsonContains(result, "\"hops\":2"));
+	CHECK(jsonContains(result,
+			   "\"path\":[{\"node_id\":10},{\"node_id\":11},"
+			   "{\"node_id\":12}]"));
 	printf("  [PASS] findShortestPath: 2-hop path\n");
 }
 
@@ -156,11 +157,11 @@ static void testShortestPath3Hop(store::GraphStore &store, uint64_t project_id)
 	std::string result = engine.findShortestPath(project_id, 20, 23);
 	printf("  [debug] 3-hop: %s\n", result.c_str());
 
-	assert(jsonContains(result, "\"found\":true"));
-	assert(jsonContains(result, "\"hops\":3"));
-	assert(jsonContains(result,
-			    "\"path\":[{\"node_id\":20},{\"node_id\":21},"
-			    "{\"node_id\":22},{\"node_id\":23}]"));
+	CHECK(jsonContains(result, "\"found\":true"));
+	CHECK(jsonContains(result, "\"hops\":3"));
+	CHECK(jsonContains(result,
+			   "\"path\":[{\"node_id\":20},{\"node_id\":21},"
+			   "{\"node_id\":22},{\"node_id\":23}]"));
 	printf("  [PASS] findShortestPath: 3-hop path\n");
 }
 
@@ -180,10 +181,10 @@ static void testShortestPathNoPath(store::GraphStore &store,
 	std::string result = engine.findShortestPath(project_id, 30, 33);
 	printf("  [debug] no path: %s\n", result.c_str());
 
-	assert(jsonContains(result, "\"found\":false"));
-	assert(jsonContains(result, "\"hops\":0"));
+	CHECK(jsonContains(result, "\"found\":false"));
+	CHECK(jsonContains(result, "\"hops\":0"));
 	// Path should contain only the source node.
-	assert(jsonContains(result, "\"path\":[{\"node_id\":30}]"));
+	CHECK(jsonContains(result, "\"path\":[{\"node_id\":30}]"));
 	printf("  [PASS] findShortestPath: no path (disconnected)\n");
 }
 
@@ -197,9 +198,9 @@ static void testShortestPathSelfToSelf(store::GraphStore &store,
 	std::string result = engine.findShortestPath(project_id, 40, 40);
 	printf("  [debug] self-to-self: %s\n", result.c_str());
 
-	assert(jsonContains(result, "\"found\":true"));
-	assert(jsonContains(result, "\"hops\":0"));
-	assert(jsonContains(result, "\"path\":[{\"node_id\":40}]"));
+	CHECK(jsonContains(result, "\"found\":true"));
+	CHECK(jsonContains(result, "\"hops\":0"));
+	CHECK(jsonContains(result, "\"path\":[{\"node_id\":40}]"));
 	printf("  [PASS] findShortestPath: self-to-self (0 hops)\n");
 }
 
@@ -224,9 +225,9 @@ static void testShortestPathDepthLimit(store::GraphStore &store,
 	printf("  [debug] depth limit (11 hops, max 10): %s\n", result.c_str());
 
 	// 11 hops > kShortestPathMaxDepth (10) → no path found.
-	assert(jsonContains(result, "\"found\":false"));
-	assert(jsonContains(result, "\"hops\":0"));
-	assert(jsonContains(result, "\"path\":[{\"node_id\":50}]"));
+	CHECK(jsonContains(result, "\"found\":false"));
+	CHECK(jsonContains(result, "\"hops\":0"));
+	CHECK(jsonContains(result, "\"path\":[{\"node_id\":50}]"));
 	printf("  [PASS] findShortestPath: depth limit reached\n");
 }
 
@@ -251,8 +252,8 @@ static void testShortestPathWithinDepthLimit(store::GraphStore &store,
 	printf("  [debug] exactly 10 hops: %s\n", result.c_str());
 
 	// 10 hops == kShortestPathMaxDepth → should be found.
-	assert(jsonContains(result, "\"found\":true"));
-	assert(jsonContains(result, "\"hops\":10"));
+	CHECK(jsonContains(result, "\"found\":true"));
+	CHECK(jsonContains(result, "\"hops\":10"));
 	printf("  [PASS] findShortestPath: exactly at depth limit (10 hops)\n");
 }
 
@@ -278,21 +279,21 @@ static void testImpact1Hop(store::GraphStore &store, uint64_t project_id)
 	printf("  [debug] 1-hop impact: %s\n", result.c_str());
 
 	// Should find 1 modified node.
-	assert(jsonContains(result, "\"modified\":[{\"id\":101"));
+	CHECK(jsonContains(result, "\"modified\":[{\"id\":101"));
 	// Should find caller at depth 1.
-	assert(jsonContains(result, "\"callers\":["));
-	assert(jsonContains(result, "\"id\":100"));
-	assert(jsonContains(result, "\"depth\":1"));
-	assert(jsonContains(result, "\"caller_of\":\"modified_fn\""));
+	CHECK(jsonContains(result, "\"callers\":["));
+	CHECK(jsonContains(result, "\"id\":100"));
+	CHECK(jsonContains(result, "\"depth\":1"));
+	CHECK(jsonContains(result, "\"caller_of\":\"modified_fn\""));
 	// Should find callee at depth 1.
-	assert(jsonContains(result, "\"callees\":["));
-	assert(jsonContains(result, "\"id\":102"));
-	assert(jsonContains(result, "\"depth\":1"));
-	assert(jsonContains(result, "\"callee_of\":\"modified_fn\""));
+	CHECK(jsonContains(result, "\"callees\":["));
+	CHECK(jsonContains(result, "\"id\":102"));
+	CHECK(jsonContains(result, "\"depth\":1"));
+	CHECK(jsonContains(result, "\"callee_of\":\"modified_fn\""));
 	// Total impacted = modified(1) + callers(1) + callees(1) = 3.
-	assert(jsonContains(result, "\"total_impacted\":3"));
-	assert(jsonContains(result, "\"max_depth\":3"));
-	assert(jsonContains(result, "\"approximation\":\"heuristic\""));
+	CHECK(jsonContains(result, "\"total_impacted\":3"));
+	CHECK(jsonContains(result, "\"max_depth\":3"));
+	CHECK(jsonContains(result, "\"approximation\":\"heuristic\""));
 	printf("  [PASS] analyzeChangeImpact: 1-hop callers + callees\n");
 }
 
@@ -319,17 +320,17 @@ static void testImpact2Hop(store::GraphStore &store, uint64_t project_id)
 	printf("  [debug] 2-hop impact: %s\n", result.c_str());
 
 	// Should find 1 modified node.
-	assert(jsonContains(result, "\"modified\":[{\"id\":202"));
+	CHECK(jsonContains(result, "\"modified\":[{\"id\":202"));
 	// Callers: 201 at depth 1, 200 at depth 2.
-	assert(jsonContains(result, "\"id\":201"));
-	assert(jsonContains(result, "\"depth\":1"));
-	assert(jsonContains(result, "\"id\":200"));
-	assert(jsonContains(result, "\"depth\":2"));
+	CHECK(jsonContains(result, "\"id\":201"));
+	CHECK(jsonContains(result, "\"depth\":1"));
+	CHECK(jsonContains(result, "\"id\":200"));
+	CHECK(jsonContains(result, "\"depth\":2"));
 	// Callees: 203 at depth 1, 204 at depth 2.
-	assert(jsonContains(result, "\"id\":203"));
-	assert(jsonContains(result, "\"id\":204"));
+	CHECK(jsonContains(result, "\"id\":203"));
+	CHECK(jsonContains(result, "\"id\":204"));
 	// Total impacted = 1 (modified) + 2 (callers) + 2 (callees) = 5.
-	assert(jsonContains(result, "\"total_impacted\":5"));
+	CHECK(jsonContains(result, "\"total_impacted\":5"));
 	printf("  [PASS] analyzeChangeImpact: 2-hop transitive impact\n");
 }
 
@@ -360,17 +361,17 @@ static void testImpact3Hop(store::GraphStore &store, uint64_t project_id)
 	printf("  [debug] 3-hop impact: %s\n", result.c_str());
 
 	// Should find 1 modified node.
-	assert(jsonContains(result, "\"modified\":[{\"id\":303"));
+	CHECK(jsonContains(result, "\"modified\":[{\"id\":303"));
 	// Upstream callers at depths 1, 2, 3.
-	assert(jsonContains(result, "\"id\":302"));
-	assert(jsonContains(result, "\"id\":301"));
-	assert(jsonContains(result, "\"id\":300"));
+	CHECK(jsonContains(result, "\"id\":302"));
+	CHECK(jsonContains(result, "\"id\":301"));
+	CHECK(jsonContains(result, "\"id\":300"));
 	// Downstream callees at depths 1, 2, 3.
-	assert(jsonContains(result, "\"id\":304"));
-	assert(jsonContains(result, "\"id\":305"));
-	assert(jsonContains(result, "\"id\":306"));
+	CHECK(jsonContains(result, "\"id\":304"));
+	CHECK(jsonContains(result, "\"id\":305"));
+	CHECK(jsonContains(result, "\"id\":306"));
 	// Total = 1 (modified) + 3 (callers) + 3 (callees) = 7.
-	assert(jsonContains(result, "\"total_impacted\":7"));
+	CHECK(jsonContains(result, "\"total_impacted\":7"));
 	printf("  [PASS] analyzeChangeImpact: 3-hop transitive impact\n");
 }
 
@@ -400,26 +401,26 @@ static void testImpactDepthCap(store::GraphStore &store, uint64_t project_id)
 	printf("  [debug] depth cap impact: %s\n", result.c_str());
 
 	// Modified node is 404.
-	assert(jsonContains(result, "\"modified\":[{\"id\":404"));
+	CHECK(jsonContains(result, "\"modified\":[{\"id\":404"));
 	// Callers within depth 3: 403, 402, 401. Node 400 should NOT appear.
-	assert(jsonContains(result, "\"id\":403"));
-	assert(jsonContains(result, "\"id\":402"));
-	assert(jsonContains(result, "\"id\":401"));
+	CHECK(jsonContains(result, "\"id\":403"));
+	CHECK(jsonContains(result, "\"id\":402"));
+	CHECK(jsonContains(result, "\"id\":401"));
 	// Node 400 is at depth 4 — beyond the cap. It must NOT be in the result.
 	// We check that "id\":400" does not appear (would match 400 but not 400x).
 	// Note: 401-409 all start with "40", so we check the exact ID pattern.
-	assert(!jsonContains(result, "\"id\":400,"));
-	assert(!jsonContains(result, "\"id\":400}"));
+	CHECK(!jsonContains(result, "\"id\":400,"));
+	CHECK(!jsonContains(result, "\"id\":400}"));
 	// Callees within depth 3: 405, 406, 407. Nodes 408, 409 should NOT appear.
-	assert(jsonContains(result, "\"id\":405"));
-	assert(jsonContains(result, "\"id\":406"));
-	assert(jsonContains(result, "\"id\":407"));
-	assert(!jsonContains(result, "\"id\":408,"));
-	assert(!jsonContains(result, "\"id\":408}"));
-	assert(!jsonContains(result, "\"id\":409,"));
-	assert(!jsonContains(result, "\"id\":409}"));
+	CHECK(jsonContains(result, "\"id\":405"));
+	CHECK(jsonContains(result, "\"id\":406"));
+	CHECK(jsonContains(result, "\"id\":407"));
+	CHECK(!jsonContains(result, "\"id\":408,"));
+	CHECK(!jsonContains(result, "\"id\":408}"));
+	CHECK(!jsonContains(result, "\"id\":409,"));
+	CHECK(!jsonContains(result, "\"id\":409}"));
 	// Total = 1 (modified) + 3 (callers) + 3 (callees) = 7.
-	assert(jsonContains(result, "\"total_impacted\":7"));
+	CHECK(jsonContains(result, "\"total_impacted\":7"));
 	printf("  [PASS] analyzeChangeImpact: depth cap (3) enforced\n");
 }
 
@@ -435,11 +436,11 @@ static void testImpactDisconnectedNode(store::GraphStore &store,
 	printf("  [debug] disconnected: %s\n", result.c_str());
 
 	// Should find 1 modified node, no callers, no callees.
-	assert(jsonContains(result, "\"modified\":[{\"id\":500"));
-	assert(jsonContains(result, "\"callers\":[]"));
-	assert(jsonContains(result, "\"callees\":[]"));
+	CHECK(jsonContains(result, "\"modified\":[{\"id\":500"));
+	CHECK(jsonContains(result, "\"callers\":[]"));
+	CHECK(jsonContains(result, "\"callees\":[]"));
 	// Total = 1 (just the modified node).
-	assert(jsonContains(result, "\"total_impacted\":1"));
+	CHECK(jsonContains(result, "\"total_impacted\":1"));
 	printf("  [PASS] analyzeChangeImpact: disconnected node\n");
 }
 
@@ -451,12 +452,12 @@ static void testImpactEmptyFileList(store::GraphStore &store,
 		query::analyzeChangeImpact(project_id, &store, "[]");
 	printf("  [debug] empty file list: %s\n", result.c_str());
 
-	assert(jsonContains(result, "\"error\":null"));
-	assert(jsonContains(result, "\"modified\":[]"));
-	assert(jsonContains(result, "\"callers\":[]"));
-	assert(jsonContains(result, "\"callees\":[]"));
-	assert(jsonContains(result, "\"total_impacted\":0"));
-	assert(jsonContains(result, "\"max_depth\":3"));
+	CHECK(jsonContains(result, "\"error\":null"));
+	CHECK(jsonContains(result, "\"modified\":[]"));
+	CHECK(jsonContains(result, "\"callers\":[]"));
+	CHECK(jsonContains(result, "\"callees\":[]"));
+	CHECK(jsonContains(result, "\"total_impacted\":0"));
+	CHECK(jsonContains(result, "\"max_depth\":3"));
 	printf("  [PASS] analyzeChangeImpact: empty file list\n");
 }
 
@@ -486,16 +487,98 @@ static void testImpactMultipleModifiedFiles(store::GraphStore &store,
 	printf("  [debug] multiple modified: %s\n", result.c_str());
 
 	// Should find 2 modified nodes.
-	assert(jsonContains(result, "\"id\":600"));
-	assert(jsonContains(result, "\"id\":601"));
+	CHECK(jsonContains(result, "\"id\":600"));
+	CHECK(jsonContains(result, "\"id\":601"));
 	// 602 should be a callee at depth 1 (reached from 601).
-	assert(jsonContains(result, "\"id\":602"));
-	assert(jsonContains(result, "\"depth\":1"));
+	CHECK(jsonContains(result, "\"id\":602"));
+	CHECK(jsonContains(result, "\"depth\":1"));
 	// 600 should not appear as a caller (it's a modified node, excluded).
 	// 601 should not appear as a callee (it's a modified node, excluded).
 	// Total = 2 (modified) + 0 (callers) + 1 (callee: 602) = 3.
-	assert(jsonContains(result, "\"total_impacted\":3"));
+	CHECK(jsonContains(result, "\"total_impacted\":3"));
 	printf("  [PASS] analyzeChangeImpact: multiple modified files\n");
+}
+
+/// The modified-file list reaches analyzeChangeImpact as the CALLER spells it,
+/// while entity.file_path holds the resolved absolute form. The lookup is an
+/// exact `file_path IN (...)`, so a relative path or one that goes through a
+/// symlink matched nothing and the tool answered `modified: []` — "nothing
+/// changed" — for a file that had. The paths are now normalised the way the
+/// store normalises a project root: anchored at the registered root when
+/// relative, then weakly_canonical.
+static void testImpactPathForms(store::GraphStore &store, uint64_t project_id)
+{
+	namespace fs = std::filesystem;
+	std::error_code ec;
+
+	// ── Relative to the registered project root ──────────────────
+	// The fixture registers "/test", so this node is reachable by the
+	// relative path "src/rel.cpp" as well as its stored form. The ids are in a
+	// range no other case uses (the 3-hop case owns 300-306), because
+	// insertGraphNode() would otherwise fail its CHECK on the primary key and
+	// the lookups below would then report "nothing changed" for the wrong
+	// reason.
+	insertGraphNode(store, project_id, 700, "rel_fn", "/test/src/rel.cpp");
+	syncSQLite(store, project_id);
+	CHECK(jsonContains(query::analyzeChangeImpact(project_id, &store,
+						       "[\"/test/src/rel.cpp\"]"),
+			   "\"id\":700"));
+	CHECK(jsonContains(query::analyzeChangeImpact(project_id, &store,
+						       "[\"src/rel.cpp\"]"),
+			   "\"id\":700"));
+
+	// ── Through a symlink ────────────────────────────────────────
+	// The node is stored under the RESOLVED directory, and the query names it
+	// through a link, which is what a caller sees when the project sits behind
+	// one (macOS /tmp is /private/tmp in exactly this way).
+	const fs::path base = fs::temp_directory_path(ec);
+	if (ec) {
+		printf("  [skip] symlink form: no temp directory\n");
+		return;
+	}
+	const fs::path real_dir = base / "codescope_impact_real";
+	const fs::path link = base / "codescope_impact_link";
+	fs::remove_all(real_dir, ec);
+	fs::create_directories(real_dir, ec);
+	CHECK(!ec);
+	fs::remove(link, ec);
+	ec.clear();
+	fs::create_directory_symlink(real_dir, link, ec);
+	if (ec) {
+		printf("  [skip] symlink form: cannot create a link\n");
+		fs::remove_all(real_dir, ec);
+		return;
+	}
+	const std::string stored_dir =
+		fs::weakly_canonical(real_dir, ec).string();
+	insertGraphNode(store, project_id, 701, "link_fn",
+			(stored_dir + "/b.cpp").c_str());
+	syncSQLite(store, project_id);
+	const std::string via_link = (link / "b.cpp").string();
+	CHECK(jsonContains(query::analyzeChangeImpact(project_id, &store,
+						       ("[\"" + via_link + "\"]")
+							       .c_str()),
+			   "\"id\":701"));
+
+	// The same spelling as a FILE FILTER, which findDefinition wraps in
+	// `file_path LIKE '%'||?||'%'`: an absolute path that reaches the project
+	// through a symlink matched nothing, so the query answered
+	// `{"results":[]}` for a symbol that exists (reproduced on a real index
+	// before the fix). Relative and partial filters must stay untouched —
+	// they are substrings by design, and resolving "b.cpp" against the CWD
+	// would break them — which is why only the absolute form is resolved.
+	query::QueryEngine engine(&store);
+	CHECK(engine.findDefinition(project_id, "link_fn", via_link.c_str())
+		      .find("\"name\":\"link_fn\"") != std::string::npos);
+	CHECK(engine.findDefinition(project_id, "link_fn",
+				    (stored_dir + "/b.cpp").c_str())
+		      .find("\"name\":\"link_fn\"") != std::string::npos);
+	CHECK(engine.findDefinition(project_id, "link_fn", "b.cpp")
+		      .find("\"name\":\"link_fn\"") != std::string::npos);
+
+	fs::remove(link, ec);
+	fs::remove_all(real_dir, ec);
+	printf("  [PASS] analyzeChangeImpact: relative and symlinked paths\n");
 }
 
 int main()
@@ -503,10 +586,10 @@ int main()
 	unlink(kDbPath);
 
 	store::GraphStore store;
-	assert(store.open(kDbPath));
+	CHECK(store.open(kDbPath));
 
 	uint64_t project_id = store.createProject("/test", "query_algos");
-	assert(project_id > 0);
+	CHECK(project_id > 0);
 
 	printf("=== findShortestPath tests ===\n");
 	testShortestPathDirectEdge(store, project_id);
@@ -521,6 +604,7 @@ int main()
 	testImpact1Hop(store, project_id);
 	testImpact2Hop(store, project_id);
 	testImpact3Hop(store, project_id);
+	testImpactPathForms(store, project_id);
 	testImpactDepthCap(store, project_id);
 	testImpactDisconnectedNode(store, project_id);
 	testImpactEmptyFileList(store, project_id);
@@ -529,6 +613,14 @@ int main()
 	store.close();
 	unlink(kDbPath);
 
+	// The banner must follow the verdict: it used to be printed
+	// unconditionally, so a run with a failed CHECK announced PASSED and only
+	// the exit code disagreed — a caller reading the output (as this session
+	// did, on the way to a red gate) was told the opposite of the truth.
+	if (checkFailures()) {
+		printf("\n=== test_query_algorithms FAILED ===\n");
+		return 1;
+	}
 	printf("\n=== test_query_algorithms PASSED ===\n");
 	return 0;
 }

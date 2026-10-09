@@ -86,6 +86,10 @@ SemanticUnit *JavaVisitor::visit(TSTree *tree, const char *source,
 	import_aliases_.clear();
 
 	TSNode root_node = ts_tree_root_node(tree);
+	// Names this file defines, so a call to a locally declared `valueOf` /
+	// `format` / `map` ... is not mistaken for the JDK static of that name.
+	defined_names_.clear();
+	collectDefinedNames(root_node);
 	pushScope();
 	SourceRange root_loc = location(root_node);
 	uint64_t root_id = emitter_->emitVariable("", root_loc, 0);
@@ -113,9 +117,56 @@ void JavaVisitor::visitNode(TSNode node, uint64_t parent_id)
 		return handleObjectCreation(node, parent_id);
 	if (strcmp(type, "variable_declarator") == 0)
 		return handleVariableDecl(node, parent_id);
+	if (strcmp(type, "formal_parameter") == 0 ||
+	    strcmp(type, "spread_parameter") == 0)
+		return handleFormalParameter(node, parent_id);
 	if (strcmp(type, "import_declaration") == 0)
 		return handleImport(node, parent_id);
 	JsVisitor::visitNode(node, parent_id);
+}
+
+void JavaVisitor::handleFormalParameter(TSNode node, uint64_t parent_id)
+{
+	// `void use(Drawable d)`: the parameter's TYPE has to be recorded, not just
+	// its name. handleMethodInvocation resolves `d.draw()`'s receiver_type from
+	// var_types_, so a parameter that was never recorded left the receiver
+	// factor empty — the interface method and every implementation then tied on
+	// every factor, the Step-5 ambiguity gate abstained, and the call produced
+	// no edge at all.
+	std::string name;
+	std::string type_name;
+	uint32_t cnt = ts_node_child_count(node);
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (!ts_node_is_named(c))
+			continue;
+		const char *t = ts_node_type(c);
+		if (strcmp(t, "identifier") == 0) {
+			name = nodeText(c);
+			continue;
+		}
+		if (strcmp(t, "type_identifier") == 0) {
+			type_name = nodeText(c);
+			continue;
+		}
+		// `List<Foo> items` — the base type is the receiver's type, the type
+		// arguments are not (mirrors handleVariableDecl).
+		if (strcmp(t, "generic_type") == 0) {
+			TSNode base = ts_node_child(c, 0);
+			if (!ts_node_is_null(base))
+				type_name = nodeText(base);
+			continue;
+		}
+	}
+	if (name.empty()) {
+		visitChildren(node, parent_id);
+		return;
+	}
+	uint64_t id =
+		emitter_->emitVariable(name, location(node), parent_id, 0);
+	defineSymbol(name, id);
+	if (!type_name.empty())
+		recordVarType(name, type_name);
 }
 void JavaVisitor::handleMethodDecl(TSNode node, uint64_t parent_id)
 {
@@ -128,6 +179,16 @@ void JavaVisitor::handleMethodDecl(TSNode node, uint64_t parent_id)
 	uint64_t id = emitter_->emitMethod(name, loc, parent_id, 0, false,
 					   detectVisibility(node));
 	defineSymbol(name, id);
+	// Tag the method with its declaring type (`Circle::draw`). The Resolver's
+	// factorReceiverTypeMatch and the interface dispatch index both match on
+	// this prefix: without it, an interface method and each of its
+	// implementations are candidates with identical names and arity, tie on
+	// every factor, and the Step-5 ambiguity gate abstains — so a call through
+	// the interface produced no edge at all (the same reasoning as
+	// CVisitor::handleFuncDef).
+	std::string cls = currentClassName();
+	if (!cls.empty())
+		unit_->setQualifiedName(id, cls + "::" + name);
 	pushScope();
 	pushFunctionScope(id);
 	uint32_t cnt = ts_node_child_count(node);
@@ -164,23 +225,8 @@ void JavaVisitor::handleClassDecl(TSNode node, uint64_t parent_id)
 		TSNode c = ts_node_child(node, i);
 		if (!ts_node_is_named(c))
 			continue;
-		if (strcmp(ts_node_type(c), "super_interfaces") == 0) {
-			uint32_t sc = ts_node_child_count(c);
-			for (uint32_t j = 0; j < sc; j++) {
-				TSNode iface = ts_node_child(c, j);
-				if (!ts_node_is_named(iface))
-					continue;
-				if (strcmp(ts_node_type(iface),
-					   "type_identifier") == 0) {
-					std::string iface_name =
-						nodeText(iface);
-					if (!iface_name.empty())
-						emitter_->emitInterfaceImpl(
-							name, iface_name,
-							location(iface), id);
-				}
-			}
-		}
+		if (strcmp(ts_node_type(c), "super_interfaces") == 0)
+			emitInterfaceImpls(c, name, id);
 	}
 	for (uint32_t i = 0; i < cnt; i++) {
 		TSNode c = ts_node_child(node, i);
@@ -191,11 +237,52 @@ void JavaVisitor::handleClassDecl(TSNode node, uint64_t parent_id)
 		if (strcmp(ts_node_type(c), "class_body") == 0)
 			visitChildren(c, id);
 		else
-			visitNode(c, id);
+			visitChild(c, id);
 	}
 	popClassScope();
 	popScope();
 }
+void JavaVisitor::emitInterfaceImpls(TSNode node, const std::string &impl_type,
+				     uint64_t parent_id)
+{
+	uint32_t cnt = ts_node_child_count(node);
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (!ts_node_is_named(c))
+			continue;
+		const char *t = ts_node_type(c);
+		if (strcmp(t, "type_identifier") == 0) {
+			std::string iface_name = nodeText(c);
+			if (!iface_name.empty())
+				emitter_->emitInterfaceImpl(impl_type,
+							    iface_name,
+							    location(c),
+							    parent_id);
+			continue;
+		}
+		// `implements Comparable<Foo>` — record the base type only; the
+		// type arguments are not implemented interfaces.
+		if (strcmp(t, "generic_type") == 0) {
+			uint32_t gc = ts_node_child_count(c);
+			for (uint32_t j = 0; j < gc; j++) {
+				TSNode g = ts_node_child(c, j);
+				if (ts_node_is_named(g) &&
+				    strcmp(ts_node_type(g),
+					   "type_identifier") == 0) {
+					std::string iface_name = nodeText(g);
+					if (!iface_name.empty())
+						emitter_->emitInterfaceImpl(
+							impl_type, iface_name,
+							location(g), parent_id);
+					break;
+				}
+			}
+			continue;
+		}
+		emitInterfaceImpls(c, impl_type, parent_id);
+	}
+}
+
 void JavaVisitor::handleInterfaceDecl(TSNode node, uint64_t parent_id)
 {
 	SourceRange loc = location(node);
@@ -207,7 +294,15 @@ void JavaVisitor::handleInterfaceDecl(TSNode node, uint64_t parent_id)
 	uint64_t id = emitter_->emitInterface(name, loc, parent_id,
 					      detectVisibility(node));
 	defineSymbol(name, id);
+	// Push an interface scope so its methods are qualified
+	// (`Drawable::draw`) exactly like class methods: the resolver's dispatch
+	// index reconstructs method sets from those qualified names to find the
+	// implementations of an interface.
+	pushScope();
+	pushClassScope(name);
 	visitChildren(node, id);
+	popClassScope();
+	popScope();
 }
 void JavaVisitor::handleEnumDecl(TSNode node, uint64_t parent_id)
 {
@@ -233,7 +328,7 @@ void JavaVisitor::handleMethodInvocation(TSNode node, uint64_t parent_id)
 	// callee names were always the receiver → resolveSymbol never
 	// matched → ref_original_id=0 → all Java call-edges were lost.
 	// ts_node_child_by_field_name fetches the `name` field directly
-	// regardless of child order. See CODE_REVIEW_FINDINGS_2026-07-19.md C3.
+	// regardless of child order.
 	std::string name;
 	TSNode name_node = ts_node_child_by_field_name(node, "name", 4);
 	if (!ts_node_is_null(name_node))
@@ -243,8 +338,28 @@ void JavaVisitor::handleMethodInvocation(TSNode node, uint64_t parent_id)
 	// path and the post-emit recursion below.
 	uint32_t cnt = ts_node_child_count(node);
 
-	// Skip Java common JDK methods — they are NOT user-defined calls
-	if (!name.empty() && isJavaBuiltin(name)) {
+	// obj.method() / Class.method() — the method_invocation node carries an
+	// optional `object` field (the receiver). Fetched before the builtin
+	// check below, which needs it to tell a bare call from a method call.
+	TSNode obj_node = ts_node_child_by_field_name(node, "object", 6);
+	bool has_receiver = !ts_node_is_null(obj_node);
+
+	// Skip Java JDK builtins — but ONLY for unqualified calls.
+	// method_invocation covers both `println(...)` and `obj.method()`, and
+	// `name` is the bare method name either way, so the previous check
+	// dropped every call whose method name collided with the JDK list:
+	// `map`, `filter`, `forEach`, `collect`, `reduce`, `indexOf`, `replace`,
+	// `format`, `compareTo`, `startsWith`, `equals`, `toString`, `hashCode`,
+	// `clone` … are all extremely common user-defined method names, and none
+	// of them produced a call record — a systematic false negative. A call
+	// with a receiver can never be a JDK static, so it keeps its record and
+	// the receiver/interface evidence the Resolver needs.
+	// Same exemption as Python, and it covers static imports: `import static
+	// foo.Bar.valueOf;` inserts `valueOf` into import_aliases_ (the last
+	// segment), so a statically imported user method is no longer dropped as
+	// the JDK's Integer.valueOf.
+	if (!has_receiver && !name.empty() && isJavaBuiltin(name) &&
+	    !isLocallyDefined(name) && import_aliases_.count(name) == 0) {
 		for (uint32_t i = 0; i < cnt; i++) {
 			TSNode c = ts_node_child(node, i);
 			if (!ts_node_is_named(c))
@@ -254,7 +369,7 @@ void JavaVisitor::handleMethodInvocation(TSNode node, uint64_t parent_id)
 			    strcmp(t, "scoped_identifier") == 0 ||
 			    strcmp(t, "field_access") == 0)
 				continue;
-			visitNode(c, parent_id);
+			visitChild(c, parent_id);
 		}
 		return;
 	}
@@ -265,8 +380,6 @@ void JavaVisitor::handleMethodInvocation(TSNode node, uint64_t parent_id)
 	// old find('.') check never matched and every method call was
 	// mislabeled Direct, skipping the Resolver's CallKindMatch factor
 	// and receiver evidence. Detect the receiver to mark Method.
-	TSNode obj_node = ts_node_child_by_field_name(node, "object", 6);
-	bool has_receiver = !ts_node_is_null(obj_node);
 	CallKind call_kind = CallKind::Direct;
 	if (has_receiver) {
 		call_kind = CallKind::Method;
@@ -358,7 +471,7 @@ void JavaVisitor::handleMethodInvocation(TSNode node, uint64_t parent_id)
 		    strcmp(t, "scoped_identifier") == 0 ||
 		    strcmp(t, "field_access") == 0)
 			continue;
-		visitNode(c, id);
+		visitChild(c, id);
 	}
 }
 void JavaVisitor::handleObjectCreation(TSNode node, uint64_t parent_id)
@@ -369,7 +482,7 @@ void JavaVisitor::handleObjectCreation(TSNode node, uint64_t parent_id)
 	// via child_by_field_name("type"), which may be a type_identifier
 	// (`Foo`) or a generic_type (`Foo<Bar>`). Mirrors handleMethodInvocation's
 	// use of child_by_field_name for robust name extraction regardless of
-	// child order. See CODE_REVIEW_FINDINGS_2026-07-19.md C3 (same pattern).
+	// child order.
 	std::string name;
 	TSNode type_node = ts_node_child_by_field_name(node, "type", 4);
 	if (!ts_node_is_null(type_node)) {
@@ -434,7 +547,7 @@ void JavaVisitor::handleObjectCreation(TSNode node, uint64_t parent_id)
 		    strcmp(t, "scoped_type_identifier") == 0 ||
 		    strcmp(t, "array_type") == 0)
 			continue;
-		visitNode(c, id);
+		visitChild(c, id);
 	}
 }
 void JavaVisitor::handleVariableDecl(TSNode node, uint64_t parent_id)
@@ -543,7 +656,7 @@ void JavaVisitor::handleVariableDecl(TSNode node, uint64_t parent_id)
 			continue;
 		if (strcmp(ts_node_type(c), "identifier") == 0)
 			continue;
-		visitNode(c, parent_id);
+		visitChild(c, parent_id);
 	}
 }
 void JavaVisitor::handleImport(TSNode node, uint64_t parent_id)
@@ -580,6 +693,26 @@ void JavaVisitor::handleImport(TSNode node, uint64_t parent_id)
 }
 std::string JavaVisitor::extractName(TSNode node)
 {
+	// The grammar's `name` field is authoritative for every declaration this is
+	// reached for (class_declaration, interface_declaration,
+	// method_declaration, constructor_declaration, enum_declaration).
+	TSNode named = ts_node_child_by_field_name(node, "name", 4);
+	if (!ts_node_is_null(named))
+		return nodeText(named);
+
+	// Fallback for node shapes that do not expose the field: the LAST
+	// identifier, because a Java declaration writes the type before the name.
+	// The previous first-match scan accepted `type_identifier` as well, and for
+	// `public String describe(...)` the return type IS a type_identifier — so
+	// every method whose return type was a class (not a primitive or `void`)
+	// was recorded under that type: measured on spring-petclinic, 27 entities
+	// called `String`, 4 `Pet`, 3 `LocalDate`, 2 `PetType`, 2 `Owner`, while
+	// every `void` method kept its real name (`void_type` is not matched here).
+	// Those type-named entities then collected edges under the
+	// single-same-module-candidate heuristic, so the damage was not cosmetic:
+	// `find_definition("processUpdateForm")` answered nothing and a call to
+	// `updatePetDetails` was attributed to an entity called `String`.
+	std::string last;
 	uint32_t cnt = ts_node_child_count(node);
 	for (uint32_t i = 0; i < cnt; i++) {
 		TSNode c = ts_node_child(node, i);
@@ -587,9 +720,9 @@ std::string JavaVisitor::extractName(TSNode node)
 			continue;
 		if (strcmp(ts_node_type(c), "identifier") == 0 ||
 		    strcmp(ts_node_type(c), "type_identifier") == 0)
-			return nodeText(c);
+			last = nodeText(c);
 	}
-	return "";
+	return last;
 }
 
 int JavaVisitor::detectVisibility(TSNode node)

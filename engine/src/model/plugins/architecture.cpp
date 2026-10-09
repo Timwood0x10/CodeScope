@@ -32,6 +32,19 @@ ModelResult ArchitecturePlugin::build(uint64_t project_id,
 	ModelResult r;
 	r.plugin_name = "Architecture";
 
+	// Clear previous rows so a rebuild is idempotent. Without this every
+	// enhance/async rebuild APPENDs a second copy of each cross-module
+	// edge and StateBuilder's COUNT(*) doubles, triples, … (the unfixed
+	// twin of the old architecture_state accumulation bug).
+	if (!store_->exec("DELETE FROM architecture_edge")) {
+		// Surface the failure (code_rules: no silent error handling)
+		// and refuse to append more rows on top of a half-cleared table.
+		r.error = "[module=model, method=ArchitecturePlugin::build] "
+			  "DELETE architecture_edge failed: " +
+			  store_->error();
+		return r;
+	}
+
 	// Lazily compute the matching module scopes for each entity, cached
 	// so that entities appearing in multiple call edges are scanned once.
 	std::unordered_map<uint64_t, std::vector<const ScopeInfo *>>
@@ -52,7 +65,10 @@ ModelResult ArchitecturePlugin::build(uint64_t project_id,
 	// For each call edge, emit an architecture_edge for each
 	// cross-module (src_mod != tgt_mod) scope pair. The entity_id
 	// stored is the target (callee), matching the original SQL's
-	// `r.target_id`.
+	// `r.target_id`. The module columns follow the call direction:
+	// caller_module = the source module, callee_module = the target module.
+	// (They were named layer_upper/layer_lower until v0.7, which is what made
+	// the model layer read a plain cross-module call as a layer violation.)
 	int64_t edges = 0;
 	for (const auto &edge : ctx.call_edges) {
 		auto src_it = ctx.entities_by_id.find(edge.source_id);

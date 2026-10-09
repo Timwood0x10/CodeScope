@@ -20,7 +20,7 @@
 #include "../src/store/store.h"
 #include "../src/verify/architecture_drift.h"
 
-#include <cassert>
+#include "test_check.h"
 #include <cstdio>
 #include <sqlite3.h>
 #include <unistd.h>
@@ -39,12 +39,12 @@ static void insertEntity(store::GraphStore &store, uint64_t project_id,
 			  "start_col, end_row, end_col) "
 			  "VALUES (?,?,0,?,'',?,'cpp',0,0,0,0)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, id);
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 3, name, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 4, file_path, -1, SQLITE_TRANSIENT);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -56,11 +56,11 @@ static void insertCall(store::GraphStore &store, uint64_t project_id,
 	const char *sql = "INSERT INTO relation (project_id, source_id, "
 			  "target_id, type) VALUES (?,?,?,1)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_int64(stmt, 2, source_id);
 	sqlite3_bind_int64(stmt, 3, target_id);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -69,59 +69,60 @@ int main()
 	unlink(kDbPath);
 
 	store::GraphStore store;
-	assert(store.open(kDbPath));
+	CHECK(store.open(kDbPath));
 
 	uint64_t project_id = store.createProject("/test", "test_arch_drift");
-	assert(project_id > 0);
+	CHECK(project_id > 0);
 
 	// ── Test 1: classifyEntityLayer — Controller by name ────────────
 	{
-		assert(classifyEntityLayer("UserController", "/src/main.cpp") ==
-		       kLayerController);
-		assert(classifyEntityLayer("usercontroller", "/src/main.cpp") ==
-		       kLayerController); // case-insensitive
+		CHECK(classifyEntityLayer("UserController", "/src/main.cpp") ==
+		      kLayerController);
+		CHECK(classifyEntityLayer("usercontroller", "/src/main.cpp") ==
+		      kLayerController); // case-insensitive
 		printf("  [PASS] classifyEntityLayer: Controller by name suffix\n");
 	}
 
 	// ── Test 2: classifyEntityLayer — Controller by path ────────────
 	{
-		assert(classifyEntityLayer("handler", "/src/controllers/user.go") ==
-		       kLayerController);
-		assert(classifyEntityLayer("handler", "/api/v1/routes.ts") ==
-		       kLayerController);
+		CHECK(classifyEntityLayer("handler",
+					  "/src/controllers/user.go") ==
+		      kLayerController);
+		CHECK(classifyEntityLayer("handler", "/api/v1/routes.ts") ==
+		      kLayerController);
 		printf("  [PASS] classifyEntityLayer: Controller by file path\n");
 	}
 
 	// ── Test 3: classifyEntityLayer — Service ───────────────────────
 	{
-		assert(classifyEntityLayer("UserService", "/src/main.cpp") ==
-		       kLayerService);
-		assert(classifyEntityLayer("auth", "/services/auth.py") ==
-		       kLayerService);
+		CHECK(classifyEntityLayer("UserService", "/src/main.cpp") ==
+		      kLayerService);
+		CHECK(classifyEntityLayer("auth", "/services/auth.py") ==
+		      kLayerService);
 		printf("  [PASS] classifyEntityLayer: Service by name/path\n");
 	}
 
 	// ── Test 4: classifyEntityLayer — Repository variants ───────────
 	{
-		assert(classifyEntityLayer("UserRepository", "/src/main.cpp") ==
-		       kLayerRepository);
-		assert(classifyEntityLayer("UserRepo", "/src/main.cpp") ==
-		       kLayerRepository);
-		assert(classifyEntityLayer("UserStore", "/src/main.cpp") ==
-		       kLayerRepository);
-		assert(classifyEntityLayer("UserDAO", "/src/main.cpp") ==
-		       kLayerRepository);
-		assert(classifyEntityLayer("user", "/repository/user.go") ==
-		       kLayerRepository);
-		assert(classifyEntityLayer("user", "/data/user.go") ==
-		       kLayerRepository);
+		CHECK(classifyEntityLayer("UserRepository", "/src/main.cpp") ==
+		      kLayerRepository);
+		CHECK(classifyEntityLayer("UserRepo", "/src/main.cpp") ==
+		      kLayerRepository);
+		CHECK(classifyEntityLayer("UserStore", "/src/main.cpp") ==
+		      kLayerRepository);
+		CHECK(classifyEntityLayer("UserDAO", "/src/main.cpp") ==
+		      kLayerRepository);
+		CHECK(classifyEntityLayer("user", "/repository/user.go") ==
+		      kLayerRepository);
+		CHECK(classifyEntityLayer("user", "/data/user.go") ==
+		      kLayerRepository);
 		printf("  [PASS] classifyEntityLayer: Repository variants\n");
 	}
 
 	// ── Test 5: classifyEntityLayer — unclassified ──────────────────
 	{
-		assert(classifyEntityLayer("helper", "/src/utils.cpp").empty());
-		assert(classifyEntityLayer("main", "/src/main.go").empty());
+		CHECK(classifyEntityLayer("helper", "/src/utils.cpp").empty());
+		CHECK(classifyEntityLayer("main", "/src/main.go").empty());
 		printf("  [PASS] classifyEntityLayer: unclassified → empty\n");
 	}
 
@@ -140,7 +141,7 @@ int main()
 		insertCall(store, project_id, 10, 11); // Controller → Service
 
 		auto drifts = detectArchitectureDrift(store, project_id);
-		assert(drifts.empty());
+		CHECK(drifts.empty());
 		printf("  [PASS] detectArchitectureDrift: Controller→Service OK\n");
 	}
 
@@ -157,13 +158,14 @@ int main()
 			     "/repository/user.go");
 		insertEntity(store, project_id, 21, "AdminController",
 			     "/controllers/admin.go");
-		insertCall(store, project_id, 20, 21); // Repository → Controller
+		insertCall(store, project_id, 20,
+			   21); // Repository → Controller
 
 		auto drifts = detectArchitectureDrift(store, project_id);
-		assert(drifts.size() == 1);
-		assert(drifts[0].type == "ArchitectureDrift");
-		assert(drifts[0].severity == kDriftSeverityArch);
-		assert(drifts[0].subject == "Repository->Controller");
+		CHECK(drifts.size() == 1);
+		CHECK(drifts[0].type == "ArchitectureDrift");
+		CHECK(drifts[0].severity == kDriftSeverityArch);
+		CHECK(drifts[0].subject == "Repository->Controller");
 		printf("  [PASS] detectArchitectureDrift: Repository→Controller = reverse call\n");
 	}
 
@@ -180,12 +182,13 @@ int main()
 			     "/controllers/user.go");
 		insertEntity(store, project_id, 31, "OrderController",
 			     "/controllers/order.go");
-		insertCall(store, project_id, 30, 31); // Controller → Controller
+		insertCall(store, project_id, 30,
+			   31); // Controller → Controller
 
 		auto drifts = detectArchitectureDrift(store, project_id);
-		assert(drifts.size() == 1);
-		assert(drifts[0].type == "ArchitectureDrift");
-		assert(drifts[0].subject == "Controller->Controller");
+		CHECK(drifts.size() == 1);
+		CHECK(drifts[0].type == "ArchitectureDrift");
+		CHECK(drifts[0].subject == "Controller->Controller");
 		printf("  [PASS] detectArchitectureDrift: Controller→Controller = same-layer bypass\n");
 	}
 
@@ -204,7 +207,7 @@ int main()
 		insertCall(store, project_id, 40, 41); // unclassified → Service
 
 		auto drifts = detectArchitectureDrift(store, project_id);
-		assert(drifts.empty());
+		CHECK(drifts.empty());
 		printf("  [PASS] detectArchitectureDrift: unclassified entities skipped\n");
 	}
 
@@ -222,7 +225,7 @@ int main()
 		insertCall(store, project_id, 50, 50); // self-edge
 
 		auto drifts = detectArchitectureDrift(store, project_id);
-		assert(drifts.empty());
+		CHECK(drifts.empty());
 		printf("  [PASS] detectArchitectureDrift: self-edges excluded\n");
 	}
 
@@ -242,7 +245,7 @@ int main()
 		insertCall(store, project_id, 60, 61); // Service → Repository
 
 		auto drifts = detectArchitectureDrift(store, project_id);
-		assert(drifts.empty());
+		CHECK(drifts.empty());
 		printf("  [PASS] detectArchitectureDrift: Service→Repository OK\n");
 	}
 
@@ -250,5 +253,5 @@ int main()
 	unlink(kDbPath);
 
 	printf("=== test_architecture_drift PASSED ===\n");
-	return 0;
+	return checkFailures() ? 1 : 0;
 }

@@ -24,6 +24,8 @@ class GoTranslator : public Translator {
 	TranslationUnit *unit_ = nullptr;
 	const char *source_ = nullptr;
 	std::string file_path_;
+	// Recursion counter for this file (see kMaxTranslateDepth).
+	TranslateDepth depth_;
 
 	struct Scope {
 		std::unordered_map<std::string, Node *> symbols;
@@ -81,6 +83,7 @@ class GoTranslator : public Translator {
 TranslationUnit *GoTranslator::translate(TSTree *tree, const char *source,
 					 const char *file_path)
 {
+	depth_.reset();
 	unit_ = new TranslationUnit();
 	unit_->source_content = source;
 	source_ = source;
@@ -217,6 +220,13 @@ Node *GoTranslator::translateNode(TSNode ts_node, Node *parent)
 
 void GoTranslator::translateChildren(TSNode ts_node, Node *parent)
 {
+	// Bound native-stack recursion (see kMaxTranslateDepth): a pathologically
+	// deep AST would overflow the indexer's 512 KB worker stack, which the FFI
+	// try/catch cannot recover. The visitors apply the same bound.
+	if (depth_.exceeded(file_path_.c_str(), "translateChildren"))
+		return;
+	DepthGuard depth_guard(depth_);
+
 	uint32_t count = ts_node_child_count(ts_node);
 	for (uint32_t i = 0; i < count; i++) {
 		TSNode child = ts_node_child(ts_node, i);
@@ -292,8 +302,7 @@ Node *GoTranslator::handleMethodDecl(TSNode ts_node, Node *parent)
 		// — otherwise the second parameter_list's parameter types (e.g.
 		// `int` in `func (r *MyType) Method(a int)`) overwrite receiver_type
 		// → receiver edge points to `int` instead of `MyType`, breaking
-		// every Go method-to-type association. See
-		// CODE_REVIEW_FINDINGS_2026-07-19.md C4.
+		// every Go method-to-type association.
 		if (strcmp(t, "parameter_list") == 0) {
 			// First parameter_list is receiver
 			uint32_t pc = ts_node_child_count(child);

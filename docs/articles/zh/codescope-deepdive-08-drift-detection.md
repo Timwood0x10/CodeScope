@@ -1,6 +1,5 @@
 # CodeScope 拆解 (八)：漂移检测 — 文档、能力、架构的三位一体
 
-> *"Documentation is a love letter to your future self. Drift is the heartbreak when you realize it was never updated."*
 > 文档是写给未来自己的情书。漂移是当你发现它从未被更新时的心碎。
 
 ## 问题：文档什么时候开始偏离代码？

@@ -36,62 +36,17 @@ constexpr int kKindTypeAssign = 18;
 
 #include "../graph/graph_builder.h"
 #include "../ir/semantic_unit.h"
+// PathRec + flushImportBatch live in their own TU: this file's 1000-line
+// rule (see plan/rules/code_rules.md) is easier to keep when the import
+// batch writer is not inlined here.
+#include "store_graph_imports.h"
 
-// ── Batch import helper ─────────────────────────────────────────
 namespace store
 {
 
-// ── Batch import helper ─────────────────────────────────────────
-struct PathRec {
-	std::string path;
-	std::string alias;
-	std::string file;
-};
-
-static void flushImportBatch(sqlite3 *db, uint64_t project_id,
-			     const std::vector<PathRec> &batch)
-{
-	if (batch.empty())
-		return;
-	std::string sql = "INSERT OR IGNORE INTO import "
-			  "(project_id, source_scope_id, target_path, alias, "
-			  " file_path, is_pub) VALUES ";
-	for (size_t i = 0; i < batch.size(); i++) {
-		if (i > 0)
-			sql += ",";
-		sql += "(?,0,?,?,?,0)";
-	}
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) !=
-	    SQLITE_OK) {
-		fprintf(stderr,
-			"[module=store, method=flushImportBatch] "
-			"prepare failed: %s\n",
-			sqlite3_errmsg(db));
-		return;
-	}
-	for (size_t i = 0; i < batch.size(); i++) {
-		int base = static_cast<int>(i * 4);
-		sqlite3_bind_int64(stmt, base + 1,
-				   static_cast<int64_t>(project_id));
-		sqlite3_bind_text(stmt, base + 2, batch[i].path.c_str(), -1,
-				  SQLITE_STATIC);
-		sqlite3_bind_text(stmt, base + 3, batch[i].alias.c_str(), -1,
-				  SQLITE_STATIC);
-		sqlite3_bind_text(stmt, base + 4, batch[i].file.c_str(), -1,
-				  SQLITE_STATIC);
-	}
-	int rc = sqlite3_step(stmt);
-	if (rc != SQLITE_DONE && rc != SQLITE_CONSTRAINT)
-		fprintf(stderr,
-			"[module=store, method=flushImportBatch] "
-			"step failed (rc=%d): %s\n",
-			rc, sqlite3_errmsg(db));
-	sqlite3_finalize(stmt);
-}
-
 bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
-			    const std::unordered_set<std::string> *changed_files)
+			    const std::unordered_set<std::string> *changed_files,
+			    bool include_test_files)
 {
 	using Clock = std::chrono::steady_clock;
 
@@ -105,11 +60,32 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// a subset of files are re-indexed — lookup indexes stay valid.
 	const bool full_rebuild = (changed_files == nullptr);
 
-	// Step 1: determine which files to rebuild
+	// Test/bench/spec filter, applied to every graph row derived below
+	// (entity, reference, import). The automatic index path keeps it: those
+	// declarations are deliberately kept out of the graph ("AI only needs
+	// production code"), and the discovery walk already skips the test/
+	// directories it recognises. `include_test_files` is the decision of a
+	// caller that explicitly bypassed that walk — `force_index_files`
+	// promises "index these paths regardless of the default skip rules", and
+	// without this switch that promise held for the parse stage only:
+	// measured on this repository, forcing `engine/tests` added 13174
+	// semantic_records rows and **zero** entities, while the tool answered
+	// {"ok":true,"files_indexed":115}.
+	const std::string test_file_filter =
+		include_test_files ?
+			std::string() :
+			std::string(
+				" AND sr.file_path NOT LIKE '%\\_test.%' ESCAPE '\\'"
+				" AND sr.file_path NOT LIKE '%/tests/%'"
+				" AND sr.file_path NOT LIKE '%\\_spec.%' ESCAPE '\\'"
+				" AND sr.file_path NOT LIKE '%/benches/%'"
+				" AND sr.file_path NOT LIKE '%\\_\\_test\\_\\_%' ESCAPE '\\'");
+
+	// Step 1: determine which files to rebuild. project_id is bound, not
+	// concatenated (code_rules §5: one parameterized form for all queries).
 	auto t0 = Clock::now();
 	std::string file_list_sql =
-		"SELECT DISTINCT file_path FROM semantic_records WHERE project_id=" +
-		std::to_string(project_id);
+		"SELECT DISTINCT file_path FROM semantic_records WHERE project_id=?";
 	sqlite3_stmt *fl_stmt = nullptr;
 	if (sqlite3_prepare_v2(db_, file_list_sql.c_str(), -1, &fl_stmt,
 			       nullptr) != SQLITE_OK) {
@@ -117,9 +93,15 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			"buildGraph: prepare file_list failed: %s "
 			"[module=store, method=buildGraph]\n",
 			sqlite3_errmsg(db_));
-		// Fall through: empty rebuild_files is a no-op, not a fatal error.
-		// The transaction is still committed below.
+		// Fail closed: an empty rebuild_files used to RELEASE the
+		// savepoint and return true, so the caller committed an index
+		// with no graph and reported ok:true (code_rules: no silent
+		// error handling).
+		if (fl_stmt)
+			sqlite3_finalize(fl_stmt);
+		return false;
 	}
+	sqlite3_bind_int64(fl_stmt, 1, static_cast<int64_t>(project_id));
 
 	std::vector<std::string> rebuild_files;
 	if (fl_stmt) {
@@ -150,6 +132,15 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		return true;
 	}
 
+	// Metric columns are derived data that this rebuild would otherwise drop:
+	// the entity INSERT below re-creates rows from semantic_records, whose
+	// column list carries no metrics. Carry the current values across the
+	// rebuild (store_metrics.cpp documents the two field failures this fixes:
+	// the parallel path's post-index rebuild and the file-list path).
+	// The return value is advisory — a failure is logged and only means the
+	// values cannot be restored; the graph itself still rebuilds correctly.
+	snapshotMetricsForRebuild(project_id);
+
 	// Delete existing graph data for files being rebuilt.
 	// deleteGraphDataByFile cleans entity, relation (graph_nodes/graph_edges are deprecated)
 	// AND entity — the old code only deleted edges+nodes, leaving entity
@@ -161,18 +152,54 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 
 	std::string pid = std::to_string(project_id);
 
+	// Critical graph writes are checked. A failed INSERT..SELECT (schema
+	// drift, SQLITE_BUSY, disk full) used to go unnoticed: buildGraph then
+	// RELEASEd the savepoint and returned true, so the caller committed a
+	// partially-populated graph and reported success. `graph_write_ok`
+	// accumulates failures and forces a ROLLBACK TO SAVEPOINT below.
+	bool graph_write_ok = true;
+	auto exec_write = [&](const std::string &sql, const char *step) {
+		if (exec(sql.c_str()))
+			return;
+		graph_write_ok = false;
+		fprintf(stderr,
+			"[module=store, method=buildGraph] %s failed: %s\n",
+			step, error().c_str());
+	};
+
 	// ── 2a: Create file filter temp table ──
 	exec("DROP TABLE IF EXISTS _rf");
 	exec("CREATE TEMP TABLE _rf (file_path TEXT PRIMARY KEY)");
 	{
 		sqlite3_stmt *ins = nullptr;
-		sqlite3_prepare_v2(
-			db_, "INSERT OR IGNORE INTO _rf (file_path) VALUES (?)",
-			-1, &ins, nullptr);
+		// Check prepare: bind/step on a NULL stmt is UB (and a failed
+		// _rf fill makes every `file_path IN (SELECT ... FROM _rf)`
+		// insert a silent no-op while graph_write_ok stays true).
+		if (sqlite3_prepare_v2(
+			    db_,
+			    "INSERT OR IGNORE INTO _rf (file_path) VALUES (?)",
+			    -1, &ins, nullptr) != SQLITE_OK) {
+			fprintf(stderr,
+				"buildGraph: prepare _rf insert failed: %s "
+				"[module=store, method=buildGraph]\n",
+				sqlite3_errmsg(db_));
+			exec("ROLLBACK TO SAVEPOINT buildGraph");
+			exec("RELEASE SAVEPOINT buildGraph");
+			return false;
+		}
 		for (auto &fp : rebuild_files) {
 			sqlite3_bind_text(ins, 1, fp.c_str(), -1,
 					  SQLITE_TRANSIENT);
-			sqlite3_step(ins);
+			if (sqlite3_step(ins) != SQLITE_DONE) {
+				fprintf(stderr,
+					"buildGraph: _rf insert step failed: "
+					"%s [module=store, method=buildGraph]\n",
+					sqlite3_errmsg(db_));
+				sqlite3_finalize(ins);
+				exec("ROLLBACK TO SAVEPOINT buildGraph");
+				exec("RELEASE SAVEPOINT buildGraph");
+				return false;
+			}
 			sqlite3_reset(ins);
 		}
 		sqlite3_finalize(ins);
@@ -180,13 +207,21 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	auto t_rf = Clock::now();
 
 	// ── 2b: Create _r2n mapping table (unsorted for speed) ──
-	// Note: ROW_NUMBER() OVER () avoids ORDER BY sort cost.
-	// Node IDs are sequential but not sorted by file_path — sorting is
-	// not required for correctness since JOINs use indexes, not sequential scans.
+	// Node ids are assigned by ROW_NUMBER() ordered on each record's
+	// semantic identity (see the _r2n CREATE below), so the same input
+	// always yields the same ids. JOINs use indexes, not sequential scans,
+	// so the ordering itself is irrelevant to query correctness — it only
+	// makes the assignment reproducible.
 	static constexpr int kR2nKinds[] = {
 		kKindFunction,	kKindMethod,  kKindClass,
 		kKindInterface, kKindEnum,    kKindTypeAlias,
 		kKindTypeDecl,	kKindTypeRef, kKindTypeAssign,
+		// RecordKind::ImportBinding is deliberately NOT here: this list
+		// decides which kinds are promoted to ENTITIES (the _r2n mapping and
+		// the entity INSERT below). An import binding is a fact, not a symbol
+		// — listing it here turned every imported name into a node (measured:
+		// AIScope 223 → 839 entities). The Resolver reads it from
+		// semantic_records, which stores every record kind unfiltered.
 	};
 	static constexpr int kNumR2nKinds =
 		sizeof(kR2nKinds) / sizeof(kR2nKinds[0]);
@@ -200,27 +235,33 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	}
 	kind_list += ")";
 
-	// C1 (data-loss fix): in incremental rebuilds (changed_files != null),
-	// `deleteGraphDataByFile` above only removed entity rows for the files
-	// being rebuilt, so unchanged files still hold entity.id values starting
-	// at 1. ROW_NUMBER() OVER () restarts at 1 every call, which collides
-	// with those retained ids and makes the downstream INSERT OR IGNORE INTO
-	// entity silently skip the rebuilt file's entities — losing data on every
-	// incremental run (confirmed: 1477 -> 1476 entities after editing one
-	// file). Shift new node_ids above the current max entity.id in the
-	// incremental case; a full rebuild deletes ALL entity rows first, so
-	// MAX(entity.id) is NULL and the offset is 0. All downstream edges
-	// (relation, type_ref, import) reference r2n.node_id, so they stay
-	// consistent with the shifted id automatically.
+	// C1 (data-loss fix): entity ids are a GLOBAL primary key
+	// (`entity.id INTEGER PRIMARY KEY`, not per project), while
+	// deleteGraphDataByFile above removes only the rows of the files being
+	// rebuilt, so rows with ids starting at 1 are always still there. A bare
+	// ROW_NUMBER() OVER () restarts at 1 every call, collides with those
+	// retained ids, and the downstream INSERT OR IGNORE INTO entity then
+	// silently skips the new rows — losing data on every incremental run
+	// (confirmed: 1477 -> 1476 entities after editing one file).
+	//
+	// The offset must therefore clear the WHOLE table and must be computed on
+	// every call, not only for incremental rebuilds. The old code applied it
+	// only when `changed_files != nullptr` and scoped MAX(id) to the project,
+	// on the assumption that "a full rebuild deletes ALL entity rows first" —
+	// true for the project being indexed, false for the table. Indexing a
+	// SECOND project into a database that already holds one therefore started
+	// at id 1, collided with the first project's ids, and lost every entity
+	// row of the new project: the project had semantic_records but zero
+	// entities, so every tool answered "not found" for a project that had just
+	// indexed successfully (silently — INSERT OR IGNORE reports nothing).
+	// All downstream edges (relation, type_ref, import) reference
+	// r2n.node_id, so they stay consistent with the shifted id automatically.
 	long long id_offset = 0;
-	if (changed_files != nullptr) {
+	{
 		sqlite3_stmt *mx = nullptr;
 		if (sqlite3_prepare_v2(db_,
-				       "SELECT COALESCE(MAX(id),0) FROM entity "
-				       "WHERE project_id=?",
+				       "SELECT COALESCE(MAX(id),0) FROM entity",
 				       -1, &mx, nullptr) == SQLITE_OK) {
-			sqlite3_bind_int64(mx, 1,
-					   static_cast<int64_t>(project_id));
 			if (sqlite3_step(mx) == SQLITE_ROW)
 				id_offset = sqlite3_column_int64(mx, 0);
 			sqlite3_finalize(mx);
@@ -228,10 +269,19 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	}
 
 	exec("DROP TABLE IF EXISTS _r2n");
+	// Deterministic id assignment. ROW_NUMBER() must be ordered by the
+	// record's semantic identity, NOT by semantic_records' scan order:
+	// that order is the insertion order, which varies with parse-worker
+	// scheduling, so a bare `OVER ()` produced different entity ids for
+	// identical input (the perf report measured entity.id drift on parallel
+	// indexes). Everything downstream (relation, type_ref, import, CSR,
+	// fixture comparisons) then shifted with it. The key is unique for real
+	// records — one declaration per (file, kind, position).
 	std::string r2n_sql =
 		"CREATE TEMP TABLE _r2n AS "
 		"SELECT sr.rowid as rid, sr.original_id, sr.file_path, sr.name,"
-		" CAST(ROW_NUMBER() OVER () AS INTEGER) + " +
+		" CAST(ROW_NUMBER() OVER (ORDER BY sr.file_path, sr.kind, "
+		"  sr.start_row, sr.start_col, sr.original_id) AS INTEGER) + " +
 		std::to_string(id_offset) +
 		" as node_id "
 		"FROM semantic_records sr "
@@ -270,30 +320,33 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// before scope creation. The late insert after dropQueryIndexes is
 	// now redundant but kept as a safety net (INSERT OR IGNORE).
 	// Includes sr.arity so the Resolver Pipeline can disambiguate
-	// same-name overloads via factorSignatureMatch. See
-	// CODE_REVIEW_FINDINGS_2026-07-19.md C2.
-	exec(std::string(
-		     "INSERT OR IGNORE INTO entity "
-		     "(id, project_id, kind, name, qualified_name, "
-		     " file_path, language, start_row, start_col, "
-		     " end_row, end_col, module_path, visibility, arity) "
-		     "SELECT r2n.node_id, sr.project_id, "
-		     " CASE sr.kind WHEN 0 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 "
-		     "  WHEN 3 THEN 4 WHEN 4 THEN 3 WHEN 5 THEN 3 ELSE 7 END, "
-		     " sr.name, COALESCE(NULLIF(sr.qualified_name, ''), sr.name), "
-		     " sr.file_path, sr.language, "
-		     " sr.start_row, sr.start_col, sr.end_row, sr.end_col, "
-		     " rtrim(sr.file_path, replace(sr.file_path, '/', 'x')), "
-		     " sr.visibility, "
-		     " sr.arity "
-		     "FROM semantic_records sr "
-		     "JOIN _r2n r2n ON sr.rowid = r2n.rid "
-		     "WHERE sr.file_path NOT LIKE '%\\_test.%' ESCAPE '\\'"
-		     " AND sr.file_path NOT LIKE '%/tests/%'"
-		     " AND sr.file_path NOT LIKE '%\\_spec.%' ESCAPE '\\'"
-		     " AND sr.file_path NOT LIKE '%/benches/%'"
-		     " AND sr.file_path NOT LIKE '%\\_\\_test\\_\\_%' ESCAPE '\\'")
-		     .c_str());
+	// same-name overloads via factorSignatureMatch.
+	exec_write(
+		std::string(
+			"INSERT OR IGNORE INTO entity "
+			"(id, project_id, kind, name, qualified_name, "
+			" file_path, language, start_row, start_col, "
+			" end_row, end_col, module_path, visibility, arity) "
+			"SELECT r2n.node_id, sr.project_id, "
+			" CASE sr.kind WHEN 0 THEN 0 WHEN 1 THEN 1 WHEN 2 THEN 2 "
+			"  WHEN 3 THEN 4 WHEN 4 THEN 3 WHEN 5 THEN 3 ELSE 7 END, "
+			" sr.name, COALESCE(NULLIF(sr.qualified_name, ''), sr.name), "
+			" sr.file_path, sr.language, "
+			" sr.start_row, sr.start_col, sr.end_row, sr.end_col, "
+			" rtrim(sr.file_path, replace(sr.file_path, '/', 'x')), "
+			" sr.visibility, "
+			" sr.arity "
+			"FROM semantic_records sr "
+			"JOIN _r2n r2n ON sr.rowid = r2n.rid "
+			"WHERE sr.project_id=" +
+			pid + test_file_filter),
+		"INSERT INTO entity");
+
+	// The rows above were just re-created without metric columns: re-apply the
+	// snapshot taken before the rebuild and any freshly staged values. Order
+	// matters — staging is the newer producer result. Failure is logged, not
+	// fatal: metrics are derived data and must not fail an index run.
+	applyMetricsAfterRebuild(project_id);
 	auto t_nodes = Clock::now();
 
 	// ── 2d: Containment edges (edge_type=3) ──
@@ -314,22 +367,23 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// Phase 1.3: Type edges — create USES_TYPE edges from TypeRef records
 	{
 		// Populate route table from Route records (kind=19 in semantic_records)
-		exec(std::string(
-			     "INSERT OR IGNORE INTO route "
-			     "(project_id, method, path, handler_name, "
-			     " file_path, start_row, start_col) "
-			     "SELECT sr.project_id, "
-			     " SUBSTR(sr.name, 1, INSTR(sr.name, ' ') - 1), "
-			     " SUBSTR(sr.name, INSTR(sr.name, ' ') + 1), "
-			     " sr.qualified_name, "
-			     " sr.file_path, sr.start_row, sr.start_col "
-			     "FROM semantic_records sr "
-			     "WHERE sr.project_id=" +
-			     pid +
-			     " AND sr.kind = 19" // Route
-			     " AND sr.name != '' AND sr.name LIKE '% %'"
-			     " AND sr.file_path IN (SELECT file_path FROM _rf)")
-			     .c_str());
+		exec_write(
+			std::string(
+				"INSERT OR IGNORE INTO route "
+				"(project_id, method, path, handler_name, "
+				" file_path, start_row, start_col) "
+				"SELECT sr.project_id, "
+				" SUBSTR(sr.name, 1, INSTR(sr.name, ' ') - 1), "
+				" SUBSTR(sr.name, INSTR(sr.name, ' ') + 1), "
+				" sr.qualified_name, "
+				" sr.file_path, sr.start_row, sr.start_col "
+				"FROM semantic_records sr "
+				"WHERE sr.project_id=" +
+				pid +
+				" AND sr.kind = 19" // Route
+				" AND sr.name != '' AND sr.name LIKE '% %'"
+				" AND sr.file_path IN (SELECT file_path FROM _rf)"),
+			"INSERT INTO route");
 	}
 	auto t_route = Clock::now();
 
@@ -377,55 +431,59 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			std::to_string(kKindInterface) + "," +
 			std::to_string(kKindEnum) + "," +
 			std::to_string(kKindTypeAlias) + ")";
-		exec(std::string(
-			     "INSERT OR IGNORE INTO type_info "
-			     "(project_id, name, qualified_name, kind, "
-			     " file_path, language, start_row, start_col, "
-			     " end_row, end_col) "
-			     "SELECT sr.project_id, sr.name, "
-			     " COALESCE(NULLIF(sr.qualified_name, ''), sr.name), "
-			     " CASE sr.kind"
-			     "  WHEN " +
-			     std::to_string(kKindClass) +
-			     " THEN 0 "
-			     "  WHEN " +
-			     std::to_string(kKindEnum) +
-			     " THEN 1 "
-			     "  WHEN " +
-			     std::to_string(kKindInterface) +
-			     " THEN 3 "
-			     "  WHEN " +
-			     std::to_string(kKindTypeAlias) +
-			     " THEN 4 "
-			     "  ELSE 0 END, "
-			     " sr.file_path, sr.language, "
-			     " sr.start_row, sr.start_col, sr.end_row, sr.end_col "
-			     "FROM semantic_records sr "
-			     "WHERE sr.project_id=" +
-			     pid + " AND sr.kind IN " + type_kind_list +
-			     " AND sr.name != ''"
-			     " AND sr.file_path IN (SELECT file_path FROM _rf)")
-			     .c_str());
+		exec_write(
+			std::string(
+				"INSERT OR IGNORE INTO type_info "
+				"(project_id, name, qualified_name, kind, "
+				" file_path, language, start_row, start_col, "
+				" end_row, end_col) "
+				"SELECT sr.project_id, sr.name, "
+				" COALESCE(NULLIF(sr.qualified_name, ''), sr.name), "
+				" CASE sr.kind"
+				"  WHEN " +
+				std::to_string(kKindClass) +
+				" THEN 0 "
+				"  WHEN " +
+				std::to_string(kKindEnum) +
+				" THEN 1 "
+				"  WHEN " +
+				std::to_string(kKindInterface) +
+				" THEN 3 "
+				"  WHEN " +
+				std::to_string(kKindTypeAlias) +
+				" THEN 4 "
+				"  ELSE 0 END, "
+				" sr.file_path, sr.language, "
+				" sr.start_row, sr.start_col, "
+				" sr.end_row, sr.end_col "
+				"FROM semantic_records sr "
+				"WHERE sr.project_id=" +
+				pid + " AND sr.kind IN " + type_kind_list +
+				" AND sr.name != ''"
+				" AND sr.file_path IN "
+				"(SELECT file_path FROM _rf)"),
+			"INSERT INTO type_info");
 	}
 	auto t_type_info = Clock::now();
 
 	// Populate type_ref table from TypeRef records.
 	{
-		exec(std::string(
-			     "INSERT OR IGNORE INTO type_ref "
-			     "(project_id, entity_id, type_name, kind, "
-			     " file_path, start_row, start_col) "
-			     "SELECT sr.project_id, r2n.node_id, sr.type_name, "
-			     " CASE WHEN sr.name LIKE '%.return' THEN 2 ELSE 0 END, "
-			     " sr.file_path, sr.start_row, sr.start_col "
-			     "FROM semantic_records sr "
-			     "JOIN _r2n r2n ON sr.rowid = r2n.rid "
-			     "WHERE sr.project_id=" +
-			     pid +
-			     " AND sr.kind = " + std::to_string(kKindTypeRef) +
-			     " AND sr.name != '' AND sr.type_name != ''"
-			     " AND sr.file_path IN (SELECT file_path FROM _rf)")
-			     .c_str());
+		exec_write(
+			std::string(
+				"INSERT OR IGNORE INTO type_ref "
+				"(project_id, entity_id, type_name, kind, "
+				" file_path, start_row, start_col) "
+				"SELECT sr.project_id, r2n.node_id, sr.type_name, "
+				" CASE WHEN sr.name LIKE '%.return' THEN 2 ELSE 0 END, "
+				" sr.file_path, sr.start_row, sr.start_col "
+				"FROM semantic_records sr "
+				"JOIN _r2n r2n ON sr.rowid = r2n.rid "
+				"WHERE sr.project_id=" +
+				pid + " AND sr.kind = " +
+				std::to_string(kKindTypeRef) +
+				" AND sr.name != '' AND sr.type_name != ''"
+				" AND sr.file_path IN (SELECT file_path FROM _rf)"),
+			"INSERT INTO type_ref");
 	}
 	auto t_type_ref = Clock::now();
 
@@ -478,21 +536,24 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			" AND sr.file_path = r2n.file_path "
 			"WHERE sr.project_id=" +
 			std::to_string(project_id) +
-			" AND sr.kind = 9 AND sr.name != '' AND sr.file_path NOT LIKE '%\\_test.%' ESCAPE '\\' AND sr.file_path NOT LIKE '%/tests/%' AND sr.file_path NOT LIKE '%\\_spec.%' ESCAPE '\\' AND sr.file_path NOT LIKE '%/benches/%' AND sr.file_path NOT LIKE '%\\_\\_test\\_\\_%' ESCAPE '\\'"
-			" AND sr.file_path IN (SELECT file_path FROM _rf)";
-		exec(ref_sql.c_str());
+			" AND sr.kind = 9 AND sr.name != ''"
+			" AND sr.file_path IN (SELECT file_path FROM _rf)" +
+			test_file_filter;
+		exec_write(ref_sql, "INSERT INTO reference");
 	}
 	auto t_reference = Clock::now();
 
 	// Phase 1.2: populate import table from semantic_records Import
 	// Parse raw import text to extract individual import paths.
 	{
-		const char *fetch_sql =
-			"SELECT sr.name, sr.project_id, sr.file_path FROM semantic_records sr "
-			"WHERE sr.project_id=? AND sr.kind=11 AND sr.name != '' AND sr.file_path NOT LIKE '%\\_test.%' ESCAPE '\\' AND sr.file_path NOT LIKE '%/tests/%' AND sr.file_path NOT LIKE '%\\_spec.%' ESCAPE '\\' AND sr.file_path NOT LIKE '%/benches/%'"
-			" AND sr.file_path IN (SELECT file_path FROM _rf)";
+		const std::string fetch_sql =
+			std::string(
+				"SELECT sr.name, sr.project_id, sr.file_path FROM semantic_records sr "
+				"WHERE sr.project_id=? AND sr.kind=11 AND sr.name != ''"
+				" AND sr.file_path IN (SELECT file_path FROM _rf)") +
+			test_file_filter;
 		sqlite3_stmt *fetch_st = nullptr;
-		if (sqlite3_prepare_v2(db_, fetch_sql, -1, &fetch_st,
+		if (sqlite3_prepare_v2(db_, fetch_sql.c_str(), -1, &fetch_st,
 				       nullptr) == SQLITE_OK) {
 			sqlite3_bind_int64(fetch_st, 1,
 					   static_cast<int64_t>(project_id));
@@ -571,14 +632,16 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 					pr.file = fp_c ? fp_c : "";
 					batch.push_back(pr);
 					if (batch.size() >= kMaxBatch) {
-						flushImportBatch(
-							db_, project_id, batch);
+						if (!flushImportBatch(
+							    db_, project_id,
+							    batch))
+							graph_write_ok = false;
 						batch.clear();
 					}
 				}
-				if (!batch.empty())
-					flushImportBatch(db_, project_id,
-							 batch);
+				if (!batch.empty() &&
+				    !flushImportBatch(db_, project_id, batch))
+					graph_write_ok = false;
 			}
 			sqlite3_finalize(fetch_st);
 		}
@@ -588,6 +651,19 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// Phase 1.2: populate scope table from entity module_path.
 	// Module scopes: one per unique directory (module_path is the
 	// denormalized directory portion of file_path, populated at INSERT).
+	//
+	// Idempotency: `scope` has no UNIQUE key on (project_id, kind, name)
+	// (kind=2 function scopes legitimately repeat a name across modules),
+	// so `INSERT OR IGNORE` has no conflict target and would re-append every
+	// kind=1 module row on each buildGraph. buildGraph runs more than once
+	// per project (the parallel indexer merges per-module worker DBs, then
+	// the post-index enhance runs buildGraph again on the merged DB), so
+	// without a guard each module scope is duplicated — inflating
+	// project_overview.total_modules and doubling module_summary rows (and
+	// thus dead_code counts, since buildModuleSummaries GROUP BYs s.id).
+	// The NOT EXISTS clause makes the insert a true upsert-by-name for
+	// module scopes and is correct for both full and incremental passes
+	// (an incremental pass only adds modules that do not yet have a scope).
 	{
 		std::string scope_sql =
 			"INSERT OR IGNORE INTO scope "
@@ -599,8 +675,12 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			"FROM entity WHERE project_id=" +
 			std::to_string(project_id) +
 			" AND module_path != ''"
-			" AND entity.file_path IN (SELECT file_path FROM _rf)";
-		exec(scope_sql.c_str());
+			" AND entity.file_path IN (SELECT file_path FROM _rf)"
+			" AND NOT EXISTS (SELECT 1 FROM scope s2 WHERE"
+			" s2.project_id=" +
+			std::to_string(project_id) +
+			" AND s2.kind=1 AND s2.name=entity.module_path)";
+		exec_write(scope_sql, "INSERT INTO scope (module)");
 	}
 	// Function scopes: each entity within its module scope.
 	{
@@ -618,7 +698,46 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			"WHERE e.project_id=" +
 			std::to_string(project_id) +
 			" AND e.file_path IN (SELECT file_path FROM _rf)";
-		exec(func_sql.c_str());
+		exec_write(func_sql, "INSERT INTO scope (function)");
+	}
+	// Phase 1.3: drop module scopes whose module no longer exists.
+	//
+	// Nothing else removes kind=1 rows: a module scope is shared by every file
+	// in its directory, so the per-file cleanup in deleteGraphDataByFile only
+	// deletes function scopes. When the last file of a module disappears — the
+	// directory was deleted, or a later index excluded it — its module scope
+	// stayed behind. project_overview counts kind=1 rows as total_modules and
+	// buildModuleSummaries GROUPs BY them, so a stale row inflated both (and
+	// the dead_code counts derived from those groups).
+	//
+	// `entity` is the right reference set: the INSERT above creates a kind=1
+	// row exclusively from `entity.module_path`, so every legitimate module
+	// name is an entity.module_path of this project. The entity rows of files
+	// that vanished are already gone by now (deleteGraphDataByFile above, or
+	// GraphStore::cleanupStaleFiles before this call) and the surviving files'
+	// rows were inserted earlier in this function, so no live module can look
+	// orphaned here. NOT IN (…) keeps it to a single index scan of
+	// idx_entity_module instead of a correlated probe per scope row.
+	{
+		std::string orphan_modules =
+			"DELETE FROM scope WHERE project_id=" +
+			std::to_string(project_id) +
+			" AND kind=1 AND name NOT IN ("
+			"SELECT DISTINCT module_path FROM entity"
+			" WHERE project_id=" +
+			std::to_string(project_id) + " AND module_path != '')";
+		exec_write(orphan_modules, "DELETE FROM scope (orphan module)");
+		// Their function scopes go with them: a kind=2 row whose parent is gone
+		// can never be joined to a module again, and it would keep inflating
+		// the table on every later pass.
+		std::string orphan_functions =
+			"DELETE FROM scope WHERE project_id=" +
+			std::to_string(project_id) +
+			" AND kind=2 AND parent_id NOT IN ("
+			"SELECT id FROM scope WHERE project_id=" +
+			std::to_string(project_id) + " AND kind=1)";
+		exec_write(orphan_functions,
+			   "DELETE FROM scope (orphan function)");
 	}
 	// Update import.source_scope_id to point to the file's module scope.
 	// v0.6 (perf): the old form nested a second correlated subquery to look
@@ -640,13 +759,22 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	//   NOTE: an UPDATE ... FROM rewrite was attempted but SQLite rejects
 	//   referencing the target table (import) inside the FROM join clause
 	//   ("no such column: import.id"), so the correlated form is kept.
-	//   exec() result is now checked so a failed update can never be
-	//   silently swallowed again (previous code ignored the return value,
-	//   which left every import.source_scope_id at its 0 default).
+	//   The result is routed through exec_write so a failed update flips
+	//   graph_write_ok and rolls the savepoint back (all-or-nothing):
+	//   previously it only logged, so a failure left every
+	//   import.source_scope_id at its 0 default while buildGraph still
+	//   returned true.
+	//
+	//   import.source_scope_id is NOT NULL. The scalar subquery yields NULL
+	//   when an import has no matching kind=1 module scope, so COALESCE must
+	//   wrap the SUBQUERY (not sit inside it): the old inner COALESCE only
+	//   guarded a matched row's s.id and was never evaluated when the
+	//   subquery returned zero rows, so the whole UPDATE aborted with
+	//   "NOT NULL constraint failed" the moment any import had no scope.
 	{
 		std::string imp_scope_sql =
 			"UPDATE import SET source_scope_id = "
-			"(SELECT COALESCE(s.id, 0) FROM scope s "
+			"COALESCE((SELECT s.id FROM scope s "
 			" JOIN entity e ON e.project_id = s.project_id"
 			" AND s.kind = 1"
 			" AND s.name = e.module_path "
@@ -654,15 +782,10 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 			" AND sr.project_id = import.project_id"
 			" AND sr.file_path = e.file_path"
 			" WHERE e.project_id = import.project_id"
-			" LIMIT 1) "
+			" LIMIT 1), 0) "
 			"WHERE project_id=" +
 			std::to_string(project_id);
-		if (!exec(imp_scope_sql.c_str())) {
-			fprintf(stderr,
-				"[module=store, method=buildGraph] "
-				"UPDATE import.source_scope_id failed: %s\n",
-				error().c_str());
-		}
+		exec_write(imp_scope_sql, "UPDATE import.source_scope_id");
 	}
 	auto t_scope = Clock::now();
 
@@ -779,313 +902,29 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 		(long long)ms(t_resolver, t_csr),
 		(long long)ms(t_csr, t_cleanup), (long long)ms(t0, t_cleanup));
 
-	exec("RELEASE SAVEPOINT buildGraph");
-	return true;
-}
-
-// ── CSR Adjacency (BLOB-packed call edges) ─────────────────────
-
-bool GraphStore::buildCSR(uint64_t project_id)
-{
-	// Wrap the full rebuild (DELETE + forward inserts + reverse inserts)
-	// in a SAVEPOINT so a mid-build failure rolls back atomically:
-	// without this, a crash between the DELETE and the final INSERT leaves
-	// a half-populated CSR (some edges silently missing from queries).
-	// SAVEPOINT (not BEGIN) is required because buildGraph always runs
-	// with an active transaction (SAVEPOINT buildGraph / caller BEGIN),
-	// and SQLite forbids BEGIN inside an active transaction.
-	if (!exec("SAVEPOINT buildCSR")) {
+	// Fail closed: any unchecked critical write failure above must not be
+	// committed. Rolling back to the savepoint restores the pre-buildGraph
+	// state (all or nothing) and the false return value tells the caller
+	// the index did not produce a complete graph.
+	if (!graph_write_ok) {
 		fprintf(stderr,
-			"[module=store, method=buildCSR] SAVEPOINT buildCSR "
-			"failed: %s\n",
-			sqlite3_errmsg(db_));
+			"buildGraph: graph writes failed for project %s — "
+			"rolling back savepoint "
+			"[module=store, method=buildGraph]\n",
+			pid.c_str());
+		exec("ROLLBACK TO SAVEPOINT buildGraph");
+		exec("RELEASE SAVEPOINT buildGraph");
 		return false;
 	}
-
-	// Clear previous entries for this project
-	exec(std::string("DELETE FROM adjacency WHERE project_id=" +
-			 std::to_string(project_id))
-		     .c_str());
-
-	// Read all call edges from relation table, ordered by source_id for streaming group-by.
-	// ORDER BY ensures same caller rows are contiguous so we only flush
-	// to the BLOB when the source changes.
-	std::string sql = "SELECT source_id, target_id "
-			  "FROM relation "
-			  "WHERE type=1 AND project_id=" +
-			  std::to_string(project_id) + " ORDER BY source_id";
-	sqlite3_stmt *st = nullptr;
-	if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &st, nullptr) !=
-	    SQLITE_OK) {
-		exec("ROLLBACK TO SAVEPOINT buildCSR");
-		exec("RELEASE SAVEPOINT buildCSR");
-		return false;
-	}
-
-	// v0.6 (perf): rows for this project were just DELETEd above (line 767),
-	// so no PK conflicts can exist — plain INSERT is equivalent to INSERT OR
-	// REPLACE here but skips the replace path's conflict bookkeeping.
-	const char *ins_sql =
-		"INSERT INTO adjacency (src_id, project_id, tgt_blob) "
-		"VALUES (?, ?, ?)";
-	sqlite3_stmt *ins = nullptr;
-	if (sqlite3_prepare_v2(db_, ins_sql, -1, &ins, nullptr) != SQLITE_OK) {
-		sqlite3_finalize(st);
-		exec("ROLLBACK TO SAVEPOINT buildCSR");
-		exec("RELEASE SAVEPOINT buildCSR");
-		return false;
-	}
-
-	int64_t pid_i = static_cast<int64_t>(project_id);
-	int64_t current_src = -1;
-	std::vector<uint64_t> buf;
-	buf.reserve(1024);
-	int64_t count = 0;
-
-	while (sqlite3_step(st) == SQLITE_ROW) {
-		int64_t src = sqlite3_column_int64(st, 0);
-		int64_t tgt = sqlite3_column_int64(st, 1);
-		if (src == tgt)
-			continue; // skip self-loops
-
-		if (src != current_src) {
-			// Flush previous group
-			if (current_src >= 0 && !buf.empty()) {
-				sqlite3_bind_int64(ins, 1, current_src);
-				sqlite3_bind_int64(ins, 2, pid_i);
-				sqlite3_bind_blob(
-					ins, 3, buf.data(),
-					static_cast<int>(buf.size() *
-							 sizeof(uint64_t)),
-					SQLITE_STATIC);
-				if (sqlite3_step(ins) == SQLITE_DONE)
-					count++;
-				else
-					fprintf(stderr,
-						"buildCSR: forward flush"
-						" failed: %s\n",
-						sqlite3_errmsg(db_));
-				sqlite3_reset(ins);
-			}
-			current_src = src;
-			buf.clear();
-		}
-		buf.push_back(static_cast<uint64_t>(tgt));
-	}
-	// Flush last group
-	if (current_src >= 0 && !buf.empty()) {
-		sqlite3_bind_int64(ins, 1, current_src);
-		sqlite3_bind_int64(ins, 2, pid_i);
-		sqlite3_bind_blob(
-			ins, 3, buf.data(),
-			static_cast<int>(buf.size() * sizeof(uint64_t)),
-			SQLITE_STATIC);
-		if (sqlite3_step(ins) == SQLITE_DONE)
-			count++;
-		else
-			fprintf(stderr,
-				"buildCSR: final forward flush failed: %s\n",
-				sqlite3_errmsg(db_));
-		sqlite3_reset(ins);
-	}
-
-	sqlite3_finalize(ins);
-	sqlite3_finalize(st);
-	fprintf(stderr, "buildCSR: %lld forward groups from relation(type=1)\n",
-		(long long)count);
-
-	// ── Build reverse adjacency (adjacency_rev) ──
-	// Mirror of forward adjacency: group by target_id (callee) instead
-	// of source_id (caller). Enables O(1) getCallerIds() lookups.
-	exec(std::string("DELETE FROM adjacency_rev WHERE project_id=" +
-			 std::to_string(project_id))
-		     .c_str());
-
-	std::string rev_sql = "SELECT target_id, source_id "
-			      "FROM relation "
-			      "WHERE type=1 AND project_id=" +
-			      std::to_string(project_id) +
-			      " ORDER BY target_id";
-	sqlite3_stmt *rev_st = nullptr;
-	if (sqlite3_prepare_v2(db_, rev_sql.c_str(), -1, &rev_st, nullptr) !=
-	    SQLITE_OK) {
-		exec("ROLLBACK TO SAVEPOINT buildCSR");
-		exec("RELEASE SAVEPOINT buildCSR");
-		return false;
-	}
-
-	// v0.6 (perf): rows for this project were just DELETEd above, so no PK
-	// conflicts can exist — plain INSERT equals INSERT OR REPLACE here.
-	const char *rev_ins_sql =
-		"INSERT INTO adjacency_rev (tgt_id, project_id, "
-		"src_blob) VALUES (?, ?, ?)";
-	sqlite3_stmt *rev_ins = nullptr;
-	if (sqlite3_prepare_v2(db_, rev_ins_sql, -1, &rev_ins, nullptr) !=
-	    SQLITE_OK) {
-		sqlite3_finalize(rev_st);
-		exec("ROLLBACK TO SAVEPOINT buildCSR");
-		exec("RELEASE SAVEPOINT buildCSR");
-		return false;
-	}
-
-	int64_t current_tgt = -1;
-	std::vector<uint64_t> rev_buf;
-	rev_buf.reserve(1024);
-	int64_t rev_count = 0;
-
-	while (sqlite3_step(rev_st) == SQLITE_ROW) {
-		int64_t tgt = sqlite3_column_int64(rev_st, 0);
-		int64_t src = sqlite3_column_int64(rev_st, 1);
-		if (src == tgt)
-			continue;
-
-		if (tgt != current_tgt) {
-			if (current_tgt >= 0 && !rev_buf.empty()) {
-				sqlite3_bind_int64(rev_ins, 1, current_tgt);
-				sqlite3_bind_int64(rev_ins, 2, pid_i);
-				sqlite3_bind_blob(
-					rev_ins, 3, rev_buf.data(),
-					static_cast<int>(rev_buf.size() *
-							 sizeof(uint64_t)),
-					SQLITE_STATIC);
-				if (sqlite3_step(rev_ins) == SQLITE_DONE)
-					rev_count++;
-				else
-					fprintf(stderr,
-						"buildCSR: rev flush"
-						" failed: %s\n",
-						sqlite3_errmsg(db_));
-				sqlite3_reset(rev_ins);
-			}
-			current_tgt = tgt;
-			rev_buf.clear();
-		}
-		rev_buf.push_back(static_cast<uint64_t>(src));
-	}
-	if (current_tgt >= 0 && !rev_buf.empty()) {
-		sqlite3_bind_int64(rev_ins, 1, current_tgt);
-		sqlite3_bind_int64(rev_ins, 2, pid_i);
-		sqlite3_bind_blob(
-			rev_ins, 3, rev_buf.data(),
-			static_cast<int>(rev_buf.size() * sizeof(uint64_t)),
-			SQLITE_STATIC);
-		if (sqlite3_step(rev_ins) == SQLITE_DONE)
-			rev_count++;
-		else
-			fprintf(stderr,
-				"buildCSR: final rev flush failed: %s\n",
-				sqlite3_errmsg(db_));
-		sqlite3_reset(rev_ins);
-	}
-
-	sqlite3_finalize(rev_ins);
-	sqlite3_finalize(rev_st);
-	fprintf(stderr, "buildCSR: %lld reverse groups from relation(type=1)\n",
-		(long long)rev_count);
-	// Release the atomic rebuild savepoint; a failure here leaves the
-	// savepoint open, so roll back explicitly rather than leaking a
-	// pending savepoint into the caller's transaction.
-	if (!exec("RELEASE SAVEPOINT buildCSR")) {
+	if (!exec("RELEASE SAVEPOINT buildGraph")) {
 		fprintf(stderr,
-			"[module=store, method=buildCSR] RELEASE SAVEPOINT "
-			"buildCSR failed: %s\n",
-			sqlite3_errmsg(db_));
-		exec("ROLLBACK TO SAVEPOINT buildCSR");
-		exec("RELEASE SAVEPOINT buildCSR");
+			"buildGraph: RELEASE SAVEPOINT failed: %s "
+			"[module=store, method=buildGraph]\n",
+			error().c_str());
+		exec("ROLLBACK TO SAVEPOINT buildGraph");
 		return false;
 	}
 	return true;
-}
-
-/// Decode a packed uint64_t BLOB into a vector of node IDs.
-///
-/// The CSR adjacency tables store neighbor IDs as a packed array of
-/// uint64_t. The BLOB length must be an exact multiple of sizeof(uint64_t);
-/// a non-multiple indicates corruption or an externally-written row. The
-/// trailing partial element is dropped and a diagnostic is emitted so the
-/// caller is never silently handed a truncated neighbor list.
-///
-/// @param blob   Pointer to the BLOB bytes (may be null when length is 0).
-/// @param bytes  Length of the BLOB in bytes.
-/// @return The decoded neighbor IDs.
-static std::vector<uint64_t> decodeAdjacencyBlob(const void *blob, int bytes)
-{
-	constexpr int kUint64Bytes = static_cast<int>(sizeof(uint64_t));
-	if (bytes % kUint64Bytes != 0) {
-		fprintf(stderr,
-			"[module=store, method=decodeAdjacencyBlob] BLOB "
-			"length %d is not a multiple of %d — trailing %d "
-			"byte(s) dropped\n",
-			bytes, kUint64Bytes, bytes % kUint64Bytes);
-	}
-	const int n = bytes / kUint64Bytes;
-	std::vector<uint64_t> ids;
-	ids.reserve(static_cast<size_t>(n));
-	if (n > 0) {
-		const auto *arr = static_cast<const uint64_t *>(blob);
-		for (int i = 0; i < n; i++)
-			ids.push_back(static_cast<uint64_t>(arr[i]));
-	}
-	return ids;
-}
-
-std::vector<uint64_t> GraphStore::getCalleeIds(uint64_t node_id)
-{
-	std::vector<uint64_t> ids;
-	const char *sql = "SELECT tgt_blob FROM adjacency WHERE src_id=?";
-	sqlite3_stmt *st = nullptr;
-	if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK)
-		return ids;
-	sqlite3_bind_int64(st, 1, static_cast<int64_t>(node_id));
-	if (sqlite3_step(st) == SQLITE_ROW) {
-		ids = decodeAdjacencyBlob(sqlite3_column_blob(st, 0),
-					  sqlite3_column_bytes(st, 0));
-	}
-	sqlite3_finalize(st);
-	return ids;
-}
-
-std::vector<uint64_t> GraphStore::getCallerIds(uint64_t node_id)
-{
-	// O(1) reverse adjacency lookup via adjacency_rev table.
-	// Falls back to O(n) full-scan if adjacency_rev is not populated
-	// (e.g., buildCSR was called before the reverse adjacency feature).
-	std::vector<uint64_t> ids;
-	const char *sql = "SELECT src_blob FROM adjacency_rev WHERE tgt_id=?";
-	sqlite3_stmt *st = nullptr;
-	if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK)
-		return ids;
-	sqlite3_bind_int64(st, 1, static_cast<int64_t>(node_id));
-	if (sqlite3_step(st) == SQLITE_ROW) {
-		ids = decodeAdjacencyBlob(sqlite3_column_blob(st, 0),
-					  sqlite3_column_bytes(st, 0));
-		sqlite3_finalize(st);
-		return ids;
-	}
-	sqlite3_finalize(st);
-
-	// Fallback: O(n) full-scan of forward adjacency (legacy path)
-	const char *fallback_sql =
-		"SELECT src_id, tgt_blob FROM adjacency WHERE project_id IN "
-		"(SELECT project_id FROM entity WHERE id=?)";
-	if (sqlite3_prepare_v2(db_, fallback_sql, -1, &st, nullptr) !=
-	    SQLITE_OK)
-		return ids;
-	sqlite3_bind_int64(st, 1, static_cast<int64_t>(node_id));
-	while (sqlite3_step(st) == SQLITE_ROW) {
-		int64_t src = sqlite3_column_int64(st, 0);
-		auto src_ids = decodeAdjacencyBlob(sqlite3_column_blob(st, 1),
-						   sqlite3_column_bytes(st, 1));
-		uint64_t target = node_id;
-		for (uint64_t id : src_ids) {
-			if (id == target) {
-				ids.push_back(static_cast<uint64_t>(src));
-				break;
-			}
-		}
-	}
-	sqlite3_finalize(st);
-	return ids;
 }
 
 // ── BulkPragmaGuard: RAII bulk-load PRAGMA tuning ───────────────

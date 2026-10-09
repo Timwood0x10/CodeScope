@@ -6,7 +6,7 @@
 //! tool (which is designed for project-overview UI display, not for
 //! dispatching workers).
 //!
-//! See `builtin-scheduler-design.md` §4.2 for the rationale. The skip
+//! The skip
 //! rules mirror the C++ `FilterPolicy::shouldSkipEntry` so the file list
 //! we emit matches what the worker will actually index.
 
@@ -14,138 +14,72 @@ use serde_json::{Value, json};
 use std::path::Path;
 use walkdir::WalkDir;
 
-/// Built-in skip dirs matching `FilterPolicy::normal_skip_dirs_`.
-/// Applied to EVERY path component (any depth) so nested `target/` and
-/// `node_modules/` directories are pruned during the walk.
-fn is_skip_dir(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    matches!(
-        lower.as_str(),
-        ".git"
-            | ".svn"
-            | ".hg"
-            | ".bzr"
-            | "node_modules"
-            | ".venv"
-            | "venv"
-            | "env"
-            | ".env"
-            | "__pycache__"
-            | ".pytest_cache"
-            | ".mypy_cache"
-            | ".cache"
-            | ".codescope"
-            | "target"
-            | "build"
-            | "dist"
-            | ".next"
-            | ".turbo"
-            | ".direnv"
-            | "vendor"
-            | "third_party"
-            | "third-party"
-            | ".bundle"
-            | ".gem"
-            | "go_pkg"
-            | "pkg"
-    )
+/// Whether the indexer would skip this path.
+///
+/// Delegates to the engine's `FilterPolicy` — the single authority — instead
+/// of keeping a copy of the skip rules. The copy is what let two defects
+/// through in one review: a `.gitignore`d top-level directory was still
+/// reported as a module (the copy read no ignore file at all, so the scheduler
+/// dispatched a worker that indexed zero files), and the extension list below
+/// advertised `.zig` while the engine has no Zig support. `root` is the
+/// project root `rel_path` is relative to, which is the shape the indexer
+/// passes, so project-anchored rules can match.
+fn skipped_by_engine(root: &str, rel_path: &str, is_dir: bool) -> bool {
+    crate::ffi::path_is_skipped(root, rel_path, is_dir)
 }
 
-/// Top-only skip dirs matching `FilterPolicy::top_only_skip_dirs_`.
-/// Source-bearing dirs that are rarely the focus of analysis
-/// (test/, docs/, bench/, examples/, ...). Matched ONLY against the
-/// first path component (top-level dirs), so Java packages like
-/// `org/springframework/samples/petclinic` are NOT falsely skipped.
-fn is_top_only_skip_dir(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    matches!(
-        lower.as_str(),
-        "test"
-            | "tests"
-            | "docs"
-            | "doc"
-            | "documentation"
-            | "examples"
-            | "example"
-            | "samples"
-            | "sample"
-            | "scripts"
-            | "hack"
-            | "migrations"
-            | "seeds"
-            | "e2e"
-            | "integration"
-            | "locale"
-            | "locales"
-            | "i18n"
-            | "l10n"
-            | "assets"
-            | "static"
-            | "public"
-            | "media"
-            | "external"
-            | "vendored"
-            | "bench"
-            | "benchmarks"
-    )
+/// Path of `entry_path` relative to `root`, the form both the indexer and
+/// `skipped_by_engine` expect.
+fn rel_to(root: &Path, entry_path: &Path) -> String {
+    entry_path
+        .strip_prefix(root)
+        .unwrap_or(entry_path)
+        .to_string_lossy()
+        .to_string()
 }
 
-/// Skip hidden dirs/files (those starting with `.`).
-fn is_skip_prefix(name: &str) -> bool {
-    name.starts_with('.')
-}
-
-/// Countable source extensions matching `FilterPolicy::isSourceFile`.
-/// Kept in sync with the C++ list so the scheduler's file count agrees
-/// with what the worker will actually parse.
+/// Countable source files, decided by the engine.
+///
+/// Delegates to `FilterPolicy::detectLanguage`, so the server cannot count a
+/// language the indexer cannot parse. The former hand-written list contained
+/// `.zig`, `.rb`, `.kt`, `.cs`, `.vue` and others with no engine support; on a
+/// 373-file Zig project the count said "source files" and the index contained
+/// zero entities for them.
 fn is_source_file(name: &str) -> bool {
-    let dot = match name.rfind('.') {
-        Some(d) => d,
-        None => return false,
+    crate::ffi::is_indexable_source(name)
+}
+
+/// Module name for the files that sit DIRECTLY in the target directory.
+///
+/// They belong to no top-level directory, so a walk that only looks at
+/// subdirectories drops them: a flat project (all sources in one directory)
+/// reported `"modules":[]` and indexed nothing at all, and a project mixing
+/// root files with subdirectories silently lost the root files. The scheduler
+/// roots this module's worker at the project directory and excludes the
+/// subdirectories, so the root files are indexed exactly once.
+pub const ROOT_MODULE_NAME: &str = ".";
+
+/// Absolute paths of the source files that sit directly in `dir_path`,
+/// sorted. Mirrors the shape of `discover_files` for one directory level and
+/// is the companion to ROOT_MODULE_NAME.
+pub fn root_source_files(dir_path: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let entries = match std::fs::read_dir(Path::new(dir_path)) {
+        Ok(e) => e,
+        Err(_) => return out,
     };
-    let ext = name[dot..].to_lowercase();
-    matches!(
-        ext.as_str(),
-        ".c" | ".h"
-            | ".cpp"
-            | ".hpp"
-            | ".cc"
-            | ".cxx"
-            | ".hh"
-            | ".hxx"
-            | ".rs"
-            | ".go"
-            | ".py"
-            | ".java"
-            | ".kt"
-            | ".kts"
-            | ".js"
-            | ".jsx"
-            | ".ts"
-            | ".tsx"
-            | ".swift"
-            | ".rb"
-            | ".php"
-            | ".cs"
-            | ".fs"
-            | ".scala"
-            | ".clj"
-            | ".cljs"
-            | ".ex"
-            | ".exs"
-            | ".erl"
-            | ".hrl"
-            | ".vue"
-            | ".svelte"
-            | ".mjs"
-            | ".cjs"
-            | ".mts"
-            | ".cts"
-            | ".d.ts"
-            | ".wasm"
-            | ".zig"
-            | ".mojo"
-    )
+    for entry in entries.flatten() {
+        if entry.path().is_dir() {
+            continue;
+        }
+        let fname = entry.file_name().to_string_lossy().to_string();
+        if skipped_by_engine(dir_path, &fname, false) || !is_source_file(&fname) {
+            continue;
+        }
+        out.push(entry.path().to_string_lossy().to_string());
+    }
+    out.sort();
+    out
 }
 
 /// Discover top-level modules and their source-file counts.
@@ -161,7 +95,7 @@ fn is_source_file(name: &str) -> bool {
 ///
 /// Skip rules mirror `FilterPolicy` so the count matches what the worker
 /// will actually parse (modulo nested `test/`/`docs/` dirs which the
-/// worker additionally skips — see `builtin-scheduler-design.md` §1.2).
+/// worker additionally skips).
 /// The count is therefore an upper bound; the worker reports the true
 /// `discovery.candidate_files` in its stdout JSON, which the scheduler
 /// uses for the final summary (so reported numbers are always accurate).
@@ -197,7 +131,7 @@ pub fn discover_modules(dir_path: &str) -> String {
         if !path.is_dir() {
             continue;
         }
-        if is_skip_dir(&name_str) || is_top_only_skip_dir(&name_str) || is_skip_prefix(&name_str) {
+        if skipped_by_engine(dir_path, &name_str, true) {
             continue;
         }
 
@@ -210,12 +144,11 @@ pub fn discover_modules(dir_path: &str) -> String {
         // uses this as the worker-allocation weight.
         let mut bytes: u64 = 0;
         let walk = WalkDir::new(&path).into_iter().filter_entry(|e| {
-            let fname = e.file_name().to_string_lossy();
             if e.depth() == 0 {
                 return true;
             }
             if e.file_type().is_dir() {
-                !is_skip_dir(&fname) && !is_skip_prefix(&fname)
+                !skipped_by_engine(dir_path, &rel_to(Path::new(dir_path), e.path()), true)
             } else {
                 true
             }
@@ -223,7 +156,13 @@ pub fn discover_modules(dir_path: &str) -> String {
         for entry in walk.flatten() {
             if entry.file_type().is_file() {
                 let fname = entry.file_name().to_string_lossy();
-                if is_source_file(&fname) {
+                if is_source_file(&fname)
+                    && !skipped_by_engine(
+                        dir_path,
+                        &rel_to(Path::new(dir_path), entry.path()),
+                        false,
+                    )
+                {
                     count += 1;
                     if let Ok(meta) = entry.metadata() {
                         bytes += meta.len();
@@ -235,6 +174,26 @@ pub fn discover_modules(dir_path: &str) -> String {
             modules.push((name_str, count, bytes));
             total_files += count;
         }
+    }
+
+    // Files directly in the target directory. The loop above only ever
+    // descends into subdirectories, so these were counted nowhere: a flat
+    // project produced an empty module list and indexed nothing, and a project
+    // with both root files and subdirectories lost the root files. They become
+    // the root module, whose worker restricts itself to this level.
+    let root_files = root_source_files(dir_path);
+    if !root_files.is_empty() {
+        let root_bytes: u64 = root_files
+            .iter()
+            .filter_map(|p| std::fs::metadata(p).ok())
+            .map(|m| m.len())
+            .sum();
+        total_files += root_files.len() as u64;
+        modules.push((
+            ROOT_MODULE_NAME.to_string(),
+            root_files.len() as u64,
+            root_bytes,
+        ));
     }
 
     // Sort by file count descending so the scheduler dispatches the
@@ -281,26 +240,16 @@ pub fn discover_files(dir_path: &str) -> String {
     }
 
     let walk = WalkDir::new(root).into_iter().filter_entry(|e| {
-        let fname = e.file_name().to_string_lossy();
         if e.depth() == 0 {
             return true;
         }
         if e.file_type().is_dir() {
-            // Apply both any-depth skip dirs and top-only skip dirs at
-            // depth 1. The C++ FilterPolicy checks `top_only_skip_dirs_`
-            // against the first 3 path components — we approximate by
-            // checking depth==1 here. Deeper nested test/docs dirs are
-            // also skipped to match worker behaviour (see design §1.2).
-            if is_skip_dir(&fname) || is_skip_prefix(&fname) {
-                return false;
-            }
-            if e.depth() == 1 && is_top_only_skip_dir(&fname) {
-                return false;
-            }
-            true
-        } else {
-            true
+            // The engine decides, so the depth-3 `top_only_skip_dirs_` rule is
+            // applied exactly as the worker applies it rather than being
+            // approximated at depth 1 as it used to be here.
+            return !skipped_by_engine(dir_path, &rel_to(root, e.path()), true);
         }
+        true
     });
 
     let mut files: Vec<String> = Vec::new();
@@ -309,7 +258,9 @@ pub fn discover_files(dir_path: &str) -> String {
             continue;
         }
         let fname = entry.file_name().to_string_lossy();
-        if !is_source_file(&fname) {
+        if !is_source_file(&fname)
+            || skipped_by_engine(dir_path, &rel_to(root, entry.path()), false)
+        {
             continue;
         }
         // Use absolute path so the worker can resolve regardless of cwd.
@@ -340,33 +291,153 @@ mod tests {
     }
 
     #[test]
-    fn test_is_skip_dir_matches_known_vendors() {
-        assert!(is_skip_dir("node_modules"));
-        assert!(is_skip_dir("target"));
-        assert!(is_skip_dir("vendor"));
-        assert!(is_skip_dir("third_party"));
-        assert!(!is_skip_dir("src"));
-        assert!(!is_skip_dir("engine"));
+    fn test_skipped_by_engine_matches_known_vendors() {
+        // These assertions used to run against a Rust copy of the C++ skip
+        // lists. They now run against the engine's FilterPolicy, i.e. the
+        // implementation the indexer itself uses — which is the point of the
+        // delegation: there is no second list left to drift.
+        let root = make_tmpdir("skip_vendors");
+        let root = root.to_str().unwrap();
+        for vendor in ["node_modules", "target", "vendor", "third_party"] {
+            assert!(skipped_by_engine(root, vendor, true), "{vendor} must skip");
+        }
+        assert!(!skipped_by_engine(root, "src", true));
+        assert!(!skipped_by_engine(root, "engine", true));
+        // The depth-gated names are applied at the depth the indexer applies
+        // them (first three components), not approximated at depth 1.
+        assert!(skipped_by_engine(root, "test", true));
+        assert!(skipped_by_engine(root, "docs", true));
+        assert!(!skipped_by_engine(root, "src", true));
+        assert!(!skipped_by_engine(root, "compiler", true));
     }
 
     #[test]
-    fn test_is_top_only_skip_dir_matches_test_docs() {
-        assert!(is_top_only_skip_dir("test"));
-        assert!(is_top_only_skip_dir("docs"));
-        assert!(is_top_only_skip_dir("bench"));
-        assert!(!is_top_only_skip_dir("src"));
-        assert!(!is_top_only_skip_dir("compiler"));
+    fn test_discover_modules_reads_a_maven_layout() {
+        // spring-petclinic's shape: the whole source tree lives under
+        // src/main/java/org/.../samples/petclinic/. `samples` is a Java package
+        // component, not a docs folder, but the skip names are only relaxed to
+        // a top-only check for JAVA — and the policy behind
+        // engine_path_is_skipped was built with no language context, so it took
+        // the any-depth branch, reported `"modules":[]` and made
+        // `index-parallel` index nothing while claiming "no source modules
+        // found", whereas `codescope discover` counted every file. The policy
+        // now learns its language the same way the indexer's own walk does.
+        let root = make_tmpdir("maven_layout");
+        let src = root.join("src/main/java/org/acme/samples/petclinic");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("Owner.java"), "class Owner {}\n").unwrap();
+
+        let json = discover_modules(root.to_str().unwrap());
+        let v: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["ok"], true, "{json}");
+        assert_eq!(v["total_files"], 1, "{json}");
+        let modules = v["modules"].as_array().unwrap();
+        assert_eq!(modules.len(), 1, "{json}");
+        assert_eq!(modules[0]["name"], "src", "{json}");
+
+        // ... while a real Java test source stays excluded: the carve-out
+        // relaxes the names only beyond the first three path components.
+        let test_src = root.join("src/test/java");
+        fs::create_dir_all(&test_src).unwrap();
+        fs::write(test_src.join("OwnerTest.java"), "class OwnerTest {}\n").unwrap();
+        let json = discover_modules(root.to_str().unwrap());
+        let v: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["total_files"], 1, "src/test must stay skipped: {json}");
     }
 
     #[test]
     fn test_is_source_file_recognises_extensions() {
         assert!(is_source_file("foo.rs"));
         assert!(is_source_file("bar.cpp"));
+        // "foo.d.ts" resolves through the ".ts" entry: the extension is
+        // everything after the LAST dot. The ".d.ts" allow-list entry that
+        // used to sit in the list could never fire and has been removed —
+        // this assertion is what keeps the behaviour identical.
+        assert!(is_source_file("types.d.ts"));
         assert!(is_source_file("baz.go"));
         assert!(is_source_file("a.py"));
         assert!(!is_source_file("readme.md"));
         assert!(!is_source_file("Makefile"));
         assert!(!is_source_file("noext"));
+        // Counted only if the ENGINE can parse it. The list used to be
+        // hand-written and counted `.zig` (362 files in OmniScope) although
+        // Zig is deliberately unsupported — no mapping, no translator, and
+        // none planned — so the count advertised files the index could never
+        // contain. Ruby, which the same list contains, IS recognized: the
+        // point is to follow the engine, not to shorten a list.
+        assert!(!is_source_file("main.zig"), "no Zig support in the engine");
+        assert!(
+            is_source_file("script.rb"),
+            "the engine does recognize Ruby"
+        );
+    }
+
+    #[test]
+    fn test_gitignored_top_level_dir_is_not_a_module() {
+        // Drift that the delegation removes: the module list was decided by a
+        // Rust copy of the skip rules that read no ignore file, so a
+        // `.gitignore`d top-level directory was reported as a module and the
+        // scheduler dispatched a worker for it that indexed zero files.
+        let dir = make_tmpdir("discover_modules_gitignore");
+        fs::write(dir.join(".gitignore"), "**/build-*/\n").unwrap();
+        fs::create_dir_all(dir.join("build-x/src")).unwrap();
+        fs::write(dir.join("build-x/src/main.rs"), "fn main() {}").unwrap();
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("src/lib.rs"), "pub fn f() {}").unwrap();
+
+        let v: Value = serde_json::from_str(&discover_modules(dir.to_str().unwrap())).unwrap();
+        assert_eq!(v["total_modules"], 1, "only src/ is a module: {v}");
+        assert_eq!(v["modules"][0]["name"], "src");
+
+        let files: Value = serde_json::from_str(&discover_files(dir.to_str().unwrap())).unwrap();
+        let list = files["files"].as_array().unwrap();
+        assert_eq!(list.len(), 1, "only src/lib.rs is a candidate: {list:?}");
+    }
+
+    #[test]
+    fn test_discover_modules_counts_root_files() {
+        // Regression (#22): files directly in the target directory were counted
+        // nowhere. A flat project reported no modules at all and indexed
+        // nothing; a project mixing root files with subdirectories lost the
+        // root files.
+        let flat = make_tmpdir("discover_modules_flat");
+        fs::write(flat.join("a.go"), "package main").unwrap();
+        let v: Value = serde_json::from_str(&discover_modules(flat.to_str().unwrap())).unwrap();
+        assert_eq!(v["total_modules"], 1, "a flat project has one module");
+        assert_eq!(v["modules"][0]["name"], ROOT_MODULE_NAME);
+        assert_eq!(v["modules"][0]["files"], 1);
+        assert_eq!(v["total_files"], 1);
+
+        let mixed = make_tmpdir("discover_modules_mixed");
+        fs::write(mixed.join("top.go"), "package main").unwrap();
+        fs::create_dir_all(mixed.join("sub")).unwrap();
+        fs::write(mixed.join("sub/b.go"), "package sub").unwrap();
+        let v: Value = serde_json::from_str(&discover_modules(mixed.to_str().unwrap())).unwrap();
+        assert_eq!(v["total_modules"], 2, "root files + sub/ = two modules");
+        assert_eq!(
+            v["total_files"], 2,
+            "the root file must be counted as well as sub/b.go"
+        );
+        let names: Vec<&str> = v["modules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&ROOT_MODULE_NAME));
+        assert!(names.contains(&"sub"));
+    }
+
+    #[test]
+    fn test_root_source_files_are_direct_children_only() {
+        let dir = make_tmpdir("root_source_files");
+        fs::write(dir.join("a.go"), "package main").unwrap();
+        fs::write(dir.join("notes.md"), "not source").unwrap();
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("sub/b.go"), "package sub").unwrap();
+        let files = root_source_files(dir.to_str().unwrap());
+        assert_eq!(files.len(), 1);
+        assert!(files[0].ends_with("a.go"));
     }
 
     #[test]

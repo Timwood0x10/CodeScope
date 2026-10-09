@@ -1,6 +1,5 @@
 # CodeScope 拆解 (二)：Worker 子进程隔离 — 为什么索引必须跑在子进程里
 
-> *"The only way to make a C++ program crash-proof is to run it in a separate process."*
 > 让 C++ 程序不崩溃的唯一方法，是把它跑在单独的进程里。
 
 ## 从 OOM 崩溃说起

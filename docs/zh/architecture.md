@@ -1,7 +1,7 @@
 # CodeScope 架构文档
 
-**版本**：0.2.1  
-**更新日期**：2026-07-06
+**版本**：v0.2.7  
+**更新日期**：2026-10-01
 
 ---
 
@@ -195,7 +195,7 @@ sequenceDiagram
 
     Client->>Server: tools/call index_project
     Server->>Worker: spawn subprocess
-    Worker->>DB: 写入 semantic_records + graph_nodes
+    Worker->>DB: 写入 semantic_records + entity + relation
     Worker-->>Server: stdout JSON result
     Server->>Server: RUNTIME.spawn(build_fts)
     Server-->>Client: {"ok":true, "files_indexed":N}
@@ -218,7 +218,7 @@ sequenceDiagram
 | `search`（graph fallback） | **<10 ms** | LIKE 降级搜索 |
 | `get_module_tree` | **<1 ms** | 轻量查询 |
 | `get_entry_points` | **<1 ms** | 索引查询 |
-| `get_communities` | ❌ 引擎有实现，未接 MCP — 改用 `connected_components` | — |
+| `get_communities` | ✅ 已接入 — 基于 CALLS 边做确定性标签传播；默认只返回摘要（`max_communities` / `include_members` / `max_members`） | — |
 | `get_index_progress` | **<1 ms** | 原子读全局变量 |
 
 ---

@@ -45,6 +45,7 @@
 #include <sqlite3.h>
 #include <string>
 #include <unistd.h>
+#include "test_engine_handle.h"
 
 // Tiny test helper: abort with a labeled message. Centralized so every
 // failure prints the layer that broke, which is the whole point of a
@@ -78,10 +79,9 @@ static int64_t scalarInt(sqlite3 *db, const std::string &sql)
 // are kind 0 (free function) or 1 (method). Returns 0 if not found.
 static int64_t findEntityId(sqlite3 *db, uint64_t pid, const char *name)
 {
-	std::string sql =
-		"SELECT id FROM entity WHERE project_id=" +
-		std::to_string(pid) + " AND name='" + name +
-		"' AND kind IN (0,1) LIMIT 1";
+	std::string sql = "SELECT id FROM entity WHERE project_id=" +
+			  std::to_string(pid) + " AND name='" + name +
+			  "' AND kind IN (0,1) LIMIT 1";
 	return scalarInt(db, sql);
 }
 
@@ -127,14 +127,16 @@ int main()
 	char db_path[] = "/tmp/test_step11_go_smoke.db";
 	unlink(db_path);
 
-	if (engine_init(db_path) != 0)
+	g_engine = engine_create(db_path);
+	if (!g_engine)
 		fail("engine", "engine_init");
 
-	uint64_t pid = engine_create_project(proj_dir, "step11-go-smoke");
+	uint64_t pid =
+		engine_create_project(g_engine, proj_dir, "step11-go-smoke");
 	if (pid == 0)
 		fail("engine", "engine_create_project");
 
-	char *idx = engine_index_project(pid, proj_dir, nullptr);
+	char *idx = engine_index_project(g_engine, pid, proj_dir, nullptr);
 	if (!idx || !strstr(idx, "\"ok\":true")) {
 		fail("engine", "index_project did not return ok");
 	}
@@ -165,12 +167,12 @@ int main()
 	// engine_find_symbol must locate the callee, and engine_search_code
 	// must hit the call text. If search misses, the discovery layer is
 	// broken and no downstream query can recover.
-	char *sym = engine_find_symbol(pid, "multiply");
+	char *sym = engine_find_symbol(g_engine, pid, "multiply");
 	if (!sym || !strstr(sym, "multiply"))
 		fail("L1/search", "engine_find_symbol did not return multiply");
 	engine_free_string(sym);
 
-	char *code = engine_search_code(pid, "multiply", 10);
+	char *code = engine_search_code(g_engine, pid, "multiply", 10);
 	// FTS (code search) depends on the async FTS build which may not
 	// have completed yet. This is a secondary check — the critical
 	// layers are L2-L5 below (reference, relation, SQLite, API).
@@ -189,8 +191,9 @@ int main()
 	// callee bare name.
 	std::string ref_sql =
 		"SELECT COUNT(*) FROM reference WHERE project_id=" +
-		std::to_string(pid) + " AND caller_id=" +
-		std::to_string(compute_id) + " AND name='multiply'";
+		std::to_string(pid) +
+		" AND caller_id=" + std::to_string(compute_id) +
+		" AND name='multiply'";
 	int64_t ref_count = scalarInt(db, ref_sql);
 	if (ref_count <= 0)
 		fail("L2/reference",
@@ -202,9 +205,9 @@ int main()
 	// compute to multiply. This is the canonical call-graph edge.
 	std::string rel_sql =
 		"SELECT COUNT(*) FROM relation WHERE project_id=" +
-		std::to_string(pid) + " AND type=1 AND source_id=" +
-		std::to_string(compute_id) + " AND target_id=" +
-		std::to_string(multiply_id);
+		std::to_string(pid) +
+		" AND type=1 AND source_id=" + std::to_string(compute_id) +
+		" AND target_id=" + std::to_string(multiply_id);
 	int64_t rel_count = scalarInt(db, rel_sql);
 	if (rel_count <= 0)
 		fail("L3/relation",
@@ -216,7 +219,7 @@ int main()
 	// explicit edge_type=1 filter (Step 1). If the graph compiler failed
 	// to compile the relation into SQLite, this returns empty even
 	// though L3 passed — exactly the A13 "no fallback" gap.
-	char *callers = engine_get_callers(pid, "multiply", nullptr);
+	char *callers = engine_get_callers(g_engine, pid, "multiply", nullptr);
 	if (!callers || !strstr(callers, "compute"))
 		fail("L4",
 		     "engine_get_callers(multiply) did not return compute — "
@@ -226,8 +229,8 @@ int main()
 	// ── L5: adaptive API ─────────────────────────────────────────
 	// engine_find_callers_adaptive is the MCP-facing entry point. It
 	// must agree with the direct SQLite query.
-	char *adaptive =
-		engine_find_callers_adaptive(pid, "multiply", nullptr);
+	char *adaptive = engine_find_callers_adaptive(g_engine, pid, "multiply",
+						      nullptr);
 	if (!adaptive || !strstr(adaptive, "compute"))
 		fail("L5/api",
 		     "engine_find_callers_adaptive(multiply) did not return "
@@ -240,29 +243,28 @@ int main()
 	// caller set is non-empty and contains multiply; contamination is
 	// additionally guarded by the typed_relation_query counter-example
 	// test (this smoke test focuses on the positive control).
-	char *add_callers = engine_get_callers(pid, "add", nullptr);
+	char *add_callers = engine_get_callers(g_engine, pid, "add", nullptr);
 	if (!add_callers || !strstr(add_callers, "multiply"))
-		fail("L4",
-		     "engine_get_callers(add) did not return multiply");
+		fail("L4", "engine_get_callers(add) did not return multiply");
 	engine_free_string(add_callers);
 
 	// ── Step 1 invariant: no duplicate typed relations ───────────
 	// The UNIQUE(project_id, source_id, target_id, type) index must
 	// guarantee zero duplicate typed edges.
-	int64_t dup_count = scalarInt(
-		db,
-		"SELECT COUNT(*) FROM relation r1 WHERE EXISTS ("
-		"  SELECT 1 FROM relation r2 WHERE"
-		"  r2.project_id=r1.project_id AND"
-		"  r2.source_id=r1.source_id AND"
-		"  r2.target_id=r1.target_id AND"
-		"  r2.type=r1.type AND r2.id<r1.id)");
+	int64_t dup_count =
+		scalarInt(db, "SELECT COUNT(*) FROM relation r1 WHERE EXISTS ("
+			      "  SELECT 1 FROM relation r2 WHERE"
+			      "  r2.project_id=r1.project_id AND"
+			      "  r2.source_id=r1.source_id AND"
+			      "  r2.target_id=r1.target_id AND"
+			      "  r2.type=r1.type AND r2.id<r1.id)");
 	if (dup_count != 0)
 		fail("dedup", "duplicate typed relations exist — unique index "
 			      "not enforced");
 
 	sqlite3_close(db);
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 
 	// ── Summary ──────────────────────────────────────────────────
 	printf("=== Step 11 Go positive-control smoke test PASSED ===\n");

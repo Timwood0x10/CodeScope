@@ -1,4 +1,6 @@
+#include "util/json_writer.h"
 #include "engine_internal.h"
+#include "engine_index_paths.h"
 #include "filter_policy.h"
 #include "platform_win.h"
 #include "async_knowledge.h"
@@ -31,15 +33,26 @@
 // ─── Constants ─────────────────────────────────────────────────
 // ─── Index File ────────────────────────────────────────────────
 
-char *engine_index_file(uint64_t project_id, const char *file_path)
+char *engine_index_file(engine_t handle, uint64_t project_id,
+			const char *file_path)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
 		if (!file_path || !*file_path)
 			return dupString(
 				"{\"error\":\"[module=ffi, method=engine_index_file] file_path is required\"}");
-		if (!g_store || !g_parser)
+		if (!ctx || !ctx->store || !ctx->parser)
 			return dupString(
 				"{\"ok\":false,\"error\":\"engine not initialized\"}");
+
+		// Serialize with the background enrichment thread: this path
+		// writes semantic_records + graph and then launches the builder,
+		// so it must join any running builder first (the builder holds
+		// g_store_mutex) and then hold the store guard for the writes.
+		// Order matters — guarding first would deadlock the join.
+		joinAsyncKnowledgeBuilder();
+		auto _store_guard = waitForKnowledgeBuilder();
 
 		const char *language = detectLanguage(file_path);
 		if (!language)
@@ -63,12 +76,22 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 			fsize = static_cast<int64_t>(file_stat_buf.st_size);
 		}
 
+		// Store the spelling the index already uses for this file (see
+		// engine_index_paths.h): callers pass an absolute path, while the
+		// walk-based index may have stored `./src/a.go`, and writing the
+		// absolute form verbatim gave the same file a second identity.
+		// `file_path` stays the real path for the file-system work below (the
+		// LSP block opens it).
+		const std::string stored_path = indexSpellingFor(
+			ctx->store.get(), project_id, file_path);
+		const char *store_path = stored_path.c_str();
+
 		// Parse
-		TSTree *tree = g_parser->parse(file_path, source.c_str(),
-					       language, source.size());
+		TSTree *tree = ctx->parser->parse(store_path, source.c_str(),
+						  language, source.size());
 		if (!tree) {
 			return dupString("{\"ok\":false,\"error\":\"" +
-					 g_parser->error() + "\"}");
+					 ctx->parser->error() + "\"}");
 		}
 
 		// ── Build IR: visitor (rust/java) or translator (others) ──
@@ -95,7 +118,7 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 		std::unique_ptr<ir::TranslationUnit> unit_guard;
 		auto visitor = ir::createJsVisitor(language);
 		if (visitor) {
-			su = visitor->visit(tree, source.c_str(), file_path);
+			su = visitor->visit(tree, source.c_str(), store_path);
 			su_guard.reset(su);
 		}
 		if (!su) {
@@ -107,7 +130,7 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 						 "for language\"}");
 			}
 			unit_raw = translator->translate(tree, source.c_str(),
-							 file_path);
+							 store_path);
 			unit_guard.reset(unit_raw);
 		}
 		ts_tree_delete(tree);
@@ -119,7 +142,7 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 
 		// ── Convert IR → store::FileResult (flat records) ──────
 		store::FileResult fr;
-		fr.file_path = file_path;
+		fr.file_path = store_path;
 		fr.language = language;
 		fr.mtime = mtime;
 		fr.fsize = fsize;
@@ -240,7 +263,7 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 					rec.loc.start_col = n->loc.start_col;
 					rec.loc.end_row = n->loc.end_row;
 					rec.loc.end_col = n->loc.end_col;
-					rec.file_path = file_path;
+					rec.file_path = store_path;
 					fr.records.push_back(std::move(rec));
 					for (auto *c : n->children)
 						flatten(c, my_id);
@@ -256,19 +279,20 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 		// deletes the file's old graph/entity data before rebuilding from
 		// those records. The pair is idempotent, so re-indexing a file
 		// never accumulates duplicates.
-		g_store->beginTransaction();
+		ctx->store->beginTransaction();
 		std::string hash = simpleHash(source);
-		g_store->upsertFile(project_id, file_path, language,
-				    hash.c_str());
-		if (!g_store->insertFileResultBatch(
+		ctx->store->upsertFile(project_id, store_path, language,
+				       hash.c_str());
+		if (!ctx ||
+		    !ctx->store->insertFileResultBatch(
 			    project_id, std::vector<store::FileResult>{ fr })) {
-			g_store->rollbackTransaction();
+			ctx->store->rollbackTransaction();
 			return dupString(
 				"{\"ok\":false,\"error\":\"insertFileResultBatch "
 				"failed: " +
-				g_store->error() + "\"}");
+				ctx->store->error() + "\"}");
 		}
-		g_store->commitTransaction();
+		ctx->store->commitTransaction();
 
 		// Rebuild graph for THIS file only — wrap in its own transaction
 		// exactly like engine_index_project. buildGraph uses a SAVEPOINT
@@ -276,15 +300,16 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 		// without it the SAVEPOINT leaks an implicit transaction that
 		// breaks the async knowledge builder.
 		{
-			g_store->beginTransaction();
+			ctx->store->beginTransaction();
 			std::unordered_set<std::string> changed{ std::string(
-				file_path) };
-			if (!g_store->buildGraph(project_id, true, &changed)) {
-				g_store->rollbackTransaction();
+				store_path) };
+			if (!ctx || !ctx->store->buildGraph(project_id, true,
+							    &changed)) {
+				ctx->store->rollbackTransaction();
 				return dupString(
 					"{\"ok\":false,\"error\":\"buildGraph "
 					"failed: " +
-					g_store->error() + "\"}");
+					ctx->store->error() + "\"}");
 			}
 			// Indexing now builds the full call graph (buildGraph above),
 			// so mark every node callgraph_ready. This makes trace_path and
@@ -303,9 +328,9 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 				"UPDATE graph_nodes SET callgraph_ready=1 "
 				"WHERE project_id=" +
 				std::to_string(project_id);
-			if (!g_store->exec(up.c_str())) {
-				std::string err = g_store->error();
-				g_store->rollbackTransaction();
+			if (!ctx || !ctx->store->exec(up.c_str())) {
+				std::string err = ctx->store->error();
+				ctx->store->rollbackTransaction();
 				fprintf(stderr,
 					"engine_index_file: callgraph_ready UPDATE "
 					"failed: %s "
@@ -316,25 +341,27 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 					"UPDATE failed: " +
 					err + "\"}");
 			}
-			g_store->commitTransaction();
+			ctx->store->commitTransaction();
 		}
 
 		// Async knowledge builder (modules/role/summary) — keeps the
 		// knowledge layer consistent with engine_index_project so MCP
 		// tools return complete results after a single-file re-index.
-		launchAsyncKnowledgeBuilder(project_id, true);
+		launchAsyncKnowledgeBuilder(ctx, project_id, true);
 
-		// Report the actual persisted graph node/edge counts for the file.
+		// Report the actual persisted counts for the file, from the canonical
+		// tables the pipeline writes. Counting `graph_nodes`/`graph_edges`
+		// (which only the legacy engine_index_batch path populates) reported
+		// `nodes:0, edges:0` for a file that had just been indexed.
 		auto countRows = [&](const char *table) -> int64_t {
-			// graph_edges has no file_path column; count its rows by
-			// joining through graph_nodes (which does).
+			// `relation` has no file_path column; count its rows through the
+			// source entity, which does.
 			std::string sql;
-			if (std::string(table) == "graph_edges") {
-				sql = "SELECT COUNT(*) FROM graph_edges ge "
-				      "JOIN graph_nodes gn ON ge.source_node_id "
-				      "= gn.id "
-				      "WHERE gn.project_id = ? AND "
-				      "gn.file_path = ?";
+			if (std::string(table) == "relation") {
+				sql = "SELECT COUNT(*) FROM relation r "
+				      "JOIN entity e ON e.id = r.source_id "
+				      "WHERE r.project_id = ? AND "
+				      "e.file_path = ?";
 			} else {
 				sql = std::string("SELECT COUNT(*) FROM ") +
 				      table +
@@ -342,40 +369,41 @@ char *engine_index_file(uint64_t project_id, const char *file_path)
 			}
 			sqlite3_stmt *st = nullptr;
 			int64_t n = 0;
-			if (sqlite3_prepare_v2(g_store->handle(), sql.c_str(),
-					       -1, &st, nullptr) != SQLITE_OK) {
+			if (sqlite3_prepare_v2(ctx->store->handle(),
+					       sql.c_str(), -1, &st,
+					       nullptr) != SQLITE_OK) {
 				fprintf(stderr,
 					"engine_index_file: countRows prepare "
 					"failed for %s: %s "
 					"[module=ffi, method=engine_index_file]\n",
 					table,
-					sqlite3_errmsg(g_store->handle()));
+					sqlite3_errmsg(ctx->store->handle()));
 				return 0;
 			}
 			sqlite3_bind_int64(st, 1,
 					   static_cast<int64_t>(project_id));
-			sqlite3_bind_text(st, 2, file_path, -1, SQLITE_STATIC);
+			sqlite3_bind_text(st, 2, store_path, -1, SQLITE_STATIC);
 			if (sqlite3_step(st) == SQLITE_ROW)
 				n = sqlite3_column_int64(st, 0);
 			sqlite3_finalize(st);
 			return n;
 		};
-		int64_t node_count = countRows("graph_nodes");
-		int64_t edge_count = countRows("graph_edges");
+		int64_t node_count = countRows("entity");
+		int64_t edge_count = countRows("relation");
 
 		std::ostringstream result_os;
 		result_os << "{\"ok\":true,\"nodes\":" << node_count
 			  << ",\"edges\":" << edge_count << "}";
 		return dupString(result_os.str());
 	} catch (const std::exception &e) {
-		g_store->rollbackTransaction();
+		ctx->store->rollbackTransaction();
 		return dupString(
 			std::string(
 				"{\"error\":\"[module=ffi, method=engine_index_file] ") +
 			e.what() + "\"}");
 	} catch (...) {
-		g_store->rollbackTransaction();
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_index_file] unknown exception\"}");
+		ctx->store->rollbackTransaction();
+		return dupString(util::errorEnvelope("ffi", "engine_index_file",
+						     "unknown exception"));
 	}
 }

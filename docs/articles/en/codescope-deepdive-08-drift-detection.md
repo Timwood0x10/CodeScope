@@ -1,7 +1,6 @@
 # CodeScope Deep Dive (8): Drift Detection — The Trinity of Documentation, Capability, and Architecture
 
 > *"Documentation is a love letter to your future self. Drift is the heartbreak when you realize it was never updated."*
-> 文档是写给未来自己的情书。漂移是当你发现它从未被更新时的心碎。
 
 ## The Problem: When Does Documentation Start to Diverge from Code?
 

@@ -13,6 +13,7 @@
 #include <sqlite3.h>
 #include <thread>
 #include <unistd.h>
+#include "test_engine_handle.h"
 
 static inline void check(bool cond, const char *msg)
 {
@@ -35,11 +36,8 @@ int main()
 	if (const char *env = std::getenv("CODESCOPE_ENGINE_SRC")) {
 		self_dir = env;
 	} else {
-		const char *candidates[] = {
-			"engine/src",
-			"../src",
-			"../engine/src",
-			nullptr};
+		const char *candidates[] = { "engine/src", "../src",
+					     "../engine/src", nullptr };
 		for (int i = 0; candidates[i]; ++i) {
 			if (access(candidates[i], F_OK) == 0) {
 				self_dir = candidates[i];
@@ -60,14 +58,16 @@ int main()
 	char db_path[] = "/tmp/test_self_inspect.db";
 	unlink(db_path);
 
-	int rc = engine_init(db_path);
+	g_engine = engine_create(db_path);
+	const int rc = g_engine != nullptr ? 0 : -1;
 	check(rc == 0, "engine_init");
 
-	uint64_t pid = engine_create_project("/tmp", "self-inspect");
+	uint64_t pid = engine_create_project(g_engine, "/tmp", "self-inspect");
 	check(pid > 0, "create_project");
 
 	// Index the engine/src directory (CodeScope's own C++ source)
-	char *result = engine_index_project(pid, self_dir.c_str(), nullptr);
+	char *result =
+		engine_index_project(g_engine, pid, self_dir.c_str(), nullptr);
 	check(result != nullptr, "index_project returns non-null");
 	printf("--- Self-inspect index result ---\n%s\n", result);
 	check(strstr(result, "\"ok\":true") != nullptr,
@@ -121,17 +121,17 @@ int main()
 	// An orphan is a function that neither calls nor is called.
 	// Query: functions that appear in NO call edge (neither as
 	// source nor as target).
-	const char *orphan_sql =
-		"SELECT COUNT(*) FROM graph_nodes gn "
-		"WHERE gn.project_id = ? "
-		"AND gn.node_type = 0 "
-		"AND gn.id NOT IN ("
-		"  SELECT source_node_id FROM graph_edges "
-		"  WHERE project_id = ? AND edge_type = 1) "
-		"AND gn.id NOT IN ("
-		"  SELECT target_node_id FROM graph_edges "
-		"  WHERE project_id = ? AND edge_type = 1)";
-	check(sqlite3_prepare_v2(db, orphan_sql, -1, &stmt, nullptr) == SQLITE_OK,
+	const char *orphan_sql = "SELECT COUNT(*) FROM graph_nodes gn "
+				 "WHERE gn.project_id = ? "
+				 "AND gn.node_type = 0 "
+				 "AND gn.id NOT IN ("
+				 "  SELECT source_node_id FROM graph_edges "
+				 "  WHERE project_id = ? AND edge_type = 1) "
+				 "AND gn.id NOT IN ("
+				 "  SELECT target_node_id FROM graph_edges "
+				 "  WHERE project_id = ? AND edge_type = 1)";
+	check(sqlite3_prepare_v2(db, orphan_sql, -1, &stmt, nullptr) ==
+		      SQLITE_OK,
 	      "prepare orphan count");
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(pid));
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(pid));
@@ -171,10 +171,10 @@ int main()
 
 	// ── Check 5: sample some known functions to verify edges ──
 	// engine_get_callees on a known function
-	char *callees = engine_get_callees(pid, "buildCallEdgesSQL", nullptr);
+	char *callees =
+		engine_get_callees(g_engine, pid, "buildCallEdgesSQL", nullptr);
 	if (callees) {
-		printf("--- Callees of buildCallEdgesSQL ---\n%s\n",
-		       callees);
+		printf("--- Callees of buildCallEdgesSQL ---\n%s\n", callees);
 		// This function should have some callees after P1 fix
 		check(strstr(callees, "callees") != nullptr,
 		      "get_callees should return valid JSON");
@@ -182,10 +182,10 @@ int main()
 	}
 
 	// ── Check 6: find_callers on a known function ──
-	char *callers = engine_get_callers(pid, "buildCallEdgesSQL", nullptr);
+	char *callers =
+		engine_get_callers(g_engine, pid, "buildCallEdgesSQL", nullptr);
 	if (callers) {
-		printf("--- Callers of buildCallEdgesSQL ---\n%s\n",
-		       callers);
+		printf("--- Callers of buildCallEdgesSQL ---\n%s\n", callers);
 		check(strstr(callers, "callers") != nullptr,
 		      "get_callers should return valid JSON");
 		engine_free_string(callers);
@@ -195,15 +195,13 @@ int main()
 	printf("\n=== Self-inspect summary ===\n");
 	printf("Total nodes:     %lld\n", (long long)total_nodes);
 	printf("Functions:        %lld\n", (long long)func_count);
-	printf("Call graph edges: %lld (P1 fix)\n",
-	       (long long)call_edges);
-	printf("Documents:        %lld (verify fix)\n",
-	       (long long)doc_count);
-	printf("Orphan functions: %lld\n",
-	       (long long)orphan_count);
+	printf("Call graph edges: %lld (P1 fix)\n", (long long)call_edges);
+	printf("Documents:        %lld (verify fix)\n", (long long)doc_count);
+	printf("Orphan functions: %lld\n", (long long)orphan_count);
 
 	sqlite3_close(db);
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 
 	printf("\n=== Self-inspect test passed ===\n");
 	return 0;

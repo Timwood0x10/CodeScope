@@ -100,169 +100,26 @@ void GraphStore::insertSemanticRecords(uint64_t project_id,
 				  SQLITE_STATIC);
 
 		int rc = sqlite3_step(stmt);
-		if (rc != SQLITE_DONE)
+		if (rc != SQLITE_DONE) {
+			// Surface the failure on the store instead of only logging
+			// it: a silent step error left a partially-written file with
+			// error() empty (code_rules §5). This entry point is
+			// test-only now (production uses insertFileResultBatch), but
+			// the same contract applies.
+			error_ =
+				std::string(
+					"insertSemanticRecords: step failed: ") +
+				sqlite3_errmsg(db_);
 			fprintf(stderr,
-				"insertSemanticRecords: step error %d: %s\n",
+				"insertSemanticRecords: step error %d: %s "
+				"[module=store, method=insertSemanticRecords]\n",
 				rc, sqlite3_errmsg(db_));
+			break;
+		}
 		sqlite3_reset(stmt);
 	}
 	sqlite3_finalize(stmt);
 }
-
-void GraphStore::insertSemanticRecordsBatch(
-	uint64_t project_id,
-	const std::vector<std::pair<std::string, std::vector<ir::Record>>>
-		&file_records)
-{
-	// Count total records to pre-compute size
-	size_t total = 0;
-	for (auto &fr : file_records)
-		total += fr.second.size();
-	if (total == 0)
-		return;
-
-	constexpr size_t kBatchSize = 500;
-	// 23 columns in semantic_records: original_id, project_id, kind,
-	// name, qualified_name, parent_id, ref_original_id, arity,
-	// is_static, type_name, call_kind, resolve_strategy, visibility,
-	// start_row, start_col, end_row, end_col, file_path, language,
-	// qualified_target, receiver_text, receiver_type, import_alias.
-	// (Step 3 added the last 4 call-fact columns.) Must match the
-	// column count AND the placeholder count below.
-	constexpr int kColsPerRow = 23;
-
-	// Step 1: Flatten records into a contiguous vector for efficient batching.
-	// Each element stores (file_path, record_index) to reference the original.
-	struct FlatRecord {
-		const ir::Record *rec;
-		const std::string *file_path;
-	};
-	std::vector<FlatRecord> flat;
-	flat.reserve(total);
-	for (auto &fr : file_records)
-		for (auto &r : fr.second)
-			flat.push_back({ &r, &fr.first });
-
-	// Step 2: Process in batches using multi-VALUES INSERT.
-	// Build SQL: INSERT INTO t VALUES (?,?,...), (?,?,...), ...
-	// This reduces prepare/bind/step/reset overhead by ~13x per batch.
-	size_t offset = 0;
-	while (offset < flat.size()) {
-		size_t batch = flat.size() - offset;
-		if (batch > kBatchSize)
-			batch = kBatchSize;
-
-		// Build multi-VALUES SQL
-		std::string sql = "INSERT INTO semantic_records "
-				  "(original_id, project_id, kind, name, "
-				  "qualified_name, parent_id, ref_original_id, "
-				  "arity, is_static, type_name, call_kind, "
-				  "resolve_strategy, visibility, "
-				  "start_row, start_col, end_row, end_col, "
-				  "file_path, language, "
-				  "qualified_target, receiver_text, "
-				  "receiver_type, import_alias) VALUES ";
-		for (size_t i = 0; i < batch; i++) {
-			if (i > 0)
-				sql += ",";
-			sql += "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
-		}
-
-		sqlite3_stmt *stmt = nullptr;
-		if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) !=
-		    SQLITE_OK) {
-			error_ = "insertSemanticRecordsBatch: prepare failed";
-			return;
-		}
-
-		// Build intra-file declaration maps for ref_original_id
-		std::unordered_map<std::string, uint64_t> decl_by_name;
-		for (size_t i = 0; i < batch; i++) {
-			auto &fr = flat[offset + i];
-			auto k = static_cast<int>(fr.rec->kind);
-			if ((k == 0 || k == 1) && !fr.rec->name.empty())
-				decl_by_name[fr.rec->name] = fr.rec->id;
-		}
-
-		// Bind all rows in batch
-		for (size_t i = 0; i < batch; i++) {
-			auto &fr = flat[offset + i];
-			auto &r = *fr.rec;
-			int base = static_cast<int>(i * kColsPerRow);
-
-			uint64_t ref_id = 0;
-			if (static_cast<int>(r.kind) == 9 && !r.name.empty()) {
-				auto it = decl_by_name.find(r.name);
-				if (it != decl_by_name.end())
-					ref_id = it->second;
-			}
-
-			sqlite3_bind_int64(stmt, base + 1,
-					   static_cast<int64_t>(r.id));
-			sqlite3_bind_int64(stmt, base + 2,
-					   static_cast<int64_t>(project_id));
-			sqlite3_bind_int(stmt, base + 3,
-					 static_cast<int>(r.kind));
-			sqlite3_bind_text(stmt, base + 4, r.name.c_str(), -1,
-					  SQLITE_STATIC);
-			sqlite3_bind_text(stmt, base + 5,
-					  r.qualified_name.c_str(), -1,
-					  SQLITE_STATIC);
-			sqlite3_bind_int64(stmt, base + 6,
-					   static_cast<int64_t>(r.parent_id));
-			sqlite3_bind_int64(stmt, base + 7,
-					   static_cast<int64_t>(ref_id));
-			sqlite3_bind_int(stmt, base + 8, r.arity);
-			sqlite3_bind_int(stmt, base + 9, r.is_static ? 1 : 0);
-			sqlite3_bind_text(stmt, base + 10, r.type_name.c_str(),
-					  -1, SQLITE_STATIC);
-			sqlite3_bind_int(stmt, base + 11,
-					 static_cast<int>(r.call_kind));
-			sqlite3_bind_text(stmt, base + 12,
-					  r.resolve_strategy.c_str(), -1,
-					  SQLITE_STATIC);
-			sqlite3_bind_int(stmt, base + 13, r.visibility);
-			sqlite3_bind_int(stmt, base + 14,
-					 static_cast<int>(r.loc.start_row));
-			sqlite3_bind_int(stmt, base + 15,
-					 static_cast<int>(r.loc.start_col));
-			sqlite3_bind_int(stmt, base + 16,
-					 static_cast<int>(r.loc.end_row));
-			sqlite3_bind_int(stmt, base + 17,
-					 static_cast<int>(r.loc.end_col));
-			sqlite3_bind_text(stmt, base + 18,
-					  fr.file_path->c_str(), -1,
-					  SQLITE_STATIC);
-			sqlite3_bind_text(stmt, base + 19, r.language.c_str(),
-					  -1, SQLITE_STATIC);
-			// Step 3: bind structured call facts.
-			sqlite3_bind_text(stmt, base + 20,
-					  r.qualified_target.c_str(), -1,
-					  SQLITE_STATIC);
-			sqlite3_bind_text(stmt, base + 21,
-					  r.receiver_text.c_str(), -1,
-					  SQLITE_STATIC);
-			sqlite3_bind_text(stmt, base + 22,
-					  r.receiver_type.c_str(), -1,
-					  SQLITE_STATIC);
-			sqlite3_bind_text(stmt, base + 23,
-					  r.import_alias.c_str(), -1,
-					  SQLITE_STATIC);
-		}
-
-		int rc = sqlite3_step(stmt);
-		if (rc != SQLITE_DONE)
-			fprintf(stderr,
-				"insertSemanticRecordsBatch: step error %d: %s "
-				"(batch %zu-%zu)\n",
-				rc, sqlite3_errmsg(db_), offset,
-				offset + batch);
-		sqlite3_finalize(stmt);
-
-		offset += batch;
-	}
-}
-
 // ─── Streaming Pipeline ─────────────────────────────────────────
 
 bool GraphStore::insertFileResultBatch(uint64_t project_id,
@@ -271,8 +128,6 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 {
 	if (batch.empty())
 		return true;
-
-	// _staged_metrics temp table removed — metrics no longer stored.
 
 	// ── Prepare statements ─────────────────────────────────────
 	const char *sr_sql =
@@ -366,7 +221,22 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 					  SQLITE_TRANSIENT);
 			sqlite3_bind_text(file_st, 3, fr.language.c_str(), -1,
 					  SQLITE_TRANSIENT);
-			sqlite3_step(file_st);
+			// The files row is the per-file record: a silent step
+			// failure would leave the file untracked while its
+			// semantic_records are still inserted below.
+			if (sqlite3_step(file_st) != SQLITE_DONE) {
+				error_ =
+					"[module=store, method="
+					"insertFileResultBatch] INSERT INTO files "
+					"failed: " +
+					std::string(sqlite3_errmsg(db_));
+				sqlite3_reset(file_st);
+				sqlite3_finalize(file_st);
+				sqlite3_finalize(fss_st);
+				sqlite3_finalize(del_sr_st);
+				sqlite3_finalize(sr_st);
+				return false;
+			}
 			sqlite3_reset(file_st);
 		}
 
@@ -383,7 +253,20 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 			sqlite3_bind_text(fss_st, 5, ch.c_str(), -1,
 					  SQLITE_TRANSIENT);
 		}
-		sqlite3_step(fss_st);
+		// file_scan_state drives incremental re-index freshness; a
+		// silent failure would make the next run re-parse the file
+		// (or, worse, believe a changed file is unchanged).
+		if (sqlite3_step(fss_st) != SQLITE_DONE) {
+			error_ = "[module=store, method=insertFileResultBatch] "
+				 "INSERT INTO file_scan_state failed: " +
+				 std::string(sqlite3_errmsg(db_));
+			sqlite3_reset(fss_st);
+			sqlite3_finalize(fss_st);
+			sqlite3_finalize(file_st);
+			sqlite3_finalize(del_sr_st);
+			sqlite3_finalize(sr_st);
+			return false;
+		}
 		sqlite3_reset(fss_st);
 
 		// Delete old semantic_records for this file to prevent
@@ -395,7 +278,22 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 					   static_cast<int64_t>(project_id));
 			sqlite3_bind_text(del_sr_st, 2, fr.file_path.c_str(),
 					  -1, SQLITE_TRANSIENT);
-			sqlite3_step(del_sr_st);
+			// A failed DELETE leaves the previous run's rows in
+			// place; the plain INSERT below would then append
+			// duplicates that buildGraph turns into duplicate
+			// entities. Fail instead of accumulating.
+			if (sqlite3_step(del_sr_st) != SQLITE_DONE) {
+				error_ = "[module=store, method="
+					 "insertFileResultBatch] DELETE FROM "
+					 "semantic_records failed: " +
+					 std::string(sqlite3_errmsg(db_));
+				sqlite3_reset(del_sr_st);
+				sqlite3_finalize(del_sr_st);
+				sqlite3_finalize(fss_st);
+				sqlite3_finalize(file_st);
+				sqlite3_finalize(sr_st);
+				return false;
+			}
 			sqlite3_reset(del_sr_st);
 		}
 
@@ -415,6 +313,12 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 
 	// Step 2: Batch-insert semantic_records via multi-VALUES
 	// Simple flat iteration: collect (record_ptr, file_path) for all records
+	//
+	// The DELETE above already removed each file's previous rows, so a failed
+	// INSERT here would commit a file that has no records at all — buildGraph
+	// would then see the file but none of its symbols. Track the failure and
+	// report it instead of letting the caller commit a half-written batch.
+	bool records_write_ok = true;
 	if (!batch_records.empty()) {
 		struct RecRef {
 			const ir::Record *rec;
@@ -471,7 +375,17 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 
 			sqlite3_stmt *batch_st = nullptr;
 			if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &batch_st,
-					       nullptr) == SQLITE_OK) {
+					       nullptr) != SQLITE_OK) {
+				// Prepare failure after DELETE: without this
+				// branch the function returned true with old
+				// rows already gone and new rows never written.
+				error_ = "[module=store, method="
+					 "insertFileResultBatch] "
+					 "semantic_records batch prepare "
+					 "failed: " +
+					 std::string(sqlite3_errmsg(db_));
+				records_write_ok = false;
+			} else {
 				for (size_t i = 0; i < batch_sz; i++) {
 					auto &r = *all_recs[off + i].rec;
 					int base = static_cast<int>(i * 23);
@@ -564,11 +478,17 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 						SQLITE_STATIC);
 				}
 				int rc = sqlite3_step(batch_st);
-				if (rc != SQLITE_DONE)
-					fprintf(stderr,
-						"insertFileResultBatch: records "
-						"multi-VALUES step %d: %s\n",
-						rc, sqlite3_errmsg(db_));
+				if (rc != SQLITE_DONE) {
+					error_ = "[module=store, method="
+						 "insertFileResultBatch] "
+						 "semantic_records batch step "
+						 "failed: " +
+						 std::string(
+							 sqlite3_errmsg(db_));
+					sqlite3_finalize(batch_st);
+					records_write_ok = false;
+					break;
+				}
 				sqlite3_finalize(batch_st);
 			}
 		}
@@ -655,7 +575,9 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 	// Graph data is stored in SQLite: semantic_records → buildGraph →
 	// graph_nodes/edges is the source of truth for all graph queries.
 
-	return true;
+	// Fail-closed: a failed records batch must not be committed by the caller
+	// (see records_write_ok above).
+	return records_write_ok;
 }
 
 // Resolve pre-computed metrics from the _staged_metrics staging table onto
@@ -668,8 +590,7 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 //
 // Metrics are real measurements (cyclomatic/cognitive/nesting) produced in the
 // parse worker — see engine_index_metrics.cpp. This restores the metrics
-// capability that Step 10 of ACCURACY_IMPROVEMENT_DEVELOPMENT_PLAN.md had
-// sunset; the plan's completion criterion (no placeholder 0, real data) is met
+// capability that had been sunset; the criterion (no placeholder 0, real data) is met
 // because we write the actual computed values and mark the project's
 // metrics_ready flag from the canonical entity coverage.
 bool GraphStore::resolveStagedMetrics(uint64_t project_id)
@@ -734,7 +655,12 @@ bool GraphStore::resolveStagedMetrics(uint64_t project_id)
 		"DELETE FROM _staged_metrics WHERE project_id = ?";
 	if (sqlite3_prepare_v2(db_, del_sql, -1, &del, nullptr) == SQLITE_OK) {
 		sqlite3_bind_int64(del, 1, static_cast<int64_t>(project_id));
-		sqlite3_step(del);
+		if (sqlite3_step(del) != SQLITE_DONE) {
+			fprintf(stderr,
+				"resolveStagedMetrics: cleanup step failed: %s "
+				"[module=store, method=resolveStagedMetrics]\n",
+				sqlite3_errmsg(db_));
+		}
 		sqlite3_finalize(del);
 	} else {
 		fprintf(stderr,

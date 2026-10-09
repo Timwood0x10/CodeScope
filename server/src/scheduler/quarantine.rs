@@ -5,15 +5,15 @@
 //! Once a crasher is found, the module is retried with that file
 //! excluded via `CODESCOPE_EXCLUDE_PATHS`.
 //!
-//! Algorithm (mirrors `codescope-parallel.sh:find_crashing_file`):
+//! Algorithm (mirrors the legacy `scripts/legacy/codescope-parallel.sh:find_crashing_file`):
 //! 1. Get candidate file list via `discover::discover_files()`.
 //! 2. Binary search: split list in half, run worker with `--file-list`
 //!    on the left half. If it crashes, recurse left; else advance right.
 //! 3. When `left == right`, that file is the crasher.
 //! 4. Repeat up to `QUARANTINE_MAX_ITER` times to find multiple crashers.
 
-use serde_json::Value;
-use std::path::Path;
+use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -94,8 +94,22 @@ pub(super) fn quarantine_module(
     grammars_dir: &str,
     db_prefix: &str,
 ) -> Vec<String> {
-    let module_dir = Path::new(project_dir).join(module_name);
-    let discover_json = discover::discover_files(module_dir.to_str().unwrap_or(""));
+    // The root module (see discover::ROOT_MODULE_NAME) is rooted at the project
+    // directory and owns only the files directly in it. Walking the whole tree
+    // here would hand quarantine the files the per-module workers own, and
+    // would make the exclusion globs relative to the wrong root.
+    let is_root_module = module_name == discover::ROOT_MODULE_NAME;
+    let module_dir = if is_root_module {
+        PathBuf::from(project_dir)
+    } else {
+        Path::new(project_dir).join(module_name)
+    };
+    let discover_json = if is_root_module {
+        let files = discover::root_source_files(module_dir.to_str().unwrap_or(""));
+        json!({"ok": true, "total": files.len(), "files": files}).to_string()
+    } else {
+        discover::discover_files(module_dir.to_str().unwrap_or(""))
+    };
     let discover_val: Value = match serde_json::from_str(&discover_json) {
         Ok(v) => v,
         Err(_) => return Vec::new(),
@@ -125,17 +139,18 @@ pub(super) fn quarantine_module(
 
         // Filter out already-found crashers before each iteration so
         // the binary search can find additional crashers.
+        //
+        // Compare the module-relative PATH, not the basename: `crashers` holds
+        // module-relative paths (see make_relative_glob), and matching on the
+        // basename alone made `c/foo.cpp` count as "already quarantined"
+        // because `a/foo.cpp` crashed — so a healthy file was dropped from the
+        // retry without ever being tested.
         let active_files: Vec<String> = files
             .iter()
             .filter_map(|f| {
                 let s = f.as_str()?;
-                let basename = Path::new(s).file_name()?.to_string_lossy().to_string();
-                if crashers.iter().any(|c| {
-                    Path::new(c)
-                        .file_name()
-                        .map(|n| n == basename.as_str())
-                        .unwrap_or(false)
-                }) {
+                let rel = make_relative_glob(s, module_dir.to_str().unwrap_or(""));
+                if crashers.iter().any(|c| c == &rel) {
                     None
                 } else {
                     Some(s.to_string())
@@ -306,7 +321,7 @@ fn run_subset_once(
     ]);
     cmd.env("GRAMMARS_DIR", grammars_dir);
     cmd.env("CODESCOPE_DB_PATH", db_path);
-    cmd.env("CODESCOPE_INDEX_MODE", "fast");
+    super::worker::apply_worker_index_mode(&mut cmd);
     cmd.env("CODESCOPE_WORKERS", "1");
     cmd.stdout(Stdio::null()).stderr(Stdio::null());
 

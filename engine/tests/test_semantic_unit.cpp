@@ -19,28 +19,29 @@
 static int tests_run = 0;
 static int tests_passed = 0;
 
-#define CHECK(cond, msg)                                                      \
-	do {                                                                   \
-		tests_run++;                                                   \
-		if (!(cond)) {                                                 \
-			fprintf(stderr, "FAIL [%d]: %s\n", tests_run, msg);    \
-			exit(1);                                               \
-		}                                                              \
-		tests_passed++;                                                \
+#define CHECK(cond, msg)                                                    \
+	do {                                                                \
+		tests_run++;                                                \
+		if (!(cond)) {                                              \
+			fprintf(stderr, "FAIL [%d]: %s\n", tests_run, msg); \
+			exit(1);                                            \
+		}                                                           \
+		tests_passed++;                                             \
 	} while (0)
 
-#define CHECK_EQ(a, b, msg)                                                    \
-	do {                                                                   \
-		tests_run++;                                                   \
-		if ((a) != (b)) {                                              \
-			fprintf(stderr, "FAIL [%d]: %s — expected %llu, "      \
-					"got %llu\n",                          \
-				tests_run, msg,                                 \
-				static_cast<unsigned long long>(b),            \
-				static_cast<unsigned long long>(a));           \
-			exit(1);                                               \
-		}                                                              \
-		tests_passed++;                                                \
+#define CHECK_EQ(a, b, msg)                                          \
+	do {                                                         \
+		tests_run++;                                         \
+		if ((a) != (b)) {                                    \
+			fprintf(stderr,                              \
+				"FAIL [%d]: %s — expected %llu, "    \
+				"got %llu\n",                        \
+				tests_run, msg,                      \
+				static_cast<unsigned long long>(b),  \
+				static_cast<unsigned long long>(a)); \
+			exit(1);                                     \
+		}                                                    \
+		tests_passed++;                                      \
 	} while (0)
 
 // ── Test: Empty SemanticUnit ──────────────────────────────────
@@ -62,12 +63,10 @@ static void test_add_records()
 	unit.setLanguage("typescript");
 
 	ir::SourceRange loc = { 0, 0, 5, 0 };
-	uint64_t id1 = unit.addRecord(ir::RecordKind::Function,
-				      "foo", 0, loc);
-	uint64_t id2 = unit.addRecord(ir::RecordKind::Function,
-				      "bar", 0, loc);
-	uint64_t id3 = unit.addRecord(ir::RecordKind::CallExpr,
-				      "baz", id1, loc);
+	uint64_t id1 = unit.addRecord(ir::RecordKind::Function, "foo", 0, loc);
+	uint64_t id2 = unit.addRecord(ir::RecordKind::Function, "bar", 0, loc);
+	uint64_t id3 =
+		unit.addRecord(ir::RecordKind::CallExpr, "baz", id1, loc);
 
 	CHECK_EQ(unit.size(), 3ULL, "3 records added");
 	CHECK_EQ(id1, 1ULL, "first record id == 1");
@@ -81,10 +80,8 @@ static void test_add_records()
 	CHECK(rec3 != nullptr, "getRecord(id3) non-null");
 	CHECK_EQ(rec1->parent_id, 0ULL, "foo is top-level");
 	CHECK_EQ(rec3->parent_id, id1, "baz has foo as parent");
-	CHECK(rec1->file_path == "/test/file.ts",
-	      "file path propagated");
-	CHECK(rec1->language == "typescript",
-	      "language propagated");
+	CHECK(rec1->file_path == "/test/file.ts", "file path propagated");
+	CHECK(rec1->language == "typescript", "language propagated");
 }
 
 // ── Test: Query methods ───────────────────────────────────────
@@ -97,13 +94,12 @@ static void test_queries()
 	ir::SourceRange loc2 = { 3, 0, 5, 0 };
 	ir::SourceRange loc3 = { 6, 0, 6, 10 };
 
-	uint64_t fn1 = unit.addRecord(ir::RecordKind::Function,
-				      "compute", 0, loc1);
-	uint64_t fn2 = unit.addRecord(ir::RecordKind::Function,
-	         "add", 0, loc2);
+	uint64_t fn1 =
+		unit.addRecord(ir::RecordKind::Function, "compute", 0, loc1);
+	uint64_t fn2 = unit.addRecord(ir::RecordKind::Function, "add", 0, loc2);
 	(void)fn2;
-	uint64_t call = unit.addRecord(ir::RecordKind::CallExpr,
-	          "add", fn1, loc3);
+	uint64_t call =
+		unit.addRecord(ir::RecordKind::CallExpr, "add", fn1, loc3);
 	(void)call;
 
 	// findByName
@@ -124,8 +120,8 @@ static void test_queries()
 	// getChildren
 	auto children = unit.getChildren(fn1);
 	CHECK_EQ(children.size(), 1ULL, "compute has 1 child");
-	CHECK_EQ(unit.allRecords()[children[0]].kind,
-		 ir::RecordKind::CallExpr, "compute's child is a call");
+	CHECK_EQ(unit.allRecords()[children[0]].kind, ir::RecordKind::CallExpr,
+		 "compute's child is a call");
 }
 
 // ── Test: Emitter interface ───────────────────────────────────
@@ -151,14 +147,10 @@ static void test_emitter()
 	// Verify containment
 	auto children = unit.getChildren(fn);
 	CHECK_EQ(children.size(), 2ULL, "main has 2 children");
-	CHECK(unit.getRecord(call) != nullptr,
-	      "getRecord(call) non-null");
-	CHECK(unit.getRecord(var) != nullptr,
-	      "getRecord(var) non-null");
-	CHECK_EQ(unit.getRecord(call)->parent_id, fn,
-		 "call parent is main");
-	CHECK_EQ(unit.getRecord(var)->parent_id, fn,
-		 "variable parent is main");
+	CHECK(unit.getRecord(call) != nullptr, "getRecord(call) non-null");
+	CHECK(unit.getRecord(var) != nullptr, "getRecord(var) non-null");
+	CHECK_EQ(unit.getRecord(call)->parent_id, fn, "call parent is main");
+	CHECK_EQ(unit.getRecord(var)->parent_id, fn, "variable parent is main");
 
 	// Verify location preservation
 	CHECK_EQ(unit.getRecord(call)->loc.start_row, 5U,
@@ -210,7 +202,7 @@ int main()
 	test_emitter();
 	test_memory_size();
 
-	printf("=== semantic_unit test passed (%d/%d)\n",
-	       tests_passed, tests_run);
+	printf("=== semantic_unit test passed (%d/%d)\n", tests_passed,
+	       tests_run);
 	return 0;
 }

@@ -1,5 +1,7 @@
+#include "util/json_writer.h"
 #include "query_engine.h"
-// community_detection removed — Phase 0 cut
+// Community detection lives in query_communities.cpp (restored after the
+// Phase-0 cut that removed the original label-propagation implementation).
 #include "graph_query.h"
 #include "impact_analysis.h"
 
@@ -17,6 +19,21 @@
 
 namespace query
 {
+
+namespace
+{
+/// Text of a result column, escaped for embedding inside a JSON string
+/// literal. Values emitted through this helper are DB-derived (symbol names,
+/// file paths) and may contain quotes, backslashes or control characters,
+/// which would otherwise produce JSON the MCP client cannot parse. A NULL
+/// column becomes the empty string.
+std::string columnTextEscaped(sqlite3_stmt *stmt, int col)
+{
+	const unsigned char *text = sqlite3_column_text(stmt, col);
+	return util::jsonEscapeString(
+		text ? reinterpret_cast<const char *>(text) : "");
+}
+} // namespace
 
 std::string QueryEngine::searchCode(uint64_t project_id, const char *query,
 				    int limit)
@@ -45,19 +62,6 @@ std::string QueryEngine::detectChanges(uint64_t project_id,
 				       const char *modified_files_json)
 {
 	return analyzeChangeImpact(project_id, store_, modified_files_json);
-}
-
-// ─── Community Detection ─────────────────────────────────────
-
-std::string QueryEngine::getCommunities(uint64_t project_id, int max_members,
-					int max_communities,
-					bool include_members)
-{
-	(void)project_id;
-	(void)max_members;
-	(void)max_communities;
-	(void)include_members;
-	return "{\"communities\":[],\"total\":0}";
 }
 
 // ─── Hotspot Analysis ───────────────────────────────────────
@@ -121,13 +125,18 @@ std::string QueryEngine::getHotspots(uint64_t project_id, int top_n)
 				j << ",";
 			first = false;
 			++count;
-			j << "{\"id\":" << id << ",\"name\":\""
-			  << jsonEscape(name.c_str()) << "\",\"file\":\""
-			  << jsonEscape(file.c_str()) << "\",\"type\":" << kind
-			  << ",\"caller_count\":" << caller_count
-			  << ",\"complexity\":" << cyclomatic
-			  << ",\"cognitive\":" << cognitive
-			  << ",\"nesting_depth\":" << nesting << "}";
+			util::JsonWriter el;
+			el.beginObject();
+			el.key("id").value(id);
+			el.key("name").value(name);
+			el.key("file").value(file);
+			el.key("type").value(kind);
+			el.key("caller_count").value(caller_count);
+			el.key("complexity").value(cyclomatic);
+			el.key("cognitive").value(cognitive);
+			el.key("nesting_depth").value(nesting);
+			el.endObject();
+			j << el.str();
 		}
 		sqlite3_finalize(st);
 	}
@@ -179,7 +188,11 @@ std::string QueryEngine::getModuleMap(uint64_t project_id)
 		if (!first_dir)
 			json << ",";
 		first_dir = false;
-		json << "{\"path\":\"" << dir << "\",\"files\":[";
+		// This object stays open across the files array below and is
+		// closed on two different paths, so it keeps its shape; the
+		// path value goes through the shared escaper.
+		json << "{\"path\":\"" << util::jsonEscapeString(dir)
+		     << "\",\"files\":[";
 
 		// Functions in this directory. entity is the canonical fact source
 		// (the legacy graph_nodes table was migrated to entity); metrics
@@ -191,7 +204,20 @@ std::string QueryEngine::getModuleMap(uint64_t project_id)
 			"FROM entity e "
 			"WHERE e.project_id = ? AND e.file_path LIKE ? "
 			"AND e.kind IN (0,1) ORDER BY e.file_path";
-		sqlite3_prepare_v2(db, func_sql.c_str(), -1, &stmt, nullptr);
+		// Check prepare: bind/step on a NULL stmt is UB and would
+		// crash the long-running MCP server through FFI (code_rules
+		// §3 Error Handling; no silent error handling).
+		if (sqlite3_prepare_v2(db, func_sql.c_str(), -1, &stmt,
+				       nullptr) != SQLITE_OK) {
+			fprintf(stderr,
+				"getModuleMap: prepare functions failed: %s "
+				"[module=query, method=getModuleMap]\n",
+				sqlite3_errmsg(db));
+			if (stmt)
+				sqlite3_finalize(stmt);
+			json << "]}";
+			continue;
+		}
 		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 		sqlite3_bind_text(stmt, 2, (dir + "/%").c_str(), -1,
 				  SQLITE_TRANSIENT);
@@ -202,19 +228,11 @@ std::string QueryEngine::getModuleMap(uint64_t project_id)
 				json << ",";
 			first_fn = false;
 			json << "{"
-			     << "\"name\":\""
-			     << (sqlite3_column_text(stmt, 0) ?
-					 reinterpret_cast<const char *>(
-						 sqlite3_column_text(stmt, 0)) :
-					 "")
+			     << "\"name\":\"" << columnTextEscaped(stmt, 0)
 			     << "\","
 			     << "\"type\":" << sqlite3_column_int(stmt, 1)
 			     << ","
-			     << "\"file\":\""
-			     << (sqlite3_column_text(stmt, 2) ?
-					 reinterpret_cast<const char *>(
-						 sqlite3_column_text(stmt, 2)) :
-					 "")
+			     << "\"file\":\"" << columnTextEscaped(stmt, 2)
 			     << "\","
 			     << "\"complexity\":" << sqlite3_column_int(stmt, 3)
 			     << ","
@@ -283,12 +301,17 @@ std::string QueryEngine::getEntryPoints(uint64_t project_id)
 				j << ",";
 			first = false;
 			++count;
-			j << "{\"id\":" << id << ",\"name\":\""
-			  << jsonEscape(name.c_str()) << "\",\"type\":" << kind
-			  << ",\"file\":\"" << jsonEscape(file.c_str())
-			  << "\",\"complexity\":" << cyc
-			  << ",\"cognitive\":" << cog << ",\"nesting\":" << nest
-			  << "}";
+			util::JsonWriter el;
+			el.beginObject();
+			el.key("id").value(id);
+			el.key("name").value(name);
+			el.key("type").value(kind);
+			el.key("file").value(file);
+			el.key("complexity").value(cyc);
+			el.key("cognitive").value(cog);
+			el.key("nesting").value(nest);
+			el.endObject();
+			j << el.str();
 		}
 		sqlite3_finalize(st);
 	}
@@ -306,6 +329,24 @@ std::string QueryEngine::traceCallChain(uint64_t project_id,
 	if (!from_function || !*from_function || !to_function ||
 	    !*to_function) {
 		return "{\"error\":\"empty function name\"}";
+	}
+	sqlite3 *db_probe = (store_ && store_->handle()) ? store_->handle() :
+							   nullptr;
+	// Homonym guard: the BFS below is name-keyed, so two entities with
+	// the same name collapse into one node and the trace silently follows
+	// whichever edge appeared first. Surface the candidates instead
+	// (T5 finding #9) — same contract as getCallers.
+	if (db_probe) {
+		std::string amb = query::bareNameCandidates(
+			db_probe, project_id, from_function);
+		if (!amb.empty())
+			return "{\"found\":false,\"chain\":\"\",\"depth\":0," +
+			       amb.substr(1); // merge: keep "ambiguous":…
+		amb = query::bareNameCandidates(db_probe, project_id,
+						to_function);
+		if (!amb.empty())
+			return "{\"found\":false,\"chain\":\"\",\"depth\":0," +
+			       amb.substr(1);
 	}
 
 	// ── v0.2.5: SQLite graph-query backend (Windows / SQLite-only) ──
@@ -392,10 +433,12 @@ std::string QueryEngine::traceCallChain(uint64_t project_id,
 		std::string chain = path[0];
 		for (size_t i = 1; i < path.size(); i++)
 			chain += "→" + path[i];
-		std::ostringstream json;
-		json << "{\"found\":true,\"chain\":\""
-		     << jsonEscape(chain.c_str())
-		     << "\",\"depth\":" << (path.size() - 1) << "}";
+		util::JsonWriter json;
+		json.beginObject();
+		json.key("found").value(true);
+		json.key("chain").value(chain);
+		json.key("depth").value(path.size() - 1);
+		json.endObject();
 		return json.str();
 	}
 	return "{\"found\":false,\"chain\":\"\",\"depth\":0}";
@@ -428,57 +471,92 @@ std::string QueryEngine::getProjectOverview(uint64_t project_id)
 		sqlite3_stmt *stmt = nullptr;
 		// v0.2.6: count from the canonical entity/relation tables.
 		// graph_nodes/graph_edges are deprecated and no longer written.
-		sqlite3_prepare_v2(
-			db, "SELECT COUNT(*) FROM entity WHERE project_id=?",
-			-1, &stmt, nullptr);
-		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-		if (sqlite3_step(stmt) == SQLITE_ROW) {
-			json << "\"total_nodes\":"
-			     << sqlite3_column_int(stmt, 0) << ",";
+		// Every prepare is checked: bind/step on a NULL stmt is UB and
+		// would crash the long-running MCP server through FFI.
+		if (sqlite3_prepare_v2(
+			    db,
+			    "SELECT COUNT(*) FROM entity WHERE project_id=?",
+			    -1, &stmt, nullptr) == SQLITE_OK) {
+			sqlite3_bind_int64(stmt, 1,
+					   static_cast<int64_t>(project_id));
+			if (sqlite3_step(stmt) == SQLITE_ROW) {
+				json << "\"total_nodes\":"
+				     << sqlite3_column_int(stmt, 0) << ",";
+			}
+		} else {
+			fprintf(stderr,
+				"getProjectOverview: prepare entity count "
+				"failed: %s "
+				"[module=query, method=getProjectOverview]\n",
+				sqlite3_errmsg(db));
 		}
 		sqlite3_finalize(stmt);
+		stmt = nullptr;
 
-		sqlite3_prepare_v2(
-			db, "SELECT COUNT(*) FROM relation WHERE project_id=?",
-			-1, &stmt, nullptr);
-		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-		if (sqlite3_step(stmt) == SQLITE_ROW) {
-			json << "\"total_edges\":"
-			     << sqlite3_column_int(stmt, 0) << ",";
+		if (sqlite3_prepare_v2(
+			    db,
+			    "SELECT COUNT(*) FROM relation WHERE project_id=?",
+			    -1, &stmt, nullptr) == SQLITE_OK) {
+			sqlite3_bind_int64(stmt, 1,
+					   static_cast<int64_t>(project_id));
+			if (sqlite3_step(stmt) == SQLITE_ROW) {
+				json << "\"total_edges\":"
+				     << sqlite3_column_int(stmt, 0) << ",";
+			}
+		} else {
+			fprintf(stderr,
+				"getProjectOverview: prepare relation count "
+				"failed: %s "
+				"[module=query, method=getProjectOverview]\n",
+				sqlite3_errmsg(db));
 		}
 		sqlite3_finalize(stmt);
+		stmt = nullptr;
 
-		sqlite3_prepare_v2(
-			db, "SELECT COUNT(*) FROM files WHERE project_id=?", -1,
-			&stmt, nullptr);
-		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-		if (sqlite3_step(stmt) == SQLITE_ROW) {
-			json << "\"total_files\":"
-			     << sqlite3_column_int(stmt, 0) << ",";
+		if (sqlite3_prepare_v2(
+			    db, "SELECT COUNT(*) FROM files WHERE project_id=?",
+			    -1, &stmt, nullptr) == SQLITE_OK) {
+			sqlite3_bind_int64(stmt, 1,
+					   static_cast<int64_t>(project_id));
+			if (sqlite3_step(stmt) == SQLITE_ROW) {
+				json << "\"total_files\":"
+				     << sqlite3_column_int(stmt, 0) << ",";
+			}
+		} else {
+			fprintf(stderr,
+				"getProjectOverview: prepare files count "
+				"failed: %s "
+				"[module=query, method=getProjectOverview]\n",
+				sqlite3_errmsg(db));
 		}
 		sqlite3_finalize(stmt);
+		stmt = nullptr;
 
 		// Language distribution
 		json << "\"languages\":[";
-		sqlite3_prepare_v2(
-			db,
-			"SELECT language,COUNT(*) FROM files WHERE project_id=? "
-			"GROUP BY language",
-			-1, &stmt, nullptr);
-		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-		bool first = true;
-		while (sqlite3_step(stmt) == SQLITE_ROW) {
-			if (!first)
-				json << ",";
-			first = false;
-			json << "{\"lang\":\""
-			     << (sqlite3_column_text(stmt, 0) ?
-					 reinterpret_cast<const char *>(
-						 sqlite3_column_text(stmt, 0)) :
-					 "")
-			     << "\","
-			     << "\"files\":" << sqlite3_column_int(stmt, 1)
-			     << "}";
+		if (sqlite3_prepare_v2(
+			    db,
+			    "SELECT language,COUNT(*) FROM files WHERE project_id=? "
+			    "GROUP BY language",
+			    -1, &stmt, nullptr) == SQLITE_OK) {
+			sqlite3_bind_int64(stmt, 1,
+					   static_cast<int64_t>(project_id));
+			bool first = true;
+			while (sqlite3_step(stmt) == SQLITE_ROW) {
+				if (!first)
+					json << ",";
+				first = false;
+				json << "{\"lang\":\""
+				     << columnTextEscaped(stmt, 0) << "\","
+				     << "\"files\":"
+				     << sqlite3_column_int(stmt, 1) << "}";
+			}
+		} else {
+			fprintf(stderr,
+				"getProjectOverview: prepare languages "
+				"failed: %s "
+				"[module=query, method=getProjectOverview]\n",
+				sqlite3_errmsg(db));
 		}
 		json << "]";
 		sqlite3_finalize(stmt);
@@ -507,27 +585,28 @@ static void appendRowsAsJson(sqlite3_stmt *stmt, std::ostringstream &json,
 		if (!first)
 			json << ",";
 		first = false;
-		json << "{";
+		util::JsonWriter el;
+		el.beginObject();
 		for (int i = 0; i < col_count; i++) {
-			if (i > 0)
-				json << ",";
 			const char *col_name = sqlite3_column_name(stmt, i);
-			json << "\"" << (col_name ? col_name : "?") << "\":";
+			// The writer escapes keys as well as values; the column
+			// name was concatenated unescaped before.
+			el.key(col_name ? col_name : "?");
 
 			int col_type = sqlite3_column_type(stmt, i);
 			if (col_type == SQLITE_NULL) {
-				json << "null";
+				el.nullValue();
 			} else if (col_type == SQLITE_INTEGER) {
-				json << sqlite3_column_int64(stmt, i);
+				el.value(sqlite3_column_int64(stmt, i));
 			} else {
 				const char *text =
 					reinterpret_cast<const char *>(
 						sqlite3_column_text(stmt, i));
-				json << "\"" << jsonEscape(text ? text : "")
-				     << "\"";
+				el.value(text ? text : "");
 			}
 		}
-		json << "}";
+		el.endObject();
+		json << el.str();
 	}
 }
 

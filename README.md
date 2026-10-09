@@ -4,7 +4,7 @@
 
 It transforms source code into verifiable facts, understandable models, and inspectable evidence — enabling AI to validate claims against reality instead of hallucinating.
 
-**Version**: v0.2.6 | **License**: Apache 2.0
+**Version**: v0.2.7 | **License**: Apache 2.0
 
 ---
 
@@ -16,7 +16,7 @@ CodeScope is a **Project Truth Engine** that answers one question:
 
 Not "what does this code mean", but "does the code actually do what you claim?"
 
-It indexes source code into a structured code graph (call graph + reference graph + module knowledge), then exposes **47 MCP tools** that let AI agents locate symbols, trace call paths, verify claims, detect documentation drift, and analyze architecture — all with **~98.9% token savings** vs reading raw source files.
+It indexes source code into a structured code graph (call graph + reference graph + module knowledge), then exposes **46 MCP tools** that let AI agents locate symbols, trace call paths, verify claims, detect documentation drift, and analyze architecture — all with **~98.9% token savings** vs reading raw source files.
 
 ### Supported Languages (8)
 
@@ -31,6 +31,57 @@ It indexes source code into a structured code graph (call graph + reference grap
 | TypeScript | ✅ | ✅ | ✅ |
 | Java | ✅ | ✅ | ✅ |
 
+**What "Verified" means**: the language has an automated test that asserts a real
+semantic record (a named call, method declaration, or interface implementation)
+is emitted — not merely that the response JSON contains the expected keys. Those
+tests live in `engine/tests/test_ir_edge_coverage.cpp`; before they existed the
+per-language E2E harness only checked for the strings `"callers"` / `"callees"` /
+`"total_nodes"`, so a translator that emitted **zero** edges still passed.
+
+**Known limitations** (documented rather than silently dropped):
+
+- **Rust**: macro invocations (`println!`, `vec!`, user `foo!()`) are recorded as
+  calls to the macro name. tree-sitter does not expand macros, so code *generated*
+  by a macro body is not in the graph, and a macro is matched by name only.
+- **JavaScript**: `class A extends B` is not recorded as an `InterfaceImpl`
+  (JavaScript has no `implements` clause); the extends expression is still visited.
+  TypeScript/TSX `implements` clauses **are** recorded.
+- **Inference is best-effort**: receiver types come from local declarations,
+  composite literals, and `this`/`self`; dynamically typed receivers stay unknown.
+- **Pathologically deep ASTs are truncated, not walked in full**: when a file's
+  AST nests deeper than `kMaxVisitDepth` (250), the deeper subtrees are skipped
+  and the file is reported once on stderr
+  (`[module=ir, method=…] AST nesting exceeded kMaxVisitDepth=250`). The cap
+  exists because the recursive walk runs on the indexer's 512 KB worker stacks;
+  hand-written code never reaches it, generated code occasionally does.
+- **Some extensions are detected but not parsed**: `.kt`/`.kts`, `.rb`, `.scala`
+  and `.swift` are recognized (they count as candidate files) but no grammar is
+  vendored for them, so they are skipped and recorded in `parse_failures` as
+  `language_missing` — listed by `codescope parse-failures`, never silently
+  dropped, re-attempted on every run, and exempt from the
+  `CODESCOPE_FAIL_RETRY_MAX` fail-fast skip. Swift's `parser.c` is
+  ABI-incompatible with the vendored tree-sitter core, which is why its grammar,
+  visitor and builtin table are absent (see `engine/src/parser/parser.cpp`).
+- **A file keeps one identity across the entry points.** The walk-based entry
+  points store the path exactly as passed, while the single-file ones
+  (`force_index_files`, the scheduler's `--file-list` retry) receive
+  `std::fs::canonicalize`d paths. Indexing through a symlinked path (macOS
+  `/tmp/x` is really `/private/tmp/x`, and the same applies to any symlinked
+  workspace) and then force-indexing something inside it used to store one file
+  under two spellings, duplicating its symbols — `find_symbol` answered with
+  the same symbol twice. The stored spelling is now reused both for
+  root-relative forms and, as a second pass, for any absolute row whose
+  **  canonical form equals** the incoming path's (equality, not a guess, so two
+  files can never be merged), and a relative spelling is recognised when its
+  prefix resolves to the project root from the working directory the indexer
+  ran in. Still uncovered, and deliberately left at the old behaviour rather
+  than guessed: Windows paths (the narrowing pattern uses `/`) and a relative
+  spelling whose index-time working directory is no longer the current one.
+  Rows written by an older build keep their extra spelling — re-indexing deletes
+  entity rows only for the spelling being written, so clear the affected
+  `parse_failures` rows with `codescope reset-failures` and rebuild the database
+  (delete `.codescope/codescope.db` and re-index) for duplicated symbols.
+
 ### Tech Stack
 
 | Layer | Technology |
@@ -39,7 +90,7 @@ It indexes source code into a structured code graph (call graph + reference grap
 | Indexer | C++23 (Clang 17+), SQLite (WAL mode, FTS5) |
 | Server | Rust 2024 Edition, MCP Protocol (JSON-RPC 2.0, stdio transport) |
 | Graph Storage | SQLite (sole graph store, CSR adjacency for sub-ms call-graph queries) |
-| Scheduler | Built-in multi-process parallel indexer (chunk-level work-stealing) |
+| Scheduler | Built-in multi-process parallel indexer (static proportional allocation by default; opt-in shared chunk queue via `CODESCOPE_CPU_DYNAMIC=1`) |
 | Build | CMake 3.30+ (C++), Cargo (Rust) |
 
 ---
@@ -53,7 +104,7 @@ graph TB
     end
 
     subgraph "Rust MCP Server"
-        MCP["MCP Protocol (JSON-RPC 2.0)<br/>47 tools / stdio transport"]
+        MCP["MCP Protocol (JSON-RPC 2.0)<br/>46 tools / stdio transport"]
         DISPATCH["Tool Dispatch<br/>project_id auto-restore"]
     end
 
@@ -112,11 +163,11 @@ Inspector --------- evidence / finding
 ```mermaid
 flowchart LR
     Q["MCP Client<br/>tool call"] --> Q1["Server receives<br/>project_id auto-restore"]
-    Q1 --> Q2{"Tool type?"}
-    Q2 -->|"index_project"| Q3["Spawn worker subprocess<br/>→ memory isolated<br/>→ exits after done"]
-    Q2 -->|"query tools"| Q4["C++ FFI → SQLite query<br/>graph_nodes, graph_edges<br/>search_index, ..."]
+    Q1 -->     Q2{"Tool type?"}
+    Q2 -->|"session auto-index"| Q3["At initialize: spawn worker subprocess<br/>→ memory isolated<br/>→ exits after done<br/>(not a callable tool)"]
+    Q2 -->|"query tools"| Q4["C++ FFI → SQLite query<br/>entity, relation<br/>code_fts, ..."]
     Q2 -->|"get_communities"| Q5["Load full graph<br/>Label Propagation<br/>→ JSON with max_communities limit"]
-    Q2 -->|"get_hotspots"| Q6["SQL: COUNT(ge.id) JOIN<br/>graph_edges edge_type=1<br/>ORDER BY caller_count"]
+    Q2 -->|"get_hotspots"| Q6["SQL: COUNT(r.id) JOIN<br/>relation edge_type=1<br/>ORDER BY caller_count"]
     Q4 --> R["Result JSON<br/>back to MCP Client"]
     Q5 --> R
     Q6 --> R
@@ -126,23 +177,36 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    subgraph A["Phase A: Fast Scan (ms)"]
+    subgraph A["Phase A: Index (scan + full tree-sitter parse)"]
         S1["scan_project"]
         S2["total_symbols"]
         S3["module_tree"]
         S4["entry_points"]
+        S5["full tree-sitter parse → IR records"]
     end
 
-    subgraph B["Phase B: Background Enhance (async, seconds)"]
+    subgraph B["Phase B: Graph Finalize (async, seconds)"]
         E1["enhance_project"]
-        E2["full tree-sitter"]
-        E3["call graph"]
+        E2["buildGraph — NO re-parse"]
+        E3["call graph / CSR"]
         E4["FTS index"]
         E5["semantic_fact (v0.3)"]
     end
 
-    A -->|"trigger"| B
+    A -->|"trigger (CLI index-parallel path only)"| B
 ```
+
+**Where the parsing happens**: the full tree-sitter parse runs in **Phase A**, not
+Phase B. Phase B (`enhance_project`) is a lightweight *GraphFinalize* step —
+`buildGraph` → `buildFTSFromGraph` → `resolveStagedMetrics` → semantic_fact
+extraction → model build — and never re-parses or re-translates
+(`engine_queries.cpp`).
+
+**When Phase B runs automatically**: only the CLI path (`codescope index-parallel`)
+triggers it after the merge (`server/src/main.rs`). The MCP session auto-index
+(§5, `index_project`) triggers the FTS build only, so call `enhance_project`
+explicitly if you need a full graph finalization inside an MCP session.
+
 
 ---
 
@@ -170,15 +234,26 @@ Without filtering, CodeScope would waste 84% of its time indexing tests, vendore
 ### The 8-Layer Filter Cascade
 
 ```
-Layer 1: any-depth skip directories  (~120 patterns)
+Layer 1: any-depth skip directories  (~150 patterns)
   .git, .svn, .hg, node_modules, .venv, target, build, dist,
-  vendor, __pycache__, .github, deploy, docker, k8s, ...
-  → Catches VCS, build artifacts, dependencies, CI/CD, infra at ANY depth
+  vendor, vendored, third_party, bin, bench, benchmarks,
+  test, tests, e2e, docs, examples, samples,
+  __pycache__, .github, deploy, docker, k8s, ...
+  → Catches VCS, build artifacts, dependencies, vendored code and the
+    test/docs/sample conventions at ANY depth
 
-Layer 2: top-only skip directories  (depth ≤ 3, Java-safe)
-  test, tests, docs, examples, samples, scripts, e2e, integration,
-  assets, static, public, media, i18n, bench, benchmarks, ...
-  → For Java: protects package namespaces (org/.../samples/petclinic)
+Layer 2: top-only skip directories  (depth ≤ 3, every language)
+  scripts, hack, migrations, seeds, integration,
+  locale, locales, i18n, l10n, assets, static, public, media, external
+  → These are ordinary business directories outside the web convention
+    (src/integration/, pkg/scripts/, db/migrations/, app/static/ all
+    hold first-party code), so skipping them at any depth silently
+    dropped real symbols — an undetectable false negative. They are
+    still skipped at the project root and the next two levels, where
+    the web-frontend convention they target actually lives. The
+    non-source formats filling those dirs are rejected by Layer 3.
+  → For Java: the Layer-1 names (test, docs, samples, ...) are also
+    top-only, protecting package namespaces (org/.../samples/petclinic)
 
 Layer 3: file suffix skip  (always applied)
   .md, .txt, .json, .yaml, .toml, .ini, .png, .jpg, .svg,
@@ -190,8 +265,8 @@ Layer 4: exact filename skip
   .env, .env.local, .gitkeep, .gitignore, ...
 
 Layer 5: filename/directory prefix skip
-  File prefixes: ._*, ~$*, #*#
-  Directory prefixes: build_*, test_*, tmp_*
+  File prefixes: .env.*, docker-compose.* (plus trailing-`~` editor backups)
+  Directory prefixes: build_*, cmake-build-*, _build, tools-*, tools_*
 
 Layer 6: .gitignore pattern matching
   Respects every rule in the project's .gitignore
@@ -200,9 +275,17 @@ Layer 7: .codescopeignore (user-defined)
   Additional custom ignore patterns per project
 
 Layer 8: file size limit + language detection
-  • Max file size (default 10 MB, configurable via CODESCOPE_MAX_FILE_SIZE)
+  • Max file size (default 5 MB = 5242880 bytes, configurable via CODESCOPE_MAX_FILE_SIZE)
   • Undetectable language files are silently skipped
 ```
+
+> **Layer numbers are a classification, not the execution order.** The skip
+> verdict is a boolean OR, so only the *result* is observable, but the checks
+> actually run in this order (`FilterPolicy::shouldSkipEntry`): path components
+> (Layer 1 / 2) **plus Layer 6 `.gitignore` and Layer 7 `.codescopeignore`** →
+> bundle suffixes → Layer 4 exact filename + Layer 5 prefixes → Layer 3 suffix →
+> the STRICT gate → the user's `CODESCOPE_EXCLUDE_PATHS` patterns last, as an
+> override on top of everything else.
 
 ### Real-World Impact
 
@@ -229,9 +312,12 @@ codescope cli force_index_files '{"paths":["/path/to/test/file.rs"]}'
 |----------|-------------|
 | **macOS** | Xcode CLT, cmake, Rust (1.85+) |
 | **Linux** | build-essential, cmake, Rust (1.85+) |
-| **Windows** ⚠️ **Beta** | MinGW-w64 14.0.0+, Rust `x86_64-pc-windows-gnu` target, cmake. Every graph-query tool (shortest_path, get_neighbors, get_callers/callees, graph_query, subgraph, entry_points, trace_path, hotspots, impact_analysis, ...) works via the built-in SQLite graph-query backend (CSR adjacency, sub-millisecond call-graph lookups). |
+| **Windows** ⚠️ **Beta** | MinGW-w64 14.0.0+, Rust `x86_64-pc-windows-gnu` target, cmake, and the **`sqlite3` CLI on `PATH`** (the parallel and chunked schedulers merge their worker databases by piping SQL into it). Every graph-query tool (shortest_path, get_neighbors, get_callers/callees, graph_query, subgraph, entry_points, trace_path, hotspots, impact_analysis, ...) works via the built-in SQLite graph-query backend (CSR adjacency, sub-millisecond call-graph lookups). Parallel indexing (`index-parallel`, including the chunk-level scheduler) now works on Windows as well — the shared state both schedulers map has a Windows backend (`CreateFileMappingW`/`MapViewOfFile`) — but stays **Beta**: the `windows-smoke` CI job is its acceptance gate and it is dispatch-only. If the `sqlite3` CLI is missing, use `codescope index` (single-process), which does not merge. |
 
 ### Install Pre-built Binary
+
+> New here? [`docs/en/QUICK_START.md`](docs/en/QUICK_START.md) is the 5-minute path — install, index a
+> project, connect an MCP client, run the first queries.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Timwood0x10/CodeScope/main/install.sh | bash
@@ -262,8 +348,8 @@ cargo build --release
 ### Index and Query
 
 ```bash
-# Index a project
-codescope cli index_project '{"project_path":"/path/to/your/project"}'
+# Index a project (spawns an isolated worker subprocess per module)
+codescope index-parallel /path/to/your/project
 
 # Quick overview
 codescope cli project_overview '{}'
@@ -274,21 +360,59 @@ codescope
 
 ### Large Projects
 
-For projects with thousands of files, use the built-in parallel scheduler:
+For projects with thousands of files, tune the built-in parallel scheduler:
 
 ```bash
-codescope index-parallel /path/to/large/project
+codescope index-parallel /path/to/large/project --workers 8 --parallel 4
 ```
+
+`--workers` sets the total parse-worker cores (default 8) and `--parallel` the
+maximum concurrent module workers (default 4).
+
+### Maintenance
+
+```bash
+# Files the indexer could not parse, with the reason and the retry count
+codescope parse-failures --limit 50
+
+# Clear them, so those files are attempted again on the next run
+codescope reset-failures
+```
+
+Both accept `--db <path>` (or `CODESCOPE_DB_PATH`) and operate on the most
+recent project in that database. A file whose only failure is a missing grammar
+(e.g. `.swift`) is retried on every run anyway and needs no reset.
 
 ---
 
-## 5. MCP Tools (47 Tools)
+## 5. MCP Tools (46 Tools)
+
+The 46 tools listed here are exactly the ones advertised by `tools/list`
+(`server/src/tools/catalog.rs`) and dispatched by name (`TOOL_HANDLERS` in
+`server/src/tools/mod.rs`); the two sets are identical — there are no
+advertised-but-unhandled or handled-but-unadvertised tools.
+
+> **Responses are capped at 1 MiB by the stdio transport.** A tool result
+> larger than that is replaced by a JSON-RPC error (`-32000`) naming the size
+> and suggesting a narrower query or smaller limits — it is never truncated
+> silently. Bound large result sets with the tools' own arguments
+> (`LIMIT` in a `graph_query` DSL string, `limit`/`node_limit`/`edge_limit`,
+> `max_findings`, …).
 
 ### Indexing
 
+> **`index_project` is session-only and NOT callable by name.** It is absent
+> from `tools/list` and from the tool dispatcher, so
+> `tools/call {"name":"index_project"}` returns
+> `{"error":"Unknown tool: index_project …"}`. A worker-subprocess index runs
+> automatically once per MCP session at `initialize`
+> (`server/src/mcp/server.rs`). The CLI/agent equivalent is
+> `codescope index-parallel <dir>`; `codescope cli index_project` is **not** a
+> valid invocation. Call `enhance_project` explicitly if you need a full graph
+> finalization inside a session (see §2).
+
 | Tool | Description | Parameters |
 |------|-------------|------------|
-| `index_project` | Index a project directory: parse all source files, build IR, and construct the code graph. | `{"project_path": "string (required)", "language_filter": "string (optional)"}` |
 | `index_file` | Index a single source file. | `{"file_path": "string (required)"}` |
 | `force_index_files` | Force-index files/dirs bypassing default skip rules (test/, docs/, node_modules/, .gitignore, etc.). | `{"paths": ["string (required)"], "language_filter": "string (optional)"}` |
 
@@ -321,19 +445,21 @@ codescope index-parallel /path/to/large/project
 | `find_callers_by_entity` | Find callers of a symbol by its graph entity id. | `{"entity_id": "integer (required)"}` |
 | `find_callees_by_entity` | Find callees of a symbol by its graph entity id. | `{"entity_id": "integer (required)"}` |
 | `get_verifier_registry_status` | Inspect the registered verifiers and their health (supported claim types, unsupported list, backend readiness). | `{}` |
-| `codescope_trace` | Interactive recursive call exploration (depth + direction) or shortest path. | `{"function_name": "string", "depth": "integer (default 1, max 5)", "direction": "callers|callees|both", "from": "string", "to": "string"}` |
+| `codescope_trace` | Interactive recursive call exploration (depth + direction) or shortest path. | `{"function_name": "string (required for exploration mode)", "depth": "integer (default 1, max 5)", "direction": "callers\|callees\|both", "from": "string (shortest-path mode: required with to)", "to": "string (shortest-path mode: required with from)"}` |
 | `trace_flow` | Recursive execution flow tracing (caller→callee chain). | `{"function_name": "string (required)", "depth": "integer (default 3, max 10)"}` |
-| `shortest_path` | Shortest call path between two functions (BFS). | `{"from": "string", "to": "string", "from_id": "integer", "to_id": "integer"}` |
+| `shortest_path` | Shortest call path between two functions (BFS). | `{"from": "string (required unless from_id)", "to": "string (required unless to_id)", "from_id": "integer (required unless from)", "to_id": "integer (required unless to)"}` |
 | `connected_components` | Connected components in the call graph. | `{}` |
+| `get_communities` | **New** — detect communities (clusters) in the call graph via deterministic label propagation. Returns `{communities:[{id,label,member_count}], total_communities, returned_communities, inter_community_edges, truncated}`; members are omitted unless `include_members` is true. | `{"max_communities": "integer (default 20, max 500)", "include_members": "boolean (default false)", "max_members": "integer (default 10, max 200)"}` |
 
 ### Graph Query
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
-| `graph_query` | Cypher-like DSL query: `MATCH (Function:main)-[Calls]->(Method)`. | `{"dsl": "string (required)"}` |
+| `graph_query` | Cypher-like DSL query: `MATCH (Function:main)-[Calls]->(Method)`, plus optional trailing clauses: `LIMIT <n>` (**honoured**; the response then also carries `truncated: true`) and `RETURN <fields>` (accepted, no effect today). Any other trailing text is an error. Use `LIMIT` on large graphs — a broad pattern can exceed the 1 MiB transport cap (see the note above the table). | `{"dsl": "string (required)"}` |
 | `get_graph` | Retrieve the complete code graph in paginated pages. | `{"node_offset": "integer", "node_limit": "integer (max 50000)", "edge_offset": "integer", "edge_limit": "integer (max 200000)", "node_types": "string", "edge_types": "string"}` |
 | `get_subgraph` | Fetch a local region centered on a node (1-hop). | `{"node_id": "integer (required)", "radius": "integer", "node_types": "string", "edge_types": "string"}` |
 | `get_neighbors` | Fetch direct neighbors (callers + callees) of a graph node. | `{"node_id": "integer (required)", "edge_type": "integer (default -1)", "radius": "integer"}` |
+| `get_knowledge_graph` | Direct-query a knowledge-layer table. Tables: `entity`, `relation`, `architecture_edge`, `module_edge`, `capability`, `document`, `module_summary` (see §6). | `{"table": "string (required)", "limit": "integer (default 100, max 1000)"}` |
 
 ### Search
 
@@ -346,8 +472,8 @@ codescope index-parallel /path/to/large/project
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
-| `verify_integrity` | Check README-promised features actually exist in code. | `{}` |
-| `verify_claim` | Verify a single claim (capability_exists / contract_holds / architecture_follows). | `{"claim": "string (required)"}` |
+| `verify_integrity` | Check README-promised features actually exist in code. | `{"max_findings": "integer (optional, default 200, max 2000)"}` |
+| `verify_claim` | Verify a single claim. `claim` is a **JSON object string**, not free text: `{"type": "capability_exists \| contract_holds \| architecture_follows \| function_implements", "subject": "symbol/module/contract", "predicate": "optional detail"}`. An unknown or missing `type` is rejected with `error_code: claim_type_unsupported` instead of being guessed. | `{"claim": "string (required, JSON object)"}` |
 | `verify_summary` | Parse natural-language summary and verify each claim. | `{"text": "string (required)"}` |
 | `verify_review` | Verify code review comment claims. | `{"text": "string (required)"}` |
 | `verify_reality` | Verify a single AI statement against code evidence. | `{"text": "string (required)"}` |
@@ -358,9 +484,8 @@ The v0.3 Evidence Pipeline transforms indexed code into verifiable evidence and 
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
-| `enhance_project` | Run background enhancement: full tree-sitter parse, call graph, FTS, and v0.3 semantic_fact extraction. Prerequisite for `build_evidence` to produce non-empty findings. Complexity metrics and n-gram semantic vectors are built during `index_project` (restored in v0.2.5). | `{}` |
+| `enhance_project` | Run background graph finalization: `buildGraph` (call graph + CSR), FTS, staged metrics, model build, and v0.3 semantic_fact extraction. It does **not** re-parse — the full tree-sitter parse happens during indexing (Phase A, §2). Prerequisite for `build_evidence` to produce non-empty findings. Complexity metrics and n-gram semantic vectors are built during `index_project` (restored in v0.2.5); n-gram vectors additionally require `CODESCOPE_INDEX_MODE=deep`. Returns `ok:false` with `failed_step` when a finalization step fails. | `{}` |
 | `build_evidence` | Build evidence findings by applying the rule set (sync/memory/error/pattern/framework/ffi) to the project's semantic_fact rows. Each rule declares fact needs + a combine mode (Collect / MissingMatch / MissingMatchPerFunction / Count). Returns a JSON array of Evidence objects. Run after `enhance_project` so semantic facts are populated. | `{"category": "string (optional, one of: sync|memory|error|pattern|framework|ffi)"}` |
-| `verify_statement` | Verify a natural-language claim against the project's indexed evidence. Pipeline: IntentParser → Planner → EvidenceBuilder → VerdictBuilder. Returns JSON with `verdict` (Supported\|Contradicted\|PartiallyVerified\|Unknown), `confidence`, `requirements[]`, and `evidence[]`. Use this for yes/no questions about code behavior (e.g. "does this project safely handle CString?"). | `{"claim": "string (required)"}` |
 | `build_project_state` | Build (or rebuild) and persist the project state snapshot. Runs the full v0.3 Evidence Pipeline (evidence aggregation + state queries) and UPSERTs the result into the `project_state` table. Returns the snapshot JSON: overall confidence, capability/architecture/workflow/dead_code scores, per-category issue counts, and `last_updated` timestamp. | `{}` |
 | `get_project_state` | Get the previously persisted project state snapshot (without rebuilding). Returns the `snapshot_json` string for the project, or a JSON error object if no snapshot exists yet (run `build_project_state` first). Use this for fast reads of the latest health snapshot. | `{}` |
 
@@ -400,7 +525,6 @@ HTTP routes       → get_routes
 Type info         → get_type_info
 Verify claim      → verify_claim
 Enhance project   → enhance_project
-Verify statement  → verify_statement
 Build evidence    → build_evidence
 Project health    → build_project_state
 Detect drift      → detect_documentation_drift
@@ -437,6 +561,12 @@ Supported tables: `entity`, `relation`, `architecture_edge`, `module_edge`, `cap
 ## 7. Benchmark
 
 All benchmarks measured on **Apple M3 Max (36 GB RAM, 14 cores), macOS, 2026-08-14**, using `target/release/codescope` (v0.2.6) in `worker` (serial full index) mode with the pure-SQLite graph backend (no LadybugDB/Kuzu dependency), `CODESCOPE_INDEX_MODE=normal`. Query latency measured via MCP server mode (engine initialized once, median of 7 runs). Numbers reflect the in-memory fuzzy resolver + ordering fix (edge count 1,249 → 1,189 vs. the pre-fix binary; nodes/files unchanged). Other hardware will produce different results — expect slower performance on less capable machines.
+
+> **Indicative, single-run figures.** These tables are one measurement on one
+> machine, not a regression gate: `benchmarks/run_benchmark.sh` re-runs the
+> **index-time** rows, but the latencies and the token-savings table below are
+> recorded by hand and are not reproduced by any script. Treat them as
+> order-of-magnitude indications.
 
 ### Index Time
 
@@ -546,16 +676,32 @@ Each script calls `codescope cli <tool_name> '<json_args>'` internally. See `ski
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CODESCOPE_DB_PATH` | `.codescope/codescope.db` | SQLite database path |
-| `CODESCOPE_INDEX_MODE` | `normal` | Index mode: `fast` / `normal` / `strict` |
-| `CODESCOPE_EXCLUDE_PATHS` | (unset) | Comma-separated glob patterns to exclude |
-| `CODESCOPE_WORKERS` | `min(hw,8)` | Total parse-worker cores for `index-parallel` (`kDefaultParseWorkers=8`) |
+| `CODESCOPE_INDEX_MODE` | `normal` | Parse-pipeline mode: `fast` / `normal` / `deep`. `strict` is a separate discovery-only mode — see the notes below. |
+| `CODESCOPE_EXCLUDE_PATHS` | (unset) | Comma-separated glob patterns to exclude, matched against the project-relative path and applied **last** (they override the built-in filters). Escape a literal comma inside a pattern as `\,` (e.g. `a\,b/**`); `\\` is a literal backslash. |
+| `CODESCOPE_WORKERS` | `min(hw,8)` | Total parse-worker cores (`kDefaultParseWorkers=8`). The in-memory path used for projects of ≤2000 files defaults to **4** instead. |
 | `CODESCOPE_WORKER_TIMEOUT` | `300` | Worker subprocess timeout in seconds |
-| `CODESCOPE_MAX_FILE_SIZE` | (unset) | Max source file size to index in bytes |
+| `CODESCOPE_MAX_FILE_SIZE` | `5242880` (5 MB) | Max source file size to index in bytes. Files above it are skipped silently. |
+| `CODESCOPE_FAIL_RETRY_MAX` | `1` | Parse failures before a file is skipped entirely on the automatic index paths (min 1); see `parse_failures` / `codescope reset-failures`. Files whose only failure is a missing grammar (`language_missing`, e.g. `.swift`) never count and are retried on every run. `force_index_files` applies **no** such skip: a forced file is always re-attempted. |
 | `CODESCOPE_MMAP_SIZE` | 256 MB | SQLite `mmap_size` pragma value |
 | `CODESCOPE_MEM_LIMIT_MB` | `4096` | Dynamic-scheduler memory ceiling |
-| `CODESCOPE_DYNAMIC_SCHED` | `auto` | Dynamic CPU scheduling: `1` on, `0` off, unset = auto |
-| `CODESCOPE_VERBOSE` | `0` | Set to `1` for verbose logging |
+| `CODESCOPE_DYNAMIC_SCHED` | (unset = static) | Opt-in dynamic CPU scheduling. `CODESCOPE_CPU_DYNAMIC` is the canonical name and this is the legacy alias; either one works. `1`/`true`/`on` enables the shared chunk-queue scheduler, `0`/`false`/`off` disables it, unset stays on the **static** proportional allocator. |
 | `CODESCOPE_LSP` | (unset) | LSP server command for type enhancement |
+
+> **`strict` and `deep`**: `CODESCOPE_INDEX_MODE=strict` only tightens file
+> *discovery* (a whitelist gate on detected languages); it does not change the
+> parse pipeline. `deep` additionally builds the n-gram semantic vectors that
+> `normal` skips.
+>
+> **`index-parallel` always parses in `fast` mode.** Its per-module and chunk
+> workers are launched with `CODESCOPE_INDEX_MODE=fast` hard-coded
+> (`server/src/scheduler/worker.rs`, `quarantine.rs`), because the merged DB gets
+> its graph pass afterwards. Setting `normal`/`strict`/`deep` therefore has no
+> effect on `codescope index-parallel`; use the single-process
+> `codescope index` path when you need a non-`fast` pipeline.
+>
+> **Dynamic scheduling is opt-in, never automatic.** The production dispatcher
+> checks the explicit flag only; it does not auto-enable the chunk scheduler for
+> large projects (this is deliberate — see `plan/next/DYNAMIC_SCHED_REDESIGN.md`).
 
 ---
 
@@ -563,4 +709,4 @@ Each script calls `codescope cli <tool_name> '<json_args>'` internally. See `ski
 
 Apache 2.0 — see [LICENSE](LICENSE).
 
-**CodeScope v0.2.6** — Built with Rust 2024 + C++23 + tree-sitter + SQLite.
+**CodeScope v0.2.7** — Built with Rust 2024 + C++23 + tree-sitter + SQLite.

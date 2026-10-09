@@ -24,7 +24,7 @@
 #include "../src/query/query_engine.h"
 #include "../src/store/store.h"
 
-#include <cassert>
+#include "test_check.h"
 #include <cstdio>
 #include <cstring>
 #include <sqlite3.h>
@@ -44,13 +44,13 @@ static void insertEntity(store::GraphStore &store, uint64_t project_id,
 			  "start_col, end_row, end_col) "
 			  "VALUES (?, ?, 0, ?, ?, ?, 'go', 1, 0, 10, 0)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, id);
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 3, name, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 4, name, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 5, file_path, -1, SQLITE_TRANSIENT);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -66,7 +66,7 @@ static bool insertRelation(store::GraphStore &store, uint64_t project_id,
 		"INSERT OR IGNORE INTO relation (project_id, source_id, "
 		"target_id, type) VALUES (?, ?, ?, ?)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_int64(stmt, 2, source_id);
 	sqlite3_bind_int64(stmt, 3, target_id);
@@ -74,7 +74,7 @@ static bool insertRelation(store::GraphStore &store, uint64_t project_id,
 	int rc = sqlite3_step(stmt);
 	int changes = sqlite3_changes(db);
 	sqlite3_finalize(stmt);
-	assert(rc == SQLITE_DONE);
+	CHECK(rc == SQLITE_DONE);
 	return changes > 0;
 }
 
@@ -88,7 +88,7 @@ static int countRelations(store::GraphStore &store, uint64_t project_id,
 		"SELECT COUNT(*) FROM relation WHERE project_id=? AND "
 		"source_id=? AND target_id=? AND type=?";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_int64(stmt, 2, source_id);
 	sqlite3_bind_int64(stmt, 3, target_id);
@@ -136,7 +136,7 @@ int main()
 	}
 
 	uint64_t project_id = store.createProject("/typed-rel", "typed-rel");
-	assert(project_id > 0);
+	CHECK(project_id > 0);
 
 	// ── Insert two entities sharing a single source→target pair ──
 	insertEntity(store, project_id, 1, "caller", "/t/a.go");
@@ -146,15 +146,15 @@ int main()
 	// References(0), Calls(1), Defines(2), Contains(3). The unique
 	// index is on (project_id, source_id, target_id, type), so all four
 	// coexist — they differ only by `type`.
-	assert(insertRelation(
+	CHECK(insertRelation(
 		store, project_id, 1, 2,
 		graph::relationTypeToInt(graph::EdgeType::References)));
-	assert(insertRelation(store, project_id, 1, 2,
-			      graph::relationTypeToInt(graph::EdgeType::Calls)));
-	assert(insertRelation(
+	CHECK(insertRelation(store, project_id, 1, 2,
+			     graph::relationTypeToInt(graph::EdgeType::Calls)));
+	CHECK(insertRelation(
 		store, project_id, 1, 2,
 		graph::relationTypeToInt(graph::EdgeType::Defines)));
-	assert(insertRelation(
+	CHECK(insertRelation(
 		store, project_id, 1, 2,
 		graph::relationTypeToInt(graph::EdgeType::Contains)));
 
@@ -162,11 +162,11 @@ int main()
 	bool dup_inserted = insertRelation(
 		store, project_id, 1, 2,
 		graph::relationTypeToInt(graph::EdgeType::Calls));
-	assert(!dup_inserted &&
-	       "duplicate Calls(1) relation must be rejected by the unique "
-	       "index (INSERT OR IGNORE should report 0 changes)");
-	assert(countRelations(store, project_id, 1, 2, 1) == 1 &&
-	       "exactly one Calls(1) relation must exist for the pair");
+	CHECK(!dup_inserted &&
+	      "duplicate Calls(1) relation must be rejected by the unique "
+	      "index (INSERT OR IGNORE should report 0 changes)");
+	CHECK(countRelations(store, project_id, 1, 2, 1) == 1 &&
+	      "exactly one Calls(1) relation must exist for the pair");
 
 	// ── Query boundary: callees of "caller" must be ONLY "callee" ──
 	// Before Step 1 the query matched `CALLS|RELATES` and returned all
@@ -175,41 +175,41 @@ int main()
 
 	std::string callees = engine.getCallees(project_id, "caller", nullptr);
 	printf("  [debug] getCallees(caller) = %s\n", callees.c_str());
-	assert(callees.find("callee") != std::string::npos &&
-	       "getCallees(caller) must contain the callee (Calls edge)");
+	CHECK(callees.find("callee") != std::string::npos &&
+	      "getCallees(caller) must contain the callee (Calls edge)");
 	// "callee" must appear exactly once — no duplicate CALLS edges and
 	// no References/Defines/Contains leakage.
 	int callee_hits = countOccurrences(callees, "\"name\":\"callee\"");
-	assert(callee_hits == 1 &&
-	       "getCallees(caller) must return callee exactly once (no "
-	       "duplicate typed edges, no non-Calls contamination)");
+	CHECK(callee_hits == 1 &&
+	      "getCallees(caller) must return callee exactly once (no "
+	      "duplicate typed edges, no non-Calls contamination)");
 
 	std::string callers = engine.getCallers(project_id, "callee", nullptr);
 	printf("  [debug] getCallers(callee) = %s\n", callers.c_str());
-	assert(callers.find("caller") != std::string::npos &&
-	       "getCallers(callee) must contain the caller (Calls edge)");
+	CHECK(callers.find("caller") != std::string::npos &&
+	      "getCallers(callee) must contain the caller (Calls edge)");
 	int caller_hits = countOccurrences(callers, "\"name\":\"caller\"");
-	assert(caller_hits == 1 &&
-	       "getCallers(callee) must return caller exactly once");
+	CHECK(caller_hits == 1 &&
+	      "getCallers(callee) must return caller exactly once");
 
 	// ── Verify total counts in the JSON match the deduped edge set ──
 	// total should be 1 for both directions (only the Calls edge).
-	assert(callees.find("\"total\":1") != std::string::npos &&
-	       "getCallees total must be 1 (single Calls edge)");
-	assert(callers.find("\"total\":1") != std::string::npos &&
-	       "getCallers total must be 1 (single Calls edge)");
+	CHECK(callees.find("\"total\":1") != std::string::npos &&
+	      "getCallees total must be 1 (single Calls edge)");
+	CHECK(callers.find("\"total\":1") != std::string::npos &&
+	      "getCallers total must be 1 (single Calls edge)");
 
 	// ── Verify SQLite relation layer is unaffected by the query ──
 	// All four typed relations still exist in SQLite; only the query
 	// boundary filters to Calls(1).
-	assert(countRelations(store, project_id, 1, 2, 0) == 1 &&
-	       "References(0) relation preserved in SQLite");
-	assert(countRelations(store, project_id, 1, 2, 1) == 1 &&
-	       "Calls(1) relation preserved in SQLite (deduped)");
-	assert(countRelations(store, project_id, 1, 2, 2) == 1 &&
-	       "Defines(2) relation preserved in SQLite");
-	assert(countRelations(store, project_id, 1, 2, 3) == 1 &&
-	       "Contains(3) relation preserved in SQLite");
+	CHECK(countRelations(store, project_id, 1, 2, 0) == 1 &&
+	      "References(0) relation preserved in SQLite");
+	CHECK(countRelations(store, project_id, 1, 2, 1) == 1 &&
+	      "Calls(1) relation preserved in SQLite (deduped)");
+	CHECK(countRelations(store, project_id, 1, 2, 2) == 1 &&
+	      "Defines(2) relation preserved in SQLite");
+	CHECK(countRelations(store, project_id, 1, 2, 3) == 1 &&
+	      "Contains(3) relation preserved in SQLite");
 
 	store.close();
 	unlink(kDbPath);
@@ -221,5 +221,5 @@ int main()
 	printf("  - UNIQUE(project_id, source_id, target_id, type) rejects "
 	       "duplicate Calls\n");
 	printf("  - defensive result-layer dedup collapses stale duplicates\n");
-	return 0;
+	return checkFailures() ? 1 : 0;
 }

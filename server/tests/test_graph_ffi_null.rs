@@ -1,25 +1,49 @@
 // Null-store FFI tests for the graph path + connected-components functions.
 //
 // This file is a SEPARATE test binary from test_graph_ffi.rs on purpose.
-// cargo runs each #[test] function in parallel threads that share the same
-// process and therefore the same global C++ `g_store` singleton. If a
-// null-store test ran in the same process as a test that calls
-// engine_init(), the init could set g_store before the null-store test
-// runs, turning a "null store → error JSON" assertion into a flaky failure.
+// cargo runs each #[test] function in parallel threads, and the suite used to
+// share one process-global engine: a test that called the old engine_init()
+// could install state before a null-store assertion ran, turning its
+// "null store → error JSON" expectation into a flaky failure.
 //
-// By keeping every null-store assertion in a binary that NEVER calls
-// engine_init(), g_store is guaranteed to be null for the whole process
-// lifetime, so the error-JSON contract is deterministic.
+// TD-1 knife 3 removed that class of flakiness from the design: the instance
+// is passed per call, so this binary simply never creates one and every call
+// below passes a null handle. The separation is kept so a stray instance
+// cannot appear behind the assertions, and so the null contract is stated in
+// one obvious place.
 //
 // The happy-path (initialized engine) tests live in test_graph_ffi.rs.
 
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 
+/// Opaque engine handle — the C ABI's `engine_t` (engine/include/engine.h).
+#[repr(C)]
+struct CodescopeEngine {
+    _private: [u8; 0],
+}
+type EngineHandle = *mut CodescopeEngine;
+
+/// This binary never creates an instance: every call below passes a null
+/// handle, which is what an engine that was never `engine_create`d looks like
+/// (TD-1 knife 3). Calling a tool before `init` takes the same path.
+fn engine_handle() -> EngineHandle {
+    std::ptr::null_mut()
+}
+
 unsafe extern "C" {
-    fn engine_find_shortest_path(project_id: u64, source_id: u64, target_id: u64) -> *mut c_char;
-    fn engine_locate_by_name(project_id: u64, name: *const c_char) -> *mut c_char;
-    fn engine_find_connected_components(project_id: u64) -> *mut c_char;
+    fn engine_find_shortest_path(
+        handle: EngineHandle,
+        project_id: u64,
+        source_id: u64,
+        target_id: u64,
+    ) -> *mut c_char;
+    fn engine_locate_by_name(
+        handle: EngineHandle,
+        project_id: u64,
+        name: *const c_char,
+    ) -> *mut c_char;
+    fn engine_find_connected_components(handle: EngineHandle, project_id: u64) -> *mut c_char;
     fn engine_free_string(ptr: *mut c_char);
 }
 
@@ -39,8 +63,8 @@ fn take_string(ptr: *mut c_char) -> String {
 
 #[test]
 fn test_find_connected_components_null_store_returns_error_json() {
-    // Do NOT call engine_init — g_store is null for this whole process.
-    let result = take_string(unsafe { engine_find_connected_components(1) });
+    // Do NOT create an instance — every call here passes a null handle.
+    let result = take_string(unsafe { engine_find_connected_components(engine_handle(), 1) });
 
     let json: serde_json::Value =
         serde_json::from_str(&result).expect("null store should still return valid JSON");
@@ -85,9 +109,9 @@ fn test_find_connected_components_null_store_returns_error_json() {
 
 #[test]
 fn test_find_shortest_path_null_store_returns_error_json() {
-    // Before engine_init the query engine is null; the C++ side returns
-    // {"path":[],"error":"not initialized"}.
-    let result = take_string(unsafe { engine_find_shortest_path(1, 100, 200) });
+    // With a null handle the query engine is unreachable; the C++ side
+    // returns {"path":[],"error":"not initialized"}.
+    let result = take_string(unsafe { engine_find_shortest_path(engine_handle(), 1, 100, 200) });
 
     let json: serde_json::Value =
         serde_json::from_str(&result).expect("null store should still return valid JSON");
@@ -107,7 +131,7 @@ fn test_find_shortest_path_null_store_returns_error_json() {
 #[test]
 fn test_locate_by_name_null_store_returns_error_json() {
     let name_c = cstr("does_not_matter");
-    let result = take_string(unsafe { engine_locate_by_name(1, name_c.as_ptr()) });
+    let result = take_string(unsafe { engine_locate_by_name(engine_handle(), 1, name_c.as_ptr()) });
 
     let json: serde_json::Value =
         serde_json::from_str(&result).expect("null store should still return valid JSON");

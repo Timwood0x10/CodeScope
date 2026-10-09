@@ -12,8 +12,7 @@ namespace model
 // ── Role classifier thresholds (v0.2.2) ───────────────────────────────
 // Multi-signal fusion classifier in buildModuleSummaries() uses these
 // constexpr thresholds so they can be retuned in one place against `bun`
-// without touching the SQL string. See docs/dev_plans/role_classifier_plan.md
-// for the tuning protocol. Values chosen as v0.2.2 initial estimates.
+// without touching the SQL string. Values chosen as v0.2.2 initial estimates.
 //
 // role priority order (first hit stops): test -> api -> entry -> core -> utility -> dead -> infra
 //

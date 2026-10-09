@@ -2,6 +2,7 @@ SHELL := /bin/bash
 .PHONY: all build build-engine build-server \
         test test-engine test-server test-bench test-savings \
         accuracy-check \
+        bench-check bench-full bench-graph bench-graph-update \
         lint lint-cpp lint-rust fmt fmt-cpp fmt-rust check \
         clean distclean help
 
@@ -91,9 +92,25 @@ ifneq (,$(findstring Darwin,$(UNAME_S)))
 ENGINE_CMAKE_FLAGS += -DCMAKE_OSX_SYSROOT=$(shell xcrun --show-sdk-path)
 endif
 
-# Use Ninja if available for faster builds
-BUILD_GENERATOR := $(shell which ninja >/dev/null 2>&1 && echo "Ninja" || echo "Unix Makefiles")
-ENGINE_LIB      := $(BUILD_DIR)/libastgraph_engine.a
+# ─── Build Generator ─────────────────────────────────────────────
+# The generator belongs to the BUILD TREE, not to the current shell. CMake
+# refuses to reconfigure an existing tree with a different -G ("does not
+# match the generator used previously"), and the previous recipe hid that
+# failure by piping the configure output through `tail`, whose exit status
+# is always 0. The result: once ninja was installed alongside an existing
+# Unix-Makefiles tree, every CMakeLists.txt change re-ran a failing
+# configure that make believed had succeeded, the stale build system was
+# reused, and newly added source files were silently never compiled.
+#
+# Resolution order:
+#   1. BUILD_GENERATOR=... on the command line (explicit)
+#   2. the generator recorded in $(BUILD_DIR)/CMakeCache.txt
+#   3. Ninja when installed, else Unix Makefiles (fresh tree only)
+# `make clean` removes the tree, so the next build re-detects from scratch.
+ENGINE_LIB := $(BUILD_DIR)/libastgraph_engine.a
+CMAKE_CACHE := $(BUILD_DIR)/CMakeCache.txt
+CACHED_GENERATOR := $(shell sed -n 's/^CMAKE_GENERATOR:INTERNAL=//p' "$(CMAKE_CACHE)" 2>/dev/null)
+BUILD_GENERATOR ?= $(if $(strip $(CACHED_GENERATOR)),$(CACHED_GENERATOR),$(shell which ninja >/dev/null 2>&1 && echo "Ninja" || echo "Unix Makefiles"))
 
 $(BUILD_DIR):
 	@mkdir -p $(BUILD_DIR)
@@ -112,9 +129,19 @@ else
 CMAKE_GEN_FILE := $(BUILD_DIR)/Makefile
 endif
 
+# When the recorded generator and BUILD_GENERATOR disagree, the tree cannot be
+# reconfigured in place. Checked here (not with $(error) at parse time) so that
+# `make clean` — the documented remedy — still runs.
 $(CMAKE_GEN_FILE): $(ENGINE_DIR)/CMakeLists.txt $(wildcard $(ENGINE_DIR)/cmake/*.cmake) | $(BUILD_DIR)
+	@if [ -n "$(strip $(CACHED_GENERATOR))" ] && [ "$(BUILD_GENERATOR)" != "$(CACHED_GENERATOR)" ]; then \
+		printf "$(CROSS) generator mismatch: $(BUILD_DIR) was configured with '$(CACHED_GENERATOR)' but BUILD_GENERATOR is '$(BUILD_GENERATOR)'\n"; \
+		printf "          Run 'make clean' to reconfigure the tree from scratch.\n"; \
+		exit 1; \
+	fi
 	@printf "$(CYAN)[engine]$(RESET) Configuring CMake ($(BUILD_GENERATOR))...\n"
-	@cd $(BUILD_DIR) && cmake -G "$(BUILD_GENERATOR)" $(CURDIR)/$(ENGINE_DIR) $(ENGINE_CMAKE_FLAGS) 2>&1 | tail -3
+	@# pipefail (bash): a failing configure must abort the build instead of
+	@# being masked by `tail`'s exit status (see the note above).
+	@cd $(BUILD_DIR) && set -o pipefail && cmake -G "$(BUILD_GENERATOR)" $(CURDIR)/$(ENGINE_DIR) $(ENGINE_CMAKE_FLAGS) 2>&1 | tail -5
 
 $(ENGINE_LIB): $(CMAKE_GEN_FILE)
 	@printf "$(CYAN)[engine]$(RESET) Building C++ engine...\n"
@@ -136,59 +163,31 @@ test: test-engine test-server
 	@printf "$(CHECK) all tests passed\n"
 
 # Automated C++ test executables run by `make test-engine`.
-# Every automated test_*.cpp in engine/tests/ MUST be listed here so it
-# does not silently go unrun. Excluded tools are NOT automated tests:
-#   - test_fast_scan, test_fast_scan_debug, test_verify_aiscope: manual
-#     debug tools needing external args (<grammars_dir> <src_dir>);
-#     moved to engine/manual/ (built only with -DBUILD_MANUAL=ON).
-#   - test_bench, test_bench_enhance, test_bench_project,
-#     test_pipeline_bench, test_bun: benchmarks / manual debug, built
-#     on demand (see test-bench / bench-check targets).
-# Previously-excluded tests (now passing, wired back into TEST_EXES):
-#   - test_enhance_e2e: was a duplicate engine_free_string(st) in the test
-#     (double-free SIGABRT) + trace_path gated on callgraph_ready which
-#     index_project now sets after buildGraph. Both fixed.
-#   - test_js_visitor, test_ts_visitor, test_tsx_visitor: unit tests for the
-#     Js/Ts/Tsx translators that dlopen the grammar .so at runtime — they need
-#     GRAMMARS_DIR set (see test-engine target below). They pass once the
-#     grammar .so files are on disk under engine/grammars.
-# test_evidence_builder, test_project_state, test_domain_rules,
-# test_verify_planner, and test_self_bench were previously excluded for
-# hardcoded local paths; they now resolve rules/CWD portably, and the
-# three that pass are wired into TEST_EXES above. The other two
-# (test_verify_planner, test_self_bench) were removed: their assertions
-# referenced pre-v0.2.5 verify-pipeline / graph_nodes-table behavior
-# that the SQLite-only store no longer fills.
-TEST_EXES := \
-	test_ir test_graph test_graph_semantic test_graph_call_precision \
-	test_semantic_unit \
-	test_e2e test_c_e2e test_cpp_e2e test_go_e2e test_rust_e2e \
-	test_js_e2e test_ts_e2e test_java_e2e \
-	test_fp_c test_fp_cpp test_fp_go test_fp_js test_fp_ts test_fp_python \
-	test_fp_rust test_fp_java \
-	test_type_extraction test_state_builder_batch test_module_edge \
-	test_module_path_column \
-	test_model_engine test_claim_parser test_verifier_registry \
-	test_fuzzy_resolver test_resolver_fuzzy_cache \
-	test_documentation_drift test_capability_drift test_architecture_drift \
-	test_query_algorithms test_connected_components_ffi test_trigram_search \
-	test_exclude_paths test_index_metrics \
-	test_call_graph_p1 test_readme_ingestion test_call_graph_method \
-	test_project_id \
-	test_enhance_e2e \
-	test_js_visitor test_ts_visitor test_tsx_visitor \
-	test_semantic_fact_extractor \
-	test_accuracy_baseline \
-	test_verifier_lifecycle test_verifier_claim_coverage \
-        test_verifier_ground_truth \
-        test_typed_relation_query \
-        test_metrics_readiness \
-        test_call_graph_accuracy \
-        test_step11_go_smoke \
-        test_evidence_builder test_project_state test_domain_rules
+#
+# The list is DERIVED from engine/tests/*.cpp so a new test can never
+# silently go unrun. The previous hand-maintained list had drifted: it
+# omitted six tests that were passing and in the tree (test_membulk,
+# test_membulk_parity, test_resolve_strategy, test_homonym_filter,
+# test_parent_chain, test_self_inspect), and the matching CI list skipped
+# 26 more for reasons that were no longer true. CMake already builds every
+# engine/tests/*.cpp (file(GLOB), see engine/CMakeLists.txt), so the
+# sources are the single source of truth.
+#
+# TEST_EXCLUDES must stay empty unless a test genuinely cannot run under
+# `make test-engine` (for example it needs external arguments or a network
+# service). Never add an entry to hide a failure — either fix the test or
+# delete it from engine/tests/ with a tracked issue.
+TEST_EXCLUDES :=
+TEST_EXES := $(filter-out $(TEST_EXCLUDES), \
+	$(patsubst $(ENGINE_DIR)/tests/%.cpp,%,$(wildcard $(ENGINE_DIR)/tests/*.cpp)))
 
 test-engine: $(ENGINE_LIB)
 	@printf "$(CYAN)[test/engine]$(RESET) Building and running C++ tests...\n"
+	@# code_rules §4 / REVIEW_0.2.7 TEST-3: engine tests use CHECK() from
+	@# engine/tests/test_check.h, never assert(). CHECK() is always evaluated
+	@# (NDEBUG cannot compile it out) and a recorded failure makes the test
+	@# binary exit non-zero, so the build type no longer decides whether a
+	@# test actually checks anything.
 	@rm -f $(TEST_DB) $(TEST_DB)-wal $(TEST_DB)-shm
 	@rm -f /tmp/test_*.db /tmp/test_*.db-wal /tmp/test_*.db-shm 2>/dev/null || true
 	@rm -f /tmp/codescope_test_*.db /tmp/codescope_test_*.db-wal /tmp/codescope_test_*.db-shm 2>/dev/null || true
@@ -303,20 +302,50 @@ else
 endif
 	@printf "$(CHECK) bench-full complete\n"
 
+# Graph-SHAPE regression: not speed, but the RESULT — how many call edges the
+# resolver produces on fixed multi-language checkouts and how they distribute
+# across resolution kinds, parse-time strategies and deciding factors. A visitor
+# or factor change that moves real edges is invisible to the unit tests, which
+# pin hand-built fixtures; this compares against benchmarks/baselines/ and exits
+# non-zero on any difference. Relocate the checkouts with
+# CODESCOPE_BENCH_PROJECTS; missing ones are skipped.
+bench-graph:
+	@printf "$(CYAN)[bench/graph]$(RESET) Comparing graph shape against baselines...\n"
+	@bash $(BENCH_DIR)/graph_baseline.sh
+
+bench-graph-update:
+	@printf "$(CYAN)[bench/graph]$(RESET) Rewriting graph baselines (intended changes only)...\n"
+	@bash $(BENCH_DIR)/graph_baseline.sh --update
+
 $(BENCH_BIN): $(ENGINE_LIB)
 	@cmake --build $(BUILD_DIR) -j$(NPROC) 2>&1 | tail -1
 
 # ─── Lint ────────────────────────────────────────────────────────
-LINT_CPP_FILES := $(shell find $(ENGINE_DIR)/src $(ENGINE_DIR)/include -name '*.cpp' -o -name '*.h' | grep -v build)
+# Build trees are pruned by PATH. The previous `| grep -v build` dropped any
+# path containing "build" anywhere, which silently excluded eight real source
+# files — state_builder.{cpp,h}, project_state_builder.{cpp,h},
+# graph_builder.{cpp,h} and evidence_builder.{cpp,h} — from clang-format and
+# from `make check`'s lint-verify step. state_builder.cpp had drifted 50 lines
+# without a single gate noticing, and the code written there during this work
+# passed the check while failing clang-format on its own.
+CPP_LINT_PRUNE := \( -path '*/build/*' -o -path '*/build-*/*' \) -prune -o
+LINT_CPP_FILES := $(shell find $(ENGINE_DIR)/src $(ENGINE_DIR)/include $(CPP_LINT_PRUNE) \( -name '*.cpp' -o -name '*.h' \) -print)
 
 lint: lint-cpp lint-rust
 	@printf "$(CHECK) lint complete\n"
+
+# What CI runs. `lint-cpp` only formats-check the files modified in the last
+# hour (a deliberate 3s target for local iteration), so a file that was
+# mis-formatted yesterday and not touched today passed `make check`. The full
+# check costs well under a second here, so the gate uses it.
+lint-verify: lint-cpp-full lint-rust
+	@printf "$(CHECK) lint (full) complete\n"
 
 # Fast lint-cpp (3s target) - only check recently modified files
 lint-cpp: $(BUILD_DIR)/compile_commands.json
 	@printf "$(CYAN)[lint/cpp]$(RESET) Running clang-format check...\n"
 	@# Get recently modified files (last 1 hour) for fast lint
-	@RECENT_FILES=$$(find $(ENGINE_DIR)/src -name '*.cpp' -o -name '*.h' -mmin -60 | grep -v build); \
+	@RECENT_FILES=$$(find $(ENGINE_DIR)/src $(CPP_LINT_PRUNE) \( -name '*.cpp' -o -name '*.h' \) -mmin -60 -print); \
 	if [ -z "$$RECENT_FILES" ]; then \
 		RECENT_FILES="$(ENGINE_DIR)/src/query/query_engine.cpp $(ENGINE_DIR)/src/engine_lifecycle.cpp"; \
 	fi; \
@@ -358,7 +387,7 @@ fmt-rust:
 	@printf "  $(CHECK) done\n"
 
 # ─── Check (CI) ──────────────────────────────────────────────────
-check: build lint test-engine test-server
+check: build lint-verify test-engine test-server
 	@printf "$(CHECK) check complete\n"
 
 # ─── Clean ───────────────────────────────────────────────────────
@@ -368,6 +397,18 @@ check: build lint test-engine test-server
 clean:
 	@printf "$(CYAN)[clean]$(RESET) Cleaning build artifacts...\n"
 	@rm -rf $(BUILD_DIR) $(ENGINE_DIR)/build-release
+	@# A clean that did not happen is worse than no clean at all: the next
+	@# build silently reuses the stale tree. `rm -rf` can be blocked (a
+	@# sandbox or a checkout guard may refuse bulk deletes) and the recipe
+	@# would still print success, so verify it and fail loudly instead —
+	@# that failure was observed in practice and went unnoticed because a
+	@# piped caller takes the pipeline's exit status, not make's.
+	@for d in $(BUILD_DIR) $(ENGINE_DIR)/build-release; do \
+		if [ -e "$$d" ]; then \
+			printf "  $(CROSS) clean FAILED: $$d still exists — the delete was blocked (permissions or a sandbox guard). Remove it by hand before rebuilding.\n"; \
+			exit 1; \
+		fi; \
+	done
 	@cd $(SERVER_DIR) && cargo clean 2>&1 | tail -1
 	@rm -f $(TEST_DB)
 	@printf "  $(CHECK) cleaned\n"

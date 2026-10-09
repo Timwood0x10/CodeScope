@@ -18,8 +18,15 @@ static constexpr double kConfFunctionIsolated = 0.55;
 // Function exists AND is wired into the call graph — but only presence
 // + edges are confirmed, not that the function semantically implements
 // the claimed behavior (the claim's object field is not validated).
-// Downgraded from Supported to PartiallyVerified with low confidence.
-static constexpr double kConfFunctionPartiallyVerified = 0.55;
+//
+// Reported as Supported with reduced confidence, and the detail string says the
+// check was structural only. The comment here used to say the verdict was
+// "downgraded to PartiallyVerified" — a value the claim Verdict enum
+// (claim.h: Supported / Contradicted / Unknown) does not have, so the code
+// never did what the comment described. The confidence split is what separates
+// "structurally plausible" (this value) from "object-linked"
+// (kConfFunctionObjectLinked below).
+static constexpr double kConfFunctionStructuralOnly = 0.55;
 static constexpr double kConfNoStore = 0.0;
 static constexpr double kConfBackendNotReady = 0.2;
 
@@ -53,12 +60,19 @@ bool FunctionImplementsVerifier::accepts(const Claim &claim) const
 // case-insensitive exact name match (LOWER(name) = LOWER(?)). We do NOT
 // use LIKE wildcards here because a function-implements claim names a
 // specific symbol; prefix matching would over-match (e.g. "run" would
-// match "runtime"). Returns ids in SQLite row order; empty when no match.
+// match "runtime").
+//
+// @param out_ok  Set to false on prepare failure (caller must map that to
+//                Unknown, not Contradicted). True on success even when the
+//                result is empty ("function not found").
+// @return Matching entity ids in SQLite row order; empty when no match.
 static std::vector<int64_t> findFunctionEntities(store::GraphStore *store,
 						 uint64_t project_id,
-						 const std::string &subject)
+						 const std::string &subject,
+						 bool &out_ok)
 {
 	std::vector<int64_t> ids;
+	out_ok = true;
 	if (!store || !store->handle() || subject.empty())
 		return ids;
 
@@ -73,6 +87,7 @@ static std::vector<int64_t> findFunctionEntities(store::GraphStore *store,
 			"failed: %s "
 			"[module=verify, method=findFunctionEntities]\n",
 			sqlite3_errmsg(store->handle()));
+		out_ok = false;
 		return ids;
 	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
@@ -278,8 +293,20 @@ EvidenceRecord FunctionImplementsVerifier::verify(const Claim &claim)
 	}
 
 	// Step 1: the subject function must exist as an entity.
-	std::vector<int64_t> fn_ids =
-		findFunctionEntities(store_, project_id_, claim.subject);
+	// A query failure is Unknown, not Contradicted (code_rules: no hard
+	// conclusion from a failed query).
+	bool query_ok = true;
+	std::vector<int64_t> fn_ids = findFunctionEntities(
+		store_, project_id_, claim.subject, query_ok);
+	if (!query_ok) {
+		rec.verdict = Verdict::Unknown;
+		rec.confidence = kConfBackendNotReady;
+		rec.detail =
+			"FunctionImplementsVerifier: function lookup failed "
+			"[module=verify, "
+			"method=FunctionImplementsVerifier::verify]";
+		return rec;
+	}
 	if (fn_ids.empty()) {
 		rec.verdict = Verdict::Contradicted;
 		rec.confidence = kConfFunctionNotFound;
@@ -313,7 +340,7 @@ EvidenceRecord FunctionImplementsVerifier::verify(const Claim &claim)
 	// object-linked call edges and thus stays at structural confidence,
 	// so callers can tell "structurally plausible" from "object-linked".
 	rec.verdict = Verdict::Supported;
-	rec.confidence = kConfFunctionPartiallyVerified;
+	rec.confidence = kConfFunctionStructuralOnly;
 	rec.detail = "Function '" + claim.subject +
 		     "' exists and participates in the call graph "
 		     "(structural check only); semantic implementation of '" +

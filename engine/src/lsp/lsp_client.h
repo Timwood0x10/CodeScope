@@ -154,6 +154,25 @@ class LspClient {
 	// Read a JSON-RPC response from the server (blocks until received).
 	// Returns the body of the response, or empty on timeout/failure.
 	std::string readResponse(int expected_id, int timeout_ms = 5000);
+
+	/**
+     * Bytes received from the server but not yet consumed.
+     *
+     * The LSP stream is framed, not one-message-per-read: a read can deliver a
+     * `window/logMessage` notification and the response in the same chunk, and
+     * a single message can be split across reads. A buffer local to one
+     * readResponse() call threw away whatever followed the message it
+     * returned, and returned the notification when one arrived first.
+     */
+	std::string read_buffer_;
+
+#ifndef _WIN32
+	/**
+     * Wait until the server's stdin accepts more bytes, up to `timeout_ms`.
+     * False on timeout or error. See sendMessage().
+     */
+	bool waitWritable(int timeout_ms);
+#endif
 };
 
 #endif // LSP_CLIENT_H

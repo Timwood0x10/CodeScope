@@ -1,4 +1,6 @@
+#include "util/json_writer.h"
 #include "engine_internal.h"
+#include "async_knowledge.h"
 #include "filter_policy.h"
 #include "platform_win.h"
 
@@ -28,11 +30,24 @@
 // Redirected to engine_index_project with fast mode.
 // Regex scan eliminated — tree-sitter is fast enough (727ms for 150K lines).
 
-char *engine_scan_project(uint64_t project_id, const char *dir_path,
-			  const char *language_filter)
+char *engine_scan_project(engine_t handle, uint64_t project_id,
+			  const char *dir_path, const char *language_filter)
 {
-	if (!g_store)
-		return dupString("{\"error\":\"engine not initialized\"}");
-	(void)language_filter;
-	return engine_index_project(project_id, dir_path, nullptr);
+	EngineContext *ctx = engineInstance(handle);
+
+	try {
+		auto _store_guard = waitForKnowledgeBuilder();
+		if (!ctx || !ctx->store)
+			return dupString(
+				"{\"error\":\"engine not initialized\"}");
+		(void)language_filter;
+		return engine_index_project(handle, project_id, dir_path,
+					    nullptr);
+	} catch (const std::exception &e) {
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_scan_project", e.what()));
+	} catch (...) {
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_scan_project", "unknown exception"));
+	}
 }

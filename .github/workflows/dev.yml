@@ -5,7 +5,11 @@ name: Dev CI (Windows Cross-Compile)
 on:
   workflow_dispatch:
   push:
-    branches: [hhh]
+    # `dev` is the integration branch this workflow is named after; without it
+    # the Windows cross-compile only ever ran on `master`, so a regression in
+    # build.rs cross-compilation (e.g. the target-cpu=native failure fixed in
+    # d44f0fd) could not be caught before merge.
+    branches: [dev, master]
 
 permissions:
   contents: read
@@ -49,3 +53,77 @@ jobs:
         run: |
           file target/x86_64-pc-windows-gnu/release/codescope.exe | grep -i "PE32"
           echo "✅ Windows cross-compile succeeded"
+
+  # ── TD-5 step 3: run the parallel scheduler on a real Windows host ──
+  # The cross-compile job above proves the binary *links*; it cannot prove the
+  # shared-file chunk queue works, because that is a runtime property of two
+  # Windows processes mapping the same file (`src/scheduler/mapped_file.rs`).
+  # This job indexes a real project twice — once through the module-level
+  # scheduler, once through the chunk-level (work-stealing) one — and asserts
+  # the graph came out non-empty both times.
+  #
+  # Three Windows-specific requirements, all handled below:
+  #   * CodeScope needs the GNU ABI (build.rs panics on msvc), so even on a
+  #     Windows host the build target is x86_64-pc-windows-gnu and MinGW's
+  #     gcc/g++ must be on PATH — build.rs looks for plain `gcc`/`g++`.
+  #   * The merge step of the parallel scheduler shells out to the `sqlite3`
+  #     CLI (`scheduler/merge.rs`), which the runner image does not ship.
+  #   * The chunk queue and per-module DBs live in the platform temp directory,
+  #     so no /tmp-like path is assumed.
+  #
+  # NOTE: this job has not been executed yet (it needs a Windows runner) and is
+  # deliberately reachable through workflow_dispatch only, so it cannot redden a
+  # normal push until its first successful run promotes it.
+  windows-smoke:
+    name: Windows smoke (index-parallel)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7 # v4.2.2
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@1.95.0 # pinned to match local dev
+
+      - name: Install MinGW (gcc/g++ for the engine) + sqlite3 (merge step)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-sqlite3
+          path-type: inherit
+
+      - name: Add Windows GNU target
+        run: rustup target add x86_64-pc-windows-gnu
+
+      - name: Verify the toolchain the build depends on
+        shell: pwsh
+        run: |
+          gcc --version
+          g++ --version
+          sqlite3 --version
+
+      - name: Build codescope.exe
+        run: cargo build --release --target x86_64-pc-windows-gnu --bin codescope
+
+      - name: index-parallel indexes a real project (module scheduler)
+        shell: pwsh
+        run: |
+          $exe = "target/x86_64-pc-windows-gnu/release/codescope.exe"
+          $result = & $exe index-parallel engine/src --workers 2 --parallel 2 2>$null | ConvertFrom-Json
+          $result | ConvertTo-Json -Depth 3 -Compress | Write-Host
+          if ($result.ok -ne $true) { throw "index-parallel reported ok=$($result.ok)" }
+          if ($result.total_nodes -le 0) { throw "no nodes indexed (total_nodes=$($result.total_nodes))" }
+          Write-Host "✅ module scheduler: $($result.total_nodes) nodes / $($result.total_edges) edges"
+
+      - name: index-parallel indexes a real project (chunk scheduler)
+        shell: pwsh
+        run: |
+          $env:CODESCOPE_CPU_DYNAMIC = "1"
+          $exe = "target/x86_64-pc-windows-gnu/release/codescope.exe"
+          $result = & $exe index-parallel engine/src --workers 2 --parallel 2 2>$null | ConvertFrom-Json
+          $result | ConvertTo-Json -Depth 3 -Compress | Write-Host
+          if ($result.sched_mode -ne "chunked") { throw "expected the chunked scheduler, got '$($result.sched_mode)'" }
+          if ($result.complete -ne $true) { throw "chunked run reported complete=$($result.complete)" }
+          if ($result.total_nodes -le 0) { throw "no nodes indexed (total_nodes=$($result.total_nodes))" }
+          Write-Host "✅ chunk scheduler: $($result.total_nodes) nodes, $($result.success) chunk workers"

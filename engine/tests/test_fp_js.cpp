@@ -1,8 +1,9 @@
 #include "test_e2e.h"
 
-int main() {
-    // JavaScript FP verification: builtins + global constructors
-    const char* code = R"(
+int main()
+{
+	// JavaScript FP verification: builtins + global constructors
+	const char *code = R"(
 // User-defined function — should appear in callees
 function userFunction(x) {
     return x * 2;
@@ -34,14 +35,14 @@ function mainFunc() {
 }
 )";
 
-    const char* builtins[] = {
-        "String", "Number", "Boolean", "Array", "Object",
-        "parseInt", "parseFloat", "isNaN", "isFinite",
-        "encodeURIComponent",
-        nullptr
-    };
+	const char *builtins[] = { "String",	 "Number",
+				   "Boolean",	 "Array",
+				   "Object",	 "parseInt",
+				   "parseFloat", "isNaN",
+				   "isFinite",	 "encodeURIComponent",
+				   nullptr };
 
-    runFPVerificationTest("js", code, "/tmp/test_fp_js.js",
-                          "mainFunc", "userFunction", builtins);
-    return 0;
+	runFPVerificationTest("js", code, "/tmp/test_fp_js.js", "mainFunc",
+			      "userFunction", builtins);
+	return 0;
 }

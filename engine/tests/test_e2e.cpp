@@ -1,7 +1,8 @@
 #include "test_e2e.h"
 
-int main() {
-    const char* code = R"PY(
+int main()
+{
+	const char *code = R"PY(
 # calculator.py — A simple calculator module
 
 def add(a, b):
@@ -44,12 +45,8 @@ if __name__ == "__main__":
     main()
 )PY";
 
-    const char* defs[] = {"add", "Calculator", nullptr};
-    runE2eTest("python", code, "/tmp/calculator.py",
-               defs, 2,
-               "add", "multiply",
-               "add",
-               "multiply",
-               "main", "Calculator");
-    return 0;
+	const char *defs[] = { "add", "Calculator", nullptr };
+	runE2eTest("python", code, "/tmp/calculator.py", defs, 2, "add",
+		   "multiply", "add", "multiply", "main", "Calculator");
+	return 0;
 }

@@ -1,4 +1,6 @@
+#include "util/json_writer.h"
 #include "engine_internal.h"
+#include "async_knowledge.h"
 #include "verify/ffi_internal.h"
 #include "verify/architecture_drift.h"
 #include "verify/capability_drift.h"
@@ -48,7 +50,8 @@ struct AggregateVerdict {
 	double confidence = 0.0;
 };
 
-AggregateVerdict aggregateVerdict(int supported, int contradicted, int unknown)
+AggregateVerdict aggregateVerdict(EngineContext *ctx, int supported,
+				  int contradicted, int unknown)
 {
 	AggregateVerdict out;
 	int total = supported + contradicted + unknown;
@@ -89,10 +92,14 @@ AggregateVerdict aggregateVerdict(int supported, int contradicted, int unknown)
 //
 // MEMORY: caller MUST free the returned char* via engine_free_string().
 // THREAD SAFETY: single-threaded (GraphStore writer invariant).
-extern "C" char *engine_verify_review(uint64_t project_id, const char *text)
+extern "C" char *engine_verify_review(engine_t handle, uint64_t project_id,
+				      const char *text)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
-		if (!g_store)
+		auto _store_guard = waitForKnowledgeBuilder();
+		if (!ctx || !ctx->store)
 			return dupString("{\"error\":\"not initialized\"}");
 		if (!text || !*text)
 			return dupString(
@@ -101,7 +108,7 @@ extern "C" char *engine_verify_review(uint64_t project_id, const char *text)
 
 		std::string src(text);
 		auto batch = verify_ffi::verify_claim_batch(
-			project_id, src, kSourceKindCodeReview,
+			ctx, project_id, src, kSourceKindCodeReview,
 			src.substr(0, kSourceRefMaxLen));
 
 		std::ostringstream json;
@@ -109,23 +116,27 @@ extern "C" char *engine_verify_review(uint64_t project_id, const char *text)
 		     << ",\"results\":" << batch.results_json
 		     << ",\"summary\":{\"supported\":" << batch.supported
 		     << ",\"contradicted\":" << batch.contradicted
-		     << ",\"unknown\":" << batch.unknown << ",\"trust_score\":";
+		     << ",\"unknown\":" << batch.unknown << ",\"status\":\""
+		     << batch.status << "\""
+		     << ",\"verdicts_decided\":"
+		     << (batch.supported + batch.contradicted)
+		     << ",\"trust_score\":";
 		int denom = batch.supported + batch.contradicted;
 		if (denom > 0)
 			json << (static_cast<double>(batch.supported) /
 				 static_cast<double>(denom));
 		else
+			// No decided verdicts — `status` says whether the text had no
+			// claims at all or only undecidable ones.
 			json << "0.0";
 		json << "}}";
 		return dupString(json.str());
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_verify_review] ") +
-			e.what() + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_verify_review", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_verify_review] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_verify_review", "unknown exception"));
 	}
 }
 
@@ -147,10 +158,14 @@ extern "C" char *engine_verify_review(uint64_t project_id, const char *text)
 //
 // MEMORY: caller MUST free the returned char* via engine_free_string().
 // THREAD SAFETY: single-threaded (GraphStore writer invariant).
-extern "C" char *engine_verify_reality(uint64_t project_id, const char *text)
+extern "C" char *engine_verify_reality(engine_t handle, uint64_t project_id,
+				       const char *text)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
-		if (!g_store)
+		auto _store_guard = waitForKnowledgeBuilder();
+		if (!ctx || !ctx->store)
 			return dupString("{\"error\":\"not initialized\"}");
 		if (!text || !*text)
 			return dupString(
@@ -159,28 +174,29 @@ extern "C" char *engine_verify_reality(uint64_t project_id, const char *text)
 
 		std::string src(text);
 		auto batch = verify_ffi::verify_claim_batch(
-			project_id, src, kSourceKindAiStatement,
+			ctx, project_id, src, kSourceKindAiStatement,
 			src.substr(0, kSourceRefMaxLen));
 
-		AggregateVerdict agg = aggregateVerdict(
-			batch.supported, batch.contradicted, batch.unknown);
+		AggregateVerdict agg = aggregateVerdict(ctx, batch.supported,
+							batch.contradicted,
+							batch.unknown);
 
-		std::ostringstream json;
-		json << "{\"statement\":\""
-		     << jsonEscape(src.substr(0, kSourceRefMaxLen))
-		     << "\",\"claims_parsed\":" << batch.claims_count
-		     << ",\"verdict\":\"" << agg.verdict
-		     << "\",\"confidence\":" << agg.confidence
-		     << ",\"results\":" << batch.results_json << "}";
+		util::JsonWriter json;
+		json.beginObject();
+		json.key("statement").value(src.substr(0, kSourceRefMaxLen));
+		json.key("claims_parsed").value(batch.claims_count);
+		json.key("status").value(batch.status);
+		json.key("verdict").value(agg.verdict);
+		json.key("confidence").value(agg.confidence);
+		json.key("results").raw(batch.results_json);
+		json.endObject();
 		return dupString(json.str());
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_verify_reality] ") +
-			e.what() + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_verify_reality", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_verify_reality] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_verify_reality", "unknown exception"));
 	}
 }
 
@@ -203,13 +219,16 @@ extern "C" char *engine_verify_reality(uint64_t project_id, const char *text)
 //
 // MEMORY: caller MUST free the returned char* via engine_free_string().
 // THREAD SAFETY: single-threaded (GraphStore writer invariant).
-extern "C" char *engine_detect_drift(uint64_t project_id)
+extern "C" char *engine_detect_drift(engine_t handle, uint64_t project_id)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
-		if (!g_store)
+		auto _store_guard = waitForKnowledgeBuilder();
+		if (!ctx || !ctx->store)
 			return dupString("{\"error\":\"not initialized\"}");
 
-		sqlite3 *db = g_store->handle();
+		sqlite3 *db = ctx->store->handle();
 		if (!db)
 			return dupString(
 				"{\"error\":\"db handle null "
@@ -253,21 +272,24 @@ extern "C" char *engine_detect_drift(uint64_t project_id)
 						"Capability '" + name +
 						"' declared in README but no "
 						"implementing entity with callers";
-					g_store->insertFinding(
+					ctx->store->insertFinding(
 						project_id, "MissingCapability",
 						kDriftSeverityHard, 0, detail,
 						0.9);
 					if (!first)
 						json << ",";
 					first = false;
-					json << "{\"type\":\"MissingCapability\","
-					     << "\"severity\":"
-					     << kDriftSeverityHard
-					     << ",\"capability_id\":" << cid
-					     << ",\"subject\":\""
-					     << jsonEscape(name) << "\""
-					     << ",\"detail\":\""
-					     << jsonEscape(detail) << "\"}";
+					util::JsonWriter el;
+					el.beginObject();
+					el.key("type").value(
+						"MissingCapability");
+					el.key("severity")
+						.value(kDriftSeverityHard);
+					el.key("capability_id").value(cid);
+					el.key("subject").value(name);
+					el.key("detail").value(detail);
+					el.endObject();
+					json << el.str();
 					drifts_found++;
 				}
 				sqlite3_finalize(stmt);
@@ -401,7 +423,7 @@ extern "C" char *engine_detect_drift(uint64_t project_id)
 							"' declared in " +
 							file_path +
 							" but no enforcing code detected";
-						g_store->insertFinding(
+						ctx->store->insertFinding(
 							project_id,
 							"BrokenContract",
 							kDriftSeverityHard, 0,
@@ -409,15 +431,17 @@ extern "C" char *engine_detect_drift(uint64_t project_id)
 						if (!first)
 							json << ",";
 						first = false;
-						json << "{\"type\":\"BrokenContract\","
-						     << "\"severity\":"
-						     << kDriftSeverityHard
-						     << ",\"contract_id\":"
-						     << cid << ",\"subject\":\""
-						     << jsonEscape(name) << "\""
-						     << ",\"detail\":\""
-						     << jsonEscape(detail)
-						     << "\"}";
+						util::JsonWriter el;
+						el.beginObject();
+						el.key("type").value(
+							"BrokenContract");
+						el.key("severity")
+							.value(kDriftSeverityHard);
+						el.key("contract_id").value(cid);
+						el.key("subject").value(name);
+						el.key("detail").value(detail);
+						el.endObject();
+						json << el.str();
 						drifts_found++;
 					}
 				}
@@ -428,13 +452,11 @@ extern "C" char *engine_detect_drift(uint64_t project_id)
 		json << "],\"drifts_found\":" << drifts_found << "}";
 		return dupString(json.str());
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_detect_drift] ") +
-			e.what() + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_detect_drift", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_detect_drift] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_detect_drift", "unknown exception"));
 	}
 }
 
@@ -458,14 +480,18 @@ extern "C" char *engine_detect_drift(uint64_t project_id)
 //
 // MEMORY: caller MUST free the returned char* via engine_free_string().
 // THREAD SAFETY: single-threaded (GraphStore writer invariant).
-extern "C" char *engine_detect_documentation_drift(uint64_t project_id)
+extern "C" char *engine_detect_documentation_drift(engine_t handle,
+						   uint64_t project_id)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
-		if (!g_store)
+		auto _store_guard = waitForKnowledgeBuilder();
+		if (!ctx || !ctx->store)
 			return dupString("{\"error\":\"not initialized\"}");
 
 		// Read README content from the document table.
-		sqlite3 *db = g_store->handle();
+		sqlite3 *db = ctx->store->handle();
 		if (!db)
 			return dupString(
 				"{\"error\":\"db handle null "
@@ -509,7 +535,7 @@ extern "C" char *engine_detect_documentation_drift(uint64_t project_id)
 		for (const auto &claim : claims) {
 			claimed.push_back(claim.display);
 			int64_t count = verify::countEntitiesByLanguage(
-				*g_store, project_id, claim.canonical);
+				*ctx->store, project_id, claim.canonical);
 			if (count > 0)
 				found.push_back(claim.display);
 			else
@@ -527,56 +553,51 @@ extern "C" char *engine_detect_documentation_drift(uint64_t project_id)
 
 		// Persist a finding row for each missing language.
 		for (size_t i = 0; i < missing.size(); ++i) {
-			g_store->insertFinding(project_id, "DocumentationDrift",
-					       verify::kDriftSeverityDoc, 0,
-					       missing_details[i],
-					       verify::kDriftConfidenceDoc);
+			ctx->store->insertFinding(project_id,
+						  "DocumentationDrift",
+						  verify::kDriftSeverityDoc, 0,
+						  missing_details[i],
+						  verify::kDriftConfidenceDoc);
 		}
 		int drifts_found = static_cast<int>(missing.size());
 
 		// Serialize to JSON:
 		// {"claimed_languages":[...],"found_languages":[...],
 		//  "missing_languages":[...],"drifts":[...],"drifts_found":N}
-		std::ostringstream json;
-		json << "{\"claimed_languages\":[";
-		for (size_t i = 0; i < claimed.size(); ++i) {
-			if (i > 0)
-				json << ",";
-			json << "\"" << jsonEscape(claimed[i]) << "\"";
-		}
-		json << "],\"found_languages\":[";
-		for (size_t i = 0; i < found.size(); ++i) {
-			if (i > 0)
-				json << ",";
-			json << "\"" << jsonEscape(found[i]) << "\"";
-		}
-		json << "],\"missing_languages\":[";
+		util::JsonWriter json;
+		json.beginObject();
+		json.key("claimed_languages").beginArray();
+		for (const auto &lang : claimed)
+			json.value(lang);
+		json.endArray();
+		json.key("found_languages").beginArray();
+		for (const auto &lang : found)
+			json.value(lang);
+		json.endArray();
+		json.key("missing_languages").beginArray();
+		for (const auto &lang : missing)
+			json.value(lang);
+		json.endArray();
+		json.key("drifts").beginArray();
 		for (size_t i = 0; i < missing.size(); ++i) {
-			if (i > 0)
-				json << ",";
-			json << "\"" << jsonEscape(missing[i]) << "\"";
+			json.beginObject();
+			json.key("type").value("DocumentationDrift");
+			json.key("severity").value(verify::kDriftSeverityDoc);
+			json.key("subject").value(missing[i]);
+			json.key("detail").value(missing_details[i]);
+			json.endObject();
 		}
-		json << "],\"drifts\":[";
-		for (size_t i = 0; i < missing.size(); ++i) {
-			if (i > 0)
-				json << ",";
-			json << "{\"type\":\"DocumentationDrift\""
-			     << ",\"severity\":" << verify::kDriftSeverityDoc
-			     << ",\"subject\":\"" << jsonEscape(missing[i])
-			     << "\""
-			     << ",\"detail\":\""
-			     << jsonEscape(missing_details[i]) << "\"}";
-		}
-		json << "],\"drifts_found\":" << drifts_found << "}";
+		json.endArray();
+		json.key("drifts_found").value(drifts_found);
+		json.endObject();
 		return dupString(json.str());
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_detect_documentation_drift] ") +
-			e.what() + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_detect_documentation_drift", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_detect_documentation_drift] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_detect_documentation_drift",
+			"unknown exception"));
 	}
 }
 
@@ -598,26 +619,30 @@ extern "C" char *engine_detect_documentation_drift(uint64_t project_id)
 //
 // MEMORY: caller MUST free the returned char* via engine_free_string().
 // THREAD SAFETY: single-threaded (GraphStore writer invariant).
-extern "C" char *engine_detect_capability_drift(uint64_t project_id)
+extern "C" char *engine_detect_capability_drift(engine_t handle,
+						uint64_t project_id)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
-		if (!g_store)
+		auto _store_guard = waitForKnowledgeBuilder();
+		if (!ctx || !ctx->store)
 			return dupString(
 				"{\"error\":\"not initialized "
 				"[module=ffi, method=engine_detect_capability_drift]\"}");
 
-		sqlite3 *db = g_store->handle();
+		sqlite3 *db = ctx->store->handle();
 		if (!db)
 			return dupString(
 				"{\"error\":\"db not open "
 				"[module=ffi, method=engine_detect_capability_drift]\"}");
 
 		auto drifts =
-			verify::detectCapabilityDrift(*g_store, project_id);
+			verify::detectCapabilityDrift(*ctx->store, project_id);
 
 		// Persist each drift as a finding row.
 		for (const auto &d : drifts) {
-			g_store->insertFinding(
+			ctx->store->insertFinding(
 				project_id, "CapabilityDrift",
 				verify::kDriftSeverityCapability, 0, d.detail,
 				verify::kDriftConfidenceCapability);
@@ -652,13 +677,15 @@ extern "C" char *engine_detect_capability_drift(uint64_t project_id)
 		for (size_t i = 0; i < drifts.size(); ++i) {
 			if (i > 0)
 				json << ",";
-			json << "{\"type\":\"CapabilityDrift\""
-			     << ",\"severity\":"
-			     << verify::kDriftSeverityCapability
-			     << ",\"subject\":\""
-			     << jsonEscape(drifts[i].subject) << "\""
-			     << ",\"detail\":\"" << jsonEscape(drifts[i].detail)
-			     << "\"}";
+			util::JsonWriter el;
+			el.beginObject();
+			el.key("type").value("CapabilityDrift");
+			el.key("severity")
+				.value(verify::kDriftSeverityCapability);
+			el.key("subject").value(drifts[i].subject);
+			el.key("detail").value(drifts[i].detail);
+			el.endObject();
+			json << el.str();
 		}
 		json << "],\"drifts_found\":" << drifts.size();
 		// Honest reporting: when the capability table is empty there is
@@ -671,13 +698,12 @@ extern "C" char *engine_detect_capability_drift(uint64_t project_id)
 		json << "}";
 		return dupString(json.str());
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_detect_capability_drift] ") +
-			e.what() + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_detect_capability_drift", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_detect_capability_drift] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_detect_capability_drift",
+			"unknown exception"));
 	}
 }
 
@@ -701,23 +727,28 @@ extern "C" char *engine_detect_capability_drift(uint64_t project_id)
 //
 // MEMORY: caller MUST free the returned char* via engine_free_string().
 // THREAD SAFETY: single-threaded (GraphStore writer invariant).
-extern "C" char *engine_detect_architecture_drift(uint64_t project_id)
+extern "C" char *engine_detect_architecture_drift(engine_t handle,
+						  uint64_t project_id)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
-		if (!g_store)
+		auto _store_guard = waitForKnowledgeBuilder();
+		if (!ctx || !ctx->store)
 			return dupString(
 				"{\"error\":\"not initialized "
 				"[module=ffi, method=engine_detect_architecture_drift]\"}");
 
-		auto drifts =
-			verify::detectArchitectureDrift(*g_store, project_id);
+		auto drifts = verify::detectArchitectureDrift(*ctx->store,
+							      project_id);
 
 		// Persist each drift as a finding row.
 		for (const auto &d : drifts) {
-			g_store->insertFinding(project_id, "ArchitectureDrift",
-					       verify::kDriftSeverityArch, 0,
-					       d.detail,
-					       verify::kDriftConfidenceArch);
+			ctx->store->insertFinding(project_id,
+						  "ArchitectureDrift",
+						  verify::kDriftSeverityArch, 0,
+						  d.detail,
+						  verify::kDriftConfidenceArch);
 		}
 
 		std::ostringstream json;
@@ -725,22 +756,23 @@ extern "C" char *engine_detect_architecture_drift(uint64_t project_id)
 		for (size_t i = 0; i < drifts.size(); ++i) {
 			if (i > 0)
 				json << ",";
-			json << "{\"type\":\"ArchitectureDrift\""
-			     << ",\"severity\":" << verify::kDriftSeverityArch
-			     << ",\"subject\":\""
-			     << jsonEscape(drifts[i].subject) << "\""
-			     << ",\"detail\":\"" << jsonEscape(drifts[i].detail)
-			     << "\"}";
+			util::JsonWriter el;
+			el.beginObject();
+			el.key("type").value("ArchitectureDrift");
+			el.key("severity").value(verify::kDriftSeverityArch);
+			el.key("subject").value(drifts[i].subject);
+			el.key("detail").value(drifts[i].detail);
+			el.endObject();
+			json << el.str();
 		}
 		json << "],\"drifts_found\":" << drifts.size() << "}";
 		return dupString(json.str());
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_detect_architecture_drift] ") +
-			e.what() + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_detect_architecture_drift", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_detect_architecture_drift] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_detect_architecture_drift",
+			"unknown exception"));
 	}
 }

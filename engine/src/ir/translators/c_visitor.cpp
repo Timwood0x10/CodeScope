@@ -110,6 +110,15 @@ SemanticUnit *CVisitor::visit(TSTree *tree, const char *source,
 	class_scope_stack_.clear();
 
 	TSNode root_node = ts_tree_root_node(tree);
+	// Names this file defines, so a locally declared `free`/`assert` ... is not
+	// dropped as a stdlib call.
+	defined_names_.clear();
+	collectDefinedNames(root_node);
+	// Out-of-class definitions present in this file (see
+	// out_of_class_defs_): a class-body declaration for one of them must not
+	// be emitted a second time.
+	out_of_class_defs_.clear();
+	collectOutOfClassDefs(root_node);
 	pushScope();
 	SourceRange root_loc = location(root_node);
 	uint64_t root_id = emitter_->emitVariable("", root_loc, 0);
@@ -160,6 +169,7 @@ void CVisitor::handleFuncDef(TSNode node, uint64_t parent_id)
 	}
 	uint64_t id = emitter_->emitFunction(name, loc, parent_id, 0, false,
 					     detectVisibility(node));
+	recordParameterTypes(node);
 	defineSymbol(name, id);
 	// Step 4/5 (plan §4C/§5): tag methods with a qualified name so the
 	// Resolver's factorReceiverTypeMatch can match a call's receiver_type
@@ -195,6 +205,45 @@ void CVisitor::handleFuncDef(TSNode node, uint64_t parent_id)
 	}
 	popFunctionScope();
 	popScope();
+}
+
+void CVisitor::recordParameterTypes(TSNode func_def)
+{
+	// The parameter list hangs off the declarator, one level below the
+	// definition — the same reason extractName() reads the `declarator` field:
+	// the first named child of a function_definition is the return type, so
+	// scanning the definition's children reaches the return type instead.
+	//
+	// Only named parameters are recorded (`void f(int)` binds nothing), and
+	// extractName() unwraps the declarator for the parameter, so `*o` and `&o`
+	// both yield `o`.
+	const uint32_t count = ts_node_child_count(func_def);
+	for (uint32_t i = 0; i < count; i++) {
+		TSNode child = ts_node_child(func_def, i);
+		if (!ts_node_is_named(child) ||
+		    strcmp(ts_node_type(child), "function_declarator") != 0)
+			continue;
+		TSNode params =
+			ts_node_child_by_field_name(child, "parameters", 10);
+		if (ts_node_is_null(params))
+			continue;
+		const uint32_t param_count = ts_node_child_count(params);
+		for (uint32_t p = 0; p < param_count; p++) {
+			TSNode param = ts_node_child(params, p);
+			if (!ts_node_is_named(param) ||
+			    strcmp(ts_node_type(param),
+				   "parameter_declaration") != 0)
+				continue;
+			TSNode type_node =
+				ts_node_child_by_field_name(param, "type", 4);
+			if (ts_node_is_null(type_node))
+				continue;
+			const std::string param_name = extractName(param);
+			if (param_name.empty())
+				continue;
+			recordVarType(param_name, nodeText(type_node));
+		}
+	}
 }
 
 void CVisitor::handleDeclaration(TSNode node, uint64_t parent_id)
@@ -354,8 +403,17 @@ void CVisitor::handleCall(TSNode node, uint64_t parent_id)
 	// Skip C compiler builtins and common stdlib functions — they are NOT
 	// user-defined calls and the Resolver Pipeline would generate
 	// false-positive edges by matching them to entities with the same name.
+	//
+	// NOTE (deliberate, unlike the Go/Java/Python/JS visitors): this also
+	// filters QUALIFIED calls (`ops->free(x)`, `Util::clone()`), whose last
+	// segment is the bare `name`. The C list contains very common stdlib
+	// names (malloc/free/memcpy/printf/exit/assert) and C's idiomatic
+	// vtable-style structs name callback fields exactly that way, while the
+	// resolver has no receiver-type evidence for a field call. Emitting a
+	// record would therefore re-open the false-positive flood this filter
+	// exists to prevent; dropping the call is the conservative choice.
 	// Reference: codebase-memory-mcp (MIT) c_lsp.c :: is_c_builtin_func()
-	if (!name.empty() && isCBuiltin(name)) {
+	if (!name.empty() && isCBuiltin(name) && !isLocallyDefined(name)) {
 		// Still visit children to pick up nested calls/expressions
 		for (uint32_t i = 0; i < count; i++) {
 			TSNode child = ts_node_child(node, i);
@@ -366,7 +424,7 @@ void CVisitor::handleCall(TSNode node, uint64_t parent_id)
 			if (strcmp(ts_node_type(child), "argument_list") == 0)
 				visitChildren(child, parent_id);
 			else
-				visitNode(child, parent_id);
+				visitChild(child, parent_id);
 		}
 		return;
 	}
@@ -456,7 +514,7 @@ void CVisitor::handleCall(TSNode node, uint64_t parent_id)
 		if (strcmp(ts_node_type(child), "argument_list") == 0)
 			visitChildren(child, id);
 		else
-			visitNode(child, id);
+			visitChild(child, id);
 	}
 }
 
@@ -486,7 +544,7 @@ void CVisitor::handleNewExpr(TSNode node, uint64_t parent_id)
 	}
 
 	// Skip C compiler builtins / common stdlib — NOT user-defined calls.
-	if (!name.empty() && isCBuiltin(name)) {
+	if (!name.empty() && isCBuiltin(name) && !isLocallyDefined(name)) {
 		for (uint32_t i = 0; i < count; i++) {
 			TSNode child = ts_node_child(node, i);
 			if (!ts_node_is_named(child))
@@ -494,7 +552,7 @@ void CVisitor::handleNewExpr(TSNode node, uint64_t parent_id)
 			if (strcmp(ts_node_type(child), "argument_list") == 0)
 				visitChildren(child, parent_id);
 			else
-				visitNode(child, parent_id);
+				visitChild(child, parent_id);
 		}
 		return;
 	}
@@ -538,7 +596,7 @@ void CVisitor::handleNewExpr(TSNode node, uint64_t parent_id)
 		if (strcmp(t, "argument_list") == 0)
 			visitChildren(child, id);
 		else
-			visitNode(child, id);
+			visitChild(child, id);
 	}
 }
 
@@ -586,6 +644,43 @@ void CVisitor::handlePreprocDef(TSNode node, uint64_t parent_id)
 
 std::string CVisitor::extractName(TSNode node)
 {
+	// Read the `declarator` FIELD first instead of scanning children in order.
+	//
+	// In a function_definition the first named child is the return type, and for
+	// a qualified return type (`std::string`, `nlohmann::json`, `Status::Code`)
+	// tree-sitter-cpp parses that type as a qualified_identifier. The scan below
+	// then matched the TYPE before the declarator, recursed into it, found only
+	// namespace_identifier / type_identifier — neither of which any branch
+	// accepts — and returned "" for the whole definition. handleFuncDef treats
+	// an empty name as "no name" and drops the record, so every function
+	// returning a qualified type was invisible to the index: the entire
+	// QueryEngine surface (all of whose methods return std::string JSON) plus
+	// the std::string-returning store/graph accessors. Variables declared with a
+	// qualified type (`std::string name;`) were dropped the same way.
+	//
+	// The declarator field is the same node the old branches reached for the
+	// cases that did work, so nothing regresses.
+	TSNode declarator = ts_node_child_by_field_name(node, "declarator", 10);
+	if (!ts_node_is_null(declarator)) {
+		// The declarator is often the name node itself (a free function, or the
+		// innermost level of a pointer/function declarator chain). The scan
+		// below inspects CHILDREN, so recursing into a bare identifier would
+		// find no children and return "" — which silently dropped every free
+		// function definition. Read the text directly when the declarator
+		// already is the name.
+		//
+		// operator_name / destructor_name are name nodes too (`operator==`,
+		// `~Point`): they have no children, so recursing into them returned ""
+		// and the whole definition was dropped.
+		const char *dt = ts_node_type(declarator);
+		if (strcmp(dt, "identifier") == 0 ||
+		    strcmp(dt, "field_identifier") == 0 ||
+		    strcmp(dt, "operator_name") == 0 ||
+		    strcmp(dt, "destructor_name") == 0)
+			return nodeText(declarator);
+		return extractName(declarator);
+	}
+
 	uint32_t count = ts_node_child_count(node);
 	for (uint32_t i = 0; i < count; i++) {
 		TSNode child = ts_node_child(node, i);
@@ -602,6 +697,15 @@ std::string CVisitor::extractName(TSNode node)
 		// handleFuncDef fell into the visitChildren path, never
 		// emitting a Function record or calling defineSymbol).
 		if (strcmp(t, "field_identifier") == 0)
+			return nodeText(child);
+		// operator_name / destructor_name: `bool operator==(...)`,
+		// `~Point()`. tree-sitter-cpp parses the overloaded operator as an
+		// operator_name node ("operator==") and a destructor as a
+		// destructor_name node ("~Point"); neither is an identifier or
+		// field_identifier, so both were previously skipped and the
+		// definition emitted with an empty name (dropped as a Variable).
+		if (strcmp(t, "operator_name") == 0 ||
+		    strcmp(t, "destructor_name") == 0)
 			return nodeText(child);
 		// qualified_identifier: out-of-class member function
 		// definitions like "int64_t GraphStore::buildCallEdgesSQL(
@@ -636,6 +740,30 @@ std::string CVisitor::extractName(TSNode node)
 	return "";
 }
 
+void CVisitor::collectOutOfClassDefs(TSNode node, int depth)
+{
+	// Bound the recursion with the same cap as the other walks: this scan runs
+	// over the whole tree before the traversal, so an unbounded deep AST would
+	// overflow the stack here too. It does not report the truncation itself —
+	// collectDefinedNames walks the same tree with the same cap and runs first,
+	// so the file is already covered by the once-per-file report ([module=ir,
+	// method=collectDefinedNames]).
+	if (depth >= kMaxVisitDepth)
+		return;
+	uint32_t cnt = ts_node_child_count(node);
+	for (uint32_t i = 0; i < cnt; i++) {
+		TSNode c = ts_node_child(node, i);
+		if (!ts_node_is_named(c))
+			continue;
+		if (strcmp(ts_node_type(c), "function_definition") == 0) {
+			std::string q = extractQualifiedName(c);
+			if (!q.empty())
+				out_of_class_defs_.insert(std::move(q));
+		}
+		collectOutOfClassDefs(c, depth + 1);
+	}
+}
+
 std::string CVisitor::extractQualifiedName(TSNode node)
 {
 	// Walk the function_definition's declarator chain for a
@@ -644,31 +772,72 @@ std::string CVisitor::extractQualifiedName(TSNode node)
 	//   identifier (scope), "::" (unnamed), field_identifier (name).
 	// Returns "" when no qualified scope is present; the caller then falls
 	// back to currentClassName() for in-class methods.
+	//
+	// Read the `declarator` field first, for the same reason as extractName():
+	// the first named child of a function_definition is the return type, and a
+	// qualified return type (`std::string`) is itself a qualified_identifier.
+	// Scanning children in order used to hit that type first and return "" — so
+	// `Scope::method` definitions were registered without their scope whenever
+	// the return type happened to be qualified. The declarator never contains
+	// the return type.
+	// Collect every name segment of the qualified_identifier in source
+	// order; the last one is the method, the rest is its scope.
+	//
+	// tree-sitter-cpp mixes node types inside one qualified_identifier:
+	// `GraphStore::buildCallEdgesSQL` is namespace_identifier + identifier,
+	// `Point::operator==` is type_identifier + operator_name, and a nested
+	// `a::b::c` adds a namespace_identifier per level. The scope is NOT
+	// always an `identifier` — matching only `identifier` (the original
+	// code) returned an empty qualified name for every out-of-class
+	// definition. Taking the trailing segment handles all of those shapes.
+	auto nameOf = [this](TSNode qualified) -> std::string {
+		std::vector<std::string> parts;
+		uint32_t qc = ts_node_child_count(qualified);
+		for (uint32_t j = 0; j < qc; j++) {
+			TSNode q = ts_node_child(qualified, j);
+			if (!ts_node_is_named(q))
+				continue;
+			const char *qt = ts_node_type(q);
+			if (strcmp(qt, "identifier") == 0 ||
+			    strcmp(qt, "type_identifier") == 0 ||
+			    strcmp(qt, "namespace_identifier") == 0 ||
+			    strcmp(qt, "field_identifier") == 0 ||
+			    strcmp(qt, "operator_name") == 0 ||
+			    strcmp(qt, "destructor_name") == 0)
+				parts.push_back(nodeText(q));
+		}
+		if (parts.size() < 2)
+			return std::string();
+		std::string out;
+		for (size_t i = 0; i + 1 < parts.size(); i++) {
+			if (!out.empty())
+				out += "::";
+			out += parts[i];
+		}
+		out += "::";
+		out += parts.back();
+		return out;
+	};
+
+	// The node reached through the declarator chain may itself BE the
+	// qualified_identifier. It has no declarator field, so recursing past it
+	// would return "" and silently drop the scope of every out-of-class
+	// definition — check for it before descending.
+	if (strcmp(ts_node_type(node), "qualified_identifier") == 0)
+		return nameOf(node);
+
+	TSNode declarator = ts_node_child_by_field_name(node, "declarator", 10);
+	if (!ts_node_is_null(declarator))
+		return extractQualifiedName(declarator);
+
 	uint32_t count = ts_node_child_count(node);
 	for (uint32_t i = 0; i < count; i++) {
 		TSNode child = ts_node_child(node, i);
 		if (!ts_node_is_named(child))
 			continue;
 		const char *t = ts_node_type(child);
-		if (strcmp(t, "qualified_identifier") == 0) {
-			std::string scope;
-			std::string method;
-			uint32_t qc = ts_node_child_count(child);
-			for (uint32_t j = 0; j < qc; j++) {
-				TSNode q = ts_node_child(child, j);
-				if (!ts_node_is_named(q))
-					continue;
-				const char *qt = ts_node_type(q);
-				if (strcmp(qt, "identifier") == 0 &&
-				    scope.empty())
-					scope = nodeText(q);
-				else if (strcmp(qt, "field_identifier") == 0)
-					method = nodeText(q);
-			}
-			if (!scope.empty() && !method.empty())
-				return scope + "::" + method;
-			return "";
-		}
+		if (strcmp(t, "qualified_identifier") == 0)
+			return nameOf(child);
 		// Recurse into declarator wrappers that may contain the
 		// qualified_identifier (function_declarator, pointer_declarator).
 		if (strcmp(t, "function_declarator") == 0 ||

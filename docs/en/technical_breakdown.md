@@ -1,6 +1,6 @@
 # CodeScope Technical Breakdown
 
-> **Version**: v0.2.1 | **Last Updated**: 2026-07-15
+> **Version**: v0.2.7 | **Last Updated**: 2026-10-09
 
 This document provides a deep dive into CodeScope's internal architecture, design decisions, and implementation details. It's intended for developers who want to understand how the system works, contribute to it, or integrate with it.
 
@@ -15,7 +15,7 @@ This document provides a deep dive into CodeScope's internal architecture, desig
 5. [Resolver Pipeline](#5-resolver-pipeline)
 6. [Verification System](#6-verification-system)
 7. [Performance Characteristics](#7-performance-characteristics)
-8. [LadybugDB Integration](#8-ladybugdb-integration)
+8. [LadybugDB Integration (removed)](#8-ladybugdb-integration-removed)
 9. [How to Extend](#9-how-to-extend)
 
 ---
@@ -36,7 +36,7 @@ flowchart TB
         MCPServer["MCP Server (JSON-RPC 2.0)"]
         FFIBridge["FFI Bridge (Rust ↔ C++)"]
         TokioRT["Tokio Runtime (Background Tasks)"]
-        tools["35+ MCP Tools<br/>Locate / Understand / Verify / Index"]
+        tools["46 MCP Tools<br/>Locate / Understand / Verify / Index"]
     end
 
     subgraph "C++ Worker Subprocess"
@@ -44,12 +44,11 @@ flowchart TB
         Parser["tree-sitter Parser (8 languages)"]
         Resolver["Resolver Pipeline"]
         GraphBuilder["Graph Builder"]
-        Store["SQLite + LadybugDB Writer"]
+        Store["SQLite Writer"]
     end
 
     subgraph "Storage"
         SQLite["SQLite DB (WAL mode)"]
-        Ladybug["LadybugDB (.lbug)"]
     end
 
     Client -->|"MCP stdio"| MCPServer
@@ -57,7 +56,6 @@ flowchart TB
     MCPServer -->|"FFI (read-only)"| FFIBridge
     FFIBridge -->|"poll progress"| SQLite
     Worker -->|"write"| SQLite
-    Worker -->|"sync"| Ladybug
     TokioRT -->|"async FTS build"| SQLite
 ```
 
@@ -79,13 +77,13 @@ flowchart LR
         B --> C["IR (SemanticUnit)"]
         C --> D["SQLite"]
         D --> E["Graph Builder"]
-        E --> F["LadybugDB"]
+        E --> F["SQLite: entity + relation"]
     end
 
     subgraph "Query Flow"
         G["MCP Tool"] --> H["FFI Bridge"]
         H --> I["C++ Query Engine"]
-        I --> J["SQLite / LadybugDB"]
+        I --> J["SQLite (entity / relation)"]
         J --> K["JSON Response"]
     end
 ```
@@ -108,7 +106,6 @@ flowchart LR
 | `filter_policy.cpp` | — | Dir/file/suffix filtering + .gitignore matching |
 | `store/store.cpp` | ~3,060 | SQLite storage + FTS + progress tracking |
 | `store/store_core.cpp` | — | Core CRUD operations |
-| `store/store_ladybug.cpp` | 365 | LadybugDB sync (CSV → COPY FROM) |
 | `ir/` | — | IR types (SemanticUnit, Record, Reference) |
 | `parser/` | — | tree-sitter wrappers per language |
 | `graph/` | — | Graph builder + call chain resolution |
@@ -245,7 +242,7 @@ flowchart TB
 
     subgraph "MCP Protocol Layer"
         Transport["transport.rs<br/>stdio transport<br/>1MB read line limit"]
-        Server["server.rs<br/>Request dispatch + routing<br/>35+ tools registered"]
+        Server["server.rs<br/>Request dispatch + routing<br/>46 tools registered"]
     end
 
     Main --> MCP
@@ -259,7 +256,7 @@ flowchart TB
 
 The MCP server implements the [Model Context Protocol](https://modelcontextprotocol.io/) over stdio:
 
-- **`tools/list`**: Returns the list of available tools (35+ tools)
+- **`tools/list`**: Returns the list of available tools (46 tools)
 - **`tools/call`**: Invokes a tool by name with arguments
 - **Transport**: JSON-RPC 2.0 over stdin/stdout
 - **Error handling**: Parse errors return `ReadResult::ParseError` instead of crashing (1MB read line limit)
@@ -305,15 +302,19 @@ The primary storage is SQLite with WAL mode for concurrent reads. The schema has
 
 ```mermaid
 flowchart TB
-    subgraph "Core Tables"
-        GN["graph_nodes<br/>All symbols<br/>~17k-200k rows"] --> GE["graph_edges<br/>Relationships<br/>~3k-50k rows"]
-        ENT["entity<br/>Production code only<br/>~10k-150k rows"] --> REL["relation<br/>Production code only<br/>~2k-40k rows"]
+    subgraph "Core Tables (canonical)"
+        ENT["entity<br/>Symbols<br/>~10k-200k rows"] --> REL["relation<br/>Edges<br/>~2k-50k rows"]
+    end
+
+    subgraph "Legacy (deprecated, read by no query)"
+        GN["graph_nodes<br/>not populated on the scheduler paths"]
+        GE["graph_edges<br/>still mirrored by the resolver"]
     end
 
     subgraph "Auxiliary Tables"
         REF["reference<br/>Unresolved references"]
         SCOPE["scope<br/>Scope chains"]
-        FTS["search_index<br/>FTS5 full-text search"]
+        FTS["code_fts + name_trgm<br/>FTS5 full-text search"]
         VEC["node_vectors<br/>Vector embeddings"]
     end
 
@@ -322,29 +323,30 @@ flowchart TB
         PROJ["project<br/>Metadata + readiness flags"]
     end
 
-    GN --> FTS
-    GN --> VEC
-    ENT --> REL
+    ENT --> FTS
+    ENT --> VEC
 ```
 
 **Indexes:**
 
 All queries use index-only scans:
-- `idx_sr_kind_name` on `(kind, name)` — symbol lookup
-- `idx_sr_fp_parent` on `(file_path, parent_id)` — tree traversal
-- `idx_ge_source` on `(source_node_id)` — call edge lookup
-- `idx_ge_target` on `(target_node_id)` — callee lookup
+- `idx_entity_name` on `entity(project_id, name)` — symbol lookup
+- `idx_entity_file` on `entity(project_id, file_path)` — per-file re-index and delete
+- `idx_relation_source` on `relation(project_id, source_id)` — callee lookup
+- `idx_relation_target` on `relation(project_id, target_id)` — caller lookup
 
 ### 4.2 Dual-Write Strategy
 
-During v0.1.3 migration, production-code symbols are dual-written to both:
-- Legacy `graph_nodes`/`graph_edges` tables
-- New `entity`/`relation` tables
+The dual write that came with the v0.1.3 migration was retired for **symbols**:
+they exist only in `entity`. It survives for **edges**, where the resolver still
+mirrors every resolved edge into the legacy `graph_edges` beside the canonical
+`relation` (`engine/src/resolver/pipeline_flush.cpp`).
 
-This enables:
-- Backward compatibility with existing queries
-- Gradual migration without downtime
-- A/B comparison for correctness verification
+Measured on a freshly indexed project (goagent, 1,579 files, 2026-10-01):
+`entity` 24,545 rows, `relation` 7,374, `graph_edges` 7,377, `graph_nodes` 0. No
+query reads either legacy table (`engine/src/engine_queries_context.cpp` records
+the switch to the canonical ones), so the edge mirror costs disk and nothing
+else — but it is why the two edge tables can drift apart by a few rows.
 
 ### 4.3 String Interning
 
@@ -560,118 +562,18 @@ Compares code structure against documentation:
 1. **tree-sitter parse time**: Dominant factor for large files (>10k lines). Parsing is single-threaded per file.
 2. **SQLite write throughput**: ~80k rows/s is the limit for WAL mode on consumer SSDs.
 3. **FTS build time**: Linear in number of symbols. For 150k symbols, takes ~30s.
-4. **LadybugDB COPY FROM**: CSV import is fast but requires a full sync — incremental sync not yet implemented.
 
 ---
 
-## 8. LadybugDB Integration
+## 8. LadybugDB Integration (removed)
 
-### 8.1 Overview
-
-[LadybugDB](https://ladybugdb.com/) is an embedded graph database that CodeScope uses as an optional secondary storage backend. It provides:
-
-```mermaid
-flowchart LR
-    subgraph "SQLite"
-        SQL["Relational queries<br/>Reliable, zero-config"]
-    end
-
-    subgraph "LadybugDB"
-        LBUG["Graph-native queries (Cypher)<br/>Faster multi-hop traversal<br/>Visualization support"]
-    end
-
-    SQL -->|"CSV export → COPY FROM sync"| LBUG
-    LBUG -->|"LadybugDB Explorer<br/>Interactive graph exploration"| VIZ["Visualization"]
-```
-
-### 8.2 Schema
-
-LadybugDB stores the same data as SQLite but in a graph-native format:
-
-```cypher
-// Node table (mirrors graph_nodes)
-CREATE NODE TABLE IF NOT EXISTS GraphNode (
-    id INT64 PRIMARY KEY,
-    project_id INT64,
-    ir_node_id INT64,
-    node_type INT32,
-    name STRING,
-    qualified_name STRING,
-    signature STRING,
-    module_path STRING,
-    file_path STRING,
-    language STRING,
-    start_row INT32,
-    start_col INT32,
-    end_row INT32,
-    end_col INT32,
-    parent_id INT64,
-    is_entry_point BOOL,
-    embedding_ready BOOL,
-    metrics_ready BOOL
-);
-
-// Call edges (from caller to callee)
-CREATE REL TABLE IF NOT EXISTS CALLS (
-    FROM GraphNode TO GraphNode,
-    project_id INT64,
-    edge_type INT32,
-    call_site_line INT32,
-    label STRING
-);
-
-// Generic relations
-CREATE REL TABLE IF NOT EXISTS RELATES (
-    FROM GraphNode TO GraphNode,
-    project_id INT64,
-    type INT32
-);
-```
-
-### 8.3 Sync Mechanism
-
-Data is synced from SQLite to LadybugDB via CSV export + COPY FROM:
-
-```mermaid
-sequenceDiagram
-    participant SQL as SQLite
-    participant CSV as CSV File
-    participant LBUG as LadybugDB
-
-    SQL->>CSV: Export graph_nodes → nodes.csv
-    SQL->>CSV: Export graph_edges → edges.csv
-    CSV->>LBUG: COPY GraphNode FROM 'nodes.csv' (header=false)
-    CSV->>LBUG: COPY CALLS FROM 'edges.csv' (header=false)
-    Note over LBUG: Sync complete ✓
-```
-
-The sync is triggered via `codescope_export_graph` or the `syncGraphToLadybugDB()` C++ function.
-
-### 8.4 Querying LadybugDB
-
-```bash
-# Open the LadybugDB shell
-lbug /path/to/project/.codescope/codescope.lbug
-
-# Count all nodes
-MATCH (n:GraphNode) RETURN count(n);
-
-# Find all Go functions
-MATCH (n:GraphNode)
-WHERE n.language = 'go'
-RETURN n.name, n.file_path, n.start_row;
-
-# Find callers of a specific function
-MATCH (n:GraphNode)-[c:CALLS]->(m:GraphNode)
-WHERE m.name = 'targetFunction'
-RETURN n.name, c.call_site_line;
-
-# Find the shortest call path between two functions
-MATCH p = shortestPath(
-    (a:GraphNode {name: 'funcA'})-[*..10]->(b:GraphNode {name: 'funcB'})
-)
-RETURN p;
-```
+CodeScope used to mirror the graph into [LadybugDB](https://ladybugdb.com/), an
+embedded graph database, as an optional acceleration layer. **It was removed**:
+the tree has no `store_ladybug*.cpp`, `server/build.rs` does not link `liblbug`,
+and no `.codescope/codescope.lbug` file is produced any more — the backend is
+pure SQLite (the same note appears in `README.md` §7). The design and the
+integration steps are kept in git history; every graph and search tool now reads
+the SQLite tables described in §4.
 
 ---
 
@@ -759,10 +661,14 @@ class MyInspector : public Inspector {
 - **Async runtime**: Tokio provides lightweight async tasks for FTS building and progress polling.
 - **Ecosystem**: MCP client libraries, serde for JSON, cargo for dependency management.
 
-### Why SQLite + LadybugDB?
+### Why SQLite, and not an embedded graph database?
 - **SQLite**: Universal, zero-config, battle-tested. Every system has SQLite support.
-- **LadybugDB**: Graph-native queries for multi-hop traversals. Cypher is more expressive than recursive SQL for graph patterns.
-- **Dual strategy**: SQLite for reliability and portability, LadybugDB for performance and visualization.
+- **An embedded graph DB was tried and removed** (LadybugDB, §8): it added a linked
+  dependency and a second store to keep in sync, while the graph workloads CodeScope
+  actually runs — caller/callee lookups, BFS over the call graph, hotspots — are served
+  by indexed `relation` lookups plus the CSR adjacency blob.
+- **One store**: every tool reads the same tables, so the graph and the index cannot
+  disagree.
 
 ### Why two processes?
 - **Crash isolation**: A parser segfault doesn't kill the MCP server.

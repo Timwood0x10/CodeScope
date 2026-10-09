@@ -1,3 +1,5 @@
+#include "util/json_writer.h"
+#include "util/path_util.h"
 #include "query_engine.h"
 // community_detection removed — Phase 0 cut
 #include "graph_query.h"
@@ -7,8 +9,6 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
-#include <deque>
-#include <queue>
 #include <sqlite3.h>
 #include <sstream>
 #include <unordered_map>
@@ -18,48 +18,23 @@
 namespace query
 {
 
-// Maximum BFS depth for findShortestPath. Limits traversal to prevent
-// unbounded walks over very large graphs; chosen to cover typical call
-// chains while keeping query latency bounded.
-static constexpr int kShortestPathMaxDepth = 10;
+// What to do when a bare name matches several entities.
+//
+// The candidates array alone was not enough: every name-based tool answered
+// `{"…":[],"total":0,"ambiguous":true,"candidates":[…]}` for names as ordinary
+// as `main` (100+ definitions in one Rust project's examples/), `Agent` or
+// `new`, and a caller reading only the empty list concluded "no edges" — the
+// next step (`*_by_entity`, which does resolve them) was discoverable only by
+// reading the tool catalogue. One sentence, shared by getCallers, getCallees
+// and the trace probe so the wording cannot drift.
+static const char *const kAmbiguousNameHint =
+	"Name matches several entities, so no edges were resolved. Pass one of "
+	"the candidates' graph_node_id to find_callers_by_entity / "
+	"find_callees_by_entity, or narrow the name with file_filter.";
 
-// Standard note appended to findShortestPath results explaining the
-// heuristic nature of the call graph (name-matched, no virtual dispatch).
-static const char *const kShortestPathNote =
-	"Call graph edges are resolved by name matching; indirect calls "
-	"(virtual/pointer) may be missing.";
-
-// ─── JSON string escaping ──────────────────────────────────────
-
-std::string jsonEscape(const char *s)
-{
-	if (!s)
-		return "";
-	std::string out;
-	for (const char *p = s; *p; p++) {
-		switch (*p) {
-		case '"':
-			out += "\\\"";
-			break;
-		case '\\':
-			out += "\\\\";
-			break;
-		case '\n':
-			out += "\\n";
-			break;
-		case '\r':
-			out += "\\r";
-			break;
-		case '\t':
-			out += "\\t";
-			break;
-		default:
-			out += *p;
-			break;
-		}
-	}
-	return out;
-}
+// findShortestPath moved to query_engine_traverse.cpp together with
+// kShortestPathMaxDepth / kShortestPathNote; the copies that used to live here
+// were left behind by that split and only produced unused-variable warnings.
 
 QueryEngine::QueryEngine(store::GraphStore *store)
 	: store_(store)
@@ -72,57 +47,61 @@ std::string queryToJson(sqlite3 *db, const char *sql, const char *result_key)
 {
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-		return "{\"total\":0,\"results\":[],\"error\":\"" +
-		       std::string(sqlite3_errmsg(db)) + "\"}";
+		util::JsonWriter err;
+		err.beginObject();
+		err.key("total").value(0);
+		err.key("results").beginArray().endArray();
+		// The writer escapes the message: sqlite3_errmsg() can carry a
+		// quote, which previously produced invalid JSON here.
+		err.key("error").value(sqlite3_errmsg(db));
+		err.endObject();
+		return err.str();
 	}
 
-	std::ostringstream json;
-	json << "{\"" << result_key << "\":[";
+	util::JsonWriter json;
+	json.beginObject();
+	json.key(result_key).beginArray();
 
 	int col_count = sqlite3_column_count(stmt);
-	bool first_row = true;
 	int row_count = 0;
 
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
-		if (!first_row)
-			json << ",";
-		first_row = false;
 		row_count++;
 
-		json << "{";
+		json.beginObject();
 		for (int i = 0; i < col_count; i++) {
-			if (i > 0)
-				json << ",";
 			const char *col_name = sqlite3_column_name(stmt, i);
-			// L2 fix: escape the column name so a name containing a quote
-			// or control char cannot produce invalid JSON.
-			json << "\"" << jsonEscape(col_name ? col_name : "")
-			     << "\":";
+			// The writer escapes keys and values, so a column name
+			// containing a quote or control char cannot produce
+			// invalid JSON.
+			json.key(col_name ? col_name : "");
 
 			int col_type = sqlite3_column_type(stmt, i);
 			if (col_type == SQLITE_NULL) {
-				json << "null";
+				json.nullValue();
 			} else if (col_type == SQLITE_INTEGER) {
-				json << sqlite3_column_int64(stmt, i);
+				json.value(sqlite3_column_int64(stmt, i));
 			} else if (col_type == SQLITE_FLOAT) {
 				double val = sqlite3_column_double(stmt, i);
-				// Use integer output for whole numbers to avoid "1.000000"
+				// Use integer output for whole numbers to avoid
+				// "1.000000"
 				if (val == static_cast<int64_t>(val))
-					json << static_cast<int64_t>(val);
+					json.value(static_cast<int64_t>(val));
 				else
-					json << val;
+					json.value(val);
 			} else {
 				const char *text =
 					reinterpret_cast<const char *>(
 						sqlite3_column_text(stmt, i));
-				json << "\"" << jsonEscape(text ? text : "")
-				     << "\"";
+				json.value(text ? text : "");
 			}
 		}
-		json << "}";
+		json.endObject();
 	}
 
-	json << "],\"total\":" << row_count << "}";
+	json.endArray();
+	json.key("total").value(row_count);
+	json.endObject();
 	sqlite3_finalize(stmt);
 	return json.str();
 }
@@ -150,8 +129,10 @@ std::string QueryEngine::findDefinition(uint64_t project_id,
 	// into the LIKE literal. Splicing let a filter containing a quote or
 	// % break the query or inject SQL; a bound `%filter%` value is safe.
 	bool has_filter = file_filter && strlen(file_filter) > 0;
+	// Two patterns per filter — the value as given and its resolved form — so a
+	// database whose rows hold either spelling still matches (util::lookupPath).
 	if (has_filter)
-		sql += " AND file_path LIKE ?";
+		sql += " AND (file_path LIKE ? OR file_path LIKE ?)";
 	sql += " LIMIT 20";
 	std::ostringstream json;
 	json << "{\"results\":[";
@@ -164,8 +145,10 @@ std::string QueryEngine::findDefinition(uint64_t project_id,
 		sqlite3_bind_text(st, 2, symbol_name, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_text(st, 3, symbol_name, -1, SQLITE_TRANSIENT);
 		if (has_filter) {
-			std::string like = "%" + std::string(file_filter) + "%";
-			sqlite3_bind_text(st, 4, like.c_str(), -1,
+			const auto patterns = util::lookupPatterns(file_filter);
+			sqlite3_bind_text(st, 4, patterns[0].c_str(), -1,
+					  SQLITE_TRANSIENT);
+			sqlite3_bind_text(st, 5, patterns[1].c_str(), -1,
 					  SQLITE_TRANSIENT);
 		}
 		while (sqlite3_step(st) == SQLITE_ROW) {
@@ -203,16 +186,20 @@ std::string QueryEngine::findDefinition(uint64_t project_id,
 					reinterpret_cast<const char *>(
 						sqlite3_column_text(st, 9)) :
 					"";
-			json << "{\"node_id\":" << node_id << ",\"name\":\""
-			     << jsonEscape(name.c_str())
-			     << "\",\"qualified_name\":\""
-			     << jsonEscape(qn.c_str())
-			     << "\",\"node_type\":" << ntype
-			     << ",\"file_path\":\"" << jsonEscape(fp.c_str())
-			     << "\",\"start_row\":" << sr
-			     << ",\"start_col\":" << sc << ",\"end_row\":" << er
-			     << ",\"end_col\":" << ec << ",\"language\":\""
-			     << jsonEscape(lang.c_str()) << "\"}";
+			util::JsonWriter el;
+			el.beginObject();
+			el.key("node_id").value(node_id);
+			el.key("name").value(name);
+			el.key("qualified_name").value(qn);
+			el.key("node_type").value(ntype);
+			el.key("file_path").value(fp);
+			el.key("start_row").value(sr);
+			el.key("start_col").value(sc);
+			el.key("end_row").value(er);
+			el.key("end_col").value(ec);
+			el.key("language").value(lang);
+			el.endObject();
+			json << el.str();
 		}
 		sqlite3_finalize(st);
 	}
@@ -263,8 +250,10 @@ std::string QueryEngine::findReferences(uint64_t project_id,
 		sqlite3_bind_text(st, 3, symbol_name, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_text(st, 4, symbol_name, -1, SQLITE_TRANSIENT);
 		if (has_filter) {
-			std::string like = "%" + std::string(file_filter) + "%";
-			sqlite3_bind_text(st, 5, like.c_str(), -1,
+			const auto patterns = util::lookupPatterns(file_filter);
+			sqlite3_bind_text(st, 5, patterns[0].c_str(), -1,
+					  SQLITE_TRANSIENT);
+			sqlite3_bind_text(st, 6, patterns[1].c_str(), -1,
 					  SQLITE_TRANSIENT);
 		}
 		while (sqlite3_step(st) == SQLITE_ROW) {
@@ -302,20 +291,41 @@ std::string QueryEngine::findReferences(uint64_t project_id,
 					reinterpret_cast<const char *>(
 						sqlite3_column_text(st, 9)) :
 					"";
-			json << "{\"node_id\":" << node_id << ",\"name\":\""
-			     << jsonEscape(name.c_str())
-			     << "\",\"qualified_name\":\""
-			     << jsonEscape(qn.c_str())
-			     << "\",\"node_type\":" << ntype
-			     << ",\"file_path\":\"" << jsonEscape(fp.c_str())
-			     << "\",\"start_row\":" << sr
-			     << ",\"start_col\":" << sc << ",\"end_row\":" << er
-			     << ",\"end_col\":" << ec << ",\"language\":\""
-			     << jsonEscape(lang.c_str()) << "\"}";
+			util::JsonWriter el;
+			el.beginObject();
+			el.key("node_id").value(node_id);
+			el.key("name").value(name);
+			el.key("qualified_name").value(qn);
+			el.key("node_type").value(ntype);
+			el.key("file_path").value(fp);
+			el.key("start_row").value(sr);
+			el.key("start_col").value(sc);
+			el.key("end_row").value(er);
+			el.key("end_col").value(ec);
+			el.key("language").value(lang);
+			el.endObject();
+			json << el.str();
 		}
 		sqlite3_finalize(st);
 	}
-	json << "],\"total\":" << count << "}";
+	json << "],\"total\":" << count;
+	if (count == 0) {
+		// An empty answer must not read as "this symbol is unused". The
+		// reference table records call sites (type 1 Calls, type 3
+		// symbol_reference), and both are emitted for call expressions — a
+		// symbol that is only USED AS A VALUE has no row at all. Measured
+		// 2026-10-06 on goagent: get_routes reported the handler `t.handleMCP`
+		// (transport_server.go:277) while find_references answered 0, because
+		// registering a handler is not a call. The note names the tools that
+		// can still locate such a use.
+		json << ",\"note\":\"No call or symbol-reference edge targets this name. "
+			"References are recorded per call site, so a symbol that is only "
+			"used as a value (a route handler, a callback passed by name, a "
+			"function pointer) has no edge here — an empty result is not proof "
+			"that it is unused. get_routes, find_symbol and get_type_info can "
+			"still locate it.\"";
+	}
+	json << "}";
 	return json.str();
 }
 
@@ -355,8 +365,12 @@ std::string QueryEngine::getCallers(uint64_t project_id,
 	auto resolveIds = [&](std::vector<int64_t> &ids) {
 		std::string sql = "SELECT id FROM entity WHERE project_id=? "
 				  "AND (name=? OR qualified_name=?)";
+		// M3 fix: bind the file_filter instead of splicing it into the
+		// LIKE literal — a filter containing a quote could inject SQL,
+		// while a bound `%filter%` value is safe. Mirrors the fix
+		// already applied to findDefinition / findReferences.
 		if (!has_filter.empty())
-			sql += " AND file_path LIKE '%" + has_filter + "%'";
+			sql += " AND file_path LIKE ?";
 		sqlite3_stmt *st = nullptr;
 		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &st, nullptr) !=
 		    SQLITE_OK)
@@ -364,6 +378,13 @@ std::string QueryEngine::getCallers(uint64_t project_id,
 		sqlite3_bind_int64(st, 1, static_cast<int64_t>(project_id));
 		sqlite3_bind_text(st, 2, function_name, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_text(st, 3, function_name, -1, SQLITE_TRANSIENT);
+		if (!has_filter.empty()) {
+			const auto patterns = util::lookupPatterns(has_filter);
+			sqlite3_bind_text(st, 4, patterns[0].c_str(), -1,
+					  SQLITE_TRANSIENT);
+			sqlite3_bind_text(st, 5, patterns[1].c_str(), -1,
+					  SQLITE_TRANSIENT);
+		}
 		while (sqlite3_step(st) == SQLITE_ROW)
 			ids.push_back(sqlite3_column_int64(st, 0));
 		sqlite3_finalize(st);
@@ -414,16 +435,20 @@ std::string QueryEngine::getCallers(uint64_t project_id,
 			if (!first_c)
 				cands += ",";
 			first_c = false;
-			cands += "{\"graph_node_id\":" + std::to_string(id) +
-				 ",\"name\":\"" + jsonEscape(nm.c_str()) +
-				 "\",\"file_path\":\"" +
-				 jsonEscape(fp.c_str()) +
-				 "\",\"start_row\":" + std::to_string(sr) +
-				 ",\"start_col\":" + std::to_string(sc) + "}";
+			util::JsonWriter el;
+			el.beginObject();
+			el.key("graph_node_id").value(id);
+			el.key("name").value(nm);
+			el.key("file_path").value(fp);
+			el.key("start_row").value(sr);
+			el.key("start_col").value(sc);
+			el.endObject();
+			cands += el.str();
 		}
 		return "{\"callers\":[],\"total\":0,\"ambiguous\":true,"
 		       "\"candidates\":[" +
-		       cands + "]}";
+		       cands + "],\"hint\":\"" +
+		       util::jsonEscapeString(kAmbiguousNameHint) + "\"}";
 	}
 
 	// Query callers: relation rows where target_id is one of the matched
@@ -484,21 +509,21 @@ std::string QueryEngine::getCallers(uint64_t project_id,
 				result += ",";
 			first = false;
 			++count;
-			result +=
-				"{\"node_id\":" + std::to_string(node_id) +
-				",\"name\":\"" + jsonEscape(name.c_str()) +
-				"\",\"file_path\":\"" +
-				jsonEscape(file.c_str()) + "\",\"start_row\":" +
-				std::to_string(start_row) +
-				",\"start_col\":" + std::to_string(start_col) +
-				",\"confidence\":" +
-				std::to_string(confidence) +
-				",\"resolver\":\"" +
-				jsonEscape(resolver.c_str()) +
-				"\",\"resolution_kind\":\"" +
-				jsonEscape(rkind.c_str()) +
-				"\",\"resolve_strategy\":\"" +
-				jsonEscape(rkind.c_str()) + "\"}";
+			util::JsonWriter el;
+			el.beginObject();
+			el.key("node_id").value(node_id);
+			el.key("name").value(name);
+			el.key("file_path").value(file);
+			el.key("start_row").value(start_row);
+			el.key("start_col").value(start_col);
+			// raw(): std::to_string keeps the historic "%f" formatting
+			// for this field.
+			el.key("confidence").raw(std::to_string(confidence));
+			el.key("resolver").value(resolver);
+			el.key("resolution_kind").value(rkind);
+			el.key("resolve_strategy").value(rkind);
+			el.endObject();
+			result += el.str();
 		}
 		sqlite3_finalize(st);
 	}
@@ -529,8 +554,12 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 	auto resolveIds = [&](std::vector<int64_t> &ids) {
 		std::string sql = "SELECT id FROM entity WHERE project_id=? "
 				  "AND (name=? OR qualified_name=?)";
+		// M3 fix: bind the file_filter instead of splicing it into the
+		// LIKE literal — a filter containing a quote could inject SQL,
+		// while a bound `%filter%` value is safe. Mirrors the fix
+		// already applied to findDefinition / findReferences.
 		if (!has_filter.empty())
-			sql += " AND file_path LIKE '%" + has_filter + "%'";
+			sql += " AND file_path LIKE ?";
 		sqlite3_stmt *st = nullptr;
 		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &st, nullptr) !=
 		    SQLITE_OK)
@@ -538,6 +567,13 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 		sqlite3_bind_int64(st, 1, static_cast<int64_t>(project_id));
 		sqlite3_bind_text(st, 2, function_name, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_text(st, 3, function_name, -1, SQLITE_TRANSIENT);
+		if (!has_filter.empty()) {
+			const auto patterns = util::lookupPatterns(has_filter);
+			sqlite3_bind_text(st, 4, patterns[0].c_str(), -1,
+					  SQLITE_TRANSIENT);
+			sqlite3_bind_text(st, 5, patterns[1].c_str(), -1,
+					  SQLITE_TRANSIENT);
+		}
 		while (sqlite3_step(st) == SQLITE_ROW)
 			ids.push_back(sqlite3_column_int64(st, 0));
 		sqlite3_finalize(st);
@@ -587,16 +623,20 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 			if (!first_c)
 				cands += ",";
 			first_c = false;
-			cands += "{\"graph_node_id\":" + std::to_string(id) +
-				 ",\"name\":\"" + jsonEscape(nm.c_str()) +
-				 "\",\"file_path\":\"" +
-				 jsonEscape(fp.c_str()) +
-				 "\",\"start_row\":" + std::to_string(sr) +
-				 ",\"start_col\":" + std::to_string(sc) + "}";
+			util::JsonWriter el;
+			el.beginObject();
+			el.key("graph_node_id").value(id);
+			el.key("name").value(nm);
+			el.key("file_path").value(fp);
+			el.key("start_row").value(sr);
+			el.key("start_col").value(sc);
+			el.endObject();
+			cands += el.str();
 		}
 		return "{\"callees\":[],\"total\":0,\"ambiguous\":true,"
 		       "\"candidates\":[" +
-		       cands + "]}";
+		       cands + "],\"hint\":\"" +
+		       util::jsonEscapeString(kAmbiguousNameHint) + "\"}";
 	}
 
 	// Read outgoing Calls edges: relation rows where source_id is the
@@ -656,609 +696,26 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 				result += ",";
 			first = false;
 			++count;
-			result +=
-				"{\"node_id\":" + std::to_string(node_id) +
-				",\"name\":\"" + jsonEscape(name.c_str()) +
-				"\",\"file_path\":\"" +
-				jsonEscape(file.c_str()) + "\",\"start_row\":" +
-				std::to_string(start_row) +
-				",\"start_col\":" + std::to_string(start_col) +
-				",\"confidence\":" +
-				std::to_string(confidence) +
-				",\"resolver\":\"" +
-				jsonEscape(resolver.c_str()) +
-				"\",\"resolution_kind\":\"" +
-				jsonEscape(rkind.c_str()) +
-				"\",\"resolve_strategy\":\"" +
-				jsonEscape(rkind.c_str()) + "\"}";
+			util::JsonWriter el;
+			el.beginObject();
+			el.key("node_id").value(node_id);
+			el.key("name").value(name);
+			el.key("file_path").value(file);
+			el.key("start_row").value(start_row);
+			el.key("start_col").value(start_col);
+			// raw(): std::to_string keeps the historic "%f" formatting
+			// for this field.
+			el.key("confidence").raw(std::to_string(confidence));
+			el.key("resolver").value(resolver);
+			el.key("resolution_kind").value(rkind);
+			el.key("resolve_strategy").value(rkind);
+			el.endObject();
+			result += el.str();
 		}
 		sqlite3_finalize(st);
 	}
 	result += "],\"total\":" + std::to_string(count) + "}";
 	return result;
-}
-
-// ── Step 7 (plan §7.2): entity-precise query APIs ────────────────────
-//
-// These methods resolve an entity ID to (name, file_path, start_row) in
-// SQLite, then build a SQLite Cypher query that filters by all three
-// fields. This eliminates the homonym aggregation problem: multiple
-// entities named "__init__" in different classes/files are no longer
-// merged into a single result set.
-//
-// The old bare-name APIs (getCallers/getCallees) are retained for
-// backward compatibility but now detect ambiguity: when multiple
-// entities match the bare name, they return ambiguous=true with a
-// candidate list instead of silently aggregating.
-
-std::string QueryEngine::getCallersByEntity(uint64_t project_id,
-					    uint64_t entity_id)
-{
-	// ── v0.2.5: SQLite graph-query backend (Windows / SQLite-only) ──
-	// Callers by explicit entity id: read incoming Calls edges
-	// (relation where target_id = entity_id, type=1) via the
-	// (project_id, target_id) index. JSON shape mirrors the SQLite
-	// branch, including the trailing entity_id.
-	if (!store_ || !store_->handle()) {
-		return "{\"callers\":[],\"total\":0,\"error\":\"graph not ready "
-		       "[module=query, method=getCallersByEntity]\"}";
-	}
-	sqlite3 *db = store_->handle();
-	std::string result = "{\"callers\":[";
-	bool first = true;
-	int count = 0;
-	{
-		const char *sql =
-			"SELECT e.id, e.name, e.file_path, e.start_row, "
-			"       e.start_col, r.confidence, r.resolver, "
-			"       r.resolution_kind "
-			"FROM relation r JOIN entity e ON e.id = r.source_id "
-			"WHERE r.project_id=? AND r.type=1 "
-			"AND r.target_id=? "
-			"GROUP BY e.id ORDER BY e.id LIMIT 1000";
-		sqlite3_stmt *st = nullptr;
-		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) ==
-		    SQLITE_OK) {
-			sqlite3_bind_int64(st, 1,
-					   static_cast<int64_t>(project_id));
-			sqlite3_bind_int64(st, 2,
-					   static_cast<int64_t>(entity_id));
-			while (sqlite3_step(st) == SQLITE_ROW) {
-				int64_t node_id = sqlite3_column_int64(st, 0);
-				std::string name =
-					reinterpret_cast<const char *>(
-						sqlite3_column_text(st, 1)) ?
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(
-								st, 1)) :
-						"";
-				std::string file =
-					reinterpret_cast<const char *>(
-						sqlite3_column_text(st, 2)) ?
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(
-								st, 2)) :
-						"";
-				int start_row = sqlite3_column_int(st, 3);
-				int start_col = sqlite3_column_int(st, 4);
-				double confidence =
-					sqlite3_column_double(st, 5);
-				std::string resolver =
-					reinterpret_cast<const char *>(
-						sqlite3_column_text(st, 6)) ?
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(
-								st, 6)) :
-						"";
-				std::string rkind =
-					reinterpret_cast<const char *>(
-						sqlite3_column_text(st, 7)) ?
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(
-								st, 7)) :
-						"";
-				if (!first)
-					result += ",";
-				first = false;
-				++count;
-				result += "{\"node_id\":" +
-					  std::to_string(node_id) +
-					  ",\"name\":\"" +
-					  jsonEscape(name.c_str()) +
-					  "\",\"file_path\":\"" +
-					  jsonEscape(file.c_str()) +
-					  "\",\"start_row\":" +
-					  std::to_string(start_row) +
-					  ",\"start_col\":" +
-					  std::to_string(start_col) +
-					  ",\"confidence\":" +
-					  std::to_string(confidence) +
-					  ",\"resolver\":\"" +
-					  jsonEscape(resolver.c_str()) +
-					  "\",\"resolution_kind\":\"" +
-					  jsonEscape(rkind.c_str()) +
-					  "\",\"resolve_strategy\":\"" +
-					  jsonEscape(rkind.c_str()) + "\"}";
-			}
-			sqlite3_finalize(st);
-		}
-	}
-	result += "],\"total\":" + std::to_string(count) +
-		  ",\"entity_id\":" + std::to_string(entity_id) + "}";
-	return result;
-}
-
-std::string QueryEngine::getCalleesByEntity(uint64_t project_id,
-					    uint64_t entity_id)
-{
-	// ── v0.2.5: SQLite graph-query backend (Windows / SQLite-only) ──
-	// Callees by explicit entity id: read outgoing Calls edges
-	// (relation where source_id = entity_id, type=1) via the
-	// (project_id, source_id) index. JSON shape mirrors the SQLite
-	// branch, including the trailing entity_id.
-	if (!store_ || !store_->handle()) {
-		return "{\"callees\":[],\"total\":0,\"error\":\"graph not ready "
-		       "[module=query, method=getCalleesByEntity]\"}";
-	}
-	sqlite3 *db = store_->handle();
-	std::string result = "{\"callees\":[";
-	bool first = true;
-	int count = 0;
-	{
-		const char *sql =
-			"SELECT e.id, e.name, e.file_path, e.start_row, "
-			"       e.start_col, r.confidence, r.resolver, "
-			"       r.resolution_kind "
-			"FROM relation r JOIN entity e ON e.id = r.target_id "
-			"WHERE r.project_id=? AND r.type=1 "
-			"AND r.source_id=? "
-			"GROUP BY e.id ORDER BY e.id LIMIT 1000";
-		sqlite3_stmt *st = nullptr;
-		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) ==
-		    SQLITE_OK) {
-			sqlite3_bind_int64(st, 1,
-					   static_cast<int64_t>(project_id));
-			sqlite3_bind_int64(st, 2,
-					   static_cast<int64_t>(entity_id));
-			while (sqlite3_step(st) == SQLITE_ROW) {
-				int64_t node_id = sqlite3_column_int64(st, 0);
-				std::string name =
-					reinterpret_cast<const char *>(
-						sqlite3_column_text(st, 1)) ?
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(
-								st, 1)) :
-						"";
-				std::string file =
-					reinterpret_cast<const char *>(
-						sqlite3_column_text(st, 2)) ?
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(
-								st, 2)) :
-						"";
-				int start_row = sqlite3_column_int(st, 3);
-				int start_col = sqlite3_column_int(st, 4);
-				double confidence =
-					sqlite3_column_double(st, 5);
-				std::string resolver =
-					reinterpret_cast<const char *>(
-						sqlite3_column_text(st, 6)) ?
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(
-								st, 6)) :
-						"";
-				std::string rkind =
-					reinterpret_cast<const char *>(
-						sqlite3_column_text(st, 7)) ?
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(
-								st, 7)) :
-						"";
-				if (!first)
-					result += ",";
-				first = false;
-				++count;
-				result += "{\"node_id\":" +
-					  std::to_string(node_id) +
-					  ",\"name\":\"" +
-					  jsonEscape(name.c_str()) +
-					  "\",\"file_path\":\"" +
-					  jsonEscape(file.c_str()) +
-					  "\",\"start_row\":" +
-					  std::to_string(start_row) +
-					  ",\"start_col\":" +
-					  std::to_string(start_col) +
-					  ",\"confidence\":" +
-					  std::to_string(confidence) +
-					  ",\"resolver\":\"" +
-					  jsonEscape(resolver.c_str()) +
-					  "\",\"resolution_kind\":\"" +
-					  jsonEscape(rkind.c_str()) +
-					  "\",\"resolve_strategy\":\"" +
-					  jsonEscape(rkind.c_str()) + "\"}";
-			}
-			sqlite3_finalize(st);
-		}
-	}
-	result += "],\"total\":" + std::to_string(count) +
-		  ",\"entity_id\":" + std::to_string(entity_id) + "}";
-	return result;
-}
-
-std::string QueryEngine::getNeighbors(uint64_t project_id, uint64_t node_id,
-				      int edge_type_filter, int radius)
-{
-	(void)radius; // reserved for future multi-hop
-	// ── v0.2.5: SQLite graph-query backend (Windows / SQLite-only) ──
-	// Neighbors by node id: outgoing edges from relation (source_id =
-	// node_id, type = edge_type_filter) and incoming edges (target_id =
-	// node_id), each joined to entity metadata, tagged with direction
-	// "out"/"in" exactly like the SQLite branch. Uses the
-	// (project_id, source_id) / (project_id, target_id) indexes.
-	if (!store_ || !store_->handle()) {
-		return "{\"total\":0,\"neighbors\":[],\"error\":\"graph not "
-		       "ready [module=query, method=getNeighbors]\"}";
-	}
-	sqlite3 *db = store_->handle();
-	std::ostringstream json;
-	json << "{\"neighbors\":[";
-	bool first = true;
-	int count = 0;
-
-	auto emitNeighbors = [&](const std::string &dir_clause,
-				 const char *direction) {
-		std::string sql =
-			"SELECT e.id, e.name, e.kind, e.file_path, r.type "
-			"FROM relation r JOIN entity e ON e.id = "
-			"r.target_id "
-			"WHERE r.project_id=? AND " +
-			dir_clause + " ";
-		if (edge_type_filter > 0)
-			sql += "AND r.type=" +
-			       std::to_string(edge_type_filter) + " ";
-		sql += "ORDER BY e.id LIMIT 500";
-		sqlite3_stmt *st = nullptr;
-		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &st, nullptr) ==
-		    SQLITE_OK) {
-			sqlite3_bind_int64(st, 1,
-					   static_cast<int64_t>(project_id));
-			sqlite3_bind_int64(st, 2,
-					   static_cast<int64_t>(node_id));
-			while (sqlite3_step(st) == SQLITE_ROW) {
-				int64_t nid = sqlite3_column_int64(st, 0);
-				std::string name =
-					reinterpret_cast<const char *>(
-						sqlite3_column_text(st, 1)) ?
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(
-								st, 1)) :
-						"";
-				int ntype = sqlite3_column_int(st, 2);
-				std::string file =
-					reinterpret_cast<const char *>(
-						sqlite3_column_text(st, 3)) ?
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(
-								st, 3)) :
-						"";
-				int etype = sqlite3_column_int(st, 4);
-				if (!first)
-					json << ",";
-				first = false;
-				++count;
-				json << "{\"neighbor_id\":" << nid
-				     << ",\"name\":\""
-				     << jsonEscape(name.c_str())
-				     << "\",\"node_type\":" << ntype
-				     << ",\"file_path\":\""
-				     << jsonEscape(file.c_str())
-				     << "\",\"edge_type\":" << etype
-				     << ",\"direction\":\""
-				     << jsonEscape(direction) << "\"}";
-			}
-			sqlite3_finalize(st);
-		}
-	};
-
-	// Outgoing: source_id = node_id → target is the neighbor.
-	emitNeighbors("r.source_id=?", "out");
-	// Incoming: target_id = node_id → source is the neighbor.
-	{
-		std::string sql =
-			"SELECT e.id, e.name, e.kind, e.file_path, r.type "
-			"FROM relation r JOIN entity e ON e.id = r.source_id "
-			"WHERE r.project_id=? AND r.target_id=? ";
-		if (edge_type_filter > 0)
-			sql += "AND r.type=" +
-			       std::to_string(edge_type_filter) + " ";
-		sql += "ORDER BY e.id LIMIT 500";
-		sqlite3_stmt *st = nullptr;
-		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &st, nullptr) ==
-		    SQLITE_OK) {
-			sqlite3_bind_int64(st, 1,
-					   static_cast<int64_t>(project_id));
-			sqlite3_bind_int64(st, 2,
-					   static_cast<int64_t>(node_id));
-			while (sqlite3_step(st) == SQLITE_ROW) {
-				int64_t nid = sqlite3_column_int64(st, 0);
-				std::string name =
-					reinterpret_cast<const char *>(
-						sqlite3_column_text(st, 1)) ?
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(
-								st, 1)) :
-						"";
-				int ntype = sqlite3_column_int(st, 2);
-				std::string file =
-					reinterpret_cast<const char *>(
-						sqlite3_column_text(st, 3)) ?
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(
-								st, 3)) :
-						"";
-				int etype = sqlite3_column_int(st, 4);
-				if (!first)
-					json << ",";
-				first = false;
-				++count;
-				json << "{\"neighbor_id\":" << nid
-				     << ",\"name\":\""
-				     << jsonEscape(name.c_str())
-				     << "\",\"node_type\":" << ntype
-				     << ",\"file_path\":\""
-				     << jsonEscape(file.c_str())
-				     << "\",\"edge_type\":" << etype
-				     << ",\"direction\":\"in\"}";
-			}
-			sqlite3_finalize(st);
-		}
-	}
-	json << "],\"total\":" << count << "}";
-	return json.str();
-}
-
-std::string QueryEngine::findShortestPath(uint64_t project_id,
-					  uint64_t source_id,
-					  uint64_t target_id)
-{
-	// Real iterative BFS over the in-memory call graph.
-	//
-	// Steps:
-	//   1. Load all CALLS|RELATES edges for the project from SQLite
-	//      into an adjacency list (unordered_map<node, vector<neighbor>>).
-	//   2. BFS from source_id to target_id with a visited set (encoded
-	//      in the depth map) and a parent-pointer map for reconstruction.
-	//   3. Enforce kShortestPathMaxDepth so traversal stays bounded.
-	//   4. Reconstruct source→target path via parent pointers.
-	//
-	// All errors are reported with [module=query, method=findShortestPath]
-	// tags; nothing is silently swallowed.
-	// ── v0.2.5: SQLite graph-query backend (Windows / SQLite-only) ──
-	// Real iterative BFS over the CSR forward adjacency table
-	// (store_->getCalleeIds, O(E) traversal, no full-table scans). The
-	// output JSON shape is identical to the SQLite branch: path array
-	// of {node_id}, found, approximation, note, hops. If source == target
-	// the path is a single node with 0 hops.
-	if (!store_ || !store_->handle()) {
-		return "{\"path\":[],\"found\":false,\"approximation\":"
-		       "\"heuristic\",\"note\":\"" +
-		       std::string(kShortestPathNote) +
-		       "\",\"hops\":0,\"error\":\"graph not ready "
-		       "[module=query, method=findShortestPath]\"}";
-	}
-	std::ostringstream json;
-	if (source_id == target_id) {
-		json << "{\"path\":[{\"node_id\":" << source_id << "}],"
-		     << "\"found\":true,\"approximation\":\"heuristic\","
-		     << "\"note\":\"" << kShortestPathNote << "\",\"hops\":0}";
-		return json.str();
-	}
-	// BFS with parent pointers and a visited/depth map; bounded by the
-	// same kShortestPathMaxDepth as the SQLite branch.
-	std::unordered_map<uint64_t, uint64_t> parent;
-	std::unordered_map<uint64_t, int> depth_map;
-	std::queue<uint64_t> bfs;
-	parent[source_id] = source_id;
-	depth_map[source_id] = 0;
-	bfs.push(source_id);
-	bool found = false;
-	while (!bfs.empty()) {
-		uint64_t cur = bfs.front();
-		bfs.pop();
-		int cur_depth = depth_map[cur];
-		if (cur_depth >= kShortestPathMaxDepth)
-			continue;
-		auto neighbors = store_->getCalleeIds(cur);
-		for (uint64_t nb : neighbors) {
-			if (parent.count(nb))
-				continue; // already visited
-			parent[nb] = cur;
-			depth_map[nb] = cur_depth + 1;
-			if (nb == target_id) {
-				found = true;
-				break;
-			}
-			bfs.push(nb);
-		}
-		if (found)
-			break;
-	}
-	if (!found) {
-		// v0.2.5: no-path payload keeps the source node in the path array
-		// (path:[source]), matching the SQLite emitNotFound contract
-		// so callers can rely on a stable JSON shape across backends.
-		json << "{\"path\":[{\"node_id\":" << source_id << "}],"
-		     << "\"found\":false,"
-		     << "\"approximation\":\"heuristic\","
-		     << "\"note\":\"" << kShortestPathNote << "\",\"hops\":0}";
-		return json.str();
-	}
-	// Reconstruct target → source via parent pointers, then reverse.
-	std::vector<uint64_t> path;
-	uint64_t node = target_id;
-	while (true) {
-		path.push_back(node);
-		if (node == source_id)
-			break;
-		auto it = parent.find(node);
-		if (it == parent.end()) {
-			path.clear();
-			found = false;
-			break;
-		}
-		node = it->second;
-	}
-	if (!found) {
-		// See no-path contract above (path:[source]).
-		json << "{\"path\":[{\"node_id\":" << source_id << "}],"
-		     << "\"found\":false,"
-		     << "\"approximation\":\"heuristic\","
-		     << "\"note\":\"" << kShortestPathNote << "\",\"hops\":0}";
-		return json.str();
-	}
-	std::reverse(path.begin(), path.end());
-	json << "{\"path\":[";
-	bool first = true;
-	for (uint64_t n : path) {
-		if (!first)
-			json << ",";
-		first = false;
-		json << "{\"node_id\":" << n << "}";
-	}
-	size_t hops = path.size() > 0 ? path.size() - 1 : 0;
-	json << "],\"found\":true,\"approximation\":\"heuristic\","
-	     << "\"note\":\"" << kShortestPathNote << "\",\"hops\":" << hops
-	     << "}";
-	return json.str();
-}
-
-std::string QueryEngine::getSubgraph(uint64_t project_id,
-				     uint64_t center_node_id, int radius,
-				     const char *node_type_filter,
-				     const char *edge_type_filter)
-{
-	(void)radius; // reserved for future multi-hop
-	// ── v0.2.5: SQLite graph-query backend (Windows / SQLite-only) ──
-	// Subgraph via bidirectional BFS over the CSR adjacency tables
-	// (getCalleeIds + getCallerIds, O(E) per level). Emits nodes as
-	// {id, name, node_type, file_path, language} matching the SQLite
-	// branch. radius is honored (clamped to a sane bound); node/edge type
-	// filters are applied when given.
-	if (!store_ || !store_->handle()) {
-		return "{\"total\":0,\"nodes\":[],\"error\":\"graph not ready "
-		       "[module=query, method=getSubgraph]\"}";
-	}
-	int hops = radius > 0 ? radius : 1;
-	if (hops > 8)
-		hops = 8; // bounded traversal (matches SQLite budget)
-	// Parse node_type_filter (comma-separated kinds) for filtering.
-	std::unordered_set<int> kind_filter;
-	if (node_type_filter && *node_type_filter) {
-		std::string fs(node_type_filter);
-		std::string token;
-		std::istringstream iss(fs);
-		while (std::getline(iss, token, ',')) {
-			while (!token.empty() &&
-			       std::isspace(static_cast<unsigned char>(
-				       token.front())))
-				token.erase(token.begin());
-			if (!token.empty()) {
-				try {
-					kind_filter.insert(std::stoi(token));
-				} catch (...) {
-					// skip malformed token
-				}
-			}
-		}
-	}
-
-	// BFS level by level, collecting visited nodes (undirected: follow
-	// both callers and callees).
-	std::unordered_map<uint64_t, int> depth_map;
-	std::deque<uint64_t> frontier{ center_node_id };
-	depth_map[center_node_id] = 0;
-	int cur_depth = 0;
-	while (!frontier.empty() && cur_depth < hops) {
-		std::deque<uint64_t> next;
-		for (uint64_t n : frontier) {
-			int d = depth_map[n];
-			for (uint64_t nb : store_->getCalleeIds(n)) {
-				if (!depth_map.count(nb)) {
-					depth_map[nb] = d + 1;
-					next.push_back(nb);
-				}
-			}
-			for (uint64_t nb : store_->getCallerIds(n)) {
-				if (!depth_map.count(nb)) {
-					depth_map[nb] = d + 1;
-					next.push_back(nb);
-				}
-			}
-		}
-		frontier = std::move(next);
-		++cur_depth;
-	}
-
-	// Emit nodes (center first, then by depth) with entity metadata.
-	std::ostringstream json;
-	json << "{\"nodes\":[";
-	bool first = true;
-	int count = 0;
-	auto emitNode = [&](int64_t id, const std::string &name, int kind,
-			    const std::string &file, const std::string &lang) {
-		if (!first)
-			json << ",";
-		first = false;
-		++count;
-		json << "{\"id\":" << id << ",\"name\":\""
-		     << jsonEscape(name.c_str()) << "\",\"node_type\":" << kind
-		     << ",\"file_path\":\"" << jsonEscape(file.c_str())
-		     << "\",\"language\":\"" << jsonEscape(lang.c_str())
-		     << "\"}";
-	};
-	// Deterministic order: center, then BFS discovery order (depth_map is
-	// insertion-ordered by BFS, which yields breadth-first order).
-	std::vector<uint64_t> ordered;
-	for (auto &kv : depth_map)
-		ordered.push_back(kv.first);
-	for (uint64_t id : ordered) {
-		const char *sql =
-			"SELECT name, kind, file_path, language FROM entity "
-			"WHERE id=? AND project_id=?";
-		sqlite3_stmt *st = nullptr;
-		if (sqlite3_prepare_v2(store_->handle(), sql, -1, &st,
-				       nullptr) != SQLITE_OK)
-			continue;
-		sqlite3_bind_int64(st, 1, static_cast<int64_t>(id));
-		sqlite3_bind_int64(st, 2, static_cast<int64_t>(project_id));
-		if (sqlite3_step(st) == SQLITE_ROW) {
-			std::string name =
-				reinterpret_cast<const char *>(
-					sqlite3_column_text(st, 0)) ?
-					reinterpret_cast<const char *>(
-						sqlite3_column_text(st, 0)) :
-					"";
-			int kind = sqlite3_column_int(st, 1);
-			std::string file =
-				reinterpret_cast<const char *>(
-					sqlite3_column_text(st, 2)) ?
-					reinterpret_cast<const char *>(
-						sqlite3_column_text(st, 2)) :
-					"";
-			std::string lang =
-				reinterpret_cast<const char *>(
-					sqlite3_column_text(st, 3)) ?
-					reinterpret_cast<const char *>(
-						sqlite3_column_text(st, 3)) :
-					"";
-			if (kind_filter.empty() || kind_filter.count(kind))
-				emitNode(static_cast<int64_t>(id), name, kind,
-					 file, lang);
-		}
-		sqlite3_finalize(st);
-	}
-	json << "],\"total\":" << count << "}";
-	return json.str();
 }
 
 std::string QueryEngine::locateNode(uint64_t project_id, uint64_t node_id,
@@ -1301,45 +758,43 @@ std::string QueryEngine::locateByName(uint64_t project_id, const char *name)
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 2, name, -1, SQLITE_TRANSIENT);
 
-	std::ostringstream json;
-	json << "{\"locations\":[";
+	util::JsonWriter json;
+	json.beginObject();
+	json.key("locations").beginArray();
 	int col_count = sqlite3_column_count(stmt);
-	bool first_row = true;
 	int row_count = 0;
 
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
-		if (!first_row)
-			json << ",";
-		first_row = false;
 		row_count++;
 
-		json << "{";
+		json.beginObject();
 		for (int i = 0; i < col_count; i++) {
-			if (i > 0)
-				json << ",";
 			const char *col_name = sqlite3_column_name(stmt, i);
-			// L2 fix: escape the column name so a name containing a quote
-			// or control char cannot produce invalid JSON.
-			json << "\"" << jsonEscape(col_name ? col_name : "")
-			     << "\":";
+			// The writer escapes keys and values, so a column name
+			// containing a quote or control char cannot produce
+			// invalid JSON.
+			json.key(col_name ? col_name : "");
 
 			int col_type = sqlite3_column_type(stmt, i);
 			if (col_type == SQLITE_NULL) {
-				json << "null";
+				json.nullValue();
 			} else if (col_type == SQLITE_INTEGER) {
-				json << sqlite3_column_int64(stmt, i);
+				json.value(sqlite3_column_int64(stmt, i));
 			} else {
+				// Non-integer, non-null columns are emitted as
+				// text, as before.
 				const char *text =
 					reinterpret_cast<const char *>(
 						sqlite3_column_text(stmt, i));
-				json << "\"" << jsonEscape(text ? text : "")
-				     << "\"";
+				json.value(text ? text : "");
 			}
 		}
-		json << "}";
+		json.endObject();
 	}
 
-	json << "],\"total\":" << row_count << "}";
+	json.endArray();
+	json.key("total").value(row_count);
+	json.endObject();
 	sqlite3_finalize(stmt);
 	return json.str();
 }
@@ -1381,10 +836,14 @@ std::string QueryEngine::getGraphStats(uint64_t project_id)
 		}
 	}
 	{
-		// Distinct file paths across all entities (matches the
-		// SQLite branch's "count DISTINCT n.file_path").
-		const char *sql =
-			"SELECT COUNT(DISTINCT file_path) FROM entity";
+		// Files the indexer actually wrote, from the `files` table — what the
+		// field name promises. It used to count `COUNT(DISTINCT file_path)
+		// FROM entity`, i.e. only the files that produced at least one symbol,
+		// so a project of 1,579 indexed files reported 672 (goagent) and the
+		// number looked like "files indexed" while silently excluding
+		// header-only, re-export-only and comment-only files. The old value is
+		// still reported, as `files_with_symbols`.
+		const char *sql = "SELECT COUNT(*) FROM files";
 		sqlite3_stmt *st = nullptr;
 		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) ==
 		    SQLITE_OK) {
@@ -1393,10 +852,29 @@ std::string QueryEngine::getGraphStats(uint64_t project_id)
 			sqlite3_finalize(st);
 		}
 	}
+	// Files that produced at least one entity: the value the old
+	// implementation reported as total_files, kept because it answers a
+	// different (also useful) question — how much of the corpus the graph
+	// actually covers.
+	int64_t files_with_symbols = 0;
+	{
+		const char *sql =
+			"SELECT COUNT(DISTINCT file_path) FROM entity";
+		sqlite3_stmt *st = nullptr;
+		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) ==
+		    SQLITE_OK) {
+			if (sqlite3_step(st) == SQLITE_ROW)
+				files_with_symbols =
+					sqlite3_column_int64(st, 0);
+			sqlite3_finalize(st);
+		}
+	}
+
 	std::ostringstream json;
 	json << "{\"total_nodes\":" << total_nodes
 	     << ",\"total_edges\":" << total_edges
-	     << ",\"total_files\":" << total_files << "}";
+	     << ",\"total_files\":" << total_files
+	     << ",\"files_with_symbols\":" << files_with_symbols << "}";
 	return json.str();
 }
 
@@ -1420,12 +898,90 @@ std::string QueryEngine::explainSymbol(uint64_t project_id,
 	std::string callees_json = getCallees(project_id, name.c_str());
 
 	// 4. Combine into a single response
-	std::string json = "{";
-	json += "\"symbol\":\"" + jsonEscape(name.c_str()) + "\",";
-	json += "\"definition\":" + def_json + ",";
-	json += "\"callers\":" + callers_json + ",";
-	json += "\"callees\":" + callees_json + "}";
-	return json;
+	util::JsonWriter json;
+	json.beginObject();
+	json.key("symbol").value(name);
+	// The three sub-documents are already serialized by the query
+	// methods above; raw() embeds them without re-escaping.
+	json.key("definition").raw(def_json);
+	json.key("callers").raw(callers_json);
+	json.key("callees").raw(callees_json);
+	json.endObject();
+	return json.str();
+}
+
+// ─── Bare-name ambiguity probe ─────────────────────────────────
+//
+// Shared by the name-based trace/lookup paths (traceCallChain,
+// trace_path). Returns "" when the name is unambiguous; otherwise a
+// `{"ambiguous":true,"candidates":[…]}` fragment the caller merges into
+// its response. Mirrors the getCallers ambiguity contract so a client
+// sees one shape for "which entity do you mean?" no matter which tool
+// asked (T5 finding #9).
+
+std::string bareNameCandidates(sqlite3 *db, uint64_t project_id,
+			       const char *name)
+{
+	if (!db || !name || !*name)
+		return std::string();
+	// Collect every matching entity id first — LIMIT 1 here is exactly
+	// the silent-first-match behaviour this probe exists to prevent.
+	std::vector<int64_t> ids;
+	{
+		const char *sql = "SELECT id FROM entity WHERE project_id=? "
+				  "AND (name=? OR qualified_name=?) "
+				  "ORDER BY id";
+		sqlite3_stmt *st = nullptr;
+		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) != SQLITE_OK)
+			return std::string();
+		sqlite3_bind_int64(st, 1, static_cast<int64_t>(project_id));
+		sqlite3_bind_text(st, 2, name, -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(st, 3, name, -1, SQLITE_TRANSIENT);
+		while (sqlite3_step(st) == SQLITE_ROW)
+			ids.push_back(sqlite3_column_int64(st, 0));
+		sqlite3_finalize(st);
+	}
+	if (ids.size() < 2)
+		return std::string();
+
+	std::string cands;
+	bool first = true;
+	for (int64_t id : ids) {
+		std::string nm, fp;
+		int sr = 0, sc = 0;
+		const char *q = "SELECT name, file_path, start_row, start_col "
+				"FROM entity WHERE id=?";
+		sqlite3_stmt *st = nullptr;
+		if (sqlite3_prepare_v2(db, q, -1, &st, nullptr) == SQLITE_OK) {
+			sqlite3_bind_int64(st, 1, id);
+			if (sqlite3_step(st) == SQLITE_ROW) {
+				const unsigned char *n =
+					sqlite3_column_text(st, 0);
+				const unsigned char *f =
+					sqlite3_column_text(st, 1);
+				nm = n ? reinterpret_cast<const char *>(n) : "";
+				fp = f ? reinterpret_cast<const char *>(f) : "";
+				sr = sqlite3_column_int(st, 2);
+				sc = sqlite3_column_int(st, 3);
+			}
+			sqlite3_finalize(st);
+		}
+		if (!first)
+			cands += ",";
+		first = false;
+		util::JsonWriter el;
+		el.beginObject();
+		el.key("graph_node_id").value(id);
+		el.key("name").value(nm);
+		el.key("file_path").value(fp);
+		el.key("start_row").value(sr);
+		el.key("start_col").value(sc);
+		el.endObject();
+		cands += el.str();
+	}
+	return "{\"ambiguous\":true,\"candidates\":[" + cands +
+	       "],\"hint\":\"" + util::jsonEscapeString(kAmbiguousNameHint) +
+	       "\"}";
 }
 
 } // namespace query

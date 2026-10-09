@@ -1,5 +1,6 @@
 #include "dead_code_inspector.h"
 #include "claim.h"
+#include "registry.h"
 #include "../store/store.h"
 
 #include <cstdio>
@@ -22,32 +23,91 @@ DeadCodeInspector::DeadCodeInspector(store::GraphStore *store,
 std::vector<Finding> DeadCodeInspector::findOrphanModules()
 {
 	std::vector<Finding> out;
+
+	// Evidence gate. The orphan test below is `NOT EXISTS (SELECT 1 FROM
+	// import …)`, which is vacuously TRUE when the import table is empty: a
+	// project that was never indexed, or a language whose visitor records no
+	// imports, would have every module with >=10 entities reported as an
+	// orphan module — a hard conclusion drawn from missing evidence. Unlike
+	// the shared evidence_backend_ready() gate this also has to check
+	// `import`, because entity rows can exist while imports do not.
+	auto count_for_project = [&](const char *sql) -> int64_t {
+		sqlite3_stmt *st = nullptr;
+		if (sqlite3_prepare_v2(store_->handle(), sql, -1, &st,
+				       nullptr) != SQLITE_OK) {
+			fprintf(stderr,
+				"[module=verify, method=findOrphanModules] "
+				"prepare failed: %s\n",
+				sqlite3_errmsg(store_->handle()));
+			return -1;
+		}
+		sqlite3_bind_int64(st, 1, static_cast<int64_t>(project_id_));
+		int64_t n = (sqlite3_step(st) == SQLITE_ROW) ?
+				    sqlite3_column_int64(st, 0) :
+				    -1;
+		sqlite3_finalize(st);
+		return n;
+	};
+	const int64_t entity_rows = count_for_project(
+		"SELECT COUNT(*) FROM entity WHERE project_id=?");
+	const int64_t import_rows = count_for_project(
+		"SELECT COUNT(*) FROM import WHERE project_id=?");
+	if (entity_rows <= 0 || import_rows <= 0) {
+		fprintf(stderr,
+			"[module=verify, method=findOrphanModules] evidence "
+			"backend not ready (entity=%lld, import=%lld): "
+			"orphan-module conclusions suppressed\n",
+			(long long)entity_rows, (long long)import_rows);
+		return out;
+	}
+
 	// Find modules that are never imported from outside the module itself.
 	// Uses the import table, filtered by file_path to exclude self-imports.
 	// A module is orphaned if no external file imports it.
 	// This matches the manual audit methodology (grep for import paths,
 	// excluding self-references).
-	std::string sql = "SELECT s.name, COUNT(e.id) as entities, "
-			  " MIN(e.file_path) as sample_file "
-			  "FROM scope s "
-			  "JOIN entity e ON e.project_id = s.project_id "
-			  " AND e.file_path LIKE s.name || '%' "
-			  "WHERE s.kind = 1 AND s.project_id = ? "
-			  " AND NOT EXISTS ("
-			  "  SELECT 1 FROM import i "
-			  "  WHERE i.project_id = ? "
-			  "  AND i.target_path LIKE '%' || "
-			  "   substr(s.name, length(s.name) - "
-			  "    instr(reverse(s.name), '/') + 2) || '%'"
-			  "  AND i.file_path NOT LIKE s.name || '%'"
-			  " ) "
-			  "GROUP BY s.name "
-			  "HAVING entities >= 10 "
-			  "ORDER BY entities DESC LIMIT 500";
+	std::string sql =
+		"SELECT s.name, COUNT(e.id) as entities, "
+		" MIN(e.file_path) as sample_file "
+		"FROM scope s "
+		"JOIN entity e ON e.project_id = s.project_id "
+		" AND e.file_path LIKE s.name || '%' "
+		"WHERE s.kind = 1 AND s.project_id = ? "
+		" AND NOT EXISTS ("
+		"  SELECT 1 FROM import i "
+		"  WHERE i.project_id = ? "
+		// An import counts if its target path contains the
+		// module's last path component ("src/foo/bar" -> "bar").
+		//
+		// SQLite has no reverse(), which the previous expression
+		// called: the statement failed to prepare on EVERY call and
+		// the inspector silently reported "no orphan modules" for
+		// every project. The basename is extracted with rtrim
+		// instead — rtrim(X,'/') drops trailing slashes, and
+		// rtrim(X, replace(X,'/','')) strips trailing non-slash
+		// characters, so its length is the index of the last '/'.
+		"  AND i.target_path LIKE '%' || "
+		"   substr(rtrim(s.name, '/'), "
+		"          length(rtrim(rtrim(s.name, '/'), "
+		"                   replace(rtrim(s.name, '/'), "
+		"                           '/', ''))) + 1) || '%'"
+		"  AND i.file_path NOT LIKE s.name || '%'"
+		" ) "
+		"GROUP BY s.name "
+		"HAVING entities >= 10 "
+		"ORDER BY entities DESC LIMIT 500";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), sql.c_str(), -1, &stmt,
-			       nullptr) != SQLITE_OK)
+			       nullptr) != SQLITE_OK) {
+		// No silent error handling: a failed prepare must not look like
+		// "the inspection ran and found nothing". The SQL prefix
+		// identifies which of this class's queries failed.
+		fprintf(stderr,
+			"[module=verify, method=dead_code_inspector] prepare "
+			"failed: %s | sql=%.120s\n",
+			sqlite3_errmsg(store_->handle()), sql.c_str());
 		return out;
+	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id_));
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id_));
 
@@ -60,11 +120,29 @@ std::vector<Finding> DeadCodeInspector::findOrphanModules()
 
 		Finding f;
 		f.type = "DeadModule";
+		// The old wording said "entities with zero callers", which this query
+		// never measures — it counts the module's entities and tests whether
+		// anything outside imports the module. Say what was checked.
 		f.description = std::string("Module '") + (mod ? mod : "") +
 				"' has " + std::to_string(entities) +
-				" entities with zero callers — orphan module. "
-				"Sample: " +
+				" entities and is imported by no other module "
+				"(checked via the import table). Sample: " +
 				(sample ? sample : "");
+		// A scope holding most of the project is a top-level directory, not a
+		// dependency: nothing outside it imports it *because* it contains
+		// everything. Measured on real projects — a Rust crate's `src/`
+		// (6747 of 6850 entities), a Python project root (847 of 847), and
+		// this repo's `engine/src/` (1766 of 2265) — the finding is still
+		// emitted (the query contract is pinned by
+		// test_verifier_evidence_gates Case 6), but the reader is told why
+		// the absence of an importer is expected there. Deleting the finding
+		// instead was tried and breaks that contract.
+		if (static_cast<int64_t>(entities) * 2 > entity_rows) {
+			f.description +=
+				" (this scope holds most of the project's "
+				"entities — it is a top-level directory, so no "
+				"external importer is expected)";
+		}
 		f.confidence = 0.95;
 		out.push_back(f);
 	}
@@ -75,6 +153,40 @@ std::vector<Finding> DeadCodeInspector::findOrphanModules()
 std::vector<Finding> DeadCodeInspector::findOrphanFunctions()
 {
 	std::vector<Finding> out;
+
+	// Evidence gate (same class as findOrphanModules): when the relation
+	// table is empty the orphan test `NOT EXISTS (SELECT 1 FROM relation …)`
+	// is vacuously TRUE for every non-public, non-entry-point function, so
+	// a pre-index or call-edge-less project would emit mass DeadFunction
+	// findings at 0.90 confidence — hard conclusions drawn from missing
+	// evidence. Suppress the check when relation is empty.
+	{
+		sqlite3_stmt *st = nullptr;
+		if (sqlite3_prepare_v2(store_->handle(),
+				       "SELECT COUNT(*) FROM relation WHERE "
+				       "project_id=?",
+				       -1, &st, nullptr) != SQLITE_OK) {
+			fprintf(stderr,
+				"[module=verify, method=findOrphanFunctions] "
+				"prepare relation count failed: %s\n",
+				sqlite3_errmsg(store_->handle()));
+			return out;
+		}
+		sqlite3_bind_int64(st, 1, static_cast<int64_t>(project_id_));
+		int64_t relation_rows = (sqlite3_step(st) == SQLITE_ROW) ?
+						sqlite3_column_int64(st, 0) :
+						-1;
+		sqlite3_finalize(st);
+		if (relation_rows <= 0) {
+			fprintf(stderr,
+				"[module=verify, method=findOrphanFunctions] "
+				"evidence backend not ready (relation=%lld): "
+				"dead-function conclusions suppressed\n",
+				(long long)relation_rows);
+			return out;
+		}
+	}
+
 	// Find functions/types with 0 incoming edges and 0 outgoing edges.
 	// Exclusions (otherwise main(), FFI exports, and callback entry
 	// points get misclassified as dead — they have no in/out relation
@@ -112,8 +224,16 @@ std::vector<Finding> DeadCodeInspector::findOrphanFunctions()
 		"LIMIT 500";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), sql.c_str(), -1, &stmt,
-			       nullptr) != SQLITE_OK)
+			       nullptr) != SQLITE_OK) {
+		// No silent error handling: a failed prepare must not look like
+		// "the inspection ran and found nothing". The SQL prefix
+		// identifies which of this class's queries failed.
+		fprintf(stderr,
+			"[module=verify, method=dead_code_inspector] prepare "
+			"failed: %s | sql=%.120s\n",
+			sqlite3_errmsg(store_->handle()), sql.c_str());
 		return out;
+	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id_));
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id_));
 
@@ -161,12 +281,30 @@ std::vector<Finding> DeadCodeInspector::findArchitectureDrift()
 		" AND tgt_mod.kind = 1 "
 		"WHERE r.project_id = ? AND r.type = 1 "
 		" AND src_mod.id != tgt_mod.id "
+		// A file under a nested scope prefix-matches BOTH the child and
+		// its ancestor, so an intra-module call is emitted twice and
+		// surfaces as "Module 'src/' calls 'src/ir/'" — a parent/child
+		// pair is not a boundary crossing (T5 finding #6). substr/=
+		// rather than LIKE so '_' in a path is a literal, not a
+		// single-char wildcard.
+		" AND NOT (substr(src_mod.name, 1, length(tgt_mod.name)) = "
+		"tgt_mod.name "
+		"       OR substr(tgt_mod.name, 1, length(src_mod.name)) = "
+		"src_mod.name) "
 		"GROUP BY src_mod.name, tgt_mod.name "
 		"ORDER BY edges DESC LIMIT 15";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), sql.c_str(), -1, &stmt,
-			       nullptr) != SQLITE_OK)
+			       nullptr) != SQLITE_OK) {
+		// No silent error handling: a failed prepare must not look like
+		// "the inspection ran and found nothing". The SQL prefix
+		// identifies which of this class's queries failed.
+		fprintf(stderr,
+			"[module=verify, method=dead_code_inspector] prepare "
+			"failed: %s | sql=%.120s\n",
+			sqlite3_errmsg(store_->handle()), sql.c_str());
 		return out;
+	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id_));
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id_));
 	sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(project_id_));
@@ -192,46 +330,76 @@ std::vector<Finding> DeadCodeInspector::findArchitectureDrift()
 	}
 	sqlite3_finalize(stmt);
 
-	// Layer violation check: detect lower-layer modules calling upper-layer
-	// modules. Uses the architecture_edge table for known layer relationships.
-	std::string layer_sql =
-		"SELECT ae.layer_lower, ae.layer_upper, COUNT(*) as violations "
+	// Module coupling: the module pairs with the most cross-module calls.
+	//
+	// This used to be reported as a layer violation ("lower layer should not
+	// depend on upper layer"). There is no layer model: architecture_edge rows
+	// are written per (caller module, callee module) pair with no direction
+	// test, and callee_module / caller_module hold module NAMES. The old finding
+	// therefore asserted a violation on the strength of two module names. It
+	// is now reported for what it is — coupling, ordered by call count.
+	std::string coupling_sql =
+		"SELECT ae.caller_module, ae.callee_module, COUNT(*) as calls "
 		"FROM architecture_edge ae "
 		"JOIN entity e ON ae.entity_id = e.id "
 		"JOIN relation r ON r.project_id = ? AND r.target_id = e.id "
 		"JOIN entity caller ON r.source_id = caller.id "
 		"WHERE ae.project_id = ? "
-		" AND caller.file_path LIKE '%' || ae.layer_lower || '%'"
-		" AND e.file_path LIKE '%' || ae.layer_upper || '%'"
-		" GROUP BY ae.layer_lower, ae.layer_upper"
-		" HAVING violations > 0"
-		" ORDER BY violations DESC LIMIT 10";
-	sqlite3_stmt *layer_st = nullptr;
-	if (sqlite3_prepare_v2(store_->handle(), layer_sql.c_str(), -1,
-			       &layer_st, nullptr) == SQLITE_OK) {
-		sqlite3_bind_int64(layer_st, 1,
+		// A module calling itself is not a boundary crossing. The
+		// architecture_edge writer already skips same-scope pairs, but
+		// the read side must not trust that: without this predicate a
+		// self-pair row would be reported as "Module 'X' calls 'X' …
+		// across a module boundary" (T5 finding #6).
+		" AND ae.callee_module != ae.caller_module"
+		// Same for parent/child nesting: a file under `src/ir/` also
+		// prefix-matches `src/`, so intra-module calls surface as
+		// 'src/' ↔ 'src/ir/' pairs. substr/= keeps '_' literal.
+		" AND NOT (substr(ae.callee_module, 1, length(ae.caller_module)) "
+		"= ae.caller_module "
+		"       OR substr(ae.caller_module, 1, length(ae.callee_module)) "
+		"= ae.callee_module)"
+		// The call edge runs caller -> callee (relation.target_id is the
+		// callee, so `caller` is the source side). Matching the caller
+		// against callee_module here read every pair backwards and made
+		// the rule report only reversed edges — once the parent/child
+		// filter above removed those, this rule went silent on real data.
+		" AND caller.file_path LIKE '%' || ae.caller_module || '%'"
+		" AND e.file_path LIKE '%' || ae.callee_module || '%'"
+		" GROUP BY ae.caller_module, ae.callee_module"
+		" HAVING calls > 0"
+		" ORDER BY calls DESC LIMIT 10";
+	sqlite3_stmt *coupling_st = nullptr;
+	if (sqlite3_prepare_v2(store_->handle(), coupling_sql.c_str(), -1,
+			       &coupling_st, nullptr) == SQLITE_OK) {
+		sqlite3_bind_int64(coupling_st, 1,
 				   static_cast<int64_t>(project_id_));
-		sqlite3_bind_int64(layer_st, 2,
+		sqlite3_bind_int64(coupling_st, 2,
 				   static_cast<int64_t>(project_id_));
-		while (sqlite3_step(layer_st) == SQLITE_ROW) {
-			const char *lower = reinterpret_cast<const char *>(
-				sqlite3_column_text(layer_st, 0));
-			const char *upper = reinterpret_cast<const char *>(
-				sqlite3_column_text(layer_st, 1));
-			int violations = sqlite3_column_int(layer_st, 2);
+		while (sqlite3_step(coupling_st) == SQLITE_ROW) {
+			const char *caller_mod = reinterpret_cast<const char *>(
+				sqlite3_column_text(coupling_st, 0));
+			const char *callee_mod = reinterpret_cast<const char *>(
+				sqlite3_column_text(coupling_st, 1));
+			int calls = sqlite3_column_int(coupling_st, 2);
 
 			Finding f;
-			f.type = "LayerViolation";
-			f.description =
-				std::string("Layer violation: '") +
-				(lower ? lower : "") + "' calls '" +
-				(upper ? upper : "") + "' " +
-				std::to_string(violations) +
-				" times — lower layer should not depend on upper layer.";
+			f.type = "ModuleCoupling";
+			f.description = std::string("Module coupling: '") +
+					(caller_mod ? caller_mod : "") +
+					"' calls '" +
+					(callee_mod ? callee_mod : "") + "' " +
+					std::to_string(calls) +
+					" times across a module boundary — a "
+					"dependency, not a layer violation.";
 			f.confidence = 0.90;
 			out.push_back(f);
 		}
-		sqlite3_finalize(layer_st);
+		sqlite3_finalize(coupling_st);
+	} else {
+		fprintf(stderr,
+			"[module=verify, method=dead_code_inspector] "
+			"coupling prepare failed: %s\n",
+			sqlite3_errmsg(store_->handle()));
 	}
 
 	return out;
@@ -261,8 +429,16 @@ std::vector<Finding> DeadCodeInspector::findConnectedComponents()
 			  "WHERE project_id = ? AND type = 1";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), sql.c_str(), -1, &stmt,
-			       nullptr) != SQLITE_OK)
+			       nullptr) != SQLITE_OK) {
+		// No silent error handling: a failed prepare must not look like
+		// "the inspection ran and found nothing". The SQL prefix
+		// identifies which of this class's queries failed.
+		fprintf(stderr,
+			"[module=verify, method=dead_code_inspector] prepare "
+			"failed: %s | sql=%.120s\n",
+			sqlite3_errmsg(store_->handle()), sql.c_str());
 		return out;
+	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id_));
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
 		uint64_t src =

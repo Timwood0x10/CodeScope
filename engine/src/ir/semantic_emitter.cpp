@@ -91,24 +91,24 @@ uint64_t SemanticEmitter::emitImport(const std::string &module_name,
 				loc);
 }
 
+uint64_t SemanticEmitter::emitImportBinding(const std::string &binding,
+					    const std::string &module_spec,
+					    SourceRange loc, uint64_t parent_id)
+{
+	// A distinct kind from emitImport, deliberately: `Import` records the whole
+	// statement and is what the `import` table and the visitor tests count, so
+	// reusing it inflated those counts (the JS/TS visitor tests failed exactly
+	// that way, 1 import → 2). The binding sits in `name` and the specifier in
+	// `type_name`, which is what lets the Resolver map a bare call name back to
+	// its module.
+	return unit_->addTypedRecord(RecordKind::ImportBinding, binding,
+				     module_spec, parent_id, loc);
+}
+
 uint64_t SemanticEmitter::emitExport(const std::string &name, SourceRange loc,
 				     uint64_t parent_id)
 {
 	return unit_->addRecord(RecordKind::Export, name, parent_id, loc);
-}
-
-// ── Scope Emitters ───────────────────────────────────────────
-
-void SemanticEmitter::emitScope(int kind, int scope_kind,
-				const std::string &name, SourceRange loc)
-{
-	// Scope entries/exits are stored as records with special kinds.
-	// kind=0 means scope enter, kind=1 means scope exit.
-	// The scope_kind is encoded in the arity field.
-	// scope_kind: 0=Global, 1=Module, 2=Function, 3=Block, 4=Trait, 5=Impl
-	RecordKind rk = (kind == 0) ? RecordKind::TranslationUnit :
-				      RecordKind::Comment;
-	unit_->addRecord(rk, name, 0, loc, scope_kind, false);
 }
 
 // ── Reference Emitter ────────────────────────────────────────

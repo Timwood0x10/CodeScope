@@ -33,6 +33,7 @@
 #include <filesystem>
 #include <sqlite3.h>
 #include <unistd.h>
+#include "test_engine_handle.h"
 
 static inline void check(bool cond, const char *msg)
 {
@@ -132,13 +133,14 @@ def make_timeline():
 	char db_path[] = "/tmp/call_graph_method.db";
 	unlink(db_path);
 
-	int rc = engine_init(db_path);
+	g_engine = engine_create(db_path);
+	const int rc = g_engine != nullptr ? 0 : -1;
 	check(rc == 0, "engine_init");
 
-	uint64_t pid = engine_create_project(proj_dir, "method-proj");
+	uint64_t pid = engine_create_project(g_engine, proj_dir, "method-proj");
 	check(pid > 0, "create_project");
 
-	char *idx = engine_index_project(pid, proj_dir, nullptr);
+	char *idx = engine_index_project(g_engine, pid, proj_dir, nullptr);
 	check(idx != nullptr, "index_project returns non-null");
 	check(strstr(idx, "\"ok\":true") != nullptr, "index_project ok");
 	engine_free_string(idx);
@@ -146,13 +148,13 @@ def make_timeline():
 	// ── Part 1: C++ method call via field_expression ─────────────
 	// Verify callees of AddPoints include "adder" (the method name,
 	// extracted from the field_expression "a.adder").
-	char *callees = engine_get_callees(pid, "AddPoints", nullptr);
+	char *callees = engine_get_callees(g_engine, pid, "AddPoints", nullptr);
 	check(strstr(callees, "adder") != nullptr,
 	      "AddPoints should call adder (field_expression callee extraction)");
 	engine_free_string(callees);
 
 	// Verify callers of adder include AddPoints.
-	char *callers = engine_get_callers(pid, "adder", nullptr);
+	char *callers = engine_get_callers(g_engine, pid, "adder", nullptr);
 	check(strstr(callers, "AddPoints") != nullptr,
 	      "adder should be called by AddPoints (intra-file P1 edge)");
 	engine_free_string(callers);
@@ -182,13 +184,14 @@ def make_timeline():
 
 	// ── Part 3: Python method call via attribute ─────────────────
 	// Verify render calls _load_data (intra-class method call).
-	char *py_callees = engine_get_callees(pid, "render", nullptr);
+	char *py_callees = engine_get_callees(g_engine, pid, "render", nullptr);
 	check(strstr(py_callees, "_load_data") != nullptr,
 	      "render should call _load_data (attribute callee extraction)");
 	engine_free_string(py_callees);
 
 	// Verify _load_data is called by render.
-	char *py_callers = engine_get_callers(pid, "_load_data", nullptr);
+	char *py_callers =
+		engine_get_callers(g_engine, pid, "_load_data", nullptr);
 	check(strstr(py_callers, "render") != nullptr,
 	      "_load_data should be called by render (Python intra-file P1 edge)");
 	engine_free_string(py_callers);
@@ -240,16 +243,14 @@ def make_timeline():
 		"SELECT original_id FROM semantic_records "
 		"WHERE project_id=? AND kind=0 AND name='make_timeline' "
 		"LIMIT 1";
-	check(sqlite3_prepare_v2(db, fn_sql, -1, &stmt, nullptr) ==
-		      SQLITE_OK,
+	check(sqlite3_prepare_v2(db, fn_sql, -1, &stmt, nullptr) == SQLITE_OK,
 	      "prepare make_timeline select");
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(pid));
 	int64_t make_timeline_id = -1;
 	if (sqlite3_step(stmt) == SQLITE_ROW)
 		make_timeline_id = sqlite3_column_int64(stmt, 0);
 	sqlite3_finalize(stmt);
-	check(make_timeline_id > 0,
-	      "make_timeline function record must exist");
+	check(make_timeline_id > 0, "make_timeline function record must exist");
 
 	check(scatter_parent == make_timeline_id,
 	      "Scatter (nested call) parent_id must equal make_timeline "
@@ -259,7 +260,8 @@ def make_timeline():
 	// include Scatter (the nested call). Before the fix, Scatter
 	// was dropped from the reference table because its parent_id
 	// pointed to a CallExpr record (not in _r2n), failing the JOIN.
-	char *nested_callees = engine_get_callees(pid, "make_timeline", nullptr);
+	char *nested_callees =
+		engine_get_callees(g_engine, pid, "make_timeline", nullptr);
 	check(strstr(nested_callees, "Scatter") != nullptr,
 	      "make_timeline should call Scatter (nested call must "
 	      "appear in callees — was dropped before function_stack_ fix)");
@@ -267,7 +269,8 @@ def make_timeline():
 
 	sqlite3_close(db);
 
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 
 	// Cleanup temp dir
 	std::filesystem::remove_all(proj_dir);

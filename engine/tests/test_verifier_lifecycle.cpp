@@ -21,13 +21,14 @@
 #include "verify/claim.h"
 #include "verify/registry.h"
 
-#include <cassert>
+#include "test_check.h"
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <string>
 #include <unistd.h>
+#include "test_engine_handle.h"
 
 // Helper: write a tiny Go project to `dir` so entity/relation tables get
 // populated after engine_index_project. The fixture defines add/multiply/
@@ -38,7 +39,7 @@ static void writeFixture(const std::string &dir)
 	std::filesystem::create_directories(dir);
 
 	FILE *f = fopen((dir + "/multi.go").c_str(), "w");
-	assert(f != nullptr);
+	CHECK(f != nullptr);
 	fputs("package main\n\n"
 	      "func add(a, b int) int { return a + b }\n"
 	      "func multiply(a, b int) int {\n"
@@ -51,7 +52,7 @@ static void writeFixture(const std::string &dir)
 	fclose(f);
 
 	f = fopen((dir + "/main.go").c_str(), "w");
-	assert(f != nullptr);
+	CHECK(f != nullptr);
 	fputs("package main\n\n"
 	      "func main() {\n"
 	      "    _ = compute(1, 2)\n"
@@ -67,16 +68,17 @@ static void writeFixture(const std::string &dir)
 static uint64_t indexFixture(const char *db_path, const char *proj_dir,
 			     const char *proj_name)
 {
-	if (engine_init(db_path) != 0) {
+	g_engine = engine_create(db_path);
+	if (!g_engine) {
 		fprintf(stderr, "FAIL: engine_init failed\n");
 		exit(1);
 	}
-	uint64_t pid = engine_create_project(proj_dir, proj_name);
-	assert(pid > 0);
+	uint64_t pid = engine_create_project(g_engine, proj_dir, proj_name);
+	CHECK(pid > 0);
 
-	char *idx = engine_index_project(pid, proj_dir, nullptr);
-	assert(idx != nullptr);
-	assert(strstr(idx, "\"ok\":true") != nullptr);
+	char *idx = engine_index_project(g_engine, pid, proj_dir, nullptr);
+	CHECK(idx != nullptr);
+	CHECK(strstr(idx, "\"ok\":true") != nullptr);
 	engine_free_string(idx);
 	// Allow the synchronous graph build to settle.
 	usleep(200000);
@@ -88,13 +90,13 @@ static uint64_t indexFixture(const char *db_path, const char *proj_dir,
 // frees). The verdict itself is not asserted — only that dispatch worked.
 static char *assertDispatchOk(uint64_t pid, const std::string &claim_json)
 {
-	char *out = engine_verify_claim(pid, claim_json.c_str());
-	assert(out != nullptr);
+	char *out = engine_verify_claim(g_engine, pid, claim_json.c_str());
+	CHECK(out != nullptr);
 	// Lifecycle error codes that indicate the registry is broken. None
 	// of these should appear after a healthy init+create_project.
-	assert(strstr(out, "registry_empty") == nullptr);
-	assert(strstr(out, "claim_type_unsupported") == nullptr);
-	assert(strstr(out, "verifier_execution_failed") == nullptr);
+	CHECK(strstr(out, "registry_empty") == nullptr);
+	CHECK(strstr(out, "claim_type_unsupported") == nullptr);
+	CHECK(strstr(out, "verifier_execution_failed") == nullptr);
 	return out;
 }
 
@@ -104,9 +106,9 @@ static char *assertDispatchOk(uint64_t pid, const std::string &claim_json)
 static void assertRegistryHealthy()
 {
 	auto &reg = verify::VerifierRegistry::instance();
-	assert(reg.verifier_count() >= 4);
+	CHECK(reg.verifier_count() >= 4);
 	auto supported = reg.supported_claim_types();
-	assert(supported.size() == 4);
+	CHECK(supported.size() == 4);
 }
 
 int main()
@@ -153,11 +155,12 @@ int main()
 				     "\"subject\":\"compute\"}");
 			engine_free_string(r4);
 
-			engine_shutdown();
+			engine_destroy(g_engine);
+			g_engine = nullptr;
 			// After shutdown the registry MUST be empty so the
 			// next init+ensureDefaultVerifiers re-populates it.
-			assert(verify::VerifierRegistry::instance()
-				       .verifier_count() == 0);
+			CHECK(verify::VerifierRegistry::instance()
+				      .verifier_count() == 0);
 		}
 		printf("Test 1 (3-cycle init/verify/shutdown): PASS\n");
 	}
@@ -174,21 +177,23 @@ int main()
 
 		// First init: create + index the project normally.
 		uint64_t pid1 = indexFixture(db_path, proj_dir, "restore-proj");
-		engine_shutdown();
+		engine_destroy(g_engine);
+		g_engine = nullptr;
 
 		// Second init: re-open the SAME db (project already exists).
 		// Deliberately do NOT call engine_create_project — simulate a
 		// restore/worker scenario. Use engine_get_latest_project_id to
 		// recover the existing project_id.
-		assert(engine_init(db_path) == 0);
-		uint64_t pid2 = engine_get_latest_project_id();
-		assert(pid2 == pid1);
+		g_engine = engine_create(db_path);
+		CHECK(g_engine != nullptr);
+		uint64_t pid2 = engine_get_latest_project_id(g_engine);
+		CHECK(pid2 == pid1);
 
 		// Registry should be empty after init (engine_create_project
 		// is what normally populates it). The first verify_claim call
 		// must trigger ensureDefaultVerifiers() and dispatch.
-		assert(verify::VerifierRegistry::instance().verifier_count() ==
-		       0);
+		CHECK(verify::VerifierRegistry::instance().verifier_count() ==
+		      0);
 
 		char *r = assertDispatchOk(pid2,
 					   "{\"type\":\"function_implements\","
@@ -198,7 +203,8 @@ int main()
 		// After the first dispatch the registry should be healthy.
 		assertRegistryHealthy();
 
-		engine_shutdown();
+		engine_destroy(g_engine);
+		g_engine = nullptr;
 		printf("Test 2 (restore DB without create_project): PASS\n");
 	}
 
@@ -214,21 +220,24 @@ int main()
 		writeFixture(dir_a);
 		writeFixture(dir_b);
 
-		assert(engine_init(db_path) == 0);
-		uint64_t pid_a = engine_create_project(dir_a.c_str(), "proj-a");
-		assert(pid_a > 0);
-		char *idx_a =
-			engine_index_project(pid_a, dir_a.c_str(), nullptr);
-		assert(idx_a != nullptr && strstr(idx_a, "\"ok\":true"));
+		g_engine = engine_create(db_path);
+		CHECK(g_engine != nullptr);
+		uint64_t pid_a = engine_create_project(g_engine, dir_a.c_str(),
+						       "proj-a");
+		CHECK(pid_a > 0);
+		char *idx_a = engine_index_project(g_engine, pid_a,
+						   dir_a.c_str(), nullptr);
+		CHECK(idx_a != nullptr && strstr(idx_a, "\"ok\":true"));
 		engine_free_string(idx_a);
 		usleep(150000);
 
-		uint64_t pid_b = engine_create_project(dir_b.c_str(), "proj-b");
-		assert(pid_b > 0);
-		assert(pid_b != pid_a);
-		char *idx_b =
-			engine_index_project(pid_b, dir_b.c_str(), nullptr);
-		assert(idx_b != nullptr && strstr(idx_b, "\"ok\":true"));
+		uint64_t pid_b = engine_create_project(g_engine, dir_b.c_str(),
+						       "proj-b");
+		CHECK(pid_b > 0);
+		CHECK(pid_b != pid_a);
+		char *idx_b = engine_index_project(g_engine, pid_b,
+						   dir_b.c_str(), nullptr);
+		CHECK(idx_b != nullptr && strstr(idx_b, "\"ok\":true"));
 		engine_free_string(idx_b);
 		usleep(150000);
 
@@ -246,7 +255,8 @@ int main()
 			       "\"subject\":\"compute\"}");
 		engine_free_string(r_b);
 
-		engine_shutdown();
+		engine_destroy(g_engine);
+		g_engine = nullptr;
 		printf("Test 3 (multi-project sequential verify): PASS\n");
 	}
 
@@ -259,16 +269,18 @@ int main()
 		writeFixture(proj_dir);
 		uint64_t pid = indexFixture(db_path, proj_dir, "unknown-claim");
 		char *r = engine_verify_claim(
-			pid, "{\"type\":\"nonexistent_claim_type\","
-			     "\"subject\":\"foo\"}");
-		assert(r != nullptr);
-		assert(strstr(r, "claim_type_unsupported") != nullptr);
-		assert(strstr(r, "unknown claim type") != nullptr);
+			g_engine, pid,
+			"{\"type\":\"nonexistent_claim_type\","
+			"\"subject\":\"foo\"}");
+		CHECK(r != nullptr);
+		CHECK(strstr(r, "claim_type_unsupported") != nullptr);
+		CHECK(strstr(r, "unknown claim type") != nullptr);
 		engine_free_string(r);
-		engine_shutdown();
+		engine_destroy(g_engine);
+		g_engine = nullptr;
 		printf("Test 4 (unknown claim type -> input error): PASS\n");
 	}
 
 	printf("\n=== test_verifier_lifecycle PASSED ===\n");
-	return 0;
+	return checkFailures() ? 1 : 0;
 }

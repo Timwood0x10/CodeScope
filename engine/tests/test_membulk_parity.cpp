@@ -14,10 +14,12 @@
 #include <vector>
 
 #include "../include/engine.h"
+#include "test_engine_handle.h"
 
 static std::string g_dir;
 
-static void writeFile(const std::string &name, int id) {
+static void writeFile(const std::string &name, int id)
+{
 	std::string path = g_dir + "/" + name;
 	FILE *f = fopen(path.c_str(), "w");
 	if (!f) {
@@ -42,7 +44,8 @@ struct Counts {
 	long nodes = 0, edges = 0, records = 0;
 };
 
-static Counts indexAndCount(bool force_streaming) {
+static Counts indexAndCount(bool force_streaming)
+{
 	if (force_streaming)
 		setenv("CODESCOPE_FORCE_STREAMING", "1", 1);
 	else
@@ -51,16 +54,17 @@ static Counts indexAndCount(bool force_streaming) {
 	std::string db = g_dir + "/parity.db";
 	unlink(db.c_str());
 
-	if (engine_init(db.c_str()) != 0) {
+	g_engine = engine_create(db.c_str());
+	if (!g_engine) {
 		fprintf(stderr, "FAIL: engine_init\n");
 		exit(1);
 	}
-	uint64_t pid = engine_create_project(g_dir.c_str(), "parity");
+	uint64_t pid = engine_create_project(g_engine, g_dir.c_str(), "parity");
 	if (pid == 0) {
 		fprintf(stderr, "FAIL: create_project\n");
 		exit(1);
 	}
-	char *res = engine_index_project(pid, g_dir.c_str(), "");
+	char *res = engine_index_project(g_engine, pid, g_dir.c_str(), "");
 	if (!res || strstr(res, "\"ok\":true") == nullptr) {
 		fprintf(stderr, "FAIL: index_project: %s\n",
 			res ? res : "(null)");
@@ -69,7 +73,7 @@ static Counts indexAndCount(bool force_streaming) {
 	engine_free_string(res);
 
 	Counts c;
-	char *stats = engine_get_graph_stats(pid);
+	char *stats = engine_get_graph_stats(g_engine, pid);
 	if (stats) {
 		// stats JSON contains total_nodes / total_edges.
 		// We instead query the DB directly for robustness.
@@ -79,7 +83,7 @@ static Counts indexAndCount(bool force_streaming) {
 	// Re-open the DB file directly to count rows (engine API does not
 	// expose raw counts; use sqlite3 via the engine's own handle is not
 	// available here, so parse graph_stats JSON fields).
-	char *s2 = engine_get_graph_stats(pid);
+	char *s2 = engine_get_graph_stats(g_engine, pid);
 	// graph_stats returns {"total_nodes":N,"total_edges":M,...}
 	auto extract = [](const char *json, const char *key) -> long {
 		std::string k = std::string("\"") + key + "\":";
@@ -100,11 +104,13 @@ static Counts indexAndCount(bool force_streaming) {
 	// rely on nodes+edges equality which fully exercises both paths.
 	c.records = c.nodes;
 
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 	return c;
 }
 
-int main() {
+int main()
+{
 	g_dir = "/tmp/codescope_membulk_parity";
 	std::filesystem::remove_all(g_dir);
 	std::filesystem::create_directories(g_dir);
@@ -128,9 +134,8 @@ int main() {
 
 	if (membulk.nodes != streaming.nodes ||
 	    membulk.edges != streaming.edges) {
-		fprintf(stderr,
-			"FAIL: parity mismatch between membulk and "
-			"streaming paths\n");
+		fprintf(stderr, "FAIL: parity mismatch between membulk and "
+				"streaming paths\n");
 		return 1;
 	}
 	if (membulk.nodes <= 0) {

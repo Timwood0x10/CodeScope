@@ -15,7 +15,7 @@
 #include "verify/function_implements_verifier.h"
 #include "verify/registry.h"
 
-#include <cassert>
+#include "test_check.h"
 #include <cstdio>
 #include <memory>
 #include <unistd.h>
@@ -63,11 +63,11 @@ int main()
 
 	// ── Test 1: four verifiers registered ────────────────────────
 	auto names = reg.verifier_names();
-	assert(names.size() == 4);
-	assert(names[0] == "CapabilityVerifier");
-	assert(names[1] == "ContractVerifier");
-	assert(names[2] == "ArchitectureVerifier");
-	assert(names[3] == "FunctionImplementsVerifier");
+	CHECK(names.size() == 4);
+	CHECK(names[0] == "CapabilityVerifier");
+	CHECK(names[1] == "ContractVerifier");
+	CHECK(names[2] == "ArchitectureVerifier");
+	CHECK(names[3] == "FunctionImplementsVerifier");
 	printf("Test 1 (registry names): PASS\n");
 
 	// ── Test 2: CapabilityExists → CapabilityVerifier ────────────
@@ -76,9 +76,9 @@ int main()
 		c.type = ClaimType::CapabilityExists;
 		c.subject = "IncrementalIndex";
 		Verifier *v = reg.match(c);
-		assert(v != nullptr);
-		assert(v->name() == "CapabilityVerifier");
-		assert(v->accepts(c) == true);
+		CHECK(v != nullptr);
+		CHECK(v->name() == "CapabilityVerifier");
+		CHECK(v->accepts(c) == true);
 		printf("Test 2 (CapabilityExists dispatch): PASS\n");
 	}
 
@@ -88,9 +88,9 @@ int main()
 		c.type = ClaimType::ContractHolds;
 		c.subject = "ThreadSafe";
 		Verifier *v = reg.match(c);
-		assert(v != nullptr);
-		assert(v->name() == "ContractVerifier");
-		assert(v->accepts(c) == true);
+		CHECK(v != nullptr);
+		CHECK(v->name() == "ContractVerifier");
+		CHECK(v->accepts(c) == true);
 		printf("Test 3 (ContractHolds dispatch): PASS\n");
 	}
 
@@ -102,9 +102,9 @@ int main()
 		c.object = "Service";
 		c.scope = "Repository";
 		Verifier *v = reg.match(c);
-		assert(v != nullptr);
-		assert(v->name() == "ArchitectureVerifier");
-		assert(v->accepts(c) == true);
+		CHECK(v != nullptr);
+		CHECK(v->name() == "ArchitectureVerifier");
+		CHECK(v->accepts(c) == true);
 		printf("Test 4 (ArchitectureFollows dispatch): PASS\n");
 	}
 
@@ -117,9 +117,9 @@ int main()
 		c.type = ClaimType::FunctionImplements;
 		c.subject = "foo";
 		Verifier *v = reg.match(c);
-		assert(v != nullptr);
-		assert(v->name() == "FunctionImplementsVerifier");
-		assert(v->accepts(c) == true);
+		CHECK(v != nullptr);
+		CHECK(v->name() == "FunctionImplementsVerifier");
+		CHECK(v->accepts(c) == true);
 		printf("Test 5 (FunctionImplements dispatch): PASS\n");
 	}
 
@@ -135,9 +135,9 @@ int main()
 
 		Verifier *cap_v = reg.match(cap);
 		Verifier *contract_v = reg.match(contract);
-		assert(cap_v != contract_v);
-		assert(cap_v->accepts(contract) == false);
-		assert(contract_v->accepts(cap) == false);
+		CHECK(cap_v != contract_v);
+		CHECK(cap_v->accepts(contract) == false);
+		CHECK(contract_v->accepts(cap) == false);
 		printf("Test 6 (type-exclusive accepts): PASS\n");
 	}
 
@@ -148,7 +148,7 @@ int main()
 	{
 		auto supported = reg.supported_claim_types();
 		auto all = all_public_claim_types();
-		assert(supported.size() == all.size());
+		CHECK(supported.size() == all.size());
 		// Verify each public type is reported as supported.
 		for (ClaimType t : all) {
 			bool found = false;
@@ -158,24 +158,24 @@ int main()
 					break;
 				}
 			}
-			assert(found);
+			CHECK(found);
 		}
 		printf("Test 7 (supported_claim_types covers all public): PASS\n");
 	}
 
 	// ── Test 8: claimTypeWireName round-trips all public types ───
 	{
-		assert(std::string(claimTypeWireName(
-			       ClaimType::CapabilityExists)) ==
-		       "capability_exists");
-		assert(std::string(claimTypeWireName(
-			       ClaimType::ContractHolds)) == "contract_holds");
-		assert(std::string(claimTypeWireName(
-			       ClaimType::ArchitectureFollows)) ==
-		       "architecture_follows");
-		assert(std::string(claimTypeWireName(
-			       ClaimType::FunctionImplements)) ==
-		       "function_implements");
+		CHECK(std::string(
+			      claimTypeWireName(ClaimType::CapabilityExists)) ==
+		      "capability_exists");
+		CHECK(std::string(claimTypeWireName(
+			      ClaimType::ContractHolds)) == "contract_holds");
+		CHECK(std::string(claimTypeWireName(
+			      ClaimType::ArchitectureFollows)) ==
+		      "architecture_follows");
+		CHECK(std::string(claimTypeWireName(
+			      ClaimType::FunctionImplements)) ==
+		      "function_implements");
 		printf("Test 8 (claimTypeWireName): PASS\n");
 	}
 
@@ -187,7 +187,7 @@ int main()
 	{
 		size_t before = reg.verifier_count();
 		reg.ensureDefaultVerifiers(&g_store, pid);
-		assert(reg.verifier_count() == before);
+		CHECK(reg.verifier_count() == before);
 		printf("Test 9 (ensureDefaultVerifiers idempotent): PASS\n");
 	}
 
@@ -197,19 +197,19 @@ int main()
 	// lifecycle contract: shutdown clears, init re-arms.
 	{
 		reg.clear();
-		assert(reg.verifier_count() == 0);
+		CHECK(reg.verifier_count() == 0);
 		reg.ensureDefaultVerifiers(&g_store, pid);
-		assert(reg.verifier_count() == 4);
+		CHECK(reg.verifier_count() == 4);
 		// Dispatch still works after re-arm.
 		Claim c;
 		c.type = ClaimType::FunctionImplements;
 		c.subject = "foo";
 		Verifier *v = reg.match(c);
-		assert(v != nullptr);
-		assert(v->name() == "FunctionImplementsVerifier");
+		CHECK(v != nullptr);
+		CHECK(v->name() == "FunctionImplementsVerifier");
 		printf("Test 10 (clear -> ensureDefaultVerifiers re-populates): PASS\n");
 	}
 
 	printf("\n=== test_verifier_registry PASSED ===\n");
-	return 0;
+	return checkFailures() ? 1 : 0;
 }

@@ -23,13 +23,14 @@
 #include "verify/claim.h"
 #include "verify/registry.h"
 
-#include <cassert>
+#include "test_check.h"
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <string>
 #include <unistd.h>
+#include "test_engine_handle.h"
 
 // ─── Fixture ─────────────────────────────────────────────────────────
 // A Go project with a known call chain plus an isolated function:
@@ -43,7 +44,7 @@ static void writeFixture(const std::string &dir)
 	std::filesystem::create_directories(dir);
 
 	FILE *f = fopen((dir + "/main.go").c_str(), "w");
-	assert(f != nullptr);
+	CHECK(f != nullptr);
 	fputs("package main\n\n"
 	      "func add(a, b int) int { return a + b }\n"
 	      "func multiply(a, b int) int {\n"
@@ -66,15 +67,16 @@ static void writeFixture(const std::string &dir)
 static uint64_t indexFixture(const char *db_path, const char *proj_dir,
 			     const char *proj_name)
 {
-	if (engine_init(db_path) != 0) {
+	g_engine = engine_create(db_path);
+	if (!g_engine) {
 		fprintf(stderr, "FAIL: engine_init failed\n");
 		exit(1);
 	}
-	uint64_t pid = engine_create_project(proj_dir, proj_name);
-	assert(pid > 0);
-	char *idx = engine_index_project(pid, proj_dir, nullptr);
-	assert(idx != nullptr);
-	assert(strstr(idx, "\"ok\":true") != nullptr);
+	uint64_t pid = engine_create_project(g_engine, proj_dir, proj_name);
+	CHECK(pid > 0);
+	char *idx = engine_index_project(g_engine, pid, proj_dir, nullptr);
+	CHECK(idx != nullptr);
+	CHECK(strstr(idx, "\"ok\":true") != nullptr);
 	engine_free_string(idx);
 	usleep(200000);
 	return pid;
@@ -83,11 +85,11 @@ static uint64_t indexFixture(const char *db_path, const char *proj_dir,
 // Helper: run verify_claim and assert dispatch succeeded.
 static char *verifyClaimOk(uint64_t pid, const std::string &claim_json)
 {
-	char *out = engine_verify_claim(pid, claim_json.c_str());
-	assert(out != nullptr);
-	assert(strstr(out, "registry_empty") == nullptr);
-	assert(strstr(out, "claim_type_unsupported") == nullptr);
-	assert(strstr(out, "verifier_execution_failed") == nullptr);
+	char *out = engine_verify_claim(g_engine, pid, claim_json.c_str());
+	CHECK(out != nullptr);
+	CHECK(strstr(out, "registry_empty") == nullptr);
+	CHECK(strstr(out, "claim_type_unsupported") == nullptr);
+	CHECK(strstr(out, "verifier_execution_failed") == nullptr);
 	return out;
 }
 
@@ -141,22 +143,23 @@ int main()
 	// claim types in supported_claim_types, and evidence_backend_ready=
 	// true for an indexed project.
 	{
-		char *status = engine_get_verifier_registry_status(pid);
-		assert(status != nullptr);
-		assert(strstr(status, "\"registry_empty\":false") != nullptr);
-		assert(strstr(status, "\"verifier_count\":4") != nullptr);
-		assert(strstr(status, "\"capability_exists\"") != nullptr);
-		assert(strstr(status, "\"contract_holds\"") != nullptr);
-		assert(strstr(status, "\"architecture_follows\"") != nullptr);
-		assert(strstr(status, "\"function_implements\"") != nullptr);
-		assert(strstr(status, "\"unsupported_claim_types\":[]") !=
-		       nullptr);
-		assert(strstr(status, "\"evidence_backend_ready\":true") !=
-		       nullptr);
+		char *status =
+			engine_get_verifier_registry_status(g_engine, pid);
+		CHECK(status != nullptr);
+		CHECK(strstr(status, "\"registry_empty\":false") != nullptr);
+		CHECK(strstr(status, "\"verifier_count\":4") != nullptr);
+		CHECK(strstr(status, "\"capability_exists\"") != nullptr);
+		CHECK(strstr(status, "\"contract_holds\"") != nullptr);
+		CHECK(strstr(status, "\"architecture_follows\"") != nullptr);
+		CHECK(strstr(status, "\"function_implements\"") != nullptr);
+		CHECK(strstr(status, "\"unsupported_claim_types\":[]") !=
+		      nullptr);
+		CHECK(strstr(status, "\"evidence_backend_ready\":true") !=
+		      nullptr);
 		// entity_count and relation_count must be > 0 for an indexed
 		// project.
-		assert(strstr(status, "\"entity_count\":0") == nullptr);
-		assert(strstr(status, "\"relation_count\":0") == nullptr);
+		CHECK(strstr(status, "\"entity_count\":0") == nullptr);
+		CHECK(strstr(status, "\"relation_count\":0") == nullptr);
 		engine_free_string(status);
 		printf("Test 1 (introspection API healthy): PASS\n");
 	}
@@ -171,13 +174,13 @@ int main()
 		char *r = verifyClaimOk(pid,
 					"{\"type\":\"function_implements\","
 					"\"subject\":\"compute\"}");
-		assert(extractVerdict(r) == "Supported");
-		assert(strstr(r, "FunctionImplementsVerifier") != nullptr);
+		CHECK(extractVerdict(r) == "Supported");
+		CHECK(strstr(r, "FunctionImplementsVerifier") != nullptr);
 		// Downgraded confidence: structural check only.
-		assert(strstr(r, "\"confidence\":0.55") != nullptr ||
-		       strstr(r, "\"confidence\": 0.55") != nullptr);
+		CHECK(strstr(r, "\"confidence\":0.55") != nullptr ||
+		      strstr(r, "\"confidence\": 0.55") != nullptr);
 		int facts = countEvidenceFacts(r);
-		assert(facts >= 2); // at least 1 entity + 1 relation
+		CHECK(facts >= 2); // at least 1 entity + 1 relation
 		engine_free_string(r);
 		printf("Test 2 (FunctionImplements Supported, low confidence): PASS\n");
 	}
@@ -193,11 +196,11 @@ int main()
 					"{\"type\":\"function_implements\","
 					"\"subject\":\"orphanFunc\"}");
 		std::string v = extractVerdict(r);
-		assert(v == "Unknown");
-		assert(strstr(r, "isolated") != nullptr);
+		CHECK(v == "Unknown");
+		CHECK(strstr(r, "isolated") != nullptr);
 		// Entity facts present (the function exists), but the detail
 		// must mention "no callers/callees".
-		assert(strstr(r, "no callers/callees") != nullptr);
+		CHECK(strstr(r, "no callers/callees") != nullptr);
 		engine_free_string(r);
 		printf("Test 3 (FunctionImplements isolated -> Unknown): PASS\n");
 	}
@@ -209,11 +212,11 @@ int main()
 		char *r = verifyClaimOk(pid,
 					"{\"type\":\"function_implements\","
 					"\"subject\":\"does_not_exist_xyz\"}");
-		assert(extractVerdict(r) == "Contradicted");
-		assert(strstr(r, "not found in canonical entity table") !=
-		       nullptr);
+		CHECK(extractVerdict(r) == "Contradicted");
+		CHECK(strstr(r, "not found in canonical entity table") !=
+		      nullptr);
 		int facts = countEvidenceFacts(r);
-		assert(facts == 0);
+		CHECK(facts == 0);
 		engine_free_string(r);
 		printf("Test 4 (FunctionImplements non-existent -> Contradicted): PASS\n");
 	}
@@ -229,19 +232,20 @@ int main()
 		const char *empty_dir = "/tmp/test_verifier_groundtruth_empty";
 		std::filesystem::remove_all(empty_dir);
 		std::filesystem::create_directories(empty_dir);
-		uint64_t empty_pid =
-			engine_create_project(empty_dir, "empty-no-index");
-		assert(empty_pid > 0);
-		assert(empty_pid != pid);
+		uint64_t empty_pid = engine_create_project(g_engine, empty_dir,
+							   "empty-no-index");
+		CHECK(empty_pid > 0);
+		CHECK(empty_pid != pid);
 
 		// Introspection API must report backend NOT ready for the
 		// empty project.
-		char *status = engine_get_verifier_registry_status(empty_pid);
-		assert(status != nullptr);
-		assert(strstr(status, "\"evidence_backend_ready\":false") !=
-		       nullptr);
-		assert(strstr(status, "\"entity_count\":0") != nullptr);
-		assert(strstr(status, "\"relation_count\":0") != nullptr);
+		char *status = engine_get_verifier_registry_status(g_engine,
+								   empty_pid);
+		CHECK(status != nullptr);
+		CHECK(strstr(status, "\"evidence_backend_ready\":false") !=
+		      nullptr);
+		CHECK(strstr(status, "\"entity_count\":0") != nullptr);
+		CHECK(strstr(status, "\"relation_count\":0") != nullptr);
 		engine_free_string(status);
 
 		// Each claim type must return Unknown + backend-not-ready.
@@ -265,12 +269,12 @@ int main()
 			  "\"subject\":\"compute\"}" },
 		};
 		for (const auto &c : cases) {
-			char *r = engine_verify_claim(empty_pid,
+			char *r = engine_verify_claim(g_engine, empty_pid,
 						      c.claim_json.c_str());
-			assert(r != nullptr);
-			assert(extractVerdict(r) == "Unknown");
-			assert(strstr(r, "evidence backend not ready") !=
-			       nullptr);
+			CHECK(r != nullptr);
+			CHECK(extractVerdict(r) == "Unknown");
+			CHECK(strstr(r, "evidence backend not ready") !=
+			      nullptr);
 			engine_free_string(r);
 		}
 		printf("Test 5 (backend not ready -> Unknown all types): PASS\n");
@@ -282,19 +286,20 @@ int main()
 	// counts=0). This lets callers check registry health without a
 	// project context.
 	{
-		char *status = engine_get_verifier_registry_status(0);
-		assert(status != nullptr);
-		assert(strstr(status, "\"registry_empty\":false") != nullptr);
-		assert(strstr(status, "\"verifier_count\":4") != nullptr);
-		assert(strstr(status, "\"evidence_backend_ready\":false") !=
-		       nullptr);
-		assert(strstr(status, "\"entity_count\":0") != nullptr);
-		assert(strstr(status, "\"relation_count\":0") != nullptr);
+		char *status = engine_get_verifier_registry_status(g_engine, 0);
+		CHECK(status != nullptr);
+		CHECK(strstr(status, "\"registry_empty\":false") != nullptr);
+		CHECK(strstr(status, "\"verifier_count\":4") != nullptr);
+		CHECK(strstr(status, "\"evidence_backend_ready\":false") !=
+		      nullptr);
+		CHECK(strstr(status, "\"entity_count\":0") != nullptr);
+		CHECK(strstr(status, "\"relation_count\":0") != nullptr);
 		engine_free_string(status);
 		printf("Test 6 (introspection project_id=0): PASS\n");
 	}
 
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 	printf("\n=== test_verifier_ground_truth PASSED ===\n");
-	return 0;
+	return checkFailures() ? 1 : 0;
 }

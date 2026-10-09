@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <unistd.h>
+#include "test_engine_handle.h"
 
 static inline void check(bool cond, const char *msg)
 {
@@ -53,7 +54,8 @@ int main() {
 	char db_path[] = "/tmp/test_call_graph_p1.db";
 	unlink(db_path);
 
-	int rc = engine_init(db_path);
+	g_engine = engine_create(db_path);
+	const int rc = g_engine != nullptr ? 0 : -1;
 	check(rc == 0, "engine_init");
 
 	const char *file_path = "/tmp/test_p1_call.c";
@@ -62,22 +64,22 @@ int main() {
 	fwrite(code, 1, strlen(code), f);
 	fclose(f);
 
-	uint64_t pid = engine_create_project("/tmp", "p1-test");
+	uint64_t pid = engine_create_project(g_engine, "/tmp", "p1-test");
 	check(pid > 0, "create_project");
 
-	char *idx = engine_index_file(pid, file_path);
+	char *idx = engine_index_file(g_engine, pid, file_path);
 	check(strstr(idx, "\"ok\":true") != nullptr, "index_file ok");
 	engine_free_string(idx);
 
 	// Verify callees of main include helper
-	char *callees = engine_get_callees(pid, "main", nullptr);
+	char *callees = engine_get_callees(g_engine, pid, "main", nullptr);
 	printf("--- Callees of main ---\n%s\n", callees);
 	check(strstr(callees, "helper") != nullptr,
 	      "main should call helper (P1 intra-file edge)");
 	engine_free_string(callees);
 
 	// Verify callers of helper include main
-	char *callers = engine_get_callers(pid, "helper", nullptr);
+	char *callers = engine_get_callers(g_engine, pid, "helper", nullptr);
 	printf("--- Callers of helper ---\n%s\n", callers);
 	check(strstr(callers, "main") != nullptr,
 	      "helper should be called by main (P1 intra-file edge)");
@@ -85,7 +87,7 @@ int main() {
 
 	// Verify total edges > 0 (graph_stats returns total_edges, not
 	// total_call_edges — the edge count includes call edges).
-	char *stats = engine_get_graph_stats(pid);
+	char *stats = engine_get_graph_stats(g_engine, pid);
 	printf("--- Graph Stats ---\n%s\n", stats);
 	check(strstr(stats, "total_edges") != nullptr,
 	      "stats should include total_edges");
@@ -97,11 +99,11 @@ int main() {
 		if (val)
 			edge_count = atoi(val + 1);
 	}
-	check(edge_count > 0,
-	      "total_edges must be > 0 after P1 fix");
+	check(edge_count > 0, "total_edges must be > 0 after P1 fix");
 	engine_free_string(stats);
 
-	engine_shutdown();
+	engine_destroy(g_engine);
+	g_engine = nullptr;
 
 	printf("\n=== P1 call graph test passed ===\n");
 	return 0;

@@ -8,43 +8,6 @@
 namespace resolver
 {
 
-namespace
-{
-// Infer the source language from a file path's extension. Mirrors the
-// helper in pipeline.cpp (kept as a per-TU copy because it lives in an
-// anonymous namespace there; ODR-safe since anonymous namespaces isolate
-// each translation unit).
-std::string languageFromPath(const std::string &file_path)
-{
-	size_t dot = file_path.rfind('.');
-	if (dot == std::string::npos)
-		return "";
-	std::string ext = file_path.substr(dot);
-	std::string lower;
-	lower.reserve(ext.size());
-	for (char ch : ext)
-		lower.push_back(static_cast<char>(
-			std::tolower(static_cast<unsigned char>(ch))));
-	if (lower == ".cpp" || lower == ".cc" || lower == ".cxx" ||
-	    lower == ".c" || lower == ".h" || lower == ".hpp" ||
-	    lower == ".hh" || lower == ".hxx")
-		return "cpp";
-	if (lower == ".rs")
-		return "rust";
-	if (lower == ".py")
-		return "python";
-	if (lower == ".go")
-		return "go";
-	if (lower == ".ts" || lower == ".tsx")
-		return "typescript";
-	if (lower == ".js" || lower == ".jsx")
-		return "javascript";
-	if (lower == ".java")
-		return "java";
-	return "";
-}
-} // namespace
-
 int ResolverPipeline::loadEntityIndex(
 	std::unordered_map<std::string, std::vector<Candidate>> &entity_index,
 	std::unordered_map<uint64_t, const Candidate *> &entity_by_id,
@@ -60,7 +23,6 @@ int ResolverPipeline::loadEntityIndex(
 			// Without this column in the SELECT, c.arity defaulted to 0
 			// and every candidate scored kScorePartialMatch (0.5),
 			// letting std::sort pick the winner by unstable order.
-			// See CODE_REVIEW_FINDINGS_2026-07-19.md C2.
 			// Include kind (appended as column 5) so
 			// factorConstructorMatch can prefer Class/Struct targets;
 			// previously kind was hardcoded 0 in the call, so the
@@ -68,9 +30,16 @@ int ResolverPipeline::loadEntityIndex(
 			// Step 5: include qualified_name (column 6) so
 			// factorReceiverTypeMatch can match "Box::draw" against
 			// receiver_type="Box" instead of using directory heuristics.
+			// ORDER BY id makes the per-name candidate order deterministic
+			// (rowid order). Without it SQLite may return rows in any order
+			// after a parallel index merge, so equal-scoring homonyms could
+			// be ranked differently between runs. entity_index[name] keeps
+			// that order, and applyConstraints() uses entity_id as the final
+			// tie-break, so the winner is reproducible.
 			"SELECT id, name, file_path, language, arity, kind, qualified_name "
 			"FROM entity "
-			"WHERE project_id=? AND name != ''";
+			"WHERE project_id=? AND name != '' "
+			"ORDER BY id";
 		sqlite3_stmt *idx_st = nullptr;
 		if (sqlite3_prepare_v2(store_->handle(), idx_sql.c_str(), -1,
 				       &idx_st, nullptr) != SQLITE_OK) {
@@ -202,7 +171,115 @@ int ResolverPipeline::loadEntityIndex(
 		}
 		sqlite3_finalize(imp_st);
 	}
+
+	// ── Step 0c: imported binding -> module specifier, from the IR records ──
+	// This is the index that lets a bare `widgetHelper()` call be traced to the
+	// module it came from, which is the only evidence that can separate
+	// cross-directory candidates in JS/TS (no receiver to match on, and
+	// `import_alias` records that a name IS imported, not where from). The
+	// `import` table cannot answer it: its alias column is the module path's
+	// last segment (`../lib/Widget` → `Widget`), not the bound name. Only the
+	// visitors that know the binding emit these records today (JS/TS, via
+	// SemanticEmitter::emitImportBinding), so for every other language this map
+	// stays empty and the factor reading it never fires.
+	import_alias_index_.clear();
+	{
+		// RecordKind::ImportBinding as stored in semantic_records.kind. The
+		// store layer writes raw ordinals — store_graph.cpp persists this one
+		// as kKindImportBinding with the same value.
+		static constexpr int kKindImportBinding = 21;
+		const std::string binding_sql =
+			"SELECT file_path, name, type_name FROM semantic_records "
+			"WHERE project_id=? AND kind=? AND name != '' AND "
+			"type_name != ''";
+		sqlite3_stmt *bind_st = nullptr;
+		if (sqlite3_prepare_v2(store_->handle(), binding_sql.c_str(),
+				       -1, &bind_st, nullptr) != SQLITE_OK) {
+			fprintf(stderr,
+				"[module=resolver, method=run] "
+				"prepare import-binding index failed: %s\n",
+				sqlite3_errmsg(store_->handle()));
+			return -1;
+		}
+		sqlite3_bind_int64(bind_st, 1,
+				   static_cast<int64_t>(project_id_));
+		sqlite3_bind_int(bind_st, 2, kKindImportBinding);
+		while (sqlite3_step(bind_st) == SQLITE_ROW) {
+			const char *fp = reinterpret_cast<const char *>(
+				sqlite3_column_text(bind_st, 0));
+			const char *nm = reinterpret_cast<const char *>(
+				sqlite3_column_text(bind_st, 1));
+			const char *tn = reinterpret_cast<const char *>(
+				sqlite3_column_text(bind_st, 2));
+			if (!fp || !nm || !tn || !*fp || !*nm || !*tn)
+				continue;
+			import_alias_index_[fp][nm] = tn;
+		}
+		sqlite3_finalize(bind_st);
+	}
 	return 0;
+}
+
+void ResolverPipeline::loadReferences(sqlite3_stmt *ref_st,
+				      std::vector<RefRow> &refs,
+				      int64_t &total_refs)
+{
+	// Read all project references into memory first. Instead of
+	// sqlite3_step per row in the hot loop, read every ref into a vector
+	// at once. This avoids per-row sqlite3_step calls and lets the hot
+	// loop run entirely in memory (~10MB for 108k refs). Extracted from
+	// run() so pipeline.cpp stays under the 1000-line rule.
+	refs.clear();
+	refs.reserve(65536); // pre-allocate for 108k typical
+
+	while (sqlite3_step(ref_st) == SQLITE_ROW) {
+		RefRow r;
+		r.ref_id =
+			static_cast<uint64_t>(sqlite3_column_int64(ref_st, 0));
+		const char *name_c = reinterpret_cast<const char *>(
+			sqlite3_column_text(ref_st, 1));
+		r.caller_id =
+			static_cast<uint64_t>(sqlite3_column_int64(ref_st, 2));
+		// Column 3 is r.arity — the call site's arity. Previously this
+		// column was selected but never read, so the caller arity was
+		// always 0 in applyConstraints, breaking overload resolution.
+		r.arity = sqlite3_column_int(ref_st, 3);
+		// Step 6: read call site position for provenance (columns 4-5).
+		r.start_row = sqlite3_column_int(ref_st, 4);
+		r.start_col = sqlite3_column_int(ref_st, 5);
+		const char *fp_c = reinterpret_cast<const char *>(
+			sqlite3_column_text(ref_st, 8));
+		r.call_kind = sqlite3_column_int(ref_st, 6);
+		const char *rs_c = reinterpret_cast<const char *>(
+			sqlite3_column_text(ref_st, 7));
+		// Step 3: read structured call facts (columns 9-13).
+		const char *qt_c = reinterpret_cast<const char *>(
+			sqlite3_column_text(ref_st, 9));
+		const char *rtx_c = reinterpret_cast<const char *>(
+			sqlite3_column_text(ref_st, 10));
+		const char *rty_c = reinterpret_cast<const char *>(
+			sqlite3_column_text(ref_st, 11));
+		const char *ia_c = reinterpret_cast<const char *>(
+			sqlite3_column_text(ref_st, 12));
+		const char *csf_c = reinterpret_cast<const char *>(
+			sqlite3_column_text(ref_st, 13));
+		if (!name_c || !*name_c || !fp_c)
+			continue;
+		r.name = name_c;
+		r.caller_file = fp_c;
+		r.resolve_strategy = rs_c ? rs_c : "";
+		r.qualified_target = qt_c ? qt_c : "";
+		r.receiver_text = rtx_c ? rtx_c : "";
+		r.receiver_type = rty_c ? rty_c : "";
+		r.import_alias = ia_c ? ia_c : "";
+		r.call_site_file = csf_c ? csf_c : fp_c;
+		refs.push_back(std::move(r));
+	}
+	// Ownership: ref_st is passed by value, so this finalize is the
+	// transfer point — the caller's pointer is stale afterwards and is
+	// nulled there (pipeline.cpp). Do not dereference ref_st after this.
+	sqlite3_finalize(ref_st);
+	total_refs = static_cast<int64_t>(refs.size());
 }
 
 void ResolverPipeline::loadDispatchIndex()
@@ -391,6 +468,14 @@ void ResolverPipeline::loadDispatchIndex()
 	// another file) can be resolved before dispatch expansion.
 	global_struct_fields_.clear();
 	{
+		// ORDER BY key, not insertion order: the assignment below is
+		// last-write-wins, so when one (struct, field) is recorded twice with
+		// different types the winner was whatever row the scan reached last —
+		// i.e. the rowid order, which is the MERGE order of the module
+		// databases and therefore changes with the worker partitioning
+		// (semantic_records.rowid is re-assigned at merge time). Ordering by
+		// content makes the table a function of the records, not of how they
+		// were packed into modules.
 		std::string field_sql =
 			"SELECT p.name, t.name, t.type_name "
 			"FROM semantic_records t "
@@ -398,7 +483,8 @@ void ResolverPipeline::loadDispatchIndex()
 			"AND p.project_id = t.project_id "
 			"AND p.file_path = t.file_path "
 			"WHERE t.project_id=? AND t.kind=17 AND p.kind=2 "
-			"AND t.name != '' AND t.type_name != ''";
+			"AND t.name != '' AND t.type_name != '' "
+			"ORDER BY p.name, t.name, t.type_name";
 		sqlite3_stmt *fst = nullptr;
 		if (sqlite3_prepare_v2(store_->handle(), field_sql.c_str(), -1,
 				       &fst, nullptr) == SQLITE_OK) {
@@ -430,6 +516,18 @@ void ResolverPipeline::loadDispatchIndex()
 	// type ("r" -> "Runner") when resolving "r.pluginBus.AfterStep".
 	global_var_types_.clear();
 	{
+		// ORDER BY key, not insertion order: the walk in run() takes the FIRST
+		// candidate type whose field chain resolves ("the first type that
+		// resolves the whole chain wins"), so the vector's order decided the
+		// answer. Without this the order was the rowid order — the MERGE order
+		// of the module databases, which changes with the worker partitioning
+		// (semantic_records.rowid is re-assigned at merge time) — and the same
+		// project resolved a field-chain receiver to an interface or to
+		// nothing depending on how its directories were spread over workers:
+		// measured on goagent, `-w 4` produced 684 dispatch edges and `-w 6`
+		// produced 696, from byte-identical entities, references and
+		// semantic_records. Ordering by content makes the resolution a
+		// function of the records.
 		std::string vtype_sql =
 			"SELECT t.name, t.type_name FROM semantic_records t "
 			"JOIN semantic_records p ON t.parent_id = p.original_id "
@@ -437,7 +535,8 @@ void ResolverPipeline::loadDispatchIndex()
 			"AND p.file_path = t.file_path "
 			"WHERE t.project_id=? AND t.kind=17 "
 			"AND p.kind IN (0,1) "
-			"AND t.name != '' AND t.type_name != ''";
+			"AND t.name != '' AND t.type_name != '' "
+			"ORDER BY t.name, t.type_name";
 		sqlite3_stmt *vst = nullptr;
 		if (sqlite3_prepare_v2(store_->handle(), vtype_sql.c_str(), -1,
 				       &vst, nullptr) == SQLITE_OK) {

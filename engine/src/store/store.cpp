@@ -1,4 +1,5 @@
 #include "store.h"
+#include "util/json_writer.h"
 #include "store_internal.h"
 #include "platform_win.h"
 
@@ -44,7 +45,7 @@ bool GraphStore::rollbackTransaction()
 //
 // Each thread owns its own prepared statements. A single sqlite3_stmt* is
 // therefore never shared across threads, fixing the M-2 cross-thread race on
-// a shared cached statement under concurrent g_store access. The connection is
+// a shared cached statement under concurrent engine store access. The connection is
 // already serialized via SQLITE_CONFIG_SERIALIZED (see open()), so concurrent
 // use of DIFFERENT per-thread statements on the same connection is safe.
 // Bounded to kStmtCacheMax entries per thread; finalized by clearStmtCache()
@@ -112,40 +113,4 @@ void GraphStore::clearStmtCache()
 
 // ── Shared JSON helper ─────────────────────────────────────────
 // Declared in store_internal.h; used by all store_*.cpp split files.
-std::string jsonEscape(const std::string &s)
-{
-	std::string out;
-	out.reserve(s.size() + 4);
-	for (char c : s) {
-		switch (c) {
-		case '"':
-			out += "\\\"";
-			break;
-		case '\\':
-			out += "\\\\";
-			break;
-		case '\n':
-			out += "\\n";
-			break;
-		case '\r':
-			out += "\\r";
-			break;
-		case '\t':
-			out += "\\t";
-			break;
-		default:
-			if (static_cast<unsigned char>(c) < 0x20) {
-				char buf[8];
-				snprintf(buf, sizeof(buf), "\\u%04x",
-					 static_cast<unsigned char>(c));
-				out += buf;
-			} else {
-				out += c;
-			}
-			break;
-		}
-	}
-	return out;
-}
-
 } // namespace store

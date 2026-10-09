@@ -23,20 +23,23 @@
 //! This module is infrastructure for the chunk-level scheduler (P2-P4
 //! of the redesign). The current module-level scheduler still uses
 //! `shm.rs`; both can coexist during the migration.
+//!
+//! The queue lives in a shared file mapped by
+//! [`super::mapped_file::MappedFile`], so it works on POSIX and Windows
+//! alike; nothing here calls `mmap`, `ftruncate` or `unlink` directly.
 
 #![allow(dead_code)]
 
-use std::ffi::CString;
-use std::os::unix::io::RawFd;
+// Worker-facing operations live in a child module of THIS file so
+// they can reach the private helpers and struct fields declared above
+// (see plan/rules/code_rules.md 1000-line rule).
+#[path = "chunk_queue_ops.rs"]
+mod chunk_queue_ops;
+
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use libc::{
-    MAP_SHARED, O_CREAT, O_RDWR, PROT_READ, PROT_WRITE, S_IRUSR, S_IWUSR, c_void, close, ftruncate,
-    mmap, munmap, open, unlink,
-};
-#[cfg(windows)]
-const MAP_FAILED: *mut libc::c_void = !0 as *mut libc::c_void;
+use super::mapped_file::MappedFile;
 
 /// Magic number stored in [`ChunkQueueHeader::magic`] — ASCII "CUNK"
 /// (Chunk Queue) in little-endian. Workers verify this on attach.
@@ -162,23 +165,20 @@ pub struct ChunkQueueState {
 
 /// RAII wrapper around a `mmap`'d [`ChunkQueueState`].
 ///
-/// Owner (scheduler) creates via [`ChunkQueue::create`] and unlinks on
-/// `Drop`. Workers attach via [`ChunkQueue::open`] and only `munmap` on
-/// drop — they do not unlink.
+/// Owner (scheduler) creates via [`ChunkQueue::create`]; unmapping, closing
+/// and removing the file are [`super::mapped_file::MappedFile`]'s `Drop`.
+/// Workers attach via [`ChunkQueue::open`] and only unmap.
 pub struct ChunkQueue {
-    path: String,
-    fd: RawFd,
+    map: MappedFile,
     ptr: *mut ChunkQueueState,
-    is_owner: bool,
 }
 
 // Manual Debug impl — `*mut ChunkQueueState` doesn't auto-derive Debug.
 impl std::fmt::Debug for ChunkQueue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ChunkQueue")
-            .field("path", &self.path)
-            .field("fd", &self.fd)
-            .field("is_owner", &self.is_owner)
+            .field("path", &self.map.path())
+            .field("is_owner", &self.map.is_owner())
             .finish_non_exhaustive()
     }
 }
@@ -209,83 +209,27 @@ impl ChunkQueue {
     /// not consume the queue before all writes are done — caller's
     /// responsibility).
     pub fn create(path: &str, chunk_count: u32) -> Result<Self, String> {
-        let c_path = CString::new(path).map_err(|e| {
-            format!(
-                "path contains NUL byte: {} [module=scheduler, method=ChunkQueue::create]",
-                e
-            )
-        })?;
-
-        // SAFETY: c_path is a valid NUL-terminated CString; O_CREAT|O_RDWR
-        // creates the file if absent; mode 0600 restricts to owner.
-        let fd = unsafe {
-            open(
-                c_path.as_ptr(),
-                O_CREAT | O_RDWR,
-                (S_IRUSR | S_IWUSR) as libc::c_int,
-            )
-        };
-        if fd < 0 {
-            return Err(format!(
-                "open failed: {} [module=scheduler, method=ChunkQueue::create, path={}]",
-                std::io::Error::last_os_error(),
-                path,
-            ));
-        }
-
         let size = std::mem::size_of::<ChunkQueueState>();
-        // SAFETY: fd is valid; ftruncate sizes the file to exactly
-        // `size` bytes. Cast to i64 is safe because the struct is
-        // roughly 256 * 64 = ~16KB.
-        if unsafe { ftruncate(fd, size as i64) } != 0 {
-            let err = std::io::Error::last_os_error();
-            // SAFETY: fd is valid; close it to leak no fd.
-            unsafe { close(fd) };
-            return Err(format!(
-                "ftruncate failed: {} [module=scheduler, method=ChunkQueue::create]",
-                err
-            ));
-        }
-
-        // SAFETY: fd is valid and points to a file we just sized.
-        // MAP_SHARED makes writes visible to other processes that map
-        // the same file.
-        let ptr = unsafe {
-            mmap(
-                std::ptr::null_mut(),
-                size,
-                PROT_READ | PROT_WRITE,
-                MAP_SHARED,
-                fd,
-                0,
-            )
-        };
-        if ptr == libc::MAP_FAILED {
-            let err = std::io::Error::last_os_error();
-            // SAFETY: fd is valid; close it to leak no fd.
-            unsafe { close(fd) };
-            return Err(format!(
-                "mmap failed: {} [module=scheduler, method=ChunkQueue::create]",
-                err
-            ));
-        }
+        // The mapping layer sizes the file to `size` and zero-fills it, so the
+        // chunk array starts as all-zero — status PENDING with no claimer, once
+        // `claimer_id` is set below.
+        let map = MappedFile::create(path, size, "ChunkQueue::create")?;
 
         let clamped = std::cmp::min(chunk_count, MAX_CHUNKS as u32);
 
-        // SAFETY: ptr is a valid, properly-aligned pointer to memory
-        // returned by mmap and sized to size_of::<ChunkQueueState>().
-        // The file was just created/truncated so the bytes are zero.
-        // No worker has opened the file yet (caller's responsibility),
-        // so exclusive mutable access here is safe.
-        let state = unsafe { &mut *(ptr as *mut ChunkQueueState) };
+        // SAFETY: `map` is a valid, properly-aligned, all-zero view of
+        // `size_of::<ChunkQueueState>()` bytes and no worker has opened the
+        // file yet (callers create the queue before spawning workers), so this
+        // exclusive mutable borrow is sound.
+        let ptr = map.ptr() as *mut ChunkQueueState;
+        let state = unsafe { &mut *ptr };
         state.header.magic = MAGIC;
         state.header.version = VERSION;
         state.header.chunk_count = clamped;
         state.header.reserved = [0u32; 13];
-        // ChunkState fields are already zero from ftruncate — but
-        // `status` must be explicitly initialised because zero IS
-        // STATUS_PENDING (so it's fine) and `claimer_id` zero would
-        // look like worker 0 claimed it, so we set it to u32::MAX.
+        // `status` is already 0 == STATUS_PENDING and every timing field is 0,
+        // but `claimer_id` must be u32::MAX: a zero there would look like
+        // worker 0 owns the chunk.
         for slot in state.chunks.iter_mut() {
             slot.status.store(STATUS_PENDING, Ordering::Relaxed);
             slot.claimer_id.store(u32::MAX, Ordering::Relaxed);
@@ -296,12 +240,7 @@ impl ChunkQueue {
             // until write_chunk populates them.
         }
 
-        Ok(Self {
-            path: path.to_string(),
-            fd,
-            ptr: ptr as *mut ChunkQueueState,
-            is_owner: true,
-        })
+        Ok(Self { map, ptr })
     }
 
     /// Worker opens an existing shm created by the scheduler.
@@ -309,60 +248,22 @@ impl ChunkQueue {
     /// Verifies magic + version. Returns `Err` with a tagged message
     /// if `open`, `mmap`, or the magic/version check fails.
     pub fn open(path: &str) -> Result<Self, String> {
-        let c_path = CString::new(path).map_err(|e| {
-            format!(
-                "path contains NUL byte: {} [module=scheduler, method=ChunkQueue::open]",
-                e
-            )
-        })?;
-
-        // SAFETY: c_path is valid NUL-terminated; O_RDWR (no O_CREAT).
-        let fd = unsafe { open(c_path.as_ptr(), O_RDWR) };
-        if fd < 0 {
-            return Err(format!(
-                "open failed: {} [module=scheduler, method=ChunkQueue::open, path={}]",
-                std::io::Error::last_os_error(),
-                path,
-            ));
-        }
-
         let size = std::mem::size_of::<ChunkQueueState>();
-        // SAFETY: fd is valid; the file was created and sized by
-        // ChunkQueue::create, so the mapping fits the file exactly.
-        let ptr = unsafe {
-            mmap(
-                std::ptr::null_mut(),
-                size,
-                PROT_READ | PROT_WRITE,
-                MAP_SHARED,
-                fd,
-                0,
-            )
-        };
-        if ptr == libc::MAP_FAILED {
-            let err = std::io::Error::last_os_error();
-            // SAFETY: fd is valid; close it to leak no fd.
-            unsafe { close(fd) };
-            return Err(format!(
-                "mmap failed: {} [module=scheduler, method=ChunkQueue::open]",
-                err
-            ));
-        }
+        // The owner created this file with the same size, so the mapping fits
+        // the queue exactly.
+        let map = MappedFile::open(path, size, "ChunkQueue::open")?;
 
-        // SAFETY: ptr is valid ChunkQueueState-aligned memory returned
-        // by mmap. We only read header.magic and header.version here
-        // (non-atomic u32); the scheduler writes them once in create()
-        // before any worker opens the file, so the read is race-free.
-        let state = unsafe { &*(ptr as *const ChunkQueueState) };
-        // Cache the values BEFORE any munmap — reading through `state`
-        // after `munmap(ptr, size)` would be use-after-unmap.
+        // SAFETY: `map` is a valid, properly-aligned view of `size_of::<
+        // ChunkQueueState>()` bytes. We only read the non-atomic header fields
+        // here; the scheduler wrote them once in create() before any worker
+        // attached, so the read is race-free.
+        let ptr = map.ptr() as *mut ChunkQueueState;
+        let state = unsafe { &*ptr };
         let observed_magic = state.header.magic;
         let observed_version = state.header.version;
         if observed_magic != MAGIC {
-            // SAFETY: ptr was returned by mmap with `size` bytes.
-            unsafe { munmap(ptr, size) };
-            // SAFETY: fd is valid; close it to leak no fd.
-            unsafe { close(fd) };
+            // Dropping `map` unmaps and closes the segment; removing the file
+            // is the owner's job, so these error paths leak nothing.
             return Err(format!(
                 "magic mismatch: 0x{:08x} (expected 0x{:08x}) \
                  [module=scheduler, method=ChunkQueue::open]",
@@ -370,10 +271,6 @@ impl ChunkQueue {
             ));
         }
         if observed_version != VERSION {
-            // SAFETY: ptr was returned by mmap with `size` bytes.
-            unsafe { munmap(ptr, size) };
-            // SAFETY: fd is valid; close it to leak no fd.
-            unsafe { close(fd) };
             return Err(format!(
                 "version mismatch: {} (expected {}) \
                  [module=scheduler, method=ChunkQueue::open]",
@@ -381,12 +278,7 @@ impl ChunkQueue {
             ));
         }
 
-        Ok(Self {
-            path: path.to_string(),
-            fd,
-            ptr: ptr as *mut ChunkQueueState,
-            is_owner: false,
-        })
+        Ok(Self { map, ptr })
     }
 
     /// Scheduler writes a chunk's immutable metadata into slot `idx`.
@@ -419,292 +311,8 @@ impl ChunkQueue {
         slot.init(module_id, file_start, file_count, total_bytes);
         Ok(())
     }
-
-    /// Worker atomically claims the next PENDING chunk via CAS.
-    ///
-    /// Linear-scans `chunks[0..chunk_count]` for the first `PENDING`
-    /// slot and CAS-es it to `CLAIMED` with `claimer_id = worker_id`.
-    /// Returns the claimed slot index, or `None` if no chunk is
-    /// pending. Multiple workers calling concurrently are serialised
-    /// by the CAS — losers simply retry the scan (§6.1).
-    ///
-    /// Records `started_at_ms` so [`ChunkQueue::reset_stale`] can
-    /// detect crashed workers.
-    pub fn claim_next(&self, worker_id: u32) -> Option<u32> {
-        // SAFETY: self.ptr is valid for the lifetime of self; reads via
-        // shared reference are safe because all mutable fields are atomic.
-        let state = unsafe { &*self.ptr };
-        let count = state.header.chunk_count;
-        for i in 0..count {
-            let slot = &state.chunks[i as usize];
-            // Acquire on success pairs with the Release store in
-            // mark_done/mark_failed/reset_stale so a claimer observes
-            // the full prior state of the slot (weak memory: Apple
-            // Silicon reorders). Relaxed on failure — a lost CAS just
-            // retries the scan and carries no cross-thread dependency.
-            match slot.status.compare_exchange(
-                STATUS_PENDING,
-                STATUS_CLAIMED,
-                Ordering::Acquire,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => {
-                    slot.claimer_id.store(worker_id, Ordering::Relaxed);
-                    slot.started_at_ms.store(now_ms(), Ordering::Relaxed);
-                    return Some(i);
-                }
-                Err(_) => continue,
-            }
-        }
-        None
-    }
-
-    /// Mark chunk `idx` as DONE. Records `finished_at_ms`. No-op if
-    /// the slot is out of range (caller bug — we don't panic).
-    pub fn mark_done(&self, idx: u32) {
-        // SAFETY: self.ptr is valid for the lifetime of self.
-        let state = unsafe { &*self.ptr };
-        if idx >= state.header.chunk_count {
-            return;
-        }
-        let slot = &state.chunks[idx as usize];
-        // Write finished_at BEFORE the status store so a Release/Acquire
-        // pair makes it (and the worker's parse side-effects) visible to
-        // any observer that reads status == DONE via an Acquire load.
-        slot.finished_at_ms.store(now_ms(), Ordering::Relaxed);
-        slot.status.store(STATUS_DONE, Ordering::Release);
-    }
-
-    /// Mark chunk `idx` as FAILED. Records `finished_at_ms`. No-op if
-    /// the slot is out of range.
-    pub fn mark_failed(&self, idx: u32) {
-        // SAFETY: self.ptr is valid for the lifetime of self.
-        let state = unsafe { &*self.ptr };
-        if idx >= state.header.chunk_count {
-            return;
-        }
-        let slot = &state.chunks[idx as usize];
-        // Same Release discipline as mark_done: publish finished_at (and
-        // the worker's parse side-effects) before the status store so an
-        // Acquire reader that observes FAILED also sees the prior writes.
-        slot.finished_at_ms.store(now_ms(), Ordering::Relaxed);
-        slot.status.store(STATUS_FAILED, Ordering::Release);
-    }
-
-    /// Increment the failed-file counter on chunk `idx`.
-    /// Called by the parse loop when a single file fails (§7.3).
-    /// No-op if the slot is out of range.
-    pub fn inc_failed_files(&self, idx: u32) {
-        // SAFETY: self.ptr is valid for the lifetime of self.
-        let state = unsafe { &*self.ptr };
-        if idx >= state.header.chunk_count {
-            return;
-        }
-        let slot = &state.chunks[idx as usize];
-        slot.failed_files.fetch_add(1, Ordering::Release);
-    }
-
-    /// Reset a CLAIMED chunk back to PENDING if its worker has timed
-    /// out (crash recovery, §8). Returns true if the reset happened.
-    ///
-    /// `timeout_ms` is the maximum allowed gap between `started_at_ms`
-    /// and now. The CAS only succeeds if the slot is still CLAIMED —
-    /// if the worker raced and finished just before us, we leave its
-    /// DONE/FAILED state alone.
-    pub fn reset_stale(&self, idx: u32, timeout_ms: u64) -> bool {
-        // SAFETY: self.ptr is valid for the lifetime of self.
-        let state = unsafe { &*self.ptr };
-        if idx >= state.header.chunk_count {
-            return false;
-        }
-        let slot = &state.chunks[idx as usize];
-        let started = slot.started_at_ms.load(Ordering::Acquire);
-        if started == 0 {
-            return false; // never claimed
-        }
-        let elapsed = now_ms().saturating_sub(started);
-        if elapsed < timeout_ms {
-            return false;
-        }
-        // CAS CLAIMED → PENDING so we don't clobber a worker that just
-        // finished (race between watchdog and worker completion).
-        // Release on success publishes the recycle so the next claimer's
-        // Acquire CAS in claim_next observes a clean slot; Relaxed on
-        // failure (a lost race carries no cross-thread dependency).
-        match slot.status.compare_exchange(
-            STATUS_CLAIMED,
-            STATUS_PENDING,
-            Ordering::Release,
-            Ordering::Relaxed,
-        ) {
-            Ok(_) => {
-                slot.claimer_id.store(u32::MAX, Ordering::Relaxed);
-                slot.started_at_ms.store(0, Ordering::Relaxed);
-                true
-            }
-            Err(_) => false,
-        }
-    }
-
-    /// Returns true if every chunk is in DONE or FAILED state.
-    /// Used by the scheduler's main loop to detect completion.
-    /// Scan every chunk and reclaim any `CLAIMED` chunk whose worker has
-    /// been silent longer than `timeout_ms` (orphaned by a crashed
-    /// worker). Returns the number of chunks reset to `PENDING`.
-    ///
-    /// Called by idle workers (when `claim_next` finds no `PENDING` chunk)
-    /// so a crash mid-chunk cannot permanently strand files: another
-    /// worker re-claims the orphaned chunk and re-indexes its files
-    /// (idempotent — the worker writes to its OWN per-worker DB, so no
-    /// duplicate rows appear in the final merge). See DYNAMIC_SCHED_REDESIGN.md §8.
-    pub fn reset_all_stale(&self, timeout_ms: u64) -> u32 {
-        let count = self.chunk_count();
-        let mut reclaimed = 0u32;
-        for i in 0..count {
-            if self.reset_stale(i, timeout_ms) {
-                reclaimed += 1;
-            }
-        }
-        reclaimed
-    }
-
-    pub fn is_complete(&self) -> bool {
-        // SAFETY: self.ptr is valid for the lifetime of self.
-        let state = unsafe { &*self.ptr };
-        let count = state.header.chunk_count;
-        for i in 0..count {
-            // Acquire pairs with the Release store in mark_done/mark_failed:
-            // once the scheduler observes every chunk DONE/FAILED it gates
-            // the resolve phase, so it must see all of each worker's prior
-            // writes (weak memory ordering on Apple Silicon).
-            let s = state.chunks[i as usize].status.load(Ordering::Acquire);
-            if s != STATUS_DONE && s != STATUS_FAILED {
-                return false;
-            }
-        }
-        true
-    }
-
-    /// Number of chunks currently in PENDING state.
-    pub fn pending_count(&self) -> u32 {
-        // SAFETY: self.ptr is valid for the lifetime of self.
-        let state = unsafe { &*self.ptr };
-        let count = state.header.chunk_count;
-        let mut n = 0u32;
-        for i in 0..count {
-            if state.chunks[i as usize].status.load(Ordering::Acquire) == STATUS_PENDING {
-                n += 1;
-            }
-        }
-        n
-    }
-
-    /// Number of chunks in DONE state.
-    pub fn done_count(&self) -> u32 {
-        // SAFETY: self.ptr is valid for the lifetime of self.
-        let state = unsafe { &*self.ptr };
-        let count = state.header.chunk_count;
-        let mut n = 0u32;
-        for i in 0..count {
-            if state.chunks[i as usize].status.load(Ordering::Acquire) == STATUS_DONE {
-                n += 1;
-            }
-        }
-        n
-    }
-
-    /// Number of chunks in FAILED state.
-    pub fn failed_count(&self) -> u32 {
-        // SAFETY: self.ptr is valid for the lifetime of self.
-        let state = unsafe { &*self.ptr };
-        let count = state.header.chunk_count;
-        let mut n = 0u32;
-        for i in 0..count {
-            if state.chunks[i as usize].status.load(Ordering::Acquire) == STATUS_FAILED {
-                n += 1;
-            }
-        }
-        n
-    }
-
-    /// Snapshot of chunk `idx`'s state. Returns `None` if out of range.
-    /// Useful for diagnostics and SUMMARY generation.
-    pub fn chunk_state(&self, idx: u32) -> Option<ChunkStateSnapshot> {
-        // SAFETY: self.ptr is valid for the lifetime of self.
-        let state = unsafe { &*self.ptr };
-        if idx >= state.header.chunk_count {
-            return None;
-        }
-        let slot = &state.chunks[idx as usize];
-        // Acquire on status first; the remaining Relaxed loads are ordered
-        // after it in program order, so a snapshot that sees DONE/FAILED
-        // also observes the finished_at/failed_files written before the
-        // producer's Release store.
-        Some(ChunkStateSnapshot {
-            status: slot.status.load(Ordering::Acquire),
-            claimer_id: slot.claimer_id.load(Ordering::Relaxed),
-            module_id: slot.module_id,
-            file_start: slot.file_start,
-            file_count: slot.file_count,
-            total_bytes: slot.total_bytes,
-            started_at_ms: slot.started_at_ms.load(Ordering::Relaxed),
-            finished_at_ms: slot.finished_at_ms.load(Ordering::Relaxed),
-            failed_files: slot.failed_files.load(Ordering::Relaxed),
-        })
-    }
-
-    /// Number of valid chunks in the queue.
-    pub fn chunk_count(&self) -> u32 {
-        // SAFETY: self.ptr is valid for the lifetime of self.
-        let state = unsafe { &*self.ptr };
-        state.header.chunk_count
-    }
-
-    /// Filesystem path backing this shm segment.
-    pub fn path(&self) -> &str {
-        &self.path
-    }
 }
 
-impl Drop for ChunkQueue {
-    fn drop(&mut self) {
-        let size = std::mem::size_of::<ChunkQueueState>();
-        if !self.ptr.is_null() {
-            // SAFETY: self.ptr was returned by mmap with `size` bytes and
-            // has not been unmapped yet (Drop runs once per instance).
-            unsafe {
-                munmap(self.ptr as *mut c_void, size);
-            }
-        }
-        if self.fd >= 0 {
-            // SAFETY: self.fd is a valid open descriptor (or already
-            // closed, in which case close returns EBADF — harmless).
-            unsafe {
-                close(self.fd);
-            }
-        }
-        // Only the scheduler (owner) unlinks the file. Workers just
-        // munmap+close — the inode persists until the scheduler unlinks,
-        // and any in-flight mmap references stay valid (POSIX semantics).
-        if self.is_owner
-            && let Ok(c_path) = CString::new(self.path.clone())
-        {
-            // SAFETY: c_path is a valid NUL-terminated CString. unlink
-            // removes the directory entry; existing mmap references
-            // remain valid until munmap (POSIX shared memory semantics).
-            unsafe {
-                unlink(c_path.as_ptr());
-            }
-        }
-    }
-}
-
-// SAFETY: ChunkQueue is Send for the same reasons as SchedShm:
-// - `ptr` points to mmap'd memory (MAP_SHARED) that is process-global;
-//   moving the Rust handle across threads does not affect the underlying
-//   memory or its visibility to other processes.
-// - `fd` (RawFd = i32), `path` (String), and `is_owner` (bool) are all
-//   Send by default.
 unsafe impl Send for ChunkQueue {}
 
 // SAFETY: ChunkQueue is Sync for the same reasons as SchedShm:
@@ -720,7 +328,7 @@ unsafe impl Send for ChunkQueue {}
 //   read-only afterwards. `write_chunk` completes before workers are
 //   spawned (caller's responsibility), so there are no concurrent
 //   reads during the writes.
-// - `fd` and `is_owner` are only accessed in `Drop`, which takes
+// - `map` (the `MappedFile`) is only touched by `Drop`, which takes
 //   `&mut self` (exclusive access) — no concurrent access is possible.
 unsafe impl Sync for ChunkQueue {}
 
@@ -740,9 +348,12 @@ mod tests {
     use std::sync::atomic::AtomicU64;
 
     /// Monotonic counter appended to test paths so parallel test
-    /// processes never collide on the same /tmp file.
+    /// processes never collide on the same temp file.
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+    /// Build a unique path in the platform temp directory for one test
+    /// invocation. `temp_dir()` rather than a hardcoded `/tmp` because this
+    /// suite also runs on Windows hosts, where `/tmp` does not exist.
     fn unique_path() -> String {
         let pid = std::process::id();
         let nanos = std::time::SystemTime::now()
@@ -750,10 +361,10 @@ mod tests {
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(0);
         let counter = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
-        format!(
-            "/tmp/codescope_chunkq_test_{}_{}_{}.shm",
-            pid, nanos, counter
-        )
+        std::env::temp_dir()
+            .join(format!("codescope_chunkq_test_{pid}_{nanos}_{counter}.shm"))
+            .to_string_lossy()
+            .into_owned()
     }
 
     #[test]
@@ -892,6 +503,105 @@ mod tests {
     }
 
     #[test]
+    fn test_claim_publishes_start_time_with_the_claim() {
+        // Regression (#23): claim_next() used to publish CLAIMED with its CAS
+        // and store started_at_ms afterwards — two separate atomics, with no
+        // Release anywhere on the claim path. An observer (reset_stale, called
+        // by every idle chunk worker) could therefore read CLAIMED +
+        // started_at_ms == 0, judge the chunk abandoned ("as stale as it
+        // gets") and hand it to a second worker while the first was still
+        // parsing it. The merge copies each worker DB row-for-row, so the
+        // re-parsed files then appeared twice in the final index.
+        //
+        // Two invariants close it, both checked here while claimers and
+        // independent samplers race on a fresh queue per round:
+        //   1. a CLAIMED slot always carries a non-zero start time (the stamp
+        //      is stored before the Release CAS — structural, this is the
+        //      behavioural guard against a future reordering);
+        //   2. reset_stale must never recycle a chunk with a timeout no
+        //      wall-clock reading can exceed.
+        use std::sync::atomic::AtomicBool;
+
+        // create() clamps to MAX_CHUNKS, so this is the largest queue there is.
+        const CHUNKS: u32 = MAX_CHUNKS as u32;
+        const ROUNDS: usize = 8;
+        const CLAIMERS: usize = 4;
+
+        let mut unstamped = 0u64;
+        let mut recycled = 0u64;
+        for _ in 0..ROUNDS {
+            let path = unique_path();
+            let q = Arc::new(ChunkQueue::create(&path, CHUNKS).expect("create"));
+            for i in 0..CHUNKS {
+                q.write_chunk(i, 1, i, 10, 100_000).expect("write");
+            }
+
+            let bad_unstamped = Arc::new(AtomicU64::new(0));
+            let bad_recycled = Arc::new(AtomicU64::new(0));
+            let stop = Arc::new(AtomicBool::new(false));
+
+            let mut samplers = Vec::new();
+            for _ in 0..2 {
+                let q = Arc::clone(&q);
+                let bad_unstamped = Arc::clone(&bad_unstamped);
+                let bad_recycled = Arc::clone(&bad_recycled);
+                let stop = Arc::clone(&stop);
+                samplers.push(std::thread::spawn(move || {
+                    // SAFETY: q.ptr is valid for the queue's lifetime and
+                    // every field read here is an atomic.
+                    let state = unsafe { &*q.ptr };
+                    while !stop.load(Ordering::Relaxed) {
+                        for i in 0..CHUNKS {
+                            let slot = &state.chunks[i as usize];
+                            // Acquire pairs with the claim's Release CAS.
+                            if slot.status.load(Ordering::Acquire) != STATUS_CLAIMED {
+                                continue;
+                            }
+                            if slot.started_at_ms.load(Ordering::Acquire) == 0 {
+                                bad_unstamped.fetch_add(1, Ordering::Relaxed);
+                            }
+                            if q.reset_stale(i, u64::MAX) {
+                                bad_recycled.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                }));
+            }
+
+            let mut claimers = Vec::new();
+            for t in 0..CLAIMERS {
+                let q = Arc::clone(&q);
+                claimers.push(std::thread::spawn(move || {
+                    // Leave the chunks CLAIMED: the publication of the claim
+                    // is exactly what is under test.
+                    while q.claim_next(t as u32).is_some() {}
+                }));
+            }
+            for h in claimers {
+                h.join().unwrap();
+            }
+            stop.store(true, Ordering::Relaxed);
+            for h in samplers {
+                h.join().unwrap();
+            }
+
+            unstamped += bad_unstamped.load(Ordering::Relaxed);
+            recycled += bad_recycled.load(Ordering::Relaxed);
+            let _ = std::fs::remove_file(&path);
+        }
+
+        assert_eq!(
+            unstamped, 0,
+            "a CLAIMED chunk was observable with started_at_ms == 0 — \
+             reset_stale treats that as abandoned and duplicates the chunk"
+        );
+        assert_eq!(
+            recycled, 0,
+            "reset_stale recycled a chunk under an unreachable timeout"
+        );
+    }
+
+    #[test]
     fn test_mark_done_failed_and_completion() {
         let path = unique_path();
         let q = ChunkQueue::create(&path, 3).expect("create");
@@ -977,6 +687,77 @@ mod tests {
         assert_eq!(idx, 0);
         let s = q.chunk_state(0).expect("snap");
         assert_eq!(s.claimer_id, 9);
+    }
+
+    #[test]
+    fn test_reset_stale_recovers_claim_without_timestamp() {
+        // Legacy state: a chunk that is CLAIMED with started_at_ms == 0. The
+        // current claim_next() stamps the start time BEFORE it publishes
+        // CLAIMED, so this build never leaves a claim unstamped; the state can
+        // only survive in an shm segment written by an older binary (whose
+        // worker could crash between the CAS and the stamp). It must still be
+        // reclaimed: reset_stale's old early return treated 0 as "never
+        // claimed", so the watchdog skipped such a slot forever and its files
+        // were never indexed.
+        let path = unique_path();
+        let q = ChunkQueue::create(&path, 1).expect("create");
+        q.write_chunk(0, 1, 0, 10, 100_000).expect("write");
+        let _ = q.claim_next(0).expect("claim");
+        assert_eq!(q.chunk_state(0).unwrap().status, STATUS_CLAIMED);
+        unsafe {
+            let state = &*q.ptr;
+            state.chunks[0].started_at_ms.store(0, Ordering::Relaxed);
+        }
+
+        // Even a zero timeout must reclaim it: an unstamped claim is stale.
+        assert!(
+            q.reset_stale(0, 0),
+            "unstamped CLAIMED chunk must be reclaimable"
+        );
+        let s = q.chunk_state(0).expect("snap");
+        assert_eq!(s.status, STATUS_PENDING);
+        assert_eq!(s.started_at_ms, 0);
+
+        // A PENDING slot with no claimer is still NOT stale — the fix must not
+        // have turned every idle chunk into a watchdog target.
+        assert!(
+            !q.reset_stale(0, 0),
+            "an unclaimed PENDING chunk is not stale"
+        );
+    }
+
+    #[test]
+    fn test_release_worker_chunks_returns_only_that_workers_chunks() {
+        // Regression (#15, option C): when a chunk worker dies, the merge drops
+        // its DB — including the chunks it had already marked DONE, because one
+        // worker owns one DB. `claimer_id` is the only record of which chunks
+        // those were, so release must hand back exactly that worker's chunks
+        // (whatever their status) and leave every other worker's alone.
+        let path = unique_path();
+        let q = ChunkQueue::create(&path, 3).expect("create");
+        for i in 0..3 {
+            q.write_chunk(i, 1, 0, 10, 100_000).expect("write");
+        }
+        assert_eq!(q.claim_next(0), Some(0));
+        assert_eq!(q.claim_next(1), Some(1));
+        q.mark_done(0); // worker 0 finished chunk 0
+        assert_eq!(q.claim_next(0), Some(2)); // ...and is mid-way through chunk 2
+        q.mark_failed(1); // worker 1 failed chunk 1
+
+        // Worker 0 owns chunk 0 (DONE) and chunk 2 (CLAIMED) — both must come
+        // back, because both live in the DB that is about to be dropped.
+        assert_eq!(q.release_worker_chunks(0), 2);
+        for i in [0u32, 2] {
+            let s = q.chunk_state(i).expect("snap");
+            assert_eq!(s.status, STATUS_PENDING, "chunk {i} must be re-claimable");
+            assert_eq!(s.started_at_ms, 0, "chunk {i} must look never-claimed");
+        }
+        // Worker 1's chunk is left exactly as it was.
+        assert_ne!(q.chunk_state(1).expect("snap").status, STATUS_PENDING);
+        // An id that owns nothing releases nothing.
+        assert_eq!(q.release_worker_chunks(9), 0);
+        // Releasing is only useful if the chunks can be picked up again.
+        assert_eq!(q.claim_next(5), Some(0));
     }
 
     #[test]

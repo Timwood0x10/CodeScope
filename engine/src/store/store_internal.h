@@ -7,7 +7,6 @@ namespace store
 
 // Escape a string for safe embedding in JSON.
 // Shared across store_*.cpp split files.
-std::string jsonEscape(const std::string &s);
 
 // Build a safe FTS5 phrase query string for the trigram tokenizer.
 // Wraps the raw query in double quotes so it is treated as a literal

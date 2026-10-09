@@ -13,8 +13,17 @@ jobs = -1
 # Incremental compilation (enabled by default in dev profile)
 incremental = true
 
-# Rustflags for faster builds
-[target.'cfg(debug_assertions)']
+# Rustflags for faster builds.
+#
+# `-C target-cpu=native` is only sound when the target IS the host: on an Apple
+# Silicon host cross-compiling to Windows it resolves to `apple-m3`, and
+# rustc-LLVM then rejects every crate with "64-bit code requested on a subtarget
+# that doesn't support it" — which is why
+# `cargo build --release --target x86_64-pc-windows-gnu` (the macOS → Windows
+# cross-compile job in `.github/workflows/dev.yml`) could never build. The flag
+# is therefore kept out of Windows targets, which are the only ones this project
+# cross-compiles to.
+[target.'cfg(all(debug_assertions, not(target_os = "windows")))']
 rustflags = ["-C", "target-cpu=native"]
 
 # Profile-specific optimizations

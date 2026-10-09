@@ -10,7 +10,9 @@
 // release with engine_free_string(). Null store/query inputs return an
 // error JSON object instead of crashing.
 
+#include "util/json_writer.h"
 #include "engine_internal.h"
+#include "async_knowledge.h"
 #include "platform_win.h"
 
 #include <algorithm>
@@ -45,15 +47,14 @@ namespace
 // Trust score penalty per non-supported finding in engine_verify_integrity.
 static constexpr double kTrustScorePenalty = 0.1;
 
-// Maximum number of entity sample rows returned by engine_explain_module.
-static constexpr int kEntitySampleLimit = 10;
-/// Maximum number of cross-module dependency edges to return per direction.
-static constexpr int kCrossModuleEdgeLimit = 20;
-
-// Integrity score parameters for engine_explain_module.
-static constexpr int kIntegrityMax = 100;
-static constexpr int kIntegritySev2Penalty = 10;
-static constexpr int kIntegritySev1Penalty = 5;
+// Default cap on the number of findings serialized into the
+// engine_verify_integrity response, and the absolute upper bound the
+// caller may request. The findings array is unbounded otherwise: a
+// 10k-entity index produces one DeadCode/Architecture/ModuleCoupling
+// finding per module/function and the JSON overflows the MCP write cap
+// (T5 finding #15). The real totals are always reported alongside.
+static constexpr int kDefaultMaxFindings = 200;
+static constexpr int kMaxFindingsCap = 2000;
 
 // ─── JSON Helpers ───────────────────────────────────────────────
 
@@ -127,7 +128,7 @@ std::optional<verify::ClaimType> parseClaimType(const std::string &s)
 // global registry. Delegates to VerifierRegistry::ensureDefaultVerifiers,
 // which checks the actual registry state (not a process-level static flag)
 // and only re-registers when empty. This fixes the lifecycle bug A15:
-//   engine_shutdown() cleared the registry but the old `static bool
+//   engine_destroy() cleared the registry but the old `static bool
 //   initialized` flag stayed true, so the next ensureVerifiersRegistered()
 //   was a no-op and the registry stayed empty → every claim returned
 //   "no verifier registered".
@@ -180,11 +181,12 @@ makeVerifierForClaim(const verify::Claim &claim, store::GraphStore *store,
 
 namespace verify_ffi
 {
-VerifyResult verify_one_claim(uint64_t project_id, const verify::Claim &claim)
+VerifyResult verify_one_claim(EngineContext *ctx, uint64_t project_id,
+			      const verify::Claim &claim)
 {
 	VerifyResult result;
 
-	int64_t claim_id = g_store->insertClaim(project_id, claim);
+	int64_t claim_id = ctx->store->insertClaim(project_id, claim);
 	if (claim_id < 0) {
 		result.json =
 			dupString("{\"error\":\"failed to persist claim "
@@ -208,21 +210,24 @@ VerifyResult verify_one_claim(uint64_t project_id, const verify::Claim &claim)
 		const std::string detail =
 			(reg.verifier_count() == 0) ?
 				std::string("verifier registry is empty "
-					    "(engine_init not called or "
-					    "engine_shutdown cleared it) "
+					    "(engine_create not called or "
+					    "the instance was destroyed) "
 					    "[module=ffi, method="
 					    "verify_one_claim]") :
 				(std::string(
 					 "no verifier accepts claim type '") +
 				 verify::claimTypeWireName(claim.type) +
 				 "' [module=ffi, method=verify_one_claim]");
-		std::ostringstream j;
-		j << "{\"claim_id\":" << claim_id
-		  << ",\"verdict\":\"Unknown\",\"confidence\":0"
-		  << ",\"verifier\":null"
-		  << ",\"error_code\":\"" << code << "\""
-		  << ",\"detail\":\"" << jsonEscape(detail) << "\""
-		  << ",\"evidence_facts\":[]}";
+		util::JsonWriter j;
+		j.beginObject();
+		j.key("claim_id").value(claim_id);
+		j.key("verdict").value("Unknown");
+		j.key("confidence").value(0);
+		j.key("verifier").nullValue();
+		j.key("error_code").value(code);
+		j.key("detail").value(detail);
+		j.key("evidence_facts").beginArray().endArray();
+		j.endObject();
 		result.json = dupString(j.str());
 		result.verdict = verify::Verdict::Unknown;
 		return result;
@@ -231,17 +236,20 @@ VerifyResult verify_one_claim(uint64_t project_id, const verify::Claim &claim)
 	// Build a fresh verifier bound to the caller's project_id so verify()
 	// queries the right project's data. The registry's matched pointer is
 	// only used to confirm that SOME verifier accepts this claim type.
-	auto v = makeVerifierForClaim(claim, g_store.get(), project_id);
+	auto v = makeVerifierForClaim(claim, ctx->store.get(), project_id);
 	if (!v) {
-		std::ostringstream j;
-		j << "{\"claim_id\":" << claim_id
-		  << ",\"verdict\":\"Unknown\",\"confidence\":0"
-		  << ",\"verifier\":null"
-		  << ",\"error_code\":\"verifier_execution_failed\""
-		  << ",\"detail\":\"verifier "
-		     "implementation unavailable for this claim type "
-		     "[module=ffi, method=verify_one_claim]\""
-		  << ",\"evidence_facts\":[]}";
+		util::JsonWriter j;
+		j.beginObject();
+		j.key("claim_id").value(claim_id);
+		j.key("verdict").value("Unknown");
+		j.key("confidence").value(0);
+		j.key("verifier").nullValue();
+		j.key("error_code").value("verifier_execution_failed");
+		j.key("detail").value(
+			"verifier implementation unavailable for this claim type "
+			"[module=ffi, method=verify_one_claim]");
+		j.key("evidence_facts").beginArray().endArray();
+		j.endObject();
 		result.json = dupString(j.str());
 		result.verdict = verify::Verdict::Unknown;
 		return result;
@@ -254,35 +262,43 @@ VerifyResult verify_one_claim(uint64_t project_id, const verify::Claim &claim)
 	try {
 		rec = v->verify(claim);
 	} catch (const std::exception &e) {
-		std::ostringstream j;
-		j << "{\"claim_id\":" << claim_id
-		  << ",\"verdict\":\"Unknown\",\"confidence\":0"
-		  << ",\"verifier\":\"" << jsonEscape(v->name()) << "\""
-		  << ",\"error_code\":\"verifier_execution_failed\""
-		  << ",\"detail\":\"verifier threw: " << jsonEscape(e.what())
-		  << " [module=ffi, method=verify_one_claim]\""
-		  << ",\"evidence_facts\":[]}";
+		util::JsonWriter j;
+		j.beginObject();
+		j.key("claim_id").value(claim_id);
+		j.key("verdict").value("Unknown");
+		j.key("confidence").value(0);
+		j.key("verifier").value(v->name());
+		j.key("error_code").value("verifier_execution_failed");
+		j.key("detail").value(std::string("verifier threw: ") +
+				      e.what() +
+				      " [module=ffi, method=verify_one_claim]");
+		j.key("evidence_facts").beginArray().endArray();
+		j.endObject();
 		result.json = dupString(j.str());
 		result.verdict = verify::Verdict::Unknown;
 		return result;
 	} catch (...) {
-		std::ostringstream j;
-		j << "{\"claim_id\":" << claim_id
-		  << ",\"verdict\":\"Unknown\",\"confidence\":0"
-		  << ",\"verifier\":\"" << jsonEscape(v->name()) << "\""
-		  << ",\"error_code\":\"verifier_execution_failed\""
-		  << ",\"detail\":\"verifier threw unknown exception "
-		     "[module=ffi, method=verify_one_claim]\""
-		  << ",\"evidence_facts\":[]}";
+		util::JsonWriter j;
+		j.beginObject();
+		j.key("claim_id").value(claim_id);
+		j.key("verdict").value("Unknown");
+		j.key("confidence").value(0);
+		j.key("verifier").value(v->name());
+		j.key("error_code").value("verifier_execution_failed");
+		j.key("detail").value("verifier threw unknown exception "
+				      "[module=ffi, method=verify_one_claim]");
+		j.key("evidence_facts").beginArray().endArray();
+		j.endObject();
 		result.json = dupString(j.str());
 		result.verdict = verify::Verdict::Unknown;
 		return result;
 	}
 	rec.claim_id = claim_id;
 
-	int64_t evidence_id =
-		g_store->insertEvidence(claim_id, rec.verdict, rec.confidence,
-					rec.verifier_name, rec.detail);
+	int64_t evidence_id = ctx->store->insertEvidence(claim_id, rec.verdict,
+							 rec.confidence,
+							 rec.verifier_name,
+							 rec.detail);
 	if (evidence_id < 0) {
 		result.json =
 			dupString("{\"error\":\"failed to persist evidence "
@@ -292,7 +308,8 @@ VerifyResult verify_one_claim(uint64_t project_id, const verify::Claim &claim)
 	}
 
 	for (const auto &f : rec.facts) {
-		g_store->insertEvidenceFact(evidence_id, f.first, f.second, "");
+		ctx->store->insertEvidenceFact(evidence_id, f.first, f.second,
+					       "");
 	}
 
 	// Step 9.6: when the verifier returned Unknown because the evidence
@@ -300,11 +317,12 @@ VerifyResult verify_one_claim(uint64_t project_id, const verify::Claim &claim)
 	// callers can distinguish "no evidence yet" from a normal Unknown
 	// verdict. The verifier signals this via a low confidence + the
 	// "evidence backend not ready" prefix in the detail string.
-	std::ostringstream j;
-	j << "{\"claim_id\":" << claim_id << ",\"verdict\":\""
-	  << verify::verdictName(rec.verdict) << "\""
-	  << ",\"confidence\":" << rec.confidence << ",\"verifier\":\""
-	  << jsonEscape(rec.verifier_name) << "\"";
+	util::JsonWriter j;
+	j.beginObject();
+	j.key("claim_id").value(claim_id);
+	j.key("verdict").value(verify::verdictName(rec.verdict));
+	j.key("confidence").value(rec.confidence);
+	j.key("verifier").value(rec.verifier_name);
 	// Tag evidence_backend_not_ready when the verifier reported it. The
 	// detail string is the canonical signal (set by evidence_backend_ready
 	// helpers in each verifier) so we don't need a separate enum field on
@@ -312,25 +330,25 @@ VerifyResult verify_one_claim(uint64_t project_id, const verify::Claim &claim)
 	if (rec.verdict == verify::Verdict::Unknown &&
 	    rec.detail.find("evidence backend not ready") !=
 		    std::string::npos) {
-		j << ",\"error_code\":\"evidence_backend_not_ready\"";
+		j.key("error_code").value("evidence_backend_not_ready");
 	}
-	j << ",\"detail\":\"" << jsonEscape(rec.detail) << "\""
-	  << ",\"evidence_facts\":[";
-	bool first = true;
+	j.key("detail").value(rec.detail);
+	j.key("evidence_facts").beginArray();
 	for (const auto &f : rec.facts) {
-		if (!first)
-			j << ",";
-		first = false;
-		j << "{\"kind\":" << f.first << ",\"ref\":" << f.second << "}";
+		j.beginObject();
+		j.key("kind").value(f.first);
+		j.key("ref").value(f.second);
+		j.endObject();
 	}
-	j << "]}";
+	j.endArray();
+	j.endObject();
 	result.json = dupString(j.str());
 	result.verdict = rec.verdict;
 	return result;
 }
 
-BatchResult verify_claim_batch(uint64_t project_id, const std::string &text,
-			       const char *source_kind,
+BatchResult verify_claim_batch(EngineContext *ctx, uint64_t project_id,
+			       const std::string &text, const char *source_kind,
 			       const std::string &source_ref)
 {
 	BatchResult out;
@@ -345,7 +363,7 @@ BatchResult verify_claim_batch(uint64_t project_id, const std::string &text,
 		if (!first)
 			json << ",";
 		first = false;
-		VerifyResult result = verify_one_claim(project_id, c);
+		VerifyResult result = verify_one_claim(ctx, project_id, c);
 		if (result.json) {
 			json << result.json;
 			switch (result.verdict) {
@@ -367,6 +385,14 @@ BatchResult verify_claim_batch(uint64_t project_id, const std::string &text,
 	}
 	json << "]";
 	out.results_json = json.str();
+	// Status is decided once here (see BatchResult::status) so the wrapping
+	// tools cannot drift apart on what "nothing to report" means.
+	if (out.claims_count == 0)
+		out.status = "no_claims";
+	else if (out.supported + out.contradicted == 0)
+		out.status = "no_verdicts";
+	else
+		out.status = "verified";
 	return out;
 }
 
@@ -383,26 +409,43 @@ BatchResult verify_claim_batch(uint64_t project_id, const std::string &text,
 //
 // MEMORY: caller MUST free the returned char* via engine_free_string().
 // THREAD SAFETY: single-threaded (GraphStore writer invariant).
-extern "C" char *engine_verify_integrity(uint64_t project_id)
+//
+// `max_findings` caps how many entries are serialized into the
+// `findings` array (0 or negative selects the default; the absolute
+// upper bound is kMaxFindingsCap). `truncated` is true when the array
+// was cut short. `total` counts every verdict (Supported included,
+// which are not listed as findings), so it is normally larger than
+// the array length.
+extern "C" char *engine_verify_integrity(engine_t handle, uint64_t project_id,
+					 int max_findings)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
-		if (!g_store)
+		auto _store_guard = waitForKnowledgeBuilder();
+		if (!ctx || !ctx->store)
 			return dupString("{\"error\":\"not initialized\"}");
 
 		// Arm the query timeout (10s) so a hung query never blocks
 		// the caller indefinitely. The guard disarms on scope exit.
-		store::GraphStore::QueryDeadlineGuard guard(g_store.get(),
+		store::GraphStore::QueryDeadlineGuard guard(ctx->store.get(),
 							    10000);
 		(void)guard;
 
-		int supported = 0, contradicted = 0, unknown = 0, orphans = 0;
+		int limit = (max_findings <= 0) ? kDefaultMaxFindings :
+						  max_findings;
+		if (limit > kMaxFindingsCap)
+			limit = kMaxFindingsCap;
 
-		std::ostringstream json;
-		json << "{\"findings\":[";
-		bool first = true;
+		int supported = 0, contradicted = 0, unknown = 0, orphans = 0;
+		int emitted = 0;
+
+		util::JsonWriter json;
+		json.beginObject();
+		json.key("findings").beginArray();
 
 		// Iterate capabilities -> CapabilityExists claims
-		auto caps = g_store->listCapabilities(project_id);
+		auto caps = ctx->store->listCapabilities(project_id);
 		for (const auto &cap : caps) {
 			verify::Claim claim;
 			claim.type = verify::ClaimType::CapabilityExists;
@@ -412,7 +455,7 @@ extern "C" char *engine_verify_integrity(uint64_t project_id)
 			claim.source_kind = "capability";
 			claim.source_ref = std::to_string(cap.first);
 
-			auto v = makeVerifierForClaim(claim, g_store.get(),
+			auto v = makeVerifierForClaim(claim, ctx->store.get(),
 						      project_id);
 			if (!v)
 				continue;
@@ -435,21 +478,23 @@ extern "C" char *engine_verify_integrity(uint64_t project_id)
 			std::string desc = "Capability '" + cap.second + "' " +
 					   verify::verdictName(rec.verdict) +
 					   ": " + rec.detail;
-			g_store->insertFinding(project_id, "CapabilityVerifier",
-					       severity, 0, desc,
-					       rec.confidence);
-			if (!first)
-				json << ",";
-			first = false;
-			json << "{\"type\":\"CapabilityVerifier\","
-			     << "\"description\":\"" << jsonEscape(desc)
-			     << "\","
-			     << "\"confidence\":" << rec.confidence << "}";
+			ctx->store->insertFinding(project_id,
+						  "CapabilityVerifier",
+						  severity, 0, desc,
+						  rec.confidence);
+			if (emitted < limit) {
+				++emitted;
+				json.beginObject();
+				json.key("type").value("CapabilityVerifier");
+				json.key("description").value(desc);
+				json.key("confidence").value(rec.confidence);
+				json.endObject();
+			}
 		}
 
 		// Iterate contracts -> ContractHolds claims. ContractVerifier is
 		// registered, so makeVerifierForClaim returns a valid verifier instance.
-		auto contracts = g_store->listContracts(project_id);
+		auto contracts = ctx->store->listContracts(project_id);
 		for (const auto &ct : contracts) {
 			verify::Claim claim;
 			claim.type = verify::ClaimType::ContractHolds;
@@ -459,7 +504,7 @@ extern "C" char *engine_verify_integrity(uint64_t project_id)
 			claim.source_kind = "contract";
 			claim.source_ref = std::to_string(ct.first);
 
-			auto v = makeVerifierForClaim(claim, g_store.get(),
+			auto v = makeVerifierForClaim(claim, ctx->store.get(),
 						      project_id);
 			if (!v)
 				continue;
@@ -482,16 +527,17 @@ extern "C" char *engine_verify_integrity(uint64_t project_id)
 			std::string desc = "Contract '" + ct.second + "' " +
 					   verify::verdictName(rec.verdict) +
 					   ": " + rec.detail;
-			g_store->insertFinding(project_id, "ContractVerifier",
-					       severity, 0, desc,
-					       rec.confidence);
-			if (!first)
-				json << ",";
-			first = false;
-			json << "{\"type\":\"ContractVerifier\","
-			     << "\"description\":\"" << jsonEscape(desc)
-			     << "\","
-			     << "\"confidence\":" << rec.confidence << "}";
+			ctx->store->insertFinding(project_id,
+						  "ContractVerifier", severity,
+						  0, desc, rec.confidence);
+			if (emitted < limit) {
+				++emitted;
+				json.beginObject();
+				json.key("type").value("ContractVerifier");
+				json.key("description").value(desc);
+				json.key("confidence").value(rec.confidence);
+				json.endObject();
+			}
 		}
 
 		// DeadCodeInspector: find orphan modules and functions.
@@ -499,7 +545,7 @@ extern "C" char *engine_verify_integrity(uint64_t project_id)
 		// land inside the JSON array (previously they were appended
 		// after `],"total":N`, producing invalid JSON).
 		{
-			verify::DeadCodeInspector dci(g_store.get(),
+			verify::DeadCodeInspector dci(ctx->store.get(),
 						      project_id);
 			auto findings = dci.inspect();
 			for (auto &f : findings) {
@@ -511,21 +557,32 @@ extern "C" char *engine_verify_integrity(uint64_t project_id)
 				// actual claim verdicts instead of collapsing to 0
 				// whenever any orphan exists.
 				orphans++;
-				if (!first)
-					json << ",";
-				first = false;
-				json << "{\"type\":\"DeadCodeInspector\","
-				     << "\"rule\":\"" << jsonEscape(f.type)
-				     << "\","
-				     << "\"description\":\""
-				     << jsonEscape(f.description) << "\","
-				     << "\"confidence\":" << f.confidence
-				     << "}";
+				if (emitted < limit) {
+					++emitted;
+					json.beginObject();
+					json.key("type").value(
+						"DeadCodeInspector");
+					json.key("rule").value(f.type);
+					json.key("description")
+						.value(f.description);
+					json.key("confidence")
+						.value(f.confidence);
+					json.endObject();
+				}
 			}
 		}
 
-		json << "],\"total\":"
-		     << (supported + contradicted + unknown + orphans);
+		int total = supported + contradicted + unknown + orphans;
+		// Only non-Supported verdicts become findings; Supported ones
+		// `continue` above and never enter the array. Truncation must
+		// therefore compare `emitted` against the emit-eligible count,
+		// not `total` — otherwise any Supported claim makes the flag
+		// report a cut that never happened.
+		int findings_total = contradicted + unknown + orphans;
+		json.endArray();
+		json.key("total").value(total);
+		json.key("truncated").value(emitted < findings_total);
+		json.key("limit").value(limit);
 
 		// Trust score: 1.0 - kTrustScorePenalty per non-supported finding, clamped to [0, 1].
 		// Orphans are excluded: they are informational findings, not
@@ -535,20 +592,19 @@ extern "C" char *engine_verify_integrity(uint64_t project_id)
 			       static_cast<double>(contradicted + unknown);
 		if (trust_score < 0.0)
 			trust_score = 0.0;
-		json << ",\"trust_score\":" << trust_score
-		     << ",\"supported\":" << supported
-		     << ",\"contradicted\":" << contradicted
-		     << ",\"unknown\":" << unknown << ",\"orphans\":" << orphans
-		     << "}";
+		json.key("trust_score").value(trust_score);
+		json.key("supported").value(supported);
+		json.key("contradicted").value(contradicted);
+		json.key("unknown").value(unknown);
+		json.key("orphans").value(orphans);
+		json.endObject();
 		return dupString(json.str());
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_verify_integrity] ") +
-			e.what() + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_verify_integrity", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_verify_integrity] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_verify_integrity", "unknown exception"));
 	}
 }
 
@@ -567,11 +623,14 @@ extern "C" char *engine_verify_integrity(uint64_t project_id)
 //
 // MEMORY: caller MUST free the returned char* via engine_free_string().
 // THREAD SAFETY: single-threaded (GraphStore writer invariant).
-extern "C" char *engine_verify_claim(uint64_t project_id,
+extern "C" char *engine_verify_claim(engine_t handle, uint64_t project_id,
 				     const char *claim_json)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
-		if (!g_store)
+		auto _store_guard = waitForKnowledgeBuilder();
+		if (!ctx || !ctx->store)
 			return dupString("{\"error\":\"not initialized\"}");
 		if (!claim_json || !*claim_json)
 			return dupString(
@@ -590,14 +649,39 @@ extern "C" char *engine_verify_claim(uint64_t project_id,
 		std::string type_str = jsonField(input, "type");
 		auto parsed_type = parseClaimType(type_str);
 		if (!parsed_type) {
-			std::ostringstream err;
-			err << "{\"error\":\"unknown claim type '"
-			    << jsonEscape(type_str)
-			    << "'. Supported types: capability_exists, "
-			       "contract_holds, architecture_follows, "
-			       "function_implements "
-			       "[module=ffi, method=engine_verify_claim]\""
-			    << ",\"error_code\":\"claim_type_unsupported\"}";
+			util::JsonWriter err;
+			err.beginObject();
+			// Two different mistakes land here and the message used to
+			// describe neither: an EMPTY type means the `claim` argument was
+			// not a JSON object carrying a `type` field at all — the common
+			// case is free text ("the engine supports X"), which the sibling
+			// verify_summary/verify review/reality tools DO accept, so sending
+			// prose here is an easy slip. A non-empty type is simply not in the
+			// contract. The two are separate error codes so a client can tell
+			// "you sent the wrong shape" from "you named a type that does not
+			// exist" — which is what this check was introduced to do.
+			if (type_str.empty()) {
+				err.key("error").value(
+					"missing claim type: `claim` must be a JSON object "
+					"with a \"type\" field (one of: capability_exists, "
+					"contract_holds, architecture_follows, "
+					"function_implements), e.g. "
+					"{\"type\":\"capability_exists\",\"subject\":\"Indexing\"}. "
+					"For free-form prose use verify_summary instead "
+					"[module=ffi, method=engine_verify_claim]");
+				err.key("error_code")
+					.value("claim_type_missing");
+			} else {
+				err.key("error").value(
+					"unknown claim type '" + type_str +
+					"'. Supported types: capability_exists, "
+					"contract_holds, architecture_follows, "
+					"function_implements "
+					"[module=ffi, method=engine_verify_claim]");
+				err.key("error_code")
+					.value("claim_type_unsupported");
+			}
+			err.endObject();
 			return dupString(err.str());
 		}
 		claim.type = *parsed_type;
@@ -621,16 +705,14 @@ extern "C" char *engine_verify_claim(uint64_t project_id,
 		}
 
 		verify_ffi::VerifyResult result =
-			verify_ffi::verify_one_claim(project_id, claim);
+			verify_ffi::verify_one_claim(ctx, project_id, claim);
 		return result.json;
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_verify_claim] ") +
-			e.what() + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_verify_claim", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_verify_claim] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_verify_claim", "unknown exception"));
 	}
 }
 
@@ -653,10 +735,14 @@ extern "C" char *engine_verify_claim(uint64_t project_id,
 //
 // MEMORY: caller MUST free the returned char* via engine_free_string().
 // THREAD SAFETY: single-threaded (GraphStore writer invariant).
-extern "C" char *engine_verify_summary(uint64_t project_id, const char *text)
+extern "C" char *engine_verify_summary(engine_t handle, uint64_t project_id,
+				       const char *text)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
-		if (!g_store)
+		auto _store_guard = waitForKnowledgeBuilder();
+		if (!ctx || !ctx->store)
 			return dupString(
 				"{\"error\":\"not initialized "
 				"[module=ffi, method=engine_verify_summary]\"}");
@@ -667,37 +753,34 @@ extern "C" char *engine_verify_summary(uint64_t project_id, const char *text)
 
 		std::string src(text);
 		auto batch = verify_ffi::verify_claim_batch(
-			project_id, src, verify_ffi::kSourceKindAiSummary,
+			ctx, project_id, src, verify_ffi::kSourceKindAiSummary,
 			src.substr(0, verify_ffi::kSourceRefMaxLen));
 
 		// ── End-to-end drift detection ──
 		// Cross-reference AI claims against the actual codebase state.
 		// Each drift finding represents a mismatch between documentation
 		// (or AI summary) and the code.
-		auto doc_drifts =
-			verify::detectDocumentationDrift(*g_store, project_id);
+		auto doc_drifts = verify::detectDocumentationDrift(*ctx->store,
+								   project_id);
 		auto cap_drifts =
-			verify::detectCapabilityDrift(*g_store, project_id);
-		auto arch_drifts =
-			verify::detectArchitectureDrift(*g_store, project_id);
+			verify::detectCapabilityDrift(*ctx->store, project_id);
+		auto arch_drifts = verify::detectArchitectureDrift(*ctx->store,
+								   project_id);
 		size_t total_drifts = doc_drifts.size() + cap_drifts.size() +
 				      arch_drifts.size();
 
-		// Build drifts JSON array.
-		std::ostringstream drifts_json;
-		drifts_json << "[";
-		bool drift_first = true;
+		util::JsonWriter json;
+		json.beginObject();
+		json.key("claims_parsed").value(batch.claims_count);
+		json.key("results").raw(batch.results_json);
+		json.key("drifts").beginArray();
 		auto emit_drift = [&](const verify::DriftItem &d) {
-			if (!drift_first)
-				drifts_json << ",";
-			drift_first = false;
-			drifts_json
-				<< "{\"type\":\"" << jsonEscape(d.type) << "\""
-				<< ",\"severity\":" << d.severity
-				<< ",\"subject\":\"" << jsonEscape(d.subject)
-				<< "\""
-				<< ",\"detail\":\"" << jsonEscape(d.detail)
-				<< "\"}";
+			json.beginObject();
+			json.key("type").value(d.type);
+			json.key("severity").value(d.severity);
+			json.key("subject").value(d.subject);
+			json.key("detail").value(d.detail);
+			json.endObject();
 		};
 		for (const auto &d : doc_drifts)
 			emit_drift(d);
@@ -705,435 +788,44 @@ extern "C" char *engine_verify_summary(uint64_t project_id, const char *text)
 			emit_drift(d);
 		for (const auto &d : arch_drifts)
 			emit_drift(d);
-		drifts_json << "]";
+		json.endArray();
 
-		std::ostringstream json;
-		json << "{\"claims_parsed\":" << batch.claims_count
-		     << ",\"results\":" << batch.results_json
-		     << ",\"drifts\":" << drifts_json.str()
-		     << ",\"summary\":{\"supported\":" << batch.supported
-		     << ",\"contradicted\":" << batch.contradicted
-		     << ",\"unknown\":" << batch.unknown
-		     << ",\"drifts_found\":" << total_drifts
-		     << ",\"trust_score\":";
+		json.key("summary").beginObject();
+		json.key("supported").value(batch.supported);
+		json.key("contradicted").value(batch.contradicted);
+		json.key("unknown").value(batch.unknown);
+		json.key("drifts_found").value(total_drifts);
+		// How much was judgeable, and how many claims reached a decision —
+		// without these, `trust_score` alone is unreadable: 1.0 means
+		// "nothing was checkable" here (see BatchResult::status).
+		json.key("status").value(batch.status);
+		json.key("verdicts_decided")
+			.value(batch.supported + batch.contradicted);
+		json.key("trust_score");
 		size_t denom =
 			batch.supported + batch.contradicted + total_drifts;
-		if (denom > 0)
-			json << (static_cast<double>(batch.supported) /
-				 static_cast<double>(denom));
-		else if (batch.claims_count > 0)
-			json << "0.0"; // all claims unknown — not trustworthy
-		else
-			json << "1.0"; // no claims and no drifts — nothing to dispute
-		json << "}}";
+		if (denom > 0) {
+			json.value(static_cast<double>(batch.supported) /
+				   static_cast<double>(denom));
+		} else if (batch.claims_count > 0) {
+			// Literal "0.0": all claims unknown, not trustworthy.
+			json.raw("0.0");
+		} else {
+			// No claims and no drifts: nothing was checked, so the score
+			// carries no information. Reported as 1.0 for shape stability —
+			// `status: "no_claims"` above is what says so, and a reader must
+			// take the two together.
+			json.raw("1.0");
+		}
+		json.endObject();
+		json.endObject();
 		return dupString(json.str());
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_verify_summary] ") +
-			e.what() + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_verify_summary", e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_verify_summary] unknown exception\"}");
-	}
-}
-
-// engine_explain_module — return a Knowledge Card for a named module.
-//
-// Looks up the module by name (case-insensitive) in the modules table. If no
-// row exists, falls back to deriving module info from file paths so the tool
-// works on freshly-indexed projects where the modules table has not yet been
-// populated.
-//
-// Output JSON (Knowledge Card):
-//   {"module":"engine","summary":"...","entities":{"count":N,"sample":[...]},
-//    "capabilities":[...],"contracts":[...],"findings":[...],
-//    "integrity":92}
-// On error: {"error":"module not found","module":"<name>"}
-//
-// MEMORY: caller MUST free the returned char* via engine_free_string().
-// THREAD SAFETY: single-threaded (GraphStore writer invariant).
-extern "C" char *engine_explain_module(uint64_t project_id,
-				       const char *module_name)
-{
-	try {
-		if (!g_store)
-			return dupString(
-				"{\"error\":\"not initialized "
-				"[module=ffi, method=engine_explain_module]\"}");
-		if (!module_name || !*module_name)
-			return dupString(
-				"{\"error\":\"module_name is empty "
-				"[module=ffi, method=engine_explain_module]\"}");
-
-		std::string name(module_name);
-		std::string name_lower;
-		name_lower.reserve(name.size());
-		for (char c : name)
-			name_lower += static_cast<char>(
-				std::tolower(static_cast<unsigned char>(c)));
-
-		sqlite3 *db = g_store->handle();
-		if (!db)
-			return dupString(
-				"{\"error\":\"db not open "
-				"[module=ffi, method=engine_explain_module]\"}");
-
-		// Resolve module row (case-insensitive name match).
-		// No project_id filter: module names are globally unique in
-		// both serial (single project) and parallel (merged) products,
-		// and the MCP layer's restored project_id may differ from the
-		// owning module's project_id in parallel products.
-		std::string summary;
-		bool found = false;
-		{
-			const char *sql = "SELECT name FROM modules "
-					  "WHERE LOWER(name)=? "
-					  "LIMIT 1";
-			sqlite3_stmt *stmt = nullptr;
-			if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
-			    SQLITE_OK) {
-				sqlite3_bind_text(stmt, 1, name_lower.c_str(),
-						  -1, SQLITE_STATIC);
-				if (sqlite3_step(stmt) == SQLITE_ROW) {
-					found = true;
-					const char *n =
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(
-								stmt, 0));
-					if (n)
-						summary = "Module: " +
-							  std::string(n);
-				}
-				sqlite3_finalize(stmt);
-			}
-		}
-
-		// Fallback: derive module existence from file paths so the tool works
-		// even when the modules table is empty (e.g. freshly indexed project).
-		// Use "%/<name>/%" so paths with a leading "./" or a parent directory
-		// still match. The slashes prevent partial segment matches (e.g. a
-		// query for "engine" won't match "./my_engine/foo").
-		if (!found) {
-			// Build the LIKE pattern. The fallback targets files under
-			// `name`, so an absolute path (leading '/') must not gain a
-			// second slash: "%/" + "/Users/..." would produce
-			// "%//Users/..." which never matches a single-slash path.
-			// Relative module names keep the leading "/" to avoid
-			// partial-segment matches ("engine" vs "./my_engine").
-			std::string like = name[0] == '/' ? "%" + name + "/%" :
-							    "%/" + name + "/%";
-			const char *sql = "SELECT COUNT(*) FROM files "
-					  "WHERE path LIKE ?";
-			sqlite3_stmt *stmt = nullptr;
-			int count = 0;
-			if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
-			    SQLITE_OK) {
-				sqlite3_bind_text(stmt, 1, like.c_str(), -1,
-						  SQLITE_STATIC);
-				if (sqlite3_step(stmt) == SQLITE_ROW)
-					count = sqlite3_column_int(stmt, 0);
-				sqlite3_finalize(stmt);
-			}
-			if (count == 0) {
-				std::ostringstream j;
-				j << "{\"error\":\"module not found\",\"module\":\""
-				  << jsonEscape(name) << "\"}";
-				return dupString(j.str());
-			}
-			found = true;
-			summary = "Module derived from " +
-				  std::to_string(count) + " files under " +
-				  name + "/";
-		}
-
-		std::ostringstream json;
-		json << "{\"module\":\"" << jsonEscape(name) << "\","
-		     << "\"summary\":\"" << jsonEscape(summary) << "\",";
-
-		// Entities: count + sample (up to 10) for this module's files.
-		// Use the same "%/<name>/%" pattern as the fallback check above so
-		// paths with a leading "./" match consistently.
-		{
-			std::string like = "%/" + name + "/%";
-			// v0.2.5: read from the canonical `entity` table (the legacy
-			// graph_nodes table is empty in the canonical schema, so this
-			// previously always returned zero entities). entity.id
-			// preserves the legacy graph node identity.
-			std::string sql_str =
-				"SELECT name, kind, file_path FROM entity "
-				"WHERE file_path LIKE ? "
-				"ORDER BY id LIMIT " +
-				std::to_string(kEntitySampleLimit);
-			sqlite3_stmt *stmt = nullptr;
-			int total = 0;
-			// Count first
-			const char *csql = "SELECT COUNT(*) FROM entity "
-					   "WHERE file_path LIKE ?";
-			if (sqlite3_prepare_v2(db, csql, -1, &stmt, nullptr) ==
-			    SQLITE_OK) {
-				sqlite3_bind_text(stmt, 1, like.c_str(), -1,
-						  SQLITE_STATIC);
-				if (sqlite3_step(stmt) == SQLITE_ROW)
-					total = sqlite3_column_int(stmt, 0);
-				sqlite3_finalize(stmt);
-			}
-			json << "\"entities\":{\"count\":" << total
-			     << ",\"sample\":[";
-			if (sqlite3_prepare_v2(db, sql_str.c_str(), -1, &stmt,
-					       nullptr) == SQLITE_OK) {
-				sqlite3_bind_text(stmt, 1, like.c_str(), -1,
-						  SQLITE_STATIC);
-				bool first = true;
-				while (sqlite3_step(stmt) == SQLITE_ROW) {
-					if (!first)
-						json << ",";
-					first = false;
-					const char *n =
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(
-								stmt, 0));
-					int kind = sqlite3_column_int(stmt, 1);
-					const char *fp =
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(
-								stmt, 2));
-					json << "{\"name\":\""
-					     << jsonEscape(n ? n : "") << "\","
-					     << "\"kind\":" << kind << ","
-					     << "\"file_path\":\""
-					     << jsonEscape(fp ? fp : "")
-					     << "\"}";
-				}
-				sqlite3_finalize(stmt);
-			}
-			json << "]},";
-		}
-
-		// Capabilities
-		{
-			json << "\"capabilities\":[";
-			const char *sql =
-				"SELECT id, name, summary FROM capability "
-				"ORDER BY id";
-			sqlite3_stmt *stmt = nullptr;
-			if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
-			    SQLITE_OK) {
-				bool first = true;
-				while (sqlite3_step(stmt) == SQLITE_ROW) {
-					if (!first)
-						json << ",";
-					first = false;
-					int64_t id =
-						sqlite3_column_int64(stmt, 0);
-					const char *n =
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(
-								stmt, 1));
-					const char *s =
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(
-								stmt, 2));
-					json << "{\"id\":" << id << ","
-					     << "\"name\":\""
-					     << jsonEscape(n ? n : "") << "\","
-					     << "\"summary\":\""
-					     << jsonEscape(s ? s : "") << "\"}";
-				}
-				sqlite3_finalize(stmt);
-			}
-			json << "],";
-		}
-
-		// Contracts
-		{
-			json << "\"contracts\":[";
-			const char *sql =
-				"SELECT id, name, origin, claim_text FROM contract "
-				"ORDER BY id";
-			sqlite3_stmt *stmt = nullptr;
-			if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
-			    SQLITE_OK) {
-				bool first = true;
-				while (sqlite3_step(stmt) == SQLITE_ROW) {
-					if (!first)
-						json << ",";
-					first = false;
-					int64_t id =
-						sqlite3_column_int64(stmt, 0);
-					const char *n =
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(
-								stmt, 1));
-					const char *o =
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(
-								stmt, 2));
-					const char *c =
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(
-								stmt, 3));
-					json << "{\"id\":" << id << ","
-					     << "\"name\":\""
-					     << jsonEscape(n ? n : "") << "\","
-					     << "\"origin\":\""
-					     << jsonEscape(o ? o : "") << "\","
-					     << "\"claim_text\":\""
-					     << jsonEscape(c ? c : "") << "\"}";
-				}
-				sqlite3_finalize(stmt);
-			}
-			json << "],";
-		}
-
-		// Findings + integrity score
-		{
-			json << "\"findings\":[";
-			const char *sql =
-				"SELECT id, rule, severity, description, confidence "
-				"FROM finding ORDER BY id";
-			sqlite3_stmt *stmt = nullptr;
-			int sev2 = 0, sev1 = 0;
-			if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
-			    SQLITE_OK) {
-				bool first = true;
-				while (sqlite3_step(stmt) == SQLITE_ROW) {
-					if (!first)
-						json << ",";
-					first = false;
-					int64_t id =
-						sqlite3_column_int64(stmt, 0);
-					const char *r =
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(
-								stmt, 1));
-					int sev = sqlite3_column_int(stmt, 2);
-					const char *d =
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(
-								stmt, 3));
-					double conf =
-						sqlite3_column_double(stmt, 4);
-					json << "{\"id\":" << id << ","
-					     << "\"rule\":\""
-					     << jsonEscape(r ? r : "") << "\","
-					     << "\"severity\":" << sev << ","
-					     << "\"description\":\""
-					     << jsonEscape(d ? d : "") << "\","
-					     << "\"confidence\":" << conf
-					     << "}";
-					if (sev == 2)
-						sev2++;
-					else if (sev == 1)
-						sev1++;
-				}
-				sqlite3_finalize(stmt);
-			}
-			json << "],";
-			int integrity = kIntegrityMax -
-					kIntegritySev2Penalty * sev2 -
-					kIntegritySev1Penalty * sev1;
-			if (integrity < 0)
-				integrity = 0;
-			if (integrity > kIntegrityMax)
-				integrity = kIntegrityMax;
-			json << "\"integrity\":" << integrity << ",";
-		}
-
-		// Cross-module dependencies from the pre-computed module_edge table.
-		// Populated by the async knowledge builder after indexing. When the
-		// table is empty (e.g. async build not yet complete), both arrays are
-		// empty — the card still returns successfully.
-		json << "\"cross_module\":{";
-
-		// depends_on: modules that this module calls (outgoing edges).
-		{
-			json << "\"depends_on\":[";
-			const char *sql =
-				"SELECT tgt_module, edge_count "
-				"FROM module_edge "
-				"WHERE project_id=? AND src_module LIKE ? "
-				"ORDER BY edge_count DESC LIMIT ?";
-			sqlite3_stmt *stmt = nullptr;
-			if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
-			    SQLITE_OK) {
-				std::string like = "%/" + name + "/%";
-				sqlite3_bind_int64(
-					stmt, 1,
-					static_cast<int64_t>(project_id));
-				sqlite3_bind_text(stmt, 2, like.c_str(), -1,
-						  SQLITE_STATIC);
-				sqlite3_bind_int(stmt, 3,
-						 kCrossModuleEdgeLimit);
-				bool first = true;
-				while (sqlite3_step(stmt) == SQLITE_ROW) {
-					if (!first)
-						json << ",";
-					first = false;
-					const char *m =
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(
-								stmt, 0));
-					int64_t ec =
-						sqlite3_column_int64(stmt, 1);
-					json << "{\"module\":\""
-					     << jsonEscape(m ? m : "") << "\""
-					     << ",\"edge_count\":" << ec << "}";
-				}
-				sqlite3_finalize(stmt);
-			}
-			json << "],";
-		}
-
-		// depended_by: modules that call this module (incoming edges).
-		{
-			json << "\"depended_by\":[";
-			const char *sql =
-				"SELECT src_module, edge_count "
-				"FROM module_edge "
-				"WHERE project_id=? AND tgt_module LIKE ? "
-				"ORDER BY edge_count DESC LIMIT ?";
-			sqlite3_stmt *stmt = nullptr;
-			if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
-			    SQLITE_OK) {
-				std::string like = "%/" + name + "/%";
-				sqlite3_bind_int64(
-					stmt, 1,
-					static_cast<int64_t>(project_id));
-				sqlite3_bind_text(stmt, 2, like.c_str(), -1,
-						  SQLITE_STATIC);
-				sqlite3_bind_int(stmt, 3,
-						 kCrossModuleEdgeLimit);
-				bool first = true;
-				while (sqlite3_step(stmt) == SQLITE_ROW) {
-					if (!first)
-						json << ",";
-					first = false;
-					const char *m =
-						reinterpret_cast<const char *>(
-							sqlite3_column_text(
-								stmt, 0));
-					int64_t ec =
-						sqlite3_column_int64(stmt, 1);
-					json << "{\"module\":\""
-					     << jsonEscape(m ? m : "") << "\""
-					     << ",\"edge_count\":" << ec << "}";
-				}
-				sqlite3_finalize(stmt);
-			}
-			json << "]";
-		}
-
-		json << "}}";
-		return dupString(json.str());
-	} catch (const std::exception &e) {
-		return dupString(
-			std::string(
-				"{\"error\":\"[module=ffi, method=engine_explain_module] ") +
-			e.what() + "\"}");
-	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method=engine_explain_module] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_verify_summary", "unknown exception"));
 	}
 }
 
@@ -1160,9 +852,13 @@ extern "C" char *engine_explain_module(uint64_t project_id,
 //
 // MEMORY: caller MUST free the returned char* via engine_free_string().
 // THREAD SAFETY: single-threaded (GraphStore writer invariant).
-extern "C" char *engine_get_verifier_registry_status(uint64_t project_id)
+extern "C" char *engine_get_verifier_registry_status(engine_t handle,
+						     uint64_t project_id)
 {
+	EngineContext *ctx = engineInstance(handle);
+
 	try {
+		auto _store_guard = waitForKnowledgeBuilder();
 		// Idempotent: arms the registry if empty without relying on a
 		// static flag (Step 9.1 fix for lifecycle bug A15).
 		ensureVerifiersRegistered();
@@ -1189,47 +885,40 @@ extern "C" char *engine_get_verifier_registry_status(uint64_t project_id)
 		int64_t entity_count = 0;
 		int64_t relation_count = 0;
 		bool backend_ready = false;
-		if (g_store && project_id != 0) {
+		if (ctx->store && project_id != 0) {
 			backend_ready = verify::evidence_backend_ready(
-				g_store.get(), project_id, &entity_count,
+				ctx->store.get(), project_id, &entity_count,
 				&relation_count);
 		}
 
-		std::ostringstream j;
-		j << "{\"registry_empty\":" << (count == 0 ? "true" : "false")
-		  << ",\"verifier_count\":" << count << ",\"verifier_names\":[";
-		for (size_t i = 0; i < names.size(); ++i) {
-			if (i > 0)
-				j << ",";
-			j << "\"" << jsonEscape(names[i]) << "\"";
-		}
-		j << "],\"supported_claim_types\":[";
-		for (size_t i = 0; i < supported.size(); ++i) {
-			if (i > 0)
-				j << ",";
-			j << "\"" << verify::claimTypeWireName(supported[i])
-			  << "\"";
-		}
-		j << "],\"unsupported_claim_types\":[";
-		for (size_t i = 0; i < unsupported.size(); ++i) {
-			if (i > 0)
-				j << ",";
-			j << "\"" << verify::claimTypeWireName(unsupported[i])
-			  << "\"";
-		}
-		j << "],\"evidence_backend_ready\":"
-		  << (backend_ready ? "true" : "false")
-		  << ",\"entity_count\":" << entity_count
-		  << ",\"relation_count\":" << relation_count << "}";
+		util::JsonWriter j;
+		j.beginObject();
+		j.key("registry_empty").value(count == 0);
+		j.key("verifier_count").value(count);
+		j.key("verifier_names").beginArray();
+		for (const auto &name : names)
+			j.value(name);
+		j.endArray();
+		j.key("supported_claim_types").beginArray();
+		for (auto t : supported)
+			j.value(verify::claimTypeWireName(t));
+		j.endArray();
+		j.key("unsupported_claim_types").beginArray();
+		for (auto t : unsupported)
+			j.value(verify::claimTypeWireName(t));
+		j.endArray();
+		j.key("evidence_backend_ready").value(backend_ready);
+		j.key("entity_count").value(entity_count);
+		j.key("relation_count").value(relation_count);
+		j.endObject();
 		return dupString(j.str());
 	} catch (const std::exception &e) {
-		return dupString(
-			std::string("{\"error\":\"[module=ffi, method="
-				    "engine_get_verifier_registry_status] ") +
-			e.what() + "\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_verifier_registry_status",
+			e.what()));
 	} catch (...) {
-		return dupString(
-			"{\"error\":\"[module=ffi, method="
-			"engine_get_verifier_registry_status] unknown exception\"}");
+		return dupString(util::errorEnvelope(
+			"ffi", "engine_get_verifier_registry_status",
+			"unknown exception"));
 	}
 }

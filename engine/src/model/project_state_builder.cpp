@@ -24,6 +24,7 @@
 // omits the corresponding key (or sets its score to a default).
 
 #include "project_state_builder.h"
+#include "util/json_writer.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -38,6 +39,7 @@
 #include <vector>
 
 #include "../evidence/evidence_builder.h"
+#include "../evidence/rule.h"
 #include "../store/store.h"
 
 namespace model
@@ -93,37 +95,7 @@ std::string colText(sqlite3_stmt *stmt, int col)
 // Mirrors the jsonEscape helper used across the engine.
 std::string escapeJson(const std::string &s)
 {
-	std::string out;
-	out.reserve(s.size() + 8);
-	for (char c : s) {
-		switch (c) {
-		case '"':
-			out += "\\\"";
-			break;
-		case '\\':
-			out += "\\\\";
-			break;
-		case '\n':
-			out += "\\n";
-			break;
-		case '\r':
-			out += "\\r";
-			break;
-		case '\t':
-			out += "\\t";
-			break;
-		default:
-			if (static_cast<unsigned char>(c) < 0x20) {
-				char buf[8];
-				std::snprintf(buf, sizeof(buf), "\\u%04x",
-					      static_cast<unsigned char>(c));
-				out += buf;
-			} else {
-				out += c;
-			}
-		}
-	}
-	return out;
+	return util::jsonEscapeString(s);
 }
 
 // Format a double as a JSON number with up to 4 decimal places.
@@ -321,22 +293,35 @@ int64_t countVerifiedCapabilities(store::GraphStore *store, uint64_t project_id)
 	return count;
 }
 
-// Sum architecture_state.violations for a project. Returns 0 on
-// error or empty table.
-int64_t sumArchitectureViolations(store::GraphStore *store, uint64_t project_id)
+// Sum one architecture_state column for a project. `column` is chosen by
+// the callers below (never client input) AND checked against an allowlist,
+// because it is interpolated into the SQL — together the two keep this a
+// constant query. Returns 0 on error or empty table.
+static int64_t sumArchitectureColumn(store::GraphStore *store,
+				     uint64_t project_id, const char *column)
 {
-	if (!store || !store->handle())
-		return 0;
-	const char *sql = "SELECT COALESCE(SUM(violations), 0) "
-			  "FROM architecture_state WHERE project_id = ?";
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(store->handle(), sql, -1, &stmt, nullptr) !=
-	    SQLITE_OK) {
+	if (std::strcmp(column, "violations") != 0 &&
+	    std::strcmp(column, "cross_module_edges") != 0) {
 		std::fprintf(
 			stderr,
-			"[module=project_state, method=sumArchitectureViolations] "
-			"prepare failed: %s\n",
-			sqlite3_errmsg(store->handle()));
+			"[module=project_state, method=sumArchitectureColumn] "
+			"refusing non-allowlisted column '%s'\n",
+			column);
+		return 0;
+	}
+	if (!store || !store->handle())
+		return 0;
+	const std::string sql = std::string("SELECT COALESCE(SUM(") + column +
+				"), 0) FROM architecture_state "
+				"WHERE project_id = ?";
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(store->handle(), sql.c_str(), -1, &stmt,
+			       nullptr) != SQLITE_OK) {
+		std::fprintf(
+			stderr,
+			"[module=project_state, method=sumArchitectureColumn] "
+			"prepare failed for column '%s': %s\n",
+			column, sqlite3_errmsg(store->handle()));
 		return 0;
 	}
 	StmtGuard guard(stmt);
@@ -346,6 +331,24 @@ int64_t sumArchitectureViolations(store::GraphStore *store, uint64_t project_id)
 		count = sqlite3_column_int64(stmt, 0);
 	}
 	return count;
+}
+
+// Sum architecture_state.violations for a project. Returns 0 on error or
+// empty table. Always 0 today: calling a cross-module dependency a violation
+// needs a layer model, which this graph does not carry — see
+// StateBuilder::buildArchitectureState.
+int64_t sumArchitectureViolations(store::GraphStore *store, uint64_t project_id)
+{
+	return sumArchitectureColumn(store, project_id, "violations");
+}
+
+// Sum architecture_state.cross_module_edges: how many call edges cross a
+// module boundary, summed over the tracked module pairs. This is a
+// dependency count, NOT a violation count.
+int64_t sumArchitectureCrossModuleEdges(store::GraphStore *store,
+					uint64_t project_id)
+{
+	return sumArchitectureColumn(store, project_id, "cross_module_edges");
 }
 
 // Sum workflow_state.steps_done and steps_total across all workflows
@@ -521,17 +524,6 @@ bool upsertProjectState(store::GraphStore *store, uint64_t project_id,
 	return true;
 }
 
-// Resolve the rules directory from CODESCOPE_RULES_DIR env var, or
-// fall back to the default relative path "engine/src/evidence/rules".
-// Mirrors the fallback used in engine_evidence_ffi.cpp.
-std::string resolveRulesDir()
-{
-	const char *env_dir = std::getenv("CODESCOPE_RULES_DIR");
-	if (env_dir && *env_dir)
-		return std::string(env_dir);
-	return "engine/src/evidence/rules";
-}
-
 } // namespace
 
 // ─── ProjectStateBuilder public API ──────────────────────────────
@@ -546,7 +538,7 @@ bool ProjectStateBuilder::build(uint64_t project_id)
 
 	// 1. Run evidence::EvidenceBuilder::buildAll to get all evidence.
 	evidence::EvidenceBuilder ev_builder(store_);
-	ev_builder.loadRules(resolveRulesDir());
+	ev_builder.loadRules(evidence::resolveRulesDir());
 	auto evidences = ev_builder.buildAll(project_id);
 
 	// 2. Aggregate evidence by category (count + titles).
@@ -594,6 +586,8 @@ bool ProjectStateBuilder::build(uint64_t project_id)
 	int64_t capability_verified =
 		countVerifiedCapabilities(store_, project_id);
 	int64_t arch_violations = sumArchitectureViolations(store_, project_id);
+	int64_t arch_cross_module =
+		sumArchitectureCrossModuleEdges(store_, project_id);
 	int64_t workflow_total =
 		countRows(store_,
 			  "SELECT COUNT(*) FROM workflow_state "
@@ -607,7 +601,10 @@ bool ProjectStateBuilder::build(uint64_t project_id)
 	double confidence =
 		computeOverallConfidence(agg, arch_violations, dead_entities);
 
-	// Architecture score = 1 - violations * penalty (clamped).
+	// Architecture score = 1 - violations * penalty (clamped). `violations`
+	// counts only real layer violations, so a project is no longer penalised
+	// for having cross-module dependencies; those are reported as
+	// cross_module_edges alongside the score.
 	double arch_score = 1.0 - kPenaltyPerArchitectureViolation *
 					  static_cast<double>(arch_violations);
 	if (arch_score < 0.0)
@@ -689,7 +686,8 @@ bool ProjectStateBuilder::build(uint64_t project_id)
 
 	// architecture
 	ss << ",\"architecture\":{\"score\":" << fmtDouble(arch_score)
-	   << ",\"violations\":" << arch_violations << "}";
+	   << ",\"violations\":" << arch_violations
+	   << ",\"cross_module_edges\":" << arch_cross_module << "}";
 
 	// workflow
 	ss << ",\"workflow\":{\"score\":" << fmtDouble(workflow_score)

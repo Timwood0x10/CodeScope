@@ -1,7 +1,13 @@
 # CodeScope Deep Dive (7): Verification Pipeline — Claim → Evidence → Verdict
 
 > *"The most dangerous assumption in software engineering is that the code matches the docs."*
-> 软件工程中最危险的假设，就是认为代码和文档是一致的。
+
+> **Historical note (2026-10-01)**: the storage layer moved on after this
+> article. The canonical tables are `entity` (symbols) and `relation` (edges),
+> `graph_nodes` is no longer populated, and full-text search lives in `code_fts`
+> + `name_trgm`. See `docs/en/technical_breakdown.md` §4.1 for the current
+> schema. LadybugDB was removed from the product as well; where the text below
+> names it, it is history rather than a supported path.
 
 ## The Problem: How to Keep Code and Docs in Sync?
 

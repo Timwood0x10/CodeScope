@@ -1,6 +1,9 @@
 #include "state_builder.h"
+#include "../verify/capability_verifier.h"
 #include <cstdio>
 #include <sstream>
+#include <string>
+#include <vector>
 #include <sqlite3.h>
 
 namespace model
@@ -24,14 +27,15 @@ int64_t StateBuilder::buildModuleSummaries()
 	//   - pub_count:      COUNT of entity.visibility=1 (pub/public/export)
 	//                     in the module — distinguishes "对外接口层" from
 	//                     "内部实现层", a signal the call graph cannot give.
-	//   - entry_reachable: MAX(graph_nodes.is_entry_point) — does this
-	//                     module contain a main/init/setup/run/handler?
-	// Rules match by PRIORITY (first hit stops, see role_classifier_plan.md).
-	// Split the aggregate and the graph_nodes entry_reachable scan into
-	// two CTEs. A single 6-table LEFT JOIN that combined the three
-	// relation joins with graph_nodes made SQLite build four COUNT(DISTINCT)
+	//   - entry_reachable: does this module contain a main/init entity?
+	//                     Derived from the canonical entity.name/language
+	//                     columns (see the entry CTE below).
+	// Rules match by PRIORITY (first hit stops).
+	// Split the aggregate and the entry_reachable scan into two CTEs. A
+	// single 6-table LEFT JOIN that combined the three relation joins
+	// with the entry scan made SQLite build four COUNT(DISTINCT)
 	// temp B-trees over a blown-up intermediate result (~29s on a 26k-node
-	// Go tree). Isolating the graph_nodes join into its own CTE — joined
+	// Go tree). Isolating the entry scan into its own CTE — joined
 	// only on module_id after both aggregates finish — drops the cost to
 	// <0.2s with identical results. INDEXED BY forces the right index for
 	// each relation join; SQLite otherwise picks idx_relation_unique_typed
@@ -71,19 +75,52 @@ int64_t StateBuilder::buildModuleSummaries()
 		"  WHERE s.kind = 1 AND s.project_id = ? "
 		"  GROUP BY s.id, s.name "
 		"), entry AS ("
+		// Entry-point reachability is derived from the canonical
+		// entity.name + entity.language columns. The previous version
+		// read graph_nodes.is_entry_point, but graph_nodes has not been
+		// written since the canonical-schema migration, so
+		// entry_reachable was always 0 and the 'entry' role in the CASE
+		// below could never fire. The name/language predicate mirrors
+		// graph::isEntryPointName (graph_builder.cpp) so the SQL path and
+		// the in-memory graph path agree on what an entry point is.
 		"  SELECT s.id AS module_id, "
-		"    MAX(COALESCE(gn.is_entry_point, 0)) AS entry_reachable "
+		"    MAX(CASE WHEN "
+		"      (e.name = 'main' AND e.language IN "
+		"        ('c', 'cpp', 'c++', 'go', 'rust')) "
+		"      OR (e.name = 'init' AND e.language = 'go') "
+		"      THEN 1 ELSE 0 END) AS entry_reachable "
 		"  FROM scope s "
 		"  JOIN entity e ON e.project_id = ? AND e.module_path = s.name "
-		"  LEFT JOIN graph_nodes gn ON gn.project_id = ? "
-		"    AND gn.name = e.name AND gn.file_path = e.file_path "
 		"  WHERE s.kind = 1 AND s.project_id = ? "
 		"  GROUP BY s.id "
+		"), intra AS ("
+		// Internal coupling: call edges whose source AND target entity both
+		// live in this module. Keyed by module_path — the same column the agg
+		// CTE joins scope.name on — so it is one grouped scan instead of a
+		// correlated subquery per module. Self-loops are excluded for the
+		// same reason the incoming/outgoing counts above exclude them: an
+		// entity calling itself is not a dependency between two entities.
+		// The column has always existed (NOT NULL DEFAULT 0) but this INSERT
+		// passed a literal 0, so every module reported zero internal coupling
+		// whatever the call graph said — measured on goagent (131 modules,
+		// 24206 call edges) and on this repository.
+		"  SELECT se.module_path AS module_path, "
+		"    COUNT(*) AS internal "
+		"  FROM relation r2 "
+		"  JOIN entity se ON se.id = r2.source_id "
+		"  JOIN entity te ON te.id = r2.target_id "
+		"  WHERE r2.project_id = ? AND se.project_id = ? "
+		"    AND te.project_id = ? "
+		"    AND se.module_path = te.module_path "
+		"    AND se.module_path != '' "
+		"    AND r2.source_id != r2.target_id "
+		"  GROUP BY se.module_path "
 		") "
 		"INSERT OR REPLACE INTO module_summary "
 		"(project_id, module_id, state, incoming_count, outgoing_count, "
 		" internal_edges, dead_entities, utilization, confidence, role) "
-		"SELECT ?, agg.module_id, 0, incoming, outgoing, 0, dead, "
+		"SELECT ?, agg.module_id, 0, incoming, outgoing, "
+		"  COALESCE(intra.internal, 0), dead, "
 		"  CASE WHEN total > 0 "
 		"    THEN 1.0 - CAST(dead AS REAL) / total ELSE 0.0 END, "
 		"  0.85, "
@@ -137,6 +174,7 @@ int64_t StateBuilder::buildModuleSummaries()
 		// Priority 8: infra — true fallback
 		"    ELSE 'infra' END "
 		"FROM agg LEFT JOIN entry ON entry.module_id = agg.module_id "
+		"LEFT JOIN intra ON intra.module_path = agg.module_name "
 		"WHERE agg.total >= 3";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), sql.c_str(), -1, &stmt,
@@ -147,8 +185,12 @@ int64_t StateBuilder::buildModuleSummaries()
 			sqlite3_errmsg(store_->handle()));
 		return -1;
 	}
-	// Bind order: agg (4) + entry (3) + SELECT (1) = 8 ? params.
-	for (int i = 1; i <= 8; i++)
+	// Bind order: agg (4) + entry (2) + intra (3) + SELECT (1) = 10 params.
+	// entry previously contributed 3 (one per graph_nodes/scope/entity
+	// project filter); the deprecated graph_nodes join is gone, so the
+	// entry CTE now filters project_id twice. intra filters the relation
+	// plus its source and target entities.
+	for (int i = 1; i <= 10; i++)
 		sqlite3_bind_int64(stmt, i, static_cast<int64_t>(project_id_));
 
 	int rc = sqlite3_step(stmt);
@@ -165,97 +207,176 @@ int64_t StateBuilder::buildModuleSummaries()
 
 int64_t StateBuilder::buildCapabilityState()
 {
-	// Single INSERT...SELECT with a recursive CTE to derive the
-	// capability name. The CTE scans each matched entity name and finds
-	// the first position >= 2 where an uppercase letter is followed by
-	// a lowercase letter — i.e. the start of a new CamelCase word. The
-	// capability name is the prefix before that position.
+	// capability_state is the snapshot build_project_state reports as
+	// project_state.capability (total / verified). It answers the same question
+	// detect_capability_drift and verify_claim answer, so it asks the same
+	// implementation: verify::implementingEntitiesFor, the one place the rule
+	// lives. This builder used to restate the rule in SQL ("model/ cannot
+	// include verify/") and the two copies drifted — the restated arm floored
+	// the raw entity name where the verifier floors the normalised one, so one
+	// capability read 'Implemented' here and 'Contradicted' there — and before
+	// that the rows came from a naming heuristic (Auth%/Login%/JWT%/…, every
+	// hit 'Implemented' without consulting the call graph), which is why goagent
+	// reported 19 capabilities against the 7 its README declares.
 	//
-	// Acronym handling: a run of uppercase letters like "JWT" in
-	// "JWTValidator" must be treated as ONE word, not three. The
-	// previous CTE matched ANY uppercase letter at pos >= 2, so for
-	// "JWTValidator" it found pos=2 ('W') and returned substr(name,1,1)
-	// = "J" — truncating the acronym to its first letter. Requiring
-	// next_ch GLOB '[a-z]' skips the W and T (followed by uppercase),
-	// finds 'V' at pos=4 (followed by 'a'), and returns "JWT".
-	// For "AuthValidator" the rule still finds 'V' at pos=5 and
-	// returns "Auth".
-	std::string sql =
-		"INSERT OR IGNORE INTO capability_state "
-		"(project_id, name, state) "
-		"WITH RECURSIVE "
-		"matched(name) AS ("
-		"  SELECT name FROM entity "
-		"  WHERE project_id = ? AND kind = 0"
-		"    AND (name LIKE 'Auth%' OR name LIKE 'Login%'"
-		"     OR name LIKE 'JWT%' OR name LIKE 'Token%'"
-		"     OR name LIKE 'Rate%' OR name LIKE 'Cache%'"
-		"     OR name LIKE 'Log%' OR name LIKE 'Metric%'"
-		"     OR name LIKE 'Health%' OR name LIKE 'Config%')"
-		"  LIMIT 50"
-		"), "
-		// scan carries the current char (ch) and the next char
-		// (next_ch) so the word-boundary filter can require an
-		// uppercase letter followed by a lowercase letter. substr
-		// returns '' past end-of-string, and '' GLOB '[a-z]' is 0,
-		// so a trailing uppercase letter is correctly rejected.
-		"scan(name, pos, ch, next_ch) AS ("
-		"  SELECT name, 2, substr(name, 2, 1), substr(name, 3, 1) "
-		"  FROM matched "
-		"  WHERE length(name) >= 2 "
-		"  UNION ALL "
-		"  SELECT name, pos + 1, "
-		"    substr(name, pos + 1, 1), substr(name, pos + 2, 1) "
-		"  FROM scan "
-		"  WHERE pos < length(name)"
-		") "
-		"SELECT ?, "
-		"  CASE "
-		"    WHEN fu.pos IS NOT NULL "
-		"      THEN substr(m.name, 1, fu.pos - 1) "
-		"    ELSE m.name END, "
-		"  'Implemented' "
-		"FROM matched m "
-		"LEFT JOIN ("
-		"  SELECT name, MIN(pos) AS pos FROM scan "
-		// Word boundary: uppercase followed by lowercase. This skips
-		// intra-acronym uppercase letters (e.g. 'W','T' in "JWT")
-		// because they are followed by another uppercase letter.
-		"  WHERE ch GLOB '[A-Z]' AND next_ch GLOB '[a-z]' "
-		"  GROUP BY name"
-		") fu ON fu.name = m.name";
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(store_->handle(), sql.c_str(), -1, &stmt,
+	// Including verify/ from here is not a layering violation:
+	// engine/CMakeLists.txt builds ONE static library (astgraph_engine) from all
+	// of engine/src, and verify/ includes only store/, so there is no cycle. The
+	// old note that treated this include as impossible is what forced the second
+	// copy, and a six-arm SQL predicate maintained twice is how the drift got in.
+	// capability_drift.cpp delegates to the same function for the same reason.
+	//
+	// Rows come from the DECLARED capabilities (the `capability` table, filled
+	// from the project README by the knowledge builder). 'Declared' means the
+	// evidence chain is incomplete, which is exactly what the verifier reports
+	// as Contradicted.
+	//
+	// Rebuild idempotently: capability_state has no UNIQUE(project_id, name), so
+	// an INSERT without this DELETE appended a second copy of every row on each
+	// rebuild (each enhance / build_project_state) and inflated
+	// project_state.capability.total by the number of runs.
+	{
+		const std::string del =
+			"DELETE FROM capability_state WHERE project_id=" +
+			std::to_string(project_id_);
+		if (!store_->exec(del.c_str())) {
+			fprintf(stderr,
+				"[module=state_builder, method=buildCapabilityState] "
+				"delete failed: %s\n",
+				store_->error().c_str());
+			return -1;
+		}
+	}
+
+	// The declared capability names.
+	std::vector<std::string> declared;
+	{
+		const char *names_sql = "SELECT name FROM capability "
+					"WHERE project_id = ? ORDER BY name";
+		sqlite3_stmt *names_st = nullptr;
+		if (sqlite3_prepare_v2(store_->handle(), names_sql, -1,
+				       &names_st, nullptr) != SQLITE_OK) {
+			fprintf(stderr,
+				"[module=state_builder, method=buildCapabilityState] "
+				"prepare capability names failed: %s\n",
+				sqlite3_errmsg(store_->handle()));
+			return -1;
+		}
+		sqlite3_bind_int64(names_st, 1,
+				   static_cast<int64_t>(project_id_));
+		while (sqlite3_step(names_st) == SQLITE_ROW) {
+			const char *name = reinterpret_cast<const char *>(
+				sqlite3_column_text(names_st, 0));
+			if (name)
+				declared.emplace_back(name);
+		}
+		sqlite3_finalize(names_st);
+	}
+
+	const char *insert_sql =
+		"INSERT INTO capability_state (project_id, name, state) "
+		"VALUES (?,?,?)";
+	sqlite3_stmt *insert_st = nullptr;
+	if (sqlite3_prepare_v2(store_->handle(), insert_sql, -1, &insert_st,
 			       nullptr) != SQLITE_OK) {
 		fprintf(stderr,
 			"[module=state_builder, method=buildCapabilityState] "
-			"prepare failed: %s\n",
+			"prepare insert failed: %s\n",
 			sqlite3_errmsg(store_->handle()));
 		return -1;
 	}
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id_));
-	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id_));
 
-	int rc = sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-	if (rc != SQLITE_DONE) {
-		fprintf(stderr,
-			"[module=state_builder, method=buildCapabilityState] "
-			"step failed (rc=%d): %s\n",
-			rc, sqlite3_errmsg(store_->handle()));
-		return -1;
+	int64_t written = 0;
+	for (const std::string &name : declared) {
+		bool ok = false;
+		const std::vector<int64_t> implementing =
+			verify::implementingEntitiesFor(store_, project_id_,
+							name, ok);
+		if (!ok) {
+			// The shared rule's query failed. Writing 'Declared' here would turn
+			// an infrastructure failure into a product verdict, which is the
+			// silent error its contract forbids (code_rules §1).
+			fprintf(stderr,
+				"[module=state_builder, method=buildCapabilityState] "
+				"implementingEntitiesFor failed for \"%s\"\n",
+				name.c_str());
+			sqlite3_finalize(insert_st);
+			return -1;
+		}
+		sqlite3_bind_int64(insert_st, 1,
+				   static_cast<int64_t>(project_id_));
+		sqlite3_bind_text(insert_st, 2, name.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_text(insert_st, 3,
+				  implementing.empty() ? "Declared" :
+							 "Implemented",
+				  -1, SQLITE_STATIC);
+		const int rc = sqlite3_step(insert_st);
+		if (rc != SQLITE_DONE) {
+			fprintf(stderr,
+				"[module=state_builder, method=buildCapabilityState] "
+				"insert failed for \"%s\" (rc=%d): %s\n",
+				name.c_str(), rc,
+				sqlite3_errmsg(store_->handle()));
+			sqlite3_finalize(insert_st);
+			return -1;
+		}
+		sqlite3_reset(insert_st);
+		++written;
 	}
-	return sqlite3_changes(store_->handle());
+	sqlite3_finalize(insert_st);
+	return written;
 }
 
 int64_t StateBuilder::buildWorkflowState()
 {
-	// Single INSERT...SELECT replaces the per-row prepare/step/finalize
-	// loop.
+	// Clear previous rows so a rebuild is idempotent (rename-safe).
+	// INSERT OR IGNORE without a DELETE left stale workflow names behind
+	// after a rename and double-counted on every enhance.
+	if (!store_->exec(
+		    (std::string(
+			     "DELETE FROM workflow_state WHERE project_id=") +
+		     std::to_string(project_id_))
+			    .c_str())) {
+		fprintf(stderr,
+			"[module=state_builder, method=buildWorkflowState] "
+			"delete failed: %s\n",
+			store_->error().c_str());
+		return -1;
+	}
+	// Derive step counts from the call graph instead of hardcoding
+	// (5, 2), which fabricated a 0.4 progress score for every workflow.
+	//   steps_total = outgoing Calls from the workflow entry
+	//   steps_done  = those callees that themselves have a caller
+	//                 (wired into the graph, not just declared)
 	std::string sql =
-		"INSERT OR IGNORE INTO workflow_state "
+		"INSERT INTO workflow_state "
 		"(project_id, name, state, steps_total, steps_done) "
-		"SELECT DISTINCT ?, e.name, 'Partial', 5, 2 "
+		"SELECT DISTINCT ?, e.name, "
+		" CASE WHEN (SELECT COUNT(*) FROM relation rt "
+		"  WHERE rt.project_id = e.project_id AND rt.source_id = e.id "
+		"  AND rt.type = 1) = 0 THEN 'Empty' "
+		"  WHEN (SELECT COUNT(DISTINCT rt.target_id) FROM relation rt "
+		"   WHERE rt.project_id = e.project_id AND rt.source_id = e.id "
+		"   AND rt.type = 1 AND EXISTS ("
+		"    SELECT 1 FROM relation rin "
+		"    WHERE rin.project_id = e.project_id "
+		"    AND rin.target_id = rt.target_id AND rin.type = 1"
+		"    AND rin.source_id != e.id)) "
+		"   >= (SELECT COUNT(*) FROM relation rt "
+		"       WHERE rt.project_id = e.project_id AND rt.source_id = e.id "
+		"       AND rt.type = 1) THEN 'Done' "
+		"  ELSE 'Partial' END, "
+		" (SELECT COUNT(*) FROM relation rt "
+		"  WHERE rt.project_id = e.project_id AND rt.source_id = e.id "
+		"  AND rt.type = 1), "
+		" (SELECT COUNT(DISTINCT rt.target_id) FROM relation rt "
+		"  WHERE rt.project_id = e.project_id AND rt.source_id = e.id "
+		"  AND rt.type = 1 AND EXISTS ("
+		"   SELECT 1 FROM relation rin "
+		"   WHERE rin.project_id = e.project_id "
+		"   AND rin.target_id = rt.target_id AND rin.type = 1"
+		"   AND rin.source_id != e.id)) "
 		"FROM entity e "
 		"JOIN relation r ON r.project_id = ? AND r.target_id = e.id "
 		"JOIN entity caller ON r.source_id = caller.id "
@@ -292,39 +413,54 @@ int64_t StateBuilder::buildWorkflowState()
 
 int64_t StateBuilder::buildArchitectureState()
 {
-	// Count architecture violations per layer pair directly from
-	// architecture_edge, without re-joining entity/relation tables.
+	// Record cross-module dependency counts. This is a COUNT of call edges
+	// that cross a module boundary — NOT a violation count, and NOT a layer
+	// check.
+	//
+	// ArchitecturePlugin (model/plugins/architecture.cpp) writes one
+	// architecture_edge row per (caller module, callee module) pair with no
+	// layer model and no direction test: callee_module / caller_module hold MODULE
+	// NAMES, not layer names. Counting those rows as `violations` with
+	// compliance = 0.0 therefore reported every normal cross-module dependency
+	// as an architecture violation, and pushed the architecture score down in
+	// proportion to how interconnected the project is.
+	//
+	// The count is real information, so it is kept — under its own column.
+	// `violations` stays 0 and compliance stays 1.0 because nothing here can
+	// tell a violation from a dependency. `layer` keeps the "a->b" module-pair
+	// key (the column predates this distinction).
 	//
 	// The original query did a 4-table JOIN (architecture_edge × entity ×
 	// relation × entity) with non-sargable `file_path LIKE '%layer%'`
-	// filters, costing ~25s for 110k architecture_edge rows. Even with
-	// sargable `module_path LIKE 'layer%'` and indexes on
-	// relation(project_id, target_id), the JOIN cardinality (110k edges ×
-	// N relations per target) made it prohibitively slow.
-	//
-	// This simplification is SAFE because architecture_edge rows are
-	// already validated cross-module calls: ArchitecturePlugin (see
-	// model/plugins/architecture.cpp) creates each row ONLY when a real
-	// call edge crosses from layer_lower to layer_upper, using the same
-	// pathStartsWithCI membership test that the LIKE filters re-checked.
-	// The relation JOIN was therefore redundant validation.
-	//
-	// Accuracy: the layer pairs, compliance flags (0.0 when violations >
-	// 0), ORDER BY, and LIMIT are IDENTICAL to the original. The
-	// violation COUNT differs in magnitude (counts architecture_edge rows
-	// instead of architecture_edge × relation rows) but preserves
-	// relative ordering — more cross-module calls per layer pair
-	// produces a proportionally higher count.
-	std::string sql = "INSERT OR IGNORE INTO architecture_state "
-			  "(project_id, layer, violations, compliance) "
-			  "SELECT ?, ae.layer_lower || '->' || ae.layer_upper, "
-			  "  COUNT(*), "
-			  "  CASE WHEN COUNT(*) > 0 THEN 0.0 ELSE 1.0 END "
-			  "FROM architecture_edge ae "
-			  "WHERE ae.project_id = ? "
-			  "GROUP BY ae.layer_lower, ae.layer_upper "
-			  "HAVING COUNT(*) > 0 "
-			  "ORDER BY COUNT(*) DESC LIMIT 10";
+	// filters, costing ~25s for 110k architecture_edge rows. Reading the
+	// counts straight from architecture_edge avoids that JOIN: the rows are
+	// already cross-module call edges.
+	{
+		// Rebuild idempotently. INSERT OR IGNORE cannot dedupe here — the
+		// table has no UNIQUE(project_id, layer) — so re-running the builder
+		// would accumulate a second copy of every row and double every count.
+		const std::string del =
+			"DELETE FROM architecture_state WHERE project_id=" +
+			std::to_string(project_id_);
+		if (!store_->exec(del.c_str())) {
+			fprintf(stderr,
+				"[module=state_builder, method=buildArchitectureState] "
+				"delete failed: %s\n",
+				store_->error().c_str());
+			return -1;
+		}
+	}
+	std::string sql =
+		"INSERT INTO architecture_state "
+		"(project_id, layer, violations, cross_module_edges, "
+		" compliance) "
+		"SELECT ?, ae.caller_module || '->' || ae.callee_module, "
+		"  0, COUNT(*), 1.0 "
+		"FROM architecture_edge ae "
+		"WHERE ae.project_id = ? "
+		"GROUP BY ae.callee_module, ae.caller_module "
+		"HAVING COUNT(*) > 0 "
+		"ORDER BY COUNT(*) DESC LIMIT 10";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(store_->handle(), sql.c_str(), -1, &stmt,
 			       nullptr) != SQLITE_OK) {

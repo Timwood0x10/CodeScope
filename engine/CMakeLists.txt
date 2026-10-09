@@ -2,12 +2,12 @@ cmake_minimum_required(VERSION 3.30)
 project(astgraph_engine VERSION 0.1.0 LANGUAGES C CXX)
 
 # ── Build Optimization ───────────────────────────────────────────
-if(NOT CMAKE_GENERATOR)
-    find_program(NINJA ninja)
-    if(NINJA)
-        set(CMAKE_GENERATOR "Ninja" CACHE STRING "Build generator")
-    endif()
-endif()
+# NOTE: the generator is chosen by the CALLER, not here. CMake sets
+# CMAKE_GENERATOR itself before this file is processed, so
+# `set(CMAKE_GENERATOR ... CACHE ...)` is a no-op and a project cannot switch
+# generators. Selection lives in the Makefile (engine/build) and
+# server/build.rs (engine/build-release*); both reuse the generator recorded
+# in an existing CMakeCache.txt and only pick Ninja for a fresh tree.
 find_program(CCACHE_PROGRAM ccache)
 if(CCACHE_PROGRAM)
     # Cache BOTH C and C++ — the heavy translation units (sqlite3.c,
@@ -174,7 +174,9 @@ message(STATUS "sqlite-vec: source at ${SQLITE_VEC_SRC}")
 set(ENGINE_SOURCES
     ${GRAMMAR_SOURCES}
     src/engine.cpp
+    src/engine_context.cpp
     src/engine_helpers.cpp
+    src/util/json_writer.cpp
     src/engine_lifecycle.cpp
     src/engine_index.cpp
     src/engine_index_project.cpp
@@ -182,12 +184,18 @@ set(ENGINE_SOURCES
     src/engine_index_sched.cpp
     src/engine_index_discover.cpp
         src/engine_index_project_membulk.cpp
-        src/engine_index_post_parse.cpp
+        src/post_parse_phase.cpp
         src/engine_index_metrics.cpp
     src/engine_scanner.cpp
     src/engine_queries.cpp
+    src/engine_queries_status.cpp
+    src/engine_queries_context.cpp
     src/engine_ffi.cpp
+    src/engine_filter_ffi.cpp
+    src/engine_ffi_index.cpp
+    src/engine_ffi_graph.cpp
     src/engine_verify_ffi.cpp
+    src/engine_verify_explain.cpp
     src/engine_verify_drift_ffi.cpp
     src/parser/parser.cpp
     src/ir/ir.cpp
@@ -196,6 +204,8 @@ set(ENGINE_SOURCES
     src/ir/semantic_unit.cpp
     src/ir/semantic_emitter.cpp
     src/ir/builtin_registry.cpp
+    src/ir/builtin_registry_systems.cpp
+    src/ir/builtin_registry_app.cpp
     src/ir/translators/python_translator.cpp
     src/ir/translators/go_translator.cpp
     src/ir/translators/c_translator.cpp
@@ -204,27 +214,34 @@ set(ENGINE_SOURCES
     src/ir/translators/javascript_translator.cpp
     src/ir/translators/typescript_translator.cpp
     src/ir/translators/js_visitor.cpp
+    src/ir/translators/js_visitor_calls.cpp
+    src/ir/translators/js_visitor_defined_names.cpp
     src/ir/translators/ts_visitor.cpp
     src/ir/translators/tsx_visitor.cpp
     src/ir/translators/c_visitor.cpp
     src/ir/translators/cpp_visitor.cpp
     src/ir/translators/go_visitor.cpp
+    src/ir/translators/go_visitor_calls.cpp
     src/ir/translators/python_visitor.cpp
     src/ir/translators/rust_visitor.cpp
     src/ir/translators/java_visitor.cpp
     src/ir/translators/java_translator.cpp
-    src/ir/translators/scanner_visitor.cpp
     src/ir/translators/tsx_translator.cpp
     src/graph/graph_types.cpp
     src/graph/graph_builder.cpp
     src/store/store_core.cpp
     src/store/store_schema.cpp
+    src/store/store_schema_migrations.cpp
+    src/store/store_schema_migrations_types.cpp
     src/store/store.cpp
     src/store/store_insert.cpp
     src/store/store_search.cpp
+    src/store/store_search_vector.cpp
     src/store/store_batch.cpp
-    src/store/store_type.cpp
     src/store/store_graph.cpp
+    src/store/store_metrics.cpp
+    src/store/store_graph_csr.cpp
+    src/store/store_graph_imports.cpp
     src/store/store_query.cpp
      src/store/store_project.cpp
      src/store/store_parse_failure.cpp
@@ -232,11 +249,12 @@ set(ENGINE_SOURCES
      src/store/store_membulk.cpp
      src/store/store_semantic_fact.cpp
     src/query/query_engine.cpp
+    src/query/query_engine_traverse.cpp
     src/query/query_analysis.cpp
+    src/query/query_communities.cpp
     src/query/graph_query.cpp
     src/query/impact_analysis.cpp
          src/lsp/lsp_client.cpp
-    src/resolver/resolver.cpp
     src/resolver/pipeline.cpp
     src/resolver/pipeline_apply.cpp
     src/resolver/pipeline_load.cpp
@@ -251,8 +269,6 @@ set(ENGINE_SOURCES
         src/model/state_builder.cpp
         src/model/project_state_builder.cpp
         src/model/semantic_fact_extractor.cpp
-    src/resolver/project_index.cpp
-        src/resolver/project_resolver.cpp
         src/verify/capability_verifier.cpp
         src/verify/contract_verifier.cpp
         src/verify/architecture_verifier.cpp
@@ -264,13 +280,9 @@ set(ENGINE_SOURCES
         src/verify/documentation_drift.cpp
         src/verify/capability_drift.cpp
         src/verify/architecture_drift.cpp
-        src/verify/intent_parser.cpp
-        src/verify/planner.cpp
-        src/verify/verdict_builder.cpp
-    src/engine_verify_planner_ffi.cpp
     src/async_knowledge.cpp
-    src/resolver/resolve_cache.cpp
     src/filter_policy.cpp
+    src/filter_policy_detect.cpp
     src/filter_policy_ignore.cpp
     src/platform_win.cpp
     src/evidence/rule.cpp
@@ -352,6 +364,13 @@ target_compile_definitions(astgraph_engine PUBLIC
     SQLITE_ENABLE_FTS5
     SQLITE_THREADSAFE=1)
 
+# Absolute rules-dir default baked in at build time so
+# evidence::resolveRulesDir() can find engine/src/evidence/rules
+# regardless of the process working directory (the MCP/CLI vehicles
+# run inside the target project, where the relative path is absent).
+target_compile_definitions(astgraph_engine PRIVATE
+    CODESCOPE_RULES_DIR_DEFAULT="${CMAKE_CURRENT_SOURCE_DIR}/src/evidence/rules")
+
 target_include_directories(astgraph_engine PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -397,6 +416,13 @@ if(BUILD_TESTS)
     foreach(test_src ${TEST_SOURCES})
         get_filename_component(test_name ${test_src} NAME_WE)
         add_executable(${test_name} ${test_src})
+        # Tests use CHECK() from tests/test_check.h, which NDEBUG cannot
+        # compile out (REVIEW_0.2.7 TEST-3). -UNDEBUG is kept as a second line
+        # of defence for anything that still routes through the C library, so
+        # a Release/RelWithDebInfo configure cannot run the suite vacuously.
+        target_compile_options(${test_name} PRIVATE
+            $<$<CXX_COMPILER_ID:MSVC>:/UNDEBUG>
+            $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-UNDEBUG>)
         target_link_libraries(${test_name} astgraph_engine)
         add_test(NAME ${test_name} COMMAND ${test_name})
     endforeach()

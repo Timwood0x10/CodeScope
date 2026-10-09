@@ -23,7 +23,7 @@
 #include "../src/model/plugins/workflow.h"
 #include "../src/store/store.h"
 
-#include <cassert>
+#include "test_check.h"
 #include <cstdio>
 #include <sqlite3.h>
 #include <unistd.h>
@@ -42,11 +42,11 @@ static void insertReadme(store::GraphStore &store, uint64_t project_id,
 	const char *sql = "INSERT INTO document (project_id, type, file_path, "
 			  "content) VALUES (?, 0, ?, ?)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 2, file_path.c_str(), -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 3, content.c_str(), -1, SQLITE_TRANSIENT);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -65,7 +65,7 @@ static void insertGraphNode(store::GraphStore &store, uint64_t project_id,
 		"is_entry_point) "
 		"VALUES (?, ?, 0, ?, ?, ?, '', '', '', ?, 0, 0, 0, ?, ?, '', 0)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, id);
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
 	sqlite3_bind_int(stmt, 3, node_type);
@@ -74,7 +74,7 @@ static void insertGraphNode(store::GraphStore &store, uint64_t project_id,
 	sqlite3_bind_int(stmt, 6, start_row);
 	sqlite3_bind_text(stmt, 7, file_path, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 8, language, -1, SQLITE_TRANSIENT);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -90,13 +90,13 @@ static void insertEntity(store::GraphStore &store, uint64_t project_id,
 			  "start_col, end_row, end_col) "
 			  "VALUES (?,?,?,?,'',?,'',0,0,0,0)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, id);
 	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
 	sqlite3_bind_int(stmt, 3, kind);
 	sqlite3_bind_text(stmt, 4, name, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 5, file_path, -1, SQLITE_TRANSIENT);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -109,11 +109,11 @@ static void insertCallRelation(store::GraphStore &store, uint64_t project_id,
 	const char *sql = "INSERT INTO relation (project_id, source_id, "
 			  "target_id, type) VALUES (?,?,?,1)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_int64(stmt, 2, source_id);
 	sqlite3_bind_int64(stmt, 3, target_id);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -127,10 +127,10 @@ static void insertModuleScope(store::GraphStore &store, uint64_t project_id,
 	const char *sql = "INSERT INTO scope (project_id, parent_id, kind, "
 			  "name, start_row, end_row) VALUES (?,0,1,?,0,0)";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 2, name, -1, SQLITE_TRANSIENT);
-	assert(sqlite3_step(stmt) == SQLITE_DONE);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
 	sqlite3_finalize(stmt);
 }
 
@@ -143,8 +143,8 @@ static int countRows(store::GraphStore &store, uint64_t project_id,
 	std::string sql = std::string("SELECT COUNT(*) FROM ") + table +
 			  " WHERE project_id=?";
 	sqlite3_stmt *stmt = nullptr;
-	assert(sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) ==
-	       SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) ==
+	      SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	int count = 0;
 	if (sqlite3_step(stmt) == SQLITE_ROW)
@@ -176,6 +176,67 @@ int main()
 		     "- This module is thread-safe\n"
 		     "- Feature: JWT authentication\n");
 
+	// ── Negation / polarity regression (pass 3/5) ─────────────────
+	// "isn't thread-safe" must NOT become a positive ThreadSafe contract,
+	// and "cannot thread-safe" must STILL become one ("cannot" is not a
+	// denial — it merely ends in the letters "not"). Both guards live in
+	// ContractPlugin's ends_word / ends_suffix split.
+	// Counts are filtered by source_file: the positive README.md inserted
+	// above also yields a threadsafe contract, and that row is expected.
+	{
+		insertReadme(store, pid, "/tmp/NEG.md",
+			     "The buffer isn't thread-safe under load.\n");
+		ModelEngine me_neg(&store);
+		me_neg.addPlugin(std::make_unique<ContractPlugin>(&store));
+		me_neg.runAll(pid);
+		int neg_count = 0;
+		{
+			sqlite3_stmt *stmt = nullptr;
+			if (sqlite3_prepare_v2(
+				    store.handle(),
+				    "SELECT COUNT(*) FROM contract WHERE "
+				    "project_id=? AND name='threadsafe' "
+				    "AND source_file='/tmp/NEG.md'",
+				    -1, &stmt, nullptr) == SQLITE_OK) {
+				sqlite3_bind_int64(stmt, 1,
+						   static_cast<int64_t>(pid));
+				if (sqlite3_step(stmt) == SQLITE_ROW)
+					neg_count = sqlite3_column_int(stmt, 0);
+				sqlite3_finalize(stmt);
+			}
+		}
+		CHECK(neg_count == 0 &&
+		      "an occurrence of \"isn't thread-safe\" in NEG.md must "
+		      "not add a positive threadsafe contract");
+		printf("  [PASS] ContractPlugin negation (isn't thread-safe)\n");
+
+		insertReadme(store, pid, "/tmp/CANNOT.md",
+			     "This design cannot thread-safe anything.\n");
+		ModelEngine me_can(&store);
+		me_can.addPlugin(std::make_unique<ContractPlugin>(&store));
+		me_can.runAll(pid);
+		int can_count = 0;
+		{
+			sqlite3_stmt *stmt = nullptr;
+			if (sqlite3_prepare_v2(
+				    store.handle(),
+				    "SELECT COUNT(*) FROM contract WHERE "
+				    "project_id=? AND name='threadsafe' "
+				    "AND source_file='/tmp/CANNOT.md'",
+				    -1, &stmt, nullptr) == SQLITE_OK) {
+				sqlite3_bind_int64(stmt, 1,
+						   static_cast<int64_t>(pid));
+				if (sqlite3_step(stmt) == SQLITE_ROW)
+					can_count = sqlite3_column_int(stmt, 0);
+				sqlite3_finalize(stmt);
+			}
+		}
+		CHECK(can_count >= 1 &&
+		      "\"cannot thread-safe\" must still produce a threadsafe "
+		      "contract (cannot is not a denial)");
+		printf("  [PASS] ContractPlugin non-negation (cannot)\n");
+	}
+
 	// Insert entities: main() is the entry point, Mutex is the
 	// contract-enforcing entity, Helper is called by main.
 	insertGraphNode(store, pid, 1, 0, "main", "/tmp/main.cpp", "cpp", 1);
@@ -196,11 +257,11 @@ int main()
 		me.addPlugin(std::make_unique<WorkflowPlugin>(&store));
 		me.addPlugin(std::make_unique<ArchitecturePlugin>(&store));
 		auto names = me.pluginNames();
-		assert(names.size() == 4);
-		assert(std::string(names[0]) == "Capability");
-		assert(std::string(names[1]) == "Contract");
-		assert(std::string(names[2]) == "Workflow");
-		assert(std::string(names[3]) == "Architecture");
+		CHECK(names.size() == 4);
+		CHECK(std::string(names[0]) == "Capability");
+		CHECK(std::string(names[1]) == "Contract");
+		CHECK(std::string(names[2]) == "Workflow");
+		CHECK(std::string(names[3]) == "Architecture");
 		printf("Test 1 (plugin registration): PASS\n");
 	}
 
@@ -212,50 +273,53 @@ int main()
 		me.addPlugin(std::make_unique<WorkflowPlugin>(&store));
 		me.addPlugin(std::make_unique<ArchitecturePlugin>(&store));
 		int64_t total = me.runAll(pid);
-		assert(total > 0);
+		CHECK(total > 0);
 
 		// Verify capability table is populated.
 		sqlite3 *db = store.handle();
 		sqlite3_stmt *stmt = nullptr;
 		int cap_count = 0;
-		if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM capability "
-					   "WHERE project_id=?",
+		if (sqlite3_prepare_v2(db,
+				       "SELECT COUNT(*) FROM capability "
+				       "WHERE project_id=?",
 				       -1, &stmt, nullptr) == SQLITE_OK) {
 			sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(pid));
 			if (sqlite3_step(stmt) == SQLITE_ROW)
 				cap_count = sqlite3_column_int(stmt, 0);
 			sqlite3_finalize(stmt);
 		}
-		assert(cap_count > 0);
+		CHECK(cap_count > 0);
 		printf("Test 2 (capability extraction: %d caps): PASS\n",
 		       cap_count);
 
 		// Verify contract table is populated.
 		int contract_count = 0;
-		if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM contract "
-					   "WHERE project_id=?",
+		if (sqlite3_prepare_v2(db,
+				       "SELECT COUNT(*) FROM contract "
+				       "WHERE project_id=?",
 				       -1, &stmt, nullptr) == SQLITE_OK) {
 			sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(pid));
 			if (sqlite3_step(stmt) == SQLITE_ROW)
 				contract_count = sqlite3_column_int(stmt, 0);
 			sqlite3_finalize(stmt);
 		}
-		assert(contract_count > 0);
+		CHECK(contract_count > 0);
 		printf("Test 3 (contract extraction: %d contracts): PASS\n",
 		       contract_count);
 
 		// Verify workflow table is populated (main is an entry point
 		// with a callee, so WorkflowPlugin should detect it).
 		int workflow_count = 0;
-		if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM workflow "
-					   "WHERE project_id=?",
+		if (sqlite3_prepare_v2(db,
+				       "SELECT COUNT(*) FROM workflow "
+				       "WHERE project_id=?",
 				       -1, &stmt, nullptr) == SQLITE_OK) {
 			sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(pid));
 			if (sqlite3_step(stmt) == SQLITE_ROW)
 				workflow_count = sqlite3_column_int(stmt, 0);
 			sqlite3_finalize(stmt);
 		}
-		assert(workflow_count > 0);
+		CHECK(workflow_count > 0);
 		printf("Test 4 (workflow extraction: %d workflows): PASS\n",
 		       workflow_count);
 	}
@@ -265,8 +329,8 @@ int main()
 		ModelEngine me(&store);
 		me.addPlugin(std::make_unique<CapabilityPlugin>(&store));
 		ModelResult r = me.run("Capability", pid);
-		assert(r.ok());
-		assert(r.plugin_name == "Capability");
+		CHECK(r.ok());
+		CHECK(r.plugin_name == "Capability");
 		printf("Test 5 (run by name): PASS\n");
 	}
 
@@ -275,8 +339,8 @@ int main()
 		ModelEngine me(&store);
 		me.addPlugin(std::make_unique<CapabilityPlugin>(&store));
 		ModelResult r = me.run("Nonexistent", pid);
-		assert(!r.ok());
-		assert(r.error.find("not found") != std::string::npos);
+		CHECK(!r.ok());
+		CHECK(r.error.find("not found") != std::string::npos);
 		printf("Test 6 (run unknown plugin): PASS\n");
 	}
 
@@ -291,23 +355,22 @@ int main()
 		// Clear model tables from Test 2's runAll so counts reflect
 		// only this test's output.
 		sqlite3_exec(db, "DELETE FROM capability", nullptr, nullptr,
-			    nullptr);
+			     nullptr);
 		sqlite3_exec(db, "DELETE FROM contract", nullptr, nullptr,
-			    nullptr);
+			     nullptr);
 		sqlite3_exec(db, "DELETE FROM workflow", nullptr, nullptr,
-			    nullptr);
+			     nullptr);
 		sqlite3_exec(db, "DELETE FROM workflow_step", nullptr, nullptr,
-			    nullptr);
+			     nullptr);
 		sqlite3_exec(db, "DELETE FROM architecture_edge", nullptr,
-			    nullptr, nullptr);
+			     nullptr, nullptr);
 
 		// Cross-module callee: Logger lives in /tmp/lib/, while main
 		// lives in /tmp/main.cpp. The module scopes below let
 		// ArchitecturePlugin detect this as a cross-module call.
 		insertGraphNode(store, pid, 4, 0, "Logger",
 				"/tmp/lib/logger.cpp", "cpp", 1);
-		insertEntity(store, pid, 4, 0, "Logger",
-			     "/tmp/lib/logger.cpp");
+		insertEntity(store, pid, 4, 0, "Logger", "/tmp/lib/logger.cpp");
 
 		// Module scopes: "/tmp/" matches /tmp/main.cpp, "/tmp/lib/"
 		// matches /tmp/lib/logger.cpp. Both are prefixes, so Logger
@@ -326,7 +389,7 @@ int main()
 		me.addPlugin(std::make_unique<WorkflowPlugin>(&store));
 		me.addPlugin(std::make_unique<ArchitecturePlugin>(&store));
 		int64_t total = me.runAll(pid);
-		assert(total > 0);
+		CHECK(total > 0);
 
 		// All 4 plugins produced rows from the single shared
 		// ModelContext populated by runAll. If the context had not
@@ -335,10 +398,10 @@ int main()
 		int contract_count = countRows(store, pid, "contract");
 		int workflow_count = countRows(store, pid, "workflow");
 		int arch_count = countRows(store, pid, "architecture_edge");
-		assert(cap_count > 0);
-		assert(contract_count > 0);
-		assert(workflow_count > 0);
-		assert(arch_count > 0);
+		CHECK(cap_count > 0);
+		CHECK(contract_count > 0);
+		CHECK(workflow_count > 0);
+		CHECK(arch_count > 0);
 		printf("Test 7 (shared ModelContext: cap=%d contract=%d "
 		       "workflow=%d arch_edge=%d): PASS\n",
 		       cap_count, contract_count, workflow_count, arch_count);
@@ -346,5 +409,5 @@ int main()
 
 	unlink(kDbPath);
 	printf("\nAll model engine tests passed.\n");
-	return 0;
+	return checkFailures() ? 1 : 0;
 }

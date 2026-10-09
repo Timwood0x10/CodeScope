@@ -24,11 +24,19 @@ static const TSLanguage *resolveGrammar(const char *name)
 		return tree_sitter_python();
 	if (strcmp(name, "rust") == 0 || strcmp(name, "rs") == 0)
 		return tree_sitter_rust();
-	// Swift grammar temporarily disabled: parser.c incompatible
-	// with tree-sitter core v0.24.7. Re-enable when upstream
-	// releases an ABI-compatible version.
-	// if (strcmp(name, "swift") == 0)
-	//     return tree_sitter_swift();
+	// Swift is NOT resolvable here — this is the single authoritative note
+	// for that state. The grammar is not vendored (it is absent from
+	// GRAMMAR_SOURCES in CMakeLists.txt) because its parser.c is
+	// incompatible with tree-sitter core v0.24.7; the IR visitor/translator
+	// and the Swift builtin table were therefore removed as well rather than
+	// left unreachable. Consequence, and it is deliberate: a .swift file is
+	// still detected by extension (filter_policy_detect) and reported as a
+	// `language_missing` parse failure, which is retried on every run and
+	// never counts towards the fail-fast skip. The other detected-but-
+	// ungrammared languages (Kotlin, Ruby, Scala) behave identically.
+	// Re-enable by restoring the grammar, the visitor/translator pair and the
+	// builtin table together.
+
 	if (strcmp(name, "typescript") == 0 || strcmp(name, "ts") == 0)
 		return tree_sitter_typescript();
 	if (strcmp(name, "tsx") == 0)

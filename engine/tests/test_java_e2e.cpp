@@ -1,7 +1,8 @@
 #include "test_e2e.h"
 
-int main() {
-    const char* code = R"(class Calculator {
+int main()
+{
+	const char *code = R"(class Calculator {
     int add(int a, int b) {
         return a + b;
     }
@@ -19,6 +20,14 @@ int main() {
         int b = add(x, y);
         return multiply(a, b);
     }
+
+    String describe(int value) {
+        return format(value);
+    }
+
+    String format(int value) {
+        return "v";
+    }
 }
 
 class Main {
@@ -29,12 +38,16 @@ class Main {
 }
 )";
 
-    const char* defs[] = {"add", "Calculator", "multiply"};
-    runE2eTest("java", code, "/tmp/TestApp.java",
-               defs, 3,
-               "add", "multiply",
-               "add",
-               "compute",
-               "main", nullptr);
-    return 0;
+	// `describe` and `format` return a CLASS type (`String`). This grammar
+	// spells a class type `identifier` too, so naming a declaration by its
+	// first `identifier` child named such methods after their return type: the
+	// entity used to be called `String`, and find_definition("describe") — the
+	// assertion below, via runE2eTest's def list — answered nothing. Primitives
+	// and `void` never showed it (their own node types), which is why the
+	// original three-definition fixture passed.
+	const char *defs[] = { "add", "Calculator", "multiply", "describe",
+			       "format" };
+	runE2eTest("java", code, "/tmp/TestApp.java", defs, 5, "format",
+		   "describe", "format", "describe", "main", nullptr);
+	return 0;
 }
