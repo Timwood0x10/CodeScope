@@ -1,5 +1,6 @@
 #include "ts_visitor.h"
 
+#include <cctype>
 #include <cstring>
 #include <tree_sitter/api.h>
 
@@ -398,20 +399,28 @@ std::string TsVisitor::extractTsTypeAnnotation(TSNode type_node)
 	if (ts_node_is_null(type_node))
 		return "";
 
-	// type_annotation wraps the actual type as its first named child.
-	uint32_t tc = ts_node_child_count(type_node);
-	TSNode inner = {};
-	bool found_inner = false;
-	for (uint32_t i = 0; i < tc; i++) {
-		TSNode child = ts_node_child(type_node, i);
-		if (ts_node_is_named(child)) {
-			inner = child;
-			found_inner = true;
-			break;
+	// `type_annotation` is the wrapper (`: Foo`) and holds the type as its
+	// first named child. Every other node this is called with IS the type —
+	// the array/union/parenthesized branches below recurse with an element or
+	// member type, and unwrapping those as if they were annotations discarded
+	// the type entirely: `Foo[]` reached `type_identifier Foo`, looked for its
+	// (non-existent) first named child and returned "" — the element type of
+	// every array annotation was lost.
+	TSNode inner = type_node;
+	if (strcmp(ts_node_type(type_node), "type_annotation") == 0) {
+		const uint32_t tc = ts_node_child_count(type_node);
+		bool found_inner = false;
+		for (uint32_t i = 0; i < tc; i++) {
+			TSNode child = ts_node_child(type_node, i);
+			if (ts_node_is_named(child)) {
+				inner = child;
+				found_inner = true;
+				break;
+			}
 		}
+		if (!found_inner)
+			return "";
 	}
-	if (!found_inner)
-		return "";
 
 	const char *it = ts_node_type(inner);
 
@@ -496,15 +505,29 @@ std::string TsVisitor::extractTsTypeAnnotation(TSNode type_node)
 		return "";
 	}
 
-	// Fallback: use the text of the inner node, stripping generics.
+	// Fallback: use the text of the inner node, stripping generics and array
+	// brackets — but only when what is left is a plain type name.
+	//
+	// The fallback used to return that text unconditionally, and for a shape
+	// this extractor does not model it therefore returned a fragment of the
+	// annotation instead of a type: `const tabs: { id: TabId; label: string }[]`
+	// recorded the receiver type of `tabs.map(...)` as `id: TabId` (measured on
+	// codebase-memory-mcp). No declaration is keyed by a name containing a
+	// space, so such a value can never match a candidate — it is wrong data in
+	// the database and in every tool that prints it, and "" (unknown) is the
+	// honest answer for an object, tuple or function type.
 	std::string txt = nodeText(inner);
 	size_t lt = txt.find('<');
 	if (lt != std::string::npos)
-		return txt.substr(0, lt);
-	// Strip array brackets.
+		txt = txt.substr(0, lt);
 	size_t lb = txt.find('[');
 	if (lb != std::string::npos)
-		return txt.substr(0, lb);
+		txt = txt.substr(0, lb);
+	for (char ch : txt) {
+		if (!std::isalnum(static_cast<unsigned char>(ch)) &&
+		    ch != '_' && ch != '.' && ch != '$')
+			return "";
+	}
 	return txt;
 }
 

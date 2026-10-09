@@ -413,6 +413,82 @@ static void test_ts_empty_file()
 
 // ── Main ──────────────────────────────────────────────────────
 
+// ── Test: type-annotation extraction ─────────────────────────
+
+/// First node of `type` in the tree, reported through `out`.
+static bool findFirstOfType(TSNode node, const char *type, TSNode &out)
+{
+	if (strcmp(ts_node_type(node), type) == 0) {
+		out = node;
+		return true;
+	}
+	const uint32_t count = ts_node_child_count(node);
+	for (uint32_t i = 0; i < count; i++) {
+		if (findFirstOfType(ts_node_child(node, i), type, out))
+			return true;
+	}
+	return false;
+}
+
+/// Type extracted from the first annotation in `snippet`.
+static std::string annotationType(const TSLanguage *lang, const char *snippet)
+{
+	TSTree *tree = parse(snippet, lang);
+	if (!tree)
+		return "<parse failed>";
+	TSNode ann;
+	std::string got = "<no annotation found>";
+	if (findFirstOfType(ts_tree_root_node(tree), "type_annotation", ann)) {
+		// The extractor is protected; this probe exposes it without widening
+		// the production contract.
+		struct Probe : ir::TsVisitor {
+			using ir::TsVisitor::extractTsTypeAnnotation;
+		};
+		Probe probe;
+		// nodeText() reads the visitor's source, which visit() sets: without
+		// it the extractor sees an empty source and every case returns "".
+		ir::SemanticUnit *unit =
+			probe.visit(tree, snippet, "/test/annotation.ts");
+		got = probe.extractTsTypeAnnotation(ann);
+		delete unit;
+	}
+	printf("  [debug] %-48s -> '%s'\n", snippet, got.c_str());
+	ts_tree_delete(tree);
+	return got;
+}
+
+static void test_type_annotation_extraction()
+{
+	const TSLanguage *lang = load_ts_language();
+	CHECK(lang != nullptr, "TypeScript grammar loaded");
+
+	// Plain, generic, array and union annotations keep their base type name.
+	CHECK(annotationType(lang, "const a: Foo = x;\n") == "Foo",
+	      "plain class type");
+	CHECK(annotationType(lang, "const b: Array<Foo> = x;\n") == "Array",
+	      "generic type keeps its base");
+	CHECK(annotationType(lang, "const c: Foo[] = x;\n") == "Foo",
+	      "array element type");
+	CHECK(annotationType(lang, "const d: Foo | null = x;\n") == "Foo",
+	      "union takes the first member");
+	CHECK(annotationType(lang, "const e: Map<string, Foo> = x;\n") == "Map",
+	      "map generic keeps its base");
+	CHECK(annotationType(lang, "const f: Foo.Bar = x;\n") == "Foo.Bar",
+	      "qualified type name");
+
+	// Shapes the extractor does not model report UNKNOWN instead of a fragment
+	// of the annotation. An object type literal used to yield its first member
+	// ("id: Foo"), which no declaration can be keyed by: the receiver type could
+	// never match a candidate, and every tool printed it as if it were a name.
+	CHECK(annotationType(lang, "const g: { id: Foo; n: number }[] = x;\n") ==
+		      "",
+	      "object type literal reports unknown");
+	CHECK(annotationType(lang, "const h: (a: number) => void = f;\n") == "",
+	      "function type reports unknown");
+
+	printf("  ✓ test_type_annotation_extraction\n");
+}
+
 int main()
 {
 	printf("TsVisitor tests:\n");
@@ -427,6 +503,7 @@ int main()
 	test_mixed_ts_constructs();
 	test_ts_arrow_function();
 	test_ts_empty_file();
+	test_type_annotation_extraction();
 
 	printf("\n=== ts_visitor test passed (%d/%d) ===\n", tests_passed,
 	       tests_run);

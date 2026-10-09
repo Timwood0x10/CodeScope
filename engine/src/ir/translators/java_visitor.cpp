@@ -693,6 +693,26 @@ void JavaVisitor::handleImport(TSNode node, uint64_t parent_id)
 }
 std::string JavaVisitor::extractName(TSNode node)
 {
+	// The grammar's `name` field is authoritative for every declaration this is
+	// reached for (class_declaration, interface_declaration,
+	// method_declaration, constructor_declaration, enum_declaration).
+	TSNode named = ts_node_child_by_field_name(node, "name", 4);
+	if (!ts_node_is_null(named))
+		return nodeText(named);
+
+	// Fallback for node shapes that do not expose the field: the LAST
+	// identifier, because a Java declaration writes the type before the name.
+	// The previous first-match scan accepted `type_identifier` as well, and for
+	// `public String describe(...)` the return type IS a type_identifier — so
+	// every method whose return type was a class (not a primitive or `void`)
+	// was recorded under that type: measured on spring-petclinic, 27 entities
+	// called `String`, 4 `Pet`, 3 `LocalDate`, 2 `PetType`, 2 `Owner`, while
+	// every `void` method kept its real name (`void_type` is not matched here).
+	// Those type-named entities then collected edges under the
+	// single-same-module-candidate heuristic, so the damage was not cosmetic:
+	// `find_definition("processUpdateForm")` answered nothing and a call to
+	// `updatePetDetails` was attributed to an entity called `String`.
+	std::string last;
 	uint32_t cnt = ts_node_child_count(node);
 	for (uint32_t i = 0; i < cnt; i++) {
 		TSNode c = ts_node_child(node, i);
@@ -700,9 +720,9 @@ std::string JavaVisitor::extractName(TSNode node)
 			continue;
 		if (strcmp(ts_node_type(c), "identifier") == 0 ||
 		    strcmp(ts_node_type(c), "type_identifier") == 0)
-			return nodeText(c);
+			last = nodeText(c);
 	}
-	return "";
+	return last;
 }
 
 int JavaVisitor::detectVisibility(TSNode node)

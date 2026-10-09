@@ -98,11 +98,17 @@ class TsVisitor : public JsVisitor {
 	void emitImplementClause(TSNode node, const std::string &impl_type,
 				 uint64_t parent_id);
 
-    private:
+    protected:
 	/// Extract the bare type name from a TS type annotation node,
-	/// stripping generics (`Array<T>` → "Array"), union/intersection
-	/// (takes first member), and array brackets (`T[]` → "T").
-	/// Returns empty string if the type cannot be determined.
+	/// stripping generics (`Array<T>` → "Array"), union/intersection (takes
+	/// the first member) and array brackets (`T[]` → "T").
+	///
+	/// Returns "" — UNKNOWN — when the annotation is not a plain (optionally
+	/// qualified) type name. An object, tuple or function type is not something
+	/// a declaration can be keyed by, and returning a fragment of it put wrong
+	/// data in the database and in every tool that printed it (see the fallback
+	/// in the definition). test_ts_visitor reaches it through a derived probe
+	/// rather than by widening this contract.
 	std::string extractTsTypeAnnotation(TSNode type_node);
 };
 
