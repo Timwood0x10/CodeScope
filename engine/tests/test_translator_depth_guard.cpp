@@ -18,11 +18,11 @@
 
 #include "../src/ir/ir_translator.h"
 #include "../src/ir/semantic_unit.h"
+#include "grammar_loader.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <dlfcn.h>
 #include <string>
 #include <unistd.h>
 
@@ -39,26 +39,13 @@ static int tests_run = 0;
 		}                                                           \
 	} while (0)
 
-using LangFn = const TSLanguage *(*)();
-
-/// Load `<GRAMMARS_DIR>/tree-sitter-<grammar>.so`. The handle is left open for
-/// the process lifetime.
-static const TSLanguage *loadLanguage(const char *grammar, const char *symbol)
+/// The grammar, from the library this test links (grammar_loader.h). The old
+/// dlopen() searched directories this repository never writes — and the .so
+/// files it looked for exist only as untracked leftovers — so `grammar loaded`
+/// failed on CI for every test that used this loader.
+static const TSLanguage *loadLanguage(const char *grammar)
 {
-	const char *dirs[] = { getenv("GRAMMARS_DIR"), "../grammars",
-			       "grammars", nullptr };
-	for (int i = 0; dirs[i] != nullptr; i++) {
-		std::string path = std::string(dirs[i]) + "/tree-sitter-" +
-				   grammar + ".so";
-		void *handle = dlopen(path.c_str(), RTLD_LAZY | RTLD_LOCAL);
-		if (!handle)
-			continue;
-		auto fn = reinterpret_cast<LangFn>(dlsym(handle, symbol));
-		if (fn)
-			return fn();
-		dlclose(handle);
-	}
-	return nullptr;
+	return testGrammar(grammar);
 }
 
 /// Deepest node level in `node`'s subtree, so the fixture can assert it really
@@ -77,10 +64,9 @@ static int treeDepth(TSNode node)
 }
 
 /// Parse `code` and return its CST root depth.
-static int parseDepth(const char *grammar, const char *symbol,
-		      const std::string &code)
+static int parseDepth(const char *grammar, const std::string &code)
 {
-	const TSLanguage *lang = loadLanguage(grammar, symbol);
+	const TSLanguage *lang = loadLanguage(grammar);
 	CHECK(lang != nullptr, "grammar loaded for the depth probe");
 	TSParser *parser = ts_parser_new();
 	ts_parser_set_language(parser, lang);
@@ -112,11 +98,11 @@ static std::string readFile(const char *path)
 /// Run the legacy translator for `grammar` over `code`, with stderr captured.
 /// \param produced  Set to whether translate() returned a unit.
 /// \return Everything the translator wrote to stderr.
-static std::string translateCapturing(const char *grammar, const char *symbol,
+static std::string translateCapturing(const char *grammar,
 				      const std::string &code,
 				      const char *file_path, bool *produced)
 {
-	const TSLanguage *lang = loadLanguage(grammar, symbol);
+	const TSLanguage *lang = loadLanguage(grammar);
 	CHECK(lang != nullptr, "grammar loaded");
 
 	TSParser *parser = ts_parser_new();
@@ -180,8 +166,8 @@ int main()
 	{
 		bool produced = false;
 		const std::string err = translateCapturing(
-			"c", "tree_sitter_c", "int f(void) { return 1; }\n",
-			"/t/shallow.c", &produced);
+			"c", "int f(void) { return 1; }\n",
+				"/t/shallow.c", &produced);
 		CHECK(produced, "a normal file must still translate");
 		CHECK(countOccurrences(err, truncated) == 0,
 		      "the recursion bound must not fire on ordinary code");
@@ -199,8 +185,8 @@ int main()
 					 " }\n";
 		bool produced = false;
 		const std::string err = translateCapturing(
-			"c", "tree_sitter_c", code, "/t/deep.c", &produced);
-		CHECK(parseDepth("c", "tree_sitter_c", code) >
+			"c", code, "/t/deep.c", &produced);
+		CHECK(parseDepth("c", code) >
 			      ir::kMaxTranslateDepth,
 		      "fixture check: the file must nest deeper than the "
 		      "bound, or this test would pass vacuously");
@@ -221,8 +207,8 @@ int main()
 		code += std::string(900, '\t') + "pass\n";
 		bool produced = false;
 		const std::string err =
-			translateCapturing("python", "tree_sitter_python", code,
-					   "/t/deep.py", &produced);
+			translateCapturing("python", code, "/t/deep.py",
+					   &produced);
 		CHECK(produced, "the python translator must also complete");
 		CHECK(countOccurrences(err, truncated) == 1,
 		      "the python translator must apply the same bound (the guard "

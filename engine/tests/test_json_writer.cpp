@@ -11,6 +11,7 @@
 #include "../src/util/json_writer.h"
 
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <limits>
 #include <locale>

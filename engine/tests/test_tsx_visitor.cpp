@@ -12,40 +12,23 @@
 
 #include "../src/ir/translators/tsx_visitor.h"
 #include "../src/ir/semantic_unit.h"
+#include "grammar_loader.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <dlfcn.h>
 #include <string>
 #include <vector>
 
 // tree-sitter
 #include <tree_sitter/api.h>
 
-// Load the TSX grammar dynamically
+// The grammar is compiled into astgraph_engine, which this test links, so the
+// language comes from the library rather than from a .so on disk
+// (engine/tests/grammar_loader.h explains what the old lookup cost).
 static const TSLanguage *load_tsx_language()
 {
-	const char *dirs[] = {
-		getenv("GRAMMARS_DIR"),
-		"../grammars",
-		"grammars",
-		"～/code/cppCode/CodeScope/grammars",
-	};
-	for (auto d : dirs) {
-		if (!d)
-			continue;
-		std::string path = std::string(d) + "/tree-sitter-tsx.so";
-		void *handle = dlopen(path.c_str(), RTLD_LAZY | RTLD_LOCAL);
-		if (handle) {
-			auto *fn = reinterpret_cast<const TSLanguage *(*)()>(
-				dlsym(handle, "tree_sitter_tsx"));
-			if (fn)
-				return fn();
-			dlclose(handle);
-		}
-	}
-	return nullptr;
+	return testGrammar("tsx");
 }
 
 static int tests_run = 0;

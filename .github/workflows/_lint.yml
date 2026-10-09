@@ -17,7 +17,14 @@ jobs:
       - name: Install system deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build
+          # cmake is not installed from apt: ubuntu-24.04 ships 3.28.3 and the
+          # engine requires 3.30+ (engine/CMakeLists.txt:1). `cargo clippy`
+          # builds server/build.rs, which drives cmake over the engine, so the
+          # old version made this job fail for a reason that had nothing to do
+          # with linting. Same pinned wheel as _ci.yml.
+          sudo apt-get install -y ninja-build
+          pip install "cmake==3.31.6"
+          cmake --version
           # Install clang-format via pip — the PyPI wheel provides an
           # exact version match (21.1.8) with the local dev environment
           # (Homebrew llvm@21, which is what `which clang-format` resolves

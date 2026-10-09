@@ -30,11 +30,11 @@
 #include "../src/ir/translators/rust_visitor.h"
 #include "../src/ir/translators/ts_visitor.h"
 #include "../src/ir/translators/tsx_visitor.h"
+#include "grammar_loader.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <dlfcn.h>
 #include <string>
 
 #include <tree_sitter/api.h>
@@ -54,35 +54,21 @@ static int tests_passed = 0;
 		tests_passed++;                                             \
 	} while (0)
 
-using LangFn = const TSLanguage *(*)();
-
-/// Load `<GRAMMARS_DIR>/tree-sitter-<grammar>.so` and return its language.
-/// The handle is intentionally left open for the process lifetime.
-static const TSLanguage *loadLanguage(const char *grammar, const char *symbol)
+/// The grammar, from the library this test links (grammar_loader.h). The old
+/// dlopen() of `<dir>/tree-sitter-<grammar>.so` searched directories this
+/// repository never writes, so `grammar loaded` failed on CI for every test
+/// that used this loader.
+static const TSLanguage *loadLanguage(const char *grammar)
 {
-	const char *dirs[] = { getenv("GRAMMARS_DIR"), "../grammars",
-			       "grammars", nullptr };
-	for (int i = 0; dirs[i] != nullptr; i++) {
-		std::string path = std::string(dirs[i]) + "/tree-sitter-" +
-				   grammar + ".so";
-		void *handle = dlopen(path.c_str(), RTLD_LAZY | RTLD_LOCAL);
-		if (!handle)
-			continue;
-		auto fn = reinterpret_cast<LangFn>(dlsym(handle, symbol));
-		if (fn)
-			return fn();
-		dlclose(handle);
-	}
-	return nullptr;
+	return testGrammar(grammar);
 }
 
 /// Parse `code` with the given grammar and run `visitor` over it.
 /// Ownership of the returned unit passes to the caller.
 static ir::SemanticUnit *runVisitor(ir::JsVisitor &visitor, const char *grammar,
-				    const char *symbol, const char *code,
-				    const char *file_path)
+				    const char *code, const char *file_path)
 {
-	const TSLanguage *lang = loadLanguage(grammar, symbol);
+	const TSLanguage *lang = loadLanguage(grammar);
 	CHECK(lang != nullptr, "grammar loaded");
 
 	TSParser *parser = ts_parser_new();
@@ -154,7 +140,7 @@ static void test_rust_macro_invocation_emits_call()
 			   "fn caller() { do_work!(); }\n";
 
 	ir::RustVisitor visitor;
-	ir::SemanticUnit *unit = runVisitor(visitor, "rust", "tree_sitter_rust",
+	ir::SemanticUnit *unit = runVisitor(visitor, "rust",
 					    code, "/test/macro.rs");
 
 	CHECK(hasNamed(*unit, ir::RecordKind::CallExpr, "do_work"),
@@ -169,7 +155,7 @@ static void test_rust_builtin_macro_filtered()
 	const char *code = "fn caller() { println!(\"hello\"); }\n";
 
 	ir::RustVisitor visitor;
-	ir::SemanticUnit *unit = runVisitor(visitor, "rust", "tree_sitter_rust",
+	ir::SemanticUnit *unit = runVisitor(visitor, "rust",
 					    code, "/test/builtin_macro.rs");
 
 	CHECK(!hasNamed(*unit, ir::RecordKind::CallExpr, "println"),
@@ -193,7 +179,7 @@ static void test_go_short_var_defines_variables()
 			   "}\n";
 
 	ir::GoVisitor visitor;
-	ir::SemanticUnit *unit = runVisitor(visitor, "go", "tree_sitter_go",
+	ir::SemanticUnit *unit = runVisitor(visitor, "go",
 					    code, "/test/shortvar.go");
 
 	CHECK(hasNamed(*unit, ir::RecordKind::Variable, "a"),
@@ -227,7 +213,7 @@ static void test_go_blank_identifier_binds_nothing()
 			   "}\n";
 
 	ir::GoVisitor visitor;
-	ir::SemanticUnit *unit = runVisitor(visitor, "go", "tree_sitter_go",
+	ir::SemanticUnit *unit = runVisitor(visitor, "go",
 					    code, "/test/blank.go");
 
 	CHECK(!hasNamed(*unit, ir::RecordKind::Variable, "_"),
@@ -263,7 +249,7 @@ static void test_cpp_class_member_declarations()
 		"Line::~Line() {}\n";
 
 	ir::CppVisitor visitor;
-	ir::SemanticUnit *unit = runVisitor(visitor, "cpp", "tree_sitter_cpp",
+	ir::SemanticUnit *unit = runVisitor(visitor, "cpp",
 					    code, "/test/members.cpp");
 
 	CHECK(hasNamed(*unit, ir::RecordKind::Method, "foo"),
@@ -305,7 +291,7 @@ static void test_cpp_local_function_decl_is_not_a_member()
 			   "Point::~Point() {}\n";
 
 	ir::CppVisitor visitor;
-	ir::SemanticUnit *unit = runVisitor(visitor, "cpp", "tree_sitter_cpp",
+	ir::SemanticUnit *unit = runVisitor(visitor, "cpp",
 					    code, "/test/local.cpp");
 
 	CHECK(hasQualifiedName(*unit, "Point::run"),
@@ -340,7 +326,7 @@ static void test_python_chained_call_name()
 
 	ir::PythonVisitor visitor;
 	ir::SemanticUnit *unit = runVisitor(visitor, "python",
-					    "tree_sitter_python", code,
+					    code,
 					    "/test/chained.py");
 
 	CHECK(hasNamed(*unit, ir::RecordKind::CallExpr, "compute"),
@@ -364,7 +350,7 @@ static void test_java_implements_emits_interface_impl()
 		"}\n";
 
 	ir::JavaVisitor visitor;
-	ir::SemanticUnit *unit = runVisitor(visitor, "java", "tree_sitter_java",
+	ir::SemanticUnit *unit = runVisitor(visitor, "java",
 					    code, "/test/Circle.java");
 
 	CHECK(hasInterfaceImpl(*unit, "Circle", "Drawable"),
@@ -390,7 +376,7 @@ static void test_ts_implements_emits_interface_impl()
 
 	ir::TsVisitor visitor;
 	ir::SemanticUnit *unit = runVisitor(visitor, "typescript",
-					    "tree_sitter_typescript", code,
+					    code,
 					    "/test/square.ts");
 
 	CHECK(hasInterfaceImpl(*unit, "Square", "Shape"),
@@ -408,7 +394,7 @@ static void test_tsx_self_closing_attribute_call()
 			   "const el = <Foo onClick={bar()} />;\n";
 
 	ir::TsxVisitor visitor;
-	ir::SemanticUnit *unit = runVisitor(visitor, "tsx", "tree_sitter_tsx",
+	ir::SemanticUnit *unit = runVisitor(visitor, "tsx",
 					    code, "/test/elem.tsx");
 
 	CHECK(hasNamed(*unit, ir::RecordKind::CallExpr, "bar"),
@@ -431,7 +417,7 @@ static void test_cpp_user_function_shadowing_builtin()
 			   "void caller(void *p) { free(p); }\n";
 
 	ir::CppVisitor visitor;
-	ir::SemanticUnit *unit = runVisitor(visitor, "cpp", "tree_sitter_cpp",
+	ir::SemanticUnit *unit = runVisitor(visitor, "cpp",
 					    code, "/test/free.cpp");
 
 	CHECK(hasNamed(*unit, ir::RecordKind::CallExpr, "free"),
@@ -449,7 +435,7 @@ static void test_ts_user_function_shadowing_builtin()
 
 	ir::TsVisitor visitor;
 	ir::SemanticUnit *unit = runVisitor(visitor, "typescript",
-					    "tree_sitter_typescript", code,
+					    code,
 					    "/test/shadow.ts");
 
 	CHECK(hasNamed(*unit, ir::RecordKind::CallExpr, "String"),

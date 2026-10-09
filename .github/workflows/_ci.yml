@@ -55,7 +55,23 @@ jobs:
         if: startsWith(matrix.os, 'ubuntu-')
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build git gcc g++ pkg-config libssl-dev ccache patchelf
+          # NOT `apt-get install cmake`: ubuntu-24.04 ships CMake 3.28.3 while
+          # the engine requires 3.30+ (engine/CMakeLists.txt:1, README "CMake
+          # 3.30+"), and CMake refuses to read a project above its own version.
+          # Every invocation therefore aborted at line 1 —
+          # `cmake_minimum_required` — so both Ubuntu jobs died before compiling
+          # a single file: the Rust step because server/build.rs drives cmake,
+          # and the engine step directly. macOS (Homebrew cmake, 4.x) configured
+          # and ran the tests without noticing, which is why this only ever
+          # showed up on Linux. The PyPI wheel pins one version for both Ubuntu
+          # runners and takes precedence over the distro package in /usr/local.
+          sudo apt-get install -y ninja-build git gcc g++ pkg-config libssl-dev ccache patchelf
+          pip install "cmake==3.31.6"
+          cmake --version
+          cmake --version | grep -qE "version 3\.(3[0-9]|[4-9])" || {
+            echo "::error::CMake 3.30+ is required (engine/CMakeLists.txt:1), got: $(cmake --version | head -1)"
+            exit 1
+          }
 
       - name: Install deps (macOS)
         if: matrix.os == 'macos-15'
