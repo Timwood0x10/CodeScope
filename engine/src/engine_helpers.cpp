@@ -93,15 +93,6 @@ std::string fileContentHash(const char *path)
 }
 
 // Escape a string for safe embedding in JSON (RFC 8259)
-std::string simpleHash(const std::string &s)
-{
-	// Simple djb2 hash for content fingerprint
-	uint64_t hash = 5381;
-	for (char c : s)
-		hash = ((hash << 5) + hash) + static_cast<uint64_t>(c);
-	return std::to_string(hash);
-}
-
 const char *detectLanguage(const char *file_path)
 {
 	// Delegate to the canonical FilterPolicy implementation so there is a

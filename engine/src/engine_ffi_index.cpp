@@ -9,12 +9,17 @@
 // Every function follows the FFI safety contract in engine_ffi.cpp:
 // try/catch around the body, null-checked inputs, dupString() result
 // the caller frees with engine_free_string().
+//
+// Content fingerprints are SHA-256, not a 32-bit hash: files.content_hash is
+// the leaf of GraphStore::worktreeDigest, so a weak leaf would cap the whole
+// chain and let an edit slip past a re-index (development_plan §17.6).
 
 #include "engine_internal.h"
 #include "async_knowledge.h"
 #include "platform_win.h"
 #include "util/json_writer.h"
 #include "store/store_parse_failure.h"
+#include "store/store_identity.h"
 
 #include <cstdio>
 #include <sqlite3.h>
@@ -221,7 +226,7 @@ char *engine_index_batch(engine_t handle, uint64_t project_id,
 		int total_nodes = 0, total_edges = 0;
 
 		for (auto &b : batches) {
-			std::string hash = simpleHash(b.source);
+			std::string hash = store::Sha256Hex(b.source);
 			ctx->store->upsertFile(project_id, b.file_path.c_str(),
 					       b.language.c_str(),
 					       hash.c_str());

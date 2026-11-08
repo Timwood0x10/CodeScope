@@ -1,7 +1,15 @@
+// engine_index.cpp — per-file indexing.
+//
+// files.content_hash is filled with SHA-256, not the old 32-bit djb2 helper:
+// that column is the leaf of GraphStore::worktreeDigest, so a weak leaf would
+// cap the strength of the whole chain and let an edit slip past a re-index
+// (development_plan §17.6).
+
 #include "util/json_writer.h"
 #include "engine_internal.h"
 #include "engine_index_paths.h"
 #include "filter_policy.h"
+#include "store/store_identity.h"
 #include "platform_win.h"
 #include "async_knowledge.h"
 
@@ -280,7 +288,7 @@ char *engine_index_file(engine_t handle, uint64_t project_id,
 		// those records. The pair is idempotent, so re-indexing a file
 		// never accumulates duplicates.
 		ctx->store->beginTransaction();
-		std::string hash = simpleHash(source);
+		std::string hash = store::Sha256Hex(source);
 		ctx->store->upsertFile(project_id, store_path, language,
 				       hash.c_str());
 		if (!ctx ||
