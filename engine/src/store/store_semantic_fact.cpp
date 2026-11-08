@@ -41,6 +41,7 @@ namespace store
 bool GraphStore::insertSemanticFacts(uint64_t project_id,
 				     const std::vector<SemanticFactRow> &facts)
 {
+	persisted_fact_count_ = 0;
 	if (facts.empty())
 		return true;
 
@@ -83,7 +84,9 @@ bool GraphStore::insertSemanticFacts(uint64_t project_id,
 					  SQLITE_STATIC);
 
 		int rc = sqlite3_step(stmt);
-		if (rc != SQLITE_DONE) {
+		if (rc == SQLITE_DONE)
+			++persisted_fact_count_;
+		else {
 			error_ = std::string("insertSemanticFacts: step "
 					     "failed: ") +
 				 sqlite3_errmsg(db_);

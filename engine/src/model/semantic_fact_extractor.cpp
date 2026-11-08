@@ -271,9 +271,9 @@ int64_t SemanticFactExtractor::extractSyncFacts(uint64_t project_id)
 			"method=extractSyncFacts] insert failed: %s\n",
 			store_->error().c_str());
 	}
-	fprintf(stderr, "[model] SemanticFactExtractor sync: %zu facts\n",
-		facts.size());
-	return static_cast<int64_t>(facts.size());
+	fprintf(stderr, "[model] SemanticFactExtractor sync: %lld facts\n",
+		(long long)store_->persistedFactCount());
+	return store_->persistedFactCount();
 }
 
 // ─── extractMemoryFacts ───────────────────────────────────────────
@@ -350,9 +350,9 @@ int64_t SemanticFactExtractor::extractMemoryFacts(uint64_t project_id)
 			"method=extractMemoryFacts] insert failed: %s\n",
 			store_->error().c_str());
 	}
-	fprintf(stderr, "[model] SemanticFactExtractor memory: %zu facts\n",
-		facts.size());
-	return static_cast<int64_t>(facts.size());
+	fprintf(stderr, "[model] SemanticFactExtractor memory: %lld facts\n",
+		(long long)store_->persistedFactCount());
+	return store_->persistedFactCount();
 }
 
 // ─── extractErrorFacts ────────────────────────────────────────────
@@ -450,9 +450,9 @@ int64_t SemanticFactExtractor::extractErrorFacts(uint64_t project_id)
 			"method=extractErrorFacts] insert failed: %s\n",
 			store_->error().c_str());
 	}
-	fprintf(stderr, "[model] SemanticFactExtractor error: %zu facts\n",
-		facts.size());
-	return static_cast<int64_t>(facts.size());
+	fprintf(stderr, "[model] SemanticFactExtractor error: %lld facts\n",
+		(long long)store_->persistedFactCount());
+	return store_->persistedFactCount();
 }
 
 // ─── extractPatternFacts ──────────────────────────────────────────
@@ -563,9 +563,9 @@ int64_t SemanticFactExtractor::extractPatternFacts(uint64_t project_id)
 			"method=extractPatternFacts] insert failed: %s\n",
 			store_->error().c_str());
 	}
-	fprintf(stderr, "[model] SemanticFactExtractor pattern: %zu facts\n",
-		facts.size());
-	return static_cast<int64_t>(facts.size());
+	fprintf(stderr, "[model] SemanticFactExtractor pattern: %lld facts\n",
+		(long long)store_->persistedFactCount());
+	return store_->persistedFactCount();
 }
 
 // ─── extractFrameworkFacts ────────────────────────────────────────
@@ -654,9 +654,9 @@ int64_t SemanticFactExtractor::extractFrameworkFacts(uint64_t project_id)
 			"method=extractFrameworkFacts] insert failed: %s\n",
 			store_->error().c_str());
 	}
-	fprintf(stderr, "[model] SemanticFactExtractor framework: %zu facts\n",
-		facts.size());
-	return static_cast<int64_t>(facts.size());
+	fprintf(stderr, "[model] SemanticFactExtractor framework: %lld facts\n",
+		(long long)store_->persistedFactCount());
+	return store_->persistedFactCount();
 }
 
 // ─── extractFfiFacts ──────────────────────────────────────────────
@@ -853,9 +853,9 @@ int64_t SemanticFactExtractor::extractFfiFacts(uint64_t project_id)
 			"method=extractFfiFacts] insert failed: %s\n",
 			store_->error().c_str());
 	}
-	fprintf(stderr, "[model] SemanticFactExtractor ffi: %zu facts\n",
-		facts.size());
-	return static_cast<int64_t>(facts.size());
+	fprintf(stderr, "[model] SemanticFactExtractor ffi: %lld facts\n",
+		(long long)store_->persistedFactCount());
+	return store_->persistedFactCount();
 }
 
 } // namespace model
