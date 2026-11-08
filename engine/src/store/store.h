@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "../graph/graph_types.h"
+#include "store_verification.h"
 
 struct sqlite3;
 struct sqlite3_stmt;
@@ -648,6 +649,46 @@ class GraphStore {
 			      const std::string &description,
 			      double confidence);
 
+	// ── Unified verification model (development_plan §17.4) ─────
+	//
+	// NOTE: these five methods have no production caller yet — no FFI entry
+	// point and no MCP tool invokes them; only engine/tests drives them
+	// (development_plan §17.10). Until that wiring lands, "M0 end-to-end" is
+	// proven at the test level only, and a caller must not assume that
+	// analyze_project creates a run on its behalf.
+
+	/** Insert one verification run.
+	 *  @return false when the run_id already exists or on any SQL error. A
+	 *          duplicate run is rejected rather than silently merged: two
+	 *          different analyses must never share one identity. */
+	bool insertVerificationRun(const VerificationRun &run);
+
+	/** Close a run: stamp finished_at, status and error.
+	 *
+	 *  Idempotent by overwrite: calling it again on an already-finished run
+	 *  rewrites finished_at/status/error and still returns true. Callers do
+	 *  not need to check whether the run is already closed.
+	 *
+	 *  @return false when no row matched (unknown run_id). */
+	bool finishVerificationRun(const std::string &run_id, RunStatus status,
+				   const std::string &error);
+
+	/** Record the outcome of one rule execution. Idempotent per
+	 *  (run_id, rule_id): re-running a rule replaces its previous outcome. */
+	bool insertRuleExec(const RuleExec &rec);
+
+	/** Persist one evidence row together with its locations and fact links,
+	 *  atomically. A record without a run, rule or location is rejected: an
+	 *  unactionable finding must not be persisted as if it were verified.
+	 *  @return new evidence id, or 0 on rejection/failure; nothing is written
+	 *          when it returns 0. */
+	int64_t recordEvidence(const EvidenceRecord &rec);
+
+	/** Insert or update the current state of a finding, keyed by
+	 *  (project_id, finding_key). History stays in the evidence rows; this
+	 *  row only carries the present state. */
+	bool upsertFinding(const FindingRecord &rec);
+
 	/** List (id, name) pairs of capabilities for a project. */
 	std::vector<std::pair<int64_t, std::string>>
 	listCapabilities(uint64_t project_id);
@@ -711,12 +752,37 @@ class GraphStore {
     private:
 	bool createSchema();
 
+	/** Post-DDL schema passes: self-healing column patches followed by the
+	 *  ordered migrations. Split out of createSchema() so that function keeps
+	 *  its grandfathered size (code_rules §1.1: over-limit code may shrink,
+	 *  never grow).
+	 *  @param schema_ok result of the main DDL; a failure here still fails the
+	 *         whole build, but the passes run either way.
+	 *  @return false when either pass fails. */
+	bool finishSchema(bool schema_ok);
+
 	/** Patch columns added in later versions onto a database that already
 	 *  exists. SQLite has no "ADD COLUMN IF NOT EXISTS", so createSchema()
 	 *  creates the main DDL and delegates every per-column migration here
 	 *  (own TU: the migrations outgrew the 1000-line rule).
 	 *  @return false on a hard failure; individual failures are logged. */
 	bool runSchemaMigrations();
+
+	/** Apply ordered migrations newer than PRAGMA user_version.
+	 *
+	 *  Runs after the baseline DDL and the self-healing column pass. Each
+	 *  entry from store_migrations_data.cpp executes in its own transaction
+	 *  and is recorded in schema_meta; PRAGMA user_version is the authority.
+	 *
+	 *  Pre-0.3.0 databases carry user_version = 0 although their tables
+	 *  exist, so they are normalised to baseline version 1 and then receive
+	 *  every migration above 1 — the same path a fresh database takes, which
+	 *  keeps the two schemas identical.
+	 *
+	 *  @return false when a migration or the post-migration health check
+	 *          fails; callers must not continue on a partially migrated
+	 *          schema. */
+	bool applyPendingMigrations();
 
 	/** Migration group for the route / type_info / type_ref tables (own TU:
 	 *  the migration pass outgrew the 1000-line rule — see

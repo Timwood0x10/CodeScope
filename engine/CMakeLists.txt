@@ -233,6 +233,9 @@ set(ENGINE_SOURCES
     src/store/store_schema.cpp
     src/store/store_schema_migrations.cpp
     src/store/store_schema_migrations_types.cpp
+    src/store/store_migrations.cpp
+    src/store/store_migrations_data.cpp
+    src/store/store_verification.cpp
     src/store/store.cpp
     src/store/store_insert.cpp
     src/store/store_search.cpp

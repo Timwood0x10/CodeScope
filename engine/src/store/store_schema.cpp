@@ -827,16 +827,22 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 
         )SQL";
 
-	// Execute main schema
+	// Execute main schema, then hand off to the post-DDL passes: column
+	// patches (store_schema_migrations.cpp) and ordered migrations
+	// (store_migrations.cpp). Split out so this function keeps its
+	// grandfathered size — code_rules §1.1 lets over-limit code shrink, never
+	// grow.
 	bool ok = exec(schema);
+	return finishSchema(ok);
+}
 
-	// The per-column migrations that follow live in
-	// store_schema_migrations.cpp (1000-line rule). They run regardless of
-	// `ok`, exactly as before this split, and a hard migration failure
-	// still fails the whole schema build.
-	bool migrations_ok = runSchemaMigrations();
-	(void)ok;
-	return ok && migrations_ok;
+bool GraphStore::finishSchema(bool schema_ok)
+{
+	// Both passes run regardless of the DDL result, exactly as before they
+	// were split: a hard failure in either one fails the whole schema build.
+	bool columns_ok = runSchemaMigrations();
+	bool pending_ok = applyPendingMigrations();
+	return schema_ok && columns_ok && pending_ok;
 }
 
 bool GraphStore::createIndexesAfterBulkLoad(uint64_t project_id,
