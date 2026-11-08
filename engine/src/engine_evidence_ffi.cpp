@@ -114,6 +114,32 @@ char *engine_build_evidence(engine_t handle, uint64_t project_id,
 			evidences = builder.buildAll(project_id);
 		}
 
+		// Zero matches and a failed query both yield an empty list. Returning
+		// `[]` would claim "nothing to report" when the facts could not even
+		// be read, so report the failure instead of a confident empty answer
+		// (development_plan §17.5). The rule names matter: a bare count does
+		// not tell the caller whether its rule is among the failures.
+		if (builder.failedQueries() > 0) {
+			constexpr int kMaxRulesInError = 10;
+			std::string names;
+			int shown = 0;
+			for (const auto &rule : builder.failedRules()) {
+				if (shown == kMaxRulesInError) {
+					names += ", ...";
+					break;
+				}
+				if (!names.empty())
+					names += ", ";
+				names += rule;
+				++shown;
+			}
+			return dupString(util::errorEnvelope(
+				"ffi", "engine_build_evidence",
+				std::to_string(builder.failedQueries()) +
+					" rule(s) failed to query facts: " +
+					names));
+		}
+
 		util::JsonWriter w;
 		w.beginArray();
 		for (const auto &ev : evidences)

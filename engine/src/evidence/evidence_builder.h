@@ -2,6 +2,7 @@
 #define CODESCOPE_EVIDENCE_BUILDER_H
 
 #include <cstdint>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -100,9 +101,32 @@ class EvidenceBuilder {
 		return rule_sets_;
 	}
 
+	/// Number of RULES whose fact query failed during the last build* call.
+	///
+	/// Zero matches and a failed query both produce an empty evidence list,
+	/// which is exactly the confusion this removes: a caller must not report
+	/// "clean" when a query never ran. A non-zero value means the evidence for
+	/// this build is incomplete (development_plan §17.5).
+	int failedQueries() const
+	{
+		return static_cast<int>(failed_rules_.size());
+	}
+
+	/// Names of the rules whose queries failed, so a caller can tell whether
+	/// the rule it cares about is among them instead of only seeing a count.
+	const std::set<std::string> &failedRules() const
+	{
+		return failed_rules_;
+	}
+
     private:
 	store::GraphStore *store_;
 	std::vector<RuleSet> rule_sets_;
+	/// Reset at the start of every build* call; `mutable` because the build
+	/// methods are const and this is a run report, not builder state.
+	/// A set, not a counter: one rule may issue several needs, and reporting
+	/// "3 failures" without names tells the caller nothing actionable.
+	mutable std::set<std::string> failed_rules_;
 };
 
 } // namespace evidence
