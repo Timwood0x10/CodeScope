@@ -524,6 +524,11 @@ pub(crate) fn merge_module_dbs(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        // sqlite3 prints the diagnostic, a snippet, then a caret line. Keeping
+        // only the last line left the caret and dropped the reason, which made
+        // a failed merge undiagnosable. Keep the last few lines instead.
+        let tail: Vec<&str> = stderr.lines().rev().take(4).collect();
+        let tail = tail.into_iter().rev().collect::<Vec<_>>().join(" | ");
         return MergeResult {
             merged: false,
             main_db_path: main_db.to_string(),
@@ -533,7 +538,7 @@ pub(crate) fn merge_module_dbs(
             error: Some(format!(
                 "sqlite3 exit={} stderr_tail={:?} [module=scheduler, method=merge_module_dbs]",
                 output.status.code().unwrap_or(-1),
-                stderr.lines().last().unwrap_or("")
+                tail
             )),
         };
     }
@@ -590,7 +595,7 @@ pub(crate) fn merge_module_dbs(
 
 #[cfg(test)]
 mod tests {
-    use super::unify_project;
+    use super::{merge_module_dbs, unify_project};
     use std::process::{Command, Stdio};
 
     fn sqlite(db: &str, sql: &str) -> String {
@@ -608,6 +613,144 @@ mod tests {
             String::from_utf8_lossy(&out.stderr)
         );
         String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// Schema shared by the module DBs used by the verification-merge test.
+    ///
+    /// It carries every OFFSET_TABLES entry because `merge_module_dbs` builds
+    /// `_offsets` for all of them unconditionally: a missing table there aborts
+    /// the merge even when no row of that table exists.
+    const MERGE_SCHEMA: &str = "
+        CREATE TABLE projects (id INTEGER PRIMARY KEY, root_path TEXT UNIQUE, name TEXT);
+        CREATE TABLE entity (id INTEGER PRIMARY KEY, project_id INTEGER, name TEXT);
+        CREATE TABLE relation (id INTEGER PRIMARY KEY, project_id INTEGER);
+        CREATE TABLE type_info (id INTEGER PRIMARY KEY);
+        CREATE TABLE type_ref (id INTEGER PRIMARY KEY);
+        CREATE TABLE scope (id INTEGER PRIMARY KEY);
+        CREATE TABLE import (id INTEGER PRIMARY KEY);
+        CREATE TABLE reference (id INTEGER PRIMARY KEY);
+        CREATE TABLE files (id INTEGER PRIMARY KEY);
+        CREATE TABLE document (id INTEGER PRIMARY KEY);
+        CREATE TABLE claim (id INTEGER PRIMARY KEY, project_id INTEGER, subject TEXT);
+        CREATE TABLE evidence (
+            id INTEGER PRIMARY KEY, claim_id INTEGER, run_id TEXT,
+            rule_id TEXT, finding_key TEXT);
+        CREATE TABLE evidence_location (
+            evidence_id INTEGER, file_path TEXT, start_row INTEGER,
+            end_row INTEGER, symbol TEXT,
+            PRIMARY KEY (evidence_id, file_path, start_row, symbol));
+        CREATE TABLE finding (
+            id INTEGER PRIMARY KEY, project_id INTEGER, finding_key TEXT,
+            claim_id INTEGER);
+        CREATE TABLE finding_evidence (
+            project_id INTEGER, finding_key TEXT, evidence_id INTEGER,
+            PRIMARY KEY (project_id, finding_key, evidence_id));
+        CREATE TABLE verification_run (run_id TEXT PRIMARY KEY, project_id INTEGER);
+        CREATE TABLE rule_exec (run_id TEXT, rule_id TEXT, PRIMARY KEY (run_id, rule_id));
+        CREATE TABLE coverage (
+            run_id TEXT, layer TEXT, metric TEXT, value REAL,
+            PRIMARY KEY (run_id, layer, metric));
+    ";
+
+    /// Merge must offset every id the verification model references.
+    ///
+    /// Regression: `evidence_location` / `finding_evidence` remap
+    /// `evidence_id`, and `evidence` / `finding` remap `claim_id`. If any of
+    /// those parent tables is missing from OFFSET_TABLES, the generated SQL
+    /// selects a `_<table>_offset` column that does not exist and the merge
+    /// aborts after earlier modules were already committed — which is exactly
+    /// what a static spec test cannot catch. This test runs the real merge.
+    #[test]
+    fn test_merge_remaps_verification_evidence_links() {
+        let pid = std::process::id();
+        let dir = std::env::temp_dir();
+        let main = dir.join(format!("codescope_merge_verify_{pid}_main.db"));
+        let m0 = dir.join(format!("codescope_merge_verify_{pid}_m0.db"));
+        let m1 = dir.join(format!("codescope_merge_verify_{pid}_m1.db"));
+        for p in [&main, &m0, &m1] {
+            let _ = std::fs::remove_file(p);
+            let _ = std::fs::remove_file(format!("{}-wal", p.to_string_lossy()));
+        }
+
+        for db in [&m0, &m1] {
+            sqlite(db.to_str().expect("utf8 path"), MERGE_SCHEMA);
+        }
+        // Both modules use their own id 1; the offset must push module 1 to 2.
+        sqlite(
+            m0.to_str().expect("utf8 path"),
+            "INSERT INTO claim VALUES (1,1,'a');
+             INSERT INTO evidence (id,claim_id,run_id,rule_id,finding_key)
+                 VALUES (1,1,'r','rule','fk-a');
+             INSERT INTO evidence_location VALUES (1,'a.rs',1,2,'A');
+             INSERT INTO finding (id,project_id,finding_key,claim_id)
+                 VALUES (1,1,'fk-a',1);
+             INSERT INTO finding_evidence VALUES (1,'fk-a',1);
+             INSERT INTO projects VALUES (1,'/w/0','w0');",
+        );
+        sqlite(
+            m1.to_str().expect("utf8 path"),
+            "INSERT INTO claim VALUES (1,1,'b');
+             INSERT INTO evidence (id,claim_id,run_id,rule_id,finding_key)
+                 VALUES (1,1,'r','rule','fk-b');
+             INSERT INTO evidence_location VALUES (1,'b.rs',1,2,'B');
+             INSERT INTO finding (id,project_id,finding_key,claim_id)
+                 VALUES (1,1,'fk-b',1);
+             INSERT INTO finding_evidence VALUES (1,'fk-b',1);
+             INSERT INTO projects VALUES (1,'/w/1','w1');",
+        );
+
+        let modules = vec![
+            m0.to_string_lossy().into_owned(),
+            m1.to_string_lossy().into_owned(),
+        ];
+        let main_path = main.to_string_lossy().into_owned();
+        let result = merge_module_dbs(&main_path, &modules, "/real/project");
+        assert!(result.merged, "merge failed: {:?}", result.error);
+
+        assert_eq!(sqlite(&main_path, "SELECT COUNT(*) FROM claim;"), "2");
+        assert_eq!(
+            sqlite(
+                &main_path,
+                "SELECT group_concat(id) FROM claim ORDER BY id;"
+            ),
+            "1,2"
+        );
+        // Module 1's evidence must point at module 1's claim, not claim 1.
+        assert_eq!(
+            sqlite(
+                &main_path,
+                "SELECT claim_id FROM evidence WHERE finding_key='fk-b';"
+            ),
+            "2",
+            "evidence.claim_id was not remapped"
+        );
+        assert_eq!(
+            sqlite(
+                &main_path,
+                "SELECT evidence_id FROM evidence_location WHERE file_path='b.rs';"
+            ),
+            "2",
+            "evidence_location.evidence_id was not remapped"
+        );
+        assert_eq!(
+            sqlite(
+                &main_path,
+                "SELECT evidence_id FROM finding_evidence WHERE finding_key='fk-b';"
+            ),
+            "2",
+            "finding_evidence.evidence_id was not remapped"
+        );
+        assert_eq!(
+            sqlite(
+                &main_path,
+                "SELECT id FROM finding WHERE finding_key='fk-b';"
+            ),
+            "2"
+        );
+
+        for p in [&main, &m0, &m1] {
+            let _ = std::fs::remove_file(p);
+        }
     }
 
     #[test]

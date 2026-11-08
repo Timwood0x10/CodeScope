@@ -48,160 +48,9 @@ pub(super) struct MergeResult {
     pub error: Option<String>,
 }
 
-/// Spec for one table to merge.
-struct TableSpec {
-    name: &'static str,
-    /// Columns to remap when this table is from module i > 0.
-    /// Each entry is (column_name, source_table_for_offset).
-    /// "self" means use this table's own MAX(id) as the offset
-    /// (i.e., the column is this table's own PK).
-    /// Any other value means use that table's MAX(id) as the offset
-    /// (i.e., the column is an FK to that table).
-    remap_cols: &'static [(&'static str, &'static str)],
-    /// When true, use an explicit column list (excluding rowid) instead
-    /// of `SELECT *` so SQLite auto-assigns a fresh rowid. Required for
-    /// tables with `INTEGER PRIMARY KEY AUTOINCREMENT` whose rowid
-    /// would collide across module DBs.
-    skip_rowid: bool,
-}
-
-/// Tables to merge. Order matters: parents (referenced tables) must come
-/// before children (tables with FKs to them), so offsets for parent
-/// tables are computed first.
-const TABLE_SPECS: &[TableSpec] = &[
-    // entity replaces graph_nodes (deprecated)
-    TableSpec {
-        name: "entity",
-        remap_cols: &[("id", "self")],
-        skip_rowid: false,
-    },
-    // relation replaces graph_edges (deprecated)
-    TableSpec {
-        name: "relation",
-        remap_cols: &[
-            ("id", "self"),
-            ("source_id", "entity"),
-            ("target_id", "entity"),
-        ],
-        skip_rowid: false,
-    },
-    TableSpec {
-        name: "type_info",
-        remap_cols: &[("id", "self")],
-        skip_rowid: false,
-    },
-    TableSpec {
-        name: "type_ref",
-        remap_cols: &[("id", "self"), ("entity_id", "entity")],
-        skip_rowid: false,
-    },
-    // parent_id is a self-reference (scope.parent_id -> scope.id);
-    // remapping by the same scope offset preserves intra-module refs.
-    TableSpec {
-        name: "scope",
-        remap_cols: &[("id", "self"), ("parent_id", "self")],
-        skip_rowid: false,
-    },
-    TableSpec {
-        name: "import",
-        remap_cols: &[("id", "self"), ("source_scope_id", "scope")],
-        skip_rowid: false,
-    },
-    TableSpec {
-        name: "reference",
-        remap_cols: &[
-            ("id", "self"),
-            ("caller_id", "entity"),
-            ("scope_id", "scope"),
-        ],
-        skip_rowid: false,
-    },
-    TableSpec {
-        name: "files",
-        remap_cols: &[("id", "self")],
-        skip_rowid: false,
-    },
-    // PK is (project_id, file_path) — no id column to remap.
-    TableSpec {
-        name: "file_scan_state",
-        remap_cols: &[],
-        skip_rowid: false,
-    },
-    // adjacency and adjacency_rev now reference entity.id instead of graph_nodes.id
-    TableSpec {
-        name: "adjacency",
-        remap_cols: &[("src_id", "entity")],
-        skip_rowid: false,
-    },
-    TableSpec {
-        name: "adjacency_rev",
-        remap_cols: &[("tgt_id", "entity")],
-        skip_rowid: false,
-    },
-    // semantic_records has rowid INTEGER PRIMARY KEY AUTOINCREMENT.
-    // skip_rowid=true so SQLite auto-assigns fresh rowids (avoids
-    // cross-module rowid collisions that would silently drop rows
-    // under INSERT OR IGNORE). parent_id and ref_original_id reference
-    // original_id within the same project_id, which is unique per
-    // worker — no remap needed.
-    TableSpec {
-        name: "semantic_records",
-        remap_cols: &[],
-        skip_rowid: true,
-    },
-    // H2 fix: document (README/architecture extraction) and parse_failures
-    // were absent from TABLE_SPECS, so parallel workers' rows in these
-    // tables were silently dropped at merge time (the main.db only merged
-    // the tables listed here). document.id is INTEGER PRIMARY KEY
-    // AUTOINCREMENT but the column is literally named `id` (not `rowid`),
-    // so fetch_columns_excluding_rowid cannot skip it — we remap it with
-    // the document offset instead (id + offset lands above every module's
-    // max, so INSERT OR IGNORE never collides across modules).
-    // parse_failures has a composite PK (project_id, file_path) with no id
-    // column, so a plain INSERT OR IGNORE dedupes naturally.
-    TableSpec {
-        name: "document",
-        remap_cols: &[("id", "self")],
-        skip_rowid: false,
-    },
-    TableSpec {
-        name: "parse_failures",
-        remap_cols: &[],
-        skip_rowid: false,
-    },
-];
-
-/// Tables to read schema for from sqlite_master.
-const SCHEMA_TABLES: &[&str] = &[
-    "files",
-    "file_scan_state",
-    "entity",
-    "relation",
-    "import",
-    "reference",
-    "scope",
-    "type_info",
-    "type_ref",
-    "adjacency",
-    "adjacency_rev",
-    "semantic_records",
-    "document",
-    "parse_failures",
-];
-
-/// Tables that need an offset computed (have id column).
-/// Used to build the _offsets temp table.
-const OFFSET_TABLES: &[&str] = &[
-    "entity",
-    "relation",
-    "type_info",
-    "type_ref",
-    "scope",
-    "import",
-    "reference",
-    "files",
-    "document",
-];
+pub(crate) use crate::scheduler::merge_specs::{
+    OFFSET_TABLES, SCHEMA_TABLES, TABLE_SPECS, TableSpec,
+};
 
 /// Build the INSERT OR IGNORE SQL for a table.
 ///
@@ -510,6 +359,66 @@ mod tests {
                 "{} should not be in merge list",
                 forbidden
             );
+        }
+    }
+
+    #[test]
+    fn test_verification_tables_are_merged() {
+        // development_plan §17.7: a verification table missing from this list
+        // loses every row a worker writes, silently. Guard the whole set, and
+        // pin the one FK that must be offset-remapped.
+        let names: Vec<&str> = TABLE_SPECS.iter().map(|s| s.name).collect();
+        for required in [
+            "verification_run",
+            "rule_exec",
+            "evidence",
+            "evidence_location",
+            "finding",
+            "finding_evidence",
+            "coverage",
+        ] {
+            assert!(
+                names.contains(&required),
+                "{} missing from TABLE_SPECS",
+                required
+            );
+        }
+        let loc = TABLE_SPECS
+            .iter()
+            .find(|s| s.name == "evidence_location")
+            .expect("evidence_location spec");
+        assert!(
+            loc.remap_cols.contains(&("evidence_id", "evidence")),
+            "evidence_location.evidence_id must be remapped by the evidence offset"
+        );
+    }
+
+    #[test]
+    fn test_every_remap_source_is_an_offset_table() {
+        // build_remap_insert_sql emits `col + (SELECT _X_offset FROM _offsets)`
+        // for every remap source X. If X is not in OFFSET_TABLES the column
+        // does not exist and the whole merge aborts at runtime, after earlier
+        // modules were already committed. Pin the invariant for every spec.
+        for spec in TABLE_SPECS {
+            for (col, source) in spec.remap_cols {
+                // "self" means the table's own MAX(id) is the offset, so the
+                // table itself must be in OFFSET_TABLES — not just the FK
+                // parents. Checking only non-self sources let `finding`
+                // (id, self) reach production with no _finding_offset.
+                let offset_table = if *source == "self" {
+                    spec.name
+                } else {
+                    *source
+                };
+                assert!(
+                    OFFSET_TABLES.contains(&offset_table),
+                    "{}::{} needs _{}_offset, but `{}` is not in OFFSET_TABLES",
+                    spec.name,
+                    col,
+                    offset_table,
+                    offset_table
+                );
+            }
         }
     }
 
