@@ -6,7 +6,6 @@
 #include <utility>
 #include <vector>
 
-
 namespace store
 {
 

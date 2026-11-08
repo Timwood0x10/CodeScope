@@ -167,8 +167,11 @@ bool insertLocations(sqlite3 *db, int64_t evidence_id,
 		     const std::vector<EvidenceLocation> &locations,
 		     std::string &err)
 {
+	// OR IGNORE for symmetry with evidence_fact: a rule that reports the same
+	// location twice should not abort the whole evidence row on the primary
+	// key, it should record the location once.
 	const char *sql =
-		"INSERT INTO evidence_location (evidence_id, file_path, "
+		"INSERT OR IGNORE INTO evidence_location (evidence_id, file_path, "
 		"start_row, end_row, symbol) VALUES (?,?,?,?,?)";
 	for (const auto &loc : locations) {
 		sqlite3_stmt *st = nullptr;

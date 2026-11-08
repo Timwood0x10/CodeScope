@@ -221,17 +221,25 @@ int main()
 					   store::RunStatus::Completed, ""),
 	      "unknown run_id must report failure");
 
-	// ── 5. Duplicate fact links are deduplicated, not duplicated ────
+	// ── 5. Duplicate children are deduplicated, not duplicated ──────
 	store::EvidenceRecord dup = ev;
 	dup.finding_key = "fk-dup";
-	dup.facts.push_back({0, 42}); // repeats the first fact on purpose
+	dup.facts.push_back({0, 42});      // repeats the first fact
+	dup.locations.push_back(ev.locations[0]); // repeats the first location
 	int64_t dup_id = store.recordEvidence(dup);
-	check(dup_id > 0, "recordEvidence with a duplicate fact");
+	check(dup_id > 0, "recordEvidence with duplicate children");
 	std::string fact_count =
 		"SELECT COUNT(*) FROM evidence_fact WHERE evidence_id=" +
 		std::to_string(dup_id);
 	check(scalar(store, fact_count) == 2,
 	      "a repeated (kind, ref) pair must be stored once");
+	// Same guard for locations: without INSERT OR IGNORE this aborts the whole
+	// evidence row instead of recording the location once.
+	std::string loc_count =
+		"SELECT COUNT(*) FROM evidence_location WHERE evidence_id=" +
+		std::to_string(dup_id);
+	check(scalar(store, loc_count) == 2,
+	      "a repeated location must be stored once");
 	check(scalar(store, "SELECT COUNT(*) FROM evidence") == 2,
 	      "two evidence rows expected at the end");
 
