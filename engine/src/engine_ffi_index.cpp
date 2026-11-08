@@ -29,6 +29,237 @@
 
 // ─── Batch Indexing ──────────────────────────────────────────
 
+/// One parsed file waiting to be written.
+struct FileBatch {
+	std::unique_ptr<ir::TranslationUnit> unit;
+	std::string source;
+	std::string language;
+	std::string file_path;
+	FileBatch(std::unique_ptr<ir::TranslationUnit> u, std::string s,
+		  std::string l, std::string fp)
+		: unit(std::move(u))
+		, source(std::move(s))
+		, language(std::move(l))
+		, file_path(std::move(fp))
+	{
+	}
+};
+
+/// Parse a JSON array of paths. `err` carries the message the caller reports.
+static bool parsePathList(const char *json, std::vector<std::string> &paths,
+			  std::string &err)
+{
+	const char *p = json;
+	if (!p || !*p) {
+		err = "empty file list";
+		return false;
+	}
+	while (*p && *p != '[')
+		p++;
+	if (!*p) {
+		err = "expected [";
+		return false;
+	}
+	p++;
+	while (*p) {
+		while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' ||
+		       *p == ',')
+			p++;
+		if (*p == ']')
+			break;
+		if (*p != '"') {
+			err = "expected string";
+			return false;
+		}
+		p++;
+		std::string path;
+		while (*p && *p != '"') {
+			if (*p == '\\') {
+				p++;
+				switch (*p) {
+				case '"':
+					path += '"';
+					break;
+				case '\\':
+					path += '\\';
+					break;
+				case '/':
+					path += '/';
+					break;
+				case 'n':
+					path += '\n';
+					break;
+				case 't':
+					path += '\t';
+					break;
+				case 'r':
+					path += '\r';
+					break;
+				case 'b':
+					path += '\b';
+					break;
+				case 'f':
+					path += '\f';
+					break;
+				case 'u': {
+					// Pass-through for \uXXXX: keep the escape
+					// text so non-ASCII paths round-trip.
+					// Buffer: '\' 'u' + 5 hex + NUL = 8 bytes.
+					char unicode_buf[8] = "\\u";
+					int i = 1;
+					while (*++p && i < 6 &&
+					       ((*p >= '0' && *p <= '9') ||
+						(*p >= 'a' && *p <= 'f') ||
+						(*p >= 'A' && *p <= 'F')))
+						unicode_buf[++i] = *p;
+					unicode_buf[++i] = '\0';
+					path += unicode_buf;
+					p--; // loop advances p
+					break;
+				}
+				default:
+					path += '\\';
+					path += *p;
+					break;
+				}
+			} else {
+				path += *p;
+			}
+			p++;
+		}
+		if (*p != '"') {
+			err = "unterminated string";
+			return false;
+		}
+		p++;
+		if (!path.empty())
+			paths.push_back(path);
+	}
+	return true;
+}
+
+/// Parse every path in memory; unreadable or unparsable files land in `errors`
+/// instead of aborting the batch (one bad file must not lose the rest).
+static void parseBatches(EngineContext *ctx,
+			 const std::vector<std::string> &paths,
+			 std::vector<FileBatch> &batches,
+			 std::vector<std::string> &errors)
+{
+	for (const auto &fp : paths) {
+		const char *lang = detectLanguage(fp.c_str());
+		if (!lang) {
+			errors.push_back(fp + ": unsupported");
+			continue;
+		}
+
+		std::string source = readFile(fp.c_str());
+		if (source.empty()) {
+			errors.push_back(fp + ": cannot read");
+			continue;
+		}
+
+		TSTree *tree = ctx->parser->parse(fp.c_str(), source.c_str(),
+						  lang, source.size());
+		if (!tree) {
+			errors.push_back(fp + ": parse failed");
+			continue;
+		}
+
+		std::unique_ptr<ir::Translator> translator(
+			ir::createTranslator(lang));
+		if (!translator) {
+			ts_tree_delete(tree);
+			errors.push_back(fp + ": no translator");
+			continue;
+		}
+
+		ir::TranslationUnit *unit =
+			translator->translate(tree, source.c_str(), fp.c_str());
+		ts_tree_delete(tree);
+		if (!unit) {
+			errors.push_back(fp + ": translation failed");
+			continue;
+		}
+
+		batches.push_back(
+			FileBatch{ std::unique_ptr<ir::TranslationUnit>(unit),
+				   std::move(source), lang, fp });
+	}
+}
+
+/// Write every parsed file in one transaction.
+///
+/// Cleanup is a precondition, not a best effort: leftover graph rows plus the
+/// inserts below produce duplicate entities. The old code logged the failure
+/// and carried on, which is exactly the duplicate accumulation the DELETE
+/// exists to prevent.
+static bool persistBatches(EngineContext *ctx, uint64_t project_id,
+			   std::vector<FileBatch> &batches, int &total_nodes,
+			   int &total_edges)
+{
+	ctx->store->beginTransaction();
+
+	uint64_t start_id = 1;
+	{
+		// Allocate past BOTH tables: insertEntity is INSERT OR IGNORE
+		// (drops on collision) while insertGraphNode does a bare INSERT
+		// on graph_nodes.id (PRIMARY KEY). Sourcing only one table lets
+		// the other collide and silently lose rows.
+		sqlite3_stmt *stmt = nullptr;
+		if (sqlite3_prepare_v2(
+			    ctx->store->handle(),
+			    "SELECT COALESCE(MAX(t.id),0)+1 FROM (SELECT id "
+			    "FROM entity UNION ALL SELECT id FROM "
+			    "graph_nodes) t",
+			    -1, &stmt, nullptr) == SQLITE_OK) {
+			if (sqlite3_step(stmt) == SQLITE_ROW)
+				start_id = static_cast<uint64_t>(
+					sqlite3_column_int64(stmt, 0));
+			sqlite3_finalize(stmt);
+		}
+	}
+
+	graph::GraphBuilder builder(project_id, start_id);
+	for (auto &b : batches) {
+		std::string hash = store::Sha256Hex(b.source);
+		ctx->store->upsertFile(project_id, b.file_path.c_str(),
+				       b.language.c_str(), hash.c_str());
+		// Delete graph-layer data only (relation, graph_edges,
+		// graph_nodes, entity, type_ref, type_info, import, route).
+		// NOT semantic_records — this batch path re-inserts graph data
+		// directly from in-memory `b.unit` and never repopulates
+		// semantic_records. buildGraph later uses semantic_records to
+		// decide the file rebuild set; wiping it here would make
+		// subsequent engine_index_project skip rebuilding this file,
+		// leaving stale graph_nodes forever.
+		if (!ctx->store->deleteGraphDataByFile(project_id,
+						       b.file_path.c_str()))
+			return false;
+
+		// No ir_nodes/ir_semantic_edges write — graph_nodes is canonical.
+		// FTS/vector writes skipped for single-file index path.
+
+		auto sg = builder.buildSymbolGraph(b.unit.get());
+		auto cg = builder.buildCallGraph(b.unit.get());
+		for (auto &gn : sg.nodes) {
+			ctx->store->insertGraphNode(project_id, gn);
+			ctx->store->insertEntity(project_id, gn);
+			total_nodes++;
+		}
+		for (auto &e : sg.edges) {
+			ctx->store->insertGraphEdge(project_id, e);
+			total_edges++;
+		}
+		for (auto &e : cg.edges) {
+			ctx->store->insertGraphEdge(project_id, e);
+			total_edges++;
+		}
+	}
+
+	ctx->store->commitTransaction();
+	return true;
+}
+
 char *engine_index_batch(engine_t handle, uint64_t project_id,
 			 const char *file_paths_json)
 {
@@ -42,235 +273,28 @@ char *engine_index_batch(engine_t handle, uint64_t project_id,
 			return dupString(
 				"{\"ok\":false,\"error\":\"not initialized\"}");
 
-		// Parse JSON array of file paths
 		std::vector<std::string> paths;
-		{
-			const char *p = file_paths_json;
-			if (!p || !*p)
-				return dupString(
-					"{\"ok\":false,\"error\":\"empty file list\"}");
-			while (*p && *p != '[')
-				p++;
-			if (!*p)
-				return dupString(
-					"{\"ok\":false,\"error\":\"expected [\"}");
-			p++;
-			while (*p) {
-				while (*p == ' ' || *p == '\t' || *p == '\n' ||
-				       *p == '\r' || *p == ',')
-					p++;
-				if (*p == ']')
-					break;
-				if (*p != '"')
-					return dupString(
-						"{\"ok\":false,\"error\":\"expected string\"}");
-				p++;
-				std::string path;
-				while (*p && *p != '"') {
-					if (*p == '\\') {
-						p++;
-						switch (*p) {
-						case '"':
-							path += '"';
-							break;
-						case '\\':
-							path += '\\';
-							break;
-						case '/':
-							path += '/';
-							break;
-						case 'n':
-							path += '\n';
-							break;
-						case 't':
-							path += '\t';
-							break;
-						case 'r':
-							path += '\r';
-							break;
-						case 'b':
-							path += '\b';
-							break;
-						case 'f':
-							path += '\f';
-							break;
-						case 'u': {
-							// Simple pass-through for \uXXXX.
-							// Buffer layout: '\' 'u' + up to 5 hex
-							// digits + NUL = 8 bytes. The loop below
-							// lets i reach 6, then writes the NUL at
-							// index 7, so the buffer must hold 8.
-							char unicode_buf[8] =
-								"\\u";
-							int i = 1;
-							while (*++p && i < 6 &&
-							       ((*p >= '0' &&
-								 *p <= '9') ||
-								(*p >= 'a' &&
-								 *p <= 'f') ||
-								(*p >= 'A' &&
-								 *p <= 'F')))
-								unicode_buf[++i] =
-									*p;
-							unicode_buf[++i] = '\0';
-							path += unicode_buf;
-							p--; // loop will advance p
-							break;
-						}
-						default:
-							path += '\\';
-							path += *p;
-							break;
-						}
-					} else {
-						path += *p;
-					}
-					p++;
-				}
-				if (*p != '"')
-					return dupString(
-						"{\"ok\":false,\"error\":\"unterminated string\"}");
-				p++;
-				if (!path.empty())
-					paths.push_back(path);
-			}
-		}
+		std::string parse_err;
+		if (!parsePathList(file_paths_json, paths, parse_err))
+			return dupString("{\"ok\":false,\"error\":\"" +
+					 parse_err + "\"}");
 		if (paths.empty())
 			return dupString(
 				"{\"ok\":false,\"error\":\"empty file list\"}");
 
-		// Phase 1: Parse all files in memory (no DB I/O)
-		struct FileBatch {
-			std::unique_ptr<ir::TranslationUnit> unit;
-			std::string source;
-			std::string language;
-			std::string file_path;
-			FileBatch(std::unique_ptr<ir::TranslationUnit> u,
-				  std::string s, std::string l, std::string fp)
-				: unit(std::move(u))
-				, source(std::move(s))
-				, language(std::move(l))
-				, file_path(std::move(fp))
-			{
-			}
-		};
 		std::vector<FileBatch> batches;
 		std::vector<std::string> errors;
+		parseBatches(ctx, paths, batches, errors);
 
-		for (const auto &fp : paths) {
-			const char *lang = detectLanguage(fp.c_str());
-			if (!lang) {
-				errors.push_back(fp + ": unsupported");
-				continue;
-			}
-
-			std::string source = readFile(fp.c_str());
-			if (source.empty()) {
-				errors.push_back(fp + ": cannot read");
-				continue;
-			}
-
-			TSTree *tree = ctx->parser->parse(fp.c_str(),
-							  source.c_str(), lang,
-							  source.size());
-			if (!tree) {
-				errors.push_back(fp + ": parse failed");
-				continue;
-			}
-
-			std::unique_ptr<ir::Translator> translator(
-				ir::createTranslator(lang));
-			if (!translator) {
-				ts_tree_delete(tree);
-				errors.push_back(fp + ": no translator");
-				continue;
-			}
-
-			ir::TranslationUnit *unit = translator->translate(
-				tree, source.c_str(), fp.c_str());
-			ts_tree_delete(tree);
-			if (!unit) {
-				errors.push_back(fp + ": translation failed");
-				continue;
-			}
-
-			batches.push_back(FileBatch{
-				std::unique_ptr<ir::TranslationUnit>(unit),
-				std::move(source), lang, fp });
-		}
-
-		// Phase 2: Persist in single transaction
-		ctx->store->beginTransaction();
-
-		uint64_t start_id = 1;
-		{
-			// Allocate past BOTH tables: insertEntity is INSERT OR
-			// IGNORE (drops on collision) while insertGraphNode does a
-			// bare INSERT on graph_nodes.id (PRIMARY KEY). Sourcing only
-			// one table lets the other collide and silently lose rows.
-			sqlite3_stmt *stmt = nullptr;
-			if (sqlite3_prepare_v2(
-				    ctx->store->handle(),
-				    "SELECT COALESCE(MAX(t.id),0)+1 FROM (SELECT id "
-				    "FROM entity UNION ALL SELECT id FROM "
-				    "graph_nodes) t",
-				    -1, &stmt, nullptr) == SQLITE_OK) {
-				if (sqlite3_step(stmt) == SQLITE_ROW)
-					start_id = static_cast<uint64_t>(
-						sqlite3_column_int64(stmt, 0));
-				sqlite3_finalize(stmt);
-			}
-		}
-
-		graph::GraphBuilder builder(project_id, start_id);
 		int total_nodes = 0, total_edges = 0;
-
-		for (auto &b : batches) {
-			std::string hash = store::Sha256Hex(b.source);
-			ctx->store->upsertFile(project_id, b.file_path.c_str(),
-					       b.language.c_str(),
-					       hash.c_str());
-			// Delete graph-layer data only (relation, graph_edges,
-			// graph_nodes, entity, type_ref, type_info, import, route).
-			// NOT semantic_records — this batch path re-inserts graph
-			// data directly from in-memory `b.unit` and never repopulates
-			// semantic_records. buildGraph later uses semantic_records to
-			// decide the file rebuild set; wiping it here would make
-			// subsequent engine_index_project skip rebuilding this file,
-			// leaving stale graph_nodes forever.
-			ctx->store->deleteGraphDataByFile(project_id,
-							  b.file_path.c_str());
-
-			// No ir_nodes/ir_semantic_edges write — graph_nodes is canonical.
-			// FTS/vector writes skipped for single-file index path.
-
-			auto sg = builder.buildSymbolGraph(b.unit.get());
-			auto cg = builder.buildCallGraph(b.unit.get());
-			for (auto &gn : sg.nodes) {
-				ctx->store->insertGraphNode(project_id, gn);
-				ctx->store->insertEntity(project_id, gn);
-				total_nodes++;
-			}
-			for (auto &e : sg.edges) {
-				ctx->store->insertGraphEdge(project_id, e);
-				total_edges++;
-			}
-			for (auto &e : cg.edges) {
-				ctx->store->insertGraphEdge(project_id, e);
-				total_edges++;
-			}
-
-			// ComplexityAnalyzer removed (Phase 0)
-			for (auto &gn : sg.nodes)
-				if (gn.type == graph::NodeType::Function ||
-				    gn.type == graph::NodeType::Method)
-					for (auto *in : b.unit->all_nodes)
-						if (in->id == gn.ir_node_id) {
-							break;
-						}
+		if (!persistBatches(ctx, project_id, batches, total_nodes,
+				    total_edges)) {
+			ctx->store->rollbackTransaction();
+			return dupString(util::errorEnvelope(
+				"ffi", "engine_index_batch",
+				"graph cleanup failed; refusing to insert on "
+				"top of stale rows"));
 		}
-
-		ctx->store->commitTransaction();
 
 		util::JsonWriter w;
 		w.beginObject();

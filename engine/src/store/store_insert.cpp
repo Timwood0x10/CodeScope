@@ -406,4 +406,23 @@ bool GraphStore::deleteGraphDataByFile(uint64_t project_id,
 
 	return ok;
 }
+
+bool GraphStore::deleteGraphDataForFiles(uint64_t project_id,
+					 const std::vector<std::string> &paths)
+{
+	for (const auto &path : paths) {
+		if (!deleteGraphDataByFile(project_id, path.c_str())) {
+			error_ = "cleanup failed for " + path;
+			// deleteGraphDataByFile logs which statement failed, but not
+			// which file. error_ is overwritten by whatever fails next, so
+			// the file name has to reach stderr here or it is lost.
+			fprintf(stderr,
+				"[module=store, method=deleteGraphDataForFiles] "
+				"cleanup failed for %s\n",
+				path.c_str());
+			return false;
+		}
+	}
+	return true;
+}
 } // namespace store

@@ -141,13 +141,11 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// values cannot be restored; the graph itself still rebuilds correctly.
 	snapshotMetricsForRebuild(project_id);
 
-	// Delete existing graph data for files being rebuilt.
-	// deleteGraphDataByFile cleans entity, relation (graph_nodes/graph_edges are deprecated)
-	// AND entity — the old code only deleted edges+nodes, leaving entity
-	// rows that caused duplicate accumulation on re-index.
-	for (auto &fp : rebuild_files) {
-		deleteGraphDataByFile(project_id, fp.c_str());
-	}
+	// Delete existing graph data for the files being rebuilt, and start the
+	// write flag from that result: leftover rows plus the INSERT below would
+	// create duplicate entities, so a failed cleanup must force the ROLLBACK.
+	bool graph_write_ok =
+		deleteGraphDataForFiles(project_id, rebuild_files);
 	auto t_delete = Clock::now();
 
 	std::string pid = std::to_string(project_id);
@@ -156,8 +154,8 @@ bool GraphStore::buildGraph(uint64_t project_id, bool build_calls,
 	// drift, SQLITE_BUSY, disk full) used to go unnoticed: buildGraph then
 	// RELEASEd the savepoint and returned true, so the caller committed a
 	// partially-populated graph and reported success. `graph_write_ok`
-	// accumulates failures and forces a ROLLBACK TO SAVEPOINT below.
-	bool graph_write_ok = true;
+	// accumulates failures (including the cleanup above) and forces a
+	// ROLLBACK TO SAVEPOINT below.
 	auto exec_write = [&](const std::string &sql, const char *step) {
 		if (exec(sql.c_str()))
 			return;

@@ -163,6 +163,14 @@ class GraphStore {
 	 */
 	bool deleteGraphDataByFile(uint64_t project_id, const char *file_path);
 
+	/** Delete graph data for every path, stopping at the first failure.
+	 *  Cleanup is a precondition of the rebuild: leftover rows plus the
+	 *  inserts that follow produce duplicate entities, so a partial delete
+	 *  must abort the rebuild rather than be logged and ignored.
+	 *  @return false on the first failure; error() names the file. */
+	bool deleteGraphDataForFiles(uint64_t project_id,
+				     const std::vector<std::string> &paths);
+
 	// ── Entity/Relation (Phase 1.1) ─────────────────────────
 
 	uint64_t insertEntity(uint64_t project_id,
@@ -733,6 +741,18 @@ class GraphStore {
 	 *  @param project_id  Project identifier (bound on every row).
 	 *  @param facts       Vector of SemanticFactRow tuples.
 	 *  @return true on success; false sets error() with full trace. */
+	/** Number of rows actually written by the last insertSemanticFacts call.
+	 *
+	 *  Callers must report this, not the number of facts they CONSTRUCTED:
+	 *  a step failure means the row was not persisted, and reporting the
+	 *  constructed count would overstate how much evidence exists
+	 *  (development_plan §17.5). Zero before the first call and after a
+	 *  call that prepared nothing. */
+	int64_t persistedFactCount() const
+	{
+		return persisted_fact_count_;
+	}
+
 	bool insertSemanticFacts(uint64_t project_id,
 				 const std::vector<SemanticFactRow> &facts);
 
@@ -744,6 +764,10 @@ class GraphStore {
 	sqlite3 *db_ = nullptr;
 	std::string error_;
 	std::string db_path_;
+	/// Rows actually written by the last insertSemanticFacts call; see
+	/// persistedFactCount(). Reporting the constructed count instead would
+	/// overstate how much evidence survived the write (§17.5).
+	int64_t persisted_fact_count_ = 0;
 
 	// Dynamic statement cache: one prepared statement PER THREAD (see
 	// getCachedStmt in store.cpp). A single sqlite3_stmt* is never shared
