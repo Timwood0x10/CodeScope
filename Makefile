@@ -334,6 +334,15 @@ LINT_CPP_FILES := $(shell find $(ENGINE_DIR)/src $(ENGINE_DIR)/include $(CPP_LIN
 lint: lint-cpp lint-rust
 	@printf "$(CHECK) lint complete\n"
 
+# Size limits from plan/rules/code_rules.md §1.1/§1.4 (file / function / struct
+# field counts). Existing over-limit code is grandfathered in the checked-in
+# baseline; growing it, or adding new over-limit code, fails. The baseline key
+# includes the measured size, so "只允许缩短，不允许继续加长" is enforced
+# mechanically rather than by review.
+rules-check:
+	@printf "$(CYAN)[rules]$(RESET) Checking code_rules size limits...\n"
+	@bash $(CURDIR)/scripts/check-code-rules.sh
+
 # What CI runs. `lint-cpp` only formats-check the files modified in the last
 # hour (a deliberate 3s target for local iteration), so a file that was
 # mis-formatted yesterday and not touched today passed `make check`. The full
@@ -387,7 +396,7 @@ fmt-rust:
 	@printf "  $(CHECK) done\n"
 
 # ─── Check (CI) ──────────────────────────────────────────────────
-check: build lint-verify test-engine test-server
+check: rules-check build lint-verify test-engine test-server
 	@printf "$(CHECK) check complete\n"
 
 # ─── Clean ───────────────────────────────────────────────────────
