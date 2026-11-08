@@ -649,6 +649,23 @@ class GraphStore {
 			      const std::string &description,
 			      double confidence);
 
+	/** Identity of the source state a run was taken against:
+	 *  sha256 over the sorted (path, content_hash) pairs of the project.
+	 *
+	 *  A revision alone cannot distinguish a dirty worktree, so without this
+	 *  a re-run over modified files would look identical to the previous one.
+	 *  Sorted by path, so the value does not depend on insertion order.
+	 *
+	 *  @param project_id Project whose files are hashed.
+	 *  @return 64 hex characters; the digest of the empty string when the
+	 *          project has no files; an empty string on a SQL error.
+	 *
+	 *  A NON-EMPTY result is not by itself proof of success: check error()
+	 *  first. An empty project and a failed query are distinguishable only by
+	 *  that flag, since the former legitimately returns a 64-character
+	 *  digest. */
+	std::string worktreeDigest(uint64_t project_id);
+
 	// ── Unified verification model (development_plan §17.4) ─────
 	//
 	// NOTE: these five methods have no production caller yet — no FFI entry
