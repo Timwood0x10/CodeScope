@@ -99,12 +99,24 @@ char *engine_build_evidence(engine_t handle, uint64_t project_id,
 			return dupString(
 				"{\"error\":\"engine not initialized\"}");
 
+		// Returning [] here would say "nothing to report" when in fact no rule
+		// ever ran, which is the same false assurance as a failed query
+		// (development_plan §17.5).
 		std::string rules_dir = evidence::resolveRulesDir();
 		if (rules_dir.empty())
-			return dupString("[]");
+			return dupString(util::errorEnvelope(
+				"ffi", "engine_build_evidence",
+				"rule directory not found; cannot report a clean result "
+				"without running any rule"));
 
 		evidence::EvidenceBuilder builder(ctx->store.get());
 		builder.loadRules(rules_dir);
+		if (builder.ruleCount() == 0)
+			return dupString(util::errorEnvelope(
+				"ffi", "engine_build_evidence",
+				"no rule files loaded from '" + rules_dir +
+					"'; cannot report a clean result without "
+					"running any rule"));
 
 		std::vector<evidence::Evidence> evidences;
 		if (category_filter && *category_filter) {

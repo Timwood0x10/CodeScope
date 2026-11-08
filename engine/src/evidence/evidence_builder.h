@@ -101,6 +101,20 @@ class EvidenceBuilder {
 		return rule_sets_;
 	}
 
+	/// Number of individual rules loaded.
+	///
+	/// Zero is not a normal state: it means the rule directory was missing or
+	/// held no rule files, and every build* call would then return an empty
+	/// list that is indistinguishable from "the project is clean"
+	/// (development_plan §17.5). Callers must treat it as an error.
+	std::size_t ruleCount() const
+	{
+		std::size_t total = 0;
+		for (const auto &set : rule_sets_)
+			total += set.rules.size();
+		return total;
+	}
+
 	/// Number of RULES whose fact query failed during the last build* call.
 	///
 	/// Zero matches and a failed query both produce an empty evidence list,

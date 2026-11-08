@@ -89,6 +89,20 @@ int main()
 	builder.loadRules(rules_dir);
 	check(!builder.ruleSets().empty(),
 	      "no rule sets loaded; the test would not exercise any query");
+	check(builder.ruleCount() > 0, "rules must report a non-zero count");
+
+	// Zero loaded rules is the other silent-clean path: nothing ran, so an
+	// empty result says nothing about the project. The FFI refuses to answer
+	// when ruleCount() is 0, and this is the state it detects.
+	evidence::EvidenceBuilder no_rules(&store);
+	// Derived from the pid rather than a fixed path: a literal
+	// "/nonexistent/..." would make this test pass or fail depending on
+	// whether someone happens to create that directory.
+	const std::string missing_dir =
+		"/tmp/codescope_missing_rules_" + std::to_string(getpid());
+	no_rules.loadRules(missing_dir);
+	check(no_rules.ruleCount() == 0,
+	      "a missing rule directory must load zero rules");
 
 	// ── 1. Healthy database, no matching facts ──────────────────────
 	auto empty = builder.buildAll(project_id);
