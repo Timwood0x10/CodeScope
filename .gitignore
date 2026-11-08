@@ -194,10 +194,17 @@
 # is an output rather than a source. It stays on disk after the run.
 tests/token_savings_report.md
 
-# Local planning scratch. `plan/*` rather than `plan/` so that a single
-# subdirectory can be exempted below: git will not re-include anything inside an
-# excluded DIRECTORY, so the exemption has to start one level up.
-plan/
+# Local planning scratch. `plan/*` rather than `plan/` keeps the door open for a
+# per-subdirectory exemption; git will not re-include anything inside an excluded
+# DIRECTORY, so such an exemption would have to start one level up.
+plan/*
+
+# Coding standards: HIGH-PRIVILEGE, local-only, never committed.
+# They are cited by ~40 source comments and by CONTRIBUTING, but are deliberately
+# kept out of version control (code_rules §0 文件治理). Because they are
+# untracked, git cannot recover them from history — never delete or rewrite this
+# directory, and keep an out-of-tree backup.
+plan/rules/
 
 # The scheduler cites this one by section number from five source files
 # (chunk_plan.rs "§5", chunk_queue.rs "§4, §6", chunk_queue_ops.rs "§8", …), so
@@ -205,8 +212,6 @@ plan/
 # as above: the directory has to be re-included before a file inside it can be,
 # which is why `!plan/next/` comes before `plan/next/*`.
 plan/next/*
-
-plan/rules/*
 
 **/build_*/
 **/build-*/
