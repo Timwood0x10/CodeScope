@@ -145,6 +145,10 @@ pub(crate) const TABLE_SPECS: &[TableSpec] = &[
     // these tables, two workers using the same wall-clock run_id under one
     // project dedupe silently through INSERT OR IGNORE and a run disappears.
     // Revisit development_plan §17.7 before letting a worker write them.
+    //
+    // `finding` is safe to merge: m0007 added the partial unique index
+    // uq_finding_project_key, so a duplicate (project_id, finding_key) from
+    // two workers collapses through INSERT OR IGNORE instead of duplicating.
     TableSpec {
         name: "verification_run",
         remap_cols: &[],

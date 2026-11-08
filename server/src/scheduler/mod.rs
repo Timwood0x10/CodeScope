@@ -46,6 +46,7 @@ mod chunked;
 mod dyn_config;
 mod mapped_file;
 mod merge;
+mod merge_index;
 mod merge_specs;
 mod quarantine;
 mod shm;

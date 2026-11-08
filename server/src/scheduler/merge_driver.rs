@@ -138,6 +138,8 @@ fn unify_project(main_db: &str, project_path: &str) -> Result<(), String> {
     Ok(())
 }
 
+use crate::scheduler::merge_index::{copy_non_unique_indexes_and_version, index_ddl};
+
 pub(crate) fn merge_module_dbs(
     main_db: &str,
     module_db_paths: &[String],
@@ -320,6 +322,30 @@ pub(crate) fn merge_module_dbs(
     sql.push_str("PRAGMA synchronous=OFF;\n");
     sql.push_str("PRAGMA foreign_keys=OFF;\n");
 
+    // UNIQUE indexes have to exist BEFORE the rows are inserted: they are what
+    // makes INSERT OR IGNORE drop a duplicate produced by two workers (a
+    // finding keyed the same way in both). Creating them afterwards cannot
+    // retroactively dedupe, and fails outright on the duplicates.
+    // `CREATE%UNIQUE INDEX%` rather than `%UNIQUE%`: the latter also matches a
+    // non-unique index whose NAME happens to contain "unique".
+    let unique_index_ddl = match index_ddl(
+        &module_db_paths[0],
+        "sql LIKE 'CREATE%UNIQUE INDEX%'",
+        &main_db_existing_tables,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            return MergeResult {
+                merged: false,
+                main_db_path: main_db.to_string(),
+                tables_merged: 0,
+                rows_merged: 0,
+                duration_ms: start.elapsed().as_millis() as u64,
+                error: Some(e),
+            };
+        }
+    };
+
     // ── Step 4: merge each module ───────────────────────────────
     for (i, db_path) in module_db_paths.iter().enumerate() {
         let alias = format!("m{}", i);
@@ -333,6 +359,10 @@ pub(crate) fn merge_module_dbs(
             // sqlite_master) so the INSERTs below have a target.
             sql.push_str(&schema_sql);
             sql.push('\n');
+            if !unique_index_ddl.is_empty() {
+                sql.push_str(&unique_index_ddl);
+                sql.push_str(";\n");
+            }
         }
         // Escape single quotes by doubling them (' -> ''). Module DB
         // paths embed the module name, which comes from a directory
@@ -348,7 +378,7 @@ pub(crate) fn merge_module_dbs(
         ));
 
         // v0.6 (perf): every worker builds the full schema via
-        // createSchema() (CREATE TABLE IF NOT EXISTS is idempotent), so all
+        // createSchema() (CREATE TABLE is idempotent), so all
         // modules share the SAME table set as module 0. We reuse
         // `main_db_existing_tables` instead of spawning `list_tables_in_db`
         // once per module — each such spawn opens a large module DB (~59ms),
@@ -551,6 +581,24 @@ pub(crate) fn merge_module_dbs(
         .and_then(|l| l.trim().parse::<u64>().ok())
         .unwrap_or(0);
 
+    // The schema copy above reproduces tables only. Without the indexes and the
+    // schema version the merged DB is a degraded copy: no index (the m0007
+    // UNIQUE(project_id, finding_key) guard would simply not exist) and
+    // user_version = 0, which makes the engine treat an already-migrated
+    // database as pre-0.3.0 and re-run every migration against it.
+    if let Err(e) =
+        copy_non_unique_indexes_and_version(main_db, &module_db_paths[0], &main_db_existing_tables)
+    {
+        return MergeResult {
+            merged: false,
+            main_db_path: main_db.to_string(),
+            tables_merged: actual_tables_merged,
+            rows_merged,
+            duration_ms: start.elapsed().as_millis() as u64,
+            error: Some(e),
+        };
+    }
+
     // The merged file must describe ONE project before anyone reads it: the
     // per-worker project_ids would otherwise leave it looking like N partial
     // projects with no way to find the one that was indexed. See unify_project.
@@ -642,6 +690,8 @@ mod tests {
         CREATE TABLE finding (
             id INTEGER PRIMARY KEY, project_id INTEGER, finding_key TEXT,
             claim_id INTEGER);
+        CREATE UNIQUE INDEX uq_finding_project_key
+            ON finding(project_id, finding_key) WHERE finding_key <> '';
         CREATE TABLE finding_evidence (
             project_id INTEGER, finding_key TEXT, evidence_id INTEGER,
             PRIMARY KEY (project_id, finding_key, evidence_id));
@@ -650,6 +700,11 @@ mod tests {
         CREATE TABLE coverage (
             run_id TEXT, layer TEXT, metric TEXT, value REAL,
             PRIMARY KEY (run_id, layer, metric));
+        -- Deliberately outside SCHEMA_TABLES: a module DB carries indexes for
+        -- tables the merge does not copy, and copying those indexes would fail
+        -- on a missing table. Guards the tbl_name scope in index_ddl().
+        CREATE TABLE graph_edges (id INTEGER PRIMARY KEY, src INTEGER);
+        CREATE UNIQUE INDEX idx_ge_unique_edge ON graph_edges(src);
     ";
 
     /// Merge must offset every id the verification model references.
@@ -675,6 +730,9 @@ mod tests {
         for db in [&m0, &m1] {
             sqlite(db.to_str().expect("utf8 path"), MERGE_SCHEMA);
         }
+        // A migrated module DB carries the schema version; the merge must not
+        // leave the unified DB at 0, or the engine replays every migration.
+        sqlite(m0.to_str().expect("utf8 path"), "PRAGMA user_version = 7;");
         // Both modules use their own id 1; the offset must push module 1 to 2.
         sqlite(
             m0.to_str().expect("utf8 path"),
@@ -695,6 +753,10 @@ mod tests {
              INSERT INTO evidence_location VALUES (1,'b.rs',1,2,'B');
              INSERT INTO finding (id,project_id,finding_key,claim_id)
                  VALUES (1,1,'fk-b',1);
+             -- Same key as module 0: the m0007 partial unique index must
+             -- collapse it instead of letting two workers duplicate it.
+             INSERT INTO finding (id,project_id,finding_key,claim_id)
+                 VALUES (2,1,'fk-a',1);
              INSERT INTO finding_evidence VALUES (1,'fk-b',1);
              INSERT INTO projects VALUES (1,'/w/1','w1');",
         );
@@ -746,6 +808,27 @@ mod tests {
                 "SELECT id FROM finding WHERE finding_key='fk-b';"
             ),
             "2"
+        );
+        // Indexes and the schema version must survive the merge.
+        assert_eq!(sqlite(&main_path, "PRAGMA user_version;"), "7");
+        assert_eq!(
+            sqlite(
+                &main_path,
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' \
+                 AND name='uq_finding_project_key';"
+            ),
+            "1",
+            "the unique finding index must be recreated on the merged DB"
+        );
+        // fk-a exists in BOTH modules: the index must collapse it.
+        assert_eq!(sqlite(&main_path, "SELECT COUNT(*) FROM finding;"), "2");
+        assert_eq!(
+            sqlite(
+                &main_path,
+                "SELECT COUNT(*) FROM finding WHERE finding_key='fk-a';"
+            ),
+            "1",
+            "the same finding produced by two workers must not duplicate"
         );
 
         for p in [&main, &m0, &m1] {

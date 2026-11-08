@@ -212,11 +212,11 @@ int main()
 		store::GraphStore store;
 		check(store.open(kFreshDb), "open fresh database");
 
-		check(scalar(store, "PRAGMA user_version") == 6,
-		      "fresh database not at version 6");
-		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 6,
-		      "schema_meta must hold baseline + 5 migrations");
-		check(scalar(store, "SELECT MAX(version) FROM schema_meta") == 6,
+		check(scalar(store, "PRAGMA user_version") == 7,
+		      "fresh database not at version 7");
+		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 7,
+		      "schema_meta must hold baseline + 6 migrations");
+		check(scalar(store, "SELECT MAX(version) FROM schema_meta") == 7,
 		      "schema_meta max version");
 
 		check(hasColumn(store, "evidence", "finding_key"),
@@ -234,6 +234,35 @@ int main()
 		check(tableExists(store, "finding_evidence"),
 		      "finding_evidence missing");
 
+		// m0007: the unique guard applies to real finding keys only. Legacy
+		// rows (empty key, written by m0003) must keep coexisting, which is
+		// why the index is partial rather than a plain UNIQUE.
+		check(scalar(store,
+			     "SELECT COUNT(*) FROM sqlite_master WHERE "
+			     "type='index' AND name='uq_finding_project_key'") == 1,
+		      "unique finding-key index missing");
+
+		// Use the real project id: a hardcoded 1 would point at a project
+		// that may not exist if this database was not freshly created.
+		uint64_t project_id =
+			store.createProject("/test/fresh", "fresh");
+		check(project_id > 0, "createProject (fresh)");
+		const std::string pid = std::to_string(project_id);
+		const std::string ins_prefix =
+			"INSERT INTO finding (project_id, rule, severity, "
+			"description, finding_key) VALUES (" +
+			pid + ",";
+		check(store.exec((ins_prefix + "'r',1,'legacy a','')").c_str()),
+		      "first legacy finding with an empty key");
+		check(store.exec((ins_prefix + "'r',1,'legacy b','')").c_str()),
+		      "empty finding keys must not collide");
+		check(store.exec((ins_prefix + "'r',1,'real','fk-unique')")
+			      .c_str()),
+		      "insert with a real finding key");
+		check(!store.exec((ins_prefix + "'r',1,'dup','fk-unique')")
+			       .c_str()),
+		      "a duplicate (project, finding_key) must be rejected");
+
 		// Pre-migration snapshot (development_plan §17.8 item 4).
 		std::string backup = std::string(kFreshDb) + ".backup.v1";
 		check(access(backup.c_str(), R_OK) == 0,
@@ -241,16 +270,16 @@ int main()
 
 		fresh_columns = columnList(store, "evidence");
 		store.close();
-		std::printf("  [PASS] fresh database at v6, snapshot present\n");
+		std::printf("  [PASS] fresh database at v7, snapshot present\n");
 	}
 
 	// ── 2. Reopen must not re-apply anything ──────────────────────────
 	{
 		store::GraphStore store;
 		check(store.open(kFreshDb), "reopen fresh database");
-		check(scalar(store, "PRAGMA user_version") == 6,
+		check(scalar(store, "PRAGMA user_version") == 7,
 		      "version changed on reopen");
-		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 6,
+		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 7,
 		      "schema_meta grew on reopen");
 		store.close();
 		std::printf("  [PASS] reopen is idempotent\n");
@@ -262,9 +291,9 @@ int main()
 		store::GraphStore store;
 		check(store.open(kLegacyDb), "open legacy database");
 
-		check(scalar(store, "PRAGMA user_version") == 6,
-		      "legacy database not migrated to v6");
-		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 6,
+		check(scalar(store, "PRAGMA user_version") == 7,
+		      "legacy database not migrated to v7");
+		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 7,
 		      "legacy schema_meta row count");
 
 		check(scalar(store, "SELECT verdict FROM evidence WHERE id=1") == 0,

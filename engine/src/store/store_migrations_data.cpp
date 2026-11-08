@@ -204,6 +204,23 @@ DROP TABLE coverage;
 ALTER TABLE coverage_new RENAME TO coverage;
 )sql",
 	},
+	{
+		7,
+		"finding_key_unique",
+		// Cross-worker dedup guard. `finding` is written by the main process
+		// today, but the moment a worker starts producing findings, merge's
+		// INSERT OR IGNORE needs a constraint to dedupe on — otherwise the
+		// same (project, finding_key) silently appears twice.
+		//
+		// PARTIAL index, not a plain UNIQUE: every row migrated by m0003
+		// carries finding_key = '' , so a full unique index would fail on the
+		// first legacy database. The WHERE clause makes the rule apply to
+		// real keys only, which is exactly the intended semantics.
+		R"sql(
+CREATE UNIQUE INDEX IF NOT EXISTS uq_finding_project_key
+    ON finding(project_id, finding_key) WHERE finding_key <> '';
+)sql",
+	},
 };
 
 } // namespace
