@@ -236,6 +236,7 @@ set(ENGINE_SOURCES
     src/store/store_migrations.cpp
     src/store/store_migrations_data.cpp
     src/store/store_verification.cpp
+    src/evidence/rule_runner.cpp
     src/store/store_identity.cpp
     src/store/store.cpp
     src/store/store_insert.cpp
