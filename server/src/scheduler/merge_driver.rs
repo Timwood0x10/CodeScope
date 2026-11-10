@@ -732,7 +732,9 @@ mod tests {
         }
         // A migrated module DB carries the schema version; the merge must not
         // leave the unified DB at 0, or the engine replays every migration.
-        sqlite(m0.to_str().expect("utf8 path"), "PRAGMA user_version = 7;");
+        // Any value would do — the point is that the merge COPIES it — but
+        // using the current schema version keeps the fixture realistic.
+        sqlite(m0.to_str().expect("utf8 path"), "PRAGMA user_version = 8;");
         // Both modules use their own id 1; the offset must push module 1 to 2.
         sqlite(
             m0.to_str().expect("utf8 path"),
@@ -758,6 +760,13 @@ mod tests {
              INSERT INTO finding (id,project_id,finding_key,claim_id)
                  VALUES (2,1,'fk-a',1);
              INSERT INTO finding_evidence VALUES (1,'fk-b',1);
+             -- Module 1 finds the same issue as module 0: it has its OWN
+             -- evidence row for it, and the finding it links to must collapse
+             -- while both evidence rows survive.
+             INSERT INTO evidence (id,claim_id,run_id,rule_id,finding_key)
+                 VALUES (2,1,'r','rule','fk-a');
+             INSERT INTO evidence_location VALUES (2,'a2.rs',1,2,'A');
+             INSERT INTO finding_evidence VALUES (1,'fk-a',2);
              INSERT INTO projects VALUES (1,'/w/1','w1');",
         );
 
@@ -769,18 +778,26 @@ mod tests {
         let result = merge_module_dbs(&main_path, &modules, "/real/project");
         assert!(result.merged, "merge failed: {:?}", result.error);
 
-        assert_eq!(sqlite(&main_path, "SELECT COUNT(*) FROM claim;"), "2");
+        assert_verification_ids_remapped(&main_path);
+        assert_verification_row_counts(&main_path);
+
+        for p in [&main, &m0, &m1] {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+
+    /// Ids the merge had to renumber: claims, evidence, locations and the
+    /// findings that reference them.
+    fn assert_verification_ids_remapped(main: &str) {
+        assert_eq!(sqlite(main, "SELECT COUNT(*) FROM claim;"), "2");
         assert_eq!(
-            sqlite(
-                &main_path,
-                "SELECT group_concat(id) FROM claim ORDER BY id;"
-            ),
+            sqlite(main, "SELECT group_concat(id) FROM claim ORDER BY id;"),
             "1,2"
         );
         // Module 1's evidence must point at module 1's claim, not claim 1.
         assert_eq!(
             sqlite(
-                &main_path,
+                main,
                 "SELECT claim_id FROM evidence WHERE finding_key='fk-b';"
             ),
             "2",
@@ -788,7 +805,7 @@ mod tests {
         );
         assert_eq!(
             sqlite(
-                &main_path,
+                main,
                 "SELECT evidence_id FROM evidence_location WHERE file_path='b.rs';"
             ),
             "2",
@@ -796,44 +813,67 @@ mod tests {
         );
         assert_eq!(
             sqlite(
-                &main_path,
+                main,
                 "SELECT evidence_id FROM finding_evidence WHERE finding_key='fk-b';"
             ),
             "2",
             "finding_evidence.evidence_id was not remapped"
         );
         assert_eq!(
-            sqlite(
-                &main_path,
-                "SELECT id FROM finding WHERE finding_key='fk-b';"
-            ),
+            sqlite(main, "SELECT id FROM finding WHERE finding_key='fk-b';"),
             "2"
         );
         // Indexes and the schema version must survive the merge.
-        assert_eq!(sqlite(&main_path, "PRAGMA user_version;"), "7");
+        assert_eq!(sqlite(main, "PRAGMA user_version;"), "8");
         assert_eq!(
             sqlite(
-                &main_path,
+                main,
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='index' \
-                 AND name='uq_finding_project_key';"
+                     AND name='uq_finding_project_key';"
             ),
             "1",
             "the unique finding index must be recreated on the merged DB"
         );
         // fk-a exists in BOTH modules: the index must collapse it.
-        assert_eq!(sqlite(&main_path, "SELECT COUNT(*) FROM finding;"), "2");
+        assert_eq!(sqlite(main, "SELECT COUNT(*) FROM finding;"), "2");
         assert_eq!(
             sqlite(
-                &main_path,
+                main,
                 "SELECT COUNT(*) FROM finding WHERE finding_key='fk-a';"
             ),
             "1",
             "the same finding produced by two workers must not duplicate"
         );
+    }
 
-        for p in [&main, &m0, &m1] {
-            let _ = std::fs::remove_file(p);
-        }
+    /// Acceptance 8 (development_plan §17.8): the merged database holds
+    /// every row the workers produced, with no id collisions.
+    fn assert_verification_row_counts(main: &str) {
+        // Acceptance 8 (development_plan §17.8): row conservation. Each module
+        // contributes one evidence row, so the merged DB must hold exactly two
+        // with distinct ids — remapping is what keeps them apart.
+        assert_eq!(sqlite(main, "SELECT COUNT(*) FROM evidence;"), "3");
+        assert_eq!(
+            sqlite(main, "SELECT COUNT(DISTINCT id) FROM evidence;"),
+            "3",
+            "remapped evidence ids must not collide"
+        );
+        assert_eq!(
+            sqlite(main, "SELECT group_concat(id) FROM evidence ORDER BY id;"),
+            "1,2,3"
+        );
+        // Children follow their parents: one location per evidence row.
+        assert_eq!(sqlite(main, "SELECT COUNT(*) FROM evidence_location;"), "3");
+        // Two links to fk-a (one per worker) plus module 1's fk-b link.
+        assert_eq!(sqlite(main, "SELECT COUNT(*) FROM finding_evidence;"), "3");
+        assert_eq!(
+            sqlite(
+                main,
+                "SELECT COUNT(*) FROM finding_evidence WHERE finding_key='fk-a';"
+            ),
+            "2",
+            "the surviving finding keeps the evidence from both workers"
+        );
     }
 
     #[test]
