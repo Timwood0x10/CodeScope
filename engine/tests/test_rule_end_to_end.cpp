@@ -181,6 +181,89 @@ int main()
 	check(scalar(store, "SELECT COUNT(*) FROM evidence") >= 2,
 	      "evidence history accumulates");
 
+	// ── 3. A failing rule must not poison the run ───────────────────
+	// Hiding the facts table makes every query of the next rule fail. The
+	// failed rule must be recorded as failed, write no evidence and no
+	// finding, and leave the store usable for the rules that follow
+	// (development_plan §17.8 acceptance 6).
+	const int64_t evidence_before =
+		scalar(store, "SELECT COUNT(*) FROM evidence");
+	check(store.exec("ALTER TABLE semantic_fact RENAME TO semantic_fact_off"),
+	      "hide semantic_fact");
+
+	evidence::RuleRunOutcome broken = evidence::runRuleToStore(
+		&store, rules_dir, project_id, run.run_id, "unwrap_risk");
+	check(!broken.executed,
+	      "a rule whose query failed must not report success");
+	check(!broken.error.empty(), "the failure must carry a message");
+	check(broken.evidence_rows == 0, "no evidence from a failed query");
+	check(scalar(store, "SELECT COUNT(*) FROM rule_exec WHERE rule_id="
+			    "'unwrap_risk' AND status='failed'") == 1,
+	      "the failed rule must be recorded as failed");
+	check(scalar(store, "SELECT COUNT(*) FROM evidence") == evidence_before,
+	      "a failed rule must not write evidence");
+	check(scalar(store, "SELECT COUNT(*) FROM finding") == 1,
+	      "a failed rule must not write a finding");
+
+	// ── 4. The store is still usable afterwards ─────────────────────
+	check(store.exec("ALTER TABLE semantic_fact_off RENAME TO semantic_fact"),
+	      "restore semantic_fact");
+	evidence::RuleRunOutcome recovered = evidence::runRuleToStore(
+		&store, rules_dir, project_id, run.run_id, "unwrap_risk");
+	check(recovered.executed, "the store stays usable after a failed rule");
+	check(scalar(store, "SELECT COUNT(*) FROM rule_exec WHERE rule_id="
+			    "'unwrap_risk' AND status='executed'") == 1,
+	      "the re-run flips the rule_exec row to executed");
+
+	// ── 5. A README-only change must not move finding identities ────
+	// Two projects with identical source but different README content. The
+	// source state (worktree digest) has to differ, the finding identity must
+	// not: otherwise every documentation edit would look like a new issue
+	// (development_plan §17.8 acceptance 7).
+	uint64_t project_a = store.createProject("/test/readme-a", "readme-a");
+	uint64_t project_b = store.createProject("/test/readme-b", "readme-b");
+	check(project_a > 0 && project_b > 0, "create the two projects");
+	check(insertFact(store, project_a, "Parser::Parse", 42), "fact a");
+	check(insertFact(store, project_b, "Parser::Parse", 42), "fact b");
+
+	store.upsertFile(project_a, "src/a.cpp", "cpp", "hash-src-1");
+	store.upsertFile(project_b, "src/a.cpp", "cpp", "hash-src-1");
+	store.upsertFile(project_a, "README.md", "markdown", "hash-readme-old");
+	store.upsertFile(project_b, "README.md", "markdown", "hash-readme-new");
+
+	const std::string digest_a = store.worktreeDigest(project_a);
+	const std::string digest_b = store.worktreeDigest(project_b);
+	check(digest_a != digest_b, "a README change must move the worktree digest");
+
+	for (auto [pid, run_id] : { std::pair<uint64_t, const char *>{
+				     project_a, "run-readme-a" },
+			     std::pair<uint64_t, const char *>{
+				     project_b, "run-readme-b" } }) {
+		store::VerificationRun r;
+		r.run_id = run_id;
+		r.project_id = pid;
+		r.source.revision = "deadbeef";
+		r.source.worktree_digest = store.worktreeDigest(pid);
+		r.source.analyzer_version = "0.3.0-test";
+		r.rule_set_digest = "rs";
+		r.profile = "default";
+		r.started_at = "2026-11-09T00:00:00Z";
+		check(store.insertVerificationRun(r), "insert run for project");
+		evidence::RuleRunOutcome o = evidence::runRuleToStore(
+			&store, rules_dir, pid, run_id, "todo_collect");
+		check(o.executed, "rule must run for each source state");
+	}
+
+	const std::string key_a = textAt(
+		store, "SELECT finding_key FROM finding WHERE project_id=" +
+			       std::to_string(project_a));
+	const std::string key_b = textAt(
+		store, "SELECT finding_key FROM finding WHERE project_id=" +
+			       std::to_string(project_b));
+	check(!key_a.empty() && !key_b.empty(), "both projects produce a finding");
+	check(key_a == key_b,
+	      "the same issue in two source states must keep its identity");
+
 	store.close();
 	removeDbFiles();
 	std::printf("\nAll rule end-to-end tests passed.\n");
