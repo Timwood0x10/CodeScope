@@ -357,6 +357,11 @@ int main()
 		// Architecture and capability should be present.
 		CHECK(snapshot.find("\"architecture\"") != std::string::npos);
 		CHECK(snapshot.find("\"capability\"") != std::string::npos);
+		// Every score in this snapshot is the pre-0.3.0 heuristic, not a
+		// model-derived value; the flag is what tells a consumer that
+		// (development_plan §15.1 — removal scheduled for 0.4.0).
+		CHECK(snapshot.find("\"score_basis\":\"legacy_heuristic\"") !=
+		      std::string::npos);
 		// last_updated timestamp.
 		CHECK(snapshot.find("\"last_updated\"") != std::string::npos);
 		printf("Test 4 (snapshot contains required keys): "

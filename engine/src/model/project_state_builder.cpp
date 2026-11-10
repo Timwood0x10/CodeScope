@@ -674,7 +674,7 @@ bool ProjectStateBuilder::build(uint64_t project_id)
 
 	// 6. Build snapshot_json. The structure follows plan §6.2.
 	std::ostringstream ss;
-	ss << "{";
+	ss << "{\"score_basis\":\"legacy_heuristic\",";
 	// overall
 	ss << "\"overall\":{\"confidence\":" << fmtDouble(confidence)
 	   << ",\"inspectors_ran\":" << inspectors_ran << "}";
