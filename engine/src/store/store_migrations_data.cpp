@@ -221,6 +221,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_finding_project_key
     ON finding(project_id, finding_key) WHERE finding_key <> '';
 )sql",
 	},
+	{
+		8,
+		"evidence_claim_index",
+		// m0002 rebuilds `evidence` (CREATE new / DROP old / RENAME), and
+		// DROP TABLE takes the table's indexes with it — including
+		// idx_evidence_claim, which createSchema creates. A database that
+		// migrated in one open therefore ended up with one index fewer than
+		// a fresh one, and only regained it on the NEXT open (when
+		// createSchema ran again). Recreate it here so one open is enough.
+		R"sql(
+CREATE INDEX IF NOT EXISTS idx_evidence_claim ON evidence(claim_id);
+)sql",
+	},
 };
 
 } // namespace

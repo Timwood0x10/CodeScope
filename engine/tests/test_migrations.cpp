@@ -23,9 +23,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <sqlite3.h>
 #include <string>
 #include <unistd.h>
+#include <vector>
 
 // Unique per process: a leftover WAL from a killed run, or two concurrent
 // invocations of this binary, must never share one database file.
@@ -126,22 +128,88 @@ static bool tableExists(store::GraphStore &store, const char *table)
 			      table + "'") == 1;
 }
 
-/// Column names of `table`, in declaration order, joined by ','.
-/// Compared between the fresh and the migrated database.
-static std::string columnList(store::GraphStore &store, const char *table)
+/// Column signature of `table`: cid, name, type, notnull, default, pk.
+/// Names alone would miss a migration that changes a type or a default.
+static std::string columnSignature(store::GraphStore &store, const char *table)
 {
 	std::string sql = std::string("PRAGMA table_info(") + table + ")";
 	sqlite3_stmt *st = nullptr;
 	check(sqlite3_prepare_v2(store.handle(), sql.c_str(), -1, &st, nullptr) ==
 		      SQLITE_OK,
-	      "prepare columnList");
+	      "prepare columnSignature");
 	std::string out;
 	while (sqlite3_step(st) == SQLITE_ROW) {
 		const char *name = reinterpret_cast<const char *>(
 			sqlite3_column_text(st, 1));
+		const char *type = reinterpret_cast<const char *>(
+			sqlite3_column_text(st, 2));
+		const char *dflt = reinterpret_cast<const char *>(
+			sqlite3_column_text(st, 4));
 		if (!out.empty())
-			out += ",";
-		out += name ? name : "";
+			out += "|";
+		out += std::to_string(sqlite3_column_int(st, 0)) + ":" +
+		       (name ? name : "") + ":" + (type ? type : "") + ":" +
+		       std::to_string(sqlite3_column_int(st, 3)) + ":" +
+		       (dflt ? dflt : "") + ":" +
+		       std::to_string(sqlite3_column_int(st, 5));
+	}
+	sqlite3_finalize(st);
+	return out;
+}
+
+/// Every user table and its column signature, keyed by table name.
+///
+/// The point of comparing the WHOLE map rather than one hand-picked table:
+/// createSchema() and the migrations are two independent definitions of the
+/// same schema, and any table nobody looks at is exactly where they drift.
+static std::map<std::string, std::string>
+schemaSnapshot(store::GraphStore &store)
+{
+	std::map<std::string, std::string> out;
+	sqlite3_stmt *st = nullptr;
+	const char *sql = "SELECT name FROM sqlite_master WHERE type='table' "
+			  "AND name NOT LIKE 'sqlite_%' ORDER BY name;";
+	check(sqlite3_prepare_v2(store.handle(), sql, -1, &st, nullptr) ==
+		      SQLITE_OK,
+	      "prepare schemaSnapshot");
+	std::vector<std::string> names;
+	while (sqlite3_step(st) == SQLITE_ROW) {
+		const char *p = reinterpret_cast<const char *>(
+			sqlite3_column_text(st, 0));
+		if (p)
+			names.push_back(p);
+	}
+	sqlite3_finalize(st);
+	for (const auto &name : names)
+		out[name] = columnSignature(store, name.c_str());
+	return out;
+}
+
+/// Every index, trigger and view with its DDL, keyed by name.
+///
+/// Tables alone are not the whole schema: a migration that rebuilt a table
+/// dropped its index and nothing noticed until this comparison existed. The
+/// same trap applies to triggers and views, so they are compared on the same
+/// footing even though the schema has none today. Implicit indexes
+/// (sqlite_autoindex_*) carry no DDL and are skipped.
+static std::map<std::string, std::string>
+indexSnapshot(store::GraphStore &store)
+{
+	std::map<std::string, std::string> out;
+	sqlite3_stmt *st = nullptr;
+	const char *sql = "SELECT name, sql FROM sqlite_master WHERE "
+			  "type IN ('index','trigger','view') AND sql IS NOT NULL "
+			  "ORDER BY name;";
+	check(sqlite3_prepare_v2(store.handle(), sql, -1, &st, nullptr) ==
+		      SQLITE_OK,
+	      "prepare indexSnapshot");
+	while (sqlite3_step(st) == SQLITE_ROW) {
+		const char *name = reinterpret_cast<const char *>(
+			sqlite3_column_text(st, 0));
+		const char *ddl = reinterpret_cast<const char *>(
+			sqlite3_column_text(st, 1));
+		if (name)
+			out[name] = ddl ? ddl : "";
 	}
 	sqlite3_finalize(st);
 	return out;
@@ -204,7 +272,14 @@ static void buildLegacyDb()
 int main()
 {
 	initDbPaths();
-	std::string fresh_columns;
+	std::map<std::string, std::string> fresh_schema;
+	std::map<std::string, std::string> fresh_indexes;
+	// Captured on the FIRST open of the migrated database. The
+	// comparison below must not use a reopened one: reopening runs
+	// createSchema again, which silently repairs anything the
+	// migrations dropped and hides the drift.
+	std::map<std::string, std::string> migrated_schema_first;
+	std::map<std::string, std::string> migrated_indexes_first;
 
 	// ── 1. Fresh database: versioning, tables, snapshot ───────────────
 	removeDbFiles(kFreshDb);
@@ -212,11 +287,11 @@ int main()
 		store::GraphStore store;
 		check(store.open(kFreshDb), "open fresh database");
 
-		check(scalar(store, "PRAGMA user_version") == 7,
-		      "fresh database not at version 7");
-		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 7,
-		      "schema_meta must hold baseline + 6 migrations");
-		check(scalar(store, "SELECT MAX(version) FROM schema_meta") == 7,
+		check(scalar(store, "PRAGMA user_version") == 8,
+		      "fresh database not at version 8");
+		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 8,
+		      "schema_meta must hold baseline + 7 migrations");
+		check(scalar(store, "SELECT MAX(version) FROM schema_meta") == 8,
 		      "schema_meta max version");
 
 		check(hasColumn(store, "evidence", "finding_key"),
@@ -268,18 +343,19 @@ int main()
 		check(access(backup.c_str(), R_OK) == 0,
 		      "pre-migration snapshot missing");
 
-		fresh_columns = columnList(store, "evidence");
+		fresh_schema = schemaSnapshot(store);
+		fresh_indexes = indexSnapshot(store);
 		store.close();
-		std::printf("  [PASS] fresh database at v7, snapshot present\n");
+		std::printf("  [PASS] fresh database at v8, snapshot present\n");
 	}
 
 	// ── 2. Reopen must not re-apply anything ──────────────────────────
 	{
 		store::GraphStore store;
 		check(store.open(kFreshDb), "reopen fresh database");
-		check(scalar(store, "PRAGMA user_version") == 7,
+		check(scalar(store, "PRAGMA user_version") == 8,
 		      "version changed on reopen");
-		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 7,
+		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 8,
 		      "schema_meta grew on reopen");
 		store.close();
 		std::printf("  [PASS] reopen is idempotent\n");
@@ -291,9 +367,9 @@ int main()
 		store::GraphStore store;
 		check(store.open(kLegacyDb), "open legacy database");
 
-		check(scalar(store, "PRAGMA user_version") == 7,
-		      "legacy database not migrated to v7");
-		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 7,
+		check(scalar(store, "PRAGMA user_version") == 8,
+		      "legacy database not migrated to v8");
+		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 8,
 		      "legacy schema_meta row count");
 
 		check(scalar(store, "SELECT verdict FROM evidence WHERE id=1") == 0,
@@ -329,6 +405,19 @@ int main()
 		check(scalar(store, "SELECT MAX(id) FROM evidence") == 4,
 		      "AUTOINCREMENT must continue after the rebuild");
 
+		// m0002 rebuilds `evidence` with DROP TABLE, which takes the table's
+		// indexes with it. m0008 recreates this one. Asserting it here — on
+		// the FIRST open, before anything can re-run createSchema — is what
+		// makes the regression deterministic; the fresh/migrated comparison
+		// below only noticed it because the two sides were opened a different
+		// number of times.
+		check(scalar(store, "SELECT COUNT(*) FROM sqlite_master WHERE "
+				   "type='index' AND name='idx_evidence_claim'") == 1,
+		      "m0008 must recreate idx_evidence_claim after the rebuild");
+
+		migrated_schema_first = schemaSnapshot(store);
+		migrated_indexes_first = indexSnapshot(store);
+
 		store.close();
 		std::printf("  [PASS] legacy remap, children and snapshot verified\n");
 	}
@@ -337,11 +426,82 @@ int main()
 	{
 		store::GraphStore store;
 		check(store.open(kLegacyDb), "reopen legacy database");
-		std::string migrated_columns = columnList(store, "evidence");
-		check(!fresh_columns.empty() && fresh_columns == migrated_columns,
-		      "fresh and migrated evidence schemas differ");
+		// Reopening must be a no-op for the schema. If it is not, some pass
+		// is repairing what an earlier pass broke, and one-open users get the
+		// broken version — exactly the m0008 bug.
+		auto reopened_schema = schemaSnapshot(store);
+		auto reopened_indexes = indexSnapshot(store);
+		check(reopened_schema == migrated_schema_first,
+		      "a second open must not change the schema");
+		check(reopened_indexes == migrated_indexes_first,
+		      "a second open must not add indexes");
+		const auto &migrated_schema = migrated_schema_first;
+		const auto &migrated_indexes = migrated_indexes_first;
+		check(!fresh_indexes.empty(), "fresh index snapshot is empty");
+		if (fresh_indexes.size() != migrated_indexes.size()) {
+			std::fprintf(stderr,
+				     "  [DIFF] index count fresh=%zu migrated=%zu\n",
+				     fresh_indexes.size(),
+				     migrated_indexes.size());
+			for (const auto &e : fresh_indexes)
+				if (migrated_indexes.find(e.first) ==
+				    migrated_indexes.end())
+					std::fprintf(stderr,
+						     "  [DIFF] only in fresh: %s\n",
+						     e.first.c_str());
+			for (const auto &e : migrated_indexes)
+				if (fresh_indexes.find(e.first) ==
+				    fresh_indexes.end())
+					std::fprintf(stderr,
+						     "  [DIFF] only in migrated: %s\n",
+						     e.first.c_str());
+			check(false, "index count differs");
+		}
+		for (const auto &entry : fresh_indexes) {
+			auto it = migrated_indexes.find(entry.first);
+			if (it == migrated_indexes.end()) {
+				std::fprintf(stderr,
+					     "  [DIFF] index missing after "
+					     "migration: %s\n",
+					     entry.first.c_str());
+				check(false, "index missing after migration");
+			}
+			if (it->second != entry.second) {
+				std::fprintf(stderr,
+					     "  [DIFF] index %s\n    fresh:    %s\n"
+					     "    migrated: %s\n",
+					     entry.first.c_str(),
+					     entry.second.c_str(),
+					     it->second.c_str());
+				check(false, "index DDL differs");
+			}
+		}
+		check(!fresh_schema.empty(), "fresh schema snapshot is empty");
+		check(fresh_schema.size() == migrated_schema.size(),
+		      "table count differs between fresh and migrated");
+		for (const auto &entry : fresh_schema) {
+			auto it = migrated_schema.find(entry.first);
+			if (it == migrated_schema.end()) {
+				std::fprintf(stderr,
+					     "  [DIFF] table missing after "
+					     "migration: %s\n",
+					     entry.first.c_str());
+				check(false, "table missing after migration");
+			}
+			if (it->second != entry.second) {
+				std::fprintf(stderr,
+					     "  [DIFF] %s\n    fresh:    %s\n"
+					     "    migrated: %s\n",
+					     entry.first.c_str(),
+					     entry.second.c_str(),
+					     it->second.c_str());
+				check(false, "column signature differs");
+			}
+		}
 		store.close();
-		std::printf("  [PASS] fresh and migrated schemas identical\n");
+		std::printf("  [PASS] fresh and migrated schemas identical "
+			    "(%zu tables, full column signatures)\n",
+			    fresh_schema.size());
 	}
 
 	removeDbFiles(kFreshDb);
