@@ -528,6 +528,232 @@ bool upsertProjectState(store::GraphStore *store, uint64_t project_id,
 
 // ─── ProjectStateBuilder public API ──────────────────────────────
 
+/// Render one category block. Every call site used to inline the same
+/// find/end/ternary dance; collapsing it here is what lets build() shrink.
+std::string
+categoryBlockFor(const std::unordered_map<std::string, CategoryAgg> &agg,
+		 const char *key, int64_t fact_count)
+{
+	auto it = agg.find(key);
+	return buildCategoryBlock(it != agg.end() ? &it->second : nullptr,
+				  fact_count);
+}
+
+/// Score values as they appear in the snapshot JSON.
+///
+/// Grouped by block rather than kept flat because a single struct holding all
+/// of them would exceed the 12-field limit of code_rules §1.4 — and because
+/// each group is what one JSON block actually reads.
+struct SnapshotScores {
+	double confidence = 0.0;
+	double arch_score = 0.0;
+	double capability_score = 0.0;
+	double workflow_score = 0.0;
+	double dead_pct = 0.0;
+	int inspectors_ran = 0;
+	int64_t capability_total = 0;
+	int64_t capability_verified = 0;
+	int64_t arch_violations = 0;
+	int64_t arch_cross_module = 0;
+};
+
+/// Denominators behind the scores: shown in the snapshot so a reader can tell
+/// "0 of 0" from "0 of 100".
+struct SnapshotScale {
+	int64_t workflow_total = 0;
+	int64_t steps_done = 0;
+	int64_t steps_total = 0;
+	int64_t dead_entities = 0;
+	int64_t total_entities = 0;
+};
+
+/// Fact counts per reported category.
+struct CategoryTotals {
+	int64_t sync = 0;
+	int64_t memory = 0;
+	int64_t error = 0;
+	int64_t pattern = 0;
+	int64_t ffi = 0;
+	int64_t framework = 0;
+};
+
+/// Severity split of the pattern findings.
+struct SeverityCounts {
+	int info = 0;
+	int warning = 0;
+	int error = 0;
+};
+
+/// Write the snapshot JSON. Split out of build() so that function keeps its
+/// grandfathered size (code_rules §1.1: over-limit code may shrink, not grow).
+void writeSnapshotJson(std::ostringstream &ss, const SnapshotScores &scores,
+		       const SnapshotScale &scale, const CategoryTotals &totals,
+		       const SeverityCounts &severity,
+		       const std::unordered_map<std::string, CategoryAgg> &agg,
+		       const std::vector<std::string> &frameworks)
+{
+	ss << "{\"score_basis\":\"legacy_heuristic\",";
+	ss << "\"overall\":{\"confidence\":" << fmtDouble(scores.confidence)
+	   << ",\"inspectors_ran\":" << scores.inspectors_ran << "}";
+
+	ss << ",\"capability\":{\"score\":"
+	   << fmtDouble(scores.capability_score)
+	   << ",\"total\":" << scores.capability_total
+	   << ",\"verified\":" << scores.capability_verified << "}";
+
+	ss << ",\"architecture\":{\"score\":" << fmtDouble(scores.arch_score)
+	   << ",\"violations\":" << scores.arch_violations
+	   << ",\"cross_module_edges\":" << scores.arch_cross_module << "}";
+
+	ss << ",\"workflow\":{\"score\":" << fmtDouble(scores.workflow_score)
+	   << ",\"total\":" << scale.workflow_total
+	   << ",\"steps_done\":" << scale.steps_done
+	   << ",\"steps_total\":" << scale.steps_total << "}";
+
+	ss << ",\"dead_code\":{\"pct\":" << fmtDouble(scores.dead_pct)
+	   << ",\"entities\":" << scale.dead_entities
+	   << ",\"total\":" << scale.total_entities << "}";
+
+	ss << ",\"sync\":{" << categoryBlockFor(agg, "sync", totals.sync)
+	   << "}";
+	ss << ",\"memory\":{" << categoryBlockFor(agg, "memory", totals.memory)
+	   << "}";
+	ss << ",\"error_handling\":{"
+	   << categoryBlockFor(agg, "error", totals.error) << "}";
+	ss << ",\"pattern\":{"
+	   << categoryBlockFor(agg, "pattern", totals.pattern)
+	   << ",\"by_severity\":{\"info\":" << severity.info
+	   << ",\"warning\":" << severity.warning
+	   << ",\"error\":" << severity.error << "}}";
+
+	ss << ",\"framework\":{\"detected\":[";
+	for (size_t i = 0; i < frameworks.size(); ++i) {
+		if (i)
+			ss << ",";
+		ss << "\"" << escapeJson(frameworks[i]) << "\"";
+	}
+	ss << "],\"facts\":" << totals.framework << "}";
+
+	ss << ",\"ffi\":{" << categoryBlockFor(agg, "ffi", totals.ffi)
+	   << ",\"boundaries\":" << totals.ffi << "}";
+
+	ss << ",\"last_updated\":\"" << currentUtcIsoTimestamp() << "\"";
+	ss << "}";
+}
+
+double clamp01(double v)
+{
+	if (v < 0.0)
+		return 0.0;
+	if (v > 1.0)
+		return 1.0;
+	return v;
+}
+
+/// Raw fact counts per category, straight from semantic_fact.
+///
+/// One helper instead of six copies of the same query: the six differ only in
+/// the category literal, and a typo in one of them used to be invisible.
+CategoryTotals countCategoryTotals(store::GraphStore *store,
+				   uint64_t project_id)
+{
+	CategoryTotals t;
+	t.sync = countRows(
+		store,
+		"SELECT COUNT(*) FROM semantic_fact WHERE project_id = ? "
+		"AND category = 'sync'",
+		project_id);
+	t.memory = countRows(
+		store,
+		"SELECT COUNT(*) FROM semantic_fact WHERE project_id = ? "
+		"AND category = 'memory'",
+		project_id);
+	t.error = countRows(
+		store,
+		"SELECT COUNT(*) FROM semantic_fact WHERE project_id = ? "
+		"AND category = 'error'",
+		project_id);
+	t.pattern = countRows(
+		store,
+		"SELECT COUNT(*) FROM semantic_fact WHERE project_id = ? "
+		"AND category = 'pattern'",
+		project_id);
+	t.framework = countRows(
+		store,
+		"SELECT COUNT(*) FROM semantic_fact WHERE project_id = ? "
+		"AND category = 'framework'",
+		project_id);
+	t.ffi = countRows(
+		store,
+		"SELECT COUNT(*) FROM semantic_fact WHERE project_id = ? "
+		"AND category = 'ffi'",
+		project_id);
+	return t;
+}
+
+/// Severity split of the stored findings.
+SeverityCounts countSeverities(store::GraphStore *store, uint64_t project_id)
+{
+	SeverityCounts out;
+	for (const auto &kv : findingSeverityCounts(store, project_id)) {
+		switch (kv.first) {
+		case 1:
+			out.warning += kv.second;
+			break;
+		case 2:
+			out.error += kv.second;
+			break;
+		default:
+			// 0 is info; an unknown severity is treated as info rather
+			// than dropped, so the buckets always sum to the total.
+			out.info += kv.second;
+			break;
+		}
+	}
+	return out;
+}
+
+/// Turn the raw counts into the scores the snapshot reports.
+///
+/// Kept separate from build() so the clamping rules live in one place: every
+/// score is 0..1, and "no data" is 1.0 only for capability/workflow (nothing
+/// to fail) and 0.0 for dead code (nothing to be dead).
+SnapshotScores
+computeScores(const std::unordered_map<std::string, CategoryAgg> &agg,
+	      const SnapshotScale &scale, int64_t capability_total,
+	      int64_t capability_verified, int64_t arch_violations,
+	      int64_t arch_cross_module)
+{
+	SnapshotScores s;
+	s.capability_total = capability_total;
+	s.capability_verified = capability_verified;
+	s.arch_violations = arch_violations;
+	s.arch_cross_module = arch_cross_module;
+	s.confidence = computeOverallConfidence(agg, arch_violations,
+						scale.dead_entities);
+	// `violations` counts layer violations only; cross-module edges are
+	// reported next to the score, not deducted from it.
+	s.arch_score =
+		clamp01(1.0 - kPenaltyPerArchitectureViolation *
+				      static_cast<double>(arch_violations));
+	s.capability_score =
+		capability_total > 0 ?
+			clamp01(static_cast<double>(capability_verified) /
+				static_cast<double>(capability_total)) :
+			1.0;
+	s.workflow_score =
+		scale.steps_total > 0 ?
+			clamp01(static_cast<double>(scale.steps_done) /
+				static_cast<double>(scale.steps_total)) :
+			1.0;
+	s.dead_pct =
+		scale.total_entities > 0 ?
+			clamp01(static_cast<double>(scale.dead_entities) /
+				static_cast<double>(scale.total_entities)) :
+			0.0;
+	return s;
+}
+
 bool ProjectStateBuilder::build(uint64_t project_id)
 {
 	if (!store_) {
@@ -544,40 +770,8 @@ bool ProjectStateBuilder::build(uint64_t project_id)
 	// 2. Aggregate evidence by category (count + titles).
 	auto agg = aggregateByCategory(evidences);
 
-	// 3. Query semantic_fact for per-category raw fact counts.
-	int64_t sync_facts =
-		countRows(store_,
-			  "SELECT COUNT(*) FROM semantic_fact "
-			  "WHERE project_id = ? AND category = 'sync'",
-			  project_id);
-	int64_t memory_facts =
-		countRows(store_,
-			  "SELECT COUNT(*) FROM semantic_fact "
-			  "WHERE project_id = ? AND category = 'memory'",
-			  project_id);
-	int64_t error_facts =
-		countRows(store_,
-			  "SELECT COUNT(*) FROM semantic_fact "
-			  "WHERE project_id = ? AND category = 'error'",
-			  project_id);
-	int64_t pattern_facts =
-		countRows(store_,
-			  "SELECT COUNT(*) FROM semantic_fact "
-			  "WHERE project_id = ? AND category = 'pattern'",
-			  project_id);
-	int64_t framework_facts =
-		countRows(store_,
-			  "SELECT COUNT(*) FROM semantic_fact "
-			  "WHERE project_id = ? AND category = 'framework'",
-			  project_id);
-	int64_t ffi_facts =
-		countRows(store_,
-			  "SELECT COUNT(*) FROM semantic_fact "
-			  "WHERE project_id = ? AND category = 'ffi'",
-			  project_id);
-
-	// 4. Query state tables for capability / architecture / workflow /
-	//    dead_code counts.
+	// 3-5. Gather the numbers the snapshot reports, then score them.
+	CategoryTotals totals = countCategoryTotals(store_, project_id);
 	int64_t capability_total =
 		countRows(store_,
 			  "SELECT COUNT(*) FROM capability_state "
@@ -588,177 +782,31 @@ bool ProjectStateBuilder::build(uint64_t project_id)
 	int64_t arch_violations = sumArchitectureViolations(store_, project_id);
 	int64_t arch_cross_module =
 		sumArchitectureCrossModuleEdges(store_, project_id);
+	WorkflowProgress wp = sumWorkflowProgress(store_, project_id);
 	int64_t workflow_total =
 		countRows(store_,
 			  "SELECT COUNT(*) FROM workflow_state "
 			  "WHERE project_id = ?",
 			  project_id);
-	WorkflowProgress wp = sumWorkflowProgress(store_, project_id);
-	int64_t dead_entities = sumDeadEntities(store_, project_id);
-	int64_t total_entities = countEntities(store_, project_id);
-
-	// 5. Compute overall confidence (1.0 - sum of penalties).
-	double confidence =
-		computeOverallConfidence(agg, arch_violations, dead_entities);
-
-	// Architecture score = 1 - violations * penalty (clamped). `violations`
-	// counts only real layer violations, so a project is no longer penalised
-	// for having cross-module dependencies; those are reported as
-	// cross_module_edges alongside the score.
-	double arch_score = 1.0 - kPenaltyPerArchitectureViolation *
-					  static_cast<double>(arch_violations);
-	if (arch_score < 0.0)
-		arch_score = 0.0;
-	if (arch_score > 1.0)
-		arch_score = 1.0;
-
-	// Capability score = verified / total (or 1.0 when no
-	// capabilities are tracked).
-	double capability_score = 1.0;
-	if (capability_total > 0) {
-		capability_score = static_cast<double>(capability_verified) /
-				   static_cast<double>(capability_total);
-		if (capability_score < 0.0)
-			capability_score = 0.0;
-		if (capability_score > 1.0)
-			capability_score = 1.0;
-	}
-
-	// Workflow score = done / total (or 1.0 when no workflows).
-	double workflow_score = 1.0;
-	if (wp.steps_total > 0) {
-		workflow_score = static_cast<double>(wp.steps_done) /
-				 static_cast<double>(wp.steps_total);
-		if (workflow_score < 0.0)
-			workflow_score = 0.0;
-		if (workflow_score > 1.0)
-			workflow_score = 1.0;
-	}
-
-	// Dead code percentage = dead / total (0.0 when no entities).
-	double dead_pct = 0.0;
-	if (total_entities > 0) {
-		dead_pct = static_cast<double>(dead_entities) /
-			   static_cast<double>(total_entities);
-		if (dead_pct < 0.0)
-			dead_pct = 0.0;
-		if (dead_pct > 1.0)
-			dead_pct = 1.0;
-	}
+	SnapshotScale scale{ workflow_total, wp.steps_done, wp.steps_total,
+			     sumDeadEntities(store_, project_id),
+			     countEntities(store_, project_id) };
+	SnapshotScores scores =
+		computeScores(agg, scale, capability_total, capability_verified,
+			      arch_violations, arch_cross_module);
+	scores.inspectors_ran = countInspectorsRan(agg);
 
 	// Detect frameworks (distinct primitives in semantic_fact).
 	auto frameworks = detectFrameworks(store_, project_id);
-
-	// Finding severity counts (for pattern.by_severity block).
-	auto findings = findingSeverityCounts(store_, project_id);
-	int info_count = 0, warning_count = 0, error_count = 0;
-	for (const auto &kv : findings) {
-		switch (kv.first) {
-		case 0:
-			info_count += kv.second;
-			break;
-		case 1:
-			warning_count += kv.second;
-			break;
-		case 2:
-			error_count += kv.second;
-			break;
-		default:
-			// Unknown severity → treat as info.
-			info_count += kv.second;
-			break;
-		}
-	}
-
-	int inspectors_ran = countInspectorsRan(agg);
+	SeverityCounts severity = countSeverities(store_, project_id);
 
 	// 6. Build snapshot_json. The structure follows plan §6.2.
 	std::ostringstream ss;
-	ss << "{\"score_basis\":\"legacy_heuristic\",";
-	// overall
-	ss << "\"overall\":{\"confidence\":" << fmtDouble(confidence)
-	   << ",\"inspectors_ran\":" << inspectors_ran << "}";
-
-	// capability
-	ss << ",\"capability\":{\"score\":" << fmtDouble(capability_score)
-	   << ",\"total\":" << capability_total
-	   << ",\"verified\":" << capability_verified << "}";
-
-	// architecture
-	ss << ",\"architecture\":{\"score\":" << fmtDouble(arch_score)
-	   << ",\"violations\":" << arch_violations
-	   << ",\"cross_module_edges\":" << arch_cross_module << "}";
-
-	// workflow
-	ss << ",\"workflow\":{\"score\":" << fmtDouble(workflow_score)
-	   << ",\"total\":" << workflow_total
-	   << ",\"steps_done\":" << wp.steps_done
-	   << ",\"steps_total\":" << wp.steps_total << "}";
-
-	// dead_code
-	ss << ",\"dead_code\":{\"pct\":" << fmtDouble(dead_pct)
-	   << ",\"entities\":" << dead_entities
-	   << ",\"total\":" << total_entities << "}";
-
-	// sync
-	auto sync_it = agg.find("sync");
-	ss << ",\"sync\":{"
-	   << buildCategoryBlock(sync_it != agg.end() ? &sync_it->second :
-							nullptr,
-				 sync_facts)
-	   << "}";
-
-	// memory
-	auto memory_it = agg.find("memory");
-	ss << ",\"memory\":{"
-	   << buildCategoryBlock(memory_it != agg.end() ? &memory_it->second :
-							  nullptr,
-				 memory_facts)
-	   << "}";
-
-	// error_handling
-	auto error_it = agg.find("error");
-	ss << ",\"error_handling\":{"
-	   << buildCategoryBlock(error_it != agg.end() ? &error_it->second :
-							 nullptr,
-				 error_facts)
-	   << "}";
-
-	// pattern
-	auto pattern_it = agg.find("pattern");
-	ss << ",\"pattern\":{"
-	   << buildCategoryBlock(pattern_it != agg.end() ? &pattern_it->second :
-							   nullptr,
-				 pattern_facts)
-	   << ",\"by_severity\":{\"info\":" << info_count
-	   << ",\"warning\":" << warning_count << ",\"error\":" << error_count
-	   << "}}";
-
-	// framework
-	ss << ",\"framework\":{\"detected\":[";
-	for (size_t i = 0; i < frameworks.size(); ++i) {
-		if (i)
-			ss << ",";
-		ss << "\"" << escapeJson(frameworks[i]) << "\"";
-	}
-	ss << "],\"facts\":" << framework_facts << "}";
-
-	// ffi
-	auto ffi_it = agg.find("ffi");
-	ss << ",\"ffi\":{"
-	   << buildCategoryBlock(ffi_it != agg.end() ? &ffi_it->second :
-						       nullptr,
-				 ffi_facts)
-	   << ",\"boundaries\":" << ffi_facts << "}";
-
-	// last_updated
-	ss << ",\"last_updated\":\"" << currentUtcIsoTimestamp() << "\"";
-	ss << "}";
-
+	writeSnapshotJson(ss, scores, scale, totals, severity, agg, frameworks);
 	std::string snapshot_json = ss.str();
 
 	// 7. UPSERT into project_state.
-	if (!upsertProjectState(store_, project_id, confidence,
+	if (!upsertProjectState(store_, project_id, scores.confidence,
 				snapshot_json)) {
 		return false;
 	}
@@ -766,8 +814,8 @@ bool ProjectStateBuilder::build(uint64_t project_id)
 	std::fprintf(stderr,
 		     "[model] ProjectState: project_id=%llu "
 		     "confidence=%.4f snapshot_bytes=%zu\n",
-		     static_cast<unsigned long long>(project_id), confidence,
-		     snapshot_json.size());
+		     static_cast<unsigned long long>(project_id),
+		     scores.confidence, snapshot_json.size());
 	return true;
 }
 

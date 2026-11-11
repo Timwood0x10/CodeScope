@@ -9,7 +9,6 @@ function|engine/src/async_knowledge.cpp|populateModulesHierarchy|178
 function|engine/src/engine_ffi.cpp|engine_get_capabilities|128
 function|engine/src/engine_ffi_graph.cpp|engine_get_knowledge_graph|149
 function|engine/src/engine_ffi_index.cpp|engine_get_project_info|121
-function|engine/src/engine_ffi_index.cpp|engine_index_batch|265
 function|engine/src/engine_index.cpp|engine_index_file|374
 function|engine/src/engine_index_discover.cpp|collectFileJobs|206
 function|engine/src/engine_index_metrics.cpp|computeMetricsFromCST|244
@@ -54,7 +53,6 @@ function|engine/src/lsp/lsp_client.cpp|LspClient::readResponse|149
 function|engine/src/lsp/lsp_client.cpp|LspClient::spawnProcess|135
 function|engine/src/model/engine.cpp|ModelEngine::populateModelContext|188
 function|engine/src/model/plugins/contract.cpp|ContractPlugin::build|143
-function|engine/src/model/project_state_builder.cpp|ProjectStateBuilder::build|242
 function|engine/src/model/semantic_fact_extractor.cpp|SemanticFactExtractor::extractFfiFacts|189
 function|engine/src/model/state_builder.cpp|StateBuilder::buildCapabilityState|122
 function|engine/src/model/state_builder.cpp|StateBuilder::buildModuleSummaries|189
@@ -76,7 +74,7 @@ function|engine/src/resolver/pipeline_load.cpp|ResolverPipeline::loadDispatchInd
 function|engine/src/resolver/pipeline_load.cpp|ResolverPipeline::loadEntityIndex|211
 function|engine/src/store/store_batch.cpp|GraphStore::insertFileResultBatch|457
 function|engine/src/store/store_core.cpp|GraphStore::open|126
-function|engine/src/store/store_graph.cpp|GraphStore::buildGraph|882
+function|engine/src/store/store_graph.cpp|GraphStore::buildGraph|880
 function|engine/src/store/store_graph_csr.cpp|GraphStore::buildCSR|238
 function|engine/src/store/store_insert.cpp|GraphStore::deleteGraphDataByFile|163
 function|engine/src/store/store_project.cpp|GraphStore::findSymbolJson|134
