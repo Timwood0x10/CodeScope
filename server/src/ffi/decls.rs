@@ -516,6 +516,17 @@ unsafe extern "C" {
     /// # Safety
     /// The returned pointer is engine-owned; release it with [`take_string`]
     /// (i.e. `engine_free_string`).
+    /// `revision` may be null (sentinel "WORKTREE").
+    /// Mutates engine/store state; must not run concurrently with another engine call.
+    /// `handle` must be a live instance from `engine_create` (engine.h).
+    pub fn engine_run_rules(
+        handle: EngineHandle,
+        project_id: u64,
+        revision: *const c_char,
+    ) -> *mut c_char;
+    /// # Safety
+    /// The returned pointer is engine-owned; release it with [`take_string`]
+    /// (i.e. `engine_free_string`).
     /// No pointers are passed in.
     /// Mutates engine/store state; must not run concurrently with another engine call.
     /// `handle` must be a live instance from `engine_create` (engine.h).
@@ -740,6 +751,31 @@ unsafe extern "C" {
     /// it concurrently with an indexing call.
     /// `handle` must be a live instance from `engine_create` (engine.h).
     pub fn engine_detect_ffi_boundaries(handle: EngineHandle, project_id: u64) -> *mut c_char;
+
+    /// # Safety
+    /// The returned pointer is engine-owned; release it with [`take_string`]
+    /// (i.e. `engine_free_string`).
+    /// No pointers are passed in.
+    /// The engine serialises calls on one store connection, so do not call
+    /// it concurrently with an indexing call.
+    /// `handle` must be a live instance from `engine_create` (engine.h).
+    pub fn engine_get_project_briefing(handle: EngineHandle, project_id: u64) -> *mut c_char;
+
+    /// # Safety
+    /// The returned pointer is engine-owned; release it with [`take_string`]
+    /// (i.e. `engine_free_string`).
+    /// Input strings (`view`, `scope_json`, `run_id`) are NUL-terminated and
+    /// borrowed for the call only. `run_id` may be null.
+    /// The engine serialises calls on one store connection, so do not call
+    /// it concurrently with an indexing call.
+    /// `handle` must be a live instance from `engine_create` (engine.h).
+    pub fn engine_analyze_project(
+        handle: EngineHandle,
+        project_id: u64,
+        view: *const c_char,
+        scope_json: *const c_char,
+        run_id: *const c_char,
+    ) -> *mut c_char;
 
     // ── Code Understanding (Phase C, missing bindings) ───────────
 

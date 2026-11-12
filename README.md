@@ -489,6 +489,15 @@ The v0.3 Evidence Pipeline transforms indexed code into verifiable evidence and 
 | `build_project_state` | Build (or rebuild) and persist the project state snapshot. Runs the full v0.3 Evidence Pipeline (evidence aggregation + state queries) and UPSERTs the result into the `project_state` table. Returns the snapshot JSON: overall confidence, capability/architecture/workflow/dead_code scores, per-category issue counts, and `last_updated` timestamp. | `{}` |
 | `get_project_state` | Get the previously persisted project state snapshot (without rebuilding). Returns the `snapshot_json` string for the project, or a JSON error object if no snapshot exists yet (run `build_project_state` first). Use this for fast reads of the latest health snapshot. | `{}` |
 
+### Project Navigation (M1)
+
+Two tools, per the 0.3.x development plan (§11.1). Both are read-only unless asked to run rules, and both separate "nothing found" from "not analysed": anything unmeasured is listed under `unknowns` instead of being reported as clean.
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `get_project_briefing` | Read-only navigation card: scale, languages, module paths, entry-point candidates, the latest **completed** verification run with its finding summary, explicit unknowns, and `next_queries`. Does not index, run rules, or execute project scripts. `freshness` is `unknown` when no run exists and `stale` after one, because a worktree digest is not re-checked (§18.6.2). | `{}` |
+| `analyze_project` | The analysis/query entry point. `profile="conformance"` executes the rule set once through the 0.3.0 verification model (run → `rule_exec` → evidence → findings) and returns `{run_id, rules, executed, failed, evidence, findings, status}`; a failing rule is recorded and the run is marked `partial`, the other results survive. `profile="quick"` is a read-only projection and needs a `view`: `symbol_context` (definition, callers, callees, findings, test candidates) or `module_context` (entities and findings for a module path). `architecture`/`full` are rejected until M2/M3. | `{"profile": "quick\|conformance", "view": "symbol_context\|module_context (quick only)", "scope": "{symbol\|module, file_filter?}", "run_id": "string (optional)"}` |
+
 ### Drift Detection
 
 | Tool | Description | Parameters |

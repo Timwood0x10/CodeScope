@@ -251,14 +251,7 @@ pub fn all_tools() -> Vec<Tool> {
                 }
             }),
         },
-        Tool {
-            name: "build_project_state".into(),
-            description: "Build (or rebuild) and persist the project state snapshot. Runs the full v0.3 Evidence Pipeline (evidence aggregation + state queries) and UPSERTs the result into the project_state table. Returns the snapshot JSON describing what each inspector ran and what it found (category counts, confidence score, snapshot metadata). Use this after build_evidence to materialize a health snapshot.".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {}
-            }),
-        },
+        build_project_state_tool(),
         Tool {
             name: "get_project_state".into(),
             description: "Get the previously persisted project state snapshot (without rebuilding). Returns the snapshot_json string for the project, or a JSON error object if no snapshot exists yet (run build_project_state first). Use this for fast reads of the latest health snapshot.".into(),
@@ -546,5 +539,62 @@ pub fn all_tools() -> Vec<Tool> {
                 }
             }),
         },
+        briefing_tool(),
+        analyze_tool(),
     ]
+}
+
+/// Descriptor for `build_project_state`, extracted so `all_tools()` — already
+/// at its grandfathered size — does not grow when another tool is added.
+fn build_project_state_tool() -> Tool {
+    Tool {
+        name: "build_project_state".into(),
+        description: "Build (or rebuild) and persist the project state snapshot. Runs the full v0.3 Evidence Pipeline (evidence aggregation + state queries) and UPSERTs the result into the project_state table. Returns the snapshot JSON describing what each inspector ran and what it found (category counts, confidence score, snapshot metadata). Use this after build_evidence to materialize a health snapshot.".into(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {}
+        }),
+    }
+}
+
+/// Descriptor for `get_project_briefing`, the navigation half of the two
+/// planned MCP tools (development_plan §11.1).
+fn briefing_tool() -> Tool {
+    Tool {
+        name: "get_project_briefing".into(),
+        description: "Get a read-only project briefing — the M1 navigation card. Returns a JSON object with the project's structural facts (scale, languages, modules, entry-point candidates), the latest completed verification run, explicit unknowns, and navigation suggestions (next_queries). The briefing does NOT execute indexing, rules, or scripts; it reads existing database state only. Call this first to get oriented before drilling into modules or symbols.".into(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {}
+        }),
+    }
+}
+
+/// Descriptor for `analyze_project`, the analysis/query entry point of the
+/// two planned MCP tools (development_plan §11.1). `profile` selects the work
+/// (§11.2): `quick` is a read-only projection, `conformance` executes the rule
+/// set and persists a run. `architecture`/`full` are not implemented yet.
+fn analyze_tool() -> Tool {
+    Tool {
+        name: "analyze_project".into(),
+        description: "Analyze a project. `profile` selects the work: \"quick\" returns a read-only task-context projection and needs `view`; \"conformance\" executes the rule set once, persists a verification run with its evidence and findings, and returns {run_id, rules, executed, failed, evidence, findings, status}. \"architecture\" and \"full\" are not implemented yet and are rejected. With profile=quick, view=symbol_context returns the definition, callers, callees, findings and test candidates for a symbol; view=module_context does the same for a module path. No indexing, no target-project scripts. A failing rule is recorded and the run is marked partial instead of losing the other results.".into(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "profile": {"type": "string", "enum": ["quick", "conformance", "architecture", "full"],
+                            "description": "quick (read-only context) or conformance (run the rules)"},
+                "view": {"type": "string", "enum": ["symbol_context", "module_context"],
+                         "description": "Required when profile=quick: the projection to return"},
+                "scope": {"type": "object",
+                          "description": "Required when profile=quick: {symbol: \"name\"} or {module: \"path\"}, optional file_filter",
+                          "properties": {
+                              "symbol": {"type": "string"},
+                              "module": {"type": "string"},
+                              "file_filter": {"type": "string"}
+                          }},
+                "run_id": {"type": "string", "description": "Pin the read to one verification run (M2)"}
+            },
+            "required": ["profile"]
+        }),
+    }
 }

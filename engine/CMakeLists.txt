@@ -294,6 +294,8 @@ set(ENGINE_SOURCES
     src/evidence/evidence_builder.cpp
     src/engine_evidence_ffi.cpp
     src/engine_project_state_ffi.cpp
+    src/engine_briefing_ffi.cpp
+    src/engine_analyze_ffi.cpp
     ${SQLITE3_AMAL_SRC}
     ${TREE_SITTER_SOURCES}
 )

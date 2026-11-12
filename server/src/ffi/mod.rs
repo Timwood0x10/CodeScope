@@ -545,6 +545,24 @@ pub fn build_evidence(project_id: u64, category_filter: Option<&str>) -> String 
     })
 }
 
+/// Execute every loaded rule once and persist the run, its evidence and its
+/// findings (the 0.3.0 verification model).
+///
+/// `revision` is the VCS revision, or `None` for the "WORKTREE" sentinel.
+/// Returns a JSON object with `run_id`, `rules`, `executed`, `failed`,
+/// `evidence`, `findings` and `status` ("completed" or "partial"). A failing
+/// rule does not abort the batch; it is recorded and the run is marked partial.
+pub fn run_rules(project_id: u64, revision: Option<&str>) -> String {
+    let rev = revision.map(cstr);
+    take_string(unsafe {
+        engine_run_rules(
+            engine_handle(),
+            project_id,
+            rev.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
+        )
+    })
+}
+
 /// Build and persist the project state snapshot. Runs the full
 /// analysis pipeline (evidence aggregation + state queries + UPSERT
 /// into project_state) and returns the persisted snapshot JSON.
@@ -717,6 +735,52 @@ pub fn project_overview(project_id: u64) -> String {
 
 pub fn detect_ffi_boundaries(project_id: u64) -> String {
     take_string(unsafe { engine_detect_ffi_boundaries(engine_handle(), project_id) })
+}
+
+/// Get a read-only project briefing — the M1 "navigation card".
+///
+/// Returns a JSON object with the project's structural facts (scale,
+/// languages, modules, entry points), the latest verification run state,
+/// explicit unknowns, and navigation suggestions (next_queries). The
+/// briefing does NOT execute indexing, rules, or target-project scripts;
+/// it reads existing database state only (development_plan §18.7.0).
+///
+/// On error the JSON contains an "error" field tagged with module/method
+/// per code_rules.md §3.
+pub fn get_project_briefing(project_id: u64) -> String {
+    take_string(unsafe { engine_get_project_briefing(engine_handle(), project_id) })
+}
+
+/// Analyze a project — M1 task context (§18.7.2).
+///
+/// Returns structural context for a symbol (`symbol_context` view) or
+/// module (`module_context` view). Read-only: no indexing or rule execution.
+/// `scope_json` is a JSON string with `symbol`/`module`/`file_filter` fields.
+/// `run_id` is optional (used in M2 for change_context).
+///
+/// On error the JSON contains an "error" field tagged with module/method.
+pub fn analyze_project(
+    project_id: u64,
+    view: &str,
+    scope_json: &str,
+    run_id: Option<&str>,
+) -> String {
+    let rid_cstr = run_id.map(cstr);
+    let rid = rid_cstr
+        .as_ref()
+        .map(|s| s.as_ptr())
+        .unwrap_or(std::ptr::null());
+    let view_cstr = cstr(view);
+    let scope_cstr = cstr(scope_json);
+    take_string(unsafe {
+        engine_analyze_project(
+            engine_handle(),
+            project_id,
+            view_cstr.as_ptr(),
+            scope_cstr.as_ptr(),
+            rid,
+        )
+    })
 }
 
 pub fn trace_path(project_id: u64, from_name: &str, to_name: &str) -> String {

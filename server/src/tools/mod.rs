@@ -28,11 +28,12 @@ pub fn db_path() -> Option<&'static str> {
     DB_PATH.get().map(String::as_str)
 }
 
-// The quick project scan lives in tools/discover.rs — a filesystem
-// walk with no parsing and no SQLite, so it has no reason to share
-// this file (see plan/rules/code_rules.md 1000-line rule).
-mod discover;
+mod discover; // filesystem walk, no parsing/SQLite (1000-line rule).
 pub use discover::discover;
+mod briefing;
+use briefing::h_get_project_briefing;
+mod analyze;
+use analyze::h_analyze_project;
 
 /// Handler signature for a single MCP tool.
 type ToolHandler = fn(u64, &Value) -> String;
@@ -52,12 +53,7 @@ fn h_find_references(project_id: u64, args: &Value) -> String {
 }
 
 // ─── Worker Supervisor (timeout + retry) ───────────────────────
-
-// The worker timeout/retry constants above moved to tools/indexing.rs
-// alongside the code that uses them (1000-line rule).
-//
-// Argument clamps (depth/radius/edge-type/limit bounds) live in
-// tools/clamp.rs with their unit tests (1000-line rule).
+// Constants in tools/indexing.rs; clamps in tools/clamp.rs (1000-line rule).
 mod clamp;
 use clamp::{
     DEFAULT_CODESCOPE_TRACE_DEPTH, DEFAULT_QUERY_LIMIT, DEFAULT_TRACE_FLOW_DEPTH, MAX_QUERY_LIMIT,
@@ -65,9 +61,7 @@ use clamp::{
     clamp_max_communities, clamp_max_members, clamp_radius,
 };
 
-// The indexing/worker machinery (subprocess orchestration, force-index
-// file walking, acceptability filtering) lives in tools/indexing.rs — see
-// plan/rules/code_rules.md (1000-line rule).
+// Indexing/worker machinery in tools/indexing.rs (1000-line rule).
 mod indexing;
 pub use indexing::index_project_via_worker;
 use indexing::{h_force_index_files, h_index_file};
@@ -632,8 +626,6 @@ fn h_count_tokens(_project_id: u64, args: &Value) -> String {
     .to_string()
 }
 
-// ─── Newly bound FFI tools (formerly missing from Rust side) ───────
-
 // ─── Tool Registry ──────────────────────────────────────────────
 
 static TOOL_HANDLERS: Lazy<HashMap<&'static str, ToolHandler>> = Lazy::new(|| {
@@ -720,6 +712,11 @@ static TOOL_HANDLERS: Lazy<HashMap<&'static str, ToolHandler>> = Lazy::new(|| {
     m.insert("get_neighbors", h_get_neighbors as ToolHandler);
     m.insert("graph_query", h_graph_query as ToolHandler);
     m.insert("get_graph", h_get_graph as ToolHandler);
+    m.insert(
+        "get_project_briefing",
+        h_get_project_briefing as ToolHandler,
+    );
+    m.insert("analyze_project", h_analyze_project as ToolHandler);
     m
 });
 

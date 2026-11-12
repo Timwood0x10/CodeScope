@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased (0.3.x)
+
+### 🚀 New Features
+
+- **`analyze_project` — one analysis entry point** (`server/src/tools/analyze.rs`, `engine/src/engine_analyze_ffi.cpp`): `profile="conformance"` executes the rule set once into the 0.3.0 verification model (run → `rule_exec` → evidence → findings) and returns `{run_id, rules, executed, failed, evidence, findings, status}`; `profile="quick"` is a read-only projection with `view=symbol_context|module_context` (definition, callers, callees, findings, test candidates, unknowns, `next_queries`). `architecture`/`full` are rejected until M2/M3. Per development plan §11.1 this is the *second* of the two planned tools, not a third: rule execution is a profile of the analysis entry point, not a separate tool.
+- **`get_project_briefing`** (`engine/src/engine_briefing_ffi.cpp`, `server/src/tools/briefing.rs`): read-only navigation card — scale, languages, module paths, entry-point candidates, the latest completed run with its finding summary, explicit `unknowns` and `next_queries`. No indexing, no rule execution, no project scripts. Truncated lists report `total`/`returned`/`has_more`.
+- **`engine_run_rules()`** (`engine/src/engine_evidence_ffi.cpp`): the production entry point of the verification model. It pins `worktree_digest` and `rule_set_digest`, inserts the run, executes each rule into evidence + findings, and closes the run. Until now `runRuleToStore()` was reachable from engine tests only.
+
+### 🐛 Fixes
+
+- **A failed section query is no longer reported as an empty result.** The briefing and task-context views queried columns that do not exist (`finding.dimension/title/file_path`, `verification_run.id`, `scope.path`, `entity.scope_id`), so those statements failed to prepare and every view confidently reported "no findings" and "no run" next to real data. Findings are now attributed through `finding_evidence` → `evidence.run_id` → `evidence_location`, the run is read by its actual primary key, modules come from the parsed `entity.module_path`, and any section whose query fails is named under `unknowns` (development plan invariant 1, §17.5). Regression tests assert that no section silently fails.
+- **No fabricated `loc`.** The briefing summed entity row spans and called the result `loc` with `source: "fact"` — it double-counted nested symbols and missed non-symbol lines. It now reports measured `function_lines` and lists total file LOC as unknown until `files.loc` exists (D1).
+- **`all_tools()` in `catalog.rs` stays inside its grandfathered size**: the new descriptors are extracted into functions instead of being appended to the list, so the size gate records no growth (§1.1 "只缩不长").
+
 ## v0.2.7 (2026-10-09)
 
 First release since v0.2.6 (`main`, 2026-08-14): **41 commits, 394 files**. Two themes: the architectural work for 0.3 (handle-based ABI, Windows parallel indexing), and silent failure — the cases where a tool answered confidently and wrongly, on the default path, for real projects.

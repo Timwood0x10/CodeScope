@@ -976,6 +976,19 @@ int engine_path_is_skipped(const char *project_root, const char *rel_path,
 // Thread safety: shares one store connection; not concurrent with indexing.
 int engine_is_indexable_source(const char *file_path);
 
+// ─── M1 Project Briefing + Analyze (navigation + task context) ──
+
+/// Get read-only project briefing — M1 navigation card (§18.7.0).
+// Ownership: caller frees with engine_free_string(). Reads DB state only.
+char *engine_get_project_briefing(engine_t handle, uint64_t project_id);
+
+/// Analyze project — M1 task context (§18.7.2), read-only.
+/// view: "symbol_context"|"module_context"; scope_json: {symbol|module, file_filter}.
+// Ownership: caller frees with engine_free_string(). Inputs borrowed.
+char *engine_analyze_project(engine_t handle, uint64_t project_id,
+			     const char *view, const char *scope_json,
+			     const char *run_id);
+
 #ifdef __cplusplus
 }
 #endif
