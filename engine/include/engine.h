@@ -732,6 +732,32 @@ char *engine_import_artifact(engine_t handle, uint64_t project_id,
 char *engine_build_evidence(engine_t handle, uint64_t project_id,
 			    const char *category_filter);
 
+/**
+ * Execute every loaded rule once and persist the results.
+ *
+ * This is the production entry point of the 0.3.0 verification model: it
+ * creates a run (with the project's worktree digest), executes each rule into
+ * evidence + findings, and closes the run. A failing rule is recorded and the
+ * run is marked partial rather than losing the other results.
+ *
+ * Returns a JSON object:
+ *   {"ok":true,"run_id":"...","rules":N,"executed":N,"failed":N,
+ *    "evidence":N,"findings":N,"status":"completed"|"partial"}
+ *
+ * A missing or unloadable rule directory returns an error envelope: a run
+ * without rules would report a clean project without checking anything.
+ *
+ * @param handle      Live engine instance.
+ * @param project_id  Project to analyse.
+ * @param revision    Source revision, or NULL for the "WORKTREE" sentinel.
+ * @return JSON string; the caller MUST free it with engine_free_string().
+ */
+// Ownership: the caller frees the returned JSON string with engine_free_string().
+// Lifetime: input strings are borrowed for the call only.
+// Thread safety: writes the store; not concurrent with another engine call.
+char *engine_run_rules(engine_t handle, uint64_t project_id,
+		       const char *revision);
+
 // ─── Claim-driven Verification (v0.3) ──────────────────────────
 
 /**
