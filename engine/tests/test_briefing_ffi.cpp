@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <sqlite3.h>
 #include <string>
 #include <unistd.h>
 
@@ -36,8 +37,8 @@ static void check(bool cond, const char *msg)
 
 static void initPath()
 {
-	std::snprintf(kDbPath, sizeof(kDbPath),
-		      "/tmp/codescope_briefing_%d.db", int(getpid()));
+	std::snprintf(kDbPath, sizeof(kDbPath), "/tmp/codescope_briefing_%d.db",
+		      int(getpid()));
 }
 
 static void removeDbFiles()
@@ -53,6 +54,51 @@ static void removeDbFiles()
 static bool contains(const std::string &json, const char *needle)
 {
 	return json.find(needle) != std::string::npos;
+}
+
+/// Run one statement on a second connection: the engine keeps its own handle,
+/// and fixture rows are cheaper to write directly than through the parser.
+static int execSql(const std::string &sql)
+{
+	sqlite3 *db = nullptr;
+	if (sqlite3_open(kDbPath, &db) != SQLITE_OK)
+		return -1;
+	char *err = nullptr;
+	int rc = sqlite3_exec(db, sql.c_str(), nullptr, nullptr, &err);
+	sqlite3_free(err);
+	sqlite3_close(db);
+	return rc;
+}
+
+/// Insert one allocation fact for a distinct function id.
+///
+/// `cstring_leak` groups by function and emits one evidence per function, so
+/// twelve functions give twelve findings — the shape needed to tell a counted
+/// total from a page size.
+static void insertLeakFact(const std::string &symbol, int function_id)
+{
+	const std::string sql =
+		"INSERT INTO semantic_fact (project_id, function_id, category, "
+		"primitive, kind, symbol, confidence, detail_json) VALUES "
+		"(1, " +
+		std::to_string(function_id) +
+		", 'memory', 'cstring', 'alloc', '" + symbol +
+		"', 0.9, '{\"line\":1,\"file\":\"f.cpp\"}')";
+	check(execSql(sql) == SQLITE_OK, "insert semantic_fact");
+}
+
+/// Run the rule set and return the run id from the envelope.
+static std::string runRules(engine_t engine)
+{
+	char *raw = engine_run_rules(engine, 1, nullptr);
+	check(raw != nullptr, "engine_run_rules must not return null");
+	const std::string json(raw);
+	engine_free_string(raw);
+	const std::string marker = "\"run_id\":\"";
+	const std::size_t at = json.find(marker);
+	check(at != std::string::npos, "the run envelope must carry a run id");
+	const std::size_t start = at + marker.size();
+	return json.substr(start, json.find('"', start) - start);
 }
 
 int main()
@@ -109,8 +155,7 @@ int main()
 		engine_free_string(first);
 
 		char *second = engine_get_project_briefing(engine, 1);
-		check(second != nullptr,
-		      "second briefing must not be null");
+		check(second != nullptr, "second briefing must not be null");
 		std::string second_json(second);
 		engine_free_string(second);
 
@@ -166,6 +211,87 @@ int main()
 		// Capped lists must advertise truncation instead of hiding it.
 		check(contains(brief_json, "\"has_more\""),
 		      "capped lists must report has_more");
+	}
+
+	// ── Test 4: finding_count is a total, not a page size ──
+	// Twelve TODO facts produce twelve findings; the briefing caps the list at
+	// ten but must still report twelve (§18.7.0).
+	{
+		for (int i = 0; i < 12; ++i)
+			insertLeakFact("symbol_" + std::to_string(i), i + 1);
+		const std::string run_id = runRules(engine);
+		check(!run_id.empty(), "run id parsed");
+
+		char *brief = engine_get_project_briefing(engine, 1);
+		check(brief != nullptr, "briefing must not be null");
+		const std::string json(brief);
+		engine_free_string(brief);
+		check(contains(json, "\"finding_count\":12"),
+		      "finding_count must count, not measure the page");
+		check(contains(json, "\"returned\":10"),
+		      "the page stays capped");
+		check(contains(json, "\"total\":12"),
+		      "the list total must be the real total");
+		check(contains(json, "\"has_more\":true"),
+		      "truncation must be advertised");
+	}
+
+	// ── Test 5: a later re-run must not rewrite an older run's card ──
+	// Upserting a finding re-points finding_evidence at the new evidence. The
+	// card's membership therefore comes from that run's evidence rows; deriving
+	// it from finding_evidence made a finished run lose findings (2 -> 1) when
+	// a later run touched the same finding.
+	{
+		const std::string rerun_id = runRules(engine);
+		check(!rerun_id.empty(), "second run id parsed");
+		// Mark the re-run partial so the briefing keeps reading the earlier
+		// completed run, exactly like a partially failed analysis.
+		check(execSql("UPDATE verification_run SET status='partial' WHERE "
+			      "run_id='" +
+			      rerun_id + "'") == SQLITE_OK,
+		      "mark the re-run partial");
+
+		char *brief = engine_get_project_briefing(engine, 1);
+		check(brief != nullptr,
+		      "briefing after re-run must not be null");
+		const std::string json(brief);
+		engine_free_string(brief);
+		check(contains(json, "\"finding_count\":12"),
+		      "the completed run must keep its findings after a re-run");
+	}
+
+	// ── Test 6: the card fits its byte budget ──
+	// Module paths long enough that the full card exceeds 4 KiB; the cap must
+	// then shrink the lists instead of shipping an oversized object.
+	{
+		for (int i = 0; i < 14; ++i) {
+			const std::string module_path =
+				"mod" + std::to_string(i) + "/" +
+				std::string(260, 'x');
+			check(execSql("INSERT INTO entity (project_id, kind, name, "
+				      "qualified_name, file_path, language, start_row, "
+				      "start_col, end_row, end_col, module_path) VALUES "
+				      "(1, 0, 'fn" +
+				      std::to_string(i) +
+				      "', "
+				      "'fn" +
+				      std::to_string(i) +
+				      "', 'f.cpp', 'cpp', 1, "
+				      "0, 9, 0, '" +
+				      module_path + "')") == SQLITE_OK,
+			      "insert module entity");
+		}
+
+		char *brief = engine_get_project_briefing(engine, 1);
+		check(brief != nullptr, "briefing must not be null");
+		const std::string json(brief);
+		engine_free_string(brief);
+		check(json.size() <= 4096,
+		      "the briefing must fit its 4 KiB budget");
+		check(contains(json, "\"truncated\":true"),
+		      "a clipped card must say so");
+		check(contains(json, "\"unknowns\""),
+		      "counts and unknowns survive the clipping");
 	}
 
 	engine_destroy(engine);

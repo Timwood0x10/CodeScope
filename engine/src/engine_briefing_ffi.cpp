@@ -113,13 +113,14 @@ const char *textColumn(sqlite3_stmt *stmt, int col)
 	return text ? text : "";
 }
 
-/// Languages by symbol count. Fetches one row past the display cap so the
-/// caller can report `has_more` instead of silently truncating.
+/// Languages by symbol count. Fetched whole: the table holds a handful of
+/// rows, and a real total lets `has_more` mean truncation instead of "the page
+/// was full".
 Rows<LanguageRow> queryLanguages(sqlite3 *db, uint64_t project_id)
 {
 	const char *sql = "SELECT language, COUNT(*) AS cnt "
 			  "FROM entity WHERE project_id = ? AND kind IN (0,1) "
-			  "GROUP BY language ORDER BY cnt DESC, language LIMIT ?";
+			  "GROUP BY language ORDER BY cnt DESC, language";
 	Rows<LanguageRow> out;
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -127,7 +128,6 @@ Rows<LanguageRow> queryLanguages(sqlite3 *db, uint64_t project_id)
 		return out;
 	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_int(stmt, 2, kMaxLanguages + 1);
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
 		LanguageRow r;
 		r.language = textColumn(stmt, 0);
@@ -148,7 +148,7 @@ Rows<ModuleRow> queryModules(sqlite3 *db, uint64_t project_id)
 			  "WHERE project_id = ? AND kind IN (0,1) "
 			  "  AND module_path <> '' "
 			  "GROUP BY module_path "
-			  "ORDER BY cnt DESC, module_path LIMIT ?";
+			  "ORDER BY cnt DESC, module_path";
 	Rows<ModuleRow> out;
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -156,7 +156,6 @@ Rows<ModuleRow> queryModules(sqlite3 *db, uint64_t project_id)
 		return out;
 	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_int(stmt, 2, kMaxModules + 1);
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
 		ModuleRow r;
 		r.path = textColumn(stmt, 0);
@@ -179,7 +178,7 @@ Rows<EntryPointRow> queryEntryPoints(sqlite3 *db, uint64_t project_id)
 		"WHERE project_id = ? AND kind IN (0,1) "
 		"AND (name = 'main' OR name = 'init' OR name = 'setup' "
 		"  OR name = 'run' OR name LIKE '%handler%') "
-		"ORDER BY name, file_path, start_row LIMIT ?";
+		"ORDER BY name, file_path, start_row";
 	Rows<EntryPointRow> out;
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -187,7 +186,6 @@ Rows<EntryPointRow> queryEntryPoints(sqlite3 *db, uint64_t project_id)
 		return out;
 	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_int(stmt, 2, kMaxEntryPoints + 1);
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
 		EntryPointRow r;
 		r.name = textColumn(stmt, 0);
@@ -226,27 +224,31 @@ LatestRun queryLatestRun(sqlite3 *db, uint64_t project_id)
 
 /// Findings produced by `run_id`.
 ///
-/// `finding` carries neither a run nor a location: its columns are
-/// (rule, category, severity, description, finding_key, status, ...). A finding
-/// belongs to a run only through `finding_evidence` → `evidence.run_id`, which
-/// is why this joins instead of filtering `finding.run_id`.
+/// Membership comes from that run's `evidence` rows, not from
+/// `finding_evidence`: the association table is rewritten every time a finding
+/// is upserted, so a later partial re-run silently detaches the old run's
+/// findings and changes a finished run's briefing (development_plan §6.1: a
+/// finding keeps current state, evidence instances are history).
+///
+/// The display fields (category/severity/description) are read from the current
+/// `finding` row, which is what "current state" means; a finding whose row was
+/// deleted keeps its key with empty fields.
 Rows<FindingSummary> queryFindings(sqlite3 *db, uint64_t project_id,
 				   const std::string &run_id)
 {
 	Rows<FindingSummary> out;
 	if (run_id.empty())
 		return out; // no run: nothing to attribute, not a failure
-	const char *sql = "SELECT f.finding_key, f.category, f.severity, "
-			  "       f.description "
-			  "FROM finding f "
-			  "JOIN finding_evidence fe "
-			  "  ON fe.project_id = f.project_id "
-			  " AND fe.finding_key = f.finding_key "
-			  "JOIN evidence e ON e.id = fe.evidence_id "
-			  "WHERE f.project_id = ? AND e.run_id = ? "
-			  "  AND f.status NOT IN ('resolved', 'superseded') "
-			  "GROUP BY f.finding_key "
-			  "ORDER BY f.severity DESC, f.finding_key LIMIT ?";
+	const char *sql =
+		"SELECT e.finding_key, COALESCE(f.category, ''), "
+		"       COALESCE(f.severity, -1), COALESCE(f.description, '') "
+		"FROM evidence e "
+		"LEFT JOIN finding f "
+		"  ON f.project_id = ? AND f.finding_key = e.finding_key "
+		"WHERE e.run_id = ? "
+		"  AND COALESCE(f.status, '') NOT IN ('resolved', 'superseded') "
+		"GROUP BY e.finding_key "
+		"ORDER BY COALESCE(f.severity, -1) DESC, e.finding_key LIMIT ?";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
 		out.ok = false;
@@ -256,7 +258,8 @@ Rows<FindingSummary> queryFindings(sqlite3 *db, uint64_t project_id,
 	sqlite3_bind_text(stmt, 2, run_id.c_str(),
 			  static_cast<int>(run_id.size()), SQLITE_TRANSIENT);
 	sqlite3_bind_int(stmt, 3, kMaxFindings + 1);
-	while (sqlite3_step(stmt) == SQLITE_ROW) {
+	int rc = SQLITE_ROW;
+	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
 		FindingSummary f;
 		f.finding_key = textColumn(stmt, 0);
 		f.dimension = textColumn(stmt, 1);
@@ -264,6 +267,41 @@ Rows<FindingSummary> queryFindings(sqlite3 *db, uint64_t project_id,
 		f.title = textColumn(stmt, 3);
 		out.items.push_back(std::move(f));
 	}
+	if (rc != SQLITE_DONE)
+		out.ok = false;
+	sqlite3_finalize(stmt);
+	return out;
+}
+
+/// Exact number of distinct findings the run produced. The list above is
+/// capped, so its length is a page size, not a total (§18.7.0).
+CountResult queryFindingTotal(sqlite3 *db, uint64_t project_id,
+			      const std::string &run_id)
+{
+	CountResult out;
+	if (run_id.empty())
+		return out;
+	// `evidence` has no project_id column; a run id already belongs to exactly
+	// one project, and the caller passed that run. The status filter matches the
+	// list query, so the count and the page always describe the same set.
+	const char *sql =
+		"SELECT COUNT(DISTINCT e.finding_key) FROM evidence e "
+		"LEFT JOIN finding f "
+		"  ON f.project_id = ? AND f.finding_key = e.finding_key "
+		"WHERE e.run_id = ? "
+		"  AND COALESCE(f.status, '') NOT IN ('resolved', 'superseded')";
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		out.ok = false;
+		return out;
+	}
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	sqlite3_bind_text(stmt, 2, run_id.c_str(),
+			  static_cast<int>(run_id.size()), SQLITE_TRANSIENT);
+	if (sqlite3_step(stmt) == SQLITE_ROW)
+		out.value = sqlite3_column_int64(stmt, 0);
+	else
+		out.ok = false;
 	sqlite3_finalize(stmt);
 	return out;
 }
@@ -364,12 +402,13 @@ void writeCappedSection(util::JsonWriter &w, const std::vector<T> &items,
 	w.key("source").value(source);
 }
 
-/// Write the languages section (capped at kMaxLanguages).
-void writeLanguages(util::JsonWriter &w, const std::vector<LanguageRow> &langs)
+/// Write the languages section.
+void writeLanguages(util::JsonWriter &w, const std::vector<LanguageRow> &langs,
+		    int max_count)
 {
 	w.key("languages");
 	w.beginObject();
-	writeCappedSection(w, langs, kMaxLanguages, "fact",
+	writeCappedSection(w, langs, max_count, "fact",
 			   [](util::JsonWriter &jw, const LanguageRow &r) {
 				   jw.beginObject();
 				   jw.key("name").value(r.language);
@@ -387,13 +426,14 @@ std::string moduleName(const std::string &path)
 	return slash == std::string::npos ? path : path.substr(slash + 1);
 }
 
-/// Write the modules section (capped at kMaxModules).
-/// Module role is "inferred" — not declared (§18.7.0).
-void writeModules(util::JsonWriter &w, const std::vector<ModuleRow> &mods)
+/// Write the modules section. Module role is "inferred" — not declared
+/// (§18.7.0).
+void writeModules(util::JsonWriter &w, const std::vector<ModuleRow> &mods,
+		  int max_count)
 {
 	w.key("modules");
 	w.beginObject();
-	writeCappedSection(w, mods, kMaxModules, "fact",
+	writeCappedSection(w, mods, max_count, "fact",
 			   [](util::JsonWriter &jw, const ModuleRow &r) {
 				   jw.beginObject();
 				   jw.key("name").value(moduleName(r.path));
@@ -405,13 +445,13 @@ void writeModules(util::JsonWriter &w, const std::vector<ModuleRow> &mods)
 	w.endObject();
 }
 
-/// Write the entry points section (capped at kMaxEntryPoints).
+/// Write the entry-point candidates section.
 void writeEntryPoints(util::JsonWriter &w,
-		      const std::vector<EntryPointRow> &eps)
+		      const std::vector<EntryPointRow> &eps, int max_count)
 {
 	w.key("entry_points");
 	w.beginObject();
-	writeCappedSection(w, eps, kMaxEntryPoints, "inferred",
+	writeCappedSection(w, eps, max_count, "inferred",
 			   [](util::JsonWriter &jw, const EntryPointRow &r) {
 				   jw.beginObject();
 				   jw.key("name").value(r.name);
@@ -424,11 +464,15 @@ void writeEntryPoints(util::JsonWriter &w,
 }
 
 /// Write the verification section (run state + findings summary).
-/// `evidence` and `findings` are already query results with their success
-/// flags: a failed count is written as `null`, never as 0 (§17.5).
+///
+/// `finding_count` is the counted total, never the page size: reporting the
+/// capped length turned 25 findings into "11" (the plan requires an explicit
+/// total/returned/has_more split, §18.7.0). A failed count is written as
+/// `null`, not 0 (§17.5).
 void writeVerification(util::JsonWriter &w, const LatestRun &run,
 		       const CountResult &evidence,
-		       const Rows<FindingSummary> &findings)
+		       const CountResult &finding_total,
+		       const Rows<FindingSummary> &findings, int max_count)
 {
 	w.key("verification");
 	w.beginObject();
@@ -442,23 +486,42 @@ void writeVerification(util::JsonWriter &w, const LatestRun &run,
 			w.key("evidence_count").value(evidence.value);
 		else
 			w.key("evidence_count").nullValue();
-		if (findings.ok)
-			w.key("finding_count")
-				.value(static_cast<int64_t>(findings.items.size()));
+		if (finding_total.ok)
+			w.key("finding_count").value(finding_total.value);
 		else
 			w.key("finding_count").nullValue();
 		w.key("findings");
 		w.beginObject();
-		writeCappedSection(
-			w, findings.items, kMaxFindings, "fact",
-			[](util::JsonWriter &jw, const FindingSummary &f) {
-				jw.beginObject();
-				jw.key("key").value(f.finding_key);
-				jw.key("dimension").value(f.dimension);
-				jw.key("severity").value(f.severity);
-				jw.key("title").value(f.title);
-				jw.endObject();
-			});
+		if (!findings.ok) {
+			w.key("status").value("unknown");
+			w.key("reason").value("findings query failed");
+			w.key("source").value("unknown");
+		} else {
+			const int returned = std::min(
+				static_cast<int>(findings.items.size()),
+				max_count);
+			w.key("items").beginArray();
+			for (int i = 0; i < returned; ++i) {
+				const auto &f = findings.items[i];
+				w.beginObject();
+				w.key("key").value(f.finding_key);
+				w.key("dimension").value(f.dimension);
+				w.key("severity").value(f.severity);
+				w.key("title").value(f.title);
+				w.endObject();
+			}
+			w.endArray();
+			w.key("total").value(
+				finding_total.ok ?
+					finding_total.value :
+					static_cast<int64_t>(
+						findings.items.size()));
+			w.key("returned").value(returned);
+			w.key("has_more")
+				.value(finding_total.ok &&
+				       finding_total.value > returned);
+			w.key("source").value("fact");
+		}
 		w.endObject();
 	}
 	w.key("source").value("fact");
@@ -532,9 +595,140 @@ void writeNextQueries(util::JsonWriter &w)
 
 // ── Briefing assembler ──────────────────────────────────────────
 
-/// Gather all facts from the database and assemble the briefing JSON.
-/// Each section is written by a dedicated function; this function only
-/// orchestrates the query + section order.
+/// Serialized-size budget of the navigation card (development_plan §11.2,
+/// §18.7.1). It is enforced on the finished JSON: a row cap cannot promise a
+/// byte count, and a card whose fields are long paths reached 8 KiB while every
+/// list was still under its item limit.
+constexpr std::size_t kBriefingBudgetBytes = 4096;
+
+/// Display caps for one budget level. Level 0 is the full card; each further
+/// level shrinks the lists. Counts, freshness, unknowns and next_queries are
+/// never dropped — they are what makes the card trustworthy.
+struct Caps {
+	int languages;
+	int modules;
+	int entry_points;
+	int findings;
+};
+
+constexpr int kMaxBudgetLevel = 3;
+
+Caps capsForLevel(int level)
+{
+	switch (level) {
+	case 0:
+		return { kMaxLanguages, kMaxModules, kMaxEntryPoints,
+			 kMaxFindings };
+	case 1:
+		return { 4, 6, 4, 4 };
+	case 2:
+		return { 2, 3, 2, 2 };
+	default:
+		return { 0, 0, 0, 0 };
+	}
+}
+
+/// Everything the card needs, read once.
+///
+/// Gathering once and re-rendering per budget level is deliberate: a retry must
+/// not observe a database that changed between attempts, or the card would mix
+/// two states.
+struct BriefingFacts {
+	Rows<LanguageRow> languages;
+	Rows<ModuleRow> modules;
+	Rows<EntryPointRow> entry_points;
+	Rows<FindingSummary> findings;
+	LatestRun run;
+	CountResult evidence_count;
+	CountResult finding_total;
+	CountResult files;
+	CountResult symbols;
+	CountResult function_lines;
+	std::vector<std::string> failed;
+};
+
+BriefingFacts gatherFacts(sqlite3 *db, uint64_t project_id)
+{
+	BriefingFacts facts;
+	facts.languages = queryLanguages(db, project_id);
+	facts.modules = queryModules(db, project_id);
+	facts.entry_points = queryEntryPoints(db, project_id);
+	facts.run = queryLatestRun(db, project_id);
+	facts.findings = queryFindings(db, project_id, facts.run.run_id);
+	facts.evidence_count = queryEvidenceCount(db, facts.run.run_id);
+	facts.finding_total =
+		queryFindingTotal(db, project_id, facts.run.run_id);
+	facts.files = queryCount(
+		db, "SELECT COUNT(*) FROM files WHERE project_id = ?",
+		project_id);
+	// Measured per-function line counts. Not file LOC: that needs the
+	// `files.loc` columns D1 has not added yet.
+	facts.function_lines =
+		queryCount(db,
+			   "SELECT COALESCE(SUM(lines), 0) FROM entity "
+			   "WHERE project_id = ? AND kind IN (0,1)",
+			   project_id);
+	facts.symbols =
+		queryCount(db,
+			   "SELECT COUNT(*) FROM entity WHERE project_id = ? "
+			   "AND kind IN (0,1)",
+			   project_id);
+
+	if (!facts.languages.ok)
+		facts.failed.push_back("languages");
+	if (!facts.modules.ok)
+		facts.failed.push_back("modules");
+	if (!facts.entry_points.ok)
+		facts.failed.push_back("entry_points");
+	if (!facts.findings.ok)
+		facts.failed.push_back("findings");
+	if (!facts.finding_total.ok)
+		facts.failed.push_back("finding_count");
+	if (!facts.evidence_count.ok)
+		facts.failed.push_back("evidence_count");
+	if (!facts.files.ok || !facts.symbols.ok || !facts.function_lines.ok)
+		facts.failed.push_back("scale");
+	return facts;
+}
+
+/// Render the card at one budget level.
+/// @param[out] error Set when the writer rejected the section order.
+/// @return The JSON text ("" on error).
+std::string renderBriefing(uint64_t project_id, int level,
+			   const BriefingFacts &facts, std::string &error)
+{
+	const Caps caps = capsForLevel(level);
+	util::JsonWriter w;
+	w.beginObject();
+	w.key("ok").value(true);
+	w.key("project_id").value(project_id);
+	w.key("scoring").value("none");
+	w.key("truncated").value(level > 0);
+	w.key("budget_bytes").value(static_cast<int64_t>(kBriefingBudgetBytes));
+	writeFreshness(w, facts.run);
+	writeScale(w, facts.files, facts.symbols, facts.function_lines);
+	writeLanguages(w, facts.languages.items, caps.languages);
+	writeModules(w, facts.modules.items, caps.modules);
+	writeEntryPoints(w, facts.entry_points.items, caps.entry_points);
+	writeVerification(w, facts.run, facts.evidence_count,
+			  facts.finding_total, facts.findings, caps.findings);
+	writeUnknowns(w, facts.run, facts.languages.items, facts.modules.items,
+		      facts.entry_points.items, facts.failed);
+	writeNextQueries(w);
+	w.endObject();
+	if (!w.ok()) {
+		error = w.error();
+		return {};
+	}
+	return w.str();
+}
+
+/// Assemble the briefing within the byte budget.
+///
+/// Levels are tried in order and the first card that fits wins. If even the
+/// smallest card is too large it is returned with `truncated: true` — never cut
+/// mid-JSON, because a truncated object is not a smaller answer, it is an
+/// unparseable one.
 char *buildBriefing(EngineContext *ctx, uint64_t project_id)
 {
 	auto _store_guard = waitForKnowledgeBuilder();
@@ -543,67 +737,20 @@ char *buildBriefing(EngineContext *ctx, uint64_t project_id)
 			"ffi", "engine_get_project_briefing",
 			"engine not initialized"));
 
-	auto db = ctx->store->handle();
+	const BriefingFacts facts =
+		gatherFacts(ctx->store->handle(), project_id);
 
-	// Gather facts. Every result carries `ok`; the failures end up in
-	// `unknowns` instead of turning into a confident empty answer.
-	const auto languages = queryLanguages(db, project_id);
-	const auto modules = queryModules(db, project_id);
-	const auto entry_points = queryEntryPoints(db, project_id);
-	const auto latest_run = queryLatestRun(db, project_id);
-	const auto findings = queryFindings(db, project_id, latest_run.run_id);
-	const auto evidence_count = queryEvidenceCount(db, latest_run.run_id);
-	const auto file_count = queryCount(
-		db, "SELECT COUNT(*) FROM files WHERE project_id = ?",
-		project_id);
-	// Measured per-function line counts. Not file LOC: that needs the
-	// `files.loc` columns D1 has not added yet.
-	const auto function_lines = queryCount(
-		db,
-		"SELECT COALESCE(SUM(lines), 0) FROM entity "
-		"WHERE project_id = ? AND kind IN (0,1)",
-		project_id);
-	const auto total_symbols = queryCount(
-		db,
-		"SELECT COUNT(*) FROM entity WHERE project_id = ? "
-		"AND kind IN (0,1)",
-		project_id);
-
-	std::vector<std::string> failed;
-	if (!languages.ok)
-		failed.push_back("languages");
-	if (!modules.ok)
-		failed.push_back("modules");
-	if (!entry_points.ok)
-		failed.push_back("entry_points");
-	if (!findings.ok)
-		failed.push_back("findings");
-	if (!evidence_count.ok)
-		failed.push_back("evidence_count");
-	if (!file_count.ok || !total_symbols.ok || !function_lines.ok)
-		failed.push_back("scale");
-
-	// Serialize sections.
-	util::JsonWriter w;
-	w.beginObject();
-	w.key("ok").value(true);
-	w.key("project_id").value(project_id);
-	w.key("scoring").value("none");
-	writeFreshness(w, latest_run);
-	writeScale(w, file_count, total_symbols, function_lines);
-	writeLanguages(w, languages.items);
-	writeModules(w, modules.items);
-	writeEntryPoints(w, entry_points.items);
-	writeVerification(w, latest_run, evidence_count, findings);
-	writeUnknowns(w, latest_run, languages.items, modules.items,
-		      entry_points.items, failed);
-	writeNextQueries(w);
-	w.endObject();
-
-	if (!w.ok())
-		return dupString(util::errorEnvelope(
-			"ffi", "engine_get_project_briefing", w.error()));
-	return dupString(w.str());
+	std::string json;
+	for (int level = 0; level <= kMaxBudgetLevel; ++level) {
+		std::string error;
+		json = renderBriefing(project_id, level, facts, error);
+		if (json.empty())
+			return dupString(util::errorEnvelope(
+				"ffi", "engine_get_project_briefing", error));
+		if (json.size() <= kBriefingBudgetBytes)
+			break;
+	}
+	return dupString(json);
 }
 
 } // namespace
