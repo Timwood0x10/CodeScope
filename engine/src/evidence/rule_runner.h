@@ -17,6 +17,10 @@ struct RuleRunOutcome {
 	/// True when the rule ran to completion. A rule that matched nothing is
 	/// still executed — zero matches is a result, not a failure.
 	bool executed = false;
+	/// True when the rule could not produce evidence at all (for example a
+	/// Count rule, which has no location to attach). Neither executed nor
+	/// failed: the caller must not count it as a clean run of that rule.
+	bool skipped = false;
 	int64_t evidence_rows = 0;
 	int64_t findings = 0;
 	/// Empty on success; the store's message when a write was rejected.

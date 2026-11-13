@@ -3,6 +3,8 @@
   "rules": [
     {
       "name": "mutex_without_defer_unlock",
+      "version": "1",
+      "evidence_level": "L2",
       "description": "Mutex locked but not deferred-unlock",
       "need": [
         { "category": "sync", "primitive": "mutex", "kind": "lock" },

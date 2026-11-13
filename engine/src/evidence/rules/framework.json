@@ -3,6 +3,8 @@
   "rules": [
     {
       "name": "framework_detected",
+      "version": "1",
+      "evidence_level": "L1",
       "description": "Detected web/ORM framework adoption via import table",
       "need": [
         { "category": "framework", "primitive": "gin", "kind": "router" },

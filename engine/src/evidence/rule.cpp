@@ -8,6 +8,8 @@
 //     "rules": [
 //       {
 //         "name": "mutex_without_defer_unlock",
+//         "version": "1",
+//         "evidence_level": "L2",
 //         "description": "...",
 //         "need": [
 //           { "category": "sync", "primitive": "mutex", "kind": "lock" },
@@ -24,14 +26,18 @@
 //     ]
 //   }
 //
-// The parser below is a tiny recursive-descent JSON reader scoped to
-// objects, arrays, strings, numbers, booleans, and null — enough for
-// this schema. NO external JSON dependency is pulled in (plan rule:
-// vendored deps only). On any parse error the loader logs to stderr
-// with the [module=evidence, method=loadFromDirectory] trace chain
-// and skips that file (non-fatal).
+// `version` and `evidence_level` are required (development_plan §8.1,
+// §16.11). `severity` is the persisted 0..4 scale of §10.2 and is required.
+//
+// The JSON reader is rule_json.{h,cpp} — a tiny recursive-descent parser
+// scoped to objects, arrays, strings, numbers, booleans and null, with no
+// external dependency (plan rule: vendored deps only). On a parse error the
+// loader logs to stderr with the [module=evidence, method=loadFromDirectory]
+// trace chain, records the file as rejected, and moves on: the caller decides
+// whether one bad file may be ignored, and the FFI layer says no (§17.5).
 
 #include "rule.h"
+#include "rule_json.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -43,7 +49,6 @@
 #include <sstream>
 #include <string>
 #include <system_error>
-#include <utility>
 #include <vector>
 
 namespace evidence
@@ -78,402 +83,69 @@ const char *combineModeToString(CombineMode mode)
 	return "collect";
 }
 
-// ─── Minimal JSON parser (recursive descent) ─────────────────────
+// ─── EvidenceLevel string conversion ────────────────────────────
+
+bool evidenceLevelFromString(const std::string &s, store::EvidenceLevel &out)
+{
+	if (s == "L1") {
+		out = store::EvidenceLevel::L1;
+		return true;
+	}
+	if (s == "L2") {
+		out = store::EvidenceLevel::L2;
+		return true;
+	}
+	if (s == "L3") {
+		out = store::EvidenceLevel::L3;
+		return true;
+	}
+	return false;
+}
+
+const char *evidenceLevelToString(store::EvidenceLevel level)
+{
+	switch (level) {
+	case store::EvidenceLevel::L1:
+		return "L1";
+	case store::EvidenceLevel::L2:
+		return "L2";
+	case store::EvidenceLevel::L3:
+		return "L3";
+	}
+	return "L1";
+}
+
+std::string rejectedRulesReason(const RuleLoadReport &report)
+{
+	if (report.rejected.empty())
+		return std::string();
+	std::string text =
+		std::to_string(report.rejected.size()) + " rule(s) rejected: ";
+	constexpr std::size_t kMaxShown = 3;
+	for (std::size_t i = 0; i < report.rejected.size(); ++i) {
+		if (i == kMaxShown) {
+			text += ", ...";
+			break;
+		}
+		if (i > 0)
+			text += "; ";
+		const auto &err = report.rejected[i];
+		text += err.rule.empty() ? err.file : err.rule;
+		text += " (" + err.reason + ")";
+	}
+	return text;
+}
+
+// ─── JSON → rule structs ────────────────────────────────────────
 //
-// The parser produces a JsonValue variant that the rule loader walks
-// to build Rule / FactNeed / RuleOutput. Only the subset of JSON
-// needed by the rule schema is implemented: object, array, string,
-// number (int/double), bool, null. Errors are reported via a flag
-// and a message; the loader logs them and skips the file.
+// The JSON reader itself lives in rule_json.{h,cpp}: parsing and
+// metadata validation are different concerns, and this file sits close
+// to the size budget of plan/rules/code_rules.md §1.1.
 
 namespace
 {
 
-// Tagged-union JSON value. Uses std::string for keys (object) and a
-// vector for arrays — simplicity over performance, since rule files
-// are tiny (<1 KB each) and only loaded once per build_evidence call.
-struct JsonValue {
-	enum class Type {
-		Null,
-		Bool,
-		Number,
-		String,
-		Array,
-		Object,
-	};
-	Type type = Type::Null;
-	bool bool_value = false;
-	double number_value = 0.0;
-	std::string string_value;
-	std::vector<JsonValue> array_value;
-	// Object: parallel vectors of (key, value) — keeps insertion
-	// order, which a map<string,JsonValue> would not. Lookups are
-	// linear but N is tiny (<10 keys per object in this schema).
-	std::vector<std::string> object_keys;
-	std::vector<JsonValue> object_values;
-
-	/// Convenience: look up a key in an Object. Returns nullptr if
-	/// this value is not an Object or the key is absent.
-	const JsonValue *find(const std::string &key) const
-	{
-		if (type != Type::Object)
-			return nullptr;
-		for (size_t i = 0; i < object_keys.size(); ++i) {
-			if (object_keys[i] == key)
-				return &object_values[i];
-		}
-		return nullptr;
-	}
-};
-
-// Parser state: a cursor over the input string. All methods advance
-// `pos` past the consumed characters. On error, `error` is set and
-// further parse calls become no-ops.
-class JsonParser {
-    public:
-	explicit JsonParser(const std::string &src)
-		: src_(src)
-	{
-	}
-
-	bool hasError() const
-	{
-		return !error_.empty();
-	}
-	const std::string &error() const
-	{
-		return error_;
-	}
-
-	/// Parse a JSON value. Returns true on success (value_ populated).
-	bool parse(JsonValue &out)
-	{
-		skipWhitespace();
-		if (eof()) {
-			setError("unexpected end of input");
-			return false;
-		}
-		if (!parseValue(out))
-			return false;
-		skipWhitespace();
-		if (!eof()) {
-			setError("trailing characters after JSON value");
-			return false;
-		}
-		return true;
-	}
-
-    private:
-	// RAII guard for recursion depth tracking. Incremented on entry
-	// to parseValue, decremented on any return path. Prevents stack
-	// overflow from maliciously nested JSON (e.g. {{{...}}}).
-	struct DepthGuard {
-		int &depth;
-		explicit DepthGuard(int &d)
-			: depth(d)
-		{
-			++depth;
-		}
-		~DepthGuard()
-		{
-			--depth;
-		}
-	};
-
-	static constexpr int kMaxDepth = 64;
-
-	bool eof() const
-	{
-		return pos_ >= src_.size();
-	}
-	char peek() const
-	{
-		return pos_ < src_.size() ? src_[pos_] : '\0';
-	}
-	char next()
-	{
-		return pos_ < src_.size() ? src_[pos_++] : '\0';
-	}
-	void setError(const std::string &msg)
-	{
-		if (error_.empty())
-			error_ = msg + " (at offset " + std::to_string(pos_) +
-				 ")";
-	}
-
-	void skipWhitespace()
-	{
-		while (!eof()) {
-			char c = peek();
-			if (c == ' ' || c == '\t' || c == '\n' || c == '\r')
-				pos_++;
-			else
-				break;
-		}
-	}
-
-	bool parseValue(JsonValue &out)
-	{
-		DepthGuard g(depth_);
-		if (depth_ > kMaxDepth) {
-			setError("maximum nesting depth exceeded");
-			return false;
-		}
-		skipWhitespace();
-		if (eof()) {
-			setError("unexpected end of input");
-			return false;
-		}
-		char c = peek();
-		if (c == '{')
-			return parseObject(out);
-		if (c == '[')
-			return parseArray(out);
-		if (c == '"')
-			return parseString(out);
-		if (c == 't' || c == 'f')
-			return parseBool(out);
-		if (c == 'n')
-			return parseNull(out);
-		if (c == '-' || (c >= '0' && c <= '9'))
-			return parseNumber(out);
-		setError(std::string("unexpected character '") + c + "'");
-		return false;
-	}
-
-	bool parseObject(JsonValue &out)
-	{
-		out.type = JsonValue::Type::Object;
-		next(); // consume '{'
-		skipWhitespace();
-		if (peek() == '}') {
-			next();
-			return true;
-		}
-		while (true) {
-			skipWhitespace();
-			if (peek() != '"') {
-				setError("expected string key in object");
-				return false;
-			}
-			JsonValue key;
-			if (!parseString(key))
-				return false;
-			skipWhitespace();
-			if (peek() != ':') {
-				setError("expected ':' after object key");
-				return false;
-			}
-			next(); // consume ':'
-			JsonValue val;
-			if (!parseValue(val))
-				return false;
-			out.object_keys.push_back(key.string_value);
-			out.object_values.push_back(std::move(val));
-			skipWhitespace();
-			char c = peek();
-			if (c == ',') {
-				next();
-				continue;
-			}
-			if (c == '}') {
-				next();
-				return true;
-			}
-			setError("expected ',' or '}' in object");
-			return false;
-		}
-	}
-
-	bool parseArray(JsonValue &out)
-	{
-		out.type = JsonValue::Type::Array;
-		next(); // consume '['
-		skipWhitespace();
-		if (peek() == ']') {
-			next();
-			return true;
-		}
-		while (true) {
-			JsonValue val;
-			if (!parseValue(val))
-				return false;
-			out.array_value.push_back(std::move(val));
-			skipWhitespace();
-			char c = peek();
-			if (c == ',') {
-				next();
-				continue;
-			}
-			if (c == ']') {
-				next();
-				return true;
-			}
-			setError("expected ',' or ']' in array");
-			return false;
-		}
-	}
-
-	bool parseString(JsonValue &out)
-	{
-		out.type = JsonValue::Type::String;
-		next(); // consume opening '"'
-		std::string s;
-		while (!eof()) {
-			char c = next();
-			if (c == '"') {
-				out.string_value = std::move(s);
-				return true;
-			}
-			if (c == '\\') {
-				if (eof()) {
-					setError("unterminated escape");
-					return false;
-				}
-				char esc = next();
-				switch (esc) {
-				case '"':
-					s += '"';
-					break;
-				case '\\':
-					s += '\\';
-					break;
-				case '/':
-					s += '/';
-					break;
-				case 'b':
-					s += '\b';
-					break;
-				case 'f':
-					s += '\f';
-					break;
-				case 'n':
-					s += '\n';
-					break;
-				case 'r':
-					s += '\r';
-					break;
-				case 't':
-					s += '\t';
-					break;
-				case 'u': {
-					// \uXXXX — decode 4 hex digits to a UTF-8
-					// byte sequence. Basic BMP support is
-					// sufficient for rule files (ASCII keys +
-					// descriptions); surrogate pairs are not
-					// handled (rule files do not use emoji).
-					std::string hex;
-					for (int i = 0; i < 4; ++i) {
-						if (eof()) {
-							setError(
-								"unterminated \\u escape");
-							return false;
-						}
-						hex += next();
-					}
-					unsigned code = 0;
-					try {
-						code = static_cast<unsigned>(
-							std::stoul(hex, nullptr,
-								   16));
-					} catch (...) {
-						setError("bad \\u escape: " +
-							 hex);
-						return false;
-					}
-					if (code < 0x80) {
-						s += static_cast<char>(code);
-					} else if (code < 0x800) {
-						s += static_cast<char>(
-							0xC0 | (code >> 6));
-						s += static_cast<char>(
-							0x80 | (code & 0x3F));
-					} else {
-						s += static_cast<char>(
-							0xE0 | (code >> 12));
-						s += static_cast<char>(
-							0x80 |
-							((code >> 6) & 0x3F));
-						s += static_cast<char>(
-							0x80 | (code & 0x3F));
-					}
-					break;
-				}
-				default:
-					setError(std::string("bad escape '\\") +
-						 esc + "'");
-					return false;
-				}
-			} else {
-				s += c;
-			}
-		}
-		setError("unterminated string");
-		return false;
-	}
-
-	bool parseNumber(JsonValue &out)
-	{
-		out.type = JsonValue::Type::Number;
-		size_t start = pos_;
-		if (peek() == '-')
-			pos_++;
-		while (!eof()) {
-			char c = peek();
-			if ((c >= '0' && c <= '9') || c == '.' || c == 'e' ||
-			    c == 'E' || c == '+' || c == '-')
-				pos_++;
-			else
-				break;
-		}
-		std::string num = src_.substr(start, pos_ - start);
-		try {
-			size_t idx = 0;
-			out.number_value = std::stod(num, &idx);
-			if (idx != num.size()) {
-				setError("bad number: " + num);
-				return false;
-			}
-		} catch (...) {
-			setError("bad number: " + num);
-			return false;
-		}
-		return true;
-	}
-
-	bool parseBool(JsonValue &out)
-	{
-		out.type = JsonValue::Type::Bool;
-		if (src_.compare(pos_, 4, "true") == 0) {
-			pos_ += 4;
-			out.bool_value = true;
-			return true;
-		}
-		if (src_.compare(pos_, 5, "false") == 0) {
-			pos_ += 5;
-			out.bool_value = false;
-			return true;
-		}
-		setError("invalid literal (expected true/false)");
-		return false;
-	}
-
-	bool parseNull(JsonValue &out)
-	{
-		out.type = JsonValue::Type::Null;
-		if (src_.compare(pos_, 4, "null") == 0) {
-			pos_ += 4;
-			return true;
-		}
-		setError("invalid literal (expected null)");
-		return false;
-	}
-
-	const std::string &src_;
-	size_t pos_ = 0;
-	std::string error_;
-	int depth_ = 0;
-};
+using rule_json::JsonValue;
 
 // ─── JSON value → rule struct extraction ─────────────────────────
 
@@ -519,60 +191,145 @@ FactNeed parseFactNeed(const JsonValue &obj)
 	return need;
 }
 
-// Parse the "output" object of a rule. Severity defaults to 1 (info)
-// when absent — matches RuleOutput's default initializer.
+// Parse the "output" object of a rule.
 RuleOutput parseRuleOutput(const JsonValue &obj)
 {
 	RuleOutput out;
-	out.severity = getInt(obj, "severity", 1);
+	out.severity = getInt(obj, "severity", -1);
 	out.title_template = getString(obj, "title");
 	out.message_template = getString(obj, "message");
 	return out;
 }
 
-// Parse one element of the "rules" array into a Rule. Returns false
-// if the rule is missing a required field (name/needs); the caller
-// skips such rules with a warning.
-bool parseRule(const JsonValue &obj, const std::string &fallback_cat, Rule &out)
+// Is `s` one of the combine modes the builder implements? An unknown
+// spelling used to fall back to Collect, which silently turned an
+// absence-based rule into a presence rule.
+bool isKnownCombine(const std::string &s)
+{
+	return s == "collect" || s == "missing_match" ||
+	       s == "missing_match_per_function" || s == "count";
+}
+
+// Reject an L1 claim that the combine mode cannot support. §8.1 reserves L1
+// for a syntax fact with an unambiguous location; a set difference over
+// functions only says "this pattern is missing somewhere in this function",
+// which is exactly the L2 observation §2.2 warns about.
+bool checkLevelAgainstCombine(const Rule &rule, std::string &reason)
+{
+	if (rule.evidence_level != store::EvidenceLevel::L1)
+		return true;
+	if (rule.combine == CombineMode::Collect)
+		return true;
+	reason = std::string("combine '") + combineModeToString(rule.combine) +
+		 "' cannot back L1: an absence-based result is an observation "
+		 "(development_plan §8.1)";
+	return false;
+}
+
+// Parse and validate one element of the "rules" array.
+// Returns false with `reason` set; the caller records it in the report.
+bool parseRule(const JsonValue &obj, const std::string &fallback_cat, Rule &out,
+	       std::string &reason)
 {
 	out.name = getString(obj, "name");
+	if (out.name.empty()) {
+		reason = "missing 'name'";
+		return false;
+	}
+	out.version = getString(obj, "version");
+	if (out.version.empty()) {
+		reason = "missing 'version' (development_plan §16.11)";
+		return false;
+	}
+	const std::string level = getString(obj, "evidence_level");
+	if (level.empty()) {
+		reason = "missing 'evidence_level' (development_plan §8.1)";
+		return false;
+	}
+	if (!evidenceLevelFromString(level, out.evidence_level)) {
+		reason = "unknown evidence_level '" + level +
+			 "' (expected L1, L2 or L3)";
+		return false;
+	}
 	out.description = getString(obj, "description");
 	out.category = getString(obj, "category");
 	if (out.category.empty())
 		out.category = fallback_cat;
-	out.combine = combineModeFromString(getString(obj, "combine"));
+	out.enabled = getBool(obj, "enabled", true);
+
+	const std::string combine = getString(obj, "combine");
+	if (!isKnownCombine(combine)) {
+		reason = "'combine' must be one of collect, missing_match, "
+			 "missing_match_per_function, count (got '" +
+			 combine + "')";
+		return false;
+	}
+	out.combine = combineModeFromString(combine);
+
 	const JsonValue *needs = obj.find("need");
 	if (!needs || needs->type != JsonValue::Type::Array) {
 		// "needs" is also accepted as an alias for "need".
 		needs = obj.find("needs");
 	}
-	if (!needs || needs->type != JsonValue::Type::Array)
+	if (!needs || needs->type != JsonValue::Type::Array) {
+		reason = "missing 'need' array";
 		return false;
+	}
 	for (const auto &n : needs->array_value)
 		out.needs.push_back(parseFactNeed(n));
+	if (out.needs.empty()) {
+		reason = "empty 'need' array";
+		return false;
+	}
+
 	const JsonValue *output = obj.find("output");
-	if (output && output->type == JsonValue::Type::Object)
-		out.output = parseRuleOutput(*output);
-	return !out.name.empty();
+	if (!output || output->type != JsonValue::Type::Object) {
+		reason = "missing 'output' object";
+		return false;
+	}
+	out.output = parseRuleOutput(*output);
+	if (out.output.title_template.empty()) {
+		reason = "missing 'output.title'";
+		return false;
+	}
+	if (out.output.severity < 0 || out.output.severity > 4) {
+		reason =
+			"output.severity must be 0..4 (development_plan §10.2)";
+		return false;
+	}
+	return checkLevelAgainstCombine(out, reason);
+}
+
+// Record a rule the loader refused. `report` is optional.
+void recordRule(RuleLoadReport *report, const std::string &file,
+		const std::string &rule, const std::string &reason)
+{
+	if (!report)
+		return;
+	report->rejected.push_back(RuleLoadError{ file, rule, reason });
 }
 
 // Parse one JSON file's contents into a RuleSet. Returns false on
 // parse error or missing top-level "rules" array; the caller logs
 // and skips the file.
-bool parseRuleFile(const std::string &content, RuleSet &out)
+bool parseRuleFile(const std::string &content, const std::string &file,
+		   RuleSet &out, RuleLoadReport *report)
 {
-	JsonParser parser(content);
 	JsonValue root;
-	if (!parser.parse(root)) {
+	std::string parse_error;
+	if (!rule_json::parseDocument(content, root, parse_error)) {
 		fprintf(stderr,
 			"[module=evidence, method=loadFromDirectory] "
 			"JSON parse error: %s\n",
-			parser.error().c_str());
+			parse_error.c_str());
+		recordRule(report, file, "",
+			   "JSON parse error: " + parse_error);
 		return false;
 	}
 	if (root.type != JsonValue::Type::Object) {
 		fprintf(stderr, "[module=evidence, method=loadFromDirectory] "
 				"top-level JSON is not an object\n");
+		recordRule(report, file, "", "top-level JSON is not an object");
 		return false;
 	}
 	out.category = getString(root, "category");
@@ -580,15 +337,28 @@ bool parseRuleFile(const std::string &content, RuleSet &out)
 	if (!rules || rules->type != JsonValue::Type::Array) {
 		fprintf(stderr, "[module=evidence, method=loadFromDirectory] "
 				"missing or non-array 'rules' field\n");
+		recordRule(report, file, "",
+			   "missing or non-array 'rules' field");
 		return false;
 	}
 	for (const auto &r : rules->array_value) {
 		Rule rule;
-		if (!parseRule(r, out.category, rule)) {
+		std::string reason;
+		if (!parseRule(r, out.category, rule, reason)) {
 			fprintf(stderr,
-				"[module=evidence, "
-				"method=loadFromDirectory] "
-				"skipping rule with missing name/needs\n");
+				"[module=evidence, method=loadFromDirectory] "
+				"rejected rule %s in %s: %s\n",
+				rule.name.empty() ? "(unnamed)" :
+						    rule.name.c_str(),
+				file.c_str(), reason.c_str());
+			recordRule(report, file, rule.name, reason);
+			continue;
+		}
+		if (!rule.enabled) {
+			if (report)
+				report->disabled.push_back(RuleLoadError{
+					file, rule.name,
+					"declared enabled:false" });
 			continue;
 		}
 		out.rules.push_back(std::move(rule));
@@ -606,8 +376,8 @@ bool parseRuleFile(const std::string &content, RuleSet &out)
 // tests asserting evidence order). Missing directory is a soft
 // failure: log + return empty vector.
 
-std::vector<RuleSet>
-RuleLoader::loadFromDirectory(const std::string &dir_path) const
+std::vector<RuleSet> RuleLoader::loadFromDirectory(const std::string &dir_path,
+						   RuleLoadReport *report) const
 {
 	std::vector<RuleSet> result;
 	std::error_code ec;
@@ -641,20 +411,21 @@ RuleLoader::loadFromDirectory(const std::string &dir_path) const
 				"method=loadFromDirectory] "
 				"cannot open rule file: %s\n",
 				file.c_str());
+			recordRule(report, file, "", "cannot open rule file");
 			continue;
 		}
 		std::stringstream ss;
 		ss << in.rdbuf();
 		RuleSet rs;
-		if (!parseRuleFile(ss.str(), rs)) {
-			// parseRuleFile already logged the specific error.
+		if (!parseRuleFile(ss.str(), file, rs, report)) {
+			// parseRuleFile already logged and recorded the error.
 			continue;
 		}
 		if (rs.rules.empty()) {
 			fprintf(stderr,
 				"[module=evidence, "
 				"method=loadFromDirectory] "
-				"no valid rules in %s — skipping\n",
+				"no enabled rules in %s — skipping\n",
 				file.c_str());
 			continue;
 		}

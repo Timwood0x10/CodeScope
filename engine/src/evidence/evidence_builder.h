@@ -74,7 +74,16 @@ class EvidenceBuilder {
 	/// Load all rule files from `dir_path`. Replaces any previously
 	/// loaded rules. Empty / missing directory is a soft failure:
 	/// the builder will simply produce no evidence on build* calls.
+	/// Rules whose metadata violates §8.1/§16.11 are not loaded and are
+	/// recorded in `loadReport()`; callers must fail on a non-empty
+	/// `rejected` list instead of reporting a smaller rule set as complete.
 	void loadRules(const std::string &dir_path);
+
+	/// Rejected and disabled rules from the last loadRules() call.
+	const RuleLoadReport &loadReport() const
+	{
+		return load_report_;
+	}
 
 	/// Run all loaded rules against the project's semantic_fact
 	/// rows. Returns one Evidence per rule that produced at least
@@ -136,6 +145,9 @@ class EvidenceBuilder {
     private:
 	store::GraphStore *store_;
 	std::vector<RuleSet> rule_sets_;
+	/// What the last loadRules() refused or disabled. Kept because a rule
+	/// that silently disappears makes a run look cleaner than it is.
+	RuleLoadReport load_report_;
 	/// Reset at the start of every build* call; `mutable` because the build
 	/// methods are const and this is a run report, not builder state.
 	/// A set, not a counter: one rule may issue several needs, and reporting

@@ -122,6 +122,13 @@ char *engine_build_evidence(engine_t handle, uint64_t project_id,
 				"no rule files loaded from '" + rules_dir +
 					"'; cannot report a clean result without "
 					"running any rule"));
+		// A rule rejected for bad metadata is a load failure, not a smaller
+		// rule set (development_plan §8.1, §17.5).
+		const std::string rejected =
+			evidence::rejectedRulesReason(builder.loadReport());
+		if (!rejected.empty())
+			return dupString(util::errorEnvelope(
+				"ffi", "engine_build_evidence", rejected));
 
 		std::vector<evidence::Evidence> evidences;
 		if (category_filter && *category_filter) {
@@ -216,6 +223,10 @@ std::string NowIso()
 struct RuleBatchStats {
 	int executed = 0;
 	int failed = 0;
+	/// Rules that could not produce evidence at all (e.g. Count combine).
+	/// Separate from `failed`: nothing went wrong, the rule just has no
+	/// location to report, and it must not be counted as a clean execution.
+	int skipped = 0;
 	int evidence_rows = 0;
 	int findings = 0;
 	std::string first_error;
@@ -237,6 +248,10 @@ RuleBatchStats runAllRules(store::GraphStore *store,
 			evidence::RuleRunOutcome out = evidence::runRuleToStore(
 				store, rules_dir, project_id, run_id,
 				rule.name);
+			if (out.skipped) {
+				++stats.skipped;
+				continue;
+			}
 			if (!out.executed) {
 				++stats.failed;
 				if (stats.first_error.empty())
@@ -250,6 +265,29 @@ RuleBatchStats runAllRules(store::GraphStore *store,
 		}
 	}
 	return stats;
+}
+
+/// Digest of the rule set that actually ran.
+///
+/// It covers what a rule DOES, not just its name: editing needs, level or
+/// severity changes the input, so two runs cannot claim the same rule set on the
+/// strength of identical rule names alone.
+std::string RuleSetDigest(const std::vector<evidence::RuleSet> &sets)
+{
+	std::string text;
+	for (const auto &set : sets)
+		for (const auto &rule : set.rules) {
+			text += rule.name + "@" + rule.version + " " +
+				evidence::evidenceLevelToString(
+					rule.evidence_level) +
+				" sev=" + std::to_string(rule.output.severity) +
+				"\n";
+			for (const auto &need : rule.needs)
+				text += need.category + "/" + need.primitive +
+					"/" + need.kind + ";";
+			text += "\n";
+		}
+	return store::Sha256Hex(text);
 }
 
 // Execute every loaded rule once, persisting the run, its evidence and its
@@ -285,6 +323,14 @@ char *engine_run_rules(engine_t handle, uint64_t project_id,
 				"ffi", "engine_run_rules",
 				"no rule files loaded from '" + rules_dir +
 					"'"));
+		// A rejected rule means the rule set is not the one the project
+		// declared. Running the rest would report a cleaner project than was
+		// actually checked (development_plan §8.1, §17.5).
+		const std::string rejected =
+			evidence::rejectedRulesReason(builder.loadReport());
+		if (!rejected.empty())
+			return dupString(util::errorEnvelope(
+				"ffi", "engine_run_rules", rejected));
 
 		// The run pins the source state. A caller without a VCS passes
 		// nothing and gets the explicit WORKTREE sentinel: an empty revision
@@ -303,22 +349,7 @@ char *engine_run_rules(engine_t handle, uint64_t project_id,
 					ctx->store->error()));
 		run.source.analyzer_version = kAnalyzerVersion;
 
-		// Digest of the rule set actually executed, so two runs can be told
-		// apart even when the source did not change.
-		// The digest covers what a rule DOES, not just its name: renaming
-		// nothing but editing a rule's fact needs would otherwise leave two
-		// different rule sets with the same digest.
-		std::string rule_names;
-		for (const auto &set : builder.ruleSets())
-			for (const auto &rule : set.rules) {
-				rule_names += rule.name + "\n";
-				for (const auto &need : rule.needs)
-					rule_names += need.category + "/" +
-						      need.primitive + "/" +
-						      need.kind + ";";
-				rule_names += "\n";
-			}
-		run.rule_set_digest = store::Sha256Hex(rule_names);
+		run.rule_set_digest = RuleSetDigest(builder.ruleSets());
 
 		run.profile = "default";
 		run.started_at = NowIso();
@@ -351,8 +382,9 @@ char *engine_run_rules(engine_t handle, uint64_t project_id,
 		w.beginObject();
 		w.key("ok").value(true);
 		w.key("run_id").value(run.run_id);
-		w.key("rules").value(executed + failed);
+		w.key("rules").value(executed + failed + stats.skipped);
 		w.key("executed").value(executed);
+		w.key("skipped").value(stats.skipped);
 		w.key("failed").value(failed);
 		w.key("evidence").value(stats.evidence_rows);
 		w.key("findings").value(stats.findings);

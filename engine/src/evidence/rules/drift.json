@@ -4,6 +4,8 @@
   "rules": [
     {
       "name": "dead_pattern_todo",
+      "version": "1",
+      "evidence_level": "L1",
       "description": "TODO markers may indicate unfinished work drifting from the plan",
       "need": [
         { "category": "pattern", "primitive": "todo", "kind": "marker" }
@@ -17,6 +19,8 @@
     },
     {
       "name": "dead_pattern_fixme",
+      "version": "1",
+      "evidence_level": "L1",
       "description": "FIXME markers signal known issues that may indicate design drift",
       "need": [
         { "category": "pattern", "primitive": "fixme", "kind": "marker" }
@@ -30,6 +34,8 @@
     },
     {
       "name": "framework_without_ffi",
+      "version": "1",
+      "evidence_level": "L2",
       "description": "Framework adoption (router/ORM) without a detected FFI boundary may indicate integration drift. Primary need is framework/gin/router; optional ffi/extern_call/call is the exclusion set. Other framework primitives (echo/django/express/gorm) are covered by separate rules of the same shape in future EB versions that support multi-primary joins.",
       "need": [
         { "category": "framework", "primitive": "gin", "kind": "router" },

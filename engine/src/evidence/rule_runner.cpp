@@ -21,11 +21,6 @@ namespace evidence
 namespace
 {
 
-/// Rule files carry no version yet. A literal keeps the record honest: the
-/// fingerprint deliberately excludes the version, so bumping it later will not
-/// mint new findings.
-constexpr const char *kRuleVersion = "1";
-
 std::string NowIso()
 {
 	std::time_t t = std::time(nullptr);
@@ -36,18 +31,15 @@ std::string NowIso()
 	return buf;
 }
 
-/// Rule files still use the legacy 0/1/2 severity scale; map it the same way
-/// migration m0003 mapped the stored findings.
+/// Rule severity is already the persisted 0..4 scale (development_plan §10.2);
+/// the loader rejects anything outside it, so this is a checked cast rather
+/// than a second, disagreeing mapping. It used to map 1→Medium and 2/3→High,
+/// which silently promoted every rule one level above what the file declared.
 store::Severity SeverityFromRule(int rule_severity)
 {
-	switch (rule_severity) {
-	case 0:
-		return store::Severity::Info;
-	case 1:
+	if (rule_severity < 0 || rule_severity > 4)
 		return store::Severity::Medium;
-	default:
-		return store::Severity::High;
-	}
+	return static_cast<store::Severity>(rule_severity);
 }
 
 /// Anchor for a matched fact (§17.6): the symbol when there is one, otherwise
@@ -66,6 +58,65 @@ std::string AnchorFor(const EvidenceItem &item, int nth)
 void RecordExec(store::GraphStore *store, const store::RuleExec &exec)
 {
 	store->insertRuleExec(exec);
+}
+
+/// Persist one matched evidence and the finding it belongs to.
+///
+/// Returns false when a write was rejected; the caller turns that into a failed
+/// rule_exec. The finding is upserted by `finding_key`, so a re-run updates it
+/// in place while evidence rows accumulate as history (§17.4).
+bool persistEvidence(store::GraphStore *store, const Rule &rule,
+		     const std::string &run_id, uint64_t project_id,
+		     const Evidence &ev, RuleRunOutcome &out)
+{
+	if (ev.items.empty())
+		return true; // no location to anchor: nothing to persist
+
+	const std::string key =
+		store::FindingKey(rule.name, AnchorFor(ev.items[0], 0));
+
+	store::EvidenceRecord record;
+	record.run_id = run_id;
+	record.rule.id = rule.name;
+	record.rule.version = rule.version;
+	record.finding_key = key;
+	// Static analysis only: nothing here has been corroborated by a runtime
+	// trace, so the verdict must not claim Supported. This is also the single
+	// place where "L2 may only observe" is enforced — the rule path has no exit
+	// that writes a violation verdict, for any evidence level (§8.1).
+	record.verdict = store::VerificationVerdict::Unverified;
+	record.confidence = ev.confidence;
+	record.provenance = "StaticAnalysis";
+	record.status = store::EvidenceStatus::Observed;
+	for (const auto &item : ev.items) {
+		record.locations.push_back(store::EvidenceLocation{
+			item.file, item.line, item.line, item.symbol });
+		record.facts.push_back(
+			{ 3, static_cast<int64_t>(item.fact_id) });
+	}
+
+	const int64_t evidence_id = store->recordEvidence(record);
+	if (evidence_id == 0)
+		return false;
+	++out.evidence_rows;
+
+	store::FindingRecord finding;
+	finding.finding_key = key;
+	finding.project_id = project_id;
+	finding.rule.id = rule.name;
+	finding.rule.version = rule.version;
+	finding.category = ev.category;
+	finding.severity = SeverityFromRule(rule.output.severity);
+	finding.verdict = store::VerificationVerdict::Unverified;
+	finding.status = store::FindingStatus::Detected;
+	finding.scope_complete = true; // the rule saw every fact it needs
+	finding.description = ev.title;
+	finding.evidence_ids = { evidence_id };
+
+	if (!store->upsertFinding(finding))
+		return false;
+	++out.findings;
+	return true;
 }
 
 } // namespace
@@ -87,6 +138,13 @@ RuleRunOutcome runRuleToStore(store::GraphStore *store,
 		out.error = "runRuleToStore: no rules loaded from " + rules_dir;
 		return out;
 	}
+	// A rejected rule is not a smaller rule set: it is a load failure
+	// (development_plan §8.1, §17.5).
+	std::string rejected = rejectedRulesReason(builder.loadReport());
+	if (!rejected.empty()) {
+		out.error = "runRuleToStore: " + rejected;
+		return out;
+	}
 
 	const Rule *rule = nullptr;
 	for (const auto &set : builder.ruleSets())
@@ -101,10 +159,24 @@ RuleRunOutcome runRuleToStore(store::GraphStore *store,
 	store::RuleExec exec;
 	exec.run_id = run_id;
 	exec.rule.id = rule->name;
-	exec.rule.version = kRuleVersion;
-	exec.evidence_level = store::EvidenceLevel::L1;
+	exec.rule.version = rule->version;
+	exec.evidence_level = rule->evidence_level;
 	exec.status = store::RuleExecStatus::Failed;
 	exec.started_at = NowIso();
+
+	// A Count rule produces a number, not a location. §17.4 invariant 2
+	// requires at least one location per evidence record, so such a rule can
+	// never become evidence. Recording "executed, zero findings" would read as
+	// a clean result of a rule that cannot report anything.
+	if (rule->combine == CombineMode::Count) {
+		exec.status = store::RuleExecStatus::SkippedNotApplicable;
+		exec.skipped_reason =
+			"count combine produces no location, so it cannot become "
+			"evidence (development_plan §17.4 invariant 2)";
+		RecordExec(store, exec);
+		out.skipped = true;
+		return out;
+	}
 
 	auto evidences = builder.buildByRule(project_id, rule_name);
 
@@ -126,60 +198,13 @@ RuleRunOutcome runRuleToStore(store::GraphStore *store,
 	}
 
 	for (const auto &ev : evidences) {
-		if (ev.items.empty())
-			continue;
-
-		const std::string key = store::FindingKey(
-			rule->name, AnchorFor(ev.items[0], 0));
-
-		store::EvidenceRecord record;
-		record.run_id = run_id;
-		record.rule.id = rule->name;
-		record.rule.version = kRuleVersion;
-		record.finding_key = key;
-		// L1 is a static observation: it has not been corroborated by a
-		// runtime trace, so the verdict must not claim Supported.
-		record.verdict = store::VerificationVerdict::Unverified;
-		record.confidence = ev.confidence;
-		record.provenance = "StaticAnalysis";
-		record.status = store::EvidenceStatus::Observed;
-		for (const auto &item : ev.items) {
-			record.locations.push_back(store::EvidenceLocation{
-				item.file, item.line, item.line, item.symbol });
-			record.facts.push_back(
-				{ 3, static_cast<int64_t>(item.fact_id) });
-		}
-
-		const int64_t evidence_id = store->recordEvidence(record);
-		if (evidence_id == 0) {
+		if (!persistEvidence(store, *rule, run_id, project_id, ev,
+				     out)) {
 			exec.error = store->error();
 			RecordExec(store, exec);
 			out.error = exec.error;
 			return out;
 		}
-		out.evidence_rows++;
-
-		store::FindingRecord finding;
-		finding.finding_key = key;
-		finding.project_id = project_id;
-		finding.rule.id = rule->name;
-		finding.rule.version = kRuleVersion;
-		finding.category = ev.category;
-		finding.severity = SeverityFromRule(rule->output.severity);
-		finding.verdict = store::VerificationVerdict::Unverified;
-		finding.status = store::FindingStatus::Detected;
-		finding.scope_complete =
-			true; // the rule saw every fact it needs
-		finding.description = ev.title;
-		finding.evidence_ids = { evidence_id };
-
-		if (!store->upsertFinding(finding)) {
-			exec.error = store->error();
-			RecordExec(store, exec);
-			out.error = exec.error;
-			return out;
-		}
-		out.findings++;
 	}
 
 	exec.status = store::RuleExecStatus::Executed;

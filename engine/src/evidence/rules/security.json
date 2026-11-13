@@ -3,6 +3,8 @@
   "rules": [
     {
       "name": "unsafe_code_risk",
+      "version": "1",
+      "evidence_level": "L1",
       "description": "Rust unsafe blocks bypass memory-safety guarantees and are security-relevant",
       "need": [
         { "category": "pattern", "primitive": "unsafe", "kind": "risk" }
@@ -16,6 +18,8 @@
     },
     {
       "name": "unchecked_ffi",
+      "version": "1",
+      "evidence_level": "L1",
       "description": "extern \"C\" calls without error checking are a security risk (untrusted boundary)",
       "need": [
         { "category": "ffi", "primitive": "extern_call", "kind": "call" }
@@ -29,6 +33,8 @@
     },
     {
       "name": "jni_without_validation",
+      "version": "1",
+      "evidence_level": "L2",
       "description": "JNI exports should validate inputs; missing validation is a security risk",
       "need": [
         { "category": "ffi", "primitive": "jni", "kind": "export" }
@@ -42,6 +48,8 @@
     },
     {
       "name": "bare_except_security",
+      "version": "1",
+      "evidence_level": "L1",
       "description": "Bare except clauses can hide security-relevant errors (e.g. auth failures)",
       "need": [
         { "category": "error", "primitive": "bare_except", "kind": "suppression" }

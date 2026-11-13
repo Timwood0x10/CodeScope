@@ -3,6 +3,8 @@
   "rules": [
     {
       "name": "todo_collect",
+      "version": "1",
+      "evidence_level": "L1",
       "description": "TODO markers in code comments",
       "need": [
         { "category": "pattern", "primitive": "todo", "kind": "marker" }
@@ -16,6 +18,8 @@
     },
     {
       "name": "unwrap_risk",
+      "version": "1",
+      "evidence_level": "L1",
       "description": "Rust .unwrap() calls that may panic",
       "need": [
         { "category": "pattern", "primitive": "unwrap", "kind": "risk" }
@@ -29,6 +33,8 @@
     },
     {
       "name": "panic_risk",
+      "version": "1",
+      "evidence_level": "L1",
       "description": "panic! / panic() calls that abort the process",
       "need": [
         { "category": "pattern", "primitive": "panic", "kind": "risk" }
@@ -42,6 +48,8 @@
     },
     {
       "name": "unsafe_risk",
+      "version": "1",
+      "evidence_level": "L1",
       "description": "Rust unsafe blocks that bypass memory safety",
       "need": [
         { "category": "pattern", "primitive": "unsafe", "kind": "risk" }

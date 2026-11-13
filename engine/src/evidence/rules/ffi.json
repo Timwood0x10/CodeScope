@@ -3,6 +3,8 @@
   "rules": [
     {
       "name": "extern_call_collect",
+      "version": "1",
+      "evidence_level": "L1",
       "description": "extern \"C\" declarations exposing FFI surface area",
       "need": [
         { "category": "ffi", "primitive": "extern_call", "kind": "call" }
@@ -16,6 +18,8 @@
     },
     {
       "name": "unchecked_c_error",
+      "version": "1",
+      "evidence_level": "L2",
       "description": "C calls whose return value is not checked for errors",
       "need": [
         { "category": "ffi", "primitive": "unchecked_error", "kind": "missing" }

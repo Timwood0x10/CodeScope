@@ -1,6 +1,8 @@
 #ifndef CODESCOPE_EVIDENCE_RULE_H
 #define CODESCOPE_EVIDENCE_RULE_H
 
+#include "../store/store_verification.h"
+
 #include <string>
 #include <vector>
 
@@ -48,12 +50,17 @@ enum class CombineMode {
 	Count = 3,
 };
 
-/// Output metadata for a Rule. Severity is a small integer (1=info,
-/// 2=warning, 3=error) used by the MCP layer for ranking. The title
-/// and message templates use {count}, {symbol}, {file}, {line}, {name}
-/// placeholders that are substituted per-Evidence by formatTemplate.
+/// Output metadata for a Rule. The title and message templates use
+/// {count}, {symbol}, {file}, {line}, {name} placeholders that are
+/// substituted per-Evidence by formatTemplate.
+///
+/// `severity` uses the persisted 0..4 scale of development_plan §10.2
+/// (0=info, 1=low, 2=medium, 3=high, 4=critical). Rule files used to carry a
+/// legacy 0/1/2 scale that meant info/warning/error; the loader now rejects
+/// anything outside 0..4, so a stale file fails loudly instead of being
+/// silently remapped.
 struct RuleOutput {
-	int severity = 1;
+	int severity = 2;
 	std::string title_template;
 	std::string message_template;
 };
@@ -62,14 +69,58 @@ struct RuleOutput {
 /// buildByRule(); `description` is human-readable and shown in the
 /// evidence output. `needs` is ordered: needs[0] is the primary
 /// match, needs[1] (if present and optional) is the exclusion set.
+///
+/// `evidence_level` decides what the rule may conclude (development_plan
+/// §8.1): only L1 (a syntax fact with a concrete location) may ever be
+/// promoted to a violation; L2 stays an observation. The loader refuses a
+/// rule that does not declare it, because "not declared" is how an L2
+/// heuristic ends up quoted as an L1 fact.
 struct Rule {
 	std::string name;
+	/// Rule version, declared per rule and carried into evidence, findings
+	/// and rule_exec (§16.11). Not part of the finding fingerprint (§6.2), so
+	/// bumping it does not mint new findings.
+	std::string version;
+	store::EvidenceLevel evidence_level = store::EvidenceLevel::L1;
+	/// `false` keeps the rule out of the executed set. Declared, not dropped:
+	/// the loader reports it so "not run on purpose" stays distinguishable
+	/// from "not loaded".
+	bool enabled = true;
 	std::string description;
 	std::string category;
 	std::vector<FactNeed> needs;
 	CombineMode combine = CombineMode::Collect;
 	RuleOutput output;
 };
+
+/// One rule (or rule file) the loader refused, and why.
+struct RuleLoadError {
+	std::string file;
+	std::string rule;
+	std::string reason;
+};
+
+/// What a load of a rule directory actually produced.
+///
+/// `rejected` is not cosmetic: a rule that silently disappears makes the run
+/// look cleaner than it is (development_plan invariant 1). Callers must treat a
+/// non-empty `rejected` as a failed load (§8.1, §17.5).
+struct RuleLoadReport {
+	std::vector<RuleLoadError> rejected;
+	/// Rules declaring `"enabled": false`. Not executed, not an error.
+	std::vector<RuleLoadError> disabled;
+};
+
+/// Parse the declared evidence level ("L1"/"L2"/"L3"). Case-sensitive: the
+/// rule files are machine-readable metadata, not prose.
+bool evidenceLevelFromString(const std::string &s, store::EvidenceLevel &out);
+
+/// Canonical JSON spelling of a level ("L1"/"L2"/"L3").
+const char *evidenceLevelToString(store::EvidenceLevel level);
+
+/// One-line reason for a failed load: "" when nothing was rejected, otherwise
+/// "<n> rule(s) rejected: <rule> (<reason>); ..." with at most three shown.
+std::string rejectedRulesReason(const RuleLoadReport &report);
 
 /// A loaded rule file. `category` is the file-level grouping (matches
 /// Rule.category for every contained rule, enforced by the loader).
@@ -118,12 +169,23 @@ std::string resolveRulesDir();
 /// SKIPS that file (non-fatal: a typo in one rule file must not
 /// prevent the rest from loading). An empty or missing directory
 /// returns an empty vector and logs a warning.
+///
+/// Metadata validation is stricter than parsing: a rule without
+/// `version`, `evidence_level` or a 0..4 `severity`, a rule whose
+/// `combine` is unknown, or an L1 rule built on an absence-based combine is
+/// recorded in the report's `rejected` list instead of being loaded
+/// (development_plan §8.1, §16.11).
 class RuleLoader {
     public:
 	/// Load every *.json file in `dir_path` as a RuleSet.
-	/// @return Vector of RuleSet (one per successfully parsed file).
+	/// @param dir_path Directory holding the *.json rule files.
+	/// @param report   Optional; receives rejected and disabled rules.
+	///                 A rejected entry means the caller must fail the
+	///                 load rather than report a smaller, cleaner rule set.
+	/// @return Vector of RuleSet (one per file with at least one valid rule).
 	std::vector<RuleSet>
-	loadFromDirectory(const std::string &dir_path) const;
+	loadFromDirectory(const std::string &dir_path,
+			  RuleLoadReport *report = nullptr) const;
 };
 
 } // namespace evidence

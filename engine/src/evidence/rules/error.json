@@ -3,6 +3,8 @@
   "rules": [
     {
       "name": "bare_except_collect",
+      "version": "1",
+      "evidence_level": "L1",
       "description": "Bare except clauses that swallow all exceptions",
       "need": [
         { "category": "error", "primitive": "bare_except", "kind": "suppression" }
@@ -16,6 +18,8 @@
     },
     {
       "name": "empty_catch_collect",
+      "version": "1",
+      "evidence_level": "L1",
       "description": "Empty catch blocks that silently swallow errors",
       "need": [
         { "category": "error", "primitive": "empty_catch", "kind": "suppression" }

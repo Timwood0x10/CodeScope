@@ -585,7 +585,8 @@ std::vector<Evidence> applyRule(store::GraphStore *store, uint64_t project_id,
 void EvidenceBuilder::loadRules(const std::string &dir_path)
 {
 	RuleLoader loader;
-	rule_sets_ = loader.loadFromDirectory(dir_path);
+	load_report_ = RuleLoadReport{};
+	rule_sets_ = loader.loadFromDirectory(dir_path, &load_report_);
 }
 
 std::vector<Evidence> EvidenceBuilder::buildAll(uint64_t project_id) const
