@@ -14,6 +14,16 @@
 - **No fabricated `loc`.** The briefing summed entity row spans and called the result `loc` with `source: "fact"` — it double-counted nested symbols and missed non-symbol lines. It now reports measured `function_lines` and lists total file LOC as unknown until `files.loc` exists (D1).
 - **`all_tools()` in `catalog.rs` stays inside its grandfathered size**: the new descriptors are extracted into functions instead of being appended to the list, so the size gate records no growth (§1.1 "只缩不长").
 
+### 🔒 Rule metadata is now a gate
+
+- **`evidence_level` is required and enforced** (`engine/src/evidence/rule.{h,cpp}`, `rule_runner.cpp`): every rule declares `L1`/`L2`/`L3`, and `rule_exec` records the declared level instead of a hardcoded `L1`. A rule without it is *rejected*, not defaulted — that default was exactly how an L2 heuristic (resource pairing, absence-based matching) was quoted as an L1 fact (development plan §8.1).
+- **An L1 rule may not be built on an absence-based combine.** `missing_match`, `missing_match_per_function` and `count` only say "this pattern is missing somewhere in this function", so they can no longer back an L1 claim; the loader rejects the combination with the reason.
+- **Rejected rules fail the load instead of shrinking the rule set.** `engine_run_rules` and `build_evidence` return an error envelope naming the rejected rule and why (§17.5). Previously a bad rule simply disappeared and the run looked cleaner than it was.
+- **Rule severity uses the persisted 0..4 scale** (§10.2) and is validated on load. `SeverityFromRule()` used to map `1→Medium`, `2/3→High`, silently promoting every rule one level above what its file declared. Rule files therefore now read as `1=low, 2=medium`; anything outside `0..4` is rejected.
+- **`version` is declared per rule** (§16.11) and carried into `rule_exec`, evidence and findings instead of a single hardcoded `"1"`; it stays out of the finding fingerprint, so bumping it does not mint new findings.
+- **`enabled: false` is reported, not silently dropped**, and a `count` rule is recorded as `skipped_not_applicable` with its reason instead of "executed, zero findings" — a count has no location and therefore cannot become evidence (§17.4 invariant 2). The run envelope gained a `skipped` field.
+- **`rule_set_digest` covers level, version and severity**, so editing a rule's strength changes the run's input digest instead of producing an identical digest.
+
 ## v0.2.7 (2026-10-09)
 
 First release since v0.2.6 (`main`, 2026-08-14): **41 commits, 394 files**. Two themes: the architectural work for 0.3 (handle-based ABI, Windows parallel indexing), and silent failure — the cases where a tool answered confidently and wrongly, on the default path, for real projects.
