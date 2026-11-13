@@ -1,19 +1,17 @@
-// rule_json.cpp — the minimal JSON reader the rule loader needs.
+// json_parse.cpp — the project's minimal JSON reader for small metadata blobs.
 //
 // Only the syntax the rule schema uses is implemented; no external JSON
 // dependency is pulled in (the project vendors its dependencies). Parsing is
 // depth-limited so a maliciously nested file cannot exhaust the stack, and
 // trailing characters are rejected so a truncated file does not parse as valid.
 
-#include "rule_json.h"
+#include "util/json_parse.h"
 
 #include <string>
 #include <utility>
 #include <vector>
 
-namespace evidence
-{
-namespace rule_json
+namespace util
 {
 namespace
 {
@@ -378,7 +376,8 @@ const JsonValue *JsonValue::find(const std::string &key) const
 	return nullptr;
 }
 
-bool parseDocument(const std::string &text, JsonValue &out, std::string &error)
+bool parseJsonDocument(const std::string &text, JsonValue &out,
+		       std::string &error)
 {
 	JsonParser parser(text);
 	if (parser.parse(out)) {
@@ -389,5 +388,4 @@ bool parseDocument(const std::string &text, JsonValue &out, std::string &error)
 	return false;
 }
 
-} // namespace rule_json
-} // namespace evidence
+} // namespace util

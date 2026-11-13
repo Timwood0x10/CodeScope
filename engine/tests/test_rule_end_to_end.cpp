@@ -27,8 +27,8 @@ static char kDbPath[160];
 
 static void initDbPath()
 {
-	std::snprintf(kDbPath, sizeof(kDbPath),
-		      "/tmp/codescope_rule_e2e_%d.db", int(getpid()));
+	std::snprintf(kDbPath, sizeof(kDbPath), "/tmp/codescope_rule_e2e_%d.db",
+		      int(getpid()));
 }
 
 static void check(bool cond, const char *msg)
@@ -102,7 +102,8 @@ static bool insertFact(store::GraphStore &st, uint64_t project_id,
 		"primitive, kind, symbol, confidence, detail_json) "
 		"VALUES (?, 0, 'pattern', 'todo', 'marker', ?, 0.9, ?)";
 	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(st.handle(), sql, -1, &stmt, nullptr) != SQLITE_OK)
+	if (sqlite3_prepare_v2(st.handle(), sql, -1, &stmt, nullptr) !=
+	    SQLITE_OK)
 		return false;
 	std::string detail = "{\"line\":" + std::to_string(line) +
 			     ",\"snippet\":\"TODO: fix\"}";
@@ -188,7 +189,8 @@ int main()
 	// (development_plan §17.8 acceptance 6).
 	const int64_t evidence_before =
 		scalar(store, "SELECT COUNT(*) FROM evidence");
-	check(store.exec("ALTER TABLE semantic_fact RENAME TO semantic_fact_off"),
+	check(store.exec(
+		      "ALTER TABLE semantic_fact RENAME TO semantic_fact_off"),
 	      "hide semantic_fact");
 
 	evidence::RuleRunOutcome broken = evidence::runRuleToStore(
@@ -206,7 +208,8 @@ int main()
 	      "a failed rule must not write a finding");
 
 	// ── 4. The store is still usable afterwards ─────────────────────
-	check(store.exec("ALTER TABLE semantic_fact_off RENAME TO semantic_fact"),
+	check(store.exec(
+		      "ALTER TABLE semantic_fact_off RENAME TO semantic_fact"),
 	      "restore semantic_fact");
 	evidence::RuleRunOutcome recovered = evidence::runRuleToStore(
 		&store, rules_dir, project_id, run.run_id, "unwrap_risk");
@@ -215,7 +218,25 @@ int main()
 			    "'unwrap_risk' AND status='executed'") == 1,
 	      "the re-run flips the rule_exec row to executed");
 
-	// ── 5. A README-only change must not move finding identities ────
+	// ── 5. A rejected rule_exec write fails the rule ────────────────
+	// The row is the only proof the rule ran. Silently ignoring the INSERT
+	// return let a database with no execution record still answer
+	// "executed, failed=0" (development_plan invariant 1).
+	check(store.exec("ALTER TABLE rule_exec RENAME TO rule_exec_off"),
+	      "hide rule_exec");
+	evidence::RuleRunOutcome lost = evidence::runRuleToStore(
+		&store, rules_dir, project_id, run.run_id, "todo_collect");
+	check(!lost.executed,
+	      "a rejected rule_exec write must not report success");
+	check(lost.error.find("rule_exec write failed") != std::string::npos,
+	      "the write failure must carry a message");
+	check(store.exec("ALTER TABLE rule_exec_off RENAME TO rule_exec"),
+	      "restore rule_exec");
+	evidence::RuleRunOutcome back = evidence::runRuleToStore(
+		&store, rules_dir, project_id, run.run_id, "todo_collect");
+	check(back.executed, "the rule runs again once rule_exec is back");
+
+	// ── 6. A README-only change must not move finding identities ────
 	// Two projects with identical source but different README content. The
 	// source state (worktree digest) has to differ, the finding identity must
 	// not: otherwise every documentation edit would look like a new issue
@@ -233,12 +254,13 @@ int main()
 
 	const std::string digest_a = store.worktreeDigest(project_a);
 	const std::string digest_b = store.worktreeDigest(project_b);
-	check(digest_a != digest_b, "a README change must move the worktree digest");
+	check(digest_a != digest_b,
+	      "a README change must move the worktree digest");
 
-	for (auto [pid, run_id] : { std::pair<uint64_t, const char *>{
-				     project_a, "run-readme-a" },
-			     std::pair<uint64_t, const char *>{
-				     project_b, "run-readme-b" } }) {
+	for (auto [pid, run_id] :
+	     { std::pair<uint64_t, const char *>{ project_a, "run-readme-a" },
+	       std::pair<uint64_t, const char *>{ project_b,
+						  "run-readme-b" } }) {
 		store::VerificationRun r;
 		r.run_id = run_id;
 		r.project_id = pid;
@@ -260,7 +282,8 @@ int main()
 	const std::string key_b = textAt(
 		store, "SELECT finding_key FROM finding WHERE project_id=" +
 			       std::to_string(project_b));
-	check(!key_a.empty() && !key_b.empty(), "both projects produce a finding");
+	check(!key_a.empty() && !key_b.empty(),
+	      "both projects produce a finding");
 	check(key_a == key_b,
 	      "the same issue in two source states must keep its identity");
 

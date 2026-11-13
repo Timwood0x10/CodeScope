@@ -281,10 +281,16 @@ std::string RuleSetDigest(const std::vector<evidence::RuleSet> &sets)
 				evidence::evidenceLevelToString(
 					rule.evidence_level) +
 				" sev=" + std::to_string(rule.output.severity) +
+				" combine=" +
+				evidence::combineModeToString(rule.combine) +
 				"\n";
+			// `optional` decides whether a need suppresses or selects a
+			// finding, so it is part of what the rule does: without it, three
+			// genuinely different rules share one digest.
 			for (const auto &need : rule.needs)
 				text += need.category + "/" + need.primitive +
-					"/" + need.kind + ";";
+					"/" + need.kind +
+					(need.optional ? "?" : "") + ";";
 			// A metric rule has no needs; its strength lives in the
 			// threshold, which must change the digest too (§13.2:
 			// changing a threshold must change the evidence version).

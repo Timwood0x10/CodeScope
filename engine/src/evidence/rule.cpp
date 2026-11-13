@@ -29,7 +29,7 @@
 // `version` and `evidence_level` are required (development_plan §8.1,
 // §16.11). `severity` is the persisted 0..4 scale of §10.2 and is required.
 //
-// The JSON reader is rule_json.{h,cpp} — a tiny recursive-descent parser
+// The JSON reader is util/json_parse.{h,cpp} — a tiny recursive-descent parser
 // scoped to objects, arrays, strings, numbers, booleans and null, with no
 // external dependency (plan rule: vendored deps only). On a parse error the
 // loader logs to stderr with the [module=evidence, method=loadFromDirectory]
@@ -37,11 +37,12 @@
 // whether one bad file may be ignored, and the FFI layer says no (§17.5).
 
 #include "rule.h"
-#include "rule_json.h"
+#include "util/json_parse.h"
 
 #include <algorithm>
 #include <cerrno>
 #include <cstdio>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -213,7 +214,7 @@ std::string rejectedRulesReason(const RuleLoadReport &report)
 namespace
 {
 
-using rule_json::JsonValue;
+using util::JsonValue;
 
 // ─── JSON value → rule struct extraction ─────────────────────────
 
@@ -228,13 +229,25 @@ std::string getString(const JsonValue &obj, const std::string &key)
 	return v->string_value;
 }
 
-// Read an integer field; returns `fallback` if absent or non-numeric.
-int getInt(const JsonValue &obj, const std::string &key, int fallback)
+// Read a JSON number that must be an integer inside [min, max].
+//
+// A plain cast truncated 4.9 to 4, which then passed the range check and was
+// stored as a severity the author never declared. The raw value is validated
+// before any conversion.
+bool getIntegralNumber(const JsonValue &obj, const std::string &key,
+		       int64_t min, int64_t max, int64_t &out)
 {
 	const JsonValue *v = obj.find(key);
 	if (!v || v->type != JsonValue::Type::Number)
-		return fallback;
-	return static_cast<int>(v->number_value);
+		return false;
+	const double value = v->number_value;
+	if (value < static_cast<double>(min) ||
+	    value > static_cast<double>(max))
+		return false;
+	if (value != std::trunc(value))
+		return false;
+	out = static_cast<int64_t>(value);
+	return true;
 }
 
 // Read a boolean field; returns `fallback` if absent or non-bool.
@@ -259,14 +272,20 @@ FactNeed parseFactNeed(const JsonValue &obj)
 	return need;
 }
 
-// Parse the "output" object of a rule.
-RuleOutput parseRuleOutput(const JsonValue &obj)
+// Parse the "output" object of a rule. Severity must be a declared integer in
+// the persisted 0..4 range (development_plan §10.2).
+bool parseRuleOutput(const JsonValue &obj, RuleOutput &out, std::string &reason)
 {
-	RuleOutput out;
-	out.severity = getInt(obj, "severity", -1);
 	out.title_template = getString(obj, "title");
 	out.message_template = getString(obj, "message");
-	return out;
+	int64_t severity = 0;
+	if (!getIntegralNumber(obj, "severity", 0, 4, severity)) {
+		reason = "output.severity must be an integer in 0..4 "
+			 "(development_plan §10.2)";
+		return false;
+	}
+	out.severity = static_cast<int>(severity);
+	return true;
 }
 
 // Is `s` one of the combine modes the builder implements? An unknown
@@ -334,14 +353,11 @@ bool parseMetricSpec(const JsonValue &obj, MetricSpec &out, std::string &reason)
 			 "' (expected gt, ge, lt, le or eq)";
 		return false;
 	}
-	const JsonValue *threshold = metric->find("threshold");
-	if (!threshold || threshold->type != JsonValue::Type::Number) {
-		reason = "metric needs a numeric 'threshold'";
-		return false;
-	}
-	out.threshold = static_cast<int64_t>(threshold->number_value);
-	if (out.threshold < 0) {
-		reason = "metric threshold must not be negative";
+	// A billion is far past any meaningful size limit; a larger value is a
+	// typo rather than a threshold.
+	if (!getIntegralNumber(*metric, "threshold", 0, 1000000000,
+			       out.threshold)) {
+		reason = "metric needs an integer 'threshold' in 0..1e9";
 		return false;
 	}
 	return true;
@@ -422,14 +438,10 @@ bool parseRule(const JsonValue &obj, const std::string &fallback_cat, Rule &out,
 		reason = "missing 'output' object";
 		return false;
 	}
-	out.output = parseRuleOutput(*output);
+	if (!parseRuleOutput(*output, out.output, reason))
+		return false;
 	if (out.output.title_template.empty()) {
 		reason = "missing 'output.title'";
-		return false;
-	}
-	if (out.output.severity < 0 || out.output.severity > 4) {
-		reason =
-			"output.severity must be 0..4 (development_plan §10.2)";
 		return false;
 	}
 	return checkLevelAgainstCombine(out, reason);
@@ -452,7 +464,7 @@ bool parseRuleFile(const std::string &content, const std::string &file,
 {
 	JsonValue root;
 	std::string parse_error;
-	if (!rule_json::parseDocument(content, root, parse_error)) {
+	if (!util::parseJsonDocument(content, root, parse_error)) {
 		fprintf(stderr,
 			"[module=evidence, method=loadFromDirectory] "
 			"JSON parse error: %s\n",

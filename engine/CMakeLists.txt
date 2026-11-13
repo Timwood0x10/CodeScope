@@ -291,12 +291,12 @@ set(ENGINE_SOURCES
     src/filter_policy_ignore.cpp
     src/platform_win.cpp
     src/evidence/rule.cpp
-    src/evidence/rule_json.cpp
     src/evidence/rule_metric.cpp
     src/evidence/template_format.cpp
     src/evidence/evidence_builder.cpp
     src/engine_evidence_ffi.cpp
     src/engine_project_state_ffi.cpp
+    src/util/json_parse.cpp
     src/engine_briefing_ffi.cpp
     src/engine_analyze_ffi.cpp
     ${SQLITE3_AMAL_SRC}

@@ -55,9 +55,31 @@ std::string AnchorFor(const EvidenceItem &item, int nth)
 
 /// Write the rule's outcome row. Called on every exit path so a failed rule is
 /// recorded as failed instead of leaving no trace.
-void RecordExec(store::GraphStore *store, const store::RuleExec &exec)
+/// @return false when the row was rejected.
+bool RecordExec(store::GraphStore *store, const store::RuleExec &exec)
 {
-	store->insertRuleExec(exec);
+	return store->insertRuleExec(exec);
+}
+
+/// Record the outcome row and close the rule's result.
+///
+/// A rejected `rule_exec` write must not be reported as a successful run: the
+/// row is the only proof the rule executed, so without it the caller would see
+/// `executed`, `failed=0` and a `completed` run backed by no execution record at
+/// all (development_plan invariant 1, §17.5).
+RuleRunOutcome closeRule(store::GraphStore *store, const store::RuleExec &exec,
+			 RuleRunOutcome out)
+{
+	if (RecordExec(store, exec))
+		return out;
+	const std::string write_error = store->error();
+	out.executed = false;
+	out.skipped = false;
+	out.error =
+		out.error.empty() ?
+			"rule_exec write failed: " + write_error :
+			out.error + "; rule_exec write failed: " + write_error;
+	return out;
 }
 
 /// Persist one matched evidence and the finding it belongs to.
@@ -175,9 +197,8 @@ RuleRunOutcome runRuleToStore(store::GraphStore *store,
 		exec.skipped_reason =
 			"count combine produces no location, so it cannot become "
 			"evidence (development_plan §17.4 invariant 2)";
-		RecordExec(store, exec);
 		out.skipped = true;
-		return out;
+		return closeRule(store, exec, out);
 	}
 
 	auto evidences = builder.buildByRule(project_id, rule_name);
@@ -185,34 +206,30 @@ RuleRunOutcome runRuleToStore(store::GraphStore *store,
 	// A failed fact query is not "no matches": the rule never saw the data.
 	if (builder.failedQueries() > 0) {
 		exec.error = "fact query failed";
-		RecordExec(store, exec);
 		out.error = exec.error;
-		return out;
+		return closeRule(store, exec, out);
 	}
 
 	// Zero matches is a legitimate outcome and must still be recorded, so the
 	// caller can tell "ran, found nothing" from "never ran".
 	if (evidences.empty()) {
 		exec.status = store::RuleExecStatus::Executed;
-		RecordExec(store, exec);
 		out.executed = true;
-		return out;
+		return closeRule(store, exec, out);
 	}
 
 	for (const auto &ev : evidences) {
 		if (!persistEvidence(store, *rule, run_id, project_id, ev,
 				     out)) {
 			exec.error = store->error();
-			RecordExec(store, exec);
 			out.error = exec.error;
-			return out;
+			return closeRule(store, exec, out);
 		}
 	}
 
 	exec.status = store::RuleExecStatus::Executed;
-	RecordExec(store, exec);
 	out.executed = true;
-	return out;
+	return closeRule(store, exec, out);
 }
 
 } // namespace evidence

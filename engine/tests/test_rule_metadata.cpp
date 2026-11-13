@@ -154,6 +154,27 @@ static void checkLoaderGates()
 			    "collectt") +
 		   "  ]\n}\n")
 			  .c_str());
+	writeFile(
+		"frac_severity.json",
+		"{\n  \"rules\": [\n"
+		"    {\n        \"name\": \"frac_severity\",\n"
+		"        \"version\": \"1\",\n"
+		"        \"evidence_level\": \"L1\",\n"
+		"        \"need\": [ { \"category\": \"pattern\", "
+		"\"primitive\": \"todo\", \"kind\": \"marker\" } ],\n"
+		"        \"combine\": \"collect\",\n"
+		"        \"output\": { \"severity\": 4.9, \"title\": \"t\" }\n"
+		"    }\n  ]\n}\n");
+	writeFile("frac_threshold.json",
+		  "{\n  \"rules\": [\n"
+		  "    {\n        \"name\": \"frac_threshold\",\n"
+		  "        \"version\": \"1\",\n"
+		  "        \"evidence_level\": \"L1\",\n"
+		  "        \"type\": \"metric\",\n"
+		  "        \"metric\": { \"name\": \"function_lines\", "
+		  "\"op\": \"gt\", \"threshold\": 120.5 },\n"
+		  "        \"output\": { \"severity\": 2, \"title\": \"t\" }\n"
+		  "    }\n  ]\n}\n");
 	writeFile("disabled.json",
 		  (std::string("{\n  \"rules\": [\n") +
 		   "    {\n        \"name\": \"off\",\n"
@@ -175,16 +196,18 @@ static void checkLoaderGates()
 	for (const auto &set : sets)
 		loaded += set.rules.size();
 	check(loaded == 2, "the two valid rules must load");
-	check(report.rejected.size() == 6,
-	      "six rules must be rejected, not silently dropped");
+	check(report.rejected.size() == 8,
+	      "eight rules must be rejected, not silently dropped");
 	check(report.disabled.size() == 1, "enabled:false must be reported");
 
-	expectRejected(report, 6, "missing 'evidence_level'");
-	expectRejected(report, 6, "unknown evidence_level");
-	expectRejected(report, 6, "cannot back L1");
-	expectRejected(report, 6, "severity must be 0..4");
-	expectRejected(report, 6, "missing 'version'");
-	expectRejected(report, 6, "must be one of collect");
+	expectRejected(report, 8, "missing 'evidence_level'");
+	expectRejected(report, 8, "unknown evidence_level");
+	expectRejected(report, 8, "cannot back L1");
+	expectRejected(report, 8, "severity must be an integer in 0..4");
+	expectRejected(report, 8, "missing 'version'");
+	expectRejected(report, 8, "must be one of collect");
+	// 4.9 used to truncate to 4 and pass the range check.
+	expectRejected(report, 8, "threshold' in 0..1e9");
 
 	const evidence::Rule *l1 = nullptr;
 	const evidence::Rule *l2 = nullptr;
@@ -235,6 +258,25 @@ static void checkShippedRules()
 		}
 	check(count > 0, "shipped rules must load");
 	std::printf("  [PASS] shipped rules (%zu) keep L1 => collect\n", count);
+}
+
+static std::string scalarText(const char *sql)
+{
+	sqlite3 *db = nullptr;
+	if (sqlite3_open(kDbPath, &db) != SQLITE_OK)
+		return {};
+	sqlite3_stmt *st = nullptr;
+	std::string out;
+	if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) == SQLITE_OK &&
+	    sqlite3_step(st) == SQLITE_ROW) {
+		const char *p = reinterpret_cast<const char *>(
+			sqlite3_column_text(st, 0));
+		if (p)
+			out = p;
+	}
+	sqlite3_finalize(st);
+	sqlite3_close(db);
+	return out;
 }
 
 static long scalar(const char *sql)
@@ -310,12 +352,82 @@ static void checkRunRecordsLevel()
 	std::printf("  [PASS] rule_exec records level, Count is skipped\n");
 }
 
+/// Case 9: the rule-set digest covers what a rule does, not only its name.
+///
+/// `combine` and `need.optional` decide whether a rule emits a finding, no
+/// finding or a skip, so three such rules had one digest and rule changes could
+/// not be told apart.
+static void checkDigestTracksBehaviour()
+{
+	std::filesystem::remove_all(kRulesDir);
+	std::filesystem::create_directories(kRulesDir);
+	setenv("CODESCOPE_RULES_DIR", kRulesDir, 1);
+
+	auto writeVariant = [](const char *need, const char *combine) {
+		const std::string json =
+			std::string("{\n  \"rules\": [\n") +
+			"    {\n        \"name\": \"v\",\n"
+			"        \"version\": \"1\",\n"
+			"        \"evidence_level\": \"L2\",\n"
+			"        \"need\": [ " +
+			need + " ],\n        \"combine\": \"" + combine +
+			"\",\n        \"output\": { \"severity\": 2, "
+			"\"title\": \"t\" }\n"
+			"    }\n  ]\n}\n";
+		writeFile("var.json", json.c_str());
+	};
+
+	auto digestOf = [](engine_t engine) {
+		char *raw = engine_run_rules(engine, 1, nullptr);
+		check(raw != nullptr, "engine_run_rules must not return null");
+		const std::string json(raw);
+		engine_free_string(raw);
+		const std::string marker = "\"run_id\":\"";
+		const std::size_t at = json.find(marker);
+		check(at != std::string::npos, "the run must report its id");
+		const std::size_t start = at + marker.size();
+		const std::string run_id =
+			json.substr(start, json.find('"', start) - start);
+		return scalarText(
+			("SELECT rule_set_digest FROM verification_run "
+			 "WHERE run_id='" +
+			 run_id + "'")
+				.c_str());
+	};
+
+	removeDbFiles();
+	engine_t engine = engine_create(kDbPath);
+	check(engine != nullptr, "engine_create");
+
+	const char *plain = "{\"category\":\"pattern\",\"primitive\":"
+			    "\"todo\",\"kind\":\"marker\"}";
+	const char *exclusion = "{\"category\":\"pattern\",\"primitive\":"
+				"\"todo\",\"kind\":\"marker\","
+				"\"optional\":true}";
+
+	writeVariant(plain, "collect");
+	const std::string selected = digestOf(engine);
+	writeVariant(exclusion, "collect");
+	const std::string excluded = digestOf(engine);
+	writeVariant(plain, "missing_match");
+	const std::string absence = digestOf(engine);
+
+	check(!selected.empty(), "digest must be readable");
+	check(selected != excluded, "need.optional must change the digest");
+	check(excluded != absence, "combine must change the digest");
+
+	engine_destroy(engine);
+	unsetenv("CODESCOPE_RULES_DIR");
+	std::printf("  [PASS] rule_set_digest tracks behaviour\n");
+}
+
 int main()
 {
 	initPaths();
 	checkLoaderGates();
 	checkShippedRules();
 	checkRunRecordsLevel();
+	checkDigestTracksBehaviour();
 
 	std::filesystem::remove_all(kRulesDir);
 	removeDbFiles();
