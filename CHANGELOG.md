@@ -24,6 +24,14 @@
 - **`enabled: false` is reported, not silently dropped**, and a `count` rule is recorded as `skipped_not_applicable` with its reason instead of "executed, zero findings" — a count has no location and therefore cannot become evidence (§17.4 invariant 2). The run envelope gained a `skipped` field.
 - **`rule_set_digest` covers level, version and severity**, so editing a rule's strength changes the run's input digest instead of producing an identical digest.
 
+### 📏 Metric rules (D2 sizes)
+
+- **A rule can now read a measured value per entity** (`engine/src/evidence/rule_metric.{h,cpp}`): `type: "metric"` with `metric: {name, op, threshold}` reads `entity.lines` or `entity.param_count` — values the indexer already recorded — and emits one evidence per entity over the limit. Each item references the entity row (`fact_kind = 0`), so the finding has a real location and a real fact reference (§17.4 invariant 2) instead of a synthetic one.
+- **`size.json` ships two rules**: `function_too_long` (>120 lines, L1, high — §1.1/§9 hard limit) and `too_many_parameters` (>5 params, L2, low — §9 prefers an options struct, which is a preference, so it stays an observation). Thresholds are the tool's built-in defaults until M2 reads declared constraints from `.codescope/profile.yaml`.
+- **`file_lines` is deliberately not shipped yet.** The `files` table has no line count; §5.1 requires new `files.loc` columns. Summing entity row spans would miss non-symbol lines and double-count nested symbols, so the metric waits rather than guessing.
+- **`rule_set_digest` includes the metric, operator and threshold**, so changing a threshold changes the run's input digest (§13.2 item 4).
+- **Template substitution moved to `template_format.{h,cpp}`** and is shared by both evidence sources, so a rule file renders the same way regardless of which source produced the evidence.
+
 ## v0.2.7 (2026-10-09)
 
 First release since v0.2.6 (`main`, 2026-08-14): **41 commits, 394 files**. Two themes: the architectural work for 0.3 (handle-based ABI, Windows parallel indexing), and silent failure — the cases where a tool answered confidently and wrongly, on the default path, for real projects.
