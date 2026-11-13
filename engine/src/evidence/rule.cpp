@@ -115,6 +115,74 @@ const char *evidenceLevelToString(store::EvidenceLevel level)
 	return "L1";
 }
 
+// ─── Metric string conversion ───────────────────────────────────
+
+bool metricFromString(const std::string &s, Metric &out)
+{
+	if (s == "function_lines") {
+		out = Metric::FunctionLines;
+		return true;
+	}
+	if (s == "param_count") {
+		out = Metric::ParameterCount;
+		return true;
+	}
+	return false;
+}
+
+const char *metricToString(Metric metric)
+{
+	switch (metric) {
+	case Metric::FunctionLines:
+		return "function_lines";
+	case Metric::ParameterCount:
+		return "param_count";
+	}
+	return "function_lines";
+}
+
+bool metricOpFromString(const std::string &s, MetricOp &out)
+{
+	if (s == "gt") {
+		out = MetricOp::Greater;
+		return true;
+	}
+	if (s == "ge") {
+		out = MetricOp::GreaterOrEqual;
+		return true;
+	}
+	if (s == "lt") {
+		out = MetricOp::Less;
+		return true;
+	}
+	if (s == "le") {
+		out = MetricOp::LessOrEqual;
+		return true;
+	}
+	if (s == "eq") {
+		out = MetricOp::Equal;
+		return true;
+	}
+	return false;
+}
+
+const char *metricOpToString(MetricOp op)
+{
+	switch (op) {
+	case MetricOp::Greater:
+		return "gt";
+	case MetricOp::GreaterOrEqual:
+		return "ge";
+	case MetricOp::Less:
+		return "lt";
+	case MetricOp::LessOrEqual:
+		return "le";
+	case MetricOp::Equal:
+		return "eq";
+	}
+	return "gt";
+}
+
 std::string rejectedRulesReason(const RuleLoadReport &report)
 {
 	if (report.rejected.empty())
@@ -226,6 +294,59 @@ bool checkLevelAgainstCombine(const Rule &rule, std::string &reason)
 	return false;
 }
 
+// Parse the "need" array of a fact rule. "needs" is accepted as an alias.
+bool parseNeeds(const JsonValue &obj, std::vector<FactNeed> &out,
+		std::string &reason)
+{
+	const JsonValue *needs = obj.find("need");
+	if (!needs || needs->type != JsonValue::Type::Array)
+		needs = obj.find("needs");
+	if (!needs || needs->type != JsonValue::Type::Array) {
+		reason = "missing 'need' array";
+		return false;
+	}
+	for (const auto &n : needs->array_value)
+		out.push_back(parseFactNeed(n));
+	if (out.empty()) {
+		reason = "empty 'need' array";
+		return false;
+	}
+	return true;
+}
+
+// Parse the "metric" object of a metric rule.
+bool parseMetricSpec(const JsonValue &obj, MetricSpec &out, std::string &reason)
+{
+	const JsonValue *metric = obj.find("metric");
+	if (!metric || metric->type != JsonValue::Type::Object) {
+		reason = "metric rules need a 'metric' object";
+		return false;
+	}
+	const std::string name = getString(*metric, "name");
+	if (!metricFromString(name, out.metric)) {
+		reason = "unknown metric '" + name +
+			 "' (expected function_lines or param_count)";
+		return false;
+	}
+	const std::string op = getString(*metric, "op");
+	if (!metricOpFromString(op, out.op)) {
+		reason = "unknown metric op '" + op +
+			 "' (expected gt, ge, lt, le or eq)";
+		return false;
+	}
+	const JsonValue *threshold = metric->find("threshold");
+	if (!threshold || threshold->type != JsonValue::Type::Number) {
+		reason = "metric needs a numeric 'threshold'";
+		return false;
+	}
+	out.threshold = static_cast<int64_t>(threshold->number_value);
+	if (out.threshold < 0) {
+		reason = "metric threshold must not be negative";
+		return false;
+	}
+	return true;
+}
+
 // Parse and validate one element of the "rules" array.
 // Returns false with `reason` set; the caller records it in the report.
 bool parseRule(const JsonValue &obj, const std::string &fallback_cat, Rule &out,
@@ -257,29 +378,43 @@ bool parseRule(const JsonValue &obj, const std::string &fallback_cat, Rule &out,
 		out.category = fallback_cat;
 	out.enabled = getBool(obj, "enabled", true);
 
-	const std::string combine = getString(obj, "combine");
-	if (!isKnownCombine(combine)) {
-		reason = "'combine' must be one of collect, missing_match, "
-			 "missing_match_per_function, count (got '" +
-			 combine + "')";
+	const std::string type = getString(obj, "type");
+	if (type.empty() || type == "fact") {
+		out.type = RuleType::FactMatch;
+	} else if (type == "metric") {
+		out.type = RuleType::Metric;
+	} else {
+		reason = "unknown 'type' '" + type +
+			 "' (expected fact or metric)";
 		return false;
 	}
-	out.combine = combineModeFromString(combine);
 
-	const JsonValue *needs = obj.find("need");
-	if (!needs || needs->type != JsonValue::Type::Array) {
-		// "needs" is also accepted as an alias for "need".
-		needs = obj.find("needs");
-	}
-	if (!needs || needs->type != JsonValue::Type::Array) {
-		reason = "missing 'need' array";
-		return false;
-	}
-	for (const auto &n : needs->array_value)
-		out.needs.push_back(parseFactNeed(n));
-	if (out.needs.empty()) {
-		reason = "empty 'need' array";
-		return false;
+	const std::string combine = getString(obj, "combine");
+	if (out.type == RuleType::Metric) {
+		if (!parseMetricSpec(obj, out.metric, reason))
+			return false;
+		if (!combine.empty() && combine != "collect") {
+			reason = "metric rules emit one evidence per hit; "
+				 "'combine: " +
+				 combine + "' is not supported";
+			return false;
+		}
+		if (obj.find("need") || obj.find("needs")) {
+			reason = "metric rules take no 'need' array";
+			return false;
+		}
+		out.combine = CombineMode::Collect;
+	} else {
+		if (!isKnownCombine(combine)) {
+			reason =
+				"'combine' must be one of collect, missing_match, "
+				"missing_match_per_function, count (got '" +
+				combine + "')";
+			return false;
+		}
+		out.combine = combineModeFromString(combine);
+		if (!parseNeeds(obj, out.needs, reason))
+			return false;
 	}
 
 	const JsonValue *output = obj.find("output");

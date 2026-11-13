@@ -292,6 +292,8 @@ set(ENGINE_SOURCES
     src/platform_win.cpp
     src/evidence/rule.cpp
     src/evidence/rule_json.cpp
+    src/evidence/rule_metric.cpp
+    src/evidence/template_format.cpp
     src/evidence/evidence_builder.cpp
     src/engine_evidence_ffi.cpp
     src/engine_project_state_ffi.cpp

@@ -285,6 +285,17 @@ std::string RuleSetDigest(const std::vector<evidence::RuleSet> &sets)
 			for (const auto &need : rule.needs)
 				text += need.category + "/" + need.primitive +
 					"/" + need.kind + ";";
+			// A metric rule has no needs; its strength lives in the
+			// threshold, which must change the digest too (§13.2:
+			// changing a threshold must change the evidence version).
+			if (rule.type == evidence::RuleType::Metric)
+				text += std::string("metric=") +
+					evidence::metricToString(
+						rule.metric.metric) +
+					evidence::metricOpToString(
+						rule.metric.op) +
+					":" +
+					std::to_string(rule.metric.threshold);
 			text += "\n";
 		}
 	return store::Sha256Hex(text);

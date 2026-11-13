@@ -50,9 +50,47 @@ enum class CombineMode {
 	Count = 3,
 };
 
+/// Where a rule gets its facts from.
+///
+/// `FactMatch` is the semantic-fact pipeline: `needs[]` selects rows by
+/// (category, primitive, kind). `Metric` reads one already-measured number per
+/// entity and compares it to a threshold — the only way to express the D2 size
+/// rules, because "function is 150 lines" is not a semantic fact.
+enum class RuleType {
+	FactMatch = 0,
+	Metric = 1,
+};
+
+/// What a metric rule measures. Only values the index already records: a metric
+/// that is not measured must be reported as unknown, never approximated from a
+/// neighbouring column.
+enum class Metric {
+	/// `entity.lines` for functions and methods (kind 0/1).
+	FunctionLines = 0,
+	/// `entity.param_count` for functions and methods (kind 0/1).
+	ParameterCount = 1,
+};
+
+/// Comparison applied to the measured value.
+enum class MetricOp {
+	Greater = 0,
+	GreaterOrEqual = 1,
+	Less = 2,
+	LessOrEqual = 3,
+	Equal = 4,
+};
+
+/// The measurement and comparison of a metric rule.
+struct MetricSpec {
+	Metric metric = Metric::FunctionLines;
+	MetricOp op = MetricOp::Greater;
+	int64_t threshold = 0;
+};
+
 /// Output metadata for a Rule. The title and message templates use
 /// {count}, {symbol}, {file}, {line}, {name} placeholders that are
-/// substituted per-Evidence by formatTemplate.
+/// substituted per-Evidence by formatTemplate. Metric rules may also use
+/// {value} (the measurement) and {threshold}.
 ///
 /// `severity` uses the persisted 0..4 scale of development_plan §10.2
 /// (0=info, 1=low, 2=medium, 3=high, 4=critical). Rule files used to carry a
@@ -88,6 +126,10 @@ struct Rule {
 	bool enabled = true;
 	std::string description;
 	std::string category;
+	/// Which source produces the evidence. A metric rule leaves `needs` empty.
+	RuleType type = RuleType::FactMatch;
+	/// Used when type == Metric; ignored otherwise.
+	MetricSpec metric;
 	std::vector<FactNeed> needs;
 	CombineMode combine = CombineMode::Collect;
 	RuleOutput output;
@@ -117,6 +159,16 @@ bool evidenceLevelFromString(const std::string &s, store::EvidenceLevel &out);
 
 /// Canonical JSON spelling of a level ("L1"/"L2"/"L3").
 const char *evidenceLevelToString(store::EvidenceLevel level);
+
+/// Parse the JSON spellings of a metric ("function_lines", "param_count").
+bool metricFromString(const std::string &s, Metric &out);
+/// Canonical JSON spelling of a metric.
+const char *metricToString(Metric metric);
+
+/// Parse a comparison operator ("gt", "ge", "lt", "le", "eq").
+bool metricOpFromString(const std::string &s, MetricOp &out);
+/// Canonical JSON spelling of an operator.
+const char *metricOpToString(MetricOp op);
 
 /// One-line reason for a failed load: "" when nothing was rejected, otherwise
 /// "<n> rule(s) rejected: <rule> (<reason>); ..." with at most three shown.

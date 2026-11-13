@@ -29,11 +29,15 @@ namespace evidence
 // project_id. The store pointer is borrowed; the caller owns it and
 // must keep it alive for the lifetime of the builder.
 
-/// One evidence item: a single semantic_fact row referenced by an
-/// Evidence finding. `file`/`line`/`snippet` come from the fact's
-/// detail_json column; `fact_id` is the semantic_fact.id.
+/// One evidence item: the fact an Evidence finding points at.
+///
+/// `fact_id` is the row id in the table named by `fact_kind` (0=entity,
+/// 3=semantic_fact — development_plan §17.4 invariant 3). A semantic-fact item
+/// takes `file`/`line`/`snippet` from the fact's detail_json; a metric item
+/// takes them from the entity row it measured.
 struct EvidenceItem {
 	uint64_t fact_id = 0;
+	int fact_kind = 3;
 	std::string category;
 	std::string primitive;
 	std::string kind;

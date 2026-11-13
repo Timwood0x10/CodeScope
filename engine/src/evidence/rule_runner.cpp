@@ -91,8 +91,10 @@ bool persistEvidence(store::GraphStore *store, const Rule &rule,
 	for (const auto &item : ev.items) {
 		record.locations.push_back(store::EvidenceLocation{
 			item.file, item.line, item.line, item.symbol });
+		// The item says which table its id belongs to: 3 = semantic_fact,
+		// 0 = entity for metric rules (§17.4 invariant 3).
 		record.facts.push_back(
-			{ 3, static_cast<int64_t>(item.fact_id) });
+			{ item.fact_kind, static_cast<int64_t>(item.fact_id) });
 	}
 
 	const int64_t evidence_id = store->recordEvidence(record);

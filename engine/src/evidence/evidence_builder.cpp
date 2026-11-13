@@ -27,6 +27,9 @@
 
 #include "evidence_builder.h"
 
+#include "rule_metric.h"
+#include "template_format.h"
+
 #include <algorithm>
 #include <cstdio>
 #include <sqlite3.h>
@@ -198,38 +201,6 @@ void applyDetailJson(const std::string &detail, EvidenceItem &item)
 				item.snippet.substr(open + 1, close - open - 1);
 		}
 	}
-}
-
-// Substitute {placeholder} tokens in a template string with values
-// from a lookup map. Unknown tokens are left as-is (defensive: a
-// typo in a template should not blank the output). Used to fill
-// {count}, {symbol}, {file}, {line}, {name} in rule output
-// templates.
-std::string
-formatTemplate(const std::string &tmpl,
-	       const std::unordered_map<std::string, std::string> &vars)
-{
-	std::string out;
-	out.reserve(tmpl.size() + 16);
-	for (size_t i = 0; i < tmpl.size();) {
-		if (tmpl[i] == '{') {
-			size_t end = tmpl.find('}', i + 1);
-			if (end == std::string::npos) {
-				out += tmpl[i++];
-				continue;
-			}
-			std::string key = tmpl.substr(i + 1, end - i - 1);
-			auto it = vars.find(key);
-			if (it != vars.end())
-				out += it->second;
-			else
-				out += tmpl.substr(i, end - i + 1);
-			i = end + 1;
-		} else {
-			out += tmpl[i++];
-		}
-	}
-	return out;
 }
 
 // A matched semantic_fact row. Read once per (rule, FactNeed) and
@@ -564,6 +535,10 @@ std::vector<Evidence> applyRule(store::GraphStore *store, uint64_t project_id,
 				const Rule &rule,
 				std::set<std::string> &failures)
 {
+	// A metric rule reads a measured value per entity instead of selecting
+	// semantic_fact rows, so it bypasses the combine modes entirely (§5.2).
+	if (rule.type == RuleType::Metric)
+		return buildMetricEvidence(store, project_id, rule, failures);
 	switch (rule.combine) {
 	case CombineMode::Collect:
 		return combineCollect(store, project_id, rule, failures);

@@ -1,0 +1,34 @@
+{
+  "category": "size",
+  "_note": "D2 metric rules (development_plan 5.2). Both read a value the indexer already measured (entity.lines / entity.param_count) and are L1 only where the threshold is a hard limit; a preference stays L2. Thresholds are the tool's built-in defaults until M2 reads declared constraints from .codescope/profile.yaml.",
+  "rules": [
+    {
+      "name": "function_too_long",
+      "version": "1",
+      "evidence_level": "L1",
+      "type": "metric",
+      "description": "Function body exceeds the 120-line hard limit (code_rules 1.1, 9). Measurement, not a heuristic: entity.lines is recorded by the indexer.",
+      "metric": { "name": "function_lines", "op": "gt", "threshold": 120 },
+      "combine": "collect",
+      "output": {
+        "severity": 3,
+        "title": "{symbol} is {value} lines (limit {threshold})",
+        "message": "{file}:{line} {symbol} spans {value} lines, limit {threshold}"
+      }
+    },
+    {
+      "name": "too_many_parameters",
+      "version": "1",
+      "evidence_level": "L2",
+      "type": "metric",
+      "description": "More than 5 parameters: an options struct is usually clearer (code_rules 9). Observation only - the threshold is a style preference, not a proven defect.",
+      "metric": { "name": "param_count", "op": "gt", "threshold": 5 },
+      "combine": "collect",
+      "output": {
+        "severity": 1,
+        "title": "{symbol} takes {value} parameters (soft limit {threshold})",
+        "message": "{file}:{line} {symbol}({value} params), soft limit {threshold}"
+      }
+    }
+  ]
+}
