@@ -24,6 +24,21 @@
 - **`enabled: false` is reported, not silently dropped**, and a `count` rule is recorded as `skipped_not_applicable` with its reason instead of "executed, zero findings" — a count has no location and therefore cannot become evidence (§17.4 invariant 2). The run envelope gained a `skipped` field.
 - **`rule_set_digest` covers level, version and severity**, so editing a rule's strength changes the run's input digest instead of producing an identical digest.
 
+### 🔍 Review fixes: no confident answer without the data behind it
+
+Every item below is the same failure shape — an answer that looks trustworthy while the work behind it did not happen.
+
+- **A rejected `rule_exec` write fails the rule** (`rule_runner.cpp`): `insertRuleExec()`'s return was ignored, so a database with no execution record still answered `executed=1, failed=0, status="completed"`. The row is the only proof the rule ran, so a rejected write now closes the rule as failed with the write error (§17.5).
+- **`rule_set_digest` covers `combine` and `need.optional`** (`engine_evidence_ffi.cpp`): three rules that produce a finding / no finding / a skip shared one digest, so a behavioural change could not be detected. Both fields are part of what a rule does.
+- **A partial re-run no longer rewrites an older run's card** (`engine_briefing_ffi.cpp`): membership is taken from that run's `evidence` rows. Deriving it from `finding_evidence` meant an upsert rewired the link and a finished run's finding count dropped (2 → 1) without touching the old run.
+- **`Contains` is not a call edge** (`engine_analyze_queries.cpp`): callers/callees matched `type IN (1,3)`, so a class appeared as a caller of its own methods. Only `EdgeType::Calls` is matched now; the returned names use the qualified form.
+- **A failed caller/callee/finding query is `unknown`, not empty**: pages carry an `ok` flag and the section says `status: "unknown"` with the reason, plus `query failed: <section>` under `unknowns`. An empty list is a claim ("nothing calls this") that a dead query never earned.
+- **Module paths are normalized** (`parseScope`): `src/` produced the prefix `src//%`, which skipped every sub-module while reporting `has_more=false`. Trailing slashes and a leading `./` are removed.
+- **`scope` is parsed as JSON, not substring-matched** (`util/json_parse.{h,cpp}`): a legitimate `a\"b.cpp` filter stopped at the escaped quote and queried the wrong path. The rule loader's reader moved to `util/` and serves both callers.
+- **`finding_count` is counted, not measured from the page**: 25 findings were reported as 11 because the count came from the capped array. Lists carry a counted `total` and `has_more`.
+- **The briefing enforces its 4 KiB budget on the serialized JSON**: fixed item caps could not promise a byte count (a card reached 8,662 bytes). Display caps shrink per level until the card fits; a clipped card says `truncated: true` and is never cut mid-JSON.
+- **Severity and metric thresholds are validated before conversion**: 4.9 was truncated to 4 and passed the range check, so a rule could declare a value it did not mean. The raw number must be an integer in range.
+
 ### 📏 Metric rules (D2 sizes)
 
 - **A rule can now read a measured value per entity** (`engine/src/evidence/rule_metric.{h,cpp}`): `type: "metric"` with `metric: {name, op, threshold}` reads `entity.lines` or `entity.param_count` — values the indexer already recorded — and emits one evidence per entity over the limit. Each item references the entity row (`fact_kind = 0`), so the finding has a real location and a real fact reference (§17.4 invariant 2) instead of a synthetic one.
