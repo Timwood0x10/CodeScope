@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <sqlite3.h>
 #include <string>
 #include <unistd.h>
 
@@ -33,8 +34,8 @@ static void check(bool cond, const char *msg)
 
 static void initPath()
 {
-	std::snprintf(kDbPath, sizeof(kDbPath),
-		      "/tmp/codescope_analyze_%d.db", int(getpid()));
+	std::snprintf(kDbPath, sizeof(kDbPath), "/tmp/codescope_analyze_%d.db",
+		      int(getpid()));
 }
 
 static void removeDbFiles()
@@ -51,13 +52,25 @@ static bool contains(const std::string &json, const char *needle)
 	return json.find(needle) != std::string::npos;
 }
 
-/// Helper to call analyze_project and get the JSON string.
-static std::string analyze(engine_t engine, uint64_t pid,
-			   const char *view, const char *scope,
-			   const char *run_id)
+/// Run one statement on a second connection: the engine keeps its own handle,
+/// and the fixture rows are cheaper to write directly than through the parser.
+static int execSql(const std::string &sql)
 {
-	char *raw = engine_analyze_project(engine, pid, view, scope,
-					   run_id);
+	sqlite3 *db = nullptr;
+	if (sqlite3_open(kDbPath, &db) != SQLITE_OK)
+		return -1;
+	char *err = nullptr;
+	int rc = sqlite3_exec(db, sql.c_str(), nullptr, nullptr, &err);
+	sqlite3_free(err);
+	sqlite3_close(db);
+	return rc;
+}
+
+/// Helper to call analyze_project and get the JSON string.
+static std::string analyze(engine_t engine, uint64_t pid, const char *view,
+			   const char *scope, const char *run_id)
+{
+	char *raw = engine_analyze_project(engine, pid, view, scope, run_id);
 	check(raw != nullptr, "analyze_project must not return null");
 	std::string json(raw);
 	engine_free_string(raw);
@@ -72,7 +85,7 @@ int main()
 	engine_t engine = engine_create(kDbPath);
 	check(engine != nullptr, "engine_create");
 
-        // Create a project so the DB has a projects row.
+	// Create a project so the DB has a projects row.
 	uint64_t project_id = engine_create_project(
 		engine, "/tmp/test_analyze_proj", "test_analyze");
 	check(project_id > 0, "create_project must return a valid id");
@@ -81,19 +94,16 @@ int main()
 	// No entities indexed yet. The tool must not crash and must
 	// return a valid error JSON (§18.7.0: no false assurance).
 	{
-		auto json = analyze(engine, project_id,
-				    "symbol_context",
+		auto json = analyze(engine, project_id, "symbol_context",
 				    "{\"symbol\":\"nonexistent\"}", nullptr);
 		check(json[0] == '{', "must be a JSON object");
-		check(contains(json, "not found") ||
-			      contains(json, "error"),
+		check(contains(json, "not found") || contains(json, "error"),
 		      "must report symbol not found or error");
 	}
 
 	// ── Test 2: module_context on empty project ──
 	{
-		auto json = analyze(engine, project_id,
-				    "module_context",
+		auto json = analyze(engine, project_id, "module_context",
 				    "{\"module\":\"src\"}", nullptr);
 		check(json[0] == '{', "must be a JSON object");
 		check(contains(json, "\"unknowns\""),
@@ -104,8 +114,7 @@ int main()
 
 	// ── Test 3: unsupported view ──
 	{
-		auto json = analyze(engine, project_id,
-				    "invalid_view",
+		auto json = analyze(engine, project_id, "invalid_view",
 				    "{\"symbol\":\"foo\"}", nullptr);
 		check(contains(json, "error"),
 		      "must return error for unsupported view");
@@ -113,18 +122,16 @@ int main()
 
 	// ── Test 4: missing scope symbol ──
 	{
-		auto json = analyze(engine, project_id,
-				    "symbol_context",
-				    "{}", nullptr);
+		auto json = analyze(engine, project_id, "symbol_context", "{}",
+				    nullptr);
 		check(contains(json, "error"),
 		      "must return error for missing scope.symbol");
 	}
 
 	// ── Test 5: missing scope module ──
 	{
-		auto json = analyze(engine, project_id,
-				    "module_context",
-				    "{}", nullptr);
+		auto json = analyze(engine, project_id, "module_context", "{}",
+				    nullptr);
 		check(contains(json, "error"),
 		      "must return error for missing scope.module");
 	}
@@ -132,20 +139,17 @@ int main()
 	// ── Test 6: idempotent read ──
 	// Two consecutive calls with same args must return the same JSON.
 	{
-		auto first = analyze(engine, project_id,
-				      "module_context",
+		auto first = analyze(engine, project_id, "module_context",
+				     "{\"module\":\"src\"}", nullptr);
+		auto second = analyze(engine, project_id, "module_context",
 				      "{\"module\":\"src\"}", nullptr);
-		auto second = analyze(engine, project_id,
-				       "module_context",
-				       "{\"module\":\"src\"}", nullptr);
 		check(first == second,
 		      "two consecutive calls must be identical");
 	}
 
 	// ── Test 7: source tags present ──
 	{
-		auto json = analyze(engine, project_id,
-				    "module_context",
+		auto json = analyze(engine, project_id, "module_context",
 				    "{\"module\":\"src\"}", nullptr);
 		check(contains(json, "\"source\""),
 		      "must tag data with source field");
@@ -155,8 +159,7 @@ int main()
 
 	// ── Test 8: run_id accepted without crash ──
 	{
-		auto json = analyze(engine, project_id,
-				    "module_context",
+		auto json = analyze(engine, project_id, "module_context",
 				    "{\"module\":\"src\"}", "run-123");
 		check(json[0] == '{', "must return JSON with run_id");
 	}
@@ -168,7 +171,8 @@ int main()
 	// looking healthy.
 	{
 		char *run_raw = engine_run_rules(engine, project_id, nullptr);
-		check(run_raw != nullptr, "engine_run_rules must not return null");
+		check(run_raw != nullptr,
+		      "engine_run_rules must not return null");
 		engine_free_string(run_raw);
 
 		auto json = analyze(engine, project_id, "module_context",
@@ -182,6 +186,94 @@ int main()
 				   "{\"symbol\":\"nonexistent\"}", nullptr);
 		check(!contains(sym, "query failed"),
 		      "symbol_context must not silently fail a query either");
+	}
+
+	// ── Test 10: a class is not a caller ──
+	// relation.type 3 is Contains (class owns method), not Calls. Mixing it in
+	// made every class look like a consumer of its own methods.
+	{
+		check(execSql("INSERT INTO entity (id, project_id, kind, name, "
+			      "qualified_name, file_path, language, start_row, "
+			      "start_col, end_row, end_col) VALUES "
+			      "(100, " +
+			      std::to_string(project_id) +
+			      ", 2, 'Widget', 'ns::Widget', 'w.cpp', 'cpp', 1, 0, 90, 0),"
+			      "(101, " +
+			      std::to_string(project_id) +
+			      ", 1, 'draw', 'ns::Widget::draw', 'w.cpp', 'cpp', 5, 0, 20, 0),"
+			      "(102, " +
+			      std::to_string(project_id) +
+			      ", 0, 'paint', 'ns::paint', 'p.cpp', 'cpp', 3, 0, 9, 0)") ==
+			      SQLITE_OK,
+		      "insert entities");
+		check(execSql("INSERT INTO relation (project_id, source_id, target_id, "
+			      "type) VALUES (" +
+			      std::to_string(project_id) + ", 100, 101, 3), (" +
+			      std::to_string(project_id) + ", 102, 101, 1)") ==
+			      SQLITE_OK,
+		      "insert relations");
+
+		auto json = analyze(engine, project_id, "symbol_context",
+				    "{\"symbol\":\"ns::Widget::draw\"}",
+				    nullptr);
+		check(contains(json, "\"entity_name\":\"ns::paint\""),
+		      "the real caller must be listed");
+		check(!contains(json, "\"entity_name\":\"Widget\""),
+		      "a Contains edge must not be reported as a call");
+		check(contains(json, "\"callers\""), "callers section present");
+	}
+
+	// ── Test 11: a failed caller query is unknown, not empty ──
+	// An empty list reads as "nothing calls this", which is a claim the dead
+	// query never earned (development_plan §17.5).
+	{
+		check(execSql("ALTER TABLE relation RENAME TO relation_off") ==
+			      SQLITE_OK,
+		      "hide relation table");
+		auto json = analyze(engine, project_id, "symbol_context",
+				    "{\"symbol\":\"ns::paint\"}", nullptr);
+		check(contains(json, "\"status\":\"unknown\""),
+		      "the callers section must say unknown");
+		check(contains(json, "query failed: callers"),
+		      "unknowns must name the failed query");
+		check(contains(json, "relation query failed"),
+		      "the section must say why it is unknown");
+		check(execSql("ALTER TABLE relation_off RENAME TO relation") ==
+			      SQLITE_OK,
+		      "restore relation table");
+	}
+
+	// ── Test 12: a trailing slash must not hide sub-modules ──
+	{
+		check(execSql("UPDATE entity SET module_path = 'src/sub' "
+			      "WHERE id = 102") == SQLITE_OK,
+		      "set module path");
+		for (const char *module : { "src", "src/", "./src/" }) {
+			auto json = analyze(
+				engine, project_id, "module_context",
+				(std::string("{\"module\":\"") + module + "\"}")
+					.c_str(),
+				nullptr);
+			check(contains(json, "\"total\":1"),
+			      "src and src/ must address the same module");
+		}
+	}
+
+	// ── Test 13: scope JSON is parsed, not substring-matched ──
+	// A legitimate filter may contain an escaped quote; the hand-rolled reader
+	// stopped at the backslash and queried the wrong path.
+	{
+		check(execSql("UPDATE entity SET file_path = 'a\"b.cpp' "
+			      "WHERE id = 102") == SQLITE_OK,
+		      "set quoted file path");
+		auto json = analyze(engine, project_id, "symbol_context",
+				    "{\"symbol\":\"ns::paint\","
+				    "\"file_filter\":\"a\\\"b.cpp\"}",
+				    nullptr);
+		check(contains(json, "\"definition\""),
+		      "an escaped quote in file_filter must still resolve");
+		check(!contains(json, "symbol not found"),
+		      "the symbol exists; the filter must not be misread");
 	}
 
 	engine_destroy(engine);

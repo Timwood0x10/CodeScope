@@ -299,6 +299,8 @@ set(ENGINE_SOURCES
     src/util/json_parse.cpp
     src/engine_briefing_ffi.cpp
     src/engine_analyze_ffi.cpp
+    src/engine_analyze_views.cpp
+    src/engine_analyze_queries.cpp
     ${SQLITE3_AMAL_SRC}
     ${TREE_SITTER_SOURCES}
 )
