@@ -170,6 +170,26 @@ int main()
 		printf("  [PASS] searchUnifiedJson: 'Factory' -> results\n");
 	}
 
+	// ── 5b. searchCode: an identifier query returns that symbol first ──
+	//
+	// The FTS stage splits identifiers into words and ORs them, so
+	// "graph_parser" also matched every node containing "graph" and the exact
+	// symbol came back after unrelated rows. The exact/prefix stage must win.
+	{
+		// Ids above the bulk fixture's 1000..50999 range: a collision there
+		// makes the timeout test's INSERT fail for an unrelated reason.
+		insertGraphNode(store, project_id, 900001, "graph_parser");
+		insertGraphNode(store, project_id, 900002, "graph_builder");
+		insertGraphNode(store, project_id, 900003, "rebuild_graph");
+
+		const std::string json =
+			store.searchCode(project_id, "graph_parser", 5);
+		const std::size_t at = json.find("\"name\":\"");
+		CHECK(at != std::string::npos);
+		CHECK(json.compare(at + 8, 12, "graph_parser") == 0);
+		printf("  [PASS] searchCode: identifier returns the symbol first\n");
+	}
+
 	// ── 6. QueryDeadlineGuard timeout ─────────────────────────────
 	//
 	// Insert a large number of nodes (50000) with distinct names, then

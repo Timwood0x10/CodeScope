@@ -4,6 +4,7 @@
 #include "platform_win.h"
 
 #include <algorithm>
+#include <cctype>
 #include <climits>
 #include <cmath>
 #include <cstdint>
@@ -140,6 +141,108 @@ bool GraphStore::isTrigramAvailable()
 	return available;
 }
 
+namespace
+{
+
+/// One search hit.
+struct Row {
+	int64_t node_id = 0;
+	std::string name;
+	int node_type = 0;
+	std::string file_path;
+	int start_row = 0;
+	int start_col = 0;
+	int end_row = 0;
+	int end_col = 0;
+	std::string language;
+	double score = 0.0;
+};
+
+/// Escape LIKE metacharacters for a literal match (paired with ESCAPE '\').
+std::string escapeLike(const std::string &in)
+{
+	std::string out;
+	out.reserve(in.size() + 4);
+	for (char c : in) {
+		if (c == '%' || c == '_' || c == '\\')
+			out += '\\';
+		out += c;
+	}
+	return out;
+}
+
+/// Exact and prefix symbol matches for `query`, appended before the ranked text
+/// hits.
+///
+/// An identifier query ("upsertFile") asks for that symbol, but the FTS stage
+/// splits identifiers into words and ORs them ("upsert" OR "file"), which buried
+/// the symbol under every node containing "file" — search_code("upsertFile")
+/// answered MappedFile. A phrase query is left to the text stages.
+///
+/// Extracted from searchCode(), whose size is grandfathered (code_rules §1.1).
+void collectExactNameHits(sqlite3 *db, uint64_t project_id,
+			  const std::string &query, int limit,
+			  std::unordered_set<int64_t> &seen,
+			  std::vector<Row> &results)
+{
+	if (query.size() < 3)
+		return;
+	for (unsigned char c : query)
+		if (std::isspace(c) != 0)
+			return;
+
+	const char *sql =
+		"SELECT id, name, kind, file_path, start_row, start_col, "
+		"       end_row, end_col, language "
+		"FROM entity "
+		"WHERE project_id = ? "
+		"  AND (name = ? OR qualified_name = ? "
+		"       OR name LIKE ? ESCAPE '\\' "
+		"       OR qualified_name LIKE ? ESCAPE '\\') "
+		"ORDER BY CASE WHEN name = ? OR qualified_name = ? THEN 0 "
+		"              ELSE 1 END, "
+		"         LENGTH(name), id "
+		"LIMIT ?";
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+		return;
+	const std::string escaped = escapeLike(query);
+	const std::string prefix = escaped + "%";
+	const std::string suffix = "%::" + escaped;
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	sqlite3_bind_text(stmt, 2, query.c_str(), -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 3, query.c_str(), -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 4, prefix.c_str(), -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 5, suffix.c_str(), -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 6, query.c_str(), -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 7, query.c_str(), -1, SQLITE_TRANSIENT);
+	sqlite3_bind_int(stmt, 8, limit);
+	while (sqlite3_step(stmt) == SQLITE_ROW) {
+		Row r;
+		r.node_id = sqlite3_column_int64(stmt, 0);
+		const char *name_raw = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 1));
+		const char *fp_raw = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 3));
+		const char *lang_raw = reinterpret_cast<const char *>(
+			sqlite3_column_text(stmt, 8));
+		r.name = name_raw ? name_raw : "";
+		r.node_type = sqlite3_column_int(stmt, 2);
+		r.file_path = fp_raw ? fp_raw : "";
+		r.start_row = sqlite3_column_int(stmt, 4);
+		r.start_col = sqlite3_column_int(stmt, 5);
+		r.end_row = sqlite3_column_int(stmt, 6);
+		r.end_col = sqlite3_column_int(stmt, 7);
+		r.language = lang_raw ? lang_raw : "";
+		if (!seen.insert(r.node_id).second)
+			continue;
+		results.push_back(std::move(r));
+	}
+	sqlite3_finalize(stmt);
+}
+
+} // namespace
+
 std::string GraphStore::searchCode(uint64_t project_id, const char *query,
 				   int limit)
 {
@@ -156,20 +259,13 @@ std::string GraphStore::searchCode(uint64_t project_id, const char *query,
 	// come first (preferred — ranked by FTS rank + node_type priority),
 	// trigram substring results are appended after (only those whose
 	// node_id is not already present in the FTS set).
-	struct Row {
-		int64_t node_id;
-		std::string name;
-		int node_type;
-		std::string file_path;
-		int start_row;
-		int start_col;
-		int end_row;
-		int end_col;
-		std::string language;
-		double score;
-	};
 	std::vector<Row> results;
 	std::unordered_set<int64_t> seen;
+
+	// 0. Exact/prefix symbol match first: an identifier query asks for that
+	// symbol, while the FTS stage below splits identifiers into words and ORs
+	// them.
+	collectExactNameHits(db_, project_id, query, limit, seen, results);
 
 	// 1. FTS5 prefix search via code_fts (word-based, ranked).
 	{
@@ -244,8 +340,13 @@ std::string GraphStore::searchCode(uint64_t project_id, const char *query,
 
 		int rc;
 		while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+			if (results.size() >= static_cast<size_t>(limit))
+				break;
+			const int64_t nid = sqlite3_column_int64(stmt, 0);
+			if (seen.count(nid))
+				continue; // already returned by the exact stage
 			Row r;
-			r.node_id = sqlite3_column_int64(stmt, 0);
+			r.node_id = nid;
 			const char *name_raw = reinterpret_cast<const char *>(
 				sqlite3_column_text(stmt, 1));
 			const char *fp_raw = reinterpret_cast<const char *>(
