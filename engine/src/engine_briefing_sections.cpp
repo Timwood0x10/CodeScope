@@ -35,8 +35,14 @@ void writeCappedSection(util::JsonWriter &w, const std::vector<T> &items,
 /// "store"). The parser records the directory; the briefing shows both.
 std::string moduleName(const std::string &path)
 {
-	const std::size_t slash = path.find_last_of('/');
-	return slash == std::string::npos ? path : path.substr(slash + 1);
+	// Parsed module paths keep their trailing separator ("…/store/"), so the
+	// last component after a plain find_last_of('/') is empty — the card's
+	// primary label was blank for every module.
+	std::string trimmed = path;
+	while (trimmed.size() > 1 && trimmed.back() == '/')
+		trimmed.pop_back();
+	const std::size_t slash = trimmed.find_last_of('/');
+	return slash == std::string::npos ? trimmed : trimmed.substr(slash + 1);
 }
 
 } // namespace
