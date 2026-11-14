@@ -12,6 +12,8 @@
 
 ### 🐛 Fixes
 
+- **Silence in the knowledge layer is not a denial** (`engine/src/verify/capability_verifier.cpp`): an undeclared capability used to answer `Contradicted` with confidence 0.9, so `verify_claim(capability_exists, "upsertFile")` denied a function defined in `store_core.cpp` and called twice. The verifier now checks for a matching entity first: found ⇒ `Unknown` with both facts spelled out; neither declared nor implemented ⇒ `Contradicted` at 0.5. A failed symbol query is `Unknown`, never `Contradicted` (invariant 1).
+- **`search_code` answers an identifier query with the symbol itself** (`engine/src/store/store_search.cpp`): the FTS stage split identifiers into words and OR'd them (`"upsert" OR "file"`), so `search_code("upsertFile")` returned `MappedFile`. An exact/prefix name stage now runs before the ranked stages; phrase queries are unchanged.
 - **The LOC columns arrive through a numbered migration** (`m0009_files_loc`), not the self-healing `ALTER` pass: 0.3.0 additions must not live in the baseline DDL or in `runSchemaMigrations()` (§17.2), or a fresh database and a migrated one diverge. `runSchemaMigrations()`'s boundary is now stated in its header.
 - **`upsertFile` keeps `files.id`**: `INSERT OR REPLACE` deleted and re-inserted the row, so re-indexing a file minted a new id and `evidence_fact (4, files.id)` — first used by `file_size_limit` — silently dangled. It is an `ON CONFLICT DO UPDATE` now.
 - **An unmeasured file is not a 0-line file**: `files.loc` is NULL for rows that predate the column, the metric skips them, and the briefing reports `loc_files` plus an `unknowns` entry instead of summing the gap as zero.
