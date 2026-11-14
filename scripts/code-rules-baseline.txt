@@ -9,7 +9,7 @@ function|engine/src/async_knowledge.cpp|populateModulesHierarchy|178
 function|engine/src/engine_ffi.cpp|engine_get_capabilities|128
 function|engine/src/engine_ffi_graph.cpp|engine_get_knowledge_graph|149
 function|engine/src/engine_ffi_index.cpp|engine_get_project_info|121
-function|engine/src/engine_index.cpp|engine_index_file|374
+function|engine/src/engine_index.cpp|engine_index_file|373
 function|engine/src/engine_index_discover.cpp|collectFileJobs|206
 function|engine/src/engine_index_metrics.cpp|computeMetricsFromCST|244
 function|engine/src/engine_index_project.cpp|indexProjectImpl|855
@@ -93,7 +93,7 @@ function|engine/src/verify/documentation_drift.cpp|extractLanguageClaims|155
 function|engine/src/verify/function_implements_verifier.cpp|FunctionImplementsVerifier::verify|146
 function|server/src/main.rs|main|754
 function|server/src/scheduler/mod.rs|index_parallel|421
-function|server/src/tools/catalog.rs|all_tools|536
+function|server/src/tools/catalog.rs|all_tools|531
 function|server/src/tools/discover.rs|discover|162
 function|server/src/tools/indexing.rs|h_force_index_files|144
 function|server/src/tools/indexing.rs|index_project_via_worker|138

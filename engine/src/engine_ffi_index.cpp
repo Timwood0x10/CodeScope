@@ -18,6 +18,7 @@
 #include "async_knowledge.h"
 #include "platform_win.h"
 #include "util/json_writer.h"
+#include "util/loc_counter.h"
 #include "store/store_parse_failure.h"
 #include "store/store_identity.h"
 
@@ -222,8 +223,11 @@ static bool persistBatches(EngineContext *ctx, uint64_t project_id,
 	graph::GraphBuilder builder(project_id, start_id);
 	for (auto &b : batches) {
 		std::string hash = store::Sha256Hex(b.source);
+		auto loc = util::countLoc(b.source);
 		ctx->store->upsertFile(project_id, b.file_path.c_str(),
-				       b.language.c_str(), hash.c_str());
+				       b.language.c_str(), hash.c_str(),
+				       loc.loc, loc.code_loc, loc.comment_loc,
+				       loc.blank_loc);
 		// Delete graph-layer data only (relation, graph_edges,
 		// graph_nodes, entity, type_ref, type_info, import, route).
 		// NOT semantic_records — this batch path re-inserts graph data

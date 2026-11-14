@@ -37,7 +37,8 @@ static char kLegacyDb[160];
 static void initDbPaths()
 {
 	std::snprintf(kFreshDb, sizeof(kFreshDb),
-		      "/tmp/codescope_test_migrations_fresh_%d.db", int(getpid()));
+		      "/tmp/codescope_test_migrations_fresh_%d.db",
+		      int(getpid()));
 	std::snprintf(kLegacyDb, sizeof(kLegacyDb),
 		      "/tmp/codescope_test_migrations_legacy_%d.db",
 		      int(getpid()));
@@ -74,8 +75,8 @@ static bool execRaw(sqlite3 *db, const char *sql)
 static long long scalar(store::GraphStore &store, const std::string &sql)
 {
 	sqlite3_stmt *st = nullptr;
-	check(sqlite3_prepare_v2(store.handle(), sql.c_str(), -1, &st, nullptr) ==
-		      SQLITE_OK,
+	check(sqlite3_prepare_v2(store.handle(), sql.c_str(), -1, &st,
+				 nullptr) == SQLITE_OK,
 	      "prepare scalar");
 	long long v = -1;
 	if (sqlite3_step(st) == SQLITE_ROW)
@@ -87,8 +88,8 @@ static long long scalar(store::GraphStore &store, const std::string &sql)
 static std::string textAt(store::GraphStore &store, const std::string &sql)
 {
 	sqlite3_stmt *st = nullptr;
-	check(sqlite3_prepare_v2(store.handle(), sql.c_str(), -1, &st, nullptr) ==
-		      SQLITE_OK,
+	check(sqlite3_prepare_v2(store.handle(), sql.c_str(), -1, &st,
+				 nullptr) == SQLITE_OK,
 	      "prepare textAt");
 	std::string v;
 	if (sqlite3_step(st) == SQLITE_ROW) {
@@ -106,8 +107,8 @@ static bool hasColumn(store::GraphStore &store, const char *table,
 {
 	std::string sql = std::string("PRAGMA table_info(") + table + ")";
 	sqlite3_stmt *st = nullptr;
-	check(sqlite3_prepare_v2(store.handle(), sql.c_str(), -1, &st, nullptr) ==
-		      SQLITE_OK,
+	check(sqlite3_prepare_v2(store.handle(), sql.c_str(), -1, &st,
+				 nullptr) == SQLITE_OK,
 	      "prepare hasColumn");
 	bool found = false;
 	while (sqlite3_step(st) == SQLITE_ROW) {
@@ -134,8 +135,8 @@ static std::string columnSignature(store::GraphStore &store, const char *table)
 {
 	std::string sql = std::string("PRAGMA table_info(") + table + ")";
 	sqlite3_stmt *st = nullptr;
-	check(sqlite3_prepare_v2(store.handle(), sql.c_str(), -1, &st, nullptr) ==
-		      SQLITE_OK,
+	check(sqlite3_prepare_v2(store.handle(), sql.c_str(), -1, &st,
+				 nullptr) == SQLITE_OK,
 	      "prepare columnSignature");
 	std::string out;
 	while (sqlite3_step(st) == SQLITE_ROW) {
@@ -197,9 +198,10 @@ indexSnapshot(store::GraphStore &store)
 {
 	std::map<std::string, std::string> out;
 	sqlite3_stmt *st = nullptr;
-	const char *sql = "SELECT name, sql FROM sqlite_master WHERE "
-			  "type IN ('index','trigger','view') AND sql IS NOT NULL "
-			  "ORDER BY name;";
+	const char *sql =
+		"SELECT name, sql FROM sqlite_master WHERE "
+		"type IN ('index','trigger','view') AND sql IS NOT NULL "
+		"ORDER BY name;";
 	check(sqlite3_prepare_v2(store.handle(), sql, -1, &st, nullptr) ==
 		      SQLITE_OK,
 	      "prepare indexSnapshot");
@@ -287,17 +289,29 @@ int main()
 		store::GraphStore store;
 		check(store.open(kFreshDb), "open fresh database");
 
-		check(scalar(store, "PRAGMA user_version") == 8,
-		      "fresh database not at version 8");
-		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 8,
+		check(scalar(store, "PRAGMA user_version") == 9,
+		      "fresh database not at version 9");
+		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 9,
 		      "schema_meta must hold baseline + 7 migrations");
-		check(scalar(store, "SELECT MAX(version) FROM schema_meta") == 8,
+		check(scalar(store, "SELECT MAX(version) FROM schema_meta") ==
+			      9,
 		      "schema_meta max version");
 
 		check(hasColumn(store, "evidence", "finding_key"),
 		      "evidence.finding_key missing after migration");
 		check(hasColumn(store, "evidence", "run_id"),
 		      "evidence.run_id missing after migration");
+		// D1 §5.1: the LOC columns arrive through numbered migration 9, so
+		// they exist on a fresh database too (createSchema no longer declares
+		// them — a 0.3.0 column must not live in the baseline DDL).
+		check(hasColumn(store, "files", "loc"), "files.loc missing");
+		check(hasColumn(store, "files", "code_loc"),
+		      "files.code_loc missing");
+		check(hasColumn(store, "files", "comment_loc"),
+		      "files.comment_loc missing");
+		check(hasColumn(store, "files", "blank_loc"),
+		      "files.blank_loc missing");
+
 		check(hasColumn(store, "finding", "legacy_severity"),
 		      "finding.legacy_severity missing after migration");
 		check(tableExists(store, "verification_run"),
@@ -314,7 +328,8 @@ int main()
 		// why the index is partial rather than a plain UNIQUE.
 		check(scalar(store,
 			     "SELECT COUNT(*) FROM sqlite_master WHERE "
-			     "type='index' AND name='uq_finding_project_key'") == 1,
+			     "type='index' AND name='uq_finding_project_key'") ==
+			      1,
 		      "unique finding-key index missing");
 
 		// Use the real project id: a hardcoded 1 would point at a project
@@ -332,10 +347,10 @@ int main()
 		check(store.exec((ins_prefix + "'r',1,'legacy b','')").c_str()),
 		      "empty finding keys must not collide");
 		check(store.exec((ins_prefix + "'r',1,'real','fk-unique')")
-			      .c_str()),
+					 .c_str()),
 		      "insert with a real finding key");
-		check(!store.exec((ins_prefix + "'r',1,'dup','fk-unique')")
-			       .c_str()),
+		check(!store.exec(
+			      (ins_prefix + "'r',1,'dup','fk-unique')").c_str()),
 		      "a duplicate (project, finding_key) must be rejected");
 
 		// Pre-migration snapshot (development_plan §17.8 item 4).
@@ -346,16 +361,17 @@ int main()
 		fresh_schema = schemaSnapshot(store);
 		fresh_indexes = indexSnapshot(store);
 		store.close();
-		std::printf("  [PASS] fresh database at v8, snapshot present\n");
+		std::printf(
+			"  [PASS] fresh database at v8, snapshot present\n");
 	}
 
 	// ── 2. Reopen must not re-apply anything ──────────────────────────
 	{
 		store::GraphStore store;
 		check(store.open(kFreshDb), "reopen fresh database");
-		check(scalar(store, "PRAGMA user_version") == 8,
+		check(scalar(store, "PRAGMA user_version") == 9,
 		      "version changed on reopen");
-		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 8,
+		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 9,
 		      "schema_meta grew on reopen");
 		store.close();
 		std::printf("  [PASS] reopen is idempotent\n");
@@ -367,31 +383,39 @@ int main()
 		store::GraphStore store;
 		check(store.open(kLegacyDb), "open legacy database");
 
-		check(scalar(store, "PRAGMA user_version") == 8,
+		check(scalar(store, "PRAGMA user_version") == 9,
 		      "legacy database not migrated to v8");
-		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 8,
+		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 9,
 		      "legacy schema_meta row count");
 
-		check(scalar(store, "SELECT verdict FROM evidence WHERE id=1") == 0,
+		check(scalar(store,
+			     "SELECT verdict FROM evidence WHERE id=1") == 0,
 		      "verdict 0 must stay Supported");
-		check(scalar(store, "SELECT verdict FROM evidence WHERE id=2") == 1,
+		check(scalar(store,
+			     "SELECT verdict FROM evidence WHERE id=2") == 1,
 		      "verdict 1 must stay Contradicted");
-		check(scalar(store, "SELECT verdict FROM evidence WHERE id=3") == 3,
+		check(scalar(store,
+			     "SELECT verdict FROM evidence WHERE id=3") == 3,
 		      "verdict 2 must map to Unverified");
 		check(scalar(store,
-			     "SELECT legacy_verdict FROM evidence WHERE id=3") == 2,
+			     "SELECT legacy_verdict FROM evidence WHERE id=3") ==
+			      2,
 		      "legacy_verdict must preserve the original 2");
 		check(scalar(store, "SELECT COUNT(*) FROM evidence_fact") == 3,
 		      "evidence_fact children lost in the table rebuild");
 
-		check(scalar(store, "SELECT severity FROM finding WHERE id=1") == 0,
+		check(scalar(store,
+			     "SELECT severity FROM finding WHERE id=1") == 0,
 		      "severity 0 must stay info");
-		check(scalar(store, "SELECT severity FROM finding WHERE id=2") == 2,
+		check(scalar(store,
+			     "SELECT severity FROM finding WHERE id=2") == 2,
 		      "severity 1 must map to medium");
-		check(scalar(store, "SELECT severity FROM finding WHERE id=3") == 3,
+		check(scalar(store,
+			     "SELECT severity FROM finding WHERE id=3") == 3,
 		      "severity 2 must map to high");
 		check(scalar(store,
-			     "SELECT legacy_severity FROM finding WHERE id=2") == 1,
+			     "SELECT legacy_severity FROM finding WHERE id=2") ==
+			      1,
 		      "legacy_severity must preserve the original 1");
 		check(textAt(store, "SELECT status FROM finding WHERE id=1") ==
 			      "detected",
@@ -411,15 +435,17 @@ int main()
 		// makes the regression deterministic; the fresh/migrated comparison
 		// below only noticed it because the two sides were opened a different
 		// number of times.
-		check(scalar(store, "SELECT COUNT(*) FROM sqlite_master WHERE "
-				   "type='index' AND name='idx_evidence_claim'") == 1,
+		check(scalar(store,
+			     "SELECT COUNT(*) FROM sqlite_master WHERE "
+			     "type='index' AND name='idx_evidence_claim'") == 1,
 		      "m0008 must recreate idx_evidence_claim after the rebuild");
 
 		migrated_schema_first = schemaSnapshot(store);
 		migrated_indexes_first = indexSnapshot(store);
 
 		store.close();
-		std::printf("  [PASS] legacy remap, children and snapshot verified\n");
+		std::printf(
+			"  [PASS] legacy remap, children and snapshot verified\n");
 	}
 
 	// ── 4. Fresh vs migrated schema must be identical ────────────────
@@ -439,22 +465,24 @@ int main()
 		const auto &migrated_indexes = migrated_indexes_first;
 		check(!fresh_indexes.empty(), "fresh index snapshot is empty");
 		if (fresh_indexes.size() != migrated_indexes.size()) {
-			std::fprintf(stderr,
-				     "  [DIFF] index count fresh=%zu migrated=%zu\n",
-				     fresh_indexes.size(),
-				     migrated_indexes.size());
+			std::fprintf(
+				stderr,
+				"  [DIFF] index count fresh=%zu migrated=%zu\n",
+				fresh_indexes.size(), migrated_indexes.size());
 			for (const auto &e : fresh_indexes)
 				if (migrated_indexes.find(e.first) ==
 				    migrated_indexes.end())
-					std::fprintf(stderr,
-						     "  [DIFF] only in fresh: %s\n",
-						     e.first.c_str());
+					std::fprintf(
+						stderr,
+						"  [DIFF] only in fresh: %s\n",
+						e.first.c_str());
 			for (const auto &e : migrated_indexes)
 				if (fresh_indexes.find(e.first) ==
 				    fresh_indexes.end())
-					std::fprintf(stderr,
-						     "  [DIFF] only in migrated: %s\n",
-						     e.first.c_str());
+					std::fprintf(
+						stderr,
+						"  [DIFF] only in migrated: %s\n",
+						e.first.c_str());
 			check(false, "index count differs");
 		}
 		for (const auto &entry : fresh_indexes) {
@@ -467,12 +495,13 @@ int main()
 				check(false, "index missing after migration");
 			}
 			if (it->second != entry.second) {
-				std::fprintf(stderr,
-					     "  [DIFF] index %s\n    fresh:    %s\n"
-					     "    migrated: %s\n",
-					     entry.first.c_str(),
-					     entry.second.c_str(),
-					     it->second.c_str());
+				std::fprintf(
+					stderr,
+					"  [DIFF] index %s\n    fresh:    %s\n"
+					"    migrated: %s\n",
+					entry.first.c_str(),
+					entry.second.c_str(),
+					it->second.c_str());
 				check(false, "index DDL differs");
 			}
 		}

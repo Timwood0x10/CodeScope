@@ -137,8 +137,18 @@ class GraphStore {
 
 	// ── File ───────────────────────────────────────────────────
 
+	/// Insert or update one file row and return its id.
+	///
+	/// The LOC parameters are measured values from `util::countLoc`; pass 0
+	/// for a file that was not measured at all only when 0 is the truth, not
+	/// as a placeholder (the store cannot tell the two apart afterwards).
+	/// Updates keep the existing row id: `evidence_fact` references
+	/// `(4, files.id)` for file-level findings, so replacing the row would
+	/// orphan those references.
 	uint64_t upsertFile(uint64_t project_id, const char *path,
-			    const char *language, const char *content_hash);
+			    const char *language, const char *content_hash,
+			    int loc = 0, int code_loc = 0, int comment_loc = 0,
+			    int blank_loc = 0);
 
 	// ── Graph Nodes ────────────────────────────────────────────
 

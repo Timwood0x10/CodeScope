@@ -792,13 +792,28 @@ uint64_t GraphStore::getProjectNodeCount(uint64_t project_id)
 // ─── File ──────────────────────────────────────────────────────
 
 uint64_t GraphStore::upsertFile(uint64_t project_id, const char *path,
-				const char *language, const char *content_hash)
+				const char *language, const char *content_hash,
+				int loc, int code_loc, int comment_loc,
+				int blank_loc)
 {
 	sqlite3_stmt *stmt = nullptr;
+	// UPSERT, not INSERT OR REPLACE: REPLACE deletes the conflicting row and
+	// inserts a new one, so AUTOINCREMENT hands out a new id on every
+	// re-index. `evidence_fact` stores (4, files.id) for file-level metrics,
+	// and those references would silently point at a row that no longer
+	// exists (development_plan §17.4 invariant 3).
 	const char *sql =
-		"INSERT OR REPLACE INTO files (project_id, path, language, "
-		"content_hash, last_parsed_at) "
-		"VALUES (?, ?, ?, ?, datetime('now'))";
+		"INSERT INTO files (project_id, path, language, content_hash, "
+		"loc, code_loc, comment_loc, blank_loc, last_parsed_at) "
+		"VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now')) "
+		"ON CONFLICT(project_id, path) DO UPDATE SET "
+		"language = excluded.language, "
+		"content_hash = excluded.content_hash, "
+		"loc = excluded.loc, "
+		"code_loc = excluded.code_loc, "
+		"comment_loc = excluded.comment_loc, "
+		"blank_loc = excluded.blank_loc, "
+		"last_parsed_at = excluded.last_parsed_at";
 	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
 		fprintf(stderr,
 			"upsertFile prepare failed: %s "
@@ -810,6 +825,10 @@ uint64_t GraphStore::upsertFile(uint64_t project_id, const char *path,
 	sqlite3_bind_text(stmt, 2, path, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 3, language, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 4, content_hash, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_int(stmt, 5, loc);
+	sqlite3_bind_int(stmt, 6, code_loc);
+	sqlite3_bind_int(stmt, 7, comment_loc);
+	sqlite3_bind_int(stmt, 8, blank_loc);
 	int rc = sqlite3_step(stmt);
 	if (rc != SQLITE_DONE)
 		fprintf(stderr,

@@ -6,6 +6,7 @@
 // (development_plan §17.6).
 
 #include "util/json_writer.h"
+#include "util/loc_counter.h"
 #include "engine_internal.h"
 #include "engine_index_paths.h"
 #include "filter_policy.h"
@@ -40,6 +41,29 @@
 
 // ─── Constants ─────────────────────────────────────────────────
 // ─── Index File ────────────────────────────────────────────────
+
+namespace
+{
+
+/// Persist one file row with its measured LOC breakdown.
+///
+/// Extracted out of engine_index_file() rather than inlined: that function is
+/// already over the §1.1 limit, and a grandfathered unit may only shrink.
+/// @return false when the row could not be written; the caller currently
+///         ignores it, matching the previous inline behaviour (the following
+///         insertFileResultBatch surfaces the failure path).
+bool upsertFileWithLoc(store::GraphStore *store, uint64_t project_id,
+		       const std::string &path, const char *language,
+		       const std::string &source)
+{
+	const std::string hash = store::Sha256Hex(source);
+	const auto loc = util::countLoc(source);
+	return store->upsertFile(project_id, path.c_str(), language,
+				 hash.c_str(), loc.loc, loc.code_loc,
+				 loc.comment_loc, loc.blank_loc) != 0;
+}
+
+} // namespace
 
 char *engine_index_file(engine_t handle, uint64_t project_id,
 			const char *file_path)
@@ -288,9 +312,8 @@ char *engine_index_file(engine_t handle, uint64_t project_id,
 		// those records. The pair is idempotent, so re-indexing a file
 		// never accumulates duplicates.
 		ctx->store->beginTransaction();
-		std::string hash = store::Sha256Hex(source);
-		ctx->store->upsertFile(project_id, store_path, language,
-				       hash.c_str());
+		(void)upsertFileWithLoc(ctx->store.get(), project_id,
+					store_path, language, source);
 		if (!ctx ||
 		    !ctx->store->insertFileResultBatch(
 			    project_id, std::vector<store::FileResult>{ fr })) {

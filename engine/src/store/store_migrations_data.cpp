@@ -234,6 +234,21 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_finding_project_key
 CREATE INDEX IF NOT EXISTS idx_evidence_claim ON evidence(claim_id);
 )sql",
 	},
+	{
+		9,
+		"files_loc",
+		// D1 §5.1: measure file size where it is already known.
+		// Nullable on purpose: NULL means "not measured" (a row that
+		// predates the columns and has not been re-indexed), while 0 is a
+		// real file with no lines. A DEFAULT 0 would make the briefing
+		// sum unmeasured files as zero lines and report it as a fact.
+		R"sql(
+ALTER TABLE files ADD COLUMN loc INTEGER;
+ALTER TABLE files ADD COLUMN code_loc INTEGER;
+ALTER TABLE files ADD COLUMN comment_loc INTEGER;
+ALTER TABLE files ADD COLUMN blank_loc INTEGER;
+)sql",
+	},
 };
 
 } // namespace

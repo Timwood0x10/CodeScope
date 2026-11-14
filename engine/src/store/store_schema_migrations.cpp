@@ -10,6 +10,14 @@
 //
 // A hard failure returns false so createSchema() fails loudly instead of
 // leaving a half-migrated schema that later queries misinterpret.
+//
+// Boundary (development_plan §17.2): this pass may only maintain columns that
+// belong to the pre-0.3.0 baseline. Every column, index or table introduced
+// after 0.3.0 goes into store_migrations_data.cpp as a numbered migration,
+// because a numbered migration is recorded and checksummed while this pass is
+// unversioned and reruns on every open. Adding a 0.3.0 column here would also
+// make a fresh database and a migrated one diverge, since createSchema() would
+// have to declare it too.
 
 #include "store.h"
 
