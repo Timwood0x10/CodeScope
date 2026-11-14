@@ -281,6 +281,47 @@ int main()
 		      "the symbol exists; the filter must not be misread");
 	}
 
+	// ── Test 14: a missing symbol must not invent "no run found" ──
+	// The branch used to hardcode has_run=false, so a typo in a symbol name
+	// produced the claim that no verification run exists — while one did.
+	{
+		auto json = analyze(engine, project_id, "symbol_context",
+				    "{\"symbol\":\"definitely_absent\"}",
+				    nullptr);
+		check(contains(json, "symbol not found"),
+		      "missing symbol must say so");
+		check(!contains(json, "no run found"),
+		      "a missing symbol must not claim the run is missing");
+		check(contains(json, "\"next_queries\""),
+		      "every view must carry navigation suggestions");
+	}
+
+	// ── Test 15: an ambiguous symbol keeps the response contract ──
+	{
+		check(execSql("INSERT INTO entity (id, project_id, kind, name, "
+			      "qualified_name, file_path, language, start_row, "
+			      "start_col, end_row, end_col) VALUES "
+			      "(201, " +
+			      std::to_string(project_id) +
+			      ", 0, 'dup', 'a::dup', 'a.cpp', 'cpp', 1, 0, 5, 0),"
+			      "(202, " +
+			      std::to_string(project_id) +
+			      ", 0, 'dup', 'b::dup', 'b.cpp', 'cpp', 1, 0, 5, 0)") ==
+			      SQLITE_OK,
+		      "insert duplicate names");
+
+		auto json = analyze(engine, project_id, "symbol_context",
+				    "{\"symbol\":\"dup\"}", nullptr);
+		check(contains(json, "\"ambiguous\":true"),
+		      "duplicate names must return candidates");
+		check(contains(json, "\"total\":2"),
+		      "both candidates must be counted");
+		check(contains(json, "\"unknowns\""),
+		      "the ambiguity branch must still report unknowns");
+		check(contains(json, "\"next_queries\""),
+		      "the ambiguity branch must still suggest next steps");
+	}
+
 	engine_destroy(engine);
 	removeDbFiles();
 	std::printf("\nAll analyze FFI tests passed.\n");

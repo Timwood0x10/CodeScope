@@ -27,7 +27,6 @@ namespace
 {
 
 /// Read a string field from a parsed object; missing means empty.
-/// Read a string field from a parsed object; missing means empty.
 std::string stringField(const util::JsonValue &obj, const std::string &key)
 {
 	const util::JsonValue *value = obj.find(key);
@@ -36,15 +35,21 @@ std::string stringField(const util::JsonValue &obj, const std::string &key)
 	return value->string_value;
 }
 
-} // namespace
-
-bool parseScope(const char *scope_json, Scope &out, std::string &error)
+/// Parse scope_json into a JSON object.
+///
+/// Every view parses its scope through this function so they validate the same
+/// way: empty input, invalid JSON, and a non-object are all errors.
+/// @param scope_json  NUL-terminated JSON string.
+/// @param[out] root   Parsed JSON value.
+/// @param[out] error  Error message on failure.
+/// @return false when the input is not a JSON object.
+bool parseObjectScope(const char *scope_json, util::JsonValue &root,
+		      std::string &error)
 {
 	if (!scope_json || !*scope_json) {
 		error = "scope is empty";
 		return false;
 	}
-	util::JsonValue root;
 	std::string parse_error;
 	if (!util::parseJsonDocument(scope_json, root, parse_error)) {
 		error = "scope is not valid JSON: " + parse_error;
@@ -54,6 +59,16 @@ bool parseScope(const char *scope_json, Scope &out, std::string &error)
 		error = "scope must be a JSON object";
 		return false;
 	}
+	return true;
+}
+
+} // namespace
+
+bool parseScope(const char *scope_json, Scope &out, std::string &error)
+{
+	util::JsonValue root;
+	if (!parseObjectScope(scope_json, root, error))
+		return false;
 	out.symbol = stringField(root, "symbol");
 	out.module = stringField(root, "module");
 	out.file_filter = stringField(root, "file_filter");
@@ -243,6 +258,10 @@ char *buildSymbolContext(EngineContext *ctx, uint64_t project_id,
 	w.key("view").value("symbol_context");
 	w.key("project_id").value(project_id);
 
+	// Read the run up front: every branch reports freshness, and claiming
+	// "no run found" on a symbol typo would be a statement nobody queried.
+	const RunInfo run = queryLatestRun(db, project_id);
+
 	// Resolve entity. A failed lookup is an error, not "symbol not found":
 	// telling the caller the symbol does not exist when the query died would
 	// send it looking for a rename that never happened.
@@ -257,7 +276,11 @@ char *buildSymbolContext(EngineContext *ctx, uint64_t project_id,
 		w.key("error").value("symbol not found");
 		w.key("symbol").value(scope.symbol);
 		w.key("source").value("fact");
-		writeUnknowns(w, false, {});
+		std::vector<std::string> failed;
+		collectFailure(failed, run.ok, "verification_run");
+		writeFreshness(w, run);
+		writeUnknowns(w, !run.run_id.empty(), failed);
+		writeNextQueries(w, "symbol_context");
 		w.endObject();
 		return dupString(w.str());
 	}
@@ -287,6 +310,11 @@ char *buildSymbolContext(EngineContext *ctx, uint64_t project_id,
 		w.key("source").value("fact");
 		w.key("note").value("multiple entities match; narrow with "
 				    "file_filter");
+		std::vector<std::string> failed;
+		collectFailure(failed, run.ok, "verification_run");
+		writeFreshness(w, run);
+		writeUnknowns(w, !run.run_id.empty(), failed);
+		writeNextQueries(w, "symbol_context");
 		w.endObject();
 		return dupString(w.str());
 	}
@@ -314,7 +342,6 @@ char *buildSymbolContext(EngineContext *ctx, uint64_t project_id,
 	collectFailure(failed, tests.ok, "test_candidates");
 	writeTestCandidates(w, tests);
 
-	const RunInfo run = queryLatestRun(db, project_id);
 	collectFailure(failed, run.ok, "verification_run");
 	writeFreshness(w, run);
 	writeUnknowns(w, !run.run_id.empty(), failed);
