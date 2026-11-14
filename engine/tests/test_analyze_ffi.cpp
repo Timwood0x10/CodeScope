@@ -322,6 +322,51 @@ int main()
 		      "the ambiguity branch must still suggest next steps");
 	}
 
+	// ── Test 16: a test candidate says how it was associated ──
+	// "a test calls this" and "a test file mentions this name" are not the same
+	// claim; without the distinction a coincidental name looks like coverage.
+	{
+		check(execSql("INSERT INTO files (project_id, path, language, "
+			      "content_hash, is_test) VALUES (" +
+			      std::to_string(project_id) +
+			      ", 'tests/paint_test.cpp', 'cpp', 'h1', 1), (" +
+			      std::to_string(project_id) +
+			      ", 'tests/paint_note.cpp', 'cpp', 'h2', 1)") ==
+			      SQLITE_OK,
+		      "insert classified test files");
+		check(execSql("INSERT INTO entity (id, project_id, kind, name, "
+			      "qualified_name, file_path, language, start_row, "
+			      "start_col, end_row, end_col) VALUES "
+			      "(301, " +
+			      std::to_string(project_id) +
+			      ", 0, 'paint_is_red', 'tests::paint_is_red', "
+			      "'tests/paint_test.cpp', 'cpp', 10, 0, 20, 0),"
+			      "(302, " +
+			      std::to_string(project_id) +
+			      ", 0, 'ns::paint_helper', 'tests::paint_helper', "
+			      "'tests/paint_note.cpp', 'cpp', 5, 0, 9, 0)") ==
+			      SQLITE_OK,
+		      "insert test entities");
+		check(execSql("INSERT INTO relation (project_id, source_id, "
+			      "target_id, type) VALUES (" +
+			      std::to_string(project_id) + ", 301, 102, 1)") ==
+			      SQLITE_OK,
+		      "the test calls the symbol");
+
+		auto json = analyze(engine, project_id, "symbol_context",
+				    "{\"symbol\":\"ns::paint\"}", nullptr);
+		check(contains(json, "\"method\":\"call_edge\""),
+		      "a calling test is a measured association");
+		check(contains(json, "\"confidence\":\"high\""),
+		      "a call edge is high confidence");
+		check(contains(json, "paint_is_red"),
+		      "the calling test entity is named");
+		check(contains(json, "\"method\":\"name_match\""),
+		      "a name-only association is reported as such");
+		check(contains(json, "\"confidence\":\"low\""),
+		      "a name match is low confidence");
+	}
+
 	engine_destroy(engine);
 	removeDbFiles();
 	std::printf("\nAll analyze FFI tests passed.\n");

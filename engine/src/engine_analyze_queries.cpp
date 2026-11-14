@@ -14,6 +14,7 @@
 
 #include <sqlite3.h>
 
+#include <algorithm>
 #include <string>
 #include <utility>
 #include <vector>
@@ -359,18 +360,66 @@ Page<FindingRow> queryFindings(sqlite3 *db, uint64_t project_id,
 
 /// Test files that mention the symbol. Naming-based, never execution: the
 /// caller is told so in `note` and `unknowns` (development_plan §13.2 item 8).
-Page<std::string> queryTestCandidates(sqlite3 *db, uint64_t project_id,
-				      const std::string &symbol)
+Page<TestCandidate> queryTestCandidates(sqlite3 *db, uint64_t project_id,
+					int64_t entity_id,
+					const std::string &symbol)
 {
-	Page<std::string> page;
-	const char *sql = "SELECT DISTINCT e.file_path FROM entity e "
-			  "WHERE e.project_id=? "
-			  "AND (e.file_path LIKE '%test%' "
-			  "     OR e.file_path LIKE '%Test%') "
-			  "AND (e.name LIKE ? OR e.qualified_name LIKE ?) "
-			  "ORDER BY e.file_path LIMIT ?";
+	Page<TestCandidate> page;
+	if (symbol.empty() && entity_id <= 0)
+		return page;
+
+	// Pass 1: a test entity calls the symbol. This is evidence, not a guess.
+	const char *call_sql =
+		"SELECT DISTINCT e.file_path, "
+		"       COALESCE(NULLIF(e.qualified_name, ''), e.name), "
+		"       e.start_row "
+		"FROM relation r "
+		"JOIN entity e ON e.id = r.source_id "
+		"JOIN files f ON f.project_id = e.project_id "
+		"            AND f.path = e.file_path "
+		"WHERE r.project_id = ? AND r.type = ? AND r.target_id = ? "
+		"  AND f.is_test = 1 "
+		"ORDER BY e.file_path, e.start_row LIMIT ?";
 	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+	if (sqlite3_prepare_v2(db, call_sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		page.ok = false;
+		return page;
+	}
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	sqlite3_bind_int(stmt, 2, kEdgeCalls);
+	sqlite3_bind_int64(stmt, 3, entity_id);
+	sqlite3_bind_int(stmt, 4, kMaxTestCandidates);
+	int rc = SQLITE_ROW;
+	std::vector<std::string> seen;
+	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+		TestCandidate c;
+		c.file_path = textCol(stmt, 0);
+		c.entity = textCol(stmt, 1);
+		c.line = sqlite3_column_int64(stmt, 2);
+		c.method = "call_edge";
+		c.confidence = "high";
+		seen.push_back(c.file_path);
+		page.rows.push_back(std::move(c));
+	}
+	if (rc != SQLITE_DONE)
+		page.ok = false;
+	sqlite3_finalize(stmt);
+	if (!page.ok)
+		return page;
+
+	// Pass 2: a test file mentions the name but nothing calls the symbol.
+	// Lower confidence, and never used to contradict pass 1.
+	const char *name_sql =
+		"SELECT DISTINCT e.file_path, "
+		"       COALESCE(NULLIF(e.qualified_name, ''), e.name), "
+		"       e.start_row "
+		"FROM entity e "
+		"JOIN files f ON f.project_id = e.project_id "
+		"            AND f.path = e.file_path "
+		"WHERE e.project_id = ? AND f.is_test = 1 "
+		"  AND (e.name LIKE ? OR e.qualified_name LIKE ?) "
+		"ORDER BY e.file_path, e.start_row LIMIT ?";
+	if (sqlite3_prepare_v2(db, name_sql, -1, &stmt, nullptr) != SQLITE_OK) {
 		page.ok = false;
 		return page;
 	}
@@ -379,12 +428,23 @@ Page<std::string> queryTestCandidates(sqlite3 *db, uint64_t project_id,
 	sqlite3_bind_text(stmt, 2, pattern.c_str(), -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 3, pattern.c_str(), -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int(stmt, 4, kMaxTestCandidates);
-	int rc = SQLITE_ROW;
-	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW)
-		page.rows.push_back(textCol(stmt, 0));
+	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+		TestCandidate c;
+		c.file_path = textCol(stmt, 0);
+		if (std::find(seen.begin(), seen.end(), c.file_path) !=
+		    seen.end())
+			continue;
+		c.entity = textCol(stmt, 1);
+		c.line = sqlite3_column_int64(stmt, 2);
+		c.method = "name_match";
+		c.confidence = "low";
+		seen.push_back(c.file_path);
+		page.rows.push_back(std::move(c));
+	}
 	if (rc != SQLITE_DONE)
 		page.ok = false;
 	sqlite3_finalize(stmt);
+	page.total = static_cast<int64_t>(seen.size());
 	return page;
 }
 

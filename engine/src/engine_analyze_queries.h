@@ -62,6 +62,22 @@ template <typename T> struct Page {
 	bool ok = true;
 };
 
+/// One place that appears to test `symbol`.
+///
+/// `method` says how it was found, because the two are not equally strong: a
+/// test function that calls the symbol is evidence the symbol is exercised,
+/// while a matching name in a test file is only a hint (§12.2 "关联置信度").
+struct TestCandidate {
+	std::string file_path;
+	/// Test entity that calls the symbol; empty for a name-only match.
+	std::string entity;
+	int64_t line = 0;
+	/// "call_edge" or "name_match".
+	std::string method;
+	/// "high" for a call edge, "low" for a name match.
+	std::string confidence;
+};
+
 struct RunInfo {
 	std::string run_id;
 	std::string status;
@@ -86,9 +102,15 @@ Page<RelationRow> queryRelations(sqlite3 *db, uint64_t project_id,
 Page<FindingRow> queryFindings(sqlite3 *db, uint64_t project_id,
 			       const std::string &path);
 
-/// Test files mentioning the symbol. Naming-based, never execution.
-Page<std::string> queryTestCandidates(sqlite3 *db, uint64_t project_id,
-				      const std::string &symbol);
+/// Test code associated with `symbol`.
+///
+/// Two passes: test entities that call the symbol (a real edge, high
+/// confidence), then test files whose entities merely mention the name (low).
+/// Both rely on `files.is_test`, so a database that predates the classification
+/// returns nothing rather than a path-substring guess.
+Page<TestCandidate> queryTestCandidates(sqlite3 *db, uint64_t project_id,
+					int64_t entity_id,
+					const std::string &symbol);
 
 /// Most recent verification run, whatever its status.
 RunInfo queryLatestRun(sqlite3 *db, uint64_t project_id);

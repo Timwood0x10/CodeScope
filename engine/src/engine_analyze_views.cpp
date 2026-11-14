@@ -208,7 +208,12 @@ void writeFindings(util::JsonWriter &w, const Page<FindingRow> &page)
 	w.endObject();
 }
 
-void writeTestCandidates(util::JsonWriter &w, const Page<std::string> &page)
+/// Write the test-candidate page.
+///
+/// Each item says HOW the association was made: a call edge from a test entity
+/// is evidence, a name match in a test file is a hint (§12.2). Reporting them as
+/// one undifferentiated list would let a coincidental match read as coverage.
+void writeTestCandidates(util::JsonWriter &w, const Page<TestCandidate> &page)
 {
 	w.key("test_candidates").beginObject();
 	if (!page.ok) {
@@ -218,13 +223,29 @@ void writeTestCandidates(util::JsonWriter &w, const Page<std::string> &page)
 		w.endObject();
 		return;
 	}
+	const int returned = std::min(static_cast<int>(page.rows.size()),
+				      kMaxTestCandidates);
 	w.key("items").beginArray();
-	for (const auto &path : page.rows)
-		w.value(path);
+	for (int i = 0; i < returned; ++i) {
+		const auto &c = page.rows[i];
+		w.beginObject();
+		w.key("file_path").value(c.file_path);
+		if (!c.entity.empty())
+			w.key("test_entity").value(c.entity);
+		if (c.line > 0)
+			w.key("line").value(c.line);
+		w.key("method").value(c.method);
+		w.key("confidence").value(c.confidence);
+		w.endObject();
+	}
 	w.endArray();
-	w.key("total").value(static_cast<int64_t>(page.rows.size()));
-	w.key("source").value("inferred");
-	w.key("note").value("test files referencing this symbol; not executed");
+	w.key("total").value(page.total);
+	w.key("returned").value(returned);
+	w.key("has_more").value(page.total > returned);
+	w.key("source").value("fact");
+	w.key("note").value(
+		"call_edge = a test entity calls the symbol (measured); "
+		"name_match = a test file mentions the name (hint only)");
 	w.endObject();
 }
 
@@ -359,8 +380,8 @@ char *buildSymbolContext(EngineContext *ctx, uint64_t project_id,
 	collectFailure(failed, findings.ok, "findings");
 	writeFindings(w, findings);
 
-	const Page<std::string> tests =
-		queryTestCandidates(db, project_id, scope.symbol);
+	const Page<TestCandidate> tests =
+		queryTestCandidates(db, project_id, entity.id, scope.symbol);
 	collectFailure(failed, tests.ok, "test_candidates");
 	writeTestCandidates(w, tests);
 
