@@ -21,10 +21,13 @@ use crate::ffi;
 ///
 /// Arguments:
 /// - `profile` (required): "quick" or "conformance"
-/// - `view` (required for quick): "symbol_context" or "module_context"
-/// - `scope` (required for quick): JSON object with `symbol` or `module` and
-///   an optional `file_filter`
+/// - `view` (required for quick): "symbol_context", "module_context",
+///   or "compare_snapshots"
+/// - `scope` (required for quick): JSON object whose fields depend on `view`
 /// - `run_id` (optional): pin the read to one verification run (M2)
+///
+/// `view` is only meaningful with `profile=quick`. Passing `view` with
+/// any other profile is rejected to avoid silently ignoring it.
 ///
 /// Returns the engine's JSON verbatim.
 pub fn h_analyze_project(project_id: u64, args: &Value) -> String {
@@ -41,7 +44,17 @@ pub fn h_analyze_project(project_id: u64, args: &Value) -> String {
     match profile {
         // The rule set is the conformance profile. A failing rule is recorded
         // and the run is marked partial, so the other results survive.
-        "conformance" => ffi::run_rules(project_id, None),
+        // `view` is not accepted here — it only applies to profile=quick.
+        "conformance" => {
+            if args.get("view").and_then(|v| v.as_str()).is_some() {
+                return json!({
+                    "error": "view is only valid with profile=quick \
+                              [module=mcp, tool=analyze_project]"
+                })
+                .to_string();
+            }
+            ffi::run_rules(project_id, None)
+        }
         "quick" => analyze_quick(project_id, args),
         other => json!({
             "error": format!(

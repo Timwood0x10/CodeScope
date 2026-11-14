@@ -82,6 +82,27 @@ bool parseScope(const char *scope_json, Scope &out, std::string &error)
 	return true;
 }
 
+bool parseRunIds(const char *scope_json, std::string &base_run_id,
+		 std::string &target_run_id, std::string &error)
+{
+	util::JsonValue root;
+	if (!parseObjectScope(scope_json, root, error))
+		return false;
+	base_run_id = stringField(root, "base_run_id");
+	target_run_id = stringField(root, "target_run_id");
+	if (base_run_id.empty()) {
+		error = "scope.base_run_id is required for "
+			"compare_snapshots view";
+		return false;
+	}
+	if (target_run_id.empty()) {
+		error = "scope.target_run_id is required for "
+			"compare_snapshots view";
+		return false;
+	}
+	return true;
+}
+
 namespace
 {
 

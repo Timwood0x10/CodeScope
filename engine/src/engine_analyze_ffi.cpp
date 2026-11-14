@@ -71,8 +71,17 @@ char *engine_analyze_project(engine_t handle, uint64_t project_id,
 			return engine_views::buildModuleContext(ctx, project_id,
 								scope);
 		}
-		return reject("unsupported view; use symbol_context or "
-			      "module_context");
+		if (view_str == "compare_snapshots") {
+			std::string base_id;
+			std::string target_id;
+			if (!engine_views::parseRunIds(scope_json, base_id,
+						       target_id, scope_error))
+				return reject(scope_error);
+			return engine_views::buildCompareSnapshots(
+				ctx, project_id, base_id, target_id);
+		}
+		return reject("unsupported view; use symbol_context, "
+			      "module_context, or compare_snapshots");
 	} catch (const std::exception &e) {
 		return reject(e.what());
 	} catch (...) {

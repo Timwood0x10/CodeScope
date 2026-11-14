@@ -577,20 +577,22 @@ fn briefing_tool() -> Tool {
 fn analyze_tool() -> Tool {
     Tool {
         name: "analyze_project".into(),
-        description: "Analyze a project. `profile` selects the work: \"quick\" returns a read-only task-context projection and needs `view`; \"conformance\" executes the rule set once, persists a verification run with its evidence and findings, and returns {run_id, rules, executed, failed, evidence, findings, status}. \"architecture\" and \"full\" are not implemented yet and are rejected. With profile=quick, view=symbol_context returns the definition, callers, callees, findings and test candidates for a symbol; view=module_context does the same for a module path. No indexing, no target-project scripts. A failing rule is recorded and the run is marked partial instead of losing the other results.".into(),
+        description: "Analyze a project. `profile` selects the work: \"quick\" returns a read-only task-context projection and needs `view`; \"conformance\" executes the rule set once, persists a verification run with its evidence and findings, and returns {run_id, rules, executed, failed, evidence, findings, status}. \"architecture\" and \"full\" are not implemented yet and are rejected. With profile=quick: view=symbol_context returns the definition, callers, callees, findings and test candidates for a symbol; view=module_context does the same for a module path; view=compare_snapshots diffs two verification runs (scope must contain base_run_id and target_run_id). No indexing, no target-project scripts. A failing rule is recorded and the run is marked partial instead of losing the other results.".into(),
         input_schema: json!({
             "type": "object",
             "properties": {
                 "profile": {"type": "string", "enum": ["quick", "conformance", "architecture", "full"],
                             "description": "quick (read-only context) or conformance (run the rules)"},
-                "view": {"type": "string", "enum": ["symbol_context", "module_context"],
+                "view": {"type": "string", "enum": ["symbol_context", "module_context", "compare_snapshots"],
                          "description": "Required when profile=quick: the projection to return"},
                 "scope": {"type": "object",
-                          "description": "Required when profile=quick: {symbol: \"name\"} or {module: \"path\"}, optional file_filter",
+                          "description": "Required when profile=quick: {symbol: \"name\"} or {module: \"path\"} for symbol_context/module_context; {base_run_id: \"id\", target_run_id: \"id\"} for compare_snapshots. Optional file_filter for symbol/module views.",
                           "properties": {
                               "symbol": {"type": "string"},
                               "module": {"type": "string"},
-                              "file_filter": {"type": "string"}
+                              "file_filter": {"type": "string"},
+                              "base_run_id": {"type": "string"},
+                              "target_run_id": {"type": "string"}
                           }},
                 "run_id": {"type": "string", "description": "Pin the read to one verification run (M2)"}
             },

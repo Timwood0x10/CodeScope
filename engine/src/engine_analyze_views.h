@@ -52,6 +52,26 @@ char *buildSymbolContext(EngineContext *ctx, uint64_t project_id,
 char *buildModuleContext(EngineContext *ctx, uint64_t project_id,
 			 const Scope &scope);
 
+/// Parse `base_run_id` and `target_run_id` from a scope JSON object
+/// for the compare_snapshots view.
+/// @param scope_json  NUL-terminated JSON object.
+/// @param[out] base_run_id   Extracted base run ID.
+/// @param[out] target_run_id Extracted target run ID.
+/// @param[out] error  Set when the input is missing required fields.
+/// @return false when base_run_id or target_run_id is absent or empty.
+bool parseRunIds(const char *scope_json, std::string &base_run_id,
+		 std::string &target_run_id, std::string &error);
+
+/// Build the `compare_snapshots` payload (§5.6 four-state diff).
+/// @param ctx           Live engine context.
+/// @param project_id    Project to read.
+/// @param base_run_id   Earlier run to compare from.
+/// @param target_run_id Later run to compare to.
+/// @return Heap JSON string; the caller frees with engine_free_string().
+char *buildCompareSnapshots(EngineContext *ctx, uint64_t project_id,
+			    const std::string &base_run_id,
+			    const std::string &target_run_id);
+
 } // namespace engine_views
 
 #endif // CODESCOPE_ENGINE_ANALYZE_VIEWS_H

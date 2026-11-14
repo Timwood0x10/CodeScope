@@ -983,7 +983,7 @@ int engine_is_indexable_source(const char *file_path);
 char *engine_get_project_briefing(engine_t handle, uint64_t project_id);
 
 /// Analyze project — M1 task context (§18.7.2), read-only.
-/// view: "symbol_context"|"module_context"; scope_json: {symbol|module, file_filter}.
+/// view: "symbol_context"|"module_context"|"compare_snapshots"; scope_json: per-view.
 // Ownership: caller frees with engine_free_string(). Inputs borrowed.
 char *engine_analyze_project(engine_t handle, uint64_t project_id,
 			     const char *view, const char *scope_json,
