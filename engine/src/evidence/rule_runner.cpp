@@ -46,6 +46,11 @@ store::Severity SeverityFromRule(int rule_severity)
 /// the file hit. Numbers never enter the anchor.
 std::string AnchorFor(const EvidenceItem &item, int nth)
 {
+	// File-level findings (fact_kind 4) anchor on the path: the symbol field
+	// carries that path for file metrics, and calling it a symbol would put a
+	// path in the symbol namespace — the same reason `file:` exists below.
+	if (item.fact_kind == 4 && !item.file.empty())
+		return "file:" + item.file;
 	if (!item.symbol.empty())
 		return "symbol:" + item.symbol;
 	if (!item.file.empty())
