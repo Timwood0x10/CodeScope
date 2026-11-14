@@ -274,6 +274,7 @@ set(ENGINE_SOURCES
         src/model/plugins/contract.cpp
         src/model/state_builder.cpp
         src/model/project_state_builder.cpp
+        src/model/project_state_queries.cpp
         src/model/semantic_fact_extractor.cpp
         src/verify/capability_verifier.cpp
         src/verify/contract_verifier.cpp

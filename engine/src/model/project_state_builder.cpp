@@ -17,6 +17,11 @@
 //   6. Build snapshot_json (see plan §6.2 schema).
 //   7. UPSERT into project_state (ON CONFLICT project_id DO UPDATE).
 //
+// SQL query helpers (countRows, detectFrameworks, etc.) live in
+// project_state_queries.cpp; this file keeps scoring and JSON
+// serialisation so the "do not copy old scoring logic" directive
+// (development_plan §12.2) is respected.
+//
 // All sqlite3_stmt handles are managed by an RAII guard so they are
 // finalized on every exit path. The store pointer is borrowed; null
 // is checked at every public entry point and returns false / empty
@@ -24,14 +29,14 @@
 // omits the corresponding key (or sets its score to a default).
 
 #include "project_state_builder.h"
+#include "project_state_internal.h"
+#include "project_state_queries.h"
 #include "util/json_writer.h"
 
-#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
-#include <map>
 #include <sqlite3.h>
 #include <sstream>
 #include <string>
@@ -45,67 +50,24 @@
 namespace model
 {
 
-// ─── Local helpers ──────────────────────────────────────────────
+// ─── Local helpers (scoring + JSON serialisation) ──────────────
 
 namespace
 {
 
-// RAII guard around a sqlite3_stmt. Calls sqlite3_finalize on
-// destruction unless release() is called (transfer ownership).
-// Ensures statements are finalized on every exit path, including
-// early returns on error. Mirrors the pattern used in
-// evidence_builder.cpp.
-class StmtGuard {
-    public:
-	explicit StmtGuard(sqlite3_stmt *stmt = nullptr)
-		: stmt_(stmt)
-	{
-	}
-	~StmtGuard()
-	{
-		if (stmt_)
-			sqlite3_finalize(stmt_);
-	}
-	StmtGuard(const StmtGuard &) = delete;
-	StmtGuard &operator=(const StmtGuard &) = delete;
-	StmtGuard(StmtGuard &&other) noexcept
-		: stmt_(other.stmt_)
-	{
-		other.stmt_ = nullptr;
-	}
-	sqlite3_stmt *get() const
-	{
-		return stmt_;
-	}
+using detail::colText;
+using detail::StmtGuard;
 
-    private:
-	sqlite3_stmt *stmt_;
-};
-
-// Read a text column as a std::string; NULL → "".
-std::string colText(sqlite3_stmt *stmt, int col)
-{
-	const unsigned char *t = sqlite3_column_text(stmt, col);
-	if (!t)
-		return "";
-	return std::string(reinterpret_cast<const char *>(t));
-}
-
-// JSON-escape a string for inclusion in a JSON string literal.
-// Mirrors the jsonEscape helper used across the engine.
 std::string escapeJson(const std::string &s)
 {
 	return util::jsonEscapeString(s);
 }
 
-// Format a double as a JSON number with up to 4 decimal places.
-// Trailing zeros are stripped (1.0000 → "1", 0.5000 → "0.5").
 std::string fmtDouble(double v)
 {
 	char buf[32];
 	std::snprintf(buf, sizeof(buf), "%.4f", v);
 	std::string s(buf);
-	// Strip trailing zeros and the dot if at the end.
 	while (!s.empty() && s.back() == '0')
 		s.pop_back();
 	if (!s.empty() && s.back() == '.')
@@ -115,10 +77,6 @@ std::string fmtDouble(double v)
 	return s;
 }
 
-// Return the current UTC timestamp in ISO 8601 format
-// (YYYY-MM-DDTHH:MM:SSZ). Uses strftime for portability; the time
-// zone is UTC because project_state snapshot consumers may run in
-// any locale.
 std::string currentUtcIsoTimestamp()
 {
 	std::time_t now = std::time(nullptr);
@@ -133,18 +91,11 @@ std::string currentUtcIsoTimestamp()
 	return buf;
 }
 
-// Per-category aggregated evidence: total item count across all
-// rules in this category + a list of (title, item_count) for the
-// snapshot details array.
 struct CategoryAgg {
 	int issue_count = 0;
 	std::vector<std::string> details;
 };
 
-// Aggregate a vector of Evidence by category. Each Evidence contributes
-// items.size() to its category's issue count. The first few titles are
-// collected as detail strings (capped at kMaxDetailsPerCategory per
-// category to keep the snapshot compact).
 std::unordered_map<std::string, CategoryAgg>
 aggregateByCategory(const std::vector<evidence::Evidence> &evidences)
 {
@@ -165,8 +116,6 @@ aggregateByCategory(const std::vector<evidence::Evidence> &evidences)
 	return out;
 }
 
-// Serialize a vector of detail strings to a JSON array string.
-// Empty vector returns "[]". Each string is JSON-escaped.
 std::string serializeDetailsArray(const std::vector<std::string> &details)
 {
 	std::ostringstream ss;
@@ -180,254 +129,6 @@ std::string serializeDetailsArray(const std::vector<std::string> &details)
 	return ss.str();
 }
 
-// Run a `SELECT COUNT(*) FROM <table> WHERE project_id = ?` query
-// and return the count. Returns 0 on error (logged). Used to get
-// per-category fact counts and state-row counts in one place.
-int64_t countRows(store::GraphStore *store, const std::string &sql,
-		  uint64_t project_id)
-{
-	if (!store || !store->handle())
-		return 0;
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(store->handle(), sql.c_str(), -1, &stmt,
-			       nullptr) != SQLITE_OK) {
-		std::fprintf(stderr,
-			     "[module=project_state, method=countRows] "
-			     "prepare failed: %s\n",
-			     sqlite3_errmsg(store->handle()));
-		return 0;
-	}
-	StmtGuard guard(stmt);
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	int64_t count = 0;
-	if (sqlite3_step(stmt) == SQLITE_ROW) {
-		count = sqlite3_column_int64(stmt, 0);
-	}
-	return count;
-}
-
-// Distinct framework primitives detected in semantic_fact for the
-// project under category='framework'. Returns a vector of unique
-// primitive names (e.g. "gin", "gorm"). Empty on error.
-std::vector<std::string> detectFrameworks(store::GraphStore *store,
-					  uint64_t project_id)
-{
-	std::vector<std::string> out;
-	if (!store || !store->handle())
-		return out;
-	const char *sql = "SELECT DISTINCT primitive FROM semantic_fact "
-			  "WHERE project_id = ? AND category = 'framework'";
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(store->handle(), sql, -1, &stmt, nullptr) !=
-	    SQLITE_OK) {
-		std::fprintf(stderr,
-			     "[module=project_state, method=detectFrameworks] "
-			     "prepare failed: %s\n",
-			     sqlite3_errmsg(store->handle()));
-		return out;
-	}
-	StmtGuard guard(stmt);
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	while (sqlite3_step(stmt) == SQLITE_ROW) {
-		out.push_back(colText(stmt, 0));
-	}
-	return out;
-}
-
-// Query the count of findings for a project grouped by severity.
-// Returns a map: {1: "info", 2: "warning", 3: "error"} → count.
-// Used to populate the pattern.by_severity block in the snapshot.
-std::map<int, int> findingSeverityCounts(store::GraphStore *store,
-					 uint64_t project_id)
-{
-	std::map<int, int> out;
-	if (!store || !store->handle())
-		return out;
-	const char *sql = "SELECT severity, COUNT(*) FROM finding "
-			  "WHERE project_id = ? GROUP BY severity";
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(store->handle(), sql, -1, &stmt, nullptr) !=
-	    SQLITE_OK) {
-		std::fprintf(
-			stderr,
-			"[module=project_state, method=findingSeverityCounts] "
-			"prepare failed: %s\n",
-			sqlite3_errmsg(store->handle()));
-		return out;
-	}
-	StmtGuard guard(stmt);
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	while (sqlite3_step(stmt) == SQLITE_ROW) {
-		int sev = sqlite3_column_int(stmt, 0);
-		int cnt = sqlite3_column_int(stmt, 1);
-		out[sev] = cnt;
-	}
-	return out;
-}
-
-// Count verified capability_state rows (state='Implemented' or
-// 'Verified'). Used for capability.verified in the snapshot.
-int64_t countVerifiedCapabilities(store::GraphStore *store, uint64_t project_id)
-{
-	if (!store || !store->handle())
-		return 0;
-	const char *sql = "SELECT COUNT(*) FROM capability_state "
-			  "WHERE project_id = ? AND state IN "
-			  "('Implemented','Verified')";
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(store->handle(), sql, -1, &stmt, nullptr) !=
-	    SQLITE_OK) {
-		std::fprintf(
-			stderr,
-			"[module=project_state, method=countVerifiedCapabilities] "
-			"prepare failed: %s\n",
-			sqlite3_errmsg(store->handle()));
-		return 0;
-	}
-	StmtGuard guard(stmt);
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	int64_t count = 0;
-	if (sqlite3_step(stmt) == SQLITE_ROW) {
-		count = sqlite3_column_int64(stmt, 0);
-	}
-	return count;
-}
-
-// Sum one architecture_state column for a project. `column` is chosen by
-// the callers below (never client input) AND checked against an allowlist,
-// because it is interpolated into the SQL — together the two keep this a
-// constant query. Returns 0 on error or empty table.
-static int64_t sumArchitectureColumn(store::GraphStore *store,
-				     uint64_t project_id, const char *column)
-{
-	if (std::strcmp(column, "violations") != 0 &&
-	    std::strcmp(column, "cross_module_edges") != 0) {
-		std::fprintf(
-			stderr,
-			"[module=project_state, method=sumArchitectureColumn] "
-			"refusing non-allowlisted column '%s'\n",
-			column);
-		return 0;
-	}
-	if (!store || !store->handle())
-		return 0;
-	const std::string sql = std::string("SELECT COALESCE(SUM(") + column +
-				"), 0) FROM architecture_state "
-				"WHERE project_id = ?";
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(store->handle(), sql.c_str(), -1, &stmt,
-			       nullptr) != SQLITE_OK) {
-		std::fprintf(
-			stderr,
-			"[module=project_state, method=sumArchitectureColumn] "
-			"prepare failed for column '%s': %s\n",
-			column, sqlite3_errmsg(store->handle()));
-		return 0;
-	}
-	StmtGuard guard(stmt);
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	int64_t count = 0;
-	if (sqlite3_step(stmt) == SQLITE_ROW) {
-		count = sqlite3_column_int64(stmt, 0);
-	}
-	return count;
-}
-
-// Sum architecture_state.violations for a project. Returns 0 on error or
-// empty table. Always 0 today: calling a cross-module dependency a violation
-// needs a layer model, which this graph does not carry — see
-// StateBuilder::buildArchitectureState.
-int64_t sumArchitectureViolations(store::GraphStore *store, uint64_t project_id)
-{
-	return sumArchitectureColumn(store, project_id, "violations");
-}
-
-// Sum architecture_state.cross_module_edges: how many call edges cross a
-// module boundary, summed over the tracked module pairs. This is a
-// dependency count, NOT a violation count.
-int64_t sumArchitectureCrossModuleEdges(store::GraphStore *store,
-					uint64_t project_id)
-{
-	return sumArchitectureColumn(store, project_id, "cross_module_edges");
-}
-
-// Sum workflow_state.steps_done and steps_total across all workflows
-// for a project. Returns (steps_done, steps_total). Used for the
-// workflow score = done / total.
-struct WorkflowProgress {
-	int64_t steps_done = 0;
-	int64_t steps_total = 0;
-};
-WorkflowProgress sumWorkflowProgress(store::GraphStore *store,
-				     uint64_t project_id)
-{
-	WorkflowProgress wp;
-	if (!store || !store->handle())
-		return wp;
-	const char *sql = "SELECT COALESCE(SUM(steps_done), 0), "
-			  "       COALESCE(SUM(steps_total), 0) "
-			  "FROM workflow_state WHERE project_id = ?";
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(store->handle(), sql, -1, &stmt, nullptr) !=
-	    SQLITE_OK) {
-		std::fprintf(
-			stderr,
-			"[module=project_state, method=sumWorkflowProgress] "
-			"prepare failed: %s\n",
-			sqlite3_errmsg(store->handle()));
-		return wp;
-	}
-	StmtGuard guard(stmt);
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	if (sqlite3_step(stmt) == SQLITE_ROW) {
-		wp.steps_done = sqlite3_column_int64(stmt, 0);
-		wp.steps_total = sqlite3_column_int64(stmt, 1);
-	}
-	return wp;
-}
-
-// Sum module_summary.dead_entities across all modules for a project.
-// Used for the dead_code.entities count in the snapshot.
-int64_t sumDeadEntities(store::GraphStore *store, uint64_t project_id)
-{
-	if (!store || !store->handle())
-		return 0;
-	const char *sql = "SELECT COALESCE(SUM(dead_entities), 0) "
-			  "FROM module_summary WHERE project_id = ?";
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(store->handle(), sql, -1, &stmt, nullptr) !=
-	    SQLITE_OK) {
-		std::fprintf(stderr,
-			     "[module=project_state, method=sumDeadEntities] "
-			     "prepare failed: %s\n",
-			     sqlite3_errmsg(store->handle()));
-		return 0;
-	}
-	StmtGuard guard(stmt);
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	int64_t count = 0;
-	if (sqlite3_step(stmt) == SQLITE_ROW) {
-		count = sqlite3_column_int64(stmt, 0);
-	}
-	return count;
-}
-
-// Total entity count for a project (used to compute dead_code.pct =
-// dead / total). Returns 0 on error or empty project.
-int64_t countEntities(store::GraphStore *store, uint64_t project_id)
-{
-	return countRows(store,
-			 "SELECT COUNT(*) FROM entity WHERE project_id = ?",
-			 project_id);
-}
-
-// Compute the per-category block of the snapshot JSON. `agg` is the
-// aggregated evidence for the category (may be absent if no rules
-// fired). `fact_count` is the raw semantic_fact row count for the
-// category. Returns the inner JSON object string (without enclosing
-// braces); the caller wraps it in "category": {...}.
-//
-// Fields: "issues" (item count), "details" (array of titles).
 std::string buildCategoryBlock(const CategoryAgg *agg, int64_t fact_count)
 {
 	std::ostringstream ss;
@@ -443,10 +144,6 @@ std::string buildCategoryBlock(const CategoryAgg *agg, int64_t fact_count)
 	return ss.str();
 }
 
-// Compute the overall confidence from the aggregated evidence and
-// state counts. Starts at 1.0 and subtracts a per-issue penalty for
-// each category, then clamps to [0.0, 1.0]. See penalty constants
-// in project_state_builder.h.
 double computeOverallConfidence(
 	const std::unordered_map<std::string, CategoryAgg> &agg,
 	int64_t arch_violations, int64_t dead_entities)
@@ -475,61 +172,15 @@ double computeOverallConfidence(
 	return confidence;
 }
 
-// Count how many distinct inspector categories produced evidence.
-// Used for the "overall.inspectors_ran" field. The maximum is the
-// number of categories with rule files (sync/memory/error/pattern/
-// framework/ffi = 6).
 int countInspectorsRan(const std::unordered_map<std::string, CategoryAgg> &agg)
 {
 	return static_cast<int>(agg.size());
-}
-
-// Persist the snapshot + confidence to project_state via UPSERT.
-// Returns true on success, false on prepare/step failure (logged).
-bool upsertProjectState(store::GraphStore *store, uint64_t project_id,
-			double confidence, const std::string &snapshot_json)
-{
-	if (!store || !store->handle())
-		return false;
-	const char *sql = "INSERT INTO project_state "
-			  "(project_id, confidence, snapshot_json, updated_at) "
-			  "VALUES (?,?,?,datetime('now')) "
-			  "ON CONFLICT(project_id) DO UPDATE SET "
-			  "confidence=excluded.confidence, "
-			  "snapshot_json=excluded.snapshot_json, "
-			  "updated_at=datetime('now')";
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(store->handle(), sql, -1, &stmt, nullptr) !=
-	    SQLITE_OK) {
-		std::fprintf(
-			stderr,
-			"[module=project_state, method=upsertProjectState] "
-			"prepare failed: %s\n",
-			sqlite3_errmsg(store->handle()));
-		return false;
-	}
-	StmtGuard guard(stmt);
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_double(stmt, 2, confidence);
-	sqlite3_bind_text(stmt, 3, snapshot_json.c_str(), -1, SQLITE_TRANSIENT);
-	int rc = sqlite3_step(stmt);
-	if (rc != SQLITE_DONE) {
-		std::fprintf(
-			stderr,
-			"[module=project_state, method=upsertProjectState] "
-			"step failed (rc=%d): %s\n",
-			rc, sqlite3_errmsg(store->handle()));
-		return false;
-	}
-	return true;
 }
 
 } // namespace
 
 // ─── ProjectStateBuilder public API ──────────────────────────────
 
-/// Render one category block. Every call site used to inline the same
-/// find/end/ternary dance; collapsing it here is what lets build() shrink.
 std::string
 categoryBlockFor(const std::unordered_map<std::string, CategoryAgg> &agg,
 		 const char *key, int64_t fact_count)
@@ -539,11 +190,6 @@ categoryBlockFor(const std::unordered_map<std::string, CategoryAgg> &agg,
 				  fact_count);
 }
 
-/// Score values as they appear in the snapshot JSON.
-///
-/// Grouped by block rather than kept flat because a single struct holding all
-/// of them would exceed the 12-field limit of code_rules §1.4 — and because
-/// each group is what one JSON block actually reads.
 struct SnapshotScores {
 	double confidence = 0.0;
 	double arch_score = 0.0;
@@ -557,8 +203,6 @@ struct SnapshotScores {
 	int64_t arch_cross_module = 0;
 };
 
-/// Denominators behind the scores: shown in the snapshot so a reader can tell
-/// "0 of 0" from "0 of 100".
 struct SnapshotScale {
 	int64_t workflow_total = 0;
 	int64_t steps_done = 0;
@@ -567,7 +211,6 @@ struct SnapshotScale {
 	int64_t total_entities = 0;
 };
 
-/// Fact counts per reported category.
 struct CategoryTotals {
 	int64_t sync = 0;
 	int64_t memory = 0;
@@ -577,15 +220,12 @@ struct CategoryTotals {
 	int64_t framework = 0;
 };
 
-/// Severity split of the pattern findings.
 struct SeverityCounts {
 	int info = 0;
 	int warning = 0;
 	int error = 0;
 };
 
-/// Write the snapshot JSON. Split out of build() so that function keeps its
-/// grandfathered size (code_rules §1.1: over-limit code may shrink, not grow).
 void writeSnapshotJson(std::ostringstream &ss, const SnapshotScores &scores,
 		       const SnapshotScale &scale, const CategoryTotals &totals,
 		       const SeverityCounts &severity,
@@ -650,10 +290,6 @@ double clamp01(double v)
 	return v;
 }
 
-/// Raw fact counts per category, straight from semantic_fact.
-///
-/// One helper instead of six copies of the same query: the six differ only in
-/// the category literal, and a typo in one of them used to be invisible.
 CategoryTotals countCategoryTotals(store::GraphStore *store,
 				   uint64_t project_id)
 {
@@ -691,7 +327,6 @@ CategoryTotals countCategoryTotals(store::GraphStore *store,
 	return t;
 }
 
-/// Severity split of the stored findings.
 SeverityCounts countSeverities(store::GraphStore *store, uint64_t project_id)
 {
 	SeverityCounts out;
@@ -704,8 +339,6 @@ SeverityCounts countSeverities(store::GraphStore *store, uint64_t project_id)
 			out.error += kv.second;
 			break;
 		default:
-			// 0 is info; an unknown severity is treated as info rather
-			// than dropped, so the buckets always sum to the total.
 			out.info += kv.second;
 			break;
 		}
@@ -713,11 +346,6 @@ SeverityCounts countSeverities(store::GraphStore *store, uint64_t project_id)
 	return out;
 }
 
-/// Turn the raw counts into the scores the snapshot reports.
-///
-/// Kept separate from build() so the clamping rules live in one place: every
-/// score is 0..1, and "no data" is 1.0 only for capability/workflow (nothing
-/// to fail) and 0.0 for dead code (nothing to be dead).
 SnapshotScores
 computeScores(const std::unordered_map<std::string, CategoryAgg> &agg,
 	      const SnapshotScale &scale, int64_t capability_total,
@@ -731,8 +359,6 @@ computeScores(const std::unordered_map<std::string, CategoryAgg> &agg,
 	s.arch_cross_module = arch_cross_module;
 	s.confidence = computeOverallConfidence(agg, arch_violations,
 						scale.dead_entities);
-	// `violations` counts layer violations only; cross-module edges are
-	// reported next to the score, not deducted from it.
 	s.arch_score =
 		clamp01(1.0 - kPenaltyPerArchitectureViolation *
 				      static_cast<double>(arch_violations));
