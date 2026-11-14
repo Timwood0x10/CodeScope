@@ -58,6 +58,19 @@ Every item below is the same failure shape — an answer that looks trustworthy 
 - **`rule_set_digest` includes the metric, operator and threshold**, so changing a threshold changes the run's input digest (§13.2 item 4).
 - **Template substitution moved to `template_format.{h,cpp}`** and is shared by both evidence sources, so a rule file renders the same way regardless of which source produced the evidence.
 
+### 🔬 First self-test of the MCP tools
+
+The 0.3.0 tool set was run against this repository (258 files, 84.5k lines, indexed by `index-parallel` in 2.6 s). Four defects showed up that no unit test had covered, all fixed above:
+
+- **`files.loc` and `files.content_hash` were never written on the batch path** — the writer a full index actually uses. The briefing reported `loc: null` for all 258 files (its `unknowns` said so, which is why the defect was visible at all), `file_size_limit` "executed" with no input, and `worktree_digest` was content-blind, so `compare_snapshots` could never report `source_changed`.
+- **`module_context` returned 0 entities for every module** when given the obvious repository-relative path, with `source: fact` and no unknown.
+- **The run envelope counted evidence rows as findings** (153 reported, 136 rows, briefing 136).
+- **Every module card had an empty `name`** because parsed module paths keep a trailing separator.
+
+Confirmed working end to end: `get_project_briefing` (3 428 bytes, inside its 4 KiB budget, `loc: 85 811` measured), `analyze_project(profile="conformance")` (28 rules: 27 executed, 1 skipped as not-applicable, 0 failed, 150 ms) which independently reported the same over-long functions as `check-code-rules.sh` (`main` 754, `indexFilesImpl` 707, `engine_index_file` 373), and `view="compare_snapshots"` (136 persistent, `source_changed` true only after a real content change).
+
+Known limitation, not fixed here: C/C++ symbols are indexed twice (declaration + definition), so 467 qualified names in this repository are duplicates and `symbol_context` answers `ambiguous` for nearly every symbol. Deduplicating them belongs to the structure graph (M2) — until then the ambiguity payload names the cause and points at `file_filter`.
+
 ## v0.2.7 (2026-10-09)
 
 First release since v0.2.6 (`main`, 2026-08-14): **41 commits, 394 files**. Two themes: the architectural work for 0.3 (handle-based ABI, Windows parallel indexing), and silent failure — the cases where a tool answered confidently and wrongly, on the default path, for real projects.
