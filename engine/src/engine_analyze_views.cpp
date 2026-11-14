@@ -330,7 +330,8 @@ char *buildSymbolContext(EngineContext *ctx, uint64_t project_id,
 		w.key("has_more").value(resolved.total > returned);
 		w.key("source").value("fact");
 		w.key("note").value("multiple entities match; narrow with "
-				    "file_filter");
+				    "file_filter. C/C++ symbols usually appear "
+				    "twice (declaration and definition)");
 		std::vector<std::string> failed;
 		collectFailure(failed, run.ok, "verification_run");
 		writeFreshness(w, run);

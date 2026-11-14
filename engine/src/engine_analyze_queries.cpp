@@ -145,19 +145,32 @@ Page<EntityRow> resolveEntities(sqlite3 *db, uint64_t project_id,
 
 /// Entities in a module (module_path prefix). `module_path` is already
 /// normalized by parseScope, so no double separator can appear here.
+///
+/// The stored `entity.module_path` is absolute (the parser records the directory
+/// it resolved), while a caller naturally passes a repository-relative path like
+/// "engine/src/store". Matching only the literal value turned that into a
+/// confident "0 entities" with source=fact, so both spellings are accepted: the
+/// exact value, its '/'-suffixed form, its prefix, and — for a relative input —
+/// its occurrence inside an absolute path.
 Page<EntityRow> queryModuleEntities(sqlite3 *db, uint64_t project_id,
 				    const std::string &module_path)
 {
 	Page<EntityRow> page;
 	const char *where =
 		"FROM entity WHERE project_id=? AND kind IN (0,1,2) "
-		"AND (module_path=? OR module_path LIKE ?)";
+		"AND (module_path=? OR module_path=? OR module_path LIKE ? "
+		"     OR module_path LIKE ?)";
 	const std::string select =
 		std::string("SELECT id, name, qualified_name, kind, file_path, "
 			    "       start_row, language, module_path ") +
 		where + " ORDER BY kind, id LIMIT ?";
 	const std::string count = std::string("SELECT COUNT(*) ") + where;
+	const std::string with_slash = module_path + "/";
 	const std::string prefix = module_path + "/%";
+	const std::string anywhere = module_path.empty() ||
+						     module_path[0] == '/' ?
+					     std::string("\x01") :
+					     "%/" + module_path + "/%";
 
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db, select.c_str(), -1, &stmt, nullptr) !=
@@ -167,8 +180,10 @@ Page<EntityRow> queryModuleEntities(sqlite3 *db, uint64_t project_id,
 	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 2, module_path.c_str(), -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 3, prefix.c_str(), -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int(stmt, 4, kMaxModuleEntities);
+	sqlite3_bind_text(stmt, 3, with_slash.c_str(), -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 4, prefix.c_str(), -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 5, anywhere.c_str(), -1, SQLITE_TRANSIENT);
+	sqlite3_bind_int(stmt, 6, kMaxModuleEntities);
 	int rc = SQLITE_ROW;
 	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW)
 		page.rows.push_back(readEntityRow(stmt));
@@ -185,7 +200,9 @@ Page<EntityRow> queryModuleEntities(sqlite3 *db, uint64_t project_id,
 	sqlite3_bind_int64(counter, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(counter, 2, module_path.c_str(), -1,
 			  SQLITE_TRANSIENT);
-	sqlite3_bind_text(counter, 3, prefix.c_str(), -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(counter, 3, with_slash.c_str(), -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(counter, 4, prefix.c_str(), -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(counter, 5, anywhere.c_str(), -1, SQLITE_TRANSIENT);
 	if (sqlite3_step(counter) == SQLITE_ROW)
 		page.total = sqlite3_column_int64(counter, 0);
 	else
