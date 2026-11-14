@@ -307,6 +307,25 @@ std::string RuleSetDigest(const std::vector<evidence::RuleSet> &sets)
 	return store::Sha256Hex(text);
 }
 
+/// Distinct findings the run produced, falling back to the accumulated count
+/// when the query fails (the envelope must still answer something true-ish).
+int64_t countRunFindings(store::GraphStore &store, const std::string &run_id,
+			 int fallback)
+{
+	const char *sql = "SELECT COUNT(DISTINCT finding_key) FROM evidence "
+			  "WHERE run_id = ? AND finding_key <> ''";
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(store.handle(), sql, -1, &stmt, nullptr) !=
+	    SQLITE_OK)
+		return fallback;
+	sqlite3_bind_text(stmt, 1, run_id.c_str(), -1, SQLITE_TRANSIENT);
+	int64_t count = fallback;
+	if (sqlite3_step(stmt) == SQLITE_ROW)
+		count = sqlite3_column_int64(stmt, 0);
+	sqlite3_finalize(stmt);
+	return count;
+}
+
 // Execute every loaded rule once, persisting the run, its evidence and its
 // findings. This is the production entry point the unified model was missing:
 // until now runRuleToStore() was reachable from tests only.
@@ -404,7 +423,12 @@ char *engine_run_rules(engine_t handle, uint64_t project_id,
 		w.key("skipped").value(stats.skipped);
 		w.key("failed").value(failed);
 		w.key("evidence").value(stats.evidence_rows);
-		w.key("findings").value(stats.findings);
+		// Distinct findings, not evidence rows: one finding backed by two
+		// locations (a declaration and a definition) added 2 here while
+		// `finding` grew by 1, so the envelope disagreed with the briefing.
+		w.key("findings")
+			.value(countRunFindings(*ctx->store, run.run_id,
+						stats.findings));
 		w.key("status").value(complete ? "completed" : "partial");
 		w.endObject();
 		return dupString(w.str());
