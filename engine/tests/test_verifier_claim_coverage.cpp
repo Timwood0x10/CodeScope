@@ -290,6 +290,23 @@ int main()
 		printf("Test 4 (CapabilityVerifier ground truth): PASS\n");
 	}
 
+	// ── Test 4b: silence is not denial ────────────────────────────
+	// "multiply" exists in the fixture and is called by "compute", but no
+	// capability row declares it. Answering Contradicted 0.9 there denies code
+	// the same database can point at; the honest verdict is Unknown.
+	{
+		char *r = verifyClaimOk(pid, "{\"type\":\"capability_exists\","
+					     "\"subject\":\"multiply\"}");
+		std::string v = extractVerdict(r);
+		CHECK(v == "Unknown");
+		CHECK(strstr(r, "not declared in the knowledge layer") !=
+		      nullptr);
+		CHECK(strstr(r, "matching symbol") != nullptr);
+		engine_free_string(r);
+		printf("Test 4b (CapabilityVerifier: undeclared but "
+		       "implemented): PASS\n");
+	}
+
 	// ── Test 5: ContractVerifier ground truth ──────────────────────
 	// The fixture defines a `mutex` variable so ThreadSafe should find
 	// supporting evidence (Supported). The fixture does NOT declare a

@@ -7,7 +7,16 @@
 #include <sqlite3.h>
 
 // Confidence values for CapabilityVerifier verdicts.
-static constexpr double kConfCapabilityNotDeclared = 0.9;
+//
+// `kConfCapabilityAbsent` is deliberately below 0.9: it is used only when the
+// capability is neither declared NOR matched by any entity, and the entity
+// matching is a name heuristic. "Not declared" alone used to answer 0.9
+// Contradicted for code that plainly exists (a symbol such as `upsertFile`),
+// which turned the knowledge layer's silence into a denial.
+static constexpr double kConfCapabilityAbsent = 0.5;
+/// Declared by nobody, but implemented by at least one entity: the two sources
+/// disagree, and the honest answer is Unknown (development_plan invariant 1).
+static constexpr double kConfCapabilityUndeclaredButPresent = 0.3;
 static constexpr double kConfCapabilityNoCallers = 0.7;
 static constexpr double kConfCapabilitySupported = 0.85;
 static constexpr double kConfDeadCapability = 0.95;
@@ -39,11 +48,13 @@ CapabilityVerifier::CapabilityVerifier(store::GraphStore *store,
 // Evidence chain (Step 9.5: canonical facts only):
 //   capability row (declared) -> entity row (implemented) -> callers
 //   (relation type=1 incoming). A claim is Supported only when all three
-//   links are present. If the capability is not declared, the claim is
-//   Contradicted with high confidence (the knowledge layer explicitly
-//   denies it). If declared but nothing implements it, the claim is
-//   Contradicted with lower confidence (the code may exist under a
-//   different name). An entity implements it when its name matches (see
+//   links are present. If the capability is not declared, the claim is NOT
+//   automatically Contradicted: the knowledge layer's silence is not a denial
+//   (development_plan invariant 1). The verifier then looks for a matching
+//   entity — found => Unknown (declaration and code disagree, neither settles
+//   it); not found => Contradicted with modest confidence. If declared but
+//   nothing implements it, the claim is Contradicted with lower confidence
+//   (the code may exist under a different name). An entity implements it when its name matches (see
 //   implementingEntitiesFor for the spellings tried) AND it is either called
 //   or exported — requiring callers alone marked every C-ABI export
 //   unimplemented, because its callers live in the other language.
@@ -268,10 +279,37 @@ EvidenceRecord CapabilityVerifier::verify(const Claim &claim)
 		return rec;
 	}
 	if (declared == 0) {
+		// Silence is not denial. The knowledge layer not declaring a
+		// capability says nothing about whether the code implements it, so
+		// ask the same question the declared branch asks — is there a
+		// matching entity? — before answering anything.
+		bool symbol_ok = true;
+		const std::vector<int64_t> ids = implementingEntitiesFor(
+			store_, project_id_, claim.subject, symbol_ok);
+		if (!symbol_ok) {
+			rec.verdict = Verdict::Unknown;
+			rec.confidence = kConfBackendNotReady;
+			rec.detail = "Capability '" + claim.subject +
+				     "': declaration lookup succeeded but the "
+				     "implementing-symbol query failed";
+			return rec;
+		}
+		if (!ids.empty()) {
+			rec.verdict = Verdict::Unknown;
+			rec.confidence = kConfCapabilityUndeclaredButPresent;
+			rec.detail =
+				"Capability '" + claim.subject +
+				"' is not declared in the knowledge layer, but " +
+				std::to_string(ids.size()) +
+				" matching symbol(s) exist in code; declarations "
+				"cannot confirm or deny it";
+			return rec;
+		}
 		rec.verdict = Verdict::Contradicted;
-		rec.confidence = kConfCapabilityNotDeclared;
+		rec.confidence = kConfCapabilityAbsent;
 		rec.detail = "Capability '" + claim.subject +
-			     "' not declared in knowledge layer";
+			     "' is neither declared in the knowledge layer nor "
+			     "implemented by any matching symbol";
 		return rec;
 	}
 
