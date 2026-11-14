@@ -599,7 +599,16 @@ void writeNextQueries(util::JsonWriter &w)
 /// §18.7.1). It is enforced on the finished JSON: a row cap cannot promise a
 /// byte count, and a card whose fields are long paths reached 8 KiB while every
 /// list was still under its item limit.
+///
+/// The budget accounts for the MCP JSON-RPC envelope that wraps the FFI
+/// payload: `{"jsonrpc":"2.0","id":N,"result":{"content":[{"type":"text",
+/// "text":"..."}]}}`. The envelope size varies with the `id` length and
+/// any extra result metadata; 128 bytes is a safe upper bound that covers
+/// observed real-world messages, so the FFI JSON must be at most
+/// `kBriefingBudgetBytes - kMcpEnvelopeOverhead` to keep the final wire
+/// message ≤ 4 KiB.
 constexpr std::size_t kBriefingBudgetBytes = 4096;
+constexpr std::size_t kMcpEnvelopeOverhead = 128;
 
 /// Display caps for one budget level. Level 0 is the full card; each further
 /// level shrinks the lists. Counts, freshness, unknowns and next_queries are
@@ -747,7 +756,7 @@ char *buildBriefing(EngineContext *ctx, uint64_t project_id)
 		if (json.empty())
 			return dupString(util::errorEnvelope(
 				"ffi", "engine_get_project_briefing", error));
-		if (json.size() <= kBriefingBudgetBytes)
+		if (json.size() <= kBriefingBudgetBytes - kMcpEnvelopeOverhead)
 			break;
 	}
 	return dupString(json);
