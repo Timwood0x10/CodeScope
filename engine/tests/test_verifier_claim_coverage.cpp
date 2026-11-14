@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <system_error>
 #include <set>
 #include <string>
 #include <unistd.h>
@@ -39,7 +40,8 @@
 // ArchitectureVerifier finds a "Controller" layer.
 static void writeFixture(const std::string &dir)
 {
-	std::filesystem::remove_all(dir);
+	std::error_code ignored;
+	std::filesystem::remove_all(dir, ignored);
 	std::filesystem::create_directories(dir);
 
 	FILE *f = fopen((dir + "/main.go").c_str(), "w");
@@ -338,7 +340,8 @@ int main()
 		// new row (root_path is UNIQUE) instead of returning the
 		// existing project id.
 		const char *empty_dir = "/tmp/test_verifier_coverage_empty";
-		std::filesystem::remove_all(empty_dir);
+		std::error_code ignored_empty;
+		std::filesystem::remove_all(empty_dir, ignored_empty);
 		std::filesystem::create_directories(empty_dir);
 		uint64_t empty_pid = engine_create_project(g_engine, empty_dir,
 							   "empty-no-index");

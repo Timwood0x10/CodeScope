@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <system_error>
 #include <string>
 #include <unistd.h>
 #include "test_engine_handle.h"
@@ -40,7 +41,8 @@
 // from FunctionImplementsVerifier, which the coverage test does not cover.
 static void writeFixture(const std::string &dir)
 {
-	std::filesystem::remove_all(dir);
+	std::error_code ignored;
+	std::filesystem::remove_all(dir, ignored);
 	std::filesystem::create_directories(dir);
 
 	FILE *f = fopen((dir + "/main.go").c_str(), "w");
@@ -230,7 +232,8 @@ int main()
 	// as a fallback when canonical tables are empty.
 	{
 		const char *empty_dir = "/tmp/test_verifier_groundtruth_empty";
-		std::filesystem::remove_all(empty_dir);
+		std::error_code ignored_empty;
+		std::filesystem::remove_all(empty_dir, ignored_empty);
 		std::filesystem::create_directories(empty_dir);
 		uint64_t empty_pid = engine_create_project(g_engine, empty_dir,
 							   "empty-no-index");
