@@ -299,6 +299,7 @@ set(ENGINE_SOURCES
     src/engine_project_state_ffi.cpp
     src/util/json_parse.cpp
     src/engine_briefing_ffi.cpp
+    src/engine_briefing_sections.cpp
     src/engine_analyze_ffi.cpp
     src/engine_analyze_views.cpp
     src/engine_analyze_queries.cpp

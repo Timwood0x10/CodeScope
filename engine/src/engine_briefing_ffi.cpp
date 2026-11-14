@@ -17,6 +17,7 @@
 //   - Budget: top-k lists are sorted by a stable key and truncated; the
 //     response carries total/returned/has_more for each truncated list.
 
+#include "engine_briefing_sections.h"
 #include "engine_internal.h"
 #include "async_knowledge.h"
 #include "util/json_writer.h"
@@ -30,28 +31,23 @@
 namespace
 {
 
+// The three structural sections live in engine_briefing_sections.cpp; these
+// names are used throughout the card, so keep the spellings local.
+using engine_briefing::EntryPointRow;
+using engine_briefing::LanguageRow;
+using engine_briefing::ModuleRow;
+using engine_briefing::kMaxEntryPoints;
+using engine_briefing::kMaxLanguages;
+using engine_briefing::kMaxModules;
+
 // ── Briefing field counts (§18.7.0 budget) ──────────────────────
-constexpr int kMaxLanguages = 8;
-constexpr int kMaxModules = 12;
-constexpr int kMaxEntryPoints = 8;
+// The per-list display caps of the three structural sections live next to the
+// writers that use them (engine_briefing_sections.h).
 constexpr int kMaxFindings = 10;
 constexpr int kMaxNextQueries = 6;
 
 // ── Row types ───────────────────────────────────────────────────
 
-struct LanguageRow {
-	std::string language;
-	int64_t count;
-};
-struct ModuleRow {
-	std::string path;
-	int64_t entity_count;
-};
-struct EntryPointRow {
-	std::string name;
-	std::string file;
-	int64_t line;
-};
 struct FindingSummary {
 	std::string finding_key;
 	std::string dimension;
@@ -306,6 +302,40 @@ CountResult queryFindingTotal(sqlite3 *db, uint64_t project_id,
 	return out;
 }
 
+/// Measured LOC of the project: total lines across files that carry a
+/// measurement, and how many files do.
+///
+/// `lines.value == -1` means nothing was measured (every `files.loc` is NULL,
+/// i.e. the rows predate the column and were never re-indexed). Reporting that
+/// as 0 would claim an empty project, which is the confusion §17.5 forbids.
+struct LocTotals {
+	CountResult lines;
+	CountResult files;
+};
+
+LocTotals queryLocTotals(sqlite3 *db, uint64_t project_id)
+{
+	LocTotals out;
+	const char *sql = "SELECT COALESCE(SUM(loc), -1), COUNT(loc) "
+			  "FROM files WHERE project_id = ?";
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		out.lines.ok = false;
+		out.files.ok = false;
+		return out;
+	}
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	if (sqlite3_step(stmt) == SQLITE_ROW) {
+		out.lines.value = sqlite3_column_int64(stmt, 0);
+		out.files.value = sqlite3_column_int64(stmt, 1);
+	} else {
+		out.lines.ok = false;
+		out.files.ok = false;
+	}
+	sqlite3_finalize(stmt);
+	return out;
+}
+
 CountResult queryEvidenceCount(sqlite3 *db, const std::string &run_id)
 {
 	CountResult out;
@@ -355,13 +385,13 @@ void writeFreshness(util::JsonWriter &w, const LatestRun &run)
 /// Write the project scale section.
 ///
 /// `files` and `symbols` are row counts; `function_lines` is the sum of the
-/// per-function line counts measured at parse time. There is deliberately no
-/// `loc`: `files.loc` does not exist yet (D1), and summing entity row spans
-/// would double-count nested symbols while missing non-symbol lines — a
-/// number that looks measured but is not. A failed count is emitted as `null`
-/// with `source: "unknown"` instead of a fabricated 0 (§17.5).
+/// per-function line counts measured at parse time. `loc` is the sum of
+/// `files.loc` — a measured file-level line count (D1 §5.1). A failed count
+/// is emitted as `null` with `source: "unknown"` instead of a fabricated 0
+/// (§17.5).
 void writeScale(util::JsonWriter &w, const CountResult &files,
-		const CountResult &symbols, const CountResult &function_lines)
+		const CountResult &symbols, const CountResult &function_lines,
+		const LocTotals &loc)
 {
 	w.key("scale");
 	w.beginObject();
@@ -377,89 +407,19 @@ void writeScale(util::JsonWriter &w, const CountResult &files,
 		w.key("function_lines").value(function_lines.value);
 	else
 		w.key("function_lines").nullValue();
-	const bool all_ok = files.ok && symbols.ok && function_lines.ok;
+	if (loc.lines.ok && loc.lines.value >= 0)
+		w.key("loc").value(loc.lines.value);
+	else
+		w.key("loc").nullValue();
+	// How many files the sum covers: a card that reports loc without this
+	// cannot be checked against `files`.
+	if (loc.files.ok)
+		w.key("loc_files").value(loc.files.value);
+	else
+		w.key("loc_files").nullValue();
+	const bool all_ok = files.ok && symbols.ok && function_lines.ok &&
+			    loc.lines.ok;
 	w.key("source").value(all_ok ? "fact" : "unknown");
-	w.endObject();
-}
-
-/// Write a capped list with total/returned/has_more metadata.
-/// Each item is written by `write_item`. The caller must have already
-/// emitted the section key and opened the outer object.
-template <typename T, typename WriteItem>
-void writeCappedSection(util::JsonWriter &w, const std::vector<T> &items,
-			int max_count, const char *source, WriteItem write_item)
-{
-	w.key("items");
-	w.beginArray();
-	const int returned =
-		std::min(static_cast<int>(items.size()), max_count);
-	for (int i = 0; i < returned; ++i)
-		write_item(w, items[i]);
-	w.endArray();
-	w.key("total").value(static_cast<int>(items.size()));
-	w.key("returned").value(returned);
-	w.key("has_more").value(static_cast<int>(items.size()) > max_count);
-	w.key("source").value(source);
-}
-
-/// Write the languages section.
-void writeLanguages(util::JsonWriter &w, const std::vector<LanguageRow> &langs,
-		    int max_count)
-{
-	w.key("languages");
-	w.beginObject();
-	writeCappedSection(w, langs, max_count, "fact",
-			   [](util::JsonWriter &jw, const LanguageRow &r) {
-				   jw.beginObject();
-				   jw.key("name").value(r.language);
-				   jw.key("symbols").value(r.count);
-				   jw.endObject();
-			   });
-	w.endObject();
-}
-
-/// Last path component of a parsed module path ("engine/src/store" →
-/// "store"). The parser records the directory; the briefing shows both.
-std::string moduleName(const std::string &path)
-{
-	const std::size_t slash = path.find_last_of('/');
-	return slash == std::string::npos ? path : path.substr(slash + 1);
-}
-
-/// Write the modules section. Module role is "inferred" — not declared
-/// (§18.7.0).
-void writeModules(util::JsonWriter &w, const std::vector<ModuleRow> &mods,
-		  int max_count)
-{
-	w.key("modules");
-	w.beginObject();
-	writeCappedSection(w, mods, max_count, "fact",
-			   [](util::JsonWriter &jw, const ModuleRow &r) {
-				   jw.beginObject();
-				   jw.key("name").value(moduleName(r.path));
-				   jw.key("path").value(r.path);
-				   jw.key("symbols").value(r.entity_count);
-				   jw.key("role").value("inferred");
-				   jw.endObject();
-			   });
-	w.endObject();
-}
-
-/// Write the entry-point candidates section.
-void writeEntryPoints(util::JsonWriter &w,
-		      const std::vector<EntryPointRow> &eps, int max_count)
-{
-	w.key("entry_points");
-	w.beginObject();
-	writeCappedSection(w, eps, max_count, "inferred",
-			   [](util::JsonWriter &jw, const EntryPointRow &r) {
-				   jw.beginObject();
-				   jw.key("name").value(r.name);
-				   jw.key("file").value(r.file);
-				   jw.key("line").value(r.line);
-				   jw.key("source").value("inferred");
-				   jw.endObject();
-			   });
 	w.endObject();
 }
 
@@ -533,10 +493,11 @@ void writeVerification(util::JsonWriter &w, const LatestRun &run,
 /// empty list there means "nothing found", a failed query means "unknown",
 /// and the two must not look the same.
 void writeUnknowns(util::JsonWriter &w, const LatestRun &run,
-		   const std::vector<LanguageRow> &langs,
-		   const std::vector<ModuleRow> &mods,
-		   const std::vector<EntryPointRow> &eps,
-		   const std::vector<std::string> &failed)
+		   const std::vector<engine_briefing::LanguageRow> &langs,
+		   const std::vector<engine_briefing::ModuleRow> &mods,
+		   const std::vector<engine_briefing::EntryPointRow> &eps,
+		   const std::vector<std::string> &failed,
+		   const CountResult &files, const LocTotals &loc)
 {
 	w.key("unknowns");
 	w.beginArray();
@@ -550,7 +511,12 @@ void writeUnknowns(util::JsonWriter &w, const LatestRun &run,
 		w.value("modules: no parsed module_path");
 	if (eps.empty())
 		w.value("entry_points: name-based candidates only, none matched");
-	w.value("loc: total file lines not measured (files.loc is D1)");
+	// A file without a measurement is not a file with zero lines.
+	if (files.ok && loc.files.ok && loc.files.value < files.value)
+		w.value("loc: " +
+			std::to_string(files.value - loc.files.value) +
+			" file(s) have no measured line count (re-index to "
+			"fill)");
 	w.value("constraints: not declared (M2)");
 	w.value("coverage: not computed (M2)");
 	w.value("drift: not detected (M3)");
@@ -653,6 +619,7 @@ struct BriefingFacts {
 	CountResult files;
 	CountResult symbols;
 	CountResult function_lines;
+	LocTotals loc;
 	std::vector<std::string> failed;
 };
 
@@ -670,8 +637,9 @@ BriefingFacts gatherFacts(sqlite3 *db, uint64_t project_id)
 	facts.files = queryCount(
 		db, "SELECT COUNT(*) FROM files WHERE project_id = ?",
 		project_id);
-	// Measured per-function line counts. Not file LOC: that needs the
-	// `files.loc` columns D1 has not added yet.
+	// Measured file LOC: files.loc is populated at index time.
+	facts.loc = queryLocTotals(db, project_id);
+	// Measured per-function line counts.
 	facts.function_lines =
 		queryCount(db,
 			   "SELECT COALESCE(SUM(lines), 0) FROM entity "
@@ -695,7 +663,8 @@ BriefingFacts gatherFacts(sqlite3 *db, uint64_t project_id)
 		facts.failed.push_back("finding_count");
 	if (!facts.evidence_count.ok)
 		facts.failed.push_back("evidence_count");
-	if (!facts.files.ok || !facts.symbols.ok || !facts.function_lines.ok)
+	if (!facts.files.ok || !facts.symbols.ok || !facts.function_lines.ok ||
+	    !facts.loc.lines.ok || !facts.loc.files.ok)
 		facts.failed.push_back("scale");
 	return facts;
 }
@@ -715,14 +684,18 @@ std::string renderBriefing(uint64_t project_id, int level,
 	w.key("truncated").value(level > 0);
 	w.key("budget_bytes").value(static_cast<int64_t>(kBriefingBudgetBytes));
 	writeFreshness(w, facts.run);
-	writeScale(w, facts.files, facts.symbols, facts.function_lines);
-	writeLanguages(w, facts.languages.items, caps.languages);
-	writeModules(w, facts.modules.items, caps.modules);
-	writeEntryPoints(w, facts.entry_points.items, caps.entry_points);
+	writeScale(w, facts.files, facts.symbols, facts.function_lines,
+		   facts.loc);
+	engine_briefing::writeLanguages(w, facts.languages.items,
+					caps.languages);
+	engine_briefing::writeModules(w, facts.modules.items, caps.modules);
+	engine_briefing::writeEntryPoints(w, facts.entry_points.items,
+					  caps.entry_points);
 	writeVerification(w, facts.run, facts.evidence_count,
 			  facts.finding_total, facts.findings, caps.findings);
 	writeUnknowns(w, facts.run, facts.languages.items, facts.modules.items,
-		      facts.entry_points.items, facts.failed);
+		      facts.entry_points.items, facts.failed, facts.files,
+		      facts.loc);
 	writeNextQueries(w);
 	w.endObject();
 	if (!w.ok()) {

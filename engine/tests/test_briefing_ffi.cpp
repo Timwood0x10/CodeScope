@@ -294,6 +294,34 @@ int main()
 		      "counts and unknowns survive the clipping");
 	}
 
+	// ── Test 7: measured LOC and the files it does not cover ──
+	// files.loc is written at index time. A row that predates the column has
+	// NULL, which means "not measured" — reporting it as 0 would claim an
+	// empty file, and summing only the measured ones without saying so would
+	// under-report the project.
+	{
+		check(execSql("INSERT INTO files (project_id, path, language, "
+			      "content_hash, loc) VALUES "
+			      "(1, 'a.cpp', 'cpp', 'h1', 100),"
+			      "(1, 'b.cpp', 'cpp', 'h2', 200)") == SQLITE_OK,
+		      "insert measured files");
+		check(execSql("INSERT INTO files (project_id, path, language, "
+			      "content_hash) VALUES (1, 'legacy.cpp', 'cpp', "
+			      "'h3')") == SQLITE_OK,
+		      "insert unmeasured file");
+
+		char *brief = engine_get_project_briefing(engine, 1);
+		check(brief != nullptr, "briefing must not be null");
+		const std::string json(brief);
+		engine_free_string(brief);
+		check(contains(json, "\"loc\":300"),
+		      "loc must sum the measured files");
+		check(contains(json, "\"loc_files\":2"),
+		      "loc_files must count the measured files");
+		check(contains(json, "no measured line count"),
+		      "an unmeasured file must be reported as a gap");
+	}
+
 	engine_destroy(engine);
 	removeDbFiles();
 	std::printf("\nAll briefing FFI tests passed.\n");
