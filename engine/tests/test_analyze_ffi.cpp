@@ -221,6 +221,11 @@ int main()
 		check(!contains(json, "\"entity_name\":\"Widget\""),
 		      "a Contains edge must not be reported as a call");
 		check(contains(json, "\"callers\""), "callers section present");
+		// The total must reflect the one Calls edge, not zero
+		// (the old countWithInt bug bound entity_id to the type
+		// slot, silently returning total=0 and has_more=false).
+		check(contains(json, "\"total\":1"),
+		      "callers total must be 1 (one Calls edge), not 0");
 	}
 
 	// ── Test 11: a failed caller query is unknown, not empty ──

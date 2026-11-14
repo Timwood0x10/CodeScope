@@ -36,10 +36,13 @@ std::string textCol(sqlite3_stmt *stmt, int col)
 	return text ? text : "";
 }
 
-/// Run a COUNT statement with one int64 parameter after project_id.
-/// @return -1 with *ok == false when the statement could not run.
-int64_t countWithInt(sqlite3 *db, const char *sql, uint64_t project_id,
-		     int64_t value, bool *ok)
+/// Run a COUNT statement with an int (type) and an int64 (entity id)
+/// after project_id. The relation count SQL has three parameters:
+/// `project_id=? AND type=? AND source_id=?` — a helper that only
+/// binds two would put the entity id in the type slot and leave the
+/// id slot unbound, silently returning total=0.
+int64_t countWithIntAndInt64(sqlite3 *db, const char *sql, uint64_t project_id,
+			     int type_val, int64_t entity_id, bool *ok)
 {
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -47,27 +50,8 @@ int64_t countWithInt(sqlite3 *db, const char *sql, uint64_t project_id,
 		return -1;
 	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_int64(stmt, 2, value);
-	int64_t total = -1;
-	if (sqlite3_step(stmt) == SQLITE_ROW)
-		total = sqlite3_column_int64(stmt, 0);
-	else
-		*ok = false;
-	sqlite3_finalize(stmt);
-	return total;
-}
-
-/// Run a COUNT statement with one text parameter after project_id.
-int64_t countWithText(sqlite3 *db, const char *sql, uint64_t project_id,
-		      const std::string &value, bool *ok)
-{
-	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-		*ok = false;
-		return -1;
-	}
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_text(stmt, 2, value.c_str(), -1, SQLITE_TRANSIENT);
+	sqlite3_bind_int(stmt, 2, type_val);
+	sqlite3_bind_int64(stmt, 3, entity_id);
 	int64_t total = -1;
 	if (sqlite3_step(stmt) == SQLITE_ROW)
 		total = sqlite3_column_int64(stmt, 0);
@@ -129,8 +113,11 @@ Page<EntityRow> resolveEntities(sqlite3 *db, uint64_t project_id,
 				  SQLITE_TRANSIENT);
 	}
 	sqlite3_bind_int(stmt, next, kMaxResolvedEntities);
-	while (sqlite3_step(stmt) == SQLITE_ROW)
+	int rc = SQLITE_ROW;
+	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW)
 		page.rows.push_back(readEntityRow(stmt));
+	if (rc != SQLITE_DONE)
+		page.ok = false;
 	sqlite3_finalize(stmt);
 
 	// The count repeats the predicate; it is not derived from the page.
@@ -182,8 +169,11 @@ Page<EntityRow> queryModuleEntities(sqlite3 *db, uint64_t project_id,
 	sqlite3_bind_text(stmt, 2, module_path.c_str(), -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 3, prefix.c_str(), -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int(stmt, 4, kMaxModuleEntities);
-	while (sqlite3_step(stmt) == SQLITE_ROW)
+	int rc = SQLITE_ROW;
+	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW)
 		page.rows.push_back(readEntityRow(stmt));
+	if (rc != SQLITE_DONE)
+		page.ok = false;
 	sqlite3_finalize(stmt);
 
 	sqlite3_stmt *counter = nullptr;
@@ -255,8 +245,8 @@ Page<RelationRow> queryRelations(sqlite3 *db, uint64_t project_id,
 		page.ok = false;
 	sqlite3_finalize(stmt);
 
-	page.total =
-		countWithInt(db, count_sql, project_id, entity_id, &page.ok);
+	page.total = countWithIntAndInt64(db, count_sql, project_id, kEdgeCalls,
+					  entity_id, &page.ok);
 	return page;
 }
 
@@ -267,10 +257,18 @@ Page<RelationRow> queryRelations(sqlite3 *db, uint64_t project_id,
 /// `finding` has no location and no run: both live on evidence. The join is also
 /// what keeps the count honest — a finding row is current state, while
 /// membership comes from the evidence of the run that produced it (§6.1).
+///
+/// Boundary safety: `path` may be a file (`/proj/src/app.cpp`) or a module
+/// (`/proj/src/app`). A bare `LIKE '%path%'` matches `/proj/src/app2/b.cpp`,
+/// pulling in findings from a sibling directory. The SQL uses two conditions:
+/// `file_path = path` (exact file) OR `file_path LIKE 'path/%'` (directory
+/// prefix), preventing the `app` → `app2` cross-match.
 Page<FindingRow> queryFindings(sqlite3 *db, uint64_t project_id,
 			       const std::string &path)
 {
 	Page<FindingRow> page;
+	// Two patterns: exact file match and directory-prefix match.
+	const std::string dir_prefix = path + "/%";
 	const char *sql =
 		"SELECT f.finding_key, f.category, f.severity, f.description, "
 		"       MIN(l.file_path), MIN(l.start_row) "
@@ -280,7 +278,8 @@ Page<FindingRow> queryFindings(sqlite3 *db, uint64_t project_id,
 		" AND fe.finding_key = f.finding_key "
 		"JOIN evidence e ON e.id = fe.evidence_id "
 		"JOIN evidence_location l ON l.evidence_id = e.id "
-		"WHERE f.project_id = ? AND l.file_path LIKE ? "
+		"WHERE f.project_id = ? "
+		"  AND (l.file_path = ? OR l.file_path LIKE ?) "
 		"  AND f.status NOT IN ('resolved', 'superseded') "
 		"GROUP BY f.finding_key "
 		"ORDER BY f.severity DESC, f.finding_key LIMIT ?";
@@ -292,18 +291,19 @@ Page<FindingRow> queryFindings(sqlite3 *db, uint64_t project_id,
 		" AND fe.finding_key = f.finding_key "
 		"JOIN evidence e ON e.id = fe.evidence_id "
 		"JOIN evidence_location l ON l.evidence_id = e.id "
-		"WHERE f.project_id = ? AND l.file_path LIKE ? "
+		"WHERE f.project_id = ? "
+		"  AND (l.file_path = ? OR l.file_path LIKE ?) "
 		"  AND f.status NOT IN ('resolved', 'superseded')";
 
-	const std::string pattern = "%" + path + "%";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
 		page.ok = false;
 		return page;
 	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_text(stmt, 2, pattern.c_str(), -1, SQLITE_TRANSIENT);
-	sqlite3_bind_int(stmt, 3, kMaxFindings);
+	sqlite3_bind_text(stmt, 2, path.c_str(), -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 3, dir_prefix.c_str(), -1, SQLITE_TRANSIENT);
+	sqlite3_bind_int(stmt, 4, kMaxFindings);
 	int rc = SQLITE_ROW;
 	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
 		FindingRow r;
@@ -319,8 +319,22 @@ Page<FindingRow> queryFindings(sqlite3 *db, uint64_t project_id,
 		page.ok = false;
 	sqlite3_finalize(stmt);
 
-	page.total =
-		countWithText(db, count_sql, project_id, pattern, &page.ok);
+	// Count with the same two-pattern predicate. Inline the
+	// count so the bind positions match the SQL.
+	sqlite3_stmt *counter = nullptr;
+	if (sqlite3_prepare_v2(db, count_sql, -1, &counter, nullptr) !=
+	    SQLITE_OK) {
+		page.ok = false;
+		return page;
+	}
+	sqlite3_bind_int64(counter, 1, static_cast<int64_t>(project_id));
+	sqlite3_bind_text(counter, 2, path.c_str(), -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(counter, 3, dir_prefix.c_str(), -1, SQLITE_TRANSIENT);
+	if (sqlite3_step(counter) == SQLITE_ROW)
+		page.total = sqlite3_column_int64(counter, 0);
+	else
+		page.ok = false;
+	sqlite3_finalize(counter);
 	return page;
 }
 
@@ -348,8 +362,11 @@ Page<std::string> queryTestCandidates(sqlite3 *db, uint64_t project_id,
 	sqlite3_bind_text(stmt, 2, pattern.c_str(), -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 3, pattern.c_str(), -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int(stmt, 4, kMaxTestCandidates);
-	while (sqlite3_step(stmt) == SQLITE_ROW)
+	int rc = SQLITE_ROW;
+	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW)
 		page.rows.push_back(textCol(stmt, 0));
+	if (rc != SQLITE_DONE)
+		page.ok = false;
 	sqlite3_finalize(stmt);
 	return page;
 }
