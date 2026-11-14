@@ -88,7 +88,7 @@ static std::string findRulesDir()
 {
 	std::string prefix;
 	for (int depth = 0; depth < 8; ++depth) {
-		std::string candidate = prefix + "engine/src/evidence/rules";
+		std::string candidate = prefix + "engine/src/rules";
 		if (access(candidate.c_str(), F_OK) == 0)
 			return candidate;
 		prefix += "../";

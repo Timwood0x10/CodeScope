@@ -527,7 +527,7 @@ pub fn enhance_project(project_id: u64) -> String {
 }
 
 /// Build evidence findings for a project by applying the rule set
-/// (engine/src/evidence/rules JSON files, or $CODESCOPE_RULES_DIR) to
+/// (engine/src/rules JSON files, or $CODESCOPE_RULES_DIR) to
 /// the project's semantic_fact rows.
 ///
 /// `category_filter` optionally restricts the run to one category

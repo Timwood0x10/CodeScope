@@ -1,6 +1,6 @@
 // test_evidence_builder: verify EvidenceBuilder turns semantic_fact
 // rows into Evidence findings via the rule files under
-// engine/src/evidence/rules/. The test inserts facts that match each
+// engine/src/rules/. The test inserts facts that match each
 // rule's (category, primitive, kind) triples, then asserts the
 // builder produces the expected evidence counts.
 //
@@ -114,16 +114,16 @@ static std::string detailJson(int line, const std::string &snippet,
 /// Find the rules directory by trying a list of candidate paths.
 /// Returns the first path that exists and contains *.json files; on
 /// failure returns an empty string. The test binary may run from
-/// engine/build/ (../src/evidence/rules works) or from a deeper
-/// build subdirectory (../../engine/src/evidence/rules). A hard-coded
+/// engine/build/ (../src/rules works) or from a deeper
+/// build subdirectory (../../engine/src/rules). A hard-coded
 /// absolute path is the last resort for the dev environment.
 static std::string findRulesDir()
 {
 	const char *candidates[] = {
-		"engine/src/evidence/rules",
-		"../src/evidence/rules",
-		"../../engine/src/evidence/rules",
-		"../../../engine/src/evidence/rules",
+		"engine/src/rules",
+		"../src/rules",
+		"../../engine/src/rules",
+		"../../../engine/src/rules",
 	};
 	for (const char *cand : candidates) {
 		std::error_code ec;

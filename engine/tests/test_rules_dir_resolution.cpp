@@ -3,7 +3,7 @@
 // directory.
 //
 // Regression covered: engine_build_evidence / ProjectStateBuilder used
-// to fall back to the CWD-relative "engine/src/evidence/rules", which
+// to fall back to the CWD-relative "engine/src/rules", which
 // only exists when running from the repository root. The MCP/CLI
 // vehicles run inside the target project, so build_evidence silently
 // loaded zero rules and returned [] (T5 finding #5).
@@ -54,7 +54,7 @@ int main()
 		return 1;
 	}
 
-	// 1. A fresh empty directory: no engine/src/evidence/rules under it,
+	// 1. A fresh empty directory: no engine/src/rules under it,
 	//    so the CWD-relative fallback cannot succeed.
 	std::filesystem::path foreign = std::filesystem::temp_directory_path() /
 					"codescope_rules_dir_test";

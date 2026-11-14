@@ -62,7 +62,7 @@ struct Evidence {
 ///
 /// Usage:
 ///   evidence::EvidenceBuilder builder(store);
-///   builder.loadRules("engine/src/evidence/rules");
+///   builder.loadRules("engine/src/rules");
 ///   auto evidences = builder.buildAll(project_id);
 class EvidenceBuilder {
     public:

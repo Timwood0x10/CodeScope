@@ -20,7 +20,7 @@ namespace evidence
 //
 // All structs are value types with default copy/move; they are
 // populated by RuleLoader::loadFromDirectory from JSON rule files
-// shipped under engine/src/evidence/rules/.
+// shipped under engine/src/rules/.
 
 /// One fact requirement inside a Rule. The (category, primitive, kind)
 /// triple selects matching semantic_fact rows; `optional` marks a
@@ -197,7 +197,7 @@ CombineMode combineModeFromString(const std::string &s);
 const char *combineModeToString(CombineMode mode);
 
 /// Resolve the rule-file directory independently of the process CWD.
-/// Callers must not hard-code "engine/src/evidence/rules": that path
+/// Callers must not hard-code "engine/src/rules": that path
 /// only exists when running from the repository root, so the MCP/CLI
 /// vehicles (which run inside the target project) silently load zero
 /// rules and `build_evidence` returns [].
@@ -205,8 +205,8 @@ const char *combineModeToString(CombineMode mode);
 /// Resolution order:
 ///   1. $CODESCOPE_RULES_DIR — explicit operator override.
 ///   2. CODESCOPE_RULES_DIR_DEFAULT — absolute path baked in at build
-///      time by CMake (CMAKE_CURRENT_SOURCE_DIR/src/evidence/rules).
-///   3. "engine/src/evidence/rules" relative to CWD — back-compat for
+///      time by CMake (CMAKE_CURRENT_SOURCE_DIR/src/rules).
+///   3. "engine/src/rules" relative to CWD — back-compat for
 ///      in-tree runs and tests that set the working directory.
 /// Each candidate must be a directory containing at least one *.json
 /// file; otherwise it is skipped. Returns "" when no candidate works

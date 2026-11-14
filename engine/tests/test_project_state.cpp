@@ -131,10 +131,10 @@ static void insertArchitectureState(GraphStore &store, uint64_t project_id,
 static std::string findRulesDir()
 {
 	const char *candidates[] = {
-		"engine/src/evidence/rules",
-		"../src/evidence/rules",
-		"../../engine/src/evidence/rules",
-		"../../../engine/src/evidence/rules",
+		"engine/src/rules",
+		"../src/rules",
+		"../../engine/src/rules",
+		"../../../engine/src/rules",
 	};
 	for (const char *cand : candidates) {
 		std::error_code ec;

@@ -114,7 +114,7 @@ char *postParsePhase(EngineContext *ctx, uint64_t project_id,
 // ─── Evidence Builder FFI (v0.3 Phase 2) ─────────────────────────
 //
 // Implemented in engine_evidence_ffi.cpp. Loads rule JSON files from
-// engine/src/evidence/rules (or $CODESCOPE_RULES_DIR), runs all
+// engine/src/rules (or $CODESCOPE_RULES_DIR), runs all
 // rules (or one category when category_filter is non-empty) against
 // the project's semantic_fact rows, and returns a JSON array of
 // Evidence objects. Caller MUST release the returned pointer via

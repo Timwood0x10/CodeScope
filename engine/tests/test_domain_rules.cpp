@@ -21,7 +21,7 @@
 //   4. Insert semantic_fact rows: TODO, unsafe block, mutex lock
 //      (no defer_unlock), unwrap, bare except, extern_call
 //   5. Create EvidenceBuilder, loadRules from
-//      engine/src/evidence/rules (path tried from a list of
+//      engine/src/rules (path tried from a list of
 //      candidates — see findRulesDir)
 //   6. Assert total rule sets >= 10 (6 existing + 4 new)
 //   7. Run buildAll; verify at least 1 evidence per new category
@@ -120,10 +120,10 @@ static std::string detailJson(int line, const std::string &snippet,
 static std::string findRulesDir()
 {
 	const char *candidates[] = {
-		"engine/src/evidence/rules",
-		"../src/evidence/rules",
-		"../../engine/src/evidence/rules",
-		"../../../engine/src/evidence/rules",
+		"engine/src/rules",
+		"../src/rules",
+		"../../engine/src/rules",
+		"../../../engine/src/rules",
 	};
 	for (const char *cand : candidates) {
 		std::error_code ec;

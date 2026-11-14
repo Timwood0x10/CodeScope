@@ -1,6 +1,6 @@
 // rule.cpp — Rule data structures + JSON loader for Evidence Builder (EB1).
 //
-// Loads rule definition files from engine/src/evidence/rules/*.json.
+// Loads rule definition files from engine/src/rules/*.json.
 // The JSON schema is intentionally flat (see plan section 4.3):
 //
 //   {
@@ -606,7 +606,7 @@ std::string resolveRulesDir()
 	const char *candidates[] = {
 		env_dir,
 		build_default,
-		"engine/src/evidence/rules",
+		"engine/src/rules",
 	};
 	for (const char *cand : candidates) {
 		if (!cand || !*cand)
@@ -630,7 +630,7 @@ std::string resolveRulesDir()
 	}
 	fprintf(stderr, "[module=evidence, method=resolveRulesDir] no rule "
 			"directory found (checked $CODESCOPE_RULES_DIR, build "
-			"default, and ./engine/src/evidence/rules)\n");
+			"default, and ./engine/src/rules)\n");
 	return std::string();
 }
 

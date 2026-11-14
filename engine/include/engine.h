@@ -714,7 +714,7 @@ char *engine_import_artifact(engine_t handle, uint64_t project_id,
 
 /**
  * Build evidence findings for a project by applying the rule set
- * (engine/src/evidence/rules/ JSON files, or $CODESCOPE_RULES_DIR) to
+ * (engine/src/rules/ JSON files, or $CODESCOPE_RULES_DIR) to
  * the project's semantic_fact rows.
  *
  * @param project_id       Project to analyze.

@@ -48,10 +48,10 @@ static void removeDbFiles()
 static std::string findRulesDir()
 {
 	static const char *kCandidates[] = {
-		"engine/src/evidence/rules",
-		"../src/evidence/rules",
-		"../../engine/src/evidence/rules",
-		"../../../engine/src/evidence/rules",
+		"engine/src/rules",
+		"../src/rules",
+		"../../engine/src/rules",
+		"../../../engine/src/rules",
 	};
 	for (const char *candidate : kCandidates) {
 		if (access(candidate, F_OK) == 0)
@@ -61,7 +61,7 @@ static std::string findRulesDir()
 	// fixed list would silently stop finding the rules; walk up instead.
 	std::string prefix;
 	for (int depth = 0; depth < 8; ++depth) {
-		std::string candidate = prefix + "engine/src/evidence/rules";
+		std::string candidate = prefix + "engine/src/rules";
 		if (access(candidate.c_str(), F_OK) == 0)
 			return candidate;
 		prefix += "../";
