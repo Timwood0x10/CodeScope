@@ -1,6 +1,6 @@
 {
   "category": "size",
-  "_note": "D2 metric rules (development_plan 5.2). Both read a value the indexer already measured (entity.lines / entity.param_count) and are L1 only where the threshold is a hard limit; a preference stays L2. Thresholds are the tool's built-in defaults until M2 reads declared constraints from .codescope/profile.yaml.",
+  "_note": "D2 metric rules (development_plan 5.2). All read a value the indexer already measured (entity.lines / entity.param_count / files.loc) and are L1 only where the threshold is a hard limit; a preference stays L2. Thresholds are the tool's built-in defaults until M2 reads declared constraints from .codescope/profile.yaml.",
   "rules": [
     {
       "name": "function_too_long",
@@ -28,6 +28,20 @@
         "severity": 1,
         "title": "{symbol} takes {value} parameters (soft limit {threshold})",
         "message": "{file}:{line} {symbol}({value} params), soft limit {threshold}"
+      }
+    },
+    {
+      "name": "file_size_limit",
+      "version": "1",
+      "evidence_level": "L1",
+      "type": "metric",
+      "description": "File exceeds the 1000-line hard limit (code_rules 1.1). Measurement, not a heuristic: files.loc is recorded by the indexer.",
+      "metric": { "name": "file_lines", "op": "gt", "threshold": 1000 },
+      "combine": "collect",
+      "output": {
+        "severity": 3,
+        "title": "{file} is {value} lines (limit {threshold})",
+        "message": "{file} is {value} lines, limit {threshold}"
       }
     }
   ]

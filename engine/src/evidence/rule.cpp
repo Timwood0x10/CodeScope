@@ -128,6 +128,10 @@ bool metricFromString(const std::string &s, Metric &out)
 		out = Metric::ParameterCount;
 		return true;
 	}
+	if (s == "file_lines") {
+		out = Metric::FileLines;
+		return true;
+	}
 	return false;
 }
 
@@ -138,6 +142,8 @@ const char *metricToString(Metric metric)
 		return "function_lines";
 	case Metric::ParameterCount:
 		return "param_count";
+	case Metric::FileLines:
+		return "file_lines";
 	}
 	return "function_lines";
 }

@@ -20,6 +20,7 @@
 
 #include "../src/evidence/rule_runner.h"
 #include "../src/store/store.h"
+#include "../src/store/store_identity.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -180,6 +181,74 @@ static void checkParams(store::GraphStore &st, uint64_t project_id,
 	std::printf("  [PASS] too_many_parameters (L2, low)\n");
 }
 
+/// D1 file_size_limit: the measured object is a file, not an entity.
+///
+/// It is the first rule to reference `files.id` (`fact_kind = 4`), so this also
+/// pins the anchor (`file:`) and the "NULL means unmeasured" rule: a row that
+/// predates `files.loc` must not be judged as a 0-line file.
+static void checkFileSize(store::GraphStore &st, uint64_t project_id,
+			  const std::string &rules_dir,
+			  const std::string &run_id)
+{
+	const uint64_t big_id = st.upsertFile(project_id, "big.cpp", "cpp",
+					      "h1", 1500, 1200, 200, 100);
+	check(big_id > 0, "insert measured big file");
+	check(st.upsertFile(project_id, "small.cpp", "cpp", "h2", 40, 40, 0,
+			    0) > 0,
+	      "insert measured small file");
+	// A row from before the LOC columns: loc stays NULL.
+	check(st.exec(("INSERT INTO files (project_id, path, language, "
+		       "content_hash) VALUES (" +
+		       std::to_string(project_id) +
+		       ", 'legacy.cpp', 'cpp', "
+		       "'h3')")
+			      .c_str()),
+	      "insert file without loc");
+
+	evidence::RuleRunOutcome out = evidence::runRuleToStore(
+		&st, rules_dir, project_id, run_id, "file_size_limit");
+	check(out.executed, "file_size_limit must execute");
+	check(out.evidence_rows == 1,
+	      "only the measured file over the limit is reported");
+	check(out.findings == 1, "one finding per violating file");
+
+	check(textAt(st, "SELECT evidence_level FROM rule_exec WHERE rule_id="
+			 "'file_size_limit'") == "L1",
+	      "file_size_limit is an L1 measurement");
+	check(scalar(st, "SELECT severity FROM finding WHERE rule='"
+			 "file_size_limit'") == 3,
+	      "file_size_limit is high severity");
+
+	// fact_ref is only unique per kind: an entity id can equal a file id, so
+	// the pair (fact_kind, fact_ref) is the reference (§17.4 invariant 3).
+	check(scalar(st,
+		     "SELECT fact_kind FROM evidence_fact WHERE fact_kind=4 "
+		     "AND fact_ref=" +
+			     std::to_string(big_id)) == 4,
+	      "the evidence references the file row, not an entity");
+	const std::string scope =
+		" FROM evidence_location l JOIN evidence e ON e.id = "
+		"l.evidence_id WHERE e.rule_id = 'file_size_limit'";
+	check(textAt(st, "SELECT l.file_path" + scope) == "big.cpp",
+	      "the location is the offending file");
+	check(scalar(st, "SELECT l.start_row" + scope) == 1,
+	      "a file-level location starts at line 1");
+
+	// The anchor is the path in the file namespace, not a fake symbol.
+	const std::string key =
+		textAt(st, "SELECT finding_key FROM evidence WHERE rule_id = "
+			   "'file_size_limit'");
+	check(key == store::FindingKey("file_size_limit", "file:big.cpp"),
+	      "file findings anchor on file:<path>");
+	check(scalar(st, "SELECT COUNT(*) FROM evidence WHERE finding_key="
+			 "'" +
+				 store::FindingKey("file_size_limit",
+						   "file:legacy.cpp") +
+				 "'") == 0,
+	      "an unmeasured file must not be judged");
+	std::printf("  [PASS] file_size_limit (L1, files.loc, fact_kind=4)\n");
+}
+
 int main()
 {
 	initDbPath();
@@ -224,12 +293,15 @@ int main()
 
 	checkTooLong(st, project_id, rules_dir, run.run_id);
 	checkParams(st, project_id, rules_dir, run.run_id);
+	checkFileSize(st, project_id, rules_dir, run.run_id);
 
-	check(scalar(st, "SELECT COUNT(*) FROM evidence") == 2,
+	// Two entity findings (function_too_long, too_many_parameters) plus the
+	// one file finding (file_size_limit).
+	check(scalar(st, "SELECT COUNT(*) FROM evidence") == 3,
 	      "clean entities and classes produce no evidence");
 	check(scalar(st,
-		     "SELECT COUNT(*) FROM evidence_fact WHERE fact_ref = 4") ==
-		      0,
+		     "SELECT COUNT(*) FROM evidence_fact WHERE fact_kind = 0 "
+		     "AND fact_ref = 4") == 0,
 	      "a class is outside the metric's scope");
 
 	st.close();

@@ -511,7 +511,7 @@ bool GraphStore::createSchema()
         -- evidence_fact: links evidence back to entity/relation rows.
         CREATE TABLE IF NOT EXISTS evidence_fact (
             evidence_id INTEGER NOT NULL,
-            fact_kind INTEGER NOT NULL,    -- 0=entity, 1=relation, 2=document
+            fact_kind INTEGER NOT NULL,    -- 0=entity 1=relation 2=document 3=semantic_fact 4=files 5=arch_edge
             fact_ref INTEGER NOT NULL,     -- entity.id / relation.id / doc rowid
             detail TEXT DEFAULT '',
             PRIMARY KEY (evidence_id, fact_kind, fact_ref),

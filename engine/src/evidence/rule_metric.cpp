@@ -33,6 +33,8 @@ const char *metricColumn(Metric metric)
 		return "lines";
 	case Metric::ParameterCount:
 		return "param_count";
+	case Metric::FileLines:
+		return "loc";
 	}
 	return "lines";
 }
@@ -91,8 +93,6 @@ bool queryMeasured(sqlite3 *db, uint64_t project_id, Metric metric,
 		Measured m;
 		m.entity_id = sqlite3_column_int64(stmt, 0);
 		const std::string qualified = columnText(stmt, 2);
-		// The qualified name is the §17.6 anchor; the bare name is only a
-		// fallback for parsers that leave it empty.
 		m.symbol = qualified.empty() ? columnText(stmt, 1) : qualified;
 		m.file = columnText(stmt, 3);
 		m.line = sqlite3_column_int64(stmt, 4);
@@ -103,7 +103,40 @@ bool queryMeasured(sqlite3 *db, uint64_t project_id, Metric metric,
 	return true;
 }
 
-/// One Evidence for one measured entity.
+/// Read the measured LOC of every file in the project.
+///
+/// Files are the measured object for this metric, so the item references the
+/// file row (`fact_kind = 4`) and its location is the file itself. A row whose
+/// `loc` is NULL predates the column and has not been re-indexed; it is skipped
+/// here rather than counted as 0 lines, and the briefing reports the gap.
+bool queryFileMeasured(sqlite3 *db, uint64_t project_id, Metric metric,
+		       std::vector<Measured> &out)
+{
+	// The column is one of the fixed pairs in metricColumn, never rule text.
+	const std::string column = metricColumn(metric);
+	const std::string sql = "SELECT id, path, " + column +
+				" FROM files WHERE project_id = ? AND " +
+				column + " IS NOT NULL ORDER BY id";
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) !=
+	    SQLITE_OK)
+		return false;
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	int rc = SQLITE_ROW;
+	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+		Measured m;
+		m.entity_id = sqlite3_column_int64(stmt, 0);
+		m.file = columnText(stmt, 1);
+		m.symbol = m.file;
+		m.line = 1;
+		m.value = sqlite3_column_int64(stmt, 2);
+		out.push_back(std::move(m));
+	}
+	sqlite3_finalize(stmt);
+	return rc == SQLITE_DONE;
+}
+
+/// One Evidence for one measured entity or file.
 Evidence makeEvidence(const Rule &rule, const Measured &m)
 {
 	std::unordered_map<std::string, std::string> vars;
@@ -123,7 +156,8 @@ Evidence makeEvidence(const Rule &rule, const Measured &m)
 
 	EvidenceItem item;
 	item.fact_id = static_cast<uint64_t>(m.entity_id);
-	item.fact_kind = 0; // entity
+	// FileLines references a file row; other metrics reference an entity.
+	item.fact_kind = rule.metric.metric == Metric::FileLines ? 4 : 0;
 	item.category = rule.category;
 	item.primitive = metricToString(rule.metric.metric);
 	item.kind = "measured";
@@ -147,8 +181,14 @@ std::vector<Evidence> buildMetricEvidence(store::GraphStore *store,
 		return result;
 
 	std::vector<Measured> rows;
-	if (!queryMeasured(store->handle(), project_id, rule.metric.metric,
-			   rows)) {
+	bool ok;
+	if (rule.metric.metric == Metric::FileLines)
+		ok = queryFileMeasured(store->handle(), project_id,
+				       rule.metric.metric, rows);
+	else
+		ok = queryMeasured(store->handle(), project_id,
+				   rule.metric.metric, rows);
+	if (!ok) {
 		failed.insert(rule.name);
 		return result;
 	}

@@ -69,6 +69,8 @@ enum class Metric {
 	FunctionLines = 0,
 	/// `entity.param_count` for functions and methods (kind 0/1).
 	ParameterCount = 1,
+	/// `files.loc` — total physical lines of a source file.
+	FileLines = 2,
 };
 
 /// Comparison applied to the measured value.
