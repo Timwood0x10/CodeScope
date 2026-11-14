@@ -318,6 +318,10 @@ int main()
 		      "loc must sum the measured files");
 		check(contains(json, "\"loc_files\":2"),
 		      "loc_files must count the measured files");
+		check(contains(json, "\"test_files\""),
+		      "the card must report the production/test split");
+		check(contains(json, "not classified as production/test"),
+		      "an unclassified file is a gap, not production code");
 		check(contains(json, "no measured line count"),
 		      "an unmeasured file must be reported as a gap");
 	}

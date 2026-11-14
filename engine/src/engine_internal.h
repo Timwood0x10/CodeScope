@@ -90,6 +90,10 @@ struct FileMeasurement {
 	int code_loc = 0;
 	int comment_loc = 0;
 	int blank_loc = 0;
+	/// 1 = test code, 0 = production (development_plan §12.2). `measured`
+	/// distinguishes "not classified" from "classified as production".
+	bool is_test = false;
+	std::string test_reason;
 };
 
 /// Read `path` once and measure it. An unreadable file returns default values,

@@ -308,29 +308,46 @@ CountResult queryFindingTotal(sqlite3 *db, uint64_t project_id,
 /// `lines.value == -1` means nothing was measured (every `files.loc` is NULL,
 /// i.e. the rows predate the column and were never re-indexed). Reporting that
 /// as 0 would claim an empty project, which is the confusion §17.5 forbids.
-struct LocTotals {
+/// Per-file totals the card reports, in one query.
+///
+/// `lines.value == -1` means no file carries a measurement. `classified` is the
+/// number of files with a production/test decision (§12.2): a file that predates
+/// the column is neither, and saying "0 test files" without that context would
+/// be a measurement nobody took.
+struct FileTotals {
 	CountResult lines;
 	CountResult files;
+	CountResult test_files;
+	CountResult classified;
 };
 
-LocTotals queryLocTotals(sqlite3 *db, uint64_t project_id)
+FileTotals queryFileTotals(sqlite3 *db, uint64_t project_id)
 {
-	LocTotals out;
-	const char *sql = "SELECT COALESCE(SUM(loc), -1), COUNT(loc) "
-			  "FROM files WHERE project_id = ?";
+	FileTotals out;
+	const char *sql =
+		"SELECT COALESCE(SUM(loc), -1), COUNT(loc), "
+		"       COALESCE(SUM(CASE WHEN is_test = 1 THEN 1 ELSE 0 END), 0), "
+		"       COUNT(is_test) "
+		"FROM files WHERE project_id = ?";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
 		out.lines.ok = false;
 		out.files.ok = false;
+		out.test_files.ok = false;
+		out.classified.ok = false;
 		return out;
 	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	if (sqlite3_step(stmt) == SQLITE_ROW) {
 		out.lines.value = sqlite3_column_int64(stmt, 0);
 		out.files.value = sqlite3_column_int64(stmt, 1);
+		out.test_files.value = sqlite3_column_int64(stmt, 2);
+		out.classified.value = sqlite3_column_int64(stmt, 3);
 	} else {
 		out.lines.ok = false;
 		out.files.ok = false;
+		out.test_files.ok = false;
+		out.classified.ok = false;
 	}
 	sqlite3_finalize(stmt);
 	return out;
@@ -391,7 +408,7 @@ void writeFreshness(util::JsonWriter &w, const LatestRun &run)
 /// (§17.5).
 void writeScale(util::JsonWriter &w, const CountResult &files,
 		const CountResult &symbols, const CountResult &function_lines,
-		const LocTotals &loc)
+		const FileTotals &files_totals)
 {
 	w.key("scale");
 	w.beginObject();
@@ -407,18 +424,24 @@ void writeScale(util::JsonWriter &w, const CountResult &files,
 		w.key("function_lines").value(function_lines.value);
 	else
 		w.key("function_lines").nullValue();
-	if (loc.lines.ok && loc.lines.value >= 0)
-		w.key("loc").value(loc.lines.value);
+	if (files_totals.lines.ok && files_totals.lines.value >= 0)
+		w.key("loc").value(files_totals.lines.value);
 	else
 		w.key("loc").nullValue();
 	// How many files the sum covers: a card that reports loc without this
 	// cannot be checked against `files`.
-	if (loc.files.ok)
-		w.key("loc_files").value(loc.files.value);
+	if (files_totals.files.ok)
+		w.key("loc_files").value(files_totals.files.value);
 	else
 		w.key("loc_files").nullValue();
+	// Production/test split (§12.2). Reported next to the total so the share
+	// of the tree that is test code is visible, not inferred.
+	if (files_totals.test_files.ok)
+		w.key("test_files").value(files_totals.test_files.value);
+	else
+		w.key("test_files").nullValue();
 	const bool all_ok = files.ok && symbols.ok && function_lines.ok &&
-			    loc.lines.ok;
+			    files_totals.lines.ok;
 	w.key("source").value(all_ok ? "fact" : "unknown");
 	w.endObject();
 }
@@ -497,7 +520,7 @@ void writeUnknowns(util::JsonWriter &w, const LatestRun &run,
 		   const std::vector<engine_briefing::ModuleRow> &mods,
 		   const std::vector<engine_briefing::EntryPointRow> &eps,
 		   const std::vector<std::string> &failed,
-		   const CountResult &files, const LocTotals &loc)
+		   const CountResult &files, const FileTotals &file_totals)
 {
 	w.key("unknowns");
 	w.beginArray();
@@ -511,10 +534,28 @@ void writeUnknowns(util::JsonWriter &w, const LatestRun &run,
 		w.value("modules: no parsed module_path");
 	if (eps.empty())
 		w.value("entry_points: name-based candidates only, none matched");
+	// Zero classified test files is not the same claim as "the project has no
+	// tests": the indexer's filter drops test directories before they reach
+	// `files`, so the split can only describe what was indexed (§12.2 leaves the
+	// index_profile switch to M2).
+	if (files.ok && file_totals.test_files.ok &&
+	    file_totals.test_files.value == 0)
+		w.value("tests: no test file was indexed/classified; test "
+			"directories are excluded by the indexing filter");
+	// A file without a production/test decision is not production code: it is
+	// unknown, and a metric that mixes the two would be wrong invisibly.
+	if (files.ok && file_totals.classified.ok &&
+	    file_totals.classified.value < files.value)
+		w.value("tests: " +
+			std::to_string(files.value -
+				       file_totals.classified.value) +
+			" file(s) are not classified as production/test "
+			"(re-index to fill)");
 	// A file without a measurement is not a file with zero lines.
-	if (files.ok && loc.files.ok && loc.files.value < files.value)
+	if (files.ok && file_totals.files.ok &&
+	    file_totals.files.value < files.value)
 		w.value("loc: " +
-			std::to_string(files.value - loc.files.value) +
+			std::to_string(files.value - file_totals.files.value) +
 			" file(s) have no measured line count (re-index to "
 			"fill)");
 	w.value("constraints: not declared (M2)");
@@ -619,7 +660,7 @@ struct BriefingFacts {
 	CountResult files;
 	CountResult symbols;
 	CountResult function_lines;
-	LocTotals loc;
+	FileTotals file_totals;
 	std::vector<std::string> failed;
 };
 
@@ -638,7 +679,7 @@ BriefingFacts gatherFacts(sqlite3 *db, uint64_t project_id)
 		db, "SELECT COUNT(*) FROM files WHERE project_id = ?",
 		project_id);
 	// Measured file LOC: files.loc is populated at index time.
-	facts.loc = queryLocTotals(db, project_id);
+	facts.file_totals = queryFileTotals(db, project_id);
 	// Measured per-function line counts.
 	facts.function_lines =
 		queryCount(db,
@@ -664,7 +705,8 @@ BriefingFacts gatherFacts(sqlite3 *db, uint64_t project_id)
 	if (!facts.evidence_count.ok)
 		facts.failed.push_back("evidence_count");
 	if (!facts.files.ok || !facts.symbols.ok || !facts.function_lines.ok ||
-	    !facts.loc.lines.ok || !facts.loc.files.ok)
+	    !facts.file_totals.lines.ok || !facts.file_totals.files.ok ||
+	    !facts.file_totals.test_files.ok)
 		facts.failed.push_back("scale");
 	return facts;
 }
@@ -685,7 +727,7 @@ std::string renderBriefing(uint64_t project_id, int level,
 	w.key("budget_bytes").value(static_cast<int64_t>(kBriefingBudgetBytes));
 	writeFreshness(w, facts.run);
 	writeScale(w, facts.files, facts.symbols, facts.function_lines,
-		   facts.loc);
+		   facts.file_totals);
 	engine_briefing::writeLanguages(w, facts.languages.items,
 					caps.languages);
 	engine_briefing::writeModules(w, facts.modules.items, caps.modules);
@@ -695,7 +737,7 @@ std::string renderBriefing(uint64_t project_id, int level,
 			  facts.finding_total, facts.findings, caps.findings);
 	writeUnknowns(w, facts.run, facts.languages.items, facts.modules.items,
 		      facts.entry_points.items, facts.failed, facts.files,
-		      facts.loc);
+		      facts.file_totals);
 	writeNextQueries(w);
 	w.endObject();
 	if (!w.ok()) {

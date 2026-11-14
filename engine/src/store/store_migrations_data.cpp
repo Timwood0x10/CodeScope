@@ -249,6 +249,18 @@ ALTER TABLE files ADD COLUMN comment_loc INTEGER;
 ALTER TABLE files ADD COLUMN blank_loc INTEGER;
 )sql",
 	},
+	{
+		10,
+		"files_is_test",
+		// development_plan §12.2: production and test code are counted
+		// separately before any metric mixes them. Nullable on purpose — NULL
+		// means "not classified" (a row indexed before this migration), while 0
+		// is a measurement that says "production". A DEFAULT 0 would make every
+		// legacy row silently claim to be production code.
+		R"sql(
+ALTER TABLE files ADD COLUMN is_test INTEGER;
+)sql",
+	},
 };
 
 } // namespace

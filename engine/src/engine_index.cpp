@@ -7,6 +7,7 @@
 
 #include "util/json_writer.h"
 #include "util/loc_counter.h"
+#include "util/test_classifier.h"
 #include "engine_internal.h"
 #include "engine_index_paths.h"
 #include "filter_policy.h"
@@ -58,9 +59,11 @@ bool upsertFileWithLoc(store::GraphStore *store, uint64_t project_id,
 {
 	const std::string hash = store::Sha256Hex(source);
 	const auto loc = util::countLoc(source);
+	const auto test = util::classifyTestFile(path.c_str());
 	return store->upsertFile(project_id, path.c_str(), language,
 				 hash.c_str(), loc.loc, loc.code_loc,
-				 loc.comment_loc, loc.blank_loc) != 0;
+				 loc.comment_loc, loc.blank_loc,
+				 test.is_test ? 1 : 0) != 0;
 }
 
 } // namespace

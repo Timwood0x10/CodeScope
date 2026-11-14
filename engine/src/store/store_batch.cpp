@@ -122,6 +122,22 @@ void GraphStore::insertSemanticRecords(uint64_t project_id,
 }
 // ─── Streaming Pipeline ─────────────────────────────────────────
 
+/// Upsert for the `files` row written by the batch path.
+///
+/// File scope rather than inside insertFileResultBatch(): that unit is
+/// grandfathered at its size, and the column list grows whenever the schema
+/// does (§1.1 "只缩不长").
+constexpr const char *kFileUpsertSql =
+	"INSERT INTO files (project_id, path, language, content_hash, loc, "
+	"code_loc, comment_loc, blank_loc, is_test) "
+	"VALUES (?,?,?,?,?,?,?,?,?) "
+	"ON CONFLICT(project_id, path) DO UPDATE SET "
+	"language = excluded.language, "
+	"content_hash = excluded.content_hash, "
+	"loc = excluded.loc, code_loc = excluded.code_loc, "
+	"comment_loc = excluded.comment_loc, blank_loc = excluded.blank_loc, "
+	"is_test = excluded.is_test";
+
 /// Write the `files` row and the `file_scan_state` row for one indexed file.
 ///
 /// Both rows describe the same bytes, so they are written together: the files
@@ -148,6 +164,7 @@ bool writeFileRows(sqlite3 *db, sqlite3_stmt *file_st, sqlite3_stmt *fss_st,
 		sqlite3_bind_int(file_st, 6, measured.code_loc);
 		sqlite3_bind_int(file_st, 7, measured.comment_loc);
 		sqlite3_bind_int(file_st, 8, measured.blank_loc);
+		sqlite3_bind_int(file_st, 9, measured.is_test ? 1 : 0);
 		// The files row is the per-file record: a silent step failure
 		// would leave the file untracked while its semantic_records are
 		// still inserted below.
@@ -232,18 +249,8 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 	// source states apart — and loc/code_loc/comment_loc/blank_loc are the D1
 	// measurements the size rule and the briefing read. OR IGNORE left both
 	// empty on the first write and never repaired them.
-	const char *file_sql =
-		"INSERT INTO files (project_id, path, language, content_hash, loc, "
-		"code_loc, comment_loc, blank_loc) VALUES (?,?,?,?,?,?,?,?) "
-		"ON CONFLICT(project_id, path) DO UPDATE SET "
-		"language = excluded.language, "
-		"content_hash = excluded.content_hash, "
-		"loc = excluded.loc, "
-		"code_loc = excluded.code_loc, "
-		"comment_loc = excluded.comment_loc, "
-		"blank_loc = excluded.blank_loc";
 	sqlite3_stmt *file_st = nullptr;
-	if (sqlite3_prepare_v2(db_, file_sql, -1, &file_st, nullptr) !=
+	if (sqlite3_prepare_v2(db_, kFileUpsertSql, -1, &file_st, nullptr) !=
 	    SQLITE_OK) {
 		sqlite3_finalize(sr_st);
 		sqlite3_finalize(fss_st);

@@ -794,7 +794,7 @@ uint64_t GraphStore::getProjectNodeCount(uint64_t project_id)
 uint64_t GraphStore::upsertFile(uint64_t project_id, const char *path,
 				const char *language, const char *content_hash,
 				int loc, int code_loc, int comment_loc,
-				int blank_loc)
+				int blank_loc, int is_test)
 {
 	sqlite3_stmt *stmt = nullptr;
 	// UPSERT, not INSERT OR REPLACE: REPLACE deletes the conflicting row and
@@ -804,8 +804,8 @@ uint64_t GraphStore::upsertFile(uint64_t project_id, const char *path,
 	// exists (development_plan §17.4 invariant 3).
 	const char *sql =
 		"INSERT INTO files (project_id, path, language, content_hash, "
-		"loc, code_loc, comment_loc, blank_loc, last_parsed_at) "
-		"VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now')) "
+		"loc, code_loc, comment_loc, blank_loc, is_test, last_parsed_at) "
+		"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now')) "
 		"ON CONFLICT(project_id, path) DO UPDATE SET "
 		"language = excluded.language, "
 		"content_hash = excluded.content_hash, "
@@ -813,6 +813,9 @@ uint64_t GraphStore::upsertFile(uint64_t project_id, const char *path,
 		"code_loc = excluded.code_loc, "
 		"comment_loc = excluded.comment_loc, "
 		"blank_loc = excluded.blank_loc, "
+		// A caller that did not classify the file must not erase a
+		// classification made by an earlier, better-informed write.
+		"is_test = COALESCE(excluded.is_test, files.is_test), "
 		"last_parsed_at = excluded.last_parsed_at";
 	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
 		fprintf(stderr,
@@ -829,6 +832,10 @@ uint64_t GraphStore::upsertFile(uint64_t project_id, const char *path,
 	sqlite3_bind_int(stmt, 6, code_loc);
 	sqlite3_bind_int(stmt, 7, comment_loc);
 	sqlite3_bind_int(stmt, 8, blank_loc);
+	if (is_test < 0)
+		sqlite3_bind_null(stmt, 9);
+	else
+		sqlite3_bind_int(stmt, 9, is_test);
 	int rc = sqlite3_step(stmt);
 	if (rc != SQLITE_DONE)
 		fprintf(stderr,

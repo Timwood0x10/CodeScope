@@ -2,6 +2,7 @@
 
 #include "store/store_identity.h"
 #include "util/loc_counter.h"
+#include "util/test_classifier.h"
 #include "filter_policy.h"
 #include "platform_win.h"
 #include "util/json_writer.h"
@@ -132,6 +133,9 @@ FileMeasurement measureFileBytes(const char *path)
 	out.fnv = fnvHex(h);
 
 	out.sha256 = store::Sha256Hex(source);
+	const util::TestClassification test = util::classifyTestFile(path);
+	out.is_test = test.is_test;
+	out.test_reason = test.reason;
 	const util::LocBreakdown loc = util::countLoc(source);
 	out.loc = loc.loc;
 	out.code_loc = loc.code_loc;

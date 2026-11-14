@@ -289,12 +289,12 @@ int main()
 		store::GraphStore store;
 		check(store.open(kFreshDb), "open fresh database");
 
-		check(scalar(store, "PRAGMA user_version") == 9,
-		      "fresh database not at version 9");
-		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 9,
-		      "schema_meta must hold baseline + 7 migrations");
+		check(scalar(store, "PRAGMA user_version") == 10,
+		      "fresh database not at version 10");
+		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 10,
+		      "schema_meta must hold baseline + 9 migrations");
 		check(scalar(store, "SELECT MAX(version) FROM schema_meta") ==
-			      9,
+			      10,
 		      "schema_meta max version");
 
 		check(hasColumn(store, "evidence", "finding_key"),
@@ -311,6 +311,9 @@ int main()
 		      "files.comment_loc missing");
 		check(hasColumn(store, "files", "blank_loc"),
 		      "files.blank_loc missing");
+		// m0010: production/test classification (§12.2).
+		check(hasColumn(store, "files", "is_test"),
+		      "files.is_test missing");
 
 		check(hasColumn(store, "finding", "legacy_severity"),
 		      "finding.legacy_severity missing after migration");
@@ -369,9 +372,9 @@ int main()
 	{
 		store::GraphStore store;
 		check(store.open(kFreshDb), "reopen fresh database");
-		check(scalar(store, "PRAGMA user_version") == 9,
+		check(scalar(store, "PRAGMA user_version") == 10,
 		      "version changed on reopen");
-		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 9,
+		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 10,
 		      "schema_meta grew on reopen");
 		store.close();
 		std::printf("  [PASS] reopen is idempotent\n");
@@ -383,9 +386,9 @@ int main()
 		store::GraphStore store;
 		check(store.open(kLegacyDb), "open legacy database");
 
-		check(scalar(store, "PRAGMA user_version") == 9,
+		check(scalar(store, "PRAGMA user_version") == 10,
 		      "legacy database not migrated to v8");
-		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 9,
+		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 10,
 		      "legacy schema_meta row count");
 
 		check(scalar(store,

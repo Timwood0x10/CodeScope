@@ -178,6 +178,7 @@ set(ENGINE_SOURCES
     src/engine_helpers.cpp
     src/util/json_writer.cpp
     src/util/loc_counter.cpp
+    src/util/test_classifier.cpp
     src/engine_lifecycle.cpp
     src/engine_index.cpp
     src/engine_index_project.cpp

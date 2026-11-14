@@ -145,10 +145,13 @@ class GraphStore {
 	/// Updates keep the existing row id: `evidence_fact` references
 	/// `(4, files.id)` for file-level findings, so replacing the row would
 	/// orphan those references.
+	/// @param is_test 1 = test code, 0 = production, -1 = not classified
+	///                (the column stays NULL, which is not the same claim as
+	///                "production"; development_plan §12.2).
 	uint64_t upsertFile(uint64_t project_id, const char *path,
 			    const char *language, const char *content_hash,
 			    int loc = 0, int code_loc = 0, int comment_loc = 0,
-			    int blank_loc = 0);
+			    int blank_loc = 0, int is_test = -1);
 
 	// ── Graph Nodes ────────────────────────────────────────────
 
