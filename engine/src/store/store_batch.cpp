@@ -122,6 +122,70 @@ void GraphStore::insertSemanticRecords(uint64_t project_id,
 }
 // ─── Streaming Pipeline ─────────────────────────────────────────
 
+/// Write the `files` row and the `file_scan_state` row for one indexed file.
+///
+/// Both rows describe the same bytes, so they are written together: the files
+/// row carries the source identity (content_hash) and the D1 LOC columns, the
+/// scan-state row carries the incremental-change hash. Extracted out of
+/// insertFileResultBatch() because that unit is grandfathered at its size
+/// (§1.1 allows a touched unit to shrink, not to grow).
+/// @param[out] err Set when a statement was rejected.
+/// @return false when a write failed; the caller owns the statement cleanup.
+bool writeFileRows(sqlite3 *db, sqlite3_stmt *file_st, sqlite3_stmt *fss_st,
+		   uint64_t project_id, const FileResult &fr,
+		   const FileMeasurement &measured, std::string &err)
+{
+	if (file_st) {
+		sqlite3_bind_int64(file_st, 1,
+				   static_cast<int64_t>(project_id));
+		sqlite3_bind_text(file_st, 2, fr.file_path.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_text(file_st, 3, fr.language.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_text(file_st, 4, measured.sha256.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_int(file_st, 5, measured.loc);
+		sqlite3_bind_int(file_st, 6, measured.code_loc);
+		sqlite3_bind_int(file_st, 7, measured.comment_loc);
+		sqlite3_bind_int(file_st, 8, measured.blank_loc);
+		// The files row is the per-file record: a silent step failure
+		// would leave the file untracked while its semantic_records are
+		// still inserted below.
+		if (sqlite3_step(file_st) != SQLITE_DONE) {
+			err = "[module=store, method=insertFileResultBatch] "
+			      "INSERT INTO files failed: " +
+			      std::string(sqlite3_errmsg(db));
+			sqlite3_reset(file_st);
+			return false;
+		}
+		sqlite3_reset(file_st);
+	}
+
+	sqlite3_bind_int64(fss_st, 1, static_cast<int64_t>(project_id));
+	sqlite3_bind_text(fss_st, 2, fr.file_path.c_str(), -1,
+			  SQLITE_TRANSIENT);
+	sqlite3_bind_int64(fss_st, 3, fr.mtime);
+	sqlite3_bind_int64(fss_st, 4, fr.fsize);
+	if (measured.fnv.empty()) {
+		sqlite3_bind_null(fss_st, 5);
+	} else {
+		sqlite3_bind_text(fss_st, 5, measured.fnv.c_str(), -1,
+				  SQLITE_TRANSIENT);
+	}
+	// file_scan_state drives incremental re-index freshness; a silent failure
+	// would make the next run re-parse the file (or, worse, believe a changed
+	// file is unchanged).
+	if (sqlite3_step(fss_st) != SQLITE_DONE) {
+		err = "[module=store, method=insertFileResultBatch] "
+		      "INSERT INTO file_scan_state failed: " +
+		      std::string(sqlite3_errmsg(db));
+		sqlite3_reset(fss_st);
+		return false;
+	}
+	sqlite3_reset(fss_st);
+	return true;
+}
+
 bool GraphStore::insertFileResultBatch(uint64_t project_id,
 				       const std::vector<FileResult> &batch,
 				       bool is_reindex)
@@ -162,9 +226,22 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 		return false;
 	}
 
+	// The files row is written by THIS path on a full index (the scheduler's
+	// chunk workers never call upsertFile), so it has to carry the same facts:
+	// content_hash feeds worktreeDigest — with '' the digest could not tell two
+	// source states apart — and loc/code_loc/comment_loc/blank_loc are the D1
+	// measurements the size rule and the briefing read. OR IGNORE left both
+	// empty on the first write and never repaired them.
 	const char *file_sql =
-		"INSERT OR IGNORE INTO files (project_id, path, language, content_hash) "
-		"VALUES (?,?,?,'')";
+		"INSERT INTO files (project_id, path, language, content_hash, loc, "
+		"code_loc, comment_loc, blank_loc) VALUES (?,?,?,?,?,?,?,?) "
+		"ON CONFLICT(project_id, path) DO UPDATE SET "
+		"language = excluded.language, "
+		"content_hash = excluded.content_hash, "
+		"loc = excluded.loc, "
+		"code_loc = excluded.code_loc, "
+		"comment_loc = excluded.comment_loc, "
+		"blank_loc = excluded.blank_loc";
 	sqlite3_stmt *file_st = nullptr;
 	if (sqlite3_prepare_v2(db_, file_sql, -1, &file_st, nullptr) !=
 	    SQLITE_OK) {
@@ -213,61 +290,18 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 		batch_metrics;
 
 	for (auto &fr : batch) {
-		// Upsert file record (ignore if already exists)
-		if (file_st) {
-			sqlite3_bind_int64(file_st, 1,
-					   static_cast<int64_t>(project_id));
-			sqlite3_bind_text(file_st, 2, fr.file_path.c_str(), -1,
-					  SQLITE_TRANSIENT);
-			sqlite3_bind_text(file_st, 3, fr.language.c_str(), -1,
-					  SQLITE_TRANSIENT);
-			// The files row is the per-file record: a silent step
-			// failure would leave the file untracked while its
-			// semantic_records are still inserted below.
-			if (sqlite3_step(file_st) != SQLITE_DONE) {
-				error_ =
-					"[module=store, method="
-					"insertFileResultBatch] INSERT INTO files "
-					"failed: " +
-					std::string(sqlite3_errmsg(db_));
-				sqlite3_reset(file_st);
-				sqlite3_finalize(file_st);
-				sqlite3_finalize(fss_st);
-				sqlite3_finalize(del_sr_st);
-				sqlite3_finalize(sr_st);
-				return false;
-			}
-			sqlite3_reset(file_st);
-		}
-
-		// Update file_scan_state (with content_hash for M2)
-		std::string ch = fileContentHash(fr.file_path.c_str());
-		sqlite3_bind_int64(fss_st, 1, static_cast<int64_t>(project_id));
-		sqlite3_bind_text(fss_st, 2, fr.file_path.c_str(), -1,
-				  SQLITE_TRANSIENT);
-		sqlite3_bind_int64(fss_st, 3, fr.mtime);
-		sqlite3_bind_int64(fss_st, 4, fr.fsize);
-		if (ch.empty()) {
-			sqlite3_bind_null(fss_st, 5);
-		} else {
-			sqlite3_bind_text(fss_st, 5, ch.c_str(), -1,
-					  SQLITE_TRANSIENT);
-		}
-		// file_scan_state drives incremental re-index freshness; a
-		// silent failure would make the next run re-parse the file
-		// (or, worse, believe a changed file is unchanged).
-		if (sqlite3_step(fss_st) != SQLITE_DONE) {
-			error_ = "[module=store, method=insertFileResultBatch] "
-				 "INSERT INTO file_scan_state failed: " +
-				 std::string(sqlite3_errmsg(db_));
-			sqlite3_reset(fss_st);
-			sqlite3_finalize(fss_st);
+		// One read for the incremental hash, the source identity and the LOC
+		// breakdown; all three describe the same bytes.
+		const FileMeasurement measured =
+			measureFileBytes(fr.file_path.c_str());
+		if (!writeFileRows(db_, file_st, fss_st, project_id, fr,
+				   measured, error_)) {
 			sqlite3_finalize(file_st);
+			sqlite3_finalize(fss_st);
 			sqlite3_finalize(del_sr_st);
 			sqlite3_finalize(sr_st);
 			return false;
 		}
-		sqlite3_reset(fss_st);
 
 		// Delete old semantic_records for this file to prevent
 		// duplicate accumulation on re-index. The multi-VALUES insert

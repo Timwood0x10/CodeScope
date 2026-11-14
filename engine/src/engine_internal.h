@@ -72,6 +72,29 @@ std::string readFilePrealloc(const char *path, size_t known_size);
 // unchanged before the incremental skip. Computed on the file path so the
 // caller does not need to hold file bytes in memory.
 std::string fileContentHash(const char *path);
+
+/// Facts about one file's bytes that the indexer records.
+///
+/// One read feeds three consumers: the incremental-change hash
+/// (`file_scan_state.content_hash`), the source identity
+/// (`files.content_hash`, which `worktreeDigest` hashes) and the measured LOC
+/// columns (D1 §5.1). Reading a second or third time would multiply the I/O of
+/// a full index for values derived from the same buffer.
+struct FileMeasurement {
+	/// FNV-1a, 16 lowercase hex digits; "" when the file cannot be read.
+	std::string fnv;
+	/// SHA-256, the same spelling `upsertFile` writes; "" when unreadable.
+	std::string sha256;
+	/// Physical / code / comment / blank line counts; all 0 when unreadable.
+	int loc = 0;
+	int code_loc = 0;
+	int comment_loc = 0;
+	int blank_loc = 0;
+};
+
+/// Read `path` once and measure it. An unreadable file returns default values,
+/// which the stores treat as "unmeasured" rather than as an empty file.
+FileMeasurement measureFileBytes(const char *path);
 const char *detectLanguage(const char *file_path);
 char *dupString(const std::string &s);
 

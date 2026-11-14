@@ -1,4 +1,7 @@
 #include "engine_internal.h"
+
+#include "store/store_identity.h"
+#include "util/loc_counter.h"
 #include "filter_policy.h"
 #include "platform_win.h"
 #include "util/json_writer.h"
@@ -6,6 +9,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <sstream>
 #include <string>
 
 // ─── Helpers ───────────────────────────────────────────────────
@@ -61,6 +65,35 @@ std::string readFilePrealloc(const char *path, size_t known_size)
 	return result;
 }
 
+// ─── File identity + size, measured in one read ─────────────────
+namespace
+{
+
+constexpr uint64_t kFnvOffsetBasis = 14695981039346656037ULL;
+constexpr uint64_t kFnvPrime = 1099511628211ULL;
+
+void fnv1aUpdate(uint64_t &h, const char *data, std::size_t n)
+{
+	for (std::size_t i = 0; i < n; ++i) {
+		h ^= static_cast<unsigned char>(data[i]);
+		h *= kFnvPrime;
+	}
+}
+
+/// 16 lowercase hex digits of a 64-bit FNV value.
+std::string fnvHex(uint64_t h)
+{
+	static const char *hex = "0123456789abcdef";
+	std::string out(16, '0');
+	for (int i = 0; i < 16; ++i) {
+		out[15 - i] = hex[h & 0xF];
+		h >>= 4;
+	}
+	return out;
+}
+
+} // namespace
+
 // M2: stable 64-bit FNV-1a hash of a file's contents, hex-encoded lowercase.
 // Reads the file from disk (streamed, not into memory) and returns the hash,
 // or "" if the file cannot be read. See declaration in engine_internal.h.
@@ -71,24 +104,39 @@ std::string fileContentHash(const char *path)
 	std::ifstream ifs(path, std::ios::binary);
 	if (!ifs)
 		return "";
-	constexpr uint64_t kFnvOffsetBasis = 14695981039346656037ULL;
-	constexpr uint64_t kFnvPrime = 1099511628211ULL;
 	uint64_t h = kFnvOffsetBasis;
 	char buf[65536];
 	while (ifs) {
 		ifs.read(buf, sizeof(buf));
-		std::streamsize n = ifs.gcount();
-		for (std::streamsize i = 0; i < n; ++i) {
-			h ^= static_cast<unsigned char>(buf[i]);
-			h *= kFnvPrime;
-		}
+		fnv1aUpdate(h, buf, static_cast<std::size_t>(ifs.gcount()));
 	}
-	static const char *hex = "0123456789abcdef";
-	std::string out(16, '0');
-	for (int i = 0; i < 16; ++i) {
-		out[15 - i] = hex[h & 0xF];
-		h >>= 4;
-	}
+	return fnvHex(h);
+}
+
+FileMeasurement measureFileBytes(const char *path)
+{
+	FileMeasurement out;
+	if (!path || !*path)
+		return out;
+	std::ifstream ifs(path, std::ios::binary);
+	if (!ifs)
+		return out;
+	std::stringstream ss;
+	ss << ifs.rdbuf();
+	const std::string source = ss.str();
+
+	// Same bytes, same hash as fileContentHash(): the incremental scan compares
+	// the two, so the constants and the fold order must stay identical.
+	uint64_t h = kFnvOffsetBasis;
+	fnv1aUpdate(h, source.data(), source.size());
+	out.fnv = fnvHex(h);
+
+	out.sha256 = store::Sha256Hex(source);
+	const util::LocBreakdown loc = util::countLoc(source);
+	out.loc = loc.loc;
+	out.code_loc = loc.code_loc;
+	out.comment_loc = loc.comment_loc;
+	out.blank_loc = loc.blank_loc;
 	return out;
 }
 

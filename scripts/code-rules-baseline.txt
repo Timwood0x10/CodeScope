@@ -72,7 +72,7 @@ function|engine/src/resolver/pipeline.cpp|ResolverPipeline::run|858
 function|engine/src/resolver/pipeline_apply.cpp|ResolverPipeline::applyConstraints|388
 function|engine/src/resolver/pipeline_load.cpp|ResolverPipeline::loadDispatchIndex|275
 function|engine/src/resolver/pipeline_load.cpp|ResolverPipeline::loadEntityIndex|211
-function|engine/src/store/store_batch.cpp|GraphStore::insertFileResultBatch|457
+function|engine/src/store/store_batch.cpp|GraphStore::insertFileResultBatch|427
 function|engine/src/store/store_core.cpp|GraphStore::open|126
 function|engine/src/store/store_graph.cpp|GraphStore::buildGraph|880
 function|engine/src/store/store_graph_csr.cpp|GraphStore::buildCSR|238
