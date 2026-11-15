@@ -12,7 +12,7 @@ function|engine/src/engine_ffi_index.cpp|engine_get_project_info|121
 function|engine/src/engine_index.cpp|engine_index_file|373
 function|engine/src/engine_index_discover.cpp|collectFileJobs|206
 function|engine/src/engine_index_metrics.cpp|computeMetricsFromCST|244
-function|engine/src/engine_index_project.cpp|indexProjectImpl|856
+function|engine/src/engine_index_project.cpp|indexProjectImpl|855
 function|engine/src/engine_index_project_membulk.cpp|engine_index_project_membulk|425
 function|engine/src/engine_queries.cpp|enhanceProjectImpl|231
 function|engine/src/engine_queries.cpp|findSymbolImpl|150
@@ -64,8 +64,6 @@ function|engine/src/query/query_analysis.cpp|QueryEngine::getProjectOverview|123
 function|engine/src/query/query_analysis.cpp|QueryEngine::traceCallChain|122
 function|engine/src/query/query_communities.cpp|QueryEngine::getCommunities|308
 function|engine/src/query/query_engine.cpp|QueryEngine::findReferences|121
-function|engine/src/query/query_engine.cpp|QueryEngine::getCallees|147
-function|engine/src/query/query_engine.cpp|QueryEngine::getCallers|151
 function|engine/src/query/query_engine_traverse.cpp|QueryEngine::getNeighbors|146
 function|engine/src/query/query_engine_traverse.cpp|QueryEngine::getSubgraph|134
 function|engine/src/resolver/pipeline.cpp|ResolverPipeline::run|858
@@ -73,7 +71,6 @@ function|engine/src/resolver/pipeline_apply.cpp|ResolverPipeline::applyConstrain
 function|engine/src/resolver/pipeline_load.cpp|ResolverPipeline::loadDispatchIndex|275
 function|engine/src/resolver/pipeline_load.cpp|ResolverPipeline::loadEntityIndex|211
 function|engine/src/store/store_batch.cpp|GraphStore::insertFileResultBatch|395
-function|engine/src/store/store_core.cpp|GraphStore::importArtifact|123
 function|engine/src/store/store_core.cpp|GraphStore::open|126
 function|engine/src/store/store_graph.cpp|GraphStore::buildGraph|882
 function|engine/src/store/store_graph_csr.cpp|GraphStore::buildCSR|238

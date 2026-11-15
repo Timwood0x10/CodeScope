@@ -183,11 +183,10 @@ static char *indexProjectImpl(EngineContext *ctx, uint64_t project_id,
 	// during discovery (1254 files × ~2ms prepare/finalize = ~2.5s saved).
 	auto scan_state = ctx->store->loadFileScanStateBatch(project_id);
 
-	// Phase 1: collect file paths (single-threaded). The directory walk,
-	// README ingestion and incremental scan-state gate now live in
-	// engine_index_discover.cpp. scan_state is a safe "has history" proxy:
-	// cleanupStaleFiles removes deleted-file entries; buildGraph rebuilds
-	// from semantic_records ∩ changed_files regardless of entity state.
+	// Phase 1: collect file paths (single-threaded). The walk, README
+	// ingestion and scan-state gate live in engine_index_discover.cpp.
+	// scan_state is a safe "has history" proxy: cleanupStaleFiles removes
+	// deleted-file entries, and buildGraph rebuilds from the changed set.
 	std::vector<engine_index_discover::FileJob> jobs;
 	bool is_reindex = !scan_state.empty();
 	std::string discover_err;
