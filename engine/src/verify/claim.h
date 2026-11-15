@@ -41,10 +41,20 @@ struct Claim {
 	std::string scope = "repository";
 	std::string source_kind;
 	std::string source_ref;
+	/// True when `subject` was captured from a sentence ("supports X",
+	/// "implements X", "has/contains X") rather than supplied as an
+	/// identifier. A capability subject like that is a phrase, so a failed
+	/// name match cannot disprove it; CapabilityVerifier answers Unknown
+	/// instead of Contradicted. Claims built by verify_claim and
+	/// verify_integrity never set this flag, and a declared capability is
+	/// still judged on its implementing evidence.
+	bool captured_prose = false;
 };
 
-/// Predicate written by "has/contains ..." sentences. A verifier must not
-/// resolve that capture as a symbol: it is a phrase, not an identifier.
+/// Predicate written by "has/contains ..." sentences. It is a label for the
+/// persisted claim row, not a prose signal: detection reads
+/// Claim::captured_prose, because verify_claim also defaults to
+/// "implemented_by" for identifiers.
 inline constexpr const char *kPredicateHas = "has";
 
 // EvidenceRecord is the output of Verifier::verify(Claim). It is persisted

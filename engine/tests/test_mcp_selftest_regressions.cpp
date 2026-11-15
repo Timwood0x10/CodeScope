@@ -70,7 +70,19 @@ void Seed(sqlite3 *db)
 	     "(12,1,0,'c_brief','c_brief','api.h','cpp','(int)',0,2,0,2,0);"
 	     "INSERT INTO relation(project_id,source_id,target_id,type) VALUES "
 	     "(1,7,1,1),(1,7,2,1),(1,2,8,1),(1,3,7,1),"
-	     "(1,4,7,1),(1,5,7,1),(2,6,7,1),(1,7,9,1),(1,7,11,1);");
+	     "(1,4,7,1),(1,5,7,1),(2,6,7,1),(1,7,9,1),(1,7,11,1);"
+	     // Declared capabilities: one with a called implementation, one
+	     // with none, so both sides of CapabilityVerifier are exercised.
+	     "INSERT INTO entity(id,project_id,kind,name,qualified_name,"
+	     "file_path,language,callable_signature,is_definition,"
+	     "start_row,start_col,end_row,end_col,visibility) "
+	     "VALUES (20,1,0,'DemoCapability','DemoCapability','api.cpp',"
+	     "'cpp','()',1,6,0,6,0,0);"
+	     "INSERT INTO capability(project_id,name,source_kind,source_ref) "
+	     "VALUES (1,'DemoCapability','readme','selftest'),"
+	     "(1,'OrphanCapability','readme','selftest');"
+	     "INSERT INTO relation(project_id,source_id,target_id,type) "
+	     "VALUES (1,7,20,1);");
 }
 
 void CheckEntityQueries(engine_t engine)
@@ -202,6 +214,62 @@ void CheckVerification(engine_t engine)
 	}
 }
 
+/// Prose captures answer Unknown; identifiers keep Contradicted.
+void CheckProseVerdicts(engine_t engine)
+{
+	// 1. A capability subject captured from a sentence is a phrase: name
+	//    lookup cannot disprove it, so the verdict is Unknown with the
+	//    reason surfaced instead of an empty unknowns array.
+	for (const char *text : {
+		     "The project implements a memory tracker for Rust.",
+		     "The project supports Java.",
+	     }) {
+		auto result = Result(engine_verify_summary(engine, 1, text));
+		CHECK(Field(result, "claims_parsed").number_value == 1);
+		const auto &first = Field(result, "results").array_value[0];
+		CHECK(Field(first, "verdict").string_value == "Unknown");
+		CHECK(Field(first, "confidence").number_value == 0.0);
+		CHECK(Field(Field(result, "summary"), "status").string_value ==
+		      "no_verdicts");
+		const auto &gaps = Field(result, "unknowns").array_value;
+		CHECK(gaps.size() == 1);
+		CHECK(Field(gaps[0], "reason").string_value == "no_verdicts");
+	}
+
+	// 2. A declared capability with a called implementation stays
+	//    Supported: the flag must not become an early Unknown.
+	auto supported = Result(engine_verify_summary(
+		engine, 1, "The project implements DemoCapability."));
+	CHECK(Field(Field(supported, "results").array_value[0], "verdict")
+		      .string_value == "Supported");
+	CHECK(Field(Field(supported, "summary"), "status").string_value ==
+	      "verified");
+
+	// 3. A structured claim is an identifier. The omitted predicate also
+	//    exercises the implemented_by default that a predicate-name rule
+	//    would have misfiled as prose.
+	auto structured = Result(
+		engine_verify_claim(engine, 1,
+				    "{\"type\":\"capability_exists\","
+				    "\"subject\":\"NoSuchCapabilityXYZ\"}"));
+	CHECK(Field(structured, "verdict").string_value == "Contradicted");
+	CHECK(Field(structured, "confidence").number_value > 0.49);
+	CHECK(Field(structured, "confidence").number_value < 0.51);
+
+	// 4. verify_integrity reads declared capabilities: the orphan one has no
+	//    caller and is not exported, so it stays Contradicted.
+	auto integrity = Result(engine_verify_integrity(engine, 1, 50));
+	bool orphan = false;
+	for (const auto &finding : Field(integrity, "findings").array_value) {
+		const auto &desc = Field(finding, "description").string_value;
+		if (desc.find("OrphanCapability") == std::string::npos)
+			continue;
+		orphan = desc.find("Contradicted") != std::string::npos &&
+			 Field(finding, "confidence").number_value > 0.69;
+	}
+	CHECK(orphan);
+}
+
 } // namespace
 
 int main()
@@ -222,6 +290,7 @@ int main()
 	Seed(engineInstance(engine)->store->handle());
 	CheckEntityQueries(engine);
 	CheckVerification(engine);
+	CheckProseVerdicts(engine);
 	engine_destroy(engine);
 	std::error_code cleanup;
 	std::filesystem::remove_all(root, cleanup);

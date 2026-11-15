@@ -207,7 +207,7 @@ std::vector<Claim> ClaimParser::parse(const std::string &text,
 			c.type = ClaimType::CapabilityExists;
 			c.subject = subject;
 			c.predicate = "supported_by";
-			c.object = "";
+			c.captured_prose = true;
 			c.scope = "repository";
 			c.source_kind = source_kind;
 			c.source_ref = source_ref;
@@ -238,7 +238,7 @@ std::vector<Claim> ClaimParser::parse(const std::string &text,
 			c.type = ClaimType::CapabilityExists;
 			c.subject = subject;
 			c.predicate = "implemented_by";
-			c.object = "";
+			c.captured_prose = true;
 			c.scope = "repository";
 			c.source_kind = source_kind;
 			c.source_ref = source_ref;
@@ -292,7 +292,7 @@ std::vector<Claim> ClaimParser::parse(const std::string &text,
 			c.subject = subject;
 			c.predicate = kPredicateHas;
 			c.object = truncateAtBoundary(raw);
-			c.scope = "repository";
+			c.captured_prose = true;
 			c.source_kind = source_kind;
 			c.source_ref = source_ref;
 			claims.push_back(std::move(c));

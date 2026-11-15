@@ -305,10 +305,10 @@ EvidenceRecord CapabilityVerifier::verify(const Claim &claim)
 				"cannot confirm or deny it";
 			return rec;
 		}
-		// A parsed existence description is not a symbol name: name lookup
-		// cannot disprove it, and kPredicateHas ties this to the parser.
-		const bool prose = claim.predicate == kPredicateHas &&
-				   !claim.object.empty();
+		// A subject captured from a sentence is a phrase, not a symbol
+		// name: name lookup cannot disprove it. Only the parser sets the
+		// flag, so identifier claims keep their Contradicted answer.
+		const bool prose = claim.captured_prose;
 		rec.verdict = prose ? Verdict::Unknown : Verdict::Contradicted;
 		rec.confidence = prose ? 0.0 : kConfCapabilityAbsent;
 		rec.detail =
