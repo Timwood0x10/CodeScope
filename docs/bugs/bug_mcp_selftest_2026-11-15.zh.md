@@ -1,23 +1,23 @@
-# MCP 全工具实测记录：四条已知限制（未修复）
+# MCP 全工具实测记录：四条已知限制（第 1 项已修复，其余待处理）
 
 ## Meta
 
 | 项目 | 内容 |
 |---|---|
 | 发现时间 | 2026-11-15 |
-| 状态 | **仅记录，未修复**（后续单独立项） |
+| 状态 | **第 1 项已修复（2026-11-15）；第 2–4 项仅记录**，后续单独立项 |
 | 测试方式 | 手动 stdio 会话：`printf` 逐条发送 JSON-RPC，每行响应打时间戳；未使用脚本文件 |
 | 被测版本 | `bin/codescope` 0.2.7（2026-11-15 15:47 构建） |
 | 测试项目 | 本仓库（1122 文件 / 14842 节点）、`~/go/src/goagent`（1908 文件 / 53792 节点）、`~/code/rustcode/memscope-rs`（297 文件 / 10049 节点） |
 | 覆盖 | 48 工具 × 3 项目 = 144 次调用，另加 6 次 `analyze_project` 视图 |
 
-结论先行：48 个工具全部可调用，仅 1 次 `isError`（第 3 条的参数不适配）。以下四条是“结果与预期不符”的差异，都不属于协议错误。
+结论先行：48 个工具全部可调用，仅 1 次 `isError`（第 3 条的参数不适配）。以下四条是“结果与预期不符”的差异，都不属于协议错误。第 1 项已在同一轮修复（见该节）。
 
 ---
 
-## 1. `verify_summary` 把 `implements`/`supports` 的短语当符号名
+## 1. `verify_summary` 把 `implements`/`supports` 的短语当符号名 —— **已修复（2026-11-15）**
 
-**现象**：三个项目均返回 `Contradicted 0.5`，而输入是普通描述句。
+**现象（修复前）**：三个项目均返回 `Contradicted 0.5`，而输入是普通描述句。
 
 ```
 verify_summary("The project implements a memory tracker for Rust.")
@@ -25,11 +25,16 @@ verify_summary("The project implements a memory tracker for Rust.")
   detail: "Capability 'AMemoryTrackerForRust' is neither declared ... nor implemented"
 ```
 
-**根因**：本轮只把 `has/contains` 捕获的 `object` 当作 prose（`verify::kPredicateHas`）。`implements`/`supports` 的捕获仍被 `toPascalCase` 拼成 subject，`CapabilityVerifier` 用名字查不到就判否。
+**根因**：只有 `has/contains` 的捕获被当作散文。`implements`/`supports` 的捕获被 `toPascalCase` 拼成 subject，`CapabilityVerifier` 用名字查不到就判否。
 
-**影响**：任何“项目实现了 X”式总结都会得到否证，且置信度 0.5 足够高，调用方容易当真。
+**修复**：parser 在三个分支（`supports` / `implements` / `has`）设置 `Claim::captured_prose`；`CapabilityVerifier` 只读这个标记，把“未声明且名字匹配不到”的散文降为 `Unknown 0`。结构化入口（`verify_claim` / `verify_integrity`）不设置标记，因此：
 
-**建议**：把 `kPredicateHas` 扩成谓词集合（`has` / `contains` / `implements` / `supports`），由 parser 在捕获时标记，verifier 用同一常量判定；`object` 非空即视为 prose。
+- `verify_claim(type=capability_exists, subject=不存在的名字)` 仍是 `Contradicted 0.5`；
+- 已声明的能力继续走实现证据判定（无调用且未导出 → `Contradicted 0.7`，有调用 → `Supported`）。
+
+**为什么不用谓词推断**：`verify_claim` 的默认谓词同样是 `implemented_by`（`engine_verify_ffi.cpp:703`），按谓词名判断会把标识符 claim 一起降级。
+
+**验证**：`test_mcp_selftest_regressions` 的 `CheckProseVerdicts` 覆盖四个方向——散文 → `Unknown 0`（含 `summary.status=no_verdicts` 与 `unknowns[0].reason=no_verdicts`）、已声明且有调用 → `Supported`、结构化省略 predicate → `Contradicted 0.5`、`verify_integrity` 的孤儿能力 → `Contradicted 0.7`。
 
 ---
 
