@@ -40,7 +40,6 @@ constexpr const char *kSemanticRecordInsert =
 std::string SemanticRecordInsertSql(size_t row_count)
 {
 	std::string values = "(?";
-	values.reserve(kSemanticRecordColumns * 2 + 1);
 	for (int column = 1; column < kSemanticRecordColumns; ++column)
 		values += ",?";
 	values += ')';
@@ -242,16 +241,9 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 	if (batch.empty())
 		return true;
 
-	// ── Prepare statements ─────────────────────────────────────
-	const std::string sr_sql = SemanticRecordInsertSql(1);
-	sqlite3_stmt *sr_st = nullptr;
-	if (sqlite3_prepare_v2(db_, sr_sql.c_str(), -1, &sr_st, nullptr) !=
-	    SQLITE_OK) {
-		error_ = "[module=store, method=insertFileResultBatch] "
-			 "prepare semantic_records failed: " +
-			 std::string(sqlite3_errmsg(db_));
-		return false;
-	}
+	// ── Prepare statements ───────────────────────────────────
+	// Note: semantic_records are inserted via the multi-VALUES batch
+	// below, so no single-row statement is prepared here.
 
 	// M2: record content_hash so the next incremental run can verify a file
 	// with matching mtime+size is truly unchanged (closes the "same size +
@@ -264,7 +256,7 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 	sqlite3_stmt *fss_st = nullptr;
 	if (sqlite3_prepare_v2(db_, fss_sql, -1, &fss_st, nullptr) !=
 	    SQLITE_OK) {
-		sqlite3_finalize(sr_st);
+		sqlite3_finalize(fss_st);
 		error_ =
 			"insertFileResultBatch: prepare file_scan_state failed";
 		return false;
@@ -279,7 +271,6 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 	sqlite3_stmt *file_st = nullptr;
 	if (sqlite3_prepare_v2(db_, kFileUpsertSql, -1, &file_st, nullptr) !=
 	    SQLITE_OK) {
-		sqlite3_finalize(sr_st);
 		sqlite3_finalize(fss_st);
 		error_ = "insertFileResultBatch: prepare file failed";
 		return false;
@@ -302,7 +293,6 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 			"DELETE FROM semantic_records WHERE project_id = ? AND file_path = ?";
 		if (sqlite3_prepare_v2(db_, del_sr_sql, -1, &del_sr_st,
 				       nullptr) != SQLITE_OK) {
-			sqlite3_finalize(sr_st);
 			sqlite3_finalize(fss_st);
 			sqlite3_finalize(file_st);
 			error_ = "insertFileResultBatch: prepare del_sr failed";
@@ -333,7 +323,6 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 			sqlite3_finalize(file_st);
 			sqlite3_finalize(fss_st);
 			sqlite3_finalize(del_sr_st);
-			sqlite3_finalize(sr_st);
 			return false;
 		}
 
@@ -359,7 +348,6 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 				sqlite3_finalize(del_sr_st);
 				sqlite3_finalize(fss_st);
 				sqlite3_finalize(file_st);
-				sqlite3_finalize(sr_st);
 				return false;
 			}
 			sqlite3_reset(del_sr_st);
@@ -627,7 +615,6 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 		}
 	}
 
-	sqlite3_finalize(sr_st);
 	sqlite3_finalize(fss_st);
 	if (del_sr_st)
 		sqlite3_finalize(del_sr_st);
