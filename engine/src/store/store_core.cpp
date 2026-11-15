@@ -484,6 +484,23 @@ std::string GraphStore::exportArtifact(uint64_t project_id,
 	       ",\"compressed_bytes\":" + std::to_string(comp_size) + "}";
 }
 
+/// True when the attached artifact carries the callable source facts (v12+).
+///
+/// The artifact is produced by VACUUM INTO, which preserves the source
+/// database's user_version, so one version check answers the question for
+/// both columns that migration added.
+static bool artifactHasCallableFacts(sqlite3 *db)
+{
+	char **table = nullptr;
+	int version = 0;
+	if (sqlite3_get_table(db, "PRAGMA artifact.user_version", &table,
+			      nullptr, nullptr, nullptr) == SQLITE_OK &&
+	    table && table[0])
+		version = std::atoi(table[0]);
+	sqlite3_free_table(table);
+	return version >= 12;
+}
+
 std::string GraphStore::importArtifact(uint64_t project_id,
 				       const char *artifact_path)
 {
@@ -535,14 +552,7 @@ std::string GraphStore::importArtifact(uint64_t project_id,
 	beginTransaction();
 	bool ok = true;
 	// Pre-v12 artifacts lack is_definition/callable_signature.
-	char **ver_tbl = nullptr;
-	int av = 0;
-	if (sqlite3_get_table(db_, "PRAGMA artifact.user_version", &ver_tbl,
-			      nullptr, nullptr, nullptr) == SQLITE_OK &&
-	    ver_tbl && ver_tbl[0])
-		av = std::atoi(ver_tbl[0]);
-	sqlite3_free_table(ver_tbl);
-	const bool has_facts = av >= 12;
+	const bool has_facts = artifactHasCallableFacts(db_);
 	if (!has_facts)
 		std::fprintf(
 			stderr,
