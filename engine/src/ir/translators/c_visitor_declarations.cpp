@@ -20,7 +20,7 @@ void CVisitor::handleFuncDef(TSNode node, uint64_t parent_id)
 	uint64_t id = emitter_->emitFunction(name, loc, parent_id, 0, false,
 					     detectVisibility(node));
 	const auto facts = ReadCallableFacts(node, source_, unit_->filePath());
-	if (!unit_->setIsDefinition(id, facts.is_definition, facts.signature))
+	if (!unit_->setCallableFacts(id, facts.is_definition, facts.signature))
 		std::fprintf(
 			stderr,
 			"[module=ir, method=handleFuncDef] record missing\n");

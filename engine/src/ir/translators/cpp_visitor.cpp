@@ -155,7 +155,7 @@ void CppVisitor::handleMemberFunctionDecl(TSNode node, uint64_t parent_id)
 	// structure — file extension heuristics fail for inline .h definitions
 	// and single-line .cpp bodies. find_definition and symbol_context use
 	// this flag to prefer definitions over declarations.
-	if (!unit_->setIsDefinition(id, facts.is_definition, facts.signature))
+	if (!unit_->setCallableFacts(id, facts.is_definition, facts.signature))
 		std::fprintf(stderr,
 			     "[module=ir, method=handleMemberFunctionDecl] "
 			     "record missing\n");

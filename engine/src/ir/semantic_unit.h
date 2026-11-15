@@ -355,15 +355,16 @@ class SemanticUnit {
 	bool setQualifiedName(uint64_t record_id,
 			      const std::string &qualified_name);
 
-	/// Set the source facts used to pair declarations with definitions.
+	/// Set the callable facts (definition status + source signature) on a
+	/// record. Visitors that have AST-level definition info call this
+	/// instead of leaving the default. The signature is used to pair
+	/// declarations with definitions; empty means unknown and never pairs.
 	/// @param record_id ID of an emitted record in this unit.
 	/// @param is_def True for a definition; false for a declaration.
 	/// @param signature Borrowed source identity, copied; empty means unknown.
 	/// @return False without mutation when the ID is missing; true on update.
-	/// Requires exclusive access to this unit. Allocation failures propagate
-	/// to the enclosing FFI boundary.
-	[[nodiscard]] bool setIsDefinition(uint64_t record_id, bool is_def,
-					   const std::string &signature = {});
+	[[nodiscard]] bool setCallableFacts(uint64_t record_id, bool is_def,
+					    const std::string &signature = {});
 
     private:
 	std::vector<Record> records_;
