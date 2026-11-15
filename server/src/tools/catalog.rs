@@ -143,7 +143,7 @@ pub fn all_tools() -> Vec<Tool> {
         },
         Tool {
             name: "verify_summary".into(),
-            description: "Parse a natural-language summary (README excerpt, AI summary, PR description) into structured claims using the ClaimParser, then verify each claim. Returns aggregated verdicts and a trust_score. Useful for checking whether prose claims about the codebase are actually backed by code evidence.".into(),
+            description: "Parse a natural-language summary (README excerpt, AI summary, PR description) into structured claims using the ClaimParser, then verify each claim. Returns aggregated verdicts and a trust_score. If no claim pattern is recognized, status is no_claims and unknowns explains that the input was not verified.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -157,7 +157,7 @@ pub fn all_tools() -> Vec<Tool> {
         },
         Tool {
             name: "verify_review".into(),
-            description: "Verify a code review comment by parsing it into claims and dispatching each through the Claim -> Verifier -> Evidence pipeline. Each claim is stamped source_kind=\"code_review\" so the evidence table can be filtered by origin. Output shape is identical to verify_summary.".into(),
+            description: "Verify a code review comment by parsing it into claims and dispatching each through the Claim -> Verifier -> Evidence pipeline. Each claim is stamped source_kind=\"code_review\" so the evidence table can be filtered by origin. If claims_parsed is zero, summary.status is no_claims and unknowns explains that the input was not verified.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -335,7 +335,7 @@ pub fn all_tools() -> Vec<Tool> {
         },
         Tool {
             name: "find_callees".into(),
-            description: "Find all symbols called by the specified function. Auto-adapts to callgraph readiness.".into(),
+            description: "Find indexed symbols called by the specified function. Only resolved call edges are counted; external or unresolved calls are excluded. Results include coverage and a note: zero callees does not prove the function makes no calls.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -347,7 +347,7 @@ pub fn all_tools() -> Vec<Tool> {
         },
         Tool {
             name: "find_callers_by_entity".into(),
-            description: "Find all symbols that call the specified entity (Step 7, plan §7.2). Targets a single entity by its id, so homonyms (same name across files/classes, e.g. __init__, run, main) are never aggregated. Use the candidates returned by find_callers/find_callees when a bare name is ambiguous, or locate the entity first via find_symbol, then pass its id here.".into(),
+            description: "Find symbols that call the callable identified by entity_id. Merges C/C++ declaration and definition edges using measured callable_signature and qualified identity; overloads and homonyms stay separate. Use an id from find_definition, find_symbol, or ambiguity candidates. Ids may change after reindexing; a missing id returns entity_not_found with a refresh hint.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -358,7 +358,7 @@ pub fn all_tools() -> Vec<Tool> {
         },
         Tool {
             name: "find_callees_by_entity".into(),
-            description: "Find all symbols called by the specified entity (Step 7, plan §7.2). Targets a single entity by its id, so homonyms are never aggregated.".into(),
+            description: "Find indexed symbols called by the callable identified by entity_id. Merges C/C++ declaration and definition edges using measured callable_signature and qualified identity; overloads and homonyms stay separate. Missing ids return entity_not_found. External or unresolved calls are excluded; coverage and a note explain this even when the result is empty.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
