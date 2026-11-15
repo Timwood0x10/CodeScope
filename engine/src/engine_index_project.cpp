@@ -185,10 +185,10 @@ static char *indexProjectImpl(EngineContext *ctx, uint64_t project_id,
 
 	// Phase 1: collect file paths (single-threaded). The directory walk,
 	// README ingestion and incremental scan-state gate now live in
-	// engine_index_discover.cpp (collectFileJobs) so this TU stays under
-	// the 1000-line rule.
+	// engine_index_discover.cpp. Existing rows mean reindex even when every
+	// file is invalidated by a source-fact migration and none can be skipped.
 	std::vector<engine_index_discover::FileJob> jobs;
-	bool is_reindex = false;
+	bool is_reindex = !scan_state.empty();
 	std::string discover_err;
 	if (engine_index_discover::collectFileJobs(ctx, project_id, dir, filter,
 						   scan_state, jobs, is_reindex,
