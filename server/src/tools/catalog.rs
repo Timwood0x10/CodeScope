@@ -284,7 +284,7 @@ pub fn all_tools() -> Vec<Tool> {
         },
         Tool {
             name: "get_module_tree".into(),
-            description: "Get the hierarchical module (directory) tree for the current project. Returns modules with id, parent_id, name, path, and file_count.".into(),
+            description: "Get the hierarchical module (directory) tree for the current project. Each node carries id, parent_id, name, path, symbols (entities in that directory) and symbols_total (the subtree). Counts are entity rows, not files.".into(),
             input_schema: json!({ "type": "object", "properties": {} }),
         },
         Tool {

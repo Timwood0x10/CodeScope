@@ -72,29 +72,35 @@ uint64_t GraphStore::insertModule(uint64_t project_id, uint64_t parent_id,
 }
 // ── New Schema (Phase A): Queries ─────────────────────────────
 
-std::string GraphStore::getModuleTreeJson(uint64_t project_id)
+namespace
 {
-	// Fetch all modules for the project
+
+/// One row of the modules table.
+struct ModuleInfo {
+	uint64_t id = 0;
+	uint64_t parent_id = 0;
+	std::string name;
+	std::string path;
+	std::string language;
+	/// Entity rows in this exact directory, not files (see getModuleTreeJson).
+	int symbol_count = 0;
+};
+
+/// Read the project's modules into a flat, path-ordered list.
+///
+/// Extracted from getModuleTreeJson(), whose size is grandfathered (code_rules
+/// §1.1). @return false when the query could not be prepared or stepped.
+bool loadModules(sqlite3 *db, uint64_t project_id, std::vector<ModuleInfo> &out)
+{
 	const char *sql =
 		"SELECT id, parent_id, name, path, language, file_count "
 		"FROM modules WHERE project_id = ? ORDER BY path";
 	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-		return "{\"error\":\"getModuleTreeJson: prepare failed\"}";
-	}
+	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+		return false;
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-
-	// Build flat list first
-	struct ModuleInfo {
-		uint64_t id;
-		uint64_t parent_id;
-		std::string name;
-		std::string path;
-		std::string language;
-		int file_count;
-	};
-	std::vector<ModuleInfo> modules;
-	while (sqlite3_step(stmt) == SQLITE_ROW) {
+	int rc = SQLITE_ROW;
+	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
 		ModuleInfo m;
 		m.id = static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
 		m.parent_id = sqlite3_column_type(stmt, 1) == SQLITE_NULL ?
@@ -110,10 +116,21 @@ std::string GraphStore::getModuleTreeJson(uint64_t project_id)
 		const char *l = reinterpret_cast<const char *>(
 			sqlite3_column_text(stmt, 4));
 		m.language = l ? l : "";
-		m.file_count = sqlite3_column_int(stmt, 5);
-		modules.push_back(std::move(m));
+		m.symbol_count = sqlite3_column_int(stmt, 5);
+		out.push_back(std::move(m));
 	}
 	sqlite3_finalize(stmt);
+	return rc == SQLITE_DONE;
+}
+
+} // namespace
+
+std::string GraphStore::getModuleTreeJson(uint64_t project_id)
+{
+	// Build flat list first.
+	std::vector<ModuleInfo> modules;
+	if (!loadModules(db_, project_id, modules))
+		return "{\"error\":\"getModuleTreeJson: query failed\"}";
 
 	if (modules.empty()) {
 		return "{\"modules\":[]}";
@@ -131,8 +148,36 @@ std::string GraphStore::getModuleTreeJson(uint64_t project_id)
 	json << "{\"modules\":[";
 	// Build child map: parent_id → list of child module ids
 	std::unordered_map<uint64_t, std::vector<uint64_t>> children_of;
+	std::unordered_map<uint64_t, int64_t> subtree_symbols;
 	for (const auto &m : modules)
 		children_of[m.parent_id].push_back(m.id);
+
+	// `modules.file_count` counts entity rows in the directory it names (it is
+	// populated from entity.module_path), not files — and it was never rolled
+	// up, so a parent reported 0 while its children held thousands. Both the
+	// own-directory count and the subtree total are reported now, and neither
+	// is called "file".
+	//
+	// The subtree pass is a memoised post-order walk; parents appear before
+	// children in `modules`, so a naive accumulation would miss them.
+	std::function<int64_t(uint64_t)> sumSubtree =
+		[&](uint64_t id) -> int64_t {
+		auto cached = subtree_symbols.find(id);
+		if (cached != subtree_symbols.end())
+			return cached->second;
+		int64_t total = 0;
+		for (const auto &m : modules)
+			if (m.id == id) {
+				total = m.symbol_count;
+				break;
+			}
+		auto ci = children_of.find(id);
+		if (ci != children_of.end())
+			for (auto cid : ci->second)
+				total += sumSubtree(cid);
+		subtree_symbols[id] = total;
+		return total;
+	};
 	std::function<void(uint64_t, int, bool &)> outMod =
 		[&](uint64_t id, int depth, bool &first) {
 			auto it = std::find_if(modules.begin(), modules.end(),
@@ -156,7 +201,8 @@ std::string GraphStore::getModuleTreeJson(uint64_t project_id)
 			     << util::jsonEscapeString(it->path) << "\""
 			     << ",\"language\":\""
 			     << util::jsonEscapeString(it->language) << "\""
-			     << ",\"file_count\":" << it->file_count;
+			     << ",\"symbols\":" << it->symbol_count
+			     << ",\"symbols_total\":" << sumSubtree(id);
 			auto ci = children_of.find(id);
 			if (ci != children_of.end() && !ci->second.empty()) {
 				json << ",\"children\":[";
