@@ -185,8 +185,9 @@ static char *indexProjectImpl(EngineContext *ctx, uint64_t project_id,
 
 	// Phase 1: collect file paths (single-threaded). The directory walk,
 	// README ingestion and incremental scan-state gate now live in
-	// engine_index_discover.cpp. Existing rows mean reindex even when every
-	// file is invalidated by a source-fact migration and none can be skipped.
+	// engine_index_discover.cpp. scan_state is a safe "has history" proxy:
+	// cleanupStaleFiles removes deleted-file entries; buildGraph rebuilds
+	// from semantic_records ∩ changed_files regardless of entity state.
 	std::vector<engine_index_discover::FileJob> jobs;
 	bool is_reindex = !scan_state.empty();
 	std::string discover_err;
