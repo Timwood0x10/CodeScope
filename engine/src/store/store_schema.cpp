@@ -833,6 +833,16 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 	// grandfathered size — code_rules §1.1 lets over-limit code shrink, never
 	// grow.
 	bool ok = exec(schema);
+	if (!ok) {
+		// Fail-fast: a DDL failure means tables are missing, so running
+		// migrations would produce misleading "no such table" errors far
+		// from the real cause. Surface the original DDL error instead.
+		fprintf(stderr,
+			"createSchema: DDL failed, skipping migrations: %s "
+			"[module=store, method=createSchema]\n",
+			error_.c_str());
+		return false;
+	}
 	return finishSchema(ok);
 }
 
