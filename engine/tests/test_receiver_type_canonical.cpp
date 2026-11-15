@@ -43,7 +43,8 @@ void expectCanonical(const char *in, const char *want)
 {
 	const std::string got = resolver::canonicalTypeName(in);
 	if (got != want) {
-		fprintf(stderr, "FAIL: canonicalTypeName(\"%s\") = \"%s\", want \"%s\"\n",
+		fprintf(stderr,
+			"FAIL: canonicalTypeName(\"%s\") = \"%s\", want \"%s\"\n",
 			in, got.c_str(), want);
 	}
 	CHECK(got == want);
@@ -73,12 +74,11 @@ long long scalarSql(sqlite3 *db, const char *sql)
 /// The resolution kind of the edge `caller -> callee`, or "(no edge)".
 std::string edgeKind(sqlite3 *db, const char *caller, const char *callee)
 {
-	const char *sql =
-		"SELECT r.resolution_kind FROM relation r "
-		"JOIN entity se ON se.id = r.source_id "
-		"JOIN entity te ON te.id = r.target_id "
-		"WHERE r.type = 1 AND se.name = ? AND te.name = ? "
-		"ORDER BY r.resolution_kind LIMIT 1";
+	const char *sql = "SELECT r.resolution_kind FROM relation r "
+			  "JOIN entity se ON se.id = r.source_id "
+			  "JOIN entity te ON te.id = r.target_id "
+			  "WHERE r.type = 1 AND se.name = ? AND te.name = ? "
+			  "ORDER BY r.resolution_kind LIMIT 1";
 	sqlite3_stmt *st = nullptr;
 	CHECK(sqlite3_prepare_v2(db, sql, -1, &st, nullptr) == SQLITE_OK);
 	sqlite3_bind_text(st, 1, caller, -1, SQLITE_TRANSIENT);
@@ -139,12 +139,16 @@ int main()
 	expectCanonical("map[string]int", "");
 	expectCanonical("<-chan os.Signal", "");
 	expectCanonical("chan<- *Event", "");
-	expectCanonical("func(ctx context.Context, s string) (<-chan T, error)", "");
+	expectCanonical("func(ctx context.Context, s string) (<-chan T, error)",
+			"");
 	expectCanonical("::", "");
 
 	// ── Part 2: the field-chain walk through the real index path ──
 	const std::string proj_dir = "/tmp/receiver_type_canonical_repro";
-	{ std::error_code ec_remove; std::filesystem::remove_all(proj_dir, ec_remove); }
+	{
+		std::error_code ec_remove;
+		std::filesystem::remove_all(proj_dir, ec_remove);
+	}
 	std::filesystem::create_directories(proj_dir + "/src");
 
 	writeFile(proj_dir + "/src/iface.go",
@@ -157,16 +161,15 @@ int main()
 		  "type Registry struct{}\n"
 		  "\n"
 		  "func (r *Registry) Get(id string) error { return nil }\n");
-	writeFile(proj_dir + "/src/holders.go",
-		  "package p\n"
-		  "\n"
-		  "type Holder struct {\n"
-		  "\tregistry Getter\n"
-		  "}\n"
-		  "\n"
-		  "type Outer struct {\n"
-		  "\tinner *Holder\n"
-		  "}\n");
+	writeFile(proj_dir + "/src/holders.go", "package p\n"
+						"\n"
+						"type Holder struct {\n"
+						"\tregistry Getter\n"
+						"}\n"
+						"\n"
+						"type Outer struct {\n"
+						"\tinner *Holder\n"
+						"}\n");
 	writeFile(proj_dir + "/src/use_ptr.go",
 		  "package p\n"
 		  "\n"
@@ -197,12 +200,11 @@ int main()
 						   "receiver-canonical");
 	CHECK(pid > 0);
 
-	const std::string request = "{\"paths\":[\"" + proj_dir +
-				    "/src/iface.go\",\"" + proj_dir +
-				    "/src/holders.go\",\"" + proj_dir +
-				    "/src/use_ptr.go\",\"" + proj_dir +
-				    "/src/use_nested.go\",\"" + proj_dir +
-				    "/src/use_unknown.go\"]}";
+	const std::string request =
+		"{\"paths\":[\"" + proj_dir + "/src/iface.go\",\"" + proj_dir +
+		"/src/holders.go\",\"" + proj_dir + "/src/use_ptr.go\",\"" +
+		proj_dir + "/src/use_nested.go\",\"" + proj_dir +
+		"/src/use_unknown.go\"]}";
 	char *res = engine_index_files(g_engine, pid, request.c_str(), 1);
 	CHECK(res != nullptr);
 	CHECK(strstr(res, "\"ok\":true") != nullptr);
@@ -221,7 +223,8 @@ int main()
 	// The call sites below are only meaningful while the name is ambiguous —
 	// the interface method and its implementation are both called `Get` — and
 	// while the fixture really parsed (the three call sites exist).
-	CHECK(scalarSql(db, "SELECT COUNT(*) FROM entity WHERE name='Get'") >= 2);
+	CHECK(scalarSql(db, "SELECT COUNT(*) FROM entity WHERE name='Get'") >=
+	      2);
 	CHECK(scalarSql(db, "SELECT COUNT(*) FROM entity WHERE name IN "
 			    "('usePtr','useNested','useUnknown')") == 3);
 
@@ -238,7 +241,8 @@ int main()
 	sqlite3_close(db);
 	unlink(db_path.c_str());
 	if (checkFailures()) {
-		fprintf(stderr, "=== receiver type canonicalisation: FAILED ===\n");
+		fprintf(stderr,
+			"=== receiver type canonicalisation: FAILED ===\n");
 		return 1;
 	}
 	printf("=== receiver type canonicalisation test passed ===\n");

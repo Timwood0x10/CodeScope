@@ -36,7 +36,10 @@
 // compute/main with a known call chain: main -> compute -> multiply -> add.
 static void writeFixture(const std::string &dir)
 {
-	{ std::error_code ec_remove; std::filesystem::remove_all(dir, ec_remove); }
+	{
+		std::error_code ec_remove;
+		std::filesystem::remove_all(dir, ec_remove);
+	}
 	std::filesystem::create_directories(dir);
 
 	FILE *f = fopen((dir + "/multi.go").c_str(), "w");

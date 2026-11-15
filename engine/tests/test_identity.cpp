@@ -63,8 +63,9 @@ static void testSha256Vectors()
 		"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
 		"sha256 of \"abc\"");
 	// 56 bytes: the padding has to start a second block.
-	checkEq(store::Sha256Hex("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomn"
-				 "opnopq"),
+	checkEq(store::Sha256Hex(
+			"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomn"
+			"opnopq"),
 		"248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
 		"sha256 of the 56-byte NIST vector");
 	std::printf("  [PASS] SHA-256 vectors\n");
@@ -90,7 +91,8 @@ static void testFindingKey()
 	check(key.size() == 64, "finding key must be 64 hex characters");
 	check(key != store::FindingKey("size.other", "symbol:Big::Parse"),
 	      "different rule must produce a different key");
-	check(key != store::FindingKey("size.file_too_large", "symbol:Big::Read"),
+	check(key != store::FindingKey("size.file_too_large",
+				       "symbol:Big::Read"),
 	      "different anchor must produce a different key");
 	// The separator must prevent boundary collisions.
 	check(store::FindingKey("ab", "c") != store::FindingKey("a", "bc"),
@@ -136,7 +138,8 @@ int main()
 	      "a content change must change the worktree digest");
 
 	// Insertion order must not matter: the digest is sorted by path.
-	uint64_t project_b = store.createProject("/test/identity-b", "identity-b");
+	uint64_t project_b =
+		store.createProject("/test/identity-b", "identity-b");
 	store.upsertFile(project_b, "README.md", "markdown", "hash-r2");
 	store.upsertFile(project_b, "src/a.cpp", "cpp", "hash-a1");
 	checkEq(store.worktreeDigest(project_b), digest_after,
@@ -148,8 +151,7 @@ int main()
 		store::FindingKey("size.file_too_large", "symbol:Big");
 	store.upsertFile(project_id, "README.md", "markdown", "hash-r3");
 	checkEq(store::FindingKey("size.file_too_large", "symbol:Big"),
-		key_before,
-		"finding key must survive a source change");
+		key_before, "finding key must survive a source change");
 	check(store.worktreeDigest(project_id) != digest_after,
 	      "the source state itself must have moved on");
 

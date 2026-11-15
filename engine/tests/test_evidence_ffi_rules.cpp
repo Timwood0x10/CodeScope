@@ -28,8 +28,8 @@ static char kBrokenRulesDir[160];
 
 static void initPaths()
 {
-	std::snprintf(kDbPath, sizeof(kDbPath), "/tmp/codescope_rules_ffi_%d.db",
-		      int(getpid()));
+	std::snprintf(kDbPath, sizeof(kDbPath),
+		      "/tmp/codescope_rules_ffi_%d.db", int(getpid()));
 	std::snprintf(kBrokenRulesDir, sizeof(kBrokenRulesDir),
 		      "/tmp/codescope_broken_rules_%d", int(getpid()));
 }
@@ -54,15 +54,16 @@ static void expectRuleError(const char *label, char *result)
 	engine_free_string(result);
 
 	if (json == "[]") {
-		std::fprintf(stderr,
-			     "FAIL %s: returned [] — no rule ran, but the answer "
-			     "claims the project is clean\n",
-			     label);
+		std::fprintf(
+			stderr,
+			"FAIL %s: returned [] — no rule ran, but the answer "
+			"claims the project is clean\n",
+			label);
 		std::exit(1);
 	}
 	if (json.find("\"error\"") == std::string::npos) {
-		std::fprintf(stderr, "FAIL %s: no error field in %.120s\n", label,
-			     json.c_str());
+		std::fprintf(stderr, "FAIL %s: no error field in %.120s\n",
+			     label, json.c_str());
 		std::exit(1);
 	}
 	std::printf("  [PASS] %s\n", label);
@@ -72,7 +73,10 @@ int main()
 {
 	initPaths();
 	removeDbFiles();
-	{ std::error_code ec_remove; std::filesystem::remove_all(kBrokenRulesDir, ec_remove); }
+	{
+		std::error_code ec_remove;
+		std::filesystem::remove_all(kBrokenRulesDir, ec_remove);
+	}
 
 	engine_t engine = engine_create(kDbPath);
 	if (!engine) {
@@ -84,7 +88,8 @@ int main()
 	// (the .json exists) but every file fails to parse.
 	std::filesystem::create_directories(kBrokenRulesDir);
 	{
-		std::ofstream broken(std::string(kBrokenRulesDir) + "/broken.json");
+		std::ofstream broken(std::string(kBrokenRulesDir) +
+				     "/broken.json");
 		broken << "{ this is not valid json ";
 	}
 	setenv("CODESCOPE_RULES_DIR", kBrokenRulesDir, 1);
@@ -92,7 +97,10 @@ int main()
 			engine_build_evidence(engine, 1, ""));
 
 	unsetenv("CODESCOPE_RULES_DIR");
-	{ std::error_code ec_remove; std::filesystem::remove_all(kBrokenRulesDir, ec_remove); }
+	{
+		std::error_code ec_remove;
+		std::filesystem::remove_all(kBrokenRulesDir, ec_remove);
+	}
 
 	engine_destroy(engine);
 	removeDbFiles();

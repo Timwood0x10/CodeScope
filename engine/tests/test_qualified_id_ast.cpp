@@ -94,7 +94,10 @@ int main()
 	// Exercises Bug 3-C (out-of-class definition) and Bug 3-D
 	// (this->method() call edge).
 	const char *cpp_proj_dir = "/tmp/cpp_repro_qualified";
-	{ std::error_code ec_remove; std::filesystem::remove_all(cpp_proj_dir, ec_remove); }
+	{
+		std::error_code ec_remove;
+		std::filesystem::remove_all(cpp_proj_dir, ec_remove);
+	}
 	std::filesystem::create_directories(cpp_proj_dir);
 	const std::string cpp_path_str =
 		std::string(cpp_proj_dir) + "/qualified.cpp";
@@ -193,7 +196,10 @@ int main() {
 	// Exercises Bug 3-D for Python: self.fig.add_trace() should
 	// resolve callee name to "add_trace" (not "fig" or "self").
 	const char *py_proj_dir = "/tmp/py_repro_chained";
-	{ std::error_code ec_remove; std::filesystem::remove_all(py_proj_dir, ec_remove); }
+	{
+		std::error_code ec_remove;
+		std::filesystem::remove_all(py_proj_dir, ec_remove);
+	}
 	std::filesystem::create_directories(py_proj_dir);
 	const std::string py_path_str =
 		std::string(py_proj_dir) + "/chained.py";
@@ -263,8 +269,14 @@ class Worker:
 	g_engine = nullptr;
 
 	// ── Cleanup ─────────────────────────────────────────────────
-	{ std::error_code ec_remove; std::filesystem::remove_all(cpp_proj_dir, ec_remove); }
-	{ std::error_code ec_remove; std::filesystem::remove_all(py_proj_dir, ec_remove); }
+	{
+		std::error_code ec_remove;
+		std::filesystem::remove_all(cpp_proj_dir, ec_remove);
+	}
+	{
+		std::error_code ec_remove;
+		std::filesystem::remove_all(py_proj_dir, ec_remove);
+	}
 
 	printf("\n=== Qualified identifier + chained attribute test passed ===\n");
 	return 0;

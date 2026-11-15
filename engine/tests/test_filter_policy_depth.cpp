@@ -127,12 +127,16 @@ int main()
 	// points now use.
 	{
 		const std::string root = "/tmp/filter_policy_java_bootstrap";
-		{ std::error_code ec_remove; std::filesystem::remove_all(root, ec_remove); }
+		{
+			std::error_code ec_remove;
+			std::filesystem::remove_all(root, ec_remove);
+		}
 		std::filesystem::create_directories(
 			root + "/src/main/java/org/acme/samples");
 		std::filesystem::create_directories(root + "/src/test/java");
-		for (const char *rel : { "src/main/java/org/acme/samples/Owner.java",
-					 "src/test/java/OwnerTest.java" }) {
+		for (const char *rel :
+		     { "src/main/java/org/acme/samples/Owner.java",
+		       "src/test/java/OwnerTest.java" }) {
 			FILE *f = fopen((root + "/" + rel).c_str(), "w");
 			check(f != nullptr, "fixture file must be creatable");
 			fputs("class X {}\n", f);
@@ -142,22 +146,29 @@ int main()
 		// Before: no language context, so `samples` is skipped at any depth
 		// and the file that would reveal the language is unreachable.
 		FilterPolicy before;
-		expectPath(before, "src/main/java/org/acme/samples/Owner.java", true,
-			   "without a language context, samples is skipped (the bug)");
+		expectPath(
+			before, "src/main/java/org/acme/samples/Owner.java",
+			true,
+			"without a language context, samples is skipped (the bug)");
 
 		FilterPolicy after;
 		applyProjectLanguageContext(after, root);
 		check(after.langContext() == "java",
 		      "a tree containing a .java file must set the Java context");
-		expectPath(after, "src/main/java/org/acme/samples/Owner.java", false,
-			   "Java: the same path is package code, not a samples folder");
+		expectPath(
+			after, "src/main/java/org/acme/samples/Owner.java",
+			false,
+			"Java: the same path is package code, not a samples folder");
 		expectPath(after, "src/test/java/OwnerTest.java", true,
 			   "Java: src/test/ is still skipped at depth 2");
 
 		// A tree with no .java file must NOT be flipped: the carve-out only
 		// relaxes the names for Java, and other languages nest real test dirs.
 		const std::string go_root = root + "_go";
-		{ std::error_code ec_remove; std::filesystem::remove_all(go_root, ec_remove); }
+		{
+			std::error_code ec_remove;
+			std::filesystem::remove_all(go_root, ec_remove);
+		}
 		std::filesystem::create_directories(go_root + "/pkg/a/test");
 		FILE *g = fopen((go_root + "/pkg/a/test/x.go").c_str(), "w");
 		check(g != nullptr, "go fixture file must be creatable");
@@ -170,8 +181,14 @@ int main()
 		expectPath(go, "pkg/a/test/x.go", true,
 			   "non-Java: test/ stays any-depth");
 
-		{ std::error_code ec_remove; std::filesystem::remove_all(root, ec_remove); }
-		{ std::error_code ec_remove; std::filesystem::remove_all(go_root, ec_remove); }
+		{
+			std::error_code ec_remove;
+			std::filesystem::remove_all(root, ec_remove);
+		}
+		{
+			std::error_code ec_remove;
+			std::filesystem::remove_all(go_root, ec_remove);
+		}
 	}
 
 	printf("\nAll filter policy depth tests passed.\n");

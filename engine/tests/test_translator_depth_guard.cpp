@@ -165,9 +165,9 @@ int main()
 	// ── 1. Ordinary code is not truncated ───────────────────────────────
 	{
 		bool produced = false;
-		const std::string err = translateCapturing(
-			"c", "int f(void) { return 1; }\n",
-				"/t/shallow.c", &produced);
+		const std::string err =
+			translateCapturing("c", "int f(void) { return 1; }\n",
+					   "/t/shallow.c", &produced);
 		CHECK(produced, "a normal file must still translate");
 		CHECK(countOccurrences(err, truncated) == 0,
 		      "the recursion bound must not fire on ordinary code");
@@ -184,10 +184,9 @@ int main()
 					 nest("{", "int x = 0;", "}", 900) +
 					 " }\n";
 		bool produced = false;
-		const std::string err = translateCapturing(
-			"c", code, "/t/deep.c", &produced);
-		CHECK(parseDepth("c", code) >
-			      ir::kMaxTranslateDepth,
+		const std::string err =
+			translateCapturing("c", code, "/t/deep.c", &produced);
+		CHECK(parseDepth("c", code) > ir::kMaxTranslateDepth,
 		      "fixture check: the file must nest deeper than the "
 		      "bound, or this test would pass vacuously");
 		CHECK(produced,
@@ -206,9 +205,8 @@ int main()
 			code += std::string(i, '\t') + "if True:\n";
 		code += std::string(900, '\t') + "pass\n";
 		bool produced = false;
-		const std::string err =
-			translateCapturing("python", code, "/t/deep.py",
-					   &produced);
+		const std::string err = translateCapturing(
+			"python", code, "/t/deep.py", &produced);
 		CHECK(produced, "the python translator must also complete");
 		CHECK(countOccurrences(err, truncated) == 1,
 		      "the python translator must apply the same bound (the guard "

@@ -33,8 +33,8 @@ static void check(bool cond, const char *msg)
 
 static void initPath()
 {
-	std::snprintf(kDbPath, sizeof(kDbPath), "/tmp/codescope_run_rules_%d.db",
-		      int(getpid()));
+	std::snprintf(kDbPath, sizeof(kDbPath),
+		      "/tmp/codescope_run_rules_%d.db", int(getpid()));
 }
 
 static void removeDbFiles()

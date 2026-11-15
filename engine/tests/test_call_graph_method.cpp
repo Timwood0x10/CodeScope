@@ -65,7 +65,10 @@ int main()
 	const char *cpp_path = cpp_path_str.c_str();
 	const char *py_path = py_path_str.c_str();
 
-	{ std::error_code ec_remove; std::filesystem::remove_all(proj_dir, ec_remove); }
+	{
+		std::error_code ec_remove;
+		std::filesystem::remove_all(proj_dir, ec_remove);
+	}
 	std::filesystem::create_directories(proj_dir);
 
 	// C++ source: struct Point with adder method; AddPoints calls
@@ -274,7 +277,10 @@ def make_timeline():
 	g_engine = nullptr;
 
 	// Cleanup temp dir
-	{ std::error_code ec_remove; std::filesystem::remove_all(proj_dir, ec_remove); }
+	{
+		std::error_code ec_remove;
+		std::filesystem::remove_all(proj_dir, ec_remove);
+	}
 
 	printf("\n=== Method call graph test passed ===\n");
 	return 0;

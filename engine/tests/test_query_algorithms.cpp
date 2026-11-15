@@ -521,10 +521,10 @@ static void testImpactPathForms(store::GraphStore &store, uint64_t project_id)
 	insertGraphNode(store, project_id, 700, "rel_fn", "/test/src/rel.cpp");
 	syncSQLite(store, project_id);
 	CHECK(jsonContains(query::analyzeChangeImpact(project_id, &store,
-						       "[\"/test/src/rel.cpp\"]"),
+						      "[\"/test/src/rel.cpp\"]"),
 			   "\"id\":700"));
 	CHECK(jsonContains(query::analyzeChangeImpact(project_id, &store,
-						       "[\"src/rel.cpp\"]"),
+						      "[\"src/rel.cpp\"]"),
 			   "\"id\":700"));
 
 	// ── Through a symlink ────────────────────────────────────────
@@ -555,10 +555,10 @@ static void testImpactPathForms(store::GraphStore &store, uint64_t project_id)
 			(stored_dir + "/b.cpp").c_str());
 	syncSQLite(store, project_id);
 	const std::string via_link = (link / "b.cpp").string();
-	CHECK(jsonContains(query::analyzeChangeImpact(project_id, &store,
-						       ("[\"" + via_link + "\"]")
-							       .c_str()),
-			   "\"id\":701"));
+	CHECK(jsonContains(
+		query::analyzeChangeImpact(project_id, &store,
+					   ("[\"" + via_link + "\"]").c_str()),
+		"\"id\":701"));
 
 	// The same spelling as a FILE FILTER, which findDefinition wraps in
 	// `file_path LIKE '%'||?||'%'`: an absolute path that reaches the project

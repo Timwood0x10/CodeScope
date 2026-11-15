@@ -462,8 +462,8 @@ static void test_type_annotation_extraction()
 	// of the annotation. An object type literal used to yield its first member
 	// ("id: Foo"), which no declaration can be keyed by: the receiver type could
 	// never match a candidate, and every tool printed it as if it were a name.
-	CHECK(annotationType(lang, "const g: { id: Foo; n: number }[] = x;\n") ==
-		      "",
+	CHECK(annotationType(lang,
+			     "const g: { id: Foo; n: number }[] = x;\n") == "",
 	      "object type literal reports unknown");
 	CHECK(annotationType(lang, "const h: (a: number) => void = f;\n") == "",
 	      "function type reports unknown");

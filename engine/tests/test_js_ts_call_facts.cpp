@@ -98,7 +98,10 @@ static void writeFile(const std::string &path, const char *content)
 int main()
 {
 	const std::string root = "/tmp/codescope_js_ts_call_facts";
-	{ std::error_code ec_remove; std::filesystem::remove_all(root, ec_remove); }
+	{
+		std::error_code ec_remove;
+		std::filesystem::remove_all(root, ec_remove);
+	}
 
 	// util.js — namespace-import target.
 	writeFile(root + "/src/util.js",
@@ -194,7 +197,10 @@ int main()
 	sqlite3_close(db);
 	engine_destroy(g_engine);
 	g_engine = nullptr;
-	{ std::error_code ec_remove; std::filesystem::remove_all(root, ec_remove); }
+	{
+		std::error_code ec_remove;
+		std::filesystem::remove_all(root, ec_remove);
+	}
 	printf("\nAll JS/TS call-fact tests passed.\n");
 	return 0;
 }

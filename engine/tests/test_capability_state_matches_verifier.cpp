@@ -41,8 +41,9 @@ static void insertCapability(store::GraphStore &store, uint64_t project_id,
 			     const char *name)
 {
 	sqlite3 *db = store.handle();
-	const char *sql = "INSERT INTO capability (project_id, name, source_kind) "
-			  "VALUES (?,?, 'readme')";
+	const char *sql =
+		"INSERT INTO capability (project_id, name, source_kind) "
+		"VALUES (?,?, 'readme')";
 	sqlite3_stmt *stmt = nullptr;
 	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
@@ -135,9 +136,8 @@ static void expectAgreement(store::GraphStore &store, uint64_t project_id,
 			    const char *capability)
 {
 	bool ok = false;
-	const std::vector<int64_t> ids =
-		verify::implementingEntitiesFor(&store, project_id, capability,
-						ok);
+	const std::vector<int64_t> ids = verify::implementingEntitiesFor(
+		&store, project_id, capability, ok);
 	CHECK(ok);
 	const std::string want = ids.empty() ? "Declared" : "Implemented";
 	const std::string got = stateOf(store, project_id, capability);
@@ -203,7 +203,8 @@ int main()
 
 	// 3. Pinned verdicts, so the agreement above cannot pass vacuously by
 	// both sides going blank.
-	CHECK(stateOf(store, project_id, "IncrementalIndexing") == "Implemented");
+	CHECK(stateOf(store, project_id, "IncrementalIndexing") ==
+	      "Implemented");
 	CHECK(stateOf(store, project_id, "Run") == "Implemented");
 	CHECK(stateOf(store, project_id, "CacheIndex") == "Declared");
 	CHECK(stateOf(store, project_id, "TelemetryExport") == "Declared");
@@ -220,7 +221,8 @@ int main()
 	unlink(db_path);
 
 	if (checkFailures()) {
-		fprintf(stderr, "=== capability_state/verifier agreement: FAILED ===\n");
+		fprintf(stderr,
+			"=== capability_state/verifier agreement: FAILED ===\n");
 		return 1;
 	}
 	printf("=== capability_state/verifier agreement test passed ===\n");

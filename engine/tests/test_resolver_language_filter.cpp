@@ -137,7 +137,10 @@ static void indexDir(const char *db_path, const std::string &dir,
 static void testCrossLanguageCandidateRejected()
 {
 	const std::string root = "/tmp/codescope_langfilter_mix";
-	{ std::error_code ec_remove; std::filesystem::remove_all(root, ec_remove); }
+	{
+		std::error_code ec_remove;
+		std::filesystem::remove_all(root, ec_remove);
+	}
 	// The C++ caller and the Python candidate share one directory, so the
 	// fast path's same_dir gate is satisfied — only the language rule can
 	// reject it.
@@ -163,7 +166,10 @@ static void testCrossLanguageCandidateRejected()
 
 	engine_destroy(g_engine);
 	g_engine = nullptr;
-	{ std::error_code ec_remove; std::filesystem::remove_all(root, ec_remove); }
+	{
+		std::error_code ec_remove;
+		std::filesystem::remove_all(root, ec_remove);
+	}
 	printf("  [PASS] cross-language single candidate rejected\n");
 }
 
@@ -171,7 +177,10 @@ static void testCrossLanguageCandidateRejected()
 static void testCFamilyCandidateAccepted()
 {
 	const std::string root = "/tmp/codescope_langfilter_cfam";
-	{ std::error_code ec_remove; std::filesystem::remove_all(root, ec_remove); }
+	{
+		std::error_code ec_remove;
+		std::filesystem::remove_all(root, ec_remove);
+	}
 	// `main` in a.c calls helper(), which is defined in b.c. The caller's
 	// language is classified "cpp" from the path while the entity is
 	// labelled "c" — the C family rule must let this resolve.
@@ -195,7 +204,10 @@ static void testCFamilyCandidateAccepted()
 
 	engine_destroy(g_engine);
 	g_engine = nullptr;
-	{ std::error_code ec_remove; std::filesystem::remove_all(root, ec_remove); }
+	{
+		std::error_code ec_remove;
+		std::filesystem::remove_all(root, ec_remove);
+	}
 	printf("  [PASS] C-family candidate accepted (main -> helper)\n");
 }
 
@@ -208,7 +220,10 @@ static void testCFamilyCandidateAccepted()
 static void testJsTsFamilyCandidateAccepted()
 {
 	const std::string root = "/tmp/codescope_langfilter_jsts";
-	{ std::error_code ec_remove; std::filesystem::remove_all(root, ec_remove); }
+	{
+		std::error_code ec_remove;
+		std::filesystem::remove_all(root, ec_remove);
+	}
 	writeFile(root + "/web/Widget.tsx",
 		  "export function widgetHelper() { return 1; }\n");
 	writeFile(root + "/web/App.tsx",
@@ -232,7 +247,10 @@ static void testJsTsFamilyCandidateAccepted()
 
 	engine_destroy(g_engine);
 	g_engine = nullptr;
-	{ std::error_code ec_remove; std::filesystem::remove_all(root, ec_remove); }
+	{
+		std::error_code ec_remove;
+		std::filesystem::remove_all(root, ec_remove);
+	}
 	printf("  [PASS] JS/TS family candidate accepted (App -> widgetHelper)\n");
 }
 
@@ -292,7 +310,10 @@ static void testRelativeImportMatcher()
 static void testRelativeImportBeatsDecoy()
 {
 	const std::string root = "/tmp/codescope_langfilter_importpath";
-	{ std::error_code ec_remove; std::filesystem::remove_all(root, ec_remove); }
+	{
+		std::error_code ec_remove;
+		std::filesystem::remove_all(root, ec_remove);
+	}
 	// The decoy lives in `app/decoy/`, which sorts BEFORE `app/lib/`: entity
 	// ids follow the scan order, and the resolver keeps the first candidate
 	// when scores are equal (`c.total_score > best_score` is a strict
@@ -338,7 +359,10 @@ static void testRelativeImportBeatsDecoy()
 
 	engine_destroy(g_engine);
 	g_engine = nullptr;
-	{ std::error_code ec_remove; std::filesystem::remove_all(root, ec_remove); }
+	{
+		std::error_code ec_remove;
+		std::filesystem::remove_all(root, ec_remove);
+	}
 	printf("  [PASS] relative import beats a same-named decoy\n");
 }
 

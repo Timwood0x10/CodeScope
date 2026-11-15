@@ -58,7 +58,7 @@ jobs:
       - name: Lint C++ (clang-format)
         run: |
           set -e
-          FILES=$(find engine/src engine/include -name '*.cpp' -o -name '*.h' 2>/dev/null)
+          FILES=$(find engine/src engine/include engine/tests -name '*.cpp' -o -name '*.h' 2>/dev/null)
           if [ -n "$FILES" ]; then
             echo "$FILES" | xargs clang-format --dry-run --Werror
             echo "  ✓ clang-format passed"

@@ -140,8 +140,8 @@ static void test_rust_macro_invocation_emits_call()
 			   "fn caller() { do_work!(); }\n";
 
 	ir::RustVisitor visitor;
-	ir::SemanticUnit *unit = runVisitor(visitor, "rust",
-					    code, "/test/macro.rs");
+	ir::SemanticUnit *unit =
+		runVisitor(visitor, "rust", code, "/test/macro.rs");
 
 	CHECK(hasNamed(*unit, ir::RecordKind::CallExpr, "do_work"),
 	      "macro_invocation must emit a CallExpr (macro calls are calls)");
@@ -155,8 +155,8 @@ static void test_rust_builtin_macro_filtered()
 	const char *code = "fn caller() { println!(\"hello\"); }\n";
 
 	ir::RustVisitor visitor;
-	ir::SemanticUnit *unit = runVisitor(visitor, "rust",
-					    code, "/test/builtin_macro.rs");
+	ir::SemanticUnit *unit =
+		runVisitor(visitor, "rust", code, "/test/builtin_macro.rs");
 
 	CHECK(!hasNamed(*unit, ir::RecordKind::CallExpr, "println"),
 	      "builtin macro println! must not create a call record");
@@ -179,8 +179,8 @@ static void test_go_short_var_defines_variables()
 			   "}\n";
 
 	ir::GoVisitor visitor;
-	ir::SemanticUnit *unit = runVisitor(visitor, "go",
-					    code, "/test/shortvar.go");
+	ir::SemanticUnit *unit =
+		runVisitor(visitor, "go", code, "/test/shortvar.go");
 
 	CHECK(hasNamed(*unit, ir::RecordKind::Variable, "a"),
 	      "`a, b := ...` must emit Variable a");
@@ -213,8 +213,8 @@ static void test_go_blank_identifier_binds_nothing()
 			   "}\n";
 
 	ir::GoVisitor visitor;
-	ir::SemanticUnit *unit = runVisitor(visitor, "go",
-					    code, "/test/blank.go");
+	ir::SemanticUnit *unit =
+		runVisitor(visitor, "go", code, "/test/blank.go");
 
 	CHECK(!hasNamed(*unit, ir::RecordKind::Variable, "_"),
 	      "the blank identifier must not become a symbol");
@@ -249,8 +249,8 @@ static void test_cpp_class_member_declarations()
 		"Line::~Line() {}\n";
 
 	ir::CppVisitor visitor;
-	ir::SemanticUnit *unit = runVisitor(visitor, "cpp",
-					    code, "/test/members.cpp");
+	ir::SemanticUnit *unit =
+		runVisitor(visitor, "cpp", code, "/test/members.cpp");
 
 	CHECK(hasNamed(*unit, ir::RecordKind::Method, "foo"),
 	      "in-class declaration `void foo();` must emit a Method");
@@ -291,8 +291,8 @@ static void test_cpp_local_function_decl_is_not_a_member()
 			   "Point::~Point() {}\n";
 
 	ir::CppVisitor visitor;
-	ir::SemanticUnit *unit = runVisitor(visitor, "cpp",
-					    code, "/test/local.cpp");
+	ir::SemanticUnit *unit =
+		runVisitor(visitor, "cpp", code, "/test/local.cpp");
 
 	CHECK(hasQualifiedName(*unit, "Point::run"),
 	      "the out-of-class definition must carry its scope");
@@ -325,9 +325,8 @@ static void test_python_chained_call_name()
 			   "        return self.helper.compute(10)\n";
 
 	ir::PythonVisitor visitor;
-	ir::SemanticUnit *unit = runVisitor(visitor, "python",
-					    code,
-					    "/test/chained.py");
+	ir::SemanticUnit *unit =
+		runVisitor(visitor, "python", code, "/test/chained.py");
 
 	CHECK(hasNamed(*unit, ir::RecordKind::CallExpr, "compute"),
 	      "chained call must resolve to the LAST segment (compute)");
@@ -350,8 +349,8 @@ static void test_java_implements_emits_interface_impl()
 		"}\n";
 
 	ir::JavaVisitor visitor;
-	ir::SemanticUnit *unit = runVisitor(visitor, "java",
-					    code, "/test/Circle.java");
+	ir::SemanticUnit *unit =
+		runVisitor(visitor, "java", code, "/test/Circle.java");
 
 	CHECK(hasInterfaceImpl(*unit, "Circle", "Drawable"),
 	      "`implements Drawable` must emit InterfaceImpl (names live in "
@@ -375,9 +374,8 @@ static void test_ts_implements_emits_interface_impl()
 		"}\n";
 
 	ir::TsVisitor visitor;
-	ir::SemanticUnit *unit = runVisitor(visitor, "typescript",
-					    code,
-					    "/test/square.ts");
+	ir::SemanticUnit *unit =
+		runVisitor(visitor, "typescript", code, "/test/square.ts");
 
 	CHECK(hasInterfaceImpl(*unit, "Square", "Shape"),
 	      "TS `implements Shape` must emit InterfaceImpl");
@@ -394,8 +392,8 @@ static void test_tsx_self_closing_attribute_call()
 			   "const el = <Foo onClick={bar()} />;\n";
 
 	ir::TsxVisitor visitor;
-	ir::SemanticUnit *unit = runVisitor(visitor, "tsx",
-					    code, "/test/elem.tsx");
+	ir::SemanticUnit *unit =
+		runVisitor(visitor, "tsx", code, "/test/elem.tsx");
 
 	CHECK(hasNamed(*unit, ir::RecordKind::CallExpr, "bar"),
 	      "call inside a self-closing JSX attribute must be visited");
@@ -417,8 +415,8 @@ static void test_cpp_user_function_shadowing_builtin()
 			   "void caller(void *p) { free(p); }\n";
 
 	ir::CppVisitor visitor;
-	ir::SemanticUnit *unit = runVisitor(visitor, "cpp",
-					    code, "/test/free.cpp");
+	ir::SemanticUnit *unit =
+		runVisitor(visitor, "cpp", code, "/test/free.cpp");
 
 	CHECK(hasNamed(*unit, ir::RecordKind::CallExpr, "free"),
 	      "user-defined `free()` call must not be filtered as a builtin");
@@ -434,9 +432,8 @@ static void test_ts_user_function_shadowing_builtin()
 			   "function caller() { return String(1); }\n";
 
 	ir::TsVisitor visitor;
-	ir::SemanticUnit *unit = runVisitor(visitor, "typescript",
-					    code,
-					    "/test/shadow.ts");
+	ir::SemanticUnit *unit =
+		runVisitor(visitor, "typescript", code, "/test/shadow.ts");
 
 	CHECK(hasNamed(*unit, ir::RecordKind::CallExpr, "String"),
 	      "user-defined `String()` call must not be filtered as a builtin");

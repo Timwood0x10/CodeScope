@@ -93,7 +93,10 @@ int main()
 	// runs both locally and in CI without any external repo. The call
 	// chain compute → multiply → add is the positive control.
 	const char *proj_dir = "/tmp/test_step11_go_smoke";
-	{ std::error_code ec_remove; std::filesystem::remove_all(proj_dir, ec_remove); }
+	{
+		std::error_code ec_remove;
+		std::filesystem::remove_all(proj_dir, ec_remove);
+	}
 	std::filesystem::create_directories(proj_dir);
 
 	{

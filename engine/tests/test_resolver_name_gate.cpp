@@ -52,7 +52,10 @@ long long scalarSql(sqlite3 *db, const char *sql)
 int main()
 {
 	const char *proj_dir = "/tmp/resolver_name_gate_repro";
-	{ std::error_code ec_remove; std::filesystem::remove_all(proj_dir, ec_remove); }
+	{
+		std::error_code ec_remove;
+		std::filesystem::remove_all(proj_dir, ec_remove);
+	}
 	std::filesystem::create_directories(std::string(proj_dir) + "/src");
 
 	// `src/unrelated.cpp` holds a same-directory function whose name merely

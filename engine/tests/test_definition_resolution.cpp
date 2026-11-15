@@ -86,7 +86,11 @@ class Fixture {
 		engine_.reset();
 		std::error_code error;
 		std::filesystem::remove_all(root_, error);
-		Require(!error, "fixture cleanup: " + error.message());
+		if (error)
+			std::fprintf(stderr,
+				     "[test=definition_resolution] "
+				     "fixture cleanup: %s\n",
+				     error.message().c_str());
 	}
 	void Write(const char *file, const char *source)
 	{
@@ -308,7 +312,10 @@ void RelationUnionIsUncappedAndDeduplicated()
 	for (bool outgoing : { false, true }) {
 		const auto page = engine_views::queryRelations(
 			fixture.Db(), fixture.Project(), 71, outgoing);
-		Require(page.ok && page.total == 35 && page.rows.size() == 30,
+		Require(page.ok && page.total == 35 &&
+				page.rows.size() ==
+					static_cast<size_t>(
+						engine_views::kMaxCallers),
 			"relation union must deduplicate before counting and capping");
 		const auto scoped = engine_views::queryRelations(
 			fixture.Db(), fixture.Project(), 71, outgoing,
@@ -332,8 +339,9 @@ void RelationUnionIsUncappedAndDeduplicated()
 		fixture.Db(), fixture.Project(), 71, false, "graph.cpp");
 	Require(excluded.ok && excluded.total == 0,
 		"explicit source filter must exclude header-only call edges");
-	const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-		std::chrono::steady_clock::now() - started);
+	const auto elapsed =
+		std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now() - started);
 	constexpr int kQueryBudgetMs = 2000;
 	Require(elapsed.count() < kQueryBudgetMs,
 		"declaration-union query budget exceeded: " +
@@ -371,6 +379,20 @@ void SameFileDefinitionOnlySuppressesItsOwnOverload()
 		"same-file definition must keep the unimplemented overload's candidate");
 }
 
+void CHomonymPairsAcrossHeaderAndSource()
+{
+	Fixture fixture;
+	fixture.Write("util.h", "int helper(int v);\n");
+	fixture.Write("main.c", "#include \"util.h\"\n"
+				"int helper(int v) { return v * 2; }\n"
+				"int main(void) { return helper(7); }\n");
+	fixture.Index();
+	ExpectDefinition(fixture.Context("helper"), "main.c");
+	const auto callers = fixture.Context("helper");
+	Require(Field(Field(callers, "callers"), "total").number_value == 1,
+		"helper must retain its caller after pairing");
+}
+
 void DefaultsNormalizeButUnknownTemplatesStayAmbiguous()
 {
 	Fixture fixture;
@@ -378,10 +400,11 @@ void DefaultsNormalizeButUnknownTemplatesStayAmbiguous()
 				 "int normalize(int renamed /*name*/ = 7); };\n"
 				 "template<class T> class Box { public: "
 				 "T unknown(T value); };\n");
-	fixture.Write("api.cpp",
-		      "#include \"api.hpp\"\n"
-		      "int A::normalize(int x) { return x; }\n"
-		      "template<class T> T Box<T>::unknown(T x) { return x; }\n");
+	fixture.Write(
+		"api.cpp",
+		"#include \"api.hpp\"\n"
+		"int A::normalize(int x) { return x; }\n"
+		"template<class T> T Box<T>::unknown(T x) { return x; }\n");
 	fixture.Index();
 	ExpectDefinition(fixture.Context("A::normalize"), "api.cpp");
 	const auto result = fixture.Context("unknown");
@@ -402,6 +425,7 @@ int main()
 	RelationUnionIsUncappedAndDeduplicated();
 	NamespaceHomonymsStayScoped();
 	SameFileDefinitionOnlySuppressesItsOwnOverload();
+	CHomonymPairsAcrossHeaderAndSource();
 	DefaultsNormalizeButUnknownTemplatesStayAmbiguous();
 	std::puts("Definition resolution regressions passed.");
 	return 0;

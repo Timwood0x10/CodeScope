@@ -62,7 +62,10 @@ int main()
 {
 	const std::string proj_dir = "/tmp/force_index_files_repro";
 	const std::string tests_dir = proj_dir + "/tests";
-	{ std::error_code ec_remove; std::filesystem::remove_all(proj_dir, ec_remove); }
+	{
+		std::error_code ec_remove;
+		std::filesystem::remove_all(proj_dir, ec_remove);
+	}
 	std::filesystem::create_directories(proj_dir + "/src");
 	std::filesystem::create_directories(tests_dir);
 

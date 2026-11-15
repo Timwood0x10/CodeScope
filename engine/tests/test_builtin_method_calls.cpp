@@ -121,7 +121,10 @@ static void expectFiltered(sqlite3 *db, uint64_t pid, const char *name,
 int main()
 {
 	const std::string root = "/tmp/codescope_builtin_method_calls";
-	{ std::error_code ec_remove; std::filesystem::remove_all(root, ec_remove); }
+	{
+		std::error_code ec_remove;
+		std::filesystem::remove_all(root, ec_remove);
+	}
 
 	// Go: a method named `copy` (a pre-declared builtin) called via a
 	// pointer receiver, plus a bare `len(x)` inside it.
@@ -301,7 +304,10 @@ int main()
 	sqlite3_close(db);
 	engine_destroy(g_engine);
 	g_engine = nullptr;
-	{ std::error_code ec_remove; std::filesystem::remove_all(root, ec_remove); }
+	{
+		std::error_code ec_remove;
+		std::filesystem::remove_all(root, ec_remove);
+	}
 	unlink(db_path);
 	printf("\nAll builtin method-call tests passed.\n");
 	return 0;

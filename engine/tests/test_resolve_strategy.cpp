@@ -28,7 +28,10 @@ static inline void check(bool cond, const char *msg)
 int main()
 {
 	const char *proj_dir = "/tmp/resolve_strategy_repro";
-	{ std::error_code ec_remove; std::filesystem::remove_all(proj_dir, ec_remove); }
+	{
+		std::error_code ec_remove;
+		std::filesystem::remove_all(proj_dir, ec_remove);
+	}
 	std::filesystem::create_directories(proj_dir);
 	const std::string py_path = std::string(proj_dir) + "/repro.py";
 	FILE *f = fopen(py_path.c_str(), "w");
@@ -151,7 +154,10 @@ class Worker:
 	sqlite3_close(db_h);
 	engine_destroy(g_engine);
 	g_engine = nullptr;
-	{ std::error_code ec_remove; std::filesystem::remove_all(proj_dir, ec_remove); }
+	{
+		std::error_code ec_remove;
+		std::filesystem::remove_all(proj_dir, ec_remove);
+	}
 	printf("\n=== PASS: resolve_strategy correctly set ===\n");
 	return 0;
 }

@@ -87,8 +87,9 @@ long long declaredParams(sqlite3 *db, const char *name)
 /// entity.arity — what the Resolver compares a call site against.
 long long entityArity(sqlite3 *db, const char *name)
 {
-	return scalarForName(db, "SELECT arity FROM entity "
-				 "WHERE kind IN (0,1) AND name=?",
+	return scalarForName(db,
+			     "SELECT arity FROM entity "
+			     "WHERE kind IN (0,1) AND name=?",
 			     name);
 }
 
@@ -96,8 +97,9 @@ long long entityArity(sqlite3 *db, const char *name)
 /// entity.arity.
 long long recordArity(sqlite3 *db, const char *name)
 {
-	return scalarForName(db, "SELECT arity FROM semantic_records "
-				 "WHERE kind IN (0,1) AND name=?",
+	return scalarForName(db,
+			     "SELECT arity FROM semantic_records "
+			     "WHERE kind IN (0,1) AND name=?",
 			     name);
 }
 
@@ -115,7 +117,10 @@ void expect(long long got, long long want, const char *column, const char *name)
 int main()
 {
 	const std::string proj_dir = "/tmp/function_arity_repro";
-	{ std::error_code ec_remove; std::filesystem::remove_all(proj_dir, ec_remove); }
+	{
+		std::error_code ec_remove;
+		std::filesystem::remove_all(proj_dir, ec_remove);
+	}
 	std::filesystem::create_directories(proj_dir);
 
 	writeFile(proj_dir + "/a.cpp",
@@ -138,44 +143,42 @@ int main()
 		  "{\n"
 		  "\treturn a + b;\n"
 		  "}\n");
-	writeFile(proj_dir + "/b.go",
-		  "package main\n"
-		  "\n"
-		  "type T struct{}\n"
-		  "\n"
-		  "func (t *T) methodWithTwo(a int, b int) int { return a + b }\n"
-		  "\n"
-		  "func plainNoParams() int { return 0 }\n"
-		  "\n"
-		  "func variadicSum(base int, rest ...int) int { return base }\n");
-	writeFile(proj_dir + "/c.py",
-		  "def py_two(a, b):\n"
-		  "    return a + b\n"
-		  "\n"
-		  "\n"
-		  "def py_default(a, b=1):\n"
-		  "    return a\n"
-		  "\n"
-		  "\n"
-		  "class Widget:\n"
-		  "    def render(self, canvas, scale):\n"
-		  "        return canvas\n");
+	writeFile(
+		proj_dir + "/b.go",
+		"package main\n"
+		"\n"
+		"type T struct{}\n"
+		"\n"
+		"func (t *T) methodWithTwo(a int, b int) int { return a + b }\n"
+		"\n"
+		"func plainNoParams() int { return 0 }\n"
+		"\n"
+		"func variadicSum(base int, rest ...int) int { return base }\n");
+	writeFile(proj_dir + "/c.py", "def py_two(a, b):\n"
+				      "    return a + b\n"
+				      "\n"
+				      "\n"
+				      "def py_default(a, b=1):\n"
+				      "    return a\n"
+				      "\n"
+				      "\n"
+				      "class Widget:\n"
+				      "    def render(self, canvas, scale):\n"
+				      "        return canvas\n");
 	// C, and the exact shape the bounded declarator search exists for: the
 	// callback's own `(int a)` hangs one level below `takes_cb`'s declarator, and
 	// counting it would report three parameters for a two-parameter function.
-	writeFile(proj_dir + "/d.c",
-		  "int takes_cb(int (*cb)(int a), int x)\n"
-		  "{\n"
-		  "\treturn cb(x);\n"
-		  "}\n");
+	writeFile(proj_dir + "/d.c", "int takes_cb(int (*cb)(int a), int x)\n"
+				     "{\n"
+				     "\treturn cb(x);\n"
+				     "}\n");
 	// Python classmethod: `cls` is a receiver exactly like `self`, and only the
 	// enclosing-class check tells it apart from a free function whose first
 	// parameter happens to be called `cls`.
-	writeFile(proj_dir + "/e.py",
-		  "class Entity:\n"
-		  "    @classmethod\n"
-		  "    def validate(cls, payload):\n"
-		  "        return payload\n");
+	writeFile(proj_dir + "/e.py", "class Entity:\n"
+				      "    @classmethod\n"
+				      "    def validate(cls, payload):\n"
+				      "        return payload\n");
 	// Rust spells the receiver as its own node (`&self`) instead of a named
 	// first parameter, so it takes the self_parameter branch, not the name one.
 	writeFile(proj_dir + "/f.rs",
@@ -254,8 +257,10 @@ int main()
 	for (const Case &c : cases) {
 		expect(declaredParams(db_h, c.name), c.declared, "param_count",
 		       c.name);
-		expect(entityArity(db_h, c.name), c.arity, "entity.arity", c.name);
-		expect(recordArity(db_h, c.name), c.arity, "record arity", c.name);
+		expect(entityArity(db_h, c.name), c.arity, "entity.arity",
+		       c.name);
+		expect(recordArity(db_h, c.name), c.arity, "record arity",
+		       c.name);
 	}
 
 	// Python's receiver: 3 declared parameters, 2 supplied by a call site.
@@ -265,10 +270,11 @@ int main()
 
 	// Guard against a vacuous pass: the fixture has to have produced the
 	// function entities the assertions above read.
-	CHECK(scalarForName(db_h,
-			    "SELECT COUNT(*) FROM entity WHERE kind IN (0,1) AND "
-			    "name=?",
-			    "two_params") == 1);
+	CHECK(scalarForName(
+		      db_h,
+		      "SELECT COUNT(*) FROM entity WHERE kind IN (0,1) AND "
+		      "name=?",
+		      "two_params") == 1);
 
 	printf("=== function arity/param_count test passed ===\n");
 	sqlite3_close(db_h);

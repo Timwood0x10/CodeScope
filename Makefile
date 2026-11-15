@@ -329,7 +329,7 @@ $(BENCH_BIN): $(ENGINE_LIB)
 # without a single gate noticing, and the code written there during this work
 # passed the check while failing clang-format on its own.
 CPP_LINT_PRUNE := \( -path '*/build/*' -o -path '*/build-*/*' \) -prune -o
-LINT_CPP_FILES := $(shell find $(ENGINE_DIR)/src $(ENGINE_DIR)/include $(CPP_LINT_PRUNE) \( -name '*.cpp' -o -name '*.h' \) -print)
+LINT_CPP_FILES := $(shell find $(ENGINE_DIR)/src $(ENGINE_DIR)/include $(ENGINE_DIR)/tests $(CPP_LINT_PRUNE) \( -name '*.cpp' -o -name '*.h' \) -print)
 
 lint: lint-cpp lint-rust
 	@printf "$(CHECK) lint complete\n"
@@ -354,7 +354,7 @@ lint-verify: lint-cpp-full lint-rust
 lint-cpp: $(BUILD_DIR)/compile_commands.json
 	@printf "$(CYAN)[lint/cpp]$(RESET) Running clang-format check...\n"
 	@# Get recently modified files (last 1 hour) for fast lint
-	@RECENT_FILES=$$(find $(ENGINE_DIR)/src $(CPP_LINT_PRUNE) \( -name '*.cpp' -o -name '*.h' \) -mmin -60 -print); \
+	@RECENT_FILES=$$(find $(ENGINE_DIR)/src $(ENGINE_DIR)/tests $(CPP_LINT_PRUNE) \( -name '*.cpp' -o -name '*.h' \) -mmin -60 -print); \
 	if [ -z "$$RECENT_FILES" ]; then \
 		RECENT_FILES="$(ENGINE_DIR)/src/query/query_engine.cpp $(ENGINE_DIR)/src/engine_lifecycle.cpp"; \
 	fi; \

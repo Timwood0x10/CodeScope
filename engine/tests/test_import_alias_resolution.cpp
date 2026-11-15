@@ -54,13 +54,12 @@ long long scalarSql(sqlite3 *db, const char *sql)
 std::string calleeFile(sqlite3 *db, const char *caller)
 {
 	sqlite3_stmt *st = nullptr;
-	CHECK(sqlite3_prepare_v2(
-		      db,
-		      "SELECT te.file_path FROM relation r "
-		      "JOIN entity se ON se.id = r.source_id "
-		      "JOIN entity te ON te.id = r.target_id "
-		      "WHERE r.type = 1 AND se.name = ?",
-		      -1, &st, nullptr) == SQLITE_OK);
+	CHECK(sqlite3_prepare_v2(db,
+				 "SELECT te.file_path FROM relation r "
+				 "JOIN entity se ON se.id = r.source_id "
+				 "JOIN entity te ON te.id = r.target_id "
+				 "WHERE r.type = 1 AND se.name = ?",
+				 -1, &st, nullptr) == SQLITE_OK);
 	sqlite3_bind_text(st, 1, caller, -1, SQLITE_TRANSIENT);
 	std::string out = "(no edge)";
 	if (sqlite3_step(st) == SQLITE_ROW) {
@@ -99,7 +98,10 @@ std::string referenceName(sqlite3 *db, const char *caller)
 int main()
 {
 	const std::string proj_dir = "/tmp/import_alias_repro";
-	{ std::error_code ec_remove; std::filesystem::remove_all(proj_dir, ec_remove); }
+	{
+		std::error_code ec_remove;
+		std::filesystem::remove_all(proj_dir, ec_remove);
+	}
 	std::filesystem::create_directories(proj_dir + "/src/lib");
 	std::filesystem::create_directories(proj_dir + "/src/util");
 
@@ -144,8 +146,10 @@ int main()
 
 	// The fixture must really have parsed, and the ambiguity must exist: two
 	// same-named functions in different files.
-	CHECK(scalarSql(db, "SELECT COUNT(*) FROM entity WHERE name='pick'") == 2);
-	CHECK(scalarSql(db, "SELECT COUNT(*) FROM entity WHERE name='use'") == 1);
+	CHECK(scalarSql(db, "SELECT COUNT(*) FROM entity WHERE name='pick'") ==
+	      2);
+	CHECK(scalarSql(db, "SELECT COUNT(*) FROM entity WHERE name='use'") ==
+	      1);
 
 	// The call site is recorded as the IMPORTED symbol, not the local alias: the
 	// alias names nothing that can be declared, which is why the edge was lost.
@@ -162,7 +166,10 @@ int main()
 		fprintf(stderr, "=== import alias resolution: FAILED ===\n");
 		return 1;
 	}
-	{ std::error_code ec_remove; std::filesystem::remove_all(proj_dir, ec_remove); }
+	{
+		std::error_code ec_remove;
+		std::filesystem::remove_all(proj_dir, ec_remove);
+	}
 	printf("=== import alias resolution test passed ===\n");
 	return 0;
 }

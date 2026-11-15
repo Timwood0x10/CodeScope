@@ -64,8 +64,8 @@ void execSql(sqlite3 *db, const char *sql)
 	char *err = nullptr;
 	const int rc = sqlite3_exec(db, sql, nullptr, nullptr, &err);
 	if (rc != SQLITE_OK) {
-		fprintf(stderr, "FAIL: sqlite3_exec: %s\n  %s\n", err ? err : "?",
-			sql);
+		fprintf(stderr, "FAIL: sqlite3_exec: %s\n  %s\n",
+			err ? err : "?", sql);
 		if (err)
 			sqlite3_free(err);
 	}
@@ -120,7 +120,10 @@ std::string firstTypeOf(sqlite3 *db, const char *name, int kind)
 int main()
 {
 	const std::string proj_dir = "/tmp/dispatch_order_repro";
-	{ std::error_code ec_remove; std::filesystem::remove_all(proj_dir, ec_remove); }
+	{
+		std::error_code ec_remove;
+		std::filesystem::remove_all(proj_dir, ec_remove);
+	}
 	std::filesystem::create_directories(proj_dir + "/src");
 
 	writeFile(proj_dir + "/src/iface.go",
@@ -133,16 +136,15 @@ int main()
 		  "type Registry struct{}\n"
 		  "\n"
 		  "func (r *Registry) Get(id string) error { return nil }\n");
-	writeFile(proj_dir + "/src/holders.go",
-		  "package p\n"
-		  "\n"
-		  "type HolderA struct {\n"
-		  "\tregistry Getter\n"
-		  "}\n"
-		  "\n"
-		  "type HolderB struct {\n"
-		  "\tregistry *Registry\n"
-		  "}\n");
+	writeFile(proj_dir + "/src/holders.go", "package p\n"
+						"\n"
+						"type HolderA struct {\n"
+						"\tregistry Getter\n"
+						"}\n"
+						"\n"
+						"type HolderB struct {\n"
+						"\tregistry *Registry\n"
+						"}\n");
 	// The call sites sit in files of their own: the Visitor resolves field
 	// types per file, so `h.registry` is only resolvable through the global
 	// struct-field table (Step 8.1c) when the struct is declared elsewhere.
@@ -170,11 +172,10 @@ int main()
 						   "dispatch-order");
 	CHECK(pid > 0);
 
-	const std::string request = "{\"paths\":[\"" + proj_dir +
-				    "/src/iface.go\",\"" + proj_dir +
-				    "/src/holders.go\",\"" + proj_dir +
-				    "/src/use_a.go\",\"" + proj_dir +
-				    "/src/use_b.go\"]}";
+	const std::string request =
+		"{\"paths\":[\"" + proj_dir + "/src/iface.go\",\"" + proj_dir +
+		"/src/holders.go\",\"" + proj_dir + "/src/use_a.go\",\"" +
+		proj_dir + "/src/use_b.go\"]}";
 	char *res = engine_index_files(g_engine, pid, request.c_str(), 1);
 	CHECK(res != nullptr);
 	CHECK(strstr(res, "\"ok\":true") != nullptr);
@@ -213,11 +214,12 @@ int main()
 
 	// A marker edge that the rebuild must remove, so a skipped rebuild cannot
 	// make the comparison below pass for the wrong reason.
-	execSql(db, "INSERT INTO relation (project_id, source_id, target_id, type, "
-		    "confidence, resolver, resolution_kind, reason) "
-		    "SELECT 1, (SELECT id FROM entity WHERE name='useA' LIMIT 1), "
-		    "(SELECT id FROM entity WHERE name='Get' LIMIT 1), 1, "
-		    "0.1, 'test', 'probe-kind', 'probe';");
+	execSql(db,
+		"INSERT INTO relation (project_id, source_id, target_id, type, "
+		"confidence, resolver, resolution_kind, reason) "
+		"SELECT 1, (SELECT id FROM entity WHERE name='useA' LIMIT 1), "
+		"(SELECT id FROM entity WHERE name='Get' LIMIT 1), 1, "
+		"0.1, 'test', 'probe-kind', 'probe';");
 	execSql(db, "DELETE FROM project_readiness;");
 	sqlite3_close(db);
 

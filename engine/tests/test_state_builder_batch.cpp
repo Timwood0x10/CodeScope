@@ -26,13 +26,15 @@
 using namespace model;
 
 /// Return a writable temp directory (respects TMPDIR env var, fallback /tmp).
-static const char *tmpDir() {
+static const char *tmpDir()
+{
 	const char *d = getenv("TMPDIR");
 	return d ? d : "/tmp";
 }
 
 /// Build a unique DB path in the temp directory.
-static std::string dbPath() {
+static std::string dbPath()
+{
 	return std::string(tmpDir()) + "/codescope_test_state_builder.db";
 }
 
@@ -40,25 +42,26 @@ static std::string dbPath() {
 /// buildModuleSummaries can join scope.name = entity.module_path without
 /// going through buildGraph.
 static void insertEntity(store::GraphStore &store, uint64_t project_id,
-    int64_t id, const char *name, const char *file_path,
-    const char *module_path, int visibility = 1)
- {
-  sqlite3 *db = store.handle();
-  const char *sql = "INSERT INTO entity (id, project_id, kind, name, "
-      "qualified_name, file_path, language, start_row, "
-      "start_col, end_row, end_col, module_path, visibility) "
-      "VALUES (?,?,0,?,'',?,'cpp',0,0,0,0,?,?)";
-  sqlite3_stmt *stmt = nullptr;
-  CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
-  sqlite3_bind_int64(stmt, 1, id);
-  sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
-  sqlite3_bind_text(stmt, 3, name, -1, SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt, 4, file_path, -1, SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt, 5, module_path, -1, SQLITE_TRANSIENT);
-  sqlite3_bind_int(stmt, 6, visibility);
-  CHECK(sqlite3_step(stmt) == SQLITE_DONE);
-  sqlite3_finalize(stmt);
- }
+			 int64_t id, const char *name, const char *file_path,
+			 const char *module_path, int visibility = 1)
+{
+	sqlite3 *db = store.handle();
+	const char *sql =
+		"INSERT INTO entity (id, project_id, kind, name, "
+		"qualified_name, file_path, language, start_row, "
+		"start_col, end_row, end_col, module_path, visibility) "
+		"VALUES (?,?,0,?,'',?,'cpp',0,0,0,0,?,?)";
+	sqlite3_stmt *stmt = nullptr;
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK);
+	sqlite3_bind_int64(stmt, 1, id);
+	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(project_id));
+	sqlite3_bind_text(stmt, 3, name, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 4, file_path, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 5, module_path, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_int(stmt, 6, visibility);
+	CHECK(sqlite3_step(stmt) == SQLITE_DONE);
+	sqlite3_finalize(stmt);
+}
 
 /// Insert a module-level scope (kind=1) with the given name.
 static void insertModuleScope(store::GraphStore &store, uint64_t project_id,
@@ -108,8 +111,8 @@ static int countModuleSummaries(store::GraphStore &store, uint64_t project_id)
 }
 
 /// Look up a module-level scope id by name.
-static int64_t getModuleScopeId(store::GraphStore &store,
-				uint64_t project_id, const char *name)
+static int64_t getModuleScopeId(store::GraphStore &store, uint64_t project_id,
+				const char *name)
 {
 	sqlite3 *db = store.handle();
 	const char *sql =
@@ -133,9 +136,8 @@ struct ModuleSummaryRow {
 	std::string role;
 	bool found = false;
 };
-static ModuleSummaryRow
-getModuleSummary(store::GraphStore &store, uint64_t project_id,
-		 int64_t module_id)
+static ModuleSummaryRow getModuleSummary(store::GraphStore &store,
+					 uint64_t project_id, int64_t module_id)
 {
 	sqlite3 *db = store.handle();
 	const char *sql =
@@ -160,58 +162,58 @@ getModuleSummary(store::GraphStore &store, uint64_t project_id,
 }
 
 int main()
- {
-  std::string kDbPath = dbPath();
-  unlink(kDbPath.c_str());
+{
+	std::string kDbPath = dbPath();
+	unlink(kDbPath.c_str());
 
-  store::GraphStore store;
-  if (!store.open(kDbPath.c_str())) {
-   fprintf(stderr, "FAIL: cannot open store: %s\n",
-    store.error().c_str());
-   return 1;
-  }
-  uint64_t pid = store.createProject(tmpDir(), "test_state_builder");
+	store::GraphStore store;
+	if (!store.open(kDbPath.c_str())) {
+		fprintf(stderr, "FAIL: cannot open store: %s\n",
+			store.error().c_str());
+		return 1;
+	}
+	uint64_t pid = store.createProject(tmpDir(), "test_state_builder");
 	CHECK(pid > 0);
 
 	// Module /src/api/ with 6 entities (meets HAVING total >= 3).
-	  // All entities set visibility=1 so pub_count > 0 for the
-	  // multi-signal role classifier (v0.2.2).
-	  insertEntity(store, pid, 1, "GetHandler", "/src/api/handler.cpp",
-	        "/src/api/");
-	  insertEntity(store, pid, 2, "PostHandler", "/src/api/handler.cpp",
-	        "/src/api/");
-	  insertEntity(store, pid, 3, "DeleteHandler", "/src/api/handler.cpp",
-	        "/src/api/");
-	  insertEntity(store, pid, 4, "CreateHandler", "/src/api/handler.cpp",
-	        "/src/api/");
-	  insertEntity(store, pid, 5, "UpdateHandler", "/src/api/handler.cpp",
-	        "/src/api/");
-	  insertEntity(store, pid, 6, "PatchHandler", "/src/api/handler.cpp",
-	        "/src/api/");
-	  insertModuleScope(store, pid, "/src/api/");
+	// All entities set visibility=1 so pub_count > 0 for the
+	// multi-signal role classifier (v0.2.2).
+	insertEntity(store, pid, 1, "GetHandler", "/src/api/handler.cpp",
+		     "/src/api/");
+	insertEntity(store, pid, 2, "PostHandler", "/src/api/handler.cpp",
+		     "/src/api/");
+	insertEntity(store, pid, 3, "DeleteHandler", "/src/api/handler.cpp",
+		     "/src/api/");
+	insertEntity(store, pid, 4, "CreateHandler", "/src/api/handler.cpp",
+		     "/src/api/");
+	insertEntity(store, pid, 5, "UpdateHandler", "/src/api/handler.cpp",
+		     "/src/api/");
+	insertEntity(store, pid, 6, "PatchHandler", "/src/api/handler.cpp",
+		     "/src/api/");
+	insertModuleScope(store, pid, "/src/api/");
 
-	  // Module /src/lib/ with 3 entities and no relations.
-	  insertEntity(store, pid, 7, "Trim", "/src/lib/util.cpp", "/src/lib/");
-	  insertEntity(store, pid, 8, "Split", "/src/lib/util.cpp", "/src/lib/");
-	  insertEntity(store, pid, 9, "Join", "/src/lib/util.cpp", "/src/lib/");
-	  insertModuleScope(store, pid, "/src/lib/");
+	// Module /src/lib/ with 3 entities and no relations.
+	insertEntity(store, pid, 7, "Trim", "/src/lib/util.cpp", "/src/lib/");
+	insertEntity(store, pid, 8, "Split", "/src/lib/util.cpp", "/src/lib/");
+	insertEntity(store, pid, 9, "Join", "/src/lib/util.cpp", "/src/lib/");
+	insertModuleScope(store, pid, "/src/lib/");
 
-	  // Call edges within the api module: 4 sources, 2 targets.
-	  // This gives incoming=4, outgoing=2, dead=4 (entities 1,3,4,6
-	  // are not targets), utilization=0.33.
-	  // Meets the multi-signal classifier thresholds for 'api' role:
-	  //   pub_count=6 > 0, incoming=4 >= 2*outgoing=4, incoming>=3,
-	  //   utilization=0.33 >= 0.3
-	  insertCallRelation(store, pid, 1, 2);
-	  insertCallRelation(store, pid, 3, 2);
-	  insertCallRelation(store, pid, 4, 5);
-	  insertCallRelation(store, pid, 6, 5);
+	// Call edges within the api module: 4 sources, 2 targets.
+	// This gives incoming=4, outgoing=2, dead=4 (entities 1,3,4,6
+	// are not targets), utilization=0.33.
+	// Meets the multi-signal classifier thresholds for 'api' role:
+	//   pub_count=6 > 0, incoming=4 >= 2*outgoing=4, incoming>=3,
+	//   utilization=0.33 >= 0.3
+	insertCallRelation(store, pid, 1, 2);
+	insertCallRelation(store, pid, 3, 2);
+	insertCallRelation(store, pid, 4, 5);
+	insertCallRelation(store, pid, 6, 5);
 
-		// Single call edge within the lib module so it doesn't match
-		// the 'dead' rule (incoming=0 AND outgoing=0 OR dead=total).
-		// Trim(7) -> Split(8): incoming=1, outgoing=1, dead=2 (entity 9
-		// is not a target), role falls through to 'infra'.
-		insertCallRelation(store, pid, 7, 8);
+	// Single call edge within the lib module so it doesn't match
+	// the 'dead' rule (incoming=0 AND outgoing=0 OR dead=total).
+	// Trim(7) -> Split(8): incoming=1, outgoing=1, dead=2 (entity 9
+	// is not a target), role falls through to 'infra'.
+	insertCallRelation(store, pid, 7, 8);
 
 	// ── Test 1: buildAll returns a positive count ───────────────
 	{
@@ -230,91 +232,93 @@ int main()
 	}
 
 	// ── Test 3: api module content is correct ───────────────────
-	  {
-	   int64_t api_scope_id = getModuleScopeId(store, pid, "/src/api/");
-	   CHECK(api_scope_id > 0);
-	   auto row = getModuleSummary(store, pid, api_scope_id);
-	   CHECK(row.found);
-	   // 4 sources (1→2, 3→2, 4→5, 6→5), 2 targets (2,5)
-	   CHECK(row.incoming == 4);
-	   CHECK(row.outgoing == 2);
-	   // 6 entities, only entities 2 and 5 are targets -> dead = 4.
-	   CHECK(row.dead == 4);
-	   // Multi-signal classifier: pub_count=6, incoming=4 >= 2*outgoing=4,
-	   // incoming>=3, utilization=0.33>=0.3 -> role = 'api'.
-	   CHECK(row.role == "api");
-	   printf("Test 3 (api module incoming=%d outgoing=%d dead=%d "
-	          "role=%s): PASS\n",
-	          row.incoming, row.outgoing, row.dead, row.role.c_str());
-	  }
+	{
+		int64_t api_scope_id =
+			getModuleScopeId(store, pid, "/src/api/");
+		CHECK(api_scope_id > 0);
+		auto row = getModuleSummary(store, pid, api_scope_id);
+		CHECK(row.found);
+		// 4 sources (1→2, 3→2, 4→5, 6→5), 2 targets (2,5)
+		CHECK(row.incoming == 4);
+		CHECK(row.outgoing == 2);
+		// 6 entities, only entities 2 and 5 are targets -> dead = 4.
+		CHECK(row.dead == 4);
+		// Multi-signal classifier: pub_count=6, incoming=4 >= 2*outgoing=4,
+		// incoming>=3, utilization=0.33>=0.3 -> role = 'api'.
+		CHECK(row.role == "api");
+		printf("Test 3 (api module incoming=%d outgoing=%d dead=%d "
+		       "role=%s): PASS\n",
+		       row.incoming, row.outgoing, row.dead, row.role.c_str());
+	}
 
 	// ── Test 4: lib module content (small internal helper, pub>0,
 	//   incoming=1, outgoing=1, util=0.33 — matches utility rule under
 	//   v0.2.1 thresholds: outgoing<=5, pub>0, utilization>=0.05).
 	//   Was 'infra' under v0.2.2 because utility required utilization>=0.5.
-	  {
-	   int64_t lib_scope_id = getModuleScopeId(store, pid, "/src/lib/");
-	   CHECK(lib_scope_id > 0);
-	   auto row = getModuleSummary(store, pid, lib_scope_id);
-	   CHECK(row.found);
-	   // Trim(7) -> Split(8): 1 source, 1 target
-	   CHECK(row.incoming == 1);
-	   CHECK(row.outgoing == 1);
-	   // 3 entities, only entity 8 is a target -> dead = 2.
-	   CHECK(row.dead == 2);
-	   // v0.2.1: utility rule fires (outgoing<=5, pub>0, util>=0.05).
-	   CHECK(row.role == "utility");
-	   printf("Test 4 (lib module incoming=%d outgoing=%d dead=%d "
-	          "role=%s): PASS\n",
-	          row.incoming, row.outgoing, row.dead, row.role.c_str());
-	  }
+	{
+		int64_t lib_scope_id =
+			getModuleScopeId(store, pid, "/src/lib/");
+		CHECK(lib_scope_id > 0);
+		auto row = getModuleSummary(store, pid, lib_scope_id);
+		CHECK(row.found);
+		// Trim(7) -> Split(8): 1 source, 1 target
+		CHECK(row.incoming == 1);
+		CHECK(row.outgoing == 1);
+		// 3 entities, only entity 8 is a target -> dead = 2.
+		CHECK(row.dead == 2);
+		// v0.2.1: utility rule fires (outgoing<=5, pub>0, util>=0.05).
+		CHECK(row.role == "utility");
+		printf("Test 4 (lib module incoming=%d outgoing=%d dead=%d "
+		       "role=%s): PASS\n",
+		       row.incoming, row.outgoing, row.dead, row.role.c_str());
+	}
 
 	// ── Test 5: transaction committed — rows persist after reopen ─
 	// Close and reopen the DB to verify buildAll committed the
 	// transaction. If it had rolled back, module_summary would be empty.
 	{
 		store.close();
-		   CHECK(store.open(kDbPath.c_str()));
-		   int count = countModuleSummaries(store, pid);
-		   CHECK(count == 2);
-		   printf("Test 5 (rows persist after close/reopen: %d): PASS\n",
-		          count);
-		  }
+		CHECK(store.open(kDbPath.c_str()));
+		int count = countModuleSummaries(store, pid);
+		CHECK(count == 2);
+		printf("Test 5 (rows persist after close/reopen: %d): PASS\n",
+		       count);
+	}
 
-		  // ── Test 6: a second buildAll must REPLACE, not append ──
-		  // Regression: module_summary has no UNIQUE(project_id,
-		  // module_id), so INSERT OR REPLACE never conflicted and
-		  // every model-build pass appended another full set of rows.
-		  // SUM(dead_entities) then grew past the real entity count
-		  // (T5 finding #4: dead_code.entities > dead_code.total).
-		  {
-		   StateBuilder sb(&store, pid);
-		   int64_t total = sb.buildAll();
-		   CHECK(total > 0);
-		   int count = countModuleSummaries(store, pid);
-		   CHECK(count == 2);
-		   int64_t sum_dead = 0;
-		   {
-		    sqlite3 *db = store.handle();
-		    sqlite3_stmt *stmt = nullptr;
-		    const char *sql =
-		     "SELECT COALESCE(SUM(dead_entities),0) "
-		     "FROM module_summary WHERE project_id=?";
-		    CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
-		           SQLITE_OK);
-		    sqlite3_bind_int64(stmt, 1, (sqlite3_int64)pid);
-		    if (sqlite3_step(stmt) == SQLITE_ROW)
-		     sum_dead = sqlite3_column_int64(stmt, 0);
-		    sqlite3_finalize(stmt);
-		   }
-		   // api(4) + lib(2) = 6 — unchanged by the rebuild.
-		   CHECK(sum_dead == 6);
-		   printf("Test 6 (second buildAll replaces rows: "
-		          "count=%d sum_dead=%lld): PASS\n",
-		          count, (long long)sum_dead);
-		  }
+	// ── Test 6: a second buildAll must REPLACE, not append ──
+	// Regression: module_summary has no UNIQUE(project_id,
+	// module_id), so INSERT OR REPLACE never conflicted and
+	// every model-build pass appended another full set of rows.
+	// SUM(dead_entities) then grew past the real entity count
+	// (T5 finding #4: dead_code.entities > dead_code.total).
+	{
+		StateBuilder sb(&store, pid);
+		int64_t total = sb.buildAll();
+		CHECK(total > 0);
+		int count = countModuleSummaries(store, pid);
+		CHECK(count == 2);
+		int64_t sum_dead = 0;
+		{
+			sqlite3 *db = store.handle();
+			sqlite3_stmt *stmt = nullptr;
+			const char *sql =
+				"SELECT COALESCE(SUM(dead_entities),0) "
+				"FROM module_summary WHERE project_id=?";
+			CHECK(sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
+			      SQLITE_OK);
+			sqlite3_bind_int64(stmt, 1, (sqlite3_int64)pid);
+			if (sqlite3_step(stmt) == SQLITE_ROW)
+				sum_dead = sqlite3_column_int64(stmt, 0);
+			sqlite3_finalize(stmt);
+		}
+		// api(4) + lib(2) = 6 — unchanged by the rebuild.
+		CHECK(sum_dead == 6);
+		printf("Test 6 (second buildAll replaces rows: "
+		       "count=%d sum_dead=%lld): PASS\n",
+		       count, (long long)sum_dead);
+	}
 
-		  unlink(kDbPath.c_str());
+	unlink(kDbPath.c_str());
 	printf("\nAll state builder batch tests passed.\n");
 	return checkFailures() ? 1 : 0;
 }

@@ -76,8 +76,8 @@ int main()
 
 	store::GraphStore store;
 	check(store.open(kDbPath), "open database");
-	uint64_t project_id = store.createProject("/test/query-failure",
-						   "query-failure");
+	uint64_t project_id =
+		store.createProject("/test/query-failure", "query-failure");
 	check(project_id > 0, "createProject");
 
 	const std::string rules_dir = findRulesDir();

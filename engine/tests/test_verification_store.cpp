@@ -52,8 +52,8 @@ static void removeDbFiles()
 static long long scalar(store::GraphStore &store, const std::string &sql)
 {
 	sqlite3_stmt *st = nullptr;
-	check(sqlite3_prepare_v2(store.handle(), sql.c_str(), -1, &st, nullptr) ==
-		      SQLITE_OK,
+	check(sqlite3_prepare_v2(store.handle(), sql.c_str(), -1, &st,
+				 nullptr) == SQLITE_OK,
 	      "prepare scalar");
 	long long v = -1;
 	if (sqlite3_step(st) == SQLITE_ROW)
@@ -65,8 +65,8 @@ static long long scalar(store::GraphStore &store, const std::string &sql)
 static std::string text(store::GraphStore &store, const std::string &sql)
 {
 	sqlite3_stmt *st = nullptr;
-	check(sqlite3_prepare_v2(store.handle(), sql.c_str(), -1, &st, nullptr) ==
-		      SQLITE_OK,
+	check(sqlite3_prepare_v2(store.handle(), sql.c_str(), -1, &st,
+				 nullptr) == SQLITE_OK,
 	      "prepare text");
 	std::string v;
 	if (sqlite3_step(st) == SQLITE_ROW) {
@@ -139,10 +139,10 @@ int main()
 	ev.source.revision = run.source.revision;
 	ev.source.analyzer_version = run.source.analyzer_version;
 	ev.detail = "file is 1500 lines";
-	ev.locations.push_back({"src/big.cpp", 1, 1500, "Big"});
-	ev.locations.push_back({"src/big.h", 1, 20, "Big"});
-	ev.facts.push_back({0, 42});
-	ev.facts.push_back({4, 7});
+	ev.locations.push_back({ "src/big.cpp", 1, 1500, "Big" });
+	ev.locations.push_back({ "src/big.h", 1, 20, "Big" });
+	ev.facts.push_back({ 0, 42 });
+	ev.facts.push_back({ 4, 7 });
 
 	int64_t ev_id = store.recordEvidence(ev);
 	check(ev_id > 0, "recordEvidence must return an id");
@@ -150,7 +150,8 @@ int main()
 	      "two locations expected");
 	check(scalar(store, "SELECT COUNT(*) FROM evidence_fact") == 2,
 	      "two fact links expected");
-	check(text(store, "SELECT provenance FROM evidence") == "StaticAnalysis",
+	check(text(store, "SELECT provenance FROM evidence") ==
+		      "StaticAnalysis",
 	      "provenance round-trip");
 	check(scalar(store, "SELECT verdict FROM evidence") == 1,
 	      "Contradicted must persist as 1");
@@ -215,7 +216,8 @@ int main()
 	check(text(store, "SELECT status FROM verification_run") == "partial",
 	      "run status must be updated");
 	check(scalar(store,
-		     "SELECT finished_at IS NOT NULL FROM verification_run") == 1,
+		     "SELECT finished_at IS NOT NULL FROM verification_run") ==
+		      1,
 	      "finished_at must be stamped");
 	check(!store.finishVerificationRun("missing-run",
 					   store::RunStatus::Completed, ""),
@@ -224,7 +226,7 @@ int main()
 	// ── 5. Duplicate children are deduplicated, not duplicated ──────
 	store::EvidenceRecord dup = ev;
 	dup.finding_key = "fk-dup";
-	dup.facts.push_back({0, 42});      // repeats the first fact
+	dup.facts.push_back({ 0, 42 }); // repeats the first fact
 	dup.locations.push_back(ev.locations[0]); // repeats the first location
 	int64_t dup_id = store.recordEvidence(dup);
 	check(dup_id > 0, "recordEvidence with duplicate children");

@@ -67,12 +67,11 @@ long long scalarSql(sqlite3 *db, const char *sql)
 /// The resolution kind of the edge `caller -> callee`, or "(no edge)".
 std::string edgeKind(sqlite3 *db, const char *caller, const char *callee)
 {
-	const char *sql =
-		"SELECT r.resolution_kind FROM relation r "
-		"JOIN entity se ON se.id = r.source_id "
-		"JOIN entity te ON te.id = r.target_id "
-		"WHERE r.type = 1 AND se.name = ? AND te.name = ? "
-		"ORDER BY r.resolution_kind LIMIT 1";
+	const char *sql = "SELECT r.resolution_kind FROM relation r "
+			  "JOIN entity se ON se.id = r.source_id "
+			  "JOIN entity te ON te.id = r.target_id "
+			  "WHERE r.type = 1 AND se.name = ? AND te.name = ? "
+			  "ORDER BY r.resolution_kind LIMIT 1";
 	sqlite3_stmt *st = nullptr;
 	CHECK(sqlite3_prepare_v2(db, sql, -1, &st, nullptr) == SQLITE_OK);
 	sqlite3_bind_text(st, 1, caller, -1, SQLITE_TRANSIENT);
@@ -96,16 +95,15 @@ std::string edgeKind(sqlite3 *db, const char *caller, const char *callee)
 /// owning type plus the method (`CppOwner::Method`, `JavaOwner.method`), so a
 /// prefix match identifies the owner in every language without assuming a
 /// separator.
-std::string edgeKindInType(sqlite3 *db, const char *caller,
-			   const char *method, const char *owner)
+std::string edgeKindInType(sqlite3 *db, const char *caller, const char *method,
+			   const char *owner)
 {
-	const char *sql =
-		"SELECT r.resolution_kind FROM relation r "
-		"JOIN entity se ON se.id = r.source_id "
-		"JOIN entity te ON te.id = r.target_id "
-		"WHERE r.type = 1 AND se.name = ? AND te.name = ? "
-		"AND te.qualified_name LIKE ? || '%' "
-		"ORDER BY r.resolution_kind LIMIT 1";
+	const char *sql = "SELECT r.resolution_kind FROM relation r "
+			  "JOIN entity se ON se.id = r.source_id "
+			  "JOIN entity te ON te.id = r.target_id "
+			  "WHERE r.type = 1 AND se.name = ? AND te.name = ? "
+			  "AND te.qualified_name LIKE ? || '%' "
+			  "ORDER BY r.resolution_kind LIMIT 1";
 	sqlite3_stmt *st = nullptr;
 	CHECK(sqlite3_prepare_v2(db, sql, -1, &st, nullptr) == SQLITE_OK);
 	sqlite3_bind_text(st, 1, caller, -1, SQLITE_TRANSIENT);
@@ -147,11 +145,11 @@ std::string receiverType(sqlite3 *db, const char *caller)
 /// Number of call edges leaving `caller`.
 long long outgoingCallEdges(sqlite3 *db, const char *caller)
 {
-	return scalarSql(db,
-			 ("SELECT COUNT(*) FROM relation r JOIN entity se "
-			  "ON se.id = r.source_id WHERE r.type = 1 AND se.name='" +
-			  std::string(caller) + "'")
-				 .c_str());
+	return scalarSql(
+		db, ("SELECT COUNT(*) FROM relation r JOIN entity se "
+		     "ON se.id = r.source_id WHERE r.type = 1 AND se.name='" +
+		     std::string(caller) + "'")
+			    .c_str());
 }
 
 /// One language's expectations. The names are unique per language so one
@@ -175,15 +173,15 @@ long long outgoingCallEdges(sqlite3 *db, const char *caller)
 /// test fails on the count so the flag — and this comment — get updated instead
 /// of the improvement passing unnoticed.
 struct LanguageCase {
-	const char *language;   // printed in the summary table
-	const char *file;       // fixture path, relative to the project root
-	const char *s1_caller;  // calls through a typed parameter
-	const char *s1_owner;   // type whose method the call must reach
-	const char *s1_method;  // that method's name (the decoy's name too)
-	const char *s1_decoy;   // unrelated type declaring the same method name
-	const char *s2_caller;  // calls a method nothing declares
-	const char *s2_callee;  // the name that must NOT resolve
-	bool s1_gap;            // S1 unresolved today: no receiver type recorded
+	const char *language; // printed in the summary table
+	const char *file; // fixture path, relative to the project root
+	const char *s1_caller; // calls through a typed parameter
+	const char *s1_owner; // type whose method the call must reach
+	const char *s1_method; // that method's name (the decoy's name too)
+	const char *s1_decoy; // unrelated type declaring the same method name
+	const char *s2_caller; // calls a method nothing declares
+	const char *s2_callee; // the name that must NOT resolve
+	bool s1_gap; // S1 unresolved today: no receiver type recorded
 };
 
 } // namespace
@@ -191,24 +189,28 @@ struct LanguageCase {
 int main()
 {
 	const std::string proj_dir = "/tmp/resolver_language_consistency";
-	{ std::error_code ec_remove; std::filesystem::remove_all(proj_dir, ec_remove); }
+	{
+		std::error_code ec_remove;
+		std::filesystem::remove_all(proj_dir, ec_remove);
+	}
 	std::filesystem::create_directories(proj_dir + "/src");
 
 	// ── Go ────────────────────────────────────────────────────────────
-	writeFile(proj_dir + "/src/lang.go",
-		  "package p\n"
-		  "\n"
-		  "type GoOwner struct{}\n"
-		  "\n"
-		  "func (o *GoOwner) Method() int { return 1 }\n"
-		  "\n"
-		  "type GoDecoy struct{}\n"
-		  "\n"
-		  "func (d *GoDecoy) Method() int { return 2 }\n"
-		  "\n"
-		  "func goS1(o *GoOwner) int { return o.Method() }\n"
-		  "\n"
-		  "func goS2(u GoUndeclared) int { return u.computeAbsent() }\n");
+	writeFile(
+		proj_dir + "/src/lang.go",
+		"package p\n"
+		"\n"
+		"type GoOwner struct{}\n"
+		"\n"
+		"func (o *GoOwner) Method() int { return 1 }\n"
+		"\n"
+		"type GoDecoy struct{}\n"
+		"\n"
+		"func (d *GoDecoy) Method() int { return 2 }\n"
+		"\n"
+		"func goS1(o *GoOwner) int { return o.Method() }\n"
+		"\n"
+		"func goS2(u GoUndeclared) int { return u.computeAbsent() }\n");
 	// ── C++ ───────────────────────────────────────────────────────────
 	writeFile(proj_dir + "/src/lang.cpp",
 		  "struct CppOwner {\n"
@@ -223,51 +225,52 @@ int main()
 		  "\n"
 		  "int cppS2(CppUndeclared u) { return u.computeAbsent(); }\n");
 	// ── Java ──────────────────────────────────────────────────────────
-	writeFile(proj_dir + "/src/Lang.java",
-		  "class JavaOwner {\n"
-		  "\tint method() { return 1; }\n"
-		  "}\n"
-		  "\n"
-		  "class JavaDecoy {\n"
-		  "\tint method() { return 2; }\n"
-		  "}\n"
-		  "\n"
-		  "class JavaUse {\n"
-		  "\tint javaS1(JavaOwner o) { return o.method(); }\n"
-		  "\n"
-		  "\tint javaS2(JavaUndeclared u) { return u.computeAbsent(); }\n"
-		  "}\n");
+	writeFile(
+		proj_dir + "/src/Lang.java",
+		"class JavaOwner {\n"
+		"\tint method() { return 1; }\n"
+		"}\n"
+		"\n"
+		"class JavaDecoy {\n"
+		"\tint method() { return 2; }\n"
+		"}\n"
+		"\n"
+		"class JavaUse {\n"
+		"\tint javaS1(JavaOwner o) { return o.method(); }\n"
+		"\n"
+		"\tint javaS2(JavaUndeclared u) { return u.computeAbsent(); }\n"
+		"}\n");
 	// ── Python ────────────────────────────────────────────────────────
-	writeFile(proj_dir + "/src/lang.py",
-		  "class PyOwner:\n"
-		  "    def method(self):\n"
-		  "        return 1\n"
-		  "\n"
-		  "\n"
-		  "class PyDecoy:\n"
-		  "    def method(self):\n"
-		  "        return 2\n"
-		  "\n"
-		  "\n"
-		  "def pyS1(o: PyOwner):\n"
-		  "    return o.method()\n"
-		  "\n"
-		  "\n"
-		  "def pyS2(u: PyUndeclared):\n"
-		  "    return u.compute_absent()\n");
+	writeFile(proj_dir + "/src/lang.py", "class PyOwner:\n"
+					     "    def method(self):\n"
+					     "        return 1\n"
+					     "\n"
+					     "\n"
+					     "class PyDecoy:\n"
+					     "    def method(self):\n"
+					     "        return 2\n"
+					     "\n"
+					     "\n"
+					     "def pyS1(o: PyOwner):\n"
+					     "    return o.method()\n"
+					     "\n"
+					     "\n"
+					     "def pyS2(u: PyUndeclared):\n"
+					     "    return u.compute_absent()\n");
 	// ── TypeScript ────────────────────────────────────────────────────
-	writeFile(proj_dir + "/src/lang.ts",
-		  "class TsOwner {\n"
-		  "\tmethod(): number { return 1; }\n"
-		  "}\n"
-		  "\n"
-		  "class TsDecoy {\n"
-		  "\tmethod(): number { return 2; }\n"
-		  "}\n"
-		  "\n"
-		  "function tsS1(o: TsOwner): number { return o.method(); }\n"
-		  "\n"
-		  "function tsS2(u: TsUndeclared): number { return u.computeAbsent(); }\n");
+	writeFile(
+		proj_dir + "/src/lang.ts",
+		"class TsOwner {\n"
+		"\tmethod(): number { return 1; }\n"
+		"}\n"
+		"\n"
+		"class TsDecoy {\n"
+		"\tmethod(): number { return 2; }\n"
+		"}\n"
+		"\n"
+		"function tsS1(o: TsOwner): number { return o.method(); }\n"
+		"\n"
+		"function tsS2(u: TsUndeclared): number { return u.computeAbsent(); }\n");
 	// ── Rust ──────────────────────────────────────────────────────────
 	writeFile(proj_dir + "/src/lang.rs",
 		  "struct RsOwner;\n"
@@ -289,12 +292,12 @@ int main()
 	const std::vector<LanguageCase> cases = {
 		{ "go", "src/lang.go", "goS1", "GoOwner", "Method", "GoDecoy",
 		  "goS2", "computeAbsent", false },
-		{ "c++", "src/lang.cpp", "cppS1", "CppOwner", "Method", "CppDecoy",
-		  "cppS2", "computeAbsent", false },
+		{ "c++", "src/lang.cpp", "cppS1", "CppOwner", "Method",
+		  "CppDecoy", "cppS2", "computeAbsent", false },
 		{ "java", "src/Lang.java", "javaS1", "JavaOwner", "method",
 		  "JavaDecoy", "javaS2", "computeAbsent", false },
-		{ "python", "src/lang.py", "pyS1", "PyOwner", "method", "PyDecoy",
-		  "pyS2", "compute_absent", false },
+		{ "python", "src/lang.py", "pyS1", "PyOwner", "method",
+		  "PyDecoy", "pyS2", "compute_absent", false },
 		{ "typescript", "src/lang.ts", "tsS1", "TsOwner", "method",
 		  "TsDecoy", "tsS2", "computeAbsent", false },
 		{ "rust", "src/lang.rs", "rsS1", "RsOwner", "method", "RsDecoy",
@@ -338,20 +341,26 @@ int main()
 	for (const LanguageCase &c : cases) {
 		// The fixture must really have parsed: without the caller entity the
 		// assertions below would measure nothing.
-		CHECK(scalarSql(db, ("SELECT COUNT(*) FROM entity WHERE name='" +
-				     std::string(c.s1_caller) + "'").c_str()) == 1);
-		CHECK(scalarSql(db, ("SELECT COUNT(*) FROM entity WHERE name='" +
-				     std::string(c.s2_caller) + "'").c_str()) == 1);
+		CHECK(scalarSql(db,
+				("SELECT COUNT(*) FROM entity WHERE name='" +
+				 std::string(c.s1_caller) + "'")
+					.c_str()) == 1);
+		CHECK(scalarSql(db,
+				("SELECT COUNT(*) FROM entity WHERE name='" +
+				 std::string(c.s2_caller) + "'")
+					.c_str()) == 1);
 		// Both methods of S1 must exist, or "no edge to the decoy" would hold
 		// because the decoy was never recorded rather than because the
 		// resolver rejected it. Counted by file and name rather than by
 		// qualified_name: Rust and TypeScript record the bare method name with
 		// no owner at all, so only the file and name are comparable.
-		CHECK(scalarSql(db, ("SELECT COUNT(*) FROM entity WHERE kind IN (0,1) "
-				     "AND name='" +
-				     std::string(c.s1_method) +
-				     "' AND file_path LIKE '%" + c.file + "'")
-					.c_str()) == 2);
+		CHECK(scalarSql(
+			      db,
+			      ("SELECT COUNT(*) FROM entity WHERE kind IN (0,1) "
+			       "AND name='" +
+			       std::string(c.s1_method) +
+			       "' AND file_path LIKE '%" + c.file + "'")
+				      .c_str()) == 2);
 
 		// S2: nothing declares that receiver type or that method name, so
 		// there is no evidence to resolve it with.
@@ -407,7 +416,10 @@ int main()
 			proj_dir.c_str());
 		return 1;
 	}
-	{ std::error_code ec_remove; std::filesystem::remove_all(proj_dir, ec_remove); }
+	{
+		std::error_code ec_remove;
+		std::filesystem::remove_all(proj_dir, ec_remove);
+	}
 	printf("=== resolver language consistency test passed ===\n");
 	return 0;
 }

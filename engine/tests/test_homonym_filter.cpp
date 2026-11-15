@@ -68,7 +68,10 @@ int main()
 	// a distinct helper. This creates a homonym: same name, different
 	// entities, different callees.
 	const char *proj_dir = "/tmp/test_homonym_filter";
-	{ std::error_code ec_remove; std::filesystem::remove_all(proj_dir, ec_remove); }
+	{
+		std::error_code ec_remove;
+		std::filesystem::remove_all(proj_dir, ec_remove);
+	}
 	std::filesystem::create_directories(proj_dir);
 
 	{
