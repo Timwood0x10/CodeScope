@@ -23,6 +23,40 @@
 
 namespace store
 {
+namespace
+{
+
+constexpr int kSemanticRecordColumns = 25;
+constexpr const char *kSemanticRecordInsert =
+	"INSERT INTO semantic_records "
+	"(original_id, project_id, kind, name, qualified_name, parent_id, "
+	"ref_original_id, arity, is_static, type_name, call_kind, "
+	"resolve_strategy, visibility, is_definition, "
+	"start_row, start_col, end_row, end_col, file_path, language, "
+	"qualified_target, receiver_text, receiver_type, import_alias, "
+	"callable_signature) VALUES ";
+
+/// Shared by single-row and chunked writes to keep their column layouts equal.
+std::string SemanticRecordInsertSql(size_t row_count)
+{
+	std::string values = "(?";
+	values.reserve(kSemanticRecordColumns * 2 + 1);
+	for (int column = 1; column < kSemanticRecordColumns; ++column)
+		values += ",?";
+	values += ')';
+	std::string sql;
+	sql.reserve(std::strlen(kSemanticRecordInsert) +
+		    row_count * (values.size() + 1));
+	sql = kSemanticRecordInsert;
+	for (size_t i = 0; i < row_count; ++i) {
+		if (i > 0)
+			sql += ',';
+		sql += values;
+	}
+	return sql;
+}
+
+} // namespace
 
 void GraphStore::insertSemanticRecords(uint64_t project_id,
 				       const std::string &file_path,
@@ -40,19 +74,14 @@ void GraphStore::insertSemanticRecords(uint64_t project_id,
 			decl_by_name[r.name] = r.id;
 	}
 
-	const char *sql =
-		"INSERT INTO semantic_records "
-		"(original_id, project_id, kind, name, qualified_name, parent_id, "
-		" ref_original_id, arity, is_static, type_name, call_kind,"
-		" resolve_strategy, visibility,"
-		" start_row, start_col, end_row, end_col, file_path, language,"
-		// Step 3 (plan §3.1): structured call-fact columns.
-		" qualified_target, receiver_text, receiver_type, import_alias) "
-		"VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+	const std::string sql = SemanticRecordInsertSql(1);
 
 	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-		error_ = "insertSemanticRecords: prepare failed";
+	if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) !=
+	    SQLITE_OK) {
+		error_ = "[module=store, method=insertSemanticRecords] "
+			 "prepare failed: " +
+			 std::string(sqlite3_errmsg(db_));
 		return;
 	}
 
@@ -81,22 +110,25 @@ void GraphStore::insertSemanticRecords(uint64_t project_id,
 		sqlite3_bind_text(stmt, 12, r.resolve_strategy.c_str(), -1,
 				  SQLITE_STATIC);
 		sqlite3_bind_int(stmt, 13, r.visibility);
-		sqlite3_bind_int(stmt, 14, static_cast<int>(r.loc.start_row));
-		sqlite3_bind_int(stmt, 15, static_cast<int>(r.loc.start_col));
-		sqlite3_bind_int(stmt, 16, static_cast<int>(r.loc.end_row));
-		sqlite3_bind_int(stmt, 17, static_cast<int>(r.loc.end_col));
-		sqlite3_bind_text(stmt, 18, r.file_path.c_str(), -1,
+		sqlite3_bind_int(stmt, 14, r.callable.is_definition ? 1 : 0);
+		sqlite3_bind_int(stmt, 15, static_cast<int>(r.loc.start_row));
+		sqlite3_bind_int(stmt, 16, static_cast<int>(r.loc.start_col));
+		sqlite3_bind_int(stmt, 17, static_cast<int>(r.loc.end_row));
+		sqlite3_bind_int(stmt, 18, static_cast<int>(r.loc.end_col));
+		sqlite3_bind_text(stmt, 19, r.file_path.c_str(), -1,
 				  SQLITE_STATIC);
-		sqlite3_bind_text(stmt, 19, r.language.c_str(), -1,
+		sqlite3_bind_text(stmt, 20, r.language.c_str(), -1,
 				  SQLITE_STATIC);
 		// Step 3: bind structured call facts (empty for non-CallExpr).
-		sqlite3_bind_text(stmt, 20, r.qualified_target.c_str(), -1,
+		sqlite3_bind_text(stmt, 21, r.qualified_target.c_str(), -1,
 				  SQLITE_STATIC);
-		sqlite3_bind_text(stmt, 21, r.receiver_text.c_str(), -1,
+		sqlite3_bind_text(stmt, 22, r.receiver_text.c_str(), -1,
 				  SQLITE_STATIC);
-		sqlite3_bind_text(stmt, 22, r.receiver_type.c_str(), -1,
+		sqlite3_bind_text(stmt, 23, r.receiver_type.c_str(), -1,
 				  SQLITE_STATIC);
-		sqlite3_bind_text(stmt, 23, r.import_alias.c_str(), -1,
+		sqlite3_bind_text(stmt, 24, r.import_alias.c_str(), -1,
+				  SQLITE_STATIC);
+		sqlite3_bind_text(stmt, 25, r.callable.signature.c_str(), -1,
 				  SQLITE_STATIC);
 
 		int rc = sqlite3_step(stmt);
@@ -211,18 +243,13 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 		return true;
 
 	// ── Prepare statements ─────────────────────────────────────
-	const char *sr_sql =
-		"INSERT INTO semantic_records "
-		"(original_id, project_id, kind, name, qualified_name, parent_id, "
-		" ref_original_id, arity, is_static, type_name, call_kind,"
-		" resolve_strategy, visibility,"
-		" start_row, start_col, end_row, end_col, file_path, language,"
-		" qualified_target, receiver_text, receiver_type, import_alias) "
-		"VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+	const std::string sr_sql = SemanticRecordInsertSql(1);
 	sqlite3_stmt *sr_st = nullptr;
-	if (sqlite3_prepare_v2(db_, sr_sql, -1, &sr_st, nullptr) != SQLITE_OK) {
-		error_ =
-			"insertFileResultBatch: prepare semantic_records failed";
+	if (sqlite3_prepare_v2(db_, sr_sql.c_str(), -1, &sr_st, nullptr) !=
+	    SQLITE_OK) {
+		error_ = "[module=store, method=insertFileResultBatch] "
+			 "prepare semantic_records failed: " +
+			 std::string(sqlite3_errmsg(db_));
 		return false;
 	}
 
@@ -397,22 +424,8 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 			if (batch_sz > kMaxBatch)
 				batch_sz = kMaxBatch;
 
-			// Build multi-VALUES SQL
-			std::string sql =
-				"INSERT INTO semantic_records "
-				"(original_id, project_id, kind, name, "
-				"qualified_name, parent_id, "
-				"ref_original_id, arity, is_static, type_name, call_kind, "
-				"resolve_strategy, visibility, "
-				"start_row, start_col, end_row, end_col, "
-				"file_path, language, "
-				"qualified_target, receiver_text, "
-				"receiver_type, import_alias) VALUES ";
-			for (size_t i = 0; i < batch_sz; i++) {
-				if (i > 0)
-					sql += ",";
-				sql += "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
-			}
+			const std::string sql =
+				SemanticRecordInsertSql(batch_sz);
 
 			sqlite3_stmt *batch_st = nullptr;
 			if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &batch_st,
@@ -429,7 +442,8 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 			} else {
 				for (size_t i = 0; i < batch_sz; i++) {
 					auto &r = *all_recs[off + i].rec;
-					int base = static_cast<int>(i * 23);
+					int base = static_cast<int>(
+						i * kSemanticRecordColumns);
 					sqlite3_bind_int64(
 						batch_st, base + 1,
 						static_cast<int64_t>(r.id));
@@ -479,44 +493,52 @@ bool GraphStore::insertFileResultBatch(uint64_t project_id,
 							 r.visibility);
 					sqlite3_bind_int(
 						batch_st, base + 14,
-						static_cast<int>(
-							r.loc.start_row));
+						r.callable.is_definition ? 1 :
+									   0);
 					sqlite3_bind_int(
 						batch_st, base + 15,
 						static_cast<int>(
-							r.loc.start_col));
+							r.loc.start_row));
 					sqlite3_bind_int(
 						batch_st, base + 16,
 						static_cast<int>(
-							r.loc.end_row));
+							r.loc.start_col));
 					sqlite3_bind_int(
 						batch_st, base + 17,
 						static_cast<int>(
+							r.loc.end_row));
+					sqlite3_bind_int(
+						batch_st, base + 18,
+						static_cast<int>(
 							r.loc.end_col));
 					sqlite3_bind_text(
-						batch_st, base + 18,
+						batch_st, base + 19,
 						all_recs[off + i].file->c_str(),
 						-1, SQLITE_STATIC);
-					sqlite3_bind_text(batch_st, base + 19,
+					sqlite3_bind_text(batch_st, base + 20,
 							  r.language.c_str(),
 							  -1, SQLITE_STATIC);
 					// Step 3: bind structured call facts.
 					sqlite3_bind_text(
-						batch_st, base + 20,
+						batch_st, base + 21,
 						r.qualified_target.c_str(), -1,
 						SQLITE_STATIC);
 					sqlite3_bind_text(
-						batch_st, base + 21,
+						batch_st, base + 22,
 						r.receiver_text.c_str(), -1,
 						SQLITE_STATIC);
 					sqlite3_bind_text(
-						batch_st, base + 22,
+						batch_st, base + 23,
 						r.receiver_type.c_str(), -1,
 						SQLITE_STATIC);
 					sqlite3_bind_text(
-						batch_st, base + 23,
+						batch_st, base + 24,
 						r.import_alias.c_str(), -1,
 						SQLITE_STATIC);
+					sqlite3_bind_text(
+						batch_st, base + 25,
+						r.callable.signature.c_str(),
+						-1, SQLITE_STATIC);
 				}
 				int rc = sqlite3_step(batch_st);
 				if (rc != SQLITE_DONE) {

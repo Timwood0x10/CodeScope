@@ -289,12 +289,12 @@ int main()
 		store::GraphStore store;
 		check(store.open(kFreshDb), "open fresh database");
 
-		check(scalar(store, "PRAGMA user_version") == 10,
-		      "fresh database not at version 10");
-		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 10,
-		      "schema_meta must hold baseline + 9 migrations");
+		check(scalar(store, "PRAGMA user_version") == 12,
+		      "fresh database not at version 12");
+		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 12,
+		      "schema_meta must hold baseline + 11 migrations");
 		check(scalar(store, "SELECT MAX(version) FROM schema_meta") ==
-			      10,
+			      12,
 		      "schema_meta max version");
 
 		check(hasColumn(store, "evidence", "finding_key"),
@@ -314,6 +314,18 @@ int main()
 		// m0010: production/test classification (§12.2).
 		check(hasColumn(store, "files", "is_test"),
 		      "files.is_test missing");
+		// m0011: is_definition distinguishes C/C++ definitions from
+		// declarations so find_definition/symbol_context can prefer
+		// the definition.
+		check(hasColumn(store, "entity", "is_definition"),
+		      "entity.is_definition missing");
+		check(hasColumn(store, "semantic_records", "is_definition"),
+		      "semantic_records.is_definition missing");
+		check(hasColumn(store, "semantic_records",
+				"callable_signature"),
+		      "semantic_records.callable_signature missing");
+		check(hasColumn(store, "entity", "callable_signature"),
+		      "entity.callable_signature missing");
 
 		check(hasColumn(store, "finding", "legacy_severity"),
 		      "finding.legacy_severity missing after migration");
@@ -365,16 +377,16 @@ int main()
 		fresh_indexes = indexSnapshot(store);
 		store.close();
 		std::printf(
-			"  [PASS] fresh database at v8, snapshot present\n");
+			"  [PASS] fresh database at v12, snapshot present\n");
 	}
 
 	// ── 2. Reopen must not re-apply anything ──────────────────────────
 	{
 		store::GraphStore store;
 		check(store.open(kFreshDb), "reopen fresh database");
-		check(scalar(store, "PRAGMA user_version") == 10,
+		check(scalar(store, "PRAGMA user_version") == 12,
 		      "version changed on reopen");
-		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 10,
+		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 12,
 		      "schema_meta grew on reopen");
 		store.close();
 		std::printf("  [PASS] reopen is idempotent\n");
@@ -386,9 +398,9 @@ int main()
 		store::GraphStore store;
 		check(store.open(kLegacyDb), "open legacy database");
 
-		check(scalar(store, "PRAGMA user_version") == 10,
-		      "legacy database not migrated to v8");
-		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 10,
+		check(scalar(store, "PRAGMA user_version") == 12,
+		      "legacy database not migrated to v12");
+		check(scalar(store, "SELECT COUNT(*) FROM schema_meta") == 12,
 		      "legacy schema_meta row count");
 
 		check(scalar(store,

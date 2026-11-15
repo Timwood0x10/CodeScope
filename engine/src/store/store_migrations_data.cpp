@@ -261,6 +261,42 @@ ALTER TABLE files ADD COLUMN blank_loc INTEGER;
 ALTER TABLE files ADD COLUMN is_test INTEGER;
 )sql",
 	},
+	{
+		11,
+		"entity_is_definition",
+		// v0.3: is_definition distinguishes C/C++ function definitions
+		// (have a body) from declarations (signature only, typically in
+		// headers). The flag is set by the visitor (Record.is_definition)
+		// based on whether the AST node has a function body — not by file
+		// extension, which fails for single-line implementations in .cpp
+		// and multi-line declarations in .h. find_definition and
+		// symbol_context use this to prefer the definition and avoid
+		// reporting ambiguous candidates for what is really one symbol.
+		// Defaults to 1 so legacy rows — which are mostly definitions —
+		// are treated as definitions until the next re-index populates
+		// the column correctly.
+		R"sql(
+ALTER TABLE entity ADD COLUMN is_definition INTEGER NOT NULL DEFAULT 1;
+)sql",
+	},
+	{
+		12,
+		"callable_source_facts",
+		// Version 11 databases already have the entity flag. The source
+		// fact and overload identity need a separate, forward migration.
+		// Empty signatures keep legacy candidates ambiguous until reindex.
+		R"sql(
+ALTER TABLE semantic_records ADD COLUMN is_definition INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE semantic_records ADD COLUMN callable_signature TEXT NOT NULL DEFAULT '';
+ALTER TABLE entity ADD COLUMN callable_signature TEXT NOT NULL DEFAULT '';
+-- Force one parse while retaining rows so the indexer uses its reindex path.
+UPDATE file_scan_state SET file_mtime=-1, file_size=-1, content_hash=''
+WHERE EXISTS (SELECT 1 FROM files
+              WHERE files.project_id=file_scan_state.project_id
+                AND files.path=file_scan_state.file_path
+                AND files.language IN ('c','cpp','c++'));
+)sql",
+	},
 };
 
 } // namespace

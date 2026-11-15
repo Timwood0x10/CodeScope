@@ -534,6 +534,17 @@ std::string GraphStore::importArtifact(uint64_t project_id,
 	std::string pid_str = std::to_string(project_id);
 	beginTransaction();
 	bool ok = true;
+	// Pre-v12 artifacts lack signatures; keep those identities unknown.
+	const bool has_facts = sqlite3_table_column_metadata(
+				       db_, "artifact", "semantic_records",
+				       "callable_signature", nullptr, nullptr,
+				       nullptr, nullptr, nullptr) == SQLITE_OK;
+	if (!has_facts)
+		std::fprintf(
+			stderr,
+			"[module=store, method=importArtifact] "
+			"source facts unavailable: %s; importing unknown identities\n",
+			sqlite3_errmsg(db_));
 	// Explicit column lists on BOTH the INSERT target and the SELECT source,
 	// aligned to the schema column order (store_schema.cpp). The previous
 	// SELECT * was fragile to column-order drift between the artifact DB and
@@ -543,11 +554,15 @@ std::string GraphStore::importArtifact(uint64_t project_id,
 		("INSERT OR IGNORE INTO semantic_records "
 		 "(rowid, original_id, project_id, kind, name, qualified_name, "
 		 " parent_id, ref_original_id, arity, is_static, type_name, "
-		 " call_kind, visibility, start_row, start_col, end_row, end_col, "
+		 " call_kind, visibility, is_definition, callable_signature, "
+		 " start_row, start_col, end_row, end_col, "
 		 " file_path, language) "
 		 "SELECT rowid, original_id, project_id, kind, name, qualified_name, "
 		 " parent_id, ref_original_id, arity, is_static, type_name, "
-		 " call_kind, visibility, start_row, start_col, end_row, end_col, "
+		 " call_kind, visibility, " +
+		 std::string(has_facts ? "is_definition, callable_signature, " :
+					 "1, '', ") +
+		 " start_row, start_col, end_row, end_col, "
 		 " file_path, language "
 		 "FROM artifact.semantic_records WHERE project_id=" +
 		 pid_str)
