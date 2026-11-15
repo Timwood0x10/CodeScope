@@ -534,11 +534,15 @@ std::string GraphStore::importArtifact(uint64_t project_id,
 	std::string pid_str = std::to_string(project_id);
 	beginTransaction();
 	bool ok = true;
-	// Pre-v12 artifacts lack signatures; keep those identities unknown.
-	const bool has_facts = sqlite3_table_column_metadata(
-				       db_, "artifact", "semantic_records",
-				       "callable_signature", nullptr, nullptr,
-				       nullptr, nullptr, nullptr) == SQLITE_OK;
+	// Pre-v12 artifacts lack is_definition/callable_signature.
+	char **ver_tbl = nullptr;
+	int av = 0;
+	if (sqlite3_get_table(db_, "PRAGMA artifact.user_version", &ver_tbl,
+			      nullptr, nullptr, nullptr) == SQLITE_OK &&
+	    ver_tbl && ver_tbl[0])
+		av = std::atoi(ver_tbl[0]);
+	sqlite3_free_table(ver_tbl);
+	const bool has_facts = av >= 12;
 	if (!has_facts)
 		std::fprintf(
 			stderr,
