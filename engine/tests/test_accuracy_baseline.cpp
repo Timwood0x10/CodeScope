@@ -25,6 +25,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <system_error>
 #include <sqlite3.h>
 #include <string>
 #include <unistd.h>
@@ -59,7 +60,7 @@ static int64_t scalarInt(sqlite3 *db, const std::string &sql)
 int main()
 {
 	const char *proj_dir = "/tmp/test_accuracy_baseline";
-	std::filesystem::remove_all(proj_dir);
+	{ std::error_code ec_remove; std::filesystem::remove_all(proj_dir, ec_remove); }
 	std::filesystem::create_directories(proj_dir);
 
 	// multi.go: callers of multiply are main and compute.

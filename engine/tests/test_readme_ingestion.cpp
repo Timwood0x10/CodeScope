@@ -29,6 +29,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <system_error>
 #include <sqlite3.h>
 #include <thread>
 #include <unistd.h>
@@ -46,7 +47,7 @@ int main()
 {
 	// Create a temp project dir
 	std::string proj_dir = "/tmp/test_readme_ingest";
-	std::filesystem::remove_all(proj_dir);
+	{ std::error_code ec_remove; std::filesystem::remove_all(proj_dir, ec_remove); }
 	std::filesystem::create_directories(proj_dir);
 
 	// Write root README.md with capability lines
@@ -171,7 +172,7 @@ This project demonstrates README ingestion into the knowledge layer.
 	// reach the root README, so any row that exists afterwards came from the
 	// enhance pass.
 	const std::string proj_dir2 = "/tmp/readme_ingest_enhance";
-	std::filesystem::remove_all(proj_dir2);
+	{ std::error_code ec_remove; std::filesystem::remove_all(proj_dir2, ec_remove); }
 	std::filesystem::create_directories(proj_dir2 + "/sub");
 
 	FILE *readme2 = fopen((proj_dir2 + "/README.md").c_str(), "w");
@@ -258,14 +259,14 @@ This project demonstrates README ingestion into the knowledge layer.
 	check(docs_after_second == 1,
 	      "re-running the enhance pass must not duplicate the README row");
 
-	std::filesystem::remove_all(proj_dir2);
+	{ std::error_code ec_remove; std::filesystem::remove_all(proj_dir2, ec_remove); }
 
 	sqlite3_close(db);
 	engine_destroy(g_engine);
 	g_engine = nullptr;
 
 	// Cleanup
-	std::filesystem::remove_all(proj_dir);
+	{ std::error_code ec_remove; std::filesystem::remove_all(proj_dir, ec_remove); }
 	unlink(db_path);
 
 	printf("\n=== README ingestion test passed ===\n");

@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <system_error>
 #include <fstream>
 #include <string>
 #include <unistd.h>
@@ -71,7 +72,7 @@ int main()
 {
 	initPaths();
 	removeDbFiles();
-	std::filesystem::remove_all(kBrokenRulesDir);
+	{ std::error_code ec_remove; std::filesystem::remove_all(kBrokenRulesDir, ec_remove); }
 
 	engine_t engine = engine_create(kDbPath);
 	if (!engine) {
@@ -91,7 +92,7 @@ int main()
 			engine_build_evidence(engine, 1, ""));
 
 	unsetenv("CODESCOPE_RULES_DIR");
-	std::filesystem::remove_all(kBrokenRulesDir);
+	{ std::error_code ec_remove; std::filesystem::remove_all(kBrokenRulesDir, ec_remove); }
 
 	engine_destroy(engine);
 	removeDbFiles();

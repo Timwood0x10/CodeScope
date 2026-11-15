@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <system_error>
 #include <sqlite3.h>
 #include <string>
 #include <unistd.h>
@@ -69,7 +70,7 @@ long long internalEdgesOf(sqlite3 *db, const char *suffix)
 int main()
 {
 	const std::string proj_dir = "/tmp/module_internal_edges_repro";
-	std::filesystem::remove_all(proj_dir);
+	{ std::error_code ec_remove; std::filesystem::remove_all(proj_dir, ec_remove); }
 	std::filesystem::create_directories(proj_dir + "/src");
 	std::filesystem::create_directories(proj_dir + "/other");
 

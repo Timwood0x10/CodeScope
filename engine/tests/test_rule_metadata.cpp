@@ -26,6 +26,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <system_error>
 #include <fstream>
 #include <sqlite3.h>
 #include <string>
@@ -96,7 +97,7 @@ static void expectRejected(const evidence::RuleLoadReport &report,
 /// Cases 1-6: the loader refuses bad metadata and keeps good rules.
 static void checkLoaderGates()
 {
-	std::filesystem::remove_all(kRulesDir);
+	{ std::error_code ec_remove; std::filesystem::remove_all(kRulesDir, ec_remove); }
 	std::filesystem::create_directories(kRulesDir);
 
 	writeFile("ok.json",
@@ -297,7 +298,7 @@ static long scalar(const char *sql)
 /// Case 8: the declared level reaches rule_exec, and a Count rule is skipped.
 static void checkRunRecordsLevel()
 {
-	std::filesystem::remove_all(kRulesDir);
+	{ std::error_code ec_remove; std::filesystem::remove_all(kRulesDir, ec_remove); }
 	std::filesystem::create_directories(kRulesDir);
 	writeFile("run.json",
 		  ("{\n  \"rules\": [\n" +
@@ -359,7 +360,7 @@ static void checkRunRecordsLevel()
 /// not be told apart.
 static void checkDigestTracksBehaviour()
 {
-	std::filesystem::remove_all(kRulesDir);
+	{ std::error_code ec_remove; std::filesystem::remove_all(kRulesDir, ec_remove); }
 	std::filesystem::create_directories(kRulesDir);
 	setenv("CODESCOPE_RULES_DIR", kRulesDir, 1);
 
@@ -429,7 +430,7 @@ int main()
 	checkRunRecordsLevel();
 	checkDigestTracksBehaviour();
 
-	std::filesystem::remove_all(kRulesDir);
+	{ std::error_code ec_remove; std::filesystem::remove_all(kRulesDir, ec_remove); }
 	removeDbFiles();
 	std::printf("\nAll rule metadata tests passed.\n");
 	return 0;

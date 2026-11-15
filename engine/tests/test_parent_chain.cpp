@@ -18,6 +18,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <system_error>
 #include <unistd.h>
 #include "test_engine_handle.h"
 
@@ -32,7 +33,7 @@ static inline void check(bool cond, const char *msg)
 int main()
 {
 	const char *proj_dir = "/tmp/parent_chain_repro";
-	std::filesystem::remove_all(proj_dir);
+	{ std::error_code ec_remove; std::filesystem::remove_all(proj_dir, ec_remove); }
 	std::filesystem::create_directories(proj_dir);
 	const std::string py_path = std::string(proj_dir) + "/repro.py";
 	FILE *f = fopen(py_path.c_str(), "w");
@@ -108,6 +109,6 @@ def create_evolution_timeline():
 
 	engine_destroy(g_engine);
 	g_engine = nullptr;
-	std::filesystem::remove_all(proj_dir);
+	{ std::error_code ec_remove; std::filesystem::remove_all(proj_dir, ec_remove); }
 	return 0;
 }

@@ -24,6 +24,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <system_error>
 #include <sqlite3.h>
 #include <string>
 #include <unistd.h>
@@ -61,7 +62,7 @@ int main()
 {
 	const std::string proj_dir = "/tmp/force_index_files_repro";
 	const std::string tests_dir = proj_dir + "/tests";
-	std::filesystem::remove_all(proj_dir);
+	{ std::error_code ec_remove; std::filesystem::remove_all(proj_dir, ec_remove); }
 	std::filesystem::create_directories(proj_dir + "/src");
 	std::filesystem::create_directories(tests_dir);
 

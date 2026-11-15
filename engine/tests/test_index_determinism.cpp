@@ -37,6 +37,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <system_error>
 #include <map>
 #include <sqlite3.h>
 #include <string>
@@ -79,7 +80,7 @@ static void writeFile(const std::string &path, const std::string &content)
 /// translation unit declaring kFuncsPerFile functions that call each other.
 static void buildFixture(const std::string &root)
 {
-	std::filesystem::remove_all(root);
+	{ std::error_code ec_remove; std::filesystem::remove_all(root, ec_remove); }
 	for (int f = 0; f < kFixtureFiles; ++f) {
 		const std::string idx = std::to_string(f);
 		std::string body;
@@ -375,7 +376,7 @@ int main()
 
 	unlink(db1);
 	unlink(db2);
-	std::filesystem::remove_all(root);
+	{ std::error_code ec_remove; std::filesystem::remove_all(root, ec_remove); }
 	printf("\nAll index determinism tests passed.\n");
 	return 0;
 }

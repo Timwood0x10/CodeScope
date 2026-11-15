@@ -42,6 +42,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <system_error>
 #include <sqlite3.h>
 #include <string>
 #include <unistd.h>
@@ -114,7 +115,7 @@ void expect(long long got, long long want, const char *column, const char *name)
 int main()
 {
 	const std::string proj_dir = "/tmp/function_arity_repro";
-	std::filesystem::remove_all(proj_dir);
+	{ std::error_code ec_remove; std::filesystem::remove_all(proj_dir, ec_remove); }
 	std::filesystem::create_directories(proj_dir);
 
 	writeFile(proj_dir + "/a.cpp",

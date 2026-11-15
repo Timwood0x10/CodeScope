@@ -36,6 +36,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <system_error>
 #include <fstream>
 #include <set>
 #include <sstream>
@@ -435,7 +436,7 @@ static FixtureResult runFixture(const std::string &fixture_dir, bool inject_fp,
 	// FilterPolicy skip list (e.g. "tests"). Only copy source files,
 	// not ground_truth.json, so the JSON is not mistaken for source.
 	std::string tmp_dir = "/tmp/codescope_acc_src_" + r.language;
-	std::filesystem::remove_all(tmp_dir);
+	{ std::error_code ec_remove; std::filesystem::remove_all(tmp_dir, ec_remove); }
 	std::filesystem::create_directories(tmp_dir);
 	for (const auto &entry :
 	     std::filesystem::directory_iterator(fixture_dir)) {

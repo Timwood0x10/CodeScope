@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <system_error>
 #include <string>
 #include <unistd.h>
 #include <vector>
@@ -112,7 +113,7 @@ static Counts indexAndCount(bool force_streaming)
 int main()
 {
 	g_dir = "/tmp/codescope_membulk_parity";
-	std::filesystem::remove_all(g_dir);
+	{ std::error_code ec_remove; std::filesystem::remove_all(g_dir, ec_remove); }
 	std::filesystem::create_directories(g_dir);
 
 	// 20 files (well under kMemBulkFileThreshold=2000) so the default
@@ -143,6 +144,6 @@ int main()
 		return 1;
 	}
 	fprintf(stderr, "=== membulk parity test passed ===\n");
-	std::filesystem::remove_all(g_dir);
+	{ std::error_code ec_remove; std::filesystem::remove_all(g_dir, ec_remove); }
 	return 0;
 }

@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <system_error>
 #include <string>
 #include <unistd.h>
 #include "test_engine_handle.h"
@@ -35,7 +36,7 @@
 // compute/main with a known call chain: main -> compute -> multiply -> add.
 static void writeFixture(const std::string &dir)
 {
-	std::filesystem::remove_all(dir);
+	{ std::error_code ec_remove; std::filesystem::remove_all(dir, ec_remove); }
 	std::filesystem::create_directories(dir);
 
 	FILE *f = fopen((dir + "/multi.go").c_str(), "w");

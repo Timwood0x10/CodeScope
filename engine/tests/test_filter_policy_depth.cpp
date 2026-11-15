@@ -28,6 +28,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <system_error>
 #include <string>
 
 static void check(bool cond, const char *msg)
@@ -126,7 +127,7 @@ int main()
 	// points now use.
 	{
 		const std::string root = "/tmp/filter_policy_java_bootstrap";
-		std::filesystem::remove_all(root);
+		{ std::error_code ec_remove; std::filesystem::remove_all(root, ec_remove); }
 		std::filesystem::create_directories(
 			root + "/src/main/java/org/acme/samples");
 		std::filesystem::create_directories(root + "/src/test/java");
@@ -156,7 +157,7 @@ int main()
 		// A tree with no .java file must NOT be flipped: the carve-out only
 		// relaxes the names for Java, and other languages nest real test dirs.
 		const std::string go_root = root + "_go";
-		std::filesystem::remove_all(go_root);
+		{ std::error_code ec_remove; std::filesystem::remove_all(go_root, ec_remove); }
 		std::filesystem::create_directories(go_root + "/pkg/a/test");
 		FILE *g = fopen((go_root + "/pkg/a/test/x.go").c_str(), "w");
 		check(g != nullptr, "go fixture file must be creatable");
@@ -169,8 +170,8 @@ int main()
 		expectPath(go, "pkg/a/test/x.go", true,
 			   "non-Java: test/ stays any-depth");
 
-		std::filesystem::remove_all(root);
-		std::filesystem::remove_all(go_root);
+		{ std::error_code ec_remove; std::filesystem::remove_all(root, ec_remove); }
+		{ std::error_code ec_remove; std::filesystem::remove_all(go_root, ec_remove); }
 	}
 
 	printf("\nAll filter policy depth tests passed.\n");

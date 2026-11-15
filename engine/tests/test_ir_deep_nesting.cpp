@@ -30,6 +30,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <system_error>
 #include <string>
 #include <unistd.h>
 #include "test_engine_handle.h"
@@ -135,7 +136,7 @@ static std::string indexCase(const std::string &source,
 			     const std::string &proj_dir,
 			     const std::string &db_path)
 {
-	std::filesystem::remove_all(proj_dir);
+	{ std::error_code ec_remove; std::filesystem::remove_all(proj_dir, ec_remove); }
 	std::filesystem::create_directories(proj_dir);
 
 	const std::string src_path = proj_dir + "/" + file_name;

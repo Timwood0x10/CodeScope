@@ -18,6 +18,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <system_error>
 #include <sqlite3.h>
 #include <string>
 #include <unistd.h>
@@ -98,7 +99,7 @@ std::string referenceName(sqlite3 *db, const char *caller)
 int main()
 {
 	const std::string proj_dir = "/tmp/import_alias_repro";
-	std::filesystem::remove_all(proj_dir);
+	{ std::error_code ec_remove; std::filesystem::remove_all(proj_dir, ec_remove); }
 	std::filesystem::create_directories(proj_dir + "/src/lib");
 	std::filesystem::create_directories(proj_dir + "/src/util");
 
@@ -161,7 +162,7 @@ int main()
 		fprintf(stderr, "=== import alias resolution: FAILED ===\n");
 		return 1;
 	}
-	std::filesystem::remove_all(proj_dir);
+	{ std::error_code ec_remove; std::filesystem::remove_all(proj_dir, ec_remove); }
 	printf("=== import alias resolution test passed ===\n");
 	return 0;
 }

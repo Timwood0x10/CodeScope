@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <system_error>
 #include <unistd.h>
 #include "test_engine_handle.h"
 
@@ -33,7 +34,7 @@ int main()
 
 	// ── Setup: create a temp directory with a simple C file ──
 	const char *proj_a_dir = "/tmp/test_project_id_a";
-	std::filesystem::remove_all(proj_a_dir);
+	{ std::error_code ec_remove; std::filesystem::remove_all(proj_a_dir, ec_remove); }
 	std::filesystem::create_directories(proj_a_dir);
 	{
 		std::string fpath = std::string(proj_a_dir) + "/hello.c";
@@ -91,7 +92,7 @@ int main()
 
 	// ── Test 5: create an empty shell project B with a higher id ──
 	const char *proj_b_dir = "/tmp/test_project_id_b";
-	std::filesystem::remove_all(proj_b_dir);
+	{ std::error_code ec_remove; std::filesystem::remove_all(proj_b_dir, ec_remove); }
 	std::filesystem::create_directories(proj_b_dir);
 
 	uint64_t pid_b =
@@ -138,8 +139,8 @@ int main()
 	g_engine = nullptr;
 
 	// Cleanup
-	std::filesystem::remove_all(proj_a_dir);
-	std::filesystem::remove_all(proj_b_dir);
+	{ std::error_code ec_remove; std::filesystem::remove_all(proj_a_dir, ec_remove); }
+	{ std::error_code ec_remove; std::filesystem::remove_all(proj_b_dir, ec_remove); }
 	unlink(db_path);
 	unlink((std::string(db_path) + "-wal").c_str());
 	unlink((std::string(db_path) + "-shm").c_str());
