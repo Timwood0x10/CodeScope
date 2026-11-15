@@ -11,6 +11,7 @@
 #include "engine_analyze_queries.h"
 
 #include "graph/graph_types.h"
+#include "util/symbol_identity.h"
 
 #include <sqlite3.h>
 
@@ -43,20 +44,7 @@ bool QueryFailed(sqlite3 *db, const char *operation, uint64_t project_id)
 	return false;
 }
 
-// Only a measured C/C++ signature may pair rows. Kind 0/1 is one callable
-// family because the visitor emits out-of-class methods as Functions.
-// Language matching uses C-family equivalence so .h headers (detected as
-// 'cpp' by filter_policy) pair with .c definitions (detected as 'c').
-constexpr const char *kSameCallable =
-	"e2.project_id=entity.project_id "
-	"AND entity.kind IN (0,1) AND e2.kind IN (0,1) "
-	"AND entity.language IN ('c','cpp','c++') "
-	"AND e2.language IN ('c','cpp','c++') "
-	"AND e2.name=entity.name "
-	"AND COALESCE(NULLIF(e2.qualified_name,''),e2.name)="
-	"COALESCE(NULLIF(entity.qualified_name,''),entity.name) "
-	"AND entity.callable_signature!='' "
-	"AND e2.callable_signature=entity.callable_signature ";
+using util::kSameCallable;
 
 /// The relation scope includes the displayed entity plus its paired source
 /// rows. Reused by callers, callees and call-edge test candidates; not capped.

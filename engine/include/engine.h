@@ -501,10 +501,10 @@ char *engine_find_callees_adaptive(engine_t handle, uint64_t project_id,
 /**
  * Step 7 (plan §7.2): Find callers by entity ID.
  *
- * Unlike the bare-name API, this unambiguously targets a single entity
- * even when multiple entities share the same name. The entity ID is
- * resolved to (name, file_path, start_row) in SQLite, then used to
- * build a precise call-graph query.
+ * Targets one callable, merging C/C++ declaration/definition rows by
+ * measured signature and qualified identity. Homonyms stay separate.
+ * Missing/stale ids keep the documented members (empty list, total 0,
+ * entity_id) and add error_code=entity_not_found with a refresh hint.
  *
  * @param entity_id The entity.id from the entity table.
  * @return JSON: {"callers":[...],"total":N,"entity_id":ID}
@@ -518,7 +518,9 @@ char *engine_find_callers_by_entity(engine_t handle, uint64_t project_id,
 /**
  * Step 7 (plan §7.2): Find callees by entity ID.
  *
- * See engine_find_callers_by_entity for semantics.
+ * See engine_find_callers_by_entity for identity and missing-id semantics.
+ * Coverage/note fields explain that external/unresolved calls are excluded;
+ * they are present on every response, including the error shapes.
  *
  * @param entity_id The entity.id from the entity table.
  * @return JSON: {"callees":[...],"total":N,"entity_id":ID}

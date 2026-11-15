@@ -49,11 +49,9 @@ class QueryEngine {
 			       const char *file_filter = nullptr);
 
 	// Step 7 (plan §7.2): entity-precise query APIs.
-	// These accept an entity ID instead of a bare name, so they
-	// unambiguously target a single entity even when multiple
-	// entities share the same name (e.g. multiple __init__ methods).
-	// The entity ID is resolved to (name, file_path, start_row) in
-	// SQLite, then used to build a precise SQLite query.
+	// These resolve an id to its measured C/C++ callable peers before
+	// merging edges. Homonyms/overloads remain separate; missing ids
+	// return entity_not_found with a refresh hint.
 	std::string getCallersByEntity(uint64_t project_id, uint64_t entity_id);
 	std::string getCalleesByEntity(uint64_t project_id, uint64_t entity_id);
 

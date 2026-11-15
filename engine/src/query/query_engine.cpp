@@ -471,7 +471,8 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 				    const char *file_filter)
 {
 	if (!function_name || !*function_name)
-		return "{\"callees\":[],\"total\":0}";
+		return std::string("{\"callees\":[],\"total\":0") +
+		       kCalleeCoverageJson + "}";
 
 	// ── v0.2.5: SQLite graph-query backend (Windows / SQLite-only) ──
 	// Symmetric to getCallers: resolve the target entity id(s) for
@@ -490,7 +491,8 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 	const std::vector<CallableGroup> groups = resolveCallableGroups(
 		db, project_id, function_name, has_filter, src_ids);
 	if (src_ids.empty())
-		return "{\"callees\":[],\"total\":0}";
+		return std::string("{\"callees\":[],\"total\":0") +
+		       kCalleeCoverageJson + "}";
 
 	const bool ambiguous = groups.size() > 1 && has_filter.empty();
 	const std::string cands = ambiguous ? callableCandidatesJson(groups) :
@@ -577,7 +579,7 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 		result += ",\"hint\":\"" +
 			  util::jsonEscapeString(kAmbiguousNameHint) + "\"";
 	}
-	result += "}";
+	result += std::string(kCalleeCoverageJson) + "}";
 	return result;
 }
 

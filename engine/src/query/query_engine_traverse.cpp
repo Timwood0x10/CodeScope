@@ -10,6 +10,7 @@
 
 #include "util/json_writer.h"
 #include "query_engine.h"
+#include "query_engine_identity.h"
 
 #include <algorithm>
 #include <cctype>
@@ -36,13 +37,43 @@ static const char *const kShortestPathNote =
 	"Call graph edges are resolved by name matching; indirect calls "
 	"(virtual/pointer) may be missing.";
 
+namespace
+{
+
+/// Failure shape shared by the by-entity APIs.
+///
+/// engine.h promises `{"callers":[...],"total":N,"entity_id":ID}`. A client
+/// that schema-checks the payload must keep finding those three members even
+/// when the lookup fails, so the error is added beside them instead of
+/// replacing them. `coverage` is passed by the callee variants, which carry it
+/// on every response.
+std::string byEntityFailure(const char *list_key, const char *method,
+			    uint64_t entity_id, const char *error_code,
+			    const std::string &detail, const char *hint,
+			    const char *coverage)
+{
+	std::string json =
+		std::string("{\"") + list_key +
+		"\":[],\"total\":0,\"entity_id\":" + std::to_string(entity_id) +
+		",\"error_code\":\"" + error_code + "\",\"error\":\"" +
+		util::jsonEscapeString(std::string("[module=query, "
+						   "method=") +
+				       method + "] " + detail) +
+		"\"";
+	if (hint)
+		json += std::string(",\"hint\":\"") +
+			util::jsonEscapeString(hint) + "\"";
+	if (coverage)
+		json += coverage;
+	return json + "}";
+}
+
+} // namespace
+
 // ── Step 7 (plan §7.2): entity-precise query APIs ────────────────────
 //
-// These methods resolve an entity ID to (name, file_path, start_row) in
-// SQLite, then build a SQLite Cypher query that filters by all three
-// fields. This eliminates the homonym aggregation problem: multiple
-// entities named "__init__" in different classes/files are no longer
-// merged into a single result set.
+// Resolve the id to its measured callable peers before reading edges.
+// Unknown signatures stay row-local; overloads and homonyms stay separate.
 //
 // The old bare-name APIs (getCallers/getCallees) are retained for
 // backward compatibility but now detect ambiguity: when multiple
@@ -52,35 +83,46 @@ static const char *const kShortestPathNote =
 std::string QueryEngine::getCallersByEntity(uint64_t project_id,
 					    uint64_t entity_id)
 {
-	// ── v0.2.5: SQLite graph-query backend (Windows / SQLite-only) ──
-	// Callers by explicit entity id: read incoming Calls edges
-	// (relation where target_id = entity_id, type=1) via the
-	// (project_id, target_id) index. JSON shape mirrors the SQLite
-	// branch, including the trailing entity_id.
-	if (!store_ || !store_->handle()) {
-		return "{\"callers\":[],\"total\":0,\"error\":\"graph not ready "
-		       "[module=query, method=getCallersByEntity]\"}";
-	}
+	if (!store_ || !store_->handle())
+		return byEntityFailure("callers", "getCallersByEntity",
+				       entity_id, "graph_not_ready",
+				       "graph not ready", nullptr, nullptr);
 	sqlite3 *db = store_->handle();
+	std::vector<int64_t> ids;
+	if (!resolveCallableEntityIds(db, project_id, entity_id, ids))
+		return byEntityFailure("callers", "getCallersByEntity",
+				       entity_id, "query_failed",
+				       sqlite3_errmsg(db), nullptr, nullptr);
+	if (ids.empty())
+		return byEntityFailure(
+			"callers", "getCallersByEntity", entity_id,
+			"entity_not_found",
+			"Entity id not found in this project",
+			"Ids may change after reindexing; run find_definition or "
+			"find_symbol again.",
+			nullptr);
+	std::string in_list;
+	for (auto id : ids)
+		in_list += (in_list.empty() ? "" : ",") + std::to_string(id);
 	std::string result = "{\"callers\":[";
 	bool first = true;
 	int count = 0;
 	{
-		const char *sql =
+		const std::string sql =
 			"SELECT e.id, e.name, e.file_path, e.start_row, "
 			"       e.start_col, r.confidence, r.resolver, "
 			"       r.resolution_kind "
 			"FROM relation r JOIN entity e ON e.id = r.source_id "
 			"WHERE r.project_id=? AND r.type=1 "
-			"AND r.target_id=? "
+			"AND r.target_id IN (" +
+			in_list +
+			") "
 			"GROUP BY e.id ORDER BY e.id LIMIT 1000";
 		sqlite3_stmt *st = nullptr;
-		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) ==
+		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &st, nullptr) ==
 		    SQLITE_OK) {
 			sqlite3_bind_int64(st, 1,
 					   static_cast<int64_t>(project_id));
-			sqlite3_bind_int64(st, 2,
-					   static_cast<int64_t>(entity_id));
 			while (sqlite3_step(st) == SQLITE_ROW) {
 				int64_t node_id = sqlite3_column_int64(st, 0);
 				std::string name =
@@ -147,35 +189,48 @@ std::string QueryEngine::getCallersByEntity(uint64_t project_id,
 std::string QueryEngine::getCalleesByEntity(uint64_t project_id,
 					    uint64_t entity_id)
 {
-	// ── v0.2.5: SQLite graph-query backend (Windows / SQLite-only) ──
-	// Callees by explicit entity id: read outgoing Calls edges
-	// (relation where source_id = entity_id, type=1) via the
-	// (project_id, source_id) index. JSON shape mirrors the SQLite
-	// branch, including the trailing entity_id.
-	if (!store_ || !store_->handle()) {
-		return "{\"callees\":[],\"total\":0,\"error\":\"graph not ready "
-		       "[module=query, method=getCalleesByEntity]\"}";
-	}
+	if (!store_ || !store_->handle())
+		return byEntityFailure("callees", "getCalleesByEntity",
+				       entity_id, "graph_not_ready",
+				       "graph not ready", nullptr,
+				       kCalleeCoverageJson);
 	sqlite3 *db = store_->handle();
+	std::vector<int64_t> ids;
+	if (!resolveCallableEntityIds(db, project_id, entity_id, ids))
+		return byEntityFailure("callees", "getCalleesByEntity",
+				       entity_id, "query_failed",
+				       sqlite3_errmsg(db), nullptr,
+				       kCalleeCoverageJson);
+	if (ids.empty())
+		return byEntityFailure(
+			"callees", "getCalleesByEntity", entity_id,
+			"entity_not_found",
+			"Entity id not found in this project",
+			"Ids may change after reindexing; run find_definition or "
+			"find_symbol again.",
+			kCalleeCoverageJson);
+	std::string in_list;
+	for (auto id : ids)
+		in_list += (in_list.empty() ? "" : ",") + std::to_string(id);
 	std::string result = "{\"callees\":[";
 	bool first = true;
 	int count = 0;
 	{
-		const char *sql =
+		const std::string sql =
 			"SELECT e.id, e.name, e.file_path, e.start_row, "
 			"       e.start_col, r.confidence, r.resolver, "
 			"       r.resolution_kind "
 			"FROM relation r JOIN entity e ON e.id = r.target_id "
 			"WHERE r.project_id=? AND r.type=1 "
-			"AND r.source_id=? "
+			"AND r.source_id IN (" +
+			in_list +
+			") "
 			"GROUP BY e.id ORDER BY e.id LIMIT 1000";
 		sqlite3_stmt *st = nullptr;
-		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) ==
+		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &st, nullptr) ==
 		    SQLITE_OK) {
 			sqlite3_bind_int64(st, 1,
 					   static_cast<int64_t>(project_id));
-			sqlite3_bind_int64(st, 2,
-					   static_cast<int64_t>(entity_id));
 			while (sqlite3_step(st) == SQLITE_ROW) {
 				int64_t node_id = sqlite3_column_int64(st, 0);
 				std::string name =
@@ -235,7 +290,8 @@ std::string QueryEngine::getCalleesByEntity(uint64_t project_id,
 		}
 	}
 	result += "],\"total\":" + std::to_string(count) +
-		  ",\"entity_id\":" + std::to_string(entity_id) + "}";
+		  ",\"entity_id\":" + std::to_string(entity_id) +
+		  kCalleeCoverageJson + "}";
 	return result;
 }
 

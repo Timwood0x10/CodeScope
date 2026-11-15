@@ -41,7 +41,7 @@ std::string ColumnText(sqlite3_stmt *stmt, int column)
 	return text ? text : "";
 }
 
-/// The language family a callable belongs to, as engine_views::kSameCallable
+/// The language family a callable belongs to, as util::kSameCallable
 /// defines it: a .h declaration is labelled 'cpp' and its .c definition 'c', so
 /// exact spelling would keep the pair apart in every C project.
 std::string LanguageFamily(const std::string &language)
@@ -51,9 +51,9 @@ std::string LanguageFamily(const std::string &language)
 	return language;
 }
 
-/// Mirrors engine_views::kSameCallable. Keeping the two spellings equal is the
-/// point: symbol_context and find_callers must not disagree about how many
-/// callables a name has — that disagreement is what this file exists to end.
+/// Mirrors util::kSameCallable. Keeping the two spellings equal is the point:
+/// symbol_context and find_callers must not disagree about how many callables
+/// a name has — that disagreement is what this file exists to end.
 std::string GroupKey(const Row &row)
 {
 	if ((row.kind == 0 || row.kind == 1) && !row.signature.empty())
@@ -63,6 +63,38 @@ std::string GroupKey(const Row &row)
 }
 
 } // namespace
+
+bool resolveCallableEntityIds(sqlite3 *db, uint64_t project_id,
+			      uint64_t entity_id, std::vector<int64_t> &rows)
+{
+	rows.clear();
+	const std::string sql =
+		std::string("SELECT e2.id FROM entity JOIN entity e2 "
+			    "ON e2.id=entity.id OR (") +
+		kSameCallable +
+		") WHERE entity.project_id=?1 AND entity.id=?2 ORDER BY e2.id";
+	sqlite3_stmt *stmt = nullptr;
+	int rc = sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr);
+	if (rc == SQLITE_OK)
+		rc = sqlite3_bind_int64(stmt, 1,
+					static_cast<int64_t>(project_id));
+	if (rc == SQLITE_OK)
+		rc = sqlite3_bind_int64(stmt, 2,
+					static_cast<int64_t>(entity_id));
+	if (rc == SQLITE_OK) {
+		while ((rc = sqlite3_step(stmt)) == SQLITE_ROW)
+			rows.push_back(sqlite3_column_int64(stmt, 0));
+	}
+	if (rc != SQLITE_DONE) {
+		std::fprintf(
+			stderr,
+			"[module=query, method=resolveCallableEntityIds] %s\n",
+			sqlite3_errmsg(db));
+		rows.clear();
+	}
+	sqlite3_finalize(stmt);
+	return rc == SQLITE_DONE;
+}
 
 std::vector<CallableGroup> resolveCallableGroups(sqlite3 *db,
 						 uint64_t project_id,
