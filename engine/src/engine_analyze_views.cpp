@@ -366,12 +366,12 @@ char *buildSymbolContext(EngineContext *ctx, uint64_t project_id,
 	writeDefinition(w, entity);
 
 	std::vector<std::string> failed;
-	const Page<RelationRow> callers =
-		queryRelations(db, project_id, entity.id, false);
+	const Page<RelationRow> callers = queryRelations(
+		db, project_id, entity.id, false, scope.file_filter);
 	collectFailure(failed, callers.ok, "callers");
 	writeRelations(w, "callers", callers, kMaxCallers);
-	const Page<RelationRow> callees =
-		queryRelations(db, project_id, entity.id, true);
+	const Page<RelationRow> callees = queryRelations(
+		db, project_id, entity.id, true, scope.file_filter);
 	collectFailure(failed, callees.ok, "callees");
 	writeRelations(w, "callees", callees, kMaxCallees);
 
@@ -380,8 +380,8 @@ char *buildSymbolContext(EngineContext *ctx, uint64_t project_id,
 	collectFailure(failed, findings.ok, "findings");
 	writeFindings(w, findings);
 
-	const Page<TestCandidate> tests =
-		queryTestCandidates(db, project_id, entity.id, scope.symbol);
+	const Page<TestCandidate> tests = queryTestCandidates(
+		db, project_id, entity.id, scope.symbol, scope.file_filter);
 	collectFailure(failed, tests.ok, "test_candidates");
 	writeTestCandidates(w, tests);
 

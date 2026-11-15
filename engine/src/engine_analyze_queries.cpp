@@ -15,6 +15,9 @@
 #include <sqlite3.h>
 
 #include <algorithm>
+#include <cinttypes>
+#include <cstdio>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -28,6 +31,56 @@ namespace
 /// ownership, not a call (graph_types.h).
 constexpr int kEdgeCalls = static_cast<int>(graph::EdgeType::Calls);
 
+using Statement = std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)>;
+
+/// Keep the SQLite cause in logs while callers surface an unknown result.
+bool QueryFailed(sqlite3 *db, const char *operation, uint64_t project_id)
+{
+	std::fprintf(stderr,
+		     "[module=analyze_queries, method=%s, project=%" PRIu64
+		     "] %s\n",
+		     operation, project_id, sqlite3_errmsg(db));
+	return false;
+}
+
+// Only a measured C/C++ signature may pair rows. Kind 0/1 is one callable
+// family because the visitor emits out-of-class methods as Functions.
+constexpr const char *kSameCallable =
+	"e2.project_id=entity.project_id "
+	"AND entity.kind IN (0,1) AND e2.kind IN (0,1) "
+	"AND entity.language IN ('c','cpp','c++') "
+	"AND e2.language=entity.language "
+	"AND e2.name=entity.name "
+	"AND COALESCE(NULLIF(e2.qualified_name,''),e2.name)="
+	"COALESCE(NULLIF(entity.qualified_name,''),entity.name) "
+	"AND entity.callable_signature!='' "
+	"AND e2.callable_signature=entity.callable_signature ";
+
+/// The relation scope includes the displayed entity plus its paired source
+/// rows. Reused by callers, callees and call-edge test candidates; not capped.
+std::string SymbolEntitiesSql()
+{
+	return std::string(
+		       "WITH symbol_entities AS (SELECT e2.id FROM entity e2 "
+		       "JOIN entity ON entity.id=?3 AND entity.project_id=?1 "
+		       "WHERE (e2.id=entity.id OR (") +
+	       kSameCallable + ")) AND (?4='' OR e2.file_path LIKE ?4)) ";
+}
+
+/// Bind the same lookup scope to row and count queries. Empty path means all.
+bool BindSymbolScope(sqlite3_stmt *stmt, uint64_t project_id, int type,
+		     int64_t entity_id, const std::string &file_filter)
+{
+	const std::string pattern =
+		file_filter.empty() ? "" : "%" + file_filter + "%";
+	return sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id)) ==
+		       SQLITE_OK &&
+	       sqlite3_bind_int(stmt, 2, type) == SQLITE_OK &&
+	       sqlite3_bind_int64(stmt, 3, entity_id) == SQLITE_OK &&
+	       sqlite3_bind_text(stmt, 4, pattern.c_str(), -1,
+				 SQLITE_TRANSIENT) == SQLITE_OK;
+}
+
 // ── Small SQL helpers ───────────────────────────────────────────
 
 std::string textCol(sqlite3_stmt *stmt, int col)
@@ -37,28 +90,28 @@ std::string textCol(sqlite3_stmt *stmt, int col)
 	return text ? text : "";
 }
 
-/// Run a COUNT statement with an int (type) and an int64 (entity id)
-/// after project_id. The relation count SQL has three parameters:
-/// `project_id=? AND type=? AND source_id=?` — a helper that only
-/// binds two would put the entity id in the type slot and leave the
-/// id slot unbound, silently returning total=0.
-int64_t countWithIntAndInt64(sqlite3 *db, const char *sql, uint64_t project_id,
-			     int type_val, int64_t entity_id, bool *ok)
+/// Count the uncapped relation set with exactly the same symbol/path bindings
+/// as the row query. Failure stays unknown instead of becoming a zero total.
+int64_t CountSymbolRelations(sqlite3 *db, const std::string &sql,
+			     uint64_t project_id, int64_t entity_id,
+			     const std::string &file_filter, bool *ok)
 {
 	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-		*ok = false;
+	const int prepared =
+		sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr);
+	Statement owned(stmt, sqlite3_finalize);
+	if (prepared != SQLITE_OK ||
+	    !BindSymbolScope(stmt, project_id, kEdgeCalls, entity_id,
+			     file_filter)) {
+		*ok = QueryFailed(db, "CountSymbolRelations.prepare",
+				  project_id);
 		return -1;
 	}
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_int(stmt, 2, type_val);
-	sqlite3_bind_int64(stmt, 3, entity_id);
 	int64_t total = -1;
 	if (sqlite3_step(stmt) == SQLITE_ROW)
 		total = sqlite3_column_int64(stmt, 0);
 	else
-		*ok = false;
-	sqlite3_finalize(stmt);
+		*ok = QueryFailed(db, "CountSymbolRelations.step", project_id);
 	return total;
 }
 
@@ -88,59 +141,66 @@ Page<EntityRow> resolveEntities(sqlite3 *db, uint64_t project_id,
 	Page<EntityRow> page;
 	const bool has_filter = !file_filter.empty();
 	std::string where =
-		"WHERE project_id=? AND (name=? OR qualified_name=?)";
+		"WHERE project_id=?1 AND (name=?2 OR qualified_name=?2)";
 	if (has_filter)
-		where += " AND file_path LIKE ?";
+		where += " AND file_path LIKE ?3";
+	// Prefer only a signature-matched definition inside the requested scope.
+	// Unknown legacy signatures keep their candidates, never guess a pair.
+	where += " AND (is_definition=1 OR NOT EXISTS ("
+		 "SELECT 1 FROM entity e2 WHERE ";
+	where += kSameCallable;
+	where += "AND e2.is_definition=1";
+	if (has_filter)
+		where += " AND e2.file_path LIKE ?3";
+	where += "))";
 
 	std::string select =
 		"SELECT id, name, qualified_name, kind, file_path, "
 		"       start_row, language, module_path FROM entity " +
-		where + " ORDER BY id LIMIT ?";
+		where + " ORDER BY id LIMIT " +
+		std::to_string(kMaxResolvedEntities);
 	std::string count = "SELECT COUNT(*) FROM entity " + where;
 
+	const std::string pattern = "%" + file_filter + "%";
+	const auto bind_lookup = [&](sqlite3_stmt *stmt) {
+		return sqlite3_bind_int64(stmt, 1,
+					  static_cast<int64_t>(project_id)) ==
+			       SQLITE_OK &&
+		       sqlite3_bind_text(stmt, 2, name.c_str(), -1,
+					 SQLITE_TRANSIENT) == SQLITE_OK &&
+		       (!has_filter ||
+			sqlite3_bind_text(stmt, 3, pattern.c_str(), -1,
+					  SQLITE_TRANSIENT) == SQLITE_OK);
+	};
 	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db, select.c_str(), -1, &stmt, nullptr) !=
-	    SQLITE_OK) {
-		page.ok = false;
+	const int prepared =
+		sqlite3_prepare_v2(db, select.c_str(), -1, &stmt, nullptr);
+	Statement owned(stmt, sqlite3_finalize);
+	if (prepared != SQLITE_OK || !bind_lookup(stmt)) {
+		page.ok =
+			QueryFailed(db, "resolveEntities.prepare", project_id);
 		return page;
 	}
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_text(stmt, 2, name.c_str(), -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 3, name.c_str(), -1, SQLITE_TRANSIENT);
-	int next = 4;
-	if (has_filter) {
-		std::string pattern = "%" + file_filter + "%";
-		sqlite3_bind_text(stmt, next++, pattern.c_str(), -1,
-				  SQLITE_TRANSIENT);
-	}
-	sqlite3_bind_int(stmt, next, kMaxResolvedEntities);
 	int rc = SQLITE_ROW;
 	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW)
 		page.rows.push_back(readEntityRow(stmt));
 	if (rc != SQLITE_DONE)
-		page.ok = false;
-	sqlite3_finalize(stmt);
+		page.ok = QueryFailed(db, "resolveEntities.step", project_id);
+	owned.reset();
 
 	// The count repeats the predicate; it is not derived from the page.
 	sqlite3_stmt *counter = nullptr;
-	if (sqlite3_prepare_v2(db, count.c_str(), -1, &counter, nullptr) !=
-	    SQLITE_OK) {
-		page.ok = false;
+	const int counted =
+		sqlite3_prepare_v2(db, count.c_str(), -1, &counter, nullptr);
+	Statement owned_counter(counter, sqlite3_finalize);
+	if (counted != SQLITE_OK || !bind_lookup(counter)) {
+		page.ok = QueryFailed(db, "resolveEntities.count", project_id);
 		return page;
-	}
-	sqlite3_bind_int64(counter, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_text(counter, 2, name.c_str(), -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(counter, 3, name.c_str(), -1, SQLITE_TRANSIENT);
-	if (has_filter) {
-		std::string pattern = "%" + file_filter + "%";
-		sqlite3_bind_text(counter, 4, pattern.c_str(), -1,
-				  SQLITE_TRANSIENT);
 	}
 	if (sqlite3_step(counter) == SQLITE_ROW)
 		page.total = sqlite3_column_int64(counter, 0);
 	else
-		page.ok = false;
-	sqlite3_finalize(counter);
+		page.ok = QueryFailed(db, "resolveEntities.count", project_id);
 	return page;
 }
 
@@ -220,36 +280,41 @@ Page<EntityRow> queryModuleEntities(sqlite3 *db, uint64_t project_id,
 /// method", and returning it as a caller made every class look like a consumer
 /// of its own methods, polluting impact analysis.
 Page<RelationRow> queryRelations(sqlite3 *db, uint64_t project_id,
-				 int64_t entity_id, bool outgoing)
+				 int64_t entity_id, bool outgoing,
+				 const std::string &file_filter)
 {
 	Page<RelationRow> page;
-	const char *sql =
+	const std::string join =
 		outgoing ?
-			"SELECT COALESCE(NULLIF(e.qualified_name, ''), e.name), "
-			"       e.file_path, e.start_row, r.type "
-			"FROM relation r JOIN entity e ON e.id = r.target_id "
-			"WHERE r.project_id=? AND r.type=? AND r.source_id=? "
-			"GROUP BY e.id ORDER BY e.id LIMIT ?" :
-			"SELECT COALESCE(NULLIF(e.qualified_name, ''), e.name), "
-			"       e.file_path, e.start_row, r.type "
-			"FROM relation r JOIN entity e ON e.id = r.source_id "
-			"WHERE r.project_id=? AND r.type=? AND r.target_id=? "
-			"GROUP BY e.id ORDER BY e.id LIMIT ?";
-	const char *count_sql =
-		outgoing ? "SELECT COUNT(DISTINCT target_id) FROM relation "
-			   "WHERE project_id=? AND type=? AND source_id=?" :
-			   "SELECT COUNT(DISTINCT source_id) FROM relation "
-			   "WHERE project_id=? AND type=? AND target_id=?";
+			"FROM relation r JOIN entity e ON e.id=r.target_id " :
+			"FROM relation r JOIN entity e ON e.id=r.source_id ";
+	const std::string where =
+		outgoing ?
+			"WHERE r.project_id=?1 AND r.type=?2 AND r.source_id "
+			"IN (SELECT id FROM symbol_entities) " :
+			"WHERE r.project_id=?1 AND r.type=?2 AND r.target_id "
+			"IN (SELECT id FROM symbol_entities) ";
+	const std::string scope_sql = SymbolEntitiesSql();
+	const std::string sql =
+		scope_sql +
+		"SELECT COALESCE(NULLIF(e.qualified_name,''),e.name), "
+		"e.file_path,e.start_row,r.type " +
+		join + where + "GROUP BY e.id ORDER BY e.id LIMIT ?5";
+	const std::string count_sql =
+		scope_sql + "SELECT COUNT(DISTINCT e.id) " + join + where;
 
 	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-		page.ok = false;
+	const int prepared =
+		sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr);
+	Statement owned(stmt, sqlite3_finalize);
+	if (prepared != SQLITE_OK ||
+	    !BindSymbolScope(stmt, project_id, kEdgeCalls, entity_id,
+			     file_filter) ||
+	    sqlite3_bind_int(stmt, 5, outgoing ? kMaxCallees : kMaxCallers) !=
+		    SQLITE_OK) {
+		page.ok = QueryFailed(db, "queryRelations.prepare", project_id);
 		return page;
 	}
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_int(stmt, 2, kEdgeCalls);
-	sqlite3_bind_int64(stmt, 3, entity_id);
-	sqlite3_bind_int(stmt, 4, outgoing ? kMaxCallees : kMaxCallers);
 	int rc = SQLITE_ROW;
 	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
 		RelationRow r;
@@ -260,11 +325,11 @@ Page<RelationRow> queryRelations(sqlite3 *db, uint64_t project_id,
 		page.rows.push_back(std::move(r));
 	}
 	if (rc != SQLITE_DONE)
-		page.ok = false;
-	sqlite3_finalize(stmt);
+		page.ok = QueryFailed(db, "queryRelations.step", project_id);
+	owned.reset();
 
-	page.total = countWithIntAndInt64(db, count_sql, project_id, kEdgeCalls,
-					  entity_id, &page.ok);
+	page.total = CountSymbolRelations(db, count_sql, project_id, entity_id,
+					  file_filter, &page.ok);
 	return page;
 }
 
@@ -362,14 +427,16 @@ Page<FindingRow> queryFindings(sqlite3 *db, uint64_t project_id,
 /// caller is told so in `note` and `unknowns` (development_plan §13.2 item 8).
 Page<TestCandidate> queryTestCandidates(sqlite3 *db, uint64_t project_id,
 					int64_t entity_id,
-					const std::string &symbol)
+					const std::string &symbol,
+					const std::string &file_filter)
 {
 	Page<TestCandidate> page;
 	if (symbol.empty() && entity_id <= 0)
 		return page;
 
 	// Pass 1: a test entity calls the symbol. This is evidence, not a guess.
-	const char *call_sql =
+	const std::string call_sql =
+		SymbolEntitiesSql() +
 		"SELECT DISTINCT e.file_path, "
 		"       COALESCE(NULLIF(e.qualified_name, ''), e.name), "
 		"       e.start_row "
@@ -377,18 +444,25 @@ Page<TestCandidate> queryTestCandidates(sqlite3 *db, uint64_t project_id,
 		"JOIN entity e ON e.id = r.source_id "
 		"JOIN files f ON f.project_id = e.project_id "
 		"            AND f.path = e.file_path "
-		"WHERE r.project_id = ? AND r.type = ? AND r.target_id = ? "
+		"WHERE r.project_id = ?1 AND r.type = ?2 AND r.target_id "
+		"IN (SELECT id FROM symbol_entities) "
 		"  AND f.is_test = 1 "
-		"ORDER BY e.file_path, e.start_row LIMIT ?";
+		"ORDER BY e.file_path, e.start_row LIMIT ?5";
 	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db, call_sql, -1, &stmt, nullptr) != SQLITE_OK) {
-		page.ok = false;
+	if (sqlite3_prepare_v2(db, call_sql.c_str(), -1, &stmt, nullptr) !=
+	    SQLITE_OK) {
+		page.ok = QueryFailed(db, "queryTestCandidates.prepare",
+				      project_id);
 		return page;
 	}
-	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_int(stmt, 2, kEdgeCalls);
-	sqlite3_bind_int64(stmt, 3, entity_id);
-	sqlite3_bind_int(stmt, 4, kMaxTestCandidates);
+	if (!BindSymbolScope(stmt, project_id, kEdgeCalls, entity_id,
+			     file_filter) ||
+	    sqlite3_bind_int(stmt, 5, kMaxTestCandidates) != SQLITE_OK) {
+		page.ok =
+			QueryFailed(db, "queryTestCandidates.bind", project_id);
+		sqlite3_finalize(stmt);
+		return page;
+	}
 	int rc = SQLITE_ROW;
 	std::vector<std::string> seen;
 	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
@@ -402,7 +476,8 @@ Page<TestCandidate> queryTestCandidates(sqlite3 *db, uint64_t project_id,
 		page.rows.push_back(std::move(c));
 	}
 	if (rc != SQLITE_DONE)
-		page.ok = false;
+		page.ok =
+			QueryFailed(db, "queryTestCandidates.step", project_id);
 	sqlite3_finalize(stmt);
 	if (!page.ok)
 		return page;

@@ -138,7 +138,8 @@ std::string QueryEngine::findDefinition(uint64_t project_id,
 	// Widest span first: in C/C++ the same name is indexed twice (header
 	// declaration, source definition), and returning the 4-line declaration
 	// before the body it declares read as "the definition is in the header".
-	sql += " ORDER BY (end_row - start_row) DESC, id LIMIT 20";
+	// is_definition=1 (has body) sorts before is_definition=0 (declaration).
+	sql += " ORDER BY is_definition DESC, (end_row - start_row) DESC, id LIMIT 20";
 	std::ostringstream json;
 	json << "{\"results\":[";
 	bool first = true;

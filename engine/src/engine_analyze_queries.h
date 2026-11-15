@@ -93,10 +93,18 @@ Page<EntityRow> resolveEntities(sqlite3 *db, uint64_t project_id,
 Page<EntityRow> queryModuleEntities(sqlite3 *db, uint64_t project_id,
 				    const std::string &module_path);
 
-/// Callers (`outgoing == false`) or callees of one entity. Only
-/// `EdgeType::Calls` is matched: `Contains` is ownership, not a call.
+/// Callers (`outgoing == false`) or callees, deduplicated across paired rows.
+/// @param db Borrowed store connection, serialized by the caller.
+/// @param project_id Project that owns entity_id.
+/// @param entity_id Displayed entity and anchor for matching source signatures.
+/// @param outgoing True selects callees; false selects callers. Only Calls
+/// edges count; Contains is ownership, not a call.
+/// @param file_filter Optional path substring restricting the symbol rows.
+/// @return Capped rows with an uncapped total, or ok=false on SQL failure.
+/// Allocation failures propagate to the enclosing FFI boundary.
 Page<RelationRow> queryRelations(sqlite3 *db, uint64_t project_id,
-				 int64_t entity_id, bool outgoing);
+				 int64_t entity_id, bool outgoing,
+				 const std::string &file_filter = {});
 
 /// Findings whose evidence points at `path` (file or module prefix).
 Page<FindingRow> queryFindings(sqlite3 *db, uint64_t project_id,
@@ -108,9 +116,17 @@ Page<FindingRow> queryFindings(sqlite3 *db, uint64_t project_id,
 /// confidence), then test files whose entities merely mention the name (low).
 /// Both rely on `files.is_test`, so a database that predates the classification
 /// returns nothing rather than a path-substring guess.
+/// @param db Borrowed connection, serialized by the caller.
+/// @param project_id Project to search.
+/// @param entity_id Anchor for the signature-matched declaration/definition set.
+/// @param symbol Text used by the lower-confidence name-match pass.
+/// @param file_filter Optional path substring restricting the symbol rows.
+/// @return Candidates tagged with method/confidence, or ok=false on SQL error.
+/// Allocation failures propagate to the enclosing FFI boundary.
 Page<TestCandidate> queryTestCandidates(sqlite3 *db, uint64_t project_id,
 					int64_t entity_id,
-					const std::string &symbol);
+					const std::string &symbol,
+					const std::string &file_filter = {});
 
 /// Most recent verification run, whatever its status.
 RunInfo queryLatestRun(sqlite3 *db, uint64_t project_id);
