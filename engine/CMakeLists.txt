@@ -256,6 +256,7 @@ set(ENGINE_SOURCES
      src/store/store_membulk.cpp
      src/store/store_semantic_fact.cpp
     src/query/query_engine.cpp
+    src/query/query_engine_identity.cpp
     src/query/query_engine_traverse.cpp
     src/query/query_analysis.cpp
     src/query/query_communities.cpp

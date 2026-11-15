@@ -1,6 +1,7 @@
 #include "util/json_writer.h"
 #include "util/path_util.h"
 #include "query_engine.h"
+#include "query_engine_identity.h"
 // community_detection removed — Phase 0 cut
 #include "graph_query.h"
 #include "impact_analysis.h"
@@ -29,7 +30,7 @@ namespace query
 // caller can narrow when it needs exactly one row. One sentence, shared by
 // getCallers, getCallees and the trace probe so the wording cannot drift.
 static const char *const kAmbiguousNameHint =
-	"Name matches several entities; the result merges the edges of all of "
+	"Name matches several callables; the result merges the edges of all of "
 	"them. Pass one candidate's graph_node_id to find_callers_by_entity / "
 	"find_callees_by_entity, or narrow the name with file_filter, to target a "
 	"single entity.";
@@ -340,62 +341,9 @@ std::string QueryEngine::findReferences(uint64_t project_id,
 	return json.str();
 }
 
-/// Step 7 (plan §7.3): bare-name ambiguity detection helper.
-/// Counts GraphNode entities matching (project_id, name, optional file
-/// filter). When more than one entity matches, the bare-name query is
-/// ambiguous — we cannot know which entity the caller means. Returns
-/// true and fills `candidates` with a JSON array of entity descriptors
-/// (graph_node_id, name, file_path, start_row) so the caller can either
-/// pick one and re-query via getCallersByEntity/getCalleesByEntity, or
-/// present the choices to the user. Query failure returns false so the
-/// normal path proceeds (fail-open, preserves legacy behavior).
-
-/// JSON array of descriptors for the entities a bare name matched.
-///
-/// Shared by getCallers and getCallees so the two describe the same ambiguity
-/// the same way. Extracted from them because both are grandfathered at their
-/// size (code_rules §1.1).
-std::string ambiguousCandidatesJson(sqlite3 *db,
-				    const std::vector<int64_t> &ids)
-{
-	std::string out = "[";
-	bool first = true;
-	const char *q = "SELECT name, file_path, start_row, start_col "
-			"FROM entity WHERE id=?";
-	for (int64_t id : ids) {
-		std::string nm, fp;
-		int sr = 0, sc = 0;
-		sqlite3_stmt *st = nullptr;
-		if (sqlite3_prepare_v2(db, q, -1, &st, nullptr) == SQLITE_OK) {
-			sqlite3_bind_int64(st, 1, id);
-			if (sqlite3_step(st) == SQLITE_ROW) {
-				const char *n = reinterpret_cast<const char *>(
-					sqlite3_column_text(st, 0));
-				const char *f = reinterpret_cast<const char *>(
-					sqlite3_column_text(st, 1));
-				nm = n ? n : "";
-				fp = f ? f : "";
-				sr = sqlite3_column_int(st, 2);
-				sc = sqlite3_column_int(st, 3);
-			}
-			sqlite3_finalize(st);
-		}
-		if (!first)
-			out += ",";
-		first = false;
-		util::JsonWriter el;
-		el.beginObject();
-		el.key("graph_node_id").value(id);
-		el.key("name").value(nm);
-		el.key("file_path").value(fp);
-		el.key("start_row").value(sr);
-		el.key("start_col").value(sc);
-		el.endObject();
-		out += el.str();
-	}
-	out += "]";
-	return out;
-}
+// Candidate rendering and the row-vs-callable decision live in
+// query_engine_identity.cpp, shared with the trace probe and kept equal to
+// engine_views::kSameCallable.
 
 std::string QueryEngine::getCallers(uint64_t project_id,
 				    const char *function_name,
@@ -418,50 +366,19 @@ std::string QueryEngine::getCallers(uint64_t project_id,
 	std::string has_filter =
 		(file_filter && strlen(file_filter) > 0) ? file_filter : "";
 
-	// Resolve matching entities (name or qualified_name) + optional file
-	// filter. Collect ids; if none, return empty.
-	auto resolveIds = [&](std::vector<int64_t> &ids) {
-		std::string sql = "SELECT id FROM entity WHERE project_id=? "
-				  "AND (name=? OR qualified_name=?)";
-		// M3 fix: bind the file_filter instead of splicing it into the
-		// LIKE literal — a filter containing a quote could inject SQL,
-		// while a bound `%filter%` value is safe. Mirrors the fix
-		// already applied to findDefinition / findReferences.
-		if (!has_filter.empty())
-			sql += " AND file_path LIKE ?";
-		sqlite3_stmt *st = nullptr;
-		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &st, nullptr) !=
-		    SQLITE_OK)
-			return;
-		sqlite3_bind_int64(st, 1, static_cast<int64_t>(project_id));
-		sqlite3_bind_text(st, 2, function_name, -1, SQLITE_TRANSIENT);
-		sqlite3_bind_text(st, 3, function_name, -1, SQLITE_TRANSIENT);
-		if (!has_filter.empty()) {
-			const auto patterns = util::lookupPatterns(has_filter);
-			sqlite3_bind_text(st, 4, patterns[0].c_str(), -1,
-					  SQLITE_TRANSIENT);
-			sqlite3_bind_text(st, 5, patterns[1].c_str(), -1,
-					  SQLITE_TRANSIENT);
-		}
-		while (sqlite3_step(st) == SQLITE_ROW)
-			ids.push_back(sqlite3_column_int64(st, 0));
-		sqlite3_finalize(st);
-	};
-
+	// Resolve matching rows (name or qualified_name) + optional file filter,
+	// and group them into callables. A C/C++ declaration and its definition
+	// are one symbol; only a name that really names several callables is
+	// ambiguous. The edges stay merged over every row either way.
 	std::vector<int64_t> target_ids;
-	resolveIds(target_ids);
+	const std::vector<CallableGroup> groups = resolveCallableGroups(
+		db, project_id, function_name, has_filter, target_ids);
 	if (target_ids.empty()) {
 		return "{\"callers\":[],\"total\":0}";
 	}
-	// Bare-name ambiguity: several entities share the name — in C/C++ a
-	// declaration and its definition are the common case. Their edges are
-	// merged, because the question is about the symbol and both rows
-	// describe it; the candidates are returned so a caller who needs one
-	// exact row can say which (find_callers_by_entity).
-	const bool ambiguous = target_ids.size() > 1 && has_filter.empty();
-	const std::string cands =
-		ambiguous ? ambiguousCandidatesJson(db, target_ids) :
-			    std::string();
+	const bool ambiguous = groups.size() > 1 && has_filter.empty();
+	const std::string cands = ambiguous ? callableCandidatesJson(groups) :
+					      std::string();
 
 	// Query callers: relation rows where target_id is one of the matched
 	// entities and type=1 (Calls). Join entity for caller metadata and
@@ -569,48 +486,15 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 	std::string has_filter =
 		(file_filter && strlen(file_filter) > 0) ? file_filter : "";
 
-	auto resolveIds = [&](std::vector<int64_t> &ids) {
-		std::string sql = "SELECT id FROM entity WHERE project_id=? "
-				  "AND (name=? OR qualified_name=?)";
-		// M3 fix: bind the file_filter instead of splicing it into the
-		// LIKE literal — a filter containing a quote could inject SQL,
-		// while a bound `%filter%` value is safe. Mirrors the fix
-		// already applied to findDefinition / findReferences.
-		if (!has_filter.empty())
-			sql += " AND file_path LIKE ?";
-		sqlite3_stmt *st = nullptr;
-		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &st, nullptr) !=
-		    SQLITE_OK)
-			return;
-		sqlite3_bind_int64(st, 1, static_cast<int64_t>(project_id));
-		sqlite3_bind_text(st, 2, function_name, -1, SQLITE_TRANSIENT);
-		sqlite3_bind_text(st, 3, function_name, -1, SQLITE_TRANSIENT);
-		if (!has_filter.empty()) {
-			const auto patterns = util::lookupPatterns(has_filter);
-			sqlite3_bind_text(st, 4, patterns[0].c_str(), -1,
-					  SQLITE_TRANSIENT);
-			sqlite3_bind_text(st, 5, patterns[1].c_str(), -1,
-					  SQLITE_TRANSIENT);
-		}
-		while (sqlite3_step(st) == SQLITE_ROW)
-			ids.push_back(sqlite3_column_int64(st, 0));
-		sqlite3_finalize(st);
-	};
-
 	std::vector<int64_t> src_ids;
-	resolveIds(src_ids);
+	const std::vector<CallableGroup> groups = resolveCallableGroups(
+		db, project_id, function_name, has_filter, src_ids);
 	if (src_ids.empty())
 		return "{\"callees\":[],\"total\":0}";
 
-	// Bare-name ambiguity: several entities share the name — in C/C++ a
-	// declaration and its definition are the common case. Their edges are
-	// merged, because the question is about the symbol and both rows
-	// describe it; the candidates are returned so a caller who needs one
-	// exact row can say which (find_callers_by_entity).
-	const bool ambiguous = src_ids.size() > 1 && has_filter.empty();
-	const std::string cands = ambiguous ?
-					  ambiguousCandidatesJson(db, src_ids) :
-					  std::string();
+	const bool ambiguous = groups.size() > 1 && has_filter.empty();
+	const std::string cands = ambiguous ? callableCandidatesJson(groups) :
+					      std::string();
 
 	// Read outgoing Calls edges: relation rows where source_id is the
 	// entity and type=1. Use (project_id, source_id) index.
@@ -892,75 +776,27 @@ std::string QueryEngine::explainSymbol(uint64_t project_id,
 // ─── Bare-name ambiguity probe ─────────────────────────────────
 //
 // Shared by the name-based trace/lookup paths (traceCallChain,
-// trace_path). Returns "" when the name is unambiguous; otherwise a
+// trace_path). Returns "" when the name names one callable; otherwise a
 // `{"ambiguous":true,"candidates":[…]}` fragment the caller merges into
 // its response. Mirrors the getCallers ambiguity contract so a client
 // sees one shape for "which entity do you mean?" no matter which tool
-// asked (T5 finding #9).
+// asked (T5 finding #9) — and, like getCallers, it counts callables, not
+// rows: a C/C++ declaration and its definition are one symbol, and treating
+// the pair as ambiguous made trace_path refuse every such symbol.
 
 std::string bareNameCandidates(sqlite3 *db, uint64_t project_id,
 			       const char *name)
 {
 	if (!db || !name || !*name)
 		return std::string();
-	// Collect every matching entity id first — LIMIT 1 here is exactly
-	// the silent-first-match behaviour this probe exists to prevent.
-	std::vector<int64_t> ids;
-	{
-		const char *sql = "SELECT id FROM entity WHERE project_id=? "
-				  "AND (name=? OR qualified_name=?) "
-				  "ORDER BY id";
-		sqlite3_stmt *st = nullptr;
-		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) != SQLITE_OK)
-			return std::string();
-		sqlite3_bind_int64(st, 1, static_cast<int64_t>(project_id));
-		sqlite3_bind_text(st, 2, name, -1, SQLITE_TRANSIENT);
-		sqlite3_bind_text(st, 3, name, -1, SQLITE_TRANSIENT);
-		while (sqlite3_step(st) == SQLITE_ROW)
-			ids.push_back(sqlite3_column_int64(st, 0));
-		sqlite3_finalize(st);
-	}
-	if (ids.size() < 2)
+	std::vector<int64_t> rows;
+	const std::vector<CallableGroup> groups = resolveCallableGroups(
+		db, project_id, name, std::string(), rows);
+	if (groups.size() < 2)
 		return std::string();
-
-	std::string cands;
-	bool first = true;
-	for (int64_t id : ids) {
-		std::string nm, fp;
-		int sr = 0, sc = 0;
-		const char *q = "SELECT name, file_path, start_row, start_col "
-				"FROM entity WHERE id=?";
-		sqlite3_stmt *st = nullptr;
-		if (sqlite3_prepare_v2(db, q, -1, &st, nullptr) == SQLITE_OK) {
-			sqlite3_bind_int64(st, 1, id);
-			if (sqlite3_step(st) == SQLITE_ROW) {
-				const unsigned char *n =
-					sqlite3_column_text(st, 0);
-				const unsigned char *f =
-					sqlite3_column_text(st, 1);
-				nm = n ? reinterpret_cast<const char *>(n) : "";
-				fp = f ? reinterpret_cast<const char *>(f) : "";
-				sr = sqlite3_column_int(st, 2);
-				sc = sqlite3_column_int(st, 3);
-			}
-			sqlite3_finalize(st);
-		}
-		if (!first)
-			cands += ",";
-		first = false;
-		util::JsonWriter el;
-		el.beginObject();
-		el.key("graph_node_id").value(id);
-		el.key("name").value(nm);
-		el.key("file_path").value(fp);
-		el.key("start_row").value(sr);
-		el.key("start_col").value(sc);
-		el.endObject();
-		cands += el.str();
-	}
-	return "{\"ambiguous\":true,\"candidates\":[" + cands +
-	       "],\"hint\":\"" + util::jsonEscapeString(kAmbiguousNameHint) +
-	       "\"}";
+	return "{\"ambiguous\":true,\"candidates\":" +
+	       callableCandidatesJson(groups) + ",\"hint\":\"" +
+	       util::jsonEscapeString(kAmbiguousNameHint) + "\"}";
 }
 
 } // namespace query
