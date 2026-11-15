@@ -43,6 +43,10 @@ struct Claim {
 	std::string source_ref;
 };
 
+/// Predicate written by "has/contains ..." sentences. A verifier must not
+/// resolve that capture as a symbol: it is a phrase, not an identifier.
+inline constexpr const char *kPredicateHas = "has";
+
 // EvidenceRecord is the output of Verifier::verify(Claim). It is persisted
 // into the `evidence` table, and each fact reference is written to
 // `evidence_fact` for traceability back to the canonical entity/relation

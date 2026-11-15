@@ -114,6 +114,7 @@ extern "C" char *engine_verify_review(engine_t handle, uint64_t project_id,
 		std::ostringstream json;
 		json << "{\"claims_parsed\":" << batch.claims_count
 		     << ",\"results\":" << batch.results_json
+		     << ",\"unknowns\":" << batch.unknowns_json
 		     << ",\"summary\":{\"supported\":" << batch.supported
 		     << ",\"contradicted\":" << batch.contradicted
 		     << ",\"unknown\":" << batch.unknown << ",\"status\":\""
@@ -189,6 +190,7 @@ extern "C" char *engine_verify_reality(engine_t handle, uint64_t project_id,
 		json.key("verdict").value(agg.verdict);
 		json.key("confidence").value(agg.confidence);
 		json.key("results").raw(batch.results_json);
+		json.key("unknowns").raw(batch.unknowns_json);
 		json.endObject();
 		return dupString(json.str());
 	} catch (const std::exception &e) {

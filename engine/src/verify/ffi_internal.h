@@ -69,6 +69,8 @@ struct BatchResult {
 	int contradicted = 0;
 	int unknown = 0;
 	std::string results_json; // "[<verify_one_claim output>,...]"
+	std::string unknowns_json =
+		"[]"; // Parser coverage gaps, not claim verdicts.
 
 	/// How much of the input was actually judgeable, so a caller can tell
 	/// "nothing contradicted us" apart from "nothing was checkable":

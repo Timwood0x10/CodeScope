@@ -16,6 +16,14 @@ namespace verify
 namespace
 {
 
+// Normalize language tokens before the subject regex can truncate at '+'.
+std::string normalizeLanguages(const std::string &text)
+{
+	static const std::regex cpp("\\b(?:c\\+\\+|cpp)(?![A-Za-z0-9_+])",
+				    std::regex::icase);
+	return std::regex_replace(text, cpp, "cpp");
+}
+
 // Truncate a captured capability subject at the first clause boundary.
 // The regex `[A-Za-z0-9_\- ]{1,50}` is greedy and includes spaces, so it
 // captures trailing prose like "incremental indexing and is thread-safe".
@@ -180,15 +188,14 @@ std::vector<Claim> ClaimParser::parse(const std::string &text,
 	std::vector<Claim> claims;
 	if (text.empty())
 		return claims;
+	const std::string prose = normalizeLanguages(text);
 
 	// ── Pattern 1: "supports <subject>" ──────────────────────────
-	// "support" / "supports" / "Support" all match via icase. The
-	// captured group is a 2..51 char phrase starting with a letter.
 	try {
 		static const std::regex kSupports(
 			"supports?[[:space:]]+([A-Za-z][A-Za-z0-9_\\- ]{1,50})",
 			std::regex::icase);
-		std::sregex_iterator it(text.begin(), text.end(), kSupports);
+		std::sregex_iterator it(prose.begin(), prose.end(), kSupports);
 		std::sregex_iterator end;
 		for (; it != end; ++it) {
 			std::string raw = (*it)[1].str();
@@ -218,7 +225,8 @@ std::vector<Claim> ClaimParser::parse(const std::string &text,
 		static const std::regex kImplements(
 			"implements?[[:space:]]+([A-Za-z][A-Za-z0-9_\\- ]{1,50})",
 			std::regex::icase);
-		std::sregex_iterator it(text.begin(), text.end(), kImplements);
+		std::sregex_iterator it(prose.begin(), prose.end(),
+					kImplements);
 		std::sregex_iterator end;
 		for (; it != end; ++it) {
 			std::string raw = (*it)[1].str();
@@ -253,10 +261,10 @@ std::vector<Claim> ClaimParser::parse(const std::string &text,
 			"\\b(?:has|contains?)[[:space:]]+(?:an?[[:space:]]+|the[[:space:]]+)?"
 			"([A-Za-z][A-Za-z0-9_\\- ]{1,50})",
 			std::regex::icase);
-		std::sregex_iterator it(text.begin(), text.end(), kHas);
+		std::sregex_iterator it(prose.begin(), prose.end(), kHas);
 		std::sregex_iterator end;
 		for (; it != end; ++it) {
-			std::string before = text.substr(
+			std::string before = prose.substr(
 				0, static_cast<size_t>((*it).position()));
 			std::string raw = (*it)[1].str();
 			// "has no X" / "has not X" / "has n't" / "never has X"
@@ -282,8 +290,8 @@ std::vector<Claim> ClaimParser::parse(const std::string &text,
 			Claim c;
 			c.type = ClaimType::CapabilityExists;
 			c.subject = subject;
-			c.predicate = "has";
-			c.object = "";
+			c.predicate = kPredicateHas;
+			c.object = truncateAtBoundary(raw);
 			c.scope = "repository";
 			c.source_kind = source_kind;
 			c.source_ref = source_ref;

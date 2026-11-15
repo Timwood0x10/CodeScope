@@ -387,12 +387,24 @@ BatchResult verify_claim_batch(EngineContext *ctx, uint64_t project_id,
 	out.results_json = json.str();
 	// Status is decided once here (see BatchResult::status) so the wrapping
 	// tools cannot drift apart on what "nothing to report" means.
-	if (out.claims_count == 0)
+	if (out.claims_count == 0) {
 		out.status = "no_claims";
-	else if (out.supported + out.contradicted == 0)
+		out.unknowns_json =
+			"[{\"reason\":\"no_claims_parsed\",\"detail\":\"No supported "
+			"claim pattern was recognized; the input was not verified. "
+			"Use verify_claim with an explicit type and subject.\"}]";
+	} else if (out.supported + out.contradicted == 0) {
 		out.status = "no_verdicts";
-	else
+		// Claims were parsed but nothing could decide them. An empty
+		// `unknowns` here would read exactly like "no gaps", which is the
+		// ambiguity this field exists to remove.
+		out.unknowns_json =
+			"[{\"reason\":\"no_verdicts\",\"detail\":\"Claims were "
+			"parsed but no verifier could support or contradict them; "
+			"the input was not verified. See each result's detail.\"}]";
+	} else {
 		out.status = "verified";
+	}
 	return out;
 }
 
@@ -773,6 +785,7 @@ extern "C" char *engine_verify_summary(engine_t handle, uint64_t project_id,
 		json.beginObject();
 		json.key("claims_parsed").value(batch.claims_count);
 		json.key("results").raw(batch.results_json);
+		json.key("unknowns").raw(batch.unknowns_json);
 		json.key("drifts").beginArray();
 		auto emit_drift = [&](const verify::DriftItem &d) {
 			json.beginObject();

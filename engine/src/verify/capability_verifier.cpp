@@ -305,11 +305,19 @@ EvidenceRecord CapabilityVerifier::verify(const Claim &claim)
 				"cannot confirm or deny it";
 			return rec;
 		}
-		rec.verdict = Verdict::Contradicted;
-		rec.confidence = kConfCapabilityAbsent;
-		rec.detail = "Capability '" + claim.subject +
-			     "' is neither declared in the knowledge layer nor "
-			     "implemented by any matching symbol";
+		// A parsed existence description is not a symbol name: name lookup
+		// cannot disprove it, and kPredicateHas ties this to the parser.
+		const bool prose = claim.predicate == kPredicateHas &&
+				   !claim.object.empty();
+		rec.verdict = prose ? Verdict::Unknown : Verdict::Contradicted;
+		rec.confidence = prose ? 0.0 : kConfCapabilityAbsent;
+		rec.detail =
+			"Capability '" + claim.subject +
+			"' is neither declared in the knowledge layer nor "
+			"implemented by any matching symbol" +
+			std::string(prose ? "; name matching cannot verify or "
+					    "disprove this prose description" :
+					    "");
 		return rec;
 	}
 
