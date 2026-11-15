@@ -5,14 +5,17 @@
 // is fully portable: it creates a tiny fixture in /tmp, indexes it, and
 // verifies homonym handling end to end.
 //
-// Step 7 (plan §7.3): the bare-name API no longer silently aggregates
-// across all entities that share a name. When multiple entities match
-// the bare name, getCallers/getCallees return ambiguous=true with a
-// candidate list; a file_filter that narrows to a single entity
-// proceeds normally. This test verifies BOTH behaviors:
+// Step 7 (plan §7.3) plus the 2026-11 review: when several entities share a
+// bare name, the query answers with the UNION of their edges and says so.
 //
-//   - Without a filter, "handler" is ambiguous (2 entities) — the query
-//     must return ambiguous=true + candidates, not merged callees.
+// An empty list plus `ambiguous: true` was unusable: for names as ordinary as
+// `main` or a C/C++ symbol that is indexed twice (declaration + definition),
+// the caller read the empty list and concluded "no edges". The candidates are
+// still returned, so a caller that needs one exact row can use
+// find_callers_by_entity or a file_filter. This test verifies all three:
+//
+//   - Without a filter, "handler" matches 2 entities: ambiguous=true,
+//     2 candidates, and both helperOne and helperTwo appear (merged).
 //   - With file_filter=first.go, only first.go's handler is queried and
 //     only helperOne appears.
 //   - With file_filter=second.go, only helperTwo appears.
@@ -137,8 +140,9 @@ int main()
 
 	// ── Test 1: callees("handler") WITHOUT file_filter ───────────
 	// Step 7 semantics: two entities named "handler" exist, so the bare
-	// name is ambiguous. The API must return ambiguous=true with a
-	// candidate list instead of silently merging both callees.
+	// name is ambiguous. The API returns ambiguous=true, the candidate list,
+	// and the merged callees — the candidates say how to narrow, they do not
+	// replace the answer.
 	char *callees_no_filter =
 		engine_get_callees(g_engine, pid, "handler", nullptr);
 	bool no_filter_ambiguous =
@@ -188,10 +192,9 @@ int main()
 	       total_second, helperOne_second, helperTwo_second);
 
 	// ── Gate ──────────────────────────────────────────────────────
-	// 1. Without filter, the bare name is ambiguous: the response must
-	//    carry ambiguous=true and list 2 candidates, and must NOT merge
-	//    callees from both files (helperOne/helperTwo absent from the
-	//    callee list).
+	// 1. Without filter, the bare name is ambiguous: the response carries
+	//    ambiguous=true, lists 2 candidates, and merges the callees from both
+	//    files (helperOne and helperTwo both present).
 	// 2. With first.go filter, only helperOne appears.
 	// 3. With second.go filter, only helperTwo appears.
 	// Any failure returns nonzero (plan: "任何失败返回非零").
@@ -208,9 +211,9 @@ int main()
 		       candidates_count);
 		pass = false;
 	}
-	if (helperOne_no_filter > 0 || helperTwo_no_filter > 0) {
-		printf("\nFAIL: without filter, callees must NOT be merged "
-		       "(helperOne=%d helperTwo=%d)\n",
+	if (helperOne_no_filter == 0 || helperTwo_no_filter == 0) {
+		printf("\nFAIL: without filter, callees from both candidates must "
+		       "be merged (helperOne=%d helperTwo=%d)\n",
 		       helperOne_no_filter, helperTwo_no_filter);
 		pass = false;
 	}

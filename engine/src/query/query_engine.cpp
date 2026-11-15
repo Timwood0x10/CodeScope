@@ -20,17 +20,19 @@ namespace query
 
 // What to do when a bare name matches several entities.
 //
-// The candidates array alone was not enough: every name-based tool answered
+// Every name-based tool used to answer
 // `{"…":[],"total":0,"ambiguous":true,"candidates":[…]}` for names as ordinary
-// as `main` (100+ definitions in one Rust project's examples/), `Agent` or
-// `new`, and a caller reading only the empty list concluded "no edges" — the
-// next step (`*_by_entity`, which does resolve them) was discoverable only by
-// reading the tool catalogue. One sentence, shared by getCallers, getCallees
-// and the trace probe so the wording cannot drift.
+// as `main`, `Agent` or `new`, and a caller reading only the empty list
+// concluded "no edges" — even though the candidates themselves were the answer.
+// The edges are merged over all matching entities now (a declaration and its
+// definition are the common case) and the candidates are still reported, so the
+// caller can narrow when it needs exactly one row. One sentence, shared by
+// getCallers, getCallees and the trace probe so the wording cannot drift.
 static const char *const kAmbiguousNameHint =
-	"Name matches several entities, so no edges were resolved. Pass one of "
-	"the candidates' graph_node_id to find_callers_by_entity / "
-	"find_callees_by_entity, or narrow the name with file_filter.";
+	"Name matches several entities; the result merges the edges of all of "
+	"them. Pass one candidate's graph_node_id to find_callers_by_entity / "
+	"find_callees_by_entity, or narrow the name with file_filter, to target a "
+	"single entity.";
 
 // findShortestPath moved to query_engine_traverse.cpp together with
 // kShortestPathMaxDepth / kShortestPathNote; the copies that used to live here
@@ -133,7 +135,10 @@ std::string QueryEngine::findDefinition(uint64_t project_id,
 	// database whose rows hold either spelling still matches (util::lookupPath).
 	if (has_filter)
 		sql += " AND (file_path LIKE ? OR file_path LIKE ?)";
-	sql += " LIMIT 20";
+	// Widest span first: in C/C++ the same name is indexed twice (header
+	// declaration, source definition), and returning the 4-line declaration
+	// before the body it declares read as "the definition is in the header".
+	sql += " ORDER BY (end_row - start_row) DESC, id LIMIT 20";
 	std::ostringstream json;
 	json << "{\"results\":[";
 	bool first = true;
@@ -203,7 +208,12 @@ std::string QueryEngine::findDefinition(uint64_t project_id,
 		}
 		sqlite3_finalize(st);
 	}
-	json << "],\"total\":" << count << "}";
+	json << "],\"total\":" << count;
+	if (count > 1)
+		json << ",\"note\":\"results are ordered widest-span first; a "
+			"C/C++ name may be indexed twice (declaration and "
+			"definition)\"";
+	json << "}";
 	return json.str();
 }
 
@@ -339,6 +349,53 @@ std::string QueryEngine::findReferences(uint64_t project_id,
 /// present the choices to the user. Query failure returns false so the
 /// normal path proceeds (fail-open, preserves legacy behavior).
 
+/// JSON array of descriptors for the entities a bare name matched.
+///
+/// Shared by getCallers and getCallees so the two describe the same ambiguity
+/// the same way. Extracted from them because both are grandfathered at their
+/// size (code_rules §1.1).
+std::string ambiguousCandidatesJson(sqlite3 *db,
+				    const std::vector<int64_t> &ids)
+{
+	std::string out = "[";
+	bool first = true;
+	const char *q = "SELECT name, file_path, start_row, start_col "
+			"FROM entity WHERE id=?";
+	for (int64_t id : ids) {
+		std::string nm, fp;
+		int sr = 0, sc = 0;
+		sqlite3_stmt *st = nullptr;
+		if (sqlite3_prepare_v2(db, q, -1, &st, nullptr) == SQLITE_OK) {
+			sqlite3_bind_int64(st, 1, id);
+			if (sqlite3_step(st) == SQLITE_ROW) {
+				const char *n = reinterpret_cast<const char *>(
+					sqlite3_column_text(st, 0));
+				const char *f = reinterpret_cast<const char *>(
+					sqlite3_column_text(st, 1));
+				nm = n ? n : "";
+				fp = f ? f : "";
+				sr = sqlite3_column_int(st, 2);
+				sc = sqlite3_column_int(st, 3);
+			}
+			sqlite3_finalize(st);
+		}
+		if (!first)
+			out += ",";
+		first = false;
+		util::JsonWriter el;
+		el.beginObject();
+		el.key("graph_node_id").value(id);
+		el.key("name").value(nm);
+		el.key("file_path").value(fp);
+		el.key("start_row").value(sr);
+		el.key("start_col").value(sc);
+		el.endObject();
+		out += el.str();
+	}
+	out += "]";
+	return out;
+}
+
 std::string QueryEngine::getCallers(uint64_t project_id,
 				    const char *function_name,
 				    const char *file_filter)
@@ -395,61 +452,15 @@ std::string QueryEngine::getCallers(uint64_t project_id,
 	if (target_ids.empty()) {
 		return "{\"callers\":[],\"total\":0}";
 	}
-	// Bare-name ambiguity: multiple entities share the bare name with no
-	// file filter → mirror the SQLite ambiguous response.
-	if (target_ids.size() > 1 && has_filter.empty()) {
-		std::string cands;
-		bool first_c = true;
-		for (int64_t id : target_ids) {
-			std::string nm, fp;
-			int sr = 0, sc = 0;
-			const char *q =
-				"SELECT name, file_path, start_row, start_col "
-				"FROM entity WHERE id=?";
-			sqlite3_stmt *st = nullptr;
-			if (sqlite3_prepare_v2(db, q, -1, &st, nullptr) ==
-			    SQLITE_OK) {
-				sqlite3_bind_int64(st, 1, id);
-				if (sqlite3_step(st) == SQLITE_ROW) {
-					nm = reinterpret_cast<const char *>(
-						     sqlite3_column_text(st,
-									 0)) ?
-						     reinterpret_cast<
-							     const char *>(
-							     sqlite3_column_text(
-								     st, 0)) :
-						     "";
-					fp = reinterpret_cast<const char *>(
-						     sqlite3_column_text(st,
-									 1)) ?
-						     reinterpret_cast<
-							     const char *>(
-							     sqlite3_column_text(
-								     st, 1)) :
-						     "";
-					sr = sqlite3_column_int(st, 2);
-					sc = sqlite3_column_int(st, 3);
-				}
-				sqlite3_finalize(st);
-			}
-			if (!first_c)
-				cands += ",";
-			first_c = false;
-			util::JsonWriter el;
-			el.beginObject();
-			el.key("graph_node_id").value(id);
-			el.key("name").value(nm);
-			el.key("file_path").value(fp);
-			el.key("start_row").value(sr);
-			el.key("start_col").value(sc);
-			el.endObject();
-			cands += el.str();
-		}
-		return "{\"callers\":[],\"total\":0,\"ambiguous\":true,"
-		       "\"candidates\":[" +
-		       cands + "],\"hint\":\"" +
-		       util::jsonEscapeString(kAmbiguousNameHint) + "\"}";
-	}
+	// Bare-name ambiguity: several entities share the name — in C/C++ a
+	// declaration and its definition are the common case. Their edges are
+	// merged, because the question is about the symbol and both rows
+	// describe it; the candidates are returned so a caller who needs one
+	// exact row can say which (find_callers_by_entity).
+	const bool ambiguous = target_ids.size() > 1 && has_filter.empty();
+	const std::string cands =
+		ambiguous ? ambiguousCandidatesJson(db, target_ids) :
+			    std::string();
 
 	// Query callers: relation rows where target_id is one of the matched
 	// entities and type=1 (Calls). Join entity for caller metadata and
@@ -527,7 +538,13 @@ std::string QueryEngine::getCallers(uint64_t project_id,
 		}
 		sqlite3_finalize(st);
 	}
-	result += "],\"total\":" + std::to_string(count) + "}";
+	result += "],\"total\":" + std::to_string(count);
+	if (ambiguous) {
+		result += ",\"ambiguous\":true,\"candidates\":" + cands;
+		result += ",\"hint\":\"" +
+			  util::jsonEscapeString(kAmbiguousNameHint) + "\"";
+	}
+	result += "}";
 	return result;
 }
 
@@ -584,60 +601,15 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 	if (src_ids.empty())
 		return "{\"callees\":[],\"total\":0}";
 
-	// Bare-name ambiguity guard (matches getCallers / SQLite branch).
-	if (src_ids.size() > 1 && has_filter.empty()) {
-		std::string cands;
-		bool first_c = true;
-		for (int64_t id : src_ids) {
-			std::string nm, fp;
-			int sr = 0, sc = 0;
-			const char *q =
-				"SELECT name, file_path, start_row, start_col "
-				"FROM entity WHERE id=?";
-			sqlite3_stmt *st = nullptr;
-			if (sqlite3_prepare_v2(db, q, -1, &st, nullptr) ==
-			    SQLITE_OK) {
-				sqlite3_bind_int64(st, 1, id);
-				if (sqlite3_step(st) == SQLITE_ROW) {
-					nm = reinterpret_cast<const char *>(
-						     sqlite3_column_text(st,
-									 0)) ?
-						     reinterpret_cast<
-							     const char *>(
-							     sqlite3_column_text(
-								     st, 0)) :
-						     "";
-					fp = reinterpret_cast<const char *>(
-						     sqlite3_column_text(st,
-									 1)) ?
-						     reinterpret_cast<
-							     const char *>(
-							     sqlite3_column_text(
-								     st, 1)) :
-						     "";
-					sr = sqlite3_column_int(st, 2);
-					sc = sqlite3_column_int(st, 3);
-				}
-				sqlite3_finalize(st);
-			}
-			if (!first_c)
-				cands += ",";
-			first_c = false;
-			util::JsonWriter el;
-			el.beginObject();
-			el.key("graph_node_id").value(id);
-			el.key("name").value(nm);
-			el.key("file_path").value(fp);
-			el.key("start_row").value(sr);
-			el.key("start_col").value(sc);
-			el.endObject();
-			cands += el.str();
-		}
-		return "{\"callees\":[],\"total\":0,\"ambiguous\":true,"
-		       "\"candidates\":[" +
-		       cands + "],\"hint\":\"" +
-		       util::jsonEscapeString(kAmbiguousNameHint) + "\"}";
-	}
+	// Bare-name ambiguity: several entities share the name — in C/C++ a
+	// declaration and its definition are the common case. Their edges are
+	// merged, because the question is about the symbol and both rows
+	// describe it; the candidates are returned so a caller who needs one
+	// exact row can say which (find_callers_by_entity).
+	const bool ambiguous = src_ids.size() > 1 && has_filter.empty();
+	const std::string cands = ambiguous ?
+					  ambiguousCandidatesJson(db, src_ids) :
+					  std::string();
 
 	// Read outgoing Calls edges: relation rows where source_id is the
 	// entity and type=1. Use (project_id, source_id) index.
@@ -714,7 +686,13 @@ std::string QueryEngine::getCallees(uint64_t project_id,
 		}
 		sqlite3_finalize(st);
 	}
-	result += "],\"total\":" + std::to_string(count) + "}";
+	result += "],\"total\":" + std::to_string(count);
+	if (ambiguous) {
+		result += ",\"ambiguous\":true,\"candidates\":" + cands;
+		result += ",\"hint\":\"" +
+			  util::jsonEscapeString(kAmbiguousNameHint) + "\"";
+	}
+	result += "}";
 	return result;
 }
 
