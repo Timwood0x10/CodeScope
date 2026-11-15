@@ -352,7 +352,10 @@ char *buildSymbolContext(EngineContext *ctx, uint64_t project_id,
 		w.key("source").value("fact");
 		w.key("note").value("multiple entities match; narrow with "
 				    "file_filter. C/C++ symbols usually appear "
-				    "twice (declaration and definition)");
+				    "twice (declaration and definition); "
+				    "file_filter restricts which source rows "
+				    "count as this symbol but does not limit "
+				    "the files of callers/callees");
 		std::vector<std::string> failed;
 		collectFailure(failed, run.ok, "verification_run");
 		writeFreshness(w, run);

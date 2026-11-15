@@ -45,11 +45,13 @@ bool QueryFailed(sqlite3 *db, const char *operation, uint64_t project_id)
 
 // Only a measured C/C++ signature may pair rows. Kind 0/1 is one callable
 // family because the visitor emits out-of-class methods as Functions.
+// Language matching uses C-family equivalence so .h headers (detected as
+// 'cpp' by filter_policy) pair with .c definitions (detected as 'c').
 constexpr const char *kSameCallable =
 	"e2.project_id=entity.project_id "
 	"AND entity.kind IN (0,1) AND e2.kind IN (0,1) "
 	"AND entity.language IN ('c','cpp','c++') "
-	"AND e2.language=entity.language "
+	"AND e2.language IN ('c','cpp','c++') "
 	"AND e2.name=entity.name "
 	"AND COALESCE(NULLIF(e2.qualified_name,''),e2.name)="
 	"COALESCE(NULLIF(entity.qualified_name,''),entity.name) "
@@ -495,7 +497,8 @@ Page<TestCandidate> queryTestCandidates(sqlite3 *db, uint64_t project_id,
 		"  AND (e.name LIKE ? OR e.qualified_name LIKE ?) "
 		"ORDER BY e.file_path, e.start_row LIMIT ?";
 	if (sqlite3_prepare_v2(db, name_sql, -1, &stmt, nullptr) != SQLITE_OK) {
-		page.ok = false;
+		page.ok = QueryFailed(db, "queryTestCandidates.p2.prepare",
+				      project_id);
 		return page;
 	}
 	const std::string pattern = "%" + symbol + "%";
@@ -517,7 +520,8 @@ Page<TestCandidate> queryTestCandidates(sqlite3 *db, uint64_t project_id,
 		page.rows.push_back(std::move(c));
 	}
 	if (rc != SQLITE_DONE)
-		page.ok = false;
+		page.ok = QueryFailed(db, "queryTestCandidates.p2.step",
+				      project_id);
 	sqlite3_finalize(stmt);
 	page.total = static_cast<int64_t>(seen.size());
 	return page;
