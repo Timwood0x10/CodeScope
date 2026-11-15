@@ -838,8 +838,8 @@ CREATE TABLE IF NOT EXISTS architecture_edge (
 		// migrations would produce misleading "no such table" errors far
 		// from the real cause. Surface the original DDL error instead.
 		fprintf(stderr,
-			"createSchema: DDL failed, skipping migrations: %s "
-			"[module=store, method=createSchema]\n",
+			"[module=store, method=createSchema] "
+			"DDL failed, skipping migrations: %s\n",
 			error_.c_str());
 		return false;
 	}

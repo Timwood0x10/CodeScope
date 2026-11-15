@@ -88,6 +88,16 @@ uint64_t GraphStore::insertEntity(uint64_t project_id,
 	// does not carry arity (it is set on semantic_records by Visitors),
 	// so we bind 0 here — the buildGraph path (store_graph.cpp) populates
 	// the real arity from semantic_records via SQL INSERT...SELECT.
+	//
+	// is_definition and callable_signature are intentionally omitted here:
+	// this path inserts raw graph nodes without AST-level facts. The
+	// schema defaults (is_definition=1, callable_signature='') mean these
+	// rows are conservatively treated as definitions with unknown
+	// signatures. The buildGraph path overwrites them from
+	// semantic_records, which carries the real visitor-set values. An
+	// empty signature never pairs rows in resolveEntities, so this path
+	// cannot cause false merges — but find_definition's ORDER BY
+	// is_definition DESC may be affected until buildGraph runs.
 	const char *sql = "INSERT OR IGNORE INTO entity "
 			  "(id, project_id, kind, name, qualified_name, "
 			  " file_path, language, start_row, start_col, "
