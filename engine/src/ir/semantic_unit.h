@@ -1,6 +1,8 @@
 #ifndef SEMANTIC_UNIT_H
 #define SEMANTIC_UNIT_H
 
+#include "callable_facts.h"
+
 #include <cstdint>
 #include <string>
 #include <unordered_map>
@@ -144,6 +146,11 @@ struct Record {
 	/// in state_builder.cpp fuses pub_count (visibility=1) with call-graph
 	/// counts.
 	int visibility = 0;
+
+	/// Definition status and measured source signature for callable matching.
+	/// Visitors that do not supply these facts retain the historical definition
+	/// default and an unknown signature; unknown signatures never pair rows.
+	CallableFacts callable;
 
 	// ── Call fact fields (Step 3, plan §3.1) ────────────────────────
 	// Populated by per-language Visitors for CallExpr records so the
@@ -347,6 +354,16 @@ class SemanticUnit {
 	 */
 	bool setQualifiedName(uint64_t record_id,
 			      const std::string &qualified_name);
+
+	/// Set the source facts used to pair declarations with definitions.
+	/// @param record_id ID of an emitted record in this unit.
+	/// @param is_def True for a definition; false for a declaration.
+	/// @param signature Borrowed source identity, copied; empty means unknown.
+	/// @return False without mutation when the ID is missing; true on update.
+	/// Requires exclusive access to this unit. Allocation failures propagate
+	/// to the enclosing FFI boundary.
+	[[nodiscard]] bool setIsDefinition(uint64_t record_id, bool is_def,
+					   const std::string &signature = {});
 
     private:
 	std::vector<Record> records_;

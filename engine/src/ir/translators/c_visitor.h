@@ -89,8 +89,8 @@ class CVisitor : public JsVisitor {
 	/// \return "Scope::name" or "" if no qualified scope is present.
 	std::string extractQualifiedName(TSNode node);
 
-	/// Qualified names ("Scope::name") of every out-of-class member function
-	/// DEFINED in the file being visited, filled once per visit().
+	/// Qualified names plus measured signatures ("Scope::name|signature") of
+	/// out-of-class definitions in this file, filled once per visit().
 	///
 	/// A class-body `field_declaration` (a method DECLARATION such as
 	/// `void foo();`) and the out-of-class definition of the same method are

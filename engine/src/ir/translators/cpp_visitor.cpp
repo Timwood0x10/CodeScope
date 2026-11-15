@@ -1,6 +1,9 @@
 #include "cpp_visitor.h"
+#include <cstdio>
 #include <cstring>
 #include <tree_sitter/api.h>
+
+#include "ir/callable_facts.h"
 namespace ir
 {
 CppVisitor::CppVisitor()
@@ -135,7 +138,10 @@ void CppVisitor::handleMemberFunctionDecl(TSNode node, uint64_t parent_id)
 	// LOST (test_qualified_id_ast: buildGraph → buildCallEdgesSQL). The
 	// definition already represents the method — skip the duplicate.
 	std::string cls = currentClassName();
-	if (!cls.empty() && out_of_class_defs_.count(cls + "::" + name) != 0) {
+	const auto facts = ReadCallableFacts(node, source_, unit_->filePath());
+	if (!cls.empty() && !facts.signature.empty() &&
+	    out_of_class_defs_.count(cls + "::" + name + '|' +
+				     facts.signature)) {
 		visitChildren(node, parent_id);
 		return;
 	}
@@ -144,6 +150,15 @@ void CppVisitor::handleMemberFunctionDecl(TSNode node, uint64_t parent_id)
 	defineSymbol(name, id);
 	if (!cls.empty())
 		unit_->setQualifiedName(id, cls + "::" + name);
+	// Mark as declaration (no function body). The visitor is the only
+	// authority that can tell a declaration from a definition by AST
+	// structure — file extension heuristics fail for inline .h definitions
+	// and single-line .cpp bodies. find_definition and symbol_context use
+	// this flag to prefer definitions over declarations.
+	if (!unit_->setIsDefinition(id, facts.is_definition, facts.signature))
+		std::fprintf(stderr,
+			     "[module=ir, method=handleMemberFunctionDecl] "
+			     "record missing\n");
 	// No body — nothing to enter a function scope for. Still recurse so
 	// parameter type references and default arguments are visited.
 	visitChildren(node, parent_id);

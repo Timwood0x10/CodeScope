@@ -167,4 +167,15 @@ bool SemanticUnit::setQualifiedName(uint64_t record_id,
 	return true;
 }
 
+bool SemanticUnit::setIsDefinition(uint64_t record_id, bool is_def,
+				   const std::string &signature)
+{
+	auto it = id_to_index_.find(record_id);
+	if (it == id_to_index_.end())
+		return false;
+	records_[it->second].callable.is_definition = is_def;
+	records_[it->second].callable.signature = signature;
+	return true;
+}
+
 } // namespace ir

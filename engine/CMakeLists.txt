@@ -305,6 +305,8 @@ set(ENGINE_SOURCES
     src/engine_analyze_ffi.cpp
     src/engine_analyze_views.cpp
     src/engine_analyze_queries.cpp
+    src/ir/callable_facts.cpp
+    src/ir/translators/c_visitor_declarations.cpp
     src/engine_analyze_compare.cpp
     ${SQLITE3_AMAL_SRC}
     ${TREE_SITTER_SOURCES}
