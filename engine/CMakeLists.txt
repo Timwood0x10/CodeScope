@@ -191,6 +191,7 @@ set(ENGINE_SOURCES
     src/engine_scanner.cpp
     src/engine_queries.cpp
     src/engine_queries_status.cpp
+    src/engine_explore_error.cpp
     src/engine_queries_context.cpp
     src/engine_ffi.cpp
     src/engine_filter_ffi.cpp

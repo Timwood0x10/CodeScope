@@ -10,6 +10,7 @@
 
 #include "util/json_writer.h"
 #include "engine_internal.h"
+#include "engine_explore_error.h"
 #include "async_knowledge.h"
 
 #include <cstdint>
@@ -316,38 +317,17 @@ static char *exploreFunctionImpl(EngineContext *ctx, uint64_t project_id,
 			}
 			json << "}";
 		};
-	// Find the starting function (kind IN (0,1,6)).
-	uint64_t func_id = 0;
-	{
-		const char *sql =
-			"SELECT id FROM entity WHERE project_id=? AND name=? "
-			"AND kind IN (0,1,6) ORDER BY id LIMIT 1";
-		sqlite3_stmt *st = nullptr;
-		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) ==
-		    SQLITE_OK) {
-			sqlite3_bind_int64(st, 1,
-					   static_cast<int64_t>(project_id));
-			sqlite3_bind_text(st, 2, function_name, -1,
-					  SQLITE_TRANSIENT);
-			if (sqlite3_step(st) == SQLITE_ROW)
-				func_id = static_cast<uint64_t>(
-					sqlite3_column_int64(st, 0));
-			sqlite3_finalize(st);
-		}
-	}
-	if (!func_id) {
-		util::JsonWriter err;
-		err.beginObject();
-		err.key("error").value(std::string("function '") +
-				       function_name + "' not found");
-		err.key("name").value(function_name);
-		err.key("callers").beginArray().endArray();
-		err.key("callees").beginArray().endArray();
-		err.endObject();
-		return dupString(err.str());
-	}
+	// Find the starting function (kind IN (0,1,6)). A failed query is not
+	// "no such callable": the status and reason travel into the error body,
+	// which must not blame the name for a failure of its own lookup.
+	const engine_queries::CallableLookup callable =
+		engine_queries::FindCallableId(db, project_id, function_name);
+	if (!callable.id)
+		return dupString(engine_queries::FunctionNotFoundJson(
+			db, project_id, function_name, callable.ok,
+			callable.error));
 	std::ostringstream result;
-	buildNode(result, func_id, max_depth);
+	buildNode(result, callable.id, max_depth);
 	return dupString(result.str());
 }
 
