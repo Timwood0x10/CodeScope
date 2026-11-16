@@ -621,7 +621,21 @@ fn is_build_output_dir(path: &std::path::Path) -> bool {
             | ".netlify"
             | ".git"
             | ".codescope"
+            // VCS worktrees and agent scratch trees: generated checkouts and
+            // build logs, not the project's own source.
+            | ".worktrees"
+            | ".agnes"
     ) {
+        return true;
+    }
+    // Go work directories (`go build` copies `$WORK` under a project-local
+    // `.agnes/work/tmp/` in agent sandboxes and names it `go-build<digits>`).
+    // Only the numeric suffix matches, so a real source directory called
+    // `go-build-tools` stays indexable.
+    if let Some(rest) = lower.strip_prefix("go-build")
+        && !rest.is_empty()
+        && rest.chars().all(|c| c.is_ascii_digit())
+    {
         return true;
     }
     if lower == "build" || lower.starts_with("build-") {
@@ -840,6 +854,17 @@ mod tests {
         assert!(!is_build_output_dir(&tmp.join("build-plain")));
         // A dir named exactly `build` with no markers stays indexable too.
         assert!(!is_build_output_dir(&tmp.join("src-build").join("build")));
+
+        // Agent scratch trees and Go work directories: an agent sandbox
+        // copies `$WORK` under `.agnes/work/tmp/go-build<digits>/`, and
+        // indexing it puts generated `_testmain.go` files into the graph.
+        assert!(is_build_output_dir(&tmp.join(".agnes")));
+        assert!(is_build_output_dir(&tmp.join(".worktrees")));
+        assert!(is_build_output_dir(&tmp.join("go-build3043122594")));
+        // The numeric suffix is required: a source directory named like a
+        // Go build dir must stay indexable.
+        assert!(!is_build_output_dir(&tmp.join("go-build-tools")));
+        assert!(!is_build_output_dir(&tmp.join("go-build")));
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
