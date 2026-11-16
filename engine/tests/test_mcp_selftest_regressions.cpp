@@ -1,6 +1,7 @@
 // Regression cases from the MCP self-test: callable identity and honest gaps.
 #include "engine.h"
 #include "engine_context.h"
+#include "engine_explore_error.h"
 #include "store/store.h"
 #include "util/json_parse.h"
 #include "verify/claim_parser.h"
@@ -78,6 +79,12 @@ void Seed(sqlite3 *db)
 	     "start_row,start_col,end_row,end_col,visibility) "
 	     "VALUES (20,1,0,'DemoCapability','DemoCapability','api.cpp',"
 	     "'cpp','()',1,6,0,6,0,0);"
+	     // A type with no callable of the same name: the probe must say so.
+	     "INSERT INTO entity(id,project_id,kind,name,qualified_name,"
+	     "file_path,language,callable_signature,is_definition,"
+	     "start_row,start_col,end_row,end_col,visibility) "
+	     "VALUES (30,1,2,'DemoType','DemoType','api.cpp','cpp','',1,"
+	     "7,0,7,0,0);"
 	     "INSERT INTO capability(project_id,name,source_kind,source_ref) "
 	     "VALUES (1,'DemoCapability','readme','selftest'),"
 	     "(1,'OrphanCapability','readme','selftest');"
@@ -270,6 +277,146 @@ void CheckProseVerdicts(engine_t engine)
 	CHECK(orphan);
 }
 
+/// The two "not found" paths say what they searched and why the name missed.
+void CheckTraceDiagnostics(engine_t engine)
+{
+	// No path: the response names both endpoints and the search budget so
+	// "unreachable" can be told apart from "the source has no edges".
+	auto path = Result(engine_find_shortest_path(engine, 1, 1, 999));
+	CHECK(!Field(path, "found").bool_value);
+	CHECK(Field(Field(path, "resolved"), "from").number_value == 1);
+	CHECK(Field(Field(path, "resolved"), "to").number_value == 999);
+	// 999 is not an entity: the body must say so instead of calling the id
+	// resolved.
+	CHECK(Field(path, "endpoints_verified").bool_value);
+	CHECK(Field(Field(path, "resolved"), "from_in_graph").bool_value);
+	CHECK(!Field(Field(path, "resolved"), "to_in_graph").bool_value);
+	CHECK(!Field(path, "depth_truncated").bool_value);
+	CHECK(Field(path, "visited").number_value >= 1);
+	CHECK(Field(path, "max_depth").number_value == 10);
+
+	// A type is not a callable: the error body points at the tools that can
+	// describe it instead of leaving the client to guess.
+	auto type = Result(
+		engine_explore_function(engine, 1, "DemoType", 1, "both"));
+	CHECK(Field(type, "error").string_value.find("not found") !=
+	      std::string::npos);
+	CHECK(Field(type, "entity_id").number_value == 30);
+	CHECK(Field(type, "entity_kind").number_value == 2);
+	CHECK(Field(type, "hint").string_value.find("get_type_info") !=
+	      std::string::npos);
+
+	// A name that matches nothing is reported as a spelling problem.
+	auto missing = Result(
+		engine_explore_function(engine, 1, "NoSuchThing", 1, "both"));
+	CHECK(Field(missing, "hint").string_value.find("find_symbol") !=
+	      std::string::npos);
+	CHECK(Field(missing, "entity_id").number_value == 0);
+
+	// A lookup that cannot run is not a name that does not exist. Renaming
+	// the table makes the probe fail without touching any other state.
+	sqlite3 *db = engineInstance(engine)->store->handle();
+	Exec(db, "ALTER TABLE entity RENAME TO entity_hidden");
+	auto failed = Result(
+		engine_explore_function(engine, 1, "DemoType", 1, "both"));
+	Exec(db, "ALTER TABLE entity_hidden RENAME TO entity");
+	CHECK(Field(failed, "lookup_error").string_value.find("no such table") !=
+	      std::string::npos);
+	CHECK(Field(failed, "hint").string_value.find("does not mean the name") !=
+	      std::string::npos);
+
+	// The decision behind the body. "First query failed, fallback found a
+	// row" must not be reported as a non-callable entity; a table-level
+	// fault cannot produce it (both statements read the same table), so the
+	// pure decision is asserted directly.
+	CHECK(engine_queries::DiagnoseMissingCallable(false, true, 100) ==
+	      engine_queries::MissingCallableReason::LookupFailed);
+	CHECK(engine_queries::DiagnoseMissingCallable(true, false, 0) ==
+	      engine_queries::MissingCallableReason::LookupFailed);
+	CHECK(engine_queries::DiagnoseMissingCallable(true, true, 30) ==
+	      engine_queries::MissingCallableReason::NonCallable);
+	CHECK(engine_queries::DiagnoseMissingCallable(true, true, 0) ==
+	      engine_queries::MissingCallableReason::UnknownName);
+}
+
+/// A chain longer than the search budget: the answer is "budget exhausted",
+/// not "unreachable", and `visited` says how far the walk got.
+void CheckDepthBudget(engine_t engine)
+{
+	// 100 -> 101 -> ... -> 112: twelve edges. With a ten-hop budget the walk
+	// reaches depth 10 and stops before expanding it, so eleven nodes are
+	// visited and the target at depth 12 stays unreachable-by-design.
+	std::string sql;
+	for (int i = 100; i <= 112; ++i) {
+		sql += "INSERT INTO entity(id,project_id,kind,name,qualified_name,"
+		       "file_path,language,callable_signature,is_definition,"
+		       "start_row,start_col,end_row,end_col,visibility) VALUES (" +
+		       std::to_string(i) + ",1,0,'hop" + std::to_string(i) +
+		       "','hop" + std::to_string(i) +
+		       "','chain.cpp','cpp','()',1," + std::to_string(i - 84) +
+		       ",0," + std::to_string(i - 84) + ",0,0);";
+	}
+	for (int i = 100; i < 112; ++i) {
+		sql += "INSERT INTO relation(project_id,source_id,target_id,type) "
+		       "VALUES (1," +
+		       std::to_string(i) + "," + std::to_string(i + 1) + ",1);";
+	}
+	Exec(engineInstance(engine)->store->handle(), sql.c_str());
+	CHECK(engineInstance(engine)->store->buildCSR(1));
+
+	auto deep = Result(engine_find_shortest_path(engine, 1, 100, 112));
+	CHECK(!Field(deep, "found").bool_value);
+	CHECK(Field(deep, "visited").number_value == 11);
+	CHECK(Field(deep, "max_depth").number_value == 10);
+	// The limit, not the graph, ended this walk.
+	CHECK(Field(deep, "depth_truncated").bool_value);
+	CHECK(Field(Field(deep, "resolved"), "to_in_graph").bool_value);
+
+	// Star: hub 200 -> ten leaves, plus a target 250 that exists but is not
+	// reachable in one hop. Same `visited` count as the truncated chain, so
+	// the two must be told apart by `depth_truncated`, not by node counts.
+	std::string star;
+	for (int i = 200; i <= 210; ++i) {
+		star += "INSERT INTO entity(id,project_id,kind,name,qualified_name,"
+			"file_path,language,callable_signature,is_definition,"
+			"start_row,start_col,end_row,end_col,visibility) VALUES (" +
+			std::to_string(i) + ",1,0,'leaf" + std::to_string(i) +
+			"','leaf" + std::to_string(i) +
+			"','star.cpp','cpp','()',1," + std::to_string(i - 184) +
+			",0," + std::to_string(i - 184) + ",0,0);";
+	}
+	star += "INSERT INTO entity(id,project_id,kind,name,qualified_name,"
+		"file_path,language,callable_signature,is_definition,"
+		"start_row,start_col,end_row,end_col,visibility) VALUES "
+		"(250,1,0,'lonely','lonely','star.cpp','cpp','()',1,70,0,70,"
+		"0,0);";
+	for (int i = 201; i <= 210; ++i) {
+		star += "INSERT INTO relation(project_id,source_id,target_id,type) "
+			"VALUES (1,200," +
+			std::to_string(i) + ",1);";
+	}
+	Exec(engineInstance(engine)->store->handle(), star.c_str());
+	CHECK(engineInstance(engine)->store->buildCSR(1));
+
+	auto star_path = Result(engine_find_shortest_path(engine, 1, 200, 250));
+	CHECK(!Field(star_path, "found").bool_value);
+	CHECK(Field(star_path, "visited").number_value == 11);
+	CHECK(!Field(star_path, "depth_truncated").bool_value);
+	CHECK(Field(Field(star_path, "resolved"), "to_in_graph").bool_value);
+
+	// A failed adjacency read is a failure, not "no path": endpoints still
+	// resolve, so only the error tells the two apart.
+	Exec(engineInstance(engine)->store->handle(),
+	     "ALTER TABLE adjacency RENAME TO adjacency_hidden");
+	auto broken = Result(engine_find_shortest_path(engine, 1, 200, 250));
+	Exec(engineInstance(engine)->store->handle(),
+	     "ALTER TABLE adjacency_hidden RENAME TO adjacency");
+	CHECK(!Field(broken, "endpoints_verified").bool_value);
+	CHECK(Field(broken, "error")
+		      .string_value.find("adjacency lookup failed") !=
+	      std::string::npos);
+}
+
 } // namespace
 
 int main()
@@ -291,6 +438,8 @@ int main()
 	CheckEntityQueries(engine);
 	CheckVerification(engine);
 	CheckProseVerdicts(engine);
+	CheckTraceDiagnostics(engine);
+	CheckDepthBudget(engine);
 	engine_destroy(engine);
 	std::error_code cleanup;
 	std::filesystem::remove_all(root, cleanup);

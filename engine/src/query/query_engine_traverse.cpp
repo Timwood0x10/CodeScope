@@ -68,6 +68,135 @@ std::string byEntityFailure(const char *list_key, const char *method,
 	return json + "}";
 }
 
+/// Whether each endpoint of a shortest-path query exists in this project.
+///
+/// A not-found answer that echoes an id the graph never contained would claim
+/// the lookup resolved something it never saw; the MCP layer passes numeric
+/// ids through without checking them.
+struct EndpointPresence {
+	bool ok = false; // the lookup ran (row or no row)
+	bool from = false; // source id exists in this project
+	bool to = false; // target id exists in this project
+};
+
+/// Look both endpoint ids up in one statement.
+///
+/// @param db Borrowed store connection.
+/// @param project_id Project that owns the rows.
+/// @param from Source node id from the caller.
+/// @param to Target node id from the caller.
+/// @return Presence flags; `ok` is false when the statement failed, which is
+///         not evidence that either id is missing.
+EndpointPresence endpointsInGraph(sqlite3 *db, uint64_t project_id,
+				  uint64_t from, uint64_t to)
+{
+	EndpointPresence found;
+	const char *sql = "SELECT id FROM entity WHERE project_id=? "
+			  "AND id IN (?,?)";
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		fprintf(stderr,
+			"endpointsInGraph: prepare failed: %s "
+			"[module=query, method=findShortestPath]\n",
+			sqlite3_errmsg(db));
+		return found;
+	}
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(from));
+	sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(to));
+	int rc = SQLITE_ROW;
+	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+		const int64_t id = sqlite3_column_int64(stmt, 0);
+		if (id == static_cast<int64_t>(from))
+			found.from = true;
+		if (id == static_cast<int64_t>(to))
+			found.to = true;
+	}
+	found.ok = (rc == SQLITE_DONE);
+	if (!found.ok)
+		fprintf(stderr,
+			"endpointsInGraph: step failed: %s "
+			"[module=query, method=findShortestPath]\n",
+			sqlite3_errmsg(db));
+	sqlite3_finalize(stmt);
+	return found;
+}
+
+/// Not-found body for findShortestPath.
+///
+/// Three answers shared one shape before: unreachable, a search cut short by
+/// the depth budget, and an id the project never contained. `depth_truncated`
+/// and the `*_in_graph` flags separate them; `endpoints_verified` goes false
+/// when the lookup itself failed, so the body never claims more than it knows.
+///
+/// @param source_id Source the walk started from (echoed in `path`).
+/// @param target_id Target the walk never reached.
+/// @param visited Nodes the walk reached, including the source.
+/// @param depth_truncated True when an unvisited edge sat beyond the budget.
+/// @param presence Endpoint lookup result.
+/// @return JSON object; the caller duplicates it into its FFI buffer.
+std::string shortestPathNotFoundJson(uint64_t source_id, uint64_t target_id,
+				     size_t visited, bool depth_truncated,
+				     const EndpointPresence &presence)
+{
+	util::JsonWriter json;
+	json.beginObject();
+	json.key("path").beginArray();
+	json.beginObject();
+	json.key("node_id").value(static_cast<int64_t>(source_id));
+	json.endObject();
+	json.endArray();
+	json.key("found").value(false);
+	json.key("approximation").value("heuristic");
+	json.key("resolved").beginObject();
+	json.key("from").value(static_cast<int64_t>(source_id));
+	json.key("to").value(static_cast<int64_t>(target_id));
+	if (presence.ok) {
+		json.key("from_in_graph").value(presence.from);
+		json.key("to_in_graph").value(presence.to);
+	}
+	json.endObject();
+	json.key("endpoints_verified").value(presence.ok);
+	json.key("visited").value(static_cast<int64_t>(visited));
+	json.key("max_depth").value(kShortestPathMaxDepth);
+	json.key("depth_truncated").value(depth_truncated);
+	json.key("note").value(kShortestPathNote);
+	json.key("hops").value(0);
+	json.endObject();
+	return json.str();
+}
+
+/// The walk had to expand a node but could not read its adjacency. That is a
+/// failed query, not "no path exists": `endpoints_verified` is false and an
+/// `error` names the module and method, so the caller does not read an
+/// unreachable-looking body as a fact about the graph.
+///
+/// @param source_id Source the walk started from.
+/// @param target_id Target the walk never reached.
+/// @return JSON object; the caller duplicates it into its FFI buffer.
+std::string shortestPathLookupFailedJson(uint64_t source_id, uint64_t target_id)
+{
+	util::JsonWriter json;
+	json.beginObject();
+	json.key("path").beginArray().endArray();
+	json.key("found").value(false);
+	json.key("approximation").value("heuristic");
+	json.key("resolved").beginObject();
+	json.key("from").value(static_cast<int64_t>(source_id));
+	json.key("to").value(static_cast<int64_t>(target_id));
+	json.endObject();
+	json.key("endpoints_verified").value(false);
+	json.key("visited").value(0);
+	json.key("max_depth").value(kShortestPathMaxDepth);
+	json.key("depth_truncated").value(false);
+	json.key("note").value(kShortestPathNote);
+	json.key("hops").value(0);
+	json.key("error").value("[module=query, method=findShortestPath] "
+				"adjacency lookup failed");
+	json.endObject();
+	return json.str();
+}
+
 } // namespace
 
 // ── Step 7 (plan §7.2): entity-precise query APIs ────────────────────
@@ -487,13 +616,22 @@ std::string QueryEngine::findShortestPath(uint64_t project_id,
 	depth_map[source_id] = 0;
 	bfs.push(source_id);
 	bool found = false;
-	while (!bfs.empty()) {
+	// Set when an unvisited edge sits beyond the budget: the limit ended the
+	// walk, not the graph, and node counts cannot tell those apart.
+	bool depth_truncated = false;
+	bool neighbors_ok = true; // false = the read failed, not "no edges"
+	while (!bfs.empty() && neighbors_ok) {
 		uint64_t cur = bfs.front();
 		bfs.pop();
 		int cur_depth = depth_map[cur];
-		if (cur_depth >= kShortestPathMaxDepth)
+		auto neighbors = store_->getCalleeIds(cur, &neighbors_ok);
+		if (!neighbors_ok)
+			break;
+		if (cur_depth >= kShortestPathMaxDepth) {
+			for (uint64_t nb : neighbors)
+				depth_truncated |= !parent.count(nb);
 			continue;
-		auto neighbors = store_->getCalleeIds(cur);
+		}
 		for (uint64_t nb : neighbors) {
 			if (parent.count(nb))
 				continue; // already visited
@@ -508,16 +646,13 @@ std::string QueryEngine::findShortestPath(uint64_t project_id,
 		if (found)
 			break;
 	}
-	if (!found) {
-		// v0.2.5: no-path payload keeps the source node in the path array
-		// (path:[source]), matching the SQLite emitNotFound contract
-		// so callers can rely on a stable JSON shape across backends.
-		json << "{\"path\":[{\"node_id\":" << source_id << "}],"
-		     << "\"found\":false,"
-		     << "\"approximation\":\"heuristic\","
-		     << "\"note\":\"" << kShortestPathNote << "\",\"hops\":0}";
-		return json.str();
-	}
+	if (!neighbors_ok)
+		return shortestPathLookupFailedJson(source_id, target_id);
+	if (!found)
+		return shortestPathNotFoundJson(
+			source_id, target_id, parent.size(), depth_truncated,
+			endpointsInGraph(store_->handle(), project_id,
+					 source_id, target_id));
 	// Reconstruct target → source via parent pointers, then reverse.
 	std::vector<uint64_t> path;
 	uint64_t node = target_id;

@@ -293,17 +293,34 @@ static std::vector<uint64_t> decodeAdjacencyBlob(const void *blob, int bytes)
 	return ids;
 }
 
-std::vector<uint64_t> GraphStore::getCalleeIds(uint64_t node_id)
+std::vector<uint64_t> GraphStore::getCalleeIds(uint64_t node_id, bool *ok)
 {
+	if (ok)
+		*ok = true;
 	std::vector<uint64_t> ids;
 	const char *sql = "SELECT tgt_blob FROM adjacency WHERE src_id=?";
 	sqlite3_stmt *st = nullptr;
-	if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK)
+	if (sqlite3_prepare_v2(db_, sql, -1, &st, nullptr) != SQLITE_OK) {
+		if (ok)
+			*ok = false;
+		fprintf(stderr,
+			"getCalleeIds: prepare failed: %s "
+			"[module=store, method=getCalleeIds]\n",
+			sqlite3_errmsg(db_));
 		return ids;
+	}
 	sqlite3_bind_int64(st, 1, static_cast<int64_t>(node_id));
-	if (sqlite3_step(st) == SQLITE_ROW) {
+	const int rc = sqlite3_step(st);
+	if (rc == SQLITE_ROW) {
 		ids = decodeAdjacencyBlob(sqlite3_column_blob(st, 0),
 					  sqlite3_column_bytes(st, 0));
+	} else if (rc != SQLITE_DONE) {
+		if (ok)
+			*ok = false;
+		fprintf(stderr,
+			"getCalleeIds: step failed: %s "
+			"[module=store, method=getCalleeIds]\n",
+			sqlite3_errmsg(db_));
 	}
 	sqlite3_finalize(st);
 	return ids;

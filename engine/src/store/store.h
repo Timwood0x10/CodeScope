@@ -316,8 +316,11 @@ class GraphStore {
 	 *  Call after buildGraph. Drops and rebuilds adjacency. */
 	bool buildCSR(uint64_t project_id);
 	/** Get callee node IDs for a given source (caller) node via adjacency.
-	 *  Returns empty vector on miss. O(1) B-tree lookup. */
-	std::vector<uint64_t> getCalleeIds(uint64_t node_id);
+	 *  Returns empty vector on miss. O(1) B-tree lookup.
+	 *  @param ok When non-null, set to false if the query failed; an empty
+	 *            vector alone cannot distinguish "no edges" from "no answer". */
+	std::vector<uint64_t> getCalleeIds(uint64_t node_id,
+					   bool *ok = nullptr);
 	/** Get caller node IDs for a given target (callee) node via adjacency.
 	 *  Returns empty vector on miss. O(1) B-tree lookup via adjacency_rev. */
 	std::vector<uint64_t> getCallerIds(uint64_t node_id);

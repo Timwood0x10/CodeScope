@@ -168,6 +168,7 @@ char *engine_get_neighbors(engine_t handle, uint64_t project_id,
 // Ownership: the caller frees the returned JSON string with engine_free_string().
 // Lifetime: input strings are borrowed for the call only.
 // Thread safety: shares one store connection; not concurrent with indexing.
+// @return {path,found,note,hops}; not-found adds resolved/flags/visited/depth.
 char *engine_find_shortest_path(engine_t handle, uint64_t project_id,
 				uint64_t source_id, uint64_t target_id);
 // Ownership: the caller frees the returned JSON string with engine_free_string().
@@ -208,6 +209,7 @@ char *engine_find_connected_components(engine_t handle, uint64_t project_id);
 // ─── Interactive exploration ──────────────────────────────────
 // Explore a function's callers/callees recursively as a JSON tree.
 // Returns hierarchical JSON: {"name":"...","file":"...","line":N,"callers":[...],"callees":[...]}
+// A non-callable name adds hint/entity_id/entity_kind/lookup_error.
 // @param function_name Starting function.
 // @param depth How many levels to recurse (max 5).
 // @param direction "callers", "callees", or "both".
