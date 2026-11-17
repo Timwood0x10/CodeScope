@@ -76,14 +76,20 @@ goagent:  Close (4)      ares_bootstrap/...:133  |  ares_events/...:172  |  sdk/
 
 当前行为正确：`find_callers("Count")`、`find_callers("Close")` 均返回 `ambiguous:true`，各自成组，没有被静默合并。
 
-### 2.2 将来补 facts 的前置条件（重要）
+### 2.2 前置条件：Go 包限定已实施（2026-11-17）
 
-风险方向与最初设想相反：**直接给 Rust/Go 加签名会造成误合并**。
+风险方向与最初设想相反：**直接给 Rust/Go 加签名会造成误合并**——不同包的 `Count` 共享同一个 `qualified_name`，一旦签名相同（Go 的 `func (r *Registry) Count() int` 与 `func (s *Registry) Count() int` 都是 `()`），`kSameCallable` 会把它们判成同一 callable。
 
-- 这些语言的 visitor 产出的 `qualified_name` 不含接收者/所属类型/包路径（`Count` 在三个包里都叫 `Count`）；
-- `kSameCallable` 的三元组是 `(language family, qualified_name, signature)`，一旦签名存在且相同（Go 的 `func (r *Registry) Count() int` 与 `func (s *Store) Count() int` 签名都是 `()`），不同包/不同 impl 块的方法会被判成同一 callable。
+本轮先实施了前半部分：**Go 的限定名带上文件声明的包**。
 
-因此“重新评估”的前置条件是：**先让 `qualified_name` 带上接收者/类型/包（Rust `Type::method`，Go `pkg.Type.method`），再考虑签名**。只加签名的改动应视为回归风险，而不是改进。
+- `package_clause` 决定前缀（`skills.Registry.Count`、`skills.Registry`、`skills.Load`）；包名缺失时保留 `Type.Method`，不拿目录名冒充。
+- 接收者归一：`*T`、`T`、`Box[T]` 都取声明类型名；无变量名接收者（`func (*Svc) Bare()`）同样成立。
+- 消费端同步：`pipeline_load` 按**最后**一个分隔符拆方法（按第一个拆会把 `skills.Registry.Count` 读成类型 `skills`）；`pipeline.cpp` 的派发展开与 `factors.cpp` 的接收者匹配改为“类型段”匹配（`resolver/type_segment.h`），不再要求类型位于开头。
+- 实测 goagent：`skills.Registry.Count` 与 `core.Registry.Count` 并存，`find_entry_points`/`find_callers` 的裸名行为不变。
+- **旧库需要重建索引**：本次之前写入的限定名没有包前缀，增量索引可能跳过未修改文件。
+- Rust 的 `Type::method` 原本就有，本轮补的是边界测试。
+
+仍然成立的部分（记录为边界）：`qualified_name` 不是全局唯一标识——两个不同目录可以都声明 `package core`；符号身份仍需结合 project/file/location。签名（callable facts）尚未加入，因此当前不会出现跨包误合并。
 
 复现查询：
 
