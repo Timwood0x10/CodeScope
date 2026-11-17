@@ -54,6 +54,22 @@ bool contains(const std::string &haystack, const char *needle)
 	return haystack.find(needle) != std::string::npos;
 }
 
+/// How many distinct files declare `qname`.
+int distinctFiles(sqlite3 *db, const char *qname)
+{
+	const char *sql =
+		"SELECT COUNT(DISTINCT file_path) FROM semantic_records "
+		"WHERE qualified_name=?";
+	sqlite3_stmt *st = nullptr;
+	CHECK(sqlite3_prepare_v2(db, sql, -1, &st, nullptr) == SQLITE_OK);
+	sqlite3_bind_text(st, 1, qname, -1, SQLITE_TRANSIENT);
+	int out = 0;
+	if (sqlite3_step(st) == SQLITE_ROW)
+		out = sqlite3_column_int(st, 0);
+	sqlite3_finalize(st);
+	return out;
+}
+
 void checkFixture(sqlite3 *db)
 {
 	// Same method name in two packages: both spellings must exist, and the
@@ -81,6 +97,11 @@ void checkFixture(sqlite3 *db)
 	// Top-level functions are qualified; the bare name is still stored.
 	CHECK(contains(qualifiedNames(db, "Load"), "skills.Load"));
 	CHECK(contains(qualifiedNames(db, "Load"), "core.Load"));
+
+	// Two directories may declare the same package: the qualified name
+	// repeats, but the symbols stay distinct through their file. A
+	// qualified name is not a global id.
+	CHECK(distinctFiles(db, "core.Registry.Count") == 2);
 }
 
 } // namespace
@@ -94,6 +115,9 @@ int main()
 	}
 	std::filesystem::create_directories(root + "/a");
 	std::filesystem::create_directories(root + "/b");
+	// `c` declares `package core` again: the qualified name repeats, so the
+	// file is what keeps the two symbols apart.
+	std::filesystem::create_directories(root + "/c");
 
 	// Directory `a` declares `package skills`, directory `b` declares
 	// `package core`: the two same-named methods must not merge.
@@ -113,6 +137,12 @@ int main()
 		  "func (r *Registry) Count() int { return 2 }\n"
 		  "\n"
 		  "func Load() {}\n");
+	writeFile(root + "/c/registry.go",
+		  "package core\n"
+		  "\n"
+		  "type Registry struct{}\n"
+		  "\n"
+		  "func (r *Registry) Count() int { return 3 }\n");
 	writeFile(root + "/a/svc.go",
 		  "package skills\n"
 		  "\n"
@@ -150,7 +180,8 @@ int main()
 		"{\"paths\":[\"" + root + "/a/registry.go\"]}";
 	const std::string second =
 		"{\"paths\":[\"" + root + "/b/registry.go\",\"" + root +
-		"/a/svc.go\",\"" + root + "/a/svc_test.go\"]}";
+		"/c/registry.go\",\"" + root + "/a/svc.go\",\"" + root +
+		"/a/svc_test.go\"]}";
 	char *res = engine_index_files(engine, pid, first.c_str(), 1);
 	CHECK(res != nullptr);
 	CHECK(strstr(res, "\"ok\":true") != nullptr);
