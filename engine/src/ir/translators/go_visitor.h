@@ -31,6 +31,34 @@ class GoVisitor : public JsVisitor {
 	/// Infer the type name from a composite literal (e.g. `Box{...}` → "Box").
 	std::string inferCompositeType(TSNode expr);
 
+	// ── Package-qualified identity ───────────────────────────────
+	// A Go name is only unique inside its package: `Count` exists in many.
+	// The qualified name carries the package declared by this file
+	// ("skills.Registry.Count"), so two same-named methods can be told
+	// apart without inventing an import path. It is not a global id — two
+	// directories may both declare `package core` — so the reader still
+	// combines it with project/file/location.
+	//
+	// Filled from the AST `package_clause` at the top of each file and
+	// cleared in visit(), so a reused visitor never leaks the previous
+	// file's package. When a file has no package clause the prefix stays
+	// empty and the bare `Type.Method` is kept: a directory name is not
+	// evidence of a package name.
+	std::string current_package_;
+	/// Prefix `name` with the file's package, or return it unchanged when
+	/// the package is unknown.
+	std::string qualify(const std::string &name) const;
+	/// Record the package declared by this file (no-op for an empty name).
+	void handlePackageClause(TSNode node);
+	/// Clear every per-file table, including the package.
+	void resetPerFileState();
+	/// Define a type symbol and give it its package-qualified name.
+	void defineTypeSymbol(const std::string &name, uint64_t id)
+	{
+		defineSymbol(name, id);
+		unit_->setQualifiedName(id, qualify(name));
+	}
+
 	// ── Step 4 (plan §4A): receiver type & import alias tracking ──
 	// var_types_ maps a local variable name to its statically declared
 	// or composite-literal-inferred type, so handleCall can fill

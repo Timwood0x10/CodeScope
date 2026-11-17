@@ -8,6 +8,32 @@
 namespace resolver
 {
 
+/// Split "pkg.Type.method" into the bare type key and the method name.
+///
+/// The type key is what iface_names and struct_methods are keyed by — those
+/// come from bare `name` rows — so the package prefix must be dropped.
+/// Splitting at the first '.' instead turned "skills.Registry.Count" into
+/// type "skills" and method "Registry.Count".
+///
+/// @param q Qualified name from semantic_records.
+/// @param type_name Output: bare type name ("Registry").
+/// @param method Output: method name ("Count").
+/// @return False when `q` has no separator or either half is empty.
+static bool splitMethodQname(const std::string &q, std::string &type_name,
+			     std::string &method)
+{
+	size_t dot = q.rfind('.');
+	if (dot == std::string::npos)
+		return false;
+	method = q.substr(dot + 1);
+	const std::string type_part = q.substr(0, dot);
+	const size_t type_dot = type_part.rfind('.');
+	type_name = (type_dot == std::string::npos) ?
+			    type_part :
+			    type_part.substr(type_dot + 1);
+	return !type_name.empty() && !method.empty();
+}
+
 int ResolverPipeline::loadEntityIndex(
 	std::unordered_map<std::string, std::vector<Candidate>> &entity_index,
 	std::unordered_map<uint64_t, const Candidate *> &entity_by_id,
@@ -380,14 +406,9 @@ void ResolverPipeline::loadDispatchIndex()
 									    0));
 					if (!qn)
 						continue;
-					std::string q(qn);
-					size_t dot = q.find('.');
-					if (dot == std::string::npos)
-						continue;
-					std::string type_name =
-						q.substr(0, dot);
-					std::string method = q.substr(dot + 1);
-					if (type_name.empty() || method.empty())
+					std::string type_name, method;
+					if (!splitMethodQname(qn, type_name,
+							      method))
 						continue;
 					if (iface_names.count(type_name) > 0)
 						iface_methods[type_name]

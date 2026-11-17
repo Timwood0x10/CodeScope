@@ -50,17 +50,11 @@ SemanticUnit *GoVisitor::visit(TSTree *tree, const char *source, const char *fp)
 	unit_->setFilePath(fp);
 	unit_->setLanguage("go");
 	source_ = source;
-	// Step 4: reset per-file receiver-type & import-alias tracking so the
-	// visitor arena can reuse the same GoVisitor across files without
-	// leaking stale variable bindings from the previous file.
-	var_types_.clear();
-	import_aliases_.clear();
-	// Step 8: reset per-file interface/struct method sets.
-	interface_methods_.clear();
-	struct_methods_.clear();
-	current_interface_.clear();
-	struct_fields_.clear();
-	interface_embeds_.clear();
+	// Step 4: reset per-file state so the visitor arena can reuse the same
+	// GoVisitor across files without leaking the previous file's bindings,
+	// method sets or package (a stale package would qualify this file's
+	// symbols with a package they do not belong to).
+	resetPerFileState();
 
 	TSNode root_node = ts_tree_root_node(tree);
 	// Names this file defines, so a bare call to a user function whose name
@@ -198,6 +192,8 @@ void GoVisitor::visitNode(TSNode node, uint64_t parent_id)
 		return handleRange(node, parent_id);
 	if (strcmp(type, "parameter_declaration") == 0)
 		return handleParameterDecl(node, parent_id);
+	if (strcmp(type, "package_clause") == 0)
+		return handlePackageClause(node);
 	// The blank identifier binds nothing: `_` is a discard, not a symbol. The
 	// short-variable path already skips it (handleShortVar) but every other
 	// context reaches visitIdentifier, which emits a Variable for any
@@ -208,6 +204,58 @@ void GoVisitor::visitNode(TSNode node, uint64_t parent_id)
 		return;
 	JsVisitor::visitNode(node, parent_id);
 }
+void GoVisitor::resetPerFileState()
+{
+	var_types_.clear();
+	import_aliases_.clear();
+	interface_methods_.clear();
+	struct_methods_.clear();
+	current_interface_.clear();
+	struct_fields_.clear();
+	interface_embeds_.clear();
+	current_package_.clear();
+}
+
+/// Receiver type as it appears in a qualified name: `*Box[T]` → `Box`.
+///
+/// The pointer and the type parameter are not part of the receiver's
+/// identity, and the qualified name must match the type declaration.
+///
+/// @param type Raw receiver type text.
+/// @return The bare declared type name.
+static std::string receiverTypeName(std::string type)
+{
+	const size_t bracket = type.find('[');
+	if (bracket != std::string::npos)
+		type.erase(bracket);
+	if (!type.empty() && type[0] == '*')
+		type.erase(0, 1);
+	return type;
+}
+
+std::string GoVisitor::qualify(const std::string &name) const
+{
+	if (name.empty() || current_package_.empty())
+		return name;
+	return current_package_ + "." + name;
+}
+
+void GoVisitor::handlePackageClause(TSNode node)
+{
+	// `package skills` — the clause itself is not a symbol, but every name
+	// declared below it belongs to that package.
+	uint32_t cnt = ts_node_child_count(node);
+	for (uint32_t i = 0; i < cnt; ++i) {
+		TSNode c = ts_node_child(node, i);
+		if (!ts_node_is_named(c))
+			continue;
+		if (std::string(ts_node_type(c)) == "package_identifier") {
+			current_package_ = nodeText(c);
+			return;
+		}
+	}
+}
+
 void GoVisitor::handleFuncDecl(TSNode node, uint64_t parent_id)
 {
 	SourceRange loc = location(node);
@@ -220,6 +268,7 @@ void GoVisitor::handleFuncDecl(TSNode node, uint64_t parent_id)
 		name, loc, parent_id, 0, false,
 		isupper(static_cast<unsigned char>(name[0])) ? 1 : 0);
 	defineSymbol(name, id);
+	unit_->setQualifiedName(id, qualify(name));
 	pushScope();
 	pushFunctionScope(id);
 	uint32_t cnt = ts_node_child_count(node);
@@ -273,11 +322,9 @@ void GoVisitor::handleMethodDecl(TSNode node, uint64_t parent_id)
 	pushFunctionScope(id);
 
 	// Step 4: register the method receiver's type so method-internal
-	// selector calls (e.g. e.helper()) can resolve receiver_type.
-	// tree-sitter-go exposes the receiver as a `receiver` field on
-	// method_declaration — itself a parameter_list like `(e *Engine)`.
-	// Unwrap pointer_type (`*Engine` → `Engine`) so the Resolver can
-	// match `e.helper()` against the method's declaring class.
+	// selector calls (e.g. e.helper()) can resolve receiver_type. The
+	// receiver is a `receiver` field on method_declaration, itself a
+	// parameter_list like `(e *Engine)`; the pointer is unwrapped.
 	{
 		TSNode recv = ts_node_child_by_field_name(node, "receiver", 8);
 		if (!ts_node_is_null(recv)) {
@@ -333,6 +380,7 @@ void GoVisitor::handleMethodDecl(TSNode node, uint64_t parent_id)
 						}
 					}
 				}
+				ptype = receiverTypeName(ptype);
 				if (!pname.empty() && !ptype.empty()) {
 					recordVarType(pname, ptype);
 					// Persist variable -> type as a
@@ -352,12 +400,13 @@ void GoVisitor::handleMethodDecl(TSNode node, uint64_t parent_id)
 				if (!ptype.empty() && !name.empty()) {
 					struct_methods_[ptype].push_back(name);
 					// Also set the method's qualified
-					// name ("Engine.helper") so the
+					// name ("skills.Engine.helper") so the
 					// Resolver's global interface-dispatch
 					// preload can match cross-file
 					// implementations by receiver type.
 					unit_->setQualifiedName(
-						id, ptype + "." + name);
+						id,
+						qualify(ptype + "." + name));
 				}
 			}
 		}
@@ -641,7 +690,8 @@ void GoVisitor::handleInterfaceMethod(TSNode node, uint64_t parent_id)
 			interface_methods_[current_interface_].push_back(name);
 			if (mid != 0)
 				unit_->setQualifiedName(
-					mid, current_interface_ + "." + name);
+					mid, qualify(current_interface_ + "." +
+						     name));
 		}
 	}
 }

@@ -161,7 +161,7 @@ void GoVisitor::handleTypeDecl(TSNode node, uint64_t parent_id)
 						name[0])) ?
 						1 :
 						0);
-			defineSymbol(name, id);
+			defineTypeSymbol(name, id);
 			if (is_interface) {
 				// Step 8: walk the interface body with
 				// current_interface_ set so handleInterfaceMethod

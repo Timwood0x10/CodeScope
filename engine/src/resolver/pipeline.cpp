@@ -1,6 +1,7 @@
 #include "pipeline.h"
 #include "fuzzy_resolver.h"
 #include "factors.h"
+#include "type_segment.h"
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -629,24 +630,17 @@ int64_t ResolverPipeline::run()
 					// `qn.find(impl + "::") == 0 || qn.find(impl +
 					// ".") == 0` — compare the prefix, then check
 					// the separator character.
-					const size_t impl_len =
-						impl_type.size();
 					for (const auto &c : *cands) {
 						if (c.entity_id ==
 						    ref.caller_id)
 							continue;
-						const std::string &qn =
-							c.qualified_name;
-						if (qn.size() <= impl_len ||
-						    qn.compare(0, impl_len,
-							       impl_type) != 0)
-							continue;
-						const char sep = qn[impl_len];
-						if (sep != '.' &&
-						    !(sep == ':' &&
-						      qn.size() >
-							      impl_len + 1 &&
-						      qn[impl_len + 1] == ':'))
+						// "pkg.Impl.method" puts the impl type
+						// behind the package, so the type has
+						// to match as a segment, not only at
+						// position 0.
+						if (!MatchesTypeSegment(
+							    c.qualified_name,
+							    impl_type))
 							continue;
 						// Hard language filter, identical to the
 						// main loop and the fast path. This

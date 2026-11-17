@@ -1,4 +1,5 @@
 #include "factors.h"
+#include "type_segment.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -92,6 +93,7 @@ ReceiverMatchContext buildReceiverMatchContext(const std::string &receiver_type)
 	}
 	ctx.prefix1 = canonical + "::";
 	ctx.prefix2 = canonical + ".";
+	ctx.type_name = canonical;
 	ctx.rtype_lower = canonical;
 	for (auto &ch : ctx.rtype_lower)
 		ch = static_cast<char>(
@@ -106,10 +108,10 @@ double factorReceiverTypeMatchPrecomp(const ReceiverMatchContext &ctx,
 	if (ctx.empty)
 		return 0.5; // neutral, no receiver evidence
 
-	// Strong match: qualified_name contains the receiver type as a prefix.
+	// Strong match: the receiver type is a segment of the qualified name —
+	// at position 0 for "Type::m"/"Type.m", after "pkg." for "pkg.Type.m".
 	if (!candidate_qname.empty()) {
-		if (candidate_qname.find(ctx.prefix1) == 0 ||
-		    candidate_qname.find(ctx.prefix2) == 0)
+		if (MatchesTypeSegment(candidate_qname, ctx.type_name))
 			return kScoreExactMatch;
 		if (candidate_qname.find(ctx.prefix1) != std::string::npos ||
 		    candidate_qname.find(ctx.prefix2) != std::string::npos)

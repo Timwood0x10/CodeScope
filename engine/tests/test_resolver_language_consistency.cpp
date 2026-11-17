@@ -98,17 +98,25 @@ std::string edgeKind(sqlite3 *db, const char *caller, const char *callee)
 std::string edgeKindInType(sqlite3 *db, const char *caller, const char *method,
 			   const char *owner)
 {
+	// The owner type must be a whole segment of the qualified name:
+	// "Owner.m" and "pkg.Owner.m" both match, "OtherOwner.m" does not.
 	const char *sql = "SELECT r.resolution_kind FROM relation r "
 			  "JOIN entity se ON se.id = r.source_id "
 			  "JOIN entity te ON te.id = r.target_id "
 			  "WHERE r.type = 1 AND se.name = ? AND te.name = ? "
-			  "AND te.qualified_name LIKE ? || '%' "
+			  "AND (te.qualified_name LIKE ? || '.%' "
+			  "     OR te.qualified_name LIKE ? || '::%' "
+			  "     OR te.qualified_name LIKE '%.' || ? || '.%' "
+			  "     OR te.qualified_name LIKE '%:' || ? || '::%') "
 			  "ORDER BY r.resolution_kind LIMIT 1";
 	sqlite3_stmt *st = nullptr;
 	CHECK(sqlite3_prepare_v2(db, sql, -1, &st, nullptr) == SQLITE_OK);
 	sqlite3_bind_text(st, 1, caller, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 2, method, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(st, 3, owner, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(st, 4, owner, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(st, 5, owner, -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(st, 6, owner, -1, SQLITE_TRANSIENT);
 	std::string out = "(no edge)";
 	if (sqlite3_step(st) == SQLITE_ROW) {
 		const char *s = reinterpret_cast<const char *>(

@@ -524,6 +524,9 @@ struct ReceiverMatchContext {
 	std::string prefix1; // receiver_type + "::"
 	std::string prefix2; // receiver_type + "."
 	std::string rtype_lower; // lowercased receiver_type
+	// Canonical receiver type. The strong match compares it as a type
+	// segment so a package-qualified "pkg.Type.method" still matches.
+	std::string type_name;
 	bool empty = false; // receiver_type was empty (neutral 0.5)
 };
 
