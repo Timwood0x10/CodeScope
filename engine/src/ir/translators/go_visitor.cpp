@@ -216,6 +216,23 @@ void GoVisitor::resetPerFileState()
 	current_package_.clear();
 }
 
+/// Node types that can spell a method receiver's type.
+///
+/// `generic_type` matters for a value receiver (`Box[T]`): without it the
+/// type stays empty and the method gets no qualified name, while the pointer
+/// form (`*Box[T]`) already reached the pointer_type branch.
+///
+/// @param type tree-sitter node type name.
+/// @return True when the node may carry the receiver type.
+static bool isReceiverTypeNode(const char *type)
+{
+	return strcmp(type, "pointer_type") == 0 ||
+	       strcmp(type, "type_identifier") == 0 ||
+	       strcmp(type, "generic_type") == 0 ||
+	       strcmp(type, "qualified_type") == 0 ||
+	       strcmp(type, "slice_type") == 0 || strcmp(type, "map_type") == 0;
+}
+
 /// Receiver type as it appears in a qualified name: `*Box[T]` → `Box`.
 ///
 /// The pointer and the type parameter are not part of the receiver's
@@ -343,18 +360,7 @@ void GoVisitor::handleMethodDecl(TSNode node, uint64_t parent_id)
 					const char *gt = ts_node_type(g);
 					if (strcmp(gt, "identifier") == 0) {
 						pname = nodeText(g);
-					} else if (strcmp(gt, "pointer_type") ==
-							   0 ||
-						   strcmp(gt,
-							  "type_identifier") ==
-							   0 ||
-						   strcmp(gt,
-							  "qualified_type") ==
-							   0 ||
-						   strcmp(gt, "slice_type") ==
-							   0 ||
-						   strcmp(gt, "map_type") ==
-							   0) {
+					} else if (isReceiverTypeNode(gt)) {
 						ptype = nodeText(g);
 						if (strcmp(gt,
 							   "pointer_type") ==
