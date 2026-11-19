@@ -6,39 +6,39 @@
 namespace resolver
 {
 
-/// True when `type` occurs in `qname` as a complete type segment followed by
-/// a member separator.
+/// True when `type` is the member's owning type in `qname`.
 ///
-/// Both "Type.member" and "pkg.Type.member" match type "Type";
-/// "OtherRegistry.member" does not. A prefix-only test missed the
-/// package-qualified form (the type is no longer at position 0), and a plain
-/// substring test accepted a longer type whose name ends with it.
+/// Only the segment immediately before the member counts:
+/// "pkg.Type.member" matches "Type" but not "pkg", and "Outer::Inner::m"
+/// matches "Inner" but not "Outer". Reading any segment as the type let a
+/// package name stand in for the receiver — "worker.Decoy.Run" matched
+/// "worker" — which attributed a dispatch edge to the wrong owner.
 ///
 /// @param qname Qualified name ("pkg.Type.member" or "Type::member").
 /// @param type Type name to look for ("Registry").
-/// @return True when the type starts a segment and is followed by '.' or
-///         '::'.
+/// @return True when `type` ends right before the member separator.
 inline bool MatchesTypeSegment(const std::string &qname,
 			       const std::string &type)
 {
-	if (type.empty() || qname.size() <= type.size())
+	if (type.empty())
 		return false;
-	size_t at = qname.find(type);
-	while (at != std::string::npos) {
-		const size_t after = at + type.size();
-		if (after >= qname.size())
-			return false;
-		const bool starts_segment = at == 0 || qname[at - 1] == '.' ||
-					    qname[at - 1] == ':';
-		const char sep = qname[after];
-		const bool followed = sep == '.' ||
-				      (sep == ':' && after + 1 < qname.size() &&
-				       qname[after + 1] == ':');
-		if (starts_segment && followed)
-			return true;
-		at = qname.find(type, at + 1);
+	// The member separator is the last '.' or '::'; '::' wins when it is
+	// closer to the end.
+	size_t member = qname.rfind('.');
+	size_t sep_len = 1;
+	const size_t colons = qname.rfind("::");
+	if (colons != std::string::npos &&
+	    (member == std::string::npos || colons > member)) {
+		member = colons;
+		sep_len = 2;
 	}
-	return false;
+	if (member == std::string::npos || member == 0 ||
+	    member + sep_len >= qname.size() || member < type.size())
+		return false;
+	const size_t begin = member - type.size();
+	if (qname.compare(begin, type.size(), type) != 0)
+		return false;
+	return begin == 0 || qname[begin - 1] == '.' || qname[begin - 1] == ':';
 }
 
 } // namespace resolver
