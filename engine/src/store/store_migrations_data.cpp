@@ -297,6 +297,180 @@ WHERE EXISTS (SELECT 1 FROM files
                 AND files.language IN ('c','cpp','c++'));
 )sql",
 	},
+	{
+		13,
+		"arch_module_and_edge",
+		// M2 §9.2–§9.3: physical module graph and structural edges.
+		// arch_module stores the physical module tree (one row per
+		// project × path). arch_edge stores structural dependency edges
+		// between modules, with resolution kind and confidence — not
+		// CALLS relations, which stay in the entity-level CSR.
+		// arch_module_member maps entities to their owning module for
+		// fast membership queries.
+		R"sql(
+CREATE TABLE IF NOT EXISTS arch_module (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    path TEXT NOT NULL,
+    parent_path TEXT DEFAULT '',
+    language TEXT DEFAULT '',
+    file_count INTEGER NOT NULL DEFAULT 0,
+    entity_count INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(project_id, path),
+    FOREIGN KEY (project_id) REFERENCES projects(id)
+);
+CREATE INDEX IF NOT EXISTS idx_arch_module_project
+    ON arch_module(project_id);
+CREATE INDEX IF NOT EXISTS idx_arch_module_parent
+    ON arch_module(project_id, parent_path);
+
+CREATE TABLE IF NOT EXISTS arch_module_member (
+    project_id INTEGER NOT NULL,
+    module_path TEXT NOT NULL,
+    entity_id INTEGER NOT NULL,
+    PRIMARY KEY (project_id, entity_id),
+    FOREIGN KEY (entity_id) REFERENCES entity(id)
+);
+CREATE INDEX IF NOT EXISTS idx_arch_mod_member_path
+    ON arch_module_member(project_id, module_path);
+
+CREATE TABLE IF NOT EXISTS arch_edge (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    src_module TEXT NOT NULL,
+    dst_module TEXT NOT NULL,
+    edge_kind TEXT NOT NULL DEFAULT 'import',
+    resolution_kind TEXT NOT NULL DEFAULT 'unresolved',
+    confidence REAL NOT NULL DEFAULT 0.0,
+    source_file TEXT NOT NULL DEFAULT '',
+    source_row INTEGER NOT NULL DEFAULT 0,
+    source_entity_id INTEGER,
+    FOREIGN KEY (project_id) REFERENCES projects(id),
+    FOREIGN KEY (source_entity_id) REFERENCES entity(id)
+);
+CREATE INDEX IF NOT EXISTS idx_arch_edge_src
+    ON arch_edge(project_id, src_module);
+CREATE INDEX IF NOT EXISTS idx_arch_edge_dst
+    ON arch_edge(project_id, dst_module);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_arch_edge
+    ON arch_edge(project_id, src_module, dst_module, edge_kind,
+                 source_file, source_row);
+)sql",
+	},
+	{
+		14,
+		"arch_entry_point_v2",
+		// M2 §9.4: the old entry_points table has a broken FK (references
+		// the non-existent `symbols` table) and no write path. The new
+		// arch_entry_point distinguishes entry kinds and records confidence
+		// and source evidence. The old table is left in place (deprecated)
+		// to avoid breaking legacy reads; new code reads only this table.
+		R"sql(
+CREATE TABLE IF NOT EXISTS arch_entry_point (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    entity_id INTEGER NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'heuristic',
+    confidence REAL NOT NULL DEFAULT 0.0,
+    source TEXT NOT NULL DEFAULT 'heuristic',
+    evidence_file TEXT NOT NULL DEFAULT '',
+    evidence_row INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(project_id, entity_id, kind),
+    FOREIGN KEY (entity_id) REFERENCES entity(id),
+    FOREIGN KEY (project_id) REFERENCES projects(id)
+);
+CREATE INDEX IF NOT EXISTS idx_arch_entry_project
+    ON arch_entry_point(project_id);
+CREATE INDEX IF NOT EXISTS idx_arch_entry_kind
+    ON arch_entry_point(project_id, kind);
+)sql",
+	},
+	{
+		15,
+		"constraint_and_layer_decl",
+		// M2 §9.1/§18.2.2-B: declared engineering constraints from
+		// .codescope/profile.yaml. constraint_decl stores one row per
+		// constraint id per digest version. arch_layer_decl stores the
+		// layer-to-path mapping. Both are keyed by constraint_digest so
+		// historical runs can reference the exact declaration set.
+		R"sql(
+CREATE TABLE IF NOT EXISTS constraint_decl (
+    project_id INTEGER NOT NULL,
+    constraint_digest TEXT NOT NULL,
+    constraint_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    params_json TEXT NOT NULL,
+    severity INTEGER NOT NULL DEFAULT 2,
+    evidence_level TEXT NOT NULL DEFAULT 'L1',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    declared_at TEXT NOT NULL,
+    PRIMARY KEY (project_id, constraint_digest, constraint_id),
+    FOREIGN KEY (project_id) REFERENCES projects(id)
+);
+CREATE INDEX IF NOT EXISTS idx_constraint_decl_digest
+    ON constraint_decl(project_id, constraint_digest);
+
+CREATE TABLE IF NOT EXISTS arch_layer_decl (
+    project_id INTEGER NOT NULL,
+    constraint_digest TEXT NOT NULL,
+    layer_name TEXT NOT NULL,
+    path_pattern TEXT NOT NULL,
+    PRIMARY KEY (project_id, constraint_digest, layer_name, path_pattern),
+    FOREIGN KEY (project_id) REFERENCES projects(id)
+);
+CREATE INDEX IF NOT EXISTS idx_arch_layer_decl_digest
+    ON arch_layer_decl(project_id, constraint_digest);
+)sql",
+	},
+	{
+		16,
+		"profile_run_input_drift_snapshot",
+		// M2 §18.5: Profile persistence tables. profile_run_input
+		// captures the immutable analysis inputs (normalized
+		// declarations, rule params, filter policy, file list).
+		// drift_record stores per-run drift observations.
+		// profile_snapshot stores per-dimension status projections.
+		// All three are produced by the main process only (not merged
+		// from workers).
+		R"sql(
+CREATE TABLE IF NOT EXISTS profile_run_input (
+    project_id INTEGER NOT NULL,
+    run_id TEXT NOT NULL,
+    index_generation TEXT NOT NULL,
+    input_json TEXT NOT NULL,
+    input_digest TEXT NOT NULL,
+    PRIMARY KEY (project_id, run_id),
+    FOREIGN KEY (run_id) REFERENCES verification_run(run_id)
+);
+
+CREATE TABLE IF NOT EXISTS drift_record (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    run_id TEXT NOT NULL,
+    drift_type TEXT NOT NULL,
+    severity INTEGER NOT NULL DEFAULT 1,
+    description TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    detected_at TEXT NOT NULL,
+    FOREIGN KEY (run_id) REFERENCES verification_run(run_id),
+    FOREIGN KEY (project_id) REFERENCES projects(id)
+);
+CREATE INDEX IF NOT EXISTS idx_drift_record_run
+    ON drift_record(project_id, run_id);
+
+CREATE TABLE IF NOT EXISTS profile_snapshot (
+    project_id INTEGER NOT NULL,
+    run_id TEXT NOT NULL,
+    dimension TEXT NOT NULL,
+    status TEXT NOT NULL,
+    metrics_json TEXT NOT NULL,
+    coverage_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (project_id, run_id, dimension),
+    FOREIGN KEY (run_id) REFERENCES verification_run(run_id)
+);
+)sql",
+	},
 };
 
 } // namespace
