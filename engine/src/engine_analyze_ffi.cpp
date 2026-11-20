@@ -14,6 +14,7 @@
 #include "util/json_writer.h"
 
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -45,17 +46,40 @@ char *engine_analyze_project(engine_t handle, uint64_t project_id,
 			return reject("engine not initialized");
 
 		const std::string view_str = view ? view : "";
-		// The scope is parsed by the project's JSON reader: a hand-rolled
-		// substring search ended at an escaped quote and silently queried a
-		// different path.
-		engine_views::Scope scope;
 		std::string scope_error;
+
+		// ── Views that don't need a scope object ───────────────
+		// These views accept optional run_id or no scope at all.
+		if (view_str == "robustness")
+			return engine_views::buildRobustness(ctx, project_id);
+		if (view_str == "gen_defects")
+			return engine_views::buildGenDefects(ctx, project_id);
+		if (view_str == "drift") {
+			std::string drift_run_id = run_id ? run_id : "";
+			return engine_views::buildDrift(ctx, project_id,
+							drift_run_id);
+		}
+		if (view_str == "drift_history") {
+			std::string hist_run_id = run_id ? run_id : "";
+			std::string drift_type;
+			if (!engine_views::parseDriftHistoryScope(
+				    scope_json, hist_run_id, drift_type,
+				    scope_error))
+				return reject(scope_error);
+			return engine_views::buildDriftHistory(
+				ctx, project_id, hist_run_id, drift_type);
+		}
+		if (view_str == "profile_history")
+			return engine_views::buildProfileHistory(
+				ctx, project_id);
+
+		// ── Views that require a scope object ─────────────────
+		// parseScope uses the project's JSON reader: a hand-rolled
+		// substring search ended at an escaped quote and silently
+		// queried a different path.
+		engine_views::Scope scope;
 		if (!engine_views::parseScope(scope_json, scope, scope_error))
 			return reject(scope_error);
-
-		// run_id is accepted but not used in M1; M2 pins change_context to
-		// one run instead of the latest one.
-		(void)run_id;
 
 		if (view_str == "symbol_context") {
 			if (scope.symbol.empty())
@@ -80,8 +104,28 @@ char *engine_analyze_project(engine_t handle, uint64_t project_id,
 			return engine_views::buildCompareSnapshots(
 				ctx, project_id, base_id, target_id);
 		}
+		if (view_str == "change_context") {
+			std::vector<std::string> files;
+			if (!engine_views::parseFileList(scope_json, files,
+							 scope_error))
+				return reject(scope_error);
+			return engine_views::buildChangeContext(
+				ctx, project_id, files);
+		}
+		if (view_str == "reverify") {
+			std::vector<std::string> files;
+			if (!engine_views::parseFileList(scope_json, files,
+							 scope_error))
+				return reject(scope_error);
+			return engine_views::buildReverify(ctx, project_id,
+							   files);
+		}
+
 		return reject("unsupported view; use symbol_context, "
-			      "module_context, or compare_snapshots");
+			      "module_context, compare_snapshots, "
+			      "change_context, robustness, gen_defects, "
+			      "reverify, drift, drift_history, "
+			      "or profile_history");
 	} catch (const std::exception &e) {
 		return reject(e.what());
 	} catch (...) {
