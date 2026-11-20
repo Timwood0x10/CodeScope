@@ -291,6 +291,7 @@ set(ENGINE_SOURCES
         src/verify/capability_drift.cpp
         src/verify/architecture_drift.cpp
     src/verify/drift_adapter.cpp
+    src/constraint/constraint_engine.cpp
     src/async_knowledge.cpp
     src/filter_policy.cpp
     src/filter_policy_detect.cpp
