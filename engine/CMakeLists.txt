@@ -296,6 +296,7 @@ set(ENGINE_SOURCES
     src/arch/entry_point_builder.cpp
     src/arch/robustness.cpp
     src/arch/gen_defects.cpp
+    src/arch/incremental_verify.cpp
     src/async_knowledge.cpp
     src/filter_policy.cpp
     src/filter_policy_detect.cpp
