@@ -79,6 +79,12 @@ struct EvidenceRecord {
 	double confidence = 0.0;
 	std::string verifier_name;
 	std::string detail;
+	/// Short machine-readable tag explaining the evidence basis:
+	/// "declared_structural" (declared layers + structural edges),
+	/// "legacy_heuristic" (naming/path heuristics + CALLS relations),
+	/// "backend_not_ready", "layer_not_found", etc.
+	/// Empty for verifiers that have not been upgraded (§9.5 M2-6).
+	std::string verdict_basis;
 	std::vector<std::pair<int, int64_t>> facts;
 };
 
