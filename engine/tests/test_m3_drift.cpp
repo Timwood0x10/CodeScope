@@ -23,7 +23,7 @@ static char kDbPath[160];
 static void initDbPath()
 {
 	std::snprintf(kDbPath, sizeof(kDbPath),
-		     "/tmp/codescope_test_m3_drift_%d.db", int(getpid()));
+		      "/tmp/codescope_test_m3_drift_%d.db", int(getpid()));
 }
 
 static void removeDbFiles()
@@ -47,39 +47,39 @@ static bool execSql(store::GraphStore &store, const char *sql)
 }
 
 static void insertModule(store::GraphStore &store, uint64_t project_id,
-			const std::string &path)
+			 const std::string &path)
 {
-	std::string sql = std::string(
-		"INSERT OR IGNORE INTO arch_module "
-		"(project_id, path, parent_path, language, "
-		"file_count, entity_count) VALUES (") +
+	std::string sql =
+		std::string("INSERT OR IGNORE INTO arch_module "
+			    "(project_id, path, parent_path, language, "
+			    "file_count, entity_count) VALUES (") +
 		std::to_string(project_id) + ",'" + path + "','','cpp',1,1)";
 	execSql(store, sql.c_str());
 }
 
 static void insertEdge(store::GraphStore &store, uint64_t project_id,
-		      const std::string &src, const std::string &dst)
+		       const std::string &src, const std::string &dst)
 {
-	std::string sql = std::string(
-		"INSERT OR IGNORE INTO arch_edge "
-		"(project_id, src_module, dst_module, edge_kind, "
-		"resolution_kind, confidence, source_file, "
-		"source_row) VALUES (") +
+	std::string sql =
+		std::string("INSERT OR IGNORE INTO arch_edge "
+			    "(project_id, src_module, dst_module, edge_kind, "
+			    "resolution_kind, confidence, source_file, "
+			    "source_row) VALUES (") +
 		std::to_string(project_id) + ",'" + src + "','" + dst +
 		"','import','internal',1.0,'test.cpp',1)";
 	execSql(store, sql.c_str());
 }
 
 static void insertLayerDecl(store::GraphStore &store, uint64_t project_id,
-			   const std::string &layer_name,
-			   const std::string &path_pattern)
+			    const std::string &layer_name,
+			    const std::string &path_pattern)
 {
-	std::string sql = std::string(
-		"INSERT OR IGNORE INTO arch_layer_decl "
-		"(project_id, constraint_digest, layer_name, "
-		"path_pattern) VALUES (") +
-		std::to_string(project_id) + ",'test_digest','" +
-		layer_name + "','" + path_pattern + "')";
+	std::string sql =
+		std::string("INSERT OR IGNORE INTO arch_layer_decl "
+			    "(project_id, constraint_digest, layer_name, "
+			    "path_pattern) VALUES (") +
+		std::to_string(project_id) + ",'test_digest','" + layer_name +
+		"','" + path_pattern + "')";
 	execSql(store, sql.c_str());
 }
 
@@ -90,13 +90,12 @@ static int countDriftRecords(store::GraphStore &store, uint64_t project_id,
 	const char *sql = "SELECT COUNT(*) FROM drift_record "
 			  "WHERE project_id=? AND run_id=? AND drift_type=?";
 	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(store.handle(), sql, -1, &stmt,
-			       nullptr) != SQLITE_OK)
+	if (sqlite3_prepare_v2(store.handle(), sql, -1, &stmt, nullptr) !=
+	    SQLITE_OK)
 		return -1;
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 2, run_id.c_str(), -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text(stmt, 3, drift_type.c_str(), -1,
-			  SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 3, drift_type.c_str(), -1, SQLITE_TRANSIENT);
 	int count = 0;
 	if (sqlite3_step(stmt) == SQLITE_ROW)
 		count = static_cast<int>(sqlite3_column_int64(stmt, 0));
@@ -111,8 +110,7 @@ static int countDriftRecords(store::GraphStore &store, uint64_t project_id,
 // dependency direction violation.
 static void testArchitectureDriftDeclared()
 {
-	std::fprintf(stderr,
-		     "  [test] architecture drift (declared)...\n");
+	std::fprintf(stderr, "  [test] architecture drift (declared)...\n");
 
 	store::GraphStore store;
 	CHECK(store.open(kDbPath));
@@ -137,11 +135,9 @@ static void testArchitectureDriftDeclared()
 	// Reverse edge: storage -> api (VIOLATION).
 	insertEdge(store, project_id, "src/storage", "src/api");
 
-	auto drifts = verify::detectArchitectureDriftAdapted(store,
-							     project_id);
+	auto drifts = verify::detectArchitectureDriftAdapted(store, project_id);
 
-	CHECK_MSG(drifts.size() == 1,
-		  "should find exactly 1 violation");
+	CHECK_MSG(drifts.size() == 1, "should find exactly 1 violation");
 	if (!drifts.empty()) {
 		CHECK_MSG(drifts[0].type == "ArchitectureDrift",
 			  "should be ArchitectureDrift");
@@ -159,8 +155,7 @@ static void testArchitectureDriftDeclared()
 // classification based on naming conventions.
 static void testArchitectureDriftFallback()
 {
-	std::fprintf(stderr,
-		     "  [test] architecture drift (fallback)...\n");
+	std::fprintf(stderr, "  [test] architecture drift (fallback)...\n");
 
 	store::GraphStore store;
 	CHECK(store.open(kDbPath));
@@ -175,11 +170,9 @@ static void testArchitectureDriftFallback()
 	// The heuristic uses entity names + file paths via CALLS edges.
 	// We don't test specific violations here, just that the
 	// function returns without error.
-	auto drifts = verify::detectArchitectureDriftAdapted(store,
-							     project_id);
+	auto drifts = verify::detectArchitectureDriftAdapted(store, project_id);
 	// With no entities/relations, should return empty.
-	CHECK_MSG(drifts.empty(),
-		  "should return empty with no data");
+	CHECK_MSG(drifts.empty(), "should return empty with no data");
 
 	store.close();
 }
@@ -208,18 +201,16 @@ static void testDriftPersistence()
 	insertEdge(store, project_id, "src/storage", "src/api");
 
 	std::string run_id = "test-run-1";
-	auto result = verify::detectAndPersistDrift(store, project_id,
-						    run_id);
+	auto result = verify::detectAndPersistDrift(store, project_id, run_id);
 
 	CHECK_MSG(result.error.empty(), "should not error");
 	CHECK_MSG(result.architecture.size() == 1,
 		  "should find 1 architecture drift");
 
 	// Verify records were written.
-	int arch_records = countDriftRecords(store, project_id, run_id,
-					     "architecture");
-	CHECK_MSG(arch_records == 1,
-		  "should have 1 architecture drift_record");
+	int arch_records =
+		countDriftRecords(store, project_id, run_id, "architecture");
+	CHECK_MSG(arch_records == 1, "should have 1 architecture drift_record");
 
 	store.close();
 }
@@ -251,14 +242,14 @@ static void testDriftIdempotency()
 
 	// First run.
 	verify::detectAndPersistDrift(store, project_id, run_id);
-	int first_count = countDriftRecords(store, project_id, run_id,
-					    "architecture");
+	int first_count =
+		countDriftRecords(store, project_id, run_id, "architecture");
 	CHECK_MSG(first_count == 1, "first run should write 1 record");
 
 	// Second run — should clear and rewrite, not duplicate.
 	verify::detectAndPersistDrift(store, project_id, run_id);
-	int second_count = countDriftRecords(store, project_id, run_id,
-					     "architecture");
+	int second_count =
+		countDriftRecords(store, project_id, run_id, "architecture");
 	CHECK_MSG(second_count == 1,
 		  "second run should still have 1 record (not 2)");
 
@@ -288,14 +279,12 @@ static void testNoDrift()
 	insertEdge(store, project_id, "src/api", "src/service");
 
 	std::string run_id = "test-run-3";
-	auto result = verify::detectAndPersistDrift(store, project_id,
-						    run_id);
+	auto result = verify::detectAndPersistDrift(store, project_id, run_id);
 
 	CHECK_MSG(result.error.empty(), "should not error");
 	CHECK_MSG(result.architecture.empty(),
 		  "should find no architecture drift");
-	CHECK_MSG(result.records_written == 0,
-		  "should write 0 records");
+	CHECK_MSG(result.records_written == 0, "should write 0 records");
 
 	store.close();
 }

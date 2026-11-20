@@ -79,8 +79,7 @@ char *buildCompareSnapshots(EngineContext *ctx, uint64_t project_id,
 /// @param[out] files  Extracted file paths.
 /// @param[out] error  Set when the input is missing the files array.
 /// @return false when files is absent or not an array.
-bool parseFileList(const char *scope_json,
-		   std::vector<std::string> &files,
+bool parseFileList(const char *scope_json, std::vector<std::string> &files,
 		   std::string &error);
 
 /// Build the `change_context` payload (development_plan §18.7.2, §18.6).
@@ -161,10 +160,8 @@ char *buildDrift(EngineContext *ctx, uint64_t project_id,
 /// @param[out] drift_type  Extracted drift_type filter (empty = all).
 /// @param[out] error  Set when the input is not a valid JSON object.
 /// @return false only on parse error; empty scope is valid (no filter).
-bool parseDriftHistoryScope(const char *scope_json,
-			    std::string &run_id,
-			    std::string &drift_type,
-			    std::string &error);
+bool parseDriftHistoryScope(const char *scope_json, std::string &run_id,
+			    std::string &drift_type, std::string &error);
 
 /// Build the `drift_history` payload (§18.5, §12.4 M3-5).
 ///

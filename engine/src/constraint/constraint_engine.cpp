@@ -54,8 +54,7 @@ struct YamlLine {
 };
 
 /// Read a file and split into indented lines, skipping blank/comment lines.
-std::vector<YamlLine> readYamlLines(const std::string &path,
-				    std::string &error)
+std::vector<YamlLine> readYamlLines(const std::string &path, std::string &error)
 {
 	std::vector<YamlLine> result;
 	std::ifstream file(path);
@@ -76,8 +75,7 @@ std::vector<YamlLine> readYamlLines(const std::string &path,
 		// but we just count them as 1 space for robustness).
 		int indent = 0;
 		size_t i = 0;
-		while (i < line.size() &&
-		       (line[i] == ' ' || line[i] == '\t')) {
+		while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) {
 			if (line[i] == '\t')
 				indent += 1;
 			else
@@ -119,7 +117,7 @@ std::vector<YamlLine> readYamlLines(const std::string &path,
 			content.pop_back();
 		if (content.empty())
 			continue;
-		result.push_back({indent, content, line_num});
+		result.push_back({ indent, content, line_num });
 	}
 	return result;
 }
@@ -189,7 +187,8 @@ util::JsonValue parseScalar(const std::string &s)
 		v.type = util::JsonValue::Type::String;
 		v.string_value = s;
 		// Re-check single-char number.
-		if (s.size() == 1 && std::isdigit(static_cast<unsigned char>(s[0]))) {
+		if (s.size() == 1 &&
+		    std::isdigit(static_cast<unsigned char>(s[0]))) {
 			v.type = util::JsonValue::Type::Number;
 			v.number_value = static_cast<double>(s[0] - '0');
 		}
@@ -207,8 +206,8 @@ struct YamlParseResult {
 	bool ok = false;
 };
 
-YamlParseResult parseYamlBlock(const std::vector<YamlLine> &lines,
-			       size_t start, int parent_indent)
+YamlParseResult parseYamlBlock(const std::vector<YamlLine> &lines, size_t start,
+			       int parent_indent)
 {
 	YamlParseResult result;
 	if (start >= lines.size()) {
@@ -224,16 +223,14 @@ YamlParseResult parseYamlBlock(const std::vector<YamlLine> &lines,
 	}
 	size_t i = start;
 	// Detect: is this a sequence or a mapping?
-	bool is_sequence = (!lines[i].content.empty() &&
-			    lines[i].content[0] == '-');
+	bool is_sequence =
+		(!lines[i].content.empty() && lines[i].content[0] == '-');
 	if (is_sequence) {
 		result.value.type = util::JsonValue::Type::Array;
-		while (i < lines.size() &&
-		       lines[i].indent == my_indent &&
+		while (i < lines.size() && lines[i].indent == my_indent &&
 		       !lines[i].content.empty() &&
 		       lines[i].content[0] == '-') {
-			std::string item_content =
-				lines[i].content.substr(1);
+			std::string item_content = lines[i].content.substr(1);
 			// Trim leading whitespace.
 			while (!item_content.empty() &&
 			       (item_content[0] == ' ' ||
@@ -242,8 +239,7 @@ YamlParseResult parseYamlBlock(const std::vector<YamlLine> &lines,
 			if (item_content.empty()) {
 				// Multi-line item: parse the nested block.
 				YamlParseResult sub =
-					parseYamlBlock(lines, i + 1,
-						       my_indent);
+					parseYamlBlock(lines, i + 1, my_indent);
 				if (!sub.ok) {
 					result.error = sub.error;
 					return result;
@@ -260,8 +256,8 @@ YamlParseResult parseYamlBlock(const std::vector<YamlLine> &lines,
 					// object with this key and any
 					// following keys at the same indent.
 					util::JsonValue obj;
-					obj.type = util::JsonValue::Type::
-						Object;
+					obj.type =
+						util::JsonValue::Type::Object;
 					std::string key =
 						item_content.substr(0, colon);
 					std::string val_str =
@@ -275,10 +271,8 @@ YamlParseResult parseYamlBlock(const std::vector<YamlLine> &lines,
 						// Nested block follows.
 						YamlParseResult sub =
 							parseYamlBlock(
-								lines,
-								i + 1,
-								my_indent +
-									2);
+								lines, i + 1,
+								my_indent + 2);
 						if (!sub.ok) {
 							result.error =
 								sub.error;
@@ -286,8 +280,7 @@ YamlParseResult parseYamlBlock(const std::vector<YamlLine> &lines,
 						}
 						obj.object_keys.push_back(key);
 						obj.object_values.push_back(
-							std::move(
-								sub.value));
+							std::move(sub.value));
 						i = sub.next_index;
 					} else {
 						obj.object_keys.push_back(key);
@@ -297,8 +290,7 @@ YamlParseResult parseYamlBlock(const std::vector<YamlLine> &lines,
 					}
 					// Consume any further keys at the
 					// indent level of the item content.
-					int item_content_indent =
-						my_indent + 2;
+					int item_content_indent = my_indent + 2;
 					while (i < lines.size() &&
 					       lines[i].indent >=
 						       item_content_indent &&
@@ -314,35 +306,28 @@ YamlParseResult parseYamlBlock(const std::vector<YamlLine> &lines,
 						std::string v2 =
 							c.substr(c2 + 2);
 						if (v2.empty()) {
-							YamlParseResult
-								sub2 =
-									parseYamlBlock(
-										lines,
-										i +
-											1,
-										lines[i]
-											.indent);
+							YamlParseResult sub2 =
+								parseYamlBlock(
+									lines,
+									i + 1,
+									lines[i].indent);
 							if (!sub2.ok) {
 								result.error =
-									sub2
-										.error;
+									sub2.error;
 								return result;
 							}
 							obj.object_keys
 								.push_back(k2);
-							obj.object_values
-								.push_back(
-									std::move(
-										sub2
-											.value));
+							obj.object_values.push_back(
+								std::move(
+									sub2.value));
 							i = sub2.next_index;
 						} else {
 							obj.object_keys
 								.push_back(k2);
-							obj.object_values
-								.push_back(
-									parseScalar(
-										v2));
+							obj.object_values.push_back(
+								parseScalar(
+									v2));
 							++i;
 						}
 					}
@@ -358,8 +343,7 @@ YamlParseResult parseYamlBlock(const std::vector<YamlLine> &lines,
 	} else {
 		// Mapping.
 		result.value.type = util::JsonValue::Type::Object;
-		while (i < lines.size() &&
-		       lines[i].indent == my_indent) {
+		while (i < lines.size() && lines[i].indent == my_indent) {
 			const std::string &content = lines[i].content;
 			if (!content.empty() && content[0] == '-') {
 				// A sequence at the same indent as a mapping:
@@ -381,8 +365,8 @@ YamlParseResult parseYamlBlock(const std::vector<YamlLine> &lines,
 					return result;
 				}
 				std::string key = content.substr(0, colon);
-				YamlParseResult sub = parseYamlBlock(
-					lines, i + 1, my_indent);
+				YamlParseResult sub =
+					parseYamlBlock(lines, i + 1, my_indent);
 				if (!sub.ok) {
 					result.error = sub.error;
 					return result;
@@ -393,8 +377,7 @@ YamlParseResult parseYamlBlock(const std::vector<YamlLine> &lines,
 				i = sub.next_index;
 			} else {
 				std::string key = content.substr(0, colon);
-				std::string val_str =
-					content.substr(colon + 2);
+				std::string val_str = content.substr(colon + 2);
 				if (val_str.empty()) {
 					// Nested block follows.
 					YamlParseResult sub = parseYamlBlock(
@@ -465,8 +448,7 @@ std::string findConstraintFile(const std::string &project_root)
 bool parseConstraintFile(const std::string &path, util::JsonValue &out,
 			 std::string &error)
 {
-	if (path.size() >= 5 &&
-	    path.substr(path.size() - 5) == ".json") {
+	if (path.size() >= 5 && path.substr(path.size() - 5) == ".json") {
 		std::ifstream file(path);
 		if (!file.is_open()) {
 			error = "cannot open file: " + path;
@@ -493,8 +475,7 @@ bool isValidPathPattern(const std::string &pattern, std::string &error)
 		return false;
 	}
 	if (pattern.find("..") != std::string::npos) {
-		error =
-			"path pattern must not contain '..': " + pattern;
+		error = "path pattern must not contain '..': " + pattern;
 		return false;
 	}
 	return true;
@@ -509,8 +490,7 @@ bool isValidEvidenceLevel(const std::string &level)
 /// Extract constraints and layers from the parsed YAML/JSON tree.
 bool extractDeclarations(const util::JsonValue &root,
 			 std::vector<DeclaredConstraint> &constraints,
-			 std::vector<DeclaredLayer> &layers,
-			 std::string &error)
+			 std::vector<DeclaredLayer> &layers, std::string &error)
 {
 	if (root.type != util::JsonValue::Type::Object) {
 		error = "constraint file root must be an object";
@@ -524,71 +504,64 @@ bool extractDeclarations(const util::JsonValue &root,
 		if (layer_list &&
 		    layer_list->type == util::JsonValue::Type::Array) {
 			for (const auto &item : layer_list->array_value) {
-				if (item.type != util::JsonValue::Type::
-					Object) {
+				if (item.type !=
+				    util::JsonValue::Type::Object) {
 					error = "each layer must be an object";
 					return false;
 				}
-				const util::JsonValue *name =
-					item.find("name");
+				const util::JsonValue *name = item.find("name");
 				const util::JsonValue *paths =
 					item.find("paths");
-				if (!name || name->type !=
-					util::JsonValue::Type::String) {
+				if (!name ||
+				    name->type !=
+					    util::JsonValue::Type::String) {
 					error = "layer missing 'name' field";
 					return false;
 				}
 				if (!paths ||
 				    paths->type !=
-					util::JsonValue::Type::Array) {
-					error =
-						"layer missing 'paths' array";
+					    util::JsonValue::Type::Array) {
+					error = "layer missing 'paths' array";
 					return false;
 				}
 				for (const auto &path_val :
 				     paths->array_value) {
 					if (path_val.type !=
 					    util::JsonValue::Type::String) {
-						error =
-							"layer path must be a string";
+						error = "layer path must be a string";
 						return false;
 					}
 					if (!isValidPathPattern(
 						    path_val.string_value,
 						    error))
 						return false;
-					layers.push_back({name->string_value,
-							  path_val.string_value});
+					layers.push_back(
+						{ name->string_value,
+						  path_val.string_value });
 				}
 			}
 		}
 		// Parse architecture.rules.
 		const util::JsonValue *rules = arch->find("rules");
-		if (rules &&
-		    rules->type == util::JsonValue::Type::Array) {
+		if (rules && rules->type == util::JsonValue::Type::Array) {
 			for (const auto &rule : rules->array_value) {
-				if (rule.type != util::JsonValue::Type::
-					Object) {
-					error =
-						"each architecture rule must be an object";
+				if (rule.type !=
+				    util::JsonValue::Type::Object) {
+					error = "each architecture rule must be an object";
 					return false;
 				}
 				DeclaredConstraint dc;
-				const util::JsonValue *id =
-					rule.find("id");
-				const util::JsonValue *type =
-					rule.find("type");
-				if (!id || id->type !=
-					util::JsonValue::Type::String) {
-					error =
-						"architecture rule missing 'id'";
+				const util::JsonValue *id = rule.find("id");
+				const util::JsonValue *type = rule.find("type");
+				if (!id ||
+				    id->type != util::JsonValue::Type::String) {
+					error = "architecture rule missing 'id'";
 					return false;
 				}
 				if (!type ||
 				    type->type !=
-					util::JsonValue::Type::String) {
-					error =
-						"architecture rule missing 'type'";
+					    util::JsonValue::Type::String) {
+					error = "architecture rule missing 'type'";
 					return false;
 				}
 				dc.id = id->string_value;
@@ -596,8 +569,8 @@ bool extractDeclarations(const util::JsonValue &root,
 				// Build params_json from remaining fields.
 				util::JsonWriter w;
 				w.beginObject();
-				for (size_t k = 0;
-				     k < rule.object_keys.size(); ++k) {
+				for (size_t k = 0; k < rule.object_keys.size();
+				     ++k) {
 					const std::string &key =
 						rule.object_keys[k];
 					if (key == "id" || key == "type" ||
@@ -612,12 +585,10 @@ bool extractDeclarations(const util::JsonValue &root,
 					    util::JsonValue::Type::String)
 						w.value(v.string_value);
 					else if (v.type ==
-						 util::JsonValue::Type::
-							 Number)
+						 util::JsonValue::Type::Number)
 						w.value(v.number_value);
 					else if (v.type ==
-						 util::JsonValue::Type::
-							 Bool)
+						 util::JsonValue::Type::Bool)
 						w.value(v.bool_value);
 					else
 						w.nullValue();
@@ -629,17 +600,14 @@ bool extractDeclarations(const util::JsonValue &root,
 					rule.find("severity");
 				if (sev &&
 				    sev->type ==
-					util::JsonValue::Type::String) {
+					    util::JsonValue::Type::String) {
 					if (sev->string_value == "info")
 						dc.severity = 0;
-					else if (sev->string_value ==
-						 "low")
+					else if (sev->string_value == "low")
 						dc.severity = 1;
-					else if (sev->string_value ==
-						 "medium")
+					else if (sev->string_value == "medium")
 						dc.severity = 2;
-					else if (sev->string_value ==
-						 "high")
+					else if (sev->string_value == "high")
 						dc.severity = 3;
 					else if (sev->string_value ==
 						 "critical")
@@ -648,23 +616,19 @@ bool extractDeclarations(const util::JsonValue &root,
 				const util::JsonValue *el =
 					rule.find("evidence_level");
 				if (el &&
-				    el->type ==
-					util::JsonValue::Type::String) {
+				    el->type == util::JsonValue::Type::String) {
 					if (!isValidEvidenceLevel(
 						    el->string_value)) {
-						error =
-							"invalid evidence_level: " +
+						error = "invalid evidence_level: " +
 							el->string_value;
 						return false;
 					}
-					dc.evidence_level =
-						el->string_value;
+					dc.evidence_level = el->string_value;
 				}
 				const util::JsonValue *en =
 					rule.find("enabled");
 				if (en &&
-				    en->type ==
-					util::JsonValue::Type::Bool)
+				    en->type == util::JsonValue::Type::Bool)
 					dc.enabled = en->bool_value;
 				constraints.push_back(std::move(dc));
 			}
@@ -673,50 +637,40 @@ bool extractDeclarations(const util::JsonValue &root,
 
 	// Parse metrics constraints.
 	const util::JsonValue *metrics = root.find("metrics");
-	if (metrics &&
-	    metrics->type == util::JsonValue::Type::Array) {
+	if (metrics && metrics->type == util::JsonValue::Type::Array) {
 		for (const auto &m : metrics->array_value) {
-			if (m.type !=
-			    util::JsonValue::Type::Object) {
-				error =
-					"each metric must be an object";
+			if (m.type != util::JsonValue::Type::Object) {
+				error = "each metric must be an object";
 				return false;
 			}
 			DeclaredConstraint dc;
 			const util::JsonValue *id = m.find("id");
-			if (!id || id->type !=
-				util::JsonValue::Type::String) {
+			if (!id || id->type != util::JsonValue::Type::String) {
 				error = "metric missing 'id'";
 				return false;
 			}
 			dc.id = id->string_value;
 			dc.type = "size_check";
 			const util::JsonValue *rule_field = m.find("rule");
-			const util::JsonValue *metric_field =
-				m.find("metric");
+			const util::JsonValue *metric_field = m.find("metric");
 			const util::JsonValue *threshold_field =
 				m.find("threshold");
 			if (!metric_field ||
 			    metric_field->type !=
-				util::JsonValue::Type::String) {
-				error =
-					"metric missing 'metric' field";
+				    util::JsonValue::Type::String) {
+				error = "metric missing 'metric' field";
 				return false;
 			}
 			if (!threshold_field) {
-				error =
-					"metric missing 'threshold' field";
+				error = "metric missing 'threshold' field";
 				return false;
 			}
 			util::JsonWriter w;
 			w.beginObject();
 			if (rule_field &&
-			    rule_field->type ==
-				util::JsonValue::Type::String)
-				w.key("rule").value(
-					rule_field->string_value);
-			w.key("metric").value(
-				metric_field->string_value);
+			    rule_field->type == util::JsonValue::Type::String)
+				w.key("rule").value(rule_field->string_value);
+			w.key("metric").value(metric_field->string_value);
 			w.key("threshold");
 			if (threshold_field->type ==
 			    util::JsonValue::Type::Number)
@@ -726,9 +680,7 @@ bool extractDeclarations(const util::JsonValue &root,
 			w.endObject();
 			dc.params_json = w.str();
 			const util::JsonValue *sev = m.find("severity");
-			if (sev &&
-			    sev->type ==
-				util::JsonValue::Type::String) {
+			if (sev && sev->type == util::JsonValue::Type::String) {
 				if (sev->string_value == "info")
 					dc.severity = 0;
 				else if (sev->string_value == "low")
@@ -740,15 +692,10 @@ bool extractDeclarations(const util::JsonValue &root,
 				else if (sev->string_value == "critical")
 					dc.severity = 4;
 			}
-			const util::JsonValue *el =
-				m.find("evidence_level");
-			if (el &&
-			    el->type ==
-				util::JsonValue::Type::String) {
-				if (!isValidEvidenceLevel(
-					    el->string_value)) {
-					error =
-						"invalid evidence_level: " +
+			const util::JsonValue *el = m.find("evidence_level");
+			if (el && el->type == util::JsonValue::Type::String) {
+				if (!isValidEvidenceLevel(el->string_value)) {
+					error = "invalid evidence_level: " +
 						el->string_value;
 					return false;
 				}
@@ -762,8 +709,7 @@ bool extractDeclarations(const util::JsonValue &root,
 	for (size_t a = 0; a < constraints.size(); ++a) {
 		for (size_t b = a + 1; b < constraints.size(); ++b) {
 			if (constraints[a].id == constraints[b].id) {
-				error =
-					"duplicate constraint id: " +
+				error = "duplicate constraint id: " +
 					constraints[a].id;
 				return false;
 			}
@@ -778,18 +724,15 @@ bool persistConstraints(store::GraphStore &store, uint64_t project_id,
 			const std::string &digest,
 			const std::vector<DeclaredConstraint> &constraints,
 			const std::vector<DeclaredLayer> &layers,
-			const std::string &declared_at,
-			std::string &error)
+			const std::string &declared_at, std::string &error)
 {
 	// Clear old declarations for this digest (idempotent reload).
 	std::string del_constraints =
 		"DELETE FROM constraint_decl WHERE project_id = " +
-		std::to_string(project_id) +
-		" AND constraint_digest = ?";
+		std::to_string(project_id) + " AND constraint_digest = ?";
 	std::string del_layers =
 		"DELETE FROM arch_layer_decl WHERE project_id = " +
-		std::to_string(project_id) +
-		" AND constraint_digest = ?";
+		std::to_string(project_id) + " AND constraint_digest = ?";
 
 	sqlite3 *db = store.handle();
 	if (!db) {
@@ -799,8 +742,7 @@ bool persistConstraints(store::GraphStore &store, uint64_t project_id,
 	}
 
 	// Use a transaction for atomicity.
-	if (sqlite3_exec(db, "BEGIN", nullptr, nullptr, nullptr) !=
-	    SQLITE_OK) {
+	if (sqlite3_exec(db, "BEGIN", nullptr, nullptr, nullptr) != SQLITE_OK) {
 		error = std::string("BEGIN failed: ") + sqlite3_errmsg(db);
 		return false;
 	}
@@ -812,8 +754,8 @@ bool persistConstraints(store::GraphStore &store, uint64_t project_id,
 	// Delete old.
 	{
 		sqlite3_stmt *stmt = nullptr;
-		if (sqlite3_prepare_v2(db, del_constraints.c_str(), -1,
-				       &stmt, nullptr) != SQLITE_OK) {
+		if (sqlite3_prepare_v2(db, del_constraints.c_str(), -1, &stmt,
+				       nullptr) != SQLITE_OK) {
 			error = "prepare del_constraints failed: " +
 				std::string(sqlite3_errmsg(db));
 			cleanup();
@@ -853,12 +795,11 @@ bool persistConstraints(store::GraphStore &store, uint64_t project_id,
 
 	// Insert constraints.
 	for (const auto &dc : constraints) {
-		const char *sql =
-			"INSERT INTO constraint_decl "
-			"(project_id, constraint_digest, "
-			"constraint_id, type, params_json, "
-			"severity, evidence_level, enabled, "
-			"declared_at) VALUES (?,?,?,?,?,?,?,?,?)";
+		const char *sql = "INSERT INTO constraint_decl "
+				  "(project_id, constraint_digest, "
+				  "constraint_id, type, params_json, "
+				  "severity, evidence_level, enabled, "
+				  "declared_at) VALUES (?,?,?,?,?,?,?,?,?)";
 		sqlite3_stmt *stmt = nullptr;
 		if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) !=
 		    SQLITE_OK) {
@@ -867,12 +808,10 @@ bool persistConstraints(store::GraphStore &store, uint64_t project_id,
 			cleanup();
 			return false;
 		}
-		sqlite3_bind_int64(stmt, 1,
-				   static_cast<int64_t>(project_id));
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 		sqlite3_bind_text(stmt, 2, digest.c_str(), -1,
 				  SQLITE_TRANSIENT);
-		sqlite3_bind_text(stmt, 3, dc.id.c_str(), -1,
-				  SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 3, dc.id.c_str(), -1, SQLITE_TRANSIENT);
 		sqlite3_bind_text(stmt, 4, dc.type.c_str(), -1,
 				  SQLITE_TRANSIENT);
 		sqlite3_bind_text(stmt, 5, dc.params_json.c_str(), -1,
@@ -895,11 +834,10 @@ bool persistConstraints(store::GraphStore &store, uint64_t project_id,
 
 	// Insert layers.
 	for (const auto &layer : layers) {
-		const char *sql =
-			"INSERT INTO arch_layer_decl "
-			"(project_id, constraint_digest, "
-			"layer_name, path_pattern) "
-			"VALUES (?,?,?,?)";
+		const char *sql = "INSERT INTO arch_layer_decl "
+				  "(project_id, constraint_digest, "
+				  "layer_name, path_pattern) "
+				  "VALUES (?,?,?,?)";
 		sqlite3_stmt *stmt = nullptr;
 		if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) !=
 		    SQLITE_OK) {
@@ -908,8 +846,7 @@ bool persistConstraints(store::GraphStore &store, uint64_t project_id,
 			cleanup();
 			return false;
 		}
-		sqlite3_bind_int64(stmt, 1,
-				   static_cast<int64_t>(project_id));
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 		sqlite3_bind_text(stmt, 2, digest.c_str(), -1,
 				  SQLITE_TRANSIENT);
 		sqlite3_bind_text(stmt, 3, layer.layer_name.c_str(), -1,
@@ -928,8 +865,7 @@ bool persistConstraints(store::GraphStore &store, uint64_t project_id,
 
 	if (sqlite3_exec(db, "COMMIT", nullptr, nullptr, nullptr) !=
 	    SQLITE_OK) {
-		error = std::string("COMMIT failed: ") +
-			sqlite3_errmsg(db);
+		error = std::string("COMMIT failed: ") + sqlite3_errmsg(db);
 		cleanup();
 		return false;
 	}
@@ -944,8 +880,7 @@ std::string currentTimestamp()
 	if (!gmtime_r(&now, &tm_buf))
 		return "1970-01-01T00:00:00Z";
 	char buf[32];
-	std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ",
-		      &tm_buf);
+	std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm_buf);
 	return buf;
 }
 
@@ -974,22 +909,18 @@ ConstraintLoadResult loadConstraints(store::GraphStore &store,
 	std::vector<DeclaredConstraint> constraints;
 	std::vector<DeclaredLayer> layers;
 	std::string extract_error;
-	if (!extractDeclarations(root, constraints, layers,
-				 extract_error)) {
-		result.error = "constraint validation error: " +
-			       extract_error;
+	if (!extractDeclarations(root, constraints, layers, extract_error)) {
+		result.error = "constraint validation error: " + extract_error;
 		return result;
 	}
 
 	result.constraints = constraints;
 	result.layers = layers;
-	result.constraint_digest =
-		computeConstraintDigest(constraints, layers);
+	result.constraint_digest = computeConstraintDigest(constraints, layers);
 
 	std::string persist_error;
-	if (!persistConstraints(store, project_id,
-				result.constraint_digest, constraints,
-				layers, result.declared_at,
+	if (!persistConstraints(store, project_id, result.constraint_digest,
+				constraints, layers, result.declared_at,
 				persist_error)) {
 		result.error = persist_error;
 		return result;
@@ -998,17 +929,16 @@ ConstraintLoadResult loadConstraints(store::GraphStore &store,
 	return result;
 }
 
-std::string computeConstraintDigest(
-	const std::vector<DeclaredConstraint> &constraints,
-	const std::vector<DeclaredLayer> &layers)
+std::string
+computeConstraintDigest(const std::vector<DeclaredConstraint> &constraints,
+			const std::vector<DeclaredLayer> &layers)
 {
 	// Build a normalized string representation for hashing.
 	// Sort by id/layer_name for determinism.
 	std::vector<std::string> parts;
 	for (const auto &dc : constraints) {
 		parts.push_back("C:" + dc.id + ":" + dc.type + ":" +
-				dc.params_json + ":" +
-				dc.evidence_level + ":" +
+				dc.params_json + ":" + dc.evidence_level + ":" +
 				std::to_string(dc.severity) + ":" +
 				(dc.enabled ? "1" : "0"));
 	}
@@ -1035,19 +965,16 @@ std::string activeConstraintDigest(store::GraphStore &store,
 	sqlite3 *db = store.handle();
 	if (!db)
 		return "";
-	const char *sql =
-		"SELECT constraint_digest FROM constraint_decl "
-		"WHERE project_id = ? "
-		"ORDER BY declared_at DESC LIMIT 1";
+	const char *sql = "SELECT constraint_digest FROM constraint_decl "
+			  "WHERE project_id = ? "
+			  "ORDER BY declared_at DESC LIMIT 1";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
 		return "";
-	sqlite3_bind_int64(stmt, 1,
-			   static_cast<int64_t>(project_id));
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	std::string digest;
 	if (sqlite3_step(stmt) == SQLITE_ROW) {
-		const unsigned char *text =
-			sqlite3_column_text(stmt, 0);
+		const unsigned char *text = sqlite3_column_text(stmt, 0);
 		if (text)
 			digest = reinterpret_cast<const char *>(text);
 	}
@@ -1070,19 +997,14 @@ std::vector<DeclaredLayer> loadDeclaredLayers(store::GraphStore &store,
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
 		return layers;
-	sqlite3_bind_int64(stmt, 1,
-			   static_cast<int64_t>(project_id));
-	sqlite3_bind_text(stmt, 2, digest.c_str(), -1,
-			  SQLITE_TRANSIENT);
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	sqlite3_bind_text(stmt, 2, digest.c_str(), -1, SQLITE_TRANSIENT);
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
 		DeclaredLayer layer;
-		const unsigned char *name =
-			sqlite3_column_text(stmt, 0);
-		const unsigned char *path =
-			sqlite3_column_text(stmt, 1);
+		const unsigned char *name = sqlite3_column_text(stmt, 0);
+		const unsigned char *path = sqlite3_column_text(stmt, 1);
 		if (name)
-			layer.layer_name =
-				reinterpret_cast<const char *>(name);
+			layer.layer_name = reinterpret_cast<const char *>(name);
 		if (path)
 			layer.path_pattern =
 				reinterpret_cast<const char *>(path);
@@ -1100,41 +1022,32 @@ loadDeclaredConstraints(store::GraphStore &store, uint64_t project_id,
 	sqlite3 *db = store.handle();
 	if (!db)
 		return constraints;
-	const char *sql =
-		"SELECT constraint_id, type, params_json, "
-		"severity, evidence_level, enabled "
-		"FROM constraint_decl "
-		"WHERE project_id = ? AND constraint_digest = ? "
-		"ORDER BY constraint_id";
+	const char *sql = "SELECT constraint_id, type, params_json, "
+			  "severity, evidence_level, enabled "
+			  "FROM constraint_decl "
+			  "WHERE project_id = ? AND constraint_digest = ? "
+			  "ORDER BY constraint_id";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
 		return constraints;
-	sqlite3_bind_int64(stmt, 1,
-			   static_cast<int64_t>(project_id));
-	sqlite3_bind_text(stmt, 2, digest.c_str(), -1,
-			  SQLITE_TRANSIENT);
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	sqlite3_bind_text(stmt, 2, digest.c_str(), -1, SQLITE_TRANSIENT);
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
 		DeclaredConstraint dc;
-		const unsigned char *id =
-			sqlite3_column_text(stmt, 0);
-		const unsigned char *type =
-			sqlite3_column_text(stmt, 1);
-		const unsigned char *params =
-			sqlite3_column_text(stmt, 2);
+		const unsigned char *id = sqlite3_column_text(stmt, 0);
+		const unsigned char *type = sqlite3_column_text(stmt, 1);
+		const unsigned char *params = sqlite3_column_text(stmt, 2);
 		dc.severity = sqlite3_column_int(stmt, 3);
-		const unsigned char *el =
-			sqlite3_column_text(stmt, 4);
+		const unsigned char *el = sqlite3_column_text(stmt, 4);
 		dc.enabled = sqlite3_column_int(stmt, 5) != 0;
 		if (id)
 			dc.id = reinterpret_cast<const char *>(id);
 		if (type)
 			dc.type = reinterpret_cast<const char *>(type);
 		if (params)
-			dc.params_json =
-				reinterpret_cast<const char *>(params);
+			dc.params_json = reinterpret_cast<const char *>(params);
 		if (el)
-			dc.evidence_level =
-				reinterpret_cast<const char *>(el);
+			dc.evidence_level = reinterpret_cast<const char *>(el);
 		constraints.push_back(std::move(dc));
 	}
 	sqlite3_finalize(stmt);

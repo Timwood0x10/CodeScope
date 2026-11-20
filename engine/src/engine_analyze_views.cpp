@@ -95,10 +95,8 @@ bool parseScope(const char *scope_json, Scope &out, std::string &error)
 	return true;
 }
 
-bool parseDriftHistoryScope(const char *scope_json,
-			    std::string &run_id,
-			    std::string &drift_type,
-			    std::string &error)
+bool parseDriftHistoryScope(const char *scope_json, std::string &run_id,
+			    std::string &drift_type, std::string &error)
 {
 	// Empty scope is valid — means no filter.
 	if (!scope_json || !*scope_json)
@@ -495,8 +493,7 @@ char *buildModuleContext(EngineContext *ctx, uint64_t project_id,
 
 // ── change_context view (§18.7.2, §18.6) ───────────────────────
 
-bool parseFileList(const char *scope_json,
-		   std::vector<std::string> &files,
+bool parseFileList(const char *scope_json, std::vector<std::string> &files,
 		   std::string &error)
 {
 	util::JsonValue root;
@@ -563,14 +560,13 @@ char *buildChangeContext(EngineContext *ctx, uint64_t project_id,
 		}
 		sql += ") ORDER BY file_path, start_row";
 
-		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt,
-				       nullptr) == SQLITE_OK) {
+		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) ==
+		    SQLITE_OK) {
 			sqlite3_bind_int64(stmt, 1,
-				static_cast<int64_t>(project_id));
+					   static_cast<int64_t>(project_id));
 			for (size_t i = 0; i < files.size(); ++i)
-				sqlite3_bind_text(stmt, i + 2,
-					files[i].c_str(), -1,
-					SQLITE_TRANSIENT);
+				sqlite3_bind_text(stmt, i + 2, files[i].c_str(),
+						  -1, SQLITE_TRANSIENT);
 
 			w.key("items").beginArray();
 			int returned = 0;
@@ -616,14 +612,15 @@ char *buildChangeContext(EngineContext *ctx, uint64_t project_id,
 				count_sql += "?";
 			}
 			count_sql += ")";
-			if (sqlite3_prepare_v2(db, count_sql.c_str(), -1,
-					       &stmt, nullptr) == SQLITE_OK) {
-				sqlite3_bind_int64(stmt, 1,
+			if (sqlite3_prepare_v2(db, count_sql.c_str(), -1, &stmt,
+					       nullptr) == SQLITE_OK) {
+				sqlite3_bind_int64(
+					stmt, 1,
 					static_cast<int64_t>(project_id));
 				for (size_t i = 0; i < files.size(); ++i)
 					sqlite3_bind_text(stmt, i + 2,
-						files[i].c_str(), -1,
-						SQLITE_TRANSIENT);
+							  files[i].c_str(), -1,
+							  SQLITE_TRANSIENT);
 				if (sqlite3_step(stmt) == SQLITE_ROW)
 					affected_entity_count =
 						sqlite3_column_int64(stmt, 0);
@@ -631,12 +628,14 @@ char *buildChangeContext(EngineContext *ctx, uint64_t project_id,
 			}
 
 			w.key("total").value(affected_entity_count);
-			w.key("returned").value(
-				std::min(affected_entity_count,
-					static_cast<int64_t>(kMaxModuleEntities)));
-			w.key("has_more").value(
-				affected_entity_count >
-				static_cast<int64_t>(kMaxModuleEntities));
+			w.key("returned")
+				.value(std::min(affected_entity_count,
+						static_cast<int64_t>(
+							kMaxModuleEntities)));
+			w.key("has_more")
+				.value(affected_entity_count >
+				       static_cast<int64_t>(
+					       kMaxModuleEntities));
 			w.key("source").value("fact");
 		} else {
 			w.key("status").value("unknown");
@@ -652,9 +651,8 @@ char *buildChangeContext(EngineContext *ctx, uint64_t project_id,
 	{
 		sqlite3_stmt *stmt = nullptr;
 		// Derive module paths from file paths and check arch_module.
-		std::string sql =
-			"SELECT DISTINCT path FROM arch_module "
-			"WHERE project_id=? AND (";
+		std::string sql = "SELECT DISTINCT path FROM arch_module "
+				  "WHERE project_id=? AND (";
 		bool first = true;
 		for (size_t fi = 0; fi < files.size(); ++fi) {
 			(void)fi;
@@ -665,14 +663,13 @@ char *buildChangeContext(EngineContext *ctx, uint64_t project_id,
 		}
 		sql += ")";
 
-		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt,
-				       nullptr) == SQLITE_OK) {
+		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) ==
+		    SQLITE_OK) {
 			sqlite3_bind_int64(stmt, 1,
-				static_cast<int64_t>(project_id));
+					   static_cast<int64_t>(project_id));
 			for (size_t i = 0; i < files.size(); ++i)
-				sqlite3_bind_text(stmt, i + 2,
-					files[i].c_str(), -1,
-					SQLITE_TRANSIENT);
+				sqlite3_bind_text(stmt, i + 2, files[i].c_str(),
+						  -1, SQLITE_TRANSIENT);
 
 			w.key("items").beginArray();
 			int mod_count = 0;
@@ -727,8 +724,7 @@ char *buildChangeContext(EngineContext *ctx, uint64_t project_id,
 			}
 			w.key("items").beginArray();
 			int returned = std::min(
-				static_cast<int>(deduped.size()),
-				kMaxFindings);
+				static_cast<int>(deduped.size()), kMaxFindings);
 			for (int i = 0; i < returned; ++i) {
 				const auto &f = deduped[i];
 				w.beginObject();
@@ -744,9 +740,9 @@ char *buildChangeContext(EngineContext *ctx, uint64_t project_id,
 			w.key("total").value(
 				static_cast<int64_t>(deduped.size()));
 			w.key("returned").value(returned);
-			w.key("has_more").value(
-				static_cast<int>(deduped.size()) >
-				returned);
+			w.key("has_more")
+				.value(static_cast<int>(deduped.size()) >
+				       returned);
 			w.key("source").value("fact");
 		}
 	}
@@ -776,36 +772,36 @@ char *buildChangeContext(EngineContext *ctx, uint64_t project_id,
 		}
 		sql += ") LIMIT 50";
 
-		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt,
-				       nullptr) == SQLITE_OK) {
+		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) ==
+		    SQLITE_OK) {
 			sqlite3_bind_int64(stmt, 1,
-				static_cast<int64_t>(project_id));
+					   static_cast<int64_t>(project_id));
 			int param = 2;
 			for (const auto &f : files) {
-				sqlite3_bind_text(stmt, param++,
-					f.c_str(), -1, SQLITE_TRANSIENT);
-				sqlite3_bind_text(stmt, param++,
-					f.c_str(), -1, SQLITE_TRANSIENT);
-				sqlite3_bind_text(stmt, param++,
-					f.c_str(), -1, SQLITE_TRANSIENT);
-				sqlite3_bind_text(stmt, param++,
-					f.c_str(), -1, SQLITE_TRANSIENT);
+				sqlite3_bind_text(stmt, param++, f.c_str(), -1,
+						  SQLITE_TRANSIENT);
+				sqlite3_bind_text(stmt, param++, f.c_str(), -1,
+						  SQLITE_TRANSIENT);
+				sqlite3_bind_text(stmt, param++, f.c_str(), -1,
+						  SQLITE_TRANSIENT);
+				sqlite3_bind_text(stmt, param++, f.c_str(), -1,
+						  SQLITE_TRANSIENT);
 			}
 
 			w.key("items").beginArray();
 			int edge_count = 0;
 			while (sqlite3_step(stmt) == SQLITE_ROW) {
 				w.beginObject();
-				w.key("src_module").value(
-					columnTextEscaped(stmt, 0));
-				w.key("dst_module").value(
-					columnTextEscaped(stmt, 1));
-				w.key("edge_kind").value(
-					columnTextEscaped(stmt, 2));
-				w.key("resolution_kind").value(
-					columnTextEscaped(stmt, 3));
-				w.key("confidence").value(
-					sqlite3_column_double(stmt, 4));
+				w.key("src_module")
+					.value(columnTextEscaped(stmt, 0));
+				w.key("dst_module")
+					.value(columnTextEscaped(stmt, 1));
+				w.key("edge_kind")
+					.value(columnTextEscaped(stmt, 2));
+				w.key("resolution_kind")
+					.value(columnTextEscaped(stmt, 3));
+				w.key("confidence")
+					.value(sqlite3_column_double(stmt, 4));
 				w.endObject();
 				++edge_count;
 			}
@@ -815,8 +811,7 @@ char *buildChangeContext(EngineContext *ctx, uint64_t project_id,
 			sqlite3_finalize(stmt);
 		} else {
 			w.key("status").value("unknown");
-			w.key("reason").value(
-				"structural edge query failed");
+			w.key("reason").value("structural edge query failed");
 			w.key("source").value("unknown");
 			failed.push_back("affected_structural_edges");
 		}
@@ -891,8 +886,8 @@ char *buildRobustness(EngineContext *ctx, uint64_t project_id)
 	}
 	w.endArray();
 
-	w.key("total_observations").value(
-		static_cast<int64_t>(result.observations.size()));
+	w.key("total_observations")
+		.value(static_cast<int64_t>(result.observations.size()));
 
 	// Summary counts per category.
 	std::unordered_map<std::string, int> by_category;
@@ -959,8 +954,8 @@ char *buildGenDefects(EngineContext *ctx, uint64_t project_id)
 	}
 	w.endArray();
 
-	w.key("total_candidates").value(
-		static_cast<int64_t>(result.candidates.size()));
+	w.key("total_candidates")
+		.value(static_cast<int64_t>(result.candidates.size()));
 
 	// Summary counts per category.
 	std::unordered_map<std::string, int> by_category;
@@ -968,14 +963,11 @@ char *buildGenDefects(EngineContext *ctx, uint64_t project_id)
 		++by_category[d.category];
 
 	w.key("summary").beginObject();
-	w.key("dependency_anomaly").value(
-		by_category["dependency_anomaly"]);
-	w.key("shell_implementation").value(
-		by_category["shell_implementation"]);
-	w.key("duplicate_implementation").value(
-		by_category["duplicate_implementation"]);
-	w.key("invalid_abstraction").value(
-		by_category["invalid_abstraction"]);
+	w.key("dependency_anomaly").value(by_category["dependency_anomaly"]);
+	w.key("shell_implementation").value(by_category["shell_implementation"]);
+	w.key("duplicate_implementation")
+		.value(by_category["duplicate_implementation"]);
+	w.key("invalid_abstraction").value(by_category["invalid_abstraction"]);
 	w.endObject();
 
 	w.key("verdict").value("observation_only");
@@ -995,8 +987,7 @@ char *buildGenDefects(EngineContext *ctx, uint64_t project_id)
 char *buildReverify(EngineContext *ctx, uint64_t project_id,
 		    const std::vector<std::string> &files)
 {
-	auto result = arch::incrementalReverify(
-		*ctx->store, project_id, files);
+	auto result = arch::incrementalReverify(*ctx->store, project_id, files);
 
 	util::JsonWriter w;
 	w.beginObject();
@@ -1017,12 +1008,9 @@ char *buildReverify(EngineContext *ctx, uint64_t project_id,
 	w.key("source").value("inferred");
 
 	w.key("stale_evidence_count").value(result.stale_count);
-	w.key("affected_entity_count").value(
-		result.affected_entity_count);
-	w.key("affected_module_count").value(
-		result.affected_module_count);
-	w.key("affected_rule_count").value(
-		result.affected_rule_count);
+	w.key("affected_entity_count").value(result.affected_entity_count);
+	w.key("affected_module_count").value(result.affected_module_count);
+	w.key("affected_rule_count").value(result.affected_rule_count);
 
 	w.key("scope_expansion").beginObject();
 	w.key("policy").value("file_level_incremental");
@@ -1037,10 +1025,10 @@ char *buildReverify(EngineContext *ctx, uint64_t project_id,
 	w.key("source").value("declared");
 	w.endObject();
 
-	w.key("next_step").value(
-		"Run engine_run_rules to produce fresh evidence for "
-		"the affected scope. Stale evidence is retained as "
-		"history; new evidence is stored with status=observed.");
+	w.key("next_step")
+		.value("Run engine_run_rules to produce fresh evidence for "
+		       "the affected scope. Stale evidence is retained as "
+		       "history; new evidence is stored with status=observed.");
 
 	w.endObject();
 	if (!w.ok())
@@ -1054,8 +1042,8 @@ char *buildReverify(EngineContext *ctx, uint64_t project_id,
 char *buildDrift(EngineContext *ctx, uint64_t project_id,
 		 const std::string &run_id)
 {
-	auto result = verify::detectAndPersistDrift(
-		*ctx->store, project_id, run_id);
+	auto result =
+		verify::detectAndPersistDrift(*ctx->store, project_id, run_id);
 
 	util::JsonWriter w;
 	w.beginObject();
@@ -1114,24 +1102,23 @@ char *buildDrift(EngineContext *ctx, uint64_t project_id,
 
 	// Summary.
 	w.key("summary").beginObject();
-	w.key("architecture_count").value(
-		static_cast<int64_t>(result.architecture.size()));
-	w.key("capability_count").value(
-		static_cast<int64_t>(result.capability.size()));
-	w.key("documentation_count").value(
-		static_cast<int64_t>(result.documentation.size()));
-	w.key("total").value(
-		static_cast<int64_t>(result.architecture.size() +
-				     result.capability.size() +
-				     result.documentation.size()));
+	w.key("architecture_count")
+		.value(static_cast<int64_t>(result.architecture.size()));
+	w.key("capability_count")
+		.value(static_cast<int64_t>(result.capability.size()));
+	w.key("documentation_count")
+		.value(static_cast<int64_t>(result.documentation.size()));
+	w.key("total").value(static_cast<int64_t>(result.architecture.size() +
+						  result.capability.size() +
+						  result.documentation.size()));
 	w.key("records_written").value(result.records_written);
 	w.endObject();
 
 	w.key("note").value(
 		"Architecture drift uses declared layers when available "
-		 "(arch_layer_decl + arch_edge); falls back to heuristic "
-	 "classification (inferred) otherwise. Results persisted to "
-	 "drift_record for historical traceability.");
+		"(arch_layer_decl + arch_edge); falls back to heuristic "
+		"classification (inferred) otherwise. Results persisted to "
+		"drift_record for historical traceability.");
 
 	w.endObject();
 	if (!w.ok())
@@ -1164,8 +1151,8 @@ char *buildDriftHistory(EngineContext *ctx, uint64_t project_id,
 	sql += " ORDER BY detected_at DESC LIMIT 100";
 
 	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt,
-			       nullptr) != SQLITE_OK) {
+	if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) !=
+	    SQLITE_OK) {
 		w.key("status").value("error");
 		w.key("error").value("drift_history query failed");
 		w.endObject();
@@ -1173,8 +1160,7 @@ char *buildDriftHistory(EngineContext *ctx, uint64_t project_id,
 	}
 
 	int bind_idx = 1;
-	sqlite3_bind_int64(stmt, bind_idx++,
-			   static_cast<int64_t>(project_id));
+	sqlite3_bind_int64(stmt, bind_idx++, static_cast<int64_t>(project_id));
 	if (!run_id.empty())
 		sqlite3_bind_text(stmt, bind_idx++, run_id.c_str(), -1,
 				  SQLITE_TRANSIENT);
@@ -1218,8 +1204,7 @@ char *buildDriftHistory(EngineContext *ctx, uint64_t project_id,
 
 // ── profile_history view (§18.5, §18.6.2, §12.4 M3-5) ───────────
 
-char *buildProfileHistory(EngineContext *ctx, uint64_t project_id,
-			  int limit)
+char *buildProfileHistory(EngineContext *ctx, uint64_t project_id, int limit)
 {
 	sqlite3 *db = ctx->store->handle();
 
@@ -1233,16 +1218,15 @@ char *buildProfileHistory(EngineContext *ctx, uint64_t project_id,
 			  "FROM verification_run WHERE project_id=? "
 			  "ORDER BY started_at DESC LIMIT ?";
 	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt,
-			       nullptr) != SQLITE_OK) {
+	if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) !=
+	    SQLITE_OK) {
 		w.key("status").value("error");
 		w.key("error").value("profile_history query failed");
 		w.endObject();
 		return dupString(w.str());
 	}
 
-	sqlite3_bind_int64(stmt, 1,
-			   static_cast<int64_t>(project_id));
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_int(stmt, 2, limit);
 
 	w.key("status").value("runs");
@@ -1277,20 +1261,21 @@ char *buildProfileHistory(EngineContext *ctx, uint64_t project_id,
 				"WHERE project_id=? AND run_id=? "
 				"ORDER BY dimension";
 			sqlite3_stmt *snap_stmt = nullptr;
-			if (sqlite3_prepare_v2(db, snap_sql, -1,
-					       &snap_stmt,
+			if (sqlite3_prepare_v2(db, snap_sql, -1, &snap_stmt,
 					       nullptr) == SQLITE_OK) {
-				sqlite3_bind_int64(snap_stmt, 1,
+				sqlite3_bind_int64(
+					snap_stmt, 1,
 					static_cast<int64_t>(project_id));
-				sqlite3_bind_text(snap_stmt, 2,
-					rid.c_str(), -1,
-					SQLITE_TRANSIENT);
-				while (sqlite3_step(snap_stmt) ==
-				       SQLITE_ROW) {
-					auto stext = [&](int col) -> std::string {
-						const char *t =
-							reinterpret_cast<const char *>(
-								sqlite3_column_text(snap_stmt, col));
+				sqlite3_bind_text(snap_stmt, 2, rid.c_str(), -1,
+						  SQLITE_TRANSIENT);
+				while (sqlite3_step(snap_stmt) == SQLITE_ROW) {
+					auto stext =
+						[&](int col) -> std::string {
+						const char *t = reinterpret_cast<
+							const char *>(
+							sqlite3_column_text(
+								snap_stmt,
+								col));
 						return t ? t : "";
 					};
 					w.beginObject();

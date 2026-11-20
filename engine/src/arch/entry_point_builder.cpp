@@ -34,9 +34,8 @@ std::string explicitEntryKind(const std::string &name,
 			      const std::string &language)
 {
 	if (name == "main") {
-		if (language == "c" || language == "cpp" ||
-		    language == "c++" || language == "go" ||
-		    language == "rust")
+		if (language == "c" || language == "cpp" || language == "c++" ||
+		    language == "go" || language == "rust")
 			return "explicit";
 	}
 	if (name == "init" && language == "go")
@@ -54,9 +53,9 @@ bool isFrameworkEntryName(const std::string &name)
 	// Case-sensitive: "Main" (Go) and "Run" are different entry
 	// patterns from "main" and "run".
 	static const std::unordered_set<std::string> kFrameworkNames = {
-		"run",    "Run",    "start", "Start",
-		"setup",  "Setup",  "serve", "Serve",
-		"handler", "Handler"};
+		"run",	 "Run",	  "start", "Start",   "setup",
+		"Setup", "serve", "Serve", "handler", "Handler"
+	};
 	return kFrameworkNames.count(name) > 0;
 }
 
@@ -90,8 +89,9 @@ bool isExportedAPI(const std::string &name, const std::string &language,
 bool isHeuristicCandidate(const std::string &name)
 {
 	static const std::unordered_set<std::string> kHeuristicNames = {
-		"main", "Main", "run", "Run", "start", "Start",
-		"init", "Init", "setup", "Setup"};
+		"main",	 "Main", "run",	 "Run",	  "start",
+		"Start", "init", "Init", "setup", "Setup"
+	};
 	return kHeuristicNames.count(name) > 0;
 }
 
@@ -120,8 +120,8 @@ bool buildEntryPoints(store::GraphStore &store, uint64_t project_id,
 		std::string del =
 			"DELETE FROM arch_entry_point WHERE project_id = " +
 			std::to_string(project_id);
-		if (sqlite3_exec(db, del.c_str(), nullptr, nullptr,
-				 nullptr) != SQLITE_OK) {
+		if (sqlite3_exec(db, del.c_str(), nullptr, nullptr, nullptr) !=
+		    SQLITE_OK) {
 			error = "DELETE arch_entry_point failed: " +
 				std::string(sqlite3_errmsg(db));
 			return false;
@@ -130,13 +130,13 @@ bool buildEntryPoints(store::GraphStore &store, uint64_t project_id,
 
 	// Query all function/method entities for entry point classification.
 	// kind IN (0,1) selects functions and methods from the entity table.
-	const char *sql =
-		"SELECT id, name, language, file_path, start_row, "
-		"qualified_name FROM entity "
-		"WHERE project_id=? AND kind IN (0,1)";
+	const char *sql = "SELECT id, name, language, file_path, start_row, "
+			  "qualified_name FROM entity "
+			  "WHERE project_id=? AND kind IN (0,1)";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-		error = std::string("prepare entity for entry points failed: ") +
+		error = std::string(
+				"prepare entity for entry points failed: ") +
 			sqlite3_errmsg(db);
 		return false;
 	}
@@ -149,8 +149,8 @@ bool buildEntryPoints(store::GraphStore &store, uint64_t project_id,
 		"evidence_file, evidence_row) "
 		"VALUES (?,?,?,?,?,?,?)";
 	sqlite3_stmt *insert_stmt = nullptr;
-	if (sqlite3_prepare_v2(db, insert_sql, -1, &insert_stmt,
-			       nullptr) != SQLITE_OK) {
+	if (sqlite3_prepare_v2(db, insert_sql, -1, &insert_stmt, nullptr) !=
+	    SQLITE_OK) {
 		error = "prepare arch_entry_point insert failed: " +
 			std::string(sqlite3_errmsg(db));
 		sqlite3_finalize(stmt);
@@ -166,53 +166,49 @@ bool buildEntryPoints(store::GraphStore &store, uint64_t project_id,
 
 	while (sqlite3_step(stmt) == SQLITE_ROW) {
 		int64_t entity_id = sqlite3_column_int64(stmt, 0);
-		const unsigned char *name_ptr =
-			sqlite3_column_text(stmt, 1);
-		const unsigned char *lang_ptr =
-			sqlite3_column_text(stmt, 2);
-		const unsigned char *file_ptr =
-			sqlite3_column_text(stmt, 3);
+		const unsigned char *name_ptr = sqlite3_column_text(stmt, 1);
+		const unsigned char *lang_ptr = sqlite3_column_text(stmt, 2);
+		const unsigned char *file_ptr = sqlite3_column_text(stmt, 3);
 		int start_row = sqlite3_column_int(stmt, 4);
-		const unsigned char *qn_ptr =
-			sqlite3_column_text(stmt, 5);
+		const unsigned char *qn_ptr = sqlite3_column_text(stmt, 5);
 
-		std::string name = name_ptr ?
-			reinterpret_cast<const char *>(name_ptr) : "";
-		std::string language = lang_ptr ?
-			reinterpret_cast<const char *>(lang_ptr) : "";
-		std::string file_path = file_ptr ?
-			reinterpret_cast<const char *>(file_ptr) : "";
-		std::string qualified_name = qn_ptr ?
-			reinterpret_cast<const char *>(qn_ptr) : "";
+		std::string name =
+			name_ptr ? reinterpret_cast<const char *>(name_ptr) :
+				   "";
+		std::string language =
+			lang_ptr ? reinterpret_cast<const char *>(lang_ptr) :
+				   "";
+		std::string file_path =
+			file_ptr ? reinterpret_cast<const char *>(file_ptr) :
+				   "";
+		std::string qualified_name =
+			qn_ptr ? reinterpret_cast<const char *>(qn_ptr) : "";
 
 		// Classify the entity into one or more entry point kinds.
 		// Priority: explicit > framework > exported > heuristic.
 		std::vector<EntryPointCandidate> candidates;
 
 		// 1. Explicit entry points (main, init in Go).
-		std::string explicit_kind =
-			explicitEntryKind(name, language);
-		if (!explicit_kind.empty() &&
-		    !seen_explicit.count(entity_id)) {
-			candidates.push_back({entity_id,
-					      explicit_kind, 1.0,
-					      "name_pattern"});
+		std::string explicit_kind = explicitEntryKind(name, language);
+		if (!explicit_kind.empty() && !seen_explicit.count(entity_id)) {
+			candidates.push_back({ entity_id, explicit_kind, 1.0,
+					       "name_pattern" });
 			seen_explicit.insert(entity_id);
 		}
 
 		// 2. Framework entry candidates.
 		if (isFrameworkEntryName(name) &&
 		    !seen_framework.count(entity_id)) {
-			candidates.push_back({entity_id, "framework", 0.5,
-					      "name_pattern"});
+			candidates.push_back({ entity_id, "framework", 0.5,
+					       "name_pattern" });
 			seen_framework.insert(entity_id);
 		}
 
 		// 3. Exported API entries.
 		if (isExportedAPI(name, language, qualified_name) &&
 		    !seen_exported.count(entity_id)) {
-			candidates.push_back({entity_id, "exported", 0.7,
-					      "exported"});
+			candidates.push_back(
+				{ entity_id, "exported", 0.7, "exported" });
 			seen_exported.insert(entity_id);
 		}
 
@@ -220,23 +216,23 @@ bool buildEntryPoints(store::GraphStore &store, uint64_t project_id,
 		// Only add as heuristic if not already classified above.
 		if (candidates.empty() && isHeuristicCandidate(name) &&
 		    !seen_heuristic.count(entity_id)) {
-			candidates.push_back({entity_id, "heuristic", 0.3,
-					      "name_pattern"});
+			candidates.push_back({ entity_id, "heuristic", 0.3,
+					       "name_pattern" });
 			seen_heuristic.insert(entity_id);
 		}
 
 		// Insert all candidates for this entity.
 		for (const auto &c : candidates) {
 			sqlite3_bind_int64(insert_stmt, 1,
-				static_cast<int64_t>(project_id));
+					   static_cast<int64_t>(project_id));
 			sqlite3_bind_int64(insert_stmt, 2, c.entity_id);
-			sqlite3_bind_text(insert_stmt, 3,
-				c.kind.c_str(), -1, SQLITE_TRANSIENT);
+			sqlite3_bind_text(insert_stmt, 3, c.kind.c_str(), -1,
+					  SQLITE_TRANSIENT);
 			sqlite3_bind_double(insert_stmt, 4, c.confidence);
-			sqlite3_bind_text(insert_stmt, 5,
-				c.source.c_str(), -1, SQLITE_TRANSIENT);
-			sqlite3_bind_text(insert_stmt, 6,
-				file_path.c_str(), -1, SQLITE_TRANSIENT);
+			sqlite3_bind_text(insert_stmt, 5, c.source.c_str(), -1,
+					  SQLITE_TRANSIENT);
+			sqlite3_bind_text(insert_stmt, 6, file_path.c_str(), -1,
+					  SQLITE_TRANSIENT);
 			sqlite3_bind_int(insert_stmt, 7, start_row);
 			sqlite3_step(insert_stmt);
 			sqlite3_reset(insert_stmt);

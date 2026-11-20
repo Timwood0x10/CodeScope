@@ -44,8 +44,7 @@ static std::string toLowerAscii(const std::string &s)
 	for (char ch : s) {
 		unsigned char c = static_cast<unsigned char>(ch);
 		if (c >= 'A' && c <= 'Z') {
-			result.push_back(static_cast<char>(
-				c + ('a' - 'A')));
+			result.push_back(static_cast<char>(c + ('a' - 'A')));
 		} else {
 			result.push_back(ch);
 		}
@@ -132,8 +131,7 @@ collectLayerNodesLegacy(store::GraphStore *store, uint64_t project_id,
 	}
 
 	int param = 1;
-	sqlite3_bind_int64(stmt, param++,
-			   static_cast<int64_t>(project_id));
+	sqlite3_bind_int64(stmt, param++, static_cast<int64_t>(project_id));
 	for (const auto &suffix : nameSuffixes)
 		sqlite3_bind_text(stmt, param++, suffix.c_str(), -1,
 				  SQLITE_STATIC);
@@ -188,8 +186,7 @@ findReverseCalls(store::GraphStore *store, uint64_t project_id,
 }
 
 // Count forward Calls relations from upper-layer to lower-layer entities.
-static int countForwardCalls(store::GraphStore *store,
-			     uint64_t project_id,
+static int countForwardCalls(store::GraphStore *store, uint64_t project_id,
 			     const std::vector<int64_t> &upper_ids,
 			     const std::vector<int64_t> &lower_ids)
 {
@@ -252,11 +249,9 @@ loadDeclaredLayersForProject(store::GraphStore *store, uint64_t project_id)
 		if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) !=
 		    SQLITE_OK)
 			return layers;
-		sqlite3_bind_int64(stmt, 1,
-				   static_cast<int64_t>(project_id));
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 		if (sqlite3_step(stmt) == SQLITE_ROW) {
-			const unsigned char *d =
-				sqlite3_column_text(stmt, 0);
+			const unsigned char *d = sqlite3_column_text(stmt, 0);
 			if (d)
 				digest = reinterpret_cast<const char *>(d);
 		}
@@ -281,8 +276,7 @@ loadDeclaredLayersForProject(store::GraphStore *store, uint64_t project_id)
 		const unsigned char *name = sqlite3_column_text(stmt, 0);
 		const unsigned char *path = sqlite3_column_text(stmt, 1);
 		if (name)
-			entry.layer_name =
-				reinterpret_cast<const char *>(name);
+			entry.layer_name = reinterpret_cast<const char *>(name);
 		if (path)
 			entry.path_pattern =
 				reinterpret_cast<const char *>(path);
@@ -313,8 +307,7 @@ static bool pathMatchesLayer(const std::string &file_path,
 // Collect entity IDs for a declared layer by matching file_path against
 // the layer's path patterns. Returns entity IDs.
 static std::vector<int64_t>
-collectLayerEntitiesDeclared(store::GraphStore *store,
-			     uint64_t project_id,
+collectLayerEntitiesDeclared(store::GraphStore *store, uint64_t project_id,
 			     const std::vector<DeclaredLayerEntry> &layers,
 			     const std::string &layer_name)
 {
@@ -335,8 +328,7 @@ collectLayerEntitiesDeclared(store::GraphStore *store,
 	// We do this in C++ rather than SQL LIKE because we need
 	// component-wise prefix matching, not substring matching.
 	sqlite3 *db = store->handle();
-	const char *sql =
-		"SELECT id, file_path FROM entity WHERE project_id=?";
+	const char *sql = "SELECT id, file_path FROM entity WHERE project_id=?";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
 		return ids;
@@ -347,8 +339,7 @@ collectLayerEntitiesDeclared(store::GraphStore *store,
 		const unsigned char *fp = sqlite3_column_text(stmt, 1);
 		if (!fp)
 			continue;
-		std::string file_path =
-			reinterpret_cast<const char *>(fp);
+		std::string file_path = reinterpret_cast<const char *>(fp);
 		for (const auto &pat : patterns) {
 			if (pathMatchesLayer(file_path, pat)) {
 				ids.push_back(eid);
@@ -363,8 +354,7 @@ collectLayerEntitiesDeclared(store::GraphStore *store,
 // Find structural edges (arch_edge) from one set of modules to another.
 // Returns arch_edge.id values for violating edges.
 static std::vector<int64_t>
-findStructuralEdgeViolations(store::GraphStore *store,
-			     uint64_t project_id,
+findStructuralEdgeViolations(store::GraphStore *store, uint64_t project_id,
 			     const std::vector<int64_t> &src_entity_ids,
 			     const std::vector<int64_t> &dst_entity_ids)
 {
@@ -381,9 +371,8 @@ findStructuralEdgeViolations(store::GraphStore *store,
 	// Query arch_edge and check if src_module contains source entities
 	// and dst_module contains destination entities.
 	sqlite3 *db = store->handle();
-	const char *sql =
-		"SELECT ae.id, ae.src_module, ae.dst_module "
-		"FROM arch_edge ae WHERE ae.project_id=?";
+	const char *sql = "SELECT ae.id, ae.src_module, ae.dst_module "
+			  "FROM arch_edge ae WHERE ae.project_id=?";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
 		return violating_edges;
@@ -392,12 +381,11 @@ findStructuralEdgeViolations(store::GraphStore *store,
 	// Build a module → entity_id map from arch_module_member.
 	std::unordered_map<std::string, std::vector<int64_t>> mod_entities;
 	{
-		const char *mem_sql =
-			"SELECT module_path, entity_id FROM "
-			"arch_module_member WHERE project_id=?";
+		const char *mem_sql = "SELECT module_path, entity_id FROM "
+				      "arch_module_member WHERE project_id=?";
 		sqlite3_stmt *mem_stmt = nullptr;
-		if (sqlite3_prepare_v2(db, mem_sql, -1, &mem_stmt,
-				       nullptr) == SQLITE_OK) {
+		if (sqlite3_prepare_v2(db, mem_sql, -1, &mem_stmt, nullptr) ==
+		    SQLITE_OK) {
 			sqlite3_bind_int64(mem_stmt, 1,
 					   static_cast<int64_t>(project_id));
 			while (sqlite3_step(mem_stmt) == SQLITE_ROW) {
@@ -406,7 +394,7 @@ findStructuralEdgeViolations(store::GraphStore *store,
 				int64_t eid = sqlite3_column_int64(mem_stmt, 1);
 				if (mp) {
 					mod_entities[reinterpret_cast<
-							const char *>(mp)]
+							     const char *>(mp)]
 						.push_back(eid);
 				}
 			}
@@ -457,14 +445,13 @@ findStructuralEdgeViolations(store::GraphStore *store,
 }
 
 // Count structural edges between two sets of modules (forward direction).
-static int countStructuralEdges(store::GraphStore *store,
-				uint64_t project_id,
+static int countStructuralEdges(store::GraphStore *store, uint64_t project_id,
 				const std::vector<int64_t> &src_ids,
 				const std::vector<int64_t> &dst_ids)
 {
 	// Reuse the violation finder but with the forward direction.
-	auto edges = findStructuralEdgeViolations(store, project_id,
-						  src_ids, dst_ids);
+	auto edges = findStructuralEdgeViolations(store, project_id, src_ids,
+						  dst_ids);
 	return static_cast<int>(edges.size());
 }
 
@@ -533,18 +520,12 @@ EvidenceRecord ArchitectureVerifier::verifyDeclared(const Claim &claim)
 
 	// Collect entity IDs for each of the three layers using declared
 	// path patterns.
-	std::vector<int64_t> layer1 =
-		collectLayerEntitiesDeclared(store_, project_id_,
-					     declared_layers,
-					     claim.subject);
-	std::vector<int64_t> layer2 =
-		collectLayerEntitiesDeclared(store_, project_id_,
-					     declared_layers,
-					     claim.object);
-	std::vector<int64_t> layer3 =
-		collectLayerEntitiesDeclared(store_, project_id_,
-					     declared_layers,
-					     claim.scope);
+	std::vector<int64_t> layer1 = collectLayerEntitiesDeclared(
+		store_, project_id_, declared_layers, claim.subject);
+	std::vector<int64_t> layer2 = collectLayerEntitiesDeclared(
+		store_, project_id_, declared_layers, claim.object);
+	std::vector<int64_t> layer3 = collectLayerEntitiesDeclared(
+		store_, project_id_, declared_layers, claim.scope);
 
 	if (layer1.empty()) {
 		rec.verdict = Verdict::Unknown;
@@ -573,12 +554,12 @@ EvidenceRecord ArchitectureVerifier::verifyDeclared(const Claim &claim)
 
 	// Check for reverse structural edges (lower layer → higher layer).
 	std::vector<int64_t> violations;
-	auto v1 = findStructuralEdgeViolations(store_, project_id_,
-					       layer1, layer3);
-	auto v2 = findStructuralEdgeViolations(store_, project_id_,
-					       layer2, layer3);
-	auto v3 = findStructuralEdgeViolations(store_, project_id_,
-					       layer1, layer2);
+	auto v1 = findStructuralEdgeViolations(store_, project_id_, layer1,
+					       layer3);
+	auto v2 = findStructuralEdgeViolations(store_, project_id_, layer2,
+					       layer3);
+	auto v3 = findStructuralEdgeViolations(store_, project_id_, layer1,
+					       layer2);
 	violations.insert(violations.end(), v1.begin(), v1.end());
 	violations.insert(violations.end(), v2.begin(), v2.end());
 	violations.insert(violations.end(), v3.begin(), v3.end());
@@ -587,8 +568,7 @@ EvidenceRecord ArchitectureVerifier::verifyDeclared(const Claim &claim)
 		rec.verdict = Verdict::Contradicted;
 		rec.confidence = kConfidenceDeclaredContradicted;
 		rec.verdict_basis = "declared_structural";
-		rec.detail = "Found " +
-			     std::to_string(violations.size()) +
+		rec.detail = "Found " + std::to_string(violations.size()) +
 			     " reverse structural edge(s) violating "
 			     "the declared layered flow";
 		rec.facts.reserve(violations.size());
@@ -598,17 +578,17 @@ EvidenceRecord ArchitectureVerifier::verifyDeclared(const Claim &claim)
 	}
 
 	// Check forward connectivity via structural edges.
-	int forward1 = countStructuralEdges(store_, project_id_,
-					    layer1, layer2);
-	int forward2 = countStructuralEdges(store_, project_id_,
-					    layer2, layer3);
+	int forward1 =
+		countStructuralEdges(store_, project_id_, layer1, layer2);
+	int forward2 =
+		countStructuralEdges(store_, project_id_, layer2, layer3);
 	if (forward1 == 0 && forward2 == 0) {
 		// Fall back to CALLS for connectivity check — structural
 		// edges may not exist yet for this project.
-		forward1 = countForwardCalls(store_, project_id_,
-					     layer1, layer2);
-		forward2 = countForwardCalls(store_, project_id_,
-					     layer2, layer3);
+		forward1 =
+			countForwardCalls(store_, project_id_, layer1, layer2);
+		forward2 =
+			countForwardCalls(store_, project_id_, layer2, layer3);
 	}
 
 	if (forward1 == 0 && forward2 == 0) {
@@ -623,11 +603,9 @@ EvidenceRecord ArchitectureVerifier::verifyDeclared(const Claim &claim)
 	rec.verdict = Verdict::Supported;
 	rec.confidence = kConfidenceDeclaredSupported;
 	rec.verdict_basis = "declared_structural";
-	rec.detail = "Declared layered flow verified: " +
-		     claim.subject + " -> " + claim.object + " -> " +
-		     claim.scope + " (" +
-		     std::to_string(forward1 + forward2) +
-		     " forward edges)";
+	rec.detail = "Declared layered flow verified: " + claim.subject +
+		     " -> " + claim.object + " -> " + claim.scope + " (" +
+		     std::to_string(forward1 + forward2) + " forward edges)";
 	rec.facts.emplace_back(kFactKindNode, layer1.front());
 	rec.facts.emplace_back(kFactKindNode, layer2.front());
 	rec.facts.emplace_back(kFactKindNode, layer3.front());
@@ -663,14 +641,11 @@ EvidenceRecord ArchitectureVerifier::verifyLegacy(const Claim &claim)
 	}
 
 	std::vector<int64_t> layer1 =
-		collectLayerNodesLegacy(store_, project_id_,
-					claim.subject);
+		collectLayerNodesLegacy(store_, project_id_, claim.subject);
 	std::vector<int64_t> layer2 =
-		collectLayerNodesLegacy(store_, project_id_,
-					claim.object);
+		collectLayerNodesLegacy(store_, project_id_, claim.object);
 	std::vector<int64_t> layer3 =
-		collectLayerNodesLegacy(store_, project_id_,
-					claim.scope);
+		collectLayerNodesLegacy(store_, project_id_, claim.scope);
 
 	if (layer1.empty()) {
 		rec.verdict = Verdict::Unknown;
@@ -682,15 +657,15 @@ EvidenceRecord ArchitectureVerifier::verifyLegacy(const Claim &claim)
 	if (layer2.empty()) {
 		rec.verdict = Verdict::Unknown;
 		rec.confidence = kConfidenceLayerNotFound;
-		rec.detail = "Layer '" + claim.object +
-			     "' not detected in codebase";
+		rec.detail =
+			"Layer '" + claim.object + "' not detected in codebase";
 		return rec;
 	}
 	if (layer3.empty()) {
 		rec.verdict = Verdict::Unknown;
 		rec.confidence = kConfidenceLayerNotFound;
-		rec.detail = "Layer '" + claim.scope +
-			     "' not detected in codebase";
+		rec.detail =
+			"Layer '" + claim.scope + "' not detected in codebase";
 		return rec;
 	}
 
@@ -728,8 +703,7 @@ EvidenceRecord ArchitectureVerifier::verifyLegacy(const Claim &claim)
 	rec.confidence = kConfidenceSupported;
 	rec.detail = "Layered flow verified: " + claim.subject + " -> " +
 		     claim.object + " -> " + claim.scope + " (" +
-		     std::to_string(forward1 + forward2) +
-		     " forward calls)";
+		     std::to_string(forward1 + forward2) + " forward calls)";
 	rec.facts.emplace_back(kFactKindNode, layer1.front());
 	rec.facts.emplace_back(kFactKindNode, layer2.front());
 	rec.facts.emplace_back(kFactKindNode, layer3.front());

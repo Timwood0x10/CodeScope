@@ -53,16 +53,28 @@ class ModuleGraph {
 		   std::string &error);
 
 	/// Number of modules (nodes) in the graph.
-	int nodeCount() const { return static_cast<int>(nodes_.size()); }
+	int nodeCount() const
+	{
+		return static_cast<int>(nodes_.size());
+	}
 
 	/// Number of edges.
-	int edgeCount() const { return static_cast<int>(edges_.size()); }
+	int edgeCount() const
+	{
+		return static_cast<int>(edges_.size());
+	}
 
 	/// Get a module node by index.
-	const ModuleNode &node(int index) const { return nodes_[index]; }
+	const ModuleNode &node(int index) const
+	{
+		return nodes_[index];
+	}
 
 	/// Get all edges.
-	const std::vector<ModuleEdge> &edges() const { return edges_; }
+	const std::vector<ModuleEdge> &edges() const
+	{
+		return edges_;
+	}
 
 	/// Get adjacency list (outgoing edges) for a node index.
 	const std::vector<int> &outAdj(int index) const;

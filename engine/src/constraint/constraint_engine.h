@@ -83,9 +83,9 @@ ConstraintLoadResult loadConstraints(store::GraphStore &store,
 /// Compute the SHA-256 digest of the normalized constraint content.
 /// Used by loadConstraints and by callers that need to compare digests
 /// without re-reading the file.
-std::string computeConstraintDigest(
-	const std::vector<DeclaredConstraint> &constraints,
-	const std::vector<DeclaredLayer> &layers);
+std::string
+computeConstraintDigest(const std::vector<DeclaredConstraint> &constraints,
+			const std::vector<DeclaredLayer> &layers);
 
 /// Look up the active constraint_digest for a project (the most recent
 /// successfully loaded set). Returns empty string when no constraints

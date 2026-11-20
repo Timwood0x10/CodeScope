@@ -28,7 +28,7 @@ static char kDbPath[160];
 static void initDbPath()
 {
 	std::snprintf(kDbPath, sizeof(kDbPath),
-		     "/tmp/codescope_test_m3_inc_%d.db", int(getpid()));
+		      "/tmp/codescope_test_m3_inc_%d.db", int(getpid()));
 }
 
 static void removeDbFiles()
@@ -53,30 +53,30 @@ static bool execSql(store::GraphStore &store, const char *sql)
 
 /// Insert an entity for testing.
 static void insertEntity(store::GraphStore &store, uint64_t project_id,
-			int64_t id, const std::string &name,
-			const std::string &file_path,
-			const std::string &language = "cpp")
+			 int64_t id, const std::string &name,
+			 const std::string &file_path,
+			 const std::string &language = "cpp")
 {
-	std::string sql = std::string(
-		"INSERT OR REPLACE INTO entity "
-		"(id, project_id, name, qualified_name, kind, file_path, "
-		"language, start_row, end_row, start_col, end_col) "
-		"VALUES (") +
-		std::to_string(id) + "," +
-		std::to_string(project_id) + ",'" + name + "','" + name +
-		"',1,'" + file_path + "','" + language +
+	std::string sql =
+		std::string(
+			"INSERT OR REPLACE INTO entity "
+			"(id, project_id, name, qualified_name, kind, file_path, "
+			"language, start_row, end_row, start_col, end_col) "
+			"VALUES (") +
+		std::to_string(id) + "," + std::to_string(project_id) + ",'" +
+		name + "','" + name + "',1,'" + file_path + "','" + language +
 		"',1,10,1,10)";
 	execSql(store, sql.c_str());
 }
 
 /// Insert a module into arch_module.
 static void insertModule(store::GraphStore &store, uint64_t project_id,
-			const std::string &path)
+			 const std::string &path)
 {
-	std::string sql = std::string(
-		"INSERT OR IGNORE INTO arch_module "
-		"(project_id, path, parent_path, language, "
-		"file_count, entity_count) VALUES (") +
+	std::string sql =
+		std::string("INSERT OR IGNORE INTO arch_module "
+			    "(project_id, path, parent_path, language, "
+			    "file_count, entity_count) VALUES (") +
 		std::to_string(project_id) + ",'" + path + "','','cpp',1,1)";
 	execSql(store, sql.c_str());
 }
@@ -85,11 +85,12 @@ static void insertModule(store::GraphStore &store, uint64_t project_id,
 static void insertRun(store::GraphStore &store, uint64_t project_id,
 		      const std::string &run_id)
 {
-	std::string sql = std::string(
-		"INSERT OR REPLACE INTO verification_run "
-		"(run_id, project_id, source_revision, worktree_digest, "
-		"analyzer_version, rule_set_digest, profile, started_at, "
-		"status) VALUES ('") +
+	std::string sql =
+		std::string(
+			"INSERT OR REPLACE INTO verification_run "
+			"(run_id, project_id, source_revision, worktree_digest, "
+			"analyzer_version, rule_set_digest, profile, started_at, "
+			"status) VALUES ('") +
 		run_id + "'," + std::to_string(project_id) +
 		",'rev1','digest1','v0.3','rules1','full','2026-01-01','completed')";
 	execSql(store, sql.c_str());
@@ -97,17 +98,19 @@ static void insertRun(store::GraphStore &store, uint64_t project_id,
 
 /// Insert evidence with a location. The evidence table has no
 /// project_id column; it is scoped via run_id → verification_run.
-static int64_t
-insertEvidence(store::GraphStore &store, uint64_t project_id,
-	       const std::string &run_id, const std::string &rule_id,
-	       const std::string &finding_key, const std::string &file_path,
-	       int64_t entity_id = 0)
+static int64_t insertEvidence(store::GraphStore &store, uint64_t project_id,
+			      const std::string &run_id,
+			      const std::string &rule_id,
+			      const std::string &finding_key,
+			      const std::string &file_path,
+			      int64_t entity_id = 0)
 {
-	std::string sql = std::string(
-		"INSERT INTO evidence "
-		"(run_id, claim_id, rule_id, rule_version, "
-		"finding_key, verdict, confidence, verifier_name, "
-		"source_type, provenance, status, detail) VALUES ('") +
+	std::string sql =
+		std::string(
+			"INSERT INTO evidence "
+			"(run_id, claim_id, rule_id, rule_version, "
+			"finding_key, verdict, confidence, verifier_name, "
+			"source_type, provenance, status, detail) VALUES ('") +
 		run_id + "',NULL,'" + rule_id + "','1.0','" + finding_key +
 		"',0,0.9,'test','code','fact','observed','test')";
 	execSql(store, sql.c_str());
@@ -124,19 +127,17 @@ insertEvidence(store::GraphStore &store, uint64_t project_id,
 	}
 
 	if (entity_id > 0) {
-		sql = std::string(
-			      "INSERT INTO evidence_fact "
-			      "(evidence_id, fact_kind, fact_ref, detail) "
-			      "VALUES (") +
+		sql = std::string("INSERT INTO evidence_fact "
+				  "(evidence_id, fact_kind, fact_ref, detail) "
+				  "VALUES (") +
 		      std::to_string(ev_id) + ",0," +
 		      std::to_string(entity_id) + ",'entity')";
 		execSql(store, sql.c_str());
 	}
 
 	// Also insert into finding_evidence for project-scoped lookups.
-	sql = std::string(
-		      "INSERT OR IGNORE INTO finding_evidence "
-		      "(project_id, finding_key, evidence_id) VALUES (") +
+	sql = std::string("INSERT OR IGNORE INTO finding_evidence "
+			  "(project_id, finding_key, evidence_id) VALUES (") +
 	      std::to_string(project_id) + ",'" + finding_key + "'," +
 	      std::to_string(ev_id) + ")";
 	execSql(store, sql.c_str());
@@ -145,16 +146,15 @@ insertEvidence(store::GraphStore &store, uint64_t project_id,
 }
 
 /// Count evidence rows with a given status, scoped via verification_run.
-static int countEvidenceByStatus(store::GraphStore &store,
-				 uint64_t project_id,
+static int countEvidenceByStatus(store::GraphStore &store, uint64_t project_id,
 				 const std::string &status)
 {
 	const char *sql = "SELECT COUNT(*) FROM evidence e "
 			  "JOIN verification_run vr ON e.run_id=vr.run_id "
 			  "WHERE vr.project_id=? AND e.status=?";
 	sqlite3_stmt *stmt = nullptr;
-	if (sqlite3_prepare_v2(store.handle(), sql, -1, &stmt,
-			       nullptr) != SQLITE_OK)
+	if (sqlite3_prepare_v2(store.handle(), sql, -1, &stmt, nullptr) !=
+	    SQLITE_OK)
 		return -1;
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 2, status.c_str(), -1, SQLITE_TRANSIENT);
@@ -191,7 +191,7 @@ static void testComputeAffectedSet()
 	insertModule(store, project_id, "src");
 
 	// Change src/a.cpp.
-	std::vector<std::string> changed = {"src/a.cpp"};
+	std::vector<std::string> changed = { "src/a.cpp" };
 	auto result = arch::computeAffectedSet(store, project_id, changed);
 
 	CHECK_MSG(result.error.empty(), "should not error");
@@ -213,9 +213,12 @@ static void testComputeAffectedSet()
 	// Verify affected entity IDs contain 101 and 102 but not 103.
 	bool has_101 = false, has_102 = false, has_103 = false;
 	for (auto id : result.affected_entity_ids) {
-		if (id == 101) has_101 = true;
-		if (id == 102) has_102 = true;
-		if (id == 103) has_103 = true;
+		if (id == 101)
+			has_101 = true;
+		if (id == 102)
+			has_102 = true;
+		if (id == 103)
+			has_103 = true;
 	}
 	CHECK_MSG(has_101, "should include entity 101");
 	CHECK_MSG(has_102, "should include entity 102");
@@ -245,8 +248,7 @@ static void testComputeAffectedSetEmpty()
 		  "no affected findings for empty file list");
 	CHECK_MSG(result.affected_rule_ids.empty(),
 		  "no affected rules for empty file list");
-	CHECK_MSG(result.incomplete == true,
-		  "should still be incomplete");
+	CHECK_MSG(result.incomplete == true, "should still be incomplete");
 
 	store.close();
 }
@@ -274,29 +276,26 @@ static void testMarkStaleEvidence()
 	// Both use the same rule_id (rule_size), so when src/a.cpp
 	// changes, the rule is affected and ALL evidence from that
 	// rule is marked stale (conservative re-verification, §18.6).
-	insertEvidence(store, project_id, "run-1", "rule_size",
-		       "fk_a", "src/a.cpp");
-	insertEvidence(store, project_id, "run-1", "rule_metric",
-		       "fk_b", "src/b.cpp");
+	insertEvidence(store, project_id, "run-1", "rule_size", "fk_a",
+		       "src/a.cpp");
+	insertEvidence(store, project_id, "run-1", "rule_metric", "fk_b",
+		       "src/b.cpp");
 
 	// Before: both should be 'observed'.
 	CHECK_MSG(countEvidenceByStatus(store, project_id, "observed") == 2,
 		  "both should start as observed");
 
 	// Compute affected set for src/a.cpp only.
-	std::vector<std::string> changed = {"src/a.cpp"};
-	auto affected = arch::computeAffectedSet(store, project_id,
-						 changed);
+	std::vector<std::string> changed = { "src/a.cpp" };
+	auto affected = arch::computeAffectedSet(store, project_id, changed);
 	CHECK_MSG(affected.error.empty(), "should not error");
 
-	int stale_count = arch::markStaleEvidence(store, project_id,
-						  affected);
+	int stale_count = arch::markStaleEvidence(store, project_id, affected);
 	CHECK_MSG(stale_count >= 1, "should mark at least 1 evidence");
 
 	// The evidence in src/a.cpp should be stale.
 	int stale = countEvidenceByStatus(store, project_id, "stale");
-	int observed = countEvidenceByStatus(store, project_id,
-					     "observed");
+	int observed = countEvidenceByStatus(store, project_id, "observed");
 	CHECK_MSG(stale == 1, "exactly 1 should be stale");
 	CHECK_MSG(observed == 1, "exactly 1 should remain observed");
 
@@ -326,20 +325,18 @@ static void testMarkStaleByEntityRef()
 	insertEntity(store, project_id, 201, "funcX", "src/a.cpp");
 
 	// Evidence with NO file location but referencing entity 201.
-	insertEvidence(store, project_id, "run-1", "rule_metric",
-		       "fk_x", "", 201);
+	insertEvidence(store, project_id, "run-1", "rule_metric", "fk_x", "",
+		       201);
 
 	CHECK_MSG(countEvidenceByStatus(store, project_id, "observed") == 1,
 		  "should start as observed");
 
-	std::vector<std::string> changed = {"src/a.cpp"};
-	auto affected = arch::computeAffectedSet(store, project_id,
-						 changed);
+	std::vector<std::string> changed = { "src/a.cpp" };
+	auto affected = arch::computeAffectedSet(store, project_id, changed);
 	CHECK_MSG(affected.affected_entity_ids.size() == 1,
 		  "should find entity 201");
 
-	int stale_count = arch::markStaleEvidence(store, project_id,
-						  affected);
+	int stale_count = arch::markStaleEvidence(store, project_id, affected);
 	CHECK_MSG(stale_count >= 1,
 		  "should mark at least 1 evidence via entity ref");
 
@@ -377,17 +374,16 @@ static void testIncrementalReverify()
 
 	// Evidence in all 3 files, each with a different rule_id
 	// to isolate the stale marking per file.
-	insertEvidence(store, project_id, "run-1", "rule_size",
-		       "fk_a", "src/a.cpp");
-	insertEvidence(store, project_id, "run-1", "rule_metric",
-		       "fk_b", "src/b.cpp");
-	insertEvidence(store, project_id, "run-1", "rule_naming",
-		       "fk_c", "src/c.cpp");
+	insertEvidence(store, project_id, "run-1", "rule_size", "fk_a",
+		       "src/a.cpp");
+	insertEvidence(store, project_id, "run-1", "rule_metric", "fk_b",
+		       "src/b.cpp");
+	insertEvidence(store, project_id, "run-1", "rule_naming", "fk_c",
+		       "src/c.cpp");
 
 	// Re-verify src/a.cpp and src/b.cpp.
-	std::vector<std::string> changed = {"src/a.cpp", "src/b.cpp"};
-	auto result = arch::incrementalReverify(store, project_id,
-						changed);
+	std::vector<std::string> changed = { "src/a.cpp", "src/b.cpp" };
+	auto result = arch::incrementalReverify(store, project_id, changed);
 
 	CHECK_MSG(result.error.empty(), "should not error");
 	CHECK_MSG(result.affected_entity_count == 2,
@@ -404,8 +400,7 @@ static void testIncrementalReverify()
 		  "scope expansion reason should match");
 
 	// src/c.cpp evidence should still be observed.
-	int observed = countEvidenceByStatus(store, project_id,
-					     "observed");
+	int observed = countEvidenceByStatus(store, project_id, "observed");
 	int stale = countEvidenceByStatus(store, project_id, "stale");
 	CHECK_MSG(observed == 1, "exactly 1 should remain observed");
 	CHECK_MSG(stale == 2, "exactly 2 should be stale");
@@ -430,17 +425,15 @@ static void testReverifyNonExistentFile()
 	execSql(store, "DELETE FROM evidence");
 	execSql(store, "DELETE FROM entity WHERE project_id=1");
 
-	std::vector<std::string> changed = {"src/nonexistent.cpp"};
-	auto result = arch::incrementalReverify(store, project_id,
-						changed);
+	std::vector<std::string> changed = { "src/nonexistent.cpp" };
+	auto result = arch::incrementalReverify(store, project_id, changed);
 
 	CHECK_MSG(result.error.empty(), "should not error");
 	CHECK_MSG(result.affected_entity_count == 0,
 		  "no affected entities for non-existent file");
 	CHECK_MSG(result.stale_count == 0,
 		  "no stale evidence for non-existent file");
-	CHECK_MSG(result.incomplete == true,
-		  "should still be incomplete");
+	CHECK_MSG(result.incomplete == true, "should still be incomplete");
 
 	store.close();
 }

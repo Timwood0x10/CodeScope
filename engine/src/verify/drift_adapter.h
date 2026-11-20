@@ -52,8 +52,7 @@ struct DriftResult {
 /// @param project_id The project.
 /// @param run_id    The current run ID for drift_record persistence.
 /// @return DriftResult with all drift items and record count.
-DriftResult detectAndPersistDrift(store::GraphStore &store,
-				  uint64_t project_id,
+DriftResult detectAndPersistDrift(store::GraphStore &store, uint64_t project_id,
 				  const std::string &run_id);
 
 /// Detect architecture drift using declared layers when available.
@@ -66,9 +65,8 @@ DriftResult detectAndPersistDrift(store::GraphStore &store,
 /// @param store     The GraphStore to query.
 /// @param project_id The project.
 /// @return Vector of DriftItem, one per violation.
-std::vector<DriftItem>
-detectArchitectureDriftAdapted(store::GraphStore &store,
-			       uint64_t project_id);
+std::vector<DriftItem> detectArchitectureDriftAdapted(store::GraphStore &store,
+						      uint64_t project_id);
 
 } // namespace verify
 

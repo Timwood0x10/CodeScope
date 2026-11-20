@@ -58,8 +58,7 @@ struct AffectedSet {
 /// @param project_id   The project to analyze.
 /// @param changed_files List of modified file paths (project-relative).
 /// @return Affected set with all computed fields.
-AffectedSet computeAffectedSet(store::GraphStore &store,
-			       uint64_t project_id,
+AffectedSet computeAffectedSet(store::GraphStore &store, uint64_t project_id,
 			       const std::vector<std::string> &changed_files);
 
 /// Mark evidence as stale for the given affected set

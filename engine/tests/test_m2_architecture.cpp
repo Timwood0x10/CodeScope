@@ -30,7 +30,7 @@ static char kDbPath[160];
 static void initDbPath()
 {
 	std::snprintf(kDbPath, sizeof(kDbPath),
-		     "/tmp/codescope_test_m2_arch_%d.db", int(getpid()));
+		      "/tmp/codescope_test_m2_arch_%d.db", int(getpid()));
 }
 
 /// Remove database files (db, wal, shm).
@@ -58,8 +58,7 @@ static bool execSql(store::GraphStore &store, const char *sql)
 /// Insert a test entity into the database.
 static int64_t insertEntity(store::GraphStore &store, uint64_t project_id,
 			    const std::string &name, const std::string &path,
-			    const std::string &language = "cpp",
-			    int kind = 0)
+			    const std::string &language = "cpp", int kind = 0)
 {
 	sqlite3 *db = store.handle();
 	const char *sql = "INSERT INTO entity (project_id, name, "
@@ -101,12 +100,12 @@ static void testSccMultiCycle()
 	execSql(store, "DELETE FROM arch_module WHERE project_id=1");
 	execSql(store, "DELETE FROM arch_edge WHERE project_id=1");
 
-	const char *modules[] = {"mod_a", "mod_b", "mod_c", "mod_d"};
+	const char *modules[] = { "mod_a", "mod_b", "mod_c", "mod_d" };
 	for (const auto &m : modules) {
-		std::string sql = std::string(
-			"INSERT OR IGNORE INTO arch_module "
-			"(project_id, path, parent_path, language, "
-			"file_count, entity_count) VALUES (1,'") +
+		std::string sql =
+			std::string("INSERT OR IGNORE INTO arch_module "
+				    "(project_id, path, parent_path, language, "
+				    "file_count, entity_count) VALUES (1,'") +
 			m + "','','cpp',1,1)";
 		execSql(store, sql.c_str());
 	}
@@ -117,17 +116,18 @@ static void testSccMultiCycle()
 		const char *dst;
 	};
 	Edge edges[] = {
-		{"mod_a", "mod_b"}, {"mod_b", "mod_c"},
-		{"mod_c", "mod_a"}, {"mod_c", "mod_d"},
-		{"mod_d", "mod_b"},
+		{ "mod_a", "mod_b" }, { "mod_b", "mod_c" },
+		{ "mod_c", "mod_a" }, { "mod_c", "mod_d" },
+		{ "mod_d", "mod_b" },
 	};
 	for (const auto &e : edges) {
-		std::string sql = std::string(
-			"INSERT OR IGNORE INTO arch_edge "
-			"(project_id, src_module, dst_module, edge_kind, "
-			"resolution_kind, confidence, source_file, "
-			"source_row) "
-			"VALUES (1,'") +
+		std::string sql =
+			std::string(
+				"INSERT OR IGNORE INTO arch_edge "
+				"(project_id, src_module, dst_module, edge_kind, "
+				"resolution_kind, confidence, source_file, "
+				"source_row) "
+				"VALUES (1,'") +
 			e.src + "','" + e.dst +
 			"','import','internal',1.0,'test.cpp',1)";
 		execSql(store, sql.c_str());
@@ -177,8 +177,7 @@ static void testSccMultiCycle()
 // declared mode should detect the violation.
 static void testDeclaredLayerViolation()
 {
-	std::fprintf(stderr,
-		     "  [test] declared layer violation...\n");
+	std::fprintf(stderr, "  [test] declared layer violation...\n");
 
 	store::GraphStore store;
 	CHECK(store.open(kDbPath));
@@ -198,14 +197,16 @@ static void testDeclaredLayerViolation()
 		const char *path;
 	};
 	Layer layers[] = {
-		{"api", "src/api"}, {"engine", "src/engine"},
-		{"storage", "src/storage"},
+		{ "api", "src/api" },
+		{ "engine", "src/engine" },
+		{ "storage", "src/storage" },
 	};
 	for (const auto &l : layers) {
-		std::string sql = std::string(
-			"INSERT INTO arch_layer_decl "
-			"(project_id, constraint_digest, layer_name, "
-			"path_pattern) VALUES (1,'") +
+		std::string sql =
+			std::string(
+				"INSERT INTO arch_layer_decl "
+				"(project_id, constraint_digest, layer_name, "
+				"path_pattern) VALUES (1,'") +
 			digest + "','" + l.name + "','" + l.path + "')";
 		execSql(store, sql.c_str());
 	}
@@ -213,10 +214,8 @@ static void testDeclaredLayerViolation()
 	// Insert entities in each layer.
 	insertEntity(store, project_id, "ApiController",
 		     "src/api/controller.cpp");
-	insertEntity(store, project_id, "EngineCore",
-		     "src/engine/core.cpp");
-	insertEntity(store, project_id, "StorageRepo",
-		     "src/storage/repo.cpp");
+	insertEntity(store, project_id, "EngineCore", "src/engine/core.cpp");
+	insertEntity(store, project_id, "StorageRepo", "src/storage/repo.cpp");
 
 	// Insert modules.
 	execSql(store, "INSERT OR IGNORE INTO arch_module "
@@ -233,20 +232,18 @@ static void testDeclaredLayerViolation()
 		       "VALUES (1,'src/storage','','cpp',1,1)");
 
 	// Insert a violating edge: storage → api (lower→higher).
-	execSql(store,
-		"INSERT OR IGNORE INTO arch_edge "
-		"(project_id, src_module, dst_module, edge_kind, "
-		"resolution_kind, confidence, source_file, source_row) "
-		"VALUES (1,'src/storage','src/api','import',"
-		"'internal',1.0,'src/storage/repo.cpp',5)");
+	execSql(store, "INSERT OR IGNORE INTO arch_edge "
+		       "(project_id, src_module, dst_module, edge_kind, "
+		       "resolution_kind, confidence, source_file, source_row) "
+		       "VALUES (1,'src/storage','src/api','import',"
+		       "'internal',1.0,'src/storage/repo.cpp',5)");
 
 	// Insert a valid forward edge: api → engine.
-	execSql(store,
-		"INSERT OR IGNORE INTO arch_edge "
-		"(project_id, src_module, dst_module, edge_kind, "
-		"resolution_kind, confidence, source_file, source_row) "
-		"VALUES (1,'src/api','src/engine','import',"
-		"'internal',1.0,'src/api/controller.cpp',5)");
+	execSql(store, "INSERT OR IGNORE INTO arch_edge "
+		       "(project_id, src_module, dst_module, edge_kind, "
+		       "resolution_kind, confidence, source_file, source_row) "
+		       "VALUES (1,'src/api','src/engine','import',"
+		       "'internal',1.0,'src/api/controller.cpp',5)");
 
 	// Verify: the ArchitectureVerifier should use declared layers.
 	verify::ArchitectureVerifier verifier(&store, project_id);
@@ -257,11 +254,10 @@ static void testDeclaredLayerViolation()
 	claim.scope = "storage";
 
 	auto evidence = verifier.verify(claim);
-	CHECK_MSG(evidence.verdict_basis ==
-			  "declared_structural" ||
-		      evidence.verdict_basis ==
-			  "legacy_no_declared_layers" ||
-		      evidence.verdict_basis == "legacy_heuristic",
+	CHECK_MSG(evidence.verdict_basis == "declared_structural" ||
+			  evidence.verdict_basis ==
+				  "legacy_no_declared_layers" ||
+			  evidence.verdict_basis == "legacy_heuristic",
 		  "verdict_basis should be set");
 	CHECK_MSG(!evidence.verdict_basis.empty(),
 		  "verdict_basis must not be empty after M2 upgrade");
@@ -286,17 +282,15 @@ static void testEntryPointConvergence()
 	execSql(store, "DELETE FROM entity WHERE project_id=1");
 
 	// Insert entities with various entry point names.
-	int64_t main_id = insertEntity(store, project_id, "main",
-				       "src/main.cpp", "cpp");
-	int64_t run_id = insertEntity(store, project_id, "run",
-				      "src/server.rs", "rust");
-	int64_t init_id = insertEntity(store, project_id, "init",
-				       "src/setup.go", "go");
-	int64_t handler_id = insertEntity(store, project_id,
-					  "HandleRequest",
+	int64_t main_id =
+		insertEntity(store, project_id, "main", "src/main.cpp", "cpp");
+	int64_t run_id =
+		insertEntity(store, project_id, "run", "src/server.rs", "rust");
+	int64_t init_id =
+		insertEntity(store, project_id, "init", "src/setup.go", "go");
+	int64_t handler_id = insertEntity(store, project_id, "HandleRequest",
 					  "src/handler.go", "go");
-	int64_t normal_id = insertEntity(store, project_id,
-					 "calculateTotal",
+	int64_t normal_id = insertEntity(store, project_id, "calculateTotal",
 					 "src/calc.cpp", "cpp");
 	(void)main_id;
 	(void)run_id;
@@ -313,9 +307,9 @@ static void testEntryPointConvergence()
 	sqlite3_stmt *stmt = nullptr;
 	int count = 0;
 	if (sqlite3_prepare_v2(db,
-		"SELECT COUNT(*) FROM arch_entry_point "
-		"WHERE project_id=1",
-		-1, &stmt, nullptr) == SQLITE_OK) {
+			       "SELECT COUNT(*) FROM arch_entry_point "
+			       "WHERE project_id=1",
+			       -1, &stmt, nullptr) == SQLITE_OK) {
 		if (sqlite3_step(stmt) == SQLITE_ROW)
 			count = sqlite3_column_int(stmt, 0);
 		sqlite3_finalize(stmt);
@@ -328,9 +322,9 @@ static void testEntryPointConvergence()
 	// Verify explicit entry points exist.
 	int explicit_count = 0;
 	if (sqlite3_prepare_v2(db,
-		"SELECT COUNT(*) FROM arch_entry_point "
-		"WHERE project_id=1 AND kind='explicit'",
-		-1, &stmt, nullptr) == SQLITE_OK) {
+			       "SELECT COUNT(*) FROM arch_entry_point "
+			       "WHERE project_id=1 AND kind='explicit'",
+			       -1, &stmt, nullptr) == SQLITE_OK) {
 		if (sqlite3_step(stmt) == SQLITE_ROW)
 			explicit_count = sqlite3_column_int(stmt, 0);
 		sqlite3_finalize(stmt);
@@ -342,9 +336,9 @@ static void testEntryPointConvergence()
 	// Verify exported entry points exist.
 	int exported_count = 0;
 	if (sqlite3_prepare_v2(db,
-		"SELECT COUNT(*) FROM arch_entry_point "
-		"WHERE project_id=1 AND kind='exported'",
-		-1, &stmt, nullptr) == SQLITE_OK) {
+			       "SELECT COUNT(*) FROM arch_entry_point "
+			       "WHERE project_id=1 AND kind='exported'",
+			       -1, &stmt, nullptr) == SQLITE_OK) {
 		if (sqlite3_step(stmt) == SQLITE_ROW)
 			exported_count = sqlite3_column_int(stmt, 0);
 		sqlite3_finalize(stmt);
@@ -377,48 +371,41 @@ static void testConstraintLoading()
 	// Insert constraints directly (simulating what
 	// ConstraintEngine::loadConstraints does).
 	const char *digest = "test_constraint_digest_002";
-	execSql(store,
-		"INSERT INTO constraint_decl "
-		"(project_id, constraint_digest, constraint_id, type, "
-		"params_json, severity, evidence_level, enabled, "
-		"declared_at) "
-		"VALUES (1,'test_constraint_digest_002',"
-		"'no_storage_calls_api','dependency_direction',"
-		"'{}',3,'L1',1,'2026-01-01T00:00:00Z')");
+	execSql(store, "INSERT INTO constraint_decl "
+		       "(project_id, constraint_digest, constraint_id, type, "
+		       "params_json, severity, evidence_level, enabled, "
+		       "declared_at) "
+		       "VALUES (1,'test_constraint_digest_002',"
+		       "'no_storage_calls_api','dependency_direction',"
+		       "'{}',3,'L1',1,'2026-01-01T00:00:00Z')");
 
 	// Insert layer declarations.
-	execSql(store,
-		"INSERT INTO arch_layer_decl "
-		"(project_id, constraint_digest, layer_name, "
-		"path_pattern) "
-		"VALUES (1,'test_constraint_digest_002','api',"
-		"'src/api/')");
-	execSql(store,
-		"INSERT INTO arch_layer_decl "
-		"(project_id, constraint_digest, layer_name, "
-		"path_pattern) "
-		"VALUES (1,'test_constraint_digest_002','storage',"
-		"'src/storage/')");
+	execSql(store, "INSERT INTO arch_layer_decl "
+		       "(project_id, constraint_digest, layer_name, "
+		       "path_pattern) "
+		       "VALUES (1,'test_constraint_digest_002','api',"
+		       "'src/api/')");
+	execSql(store, "INSERT INTO arch_layer_decl "
+		       "(project_id, constraint_digest, layer_name, "
+		       "path_pattern) "
+		       "VALUES (1,'test_constraint_digest_002','storage',"
+		       "'src/storage/')");
 
 	// Load constraints back using ConstraintEngine.
-	auto constraints = constraint::loadDeclaredConstraints(
-		store, project_id, digest);
-	CHECK_MSG(!constraints.empty(),
-		  "should load at least 1 constraint");
+	auto constraints =
+		constraint::loadDeclaredConstraints(store, project_id, digest);
+	CHECK_MSG(!constraints.empty(), "should load at least 1 constraint");
 	if (!constraints.empty()) {
-		CHECK_MSG(constraints[0].id ==
-				  "no_storage_calls_api",
+		CHECK_MSG(constraints[0].id == "no_storage_calls_api",
 			  "constraint id should match");
-		CHECK_MSG(constraints[0].type ==
-				  "dependency_direction",
+		CHECK_MSG(constraints[0].type == "dependency_direction",
 			  "constraint type should match");
 		CHECK_MSG(constraints[0].evidence_level == "L1",
 			  "evidence level should be L1");
 	}
 
 	// Load declared layers.
-	auto layers = constraint::loadDeclaredLayers(
-		store, project_id, digest);
+	auto layers = constraint::loadDeclaredLayers(store, project_id, digest);
 	CHECK_MSG(layers.size() >= 2,
 		  "should load at least 2 layer declarations");
 	if (layers.size() >= 2) {
@@ -435,10 +422,9 @@ static void testConstraintLoading()
 	}
 
 	// Test activeConstraintDigest.
-	std::string active = constraint::activeConstraintDigest(
-		store, project_id);
-	CHECK_MSG(!active.empty(),
-		  "active digest should not be empty");
+	std::string active =
+		constraint::activeConstraintDigest(store, project_id);
+	CHECK_MSG(!active.empty(), "active digest should not be empty");
 
 	store.close();
 	std::fprintf(stderr, "  [test] constraint loading: PASS\n");

@@ -46,47 +46,32 @@ bool isStandardLibrary(const std::string &target)
 	if (target.rfind("std::", 0) == 0)
 		return true;
 	// C standard library headers.
-	if (target.rfind("stdio", 0) == 0 ||
-	    target.rfind("stdlib", 0) == 0 ||
-	    target.rfind("string", 0) == 0 ||
-	    target.rfind("math", 0) == 0 ||
-	    target.rfind("ctype", 0) == 0 ||
-	    target.rfind("time", 0) == 0 ||
-	    target.rfind("errno", 0) == 0 ||
-	    target.rfind("assert", 0) == 0 ||
-	    target.rfind("stdint", 0) == 0 ||
-	    target.rfind("stddef", 0) == 0 ||
+	if (target.rfind("stdio", 0) == 0 || target.rfind("stdlib", 0) == 0 ||
+	    target.rfind("string", 0) == 0 || target.rfind("math", 0) == 0 ||
+	    target.rfind("ctype", 0) == 0 || target.rfind("time", 0) == 0 ||
+	    target.rfind("errno", 0) == 0 || target.rfind("assert", 0) == 0 ||
+	    target.rfind("stdint", 0) == 0 || target.rfind("stddef", 0) == 0 ||
 	    target.rfind("stdbool", 0) == 0)
 		return true;
 	// Go standard library.
-	if (target.rfind("fmt", 0) == 0 ||
-	    target.rfind("os", 0) == 0 ||
-	    target.rfind("io", 0) == 0 ||
-	    target.rfind("net", 0) == 0 ||
-	    target.rfind("http", 0) == 0 ||
-	    target.rfind("strings", 0) == 0 ||
-	    target.rfind("strconv", 0) == 0 ||
-	    target.rfind("sort", 0) == 0 ||
-	    target.rfind("sync", 0) == 0 ||
-	    target.rfind("context", 0) == 0 ||
-	    target.rfind("errors", 0) == 0 ||
-	    target.rfind("reflect", 0) == 0 ||
-	    target.rfind("encoding", 0) == 0 ||
-	    target.rfind("path", 0) == 0 ||
+	if (target.rfind("fmt", 0) == 0 || target.rfind("os", 0) == 0 ||
+	    target.rfind("io", 0) == 0 || target.rfind("net", 0) == 0 ||
+	    target.rfind("http", 0) == 0 || target.rfind("strings", 0) == 0 ||
+	    target.rfind("strconv", 0) == 0 || target.rfind("sort", 0) == 0 ||
+	    target.rfind("sync", 0) == 0 || target.rfind("context", 0) == 0 ||
+	    target.rfind("errors", 0) == 0 || target.rfind("reflect", 0) == 0 ||
+	    target.rfind("encoding", 0) == 0 || target.rfind("path", 0) == 0 ||
 	    target.rfind("time", 0) == 0)
 		return true;
 	// Python standard library.
-	if (target.rfind("os", 0) == 0 ||
-	    target.rfind("sys", 0) == 0 ||
-	    target.rfind("json", 0) == 0 ||
-	    target.rfind("re", 0) == 0 ||
+	if (target.rfind("os", 0) == 0 || target.rfind("sys", 0) == 0 ||
+	    target.rfind("json", 0) == 0 || target.rfind("re", 0) == 0 ||
 	    target.rfind("typing", 0) == 0 ||
 	    target.rfind("collections", 0) == 0 ||
 	    target.rfind("functools", 0) == 0 ||
 	    target.rfind("itertools", 0) == 0 ||
 	    target.rfind("pathlib", 0) == 0 ||
-	    target.rfind("dataclasses", 0) == 0 ||
-	    target.rfind("abc", 0) == 0)
+	    target.rfind("dataclasses", 0) == 0 || target.rfind("abc", 0) == 0)
 		return true;
 	// Node.js built-ins.
 	if (target.rfind("node:", 0) == 0)
@@ -103,8 +88,7 @@ bool isStandardLibrary(const std::string &target)
 /// We exclude standard library, local modules (in arch_module), and
 /// legitimate external packages (already marked "external" in arch_edge).
 /// Only "unresolved" edges are flagged.
-void detectDependencyAnomalies(store::GraphStore &store,
-			       uint64_t project_id,
+void detectDependencyAnomalies(store::GraphStore &store, uint64_t project_id,
 			       DefectResult &result)
 {
 	sqlite3 *db = store.handle();
@@ -128,10 +112,10 @@ void detectDependencyAnomalies(store::GraphStore &store,
 		const unsigned char *sfile = sqlite3_column_text(stmt, 2);
 		int srow = sqlite3_column_int(stmt, 3);
 
-		std::string dst_path = dst ?
-			reinterpret_cast<const char *>(dst) : "";
-		std::string src_mod = src ?
-			reinterpret_cast<const char *>(src) : "";
+		std::string dst_path =
+			dst ? reinterpret_cast<const char *>(dst) : "";
+		std::string src_mod =
+			src ? reinterpret_cast<const char *>(src) : "";
 
 		// Skip standard library.
 		if (isStandardLibrary(dst_path))
@@ -140,8 +124,8 @@ void detectDependencyAnomalies(store::GraphStore &store,
 		DefectCandidate d;
 		d.category = "dependency_anomaly";
 		d.target = dst_path;
-		d.file_path = sfile ?
-			reinterpret_cast<const char *>(sfile) : "";
+		d.file_path = sfile ? reinterpret_cast<const char *>(sfile) :
+				      "";
 		d.row = srow;
 		d.confidence = 0.4;
 		d.description =
@@ -149,8 +133,7 @@ void detectDependencyAnomalies(store::GraphStore &store,
 			"' imports '" + dst_path +
 			"' which cannot be resolved to any known module "
 			"or external package";
-		d.evidence_basis =
-			"arch_edge.resolution_kind='unresolved'";
+		d.evidence_basis = "arch_edge.resolution_kind='unresolved'";
 		result.candidates.push_back(std::move(d));
 	}
 	sqlite3_finalize(stmt);
@@ -183,8 +166,7 @@ struct FunctionMetrics {
 /// OR:
 ///   cyclomatic ≤ 1 AND call_count == 0 AND lines ≤ 2
 /// (the second path catches shells even without is_stub)
-void detectShellImplementations(store::GraphStore &store,
-				uint64_t project_id,
+void detectShellImplementations(store::GraphStore &store, uint64_t project_id,
 				DefectResult &result)
 {
 	sqlite3 *db = store.handle();
@@ -217,17 +199,16 @@ void detectShellImplementations(store::GraphStore &store,
 		fm.loop_count = sqlite3_column_int(stmt, 9);
 		fm.is_stub = sqlite3_column_int(stmt, 10);
 		fm.name = name ? reinterpret_cast<const char *>(name) : "";
-		fm.file_path = fpath ?
-			reinterpret_cast<const char *>(fpath) : "";
-		fm.language = lang ?
-			reinterpret_cast<const char *>(lang) : "";
+		fm.file_path = fpath ? reinterpret_cast<const char *>(fpath) :
+				       "";
+		fm.language = lang ? reinterpret_cast<const char *>(lang) : "";
 
 		// Shell criteria: minimal body, no calls, no branches.
 		bool is_shell = false;
 		double confidence = 0.0;
 
-		if (fm.cyclomatic <= 1 && fm.call_count == 0 &&
-		    fm.lines <= 3 && fm.is_stub) {
+		if (fm.cyclomatic <= 1 && fm.call_count == 0 && fm.lines <= 3 &&
+		    fm.is_stub) {
 			is_shell = true;
 			confidence = 0.6; // Strong: all four criteria.
 		} else if (fm.cyclomatic <= 1 && fm.call_count == 0 &&
@@ -250,9 +231,8 @@ void detectShellImplementations(store::GraphStore &store,
 				std::to_string(fm.call_count) +
 				", lines=" + std::to_string(fm.lines) +
 				", is_stub=" + std::to_string(fm.is_stub);
-			d.evidence_basis =
-				"entity metrics: cyclomatic≤1 AND "
-				"call_count=0 AND lines≤3";
+			d.evidence_basis = "entity metrics: cyclomatic≤1 AND "
+					   "call_count=0 AND lines≤3";
 			result.candidates.push_back(std::move(d));
 		}
 	}
@@ -267,8 +247,7 @@ void detectShellImplementations(store::GraphStore &store,
 /// - call_count
 /// AND are in different file paths (different modules).
 void detectDuplicateImplementations(store::GraphStore &store,
-				    uint64_t project_id,
-				    DefectResult &result)
+				    uint64_t project_id, DefectResult &result)
 {
 	sqlite3 *db = store.handle();
 	if (!db)
@@ -298,10 +277,9 @@ void detectDuplicateImplementations(store::GraphStore &store,
 		fm.param_count = sqlite3_column_int(stmt, 6);
 		fm.call_count = sqlite3_column_int(stmt, 7);
 		fm.name = name ? reinterpret_cast<const char *>(name) : "";
-		fm.file_path = fpath ?
-			reinterpret_cast<const char *>(fpath) : "";
-		fm.language = lang ?
-			reinterpret_cast<const char *>(lang) : "";
+		fm.file_path = fpath ? reinterpret_cast<const char *>(fpath) :
+				       "";
+		fm.language = lang ? reinterpret_cast<const char *>(lang) : "";
 		functions.push_back(std::move(fm));
 	}
 	sqlite3_finalize(stmt);
@@ -315,9 +293,8 @@ void detectDuplicateImplementations(store::GraphStore &store,
 		int calls;
 		bool operator==(const MetricsKey &o) const
 		{
-			return cyclomatic == o.cyclomatic &&
-			       lines == o.lines && params == o.params &&
-			       calls == o.calls;
+			return cyclomatic == o.cyclomatic && lines == o.lines &&
+			       params == o.params && calls == o.calls;
 		}
 	};
 
@@ -331,15 +308,13 @@ void detectDuplicateImplementations(store::GraphStore &store,
 		}
 	};
 
-	std::unordered_map<MetricsKey, std::vector<size_t>,
-			   MetricsKeyHash>
+	std::unordered_map<MetricsKey, std::vector<size_t>, MetricsKeyHash>
 		groups;
 
 	for (size_t i = 0; i < functions.size(); ++i) {
-		MetricsKey key{functions[i].cyclomatic,
-			       functions[i].lines,
-			       functions[i].param_count,
-			       functions[i].call_count};
+		MetricsKey key{ functions[i].cyclomatic, functions[i].lines,
+				functions[i].param_count,
+				functions[i].call_count };
 		groups[key].push_back(i);
 	}
 
@@ -366,13 +341,12 @@ void detectDuplicateImplementations(store::GraphStore &store,
 		d.confidence = 0.3; // Low: structural similarity only.
 		d.description =
 			"Possible duplicate implementation: '" + f1.name +
-			"' (" + f1.file_path + ") and '" + f2.name +
-			"' (" + f2.file_path +
-			") have identical metrics: lines=" +
-			std::to_string(f1.lines) + ", cyclomatic=" +
-			std::to_string(f1.cyclomatic) + ", params=" +
-			std::to_string(f1.param_count) + ", calls=" +
-			std::to_string(f1.call_count);
+			"' (" + f1.file_path + ") and '" + f2.name + "' (" +
+			f2.file_path + ") have identical metrics: lines=" +
+			std::to_string(f1.lines) +
+			", cyclomatic=" + std::to_string(f1.cyclomatic) +
+			", params=" + std::to_string(f1.param_count) +
+			", calls=" + std::to_string(f1.call_count);
 		d.evidence_basis =
 			"structural similarity: identical metrics signature";
 		result.candidates.push_back(std::move(d));
@@ -381,8 +355,7 @@ void detectDuplicateImplementations(store::GraphStore &store,
 
 /// Detect invalid abstractions: interfaces/traits with exactly one
 /// implementation. Reported as candidates, not defects (§8.4).
-void detectInvalidAbstractions(store::GraphStore &store,
-			       uint64_t project_id,
+void detectInvalidAbstractions(store::GraphStore &store, uint64_t project_id,
 			       DefectResult &result)
 {
 	sqlite3 *db = store.handle();
@@ -433,10 +406,10 @@ void detectInvalidAbstractions(store::GraphStore &store,
 		const unsigned char *name = sqlite3_column_text(stmt, 0);
 		const unsigned char *fpath = sqlite3_column_text(stmt, 1);
 
-		std::string iface_name = name ?
-			reinterpret_cast<const char *>(name) : "";
-		std::string file_path = fpath ?
-			reinterpret_cast<const char *>(fpath) : "";
+		std::string iface_name =
+			name ? reinterpret_cast<const char *>(name) : "";
+		std::string file_path =
+			fpath ? reinterpret_cast<const char *>(fpath) : "";
 
 		DefectCandidate d;
 		d.category = "invalid_abstraction";
@@ -447,8 +420,7 @@ void detectInvalidAbstractions(store::GraphStore &store,
 			"Interface/trait '" + iface_name +
 			"' has exactly one implementation — potential "
 			"unnecessary abstraction (candidate, not defect)";
-		d.evidence_basis =
-			"interface_impl count = 1";
+		d.evidence_basis = "interface_impl count = 1";
 		result.candidates.push_back(std::move(d));
 	}
 	sqlite3_finalize(stmt);
@@ -456,8 +428,7 @@ void detectInvalidAbstractions(store::GraphStore &store,
 
 } // namespace
 
-DefectResult detectGenDefects(store::GraphStore &store,
-			      uint64_t project_id)
+DefectResult detectGenDefects(store::GraphStore &store, uint64_t project_id)
 {
 	DefectResult result;
 

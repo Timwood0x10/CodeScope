@@ -69,8 +69,7 @@ struct DefectResult {
 /// @param store      The GraphStore to read from.
 /// @param project_id The project to analyze.
 /// @return Defect result with candidates.
-DefectResult detectGenDefects(store::GraphStore &store,
-			      uint64_t project_id);
+DefectResult detectGenDefects(store::GraphStore &store, uint64_t project_id);
 
 } // namespace arch
 

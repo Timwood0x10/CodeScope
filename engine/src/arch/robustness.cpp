@@ -77,8 +77,7 @@ int buildSccMapping(const ModuleGraph &graph,
 /// Build the condensed DAG: one edge per unique (scc_src, scc_dst) pair
 /// where scc_src != scc_dst. Returns adjacency list + in-degree.
 void buildCondensedDag(const ModuleGraph &graph,
-		       const std::vector<int> &node_to_scc,
-		       int scc_count,
+		       const std::vector<int> &node_to_scc, int scc_count,
 		       std::vector<std::vector<int>> &dag_adj,
 		       std::vector<int> &dag_in_degree)
 {
@@ -144,8 +143,7 @@ int computeDagDepth(const std::vector<std::vector<int>> &dag_adj,
 /// Compute the reverse reachable set size for each module via BFS on
 /// the reverse adjacency (following incoming edges = "who depends on me").
 /// Returns a vector of set sizes, indexed by module index.
-std::vector<int>
-computeReverseReachable(const ModuleGraph &graph)
+std::vector<int> computeReverseReachable(const ModuleGraph &graph)
 {
 	int n = graph.nodeCount();
 	std::vector<int> sizes(n, 0);
@@ -212,18 +210,15 @@ int computeFanOut(const ModuleGraph &graph, int node_idx)
 int computeExternalDepsFromDb(sqlite3 *db, uint64_t project_id,
 			      const std::string &module_path)
 {
-	const char *sql =
-		"SELECT COUNT(*) FROM arch_edge "
-		"WHERE project_id=? AND src_module=? "
-		"AND resolution_kind='external'";
+	const char *sql = "SELECT COUNT(*) FROM arch_edge "
+			  "WHERE project_id=? AND src_module=? "
+			  "AND resolution_kind='external'";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
 		return 0;
 	}
-	sqlite3_bind_int64(stmt, 1,
-			   static_cast<int64_t>(project_id));
-	sqlite3_bind_text(stmt, 2, module_path.c_str(), -1,
-			  SQLITE_TRANSIENT);
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	sqlite3_bind_text(stmt, 2, module_path.c_str(), -1, SQLITE_TRANSIENT);
 	int count = 0;
 	if (sqlite3_step(stmt) == SQLITE_ROW)
 		count = sqlite3_column_int(stmt, 0);
@@ -284,9 +279,8 @@ RobustnessResult computeRobustness(store::GraphStore &store,
 			max_fan_in_module = graph.node(i).path;
 		}
 
-		double fan_in_ratio = (n > 1) ? static_cast<double>(fan_in) /
-						      (n - 1)
-					       : 0.0;
+		double fan_in_ratio =
+			(n > 1) ? static_cast<double>(fan_in) / (n - 1) : 0.0;
 
 		// Fan-in observation.
 		if (fan_in > 0) {
@@ -298,9 +292,8 @@ RobustnessResult computeRobustness(store::GraphStore &store,
 			obs.description =
 				"Module '" + graph.node(i).path +
 				"' has fan-in " + std::to_string(fan_in) +
-				" (" + fmt(fan_in_ratio * 100.0) +
-				"% of " + std::to_string(n - 1) +
-				" possible dependers)";
+				" (" + fmt(fan_in_ratio * 100.0) + "% of " +
+				std::to_string(n - 1) + " possible dependers)";
 			result.observations.push_back(std::move(obs));
 		}
 
@@ -319,8 +312,7 @@ RobustnessResult computeRobustness(store::GraphStore &store,
 				fmt(fan_in_ratio * 100.0) +
 				"% of modules depend on it) AND outgoing "
 				"diversity " +
-				std::to_string(out_div) +
-				" distinct dependees";
+				std::to_string(out_div) + " distinct dependees";
 			result.observations.push_back(std::move(obs));
 		}
 
@@ -336,8 +328,7 @@ RobustnessResult computeRobustness(store::GraphStore &store,
 	// 2a. Condensed DAG depth.
 	auto sccs = computeSccs(graph);
 	std::vector<int> node_to_scc;
-	int scc_count =
-		buildSccMapping(graph, sccs, node_to_scc);
+	int scc_count = buildSccMapping(graph, sccs, node_to_scc);
 
 	std::vector<std::vector<int>> dag_adj;
 	std::vector<int> dag_in_degree;
@@ -423,10 +414,10 @@ RobustnessResult computeRobustness(store::GraphStore &store,
 			obs.metric = "external_dependency_count";
 			obs.value = static_cast<double>(ext);
 			obs.target = graph.node(i).path;
-			obs.description =
-				"Module '" + graph.node(i).path +
-				"' depends on " + std::to_string(ext) +
-				" external packages";
+			obs.description = "Module '" + graph.node(i).path +
+					  "' depends on " +
+					  std::to_string(ext) +
+					  " external packages";
 			result.observations.push_back(std::move(obs));
 
 			if (ext > max_external) {
@@ -447,7 +438,8 @@ RobustnessResult computeRobustness(store::GraphStore &store,
 			"Total external dependencies across all modules: " +
 			std::to_string(total_external) +
 			", concentrated in module '" + max_external_module +
-			"' (" + std::to_string(max_external) + " external deps)";
+			"' (" + std::to_string(max_external) +
+			" external deps)";
 		result.observations.push_back(std::move(obs));
 	}
 

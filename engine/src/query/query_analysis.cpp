@@ -271,11 +271,11 @@ std::string QueryEngine::getEntryPoints(uint64_t project_id)
 	{
 		sqlite3_stmt *check = nullptr;
 		if (sqlite3_prepare_v2(db,
-			"SELECT COUNT(*) FROM arch_entry_point "
-			"WHERE project_id=?",
-			-1, &check, nullptr) == SQLITE_OK) {
+				       "SELECT COUNT(*) FROM arch_entry_point "
+				       "WHERE project_id=?",
+				       -1, &check, nullptr) == SQLITE_OK) {
 			sqlite3_bind_int64(check, 1,
-				static_cast<int64_t>(project_id));
+					   static_cast<int64_t>(project_id));
 			if (sqlite3_step(check) == SQLITE_ROW &&
 			    sqlite3_column_int64(check, 0) > 0)
 				has_arch_entry = true;
@@ -302,7 +302,7 @@ std::string QueryEngine::getEntryPoints(uint64_t project_id)
 		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) ==
 		    SQLITE_OK) {
 			sqlite3_bind_int64(st, 1,
-				static_cast<int64_t>(project_id));
+					   static_cast<int64_t>(project_id));
 			while (sqlite3_step(st) == SQLITE_ROW) {
 				int64_t id = sqlite3_column_int64(st, 0);
 				std::string name = columnTextEscaped(st, 1);
@@ -347,7 +347,7 @@ std::string QueryEngine::getEntryPoints(uint64_t project_id)
 		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) ==
 		    SQLITE_OK) {
 			sqlite3_bind_int64(st, 1,
-				static_cast<int64_t>(project_id));
+					   static_cast<int64_t>(project_id));
 			while (sqlite3_step(st) == SQLITE_ROW) {
 				int64_t id = sqlite3_column_int64(st, 0);
 				std::string name = columnTextEscaped(st, 1);

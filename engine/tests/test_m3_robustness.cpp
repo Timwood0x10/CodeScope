@@ -24,7 +24,7 @@ static char kDbPath[160];
 static void initDbPath()
 {
 	std::snprintf(kDbPath, sizeof(kDbPath),
-		     "/tmp/codescope_test_m3_rob_%d.db", int(getpid()));
+		      "/tmp/codescope_test_m3_rob_%d.db", int(getpid()));
 }
 
 static void removeDbFiles()
@@ -52,12 +52,12 @@ static void insertModule(store::GraphStore &store, uint64_t project_id,
 			 const std::string &path,
 			 const std::string &language = "cpp")
 {
-	std::string sql = std::string(
-		"INSERT OR IGNORE INTO arch_module "
-		"(project_id, path, parent_path, language, "
-		"file_count, entity_count) VALUES (") +
-		std::to_string(project_id) + ",'" + path + "','','" +
-		language + "',1,1)";
+	std::string sql =
+		std::string("INSERT OR IGNORE INTO arch_module "
+			    "(project_id, path, parent_path, language, "
+			    "file_count, entity_count) VALUES (") +
+		std::to_string(project_id) + ",'" + path + "','','" + language +
+		"',1,1)";
 	execSql(store, sql.c_str());
 }
 
@@ -67,11 +67,11 @@ static void insertEdge(store::GraphStore &store, uint64_t project_id,
 		       const std::string &resolution = "internal",
 		       double confidence = 1.0)
 {
-	std::string sql = std::string(
-		"INSERT OR IGNORE INTO arch_edge "
-		"(project_id, src_module, dst_module, edge_kind, "
-		"resolution_kind, confidence, source_file, "
-		"source_row) VALUES (") +
+	std::string sql =
+		std::string("INSERT OR IGNORE INTO arch_edge "
+			    "(project_id, src_module, dst_module, edge_kind, "
+			    "resolution_kind, confidence, source_file, "
+			    "source_row) VALUES (") +
 		std::to_string(project_id) + ",'" + src + "','" + dst +
 		"','import','" + resolution + "'," +
 		std::to_string(confidence) + ",'test.cpp',1)";
@@ -94,8 +94,7 @@ static int countObservations(const arch::RobustnessResult &result,
 /// Find the first observation matching category+metric.
 static const arch::RobustnessObservation *
 findObservation(const arch::RobustnessResult &result,
-		const std::string &category,
-		const std::string &metric)
+		const std::string &category, const std::string &metric)
 {
 	for (const auto &obs : result.observations) {
 		if (obs.category == category && obs.metric == metric)
@@ -133,17 +132,16 @@ static void testFanInConcentration()
 
 	auto result = arch::computeRobustness(store, project_id);
 	CHECK_MSG(result.error.empty(), "should not error");
-	CHECK_MSG(!result.observations.empty(),
-		  "should produce observations");
+	CHECK_MSG(!result.observations.empty(), "should produce observations");
 
 	// mod_hub should have a fan_in_ratio observation.
-	int fan_in_count = countObservations(result, "concentration",
-					      "fan_in_ratio");
+	int fan_in_count =
+		countObservations(result, "concentration", "fan_in_ratio");
 	CHECK_MSG(fan_in_count >= 1, "should have at least 1 fan_in_ratio");
 
 	// Find the observation for mod_hub.
-	const auto *hub_obs = findObservation(result, "concentration",
-					       "fan_in_ratio");
+	const auto *hub_obs =
+		findObservation(result, "concentration", "fan_in_ratio");
 	if (hub_obs) {
 		CHECK_MSG(hub_obs->target == "mod_hub",
 			  "hub should be the target");
@@ -195,13 +193,12 @@ static void testFragileHub()
 	CHECK_MSG(result.error.empty(), "should not error");
 
 	// Should identify mod_hub as a fragile hub.
-	int fragile_count = countObservations(result, "concentration",
-					       "fragile_hub");
-	CHECK_MSG(fragile_count >= 1,
-		  "should identify at least 1 fragile hub");
+	int fragile_count =
+		countObservations(result, "concentration", "fragile_hub");
+	CHECK_MSG(fragile_count >= 1, "should identify at least 1 fragile hub");
 
-	const auto *hub = findObservation(result, "concentration",
-					   "fragile_hub");
+	const auto *hub =
+		findObservation(result, "concentration", "fragile_hub");
 	if (hub) {
 		CHECK_MSG(hub->target == "mod_hub",
 			  "fragile hub should be mod_hub");
@@ -243,10 +240,9 @@ static void testDagDepth()
 	CHECK_MSG(result.error.empty(), "should not error");
 
 	// Should have a dag_depth observation.
-	const auto *depth_obs = findObservation(result, "propagation",
-						"dag_depth");
-	CHECK_MSG(depth_obs != nullptr,
-		  "should have a dag_depth observation");
+	const auto *depth_obs =
+		findObservation(result, "propagation", "dag_depth");
+	CHECK_MSG(depth_obs != nullptr, "should have a dag_depth observation");
 	if (depth_obs) {
 		CHECK_MSG(depth_obs->value >= 5.0,
 			  "DAG depth should be at least 5 for a 5-node chain");
@@ -288,14 +284,13 @@ static void testReverseReachable()
 	CHECK_MSG(result.error.empty(), "should not error");
 
 	// D should have a reverse reachable set of 3 (A, B, C).
-	int rev_count = countObservations(result, "propagation",
-					   "reverse_reachable");
-	CHECK_MSG(rev_count >= 1,
-		  "should have reverse_reachable observations");
+	int rev_count =
+		countObservations(result, "propagation", "reverse_reachable");
+	CHECK_MSG(rev_count >= 1, "should have reverse_reachable observations");
 
 	// Check that D has the largest propagation radius.
 	const auto *max_prop = findObservation(result, "propagation",
-					     "max_propagation_radius");
+					       "max_propagation_radius");
 	CHECK_MSG(max_prop != nullptr,
 		  "should have max_propagation_radius observation");
 	if (max_prop) {
@@ -341,13 +336,13 @@ static void testExternalDependencies()
 
 	// Should have external_dependency_count observations.
 	int ext_count = countObservations(result, "boundary",
-					   "external_dependency_count");
+					  "external_dependency_count");
 	CHECK_MSG(ext_count >= 1,
 		  "should have external_dependency_count observations");
 
 	// Should have a global external_concentration observation.
-	const auto *global_ext = findObservation(result, "boundary",
-						 "external_concentration");
+	const auto *global_ext =
+		findObservation(result, "boundary", "external_concentration");
 	CHECK_MSG(global_ext != nullptr,
 		  "should have external_concentration observation");
 	if (global_ext) {
@@ -419,10 +414,9 @@ static void testCyclicDagDepth()
 	auto result = arch::computeRobustness(store, project_id);
 	CHECK_MSG(result.error.empty(), "should not error");
 
-	const auto *depth_obs = findObservation(result, "propagation",
-						"dag_depth");
-	CHECK_MSG(depth_obs != nullptr,
-		  "should have a dag_depth observation");
+	const auto *depth_obs =
+		findObservation(result, "propagation", "dag_depth");
+	CHECK_MSG(depth_obs != nullptr, "should have a dag_depth observation");
 	if (depth_obs) {
 		// Condensed DAG: SCC{A,B,C} → D → E, depth = 3.
 		CHECK_MSG(depth_obs->value >= 3.0,

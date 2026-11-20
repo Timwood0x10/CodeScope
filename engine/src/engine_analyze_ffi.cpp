@@ -70,8 +70,8 @@ char *engine_analyze_project(engine_t handle, uint64_t project_id,
 				ctx, project_id, hist_run_id, drift_type);
 		}
 		if (view_str == "profile_history")
-			return engine_views::buildProfileHistory(
-				ctx, project_id);
+			return engine_views::buildProfileHistory(ctx,
+								 project_id);
 
 		// ── Views that require a scope object ─────────────────
 		// parseScope uses the project's JSON reader: a hand-rolled
@@ -109,8 +109,8 @@ char *engine_analyze_project(engine_t handle, uint64_t project_id,
 			if (!engine_views::parseFileList(scope_json, files,
 							 scope_error))
 				return reject(scope_error);
-			return engine_views::buildChangeContext(
-				ctx, project_id, files);
+			return engine_views::buildChangeContext(ctx, project_id,
+								files);
 		}
 		if (view_str == "reverify") {
 			std::vector<std::string> files;

@@ -57,8 +57,7 @@ std::string matchDeclaredLayer(sqlite3 *db, uint64_t project_id,
 	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
 		return "";
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-	sqlite3_bind_text(stmt, 2, file_path.c_str(), -1,
-			  SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 2, file_path.c_str(), -1, SQLITE_TRANSIENT);
 
 	std::string layer;
 	if (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -79,8 +78,8 @@ std::string matchDeclaredLayer(sqlite3 *db, uint64_t project_id,
 /// The declared layers define an ordering: layers declared earlier
 /// are "higher" (e.g. api > service > storage). A structural edge from
 /// a lower layer to a higher layer is a violation.
-std::vector<DriftItem>
-detectWithDeclaredLayers(sqlite3 *db, uint64_t project_id)
+std::vector<DriftItem> detectWithDeclaredLayers(sqlite3 *db,
+						uint64_t project_id)
 {
 	std::vector<DriftItem> drifts;
 
@@ -91,18 +90,16 @@ detectWithDeclaredLayers(sqlite3 *db, uint64_t project_id)
 				  "arch_layer_decl WHERE project_id=? "
 				  "ORDER BY layer_name";
 		sqlite3_stmt *stmt = nullptr;
-		if (sqlite3_prepare_v2(db, sql, -1, &stmt,
-				       nullptr) != SQLITE_OK)
+		if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) !=
+		    SQLITE_OK)
 			return drifts;
-		sqlite3_bind_int64(stmt, 1,
-				   static_cast<int64_t>(project_id));
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 		while (sqlite3_step(stmt) == SQLITE_ROW) {
 			const unsigned char *name =
 				sqlite3_column_text(stmt, 0);
 			if (name)
 				layer_order.push_back(
-					reinterpret_cast<const char *>(
-						name));
+					reinterpret_cast<const char *>(name));
 		}
 		sqlite3_finalize(stmt);
 	}
@@ -132,10 +129,10 @@ detectWithDeclaredLayers(sqlite3 *db, uint64_t project_id)
 		if (!src_mod || !dst_mod)
 			continue;
 
-		std::string src_layer = matchDeclaredLayer(
-			db, project_id, src_mod);
-		std::string dst_layer = matchDeclaredLayer(
-			db, project_id, dst_mod);
+		std::string src_layer =
+			matchDeclaredLayer(db, project_id, src_mod);
+		std::string dst_layer =
+			matchDeclaredLayer(db, project_id, dst_mod);
 
 		// Skip edges where either endpoint is unclassified.
 		if (src_layer.empty() || dst_layer.empty())
@@ -161,9 +158,9 @@ detectWithDeclaredLayers(sqlite3 *db, uint64_t project_id)
 			item.type = "ArchitectureDrift";
 			item.severity = kDriftSeverityArch;
 			item.subject = src_layer + "->" + dst_layer;
-			item.detail = std::string(src_mod) + " (" +
-				      src_layer + ") depends on " +
-				      dst_mod + " (" + dst_layer +
+			item.detail = std::string(src_mod) + " (" + src_layer +
+				      ") depends on " + dst_mod + " (" +
+				      dst_layer +
 				      ") - reverse dependency direction";
 			drifts.push_back(item);
 		}
@@ -194,8 +191,7 @@ int persistDriftRecords(sqlite3 *db, uint64_t project_id,
 
 	int written = 0;
 	for (const auto &item : items) {
-		sqlite3_bind_int64(stmt, 1,
-				   static_cast<int64_t>(project_id));
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 		sqlite3_bind_text(stmt, 2, run_id.c_str(), -1,
 				  SQLITE_TRANSIENT);
 		sqlite3_bind_text(stmt, 3, drift_type.c_str(), -1,
@@ -207,8 +203,7 @@ int persistDriftRecords(sqlite3 *db, uint64_t project_id,
 		// Build a minimal evidence_json from the DriftItem fields.
 		std::string evidence = "{\"type\":\"" + item.type +
 				       "\",\"subject\":\"" + item.subject +
-				       "\",\"detail\":\"" + item.detail +
-				       "\"}";
+				       "\",\"detail\":\"" + item.detail + "\"}";
 		sqlite3_bind_text(stmt, 6, evidence.c_str(), -1,
 				  SQLITE_TRANSIENT);
 
@@ -224,9 +219,8 @@ int persistDriftRecords(sqlite3 *db, uint64_t project_id,
 
 } // namespace
 
-std::vector<DriftItem>
-detectArchitectureDriftAdapted(store::GraphStore &store,
-			       uint64_t project_id)
+std::vector<DriftItem> detectArchitectureDriftAdapted(store::GraphStore &store,
+						      uint64_t project_id)
 {
 	sqlite3 *db = store.handle();
 	if (!db)
@@ -241,22 +235,19 @@ detectArchitectureDriftAdapted(store::GraphStore &store,
 	return detectArchitectureDrift(store, project_id);
 }
 
-DriftResult detectAndPersistDrift(store::GraphStore &store,
-				  uint64_t project_id,
+DriftResult detectAndPersistDrift(store::GraphStore &store, uint64_t project_id,
 				  const std::string &run_id)
 {
 	DriftResult result;
 
 	// 1. Architecture drift.
-	result.architecture =
-		detectArchitectureDriftAdapted(store, project_id);
+	result.architecture = detectArchitectureDriftAdapted(store, project_id);
 
 	// 2. Capability drift.
 	result.capability = detectCapabilityDrift(store, project_id);
 
 	// 3. Documentation drift.
-	result.documentation =
-		detectDocumentationDrift(store, project_id);
+	result.documentation = detectDocumentationDrift(store, project_id);
 
 	// 4. Persist to drift_record.
 	sqlite3 *db = store.handle();
@@ -271,10 +262,10 @@ DriftResult detectAndPersistDrift(store::GraphStore &store,
 		const char *sql = "DELETE FROM drift_record "
 				  "WHERE project_id=? AND run_id=?";
 		sqlite3_stmt *stmt = nullptr;
-		if (sqlite3_prepare_v2(db, sql, -1, &stmt,
-				       nullptr) == SQLITE_OK) {
+		if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) ==
+		    SQLITE_OK) {
 			sqlite3_bind_int64(stmt, 1,
-				static_cast<int64_t>(project_id));
+					   static_cast<int64_t>(project_id));
 			sqlite3_bind_text(stmt, 2, run_id.c_str(), -1,
 					  SQLITE_TRANSIENT);
 			sqlite3_step(stmt);
@@ -283,12 +274,11 @@ DriftResult detectAndPersistDrift(store::GraphStore &store,
 	}
 
 	int written = 0;
-	written += persistDriftRecords(db, project_id, run_id,
-				       "architecture", result.architecture);
-	written += persistDriftRecords(db, project_id, run_id,
-				       "capability", result.capability);
-	written += persistDriftRecords(db, project_id, run_id,
-				       "documentation",
+	written += persistDriftRecords(db, project_id, run_id, "architecture",
+				       result.architecture);
+	written += persistDriftRecords(db, project_id, run_id, "capability",
+				       result.capability);
+	written += persistDriftRecords(db, project_id, run_id, "documentation",
 				       result.documentation);
 	result.records_written = written;
 
