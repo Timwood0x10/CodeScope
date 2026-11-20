@@ -188,6 +188,33 @@ pub(crate) const TABLE_SPECS: &[TableSpec] = &[
         remap_cols: &[],
         skip_rowid: false,
     },
+    // M2 §10.4/§17.7: architecture tables produced by workers during
+    // indexing (structure extraction runs per-file). arch_module and
+    // arch_module_member are per-project, deduped by UNIQUE constraints.
+    // arch_edge has a unique index on (project, src, dst, kind, file, row).
+    // arch_entry_point dedupes on (project, entity, kind).
+    // constraint_decl, arch_layer_decl, profile_run_input, drift_record
+    // and profile_snapshot are main-process only and NOT listed here.
+    TableSpec {
+        name: "arch_module",
+        remap_cols: &[("id", "self")],
+        skip_rowid: false,
+    },
+    TableSpec {
+        name: "arch_module_member",
+        remap_cols: &[("entity_id", "entity")],
+        skip_rowid: false,
+    },
+    TableSpec {
+        name: "arch_edge",
+        remap_cols: &[("id", "self"), ("source_entity_id", "entity")],
+        skip_rowid: false,
+    },
+    TableSpec {
+        name: "arch_entry_point",
+        remap_cols: &[("id", "self"), ("entity_id", "entity")],
+        skip_rowid: false,
+    },
 ];
 
 /// Tables to read schema for from sqlite_master.
@@ -216,6 +243,11 @@ pub(crate) const SCHEMA_TABLES: &[&str] = &[
     "finding",
     "finding_evidence",
     "coverage",
+    // M2 architecture tables (worker-produced).
+    "arch_module",
+    "arch_module_member",
+    "arch_edge",
+    "arch_entry_point",
 ];
 
 /// Tables that need an offset computed (have id column).
@@ -237,4 +269,11 @@ pub(crate) const OFFSET_TABLES: &[&str] = &[
     "claim",
     "evidence",
     "finding",
+    // M2: arch_module and arch_edge have autoincrement PKs that need
+    // offset remapping; arch_entry_point also has an autoincrement id.
+    // arch_module_member has no id column (PK is project_id+entity_id),
+    // so it does not need an offset entry.
+    "arch_module",
+    "arch_edge",
+    "arch_entry_point",
 ];
