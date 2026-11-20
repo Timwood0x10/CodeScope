@@ -294,6 +294,8 @@ set(ENGINE_SOURCES
     src/constraint/constraint_engine.cpp
     src/arch/module_graph.cpp
     src/arch/entry_point_builder.cpp
+    src/arch/robustness.cpp
+    src/arch/gen_defects.cpp
     src/async_knowledge.cpp
     src/filter_policy.cpp
     src/filter_policy_detect.cpp
