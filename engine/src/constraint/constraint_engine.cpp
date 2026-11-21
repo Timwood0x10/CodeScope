@@ -431,12 +431,19 @@ bool persistConstraints(store::GraphStore &store, uint64_t project_id,
 			"method=persistConstraints]";
 		return false;
 	}
-	if (sqlite3_exec(db, "BEGIN", nullptr, nullptr, nullptr) != SQLITE_OK) {
+	// The caller may already hold a transaction (the enhance pass wraps
+	// several steps): starting a second one fails with "cannot start a
+	// transaction within a transaction". Join the caller's transaction and
+	// roll back only what this call opened.
+	const bool own_txn = sqlite3_get_autocommit(db) != 0;
+	if (own_txn &&
+	    sqlite3_exec(db, "BEGIN", nullptr, nullptr, nullptr) != SQLITE_OK) {
 		error = std::string("BEGIN failed: ") + sqlite3_errmsg(db);
 		return false;
 	}
 	auto cleanup = [&]() {
-		sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
+		if (own_txn)
+			sqlite3_exec(db, "ROLLBACK", nullptr, nullptr, nullptr);
 	};
 	if (!deleteOldDeclarations(db, project_id, digest, error)) {
 		cleanup();
@@ -451,8 +458,8 @@ bool persistConstraints(store::GraphStore &store, uint64_t project_id,
 		cleanup();
 		return false;
 	}
-	if (sqlite3_exec(db, "COMMIT", nullptr, nullptr, nullptr) !=
-	    SQLITE_OK) {
+	if (own_txn && sqlite3_exec(db, "COMMIT", nullptr, nullptr, nullptr) !=
+			       SQLITE_OK) {
 		error = std::string("COMMIT failed: ") + sqlite3_errmsg(db);
 		cleanup();
 		return false;
