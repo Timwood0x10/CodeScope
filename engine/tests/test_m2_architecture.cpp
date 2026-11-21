@@ -63,10 +63,16 @@ static int64_t insertEntity(store::GraphStore &store, uint64_t project_id,
 	sqlite3 *db = store.handle();
 	const char *sql = "INSERT INTO entity (project_id, name, "
 			  "qualified_name, kind, file_path, language, "
-			  "start_row, end_row) "
-			  "VALUES (?,?,?,?,?,?,?,?)";
+			  "start_row, start_col, end_row, end_col) "
+			  "VALUES (?,?,?,?,?,?,?,?,?,?)";
 	sqlite3_stmt *stmt = nullptr;
-	sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
+	const int prc = sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
+	if (prc != SQLITE_OK) {
+		std::fprintf(stderr, "FAIL: entity prepare: %s\n",
+			     sqlite3_errmsg(db));
+		CHECK(prc == SQLITE_OK);
+		return 0;
+	}
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 2, name.c_str(), -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 3, name.c_str(), -1, SQLITE_TRANSIENT);
@@ -74,8 +80,15 @@ static int64_t insertEntity(store::GraphStore &store, uint64_t project_id,
 	sqlite3_bind_text(stmt, 5, path.c_str(), -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 6, language.c_str(), -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int(stmt, 7, 1);
-	sqlite3_bind_int(stmt, 8, 10);
-	sqlite3_step(stmt);
+	sqlite3_bind_int(stmt, 8, 0);
+	sqlite3_bind_int(stmt, 9, 10);
+	sqlite3_bind_int(stmt, 10, 0);
+	const int src = sqlite3_step(stmt);
+	if (src != SQLITE_DONE) {
+		std::fprintf(stderr, "FAIL: entity insert '%s': %s\n",
+			     name.c_str(), sqlite3_errmsg(db));
+		CHECK(src == SQLITE_DONE);
+	}
 	int64_t id = sqlite3_last_insert_rowid(db);
 	sqlite3_finalize(stmt);
 	return id;
@@ -211,11 +224,13 @@ static void testDeclaredLayerViolation()
 		execSql(store, sql.c_str());
 	}
 
-	// Insert entities in each layer.
-	insertEntity(store, project_id, "ApiController",
-		     "src/api/controller.cpp");
-	insertEntity(store, project_id, "EngineCore", "src/engine/core.cpp");
-	insertEntity(store, project_id, "StorageRepo", "src/storage/repo.cpp");
+	// Insert entities in each layer and capture their IDs.
+	int64_t api_id = insertEntity(store, project_id, "ApiController",
+				      "src/api/controller.cpp");
+	int64_t engine_id = insertEntity(store, project_id, "EngineCore",
+					 "src/engine/core.cpp");
+	int64_t storage_id = insertEntity(store, project_id, "StorageRepo",
+					  "src/storage/repo.cpp");
 
 	// Insert modules.
 	execSql(store, "INSERT OR IGNORE INTO arch_module "
@@ -244,6 +259,43 @@ static void testDeclaredLayerViolation()
 		       "resolution_kind, confidence, source_file, source_row) "
 		       "VALUES (1,'src/api','src/engine','import',"
 		       "'internal',1.0,'src/api/controller.cpp',5)");
+
+	// Insert arch_module_member rows so the verifier can map modules
+	// to entities. Without these, findStructuralEdgeViolations cannot
+	// associate arch_edge entries with entity IDs.
+	{
+		char sql[512];
+		std::snprintf(sql, sizeof(sql),
+			      "INSERT OR IGNORE INTO arch_module_member "
+			      "(project_id, module_path, entity_id) "
+			      "VALUES (1,'src/api',%lld)",
+			      (long long)api_id);
+		execSql(store, sql);
+		std::snprintf(sql, sizeof(sql),
+			      "INSERT OR IGNORE INTO arch_module_member "
+			      "(project_id, module_path, entity_id) "
+			      "VALUES (1,'src/engine',%lld)",
+			      (long long)engine_id);
+		execSql(store, sql);
+		std::snprintf(sql, sizeof(sql),
+			      "INSERT OR IGNORE INTO arch_module_member "
+			      "(project_id, module_path, entity_id) "
+			      "VALUES (1,'src/storage',%lld)",
+			      (long long)storage_id);
+		execSql(store, sql);
+	}
+
+	// Insert a Calls relation so evidence_backend_ready() passes
+	// (it requires both entity_count > 0 and relation_count > 0).
+	{
+		char sql[512];
+		std::snprintf(sql, sizeof(sql),
+			      "INSERT INTO relation (project_id, "
+			      "source_id, target_id, type) "
+			      "VALUES (1,%lld,%lld,1)",
+			      (long long)api_id, (long long)engine_id);
+		execSql(store, sql);
+	}
 
 	// Verify: the ArchitectureVerifier should use declared layers.
 	verify::ArchitectureVerifier verifier(&store, project_id);
