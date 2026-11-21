@@ -17,8 +17,10 @@ use super::*;
 ///
 /// OPT-IN path: entered only when `CODESCOPE_CPU_DYNAMIC` /
 /// `CODESCOPE_DYNAMIC_SCHED` is explicitly set. The DEFAULT (no flag) is the
-/// static proportional allocator in `index_parallel` — see the project's
-/// "static by default" scheduling principle (DYNAMIC_SCHED_REDESIGN.md).
+/// static proportional allocator in `index_parallel` — "static by default":
+/// tasks are claimed from a shared chunk queue, while each worker keeps a
+/// fixed CPU set for its whole lifetime instead of borrowing cores from a
+/// pool that a crashed worker can fail to return.
 ///
 /// Stability: each worker writes its OWN DB (no concurrent WAL writers),
 /// uses a unique 1-based project_id, and the final merge reuses the proven
