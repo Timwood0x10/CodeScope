@@ -621,6 +621,11 @@ fn is_build_output_dir(path: &std::path::Path) -> bool {
             | ".netlify"
             | ".git"
             | ".codescope"
+            // Tool caches: FilterPolicy already skips them, and force-index
+            // bypassing that rule put vendored sources into the graph —
+            // measured on this repository, `.cache/fetchcontent/**` supplied
+            // the first entry point.
+            | ".cache"
             // VCS worktrees and agent scratch trees: generated checkouts and
             // build logs, not the project's own source.
             | ".worktrees"
@@ -860,6 +865,7 @@ mod tests {
         // indexing it puts generated `_testmain.go` files into the graph.
         assert!(is_build_output_dir(&tmp.join(".agnes")));
         assert!(is_build_output_dir(&tmp.join(".worktrees")));
+        assert!(is_build_output_dir(&tmp.join(".cache")));
         assert!(is_build_output_dir(&tmp.join("go-build3043122594")));
         // The numeric suffix is required: a source directory named like a
         // Go build dir must stay indexable.
