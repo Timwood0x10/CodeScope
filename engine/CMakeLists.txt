@@ -292,6 +292,7 @@ set(ENGINE_SOURCES
         src/verify/architecture_drift.cpp
     src/verify/drift_adapter.cpp
     src/constraint/constraint_engine.cpp
+    src/constraint/constraint_yaml.cpp
     src/arch/module_graph.cpp
     src/arch/entry_point_builder.cpp
     src/arch/robustness.cpp
@@ -313,6 +314,7 @@ set(ENGINE_SOURCES
     src/engine_briefing_sections.cpp
     src/engine_analyze_ffi.cpp
     src/engine_analyze_views.cpp
+    src/engine_analyze_views_m3.cpp
     src/engine_analyze_queries.cpp
     src/ir/callable_facts.cpp
     src/ir/translators/c_visitor_declarations.cpp
