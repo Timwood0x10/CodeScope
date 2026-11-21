@@ -415,6 +415,15 @@ pub(crate) fn merge_module_dbs(
             sql.push_str("CREATE TEMP TABLE _offsets AS SELECT\n");
             let mut first = true;
             for tbl in OFFSET_TABLES {
+                // A main database indexed before this table existed has no
+                // rows to offset. Referencing it would fail the whole
+                // _offsets statement, and every later INSERT would then
+                // abort with "no such table: _offsets". The per-table guard
+                // below skips the same spec, so no statement can reference
+                // a missing offset column.
+                if !existing_tables.contains(*tbl) {
+                    continue;
+                }
                 if !first {
                     sql.push_str(",\n");
                 }
