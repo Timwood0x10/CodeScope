@@ -103,6 +103,74 @@ struct EntryPointCandidate {
 	std::string source; // "name_pattern" or "exported" or "explicit"
 };
 
+/// Classify an entity into one or more entry point candidates.
+/// Priority: explicit > framework > exported > heuristic.
+std::vector<EntryPointCandidate>
+classifyEntity(int64_t entity_id, const std::string &name,
+	       const std::string &language, const std::string &qualified_name,
+	       std::unordered_set<int64_t> &seen_explicit,
+	       std::unordered_set<int64_t> &seen_framework,
+	       std::unordered_set<int64_t> &seen_exported,
+	       std::unordered_set<int64_t> &seen_heuristic)
+{
+	std::vector<EntryPointCandidate> candidates;
+
+	// 1. Explicit entry points (main, init in Go).
+	std::string explicit_kind = explicitEntryKind(name, language);
+	if (!explicit_kind.empty() && !seen_explicit.count(entity_id)) {
+		candidates.push_back(
+			{ entity_id, explicit_kind, 1.0, "name_pattern" });
+		seen_explicit.insert(entity_id);
+	}
+
+	// 2. Framework entry candidates.
+	if (isFrameworkEntryName(name) && !seen_framework.count(entity_id)) {
+		candidates.push_back(
+			{ entity_id, "framework", 0.5, "name_pattern" });
+		seen_framework.insert(entity_id);
+	}
+
+	// 3. Exported API entries.
+	if (isExportedAPI(name, language, qualified_name) &&
+	    !seen_exported.count(entity_id)) {
+		candidates.push_back(
+			{ entity_id, "exported", 0.7, "exported" });
+		seen_exported.insert(entity_id);
+	}
+
+	// 4. Heuristic candidates from the legacy whitelist.
+	if (candidates.empty() && isHeuristicCandidate(name) &&
+	    !seen_heuristic.count(entity_id)) {
+		candidates.push_back(
+			{ entity_id, "heuristic", 0.3, "name_pattern" });
+		seen_heuristic.insert(entity_id);
+	}
+
+	return candidates;
+}
+
+/// Insert entry point candidates into the arch_entry_point table.
+void insertCandidates(sqlite3_stmt *insert_stmt, uint64_t project_id,
+		      const std::vector<EntryPointCandidate> &candidates,
+		      const std::string &file_path, int start_row)
+{
+	for (const auto &c : candidates) {
+		sqlite3_bind_int64(insert_stmt, 1,
+				   static_cast<int64_t>(project_id));
+		sqlite3_bind_int64(insert_stmt, 2, c.entity_id);
+		sqlite3_bind_text(insert_stmt, 3, c.kind.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_double(insert_stmt, 4, c.confidence);
+		sqlite3_bind_text(insert_stmt, 5, c.source.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_text(insert_stmt, 6, file_path.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_int(insert_stmt, 7, start_row);
+		sqlite3_step(insert_stmt);
+		sqlite3_reset(insert_stmt);
+	}
+}
+
 } // namespace
 
 bool buildEntryPoints(store::GraphStore &store, uint64_t project_id,
@@ -129,7 +197,6 @@ bool buildEntryPoints(store::GraphStore &store, uint64_t project_id,
 	}
 
 	// Query all function/method entities for entry point classification.
-	// kind IN (0,1) selects functions and methods from the entity table.
 	const char *sql = "SELECT id, name, language, file_path, start_row, "
 			  "qualified_name FROM entity "
 			  "WHERE project_id=? AND kind IN (0,1)";
@@ -157,8 +224,6 @@ bool buildEntryPoints(store::GraphStore &store, uint64_t project_id,
 		return false;
 	}
 
-	// Track which (entity_id, kind) pairs we've already inserted to
-	// avoid duplicates when multiple patterns match.
 	std::unordered_set<int64_t> seen_explicit;
 	std::unordered_set<int64_t> seen_framework;
 	std::unordered_set<int64_t> seen_exported;
@@ -184,59 +249,12 @@ bool buildEntryPoints(store::GraphStore &store, uint64_t project_id,
 		std::string qualified_name =
 			qn_ptr ? reinterpret_cast<const char *>(qn_ptr) : "";
 
-		// Classify the entity into one or more entry point kinds.
-		// Priority: explicit > framework > exported > heuristic.
-		std::vector<EntryPointCandidate> candidates;
-
-		// 1. Explicit entry points (main, init in Go).
-		std::string explicit_kind = explicitEntryKind(name, language);
-		if (!explicit_kind.empty() && !seen_explicit.count(entity_id)) {
-			candidates.push_back({ entity_id, explicit_kind, 1.0,
-					       "name_pattern" });
-			seen_explicit.insert(entity_id);
-		}
-
-		// 2. Framework entry candidates.
-		if (isFrameworkEntryName(name) &&
-		    !seen_framework.count(entity_id)) {
-			candidates.push_back({ entity_id, "framework", 0.5,
-					       "name_pattern" });
-			seen_framework.insert(entity_id);
-		}
-
-		// 3. Exported API entries.
-		if (isExportedAPI(name, language, qualified_name) &&
-		    !seen_exported.count(entity_id)) {
-			candidates.push_back(
-				{ entity_id, "exported", 0.7, "exported" });
-			seen_exported.insert(entity_id);
-		}
-
-		// 4. Heuristic candidates from the legacy whitelist.
-		// Only add as heuristic if not already classified above.
-		if (candidates.empty() && isHeuristicCandidate(name) &&
-		    !seen_heuristic.count(entity_id)) {
-			candidates.push_back({ entity_id, "heuristic", 0.3,
-					       "name_pattern" });
-			seen_heuristic.insert(entity_id);
-		}
-
-		// Insert all candidates for this entity.
-		for (const auto &c : candidates) {
-			sqlite3_bind_int64(insert_stmt, 1,
-					   static_cast<int64_t>(project_id));
-			sqlite3_bind_int64(insert_stmt, 2, c.entity_id);
-			sqlite3_bind_text(insert_stmt, 3, c.kind.c_str(), -1,
-					  SQLITE_TRANSIENT);
-			sqlite3_bind_double(insert_stmt, 4, c.confidence);
-			sqlite3_bind_text(insert_stmt, 5, c.source.c_str(), -1,
-					  SQLITE_TRANSIENT);
-			sqlite3_bind_text(insert_stmt, 6, file_path.c_str(), -1,
-					  SQLITE_TRANSIENT);
-			sqlite3_bind_int(insert_stmt, 7, start_row);
-			sqlite3_step(insert_stmt);
-			sqlite3_reset(insert_stmt);
-		}
+		auto candidates = classifyEntity(entity_id, name, language,
+						 qualified_name, seen_explicit,
+						 seen_framework, seen_exported,
+						 seen_heuristic);
+		insertCandidates(insert_stmt, project_id, candidates, file_path,
+				 start_row);
 	}
 
 	sqlite3_finalize(insert_stmt);

@@ -67,6 +67,130 @@ bool pathStartsWith(const std::string &path, const std::string &prefix)
 
 // ─── ModuleGraph ──────────────────────────────────────────────
 
+namespace
+{
+
+/// Load modules from arch_module into the graph's node list.
+/// Returns false on SQL error.
+bool loadModules(sqlite3 *db, uint64_t project_id,
+		 std::vector<ModuleNode> &nodes,
+		 std::vector<std::pair<std::string, int>> &path_index,
+		 std::string &error)
+{
+	const char *sql = "SELECT path, language, file_count, entity_count "
+			  "FROM arch_module WHERE project_id = ?";
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		error = std::string("prepare arch_module failed: ") +
+			sqlite3_errmsg(db);
+		return false;
+	}
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	while (sqlite3_step(stmt) == SQLITE_ROW) {
+		ModuleNode node;
+		const unsigned char *path = sqlite3_column_text(stmt, 0);
+		const unsigned char *lang = sqlite3_column_text(stmt, 1);
+		node.file_count = sqlite3_column_int(stmt, 2);
+		node.entity_count = sqlite3_column_int(stmt, 3);
+		if (path)
+			node.path = reinterpret_cast<const char *>(path);
+		if (lang)
+			node.language = reinterpret_cast<const char *>(lang);
+		node.path = normalizePath(node.path);
+		int idx = static_cast<int>(nodes.size());
+		nodes.push_back(std::move(node));
+		path_index.push_back({ nodes.back().path, idx });
+	}
+	sqlite3_finalize(stmt);
+	return true;
+}
+
+/// Fallback: derive modules from entity file paths when arch_module
+/// is empty (pre-M2 databases).
+bool loadFallbackModules(sqlite3 *db, uint64_t project_id,
+			 std::vector<ModuleNode> &nodes,
+			 std::vector<std::pair<std::string, int>> &path_index,
+			 std::string &error)
+{
+	const char *sql = "SELECT DISTINCT file_path FROM entity "
+			  "WHERE project_id = ?";
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		error = std::string("prepare entity failed: ") +
+			sqlite3_errmsg(db);
+		return false;
+	}
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	std::unordered_set<std::string> seen_dirs;
+	while (sqlite3_step(stmt) == SQLITE_ROW) {
+		const unsigned char *fp = sqlite3_column_text(stmt, 0);
+		if (!fp)
+			continue;
+		std::string file_path = reinterpret_cast<const char *>(fp);
+		std::string dir = normalizePath(dirOf(file_path));
+		if (dir.empty() || seen_dirs.count(dir))
+			continue;
+		seen_dirs.insert(dir);
+		int idx = static_cast<int>(nodes.size());
+		nodes.push_back({ dir, "", 0, 0 });
+		path_index.push_back({ dir, idx });
+	}
+	sqlite3_finalize(stmt);
+	return true;
+}
+
+/// Load edges from arch_edge and resolve them to node indices.
+bool loadEdges(sqlite3 *db, uint64_t project_id, const ModuleGraph &graph,
+	       std::vector<ModuleEdge> &edges, std::string &error)
+{
+	const char *sql = "SELECT src_module, dst_module, edge_kind, "
+			  "resolution_kind, confidence, source_file, "
+			  "source_row FROM arch_edge WHERE project_id = ?";
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		error = std::string("prepare arch_edge failed: ") +
+			sqlite3_errmsg(db);
+		return false;
+	}
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	while (sqlite3_step(stmt) == SQLITE_ROW) {
+		const unsigned char *src = sqlite3_column_text(stmt, 0);
+		const unsigned char *dst = sqlite3_column_text(stmt, 1);
+		const unsigned char *kind = sqlite3_column_text(stmt, 2);
+		const unsigned char *res = sqlite3_column_text(stmt, 3);
+		double conf = sqlite3_column_double(stmt, 4);
+		const unsigned char *sfile = sqlite3_column_text(stmt, 5);
+		int srow = sqlite3_column_int(stmt, 6);
+
+		ModuleEdge edge;
+		edge.src_index = -1;
+		edge.dst_index = -1;
+		if (src)
+			edge.src_index = graph.indexOf(
+				reinterpret_cast<const char *>(src));
+		if (dst)
+			edge.dst_index = graph.indexOf(
+				reinterpret_cast<const char *>(dst));
+		if (kind)
+			edge.edge_kind = reinterpret_cast<const char *>(kind);
+		if (res)
+			edge.resolution_kind =
+				reinterpret_cast<const char *>(res);
+		edge.confidence = conf;
+		if (sfile)
+			edge.source_file =
+				reinterpret_cast<const char *>(sfile);
+		edge.source_row = srow;
+		if (edge.src_index < 0 || edge.dst_index < 0)
+			continue;
+		edges.push_back(std::move(edge));
+	}
+	sqlite3_finalize(stmt);
+	return true;
+}
+
+} // namespace
+
 bool ModuleGraph::build(store::GraphStore &store, uint64_t project_id,
 			std::string &error)
 {
@@ -82,127 +206,18 @@ bool ModuleGraph::build(store::GraphStore &store, uint64_t project_id,
 		return false;
 	}
 
-	// Load modules from arch_module.
-	{
-		const char *sql =
-			"SELECT path, language, file_count, entity_count "
-			"FROM arch_module WHERE project_id = ?";
-		sqlite3_stmt *stmt = nullptr;
-		if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) !=
-		    SQLITE_OK) {
-			error = std::string("prepare arch_module failed: ") +
-				sqlite3_errmsg(db);
-			return false;
-		}
-		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-		while (sqlite3_step(stmt) == SQLITE_ROW) {
-			ModuleNode node;
-			const unsigned char *path =
-				sqlite3_column_text(stmt, 0);
-			const unsigned char *lang =
-				sqlite3_column_text(stmt, 1);
-			node.file_count = sqlite3_column_int(stmt, 2);
-			node.entity_count = sqlite3_column_int(stmt, 3);
-			if (path)
-				node.path =
-					reinterpret_cast<const char *>(path);
-			if (lang)
-				node.language =
-					reinterpret_cast<const char *>(lang);
-			node.path = normalizePath(node.path);
-			int idx = static_cast<int>(nodes_.size());
-			nodes_.push_back(std::move(node));
-			path_index_.push_back({ nodes_.back().path, idx });
-		}
-		sqlite3_finalize(stmt);
-	}
+	if (!loadModules(db, project_id, nodes_, path_index_, error))
+		return false;
 
-	// If no modules exist, try to derive them from entity file paths.
-	// This is a fallback for projects that haven't been indexed with
-	// the M2 module builder yet.
 	if (nodes_.empty()) {
-		const char *sql = "SELECT DISTINCT file_path FROM entity "
-				  "WHERE project_id = ?";
-		sqlite3_stmt *stmt = nullptr;
-		if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) !=
-		    SQLITE_OK) {
-			error = std::string("prepare entity failed: ") +
-				sqlite3_errmsg(db);
+		if (!loadFallbackModules(db, project_id, nodes_, path_index_,
+					 error))
 			return false;
-		}
-		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-		std::unordered_set<std::string> seen_dirs;
-		while (sqlite3_step(stmt) == SQLITE_ROW) {
-			const unsigned char *fp = sqlite3_column_text(stmt, 0);
-			if (!fp)
-				continue;
-			std::string file_path =
-				reinterpret_cast<const char *>(fp);
-			std::string dir = normalizePath(dirOf(file_path));
-			if (dir.empty() || seen_dirs.count(dir))
-				continue;
-			seen_dirs.insert(dir);
-			int idx = static_cast<int>(nodes_.size());
-			nodes_.push_back({ dir, "", 0, 0 });
-			path_index_.push_back({ dir, idx });
-		}
-		sqlite3_finalize(stmt);
 	}
 
-	// Load edges from arch_edge.
-	{
-		const char *sql =
-			"SELECT src_module, dst_module, edge_kind, "
-			"resolution_kind, confidence, source_file, "
-			"source_row FROM arch_edge WHERE project_id = ?";
-		sqlite3_stmt *stmt = nullptr;
-		if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) !=
-		    SQLITE_OK) {
-			error = std::string("prepare arch_edge failed: ") +
-				sqlite3_errmsg(db);
-			return false;
-		}
-		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-		while (sqlite3_step(stmt) == SQLITE_ROW) {
-			const unsigned char *src = sqlite3_column_text(stmt, 0);
-			const unsigned char *dst = sqlite3_column_text(stmt, 1);
-			const unsigned char *kind =
-				sqlite3_column_text(stmt, 2);
-			const unsigned char *res = sqlite3_column_text(stmt, 3);
-			double conf = sqlite3_column_double(stmt, 4);
-			const unsigned char *sfile =
-				sqlite3_column_text(stmt, 5);
-			int srow = sqlite3_column_int(stmt, 6);
+	if (!loadEdges(db, project_id, *this, edges_, error))
+		return false;
 
-			ModuleEdge edge;
-			edge.src_index = -1;
-			edge.dst_index = -1;
-			if (src)
-				edge.src_index = indexOf(
-					reinterpret_cast<const char *>(src));
-			if (dst)
-				edge.dst_index = indexOf(
-					reinterpret_cast<const char *>(dst));
-			if (kind)
-				edge.edge_kind =
-					reinterpret_cast<const char *>(kind);
-			if (res)
-				edge.resolution_kind =
-					reinterpret_cast<const char *>(res);
-			edge.confidence = conf;
-			if (sfile)
-				edge.source_file =
-					reinterpret_cast<const char *>(sfile);
-			edge.source_row = srow;
-
-			if (edge.src_index < 0 || edge.dst_index < 0)
-				continue;
-			edges_.push_back(std::move(edge));
-		}
-		sqlite3_finalize(stmt);
-	}
-
-	// Build adjacency lists.
 	out_adj_.resize(nodes_.size());
 	in_adj_.resize(nodes_.size());
 	for (int i = 0; i < static_cast<int>(edges_.size()); ++i) {
@@ -473,6 +488,256 @@ findCandidateEdges(const ModuleGraph &graph,
 
 // ─── Structural edge builder ──────────────────────────────────
 
+namespace
+{
+
+/// Step 1: Build module tree from entity file paths.
+/// Each unique directory prefix is a module.
+bool collectModuleTree(sqlite3 *db, uint64_t project_id,
+		       std::unordered_map<std::string, int> &file_counts,
+		       std::unordered_map<std::string, int> &entity_counts,
+		       std::unordered_map<std::string, std::string> &languages,
+		       std::string &error)
+{
+	const char *sql = "SELECT file_path, language FROM entity "
+			  "WHERE project_id = ?";
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		error = std::string("prepare entity failed: ") +
+			sqlite3_errmsg(db);
+		return false;
+	}
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+	while (sqlite3_step(stmt) == SQLITE_ROW) {
+		const unsigned char *fp = sqlite3_column_text(stmt, 0);
+		const unsigned char *lang = sqlite3_column_text(stmt, 1);
+		if (!fp)
+			continue;
+		std::string file_path = reinterpret_cast<const char *>(fp);
+		std::string language =
+			lang ? reinterpret_cast<const char *>(lang) : "";
+		std::string dir = normalizePath(dirOf(file_path));
+		if (dir.empty())
+			continue;
+		++file_counts[dir];
+		++entity_counts[dir];
+		if (!language.empty())
+			languages[dir] = language;
+	}
+	sqlite3_finalize(stmt);
+	return true;
+}
+
+/// Step 2: Clear and write arch_module rows.
+bool writeArchModules(
+	sqlite3 *db, uint64_t project_id,
+	const std::unordered_map<std::string, int> &file_counts,
+	const std::unordered_map<std::string, int> &entity_counts,
+	const std::unordered_map<std::string, std::string> &languages,
+	std::string &error)
+{
+	std::string del = "DELETE FROM arch_module WHERE project_id = " +
+			  std::to_string(project_id);
+	if (sqlite3_exec(db, del.c_str(), nullptr, nullptr, nullptr) !=
+	    SQLITE_OK) {
+		error = "DELETE arch_module failed: " +
+			std::string(sqlite3_errmsg(db));
+		return false;
+	}
+	const char *sql = "INSERT OR IGNORE INTO arch_module "
+			  "(project_id, path, parent_path, language, "
+			  "file_count, entity_count) VALUES (?,?,?,?,?,?)";
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		error = "prepare arch_module insert failed: " +
+			std::string(sqlite3_errmsg(db));
+		return false;
+	}
+	for (const auto &kv : file_counts) {
+		const std::string &path = kv.first;
+		std::string parent = normalizePath(dirOf(path));
+		std::string lang = languages.count(path) ? languages.at(path) :
+							   "";
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		sqlite3_bind_text(stmt, 2, path.c_str(), -1, SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 3, parent.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 4, lang.c_str(), -1, SQLITE_TRANSIENT);
+		sqlite3_bind_int(stmt, 5, kv.second);
+		auto it = entity_counts.find(path);
+		sqlite3_bind_int(stmt, 6,
+				 it != entity_counts.end() ? it->second : 0);
+		sqlite3_step(stmt);
+		sqlite3_reset(stmt);
+	}
+	sqlite3_finalize(stmt);
+	return true;
+}
+
+/// Step 3: Write arch_module_member (entity → module mapping).
+bool writeModuleMembers(sqlite3 *db, uint64_t project_id,
+			const std::unordered_map<std::string, int> &file_counts,
+			std::string &error)
+{
+	std::string del = "DELETE FROM arch_module_member WHERE project_id = " +
+			  std::to_string(project_id);
+	if (sqlite3_exec(db, del.c_str(), nullptr, nullptr, nullptr) !=
+	    SQLITE_OK) {
+		error = "DELETE arch_module_member failed: " +
+			std::string(sqlite3_errmsg(db));
+		return false;
+	}
+	const char *sql =
+		"INSERT OR IGNORE INTO arch_module_member "
+		"(project_id, module_path, entity_id) "
+		"SELECT ?, ?, e.id FROM entity e "
+		"WHERE e.project_id = ? "
+		"AND substr(e.file_path, 1, length(?)) = ? "
+		"AND (length(e.file_path) = length(?) "
+		"     OR substr(e.file_path, length(?) + 1, 1) = '/')";
+	for (const auto &kv : file_counts) {
+		const std::string &mod_path = kv.first;
+		sqlite3_stmt *stmt = nullptr;
+		if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) !=
+		    SQLITE_OK) {
+			error = "prepare arch_module_member failed: " +
+				std::string(sqlite3_errmsg(db));
+			return false;
+		}
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		sqlite3_bind_text(stmt, 2, mod_path.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(project_id));
+		sqlite3_bind_text(stmt, 4, mod_path.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 5, mod_path.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 6, mod_path.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_text(stmt, 7, mod_path.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_step(stmt);
+		sqlite3_finalize(stmt);
+	}
+	return true;
+}
+
+/// Resolve a target import path against known modules.
+/// Sets dst_module, resolution_kind, and confidence.
+void resolveImportTarget(const std::string &target_path,
+			 const std::unordered_set<std::string> &known_modules,
+			 std::string &dst_module, std::string &resolution_kind,
+			 double &confidence)
+{
+	std::string normalized_target = normalizePath(target_path);
+	bool found_internal = false;
+	for (const auto &mod : known_modules) {
+		if (pathStartsWith(normalized_target, mod) ||
+		    pathStartsWith(mod, normalized_target)) {
+			dst_module = mod;
+			resolution_kind = "internal";
+			confidence = 1.0;
+			found_internal = true;
+			break;
+		}
+	}
+	if (!found_internal) {
+		if (target_path.find("::") != std::string::npos ||
+		    target_path.find('/') == std::string::npos) {
+			dst_module = normalized_target;
+			resolution_kind = "external";
+			confidence = 0.5;
+		} else {
+			dst_module = normalized_target;
+			resolution_kind = "unresolved";
+			confidence = 0.0;
+		}
+	}
+}
+
+/// Step 4: Build structural edges from the import table.
+bool writeStructuralEdgesFromImports(
+	sqlite3 *db, uint64_t project_id,
+	const std::unordered_set<std::string> &known_modules,
+	std::string &error)
+{
+	std::string del = "DELETE FROM arch_edge WHERE project_id = " +
+			  std::to_string(project_id);
+	if (sqlite3_exec(db, del.c_str(), nullptr, nullptr, nullptr) !=
+	    SQLITE_OK) {
+		error = "DELETE arch_edge failed: " +
+			std::string(sqlite3_errmsg(db));
+		return false;
+	}
+	const char *sql = "SELECT target_path, file_path, source_scope_id "
+			  "FROM import WHERE project_id = ?";
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+		error = std::string("prepare import failed: ") +
+			sqlite3_errmsg(db);
+		return false;
+	}
+	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+
+	const char *insert_sql = "INSERT OR IGNORE INTO arch_edge "
+				 "(project_id, src_module, dst_module, "
+				 "edge_kind, resolution_kind, confidence, "
+				 "source_file, source_row) "
+				 "VALUES (?,?,?,?,?,?,?,?)";
+	sqlite3_stmt *insert_stmt = nullptr;
+	if (sqlite3_prepare_v2(db, insert_sql, -1, &insert_stmt, nullptr) !=
+	    SQLITE_OK) {
+		error = "prepare arch_edge insert failed: " +
+			std::string(sqlite3_errmsg(db));
+		sqlite3_finalize(stmt);
+		return false;
+	}
+
+	while (sqlite3_step(stmt) == SQLITE_ROW) {
+		const unsigned char *target = sqlite3_column_text(stmt, 0);
+		const unsigned char *sfile = sqlite3_column_text(stmt, 1);
+		if (!target || !sfile)
+			continue;
+		std::string target_path =
+			reinterpret_cast<const char *>(target);
+		std::string source_file = reinterpret_cast<const char *>(sfile);
+		std::string src_module = normalizePath(dirOf(source_file));
+
+		std::string dst_module;
+		std::string resolution_kind;
+		double confidence = 0.0;
+		resolveImportTarget(target_path, known_modules, dst_module,
+				    resolution_kind, confidence);
+
+		if (src_module.empty() || dst_module.empty())
+			continue;
+		if (src_module == dst_module)
+			continue;
+
+		sqlite3_bind_int64(insert_stmt, 1,
+				   static_cast<int64_t>(project_id));
+		sqlite3_bind_text(insert_stmt, 2, src_module.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_text(insert_stmt, 3, dst_module.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_text(insert_stmt, 4, "import", -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_text(insert_stmt, 5, resolution_kind.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_double(insert_stmt, 6, confidence);
+		sqlite3_bind_text(insert_stmt, 7, source_file.c_str(), -1,
+				  SQLITE_TRANSIENT);
+		sqlite3_bind_int(insert_stmt, 8, 0);
+		sqlite3_step(insert_stmt);
+		sqlite3_reset(insert_stmt);
+	}
+	sqlite3_finalize(insert_stmt);
+	sqlite3_finalize(stmt);
+	return true;
+}
+
+} // namespace
+
 bool buildStructuralEdges(store::GraphStore &store, uint64_t project_id,
 			  std::string &error)
 {
@@ -484,269 +749,31 @@ bool buildStructuralEdges(store::GraphStore &store, uint64_t project_id,
 	}
 
 	// Step 1: Build module tree from entity file paths.
-	// Each unique directory prefix is a module.
 	std::unordered_map<std::string, int> module_file_counts;
 	std::unordered_map<std::string, int> module_entity_counts;
 	std::unordered_map<std::string, std::string> module_languages;
+	if (!collectModuleTree(db, project_id, module_file_counts,
+			       module_entity_counts, module_languages, error))
+		return false;
 
-	{
-		const char *sql = "SELECT file_path, language FROM entity "
-				  "WHERE project_id = ?";
-		sqlite3_stmt *stmt = nullptr;
-		if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) !=
-		    SQLITE_OK) {
-			error = std::string("prepare entity failed: ") +
-				sqlite3_errmsg(db);
-			return false;
-		}
-		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-		while (sqlite3_step(stmt) == SQLITE_ROW) {
-			const unsigned char *fp = sqlite3_column_text(stmt, 0);
-			const unsigned char *lang =
-				sqlite3_column_text(stmt, 1);
-			if (!fp)
-				continue;
-			std::string file_path =
-				reinterpret_cast<const char *>(fp);
-			std::string language =
-				lang ? reinterpret_cast<const char *>(lang) :
-				       "";
-			std::string dir = normalizePath(dirOf(file_path));
-			if (dir.empty())
-				continue;
-			++module_file_counts[dir];
-			++module_entity_counts[dir];
-			if (!language.empty())
-				module_languages[dir] = language;
-		}
-		sqlite3_finalize(stmt);
-	}
-
-	// Step 2: Clear and write arch_module.
-	{
-		std::string del =
-			"DELETE FROM arch_module WHERE project_id = " +
-			std::to_string(project_id);
-		if (sqlite3_exec(db, del.c_str(), nullptr, nullptr, nullptr) !=
-		    SQLITE_OK) {
-			error = "DELETE arch_module failed: " +
-				std::string(sqlite3_errmsg(db));
-			return false;
-		}
-	}
+	// Step 2: Write arch_module rows.
+	if (!writeArchModules(db, project_id, module_file_counts,
+			      module_entity_counts, module_languages, error))
+		return false;
 
 	// Collect all module paths for internal resolution.
 	std::unordered_set<std::string> known_modules;
 	for (const auto &kv : module_file_counts)
 		known_modules.insert(kv.first);
 
-	// Write arch_module rows.
-	{
-		const char *sql =
-			"INSERT OR IGNORE INTO arch_module "
-			"(project_id, path, parent_path, language, "
-			"file_count, entity_count) VALUES (?,?,?,?,?,?)";
-		sqlite3_stmt *stmt = nullptr;
-		if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) !=
-		    SQLITE_OK) {
-			error = "prepare arch_module insert failed: " +
-				std::string(sqlite3_errmsg(db));
-			return false;
-		}
-		for (const auto &kv : module_file_counts) {
-			const std::string &path = kv.first;
-			std::string parent = normalizePath(dirOf(path));
-			std::string lang = module_languages.count(path) ?
-						   module_languages[path] :
-						   "";
-			sqlite3_bind_int64(stmt, 1,
-					   static_cast<int64_t>(project_id));
-			sqlite3_bind_text(stmt, 2, path.c_str(), -1,
-					  SQLITE_TRANSIENT);
-			sqlite3_bind_text(stmt, 3, parent.c_str(), -1,
-					  SQLITE_TRANSIENT);
-			sqlite3_bind_text(stmt, 4, lang.c_str(), -1,
-					  SQLITE_TRANSIENT);
-			sqlite3_bind_int(stmt, 5, kv.second);
-			sqlite3_bind_int(stmt, 6, module_entity_counts[path]);
-			sqlite3_step(stmt);
-			sqlite3_reset(stmt);
-		}
-		sqlite3_finalize(stmt);
-	}
-
-	// Step 3: Write arch_module_member (entity → module mapping).
-	{
-		std::string del =
-			"DELETE FROM arch_module_member WHERE project_id = " +
-			std::to_string(project_id);
-		if (sqlite3_exec(db, del.c_str(), nullptr, nullptr, nullptr) !=
-		    SQLITE_OK) {
-			error = "DELETE arch_module_member failed: " +
-				std::string(sqlite3_errmsg(db));
-			return false;
-		}
-		const char *sql =
-			"INSERT OR IGNORE INTO arch_module_member "
-			"(project_id, module_path, entity_id) "
-			"SELECT ?, ?, e.id FROM entity e "
-			"WHERE e.project_id = ? "
-			"AND substr(e.file_path, 1, length(?)) = ? "
-			"AND (length(e.file_path) = length(?) "
-			"     OR substr(e.file_path, length(?) + 1, 1) = '/')";
-
-		// For each module, write members.
-		// This is O(modules * entities) which is fine for
-		// small-to-medium projects.
-		for (const auto &kv : module_file_counts) {
-			const std::string &mod_path = kv.first;
-			sqlite3_stmt *stmt = nullptr;
-			if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) !=
-			    SQLITE_OK) {
-				error = "prepare arch_module_member failed: " +
-					std::string(sqlite3_errmsg(db));
-				return false;
-			}
-			sqlite3_bind_int64(stmt, 1,
-					   static_cast<int64_t>(project_id));
-			sqlite3_bind_text(stmt, 2, mod_path.c_str(), -1,
-					  SQLITE_TRANSIENT);
-			sqlite3_bind_int64(stmt, 3,
-					   static_cast<int64_t>(project_id));
-			sqlite3_bind_text(stmt, 4, mod_path.c_str(), -1,
-					  SQLITE_TRANSIENT);
-			sqlite3_bind_text(stmt, 5, mod_path.c_str(), -1,
-					  SQLITE_TRANSIENT);
-			sqlite3_bind_text(stmt, 6, mod_path.c_str(), -1,
-					  SQLITE_TRANSIENT);
-			sqlite3_bind_text(stmt, 7, mod_path.c_str(), -1,
-					  SQLITE_TRANSIENT);
-			sqlite3_step(stmt);
-			sqlite3_finalize(stmt);
-		}
-	}
+	// Step 3: Write arch_module_member.
+	if (!writeModuleMembers(db, project_id, module_file_counts, error))
+		return false;
 
 	// Step 4: Build structural edges from the import table.
-	{
-		std::string del = "DELETE FROM arch_edge WHERE project_id = " +
-				  std::to_string(project_id);
-		if (sqlite3_exec(db, del.c_str(), nullptr, nullptr, nullptr) !=
-		    SQLITE_OK) {
-			error = "DELETE arch_edge failed: " +
-				std::string(sqlite3_errmsg(db));
-			return false;
-		}
-
-		const char *sql =
-			"SELECT target_path, file_path, source_scope_id "
-			"FROM import WHERE project_id = ?";
-		sqlite3_stmt *stmt = nullptr;
-		if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) !=
-		    SQLITE_OK) {
-			error = std::string("prepare import failed: ") +
-				sqlite3_errmsg(db);
-			return false;
-		}
-		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
-
-		// Edge insert statement (reused).
-		const char *insert_sql =
-			"INSERT OR IGNORE INTO arch_edge "
-			"(project_id, src_module, dst_module, "
-			"edge_kind, resolution_kind, confidence, "
-			"source_file, source_row) "
-			"VALUES (?,?,?,?,?,?,?,?)";
-		sqlite3_stmt *insert_stmt = nullptr;
-		if (sqlite3_prepare_v2(db, insert_sql, -1, &insert_stmt,
-				       nullptr) != SQLITE_OK) {
-			error = "prepare arch_edge insert failed: " +
-				std::string(sqlite3_errmsg(db));
-			sqlite3_finalize(stmt);
-			return false;
-		}
-
-		while (sqlite3_step(stmt) == SQLITE_ROW) {
-			const unsigned char *target =
-				sqlite3_column_text(stmt, 0);
-			const unsigned char *sfile =
-				sqlite3_column_text(stmt, 1);
-			if (!target || !sfile)
-				continue;
-			std::string target_path =
-				reinterpret_cast<const char *>(target);
-			std::string source_file =
-				reinterpret_cast<const char *>(sfile);
-			std::string src_module =
-				normalizePath(dirOf(source_file));
-
-			// Resolve the target: is it an internal module?
-			std::string dst_module;
-			std::string resolution_kind;
-			double confidence = 0.0;
-
-			// Try to match target_path against known modules.
-			// The import target may be a path like
-			// "crate::module" or "src/api/handler" — try
-			// both the full string and path-based matching.
-			std::string normalized_target =
-				normalizePath(target_path);
-
-			bool found_internal = false;
-			for (const auto &mod : known_modules) {
-				if (pathStartsWith(normalized_target, mod) ||
-				    pathStartsWith(mod, normalized_target)) {
-					dst_module = mod;
-					resolution_kind = "internal";
-					confidence = 1.0;
-					found_internal = true;
-					break;
-				}
-			}
-
-			if (!found_internal) {
-				// Check if the target looks like an external
-				// package (contains :: or is a known crate
-				// name pattern).
-				if (target_path.find("::") !=
-					    std::string::npos ||
-				    target_path.find('/') ==
-					    std::string::npos) {
-					dst_module = normalized_target;
-					resolution_kind = "external";
-					confidence = 0.5;
-				} else {
-					dst_module = normalized_target;
-					resolution_kind = "unresolved";
-					confidence = 0.0;
-				}
-			}
-
-			if (src_module.empty() || dst_module.empty())
-				continue;
-			if (src_module == dst_module)
-				continue; // Intra-module, not a structural edge.
-
-			sqlite3_bind_int64(insert_stmt, 1,
-					   static_cast<int64_t>(project_id));
-			sqlite3_bind_text(insert_stmt, 2, src_module.c_str(),
-					  -1, SQLITE_TRANSIENT);
-			sqlite3_bind_text(insert_stmt, 3, dst_module.c_str(),
-					  -1, SQLITE_TRANSIENT);
-			sqlite3_bind_text(insert_stmt, 4, "import", -1,
-					  SQLITE_TRANSIENT);
-			sqlite3_bind_text(insert_stmt, 5,
-					  resolution_kind.c_str(), -1,
-					  SQLITE_TRANSIENT);
-			sqlite3_bind_double(insert_stmt, 6, confidence);
-			sqlite3_bind_text(insert_stmt, 7, source_file.c_str(),
-					  -1, SQLITE_TRANSIENT);
-			sqlite3_bind_int(insert_stmt, 8, 0);
-			sqlite3_step(insert_stmt);
-			sqlite3_reset(insert_stmt);
-		}
-		sqlite3_finalize(insert_stmt);
-		sqlite3_finalize(stmt);
-	}
+	if (!writeStructuralEdgesFromImports(db, project_id, known_modules,
+					     error))
+		return false;
 
 	return true;
 }

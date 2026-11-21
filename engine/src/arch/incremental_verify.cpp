@@ -279,98 +279,83 @@ AffectedSet computeAffectedSet(store::GraphStore &store, uint64_t project_id,
 	return result;
 }
 
-int markStaleEvidence(store::GraphStore &store, uint64_t project_id,
-		      const AffectedSet &affected)
+/// Mark evidence as stale based on file locations in affected files.
+int markStaleByFileLocation(sqlite3 *db, uint64_t project_id,
+			    const AffectedSet &affected)
 {
-	sqlite3 *db = store.handle();
-	if (!db)
-		return -1;
-
-	int total_marked = 0;
-
-	// Mark evidence as stale based on:
-	// 1. Evidence with locations in affected files.
-	// 2. Evidence with fact references to affected entities.
-	// 3. Evidence with affected finding keys.
-	// 4. Evidence from affected rules.
-
-	// Build a combined UPDATE that marks all affected evidence.
-	// We use a transaction to ensure atomicity.
-	store.beginTransaction();
-
-	// 1. Mark by file location.
-	//    evidence has no project_id column; use a subquery on
-	//    verification_run to scope by project.
-	if (!affected.changed_files.empty()) {
-		std::string sql =
-			"UPDATE evidence SET status='stale' "
-			"WHERE id IN ("
-			"  SELECT DISTINCT el.evidence_id "
-			"  FROM evidence_location el "
-			"  JOIN evidence e2 ON e2.id=el.evidence_id "
-			"  JOIN verification_run vr ON e2.run_id=vr.run_id "
-			"  WHERE vr.project_id=? AND el.file_path IN (";
-		for (size_t i = 0; i < affected.changed_files.size(); ++i) {
-			if (i > 0)
-				sql += ",";
-			sql += "?";
-		}
-		sql += "))";
-
-		sqlite3_stmt *stmt = nullptr;
-		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) ==
-		    SQLITE_OK) {
-			sqlite3_bind_int64(stmt, 1,
-					   static_cast<int64_t>(project_id));
-			for (size_t i = 0; i < affected.changed_files.size();
-			     ++i)
-				sqlite3_bind_text(
-					stmt, i + 2,
-					affected.changed_files[i].c_str(), -1,
-					SQLITE_TRANSIENT);
-			if (sqlite3_step(stmt) == SQLITE_DONE)
-				total_marked += sqlite3_changes(db);
-			sqlite3_finalize(stmt);
-		}
+	if (affected.changed_files.empty())
+		return 0;
+	std::string sql = "UPDATE evidence SET status='stale' "
+			  "WHERE id IN ("
+			  "  SELECT DISTINCT el.evidence_id "
+			  "  FROM evidence_location el "
+			  "  JOIN evidence e2 ON e2.id=el.evidence_id "
+			  "  JOIN verification_run vr ON e2.run_id=vr.run_id "
+			  "  WHERE vr.project_id=? AND el.file_path IN (";
+	for (size_t i = 0; i < affected.changed_files.size(); ++i) {
+		if (i > 0)
+			sql += ",";
+		sql += "?";
 	}
+	sql += "))";
 
-	// 2. Mark by entity fact reference.
-	if (!affected.affected_entity_ids.empty()) {
-		std::string sql =
-			"UPDATE evidence SET status='stale' "
-			"WHERE id IN ("
-			"  SELECT DISTINCT ef.evidence_id "
-			"  FROM evidence_fact ef "
-			"  JOIN evidence e2 ON e2.id=ef.evidence_id "
-			"  JOIN verification_run vr ON e2.run_id=vr.run_id "
-			"  WHERE vr.project_id=? AND ef.fact_kind=0 AND ef.fact_ref IN (";
-		for (size_t i = 0; i < affected.affected_entity_ids.size();
-		     ++i) {
-			if (i > 0)
-				sql += ",";
-			sql += "?";
-		}
-		sql += "))";
-
-		sqlite3_stmt *stmt = nullptr;
-		if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) ==
-		    SQLITE_OK) {
-			sqlite3_bind_int64(stmt, 1,
-					   static_cast<int64_t>(project_id));
-			for (size_t i = 0;
-			     i < affected.affected_entity_ids.size(); ++i)
-				sqlite3_bind_int64(
-					stmt, i + 2,
-					affected.affected_entity_ids[i]);
-			if (sqlite3_step(stmt) == SQLITE_DONE)
-				total_marked += sqlite3_changes(db);
-			sqlite3_finalize(stmt);
-		}
+	sqlite3_stmt *stmt = nullptr;
+	int marked = 0;
+	if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) ==
+	    SQLITE_OK) {
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		for (size_t i = 0; i < affected.changed_files.size(); ++i)
+			sqlite3_bind_text(stmt, i + 2,
+					  affected.changed_files[i].c_str(), -1,
+					  SQLITE_TRANSIENT);
+		if (sqlite3_step(stmt) == SQLITE_DONE)
+			marked = sqlite3_changes(db);
+		sqlite3_finalize(stmt);
 	}
+	return marked;
+}
 
-	// 3. Mark by finding key.
-	//    Use finding_evidence to scope by project_id since evidence
-	//    has no project_id column.
+/// Mark evidence as stale based on entity fact references.
+int markStaleByEntityRef(sqlite3 *db, uint64_t project_id,
+			 const AffectedSet &affected)
+{
+	if (affected.affected_entity_ids.empty())
+		return 0;
+	std::string sql =
+		"UPDATE evidence SET status='stale' "
+		"WHERE id IN ("
+		"  SELECT DISTINCT ef.evidence_id "
+		"  FROM evidence_fact ef "
+		"  JOIN evidence e2 ON e2.id=ef.evidence_id "
+		"  JOIN verification_run vr ON e2.run_id=vr.run_id "
+		"  WHERE vr.project_id=? AND ef.fact_kind=0 AND ef.fact_ref IN (";
+	for (size_t i = 0; i < affected.affected_entity_ids.size(); ++i) {
+		if (i > 0)
+			sql += ",";
+		sql += "?";
+	}
+	sql += "))";
+
+	sqlite3_stmt *stmt = nullptr;
+	int marked = 0;
+	if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) ==
+	    SQLITE_OK) {
+		sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
+		for (size_t i = 0; i < affected.affected_entity_ids.size(); ++i)
+			sqlite3_bind_int64(stmt, i + 2,
+					   affected.affected_entity_ids[i]);
+		if (sqlite3_step(stmt) == SQLITE_DONE)
+			marked = sqlite3_changes(db);
+		sqlite3_finalize(stmt);
+	}
+	return marked;
+}
+
+/// Mark evidence as stale based on finding keys.
+int markStaleByFindingKey(sqlite3 *db, uint64_t project_id,
+			  const AffectedSet &affected)
+{
+	int marked = 0;
 	for (const auto &key : affected.affected_finding_keys) {
 		const char *sql = "UPDATE evidence SET status='stale' "
 				  "WHERE finding_key=? AND id IN ("
@@ -386,13 +371,18 @@ int markStaleEvidence(store::GraphStore &store, uint64_t project_id,
 			sqlite3_bind_text(stmt, 3, key.c_str(), -1,
 					  SQLITE_TRANSIENT);
 			if (sqlite3_step(stmt) == SQLITE_DONE)
-				total_marked += sqlite3_changes(db);
+				marked += sqlite3_changes(db);
 			sqlite3_finalize(stmt);
 		}
 	}
+	return marked;
+}
 
-	// 4. Mark by rule ID.
-	//    Scope by project via verification_run join.
+/// Mark evidence as stale based on rule IDs.
+int markStaleByRuleId(sqlite3 *db, uint64_t project_id,
+		      const AffectedSet &affected)
+{
+	int marked = 0;
 	for (const auto &rule_id : affected.affected_rule_ids) {
 		const char *sql =
 			"UPDATE evidence SET status='stale' "
@@ -408,10 +398,27 @@ int markStaleEvidence(store::GraphStore &store, uint64_t project_id,
 			sqlite3_bind_int64(stmt, 2,
 					   static_cast<int64_t>(project_id));
 			if (sqlite3_step(stmt) == SQLITE_DONE)
-				total_marked += sqlite3_changes(db);
+				marked += sqlite3_changes(db);
 			sqlite3_finalize(stmt);
 		}
 	}
+	return marked;
+}
+
+int markStaleEvidence(store::GraphStore &store, uint64_t project_id,
+		      const AffectedSet &affected)
+{
+	sqlite3 *db = store.handle();
+	if (!db)
+		return -1;
+
+	int total_marked = 0;
+	store.beginTransaction();
+
+	total_marked += markStaleByFileLocation(db, project_id, affected);
+	total_marked += markStaleByEntityRef(db, project_id, affected);
+	total_marked += markStaleByFindingKey(db, project_id, affected);
+	total_marked += markStaleByRuleId(db, project_id, affected);
 
 	store.commitTransaction();
 	return total_marked;

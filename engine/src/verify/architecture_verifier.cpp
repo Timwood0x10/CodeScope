@@ -477,6 +477,68 @@ EvidenceRecord ArchitectureVerifier::verify(const Claim &claim)
 	return verifyDeclared(claim);
 }
 
+/// Collect entities for all three declared layers and check that
+/// each layer has at least one entity. Returns false (and sets rec)
+/// if any layer is empty.
+static bool
+collectDeclaredLayers(store::GraphStore *store, uint64_t project_id,
+		      const std::vector<DeclaredLayerEntry> &declared_layers,
+		      const Claim &claim, std::vector<int64_t> &layer1,
+		      std::vector<int64_t> &layer2,
+		      std::vector<int64_t> &layer3, EvidenceRecord &rec)
+{
+	layer1 = collectLayerEntitiesDeclared(store, project_id,
+					      declared_layers, claim.subject);
+	layer2 = collectLayerEntitiesDeclared(store, project_id,
+					      declared_layers, claim.object);
+	layer3 = collectLayerEntitiesDeclared(store, project_id,
+					      declared_layers, claim.scope);
+
+	if (layer1.empty()) {
+		rec.verdict = Verdict::Unknown;
+		rec.confidence = kConfidenceLayerNotFound;
+		rec.verdict_basis = "layer_not_found";
+		rec.detail = "Declared layer '" + claim.subject +
+			     "' has no matching entities";
+		return false;
+	}
+	if (layer2.empty()) {
+		rec.verdict = Verdict::Unknown;
+		rec.confidence = kConfidenceLayerNotFound;
+		rec.verdict_basis = "layer_not_found";
+		rec.detail = "Declared layer '" + claim.object +
+			     "' has no matching entities";
+		return false;
+	}
+	if (layer3.empty()) {
+		rec.verdict = Verdict::Unknown;
+		rec.confidence = kConfidenceLayerNotFound;
+		rec.verdict_basis = "layer_not_found";
+		rec.detail = "Declared layer '" + claim.scope +
+			     "' has no matching entities";
+		return false;
+	}
+	return true;
+}
+
+/// Check forward connectivity between declared layers.
+/// Returns the total forward edge count (0 if none).
+static int checkForwardConnectivity(store::GraphStore *store,
+				    uint64_t project_id,
+				    const std::vector<int64_t> &layer1,
+				    const std::vector<int64_t> &layer2,
+				    const std::vector<int64_t> &layer3)
+{
+	int forward1 = countStructuralEdges(store, project_id, layer1, layer2);
+	int forward2 = countStructuralEdges(store, project_id, layer2, layer3);
+	if (forward1 == 0 && forward2 == 0) {
+		// Fall back to CALLS for connectivity check.
+		forward1 = countForwardCalls(store, project_id, layer1, layer2);
+		forward2 = countForwardCalls(store, project_id, layer2, layer3);
+	}
+	return forward1 + forward2;
+}
+
 EvidenceRecord ArchitectureVerifier::verifyDeclared(const Claim &claim)
 {
 	EvidenceRecord rec;
@@ -511,48 +573,19 @@ EvidenceRecord ArchitectureVerifier::verifyDeclared(const Claim &claim)
 	auto declared_layers =
 		loadDeclaredLayersForProject(store_, project_id_);
 	if (declared_layers.empty()) {
-		// No declared layers: fall back to legacy mode with a note.
 		rec = verifyLegacy(claim);
 		if (rec.verdict_basis.empty())
 			rec.verdict_basis = "legacy_no_declared_layers";
 		return rec;
 	}
 
-	// Collect entity IDs for each of the three layers using declared
-	// path patterns.
-	std::vector<int64_t> layer1 = collectLayerEntitiesDeclared(
-		store_, project_id_, declared_layers, claim.subject);
-	std::vector<int64_t> layer2 = collectLayerEntitiesDeclared(
-		store_, project_id_, declared_layers, claim.object);
-	std::vector<int64_t> layer3 = collectLayerEntitiesDeclared(
-		store_, project_id_, declared_layers, claim.scope);
+	// Collect entity IDs for each layer.
+	std::vector<int64_t> layer1, layer2, layer3;
+	if (!collectDeclaredLayers(store_, project_id_, declared_layers, claim,
+				   layer1, layer2, layer3, rec))
+		return rec;
 
-	if (layer1.empty()) {
-		rec.verdict = Verdict::Unknown;
-		rec.confidence = kConfidenceLayerNotFound;
-		rec.verdict_basis = "layer_not_found";
-		rec.detail = "Declared layer '" + claim.subject +
-			     "' has no matching entities";
-		return rec;
-	}
-	if (layer2.empty()) {
-		rec.verdict = Verdict::Unknown;
-		rec.confidence = kConfidenceLayerNotFound;
-		rec.verdict_basis = "layer_not_found";
-		rec.detail = "Declared layer '" + claim.object +
-			     "' has no matching entities";
-		return rec;
-	}
-	if (layer3.empty()) {
-		rec.verdict = Verdict::Unknown;
-		rec.confidence = kConfidenceLayerNotFound;
-		rec.verdict_basis = "layer_not_found";
-		rec.detail = "Declared layer '" + claim.scope +
-			     "' has no matching entities";
-		return rec;
-	}
-
-	// Check for reverse structural edges (lower layer → higher layer).
+	// Check for reverse structural edges (lower → higher layer).
 	std::vector<int64_t> violations;
 	auto v1 = findStructuralEdgeViolations(store_, project_id_, layer1,
 					       layer3);
@@ -577,21 +610,10 @@ EvidenceRecord ArchitectureVerifier::verifyDeclared(const Claim &claim)
 		return rec;
 	}
 
-	// Check forward connectivity via structural edges.
-	int forward1 =
-		countStructuralEdges(store_, project_id_, layer1, layer2);
-	int forward2 =
-		countStructuralEdges(store_, project_id_, layer2, layer3);
-	if (forward1 == 0 && forward2 == 0) {
-		// Fall back to CALLS for connectivity check — structural
-		// edges may not exist yet for this project.
-		forward1 =
-			countForwardCalls(store_, project_id_, layer1, layer2);
-		forward2 =
-			countForwardCalls(store_, project_id_, layer2, layer3);
-	}
-
-	if (forward1 == 0 && forward2 == 0) {
+	// Check forward connectivity.
+	int forward = checkForwardConnectivity(store_, project_id_, layer1,
+					       layer2, layer3);
+	if (forward == 0) {
 		rec.verdict = Verdict::Unknown;
 		rec.confidence = kConfidenceNoEdges;
 		rec.verdict_basis = "declared_structural";
@@ -605,7 +627,7 @@ EvidenceRecord ArchitectureVerifier::verifyDeclared(const Claim &claim)
 	rec.verdict_basis = "declared_structural";
 	rec.detail = "Declared layered flow verified: " + claim.subject +
 		     " -> " + claim.object + " -> " + claim.scope + " (" +
-		     std::to_string(forward1 + forward2) + " forward edges)";
+		     std::to_string(forward) + " forward edges)";
 	rec.facts.emplace_back(kFactKindNode, layer1.front());
 	rec.facts.emplace_back(kFactKindNode, layer2.front());
 	rec.facts.emplace_back(kFactKindNode, layer3.front());

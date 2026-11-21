@@ -33,6 +33,101 @@ std::string columnTextEscaped(sqlite3_stmt *stmt, int col)
 	return util::jsonEscapeString(
 		text ? reinterpret_cast<const char *>(text) : "");
 }
+
+/// Write entry points from the unified arch_entry_point table (M2+).
+int writeArchEntryPoints(sqlite3 *db, uint64_t project_id,
+			 std::ostringstream &j, bool &first)
+{
+	const char *sql = "SELECT e.id, e.name, e.kind, e.file_path, "
+			  "       e.cyclomatic, e.cognitive, e.nesting_depth, "
+			  "       ep.kind, ep.confidence, ep.source "
+			  "FROM arch_entry_point ep "
+			  "JOIN entity e ON e.id = ep.entity_id "
+			  "WHERE ep.project_id=? "
+			  "ORDER BY ep.kind, e.file_path";
+	sqlite3_stmt *st = nullptr;
+	int count = 0;
+	if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) == SQLITE_OK) {
+		sqlite3_bind_int64(st, 1, static_cast<int64_t>(project_id));
+		while (sqlite3_step(st) == SQLITE_ROW) {
+			int64_t id = sqlite3_column_int64(st, 0);
+			std::string name = columnTextEscaped(st, 1);
+			int kind = sqlite3_column_int(st, 2);
+			std::string file = columnTextEscaped(st, 3);
+			int64_t cyc = sqlite3_column_int64(st, 4);
+			int64_t cog = sqlite3_column_int64(st, 5);
+			int64_t nest = sqlite3_column_int64(st, 6);
+			std::string ep_kind = columnTextEscaped(st, 7);
+			double ep_conf = sqlite3_column_double(st, 8);
+			std::string ep_src = columnTextEscaped(st, 9);
+			if (!first)
+				j << ",";
+			first = false;
+			++count;
+			util::JsonWriter el;
+			el.beginObject();
+			el.key("id").value(id);
+			el.key("name").value(name);
+			el.key("type").value(kind);
+			el.key("file").value(file);
+			el.key("complexity").value(cyc);
+			el.key("cognitive").value(cog);
+			el.key("nesting").value(nest);
+			el.key("entry_kind").value(ep_kind);
+			el.key("confidence").value(ep_conf);
+			el.key("source").value(ep_src);
+			el.endObject();
+			j << el.str();
+		}
+		sqlite3_finalize(st);
+	}
+	return count;
+}
+
+/// Write entry points from the legacy name whitelist (pre-M2 fallback).
+int writeLegacyEntryPoints(sqlite3 *db, uint64_t project_id,
+			   std::ostringstream &j, bool &first)
+{
+	const char *sql = "SELECT id, name, kind, file_path, cyclomatic, "
+			  "       cognitive, nesting_depth FROM entity "
+			  "WHERE project_id=? AND kind IN (0,1) "
+			  "AND name IN ('main','Main','run','Run',"
+			  "'start','Start','init','Init','setup','Setup') "
+			  "ORDER BY file_path";
+	sqlite3_stmt *st = nullptr;
+	int count = 0;
+	if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) == SQLITE_OK) {
+		sqlite3_bind_int64(st, 1, static_cast<int64_t>(project_id));
+		while (sqlite3_step(st) == SQLITE_ROW) {
+			int64_t id = sqlite3_column_int64(st, 0);
+			std::string name = columnTextEscaped(st, 1);
+			int kind = sqlite3_column_int(st, 2);
+			std::string file = columnTextEscaped(st, 3);
+			int64_t cyc = sqlite3_column_int64(st, 4);
+			int64_t cog = sqlite3_column_int64(st, 5);
+			int64_t nest = sqlite3_column_int64(st, 6);
+			if (!first)
+				j << ",";
+			first = false;
+			++count;
+			util::JsonWriter el;
+			el.beginObject();
+			el.key("id").value(id);
+			el.key("name").value(name);
+			el.key("type").value(kind);
+			el.key("file").value(file);
+			el.key("complexity").value(cyc);
+			el.key("cognitive").value(cog);
+			el.key("nesting").value(nest);
+			el.key("entry_kind").value("legacy");
+			el.key("source").value("name_whitelist");
+			el.endObject();
+			j << el.str();
+		}
+		sqlite3_finalize(st);
+	}
+	return count;
+}
 } // namespace
 
 std::string QueryEngine::searchCode(uint64_t project_id, const char *query,
@@ -262,11 +357,10 @@ std::string QueryEngine::getEntryPoints(uint64_t project_id)
 	}
 	sqlite3 *db = store_->handle();
 
-	// M2 §9.4: prefer the unified arch_entry_point table (populated by
-	// arch::buildEntryPoints). When it has rows, use it as the single
-	// source of truth. When it is empty (pre-M2 database or
-	// buildEntryPoints not yet run), fall back to the legacy name
-	// whitelist for backward compatibility.
+	// M2 §9.4: prefer the unified arch_entry_point table. When it has
+	// rows, use it as the single source of truth. When it is empty
+	// (pre-M2 database or buildEntryPoints not yet run), fall back to
+	// the legacy name whitelist for backward compatibility.
 	bool has_arch_entry = false;
 	{
 		sqlite3_stmt *check = nullptr;
@@ -287,96 +381,12 @@ std::string QueryEngine::getEntryPoints(uint64_t project_id)
 	j << "{\"entry_points\":[";
 	bool first = true;
 	int count = 0;
-	sqlite3_stmt *st = nullptr;
 
-	if (has_arch_entry) {
-		// Read from arch_entry_point joined to entity for metrics.
-		const char *sql =
-			"SELECT e.id, e.name, e.kind, e.file_path, "
-			"       e.cyclomatic, e.cognitive, e.nesting_depth, "
-			"       ep.kind, ep.confidence, ep.source "
-			"FROM arch_entry_point ep "
-			"JOIN entity e ON e.id = ep.entity_id "
-			"WHERE ep.project_id=? "
-			"ORDER BY ep.kind, e.file_path";
-		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) ==
-		    SQLITE_OK) {
-			sqlite3_bind_int64(st, 1,
-					   static_cast<int64_t>(project_id));
-			while (sqlite3_step(st) == SQLITE_ROW) {
-				int64_t id = sqlite3_column_int64(st, 0);
-				std::string name = columnTextEscaped(st, 1);
-				int kind = sqlite3_column_int(st, 2);
-				std::string file = columnTextEscaped(st, 3);
-				int64_t cyc = sqlite3_column_int64(st, 4);
-				int64_t cog = sqlite3_column_int64(st, 5);
-				int64_t nest = sqlite3_column_int64(st, 6);
-				std::string ep_kind = columnTextEscaped(st, 7);
-				double ep_conf = sqlite3_column_double(st, 8);
-				std::string ep_src = columnTextEscaped(st, 9);
-				if (!first)
-					j << ",";
-				first = false;
-				++count;
-				util::JsonWriter el;
-				el.beginObject();
-				el.key("id").value(id);
-				el.key("name").value(name);
-				el.key("type").value(kind);
-				el.key("file").value(file);
-				el.key("complexity").value(cyc);
-				el.key("cognitive").value(cog);
-				el.key("nesting").value(nest);
-				el.key("entry_kind").value(ep_kind);
-				el.key("confidence").value(ep_conf);
-				el.key("source").value(ep_src);
-				el.endObject();
-				j << el.str();
-			}
-			sqlite3_finalize(st);
-		}
-	} else {
-		// Legacy fallback: name whitelist (pre-M2 compatibility).
-		const char *sql =
-			"SELECT id, name, kind, file_path, cyclomatic, "
-			"       cognitive, nesting_depth FROM entity "
-			"WHERE project_id=? AND kind IN (0,1) "
-			"AND name IN ('main','Main','run','Run',"
-			"'start','Start','init','Init','setup','Setup') "
-			"ORDER BY file_path";
-		if (sqlite3_prepare_v2(db, sql, -1, &st, nullptr) ==
-		    SQLITE_OK) {
-			sqlite3_bind_int64(st, 1,
-					   static_cast<int64_t>(project_id));
-			while (sqlite3_step(st) == SQLITE_ROW) {
-				int64_t id = sqlite3_column_int64(st, 0);
-				std::string name = columnTextEscaped(st, 1);
-				int kind = sqlite3_column_int(st, 2);
-				std::string file = columnTextEscaped(st, 3);
-				int64_t cyc = sqlite3_column_int64(st, 4);
-				int64_t cog = sqlite3_column_int64(st, 5);
-				int64_t nest = sqlite3_column_int64(st, 6);
-				if (!first)
-					j << ",";
-				first = false;
-				++count;
-				util::JsonWriter el;
-				el.beginObject();
-				el.key("id").value(id);
-				el.key("name").value(name);
-				el.key("type").value(kind);
-				el.key("file").value(file);
-				el.key("complexity").value(cyc);
-				el.key("cognitive").value(cog);
-				el.key("nesting").value(nest);
-				el.key("entry_kind").value("legacy");
-				el.key("source").value("name_whitelist");
-				el.endObject();
-				j << el.str();
-			}
-			sqlite3_finalize(st);
-		}
-	}
+	if (has_arch_entry)
+		count = writeArchEntryPoints(db, project_id, j, first);
+	else
+		count = writeLegacyEntryPoints(db, project_id, j, first);
+
 	j << "],\"total\":" << count << "}";
 	return j.str();
 }

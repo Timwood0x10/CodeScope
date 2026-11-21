@@ -234,39 +234,11 @@ std::string fmt(double v)
 	return buf;
 }
 
-} // namespace
-
-RobustnessResult computeRobustness(store::GraphStore &store,
-				   uint64_t project_id)
+/// Phase 1: Dependency Concentration — fan-in ratio and fragile hub
+/// identification for each module.
+void computeConcentration(const ModuleGraph &graph, int n,
+			  RobustnessResult &result)
 {
-	RobustnessResult result;
-
-	// Build the module graph from the database.
-	ModuleGraph graph;
-	std::string graph_error;
-	if (!graph.build(store, project_id, graph_error)) {
-		result.error = std::move(graph_error);
-		return result;
-	}
-
-	if (graph.nodeCount() == 0) {
-		// No modules — nothing to observe. This is not an error.
-		return result;
-	}
-
-	int n = graph.nodeCount();
-
-	// ── 1. Dependency Concentration ────────────────────────────
-	//
-	// For each module, compute:
-	//   - fan_in: number of distinct modules that depend on it
-	//   - fan_in_ratio: fan_in / (n - 1), normalized to [0, 1]
-	//   - out_degree_diversity: number of distinct modules it depends on
-	//
-	// A module is a "fragile hub" if:
-	//   fan_in_ratio >= kFragileHubFanInRatio AND
-	//   out_degree_diversity >= kFragileHubMinOutDegree
-
 	int max_fan_in = 0;
 	std::string max_fan_in_module;
 	for (int i = 0; i < n; ++i) {
@@ -282,7 +254,6 @@ RobustnessResult computeRobustness(store::GraphStore &store,
 		double fan_in_ratio =
 			(n > 1) ? static_cast<double>(fan_in) / (n - 1) : 0.0;
 
-		// Fan-in observation.
 		if (fan_in > 0) {
 			RobustnessObservation obs;
 			obs.category = "concentration";
@@ -297,7 +268,6 @@ RobustnessResult computeRobustness(store::GraphStore &store,
 			result.observations.push_back(std::move(obs));
 		}
 
-		// Fragile hub observation.
 		if (fan_in_ratio >= kFragileHubFanInRatio &&
 		    out_div >= kFragileHubMinOutDegree) {
 			RobustnessObservation obs;
@@ -316,16 +286,17 @@ RobustnessResult computeRobustness(store::GraphStore &store,
 			result.observations.push_back(std::move(obs));
 		}
 
-		(void)fan_out; // Available for future use.
+		(void)fan_out;
 	}
+	(void)max_fan_in;
+	(void)max_fan_in_module;
+}
 
-	// ── 2. Change Propagation ──────────────────────────────────
-	//
-	// a) Condensed DAG depth: run SCC, condense, compute longest path.
-	// b) Reverse reachable set: for each module, how many modules
-	//    transitively depend on it (change propagation blast radius).
-
-	// 2a. Condensed DAG depth.
+/// Phase 2: Change Propagation — condensed DAG depth and reverse
+/// reachable set per module.
+void computePropagation(const ModuleGraph &graph, int n,
+			RobustnessResult &result)
+{
 	auto sccs = computeSccs(graph);
 	std::vector<int> node_to_scc;
 	int scc_count = buildSccMapping(graph, sccs, node_to_scc);
@@ -352,7 +323,6 @@ RobustnessResult computeRobustness(store::GraphStore &store,
 		result.observations.push_back(std::move(obs));
 	}
 
-	// 2b. Reverse reachable set per module.
 	auto rev_reach = computeReverseReachable(graph);
 	int max_rev_reach = 0;
 	std::string max_rev_reach_module;
@@ -377,7 +347,6 @@ RobustnessResult computeRobustness(store::GraphStore &store,
 		}
 	}
 
-	// Summary observation for the module with the largest propagation radius.
 	if (max_rev_reach > 0) {
 		RobustnessObservation obs;
 		obs.category = "propagation";
@@ -391,14 +360,13 @@ RobustnessResult computeRobustness(store::GraphStore &store,
 			" modules transitively depend on it";
 		result.observations.push_back(std::move(obs));
 	}
+}
 
-	// ── 3. Boundary Resilience ─────────────────────────────────
-	//
-	// External dependency concentration: for each module, count
-	// external (resolution_kind = "external") edges from the database.
-	// The module graph only contains internal edges (both endpoints
-	// registered), so we query arch_edge directly for external deps.
-
+/// Phase 3: Boundary Resilience — external dependency concentration.
+void computeBoundaryResilience(store::GraphStore &store, uint64_t project_id,
+			       const ModuleGraph &graph, int n,
+			       RobustnessResult &result)
+{
 	sqlite3 *db = store.handle();
 	int total_external = 0;
 	int max_external = 0;
@@ -427,7 +395,6 @@ RobustnessResult computeRobustness(store::GraphStore &store,
 		}
 	}
 
-	// Global external concentration observation.
 	if (total_external > 0) {
 		RobustnessObservation obs;
 		obs.category = "boundary";
@@ -442,6 +409,29 @@ RobustnessResult computeRobustness(store::GraphStore &store,
 			" external deps)";
 		result.observations.push_back(std::move(obs));
 	}
+}
+
+} // namespace
+
+RobustnessResult computeRobustness(store::GraphStore &store,
+				   uint64_t project_id)
+{
+	RobustnessResult result;
+
+	ModuleGraph graph;
+	std::string graph_error;
+	if (!graph.build(store, project_id, graph_error)) {
+		result.error = std::move(graph_error);
+		return result;
+	}
+
+	if (graph.nodeCount() == 0)
+		return result;
+
+	int n = graph.nodeCount();
+	computeConcentration(graph, n, result);
+	computePropagation(graph, n, result);
+	computeBoundaryResilience(store, project_id, graph, n, result);
 
 	return result;
 }
