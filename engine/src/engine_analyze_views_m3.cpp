@@ -20,6 +20,8 @@
 #include "util/json_writer.h"
 #include "verify/drift_adapter.h"
 
+#include <algorithm>
+
 #include <sqlite3.h>
 
 #include <string>
@@ -125,8 +127,17 @@ char *buildGenDefects(EngineContext *ctx, uint64_t project_id)
 	w.key("dimension").value("D2");
 	w.key("source").value("inferred");
 
+	// A real project produces far more candidates than the 1 MB MCP message
+	// cap allows — measured on this repository: 1.59 MB, which failed the
+	// whole call. Return a page and say how much was left, the same contract
+	// verify_integrity uses for findings; the summary below still counts
+	// every candidate, not just the returned page.
+	constexpr size_t kMaxReturned = 200;
+	const size_t returned =
+		std::min(result.candidates.size(), kMaxReturned);
 	w.key("candidates").beginArray();
-	for (const auto &d : result.candidates) {
+	for (size_t i = 0; i < returned; ++i) {
+		const auto &d = result.candidates[i];
 		w.beginObject();
 		w.key("category").value(d.category);
 		w.key("description").value(d.description);
@@ -139,6 +150,9 @@ char *buildGenDefects(EngineContext *ctx, uint64_t project_id)
 		w.endObject();
 	}
 	w.endArray();
+	w.key("returned").value(static_cast<int64_t>(returned));
+	w.key("limit").value(static_cast<int64_t>(kMaxReturned));
+	w.key("truncated").value(result.candidates.size() > kMaxReturned);
 
 	w.key("total_candidates")
 		.value(static_cast<int64_t>(result.candidates.size()));
