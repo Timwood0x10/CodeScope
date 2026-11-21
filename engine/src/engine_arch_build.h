@@ -1,0 +1,37 @@
+#ifndef CODESCOPE_ENGINE_ARCH_BUILD_H
+#define CODESCOPE_ENGINE_ARCH_BUILD_H
+
+#include <cstdint>
+
+namespace store
+{
+class GraphStore;
+}
+
+namespace engine_arch
+{
+
+/// Build and persist the M2 architecture layer for one project.
+///
+/// Order matters: the module tree and its structural edges come first, the
+/// in-memory graph is rebuilt from those rows (a write that produced no graph
+/// is caught here rather than by a later reader seeing an empty table), then
+/// entry points, then the declared constraints. All writes share one
+/// transaction: a half-built layer would leave `arch_edge` without
+/// `arch_entry_point` and make the drift view report a graph the entry-point
+/// view disagrees with.
+///
+/// A missing `.codescope/profile.yaml` is not a failure — nothing is declared,
+/// and the constraint tables legitimately stay empty.
+///
+/// Failure is reported on stderr and never propagated: the graph and the model
+/// layer are still usable, and an empty architecture table is exactly the
+/// state this function exists to end, so it must be visible rather than fatal.
+///
+/// @param store Open store; the caller guarantees it is not in a transaction.
+/// @param project_id Project whose architecture rows are rebuilt.
+void buildLayer(store::GraphStore &store, uint64_t project_id);
+
+} // namespace engine_arch
+
+#endif // CODESCOPE_ENGINE_ARCH_BUILD_H

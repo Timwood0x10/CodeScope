@@ -63,6 +63,67 @@ bool pathStartsWith(const std::string &path, const std::string &prefix)
 	return path[prefix.size()] == '/';
 }
 
+/// Collapse `.` and `..` in a slash-separated path.
+///
+/// The include a C/C++ file writes is relative to that file
+/// (`../include/engine.h`), so the raw target never matches a module path;
+/// measured on this repository before folding, all 1229 edges were
+/// unresolved or external and none was internal.
+///
+/// @param path Absolute or relative path; leading '/' is preserved.
+/// @return The folded path without duplicated or trailing separators.
+std::string foldPath(const std::string &path)
+{
+	const bool absolute = !path.empty() && path[0] == '/';
+	std::vector<std::string> parts;
+	size_t begin = 0;
+	while (begin <= path.size()) {
+		const size_t end = path.find('/', begin);
+		const std::string seg = path.substr(
+			begin, end == std::string::npos ? std::string::npos :
+							  end - begin);
+		if (seg.empty() || seg == ".") {
+			// nothing to add
+		} else if (seg == "..") {
+			if (!parts.empty())
+				parts.pop_back();
+		} else {
+			parts.push_back(seg);
+		}
+		if (end == std::string::npos)
+			break;
+		begin = end + 1;
+	}
+	std::string out = absolute ? "/" : "";
+	for (size_t i = 0; i < parts.size(); ++i) {
+		if (i)
+			out += '/';
+		out += parts[i];
+	}
+	return out;
+}
+
+/// Resolve an include that is relative to the including file.
+///
+/// Only `./` and `../` are file-relative; a bare `"Vector.h"` is resolved by
+/// the compiler's include path, which this layer does not model, so it stays
+/// as written and is reported unresolved rather than guessed.
+///
+/// @param target Import target as recorded.
+/// @param source_file File that contains the import.
+/// @return Folded path, or the target unchanged when it is not file-relative.
+std::string resolveRelativeTarget(const std::string &target,
+				  const std::string &source_file)
+{
+	if (target.empty())
+		return target;
+	const bool dotted = target.rfind("./", 0) == 0 ||
+			    target.rfind("../", 0) == 0;
+	if (!dotted)
+		return target;
+	return foldPath(dirOf(source_file) + "/" + target);
+}
+
 } // namespace
 
 // ─── ModuleGraph ──────────────────────────────────────────────
@@ -706,8 +767,9 @@ bool writeStructuralEdgesFromImports(
 		std::string dst_module;
 		std::string resolution_kind;
 		double confidence = 0.0;
-		resolveImportTarget(target_path, known_modules, dst_module,
-				    resolution_kind, confidence);
+		resolveImportTarget(
+			resolveRelativeTarget(target_path, source_file),
+			known_modules, dst_module, resolution_kind, confidence);
 
 		if (src_module.empty() || dst_module.empty())
 			continue;

@@ -48,16 +48,26 @@ std::string matchDeclaredLayer(sqlite3 *db, uint64_t project_id,
 	if (file_path.empty())
 		return "";
 
-	// Try exact prefix match on path_pattern.
-	const char *sql = "SELECT layer_name FROM arch_layer_decl "
-			  "WHERE project_id=? AND "
-			  "substr(?, 1, length(path_pattern)) = path_pattern "
-			  "ORDER BY length(path_pattern) DESC LIMIT 1";
+	// A declared pattern is written relative to the project root
+	// ("engine/src/store") while arch_edge carries absolute module paths, so
+	// a prefix test alone matched nothing and every declared layer looked
+	// unclassified: drift answered zero on a project with 1229 real edges.
+	// The pattern therefore matches as a whole path segment, at the start or
+	// after a '/', and the longest pattern wins.
+	const char *sql =
+		"SELECT layer_name FROM arch_layer_decl "
+		"WHERE project_id=? AND ("
+		"  substr(?, 1, length(path_pattern)) = path_pattern"
+		"  OR instr(?, '/' || path_pattern || '/') > 0"
+		"  OR substr(?, -length(path_pattern)) = path_pattern)"
+		" ORDER BY length(path_pattern) DESC LIMIT 1";
 	sqlite3_stmt *stmt = nullptr;
 	if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
 		return "";
 	sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(project_id));
 	sqlite3_bind_text(stmt, 2, file_path.c_str(), -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 3, file_path.c_str(), -1, SQLITE_TRANSIENT);
+	sqlite3_bind_text(stmt, 4, file_path.c_str(), -1, SQLITE_TRANSIENT);
 
 	std::string layer;
 	if (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -83,12 +93,16 @@ std::vector<DriftItem> detectWithDeclaredLayers(sqlite3 *db,
 {
 	std::vector<DriftItem> drifts;
 
-	// Get declared layer order (by first appearance = declaration order).
+	// Declared order is the order the layers appear in the profile file, and
+	// the table records it as insertion order (rowid). Ordering by
+	// layer_name instead sorts them alphabetically, so a profile that
+	// declares `store` above `evidence` was judged with `evidence` on top
+	// and its real reverse edges were reported as forward.
 	std::vector<std::string> layer_order;
 	{
-		const char *sql = "SELECT DISTINCT layer_name FROM "
-				  "arch_layer_decl WHERE project_id=? "
-				  "ORDER BY layer_name";
+		const char *sql = "SELECT layer_name FROM arch_layer_decl "
+				  "WHERE project_id=? GROUP BY layer_name "
+				  "ORDER BY MIN(rowid)";
 		sqlite3_stmt *stmt = nullptr;
 		if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) !=
 		    SQLITE_OK)

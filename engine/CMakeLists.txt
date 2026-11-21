@@ -189,6 +189,7 @@ set(ENGINE_SOURCES
         src/post_parse_phase.cpp
         src/engine_index_metrics.cpp
     src/engine_scanner.cpp
+    src/engine_arch_build.cpp
     src/engine_queries.cpp
     src/engine_queries_status.cpp
     src/engine_explore_error.cpp

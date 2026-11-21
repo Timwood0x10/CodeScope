@@ -1,4 +1,5 @@
 #include "util/json_writer.h"
+#include "engine_arch_build.h"
 #include "engine_index_discover.h"
 #include "engine_internal.h"
 #include "model/semantic_fact_extractor.h"
@@ -253,9 +254,8 @@ static char *enhanceProjectImpl(EngineContext *ctx, uint64_t project_id)
 	// directories, so a project whose root holds no source files never had its
 	// root README ingested (six of the ten real projects checked answered
 	// detect_documentation_drift with nothing at all while a README was
-	// present), and the file-list path (force-index) ingested none whatsoever.
-	// Enhancing is the step every path runs last, so the root README is
-	// ingested here, before the knowledge layer reads capabilities out of it.
+	// present), and the file-list path (force-index) ingested none. Enhancing
+	// is last on every path, so the root README is ingested here.
 	{
 		const int readme =
 			engine_index_discover::ingestProjectRootReadme(
@@ -365,6 +365,7 @@ run_model_build:
 		auto t = Clock::now();
 		runModelIndexSync(*ctx->store, project_id, true);
 		buildKnowledgeGraphSync(*ctx->store, project_id);
+		engine_arch::buildLayer(*ctx->store, project_id);
 		t_model = std::chrono::duration_cast<std::chrono::milliseconds>(
 				  Clock::now() - t)
 				  .count();

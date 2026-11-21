@@ -12,6 +12,7 @@
 #include "../src/arch/module_graph.h"
 #include "../src/arch/entry_point_builder.h"
 #include "../src/constraint/constraint_engine.h"
+#include "../src/engine_arch_build.h"
 #include "../src/store/store.h"
 #include "../src/verify/architecture_verifier.h"
 #include "../src/verify/claim.h"
@@ -20,8 +21,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <sqlite3.h>
 #include <string>
+#include <system_error>
 #include <unistd.h>
 
 static char kDbPath[160];
@@ -482,6 +485,106 @@ static void testConstraintLoading()
 	std::fprintf(stderr, "  [test] constraint loading: PASS\n");
 }
 
+/// COUNT(*) of `sql`, or -1 when the statement fails.
+static int64_t countRows(store::GraphStore &store, const char *sql)
+{
+	sqlite3_stmt *stmt = nullptr;
+	if (sqlite3_prepare_v2(store.handle(), sql, -1, &stmt, nullptr) !=
+	    SQLITE_OK)
+		return -1;
+	int64_t n = -1;
+	if (sqlite3_step(stmt) == SQLITE_ROW)
+		n = sqlite3_column_int64(stmt, 0);
+	sqlite3_finalize(stmt);
+	return n;
+}
+
+// ── Test 5: architecture layer wiring ─────────────────────────
+//
+// The M2 builders were tested in isolation but nothing called them, so on
+// every real project the four architecture tables stayed empty. This pins
+// buildLayer as the wiring point, and with it the two path rules that made
+// the tables useless even when filled: an include written relative to its file
+// and a layer pattern written relative to the project root.
+static void testArchLayerWiring()
+{
+	std::fprintf(stderr, "  [test] architecture layer wiring...\n");
+
+	store::GraphStore store;
+	CHECK(store.open(kDbPath));
+
+	const std::string root = std::string(kDbPath) + "_proj";
+	std::error_code ec;
+	std::filesystem::remove_all(root, ec);
+	std::filesystem::create_directories(root + "/.codescope");
+	std::filesystem::create_directories(root + "/src/api");
+	std::filesystem::create_directories(root + "/src/store");
+	{
+		FILE *f = std::fopen(
+			(root + "/.codescope/profile.json").c_str(), "w");
+		CHECK(f != nullptr);
+		std::fputs("{\"architecture\":{\"layers\":["
+			   "{\"name\":\"api\",\"paths\":[\"src/api\"]},"
+			   "{\"name\":\"store\",\"paths\":[\"src/store\"]}],"
+			   "\"rules\":[{\"id\":\"no_store_from_api\","
+			   "\"type\":\"dependency_direction\","
+			   "\"from\":\"store\",\"to\":\"api\"}]}}",
+			   f);
+		std::fclose(f);
+	}
+
+	execSql(store, "DELETE FROM arch_edge WHERE project_id=1");
+	execSql(store, "DELETE FROM arch_module WHERE project_id=1");
+	execSql(store, "DELETE FROM arch_module_member WHERE project_id=1");
+	execSql(store, "DELETE FROM arch_entry_point WHERE project_id=1");
+	execSql(store, "DELETE FROM constraint_decl WHERE project_id=1");
+	execSql(store, "DELETE FROM arch_layer_decl WHERE project_id=1");
+	execSql(store, "DELETE FROM import WHERE project_id=1");
+	execSql(store, "DELETE FROM scope WHERE project_id=1");
+	execSql(store, "DELETE FROM entity WHERE project_id=1");
+	execSql(store, "DELETE FROM projects WHERE id=1");
+
+	const std::string proj_sql =
+		"INSERT INTO projects (id, root_path, name) VALUES "
+		"(1,'" +
+		root + "','arch-wiring')";
+	execSql(store, proj_sql.c_str());
+
+	insertEntity(store, 1, "main", root + "/src/api/controller.cpp");
+	insertEntity(store, 1, "controller", root + "/src/api/controller.cpp");
+	insertEntity(store, 1, "repo", root + "/src/store/repo.cpp");
+
+	execSql(store, "INSERT INTO scope (id, project_id, kind, name) "
+		       "VALUES (100,1,1,'controller')");
+	const std::string imp_sql =
+		"INSERT INTO import (project_id, source_scope_id, target_path, "
+		"file_path) VALUES (1,100,'../store/repo.h','" +
+		root + "/src/api/controller.cpp')";
+	execSql(store, imp_sql.c_str());
+
+	engine_arch::buildLayer(store, 1);
+
+	// The include is relative to its file, so the edge resolves to the store
+	// module instead of staying an unresolved "../store/repo.h".
+	CHECK(countRows(store,
+			"SELECT COUNT(*) FROM arch_edge WHERE project_id=1 "
+			"AND resolution_kind='internal'") == 1);
+	CHECK(countRows(store, "SELECT COUNT(*) FROM arch_module "
+			       "WHERE project_id=1") >= 2);
+	CHECK(countRows(store, "SELECT COUNT(*) FROM arch_entry_point "
+			       "WHERE project_id=1 AND kind='explicit'") >= 1);
+	// A pattern written relative to the project root must match the module
+	// paths, which are absolute.
+	CHECK(countRows(store, "SELECT COUNT(*) FROM constraint_decl "
+			       "WHERE project_id=1") == 1);
+	CHECK(countRows(store, "SELECT COUNT(*) FROM arch_layer_decl "
+			       "WHERE project_id=1") == 2);
+
+	std::filesystem::remove_all(root, ec);
+	store.close();
+	std::fprintf(stderr, "  [test] architecture layer wiring: PASS\n");
+}
+
 int main()
 {
 	initDbPath();
@@ -491,6 +594,7 @@ int main()
 	testDeclaredLayerViolation();
 	testEntryPointConvergence();
 	testConstraintLoading();
+	testArchLayerWiring();
 
 	removeDbFiles();
 	return checkFailures() ? 1 : 0;
